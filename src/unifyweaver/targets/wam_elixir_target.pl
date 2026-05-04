@@ -2999,6 +2999,156 @@ defmodule WamRuntime.GraphKernel.WeightedShortestPath do
   end
 end
 
+defmodule WamRuntime.GraphKernel.AstarShortestPath do
+  @moduledoc """
+  Native A* shortest-path kernel — bypasses WAM dispatch for the
+  canonical pattern:
+
+      astar(X, Y, _Dim, W) :- weighted_edge(X, Y, W).
+      astar(X, Y, Dim, TotalW) :-
+          weighted_edge(X, Mid, W1),
+          astar(Mid, Y, Dim, RestW),
+          TotalW is RestW + W1.
+
+  Goal-directed shortest-path search with a dimensionality-aware
+  heuristic. Priority: f(n) = g(n)^D + h(n)^D where D is graph
+  dimensionality. h(n) = direct semantic distance from n to target
+  (via the configured `direct_dist_fn`). Minkowski-style f-cost
+  (NOT standard Euclidean f = g + h) — by Minkowski inequality this
+  is admissible and tighter than L1 A*.
+
+  Ported from the Rust kernel
+  `collect_native_astar_shortest_path_results` in
+  src/unifyweaver/targets/wam_rust_target.pl. Identical algorithm:
+  min-heap keyed by f-cost, dist map for stale-entry skip, early
+  termination when target pops, post-filter dist map.
+
+  Dijkstra fallback: if `target` is `nil`, the heuristic returns 0
+  for every node, f-cost reduces to g(n)^D, and the search behaves
+  like Dijkstra (no early termination — explores all reachable).
+  This matches Rusts `target.is_empty()` branch.
+
+  Two edge predicates per call:
+    - `weighted_edges_fn(node)` -> [{from, to, weight}, ...]
+      Forward weighted edges. Same contract as
+      WeightedShortestPath.collect_path_costs/2.
+    - `direct_dist_fn(node)` -> [{from, to, weight}, ...]
+      Heuristic edges from `node`. The kernel filters for the entry
+      where `to == target`; if none, defaults to 1.0 (Rusts
+      "conservative default"). When no separate `direct_dist_pred`
+      is configured, callers pass `weighted_edges_fn` here too —
+      using forward edges as the heuristic is admissible (any direct
+      edge weight is a lower bound on shortest path through it).
+
+  Result shape: same as WeightedShortestPath — `[{node, g_cost}, ...]`
+  for every node whose dist was finalised before target popped, plus
+  target itself. With early termination, result size depends on
+  search depth, not graph size. Caller post-filters to target if
+  only that single result is wanted (the dispatch wrapper does this
+  when target is bound on entry).
+
+  Cycle handling: same as Dijkstra (PR #1825) — naturally bounded
+  via the dist map. No explicit visited list needed.
+  """
+
+  @doc """
+  Returns `[{node, g_cost}, ...]` — finalised shortest-path costs
+  from `start` to nodes explored by A* search. With `target` bound,
+  search terminates as soon as target pops from the heap; result
+  contains target plus all nodes finalised along the way. With
+  `target == nil`, behaves like Dijkstra (full reachable set).
+
+  `dim` is the Minkowski exponent for f-cost. Use 5 by default
+  (matches Rusts foreign_usize_config fallback for `dimensionality`).
+  """
+  def collect_path_costs(weighted_edges_fn, direct_dist_fn, start, target, dim)
+      when is_function(weighted_edges_fn, 1) and is_function(direct_dist_fn, 1)
+       and is_number(dim) do
+    h_start = heuristic(direct_dist_fn, start, target)
+    initial_f = f_cost(0, h_start, dim)
+    initial_dist = %{start => 0}
+    initial_heap = :gb_sets.singleton({initial_f, 0, start})
+    final_dist = astar_loop(weighted_edges_fn, direct_dist_fn, target, dim,
+                            initial_heap, initial_dist)
+    final_dist
+    |> Enum.flat_map(fn
+      {^start, _} -> []
+      {node, cost} -> [{node, cost}]
+    end)
+  end
+
+  defp astar_loop(weighted_edges_fn, direct_dist_fn, target, dim, heap, dist) do
+    case :gb_sets.is_empty(heap) do
+      true -> dist
+      false ->
+        {{_f_cost, g_cost, node}, heap1} = :gb_sets.take_smallest(heap)
+        best = Map.fetch!(dist, node)
+        cond do
+          # Stale-entry skip: better path was found AFTER pushing this entry.
+          g_cost > best ->
+            astar_loop(weighted_edges_fn, direct_dist_fn, target, dim, heap1, dist)
+
+          # Early termination: target popped from heap. With an admissible
+          # heuristic this is guaranteed to be the shortest path to target.
+          target != nil and node == target ->
+            dist
+
+          # Expand neighbours.
+          true ->
+            edges = weighted_edges_fn.(node)
+            {new_heap, new_dist} =
+              edges
+              |> Enum.reduce({heap1, dist}, fn {_from, next, weight}, {h, d} ->
+                next_g = g_cost + weight
+                case Map.fetch(d, next) do
+                  {:ok, prev} when prev <= next_g ->
+                    {h, d}
+                  _ ->
+                    h_next = heuristic(direct_dist_fn, next, target)
+                    f_next = f_cost(next_g, h_next, dim)
+                    {:gb_sets.add({f_next, next_g, next}, h),
+                     Map.put(d, next, next_g)}
+                end
+              end)
+            astar_loop(weighted_edges_fn, direct_dist_fn, target, dim,
+                       new_heap, new_dist)
+        end
+    end
+  end
+
+  # h(n) = direct distance from `node` to `target`. nil target means
+  # Dijkstra mode (no goal). Default 1.0 if no direct edge recorded
+  # (matches Rusts conservative default).
+  defp heuristic(_direct_dist_fn, _node, nil), do: 0
+  defp heuristic(direct_dist_fn, node, target) do
+    edges = direct_dist_fn.(node)
+    Enum.find_value(edges, 1.0, fn
+      {_from, to, w} when to == target -> w
+      _ -> false
+    end)
+  end
+
+  # f(n) = g(n)^D + h(n)^D — Minkowski-style. NOT standard A*s g + h.
+  defp f_cost(g, h, dim), do: :math.pow(g, dim) + :math.pow(h, dim)
+
+  @doc """
+  Convenience for FactSource-backed graphs. Both `weighted_source` and
+  `direct_source` may be the same handle if no separate
+  direct_dist_pred is configured (the detectors fallback shape).
+  """
+  def collect_path_costs_from_source(weighted_source_module, weighted_source_handle,
+                                     direct_source_module, direct_source_handle,
+                                     start, target, dim, state \\\\ nil) do
+    weighted_fn = fn node ->
+      weighted_source_module.lookup_by_arg1(weighted_source_handle, node, state)
+    end
+    direct_fn = fn node ->
+      direct_source_module.lookup_by_arg1(direct_source_handle, node, state)
+    end
+    collect_path_costs(weighted_fn, direct_fn, start, target, dim)
+  end
+end
+
 defmodule WamRuntime.GraphKernel.CategoryAncestor do
   @moduledoc """
   Native bounded-ancestor kernel — path-enumeration variant of TC
@@ -3659,6 +3809,13 @@ emit_kernel_dispatch_module(ModuleName, Pred, _Arity,
                             Code) :-
     member(edge_pred(EdgePred/_), ConfigOps),
     compile_weighted_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, Code).
+emit_kernel_dispatch_module(ModuleName, Pred, _Arity,
+                            recursive_kernel(astar_shortest_path4, _, ConfigOps),
+                            Code) :-
+    member(edge_pred(EdgePred/_), ConfigOps),
+    member(direct_dist_pred(DirectPred/_), ConfigOps),
+    member(dimensionality(Dim), ConfigOps),
+    compile_astar_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, DirectPred, Dim, Code).
 
 %% compile_tc_kernel_dispatch_module(+ModuleName, +Pred, +EdgePred, -Code)
 %
@@ -4474,6 +4631,185 @@ end
      PredStr, EdgePredStr,
      EdgeKey,
      EdgeKey,
+     CamelPred]).
+
+%% compile_astar_shortest_path_dispatch_module(+ModuleName, +Pred, +EdgePred, +DirectPred, +Dim, -Code)
+%
+%  Dispatch module for the astar_shortest_path4 pattern. Routes
+%  calls through WamRuntime.GraphKernel.AstarShortestPath. Reads
+%  TWO FactSources at runtime (weighted_edge + direct_dist edges)
+%  via the registry, plus three argument registers:
+%    - A1: start (must be bound to an atom)
+%    - A2: target (atom for goal-directed mode; unbound for Dijkstra
+%      fallback)
+%    - A3: dim (number on entry overrides default; unbound uses
+%      compile-time Dim from kernel config)
+%    - A4: cost (typically unbound; gets bound on success)
+%
+%  TWO enumerated registers per solution: A2 (target, only if it
+%  was unbound on entry) and A4 (cost). When target is bound on
+%  entry, the kernel returns AT MOST ONE solution (the goal cost).
+%
+%  Driver-direct call: bind_two_regs/4 binds A2 and A4 (skipping
+%  A2 if already bound) to the first solution.
+compile_astar_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, DirectPred, Dim, Code) :-
+    atom_string(ModuleName, ModName),
+    camel_case(ModName, CamelMod),
+    atom_string(Pred, PredStr),
+    camel_case(PredStr, CamelPred),
+    atom_string(EdgePred, EdgePredStr),
+    atom_string(DirectPred, DirectPredStr),
+    format(string(EdgeKey), "~w/3", [EdgePredStr]),
+    format(string(DirectKey), "~w/3", [DirectPredStr]),
+    format(string(Code),
+'defmodule ~w.~w do
+  @moduledoc """
+  Kernel-dispatched ~w/4 (auto-recognised astar_shortest_path4 pattern
+  over ~w/3 with ~w/3 as the heuristic source). Routes calls through
+  WamRuntime.GraphKernel.AstarShortestPath.
+
+  Both edge sources must be registered via WamRuntime.FactSourceRegistry:
+    - "~w" — forward weighted edges
+    - "~w" — direct heuristic distances (may be the same indicator
+      if no separate direct_dist_pred was configured at compile time)
+  """
+
+  @default_dim ~w
+
+  def run(%WamRuntime.WamState{} = state) do
+    start_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
+    target_raw = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 2))
+    dim_raw = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 3))
+
+    # target: nil = unbound (Dijkstra mode); else the atom/binary.
+    target_val =
+      case target_raw do
+        {:unbound, _} -> nil
+        v -> v
+      end
+
+    # dim: numeric override on entry; else the compile-time default.
+    dim_val =
+      case dim_raw do
+        {:unbound, _} -> @default_dim
+        n when is_number(n) -> n
+        _ -> @default_dim
+      end
+
+    weighted_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
+    direct_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
+    weighted_fn = fn node ->
+      WamRuntime.FactSource.lookup_by_arg1(weighted_handle, node, state)
+    end
+    direct_fn = fn node ->
+      WamRuntime.FactSource.lookup_by_arg1(direct_handle, node, state)
+    end
+
+    pairs =
+      WamRuntime.GraphKernel.AstarShortestPath.collect_path_costs(
+        weighted_fn, direct_fn, start_val, target_val, dim_val)
+
+    # Post-filter: when target was bound on entry, surface only its
+    # entry from the dist map (matches Rust dispatchs `results.retain`
+    # behaviour). When target was unbound, return the full set
+    # (Dijkstra mode).
+    pairs =
+      case target_val do
+        nil -> pairs
+        t -> Enum.filter(pairs, fn {n, _} -> n == t end)
+      end
+
+    if WamRuntime.in_forkable_aggregate_frame?(state) do
+      {above, agg_cp, below} = WamRuntime.split_at_aggregate_cp(state)
+      contributions =
+        case agg_cp.agg_value_reg do
+          2 -> Enum.map(pairs, fn {t, _w} -> t end)
+          4 -> Enum.map(pairs, fn {_t, w} -> w end)
+          _ -> pairs
+        end
+      new_accum = agg_cp.agg_accum ++ contributions
+      new_agg_cp = %{agg_cp | agg_accum: new_accum}
+      new_state = %{state | choice_points: above ++ [new_agg_cp | below]}
+      throw({:fail, new_state})
+    else
+      case pairs do
+        [{first_target, first_cost} | _] ->
+          case bind_target_and_cost(state, target_val, first_target, first_cost) do
+            nil -> throw({:fail, state})
+            bound -> {:ok, bound}
+          end
+        [] -> throw({:fail, state})
+      end
+    end
+  end
+
+  def run(args) when is_list(args) do
+    state = %WamRuntime.WamState{code: {}, labels: %{}, pc: 1}
+    {state, arg_vars} =
+      Enum.with_index(args, 1)
+      |> Enum.reduce({state, []}, fn {arg, i}, {s, vars} ->
+        case arg do
+          {:unbound, _} ->
+            v = {:unbound, make_ref()}
+            {%{s | regs: Map.put(s.regs, i, v)}, [{i, v} | vars]}
+          other ->
+            {%{s | regs: Map.put(s.regs, i, other)}, vars}
+        end
+      end)
+    state = %{state | arg_vars: arg_vars, cp: &WamRuntime.terminal_cp/1}
+    try do
+      case run(state) do
+        {:ok, final} -> {:ok, WamRuntime.materialise_args(final)}
+        other -> other
+      end
+    catch
+      {:fail, _} -> :fail
+      {:return, result} -> result
+      error ->
+        IO.puts("Predicate ~w CRASHED: #{inspect(error)}")
+        :fail
+    end
+  end
+
+  # If target was bound on entry, A2 is already set — skip rebinding.
+  # Always bind A4 (cost).
+  defp bind_target_and_cost(state, nil, first_target, first_cost) do
+    # Target was unbound on entry — bind both A2 and A4.
+    with {:ok, s1} <- bind_one(state, 2, first_target),
+         {:ok, s2} <- bind_one(s1, 4, first_cost) do
+      s2
+    else
+      _ -> nil
+    end
+  end
+  defp bind_target_and_cost(state, _bound_target, _first_target, first_cost) do
+    # Target was bound on entry — only bind A4.
+    case bind_one(state, 4, first_cost) do
+      {:ok, s} -> s
+      _ -> nil
+    end
+  end
+
+  defp bind_one(state, reg_idx, value) do
+    case Map.get(state.regs, reg_idx) do
+      {:unbound, id} ->
+        {:ok,
+         state
+         |> WamRuntime.trail_binding(id)
+         |> WamRuntime.put_reg(id, value)}
+      ^value -> {:ok, state}
+      _ -> :error
+    end
+  end
+end
+',
+    [CamelMod, CamelPred,
+     PredStr, EdgePredStr, DirectPredStr,
+     EdgeKey,
+     DirectKey,
+     Dim,
+     EdgeKey,
+     DirectKey,
      CamelPred]).
 
 atom_interning_cleanup(Options) :-

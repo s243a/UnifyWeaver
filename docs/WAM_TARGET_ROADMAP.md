@@ -240,15 +240,12 @@ In rough order of expected payoff:
    | `transitive_parent_distance4` | ✓ | ✓ | ✓ (PR #1823) |
    | `transitive_step_parent_distance5` | ✓ | ✓ | ✓ (PR #1824) |
    | `weighted_shortest_path3` | ✓ | ✓ | ✓ (PR #1825) |
-   | `astar_shortest_path4` | ✓ | ✓ | — |
+   | `astar_shortest_path4` | ✓ | ✓ | ✓ (PR #1826) |
 
-   Remaining: `astar_shortest_path4` (A* with heuristic — most
-   complex; goal-directed search instead of full enumeration,
-   optional direct-distance heuristic predicate). Builds on the
-   Dijkstra primitives shipped with `weighted_shortest_path3` —
-   `:gb_sets` priority queue, dist map with stale-entry skip — but
-   adds a heuristic estimate on every push and stops when the goal
-   pops from the heap.
+   **Coverage complete.** All 7 kernel kinds the shared detector
+   (`recursive_kernel_detection.pl`) recognises now have native
+   Elixir kernel + dispatch-wrapper implementations, matching the
+   coverage Rust and Haskell already had.
 
 3. **Tier-2 outer-loop parallelism, but emitter-driven.** The
    parallel-fanout numbers in `benchmarks/wam_effective_distance_cross_target.md`
