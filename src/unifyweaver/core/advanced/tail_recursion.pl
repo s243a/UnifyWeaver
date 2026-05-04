@@ -127,8 +127,8 @@ generate_ternary_tail_loop(PredStr, AccPos, StepOp, ExitAfterResult, BashCode) :
     step_op_to_bash(StepOp, BashStepOp),
 
     % Generate return statement if unique constraint
-    (   ExitAfterResult = true ->
-        ExitStatement = "        return 0  # Unique constraint: only one result"
+    (   ExitAfterResult == true ->
+        ExitStatement = "    exit 0  # Unique constraint: only one result"
     ;   ExitStatement = ""
     ),
 
@@ -167,13 +167,13 @@ generate_ternary_tail_loop(PredStr, AccPos, StepOp, ExitAfterResult, BashCode) :
         "    else",
         "        echo \"$current_acc\"",
         "    fi",
-        "{{exit_statement}}",
         "}",
         "",
         "# Helper function for common use case",
         "{{pred}}_eval() {",
         "    {{pred}} \"$1\" 0 result",
         "    echo \"$result\"",
+        "    {{exit_statement}}",
         "}"
     ],
 
@@ -187,8 +187,8 @@ generate_ternary_tail_loop(PredStr, AccPos, StepOp, ExitAfterResult, BashCode) :
 %  ExitAfterResult: true if unique constraint applies (exit after first result)
 generate_binary_tail_loop(PredStr, ExitAfterResult, BashCode) :-
     % Generate return statement if unique constraint
-    (   ExitAfterResult = true ->
-        ExitStatement = "    return 0  # Unique constraint: only one result"
+    (   ExitAfterResult == true ->
+        ExitStatement = "exit 0  # Unique constraint: only one result"
     ;   ExitStatement = ""
     ),
 
@@ -216,8 +216,9 @@ generate_binary_tail_loop(PredStr, ExitAfterResult, BashCode) :-
         "    else",
         "        echo \"$count\"",
         "    fi",
-        "{{exit_statement}}",
-        "}"
+        "}",
+        "",
+        "{{exit_statement}}"
     ],
 
     atomic_list_concat(TemplateLines, '\n', Template),
