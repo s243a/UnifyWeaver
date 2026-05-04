@@ -152,6 +152,19 @@ haven't yet hit the kernel-or-LMDB inflection point.
    per-predicate native fast-path emitter; adding one would let it
    benchmark against Elixir/Haskell on the same basis.
 
+   PR #1827 ports the **discipline** (subprocess invocation +
+   true/false verification) to Elixir as a starter classic-programs
+   suite (`tests/test_wam_elixir_classic_programs.pl`, fibonacci +
+   ackermann). The reusable `with_elixir_project/4` +
+   `verify_elixir_args/4` harness + shared `run_classic.exs` driver
+   open the door to porting the rest of the Scala classics
+   (list_reverse, nrev, expression_evaluator, n-queens) plus the
+   builtin smoke tests (between, sort/msort, format) once
+   `parse_arg/1` in the driver grows compound-term support.
+   Runtime-correctness validation through the WAM-Elixir compiler
+   was previously emit-and-grep only; this is the first end-to-end
+   discipline.
+
 5. **Interning approaches diverge.** Three strategies in flight:
    compile-time → LMDB-key (Haskell), aggressive compile-time IDs
    with pre-assigned well-known atoms (Scala), and strings everywhere
