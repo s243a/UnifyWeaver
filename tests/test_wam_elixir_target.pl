@@ -753,6 +753,69 @@ test_lmdb_adaptor_uses_indirect_module_resolution :-
     ;   fail_test(Test, 'LMDB adaptor has literal Elmdb references — will warn without dep')
     ).
 
+test_lmdb_int_ids_adaptor_emitted_in_runtime :-
+    % LmdbIntIds is the int-id-keyed sibling of FactSource.Lmdb,
+    % designed for production-scale workloads where atom-interning
+    % isn't viable (>50k unique nodes). Same emit-and-grep posture
+    % as the original Lmdb adaptor — runtime validation requires
+    % :elmdb which the sandbox can't install. See the design proposal
+    % at docs/proposals/wam_elixir_lmdb_int_id_factsource.md.
+    Test = 'LmdbIntIds adaptor: runtime emits FactSource.LmdbIntIds with three-sub-DB shape',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.FactSource.LmdbIntIds do'),
+        sub_string(RuntimeCode, _, _, _, '@behaviour WamRuntime.FactSource'),
+        % Three sub-DB handles in the struct: facts, key→id, id→key.
+        sub_string(RuntimeCode, _, _, _, ':facts_dbi'),
+        sub_string(RuntimeCode, _, _, _, ':key_to_id_dbi'),
+        sub_string(RuntimeCode, _, _, _, ':id_to_key_dbi'),
+        % Fast-path int-id API (the whole point of this adaptor).
+        sub_string(RuntimeCode, _, _, _, 'def lookup_by_arg1_id('),
+        % Boundary translators for input/output id↔string conversion.
+        sub_string(RuntimeCode, _, _, _, 'def lookup_id('),
+        sub_string(RuntimeCode, _, _, _, 'def lookup_key('),
+        % Backwards-compat binary-key entry (delegates to int-id path).
+        sub_string(RuntimeCode, _, _, _, 'def lookup_by_arg1(%__MODULE__'),
+        % 8-byte BE u64 id encoding (the on-disk wire format).
+        sub_string(RuntimeCode, _, _, _, '<<id::64-big-unsigned>>')
+    ->  pass(Test)
+    ;   fail_test(Test, 'LmdbIntIds adaptor missing expected structure')
+    ).
+
+test_lmdb_int_ids_adaptor_uses_indirect_module_resolution :-
+    Test = 'LmdbIntIds adaptor: uses Module.concat so runtime compiles without an LMDB binding dep',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    % Verify the LmdbIntIds-specific block (not the original Lmdb)
+    % uses the same indirect-resolution pattern. Pull out the
+    % LmdbIntIds module body and check it doesn't contain literal
+    % Elmdb.X calls.
+    Pattern = "defmodule WamRuntime.FactSource.LmdbIntIds do",
+    EndPattern = "defmodule WamRuntime.GraphKernel.TransitiveClosure do",
+    (   sub_string(RuntimeCode, Start, _, _, Pattern),
+        sub_string(RuntimeCode, End, _, _, EndPattern),
+        End > Start,
+        BodyLen is End - Start,
+        sub_string(RuntimeCode, Start, BodyLen, _, Body),
+        sub_string(Body, _, _, _, "Module.concat([Elmdb])"),
+        sub_string(Body, _, _, _, "apply(mod,"),
+        \+ sub_string(Body, _, _, _, "Elmdb.ro_txn_begin"),
+        \+ sub_string(Body, _, _, _, "Elmdb.txn_get(")
+    ->  pass(Test)
+    ;   fail_test(Test, 'LmdbIntIds adaptor has literal Elmdb references — will warn without dep')
+    ).
+
+test_lmdb_int_ids_design_proposal_referenced :-
+    % Doc-fix invariant: the kernel docstring no longer claims
+    % "Haskell uses LMDB IDs as interning". Instead it points at
+    % the proposal that describes the actual LMDB-native design.
+    Test = 'LmdbIntIds: kernel docstring points at the design proposal',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'wam_elixir_lmdb_int_id_factsource.md'),
+        % Negative invariant: the old (false) claim is gone.
+        \+ sub_string(RuntimeCode, _, _, _, 'no separate intern step')
+    ->  pass(Test)
+    ;   fail_test(Test, 'kernel docstring still has the old LMDB-IDs claim or doesnt reference the proposal')
+    ).
+
 %% Atom-interning experiment (opt-in via intern_atoms(true) Option):
 %  identifier-shape constants emit as Elixir atom literals (`:foo`)
 %  instead of binaries (`"foo"`). BEAM atoms compare via pointer
@@ -906,7 +969,10 @@ test_kernel_docstring_documents_integer_id_path :-
     compile_wam_runtime_to_elixir([], RuntimeCode),
     (   sub_string(RuntimeCode, _, _, _, 'kernel is term-agnostic'),
         sub_string(RuntimeCode, _, _, _, 'Integers with tuple-as-array'),
-        sub_string(RuntimeCode, _, _, _, 'no separate intern step')
+        % After the int-id LMDB FactSource doc fix, the old "no separate
+        % intern step" claim was removed. The replacement points readers
+        % at the proposal doc that describes the LMDB-native design.
+        sub_string(RuntimeCode, _, _, _, 'wam_elixir_lmdb_int_id_factsource.md')
     ->  pass(Test)
     ;   fail_test(Test, 'CategoryAncestor moduledoc missing the integer-id scale-up note')
     ).
@@ -2071,6 +2137,9 @@ run_tests :-
     test_lmdb_adaptor_emitted_in_runtime,
     test_lmdb_adaptor_uses_indirect_module_resolution,
     test_lmdb_adaptor_targets_safe_keyvalue_api,
+    test_lmdb_int_ids_adaptor_emitted_in_runtime,
+    test_lmdb_int_ids_adaptor_uses_indirect_module_resolution,
+    test_lmdb_int_ids_design_proposal_referenced,
     test_shared_detector_finds_tc,
     test_shared_detector_finds_category_ancestor,
     test_kernel_dispatch_emits_tc_module,

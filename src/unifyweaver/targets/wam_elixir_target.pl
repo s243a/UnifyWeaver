@@ -2287,6 +2287,212 @@ defmodule WamRuntime.FactSource.Lmdb do
   end
 end
 
+defmodule WamRuntime.FactSource.LmdbIntIds do
+  @moduledoc """
+  LMDB FactSource variant that exposes integer IDs end-to-end. Designed
+  for production-scale workloads (>50k unique nodes) where atom-interning
+  is not viable due to BEAMs atom-table cap (~~1M default), and where the
+  in-memory int-tuple FactSource recipe from PR #1815 wouldnt fit RAM
+  (~~1M categories at full Wikipedia scale).
+
+  See `docs/proposals/wam_elixir_lmdb_int_id_factsource.md` for the full
+  architecture rationale; this moduledoc is the API summary only.
+
+  Status: emit-and-grep stub. The function bodies are wired but runtime
+  validation requires `:elmdb` (not reachable from the sandbox where this
+  was developed). Same testing posture as PR #1792s original
+  `WamRuntime.FactSource.Lmdb`.
+
+  Architecture: three LMDB sub-databases inside one env.
+
+  | Sub-DB       | Key                       | Value                     | Notes                                  |
+  | ------------ | ------------------------- | ------------------------- | -------------------------------------- |
+  | facts_dbi    | 8-byte BE u64 (arg1 id)   | 8-byte BE u64 (arg2 id)   | MDB_DUPSORT for arg1 -> many arg2s.    |
+  | key_to_id    | binary (UTF-8 string)     | 8-byte BE u64             | Input translation (string -> id).      |
+  | id_to_key    | 8-byte BE u64             | binary                    | Output translation (id -> string).     |
+
+  ID assignment is INSERT-time (driver responsibility). Driver populates
+  all three sub-databases consistently when ingesting facts.
+
+  Driver responsibility (mirrors PR #1792s `Lmdb`):
+    1. Add `:elmdb` to mix deps. The module is referenced indirectly via
+       `Module.concat([Elmdb])` so this runtime emits without it.
+    2. Open the LMDB env, create the three sub-databases.
+    3. Ingest facts: for each `(arg1_str, arg2_str)` row, look up or
+       allocate the integer ID for each side and write to all three DBs.
+    4. Pass env + the three dbi handles to this adaptors `open/3`.
+
+  Pair this with the int-tuple kernel path: the dispatch wrappers
+  `dests_fn` reads ids directly from `lookup_by_arg1_id/3` and feeds them
+  to `WamRuntime.GraphKernel.CategoryAncestor.fold_hops_with_dests/6`.
+  No string interning at lookup time; the kernel sees integers throughout.
+  """
+  @behaviour WamRuntime.FactSource
+  defstruct [:env, :facts_dbi, :key_to_id_dbi, :id_to_key_dbi, :arity, :dupsort]
+
+  defp lmdb_module, do: Module.concat([Elmdb])
+
+  defp encode_id(id) when is_integer(id) and id >= 0, do: <<id::64-big-unsigned>>
+  defp decode_id(<<id::64-big-unsigned>>), do: id
+
+  @impl true
+  def open(%{env: env, facts_dbi: facts, key_to_id_dbi: k2i,
+             id_to_key_dbi: i2k, arity: arity} = spec, _pred_arity, _state)
+      when arity == 2 do
+    %__MODULE__{
+      env: env,
+      facts_dbi: facts,
+      key_to_id_dbi: k2i,
+      id_to_key_dbi: i2k,
+      arity: arity,
+      dupsort: Map.get(spec, :dupsort, true)
+    }
+  end
+
+  @doc """
+  Fast-path lookup. Returns `[{key_id, value_id}, ...]` where both
+  components are integers — no string translation. This is the API the
+  kernel-dispatch wrapper should call when the FactSource is int-id
+  backed.
+  """
+  def lookup_by_arg1_id(%__MODULE__{env: env, facts_dbi: dbi, dupsort: dupsort},
+                        key_id, _state) when is_integer(key_id) do
+    mod = lmdb_module()
+    bin_key = encode_id(key_id)
+    {:ok, txn} = apply(mod, :ro_txn_begin, [env])
+    try do
+      if dupsort do
+        {:ok, cur} = apply(mod, :ro_txn_cursor_open, [txn, dbi])
+        try do
+          collect_dupsort_ids(mod, cur, bin_key, key_id)
+        after
+          apply(mod, :ro_txn_cursor_close, [cur])
+        end
+      else
+        case apply(mod, :txn_get, [txn, dbi, bin_key]) do
+          {:ok, bin_val} -> [{key_id, decode_id(bin_val)}]
+          :not_found -> []
+          _ -> []
+        end
+      end
+    after
+      apply(mod, :ro_txn_commit, [txn])
+    end
+  end
+
+  @impl true
+  def lookup_by_arg1(%__MODULE__{} = handle, key, state) when is_binary(key) do
+    # Backwards-compatible binary-key entry. Translates key -> id,
+    # delegates to the int-id fast path, translates value ids -> binaries
+    # on the way out. Two extra LMDB reads per lookup vs the fast path —
+    # use lookup_by_arg1_id/3 directly when possible.
+    case lookup_id(handle, key) do
+      nil -> []
+      key_id ->
+        for {k_id, v_id} <- lookup_by_arg1_id(handle, key_id, state) do
+          {lookup_key(handle, k_id), lookup_key(handle, v_id)}
+        end
+    end
+  end
+
+  @doc """
+  Boundary translator: binary node name -> integer ID. Returns `nil` if
+  the key has no entry. Caller usually invokes this once at the input
+  boundary (parse user-supplied article name).
+  """
+  def lookup_id(%__MODULE__{env: env, key_to_id_dbi: dbi}, key) when is_binary(key) do
+    mod = lmdb_module()
+    {:ok, txn} = apply(mod, :ro_txn_begin, [env])
+    try do
+      case apply(mod, :txn_get, [txn, dbi, key]) do
+        {:ok, bin_id} -> decode_id(bin_id)
+        :not_found -> nil
+        _ -> nil
+      end
+    after
+      apply(mod, :ro_txn_commit, [txn])
+    end
+  end
+
+  @doc """
+  Boundary translator: integer ID -> binary node name. Returns `nil` if
+  the ID has no entry. Caller usually invokes this once at the output
+  boundary (format result IDs back to display names).
+  """
+  def lookup_key(%__MODULE__{env: env, id_to_key_dbi: dbi}, id) when is_integer(id) do
+    mod = lmdb_module()
+    bin_id = encode_id(id)
+    {:ok, txn} = apply(mod, :ro_txn_begin, [env])
+    try do
+      case apply(mod, :txn_get, [txn, dbi, bin_id]) do
+        {:ok, key} -> key
+        :not_found -> nil
+        _ -> nil
+      end
+    after
+      apply(mod, :ro_txn_commit, [txn])
+    end
+  end
+
+  @impl true
+  def stream_all(%__MODULE__{env: env, facts_dbi: dbi}, _state) do
+    mod = lmdb_module()
+    {:ok, txn} = apply(mod, :ro_txn_begin, [env])
+    try do
+      {:ok, cur} = apply(mod, :ro_txn_cursor_open, [txn, dbi])
+      try do
+        scan_int_pairs_all(mod, cur, [])
+      after
+        apply(mod, :ro_txn_cursor_close, [cur])
+      end
+    after
+      apply(mod, :ro_txn_commit, [txn])
+    end
+  end
+
+  @impl true
+  def close(%__MODULE__{env: _env}, _state) do
+    # Env lifecycle belongs to the driver — multiple FactSources may share
+    # one env. The driver calls env_close when its done with all of them.
+    :ok
+  end
+
+  defp collect_dupsort_ids(mod, cur, bin_key, key_id) do
+    case apply(mod, :ro_txn_cursor_get, [cur, :set, bin_key]) do
+      {:ok, ^bin_key, bin_v} ->
+        collect_dupsort_ids_next(mod, cur, bin_key, key_id,
+                                  [{key_id, decode_id(bin_v)}])
+      :not_found -> []
+      _ -> []
+    end
+  end
+
+  defp collect_dupsort_ids_next(mod, cur, bin_key, key_id, acc) do
+    case apply(mod, :ro_txn_cursor_get, [cur, :next_dup, nil]) do
+      {:ok, ^bin_key, bin_v} ->
+        collect_dupsort_ids_next(mod, cur, bin_key, key_id,
+                                  [{key_id, decode_id(bin_v)} | acc])
+      _ -> Enum.reverse(acc)
+    end
+  end
+
+  defp scan_int_pairs_all(mod, cur, acc) do
+    case apply(mod, :ro_txn_cursor_get, [cur, :first, nil]) do
+      {:ok, k, v} -> scan_int_pairs_next(mod, cur, [{decode_id(k), decode_id(v)} | acc])
+      :not_found -> Enum.reverse(acc)
+      _ -> Enum.reverse(acc)
+    end
+  end
+
+  defp scan_int_pairs_next(mod, cur, acc) do
+    case apply(mod, :ro_txn_cursor_get, [cur, :next, nil]) do
+      {:ok, k, v} -> scan_int_pairs_next(mod, cur, [{decode_id(k), decode_id(v)} | acc])
+      :not_found -> Enum.reverse(acc)
+      _ -> Enum.reverse(acc)
+    end
+  end
+end
+
 defmodule WamRuntime.GraphKernel.TransitiveClosure do
   @moduledoc """
   Native transitive-closure kernel — bypasses WAM dispatch for the
@@ -2405,8 +2611,12 @@ defmodule WamRuntime.GraphKernel.CategoryAncestor do
     `cat -> [parent_id, ...]` as a tuple of length N+1. `dests_fn` is
     `fn n -> elem(cp_tuple, n) end` — O(1) read, no hashing. About
     2x faster than atom-Map and 2.2x faster than int-Map at 10k.
-    Same architectural shape the Haskell target uses: LMDB-derived
-    integer IDs as the comparison key, no separate intern step.
+    Note: contrary to an earlier claim in this doc, no shipping
+    target currently uses LMDBs internal record positions as the
+    interning key — Haskell, Rust, and Scala all maintain a separate
+    string -> int table at codegen or runtime. See
+    docs/proposals/wam_elixir_lmdb_int_id_factsource.md for the
+    LMDB-native design that would actually achieve the integration.
   """
 
   @doc """
