@@ -349,7 +349,6 @@ wam_generate_c_instruction(PC, Parts, LabelMap, Arity, CodeLines) :-
         ->  CInstr = CInstr_NoMap
         ;   wam_line_to_c_instr(Parts, LabelMap, CInstr_NoArity)
         ->  CInstr = CInstr_NoArity
-        ;   CInstr = '{0}'
         ),
         format(atom(L0), '    state->code[~w] = (Instruction)~w;', [PC, CInstr]),
         CodeLines = [L0]
