@@ -1481,6 +1481,33 @@ compile_aggregate_helpers_to_elixir(Code) :-
   end
 
   @doc """
+  Per-value aggregator entry point — same role as `aggregate_collect/2`
+  but takes the value directly instead of reading from a register.
+  Used by kernel-dispatch wrappers running in fold-form, where the
+  kernel emits each solution value via a callback instead of building
+  a list and calling `merge_into_aggregate/2`.
+
+  Convention matches `aggregate_collect/2`: prepend (O(1)); the final
+  `Enum.reverse` in `finalise_aggregate/4` restores encounter order.
+  This is *different* from `merge_into_aggregate/2`, which appends a
+  pre-built list. If the same kernel run uses both helpers in the
+  same call, ordering will be inconsistent — pick one path per call.
+  """
+  def aggregate_push_one(state, value) do
+    {updated_cps, _pushed} =
+      Enum.map_reduce(state.choice_points, false, fn cp, pushed ->
+        cond do
+          pushed -> {cp, pushed}
+          Map.has_key?(cp, :agg_type) ->
+            prior = Map.get(cp, :agg_accum, [])
+            {Map.put(cp, :agg_accum, [value | prior]), true}
+          true -> {cp, pushed}
+        end
+      end)
+    %{state | choice_points: updated_cps}
+  end
+
+  @doc """
   Tier-2 runtime cost probe — companion to the static forkMinCost
   gate. The static gate (par_wrap_segment/4) decides at codegen
   time whether a predicates worst-case clause body is heavy enough
@@ -2346,6 +2373,19 @@ defmodule WamRuntime.GraphKernel.CategoryAncestor do
   end
 
   @doc """
+  Tuple-input fold variant — same as `fold_hops_with_dests/6` but
+  pairs with `collect_hops/4` (neighbors_fn returning `{from, to}`
+  tuples instead of bare destinations). Used by the kernel-dispatch
+  wrapper that sits behind `WamRuntime.FactSource.lookup_by_arg1`,
+  whose contract returns tuples.
+  """
+  def fold_hops(neighbors_fn, cat, root, max_depth, init_acc, hop_fn)
+      when is_function(neighbors_fn, 1) and is_integer(max_depth)
+       and is_function(hop_fn, 2) do
+    fold_n(neighbors_fn, cat, root, [], max_depth, init_acc, 0, hop_fn)
+  end
+
+  @doc """
   Same semantics as `collect_hops/4` but `dests_fn` returns a bare list
   of destination nodes (no `{from, to}` tuple wrapping). Use this when
   the underlying FactSource can produce destinations directly.
@@ -2474,6 +2514,43 @@ defmodule WamRuntime.GraphKernel.CategoryAncestor do
   defp walk_n_leaf([{_from, to} | rest], root, nd, acc) do
     ac = if to == root, do: [nd | acc], else: acc
     walk_n_leaf(rest, root, nd, ac)
+  end
+
+  # Tuple-input fold walkers — same shape as fold_d/fold_d_recurse/fold_d_leaf
+  # but the input neighbor list is `[{from, to} | rest]` (FactSource
+  # `lookup_by_arg1` contract) so the from-side is unpacked at pattern-match
+  # time. Keep in sync with walk_n_recurse / walk_n_leaf and with the
+  # dests-side fold_d_* below.
+  defp fold_n(neighbors_fn, cat, root, visited, max_depth, acc, depth, hop_fn) do
+    next_depth = depth + 1
+    if next_depth < max_depth do
+      fold_n_recurse(neighbors_fn.(cat), neighbors_fn, root, visited, max_depth, next_depth, acc, hop_fn)
+    else
+      fold_n_leaf(neighbors_fn.(cat), root, next_depth, acc, hop_fn)
+    end
+  end
+
+  defp fold_n_recurse([], _, _, _, _, _, acc, _), do: acc
+  defp fold_n_recurse([{_from, to} | rest], nf, root, vis, mx, nd, acc, hop_fn) do
+    ac =
+      cond do
+        to == root -> hop_fn.(nd, acc)
+        :lists.member(to, vis) -> acc
+        true ->
+          new_nd = nd + 1
+          if new_nd < mx do
+            fold_n_recurse(nf.(to), nf, root, [to | vis], mx, new_nd, acc, hop_fn)
+          else
+            fold_n_leaf(nf.(to), root, new_nd, acc, hop_fn)
+          end
+      end
+    fold_n_recurse(rest, nf, root, vis, mx, nd, ac, hop_fn)
+  end
+
+  defp fold_n_leaf([], _, _, acc, _), do: acc
+  defp fold_n_leaf([{_from, to} | rest], root, nd, acc, hop_fn) do
+    ac = if to == root, do: hop_fn.(nd, acc), else: acc
+    fold_n_leaf(rest, root, nd, ac, hop_fn)
   end
 
   defp collect_d(dests_fn, cat, root, visited, max_depth, acc, depth) do
@@ -3013,14 +3090,29 @@ compile_category_ancestor_dispatch_module(ModuleName, Pred, EdgePred, MaxDepth, 
     neighbors_fn = fn node ->
       WamRuntime.FactSource.lookup_by_arg1(edge_handle, node, state)
     end
-    hops_list =
-      WamRuntime.GraphKernel.CategoryAncestor.collect_hops(
-        neighbors_fn, cat_val, root_val, @max_depth)
 
     if WamRuntime.in_forkable_aggregate_frame?(state) do
-      merged = WamRuntime.merge_into_aggregate(state, hops_list)
-      throw({:fail, merged})
+      # Fold-form path: stream each hop directly into the aggregate
+      # frame. Skips the intermediate hops list and the subsequent
+      # merge_into_aggregate iteration. Equivalent semantics to the
+      # legacy collect+merge path for findall/sum/count/max aggregates
+      # whose value register IS the kernel hop output. Transform-aware
+      # shapes — `aggregate_all(sum(W), (Goal, W is f(Hops)), R)` —
+      # are NOT yet handled here: the dispatch wrapper does not see
+      # `f`, so it would push raw hops where Hops^(-N) values are
+      # expected. Those queries currently bypass kernel dispatch and
+      # run on plain WAM; the follow-up emitter pass will recognise
+      # them at compile time.
+      new_state =
+        WamRuntime.GraphKernel.CategoryAncestor.fold_hops(
+          neighbors_fn, cat_val, root_val, @max_depth, state,
+          fn hop, st -> WamRuntime.aggregate_push_one(st, hop) end
+        )
+      throw({:fail, new_state})
     else
+      hops_list =
+        WamRuntime.GraphKernel.CategoryAncestor.collect_hops(
+          neighbors_fn, cat_val, root_val, @max_depth)
       case hops_list do
         [first | _] ->
           case bind_hops_reg(state, 3, first) do

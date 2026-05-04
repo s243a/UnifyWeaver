@@ -180,6 +180,50 @@ fold INTO the producer.
     `(article, root)` groups by `Map.update`. No per-pair list ever
     exists.
 
+**Emitter dispatch-fold integration** (this PR — first emitter-side
+step toward the producer-consumer fusion that Rust + Haskell get for
+free from monomorphisation / GHC deforestation). The kernel-dispatch
+wrapper that the WAM-Elixir target generates for kernel-recognised
+predicates (`compile_category_ancestor_dispatch_module/5`) used to
+build a hop list via `collect_hops/4` and then iterate it through
+`merge_into_aggregate` whenever the call site was inside an
+aggregate frame. The new path uses fold-form directly:
+
+12. Add `fold_hops/6` (tuple-input variant of `fold_hops_with_dests/6`)
+    that pairs with `collect_hops/4`. Same semantics as
+    `fold_hops_with_dests/6` but the neighbours come back as
+    `{from, to}` tuples — the contract `WamRuntime.FactSource.lookup_by_arg1`
+    returns and the kernel-dispatch wrapper sees. Implementation is
+    parallel `fold_n` / `fold_n_recurse` / `fold_n_leaf` mirroring
+    the existing `fold_d_*` walkers.
+13. Add `WamRuntime.aggregate_push_one/2` runtime helper. Same role
+    as `aggregate_collect/2` but takes the value directly instead of
+    reading from a register. Convention matches `aggregate_collect/2`
+    (prepend, O(1)) — the existing `Enum.reverse` in
+    `finalise_aggregate/4` restores encounter order.
+14. Modify the dispatch wrapper template: when
+    `in_forkable_aggregate_frame?(state)` is true, fold each hop
+    directly into the aggregate frame via
+    `fold_hops(neighbors_fn, ..., state, fn hop, st -> aggregate_push_one(st, hop) end)`.
+    No intermediate hop list is built. The non-aggregate (backtracking)
+    branch keeps `collect_hops/4` since it needs to bind individual
+    solutions into the hops register one at a time.
+
+**Scope of the dispatch-fold change.** Equivalent semantics to the
+legacy collect+merge path for `findall`, `bag`, `set`, `count`,
+`sum`, `max`, `min` aggregates whose value register IS the kernel's
+hop output — the most common shapes. **NOT yet handled**:
+transform-aware aggregates such as
+`aggregate_all(sum(W), (Goal, W is Hops ** -n), R)` from
+`effective_distance/3` — the wrapper does not see the `W is f(Hops)`
+arithmetic step, so it would push raw hops where `f(hops)` values
+are expected. Those queries currently bypass kernel dispatch and run
+on plain WAM bytecode; lifting them into fold-form requires the WAM
+IR pattern-recognition pass that compiles the per-solution
+arithmetic into a closure passed as `hop_fn`. That is the natural
+next emitter step — same architectural shape as this PR but with
+Prolog-arithmetic-to-Elixir compilation added.
+
 **Output cross-validation**: at every scale (dev/300/1k/10k) the
 patched kernel produces identical row counts AND identical
 effective_distance values (max delta < 1e-4) to

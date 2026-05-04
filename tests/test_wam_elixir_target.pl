@@ -849,6 +849,44 @@ test_kernel_dispatch_emits_category_ancestor_module :-
     ;   fail_test(Test, 'category_ancestor kernel dispatch module not emitted as expected')
     ).
 
+test_kernel_dispatch_uses_fold_form_in_aggregate_frame :-
+    Test = 'Kernel dispatch: category_ancestor wrapper uses fold_hops + aggregate_push_one when in aggregate frame',
+    setup_kernel_fixtures,
+    wam_target:compile_predicate_to_wam(user:kdca/4, [], CaWam),
+    write_wam_elixir_project([kdca/4-CaWam],
+        [module_name(probe), emit_mode(lowered),
+         intra_query_parallel(false),
+         kernel_dispatch(true), source_module(user)],
+        '/tmp/test_kernel_disp_ca_fold'),
+    read_file_to_string('/tmp/test_kernel_disp_ca_fold/lib/kdca.ex', S, []),
+    (   sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
+        sub_string(S, _, _, _, "fold_hops("),
+        sub_string(S, _, _, _, "aggregate_push_one(st, hop)"),
+        % Fall-through (backtracking) path still uses collect_hops.
+        sub_string(S, _, _, _, "collect_hops(")
+    ->  pass(Test)
+    ;   fail_test(Test, 'dispatch wrapper does not branch into fold-form for aggregate frames')
+    ).
+
+test_runtime_emits_fold_hops :-
+    Test = 'GraphKernel CategoryAncestor: runtime emits fold_hops + fold_hops_with_dests',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'def fold_hops(neighbors_fn'),
+        sub_string(RuntimeCode, _, _, _, 'def fold_hops_with_dests(dests_fn'),
+        sub_string(RuntimeCode, _, _, _, 'defp fold_n_recurse('),
+        sub_string(RuntimeCode, _, _, _, 'defp fold_d_recurse(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'fold_hops/6 (tuple variant) or its walkers missing from runtime')
+    ).
+
+test_runtime_emits_aggregate_push_one :-
+    Test = 'WamRuntime: runtime emits aggregate_push_one/2 helper',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'def aggregate_push_one(state, value)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'aggregate_push_one/2 helper missing from runtime')
+    ).
+
 test_graph_kernel_tc_emitted_in_runtime :-
     Test = 'GraphKernel TC: runtime assembly emits WamRuntime.GraphKernel.TransitiveClosure',
     compile_wam_runtime_to_elixir([], RuntimeCode),
@@ -2013,6 +2051,9 @@ run_tests :-
     test_shared_detector_finds_category_ancestor,
     test_kernel_dispatch_emits_tc_module,
     test_kernel_dispatch_emits_category_ancestor_module,
+    test_kernel_dispatch_uses_fold_form_in_aggregate_frame,
+    test_runtime_emits_fold_hops,
+    test_runtime_emits_aggregate_push_one,
     test_graph_kernel_tc_emitted_in_runtime,
     test_graph_kernel_tc_uses_visited_tracking,
     test_graph_kernel_tc_factsource_bridge,
