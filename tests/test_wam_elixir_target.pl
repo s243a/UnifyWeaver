@@ -1015,7 +1015,29 @@ setup_kernel_fixtures :-
     assertz((user:kdwsp(X, Y, TotalW) :-
                 user:kdweighted_edge(X, Mid, W1),
                 user:kdwsp(Mid, Y, RestW),
-                TotalW is RestW + W1)).
+                TotalW is RestW + W1)),
+    % astar_shortest_path4 fixture: 4-ary canonical shape with Dim
+    % passthrough. Reuses kdweighted_edge/3 as the forward edge source;
+    % a separate kddirect/3 is asserted as the heuristic source via
+    % the optional direct_dist_pred/1 user fact (detector falls back
+    % to the same edge predicate if no direct_dist_pred is asserted).
+    %   astar(X, Y, _Dim, W) :- weighted_edge(X, Y, W).
+    %   astar(X, Y, Dim, TotalW) :- weighted_edge(X, Mid, W1),
+    %                              astar(Mid, Y, Dim, RestW),
+    %                              TotalW is RestW + W1.
+    retractall(user:kdastar(_, _, _, _)),
+    retractall(user:direct_dist_pred(_)),
+    retractall(user:dimensionality(_)),
+    assertz((user:kdastar(X, Y, _Dim, W) :- user:kdweighted_edge(X, Y, W))),
+    assertz((user:kdastar(X, Y, Dim, TotalW) :-
+                user:kdweighted_edge(X, Mid, W1),
+                user:kdastar(Mid, Y, Dim, RestW),
+                TotalW is RestW + W1)),
+    % Optional config the detector reads: tells it to use kdweighted_edge/3
+    % as the heuristic source (same as forward edges — admissible because
+    % a direct edges weight is a lower bound on shortest path through it).
+    assertz(user:direct_dist_pred(kdweighted_edge/3)),
+    assertz(user:dimensionality(5)).
 
 test_shared_detector_finds_tc :-
     Test = 'Shared detector: kdtc/2 with canonical TC shape detected as transitive_closure2',
@@ -1469,6 +1491,95 @@ test_shared_detector_finds_weighted_shortest_path :-
         member(edge_pred(kdweighted_edge/3), ConfigOps)
     ->  pass(Test)
     ;   fail_test(Test, 'kdwsp/3 not detected as weighted_shortest_path3 by shared detector')
+    ).
+
+test_graph_kernel_astar_shortest_path_emitted_in_runtime :-
+    % Final kernel — closes the 7-of-7 coverage table. Builds on
+    % WSPs Dijkstra primitives (:gb_sets priority queue + dist map)
+    % adding a heuristic estimate and early termination.
+    Test = 'GraphKernel AstarShortestPath: runtime emits WamRuntime.GraphKernel.AstarShortestPath',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.GraphKernel.AstarShortestPath do'),
+        sub_string(RuntimeCode, _, _, _, 'def collect_path_costs('),
+        sub_string(RuntimeCode, _, _, _, 'def collect_path_costs_from_source(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'GraphKernel.AstarShortestPath module missing expected API')
+    ).
+
+test_graph_kernel_astar_uses_minkowski_f_cost :-
+    % UnifyWeavers A* uses Minkowski-style f(n) = g^D + h^D, NOT the
+    % standard f = g + h. Per Rusts reference impl which documents
+    % "By Minkowski inequality this is admissible and tighter than L1
+    % A*". The kernel must use :math.pow for both g and h to preserve
+    % this contract.
+    Test = 'GraphKernel AstarShortestPath: f-cost uses Minkowski g^D + h^D (NOT g + h)',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    Pattern = "defmodule WamRuntime.GraphKernel.AstarShortestPath do",
+    EndPattern = "defmodule WamRuntime.GraphKernel.CategoryAncestor do",
+    (   sub_string(RuntimeCode, Start, _, _, Pattern),
+        sub_string(RuntimeCode, End, _, _, EndPattern),
+        End > Start,
+        BodyLen is End - Start,
+        sub_string(RuntimeCode, Start, BodyLen, _, Body),
+        % Minkowski f-cost helper.
+        sub_string(Body, _, _, _, ":math.pow(g, dim) + :math.pow(h, dim)"),
+        % Stale-entry skip + early termination on target.
+        sub_string(Body, _, _, _, "g_cost > best"),
+        sub_string(Body, _, _, _, "target != nil and node == target"),
+        % Documents the Minkowski narrowing.
+        sub_string(Body, _, _, _, "Minkowski-style f-cost"),
+        % :gb_sets primitives reused from WSP.
+        sub_string(Body, _, _, _, ":gb_sets.take_smallest(heap)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'AstarShortestPath kernel missing Minkowski f-cost or A* primitives')
+    ).
+
+test_kernel_dispatch_emits_astar_shortest_path_module :-
+    % End-to-end: detector recognises kdastar/4 as
+    % astar_shortest_path4 (with the user-asserted direct_dist_pred
+    % and dimensionality facts), dispatch wrapper emits with TWO
+    % FactSource lookups + two-register binding (target=2, cost=4),
+    % skipping target rebinding when bound on entry.
+    Test = 'Kernel dispatch: astar_shortest_path4 kernel emits Probe.Kdastar dispatch module',
+    setup_kernel_fixtures,
+    wam_target:compile_predicate_to_wam(user:kdastar/4, [], AstarWam),
+    write_wam_elixir_project([kdastar/4-AstarWam],
+        [module_name(probe), emit_mode(lowered),
+         intra_query_parallel(false),
+         kernel_dispatch(true), source_module(user)],
+        '/tmp/test_kernel_disp_astar'),
+    read_file_to_string('/tmp/test_kernel_disp_astar/lib/kdastar.ex', S, []),
+    (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.AstarShortestPath"),
+        sub_string(S, _, _, _, "collect_path_costs("),
+        % TWO FactSource lookups (forward + heuristic).
+        sub_string(S, _, _, _, "weighted_handle = WamRuntime.FactSourceRegistry.lookup!"),
+        sub_string(S, _, _, _, "direct_handle = WamRuntime.FactSourceRegistry.lookup!"),
+        % Edge indicator is /3.
+        sub_string(S, _, _, _, "kdweighted_edge/3"),
+        % Compile-time dim default attribute.
+        sub_string(S, _, _, _, "@default_dim 5"),
+        % Aggregate-frame slicing for two regs (target=2, cost=4).
+        sub_string(S, _, _, _, "agg_cp.agg_value_reg"),
+        sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
+        % Driver-direct binding: target may be already bound on entry.
+        sub_string(S, _, _, _, "bind_target_and_cost(state, "),
+        sub_string(S, _, _, _, "split_at_aggregate_cp(state)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'astar_shortest_path4 dispatch module missing expected shape')
+    ).
+
+test_shared_detector_finds_astar_shortest_path :-
+    Test = 'Shared detector: kdastar/4 with canonical astar_shortest_path shape detected',
+    setup_kernel_fixtures,
+    functor(Head, kdastar, 4),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   detect_recursive_kernel(kdastar, 4, Clauses,
+            recursive_kernel(astar_shortest_path4, kdastar/4, ConfigOps)),
+        member(edge_pred(kdweighted_edge/3), ConfigOps),
+        member(direct_dist_pred(kdweighted_edge/3), ConfigOps),
+        member(dimensionality(5), ConfigOps)
+    ->  pass(Test)
+    ;   fail_test(Test, 'kdastar/4 not detected as astar_shortest_path4 by shared detector')
     ).
 
 test_graph_kernel_tc_uses_visited_tracking :-
@@ -2653,6 +2764,10 @@ run_tests :-
     test_graph_kernel_wsp_uses_gb_sets_priority_queue,
     test_kernel_dispatch_emits_weighted_shortest_path_module,
     test_shared_detector_finds_weighted_shortest_path,
+    test_graph_kernel_astar_shortest_path_emitted_in_runtime,
+    test_graph_kernel_astar_uses_minkowski_f_cost,
+    test_kernel_dispatch_emits_astar_shortest_path_module,
+    test_shared_detector_finds_astar_shortest_path,
     test_graph_kernel_tc_uses_visited_tracking,
     test_graph_kernel_tc_factsource_bridge,
     test_intern_atoms_default_off,
