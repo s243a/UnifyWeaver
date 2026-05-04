@@ -2893,6 +2893,112 @@ defmodule WamRuntime.GraphKernel.TransitiveStepParentDistance do
   end
 end
 
+defmodule WamRuntime.GraphKernel.WeightedShortestPath do
+  @moduledoc """
+  Native Dijkstra shortest-path kernel — bypasses WAM dispatch for
+  the canonical pattern:
+
+      wsp(X, Y, W) :- weighted_edge(X, Y, W).
+      wsp(X, Y, TotalW) :-
+          weighted_edge(X, Mid, W1),
+          wsp(Mid, Y, RestW),
+          TotalW is RestW + W1.
+
+  Returns `[{target, cost}, ...]` — the SHORTEST-path cost from
+  `start` to each reachable node (excluding start itself).
+
+  Important semantic narrowing: the canonical Prolog pattern above
+  enumerates ALL paths from start to target with their summed
+  weights. This kernel computes only the SHORTEST. So:
+
+      findall(W, wsp(s, t, W), Ws)
+      ;; Prolog source: yields all path weights to t.
+      ;; Kernel:        yields a 1-element list — only the shortest.
+
+      findall(T-W, wsp(s, T, W), Pairs)
+      ;; Prolog source: yields one pair per (path, weight); same
+      ;;                target may appear multiple times.
+      ;; Kernel:        yields one pair per reachable target with
+      ;;                its shortest-path cost.
+
+      aggregate_all(min, wsp(s, t, W), MinW)
+      ;; Both produce the same answer — the kernel just computes it
+      ;; in O(E log V) instead of exponential path enumeration.
+
+  Ported from the Rust kernel
+  `collect_native_weighted_shortest_path_results` in
+  src/unifyweaver/targets/wam_rust_target.pl (which uses BinaryHeap
+  with reversed Ordering for min-heap behaviour). Elixir uses
+  `:gb_sets` of `{cost, node}` tuples — Erlang term ordering puts
+  numerically-smaller cost first, then ties broken by node ordering,
+  giving min-first via `:gb_sets.take_smallest/1`.
+
+  Edge predicate is 3-ary: `weighted_edges_fn(node)` receives a node
+  and returns `[{from, to, weight}, ...]` triples (the weight at
+  position 3, matching the FactSource lookup_by_arg1 contract for
+  arity-3 predicates). Weights must be non-negative for Dijkstras
+  correctness — the kernel does not validate this; caller responsibility.
+
+  Cycle handling: Dijkstra naturally bounds termination via the dist
+  map. Cycles do not loop indefinitely (a nodes dist gets updated
+  only on improvement, eventually no improvement possible).
+  """
+
+  @doc """
+  Returns `[{target, cost}, ...]` — shortest path cost from `start`
+  to every reachable node. `weighted_edges_fn` is a 1-arity function
+  receiving a node, returns `[{from, to, weight}, ...]` triples.
+  """
+  def collect_path_costs(weighted_edges_fn, start)
+      when is_function(weighted_edges_fn, 1) do
+    initial_dist = %{start => 0}
+    initial_heap = :gb_sets.singleton({0, start})
+    final_dist = dijkstra(weighted_edges_fn, initial_heap, initial_dist)
+    final_dist
+    |> Enum.flat_map(fn
+      {^start, _} -> []
+      {node, cost} -> [{node, cost}]
+    end)
+  end
+
+  defp dijkstra(weighted_edges_fn, heap, dist) do
+    case :gb_sets.is_empty(heap) do
+      true -> dist
+      false ->
+        {{cost, node}, heap1} = :gb_sets.take_smallest(heap)
+        # Skip stale entries: if dist[node] is already lower than
+        # `cost`, we found a better path AFTER pushing this entry.
+        best = Map.fetch!(dist, node)
+        if cost > best do
+          dijkstra(weighted_edges_fn, heap1, dist)
+        else
+          {new_heap, new_dist} =
+            weighted_edges_fn.(node)
+            |> Enum.reduce({heap1, dist}, fn {_from, next, weight}, {h, d} ->
+              next_cost = cost + weight
+              case Map.fetch(d, next) do
+                {:ok, prev} when prev <= next_cost ->
+                  {h, d}
+                _ ->
+                  {:gb_sets.add({next_cost, next}, h), Map.put(d, next, next_cost)}
+              end
+            end)
+          dijkstra(weighted_edges_fn, new_heap, new_dist)
+        end
+    end
+  end
+
+  @doc """
+  Convenience for FactSource-backed graphs (3-arity weighted_edge
+  predicate). The FactSource adaptor must support `arity == 3` and
+  return `[{from, to, weight}, ...]` from `lookup_by_arg1`.
+  """
+  def collect_path_costs_from_source(source_module, source_handle, start, state \\\\ nil) do
+    fun = fn node -> source_module.lookup_by_arg1(source_handle, node, state) end
+    collect_path_costs(fun, start)
+  end
+end
+
 defmodule WamRuntime.GraphKernel.CategoryAncestor do
   @moduledoc """
   Native bounded-ancestor kernel — path-enumeration variant of TC
@@ -3548,6 +3654,11 @@ emit_kernel_dispatch_module(ModuleName, Pred, _Arity,
                             Code) :-
     member(edge_pred(EdgePred/_), ConfigOps),
     compile_transitive_step_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, Code).
+emit_kernel_dispatch_module(ModuleName, Pred, _Arity,
+                            recursive_kernel(weighted_shortest_path3, _, ConfigOps),
+                            Code) :-
+    member(edge_pred(EdgePred/_), ConfigOps),
+    compile_weighted_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, Code).
 
 %% compile_tc_kernel_dispatch_module(+ModuleName, +Pred, +EdgePred, -Code)
 %
@@ -4203,6 +4314,144 @@ compile_transitive_step_parent_distance_dispatch_module(ModuleName, Pred, EdgePr
          {:ok, s3} <- bind_one(s2, 4, parent),
          {:ok, s4} <- bind_one(s3, 5, distance) do
       s4
+    else
+      _ -> nil
+    end
+  end
+
+  defp bind_one(state, reg_idx, value) do
+    case Map.get(state.regs, reg_idx) do
+      {:unbound, id} ->
+        {:ok,
+         state
+         |> WamRuntime.trail_binding(id)
+         |> WamRuntime.put_reg(id, value)}
+      ^value -> {:ok, state}
+      _ -> :error
+    end
+  end
+end
+',
+    [CamelMod, CamelPred,
+     PredStr, EdgePredStr,
+     EdgeKey,
+     EdgeKey,
+     CamelPred]).
+
+%% compile_weighted_shortest_path_dispatch_module(+ModuleName, +Pred, +EdgePred, -Code)
+%
+%  Dispatch module for the weighted_shortest_path3 pattern (3-ary
+%  predicate over a 3-ary weighted_edge/3 source). Routes calls
+%  through WamRuntime.GraphKernel.WeightedShortestPath.collect_path_costs.
+%
+%  TWO enumerated registers per solution: A2 (target), A3 (cost). The
+%  wrapper inspects the active aggregate frames :agg_value_reg at
+%  runtime to slice the (target, cost) pair:
+%    - val_reg == 2 -> push targets
+%    - val_reg == 3 -> push costs
+%    - otherwise    -> push pair tuples
+%
+%  Driver-direct call: bind_two_regs/3 binds A2, A3 to the first
+%  shortest-path solution.
+%
+%  Semantic narrowing (documented in the runtime kernels moduledoc):
+%  the canonical Prolog pattern enumerates ALL paths; the kernel
+%  computes only the SHORTEST. Match the Rust reference impl.
+compile_weighted_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
+    atom_string(ModuleName, ModName),
+    camel_case(ModName, CamelMod),
+    atom_string(Pred, PredStr),
+    camel_case(PredStr, CamelPred),
+    atom_string(EdgePred, EdgePredStr),
+    format(string(EdgeKey), "~w/3", [EdgePredStr]),
+    format(string(Code),
+'defmodule ~w.~w do
+  @moduledoc """
+  Kernel-dispatched ~w/3 (auto-recognised weighted_shortest_path3
+  pattern over ~w/3). Routes calls through
+  WamRuntime.GraphKernel.WeightedShortestPath (Dijkstra).
+
+  Edge source must be registered via WamRuntime.FactSourceRegistry
+  under the indicator "~w" before calling. The registered handle
+  must support arity 3 and return `[{from, to, weight}, ...]` from
+  lookup_by_arg1.
+
+  Semantic narrowing: the canonical Prolog pattern enumerates all
+  paths from start to target with their summed weights; this kernel
+  computes only the SHORTEST path cost (one result per reachable
+  target). Match the Rust reference impl. See the kernel moduledoc
+  in WamRuntime.GraphKernel.WeightedShortestPath for the full
+  contract.
+  """
+
+  def run(%WamRuntime.WamState{} = state) do
+    start_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
+    edge_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
+    weighted_edges_fn = fn node ->
+      WamRuntime.FactSource.lookup_by_arg1(edge_handle, node, state)
+    end
+    pairs =
+      WamRuntime.GraphKernel.WeightedShortestPath.collect_path_costs(
+        weighted_edges_fn, start_val)
+
+    if WamRuntime.in_forkable_aggregate_frame?(state) do
+      # Slice (target, cost) on which register the aggregate captures.
+      # split_at_aggregate_cp/1 walks cp stack ONCE (PR #1814 fix).
+      {above, agg_cp, below} = WamRuntime.split_at_aggregate_cp(state)
+      contributions =
+        case agg_cp.agg_value_reg do
+          2 -> Enum.map(pairs, fn {t, _w} -> t end)
+          3 -> Enum.map(pairs, fn {_t, w} -> w end)
+          _ -> pairs
+        end
+      new_accum = agg_cp.agg_accum ++ contributions
+      new_agg_cp = %{agg_cp | agg_accum: new_accum}
+      new_state = %{state | choice_points: above ++ [new_agg_cp | below]}
+      throw({:fail, new_state})
+    else
+      case pairs do
+        [{first_target, first_cost} | _] ->
+          case bind_two_regs(state, first_target, first_cost) do
+            nil -> throw({:fail, state})
+            bound -> {:ok, bound}
+          end
+        [] -> throw({:fail, state})
+      end
+    end
+  end
+
+  def run(args) when is_list(args) do
+    state = %WamRuntime.WamState{code: {}, labels: %{}, pc: 1}
+    {state, arg_vars} =
+      Enum.with_index(args, 1)
+      |> Enum.reduce({state, []}, fn {arg, i}, {s, vars} ->
+        case arg do
+          {:unbound, _} ->
+            v = {:unbound, make_ref()}
+            {%{s | regs: Map.put(s.regs, i, v)}, [{i, v} | vars]}
+          other ->
+            {%{s | regs: Map.put(s.regs, i, other)}, vars}
+        end
+      end)
+    state = %{state | arg_vars: arg_vars, cp: &WamRuntime.terminal_cp/1}
+    try do
+      case run(state) do
+        {:ok, final} -> {:ok, WamRuntime.materialise_args(final)}
+        other -> other
+      end
+    catch
+      {:fail, _} -> :fail
+      {:return, result} -> result
+      error ->
+        IO.puts("Predicate ~w CRASHED: #{inspect(error)}")
+        :fail
+    end
+  end
+
+  defp bind_two_regs(state, target, cost) do
+    with {:ok, s1} <- bind_one(state, 2, target),
+         {:ok, s2} <- bind_one(s1, 3, cost) do
+      s2
     else
       _ -> nil
     end

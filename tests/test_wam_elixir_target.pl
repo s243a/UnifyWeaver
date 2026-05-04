@@ -1004,7 +1004,18 @@ setup_kernel_fixtures :-
     assertz((user:kdsp(X, Y, Mid, P, N) :-
                 user:kdedge(X, Mid),
                 user:kdsp(Mid, Y, _IgnoredStep, P, N1),
-                N is N1 + 1)).
+                N is N1 + 1)),
+    % weighted_shortest_path3 fixture: matches the canonical shape over
+    % a 3-arity weighted_edge predicate (kdweighted_edge in this fixture).
+    %   wsp(X, Y, W) :- weighted_edge(X, Y, W).
+    %   wsp(X, Y, TotalW) :- weighted_edge(X, Mid, W1), wsp(Mid, Y, RestW), TotalW is RestW + W1.
+    retractall(user:kdweighted_edge(_, _, _)),
+    retractall(user:kdwsp(_, _, _)),
+    assertz((user:kdwsp(X, Y, W) :- user:kdweighted_edge(X, Y, W))),
+    assertz((user:kdwsp(X, Y, TotalW) :-
+                user:kdweighted_edge(X, Mid, W1),
+                user:kdwsp(Mid, Y, RestW),
+                TotalW is RestW + W1)).
 
 test_shared_detector_finds_tc :-
     Test = 'Shared detector: kdtc/2 with canonical TC shape detected as transitive_closure2',
@@ -1378,6 +1389,86 @@ test_shared_detector_finds_transitive_step_parent_distance :-
         member(edge_pred(kdedge/2), ConfigOps)
     ->  pass(Test)
     ;   fail_test(Test, 'kdsp/5 not detected as transitive_step_parent_distance5 by shared detector')
+    ).
+
+test_graph_kernel_weighted_shortest_path_emitted_in_runtime :-
+    % First weighted-graph kernel (after the four unweighted DFS
+    % kernels in PRs #1799/#1803/#1822/#1823/#1824). Dijkstra via
+    % :gb_sets priority queue. Same testing posture as the
+    % unweighted kernels: emit-and-grep on the runtime + dispatch
+    % wrapper, then end-to-end smoke test against the runtime.
+    Test = 'GraphKernel WeightedShortestPath: runtime emits WamRuntime.GraphKernel.WeightedShortestPath',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.GraphKernel.WeightedShortestPath do'),
+        sub_string(RuntimeCode, _, _, _, 'def collect_path_costs('),
+        sub_string(RuntimeCode, _, _, _, 'def collect_path_costs_from_source(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'GraphKernel.WeightedShortestPath module missing expected API')
+    ).
+
+test_graph_kernel_wsp_uses_gb_sets_priority_queue :-
+    % BEAMs natural min-heap is :gb_sets ordered by Erlang term
+    % comparison ({cost, node} tuples sort by cost first, then node).
+    % :gb_sets.take_smallest/1 is the pop primitive. Without a real
+    % priority queue Dijkstra is O(V^2); with it we get O((V+E) log V).
+    Test = 'GraphKernel WeightedShortestPath: uses :gb_sets priority queue for Dijkstra',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    Pattern = "defmodule WamRuntime.GraphKernel.WeightedShortestPath do",
+    EndPattern = "defmodule WamRuntime.GraphKernel.CategoryAncestor do",
+    (   sub_string(RuntimeCode, Start, _, _, Pattern),
+        sub_string(RuntimeCode, End, _, _, EndPattern),
+        End > Start,
+        BodyLen is End - Start,
+        sub_string(RuntimeCode, Start, BodyLen, _, Body),
+        % Min-heap construction + pop.
+        sub_string(Body, _, _, _, ":gb_sets.singleton({0, start})"),
+        sub_string(Body, _, _, _, ":gb_sets.take_smallest(heap)"),
+        % Stale-entry skip (the canonical Dijkstra optimisation).
+        sub_string(Body, _, _, _, "if cost > best do"),
+        % Documents the semantic narrowing (all-paths -> shortest).
+        sub_string(Body, _, _, _, "semantic narrowing"),
+        sub_string(Body, _, _, _, "computes only the SHORTEST")
+    ->  pass(Test)
+    ;   fail_test(Test, 'WeightedShortestPath kernel missing :gb_sets primitives or semantic-narrowing note')
+    ).
+
+test_kernel_dispatch_emits_weighted_shortest_path_module :-
+    % End-to-end: detector recognises kdwsp/3 as
+    % weighted_shortest_path3, dispatch wrapper emits with two-register
+    % binding (target, cost) and 3-arity edge predicate ("kdweighted_edge/3").
+    Test = 'Kernel dispatch: weighted_shortest_path3 kernel emits Probe.Kdwsp dispatch module',
+    setup_kernel_fixtures,
+    wam_target:compile_predicate_to_wam(user:kdwsp/3, [], WspWam),
+    write_wam_elixir_project([kdwsp/3-WspWam],
+        [module_name(probe), emit_mode(lowered),
+         intra_query_parallel(false),
+         kernel_dispatch(true), source_module(user)],
+        '/tmp/test_kernel_disp_wsp'),
+    read_file_to_string('/tmp/test_kernel_disp_wsp/lib/kdwsp.ex', S, []),
+    (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.WeightedShortestPath"),
+        sub_string(S, _, _, _, "collect_path_costs("),
+        % 3-arity edge predicate indicator: weighted_edge/3
+        sub_string(S, _, _, _, "kdweighted_edge/3"),
+        % Aggregate-frame slicing for two regs (target=2, cost=3).
+        sub_string(S, _, _, _, "agg_cp.agg_value_reg"),
+        sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
+        % Driver-direct binding of both regs.
+        sub_string(S, _, _, _, "bind_two_regs(state, "),
+        sub_string(S, _, _, _, "split_at_aggregate_cp(state)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'weighted_shortest_path3 dispatch module missing expected shape')
+    ).
+
+test_shared_detector_finds_weighted_shortest_path :-
+    Test = 'Shared detector: kdwsp/3 with canonical weighted_shortest_path shape detected',
+    setup_kernel_fixtures,
+    functor(Head, kdwsp, 3),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   detect_recursive_kernel(kdwsp, 3, Clauses,
+            recursive_kernel(weighted_shortest_path3, kdwsp/3, ConfigOps)),
+        member(edge_pred(kdweighted_edge/3), ConfigOps)
+    ->  pass(Test)
+    ;   fail_test(Test, 'kdwsp/3 not detected as weighted_shortest_path3 by shared detector')
     ).
 
 test_graph_kernel_tc_uses_visited_tracking :-
@@ -2558,6 +2649,10 @@ run_tests :-
     test_graph_kernel_tspd_reuses_parent_distance_walker,
     test_kernel_dispatch_emits_transitive_step_parent_distance_module,
     test_shared_detector_finds_transitive_step_parent_distance,
+    test_graph_kernel_weighted_shortest_path_emitted_in_runtime,
+    test_graph_kernel_wsp_uses_gb_sets_priority_queue,
+    test_kernel_dispatch_emits_weighted_shortest_path_module,
+    test_shared_detector_finds_weighted_shortest_path,
     test_graph_kernel_tc_uses_visited_tracking,
     test_graph_kernel_tc_factsource_bridge,
     test_intern_atoms_default_off,
