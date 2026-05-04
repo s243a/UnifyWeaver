@@ -23,7 +23,13 @@
 %%
 %% Usage:
 %%   swipl -q -s generate_wam_scala_effective_distance_benchmark.pl -- \
-%%       <facts.pl> <output-dir> [accumulated|seeded] [kernels_on|kernels_off] [sidecar|inline|artifact|auto]
+%%       <facts.pl> <output-dir> [accumulated|seeded] [kernels_on|kernels_off] [sidecar|inline|artifact|lmdb|auto]
+%%
+%% lmdb mode requires the LMDB env to be pre-populated (the harness
+%% does not write data files for it the way sidecar/artifact do).
+%% Set $WAM_SCALA_LMDB_ENV to point at the env directory, or it
+%% defaults to <output-dir>/data/lmdb. See examples/benchmark/README_lmdb.md
+%% for the loader recipe and cross-target comparison instructions.
 
 benchmark_workload_path(Path) :-
     source_file(benchmark_workload_path(_), ThisFile),
@@ -46,7 +52,7 @@ main :-
         KernelModeAtom = kernels_on,
         DataModeAtom = auto
     ;   format(user_error,
-            'Usage: ... -- <facts.pl> <output-dir> [accumulated|seeded] [kernels_on|kernels_off] [sidecar|inline|artifact|auto]~n',
+            'Usage: ... -- <facts.pl> <output-dir> [accumulated|seeded] [kernels_on|kernels_off] [sidecar|inline|artifact|lmdb|auto]~n',
             []),
         halt(1)
     ),
@@ -124,6 +130,7 @@ parse_variant(accumulated, [
 parse_benchmark_data_mode(sidecar, sidecar).
 parse_benchmark_data_mode(inline, inline).
 parse_benchmark_data_mode(artifact, artifact).
+parse_benchmark_data_mode(lmdb,     lmdb).
 parse_benchmark_data_mode(auto, Mode) :-
     (   benchmark_declared_data_mode(DeclaredMode),
         DeclaredMode \== auto
@@ -143,7 +150,7 @@ benchmark_declared_data_mode(Mode) :-
     current_predicate(user:Name/1),
     Goal =.. [Name, DeclaredMode],
     once(call(user:Goal)),
-    memberchk(DeclaredMode, [auto, sidecar, inline, artifact]),
+    memberchk(DeclaredMode, [auto, sidecar, inline, artifact, lmdb]),
     Mode = DeclaredMode.
 
 benchmark_relation_declared_data_mode(Relation, Mode) :-
@@ -154,7 +161,7 @@ benchmark_relation_declared_data_mode(Relation, Mode) :-
     current_predicate(user:Name/2),
     Goal =.. [Name, Relation, DeclaredMode],
     once(call(user:Goal)),
-    memberchk(DeclaredMode, [auto, sidecar, inline, artifact]),
+    memberchk(DeclaredMode, [auto, sidecar, inline, artifact, lmdb]),
     Mode = DeclaredMode.
 
 benchmark_effective_data_mode(Relation, DataMode, RelationMode) :-
@@ -204,6 +211,17 @@ scala_fact_source_for_category_parent(OutputDir, sidecar, source(category_parent
 scala_fact_source_for_category_parent(OutputDir, artifact, source(category_parent/2, grouped_by_first(GroupedPath))) :-
     category_parent_grouped_path(OutputDir, GroupedPath),
     write_category_parent_grouped_tsv(GroupedPath).
+%% LMDB data mode: the env is populated separately (the bench harness
+%% does not write the data file the way sidecar/artifact do). The path
+%% is taken from $WAM_SCALA_LMDB_ENV (or defaults to <OutputDir>/data/lmdb,
+%% in which case the harness expects it to be pre-populated by a loader
+%% companion). dupsort=true matches the multi-parent shape of the
+%% category_parent relation.
+scala_fact_source_for_category_parent(OutputDir, lmdb, source(category_parent/2, lmdb([env_path(EnvPath), dbi(''), dupsort(true)]))) :-
+    (   getenv('WAM_SCALA_LMDB_ENV', EnvPath0)
+    ->  atom_string(EnvPath, EnvPath0)
+    ;   directory_file_path(OutputDir, 'data/lmdb', EnvPath)
+    ).
 
 collect_wam_predicates(kernels_on, [
     user:dimension_n/1,
@@ -415,7 +433,7 @@ object EffectiveDistanceRunner {
     val startPc = GeneratedProgram.sharedProgram.dispatch("category_ancestor/4")
     val categoryTerm = atom(category)
     val rootTerm = atom(root)
-    val hopsRef = Ref(-1)
+    val hopsRef = Ref(1000000)
     val visited = listOf(categoryTerm)
     val state = WamRuntime.newState(startPc, Array(categoryTerm, rootTerm, hopsRef, visited))
     val results = mutable.ListBuffer.empty[Int]

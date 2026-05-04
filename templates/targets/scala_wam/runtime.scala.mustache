@@ -201,6 +201,236 @@ abstract class ForeignHandler {
 }
 
 // ============================================================
+// LmdbFactSource — memory-mapped fact source (Phase S8)
+// ============================================================
+// Mirrors the Elixir WamRuntime.FactSource.Lmdb adaptor. Targets the
+// **safe key/value API** of lmdbjava (org.lmdbjava). All reads use
+// Txn.get and Cursor.seek; no raw-pointer dereferences. This
+// is the response to the materialisation-cost bottleneck above 100k+
+// facts (see docs/WAM_TARGET_ROADMAP.md): a memory-mapped backing
+// store instead of holding everything in the JVM heap.
+//
+// The lmdbjava classes are resolved via Class.forName so this runtime
+// compiles cleanly in driver projects that don't depend on lmdbjava.
+// Only fails at runtime if a project actually constructs an
+// LmdbFactSource without the dep on the classpath. Same trick as
+// Elixir's Module.concat([Elmdb]).
+//
+// Driver responsibility:
+//   1. Add `org.lmdbjava % lmdbjava % "0.9.x"` to build.sbt.
+//   2. Create the env directory and populate the database (e.g. via
+//      a separate ETL job).
+//   3. Pass envPath/dbName/dupsort to LmdbFactSource at handler
+//      construction.
+//
+// Spec parameters:
+//   envPath  — directory containing the LMDB env (required)
+//   dbName   — name of the database within env (default "")
+//   arity    — column count (required; only 2 supported)
+//   dupsort  — true if MDB_DUPSORT was set when the database was
+//              opened (default false). Toggles the lookupByArg1 path
+//              between Txn.get (unique key) and Cursor.seek(MDB_SET)
+//              + Cursor.seek(MDB_NEXT_DUP) (multi-value).
+//
+// Lifecycle: close() releases the env reference. Multiple FactSources
+// may share env handles in practice; the driver owns env creation.
+
+final class LmdbFactSource(
+  val envPath: String,
+  val dbName: String = "",
+  val arity: Int = 2,
+  val dupsort: Boolean = false,
+  internTable: InternTable
+) {
+  require(arity == 2, "LmdbFactSource currently only supports arity=2")
+
+  // Resolve lmdbjava classes via Class.forName so the runtime
+  // compiles without lmdbjava on the classpath. Same indirection the
+  // Elixir adaptor uses with Module.concat([Elmdb]).
+  private def lmdbClass(name: String): Class[_] =
+    Class.forName("org.lmdbjava." + name)
+
+  private lazy val envClass    = lmdbClass("Env")
+  private lazy val dbiClass    = lmdbClass("Dbi")
+  private lazy val txnClass    = lmdbClass("Txn")
+  private lazy val cursorClass = lmdbClass("Cursor")
+  private lazy val seekOpClass = lmdbClass("SeekOp")
+
+  // env + dbi opened lazily on first use, then reused for all reads.
+  private lazy val env: AnyRef = openEnv()
+  private lazy val dbi: AnyRef = openDbi(env)
+
+  private def openEnv(): AnyRef = {
+    val builder = envClass.getMethod("create").invoke(null)
+    val openMethod = builder.getClass.getMethod("open", classOf[java.io.File])
+    openMethod.invoke(builder, new java.io.File(envPath)).asInstanceOf[AnyRef]
+  }
+
+  private def openDbi(envInst: AnyRef): AnyRef = {
+    val flagsClass = lmdbClass("DbiFlags")
+    val flagArrType = java.lang.reflect.Array.newInstance(flagsClass, 0).getClass
+    val flagsArr =
+      if (dupsort) {
+        val arr = java.lang.reflect.Array.newInstance(flagsClass, 1)
+        java.lang.reflect.Array.set(arr, 0, flagsClass.getField("MDB_DUPSORT").get(null))
+        arr.asInstanceOf[AnyRef]
+      } else {
+        java.lang.reflect.Array.newInstance(flagsClass, 0).asInstanceOf[AnyRef]
+      }
+    val openDbi = envClass.getMethod("openDbi", classOf[String], flagArrType)
+    openDbi.invoke(envInst, dbName, flagsArr).asInstanceOf[AnyRef]
+  }
+
+  /** Full scan via cursor first/next. Used when the caller wants
+   *  every (arg1, arg2) tuple — equivalent to the Elixir
+   *  stream_all callback. */
+  def streamAll(): Seq[Map[Int, WamTerm]] = {
+    val txn = beginReadTxn()
+    try {
+      val cursor = openCursor(txn)
+      try scanCursorAll(cursor)
+      finally closeCursor(cursor)
+    } finally commitReadTxn(txn)
+  }
+
+  /** Probe by arg1. Returns at most one (key, value) pair if dupsort
+   *  is false, or all values for `key` under MDB_NEXT_DUP otherwise.
+   *  Equivalent to the Elixir lookup_by_arg1 callback. */
+  def lookupByArg1(key: WamTerm): Seq[Map[Int, WamTerm]] = {
+    val keyStr = termAsKey(key) match {
+      case Some(s) => s
+      case None    => return Seq.empty
+    }
+    val txn = beginReadTxn()
+    try {
+      if (dupsort) {
+        val cursor = openCursor(txn)
+        try cursorSeekAndCollectDupSort(cursor, keyStr)
+        finally closeCursor(cursor)
+      } else {
+        // Unique key path — Txn.get is the safe single-shot lookup.
+        val keyBuf = bufferFromString(keyStr)
+        val getMethod = txnClass.getMethod("get",
+          dbiClass, classOf[java.nio.ByteBuffer])
+        val valBuf = getMethod.invoke(txn, dbi, keyBuf)
+        if (valBuf == null) Seq.empty
+        else Seq(tupleToBindings(keyStr, bufferToString(valBuf.asInstanceOf[java.nio.ByteBuffer])))
+      }
+    } finally commitReadTxn(txn)
+  }
+
+  /** Release the env. Multiple FactSources may have shared this env;
+   *  the driver should coordinate close() across them or trust the
+   *  JVM's finalisation. */
+  def close(): Unit = {
+    if (env != null) {
+      val m = envClass.getMethod("close")
+      m.invoke(env)
+    }
+  }
+
+  // --- helpers ---
+
+  private def beginReadTxn(): AnyRef = {
+    val m = envClass.getMethod("txnRead")
+    m.invoke(env).asInstanceOf[AnyRef]
+  }
+
+  private def commitReadTxn(txn: AnyRef): Unit = {
+    val m = txnClass.getMethod("commit")
+    m.invoke(txn)
+    val closeM = txnClass.getMethod("close")
+    closeM.invoke(txn)
+  }
+
+  private def openCursor(txn: AnyRef): AnyRef = {
+    val m = dbiClass.getMethod("openCursor", txnClass)
+    m.invoke(dbi, txn).asInstanceOf[AnyRef]
+  }
+
+  private def closeCursor(cursor: AnyRef): Unit = {
+    val m = cursorClass.getMethod("close")
+    m.invoke(cursor)
+  }
+
+  private def scanCursorAll(cursor: AnyRef): Seq[Map[Int, WamTerm]] = {
+    val firstM = cursorClass.getMethod("first")
+    val nextM  = cursorClass.getMethod("next")
+    val keyM   = cursorClass.getMethod("key")
+    val valM   = cursorClass.getMethod("`val`")
+    val buf = scala.collection.mutable.ListBuffer.empty[Map[Int, WamTerm]]
+    var hasMore = firstM.invoke(cursor).asInstanceOf[java.lang.Boolean].booleanValue()
+    while (hasMore) {
+      val k = bufferToString(keyM.invoke(cursor).asInstanceOf[java.nio.ByteBuffer])
+      val v = bufferToString(valM.invoke(cursor).asInstanceOf[java.nio.ByteBuffer])
+      buf.append(tupleToBindings(k, v))
+      hasMore = nextM.invoke(cursor).asInstanceOf[java.lang.Boolean].booleanValue()
+    }
+    buf.toSeq
+  }
+
+  private def cursorSeekAndCollectDupSort(cursor: AnyRef, key: String): Seq[Map[Int, WamTerm]] = {
+    val keyBuf = bufferFromString(key)
+    val getM = cursorClass.getMethod("get", classOf[java.nio.ByteBuffer], seekOpClass)
+    val mdbSet     = seekOpClass.getField("MDB_SET").get(null)
+    val mdbNextDup = seekOpClass.getField("MDB_NEXT_DUP").get(null)
+    val keyM = cursorClass.getMethod("key")
+    val valM = cursorClass.getMethod("`val`")
+    val buf = scala.collection.mutable.ListBuffer.empty[Map[Int, WamTerm]]
+    val first = getM.invoke(cursor, keyBuf, mdbSet).asInstanceOf[java.lang.Boolean].booleanValue()
+    if (first) {
+      val v = bufferToString(valM.invoke(cursor).asInstanceOf[java.nio.ByteBuffer])
+      buf.append(tupleToBindings(key, v))
+      var more = getM.invoke(cursor, null, mdbNextDup).asInstanceOf[java.lang.Boolean].booleanValue()
+      while (more) {
+        val k = bufferToString(keyM.invoke(cursor).asInstanceOf[java.nio.ByteBuffer])
+        if (k != key) more = false
+        else {
+          val v2 = bufferToString(valM.invoke(cursor).asInstanceOf[java.nio.ByteBuffer])
+          buf.append(tupleToBindings(key, v2))
+          more = getM.invoke(cursor, null, mdbNextDup).asInstanceOf[java.lang.Boolean].booleanValue()
+        }
+      }
+    }
+    buf.toSeq
+  }
+
+  private def bufferFromString(s: String): java.nio.ByteBuffer = {
+    val bytes = s.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+    val buf = java.nio.ByteBuffer.allocateDirect(bytes.length)
+    buf.put(bytes)
+    buf.flip()
+    buf
+  }
+
+  private def bufferToString(buf: java.nio.ByteBuffer): String = {
+    val arr = new Array[Byte](buf.remaining())
+    buf.duplicate().get(arr)
+    new String(arr, java.nio.charset.StandardCharsets.UTF_8)
+  }
+
+  /** Render an arg1 term as a string key for the LMDB lookup. Atoms
+   *  use their interned string; integers/floats use toString. Vars
+   *  and structs return None — caller treats that as "no candidate". */
+  private def termAsKey(t: WamTerm): Option[String] = t match {
+    case Atom(id) if internTable.isInRange(id) => Some(internTable.stringAt(id))
+    case IntTerm(n)   => Some(n.toString)
+    case FloatTerm(d) => Some(d.toString)
+    case _            => None
+  }
+
+  /** Build the bindings map for an arity-2 (key, value) pair. The
+   *  WAM register convention is reg1 = arg1, reg2 = arg2 for foreign
+   *  calls. Strings are interned (mutable intern table absorbs them
+   *  on first sight). */
+  private def tupleToBindings(key: String, value: String): Map[Int, WamTerm] =
+    Map(
+      1 -> (Atom(internTable.intern(key)): WamTerm),
+      2 -> (Atom(internTable.intern(value)): WamTerm)
+    )
+}
+
+// ============================================================
 // WamProgram — immutable compiled context (Layer B)
 // ============================================================
 // NOTE: instructions array is populated once at construction and
@@ -2084,35 +2314,21 @@ object WamRuntime {
         (s"$n/$arity", sargs)
       case _ => return None
     }
-    if (key == "member/2" && args.length == 2) {
-      val savedTrailLen = s.trail.length
-      val ok = listToSeq(s, program, args(1)).exists { items =>
-        items.exists { item =>
-          val checkpoint = s.trail.length
-          val matched = unify(s, args(0), item)
-          unwindTrail(s, checkpoint)
-          matched
-        }
-      }
-      unwindTrail(s, savedTrailLen)
-      return Some(ok)
-    }
-    program.dispatch.get(key) match {
-      case None => None
-      case Some(startPc) =>
-        // Snapshot outer state.
-        val savedPc        = s.pc
-        val savedCallStack = s.callStack
-        val savedTrailLen  = s.trail.length
-        val savedCPs       = s.choicePoints
-        val savedRegs      = s.regs.clone()
-        val savedEnvStack  = s.envStack
-        val savedNextVarId = s.nextVarId
-        val savedCutBar    = s.cutBar
-        val savedStatus    = s.status
-        val savedUnifyQ    = s.unifyQueue
-        val savedBuildStk  = s.buildStack
+    // Snapshot outer state before either dispatch or builtin probing.
+    val savedPc        = s.pc
+    val savedCallStack = s.callStack
+    val savedTrailLen  = s.trail.length
+    val savedCPs       = s.choicePoints
+    val savedRegs      = s.regs.clone()
+    val savedEnvStack  = s.envStack
+    val savedNextVarId = s.nextVarId
+    val savedCutBar    = s.cutBar
+    val savedStatus    = s.status
+    val savedUnifyQ    = s.unifyQueue
+    val savedBuildStk  = s.buildStack
 
+    val result = program.dispatch.get(key) match {
+      case Some(startPc) =>
         // Set up the goal's call frame. callStack is empty so Proceed
         // will mark the sub-run as Succeeded rather than try to return
         // to the outer caller.
@@ -2128,23 +2344,44 @@ object WamRuntime {
         s.status       = Running
 
         while (s.status == Running) step(s, program)
-        val ok = s.status == Succeeded
-
-        // Restore — \+ does not propagate any bindings from the goal.
-        unwindTrail(s, savedTrailLen)
-        System.arraycopy(savedRegs, 0, s.regs, 0, REG_ARRAY_SIZE)
-        s.callStack    = savedCallStack
-        s.choicePoints = savedCPs
-        s.envStack     = savedEnvStack
-        s.nextVarId    = savedNextVarId
-        s.cutBar       = savedCutBar
-        s.unifyQueue   = savedUnifyQ
-        s.buildStack   = savedBuildStk
-        s.pc           = savedPc
-        s.status       = savedStatus
-
-        Some(ok)
+        Some(s.status == Succeeded)
+      case None =>
+        builtinMetaCallSucceeds(s, program, key, args)
     }
+
+    // Restore — \+ does not propagate any bindings from the goal.
+    unwindTrail(s, savedTrailLen)
+    System.arraycopy(savedRegs, 0, s.regs, 0, REG_ARRAY_SIZE)
+    s.callStack    = savedCallStack
+    s.choicePoints = savedCPs
+    s.envStack     = savedEnvStack
+    s.nextVarId    = savedNextVarId
+    s.cutBar       = savedCutBar
+    s.unifyQueue   = savedUnifyQ
+    s.buildStack   = savedBuildStk
+    s.pc           = savedPc
+    s.status       = savedStatus
+
+    result
+  }
+
+  def builtinMetaCallSucceeds(s: WamState, program: WamProgram,
+                              key: String, args: Array[WamTerm]): Option[Boolean] = key match {
+    case "member/2" if args.length == 2 =>
+      listToSeq(s, program, args(1)) match {
+        case None => Some(false)
+        case Some(items) =>
+          val baseTrail = s.trail.length
+          var ok = false
+          val it = items.iterator
+          while (!ok && it.hasNext) {
+            unwindTrail(s, baseTrail)
+            ok = unify(s, args(0), it.next())
+          }
+          unwindTrail(s, baseTrail)
+          Some(ok)
+      }
+    case _ => None
   }
 
   // ----------------------------------------------------------

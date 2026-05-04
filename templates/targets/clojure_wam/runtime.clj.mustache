@@ -802,6 +802,16 @@
           "true/0"
           (advance state)
 
+          "fail/0"
+          (backtrack state)
+
+          "atom/1"
+          (let [value (deref-value (:bindings state)
+                                   (or (reg-get-raw state "A1") ::unbound))]
+            (if (atom-term? value)
+              (advance state)
+              (backtrack state)))
+
           "!/0"
           (-> state
               (update :choice-points #(vec (take (:cut-bar state) %)))
