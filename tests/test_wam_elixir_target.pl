@@ -816,6 +816,51 @@ test_lmdb_int_ids_design_proposal_referenced :-
     ;   fail_test(Test, 'kernel docstring still has the old LMDB-IDs claim or doesnt reference the proposal')
     ).
 
+test_lmdb_int_ids_ingest_pairs_emitted :-
+    % Driver-side ingestion helper. Without this, the proposal
+    % documents a contract no driver can fulfill (insert-time
+    % ID assignment requires a coordinated write to all three
+    % sub-DBs; a one-off helper is the natural shape).
+    Test = 'LmdbIntIds: ingest_pairs/3 driver helper emitted with three-DB write surface',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'def ingest_pairs(%__MODULE__{}'),
+        % Idempotent string-interning: txn_get on key_to_id_dbi
+        % before allocating a new ID.
+        sub_string(RuntimeCode, _, _, _, 'defp intern_one('),
+        % Sequential ID allocation: increment next_id when
+        % :not_found in key_to_id_dbi.
+        sub_string(RuntimeCode, _, _, _, ':not_found ->'),
+        % Writes all three sub-DBs: key_to_id_dbi, id_to_key_dbi,
+        % facts_dbi (each via txn_put through Module.concat).
+        sub_string(RuntimeCode, _, _, _, 'handle.key_to_id_dbi'),
+        sub_string(RuntimeCode, _, _, _, 'handle.id_to_key_dbi'),
+        sub_string(RuntimeCode, _, _, _, 'handle.facts_dbi'),
+        % Returns a status map with the next_id sentinel for
+        % batched calls.
+        sub_string(RuntimeCode, _, _, _, ':next_id')
+    ->  pass(Test)
+    ;   fail_test(Test, 'ingest_pairs/3 missing or has wrong API surface')
+    ).
+
+test_lmdb_int_ids_migrate_from_string_keyed_emitted :-
+    % Migration helper: existing PR #1792 string-keyed Lmdb env
+    % -> int-id-keyed LmdbIntIds env. Without this, deployments
+    % that already use the original Lmdb adaptor have no path to
+    % the int-id win.
+    Test = 'LmdbIntIds: migrate_from_string_keyed/3 helper emitted, batches via ingest_pairs/3',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'def migrate_from_string_keyed('),
+        % Reads from the existing PR #1792 Lmdb adaptor.
+        sub_string(RuntimeCode, _, _, _, 'WamRuntime.FactSource.Lmdb.stream_all'),
+        % Batches via Enum.chunk_every for memory safety at scale.
+        sub_string(RuntimeCode, _, _, _, 'Enum.chunk_every(batch_size)'),
+        % Delegates to ingest_pairs/3 (so insert-time ID assignment
+        % logic lives in one place).
+        sub_string(RuntimeCode, _, _, _, 'ingest_pairs(dest_handle, batch')
+    ->  pass(Test)
+    ;   fail_test(Test, 'migrate_from_string_keyed/3 missing or has wrong shape')
+    ).
+
 %% Atom-interning experiment (opt-in via intern_atoms(true) Option):
 %  identifier-shape constants emit as Elixir atom literals (`:foo`)
 %  instead of binaries (`"foo"`). BEAM atoms compare via pointer
@@ -2140,6 +2185,8 @@ run_tests :-
     test_lmdb_int_ids_adaptor_emitted_in_runtime,
     test_lmdb_int_ids_adaptor_uses_indirect_module_resolution,
     test_lmdb_int_ids_design_proposal_referenced,
+    test_lmdb_int_ids_ingest_pairs_emitted,
+    test_lmdb_int_ids_migrate_from_string_keyed_emitted,
     test_shared_detector_finds_tc,
     test_shared_detector_finds_category_ancestor,
     test_kernel_dispatch_emits_tc_module,

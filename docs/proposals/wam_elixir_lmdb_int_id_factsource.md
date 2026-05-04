@@ -196,13 +196,71 @@ for the original Lmdb adaptor.
 ## Status
 
 - [x] Doc fix (the inaccurate "Haskell uses LMDB IDs" claim
-  removed from kernel docstring + benchmark doc + roadmap).
-- [x] Design proposal (this doc).
+  removed from kernel docstring + benchmark doc + roadmap)
+  — PR #1819.
+- [x] Design proposal (this doc) — PR #1819.
 - [x] Code stub: `WamRuntime.FactSource.LmdbIntIds` emitted by
-  `wam_elixir_target.pl`. Compiles, doesn't run without `:elmdb`.
-- [x] Emit-and-grep tests asserting the API surface emits.
+  `wam_elixir_target.pl`. Compiles, doesn't run without `:elmdb`
+  — PR #1819.
+- [x] Emit-and-grep tests asserting the API surface emits — PR #1819.
+- [x] **Driver ingestion helper**: `ingest_pairs/3` populates all
+  three sub-databases consistently with insert-time ID assignment.
+  Idempotent for previously-seen strings. Returns `{:ok, %{pairs_seen,
+  new_ids, next_id}}` for batched ingestion. — this PR.
+- [x] **Migration helper**: `migrate_from_string_keyed/3` cursor-walks
+  an existing PR #1792 `Lmdb` env, batches into `ingest_pairs/3` calls,
+  populates the destination's three sub-databases with sequential
+  IDs in encounter order. — this PR.
 - [ ] `:elmdb`-backed integration test (requires Hex.pm reachability).
 - [ ] Cross-target benchmark with the int-id LMDB FactSource against
-  the in-memory int-tuple recipe (requires #6).
-- [ ] Migration helper: `migrate_to_int_ids/1` from existing
-  PR #1792 `Lmdb` env to `LmdbIntIds` env.
+  the in-memory int-tuple recipe (requires the integration test).
+- [ ] Mock-`Elmdb` end-to-end test that exercises the adaptor's logic
+  (id encoding/decoding, dupsort cursor walk, round-trip) without
+  requiring real `:elmdb`. ~300 lines of Elixir for a fake module
+  backed by an in-memory map; would catch the kinds of bugs
+  emit-and-grep can't (encoding off-by-ones, dupsort comparator
+  ordering, txn lifecycle). Deferred.
+
+## Driver-side recipe
+
+With the helpers shipped, a driver looks like:
+
+```elixir
+# 1. Open env + three sub-DBs (driver responsibility).
+{:ok, env} = :elmdb.env_open("/path/to/db.lmdb", maxdbs: 3, ...)
+{:ok, facts}    = :elmdb.db_open(env, "facts",    [:create, :dupsort])
+{:ok, k_to_id}  = :elmdb.db_open(env, "key_to_id",  [:create])
+{:ok, id_to_k}  = :elmdb.db_open(env, "id_to_key",  [:create])
+
+handle = WamRuntime.FactSource.LmdbIntIds.open(
+  %{env: env, facts_dbi: facts, key_to_id_dbi: k_to_id,
+    id_to_key_dbi: id_to_k, arity: 2, dupsort: true},
+  2, nil)
+
+# 2. Ingest data (insert-time ID assignment).
+{:ok, %{next_id: nid}} =
+  WamRuntime.FactSource.LmdbIntIds.ingest_pairs(
+    handle,
+    [{"alpha", "beta"}, {"alpha", "gamma"}, {"delta", "epsilon"}],
+    start_id: 0)
+
+# 3. Persist next_id somewhere (sentinel key, separate metadata DB,
+#    application config) for the next ingest batch.
+
+# 4. Register with the kernel-dispatch FactSourceRegistry.
+WamRuntime.FactSourceRegistry.register("category_parent/2", handle)
+
+# 5. Now the kernel sees integer IDs end-to-end:
+#    dispatch_wrapper.run/1 calls handle.lookup_by_arg1_id/3 which
+#    returns [{cat_id, parent_id}, ...] -- no atom-table pressure,
+#    no per-call hashing, fact data on disk via LMDB.
+```
+
+For migration from an existing PR #1792 string-keyed env:
+
+```elixir
+{:ok, %{pairs_migrated: n, ids_assigned: m}} =
+  WamRuntime.FactSource.LmdbIntIds.migrate_from_string_keyed(
+    old_string_handle, new_int_id_handle,
+    start_id: 0, batch_size: 10_000)
+```
