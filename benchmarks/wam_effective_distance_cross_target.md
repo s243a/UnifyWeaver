@@ -203,11 +203,41 @@ aggregate frame. The new path uses fold-form directly:
     `finalise_aggregate/4` restores encounter order.
 14. Modify the dispatch wrapper template: when
     `in_forkable_aggregate_frame?(state)` is true, fold each hop
-    directly into the aggregate frame via
-    `fold_hops(neighbors_fn, ..., state, fn hop, st -> aggregate_push_one(st, hop) end)`.
-    No intermediate hop list is built. The non-aggregate (backtracking)
-    branch keeps `collect_hops/4` since it needs to bind individual
-    solutions into the hops register one at a time.
+    directly into the aggregate frame. No intermediate hop list is
+    built. The non-aggregate (backtracking) branch keeps
+    `collect_hops/4` since it needs to bind individual solutions into
+    the hops register one at a time.
+
+**Dispatch-fold regression fix** (this PR — measured by a fresh
+micro-bench that simulates the full aggregate-frame path through the
+runtime APIs at varying cp-stack depths). The first cut of the
+dispatch-fold integration used `aggregate_push_one/2` per hit, which
+walks `state.choice_points` to find the aggregate frame on every
+push. That made the per-kernel-call cost O(N×D) where the legacy
+collect+merge path was O(D + N) — a measurable regression at
+non-trivial cp-stack depth (D≥5). Numbers from
+`bench_dispatch.exs` at scale-300:
+
+| cp-stack depth | collect+merge (μs) | fold+push_one (μs) | fold+split (μs) |
+| ---: | ---: | ---: | ---: |
+| 0 | 63,041 | 68,898 | **61,083** |
+| 5 | 61,190 | 62,829 | **60,874** |
+| 20 | 62,029 | 80,314 | 67,530 |
+
+15. Add `WamRuntime.split_at_aggregate_cp/1` — one-pass cp-stack
+    walk that returns `{above_cps_in_order, agg_cp, below_cps}`.
+    Walks the cp list once instead of N times.
+16. Modify the dispatch wrapper to **extract the agg cp once via
+    `split_at_aggregate_cp/1`, fold against `agg_cp.agg_accum`
+    directly with `[hop | accum]`, then reassemble**
+    `state.choice_points` as `above ++ [updated_agg_cp | below]`.
+    Total cp work per kernel call is O(D) instead of O(N×D).
+    The fold itself stays the same; the closure no longer touches
+    the cp stack. At typical Prolog cp-stack depth (≤5) this matches
+    the legacy collect+merge path. (True O(1) would require a
+    structural separation of the active-aggregate-frames stack from
+    `choice_points`; BEAM has no equivalent of Go's compiled `switch`
+    jump table to provide constant-time dispatch for free.)
 
 **Scope of the dispatch-fold change.** Equivalent semantics to the
 legacy collect+merge path for `findall`, `bag`, `set`, `count`,
