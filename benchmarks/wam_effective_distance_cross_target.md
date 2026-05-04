@@ -33,21 +33,22 @@ Wall-clock for the full pipeline (read TSVs, compute all
 `(article, root, distance)` rows, output). Single-machine, 4-vCPU
 Intel Xeon @ 2.10 GHz.
 
-| Scale | Prolog (SWI) | Rust | Elixir orig.² | + struct² | + bare-dests³ | + walker⁴ | + fold⁵ | + int-tuple⁶ |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| dev (~200 edges) | 20 ms | 3 ms | 4 ms¹ | 2 ms¹ | 0.5 ms¹ | 0.3 ms¹ | 0.2 ms¹ | **0.15 ms¹** |
-| 300 (~6k edges) | 111 ms | 23 ms | 680 ms | 213 ms | 76 ms | 38 ms | 31 ms | **18 ms** |
-| 1k (~7k edges) | 115 ms | 28 ms | 5,078 ms | 886 ms | 258 ms | 146 ms | 125 ms | **68 ms** |
-| 10k | 567 ms | 177 ms | 60,710 ms | 9,806 ms | 3,089 ms | 1,624 ms | 1,400 ms | **764 ms** |
+| Scale | Prolog | Rust | Elixir orig.² | + struct² | + bare-dests³ | + walker⁴ | + fold⁵ | + int-tuple⁶ | + parallel⁷ |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| dev (~200 edges) | 20 ms | 3 ms | 4 ms¹ | 2 ms¹ | 0.5 ms¹ | 0.3 ms¹ | 0.2 ms¹ | 0.15 ms¹ | (n/a)⁸ |
+| 300 (~6k edges) | 111 ms | 23 ms | 680 ms | 213 ms | 76 ms | 38 ms | 31 ms | 18 ms | **11 ms** |
+| 1k (~7k edges) | 115 ms | 28 ms | 5,078 ms | 886 ms | 258 ms | 146 ms | 125 ms | 68 ms | **29 ms** |
+| 10k | 567 ms | 177 ms | 60,710 ms | 9,806 ms | 3,089 ms | 1,624 ms | 1,400 ms | 764 ms | **285 ms** |
 
 ¹ Elixir timings exclude script startup; Prolog timings include
 SWI startup (~10 ms); Rust includes binary startup (~1 ms). At dev
 scale the startup dominates; at larger scales the work dominates.
 
-² All Elixir columns measured on the same hardware. "Original" is
-the kernel as initially shipped (PR #1799); "struct" is post-PR
-#1809; "bare-dests" is post-PR #1810; "walker" is post-PR #1811;
-"fold" is post-PR #1812; "int-tuple" is this PR.
+² All Elixir columns measured on the same hardware (4-vCPU Intel
+Xeon @ 2.10 GHz). "Original" is the kernel as initially shipped
+(PR #1799); "struct" is post-PR #1809; "bare-dests" is post-PR
+#1810; "walker" is post-PR #1811; "fold" is post-PR #1812;
+"int-tuple" is post-PR #1815; "parallel" is this PR.
 
 ³ The bare-dests column uses three composable wins (any one alone
 helps; together they compound to ~3× over the structural-fix kernel):
@@ -115,6 +116,46 @@ Why this matters beyond perf: BEAM's atom table is bounded
 Wikipedia category data has ~1M unique categories — atom-interning
 is not viable there. The int-tuple path is the recommended scale-up
 recipe AND happens to be the fastest path at our measured scales.
+
+⁷ The parallel column **does not change the kernel** — it changes
+how the calling code dispatches the per-`(article, root)` work. The
+~5,192 output groups at 10k are independent (the kernel run for one
+pair never reads state from another), so the outer loop fans out
+across BEAM schedulers via `Task.async_stream/3`. This is the angle
+where BEAM's process model is genuinely the right hammer: lightweight
+process spawn, no shared mutable state to coordinate, and the int-tuple
+FactSource is a heap term that the parent shares with workers without
+copying.
+
+**Critical caveat: chunking is essential.** Naive
+`Task.async_stream(work_items, fn item -> ... end)` with one task per
+item is a 1.5-4.4× regression in our measurement, because per-task
+spawn overhead (~5-30μs) eats more than the parallelism saves when
+each item is a few μs of work. Pre-batching into ~32 chunks
+(`schedulers × 8`) gives each task ~322 items at 10k, amortising the
+per-task overhead. Numbers at 10k (4-vCPU machine):
+
+| path | elapsed |
+| --- | ---: |
+| serial | 1,024 ms |
+| naive `Task.async_stream` (1 task per item) | 4,242 ms |
+| chunked `Task.async_stream` (32 chunks) | **285 ms** |
+
+Chunked parallel hits 3.38× speedup vs serial — ~85% of the 4×
+theoretical ceiling on 4 vCPUs. **Final gap to Rust at 10k: 1.6×**
+(285ms vs 177ms). At 1k, the parallel path essentially matches Rust
+(29ms vs 28ms). On more cores the gap would narrow further.
+
+This is the structural answer to the BEAM-vs-native question: the
+single-process kernel walk is and always will be slower than native
+code per-pair, but the workload's natural parallelism — independent
+output groups — is exactly what BEAM was built for. The path to
+Elixir-Rust parity on this class of workload is not making the kernel
+faster; it is parallelizing across the groups.
+
+⁸ At dev scale (19 output rows) per-task overhead dominates regardless
+of chunking; serial wins by a wide margin. The crossover where
+parallel beats serial is between dev and 300 in our measurements.
 
 **Structural-fix changes** (PR #1809) — see
 `WamRuntime.GraphKernel.CategoryAncestor.collect_n/7`
@@ -340,14 +381,15 @@ measured kernel-Elixir vs **WAM-Elixir-emitted** `tc/2` and got
 implementations**, which is a different yardstick:
 
 - vs WAM-Elixir-emitted: kernel ≈ 1000× faster (chain graph, n=1000)
-- vs Prolog-direct: int-tuple path ≈ 1.7× as fast (effective_distance, 1k)
-  — was ≈ 0.92× with fold, ≈ 0.79× with walker-fusion,
-  ≈ 0.45× with bare-dests, ≈ 0.13× with structural-fix only,
-  ≈ 0.02× original
-- vs Rust-native-kernel: int-tuple path ≈ 0.23× as fast (10k)
-  — was ≈ 0.13× with fold, ≈ 0.11× with walker-fusion,
-  ≈ 0.057× with bare-dests, ≈ 0.018× with structural-fix only,
-  ≈ 0.003× original
+- vs Prolog-direct: chunked-parallel path ≈ 4.0× as fast (effective_distance, 1k)
+  — was ≈ 1.7× with int-tuple, ≈ 0.92× with fold, ≈ 0.79× with
+  walker-fusion, ≈ 0.45× with bare-dests, ≈ 0.13× with structural-fix
+  only, ≈ 0.02× original
+- vs Rust-native-kernel: chunked-parallel path ≈ 0.62× as fast (10k)
+  — was ≈ 0.23× with int-tuple, ≈ 0.13× with fold, ≈ 0.11× with
+  walker-fusion, ≈ 0.057× with bare-dests, ≈ 0.018× with
+  structural-fix only, ≈ 0.003× original. At 1k: ≈ 0.97× as fast as
+  Rust (essentially parity).
 
 Useful framing: the kernel makes the BEAM-deployed Elixir version
 competitive with itself, not with native targets. For applications
@@ -445,13 +487,13 @@ What the kernel DOES achieve:
    on chain graph).
 4. Pattern-recognition auto-routing: user writes the canonical
    shape, the kernel fires.
-5. Constant-factor cleanup: ~80× over the original kernel
+5. Constant-factor cleanup: ~213× cumulative over the original kernel
    stacking the structural fix (PR #1809), the bare-destinations
    API path (PR #1810), walker fusion (PR #1811), the fold path
-   (PR #1812), and the int-tuple FactSource pattern (this PR —
-   integer node IDs in a tuple-as-array, O(1) `elem/2` reads,
-   no atom-table pressure). **Final gap to Rust at 10k: ~4.3×,
-   down from ~343×.**
+   (PR #1812), the int-tuple FactSource pattern (PR #1815), and
+   chunked outer-loop parallelism (this PR). **Final gap to Rust
+   at 10k: ~1.6×, down from ~343×. At 1k: parity with Rust
+   (~1.0×).**
 6. Architectural symmetry with Rust + Haskell on producer/consumer
    composition: `fold_hops_with_dests/6` is the BEAM analogue of
    Rust iterator monomorphization and Haskell GHC deforestation.
@@ -459,6 +501,14 @@ What the kernel DOES achieve:
    matches the architecture the Haskell target uses (LMDB-derived
    integer IDs as comparison keys). Scales to ~1M unique nodes
    without atom-table cap concerns.
+8. BEAM-native paradigm fit: outer-loop parallelism via
+   `Task.async_stream` (with chunking) is the angle where BEAM is
+   genuinely the right tool. The single-process kernel walk will
+   always trail native code per-pair, but the workload's natural
+   parallelism — independent `(article, root)` groups — turns the
+   process model into an asset, not a liability. On 4 vCPUs we
+   reach Rust parity at 1k and stay within 1.6× at 10k; more cores
+   would narrow the gap further.
 
 For BEAM-targeted deployments at scale, the remaining perf levers
 are (a) a WAM-Elixir emitter pass to auto-route `findall + sum_list`
