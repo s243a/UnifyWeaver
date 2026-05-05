@@ -107,6 +107,12 @@ typedef struct {
     const char *parent;
 } CategoryEdge;
 
+typedef struct {
+    CategoryEdge *edges;
+    int edge_count;
+    int edge_cap;
+} WamFactSource;
+
 /* Instruction */
 // TODO: Pack these fields into a union keyed on `tag` to reduce memory footprint
 typedef struct {
@@ -190,6 +196,12 @@ bool wam_execute_foreign_predicate(WamState *state, const char *pred, int arity)
 void wam_register_category_parent(WamState *state, const char *child, const char *parent);
 void wam_register_category_ancestor_kernel(WamState *state, const char *pred, int max_depth);
 bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity);
+void wam_fact_source_init(WamFactSource *source);
+void wam_fact_source_close(WamFactSource *source);
+bool wam_fact_source_load_tsv(WamState *state, WamFactSource *source, const char *path);
+int wam_fact_source_lookup_arg1(WamFactSource *source, const char *arg1,
+                                CategoryEdge *out_edges, int max_edges);
+bool wam_register_category_parent_fact_source(WamState *state, WamFactSource *source);
 
 /* Helpers */
 static inline WamValue val_atom(const char *s) {
