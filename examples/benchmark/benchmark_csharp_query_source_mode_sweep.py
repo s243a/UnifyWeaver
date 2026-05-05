@@ -63,6 +63,20 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Set UNIFYWEAVER_BENCH_TRACE=1 for the child benchmark runners.",
     )
+    parser.add_argument(
+        "--max-auto-vs-best-ratio",
+        type=float,
+        default=None,
+        help=(
+            "Fail when any output-matching summary reports auto_vs_best above this ratio. "
+            "Omit to report only."
+        ),
+    )
+    parser.add_argument(
+        "--fail-on-output-mismatch",
+        action="store_true",
+        help="Fail when any swept C# query source mode produces a different output hash.",
+    )
     return parser.parse_args()
 
 
@@ -147,6 +161,43 @@ def summarize_source_registration_tokens(metrics: str) -> str:
     return "|".join(sorted(registrations))
 
 
+def parse_ratio(value: str) -> float | None:
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("x"):
+        text = text[:-1]
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def calibration_failures(
+    summaries: list[SourceModeSummary],
+    *,
+    max_auto_vs_best_ratio: float | None = None,
+    fail_on_output_mismatch: bool = False,
+) -> list[str]:
+    failures: list[str] = []
+    for summary in summaries:
+        label = f"{summary.workload}/{summary.scale}"
+        if fail_on_output_mismatch and summary.output_agreement != "match":
+            failures.append(f"{label}: source-mode outputs {summary.output_agreement}")
+        ratio = parse_ratio(summary.auto_vs_best)
+        if (
+            max_auto_vs_best_ratio is not None
+            and ratio is not None
+            and summary.output_agreement == "match"
+            and ratio > max_auto_vs_best_ratio
+        ):
+            failures.append(
+                f"{label}: auto_vs_best {summary.auto_vs_best} exceeds "
+                f"{max_auto_vs_best_ratio:.2f}x"
+            )
+    return failures
+
+
 def run_workload(
     workload: str,
     *,
@@ -225,6 +276,16 @@ def main() -> int:
         print_markdown(summaries)
     else:
         print_tsv(summaries)
+
+    failures = calibration_failures(
+        summaries,
+        max_auto_vs_best_ratio=args.max_auto_vs_best_ratio,
+        fail_on_output_mismatch=args.fail_on_output_mismatch,
+    )
+    if failures:
+        for failure in failures:
+            print(f"ERROR: {failure}", file=sys.stderr)
+        return 1
     return 0
 
 
