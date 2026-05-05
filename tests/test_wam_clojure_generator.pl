@@ -109,6 +109,7 @@ test(project_emits_runtime_and_lowered_dispatch_scaffold) :-
         assertion(sub_string(RuntimeCode, _, _, _, '"\\\\=/2"')),
         assertion(sub_string(RuntimeCode, _, _, _, '"fail/0"')),
         assertion(sub_string(RuntimeCode, _, _, _, '"atom/1"')),
+        assertion(sub_string(RuntimeCode, _, _, _, '"integer/1"')),
         assertion(sub_string(RuntimeCode, _, _, _, ':call-foreign')),
         assertion(sub_string(RuntimeCode, _, _, _, '(defn apply-foreign-result [state result]')),
         assertion(sub_string(RuntimeCode, _, _, _, '(defn apply-foreign-bindings [state bindings]')),
