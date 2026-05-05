@@ -819,6 +819,13 @@
               (advance state)
               (backtrack state)))
 
+          "number/1"
+          (let [value (deref-value (:bindings state)
+                                   (or (reg-get-raw state "A1") ::unbound))]
+            (if (number? value)
+              (advance state)
+              (backtrack state)))
+
           "!/0"
           (-> state
               (update :choice-points #(vec (take (:cut-bar state) %)))

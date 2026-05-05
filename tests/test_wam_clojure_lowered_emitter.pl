@@ -194,6 +194,17 @@ test(simple_builtin_integer_is_direct_lowered_in_prefix) :-
         has(Code, "runtime/backtrack")
     )).
 
+test(simple_builtin_number_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_number/1:\nbuiltin_call number/1, 1\nproceed\n",
+        wam_clojure_lowerable(test_number/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_number/1, WamCode, [], Code),
+        has(Code, "runtime/deref-value"),
+        has(Code, "number? value"),
+        has(Code, "runtime/advance"),
+        has(Code, "runtime/backtrack")
+    )).
+
 test(env_framed_equality_reaches_direct_builtin_prefix) :-
     once((
         WamCode = "test_env_eq/2:\nallocate\nput_value X1, A1\nput_value X2, A2\nbuiltin_call =/2, 2\ndeallocate\nproceed\n",
