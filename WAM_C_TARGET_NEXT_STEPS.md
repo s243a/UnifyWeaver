@@ -4,7 +4,7 @@ Status date: 2026-05-04
 
 Base verified locally:
 
-- `main` at `1e2bb5d6` (`Merge pull request #1832 from s243a/feat/wam-c-call-foreign`)
+- `main` at `d7611dc9` (`Merge pull request #1834 from s243a/feat/wam-c-category-ancestor-kernel`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 
 This file replaces the older implementation plan. The four original C follow-up
@@ -22,6 +22,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Unsupported instruction fail-fast | Done | `unsupported_instruction`, `unsupported_instruction_tokens`, no `(Instruction){0}` fallback |
 | Foreign predicate dispatch foundation | Done | `INSTR_CALL_FOREIGN`, `WamForeignHandler`, `wam_register_foreign_predicate`, `wam_execute_foreign_predicate`, executable smoke |
 | Native category ancestor kernel foundation | Done | `wam_register_category_parent`, `wam_register_category_ancestor_kernel`, `wam_category_ancestor_handler`, direct and recursive executable smoke |
+| File-backed FactSource foundation | Done | `WamFactSource`, `wam_fact_source_load_tsv`, `wam_fact_source_lookup_arg1`, `wam_register_category_parent_fact_source`, executable smoke |
 
 ## Current C Target Baseline
 
@@ -39,13 +40,15 @@ The C target is now a credible small WAM backend:
 - Supports deterministic `call_foreign` dispatch through a C handler registry.
 - Supports a deterministic native `category_ancestor/4` handler over an
   in-memory category-parent edge table.
+- Supports loading category-parent facts from TSV through a small
+  `WamFactSource` interface.
 - Has executable smokes for generated runtime, cross-predicate calls,
-  foreign calls, native category ancestor, real multi-clause predicates,
-  structure indexing, `is_list/1`, and `=/2`.
+  foreign calls, native category ancestor, file-backed facts, real
+  multi-clause predicates, structure indexing, `is_list/1`, and `=/2`.
 
 The main limitation is not core WAM execution anymore. It is hybrid-WAM
-infrastructure: C lacks FactSource, lowered/native helper, streaming foreign
-results, and benchmark wiring that Haskell and Rust already have.
+infrastructure: C lacks streaming foreign results, lowered/native helper,
+LMDB, and benchmark wiring that Haskell and Rust already have.
 
 ## Feature Parity Matrix
 
@@ -68,40 +71,16 @@ missing important target features; `Missing` = no comparable C path yet.
 | Native recursive kernels | Partial | Done | Done | C has deterministic `category_ancestor/4`; add streaming results and detector-driven setup later. |
 | Shared kernel detector integration | Missing | Done | Done | Reuse `recursive_kernel_detection.pl`; generate C registration stubs. |
 | Lowered/native helper functions | Missing | Done | Done | Consider after foreign kernels; C can lower simple fact-only or deterministic predicates. |
-| FactSource abstraction | Missing | Partial/less central | Done | Add simple file-backed FactSource before LMDB. |
-| LMDB-backed facts | Missing | Not primary | Done | Haskell is the reference. C should first define FactSource API and ownership model. |
-| Effective-distance benchmark harness | Missing | Done | Done | Add after foreign kernels and external fact sources. |
+| FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
+| LMDB-backed facts | Missing | Not primary | Done | Haskell is the reference. C now has an ownership model to extend. |
+| Effective-distance benchmark harness | Missing | Done | Done | Add after streaming foreign results so all paths can be counted. |
 | Classic-program e2e suite | Partial | Partial/Done | Partial/Done | C has targeted smokes; add Fibonacci/Ackermann-style suite like Scala/Elixir. |
 | Memory lifecycle | Partial | Runtime-managed | Runtime-managed | C has init/free; needs ASAN/Valgrind CI-style coverage for larger programs. |
 | Instruction layout efficiency | TODO | N/A | N/A | Pack `Instruction` fields into a tagged union if runtime footprint matters. |
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-file-fact-source`
-
-Goal: add the first C FactSource abstraction.
-
-Scope:
-
-- Define a small C interface for `scan`, `lookup_arg1`, and `close`.
-- Implement TSV or grouped-by-first file loading.
-- Wire a C foreign predicate to a FactSource lookup.
-- Add tests that mirror the Scala/Haskell grouped fact-source behavior.
-
-Why before LMDB: ownership, row encoding, and cursor semantics are easier to
-settle with a file-backed source.
-
-### 2. `feat/wam-c-effective-distance-bench`
-
-Goal: make C visible in the benchmark matrix once kernels/facts exist.
-
-Scope:
-
-- Add a C effective-distance generator under `examples/benchmark/`.
-- Support `kernels_on` / `kernels_off`.
-- Start with small TSV/fact-source mode; add LMDB later.
-
-### 3. `feat/wam-c-streaming-foreign-results`
+### 1. `feat/wam-c-streaming-foreign-results`
 
 Goal: support multiple foreign results instead of only deterministic success.
 
@@ -113,6 +92,27 @@ Scope:
 
 Why before larger benchmark work: effective-distance needs all paths, not just
 the first successful path.
+
+### 2. `feat/wam-c-effective-distance-bench`
+
+Goal: make C visible in the benchmark matrix once kernels/facts exist.
+
+Scope:
+
+- Add a C effective-distance generator under `examples/benchmark/`.
+- Support `kernels_on` / `kernels_off`.
+- Start with small TSV/fact-source mode; add LMDB later.
+
+### 3. `feat/wam-c-lmdb-fact-source`
+
+Goal: add LMDB-backed category-parent facts once the file FactSource and
+streaming result contracts are stable.
+
+Scope:
+
+- Mirror the TSV FactSource ownership model.
+- Load/cursor category-parent pairs from LMDB.
+- Keep this behind an optional build/runtime path.
 
 ### 4. `perf/wam-c-pack-instruction`
 
@@ -130,15 +130,16 @@ or cache behavior becomes a real bottleneck.
 
 ## Suggested Immediate Next Step
 
-Start with `feat/wam-c-file-fact-source`.
+Start with `feat/wam-c-streaming-foreign-results`.
 
-It is now the smallest feature that moves the native kernel from hand-seeded
-test data toward benchmark-usable external facts. The work should be split
-into two commits:
+It is now the smallest feature that unlocks real effective-distance semantics:
+the native category-ancestor kernel currently binds the first successful hop
+count, while the benchmark needs all hop counts for a query. The work should
+be split into two commits:
 
-1. Runtime FactSource interface plus TSV/grouped-by-first loader.
-2. Category-parent wiring and an executable smoke that feeds the native
-   `category_ancestor/4` kernel from the loaded source.
+1. Runtime result-buffer API and deterministic compatibility path.
+2. Category-ancestor all-hop collection plus an executable smoke with multiple
+   paths.
 
-Keep LMDB and effective-distance out of that branch; they depend on a stable
-external fact-source shape.
+Keep LMDB and effective-distance out of that branch; they depend on the
+streaming result shape.

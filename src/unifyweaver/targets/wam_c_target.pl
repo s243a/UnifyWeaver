@@ -927,6 +927,84 @@ void wam_register_category_parent(WamState *state, const char *child, const char
     state->category_edge_count++;
 }
 
+void wam_fact_source_init(WamFactSource *source) {
+    memset(source, 0, sizeof(WamFactSource));
+}
+
+void wam_fact_source_close(WamFactSource *source) {
+    free(source->edges);
+    memset(source, 0, sizeof(WamFactSource));
+}
+
+static void wam_fact_source_add_edge(WamState *state,
+                                     WamFactSource *source,
+                                     const char *child,
+                                     const char *parent) {
+    if (source->edge_count >= source->edge_cap) {
+        source->edge_cap = source->edge_cap ? source->edge_cap * 2 : WAM_INITIAL_CAP;
+        source->edges = realloc(source->edges, sizeof(CategoryEdge) * source->edge_cap);
+    }
+    source->edges[source->edge_count].child = wam_intern_atom(state, child);
+    source->edges[source->edge_count].parent = wam_intern_atom(state, parent);
+    source->edge_count++;
+}
+
+bool wam_fact_source_load_tsv(WamState *state, WamFactSource *source, const char *path) {
+    FILE *file = fopen(path, "r");
+    if (!file) return false;
+
+    char line[1024];
+    while (fgets(line, sizeof(line), file)) {
+        char *start = line;
+        while (*start == 32 || *start == 9) start++;
+        if (*start == 0 || *start == 10 || *start == 35) continue;
+
+        char *sep = strchr(start, 9);
+        if (!sep) sep = strchr(start, 32);
+        if (!sep) {
+            fclose(file);
+            return false;
+        }
+
+        *sep = 0;
+        char *parent = sep + 1;
+        while (*parent == 32 || *parent == 9) parent++;
+
+        char *end = parent + strlen(parent);
+        while (end > parent && (end[-1] == 10 || end[-1] == 13 ||
+                                end[-1] == 32 || end[-1] == 9)) {
+            *--end = 0;
+        }
+
+        if (*start == 0 || *parent == 0) {
+            fclose(file);
+            return false;
+        }
+        wam_fact_source_add_edge(state, source, start, parent);
+    }
+
+    fclose(file);
+    return true;
+}
+
+int wam_fact_source_lookup_arg1(WamFactSource *source, const char *arg1,
+                                CategoryEdge *out_edges, int max_edges) {
+    int count = 0;
+    for (int i = 0; i < source->edge_count; i++) {
+        if (strcmp(source->edges[i].child, arg1) != 0) continue;
+        if (count < max_edges) out_edges[count] = source->edges[i];
+        count++;
+    }
+    return count;
+}
+
+bool wam_register_category_parent_fact_source(WamState *state, WamFactSource *source) {
+    for (int i = 0; i < source->edge_count; i++) {
+        wam_register_category_parent(state, source->edges[i].child, source->edges[i].parent);
+    }
+    return true;
+}
+
 void wam_register_category_ancestor_kernel(WamState *state, const char *pred, int max_depth) {
     state->category_max_depth = max_depth > 0 ? max_depth : 10;
     wam_register_foreign_predicate(state, pred, 4, wam_category_ancestor_handler);
