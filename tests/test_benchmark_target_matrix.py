@@ -48,6 +48,30 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         self.assertEqual(TARGETS["clojure-wam-seeded"].category, "hybrid-wam")
         self.assertEqual(TARGETS["clojure-wam-seeded-no-kernels"].category, "hybrid-wam")
 
+    def test_clojure_artifact_targets_are_registered_separately(self) -> None:
+        targets = resolve_targets(
+            explicit_targets=None,
+            target_set_names=["clojure-wam-artifact"],
+        )
+
+        self.assertEqual(
+            targets,
+            [
+                "clojure-wam-accumulated",
+                "clojure-wam-accumulated-artifact",
+                "clojure-wam-accumulated-no-kernels",
+                "clojure-wam-accumulated-no-kernels-artifact",
+                "clojure-wam-seeded",
+                "clojure-wam-seeded-artifact",
+                "clojure-wam-seeded-no-kernels",
+                "clojure-wam-seeded-no-kernels-artifact",
+            ],
+        )
+        self.assertEqual(TARGETS["clojure-wam-accumulated-artifact"].category, "hybrid-wam")
+        self.assertEqual(TARGETS["clojure-wam-accumulated-no-kernels-artifact"].category, "hybrid-wam")
+        self.assertEqual(TARGETS["clojure-wam-seeded-artifact"].category, "hybrid-wam")
+        self.assertEqual(TARGETS["clojure-wam-seeded-no-kernels-artifact"].category, "hybrid-wam")
+
     def test_default_hybrid_wam_excludes_clojure_scaffolds(self) -> None:
         targets = resolve_targets(
             explicit_targets=None,
@@ -153,6 +177,8 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
             ("scala", "accumulated"),
             ("clojure", "seeded"),
             ("clojure", "accumulated"),
+            ("clojure", "seeded-artifact"),
+            ("clojure", "accumulated-artifact"),
             ("haskell", "interpreter"),
             ("haskell", "lowered"),
         }
@@ -184,6 +210,14 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         )
         self.assertIn(
             "scala\tseeded\tscala-wam-seeded\tscala-wam-seeded-no-kernels",
+            text,
+        )
+        self.assertIn(
+            "clojure\tseeded-artifact\tclojure-wam-seeded-artifact\tclojure-wam-seeded-no-kernels-artifact",
+            text,
+        )
+        self.assertIn(
+            "clojure\taccumulated-artifact\tclojure-wam-accumulated-artifact\tclojure-wam-accumulated-no-kernels-artifact",
             text,
         )
 
