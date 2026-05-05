@@ -103,6 +103,7 @@ test_control_flow_instructions :-
         member(call, Cases),
         member(execute, Cases),
         member(builtin_call, Cases),
+        member(call_foreign, Cases),
         member(proceed, Cases),
         member(allocate, Cases),
         member(deallocate, Cases)
@@ -217,6 +218,23 @@ test_builtin_call_generation :-
     ;   fail_test(Test, 'builtin_call parser/runtime delegation missing')
     ).
 
+test_call_foreign_generation :-
+    Test = 'WAM-C: call_foreign parses and dispatches registered handlers',
+    WamCode = 'foo/1:\n    call_foreign foo/1, 1\n    proceed',
+    (   compile_wam_predicate_to_c(user:foo/1, WamCode, [], PredCode),
+        atom_string(PredCode, PredS),
+        compile_step_wam_to_c([], StepCode),
+        atom_string(StepCode, StepS),
+        compile_wam_helpers_to_c([], HelpersCode),
+        atom_string(HelpersCode, HelpersS),
+        sub_string(PredS, _, _, _, 'INSTR_CALL_FOREIGN'),
+        sub_string(PredS, _, _, _, '.pred = "foo/1"'),
+        sub_string(StepS, _, _, _, 'wam_execute_foreign_predicate'),
+        sub_string(HelpersS, _, _, _, 'bool wam_execute_foreign_predicate')
+    ->  pass(Test)
+    ;   fail_test(Test, 'call_foreign parser/runtime delegation missing')
+    ).
+
 test_unsupported_instruction_fails_loudly :-
     Test = 'WAM-C: unsupported instructions fail loudly',
     BadWamCode = 'foo/1:\n    unknown_opcode A1\n    proceed',
@@ -286,6 +304,16 @@ test_builtin_call_executable_smoke :-
     ->  (   run_builtin_call_executable_smoke
         ->  pass(Test)
         ;   fail_test(Test, 'builtin_call executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_call_foreign_executable_smoke :-
+    Test = 'WAM-C: call_foreign executable smoke',
+    (   gcc_available
+    ->  (   run_call_foreign_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'call_foreign executable failed')
         )
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
@@ -399,6 +427,25 @@ run_builtin_call_executable_smoke :-
     format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
     write_text_file(PredPath, PredTranslationUnit),
     wam_c_builtin_smoke_main(MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
+run_call_foreign_executable_smoke :-
+    WamCode = 'wam_c_foreign_emit/1:\n    call_foreign wam_c_foreign_emit/1, 1\n    proceed',
+    compile_wam_predicate_to_c(user:wam_c_foreign_emit/1, WamCode, [], PredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    format(atom(TmpBase), '/tmp/unifyweaver_wam_c_foreign_smoke_~w', [Stamp]),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    wam_c_foreign_smoke_main(MainCode),
     write_text_file(MainPath, MainCode),
     compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
     run_c_smoke_plain(ExePath).
@@ -688,6 +735,48 @@ int main(void) {
 }
 ').
 
+wam_c_foreign_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_foreign_emit_1(WamState* state);
+
+static bool foreign_emit_ok(WamState *state, const char *pred, int arity) {
+    if (strcmp(pred, "wam_c_foreign_emit/1") != 0 || arity != 1) return false;
+    WamValue out = val_atom("foreign_ok");
+    return wam_unify(state, &state->A[0], &out);
+}
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_foreign_emit_1(&state);
+    wam_register_foreign_predicate(&state, "wam_c_foreign_emit/1", 1, foreign_emit_ok);
+
+    WamValue ok_args[1] = { val_unbound("Out") };
+    int ok_rc = wam_run_predicate(&state, "wam_c_foreign_emit/1", ok_args, 1);
+    if (ok_rc != 0 || state.P != WAM_HALT ||
+        state.A[0].tag != VAL_ATOM || strcmp(state.A[0].data.atom, "foreign_ok") != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamState missing;
+    wam_state_init(&missing);
+    setup_wam_c_foreign_emit_1(&missing);
+    WamValue fail_args[1] = { val_unbound("Out") };
+    int fail_rc = wam_run_predicate(&missing, "wam_c_foreign_emit/1", fail_args, 1);
+    if (fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        wam_free_state(&missing);
+        return 20;
+    }
+
+    wam_free_state(&state);
+    wam_free_state(&missing);
+    return 0;
+}
+').
+
 wam_c_real_builtin_smoke_main(
 '#include "wam_runtime.h"
 
@@ -916,6 +1005,7 @@ implemented_case(proceed, 'case INSTR_PROCEED').
 implemented_case(call, 'case INSTR_CALL').
 implemented_case(execute, 'case INSTR_EXECUTE').
 implemented_case(builtin_call, 'case INSTR_BUILTIN_CALL').
+implemented_case(call_foreign, 'case INSTR_CALL_FOREIGN').
 implemented_case(try_me_else, 'case INSTR_TRY_ME_ELSE').
 implemented_case(retry_me_else, 'case INSTR_RETRY_ME_ELSE').
 implemented_case(trust_me, 'case INSTR_TRUST_ME').
@@ -958,12 +1048,14 @@ run_tests_once :-
     test_c_while_loop,
     test_predicate_hash_registration,
     test_builtin_call_generation,
+    test_call_foreign_generation,
     test_unsupported_instruction_fails_loudly,
     test_no_zero_instruction_fallback,
     test_list_target_pc_emission,
     test_generated_runtime_executable_smoke,
     test_cross_predicate_executable_smoke,
     test_builtin_call_executable_smoke,
+    test_call_foreign_executable_smoke,
     test_real_prolog_builtin_executable_smoke,
     test_real_prolog_multiclause_executable_smoke,
     test_real_prolog_structure_index_executable_smoke,

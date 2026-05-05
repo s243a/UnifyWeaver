@@ -14,6 +14,10 @@
 #define WAM_INITIAL_CAP 64
 #define WAM_PRED_HASH_SIZE 256
 #define WAM_ATOM_HASH_SIZE 512
+#define WAM_FOREIGN_HASH_SIZE 256
+
+typedef struct WamState WamState;
+typedef bool (*WamForeignHandler)(WamState *state, const char *pred, int arity);
 
 /* Value tag enum */
 typedef enum {
@@ -73,7 +77,7 @@ typedef enum {
     INSTR_ALLOCATE, INSTR_DEALLOCATE,
     INSTR_TRY_ME_ELSE, INSTR_RETRY_ME_ELSE, INSTR_TRUST_ME,
     INSTR_SWITCH_ON_CONSTANT, INSTR_SWITCH_ON_STRUCTURE, INSTR_SWITCH_ON_TERM,
-    INSTR_BUILTIN_CALL
+    INSTR_BUILTIN_CALL, INSTR_CALL_FOREIGN
 } WamInstrTag;
 
 /* Hash Entry for Indexing */
@@ -91,6 +95,12 @@ typedef struct AtomEntry {
     char *str;
     struct AtomEntry *next;
 } AtomEntry;
+
+typedef struct {
+    const char *name;
+    int arity;
+    WamForeignHandler handler;
+} ForeignEntry;
 
 /* Instruction */
 // TODO: Pack these fields into a union keyed on `tag` to reduce memory footprint
@@ -114,7 +124,7 @@ typedef struct {
 } Instruction;
 
 /* WAM state */
-typedef struct {
+struct WamState {
     int P;    // Program Counter
     int CP;   // Continuation Pointer
     int S;    // Structure Pointer
@@ -154,7 +164,10 @@ typedef struct {
 
     /* Interned dynamic atoms */
     AtomEntry *atom_table[WAM_ATOM_HASH_SIZE];
-} WamState;
+
+    /* Foreign predicate handlers */
+    ForeignEntry foreign_hash[WAM_FOREIGN_HASH_SIZE];
+};
 
 bool step_wam(WamState* state, Instruction* instr);
 int wam_run(WamState* state);
@@ -162,6 +175,7 @@ void wam_state_init(WamState *state);
 void wam_free_state(WamState *state);
 int wam_run_predicate(WamState *state, const char *pred, WamValue *args, int arity);
 bool wam_execute_builtin(WamState *state, const char *op, int arity);
+bool wam_execute_foreign_predicate(WamState *state, const char *pred, int arity);
 
 /* Helpers */
 static inline WamValue val_atom(const char *s) {
@@ -219,6 +233,46 @@ static inline void wam_register_predicate(WamState *state, const char *pred, int
 
 static inline int resolve_predicate(WamState *state, const char *pred) {
     return resolve_predicate_hash(state, pred);
+}
+
+static inline unsigned int wam_foreign_hash(const char *name, int arity) {
+    unsigned int h = wam_hash_string(name);
+    h = ((h << 5) + h) ^ (unsigned int)arity;
+    return h & (WAM_FOREIGN_HASH_SIZE - 1);
+}
+
+static inline void wam_register_foreign_predicate(WamState *state,
+                                                  const char *name,
+                                                  int arity,
+                                                  WamForeignHandler handler) {
+    unsigned int idx = wam_foreign_hash(name, arity);
+    unsigned int probes = 0;
+    while (state->foreign_hash[idx].name != NULL &&
+           (strcmp(state->foreign_hash[idx].name, name) != 0 ||
+            state->foreign_hash[idx].arity != arity) &&
+           probes < WAM_FOREIGN_HASH_SIZE) {
+        idx = (idx + 1) & (WAM_FOREIGN_HASH_SIZE - 1);
+        probes++;
+    }
+    if (probes == WAM_FOREIGN_HASH_SIZE) return;
+    state->foreign_hash[idx].name = name;
+    state->foreign_hash[idx].arity = arity;
+    state->foreign_hash[idx].handler = handler;
+}
+
+static inline WamForeignHandler resolve_foreign_predicate(WamState *state,
+                                                          const char *name,
+                                                          int arity) {
+    unsigned int idx = wam_foreign_hash(name, arity);
+    unsigned int probes = 0;
+    while (state->foreign_hash[idx].name != NULL && probes < WAM_FOREIGN_HASH_SIZE) {
+        if (strcmp(state->foreign_hash[idx].name, name) == 0 &&
+            state->foreign_hash[idx].arity == arity)
+            return state->foreign_hash[idx].handler;
+        idx = (idx + 1) & (WAM_FOREIGN_HASH_SIZE - 1);
+        probes++;
+    }
+    return NULL;
 }
 
 static inline char *wam_strdup(const char *str) {

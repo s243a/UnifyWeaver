@@ -4,7 +4,7 @@ Status date: 2026-05-04
 
 Base verified locally:
 
-- `main` at `00c2cd4e` (`Merge pull request #1829 from s243a/fix/wam-c-remove-zero-instruction-fallback`)
+- `main` at `21258826` (`Merge pull request #1831 from s243a/docs/wam-c-next-steps-refresh`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 
 This file replaces the older implementation plan. The four original C follow-up
@@ -20,6 +20,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Dynamic atom interning | Done | `AtomEntry`, `wam_intern_atom`, `wam_free_state`, executable smoke interns duplicate runtime atom |
 | Runtime helpers | Done | `wam_state_init`, `wam_free_state`, `wam_run_predicate`, `test_helpers_generation` |
 | Unsupported instruction fail-fast | Done | `unsupported_instruction`, `unsupported_instruction_tokens`, no `(Instruction){0}` fallback |
+| Foreign predicate dispatch foundation | Done | `INSTR_CALL_FOREIGN`, `WamForeignHandler`, `wam_register_foreign_predicate`, `wam_execute_foreign_predicate`, executable smoke |
 
 ## Current C Target Baseline
 
@@ -34,8 +35,10 @@ The C target is now a credible small WAM backend:
   second-argument constant dispatch, and direct list dispatch.
 - Supports basic `builtin_call` delegation for tested builtins:
   `atom/1`, `integer/1`, `is_list/1`, `=/2`, and `is/2`.
+- Supports deterministic `call_foreign` dispatch through a C handler registry.
 - Has executable smokes for generated runtime, cross-predicate calls,
-  real multi-clause predicates, structure indexing, `is_list/1`, and `=/2`.
+  foreign calls, real multi-clause predicates, structure indexing, `is_list/1`,
+  and `=/2`.
 
 The main limitation is not core WAM execution anymore. It is hybrid-WAM
 infrastructure: C lacks the native kernel, FactSource, lowered/native helper,
@@ -58,8 +61,8 @@ missing important target features; `Missing` = no comparable C path yet.
 | Builtin calls | Partial | Broader | Broader | C has a small builtin set. Add `functor/3`, `arg/3`, `atom_concat/3`, arithmetic comparisons as needed. |
 | Aggregates (`findall`/`bagof`/`setof`) | Missing | Present in hybrid/lowered paths | Present in interpreter/lowered paths | Add only after C has enough runtime term-copy and list construction coverage. |
 | Negation / control builtins | Partial | Broader | Broader | C likely needs explicit tests for `\+/1`, cut interactions, and if-then-else lowering. |
-| Foreign predicate instruction (`CallForeign`) | Missing | Done | Done | Highest-value parity gap: add C `INSTR_CALL_FOREIGN` plus registration/dispatch hooks. |
-| Native recursive kernels | Missing | Done | Done | Start with one kernel, probably `category_ancestor/4` or `transitive_closure2`, after `CallForeign` exists. |
+| Foreign predicate instruction (`CallForeign`) | Done | Done | Done | C has deterministic handler dispatch; later branches can add streaming result conventions. |
+| Native recursive kernels | Missing | Done | Done | Start with one kernel, probably `category_ancestor/4` or `transitive_closure2`. |
 | Shared kernel detector integration | Missing | Done | Done | Reuse `recursive_kernel_detection.pl`; generate C registration stubs. |
 | Lowered/native helper functions | Missing | Done | Done | Consider after foreign kernels; C can lower simple fact-only or deterministic predicates. |
 | FactSource abstraction | Missing | Partial/less central | Done | Add simple file-backed FactSource before LMDB. |
@@ -71,25 +74,9 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-call-foreign`
+### 1. `feat/wam-c-category-ancestor-kernel`
 
-Goal: add the minimum foreign predicate abstraction to the C target.
-
-Scope:
-
-- Add `INSTR_CALL_FOREIGN` or reuse an equivalent C instruction shape for
-  compile-time-resolved foreign predicates.
-- Add a C registry type for foreign handlers keyed by `pred/arity`.
-- Add setup emission for a hand-registered foreign predicate.
-- Add an executable smoke where a C foreign handler returns one or more
-  solutions and the WAM runtime binds output registers.
-
-Why first: Rust and Haskell hybrid WAMs both hinge on `CallForeign`; without it,
-C cannot participate in native-kernel or external-source benchmarks.
-
-### 2. `feat/wam-c-category-ancestor-kernel`
-
-Goal: wire one shared recursive kernel into C after `CallForeign` exists.
+Goal: wire one shared recursive kernel into C now that `CallForeign` exists.
 
 Candidate kernel:
 
@@ -103,7 +90,7 @@ Scope:
 - Keep facts in a simple in-memory edge table initially.
 - Add a small executable smoke with a tiny category graph.
 
-### 3. `feat/wam-c-file-fact-source`
+### 2. `feat/wam-c-file-fact-source`
 
 Goal: add the first C FactSource abstraction.
 
@@ -117,7 +104,7 @@ Scope:
 Why before LMDB: ownership, row encoding, and cursor semantics are easier to
 settle with a file-backed source.
 
-### 4. `feat/wam-c-effective-distance-bench`
+### 3. `feat/wam-c-effective-distance-bench`
 
 Goal: make C visible in the benchmark matrix once kernels/facts exist.
 
@@ -127,7 +114,7 @@ Scope:
 - Support `kernels_on` / `kernels_off`.
 - Start with small TSV/fact-source mode; add LMDB later.
 
-### 5. `perf/wam-c-pack-instruction`
+### 4. `perf/wam-c-pack-instruction`
 
 Goal: reduce `Instruction` memory footprint.
 
@@ -143,13 +130,15 @@ or cache behavior becomes a real bottleneck.
 
 ## Suggested Immediate Next Step
 
-Start with `feat/wam-c-call-foreign`.
+Start with `feat/wam-c-category-ancestor-kernel`.
 
-It is the smallest feature that moves C toward Rust/Haskell parity. The work
-should be split into two commits:
+It is now the smallest feature that exercises the new C foreign-call
+foundation against the same class of hybrid WAM work that Rust and Haskell
+already handle. The work should be split into two commits:
 
-1. Runtime API and instruction support for C foreign handlers.
-2. Transpiler emission plus one executable smoke.
+1. C native handler skeleton and registration path for one detected kernel.
+2. Tiny category graph executable smoke that proves the handler can bind output
+   registers through `CallForeign`.
 
-Keep LMDB and effective-distance out of that first branch; they depend on this
-foreign-call foundation.
+Keep LMDB and effective-distance out of that branch; they depend on a stable
+native-kernel shape.

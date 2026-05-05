@@ -122,6 +122,8 @@ wam_instruction_to_c_literal(execute(P), Code) :-
     format(atom(Code), '{ .tag = INSTR_EXECUTE, .pred = "~w" }', [P]).
 wam_instruction_to_c_literal(builtin_call(Op, N), Code) :-
     format(atom(Code), '{ .tag = INSTR_BUILTIN_CALL, .pred = "~w", .arity = ~w }', [Op, N]).
+wam_instruction_to_c_literal(call_foreign(P, N), Code) :-
+    format(atom(Code), '{ .tag = INSTR_CALL_FOREIGN, .pred = "~w", .arity = ~w }', [P, N]).
 wam_instruction_to_c_literal(try_me_else(_Label), _) :-
     throw(error(context_error(missing_label_map, "try_me_else/1 requires LabelMap for target_pc resolution. Use wam_instruction_to_c_literal/3 instead."), _)).
 wam_instruction_to_c_literal(retry_me_else(_Label), _) :-
@@ -248,6 +250,9 @@ wam_line_to_c_instr(["execute", P], Instr) :-
 wam_line_to_c_instr(["builtin_call", Op, N], Instr) :-
     clean_comma(Op, COp), clean_comma(N, CN),
     format(atom(Instr), '{ .tag = INSTR_BUILTIN_CALL, .pred = "~w", .arity = ~w }', [COp, CN]).
+wam_line_to_c_instr(["call_foreign", P, N], Instr) :-
+    clean_comma(P, CP), clean_comma(N, CN),
+    format(atom(Instr), '{ .tag = INSTR_CALL_FOREIGN, .pred = "~w", .arity = ~w }', [CP, CN]).
 wam_line_to_c_instr(["try_me_else", L], LabelMap, Arity, Instr) :-
     clean_comma(L, CL),
     ( member(CL-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
@@ -505,6 +510,13 @@ compile_step_wam_to_c(_Options, CCode) :-
             }
             case INSTR_BUILTIN_CALL: {
                 if (wam_execute_builtin(state, instr->pred, instr->arity)) {
+                    state->P++;
+                    return true;
+                }
+                return false;
+            }
+            case INSTR_CALL_FOREIGN: {
+                if (wam_execute_foreign_predicate(state, instr->pred, instr->arity)) {
                     state->P++;
                     return true;
                 }
@@ -896,6 +908,12 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
     }
 
     return false;
+}
+
+bool wam_execute_foreign_predicate(WamState *state, const char *pred, int arity) {
+    WamForeignHandler handler = resolve_foreign_predicate(state, pred, arity);
+    if (!handler) return false;
+    return handler(state, pred, arity);
 }
 '.
 
