@@ -296,6 +296,10 @@ clojure_direct_builtin("atomic/1", "1").
 clojure_direct_builtin("atomic/1", 1).
 clojure_direct_builtin('atomic/1', "1").
 clojure_direct_builtin('atomic/1', 1).
+clojure_direct_builtin("nonvar/1", "1").
+clojure_direct_builtin("nonvar/1", 1).
+clojure_direct_builtin('nonvar/1', "1").
+clojure_direct_builtin('nonvar/1', 1).
 clojure_direct_builtin("!/0", "0").
 clojure_direct_builtin("!/0", 0).
 clojure_direct_builtin('!/0', "0").
@@ -433,6 +437,13 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     !,
     format(atom(Expr),
            '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if (or (runtime/atom-term? value) (number? value)) (runtime/advance ~w) (runtime/backtrack ~w)))',
+           [S, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "nonvar/1" ; Op == 'nonvar/1'),
+    !,
+    format(atom(Expr),
+           '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if (and (not= value ::lowered-unbound) (not (runtime/logic-var? value))) (runtime/advance ~w) (runtime/backtrack ~w)))',
            [S, S, S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),

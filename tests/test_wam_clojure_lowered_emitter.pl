@@ -229,6 +229,30 @@ test(terminal_execute_atomic_is_direct_lowered_as_succeeding_builtin) :-
         assertion(\+ has(Code, ":pc target-pc"))
     )).
 
+test(simple_builtin_nonvar_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_nonvar/1:\nbuiltin_call nonvar/1, 1\nproceed\n",
+        wam_clojure_lowerable(test_nonvar/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_nonvar/1, WamCode, [], Code),
+        has(Code, "runtime/deref-value"),
+        has(Code, "not= value ::lowered-unbound"),
+        has(Code, "not (runtime/logic-var? value)"),
+        has(Code, "runtime/advance"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(terminal_execute_nonvar_is_direct_lowered_as_succeeding_builtin) :-
+    once((
+        WamCode = "test_execute_nonvar/1:\nallocate\ndeallocate\nexecute nonvar/1\n",
+        wam_clojure_lowerable(test_execute_nonvar/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_execute_nonvar/1, WamCode, [], Code),
+        has(Code, "not= value ::lowered-unbound"),
+        has(Code, "not (runtime/logic-var? value)"),
+        has(Code, "runtime/succeed-state next-state"),
+        assertion(\+ has(Code, "\"nonvar/1\"")),
+        assertion(\+ has(Code, ":pc target-pc"))
+    )).
+
 test(env_framed_equality_reaches_direct_builtin_prefix) :-
     once((
         WamCode = "test_env_eq/2:\nallocate\nput_value X1, A1\nput_value X2, A2\nbuiltin_call =/2, 2\ndeallocate\nproceed\n",
