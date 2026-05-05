@@ -13,6 +13,8 @@
 %% Usage:
 %%   swipl -q -s generate_wam_elixir_effective_distance_benchmark.pl -- \
 %%       <facts.pl> <output-dir>
+%%   swipl -q -s generate_wam_elixir_effective_distance_benchmark.pl -- \
+%%       <facts.pl> <output-dir> runtime_only
 
 benchmark_workload_path(Path) :-
     source_file(benchmark_workload_path(_), ThisFile),
@@ -22,14 +24,18 @@ benchmark_workload_path(Path) :-
 main :-
     current_prolog_flag(argv, Argv),
     (   Argv = [FactsPath, OutputDir]
+    ->  Mode = full
+    ;   Argv = [FactsPath, OutputDir, ModeArg],
+        atom_string(Mode, ModeArg),
+        memberchk(Mode, [full, runtime_only])
     ->  true
     ;   format(user_error, 'Usage: ... -- <facts.pl> <output-dir>~n', []),
         halt(1)
     ),
-    generate_wam_elixir_benchmark(FactsPath, OutputDir),
+    generate_wam_elixir_benchmark(FactsPath, OutputDir, Mode),
     halt(0).
 
-generate_wam_elixir_benchmark(FactsPath, OutputDir) :-
+generate_wam_elixir_benchmark(FactsPath, OutputDir, full) :-
     benchmark_workload_path(WorkloadPath),
     load_files(WorkloadPath, [silent(true)]),
     load_files(FactsPath, [silent(true)]),
@@ -41,6 +47,14 @@ generate_wam_elixir_benchmark(FactsPath, OutputDir) :-
         generate_wam_elixir_benchmark_scoped(OutputDir),
         ( retractall(user:mode(category_ancestor(-, +, -, +))) )
     ).
+
+generate_wam_elixir_benchmark(_FactsPath, OutputDir, runtime_only) :-
+    Options = [
+        module_name('wam_elixir_bench'),
+        emit_mode(lowered)
+    ],
+    write_wam_elixir_project([], Options, OutputDir),
+    format(user_error, '[WAM-Elixir] Runtime-only benchmark project generated at: ~w~n', [OutputDir]).
 
 generate_wam_elixir_benchmark_scoped(OutputDir) :-
     % Define the predicates to compile
