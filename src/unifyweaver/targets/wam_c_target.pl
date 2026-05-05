@@ -1005,6 +1005,29 @@ bool wam_register_category_parent_fact_source(WamState *state, WamFactSource *so
     return true;
 }
 
+void wam_int_results_init(WamIntResults *results) {
+    memset(results, 0, sizeof(WamIntResults));
+}
+
+void wam_int_results_close(WamIntResults *results) {
+    free(results->values);
+    memset(results, 0, sizeof(WamIntResults));
+}
+
+bool wam_int_results_push(WamIntResults *results, int value) {
+    if (results->count >= results->cap) {
+        results->cap = results->cap ? results->cap * 2 : WAM_INITIAL_CAP;
+        results->values = realloc(results->values, sizeof(int) * results->cap);
+        if (!results->values) {
+            results->count = 0;
+            results->cap = 0;
+            return false;
+        }
+    }
+    results->values[results->count++] = value;
+    return true;
+}
+
 void wam_register_category_ancestor_kernel(WamState *state, const char *pred, int max_depth) {
     state->category_max_depth = max_depth > 0 ? max_depth : 10;
     wam_register_foreign_predicate(state, pred, 4, wam_category_ancestor_handler);
@@ -1062,18 +1085,19 @@ static bool wam_category_ancestor_dfs(WamState *state,
                                       int max_depth,
                                       const char **visited,
                                       int visited_len,
-                                      int *hops_out) {
+                                      WamIntResults *results) {
+    bool found = false;
     for (int i = 0; i < state->category_edge_count; i++) {
         CategoryEdge *edge = &state->category_edges[i];
         if (strcmp(edge->child, cat) != 0) continue;
         if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
         if (strcmp(edge->parent, root) == 0) {
-            *hops_out = depth + 1;
-            return true;
+            if (!wam_int_results_push(results, depth + 1)) return false;
+            found = true;
         }
     }
 
-    if (visited_len >= max_depth || visited_len >= 64) return false;
+    if (visited_len >= max_depth || visited_len >= 64) return found;
 
     for (int i = 0; i < state->category_edge_count; i++) {
         CategoryEdge *edge = &state->category_edges[i];
@@ -1082,38 +1106,61 @@ static bool wam_category_ancestor_dfs(WamState *state,
         visited[visited_len] = edge->parent;
         if (wam_category_ancestor_dfs(state, edge->parent, root, depth + 1,
                                       max_depth, visited, visited_len + 1,
-                                      hops_out)) {
-            return true;
+                                      results)) {
+            found = true;
         }
     }
-    return false;
+    return found;
 }
 
-bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity) {
-    (void)pred;
-    if (arity != 4) return false;
-
+static bool wam_category_ancestor_inputs(WamState *state,
+                                         const char **cat_out,
+                                         const char **root_out,
+                                         const char **visited,
+                                         int *visited_len_out) {
     const char *cat = NULL;
     const char *root = NULL;
     if (!wam_value_as_atom(state, state->A[0], &cat)) return false;
     if (!wam_value_as_atom(state, state->A[1], &root)) return false;
-    const char *visited[64];
     int visited_len = 0;
     if (!wam_list_atoms_to_array(state, state->A[3], visited, &visited_len, 64)) return false;
     if (wam_list_contains_atom(state, state->A[3], root)) return false;
     if (visited_len == 0) {
         visited[visited_len++] = cat;
     }
+    *cat_out = cat;
+    *root_out = root;
+    *visited_len_out = visited_len;
+    return true;
+}
+
+bool wam_collect_category_ancestor_hops(WamState *state, WamIntResults *results) {
+    const char *cat = NULL;
+    const char *root = NULL;
+    const char *visited[64];
+    int visited_len = 0;
+    if (!wam_category_ancestor_inputs(state, &cat, &root, visited, &visited_len)) return false;
 
     int max_depth = state->category_max_depth > 0 ? state->category_max_depth : 10;
-    int hops = 0;
-    if (!wam_category_ancestor_dfs(state, cat, root, 0, max_depth,
-                                   visited, visited_len, &hops)) {
+    return wam_category_ancestor_dfs(state, cat, root, 0, max_depth,
+                                     visited, visited_len, results);
+}
+
+bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity) {
+    (void)pred;
+    if (arity != 4) return false;
+
+    WamIntResults results;
+    wam_int_results_init(&results);
+    if (!wam_collect_category_ancestor_hops(state, &results) || results.count == 0) {
+        wam_int_results_close(&results);
         return false;
     }
 
-    WamValue result = val_int(hops);
-    return wam_unify(state, &state->A[2], &result);
+    WamValue result = val_int(results.values[0]);
+    bool ok = wam_unify(state, &state->A[2], &result);
+    wam_int_results_close(&results);
+    return ok;
 }
 '.
 
