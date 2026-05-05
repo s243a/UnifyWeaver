@@ -826,6 +826,13 @@
               (advance state)
               (backtrack state)))
 
+          "atomic/1"
+          (let [value (deref-value (:bindings state)
+                                   (or (reg-get-raw state "A1") ::unbound))]
+            (if (or (atom-term? value) (number? value))
+              (advance state)
+              (backtrack state)))
+
           "!/0"
           (-> state
               (update :choice-points #(vec (take (:cut-bar state) %)))

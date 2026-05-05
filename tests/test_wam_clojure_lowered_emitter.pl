@@ -205,6 +205,30 @@ test(simple_builtin_number_is_direct_lowered_in_prefix) :-
         has(Code, "runtime/backtrack")
     )).
 
+test(simple_builtin_atomic_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_atomic/1:\nbuiltin_call atomic/1, 1\nproceed\n",
+        wam_clojure_lowerable(test_atomic/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_atomic/1, WamCode, [], Code),
+        has(Code, "runtime/deref-value"),
+        has(Code, "runtime/atom-term? value"),
+        has(Code, "number? value"),
+        has(Code, "runtime/advance"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(terminal_execute_atomic_is_direct_lowered_as_succeeding_builtin) :-
+    once((
+        WamCode = "test_execute_atomic/1:\nallocate\ndeallocate\nexecute atomic/1\n",
+        wam_clojure_lowerable(test_execute_atomic/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_execute_atomic/1, WamCode, [], Code),
+        has(Code, "runtime/atom-term? value"),
+        has(Code, "number? value"),
+        has(Code, "runtime/succeed-state next-state"),
+        assertion(\+ has(Code, "\"atomic/1\"")),
+        assertion(\+ has(Code, ":pc target-pc"))
+    )).
+
 test(env_framed_equality_reaches_direct_builtin_prefix) :-
     once((
         WamCode = "test_env_eq/2:\nallocate\nput_value X1, A1\nput_value X2, A2\nbuiltin_call =/2, 2\ndeallocate\nproceed\n",
