@@ -39,6 +39,7 @@
 :- use_module('../targets/wam_python_lowered_emitter', [
 	emit_lowered_python/4,
 	is_deterministic_pred_py/1,
+	parse_wam_text_py/2,
 	python_func_name/2
 ]).
 
@@ -1210,9 +1211,11 @@ sub_string_replace(Str, From, To, Result) :-
 %  Converts WAM instruction output for a predicate to Python code.
 %  Emits a register_predicate(raw_program) call so the flat program can be
 %  built by load_program in main.py.
-compile_wam_predicate_to_python(Pred/Arity, WamCode, _Options, PythonCode) :-
+compile_wam_predicate_to_python(Pred/Arity, WamCode, Options, PythonCode) :-
 	atom_string(Pred, PredStr),
 	python_func_name(Pred/Arity, FuncName),
+	option(registrar_prefix(RegistrarPrefix), Options, ''),
+	atom_concat(RegistrarPrefix, FuncName, RegistrarName),
 	% Build the label key: "Pred/Arity"
 	format(atom(LabelKey), '~w/~w', [PredStr, Arity]),
 	wam_code_to_python_instructions(WamCode, Pred/Arity, InstrLiterals, _LabelLiterals),
@@ -1222,7 +1225,29 @@ compile_wam_predicate_to_python(Pred/Arity, WamCode, _Options, PythonCode) :-
     raw_program["~w"] = (
 ~w
     )
-', [FuncName, PredStr, Arity, LabelKey, InstrLiterals]).
+', [RegistrarName, PredStr, Arity, LabelKey, InstrLiterals]).
+
+%% compile_lowered_wam_predicate_to_python(+Pred/Arity, +WamCode, +Options, -PythonCode)
+%  Emits a direct lowered Python predicate plus a separate registrar that
+%  inserts a call_lowered stub into raw_program. The separate registrar avoids
+%  a name collision with the pred_* lowered function itself.
+compile_lowered_wam_predicate_to_python(Pred/Arity, WamCode, Options, PythonCode) :-
+	parse_wam_text_py(WamCode, Instrs),
+	is_deterministic_pred_py(Instrs),
+	emit_lowered_python(Pred/Arity, Instrs, Options, LoweredFn),
+	atom_string(Pred, PredStr),
+	python_func_name(Pred/Arity, FuncName),
+	atom_concat(register_, FuncName, RegistrarName),
+	format(atom(LabelKey), '~w/~w', [PredStr, Arity]),
+	format(string(Registrar),
+'def ~w(raw_program):
+    """Register lowered WAM code for ~w/~w into raw_program dict."""
+    raw_program["~w"] = (
+        ("call_lowered", ~w, ~w),
+        ("proceed",),
+    )
+', [RegistrarName, PredStr, Arity, LabelKey, FuncName, Arity]),
+	atomic_list_concat([LoweredFn, '\n\n', Registrar], PythonCode).
 
 %% build_python_wam_arg_list(+Arity, -ArgList)
 %  Build the Python function argument list.
@@ -1401,14 +1426,21 @@ compile_all_predicates(Predicates, Options, Code) :-
 
 %% pred_func_name(+Options, +PredSpec, -FuncName)
 %  Get the Python function name for a predicate (for build_program registry).
-pred_func_name(_Options, _Module:Pred/Arity, FuncName) :- !,
-	python_func_name(Pred/Arity, FuncName).
-pred_func_name(_Options, _Module:Pred/Arity-_, FuncName) :- !,
-	python_func_name(Pred/Arity, FuncName).
-pred_func_name(_Options, Pred/Arity-_, FuncName) :- !,
-	python_func_name(Pred/Arity, FuncName).
-pred_func_name(_Options, Pred/Arity, FuncName) :-
-	python_func_name(Pred/Arity, FuncName).
+pred_func_name(Options, _Module:Pred/Arity, FuncName) :- !,
+	pred_registrar_func_name(Options, Pred/Arity, FuncName).
+pred_func_name(Options, _Module:Pred/Arity-_, FuncName) :- !,
+	pred_registrar_func_name(Options, Pred/Arity, FuncName).
+pred_func_name(Options, Pred/Arity-_, FuncName) :- !,
+	pred_registrar_func_name(Options, Pred/Arity, FuncName).
+pred_func_name(Options, Pred/Arity, FuncName) :-
+	pred_registrar_func_name(Options, Pred/Arity, FuncName).
+
+pred_registrar_func_name(Options, Pred/Arity, RegistrarName) :-
+	python_func_name(Pred/Arity, FuncName),
+	(   option(emit_mode(lowered), Options)
+	->  atom_concat(register_, FuncName, RegistrarName)
+	;   RegistrarName = FuncName
+	).
 
 %% build_program_func(+FuncNames, -Code)
 %  Emit a build_program(raw_program) function that calls all pred_* registrars.
@@ -1425,14 +1457,19 @@ compile_one_predicate(Options, _Module:PredSpec, PredCode) :-
 	compile_one_predicate(Options, PredSpec, PredCode).
 compile_one_predicate(Options, Pred/Arity-WamCode, PredCode) :-
 	(   is_ffi_predicate(Pred, Arity, Options)
-	->  compile_ffi_stub_predicate(Pred, Arity, PredCode)
+	->  compile_ffi_stub_predicate(Pred, Arity, Options, PredCode)
+	;   option(emit_mode(lowered), Options),
+	    compile_lowered_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode)
+	->  true
+	;   option(emit_mode(lowered), Options)
+	->  compile_wam_predicate_to_python(Pred/Arity, WamCode, [registrar_prefix(register_)|Options], PredCode)
 	;   compile_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode)
 	).
 compile_one_predicate(Options, Pred/Arity, PredCode) :-
 	(   is_ffi_predicate(Pred, Arity, Options)
 	->  compile_ffi_stub_predicate(Pred, Arity, PredCode)
 	;   (   compile_predicate_to_wam(Pred/Arity, [], WamCode)
-		->  compile_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode)
+		->  compile_one_predicate(Options, Pred/Arity-WamCode, PredCode)
 		;   atom_string(Pred, PredStr),
 			format(string(PredCode),
 				'# Could not compile ~w/~w to WAM\n', [PredStr, Arity])
@@ -1442,8 +1479,15 @@ compile_one_predicate(Options, Pred/Arity, PredCode) :-
 %% compile_ffi_stub_predicate(+Pred, +Arity, -Code)
 %  Emit a registration function that inserts a call_foreign stub into raw_program.
 compile_ffi_stub_predicate(Pred, Arity, PredCode) :-
+	compile_ffi_stub_predicate(Pred, Arity, [], PredCode).
+
+compile_ffi_stub_predicate(Pred, Arity, Options, PredCode) :-
 	atom_string(Pred, PredStr),
 	python_func_name(Pred/Arity, FuncName),
+	(   option(emit_mode(lowered), Options)
+	->  atom_concat(register_, FuncName, RegistrarName)
+	;   RegistrarName = FuncName
+	),
 	format(atom(LabelKey), '~w/~w', [PredStr, Arity]),
 	format(string(PredCode),
 'def ~w(raw_program):
@@ -1452,7 +1496,7 @@ compile_ffi_stub_predicate(Pred, Arity, PredCode) :-
         ("call_foreign", "~w", ~w),
         ("proceed",),
     )
-', [FuncName, PredStr, Arity, LabelKey, PredStr, Arity]).
+', [RegistrarName, PredStr, Arity, LabelKey, PredStr, Arity]).
 
 %% generate_main_py(+Predicates, +ModuleName, -Code)
 %  Generate a main.py entry point.
@@ -1463,15 +1507,25 @@ import sys
 from wam_runtime import *
 from predicates import *
 
+def _init_query_args(query, state):
+    try:
+        arity = int(query.rsplit("/", 1)[1])
+    except (IndexError, ValueError):
+        return
+    for i in range(1, arity + 1):
+        if get_reg(state, i) is None:
+            set_reg(state, i, state.fresh_var())
+
 def main():
     state = WamState()
     # Build a raw program dict from predicates, then flatten + pre-resolve
-    raw_program = {}  # populated by predicate modules
+    raw_program = build_program()
     code, labels = load_program(raw_program)
     # Run a user-specified query
     if len(sys.argv) > 1:
         query = sys.argv[1]
         if query in labels:
+            _init_query_args(query, state)
             if run_wam(code, labels, query, state):
                 results = []
                 for i in range(1, 11):
@@ -1479,7 +1533,7 @@ def main():
                     if val is not None:
                         results.append((i, val))
                 for i, r in results:
-                    print(f"A{i} = {_format_value(r)}")
+                    print(f"A{i} = {repr(r)}")
             else:
                 print("false.")
         else:
@@ -1504,7 +1558,7 @@ from predicates import *
 
 def main():
     # Build a raw program dict from predicates, then flatten + pre-resolve
-    raw_program = {}  # populated by predicate modules
+    raw_program = build_program()
     code, labels = load_program(raw_program)
 
     # Define seeds — each seed is a list of initial register values

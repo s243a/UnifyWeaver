@@ -1107,6 +1107,17 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
                 if not fail(): return False
                 continue
 
+        elif op == 'call_lowered':
+            _, fn, _arity = instr
+            try:
+                ok = fn(state)
+            except WAMError:
+                ok = False
+            if not ok:
+                if not fail(): return False
+                continue
+            arg_snapshot = list(state.regs)
+
         elif op == 'proceed':
             if state.cp is None:
                 return True
@@ -1873,6 +1884,17 @@ def _run_aggregate_body(code: list, labels: dict, body_start: int, end_pc: int,
                 if not sub_fail(): break
                 sub_arg_snap = list(sub.regs)
                 continue
+        elif op == 'call_lowered':
+            _, fn, _arity = instr
+            try:
+                ok = fn(sub)
+            except WAMError:
+                ok = False
+            if not ok:
+                if not sub_fail(): break
+                sub_arg_snap = list(sub.regs)
+                continue
+            sub_arg_snap = list(sub.regs)
         elif op == 'proceed':
             if sub.cp is None:
                 break  # done

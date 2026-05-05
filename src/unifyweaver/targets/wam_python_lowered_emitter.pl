@@ -24,6 +24,7 @@
 	emit_lowered_python/4,           % +FunctorArity, +Instrs, +Options, -Lines
 	is_deterministic_pred_py/1,      % +Instrs
 	python_func_name/2,              % +Functor/Arity, -PythonName
+	parse_wam_text_py/2,             % +WamText, -Instrs
 	is_match_instr_py/1,             % +Instr
 	is_ite_block_py/2,               % +Instrs, -Blocks
 	emit_ite_block_py/5              % +FuncName, +Blocks, +Indent, +Opts, -Lines
@@ -142,6 +143,12 @@ instr_from_parts_py(["fail"], fail).
 instr_from_parts_py(["halt"], halt).
 instr_from_parts_py(["allocate"], allocate).
 instr_from_parts_py(["deallocate"], deallocate).
+instr_from_parts_py(["try_me_else", Label], try_me_else(Label)).
+instr_from_parts_py(["retry_me_else", Label], retry_me_else(Label)).
+instr_from_parts_py(["trust_me"], trust_me).
+instr_from_parts_py(["try", Label], try(Label)).
+instr_from_parts_py(["retry", Label], retry(Label)).
+instr_from_parts_py(["trust", Label], trust(Label)).
 instr_from_parts_py(["is", Target, Expr], is(Target, Expr)).
 instr_from_parts_py(["builtin_call", Op, Ar], builtin_call(Op, Ar)).
 instr_from_parts_py(["call_foreign", Pred, Ar], call_foreign(Pred, Ar)).
