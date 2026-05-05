@@ -19,53 +19,47 @@ define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %label
   ; accept the bogus IR without complaint.
   %regs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
   %regs_raw = bitcast %Value* %regs_ptr to i8*
-  %regs_size = mul i64 32, 16  ; 32 x sizeof(%Value) = 32 x {i32, i64} ≈ 32*16
+  %regs_size = mul i64 64, 16  ; 64 x sizeof(%Value) = 64 x {i32, i64}
   call void @llvm.memset.p0i8.i64(i8* %regs_raw, i8 0, i64 %regs_size, i1 false)
 
-  ; Allocate stack (initial capacity 256)
-  %stack_mem = call i8* @malloc(i64 6144)  ; 256 * sizeof(StackEntry)
+  ; Allocate stack (initial capacity 1024 entries)
+  ; StackEntry: 4 + 8 + 8 + (48 * 16) = 20 + 768 = 788 bytes.
+  ; Round up to 800 for alignment.
+  %stack_mem = call i8* @malloc(i64 819200)  ; 1024 * 800
   %stack_typed = bitcast i8* %stack_mem to %StackEntry*
   %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
   store %StackEntry* %stack_typed, %StackEntry** %stack_ptr
   %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
   store i32 0, i32* %ss_ptr
   %sc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 4
-  store i32 256, i32* %sc_ptr
+  store i32 1024, i32* %sc_ptr
 
-  ; Allocate heap (initial capacity 4096)
-  %heap_mem = call i8* @malloc(i64 65536)  ; 4096 * sizeof(Value)
+  ; Allocate heap (initial capacity 65536)
+  %heap_mem = call i8* @malloc(i64 1048576)  ; 65536 * 16
   %heap_typed = bitcast i8* %heap_mem to %Value*
   %hp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
   store %Value* %heap_typed, %Value** %hp_ptr
   %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
   store i32 0, i32* %hs_ptr
   %hc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 7
-  store i32 4096, i32* %hc_ptr
+  store i32 65536, i32* %hc_ptr
 
-  ; Allocate trail (initial capacity 16384 entries, ~384 KB).
-  ; Previously 256; increased because the Ref-based put_variable
-  ; landing will cause each binding to produce two trail entries (one
-  ; reg, one heap) under the current trailing discipline, and deep
-  ; recursion (e.g. bench_sum_big) comfortably exceeded 256. Headroom
-  ; here removes trail overflow as a blocker for that work. Still no
-  ; bounds check in wam_trail_binding/wam_trail_heap_binding — if this
-  ; turns out to be insufficient, add a realloc path or a bounds
-  ; check that aborts with a clear diagnostic.
-  %trail_mem = call i8* @malloc(i64 393216)
+  ; Allocate trail (initial capacity 65536 entries, ~1.5 MB).
+  %trail_mem = call i8* @malloc(i64 1572864)  ; 65536 * 24
   %trail_typed = bitcast i8* %trail_mem to %TrailEntry*
   %tp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
   store %TrailEntry* %trail_typed, %TrailEntry** %tp_ptr
   %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
   store i32 0, i32* %ts_ptr
   %tc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 10
-  store i32 16384, i32* %tc_ptr
+  store i32 65536, i32* %tc_ptr
 
   ; Initialize cp = 0
   %cp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 11
   store i32 0, i32* %cp_ptr
 
-  ; Allocate choice points (initial capacity 64)
-  %cpp_size = ptrtoint %ChoicePoint* getelementptr (%ChoicePoint, %ChoicePoint* null, i32 64) to i64
+  ; Allocate choice points (initial capacity 1024)
+  %cpp_size = ptrtoint %ChoicePoint* getelementptr (%ChoicePoint, %ChoicePoint* null, i32 1024) to i64
   %cp_mem = call i8* @malloc(i64 %cpp_size)
   %cp_typed = bitcast i8* %cp_mem to %ChoicePoint*
   %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
@@ -73,7 +67,7 @@ define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %label
   %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
   store i32 0, i32* %cpn_ptr
   %cpc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 14
-  store i32 64, i32* %cpc_ptr
+  store i32 1024, i32* %cpc_ptr
 
   ; Store code pointer and length
   %code_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 15
@@ -101,6 +95,14 @@ define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %label
   %agcap_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 22
   store i32 64, i32* %agcap_ptr
 
+  ; Initialize cut_barrier = 0
+  %cb_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 23
+  store i32 0, i32* %cb_ptr
+
+  ; Initialize last_entry_cpn = 0
+  %lcpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 24
+  store i32 0, i32* %lcpn_ptr
+
   ret %WamState* %vm
 }
 
@@ -111,6 +113,7 @@ define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %label
 ; leaks ~85KB per iteration (stack 6KB + heap 64KB + trail 6KB + CPs
 ; ~1.5KB + agg_accum 1KB + state ~200B) and the process aborts on OOM.
 define void @wam_state_free(%WamState* %vm) {
+entry:
   %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
   %stack = load %StackEntry*, %StackEntry** %stack_ptr
   %stack_i8 = bitcast %StackEntry* %stack to i8*
@@ -126,8 +129,40 @@ define void @wam_state_free(%WamState* %vm) {
   %trail_i8 = bitcast %TrailEntry* %trail to i8*
   call void @free(i8* %trail_i8)
 
+  ; Iterate over choice points to free any unexhausted multi-result buffers.
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cpn = load i32, i32* %cpn_ptr
   %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
   %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  br label %cp_loop
+
+cp_loop:
+  %i = phi i32 [ 0, %entry ], [ %i_next, %cp_cont ]
+  %cp_done = icmp uge i32 %i, %cpn
+  br i1 %cp_done, label %cp_done_label, label %cp_check
+
+cp_check:
+  %cp_entry = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %i
+  %at_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp_entry, i32 0, i32 4
+  %at = load i32, i32* %at_ptr
+  %is_foreign = icmp eq i32 %at, -2
+  br i1 %is_foreign, label %cp_free_fr, label %cp_cont
+
+cp_free_fr:
+  %fr_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp_entry, i32 0, i32 8
+  %fr = load i8*, i8** %fr_ptr
+  %fr_null = icmp eq i8* %fr, null
+  br i1 %fr_null, label %cp_cont, label %cp_do_free
+
+cp_do_free:
+  call void @free(i8* %fr)
+  br label %cp_cont
+
+cp_cont:
+  %i_next = add i32 %i, 1
+  br label %cp_loop
+
+cp_done_label:
   %cps_i8 = bitcast %ChoicePoint* %cps to i8*
   call void @free(i8* %cps_i8)
 
@@ -254,8 +289,20 @@ define void @wam_set_pc(%WamState* %vm, i32 %pc) {
 
 ; Push trail entry
 define void @wam_trail_binding(%WamState* %vm, i32 %reg_idx) {
+entry:
   %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
   %ts = load i32, i32* %ts_ptr
+  %tc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 10
+  %tc = load i32, i32* %tc_ptr
+  %ovf = icmp sge i32 %ts, %tc
+  br i1 %ovf, label %abort, label %store
+
+abort:
+  call i32 (i8*, ...) @printf(i8* getelementptr ([42 x i8], [42 x i8]* @.fmt_trail_oom, i32 0, i32 0), i32 %ts, i32 %tc)
+  call void @exit(i32 4)
+  unreachable
+
+store:
   %trail_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
   %trail_arr = load %TrailEntry*, %TrailEntry** %trail_arr_ptr
   %entry_ptr = getelementptr %TrailEntry, %TrailEntry* %trail_arr, i32 %ts
@@ -275,10 +322,28 @@ define void @wam_trail_binding(%WamState* %vm, i32 %reg_idx) {
   ret void
 }
 
-; Push value onto heap, return address
+@.fmt_trail_oom = private constant [42 x i8] c"FATAL: WAM trail overflow at %d (cap=%d)\0A\00"
+@.fmt_arith_fail = private constant [26 x i8] c"ERROR: eval_arith failed\0A\00"
+
+
+; Push value onto heap, return address. Aborts via exit(2) on overflow
+; (the alternative is silent buffer overrun and a confusing later
+; segfault — make it loud while heap-grow remains TODO).
 define i32 @wam_heap_push(%WamState* %vm, %Value %val) {
+entry:
   %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
   %hs = load i32, i32* %hs_ptr
+  %hc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 7
+  %hc = load i32, i32* %hc_ptr
+  %ovf = icmp sge i32 %hs, %hc
+  br i1 %ovf, label %abort, label %store_it
+
+abort:
+  call i32 (i8*, ...) @printf(i8* getelementptr ([41 x i8], [41 x i8]* @.fmt_heap_oom, i32 0, i32 0), i32 %hs, i32 %hc)
+  call void @exit(i32 2)
+  unreachable
+
+store_it:
   %heap_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
   %heap_arr = load %Value*, %Value** %heap_arr_ptr
   %slot = getelementptr %Value, %Value* %heap_arr, i32 %hs
@@ -288,10 +353,25 @@ define i32 @wam_heap_push(%WamState* %vm, %Value %val) {
   ret i32 %hs
 }
 
+@.fmt_heap_oom = private constant [41 x i8] c"FATAL: WAM heap overflow at %d (cap=%d)\0A\00"
+declare void @exit(i32)
+
 ; Load / store a heap slot by absolute index. Used by the Ref-aware
 ; helpers (@wam_deref_value, @wam_bind_reg) to read/write heap cells
 ; that put_variable uses as shared storage for aliased registers.
 define %Value @wam_heap_get(%WamState* %vm, i32 %addr) {
+entry:
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs = load i32, i32* %hs_ptr
+  %ok = icmp ult i32 %addr, %hs
+  br i1 %ok, label %load, label %abort
+
+abort:
+  call i32 (i8*, ...) @printf(i8* getelementptr ([41 x i8], [41 x i8]* @.fmt_heap_bounds, i32 0, i32 0), i32 %addr, i32 %hs)
+  call void @exit(i32 3)
+  unreachable
+
+load:
   %heap_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
   %heap_arr = load %Value*, %Value** %heap_arr_ptr
   %slot = getelementptr %Value, %Value* %heap_arr, i32 %addr
@@ -299,13 +379,30 @@ define %Value @wam_heap_get(%WamState* %vm, i32 %addr) {
   ret %Value %v
 }
 
+@.fmt_heap_bounds = private constant [41 x i8] c"FATAL: WAM heap oob read at %d (cap=%d)\0A\00"
+
 define void @wam_heap_set(%WamState* %vm, i32 %addr, %Value %val) {
+entry:
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs = load i32, i32* %hs_ptr
+  %ok = icmp ult i32 %addr, %hs
+  br i1 %ok, label %store, label %abort
+
+abort:
+  call i32 (i8*, ...) @printf(i8* getelementptr ([42 x i8], [42 x i8]* @.fmt_heap_w_bounds, i32 0, i32 0), i32 %addr, i32 %hs)
+  call void @exit(i32 3)
+  unreachable
+
+store:
   %heap_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
   %heap_arr = load %Value*, %Value** %heap_arr_ptr
   %slot = getelementptr %Value, %Value* %heap_arr, i32 %addr
   store %Value %val, %Value* %slot
   ret void
 }
+
+@.fmt_heap_w_bounds = private constant [42 x i8] c"FATAL: WAM heap oob write at %d (cap=%d)\0A\00"
+
 
 ; Follow a Ref chain to a terminal non-Ref value. If V is Ref{addr},
 ; load heap[addr] and continue until we reach a non-Ref. Returns the
@@ -346,11 +443,9 @@ define %Value @wam_get_reg_deref(%WamState* %vm, i32 %idx) {
 ; Bind a register to a value. If the register currently holds a Ref
 ; (put_variable aliasing), write through to the referenced heap cell
 ; AND record a trail entry so a subsequent backtrack unwinds the
-; binding. Caller is expected to have already trailed the register
-; slot itself (via wam_trail_binding) for the case where we write
-; directly to the reg. No Ref-chain following — put_variable creates
-; depth-1 Refs, and more exotic chains would also require the
-; structural-unify path to produce them.
+; binding. No Ref-chain following — put_variable creates depth-1 Refs,
+; and more exotic chains would also require the structural-unify path
+; to produce them.
 define void @wam_bind_reg(%WamState* %vm, i32 %idx, %Value %val) {
 entry:
   %cur = call %Value @wam_get_reg(%WamState* %vm, i32 %idx)
@@ -365,7 +460,29 @@ heap_bind:
   call void @wam_heap_set(%WamState* %vm, i32 %addr, %Value %val)
   ret void
 reg_bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 %idx)
   call void @wam_set_reg(%WamState* %vm, i32 %idx, %Value %val)
+  ret void
+}
+
+; Bind through a Ref value if it points to an Unbound heap cell.
+; Does NOT update any register.
+define void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %ref_val, %Value %new_val) {
+entry:
+  %tag = extractvalue %Value %ref_val, 0
+  %is_ref = icmp eq i32 %tag, 5
+  br i1 %is_ref, label %check, label %done
+check:
+  %addr_i64 = extractvalue %Value %ref_val, 1
+  %addr = trunc i64 %addr_i64 to i32
+  %old = call %Value @wam_heap_get(%WamState* %vm, i32 %addr)
+  %is_unb = call i1 @value_is_unbound(%Value %old)
+  br i1 %is_unb, label %bind, label %done
+bind:
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %addr, %Value %old)
+  call void @wam_heap_set(%WamState* %vm, i32 %addr, %Value %new_val)
+  br label %done
+done:
   ret void
 }
 
@@ -374,8 +491,20 @@ reg_bind:
 ; register indices (which are always 0-63). unwind_trail reads that
 ; bit to pick reg_set vs heap_set on restore.
 define void @wam_trail_heap_binding(%WamState* %vm, i32 %addr, %Value %old_val) {
+entry:
   %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
   %ts = load i32, i32* %ts_ptr
+  %tc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 10
+  %tc = load i32, i32* %tc_ptr
+  %ovf = icmp sge i32 %ts, %tc
+  br i1 %ovf, label %abort, label %store
+
+abort:
+  call i32 (i8*, ...) @printf(i8* getelementptr ([42 x i8], [42 x i8]* @.fmt_trail_oom, i32 0, i32 0), i32 %ts, i32 %tc)
+  call void @exit(i32 4)
+  unreachable
+
+store:
   %trail_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
   %trail_arr = load %TrailEntry*, %TrailEntry** %trail_arr_ptr
   %entry_ptr = getelementptr %TrailEntry, %TrailEntry* %trail_arr, i32 %ts
@@ -602,6 +731,9 @@ define void @wam_push_unify_ctx(%WamState* %vm, %Value* %args, i32 %count) {
   ; data = args pointer
   %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
   store %Value* %args, %Value** %data_ptr
+  ; Initialize cut_barrier = 0
+  %cb_fld = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 4
+  store i32 0, i32* %cb_fld
   %new_ss = add i32 %ss, 1
   store i32 %new_ss, i32* %ss_ptr
   ret void
@@ -626,6 +758,9 @@ define void @wam_push_write_ctx(%WamState* %vm, i32 %count) {
   ; data = null (will be set by put_structure after this call)
   %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
   store %Value* null, %Value** %data_ptr
+  ; Initialize cut_barrier = 0
+  %cb_fld_w = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 4
+  store i32 0, i32* %cb_fld_w
   %new_ss = add i32 %ss, 1
   store i32 %new_ss, i32* %ss_ptr
   ret void
@@ -662,12 +797,17 @@ entry:
   ; Read args pointer.
   %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
   %args = load %Value*, %Value** %data_ptr
-  ; Compute write index: arity - remaining_count (arity stored originally).
-  ; Actually simpler: advance the args pointer after each write.
+  %is_null = icmp eq %Value* %args, null
+  br i1 %is_null, label %dec, label %write
+
+write:
   ; Write value at args[0], then advance args to args+1.
   store %Value %val, %Value* %args
   %args_next = getelementptr %Value, %Value* %args, i32 1
   store %Value* %args_next, %Value** %data_ptr
+  br label %dec
+
+dec:
   ; Decrement count.
   %new_count = sub i32 %count, 1
   %new_count64 = zext i32 %new_count to i64
@@ -681,6 +821,7 @@ pop:
 ret:
   ret void
 }
+
 
 ; Peek top stack entry type (returns -1 if empty)
 define i32 @wam_peek_stack_type(%WamState* %vm) {
@@ -733,12 +874,8 @@ get_arg:
 pop_arg:
   %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
   %args = load %Value*, %Value** %data_ptr
-  ; Calculate offset: total_args - remaining = index of next arg
-  ; We use a simple scheme: data points to start, aux counts down
-  ; Actually, we need an index. Store consumed count differently.
-  ; Simpler: use aux as index into args, increment after read
-  %idx = sub i32 %count32, %count32  ; start from 0...
-  ; Actually, let's use aux as remaining count and shift the pointer
+  ; We use a simple scheme: data points to the next arg to read,
+  ; aux counts down the remaining number of args.
   %arg_ptr = load %Value, %Value* %args
   ; Advance data pointer
   %next_args = getelementptr %Value, %Value* %args, i32 1
@@ -854,7 +991,8 @@ grow:
   %old_raw = bitcast %Value* %old_ptr to i8*
   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %new_raw, i8* %old_raw, i64 %old_bytes, i1 false)
   store %Value* %new_typed, %Value** %old_ptr_ptr
-  ; Free old (we skip this to avoid use-after-free complications in minimal impl)
+  ; Free old buffer
+  call void @free(i8* %old_raw)
   br label %store
 
 store:
@@ -902,6 +1040,8 @@ sum_body:
   %next_s = add i32 %i_s, 1
   br label %sum_loop
 sum_done:
+  ; PHI value %acc_s is valid here as %sum_done is a direct successor
+  ; of the loop block and the edge carries the final iteration state.
   %s_val = insertvalue %Value undef, i32 1, 0    ; Integer tag
   %s_final = insertvalue %Value %s_val, i64 %acc_s, 1
   ret %Value %s_final
@@ -932,6 +1072,8 @@ min_body:
   %next_m = add i32 %i_m, 1
   br label %min_loop
 min_done:
+  ; PHI value %best_m is valid here as %min_done is a direct successor
+  ; of the loop block and the edge carries the final iteration state.
   %m_val = insertvalue %Value undef, i32 1, 0
   %m_final = insertvalue %Value %m_val, i64 %best_m, 1
   ret %Value %m_final
@@ -961,6 +1103,8 @@ max_body:
   %next_x = add i32 %i_x, 1
   br label %max_loop
 max_done:
+  ; PHI value %best_x is valid here as %max_done is a direct successor
+  ; of the loop block and the edge carries the final iteration state.
   %x_val = insertvalue %Value undef, i32 1, 0
   %x_final = insertvalue %Value %x_val, i64 %best_x, 1
   ret %Value %x_final
@@ -1032,6 +1176,9 @@ exit:
 ; WASM:   swap @wam_arena_init/@wam_arena_destroy to use linear memory.
 ;
 ; Usage:  mark → alloc … alloc → rewind (restores to mark).
+; NOTE: The arena implementation below uses module-level global state
+; and is NOT thread-safe. Multiple concurrent WamState instances
+; will race on these globals.
 
 @wam_arena_buf = internal global i8* null
 @wam_arena_pos = internal global i64 0
@@ -2547,6 +2694,9 @@ build_loop:
   %sl_len_ptr = getelementptr %List, %List* %sl, i32 0, i32 0
   store i32 %rem_len, i32* %sl_len_ptr
   %sl_elems_ptr = getelementptr %List, %List* %sl, i32 0, i32 1
+  ; For an empty input list, elems is null (from @wam_empty_list).
+  ; getelementptr of null+0 is null, resulting in an empty suffix struct
+  ; {len=0, elems=null}, which correctly matches @wam_empty_list.
   %suffix_start = getelementptr %Value, %Value* %elems, i64 %bi
   store %Value* %suffix_start, %Value** %sl_elems_ptr
   ; Create %Value for this suffix (tag=4, payload=ptr to %List).
@@ -2779,10 +2929,9 @@ define double* @wam_build_heuristic_from_table(
     %WeightedFact* %dtable, i64 %dlen,
     i64 %target, i64 %max_atom_id) {
 entry:
-  call void @wam_arena_ensure()
   %n = add i64 %max_atom_id, 1
   %bytes = shl i64 %n, 3
-  %mem = call i8* @wam_arena_alloc(i64 %bytes)
+  %mem = call i8* @malloc(i64 %bytes)
   call void @llvm.memset.p0i8.i64(i8* %mem, i8 0, i64 %bytes, i1 false)
   %h = bitcast i8* %mem to double*
   br label %scan

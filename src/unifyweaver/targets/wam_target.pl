@@ -443,15 +443,19 @@ compile_clauses_fragments([Head-Body|Rest], I, N, Pred, Arity, Options,
     normalize_goals(Body, Goals),
     empty_varmap(V0),
     % Force permanent variable allocation when the body contains a Call
-    % or aggregate (findall/aggregate_all), even for single-goal bodies.
+    % or aggregate (findall/aggregate_all), or a Cut (!/0), even for
+    % single-goal bodies.
     % Without an env frame, the post-aggregate continuation has nowhere
     % to retrieve the caller's saved cp from, so finalise_aggregate's
     % update_topmost_agg_cp + restored.cp.(restored) chain loops back
-    % into k2 forever. The single-clause path applies the same
-    % condition at line ~327; this keeps multi-clause in sync.
+    % into k2 forever. Also, Cut needs an environment frame to access
+    % the cut barrier in some targets (like LLVM).
+    % The single-clause path applies the same condition at line ~327;
+    % this keeps multi-clause in sync.
     expand_aggregate_goals_for_perm_vars(Goals, ExpandedGoals),
     (   ( length(ExpandedGoals, NG), NG > 1
         ; goals_contain_call_or_aggregate(Goals)
+        ; member(builtin_call('!/0', _), Goals)
         )
     ->  pre_assign_permanent_vars(ExpandedGoals, V0, V0a),
         compile_head_arguments(Args, 1, V0a, V1, HeadCode0),
@@ -724,12 +728,16 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
             length(Args, Arity),
             compile_put_arguments(Args, 1, V0, Vf, PutCode),
             (   is_builtin_pred(Pred, Arity)
-            ->  format(string(ExecCode), "    builtin_call ~w/~w, ~w~n    proceed", [Pred, Arity, Arity])
-            ;   format(string(ExecCode), "    execute ~w/~w", [Pred, Arity])
-            ),
-            (   PutCode == ""
-            ->  format(string(Code), "    deallocate~n~w", [ExecCode])
-            ;   format(string(Code), "~w~n    deallocate~n~w", [PutCode, ExecCode])
+            ->  format(string(ExecCode), "    builtin_call ~w/~w, ~w", [Pred, Arity, Arity]),
+                (   PutCode == ""
+                ->  format(string(Code), "~w~n    deallocate~n    proceed", [ExecCode])
+                ;   format(string(Code), "~w~n~w~n    deallocate~n    proceed", [PutCode, ExecCode])
+                )
+            ;   format(string(ExecCode), "    execute ~w/~w", [Pred, Arity]),
+                (   PutCode == ""
+                ->  format(string(Code), "    deallocate~n~w", [ExecCode])
+                ;   format(string(Code), "~w~n    deallocate~n~w", [PutCode, ExecCode])
+                )
             )
         ;   compile_goal_execute(Goal, V0, Vf, Code)
         )
@@ -1197,6 +1205,8 @@ is_builtin_pred(functor, 3). % term inspection: name/arity read or construct
 is_builtin_pred(arg, 3).     % term inspection: Nth argument access
 is_builtin_pred((=..), 2).   % term inspection: univ (decompose/compose)
 is_builtin_pred(copy_term, 2). % term inspection: fresh-variable copy
+is_builtin_pred(write, 1).  % I/O — useful for runtime instrumentation.
+is_builtin_pred(nl, 0).
 is_builtin_pred(=, 2).       % unification: bind / structurally unify two terms.
                              % Without this entry, X = Y in a body goal
                              % would compile to `execute =/2`, which looks

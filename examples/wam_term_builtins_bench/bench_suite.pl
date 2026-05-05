@@ -62,15 +62,15 @@ bench_copy_flat :- copy_term(foo(a, b), _).
 %% copy_term nested
 bench_copy_nested :- copy_term(f(g(a), h(b)), _).
 
-%% sum_ints: small (3 leaves)
-bench_sum_small :- sum_ints(f(1, 2, 3), 0, _).
+%% sum_ints: small (3 leaves). Expected: 1+2+3 = 6.
+bench_sum_small :- sum_ints(f(1, 2, 3), 0, 6).
 
-%% sum_ints: medium (5 leaves)
-bench_sum_medium :- sum_ints(f(1, g(2, 3), 4), 0, _).
+%% sum_ints: medium (5 leaves). Expected: 1+2+3+4 = 10.
+bench_sum_medium :- sum_ints(f(1, g(2, 3), 4), 0, 10).
 
-%% sum_ints: big (10 leaves, 15 nodes)
+%% sum_ints: big (10 leaves, 15 nodes). Expected: 1+2+...+10 = 55.
 bench_sum_big :-
-    sum_ints(f(1, g(2, h(3, 4), 5), k(6, 7), m(8, j(9, 10))), 0, _).
+    sum_ints(f(1, g(2, h(3, 4), 5), k(6, 7), m(8, j(9, 10))), 0, 55).
 
 %% --- Additional workloads ---
 
@@ -91,8 +91,9 @@ term_depth_args(I, Arity, T, Acc, Max) :-
     I1 is I + 1,
     term_depth_args(I1, Arity, T, NewAcc, Max).
 
+%% term_depth: f with nested g/h and m/j at depth 3. Expected: 3.
 bench_term_depth :-
-    term_depth(f(1, g(2, h(3, 4), 5), k(6, 7), m(8, j(9, 10))), _).
+    term_depth(f(1, g(2, h(3, 4), 5), k(6, 7), m(8, j(9, 10))), 3).
 
 %% fib: naive Fibonacci (exercises pure recursive arithmetic).
 %% fib(N, Acc, Result) — accumulator-style to avoid stack overflow.
@@ -105,4 +106,5 @@ fib(N, _, Result) :-
     fib(N2, 0, R2),
     Result is R1 + R2.
 
-bench_fib10 :- fib(10, 0, _).
+%% fib10: fib(10) = 55 (the 10th Fibonacci number).
+bench_fib10 :- fib(10, 0, 55).
