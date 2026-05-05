@@ -4,7 +4,7 @@ Status date: 2026-05-04
 
 Base verified locally:
 
-- `main` at `404c8c00` (`Merge pull request #1836 from s243a/feat/wam-c-file-fact-source`)
+- `main` at `83b34375` (`Merge pull request #1837 from s243a/feat/wam-c-streaming-foreign-results`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 
 This file replaces the older implementation plan. The four original C follow-up
@@ -24,6 +24,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Native category ancestor kernel foundation | Done | `wam_register_category_parent`, `wam_register_category_ancestor_kernel`, `wam_category_ancestor_handler`, direct and recursive executable smoke |
 | File-backed FactSource foundation | Done | `WamFactSource`, `wam_fact_source_load_tsv`, `wam_fact_source_lookup_arg1`, `wam_register_category_parent_fact_source`, executable smoke |
 | Streaming integer foreign-result foundation | Done | `WamIntResults`, `wam_int_results_push`, `wam_collect_category_ancestor_hops`, multi-path executable smoke |
+| Effective-distance benchmark generator | Done | `generate_wam_c_effective_distance_benchmark.pl`, TSV facts, `kernels_on`/`kernels_off`, generated C runner smoke |
 
 ## Current C Target Baseline
 
@@ -46,6 +47,9 @@ The C target is now a credible small WAM backend:
 - Supports collecting all integer hop results for native `category_ancestor/4`
   through `WamIntResults`, while preserving deterministic first-result handler
   behavior.
+- Can generate a small effective-distance C benchmark runner from Prolog facts,
+  with both native-kernel and reference DFS modes over TSV category-parent
+  facts.
 - Has executable smokes for generated runtime, cross-predicate calls,
   foreign calls, native category ancestor, file-backed facts, streaming native
   results, real multi-clause predicates, structure indexing, `is_list/1`, and
@@ -78,24 +82,14 @@ missing important target features; `Missing` = no comparable C path yet.
 | Lowered/native helper functions | Missing | Done | Done | Consider after foreign kernels; C can lower simple fact-only or deterministic predicates. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
 | LMDB-backed facts | Missing | Not primary | Done | Haskell is the reference. C now has an ownership model to extend. |
-| Effective-distance benchmark harness | Missing | Done | Done | Next parity step: wire TSV facts and all-hop collection into a benchmark harness. |
+| Effective-distance benchmark harness | Partial | Done | Done | C has a small generated TSV harness with `kernels_on`/`kernels_off`; next gap is full benchmark matrix integration and larger datasets. |
 | Classic-program e2e suite | Partial | Partial/Done | Partial/Done | C has targeted smokes; add Fibonacci/Ackermann-style suite like Scala/Elixir. |
 | Memory lifecycle | Partial | Runtime-managed | Runtime-managed | C has init/free; needs ASAN/Valgrind CI-style coverage for larger programs. |
 | Instruction layout efficiency | TODO | N/A | N/A | Pack `Instruction` fields into a tagged union if runtime footprint matters. |
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-effective-distance-bench`
-
-Goal: make C visible in the benchmark matrix once kernels/facts exist.
-
-Scope:
-
-- Add a C effective-distance generator under `examples/benchmark/`.
-- Support `kernels_on` / `kernels_off`.
-- Start with small TSV/fact-source mode; add LMDB later.
-
-### 2. `feat/wam-c-lmdb-fact-source`
+### 1. `feat/wam-c-lmdb-fact-source`
 
 Goal: add LMDB-backed category-parent facts once the file FactSource and
 streaming result contracts are stable.
@@ -106,7 +100,7 @@ Scope:
 - Load/cursor category-parent pairs from LMDB.
 - Keep this behind an optional build/runtime path.
 
-### 3. `feat/wam-c-kernel-detector-setup`
+### 2. `feat/wam-c-kernel-detector-setup`
 
 Goal: connect the C target to the shared recursive-kernel detector.
 
@@ -115,6 +109,17 @@ Scope:
 - Reuse `recursive_kernel_detection.pl`.
 - Generate C registration stubs for `category_ancestor/4`.
 - Keep the hand-registration runtime helpers as the low-level API.
+
+### 3. `feat/wam-c-effective-distance-matrix`
+
+Goal: make C visible in the standard effective-distance benchmark matrix.
+
+Scope:
+
+- Reuse the generated TSV harness.
+- Add script wiring next to the Rust and Haskell effective-distance paths.
+- Compare `kernels_on` and `kernels_off` outputs on shared small datasets
+  before scaling up.
 
 ### 4. `perf/wam-c-pack-instruction`
 
@@ -132,15 +137,9 @@ or cache behavior becomes a real bottleneck.
 
 ## Suggested Immediate Next Step
 
-Start with `feat/wam-c-effective-distance-bench`.
+Start with `feat/wam-c-lmdb-fact-source`.
 
-The C runtime now has the pieces the small TSV benchmark needs: file-backed
-category-parent facts, native category ancestor traversal, and all-hop integer
-collection. The work should be split into two commits:
-
-1. Generator or smoke harness under `examples/benchmark/` for a small
-   effective-distance query.
-2. `kernels_on` / `kernels_off` comparison path, still using TSV facts.
-
-Keep LMDB out of that branch; TSV is enough to validate benchmark semantics and
-avoid introducing storage-library friction too early.
+The C target now has a TSV-backed effective-distance harness, so the next
+highest parity gap is durable fact storage. Use the Haskell LMDB path as the
+reference design, keep the C API optional, and preserve the existing TSV
+FactSource as the dependency-free fallback.
