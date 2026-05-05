@@ -38,19 +38,21 @@ compile_tail_recursion(Pred/Arity, Options, Code) :-
     get_constraints(Pred/Arity, Constraints),
     format('  Constraints: ~w~n', [Constraints]),
 
-    % Merge runtime options with constraints
+    % Merge runtime options with constraints for diagnostics/template hooks.
+    % Explicit caller options take precedence when we read an option below.
     append(Options, Constraints, AllOptions),
     format('  Final options: ~w~n', [AllOptions]),
     
     % Determine target (default to bash)
-    (   member(target(Target), AllOptions) -> true
+    (   option_value(target, Options, Constraints, Target) -> true
     ;   Target = bash
     ),
     format('  Target: ~w~n', [Target]),
 
     % Apply unique constraint optimization
     % Tail recursive predicates with unique(true) can exit after first result
-    (   member(unique(true), AllOptions) ->
+    (   option_value(unique, Options, Constraints, UniqueValue),
+        UniqueValue == true ->
         format('  Applying unique constraint optimization~n', []),
         ExitAfterResult = true
     ;   ExitAfterResult = false
@@ -71,6 +73,18 @@ compile_tail_recursion(Pred/Arity, Options, Code) :-
     ;   format('Error: No tail recursion support for target ~w~n', [Target]),
         fail
     ).
+
+%% option_value(+Key, +Options, +Constraints, -Value)
+%  Resolve an option with explicit caller options taking precedence over
+%  declared/default constraints.
+option_value(Key, Options, _Constraints, Value) :-
+    Term =.. [Key, Value],
+    member(Term, Options),
+    !.
+option_value(Key, _Options, Constraints, Value) :-
+    Term =.. [Key, Value],
+    member(Term, Constraints),
+    !.
 
 %% ============================================
 %% BASH CODE GENERATORS (registered as multifile)

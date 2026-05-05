@@ -53,22 +53,26 @@ compile_linear_recursion(Pred/Arity, Options, Code) :-
     get_constraints(Pred/Arity, Constraints),
     format('  Constraints: ~w~n', [Constraints]),
 
-    % Merge runtime options with constraints (runtime options override)
+    % Merge runtime options with constraints for diagnostics/template hooks.
+    % Explicit caller options take precedence when we read an option below.
     append(Options, Constraints, AllOptions),
     format('  Final options: ~w~n', [AllOptions]),
 
     % Determine memoization strategy based on constraints and options
-    (   member(memo(false), AllOptions) ->
+    (   option_value(memo, Options, Constraints, MemoValue),
+        MemoValue == false ->
         format('  Applying memo(false): Memo disabled~n', []),
         MemoEnabled = false
-    ;   member(unique(false), AllOptions) ->
+    ;   option_value(unique, Options, Constraints, UniqueValue),
+        UniqueValue == false ->
         format('  Applying unique(false): Memo disabled~n', []),
         MemoEnabled = false
     ;   MemoEnabled = true
     ),
 
     % Determine memo lookup strategy
-    (   member(unordered(false), AllOptions) ->  % ordered = true
+    (   option_value(unordered, Options, Constraints, UnorderedValue),
+        UnorderedValue == false ->  % ordered = true
         format('  Applying ordered constraint: Using hash-based memo~n', []),
         MemoStrategy = hash
     ;   MemoStrategy = standard
@@ -78,7 +82,7 @@ compile_linear_recursion(Pred/Arity, Options, Code) :-
     functor(Head, Pred, Arity),
 
     % Determine target (default to bash)
-    (   member(target(Target), AllOptions) -> true
+    (   option_value(target, Options, Constraints, Target) -> true
     ;   Target = bash
     ),
     format('  Target: ~w~n', [Target]),
@@ -95,6 +99,18 @@ compile_linear_recursion(Pred/Arity, Options, Code) :-
     ;   format('Error: No linear recursion support for target ~w~n', [Target]),
         fail
     ).
+
+%% option_value(+Key, +Options, +Constraints, -Value)
+%  Resolve an option with explicit caller options taking precedence over
+%  declared/default constraints.
+option_value(Key, Options, _Constraints, Value) :-
+    Term =.. [Key, Value],
+    member(Term, Options),
+    !.
+option_value(Key, _Options, Constraints, Value) :-
+    Term =.. [Key, Value],
+    member(Term, Constraints),
+    !.
 
 %% is_recursive_clause(+Pred, +Clause)
 is_recursive_clause(Pred, clause(_Head, Body)) :-
