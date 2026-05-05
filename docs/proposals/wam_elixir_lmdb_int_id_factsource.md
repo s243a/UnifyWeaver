@@ -248,15 +248,18 @@ for the original Lmdb adaptor.
   CategoryAncestor kernel over the LMDB-backed int-id FactSource. The
   dev-scale smoke matches Prolog, Rust WAM accumulated, and Haskell
   WAM accumulated output.
+- [x] Move `wam-elixir-lmdb-int-ids` off `Mix.install` in the timed
+  command. The harness now patches the generated Mix project with an
+  `:elmdb` dependency, runs `mix deps.get`, `mix compile`, and LMDB
+  ingest before timing, then measures a `mix run --no-compile`
+  wrapper.
 - [ ] Fair steady-state benchmark against the in-memory int-tuple
   recipe and Rust/Haskell accumulated targets. The current Elixir
-  benchmark path is correct, but the timed command still pays BEAM
-  startup and `Mix.install` dependency-loading overhead, so it is a
-  correctness/comparison hook rather than a final performance number.
-  Haskell's `use_lmdb(auto)` currently defaults to
-  `lmdb_auto_threshold(50000)` when the `lmdb` package is available;
-  Elixir should get a comparable auto policy once the steady-state
-  runner is in place.
+  benchmark path no longer pays dependency installation or compilation
+  inside the timed command, but it still pays BEAM startup. Haskell's
+  `use_lmdb(auto)` currently defaults to `lmdb_auto_threshold(50000)`
+  when the `lmdb` package is available; Elixir should get a comparable
+  auto policy after the steady-state comparison shape is settled.
 
 ## Driver-side recipe
 

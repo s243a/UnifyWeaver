@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import statistics
 import sys
 import tempfile
@@ -288,16 +289,7 @@ def build_haskell_wam_effective_distance(root: Path, scale: str, variant: str) -
     return command
 
 
-ELIXIR_LMDB_BRIDGE = r'''
-defmodule RealElmdbDependency do
-  def ensure! do
-    Mix.install([{:elmdb, "~> 0.4.1"}], consolidate_protocols: false)
-  end
-end
-
-RealElmdbDependency.ensure!()
-Code.require_file("lib/wam_runtime.ex", __DIR__)
-
+ELIXIR_LMDB_BENCH_MODULES = r'''
 defmodule Elmdb do
   @moduledoc false
 
@@ -351,10 +343,8 @@ defmodule Elmdb do
   defp normalize_cursor_op(:set, key), do: {:set, key}
   defp normalize_cursor_op(op, _arg), do: op
 end
-'''
 
 
-ELIXIR_LMDB_SETUP = ELIXIR_LMDB_BRIDGE + r'''
 defmodule LmdbSetup do
   alias WamRuntime.FactSource.LmdbIntIds
 
@@ -405,16 +395,7 @@ defmodule LmdbSetup do
   end
 end
 
-case System.argv() do
-  [facts_dir] -> LmdbSetup.run(facts_dir)
-  _ ->
-    IO.puts(:stderr, "Usage: elixir setup_lmdb_int_ids.exs <facts-dir>")
-    System.halt(1)
-end
-'''
 
-
-ELIXIR_LMDB_DRIVER = ELIXIR_LMDB_BRIDGE + r'''
 defmodule BenchDriver do
   alias WamRuntime.FactSource.LmdbIntIds
 
@@ -528,14 +509,42 @@ defmodule BenchDriver do
     |> Enum.to_list()
   end
 end
-
-case System.argv() do
-  [facts_dir] -> BenchDriver.run_all(facts_dir)
-  _ ->
-    IO.puts(:stderr, "Usage: elixir run_lmdb_int_ids.exs <facts-dir>")
-    System.halt(1)
-end
 '''
+
+
+def patch_wam_elixir_lmdb_mix(project_dir: Path) -> None:
+    mix_path = require_file(project_dir / "mix.exs")
+    mix_path.write_text(
+        '''defmodule WamElixirBench.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :wam_elixir_bench,
+      version: "0.1.0",
+      elixir: "~> 1.14",
+      deps: [{:elmdb, "~> 0.4.1"}]
+    ]
+  end
+end
+''',
+        encoding="utf-8",
+    )
+
+
+def write_wam_elixir_lmdb_runner(project_dir: Path, scale_dir: Path) -> Path:
+    runner = project_dir / "run_lmdb_int_ids"
+    runner.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f"cd {shlex.quote(str(project_dir))}\n"
+        "exec mix run --no-compile -e "
+        + shlex.quote(f'BenchDriver.run_all("{scale_dir}")')
+        + "\n",
+        encoding="utf-8",
+    )
+    runner.chmod(0o755)
+    return runner
 
 
 def build_wam_elixir_lmdb_int_ids_effective_distance(root: Path, scale: str) -> list[str]:
@@ -555,12 +564,13 @@ def build_wam_elixir_lmdb_int_ids_effective_distance(root: Path, scale: str) -> 
         ],
         cwd=ROOT,
     )
-    setup_script = project_dir / "setup_lmdb_int_ids.exs"
-    driver_script = project_dir / "run_lmdb_int_ids.exs"
-    setup_script.write_text(ELIXIR_LMDB_SETUP, encoding="utf-8")
-    driver_script.write_text(ELIXIR_LMDB_DRIVER, encoding="utf-8")
-    run_command(["elixir", str(setup_script), str(scale_dir)], cwd=project_dir)
-    return ["elixir", str(driver_script), str(scale_dir)]
+    patch_wam_elixir_lmdb_mix(project_dir)
+    bench_modules = project_dir / "lib" / "lmdb_bench_modules.ex"
+    bench_modules.write_text(ELIXIR_LMDB_BENCH_MODULES, encoding="utf-8")
+    run_command(["mix", "deps.get"], cwd=project_dir)
+    run_command(["mix", "compile"], cwd=project_dir)
+    run_command(["mix", "run", "--no-compile", "-e", f'LmdbSetup.run("{scale_dir}")'], cwd=project_dir)
+    return [str(write_wam_elixir_lmdb_runner(project_dir, scale_dir))]
 
 
 def benchmark_target(

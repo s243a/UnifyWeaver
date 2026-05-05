@@ -147,8 +147,10 @@ def available_targets(requested: list[str]) -> list[str]:
         ):
             print(f"skip {target}: swipl, cabal, or ghc not found", file=sys.stderr)
             continue
-        if target.startswith("wam-elixir-") and (shutil.which("swipl") is None or shutil.which("elixir") is None):
-            print(f"skip {target}: swipl or elixir not found", file=sys.stderr)
+        if target.startswith("wam-elixir-") and (
+            shutil.which("swipl") is None or shutil.which("elixir") is None or shutil.which("mix") is None
+        ):
+            print(f"skip {target}: swipl, elixir, or mix not found", file=sys.stderr)
             continue
         if target.startswith("haskell-") and (shutil.which("cabal") is None or shutil.which("ghc") is None):
             print(f"skip {target}: cabal or ghc not found", file=sys.stderr)
