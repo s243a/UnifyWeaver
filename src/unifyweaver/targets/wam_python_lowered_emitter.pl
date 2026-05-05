@@ -52,6 +52,7 @@ choice_point_instr(trust_me).
 choice_point_instr(try(_)).
 choice_point_instr(retry(_)).
 choice_point_instr(trust(_)).
+choice_point_instr(call_indexed_atom_fact2(_)).
 
 % ============================================================================
 % Function name generation
@@ -144,6 +145,14 @@ instr_from_parts_py(["deallocate"], deallocate).
 instr_from_parts_py(["is", Target, Expr], is(Target, Expr)).
 instr_from_parts_py(["builtin_call", Op, Ar], builtin_call(Op, Ar)).
 instr_from_parts_py(["call_foreign", Pred, Ar], call_foreign(Pred, Ar)).
+instr_from_parts_py(["call_indexed_atom_fact2", Pred], call_indexed_atom_fact2(Pred)).
+instr_from_parts_py(["base_category_ancestor", CatReg, TargetReg, VisitedReg],
+	base_category_ancestor(CatReg, TargetReg, VisitedReg)).
+instr_from_parts_py(["base_category_ancestor_bind", CatReg, TargetReg, HopsReg, VisitedReg],
+	base_category_ancestor_bind(CatReg, TargetReg, HopsReg, VisitedReg)).
+instr_from_parts_py(["recurse_category_ancestor", MidReg, RootReg, ChildHopsReg, VisitedReg, Pred, Skip],
+	recurse_category_ancestor(MidReg, RootReg, ChildHopsReg, VisitedReg, Pred, Skip)).
+instr_from_parts_py(["return_add1", OutReg, InReg], return_add1(OutReg, InReg)).
 instr_from_parts_py(["neck_cut"], neck_cut).
 instr_from_parts_py(["get_level", Yn], get_level(Yn)).
 instr_from_parts_py(["cut", Yn], cut(Yn)).
@@ -724,6 +733,85 @@ emit_instr_py(call_foreign(PredStr, ArStr), Code) :-
 '    _args = [deref(state.regs[i+1], state) for i in range(~w)]
     if not execute_foreign("~w", ~w, _args, state): return False',
 		[ArStr, EP, ArStr]).
+
+emit_instr_py(call_indexed_atom_fact2(PredStr), Code) :-
+	escape_py(PredStr, EP),
+	format(string(Code),
+'    _key = deref(state.regs[1], state)
+    if not isinstance(_key, Atom): return False
+    _values = state.indexed_atom_fact2.get("~w", {}).get(_key.name, [])
+    if not _values: return False
+    if not unify(state.regs[2], Atom(_values[0]), state): return False', [EP]).
+
+emit_instr_py(base_category_ancestor(CatRegStr, TargetRegStr, VisitedRegStr), Code) :-
+	reg_int_py(CatRegStr, CatReg),
+	reg_int_py(TargetRegStr, TargetReg),
+	reg_int_py(VisitedRegStr, VisitedReg),
+	format(string(Code),
+'    _cat = deref(state.regs[~w], state)
+    _target = deref(state.regs[~w], state)
+    _visited = deref(state.regs[~w], state)
+    if not isinstance(_cat, Atom) or not isinstance(_target, Atom): return False
+    if _atom_in_cons_list(_target, _visited, state): return False
+    if _target.name not in state.indexed_atom_fact2.get("category_parent/2", {}).get(_cat.name, []): return False
+    pop_environment(state)
+    return True', [CatReg, TargetReg, VisitedReg]).
+
+emit_instr_py(base_category_ancestor_bind(CatRegStr, TargetRegStr, HopsRegStr, VisitedRegStr), Code) :-
+	reg_int_py(CatRegStr, CatReg),
+	reg_int_py(TargetRegStr, TargetReg),
+	reg_int_py(HopsRegStr, HopsReg),
+	reg_int_py(VisitedRegStr, VisitedReg),
+	format(string(Code),
+'    _cat = deref(state.regs[~w], state)
+    _target = deref(state.regs[~w], state)
+    _visited = deref(state.regs[~w], state)
+    if not isinstance(_cat, Atom) or not isinstance(_target, Atom): return False
+    if _atom_in_cons_list(_target, _visited, state): return False
+    if _target.name not in state.indexed_atom_fact2.get("category_parent/2", {}).get(_cat.name, []): return False
+    if not unify(state.regs[~w], Int(1), state): return False
+    pop_environment(state)
+    return True', [CatReg, TargetReg, VisitedReg, HopsReg]).
+
+emit_instr_py(recurse_category_ancestor(MidRegStr, RootRegStr, ChildHopsRegStr, VisitedRegStr, PredStr, _SkipStr), Code) :-
+	reg_int_py(MidRegStr, MidReg),
+	reg_int_py(RootRegStr, RootReg),
+	reg_int_py(ChildHopsRegStr, ChildHopsReg),
+	reg_int_py(VisitedRegStr, VisitedReg),
+	pred_to_func_name_py(PredStr, FN),
+	format(string(Code),
+'    _mid = deref(state.regs[~w], state)
+    _root = deref(state.regs[~w], state)
+    _visited = deref(state.regs[~w], state)
+    _child_hops = state.fresh_var()
+    state.regs[~w] = _child_hops
+    state.regs[1] = _mid
+    state.regs[2] = _root
+    state.regs[3] = _child_hops
+    state.regs[4] = Compound(".", [_mid, _visited])
+    if not ~w(state): return False', [MidReg, RootReg, VisitedReg, ChildHopsReg, FN]).
+
+emit_instr_py(return_add1(OutRegStr, InRegStr), Code) :-
+	reg_int_py(OutRegStr, OutReg),
+	reg_int_py(InRegStr, InReg),
+	format(string(Code),
+'    _in = deref(state.regs[~w], state)
+    if isinstance(_in, Int):
+        _result = Int(_in.n + 1)
+    elif isinstance(_in, Float):
+        _next = _in.f + 1.0
+        _result = Int(int(round(_next))) if abs(round(_next) - _next) < 1e-12 else Float(_next)
+    elif isinstance(_in, Atom):
+        try:
+            _next = float(_in.name) + 1.0
+            _result = Int(int(round(_next))) if abs(round(_next) - _next) < 1e-12 else Float(_next)
+        except (TypeError, ValueError):
+            return False
+    else:
+        return False
+    if not unify(state.regs[~w], _result, state): return False
+    pop_environment(state)
+    return True', [InReg, OutReg]).
 
 % --- Cut instructions ---
 

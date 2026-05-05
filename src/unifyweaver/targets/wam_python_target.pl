@@ -1151,6 +1151,36 @@ wam_line_to_python_literal(["jump", Label], Py) :-
 	clean_comma(Label, CL),
 	escape_python_string(CL, EL),
 	format(atom(Py), '("jump", "~w")', [EL]).
+% --- Indexed-fact + category-ancestor kernel instructions (Rust parity) ---
+wam_line_to_python_literal(["call_indexed_atom_fact2", Pred], Py) :-
+	clean_comma(Pred, CP),
+	escape_python_string(CP, EP),
+	format(atom(Py), '("call_indexed_atom_fact2", "~w")', [EP]).
+wam_line_to_python_literal(["base_category_ancestor", CatReg, TargetReg, VisitedReg], Py) :-
+	clean_comma(CatReg, CC),
+	clean_comma(TargetReg, CT),
+	clean_comma(VisitedReg, CV),
+	format(atom(Py), '("base_category_ancestor", ~w, ~w, ~w)', [CC, CT, CV]).
+wam_line_to_python_literal(["base_category_ancestor_bind", CatReg, TargetReg, HopsReg, VisitedReg], Py) :-
+	clean_comma(CatReg, CC),
+	clean_comma(TargetReg, CT),
+	clean_comma(HopsReg, CH),
+	clean_comma(VisitedReg, CV),
+	format(atom(Py), '("base_category_ancestor_bind", ~w, ~w, ~w, ~w)', [CC, CT, CH, CV]).
+wam_line_to_python_literal(["recurse_category_ancestor", MidReg, RootReg, ChildHopsReg, VisitedReg, Pred, Skip], Py) :-
+	clean_comma(MidReg, CM),
+	clean_comma(RootReg, CR),
+	clean_comma(ChildHopsReg, CCH),
+	clean_comma(VisitedReg, CV),
+	clean_comma(Pred, CP),
+	clean_comma(Skip, CSk),
+	escape_python_string(CP, EP),
+	format(atom(Py), '("recurse_category_ancestor", ~w, ~w, ~w, ~w, "~w", ~w)',
+		[CM, CR, CCH, CV, EP, CSk]).
+wam_line_to_python_literal(["return_add1", OutReg, InReg], Py) :-
+	clean_comma(OutReg, CO),
+	clean_comma(InReg, CI),
+	format(atom(Py), '("return_add1", ~w, ~w)', [CO, CI]).
 
 % ============================================================================
 % PHASE 5: Predicate Compilation
@@ -1582,6 +1612,11 @@ def run_benchmark(data_dir, n_reps):
     # Register foreign predicates
     register_category_parent(category_parents)
 
+    # Pre-flatten category_parent pairs once (used for indexed-table init below).
+    category_parent_pairs = [
+        (child, p) for child, parents in category_parents.items() for p in parents
+    ]
+
     # Build WAM program via predicates.build_program()
     raw_program = build_program()
     code, labels = load_program(raw_program)
@@ -1605,6 +1640,9 @@ def run_benchmark(data_dir, n_reps):
         rep_solutions = 0
         for (article, cat, rt) in seeds:
             state = WamState()
+            # Rust-parity: populate indexed fact table for O(1) category_parent/2
+            # lookups consumed by call_indexed_atom_fact2 / base_category_ancestor*.
+            register_indexed_atom_fact2_pairs(state, \'category_parent/2\', category_parent_pairs)
             set_reg(state, 1, make_atom(cat))
             set_reg(state, 2, make_atom(rt))
             set_reg(state, 3, state.fresh_var())
