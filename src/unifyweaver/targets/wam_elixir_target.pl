@@ -2167,12 +2167,13 @@ defmodule WamRuntime.FactSource.Lmdb do
   raw-pointer dereferences.
 
   Driver responsibility:
-    1. Add an LMDB binding to its mix deps (`:elmdb` is the
-       reference shape; other bindings work if they expose the same
-       function names). To keep this runtime dep-free for drivers
-       that dont use LMDB, the module is referenced indirectly via
-       Module.concat — same trick as the SQLite adaptor uses for
-       :exqlite.
+    1. Add an LMDB binding to its mix deps. The runtime expects a
+       module named `Elmdb`; the Hex `:elmdb` package exposes an
+       Erlang module named `:elmdb`, so real drivers should provide a
+       tiny bridge module with the function names used below. To keep
+       this runtime dep-free for drivers that dont use LMDB, the module
+       is referenced indirectly via Module.concat — same trick as the
+       SQLite adaptor uses for :exqlite.
     2. Open the LMDB env + database handle (dbi). Populate facts.
     3. Pass env/dbi to this adaptors open/3 via the spec.
 
@@ -2298,10 +2299,9 @@ defmodule WamRuntime.FactSource.LmdbIntIds do
   See `docs/proposals/wam_elixir_lmdb_int_id_factsource.md` for the full
   architecture rationale; this moduledoc is the API summary only.
 
-  Status: emit-and-grep stub. The function bodies are wired but runtime
-  validation requires `:elmdb` (not reachable from the sandbox where this
-  was developed). Same testing posture as PR #1792s original
-  `WamRuntime.FactSource.Lmdb`.
+  Status: function bodies are wired and covered by a MockElmdb e2e plus
+  a real-`:elmdb` integration fixture that runs when the local NIF
+  toolchain can compile the dependency.
 
   Architecture: three LMDB sub-databases inside one env.
 
@@ -2315,8 +2315,11 @@ defmodule WamRuntime.FactSource.LmdbIntIds do
   all three sub-databases consistently when ingesting facts.
 
   Driver responsibility (mirrors PR #1792s `Lmdb`):
-    1. Add `:elmdb` to mix deps. The module is referenced indirectly via
-       `Module.concat([Elmdb])` so this runtime emits without it.
+    1. Add an LMDB binding to mix deps and provide a module named
+       `Elmdb` with this runtime shape. For the Hex `:elmdb`
+       package, that bridge delegates to the Erlang module `:elmdb`.
+       The module is referenced indirectly via `Module.concat([Elmdb])`
+       so this runtime emits without the dependency.
     2. Open the LMDB env, create the three sub-databases.
     3. Ingest facts: for each `(arg1_str, arg2_str)` row, look up or
        allocate the integer ID for each side and write to all three DBs.
@@ -2460,8 +2463,8 @@ defmodule WamRuntime.FactSource.LmdbIntIds do
   persisted (e.g. via the callers metadata DB or a sentinel key in
   `id_to_key_dbi`) for the next batch.
 
-  Stub status: bodies wired through Module.concat; runtime exercise
-  requires `:elmdb`.
+  Runtime exercise is covered by MockElmdb and by a gated real-`:elmdb`
+  fixture.
   """
   def ingest_pairs(%__MODULE__{} = handle, pairs, opts \\\\ [])
       when is_list(pairs) do
@@ -2531,8 +2534,8 @@ defmodule WamRuntime.FactSource.LmdbIntIds do
   Returns `{:ok, %{pairs_migrated: integer, ids_assigned: integer,
   next_id: integer}}`.
 
-  Stub status: bodies wired through Module.concat; runtime exercise
-  requires `:elmdb`.
+  Runtime exercise is covered by MockElmdb and by a gated real-`:elmdb`
+  fixture.
   """
   def migrate_from_string_keyed(source_handle, %__MODULE__{} = dest_handle, opts \\\\ []) do
     start_id = Keyword.get(opts, :start_id, 0)

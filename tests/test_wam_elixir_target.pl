@@ -922,6 +922,70 @@ run_lmdb_int_ids_mock_e2e(Test) :-
         assertz(test_failed)
     ).
 
+test_lmdb_int_ids_real_lmdb_e2e :-
+    % End-to-end exercise against an actual LMDB env through the Hex
+    % :elmdb package. The Elixir script supplies the real-driver bridge
+    % from the runtime's dependency-free `Elmdb` shape to the Erlang
+    % `:elmdb` module. It skips cleanly if the local NIF toolchain cannot
+    % compile :elmdb.
+    Test = 'LmdbIntIds: real LMDB e2e through :elmdb bridge',
+    (   catch(process_create(path(elixir), ['-v'],
+                              [stdout(null), stderr(null), process(P)]),
+              _, fail),
+        process_wait(P, _)
+    ->  run_lmdb_int_ids_real_lmdb_e2e(Test)
+    ;   format('[SKIP] ~w: elixir not installed~n', [Test])
+    ).
+
+run_lmdb_int_ids_real_lmdb_e2e(Test) :-
+    TmpDir = '/tmp/test_lmdb_int_ids_real_lmdb_e2e',
+    (   exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true ),
+    make_directory(TmpDir),
+    directory_file_path(TmpDir, 'lib', LibDir),
+    make_directory(LibDir),
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    directory_file_path(LibDir, 'wam_runtime.ex', RuntimePath),
+    open(RuntimePath, write, RS),
+    write(RS, RuntimeCode),
+    close(RS),
+    source_file(test_lmdb_int_ids_real_lmdb_e2e, SrcFile),
+    file_directory_name(SrcFile, TestsDir),
+    directory_file_path(TestsDir, 'elixir_e2e/lmdb_int_ids_real_test.exs', TestSrc),
+    directory_file_path(TmpDir, 'lmdb_int_ids_real_test.exs', TestDst),
+    copy_file(TestSrc, TestDst),
+    process_create(path(elixir),
+                   ['lmdb_int_ids_real_test.exs'],
+                   [cwd(TmpDir),
+                    stdout(pipe(Out)), stderr(pipe(Err)),
+                    process(Pid)]),
+    read_string(Out, _, StdOut),
+    read_string(Err, _, StdErr),
+    process_wait(Pid, Status),
+    close(Out),
+    close(Err),
+    split_string(StdOut, "\n", "", Lines),
+    (   member(SkipLine, Lines),
+        string_concat("[SKIP] ", _, SkipLine)
+    ->  format('[SKIP] ~w: ~s~n', [Test, SkipLine])
+    ;   findall(L, (member(L, Lines), string_concat("[PASS] ", _, L)), PassLines),
+        findall(L, (member(L, Lines), string_concat("[FAIL] ", _, L)), FailLines),
+        length(PassLines, NPass),
+        length(FailLines, NFail),
+        (   Status = exit(0), NPass >= 3, NFail = 0
+        ->  format('[PASS] ~w (~w sub-tests via real LMDB)~n', [Test, NPass])
+        ;   format('[FAIL] ~w: status=~w pass=~w fail=~w~n', [Test, Status, NPass, NFail]),
+            (   FailLines = [_|_]
+            ->  forall(member(F, FailLines), format('  ~s~n', [F]))
+            ;   true
+            ),
+            (   StdErr \= ""
+            ->  format('  stderr:~n~s~n', [StdErr])
+            ;   true
+            ),
+            assertz(test_failed)
+        )
+    ).
+
 test_lmdb_int_ids_migrate_from_string_keyed_emitted :-
     % Migration helper: existing PR #1792 string-keyed Lmdb env
     % -> int-id-keyed LmdbIntIds env. Without this, deployments
@@ -2738,6 +2802,7 @@ run_tests :-
     test_lmdb_int_ids_ingest_pairs_emitted,
     test_lmdb_int_ids_migrate_from_string_keyed_emitted,
     test_lmdb_int_ids_mock_e2e,
+    test_lmdb_int_ids_real_lmdb_e2e,
     test_shared_detector_finds_tc,
     test_shared_detector_finds_category_ancestor,
     test_kernel_dispatch_emits_tc_module,
