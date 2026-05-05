@@ -7,6 +7,9 @@
 #include <string.h>
 #include <stdbool.h>
 #include <assert.h>
+#ifdef WAM_C_ENABLE_LMDB
+#include <lmdb.h>
+#endif
 
 #define WAM_HALT -1
 #define WAM_ERR_OOB -2
@@ -205,6 +208,8 @@ bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity)
 void wam_fact_source_init(WamFactSource *source);
 void wam_fact_source_close(WamFactSource *source);
 bool wam_fact_source_load_tsv(WamState *state, WamFactSource *source, const char *path);
+bool wam_fact_source_load_lmdb(WamState *state, WamFactSource *source,
+                               const char *env_path, const char *db_name);
 int wam_fact_source_lookup_arg1(WamFactSource *source, const char *arg1,
                                 CategoryEdge *out_edges, int max_edges);
 bool wam_register_category_parent_fact_source(WamState *state, WamFactSource *source);

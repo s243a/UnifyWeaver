@@ -987,6 +987,68 @@ bool wam_fact_source_load_tsv(WamState *state, WamFactSource *source, const char
     return true;
 }
 
+bool wam_fact_source_load_lmdb(WamState *state, WamFactSource *source,
+                               const char *env_path, const char *db_name) {
+#ifndef WAM_C_ENABLE_LMDB
+    (void)state;
+    (void)source;
+    (void)env_path;
+    (void)db_name;
+    return false;
+#else
+    MDB_env *env = NULL;
+    MDB_txn *txn = NULL;
+    MDB_cursor *cursor = NULL;
+    MDB_dbi dbi = 0;
+    int rc = 0;
+    bool ok = false;
+
+    rc = mdb_env_create(&env);
+    if (rc != MDB_SUCCESS) goto done;
+    rc = mdb_env_set_maxdbs(env, 16);
+    if (rc != MDB_SUCCESS) goto done;
+    rc = mdb_env_open(env, env_path, MDB_RDONLY, 0664);
+    if (rc != MDB_SUCCESS) goto done;
+    rc = mdb_txn_begin(env, NULL, MDB_RDONLY, &txn);
+    if (rc != MDB_SUCCESS) goto done;
+    rc = mdb_dbi_open(txn, (db_name && db_name[0]) ? db_name : NULL, 0, &dbi);
+    if (rc != MDB_SUCCESS) goto done;
+    rc = mdb_cursor_open(txn, dbi, &cursor);
+    if (rc != MDB_SUCCESS) goto done;
+
+    MDB_val key;
+    MDB_val data;
+    rc = mdb_cursor_get(cursor, &key, &data, MDB_FIRST);
+    while (rc == MDB_SUCCESS) {
+        char *child = malloc(key.mv_size + 1);
+        char *parent = malloc(data.mv_size + 1);
+        if (!child || !parent) {
+            free(child);
+            free(parent);
+            goto done;
+        }
+        memcpy(child, key.mv_data, key.mv_size);
+        child[key.mv_size] = 0;
+        memcpy(parent, data.mv_data, data.mv_size);
+        parent[data.mv_size] = 0;
+        wam_fact_source_add_edge(state, source, child, parent);
+        free(child);
+        free(parent);
+        rc = mdb_cursor_get(cursor, &key, &data, MDB_NEXT);
+    }
+    ok = (rc == MDB_NOTFOUND);
+
+done:
+    if (cursor) mdb_cursor_close(cursor);
+    if (txn) mdb_txn_abort(txn);
+    if (env) {
+        if (dbi) mdb_dbi_close(env, dbi);
+        mdb_env_close(env);
+    }
+    return ok;
+#endif
+}
+
 int wam_fact_source_lookup_arg1(WamFactSource *source, const char *arg1,
                                 CategoryEdge *out_edges, int max_edges) {
     int count = 0;

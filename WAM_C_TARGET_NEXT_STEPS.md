@@ -4,7 +4,7 @@ Status date: 2026-05-04
 
 Base verified locally:
 
-- `main` at `83b34375` (`Merge pull request #1837 from s243a/feat/wam-c-streaming-foreign-results`)
+- `main` at `e2160c7e` (`Merge pull request #1840 from s243a/feat/wam-c-effective-distance-bench`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 
 This file replaces the older implementation plan. The four original C follow-up
@@ -25,6 +25,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | File-backed FactSource foundation | Done | `WamFactSource`, `wam_fact_source_load_tsv`, `wam_fact_source_lookup_arg1`, `wam_register_category_parent_fact_source`, executable smoke |
 | Streaming integer foreign-result foundation | Done | `WamIntResults`, `wam_int_results_push`, `wam_collect_category_ancestor_hops`, multi-path executable smoke |
 | Effective-distance benchmark generator | Done | `generate_wam_c_effective_distance_benchmark.pl`, TSV facts, `kernels_on`/`kernels_off`, generated C runner smoke |
+| LMDB-backed FactSource foundation | Done | Optional `WAM_C_ENABLE_LMDB`, `wam_fact_source_load_lmdb`, duplicate-key LMDB smoke, existing lookup/kernel registration reuse |
 
 ## Current C Target Baseline
 
@@ -50,6 +51,8 @@ The C target is now a credible small WAM backend:
 - Can generate a small effective-distance C benchmark runner from Prolog facts,
   with both native-kernel and reference DFS modes over TSV category-parent
   facts.
+- Can eagerly load category-parent facts from LMDB into the same `WamFactSource`
+  edge storage used by TSV, behind the optional `WAM_C_ENABLE_LMDB` build flag.
 - Has executable smokes for generated runtime, cross-predicate calls,
   foreign calls, native category ancestor, file-backed facts, streaming native
   results, real multi-clause predicates, structure indexing, `is_list/1`, and
@@ -81,7 +84,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Shared kernel detector integration | Missing | Done | Done | Reuse `recursive_kernel_detection.pl`; generate C registration stubs. |
 | Lowered/native helper functions | Missing | Done | Done | Consider after foreign kernels; C can lower simple fact-only or deterministic predicates. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
-| LMDB-backed facts | Missing | Not primary | Done | Haskell is the reference. C now has an ownership model to extend. |
+| LMDB-backed facts | Partial | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts; next gap is generated benchmark wiring and larger artifact layout support. |
 | Effective-distance benchmark harness | Partial | Done | Done | C has a small generated TSV harness with `kernels_on`/`kernels_off`; next gap is full benchmark matrix integration and larger datasets. |
 | Classic-program e2e suite | Partial | Partial/Done | Partial/Done | C has targeted smokes; add Fibonacci/Ackermann-style suite like Scala/Elixir. |
 | Memory lifecycle | Partial | Runtime-managed | Runtime-managed | C has init/free; needs ASAN/Valgrind CI-style coverage for larger programs. |
@@ -89,18 +92,7 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-lmdb-fact-source`
-
-Goal: add LMDB-backed category-parent facts once the file FactSource and
-streaming result contracts are stable.
-
-Scope:
-
-- Mirror the TSV FactSource ownership model.
-- Load/cursor category-parent pairs from LMDB.
-- Keep this behind an optional build/runtime path.
-
-### 2. `feat/wam-c-kernel-detector-setup`
+### 1. `feat/wam-c-kernel-detector-setup`
 
 Goal: connect the C target to the shared recursive-kernel detector.
 
@@ -110,7 +102,7 @@ Scope:
 - Generate C registration stubs for `category_ancestor/4`.
 - Keep the hand-registration runtime helpers as the low-level API.
 
-### 3. `feat/wam-c-effective-distance-matrix`
+### 2. `feat/wam-c-effective-distance-matrix`
 
 Goal: make C visible in the standard effective-distance benchmark matrix.
 
@@ -120,6 +112,18 @@ Scope:
 - Add script wiring next to the Rust and Haskell effective-distance paths.
 - Compare `kernels_on` and `kernels_off` outputs on shared small datasets
   before scaling up.
+
+### 3. `feat/wam-c-lmdb-effective-distance-wiring`
+
+Goal: let the generated C effective-distance harness choose TSV or LMDB fact
+storage.
+
+Scope:
+
+- Add generator options for `facts_tsv` / `facts_lmdb`.
+- Keep `facts_tsv` as the dependency-free default.
+- Compile LMDB mode with `-DWAM_C_ENABLE_LMDB -llmdb`.
+- Validate duplicate-key category-parent artifacts before scaling up.
 
 ### 4. `perf/wam-c-pack-instruction`
 
@@ -137,9 +141,8 @@ or cache behavior becomes a real bottleneck.
 
 ## Suggested Immediate Next Step
 
-Start with `feat/wam-c-lmdb-fact-source`.
+Start with `feat/wam-c-kernel-detector-setup`.
 
-The C target now has a TSV-backed effective-distance harness, so the next
-highest parity gap is durable fact storage. Use the Haskell LMDB path as the
-reference design, keep the C API optional, and preserve the existing TSV
-FactSource as the dependency-free fallback.
+The C target now has hand-registered native kernels plus TSV and optional LMDB
+fact loading. The next parity gap is removing the hand-wiring by reusing the
+shared recursive-kernel detector to generate C registration stubs.
