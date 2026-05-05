@@ -259,6 +259,18 @@ test_fact_source_generation :-
     ;   fail_test(Test, 'file FactSource helpers missing')
     ).
 
+test_streaming_foreign_results_generation :-
+    Test = 'WAM-C: streaming foreign result helpers generated',
+    (   compile_wam_runtime_to_c([], RuntimeCode),
+        atom_string(RuntimeCode, S),
+        sub_string(S, _, _, _, 'void wam_int_results_init'),
+        sub_string(S, _, _, _, 'bool wam_int_results_push'),
+        sub_string(S, _, _, _, 'bool wam_collect_category_ancestor_hops'),
+        sub_string(S, _, _, _, 'results.values[0]')
+    ->  pass(Test)
+    ;   fail_test(Test, 'streaming foreign result helpers missing')
+    ).
+
 test_unsupported_instruction_fails_loudly :-
     Test = 'WAM-C: unsupported instructions fail loudly',
     BadWamCode = 'foo/1:\n    unknown_opcode A1\n    proceed',
@@ -358,6 +370,16 @@ test_fact_source_executable_smoke :-
     ->  (   run_fact_source_executable_smoke
         ->  pass(Test)
         ;   fail_test(Test, 'file FactSource executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_streaming_foreign_results_executable_smoke :-
+    Test = 'WAM-C: streaming category_ancestor result executable smoke',
+    (   gcc_available
+    ->  (   run_streaming_foreign_results_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'streaming category_ancestor result executable failed')
         )
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
@@ -530,6 +552,25 @@ run_fact_source_executable_smoke :-
     write_text_file(PredPath, PredTranslationUnit),
     write_text_file(DataPath, 'leaf\tmid\nmid\troot\nleaf\tother\n'),
     wam_c_fact_source_smoke_main(DataPath, MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
+run_streaming_foreign_results_executable_smoke :-
+    WamCode = 'category_ancestor/4:\n    call_foreign category_ancestor/4, 4\n    proceed',
+    compile_wam_predicate_to_c(user:category_ancestor/4, WamCode, [], PredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    format(atom(TmpBase), '/tmp/unifyweaver_wam_c_streaming_foreign_smoke_~w', [Stamp]),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    wam_c_streaming_foreign_smoke_main(MainCode),
     write_text_file(MainPath, MainCode),
     compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
     run_c_smoke_plain(ExePath).
@@ -988,6 +1029,73 @@ int main(void) {
 }
 ', [DataPath]).
 
+wam_c_streaming_foreign_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_category_ancestor_4(WamState* state);
+
+static WamValue make_visited_singleton(WamState *state, const char *atom) {
+    WamValue list;
+    list.tag = VAL_LIST;
+    list.data.ref_addr = state->H;
+    state->H_array[state->H++] = val_atom(atom);
+    state->H_array[state->H++] = val_atom("[]");
+    return list;
+}
+
+static bool has_value(WamIntResults *results, int value) {
+    for (int i = 0; i < results->count; i++) {
+        if (results->values[i] == value) return true;
+    }
+    return false;
+}
+
+int main(void) {
+    WamState state;
+    WamIntResults results;
+    wam_state_init(&state);
+    wam_int_results_init(&results);
+    setup_category_ancestor_4(&state);
+
+    wam_register_category_parent(&state, "leaf", "root");
+    wam_register_category_parent(&state, "leaf", "mid");
+    wam_register_category_parent(&state, "mid", "root");
+    wam_register_category_ancestor_kernel(&state, "category_ancestor/4", 10);
+
+    state.A[0] = val_atom("leaf");
+    state.A[1] = val_atom("root");
+    state.A[2] = val_unbound("Hops");
+    state.A[3] = make_visited_singleton(&state, "leaf");
+
+    if (!wam_collect_category_ancestor_hops(&state, &results) ||
+        results.count != 2 ||
+        !has_value(&results, 1) ||
+        !has_value(&results, 2)) {
+        wam_int_results_close(&results);
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue args[4] = {
+        val_atom("leaf"),
+        val_atom("root"),
+        val_unbound("Hops"),
+        make_visited_singleton(&state, "leaf")
+    };
+    int rc = wam_run_predicate(&state, "category_ancestor/4", args, 4);
+    if (rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_INT || state.A[2].data.integer != 1) {
+        wam_int_results_close(&results);
+        wam_free_state(&state);
+        return 20;
+    }
+
+    wam_int_results_close(&results);
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 wam_c_real_builtin_smoke_main(
 '#include "wam_runtime.h"
 
@@ -1262,6 +1370,7 @@ run_tests_once :-
     test_call_foreign_generation,
     test_category_ancestor_kernel_generation,
     test_fact_source_generation,
+    test_streaming_foreign_results_generation,
     test_unsupported_instruction_fails_loudly,
     test_no_zero_instruction_fallback,
     test_list_target_pc_emission,
@@ -1271,6 +1380,7 @@ run_tests_once :-
     test_call_foreign_executable_smoke,
     test_category_ancestor_kernel_executable_smoke,
     test_fact_source_executable_smoke,
+    test_streaming_foreign_results_executable_smoke,
     test_real_prolog_builtin_executable_smoke,
     test_real_prolog_multiclause_executable_smoke,
     test_real_prolog_structure_index_executable_smoke,

@@ -113,6 +113,12 @@ typedef struct {
     int edge_cap;
 } WamFactSource;
 
+typedef struct {
+    int *values;
+    int count;
+    int cap;
+} WamIntResults;
+
 /* Instruction */
 // TODO: Pack these fields into a union keyed on `tag` to reduce memory footprint
 typedef struct {
@@ -202,6 +208,10 @@ bool wam_fact_source_load_tsv(WamState *state, WamFactSource *source, const char
 int wam_fact_source_lookup_arg1(WamFactSource *source, const char *arg1,
                                 CategoryEdge *out_edges, int max_edges);
 bool wam_register_category_parent_fact_source(WamState *state, WamFactSource *source);
+void wam_int_results_init(WamIntResults *results);
+void wam_int_results_close(WamIntResults *results);
+bool wam_int_results_push(WamIntResults *results, int value);
+bool wam_collect_category_ancestor_hops(WamState *state, WamIntResults *results);
 
 /* Helpers */
 static inline WamValue val_atom(const char *s) {
