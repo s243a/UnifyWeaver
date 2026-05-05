@@ -223,8 +223,13 @@ for the original Lmdb adaptor.
   lookup_by_arg1_id with dupsort, lookup_by_arg1 binary round-trip,
   lookup_id/lookup_key on missing returns nil cleanly, stream_all
   ordered int-pair output, migrate_from_string_keyed correctness.
-- [ ] `:elmdb`-backed integration test (requires Hex.pm reachability).
-  Caveats vs the mock test that shipped:
+- [x] `:elmdb`-backed integration test. Shipped in
+  `tests/elixir_e2e/lmdb_int_ids_real_test.exs` and wired into
+  `tests/test_wam_elixir_target.pl` as
+  `test_lmdb_int_ids_real_lmdb_e2e/0`. It validates unique-key
+  ingest/lookup/stream, dupsort lookup, and string-keyed LMDB ->
+  int-id LMDB migration against actual LMDB files. Caveats vs the
+  mock test:
   - Real `:elmdb` cursor :next on dupsort tables walks ALL (key, value)
     pairs including duplicates (MDB_NEXT). The mock now matches this
     after a fix during the test build (the first cut had `:next` skip
@@ -235,10 +240,23 @@ for the original Lmdb adaptor.
     same for fixed-width binaries.
   - Real `:elmdb` enforces transaction lifecycle: rw_txn cannot
     coexist with concurrent ro_txn from same env, etc. The mock has
-    no isolation. Tests that rely on transaction semantics still need
-    real `:elmdb`.
-- [ ] Cross-target benchmark with the int-id LMDB FactSource against
-  the in-memory int-tuple recipe (requires the integration test).
+    no isolation.
+- [x] First cross-target benchmark hook:
+  `wam-elixir-lmdb-int-ids` in
+  `examples/benchmark/benchmark_effective_distance.py`. The target
+  pre-ingests `category_parent.tsv` into `LmdbIntIds`, then runs the
+  CategoryAncestor kernel over the LMDB-backed int-id FactSource. The
+  dev-scale smoke matches Prolog, Rust WAM accumulated, and Haskell
+  WAM accumulated output.
+- [ ] Fair steady-state benchmark against the in-memory int-tuple
+  recipe and Rust/Haskell accumulated targets. The current Elixir
+  benchmark path is correct, but the timed command still pays BEAM
+  startup and `Mix.install` dependency-loading overhead, so it is a
+  correctness/comparison hook rather than a final performance number.
+  Haskell's `use_lmdb(auto)` currently defaults to
+  `lmdb_auto_threshold(50000)` when the `lmdb` package is available;
+  Elixir should get a comparable auto policy once the steady-state
+  runner is in place.
 
 ## Driver-side recipe
 

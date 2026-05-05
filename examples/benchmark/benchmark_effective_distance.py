@@ -63,6 +63,7 @@ WAM_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_effective_distan
 # Use the variant-aware optimized Haskell WAM generator so seeded and
 # accumulated targets compile the same Prolog optimization surfaces as Rust.
 WAM_HASKELL_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_haskell_optimized_benchmark.pl"
+WAM_ELIXIR_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_elixir_effective_distance_benchmark.pl"
 SEMANTIC_PROLOG_GENERATOR = ROOT / "examples" / "benchmark" / "generate_prolog_min_semantic_distance_benchmark.pl"
 EFF_SEMANTIC_PROLOG_GENERATOR = ROOT / "examples" / "benchmark" / "generate_prolog_effective_semantic_distance_benchmark.pl"
 EDGE_WEIGHT_SCRIPT = ROOT / "examples" / "benchmark" / "precompute_edge_weights.py"
@@ -92,7 +93,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--targets",
         default="csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-accumulated",
-        help="Comma-separated targets: csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-seeded,prolog-pruned,prolog-accumulated,prolog-article-accumulated,prolog-root-accumulated,wam-rust-seeded,wam-rust-accumulated,wam-rust-seeded-no-kernels,wam-rust-accumulated-no-kernels,haskell-wam-seeded,haskell-wam-accumulated,haskell-wam-seeded-no-kernels,haskell-wam-accumulated-no-kernels",
+        help="Comma-separated targets: csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-seeded,prolog-pruned,prolog-accumulated,prolog-article-accumulated,prolog-root-accumulated,wam-rust-seeded,wam-rust-accumulated,wam-rust-seeded-no-kernels,wam-rust-accumulated-no-kernels,haskell-wam-seeded,haskell-wam-accumulated,haskell-wam-seeded-no-kernels,haskell-wam-accumulated-no-kernels,wam-elixir-lmdb-int-ids",
     )
     parser.add_argument(
         "--repetitions",
@@ -287,6 +288,281 @@ def build_haskell_wam_effective_distance(root: Path, scale: str, variant: str) -
     return command
 
 
+ELIXIR_LMDB_BRIDGE = r'''
+defmodule RealElmdbDependency do
+  def ensure! do
+    Mix.install([{:elmdb, "~> 0.4.1"}], consolidate_protocols: false)
+  end
+end
+
+RealElmdbDependency.ensure!()
+Code.require_file("lib/wam_runtime.ex", __DIR__)
+
+defmodule Elmdb do
+  @moduledoc false
+
+  def env_open(path, opts) when is_binary(path) do
+    :elmdb.env_open(String.to_charlist(path), opts)
+  end
+
+  def env_close(env), do: :elmdb.env_close(env)
+
+  def db_open(env, name, opts) do
+    :elmdb.db_open(env, to_db_name(name), normalize_db_opts(opts))
+  end
+
+  def rw_txn_begin(env), do: :elmdb.txn_begin(env)
+  def ro_txn_begin(env), do: :elmdb.ro_txn_begin(env)
+  def txn_commit(txn), do: :elmdb.txn_commit(txn)
+  def txn_abort(txn), do: :elmdb.txn_abort(txn)
+  def ro_txn_commit(txn), do: :elmdb.ro_txn_commit(txn)
+
+  def txn_get(txn, dbi, key) do
+    bin_key = to_bin(key)
+
+    try do
+      :elmdb.txn_get(txn, dbi, bin_key)
+    rescue
+      ArgumentError -> :elmdb.ro_txn_get(txn, dbi, bin_key)
+    end
+  end
+
+  def txn_put(txn, dbi, key, value), do: :elmdb.txn_put(txn, dbi, to_bin(key), to_bin(value))
+  def ro_txn_cursor_open(txn, dbi), do: :elmdb.ro_txn_cursor_open(txn, dbi)
+  def ro_txn_cursor_close(cur), do: :elmdb.ro_txn_cursor_close(cur)
+  def ro_txn_cursor_get(cur, op, arg), do: :elmdb.ro_txn_cursor_get(cur, normalize_cursor_op(op, arg))
+
+  defp to_db_name(name) when is_binary(name), do: name
+  defp to_db_name(name) when is_atom(name), do: Atom.to_string(name)
+  defp to_bin(value) when is_binary(value), do: value
+  defp to_bin(value) when is_list(value), do: :erlang.iolist_to_binary(value)
+
+  defp normalize_db_opts(opts) do
+    opts
+    |> Enum.map(fn
+      :dupsort -> :dup_sort
+      other -> other
+    end)
+    |> add_create()
+    |> Enum.uniq()
+  end
+
+  defp add_create(opts), do: [:create | opts]
+  defp normalize_cursor_op(:set, key), do: {:set, key}
+  defp normalize_cursor_op(op, _arg), do: op
+end
+'''
+
+
+ELIXIR_LMDB_SETUP = ELIXIR_LMDB_BRIDGE + r'''
+defmodule LmdbSetup do
+  alias WamRuntime.FactSource.LmdbIntIds
+
+  def run(facts_dir) do
+    env_path = Path.join(__DIR__, "lmdb_int_ids")
+    File.rm_rf!(env_path)
+    {handle, env} = open_handle(env_path)
+
+    pairs =
+      facts_dir
+      |> Path.join("category_parent.tsv")
+      |> File.stream!()
+      |> Stream.drop(1)
+      |> Stream.map(fn line ->
+        [child, parent] = line |> String.trim() |> String.split("\t")
+        {child, parent}
+      end)
+      |> Enum.to_list()
+
+    {:ok, result} = LmdbIntIds.ingest_pairs(handle, pairs)
+    Elmdb.env_close(env)
+    IO.puts("lmdb_int_ids_pairs=#{result.pairs_seen}")
+    IO.puts("lmdb_int_ids_new_ids=#{result.new_ids}")
+    IO.puts("lmdb_int_ids_next_id=#{result.next_id}")
+  end
+
+  defp open_handle(env_path) do
+    {:ok, env} = Elmdb.env_open(env_path, [{:map_size, 512 * 1024 * 1024}, {:max_dbs, 8}])
+    {:ok, facts} = Elmdb.db_open(env, "facts", [:dupsort])
+    {:ok, key_to_id} = Elmdb.db_open(env, "key_to_id", [])
+    {:ok, id_to_key} = Elmdb.db_open(env, "id_to_key", [])
+
+    handle =
+      LmdbIntIds.open(
+        %{
+          env: env,
+          facts_dbi: facts,
+          key_to_id_dbi: key_to_id,
+          id_to_key_dbi: id_to_key,
+          arity: 2,
+          dupsort: true
+        },
+        2,
+        nil
+      )
+
+    {handle, env}
+  end
+end
+
+case System.argv() do
+  [facts_dir] -> LmdbSetup.run(facts_dir)
+  _ ->
+    IO.puts(:stderr, "Usage: elixir setup_lmdb_int_ids.exs <facts-dir>")
+    System.halt(1)
+end
+'''
+
+
+ELIXIR_LMDB_DRIVER = ELIXIR_LMDB_BRIDGE + r'''
+defmodule BenchDriver do
+  alias WamRuntime.FactSource.LmdbIntIds
+
+  @max_depth 10
+  @dimension_n 5
+  @neg_n -@dimension_n
+
+  def run_all(facts_dir) do
+    root = facts_dir |> Path.join("root_categories.tsv") |> load_single() |> List.first()
+    article_cats = facts_dir |> Path.join("article_category.tsv") |> load_tsv()
+    seed_cats = article_cats |> Enum.map(fn {_, c} -> c end) |> Enum.uniq() |> Enum.sort()
+
+    env_path = Path.join(__DIR__, "lmdb_int_ids")
+    {handle, env} = open_handle(env_path)
+    root_id = LmdbIntIds.lookup_id(handle, root)
+
+    seed_weight_sums =
+      for cat <- seed_cats, into: %{} do
+        {cat, run_seeded(handle, cat, root_id)}
+      end
+
+    Elmdb.env_close(env)
+
+    article_sums =
+      Enum.reduce(article_cats, %{}, fn {art, cat}, acc ->
+        ws = Map.get(seed_weight_sums, cat, 0.0)
+        val = if cat == root, do: ws + 1.0, else: ws
+        Map.update(acc, art, val, &(&1 + val))
+      end)
+
+    results =
+      for {art, ws} <- article_sums, ws > 0.0 do
+        deff = :math.pow(ws, -1 / @dimension_n)
+        {deff, art}
+      end
+      |> Enum.sort()
+
+    IO.puts("article\troot_category\teffective_distance")
+
+    for {deff, art} <- results do
+      :io.format("~ts\t~ts\t~.6f~n", [art, root, deff])
+    end
+  end
+
+  defp run_seeded(handle, cat, root_id) do
+    case LmdbIntIds.lookup_id(handle, cat) do
+      nil ->
+        0.0
+
+      cat_id ->
+        if cat_id == root_id do
+          0.0
+        else
+          dests_fn = fn node ->
+            handle
+            |> LmdbIntIds.lookup_by_arg1_id(node, nil)
+            |> Enum.map(fn {_from, to} -> to end)
+          end
+
+          WamRuntime.GraphKernel.CategoryAncestor.fold_hops_with_dests_seeded(
+            dests_fn,
+            cat_id,
+            root_id,
+            @max_depth,
+            0.0,
+            fn hop, acc -> acc + :math.pow(hop + 1, @neg_n) end
+          )
+        end
+    end
+  end
+
+  defp open_handle(env_path) do
+    {:ok, env} = Elmdb.env_open(env_path, [{:map_size, 512 * 1024 * 1024}, {:max_dbs, 8}])
+    {:ok, facts} = Elmdb.db_open(env, "facts", [:dupsort])
+    {:ok, key_to_id} = Elmdb.db_open(env, "key_to_id", [])
+    {:ok, id_to_key} = Elmdb.db_open(env, "id_to_key", [])
+
+    handle =
+      LmdbIntIds.open(
+        %{
+          env: env,
+          facts_dbi: facts,
+          key_to_id_dbi: key_to_id,
+          id_to_key_dbi: id_to_key,
+          arity: 2,
+          dupsort: true
+        },
+        2,
+        nil
+      )
+
+    {handle, env}
+  end
+
+  defp load_tsv(path) do
+    path
+    |> File.stream!()
+    |> Stream.drop(1)
+    |> Stream.map(fn line ->
+      [a, b] = line |> String.trim() |> String.split("\t")
+      {a, b}
+    end)
+    |> Enum.to_list()
+  end
+
+  defp load_single(path) do
+    path
+    |> File.stream!()
+    |> Stream.drop(1)
+    |> Stream.map(&String.trim/1)
+    |> Enum.to_list()
+  end
+end
+
+case System.argv() do
+  [facts_dir] -> BenchDriver.run_all(facts_dir)
+  _ ->
+    IO.puts(:stderr, "Usage: elixir run_lmdb_int_ids.exs <facts-dir>")
+    System.halt(1)
+end
+'''
+
+
+def build_wam_elixir_lmdb_int_ids_effective_distance(root: Path, scale: str) -> list[str]:
+    facts_path = require_file(BENCH_DIR / scale / "facts.pl")
+    scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
+    project_dir = root / "wam_elixir_lmdb_int_ids" / scale
+    project_dir.mkdir(parents=True, exist_ok=True)
+    run_command(
+        [
+            "swipl",
+            "-q",
+            "-s",
+            str(WAM_ELIXIR_GENERATOR),
+            "--",
+            str(facts_path),
+            str(project_dir),
+        ],
+        cwd=ROOT,
+    )
+    setup_script = project_dir / "setup_lmdb_int_ids.exs"
+    driver_script = project_dir / "run_lmdb_int_ids.exs"
+    setup_script.write_text(ELIXIR_LMDB_SETUP, encoding="utf-8")
+    driver_script.write_text(ELIXIR_LMDB_DRIVER, encoding="utf-8")
+    run_command(["elixir", str(setup_script), str(scale_dir)], cwd=project_dir)
+    return ["elixir", str(driver_script), str(scale_dir)]
+
+
 def benchmark_target(
     command: list[str],
     scale: str,
@@ -350,6 +626,7 @@ def print_summary(results: list[RunResult]) -> None:
         haskell_wam_accumulated = find_result(entries, "haskell-wam-accumulated")
         haskell_wam_seeded_no_kernels = find_result(entries, "haskell-wam-seeded-no-kernels")
         haskell_wam_accumulated_no_kernels = find_result(entries, "haskell-wam-accumulated-no-kernels")
+        wam_elixir_lmdb_int_ids = find_result(entries, "wam-elixir-lmdb-int-ids")
         prolog_semantic_min = find_result(entries, "prolog-semantic-min")
         prolog_eff_semantic = find_result(entries, "prolog-eff-semantic")
         dfs_like = [item for item in entries if item.target in {"csharp-dfs", "rust-dfs", "go-dfs"}]
@@ -368,6 +645,7 @@ def print_summary(results: list[RunResult]) -> None:
         print_no_kernel_match_status(scale, "query_vs_wam_rust_accumulated_no_kernels", qe, wam_rust_accumulated_no_kernels, seed_subset_probe)
         print_pair_match_status(scale, "query_vs_haskell_wam_seeded", qe, haskell_wam_seeded)
         print_pair_match_status(scale, "query_vs_haskell_wam_accumulated", qe, haskell_wam_accumulated)
+        print_pair_match_status(scale, "query_vs_wam_elixir_lmdb_int_ids", qe, wam_elixir_lmdb_int_ids)
         print_no_kernel_match_status(scale, "query_vs_haskell_wam_seeded_no_kernels", qe, haskell_wam_seeded_no_kernels, seed_subset_probe)
         print_no_kernel_match_status(scale, "query_vs_haskell_wam_accumulated_no_kernels", qe, haskell_wam_accumulated_no_kernels, seed_subset_probe)
         print_pair_match_status(scale, "prolog_vs_wam_rust_seeded", prolog_accumulated, wam_rust_seeded)
@@ -376,10 +654,13 @@ def print_summary(results: list[RunResult]) -> None:
         print_no_kernel_match_status(scale, "prolog_vs_wam_rust_accumulated_no_kernels", prolog_accumulated, wam_rust_accumulated_no_kernels, seed_subset_probe)
         print_pair_match_status(scale, "prolog_vs_haskell_wam_seeded", prolog_accumulated, haskell_wam_seeded)
         print_pair_match_status(scale, "prolog_vs_haskell_wam_accumulated", prolog_accumulated, haskell_wam_accumulated)
+        print_pair_match_status(scale, "prolog_vs_wam_elixir_lmdb_int_ids", prolog_accumulated, wam_elixir_lmdb_int_ids)
         print_no_kernel_match_status(scale, "prolog_vs_haskell_wam_seeded_no_kernels", prolog_accumulated, haskell_wam_seeded_no_kernels, seed_subset_probe)
         print_no_kernel_match_status(scale, "prolog_vs_haskell_wam_accumulated_no_kernels", prolog_accumulated, haskell_wam_accumulated_no_kernels, seed_subset_probe)
         print_pair_match_status(scale, "wam_rust_vs_haskell_wam_seeded", wam_rust_seeded, haskell_wam_seeded)
         print_pair_match_status(scale, "wam_rust_vs_haskell_wam_accumulated", wam_rust_accumulated, haskell_wam_accumulated)
+        print_pair_match_status(scale, "wam_rust_vs_wam_elixir_lmdb_int_ids", wam_rust_accumulated, wam_elixir_lmdb_int_ids)
+        print_pair_match_status(scale, "haskell_wam_vs_wam_elixir_lmdb_int_ids", haskell_wam_accumulated, wam_elixir_lmdb_int_ids)
         print_no_kernel_match_status(scale, "wam_rust_vs_haskell_wam_seeded_no_kernels", wam_rust_seeded_no_kernels, haskell_wam_seeded_no_kernels, seed_subset_probe)
         print_no_kernel_match_status(scale, "wam_rust_vs_haskell_wam_accumulated_no_kernels", wam_rust_accumulated_no_kernels, haskell_wam_accumulated_no_kernels, seed_subset_probe)
         print_pair_match_status(scale, "query_vs_prolog_semantic_min", qe, prolog_semantic_min)
@@ -397,10 +678,13 @@ def print_summary(results: list[RunResult]) -> None:
         print_no_kernel_speedup(scale, "speedup_vs_wam_rust_accumulated_no_kernels", wam_rust_accumulated_no_kernels, qe, seed_subset_probe)
         print_speedup(scale, "speedup_vs_haskell_wam_seeded", haskell_wam_seeded, qe)
         print_speedup(scale, "speedup_vs_haskell_wam_accumulated", haskell_wam_accumulated, qe)
+        print_speedup(scale, "speedup_vs_wam_elixir_lmdb_int_ids", wam_elixir_lmdb_int_ids, qe)
         print_no_kernel_speedup(scale, "speedup_vs_haskell_wam_seeded_no_kernels", haskell_wam_seeded_no_kernels, qe, seed_subset_probe)
         print_no_kernel_speedup(scale, "speedup_vs_haskell_wam_accumulated_no_kernels", haskell_wam_accumulated_no_kernels, qe, seed_subset_probe)
         print_speedup(scale, "wam_rust_speedup_vs_haskell_seeded", haskell_wam_seeded, wam_rust_seeded)
         print_speedup(scale, "wam_rust_speedup_vs_haskell_accumulated", haskell_wam_accumulated, wam_rust_accumulated)
+        print_speedup(scale, "wam_rust_speedup_vs_wam_elixir_lmdb_int_ids", wam_elixir_lmdb_int_ids, wam_rust_accumulated)
+        print_speedup(scale, "haskell_wam_speedup_vs_wam_elixir_lmdb_int_ids", wam_elixir_lmdb_int_ids, haskell_wam_accumulated)
         print_no_kernel_speedup(scale, "wam_rust_speedup_vs_haskell_seeded_no_kernels", haskell_wam_seeded_no_kernels, wam_rust_seeded_no_kernels, seed_subset_probe)
         print_no_kernel_speedup(scale, "wam_rust_speedup_vs_haskell_accumulated_no_kernels", haskell_wam_accumulated_no_kernels, wam_rust_accumulated_no_kernels, seed_subset_probe)
         print_speedup(scale, "speedup_vs_prolog_semantic_min", prolog_semantic_min, qe)
@@ -426,6 +710,7 @@ def print_summary(results: list[RunResult]) -> None:
         print_phase_metrics(scale, "wam-rust-accumulated-no-kernels-metrics", wam_rust_accumulated_no_kernels)
         print_phase_metrics(scale, "haskell-wam-seeded-metrics", haskell_wam_seeded)
         print_phase_metrics(scale, "haskell-wam-accumulated-metrics", haskell_wam_accumulated)
+        print_phase_metrics(scale, "wam-elixir-lmdb-int-ids-metrics", wam_elixir_lmdb_int_ids)
         print_phase_metrics(scale, "haskell-wam-seeded-no-kernels-metrics", haskell_wam_seeded_no_kernels)
         print_phase_metrics(scale, "haskell-wam-accumulated-no-kernels-metrics", haskell_wam_accumulated_no_kernels)
         print_phase_metrics(scale, "prolog-semantic-min-metrics", prolog_semantic_min)
@@ -531,6 +816,8 @@ def main() -> int:
                 continue
             elif target == "haskell-wam-accumulated-no-kernels":
                 continue
+            elif target == "wam-elixir-lmdb-int-ids":
+                continue
             elif target == "prolog-semantic-min":
                 continue
             elif target == "prolog-eff-semantic":
@@ -567,6 +854,8 @@ def main() -> int:
                     command = build_haskell_wam_effective_distance(temp_root, scale, "seeded_no_kernels")
                 elif target == "haskell-wam-accumulated-no-kernels":
                     command = build_haskell_wam_effective_distance(temp_root, scale, "accumulated_no_kernels")
+                elif target == "wam-elixir-lmdb-int-ids":
+                    command = build_wam_elixir_lmdb_int_ids_effective_distance(temp_root, scale)
                 elif target == "prolog-semantic-min":
                     command = build_prolog_semantic_min(temp_root, scale)
                 elif target == "prolog-eff-semantic":
