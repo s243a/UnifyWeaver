@@ -253,13 +253,27 @@ for the original Lmdb adaptor.
   `:elmdb` dependency, runs `mix deps.get`, `mix compile`, and LMDB
   ingest before timing, then measures a `mix run --no-compile`
   wrapper.
-- [ ] Fair steady-state benchmark against the in-memory int-tuple
-  recipe and Rust/Haskell accumulated targets. The current Elixir
-  benchmark path no longer pays dependency installation or compilation
-  inside the timed command, but it still pays BEAM startup. Haskell's
-  `use_lmdb(auto)` currently defaults to `lmdb_auto_threshold(50000)`
-  when the `lmdb` package is available; Elixir should get a comparable
-  auto policy after the steady-state comparison shape is settled.
+- [x] Add same-language in-memory int-tuple comparison target:
+  `wam-elixir-int-tuple` in
+  `examples/benchmark/benchmark_effective_distance.py`. It builds a
+  string -> contiguous-int map and tuple adjacency in BEAM, then uses
+  the same seeded CategoryAncestor kernel helper as the LMDB target.
+  The dev-scale smoke matches Prolog, Rust WAM accumulated, Haskell
+  WAM accumulated, and `wam-elixir-lmdb-int-ids` output. Both Elixir
+  storage-shape benchmark targets use the generator's `runtime_only`
+  mode so facts are not compiled into Elixir modules; TSV data is
+  translated by the driver for the in-memory path and pre-ingested into
+  LMDB for the LMDB path.
+- [ ] Measure the Elixir int-tuple vs LMDB crossover around 50k facts.
+  The current Elixir benchmark paths no longer pay dependency
+  installation or compilation inside timed commands, but both still pay
+  BEAM startup via `mix run --no-compile`. Haskell's `use_lmdb(auto)`
+  currently defaults to `lmdb_auto_threshold(50000)` when the `lmdb`
+  package is available; Elixir should get a comparable auto policy once
+  the 50k-adjacent data points confirm the crossover. On the largest
+  checked-in fixture today (`10k`), int-tuple still wins locally
+  (`4.270s` vs `14.160s`, same output hash), so the next measurement
+  needs a generated or checked-in 50k-adjacent fixture.
 
 ## Driver-side recipe
 
