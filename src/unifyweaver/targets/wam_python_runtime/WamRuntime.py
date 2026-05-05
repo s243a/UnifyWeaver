@@ -104,6 +104,11 @@ class WamState:
         self.write_ctx: Any = None
         # Structure read context: (compound_ref, next_arg_idx) or None
         self.read_ctx: Any = None
+        # Indexed fact tables — Rust-parity O(1) fact lookups keyed by predicate.
+        # indexed_atom_fact2: pred_key -> { key_atom -> [value_atom, ...] }
+        self.indexed_atom_fact2: Dict[str, Dict[str, List[str]]] = {}
+        # indexed_weighted_edge: pred_key -> { key_atom -> [(value_atom, weight), ...] }
+        self.indexed_weighted_edge: Dict[str, Dict[str, List[Tuple[str, float]]]] = {}
 
     def fresh_var(self) -> Var:
         v = Var(ref=[None], id=self._var_counter)
@@ -171,6 +176,69 @@ def heap_trim(state: WamState, mark: int) -> None:
     for i in range(mark, state.heap_len):
         state.heap.pop(i, None)
     state.heap_len = mark
+
+
+# -- Indexed fact tables ----------------------------------------------------
+# Rust-parity O(1) fact lookups. Populated at program-build time, consumed by
+# the call_indexed_atom_fact2 / base_category_ancestor* instructions.
+
+def register_indexed_atom_fact2_pairs(state: WamState, pred_key: str,
+                                      pairs: List[Tuple[str, str]]) -> None:
+    """Build indexed_atom_fact2[pred_key][left] -> [right, ...] from binary atom pairs."""
+    table = state.indexed_atom_fact2.setdefault(pred_key, {})
+    for left, right in pairs:
+        table.setdefault(left, []).append(right)
+
+
+def register_indexed_weighted_edge_triples(state: WamState, pred_key: str,
+                                           triples: List[Tuple[str, str, float]]) -> None:
+    """Build indexed_weighted_edge[pred_key][left] -> [(right, weight), ...]."""
+    table = state.indexed_weighted_edge.setdefault(pred_key, {})
+    for left, right, weight in triples:
+        table.setdefault(left, []).append((right, float(weight)))
+
+
+def _atom_in_cons_list(needle: 'Term', list_term: 'Term', state: WamState) -> bool:
+    """Walk a cons-list (Compound('.', [head, tail])) and check if any head equals needle.
+    Equality compared by atom name, integer value, or float value (deref'd).
+    """
+    cur = list_term
+    while True:
+        cur = deref(cur, state)
+        if isinstance(cur, Ref):
+            cur = state.heap.get(cur.addr)
+            if cur is None:
+                return False
+            continue
+        if isinstance(cur, Atom) and cur.name == '[]':
+            return False
+        if isinstance(cur, Compound) and cur.functor == '.' and len(cur.args) == 2:
+            head = deref(cur.args[0], state)
+            if isinstance(head, Ref):
+                h2 = state.heap.get(head.addr)
+                if h2 is not None:
+                    head = deref(h2, state)
+            if _terms_equal(head, needle):
+                return True
+            cur = cur.args[1]
+            continue
+        return False
+
+
+def _terms_equal(a: 'Term', b: 'Term') -> bool:
+    """Structural equality on dereferenced terms (used for visited-list checks)."""
+    if isinstance(a, Atom) and isinstance(b, Atom):
+        return a.name == b.name
+    if isinstance(a, Int) and isinstance(b, Int):
+        return a.n == b.n
+    if isinstance(a, Float) and isinstance(b, Float):
+        return a.f == b.f
+    return False
+
+
+def _make_cons(head: 'Term', tail: 'Term') -> 'Compound':
+    """Construct a cons cell Compound('.', [head, tail])."""
+    return Compound('.', [head, tail])
 
 
 # -- Trail ------------------------------------------------------------------
@@ -486,6 +554,13 @@ def _resolve_instr(instr: tuple, labels: Dict[str, int]) -> tuple:
             pc = labels.get(lbl, -1)
             resolved_table[str(k) if not isinstance(k, str) else k] = pc
         return ('switch_on_constant_pc', resolved_table)
+    if op == 'recurse_category_ancestor':
+        # recurse_category_ancestor mid_reg, root_reg, child_hops_reg,
+        #                           visited_reg, pred_label, skip
+        _, mid_reg, root_reg, child_hops_reg, visited_reg, pred_label, skip = instr
+        pc = labels.get(pred_label, -1)
+        return ('recurse_category_ancestor_pc',
+                mid_reg, root_reg, child_hops_reg, visited_reg, pc, skip)
     return instr
 
 
@@ -1121,6 +1196,204 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             if not ok:
                 if not fail(): return False
                 continue
+
+        elif op == 'call_indexed_atom_fact2':
+            # call_indexed_atom_fact2 pred_key:
+            #   Lookup state.indexed_atom_fact2[pred_key][A1] → [v0, v1, ...].
+            #   Push a choice point per extra value (closure resumes at this ip
+            #   binding A2 to that value). Unify A2 with values[0].
+            _, pred_key = instr
+            key_term = deref(get_reg(state, 1), state)
+            if not isinstance(key_term, Atom):
+                if not fail(): return False
+                continue
+            table = state.indexed_atom_fact2.get(pred_key)
+            values = table.get(key_term.name) if table is not None else None
+            if not values:
+                if not fail(): return False
+                continue
+            resume_ip = ip
+            for v in reversed(values[1:]):
+                value_atom = make_atom(v)
+                def make_cont(va, rip):
+                    def cont(s):
+                        target = deref(get_reg(s, 2), s)
+                        if unify(target, va, s):
+                            return rip
+                        return -1
+                    return cont
+                push_choice_point(state, 2, make_cont(value_atom, resume_ip))
+            if not unify(get_reg(state, 2), make_atom(values[0]), state):
+                if not fail(): return False
+                continue
+
+        elif op == 'base_category_ancestor':
+            # base_category_ancestor cat_reg, target_reg, visited_reg:
+            #   succeeds if (cat, target) is a category_parent/2 fact AND
+            #   target is not already in visited; then pops env & returns to caller.
+            _, cat_reg, target_reg, visited_reg = instr
+            cat_val = deref(get_reg(state, cat_reg), state)
+            if not isinstance(cat_val, Atom):
+                if not fail(): return False
+                continue
+            target_val = deref(get_reg(state, target_reg), state)
+            if not isinstance(target_val, Atom):
+                if not fail(): return False
+                continue
+            visited_val = deref(get_reg(state, visited_reg), state)
+            if _atom_in_cons_list(target_val, visited_val, state):
+                if not fail(): return False
+                continue
+            table = state.indexed_atom_fact2.get('category_parent/2')
+            parents = table.get(cat_val.name) if table is not None else None
+            if not parents or target_val.name not in parents:
+                if not fail(): return False
+                continue
+            if state.e < 0:
+                if not fail(): return False
+                continue
+            pop_environment(state)
+            ret = state.cp
+            state.cp = None
+            if isinstance(ret, int) and ret >= 0:
+                ip = ret
+                arg_snapshot = list(state.regs)
+            else:
+                return True
+
+        elif op == 'base_category_ancestor_bind':
+            # base_category_ancestor_bind cat_reg, target_reg, hops_reg, visited_reg:
+            #   Same as base_category_ancestor but additionally binds hops_reg to Int(1).
+            _, cat_reg, target_reg, hops_reg, visited_reg = instr
+            cat_val = deref(get_reg(state, cat_reg), state)
+            if not isinstance(cat_val, Atom):
+                if not fail(): return False
+                continue
+            target_val = deref(get_reg(state, target_reg), state)
+            if not isinstance(target_val, Atom):
+                if not fail(): return False
+                continue
+            visited_val = deref(get_reg(state, visited_reg), state)
+            if _atom_in_cons_list(target_val, visited_val, state):
+                if not fail(): return False
+                continue
+            table = state.indexed_atom_fact2.get('category_parent/2')
+            parents = table.get(cat_val.name) if table is not None else None
+            if not parents or target_val.name not in parents:
+                if not fail(): return False
+                continue
+            hops_val = deref(get_reg(state, hops_reg), state)
+            one = Int(1)
+            if isinstance(hops_val, Var):
+                bind(hops_val, one, state)
+            elif isinstance(hops_val, Int) and hops_val.n == 1:
+                pass
+            elif isinstance(hops_val, Atom) and hops_val.name == '1':
+                pass
+            elif not unify(hops_val, one, state):
+                if not fail(): return False
+                continue
+            if state.e < 0:
+                if not fail(): return False
+                continue
+            pop_environment(state)
+            ret = state.cp
+            state.cp = None
+            if isinstance(ret, int) and ret >= 0:
+                ip = ret
+                arg_snapshot = list(state.regs)
+            else:
+                return True
+
+        elif op == 'recurse_category_ancestor_pc':
+            # recurse_category_ancestor_pc mid_reg, root_reg, child_hops_reg,
+            #                              visited_reg, target_pc, skip:
+            #   Tail-call to category_ancestor with A1=mid, A2=root,
+            #   A3=fresh child_hops var, A4=[mid|visited]; cp=current+skip.
+            _, mid_reg, root_reg, child_hops_reg, visited_reg, target_pc, skip = instr
+            mid_val = deref(get_reg(state, mid_reg), state)
+            root_val = deref(get_reg(state, root_reg), state)
+            visited_val = deref(get_reg(state, visited_reg), state)
+            child_hops = state.fresh_var()
+            next_visited = _make_cons(mid_val, visited_val)
+            set_reg(state, child_hops_reg, child_hops)
+            set_reg(state, 1, mid_val)
+            set_reg(state, 2, root_val)
+            set_reg(state, 3, child_hops)
+            set_reg(state, 4, next_visited)
+            state.cp = ip - 1 + skip  # ip already advanced; -1 corrects to current pc
+            if target_pc < 0:
+                if not fail(): return False
+                continue
+            ip = target_pc
+            arg_snapshot = list(state.regs)
+
+        elif op == 'recurse_category_ancestor':
+            # Legacy unresolved label form (load_program normally rewrites to _pc).
+            _, mid_reg, root_reg, child_hops_reg, visited_reg, pred_label, skip = instr
+            target_pc = labels.get(pred_label, -1)
+            mid_val = deref(get_reg(state, mid_reg), state)
+            root_val = deref(get_reg(state, root_reg), state)
+            visited_val = deref(get_reg(state, visited_reg), state)
+            child_hops = state.fresh_var()
+            next_visited = _make_cons(mid_val, visited_val)
+            set_reg(state, child_hops_reg, child_hops)
+            set_reg(state, 1, mid_val)
+            set_reg(state, 2, root_val)
+            set_reg(state, 3, child_hops)
+            set_reg(state, 4, next_visited)
+            state.cp = ip - 1 + skip
+            if target_pc < 0:
+                if not fail(): return False
+                continue
+            ip = target_pc
+            arg_snapshot = list(state.regs)
+
+        elif op == 'return_add1':
+            # return_add1 out_reg, in_reg:
+            #   Compute in_reg+1, bind/unify into out_reg, then pop env & return.
+            _, out_reg, in_reg = instr
+            in_val = deref(get_reg(state, in_reg), state)
+            if isinstance(in_val, Int):
+                result = Int(in_val.n + 1)
+            elif isinstance(in_val, Float):
+                nxt = in_val.f + 1.0
+                result = Int(int(round(nxt))) if abs(round(nxt) - nxt) < 1e-12 else Float(nxt)
+            elif isinstance(in_val, Atom):
+                try:
+                    f = float(in_val.name)
+                except (TypeError, ValueError):
+                    if not fail(): return False
+                    continue
+                nxt = f + 1.0
+                result = Int(int(round(nxt))) if abs(round(nxt) - nxt) < 1e-12 else Float(nxt)
+            else:
+                if not fail(): return False
+                continue
+            out_val = deref(get_reg(state, out_reg), state)
+            if isinstance(out_val, Var):
+                bind(out_val, result, state)
+            elif isinstance(out_val, Int) and isinstance(result, Int) and out_val.n == result.n:
+                pass
+            elif isinstance(out_val, Float) and isinstance(result, Float) and out_val.f == result.f:
+                pass
+            elif isinstance(out_val, Atom) and isinstance(result, (Int, Float)) \
+                    and out_val.name == (str(result.n) if isinstance(result, Int) else str(result.f)):
+                pass
+            elif not unify(out_val, result, state):
+                if not fail(): return False
+                continue
+            if state.e < 0:
+                if not fail(): return False
+                continue
+            pop_environment(state)
+            ret = state.cp
+            state.cp = None
+            if isinstance(ret, int) and ret >= 0:
+                ip = ret
+                arg_snapshot = list(state.regs)
+            else:
+                return True
 
         elif op == 'switch_on_term_pc':
             _, lv_pc, lc_pc, ll_pc, ls_pc = instr

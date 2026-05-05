@@ -152,7 +152,7 @@ test(compile_fact) :-
 	atom_string(PythonCode, S),
 	assertion(S \== ""),
 	% Should contain a def line
-	assertion(sub_string(S, _, _, _, "def wam_foo")),
+	assertion(sub_string(S, _, _, _, "def pred_foo_1")),
 	% Should contain the get_constant instruction
 	assertion(sub_string(S, _, _, _, "get_constant")).
 
@@ -161,24 +161,24 @@ test(compile_binary_predicate) :-
 	WamCode = 'bar/2:\n  get_variable 101, 1\n  get_value 101, 2\n  proceed',
 	wam_python_target:compile_wam_predicate_to_python(bar/2, WamCode, [], PythonCode),
 	atom_string(PythonCode, S),
-	assertion(sub_string(S, _, _, _, "def wam_bar")),
+	assertion(sub_string(S, _, _, _, "def pred_bar_2")),
 	assertion(sub_string(S, _, _, _, "get_variable")),
 	assertion(sub_string(S, _, _, _, "proceed")).
 
 test(compile_generates_label_mapping) :-
-	% A label line should produce a labels[] assignment
+	% A label line should produce a __label__ marker consumed by load_program/1.
 	WamCode = 'baz/1:\n  get_constant hello, 1\n  proceed',
 	wam_python_target:compile_wam_predicate_to_python(baz/1, WamCode, [], PythonCode),
 	atom_string(PythonCode, S),
-	assertion(sub_string(S, _, _, _, "state.labels")).
+	assertion(sub_string(S, _, _, _, '"__label__", "baz/1"')).
 
 test(compile_arg_setup) :-
-	% Arity-2 predicate should set up a1, a2 arguments
+	% Arity-2 predicate should be registered under its pred/arity key.
 	WamCode = 'qux/2:\n  proceed',
 	wam_python_target:compile_wam_predicate_to_python(qux/2, WamCode, [], PythonCode),
 	atom_string(PythonCode, S),
-	assertion(sub_string(S, _, _, _, "a1")),
-	assertion(sub_string(S, _, _, _, "a2")).
+	assertion(sub_string(S, _, _, _, 'raw_program["qux/2"]')),
+	assertion(sub_string(S, _, _, _, '("proceed",)')).
 
 :- end_tests(wam_python_compile).
 
@@ -326,6 +326,11 @@ test(is_not_deterministic_with_trust_me) :-
 	Instrs = [trust_me, proceed],
 	\+ wam_python_lowered_emitter:is_deterministic_pred_py(Instrs).
 
+test(is_not_deterministic_with_indexed_fact_call) :-
+	% Indexed fact lookup may push choice points for additional values.
+	Instrs = [call_indexed_atom_fact2("category_parent/2"), proceed],
+	\+ wam_python_lowered_emitter:is_deterministic_pred_py(Instrs).
+
 test(python_func_name_basic) :-
 	wam_python_lowered_emitter:python_func_name(foo/2, Name),
 	Name = 'pred_foo_2'.
@@ -359,6 +364,42 @@ test(emit_lowered_def_line, [nondet]) :-
 test(emit_lowered_fail, [nondet]) :-
 	wam_python_lowered_emitter:emit_lowered_python('nope'/0, [fail], [], Lines),
 	sub_string(Lines, _, _, _, "return False").
+
+test(emit_lowered_call_indexed_atom_fact2, [nondet]) :-
+	wam_python_lowered_emitter:emit_lowered_python(
+		category_parent/2,
+		[call_indexed_atom_fact2("category_parent/2"), proceed],
+		[],
+		Lines),
+	sub_string(Lines, _, _, _, "indexed_atom_fact2"),
+	sub_string(Lines, _, _, _, "category_parent/2").
+
+test(emit_lowered_base_category_ancestor_bind, [nondet]) :-
+	wam_python_lowered_emitter:emit_lowered_python(
+		category_ancestor/4,
+		[base_category_ancestor_bind("A1", "A2", "A3", "A4")],
+		[],
+		Lines),
+	sub_string(Lines, _, _, _, "_atom_in_cons_list"),
+	sub_string(Lines, _, _, _, "Int(1)").
+
+test(emit_lowered_recurse_category_ancestor, [nondet]) :-
+	wam_python_lowered_emitter:emit_lowered_python(
+		category_ancestor/4,
+		[recurse_category_ancestor("X1", "A2", "X2", "A4", "category_ancestor/4", "3")],
+		[],
+		Lines),
+	sub_string(Lines, _, _, _, "pred_category_ancestor_4(state)"),
+	sub_string(Lines, _, _, _, 'Compound(".", [_mid, _visited])').
+
+test(emit_lowered_return_add1, [nondet]) :-
+	wam_python_lowered_emitter:emit_lowered_python(
+		category_ancestor/4,
+		[return_add1("A3", "X3")],
+		[],
+		Lines),
+	sub_string(Lines, _, _, _, "_result = Int"),
+	sub_string(Lines, _, _, _, "pop_environment(state)").
 
 :- end_tests(wam_python_lowered_emitter).
 
@@ -502,3 +543,87 @@ test(emit_ite_integer_condition, [nondet]) :-
 	sub_string(AllText, _, _, _, "Int").
 
 :- end_tests(wam_python_ite).
+
+% ============================================================================
+% Rust-parity: indexed-fact + category-ancestor kernel instructions
+% ============================================================================
+
+:- begin_tests(wam_python_kernel_parity).
+
+% --- Line-literal parsing for new ops ---
+
+test(line_call_indexed_atom_fact2) :-
+	wam_python_target:wam_line_to_python_literal(
+		["call_indexed_atom_fact2", "category_parent/2"], Lit),
+	assertion(Lit == '("call_indexed_atom_fact2", "category_parent/2")').
+
+test(line_base_category_ancestor) :-
+	wam_python_target:wam_line_to_python_literal(
+		["base_category_ancestor", "A1", "A2", "A4"], Lit),
+	assertion(Lit == '("base_category_ancestor", A1, A2, A4)').
+
+test(line_base_category_ancestor_bind) :-
+	wam_python_target:wam_line_to_python_literal(
+		["base_category_ancestor_bind", "A1", "A2", "A3", "A4"], Lit),
+	assertion(Lit == '("base_category_ancestor_bind", A1, A2, A3, A4)').
+
+test(line_recurse_category_ancestor) :-
+	wam_python_target:wam_line_to_python_literal(
+		["recurse_category_ancestor", "X1", "A2", "X2", "A4", "category_ancestor/4", "3"], Lit),
+	assertion(Lit == '("recurse_category_ancestor", X1, A2, X2, A4, "category_ancestor/4", 3)').
+
+test(line_return_add1) :-
+	wam_python_target:wam_line_to_python_literal(
+		["return_add1", "A3", "X3"], Lit),
+	assertion(Lit == '("return_add1", A3, X3)').
+
+% --- Runtime contains the new opcodes and registration helpers ---
+
+% Helper: get path to the static WamRuntime.py
+runtime_py_path(SrcPath) :-
+	source_file(wam_python_target:compile_step_wam_to_python(_,_), ThisFile),
+	file_directory_name(ThisFile, ThisDir),
+	directory_file_path(ThisDir, 'wam_python_runtime/WamRuntime.py', SrcPath).
+
+test(runtime_has_indexed_atom_fact2_field, [nondet]) :-
+	runtime_py_path(P), read_file_to_string(P, Content, []),
+	sub_string(Content, _, _, _, "self.indexed_atom_fact2").
+
+test(runtime_has_indexed_weighted_edge_field, [nondet]) :-
+	runtime_py_path(P), read_file_to_string(P, Content, []),
+	sub_string(Content, _, _, _, "self.indexed_weighted_edge").
+
+test(runtime_has_register_indexed_atom_fact2_pairs, [nondet]) :-
+	runtime_py_path(P), read_file_to_string(P, Content, []),
+	sub_string(Content, _, _, _, "def register_indexed_atom_fact2_pairs").
+
+test(runtime_has_register_indexed_weighted_edge_triples, [nondet]) :-
+	runtime_py_path(P), read_file_to_string(P, Content, []),
+	sub_string(Content, _, _, _, "def register_indexed_weighted_edge_triples").
+
+test(runtime_has_call_indexed_atom_fact2_handler, [nondet]) :-
+	runtime_py_path(P), read_file_to_string(P, Content, []),
+	sub_string(Content, _, _, _, "'call_indexed_atom_fact2'").
+
+test(runtime_has_base_category_ancestor_handler, [nondet]) :-
+	runtime_py_path(P), read_file_to_string(P, Content, []),
+	sub_string(Content, _, _, _, "'base_category_ancestor'").
+
+test(runtime_has_base_category_ancestor_bind_handler, [nondet]) :-
+	runtime_py_path(P), read_file_to_string(P, Content, []),
+	sub_string(Content, _, _, _, "'base_category_ancestor_bind'").
+
+test(runtime_has_recurse_category_ancestor_pc_handler, [nondet]) :-
+	runtime_py_path(P), read_file_to_string(P, Content, []),
+	sub_string(Content, _, _, _, "'recurse_category_ancestor_pc'").
+
+test(runtime_has_return_add1_handler, [nondet]) :-
+	runtime_py_path(P), read_file_to_string(P, Content, []),
+	sub_string(Content, _, _, _, "'return_add1'").
+
+test(runtime_resolves_recurse_category_ancestor_to_pc, [nondet]) :-
+	% _resolve_instr should rewrite recurse_category_ancestor → ..._pc
+	runtime_py_path(P), read_file_to_string(P, Content, []),
+	sub_string(Content, _, _, _, "recurse_category_ancestor_pc").
+
+:- end_tests(wam_python_kernel_parity).
