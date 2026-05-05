@@ -1187,6 +1187,7 @@ test_runtime_emits_fold_hops :-
     compile_wam_runtime_to_elixir([], RuntimeCode),
     (   sub_string(RuntimeCode, _, _, _, 'def fold_hops(neighbors_fn'),
         sub_string(RuntimeCode, _, _, _, 'def fold_hops_with_dests(dests_fn'),
+        sub_string(RuntimeCode, _, _, _, 'def fold_hops_with_dests_seeded(dests_fn'),
         sub_string(RuntimeCode, _, _, _, 'defp fold_n_recurse('),
         sub_string(RuntimeCode, _, _, _, 'defp fold_d_recurse(')
     ->  pass(Test)

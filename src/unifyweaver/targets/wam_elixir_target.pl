@@ -3294,6 +3294,18 @@ defmodule WamRuntime.GraphKernel.CategoryAncestor do
     fold_d(dests_fn, cat, root, [], max_depth, init_acc, 0, hop_fn)
   end
 
+  @doc """
+  Same as `fold_hops_with_dests/6`, but seeds the visited list with
+  `cat`. This matches the canonical effective-distance call shape
+  `category_ancestor(Cat, Root, Hops, [Cat])`, preventing cycles from
+  revisiting the starting category.
+  """
+  def fold_hops_with_dests_seeded(dests_fn, cat, root, max_depth, init_acc, hop_fn)
+      when is_function(dests_fn, 1) and is_integer(max_depth)
+       and is_function(hop_fn, 2) do
+    fold_d(dests_fn, cat, root, [cat], max_depth, init_acc, 0, hop_fn)
+  end
+
   # `depth` is the number of edges already taken to reach `cat`; pushed hop
   # counts are `depth + 1` for any direct edge `cat -> root` we discover.
   # That replaces the original post-recursion split/map/++ bump pattern
@@ -3357,7 +3369,8 @@ defmodule WamRuntime.GraphKernel.CategoryAncestor do
 
   defp walk_n_recurse([], _, _, _, _, _, acc), do: acc
   defp walk_n_recurse([{_from, to} | rest], nf, root, vis, mx, nd, acc) when to === root do
-    walk_n_recurse(rest, nf, root, vis, mx, nd, [nd | acc])
+    ac = if :lists.member(to, vis), do: acc, else: [nd | acc]
+    walk_n_recurse(rest, nf, root, vis, mx, nd, ac)
   end
   defp walk_n_recurse([{_from, to} | rest], nf, root, vis, mx, nd, acc) do
     ac =
@@ -3396,7 +3409,8 @@ defmodule WamRuntime.GraphKernel.CategoryAncestor do
 
   defp fold_n_recurse([], _, _, _, _, _, acc, _), do: acc
   defp fold_n_recurse([{_from, to} | rest], nf, root, vis, mx, nd, acc, hop_fn) when to === root do
-    fold_n_recurse(rest, nf, root, vis, mx, nd, hop_fn.(nd, acc), hop_fn)
+    ac = if :lists.member(to, vis), do: acc, else: hop_fn.(nd, acc)
+    fold_n_recurse(rest, nf, root, vis, mx, nd, ac, hop_fn)
   end
   defp fold_n_recurse([{_from, to} | rest], nf, root, vis, mx, nd, acc, hop_fn) do
     ac =
@@ -3433,7 +3447,8 @@ defmodule WamRuntime.GraphKernel.CategoryAncestor do
   # so BEAMs clause selection dispatches without paying the cond chain
   # overhead. Measured ~~5-12% improvement on chunked-parallel at 10k.
   defp walk_d_recurse([to | rest], df, root, vis, mx, nd, acc) when to === root do
-    walk_d_recurse(rest, df, root, vis, mx, nd, [nd | acc])
+    ac = if :lists.member(to, vis), do: acc, else: [nd | acc]
+    walk_d_recurse(rest, df, root, vis, mx, nd, ac)
   end
   defp walk_d_recurse([to | rest], df, root, vis, mx, nd, acc) do
     ac =
@@ -3478,7 +3493,8 @@ defmodule WamRuntime.GraphKernel.CategoryAncestor do
 
   defp fold_d_recurse([], _, _, _, _, _, acc, _), do: acc
   defp fold_d_recurse([to | rest], df, root, vis, mx, nd, acc, hop_fn) when to === root do
-    fold_d_recurse(rest, df, root, vis, mx, nd, hop_fn.(nd, acc), hop_fn)
+    ac = if :lists.member(to, vis), do: acc, else: hop_fn.(nd, acc)
+    fold_d_recurse(rest, df, root, vis, mx, nd, ac, hop_fn)
   end
   defp fold_d_recurse([to | rest], df, root, vis, mx, nd, acc, hop_fn) do
     ac =
