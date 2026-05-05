@@ -102,6 +102,11 @@ typedef struct {
     WamForeignHandler handler;
 } ForeignEntry;
 
+typedef struct {
+    const char *child;
+    const char *parent;
+} CategoryEdge;
+
 /* Instruction */
 // TODO: Pack these fields into a union keyed on `tag` to reduce memory footprint
 typedef struct {
@@ -167,6 +172,12 @@ struct WamState {
 
     /* Foreign predicate handlers */
     ForeignEntry foreign_hash[WAM_FOREIGN_HASH_SIZE];
+
+    /* Native category_ancestor kernel data */
+    CategoryEdge *category_edges;
+    int category_edge_count;
+    int category_edge_cap;
+    int category_max_depth;
 };
 
 bool step_wam(WamState* state, Instruction* instr);
@@ -176,6 +187,9 @@ void wam_free_state(WamState *state);
 int wam_run_predicate(WamState *state, const char *pred, WamValue *args, int arity);
 bool wam_execute_builtin(WamState *state, const char *op, int arity);
 bool wam_execute_foreign_predicate(WamState *state, const char *pred, int arity);
+void wam_register_category_parent(WamState *state, const char *child, const char *parent);
+void wam_register_category_ancestor_kernel(WamState *state, const char *pred, int max_depth);
+bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity);
 
 /* Helpers */
 static inline WamValue val_atom(const char *s) {

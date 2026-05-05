@@ -4,7 +4,7 @@ Status date: 2026-05-04
 
 Base verified locally:
 
-- `main` at `21258826` (`Merge pull request #1831 from s243a/docs/wam-c-next-steps-refresh`)
+- `main` at `1e2bb5d6` (`Merge pull request #1832 from s243a/feat/wam-c-call-foreign`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 
 This file replaces the older implementation plan. The four original C follow-up
@@ -21,6 +21,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Runtime helpers | Done | `wam_state_init`, `wam_free_state`, `wam_run_predicate`, `test_helpers_generation` |
 | Unsupported instruction fail-fast | Done | `unsupported_instruction`, `unsupported_instruction_tokens`, no `(Instruction){0}` fallback |
 | Foreign predicate dispatch foundation | Done | `INSTR_CALL_FOREIGN`, `WamForeignHandler`, `wam_register_foreign_predicate`, `wam_execute_foreign_predicate`, executable smoke |
+| Native category ancestor kernel foundation | Done | `wam_register_category_parent`, `wam_register_category_ancestor_kernel`, `wam_category_ancestor_handler`, direct and recursive executable smoke |
 
 ## Current C Target Baseline
 
@@ -36,13 +37,15 @@ The C target is now a credible small WAM backend:
 - Supports basic `builtin_call` delegation for tested builtins:
   `atom/1`, `integer/1`, `is_list/1`, `=/2`, and `is/2`.
 - Supports deterministic `call_foreign` dispatch through a C handler registry.
+- Supports a deterministic native `category_ancestor/4` handler over an
+  in-memory category-parent edge table.
 - Has executable smokes for generated runtime, cross-predicate calls,
-  foreign calls, real multi-clause predicates, structure indexing, `is_list/1`,
-  and `=/2`.
+  foreign calls, native category ancestor, real multi-clause predicates,
+  structure indexing, `is_list/1`, and `=/2`.
 
 The main limitation is not core WAM execution anymore. It is hybrid-WAM
-infrastructure: C lacks the native kernel, FactSource, lowered/native helper,
-and benchmark wiring that Haskell and Rust already have.
+infrastructure: C lacks FactSource, lowered/native helper, streaming foreign
+results, and benchmark wiring that Haskell and Rust already have.
 
 ## Feature Parity Matrix
 
@@ -62,7 +65,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Aggregates (`findall`/`bagof`/`setof`) | Missing | Present in hybrid/lowered paths | Present in interpreter/lowered paths | Add only after C has enough runtime term-copy and list construction coverage. |
 | Negation / control builtins | Partial | Broader | Broader | C likely needs explicit tests for `\+/1`, cut interactions, and if-then-else lowering. |
 | Foreign predicate instruction (`CallForeign`) | Done | Done | Done | C has deterministic handler dispatch; later branches can add streaming result conventions. |
-| Native recursive kernels | Missing | Done | Done | Start with one kernel, probably `category_ancestor/4` or `transitive_closure2`. |
+| Native recursive kernels | Partial | Done | Done | C has deterministic `category_ancestor/4`; add streaming results and detector-driven setup later. |
 | Shared kernel detector integration | Missing | Done | Done | Reuse `recursive_kernel_detection.pl`; generate C registration stubs. |
 | Lowered/native helper functions | Missing | Done | Done | Consider after foreign kernels; C can lower simple fact-only or deterministic predicates. |
 | FactSource abstraction | Missing | Partial/less central | Done | Add simple file-backed FactSource before LMDB. |
@@ -74,23 +77,7 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-category-ancestor-kernel`
-
-Goal: wire one shared recursive kernel into C now that `CallForeign` exists.
-
-Candidate kernel:
-
-- `category_ancestor/4`, because it is the effective-distance workload's core
-  recursive kernel and has mature Rust/Haskell examples.
-
-Scope:
-
-- Use `recursive_kernel_detection.pl` to detect the predicate.
-- Emit C registration stubs and a native handler skeleton.
-- Keep facts in a simple in-memory edge table initially.
-- Add a small executable smoke with a tiny category graph.
-
-### 2. `feat/wam-c-file-fact-source`
+### 1. `feat/wam-c-file-fact-source`
 
 Goal: add the first C FactSource abstraction.
 
@@ -104,7 +91,7 @@ Scope:
 Why before LMDB: ownership, row encoding, and cursor semantics are easier to
 settle with a file-backed source.
 
-### 3. `feat/wam-c-effective-distance-bench`
+### 2. `feat/wam-c-effective-distance-bench`
 
 Goal: make C visible in the benchmark matrix once kernels/facts exist.
 
@@ -113,6 +100,19 @@ Scope:
 - Add a C effective-distance generator under `examples/benchmark/`.
 - Support `kernels_on` / `kernels_off`.
 - Start with small TSV/fact-source mode; add LMDB later.
+
+### 3. `feat/wam-c-streaming-foreign-results`
+
+Goal: support multiple foreign results instead of only deterministic success.
+
+Scope:
+
+- Define a small result-buffer convention for foreign handlers.
+- Use it to return all `category_ancestor/4` hop counts for a query.
+- Preserve deterministic handlers as the simple path.
+
+Why before larger benchmark work: effective-distance needs all paths, not just
+the first successful path.
 
 ### 4. `perf/wam-c-pack-instruction`
 
@@ -130,15 +130,15 @@ or cache behavior becomes a real bottleneck.
 
 ## Suggested Immediate Next Step
 
-Start with `feat/wam-c-category-ancestor-kernel`.
+Start with `feat/wam-c-file-fact-source`.
 
-It is now the smallest feature that exercises the new C foreign-call
-foundation against the same class of hybrid WAM work that Rust and Haskell
-already handle. The work should be split into two commits:
+It is now the smallest feature that moves the native kernel from hand-seeded
+test data toward benchmark-usable external facts. The work should be split
+into two commits:
 
-1. C native handler skeleton and registration path for one detected kernel.
-2. Tiny category graph executable smoke that proves the handler can bind output
-   registers through `CallForeign`.
+1. Runtime FactSource interface plus TSV/grouped-by-first loader.
+2. Category-parent wiring and an executable smoke that feeds the native
+   `category_ancestor/4` kernel from the loaded source.
 
 Keep LMDB and effective-distance out of that branch; they depend on a stable
-native-kernel shape.
+external fact-source shape.
