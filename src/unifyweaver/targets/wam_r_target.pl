@@ -35,7 +35,12 @@
     compile_wam_predicate_to_r/4,    % +Pred/Arity, +WamCode, +Options, -RCode
     write_wam_r_project/3,           % +Predicates, +Options, +ProjectDir
     r_foreign_predicate/3,           % +Pred, +Arity, +Options
-    init_r_atom_intern_table/0       % reinitialize atom intern table
+    init_r_atom_intern_table/0,      % reinitialize atom intern table
+    % --- Re-exported helpers used by wam_r_lowered_emitter -----
+    tokenize_wam_line/2,             % +Line, -Tokens
+    wam_parts_to_r/3,                % +Tokens, +Options, -RLiteral
+    parse_functor_arity/3,           % +Str, -Name, -Arity
+    wam_r_resolve_emit_mode/2        % +Options, -Mode
 ]).
 
 :- use_module(library(lists)).
@@ -43,6 +48,49 @@
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module('../core/template_system', [render_template/3]).
+% Lowered emitter: real Phase-2 implementation lives there. We keep the
+% module load lazy via catch/3 so the file remains usable even if the
+% emitter module is temporarily missing during refactors.
+:- use_module(wam_r_lowered_emitter, [
+    wam_r_lowerable/3,
+    lower_predicate_to_r/4
+]).
+
+% ============================================================================
+% EMIT MODE
+% ============================================================================
+% Mirror of wam_haskell_target.pl: Mode is one of
+%   - interpreter           : never lower (default, byte-identical to pre-
+%                             Phase-2 output)
+%   - functions             : try to lower every predicate; failed
+%                             lowerability falls through to the array path
+%   - mixed([Pred/Arity, ...]) : try to lower only listed preds
+%
+% Resolution order: emit_mode(M) Option -> user:wam_r_emit_mode(M)
+% multifile fact -> default interpreter.
+
+:- multifile user:wam_r_emit_mode/1.
+
+wam_r_resolve_emit_mode(Options, Mode) :-
+    (   option(emit_mode(M0), Options)
+    ->  validate_emit_mode(M0, Mode)
+    ;   catch(user:wam_r_emit_mode(M1), _, fail)
+    ->  validate_emit_mode(M1, Mode)
+    ;   Mode = interpreter
+    ).
+
+validate_emit_mode(interpreter, interpreter) :- !.
+validate_emit_mode(functions,   functions)   :- !.
+validate_emit_mode(mixed(L),    mixed(L))    :- is_list(L), !.
+validate_emit_mode(Other, _) :-
+    throw(error(domain_error(wam_r_emit_mode, Other),
+                wam_r_resolve_emit_mode/2)).
+
+%% should_try_lower(+Mode, +Pred, +Arity) is semidet.
+should_try_lower(functions,    _, _) :- !.
+should_try_lower(mixed(HotPreds), P, A) :-
+    member(P/A, HotPreds), !.
+should_try_lower(_, _, _) :- fail.
 
 % ============================================================================
 % ATOM INTERNING TABLE (compile-time)
@@ -465,7 +513,7 @@ compile_wam_predicate_to_r(_Pred, _WamCode, _Options, "").
 %%                                -AllLabels, -WrapperCode)
 compile_predicates_for_project(Predicates, Options,
                                AllInstrs, TopLevelLabelEntries,
-                               AllLabelEntries, WrapperCode) :-
+                               AllLabelEntries, WrapperCode, LoweredCode) :-
     init_r_atom_intern_table,
     option(intern_atoms(ExtraAtoms), Options, []),
     forall(member(A, ExtraAtoms),
@@ -473,11 +521,13 @@ compile_predicates_for_project(Predicates, Options,
     option(foreign_predicates(ForeignPredicates), Options, []),
     append_missing_foreign_predicates(Predicates, ForeignPredicates,
                                       CompilePredicates),
-    compile_all_predicates(CompilePredicates, Options, 1,
-                           [], [], [], [],
+    wam_r_resolve_emit_mode(Options, Mode),
+    compile_all_predicates(CompilePredicates, Options, Mode, 1,
+                           [], [], [], [], [],
                            AllInstrs, TopLevelLabelEntries,
-                           AllLabelEntries, Wrappers),
-    atomic_list_concat(Wrappers, '\n', WrapperCode).
+                           AllLabelEntries, Wrappers, LoweredEntries),
+    atomic_list_concat(Wrappers, '\n', WrapperCode),
+    atomic_list_concat(LoweredEntries, '\n', LoweredCode).
 
 append_missing_foreign_predicates(Predicates, ForeignPredicates,
                                   CompilePredicates) :-
@@ -497,12 +547,12 @@ same_predicate_indicator(P0, P1) :-
 predicate_indicator_key(_:Pred/Arity, Pred/Arity) :- !.
 predicate_indicator_key(Pred/Arity, Pred/Arity).
 
-compile_all_predicates([], _, _, Instrs, TopLabels, AllLabels, Wrappers,
-                       Instrs, TopLabels, AllLabels, Wrappers).
-compile_all_predicates([Pred|Rest], Options, BasePC,
-                       InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc,
+compile_all_predicates([], _, _, _, Instrs, TopLabels, AllLabels, Wrappers, Lowered,
+                       Instrs, TopLabels, AllLabels, Wrappers, Lowered).
+compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
+                       InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc, LoweredAcc,
                        AllInstrs, TopLevelLabelEntries,
-                       AllLabelEntries, AllWrappers) :-
+                       AllLabelEntries, AllWrappers, AllLowered) :-
     (   Pred = _Module:P/Arity -> true ; Pred = P/Arity ),
     (   r_foreign_predicate(P, Arity, Options)
     ->  format(string(FLit), 'CallForeign("~w", ~w)', [P, Arity]),
@@ -511,8 +561,10 @@ compile_all_predicates([Pred|Rest], Options, BasePC,
         NewPC is BasePC + 2,
         format(string(MainEntry), '    "~w/~w" = ~wL', [P, Arity, BasePC]),
         NewTopLabels = [MainEntry | TopLabelAcc],
-        NewAllLabels = [MainEntry | AllLabelAcc]
+        NewAllLabels = [MainEntry | AllLabelAcc],
+        WamCodeForLower = ""
     ;   compile_predicate_to_wam(P/Arity, [], WamCode),
+        WamCodeForLower = WamCode,
         wam_code_to_r_data(WamCode, Options, PredInstrs, _LMap,
                            PredSubLabelEntries0),
         length(PredInstrs, PredLen),
@@ -528,12 +580,23 @@ compile_all_predicates([Pred|Rest], Options, BasePC,
         NewTopLabels = [MainEntry | TopLabelAcc],
         append([MainEntry | PredSubLabelEntries], AllLabelAcc, NewAllLabels)
     ),
-    emit_r_wrapper(P, Arity, BasePC, WrapperCode),
-    compile_all_predicates(Rest, Options, NewPC,
+    % Decide whether this predicate should be lowered.
+    (   should_try_lower(Mode, P, Arity),
+        WamCodeForLower \= "",
+        catch(wam_r_lowerable(Pred, WamCodeForLower, _Reason), _, fail),
+        catch(lower_predicate_to_r(Pred, WamCodeForLower, [],
+                                   lowered(_PName, FuncName, LoweredR)),
+              _, fail)
+    ->  NewLoweredAcc = [LoweredR | LoweredAcc],
+        emit_r_lowered_wrapper(P, Arity, FuncName, WrapperCode)
+    ;   NewLoweredAcc = LoweredAcc,
+        emit_r_wrapper(P, Arity, BasePC, WrapperCode)
+    ),
+    compile_all_predicates(Rest, Options, Mode, NewPC,
                            NewInstrs, NewTopLabels, NewAllLabels,
-                           [WrapperCode|WrapperAcc],
+                           [WrapperCode|WrapperAcc], NewLoweredAcc,
                            AllInstrs, TopLevelLabelEntries,
-                           AllLabelEntries, AllWrappers).
+                           AllLabelEntries, AllWrappers, AllLowered).
 
 offset_label_entry(Offset, Entry0, Entry) :-
     atom_string(Entry0, S),
@@ -560,18 +623,38 @@ is_pred_label(PredKey, Entry) :-
 %  Emits an R top-level function: pred_name(arg1, arg2, ...).
 %  Calls run_predicate(shared_program, start_pc, list(arg1, ...)).
 emit_r_wrapper(Pred, Arity, StartPc, Code) :-
-    (   Arity =:= 0
-    ->  ArgDeclStr = '',
-        ArgListStr  = 'list()'
-    ;   numlist(1, Arity, ArgNums),
-        maplist([N, A]>>(format(string(A), 'a~w', [N])), ArgNums, ArgNames),
-        atomic_list_concat(ArgNames, ', ', ArgDeclStr),
-        format(string(ArgListStr), 'list(~w)', [ArgDeclStr])
-    ),
+    pred_arg_strings(Arity, ArgDeclStr, ArgListStr),
     r_pred_name(Pred, RName),
     format(string(Code),
            '~w <- function(~w) {\n  WamRuntime$run_predicate(shared_program, ~wL, ~w)\n}\n',
            [RName, ArgDeclStr, StartPc, ArgListStr]).
+
+%% emit_r_lowered_wrapper(+Pred, +Arity, +LoweredFuncName, -Code)
+%  Wrapper for predicates that have a lowered R function. Builds a
+%  fresh state, seeds A1..An with the call-site args, and dispatches
+%  directly to the lowered function (bypassing the instruction-array
+%  driver). Returns the boolean returned by the lowered fn.
+emit_r_lowered_wrapper(Pred, Arity, LoweredFuncName, Code) :-
+    pred_arg_strings(Arity, ArgDeclStr, ArgListStr),
+    r_pred_name(Pred, RName),
+    format(string(Code),
+'~w <- function(~w) {
+  state <- WamRuntime$new_state()
+  WamRuntime$promote_regs(state)
+  args <- ~w
+  for (i in seq_along(args)) WamRuntime$put_reg(state, i, args[[i]])
+  state$cp <- 0L
+  isTRUE(~w(shared_program, state))
+}
+', [RName, ArgDeclStr, ArgListStr, LoweredFuncName]).
+
+pred_arg_strings(0, '', 'list()') :- !.
+pred_arg_strings(Arity, ArgDeclStr, ArgListStr) :-
+    Arity > 0,
+    numlist(1, Arity, ArgNums),
+    maplist([N, A]>>(format(string(A), 'a~w', [N])), ArgNums, ArgNames),
+    atomic_list_concat(ArgNames, ', ', ArgDeclStr),
+    format(string(ArgListStr), 'list(~w)', [ArgDeclStr]).
 
 %% r_pred_name(+PrologName, -RName)
 %  R uses snake_case by convention; identifiers are looser than Scala
@@ -639,7 +722,8 @@ write_wam_r_project(Predicates, Options, ProjectDir) :-
     option(module_name(ModName), Options, 'wam.r.generated'),
     write_description(ProjectDir, ModName),
     compile_predicates_for_project(Predicates, Options,
-        AllInstrs, TopLevelLabelEntries, AllLabelEntries, WrapperCode),
+        AllInstrs, TopLevelLabelEntries, AllLabelEntries,
+        WrapperCode, LoweredFunctionsCode),
     emit_r_intern_table(IdToStringStr),
     maplist([I, Line]>>(format(string(Line), '    ~w', [I])), AllInstrs,
             InstrLines),
@@ -649,7 +733,8 @@ write_wam_r_project(Predicates, Options, ProjectDir) :-
     r_foreign_handlers_code(Options, ForeignHandlersBody),
     write_runtime_source(RDir),
     write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
-                         WrapperCode, IdToStringStr, ForeignHandlersBody).
+                         WrapperCode, IdToStringStr, ForeignHandlersBody,
+                         LoweredFunctionsCode).
 
 write_description(ProjectDir, ModName) :-
     find_template('templates/targets/r_wam/DESCRIPTION.mustache', Template),
@@ -667,7 +752,8 @@ write_runtime_source(RDir) :-
     write_file(Path, Content).
 
 write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
-                     WrapperCode, IdToStringStr, ForeignHandlersBody) :-
+                     WrapperCode, IdToStringStr, ForeignHandlersBody,
+                     LoweredFunctionsCode) :-
     find_template('templates/targets/r_wam/program.R.mustache', Template),
     get_time(T), format_time(string(DateStr), "%Y-%m-%d", T),
     render_template(Template,
@@ -677,7 +763,8 @@ write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
           'dispatch'=DispatchBody,
           'wrappers'=WrapperCode,
           'intern_id_to_string'=IdToStringStr,
-          'foreign_handlers'=ForeignHandlersBody
+          'foreign_handlers'=ForeignHandlersBody,
+          'lowered_functions'=LoweredFunctionsCode
         ], Content),
     directory_file_path(RDir, 'generated_program.R', Path),
     write_file(Path, Content).

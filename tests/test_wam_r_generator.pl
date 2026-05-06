@@ -24,6 +24,7 @@
 :- use_module('../src/unifyweaver/targets/wam_r_target').
 :- use_module('../src/unifyweaver/targets/wam_r_lowered_emitter').
 :- use_module('../src/unifyweaver/bindings/r_wam_bindings').
+:- use_module('../src/unifyweaver/targets/wam_target').
 
 :- begin_tests(wam_r_generator).
 
@@ -324,14 +325,116 @@ e2e_builtin_arith_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
-% Test 7: lowered emitter scaffold is loadable and refuses lowering
+% Test: lowered emitter exports + lowerability semantics (Phase 2)
 % ------------------------------------------------------------------
-test(lowered_emitter_phase1_stub) :-
+test(lowered_emitter_phase2) :-
     assertion(current_predicate(wam_r_lowered_emitter:wam_r_lowerable/3)),
     assertion(current_predicate(wam_r_lowered_emitter:lower_predicate_to_r/4)),
     assertion(current_predicate(wam_r_lowered_emitter:r_lowered_func_name/2)),
-    % Phase 1 stub: must always fail.
-    \+ wam_r_lowered_emitter:wam_r_lowerable(user:wam_r_fact/1, "", _Reason).
+    % Multi-clause predicates are not lowerable (need backtracking).
+    compile_predicate_to_wam_string(user:wam_r_choice_fact/1, ChoiceWam),
+    \+ wam_r_lowered_emitter:wam_r_lowerable(user:wam_r_choice_fact/1,
+                                             ChoiceWam, _),
+    % Single-clause deterministic rule is lowerable.
+    compile_predicate_to_wam_string(user:wam_r_caller/1, CallerWam),
+    wam_r_lowered_emitter:wam_r_lowerable(user:wam_r_caller/1,
+                                          CallerWam, deterministic).
+
+compile_predicate_to_wam_string(Pred, WamStr) :-
+    wam_target:compile_predicate_to_wam(Pred, [], WamCode),
+    (   string(WamCode) -> WamStr = WamCode
+    ;   atom_string(WamCode, WamStr)
+    ).
+
+% ------------------------------------------------------------------
+% Test: emit_mode(interpreter) keeps the wrapper on the array path and
+%       emits no lowered_<...>_<n> functions.
+% ------------------------------------------------------------------
+test(emit_mode_interpreter_default) :-
+    once((
+        unique_r_tmp_dir('tmp_r_mode_interp', TmpDir),
+        write_wam_r_project(
+            [user:wam_r_caller/1],
+            [],   % default mode = interpreter
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        assertion(sub_string(Code, _, _, _, 'WamRuntime$run_predicate(shared_program,')),
+        assertion(\+ sub_string(Code, _, _, _, 'lowered_wam_r_caller_1')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+% ------------------------------------------------------------------
+% Test: emit_mode(functions) emits a lowered_<name>_<n> definition
+%       and points the wrapper at it.
+% ------------------------------------------------------------------
+test(emit_mode_functions_lowers_caller) :-
+    once((
+        unique_r_tmp_dir('tmp_r_mode_funcs', TmpDir),
+        write_wam_r_project(
+            [user:wam_r_caller/1, user:wam_r_fact/1],
+            [emit_mode(functions)],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        assertion(sub_string(Code, _, _, _, 'lowered_wam_r_caller_1 <- function(program, state)')),
+        assertion(sub_string(Code, _, _, _, 'isTRUE(lowered_wam_r_caller_1(shared_program, state))')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+% ------------------------------------------------------------------
+% Test: multi-clause predicates fall back to interpreter even under
+%       emit_mode(functions).
+% ------------------------------------------------------------------
+test(emit_mode_functions_skips_multi_clause) :-
+    once((
+        unique_r_tmp_dir('tmp_r_mode_skip', TmpDir),
+        write_wam_r_project(
+            [user:wam_r_choice_fact/1],
+            [emit_mode(functions)],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        assertion(\+ sub_string(Code, _, _, _, 'lowered_wam_r_choice_fact_1')),
+        assertion(sub_string(Code, _, _, _, 'WamRuntime$run_predicate(shared_program,')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+% ------------------------------------------------------------------
+% Test: end-to-end Rscript execution of a lowered predicate.
+% ------------------------------------------------------------------
+test(lowered_emitter_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_lowered_via_rscript
+    ;   true
+    )).
+
+e2e_lowered_via_rscript :-
+    % Multi-clause fact wam_r_e2e_fact/1 stays on the array path; the
+    % single-clause deterministic caller wam_r_e2e_caller/1 is lowered
+    % and proves through it. We assert that calling the lowered wrapper
+    % with arg = a succeeds and arg = z fails.
+    assertz(user:wam_r_e2e_fact(a)),
+    assertz(user:wam_r_e2e_fact(b)),
+    assertz((user:wam_r_e2e_caller(X) :- user:wam_r_e2e_fact(X))),
+    assertz((user:e2e_ok  :- user:wam_r_e2e_caller(a))),
+    assertz((user:e2e_bad :- user:wam_r_e2e_caller(z))),
+    unique_r_tmp_dir('tmp_r_lowered_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:wam_r_e2e_fact/1, user:wam_r_e2e_caller/1,
+          user:e2e_ok/0, user:e2e_bad/0 ],
+        [emit_mode(functions)],
+        TmpDir),
+    directory_file_path(TmpDir, 'R/generated_program.R', Program),
+    read_file_to_string(Program, Code, []),
+    assertion(sub_string(Code, _, _, _, 'lowered_wam_r_e2e_caller_1 <- function')),
+    directory_file_path(TmpDir, 'R', RDir),
+    run_rscript_query(RDir, 'e2e_ok/0',  OkOut),
+    run_rscript_query(RDir, 'e2e_bad/0', BadOut),
+    assertion(sub_string(OkOut,  _, _, _, "true")),
+    assertion(sub_string(BadOut, _, _, _, "false")),
+    delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
