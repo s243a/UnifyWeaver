@@ -24,10 +24,19 @@ class CSharpQuerySourceModeSweepTests(unittest.TestCase):
                 "300\tcsharp-query:auto\t0.467\t0.467\t0.467\t42\tsamehash",
                 "300\tcsharp-query:preload\t0.360\t0.360\t0.360\t42\tsamehash",
                 "300\tcsharp-query:artifact-prebuilt\t0.904\t0.904\t0.904\t42\tsamehash",
-                "300\tcsharp-query:auto-metrics\tsource_registration_preloaded_preload_arity2=2 other=ignored",
-                "300\tcsharp-query:preload-metrics\tsource_registration_preloaded_preload_arity2=2",
+                (
+                    "300\tcsharp-query:auto-metrics\t"
+                    "source_mode=auto resolved_source_mode=preload "
+                    "source_registration_preloaded_preload_arity2=2 other=ignored"
+                ),
+                (
+                    "300\tcsharp-query:preload-metrics\t"
+                    "source_mode=preload resolved_source_mode=preload "
+                    "source_registration_preloaded_preload_arity2=2"
+                ),
                 (
                     "300\tcsharp-query:artifact-prebuilt-metrics\t"
+                    "source_mode=artifact-prebuilt resolved_source_mode=artifact-prebuilt "
                     "source_registration_binary_artifact_artifact-prebuilt_arity2=2"
                 ),
                 "300\tcsharp_query_best_source_mode\tpreload",
@@ -47,6 +56,10 @@ class CSharpQuerySourceModeSweepTests(unittest.TestCase):
         self.assertEqual(
             summary.median_summary,
             "artifact-prebuilt:0.904,auto:0.467,preload:0.360",
+        )
+        self.assertEqual(
+            summary.resolved_source_mode_summary,
+            "artifact-prebuilt:artifact-prebuilt,auto:preload,preload:preload",
         )
         self.assertEqual(
             summary.source_registration_summary,
