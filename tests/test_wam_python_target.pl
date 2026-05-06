@@ -180,6 +180,29 @@ test(compile_arg_setup) :-
 	assertion(sub_string(S, _, _, _, 'raw_program["qux/2"]')),
 	assertion(sub_string(S, _, _, _, '("proceed",)')).
 
+test(compile_lowered_mode_direct_predicate) :-
+	WamCode = 'foo/1:\n  get_constant a, 1\n  proceed',
+	wam_python_target:compile_one_predicate([emit_mode(lowered)], foo/1-WamCode, PythonCode),
+	atom_string(PythonCode, S),
+	assertion(sub_string(S, _, _, _, "def pred_foo_1(state)")),
+	assertion(sub_string(S, _, _, _, "def register_pred_foo_1(raw_program)")),
+	assertion(sub_string(S, _, _, _, '("call_lowered", pred_foo_1, 1)')).
+
+test(compile_lowered_mode_falls_back_for_nondet) :-
+	WamCode = 'choice/1:\n  try_me_else choice_2\n  get_constant a, 1\n  proceed\nchoice_2:\n  trust_me\n  get_constant b, 1\n  proceed',
+	wam_python_target:compile_one_predicate([emit_mode(lowered)], choice/1-WamCode, PythonCode),
+	atom_string(PythonCode, S),
+	assertion(sub_string(S, _, _, _, "def register_pred_choice_1(raw_program)")),
+	assertion(sub_string(S, _, _, _, '("try_me_else", "choice_2")')),
+	assertion(\+ sub_string(S, _, _, _, "def pred_choice_1(state)")).
+
+test(compile_all_lowered_mode_build_program_uses_registrars) :-
+	WamCode = 'foo/1:\n  get_constant a, 1\n  proceed',
+	wam_python_target:compile_all_predicates([foo/1-WamCode], [emit_mode(lowered)], PythonCode),
+	atom_string(PythonCode, S),
+	assertion(sub_string(S, _, _, _, "register_pred_foo_1(raw_program)")),
+	assertion(sub_string(S, _, _, _, '("call_lowered", pred_foo_1, 1)')).
+
 :- end_tests(wam_python_compile).
 
 % ============================================================================
@@ -259,10 +282,26 @@ test(load_program_in_main, [nondet]) :-
 	wam_python_target:generate_main_py([], test_mod, Code),
 	sub_string(Code, _, _, _, "load_program").
 
+test(build_program_in_main, [nondet]) :-
+	% generate_main_py populates raw_program through predicates.build_program().
+	wam_python_target:generate_main_py([], test_mod, Code),
+	sub_string(Code, _, _, _, "raw_program = build_program()").
+
+test(init_query_args_in_main, [nondet]) :-
+	% main.py initialises A-register query variables from the predicate arity.
+	wam_python_target:generate_main_py([], test_mod, Code),
+	sub_string(Code, _, _, _, "def _init_query_args"),
+	sub_string(Code, _, _, _, "_init_query_args(query, state)").
+
 test(run_wam_four_arg_in_main, [nondet]) :-
 	% main.py calls run_wam(code, labels, query, state)
 	wam_python_target:generate_main_py([], test_mod, Code),
 	sub_string(Code, _, _, _, "run_wam(code, labels").
+
+test(main_prints_results_with_repr, [nondet]) :-
+	% Static runtime does not export underscored helpers through import *.
+	wam_python_target:generate_main_py([], test_mod, Code),
+	sub_string(Code, _, _, _, "repr(r)").
 
 test(static_runtime_has_load_program, [nondet]) :-
 	% The static WamRuntime.py defines the load_program function
@@ -287,6 +326,14 @@ test(static_runtime_has_call_pc, [nondet]) :-
 	directory_file_path(ThisDir, 'wam_python_runtime/WamRuntime.py', SrcPath),
 	read_file_to_string(SrcPath, Content, []),
 	sub_string(Content, _, _, _, "call_pc").
+
+test(static_runtime_has_call_lowered, [nondet]) :-
+	% The static WamRuntime.py handles lowered predicate stubs.
+	source_file(wam_python_target:compile_step_wam_to_python(_,_), ThisFile),
+	file_directory_name(ThisFile, ThisDir),
+	directory_file_path(ThisDir, 'wam_python_runtime/WamRuntime.py', SrcPath),
+	read_file_to_string(SrcPath, Content, []),
+	sub_string(Content, _, _, _, "'call_lowered'").
 
 test(static_runtime_run_wam_four_args, [nondet]) :-
 	% run_wam takes (code, labels, entry, state)
