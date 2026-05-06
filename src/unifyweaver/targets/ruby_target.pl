@@ -1981,7 +1981,7 @@ def ~w(arg1, visited)\n\c
 end\n',
     [PredStr, PredStr, WorkerStr, WorkerStr, BaseCheck, RecCallExpr]).
 
-extract_rec_call_ruby((A, B), PredStr, WorkerStr, Expr) :-
+extract_rec_call_ruby((A, _), PredStr, WorkerStr, Expr) :-
     nonvar(A),
     functor(A, Pred, _),
     atom_string(Pred, PredStr), !,

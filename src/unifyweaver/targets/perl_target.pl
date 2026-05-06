@@ -2157,7 +2157,7 @@ sub ~w {\n\c
 }\n',
     [PredStr, PredStr, WorkerStr, WorkerStr, BaseCheck, RecCallExpr]).
 
-extract_rec_call_perl((A, B), PredStr, WorkerStr, Expr) :-
+extract_rec_call_perl((A, _), PredStr, WorkerStr, Expr) :-
     nonvar(A),
     functor(A, Pred, _),
     atom_string(Pred, PredStr), !,

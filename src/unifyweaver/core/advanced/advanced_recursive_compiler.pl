@@ -26,7 +26,7 @@
 ]).
 :- use_module('purity_analysis', [is_associative_op/1]).
 :- use_module('tail_recursion').
-:- use_module('linear_recursion').
+:- use_module('linear_recursion', except([is_recursive_clause/2])).
 :- use_module('multicall_linear_recursion').
 :- use_module('tree_recursion').
 :- use_module('mutual_recursion').

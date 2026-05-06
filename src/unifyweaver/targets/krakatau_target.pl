@@ -18,6 +18,7 @@
     compile_tree_recursion_krakatau/3,
     compile_multicall_recursion_krakatau/3,
     compile_direct_multicall_krakatau/3,
+    compile_mutual_recursion_krakatau/2,
     compile_mutual_recursion_krakatau/3,
     krakatau_type_info/1,
     krakatau_validate_config/1,
@@ -217,6 +218,9 @@ compile_direct_multicall_krakatau(Pred/Arity, _Options, Code) :-
 
 %% Mutual recursion
 mutual_recursion:compile_mutual_pattern(krakatau, Predicates, _MemoEnabled, _MemoStrategy, Code) :-
+    compile_mutual_recursion_krakatau(Predicates, [], Code).
+
+compile_mutual_recursion_krakatau(Predicates, Code) :-
     compile_mutual_recursion_krakatau(Predicates, [], Code).
 
 compile_mutual_recursion_krakatau(Predicates, _Options, Code) :-

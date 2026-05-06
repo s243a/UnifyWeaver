@@ -18,6 +18,7 @@
     compile_tree_recursion_jamaica/3,
     compile_multicall_recursion_jamaica/3,
     compile_direct_multicall_jamaica/3,
+    compile_mutual_recursion_jamaica/2,
     compile_mutual_recursion_jamaica/3,
     % Component system
     jamaica_type_info/1,
@@ -245,6 +246,9 @@ compile_direct_multicall_jamaica(Pred/Arity, _Options, Code) :-
 mutual_recursion:compile_mutual_pattern(jamaica, Predicates, _MemoEnabled, _MemoStrategy, Code) :-
     compile_mutual_recursion_jamaica(Predicates, [], Code).
 
+compile_mutual_recursion_jamaica(Predicates, Code) :-
+    compile_mutual_recursion_jamaica(Predicates, [], Code).
+
 compile_mutual_recursion_jamaica(Predicates, _Options, Code) :-
     (   Predicates = [Pred1|_]
     ->  atom_string(Pred1, P1Str),
@@ -319,9 +323,6 @@ public class ~w {
   }
 }
 ', [ClassName, PredStr, CoreParams, CoreBody, EntryName, EntryParams, EntryBody]).
-
-ensure_string(S, S) :- string(S), !.
-ensure_string(A, S) :- atom_string(A, S).
 
 %% write_jamaica_program(+Code, +Filename)
 write_jamaica_program(Code, Filename) :-
