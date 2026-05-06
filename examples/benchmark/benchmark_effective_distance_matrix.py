@@ -255,9 +255,11 @@ def build_wam_go_effective_distance(root: Path, scale: str, kernel_mode: str) ->
     return [str(project_dir / "hybrid_ed_bench_go")]
 
 
-def build_wam_c_effective_distance(root: Path, scale: str, kernel_mode: str) -> list[str]:
+def build_wam_c_effective_distance(
+    root: Path, scale: str, kernel_mode: str, fact_storage: str = "facts_tsv"
+) -> list[str]:
     facts_path = require_file(BENCH_DIR / scale / "facts.pl")
-    project_dir = root / f"wam_c_{kernel_mode}" / scale
+    project_dir = root / f"wam_c_{kernel_mode}_{fact_storage}" / scale
     project_dir.mkdir(parents=True, exist_ok=True)
     run_command(
         [
@@ -269,6 +271,7 @@ def build_wam_c_effective_distance(root: Path, scale: str, kernel_mode: str) -> 
             str(facts_path),
             str(project_dir),
             kernel_mode,
+            fact_storage,
         ],
         cwd=ROOT,
     )
@@ -276,18 +279,37 @@ def build_wam_c_effective_distance(root: Path, scale: str, kernel_mode: str) -> 
     lib_path = project_dir / "lib.c"
     main_path = project_dir / "main.c"
     binary_path = project_dir / "wam_c_effective_distance"
+    compile_flags = ["-std=c11", "-Wall", "-Wextra"]
+    link_flags = ["-lm"]
+    if fact_storage == "facts_lmdb":
+        seeder_path = project_dir / "seed_category_parent_lmdb.c"
+        seeder_binary = project_dir / "seed_category_parent_lmdb"
+        run_command(
+            [
+                "gcc",
+                *compile_flags,
+                str(seeder_path),
+                "-llmdb",
+                "-o",
+                str(seeder_binary),
+            ],
+            cwd=ROOT,
+        )
+        run_command([str(seeder_binary)], cwd=project_dir)
+        compile_flags.append("-DWAM_C_ENABLE_LMDB")
+        link_flags.append("-llmdb")
+    elif fact_storage != "facts_tsv":
+        raise ValueError(f"unknown WAM-C fact storage mode: {fact_storage}")
     run_command(
         [
             "gcc",
-            "-std=c11",
-            "-Wall",
-            "-Wextra",
+            *compile_flags,
             "-I",
             str(ROOT / "src" / "unifyweaver" / "targets" / "wam_c_runtime"),
             str(runtime_path),
             str(lib_path),
             str(main_path),
-            "-lm",
+            *link_flags,
             "-o",
             str(binary_path),
         ],
@@ -877,6 +899,10 @@ def main() -> int:
                     command = build_wam_c_effective_distance(temp_root, scale, "kernels_on")
                 elif target == "c-wam-accumulated-no-kernels":
                     command = build_wam_c_effective_distance(temp_root, scale, "kernels_off")
+                elif target == "c-wam-accumulated-lmdb":
+                    command = build_wam_c_effective_distance(temp_root, scale, "kernels_on", "facts_lmdb")
+                elif target == "c-wam-accumulated-no-kernels-lmdb":
+                    command = build_wam_c_effective_distance(temp_root, scale, "kernels_off", "facts_lmdb")
                 elif target == "scala-wam-seeded":
                     command = build_wam_scala_effective_distance(temp_root, scale, "seeded", "kernels_on")
                 elif target == "scala-wam-seeded-artifact":
