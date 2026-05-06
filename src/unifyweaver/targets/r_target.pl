@@ -24,7 +24,7 @@
 :- use_module('../bindings/r_bindings').
 :- use_module('../core/template_system').
 :- use_module('type_declarations').
-:- use_module('../core/clause_body_analysis').
+:- use_module('../core/clause_body_analysis', []).
 :- multifile prolog:message//1.
 
 % Track required packages/libraries

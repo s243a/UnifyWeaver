@@ -9,6 +9,7 @@
 :- module(recursive_compiler, [
     compile_recursive/3,
     compile_recursive/2,
+    is_transitive_closure/5,
     test_recursive_compiler/0
 ]).
 
@@ -18,7 +19,7 @@
 :- use_module('advanced/advanced_recursive_compiler').
 :- use_module('advanced/call_graph').
 :- use_module('advanced/tail_recursion').
-:- use_module('advanced/linear_recursion').
+:- use_module('advanced/linear_recursion', except([is_recursive_clause/2])).
 :- use_module(stream_compiler).
 :- use_module('../targets/awk_target').
 :- use_module('../targets/csharp_query_target').

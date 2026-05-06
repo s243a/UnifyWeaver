@@ -1301,7 +1301,28 @@ lua_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
     lua_output_goal_last(Goal, VarMap, Lines).
 lua_render_classified_last(_, _, [], []).
 
-%% lua_output_goal_last(+Goal, +VarMap, -Lines)
+%% lua_guard_condition(+VarMap, +Goal, -Condition)
+lua_guard_condition(VarMap, _Module:Goal, Condition) :-
+    !, lua_guard_condition(VarMap, Goal, Condition).
+lua_guard_condition(VarMap, Goal, Condition) :-
+    compound(Goal),
+    Goal =.. [Op, Left, Right],
+    expr_op(Op, StdOp),
+    !,
+    lua_expr(Left, VarMap, LLeft),
+    lua_expr(Right, VarMap, LRight),
+    lua_op(StdOp, LOp),
+    format(string(Condition), '~w ~w ~w', [LLeft, LOp, LRight]).
+
+%% lua_output_goals(+Goals, +VarMap, -Code)
+lua_output_goals([], _VarMap, '"error"') :- !.
+lua_output_goals([Goal], VarMap, Code) :-
+    !, lua_output_goal_last(Goal, VarMap, Code).
+lua_output_goals([Goal|Rest], VarMap0, Code) :-
+    lua_output_goal(Goal, VarMap0, _Line, VarMap1),
+    lua_output_goals(Rest, VarMap1, Code).
+
+%% lua_output_goal_last — produce the return expression
 lua_output_goal_last(Goal, VarMap, [Line]) :-
     lua_output_goal(Goal, VarMap, AssignLine, VarMapOut),
     (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, OutName)
@@ -1311,6 +1332,18 @@ lua_output_goal_last(Goal, VarMap, [Line]) :-
 lua_output_goal_last(Goal, VarMap, [Line]) :-
     lua_branch_value(Goal, VarMap, Expr),
     format(string(Line), '    return ~w', [Expr]).
+lua_output_goal_last(_Module:Goal, VarMap, Code) :-
+    !, lua_output_goal_last(Goal, VarMap, Code).
+lua_output_goal_last(Goal, VarMap, Code) :-
+    if_then_else_goal(Goal, IfGoal, ThenGoal, ElseGoal),
+    !,
+    lua_if_then_else_output(IfGoal, ThenGoal, ElseGoal, VarMap, Code).
+lua_output_goal_last(=(Var, Expr), VarMap, Code) :-
+    var(Var), !,
+    lua_expr(Expr, VarMap, Code).
+lua_output_goal_last(is(Var, Expr), VarMap, Code) :-
+    var(Var), !,
+    lua_expr(Expr, VarMap, Code).
 
 %% lua_collect_trailing_guards(+ClassifiedGoals, +VarMap, -GuardGoals, -Remaining)
 lua_collect_trailing_guards([guard(Goal, _)|Rest], VarMap, [Goal|Guards], Remaining) :-
@@ -1357,41 +1390,6 @@ lua_disj_elseif_chain([Alt|Rest], VarMap, [ElifLine, RetLine|RestLines]) :-
     format(string(ElifLine), '    elseif ~w then', [CondExpr]),
     format(string(RetLine), '        return ~w', [ValExpr]),
     lua_disj_elseif_chain(Rest, VarMap, RestLines).
-
-%% lua_guard_condition(+VarMap, +Goal, -Condition)
-lua_guard_condition(VarMap, _Module:Goal, Condition) :-
-    !, lua_guard_condition(VarMap, Goal, Condition).
-lua_guard_condition(VarMap, Goal, Condition) :-
-    compound(Goal),
-    Goal =.. [Op, Left, Right],
-    expr_op(Op, StdOp),
-    !,
-    lua_expr(Left, VarMap, LLeft),
-    lua_expr(Right, VarMap, LRight),
-    lua_op(StdOp, LOp),
-    format(string(Condition), '~w ~w ~w', [LLeft, LOp, LRight]).
-
-%% lua_output_goals(+Goals, +VarMap, -Code)
-lua_output_goals([], _VarMap, '"error"') :- !.
-lua_output_goals([Goal], VarMap, Code) :-
-    !, lua_output_goal_last(Goal, VarMap, Code).
-lua_output_goals([Goal|Rest], VarMap0, Code) :-
-    lua_output_goal(Goal, VarMap0, _Line, VarMap1),
-    lua_output_goals(Rest, VarMap1, Code).
-
-%% lua_output_goal_last — produce the return expression
-lua_output_goal_last(_Module:Goal, VarMap, Code) :-
-    !, lua_output_goal_last(Goal, VarMap, Code).
-lua_output_goal_last(Goal, VarMap, Code) :-
-    if_then_else_goal(Goal, IfGoal, ThenGoal, ElseGoal),
-    !,
-    lua_if_then_else_output(IfGoal, ThenGoal, ElseGoal, VarMap, Code).
-lua_output_goal_last(=(Var, Expr), VarMap, Code) :-
-    var(Var), !,
-    lua_expr(Expr, VarMap, Code).
-lua_output_goal_last(is(Var, Expr), VarMap, Code) :-
-    var(Var), !,
-    lua_expr(Expr, VarMap, Code).
 
 %% lua_output_goal — produce a local assignment (not used as return)
 lua_output_goal(_Module:Goal, VarMap0, Line, VarMapOut) :-
@@ -1700,7 +1698,7 @@ function ~w_worker(arg1, visited)\n\c
 end\n',
     [PredStr, PredStr, PredStr, PredStr, BaseCheck, RecCallExpr]).
 
-extract_rec_call_lua((A, B), PredStr, Expr) :-
+extract_rec_call_lua((A, _), PredStr, Expr) :-
     nonvar(A),
     functor(A, Pred, _),
     atom_string(Pred, PredStr), !,

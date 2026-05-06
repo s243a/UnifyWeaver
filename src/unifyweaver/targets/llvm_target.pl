@@ -675,7 +675,7 @@ recurse:
 %  Generate C header file for the exported functions.
 generate_c_header(Functions, HeaderCode) :-
     findall(Decl, (
-        member(func(Name, _Arity, _Type), Functions),
+        member(func(Name, _, _), Functions),
         atom_string(Name, NameStr),
         format(string(Decl), 'int64_t ~w(int64_t n);', [NameStr])
     ), Decls),
@@ -705,7 +705,7 @@ extern "C" {
 %  Generate Go code with cgo bindings.
 generate_cgo_bindings(Functions, GoCode) :-
     findall(GoFunc, (
-        member(func(Name, _Arity, _Type), Functions),
+        member(func(Name, _, _), Functions),
         atom_string(Name, NameStr),
         format(string(GoFunc),
 '// ~w calls the LLVM-compiled ~w function
@@ -732,14 +732,14 @@ import "C"
 %  Generate Rust FFI bindings.
 generate_rust_ffi(Functions, RustCode) :-
     findall(RustDecl, (
-        member(func(Name, _Arity, _Type), Functions),
+        member(func(Name, _, _), Functions),
         atom_string(Name, NameStr),
         format(string(RustDecl), '    fn ~w(n: i64) -> i64;', [NameStr])
     ), RustDecls),
     atomic_list_concat(RustDecls, '\n', RustDeclSection),
     
     findall(RustWrapper, (
-        member(func(Name, _Arity, _Type), Functions),
+        member(func(Name, _, _), Functions),
         atom_string(Name, NameStr),
         format(string(RustWrapper),
 '/// Calls the LLVM-compiled ~w function
@@ -881,7 +881,7 @@ recurse:
 %  Generate JavaScript bindings for Node.js and browser.
 generate_js_bindings(Functions, JSCode) :-
     findall(JSFunc, (
-        member(func(Name, _Arity, _Type), Functions),
+        member(func(Name, _, _), Functions),
         atom_string(Name, NameStr),
         format(string(JSFunc),
 '  ~w: (n) => instance.exports.~w(n)', [NameStr, NameStr])
@@ -920,14 +920,14 @@ module.exports = { loadPrologMath, loadPrologMathNode };
 %  Generate TypeScript bindings with type definitions.
 generate_ts_bindings(Functions, TSCode) :-
     findall(TSDecl, (
-        member(func(Name, _Arity, _Type), Functions),
+        member(func(Name, _, _), Functions),
         atom_string(Name, NameStr),
         format(string(TSDecl), '  ~w(n: number): number;', [NameStr])
     ), TSDecls),
     atomic_list_concat(TSDecls, '\n', TSDeclSection),
     
     findall(TSFunc, (
-        member(func(Name, _Arity, _Type), Functions),
+        member(func(Name, _, _), Functions),
         atom_string(Name, NameStr),
         format(string(TSFunc),
 '  ~w: (n: number): number => instance.exports.~w(n)', [NameStr, NameStr])
@@ -1571,7 +1571,7 @@ llvm_value(Expr, VarMap, Value) :-
     expr_op(Op, _),
     !,
     llvm_value(Left, VarMap, LVal),
-    llvm_value(Right, VarMap, RVal),
+    llvm_value(Right, VarMap, _),
     % For compound expressions used as values, just use left operand
     % (proper setup code handles the computation)
     Value = LVal.

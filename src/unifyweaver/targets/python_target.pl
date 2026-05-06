@@ -83,7 +83,10 @@
 % Conditional import of call_graph for mutual recursion detection
 % Falls back gracefully if module not available
 :- catch(use_module('../core/advanced/call_graph'), _, true).
-:- use_module(common_generator).
+:- use_module(common_generator, [
+    translate_builtin_common/4,
+    prepare_negation_data/4
+]).
 
 % Binding system integration (ported from PowerShell target)
 :- use_module('../core/binding_registry').
@@ -1373,22 +1376,14 @@ compile_service_mesh_python(service(Name, Options, HandlerSpec), PythonCode) :-
         CBTimeout = 30000
     ),
     % Retry with backoff
-    ( ( member(retry(RetryN, RetryStrategy, RetryOpts), Options) ->
-          ( member(delay(RetryDelay), RetryOpts) -> true ; RetryDelay = 100 ),
-          ( member(max_delay(RetryMaxDelay), RetryOpts) -> true ; RetryMaxDelay = 30000 )
-      ; member(retry(RetryN, RetryStrategy), Options) ->
-          RetryDelay = 100,
-          RetryMaxDelay = 30000
-      ) ->
+    ( service_mesh_retry_options(Options, RetryN, RetryStrategy, RetryDelay, RetryMaxDelay) ->
         generate_retry_python(config(RetryN, RetryStrategy, RetryDelay, RetryMaxDelay), RetryCode),
         atom_string(RetryStrategy, RetryStrategyStr),
         format(string(RetryConfig), "RetryConfig(~w, '~w', ~w, ~w)", [RetryN, RetryStrategyStr, RetryDelay, RetryMaxDelay])
     ;
         RetryCode = "",
         RetryConfig = "None",
-        RetryN = 0,
-        RetryDelay = 100,
-        RetryMaxDelay = 30000
+        RetryN = 0
     ),
     % Backends
     ( member(backends(Backends), Options) ->
@@ -1534,10 +1529,18 @@ class ~wService(Service):
 
 # Register service
 register_service('~w', ~wService())
-", [LoadBalancerCode, CircuitBreakerCode, RetryCode,
-    ClassNameAtom, Name, LBStrategyStr, CBThreshold, CBTimeout, RetryN,
-    Name, Stateful, BackendsCode, LBStrategyStr, CBConfig, RetryConfig,
-    HandlerCode, Name, ClassNameAtom]).
+	", [LoadBalancerCode, CircuitBreakerCode, RetryCode,
+	    ClassNameAtom, Name, LBStrategyStr, CBThreshold, CBTimeout, RetryN,
+	    Name, Stateful, BackendsCode, LBStrategyStr, CBConfig, RetryConfig,
+	    HandlerCode, Name, ClassNameAtom]).
+
+service_mesh_retry_options(Options, RetryN, RetryStrategy, RetryDelay, RetryMaxDelay) :-
+    member(retry(RetryN, RetryStrategy, RetryOpts), Options),
+    !,
+    ( member(delay(RetryDelay), RetryOpts) -> true ; RetryDelay = 100 ),
+    ( member(max_delay(RetryMaxDelay), RetryOpts) -> true ; RetryMaxDelay = 30000 ).
+service_mesh_retry_options(Options, RetryN, RetryStrategy, 100, 30000) :-
+    member(retry(RetryN, RetryStrategy), Options).
 
 %% generate_load_balancer_python(+Strategy, -Code)
 %  Generate Python load balancer infrastructure.
@@ -3053,6 +3056,39 @@ compile_non_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
     generate_python_main(Options, Main),
     format(string(PythonCode), "~s~s\n~s\n~s", [Header, Helpers, FuncCode, Main]).
 
+compile_non_recursive_predicate(_Name, Arity, Clauses, Options, PythonCode) :-
+    % Fallback: per-clause functions with yield
+    % Generate clause functions
+    findall(ClauseCode, (
+        nth0(Index, Clauses, (ClauseHead, ClauseBody)),
+        translate_clause(ClauseHead, ClauseBody, Index, Arity, ClauseCode)
+    ), ClauseCodes),
+    atomic_list_concat(ClauseCodes, "\n", AllClausesCode),
+
+    % Generate process_stream calls
+    findall(Call, (
+        nth0(Index, Clauses, _),
+        format(string(Call), "        yield from _clause_~d(record)", [Index])
+    ), Calls),
+    atomic_list_concat(Calls, "\n", CallsCode),
+
+    header(Header),
+    helpers(Helpers),
+
+    generate_python_main(Options, Main),
+
+    format(string(Logic),
+"
+~s
+
+def process_stream(records: Iterator[Dict]) -> Iterator[Dict]:
+    \"\"\"Generated predicate logic.\"\"\"
+    for record in records:
+~s
+\n", [AllClausesCode, CallsCode]),
+
+    format(string(PythonCode), "~s~s~s~s", [Header, Helpers, Logic, Main]).
+
 %% python_arg_split(+Arity, +ClausePairs, -InputArity)
 %  Determine how many args are inputs vs outputs.
 %  Arity 1: all args are inputs (boolean predicate — guard-only)
@@ -3085,6 +3121,8 @@ python_arg_split(Arity, ClausePairs, InputArity) :-
     ),
     InputArity >= 1,
     !.
+python_arg_split(Arity, _, InputArity) :-
+    InputArity is max(1, Arity - 1).
 
 %% python_fact_input_count(+HeadArgs, -InputCount)
 %  For pure facts, count the number of distinct first-occurrence variables.
@@ -3144,7 +3182,6 @@ python_typed_arg_list(Name/Arity, InputArity, ArgList) :-
     ).
 
 has_python_type_annotations(Name/Arity) :-
-    functor(Head, Name, Arity),
     (   clause(type_declarations:uw_type(Name/Arity, _, _), true)
     ;   clause(user:uw_type(Name/Arity, _, _), true)
     ), !.
@@ -3196,9 +3233,6 @@ python_count_first_occurrences([Arg|Rest], Seen, Acc, Count) :-
         Acc1 is Acc + 1,
         python_count_first_occurrences(Rest, Seen, Acc1, Count)
     ).
-python_arg_split(Arity, _, InputArity) :-
-    InputArity is max(1, Arity - 1).
-
 %% count_output_vars(+ClassifiedGoals, +HeadArgs, -Count)
 %  Count how many head args are assigned as outputs in the body.
 count_output_vars(ClassifiedGoals, HeadArgs, Count) :-
@@ -3214,38 +3248,6 @@ classified_output_var(output(_, Var, _), Var).
 classified_output_var(output_ite(_, _, _, Vars), Var) :- member(Var, Vars).
 classified_output_var(output_disj(_, Vars), Var) :- member(Var, Vars).
 classified_output_var(output_if_then(_, _, Vars), Var) :- member(Var, Vars).
-compile_non_recursive_predicate(_Name, Arity, Clauses, Options, PythonCode) :-
-    % Fallback: per-clause functions with yield
-    % Generate clause functions
-    findall(ClauseCode, (
-        nth0(Index, Clauses, (ClauseHead, ClauseBody)),
-        translate_clause(ClauseHead, ClauseBody, Index, Arity, ClauseCode)
-    ), ClauseCodes),
-    atomic_list_concat(ClauseCodes, "\n", AllClausesCode),
-
-    % Generate process_stream calls
-    findall(Call, (
-        nth0(Index, Clauses, _),
-        format(string(Call), "        yield from _clause_~d(record)", [Index])
-    ), Calls),
-    atomic_list_concat(Calls, "\n", CallsCode),
-
-    header(Header),
-    helpers(Helpers),
-
-    generate_python_main(Options, Main),
-
-    format(string(Logic),
-"
-~s
-
-def process_stream(records: Iterator[Dict]) -> Iterator[Dict]:
-    \"\"\"Generated predicate logic.\"\"\"
-    for record in records:
-~s
-\n", [AllClausesCode, CallsCode]),
-
-    format(string(PythonCode), "~s~s~s~s", [Header, Helpers, Logic, Main]).
 
 % ============================================================================
 % NATIVE CLAUSE BODY LOWERING
@@ -3510,7 +3512,7 @@ python_render_classified_goals([Classified], VarMap, Conds, Lines) :-
     !,
     python_render_classified_last(Classified, VarMap, Conds, Lines).
 %% Guarded tail: output followed by guard(s) — assign first, then conditional return
-python_render_classified_goals([output(Goal, Var, _Expr)|Rest], VarMap, [], Lines) :-
+python_render_classified_goals([output(Goal, _Var, _Expr)|Rest], VarMap, [], Lines) :-
     Rest = [guard(_, _)|_],
     !,
     python_output_goal(Goal, VarMap, AssignLine, VarMap1),
@@ -3566,39 +3568,6 @@ python_render_classified_last(guard(Goal, _Expr), VarMap, [Cond], []) :-
     python_guard_condition(VarMap, Goal, Cond).
 python_render_classified_last(output(Goal, _Var, _Expr), VarMap, [], Lines) :-
     python_output_goal_last(Goal, VarMap, Lines, _).
-
-%% Multi-output: when there are previous output assignments, return tuple
-python_render_classified_goals_multi_return(ClassifiedGoals, VarMap, Conds, Lines) :-
-    %% Collect all output var names
-    collect_output_var_names(ClassifiedGoals, VarMap, OutputNames),
-    OutputNames = [_,_|_],  %% at least 2 outputs
-    !,
-    %% Render all goals as mid (assignments), then add tuple return
-    python_render_all_as_mid(ClassifiedGoals, VarMap, Conds, MidLines, _),
-    format(string(TupleStr), '~w', [OutputNames]),
-    atomic_list_concat(OutputNames, ', ', TupleInner),
-    format(string(ReturnLine), '    return (~w)', [TupleInner]),
-    append(MidLines, [ReturnLine], Lines).
-
-python_render_all_as_mid([], _VarMap, [], [], _VarMap).
-python_render_all_as_mid([C|Rest], VarMap, Conds, Lines, VarMapOut) :-
-    python_render_classified_mid(C, VarMap, MConds, MLines, VarMap1),
-    python_render_all_as_mid(Rest, VarMap1, RConds, RLines, VarMapOut),
-    append(MConds, RConds, Conds),
-    append(MLines, RLines, Lines).
-
-collect_output_var_names([], _, []).
-collect_output_var_names([output(Goal, _Var, _)|Rest], VarMap, [Name|Names]) :-
-    goal_output_var(Goal, OutVar),
-    lookup_var(OutVar, VarMap, Name), !,
-    collect_output_var_names(Rest, VarMap, Names).
-collect_output_var_names([output(Goal, _Var, _)|Rest], VarMap, [Name|Names]) :-
-    %% Fallback: ensure the var gets a name
-    goal_output_var(Goal, OutVar),
-    ensure_var(VarMap, OutVar, Name, VarMap1), !,
-    collect_output_var_names(Rest, VarMap1, Names).
-collect_output_var_names([_|Rest], VarMap, Names) :-
-    collect_output_var_names(Rest, VarMap, Names).
 python_render_classified_last(output_ite(If, Then, Else, SharedVars), VarMap, [], Lines) :-
     python_guard_condition(VarMap, If, Cond),
     length(SharedVars, SharedCount),
@@ -3618,6 +3587,44 @@ python_render_classified_last(output_ite(If, Then, Else, SharedVars), VarMap, []
         python_branch_return_lines(ElseLines, ElseVars, SharedCount, IndentedElse),
         append([IfLine|IndentedThen], [ElseLine|IndentedElse], Lines)
     ).
+python_render_classified_last(output_disj(Alternatives, SharedVars), VarMap, [], Lines) :-
+    python_classified_disj_return(Alternatives, SharedVars, VarMap, Lines).
+python_render_classified_last(output_if_then(If, Then, OutputVars), VarMap, [], Lines) :-
+    python_classified_if_then_return(If, Then, OutputVars, VarMap, Lines).
+python_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
+    python_output_goal_last(Goal, VarMap, Lines, _).
+
+%% Multi-output: when there are previous output assignments, return tuple
+python_render_classified_goals_multi_return(ClassifiedGoals, VarMap, Conds, Lines) :-
+    %% Collect all output var names
+    collect_output_var_names(ClassifiedGoals, VarMap, OutputNames),
+    OutputNames = [_,_|_],  %% at least 2 outputs
+    !,
+    %% Render all goals as mid (assignments), then add tuple return
+    python_render_all_as_mid(ClassifiedGoals, VarMap, Conds, MidLines, _),
+    atomic_list_concat(OutputNames, ', ', TupleInner),
+    format(string(ReturnLine), '    return (~w)', [TupleInner]),
+    append(MidLines, [ReturnLine], Lines).
+
+python_render_all_as_mid([], VarMap, [], [], VarMap).
+python_render_all_as_mid([C|Rest], VarMap, Conds, Lines, VarMapOut) :-
+    python_render_classified_mid(C, VarMap, MConds, MLines, VarMap1),
+    python_render_all_as_mid(Rest, VarMap1, RConds, RLines, VarMapOut),
+    append(MConds, RConds, Conds),
+    append(MLines, RLines, Lines).
+
+collect_output_var_names([], _, []).
+collect_output_var_names([output(Goal, _Var, _)|Rest], VarMap, [Name|Names]) :-
+    goal_output_var(Goal, OutVar),
+    lookup_var(OutVar, VarMap, Name), !,
+    collect_output_var_names(Rest, VarMap, Names).
+collect_output_var_names([output(Goal, _Var, _)|Rest], VarMap, [Name|Names]) :-
+    %% Fallback: ensure the var gets a name
+    goal_output_var(Goal, OutVar),
+    ensure_var(VarMap, OutVar, Name, VarMap1), !,
+    collect_output_var_names(Rest, VarMap1, Names).
+collect_output_var_names([_|Rest], VarMap, Names) :-
+    collect_output_var_names(Rest, VarMap, Names).
 
 %% python_branch_return_lines(+BranchLines, +VarNames, +OutputCount, -IndentedLines)
 %  Indent branch lines and add return statement.
@@ -3634,12 +3641,6 @@ python_branch_return_lines(BranchLines, VarNames, OutputCount, IndentedLines) :-
     ;   RetLine = '        return None'
     ),
     append(Indented, [RetLine], IndentedLines).
-python_render_classified_last(output_disj(Alternatives, SharedVars), VarMap, [], Lines) :-
-    python_classified_disj_return(Alternatives, SharedVars, VarMap, Lines).
-python_render_classified_last(output_if_then(If, Then, OutputVars), VarMap, [], Lines) :-
-    python_classified_if_then_return(If, Then, OutputVars, VarMap, Lines).
-python_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
-    python_output_goal_last(Goal, VarMap, Lines, _).
 
 %% === If-then-else output (assignment, not return) ===
 python_classified_ite_assign(If, Then, Else, SharedVars, VarMap0, Lines, VarMapOut) :-
@@ -3691,18 +3692,6 @@ python_classified_if_then_return(If, Then, _OutputVars, VarMap, Lines) :-
     format(string(L1), '    if ~w:', [Cond]),
     format(string(L2), '        return ~w', [ThenExpr]),
     Lines = [L1, L2].
-
-%% python_branch_value(+Branch, +VarMap, -PyExpr)
-%  Extract the output value from a branch (Then or Else) as a single expression.
-%  For simple branches (single assignment/is), returns the expression directly.
-%  Falls back to python_expr for atomic values.
-python_branch_value(Branch, VarMap, PyExpr) :-
-    normalize_goals(Branch, Goals),
-    reverse(Goals, [LastGoal|_]),
-    python_goal_value(LastGoal, VarMap, PyExpr),
-    !.
-python_branch_value(Branch, VarMap, PyExpr) :-
-    python_expr(Branch, VarMap, PyExpr).
 
 %% python_goal_value(+Goal, +VarMap, -PyExpr)
 python_goal_value(_Module:Goal, VarMap, Expr) :- !, python_goal_value(Goal, VarMap, Expr).
@@ -3882,7 +3871,6 @@ python_disj_if_elif_lines([Alt|Rest], VarName, VarMap, [CondLine, AssignLine|Res
     ->  true
     ;   ValExpr = "None"
     ),
-    (   Rest == [] -> Kw = "else" ; python_disj_if_elif_lines([], _, _, _) -> Kw = "if" ; Kw = "if"  ),
     %% First alt uses "if", rest use "elif"
     format(string(CondLine), '    if ~w:', [CondExpr]),
     format(string(AssignLine), '        ~w = ~w', [VarName, ValExpr]),
@@ -5083,11 +5071,6 @@ select_best_runtime(ScoredCandidates, Preferences, Runtime) :-
         )
     ).
 
-%% get_collected_imports(-Imports)
-%  Get the list of imports collected during compilation
-get_collected_imports(Imports) :-
-    findall(I, required_import(I), Imports).
-
 %% compile_recursive_predicate(+Name, +Arity, +Clauses, +Options, -PythonCode)
 compile_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
     % Separate base and recursive clauses
@@ -5152,12 +5135,6 @@ compile_visited_recursive_generic(Name, Arity, VisitedPos, BaseClauses, RecClaus
     atomic_list_concat(ExternalArgs, ', ', ExternalArgStr),
     %% Build worker arg list (all args + visited)
     format(string(WorkerArgStr), '~w, visited=None', [ExternalArgStr]),
-    %% Build output tuple args (non-input, non-visited)
-    findall(ArgName, (
-        between(2, Arity, I),
-        I \= VisitedPos,
-        format(string(ArgName), 'arg~w', [I])
-    ), OutputArgs),
     %% Base case
     (   BaseClauses = [(BaseHead, BaseBody)|_]
     ->  BaseHead =.. [_|BaseHeadArgs],
@@ -11860,16 +11837,6 @@ collect_stage_names([Pred/_|Rest], [Pred|RestNames]) :-
 collect_stage_names([_|Rest], RestNames) :-
     collect_stage_names(Rest, RestNames).
 
-%% format_stage_list(+Names, -Str)
-%  Format stage names as Python function references.
-format_stage_list([], '').
-format_stage_list([Name], Str) :-
-    format(string(Str), '~w', [Name]).
-format_stage_list([Name|Rest], Str) :-
-    Rest \= [],
-    format_stage_list(Rest, RestStr),
-    format(string(Str), '~w, ~w', [Name, RestStr]).
-
 %% format_python_route_map(+Routes, -Code)
 %  Format routing map as Python dict literal.
 format_python_route_map([], '').
@@ -12981,15 +12948,15 @@ translate_fold_expr_python(A + B, InputVar, AccVar, PyExpr) :-
     A == InputVar, B == AccVar, !, PyExpr = 'current + result'.
 translate_fold_expr_python(A + B, InputVar, AccVar, PyExpr) :-
     A == AccVar, B == InputVar, !, PyExpr = 'result + current'.
-translate_fold_expr_python(A + B, _InputVar, AccVar, PyExpr) :-
+translate_fold_expr_python(A + B, _, AccVar, PyExpr) :-
     A == AccVar, integer(B), !, format(string(PyExpr), 'result + ~w', [B]).
-translate_fold_expr_python(A + B, _InputVar, AccVar, PyExpr) :-
+translate_fold_expr_python(A + B, _, AccVar, PyExpr) :-
     B == AccVar, integer(A), !, format(string(PyExpr), '~w + result', [A]).
 translate_fold_expr_python(A * B, InputVar, AccVar, PyExpr) :-
     A == InputVar, B == AccVar, !, PyExpr = 'current * result'.
 translate_fold_expr_python(A * B, InputVar, AccVar, PyExpr) :-
     A == AccVar, B == InputVar, !, PyExpr = 'result * current'.
-translate_fold_expr_python(A * B, _InputVar, AccVar, PyExpr) :-
+translate_fold_expr_python(A * B, _, AccVar, PyExpr) :-
     A == AccVar, integer(B), !, format(string(PyExpr), 'result * ~w', [B]).
 translate_fold_expr_python(A - B, InputVar, AccVar, PyExpr) :-
     A == InputVar, B == AccVar, !, PyExpr = 'current - result'.
@@ -13018,9 +12985,9 @@ tree_recursion:compile_tree_pattern(python, _Pattern, Pred, _Arity, UseMemo, Cod
     %% Extract recursive expression from a single clause copy
     (   clause(user:Head, RBody),
         RBody \= true,
-        Head =.. [Pred, _InputVar, ResultVar],
+        Head =.. [Pred, InputVar, ResultVar],
         %% Find all recursive calls and their arg expressions
-        extract_tree_rec_calls(RBody, Pred, _InputVar, RecCalls),
+        extract_tree_rec_calls(RBody, Pred, InputVar, RecCalls),
         RecCalls = [_|_],
         %% Find the fold expression (Result is ...)
         linear_recursion:find_last_is_expression(RBody, ResultVar is FoldExpr),
@@ -13121,9 +13088,9 @@ resolve_is_operand(N, _, N) :- number(N), !.
 resolve_is_operand(-(N), _, -(N)) :- number(N), !.
 resolve_is_operand(X, _, X).
 
-simplify_arg_expr(Var, _InputVar, Var) :- var(Var), !.
-simplify_arg_expr(Expr, _InputVar, Expr) :- number(Expr), !.
-simplify_arg_expr(Expr, _InputVar, Expr) :- atom(Expr), !.
+simplify_arg_expr(Var, _, Var) :- var(Var), !.
+simplify_arg_expr(Expr, _, Expr) :- number(Expr), !.
+simplify_arg_expr(Expr, _, Expr) :- atom(Expr), !.
 simplify_arg_expr(Expr, _, Expr).
 
 %% build_tree_python_expr(+FoldExpr, +RecCalls, +Pred, +PredStr, -PyExpr)
@@ -13192,7 +13159,7 @@ tree_call_python(Call, Pred, PredStr, PyExpr) :-
 tree_call_python(Expr, _, _, PyExpr) :-
     format(string(PyExpr), '~w', [Expr]).
 
-tree_arg_python(N - K, PyArg) :-
+tree_arg_python(_N - K, PyArg) :-
     integer(K), !,
     format(string(PyArg), 'n - ~w', [K]).
 tree_arg_python(Expr, PyExpr) :-
@@ -13274,7 +13241,7 @@ mutual_function_arity2_python(PredStr, BaseClauses, RecClauses, AllPreds, MemoEn
     atomic_list_concat(BaseLines, '\n', BaseCode),
     %% Recursive case
     (   RecClauses = [clause(RHead, RBody)|_]
-    ->  RHead =.. [_, _InputVar, _OutputVar],
+    ->  RHead =.. [_, _InputVar, _],
         extract_mutual_rec_info2_python(RBody, AllPreds, Guard, CalledPred, Step, FoldExpr),
         atom_string(CalledPred, CalledStr),
         (   Guard = (N > Threshold), var(N)
@@ -13325,7 +13292,7 @@ extract_mutual_rec_info2_python(Body, AllPreds, Guard, CalledPred, Step, FoldExp
     %% Find mutual call (arity 2)
     member(Call, Goals),
     compound(Call),
-    Call =.. [CalledPred, CalledArg, _ResultVar],
+    Call =.. [CalledPred, CalledArg, ResultVar],
     member(CalledPred/_A, AllPreds),
     !,
     %% Extract step — trace through is-bindings
@@ -13333,7 +13300,7 @@ extract_mutual_rec_info2_python(Body, AllPreds, Guard, CalledPred, Step, FoldExp
     %% Find fold expression — use the LAST is/2 (the fold, not the step)
     (   reverse(Goals, RevGoals),
         member(IsGoal, RevGoals), IsGoal = (_ is FoldArith)
-    ->  translate_fold_expr_mutual_python(FoldArith, _ResultVar, FoldExpr)
+    ->  translate_fold_expr_mutual_python(FoldArith, ResultVar, FoldExpr)
     ;   FoldExpr = "rec_result"
     ).
 

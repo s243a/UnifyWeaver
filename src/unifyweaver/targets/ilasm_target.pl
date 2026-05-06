@@ -180,7 +180,7 @@ ilasm_locals_from_body(Body, LocalDecls) :-
 % ============================================================================
 
 %% native_ilasm_clause_body(+PredSpec, +Clauses, -Code)
-native_ilasm_clause_body(PredStr/Arity, Clauses, Code) :-
+native_ilasm_clause_body(_PredStr/Arity, Clauses, Code) :-
     Arity1 is Arity - 1,
     ilasm_clauses_to_branches(Clauses, Arity1, Branches),
     Branches \= [],
