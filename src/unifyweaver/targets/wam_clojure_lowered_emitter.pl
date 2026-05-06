@@ -327,6 +327,26 @@ clojure_pred_key_direct_builtin(Pred, Op, Arity) :-
     format(string(Op), "~w/~w", [Name, Arity]),
     clojure_direct_builtin(Op, Arity).
 
+clojure_unary_guard_test("atom/1", "(runtime/atom-term? value)").
+clojure_unary_guard_test('atom/1', "(runtime/atom-term? value)").
+clojure_unary_guard_test("integer/1", "(integer? value)").
+clojure_unary_guard_test('integer/1', "(integer? value)").
+clojure_unary_guard_test("number/1", "(number? value)").
+clojure_unary_guard_test('number/1', "(number? value)").
+clojure_unary_guard_test("atomic/1", "(or (runtime/atom-term? value) (number? value))").
+clojure_unary_guard_test('atomic/1', "(or (runtime/atom-term? value) (number? value))").
+clojure_unary_guard_test("nonvar/1", "(and (not= value ::lowered-unbound) (not (runtime/logic-var? value)))").
+clojure_unary_guard_test('nonvar/1', "(and (not= value ::lowered-unbound) (not (runtime/logic-var? value)))").
+clojure_unary_guard_test("var/1", "(or (= value ::lowered-unbound) (runtime/logic-var? value))").
+clojure_unary_guard_test('var/1', "(or (= value ::lowered-unbound) (runtime/logic-var? value))").
+clojure_unary_guard_test("compound/1", "(runtime/structure-term? value)").
+clojure_unary_guard_test('compound/1', "(runtime/structure-term? value)").
+
+emit_lowered_unary_guard(TestExpr, S, Expr) :-
+    format(atom(Expr),
+           '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if ~w (runtime/advance ~w) (runtime/backtrack ~w)))',
+           [S, S, TestExpr, S, S]).
+
 emit_lowered_expr(proceed, S, Expr) :-
     format(atom(Expr), '(runtime/succeed-state ~w)', [S]).
 emit_lowered_expr(fail, S, Expr) :-
@@ -420,53 +440,9 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     format(atom(Expr), '(runtime/backtrack ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
-    (Op == "atom/1" ; Op == 'atom/1'),
+    clojure_unary_guard_test(Op, TestExpr),
     !,
-    format(atom(Expr),
-           '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if (runtime/atom-term? value) (runtime/advance ~w) (runtime/backtrack ~w)))',
-           [S, S, S, S]).
-emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
-    clojure_direct_builtin(Op, Arity),
-    (Op == "integer/1" ; Op == 'integer/1'),
-    !,
-    format(atom(Expr),
-           '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if (integer? value) (runtime/advance ~w) (runtime/backtrack ~w)))',
-           [S, S, S, S]).
-emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
-    clojure_direct_builtin(Op, Arity),
-    (Op == "number/1" ; Op == 'number/1'),
-    !,
-    format(atom(Expr),
-           '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if (number? value) (runtime/advance ~w) (runtime/backtrack ~w)))',
-           [S, S, S, S]).
-emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
-    clojure_direct_builtin(Op, Arity),
-    (Op == "atomic/1" ; Op == 'atomic/1'),
-    !,
-    format(atom(Expr),
-           '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if (or (runtime/atom-term? value) (number? value)) (runtime/advance ~w) (runtime/backtrack ~w)))',
-           [S, S, S, S]).
-emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
-    clojure_direct_builtin(Op, Arity),
-    (Op == "nonvar/1" ; Op == 'nonvar/1'),
-    !,
-    format(atom(Expr),
-           '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if (and (not= value ::lowered-unbound) (not (runtime/logic-var? value))) (runtime/advance ~w) (runtime/backtrack ~w)))',
-           [S, S, S, S]).
-emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
-    clojure_direct_builtin(Op, Arity),
-    (Op == "var/1" ; Op == 'var/1'),
-    !,
-    format(atom(Expr),
-           '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if (or (= value ::lowered-unbound) (runtime/logic-var? value)) (runtime/advance ~w) (runtime/backtrack ~w)))',
-           [S, S, S, S]).
-emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
-    clojure_direct_builtin(Op, Arity),
-    (Op == "compound/1" ; Op == 'compound/1'),
-    !,
-    format(atom(Expr),
-           '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if (runtime/structure-term? value) (runtime/advance ~w) (runtime/backtrack ~w)))',
-           [S, S, S, S]).
+    emit_lowered_unary_guard(TestExpr, S, Expr).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "!/0" ; Op == '!/0'),
