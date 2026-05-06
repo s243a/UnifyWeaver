@@ -97,7 +97,7 @@ wam_member <- function(elem, lst) {
 GetConstant    <- function(c, ai)      list(op = "GetConstant",    c = c,  ai = ai)
 GetVariable    <- function(xn, ai)     list(op = "GetVariable",    xn = xn, ai = ai)
 GetValue       <- function(xn, ai)     list(op = "GetValue",       xn = xn, ai = ai)
-GetStructure   <- function(fid, ai)    list(op = "GetStructure",   fid = fid, ai = ai)
+GetStructure   <- function(fid, ai, arity = NA_integer_) list(op = "GetStructure", fid = fid, ai = ai, arity = as.integer(arity))
 GetList        <- function(ai, fid)    list(op = "GetList",        ai = ai, fid = fid)
 
 PutConstant    <- function(c, ai)      list(op = "PutConstant",    c = c,  ai = ai)
@@ -130,8 +130,10 @@ CutIte         <- function()           list(op = "CutIte")
 
 BuiltinCall    <- function(p, n)       list(op = "BuiltinCall",   pred = p, arity = n)
 
-SwitchOnConstant <- function(cases)    list(op = "SwitchOnConstant", cases = cases)
-SwitchCase       <- function(val, label) list(value = val, label = label)
+SwitchOnConstant  <- function(cases)    list(op = "SwitchOnConstant",  cases = cases)
+SwitchCase        <- function(val, label) list(value = val, label = label)
+SwitchOnStructure <- function(cases)    list(op = "SwitchOnStructure", cases = cases)
+StructCase        <- function(fid, arity, label) list(fid = as.integer(fid), arity = as.integer(arity), label = label)
 
 BeginAggregate <- function(kind, t, b) list(op = "BeginAggregate", kind = kind, template = t, bag = b)
 EndAggregate   <- function(t)          list(op = "EndAggregate",   template = t)
@@ -152,6 +154,19 @@ WamRuntime$new_state <- function() {
   s$trail       <- list()
   s$var_counter <- 0L
   s$halt        <- FALSE                    # set by foreign top-level wrapper
+  # Structure read/write state. NULL when no build/scan is active.
+  #   write mode: build_target_reg / build_fid / build_arity / build_args
+  #               (set_*/unify_* in write mode append to build_args; on
+  #                completion the struct is finalized into the target reg).
+  #   read mode:  read_args / read_cursor (1-based)
+  #               (unify_* in read mode consume one arg per step).
+  s$mode               <- NULL
+  s$build_target_reg   <- NULL
+  s$build_fid          <- NULL
+  s$build_arity        <- 0L
+  s$build_args         <- list()
+  s$read_args          <- list()
+  s$read_cursor        <- 1L
   s
 }
 
@@ -179,6 +194,79 @@ WamRuntime$promote_regs <- function(state) {
     assign(k, state$regs[[k]], envir = e)
   }
   state$regs2 <- e
+}
+
+# ----------------------------------------------------------
+# Structure build helpers (write mode)
+# ----------------------------------------------------------
+# Begin a write-mode build for `arity` args of functor `fid`, targeting
+# register `target_reg`. Used by both PutStructure/PutList and the
+# write-mode branch of GetStructure/GetList (when matching against an
+# unbound variable).
+WamRuntime$begin_build <- function(state, fid, arity, target_reg) {
+  state$mode             <- "write"
+  state$build_fid        <- as.integer(fid)
+  state$build_arity      <- as.integer(arity)
+  state$build_target_reg <- as.integer(target_reg)
+  state$build_args       <- list()
+  invisible(NULL)
+}
+
+# Append an argument to the in-progress build. When the args list reaches
+# the declared arity we materialize the struct and write it to the target
+# register, binding any unbound variable that was previously there.
+WamRuntime$append_build_arg <- function(state, val) {
+  state$build_args <- c(state$build_args, list(val))
+  if (length(state$build_args) >= state$build_arity) {
+    new_struct <- StructTerm(state$build_fid, state$build_args)
+    cur <- WamRuntime$get_reg(state, state$build_target_reg)
+    cur <- WamRuntime$deref(state, cur)
+    if (!is.null(cur) && is.list(cur) && !is.null(cur$tag) && cur$tag == "unbound") {
+      WamRuntime$bind(state, cur$name, new_struct)
+    }
+    WamRuntime$put_reg(state, state$build_target_reg, new_struct)
+    state$mode             <- NULL
+    state$build_target_reg <- NULL
+    state$build_fid        <- NULL
+    state$build_arity      <- 0L
+    state$build_args       <- list()
+  }
+  invisible(NULL)
+}
+
+WamRuntime$begin_read <- function(state, args) {
+  state$mode        <- "read"
+  state$read_args   <- args
+  state$read_cursor <- 1L
+  invisible(NULL)
+}
+
+WamRuntime$next_read_arg <- function(state) {
+  i <- state$read_cursor
+  if (i > length(state$read_args)) return(NULL)
+  state$read_cursor <- i + 1L
+  state$read_args[[i]]
+}
+
+# When GetStructure / GetList lands on an unbound variable we need to know
+# how many args to build. The Prolog codegen emits arity on PutStructure
+# but historically not on GetStructure (it's implicit in the matching
+# unify_* run). This helper peeks ahead in the instruction array,
+# counting consecutive UnifyVariable / UnifyValue / UnifyConstant ops
+# starting just after `pc`, and returns that count.
+WamRuntime$count_following_unify <- function(program, pc) {
+  n <- 0L
+  i <- pc + 1L
+  while (i <= length(program$instructions)) {
+    op <- program$instructions[[i]]$op
+    if (op %in% c("UnifyVariable", "UnifyValue", "UnifyConstant")) {
+      n <- n + 1L
+      i <- i + 1L
+    } else {
+      break
+    }
+  }
+  n
 }
 
 # ----------------------------------------------------------
@@ -365,9 +453,153 @@ WamRuntime$step <- function(program, state, instr) {
       }
       TRUE
     },
+    "SwitchOnStructure" = {
+      # Same fall-through semantics as SwitchOnConstant: jump to the
+      # case whose (fid, arity) matches the dereferenced first arg,
+      # otherwise advance to the standard try/retry chain. "default"
+      # labels and unresolved labels both fall through.
+      v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+      target <- NULL
+      if (!is.null(v) && is.list(v) && !is.null(v$tag) && v$tag == "struct") {
+        for (case in instr$cases) {
+          if (identical(case$fid, v$fid) && identical(case$arity, length(v$args))) {
+            target <- case$label; break
+          }
+        }
+      }
+      tgt <- if (!is.null(target) && target != "default") program$labels[[target]] else NULL
+      if (is.null(tgt)) {
+        state$pc <- state$pc + 1L
+      } else {
+        state$pc <- as.integer(tgt)
+      }
+      TRUE
+    },
     "BuiltinCall" = {
       ok <- WamRuntime$call_builtin(program, state, instr$pred, instr$arity)
       if (!ok) return(FALSE)
+      state$pc <- state$pc + 1L; TRUE
+    },
+    # ----- Compound terms -----
+    # PutStructure / PutList both start a write-mode build; the only
+    # difference is the functor id (PutList is hard-wired to "[|]"/2).
+    # The arity is taken from the instruction so the build helper knows
+    # when to finalize.
+    "PutStructure" = {
+      WamRuntime$begin_build(state, instr$fid, instr$arity, instr$ai)
+      # Pre-seed the target reg with an unbound so internal references
+      # built before finalization can resolve to the eventual struct.
+      cur <- WamRuntime$get_reg(state, instr$ai)
+      cur <- WamRuntime$deref(state, cur)
+      if (is.null(cur) || (is.list(cur) && !is.null(cur$tag) && cur$tag != "unbound")) {
+        u <- Unbound(paste0("V", state$var_counter))
+        state$var_counter <- state$var_counter + 1L
+        WamRuntime$put_reg(state, instr$ai, u)
+      }
+      state$pc <- state$pc + 1L; TRUE
+    },
+    "PutList" = {
+      WamRuntime$begin_build(state, instr$fid, 2L, instr$ai)
+      cur <- WamRuntime$get_reg(state, instr$ai)
+      cur <- WamRuntime$deref(state, cur)
+      if (is.null(cur) || (is.list(cur) && !is.null(cur$tag) && cur$tag != "unbound")) {
+        u <- Unbound(paste0("V", state$var_counter))
+        state$var_counter <- state$var_counter + 1L
+        WamRuntime$put_reg(state, instr$ai, u)
+      }
+      state$pc <- state$pc + 1L; TRUE
+    },
+    # GetStructure / GetList: deref the register; if it's a struct of the
+    # right shape, switch to read mode; if it's unbound, switch to write
+    # mode (the unify_*/set_* sequence will build a new struct that the
+    # finalizer binds to the unbound). Anything else fails.
+    "GetStructure" = {
+      v <- WamRuntime$deref(state, WamRuntime$get_reg(state, instr$ai))
+      if (is.null(v)) return(FALSE)
+      if (v$tag == "unbound") {
+        # Read the arity from the codegen-supplied instruction. The WAM
+        # emitter doesn't carry arity on GetStructure (it's implicit in
+        # the matching unify_* sequence), so we accept either a present
+        # arity field or default to walking the unify_* sequence below.
+        arity <- if (!is.null(instr$arity)) as.integer(instr$arity) else NA_integer_
+        if (is.na(arity)) {
+          # Fallback: peek ahead in the instruction array for the run of
+          # unify_* / set_* immediately following. Acceptable for the
+          # scaffold; the codegen can be tightened to emit arity later.
+          arity <- WamRuntime$count_following_unify(program, state$pc)
+        }
+        WamRuntime$begin_build(state, instr$fid, arity, instr$ai)
+      } else if (v$tag == "struct" && identical(v$fid, as.integer(instr$fid))) {
+        WamRuntime$begin_read(state, v$args)
+      } else {
+        return(FALSE)
+      }
+      state$pc <- state$pc + 1L; TRUE
+    },
+    "GetList" = {
+      v <- WamRuntime$deref(state, WamRuntime$get_reg(state, instr$ai))
+      if (is.null(v)) return(FALSE)
+      if (v$tag == "unbound") {
+        WamRuntime$begin_build(state, instr$fid, 2L, instr$ai)
+      } else if (v$tag == "struct" && identical(v$fid, as.integer(instr$fid))
+                 && length(v$args) == 2L) {
+        WamRuntime$begin_read(state, v$args)
+      } else {
+        return(FALSE)
+      }
+      state$pc <- state$pc + 1L; TRUE
+    },
+    # ----- Unify (read mode reads next subterm; write mode appends) -----
+    "UnifyVariable" = {
+      if (identical(state$mode, "read")) {
+        v <- WamRuntime$next_read_arg(state)
+        if (is.null(v)) return(FALSE)
+        WamRuntime$put_reg(state, instr$xn, v)
+      } else {
+        u <- Unbound(paste0("V", state$var_counter))
+        state$var_counter <- state$var_counter + 1L
+        WamRuntime$put_reg(state, instr$xn, u)
+        WamRuntime$append_build_arg(state, u)
+      }
+      state$pc <- state$pc + 1L; TRUE
+    },
+    "UnifyValue" = {
+      if (identical(state$mode, "read")) {
+        v <- WamRuntime$next_read_arg(state)
+        if (is.null(v)) return(FALSE)
+        x <- WamRuntime$get_reg(state, instr$xn)
+        if (!WamRuntime$unify(state, v, x)) return(FALSE)
+      } else {
+        v <- WamRuntime$get_reg(state, instr$xn)
+        WamRuntime$append_build_arg(state, v)
+      }
+      state$pc <- state$pc + 1L; TRUE
+    },
+    "UnifyConstant" = {
+      if (identical(state$mode, "read")) {
+        v <- WamRuntime$next_read_arg(state)
+        if (is.null(v)) return(FALSE)
+        if (!WamRuntime$unify(state, v, instr$c)) return(FALSE)
+      } else {
+        WamRuntime$append_build_arg(state, instr$c)
+      }
+      state$pc <- state$pc + 1L; TRUE
+    },
+    # ----- Set (always write-mode; emitted only after Put*) -----
+    "SetVariable" = {
+      u <- Unbound(paste0("V", state$var_counter))
+      state$var_counter <- state$var_counter + 1L
+      WamRuntime$put_reg(state, instr$xn, u)
+      WamRuntime$append_build_arg(state, u)
+      state$pc <- state$pc + 1L; TRUE
+    },
+    "SetValue" = {
+      v <- WamRuntime$get_reg(state, instr$xn)
+      WamRuntime$append_build_arg(state, v)
+      state$pc <- state$pc + 1L; TRUE
+    },
+    "SetConstant" = {
+      WamRuntime$append_build_arg(state, instr$c)
       state$pc <- state$pc + 1L; TRUE
     },
     "Raw" = {

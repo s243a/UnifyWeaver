@@ -28,12 +28,16 @@
 :- dynamic user:wam_r_fact/1.
 :- dynamic user:wam_r_choice_fact/1.
 :- dynamic user:wam_r_caller/1.
+:- dynamic user:wam_r_pair/1.
+:- dynamic user:wam_r_list/1.
 
 user:wam_r_fact(a).
 user:wam_r_choice_fact(a).
 user:wam_r_choice_fact(b).
 user:wam_r_choice_fact(c).
 user:wam_r_caller(X) :- user:wam_r_fact(X).
+user:wam_r_pair(f(a, b)).
+user:wam_r_list([a, b, c]).
 
 % ------------------------------------------------------------------
 % Test 1: module exports the documented entry points
@@ -130,6 +134,42 @@ test(choice_points_emitted) :-
         read_file_to_string(Program, Code, []),
         assertion(sub_string(Code, _, _, _, 'TryMeElse(')),
         assertion(sub_string(Code, _, _, _, 'TrustMe()')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+% ------------------------------------------------------------------
+% Test: structure-bearing fact emits GetStructure with arity + Unify*
+% ------------------------------------------------------------------
+test(structure_instructions_emitted) :-
+    once((
+        unique_r_tmp_dir('tmp_r_struct', TmpDir),
+        write_wam_r_project(
+            [user:wam_r_pair/1],
+            [],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        % Codegen carries arity on GetStructure (3-argument constructor).
+        assertion(sub_string(Code, _, _, _, 'GetStructure(')),
+        assertion(sub_string(Code, _, _, _, ', 1, 2)')),
+        assertion(sub_string(Code, _, _, _, 'UnifyConstant(')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+% ------------------------------------------------------------------
+% Test: list fact emits GetList + UnifyConstant chain
+% ------------------------------------------------------------------
+test(list_instructions_emitted) :-
+    once((
+        unique_r_tmp_dir('tmp_r_list', TmpDir),
+        write_wam_r_project(
+            [user:wam_r_list/1],
+            [],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        assertion(sub_string(Code, _, _, _, 'GetList(')),
+        assertion(sub_string(Code, _, _, _, 'UnifyVariable(')),
         delete_directory_and_contents(TmpDir)
     )).
 

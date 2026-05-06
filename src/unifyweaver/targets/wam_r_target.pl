@@ -257,9 +257,9 @@ wam_parts_to_r(["put_list", Reg], Lit) :-
     format(string(Lit), 'PutList(~w, ~w)', [RegIdx, FId]).
 wam_parts_to_r(["get_structure", Functor, Reg], Lit) :-
     reg_to_int(Reg, RegIdx),
-    parse_functor_arity(Functor, FName, _),
+    parse_functor_arity(Functor, FName, FArity),
     intern_r_atom(FName, FId),
-    format(string(Lit), 'GetStructure(~w, ~w)', [FId, RegIdx]).
+    format(string(Lit), 'GetStructure(~w, ~w, ~w)', [FId, RegIdx, FArity]).
 wam_parts_to_r(["get_list", Reg], Lit) :-
     reg_to_int(Reg, RegIdx),
     intern_r_atom("[|]", FId),
@@ -301,6 +301,19 @@ wam_parts_to_r(["switch_on_constant" | Cases], Lit) :-
     atomic_list_concat(CaseLits, ', ', CasesStr),
     format(string(Lit), 'SwitchOnConstant(list(~w))', [CasesStr]).
 
+% --- Switch on structure (functor-shape dispatch) ---
+% Each case is "F/N:label". Behaviour parallels switch_on_constant: when
+% the first arg is a struct of matching shape, jump to the labelled
+% clause; otherwise (or if the label is "default") fall through to the
+% try/retry chain. The runtime treats the case list as advisory — we
+% always re-run the matching clause body afterwards, so worst case is
+% an extra try/retry traversal.
+wam_parts_to_r(["switch_on_structure" | Cases], Lit) :-
+    normalize_switch_case_tokens(Cases, NormalizedCases),
+    parse_struct_switch_cases(NormalizedCases, CaseLits),
+    atomic_list_concat(CaseLits, ', ', CasesStr),
+    format(string(Lit), 'SwitchOnStructure(list(~w))', [CasesStr]).
+
 % --- ITE soft cut ---
 wam_parts_to_r(["cut_ite"], 'CutIte()').
 
@@ -326,6 +339,16 @@ parse_switch_cases([Token | Rest], [Lit | More]) :-
     intern_r_atom(ValStr, AtomId),
     format(string(Lit), 'SwitchCase(Atom(~w), "~w")', [AtomId, LabelStr]),
     parse_switch_cases(Rest, More).
+
+%% parse_struct_switch_cases(+Tokens, -CaseLiterals)
+%  Each token is "Functor/Arity:label" — e.g. "f/2:L_pair_1_2".
+parse_struct_switch_cases([], []).
+parse_struct_switch_cases([Token | Rest], [Lit | More]) :-
+    split_at_first_colon(Token, FAStr, LabelStr),
+    parse_functor_arity(FAStr, FName, FArity),
+    intern_r_atom(FName, FId),
+    format(string(Lit), 'StructCase(~w, ~w, "~w")', [FId, FArity, LabelStr]),
+    parse_struct_switch_cases(Rest, More).
 
 normalize_switch_case_tokens([], []).
 normalize_switch_case_tokens([Value, Label0 | Rest], [Token | More]) :-
