@@ -424,6 +424,12 @@ test(emit_lowered_get_constant, [nondet]) :-
 	sub_string(Lines, _, _, _, "def pred_foo_1"),
 	sub_string(Lines, _, _, _, "Atom").
 
+test(emit_lowered_get_numeric_constant, [nondet]) :-
+	wam_python_lowered_emitter:emit_lowered_python('foo'/1, [get_constant("10", "1"), proceed], [], Lines),
+	Lines \= "",
+	sub_string(Lines, _, _, _, "Int(10)"),
+	assertion(\+ sub_string(Lines, _, _, _, "Atom(\"10\")")).
+
 test(emit_lowered_def_line, [nondet]) :-
 	% The emitted function starts with a proper def line
 	wam_python_lowered_emitter:emit_lowered_python('bar'/2, [proceed], [], Lines),
@@ -668,6 +674,16 @@ test(runtime_has_register_indexed_atom_fact2_pairs, [nondet]) :-
 test(runtime_has_register_indexed_weighted_edge_triples, [nondet]) :-
 	runtime_py_path(P), read_file_to_string(P, Content, []),
 	sub_string(Content, _, _, _, "def register_indexed_weighted_edge_triples").
+
+test(runtime_choicepoint_saves_one_indexed_argument_registers, [nondet]) :-
+	runtime_py_path(P), read_file_to_string(P, Content, []),
+	sub_string(Content, _, _, _, "state.regs[:n_args + 1]"),
+	sub_string(Content, _, _, _, "state.regs[:cp.n_args + 1]").
+
+test(runtime_choicepoint_discards_younger_frames, [nondet]) :-
+	runtime_py_path(P), read_file_to_string(P, Content, []),
+	sub_string(Content, _, _, _, "del state.stack[cp_index + 1:]"),
+	sub_string(Content, _, _, _, "del state.stack[cp_index:]").
 
 test(runtime_has_call_indexed_atom_fact2_handler, [nondet]) :-
 	runtime_py_path(P), read_file_to_string(P, Content, []),
