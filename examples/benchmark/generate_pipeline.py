@@ -1536,7 +1536,7 @@ class Program
             Environment.Exit(1);
         }}
 
-        var sourceMode = configuredSourceMode == RelationSourceMode.Auto ? RelationSourceMode.Preload : configuredSourceMode;
+        var sourceMode = RelationSourceModePolicy.ResolveGraphBenchmarkMode(configuredSourceMode, "dependency-depth");
         var configuredProvider = new ConfiguredDelimitedRelationProvider(
             sourceMode,
             Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_ARTIFACT_DIR"));
@@ -2055,7 +2055,7 @@ class Program
             Environment.Exit(1);
         }}
 
-        var sourceMode = configuredSourceMode == RelationSourceMode.Auto ? RelationSourceMode.Preload : configuredSourceMode;
+        var sourceMode = RelationSourceModePolicy.ResolveGraphBenchmarkMode(configuredSourceMode, "dependency-longest-depth");
         var configuredProvider = new ConfiguredDelimitedRelationProvider(
             sourceMode,
             Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_ARTIFACT_DIR"));
@@ -2712,7 +2712,7 @@ class Program
             Environment.Exit(1);
         }}
 
-        var sourceMode = configuredSourceMode == RelationSourceMode.Auto ? RelationSourceMode.Preload : configuredSourceMode;
+        var sourceMode = RelationSourceModePolicy.ResolveGraphBenchmarkMode(configuredSourceMode, "category-influence");
         var configuredProvider = new ConfiguredDelimitedRelationProvider(
             sourceMode,
             Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_ARTIFACT_DIR"));
@@ -2899,7 +2899,7 @@ class Program
             Environment.Exit(1);
         }}
 
-        var sourceMode = configuredSourceMode == RelationSourceMode.Auto ? RelationSourceMode.Preload : configuredSourceMode;
+        var sourceMode = RelationSourceModePolicy.ResolveGraphBenchmarkMode(configuredSourceMode, "effective-distance");
         var configuredProvider = new ConfiguredDelimitedRelationProvider(
             sourceMode,
             Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_ARTIFACT_DIR"));
@@ -3078,7 +3078,7 @@ class Program
             Environment.Exit(1);
         }}
 
-        var sourceMode = configuredSourceMode == RelationSourceMode.Auto ? RelationSourceMode.Preload : configuredSourceMode;
+        var sourceMode = RelationSourceModePolicy.ResolveGraphBenchmarkMode(configuredSourceMode, "shortest-path");
         var configuredProvider = new ConfiguredDelimitedRelationProvider(
             sourceMode,
             Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_ARTIFACT_DIR"));
@@ -3268,7 +3268,7 @@ class Program
             Environment.Exit(1);
         }}
 
-        var sourceMode = configuredSourceMode == RelationSourceMode.Auto ? RelationSourceMode.Preload : configuredSourceMode;
+        var sourceMode = RelationSourceModePolicy.ResolveGraphBenchmarkMode(configuredSourceMode, "weighted-shortest-path");
         var configuredProvider = new ConfiguredDelimitedRelationProvider(
             sourceMode,
             Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_ARTIFACT_DIR"));
