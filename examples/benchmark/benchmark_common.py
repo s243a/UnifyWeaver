@@ -16,6 +16,7 @@ def run_command(
     env: dict[str, str] | None = None,
     check: bool = True,
     capture_output: bool = True,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         cmd,
@@ -24,6 +25,7 @@ def run_command(
         check=check,
         capture_output=capture_output,
         text=True,
+        timeout=timeout,
     )
 
 
