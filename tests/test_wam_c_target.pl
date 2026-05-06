@@ -253,6 +253,7 @@ test_fact_source_generation :-
         atom_string(RuntimeCode, S),
         sub_string(S, _, _, _, 'void wam_fact_source_init'),
         sub_string(S, _, _, _, 'bool wam_fact_source_load_tsv'),
+        sub_string(S, _, _, _, 'bool wam_fact_source_load_lmdb'),
         sub_string(S, _, _, _, 'int wam_fact_source_lookup_arg1'),
         sub_string(S, _, _, _, 'bool wam_register_category_parent_fact_source')
     ->  pass(Test)
@@ -374,6 +375,17 @@ test_fact_source_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_lmdb_fact_source_executable_smoke :-
+    Test = 'WAM-C: LMDB FactSource executable smoke',
+    (   gcc_available,
+        lmdb_available
+    ->  (   run_lmdb_fact_source_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'LMDB FactSource executable failed')
+        )
+    ;   format('[PASS] ~w (gcc or lmdb unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_streaming_foreign_results_executable_smoke :-
     Test = 'WAM-C: streaming category_ancestor result executable smoke',
     (   gcc_available
@@ -436,6 +448,12 @@ test_real_prolog_unify_executable_smoke :-
 
 gcc_available :-
     catch(process_create(path(gcc), ['--version'],
+                         [stdout(null), stderr(null), process(Pid)]),
+          _, fail),
+    process_wait(Pid, exit(0)).
+
+lmdb_available :-
+    catch(process_create(path('pkg-config'), ['--exists', 'lmdb'],
                          [stdout(null), stderr(null), process(Pid)]),
           _, fail),
     process_wait(Pid, exit(0)).
@@ -554,6 +572,26 @@ run_fact_source_executable_smoke :-
     wam_c_fact_source_smoke_main(DataPath, MainCode),
     write_text_file(MainPath, MainCode),
     compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
+run_lmdb_fact_source_executable_smoke :-
+    WamCode = 'category_ancestor/4:\n    call_foreign category_ancestor/4, 4\n    proceed',
+    compile_wam_predicate_to_c(user:category_ancestor/4, WamCode, [], PredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    format(atom(TmpBase), '/tmp/unifyweaver_wam_c_lmdb_fact_source_smoke_~w', [Stamp]),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(EnvPath), '~w_env', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    wam_c_lmdb_fact_source_smoke_main(EnvPath, MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_lmdb(RuntimePath, PredPath, MainPath, ExePath),
     run_c_smoke_plain(ExePath).
 
 run_streaming_foreign_results_executable_smoke :-
@@ -736,6 +774,18 @@ compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath) :-
     (   Status =:= 0
     ->  true
     ;   format(user_error, 'gcc failed with status ~w~n', [Status]),
+        fail
+    ).
+
+compile_c_smoke_lmdb(RuntimePath, PredPath, MainPath, ExePath) :-
+    IncludeDir = 'src/unifyweaver/targets/wam_c_runtime',
+    format(atom(Cmd),
+           'gcc -std=c11 -Wall -Wextra -DWAM_C_ENABLE_LMDB -I ~w ~w ~w ~w -llmdb -o ~w',
+           [IncludeDir, RuntimePath, PredPath, MainPath, ExePath]),
+    shell(Cmd, Status),
+    (   Status =:= 0
+    ->  true
+    ;   format(user_error, 'gcc lmdb smoke failed with status ~w~n', [Status]),
         fail
     ).
 
@@ -1028,6 +1078,113 @@ int main(void) {
     return 0;
 }
 ', [DataPath]).
+
+wam_c_lmdb_fact_source_smoke_main(EnvPath, MainCode) :-
+    format(atom(MainCode),
+'#include "wam_runtime.h"
+#include <sys/stat.h>
+
+void setup_category_ancestor_4(WamState* state);
+
+static WamValue make_visited_singleton(WamState *state, const char *atom) {
+    WamValue list;
+    list.tag = VAL_LIST;
+    list.data.ref_addr = state->H;
+    state->H_array[state->H++] = val_atom(atom);
+    state->H_array[state->H++] = val_atom("[]");
+    return list;
+}
+
+static int put_edge(MDB_env *env, MDB_dbi dbi, const char *child, const char *parent) {
+    MDB_txn *txn = NULL;
+    MDB_val key;
+    MDB_val data;
+    int rc = mdb_txn_begin(env, NULL, 0, &txn);
+    if (rc != MDB_SUCCESS) return rc;
+    key.mv_size = strlen(child);
+    key.mv_data = (void *)child;
+    data.mv_size = strlen(parent);
+    data.mv_data = (void *)parent;
+    rc = mdb_put(txn, dbi, &key, &data, 0);
+    if (rc == MDB_SUCCESS) rc = mdb_txn_commit(txn);
+    else mdb_txn_abort(txn);
+    return rc;
+}
+
+static int seed_lmdb(const char *path) {
+    MDB_env *env = NULL;
+    MDB_txn *txn = NULL;
+    MDB_dbi dbi = 0;
+    int rc = mkdir(path, 0777);
+    (void)rc;
+    rc = mdb_env_create(&env);
+    if (rc != MDB_SUCCESS) return rc;
+    rc = mdb_env_set_maxdbs(env, 16);
+    if (rc != MDB_SUCCESS) { mdb_env_close(env); return rc; }
+    rc = mdb_env_set_mapsize(env, 1048576);
+    if (rc != MDB_SUCCESS) { mdb_env_close(env); return rc; }
+    rc = mdb_env_open(env, path, 0, 0664);
+    if (rc != MDB_SUCCESS) { mdb_env_close(env); return rc; }
+    rc = mdb_txn_begin(env, NULL, 0, &txn);
+    if (rc != MDB_SUCCESS) { mdb_env_close(env); return rc; }
+    rc = mdb_dbi_open(txn, NULL, MDB_CREATE | MDB_DUPSORT, &dbi);
+    if (rc == MDB_SUCCESS) rc = mdb_txn_commit(txn);
+    else { mdb_txn_abort(txn); mdb_env_close(env); return rc; }
+    rc = put_edge(env, dbi, "leaf", "mid");
+    if (rc == MDB_SUCCESS) rc = put_edge(env, dbi, "mid", "root");
+    if (rc == MDB_SUCCESS) rc = put_edge(env, dbi, "leaf", "other");
+    mdb_dbi_close(env, dbi);
+    mdb_env_close(env);
+    return rc;
+}
+
+int main(void) {
+    WamState state;
+    WamFactSource source;
+    CategoryEdge matches[4];
+    if (seed_lmdb("~w") != MDB_SUCCESS) return 5;
+
+    wam_state_init(&state);
+    wam_fact_source_init(&source);
+    setup_category_ancestor_4(&state);
+
+    if (!wam_fact_source_load_lmdb(&state, &source, "~w", NULL)) {
+        wam_free_state(&state);
+        wam_fact_source_close(&source);
+        return 10;
+    }
+
+    int match_count = wam_fact_source_lookup_arg1(&source, "leaf", matches, 4);
+    if (match_count != 2 ||
+        strcmp(matches[0].child, "leaf") != 0 ||
+        strcmp(matches[0].parent, "mid") != 0) {
+        wam_free_state(&state);
+        wam_fact_source_close(&source);
+        return 20;
+    }
+
+    wam_register_category_parent_fact_source(&state, &source);
+    wam_register_category_ancestor_kernel(&state, "category_ancestor/4", 10);
+
+    WamValue args[4] = {
+        val_atom("leaf"),
+        val_atom("root"),
+        val_unbound("Hops"),
+        make_visited_singleton(&state, "leaf")
+    };
+    int run_rc = wam_run_predicate(&state, "category_ancestor/4", args, 4);
+    if (run_rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_INT || state.A[2].data.integer != 2) {
+        wam_free_state(&state);
+        wam_fact_source_close(&source);
+        return 30;
+    }
+
+    wam_free_state(&state);
+    wam_fact_source_close(&source);
+    return 0;
+}
+', [EnvPath, EnvPath]).
 
 wam_c_streaming_foreign_smoke_main(
 '#include "wam_runtime.h"
@@ -1380,6 +1537,7 @@ run_tests_once :-
     test_call_foreign_executable_smoke,
     test_category_ancestor_kernel_executable_smoke,
     test_fact_source_executable_smoke,
+    test_lmdb_fact_source_executable_smoke,
     test_streaming_foreign_results_executable_smoke,
     test_real_prolog_builtin_executable_smoke,
     test_real_prolog_multiclause_executable_smoke,
