@@ -75,21 +75,46 @@ tokenize_fs(Line, Term) :-
 wam_fsharp_lowerable(_PI, WamCode, lowerable) :-
     parse_wam_text_fs(WamCode, PCInstrs, _),
     clause1_instrs_fs(PCInstrs, C1),
+    is_deterministic_pred_fs(C1),
     forall(member(I, C1), supported_fs(I)).
 
+% Match Rust/Clojure lowered emitters: only deterministic clause-1 bodies are
+% lowered. Choicepoint-manipulating instructions should stay interpreter-driven.
+is_deterministic_pred_fs(Instrs) :-
+    \+ member(try_me_else(_), Instrs),
+    \+ member(retry_me_else(_), Instrs),
+    \+ member(trust_me, Instrs).
+
 clause1_instrs_fs([], []).
-% Skip switch_on_constant prefix (multi-clause indexing)
-clause1_instrs_fs([pc(_, Instr)|Rest], C1) :-
-    functor(Instr, switch_on_constant, _), !,
-    clause1_instrs_fs(Rest, C1).
+% Skip switch_on_constant* prefixes (multi-clause indexing).  The F#
+% runtime maps both switch_on_constant and switch_on_constant_a2 to
+% SwitchOnConstant, so neither is part of the lowered clause body.
+clause1_instrs_fs(PCInstrs0, C1) :-
+    strip_switch_prefixes_fs(PCInstrs0, PCInstrs),
+    PCInstrs0 \== PCInstrs, !,
+    clause1_instrs_fs(PCInstrs, C1).
 clause1_instrs_fs([pc(_, try_me_else(_))|Rest], C1) :- !,
     take_to_proceed_fs(Rest, C1).
 clause1_instrs_fs(PCInstrs, Instrs) :-
     maplist([pc(_, I), I]>>true, PCInstrs, Instrs).
 
 take_to_proceed_fs([], []).
+% Clause bodies can terminate with either success (proceed) or explicit
+% failure.  Stop at fail too so later alternative-clause instructions are not
+% misclassified as part of clause 1 when checking lowerability.
 take_to_proceed_fs([pc(_, proceed)|_], [proceed]) :- !.
+take_to_proceed_fs([pc(_, fail)|_], [fail]) :- !.
 take_to_proceed_fs([pc(_, I)|Rest], [I|More]) :- take_to_proceed_fs(Rest, More).
+
+wam_fsharp_switch_prefix(Instr) :-
+    functor(Instr, switch_on_constant, _), !.
+wam_fsharp_switch_prefix(Instr) :-
+    functor(Instr, switch_on_constant_a2, _), !.
+
+strip_switch_prefixes_fs([pc(_, Instr)|Rest0], Rest) :-
+    wam_fsharp_switch_prefix(Instr), !,
+    strip_switch_prefixes_fs(Rest0, Rest).
+strip_switch_prefixes_fs(PCInstrs, PCInstrs).
 
 supported_fs(try_me_else(_)).
 supported_fs(allocate).
@@ -97,21 +122,33 @@ supported_fs(deallocate).
 supported_fs(get_constant(_, _)).
 supported_fs(get_variable(_, _)).
 supported_fs(get_value(_, _)).
+supported_fs(get_structure(_, _)).
+supported_fs(get_structure(_, _, _)).
+supported_fs(get_list(_)).
+supported_fs(get_nil(_)).
+supported_fs(get_integer(_, _)).
+supported_fs(unify_variable(_)).
+supported_fs(unify_value(_)).
+supported_fs(unify_constant(_)).
 supported_fs(put_constant(_, _)).
 supported_fs(put_variable(_, _)).
 supported_fs(put_value(_, _)).
 supported_fs(put_structure(_, _)).
 supported_fs(put_list(_)).
+supported_fs(set_variable(_)).
 supported_fs(set_value(_)).
 supported_fs(set_constant(_)).
 supported_fs(call(_, _)).
+supported_fs(call_foreign(_, _)).
 supported_fs(builtin_call(_, _)).
 % begin_aggregate/end_aggregate not lowerable — need the run loop for
 % backtrack-driven collection (same constraint as Haskell target).
 supported_fs(cut_ite).
 supported_fs(jump(_)).
+supported_fs(retry_me_else(_)).
 supported_fs(trust_me).
 supported_fs(proceed).
+supported_fs(fail).
 supported_fs(execute(_)).
 
 % ============================================================================
@@ -155,12 +192,9 @@ offset_labels_fs([L-PC|Rest], Off, [L-GPC|Rest2]) :-
 emit_func_fs(FN, PCInstrs, LabelMap, ForeignPreds) :-
     format("/// Lowered: ~w~n", [FN]),
     format("let ~w (ctx: WamContext) (s_init: WamState) : WamState option =~n", [FN]),
-    % Skip switch_on_constant prefix if present
-    (   PCInstrs = [pc(_, SOC)|PCInstrs1],
-        functor(SOC, switch_on_constant, _)
-    ->  true
-    ;   PCInstrs1 = PCInstrs
-    ),
+    % Skip all switch_on_constant* prefixes before deciding whether this is
+    % a multi-clause or single-clause lowered body.
+    strip_switch_prefixes_fs(PCInstrs, PCInstrs1),
     (   PCInstrs1 = [pc(_, try_me_else(LStr))|BodyPCs]
     ->  % Multi-clause: push CP for clause-2+ backtrack, try clause 1
         atom_string(LAtom, LStr),
@@ -187,11 +221,12 @@ emit_func_fs(FN, PCInstrs, LabelMap, ForeignPreds) :-
         format("        // Clause 1 failed — backtrack to clause 2+ in the interpreter~n"),
         format("        backtrack s_cp |> Option.bind (fun s_bt -> run ctx { s_bt with WsPC = s_bt.WsPC + 1 })~n")
     ;   % Single-clause: straightforward binding chain
-        emit_instrs_lm_fs(PCInstrs, "s_init", "    ", ForeignPreds, LabelMap)
+        emit_instrs_lm_fs(PCInstrs1, "s_init", "    ", ForeignPreds, LabelMap)
     ).
 
 take_to_proceed_pc_fs([], []).
 take_to_proceed_pc_fs([pc(PC, proceed)|_], [pc(PC, proceed)]) :- !.
+take_to_proceed_pc_fs([pc(PC, fail)|_], [pc(PC, fail)]) :- !.
 take_to_proceed_pc_fs([H|T], [H|R]) :- take_to_proceed_pc_fs(T, R).
 
 % ============================================================================
@@ -215,14 +250,25 @@ take_to_proceed_pc_fs([H|T], [H|R]) :- take_to_proceed_pc_fs(T, R).
 is_match_instr_fs(deallocate).
 is_match_instr_fs(get_constant(_, _)).
 is_match_instr_fs(get_value(_, _)).
+is_match_instr_fs(get_structure(_, _)).
+is_match_instr_fs(get_structure(_, _, _)).
+is_match_instr_fs(get_list(_)).
+is_match_instr_fs(get_nil(_)).
+is_match_instr_fs(get_integer(_, _)).
+is_match_instr_fs(unify_variable(_)).
+is_match_instr_fs(unify_value(_)).
+is_match_instr_fs(unify_constant(_)).
 is_match_instr_fs(put_structure(_, _)).
 is_match_instr_fs(put_list(_)).
+is_match_instr_fs(set_variable(_)).
 is_match_instr_fs(set_value(_)).
 is_match_instr_fs(set_constant(_)).
 is_match_instr_fs(call(_, _)).
+is_match_instr_fs(call_foreign(_, _)).
 is_match_instr_fs(builtin_call(_, _)).
 is_match_instr_fs(cut_ite).
 is_match_instr_fs(jump(_)).
+is_match_instr_fs(retry_me_else(_)).
 is_match_instr_fs(trust_me).
 is_match_instr_fs(begin_aggregate(_, _, _)).
 is_match_instr_fs(end_aggregate(_)).
@@ -237,6 +283,22 @@ emit_instrs_lm_fs([pc(_PC, try_me_else(ElseLabelStr))|Rest], SV, Ind, FP, LM) :-
     atom_string(ElseLabel, ElseLabelStr),
     split_ite_blocks_lm_fs(Rest, ElseLabel, LM, CondInstrs, ThenInstrs, ElseInstrs, ContInstrs),
     !,
+    (   ContInstrs = []
+    ->  emit_ite_match_fs(SV, CondInstrs, ThenInstrs, ElseInstrs, Ind, FP)
+    ;   % Bind the whole ITE result before emitting continuation code.
+        % A previous version appended another `| Some ... ->` arm to the
+        % inner condition match, making the continuation arm unreachable.
+        format("~wmatch (~n", [Ind]),
+        atom_concat(Ind, "    ", IteInd),
+        emit_ite_match_fs(SV, CondInstrs, ThenInstrs, ElseInstrs, IteInd, FP),
+        format("~w) with~n", [Ind]),
+        fresh_sv_fs(SV, SVcont),
+        format("~w| Some ~w ->~n", [Ind, SVcont]),
+        atom_concat(Ind, "    ", ContInd),
+        emit_instrs_lm_fs(ContInstrs, SVcont, ContInd, FP, LM),
+        format("~w| None -> None~n", [Ind])
+    ).
+emit_ite_match_fs(SV, CondInstrs, ThenInstrs, ElseInstrs, Ind, FP) :-
     format("~wmatch (~n", [Ind]),
     atom_concat(Ind, "    ", CondInd),
     emit_ite_block_fs(CondInstrs, SV, CondInd, FP),
@@ -247,15 +309,8 @@ emit_instrs_lm_fs([pc(_PC, try_me_else(ElseLabelStr))|Rest], SV, Ind, FP, LM) :-
     emit_ite_block_fs(ThenInstrs, SVthen, ThenInd, FP),
     format("~w| None ->~n", [Ind]),
     atom_concat(Ind, "    ", ElseInd),
-    emit_ite_block_fs(ElseInstrs, SV, ElseInd, FP),
-    % Emit continuation code (if any) after the ITE expression
-    (   ContInstrs = []
-    ->  true
-    ;   fresh_sv_fs(SV, SVcont),
-        format("~w| Some ~w ->~n", [Ind, SVcont]),
-        atom_concat(Ind, "    ", ContInd),
-        emit_instrs_lm_fs(ContInstrs, SVcont, ContInd, FP, LM)
-    ).
+    emit_ite_block_fs(ElseInstrs, SV, ElseInd, FP).
+
 % execute/1 is a tail call — it must always be the last instruction.
 % If it isn’t, the chain silently breaks because emit_one_fs emits a bare
 % expression with no ‘| Some sv ->’ arm for callers to continue into.
@@ -264,6 +319,14 @@ emit_instrs_lm_fs([pc(_PC, try_me_else(ElseLabelStr))|Rest], SV, Ind, FP, LM) :-
 %       code fails loudly rather than silently producing wrong output, and
 %   (b) emit the execute expression and stop (Rest is dropped — the user
 %       gets the warning and can fix the upstream WAM generator).
+emit_instrs_lm_fs([pc(_PC, fail)|Rest], _SV, Ind, _FP, _LM) :-
+    (   Rest \= []
+    ->  format("~w// WARNING: fail is not the last instruction — ~w instruction(s) unreachable~n",
+               [Ind, Rest])
+    ;   true
+    ),
+    format("~wNone~n", [Ind]).
+
 emit_instrs_lm_fs([pc(PC, execute(PredStr))|Rest], SV, Ind, FP, _LM) :-
     (   Rest \= []
     ->  format("~w// WARNING: execute(~w) is not the last instruction — tail-call semantics violated; ~w instruction(s) unreachable~n",
@@ -309,6 +372,22 @@ emit_instrs_fs([pc(_PC, try_me_else(ElseLabelStr))|Rest], SV, Ind, FP) :-
     format("~w| None ->~n", [Ind]),
     atom_concat(Ind, "    ", ElseInd),
     emit_ite_block_fs(ElseInstrs, SV, ElseInd, FP).
+emit_instrs_fs([pc(_PC, fail)|Rest], _SV, Ind, _FP) :-
+    (   Rest \= []
+    ->  format("~w// WARNING: fail is not the last instruction — ~w instruction(s) unreachable~n",
+               [Ind, Rest])
+    ;   true
+    ),
+    format("~wNone~n", [Ind]).
+
+emit_instrs_fs([pc(PC, execute(PredStr))|Rest], SV, Ind, FP) :-
+    (   Rest \= []
+    ->  format("~w// WARNING: execute(~w) is not the last instruction — tail-call semantics violated; ~w instruction(s) unreachable~n",
+               [Ind, PredStr, Rest])
+    ;   true
+    ),
+    emit_one_fs(execute(PredStr), PC, SV, _, Ind, FP).
+
 emit_instrs_fs([pc(PC, Instr)|Rest], SV, Ind, FP) :-
     emit_one_fs(Instr, PC, SV, SVout, Ind, FP),
     atom_concat(Ind, "    ", IndInner),
@@ -334,6 +413,20 @@ emit_instrs_fs([pc(PC, Instr)|Rest], SV, Ind, FP) :-
 
 emit_ite_block_fs([], SV, Ind, _FP) :-
     format("~wSome ~w~n", [Ind, SV]).
+emit_ite_block_fs([pc(_PC, fail)|Rest], _SV, Ind, _FP) :-
+    (   Rest \= []
+    ->  format("~w// WARNING: fail is not the last ITE instruction — ~w instruction(s) unreachable~n",
+               [Ind, Rest])
+    ;   true
+    ),
+    format("~wNone~n", [Ind]).
+emit_ite_block_fs([pc(PC, execute(PredStr))|Rest], SV, Ind, FP) :-
+    (   Rest \= []
+    ->  format("~w// WARNING: execute(~w) is not the last ITE instruction — tail-call semantics violated; ~w instruction(s) unreachable~n",
+               [Ind, PredStr, Rest])
+    ;   true
+    ),
+    emit_one_fs(execute(PredStr), PC, SV, _, Ind, FP).
 emit_ite_block_fs([pc(PC, Instr)], SV, Ind, FP) :-
     emit_one_fs(Instr, PC, SV, SVout, Ind, FP),
     atom_concat(Ind, "    ", IndInner),
@@ -355,6 +448,8 @@ emit_ite_block_fs([pc(PC, Instr)|Rest], SV, Ind, FP) :-
     ).
 
 is_terminal_instr_fs(proceed).
+is_terminal_instr_fs(fail).
+is_terminal_instr_fs(execute(_)).
 
 %% split_ite_blocks_fs/6 — legacy no-LabelMap version
 %  Used inside emit_instrs_fs (4-arg). ContInstrs is always [] here
@@ -433,6 +528,10 @@ emit_one_fs(proceed, _, SV, SV, I, _FP) :-
     format("~wif ret_ = 0 then Some { ~w with WsPC = 0 } else Some { ~w with WsPC = ret_; WsCP = 0 }~n",
            [I, SV, SV]).
 
+% Terminal: fail
+emit_one_fs(fail, _, _SV, _SVout, I, _FP) :-
+    format("~wNone~n", [I]).
+
 % Allocate — always succeeds, inline
 emit_one_fs(allocate, _, SV, SVout, I, _FP) :-
     fresh_sv_fs(SV, SVout),
@@ -470,6 +569,73 @@ emit_one_fs(get_value(XnStr, AiStr), PC, SV, SVout, I, _FP) :-
     format("~wmatch step ctx { ~w with WsPC = ~w } (GetValue (~w, ~w)) with~n", [I, SV, PC, Xn, Ai]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
+% GetStructure F Ai — can fail, delegate to step
+% Accept both canonical lowered form get_structure("f/2", "A1") and
+% legacy split-arity form get_structure("f", "2", "A1").
+emit_one_fs(get_structure(FStr, AiStr), PC, SV, SVout, I, _FP) :-
+    reg_to_int_fs(AiStr, Ai),
+    parse_functor_fs(FStr, FuncName, Arity),
+    escape_dq_fs(FuncName, EscFuncName),
+    fresh_sv_fs(SV, SVout),
+    format("~wmatch step ctx { ~w with WsPC = ~w } (GetStructure (\"~w\", ~w, ~w)) with~n",
+           [I, SV, PC, EscFuncName, Arity, Ai]),
+    format("~w| Some ~w ->~n", [I, SVout]).
+
+emit_one_fs(get_structure(FnStr, ArityStr, AiStr), PC, SV, SVout, I, _FP) :-
+    reg_to_int_fs(AiStr, Ai),
+    (   number_string(Arity, ArityStr)
+    ->  true
+    ;   throw(error(domain_error(get_structure_arity, ArityStr), emit_one_fs/6))
+    ),
+    escape_dq_fs(FnStr, EscFnStr),
+    fresh_sv_fs(SV, SVout),
+    format("~wmatch step ctx { ~w with WsPC = ~w } (GetStructure (\"~w\", ~w, ~w)) with~n",
+           [I, SV, PC, EscFnStr, Arity, Ai]),
+    format("~w| Some ~w ->~n", [I, SVout]).
+
+% GetList Ai — can fail, delegate to step
+emit_one_fs(get_list(AiStr), PC, SV, SVout, I, _FP) :-
+    reg_to_int_fs(AiStr, Ai),
+    fresh_sv_fs(SV, SVout),
+    format("~wmatch step ctx { ~w with WsPC = ~w } (GetList ~w) with~n", [I, SV, PC, Ai]),
+    format("~w| Some ~w ->~n", [I, SVout]).
+
+% GetNil / GetInteger are Rust-lowered aliases for GetConstant.
+emit_one_fs(get_nil(AiStr), PC, SV, SVout, I, _FP) :-
+    reg_to_int_fs(AiStr, Ai),
+    fresh_sv_fs(SV, SVout),
+    format("~wmatch step ctx { ~w with WsPC = ~w } (GetConstant (Atom \"[]\", ~w)) with~n", [I, SV, PC, Ai]),
+    format("~w| Some ~w ->~n", [I, SVout]).
+
+emit_one_fs(get_integer(NStr, AiStr), PC, SV, SVout, I, _FP) :-
+    (   number_string(N, NStr), integer(N)
+    ->  true
+    ;   throw(error(domain_error(get_integer_value, NStr), emit_one_fs/6))
+    ),
+    reg_to_int_fs(AiStr, Ai),
+    fresh_sv_fs(SV, SVout),
+    format("~wmatch step ctx { ~w with WsPC = ~w } (GetConstant (Integer ~w, ~w)) with~n", [I, SV, PC, N, Ai]),
+    format("~w| Some ~w ->~n", [I, SVout]).
+
+% Unify* — can fail, delegate to step
+emit_one_fs(unify_variable(XnStr), PC, SV, SVout, I, _FP) :-
+    reg_to_int_fs(XnStr, Xn),
+    fresh_sv_fs(SV, SVout),
+    format("~wmatch step ctx { ~w with WsPC = ~w } (UnifyVariable ~w) with~n", [I, SV, PC, Xn]),
+    format("~w| Some ~w ->~n", [I, SVout]).
+
+emit_one_fs(unify_value(XnStr), PC, SV, SVout, I, _FP) :-
+    reg_to_int_fs(XnStr, Xn),
+    fresh_sv_fs(SV, SVout),
+    format("~wmatch step ctx { ~w with WsPC = ~w } (UnifyValue ~w) with~n", [I, SV, PC, Xn]),
+    format("~w| Some ~w ->~n", [I, SVout]).
+
+emit_one_fs(unify_constant(CStr), PC, SV, SVout, I, _FP) :-
+    val_fs(CStr, FC),
+    fresh_sv_fs(SV, SVout),
+    format("~wmatch step ctx { ~w with WsPC = ~w } (UnifyConstant (~w)) with~n", [I, SV, PC, FC]),
+    format("~w| Some ~w ->~n", [I, SVout]).
+
 % PutValue Xn Ai — always succeeds, inline
 emit_one_fs(put_value(XnStr, AiStr), _, SV, SVout, I, _FP) :-
     reg_to_int_fs(XnStr, Xn), reg_to_int_fs(AiStr, Ai),
@@ -493,19 +659,26 @@ emit_one_fs(put_constant(CStr, AiStr), _, SV, SVout, I, _FP) :-
     format("~wlet ~w = putReg ~w (~w) ~w~n",
            [I, SVout, Ai, FC, SV]).
 
-% PutStructure, PutList, SetValue, SetConstant — delegate to step
+% PutStructure, PutList, SetVariable, SetValue, SetConstant — delegate to step
 emit_one_fs(put_structure(FnStr, AiStr), PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(AiStr, Ai),
     parse_functor_fs(FnStr, FuncName, Arity),
+    escape_dq_fs(FuncName, EscFuncName),
     fresh_sv_fs(SV, SVout),
     format("~wmatch step ctx { ~w with WsPC = ~w } (PutStructure (\"~w\", ~w, ~w)) with~n",
-           [I, SV, PC, FuncName, Ai, Arity]),
+           [I, SV, PC, EscFuncName, Ai, Arity]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
 emit_one_fs(put_list(AiStr), PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(AiStr, Ai),
     fresh_sv_fs(SV, SVout),
     format("~wmatch step ctx { ~w with WsPC = ~w } (PutList ~w) with~n", [I, SV, PC, Ai]),
+    format("~w| Some ~w ->~n", [I, SVout]).
+
+emit_one_fs(set_variable(XnStr), PC, SV, SVout, I, _FP) :-
+    reg_to_int_fs(XnStr, Xn),
+    fresh_sv_fs(SV, SVout),
+    format("~wmatch step ctx { ~w with WsPC = ~w } (SetVariable ~w) with~n", [I, SV, PC, Xn]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
 emit_one_fs(set_value(XnStr), PC, SV, SVout, I, _FP) :-
@@ -525,13 +698,28 @@ emit_one_fs(call(PredStr, _NStr), PC, SV, SVout, I, FP) :-
     RetPC is PC + 1,
     fresh_sv_fs(SV, SVout),
     atom_string(PredAtom, PredStr),
+    escape_dq_fs(PredStr, EscPred),
     (   member(PredAtom, FP)
     ->  format("~wmatch callForeign ctx \"~w\" { ~w with WsCP = ~w } with~n",
-               [I, PredStr, SV, RetPC])
+               [I, EscPred, SV, RetPC])
     ;   format("~wmatch dispatchCall ctx \"~w\" { ~w with WsCP = ~w } with~n",
-               [I, PredStr, SV, RetPC])
+               [I, EscPred, SV, RetPC])
     ),
     format("~w| Some ~w ->~n", [I, SVout]).
+
+
+% CallForeign — explicit foreign call opcode (delegate to step)
+emit_one_fs(call_foreign(PredStr, NStr), PC, SV, SVout, I, _FP) :-
+    (   number_string(N, NStr)
+    ->  true
+    ;   throw(error(domain_error(call_foreign_arity, NStr), emit_one_fs/6))
+    ),
+    fresh_sv_fs(SV, SVout),
+    escape_dq_fs(PredStr, EscPred),
+    format("~wmatch step ctx { ~w with WsPC = ~w } (CallForeign (\"~w\", ~w)) with~n",
+           [I, SV, PC, EscPred, N]),
+    format("~w| Some ~w ->~n", [I, SVout]).
+
 
 % BuiltinCall — delegate to step
 emit_one_fs(builtin_call(OpStr, NStr), PC, SV, SVout, I, _FP) :-
@@ -550,7 +738,15 @@ emit_one_fs(cut_ite, PC, SV, SVout, I, _FP) :-
 % Jump — delegate to step
 emit_one_fs(jump(LabelStr), PC, SV, SVout, I, _FP) :-
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (Jump \"~w\") with~n", [I, SV, PC, LabelStr]),
+    escape_dq_fs(LabelStr, EscLabel),
+    format("~wmatch step ctx { ~w with WsPC = ~w } (Jump \"~w\") with~n", [I, SV, PC, EscLabel]),
+    format("~w| Some ~w ->~n", [I, SVout]).
+
+
+emit_one_fs(retry_me_else(LabelStr), PC, SV, SVout, I, _FP) :-
+    fresh_sv_fs(SV, SVout),
+    escape_dq_fs(LabelStr, EscLabel),
+    format("~wmatch step ctx { ~w with WsPC = ~w } (RetryMeElse \"~w\") with~n", [I, SV, PC, EscLabel]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
 % TrustMe — delegate to step
@@ -562,18 +758,20 @@ emit_one_fs(trust_me, PC, SV, SVout, I, _FP) :-
 % Execute — tail call; returns directly (no WsCP change)
 emit_one_fs(execute(PredStr), _PC, SV, SV, I, FP) :-
     atom_string(PredAtom, PredStr),
+    escape_dq_fs(PredStr, EscPred),
     (   member(PredAtom, FP)
-    ->  format("~wcallForeign ctx \"~w\" ~w~n", [I, PredStr, SV])
-    ;   format("~wdispatchCall ctx \"~w\" ~w~n", [I, PredStr, SV])
+    ->  format("~wcallForeign ctx \"~w\" ~w~n", [I, EscPred, SV])
+    ;   format("~wdispatchCall ctx \"~w\" ~w~n", [I, EscPred, SV])
     ).
 
 % BeginAggregate — delegate to step
 emit_one_fs(begin_aggregate(TypeStr, ValRegStr, ResRegStr), PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(ValRegStr, ValReg),
     reg_to_int_fs(ResRegStr, ResReg),
+    escape_dq_fs(TypeStr, EscType),
     fresh_sv_fs(SV, SVout),
     format("~wmatch step ctx { ~w with WsPC = ~w } (BeginAggregate (\"~w\", ~w, ~w)) with~n",
-           [I, SV, PC, TypeStr, ValReg, ResReg]),
+           [I, SV, PC, EscType, ValReg, ResReg]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
 % EndAggregate — delegate to step
@@ -611,7 +809,8 @@ val_fs(Str, FS) :-
     ->  format(atom(FS), 'Integer ~w', [N])
     ;   number_string(F, Str), float(F)
     ->  format(atom(FS), 'Float ~w', [F])
-    ;   format(atom(FS), 'Atom "~w"', [Str])
+    ;   escape_dq_fs(Str, EscStr),
+        format(atom(FS), 'Atom "~w"', [EscStr])
     ).
 
 %% reg_to_int_fs(+RegStr, -Int)
@@ -640,8 +839,17 @@ parse_functor_fs(FnStr, Name, Arity) :-
     ).
 
 %% escape_dq_fs(+Str, -Escaped)
-%  Escape backslashes in builtin call names for F# string literals.
-escape_dq_fs(Str, Esc) :-
-    split_string(Str, "\\", "", Parts),
-    atomic_list_concat(Parts, "\\\\", E0),
-    atom_string(E0, Esc).
+%  Escape backslashes and double quotes for F# string literals.
+%  WAM tokens normally arrive as strings, but parsed functor names are atoms;
+%  normalize first so all string-emitting call sites can share this helper.
+escape_dq_fs(Str0, Esc) :-
+    (   string(Str0)
+    ->  Str = Str0
+    ;   atom(Str0)
+    ->  atom_string(Str0, Str)
+    ;   term_string(Str0, Str)
+    ),
+    split_string(Str, "\\", "", SlashParts),
+    atomic_list_concat(SlashParts, "\\\\", EscSlashes),
+    split_string(EscSlashes, "\"", "", QuoteParts),
+    atomic_list_concat(QuoteParts, "\\\"", Esc).
