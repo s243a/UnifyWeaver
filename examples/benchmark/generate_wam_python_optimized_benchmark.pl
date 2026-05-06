@@ -78,7 +78,7 @@ generate(VariantAtom, OutputDir) :-
     Options = [module_name('wam-python-optimized-bench'),
                prefer_wam(true),
                wam_fallback(true),
-               emit_mode(functions),
+               emit_mode(lowered),
                parallel(true),
                benchmark(true),
                foreign_predicates([category_parent/2])],

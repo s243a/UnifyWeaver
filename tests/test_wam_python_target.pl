@@ -196,12 +196,33 @@ test(compile_lowered_mode_falls_back_for_nondet) :-
 	assertion(sub_string(S, _, _, _, '("try_me_else", "choice_2")')),
 	assertion(\+ sub_string(S, _, _, _, "def pred_choice_1(state)")).
 
-test(compile_all_lowered_mode_build_program_uses_registrars) :-
+test(compile_all_lowered_mode_build_program_uses_registrars, [nondet]) :-
 	WamCode = 'foo/1:\n  get_constant a, 1\n  proceed',
 	wam_python_target:compile_all_predicates([foo/1-WamCode], [emit_mode(lowered)], PythonCode),
 	atom_string(PythonCode, S),
 	assertion(sub_string(S, _, _, _, "register_pred_foo_1(raw_program)")),
 	assertion(sub_string(S, _, _, _, '("call_lowered", pred_foo_1, 1)')).
+
+test(compile_all_lowered_mode_ffi_uses_registrar_prefix) :-
+	wam_python_target:compile_all_predicates(
+		[category_parent/2],
+		[emit_mode(lowered), foreign_predicates([category_parent/2])],
+		PythonCode),
+	atom_string(PythonCode, S),
+	assertion(sub_string(S, _, _, _, "def register_pred_category_parent_2(raw_program)")),
+	assertion(sub_string(S, _, _, _, "register_pred_category_parent_2(raw_program)")).
+
+test(compile_all_lowered_mode_keeps_direct_call_graph_consistent) :-
+	OuterWam = 'outer/1:\n  call inner/1, 1\n  proceed',
+	InnerWam = 'inner/1:\n  try_me_else inner_2\n  get_constant a, 1\n  proceed\ninner_2:\n  trust_me\n  get_constant b, 1\n  proceed',
+	wam_python_target:compile_all_predicates(
+		[outer/1-OuterWam, inner/1-InnerWam],
+		[emit_mode(lowered)],
+		PythonCode),
+	atom_string(PythonCode, S),
+	assertion(\+ sub_string(S, _, _, _, "def pred_outer_1(state)")),
+	assertion(sub_string(S, _, _, _, 'raw_program["outer/1"] = (')),
+	assertion(sub_string(S, _, _, _, '("call", "inner/1", 1)')).
 
 :- end_tests(wam_python_compile).
 
