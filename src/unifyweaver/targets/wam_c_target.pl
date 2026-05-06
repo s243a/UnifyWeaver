@@ -19,16 +19,22 @@
     compile_wam_predicate_to_c/4,     % +Pred/Arity, +WamCode, +Options, -CCode
     wam_instruction_to_c_literal/2,   % +WamInstr, -CCode
     wam_instruction_to_c_literal/3,   % +WamInstr, +LabelMap, -CCode
+    detect_kernels/2,                 % +Predicates, -DetectedKernels
+    generate_setup_detected_kernels_c/2, % +DetectedKernels, -CCode
     write_wam_c_project/3             % +Predicates, +Options, +ProjectDir
 ]).
 
 :- use_module(library(lists)).
 :- use_module(library(option)).
+:- use_module(library(pairs), [pairs_keys/2]).
 
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../core/template_system').
 :- use_module('../bindings/c_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../core/recursive_kernel_detection', [
+    detect_recursive_kernel/4
+]).
 
 % ============================================================================
 % PHASE 4: Hybrid Module Assembly
@@ -38,15 +44,21 @@
 %  Generates a full C project for the given predicates.
 write_wam_c_project(Predicates, Options, ProjectDir) :-
     make_directory_path(ProjectDir),
+    detect_kernels_for_options(Predicates, Options, DetectedKernels),
     % Generate runtime .c and .h files
     compile_wam_runtime_to_c(Options, RuntimeCode),
     directory_file_path(ProjectDir, 'wam_runtime.c', RuntimePath),
     write_file(RuntimePath, RuntimeCode),
 
     % Compile predicates and generate lib.c
-    compile_predicates_for_project(Predicates, Options, PredicatesCode),
+    pairs_keys(DetectedKernels, DetectedKeys),
+    generate_setup_detected_kernels_c(DetectedKernels, SetupKernelCode),
+    compile_predicates_for_project(Predicates, [detected_kernel_keys(DetectedKeys)|Options],
+                                   PredicatesCode),
+    format(atom(LibCode), '#include "wam_runtime.h"~n~n~w~n~n~w',
+           [SetupKernelCode, PredicatesCode]),
     directory_file_path(ProjectDir, 'lib.c', LibPath),
-    write_file(LibPath, PredicatesCode),
+    write_file(LibPath, LibCode),
 
     format('WAM C project created at: ~w~n', [ProjectDir]).
 
@@ -62,7 +74,13 @@ write_file(Path, Content) :-
 compile_predicates_for_project([], _, "").
 compile_predicates_for_project([PredIndicator|Rest], Options, Code) :-
     predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
-    (   wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode)
+    format(atom(Key), '~w/~w', [Pred, Arity]),
+    option(detected_kernel_keys(DetectedKeys), Options, []),
+    (   memberchk(Key, DetectedKeys)
+    ->  format(atom(WamCode), '~w/~w:\n    call_foreign ~w, ~w\n    proceed',
+               [Pred, Arity, Key, Arity]),
+        compile_wam_predicate_to_c(Module:Pred/Arity, WamCode, Options, PredCode)
+    ;   wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode)
     ->  compile_wam_predicate_to_c(Module:Pred/Arity, WamCode, Options, PredCode)
     ;   format(atom(PredCode), '// ~w/~w: compilation failed', [Pred, Arity])
     ),
@@ -71,6 +89,62 @@ compile_predicates_for_project([PredIndicator|Rest], Options, Code) :-
 
 predicate_indicator_parts(Module:Pred/Arity, Module, Pred, Arity) :- !.
 predicate_indicator_parts(Pred/Arity, user, Pred, Arity).
+
+detect_kernels_for_options(Predicates, Options, DetectedKernels) :-
+    (   option(no_kernels(true), Options)
+    ->  DetectedKernels = [],
+        format(user_error, '[WAM-C] kernel detection suppressed~n', [])
+    ;   detect_kernels(Predicates, DetectedKernels),
+        (   DetectedKernels \= []
+        ->  pairs_keys(DetectedKernels, DetectedKeys),
+            format(user_error, '[WAM-C] detected kernels: ~w~n', [DetectedKeys])
+        ;   true
+        )
+    ).
+
+%% detect_kernels(+Predicates, -DetectedKernels)
+%  Run the shared recursive-kernel detector over project predicates.
+detect_kernels([], []).
+detect_kernels([PI|Rest], Kernels) :-
+    predicate_indicator_parts(PI, _Module, Pred, Arity),
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   Clauses \= [],
+        detect_recursive_kernel(Pred, Arity, Clauses, Kernel),
+        wam_c_supported_kernel(Kernel)
+    ->  format(atom(Key), '~w/~w', [Pred, Arity]),
+        Kernels = [Key-Kernel|RestKernels]
+    ;   Kernels = RestKernels
+    ),
+    detect_kernels(Rest, RestKernels).
+
+wam_c_supported_kernel(recursive_kernel(category_ancestor, _Pred, _ConfigOps)).
+
+%% generate_setup_detected_kernels_c(+DetectedKernels, -CCode)
+%  Emit C startup wiring for detected kernels. This function registers only
+%  native handlers; callers still decide when to load/register fact sources.
+generate_setup_detected_kernels_c([], Code) :- !,
+    Code = 'void setup_detected_wam_c_kernels(WamState* state) {\n    (void)state;\n}'.
+generate_setup_detected_kernels_c(DetectedKernels, Code) :-
+    maplist(wam_c_kernel_registration_line, DetectedKernels, Lines),
+    atomic_list_concat(Lines, '\n', Body),
+    format(atom(Code),
+           'void setup_detected_wam_c_kernels(WamState* state) {\n~w\n}',
+           [Body]).
+
+wam_c_kernel_registration_line(Key-recursive_kernel(category_ancestor, _Pred, ConfigOps), Line) :-
+    wam_c_kernel_max_depth(ConfigOps, MaxDepth),
+    format(atom(Line),
+           '    wam_register_category_ancestor_kernel(state, "~w", ~w);',
+           [Key, MaxDepth]).
+
+wam_c_kernel_max_depth(ConfigOps, MaxDepth) :-
+    (   member(max_depth(MaxDepth0), ConfigOps),
+        integer(MaxDepth0),
+        MaxDepth0 > 0
+    ->  MaxDepth = MaxDepth0
+    ;   MaxDepth = 10
+    ).
 
 % ============================================================================
 % PHASE 2: WAM instructions -> C Struct Literals
