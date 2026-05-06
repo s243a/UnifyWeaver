@@ -304,6 +304,10 @@ clojure_direct_builtin("var/1", "1").
 clojure_direct_builtin("var/1", 1).
 clojure_direct_builtin('var/1', "1").
 clojure_direct_builtin('var/1', 1).
+clojure_direct_builtin("compound/1", "1").
+clojure_direct_builtin("compound/1", 1).
+clojure_direct_builtin('compound/1', "1").
+clojure_direct_builtin('compound/1', 1).
 clojure_direct_builtin("!/0", "0").
 clojure_direct_builtin("!/0", 0).
 clojure_direct_builtin('!/0', "0").
@@ -455,6 +459,13 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     !,
     format(atom(Expr),
            '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if (or (= value ::lowered-unbound) (runtime/logic-var? value)) (runtime/advance ~w) (runtime/backtrack ~w)))',
+           [S, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "compound/1" ; Op == 'compound/1'),
+    !,
+    format(atom(Expr),
+           '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if (runtime/structure-term? value) (runtime/advance ~w) (runtime/backtrack ~w)))',
            [S, S, S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
