@@ -84,7 +84,10 @@ test_body_construction_instructions :-
         member(put_variable, Cases),
         member(put_value, Cases),
         member(put_structure, Cases),
-        member(put_list, Cases)
+        member(put_list, Cases),
+        member(set_variable, Cases),
+        member(set_value, Cases),
+        member(set_constant, Cases)
     ->  pass(Test)
     ;   fail_test(Test, 'missing body construction instruction arms')
     ).
@@ -491,6 +494,16 @@ test_real_prolog_unify_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_real_prolog_classic_recursive_executable_smoke :-
+    Test = 'WAM-C: real Prolog classic recursive executable smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_classic_recursive_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog classic recursive executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 gcc_available :-
     catch(process_create(path(gcc), ['--version'],
                          [stdout(null), stderr(null), process(Pid)]),
@@ -807,6 +820,43 @@ run_real_prolog_unify_executable_smoke :-
         run_c_smoke_plain(ExePath)
     ->  retractall(user:wam_c_real_unify(_, _))
     ;   retractall(user:wam_c_real_unify(_, _)),
+        fail
+    ).
+
+run_real_prolog_classic_recursive_executable_smoke :-
+    assertz((user:wam_c_classic_fib(0, 0) :- true)),
+    assertz((user:wam_c_classic_fib(1, 1) :- true)),
+    assertz((user:wam_c_classic_fib(N, F) :-
+        N > 1,
+        N1 is N - 1,
+        N2 is N - 2,
+        wam_c_classic_fib(N1, F1),
+        wam_c_classic_fib(N2, F2),
+        F is F1 + F2)),
+    (   compile_predicate_to_wam(user:wam_c_classic_fib/2, [], WamCode),
+        sub_string(WamCode, _, _, _, 'retry_me_else'),
+        sub_string(WamCode, _, _, _, 'trust_me'),
+        sub_string(WamCode, _, _, _, 'builtin_call >/2, 2'),
+        sub_string(WamCode, _, _, _, 'builtin_call is/2, 2'),
+        sub_string(WamCode, _, _, _, 'call wam_c_classic_fib/2, 2'),
+        compile_wam_predicate_to_c(user:wam_c_classic_fib/2, WamCode, [], PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        format(atom(TmpBase), '/tmp/unifyweaver_wam_c_classic_fib_smoke_~w', [Stamp]),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_classic_fib_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  retractall(user:wam_c_classic_fib(_, _))
+    ;   retractall(user:wam_c_classic_fib(_, _)),
         fail
     ).
 
@@ -1586,6 +1636,57 @@ int main(void) {
 }
 ').
 
+wam_c_classic_fib_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_classic_fib_2(WamState* state);
+
+static int expect_fib(WamState *state, int n, int expected) {
+    (void)state;
+    WamState local;
+    wam_state_init(&local);
+    setup_wam_c_classic_fib_2(&local);
+    WamValue args[2] = { val_int(n), val_unbound("F") };
+    int rc = wam_run_predicate(&local, "wam_c_classic_fib/2", args, 2);
+    WamValue *result = wam_deref_ptr(&local, &local.A[0]);
+    int ok = rc == 0 &&
+             local.P == WAM_HALT &&
+             result->tag == VAL_INT &&
+             result->data.integer == expected;
+    wam_free_state(&local);
+    return ok;
+}
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_classic_fib_2(&state);
+
+    if (!expect_fib(&state, 0, 0)) {
+        wam_free_state(&state);
+        return 10;
+    }
+    if (!expect_fib(&state, 1, 1)) {
+        wam_free_state(&state);
+        return 20;
+    }
+    if (!expect_fib(&state, 6, 8)) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue fail_args[2] = { val_int(6), val_int(7) };
+    int fail_rc = wam_run_predicate(&state, "wam_c_classic_fib/2", fail_args, 2);
+    if (fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 implemented_wam_c_cases(Cases) :-
     compile_step_wam_to_c([], Code),
     atom_string(Code, S),
@@ -1618,6 +1719,9 @@ implemented_case(get_structure, 'case INSTR_GET_STRUCTURE').
 implemented_case(put_structure, 'case INSTR_PUT_STRUCTURE').
 implemented_case(get_list, 'case INSTR_GET_LIST').
 implemented_case(put_list, 'case INSTR_PUT_LIST').
+implemented_case(set_variable, 'case INSTR_SET_VARIABLE').
+implemented_case(set_value, 'case INSTR_SET_VALUE').
+implemented_case(set_constant, 'case INSTR_SET_CONSTANT').
 implemented_case(unify_variable, 'case INSTR_UNIFY_VARIABLE').
 implemented_case(unify_value, 'case INSTR_UNIFY_VALUE').
 implemented_case(unify_constant, 'case INSTR_UNIFY_CONSTANT').
@@ -1673,6 +1777,7 @@ run_tests_once :-
     test_real_prolog_structure_index_executable_smoke,
     test_real_prolog_is_list_executable_smoke,
     test_real_prolog_unify_executable_smoke,
+    test_real_prolog_classic_recursive_executable_smoke,
     format('~n=== WAM-C Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
 

@@ -18,6 +18,7 @@
 #define WAM_PRED_HASH_SIZE 256
 #define WAM_ATOM_HASH_SIZE 512
 #define WAM_FOREIGN_HASH_SIZE 256
+#define WAM_CALL_STACK_SIZE 1024
 
 typedef struct WamState WamState;
 typedef bool (*WamForeignHandler)(WamState *state, const char *pred, int arity);
@@ -51,6 +52,7 @@ typedef struct {
     int heap_size;
     int trail_size;
     int stack_size;
+    int call_base_top;
     int arity;
     WamValue a_regs[32]; // Reduced from MAX_REGS to save memory (typical max arity)
 } ChoicePoint;
@@ -187,6 +189,10 @@ struct WamState {
 
     /* Foreign predicate handlers */
     ForeignEntry foreign_hash[WAM_FOREIGN_HASH_SIZE];
+
+    /* First-solution call pruning */
+    int call_bases[WAM_CALL_STACK_SIZE];
+    int call_base_top;
 
     /* Native category_ancestor kernel data */
     CategoryEdge *category_edges;
@@ -386,7 +392,7 @@ static inline void trail_binding(WamState *state, WamValue *cell) {
 static inline WamValue* wam_deref_ptr(WamState *state, WamValue *v) {
     while (v->tag == VAL_REF) {
         WamValue *next = &state->H_array[v->data.ref_addr];
-        if (next->tag == VAL_UNBOUND) break;
+        if (next->tag == VAL_UNBOUND) return next;
         if (next->tag == VAL_REF && next->data.ref_addr == v->data.ref_addr) break;
         v = next;
     }
@@ -462,6 +468,7 @@ static inline void push_choice_point(WamState *state, int next_pc, int arity) {
     cp->heap_size = state->H;
     cp->trail_size = state->TR;
     cp->stack_size = state->E;
+    cp->call_base_top = state->call_base_top;
     
     int save_arity = arity < 32 ? arity : 32;
     cp->arity = save_arity;
@@ -480,6 +487,7 @@ static inline void restore_choice_point(WamState *state, ChoicePoint *cp) {
     state->H = cp->heap_size;
     state->E = cp->stack_size;
     state->CP = cp->cp;
+    state->call_base_top = cp->call_base_top;
     unwind_trail(state, cp->trail_size);
     memcpy(state->A, cp->a_regs, sizeof(WamValue) * cp->arity);
 }
@@ -491,6 +499,11 @@ static inline void pop_choice_point(WamState *state) {
         } else {
             state->HB = 0;
         }
+    }
+}
+static inline void wam_prune_choice_points(WamState *state, int target_b) {
+    while (state->B > target_b) {
+        pop_choice_point(state);
     }
 }
 static inline void update_choice_point(WamState *state, int next_pc) {

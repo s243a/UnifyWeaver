@@ -181,6 +181,15 @@ wam_instruction_to_c_literal(get_list(Ai), Code) :-
 wam_instruction_to_c_literal(put_list(Xn), Code) :-
     c_reg_index(Xn, IsY_Xn, XIdx),
     format(atom(Code), '{ .tag = INSTR_PUT_LIST, .reg_xn = ~w, .is_y_xn = ~w }', [XIdx, IsY_Xn]).
+wam_instruction_to_c_literal(set_variable(Xn), Code) :-
+    c_reg_index(Xn, IsY_Xn, XIdx),
+    format(atom(Code), '{ .tag = INSTR_SET_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w }', [XIdx, IsY_Xn]).
+wam_instruction_to_c_literal(set_value(Xn), Code) :-
+    c_reg_index(Xn, IsY_Xn, XIdx),
+    format(atom(Code), '{ .tag = INSTR_SET_VALUE, .reg_xn = ~w, .is_y_xn = ~w }', [XIdx, IsY_Xn]).
+wam_instruction_to_c_literal(set_constant(C), Code) :-
+    c_value_literal(C, Val),
+    format(atom(Code), '{ .tag = INSTR_SET_CONSTANT, .val = ~w }', [Val]).
 wam_instruction_to_c_literal(unify_variable(Xn), Code) :-
     c_reg_index(Xn, IsY_Xn, XIdx),
     format(atom(Code), '{ .tag = INSTR_UNIFY_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w }', [XIdx, IsY_Xn]).
@@ -303,6 +312,18 @@ wam_line_to_c_instr(["put_list", Xn], Instr) :-
     clean_comma(Xn, CXn),
     c_reg_index(CXn, IsY, Idx),
     format(atom(Instr), '{ .tag = INSTR_PUT_LIST, .reg_xn = ~w, .is_y_xn = ~w }', [Idx, IsY]).
+wam_line_to_c_instr(["set_variable", Xn], Instr) :-
+    clean_comma(Xn, CXn),
+    c_reg_index(CXn, IsY, Idx),
+    format(atom(Instr), '{ .tag = INSTR_SET_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w }', [Idx, IsY]).
+wam_line_to_c_instr(["set_value", Xn], Instr) :-
+    clean_comma(Xn, CXn),
+    c_reg_index(CXn, IsY, Idx),
+    format(atom(Instr), '{ .tag = INSTR_SET_VALUE, .reg_xn = ~w, .is_y_xn = ~w }', [Idx, IsY]).
+wam_line_to_c_instr(["set_constant", C], Instr) :-
+    clean_comma(C, CC),
+    c_value_literal(CC, Val),
+    format(atom(Instr), '{ .tag = INSTR_SET_CONSTANT, .val = ~w }', [Val]).
 wam_line_to_c_instr(["unify_variable", Xn], Instr) :-
     clean_comma(Xn, CXn),
     c_reg_index(CXn, IsY, Idx),
@@ -497,7 +518,7 @@ compile_step_wam_to_c(_Options, CCode) :-
 '    bool step_wam(WamState* state, Instruction* instr) {
         switch (instr->tag) {
             case INSTR_GET_CONSTANT: {
-                WamValue *cell = resolve_reg(state, instr->reg, instr->is_y_reg);
+                WamValue *cell = wam_deref_ptr(state, resolve_reg(state, instr->reg, instr->is_y_reg));
                 if (val_is_unbound(*cell)) {
                     trail_binding(state, cell);
                     *cell = instr->val;
@@ -568,13 +589,21 @@ compile_step_wam_to_c(_Options, CCode) :-
                 return true;
             }
             case INSTR_PROCEED: {
-                state->P = state->CP;
+                int continuation = state->CP;
+                if (continuation != WAM_HALT && state->call_base_top > 0) {
+                    int target_b = state->call_bases[--state->call_base_top];
+                    wam_prune_choice_points(state, target_b);
+                }
+                state->P = continuation;
                 return true;
             }
             case INSTR_CALL: {
+                if (state->call_base_top >= WAM_CALL_STACK_SIZE) return false;
+                state->call_bases[state->call_base_top++] = state->B;
                 state->CP = state->P + 1;
                 int target = resolve_predicate_hash(state, instr->pred);
                 if (target >= 0) { state->P = target; return true; }
+                state->call_base_top--;
                 return false;
             }
             case INSTR_EXECUTE: {
@@ -776,6 +805,34 @@ compile_step_wam_to_c(_Options, CCode) :-
                     state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
                 }
                 state->mode = MODE_WRITE;
+                state->P++;
+                return true;
+            }
+            case INSTR_SET_VARIABLE: {
+                WamValue *cell = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
+                WamValue ref = wam_make_ref(state);
+                *cell = ref;
+                state->P++;
+                return true;
+            }
+            case INSTR_SET_VALUE: {
+                WamValue *cell = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
+                if (state->H >= state->H_cap) {
+                    state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
+                    state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+                }
+                state->H_array[state->H] = *cell;
+                state->H++;
+                state->P++;
+                return true;
+            }
+            case INSTR_SET_CONSTANT: {
+                if (state->H >= state->H_cap) {
+                    state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
+                    state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+                }
+                state->H_array[state->H] = instr->val;
+                state->H++;
                 state->P++;
                 return true;
             }
