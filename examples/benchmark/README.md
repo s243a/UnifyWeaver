@@ -284,9 +284,38 @@ swipl -q -s examples/benchmark/generate_wam_scala_effective_distance_benchmark.p
 It emits a Scala WAM project plus an `EffectiveDistanceRunner` companion that
 prints the standard `article	root_category	effective_distance` table from
 `category_parent.tsv` and `article_category.tsv`. The generator supports
-`kernels_on` via the Scala fact-source handler and `kernels_off` via compiled
-WAM facts, but the targets are not registered in the Python matrix until the
-runner wiring has a dedicated smoke gate.
+`kernels_on` via the Scala fact-source handler and `kernels_off` via WAM
+`category_ancestor/4` recursion over the same fact-source seam. The registered
+matrix targets are:
+
+- `scala-wam-seeded`
+- `scala-wam-seeded-no-kernels`
+- `scala-wam-accumulated`
+- `scala-wam-accumulated-no-kernels`
+
+Slow fallback probes can be bounded from the matrix harness instead of relying
+on an external watchdog. For example, to validate that a large no-kernel Scala
+project still generates and compiles without running the slow fallback:
+
+```bash
+python3 examples/benchmark/benchmark_effective_distance_matrix.py \
+  --scales 300 \
+  --targets scala-wam-accumulated-no-kernels \
+  --compile-only-targets scala-wam-accumulated-no-kernels \
+  --repetitions 1
+```
+
+To run a bounded kernel/no-kernel comparison and report a timeout row rather
+than hanging the benchmark process:
+
+```bash
+python3 examples/benchmark/benchmark_effective_distance_matrix.py \
+  --scales dev \
+  --targets scala-wam-accumulated,scala-wam-accumulated-no-kernels \
+  --timeout-targets scala-wam-accumulated-no-kernels \
+  --run-timeout-seconds 10 \
+  --repetitions 1
+```
 
 The configurable benchmark matrix now treats all Clojure WAM effective-distance
 modes as result-producing `hybrid-wam` targets:
@@ -307,14 +336,16 @@ python3 examples/benchmark/benchmark_effective_distance_matrix.py --list-kernel-
 
 The report is TSV with `family`, `mode`, `kernels_target`, and
 `no_kernels_target` columns. It currently covers registered Rust
-seeded/accumulated and Rust interpreter/lowered pairings, plus Go, Clojure,
-and Haskell effective-distance WAM pairings.
+seeded/accumulated and Rust interpreter/lowered pairings, plus Go, C, Scala,
+Clojure, and Haskell effective-distance WAM pairings.
 
 When both sides of a registered pair run for the same scale, the benchmark
 summary also emits a paired delta table with median timings, a
 `kernels_speedup_vs_no_kernels` ratio, and output/row-count match flags. A
 ratio above `1.0` means the kernel-enabled target was faster than its
-no-kernel counterpart for that pair.
+no-kernel counterpart for that pair. Targets reported as `timeout` or
+`compile_only` are listed in the primary table but excluded from output
+matching, baseline speedups, and kernel-pair deltas.
 
 Artifact-vs-sidecar Clojure comparisons are available through the
 `clojure-wam-artifact` target set, which adds:

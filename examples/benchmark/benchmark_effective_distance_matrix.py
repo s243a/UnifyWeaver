@@ -26,6 +26,7 @@ import os
 import re
 import shlex
 import statistics
+import subprocess
 import sys
 import tempfile
 import time
@@ -89,10 +90,16 @@ class RunResult:
     stdout_sha256: str
     row_count: int
     stderr: str
+    status: str = "ok"
+    message: str = ""
 
     @property
     def median(self) -> float:
-        return statistics.median(self.times)
+        return statistics.median(self.times) if self.times else float("nan")
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
 
 
 def parse_args() -> argparse.Namespace:
@@ -112,6 +119,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--exclude-targets", default="")
     parser.add_argument("--baseline-target", default="prolog-accumulated")
     parser.add_argument("--repetitions", type=int, default=3)
+    parser.add_argument(
+        "--run-timeout-seconds",
+        type=float,
+        default=0,
+        help="Optional per-invocation runtime timeout. Timed-out targets are reported, not compared.",
+    )
+    parser.add_argument(
+        "--timeout-targets",
+        default="",
+        help="Comma-separated targets that receive --run-timeout-seconds. Defaults to all targets.",
+    )
+    parser.add_argument(
+        "--compile-only-targets",
+        default="",
+        help="Comma-separated targets to generate/build but not execute. Useful for slow WAM fallback validation.",
+    )
     parser.add_argument("--keep-temp", action="store_true")
     parser.add_argument("--list-targets", action="store_true")
     parser.add_argument(
@@ -741,22 +764,69 @@ def normalize_output(output: str) -> str:
     return normalize_three_column_float_rows(output, decimals=9)
 
 
-def benchmark_target(command: list[str], scale: str, repetitions: int, target: str) -> RunResult:
+def completed_output_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def should_timeout_target(target: str, timeout_targets: set[str]) -> bool:
+    return not timeout_targets or target in timeout_targets
+
+
+def compile_only_result(target: str, scale: str, build_seconds: float) -> RunResult:
+    return RunResult(
+        target=target,
+        scale=scale,
+        times=[build_seconds],
+        stdout_sha256="",
+        row_count=0,
+        stderr="",
+        status="compile_only",
+        message="generated/built but not executed",
+    )
+
+
+def benchmark_target(
+    command: list[str],
+    scale: str,
+    repetitions: int,
+    target: str,
+    run_timeout_seconds: float = 0,
+    timeout_targets: set[str] | None = None,
+) -> RunResult:
     times: list[float] = []
     stdout = ""
     stderr = ""
+    timeout_targets = timeout_targets or set()
+    timeout = run_timeout_seconds if run_timeout_seconds > 0 and should_timeout_target(target, timeout_targets) else None
     for _ in range(repetitions):
         started = time.perf_counter()
-        if target.startswith("prolog-") or target.startswith("wam-") or target.startswith("clojure-wam-"):
-            result = run_command(command, cwd=ROOT)
-        elif target.startswith("haskell-"):
-            scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
-            result = run_command(command + [str(scale_dir)], cwd=ROOT)
-        else:
-            scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
-            edge_path = scale_dir / "category_parent.tsv"
-            article_path = scale_dir / "article_category.tsv"
-            result = run_command(command + [str(edge_path), str(article_path)], cwd=ROOT)
+        try:
+            if target.startswith("prolog-") or target.startswith("wam-") or target.startswith("clojure-wam-"):
+                result = run_command(command, cwd=ROOT, timeout=timeout)
+            elif target.startswith("haskell-"):
+                scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
+                result = run_command(command + [str(scale_dir)], cwd=ROOT, timeout=timeout)
+            else:
+                scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
+                edge_path = scale_dir / "category_parent.tsv"
+                article_path = scale_dir / "article_category.tsv"
+                result = run_command(command + [str(edge_path), str(article_path)], cwd=ROOT, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            elapsed = time.perf_counter() - started
+            return RunResult(
+                target=target,
+                scale=scale,
+                times=[elapsed],
+                stdout_sha256="",
+                row_count=0,
+                stderr=completed_output_text(exc.stderr),
+                status="timeout",
+                message=f"timed out after {timeout:.3f}s",
+            )
         times.append(time.perf_counter() - started)
         stdout = result.stdout
         stderr = result.stderr
@@ -767,27 +837,31 @@ def benchmark_target(command: list[str], scale: str, repetitions: int, target: s
 
 
 def print_summary(results: list[RunResult], baseline_target: str) -> None:
-    print("scale\ttarget\tcategory\tmedian_s\tmin_s\tmax_s\trows\tstdout_sha256")
+    print("scale\ttarget\tcategory\tstatus\tmedian_s\tmin_s\tmax_s\trows\tstdout_sha256\tmessage")
     for scale, entries in group_results_by_scale(results):
         for result in sorted(entries, key=lambda item: item.target):
             category = TARGETS[result.target].category
+            min_s = f"{min(result.times):.3f}" if result.times else "NA"
+            max_s = f"{max(result.times):.3f}" if result.times else "NA"
+            median_s = f"{result.median:.3f}" if result.times else "NA"
             print(
-                f"{scale}\t{result.target}\t{category}\t{result.median:.3f}\t"
-                f"{min(result.times):.3f}\t{max(result.times):.3f}\t"
-                f"{result.row_count}\t{result.stdout_sha256[:12]}"
+                f"{scale}\t{result.target}\t{category}\t{result.status}\t{median_s}\t"
+                f"{min_s}\t{max_s}\t{result.row_count}\t{result.stdout_sha256[:12]}\t{result.message}"
             )
 
-        if len(entries) > 1:
-            print_match_status(scale, "all_outputs", entries)
+        ok_entries = [entry for entry in entries if entry.ok]
 
-        for category in sorted({TARGETS[item.target].category for item in entries}):
-            category_entries = [item for item in entries if TARGETS[item.target].category == category]
+        if len(ok_entries) > 1:
+            print_match_status(scale, "all_outputs", ok_entries)
+
+        for category in sorted({TARGETS[item.target].category for item in ok_entries}):
+            category_entries = [item for item in ok_entries if TARGETS[item.target].category == category]
             if len(category_entries) > 1:
                 print_match_status(scale, f"{category}_outputs", category_entries)
 
-        baseline = find_result(entries, baseline_target)
+        baseline = find_result(ok_entries, baseline_target)
         if baseline:
-            for result in sorted(entries, key=lambda item: item.target):
+            for result in sorted(ok_entries, key=lambda item: item.target):
                 if result.target == baseline_target:
                     continue
                 print_speedup(scale, f"speedup_vs_{baseline_target}_{result.target}", baseline, result)
@@ -795,7 +869,7 @@ def print_summary(results: list[RunResult], baseline_target: str) -> None:
 
 
 def kernel_pair_delta_rows(scale: str, entries: list[RunResult]) -> list[str]:
-    by_target = {entry.target: entry for entry in entries}
+    by_target = {entry.target: entry for entry in entries if entry.ok}
     rows: list[str] = []
     for pair in KERNEL_TARGET_PAIRS:
         kernels = by_target.get(pair.kernels_target)
@@ -862,6 +936,20 @@ def main() -> int:
     scales = [part.strip() for part in args.scales.split(",") if part.strip()]
     validate_termux_scales(scales, args.allow_large_termux_scales)
     targets = resolve_requested_targets(args)
+    compile_only_targets = set(parse_csv(args.compile_only_targets))
+    timeout_targets = set(parse_csv(args.timeout_targets))
+    unknown_compile_only = sorted(compile_only_targets.difference(TARGETS))
+    if unknown_compile_only:
+        raise ValueError(f"unknown --compile-only-targets: {','.join(unknown_compile_only)}")
+    unknown_timeout_targets = sorted(timeout_targets.difference(TARGETS))
+    if unknown_timeout_targets:
+        raise ValueError(f"unknown --timeout-targets: {','.join(unknown_timeout_targets)}")
+    inactive_compile_only = sorted(compile_only_targets.difference(targets))
+    for target in inactive_compile_only:
+        print(f"warning: compile-only target was not selected and will be ignored: {target}", file=sys.stderr)
+    inactive_timeout_targets = sorted(timeout_targets.difference(targets))
+    for target in inactive_timeout_targets:
+        print(f"warning: timeout target was not selected and will be ignored: {target}", file=sys.stderr)
     if not targets:
         print("no benchmark targets available", file=sys.stderr)
         return 1
@@ -879,6 +967,7 @@ def main() -> int:
         results: list[RunResult] = []
         for scale in scales:
             for target in targets:
+                build_started = time.perf_counter()
                 if target == "prolog-seeded":
                     command = build_prolog_effective_distance(temp_root, scale, "seeded")
                 elif target == "prolog-accumulated":
@@ -945,7 +1034,20 @@ def main() -> int:
                     )
                 else:
                     command = commands[target]
-                results.append(benchmark_target(command, scale, args.repetitions, target))
+                build_seconds = time.perf_counter() - build_started
+                if target in compile_only_targets:
+                    results.append(compile_only_result(target, scale, build_seconds))
+                    continue
+                results.append(
+                    benchmark_target(
+                        command,
+                        scale,
+                        args.repetitions,
+                        target,
+                        args.run_timeout_seconds,
+                        timeout_targets,
+                    )
+                )
 
         print_summary(results, args.baseline_target)
         return 0
