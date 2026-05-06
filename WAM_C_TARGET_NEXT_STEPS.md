@@ -1,15 +1,15 @@
 # WAM C Target - Status And Next Steps
 
-Status date: 2026-05-05
+Status date: 2026-05-06
 
 Base verified locally:
 
-- `main` at `74d14fd5` (`Merge pull request #1858 from s243a/feat/wam-c-effective-distance-matrix`)
+- `main` at `6b6b8613` (`Merge pull request #1861 from s243a/feat/csharp-query-source-mode-sweep-all-graph-default`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 
 Active branch:
 
-- `feat/wam-c-lmdb-effective-distance-wiring`
+- `feat/wam-c-classic-program-e2e`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -32,7 +32,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | LMDB-backed FactSource foundation | Done | Optional `WAM_C_ENABLE_LMDB`, `wam_fact_source_load_lmdb`, duplicate-key LMDB smoke, existing lookup/kernel registration reuse |
 | Shared kernel detector setup | Done | `detect_kernels/2`, `generate_setup_detected_kernels_c/2`, detected `category_ancestor/4` foreign trampoline project smoke |
 | Effective-distance matrix wiring | Done | `c-wam-accumulated`, `c-wam-accumulated-no-kernels`, C kernel-pair delta, `dev` parity smoke against Prolog |
-| Effective-distance LMDB fact-storage wiring | In progress | `facts_lmdb` generator mode, LMDB seeder/validator, `c-wam-accumulated-lmdb` matrix targets, `dev` parity smoke against Prolog |
+| Effective-distance LMDB fact-storage wiring | Done | `facts_lmdb` generator mode, LMDB seeder/validator, `c-wam-accumulated-lmdb` matrix targets, `dev` parity smoke against Prolog |
+| Classic recursive program e2e | In progress | Generated Prolog-to-WAM-C Fibonacci smoke, `set_*` instruction support, dereferenced constants/results, call-base choicepoint pruning |
 
 ## Current C Target Baseline
 
@@ -41,6 +42,8 @@ The C target is now a credible small WAM backend:
 - Emits a C runtime and predicate setup functions.
 - Supports core head/body WAM instructions for constants, variables,
   structures, lists, and unification.
+- Supports `set_variable`, `set_value`, and `set_constant` for generated body
+  term construction.
 - Supports `call`, `execute`, `proceed`, `allocate`, `deallocate`, and
   choice-point instructions.
 - Supports `switch_on_constant`, `switch_on_structure`, `switch_on_term`,
@@ -69,6 +72,8 @@ The C target is now a credible small WAM backend:
   foreign calls, native category ancestor, file-backed facts, streaming native
   results, real multi-clause predicates, structure indexing, `is_list/1`, and
   `=/2`.
+- Has an executable smoke for a generated multi-recursive Fibonacci-style
+  arithmetic program.
 
 The main limitation is not core WAM execution anymore. It is hybrid-WAM
 infrastructure: C lacks lowered/native helper integration and full benchmark
@@ -98,7 +103,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
 | LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts and generated effective-distance LMDB wiring; larger artifact layout support remains. |
 | Effective-distance benchmark harness | Partial/Done | Done | Done | C is wired into the shared matrix for TSV and LMDB `kernels_on`/`kernels_off`; next gap is larger artifact layouts. |
-| Classic-program e2e suite | Partial | Partial/Done | Partial/Done | C has targeted smokes; add Fibonacci/Ackermann-style suite like Scala/Elixir. |
+| Classic-program e2e suite | Partial/Done | Partial/Done | Partial/Done | C now covers generated Fibonacci-style recursion with arithmetic; add Ackermann-style depth only if routine runtime stays acceptable. |
 | Memory lifecycle | Partial | Runtime-managed | Runtime-managed | C has init/free; needs ASAN/Valgrind CI-style coverage for larger programs. |
 | Instruction layout efficiency | TODO | N/A | N/A | Pack `Instruction` fields into a tagged union if runtime footprint matters. |
 
@@ -110,8 +115,11 @@ Goal: broaden C executable coverage with classic recursive programs.
 
 Scope:
 
-- Add Fibonacci/Ackermann-style generated executable smokes.
-- Stress retry/trust, arithmetic comparisons, and recursive calls.
+- Add generated executable smokes for classic recursive programs.
+- Stress retry/trust, arithmetic comparisons, recursive calls, and generated
+  body term construction.
+- Cover Fibonacci-style multi-recursive calls; add Ackermann-style depth only if
+  routine runtime stays acceptable.
 - Keep the suite small enough for routine local runs.
 
 ### 2. `perf/wam-c-pack-instruction`
@@ -130,10 +138,9 @@ or cache behavior becomes a real bottleneck.
 
 ## Suggested Immediate Next Step
 
-Finish `feat/wam-c-lmdb-effective-distance-wiring`, then start
-`feat/wam-c-classic-program-e2e`.
+Continue validating `feat/wam-c-classic-program-e2e`.
 
 The C target is now visible in the shared effective-distance matrix using TSV
-and LMDB facts. The next parity gap is broader classic recursive program
-coverage, which should stress retry/trust, arithmetic comparisons, and
-recursive calls outside the effective-distance benchmark shape.
+and LMDB facts. The current classic-program branch adds Fibonacci-style
+recursive arithmetic coverage and fixes the `set_*`, dereference, and
+first-solution call-pruning gaps it exposed.
