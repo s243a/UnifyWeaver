@@ -4,7 +4,7 @@ Status date: 2026-05-04
 
 Base verified locally:
 
-- `main` at `3a7bb595` (`Merge pull request #1852 from s243a/feat/wam-c-lmdb-fact-source`)
+- `main` at `bb42243e` (`Merge pull request #1856 from s243a/feat/wam-c-kernel-detector-setup`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 
 This file replaces the older implementation plan. The four original C follow-up
@@ -27,6 +27,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Effective-distance benchmark generator | Done | `generate_wam_c_effective_distance_benchmark.pl`, TSV facts, `kernels_on`/`kernels_off`, generated C runner smoke |
 | LMDB-backed FactSource foundation | Done | Optional `WAM_C_ENABLE_LMDB`, `wam_fact_source_load_lmdb`, duplicate-key LMDB smoke, existing lookup/kernel registration reuse |
 | Shared kernel detector setup | Done | `detect_kernels/2`, `generate_setup_detected_kernels_c/2`, detected `category_ancestor/4` foreign trampoline project smoke |
+| Effective-distance matrix wiring | Done | `c-wam-accumulated`, `c-wam-accumulated-no-kernels`, C kernel-pair delta, `dev` parity smoke against Prolog |
 
 ## Current C Target Baseline
 
@@ -57,6 +58,8 @@ The C target is now a credible small WAM backend:
 - Can detect the shared `category_ancestor/4` recursive-kernel shape and emit
   C startup registration plus a `call_foreign` trampoline for generated
   projects.
+- Is visible in the shared effective-distance benchmark matrix as a
+  `kernels_on` / `kernels_off` accumulated target pair.
 - Has executable smokes for generated runtime, cross-predicate calls,
   foreign calls, native category ancestor, file-backed facts, streaming native
   results, real multi-clause predicates, structure indexing, `is_list/1`, and
@@ -89,25 +92,14 @@ missing important target features; `Missing` = no comparable C path yet.
 | Lowered/native helper functions | Missing | Done | Done | Consider after foreign kernels; C can lower simple fact-only or deterministic predicates. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
 | LMDB-backed facts | Partial | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts; next gap is generated benchmark wiring and larger artifact layout support. |
-| Effective-distance benchmark harness | Partial | Done | Done | C has a small generated TSV harness with `kernels_on`/`kernels_off`; next gap is full benchmark matrix integration and larger datasets. |
+| Effective-distance benchmark harness | Partial/Done | Done | Done | C is wired into the shared matrix for TSV `kernels_on`/`kernels_off`; next gap is LMDB mode and larger artifact layouts. |
 | Classic-program e2e suite | Partial | Partial/Done | Partial/Done | C has targeted smokes; add Fibonacci/Ackermann-style suite like Scala/Elixir. |
 | Memory lifecycle | Partial | Runtime-managed | Runtime-managed | C has init/free; needs ASAN/Valgrind CI-style coverage for larger programs. |
 | Instruction layout efficiency | TODO | N/A | N/A | Pack `Instruction` fields into a tagged union if runtime footprint matters. |
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-effective-distance-matrix`
-
-Goal: make C visible in the standard effective-distance benchmark matrix.
-
-Scope:
-
-- Reuse the generated TSV harness.
-- Add script wiring next to the Rust and Haskell effective-distance paths.
-- Compare `kernels_on` and `kernels_off` outputs on shared small datasets
-  before scaling up.
-
-### 2. `feat/wam-c-lmdb-effective-distance-wiring`
+### 1. `feat/wam-c-lmdb-effective-distance-wiring`
 
 Goal: let the generated C effective-distance harness choose TSV or LMDB fact
 storage.
@@ -119,7 +111,7 @@ Scope:
 - Compile LMDB mode with `-DWAM_C_ENABLE_LMDB -llmdb`.
 - Validate duplicate-key category-parent artifacts before scaling up.
 
-### 3. `feat/wam-c-classic-program-e2e`
+### 2. `feat/wam-c-classic-program-e2e`
 
 Goal: broaden C executable coverage with classic recursive programs.
 
@@ -129,7 +121,7 @@ Scope:
 - Stress retry/trust, arithmetic comparisons, and recursive calls.
 - Keep the suite small enough for routine local runs.
 
-### 4. `perf/wam-c-pack-instruction`
+### 3. `perf/wam-c-pack-instruction`
 
 Goal: reduce `Instruction` memory footprint.
 
@@ -145,9 +137,8 @@ or cache behavior becomes a real bottleneck.
 
 ## Suggested Immediate Next Step
 
-Start with `feat/wam-c-effective-distance-matrix`.
+Start with `feat/wam-c-lmdb-effective-distance-wiring`.
 
-The C target now has the pieces needed by the small benchmark path: detected
-native `category_ancestor/4`, all-hop collection, TSV facts, optional LMDB fact
-loading, and a generated effective-distance runner. The next parity gap is
-making C visible in the shared effective-distance comparison scripts.
+The C target is now visible in the shared effective-distance matrix using TSV
+facts. The next parity gap is letting that same generated runner choose LMDB
+fact storage while keeping TSV as the dependency-free default.

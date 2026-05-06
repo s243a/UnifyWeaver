@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
 import statistics
 import sys
 import tempfile
@@ -67,6 +68,7 @@ WAM_RUST_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_effective_d
 WAM_RUST_MATRIX_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_rust_matrix_benchmark.pl"
 WAM_HASKELL_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_haskell_matrix_benchmark.pl"
 WAM_GO_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_go_effective_distance_benchmark.pl"
+WAM_C_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_c_effective_distance_benchmark.pl"
 WAM_CLOJURE_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_clojure_optimized_benchmark.pl"
 WAM_SCALA_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_scala_effective_distance_benchmark.pl"
 DEFAULT_FACTS = BENCH_DIR / "10k" / "facts.pl"
@@ -251,6 +253,49 @@ def build_wam_go_effective_distance(root: Path, scale: str, kernel_mode: str) ->
     env = dict(os.environ, GOCACHE=str(go_cache))
     run_command(["go", "build", "-o", str(project_dir / "hybrid_ed_bench_go")], cwd=project_dir, env=env)
     return [str(project_dir / "hybrid_ed_bench_go")]
+
+
+def build_wam_c_effective_distance(root: Path, scale: str, kernel_mode: str) -> list[str]:
+    facts_path = require_file(BENCH_DIR / scale / "facts.pl")
+    project_dir = root / f"wam_c_{kernel_mode}" / scale
+    project_dir.mkdir(parents=True, exist_ok=True)
+    run_command(
+        [
+            "swipl",
+            "-q",
+            "-s",
+            str(WAM_C_GENERATOR),
+            "--",
+            str(facts_path),
+            str(project_dir),
+            kernel_mode,
+        ],
+        cwd=ROOT,
+    )
+    runtime_path = project_dir / "wam_runtime.c"
+    lib_path = project_dir / "lib.c"
+    main_path = project_dir / "main.c"
+    binary_path = project_dir / "wam_c_effective_distance"
+    run_command(
+        [
+            "gcc",
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-I",
+            str(ROOT / "src" / "unifyweaver" / "targets" / "wam_c_runtime"),
+            str(runtime_path),
+            str(lib_path),
+            str(main_path),
+            "-lm",
+            "-o",
+            str(binary_path),
+        ],
+        cwd=ROOT,
+    )
+    quoted_dir = shlex.quote(str(project_dir))
+    quoted_binary = shlex.quote(str(binary_path))
+    return ["sh", "-c", f"cd {quoted_dir} && {quoted_binary}"]
 
 
 def scala_sources(project_dir: Path) -> list[str]:
@@ -828,6 +873,10 @@ def main() -> int:
                     command = build_wam_go_effective_distance(temp_root, scale, "kernels_on")
                 elif target == "go-wam-accumulated-no-kernels":
                     command = build_wam_go_effective_distance(temp_root, scale, "kernels_off")
+                elif target == "c-wam-accumulated":
+                    command = build_wam_c_effective_distance(temp_root, scale, "kernels_on")
+                elif target == "c-wam-accumulated-no-kernels":
+                    command = build_wam_c_effective_distance(temp_root, scale, "kernels_off")
                 elif target == "scala-wam-seeded":
                     command = build_wam_scala_effective_distance(temp_root, scale, "seeded", "kernels_on")
                 elif target == "scala-wam-seeded-artifact":

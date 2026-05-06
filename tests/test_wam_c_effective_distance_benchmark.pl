@@ -20,7 +20,7 @@ test_generate_and_run_kernels_on :-
     Test = 'WAM-C effective-distance: kernels_on generated runner emits expected result',
     (   run_generated_effective_distance(kernels_on, Output),
         sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
-        sub_string(Output, _, _, _, "article_a\troot\t1.951123284")
+        sub_string(Output, _, _, _, "article_a\troot\t1.951123")
     ->  pass(Test)
     ;   fail_test(Test, 'kernels_on runner output mismatch')
     ).
@@ -29,7 +29,7 @@ test_generate_and_run_kernels_off :-
     Test = 'WAM-C effective-distance: kernels_off generated runner emits expected result',
     (   run_generated_effective_distance(kernels_off, Output),
         sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
-        sub_string(Output, _, _, _, "article_a\troot\t1.951123284")
+        sub_string(Output, _, _, _, "article_a\troot\t1.951123")
     ->  pass(Test)
     ;   fail_test(Test, 'kernels_off runner output mismatch')
     ).

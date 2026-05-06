@@ -151,7 +151,10 @@ category_parent_tsv_line(Child-Parent, Line) :-
 effective_distance_main_code(KernelMode, Dimension, MaxDepth,
                              ArticleCategories, RootCategories, Code) :-
     c_pair_arrays('ARTICLE_IDS', 'ARTICLE_CATS', ArticleCategories, ArticleArrays),
-    c_string_array('ROOTS', RootCategories, RootArray),
+    pairs_keys(ArticleCategories, ArticleIds0),
+    sort(ArticleIds0, ArticleIds),
+    c_string_array('ARTICLE_COUNT', 'ARTICLES', ArticleIds, ArticlesArray),
+    c_string_array('ROOT_COUNT', 'ROOTS', RootCategories, RootArray),
     kernel_mode_flag(KernelMode, KernelFlag),
     format(atom(Code),
 '#include <math.h>
@@ -161,6 +164,7 @@ effective_distance_main_code(KernelMode, Dimension, MaxDepth,
 
 void setup_category_ancestor_4(WamState* state);
 
+~w
 ~w
 ~w
 
@@ -252,24 +256,27 @@ int main(void) {
     for (int ai = 0; ai < ARTICLE_COUNT; ai++) {
         for (int ri = 0; ri < ROOT_COUNT; ri++) {
             double weight_sum = 0.0;
-            WamIntResults hops;
-            wam_int_results_init(&hops);
-            if (strcmp(ARTICLE_CATS[ai], ROOTS[ri]) == 0) {
-                wam_int_results_push(&hops, 1);
-            } else {
-                collect_hops(&state, &source, ARTICLE_CATS[ai], ROOTS[ri], ~w, &hops);
-                for (int hi = 0; hi < hops.count; hi++) {
-                    hops.values[hi] += 1;
+            for (int ci = 0; ci < ARTICLE_CATEGORY_COUNT; ci++) {
+                if (strcmp(ARTICLE_IDS[ci], ARTICLES[ai]) != 0) continue;
+                WamIntResults hops;
+                wam_int_results_init(&hops);
+                if (strcmp(ARTICLE_CATS[ci], ROOTS[ri]) == 0) {
+                    wam_int_results_push(&hops, 1);
+                } else {
+                    collect_hops(&state, &source, ARTICLE_CATS[ci], ROOTS[ri], ~w, &hops);
+                    for (int hi = 0; hi < hops.count; hi++) {
+                        hops.values[hi] += 1;
+                    }
                 }
-            }
-            for (int hi = 0; hi < hops.count; hi++) {
-                weight_sum += pow((double)hops.values[hi], -~w.0);
+                for (int hi = 0; hi < hops.count; hi++) {
+                    weight_sum += pow((double)hops.values[hi], -~w.0);
+                }
+                wam_int_results_close(&hops);
             }
             if (weight_sum > 0.0) {
                 double deff = pow(weight_sum, -1.0 / ~w.0);
-                printf("%s\\t%s\\t%.9f\\n", ARTICLE_IDS[ai], ROOTS[ri], deff);
+                printf("%s\\t%s\\t%.6f\\n", ARTICLES[ai], ROOTS[ri], deff);
             }
-            wam_int_results_close(&hops);
         }
     }
 
@@ -277,7 +284,7 @@ int main(void) {
     wam_free_state(&state);
     return 0;
 }
-', [ArticleArrays, RootArray, MaxDepth, MaxDepth, KernelFlag, Dimension, Dimension]).
+', [ArticleArrays, ArticlesArray, RootArray, MaxDepth, MaxDepth, KernelFlag, Dimension, Dimension]).
 
 kernel_mode_flag(kernels_on, 1).
 kernel_mode_flag(kernels_off, 0).
@@ -289,15 +296,15 @@ c_pair_arrays(NamesName, ValuesName, Pairs, Code) :-
     c_string_initializer(Values, ValueInit),
     length(Pairs, Count),
     format(atom(Code),
-           'static const int ARTICLE_COUNT = ~w;\nstatic const char *~w[] = { ~w };\nstatic const char *~w[] = { ~w };',
+           'static const int ARTICLE_CATEGORY_COUNT = ~w;\nstatic const char *~w[] = { ~w };\nstatic const char *~w[] = { ~w };',
            [Count, NamesName, KeyInit, ValuesName, ValueInit]).
 
-c_string_array(Name, Values, Code) :-
+c_string_array(CountName, Name, Values, Code) :-
     c_string_initializer(Values, Init),
     length(Values, Count),
     format(atom(Code),
-           'static const int ROOT_COUNT = ~w;\nstatic const char *~w[] = { ~w };',
-           [Count, Name, Init]).
+           'static const int ~w = ~w;\nstatic const char *~w[] = { ~w };',
+           [CountName, Count, Name, Init]).
 
 c_string_initializer(Values, Init) :-
     maplist(c_string_literal, Values, Literals),
