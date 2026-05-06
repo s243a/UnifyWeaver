@@ -18,6 +18,9 @@ test(generate_kernels_on_project_emits_runner_and_fact_sidecar) :-
             sub_string(Runner, _, _, _, 'object EffectiveDistanceRunner'),
             sub_string(Runner, _, _, _, 'article\\troot_category\\teffective_distance'),
             sub_string(Runner, _, _, _, 'category_ancestor/4'),
+            sub_string(Runner, _, _, _, 'kernel_mode=kernels_on'),
+            sub_string(Runner, _, _, _, 'nativeCategoryRootHops'),
+            sub_string(Runner, _, _, _, 'parentsByChild ='),
             !
         ),
         cleanup_tmp_dir(TmpDir)).
@@ -32,6 +35,10 @@ test(generate_kernels_off_project_omits_fact_sidecar) :-
             directory_file_path(TmpDir, 'data/category_parent.csv', CsvPath),
             exists_file(RunnerPath),
             \+ exists_file(CsvPath),
+            read_file_to_string(RunnerPath, Runner, []),
+            sub_string(Runner, _, _, _, 'kernel_mode=kernels_off'),
+            sub_string(Runner, _, _, _, 'categoryRootHopsWam(category, root)'),
+            \+ sub_string(Runner, _, _, _, 'nativeCategoryRootHops'),
             !
         ),
         cleanup_tmp_dir(TmpDir)).
@@ -119,6 +126,8 @@ test(generate_artifact_project_emits_distinct_file_backend) :-
             sub_string(Generated, _, _, _, 'internTable.stringOf(id)'),
             \+ sub_string(Generated, _, _, _, 'internTable.idToString'),
             sub_string(Runner, _, _, _, 'article_category_by_article.tsv'),
+            sub_string(Runner, _, _, _, 'category_parent_by_child.tsv'),
+            sub_string(Runner, _, _, _, 'categorySourceMode'),
             sub_string(Runner, _, _, _, 'article_source_mode='),
             sub_string(Runner, _, _, _, 'val hopsRef = Ref(1000000)'),
             sub_string(Runner, _, _, _, 'WamRuntime.deref(state.bindings, hopsRef)'),
