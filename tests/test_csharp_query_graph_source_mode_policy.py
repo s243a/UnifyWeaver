@@ -57,6 +57,14 @@ class CSharpQueryGraphSourceModePolicyTests(unittest.TestCase):
                     f'RelationSourceModePolicy.ResolveGraphBenchmarkMode(configuredSourceMode, "{workload}")',
                     source,
                 )
+                self.assertIn(
+                    'Console.Error.WriteLine($"source_mode={RelationSourceModePolicy.ToConfigValue(configuredSourceMode)}");',
+                    source,
+                )
+                self.assertIn(
+                    'Console.Error.WriteLine($"resolved_source_mode={RelationSourceModePolicy.ToConfigValue(sourceMode)}");',
+                    source,
+                )
                 self.assertNotIn(
                     "configuredSourceMode == RelationSourceMode.Auto ? RelationSourceMode.Preload : configuredSourceMode",
                     source,

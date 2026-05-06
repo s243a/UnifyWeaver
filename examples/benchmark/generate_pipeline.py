@@ -1608,6 +1608,8 @@ class Program
         Console.Error.WriteLine($"dag_retention_strategy_setting={{dagRetentionStrategy}}");
         PrintDagStrategies(trace);
         PrintBucketStrategies(trace);
+        Console.Error.WriteLine($"source_mode={{RelationSourceModePolicy.ToConfigValue(configuredSourceMode)}}");
+        Console.Error.WriteLine($"resolved_source_mode={{RelationSourceModePolicy.ToConfigValue(sourceMode)}}");
         PrintSourceRegistrations(configuredProvider);
         PrintDagPhases(trace);
     }}
@@ -2131,6 +2133,8 @@ class Program
         Console.Error.WriteLine($"dag_retention_strategy_setting={{dagRetentionStrategy}}");
         PrintDagStrategies(trace);
         PrintBucketStrategies(trace);
+        Console.Error.WriteLine($"source_mode={{RelationSourceModePolicy.ToConfigValue(configuredSourceMode)}}");
+        Console.Error.WriteLine($"resolved_source_mode={{RelationSourceModePolicy.ToConfigValue(sourceMode)}}");
         PrintSourceRegistrations(configuredProvider);
         PrintDagPhases(trace);
     }}
@@ -2792,6 +2796,8 @@ class Program
         Console.Error.WriteLine($"support_retention_strategy_setting={{supportRetentionStrategy}}");
         PrintWeightSumStrategies(trace);
         PrintBucketStrategies(trace);
+        Console.Error.WriteLine($"source_mode={{RelationSourceModePolicy.ToConfigValue(configuredSourceMode)}}");
+        Console.Error.WriteLine($"resolved_source_mode={{RelationSourceModePolicy.ToConfigValue(sourceMode)}}");
         PrintSourceRegistrations(configuredProvider);
         PrintWeightSumPhases(trace);
     }}
@@ -2968,6 +2974,8 @@ class Program
         Console.Error.WriteLine($"support_retention_strategy_setting={{supportRetentionStrategy}}");
         PrintWeightSumStrategies(trace);
         PrintBucketStrategies(trace);
+        Console.Error.WriteLine($"source_mode={{RelationSourceModePolicy.ToConfigValue(configuredSourceMode)}}");
+        Console.Error.WriteLine($"resolved_source_mode={{RelationSourceModePolicy.ToConfigValue(sourceMode)}}");
         PrintSourceRegistrations(configuredProvider);
         PrintWeightSumPhases(trace);
     }}
@@ -3146,6 +3154,8 @@ class Program
         Console.Error.WriteLine($"support_retention_strategy_setting={{supportRetentionStrategy}}");
         PrintPathMinStrategies(trace);
         PrintBucketStrategies(trace);
+        Console.Error.WriteLine($"source_mode={{RelationSourceModePolicy.ToConfigValue(configuredSourceMode)}}");
+        Console.Error.WriteLine($"resolved_source_mode={{RelationSourceModePolicy.ToConfigValue(sourceMode)}}");
         PrintSourceRegistrations(configuredProvider);
         PrintPathMinPhases(trace);
     }}
@@ -3376,6 +3386,8 @@ class Program
         Console.Error.WriteLine($"support_retention_strategy_setting={{supportRetentionStrategy}}");
         PrintPathMinStrategies(trace);
         PrintBucketStrategies(trace);
+        Console.Error.WriteLine($"source_mode={{RelationSourceModePolicy.ToConfigValue(configuredSourceMode)}}");
+        Console.Error.WriteLine($"resolved_source_mode={{RelationSourceModePolicy.ToConfigValue(sourceMode)}}");
         PrintSourceRegistrations(configuredProvider);
         PrintPathMinPhases(trace);
         PrintPathMinMetrics(trace);
