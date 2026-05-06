@@ -173,6 +173,27 @@ namespace UnifyWeaver.QueryRuntime
                 _ => RelationSourceMode.Preload,
             };
         }
+
+        public static RelationSourceMode ResolveGraphBenchmarkMode(
+            RelationSourceMode configuredMode,
+            string workload)
+        {
+            if (configuredMode != RelationSourceMode.Auto)
+            {
+                return configuredMode;
+            }
+
+            return workload switch
+            {
+                "category-influence" => RelationSourceMode.Preload,
+                "dependency-depth" => RelationSourceMode.Preload,
+                "dependency-longest-depth" => RelationSourceMode.Preload,
+                "effective-distance" => RelationSourceMode.Preload,
+                "shortest-path" => RelationSourceMode.Preload,
+                "weighted-shortest-path" => RelationSourceMode.Preload,
+                _ => RelationSourceMode.Preload,
+            };
+        }
     }
 
     public sealed class BinaryRelationArtifactManifest
