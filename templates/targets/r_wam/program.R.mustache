@@ -64,6 +64,12 @@ shared_program <- list(
 )
 
 # ----------------------------------------------------------
+# Lowered native R functions (Phase-2 emitter output)
+# Empty when emit_mode is interpreter.
+# ----------------------------------------------------------
+{{lowered_functions}}
+
+# ----------------------------------------------------------
 # Per-predicate wrapper functions
 # ----------------------------------------------------------
 {{wrappers}}
