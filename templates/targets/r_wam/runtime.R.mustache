@@ -621,9 +621,30 @@ WamRuntime$call_foreign <- function(program, state, pred, arity, tail_call) {
     args[[i]] <- WamRuntime$get_reg(state, i)
   }
   res <- handler(state, args, program$intern_table)
-  if (is.null(res) || isTRUE(res$ok == FALSE)) return(FALSE)
-  # On success the handler may have written register bindings via the
-  # mutable state; we accept that and let the caller advance the PC.
+  # Result contract:
+  #   list(ok = TRUE,                            -- handler succeeded.
+  #        bindings = list(                      -- (optional) outputs to
+  #          list(idx = <reg>, val = <term>),    -- unify into argument
+  #          ...))                               -- registers; failure
+  #                                                 to unify makes the
+  #                                                 whole call fail.
+  #   list(ok = FALSE)                           -- handler failed.
+  # A bare TRUE / FALSE is also accepted for handlers that mutate state
+  # directly; it's equivalent to list(ok = TRUE) / list(ok = FALSE).
+  if (is.null(res)) return(FALSE)
+  if (isTRUE(res)) return(TRUE)
+  if (isFALSE(res)) return(FALSE)
+  if (!isTRUE(res$ok)) return(FALSE)
+  if (!is.null(res$bindings)) {
+    for (entry in res$bindings) {
+      cur <- WamRuntime$get_reg(state, entry$idx)
+      if (is.null(cur)) {
+        WamRuntime$put_reg(state, entry$idx, entry$val)
+      } else if (!WamRuntime$unify(state, cur, entry$val)) {
+        return(FALSE)
+      }
+    }
+  }
   TRUE
 }
 

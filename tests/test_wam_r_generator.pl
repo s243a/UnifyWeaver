@@ -19,6 +19,8 @@
 
 :- use_module(library(plunit)).
 :- use_module(library(filesex)).
+:- use_module(library(process)).
+:- use_module(library(readutil)).
 :- use_module('../src/unifyweaver/targets/wam_r_target').
 :- use_module('../src/unifyweaver/targets/wam_r_lowered_emitter').
 :- use_module('../src/unifyweaver/bindings/r_wam_bindings').
@@ -172,6 +174,91 @@ test(list_instructions_emitted) :-
         assertion(sub_string(Code, _, _, _, 'UnifyVariable(')),
         delete_directory_and_contents(TmpDir)
     )).
+
+% ------------------------------------------------------------------
+% Test: foreign-predicate body is replaced by CallForeign + Proceed
+%       and the handler shows up in foreign_handlers
+% ------------------------------------------------------------------
+test(foreign_handler_wiring) :-
+    once((
+        unique_r_tmp_dir('tmp_r_foreign', TmpDir),
+        % r_double/2 is foreign; it is not defined in user: at all.
+        write_wam_r_project(
+            [],
+            [ foreign_predicates([r_double/2]),
+              r_foreign_handlers([
+                handler(r_double/2,
+                  'function(state, args, table) {\n  n <- args[[1]]\n  if (is.null(n) || is.null(n$tag) || n$tag != "int") return(FALSE)\n  list(ok = TRUE, bindings = list(list(idx = 2L, val = IntTerm(2L * n$val))))\n}')
+              ])
+            ],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        % Foreign body is the two-instruction stub: CallForeign + Proceed.
+        assertion(sub_string(Code, _, _, _, 'CallForeign("r_double", 2)')),
+        % Handler is registered against the "pred/arity" key.
+        assertion(sub_string(Code, _, _, _, '"r_double/2" = function(')),
+        % The supplied handler body is verbatim in the file.
+        assertion(sub_string(Code, _, _, _, 'list(ok = TRUE, bindings = list(list(idx = 2L,')),
+        % Top-level wrapper exists too.
+        assertion(sub_string(Code, _, _, _, 'r_double <- function(')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+% ------------------------------------------------------------------
+% Test: end-to-end Rscript dispatch through a foreign handler.
+% Skipped automatically when Rscript is not on PATH, so the suite
+% still passes in environments without R.
+% ------------------------------------------------------------------
+test(foreign_handler_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_foreign_handler_via_rscript
+    ;   true
+    )).
+
+e2e_foreign_handler_via_rscript :-
+    HandlerSrc =
+        'function(state, args, table) {\n  n <- args[[1]]\n  if (is.null(n) || is.null(n$tag) || n$tag != "int") return(FALSE)\n  list(ok = TRUE, bindings = list(list(idx = 2L, val = IntTerm(2L * n$val))))\n}',
+    % Caller predicates ground both args at the call site, so the
+    % foreign handler's output binding must unify with the literal
+    % second arg. check_ok passes 14 (matches 2*7); check_bad passes 99
+    % (does not match) -- this exercises the bindings + unify path
+    % without dragging in arithmetic builtins.
+    assertz((user:check_ok  :- user:r_double(7, 14))),
+    assertz((user:check_bad :- user:r_double(7, 99))),
+    unique_r_tmp_dir('tmp_r_foreign_e2e', TmpDir),
+    write_wam_r_project(
+        [user:check_ok/0, user:check_bad/0],
+        [ foreign_predicates([r_double/2]),
+          r_foreign_handlers([handler(r_double/2, HandlerSrc)])
+        ],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    run_rscript_query(RDir, 'check_ok/0',  OkOut),
+    run_rscript_query(RDir, 'check_bad/0', BadOut),
+    assertion(sub_string(OkOut,  _, _, _, "true")),
+    assertion(sub_string(BadOut, _, _, _, "false")),
+    delete_directory_and_contents(TmpDir).
+
+run_rscript_query(RDir, Query, Out) :-
+    process_create(path('Rscript'),
+                   ['generated_program.R', Query],
+                   [ cwd(RDir),
+                     stdout(pipe(OutStream)),
+                     stderr(pipe(ErrStream)),
+                     process(PID)
+                   ]),
+    read_string(OutStream, _, Out), close(OutStream),
+    read_string(ErrStream, _, _),   close(ErrStream),
+    process_wait(PID, _).
+
+rscript_available :-
+    catch((
+        process_create(path('Rscript'), ['--version'],
+                       [ stdout(null), stderr(null), process(PID) ]),
+        process_wait(PID, exit(0))
+    ), _, fail).
 
 % ------------------------------------------------------------------
 % Test 7: lowered emitter scaffold is loadable and refuses lowering
