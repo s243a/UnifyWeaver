@@ -25,7 +25,7 @@ test(generate_kernels_on_project_emits_runner_and_fact_sidecar) :-
         ),
         cleanup_tmp_dir(TmpDir)).
 
-test(generate_kernels_off_project_omits_fact_sidecar) :-
+test(generate_kernels_off_project_uses_fact_sidecar_with_wam_runner) :-
     setup_call_cleanup(
         unique_tmp_dir('tmp_wam_scala_effective_distance_off', TmpDir),
         (   generate('data/benchmark/dev/facts.pl', TmpDir, accumulated, kernels_off),
@@ -34,7 +34,7 @@ test(generate_kernels_off_project_omits_fact_sidecar) :-
                                 RunnerPath),
             directory_file_path(TmpDir, 'data/category_parent.csv', CsvPath),
             exists_file(RunnerPath),
-            \+ exists_file(CsvPath),
+            exists_file(CsvPath),
             read_file_to_string(RunnerPath, Runner, []),
             sub_string(Runner, _, _, _, 'kernel_mode=kernels_off'),
             sub_string(Runner, _, _, _, 'categoryRootHopsWam(category, root)'),

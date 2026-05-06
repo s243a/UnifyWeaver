@@ -194,13 +194,16 @@ scala_options(OutputDir, kernels_on, DataMode, Options) :-
         intern_atoms(Atoms),
         scala_fact_sources([FactSource])
     ].
-scala_options(_OutputDir, kernels_off, _DataMode, Options) :-
+scala_options(OutputDir, kernels_off, DataMode, Options) :-
+    benchmark_effective_data_mode(category_parent, DataMode, ParentMode),
     benchmark_atoms(Atoms),
+    scala_fact_source_for_category_parent(OutputDir, ParentMode, FactSource),
     Options = [
         package('generated.wam_scala_effective_distance.core'),
         runtime_package('generated.wam_scala_effective_distance.core'),
         module_name('wam-scala-effective-distance'),
-        intern_atoms(Atoms)
+        intern_atoms(Atoms),
+        scala_fact_sources([FactSource])
     ].
 
 scala_fact_source_for_category_parent(_OutputDir, inline, source(category_parent/2, Tuples)) :-
