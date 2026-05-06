@@ -47,6 +47,8 @@
 :- dynamic user:wam_nonvar_unbound/1.
 :- dynamic user:wam_var_guard/1.
 :- dynamic user:wam_var_unbound/1.
+:- dynamic user:wam_compound_guard/1.
+:- dynamic user:wam_compound_unbound/1.
 
 has(Code, Substr) :-
     once(sub_string(Code, _, _, _, Substr)).
@@ -96,6 +98,8 @@ user:wam_unbound_arg(_).
 user:wam_nonvar_unbound(_) :- user:wam_unbound_arg(Y), nonvar(Y).
 user:wam_var_guard(X) :- var(X).
 user:wam_var_unbound(_) :- user:wam_unbound_arg(Y), var(Y).
+user:wam_compound_guard(X) :- compound(X).
+user:wam_compound_unbound(_) :- user:wam_unbound_arg(Y), compound(Y).
 
 :- initialization(main, main).
 
@@ -149,7 +153,9 @@ run_smoke :-
           user:wam_unbound_arg/1,
           user:wam_nonvar_unbound/1,
           user:wam_var_guard/1,
-          user:wam_var_unbound/1
+          user:wam_var_unbound/1,
+          user:wam_compound_guard/1,
+          user:wam_compound_unbound/1
         ],
         [ namespace('generated.wam_exec_test'),
           module_name('wam-clojure-exec-test'),
@@ -174,6 +180,7 @@ run_smoke :-
     assert_lowered_atomic_builtin_emitted(TmpDir),
     assert_lowered_nonvar_builtin_emitted(TmpDir),
     assert_lowered_var_builtin_emitted(TmpDir),
+    assert_lowered_compound_builtin_emitted(TmpDir),
     assert_multiclause_wrappers_runtime_mediated(TmpDir),
     verify_output(TmpDir, 'wam_execute_caller/1', 'a', "true"),
     verify_output(TmpDir, 'wam_execute_caller/1', 'b', "false"),
@@ -248,6 +255,11 @@ run_smoke :-
     verify_output(TmpDir, 'wam_var_guard/1', 42, "false"),
     verify_output(TmpDir, 'wam_var_guard/1', 'f(a)', "false"),
     verify_output(TmpDir, 'wam_var_unbound/1', a, "true"),
+    verify_output(TmpDir, 'wam_compound_guard/1', a, "false"),
+    verify_output(TmpDir, 'wam_compound_guard/1', 42, "false"),
+    verify_output(TmpDir, 'wam_compound_guard/1', 'f(a)', "true"),
+    verify_output(TmpDir, 'wam_compound_guard/1', '[a,b]', "true"),
+    verify_output(TmpDir, 'wam_compound_unbound/1', a, "false"),
     delete_directory_and_contents(TmpDir),
     writeln('wam_clojure_runtime_smoke: ok').
 
@@ -348,6 +360,13 @@ assert_lowered_var_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-var-unbound-1"),
     has(CoreCode, "= value ::lowered-unbound"),
     has(CoreCode, "runtime/logic-var? value").
+
+assert_lowered_compound_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-compound-guard-1"),
+    has(CoreCode, "defn lowered-wam-compound-unbound-1"),
+    has(CoreCode, "runtime/structure-term? value").
 
 assert_multiclause_wrappers_runtime_mediated(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
