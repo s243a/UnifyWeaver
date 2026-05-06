@@ -92,6 +92,16 @@ TARGETS: dict[str, TargetInfo] = {
         "hybrid-wam",
         "Hybrid WAM C effective-distance runner with reference DFS and kernels disabled",
     ),
+    "c-wam-accumulated-lmdb": TargetInfo(
+        "c-wam-accumulated-lmdb",
+        "hybrid-wam",
+        "Hybrid WAM C effective-distance runner with kernels enabled and LMDB fact storage",
+    ),
+    "c-wam-accumulated-no-kernels-lmdb": TargetInfo(
+        "c-wam-accumulated-no-kernels-lmdb",
+        "hybrid-wam",
+        "Hybrid WAM C effective-distance runner with reference DFS, kernels disabled, and LMDB fact storage",
+    ),
     "scala-wam-seeded": TargetInfo(
         "scala-wam-seeded",
         "hybrid-wam",
@@ -250,6 +260,12 @@ KERNEL_TARGET_PAIRS: tuple[KernelPairInfo, ...] = (
         "c-wam-accumulated-no-kernels",
     ),
     KernelPairInfo(
+        "c",
+        "accumulated-lmdb",
+        "c-wam-accumulated-lmdb",
+        "c-wam-accumulated-no-kernels-lmdb",
+    ),
+    KernelPairInfo(
         "scala",
         "seeded",
         "scala-wam-seeded",
@@ -323,6 +339,8 @@ TARGET_SETS: dict[str, list[str]] = {
         "go-wam-accumulated-no-kernels",
         "c-wam-accumulated",
         "c-wam-accumulated-no-kernels",
+        "c-wam-accumulated-lmdb",
+        "c-wam-accumulated-no-kernels-lmdb",
         "scala-wam-seeded",
         "scala-wam-seeded-no-kernels",
         "scala-wam-accumulated",

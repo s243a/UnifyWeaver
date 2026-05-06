@@ -13,13 +13,13 @@
 %% generate_wam_c_effective_distance_benchmark.pl
 %%
 %% Generates a small WAM-C effective-distance benchmark project. The generated
-%% C runner loads category_parent/2 facts from TSV, executes the native
+%% C runner loads category_parent/2 facts from TSV or LMDB, executes the native
 %% category_ancestor/4 all-hop collector when kernels are enabled, and includes
 %% a C reference DFS path for kernels_off comparisons.
 %%
 %% Usage:
 %%   swipl -q -s examples/benchmark/generate_wam_c_effective_distance_benchmark.pl -- \
-%%       <facts.pl> <output-dir> [kernels_on|kernels_off]
+%%       <facts.pl> <output-dir> [kernels_on|kernels_off] [facts_tsv|facts_lmdb]
 
 benchmark_workload_path(Path) :-
     source_file(benchmark_workload_path(_), ThisFile),
@@ -30,14 +30,17 @@ main :-
     current_prolog_flag(argv, Argv),
     (   Argv == []
     ->  true
+    ;   Argv = [FactsPath, OutputDir, KernelModeAtom, FactStorageAtom]
+    ->  generate(FactsPath, OutputDir, KernelModeAtom, FactStorageAtom),
+        halt(0)
     ;   Argv = [FactsPath, OutputDir, KernelModeAtom]
-    ->  generate(FactsPath, OutputDir, KernelModeAtom),
+    ->  generate(FactsPath, OutputDir, KernelModeAtom, facts_tsv),
         halt(0)
     ;   Argv = [FactsPath, OutputDir]
     ->  generate(FactsPath, OutputDir, kernels_on),
         halt(0)
     ;   format(user_error,
-               'Usage: ... -- <facts.pl> <output-dir> [kernels_on|kernels_off]~n',
+               'Usage: ... -- <facts.pl> <output-dir> [kernels_on|kernels_off] [facts_tsv|facts_lmdb]~n',
                []),
         halt(1)
     ).
@@ -49,12 +52,13 @@ main :-
 generate(FactsPath, OutputDir, KernelMode) :-
     generate(FactsPath, OutputDir, KernelMode, []).
 
-generate(FactsPath, OutputDir, KernelMode, _Options) :-
+generate(FactsPath, OutputDir, KernelMode, OptionsOrFactStorage) :-
     (   exists_file(FactsPath)
     ->  true
     ;   throw(error(existence_error(source_sink, FactsPath), _))
     ),
     parse_kernel_mode(KernelMode, ParsedMode),
+    parse_fact_storage_option(OptionsOrFactStorage, FactStorage),
     reset_benchmark_predicates,
     benchmark_workload_path(WorkloadPath),
     load_files(user:WorkloadPath, [silent(true), if(true)]),
@@ -77,16 +81,17 @@ generate(FactsPath, OutputDir, KernelMode, _Options) :-
     category_parent_tsv(CategoryParents, CategoryTsv),
     directory_file_path(OutputDir, 'category_parent.tsv', CategoryPath),
     write_text_file(CategoryPath, CategoryTsv),
-    effective_distance_main_code(ParsedMode, Dimension, MaxDepth,
+    maybe_write_lmdb_seeder(FactStorage, OutputDir, CategoryParents),
+    effective_distance_main_code(ParsedMode, FactStorage, Dimension, MaxDepth,
                                  ArticleCategories, RootCategories, MainCode),
     directory_file_path(OutputDir, 'main.c', MainPath),
     write_text_file(MainPath, MainCode),
     directory_file_path(OutputDir, 'README.md', ReadmePath),
-    effective_distance_readme(ParsedMode, Readme),
+    effective_distance_readme(ParsedMode, FactStorage, Readme),
     write_text_file(ReadmePath, Readme),
     format(user_error,
-           '[WAM-C-EffectiveDistance] mode=~w output=~w~n',
-           [ParsedMode, OutputDir]).
+           '[WAM-C-EffectiveDistance] mode=~w fact_storage=~w output=~w~n',
+           [ParsedMode, FactStorage, OutputDir]).
 
 parse_kernel_mode(kernels_on, kernels_on).
 parse_kernel_mode(kernels_off, kernels_off).
@@ -98,6 +103,31 @@ parse_kernel_mode(Atom, Mode) :-
     parse_kernel_mode(String, Mode), !.
 parse_kernel_mode(Atom, _) :-
     throw(error(domain_error(wam_c_kernel_mode, Atom), _)).
+
+parse_fact_storage_option([], facts_tsv).
+parse_fact_storage_option(Options, FactStorage) :-
+    is_list(Options),
+    !,
+    (   memberchk(fact_storage(Raw), Options)
+    ->  parse_fact_storage(Raw, FactStorage)
+    ;   memberchk(Raw, Options),
+        parse_fact_storage(Raw, FactStorage)
+    ->  true
+    ;   FactStorage = facts_tsv
+    ).
+parse_fact_storage_option(Raw, FactStorage) :-
+    parse_fact_storage(Raw, FactStorage).
+
+parse_fact_storage(facts_tsv, facts_tsv).
+parse_fact_storage(facts_lmdb, facts_lmdb).
+parse_fact_storage("facts_tsv", facts_tsv).
+parse_fact_storage("facts_lmdb", facts_lmdb).
+parse_fact_storage(Atom, Mode) :-
+    atom(Atom),
+    atom_string(Atom, String),
+    parse_fact_storage(String, Mode), !.
+parse_fact_storage(Atom, _) :-
+    throw(error(domain_error(wam_c_fact_storage, Atom), _)).
 
 reset_benchmark_predicates :-
     forall(member(Name/Arity,
@@ -148,7 +178,169 @@ category_parent_tsv(Pairs, Tsv) :-
 category_parent_tsv_line(Child-Parent, Line) :-
     format(atom(Line), '~w\t~w\n', [Child, Parent]).
 
-effective_distance_main_code(KernelMode, Dimension, MaxDepth,
+maybe_write_lmdb_seeder(facts_tsv, _OutputDir, _CategoryParents).
+maybe_write_lmdb_seeder(facts_lmdb, OutputDir, CategoryParents) :-
+    length(CategoryParents, RowCount),
+    has_duplicate_child(CategoryParents, HasDuplicate),
+    lmdb_seeder_code(RowCount, HasDuplicate, SeederCode),
+    directory_file_path(OutputDir, 'seed_category_parent_lmdb.c', SeederPath),
+    write_text_file(SeederPath, SeederCode).
+
+has_duplicate_child(Pairs, HasDuplicate) :-
+    pairs_keys(Pairs, Children),
+    msort(Children, Sorted),
+    (   append(_, [Child, Child|_], Sorted)
+    ->  HasDuplicate = 1
+    ;   HasDuplicate = 0
+    ).
+
+lmdb_seeder_code(ExpectedRows, ExpectedDuplicate, Code) :-
+    format(atom(Code),
+'#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include "lmdb.h"
+
+static int mkdir_if_needed(const char *path) {
+    if (mkdir(path, 0775) == 0 || errno == EEXIST) return 1;
+    return 0;
+}
+
+static char *trim_right(char *s) {
+    char *end = s + strlen(s);
+    while (end > s && (end[-1] == 10 || end[-1] == 13 ||
+                       end[-1] == 32 || end[-1] == 9)) {
+        *--end = 0;
+    }
+    return s;
+}
+
+static int put_edge(MDB_txn *txn, MDB_dbi dbi, const char *child, const char *parent) {
+    MDB_val key;
+    MDB_val data;
+    key.mv_size = strlen(child);
+    key.mv_data = (void *)child;
+    data.mv_size = strlen(parent);
+    data.mv_data = (void *)parent;
+    return mdb_put(txn, dbi, &key, &data, 0);
+}
+
+static int seed_from_tsv(MDB_env *env, MDB_dbi dbi, const char *tsv_path) {
+    FILE *file = fopen(tsv_path, "r");
+    if (!file) return 0;
+    MDB_txn *txn = NULL;
+    if (mdb_txn_begin(env, NULL, 0, &txn) != MDB_SUCCESS) {
+        fclose(file);
+        return 0;
+    }
+    char line[1024];
+    int ok = 1;
+    while (fgets(line, sizeof(line), file)) {
+        char *child = line;
+        while (*child == 32 || *child == 9) child++;
+        if (*child == 0 || *child == 10 || *child == 35) continue;
+        char *sep = strchr(child, 9);
+        if (!sep) sep = strchr(child, 32);
+        if (!sep) { ok = 0; break; }
+        *sep = 0;
+        char *parent = sep + 1;
+        while (*parent == 32 || *parent == 9) parent++;
+        trim_right(parent);
+        if (*child == 0 || *parent == 0) { ok = 0; break; }
+        if (put_edge(txn, dbi, child, parent) != MDB_SUCCESS) {
+            ok = 0;
+            break;
+        }
+    }
+    fclose(file);
+    if (!ok) {
+        mdb_txn_abort(txn);
+        return 0;
+    }
+    return mdb_txn_commit(txn) == MDB_SUCCESS;
+}
+
+static int validate_lmdb(MDB_env *env, MDB_dbi dbi) {
+    MDB_txn *txn = NULL;
+    MDB_cursor *cursor = NULL;
+    MDB_val key;
+    MDB_val data;
+    int count = 0;
+    int has_duplicate_key = 0;
+    char previous_key[1024];
+    size_t previous_size = 0;
+    previous_key[0] = 0;
+
+    if (mdb_txn_begin(env, NULL, MDB_RDONLY, &txn) != MDB_SUCCESS) return 0;
+    if (mdb_cursor_open(txn, dbi, &cursor) != MDB_SUCCESS) {
+        mdb_txn_abort(txn);
+        return 0;
+    }
+    int rc = mdb_cursor_get(cursor, &key, &data, MDB_FIRST);
+    while (rc == MDB_SUCCESS) {
+        if (previous_size == key.mv_size &&
+            key.mv_size < sizeof(previous_key) &&
+            memcmp(previous_key, key.mv_data, key.mv_size) == 0) {
+            has_duplicate_key = 1;
+        }
+        if (key.mv_size < sizeof(previous_key)) {
+            memcpy(previous_key, key.mv_data, key.mv_size);
+            previous_key[key.mv_size] = 0;
+            previous_size = key.mv_size;
+        } else {
+            previous_size = 0;
+        }
+        count++;
+        rc = mdb_cursor_get(cursor, &key, &data, MDB_NEXT);
+    }
+    mdb_cursor_close(cursor);
+    mdb_txn_abort(txn);
+    return rc == MDB_NOTFOUND && count == ~w && (~w == 0 || has_duplicate_key);
+}
+
+int main(void) {
+    const char *env_path = "category_parent.lmdb";
+    if (!mkdir_if_needed(env_path)) {
+        fprintf(stderr, "failed to create %%s\\n", env_path);
+        return 1;
+    }
+
+    MDB_env *env = NULL;
+    MDB_txn *txn = NULL;
+    MDB_dbi dbi = 0;
+    int rc = mdb_env_create(&env);
+    if (rc != MDB_SUCCESS) return 2;
+    rc = mdb_env_set_mapsize(env, 10485760);
+    if (rc != MDB_SUCCESS) { mdb_env_close(env); return 3; }
+    rc = mdb_env_open(env, env_path, 0, 0664);
+    if (rc != MDB_SUCCESS) { mdb_env_close(env); return 4; }
+    rc = mdb_txn_begin(env, NULL, 0, &txn);
+    if (rc != MDB_SUCCESS) { mdb_env_close(env); return 5; }
+    rc = mdb_dbi_open(txn, NULL, MDB_CREATE | MDB_DUPSORT, &dbi);
+    if (rc == MDB_SUCCESS) rc = mdb_txn_commit(txn);
+    else mdb_txn_abort(txn);
+    if (rc != MDB_SUCCESS) { mdb_env_close(env); return 6; }
+
+    if (!seed_from_tsv(env, dbi, "category_parent.tsv")) {
+        mdb_dbi_close(env, dbi);
+        mdb_env_close(env);
+        return 7;
+    }
+    if (!validate_lmdb(env, dbi)) {
+        fprintf(stderr, "LMDB category_parent artifact validation failed\\n");
+        mdb_dbi_close(env, dbi);
+        mdb_env_close(env);
+        return 8;
+    }
+    mdb_dbi_close(env, dbi);
+    mdb_env_close(env);
+    return 0;
+}
+', [ExpectedRows, ExpectedDuplicate]).
+
+effective_distance_main_code(KernelMode, FactStorage, Dimension, MaxDepth,
                              ArticleCategories, RootCategories, Code) :-
     c_pair_arrays('ARTICLE_IDS', 'ARTICLE_CATS', ArticleCategories, ArticleArrays),
     pairs_keys(ArticleCategories, ArticleIds0),
@@ -156,6 +348,7 @@ effective_distance_main_code(KernelMode, Dimension, MaxDepth,
     c_string_array('ARTICLE_COUNT', 'ARTICLES', ArticleIds, ArticlesArray),
     c_string_array('ROOT_COUNT', 'ROOTS', RootCategories, RootArray),
     kernel_mode_flag(KernelMode, KernelFlag),
+    fact_source_load_code(FactStorage, LoadCode),
     format(atom(Code),
 '#include <math.h>
 #include <stdio.h>
@@ -243,8 +436,8 @@ int main(void) {
     wam_fact_source_init(&source);
     setup_category_ancestor_4(&state);
 
-    if (!wam_fact_source_load_tsv(&state, &source, "category_parent.tsv")) {
-        fprintf(stderr, "failed to load category_parent.tsv\\n");
+    if (!(~w)) {
+        fprintf(stderr, "failed to load category_parent facts\\n");
         wam_fact_source_close(&source);
         wam_free_state(&state);
         return 1;
@@ -284,7 +477,12 @@ int main(void) {
     wam_free_state(&state);
     return 0;
 }
-', [ArticleArrays, ArticlesArray, RootArray, MaxDepth, MaxDepth, KernelFlag, Dimension, Dimension]).
+', [ArticleArrays, ArticlesArray, RootArray, MaxDepth, LoadCode, MaxDepth, KernelFlag, Dimension, Dimension]).
+
+fact_source_load_code(facts_tsv,
+                      'wam_fact_source_load_tsv(&state, &source, "category_parent.tsv")').
+fact_source_load_code(facts_lmdb,
+                      'wam_fact_source_load_lmdb(&state, &source, "category_parent.lmdb", NULL)').
 
 kernel_mode_flag(kernels_on, 1).
 kernel_mode_flag(kernels_off, 0).
@@ -322,7 +520,8 @@ c_escaped_chars(['\\'|Rest]) --> ['\\', '\\'], c_escaped_chars(Rest).
 c_escaped_chars(['"'|Rest]) --> ['\\', '"'], c_escaped_chars(Rest).
 c_escaped_chars([C|Rest]) --> [C], c_escaped_chars(Rest).
 
-effective_distance_readme(KernelMode, Readme) :-
+effective_distance_readme(KernelMode, FactStorage, Readme) :-
+    build_notes(FactStorage, BuildNotes),
     format(atom(Readme),
 '# WAM-C Effective Distance Benchmark
 
@@ -331,7 +530,7 @@ Generated by `generate_wam_c_effective_distance_benchmark.pl`.
 Build:
 
 ```sh
-gcc -std=c11 -Wall -Wextra -I ../../src/unifyweaver/targets/wam_c_runtime wam_runtime.c lib.c main.c -lm -o wam_c_effective_distance
+~w
 ```
 
 Run:
@@ -341,7 +540,13 @@ Run:
 ```
 
 Kernel mode: `~w`.
-', [KernelMode]).
+Fact storage: `~w`.
+', [BuildNotes, KernelMode, FactStorage]).
+
+build_notes(facts_tsv,
+            'gcc -std=c11 -Wall -Wextra -I ../../src/unifyweaver/targets/wam_c_runtime wam_runtime.c lib.c main.c -lm -o wam_c_effective_distance').
+build_notes(facts_lmdb,
+            'gcc -std=c11 -Wall -Wextra seed_category_parent_lmdb.c -llmdb -o seed_category_parent_lmdb\n./seed_category_parent_lmdb\ngcc -std=c11 -Wall -Wextra -DWAM_C_ENABLE_LMDB -I ../../src/unifyweaver/targets/wam_c_runtime wam_runtime.c lib.c main.c -lm -llmdb -o wam_c_effective_distance').
 
 write_text_file(Path, Content) :-
     setup_call_cleanup(

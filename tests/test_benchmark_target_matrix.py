@@ -85,6 +85,10 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         self.assertIn("scala-wam-seeded-no-kernels", targets)
         self.assertIn("scala-wam-accumulated", targets)
         self.assertIn("scala-wam-accumulated-no-kernels", targets)
+        self.assertIn("c-wam-accumulated", targets)
+        self.assertIn("c-wam-accumulated-no-kernels", targets)
+        self.assertIn("c-wam-accumulated-lmdb", targets)
+        self.assertIn("c-wam-accumulated-no-kernels-lmdb", targets)
         self.assertIn("clojure-wam-accumulated", targets)
         self.assertIn("clojure-wam-accumulated-no-kernels", targets)
         self.assertIn("clojure-wam-seeded", targets)
@@ -175,6 +179,7 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
             ("rust", "lowered"),
             ("go", "accumulated"),
             ("c", "accumulated"),
+            ("c", "accumulated-lmdb"),
             ("scala", "seeded"),
             ("scala", "accumulated"),
             ("clojure", "seeded"),
@@ -212,6 +217,10 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         )
         self.assertIn(
             "scala\tseeded\tscala-wam-seeded\tscala-wam-seeded-no-kernels",
+            text,
+        )
+        self.assertIn(
+            "c\taccumulated-lmdb\tc-wam-accumulated-lmdb\tc-wam-accumulated-no-kernels-lmdb",
             text,
         )
         self.assertIn(

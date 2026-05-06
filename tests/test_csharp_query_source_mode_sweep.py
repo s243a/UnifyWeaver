@@ -10,13 +10,36 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "examples" / "benchmark"))
 
 from benchmark_csharp_query_source_mode_sweep import (  # noqa: E402
+    DEFAULT_WORKLOADS,
+    WORKLOAD_SCRIPTS,
     calibration_failures,
+    parse_args,
     parse_ratio,
     parse_runner_output,
+    parse_workloads,
 )
 
 
 class CSharpQuerySourceModeSweepTests(unittest.TestCase):
+    def test_default_workloads_cover_all_graph_workloads(self) -> None:
+        original_argv = sys.argv
+        try:
+            sys.argv = ["benchmark_csharp_query_source_mode_sweep.py"]
+            args = parse_args()
+        finally:
+            sys.argv = original_argv
+
+        self.assertEqual(args.workloads, DEFAULT_WORKLOADS)
+        self.assertEqual(parse_workloads(args.workloads), list(WORKLOAD_SCRIPTS))
+
+    def test_parse_workloads_all_expands_to_all_graph_workloads(self) -> None:
+        self.assertEqual(parse_workloads("all"), list(WORKLOAD_SCRIPTS))
+        self.assertEqual(parse_workloads(" ALL "), list(WORKLOAD_SCRIPTS))
+
+    def test_parse_workloads_rejects_unknown_workloads(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "unknown workload"):
+            parse_workloads("category-influence,not-a-workload")
+
     def test_parse_runner_output_summarizes_modes_and_registrations(self) -> None:
         output = "\n".join(
             [

@@ -113,6 +113,18 @@ def is_termux_environment() -> bool:
     return "com.termux" in prefix or "termux" in prefix.lower() or "TERMUX_VERSION" in os.environ
 
 
+def c_lmdb_toolchain_available() -> bool:
+    if shutil.which("pkg-config") is None:
+        return False
+    result = subprocess.run(
+        ["pkg-config", "--exists", "lmdb"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
 def scale_sort_key(scale: str) -> tuple[int, str]:
     digits = "".join(ch for ch in scale if ch.isdigit())
     suffix = "".join(ch for ch in scale if not ch.isdigit())
@@ -143,6 +155,10 @@ def available_targets(requested: list[str]) -> list[str]:
     c_wam_targets = {
         "c-wam-accumulated",
         "c-wam-accumulated-no-kernels",
+    }
+    c_wam_lmdb_targets = {
+        "c-wam-accumulated-lmdb",
+        "c-wam-accumulated-no-kernels-lmdb",
     }
     for target in requested:
         if target.startswith("csharp-") and shutil.which("dotnet") is None:
@@ -188,6 +204,12 @@ def available_targets(requested: list[str]) -> list[str]:
             continue
         if target in c_wam_targets and (shutil.which("swipl") is None or shutil.which("gcc") is None):
             print(f"skip {target}: swipl or gcc not found", file=sys.stderr)
+            continue
+        if target in c_wam_lmdb_targets and (shutil.which("swipl") is None or shutil.which("gcc") is None):
+            print(f"skip {target}: swipl or gcc not found", file=sys.stderr)
+            continue
+        if target in c_wam_lmdb_targets and not c_lmdb_toolchain_available():
+            print(f"skip {target}: LMDB C toolchain not found", file=sys.stderr)
             continue
         if target.startswith("clojure-wam-") and (shutil.which("swipl") is None or shutil.which("java") is None):
             print(f"skip {target}: swipl or java not found", file=sys.stderr)
