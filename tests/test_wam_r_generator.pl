@@ -261,6 +261,69 @@ rscript_available :-
     ), _, fail).
 
 % ------------------------------------------------------------------
+% Test: codegen emits BuiltinCall for arithmetic guards (is/2, >/2)
+% ------------------------------------------------------------------
+test(builtin_call_emitted) :-
+    once((
+        unique_r_tmp_dir('tmp_r_builtin', TmpDir),
+        assertz((user:wam_r_double(X, Y) :- Y is X * 2)),
+        assertz((user:wam_r_positive(X) :- X > 0)),
+        write_wam_r_project(
+            [user:wam_r_double/2, user:wam_r_positive/1],
+            [],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("is/2", 2)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall(">/2", 2)')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+% ------------------------------------------------------------------
+% Test: end-to-end Rscript run for arithmetic builtins.
+% Skipped when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(builtin_arith_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_builtin_arith_via_rscript
+    ;   true
+    )).
+
+e2e_builtin_arith_via_rscript :-
+    assertz((user:wam_r_double(X, Y)   :- Y is X * 2)),
+    assertz((user:wam_r_positive(X)    :- X > 0)),
+    assertz((user:wam_r_eq(X, Y)       :- X =:= Y)),
+    assertz((user:wam_r_complex_ok     :- X is 3 * 4 + 1, X =:= 13)),
+    assertz((user:wam_r_complex_bad    :- X is 3 * 4 + 1, X =:= 14)),
+    assertz((user:wam_r_double_ok      :- wam_r_double(7, 14))),
+    assertz((user:wam_r_double_bad     :- wam_r_double(7, 99))),
+    assertz((user:wam_r_pos_ok         :- wam_r_positive(5))),
+    assertz((user:wam_r_pos_bad        :- wam_r_positive(-3))),
+    unique_r_tmp_dir('tmp_r_builtin_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:wam_r_double/2, user:wam_r_positive/1, user:wam_r_eq/2,
+          user:wam_r_complex_ok/0, user:wam_r_complex_bad/0,
+          user:wam_r_double_ok/0, user:wam_r_double_bad/0,
+          user:wam_r_pos_ok/0,    user:wam_r_pos_bad/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    run_rscript_query(RDir, 'wam_r_complex_ok/0',  C1),
+    run_rscript_query(RDir, 'wam_r_complex_bad/0', C2),
+    run_rscript_query(RDir, 'wam_r_double_ok/0',   D1),
+    run_rscript_query(RDir, 'wam_r_double_bad/0',  D2),
+    run_rscript_query(RDir, 'wam_r_pos_ok/0',      P1),
+    run_rscript_query(RDir, 'wam_r_pos_bad/0',     P2),
+    assertion(sub_string(C1, _, _, _, "true")),
+    assertion(sub_string(C2, _, _, _, "false")),
+    assertion(sub_string(D1, _, _, _, "true")),
+    assertion(sub_string(D2, _, _, _, "false")),
+    assertion(sub_string(P1, _, _, _, "true")),
+    assertion(sub_string(P2, _, _, _, "false")),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 7: lowered emitter scaffold is loadable and refuses lowering
 % ------------------------------------------------------------------
 test(lowered_emitter_phase1_stub) :-

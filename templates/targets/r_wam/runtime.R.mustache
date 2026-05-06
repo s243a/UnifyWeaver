@@ -155,18 +155,21 @@ WamRuntime$new_state <- function() {
   s$var_counter <- 0L
   s$halt        <- FALSE                    # set by foreign top-level wrapper
   # Structure read/write state. NULL when no build/scan is active.
-  #   write mode: build_target_reg / build_fid / build_arity / build_args
-  #               (set_*/unify_* in write mode append to build_args; on
-  #                completion the struct is finalized into the target reg).
-  #   read mode:  read_args / read_cursor (1-based)
-  #               (unify_* in read mode consume one arg per step).
-  s$mode               <- NULL
-  s$build_target_reg   <- NULL
-  s$build_fid          <- NULL
-  s$build_arity        <- 0L
-  s$build_args         <- list()
-  s$read_args          <- list()
-  s$read_cursor        <- 1L
+  #   write mode: build_stack -- LIFO of BuildFrame(target_reg, fid,
+  #               arity, args). PutStructure / PutList push; set_* /
+  #               unify_* (in write mode) append to the top frame; when
+  #               top.args reaches top.arity it pops and feeds itself as
+  #               the next arg of the parent frame (or, if no parent,
+  #               writes to top.target_reg and binds any Ref there).
+  #               Stack form is required because nested compound terms
+  #               (e.g. arithmetic like X is 3 * 4 + 1) interleave
+  #               builds of the inner and outer functors.
+  #   read mode:  read_args / read_cursor (1-based) -- unify_* in read
+  #               mode consume one arg per step.
+  s$mode        <- NULL
+  s$build_stack <- list()
+  s$read_args   <- list()
+  s$read_cursor <- 1L
   s
 }
 
@@ -199,38 +202,51 @@ WamRuntime$promote_regs <- function(state) {
 # ----------------------------------------------------------
 # Structure build helpers (write mode)
 # ----------------------------------------------------------
-# Begin a write-mode build for `arity` args of functor `fid`, targeting
-# register `target_reg`. Used by both PutStructure/PutList and the
-# write-mode branch of GetStructure/GetList (when matching against an
-# unbound variable).
+# Push a new write-mode build frame for `arity` args of functor `fid`,
+# targeting register `target_reg`. Used by both PutStructure/PutList and
+# the write-mode branch of GetStructure/GetList (when matching against
+# an unbound variable). Nested PutStructure (arithmetic, list cons,
+# etc.) just push more frames; finalization cascades up the stack.
 WamRuntime$begin_build <- function(state, fid, arity, target_reg) {
-  state$mode             <- "write"
-  state$build_fid        <- as.integer(fid)
-  state$build_arity      <- as.integer(arity)
-  state$build_target_reg <- as.integer(target_reg)
-  state$build_args       <- list()
+  state$mode <- "write"
+  frame <- list(target_reg = as.integer(target_reg),
+                fid        = as.integer(fid),
+                arity      = as.integer(arity),
+                args       = list())
+  state$build_stack <- c(state$build_stack, list(frame))
   invisible(NULL)
 }
 
-# Append an argument to the in-progress build. When the args list reaches
-# the declared arity we materialize the struct and write it to the target
-# register, binding any unbound variable that was previously there.
+# Append an arg to the top build frame. If the top frame is now full,
+# materialize it: bind any unbound var that the target register held
+# (the WAM compiler typically pre-installs a Ref via set_variable so
+# nested structures can reference each other), then write the struct
+# into the target register. The parent frame is *not* auto-fed; the
+# emitter explicitly appends the parent's remaining args via further
+# set_*/unify_* instructions, and the parent sees the inner struct
+# through the bound Ref. Cascading finalize is still required for the
+# rare case where a parent already happens to be at full arity (e.g.
+# trailing finalize after the last explicit set_constant).
 WamRuntime$append_build_arg <- function(state, val) {
-  state$build_args <- c(state$build_args, list(val))
-  if (length(state$build_args) >= state$build_arity) {
-    new_struct <- StructTerm(state$build_fid, state$build_args)
-    cur <- WamRuntime$get_reg(state, state$build_target_reg)
+  n <- length(state$build_stack)
+  if (n == 0L) return(invisible(NULL))
+  top <- state$build_stack[[n]]
+  top$args <- c(top$args, list(val))
+  state$build_stack[[n]] <- top
+  while (n > 0L) {
+    top <- state$build_stack[[n]]
+    if (length(top$args) < top$arity) break
+    state$build_stack <- state$build_stack[-n]
+    new_struct <- StructTerm(top$fid, top$args)
+    cur <- WamRuntime$get_reg(state, top$target_reg)
     cur <- WamRuntime$deref(state, cur)
     if (!is.null(cur) && is.list(cur) && !is.null(cur$tag) && cur$tag == "unbound") {
       WamRuntime$bind(state, cur$name, new_struct)
     }
-    WamRuntime$put_reg(state, state$build_target_reg, new_struct)
-    state$mode             <- NULL
-    state$build_target_reg <- NULL
-    state$build_fid        <- NULL
-    state$build_arity      <- 0L
-    state$build_args       <- list()
+    WamRuntime$put_reg(state, top$target_reg, new_struct)
+    n <- length(state$build_stack)
   }
+  if (length(state$build_stack) == 0L) state$mode <- NULL
   invisible(NULL)
 }
 
@@ -648,10 +664,92 @@ WamRuntime$call_foreign <- function(program, state, pred, arity, tail_call) {
   TRUE
 }
 
+# Recursively evaluate an arithmetic term against the current bindings.
+# Returns a numeric scalar on success or NULL on failure (unbound var,
+# unknown operator, type mismatch). Tagged-list constants resolve to
+# their $val; structures resolve to op(eval(arg1), eval(arg2)). Atoms
+# can be added later (pi, e, ...) but are not supported here.
+WamRuntime$eval_arith <- function(state, term, table) {
+  v <- WamRuntime$deref(state, term)
+  if (is.null(v) || !is.list(v) || is.null(v$tag)) return(NULL)
+  if (v$tag == "int")   return(v$val)
+  if (v$tag == "float") return(v$val)
+  if (v$tag == "unbound") return(NULL)
+  if (v$tag == "struct") {
+    op <- WamRuntime$string_of(table, v$fid)
+    args <- v$args
+    if (length(args) == 1L) {
+      a <- WamRuntime$eval_arith(state, args[[1]], table)
+      if (is.null(a)) return(NULL)
+      return(switch(op,
+        "-"   = -a,
+        "+"   = +a,
+        "abs" = abs(a),
+        NULL
+      ))
+    }
+    if (length(args) == 2L) {
+      a <- WamRuntime$eval_arith(state, args[[1]], table)
+      b <- WamRuntime$eval_arith(state, args[[2]], table)
+      if (is.null(a) || is.null(b)) return(NULL)
+      return(switch(op,
+        "+"   = a + b,
+        "-"   = a - b,
+        "*"   = a * b,
+        "/"   = a / b,
+        "//"  = a %/% b,
+        "mod" = a %% b,
+        "rem" = a - (a %/% b) * b,
+        "min" = min(a, b),
+        "max" = max(a, b),
+        NULL
+      ))
+    }
+  }
+  NULL
+}
+
+# Wrap an R numeric back into a WAM term, keeping integer-ness when the
+# value lands cleanly on an integer (so 6 stays IntTerm(6) instead of
+# FloatTerm(6.0)). This matters for downstream unify_constant matches.
+WamRuntime$arith_to_term <- function(n) {
+  if (is.null(n) || !is.numeric(n)) return(NULL)
+  if (is.finite(n) && n == as.integer(n) && abs(n) < .Machine$integer.max) {
+    IntTerm(as.integer(n))
+  } else {
+    FloatTerm(as.numeric(n))
+  }
+}
+
 WamRuntime$call_builtin <- function(program, state, pred, arity) {
-  # Stub: minimal builtins. Extend as the lowered emitter matures.
-  if (pred == "true" && arity == 0L) return(TRUE)
-  if (pred == "fail" && arity == 0L) return(FALSE)
+  table <- program$intern_table
+  if (pred == "true"  && arity == 0L) return(TRUE)
+  if (pred == "fail"  && arity == 0L) return(FALSE)
+  # is/2: eval A2, unify with A1.
+  if (pred == "is/2" && arity == 2L) {
+    target <- WamRuntime$get_reg(state, 1L)
+    expr   <- WamRuntime$get_reg(state, 2L)
+    n <- WamRuntime$eval_arith(state, expr, table)
+    if (is.null(n)) return(FALSE)
+    res <- WamRuntime$arith_to_term(n)
+    if (is.null(res)) return(FALSE)
+    return(WamRuntime$unify(state, target, res))
+  }
+  # Comparison builtins: eval both args, compare.
+  if (arity == 2L && pred %in% c("=:=/2", "=\\=/2", "</2", ">/2", "=</2", ">=/2")) {
+    a <- WamRuntime$eval_arith(state, WamRuntime$get_reg(state, 1L), table)
+    b <- WamRuntime$eval_arith(state, WamRuntime$get_reg(state, 2L), table)
+    if (is.null(a) || is.null(b)) return(FALSE)
+    return(switch(pred,
+      "=:=/2"  = a == b,
+      "=\\=/2" = a != b,
+      "</2"    = a <  b,
+      ">/2"    = a >  b,
+      "=</2"   = a <= b,
+      ">=/2"   = a >= b,
+      FALSE
+    ))
+  }
   # Unknown builtin -> failure (matches WAM convention).
   FALSE
 }
