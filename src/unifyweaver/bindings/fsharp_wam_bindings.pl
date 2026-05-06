@@ -178,7 +178,8 @@ type WamState =
 
 and BuilderState =
     | BuildStruct of fn: string * reg: int * arity: int * args: Value list
-    | BuildList   of reg: int * items: Value list").
+    | BuildList   of reg: int * items: Value list
+    | ReadArgs    of items: Value list").
 
 % ============================================================================
 % WamContext — cold, read-only context threaded through the run loop
@@ -345,15 +346,60 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
         if List.length args' = arity then
             let str = Str (fn, args')
             let r = Array.copy s.WsRegs
+            let regVal = if reg >= 0 && reg < s.WsRegs.Length then s.WsRegs.[reg] else Unbound -1
             r.[reg] <- str
-            Some { s with
-                     WsPC      = s.WsPC + 1
-                     WsRegs    = r
-                     WsBuilder = None }
+            match derefVar s.WsBindings regVal with
+            | Unbound vid ->
+                Some { s with
+                         WsPC      = s.WsPC + 1
+                         WsRegs    = r
+                         WsBindings= Map.add vid str s.WsBindings
+                         WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
+                         WsTrailLen= s.WsTrailLen + 1
+                         WsBuilder = None }
+            | _ ->
+                Some { s with
+                         WsPC      = s.WsPC + 1
+                         WsRegs    = r
+                         WsBuilder = None }
         else
             Some { s with WsBuilder = Some (BuildStruct (fn, reg, arity, args')) }
     | Some (BuildList (reg, items)) ->
-        Some { s with WsBuilder = Some (BuildList (reg, items @ [value])) }
+        let items' = items @ [value]
+        if List.length items' = 2 then
+            let head = List.item 0 items'
+            let tail = List.item 1 items'
+            let listVal =
+                match tail with
+                | VList t -> VList (head :: t)
+                | _       -> VList [head; tail]
+            let r = Array.copy s.WsRegs
+            let regVal = if reg >= 0 && reg < s.WsRegs.Length then s.WsRegs.[reg] else Unbound -1
+            r.[reg] <- listVal
+            match derefVar s.WsBindings regVal with
+            | Unbound vid ->
+                Some { s with
+                         WsPC      = s.WsPC + 1
+                         WsRegs    = r
+                         WsBindings= Map.add vid listVal s.WsBindings
+                         WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
+                         WsTrailLen= s.WsTrailLen + 1
+                         WsBuilder = None }
+            | _ ->
+                Some { s with
+                         WsPC      = s.WsPC + 1
+                         WsRegs    = r
+                         WsBuilder = None }
+        else
+            Some { s with WsBuilder = Some (BuildList (reg, items')) }
+    | Some (ReadArgs _) -> None
+
+let readNextArg (s: WamState) : (Value * WamState) option =
+    match s.WsBuilder with
+    | Some (ReadArgs (v :: rest)) ->
+        let nextBuilder = match rest with [] -> None | _ -> Some (ReadArgs rest)
+        Some (derefVar s.WsBindings v, { s with WsBuilder = nextBuilder })
+    | _ -> None
 
 /// Arithmetic evaluator over Value terms.
 let rec evalArith (bindings: Map<int, Value>) (v: Value) : float option =

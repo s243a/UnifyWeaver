@@ -745,6 +745,38 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                      WsTrailLen= s.WsTrailLen + 1 }
         | _ -> None
 
+    | GetStructure (fn, arity, ai) ->
+        match getReg ai s with
+        | Some (Str (fn0, args)) when fn0 = fn && List.length args = arity ->
+            Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (ReadArgs args) }
+        | Some (Unbound _) ->
+            Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (BuildStruct (fn, ai, arity, [])) }
+        | _ -> None
+
+    | GetList ai ->
+        match getReg ai s with
+        | Some (VList (h :: t)) ->
+            Some { s with WsPC = s.WsPC + 1
+                           WsBuilder = Some (ReadArgs [h; VList t]) }
+        | Some (Unbound _) ->
+            Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (BuildList (ai, [])) }
+        | _ -> None
+
+    | UnifyVariable xn ->
+        match readNextArg s with
+        | Some (v, s1) -> Some (putReg xn v { s1 with WsPC = s.WsPC + 1 })
+        | None         -> None
+
+    | UnifyValue xn ->
+        match readNextArg s, getReg xn s with
+        | Some (v, s1), Some x -> unifyVal v x s1
+        | _                    -> None
+
+    | UnifyConstant c ->
+        match readNextArg s with
+        | Some (v, s1) -> unifyVal v c s1
+        | None         -> None
+
     | PutConstant (c, ai) ->
         let r = Array.copy s.WsRegs
         r.[ai] <- c
@@ -779,6 +811,12 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         match getReg xn s with
         | Some v -> addToBuilder v s
         | None   -> None
+
+    | SetVariable xn ->
+        let vid = s.WsVarCounter
+        let var = Unbound vid
+        let s1 = putReg xn var { s with WsVarCounter = s.WsVarCounter + 1 }
+        addToBuilder var s1
 
     | SetConstant c -> addToBuilder c s
 
