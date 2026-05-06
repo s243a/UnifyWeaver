@@ -196,12 +196,33 @@ test(compile_lowered_mode_falls_back_for_nondet) :-
 	assertion(sub_string(S, _, _, _, '("try_me_else", "choice_2")')),
 	assertion(\+ sub_string(S, _, _, _, "def pred_choice_1(state)")).
 
-test(compile_all_lowered_mode_build_program_uses_registrars) :-
+test(compile_all_lowered_mode_build_program_uses_registrars, [nondet]) :-
 	WamCode = 'foo/1:\n  get_constant a, 1\n  proceed',
 	wam_python_target:compile_all_predicates([foo/1-WamCode], [emit_mode(lowered)], PythonCode),
 	atom_string(PythonCode, S),
 	assertion(sub_string(S, _, _, _, "register_pred_foo_1(raw_program)")),
 	assertion(sub_string(S, _, _, _, '("call_lowered", pred_foo_1, 1)')).
+
+test(compile_all_lowered_mode_ffi_uses_registrar_prefix) :-
+	wam_python_target:compile_all_predicates(
+		[category_parent/2],
+		[emit_mode(lowered), foreign_predicates([category_parent/2])],
+		PythonCode),
+	atom_string(PythonCode, S),
+	assertion(sub_string(S, _, _, _, "def register_pred_category_parent_2(raw_program)")),
+	assertion(sub_string(S, _, _, _, "register_pred_category_parent_2(raw_program)")).
+
+test(compile_all_lowered_mode_keeps_direct_call_graph_consistent) :-
+	OuterWam = 'outer/1:\n  call inner/1, 1\n  proceed',
+	InnerWam = 'inner/1:\n  try_me_else inner_2\n  get_constant a, 1\n  proceed\ninner_2:\n  trust_me\n  get_constant b, 1\n  proceed',
+	wam_python_target:compile_all_predicates(
+		[outer/1-OuterWam, inner/1-InnerWam],
+		[emit_mode(lowered)],
+		PythonCode),
+	atom_string(PythonCode, S),
+	assertion(\+ sub_string(S, _, _, _, "def pred_outer_1(state)")),
+	assertion(sub_string(S, _, _, _, 'raw_program["outer/1"] = (')),
+	assertion(sub_string(S, _, _, _, '("call", "inner/1", 1)')).
 
 :- end_tests(wam_python_compile).
 
@@ -402,6 +423,12 @@ test(emit_lowered_get_constant, [nondet]) :-
 	Lines \= "",
 	sub_string(Lines, _, _, _, "def pred_foo_1"),
 	sub_string(Lines, _, _, _, "Atom").
+
+test(emit_lowered_get_numeric_constant, [nondet]) :-
+	wam_python_lowered_emitter:emit_lowered_python('foo'/1, [get_constant("10", "1"), proceed], [], Lines),
+	Lines \= "",
+	sub_string(Lines, _, _, _, "Int(10)"),
+	assertion(\+ sub_string(Lines, _, _, _, "Atom(\"10\")")).
 
 test(emit_lowered_def_line, [nondet]) :-
 	% The emitted function starts with a proper def line
@@ -647,6 +674,16 @@ test(runtime_has_register_indexed_atom_fact2_pairs, [nondet]) :-
 test(runtime_has_register_indexed_weighted_edge_triples, [nondet]) :-
 	runtime_py_path(P), read_file_to_string(P, Content, []),
 	sub_string(Content, _, _, _, "def register_indexed_weighted_edge_triples").
+
+test(runtime_choicepoint_saves_one_indexed_argument_registers, [nondet]) :-
+	runtime_py_path(P), read_file_to_string(P, Content, []),
+	sub_string(Content, _, _, _, "state.regs[:n_args + 1]"),
+	sub_string(Content, _, _, _, "state.regs[:cp.n_args + 1]").
+
+test(runtime_choicepoint_discards_younger_frames, [nondet]) :-
+	runtime_py_path(P), read_file_to_string(P, Content, []),
+	sub_string(Content, _, _, _, "del state.stack[cp_index + 1:]"),
+	sub_string(Content, _, _, _, "del state.stack[cp_index:]").
 
 test(runtime_has_call_indexed_atom_fact2_handler, [nondet]) :-
 	runtime_py_path(P), read_file_to_string(P, Content, []),

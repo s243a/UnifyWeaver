@@ -1407,7 +1407,9 @@ is_ffi_predicate(Functor, Arity, Options) :-
 compile_all_predicates([], _Options, "# No predicates compiled\n").
 compile_all_predicates(Predicates, Options, Code) :-
 	Predicates \= [],
-	maplist(compile_one_predicate(Options), Predicates, PredCodes),
+	plan_python_predicates(Predicates, Options, Plans),
+	lowered_route_set(Plans, Options, LoweredSet),
+	maplist(compile_planned_predicate(Options, LoweredSet), Plans, PredCodes),
 	% Collect function names for build_program() registry
 	maplist(pred_func_name(Options), Predicates, FuncNames),
 	build_program_func(FuncNames, BuildProgramCode),
@@ -1423,6 +1425,100 @@ compile_all_predicates(Predicates, Options, Code) :-
 		| PredCodes
 	], '\n\n', PredSection),
 	atomic_list_concat([PredSection, '\n\n', BuildProgramCode], Code).
+
+plan_python_predicates(Predicates, Options, Plans) :-
+	maplist(plan_python_predicate(Options), Predicates, Plans).
+
+plan_python_predicate(Options, _Module:PredSpec, Plan) :- !,
+	plan_python_predicate(Options, PredSpec, Plan).
+plan_python_predicate(Options, Pred/Arity-WamCode, pred_plan(Pred, Arity, WamCode, Kind)) :- !,
+	(   is_ffi_predicate(Pred, Arity, Options)
+	->  Kind = ffi
+	;   Kind = wam
+	).
+plan_python_predicate(Options, Pred/Arity, pred_plan(Pred, Arity, WamCode, Kind)) :-
+	(   is_ffi_predicate(Pred, Arity, Options)
+	->  Kind = ffi,
+	    WamCode = ''
+	;   compile_predicate_to_wam(Pred/Arity, [], WamCode)
+	->  Kind = wam
+	;   WamCode = '',
+	    Kind = missing
+	).
+
+lowered_route_set(Plans, Options, LoweredSet) :-
+	(   option(emit_mode(lowered), Options)
+	->  findall(Pred/Arity,
+	        ( member(pred_plan(Pred, Arity, WamCode, wam), Plans),
+	          lowered_candidate_wam(WamCode)
+	        ),
+	        Candidates0),
+	    sort(Candidates0, Candidates),
+	    fix_lowered_route_set(Candidates, Plans, Options, LoweredSet)
+	;   LoweredSet = []
+	).
+
+lowered_candidate_wam(WamCode) :-
+	parse_wam_text_py(WamCode, Instrs),
+	is_deterministic_pred_py(Instrs).
+
+fix_lowered_route_set(Current, Plans, Options, Final) :-
+	include(lowered_route_supported(Plans, Options, Current), Current, Next0),
+	sort(Next0, Next),
+	(   Next == Current
+	->  Final = Next
+	;   fix_lowered_route_set(Next, Plans, Options, Final)
+	).
+
+lowered_route_supported(Plans, Options, Current, Pred/Arity) :-
+	member(pred_plan(Pred, Arity, WamCode, wam), Plans),
+	parse_wam_text_py(WamCode, Instrs),
+	findall(CalleePred/CalleeArity, direct_wam_call(Instrs, CalleePred/CalleeArity), Calls0),
+	sort(Calls0, Calls),
+	forall(member(CalleePred/CalleeArity, Calls),
+	    ( member(CalleePred/CalleeArity, Current)
+	    ; is_ffi_predicate(CalleePred, CalleeArity, Options)
+	    ; \+ planned_predicate(Plans, CalleePred/CalleeArity)
+	    )).
+
+planned_predicate(Plans, Pred/Arity) :-
+	member(pred_plan(Pred, Arity, _WamCode, Kind), Plans),
+	Kind \= missing.
+
+direct_wam_call(Instrs, Pred/Arity) :-
+	member(Instr, Instrs),
+	(   Instr = call(PredStr, ArityStr)
+	;   Instr = call_foreign(PredStr, ArityStr)
+	),
+	pred_string_indicator(PredStr, ArityStr, Pred/Arity).
+direct_wam_call(Instrs, Pred/Arity) :-
+	member(execute(PredStr), Instrs),
+	pred_string_indicator(PredStr, _ArityStr, Pred/Arity).
+
+pred_string_indicator(PredStr, ArityStr, Pred/Arity) :-
+	atom_string(PredAtom, PredStr),
+	(   sub_atom(PredAtom, B, 1, _, '/')
+	->  sub_atom(PredAtom, 0, B, _, Pred),
+	    B1 is B + 1,
+	    sub_atom(PredAtom, B1, _, 0, ArityAtom),
+	    atom_number(ArityAtom, Arity)
+	;   Pred = PredAtom,
+	    atom_string(ArityAtom0, ArityStr),
+	    atom_number(ArityAtom0, Arity)
+	).
+
+compile_planned_predicate(Options, LoweredSet, pred_plan(Pred, Arity, WamCode, Kind), PredCode) :-
+	(   Kind = ffi
+	->  compile_ffi_stub_predicate(Pred, Arity, Options, PredCode)
+	;   Kind = missing
+	->  atom_string(Pred, PredStr),
+	    format(string(PredCode), '# Could not compile ~w/~w to WAM\n', [PredStr, Arity])
+	;   member(Pred/Arity, LoweredSet)
+	->  compile_lowered_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode)
+	;   option(emit_mode(lowered), Options)
+	->  compile_wam_predicate_to_python(Pred/Arity, WamCode, [registrar_prefix(register_)|Options], PredCode)
+	;   compile_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode)
+	).
 
 %% pred_func_name(+Options, +PredSpec, -FuncName)
 %  Get the Python function name for a predicate (for build_program registry).
@@ -1467,7 +1563,7 @@ compile_one_predicate(Options, Pred/Arity-WamCode, PredCode) :-
 	).
 compile_one_predicate(Options, Pred/Arity, PredCode) :-
 	(   is_ffi_predicate(Pred, Arity, Options)
-	->  compile_ffi_stub_predicate(Pred, Arity, PredCode)
+	->  compile_ffi_stub_predicate(Pred, Arity, Options, PredCode)
 	;   (   compile_predicate_to_wam(Pred/Arity, [], WamCode)
 		->  compile_one_predicate(Options, Pred/Arity-WamCode, PredCode)
 		;   atom_string(Pred, PredStr),

@@ -336,7 +336,8 @@ def unify(a: Term, b: Term, state: WamState) -> bool:
 
 def push_choice_point(state: WamState, n_args: int, next_clause: Any) -> None:
     """Create a new choice point, saving argument registers and trail mark."""
-    saved_regs = state.regs[:n_args].copy()
+    # Registers are 1-indexed; include index n_args so A1..An are restored.
+    saved_regs = state.regs[:n_args + 1].copy()
     cp = ChoicePoint(
         n_args=n_args,
         saved_regs=saved_regs,
@@ -352,14 +353,17 @@ def push_choice_point(state: WamState, n_args: int, next_clause: Any) -> None:
 
 def restore_choice_point(state: WamState, next_clause: Any = None) -> None:
     """Backtrack: restore state from current choice point (retry_me_else)."""
-    cp = state.stack[state.b]
+    cp_index = state.b
+    cp = state.stack[cp_index]
     assert isinstance(cp, ChoicePoint)
     # Undo trail
     undo_trail(state, cp.trail_top)
     # Trim heap (dict-based — remove entries >= mark, reset heap_len)
     heap_trim(state, cp.heap_top)
+    # Discard environments/frames younger than the restored choice point.
+    del state.stack[cp_index + 1:]
     # Restore registers
-    state.regs[:cp.n_args] = cp.saved_regs.copy()
+    state.regs[:cp.n_args + 1] = cp.saved_regs.copy()
     state.e = cp.saved_e
     state.cp = cp.saved_cp
     if next_clause is not None:
@@ -367,11 +371,12 @@ def restore_choice_point(state: WamState, next_clause: Any = None) -> None:
 
 def pop_choice_point(state: WamState) -> None:
     """Trust: restore from choice point and remove it (last clause)."""
-    cp = state.stack[state.b]
+    cp_index = state.b
+    cp = state.stack[cp_index]
     assert isinstance(cp, ChoicePoint)
     restore_choice_point(state)
-    # Remove the choice point
-    state.stack.pop()
+    # Remove the choice point and any frames above it.
+    del state.stack[cp_index:]
     state.b = cp.saved_b
 
 
