@@ -274,6 +274,19 @@ for the original Lmdb adaptor.
   checked-in fixture today (`10k`), int-tuple still wins locally
   (`4.270s` vs `14.160s`, same output hash), so the next measurement
   needs a generated or checked-in 50k-adjacent fixture.
+- [x] Add reusable large-scale preparation lifecycle. The benchmark
+  harness now accepts `--build-root` plus `--prepare-only`, and
+  `wam-elixir-lmdb-int-ids` reuses an existing `lmdb_int_ids/data.mdb`
+  instead of recreating it. The helper
+  `examples/benchmark/prepare_effective_distance_large_scales.py`
+  mirrors the Haskell `100k_cats` shape: it can generate `50k_cats`
+  and `100k_cats` from `simplewiki_categories.db`, then prebuild the
+  Elixir int-tuple and LMDB runners/artifacts.
+- [ ] Run the prepared large-scale matrix once the SimpleWiki DB or
+  generated fixtures are available locally:
+  `python3 examples/benchmark/prepare_effective_distance_large_scales.py --scales 50k_cats,100k_cats`
+  followed by
+  `python3 examples/benchmark/benchmark_effective_distance.py --scales 50k_cats,100k_cats --targets wam-elixir-int-tuple,wam-elixir-lmdb-int-ids,haskell-wam-accumulated,wam-rust-accumulated --build-root output/effective-distance-large --repetitions 3`.
 
 ## Driver-side recipe
 

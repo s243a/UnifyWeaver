@@ -107,6 +107,20 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep the temporary build directory for inspection",
     )
+    parser.add_argument(
+        "--build-root",
+        type=Path,
+        default=None,
+        help=(
+            "Persistent build/artifact directory. Use this for larger runs so "
+            "generated projects and Elixir LMDB artifacts can be reused."
+        ),
+    )
+    parser.add_argument(
+        "--prepare-only",
+        action="store_true",
+        help="Build target projects/artifacts, including reusable LMDB stores, but do not run timed benchmarks.",
+    )
     add_csharp_query_source_mode_arg(parser)
     return parser.parse_args()
 
@@ -349,26 +363,32 @@ defmodule LmdbSetup do
   alias WamRuntime.FactSource.LmdbIntIds
 
   def run(facts_dir) do
-    env_path = Path.join(__DIR__, "lmdb_int_ids")
-    File.rm_rf!(env_path)
-    {handle, env} = open_handle(env_path)
+    env_path = Path.expand("../lmdb_int_ids", __DIR__)
 
-    pairs =
-      facts_dir
-      |> Path.join("category_parent.tsv")
-      |> File.stream!()
-      |> Stream.drop(1)
-      |> Stream.map(fn line ->
-        [child, parent] = line |> String.trim() |> String.split("\t")
-        {child, parent}
-      end)
-      |> Enum.to_list()
+    if File.exists?(Path.join(env_path, "data.mdb")) do
+      IO.puts("lmdb_int_ids_reused=true")
+    else
+      File.rm_rf!(env_path)
+      {handle, env} = open_handle(env_path)
 
-    {:ok, result} = LmdbIntIds.ingest_pairs(handle, pairs)
-    Elmdb.env_close(env)
-    IO.puts("lmdb_int_ids_pairs=#{result.pairs_seen}")
-    IO.puts("lmdb_int_ids_new_ids=#{result.new_ids}")
-    IO.puts("lmdb_int_ids_next_id=#{result.next_id}")
+      pairs =
+        facts_dir
+        |> Path.join("category_parent.tsv")
+        |> File.stream!()
+        |> Stream.drop(1)
+        |> Stream.map(fn line ->
+          [child, parent] = line |> String.trim() |> String.split("\t")
+          {child, parent}
+        end)
+        |> Enum.to_list()
+
+      {:ok, result} = LmdbIntIds.ingest_pairs(handle, pairs)
+      Elmdb.env_close(env)
+      IO.puts("lmdb_int_ids_reused=false")
+      IO.puts("lmdb_int_ids_pairs=#{result.pairs_seen}")
+      IO.puts("lmdb_int_ids_new_ids=#{result.new_ids}")
+      IO.puts("lmdb_int_ids_next_id=#{result.next_id}")
+    end
   end
 
   defp open_handle(env_path) do
@@ -408,7 +428,7 @@ defmodule BenchDriver do
     article_cats = facts_dir |> Path.join("article_category.tsv") |> load_tsv()
     seed_cats = article_cats |> Enum.map(fn {_, c} -> c end) |> Enum.uniq() |> Enum.sort()
 
-    env_path = Path.join(__DIR__, "lmdb_int_ids")
+    env_path = Path.expand("../lmdb_int_ids", __DIR__)
     {handle, env} = open_handle(env_path)
     root_id = LmdbIntIds.lookup_id(handle, root)
 
@@ -919,7 +939,7 @@ def scale_sort_key(scale: str) -> tuple[int, str]:
     if not digits:
         return (10**9, scale)
     value = int(digits)
-    multiplier = 1000 if suffix.lower() == "k" else 1
+    multiplier = 1000 if suffix.lower().startswith("k") else 1
     return (value * multiplier, scale)
 
 
@@ -934,10 +954,14 @@ def main() -> int:
         return 1
 
     temp_ctx = None
-    temp_parent = benchmark_temp_parent()
-    if args.keep_temp:
+    if args.build_root is not None:
+        temp_root = args.build_root
+        temp_root.mkdir(parents=True, exist_ok=True)
+    elif args.keep_temp:
+        temp_parent = benchmark_temp_parent()
         temp_root = Path(tempfile.mkdtemp(prefix="uw-effective-distance-", dir=temp_parent))
     else:
+        temp_parent = benchmark_temp_parent()
         temp_ctx = tempfile.TemporaryDirectory(prefix="uw-effective-distance-", dir=temp_parent)
         temp_root = Path(temp_ctx.name)
     try:
@@ -1029,6 +1053,9 @@ def main() -> int:
                     command = build_prolog_effective_semantic(temp_root, scale)
                 else:
                     command = commands[target]
+                if args.prepare_only:
+                    print(f"prepared {scale}/{target}: {' '.join(command)}", file=sys.stderr)
+                    continue
                 if target == "csharp-query":
                     for source_mode in csharp_query_source_modes:
                         artifact_dir = temp_root / "artifacts" / target / source_mode / scale
@@ -1053,8 +1080,11 @@ def main() -> int:
                         )
                     )
 
-        print_summary(results)
-        if args.keep_temp:
+        if args.prepare_only:
+            print(f"prepared build directory: {temp_root}", file=sys.stderr)
+        else:
+            print_summary(results)
+        if args.keep_temp or args.build_root is not None:
             print(f"kept temp build directory: {temp_root}", file=sys.stderr)
         return 0
     finally:
