@@ -31,6 +31,8 @@ WORKLOAD_SCRIPTS = {
     "weighted-shortest-path": BENCHMARK_DIR / "benchmark_weighted_shortest_path_cross_target.py",
 }
 
+DEFAULT_WORKLOADS = "all"
+
 
 @dataclass
 class SourceModeSummary:
@@ -48,8 +50,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--workloads",
-        default="category-influence,dependency-depth",
-        help="Comma-separated workloads, or 'all'.",
+        default=DEFAULT_WORKLOADS,
+        help="Comma-separated workloads, or 'all' for every registered graph workload.",
     )
     parser.add_argument("--scales", default="300")
     parser.add_argument(
