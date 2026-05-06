@@ -325,20 +325,22 @@ e2e_builtin_arith_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
-% Test: lowered emitter exports + lowerability semantics (Phase 2)
+% Test: lowered emitter exports + lowerability semantics (Phase 3)
 % ------------------------------------------------------------------
-test(lowered_emitter_phase2) :-
+test(lowered_emitter_phase3) :-
     assertion(current_predicate(wam_r_lowered_emitter:wam_r_lowerable/3)),
     assertion(current_predicate(wam_r_lowered_emitter:lower_predicate_to_r/4)),
     assertion(current_predicate(wam_r_lowered_emitter:r_lowered_func_name/2)),
-    % Multi-clause predicates are not lowerable (need backtracking).
+    % Multi-clause predicates are now lowerable as multi_clause_1
+    % (clause 1 inline + fallback to the array path on failure).
     compile_predicate_to_wam_string(user:wam_r_choice_fact/1, ChoiceWam),
-    \+ wam_r_lowered_emitter:wam_r_lowerable(user:wam_r_choice_fact/1,
-                                             ChoiceWam, _),
-    % Single-clause deterministic rule is lowerable.
+    once(wam_r_lowered_emitter:wam_r_lowerable(user:wam_r_choice_fact/1,
+                                               ChoiceWam, multi_clause_1)),
+    % Single-clause deterministic rule is lowered with reason
+    % `deterministic`.
     compile_predicate_to_wam_string(user:wam_r_caller/1, CallerWam),
-    wam_r_lowered_emitter:wam_r_lowerable(user:wam_r_caller/1,
-                                          CallerWam, deterministic).
+    once(wam_r_lowered_emitter:wam_r_lowerable(user:wam_r_caller/1,
+                                               CallerWam, deterministic)).
 
 compile_predicate_to_wam_string(Pred, WamStr) :-
     wam_target:compile_predicate_to_wam(Pred, [], WamCode),
@@ -383,20 +385,27 @@ test(emit_mode_functions_lowers_caller) :-
     )).
 
 % ------------------------------------------------------------------
-% Test: multi-clause predicates fall back to interpreter even under
-%       emit_mode(functions).
+% Test: multi-clause predicates lower to a multi_clause_1 wrapper
+%       (clause 1 inline; backtrack into the array path on failure).
 % ------------------------------------------------------------------
-test(emit_mode_functions_skips_multi_clause) :-
+test(emit_mode_functions_lowers_multi_clause) :-
     once((
-        unique_r_tmp_dir('tmp_r_mode_skip', TmpDir),
+        unique_r_tmp_dir('tmp_r_mode_multi', TmpDir),
         write_wam_r_project(
             [user:wam_r_choice_fact/1],
             [emit_mode(functions)],
             TmpDir),
         directory_file_path(TmpDir, 'R/generated_program.R', Program),
         read_file_to_string(Program, Code, []),
-        assertion(\+ sub_string(Code, _, _, _, 'lowered_wam_r_choice_fact_1')),
-        assertion(sub_string(Code, _, _, _, 'WamRuntime$run_predicate(shared_program,')),
+        % Lowered fn definition exists.
+        assertion(sub_string(Code, _, _, _, 'lowered_wam_r_choice_fact_1 <- function(program, state)')),
+        % multi_clause_1 marker is in the comment header.
+        assertion(sub_string(Code, _, _, _, 'multi-clause; clause 1 inline, fall back to array')),
+        % Clause-1 closure structure is in place.
+        assertion(sub_string(Code, _, _, _, 'clause1_ok <- (function() {')),
+        assertion(sub_string(Code, _, _, _, 'WamRuntime$backtrack(state)')),
+        % Wrapper points at the lowered fn.
+        assertion(sub_string(Code, _, _, _, 'isTRUE(lowered_wam_r_choice_fact_1(shared_program, state))')),
         delete_directory_and_contents(TmpDir)
     )).
 
@@ -434,6 +443,80 @@ e2e_lowered_via_rscript :-
     run_rscript_query(RDir, 'e2e_bad/0', BadOut),
     assertion(sub_string(OkOut,  _, _, _, "true")),
     assertion(sub_string(BadOut, _, _, _, "false")),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% Phase 3: native per-instruction inlining replaces step delegation
+% for the simple register ops (allocate, deallocate, put_constant,
+% put_variable, put_value, get_variable). Verify the codegen actually
+% emits the inline form and stops emitting WamRuntime$step for them.
+% ------------------------------------------------------------------
+test(phase3_inlines_simple_ops) :-
+    once((
+        % p3_dual(X) :- p3_a(X), p3_b(X). forces variable preservation
+        % across two calls, so the WAM emits get_variable + put_value
+        % rather than optimizing them away. p3_a/p3_b are stubs solely
+        % to give the call sites a target.
+        assertz(user:p3_a(_)),
+        assertz(user:p3_b(_)),
+        assertz((user:p3_dual(X) :- user:p3_a(X), user:p3_b(X))),
+        unique_r_tmp_dir('tmp_r_inline', TmpDir),
+        write_wam_r_project(
+            [user:p3_dual/1, user:p3_a/1, user:p3_b/1],
+            [emit_mode(functions)],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        % Inline put_reg/get_reg replaces step delegation for put_value
+        % and get_variable.
+        assertion(sub_string(Code, _, _, _, 'WamRuntime$put_reg(state, 201, WamRuntime$get_reg(state, 1))')),
+        assertion(sub_string(Code, _, _, _, 'WamRuntime$put_reg(state, 1, WamRuntime$get_reg(state, 201))')),
+        % Allocate inlines as a direct stack push.
+        assertion(sub_string(Code, _, _, _, 'state$stack <- c(state$stack, list(list(cp = state$cp')),
+        % And we no longer see the step-dispatch wrapper for these ops.
+        assertion(\+ sub_string(Code, _, _, _, 'WamRuntime$step(program, state, Allocate())')),
+        assertion(\+ sub_string(Code, _, _, _, 'WamRuntime$step(program, state, GetVariable')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+% ------------------------------------------------------------------
+% Phase 3 e2e: multi-clause lowered fact + backtracking. Clause 1
+% matches `a`; for `b` and `c` we should backtrack into clause 2/3.
+% ------------------------------------------------------------------
+test(phase3_multi_clause_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_phase3_multi_clause
+    ;   true
+    )).
+
+e2e_phase3_multi_clause :-
+    assertz(user:p3_fact(a)),
+    assertz(user:p3_fact(b)),
+    assertz(user:p3_fact(c)),
+    assertz((user:p3_a :- user:p3_fact(a))),
+    assertz((user:p3_b :- user:p3_fact(b))),
+    assertz((user:p3_c :- user:p3_fact(c))),
+    assertz((user:p3_z :- user:p3_fact(z))),
+    unique_r_tmp_dir('tmp_r_phase3_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:p3_fact/1,
+          user:p3_a/0, user:p3_b/0, user:p3_c/0, user:p3_z/0 ],
+        [emit_mode(functions)],
+        TmpDir),
+    directory_file_path(TmpDir, 'R/generated_program.R', Program),
+    read_file_to_string(Program, Code, []),
+    % p3_fact/1 should be lowered as multi_clause_1.
+    assertion(sub_string(Code, _, _, _, 'lowered_p3_fact_1 <- function(program, state)')),
+    directory_file_path(TmpDir, 'R', RDir),
+    run_rscript_query(RDir, 'p3_a/0', A),  % matches clause 1
+    run_rscript_query(RDir, 'p3_b/0', B),  % must backtrack to clause 2
+    run_rscript_query(RDir, 'p3_c/0', C),  % must backtrack to clause 3
+    run_rscript_query(RDir, 'p3_z/0', Z),  % all three clauses fail
+    assertion(sub_string(A, _, _, _, "true")),
+    assertion(sub_string(B, _, _, _, "true")),
+    assertion(sub_string(C, _, _, _, "true")),
+    assertion(sub_string(Z, _, _, _, "false")),
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------

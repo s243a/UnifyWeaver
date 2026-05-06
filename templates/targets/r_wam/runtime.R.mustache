@@ -429,9 +429,13 @@ WamRuntime$step <- function(program, state, instr) {
       state$pc <- state$pc + 1L; TRUE
     },
     "RetryMeElse" = {
+      # When the dispatcher reaches RetryMeElse via switch_on_constant /
+      # switch_on_structure (for the 3+ clause indexed-jump case), no
+      # choice point has been pushed yet. Be permissive in that case --
+      # mirror TrustMe and just advance. When entered via the standard
+      # try-chain, the CP exists and we update its next_pc as usual.
       n <- length(state$cps)
-      if (n == 0L) return(FALSE)
-      state$cps[[n]]$next_pc <- program$labels[[instr$label]]
+      if (n > 0L) state$cps[[n]]$next_pc <- program$labels[[instr$label]]
       state$pc <- state$pc + 1L; TRUE
     },
     "TrustMe" = {
