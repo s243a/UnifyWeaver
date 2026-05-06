@@ -645,6 +645,50 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                      WsTrailLen= s.WsTrailLen + 1 }
         | _ -> None
 
+    | GetStructure (fn, arity, ai) ->
+        match getReg ai s with
+        | Some (Str (fn0, args)) when fn0 = fn && List.length args = arity ->
+            if arity = 0 then Some { s with WsPC = s.WsPC + 1; WsBuilder = None }
+            else Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (ReadArgs args) }
+        | Some (Unbound vid) when arity = 0 ->
+            let str = Str (fn, [])
+            let r = Array.copy s.WsRegs
+            r.[ai] <- str
+            Some { s with
+                     WsPC      = s.WsPC + 1
+                     WsRegs    = r
+                     WsBindings= Map.add vid str s.WsBindings
+                     WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
+                     WsTrailLen= s.WsTrailLen + 1
+                     WsBuilder = None }
+        | Some (Unbound _) ->
+            Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (BuildStruct (fn, ai, arity, [])) }
+        | _ -> None
+
+    | GetList ai ->
+        match getReg ai s with
+        | Some (VList (h :: t)) ->
+            Some { s with WsPC = s.WsPC + 1
+                           WsBuilder = Some (ReadArgs [h; VList t]) }
+        | Some (Unbound _) ->
+            Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (BuildList (ai, [])) }
+        | _ -> None
+
+    | UnifyVariable xn ->
+        match readNextArg s with
+        | Some (v, s1) -> Some (putReg xn v { s1 with WsPC = s.WsPC + 1 })
+        | None         -> None
+
+    | UnifyValue xn ->
+        match readNextArg s, getReg xn s with
+        | Some (v, s1), Some x -> unifyVal v x s1
+        | _                    -> None
+
+    | UnifyConstant c ->
+        match readNextArg s with
+        | Some (v, s1) -> unifyVal v c s1
+        | None         -> None
+
     | PutConstant (c, ai) ->
         let r = Array.copy s.WsRegs
         r.[ai] <- c
@@ -679,6 +723,12 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         match getReg xn s with
         | Some v -> addToBuilder v s
         | None   -> None
+
+    | SetVariable xn ->
+        let vid = s.WsVarCounter
+        let var = Unbound vid
+        let s1 = putReg xn var { s with WsVarCounter = s.WsVarCounter + 1 }
+        addToBuilder var s1
 
     | SetConstant c -> addToBuilder c s
 
@@ -724,6 +774,8 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         let ret = s.WsCP
         if ret = 0 then Some { s with WsPC = 0 }
         else Some { s with WsPC = ret; WsCP = 0 }
+
+    | Fail -> None
 
     | Allocate ->
         let frame = { EfSavedCP = s.WsCP; EfYRegs = Map.empty }
@@ -1646,12 +1698,20 @@ wam_instr_to_fsharp(["get_value", Xn, Ai], Fs) :-
     format(string(Fs), 'GetValue (~w, ~w)', [XnI, AiI]).
 wam_instr_to_fsharp(["get_structure", FN, Arity, Ai], Fs) :-
     fs_clean_comma(FN, CFN), fs_clean_comma(Arity, CA), fs_clean_comma(Ai, CAi),
-    (   number_string(ANum, CA) -> true ; ANum = 0 ),
+    (   number_string(ANum, CA) -> true ; throw(error(domain_error(wam_integer, CA), wam_instr_to_fsharp/2)) ),
     fs_reg_name_to_int(CAi, AiI),
     format(string(Fs), 'GetStructure ("~w", ~w, ~w)', [CFN, ANum, AiI]).
 wam_instr_to_fsharp(["get_list", Ai], Fs) :-
     fs_clean_comma(Ai, CAi), fs_reg_name_to_int(CAi, AiI),
     format(string(Fs), 'GetList ~w', [AiI]).
+wam_instr_to_fsharp(["get_nil", Ai], Fs) :-
+    fs_clean_comma(Ai, CAi), fs_reg_name_to_int(CAi, AiI),
+    format(string(Fs), 'GetConstant (Atom "[]", ~w)', [AiI]).
+wam_instr_to_fsharp(["get_integer", N, Ai], Fs) :-
+    fs_clean_comma(N, CN), fs_clean_comma(Ai, CAi),
+    (   number_string(Num, CN) -> true ; throw(error(domain_error(wam_integer, CN), wam_instr_to_fsharp/2)) ),
+    fs_reg_name_to_int(CAi, AiI),
+    format(string(Fs), 'GetConstant (Integer ~w, ~w)', [Num, AiI]).
 wam_instr_to_fsharp(["unify_variable", Xn], Fs) :-
     fs_clean_comma(Xn, CXn), fs_reg_name_to_int(CXn, XnI),
     format(string(Fs), 'UnifyVariable ~w', [XnI]).
@@ -1694,17 +1754,22 @@ wam_instr_to_fsharp(["allocate"], "Allocate").
 wam_instr_to_fsharp(["deallocate"], "Deallocate").
 wam_instr_to_fsharp(["call", P, N], Fs) :-
     fs_clean_comma(P, CP), fs_clean_comma(N, CN),
-    (   number_string(Num, CN) -> true ; Num = 0 ),
+    (   number_string(Num, CN) -> true ; throw(error(domain_error(wam_integer, CN), wam_instr_to_fsharp/2)) ),
     format(string(Fs), 'Call ("~w", ~w)', [CP, Num]).
+wam_instr_to_fsharp(["call_foreign", P, N], Fs) :-
+    fs_clean_comma(P, CP), fs_clean_comma(N, CN),
+    (   number_string(Num, CN) -> true ; throw(error(domain_error(wam_integer, CN), wam_instr_to_fsharp/2)) ),
+    format(string(Fs), 'CallForeign ("~w", ~w)', [CP, Num]).
 wam_instr_to_fsharp(["execute", P], Fs) :-
     format(string(Fs), 'Execute "~w"', [P]).
 wam_instr_to_fsharp(["proceed"], "Proceed").
+wam_instr_to_fsharp(["fail"], "Fail").
 wam_instr_to_fsharp(["jump", Label], Fs) :-
     format(string(Fs), 'Jump "~w"', [Label]).
 wam_instr_to_fsharp(["cut_ite"], "CutIte").
 wam_instr_to_fsharp(["builtin_call", Op, N], Fs) :-
     fs_clean_comma(Op, COp), fs_clean_comma(N, CN),
-    (   number_string(Num, CN) -> true ; Num = 0 ),
+    (   number_string(Num, CN) -> true ; throw(error(domain_error(wam_integer, CN), wam_instr_to_fsharp/2)) ),
     fs_escape_string(COp, ECOp),
     format(string(Fs), 'BuiltinCall ("~w", ~w)', [ECOp, Num]).
 wam_instr_to_fsharp(["try_me_else", Label], Fs) :-
