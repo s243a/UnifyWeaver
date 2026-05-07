@@ -7,6 +7,9 @@
 #include <string.h>
 #include <stdbool.h>
 #include <assert.h>
+#ifdef WAM_C_ENABLE_LMDB
+#include <lmdb.h>
+#endif
 
 #define WAM_HALT -1
 #define WAM_ERR_OOB -2
@@ -14,6 +17,11 @@
 #define WAM_INITIAL_CAP 64
 #define WAM_PRED_HASH_SIZE 256
 #define WAM_ATOM_HASH_SIZE 512
+#define WAM_FOREIGN_HASH_SIZE 256
+#define WAM_CALL_STACK_SIZE 1024
+
+typedef struct WamState WamState;
+typedef bool (*WamForeignHandler)(WamState *state, const char *pred, int arity);
 
 /* Value tag enum */
 typedef enum {
@@ -44,6 +52,7 @@ typedef struct {
     int heap_size;
     int trail_size;
     int stack_size;
+    int call_base_top;
     int arity;
     WamValue a_regs[32]; // Reduced from MAX_REGS to save memory (typical max arity)
 } ChoicePoint;
@@ -73,7 +82,7 @@ typedef enum {
     INSTR_ALLOCATE, INSTR_DEALLOCATE,
     INSTR_TRY_ME_ELSE, INSTR_RETRY_ME_ELSE, INSTR_TRUST_ME,
     INSTR_SWITCH_ON_CONSTANT, INSTR_SWITCH_ON_STRUCTURE, INSTR_SWITCH_ON_TERM,
-    INSTR_BUILTIN_CALL
+    INSTR_BUILTIN_CALL, INSTR_CALL_FOREIGN
 } WamInstrTag;
 
 /* Hash Entry for Indexing */
@@ -91,6 +100,29 @@ typedef struct AtomEntry {
     char *str;
     struct AtomEntry *next;
 } AtomEntry;
+
+typedef struct {
+    const char *name;
+    int arity;
+    WamForeignHandler handler;
+} ForeignEntry;
+
+typedef struct {
+    const char *child;
+    const char *parent;
+} CategoryEdge;
+
+typedef struct {
+    CategoryEdge *edges;
+    int edge_count;
+    int edge_cap;
+} WamFactSource;
+
+typedef struct {
+    int *values;
+    int count;
+    int cap;
+} WamIntResults;
 
 /* Instruction */
 // TODO: Pack these fields into a union keyed on `tag` to reduce memory footprint
@@ -114,7 +146,7 @@ typedef struct {
 } Instruction;
 
 /* WAM state */
-typedef struct {
+struct WamState {
     int P;    // Program Counter
     int CP;   // Continuation Pointer
     int S;    // Structure Pointer
@@ -154,7 +186,20 @@ typedef struct {
 
     /* Interned dynamic atoms */
     AtomEntry *atom_table[WAM_ATOM_HASH_SIZE];
-} WamState;
+
+    /* Foreign predicate handlers */
+    ForeignEntry foreign_hash[WAM_FOREIGN_HASH_SIZE];
+
+    /* First-solution call pruning */
+    int call_bases[WAM_CALL_STACK_SIZE];
+    int call_base_top;
+
+    /* Native category_ancestor kernel data */
+    CategoryEdge *category_edges;
+    int category_edge_count;
+    int category_edge_cap;
+    int category_max_depth;
+};
 
 bool step_wam(WamState* state, Instruction* instr);
 int wam_run(WamState* state);
@@ -162,6 +207,22 @@ void wam_state_init(WamState *state);
 void wam_free_state(WamState *state);
 int wam_run_predicate(WamState *state, const char *pred, WamValue *args, int arity);
 bool wam_execute_builtin(WamState *state, const char *op, int arity);
+bool wam_execute_foreign_predicate(WamState *state, const char *pred, int arity);
+void wam_register_category_parent(WamState *state, const char *child, const char *parent);
+void wam_register_category_ancestor_kernel(WamState *state, const char *pred, int max_depth);
+bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity);
+void wam_fact_source_init(WamFactSource *source);
+void wam_fact_source_close(WamFactSource *source);
+bool wam_fact_source_load_tsv(WamState *state, WamFactSource *source, const char *path);
+bool wam_fact_source_load_lmdb(WamState *state, WamFactSource *source,
+                               const char *env_path, const char *db_name);
+int wam_fact_source_lookup_arg1(WamFactSource *source, const char *arg1,
+                                CategoryEdge *out_edges, int max_edges);
+bool wam_register_category_parent_fact_source(WamState *state, WamFactSource *source);
+void wam_int_results_init(WamIntResults *results);
+void wam_int_results_close(WamIntResults *results);
+bool wam_int_results_push(WamIntResults *results, int value);
+bool wam_collect_category_ancestor_hops(WamState *state, WamIntResults *results);
 
 /* Helpers */
 static inline WamValue val_atom(const char *s) {
@@ -219,6 +280,46 @@ static inline void wam_register_predicate(WamState *state, const char *pred, int
 
 static inline int resolve_predicate(WamState *state, const char *pred) {
     return resolve_predicate_hash(state, pred);
+}
+
+static inline unsigned int wam_foreign_hash(const char *name, int arity) {
+    unsigned int h = wam_hash_string(name);
+    h = ((h << 5) + h) ^ (unsigned int)arity;
+    return h & (WAM_FOREIGN_HASH_SIZE - 1);
+}
+
+static inline void wam_register_foreign_predicate(WamState *state,
+                                                  const char *name,
+                                                  int arity,
+                                                  WamForeignHandler handler) {
+    unsigned int idx = wam_foreign_hash(name, arity);
+    unsigned int probes = 0;
+    while (state->foreign_hash[idx].name != NULL &&
+           (strcmp(state->foreign_hash[idx].name, name) != 0 ||
+            state->foreign_hash[idx].arity != arity) &&
+           probes < WAM_FOREIGN_HASH_SIZE) {
+        idx = (idx + 1) & (WAM_FOREIGN_HASH_SIZE - 1);
+        probes++;
+    }
+    if (probes == WAM_FOREIGN_HASH_SIZE) return;
+    state->foreign_hash[idx].name = name;
+    state->foreign_hash[idx].arity = arity;
+    state->foreign_hash[idx].handler = handler;
+}
+
+static inline WamForeignHandler resolve_foreign_predicate(WamState *state,
+                                                          const char *name,
+                                                          int arity) {
+    unsigned int idx = wam_foreign_hash(name, arity);
+    unsigned int probes = 0;
+    while (state->foreign_hash[idx].name != NULL && probes < WAM_FOREIGN_HASH_SIZE) {
+        if (strcmp(state->foreign_hash[idx].name, name) == 0 &&
+            state->foreign_hash[idx].arity == arity)
+            return state->foreign_hash[idx].handler;
+        idx = (idx + 1) & (WAM_FOREIGN_HASH_SIZE - 1);
+        probes++;
+    }
+    return NULL;
 }
 
 static inline char *wam_strdup(const char *str) {
@@ -291,7 +392,7 @@ static inline void trail_binding(WamState *state, WamValue *cell) {
 static inline WamValue* wam_deref_ptr(WamState *state, WamValue *v) {
     while (v->tag == VAL_REF) {
         WamValue *next = &state->H_array[v->data.ref_addr];
-        if (next->tag == VAL_UNBOUND) break;
+        if (next->tag == VAL_UNBOUND) return next;
         if (next->tag == VAL_REF && next->data.ref_addr == v->data.ref_addr) break;
         v = next;
     }
@@ -367,6 +468,7 @@ static inline void push_choice_point(WamState *state, int next_pc, int arity) {
     cp->heap_size = state->H;
     cp->trail_size = state->TR;
     cp->stack_size = state->E;
+    cp->call_base_top = state->call_base_top;
     
     int save_arity = arity < 32 ? arity : 32;
     cp->arity = save_arity;
@@ -385,6 +487,7 @@ static inline void restore_choice_point(WamState *state, ChoicePoint *cp) {
     state->H = cp->heap_size;
     state->E = cp->stack_size;
     state->CP = cp->cp;
+    state->call_base_top = cp->call_base_top;
     unwind_trail(state, cp->trail_size);
     memcpy(state->A, cp->a_regs, sizeof(WamValue) * cp->arity);
 }
@@ -396,6 +499,11 @@ static inline void pop_choice_point(WamState *state) {
         } else {
             state->HB = 0;
         }
+    }
+}
+static inline void wam_prune_choice_points(WamState *state, int target_b) {
+    while (state->B > target_b) {
+        pop_choice_point(state);
     }
 }
 static inline void update_choice_point(WamState *state, int next_pc) {

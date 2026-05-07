@@ -42,7 +42,7 @@
 :- use_module('../bindings/csharp_bindings').
 :- use_module('../core/pipeline_validation').
 :- use_module(common_generator).
-:- use_module(csharp_native_target).
+:- use_module(csharp_native_target, except([compile_predicate_to_csharp/3])).
 
 % Component system integration (ported from Go target)
 :- use_module('../core/component_registry').

@@ -576,7 +576,7 @@ vbnet_classified_output_goal(Goal, VarMap0, Line, VarMapOut) :-
     ->  ensure_var(VarMap0, Var, VarName, VarMapOut),
         vbnet_arith_expr(ArithExpr, VarMap0, ExprStr),
         format(string(Line), '        Dim ~w = ~w', [VarName, ExprStr])
-    ;   VarName = "_", VarMapOut = VarMap0,
+    ;   VarMapOut = VarMap0,
         Line = "        ' unsupported output goal"
     ).
 

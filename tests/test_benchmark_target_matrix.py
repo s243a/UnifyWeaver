@@ -16,6 +16,7 @@ from benchmark_effective_distance_matrix import (  # noqa: E402
     kernel_pair_delta_rows,
     parse_args,
     print_kernel_pair_deltas,
+    print_summary,
     resolve_requested_targets,
 )
 from benchmark_target_matrix import (  # noqa: E402
@@ -48,6 +49,30 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         self.assertEqual(TARGETS["clojure-wam-seeded"].category, "hybrid-wam")
         self.assertEqual(TARGETS["clojure-wam-seeded-no-kernels"].category, "hybrid-wam")
 
+    def test_clojure_artifact_targets_are_registered_separately(self) -> None:
+        targets = resolve_targets(
+            explicit_targets=None,
+            target_set_names=["clojure-wam-artifact"],
+        )
+
+        self.assertEqual(
+            targets,
+            [
+                "clojure-wam-accumulated",
+                "clojure-wam-accumulated-artifact",
+                "clojure-wam-accumulated-no-kernels",
+                "clojure-wam-accumulated-no-kernels-artifact",
+                "clojure-wam-seeded",
+                "clojure-wam-seeded-artifact",
+                "clojure-wam-seeded-no-kernels",
+                "clojure-wam-seeded-no-kernels-artifact",
+            ],
+        )
+        self.assertEqual(TARGETS["clojure-wam-accumulated-artifact"].category, "hybrid-wam")
+        self.assertEqual(TARGETS["clojure-wam-accumulated-no-kernels-artifact"].category, "hybrid-wam")
+        self.assertEqual(TARGETS["clojure-wam-seeded-artifact"].category, "hybrid-wam")
+        self.assertEqual(TARGETS["clojure-wam-seeded-no-kernels-artifact"].category, "hybrid-wam")
+
     def test_default_hybrid_wam_excludes_clojure_scaffolds(self) -> None:
         targets = resolve_targets(
             explicit_targets=None,
@@ -60,6 +85,10 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         self.assertIn("scala-wam-seeded-no-kernels", targets)
         self.assertIn("scala-wam-accumulated", targets)
         self.assertIn("scala-wam-accumulated-no-kernels", targets)
+        self.assertIn("c-wam-accumulated", targets)
+        self.assertIn("c-wam-accumulated-no-kernels", targets)
+        self.assertIn("c-wam-accumulated-lmdb", targets)
+        self.assertIn("c-wam-accumulated-no-kernels-lmdb", targets)
         self.assertIn("clojure-wam-accumulated", targets)
         self.assertIn("clojure-wam-accumulated-no-kernels", targets)
         self.assertIn("clojure-wam-seeded", targets)
@@ -149,10 +178,14 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
             ("rust", "interpreter"),
             ("rust", "lowered"),
             ("go", "accumulated"),
+            ("c", "accumulated"),
+            ("c", "accumulated-lmdb"),
             ("scala", "seeded"),
             ("scala", "accumulated"),
             ("clojure", "seeded"),
             ("clojure", "accumulated"),
+            ("clojure", "seeded-artifact"),
+            ("clojure", "accumulated-artifact"),
             ("haskell", "interpreter"),
             ("haskell", "lowered"),
         }
@@ -184,6 +217,18 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         )
         self.assertIn(
             "scala\tseeded\tscala-wam-seeded\tscala-wam-seeded-no-kernels",
+            text,
+        )
+        self.assertIn(
+            "c\taccumulated-lmdb\tc-wam-accumulated-lmdb\tc-wam-accumulated-no-kernels-lmdb",
+            text,
+        )
+        self.assertIn(
+            "clojure\tseeded-artifact\tclojure-wam-seeded-artifact\tclojure-wam-seeded-no-kernels-artifact",
+            text,
+        )
+        self.assertIn(
+            "clojure\taccumulated-artifact\tclojure-wam-accumulated-artifact\tclojure-wam-accumulated-no-kernels-artifact",
             text,
         )
 
@@ -246,6 +291,63 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         )
 
         self.assertEqual(rows, [])
+
+    def test_kernel_pair_delta_rows_skip_non_ok_pair_member(self) -> None:
+        rows = kernel_pair_delta_rows(
+            "dev",
+            [
+                RunResult("scala-wam-accumulated", "dev", [1.0], "digest", 42, ""),
+                RunResult(
+                    "scala-wam-accumulated-no-kernels",
+                    "dev",
+                    [10.0],
+                    "",
+                    0,
+                    "",
+                    status="timeout",
+                    message="timed out after 10.000s",
+                ),
+            ],
+        )
+
+        self.assertEqual(rows, [])
+
+    def test_print_summary_reports_bounded_statuses_without_comparisons(self) -> None:
+        output = StringIO()
+        with redirect_stdout(output):
+            print_summary(
+                [
+                    RunResult("prolog-accumulated", "dev", [0.1], "a", 10, ""),
+                    RunResult(
+                        "scala-wam-accumulated-no-kernels",
+                        "dev",
+                        [10.0],
+                        "",
+                        0,
+                        "",
+                        status="timeout",
+                        message="timed out after 10.000s",
+                    ),
+                    RunResult(
+                        "c-wam-accumulated-no-kernels",
+                        "dev",
+                        [0.5],
+                        "",
+                        0,
+                        "",
+                        status="compile_only",
+                        message="generated/built but not executed",
+                    ),
+                ],
+                "prolog-accumulated",
+            )
+
+        text = output.getvalue()
+        self.assertIn("scale\ttarget\tcategory\tstatus\tmedian_s", text)
+        self.assertIn("dev\tscala-wam-accumulated-no-kernels\thybrid-wam\ttimeout", text)
+        self.assertIn("dev\tc-wam-accumulated-no-kernels\thybrid-wam\tcompile_only", text)
+        self.assertNotIn("all_outputs", text)
+        self.assertNotIn("speedup_vs_prolog-accumulated", text)
 
     def test_print_kernel_pair_deltas_emits_one_table_for_all_scales(self) -> None:
         output = StringIO()

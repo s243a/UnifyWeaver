@@ -280,6 +280,34 @@ clojure_direct_builtin("fail/0", "0").
 clojure_direct_builtin("fail/0", 0).
 clojure_direct_builtin('fail/0', "0").
 clojure_direct_builtin('fail/0', 0).
+clojure_direct_builtin("atom/1", "1").
+clojure_direct_builtin("atom/1", 1).
+clojure_direct_builtin('atom/1', "1").
+clojure_direct_builtin('atom/1', 1).
+clojure_direct_builtin("integer/1", "1").
+clojure_direct_builtin("integer/1", 1).
+clojure_direct_builtin('integer/1', "1").
+clojure_direct_builtin('integer/1', 1).
+clojure_direct_builtin("number/1", "1").
+clojure_direct_builtin("number/1", 1).
+clojure_direct_builtin('number/1', "1").
+clojure_direct_builtin('number/1', 1).
+clojure_direct_builtin("atomic/1", "1").
+clojure_direct_builtin("atomic/1", 1).
+clojure_direct_builtin('atomic/1', "1").
+clojure_direct_builtin('atomic/1', 1).
+clojure_direct_builtin("nonvar/1", "1").
+clojure_direct_builtin("nonvar/1", 1).
+clojure_direct_builtin('nonvar/1', "1").
+clojure_direct_builtin('nonvar/1', 1).
+clojure_direct_builtin("var/1", "1").
+clojure_direct_builtin("var/1", 1).
+clojure_direct_builtin('var/1', "1").
+clojure_direct_builtin('var/1', 1).
+clojure_direct_builtin("compound/1", "1").
+clojure_direct_builtin("compound/1", 1).
+clojure_direct_builtin('compound/1', "1").
+clojure_direct_builtin('compound/1', 1).
 clojure_direct_builtin("!/0", "0").
 clojure_direct_builtin("!/0", 0).
 clojure_direct_builtin('!/0', "0").
@@ -290,6 +318,35 @@ clojure_terminal_builtin("fail/0", 0).
 clojure_terminal_builtin('fail/0', "0").
 clojure_terminal_builtin('fail/0', 0).
 
+clojure_pred_key_direct_builtin(Pred, Op, Arity) :-
+    (   string(Pred) -> PredString = Pred
+    ;   atom(Pred) -> atom_string(Pred, PredString)
+    ),
+    split_string(PredString, "/", "", [Name, ArityString]),
+    number_string(Arity, ArityString),
+    format(string(Op), "~w/~w", [Name, Arity]),
+    clojure_direct_builtin(Op, Arity).
+
+clojure_unary_guard_test("atom/1", "(runtime/atom-term? value)").
+clojure_unary_guard_test('atom/1', "(runtime/atom-term? value)").
+clojure_unary_guard_test("integer/1", "(integer? value)").
+clojure_unary_guard_test('integer/1', "(integer? value)").
+clojure_unary_guard_test("number/1", "(number? value)").
+clojure_unary_guard_test('number/1', "(number? value)").
+clojure_unary_guard_test("atomic/1", "(or (runtime/atom-term? value) (number? value))").
+clojure_unary_guard_test('atomic/1', "(or (runtime/atom-term? value) (number? value))").
+clojure_unary_guard_test("nonvar/1", "(and (not= value ::lowered-unbound) (not (runtime/logic-var? value)))").
+clojure_unary_guard_test('nonvar/1', "(and (not= value ::lowered-unbound) (not (runtime/logic-var? value)))").
+clojure_unary_guard_test("var/1", "(or (= value ::lowered-unbound) (runtime/logic-var? value))").
+clojure_unary_guard_test('var/1', "(or (= value ::lowered-unbound) (runtime/logic-var? value))").
+clojure_unary_guard_test("compound/1", "(runtime/structure-term? value)").
+clojure_unary_guard_test('compound/1', "(runtime/structure-term? value)").
+
+emit_lowered_unary_guard(TestExpr, S, Expr) :-
+    format(atom(Expr),
+           '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if ~w (runtime/advance ~w) (runtime/backtrack ~w)))',
+           [S, S, TestExpr, S, S]).
+
 emit_lowered_expr(proceed, S, Expr) :-
     format(atom(Expr), '(runtime/succeed-state ~w)', [S]).
 emit_lowered_expr(fail, S, Expr) :-
@@ -299,6 +356,13 @@ emit_lowered_expr(call(Pred, _Arity), S, Expr) :-
     format(atom(Expr),
            '(if-let [target-pc (get (:labels ~w) ~w)] (-> ~w (update :stack conj (inc (:pc ~w))) (assoc :pc target-pc)) (runtime/backtrack ~w))',
            [S, PredLit, S, S, S]).
+emit_lowered_expr(execute(Pred), S, Expr) :-
+    clojure_pred_key_direct_builtin(Pred, Op, Arity),
+    !,
+    emit_lowered_expr(builtin_call(Op, Arity), S, BuiltinExpr),
+    format(atom(Expr),
+           '(let [next-state ~w] (if (= :running (:status next-state)) (runtime/succeed-state next-state) next-state))',
+           [BuiltinExpr]).
 emit_lowered_expr(execute(Pred), S, Expr) :-
     clj_lowered_string_literal(Pred, PredLit),
     format(atom(Expr),
@@ -374,6 +438,11 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "fail/0" ; Op == 'fail/0'),
     !,
     format(atom(Expr), '(runtime/backtrack ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    clojure_unary_guard_test(Op, TestExpr),
+    !,
+    emit_lowered_unary_guard(TestExpr, S, Expr).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "!/0" ; Op == '!/0'),

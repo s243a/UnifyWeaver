@@ -363,6 +363,31 @@ test(build_sbt_module_name) :-
         delete_directory_and_contents(TmpDir)
     )).
 
+test(escaped_quoted_atom_tokenizes_as_constant) :-
+    wam_scala_target:wam_line_to_scala_literal(
+        "get_constant 'People\\'s_Republic_of_China' A1",
+        Literal),
+    assertion(sub_string(Literal, _, _, _, 'GetConstant(Atom(')),
+    assertion(\+ sub_string(Literal, _, _, _, 'Raw(')).
+
+test(raw_fallback_escapes_scala_string) :-
+    wam_scala_target:wam_parts_to_scala(["unsupported", "People\\", "s"], Literal),
+    assertion(sub_string(Literal, _, _, _, 'Raw("unsupported People\\\\ s")')).
+
+test(switch_on_constant_preserves_comma_atoms) :-
+    wam_scala_target:wam_line_to_scala_literal(
+        "switch_on_constant 'Washington,_D.C. ':L_one plain:L_two",
+        Literal),
+    assertion(sub_string(Literal, _, _, _, 'SwitchOnConstant(Array(')),
+    assertion(\+ sub_string(Literal, _, _, _, 'Raw(')).
+
+test(switch_on_constant_rejoins_space_before_colon) :-
+    wam_scala_target:wam_line_to_scala_literal(
+        "switch_on_constant 'Academics_from_Washington,_D.C. ' :L_one plain:L_two",
+        Literal),
+    assertion(sub_string(Literal, _, _, _, 'SwitchOnConstant(Array(')),
+    assertion(\+ sub_string(Literal, _, _, _, 'Raw(')).
+
 % ------------------------------------------------------------------
 % Helpers
 % ------------------------------------------------------------------

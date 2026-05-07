@@ -860,7 +860,6 @@ generate_fsharp_fields(Arity, Fields) :-
     atomic_list_concat(FieldList, '\n    ', Fields).
 
 generate_fsharp_fact_entry(Args, Entry) :-
-    length(Args, Arity),
     findall(FieldVal, (
         nth1(N, Args, Arg),
         format(string(FieldVal), 'Arg~w = "~w"', [N, Arg])

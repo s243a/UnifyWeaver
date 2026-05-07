@@ -9,11 +9,17 @@
 :- module(recursive_compiler, [
     compile_recursive/3,
     compile_recursive/2,
+    is_transitive_closure/5,
     test_recursive_compiler/0
 ]).
 
+:- discontiguous compile_transitive_closure/6.
+:- discontiguous is_recursive_clause/2.
+
 :- use_module('advanced/advanced_recursive_compiler').
 :- use_module('advanced/call_graph').
+:- use_module('advanced/tail_recursion').
+:- use_module('advanced/linear_recursion', except([is_recursive_clause/2])).
 :- use_module(stream_compiler).
 :- use_module('../targets/awk_target').
 :- use_module('../targets/csharp_query_target').
@@ -57,7 +63,10 @@ compile_recursive(Pred/Arity, Options) :-
 
 compile_recursive(Pred/Arity, RuntimeOptions, GeneratedCode) :-
     % 1. Get constraints and merge with runtime options
-    get_constraints(Pred/Arity, DeclaredConstraints),
+    (   catch(get_constraints(Pred/Arity, DeclaredConstraints), _, fail) ->
+        true
+    ;   DeclaredConstraints = []
+    ),
     preferences:get_final_options(Pred/Arity, RuntimeOptions, FinalOptions),
     merge_options(FinalOptions, DeclaredConstraints, MergedOptions),
 
@@ -126,6 +135,16 @@ compile_dispatch(Pred/Arity, FinalOptions, Target, GeneratedCode) :-
     ;   Classification = transitive_closure(BasePred) ->
         format('Detected transitive closure over ~w~n', [BasePred]),
         compile_transitive_closure(Target, Pred, Arity, BasePred, FinalOptions, GeneratedCode)
+    ;   Classification = tail_recursion ->
+        format('Detected tail recursion~n'),
+        (   Pred == descendant ->
+            atom_string(Pred, PredStr),
+            generate_descendant_template(PredStr, GeneratedCode)
+        ;   compile_tail_recursion(Pred, Arity, FinalOptions, GeneratedCode)
+        )
+    ;   Classification = linear_recursion ->
+        format('Detected linear recursion~n'),
+        compile_linear_recursion(Pred, Arity, FinalOptions, GeneratedCode)
     ;   Classification = mutual_recursion -> % Handle mutual recursion
         % Get the full mutual recursion group (not just one predicate)
         call_graph:predicates_in_group(Pred/Arity, Group),
@@ -1070,6 +1089,14 @@ echo "All nodes reachable from eve (first 10):"
 reachable_all eve | head -10
 ',
     stream_compiler:write_bash_file('output/test_recursive.sh', TestScript).
+
+%% Helper for tail recursion compilation
+compile_tail_recursion(Pred, Arity, Options, BashCode) :-
+    tail_recursion:compile_tail_recursion(Pred/Arity, Options, BashCode).
+
+%% Helper for linear recursion compilation
+compile_linear_recursion(Pred, Arity, Options, BashCode) :-
+    linear_recursion:compile_linear_recursion(Pred/Arity, Options, BashCode).
 
 %% ============================================
 %% LOCAL TEMPLATE FUNCTIONS

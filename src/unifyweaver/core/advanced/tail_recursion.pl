@@ -38,19 +38,21 @@ compile_tail_recursion(Pred/Arity, Options, Code) :-
     get_constraints(Pred/Arity, Constraints),
     format('  Constraints: ~w~n', [Constraints]),
 
-    % Merge runtime options with constraints
+    % Merge runtime options with constraints for diagnostics/template hooks.
+    % Explicit caller options take precedence when we read an option below.
     append(Options, Constraints, AllOptions),
     format('  Final options: ~w~n', [AllOptions]),
     
     % Determine target (default to bash)
-    (   member(target(Target), AllOptions) -> true
+    (   option_value(target, Options, Constraints, Target) -> true
     ;   Target = bash
     ),
     format('  Target: ~w~n', [Target]),
 
     % Apply unique constraint optimization
     % Tail recursive predicates with unique(true) can exit after first result
-    (   member(unique(true), AllOptions) ->
+    (   option_value(unique, Options, Constraints, UniqueValue),
+        UniqueValue == true ->
         format('  Applying unique constraint optimization~n', []),
         ExitAfterResult = true
     ;   ExitAfterResult = false
@@ -71,6 +73,18 @@ compile_tail_recursion(Pred/Arity, Options, Code) :-
     ;   format('Error: No tail recursion support for target ~w~n', [Target]),
         fail
     ).
+
+%% option_value(+Key, +Options, +Constraints, -Value)
+%  Resolve an option with explicit caller options taking precedence over
+%  declared/default constraints.
+option_value(Key, Options, _Constraints, Value) :-
+    Term =.. [Key, Value],
+    member(Term, Options),
+    !.
+option_value(Key, _Options, Constraints, Value) :-
+    Term =.. [Key, Value],
+    member(Term, Constraints),
+    !.
 
 %% ============================================
 %% BASH CODE GENERATORS (registered as multifile)
@@ -127,8 +141,8 @@ generate_ternary_tail_loop(PredStr, AccPos, StepOp, ExitAfterResult, BashCode) :
     step_op_to_bash(StepOp, BashStepOp),
 
     % Generate return statement if unique constraint
-    (   ExitAfterResult = true ->
-        ExitStatement = "        return 0  # Unique constraint: only one result"
+    (   ExitAfterResult == true ->
+        ExitStatement = "    exit 0  # Unique constraint: only one result"
     ;   ExitStatement = ""
     ),
 
@@ -167,13 +181,13 @@ generate_ternary_tail_loop(PredStr, AccPos, StepOp, ExitAfterResult, BashCode) :
         "    else",
         "        echo \"$current_acc\"",
         "    fi",
-        "{{exit_statement}}",
         "}",
         "",
         "# Helper function for common use case",
         "{{pred}}_eval() {",
         "    {{pred}} \"$1\" 0 result",
         "    echo \"$result\"",
+        "    {{exit_statement}}",
         "}"
     ],
 
@@ -187,8 +201,8 @@ generate_ternary_tail_loop(PredStr, AccPos, StepOp, ExitAfterResult, BashCode) :
 %  ExitAfterResult: true if unique constraint applies (exit after first result)
 generate_binary_tail_loop(PredStr, ExitAfterResult, BashCode) :-
     % Generate return statement if unique constraint
-    (   ExitAfterResult = true ->
-        ExitStatement = "    return 0  # Unique constraint: only one result"
+    (   ExitAfterResult == true ->
+        ExitStatement = "exit 0  # Unique constraint: only one result"
     ;   ExitStatement = ""
     ),
 
@@ -216,8 +230,9 @@ generate_binary_tail_loop(PredStr, ExitAfterResult, BashCode) :-
         "    else",
         "        echo \"$count\"",
         "    fi",
-        "{{exit_statement}}",
-        "}"
+        "}",
+        "",
+        "{{exit_statement}}"
     ],
 
     atomic_list_concat(TemplateLines, '\n', Template),

@@ -12,7 +12,9 @@
 :- use_module(library(lists)).
 :- use_module(pattern_matchers).
 :- use_module(linear_recursion).
+:- use_module(tail_recursion).
 :- use_module(tree_recursion).
+:- use_module('../constraint_analyzer').
 
 % Import is_transitive_closure from parent module
 :- use_module('../recursive_compiler', [is_transitive_closure/5]).
@@ -37,6 +39,10 @@ test_regressions :-
 
     % Bonus: Fibonacci exclusion (bug found during Item 3)
     test_fibonacci_exclusion,
+    writeln(''),
+
+    % Constraint/option precedence regressions
+    test_runtime_option_precedence,
     writeln(''),
 
     writeln('=== ALL REGRESSION TESTS PASSED ===').
@@ -194,3 +200,36 @@ test_fibonacci_exclusion :-
     % Test 4b: Document the intended behavior
     % The fix ensures fibonacci is NOT classified as linear
     writeln('  ✓ PASS - Regression test verifies fibonacci has 2 recursive calls').
+
+%% test_runtime_option_precedence
+%  Regression test for explicit caller options overriding declared/default
+%  constraints in advanced recursion compilers.
+test_runtime_option_precedence :-
+    writeln('Regression Test 5: Runtime option precedence'),
+
+    % Tail recursion: unique(false) must suppress the unique exit even though
+    % defaults include unique(true).
+    catch(abolish(tail_override/3), _, true),
+    assertz(user:(tail_override([], Acc, Acc))),
+    assertz(user:(tail_override([_|T], Acc, N) :- Acc1 is Acc + 1, tail_override(T, Acc1, N))),
+    compile_tail_recursion(tail_override/3, [unique(false), target(bash)], TailCode),
+    (   \+ sub_string(TailCode, _, _, _, "Unique constraint") ->
+        writeln('  ✓ PASS - unique(false) suppresses tail-recursion early exit')
+    ;   writeln('  ✗ FAIL - unique(false) should suppress tail-recursion early exit'),
+        fail
+    ),
+
+    % Linear recursion: explicit unique(true) must override a declared
+    % unique(false) constraint and keep memoization enabled.
+    catch(abolish(linear_override/2), _, true),
+    assertz(user:(linear_override(0, 0))),
+    assertz(user:(linear_override(N, S) :- N > 0, N1 is N - 1, linear_override(N1, S1), S is N + S1)),
+    declare_constraint(linear_override/2, [unique(false)]),
+    compile_linear_recursion(linear_override/2, [unique(true), target(bash)], LinearCode),
+    clear_constraints(linear_override/2),
+    (   sub_string(LinearCode, _, _, _, "standard strategy"),
+        \+ sub_string(LinearCode, _, _, _, "Memoization disabled") ->
+        writeln('  ✓ PASS - unique(true) keeps linear-recursion memoization enabled')
+    ;   writeln('  ✗ FAIL - unique(true) should override declared unique(false)'),
+        fail
+    ).

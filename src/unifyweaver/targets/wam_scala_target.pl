@@ -122,14 +122,19 @@ tokenize_wam_line(Line, Tokens) :-
 % tokenize_wam_chars(+Chars, +CurReversed, +TokensReversedAcc, +State, -Tokens)
 tokenize_wam_chars([], [], Acc, _, Tokens) :- !,
     reverse(Acc, Tokens).
-tokenize_wam_chars([], CurR, Acc, _, Tokens) :- !,
+tokenize_wam_chars([], CurR, Acc, outside, Tokens) :- !,
+    reverse(CurR, CurC), string_chars(T0, CurC),
+    strip_operand_comma(T0, T),
+    reverse([T|Acc], Tokens).
+tokenize_wam_chars([], CurR, Acc, inside, Tokens) :- !,
     reverse(CurR, CurC), string_chars(T, CurC),
     reverse([T|Acc], Tokens).
 tokenize_wam_chars([C|Rest], CurR, Acc, outside, Tokens) :-
-    (   (C == ' ' ; C == '\t' ; C == ',')
+    (   (C == ' ' ; C == '\t')
     ->  (   CurR == []
         ->  tokenize_wam_chars(Rest, [], Acc, outside, Tokens)
-        ;   reverse(CurR, CurC), string_chars(T, CurC),
+        ;   reverse(CurR, CurC), string_chars(T0, CurC),
+            strip_operand_comma(T0, T),
             tokenize_wam_chars(Rest, [], [T|Acc], outside, Tokens)
         )
     ;   C == '\''
@@ -141,11 +146,20 @@ tokenize_wam_chars([C|Rest], CurR, Acc, outside, Tokens) :-
     ;   tokenize_wam_chars(Rest, [C|CurR], Acc, outside, Tokens)
     ).
 tokenize_wam_chars([C|Rest], CurR, Acc, inside, Tokens) :-
-    (   C == '\''
+    (   C == '\\',
+        Rest = [Escaped|More]
+    ->  tokenize_wam_chars(More, [Escaped|CurR], Acc, inside, Tokens)
+    ;   C == '\''
     ->  reverse(CurR, CurC), string_chars(T, CurC),
         tokenize_wam_chars(Rest, [], [T|Acc], outside, Tokens)
     ;   tokenize_wam_chars(Rest, [C|CurR], Acc, inside, Tokens)
     ).
+
+strip_operand_comma(Token0, Token) :-
+    sub_string(Token0, _, 1, 0, ","),
+    !,
+    sub_string(Token0, 0, _, 1, Token).
+strip_operand_comma(Token, Token).
 
 % --- Control instructions ---
 % The WAM emitter produces both:
@@ -291,7 +305,8 @@ wam_parts_to_scala(["call_foreign", Pred, ArityStr], Lit) :-
 
 % --- Switch on constant ---
 wam_parts_to_scala(["switch_on_constant" | Cases], Lit) :-
-    parse_switch_cases(Cases, CaseLits),
+    normalize_switch_case_tokens(Cases, NormalizedCases),
+    parse_switch_cases(NormalizedCases, CaseLits),
     atomic_list_concat(CaseLits, ', ', CasesStr),
     format(string(Lit), 'SwitchOnConstant(Array(~w))', [CasesStr]).
 
@@ -327,17 +342,30 @@ wam_parts_to_scala(["end_aggregate", TemplateReg], Lit) :-
 % --- Fallback ---
 wam_parts_to_scala(Parts, Lit) :-
     atomic_list_concat(Parts, ' ', Text),
-    format(string(Lit), 'Raw("~w")', [Text]).
+    scala_string_literal(Text, TextLit),
+    format(string(Lit), 'Raw(~w)', [TextLit]).
 
 %% parse_switch_cases(+Tokens, -CaseLiterals)
 %  Parses switch_on_constant case list into SwitchCase constructor calls.
 %  Each token has the form "value:label" (e.g. "a:default", "b:L_x_2").
 parse_switch_cases([], []).
 parse_switch_cases([Token | Rest], [Lit | More]) :-
-    split_string(Token, ":", "", [ValStr, LabelStr | _]),
+    split_at_first_colon(Token, ValStr, LabelStr),
     intern_scala_atom(ValStr, AtomId),
     format(string(Lit), 'SwitchCase(Atom(~w), "~w")', [AtomId, LabelStr]),
     parse_switch_cases(Rest, More).
+
+normalize_switch_case_tokens([], []).
+normalize_switch_case_tokens([Value, Label0 | Rest], [Token | More]) :-
+    \+ sub_string(Value, _, 1, _, ":"),
+    sub_string(Label0, 0, 1, _, ":"),
+    !,
+    sub_string(Label0, 1, _, 0, Label),
+    string_concat(Value, ":", Prefix),
+    string_concat(Prefix, Label, Token),
+    normalize_switch_case_tokens(Rest, More).
+normalize_switch_case_tokens([Token | Rest], [Token | More]) :-
+    normalize_switch_case_tokens(Rest, More).
 
 %% strip_arity_suffix(+Pred, -Name)
 %  If Pred has the form "name/N", returns "name"; otherwise returns Pred unchanged.
@@ -508,8 +536,27 @@ compile_predicates_for_project(Predicates, Options, AllInstrs, TopLevelLabelEntr
     option(intern_atoms(ExtraAtoms), Options, []),
     forall(member(A, ExtraAtoms),
            (atom_string(A, S), intern_scala_atom(S, _))),
-    compile_all_predicates(Predicates, Options, 0, [], [], [], [], AllInstrs, TopLevelLabelEntries, AllLabelEntries, Wrappers),
+    option(foreign_predicates(ForeignPredicates), Options, []),
+    append_missing_foreign_predicates(Predicates, ForeignPredicates, CompilePredicates),
+    compile_all_predicates(CompilePredicates, Options, 0, [], [], [], [], AllInstrs, TopLevelLabelEntries, AllLabelEntries, Wrappers),
     atomic_list_concat(Wrappers, '\n', WrapperCode).
+
+append_missing_foreign_predicates(Predicates, ForeignPredicates, CompilePredicates) :-
+    findall(Foreign,
+            (   member(Foreign, ForeignPredicates),
+                \+ ( member(Pred, Predicates),
+                     same_predicate_indicator(Pred, Foreign)
+                   )
+            ),
+            MissingForeignPredicates),
+    append(Predicates, MissingForeignPredicates, CompilePredicates).
+
+same_predicate_indicator(Pred0, Pred1) :-
+    predicate_indicator_key(Pred0, Key),
+    predicate_indicator_key(Pred1, Key).
+
+predicate_indicator_key(_Module:Pred/Arity, Pred/Arity) :- !.
+predicate_indicator_key(Pred/Arity, Pred/Arity).
 
 compile_all_predicates([], _, _, Instrs, TopLabels, AllLabels, Wrappers,
                        Instrs, TopLabels, AllLabels, Wrappers).

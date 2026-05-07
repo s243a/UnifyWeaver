@@ -19,16 +19,22 @@
     compile_wam_predicate_to_c/4,     % +Pred/Arity, +WamCode, +Options, -CCode
     wam_instruction_to_c_literal/2,   % +WamInstr, -CCode
     wam_instruction_to_c_literal/3,   % +WamInstr, +LabelMap, -CCode
+    detect_kernels/2,                 % +Predicates, -DetectedKernels
+    generate_setup_detected_kernels_c/2, % +DetectedKernels, -CCode
     write_wam_c_project/3             % +Predicates, +Options, +ProjectDir
 ]).
 
 :- use_module(library(lists)).
 :- use_module(library(option)).
+:- use_module(library(pairs), [pairs_keys/2]).
 
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../core/template_system').
 :- use_module('../bindings/c_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../core/recursive_kernel_detection', [
+    detect_recursive_kernel/4
+]).
 
 % ============================================================================
 % PHASE 4: Hybrid Module Assembly
@@ -38,15 +44,21 @@
 %  Generates a full C project for the given predicates.
 write_wam_c_project(Predicates, Options, ProjectDir) :-
     make_directory_path(ProjectDir),
+    detect_kernels_for_options(Predicates, Options, DetectedKernels),
     % Generate runtime .c and .h files
     compile_wam_runtime_to_c(Options, RuntimeCode),
     directory_file_path(ProjectDir, 'wam_runtime.c', RuntimePath),
     write_file(RuntimePath, RuntimeCode),
 
     % Compile predicates and generate lib.c
-    compile_predicates_for_project(Predicates, Options, PredicatesCode),
+    pairs_keys(DetectedKernels, DetectedKeys),
+    generate_setup_detected_kernels_c(DetectedKernels, SetupKernelCode),
+    compile_predicates_for_project(Predicates, [detected_kernel_keys(DetectedKeys)|Options],
+                                   PredicatesCode),
+    format(atom(LibCode), '#include "wam_runtime.h"~n~n~w~n~n~w',
+           [SetupKernelCode, PredicatesCode]),
     directory_file_path(ProjectDir, 'lib.c', LibPath),
-    write_file(LibPath, PredicatesCode),
+    write_file(LibPath, LibCode),
 
     format('WAM C project created at: ~w~n', [ProjectDir]).
 
@@ -62,7 +74,13 @@ write_file(Path, Content) :-
 compile_predicates_for_project([], _, "").
 compile_predicates_for_project([PredIndicator|Rest], Options, Code) :-
     predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
-    (   wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode)
+    format(atom(Key), '~w/~w', [Pred, Arity]),
+    option(detected_kernel_keys(DetectedKeys), Options, []),
+    (   memberchk(Key, DetectedKeys)
+    ->  format(atom(WamCode), '~w/~w:\n    call_foreign ~w, ~w\n    proceed',
+               [Pred, Arity, Key, Arity]),
+        compile_wam_predicate_to_c(Module:Pred/Arity, WamCode, Options, PredCode)
+    ;   wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode)
     ->  compile_wam_predicate_to_c(Module:Pred/Arity, WamCode, Options, PredCode)
     ;   format(atom(PredCode), '// ~w/~w: compilation failed', [Pred, Arity])
     ),
@@ -71,6 +89,62 @@ compile_predicates_for_project([PredIndicator|Rest], Options, Code) :-
 
 predicate_indicator_parts(Module:Pred/Arity, Module, Pred, Arity) :- !.
 predicate_indicator_parts(Pred/Arity, user, Pred, Arity).
+
+detect_kernels_for_options(Predicates, Options, DetectedKernels) :-
+    (   option(no_kernels(true), Options)
+    ->  DetectedKernels = [],
+        format(user_error, '[WAM-C] kernel detection suppressed~n', [])
+    ;   detect_kernels(Predicates, DetectedKernels),
+        (   DetectedKernels \= []
+        ->  pairs_keys(DetectedKernels, DetectedKeys),
+            format(user_error, '[WAM-C] detected kernels: ~w~n', [DetectedKeys])
+        ;   true
+        )
+    ).
+
+%% detect_kernels(+Predicates, -DetectedKernels)
+%  Run the shared recursive-kernel detector over project predicates.
+detect_kernels([], []).
+detect_kernels([PI|Rest], Kernels) :-
+    predicate_indicator_parts(PI, _Module, Pred, Arity),
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   Clauses \= [],
+        detect_recursive_kernel(Pred, Arity, Clauses, Kernel),
+        wam_c_supported_kernel(Kernel)
+    ->  format(atom(Key), '~w/~w', [Pred, Arity]),
+        Kernels = [Key-Kernel|RestKernels]
+    ;   Kernels = RestKernels
+    ),
+    detect_kernels(Rest, RestKernels).
+
+wam_c_supported_kernel(recursive_kernel(category_ancestor, _Pred, _ConfigOps)).
+
+%% generate_setup_detected_kernels_c(+DetectedKernels, -CCode)
+%  Emit C startup wiring for detected kernels. This function registers only
+%  native handlers; callers still decide when to load/register fact sources.
+generate_setup_detected_kernels_c([], Code) :- !,
+    Code = 'void setup_detected_wam_c_kernels(WamState* state) {\n    (void)state;\n}'.
+generate_setup_detected_kernels_c(DetectedKernels, Code) :-
+    maplist(wam_c_kernel_registration_line, DetectedKernels, Lines),
+    atomic_list_concat(Lines, '\n', Body),
+    format(atom(Code),
+           'void setup_detected_wam_c_kernels(WamState* state) {\n~w\n}',
+           [Body]).
+
+wam_c_kernel_registration_line(Key-recursive_kernel(category_ancestor, _Pred, ConfigOps), Line) :-
+    wam_c_kernel_max_depth(ConfigOps, MaxDepth),
+    format(atom(Line),
+           '    wam_register_category_ancestor_kernel(state, "~w", ~w);',
+           [Key, MaxDepth]).
+
+wam_c_kernel_max_depth(ConfigOps, MaxDepth) :-
+    (   member(max_depth(MaxDepth0), ConfigOps),
+        integer(MaxDepth0),
+        MaxDepth0 > 0
+    ->  MaxDepth = MaxDepth0
+    ;   MaxDepth = 10
+    ).
 
 % ============================================================================
 % PHASE 2: WAM instructions -> C Struct Literals
@@ -107,6 +181,15 @@ wam_instruction_to_c_literal(get_list(Ai), Code) :-
 wam_instruction_to_c_literal(put_list(Xn), Code) :-
     c_reg_index(Xn, IsY_Xn, XIdx),
     format(atom(Code), '{ .tag = INSTR_PUT_LIST, .reg_xn = ~w, .is_y_xn = ~w }', [XIdx, IsY_Xn]).
+wam_instruction_to_c_literal(set_variable(Xn), Code) :-
+    c_reg_index(Xn, IsY_Xn, XIdx),
+    format(atom(Code), '{ .tag = INSTR_SET_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w }', [XIdx, IsY_Xn]).
+wam_instruction_to_c_literal(set_value(Xn), Code) :-
+    c_reg_index(Xn, IsY_Xn, XIdx),
+    format(atom(Code), '{ .tag = INSTR_SET_VALUE, .reg_xn = ~w, .is_y_xn = ~w }', [XIdx, IsY_Xn]).
+wam_instruction_to_c_literal(set_constant(C), Code) :-
+    c_value_literal(C, Val),
+    format(atom(Code), '{ .tag = INSTR_SET_CONSTANT, .val = ~w }', [Val]).
 wam_instruction_to_c_literal(unify_variable(Xn), Code) :-
     c_reg_index(Xn, IsY_Xn, XIdx),
     format(atom(Code), '{ .tag = INSTR_UNIFY_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w }', [XIdx, IsY_Xn]).
@@ -122,6 +205,8 @@ wam_instruction_to_c_literal(execute(P), Code) :-
     format(atom(Code), '{ .tag = INSTR_EXECUTE, .pred = "~w" }', [P]).
 wam_instruction_to_c_literal(builtin_call(Op, N), Code) :-
     format(atom(Code), '{ .tag = INSTR_BUILTIN_CALL, .pred = "~w", .arity = ~w }', [Op, N]).
+wam_instruction_to_c_literal(call_foreign(P, N), Code) :-
+    format(atom(Code), '{ .tag = INSTR_CALL_FOREIGN, .pred = "~w", .arity = ~w }', [P, N]).
 wam_instruction_to_c_literal(try_me_else(_Label), _) :-
     throw(error(context_error(missing_label_map, "try_me_else/1 requires LabelMap for target_pc resolution. Use wam_instruction_to_c_literal/3 instead."), _)).
 wam_instruction_to_c_literal(retry_me_else(_Label), _) :-
@@ -132,8 +217,8 @@ wam_instruction_to_c_literal(trust_me, '{ .tag = INSTR_TRUST_ME }').
 wam_instruction_to_c_literal(proceed, '{ .tag = INSTR_PROCEED }').
 wam_instruction_to_c_literal(allocate, '{ .tag = INSTR_ALLOCATE }').
 wam_instruction_to_c_literal(deallocate, '{ .tag = INSTR_DEALLOCATE }').
-wam_instruction_to_c_literal(Instr, Code) :-
-    format(atom(Code), '// TODO: ~w', [Instr]).
+wam_instruction_to_c_literal(Instr, _) :-
+    throw(error(wam_c_target_error(unsupported_instruction(Instr)), _)).
 
 wam_instruction_to_c_literal(try_me_else(Label), LabelMap, Code) :-
     ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
@@ -227,6 +312,18 @@ wam_line_to_c_instr(["put_list", Xn], Instr) :-
     clean_comma(Xn, CXn),
     c_reg_index(CXn, IsY, Idx),
     format(atom(Instr), '{ .tag = INSTR_PUT_LIST, .reg_xn = ~w, .is_y_xn = ~w }', [Idx, IsY]).
+wam_line_to_c_instr(["set_variable", Xn], Instr) :-
+    clean_comma(Xn, CXn),
+    c_reg_index(CXn, IsY, Idx),
+    format(atom(Instr), '{ .tag = INSTR_SET_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w }', [Idx, IsY]).
+wam_line_to_c_instr(["set_value", Xn], Instr) :-
+    clean_comma(Xn, CXn),
+    c_reg_index(CXn, IsY, Idx),
+    format(atom(Instr), '{ .tag = INSTR_SET_VALUE, .reg_xn = ~w, .is_y_xn = ~w }', [Idx, IsY]).
+wam_line_to_c_instr(["set_constant", C], Instr) :-
+    clean_comma(C, CC),
+    c_value_literal(CC, Val),
+    format(atom(Instr), '{ .tag = INSTR_SET_CONSTANT, .val = ~w }', [Val]).
 wam_line_to_c_instr(["unify_variable", Xn], Instr) :-
     clean_comma(Xn, CXn),
     c_reg_index(CXn, IsY, Idx),
@@ -248,6 +345,9 @@ wam_line_to_c_instr(["execute", P], Instr) :-
 wam_line_to_c_instr(["builtin_call", Op, N], Instr) :-
     clean_comma(Op, COp), clean_comma(N, CN),
     format(atom(Instr), '{ .tag = INSTR_BUILTIN_CALL, .pred = "~w", .arity = ~w }', [COp, CN]).
+wam_line_to_c_instr(["call_foreign", P, N], Instr) :-
+    clean_comma(P, CP), clean_comma(N, CN),
+    format(atom(Instr), '{ .tag = INSTR_CALL_FOREIGN, .pred = "~w", .arity = ~w }', [CP, CN]).
 wam_line_to_c_instr(["try_me_else", L], LabelMap, Arity, Instr) :-
     clean_comma(L, CL),
     ( member(CL-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
@@ -260,9 +360,8 @@ wam_line_to_c_instr(["trust_me"], _, '{ .tag = INSTR_TRUST_ME }').
 wam_line_to_c_instr(["proceed"], _, '{ .tag = INSTR_PROCEED }').
 wam_line_to_c_instr(["allocate"], _, '{ .tag = INSTR_ALLOCATE }').
 wam_line_to_c_instr(["deallocate"], _, '{ .tag = INSTR_DEALLOCATE }').
-wam_line_to_c_instr(Parts, _, Instr) :-
-    atomic_list_concat(Parts, ' ', Combined),
-    format(atom(Instr), '/* TODO: ~w */ {0}', [Combined]).
+wam_line_to_c_instr(Parts, _, _) :-
+    throw(error(wam_c_target_error(unsupported_instruction_tokens(Parts)), _)).
 
 clean_comma(S, Clean) :-
     (   sub_string(S, _, 1, 0, ",")
@@ -350,7 +449,6 @@ wam_generate_c_instruction(PC, Parts, LabelMap, Arity, CodeLines) :-
         ->  CInstr = CInstr_NoMap
         ;   wam_line_to_c_instr(Parts, LabelMap, CInstr_NoArity)
         ->  CInstr = CInstr_NoArity
-        ;   CInstr = '{0}'
         ),
         format(atom(L0), '    state->code[~w] = (Instruction)~w;', [PC, CInstr]),
         CodeLines = [L0]
@@ -420,7 +518,7 @@ compile_step_wam_to_c(_Options, CCode) :-
 '    bool step_wam(WamState* state, Instruction* instr) {
         switch (instr->tag) {
             case INSTR_GET_CONSTANT: {
-                WamValue *cell = resolve_reg(state, instr->reg, instr->is_y_reg);
+                WamValue *cell = wam_deref_ptr(state, resolve_reg(state, instr->reg, instr->is_y_reg));
                 if (val_is_unbound(*cell)) {
                     trail_binding(state, cell);
                     *cell = instr->val;
@@ -491,13 +589,21 @@ compile_step_wam_to_c(_Options, CCode) :-
                 return true;
             }
             case INSTR_PROCEED: {
-                state->P = state->CP;
+                int continuation = state->CP;
+                if (continuation != WAM_HALT && state->call_base_top > 0) {
+                    int target_b = state->call_bases[--state->call_base_top];
+                    wam_prune_choice_points(state, target_b);
+                }
+                state->P = continuation;
                 return true;
             }
             case INSTR_CALL: {
+                if (state->call_base_top >= WAM_CALL_STACK_SIZE) return false;
+                state->call_bases[state->call_base_top++] = state->B;
                 state->CP = state->P + 1;
                 int target = resolve_predicate_hash(state, instr->pred);
                 if (target >= 0) { state->P = target; return true; }
+                state->call_base_top--;
                 return false;
             }
             case INSTR_EXECUTE: {
@@ -507,6 +613,13 @@ compile_step_wam_to_c(_Options, CCode) :-
             }
             case INSTR_BUILTIN_CALL: {
                 if (wam_execute_builtin(state, instr->pred, instr->arity)) {
+                    state->P++;
+                    return true;
+                }
+                return false;
+            }
+            case INSTR_CALL_FOREIGN: {
+                if (wam_execute_foreign_predicate(state, instr->pred, instr->arity)) {
                     state->P++;
                     return true;
                 }
@@ -695,6 +808,34 @@ compile_step_wam_to_c(_Options, CCode) :-
                 state->P++;
                 return true;
             }
+            case INSTR_SET_VARIABLE: {
+                WamValue *cell = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
+                WamValue ref = wam_make_ref(state);
+                *cell = ref;
+                state->P++;
+                return true;
+            }
+            case INSTR_SET_VALUE: {
+                WamValue *cell = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
+                if (state->H >= state->H_cap) {
+                    state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
+                    state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+                }
+                state->H_array[state->H] = *cell;
+                state->H++;
+                state->P++;
+                return true;
+            }
+            case INSTR_SET_CONSTANT: {
+                if (state->H >= state->H_cap) {
+                    state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
+                    state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+                }
+                state->H_array[state->H] = instr->val;
+                state->H++;
+                state->P++;
+                return true;
+            }
             case INSTR_UNIFY_VARIABLE: {
                 WamValue *cell = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
                 if (state->mode == MODE_READ) {
@@ -802,6 +943,7 @@ void wam_free_state(WamState *state) {
     free(state->TR_array);
     free(state->B_array);
     free(state->E_array);
+    free(state->category_edges);
     memset(state, 0, sizeof(WamState));
 }
 
@@ -898,6 +1040,320 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
     }
 
     return false;
+}
+
+bool wam_execute_foreign_predicate(WamState *state, const char *pred, int arity) {
+    WamForeignHandler handler = resolve_foreign_predicate(state, pred, arity);
+    if (!handler) return false;
+    return handler(state, pred, arity);
+}
+
+void wam_register_category_parent(WamState *state, const char *child, const char *parent) {
+    if (state->category_edge_count >= state->category_edge_cap) {
+        state->category_edge_cap = state->category_edge_cap ? state->category_edge_cap * 2 : WAM_INITIAL_CAP;
+        state->category_edges = realloc(state->category_edges, sizeof(CategoryEdge) * state->category_edge_cap);
+    }
+    state->category_edges[state->category_edge_count].child = wam_intern_atom(state, child);
+    state->category_edges[state->category_edge_count].parent = wam_intern_atom(state, parent);
+    state->category_edge_count++;
+}
+
+void wam_fact_source_init(WamFactSource *source) {
+    memset(source, 0, sizeof(WamFactSource));
+}
+
+void wam_fact_source_close(WamFactSource *source) {
+    free(source->edges);
+    memset(source, 0, sizeof(WamFactSource));
+}
+
+static void wam_fact_source_add_edge(WamState *state,
+                                     WamFactSource *source,
+                                     const char *child,
+                                     const char *parent) {
+    if (source->edge_count >= source->edge_cap) {
+        source->edge_cap = source->edge_cap ? source->edge_cap * 2 : WAM_INITIAL_CAP;
+        source->edges = realloc(source->edges, sizeof(CategoryEdge) * source->edge_cap);
+    }
+    source->edges[source->edge_count].child = wam_intern_atom(state, child);
+    source->edges[source->edge_count].parent = wam_intern_atom(state, parent);
+    source->edge_count++;
+}
+
+bool wam_fact_source_load_tsv(WamState *state, WamFactSource *source, const char *path) {
+    FILE *file = fopen(path, "r");
+    if (!file) return false;
+
+    char line[1024];
+    while (fgets(line, sizeof(line), file)) {
+        char *start = line;
+        while (*start == 32 || *start == 9) start++;
+        if (*start == 0 || *start == 10 || *start == 35) continue;
+
+        char *sep = strchr(start, 9);
+        if (!sep) sep = strchr(start, 32);
+        if (!sep) {
+            fclose(file);
+            return false;
+        }
+
+        *sep = 0;
+        char *parent = sep + 1;
+        while (*parent == 32 || *parent == 9) parent++;
+
+        char *end = parent + strlen(parent);
+        while (end > parent && (end[-1] == 10 || end[-1] == 13 ||
+                                end[-1] == 32 || end[-1] == 9)) {
+            *--end = 0;
+        }
+
+        if (*start == 0 || *parent == 0) {
+            fclose(file);
+            return false;
+        }
+        wam_fact_source_add_edge(state, source, start, parent);
+    }
+
+    fclose(file);
+    return true;
+}
+
+bool wam_fact_source_load_lmdb(WamState *state, WamFactSource *source,
+                               const char *env_path, const char *db_name) {
+#ifndef WAM_C_ENABLE_LMDB
+    (void)state;
+    (void)source;
+    (void)env_path;
+    (void)db_name;
+    return false;
+#else
+    MDB_env *env = NULL;
+    MDB_txn *txn = NULL;
+    MDB_cursor *cursor = NULL;
+    MDB_dbi dbi = 0;
+    int rc = 0;
+    bool ok = false;
+
+    rc = mdb_env_create(&env);
+    if (rc != MDB_SUCCESS) goto done;
+    rc = mdb_env_set_maxdbs(env, 16);
+    if (rc != MDB_SUCCESS) goto done;
+    rc = mdb_env_open(env, env_path, MDB_RDONLY, 0664);
+    if (rc != MDB_SUCCESS) goto done;
+    rc = mdb_txn_begin(env, NULL, MDB_RDONLY, &txn);
+    if (rc != MDB_SUCCESS) goto done;
+    rc = mdb_dbi_open(txn, (db_name && db_name[0]) ? db_name : NULL, 0, &dbi);
+    if (rc != MDB_SUCCESS) goto done;
+    rc = mdb_cursor_open(txn, dbi, &cursor);
+    if (rc != MDB_SUCCESS) goto done;
+
+    MDB_val key;
+    MDB_val data;
+    rc = mdb_cursor_get(cursor, &key, &data, MDB_FIRST);
+    while (rc == MDB_SUCCESS) {
+        char *child = malloc(key.mv_size + 1);
+        char *parent = malloc(data.mv_size + 1);
+        if (!child || !parent) {
+            free(child);
+            free(parent);
+            goto done;
+        }
+        memcpy(child, key.mv_data, key.mv_size);
+        child[key.mv_size] = 0;
+        memcpy(parent, data.mv_data, data.mv_size);
+        parent[data.mv_size] = 0;
+        wam_fact_source_add_edge(state, source, child, parent);
+        free(child);
+        free(parent);
+        rc = mdb_cursor_get(cursor, &key, &data, MDB_NEXT);
+    }
+    ok = (rc == MDB_NOTFOUND);
+
+done:
+    if (cursor) mdb_cursor_close(cursor);
+    if (txn) mdb_txn_abort(txn);
+    if (env) {
+        if (dbi) mdb_dbi_close(env, dbi);
+        mdb_env_close(env);
+    }
+    return ok;
+#endif
+}
+
+int wam_fact_source_lookup_arg1(WamFactSource *source, const char *arg1,
+                                CategoryEdge *out_edges, int max_edges) {
+    int count = 0;
+    for (int i = 0; i < source->edge_count; i++) {
+        if (strcmp(source->edges[i].child, arg1) != 0) continue;
+        if (count < max_edges) out_edges[count] = source->edges[i];
+        count++;
+    }
+    return count;
+}
+
+bool wam_register_category_parent_fact_source(WamState *state, WamFactSource *source) {
+    for (int i = 0; i < source->edge_count; i++) {
+        wam_register_category_parent(state, source->edges[i].child, source->edges[i].parent);
+    }
+    return true;
+}
+
+void wam_int_results_init(WamIntResults *results) {
+    memset(results, 0, sizeof(WamIntResults));
+}
+
+void wam_int_results_close(WamIntResults *results) {
+    free(results->values);
+    memset(results, 0, sizeof(WamIntResults));
+}
+
+bool wam_int_results_push(WamIntResults *results, int value) {
+    if (results->count >= results->cap) {
+        results->cap = results->cap ? results->cap * 2 : WAM_INITIAL_CAP;
+        results->values = realloc(results->values, sizeof(int) * results->cap);
+        if (!results->values) {
+            results->count = 0;
+            results->cap = 0;
+            return false;
+        }
+    }
+    results->values[results->count++] = value;
+    return true;
+}
+
+void wam_register_category_ancestor_kernel(WamState *state, const char *pred, int max_depth) {
+    state->category_max_depth = max_depth > 0 ? max_depth : 10;
+    wam_register_foreign_predicate(state, pred, 4, wam_category_ancestor_handler);
+}
+
+static bool wam_value_as_atom(WamState *state, WamValue value, const char **out) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    if (cell->tag != VAL_ATOM) return false;
+    *out = cell->data.atom;
+    return true;
+}
+
+static bool wam_list_contains_atom(WamState *state, WamValue value, const char *atom) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    while (cell->tag == VAL_LIST) {
+        WamValue *head = wam_deref_ptr(state, &state->H_array[cell->data.ref_addr]);
+        if (head->tag == VAL_ATOM && strcmp(head->data.atom, atom) == 0) return true;
+        cell = wam_deref_ptr(state, &state->H_array[cell->data.ref_addr + 1]);
+    }
+    return cell->tag == VAL_ATOM && strcmp(cell->data.atom, atom) == 0;
+}
+
+static bool wam_list_atoms_to_array(WamState *state,
+                                    WamValue value,
+                                    const char **out,
+                                    int *out_len,
+                                    int max_len) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    int count = 0;
+    while (cell->tag == VAL_LIST) {
+        if (count >= max_len) return false;
+        WamValue *head = wam_deref_ptr(state, &state->H_array[cell->data.ref_addr]);
+        if (head->tag != VAL_ATOM) return false;
+        out[count++] = head->data.atom;
+        cell = wam_deref_ptr(state, &state->H_array[cell->data.ref_addr + 1]);
+    }
+    if (cell->tag == VAL_ATOM && strcmp(cell->data.atom, "[]") == 0) {
+        *out_len = count;
+        return true;
+    }
+    return false;
+}
+
+static bool wam_visited_array_contains(const char **visited, int visited_len, const char *atom) {
+    for (int i = 0; i < visited_len; i++) {
+        if (strcmp(visited[i], atom) == 0) return true;
+    }
+    return false;
+}
+
+static bool wam_category_ancestor_dfs(WamState *state,
+                                      const char *cat,
+                                      const char *root,
+                                      int depth,
+                                      int max_depth,
+                                      const char **visited,
+                                      int visited_len,
+                                      WamIntResults *results) {
+    bool found = false;
+    for (int i = 0; i < state->category_edge_count; i++) {
+        CategoryEdge *edge = &state->category_edges[i];
+        if (strcmp(edge->child, cat) != 0) continue;
+        if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
+        if (strcmp(edge->parent, root) == 0) {
+            if (!wam_int_results_push(results, depth + 1)) return false;
+            found = true;
+        }
+    }
+
+    if (visited_len >= max_depth || visited_len >= 64) return found;
+
+    for (int i = 0; i < state->category_edge_count; i++) {
+        CategoryEdge *edge = &state->category_edges[i];
+        if (strcmp(edge->child, cat) != 0) continue;
+        if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
+        visited[visited_len] = edge->parent;
+        if (wam_category_ancestor_dfs(state, edge->parent, root, depth + 1,
+                                      max_depth, visited, visited_len + 1,
+                                      results)) {
+            found = true;
+        }
+    }
+    return found;
+}
+
+static bool wam_category_ancestor_inputs(WamState *state,
+                                         const char **cat_out,
+                                         const char **root_out,
+                                         const char **visited,
+                                         int *visited_len_out) {
+    const char *cat = NULL;
+    const char *root = NULL;
+    if (!wam_value_as_atom(state, state->A[0], &cat)) return false;
+    if (!wam_value_as_atom(state, state->A[1], &root)) return false;
+    int visited_len = 0;
+    if (!wam_list_atoms_to_array(state, state->A[3], visited, &visited_len, 64)) return false;
+    if (wam_list_contains_atom(state, state->A[3], root)) return false;
+    if (visited_len == 0) {
+        visited[visited_len++] = cat;
+    }
+    *cat_out = cat;
+    *root_out = root;
+    *visited_len_out = visited_len;
+    return true;
+}
+
+bool wam_collect_category_ancestor_hops(WamState *state, WamIntResults *results) {
+    const char *cat = NULL;
+    const char *root = NULL;
+    const char *visited[64];
+    int visited_len = 0;
+    if (!wam_category_ancestor_inputs(state, &cat, &root, visited, &visited_len)) return false;
+
+    int max_depth = state->category_max_depth > 0 ? state->category_max_depth : 10;
+    return wam_category_ancestor_dfs(state, cat, root, 0, max_depth,
+                                     visited, visited_len, results);
+}
+
+bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity) {
+    (void)pred;
+    if (arity != 4) return false;
+
+    WamIntResults results;
+    wam_int_results_init(&results);
+    if (!wam_collect_category_ancestor_hops(state, &results) || results.count == 0) {
+        wam_int_results_close(&results);
+        return false;
+    }
+
+    WamValue result = val_int(results.values[0]);
+    bool ok = wam_unify(state, &state->A[2], &result);
+    wam_int_results_close(&results);
+    return ok;
 }
 '.
 

@@ -39,6 +39,7 @@
 :- use_module('../targets/wam_python_lowered_emitter', [
 	emit_lowered_python/4,
 	is_deterministic_pred_py/1,
+	parse_wam_text_py/2,
 	python_func_name/2
 ]).
 
@@ -1151,6 +1152,36 @@ wam_line_to_python_literal(["jump", Label], Py) :-
 	clean_comma(Label, CL),
 	escape_python_string(CL, EL),
 	format(atom(Py), '("jump", "~w")', [EL]).
+% --- Indexed-fact + category-ancestor kernel instructions (Rust parity) ---
+wam_line_to_python_literal(["call_indexed_atom_fact2", Pred], Py) :-
+	clean_comma(Pred, CP),
+	escape_python_string(CP, EP),
+	format(atom(Py), '("call_indexed_atom_fact2", "~w")', [EP]).
+wam_line_to_python_literal(["base_category_ancestor", CatReg, TargetReg, VisitedReg], Py) :-
+	clean_comma(CatReg, CC),
+	clean_comma(TargetReg, CT),
+	clean_comma(VisitedReg, CV),
+	format(atom(Py), '("base_category_ancestor", ~w, ~w, ~w)', [CC, CT, CV]).
+wam_line_to_python_literal(["base_category_ancestor_bind", CatReg, TargetReg, HopsReg, VisitedReg], Py) :-
+	clean_comma(CatReg, CC),
+	clean_comma(TargetReg, CT),
+	clean_comma(HopsReg, CH),
+	clean_comma(VisitedReg, CV),
+	format(atom(Py), '("base_category_ancestor_bind", ~w, ~w, ~w, ~w)', [CC, CT, CH, CV]).
+wam_line_to_python_literal(["recurse_category_ancestor", MidReg, RootReg, ChildHopsReg, VisitedReg, Pred, Skip], Py) :-
+	clean_comma(MidReg, CM),
+	clean_comma(RootReg, CR),
+	clean_comma(ChildHopsReg, CCH),
+	clean_comma(VisitedReg, CV),
+	clean_comma(Pred, CP),
+	clean_comma(Skip, CSk),
+	escape_python_string(CP, EP),
+	format(atom(Py), '("recurse_category_ancestor", ~w, ~w, ~w, ~w, "~w", ~w)',
+		[CM, CR, CCH, CV, EP, CSk]).
+wam_line_to_python_literal(["return_add1", OutReg, InReg], Py) :-
+	clean_comma(OutReg, CO),
+	clean_comma(InReg, CI),
+	format(atom(Py), '("return_add1", ~w, ~w)', [CO, CI]).
 
 % ============================================================================
 % PHASE 5: Predicate Compilation
@@ -1180,9 +1211,11 @@ sub_string_replace(Str, From, To, Result) :-
 %  Converts WAM instruction output for a predicate to Python code.
 %  Emits a register_predicate(raw_program) call so the flat program can be
 %  built by load_program in main.py.
-compile_wam_predicate_to_python(Pred/Arity, WamCode, _Options, PythonCode) :-
+compile_wam_predicate_to_python(Pred/Arity, WamCode, Options, PythonCode) :-
 	atom_string(Pred, PredStr),
 	python_func_name(Pred/Arity, FuncName),
+	option(registrar_prefix(RegistrarPrefix), Options, ''),
+	atom_concat(RegistrarPrefix, FuncName, RegistrarName),
 	% Build the label key: "Pred/Arity"
 	format(atom(LabelKey), '~w/~w', [PredStr, Arity]),
 	wam_code_to_python_instructions(WamCode, Pred/Arity, InstrLiterals, _LabelLiterals),
@@ -1192,7 +1225,29 @@ compile_wam_predicate_to_python(Pred/Arity, WamCode, _Options, PythonCode) :-
     raw_program["~w"] = (
 ~w
     )
-', [FuncName, PredStr, Arity, LabelKey, InstrLiterals]).
+', [RegistrarName, PredStr, Arity, LabelKey, InstrLiterals]).
+
+%% compile_lowered_wam_predicate_to_python(+Pred/Arity, +WamCode, +Options, -PythonCode)
+%  Emits a direct lowered Python predicate plus a separate registrar that
+%  inserts a call_lowered stub into raw_program. The separate registrar avoids
+%  a name collision with the pred_* lowered function itself.
+compile_lowered_wam_predicate_to_python(Pred/Arity, WamCode, Options, PythonCode) :-
+	parse_wam_text_py(WamCode, Instrs),
+	is_deterministic_pred_py(Instrs),
+	emit_lowered_python(Pred/Arity, Instrs, Options, LoweredFn),
+	atom_string(Pred, PredStr),
+	python_func_name(Pred/Arity, FuncName),
+	atom_concat(register_, FuncName, RegistrarName),
+	format(atom(LabelKey), '~w/~w', [PredStr, Arity]),
+	format(string(Registrar),
+'def ~w(raw_program):
+    """Register lowered WAM code for ~w/~w into raw_program dict."""
+    raw_program["~w"] = (
+        ("call_lowered", ~w, ~w),
+        ("proceed",),
+    )
+', [RegistrarName, PredStr, Arity, LabelKey, FuncName, Arity]),
+	atomic_list_concat([LoweredFn, '\n\n', Registrar], PythonCode).
 
 %% build_python_wam_arg_list(+Arity, -ArgList)
 %  Build the Python function argument list.
@@ -1352,7 +1407,9 @@ is_ffi_predicate(Functor, Arity, Options) :-
 compile_all_predicates([], _Options, "# No predicates compiled\n").
 compile_all_predicates(Predicates, Options, Code) :-
 	Predicates \= [],
-	maplist(compile_one_predicate(Options), Predicates, PredCodes),
+	plan_python_predicates(Predicates, Options, Plans),
+	lowered_route_set(Plans, Options, LoweredSet),
+	maplist(compile_planned_predicate(Options, LoweredSet), Plans, PredCodes),
 	% Collect function names for build_program() registry
 	maplist(pred_func_name(Options), Predicates, FuncNames),
 	build_program_func(FuncNames, BuildProgramCode),
@@ -1369,16 +1426,117 @@ compile_all_predicates(Predicates, Options, Code) :-
 	], '\n\n', PredSection),
 	atomic_list_concat([PredSection, '\n\n', BuildProgramCode], Code).
 
+plan_python_predicates(Predicates, Options, Plans) :-
+	maplist(plan_python_predicate(Options), Predicates, Plans).
+
+plan_python_predicate(Options, _Module:PredSpec, Plan) :- !,
+	plan_python_predicate(Options, PredSpec, Plan).
+plan_python_predicate(Options, Pred/Arity-WamCode, pred_plan(Pred, Arity, WamCode, Kind)) :- !,
+	(   is_ffi_predicate(Pred, Arity, Options)
+	->  Kind = ffi
+	;   Kind = wam
+	).
+plan_python_predicate(Options, Pred/Arity, pred_plan(Pred, Arity, WamCode, Kind)) :-
+	(   is_ffi_predicate(Pred, Arity, Options)
+	->  Kind = ffi,
+	    WamCode = ''
+	;   compile_predicate_to_wam(Pred/Arity, [], WamCode)
+	->  Kind = wam
+	;   WamCode = '',
+	    Kind = missing
+	).
+
+lowered_route_set(Plans, Options, LoweredSet) :-
+	(   option(emit_mode(lowered), Options)
+	->  findall(Pred/Arity,
+	        ( member(pred_plan(Pred, Arity, WamCode, wam), Plans),
+	          lowered_candidate_wam(WamCode)
+	        ),
+	        Candidates0),
+	    sort(Candidates0, Candidates),
+	    fix_lowered_route_set(Candidates, Plans, Options, LoweredSet)
+	;   LoweredSet = []
+	).
+
+lowered_candidate_wam(WamCode) :-
+	parse_wam_text_py(WamCode, Instrs),
+	is_deterministic_pred_py(Instrs).
+
+fix_lowered_route_set(Current, Plans, Options, Final) :-
+	include(lowered_route_supported(Plans, Options, Current), Current, Next0),
+	sort(Next0, Next),
+	(   Next == Current
+	->  Final = Next
+	;   fix_lowered_route_set(Next, Plans, Options, Final)
+	).
+
+lowered_route_supported(Plans, Options, Current, Pred/Arity) :-
+	member(pred_plan(Pred, Arity, WamCode, wam), Plans),
+	parse_wam_text_py(WamCode, Instrs),
+	findall(CalleePred/CalleeArity, direct_wam_call(Instrs, CalleePred/CalleeArity), Calls0),
+	sort(Calls0, Calls),
+	forall(member(CalleePred/CalleeArity, Calls),
+	    ( member(CalleePred/CalleeArity, Current)
+	    ; is_ffi_predicate(CalleePred, CalleeArity, Options)
+	    ; \+ planned_predicate(Plans, CalleePred/CalleeArity)
+	    )).
+
+planned_predicate(Plans, Pred/Arity) :-
+	member(pred_plan(Pred, Arity, _WamCode, Kind), Plans),
+	Kind \= missing.
+
+direct_wam_call(Instrs, Pred/Arity) :-
+	member(Instr, Instrs),
+	(   Instr = call(PredStr, ArityStr)
+	;   Instr = call_foreign(PredStr, ArityStr)
+	),
+	pred_string_indicator(PredStr, ArityStr, Pred/Arity).
+direct_wam_call(Instrs, Pred/Arity) :-
+	member(execute(PredStr), Instrs),
+	pred_string_indicator(PredStr, _ArityStr, Pred/Arity).
+
+pred_string_indicator(PredStr, ArityStr, Pred/Arity) :-
+	atom_string(PredAtom, PredStr),
+	(   sub_atom(PredAtom, B, 1, _, '/')
+	->  sub_atom(PredAtom, 0, B, _, Pred),
+	    B1 is B + 1,
+	    sub_atom(PredAtom, B1, _, 0, ArityAtom),
+	    atom_number(ArityAtom, Arity)
+	;   Pred = PredAtom,
+	    atom_string(ArityAtom0, ArityStr),
+	    atom_number(ArityAtom0, Arity)
+	).
+
+compile_planned_predicate(Options, LoweredSet, pred_plan(Pred, Arity, WamCode, Kind), PredCode) :-
+	(   Kind = ffi
+	->  compile_ffi_stub_predicate(Pred, Arity, Options, PredCode)
+	;   Kind = missing
+	->  atom_string(Pred, PredStr),
+	    format(string(PredCode), '# Could not compile ~w/~w to WAM\n', [PredStr, Arity])
+	;   member(Pred/Arity, LoweredSet)
+	->  compile_lowered_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode)
+	;   option(emit_mode(lowered), Options)
+	->  compile_wam_predicate_to_python(Pred/Arity, WamCode, [registrar_prefix(register_)|Options], PredCode)
+	;   compile_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode)
+	).
+
 %% pred_func_name(+Options, +PredSpec, -FuncName)
 %  Get the Python function name for a predicate (for build_program registry).
-pred_func_name(_Options, _Module:Pred/Arity, FuncName) :- !,
-	python_func_name(Pred/Arity, FuncName).
-pred_func_name(_Options, _Module:Pred/Arity-_, FuncName) :- !,
-	python_func_name(Pred/Arity, FuncName).
-pred_func_name(_Options, Pred/Arity-_, FuncName) :- !,
-	python_func_name(Pred/Arity, FuncName).
-pred_func_name(_Options, Pred/Arity, FuncName) :-
-	python_func_name(Pred/Arity, FuncName).
+pred_func_name(Options, _Module:Pred/Arity, FuncName) :- !,
+	pred_registrar_func_name(Options, Pred/Arity, FuncName).
+pred_func_name(Options, _Module:Pred/Arity-_, FuncName) :- !,
+	pred_registrar_func_name(Options, Pred/Arity, FuncName).
+pred_func_name(Options, Pred/Arity-_, FuncName) :- !,
+	pred_registrar_func_name(Options, Pred/Arity, FuncName).
+pred_func_name(Options, Pred/Arity, FuncName) :-
+	pred_registrar_func_name(Options, Pred/Arity, FuncName).
+
+pred_registrar_func_name(Options, Pred/Arity, RegistrarName) :-
+	python_func_name(Pred/Arity, FuncName),
+	(   option(emit_mode(lowered), Options)
+	->  atom_concat(register_, FuncName, RegistrarName)
+	;   RegistrarName = FuncName
+	).
 
 %% build_program_func(+FuncNames, -Code)
 %  Emit a build_program(raw_program) function that calls all pred_* registrars.
@@ -1395,14 +1553,19 @@ compile_one_predicate(Options, _Module:PredSpec, PredCode) :-
 	compile_one_predicate(Options, PredSpec, PredCode).
 compile_one_predicate(Options, Pred/Arity-WamCode, PredCode) :-
 	(   is_ffi_predicate(Pred, Arity, Options)
-	->  compile_ffi_stub_predicate(Pred, Arity, PredCode)
+	->  compile_ffi_stub_predicate(Pred, Arity, Options, PredCode)
+	;   option(emit_mode(lowered), Options),
+	    compile_lowered_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode)
+	->  true
+	;   option(emit_mode(lowered), Options)
+	->  compile_wam_predicate_to_python(Pred/Arity, WamCode, [registrar_prefix(register_)|Options], PredCode)
 	;   compile_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode)
 	).
 compile_one_predicate(Options, Pred/Arity, PredCode) :-
 	(   is_ffi_predicate(Pred, Arity, Options)
-	->  compile_ffi_stub_predicate(Pred, Arity, PredCode)
+	->  compile_ffi_stub_predicate(Pred, Arity, Options, PredCode)
 	;   (   compile_predicate_to_wam(Pred/Arity, [], WamCode)
-		->  compile_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode)
+		->  compile_one_predicate(Options, Pred/Arity-WamCode, PredCode)
 		;   atom_string(Pred, PredStr),
 			format(string(PredCode),
 				'# Could not compile ~w/~w to WAM\n', [PredStr, Arity])
@@ -1412,8 +1575,15 @@ compile_one_predicate(Options, Pred/Arity, PredCode) :-
 %% compile_ffi_stub_predicate(+Pred, +Arity, -Code)
 %  Emit a registration function that inserts a call_foreign stub into raw_program.
 compile_ffi_stub_predicate(Pred, Arity, PredCode) :-
+	compile_ffi_stub_predicate(Pred, Arity, [], PredCode).
+
+compile_ffi_stub_predicate(Pred, Arity, Options, PredCode) :-
 	atom_string(Pred, PredStr),
 	python_func_name(Pred/Arity, FuncName),
+	(   option(emit_mode(lowered), Options)
+	->  atom_concat(register_, FuncName, RegistrarName)
+	;   RegistrarName = FuncName
+	),
 	format(atom(LabelKey), '~w/~w', [PredStr, Arity]),
 	format(string(PredCode),
 'def ~w(raw_program):
@@ -1422,7 +1592,7 @@ compile_ffi_stub_predicate(Pred, Arity, PredCode) :-
         ("call_foreign", "~w", ~w),
         ("proceed",),
     )
-', [FuncName, PredStr, Arity, LabelKey, PredStr, Arity]).
+', [RegistrarName, PredStr, Arity, LabelKey, PredStr, Arity]).
 
 %% generate_main_py(+Predicates, +ModuleName, -Code)
 %  Generate a main.py entry point.
@@ -1433,15 +1603,25 @@ import sys
 from wam_runtime import *
 from predicates import *
 
+def _init_query_args(query, state):
+    try:
+        arity = int(query.rsplit("/", 1)[1])
+    except (IndexError, ValueError):
+        return
+    for i in range(1, arity + 1):
+        if get_reg(state, i) is None:
+            set_reg(state, i, state.fresh_var())
+
 def main():
     state = WamState()
     # Build a raw program dict from predicates, then flatten + pre-resolve
-    raw_program = {}  # populated by predicate modules
+    raw_program = build_program()
     code, labels = load_program(raw_program)
     # Run a user-specified query
     if len(sys.argv) > 1:
         query = sys.argv[1]
         if query in labels:
+            _init_query_args(query, state)
             if run_wam(code, labels, query, state):
                 results = []
                 for i in range(1, 11):
@@ -1449,7 +1629,7 @@ def main():
                     if val is not None:
                         results.append((i, val))
                 for i, r in results:
-                    print(f"A{i} = {_format_value(r)}")
+                    print(f"A{i} = {repr(r)}")
             else:
                 print("false.")
         else:
@@ -1474,7 +1654,7 @@ from predicates import *
 
 def main():
     # Build a raw program dict from predicates, then flatten + pre-resolve
-    raw_program = {}  # populated by predicate modules
+    raw_program = build_program()
     code, labels = load_program(raw_program)
 
     # Define seeds — each seed is a list of initial register values
@@ -1582,6 +1762,11 @@ def run_benchmark(data_dir, n_reps):
     # Register foreign predicates
     register_category_parent(category_parents)
 
+    # Pre-flatten category_parent pairs once (used for indexed-table init below).
+    category_parent_pairs = [
+        (child, p) for child, parents in category_parents.items() for p in parents
+    ]
+
     # Build WAM program via predicates.build_program()
     raw_program = build_program()
     code, labels = load_program(raw_program)
@@ -1605,6 +1790,9 @@ def run_benchmark(data_dir, n_reps):
         rep_solutions = 0
         for (article, cat, rt) in seeds:
             state = WamState()
+            # Rust-parity: populate indexed fact table for O(1) category_parent/2
+            # lookups consumed by call_indexed_atom_fact2 / base_category_ancestor*.
+            register_indexed_atom_fact2_pairs(state, \'category_parent/2\', category_parent_pairs)
             set_reg(state, 1, make_atom(cat))
             set_reg(state, 2, make_atom(rt))
             set_reg(state, 3, state.fresh_var())

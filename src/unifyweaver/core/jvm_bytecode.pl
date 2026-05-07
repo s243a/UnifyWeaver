@@ -574,9 +574,9 @@ jvm_println_bytecode(Expr, VarMap, Instructions) :-
 
 %% jvm_resolve_string_operand(+Expr, +VarMap, -Instructions)
 %%   Resolve an expression to bytecode that leaves a String/Object on stack.
-jvm_resolve_string_operand(Expr, _VarMap, [Instr]) :-
+jvm_resolve_string_operand(Expr, VarMap, [Instr]) :-
     atom(Expr),
-    \+ lookup_var(Expr, _VarMap, _),
+    \+ lookup_var(Expr, VarMap, _),
     !,
     jvm_load_string(Expr, Instr).
 jvm_resolve_string_operand(Expr, VarMap, [Instr]) :-

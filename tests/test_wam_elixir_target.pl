@@ -13,6 +13,11 @@
 % For Tier-2 purity-gate tests — user-annotation producer reads
 % clause_body_analysis:order_independent/1 dynamic facts.
 :- use_module('../src/unifyweaver/core/clause_body_analysis').
+% For test_lmdb_int_ids_mock_e2e: subprocess-invokes elixir against
+% the runtime + the mock-Elmdb test fixture in tests/elixir_e2e/.
+% Skips gracefully if elixir is not installed.
+:- use_module(library(process)).
+:- use_module(library(filesex)).
 
 :- dynamic test_failed/0.
 
@@ -753,6 +758,253 @@ test_lmdb_adaptor_uses_indirect_module_resolution :-
     ;   fail_test(Test, 'LMDB adaptor has literal Elmdb references — will warn without dep')
     ).
 
+test_lmdb_int_ids_adaptor_emitted_in_runtime :-
+    % LmdbIntIds is the int-id-keyed sibling of FactSource.Lmdb,
+    % designed for production-scale workloads where atom-interning
+    % isn't viable (>50k unique nodes). Same emit-and-grep posture
+    % as the original Lmdb adaptor — runtime validation requires
+    % :elmdb which the sandbox can't install. See the design proposal
+    % at docs/proposals/wam_elixir_lmdb_int_id_factsource.md.
+    Test = 'LmdbIntIds adaptor: runtime emits FactSource.LmdbIntIds with three-sub-DB shape',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.FactSource.LmdbIntIds do'),
+        sub_string(RuntimeCode, _, _, _, '@behaviour WamRuntime.FactSource'),
+        % Three sub-DB handles in the struct: facts, key→id, id→key.
+        sub_string(RuntimeCode, _, _, _, ':facts_dbi'),
+        sub_string(RuntimeCode, _, _, _, ':key_to_id_dbi'),
+        sub_string(RuntimeCode, _, _, _, ':id_to_key_dbi'),
+        % Fast-path int-id API (the whole point of this adaptor).
+        sub_string(RuntimeCode, _, _, _, 'def lookup_by_arg1_id('),
+        % Boundary translators for input/output id↔string conversion.
+        sub_string(RuntimeCode, _, _, _, 'def lookup_id('),
+        sub_string(RuntimeCode, _, _, _, 'def lookup_key('),
+        % Backwards-compat binary-key entry (delegates to int-id path).
+        sub_string(RuntimeCode, _, _, _, 'def lookup_by_arg1(%__MODULE__'),
+        % 8-byte BE u64 id encoding (the on-disk wire format).
+        sub_string(RuntimeCode, _, _, _, '<<id::64-big-unsigned>>')
+    ->  pass(Test)
+    ;   fail_test(Test, 'LmdbIntIds adaptor missing expected structure')
+    ).
+
+test_lmdb_int_ids_adaptor_uses_indirect_module_resolution :-
+    Test = 'LmdbIntIds adaptor: uses Module.concat so runtime compiles without an LMDB binding dep',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    % Verify the LmdbIntIds-specific block (not the original Lmdb)
+    % uses the same indirect-resolution pattern. Pull out the
+    % LmdbIntIds module body and check it doesn't contain literal
+    % Elmdb.X calls.
+    Pattern = "defmodule WamRuntime.FactSource.LmdbIntIds do",
+    EndPattern = "defmodule WamRuntime.GraphKernel.TransitiveClosure do",
+    (   sub_string(RuntimeCode, Start, _, _, Pattern),
+        sub_string(RuntimeCode, End, _, _, EndPattern),
+        End > Start,
+        BodyLen is End - Start,
+        sub_string(RuntimeCode, Start, BodyLen, _, Body),
+        sub_string(Body, _, _, _, "Module.concat([Elmdb])"),
+        sub_string(Body, _, _, _, "apply(mod,"),
+        \+ sub_string(Body, _, _, _, "Elmdb.ro_txn_begin"),
+        \+ sub_string(Body, _, _, _, "Elmdb.txn_get(")
+    ->  pass(Test)
+    ;   fail_test(Test, 'LmdbIntIds adaptor has literal Elmdb references — will warn without dep')
+    ).
+
+test_lmdb_int_ids_design_proposal_referenced :-
+    % Doc-fix invariant: the kernel docstring no longer claims
+    % "Haskell uses LMDB IDs as interning". Instead it points at
+    % the proposal that describes the actual LMDB-native design.
+    Test = 'LmdbIntIds: kernel docstring points at the design proposal',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'wam_elixir_lmdb_int_id_factsource.md'),
+        % Negative invariant: the old (false) claim is gone.
+        \+ sub_string(RuntimeCode, _, _, _, 'no separate intern step')
+    ->  pass(Test)
+    ;   fail_test(Test, 'kernel docstring still has the old LMDB-IDs claim or doesnt reference the proposal')
+    ).
+
+test_lmdb_int_ids_ingest_pairs_emitted :-
+    % Driver-side ingestion helper. Without this, the proposal
+    % documents a contract no driver can fulfill (insert-time
+    % ID assignment requires a coordinated write to all three
+    % sub-DBs; a one-off helper is the natural shape).
+    Test = 'LmdbIntIds: ingest_pairs/3 driver helper emitted with three-DB write surface',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'def ingest_pairs(%__MODULE__{}'),
+        % Idempotent string-interning: txn_get on key_to_id_dbi
+        % before allocating a new ID.
+        sub_string(RuntimeCode, _, _, _, 'defp intern_one('),
+        % Sequential ID allocation: increment next_id when
+        % :not_found in key_to_id_dbi.
+        sub_string(RuntimeCode, _, _, _, ':not_found ->'),
+        % Writes all three sub-DBs: key_to_id_dbi, id_to_key_dbi,
+        % facts_dbi (each via txn_put through Module.concat).
+        sub_string(RuntimeCode, _, _, _, 'handle.key_to_id_dbi'),
+        sub_string(RuntimeCode, _, _, _, 'handle.id_to_key_dbi'),
+        sub_string(RuntimeCode, _, _, _, 'handle.facts_dbi'),
+        % Returns a status map with the next_id sentinel for
+        % batched calls.
+        sub_string(RuntimeCode, _, _, _, ':next_id')
+    ->  pass(Test)
+    ;   fail_test(Test, 'ingest_pairs/3 missing or has wrong API surface')
+    ).
+
+test_lmdb_int_ids_mock_e2e :-
+    % End-to-end exercise of WamRuntime.FactSource.LmdbIntIds against
+    % a fake `Elmdb` module backed by an in-memory Agent. Validates:
+    % - encode_id/decode_id round-trips on integer IDs.
+    % - ingest_pairs idempotent re-ingest reuses existing IDs.
+    % - lookup_by_arg1_id with dupsort returns all values for a key.
+    % - lookup_by_arg1 (binary entry) round-trips through ID translation.
+    % - lookup_id/lookup_key on missing keys return nil cleanly.
+    % - stream_all returns ordered (int_key_id, int_value_id) pairs.
+    % - migrate_from_string_keyed transfers all source pairs.
+    %
+    % Skips if `elixir` is not on PATH. Fails if elixir runs but a test
+    % fails or stderr contains a syntax/compile error.
+    Test = 'LmdbIntIds: end-to-end against MockElmdb (encode/ingest/lookup/migrate)',
+    (   catch(process_create(path(elixir), ['-v'],
+                              [stdout(null), stderr(null), process(P)]),
+              _, fail),
+        process_wait(P, _)
+    ->  run_lmdb_int_ids_mock_e2e(Test)
+    ;   format('[SKIP] ~w: elixir not installed~n', [Test])
+    ).
+
+run_lmdb_int_ids_mock_e2e(Test) :-
+    % Set up a fresh tempdir, emit the runtime, copy the mock + test.
+    TmpDir = '/tmp/test_lmdb_int_ids_mock_e2e',
+    (   exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true ),
+    make_directory(TmpDir),
+    directory_file_path(TmpDir, 'lib', LibDir),
+    make_directory(LibDir),
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    directory_file_path(LibDir, 'wam_runtime.ex', RuntimePath),
+    open(RuntimePath, write, RS),
+    write(RS, RuntimeCode),
+    close(RS),
+    % Copy the mock + test fixture into the project.
+    source_file(test_lmdb_int_ids_mock_e2e, SrcFile),
+    file_directory_name(SrcFile, TestsDir),
+    directory_file_path(TestsDir, 'elixir_e2e/mock_elmdb.exs', MockSrc),
+    directory_file_path(TestsDir, 'elixir_e2e/lmdb_int_ids_mock_test.exs', TestSrc),
+    directory_file_path(TmpDir, 'mock_elmdb.exs', MockDst),
+    directory_file_path(TmpDir, 'lmdb_int_ids_mock_test.exs', TestDst),
+    copy_file(MockSrc, MockDst),
+    copy_file(TestSrc, TestDst),
+    % Run elixir.
+    process_create(path(elixir),
+                   ['-r', 'mock_elmdb.exs', 'lmdb_int_ids_mock_test.exs'],
+                   [cwd(TmpDir),
+                    stdout(pipe(Out)), stderr(pipe(Err)),
+                    process(Pid)]),
+    read_string(Out, _, StdOut),
+    read_string(Err, _, StdErr),
+    process_wait(Pid, Status),
+    close(Out),
+    close(Err),
+    % Parse PASS/FAIL markers.
+    split_string(StdOut, "\n", "", Lines),
+    findall(L, (member(L, Lines), string_concat("[PASS] ", _, L)), PassLines),
+    findall(L, (member(L, Lines), string_concat("[FAIL] ", _, L)), FailLines),
+    length(PassLines, NPass),
+    length(FailLines, NFail),
+    % Expected: 7 PASS, 0 FAIL.
+    (   Status = exit(0), NPass >= 7, NFail = 0
+    ->  format('[PASS] ~w (~w sub-tests via elixir subprocess)~n', [Test, NPass])
+    ;   format('[FAIL] ~w: status=~w pass=~w fail=~w~n', [Test, Status, NPass, NFail]),
+        (   FailLines = [_|_]
+        ->  forall(member(F, FailLines), format('  ~s~n', [F]))
+        ;   true
+        ),
+        (   StdErr \= ""
+        ->  format('  stderr:~n~s~n', [StdErr])
+        ;   true
+        ),
+        assertz(test_failed)
+    ).
+
+test_lmdb_int_ids_real_lmdb_e2e :-
+    % End-to-end exercise against an actual LMDB env through the Hex
+    % :elmdb package. The Elixir script supplies the real-driver bridge
+    % from the runtime's dependency-free `Elmdb` shape to the Erlang
+    % `:elmdb` module. It skips cleanly if the local NIF toolchain cannot
+    % compile :elmdb.
+    Test = 'LmdbIntIds: real LMDB e2e through :elmdb bridge',
+    (   catch(process_create(path(elixir), ['-v'],
+                              [stdout(null), stderr(null), process(P)]),
+              _, fail),
+        process_wait(P, _)
+    ->  run_lmdb_int_ids_real_lmdb_e2e(Test)
+    ;   format('[SKIP] ~w: elixir not installed~n', [Test])
+    ).
+
+run_lmdb_int_ids_real_lmdb_e2e(Test) :-
+    TmpDir = '/tmp/test_lmdb_int_ids_real_lmdb_e2e',
+    (   exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true ),
+    make_directory(TmpDir),
+    directory_file_path(TmpDir, 'lib', LibDir),
+    make_directory(LibDir),
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    directory_file_path(LibDir, 'wam_runtime.ex', RuntimePath),
+    open(RuntimePath, write, RS),
+    write(RS, RuntimeCode),
+    close(RS),
+    source_file(test_lmdb_int_ids_real_lmdb_e2e, SrcFile),
+    file_directory_name(SrcFile, TestsDir),
+    directory_file_path(TestsDir, 'elixir_e2e/lmdb_int_ids_real_test.exs', TestSrc),
+    directory_file_path(TmpDir, 'lmdb_int_ids_real_test.exs', TestDst),
+    copy_file(TestSrc, TestDst),
+    process_create(path(elixir),
+                   ['lmdb_int_ids_real_test.exs'],
+                   [cwd(TmpDir),
+                    stdout(pipe(Out)), stderr(pipe(Err)),
+                    process(Pid)]),
+    read_string(Out, _, StdOut),
+    read_string(Err, _, StdErr),
+    process_wait(Pid, Status),
+    close(Out),
+    close(Err),
+    split_string(StdOut, "\n", "", Lines),
+    (   member(SkipLine, Lines),
+        string_concat("[SKIP] ", _, SkipLine)
+    ->  format('[SKIP] ~w: ~s~n', [Test, SkipLine])
+    ;   findall(L, (member(L, Lines), string_concat("[PASS] ", _, L)), PassLines),
+        findall(L, (member(L, Lines), string_concat("[FAIL] ", _, L)), FailLines),
+        length(PassLines, NPass),
+        length(FailLines, NFail),
+        (   Status = exit(0), NPass >= 3, NFail = 0
+        ->  format('[PASS] ~w (~w sub-tests via real LMDB)~n', [Test, NPass])
+        ;   format('[FAIL] ~w: status=~w pass=~w fail=~w~n', [Test, Status, NPass, NFail]),
+            (   FailLines = [_|_]
+            ->  forall(member(F, FailLines), format('  ~s~n', [F]))
+            ;   true
+            ),
+            (   StdErr \= ""
+            ->  format('  stderr:~n~s~n', [StdErr])
+            ;   true
+            ),
+            assertz(test_failed)
+        )
+    ).
+
+test_lmdb_int_ids_migrate_from_string_keyed_emitted :-
+    % Migration helper: existing PR #1792 string-keyed Lmdb env
+    % -> int-id-keyed LmdbIntIds env. Without this, deployments
+    % that already use the original Lmdb adaptor have no path to
+    % the int-id win.
+    Test = 'LmdbIntIds: migrate_from_string_keyed/3 helper emitted, batches via ingest_pairs/3',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'def migrate_from_string_keyed('),
+        % Reads from the existing PR #1792 Lmdb adaptor.
+        sub_string(RuntimeCode, _, _, _, 'WamRuntime.FactSource.Lmdb.stream_all'),
+        % Batches via Enum.chunk_every for memory safety at scale.
+        sub_string(RuntimeCode, _, _, _, 'Enum.chunk_every(batch_size)'),
+        % Delegates to ingest_pairs/3 (so insert-time ID assignment
+        % logic lives in one place).
+        sub_string(RuntimeCode, _, _, _, 'ingest_pairs(dest_handle, batch')
+    ->  pass(Test)
+    ;   fail_test(Test, 'migrate_from_string_keyed/3 missing or has wrong shape')
+    ).
+
 %% Atom-interning experiment (opt-in via intern_atoms(true) Option):
 %  identifier-shape constants emit as Elixir atom literals (`:foo`)
 %  instead of binaries (`"foo"`). BEAM atoms compare via pointer
@@ -780,6 +1032,7 @@ setup_kernel_fixtures :-
     retractall(user:kdedge(_, _)),
     retractall(user:kdca(_, _, _, _)),
     retractall(user:kdcparent(_, _)),
+    retractall(user:kdtd(_, _, _)),
     retractall(user:max_depth(_)),
     assertz((user:kdtc(X, Z) :- user:kdedge(X, Z))),
     assertz((user:kdtc(X, Z) :- user:kdedge(X, Y), user:kdtc(Y, Z))),
@@ -789,7 +1042,66 @@ setup_kernel_fixtures :-
                 user:max_depth(MaxD), length(V, D), D < MaxD, !,
                 user:kdcparent(C, M), \+ member(M, V),
                 user:kdca(M, A, H1, [M|V]),
-                H is H1 + 1)).
+                H is H1 + 1)),
+    % transitive_distance3 fixture: matches the canonical shape
+    %   td(X, Y, 1) :- edge(X, Y).
+    %   td(X, Y, N) :- edge(X, Mid), td(Mid, Y, N1), N is N1 + 1.
+    assertz((user:kdtd(X, Y, 1) :- user:kdedge(X, Y))),
+    assertz((user:kdtd(X, Y, N) :-
+                user:kdedge(X, Mid),
+                user:kdtd(Mid, Y, N1),
+                N is N1 + 1)),
+    % transitive_parent_distance4 fixture: matches the canonical shape
+    %   pd(X, Y, X, 1) :- edge(X, Y).                  % parent == start, dist == 1
+    %   pd(X, Y, P, N) :- edge(X, Mid), pd(Mid, Y, P, N1), N is N1 + 1.
+    retractall(user:kdpd(_, _, _, _)),
+    assertz((user:kdpd(X, Y, X, 1) :- user:kdedge(X, Y))),
+    assertz((user:kdpd(X, Y, P, N) :-
+                user:kdedge(X, Mid),
+                user:kdpd(Mid, Y, P, N1),
+                N is N1 + 1)),
+    % transitive_step_parent_distance5 fixture: matches the canonical shape
+    %   sp(X, Y, Y, X, 1) :- edge(X, Y).                       % step==target==Y, parent==start, dist==1
+    %   sp(X, Y, Mid, P, N) :- edge(X, Mid), sp(Mid, Y, _, P, N1), N is N1 + 1.
+    retractall(user:kdsp(_, _, _, _, _)),
+    assertz((user:kdsp(X, Y, Y, X, 1) :- user:kdedge(X, Y))),
+    assertz((user:kdsp(X, Y, Mid, P, N) :-
+                user:kdedge(X, Mid),
+                user:kdsp(Mid, Y, _IgnoredStep, P, N1),
+                N is N1 + 1)),
+    % weighted_shortest_path3 fixture: matches the canonical shape over
+    % a 3-arity weighted_edge predicate (kdweighted_edge in this fixture).
+    %   wsp(X, Y, W) :- weighted_edge(X, Y, W).
+    %   wsp(X, Y, TotalW) :- weighted_edge(X, Mid, W1), wsp(Mid, Y, RestW), TotalW is RestW + W1.
+    retractall(user:kdweighted_edge(_, _, _)),
+    retractall(user:kdwsp(_, _, _)),
+    assertz((user:kdwsp(X, Y, W) :- user:kdweighted_edge(X, Y, W))),
+    assertz((user:kdwsp(X, Y, TotalW) :-
+                user:kdweighted_edge(X, Mid, W1),
+                user:kdwsp(Mid, Y, RestW),
+                TotalW is RestW + W1)),
+    % astar_shortest_path4 fixture: 4-ary canonical shape with Dim
+    % passthrough. Reuses kdweighted_edge/3 as the forward edge source;
+    % a separate kddirect/3 is asserted as the heuristic source via
+    % the optional direct_dist_pred/1 user fact (detector falls back
+    % to the same edge predicate if no direct_dist_pred is asserted).
+    %   astar(X, Y, _Dim, W) :- weighted_edge(X, Y, W).
+    %   astar(X, Y, Dim, TotalW) :- weighted_edge(X, Mid, W1),
+    %                              astar(Mid, Y, Dim, RestW),
+    %                              TotalW is RestW + W1.
+    retractall(user:kdastar(_, _, _, _)),
+    retractall(user:direct_dist_pred(_)),
+    retractall(user:dimensionality(_)),
+    assertz((user:kdastar(X, Y, _Dim, W) :- user:kdweighted_edge(X, Y, W))),
+    assertz((user:kdastar(X, Y, Dim, TotalW) :-
+                user:kdweighted_edge(X, Mid, W1),
+                user:kdastar(Mid, Y, Dim, RestW),
+                TotalW is RestW + W1)),
+    % Optional config the detector reads: tells it to use kdweighted_edge/3
+    % as the heuristic source (same as forward edges — admissible because
+    % a direct edges weight is a lower bound on shortest path through it).
+    assertz(user:direct_dist_pred(kdweighted_edge/3)),
+    assertz(user:dimensionality(5)).
 
 test_shared_detector_finds_tc :-
     Test = 'Shared detector: kdtc/2 with canonical TC shape detected as transitive_closure2',
@@ -849,6 +1161,72 @@ test_kernel_dispatch_emits_category_ancestor_module :-
     ;   fail_test(Test, 'category_ancestor kernel dispatch module not emitted as expected')
     ).
 
+test_kernel_dispatch_uses_fold_form_in_aggregate_frame :-
+    Test = 'Kernel dispatch: category_ancestor wrapper uses fold_hops + split_at_aggregate_cp when in aggregate frame',
+    setup_kernel_fixtures,
+    wam_target:compile_predicate_to_wam(user:kdca/4, [], CaWam),
+    write_wam_elixir_project([kdca/4-CaWam],
+        [module_name(probe), emit_mode(lowered),
+         intra_query_parallel(false),
+         kernel_dispatch(true), source_module(user)],
+        '/tmp/test_kernel_disp_ca_fold'),
+    read_file_to_string('/tmp/test_kernel_disp_ca_fold/lib/kdca.ex', S, []),
+    (   sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
+        sub_string(S, _, _, _, "fold_hops("),
+        % Fix for PR #1813's per-hit cp-walk regression: extract the
+        % aggregate cp once and thread agg_accum directly through the fold.
+        sub_string(S, _, _, _, "split_at_aggregate_cp(state)"),
+        % Fall-through (backtracking) path still uses collect_hops.
+        sub_string(S, _, _, _, "collect_hops(")
+    ->  pass(Test)
+    ;   fail_test(Test, 'dispatch wrapper does not branch into fold-form for aggregate frames')
+    ).
+
+test_runtime_emits_fold_hops :-
+    Test = 'GraphKernel CategoryAncestor: runtime emits fold_hops + fold_hops_with_dests',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'def fold_hops(neighbors_fn'),
+        sub_string(RuntimeCode, _, _, _, 'def fold_hops_with_dests(dests_fn'),
+        sub_string(RuntimeCode, _, _, _, 'def fold_hops_with_dests_seeded(dests_fn'),
+        sub_string(RuntimeCode, _, _, _, 'defp fold_n_recurse('),
+        sub_string(RuntimeCode, _, _, _, 'defp fold_d_recurse(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'fold_hops/6 (tuple variant) or its walkers missing from runtime')
+    ).
+
+test_runtime_emits_aggregate_push_one :-
+    Test = 'WamRuntime: runtime emits aggregate_push_one/2 helper',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'def aggregate_push_one(state, value)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'aggregate_push_one/2 helper missing from runtime')
+    ).
+
+test_runtime_emits_split_at_aggregate_cp :-
+    Test = 'WamRuntime: runtime emits split_at_aggregate_cp/1 helper for one-pass cp-stack walk',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'def split_at_aggregate_cp(state)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'split_at_aggregate_cp/1 helper missing from runtime')
+    ).
+
+test_kernel_docstring_documents_integer_id_path :-
+    % Production-scale workloads (e.g. full Wikipedia category data
+    % ~1M unique categories) exceed the BEAM atom table cap. The kernel
+    % itself is term-agnostic; the docstring must surface integer-id
+    % usage so a future maintainer doesn't add an atom-only assumption.
+    Test = 'GraphKernel CategoryAncestor: docstring documents integer-id scale-up path (atoms < 50k, int-tuple > 50k)',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'kernel is term-agnostic'),
+        sub_string(RuntimeCode, _, _, _, 'Integers with tuple-as-array'),
+        % After the int-id LMDB FactSource doc fix, the old "no separate
+        % intern step" claim was removed. The replacement points readers
+        % at the proposal doc that describes the LMDB-native design.
+        sub_string(RuntimeCode, _, _, _, 'wam_elixir_lmdb_int_id_factsource.md')
+    ->  pass(Test)
+    ;   fail_test(Test, 'CategoryAncestor moduledoc missing the integer-id scale-up note')
+    ).
+
 test_graph_kernel_tc_emitted_in_runtime :-
     Test = 'GraphKernel TC: runtime assembly emits WamRuntime.GraphKernel.TransitiveClosure',
     compile_wam_runtime_to_elixir([], RuntimeCode),
@@ -857,6 +1235,416 @@ test_graph_kernel_tc_emitted_in_runtime :-
         sub_string(RuntimeCode, _, _, _, 'def reachable_from_source(')
     ->  pass(Test)
     ;   fail_test(Test, 'GraphKernel.TransitiveClosure module missing expected API')
+    ).
+
+test_graph_kernel_transitive_distance_emitted_in_runtime :-
+    % First of the five kernel kinds Rust+Haskell have but Elixir was missing
+    % (per the audit in benchmarks/wam_effective_distance_cross_target.md
+    % footnote about kernel coverage). This fills the simplest of the five —
+    % shape ports cleanly from the existing CategoryAncestor walker.
+    Test = 'GraphKernel TransitiveDistance: runtime assembly emits WamRuntime.GraphKernel.TransitiveDistance',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.GraphKernel.TransitiveDistance do'),
+        sub_string(RuntimeCode, _, _, _, 'def collect_pairs('),
+        sub_string(RuntimeCode, _, _, _, 'def collect_pairs_from_source(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'GraphKernel.TransitiveDistance module missing expected API')
+    ).
+
+test_graph_kernel_transitive_distance_uses_per_path_visited :-
+    % Per-path visited list (matches Rust collect_native_transitive_distance_results).
+    % Without it the recursion would loop on cyclic graphs. The walker should
+    % use :lists.member for the visited check (consistent with PR #1817 where
+    % the explicit :lists.member call beats `Enum.member?` on the hot path).
+    Test = 'GraphKernel TransitiveDistance: kernel uses per-path visited list with :lists.member',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    % Locate the TransitiveDistance module body and check its walker
+    % uses :lists.member — anchored to the module to avoid matching
+    % CategoryAncestors visited check.
+    Pattern = "defmodule WamRuntime.GraphKernel.TransitiveDistance do",
+    EndPattern = "defmodule WamRuntime.GraphKernel.CategoryAncestor do",
+    (   sub_string(RuntimeCode, Start, _, _, Pattern),
+        sub_string(RuntimeCode, End, _, _, EndPattern),
+        End > Start,
+        BodyLen is End - Start,
+        sub_string(RuntimeCode, Start, BodyLen, _, Body),
+        sub_string(Body, _, _, _, ":lists.member(target, visited)"),
+        sub_string(Body, _, _, _, "[target | visited]")
+    ->  pass(Test)
+    ;   fail_test(Test, 'TransitiveDistance walker missing :lists.member visited check')
+    ).
+
+test_kernel_dispatch_emits_transitive_distance_module :-
+    % End-to-end: detector recognises kdtd/3 as transitive_distance3,
+    % the dispatch wrapper emits with the correct shape (calls
+    % collect_pairs, branches on agg_value_reg for findall slicing,
+    % binds two regs in driver-direct mode).
+    Test = 'Kernel dispatch: transitive_distance3 kernel emits Probe.Kdtd dispatch module',
+    setup_kernel_fixtures,
+    wam_target:compile_predicate_to_wam(user:kdtd/3, [], TdWam),
+    write_wam_elixir_project([kdtd/3-TdWam],
+        [module_name(probe), emit_mode(lowered),
+         intra_query_parallel(false),
+         kernel_dispatch(true), source_module(user)],
+        '/tmp/test_kernel_disp_td'),
+    read_file_to_string('/tmp/test_kernel_disp_td/lib/kdtd.ex', S, []),
+    (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.TransitiveDistance"),
+        sub_string(S, _, _, _, "collect_pairs("),
+        % Aggregate-frame slicing logic: pick targets/distances/pairs
+        % based on which register the active aggregate is capturing.
+        sub_string(S, _, _, _, "agg_cp.agg_value_reg"),
+        sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
+        % Driver-direct binding of both target (reg 2) and distance (reg 3).
+        sub_string(S, _, _, _, "bind_two_regs(state, "),
+        % Falls through to collect_pairs (no separate fold variant yet —
+        % future work; for now the dispatch matches the TC shape
+        % structurally).
+        sub_string(S, _, _, _, "split_at_aggregate_cp(state)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'transitive_distance3 dispatch module missing expected shape')
+    ).
+
+test_shared_detector_finds_transitive_distance :-
+    % Sanity check that the shared detector recognises the canonical
+    % td/3 shape. Same form as test_shared_detector_finds_tc.
+    Test = 'Shared detector: kdtd/3 with canonical transitive_distance shape detected',
+    setup_kernel_fixtures,
+    functor(Head, kdtd, 3),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   detect_recursive_kernel(kdtd, 3, Clauses,
+            recursive_kernel(transitive_distance3, kdtd/3, ConfigOps)),
+        member(edge_pred(kdedge/2), ConfigOps)
+    ->  pass(Test)
+    ;   fail_test(Test, 'kdtd/3 not detected as transitive_distance3 by shared detector')
+    ).
+
+test_graph_kernel_transitive_parent_distance_emitted_in_runtime :-
+    % Second of the five missing kernels (after TransitiveDistance in PR
+    % #1822). Stack-based DFS with no cycle detection — matches Rust's
+    % collect_native_transitive_parent_distance_results reference exactly.
+    Test = 'GraphKernel TransitiveParentDistance: runtime emits WamRuntime.GraphKernel.TransitiveParentDistance',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.GraphKernel.TransitiveParentDistance do'),
+        sub_string(RuntimeCode, _, _, _, 'def collect_triples('),
+        sub_string(RuntimeCode, _, _, _, 'def collect_triples_from_source(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'GraphKernel.TransitiveParentDistance module missing expected API')
+    ).
+
+test_graph_kernel_transitive_parent_distance_no_visited_set :-
+    % Documented contract: NO cycle detection, matches Rust's
+    % stack-based DFS exactly. The walker must NOT carry a visited
+    % list — that would change the per-path enumeration semantics.
+    % Locate the TransitiveParentDistance module body and check it.
+    Test = 'GraphKernel TransitiveParentDistance: walker has no visited list (matches Rust DFS)',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    Pattern = "defmodule WamRuntime.GraphKernel.TransitiveParentDistance do",
+    EndPattern = "defmodule WamRuntime.GraphKernel.CategoryAncestor do",
+    (   sub_string(RuntimeCode, Start, _, _, Pattern),
+        sub_string(RuntimeCode, End, _, _, EndPattern),
+        End > Start,
+        BodyLen is End - Start,
+        sub_string(RuntimeCode, Start, BodyLen, _, Body),
+        % Stack-based DFS shape: explicit `[{node, depth} | rest]`
+        % stack pattern in the walker, with the records pushed as
+        % `(target, predecessor, next_depth)` triples.
+        sub_string(Body, _, _, _, "[{node, depth} | rest]"),
+        sub_string(Body, _, _, _, "{[{target, node, next_depth}"),
+        % Negative invariant: no `:lists.member` visited check (would
+        % silently change the semantics from "every edge in DFS" to
+        % "every edge with simple-path constraint").
+        \+ sub_string(Body, _, _, _, ":lists.member"),
+        % Documents the cycle caveat in the moduledoc.
+        sub_string(Body, _, _, _, "NO cycle detection")
+    ->  pass(Test)
+    ;   fail_test(Test, 'TransitiveParentDistance walker has wrong shape or missing cycle caveat')
+    ).
+
+test_kernel_dispatch_emits_transitive_parent_distance_module :-
+    % End-to-end: detector recognises kdpd/4 as
+    % transitive_parent_distance4, dispatch wrapper emits with the
+    % correct shape (calls collect_triples, branches on agg_value_reg
+    % across reg 2/3/4 for findall slicing, binds three regs in
+    % driver-direct mode).
+    Test = 'Kernel dispatch: transitive_parent_distance4 kernel emits Probe.Kdpd dispatch module',
+    setup_kernel_fixtures,
+    wam_target:compile_predicate_to_wam(user:kdpd/4, [], PdWam),
+    write_wam_elixir_project([kdpd/4-PdWam],
+        [module_name(probe), emit_mode(lowered),
+         intra_query_parallel(false),
+         kernel_dispatch(true), source_module(user)],
+        '/tmp/test_kernel_disp_pd'),
+    read_file_to_string('/tmp/test_kernel_disp_pd/lib/kdpd.ex', S, []),
+    (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.TransitiveParentDistance"),
+        sub_string(S, _, _, _, "collect_triples("),
+        % Aggregate-frame slicing for three registers (2/3/4).
+        sub_string(S, _, _, _, "agg_cp.agg_value_reg"),
+        sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
+        % Driver-direct binding of all three (target, parent, distance).
+        sub_string(S, _, _, _, "bind_three_regs(state, "),
+        sub_string(S, _, _, _, "split_at_aggregate_cp(state)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'transitive_parent_distance4 dispatch module missing expected shape')
+    ).
+
+test_shared_detector_finds_transitive_parent_distance :-
+    Test = 'Shared detector: kdpd/4 with canonical transitive_parent_distance shape detected',
+    setup_kernel_fixtures,
+    functor(Head, kdpd, 4),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   detect_recursive_kernel(kdpd, 4, Clauses,
+            recursive_kernel(transitive_parent_distance4, kdpd/4, ConfigOps)),
+        member(edge_pred(kdedge/2), ConfigOps)
+    ->  pass(Test)
+    ;   fail_test(Test, 'kdpd/4 not detected as transitive_parent_distance4 by shared detector')
+    ).
+
+test_graph_kernel_transitive_step_parent_distance_emitted_in_runtime :-
+    % Third missing kernel after PRs #1822/#1823. Reuses
+    % TransitiveParentDistance for the inner walk; tags every result
+    % with the FIRST hop taken from start. Same no-cycle-detection
+    % contract as transitive_parent_distance4.
+    Test = 'GraphKernel TransitiveStepParentDistance: runtime emits WamRuntime.GraphKernel.TransitiveStepParentDistance',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.GraphKernel.TransitiveStepParentDistance do'),
+        sub_string(RuntimeCode, _, _, _, 'def collect_quads('),
+        sub_string(RuntimeCode, _, _, _, 'def collect_quads_from_source(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'GraphKernel.TransitiveStepParentDistance module missing expected API')
+    ).
+
+test_graph_kernel_tspd_reuses_parent_distance_walker :-
+    % Documents the implementation strategy: instead of writing a
+    % third walker, this kernel reuses TransitiveParentDistance's
+    % collect_triples and decorates results with the first-hop step.
+    % Negative invariant: there should NOT be a separate `walk` defp
+    % inside TSPD module body — it shouldnt have its own DFS walker.
+    Test = 'GraphKernel TransitiveStepParentDistance: reuses TransitiveParentDistance.collect_triples',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    Pattern = "defmodule WamRuntime.GraphKernel.TransitiveStepParentDistance do",
+    EndPattern = "defmodule WamRuntime.GraphKernel.CategoryAncestor do",
+    (   sub_string(RuntimeCode, Start, _, _, Pattern),
+        sub_string(RuntimeCode, End, _, _, EndPattern),
+        End > Start,
+        BodyLen is End - Start,
+        sub_string(RuntimeCode, Start, BodyLen, _, Body),
+        % Calls TransitiveParentDistance.collect_triples for the inner walk.
+        sub_string(Body, _, _, _, "WamRuntime.GraphKernel.TransitiveParentDistance.collect_triples"),
+        % Emits the depth-1 base case: {next, next, start, 1}.
+        sub_string(Body, _, _, _, "{next, next, start, 1}"),
+        % Bumps inner triples by 1 (dist + 1).
+        sub_string(Body, _, _, _, "dist + 1"),
+        % Documents the cycle caveat (inherited from
+        % TransitiveParentDistance).
+        sub_string(Body, _, _, _, "NO cycle detection")
+    ->  pass(Test)
+    ;   fail_test(Test, 'TransitiveStepParentDistance does not reuse the parent_distance walker correctly')
+    ).
+
+test_kernel_dispatch_emits_transitive_step_parent_distance_module :-
+    % End-to-end: detector recognises kdsp/5 as
+    % transitive_step_parent_distance5, dispatch wrapper emits
+    % FOUR-register binding (target, step, parent, distance).
+    Test = 'Kernel dispatch: transitive_step_parent_distance5 kernel emits Probe.Kdsp dispatch module',
+    setup_kernel_fixtures,
+    wam_target:compile_predicate_to_wam(user:kdsp/5, [], SpWam),
+    write_wam_elixir_project([kdsp/5-SpWam],
+        [module_name(probe), emit_mode(lowered),
+         intra_query_parallel(false),
+         kernel_dispatch(true), source_module(user)],
+        '/tmp/test_kernel_disp_sp'),
+    read_file_to_string('/tmp/test_kernel_disp_sp/lib/kdsp.ex', S, []),
+    (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.TransitiveStepParentDistance"),
+        sub_string(S, _, _, _, "collect_quads("),
+        % Aggregate-frame slicing for FOUR registers (2/3/4/5).
+        sub_string(S, _, _, _, "agg_cp.agg_value_reg"),
+        sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
+        % Driver-direct binding of all four (target, step, parent, distance).
+        sub_string(S, _, _, _, "bind_four_regs(state, "),
+        sub_string(S, _, _, _, "split_at_aggregate_cp(state)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'transitive_step_parent_distance5 dispatch module missing expected shape')
+    ).
+
+test_shared_detector_finds_transitive_step_parent_distance :-
+    Test = 'Shared detector: kdsp/5 with canonical transitive_step_parent_distance shape detected',
+    setup_kernel_fixtures,
+    functor(Head, kdsp, 5),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   detect_recursive_kernel(kdsp, 5, Clauses,
+            recursive_kernel(transitive_step_parent_distance5, kdsp/5, ConfigOps)),
+        member(edge_pred(kdedge/2), ConfigOps)
+    ->  pass(Test)
+    ;   fail_test(Test, 'kdsp/5 not detected as transitive_step_parent_distance5 by shared detector')
+    ).
+
+test_graph_kernel_weighted_shortest_path_emitted_in_runtime :-
+    % First weighted-graph kernel (after the four unweighted DFS
+    % kernels in PRs #1799/#1803/#1822/#1823/#1824). Dijkstra via
+    % :gb_sets priority queue. Same testing posture as the
+    % unweighted kernels: emit-and-grep on the runtime + dispatch
+    % wrapper, then end-to-end smoke test against the runtime.
+    Test = 'GraphKernel WeightedShortestPath: runtime emits WamRuntime.GraphKernel.WeightedShortestPath',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.GraphKernel.WeightedShortestPath do'),
+        sub_string(RuntimeCode, _, _, _, 'def collect_path_costs('),
+        sub_string(RuntimeCode, _, _, _, 'def collect_path_costs_from_source(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'GraphKernel.WeightedShortestPath module missing expected API')
+    ).
+
+test_graph_kernel_wsp_uses_gb_sets_priority_queue :-
+    % BEAMs natural min-heap is :gb_sets ordered by Erlang term
+    % comparison ({cost, node} tuples sort by cost first, then node).
+    % :gb_sets.take_smallest/1 is the pop primitive. Without a real
+    % priority queue Dijkstra is O(V^2); with it we get O((V+E) log V).
+    Test = 'GraphKernel WeightedShortestPath: uses :gb_sets priority queue for Dijkstra',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    Pattern = "defmodule WamRuntime.GraphKernel.WeightedShortestPath do",
+    EndPattern = "defmodule WamRuntime.GraphKernel.CategoryAncestor do",
+    (   sub_string(RuntimeCode, Start, _, _, Pattern),
+        sub_string(RuntimeCode, End, _, _, EndPattern),
+        End > Start,
+        BodyLen is End - Start,
+        sub_string(RuntimeCode, Start, BodyLen, _, Body),
+        % Min-heap construction + pop.
+        sub_string(Body, _, _, _, ":gb_sets.singleton({0, start})"),
+        sub_string(Body, _, _, _, ":gb_sets.take_smallest(heap)"),
+        % Stale-entry skip (the canonical Dijkstra optimisation).
+        sub_string(Body, _, _, _, "if cost > best do"),
+        % Documents the semantic narrowing (all-paths -> shortest).
+        sub_string(Body, _, _, _, "semantic narrowing"),
+        sub_string(Body, _, _, _, "computes only the SHORTEST")
+    ->  pass(Test)
+    ;   fail_test(Test, 'WeightedShortestPath kernel missing :gb_sets primitives or semantic-narrowing note')
+    ).
+
+test_kernel_dispatch_emits_weighted_shortest_path_module :-
+    % End-to-end: detector recognises kdwsp/3 as
+    % weighted_shortest_path3, dispatch wrapper emits with two-register
+    % binding (target, cost) and 3-arity edge predicate ("kdweighted_edge/3").
+    Test = 'Kernel dispatch: weighted_shortest_path3 kernel emits Probe.Kdwsp dispatch module',
+    setup_kernel_fixtures,
+    wam_target:compile_predicate_to_wam(user:kdwsp/3, [], WspWam),
+    write_wam_elixir_project([kdwsp/3-WspWam],
+        [module_name(probe), emit_mode(lowered),
+         intra_query_parallel(false),
+         kernel_dispatch(true), source_module(user)],
+        '/tmp/test_kernel_disp_wsp'),
+    read_file_to_string('/tmp/test_kernel_disp_wsp/lib/kdwsp.ex', S, []),
+    (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.WeightedShortestPath"),
+        sub_string(S, _, _, _, "collect_path_costs("),
+        % 3-arity edge predicate indicator: weighted_edge/3
+        sub_string(S, _, _, _, "kdweighted_edge/3"),
+        % Aggregate-frame slicing for two regs (target=2, cost=3).
+        sub_string(S, _, _, _, "agg_cp.agg_value_reg"),
+        sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
+        % Driver-direct binding of both regs.
+        sub_string(S, _, _, _, "bind_two_regs(state, "),
+        sub_string(S, _, _, _, "split_at_aggregate_cp(state)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'weighted_shortest_path3 dispatch module missing expected shape')
+    ).
+
+test_shared_detector_finds_weighted_shortest_path :-
+    Test = 'Shared detector: kdwsp/3 with canonical weighted_shortest_path shape detected',
+    setup_kernel_fixtures,
+    functor(Head, kdwsp, 3),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   detect_recursive_kernel(kdwsp, 3, Clauses,
+            recursive_kernel(weighted_shortest_path3, kdwsp/3, ConfigOps)),
+        member(edge_pred(kdweighted_edge/3), ConfigOps)
+    ->  pass(Test)
+    ;   fail_test(Test, 'kdwsp/3 not detected as weighted_shortest_path3 by shared detector')
+    ).
+
+test_graph_kernel_astar_shortest_path_emitted_in_runtime :-
+    % Final kernel — closes the 7-of-7 coverage table. Builds on
+    % WSPs Dijkstra primitives (:gb_sets priority queue + dist map)
+    % adding a heuristic estimate and early termination.
+    Test = 'GraphKernel AstarShortestPath: runtime emits WamRuntime.GraphKernel.AstarShortestPath',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.GraphKernel.AstarShortestPath do'),
+        sub_string(RuntimeCode, _, _, _, 'def collect_path_costs('),
+        sub_string(RuntimeCode, _, _, _, 'def collect_path_costs_from_source(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'GraphKernel.AstarShortestPath module missing expected API')
+    ).
+
+test_graph_kernel_astar_uses_minkowski_f_cost :-
+    % UnifyWeavers A* uses Minkowski-style f(n) = g^D + h^D, NOT the
+    % standard f = g + h. Per Rusts reference impl which documents
+    % "By Minkowski inequality this is admissible and tighter than L1
+    % A*". The kernel must use :math.pow for both g and h to preserve
+    % this contract.
+    Test = 'GraphKernel AstarShortestPath: f-cost uses Minkowski g^D + h^D (NOT g + h)',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    Pattern = "defmodule WamRuntime.GraphKernel.AstarShortestPath do",
+    EndPattern = "defmodule WamRuntime.GraphKernel.CategoryAncestor do",
+    (   sub_string(RuntimeCode, Start, _, _, Pattern),
+        sub_string(RuntimeCode, End, _, _, EndPattern),
+        End > Start,
+        BodyLen is End - Start,
+        sub_string(RuntimeCode, Start, BodyLen, _, Body),
+        % Minkowski f-cost helper.
+        sub_string(Body, _, _, _, ":math.pow(g, dim) + :math.pow(h, dim)"),
+        % Stale-entry skip + early termination on target.
+        sub_string(Body, _, _, _, "g_cost > best"),
+        sub_string(Body, _, _, _, "target != nil and node == target"),
+        % Documents the Minkowski narrowing.
+        sub_string(Body, _, _, _, "Minkowski-style f-cost"),
+        % :gb_sets primitives reused from WSP.
+        sub_string(Body, _, _, _, ":gb_sets.take_smallest(heap)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'AstarShortestPath kernel missing Minkowski f-cost or A* primitives')
+    ).
+
+test_kernel_dispatch_emits_astar_shortest_path_module :-
+    % End-to-end: detector recognises kdastar/4 as
+    % astar_shortest_path4 (with the user-asserted direct_dist_pred
+    % and dimensionality facts), dispatch wrapper emits with TWO
+    % FactSource lookups + two-register binding (target=2, cost=4),
+    % skipping target rebinding when bound on entry.
+    Test = 'Kernel dispatch: astar_shortest_path4 kernel emits Probe.Kdastar dispatch module',
+    setup_kernel_fixtures,
+    wam_target:compile_predicate_to_wam(user:kdastar/4, [], AstarWam),
+    write_wam_elixir_project([kdastar/4-AstarWam],
+        [module_name(probe), emit_mode(lowered),
+         intra_query_parallel(false),
+         kernel_dispatch(true), source_module(user)],
+        '/tmp/test_kernel_disp_astar'),
+    read_file_to_string('/tmp/test_kernel_disp_astar/lib/kdastar.ex', S, []),
+    (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.AstarShortestPath"),
+        sub_string(S, _, _, _, "collect_path_costs("),
+        % TWO FactSource lookups (forward + heuristic).
+        sub_string(S, _, _, _, "weighted_handle = WamRuntime.FactSourceRegistry.lookup!"),
+        sub_string(S, _, _, _, "direct_handle = WamRuntime.FactSourceRegistry.lookup!"),
+        % Edge indicator is /3.
+        sub_string(S, _, _, _, "kdweighted_edge/3"),
+        % Compile-time dim default attribute.
+        sub_string(S, _, _, _, "@default_dim 5"),
+        % Aggregate-frame slicing for two regs (target=2, cost=4).
+        sub_string(S, _, _, _, "agg_cp.agg_value_reg"),
+        sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
+        % Driver-direct binding: target may be already bound on entry.
+        sub_string(S, _, _, _, "bind_target_and_cost(state, "),
+        sub_string(S, _, _, _, "split_at_aggregate_cp(state)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'astar_shortest_path4 dispatch module missing expected shape')
+    ).
+
+test_shared_detector_finds_astar_shortest_path :-
+    Test = 'Shared detector: kdastar/4 with canonical astar_shortest_path shape detected',
+    setup_kernel_fixtures,
+    functor(Head, kdastar, 4),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   detect_recursive_kernel(kdastar, 4, Clauses,
+            recursive_kernel(astar_shortest_path4, kdastar/4, ConfigOps)),
+        member(edge_pred(kdweighted_edge/3), ConfigOps),
+        member(direct_dist_pred(kdweighted_edge/3), ConfigOps),
+        member(dimensionality(5), ConfigOps)
+    ->  pass(Test)
+    ;   fail_test(Test, 'kdastar/4 not detected as astar_shortest_path4 by shared detector')
     ).
 
 test_graph_kernel_tc_uses_visited_tracking :-
@@ -2009,11 +2797,43 @@ run_tests :-
     test_lmdb_adaptor_emitted_in_runtime,
     test_lmdb_adaptor_uses_indirect_module_resolution,
     test_lmdb_adaptor_targets_safe_keyvalue_api,
+    test_lmdb_int_ids_adaptor_emitted_in_runtime,
+    test_lmdb_int_ids_adaptor_uses_indirect_module_resolution,
+    test_lmdb_int_ids_design_proposal_referenced,
+    test_lmdb_int_ids_ingest_pairs_emitted,
+    test_lmdb_int_ids_migrate_from_string_keyed_emitted,
+    test_lmdb_int_ids_mock_e2e,
+    test_lmdb_int_ids_real_lmdb_e2e,
     test_shared_detector_finds_tc,
     test_shared_detector_finds_category_ancestor,
     test_kernel_dispatch_emits_tc_module,
     test_kernel_dispatch_emits_category_ancestor_module,
+    test_kernel_dispatch_uses_fold_form_in_aggregate_frame,
+    test_runtime_emits_fold_hops,
+    test_runtime_emits_aggregate_push_one,
+    test_runtime_emits_split_at_aggregate_cp,
+    test_kernel_docstring_documents_integer_id_path,
     test_graph_kernel_tc_emitted_in_runtime,
+    test_graph_kernel_transitive_distance_emitted_in_runtime,
+    test_graph_kernel_transitive_distance_uses_per_path_visited,
+    test_kernel_dispatch_emits_transitive_distance_module,
+    test_shared_detector_finds_transitive_distance,
+    test_graph_kernel_transitive_parent_distance_emitted_in_runtime,
+    test_graph_kernel_transitive_parent_distance_no_visited_set,
+    test_kernel_dispatch_emits_transitive_parent_distance_module,
+    test_shared_detector_finds_transitive_parent_distance,
+    test_graph_kernel_transitive_step_parent_distance_emitted_in_runtime,
+    test_graph_kernel_tspd_reuses_parent_distance_walker,
+    test_kernel_dispatch_emits_transitive_step_parent_distance_module,
+    test_shared_detector_finds_transitive_step_parent_distance,
+    test_graph_kernel_weighted_shortest_path_emitted_in_runtime,
+    test_graph_kernel_wsp_uses_gb_sets_priority_queue,
+    test_kernel_dispatch_emits_weighted_shortest_path_module,
+    test_shared_detector_finds_weighted_shortest_path,
+    test_graph_kernel_astar_shortest_path_emitted_in_runtime,
+    test_graph_kernel_astar_uses_minkowski_f_cost,
+    test_kernel_dispatch_emits_astar_shortest_path_module,
+    test_shared_detector_finds_astar_shortest_path,
     test_graph_kernel_tc_uses_visited_tracking,
     test_graph_kernel_tc_factsource_bridge,
     test_intern_atoms_default_off,

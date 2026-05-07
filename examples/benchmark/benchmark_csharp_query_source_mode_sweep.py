@@ -31,6 +31,8 @@ WORKLOAD_SCRIPTS = {
     "weighted-shortest-path": BENCHMARK_DIR / "benchmark_weighted_shortest_path_cross_target.py",
 }
 
+DEFAULT_WORKLOADS = "all"
+
 
 @dataclass
 class SourceModeSummary:
@@ -40,6 +42,7 @@ class SourceModeSummary:
     auto_vs_best: str
     output_agreement: str
     median_summary: str
+    resolved_source_mode_summary: str
     source_registration_summary: str
 
 
@@ -47,8 +50,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--workloads",
-        default="category-influence,dependency-depth",
-        help="Comma-separated workloads, or 'all'.",
+        default=DEFAULT_WORKLOADS,
+        help="Comma-separated workloads, or 'all' for every registered graph workload.",
     )
     parser.add_argument("--scales", default="300")
     parser.add_argument(
@@ -62,6 +65,20 @@ def parse_args() -> argparse.Namespace:
         "--trace",
         action="store_true",
         help="Set UNIFYWEAVER_BENCH_TRACE=1 for the child benchmark runners.",
+    )
+    parser.add_argument(
+        "--max-auto-vs-best-ratio",
+        type=float,
+        default=None,
+        help=(
+            "Fail when any output-matching summary reports auto_vs_best above this ratio. "
+            "Omit to report only."
+        ),
+    )
+    parser.add_argument(
+        "--fail-on-output-mismatch",
+        action="store_true",
+        help="Fail when any swept C# query source mode produces a different output hash.",
     )
     return parser.parse_args()
 
@@ -86,6 +103,7 @@ def parse_workloads(value: str) -> list[str]:
 def parse_runner_output(workload: str, output: str) -> list[SourceModeSummary]:
     medians: dict[str, dict[str, str]] = {}
     hashes: dict[str, dict[str, str]] = {}
+    resolved_source_modes: dict[str, dict[str, str]] = {}
     source_registrations: dict[str, dict[str, str]] = {}
     best_modes: dict[str, str] = {}
     auto_vs_best: dict[str, str] = {}
@@ -101,6 +119,10 @@ def parse_runner_output(workload: str, output: str) -> list[SourceModeSummary]:
             scale = parts[0]
             target = parts[1][:-len("-metrics")]
             source_mode = target.split(":", 1)[1]
+            metrics = parse_metric_tokens(parts[2])
+            resolved_mode = metrics.get("resolved_source_mode")
+            if resolved_mode:
+                resolved_source_modes.setdefault(scale, {})[source_mode] = resolved_mode
             registrations = summarize_source_registration_tokens(parts[2])
             if registrations:
                 source_registrations.setdefault(scale, {})[source_mode] = registrations
@@ -123,6 +145,10 @@ def parse_runner_output(workload: str, output: str) -> list[SourceModeSummary]:
             f"{mode}:{registrations}"
             for mode, registrations in sorted(source_registrations.get(scale, {}).items())
         )
+        resolved_summary = ",".join(
+            f"{mode}:{resolved}"
+            for mode, resolved in sorted(resolved_source_modes.get(scale, {}).items())
+        )
         summaries.append(
             SourceModeSummary(
                 workload=workload,
@@ -131,20 +157,67 @@ def parse_runner_output(workload: str, output: str) -> list[SourceModeSummary]:
                 auto_vs_best=auto_vs_best.get(scale, ""),
                 output_agreement=output_agreement,
                 median_summary=median_summary,
+                resolved_source_mode_summary=resolved_summary,
                 source_registration_summary=registration_summary,
             )
         )
     return summaries
 
 
-def summarize_source_registration_tokens(metrics: str) -> str:
-    registrations: list[str] = []
+def parse_metric_tokens(metrics: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
     for token in metrics.split():
-        if not token.startswith("source_registration_") or "=" not in token:
+        if "=" not in token:
             continue
         key, value = token.split("=", 1)
+        parsed[key] = value
+    return parsed
+
+
+def summarize_source_registration_tokens(metrics: str) -> str:
+    registrations: list[str] = []
+    for key, value in parse_metric_tokens(metrics).items():
+        if not key.startswith("source_registration_"):
+            continue
         registrations.append(f"{key[len('source_registration_'):]}={value}")
     return "|".join(sorted(registrations))
+
+
+def parse_ratio(value: str) -> float | None:
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("x"):
+        text = text[:-1]
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def calibration_failures(
+    summaries: list[SourceModeSummary],
+    *,
+    max_auto_vs_best_ratio: float | None = None,
+    fail_on_output_mismatch: bool = False,
+) -> list[str]:
+    failures: list[str] = []
+    for summary in summaries:
+        label = f"{summary.workload}/{summary.scale}"
+        if fail_on_output_mismatch and summary.output_agreement != "match":
+            failures.append(f"{label}: source-mode outputs {summary.output_agreement}")
+        ratio = parse_ratio(summary.auto_vs_best)
+        if (
+            max_auto_vs_best_ratio is not None
+            and ratio is not None
+            and summary.output_agreement == "match"
+            and ratio > max_auto_vs_best_ratio
+        ):
+            failures.append(
+                f"{label}: auto_vs_best {summary.auto_vs_best} exceeds "
+                f"{max_auto_vs_best_ratio:.2f}x"
+            )
+    return failures
 
 
 def run_workload(
@@ -181,22 +254,24 @@ def run_workload(
 
 
 def print_tsv(summaries: list[SourceModeSummary]) -> None:
-    print("workload\tscale\tbest_source_mode\tauto_vs_best\toutput_agreement\tmedian_s_by_mode\tsource_registrations_by_mode")
+    print("workload\tscale\tbest_source_mode\tauto_vs_best\toutput_agreement\tmedian_s_by_mode\tresolved_source_modes_by_mode\tsource_registrations_by_mode")
     for summary in summaries:
         print(
             f"{summary.workload}\t{summary.scale}\t{summary.best_source_mode}\t"
             f"{summary.auto_vs_best}\t{summary.output_agreement}\t{summary.median_summary}\t"
+            f"{summary.resolved_source_mode_summary}\t"
             f"{summary.source_registration_summary}"
         )
 
 
 def print_markdown(summaries: list[SourceModeSummary]) -> None:
-    print("| Workload | Scale | Best source mode | Auto vs best | Outputs | Median seconds by mode | Source registrations by mode |")
-    print("| --- | --- | --- | ---: | --- | --- | --- |")
+    print("| Workload | Scale | Best source mode | Auto vs best | Outputs | Median seconds by mode | Resolved source modes by mode | Source registrations by mode |")
+    print("| --- | --- | --- | ---: | --- | --- | --- | --- |")
     for summary in summaries:
         print(
             f"| {summary.workload} | {summary.scale} | {summary.best_source_mode} | "
             f"{summary.auto_vs_best} | {summary.output_agreement} | `{summary.median_summary}` | "
+            f"`{summary.resolved_source_mode_summary}` | "
             f"`{summary.source_registration_summary}` |"
         )
 
@@ -225,6 +300,16 @@ def main() -> int:
         print_markdown(summaries)
     else:
         print_tsv(summaries)
+
+    failures = calibration_failures(
+        summaries,
+        max_auto_vs_best_ratio=args.max_auto_vs_best_ratio,
+        fail_on_output_mismatch=args.fail_on_output_mismatch,
+    )
+    if failures:
+        for failure in failures:
+            print(f"ERROR: {failure}", file=sys.stderr)
+        return 1
     return 0
 
 

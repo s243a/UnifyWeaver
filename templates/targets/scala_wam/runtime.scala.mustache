@@ -601,7 +601,7 @@ object WamRuntime {
   def getReg(s: WamState, idx: Int): WamTerm = {
     if (isYReg(idx)) {
       val slot = idx - 200
-      s.envStack.headOption.flatMap(f => Option(f.savedRegs(slot))).getOrElse(null)
+      s.envStack.headOption.flatMap(f => Option(f.savedRegs(slot))).getOrElse(s.regs(idx))
     } else {
       s.regs(idx)
     }

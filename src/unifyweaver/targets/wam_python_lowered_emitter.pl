@@ -24,6 +24,7 @@
 	emit_lowered_python/4,           % +FunctorArity, +Instrs, +Options, -Lines
 	is_deterministic_pred_py/1,      % +Instrs
 	python_func_name/2,              % +Functor/Arity, -PythonName
+	parse_wam_text_py/2,             % +WamText, -Instrs
 	is_match_instr_py/1,             % +Instr
 	is_ite_block_py/2,               % +Instrs, -Blocks
 	emit_ite_block_py/5              % +FuncName, +Blocks, +Indent, +Opts, -Lines
@@ -52,6 +53,7 @@ choice_point_instr(trust_me).
 choice_point_instr(try(_)).
 choice_point_instr(retry(_)).
 choice_point_instr(trust(_)).
+choice_point_instr(call_indexed_atom_fact2(_)).
 
 % ============================================================================
 % Function name generation
@@ -80,6 +82,42 @@ sanitize_code(C, C) :-
 	),
 	!.
 sanitize_code(_, 0'_).
+
+constant_atom_py(C, Atom) :-
+	(   atom(C)
+	->  Atom = C
+	;   string(C)
+	->  atom_string(Atom, C)
+	;   term_string(C, S),
+	    atom_string(Atom, S)
+	).
+
+constant_number_py(C, Number) :-
+	constant_atom_py(C, Atom),
+	catch(atom_number(Atom, Number), _, fail).
+
+constant_term_py(C, Term) :-
+	(   constant_number_py(C, Number)
+	->  (   integer(Number)
+	    ->  format(string(Term), "Int(~w)", [Number])
+	    ;   format(string(Term), "Float(~w)", [Number])
+	    )
+	;   escape_py(C, EC),
+	    format(string(Term), "Atom(\"~w\")", [EC])
+	).
+
+constant_match_condition_py(C, VarExpr, Cond) :-
+	(   constant_number_py(C, Number)
+	->  (   integer(Number)
+	    ->  format(string(Cond), 'isinstance(~w, Int) and ~w.n == ~w',
+	            [VarExpr, VarExpr, Number])
+	    ;   format(string(Cond), 'isinstance(~w, Float) and ~w.f == ~w',
+	            [VarExpr, VarExpr, Number])
+	    )
+	;   escape_py(C, EC),
+	    format(string(Cond), 'isinstance(~w, Atom) and ~w.name == "~w"',
+	        [VarExpr, VarExpr, EC])
+	).
 
 % ============================================================================
 % WAM text parsing (shared pattern with other emitters)
@@ -141,9 +179,23 @@ instr_from_parts_py(["fail"], fail).
 instr_from_parts_py(["halt"], halt).
 instr_from_parts_py(["allocate"], allocate).
 instr_from_parts_py(["deallocate"], deallocate).
+instr_from_parts_py(["try_me_else", Label], try_me_else(Label)).
+instr_from_parts_py(["retry_me_else", Label], retry_me_else(Label)).
+instr_from_parts_py(["trust_me"], trust_me).
+instr_from_parts_py(["try", Label], try(Label)).
+instr_from_parts_py(["retry", Label], retry(Label)).
+instr_from_parts_py(["trust", Label], trust(Label)).
 instr_from_parts_py(["is", Target, Expr], is(Target, Expr)).
 instr_from_parts_py(["builtin_call", Op, Ar], builtin_call(Op, Ar)).
 instr_from_parts_py(["call_foreign", Pred, Ar], call_foreign(Pred, Ar)).
+instr_from_parts_py(["call_indexed_atom_fact2", Pred], call_indexed_atom_fact2(Pred)).
+instr_from_parts_py(["base_category_ancestor", CatReg, TargetReg, VisitedReg],
+	base_category_ancestor(CatReg, TargetReg, VisitedReg)).
+instr_from_parts_py(["base_category_ancestor_bind", CatReg, TargetReg, HopsReg, VisitedReg],
+	base_category_ancestor_bind(CatReg, TargetReg, HopsReg, VisitedReg)).
+instr_from_parts_py(["recurse_category_ancestor", MidReg, RootReg, ChildHopsReg, VisitedReg, Pred, Skip],
+	recurse_category_ancestor(MidReg, RootReg, ChildHopsReg, VisitedReg, Pred, Skip)).
+instr_from_parts_py(["return_add1", OutReg, InReg], return_add1(OutReg, InReg)).
 instr_from_parts_py(["neck_cut"], neck_cut).
 instr_from_parts_py(["get_level", Yn], get_level(Yn)).
 instr_from_parts_py(["cut", Yn], cut(Yn)).
@@ -267,10 +319,8 @@ match_instrs_to_condition_py([Instr|Rest], Cond) :-
 %  Generate a Python condition for a single match instruction.
 single_match_condition_py(get_constant(C, AiStr), Cond) :-
 	reg_int_py(AiStr, Ai),
-	escape_py(C, EC),
-	format(string(Cond),
-		'isinstance(_a~w, Var) or (isinstance(_a~w, Atom) and _a~w.name == "~w")',
-		[Ai, Ai, Ai, EC]).
+	format(string(VarExpr), "_a~w", [Ai]),
+	constant_match_condition_py(C, VarExpr, Cond).
 single_match_condition_py(get_integer(NStr, AiStr), Cond) :-
 	reg_int_py(AiStr, Ai),
 	format(string(Cond),
@@ -316,12 +366,12 @@ match_instrs_to_binding_py([Instr|Rest], Indent, Lines) :-
 %% single_match_binding_py(+Instr, +Indent, -Lines)
 single_match_binding_py(get_constant(C, AiStr), Indent, Lines) :-
 	reg_int_py(AiStr, Ai),
-	escape_py(C, EC),
+	constant_term_py(C, Term),
 	Indent1 is Indent + 4,
 	indent_str(Indent1, Pad),
 	format(string(DerefLine), "~w_a~w = deref(state.regs[~w], state)", [Pad, Ai, Ai]),
-	format(string(BindLine), "~wif isinstance(_a~w, Var): bind(_a~w, Atom(\"~w\"), state)",
-		[Pad, Ai, Ai, EC]),
+	format(string(BindLine), "~wif isinstance(_a~w, Var): bind(_a~w, ~w, state)",
+		[Pad, Ai, Ai, Term]),
 	Lines = [DerefLine, BindLine].
 single_match_binding_py(get_integer(NStr, AiStr), Indent, Lines) :-
 	reg_int_py(AiStr, Ai),
@@ -476,12 +526,14 @@ emit_lowered_python(FunctorArity, WamCode, Options, Lines) :-
 
 emit_instr_py(get_constant(C, AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
-	escape_py(C, EC),
+	constant_term_py(C, Term),
+	format(string(VarExpr), "_a~w", [Ai]),
+	constant_match_condition_py(C, VarExpr, Cond),
 	format(string(Code),
 '    _a~w = deref(state.regs[~w], state)
-    if isinstance(_a~w, Var): bind(_a~w, Atom("~w"), state)
-    elif not (isinstance(_a~w, Atom) and _a~w.name == "~w"): return False',
-		[Ai, Ai, Ai, Ai, EC, Ai, Ai, EC]).
+    if isinstance(_a~w, Var): bind(_a~w, ~w, state)
+    elif not (~w): return False',
+		[Ai, Ai, Ai, Ai, Term, Cond]).
 
 emit_instr_py(get_variable(XnStr, AiStr), Code) :-
 	reg_int_py(XnStr, Xn), reg_int_py(AiStr, Ai),
@@ -583,9 +635,9 @@ emit_instr_py(put_unsafe_value(YnStr, AiStr), Code) :-
 
 emit_instr_py(put_constant(C, AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
-	escape_py(C, EC),
+	constant_term_py(C, Term),
 	format(string(Code),
-'    state.regs[~w] = Atom("~w")', [Ai, EC]).
+'    state.regs[~w] = ~w', [Ai, Term]).
 
 emit_instr_py(put_nil(AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
@@ -643,14 +695,15 @@ emit_instr_py(unify_value(XnStr), Code) :-
         heap_put(state, state.regs[~w])', [Xn, Xn]).
 
 emit_instr_py(unify_constant(C), Code) :-
-	escape_py(C, EC),
+	constant_term_py(C, Term),
+	constant_match_condition_py(C, "_h", Cond),
 	format(string(Code),
 '    if state.mode == "read":
         _h = deref(state.heap[state.s], state)
-        if isinstance(_h, Var): bind(_h, Atom("~w"), state)
-        elif not (isinstance(_h, Atom) and _h.name == "~w"): return False
+        if isinstance(_h, Var): bind(_h, ~w, state)
+        elif not (~w): return False
     else:
-        heap_put(state, Atom("~w"))', [EC, EC, EC]).
+        heap_put(state, ~w)', [Term, Cond, Term]).
 
 emit_instr_py(unify_nil, Code) :-
 	Code = '    if state.mode == "read":
@@ -724,6 +777,85 @@ emit_instr_py(call_foreign(PredStr, ArStr), Code) :-
 '    _args = [deref(state.regs[i+1], state) for i in range(~w)]
     if not execute_foreign("~w", ~w, _args, state): return False',
 		[ArStr, EP, ArStr]).
+
+emit_instr_py(call_indexed_atom_fact2(PredStr), Code) :-
+	escape_py(PredStr, EP),
+	format(string(Code),
+'    _key = deref(state.regs[1], state)
+    if not isinstance(_key, Atom): return False
+    _values = state.indexed_atom_fact2.get("~w", {}).get(_key.name, [])
+    if not _values: return False
+    if not unify(state.regs[2], Atom(_values[0]), state): return False', [EP]).
+
+emit_instr_py(base_category_ancestor(CatRegStr, TargetRegStr, VisitedRegStr), Code) :-
+	reg_int_py(CatRegStr, CatReg),
+	reg_int_py(TargetRegStr, TargetReg),
+	reg_int_py(VisitedRegStr, VisitedReg),
+	format(string(Code),
+'    _cat = deref(state.regs[~w], state)
+    _target = deref(state.regs[~w], state)
+    _visited = deref(state.regs[~w], state)
+    if not isinstance(_cat, Atom) or not isinstance(_target, Atom): return False
+    if _atom_in_cons_list(_target, _visited, state): return False
+    if _target.name not in state.indexed_atom_fact2.get("category_parent/2", {}).get(_cat.name, []): return False
+    pop_environment(state)
+    return True', [CatReg, TargetReg, VisitedReg]).
+
+emit_instr_py(base_category_ancestor_bind(CatRegStr, TargetRegStr, HopsRegStr, VisitedRegStr), Code) :-
+	reg_int_py(CatRegStr, CatReg),
+	reg_int_py(TargetRegStr, TargetReg),
+	reg_int_py(HopsRegStr, HopsReg),
+	reg_int_py(VisitedRegStr, VisitedReg),
+	format(string(Code),
+'    _cat = deref(state.regs[~w], state)
+    _target = deref(state.regs[~w], state)
+    _visited = deref(state.regs[~w], state)
+    if not isinstance(_cat, Atom) or not isinstance(_target, Atom): return False
+    if _atom_in_cons_list(_target, _visited, state): return False
+    if _target.name not in state.indexed_atom_fact2.get("category_parent/2", {}).get(_cat.name, []): return False
+    if not unify(state.regs[~w], Int(1), state): return False
+    pop_environment(state)
+    return True', [CatReg, TargetReg, VisitedReg, HopsReg]).
+
+emit_instr_py(recurse_category_ancestor(MidRegStr, RootRegStr, ChildHopsRegStr, VisitedRegStr, PredStr, _SkipStr), Code) :-
+	reg_int_py(MidRegStr, MidReg),
+	reg_int_py(RootRegStr, RootReg),
+	reg_int_py(ChildHopsRegStr, ChildHopsReg),
+	reg_int_py(VisitedRegStr, VisitedReg),
+	pred_to_func_name_py(PredStr, FN),
+	format(string(Code),
+'    _mid = deref(state.regs[~w], state)
+    _root = deref(state.regs[~w], state)
+    _visited = deref(state.regs[~w], state)
+    _child_hops = state.fresh_var()
+    state.regs[~w] = _child_hops
+    state.regs[1] = _mid
+    state.regs[2] = _root
+    state.regs[3] = _child_hops
+    state.regs[4] = Compound(".", [_mid, _visited])
+    if not ~w(state): return False', [MidReg, RootReg, VisitedReg, ChildHopsReg, FN]).
+
+emit_instr_py(return_add1(OutRegStr, InRegStr), Code) :-
+	reg_int_py(OutRegStr, OutReg),
+	reg_int_py(InRegStr, InReg),
+	format(string(Code),
+'    _in = deref(state.regs[~w], state)
+    if isinstance(_in, Int):
+        _result = Int(_in.n + 1)
+    elif isinstance(_in, Float):
+        _next = _in.f + 1.0
+        _result = Int(int(round(_next))) if abs(round(_next) - _next) < 1e-12 else Float(_next)
+    elif isinstance(_in, Atom):
+        try:
+            _next = float(_in.name) + 1.0
+            _result = Int(int(round(_next))) if abs(round(_next) - _next) < 1e-12 else Float(_next)
+        except (TypeError, ValueError):
+            return False
+    else:
+        return False
+    if not unify(state.regs[~w], _result, state): return False
+    pop_environment(state)
+    return True', [InReg, OutReg]).
 
 % --- Cut instructions ---
 

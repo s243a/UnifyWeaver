@@ -18,7 +18,8 @@
     write_wam_rust_project/3,            % +Predicates, +Options, +ProjectDir
     cargo_check_project/2,               % +ProjectDir, -Result
     detect_kernels/2,                    % +Predicates, -DetectedKernels
-    generate_setup_foreign_predicates_rust/2  % +DetectedKernels, -RustCode
+    generate_setup_foreign_predicates_rust/2, % +DetectedKernels, -RustCode
+    escape_rust_string/2
 ]).
 
 :- use_module(library(lists)).

@@ -158,14 +158,6 @@ compile_general_recursive_to_awk(Pred, Arity, Clauses, Options, AwkCode) :-
     ;   StepRelStr = "step",
         StepFacts = []
     ),
-    % Build BEGIN block with step data
-    findall(InitLine,
-        (   member(K-V, StepFacts),
-            format(string(InitLine),
-                '    ~w["~w"] = ~w["~w"] " ~w"',
-                [StepRelStr, K, StepRelStr, K, V])
-        ),
-        InitLines),
     % Also build individual edge lines for the fixpoint
     findall(EdgeLine,
         (   member(K-V, StepFacts),
@@ -174,7 +166,6 @@ compile_general_recursive_to_awk(Pred, Arity, Clauses, Options, AwkCode) :-
                 [K, FieldSep, V])
         ),
         EdgeLines),
-    atomic_list_concat(InitLines, '\n', InitBlock),
     atomic_list_concat(EdgeLines, '\n', EdgeBlock),
     length(StepFacts, NEdges),
     (   Arity =:= 3
@@ -2947,7 +2938,7 @@ awk_classified_output_goal(Goal, VarMap0, Line, VarMapOut) :-
     ->  ensure_var(VarMap0, Var, VarName, VarMapOut),
         awk_expr(ArithExpr, VarMap0, ExprStr),
         format(string(Line), '    ~w = ~w', [VarName, ExprStr])
-    ;   VarName = "_", VarMapOut = VarMap0,
+    ;   VarMapOut = VarMap0,
         Line = "    # unsupported output goal"
     ).
 

@@ -84,7 +84,7 @@ generate(FactsPath, OutputDir, KernelModeAtom) :-
         [module_name('wam-python-effective-distance-bench'),
          prefer_wam(true),
          wam_fallback(true),
-         emit_mode(functions),
+         emit_mode(lowered),
          parallel(true)],
         KernelOptions
     ], Options),

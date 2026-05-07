@@ -5,7 +5,8 @@
             parse_benchmark_data_mode/2,
             benchmark_effective_data_mode/3,
             collect_wam_predicates/2,
-            scala_effective_distance_runner_code/2
+            scala_effective_distance_runner_code/2,
+            scala_effective_distance_runner_code/4
           ]).
 :- initialization(main, main).
 
@@ -88,7 +89,7 @@ generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom, DataModeAtom) :-
     maybe_write_article_category_artifact(OutputDir, ArticleMode),
     scala_options(OutputDir, KernelModeAtom, DataMode, Options),
     write_wam_scala_project(Predicates, Options, OutputDir),
-    append_effective_distance_runner(OutputDir, ArticleMode),
+    append_effective_distance_runner(OutputDir, ArticleMode, KernelModeAtom),
     format(user_error,
            '[WAM-Scala-EffectiveDistance] facts=~w variant=~w kernels=~w data_mode=~w output=~w~n',
            [FactsPath, VariantAtom, KernelModeAtom, DataMode, OutputDir]).
@@ -193,13 +194,16 @@ scala_options(OutputDir, kernels_on, DataMode, Options) :-
         intern_atoms(Atoms),
         scala_fact_sources([FactSource])
     ].
-scala_options(_OutputDir, kernels_off, _DataMode, Options) :-
+scala_options(OutputDir, kernels_off, DataMode, Options) :-
+    benchmark_effective_data_mode(category_parent, DataMode, ParentMode),
     benchmark_atoms(Atoms),
+    scala_fact_source_for_category_parent(OutputDir, ParentMode, FactSource),
     Options = [
         package('generated.wam_scala_effective_distance.core'),
         runtime_package('generated.wam_scala_effective_distance.core'),
         module_name('wam-scala-effective-distance'),
-        intern_atoms(Atoms)
+        intern_atoms(Atoms),
+        scala_fact_sources([FactSource])
     ].
 
 scala_fact_source_for_category_parent(_OutputDir, inline, source(category_parent/2, Tuples)) :-
@@ -352,10 +356,11 @@ cleanup_generated_script_entrypoint :-
     ;   true
     ).
 
-append_effective_distance_runner(OutputDir, ArticleMode) :-
+append_effective_distance_runner(OutputDir, ArticleMode, KernelMode) :-
     scala_effective_distance_runner_code(
         'generated.wam_scala_effective_distance.core',
         ArticleMode,
+        KernelMode,
         Code),
     directory_file_path(OutputDir, 'src/main/scala/generated/wam_scala_effective_distance/core', SrcDir),
     make_directory_path(SrcDir),
@@ -366,10 +371,12 @@ append_effective_distance_runner(OutputDir, ArticleMode) :-
         close(Stream)).
 
 scala_effective_distance_runner_code(Package, Code) :-
-    scala_effective_distance_runner_code(Package, sidecar, Code).
+    scala_effective_distance_runner_code(Package, sidecar, kernels_off, Code).
 
-scala_effective_distance_runner_code(Package, ArticleMode, Code) :-
+scala_effective_distance_runner_code(Package, ArticleMode, KernelMode, Code) :-
     scala_article_loader_code(ArticleMode, ArticleLoaderCode),
+    scala_category_loader_code(KernelMode, CategoryLoaderCode),
+    scala_category_hops_code(KernelMode, CategoryHopsCode),
     format(string(Code), 'package ~w
 
 import scala.collection.mutable
@@ -381,6 +388,7 @@ object EffectiveDistanceRunner {
   private val inverseDimensionN = -1.0 / dimensionN
 
   final case class ResultRow(article: String, root: String, distance: Double)
+  private var parentsByChild: Map[String, Vector[String]] = Map.empty
 
   def main(args: Array[String]): Unit = {
     if (args.length < 2) {
@@ -393,6 +401,7 @@ object EffectiveDistanceRunner {
     val rootPath = edgePath.getParent.resolve("root_categories.tsv")
     val totalStart = System.nanoTime()
     val loadStart = System.nanoTime()
+~w
 ~w
     val roots = loadSingleColumn(rootPath)
     val categoriesByArticle = articleCategories.groupMap(_._1)(_._2)
@@ -413,7 +422,9 @@ object EffectiveDistanceRunner {
     val totalMs = elapsedMs(totalStart)
 
     Console.err.println("mode=scala_wam_effective_distance")
+    Console.err.println("kernel_mode=~w")
     Console.err.println(s"article_source_mode=$articleSourceMode")
+    Console.err.println(s"category_source_mode=$categorySourceMode")
     Console.err.println(s"load_ms=$loadMs")
     Console.err.println(s"query_ms=$queryMs")
     Console.err.println(s"aggregation_ms=$aggregationMs")
@@ -429,7 +440,9 @@ object EffectiveDistanceRunner {
     if (category == root) Seq(1.0)
     else categoryRootHops(category, root).map(hops => Math.pow(hops + 1.0, -dimensionN))
 
-  private def categoryRootHops(category: String, root: String): Seq[Int] = {
+~w
+
+  private def categoryRootHopsWam(category: String, root: String): Seq[Int] = {
     val startPc = GeneratedProgram.sharedProgram.dispatch("category_ancestor/4")
     val categoryTerm = atom(category)
     val rootTerm = atom(root)
@@ -505,7 +518,45 @@ object EffectiveDistanceRunner {
     finally source.close()
   }
 }
-', [Package, ArticleLoaderCode]).
+', [Package, ArticleLoaderCode, CategoryLoaderCode, KernelMode, CategoryHopsCode]).
+
+scala_category_loader_code(kernels_on, Code) :-
+    Code = '    val categoryDataPath = Paths.get(GeneratedProgram.getClass.getProtectionDomain.getCodeSource.getLocation.toURI).resolveSibling("data")
+    val categoryArtifactPath = categoryDataPath.resolve("category_parent_by_child.tsv")
+    val categorySourceMode =
+      if (java.nio.file.Files.exists(categoryArtifactPath)) "artifact"
+      else "tsv"
+    parentsByChild =
+      if (java.nio.file.Files.exists(categoryArtifactPath)) loadGroupedPairs(categoryArtifactPath).groupMap(_._1)(_._2)
+      else loadPairs(edgePath).groupMap(_._1)(_._2)'.
+scala_category_loader_code(_KernelMode, Code) :-
+    Code = '    val categorySourceMode = "wam"'.
+
+scala_category_hops_code(kernels_on, Code) :-
+    Code = '  private val maxDepth = 10
+
+  private def categoryRootHops(category: String, root: String): Seq[Int] =
+    nativeCategoryRootHops(category, root)
+
+  private def nativeCategoryRootHops(category: String, root: String): Vector[Int] = {
+    def dfs(current: String, visited: Set[String], depth: Int): Vector[Int] = {
+      val parents = parentsByChild.getOrElse(current, Vector.empty)
+      val direct = parents.iterator.filter(_ == root).map(_ => 1).toVector
+      val recursive =
+        if (depth >= maxDepth) Vector.empty
+        else {
+          parents.iterator
+            .filter(parent => parent != root && !visited(parent))
+            .flatMap(parent => dfs(parent, visited + parent, depth + 1).iterator.map(_ + 1))
+            .toVector
+        }
+      direct ++ recursive
+    }
+    dfs(category, Set(category), 1)
+  }'.
+scala_category_hops_code(_KernelMode, Code) :-
+    Code = '  private def categoryRootHops(category: String, root: String): Seq[Int] =
+    categoryRootHopsWam(category, root)'.
 
 scala_article_loader_code(artifact, Code) :-
     Code = '    val projectDataPath = Paths.get(GeneratedProgram.getClass.getProtectionDomain.getCodeSource.getLocation.toURI).resolveSibling("data")

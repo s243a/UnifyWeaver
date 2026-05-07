@@ -39,7 +39,7 @@
     compile_component/4
 ]).
 
-:- use_module('../../core/component_registry').
+:- use_module('../../core/component_registry', [register_component_type/4]).
 
 %% type_info(-Info)
 %
