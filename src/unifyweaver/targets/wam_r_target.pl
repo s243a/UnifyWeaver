@@ -177,7 +177,12 @@ wam_line_to_r_literal(Line, Lit) :-
 %  Same single-quote-aware tokenizer as the Scala target.
 tokenize_wam_line(Line, Tokens) :-
     string_chars(Line, Chars),
-    tokenize_wam_chars(Chars, [], [], outside, Tokens).
+    tokenize_wam_chars(Chars, [], [], outside, Tokens0),
+    % Drop empty tokens. These appear when a single-quoted atom is
+    % followed by a `,` separator; strip_operand_comma turns the bare
+    % comma into "" which would otherwise confuse pattern-matching in
+    % wam_parts_to_r.
+    exclude(=(""), Tokens0, Tokens).
 
 tokenize_wam_chars([], [], Acc, _, Tokens) :- !,
     reverse(Acc, Tokens).

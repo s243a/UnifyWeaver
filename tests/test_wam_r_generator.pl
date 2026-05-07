@@ -1125,6 +1125,76 @@ e2e_higherorder_listutil_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for I/O builtins (write/1, nl/0, writeln/1,
+% print/1, format/1, format/2) and between/3 (deterministic mode).
+% Asserts both the truth result AND the captured stdout.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(io_between_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_io_between_via_rscript
+    ;   true
+    )).
+
+e2e_io_between_via_rscript :-
+    assertz((user:io_w_basic   :- write(hello), nl)),
+    assertz((user:io_w_int     :- write(42), nl)),
+    assertz((user:io_writeln_a :- writeln(world))),
+    assertz((user:io_print_x   :- print(x), nl)),
+    assertz((user:io_format1   :- format("plain~n"))),
+    assertz((user:io_format2   :- format("~w + ~w = ~w~n", [2, 3, 5]))),
+    assertz((user:io_format_list :- format("list = ~w~n", [[a, b, c]]))),
+    assertz((user:io_format_struct :- format("term = ~w~n", [f(1, two)]))),
+    assertz((user:io_format_tilde  :- format("100~~ done~n"))),
+    % between/3
+    assertz((user:bt_in    :- between(1, 10, 5))),
+    assertz((user:bt_lo    :- between(5, 5, 5))),
+    assertz((user:bt_oob_h :- between(1, 10, 99))),
+    assertz((user:bt_oob_l :- between(1, 10, 0))),
+    assertz((user:bt_bad   :- between(10, 1, 5))),
+    assertz((user:bt_gen   :- between(3, 7, X), X =:= 3)),
+    unique_r_tmp_dir('tmp_r_io_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:io_w_basic/0, user:io_w_int/0, user:io_writeln_a/0,
+          user:io_print_x/0, user:io_format1/0, user:io_format2/0,
+          user:io_format_list/0, user:io_format_struct/0,
+          user:io_format_tilde/0,
+          user:bt_in/0, user:bt_lo/0, user:bt_oob_h/0, user:bt_oob_l/0,
+          user:bt_bad/0, user:bt_gen/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    % Truth-only checks (output content irrelevant for these).
+    Yes = [io_w_basic, io_w_int, io_writeln_a, io_print_x,
+           io_format1, io_format2, io_format_list, io_format_struct,
+           io_format_tilde,
+           bt_in, bt_lo, bt_gen],
+    No  = [bt_oob_h, bt_oob_l, bt_bad],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    % Output-content checks for the I/O family.
+    run_rscript_query(RDir, 'io_w_basic/0',       OB),
+    assertion(sub_string(OB, _, _, _, "hello\n")),
+    run_rscript_query(RDir, 'io_format2/0',       OF2),
+    assertion(sub_string(OF2, _, _, _, "2 + 3 = 5\n")),
+    run_rscript_query(RDir, 'io_format_list/0',   OFL),
+    assertion(sub_string(OFL, _, _, _, "list = [a,b,c]\n")),
+    run_rscript_query(RDir, 'io_format_struct/0', OFS),
+    assertion(sub_string(OFS, _, _, _, "term = f(1,two)\n")),
+    run_rscript_query(RDir, 'io_format_tilde/0',  OFT),
+    assertion(sub_string(OFT, _, _, _, "100~ done\n")),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-

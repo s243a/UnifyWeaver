@@ -82,6 +82,47 @@ wam_term_to_string <- function(v, table = NULL) {
   )
 }
 
+# Stateful pretty printer used by I/O builtins. Derefs every node and
+# renders cons cells (`[|]`/2 chains terminated by `[]`) as native list
+# notation. Improper lists fall back to the `[h1, ..., hn | tail]` form.
+WamRuntime$term_to_string <- function(state, term, table) {
+  v <- WamRuntime$deref(state, term)
+  if (is.null(v) || is.null(v$tag)) return("<null>")
+  switch(v$tag,
+    "atom"    = WamRuntime$string_of(table, v$id),
+    "int"     = as.character(v$val),
+    "float"   = as.character(v$val),
+    "unbound" = paste0("_", v$name),
+    "struct"  = {
+      head <- WamRuntime$string_of(table, v$fid)
+      if (head == "[|]" && length(v$args) == 2L) {
+        elems <- character(0)
+        cur <- v
+        while (TRUE) {
+          cur <- WamRuntime$deref(state, cur)
+          if (is.null(cur) || is.null(cur$tag)) break
+          if (cur$tag == "atom" && WamRuntime$string_of(table, cur$id) == "[]") {
+            return(paste0("[", paste(elems, collapse = ","), "]"))
+          }
+          if (cur$tag == "struct" && length(cur$args) == 2L &&
+              WamRuntime$string_of(table, cur$fid) == "[|]") {
+            elems <- c(elems, WamRuntime$term_to_string(state, cur$args[[1]], table))
+            cur <- cur$args[[2]]
+          } else {
+            return(paste0("[", paste(elems, collapse = ","), "|",
+                          WamRuntime$term_to_string(state, cur, table), "]"))
+          }
+        }
+        return(paste0("[", paste(elems, collapse = ","), "...]"))
+      }
+      args_str <- vapply(v$args, function(a)
+        WamRuntime$term_to_string(state, a, table), character(1))
+      paste0(head, "(", paste(args_str, collapse = ","), ")")
+    },
+    "<unknown>"
+  )
+}
+
 wam_member <- function(elem, lst) {
   for (x in lst) {
     if (identical(x, elem)) return(TRUE)
@@ -428,6 +469,42 @@ wam_term_name_string <- function(v, table) {
     "float" = as.character(v$val),
     NULL
   )
+}
+
+# Format-template processor used by format/1 and format/2. Supports the
+# common SWI control-sequence subset:
+#   ~w, ~a, ~p, ~q, ~d  -> consume one arg and write its string form
+#   ~n                  -> newline
+#   ~~                  -> literal '~'
+# Unknown directives are emitted verbatim. Returns NULL on missing args.
+WamRuntime$wam_format <- function(state, template, args, table) {
+  result <- ""
+  i <- 1L
+  arg_idx <- 1L
+  chars <- if (nchar(template) == 0L) character(0)
+           else strsplit(template, "", fixed = TRUE)[[1]]
+  n <- length(chars)
+  while (i <= n) {
+    c <- chars[i]
+    if (c == "~" && i < n) {
+      d <- chars[i + 1L]
+      if (d == "n") {
+        result <- paste0(result, "\n"); i <- i + 2L
+      } else if (d == "~") {
+        result <- paste0(result, "~");  i <- i + 2L
+      } else if (d %in% c("w", "a", "d", "p", "q")) {
+        if (arg_idx > length(args)) return(NULL)
+        result <- paste0(result, WamRuntime$term_to_string(state, args[[arg_idx]], table))
+        arg_idx <- arg_idx + 1L
+        i <- i + 2L
+      } else {
+        result <- paste0(result, c, d); i <- i + 2L
+      }
+    } else {
+      result <- paste0(result, c); i <- i + 1L
+    }
+  }
+  result
 }
 
 wam_compare_nums <- function(a, b) {
@@ -1129,6 +1206,18 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
     return(TRUE)
   }
 
+  # write/1 and nl/0: side-effecting I/O. Atoms / numbers print as
+  # their name string; structs render with the term_to_string pretty
+  # printer (cons cells become list notation).
+  if (pred == "write/1" && arity == 1L) {
+    cat(WamRuntime$term_to_string(state, WamRuntime$get_reg(state, 1L), table))
+    return(TRUE)
+  }
+  if (pred == "nl/0" && arity == 0L) {
+    cat("\n")
+    return(TRUE)
+  }
+
   # \+/1, not/1: negation as failure. Run the goal in a snapshot --
   # rolling back the trail, build state and choice points after --
   # then invert the outcome. Note: the WAM compiler emits not/1 as
@@ -1534,6 +1623,64 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
                               IntTerm(y_v$val - 1L)))
     }
     return(FALSE)
+  }
+
+  # ----- between/3: deterministic mode (test only) -----
+  # between(+Low, +High, +X) succeeds iff Low <= X <= High.
+  # The (+,+,-) enumerable mode unifies X with Low (the smallest valid
+  # value). Iterating across the range needs choice-point machinery
+  # this scaffold doesn't drive from inside library dispatches.
+  if (key == "between/3") {
+    lo_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    hi_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    x_v  <- WamRuntime$deref(state, WamRuntime$get_reg(state, 3L))
+    if (is.null(lo_v) || is.null(lo_v$tag) || lo_v$tag != "int") return(FALSE)
+    if (is.null(hi_v) || is.null(hi_v$tag) || hi_v$tag != "int") return(FALSE)
+    lo <- lo_v$val
+    hi <- hi_v$val
+    if (lo > hi) return(FALSE)
+    if (!is.null(x_v) && !is.null(x_v$tag) && x_v$tag == "int") {
+      return(x_v$val >= lo && x_v$val <= hi)
+    }
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L), IntTerm(lo)))
+  }
+
+  # ----- I/O: writeln/1, print/1, format/1, format/2 -----
+  # writeln/1 == write/1 + newline. print/1 is the same as write/1 in
+  # this scaffold (no portray/1 hook). format/N processes the template
+  # via WamRuntime$wam_format -- see that helper for supported
+  # control sequences.
+  if (key == "writeln/1") {
+    cat(WamRuntime$term_to_string(state, WamRuntime$get_reg(state, 1L), table), "\n", sep = "")
+    return(TRUE)
+  }
+  if (key == "print/1") {
+    cat(WamRuntime$term_to_string(state, WamRuntime$get_reg(state, 1L), table))
+    return(TRUE)
+  }
+  if (key == "format/1") {
+    t_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    s <- wam_term_name_string(t_v, table)
+    if (is.null(s)) return(FALSE)
+    out <- WamRuntime$wam_format(state, s, list(), table)
+    if (is.null(out)) return(FALSE)
+    cat(out)
+    return(TRUE)
+  }
+  if (key == "format/2") {
+    t_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    s <- wam_term_name_string(t_v, table)
+    if (is.null(s)) return(FALSE)
+    raw_args <- WamRuntime$get_reg(state, 2L)
+    args <- WamRuntime$wam_list_decompose(state, raw_args, table)
+    if (is.null(args)) {
+      # Non-list arg: treat as singleton ([Arg]).
+      args <- list(WamRuntime$deref(state, raw_args))
+    }
+    out <- WamRuntime$wam_format(state, s, args, table)
+    if (is.null(out)) return(FALSE)
+    cat(out)
+    return(TRUE)
   }
 
   # call/1: meta-call. Just delegate the goal to the goal evaluator;
