@@ -789,6 +789,28 @@ def compile_only_result(target: str, scale: str, build_seconds: float) -> RunRes
     )
 
 
+def failed_result(
+    target: str,
+    scale: str,
+    elapsed: float,
+    stdout: str | bytes | None,
+    stderr: str | bytes | None,
+    returncode: int,
+) -> RunResult:
+    normalized = normalize_output(completed_output_text(stdout))
+    digest, row_count = digest_normalized_output(normalized)
+    return RunResult(
+        target=target,
+        scale=scale,
+        times=[elapsed],
+        stdout_sha256=digest,
+        row_count=row_count,
+        stderr=completed_output_text(stderr),
+        status="error",
+        message=f"exited with status {returncode}",
+    )
+
+
 def benchmark_target(
     command: list[str],
     scale: str,
@@ -827,6 +849,9 @@ def benchmark_target(
                 status="timeout",
                 message=f"timed out after {timeout:.3f}s",
             )
+        except subprocess.CalledProcessError as exc:
+            elapsed = time.perf_counter() - started
+            return failed_result(target, scale, elapsed, exc.stdout, exc.stderr, exc.returncode)
         times.append(time.perf_counter() - started)
         stdout = result.stdout
         stderr = result.stderr

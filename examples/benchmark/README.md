@@ -343,9 +343,12 @@ When both sides of a registered pair run for the same scale, the benchmark
 summary also emits a paired delta table with median timings, a
 `kernels_speedup_vs_no_kernels` ratio, and output/row-count match flags. A
 ratio above `1.0` means the kernel-enabled target was faster than its
-no-kernel counterpart for that pair. Targets reported as `timeout` or
-`compile_only` are listed in the primary table but excluded from output
-matching, baseline speedups, and kernel-pair deltas.
+no-kernel counterpart for that pair. Targets reported as `timeout`, `error`,
+or `compile_only` are listed in the primary table but excluded from output
+matching, baseline speedups, and kernel-pair deltas. Error rows preserve any
+normalized stdout digest and row count that were produced before the process
+failed, which is useful for diagnosing partial-output crashes without aborting
+the rest of the matrix.
 
 Artifact-vs-sidecar Clojure comparisons are available through the
 `clojure-wam-artifact` target set, which adds:
