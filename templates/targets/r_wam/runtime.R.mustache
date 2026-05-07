@@ -1028,10 +1028,75 @@ WamRuntime$arith_to_term <- function(n) {
   }
 }
 
+# ----------------------------------------------------------
+# Goal evaluator (call/1, \+/1)
+# ----------------------------------------------------------
+# Take a Prolog goal in term form (atom for arity-0, struct otherwise)
+# and dispatch it through the standard pipeline. The dispatch order
+# is labels -> foreign handlers -> library -> builtin, matching what
+# a directly-compiled call would have hit.
+
+WamRuntime$call_goal <- function(program, state, goal_term) {
+  table <- program$intern_table
+  v <- WamRuntime$deref(state, goal_term)
+  if (is.null(v) || is.null(v$tag)) return(FALSE)
+  # Unwrap module qualification: the WAM compiler emits `Module:Goal`
+  # as a `:`/2 struct. We don't model modules in this scaffold, but
+  # the wrapper should be transparent for goal-call purposes.
+  if (v$tag == "struct" && length(v$args) == 2L &&
+      identical(WamRuntime$string_of(table, v$fid), ":")) {
+    return(WamRuntime$call_goal(program, state, v$args[[2]]))
+  }
+  if (v$tag == "atom") {
+    pred <- WamRuntime$string_of(table, v$id)
+    return(WamRuntime$dispatch_call(program, state, pred, 0L))
+  }
+  if (v$tag != "struct") return(FALSE)
+  pred  <- WamRuntime$string_of(table, v$fid)
+  arity <- length(v$args)
+  # The goal's args overwrite A1..An; outer A-regs are call-volatile
+  # in the WAM convention, so this is safe.
+  for (i in seq_len(arity)) {
+    WamRuntime$put_reg(state, i, v$args[[i]])
+  }
+  WamRuntime$dispatch_call(program, state, pred, arity)
+}
+
+WamRuntime$dispatch_call <- function(program, state, pred, arity) {
+  key <- paste0(pred, "/", arity)
+  tgt <- program$labels[[key]]
+  if (!is.null(tgt)) {
+    # User predicate (or foreign-stub label). Run as a sub-call:
+    # save the outer pc / cp / halt, run to Proceed, restore.
+    saved_pc   <- state$pc
+    saved_cp   <- state$cp
+    saved_halt <- state$halt
+    state$pc   <- as.integer(tgt)
+    state$cp   <- 0L
+    state$halt <- FALSE
+    ok <- WamRuntime$run(program, state)
+    state$pc   <- saved_pc
+    state$cp   <- saved_cp
+    state$halt <- saved_halt
+    return(isTRUE(ok))
+  }
+  if (!is.null(program$foreign_handlers[[key]])) {
+    return(isTRUE(WamRuntime$call_foreign(program, state, pred, arity, FALSE)))
+  }
+  # Note: call_foreign and call_library compute their own key from
+  # bare pred, but call_builtin's checks compare against the with-/N
+  # form (matching the WAM-emitted instr$pred convention), so we
+  # pass `key` to it explicitly.
+  lib <- WamRuntime$call_library(program, state, pred, arity)
+  if (!is.null(lib)) return(isTRUE(lib))
+  isTRUE(WamRuntime$call_builtin(program, state, key, arity))
+}
+
 WamRuntime$call_builtin <- function(program, state, pred, arity) {
   table <- program$intern_table
-  if (pred == "true"  && arity == 0L) return(TRUE)
-  if (pred == "fail"  && arity == 0L) return(FALSE)
+  # Pred uses the with-/N convention here (matches BuiltinCall instr$pred).
+  if (pred == "true/0" && arity == 0L) return(TRUE)
+  if (pred == "fail/0" && arity == 0L) return(FALSE)
 
   # Cut (!/0): scaffold semantics drop the most recent choice point so
   # the surrounding predicate's try-chain stops backtracking. A full
@@ -1042,6 +1107,26 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
     n <- length(state$cps)
     if (n > 0L) state$cps <- state$cps[-n]
     return(TRUE)
+  }
+
+  # \+/1, not/1: negation as failure. Run the goal in a snapshot --
+  # rolling back the trail, build state and choice points after --
+  # then invert the outcome. Note: the WAM compiler emits not/1 as
+  # an alias for \+/1, so we accept both.
+  if (arity == 1L && (pred == "\\+/1" || pred == "not/1")) {
+    goal              <- WamRuntime$get_reg(state, 1L)
+    trail0            <- length(state$trail)
+    cps0              <- length(state$cps)
+    saved_var_counter <- state$var_counter
+    saved_mode        <- state$mode
+    saved_build_stack <- state$build_stack
+    ok <- WamRuntime$call_goal(program, state, goal)
+    WamRuntime$undo_trail_to(state, trail0)
+    state$var_counter <- saved_var_counter
+    state$mode        <- saved_mode
+    state$build_stack <- saved_build_stack
+    if (length(state$cps) > cps0) state$cps <- state$cps[seq_len(cps0)]
+    return(!isTRUE(ok))
   }
 
   # is/2: eval A2, unify with A1.
@@ -1089,6 +1174,24 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
       "ground/1"   = wam_is_ground(state, v),
       FALSE
     ))
+  }
+
+  # member/2 and memberchk/2: deterministic existence check. Walks the
+  # list, attempts to unify A1 with each element, returns TRUE on the
+  # first success. The full enumerable mode of member/2 is *not*
+  # supported -- this scaffold doesn't drive choice points from inside
+  # builtin dispatches -- so this implementation is equivalent to
+  # memberchk/2. Sufficient for guards and ground membership tests.
+  if (arity == 2L && (pred == "member/2" || pred == "memberchk/2")) {
+    elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 2L), table)
+    if (is.null(elems)) return(FALSE)
+    target <- WamRuntime$get_reg(state, 1L)
+    for (e in elems) {
+      trail0 <- length(state$trail)
+      if (WamRuntime$unify(state, target, e)) return(TRUE)
+      WamRuntime$undo_trail_to(state, trail0)
+    }
+    return(FALSE)
   }
 
   # length/2: deterministic modes only.
@@ -1281,6 +1384,13 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
 WamRuntime$call_library <- function(program, state, pred, arity) {
   table <- program$intern_table
   key <- paste0(pred, "/", arity)
+
+  # call/1: meta-call. Just delegate the goal to the goal evaluator;
+  # bindings made by the goal persist on success (unlike \+/1 which
+  # rolls them back).
+  if (key == "call/1") {
+    return(WamRuntime$call_goal(program, state, WamRuntime$get_reg(state, 1L)))
+  }
 
   # ----- atom_codes/2: atom <-> list of code points -----
   if (key == "atom_codes/2") {
