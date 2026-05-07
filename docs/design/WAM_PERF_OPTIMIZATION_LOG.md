@@ -2595,3 +2595,105 @@ The Phase L appendix #2 follow-ups #1, #2, #4 remain — ST-monad arc,
 optional firewall hook for the resolver, and the larger scale 5k/10k
 sweeps. Cross-target audit found one Clojure bug; no other target
 needed fixes.
+
+## Phase L appendix #4: pre-filter demand seeds before parMap (2026-04-28)
+
+PR #1876 (codex) added a per-seed `IS.member` gate inside the parMap
+closure so seeds outside the structural demand set returned `(cat,
+0.0)` immediately. The gate was correct but introduced a parallel
+scaling regression at high seed counts: the spark count still equalled
+`length seedCats`, so on `100k_cats` (84,136 seeds, ~84,125 outside
+the demand set) GHC scheduled ~84k sparks of trivial work and paid
+synchronization cost on each. The handoff doc captured the regression
+— at `-N1` total was 9.66 s and at `-N4` it was 7.02 s, with `-N2`
+the only setting that beat `-N1`.
+
+### The fix
+
+Move the filter from inside the parMap closure to a separate let
+binding executed *before* `parMap`:
+
+```haskell
+-- Before (PR #1876):
+let !seedResultsForced = parMap rdeepseq (\cat ->
+        if not (IS.member (iAtom cat) demandSet)
+          then (cat, 0.0)
+          else <full seed query>
+        ) seedCats
+    !demandSkippedSeeds = length [cat | cat <- seedCats, not (IS.member (iAtom cat) demandSet)]
+
+-- After (this PR):
+    !filteredSeedCats = filter (\cat -> IS.member (iAtom cat) demandSet) seedCats
+    !demandSkippedSeeds = length seedCats - length filteredSeedCats
+...
+let !seedResultsForced = parMap rdeepseq (\cat ->
+        <full seed query>
+        ) filteredSeedCats
+```
+
+Semantically equivalent: the post-aggregation step
+`Map.fromList [(cat, ws) | (cat, ws) <- seedResultsForced, ws > 0]`
+already discards zero-weight entries, so removing them upstream
+is observationally identical. Verified by output sha
+`70bbc9ffa4cf` matching at scale-300 (271 rows) before and after.
+
+### Codegen touch points
+
+`src/unifyweaver/targets/wam_haskell_target.pl`:
+- `generate_demand_filter/4` now emits the `!filteredSeedCats` binding
+  and computes `demandSkippedSeeds` as a length subtraction (cheaper
+  than a list-comprehension count).
+- `generate_demand_gated_query_body/3` is now an identity passthrough.
+  The historical wrapper is preserved as a comment in case anyone
+  needs to rebuild the in-body gate variant.
+- `generate_main_hs/4` selects `parmap_seed_source = filteredSeedCats`
+  when the demand filter is active and `seedCats` otherwise.
+
+`templates/targets/haskell_wam/main.hs.mustache`:
+- The parMap line iterates over `{{parmap_seed_source}}` instead of
+  hardcoded `seedCats`.
+
+`tests/test_wam_haskell_target.pl`:
+- `test_demand_filter_gates_seed_query_body` rewritten: now asserts
+  `!filteredSeedCats = filter ...` is present, that the inline
+  `if not (IS.member ...) then (cat, 0.0)` gate is *absent*, and
+  that parMap closes over `filteredSeedCats`.
+- `test_demand_filter_false_leaves_query_ungated` extended: also
+  asserts no pre-filter binding and that parMap still closes over
+  `seedCats`.
+
+### Measurements (`100k_cats`, default root `0s_beginnings`,
+`demand_skipped_seeds=84125`, 11 effective seeds, 3 trials each)
+
+| RTS | codex baseline (#1876) | this fix | delta |
+|---|---|---|---|
+| `-N1` | total 9.66 s, query 240 ms | total 3.23 s, query 0 ms | **3.0× faster** |
+| `-N2` | total 6.25 s, query 172 ms | total 3.32 s, query ≤4 ms | 1.9× faster |
+| `-N4` | total 7.02 s, query 220 ms | total 6.15 s, query 0 ms | 1.1× faster |
+
+Wall-clock is dominated by the sequential pre-query phase (TSV load,
+atom interning, demand-set BFS) once the spark fanout is removed.
+That sequential floor is the next target — not the parallel section.
+
+### Honest reading
+
+The parMap path is now correctly proportional to effective demand
+(11 sparks at `-N1`, not 84,136). `query_ms` collapsing to ~0 ms
+shows the spark scheduling overhead was real and is gone. `-N4`
+hurting the *total* — even with the fix — reflects the GC / RTS
+pressure of more capabilities on a workload where the parallelizable
+section is now small. That is a separate problem (parallelize the
+load / atom-intern / BFS phases, or drop into single-thread mode for
+small effective-demand workloads); the spark-fanout regression PR
+#1876 introduced is closed.
+
+### Open follow-ups
+
+- Codex's handoff doc lists Rust accumulated at 0.6 s and Elixir LMDB
+  at 1.6 s on the same fixture. Even after this fix Haskell at 3.2 s
+  is the slowest of the three because the sequential pre-query work
+  dominates. Parallelizing or amortizing TSV load and atom interning
+  is the next lever.
+- The historical in-body gate code path is documented in
+  `generate_demand_gated_query_body/3` but unreachable. Drop it once
+  there's no plausible reason to A/B against the gate variant.

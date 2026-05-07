@@ -244,9 +244,15 @@ main = do
     -- rdeepseq forces each (cat, weightSum) fully in parallel. Without
     -- deepseq, the tuple constructor would be WHNF but the Double inside
     -- could remain a thunk, deferring the actual work to later.
+    -- parMap iterates over `{{parmap_seed_source}}`. With demand
+    -- filtering active, that's `filteredSeedCats` (defined in the
+    -- demand-filter block above) — seeds outside the root-bound demand
+    -- set are removed BEFORE we spawn sparks, so we don't pay
+    -- synchronization overhead for trivial work. With demand filtering
+    -- off, this is `seedCats` and behaviour matches the pre-#1876 path.
     let !seedResultsForced = parMap rdeepseq (\cat ->
             {{query_body}}
-            ) seedCats
+            ) {{parmap_seed_source}}
         -- Force the spine so parMap sparks all run before the timing
         -- endpoint. deepseq on the list forces every element too.
         !_ = seedResultsForced `deepseq` ()

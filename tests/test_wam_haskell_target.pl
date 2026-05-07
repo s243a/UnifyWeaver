@@ -1399,7 +1399,7 @@ test_b1_lmdb_manifest_wiring_option_present :-
     ).
 
 test_demand_filter_gates_seed_query_body :-
-    Test = 'WAM-Haskell: demand filter gates seeds before FFI query body',
+    Test = 'WAM-Haskell: demand filter pre-filters seeds before parMap',
     Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
                               [max_depth(10), edge_pred(category_parent/2)]),
     (   wam_haskell_target:generate_main_hs(
@@ -1413,12 +1413,14 @@ test_demand_filter_gates_seed_query_body :-
         sub_string(S, _, _, _, "!demandSet = computeDemandSet parentsIndexInterned rootId"),
         sub_string(S, _, _, _, "!reverseAdj = IM.fromListWith (++)"),
         sub_string(S, _, _, _, "filterByDemand demandSet parents = IS.foldl' addChild IM.empty demandSet"),
-        sub_string(S, _, _, _, "!demandSkippedSeeds = length [cat | cat <- seedCats, not (IS.member (iAtom cat) demandSet)]"),
-        sub_string(S, _, _, _, "if not (IS.member (iAtom cat) demandSet) then (cat, 0.0) else let { hopsVarId"),
+        sub_string(S, _, _, _, "!filteredSeedCats = filter (\\cat -> IS.member (iAtom cat) demandSet) seedCats"),
+        sub_string(S, _, _, _, "!demandSkippedSeeds = length seedCats - length filteredSeedCats"),
+        sub_string(S, _, _, _, ") filteredSeedCats"),
+        \+ sub_string(S, _, _, _, "if not (IS.member (iAtom cat) demandSet) then (cat, 0.0) else"),
         sub_string(S, _, _, _, "collectForeignSolutions ctx \"category_ancestor/4\""),
         sub_string(S, _, _, _, "demand_skipped_seeds=")
     ->  pass(Test)
-    ;   fail_test(Test, 'Demand-filtered Main.hs should skip non-demand seeds before FFI')
+    ;   fail_test(Test, 'Demand-filtered Main.hs should pre-filter seeds before parMap')
     ).
 
 test_demand_filter_false_leaves_query_ungated :-
@@ -1434,9 +1436,11 @@ test_demand_filter_false_leaves_query_ungated :-
         atom_string(Code, S),
         sub_string(S, _, _, _, "collectForeignSolutions ctx \"category_ancestor/4\""),
         \+ sub_string(S, _, _, _, "if not (IS.member (iAtom cat) demandSet)"),
+        \+ sub_string(S, _, _, _, "filteredSeedCats = filter"),
+        sub_string(S, _, _, _, ") seedCats"),
         \+ sub_string(S, _, _, _, "demand_skipped_seeds=")
     ->  pass(Test)
-    ;   fail_test(Test, 'demand_filter(false) should not emit the seed gate')
+    ;   fail_test(Test, 'demand_filter(false) should not emit pre-filter or seed gate')
     ).
 
 %% Regression test for the linear-chain-zero-results bug: the FFI kernel's
