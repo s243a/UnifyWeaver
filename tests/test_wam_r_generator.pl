@@ -640,6 +640,92 @@ e2e_extended_builtins_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% Term inspection: functor/3, arg/3, =../2 emit BuiltinCall literals.
+% ------------------------------------------------------------------
+test(term_inspection_emitted) :-
+    once((
+        unique_r_tmp_dir('tmp_r_terminsp', TmpDir),
+        assertz((user:ti_funct(T, F, A) :- functor(T, F, A))),
+        assertz((user:ti_arg(N, T, A)   :- arg(N, T, A))),
+        assertz((user:ti_univ(T, L)     :- T =.. L)),
+        write_wam_r_project(
+            [user:ti_funct/3, user:ti_arg/3, user:ti_univ/2],
+            [],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("functor/3", 3)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("arg/3", 3)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("=../2", 2)')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+% ------------------------------------------------------------------
+% End-to-end Rscript run for term inspection. Covers:
+%   - functor/3 decompose for struct, atom, integer
+%   - functor/3 construct (fresh var args)
+%   - arg/3 extraction
+%   - =../2 decompose for struct, atom
+%   - =../2 construct from a list
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(term_inspection_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_term_inspection_via_rscript
+    ;   true
+    )).
+
+e2e_term_inspection_via_rscript :-
+    % Decompose: pull functor name + arity out of a struct.
+    assertz((user:ti_dec_struct  :- functor(f(a, b), f, 2))),
+    assertz((user:ti_dec_struct_n :- functor(f(a, b), g, 2))),
+    assertz((user:ti_dec_atom    :- functor(hello, hello, 0))),
+    assertz((user:ti_dec_int     :- functor(7, 7, 0))),
+    % Construct: build a fresh struct from name + arity.
+    assertz((user:ti_con_struct :- functor(T, f, 2), arg(1, T, _), arg(2, T, _))),
+    assertz((user:ti_con_atom   :- functor(T, hello, 0), T == hello)),
+    % arg/3 indexing (1-based).
+    assertz((user:ti_arg_first  :- arg(1, f(a, b, c), a))),
+    assertz((user:ti_arg_third  :- arg(3, f(a, b, c), c))),
+    assertz((user:ti_arg_oob    :- arg(4, f(a, b, c), _))),
+    % =../2 decompose: f(a,b) =.. [f, a, b].
+    assertz((user:ti_univ_dec   :- f(a, b) =.. [f, a, b])),
+    assertz((user:ti_univ_dec_n :- f(a, b) =.. [g, a, b])),
+    assertz((user:ti_univ_atom  :- hello =.. [hello])),
+    % =../2 construct: T =.. [f, a, b]  ->  T = f(a, b).
+    assertz((user:ti_univ_con   :- T =.. [f, a, b], T == f(a, b))),
+    assertz((user:ti_univ_con_a :- T =.. [hello],   T == hello)),
+    unique_r_tmp_dir('tmp_r_terminsp_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:ti_dec_struct/0, user:ti_dec_struct_n/0,
+          user:ti_dec_atom/0, user:ti_dec_int/0,
+          user:ti_con_struct/0, user:ti_con_atom/0,
+          user:ti_arg_first/0, user:ti_arg_third/0, user:ti_arg_oob/0,
+          user:ti_univ_dec/0, user:ti_univ_dec_n/0, user:ti_univ_atom/0,
+          user:ti_univ_con/0, user:ti_univ_con_a/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [ti_dec_struct, ti_dec_atom, ti_dec_int,
+           ti_con_struct, ti_con_atom,
+           ti_arg_first, ti_arg_third,
+           ti_univ_dec, ti_univ_atom,
+           ti_univ_con, ti_univ_con_a],
+    No  = [ti_dec_struct_n, ti_arg_oob, ti_univ_dec_n],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-

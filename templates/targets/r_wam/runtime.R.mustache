@@ -154,6 +154,7 @@ Jump           <- function(label)      list(op = "Jump",          label = label)
 CutIte         <- function()           list(op = "CutIte")
 
 BuiltinCall    <- function(p, n)       list(op = "BuiltinCall",   pred = p, arity = n)
+ArgInstr       <- function(n, ai, out) list(op = "ArgInstr",      n = as.integer(n), ai = as.integer(ai), out = as.integer(out))
 
 SwitchOnConstant  <- function(cases)    list(op = "SwitchOnConstant",  cases = cases)
 SwitchCase        <- function(val, label) list(value = val, label = label)
@@ -420,6 +421,42 @@ wam_compare_nums <- function(a, b) {
   if (a < b) -1L else if (a > b) 1L else 0L
 }
 
+# Build a Prolog-style cons-list term from a list of WAM terms.
+# []      -> Atom("[]")
+# [a]     -> StructTerm("[|]", list(a, Atom("[]")))
+# [a, b]  -> StructTerm("[|]", list(a, StructTerm("[|]", list(b, Atom("[]")))))
+WamRuntime$wam_list_build <- function(elements, table) {
+  cons_id <- WamRuntime$intern(table, "[|]")
+  nil_id  <- WamRuntime$intern(table, "[]")
+  result <- Atom(nil_id)
+  if (length(elements) > 0L) {
+    for (i in seq.int(length(elements), 1L, by = -1L)) {
+      result <- StructTerm(cons_id, list(elements[[i]], result))
+    }
+  }
+  result
+}
+
+# Walk a cons-list term and return its elements as an R list of WAM
+# terms. Returns NULL on a malformed (non-proper) list. Used by =../2
+# in construct mode to read the [Functor | Args] specification.
+WamRuntime$wam_list_decompose <- function(state, term, table) {
+  cons_id <- WamRuntime$intern(table, "[|]")
+  nil_id  <- WamRuntime$intern(table, "[]")
+  out <- list()
+  v <- WamRuntime$deref(state, term)
+  while (!is.null(v) && is.list(v) && !is.null(v$tag)) {
+    if (v$tag == "atom" && identical(v$id, nil_id)) return(out)
+    if (v$tag == "struct" && identical(v$fid, cons_id) && length(v$args) == 2L) {
+      out <- c(out, list(WamRuntime$deref(state, v$args[[1]])))
+      v <- WamRuntime$deref(state, v$args[[2]])
+    } else {
+      return(NULL)
+    }
+  }
+  NULL
+}
+
 WamRuntime$unify <- function(state, a, b) {
   a <- WamRuntime$deref(state, a)
   b <- WamRuntime$deref(state, b)
@@ -615,6 +652,23 @@ WamRuntime$step <- function(program, state, instr) {
     "BuiltinCall" = {
       ok <- WamRuntime$call_builtin(program, state, instr$pred, instr$arity)
       if (!ok) return(FALSE)
+      state$pc <- state$pc + 1L; TRUE
+    },
+    "ArgInstr" = {
+      # WAM-optimised arg/3 with literal index. Read from register
+      # instr$ai (must deref to a struct), grab the n-th 1-based arg,
+      # unify it with the OutReg target. Same semantics as the
+      # builtin_call arg/3 dispatch in call_builtin.
+      v <- WamRuntime$deref(state, WamRuntime$get_reg(state, instr$ai))
+      if (is.null(v) || is.null(v$tag) || v$tag != "struct") return(FALSE)
+      i <- instr$n
+      if (i < 1L || i > length(v$args)) return(FALSE)
+      cur <- WamRuntime$get_reg(state, instr$out)
+      if (is.null(cur)) {
+        WamRuntime$put_reg(state, instr$out, v$args[[i]])
+      } else if (!WamRuntime$unify(state, cur, v$args[[i]])) {
+        return(FALSE)
+      }
       state$pc <- state$pc + 1L; TRUE
     },
     # ----- Compound terms -----
@@ -930,6 +984,98 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
         FALSE
       ))
     }
+    # =../2 (univ): bidirectional struct <-> list conversion.
+    #   Decompose: f(a,b) =.. L  -> L = [f, a, b]
+    #              a      =.. L  -> L = [a]
+    #              7      =.. L  -> L = [7]
+    #   Construct: T =.. [f, a, b]  -> T = f(a,b)
+    #              T =.. [a]        -> T = a
+    if (pred == "=../2") {
+      raw_t <- a
+      v <- WamRuntime$deref(state, raw_t)
+      if (is.null(v) || is.null(v$tag)) return(FALSE)
+      if (v$tag == "unbound") {
+        elems <- WamRuntime$wam_list_decompose(state, b, table)
+        if (is.null(elems) || length(elems) == 0L) return(FALSE)
+        head <- elems[[1]]
+        rest <- elems[-1]
+        if (length(rest) == 0L) {
+          # arity 0: bind T to head (atom or number).
+          return(WamRuntime$unify(state, raw_t, head))
+        }
+        if (is.null(head$tag) || head$tag != "atom") return(FALSE)
+        new_t <- StructTerm(head$id, rest)
+        return(WamRuntime$unify(state, raw_t, new_t))
+      }
+      # Decompose: build [Functor | Args].
+      if (v$tag == "struct") {
+        elems <- c(list(Atom(v$fid)), v$args)
+      } else if (v$tag %in% c("atom", "int", "float")) {
+        elems <- list(v)
+      } else {
+        return(FALSE)
+      }
+      list_term <- WamRuntime$wam_list_build(elems, table)
+      return(WamRuntime$unify(state, b, list_term))
+    }
+  }
+
+  # functor/3: bidirectional name/arity inspection.
+  #   Decompose: functor(f(a,b), F, A)  -> F=f, A=2
+  #              functor(a,      F, A)  -> F=a, A=0
+  #              functor(7,      F, A)  -> F=7, A=0
+  #   Construct: functor(T, f, 2)       -> T = f(_V, _V)  (fresh vars)
+  #              functor(T, a, 0)       -> T = a
+  #              functor(T, 7, 0)       -> T = 7
+  if (pred == "functor/3" && arity == 3L) {
+    raw_t <- WamRuntime$get_reg(state, 1L)
+    v <- WamRuntime$deref(state, raw_t)
+    if (is.null(v) || is.null(v$tag)) return(FALSE)
+    if (v$tag == "unbound") {
+      name_v  <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+      arity_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 3L))
+      if (is.null(name_v) || is.null(arity_v)) return(FALSE)
+      if (is.null(arity_v$tag) || arity_v$tag != "int") return(FALSE)
+      n <- arity_v$val
+      if (n == 0L) {
+        # arity 0: T must be the atom/number itself.
+        return(WamRuntime$unify(state, raw_t, name_v))
+      }
+      if (n < 0L) return(FALSE)
+      if (is.null(name_v$tag) || name_v$tag != "atom") return(FALSE)
+      args <- vector("list", n)
+      for (i in seq_len(n)) {
+        args[[i]] <- Unbound(paste0("V", state$var_counter))
+        state$var_counter <- state$var_counter + 1L
+      }
+      new_t <- StructTerm(name_v$id, args)
+      return(WamRuntime$unify(state, raw_t, new_t))
+    }
+    # Decompose mode.
+    if (v$tag == "struct") {
+      name_term  <- Atom(v$fid)
+      arity_term <- IntTerm(length(v$args))
+    } else if (v$tag %in% c("atom", "int", "float")) {
+      name_term  <- v
+      arity_term <- IntTerm(0L)
+    } else {
+      return(FALSE)
+    }
+    if (!WamRuntime$unify(state, WamRuntime$get_reg(state, 2L), name_term))  return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L), arity_term))
+  }
+
+  # arg/3: 1-based argument extraction. Always called with N and T
+  # ground; A may be any term (we unify with the extracted arg).
+  if (pred == "arg/3" && arity == 3L) {
+    n_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    t_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    if (is.null(n_v) || is.null(t_v)) return(FALSE)
+    if (is.null(n_v$tag) || n_v$tag != "int") return(FALSE)
+    if (is.null(t_v$tag) || t_v$tag != "struct") return(FALSE)
+    i <- n_v$val
+    if (i < 1L || i > length(t_v$args)) return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L), t_v$args[[i]]))
   }
 
   # Unknown builtin -> failure (matches WAM convention).
