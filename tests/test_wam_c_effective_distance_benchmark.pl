@@ -54,6 +54,20 @@ test_generate_lmdb_mode_files :-
     ;   fail_test(Test, 'facts_lmdb generated files mismatch')
     ).
 
+test_generated_runner_bounds_kernel_heap :-
+    Test = 'WAM-C effective-distance: generated runner bounds temporary kernel heap cells',
+    (   unique_tmp_dir(heap_bounds, OutputDir),
+        write_test_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(FactsPath, OutputDir, kernels_on, facts_tsv),
+        directory_file_path(OutputDir, 'main.c', MainPath),
+        read_file_to_string(MainPath, Main, []),
+        sub_string(Main, _, _, _, 'while (required > state->H_cap) state->H_cap *= 2;'),
+        sub_string(Main, _, _, _, 'int heap_mark = state->H;'),
+        sub_string(Main, _, _, _, 'state->H = heap_mark;')
+    ->  pass(Test)
+    ;   fail_test(Test, 'generated runner does not bound/reset kernel heap cells')
+    ).
+
 test_generate_and_run_lmdb_if_available :-
     Test = 'WAM-C effective-distance: facts_lmdb generated runner emits expected result',
     (   lmdb_toolchain_available
@@ -190,6 +204,7 @@ run_tests_once :-
     test_generate_and_run_kernels_on,
     test_generate_and_run_kernels_off,
     test_generate_lmdb_mode_files,
+    test_generated_runner_bounds_kernel_heap,
     test_generate_and_run_lmdb_if_available,
     format('~n=== WAM-C Effective Distance Benchmark Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
