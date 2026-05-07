@@ -11,6 +11,7 @@ the best mode, auto-vs-best ratio, output hash agreement, and per-mode medians.
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 import sys
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ WORKLOAD_SCRIPTS = {
 }
 
 DEFAULT_WORKLOADS = "all"
+CALIBRATION_ARTIFACT = BENCHMARK_DIR / "csharp_query_graph_source_mode_calibration.tsv"
 
 
 @dataclass
@@ -40,6 +42,19 @@ class SourceModeSummary:
     scale: str
     best_source_mode: str
     auto_vs_best: str
+    output_agreement: str
+    median_summary: str
+    resolved_source_mode_summary: str
+    source_registration_summary: str
+
+
+@dataclass
+class CalibrationArtifactRow:
+    workload: str
+    scale: str
+    observed_best_source_mode: str
+    current_auto_resolved_source_mode: str
+    observed_auto_vs_best: str
     output_agreement: str
     median_summary: str
     resolved_source_mode_summary: str
@@ -98,6 +113,27 @@ def parse_workloads(value: str) -> list[str]:
     if not workloads:
         raise SystemExit("expected at least one workload")
     return workloads
+
+
+def load_calibration_artifact(path: Path = CALIBRATION_ARTIFACT) -> list[CalibrationArtifactRow]:
+    with path.open(newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        rows: list[CalibrationArtifactRow] = []
+        for row in reader:
+            rows.append(
+                CalibrationArtifactRow(
+                    workload=row["workload"],
+                    scale=row["scale"],
+                    observed_best_source_mode=row["observed_best_source_mode"],
+                    current_auto_resolved_source_mode=row["current_auto_resolved_source_mode"],
+                    observed_auto_vs_best=row["observed_auto_vs_best"],
+                    output_agreement=row["output_agreement"],
+                    median_summary=row["median_s_by_mode"],
+                    resolved_source_mode_summary=row["resolved_source_modes_by_mode"],
+                    source_registration_summary=row["source_registrations_by_mode"],
+                )
+            )
+    return rows
 
 
 def parse_runner_output(workload: str, output: str) -> list[SourceModeSummary]:

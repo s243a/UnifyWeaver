@@ -10,14 +10,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "examples" / "benchmark"))
 
 from benchmark_csharp_query_source_mode_sweep import (  # noqa: E402
+    CALIBRATION_ARTIFACT,
     DEFAULT_WORKLOADS,
     WORKLOAD_SCRIPTS,
     calibration_failures,
+    load_calibration_artifact,
     parse_args,
     parse_ratio,
     parse_runner_output,
     parse_workloads,
 )
+from benchmark_common import csharp_query_source_mode_choices  # noqa: E402
 
 
 class CSharpQuerySourceModeSweepTests(unittest.TestCase):
@@ -39,6 +42,24 @@ class CSharpQuerySourceModeSweepTests(unittest.TestCase):
     def test_parse_workloads_rejects_unknown_workloads(self) -> None:
         with self.assertRaisesRegex(SystemExit, "unknown workload"):
             parse_workloads("category-influence,not-a-workload")
+
+    def test_calibration_artifact_covers_registered_graph_workloads(self) -> None:
+        rows = load_calibration_artifact(CALIBRATION_ARTIFACT)
+
+        self.assertEqual([row.workload for row in rows], list(WORKLOAD_SCRIPTS))
+        self.assertEqual({row.scale for row in rows}, {"300"})
+
+    def test_calibration_artifact_matches_current_auto_policy_boundary(self) -> None:
+        rows = load_calibration_artifact(CALIBRATION_ARTIFACT)
+        allowed_modes = set(csharp_query_source_mode_choices())
+
+        for row in rows:
+            with self.subTest(workload=row.workload):
+                self.assertIn(row.observed_best_source_mode, allowed_modes)
+                self.assertEqual(row.current_auto_resolved_source_mode, "preload")
+                self.assertEqual(row.output_agreement, "match")
+                self.assertLessEqual(parse_ratio(row.observed_auto_vs_best) or 0.0, 2.0)
+                self.assertIn("auto:preload", row.resolved_source_mode_summary)
 
     def test_parse_runner_output_summarizes_modes_and_registrations(self) -> None:
         output = "\n".join(
