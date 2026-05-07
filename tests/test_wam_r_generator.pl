@@ -1458,6 +1458,91 @@ e2e_bagof_setof_once_forall_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for enumerable builtins inside aggregators.
+% Tests that findall/3, bagof/3, setof/3, forall/2 all enumerate over
+% member/2, between/3, and `,/2` conjunctions thereof. This is the
+% follow-up that closes the gap noted in the previous PR -- the
+% aggregators previously only worked over multi-clause user/dynamic
+% predicates because builtins didn't push choice points.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(enumerable_builtins_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_enumerable_builtins_via_rscript
+    ;   true
+    )).
+
+e2e_enumerable_builtins_via_rscript :-
+    % Multi-clause source for regression checks (must keep working).
+    assertz(user:enu_letter(a)),
+    assertz(user:enu_letter(b)),
+    assertz(user:enu_letter(c)),
+    % findall over member.
+    assertz((user:enu_fa_mem    :- findall(X, member(X, [1, 2, 3]), L),
+                                    L == [1, 2, 3])),
+    % bagof over member.
+    assertz((user:enu_bg_mem    :- bagof(X, member(X, [a, b, c]), L),
+                                    L == [a, b, c])),
+    % setof over member with duplicates.
+    assertz((user:enu_so_mem    :- setof(X, member(X, [c, a, b, a]), L),
+                                    L == [a, b, c])),
+    % findall over between.
+    assertz((user:enu_fa_btw    :- findall(X, between(1, 5, X), L),
+                                    L == [1, 2, 3, 4, 5])),
+    % bagof over between.
+    assertz((user:enu_bg_btw    :- bagof(X, between(2, 4, X), L),
+                                    L == [2, 3, 4])),
+    % findall conjunction (member + guard).
+    assertz((user:enu_fa_conj   :- findall(X, (member(X, [1, 2, 3, 4, 5]),
+                                                X > 2), L),
+                                    L == [3, 4, 5])),
+    % bagof conjunction.
+    assertz((user:enu_bg_conj   :- bagof(X, (member(X, [1, 2, 3, 4]),
+                                              X > 2), L),
+                                    L == [3, 4])),
+    % forall with all elements satisfying Action.
+    assertz((user:enu_fa_all    :- forall(member(X, [1, 2, 3]),
+                                           integer(X)))),
+    % forall with one element not satisfying Action.
+    assertz((user:enu_fa_some_no :- forall(member(X, [1, foo, 3]),
+                                            integer(X)))),
+    % forall over between.
+    assertz((user:enu_fa_btw_all :- forall(between(1, 10, X), integer(X)))),
+    % Regression: multi-clause user predicate still works.
+    assertz((user:enu_fa_user   :- findall(X, user:enu_letter(X), L),
+                                    L == [a, b, c])),
+    unique_r_tmp_dir('tmp_r_enumerable_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:enu_letter/1,
+          user:enu_fa_mem/0, user:enu_bg_mem/0, user:enu_so_mem/0,
+          user:enu_fa_btw/0, user:enu_bg_btw/0,
+          user:enu_fa_conj/0, user:enu_bg_conj/0,
+          user:enu_fa_all/0, user:enu_fa_some_no/0,
+          user:enu_fa_btw_all/0,
+          user:enu_fa_user/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [enu_fa_mem, enu_bg_mem, enu_so_mem,
+           enu_fa_btw, enu_bg_btw,
+           enu_fa_conj, enu_bg_conj,
+           enu_fa_all, enu_fa_btw_all,
+           enu_fa_user],
+    No  = [enu_fa_some_no],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-

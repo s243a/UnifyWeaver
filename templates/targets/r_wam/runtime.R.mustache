@@ -1213,9 +1213,9 @@ WamRuntime$try_dynamic <- function(program, state, pred, arity) {
 }
 
 # Iterate dynamic-store clauses starting from `start_idx`. On the
-# first success, optionally push a "dynamic" CP so backtracking
-# re-enters at the next clause and then jumps to resume_pc (typically
-# the instruction after the Call/Execute that triggered the dispatch).
+# first success, push a "dynamic" CP so backtracking re-enters at the
+# next clause and then jumps to resume_pc -- the instruction after
+# the Call/Execute that triggered the dispatch.
 WamRuntime$dynamic_iter <- function(program, state, clauses, start_idx, arity, resume_pc) {
   if (start_idx > length(clauses)) return(FALSE)
   for (idx in seq.int(start_idx, length(clauses))) {
@@ -1278,6 +1278,100 @@ WamRuntime$dynamic_iter <- function(program, state, clauses, start_idx, arity, r
     state$var_counter <- snap_vc
     state$mode        <- snap_mode
     state$build_stack <- snap_build
+  }
+  FALSE
+}
+
+# Enumerable iteration over a list of WAM terms, used by member/2 (and
+# any future enumerator with the same shape). Tries to unify `target`
+# with each element starting at `start_idx`. On success, pushes an iter
+# CP so backtrack re-enters at idx+1 then resumes at `resume_pc` (the
+# instruction after the Call/Execute that triggered the dispatch).
+WamRuntime$member_iter <- function(state, target, elems, start_idx, resume_pc) {
+  if (start_idx > length(elems)) return(FALSE)
+  for (idx in seq.int(start_idx, length(elems))) {
+    snap_regs  <- as.list.environment(state$regs2)
+    snap_trail <- length(state$trail)
+    snap_cp    <- state$cp
+    snap_vc    <- state$var_counter
+    snap_mode  <- state$mode
+    snap_build <- state$build_stack
+    if (WamRuntime$unify(state, target, elems[[idx]])) {
+      if (idx < length(elems)) {
+        next_idx <- idx + 1L
+        captured_target <- target
+        captured_elems  <- elems
+        captured_resume <- resume_pc
+        cp <- list(
+          kind        = "iter",
+          regs        = snap_regs,
+          trail_len   = snap_trail,
+          cp          = snap_cp,
+          var_counter = snap_vc,
+          mode        = snap_mode,
+          build_stack = snap_build,
+          resume_pc   = resume_pc,
+          retry       = function(state) {
+            WamRuntime$member_iter(state, captured_target, captured_elems, next_idx, captured_resume)
+          }
+        )
+        state$cps <- c(state$cps, list(cp))
+      }
+      return(TRUE)
+    }
+    # Rollback for the next iteration.
+    e <- new.env(parent = emptyenv(), hash = TRUE)
+    for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
+    state$regs2 <- e
+    if (length(state$trail) > snap_trail) {
+      to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
+      for (name in to_undo) {
+        if (exists(name, envir = state$bindings, inherits = FALSE)) {
+          rm(list = name, envir = state$bindings)
+        }
+      }
+      state$trail <- state$trail[seq_len(snap_trail)]
+    }
+    state$cp          <- snap_cp
+    state$var_counter <- snap_vc
+    state$mode        <- snap_mode
+    state$build_stack <- snap_build
+  }
+  FALSE
+}
+
+# Enumerable iteration over an integer range, used by between/3 in
+# generate mode. Same iter-CP machinery as member_iter.
+WamRuntime$between_iter <- function(state, target, current, hi, resume_pc) {
+  if (current > hi) return(FALSE)
+  snap_regs  <- as.list.environment(state$regs2)
+  snap_trail <- length(state$trail)
+  snap_cp    <- state$cp
+  snap_vc    <- state$var_counter
+  snap_mode  <- state$mode
+  snap_build <- state$build_stack
+  if (WamRuntime$unify(state, target, IntTerm(current))) {
+    if (current < hi) {
+      next_val <- current + 1L
+      captured_target <- target
+      captured_hi <- hi
+      captured_resume <- resume_pc
+      cp <- list(
+        kind        = "iter",
+        regs        = snap_regs,
+        trail_len   = snap_trail,
+        cp          = snap_cp,
+        var_counter = snap_vc,
+        mode        = snap_mode,
+        build_stack = snap_build,
+        resume_pc   = resume_pc,
+        retry       = function(state) {
+          WamRuntime$between_iter(state, captured_target, next_val, captured_hi, captured_resume)
+        }
+      )
+      state$cps <- c(state$cps, list(cp))
+    }
+    return(TRUE)
   }
   FALSE
 }
@@ -1405,20 +1499,104 @@ WamRuntime$dispatch_call <- function(program, state, pred, arity) {
   isTRUE(WamRuntime$call_builtin(program, state, key, arity))
 }
 
-# Collect all solutions of a goal, returning their copy_term'd
-# template values as an R list. Used by bagof/3, setof/3, and forall/2
-# (when implemented as a "no Action failures" check). Restores state
-# completely on return -- bindings produced by the goal don't leak to
-# the caller.
+# iterate_goal walks a goal term and invokes `on_each(state)` once per
+# solution, returning silently. Special-cases the common "enumerable"
+# shapes (member/2, between/3, and `,/2` conjunctions whose left side
+# is enumerable) at the R level so they iterate without touching the
+# choice-point machinery. Other goals -- including multi-clause user
+# predicates and dynamic-store predicates -- go through the default
+# fallback, which uses call_goal + backtrack + run to drive the
+# standard try_me_else / dynamic CP iteration.
 #
-# The iteration drives the run loop manually:
-#   1. call_goal dispatches the goal once.
-#   2. After each success, copy_term the template and snapshot it.
-#   3. Trigger backtrack to find the next goal solution; if backtrack
-#      pops past the snapshot's cps_len, the goal has exhausted its
-#      choice points and we stop.
-#   4. Re-enter the run loop with state$halt = FALSE so the alt body
-#      can execute. Loop until the goal stops succeeding.
+# The callback `on_each` is invoked while the iteration's bindings
+# are still in scope. It returns TRUE to continue iterating, FALSE to
+# stop early. Trail snapshots between iterations isolate the goal's
+# bindings -- two iterations don't see each other's binding changes.
+WamRuntime$iterate_goal <- function(program, state, goal_term, on_each) {
+  table <- program$intern_table
+  v <- WamRuntime$deref(state, goal_term)
+  if (is.null(v) || is.null(v$tag)) return(invisible(NULL))
+
+  # Conjunction `(A, B)`: iterate A; for each A binding, iterate B.
+  if (v$tag == "struct" && length(v$args) == 2L &&
+      identical(WamRuntime$string_of(table, v$fid), ",")) {
+    a <- v$args[[1]]
+    b <- v$args[[2]]
+    keep_going <- TRUE
+    WamRuntime$iterate_goal(program, state, a, function() {
+      if (!keep_going) return(FALSE)
+      cont <- TRUE
+      WamRuntime$iterate_goal(program, state, b, function() {
+        c2 <- on_each()
+        if (!isTRUE(c2)) { cont <<- FALSE; keep_going <<- FALSE }
+        c2
+      })
+      cont
+    })
+    return(invisible(NULL))
+  }
+
+  # member/2: iterate list elements directly (no CP machinery).
+  if (v$tag == "struct" && length(v$args) == 2L &&
+      identical(WamRuntime$string_of(table, v$fid), "member")) {
+    target <- v$args[[1]]
+    elems  <- WamRuntime$wam_list_decompose(state, v$args[[2]], table)
+    if (is.null(elems)) return(invisible(NULL))
+    for (e in elems) {
+      snap_t <- length(state$trail)
+      if (WamRuntime$unify(state, target, e)) {
+        cont <- on_each()
+        WamRuntime$undo_trail_to(state, snap_t)
+        if (!isTRUE(cont)) return(invisible(NULL))
+      } else {
+        WamRuntime$undo_trail_to(state, snap_t)
+      }
+    }
+    return(invisible(NULL))
+  }
+
+  # between/3: iterate the range [Low, High] inclusive.
+  if (v$tag == "struct" && length(v$args) == 3L &&
+      identical(WamRuntime$string_of(table, v$fid), "between")) {
+    lo_v <- WamRuntime$deref(state, v$args[[1]])
+    hi_v <- WamRuntime$deref(state, v$args[[2]])
+    target <- v$args[[3]]
+    if (is.null(lo_v) || is.null(lo_v$tag) || lo_v$tag != "int") return(invisible(NULL))
+    if (is.null(hi_v) || is.null(hi_v$tag) || hi_v$tag != "int") return(invisible(NULL))
+    if (lo_v$val > hi_v$val) return(invisible(NULL))
+    for (i in seq.int(lo_v$val, hi_v$val)) {
+      snap_t <- length(state$trail)
+      if (WamRuntime$unify(state, target, IntTerm(i))) {
+        cont <- on_each()
+        WamRuntime$undo_trail_to(state, snap_t)
+        if (!isTRUE(cont)) return(invisible(NULL))
+      } else {
+        WamRuntime$undo_trail_to(state, snap_t)
+      }
+    }
+    return(invisible(NULL))
+  }
+
+  # Default: call_goal-driven iteration. Works for multi-clause user
+  # predicates (try_me_else CPs) and dynamic-store predicates (dynamic
+  # CPs). After backtrack, run() drives the alt clause body until it
+  # proceeds back through the call boundary.
+  snap_cps_len <- length(state$cps)
+  ok <- WamRuntime$call_goal(program, state, goal_term)
+  while (isTRUE(ok)) {
+    cont <- on_each()
+    if (!isTRUE(cont)) break
+    if (length(state$cps) <= snap_cps_len) break
+    if (!WamRuntime$backtrack(state)) break
+    state$halt <- FALSE
+    ok <- WamRuntime$run(program, state)
+  }
+  invisible(NULL)
+}
+
+# Collect all solutions of a goal, returning their copy_term'd
+# template values as an R list. Used by bagof/3, setof/3 (and indirectly
+# findall/3 alternatives). Restores state completely on return.
 WamRuntime$collect_solutions <- function(program, state, template_term, goal_term) {
   snap_cps_len   <- length(state$cps)
   snap_regs      <- as.list.environment(state$regs2)
@@ -1431,15 +1609,11 @@ WamRuntime$collect_solutions <- function(program, state, template_term, goal_ter
   snap_build     <- state$build_stack
 
   collected <- list()
-  ok <- WamRuntime$call_goal(program, state, goal_term)
-  while (isTRUE(ok)) {
-    v <- WamRuntime$deref(state, template_term)
-    collected <- c(collected, list(WamRuntime$copy_term(state, v)))
-    if (length(state$cps) <= snap_cps_len) break
-    if (!WamRuntime$backtrack(state)) break
-    state$halt <- FALSE
-    ok <- WamRuntime$run(program, state)
-  }
+  WamRuntime$iterate_goal(program, state, goal_term, function() {
+    val <- WamRuntime$deref(state, template_term)
+    collected[[length(collected) + 1L]] <<- WamRuntime$copy_term(state, val)
+    TRUE
+  })
 
   # Restore: pop any extra CPs and roll back regs / trail / state.
   if (length(state$cps) > snap_cps_len) {
@@ -1563,22 +1737,22 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
     ))
   }
 
-  # member/2 and memberchk/2: deterministic existence check. Walks the
-  # list, attempts to unify A1 with each element, returns TRUE on the
-  # first success. The full enumerable mode of member/2 is *not*
-  # supported -- this scaffold doesn't drive choice points from inside
-  # builtin dispatches -- so this implementation is equivalent to
-  # memberchk/2. Sufficient for guards and ground membership tests.
+  # member/2: enumerable. Pushes an iter CP after the first match
+  # so backtracking re-enters the iteration at the next list element.
+  # memberchk/2: deterministic first-match (no CP push).
   if (arity == 2L && (pred == "member/2" || pred == "memberchk/2")) {
     elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 2L), table)
     if (is.null(elems)) return(FALSE)
     target <- WamRuntime$get_reg(state, 1L)
-    for (e in elems) {
-      trail0 <- length(state$trail)
-      if (WamRuntime$unify(state, target, e)) return(TRUE)
-      WamRuntime$undo_trail_to(state, trail0)
+    if (pred == "memberchk/2") {
+      for (e in elems) {
+        trail0 <- length(state$trail)
+        if (WamRuntime$unify(state, target, e)) return(TRUE)
+        WamRuntime$undo_trail_to(state, trail0)
+      }
+      return(FALSE)
     }
-    return(FALSE)
+    return(WamRuntime$member_iter(state, target, elems, 1L, state$pc + 1L))
   }
 
   # length/2: deterministic modes only.
@@ -1920,7 +2094,7 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     if (!is.null(x_v) && !is.null(x_v$tag) && x_v$tag == "int") {
       return(x_v$val >= lo && x_v$val <= hi)
     }
-    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L), IntTerm(lo)))
+    return(WamRuntime$between_iter(state, WamRuntime$get_reg(state, 3L), lo, hi, state$pc + 1L))
   }
 
   # ----- bagof/3: like findall but fails on empty bag -----
@@ -1982,9 +2156,8 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
 
   # ----- forall/2: forall(Cond, Action) succeeds iff Action succeeds
   # for every Cond binding -----
-  # Implemented by enumerating Cond and checking Action at each step.
-  # State is fully restored at the end (forall doesn't bind anything
-  # through to the surrounding query).
+  # Implemented via iterate_goal so member/2 / between/3 / conjunctions
+  # of those enumerate properly. State is fully restored at the end.
   if (key == "forall/2") {
     cond   <- WamRuntime$get_reg(state, 1L)
     action <- WamRuntime$get_reg(state, 2L)
@@ -1997,16 +2170,12 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     snap_vc      <- state$var_counter
     snap_mode    <- state$mode
     snap_build   <- state$build_stack
-    ok <- WamRuntime$call_goal(program, state, cond)
     result <- TRUE
-    while (isTRUE(ok)) {
-      action_ok <- WamRuntime$call_goal(program, state, action)
-      if (!isTRUE(action_ok)) { result <- FALSE; break }
-      if (length(state$cps) <= snap_cps_len) break
-      if (!WamRuntime$backtrack(state)) break
-      state$halt <- FALSE
-      ok <- WamRuntime$run(program, state)
-    }
+    WamRuntime$iterate_goal(program, state, cond, function() {
+      action_ok <- isTRUE(WamRuntime$call_goal(program, state, action))
+      if (!action_ok) { result <<- FALSE; return(FALSE) }
+      TRUE
+    })
     # Restore (forall does not produce bindings on success).
     if (length(state$cps) > snap_cps_len) {
       state$cps <- state$cps[seq_len(snap_cps_len)]
@@ -2450,10 +2619,12 @@ WamRuntime$backtrack <- function(state) {
   if (n == 0L) return(FALSE)
   cp <- state$cps[[n]]
   # Dynamic-CP resume: the previous clause succeeded; backtracking
-  # now means "try the next stored clause for the same predicate".
-  # If a later clause matches, jump to resume_pc; if all are
-  # exhausted, recurse so the next CP on the stack handles the
-  # backtrack (or the surrounding aggregate frame finalizes).
+  # now means "try the next stored clause for the same predicate". On
+  # success we set state$pc = cp$resume_pc -- the instruction after
+  # the Call/Execute that triggered the dispatch -- so the run loop
+  # re-executes the post-call body with the new bindings. If all
+  # clauses are exhausted, recurse so the next CP on the stack
+  # handles the backtrack.
   if (!is.null(cp$kind) && cp$kind == "dynamic") {
     state$cps <- state$cps[-n]
     e <- new.env(parent = emptyenv(), hash = TRUE)
@@ -2473,6 +2644,36 @@ WamRuntime$backtrack <- function(state) {
     state$mode        <- cp$mode
     state$build_stack <- cp$build_stack
     if (WamRuntime$dynamic_iter(cp$program, state, cp$clauses, cp$idx + 1L, cp$arity, cp$resume_pc)) {
+      state$pc <- as.integer(cp$resume_pc)
+      return(TRUE)
+    }
+    return(WamRuntime$backtrack(state))
+  }
+
+  # Iter-CP resume: builtin enumerators (member/2, between/3, ...)
+  # push these. The CP's `retry` closure does the next iteration's
+  # unification (and may push a new iter CP if more elements remain).
+  # On success we set state$pc = cp$resume_pc so the run loop re-
+  # executes the post-call body with the new bindings.
+  if (!is.null(cp$kind) && cp$kind == "iter") {
+    state$cps <- state$cps[-n]
+    e <- new.env(parent = emptyenv(), hash = TRUE)
+    for (k in names(cp$regs)) assign(k, cp$regs[[k]], envir = e)
+    state$regs2 <- e
+    if (length(state$trail) > cp$trail_len) {
+      to_undo <- state$trail[(cp$trail_len + 1L):length(state$trail)]
+      for (name in to_undo) {
+        if (exists(name, envir = state$bindings, inherits = FALSE)) {
+          rm(list = name, envir = state$bindings)
+        }
+      }
+      state$trail <- state$trail[seq_len(cp$trail_len)]
+    }
+    state$cp          <- cp$cp
+    state$var_counter <- cp$var_counter
+    state$mode        <- cp$mode
+    state$build_stack <- cp$build_stack
+    if (cp$retry(state)) {
       state$pc <- as.integer(cp$resume_pc)
       return(TRUE)
     }
