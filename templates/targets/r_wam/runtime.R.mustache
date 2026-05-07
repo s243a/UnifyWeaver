@@ -530,6 +530,13 @@ WamRuntime$tokenize_term <- function(text) {
   n <- length(chars)
   toks <- list()
   push <- function(t) toks[[length(toks) + 1L]] <<- t
+  is_digit <- function(ch) grepl("^[0-9]$", ch)
+  # Symbol chars used in Prolog operators. `,`, `;`, `|` get their
+  # own token types so the parser can switch behaviour at separator
+  # vs operator positions.
+  sym_chars <- c("+", "-", "*", "/", "\\", "^", "<", ">",
+                 "=", ":", "@", ".", "?", "~", "#", "$", "&")
+  is_sym <- function(ch) ch %in% sym_chars
   while (i <= n) {
     c <- chars[i]
     if (c %in% c(" ", "\t", "\n", "\r")) { i <- i + 1L; next }
@@ -538,6 +545,7 @@ WamRuntime$tokenize_term <- function(text) {
     if (c == "[") { push(list(type = "lbracket")); i <- i + 1L; next }
     if (c == "]") { push(list(type = "rbracket")); i <- i + 1L; next }
     if (c == ",") { push(list(type = "comma"));    i <- i + 1L; next }
+    if (c == ";") { push(list(type = "semicolon")); i <- i + 1L; next }
     if (c == "|") { push(list(type = "pipe"));     i <- i + 1L; next }
     # Quoted atom: 'foo bar' with backslash escapes for ' and \.
     if (c == "'") {
@@ -556,13 +564,13 @@ WamRuntime$tokenize_term <- function(text) {
       next
     }
     # Signed number: digit-start, or `-` followed by digit and not
-    # following an atom/var/closing bracket (in which case it would
-    # be a binary operator -- not supported).
-    is_digit <- function(ch) grepl("^[0-9]$", ch)
+    # following a value-producing token (in which case it would be a
+    # binary operator handled by the parser's op-loop).
     if (is_digit(c) || (c == "-" && i + 1L <= n && is_digit(chars[i + 1L]) &&
                         (length(toks) == 0L ||
-                         toks[[length(toks)]]$type %in% c("comma", "lparen",
-                                                           "lbracket", "pipe")))) {
+                         toks[[length(toks)]]$type %in% c("comma", "semicolon",
+                                                           "lparen", "lbracket",
+                                                           "pipe")))) {
       j <- if (c == "-") i + 1L else i
       saw_dot <- FALSE
       while (j <= n && (is_digit(chars[j]) ||
@@ -592,10 +600,74 @@ WamRuntime$tokenize_term <- function(text) {
       i <- j
       next
     }
+    # Symbol-run atom (operators): + - * / \ ^ < > = : @ . ? ~ # $ &.
+    # The whole maximal run becomes one atom token; the parser then
+    # consults the operator tables to decide its role.
+    if (is_sym(c)) {
+      j <- i + 1L
+      while (j <= n && is_sym(chars[j])) j <- j + 1L
+      push(list(type = "atom", value = paste(chars[i:(j - 1L)], collapse = ""),
+                is_symbol = TRUE))
+      i <- j
+      next
+    }
     return(NULL)  # unrecognized character
   }
   toks
 }
+
+# Operator tables. Format: name -> list(prec, assoc).
+# Coverage is the canonical Prolog operator set sufficient to round-
+# trip arithmetic, comparison, control, and common list/term
+# operators. Add entries here to extend.
+WamRuntime$op_infix <- list(
+  ":-"   = list(prec = 1200L, assoc = "xfx"),
+  "-->"  = list(prec = 1200L, assoc = "xfx"),
+  ";"    = list(prec = 1100L, assoc = "xfy"),
+  "->"   = list(prec = 1050L, assoc = "xfy"),
+  "*->"  = list(prec = 1050L, assoc = "xfy"),
+  ","    = list(prec = 1000L, assoc = "xfy"),
+  "="    = list(prec = 700L,  assoc = "xfx"),
+  "\\="  = list(prec = 700L,  assoc = "xfx"),
+  "=="   = list(prec = 700L,  assoc = "xfx"),
+  "\\==" = list(prec = 700L,  assoc = "xfx"),
+  "=.."  = list(prec = 700L,  assoc = "xfx"),
+  "is"   = list(prec = 700L,  assoc = "xfx"),
+  "=:="  = list(prec = 700L,  assoc = "xfx"),
+  "=\\=" = list(prec = 700L,  assoc = "xfx"),
+  "<"    = list(prec = 700L,  assoc = "xfx"),
+  ">"    = list(prec = 700L,  assoc = "xfx"),
+  "=<"   = list(prec = 700L,  assoc = "xfx"),
+  ">="   = list(prec = 700L,  assoc = "xfx"),
+  "@<"   = list(prec = 700L,  assoc = "xfx"),
+  "@>"   = list(prec = 700L,  assoc = "xfx"),
+  "@=<"  = list(prec = 700L,  assoc = "xfx"),
+  "@>="  = list(prec = 700L,  assoc = "xfx"),
+  "+"    = list(prec = 500L,  assoc = "yfx"),
+  "-"    = list(prec = 500L,  assoc = "yfx"),
+  "/\\"  = list(prec = 500L,  assoc = "yfx"),
+  "\\/"  = list(prec = 500L,  assoc = "yfx"),
+  "xor"  = list(prec = 500L,  assoc = "yfx"),
+  "*"    = list(prec = 400L,  assoc = "yfx"),
+  "/"    = list(prec = 400L,  assoc = "yfx"),
+  "//"   = list(prec = 400L,  assoc = "yfx"),
+  "mod"  = list(prec = 400L,  assoc = "yfx"),
+  "rem"  = list(prec = 400L,  assoc = "yfx"),
+  "div"  = list(prec = 400L,  assoc = "yfx"),
+  "<<"   = list(prec = 400L,  assoc = "yfx"),
+  ">>"   = list(prec = 400L,  assoc = "yfx"),
+  "**"   = list(prec = 200L,  assoc = "xfx"),
+  "^"    = list(prec = 200L,  assoc = "xfy")
+)
+
+WamRuntime$op_prefix <- list(
+  ":-"  = list(prec = 1200L),
+  "?-"  = list(prec = 1200L),
+  "\\+" = list(prec = 900L),
+  "-"   = list(prec = 200L),
+  "+"   = list(prec = 200L),
+  "\\"  = list(prec = 200L)
+)
 
 WamRuntime$parse_term <- function(text, table, state) {
   toks <- WamRuntime$tokenize_term(text)
@@ -606,41 +678,73 @@ WamRuntime$parse_term <- function(text, table, state) {
   p$table <- table
   p$state <- state
   p$vars <- new.env(parent = emptyenv())
-  result <- WamRuntime$wam_parse_expr(p)
+  result <- WamRuntime$wam_parse_expr(p, 1200L)
   if (is.null(result)) return(NULL)
   if (p$pos <= length(toks)) return(NULL)  # extra tokens
   result
 }
 
-WamRuntime$wam_parse_expr <- function(p) {
+# Operator-precedence (Pratt-style) parser. Parses a term whose top-
+# level operator has precedence <= max_prec. Recursive calls set the
+# rhs ceiling per associativity (xfy: rhs <= prec; yfx/xfx: rhs <
+# prec; left-recursion is implemented by the outer loop, so yfx
+# folds left without explicit lhs tracking).
+WamRuntime$wam_parse_expr <- function(p, max_prec) {
+  left <- WamRuntime$wam_parse_primary(p, max_prec)
+  if (is.null(left)) return(NULL)
+  repeat {
+    if (p$pos > length(p$tokens)) return(left)
+    tok <- p$tokens[[p$pos]]
+    op_name <- if (tok$type == "atom") tok$value
+               else if (tok$type == "comma") ","
+               else if (tok$type == "semicolon") ";"
+               else NULL
+    if (is.null(op_name)) return(left)
+    op <- WamRuntime$op_infix[[op_name]]
+    if (is.null(op) || op$prec > max_prec) return(left)
+    p$pos <- p$pos + 1L
+    rhs_max <- if (op$assoc == "xfy") op$prec else op$prec - 1L
+    rhs <- WamRuntime$wam_parse_expr(p, rhs_max)
+    if (is.null(rhs)) return(NULL)
+    left <- StructTerm(WamRuntime$intern(p$table, op_name), list(left, rhs))
+  }
+}
+
+WamRuntime$wam_parse_primary <- function(p, max_prec) {
   if (p$pos > length(p$tokens)) return(NULL)
   tok <- p$tokens[[p$pos]]
   if (tok$type == "number") {
     p$pos <- p$pos + 1L
-    if (tok$is_float) FloatTerm(as.numeric(tok$value))
-    else              IntTerm(as.integer(tok$value))
-  } else if (tok$type == "var") {
+    if (tok$is_float) return(FloatTerm(as.numeric(tok$value)))
+    return(IntTerm(as.integer(tok$value)))
+  }
+  if (tok$type == "var") {
     p$pos <- p$pos + 1L
     name <- tok$value
     if (name == "_") {
       v <- Unbound(paste0("V", p$state$var_counter))
       p$state$var_counter <- p$state$var_counter + 1L
-      v
-    } else if (exists(name, envir = p$vars, inherits = FALSE)) {
-      get(name, envir = p$vars, inherits = FALSE)
-    } else {
-      v <- Unbound(paste0("V", p$state$var_counter))
-      p$state$var_counter <- p$state$var_counter + 1L
-      assign(name, v, envir = p$vars)
-      v
+      return(v)
     }
-  } else if (tok$type == "atom") {
+    if (exists(name, envir = p$vars, inherits = FALSE)) {
+      return(get(name, envir = p$vars, inherits = FALSE))
+    }
+    v <- Unbound(paste0("V", p$state$var_counter))
+    p$state$var_counter <- p$state$var_counter + 1L
+    assign(name, v, envir = p$vars)
+    return(v)
+  }
+  if (tok$type == "atom") {
     p$pos <- p$pos + 1L
+    # Functor application: atom immediately followed by `(`. The
+    # tokenizer doesn't track whitespace gaps, so any lparen here is
+    # treated as functor application -- canonical Prolog rejects
+    # `foo (x)` too.
     if (p$pos <= length(p$tokens) && p$tokens[[p$pos]]$type == "lparen") {
       p$pos <- p$pos + 1L
       args <- list()
       repeat {
-        a <- WamRuntime$wam_parse_expr(p)
+        a <- WamRuntime$wam_parse_expr(p, 999L)
         if (is.null(a)) return(NULL)
         args <- c(args, list(a))
         if (p$pos > length(p$tokens)) return(NULL)
@@ -649,18 +753,34 @@ WamRuntime$wam_parse_expr <- function(p) {
         if (sep != "comma") return(NULL)
         p$pos <- p$pos + 1L
       }
-      StructTerm(WamRuntime$intern(p$table, tok$value), args)
-    } else {
-      Atom(WamRuntime$intern(p$table, tok$value))
+      return(StructTerm(WamRuntime$intern(p$table, tok$value), args))
     }
-  } else if (tok$type == "lparen") {
+    # Prefix operator: name in op_prefix, prec fits, and the next
+    # token can start a term. Otherwise stand-alone atom.
+    op <- WamRuntime$op_prefix[[tok$value]]
+    if (!is.null(op) && op$prec <= max_prec && p$pos <= length(p$tokens)) {
+      next_tok <- p$tokens[[p$pos]]
+      starts_term <- next_tok$type %in%
+        c("number", "var", "atom", "lparen", "lbracket")
+      if (starts_term) {
+        operand <- WamRuntime$wam_parse_expr(p, op$prec - 1L)
+        if (is.null(operand)) return(NULL)
+        return(StructTerm(WamRuntime$intern(p$table, tok$value),
+                          list(operand)))
+      }
+    }
+    return(Atom(WamRuntime$intern(p$table, tok$value)))
+  }
+  if (tok$type == "lparen") {
     p$pos <- p$pos + 1L
-    inner <- WamRuntime$wam_parse_expr(p)
+    inner <- WamRuntime$wam_parse_expr(p, 1200L)
     if (is.null(inner)) return(NULL)
-    if (p$pos > length(p$tokens) || p$tokens[[p$pos]]$type != "rparen") return(NULL)
+    if (p$pos > length(p$tokens) ||
+        p$tokens[[p$pos]]$type != "rparen") return(NULL)
     p$pos <- p$pos + 1L
-    inner
-  } else if (tok$type == "lbracket") {
+    return(inner)
+  }
+  if (tok$type == "lbracket") {
     p$pos <- p$pos + 1L
     if (p$pos <= length(p$tokens) && p$tokens[[p$pos]]$type == "rbracket") {
       p$pos <- p$pos + 1L
@@ -668,7 +788,7 @@ WamRuntime$wam_parse_expr <- function(p) {
     }
     elems <- list()
     repeat {
-      a <- WamRuntime$wam_parse_expr(p)
+      a <- WamRuntime$wam_parse_expr(p, 999L)
       if (is.null(a)) return(NULL)
       elems <- c(elems, list(a))
       if (p$pos > length(p$tokens)) return(NULL)
@@ -677,7 +797,7 @@ WamRuntime$wam_parse_expr <- function(p) {
       if (sep == "comma") { p$pos <- p$pos + 1L; next }
       if (sep == "pipe") {
         p$pos <- p$pos + 1L
-        tail <- WamRuntime$wam_parse_expr(p)
+        tail <- WamRuntime$wam_parse_expr(p, 999L)
         if (is.null(tail)) return(NULL)
         if (p$pos > length(p$tokens) ||
             p$tokens[[p$pos]]$type != "rbracket") return(NULL)
@@ -691,10 +811,9 @@ WamRuntime$wam_parse_expr <- function(p) {
       }
       return(NULL)
     }
-    WamRuntime$wam_list_build(elems, p$table)
-  } else {
-    NULL
+    return(WamRuntime$wam_list_build(elems, p$table))
   }
+  NULL
 }
 
 # Build a Prolog-style cons-list term from a list of WAM terms.

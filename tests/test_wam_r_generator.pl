@@ -1703,6 +1703,91 @@ e2e_stdlib_polish_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for operator-precedence parsing in
+% term_to_atom/2 reverse mode. Asserts that the parser respects
+% operator associativity (yfx, xfy) and precedence ordering, and
+% that prefix operators (\+) work.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(operator_parser_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_operator_parser_via_rscript
+    ;   true
+    )).
+
+e2e_operator_parser_via_rscript :-
+    % "1+2" -> +(1, 2).
+    assertz((user:op_simple :-
+        atom_codes(A, [49, 43, 50]),
+        term_to_atom(T, A), T == 1+2)),
+    % "1+2*3" -> +(1, *(2, 3)) (mul binds tighter).
+    assertz((user:op_prec :-
+        atom_codes(A, [49, 43, 50, 42, 51]),
+        term_to_atom(T, A), T == 1+2*3)),
+    % "1+2+3" -> +(+(1, 2), 3) (yfx, left associative).
+    assertz((user:op_left_assoc :-
+        atom_codes(A, [49, 43, 50, 43, 51]),
+        term_to_atom(T, A), T == 1+2+3)),
+    % "2^3^4" -> ^(2, ^(3, 4)) (xfy, right associative).
+    assertz((user:op_right_assoc :-
+        atom_codes(A, [50, 94, 51, 94, 52]),
+        term_to_atom(T, A), T == 2^3^4)),
+    % Whitespace tolerated: "1 + 2" -> +(1, 2).
+    assertz((user:op_spaces :-
+        atom_codes(A, [49, 32, 43, 32, 50]),
+        term_to_atom(T, A), T == 1+2)),
+    % "a=b" -> =(a, b).
+    assertz((user:op_eq :-
+        atom_codes(A, [97, 61, 98]),
+        term_to_atom(T, A), T == (a=b))),
+    % "1<2" -> <(1, 2).
+    assertz((user:op_compare :-
+        atom_codes(A, [49, 60, 50]),
+        term_to_atom(T, A), T == (1<2))),
+    % Multi-char operator: "1+1 =:= 2" -> =:=(+(1, 1), 2).
+    assertz((user:op_arith_eq :-
+        atom_codes(A, [49, 43, 49, 32, 61, 58, 61, 32, 50]),
+        term_to_atom(T, A), T == (1+1 =:= 2))),
+    % Prefix operator: "\+foo" -> \+(foo).
+    assertz((user:op_prefix_neg :-
+        atom_codes(A, [92, 43, 102, 111, 111]),
+        term_to_atom(T, A), T == (\+ foo))),
+    % Comma as operator inside parens: "(a,b,c)" -> ','(a, ','(b, c)).
+    assertz((user:op_comma :-
+        atom_codes(A, [40, 97, 44, 98, 44, 99, 41]),
+        term_to_atom(T, A), T == (a,b,c))),
+    % Negative integer literal preserved: "f(-3)" -> f(-3).
+    assertz((user:op_neg_lit :-
+        atom_codes(A, [102, 40, 45, 51, 41]),
+        term_to_atom(T, A), T == f(-3))),
+    % Round-trip: render an arithmetic term and re-parse to the
+    % structurally equal term.
+    assertz((user:op_round_trip :-
+        T0 = 1+2*3,
+        term_to_atom(T0, A),
+        term_to_atom(T1, A),
+        T1 == T0)),
+    unique_r_tmp_dir('tmp_r_op_parser_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:op_simple/0, user:op_prec/0, user:op_left_assoc/0,
+          user:op_right_assoc/0, user:op_spaces/0, user:op_eq/0,
+          user:op_compare/0, user:op_arith_eq/0, user:op_prefix_neg/0,
+          user:op_comma/0, user:op_neg_lit/0, user:op_round_trip/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [op_simple, op_prec, op_left_assoc, op_right_assoc,
+           op_spaces, op_eq, op_compare, op_arith_eq,
+           op_prefix_neg, op_comma, op_neg_lit, op_round_trip],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-
