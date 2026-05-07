@@ -520,6 +520,126 @@ e2e_phase3_multi_clause :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% Phase-3 follow-up: extended builtins.
+% Type checks, term equality / identity, standard order of terms,
+% and the cut (!/0). Each predicate compiles to the corresponding
+% builtin_call literal; here we verify the codegen emits them.
+% ------------------------------------------------------------------
+test(extended_builtins_emitted) :-
+    once((
+        unique_r_tmp_dir('tmp_r_extbi', TmpDir),
+        % `atomic/1` and `ground/1` are *runtime-supported* but the WAM
+        % compiler emits them as plain Execute, not BuiltinCall, so we
+        % can't structurally assert them in the generated program.
+        assertz((user:bi_atom(X)        :- atom(X))),
+        assertz((user:bi_integer(X)     :- integer(X))),
+        assertz((user:bi_var(X)         :- var(X))),
+        assertz((user:bi_is_list(X)     :- is_list(X))),
+        assertz((user:bi_eq(X, Y)       :- X = Y)),
+        assertz((user:bi_neq(X, Y)      :- X \= Y)),
+        assertz((user:bi_id(X, Y)       :- X == Y)),
+        assertz((user:bi_nid(X, Y)      :- X \== Y)),
+        assertz((user:bi_ord(X, Y)      :- X @< Y)),
+        assertz((user:bi_cut            :- !)),
+        write_wam_r_project(
+            [ user:bi_atom/1, user:bi_integer/1, user:bi_var/1,
+              user:bi_is_list/1,
+              user:bi_eq/2, user:bi_neq/2, user:bi_id/2, user:bi_nid/2,
+              user:bi_ord/2, user:bi_cut/0 ],
+            [],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("atom/1", 1)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("integer/1", 1)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("var/1", 1)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("is_list/1", 1)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("=/2", 2)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("==/2", 2)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("@</2", 2)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("!/0", 0)')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+% ------------------------------------------------------------------
+% End-to-end Rscript run for the extended builtins. Runs a battery of
+% predicates through Rscript and asserts the truth pattern. Auto-skips
+% when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(extended_builtins_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_extended_builtins_via_rscript
+    ;   true
+    )).
+
+e2e_extended_builtins_via_rscript :-
+    % atomic/ground are runtime-supported but compile to Execute, so
+    % we leave them out of the e2e battery (they would dispatch as
+    % missing predicates). Coverage is across the actually-emitted
+    % builtin family.
+    assertz((user:bi_atom_y     :- atom(a))),
+    assertz((user:bi_atom_n     :- atom(7))),
+    assertz((user:bi_int_y      :- integer(7))),
+    assertz((user:bi_int_n      :- integer(a))),
+    assertz((user:bi_num_y      :- number(7))),
+    assertz((user:bi_num_n      :- number(a))),
+    assertz((user:bi_compound_y :- compound(f(a)))),
+    assertz((user:bi_compound_n :- compound(a))),
+    assertz((user:bi_is_list_y  :- is_list([a, b, c]))),
+    assertz((user:bi_is_list_e  :- is_list([]))),
+    assertz((user:bi_is_list_n  :- is_list(f(a)))),
+    % Term equality / identity.
+    assertz((user:bi_eq_y       :- a = a)),
+    assertz((user:bi_eq_n       :- a = b)),
+    assertz((user:bi_neq_y      :- a \= b)),
+    assertz((user:bi_neq_n      :- a \= a)),
+    assertz((user:bi_id_y       :- a == a)),
+    assertz((user:bi_id_n       :- a == b)),
+    assertz((user:bi_nid_y      :- a \== b)),
+    assertz((user:bi_nid_n      :- a \== a)),
+    % Standard order of terms.
+    assertz((user:bi_lt_y       :- a @< b)),
+    assertz((user:bi_lt_n       :- b @< a)),
+    assertz((user:bi_le_y       :- a @=< a)),
+    assertz((user:bi_gt_y       :- b @> a)),
+    % Cut: succeeds (it's just `:- !`).
+    assertz((user:bi_cut_y      :- !)),
+    unique_r_tmp_dir('tmp_r_extbi_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:bi_atom_y/0, user:bi_atom_n/0,
+          user:bi_int_y/0, user:bi_int_n/0,
+          user:bi_num_y/0, user:bi_num_n/0,
+          user:bi_compound_y/0, user:bi_compound_n/0,
+          user:bi_is_list_y/0, user:bi_is_list_e/0, user:bi_is_list_n/0,
+          user:bi_eq_y/0, user:bi_eq_n/0,
+          user:bi_neq_y/0, user:bi_neq_n/0,
+          user:bi_id_y/0, user:bi_id_n/0,
+          user:bi_nid_y/0, user:bi_nid_n/0,
+          user:bi_lt_y/0, user:bi_lt_n/0, user:bi_le_y/0, user:bi_gt_y/0,
+          user:bi_cut_y/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [bi_atom_y, bi_int_y, bi_num_y,
+           bi_compound_y, bi_is_list_y, bi_is_list_e,
+           bi_eq_y, bi_neq_y, bi_id_y, bi_nid_y,
+           bi_lt_y, bi_le_y, bi_gt_y, bi_cut_y],
+    No  = [bi_atom_n, bi_int_n, bi_num_n, bi_compound_n,
+           bi_is_list_n, bi_eq_n, bi_neq_n, bi_id_n, bi_nid_n, bi_lt_n],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-
