@@ -405,7 +405,8 @@ defmodule LmdbSetup do
           key_to_id_dbi: key_to_id,
           id_to_key_dbi: id_to_key,
           arity: 2,
-          dupsort: true
+          dupsort: true,
+          cache_capacity: 1_048_576
         },
         2,
         nil
@@ -431,10 +432,15 @@ defmodule BenchDriver do
     env_path = Path.expand("../lmdb_int_ids", __DIR__)
     {handle, env} = open_handle(env_path)
     root_id = LmdbIntIds.lookup_id(handle, root)
+    all_pairs = LmdbIntIds.stream_all(handle, nil)
+    demand_set = compute_demand_set(all_pairs, root_id)
+    cache_entries = LmdbIntIds.preload_arg1_cache(handle, nil)
+    if is_integer(cache_entries), do: IO.puts(:stderr, "lmdb_int_ids_cache_entries=#{cache_entries}")
+    IO.puts(:stderr, "lmdb_int_ids_demand_set_size=#{MapSet.size(demand_set)}")
 
     seed_weight_sums =
       for cat <- seed_cats, into: %{} do
-        {cat, run_seeded(handle, cat, root_id)}
+        {cat, run_seeded(handle, demand_set, cat, root_id)}
       end
 
     Elmdb.env_close(env)
@@ -460,19 +466,25 @@ defmodule BenchDriver do
     end
   end
 
-  defp run_seeded(handle, cat, root_id) do
+  defp run_seeded(handle, demand_set, cat, root_id) do
     case LmdbIntIds.lookup_id(handle, cat) do
       nil ->
         0.0
 
       cat_id ->
-        if cat_id == root_id do
+        cond do
+          cat_id == root_id ->
           0.0
-        else
+
+          not MapSet.member?(demand_set, cat_id) ->
+            0.0
+
+          true ->
           dests_fn = fn node ->
             handle
             |> LmdbIntIds.lookup_by_arg1_id(node, nil)
             |> Enum.map(fn {_from, to} -> to end)
+            |> Enum.filter(fn to -> MapSet.member?(demand_set, to) end)
           end
 
           WamRuntime.GraphKernel.CategoryAncestor.fold_hops_with_dests_seeded(
@@ -485,6 +497,26 @@ defmodule BenchDriver do
           )
         end
     end
+  end
+
+  defp compute_demand_set(pairs, root_id) do
+    reverse_adj =
+      Enum.reduce(pairs, %{}, fn {child, parent}, acc ->
+        Map.update(acc, parent, [child], &[child | &1])
+      end)
+
+    bfs_demand(reverse_adj, MapSet.new([root_id]), [root_id])
+  end
+
+  defp bfs_demand(_reverse_adj, visited, []), do: visited
+  defp bfs_demand(reverse_adj, visited, frontier) do
+    next =
+      frontier
+      |> Enum.flat_map(fn node -> Map.get(reverse_adj, node, []) end)
+      |> Enum.reject(fn node -> MapSet.member?(visited, node) end)
+      |> Enum.uniq()
+
+    bfs_demand(reverse_adj, Enum.reduce(next, visited, &MapSet.put(&2, &1)), next)
   end
 
   defp open_handle(env_path) do
@@ -546,11 +578,13 @@ defmodule BenchDriver do
     seed_cats = article_cats |> Enum.map(fn {_, c} -> c end) |> Enum.uniq() |> Enum.sort()
     {id_map, adjacency} = build_int_tuple(category_edges, root, seed_cats)
     root_id = Map.fetch!(id_map, root)
+    demand_set = compute_demand_set(adjacency, root_id)
+    filtered_adjacency = filter_adjacency_by_demand(adjacency, demand_set)
     setup_done = monotonic_ms()
 
     seed_weight_sums =
       for cat <- seed_cats, into: %{} do
-        {cat, run_seeded(id_map, adjacency, cat, root_id)}
+        {cat, run_seeded(id_map, filtered_adjacency, demand_set, cat, root_id)}
       end
 
     query_done = monotonic_ms()
@@ -570,7 +604,7 @@ defmodule BenchDriver do
       |> Enum.sort()
 
     finished = monotonic_ms()
-    IO.puts(:stderr, "mode=wam_elixir_int_tuple setup_ms=#{setup_done - started} query_ms=#{query_done - setup_done} aggregation_ms=#{finished - query_done} total_ms=#{finished - started} seed_count=#{length(seed_cats)} tuple_count=#{map_size(seed_weight_sums)} article_count=#{length(results)} node_count=#{map_size(id_map)}")
+    IO.puts(:stderr, "mode=wam_elixir_int_tuple setup_ms=#{setup_done - started} query_ms=#{query_done - setup_done} aggregation_ms=#{finished - query_done} total_ms=#{finished - started} seed_count=#{length(seed_cats)} tuple_count=#{map_size(seed_weight_sums)} article_count=#{length(results)} node_count=#{map_size(id_map)} demand_set_size=#{MapSet.size(demand_set)}")
     IO.puts("article\troot_category\teffective_distance")
 
     for {deff, art} <- results do
@@ -578,15 +612,20 @@ defmodule BenchDriver do
     end
   end
 
-  defp run_seeded(id_map, adjacency, cat, root_id) do
+  defp run_seeded(id_map, adjacency, demand_set, cat, root_id) do
     case Map.fetch(id_map, cat) do
       :error ->
         0.0
 
       {:ok, cat_id} ->
-        if cat_id == root_id do
+        cond do
+          cat_id == root_id ->
           0.0
-        else
+
+          not MapSet.member?(demand_set, cat_id) ->
+            0.0
+
+          true ->
           dests_fn = fn node -> elem(adjacency, node) end
 
           WamRuntime.GraphKernel.CategoryAncestor.fold_hops_with_dests_seeded(
@@ -601,6 +640,40 @@ defmodule BenchDriver do
     end
   end
 
+  defp compute_demand_set(adjacency, root_id) do
+    reverse_adj =
+      adjacency
+      |> Tuple.to_list()
+      |> Enum.with_index()
+      |> Enum.reduce(%{}, fn {parents, child}, acc ->
+        Enum.reduce(parents, acc, fn parent, inner ->
+          Map.update(inner, parent, [child], &[child | &1])
+        end)
+      end)
+
+    bfs_demand(reverse_adj, MapSet.new([root_id]), [root_id])
+  end
+
+  defp bfs_demand(_reverse_adj, visited, []), do: visited
+  defp bfs_demand(reverse_adj, visited, frontier) do
+    next =
+      frontier
+      |> Enum.flat_map(fn node -> Map.get(reverse_adj, node, []) end)
+      |> Enum.reject(fn node -> MapSet.member?(visited, node) end)
+      |> Enum.uniq()
+
+    bfs_demand(reverse_adj, Enum.reduce(next, visited, &MapSet.put(&2, &1)), next)
+  end
+
+  defp filter_adjacency_by_demand(adjacency, demand_set) do
+    adjacency
+    |> Tuple.to_list()
+    |> Enum.map(fn parents ->
+      Enum.filter(parents, fn parent -> MapSet.member?(demand_set, parent) end)
+    end)
+    |> List.to_tuple()
+  end
+
   defp build_int_tuple(edges, root, seed_cats) do
     {id_map, next_id} =
       Enum.reduce(edges, {%{}, 0}, fn {child, parent}, acc ->
@@ -610,14 +683,18 @@ defmodule BenchDriver do
     {id_map, next_id} =
       Enum.reduce([root | seed_cats], {id_map, next_id}, fn key, acc -> intern(acc, key) end)
 
-    adjacency =
+    by_child =
       edges
-      |> Enum.reduce(List.duplicate([], next_id), fn {child, parent}, acc ->
+      |> Enum.reduce(%{}, fn {child, parent}, acc ->
         child_id = Map.fetch!(id_map, child)
         parent_id = Map.fetch!(id_map, parent)
-        List.update_at(acc, child_id, fn parents -> [parent_id | parents] end)
+        Map.update(acc, child_id, [parent_id], &[parent_id | &1])
       end)
-      |> Enum.map(&Enum.reverse/1)
+
+    adjacency =
+      for id <- 0..(next_id - 1) do
+        by_child |> Map.get(id, []) |> Enum.reverse()
+      end
       |> List.to_tuple()
 
     {id_map, adjacency}

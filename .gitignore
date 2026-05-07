@@ -22,6 +22,8 @@ templates/legacy/
 output/
 tests/output/
 test_output/
+data/benchmark/50k_cats/
+data/benchmark/100k_cats/
 test_input/
 output_*/
 
