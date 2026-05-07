@@ -13,9 +13,11 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import statistics
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 from benchmark_common import run_command, scale_sort_key, split_csv, validate_csharp_query_source_modes
 
@@ -67,6 +69,20 @@ class CalibrationDrift:
     timing: list[str]
 
 
+@dataclass
+class SourceModeStabilitySummary:
+    workload: str
+    scale: str
+    runs: int
+    output_agreement: str
+    stable_best_source_mode: str
+    best_source_mode_counts: str
+    stable_auto_resolved_source_mode: str
+    auto_resolved_source_mode_counts: str
+    auto_vs_best_median: str
+    median_summary: str
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -81,6 +97,15 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated C# query source modes to sweep.",
     )
     parser.add_argument("--repetitions", type=int, default=1)
+    parser.add_argument(
+        "--stability-runs",
+        type=int,
+        default=1,
+        help=(
+            "Run the wrapper-level sweep this many times and report stable winners. "
+            "Values above 1 print a stability summary instead of the raw per-run table."
+        ),
+    )
     parser.add_argument("--format", choices=["tsv", "markdown"], default="tsv")
     parser.add_argument(
         "--trace",
@@ -267,6 +292,89 @@ def parse_mode_summary(value: str) -> dict[str, str]:
     return parsed
 
 
+def summarize_stability(sweep_runs: list[list[SourceModeSummary]]) -> list[SourceModeStabilitySummary]:
+    by_key: dict[tuple[str, str], list[SourceModeSummary]] = {}
+    for run in sweep_runs:
+        for summary in run:
+            by_key.setdefault((summary.workload, summary.scale), []).append(summary)
+
+    stability: list[SourceModeStabilitySummary] = []
+    for key in sorted(by_key, key=_calibration_key_sort_key):
+        summaries = by_key[key]
+        best_modes = [summary.best_source_mode for summary in summaries if summary.best_source_mode]
+        auto_resolved_modes = [
+            parse_mode_summary(summary.resolved_source_mode_summary).get("auto", "")
+            for summary in summaries
+        ]
+        auto_resolved_modes = [mode for mode in auto_resolved_modes if mode]
+        output_agreement = "match" if all(
+            summary.output_agreement == "match" for summary in summaries
+        ) else "MISMATCH"
+        stability.append(
+            SourceModeStabilitySummary(
+                workload=key[0],
+                scale=key[1],
+                runs=len(summaries),
+                output_agreement=output_agreement,
+                stable_best_source_mode=_majority_value(best_modes, len(summaries)),
+                best_source_mode_counts=_value_counts(best_modes),
+                stable_auto_resolved_source_mode=_majority_value(auto_resolved_modes, len(summaries)),
+                auto_resolved_source_mode_counts=_value_counts(auto_resolved_modes),
+                auto_vs_best_median=_median_ratio(
+                    summary.auto_vs_best for summary in summaries
+                ),
+                median_summary=_median_mode_summary(
+                    summary.median_summary for summary in summaries
+                ),
+            )
+        )
+    return stability
+
+
+def _value_counts(values: list[str]) -> str:
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return ",".join(
+        f"{value}:{count}"
+        for value, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    )
+
+
+def _majority_value(values: list[str], total_count: int) -> str:
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    if not counts:
+        return ""
+    value, count = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0]
+    return value if count > total_count / 2 else ""
+
+
+def _median_ratio(values: Iterable[str]) -> str:
+    ratios = [
+        ratio
+        for ratio in (parse_ratio(str(value)) for value in values)
+        if ratio is not None
+    ]
+    if not ratios:
+        return ""
+    return f"{statistics.median(ratios):.2f}x"
+
+
+def _median_mode_summary(values: Iterable[str]) -> str:
+    by_mode: dict[str, list[float]] = {}
+    for value in values:
+        for mode, raw_mode_value in parse_mode_summary(str(value)).items():
+            parsed = parse_ratio(raw_mode_value)
+            if parsed is not None:
+                by_mode.setdefault(mode, []).append(parsed)
+    return ",".join(
+        f"{mode}:{statistics.median(mode_values):.3f}"
+        for mode, mode_values in sorted(by_mode.items())
+    )
+
+
 def compare_calibration(
     summaries: list[SourceModeSummary],
     baseline_rows: list[CalibrationArtifactRow],
@@ -448,30 +556,73 @@ def print_markdown(summaries: list[SourceModeSummary]) -> None:
         )
 
 
+def print_stability_tsv(summaries: list[SourceModeStabilitySummary]) -> None:
+    print("workload\tscale\truns\toutput_agreement\tstable_best_source_mode\tbest_source_mode_counts\tstable_auto_resolved_source_mode\tauto_resolved_source_mode_counts\tauto_vs_best_median\tmedian_s_by_mode_median")
+    for summary in summaries:
+        print(
+            f"{summary.workload}\t{summary.scale}\t{summary.runs}\t"
+            f"{summary.output_agreement}\t{summary.stable_best_source_mode}\t"
+            f"{summary.best_source_mode_counts}\t"
+            f"{summary.stable_auto_resolved_source_mode}\t"
+            f"{summary.auto_resolved_source_mode_counts}\t"
+            f"{summary.auto_vs_best_median}\t{summary.median_summary}"
+        )
+
+
+def print_stability_markdown(summaries: list[SourceModeStabilitySummary]) -> None:
+    print("| Workload | Scale | Runs | Outputs | Stable best source mode | Best mode counts | Stable auto resolved mode | Auto resolved counts | Auto vs best median | Median seconds by mode |")
+    print("| --- | --- | ---: | --- | --- | --- | --- | --- | ---: | --- |")
+    for summary in summaries:
+        print(
+            f"| {summary.workload} | {summary.scale} | {summary.runs} | "
+            f"{summary.output_agreement} | {summary.stable_best_source_mode} | "
+            f"`{summary.best_source_mode_counts}` | {summary.stable_auto_resolved_source_mode} | "
+            f"`{summary.auto_resolved_source_mode_counts}` | {summary.auto_vs_best_median} | "
+            f"`{summary.median_summary}` |"
+        )
+
+
 def main() -> int:
     args = parse_args()
     workloads = parse_workloads(args.workloads)
+    if args.stability_runs < 1:
+        raise SystemExit("--stability-runs must be at least 1")
     try:
         validate_csharp_query_source_modes(args.source_modes)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
-    summaries: list[SourceModeSummary] = []
-    for workload in workloads:
-        summaries.extend(
-            run_workload(
-                workload,
-                scales=args.scales,
-                source_modes=args.source_modes,
-                repetitions=args.repetitions,
-                trace=args.trace,
+    sweep_runs: list[list[SourceModeSummary]] = []
+    for _ in range(args.stability_runs):
+        run_summaries: list[SourceModeSummary] = []
+        for workload in workloads:
+            run_summaries.extend(
+                run_workload(
+                    workload,
+                    scales=args.scales,
+                    source_modes=args.source_modes,
+                    repetitions=args.repetitions,
+                    trace=args.trace,
+                )
             )
-        )
+        sweep_runs.append(run_summaries)
+    summaries = [
+        summary
+        for run_summaries in sweep_runs
+        for summary in run_summaries
+    ]
 
-    if args.format == "markdown":
-        print_markdown(summaries)
+    if args.stability_runs > 1:
+        stability_summaries = summarize_stability(sweep_runs)
+        if args.format == "markdown":
+            print_stability_markdown(stability_summaries)
+        else:
+            print_stability_tsv(stability_summaries)
     else:
-        print_tsv(summaries)
+        if args.format == "markdown":
+            print_markdown(summaries)
+        else:
+            print_tsv(summaries)
 
     failures = calibration_failures(
         summaries,
@@ -479,15 +630,27 @@ def main() -> int:
         fail_on_output_mismatch=args.fail_on_output_mismatch,
     )
     if args.compare_calibration:
-        drift = compare_calibration(
-            summaries,
-            load_calibration_artifact(args.calibration_artifact),
-            timing_drift_ratio=args.timing_drift_ratio,
-        )
-        for warning in drift.timing:
-            print(f"WARNING: calibration timing drift: {warning}", file=sys.stderr)
-        for failure in drift.critical:
-            failures.append(f"calibration drift: {failure}")
+        baseline_rows = load_calibration_artifact(args.calibration_artifact)
+        for run_index, run_summaries in enumerate(sweep_runs, start=1):
+            fresh_keys = {
+                (summary.workload, summary.scale)
+                for summary in run_summaries
+            }
+            selected_baseline_rows = [
+                row
+                for row in baseline_rows
+                if (row.workload, row.scale) in fresh_keys
+            ]
+            drift = compare_calibration(
+                run_summaries,
+                selected_baseline_rows,
+                timing_drift_ratio=args.timing_drift_ratio,
+            )
+            prefix = f"run {run_index}: " if args.stability_runs > 1 else ""
+            for warning in drift.timing:
+                print(f"WARNING: calibration timing drift: {prefix}{warning}", file=sys.stderr)
+            for failure in drift.critical:
+                failures.append(f"calibration drift: {prefix}{failure}")
     if failures:
         for failure in failures:
             print(f"ERROR: {failure}", file=sys.stderr)

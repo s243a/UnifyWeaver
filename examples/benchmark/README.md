@@ -120,6 +120,11 @@ comparison fails on output, resolved-policy, coverage, or relation-registration
 drift, while reporting best-mode and median changes as timing warnings because
 single-repetition benchmark winners can move with local noise.
 
+Use `--stability-runs <n>` to run the wrapper-level sweep repeatedly and
+summarize stable winners. Values above `1` report majority winners, winner
+counts, stable resolved `auto` modes, and per-mode median timings across the
+independent runs.
+
 ### WAM-Rust and WAM-Haskell Benchmark Variants
 
 The effective-distance harness also includes hybrid WAM benchmark targets:

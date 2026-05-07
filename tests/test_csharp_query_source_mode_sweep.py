@@ -23,6 +23,7 @@ from benchmark_csharp_query_source_mode_sweep import (  # noqa: E402
     parse_ratio,
     parse_runner_output,
     parse_workloads,
+    summarize_stability,
 )
 from benchmark_common import csharp_query_source_mode_choices  # noqa: E402
 
@@ -138,6 +139,69 @@ class CSharpQuerySourceModeSweepTests(unittest.TestCase):
                 "category-influence/300: median[preload] changed from 0.360 to 0.900 (2.50x)",
             ],
         )
+
+    def test_compare_calibration_flags_missing_baseline_for_fresh_rows(self) -> None:
+        drift = compare_calibration([self._summary()], [])
+
+        self.assertEqual(drift.timing, [])
+        self.assertEqual(
+            drift.critical,
+            ["category-influence/300: no calibration baseline row"],
+        )
+
+    def test_summarize_stability_reports_majority_and_medians(self) -> None:
+        stability = summarize_stability(
+            [
+                [
+                    self._summary(
+                        best_source_mode="preload",
+                        auto_vs_best="1.30x",
+                        median_summary="artifact-prebuilt:0.904,auto:0.467,preload:0.360",
+                    )
+                ],
+                [
+                    self._summary(
+                        best_source_mode="auto",
+                        auto_vs_best="1.00x",
+                        median_summary="artifact-prebuilt:0.800,auto:0.200,preload:0.400",
+                    )
+                ],
+                [
+                    self._summary(
+                        best_source_mode="auto",
+                        auto_vs_best="1.00x",
+                        median_summary="artifact-prebuilt:1.000,auto:0.300,preload:0.500",
+                    )
+                ],
+            ]
+        )
+
+        self.assertEqual(len(stability), 1)
+        summary = stability[0]
+        self.assertEqual(summary.workload, "category-influence")
+        self.assertEqual(summary.scale, "300")
+        self.assertEqual(summary.runs, 3)
+        self.assertEqual(summary.output_agreement, "match")
+        self.assertEqual(summary.stable_best_source_mode, "auto")
+        self.assertEqual(summary.best_source_mode_counts, "auto:2,preload:1")
+        self.assertEqual(summary.stable_auto_resolved_source_mode, "preload")
+        self.assertEqual(summary.auto_resolved_source_mode_counts, "preload:3")
+        self.assertEqual(summary.auto_vs_best_median, "1.00x")
+        self.assertEqual(
+            summary.median_summary,
+            "artifact-prebuilt:0.904,auto:0.300,preload:0.400",
+        )
+
+    def test_summarize_stability_requires_majority_for_stable_best_mode(self) -> None:
+        stability = summarize_stability(
+            [
+                [self._summary(best_source_mode="auto")],
+                [self._summary(best_source_mode="preload")],
+            ]
+        )
+
+        self.assertEqual(stability[0].stable_best_source_mode, "")
+        self.assertEqual(stability[0].best_source_mode_counts, "auto:1,preload:1")
 
     def test_parse_runner_output_summarizes_modes_and_registrations(self) -> None:
         output = "\n".join(
