@@ -115,6 +115,11 @@ The checked-in scale-300 calibration snapshot is
 baseline for the current graph `auto` policy, not a permanent benchmark
 claim: use a fresh sweep before changing `RelationSourceModePolicy`.
 
+Add `--compare-calibration` to compare a fresh sweep with that snapshot. The
+comparison fails on output, resolved-policy, coverage, or relation-registration
+drift, while reporting best-mode and median changes as timing warnings because
+single-repetition benchmark winners can move with local noise.
+
 ### WAM-Rust and WAM-Haskell Benchmark Variants
 
 The effective-distance harness also includes hybrid WAM benchmark targets:
