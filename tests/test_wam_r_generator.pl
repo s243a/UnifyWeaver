@@ -1607,6 +1607,102 @@ e2e_catch_throw_dyn_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for the standard-library polish round:
+% numlist/3, tab/1, permutation/2 (det check + identity), sub_atom/5
+% (forward mode), char_type/2, plus the term_to_atom/2 builtin which
+% uses the new tokenizer + parser.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(stdlib_polish_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_stdlib_polish_via_rscript
+    ;   true
+    )).
+
+e2e_stdlib_polish_via_rscript :-
+    % numlist/3.
+    assertz((user:nl_basic   :- numlist(1, 5, L), L == [1, 2, 3, 4, 5])),
+    assertz((user:nl_one     :- numlist(7, 7, L), L == [7])),
+    assertz((user:nl_empty_no :- numlist(5, 1, _))),  % Hi < Lo -> fail
+    % permutation/2 (deterministic check).
+    assertz((user:pm_check   :- permutation([1, 2, 3], [3, 2, 1]))),
+    assertz((user:pm_check_no :- permutation([1, 2, 3], [3, 2, 4]))),
+    % sub_atom/5 (forward mode: Before+Length both bound).
+    assertz((user:sa_basic   :- sub_atom(hello, 1, 3, A, S),
+                                 A =:= 1, S == ell)),
+    assertz((user:sa_full    :- sub_atom(abc, 0, 3, 0, abc))),
+    assertz((user:sa_oob_no  :- sub_atom(abc, 1, 99, _, _))),
+    % char_type/2.
+    assertz((user:ct_alpha   :- char_type(a, alpha))),
+    assertz((user:ct_alpha_no :- char_type('1', alpha))),
+    assertz((user:ct_digit   :- char_type('5', digit))),
+    assertz((user:ct_upper   :- char_type('Z', upper))),
+    assertz((user:ct_lower_no :- char_type('Z', lower))),
+    % term_to_atom/2 forward (Term bound -> Atom rendered).
+    % Uses atom_length to side-step the literal `'42'` vs integer 42
+    % collision in WAM-text serialisation.
+    assertz((user:t2a_fwd_int    :- term_to_atom(42, A), atom_length(A, 2))),
+    assertz((user:t2a_fwd_struct :- term_to_atom(f(a, b), A),
+                                     atom_length(A, 6))),
+    % term_to_atom/2 reverse (Atom bound -> parse to Term).
+    % Build the source atom via atom_codes so the generated WAM
+    % carries the actual character string we want to parse.
+    assertz((user:t2a_parse_int :- atom_codes(A, [52, 50]),  % "42"
+                                    term_to_atom(T, A), T =:= 42)),
+    assertz((user:t2a_parse_atom :- atom_codes(A, [104, 105]), % "hi"
+                                     term_to_atom(T, A), T == hi)),
+    assertz((user:t2a_parse_list :- atom_codes(A, [91, 49, 44, 50, 44, 51, 93]),  % "[1,2,3]"
+                                     term_to_atom(T, A),
+                                     T == [1, 2, 3])),
+    assertz((user:t2a_parse_struct :- atom_codes(A, [102, 40, 97, 44, 98, 41]),  % "f(a,b)"
+                                       term_to_atom(T, A),
+                                       T == f(a, b))),
+    % term_to_atom round-trip: render then re-parse should give the
+    % structurally equal term.
+    assertz((user:t2a_round :- atom_codes(A, [102, 40, 49, 44, 50, 41]),  % "f(1,2)"
+                                term_to_atom(T, A),
+                                term_to_atom(T, A2),
+                                A2 == A)),
+    unique_r_tmp_dir('tmp_r_polish_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:nl_basic/0, user:nl_one/0, user:nl_empty_no/0,
+          user:pm_check/0, user:pm_check_no/0,
+          user:sa_basic/0, user:sa_full/0, user:sa_oob_no/0,
+          user:ct_alpha/0, user:ct_alpha_no/0, user:ct_digit/0,
+          user:ct_upper/0, user:ct_lower_no/0,
+          user:t2a_fwd_int/0, user:t2a_fwd_struct/0,
+          user:t2a_parse_int/0, user:t2a_parse_atom/0,
+          user:t2a_parse_list/0, user:t2a_parse_struct/0,
+          user:t2a_round/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [nl_basic, nl_one,
+           pm_check,
+           sa_basic, sa_full,
+           ct_alpha, ct_digit, ct_upper,
+           t2a_fwd_int, t2a_fwd_struct,
+           t2a_parse_int, t2a_parse_atom,
+           t2a_parse_list, t2a_parse_struct,
+           t2a_round],
+    No  = [nl_empty_no,
+           pm_check_no,
+           sa_oob_no,
+           ct_alpha_no, ct_lower_no],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-
