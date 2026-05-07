@@ -946,6 +946,100 @@ e2e_stdlib_round4_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for negation-as-failure (\+/1, not/1) and
+% meta-call (call/1). Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(negation_meta_call_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_negation_meta_call_via_rscript
+    ;   true
+    )).
+
+e2e_negation_meta_call_via_rscript :-
+    % Retract any leftover clauses from prior plunit runs so multi-clause
+    % accumulation doesn't change WAM dispatch shape between runs.
+    forall(member(P/A, [
+        nm_fact/1, nm_neg_builtin/0, nm_neg_member/0, nm_neg_user/0,
+        nm_neg_no/0, nm_neg_no2/0, nm_not_builtin/0,
+        nm_call_atom/0, nm_call_fail/0, nm_call_user/0, nm_call_user_n/0,
+        nm_call_lib/0, nm_call_arith/0,
+        nm_dneg/0, nm_dneg_no/0,
+        nm_helper_succ/1, nm_helper_fail/1,
+        nm_neg_succ_helper/0, nm_neg_fail_helper/0
+    ]), (
+        functor(H, P, A),
+        catch(retractall(user:H), _, true)
+    )),
+    % User predicates that the goal evaluator will dispatch via labels.
+    assertz(user:nm_fact(a)),
+    assertz(user:nm_fact(b)),
+    % \+/1 against builtin / library / user-defined predicates.
+    assertz((user:nm_neg_builtin :- \+ atom(7))),       % atom(7) fails -> \+ succeeds
+    assertz((user:nm_neg_member  :- \+ member(z, [a, b, c]))),
+    assertz((user:nm_neg_user    :- \+ nm_fact(z))),
+    assertz((user:nm_neg_no      :- \+ atom(a))),       % atom(a) succeeds -> \+ fails
+    assertz((user:nm_neg_no2     :- \+ member(b, [a, b, c]))),
+    % not/1 alias.
+    assertz((user:nm_not_builtin :- not(atom(7)))),
+    % call/1 with various callable shapes.
+    assertz((user:nm_call_atom   :- call(true))),
+    assertz((user:nm_call_fail   :- call(fail))),
+    assertz((user:nm_call_user   :- call(nm_fact(a)))),
+    assertz((user:nm_call_user_n :- call(nm_fact(z)))),
+    assertz((user:nm_call_lib    :- call(member(b, [a, b, c])))),
+    assertz((user:nm_call_arith  :- call(>(5, 3)))),
+    % Double negation -- a classic ground-check idiom.
+    assertz((user:nm_dneg        :- \+ \+ member(a, [a, b, c]))),
+    assertz((user:nm_dneg_no     :- \+ \+ member(z, [a, b, c]))),
+    % \+ rolls back bindings made by the goal: after `\+ X = bound`,
+    % X is still unbound. Test the round-trip via a helper so the
+    % conjunction has something useful to compare against. Here the
+    % helper succeeds (its goal `b == bound` succeeds against atom b),
+    % `\+ helper` fails, the whole conjunction fails.
+    assertz((user:nm_helper_succ(X) :- X == bound)),
+    assertz((user:nm_helper_fail(X) :- X == other)),
+    % \+ helper_succ(bound) -> helper succeeds -> \+ fails -> conjunction fails.
+    assertz((user:nm_neg_succ_helper :- \+ user:nm_helper_succ(bound))),
+    % \+ helper_fail(bound) -> helper fails -> \+ succeeds.
+    assertz((user:nm_neg_fail_helper :- \+ user:nm_helper_fail(bound))),
+    unique_r_tmp_dir('tmp_r_negmeta_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:nm_fact/1,
+          user:nm_neg_builtin/0, user:nm_neg_member/0, user:nm_neg_user/0,
+          user:nm_neg_no/0, user:nm_neg_no2/0,
+          user:nm_not_builtin/0,
+          user:nm_call_atom/0, user:nm_call_fail/0,
+          user:nm_call_user/0, user:nm_call_user_n/0,
+          user:nm_call_lib/0, user:nm_call_arith/0,
+          user:nm_dneg/0, user:nm_dneg_no/0,
+          user:nm_helper_succ/1, user:nm_helper_fail/1,
+          user:nm_neg_succ_helper/0, user:nm_neg_fail_helper/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [nm_neg_builtin, nm_neg_member, nm_neg_user,
+           nm_not_builtin,
+           nm_call_atom, nm_call_user, nm_call_lib, nm_call_arith,
+           nm_dneg,
+           nm_neg_fail_helper],
+    No  = [nm_neg_no, nm_neg_no2,
+           nm_call_fail, nm_call_user_n,
+           nm_dneg_no,
+           nm_neg_succ_helper],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-
