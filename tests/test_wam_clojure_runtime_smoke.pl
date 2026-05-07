@@ -51,6 +51,8 @@
 :- dynamic user:wam_compound_unbound/1.
 :- dynamic user:wam_callable_guard/1.
 :- dynamic user:wam_callable_unbound/1.
+:- dynamic user:wam_float_guard/1.
+:- dynamic user:wam_float_unbound/1.
 
 has(Code, Substr) :-
     once(sub_string(Code, _, _, _, Substr)).
@@ -104,6 +106,8 @@ user:wam_compound_guard(X) :- compound(X).
 user:wam_compound_unbound(_) :- user:wam_unbound_arg(Y), compound(Y).
 user:wam_callable_guard(X) :- callable(X).
 user:wam_callable_unbound(_) :- user:wam_unbound_arg(Y), callable(Y).
+user:wam_float_guard(X) :- float(X).
+user:wam_float_unbound(_) :- user:wam_unbound_arg(Y), float(Y).
 
 :- initialization(main, main).
 
@@ -161,7 +165,9 @@ run_smoke :-
           user:wam_compound_guard/1,
           user:wam_compound_unbound/1,
           user:wam_callable_guard/1,
-          user:wam_callable_unbound/1
+          user:wam_callable_unbound/1,
+          user:wam_float_guard/1,
+          user:wam_float_unbound/1
         ],
         [ namespace('generated.wam_exec_test'),
           module_name('wam-clojure-exec-test'),
@@ -188,6 +194,7 @@ run_smoke :-
     assert_lowered_var_builtin_emitted(TmpDir),
     assert_lowered_compound_builtin_emitted(TmpDir),
     assert_lowered_callable_builtin_emitted(TmpDir),
+    assert_lowered_float_builtin_emitted(TmpDir),
     assert_multiclause_wrappers_runtime_mediated(TmpDir),
     verify_output(TmpDir, 'wam_execute_caller/1', 'a', "true"),
     verify_output(TmpDir, 'wam_execute_caller/1', 'b', "false"),
@@ -272,6 +279,11 @@ run_smoke :-
     verify_output(TmpDir, 'wam_callable_guard/1', 'f(a)', "true"),
     verify_output(TmpDir, 'wam_callable_guard/1', '[a,b]', "true"),
     verify_output(TmpDir, 'wam_callable_unbound/1', a, "false"),
+    verify_output(TmpDir, 'wam_float_guard/1', 3.5, "true"),
+    verify_output(TmpDir, 'wam_float_guard/1', 42, "false"),
+    verify_output(TmpDir, 'wam_float_guard/1', a, "false"),
+    verify_output(TmpDir, 'wam_float_guard/1', 'f(a)', "false"),
+    verify_output(TmpDir, 'wam_float_unbound/1', a, "false"),
     delete_directory_and_contents(TmpDir),
     writeln('wam_clojure_runtime_smoke: ok').
 
@@ -388,6 +400,13 @@ assert_lowered_callable_builtin_emitted(ProjectDir) :-
     has(CoreCode, "runtime/atom-term? value"),
     has(CoreCode, "runtime/structure-term? value").
 
+assert_lowered_float_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-float-guard-1"),
+    has(CoreCode, "defn lowered-wam-float-unbound-1"),
+    has(CoreCode, "float? value").
+
 assert_multiclause_wrappers_runtime_mediated(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
     read_file_to_string(CorePath, CoreCode, []),
@@ -441,6 +460,7 @@ prolog_term_string_to_edn(b, "\"b\"") :- !.
 prolog_term_string_to_edn(c, "\"c\"") :- !.
 prolog_term_string_to_edn(d, "\"d\"") :- !.
 prolog_term_string_to_edn(z, "\"z\"") :- !.
+prolog_term_string_to_edn(3.5, "3.5") :- !.
 prolog_term_string_to_edn(42, "42") :- !.
 prolog_term_string_to_edn("a", "\"a\"") :- !.
 prolog_term_string_to_edn("b", "\"b\"") :- !.
