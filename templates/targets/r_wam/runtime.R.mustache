@@ -1690,8 +1690,10 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     return(WamRuntime$call_goal(program, state, WamRuntime$get_reg(state, 1L)))
   }
 
-  # ----- atom_codes/2: atom <-> list of code points -----
-  if (key == "atom_codes/2") {
+  # ----- atom_codes/2 (also string_codes/2): atom <-> list of code points -----
+  # Strings and atoms are not distinguished at the WAM-text level, so
+  # the string_* family aliases onto its atom_* counterpart.
+  if (key == "atom_codes/2" || key == "string_codes/2") {
     raw_a <- WamRuntime$get_reg(state, 1L)
     raw_c <- WamRuntime$get_reg(state, 2L)
     a_v <- WamRuntime$deref(state, raw_a)
@@ -1718,13 +1720,13 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     return(WamRuntime$unify(state, raw_a, Atom(new_id)))
   }
 
-  # ----- atom_chars/2: atom <-> list of single-char atoms -----
+  # ----- atom_chars/2 (also string_chars/2): atom <-> list of single-char atoms -----
   # Char-list elements are accepted as atoms or as ints/floats with
   # their decimal name. The leniency exists because WAM-text loses the
   # atom-vs-number quoting distinction: the literal `'1'` and the
   # integer `1` both serialise as `set_constant 1`, so the codegen
   # can't tell them apart and emits IntTerm for both.
-  if (key == "atom_chars/2") {
+  if (key == "atom_chars/2" || key == "string_chars/2") {
     raw_a <- WamRuntime$get_reg(state, 1L)
     raw_l <- WamRuntime$get_reg(state, 2L)
     a_v <- WamRuntime$deref(state, raw_a)
@@ -1747,17 +1749,17 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     return(WamRuntime$unify(state, raw_a, Atom(new_id)))
   }
 
-  # ----- atom_length/2 -----
+  # ----- atom_length/2 (also string_length/2) -----
   # Same atom-or-numeric leniency as atom_chars (see note above).
-  if (key == "atom_length/2") {
+  if (key == "atom_length/2" || key == "string_length/2") {
     a_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
     s <- wam_term_name_string(a_v, table)
     if (is.null(s)) return(FALSE)
     return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L), IntTerm(nchar(s))))
   }
 
-  # ----- atom_concat/3 (deterministic mode: A and B both bound) -----
-  if (key == "atom_concat/3") {
+  # ----- atom_concat/3 (also string_concat/3, deterministic mode) -----
+  if (key == "atom_concat/3" || key == "string_concat/3") {
     a_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
     b_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
     sa <- wam_term_name_string(a_v, table)
@@ -1864,6 +1866,88 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     if (is.null(n_v) || is.null(n_v$tag) || !(n_v$tag %in% c("int", "float"))) return(FALSE)
     new_id <- WamRuntime$intern(table, as.character(n_v$val))
     return(WamRuntime$unify(state, raw_a, Atom(new_id)))
+  }
+
+  # ----- atom_string/2 and string_to_atom/2 -----
+  # Bidirectional atom <-> string conversion. Since this scaffold
+  # collapses strings into atoms (the WAM-text serialisation doesn't
+  # distinguish them), both predicates reduce to a unification of
+  # whichever side is bound with the other side as an atom of the
+  # same name string.
+  if (key == "atom_string/2" || key == "string_to_atom/2") {
+    # atom_string(?Atom, ?String); string_to_atom(?String, ?Atom).
+    if (key == "atom_string/2") {
+      atom_reg <- 1L; str_reg <- 2L
+    } else {
+      atom_reg <- 2L; str_reg <- 1L
+    }
+    a_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, atom_reg))
+    s_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, str_reg))
+    if (!is.null(a_v) && !is.null(a_v$tag) && a_v$tag != "unbound") {
+      s <- wam_term_name_string(a_v, table)
+      if (is.null(s)) return(FALSE)
+      return(WamRuntime$unify(state, WamRuntime$get_reg(state, str_reg),
+                              Atom(WamRuntime$intern(table, s))))
+    }
+    if (!is.null(s_v) && !is.null(s_v$tag) && s_v$tag != "unbound") {
+      s <- wam_term_name_string(s_v, table)
+      if (is.null(s)) return(FALSE)
+      return(WamRuntime$unify(state, WamRuntime$get_reg(state, atom_reg),
+                              Atom(WamRuntime$intern(table, s))))
+    }
+    return(FALSE)
+  }
+
+  # ----- string_upper/2 and string_lower/2 -----
+  # Case conversion. The first arg must be bound (atom or numeric);
+  # the result is interned as an Atom with the case-converted name.
+  if (key == "string_upper/2" || key == "string_lower/2") {
+    in_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    s <- wam_term_name_string(in_v, table)
+    if (is.null(s)) return(FALSE)
+    converted <- if (key == "string_upper/2") toupper(s) else tolower(s)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
+                            Atom(WamRuntime$intern(table, converted))))
+  }
+
+  # ----- string_code/3: 1-based code at index -----
+  # string_code(+Index, +String, ?Code).
+  if (key == "string_code/3") {
+    n_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    s_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    if (is.null(n_v) || is.null(n_v$tag) || n_v$tag != "int") return(FALSE)
+    s <- wam_term_name_string(s_v, table)
+    if (is.null(s)) return(FALSE)
+    i <- n_v$val
+    if (i < 1L || i > nchar(s)) return(FALSE)
+    code <- utf8ToInt(s)[i]
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L), IntTerm(code)))
+  }
+
+  # ----- split_string/4 -----
+  # split_string(+String, +Separators, +Pad, -SubStrings).
+  # Each char in Separators is a split delimiter; each char in Pad is
+  # trimmed from both ends of every substring. Returns a list of
+  # atom-strings.
+  if (key == "split_string/4") {
+    s_v   <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    sep_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    pad_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 3L))
+    s   <- wam_term_name_string(s_v,   table)
+    sep <- wam_term_name_string(sep_v, table)
+    pad <- wam_term_name_string(pad_v, table)
+    if (is.null(s) || is.null(sep) || is.null(pad)) return(FALSE)
+    parts <- if (nchar(sep) == 0L) list(s)
+             else strsplit(s, paste0("[", gsub("([\\^\\\\\\]\\-])", "\\\\\\1", sep), "]"),
+                           perl = TRUE)[[1]]
+    if (nchar(pad) > 0L) {
+      pad_re <- paste0("[", gsub("([\\^\\\\\\]\\-])", "\\\\\\1", pad), "]")
+      parts <- gsub(paste0("^", pad_re, "+|", pad_re, "+$"), "", parts, perl = TRUE)
+    }
+    elems <- lapply(as.character(parts), function(p)
+      Atom(WamRuntime$intern(table, p)))
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 4L),
+                            WamRuntime$wam_list_build(elems, table)))
   }
 
   # ----- msort/2: sort, keep duplicates -----

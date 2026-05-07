@@ -177,19 +177,19 @@ wam_line_to_r_literal(Line, Lit) :-
 %  Same single-quote-aware tokenizer as the Scala target.
 tokenize_wam_line(Line, Tokens) :-
     string_chars(Line, Chars),
-    tokenize_wam_chars(Chars, [], [], outside, Tokens0),
-    % Drop empty tokens. These appear when a single-quoted atom is
-    % followed by a `,` separator; strip_operand_comma turns the bare
-    % comma into "" which would otherwise confuse pattern-matching in
-    % wam_parts_to_r.
-    exclude(=(""), Tokens0, Tokens).
+    tokenize_wam_chars(Chars, [], [], outside, Tokens).
 
 tokenize_wam_chars([], [], Acc, _, Tokens) :- !,
     reverse(Acc, Tokens).
 tokenize_wam_chars([], CurR, Acc, outside, Tokens) :- !,
     reverse(CurR, CurC), string_chars(T0, CurC),
     strip_operand_comma(T0, T),
-    reverse([T|Acc], Tokens).
+    % Bare comma at end-of-input: skip rather than emit "". Quoted-empty
+    % atoms come through the inside-mode branch below and are kept.
+    (   T == ""
+    ->  reverse(Acc, Tokens)
+    ;   reverse([T|Acc], Tokens)
+    ).
 tokenize_wam_chars([], CurR, Acc, inside, Tokens) :- !,
     reverse(CurR, CurC), string_chars(T, CurC),
     reverse([T|Acc], Tokens).
@@ -199,7 +199,11 @@ tokenize_wam_chars([C|Rest], CurR, Acc, outside, Tokens) :-
         ->  tokenize_wam_chars(Rest, [], Acc, outside, Tokens)
         ;   reverse(CurR, CurC), string_chars(T0, CurC),
             strip_operand_comma(T0, T),
-            tokenize_wam_chars(Rest, [], [T|Acc], outside, Tokens)
+            (   T == ""
+            ->  NewAcc = Acc
+            ;   NewAcc = [T|Acc]
+            ),
+            tokenize_wam_chars(Rest, [], NewAcc, outside, Tokens)
         )
     ;   C == '\''
     ->  (   CurR == []
