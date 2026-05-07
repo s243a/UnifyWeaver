@@ -1040,6 +1040,91 @@ e2e_negation_meta_call_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for higher-order builtins (maplist/2,
+% maplist/3) and the deterministic list/utility family (compare/3,
+% nth0/3, nth1/3, select/3, delete/3, succ/2).
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(higherorder_listutil_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_higherorder_listutil_via_rscript
+    ;   true
+    )).
+
+e2e_higherorder_listutil_via_rscript :-
+    % maplist/2: pure type checks and predicates with one trailing arg.
+    assertz((user:hl_maplist_int    :- maplist(integer, [1, 2, 3]))),
+    assertz((user:hl_maplist_int_n  :- maplist(integer, [1, a, 3]))),
+    assertz((user:hl_maplist_atom   :- maplist(atom, [a, b, c]))),
+    assertz((user:hl_maplist_empty  :- maplist(integer, []))),
+    % maplist/3: lockstep transformation. succ/2 is itself in
+    % call_library, so this exercises both.
+    assertz((user:hl_maplist3_succ  :- maplist(succ, [1, 2, 3], [2, 3, 4]))),
+    assertz((user:hl_maplist3_n     :- maplist(succ, [1, 2, 3], [2, 9, 4]))),
+    assertz((user:hl_maplist3_build :- maplist(succ, [10, 20, 30], Xs),
+                                       Xs = [11, 21, 31])),
+    % compare/3.
+    assertz((user:hl_cmp_lt :- compare(Order, 1, 2), Order == '<')),
+    assertz((user:hl_cmp_eq :- compare(Order, foo, foo), Order == '=')),
+    assertz((user:hl_cmp_gt :- compare(Order, b, a), Order == '>')),
+    % nth0 / nth1.
+    assertz((user:hl_nth0_first :- nth0(0, [a, b, c], a))),
+    assertz((user:hl_nth0_last  :- nth0(2, [a, b, c], c))),
+    assertz((user:hl_nth0_oob   :- nth0(3, [a, b, c], _))),
+    assertz((user:hl_nth1_first :- nth1(1, [a, b, c], a))),
+    assertz((user:hl_nth1_oob   :- nth1(0, [a, b, c], _))),
+    % select/3.
+    assertz((user:hl_select_mid :- select(b, [a, b, c], [a, c]))),
+    assertz((user:hl_select_no  :- select(z, [a, b, c], _))),
+    assertz((user:hl_select_one :- select(only, [only], []))),
+    % delete/3 (==/2 semantics, no var binding).
+    assertz((user:hl_del_all    :- delete([a, b, a, c, a], a, [b, c]))),
+    assertz((user:hl_del_none   :- delete([a, b, c], z, [a, b, c]))),
+    % succ/2 in both directions.
+    assertz((user:hl_succ_fwd   :- succ(3, 4))),
+    assertz((user:hl_succ_back  :- succ(X, 5), X =:= 4)),
+    assertz((user:hl_succ_zero  :- succ(0, 1))),
+    assertz((user:hl_succ_neg   :- succ(_, 0))),
+    unique_r_tmp_dir('tmp_r_holu_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:hl_maplist_int/0, user:hl_maplist_int_n/0,
+          user:hl_maplist_atom/0, user:hl_maplist_empty/0,
+          user:hl_maplist3_succ/0, user:hl_maplist3_n/0, user:hl_maplist3_build/0,
+          user:hl_cmp_lt/0, user:hl_cmp_eq/0, user:hl_cmp_gt/0,
+          user:hl_nth0_first/0, user:hl_nth0_last/0, user:hl_nth0_oob/0,
+          user:hl_nth1_first/0, user:hl_nth1_oob/0,
+          user:hl_select_mid/0, user:hl_select_no/0, user:hl_select_one/0,
+          user:hl_del_all/0, user:hl_del_none/0,
+          user:hl_succ_fwd/0, user:hl_succ_back/0, user:hl_succ_zero/0,
+          user:hl_succ_neg/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [hl_maplist_int, hl_maplist_atom, hl_maplist_empty,
+           hl_maplist3_succ, hl_maplist3_build,
+           hl_cmp_lt, hl_cmp_eq, hl_cmp_gt,
+           hl_nth0_first, hl_nth0_last, hl_nth1_first,
+           hl_select_mid, hl_select_one,
+           hl_del_all, hl_del_none,
+           hl_succ_fwd, hl_succ_back, hl_succ_zero],
+    No  = [hl_maplist_int_n, hl_maplist3_n,
+           hl_nth0_oob, hl_nth1_oob,
+           hl_select_no,
+           hl_succ_neg],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-

@@ -1036,6 +1036,26 @@ WamRuntime$arith_to_term <- function(n) {
 # is labels -> foreign handlers -> library -> builtin, matching what
 # a directly-compiled call would have hit.
 
+# Extend a goal term with extra args (call/N+1 semantics). An atom G
+# becomes the struct G(extra_args...); a struct F(...) becomes
+# F(..., extra_args...). Module-qualified goals are unwrapped first.
+# Returns NULL for any other shape.
+WamRuntime$wam_extend_goal <- function(state, goal_term, extra_args, table) {
+  v <- WamRuntime$deref(state, goal_term)
+  if (is.null(v) || is.null(v$tag)) return(NULL)
+  if (v$tag == "struct" && length(v$args) == 2L &&
+      identical(WamRuntime$string_of(table, v$fid), ":")) {
+    return(WamRuntime$wam_extend_goal(state, v$args[[2]], extra_args, table))
+  }
+  if (v$tag == "atom") {
+    return(StructTerm(v$id, extra_args))
+  }
+  if (v$tag == "struct") {
+    return(StructTerm(v$fid, c(v$args, extra_args)))
+  }
+  NULL
+}
+
 WamRuntime$call_goal <- function(program, state, goal_term) {
   table <- program$intern_table
   v <- WamRuntime$deref(state, goal_term)
@@ -1384,6 +1404,137 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
 WamRuntime$call_library <- function(program, state, pred, arity) {
   table <- program$intern_table
   key <- paste0(pred, "/", arity)
+
+  # ----- maplist/2: apply Goal to each element of List -----
+  # Standard semantics: maplist(_, []). maplist(G, [X|Xs]) :- call(G, X),
+  # maplist(G, Xs). G is shared across iterations (no copy_term), so any
+  # unbound vars in G persist their first binding -- matches the Prolog
+  # library implementation.
+  if (key == "maplist/2") {
+    goal  <- WamRuntime$get_reg(state, 1L)
+    elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 2L), table)
+    if (is.null(elems)) return(FALSE)
+    for (e in elems) {
+      ext <- WamRuntime$wam_extend_goal(state, goal, list(e), table)
+      if (is.null(ext)) return(FALSE)
+      if (!isTRUE(WamRuntime$call_goal(program, state, ext))) return(FALSE)
+    }
+    return(TRUE)
+  }
+
+  # ----- maplist/3: lockstep across two lists -----
+  # If one list is unbound, generate a list of fresh vars matching the
+  # other's length. If both are bound, lengths must match.
+  if (key == "maplist/3") {
+    goal <- WamRuntime$get_reg(state, 1L)
+    raw_l1 <- WamRuntime$get_reg(state, 2L)
+    raw_l2 <- WamRuntime$get_reg(state, 3L)
+    l1 <- WamRuntime$wam_list_decompose(state, raw_l1, table)
+    l2 <- WamRuntime$wam_list_decompose(state, raw_l2, table)
+    if (is.null(l1) && is.null(l2)) return(FALSE)
+    if (is.null(l1)) {
+      l1 <- lapply(seq_along(l2), function(i) {
+        v <- Unbound(paste0("V", state$var_counter))
+        state$var_counter <- state$var_counter + 1L
+        v
+      })
+      if (!isTRUE(WamRuntime$unify(state, raw_l1,
+                                   WamRuntime$wam_list_build(l1, table)))) return(FALSE)
+    }
+    if (is.null(l2)) {
+      l2 <- lapply(seq_along(l1), function(i) {
+        v <- Unbound(paste0("V", state$var_counter))
+        state$var_counter <- state$var_counter + 1L
+        v
+      })
+      if (!isTRUE(WamRuntime$unify(state, raw_l2,
+                                   WamRuntime$wam_list_build(l2, table)))) return(FALSE)
+    }
+    if (length(l1) != length(l2)) return(FALSE)
+    for (i in seq_along(l1)) {
+      ext <- WamRuntime$wam_extend_goal(state, goal, list(l1[[i]], l2[[i]]), table)
+      if (is.null(ext)) return(FALSE)
+      if (!isTRUE(WamRuntime$call_goal(program, state, ext))) return(FALSE)
+    }
+    return(TRUE)
+  }
+
+  # ----- compare/3: standard order three-way comparison -----
+  # compare(?Order, +X, +Y) where Order is one of '<', '=', '>'.
+  if (key == "compare/3") {
+    cmp <- WamRuntime$compare_terms(state,
+                                    WamRuntime$get_reg(state, 2L),
+                                    WamRuntime$get_reg(state, 3L), table)
+    ord <- if (cmp <  0L) "<" else if (cmp >  0L) ">" else "="
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 1L),
+                            Atom(WamRuntime$intern(table, ord))))
+  }
+
+  # ----- nth0/3, nth1/3: 0-/1-based list indexing -----
+  if (key == "nth0/3" || key == "nth1/3") {
+    n_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    if (is.null(n_v) || is.null(n_v$tag) || n_v$tag != "int") return(FALSE)
+    elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 2L), table)
+    if (is.null(elems)) return(FALSE)
+    base <- if (key == "nth0/3") 0L else 1L
+    i <- n_v$val - base + 1L
+    if (i < 1L || i > length(elems)) return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L), elems[[i]]))
+  }
+
+  # ----- select/3: select(?X, +L, ?Rest) -----
+  # Find the first list element that unifies with X; Rest is L minus
+  # that element. Backtracking enumeration over multiple matches is
+  # not supported (deterministic first-match only).
+  if (key == "select/3") {
+    target <- WamRuntime$get_reg(state, 1L)
+    elems  <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 2L), table)
+    if (is.null(elems)) return(FALSE)
+    for (i in seq_along(elems)) {
+      trail0 <- length(state$trail)
+      if (WamRuntime$unify(state, target, elems[[i]])) {
+        rest <- if (length(elems) == 1L) list() else elems[-i]
+        return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L),
+                                WamRuntime$wam_list_build(rest, table)))
+      }
+      WamRuntime$undo_trail_to(state, trail0)
+    }
+    return(FALSE)
+  }
+
+  # ----- delete/3: delete(+L, @Elem, -Rest) -----
+  # Remove every element of L that is structurally identical to Elem
+  # (==/2 semantics; does not bind unbound vars).
+  if (key == "delete/3") {
+    elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(elems)) return(FALSE)
+    target <- WamRuntime$get_reg(state, 2L)
+    keep <- list()
+    for (e in elems) {
+      if (!WamRuntime$identical_terms(state, e, target)) {
+        keep <- c(keep, list(e))
+      }
+    }
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L),
+                            WamRuntime$wam_list_build(keep, table)))
+  }
+
+  # ----- succ/2: successor (bidirectional integer +1) -----
+  if (key == "succ/2") {
+    x_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    y_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    if (!is.null(x_v) && !is.null(x_v$tag) && x_v$tag == "int") {
+      if (x_v$val < 0L) return(FALSE)
+      return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
+                              IntTerm(x_v$val + 1L)))
+    }
+    if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "int") {
+      if (y_v$val <= 0L) return(FALSE)
+      return(WamRuntime$unify(state, WamRuntime$get_reg(state, 1L),
+                              IntTerm(y_v$val - 1L)))
+    }
+    return(FALSE)
+  }
 
   # call/1: meta-call. Just delegate the goal to the goal evaluator;
   # bindings made by the goal persist on success (unlike \+/1 which
