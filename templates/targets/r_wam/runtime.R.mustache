@@ -511,6 +511,192 @@ wam_compare_nums <- function(a, b) {
   if (a < b) -1L else if (a > b) 1L else 0L
 }
 
+# ----------------------------------------------------------
+# Prolog term parser (used by term_to_atom/2)
+# ----------------------------------------------------------
+# Recognises: atoms (lowercase or single-quoted), integers (signed),
+# floats, variables (uppercase or _-prefixed), compound terms
+# `f(arg1, arg2, ...)`, lists `[a, b, c]` / `[]` / `[H|T]`, and
+# parenthesised expressions for grouping. Operator notation (e.g.
+# `X + 1`) is *not* supported -- write `+(X, 1)` instead. Strings
+# (`"..."`) are not supported.
+#
+# Parser state lives in an env so the `pos` cursor and the var
+# environment are mutated through nested calls.
+WamRuntime$tokenize_term <- function(text) {
+  chars <- if (nchar(text) == 0L) character(0)
+           else strsplit(text, "", fixed = TRUE)[[1]]
+  i <- 1L
+  n <- length(chars)
+  toks <- list()
+  push <- function(t) toks[[length(toks) + 1L]] <<- t
+  while (i <= n) {
+    c <- chars[i]
+    if (c %in% c(" ", "\t", "\n", "\r")) { i <- i + 1L; next }
+    if (c == "(") { push(list(type = "lparen"));   i <- i + 1L; next }
+    if (c == ")") { push(list(type = "rparen"));   i <- i + 1L; next }
+    if (c == "[") { push(list(type = "lbracket")); i <- i + 1L; next }
+    if (c == "]") { push(list(type = "rbracket")); i <- i + 1L; next }
+    if (c == ",") { push(list(type = "comma"));    i <- i + 1L; next }
+    if (c == "|") { push(list(type = "pipe"));     i <- i + 1L; next }
+    # Quoted atom: 'foo bar' with backslash escapes for ' and \.
+    if (c == "'") {
+      i <- i + 1L
+      buf <- character(0)
+      while (i <= n && chars[i] != "'") {
+        if (chars[i] == "\\" && i + 1L <= n) {
+          buf <- c(buf, chars[i + 1L]); i <- i + 2L
+        } else {
+          buf <- c(buf, chars[i]); i <- i + 1L
+        }
+      }
+      if (i > n) return(NULL)
+      i <- i + 1L
+      push(list(type = "atom", value = paste(buf, collapse = "")))
+      next
+    }
+    # Signed number: digit-start, or `-` followed by digit and not
+    # following an atom/var/closing bracket (in which case it would
+    # be a binary operator -- not supported).
+    is_digit <- function(ch) grepl("^[0-9]$", ch)
+    if (is_digit(c) || (c == "-" && i + 1L <= n && is_digit(chars[i + 1L]) &&
+                        (length(toks) == 0L ||
+                         toks[[length(toks)]]$type %in% c("comma", "lparen",
+                                                           "lbracket", "pipe")))) {
+      j <- if (c == "-") i + 1L else i
+      saw_dot <- FALSE
+      while (j <= n && (is_digit(chars[j]) ||
+                        (!saw_dot && chars[j] == "." && j + 1L <= n &&
+                         is_digit(chars[j + 1L])))) {
+        if (chars[j] == ".") saw_dot <- TRUE
+        j <- j + 1L
+      }
+      val <- paste(chars[i:(j - 1L)], collapse = "")
+      push(list(type = "number", value = val, is_float = saw_dot))
+      i <- j
+      next
+    }
+    # Variable: uppercase letter or underscore.
+    if (grepl("^[A-Z_]$", c)) {
+      j <- i + 1L
+      while (j <= n && grepl("^[A-Za-z0-9_]$", chars[j])) j <- j + 1L
+      push(list(type = "var", value = paste(chars[i:(j - 1L)], collapse = "")))
+      i <- j
+      next
+    }
+    # Bare atom: lowercase letter prefix.
+    if (grepl("^[a-z]$", c)) {
+      j <- i + 1L
+      while (j <= n && grepl("^[A-Za-z0-9_]$", chars[j])) j <- j + 1L
+      push(list(type = "atom", value = paste(chars[i:(j - 1L)], collapse = "")))
+      i <- j
+      next
+    }
+    return(NULL)  # unrecognized character
+  }
+  toks
+}
+
+WamRuntime$parse_term <- function(text, table, state) {
+  toks <- WamRuntime$tokenize_term(text)
+  if (is.null(toks) || length(toks) == 0L) return(NULL)
+  p <- new.env(parent = emptyenv())
+  p$tokens <- toks
+  p$pos <- 1L
+  p$table <- table
+  p$state <- state
+  p$vars <- new.env(parent = emptyenv())
+  result <- WamRuntime$wam_parse_expr(p)
+  if (is.null(result)) return(NULL)
+  if (p$pos <= length(toks)) return(NULL)  # extra tokens
+  result
+}
+
+WamRuntime$wam_parse_expr <- function(p) {
+  if (p$pos > length(p$tokens)) return(NULL)
+  tok <- p$tokens[[p$pos]]
+  if (tok$type == "number") {
+    p$pos <- p$pos + 1L
+    if (tok$is_float) FloatTerm(as.numeric(tok$value))
+    else              IntTerm(as.integer(tok$value))
+  } else if (tok$type == "var") {
+    p$pos <- p$pos + 1L
+    name <- tok$value
+    if (name == "_") {
+      v <- Unbound(paste0("V", p$state$var_counter))
+      p$state$var_counter <- p$state$var_counter + 1L
+      v
+    } else if (exists(name, envir = p$vars, inherits = FALSE)) {
+      get(name, envir = p$vars, inherits = FALSE)
+    } else {
+      v <- Unbound(paste0("V", p$state$var_counter))
+      p$state$var_counter <- p$state$var_counter + 1L
+      assign(name, v, envir = p$vars)
+      v
+    }
+  } else if (tok$type == "atom") {
+    p$pos <- p$pos + 1L
+    if (p$pos <= length(p$tokens) && p$tokens[[p$pos]]$type == "lparen") {
+      p$pos <- p$pos + 1L
+      args <- list()
+      repeat {
+        a <- WamRuntime$wam_parse_expr(p)
+        if (is.null(a)) return(NULL)
+        args <- c(args, list(a))
+        if (p$pos > length(p$tokens)) return(NULL)
+        sep <- p$tokens[[p$pos]]$type
+        if (sep == "rparen") { p$pos <- p$pos + 1L; break }
+        if (sep != "comma") return(NULL)
+        p$pos <- p$pos + 1L
+      }
+      StructTerm(WamRuntime$intern(p$table, tok$value), args)
+    } else {
+      Atom(WamRuntime$intern(p$table, tok$value))
+    }
+  } else if (tok$type == "lparen") {
+    p$pos <- p$pos + 1L
+    inner <- WamRuntime$wam_parse_expr(p)
+    if (is.null(inner)) return(NULL)
+    if (p$pos > length(p$tokens) || p$tokens[[p$pos]]$type != "rparen") return(NULL)
+    p$pos <- p$pos + 1L
+    inner
+  } else if (tok$type == "lbracket") {
+    p$pos <- p$pos + 1L
+    if (p$pos <= length(p$tokens) && p$tokens[[p$pos]]$type == "rbracket") {
+      p$pos <- p$pos + 1L
+      return(Atom(WamRuntime$intern(p$table, "[]")))
+    }
+    elems <- list()
+    repeat {
+      a <- WamRuntime$wam_parse_expr(p)
+      if (is.null(a)) return(NULL)
+      elems <- c(elems, list(a))
+      if (p$pos > length(p$tokens)) return(NULL)
+      sep <- p$tokens[[p$pos]]$type
+      if (sep == "rbracket") { p$pos <- p$pos + 1L; break }
+      if (sep == "comma") { p$pos <- p$pos + 1L; next }
+      if (sep == "pipe") {
+        p$pos <- p$pos + 1L
+        tail <- WamRuntime$wam_parse_expr(p)
+        if (is.null(tail)) return(NULL)
+        if (p$pos > length(p$tokens) ||
+            p$tokens[[p$pos]]$type != "rbracket") return(NULL)
+        p$pos <- p$pos + 1L
+        cons_id <- WamRuntime$intern(p$table, "[|]")
+        result <- tail
+        for (i in seq.int(length(elems), 1L, by = -1L)) {
+          result <- StructTerm(cons_id, list(elems[[i]], result))
+        }
+        return(result)
+      }
+      return(NULL)
+    }
+    WamRuntime$wam_list_build(elems, p$table)
+  } else {
+    NULL
+  }
+}
+
 # Build a Prolog-style cons-list term from a list of WAM terms.
 # []      -> Atom("[]")
 # [a]     -> StructTerm("[|]", list(a, Atom("[]")))
@@ -2147,6 +2333,107 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     return(WamRuntime$between_iter(state, WamRuntime$get_reg(state, 3L), lo, hi, state$pc + 1L))
   }
 
+  # ----- numlist/3 -----
+  # numlist(+Low, +High, -List): the closed integer range [Low, High].
+  # Fails when Low > High (matches SWI semantics).
+  if (key == "numlist/3") {
+    lo_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    hi_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    if (is.null(lo_v) || is.null(lo_v$tag) || lo_v$tag != "int") return(FALSE)
+    if (is.null(hi_v) || is.null(hi_v$tag) || hi_v$tag != "int") return(FALSE)
+    if (lo_v$val > hi_v$val) return(FALSE)
+    elems <- lapply(seq.int(lo_v$val, hi_v$val), IntTerm)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L),
+                            WamRuntime$wam_list_build(elems, table)))
+  }
+
+  # ----- tab/1 -----
+  # Print N spaces. Negative N is a no-op.
+  if (key == "tab/1") {
+    n_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    if (is.null(n_v) || is.null(n_v$tag) || n_v$tag != "int") return(FALSE)
+    if (n_v$val > 0L) cat(strrep(" ", n_v$val))
+    return(TRUE)
+  }
+
+  # ----- permutation/2 (deterministic check + identity gen) -----
+  # Mode (+, +): succeeds iff L2 is some permutation of L1 (compared
+  # via msort). Mode (+, -): unifies L2 with L1 (the identity
+  # permutation). Multi-solution permutation enumeration is not
+  # supported in this scaffold.
+  if (key == "permutation/2") {
+    l1 <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 1L), table)
+    raw_l2 <- WamRuntime$get_reg(state, 2L)
+    l2_v <- WamRuntime$deref(state, raw_l2)
+    if (is.null(l1)) return(FALSE)
+    if (is.null(l2_v) || is.null(l2_v$tag) || l2_v$tag == "unbound") {
+      return(WamRuntime$unify(state, raw_l2, WamRuntime$wam_list_build(l1, table)))
+    }
+    l2 <- WamRuntime$wam_list_decompose(state, raw_l2, table)
+    if (is.null(l2)) return(FALSE)
+    if (length(l1) != length(l2)) return(FALSE)
+    s1 <- WamRuntime$wam_sort_terms(state, l1, table)
+    s2 <- WamRuntime$wam_sort_terms(state, l2, table)
+    for (i in seq_along(s1)) {
+      if (WamRuntime$compare_terms(state, s1[[i]], s2[[i]], table) != 0L) return(FALSE)
+    }
+    return(TRUE)
+  }
+
+  # ----- sub_atom/5 (forward mode: Before and Length both bound) -----
+  # sub_atom(+Atom, +Before, +Length, ?After, ?SubAtom). Computes
+  # After = total - Before - Length and SubAtom = Atom[Before+1, ...,
+  # Before+Length], unifying both. Other modes (enumerable, partial)
+  # are not supported.
+  if (key == "sub_atom/5") {
+    atom_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    s <- wam_term_name_string(atom_v, table)
+    if (is.null(s)) return(FALSE)
+    total <- nchar(s)
+    b_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    l_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 3L))
+    if (is.null(b_v) || b_v$tag != "int" ||
+        is.null(l_v) || l_v$tag != "int") return(FALSE)
+    b <- b_v$val; len <- l_v$val
+    if (b < 0L || len < 0L || b + len > total) return(FALSE)
+    after <- total - b - len
+    sub <- if (len == 0L) "" else substring(s, b + 1L, b + len)
+    if (!WamRuntime$unify(state, WamRuntime$get_reg(state, 4L), IntTerm(after))) return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 5L),
+                            Atom(WamRuntime$intern(table, sub))))
+  }
+
+  # ----- char_type/2 (forward mode: char given) -----
+  # char_type(+Char, +Type) tests whether the single-character Atom
+  # belongs to Type. Supported types: alpha, alnum, digit, space,
+  # upper, lower, punct, ascii, csym, csymf, newline.
+  if (key == "char_type/2") {
+    c_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    t_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    if (is.null(c_v) || is.null(t_v)) return(FALSE)
+    if (is.null(t_v$tag) || t_v$tag != "atom") return(FALSE)
+    s <- wam_term_name_string(c_v, table)
+    if (is.null(s) || nchar(s) != 1L) return(FALSE)
+    type <- WamRuntime$string_of(table, t_v$id)
+    res <- switch(type,
+      "alpha"   = grepl("^[A-Za-z]$", s),
+      "alnum"   = grepl("^[A-Za-z0-9]$", s),
+      "digit"   = grepl("^[0-9]$", s),
+      "space"   = grepl("^\\s$", s, perl = TRUE),
+      "upper"   = grepl("^[A-Z]$", s),
+      "lower"   = grepl("^[a-z]$", s),
+      "punct"   = grepl("^[[:punct:]]$", s),
+      "ascii"   = grepl("^[\x01-\x7F]$", s),
+      "csym"    = grepl("^[A-Za-z0-9_]$", s),
+      "csymf"   = grepl("^[A-Za-z_]$", s),
+      "newline" = s == "\n",
+      "white"   = s %in% c(" ", "\t"),
+      NA
+    )
+    if (is.na(res)) return(FALSE)
+    return(isTRUE(res))
+  }
+
   # ----- bagof/3: like findall but fails on empty bag -----
   # Note: this scaffold does NOT support free-variable witnesses.
   # bagof(T, G, B) here is equivalent to findall(T, G, B) with the
@@ -2546,6 +2833,32 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
                               Atom(WamRuntime$intern(table, s))))
     }
     return(FALSE)
+  }
+
+  # ----- term_to_atom/2 -----
+  # term_to_atom(?Term, ?Atom).
+  #   Forward mode (Term bound):  Atom is unified with the printed
+  #   form of Term (uses term_to_string -- list notation, struct
+  #   `f(a,b)`, atom names, numbers).
+  #   Reverse mode (Atom bound):  parse Atom's name as a Prolog term
+  #   and unify with Term. Operator notation is *not* supported in
+  #   the parser; user terms must be in canonical structural form.
+  if (key == "term_to_atom/2") {
+    raw_t <- WamRuntime$get_reg(state, 1L)
+    raw_a <- WamRuntime$get_reg(state, 2L)
+    t_v <- WamRuntime$deref(state, raw_t)
+    if (!is.null(t_v) && !is.null(t_v$tag) && t_v$tag != "unbound") {
+      s <- WamRuntime$term_to_string(state, raw_t, table)
+      return(WamRuntime$unify(state, raw_a,
+                              Atom(WamRuntime$intern(table, s))))
+    }
+    a_v <- WamRuntime$deref(state, raw_a)
+    if (is.null(a_v)) return(FALSE)
+    text <- wam_term_name_string(a_v, table)
+    if (is.null(text)) return(FALSE)
+    parsed <- WamRuntime$parse_term(text, table, state)
+    if (is.null(parsed)) return(FALSE)
+    return(WamRuntime$unify(state, raw_t, parsed))
   }
 
   # ----- string_upper/2 and string_lower/2 -----
