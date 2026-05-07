@@ -1261,6 +1261,66 @@ e2e_string_ops_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for assert/retract/abolish (runtime dynamic
+% predicate store). Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(dynamic_preds_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_dynamic_preds_via_rscript
+    ;   true
+    )).
+
+e2e_dynamic_preds_via_rscript :-
+    % assertz + dispatch through the dynamic store.
+    assertz((user:dyn_basic_test :- assertz(d_fact(a)), d_fact(a))),
+    % Multiple clauses get dispatched in order.
+    assertz((user:dyn_multi :- assertz(p(1)), assertz(p(2)), assertz(p(3)),
+                                p(1), p(2), p(3))),
+    % asserta prepends, so an earlier `assertz(q(later))` followed by
+    % `asserta(q(first))` should leave `q(first)` matchable first.
+    assertz((user:dyn_order :- assertz(q(later)), asserta(q(first)),
+                                q(first))),
+    % Asserting a rule that uses arithmetic; the body runs through
+    % call_goal, which reaches builtins.
+    assertz((user:dyn_rule :- assertz((dbl(X, Y) :- Y is X * 2)),
+                              dbl(5, R), R == 10)),
+    % retract removes the matching clause; the second one survives.
+    assertz((user:dyn_retract :- assertz(r(a)), assertz(r(b)),
+                                  retract(r(a)), \+ r(a), r(b))),
+    % Failure case: retract a clause that doesn't exist.
+    assertz((user:dyn_retract_no :- assertz(s(a)), retract(s(z)))),
+    % abolish wipes the whole entry.
+    assertz((user:dyn_abolish :- assertz(g(x)), abolish(g/1), \+ g(x))),
+    % Cross-call: dynamic clause invoked indirectly through call/1.
+    assertz((user:dyn_via_call :- assertz(t(ok)), call(t(ok)))),
+    % Negative: querying a never-asserted predicate.
+    assertz((user:dyn_unknown_no :- never_asserted(_))),
+    unique_r_tmp_dir('tmp_r_dynamic_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:dyn_basic_test/0, user:dyn_multi/0, user:dyn_order/0,
+          user:dyn_rule/0, user:dyn_retract/0, user:dyn_retract_no/0,
+          user:dyn_abolish/0, user:dyn_via_call/0,
+          user:dyn_unknown_no/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [dyn_basic_test, dyn_multi, dyn_order, dyn_rule,
+           dyn_retract, dyn_abolish, dyn_via_call],
+    No  = [dyn_retract_no, dyn_unknown_no],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-

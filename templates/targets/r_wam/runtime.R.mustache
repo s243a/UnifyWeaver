@@ -638,8 +638,13 @@ WamRuntime$step <- function(program, state, instr) {
         state$pc <- as.integer(tgt)
         return(TRUE)
       }
-      # No label match. Try the runtime library (e.g. atom_codes/2,
-      # reverse/2 etc. that the WAM compiler emits as a plain Execute).
+      # No label match. Try the dynamic store (asserted clauses) next,
+      # then the runtime library (atom_codes/2 etc.).
+      dyn <- WamRuntime$try_dynamic(program, state, instr$pred, instr$arity)
+      if (!is.null(dyn)) {
+        if (!isTRUE(dyn)) return(FALSE)
+        state$pc <- state$pc + 1L; return(TRUE)
+      }
       lib <- WamRuntime$call_library(program, state, instr$pred, instr$arity)
       if (is.null(lib)) return(FALSE)
       if (!isTRUE(lib)) return(FALSE)
@@ -651,6 +656,12 @@ WamRuntime$step <- function(program, state, instr) {
       if (!is.null(tgt)) {
         state$pc <- as.integer(tgt)
         return(TRUE)
+      }
+      dyn <- WamRuntime$try_dynamic(program, state, instr$pred, instr$arity)
+      if (!is.null(dyn)) {
+        if (!isTRUE(dyn)) return(FALSE)
+        if (state$cp == 0L) { state$halt <- TRUE; return(TRUE) }
+        state$pc <- state$cp; state$cp <- 0L; return(TRUE)
       }
       lib <- WamRuntime$call_library(program, state, instr$pred, instr$arity)
       if (is.null(lib)) return(FALSE)
@@ -1069,6 +1080,81 @@ WamRuntime$copy_term_walk <- function(state, term, mapping) {
   v
 }
 
+# Decompose a clause term into head args + optional body. The clause
+# is the form passed to assertz/asserta/retract: either a head (fact)
+# or a `:-`/2(Head, Body) struct (rule). Returns list(pred, arity,
+# head_args, body) or NULL if the shape isn't recognised.
+WamRuntime$split_clause <- function(state, term, table) {
+  v <- WamRuntime$deref(state, term)
+  if (is.null(v) || is.null(v$tag)) return(NULL)
+  body <- NULL
+  head_v <- v
+  if (v$tag == "struct" && length(v$args) == 2L &&
+      identical(WamRuntime$string_of(table, v$fid), ":-")) {
+    head_v <- WamRuntime$deref(state, v$args[[1]])
+    body   <- WamRuntime$deref(state, v$args[[2]])
+    if (is.null(head_v) || is.null(head_v$tag)) return(NULL)
+  }
+  if (head_v$tag == "atom") {
+    return(list(pred = WamRuntime$string_of(table, head_v$id), arity = 0L,
+                head_args = list(), body = body))
+  }
+  if (head_v$tag == "struct") {
+    return(list(pred = WamRuntime$string_of(table, head_v$fid),
+                arity = length(head_v$args),
+                head_args = head_v$args, body = body))
+  }
+  NULL
+}
+
+# Like copy_term but for a stored clause record. Walks both head args
+# and body, sharing the same fresh-var mapping so a var that appears
+# in both still resolves to one fresh var per clause invocation.
+WamRuntime$copy_term_clause <- function(state, clause) {
+  mapping <- new.env(parent = emptyenv())
+  fresh_args <- lapply(clause$head_args, function(a)
+    WamRuntime$copy_term_walk(state, a, mapping))
+  fresh_body <- if (is.null(clause$body)) NULL
+                else WamRuntime$copy_term_walk(state, clause$body, mapping)
+  list(head_args = fresh_args, body = fresh_body)
+}
+
+# Try to dispatch pred/arity through the runtime dynamic store.
+# Returns:
+#   TRUE  -- the first matching clause unified and (if present) its
+#            body succeeded; bindings persist on success.
+#   FALSE -- clauses exist for this key but none matched / succeeded.
+#   NULL  -- no dynamic clauses are registered for this key (caller
+#            should try the next dispatch tier).
+WamRuntime$try_dynamic <- function(program, state, pred, arity) {
+  key <- paste0(pred, "/", arity)
+  if (is.null(program$dynamic)) return(NULL)
+  if (!exists(key, envir = program$dynamic, inherits = FALSE)) return(NULL)
+  clauses <- get(key, envir = program$dynamic, inherits = FALSE)
+  if (length(clauses) == 0L) return(FALSE)
+  args <- vector("list", arity)
+  for (i in seq_len(arity)) args[[i]] <- WamRuntime$get_reg(state, i)
+  for (clause in clauses) {
+    if (length(clause$head_args) != arity) next
+    trail0 <- length(state$trail)
+    var_counter0 <- state$var_counter
+    fresh <- WamRuntime$copy_term_clause(state, clause)
+    ok <- TRUE
+    for (i in seq_len(arity)) {
+      if (!WamRuntime$unify(state, args[[i]], fresh$head_args[[i]])) {
+        ok <- FALSE; break
+      }
+    }
+    if (ok && !is.null(fresh$body)) {
+      ok <- isTRUE(WamRuntime$call_goal(program, state, fresh$body))
+    }
+    if (ok) return(TRUE)
+    WamRuntime$undo_trail_to(state, trail0)
+    state$var_counter <- var_counter0
+  }
+  FALSE
+}
+
 # Term-comparison-based merge sort. Used by msort/2 (keep dups) and
 # sort/2 (dedup after sorting). The compare_terms call orders unbound
 # vars first, then numbers, atoms, structs.
@@ -1180,6 +1266,9 @@ WamRuntime$dispatch_call <- function(program, state, pred, arity) {
   if (!is.null(program$foreign_handlers[[key]])) {
     return(isTRUE(WamRuntime$call_foreign(program, state, pred, arity, FALSE)))
   }
+  # Dynamic clauses (assertz/asserta) live in their own per-program env.
+  dyn <- WamRuntime$try_dynamic(program, state, pred, arity)
+  if (!is.null(dyn)) return(isTRUE(dyn))
   # Note: call_foreign and call_library compute their own key from
   # bare pred, but call_builtin's checks compare against the with-/N
   # form (matching the WAM-emitted instr$pred convention), so we
@@ -1948,6 +2037,82 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
       Atom(WamRuntime$intern(table, p)))
     return(WamRuntime$unify(state, WamRuntime$get_reg(state, 4L),
                             WamRuntime$wam_list_build(elems, table)))
+  }
+
+  # ----- assertz/1, asserta/1: add a clause to the dynamic store -----
+  # The arg is either a Head (fact) or a `:-`/2(Head, Body) struct.
+  # We split it via split_clause and store a fresh copy of the args
+  # so subsequent unification doesn't see leaked bindings.
+  if (key == "assertz/1" || key == "asserta/1") {
+    raw <- WamRuntime$get_reg(state, 1L)
+    parts <- WamRuntime$split_clause(state, raw, table)
+    if (is.null(parts)) return(FALSE)
+    ck <- paste0(parts$pred, "/", parts$arity)
+    cur <- if (exists(ck, envir = program$dynamic, inherits = FALSE))
+             get(ck, envir = program$dynamic, inherits = FALSE)
+           else list()
+    new_clause <- list(head_args = parts$head_args, body = parts$body)
+    if (key == "assertz/1") {
+      assign(ck, c(cur, list(new_clause)), envir = program$dynamic)
+    } else {
+      assign(ck, c(list(new_clause), cur), envir = program$dynamic)
+    }
+    return(TRUE)
+  }
+
+  # ----- retract/1: remove the first matching clause -----
+  # Bindings made by the unification persist on success (standard
+  # Prolog semantics). Multi-solution retract (backtrackable removal
+  # of subsequent matches) is not supported in this scaffold.
+  if (key == "retract/1") {
+    raw <- WamRuntime$get_reg(state, 1L)
+    parts <- WamRuntime$split_clause(state, raw, table)
+    if (is.null(parts)) return(FALSE)
+    ck <- paste0(parts$pred, "/", parts$arity)
+    if (!exists(ck, envir = program$dynamic, inherits = FALSE)) return(FALSE)
+    clauses <- get(ck, envir = program$dynamic, inherits = FALSE)
+    for (i in seq_along(clauses)) {
+      cl <- clauses[[i]]
+      if (length(cl$head_args) != parts$arity) next
+      trail0 <- length(state$trail)
+      var_counter0 <- state$var_counter
+      fresh <- WamRuntime$copy_term_clause(state, cl)
+      ok <- TRUE
+      for (j in seq_len(parts$arity)) {
+        if (!WamRuntime$unify(state, parts$head_args[[j]], fresh$head_args[[j]])) {
+          ok <- FALSE; break
+        }
+      }
+      if (ok && !is.null(parts$body) && !is.null(fresh$body)) {
+        ok <- WamRuntime$unify(state, parts$body, fresh$body)
+      }
+      if (ok) {
+        remaining <- if (length(clauses) == 1L) list() else clauses[-i]
+        assign(ck, remaining, envir = program$dynamic)
+        return(TRUE)
+      }
+      WamRuntime$undo_trail_to(state, trail0)
+      state$var_counter <- var_counter0
+    }
+    return(FALSE)
+  }
+
+  # ----- abolish/1: drop all clauses for Name/Arity -----
+  if (key == "abolish/1") {
+    raw <- WamRuntime$get_reg(state, 1L)
+    v <- WamRuntime$deref(state, raw)
+    if (is.null(v) || is.null(v$tag) || v$tag != "struct") return(FALSE)
+    if (length(v$args) != 2L) return(FALSE)
+    if (!identical(WamRuntime$string_of(table, v$fid), "/")) return(FALSE)
+    name_v  <- WamRuntime$deref(state, v$args[[1]])
+    arity_v <- WamRuntime$deref(state, v$args[[2]])
+    if (is.null(name_v)  || is.null(name_v$tag)  || name_v$tag  != "atom") return(FALSE)
+    if (is.null(arity_v) || is.null(arity_v$tag) || arity_v$tag != "int")  return(FALSE)
+    ck <- paste0(WamRuntime$string_of(table, name_v$id), "/", arity_v$val)
+    if (exists(ck, envir = program$dynamic, inherits = FALSE)) {
+      rm(list = ck, envir = program$dynamic)
+    }
+    return(TRUE)
   }
 
   # ----- msort/2: sort, keep duplicates -----
