@@ -61,6 +61,12 @@ class CalibrationArtifactRow:
     source_registration_summary: str
 
 
+@dataclass
+class CalibrationDrift:
+    critical: list[str]
+    timing: list[str]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -94,6 +100,26 @@ def parse_args() -> argparse.Namespace:
         "--fail-on-output-mismatch",
         action="store_true",
         help="Fail when any swept C# query source mode produces a different output hash.",
+    )
+    parser.add_argument(
+        "--compare-calibration",
+        action="store_true",
+        help=(
+            "Compare the fresh sweep with the checked-in calibration artifact. "
+            "Policy/output drift fails; timing drift is reported as warnings."
+        ),
+    )
+    parser.add_argument(
+        "--calibration-artifact",
+        type=Path,
+        default=CALIBRATION_ARTIFACT,
+        help="TSV calibration artifact used by --compare-calibration.",
+    )
+    parser.add_argument(
+        "--timing-drift-ratio",
+        type=float,
+        default=1.50,
+        help="Warn when a per-mode median or auto-vs-best ratio changes by more than this ratio.",
     )
     return parser.parse_args()
 
@@ -231,6 +257,116 @@ def parse_ratio(value: str) -> float | None:
         return None
 
 
+def parse_mode_summary(value: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for part in split_csv(value):
+        if ":" not in part:
+            continue
+        mode, mode_value = part.split(":", 1)
+        parsed[mode] = mode_value
+    return parsed
+
+
+def compare_calibration(
+    summaries: list[SourceModeSummary],
+    baseline_rows: list[CalibrationArtifactRow],
+    *,
+    timing_drift_ratio: float = 1.50,
+) -> CalibrationDrift:
+    critical: list[str] = []
+    timing: list[str] = []
+    fresh_by_key = {
+        (summary.workload, summary.scale): summary
+        for summary in summaries
+    }
+    baseline_by_key = {
+        (row.workload, row.scale): row
+        for row in baseline_rows
+    }
+
+    for key in sorted(set(baseline_by_key) - set(fresh_by_key), key=_calibration_key_sort_key):
+        critical.append(f"{key[0]}/{key[1]}: missing fresh sweep row")
+    for key in sorted(set(fresh_by_key) - set(baseline_by_key), key=_calibration_key_sort_key):
+        critical.append(f"{key[0]}/{key[1]}: no calibration baseline row")
+
+    for key in sorted(set(fresh_by_key) & set(baseline_by_key), key=_calibration_key_sort_key):
+        fresh = fresh_by_key[key]
+        baseline = baseline_by_key[key]
+        label = f"{fresh.workload}/{fresh.scale}"
+        fresh_resolved = parse_mode_summary(fresh.resolved_source_mode_summary)
+        if fresh.output_agreement != "match":
+            critical.append(f"{label}: fresh source-mode outputs {fresh.output_agreement}")
+        if baseline.output_agreement != "match":
+            critical.append(f"{label}: calibration baseline records output {baseline.output_agreement}")
+        if fresh_resolved.get("auto") != baseline.current_auto_resolved_source_mode:
+            critical.append(
+                f"{label}: auto resolved source mode changed from "
+                f"{baseline.current_auto_resolved_source_mode} to {fresh_resolved.get('auto', '<missing>')}"
+            )
+        if fresh.source_registration_summary != baseline.source_registration_summary:
+            critical.append(f"{label}: source registration shape changed")
+
+        if fresh.best_source_mode != baseline.observed_best_source_mode:
+            timing.append(
+                f"{label}: best source mode changed from "
+                f"{baseline.observed_best_source_mode} to {fresh.best_source_mode}"
+            )
+        _append_ratio_drift(
+            timing,
+            label,
+            "auto_vs_best",
+            baseline.observed_auto_vs_best,
+            fresh.auto_vs_best,
+            timing_drift_ratio,
+        )
+        baseline_medians = parse_mode_summary(baseline.median_summary)
+        fresh_medians = parse_mode_summary(fresh.median_summary)
+        for mode in sorted(set(baseline_medians) | set(fresh_medians)):
+            _append_ratio_drift(
+                timing,
+                label,
+                f"median[{mode}]",
+                baseline_medians.get(mode, ""),
+                fresh_medians.get(mode, ""),
+                timing_drift_ratio,
+            )
+
+    return CalibrationDrift(critical=critical, timing=timing)
+
+
+def _calibration_key_sort_key(key: tuple[str, str]) -> tuple[str, tuple[int, object]]:
+    return (key[0], scale_sort_key(key[1]))
+
+
+def _append_ratio_drift(
+    drift: list[str],
+    label: str,
+    field: str,
+    baseline_value: str,
+    fresh_value: str,
+    threshold: float,
+) -> None:
+    baseline = parse_ratio(baseline_value)
+    fresh = parse_ratio(fresh_value)
+    if baseline is None or fresh is None:
+        if baseline_value != fresh_value:
+            drift.append(
+                f"{label}: {field} changed from "
+                f"{baseline_value or '<missing>'} to {fresh_value or '<missing>'}"
+            )
+        return
+    if baseline == 0.0 or fresh == 0.0:
+        if baseline != fresh:
+            drift.append(f"{label}: {field} changed from {baseline_value} to {fresh_value}")
+        return
+    ratio = max(baseline, fresh) / min(baseline, fresh)
+    if ratio > threshold:
+        drift.append(
+            f"{label}: {field} changed from {baseline_value} to {fresh_value} "
+            f"({ratio:.2f}x)"
+        )
+
+
 def calibration_failures(
     summaries: list[SourceModeSummary],
     *,
@@ -342,6 +478,16 @@ def main() -> int:
         max_auto_vs_best_ratio=args.max_auto_vs_best_ratio,
         fail_on_output_mismatch=args.fail_on_output_mismatch,
     )
+    if args.compare_calibration:
+        drift = compare_calibration(
+            summaries,
+            load_calibration_artifact(args.calibration_artifact),
+            timing_drift_ratio=args.timing_drift_ratio,
+        )
+        for warning in drift.timing:
+            print(f"WARNING: calibration timing drift: {warning}", file=sys.stderr)
+        for failure in drift.critical:
+            failures.append(f"calibration drift: {failure}")
     if failures:
         for failure in failures:
             print(f"ERROR: {failure}", file=sys.stderr)
