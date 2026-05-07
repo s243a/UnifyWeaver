@@ -1543,6 +1543,70 @@ e2e_enumerable_builtins_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for catch/3 + throw/1 (exception handling)
+% and runtime aggregator support for dynamic predicates (the small
+% gap noted in the previous PR).
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(catch_throw_dyn_aggregator_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_catch_throw_dyn_via_rscript
+    ;   true
+    )).
+
+e2e_catch_throw_dyn_via_rscript :-
+    % catch/throw basics.
+    assertz((user:ct_basic     :- catch(throw(boom), boom, true))),
+    % Throw a structured term; recovery sees the unified Catcher var.
+    assertz((user:ct_unify     :- catch(throw(error(my_err, ctx)),
+                                         error(E, _), E == my_err))),
+    % Goal succeeds with no throw -- catch just succeeds, no recovery.
+    assertz((user:ct_no_throw  :- catch(true, _, fail))),
+    % Catcher doesn't unify -> rethrown -> top-level returns FALSE.
+    assertz((user:ct_uncaught  :- catch(throw(boom), other, true))),
+    % Nested catch: outer catches what inner rethrows.
+    assertz((user:ct_nested    :- catch(catch(throw(inner), other, fail),
+                                         inner, true))),
+    % Bare throw without any catch -> top-level returns FALSE.
+    assertz((user:ct_bare_throw :- throw(uncaught))),
+    % Runtime aggregators over dynamic-store predicates.
+    assertz((user:dyn_bg :- assertz(dynbg(a)), assertz(dynbg(b)),
+                            assertz(dynbg(c)),
+                            bagof(X, dynbg(X), L), L == [a, b, c])),
+    assertz((user:dyn_so :- assertz(dynso(c)), assertz(dynso(a)),
+                            assertz(dynso(b)), assertz(dynso(a)),
+                            setof(X, dynso(X), L), L == [a, b, c])),
+    assertz((user:dyn_fa :- assertz(dynfa(1)), assertz(dynfa(2)),
+                            assertz(dynfa(3)),
+                            forall(dynfa(X), integer(X)))),
+    assertz((user:dyn_fa_no :- assertz(dynfan(1)), assertz(dynfan(foo)),
+                                assertz(dynfan(3)),
+                                forall(dynfan(X), integer(X)))),
+    unique_r_tmp_dir('tmp_r_catch_dyn_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:ct_basic/0, user:ct_unify/0, user:ct_no_throw/0,
+          user:ct_uncaught/0, user:ct_nested/0, user:ct_bare_throw/0,
+          user:dyn_bg/0, user:dyn_so/0, user:dyn_fa/0, user:dyn_fa_no/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [ct_basic, ct_unify, ct_no_throw, ct_nested,
+           dyn_bg, dyn_so, dyn_fa],
+    No  = [ct_uncaught, ct_bare_throw, dyn_fa_no],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-
