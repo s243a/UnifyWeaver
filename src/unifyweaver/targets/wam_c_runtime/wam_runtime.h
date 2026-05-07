@@ -124,25 +124,63 @@ typedef struct {
     int cap;
 } WamIntResults;
 
-/* Instruction */
-// TODO: Pack these fields into a union keyed on `tag` to reduce memory footprint
 typedef struct {
-    WamInstrTag tag;
     int reg;
     int is_y_reg;
+    WamValue val;
+} WamConstantInstr;
+
+typedef struct {
     int reg_xn;
     int is_y_xn;
     int reg_ai;
     int is_y_ai;
-    WamValue val;
-    int arity;
+} WamRegPairInstr;
+
+typedef struct {
+    int reg;
+    int is_y_reg;
+} WamRegInstr;
+
+typedef struct {
     char *pred;
+    int reg;
+    int is_y_reg;
+} WamFunctorInstr;
+
+typedef struct {
+    char *pred;
+    int arity;
+} WamPredInstr;
+
+typedef struct {
     int target_pc;
+    int arity;
+} WamChoiceInstr;
+
+typedef struct {
+    int reg;
     HashEntry *hash_table;
     int hash_size;
     HashEntry *s_hash_table;
     int s_hash_size;
     int list_target_pc;
+} WamSwitchInstr;
+
+typedef union {
+    WamConstantInstr constant;
+    WamRegPairInstr reg_pair;
+    WamRegInstr reg;
+    WamFunctorInstr functor;
+    WamPredInstr pred;
+    WamChoiceInstr choice;
+    WamSwitchInstr switch_index;
+} InstructionPayload;
+
+/* Instruction */
+typedef struct {
+    WamInstrTag tag;
+    InstructionPayload as;
 } Instruction;
 
 /* WAM state */

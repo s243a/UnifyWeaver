@@ -4,12 +4,14 @@ Status date: 2026-05-06
 
 Base verified locally:
 
-- `main` at `6b6b8613` (`Merge pull request #1861 from s243a/feat/csharp-query-source-mode-sweep-all-graph-default`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
+- `main` at `a91d8521` (`Merge pull request #1870 from s243a/feat/wam-c-classic-program-e2e`)
+- `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
+- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels --repetitions 1`
 
 Active branch:
 
-- `feat/wam-c-classic-program-e2e`
+- `perf/wam-c-pack-instruction`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -19,7 +21,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 
 | Item | Status | Evidence |
 |---|---:|---|
-| `VAL_LIST` O(1) dispatch via `list_target_pc` | Done | `Instruction.list_target_pc`, `INSTR_SWITCH_ON_TERM` list branch, `test_switch_on_term_list_dispatch`, `test_list_target_pc_emission` |
+| `VAL_LIST` O(1) dispatch via `list_target_pc` | Done | `InstructionPayload.switch_index.list_target_pc`, `INSTR_SWITCH_ON_TERM` list branch, `test_switch_on_term_list_dispatch`, `test_list_target_pc_emission` |
 | O(1) predicate resolution | Done | `PredEntry pred_hash`, `wam_register_predicate_hash`, `resolve_predicate_hash`, `test_predicate_hash_registration` |
 | Dynamic atom interning | Done | `AtomEntry`, `wam_intern_atom`, `wam_free_state`, executable smoke interns duplicate runtime atom |
 | Runtime helpers | Done | `wam_state_init`, `wam_free_state`, `wam_run_predicate`, `test_helpers_generation` |
@@ -33,7 +35,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Shared kernel detector setup | Done | `detect_kernels/2`, `generate_setup_detected_kernels_c/2`, detected `category_ancestor/4` foreign trampoline project smoke |
 | Effective-distance matrix wiring | Done | `c-wam-accumulated`, `c-wam-accumulated-no-kernels`, C kernel-pair delta, `dev` parity smoke against Prolog |
 | Effective-distance LMDB fact-storage wiring | Done | `facts_lmdb` generator mode, LMDB seeder/validator, `c-wam-accumulated-lmdb` matrix targets, `dev` parity smoke against Prolog |
-| Classic recursive program e2e | In progress | Generated Prolog-to-WAM-C Fibonacci smoke, `set_*` instruction support, dereferenced constants/results, call-base choicepoint pruning |
+| Classic recursive program e2e | Done | Generated Prolog-to-WAM-C Fibonacci smoke, `set_*` instruction support, dereferenced constants/results, call-base choicepoint pruning |
+| Packed instruction layout | Done on active branch | `InstructionPayload` union keyed by `WamInstrTag`, typed generated initializers, typed runtime dispatch payload reads, switch-table cleanup guarded by switch tags |
 
 ## Current C Target Baseline
 
@@ -48,6 +51,8 @@ The C target is now a credible small WAM backend:
   choice-point instructions.
 - Supports `switch_on_constant`, `switch_on_structure`, `switch_on_term`,
   second-argument constant dispatch, and direct list dispatch.
+- Uses a tagged `InstructionPayload` union on the active branch instead of a
+  single wide instruction struct.
 - Supports basic `builtin_call` delegation for tested builtins:
   `atom/1`, `integer/1`, `is_list/1`, `=/2`, and `is/2`.
 - Supports deterministic `call_foreign` dispatch through a C handler registry.
@@ -105,24 +110,11 @@ missing important target features; `Missing` = no comparable C path yet.
 | Effective-distance benchmark harness | Partial/Done | Done | Done | C is wired into the shared matrix for TSV and LMDB `kernels_on`/`kernels_off`; next gap is larger artifact layouts. |
 | Classic-program e2e suite | Partial/Done | Partial/Done | Partial/Done | C now covers generated Fibonacci-style recursion with arithmetic; add Ackermann-style depth only if routine runtime stays acceptable. |
 | Memory lifecycle | Partial | Runtime-managed | Runtime-managed | C has init/free; needs ASAN/Valgrind CI-style coverage for larger programs. |
-| Instruction layout efficiency | TODO | N/A | N/A | Pack `Instruction` fields into a tagged union if runtime footprint matters. |
+| Instruction layout efficiency | Done on active branch | N/A | N/A | C now packs instruction fields into tag-specific payload arms; benchmark larger generated programs if layout becomes performance-sensitive. |
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-classic-program-e2e`
-
-Goal: broaden C executable coverage with classic recursive programs.
-
-Scope:
-
-- Add generated executable smokes for classic recursive programs.
-- Stress retry/trust, arithmetic comparisons, recursive calls, and generated
-  body term construction.
-- Cover Fibonacci-style multi-recursive calls; add Ackermann-style depth only if
-  routine runtime stays acceptable.
-- Keep the suite small enough for routine local runs.
-
-### 2. `perf/wam-c-pack-instruction`
+### 1. `perf/wam-c-pack-instruction`
 
 Goal: reduce `Instruction` memory footprint.
 
@@ -133,14 +125,26 @@ Scope:
 - Add compile-time or smoke coverage to ensure every instruction arm reads the
   correct union member.
 
-This is lower priority than hybrid parity. Do it only if generated program size
-or cache behavior becomes a real bottleneck.
+Status: ready on the active branch pending PR/merge.
+
+### 2. `test/wam-c-memory-lifecycle-asan`
+
+Goal: make the C runtime cleanup story harder to regress as generated programs
+grow.
+
+Scope:
+
+- Add an AddressSanitizer-friendly generated executable smoke, ideally covering
+  switch tables, predicate setup replacement, atoms, facts, foreign handlers,
+  and classic recursive execution in one path.
+- Keep the default suite portable if ASAN is unavailable; run the sanitizer
+  smoke opportunistically or behind a clearly named test helper.
+- Use this to validate the packed-instruction cleanup path on larger programs.
 
 ## Suggested Immediate Next Step
 
-Continue validating `feat/wam-c-classic-program-e2e`.
+Open a PR for `perf/wam-c-pack-instruction`, then continue with
+`test/wam-c-memory-lifecycle-asan`.
 
-The C target is now visible in the shared effective-distance matrix using TSV
-and LMDB facts. The current classic-program branch adds Fibonacci-style
-recursive arithmetic coverage and fixes the `set_*`, dereference, and
-first-solution call-pruning gaps it exposed.
+The packed-instruction branch is validated locally with WAM-C target tests,
+focused effective-distance tests, and the dev effective-distance matrix.

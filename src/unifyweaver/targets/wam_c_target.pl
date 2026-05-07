@@ -153,60 +153,60 @@ wam_c_kernel_max_depth(ConfigOps, MaxDepth) :-
 %% wam_instruction_to_c_literal(+WamInstr, -CCode)
 wam_instruction_to_c_literal(get_constant(C, Ai), Code) :-
     c_value_literal(C, Val), c_reg_index(Ai, IsY_Ai, Idx),
-    format(atom(Code), '{ .tag = INSTR_GET_CONSTANT, .val = ~w, .reg = ~w, .is_y_reg = ~w }', [Val, Idx, IsY_Ai]).
+    format(atom(Code), '{ .tag = INSTR_GET_CONSTANT, .as.constant = { .val = ~w, .reg = ~w, .is_y_reg = ~w } }', [Val, Idx, IsY_Ai]).
 wam_instruction_to_c_literal(get_variable(Xn, Ai), Code) :-
     c_reg_index(Xn, IsY_Xn, XIdx), c_reg_index(Ai, IsY_Ai, AIdx),
-    format(atom(Code), '{ .tag = INSTR_GET_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
+    format(atom(Code), '{ .tag = INSTR_GET_VARIABLE, .as.reg_pair = { .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w } }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
 wam_instruction_to_c_literal(get_value(Xn, Ai), Code) :-
     c_reg_index(Xn, IsY_Xn, XIdx), c_reg_index(Ai, IsY_Ai, AIdx),
-    format(atom(Code), '{ .tag = INSTR_GET_VALUE, .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
+    format(atom(Code), '{ .tag = INSTR_GET_VALUE, .as.reg_pair = { .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w } }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
 wam_instruction_to_c_literal(put_constant(C, Ai), Code) :-
     c_value_literal(C, Val), c_reg_index(Ai, IsY_Ai, Idx),
-    format(atom(Code), '{ .tag = INSTR_PUT_CONSTANT, .val = ~w, .reg = ~w, .is_y_reg = ~w }', [Val, Idx, IsY_Ai]).
+    format(atom(Code), '{ .tag = INSTR_PUT_CONSTANT, .as.constant = { .val = ~w, .reg = ~w, .is_y_reg = ~w } }', [Val, Idx, IsY_Ai]).
 wam_instruction_to_c_literal(put_variable(Xn, Ai), Code) :-
     c_reg_index(Xn, IsY_Xn, XIdx), c_reg_index(Ai, IsY_Ai, AIdx),
-    format(atom(Code), '{ .tag = INSTR_PUT_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
+    format(atom(Code), '{ .tag = INSTR_PUT_VARIABLE, .as.reg_pair = { .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w } }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
 wam_instruction_to_c_literal(put_value(Xn, Ai), Code) :-
     c_reg_index(Xn, IsY_Xn, XIdx), c_reg_index(Ai, IsY_Ai, AIdx),
-    format(atom(Code), '{ .tag = INSTR_PUT_VALUE, .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
+    format(atom(Code), '{ .tag = INSTR_PUT_VALUE, .as.reg_pair = { .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w } }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
 wam_instruction_to_c_literal(get_structure(F, Ai), Code) :-
     c_reg_index(Ai, IsY_Ai, AIdx),
-    format(atom(Code), '{ .tag = INSTR_GET_STRUCTURE, .pred = "~w", .reg_ai = ~w, .is_y_ai = ~w }', [F, AIdx, IsY_Ai]).
+    format(atom(Code), '{ .tag = INSTR_GET_STRUCTURE, .as.functor = { .pred = "~w", .reg = ~w, .is_y_reg = ~w } }', [F, AIdx, IsY_Ai]).
 wam_instruction_to_c_literal(put_structure(F, Xn), Code) :-
     c_reg_index(Xn, IsY_Xn, XIdx),
-    format(atom(Code), '{ .tag = INSTR_PUT_STRUCTURE, .pred = "~w", .reg_xn = ~w, .is_y_xn = ~w }', [F, XIdx, IsY_Xn]).
+    format(atom(Code), '{ .tag = INSTR_PUT_STRUCTURE, .as.functor = { .pred = "~w", .reg = ~w, .is_y_reg = ~w } }', [F, XIdx, IsY_Xn]).
 wam_instruction_to_c_literal(get_list(Ai), Code) :-
     c_reg_index(Ai, IsY_Ai, AIdx),
-    format(atom(Code), '{ .tag = INSTR_GET_LIST, .reg_ai = ~w, .is_y_ai = ~w }', [AIdx, IsY_Ai]).
+    format(atom(Code), '{ .tag = INSTR_GET_LIST, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [AIdx, IsY_Ai]).
 wam_instruction_to_c_literal(put_list(Xn), Code) :-
     c_reg_index(Xn, IsY_Xn, XIdx),
-    format(atom(Code), '{ .tag = INSTR_PUT_LIST, .reg_xn = ~w, .is_y_xn = ~w }', [XIdx, IsY_Xn]).
+    format(atom(Code), '{ .tag = INSTR_PUT_LIST, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [XIdx, IsY_Xn]).
 wam_instruction_to_c_literal(set_variable(Xn), Code) :-
     c_reg_index(Xn, IsY_Xn, XIdx),
-    format(atom(Code), '{ .tag = INSTR_SET_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w }', [XIdx, IsY_Xn]).
+    format(atom(Code), '{ .tag = INSTR_SET_VARIABLE, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [XIdx, IsY_Xn]).
 wam_instruction_to_c_literal(set_value(Xn), Code) :-
     c_reg_index(Xn, IsY_Xn, XIdx),
-    format(atom(Code), '{ .tag = INSTR_SET_VALUE, .reg_xn = ~w, .is_y_xn = ~w }', [XIdx, IsY_Xn]).
+    format(atom(Code), '{ .tag = INSTR_SET_VALUE, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [XIdx, IsY_Xn]).
 wam_instruction_to_c_literal(set_constant(C), Code) :-
     c_value_literal(C, Val),
-    format(atom(Code), '{ .tag = INSTR_SET_CONSTANT, .val = ~w }', [Val]).
+    format(atom(Code), '{ .tag = INSTR_SET_CONSTANT, .as.constant = { .val = ~w } }', [Val]).
 wam_instruction_to_c_literal(unify_variable(Xn), Code) :-
     c_reg_index(Xn, IsY_Xn, XIdx),
-    format(atom(Code), '{ .tag = INSTR_UNIFY_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w }', [XIdx, IsY_Xn]).
+    format(atom(Code), '{ .tag = INSTR_UNIFY_VARIABLE, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [XIdx, IsY_Xn]).
 wam_instruction_to_c_literal(unify_value(Xn), Code) :-
     c_reg_index(Xn, IsY_Xn, XIdx),
-    format(atom(Code), '{ .tag = INSTR_UNIFY_VALUE, .reg_xn = ~w, .is_y_xn = ~w }', [XIdx, IsY_Xn]).
+    format(atom(Code), '{ .tag = INSTR_UNIFY_VALUE, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [XIdx, IsY_Xn]).
 wam_instruction_to_c_literal(unify_constant(C), Code) :-
     c_value_literal(C, Val),
-    format(atom(Code), '{ .tag = INSTR_UNIFY_CONSTANT, .val = ~w }', [Val]).
+    format(atom(Code), '{ .tag = INSTR_UNIFY_CONSTANT, .as.constant = { .val = ~w } }', [Val]).
 wam_instruction_to_c_literal(call(P, N), Code) :-
-    format(atom(Code), '{ .tag = INSTR_CALL, .pred = "~w", .arity = ~w }', [P, N]).
+    format(atom(Code), '{ .tag = INSTR_CALL, .as.pred = { .pred = "~w", .arity = ~w } }', [P, N]).
 wam_instruction_to_c_literal(execute(P), Code) :-
-    format(atom(Code), '{ .tag = INSTR_EXECUTE, .pred = "~w" }', [P]).
+    format(atom(Code), '{ .tag = INSTR_EXECUTE, .as.pred = { .pred = "~w" } }', [P]).
 wam_instruction_to_c_literal(builtin_call(Op, N), Code) :-
-    format(atom(Code), '{ .tag = INSTR_BUILTIN_CALL, .pred = "~w", .arity = ~w }', [Op, N]).
+    format(atom(Code), '{ .tag = INSTR_BUILTIN_CALL, .as.pred = { .pred = "~w", .arity = ~w } }', [Op, N]).
 wam_instruction_to_c_literal(call_foreign(P, N), Code) :-
-    format(atom(Code), '{ .tag = INSTR_CALL_FOREIGN, .pred = "~w", .arity = ~w }', [P, N]).
+    format(atom(Code), '{ .tag = INSTR_CALL_FOREIGN, .as.pred = { .pred = "~w", .arity = ~w } }', [P, N]).
 wam_instruction_to_c_literal(try_me_else(_Label), _) :-
     throw(error(context_error(missing_label_map, "try_me_else/1 requires LabelMap for target_pc resolution. Use wam_instruction_to_c_literal/3 instead."), _)).
 wam_instruction_to_c_literal(retry_me_else(_Label), _) :-
@@ -222,10 +222,10 @@ wam_instruction_to_c_literal(Instr, _) :-
 
 wam_instruction_to_c_literal(try_me_else(Label), LabelMap, Code) :-
     ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
-    format(atom(Code), '{ .tag = INSTR_TRY_ME_ELSE, .target_pc = ~w }', [TargetPC]).
+    format(atom(Code), '{ .tag = INSTR_TRY_ME_ELSE, .as.choice = { .target_pc = ~w } }', [TargetPC]).
 wam_instruction_to_c_literal(retry_me_else(Label), LabelMap, Code) :-
     ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
-    format(atom(Code), '{ .tag = INSTR_RETRY_ME_ELSE, .target_pc = ~w }', [TargetPC]).
+    format(atom(Code), '{ .tag = INSTR_RETRY_ME_ELSE, .as.choice = { .target_pc = ~w } }', [TargetPC]).
 wam_instruction_to_c_literal(Instr, _, Code) :- wam_instruction_to_c_literal(Instr, Code).
 
 
@@ -275,87 +275,87 @@ c_reg_index(RegAtom, IsY, Idx) :-
 wam_line_to_c_instr(["get_constant", C, Ai], Instr) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     c_value_literal(CC, Val), c_reg_index(CAi, IsY, Idx),
-    format(atom(Instr), '{ .tag = INSTR_GET_CONSTANT, .val = ~w, .reg = ~w, .is_y_reg = ~w }', [Val, Idx, IsY]).
+    format(atom(Instr), '{ .tag = INSTR_GET_CONSTANT, .as.constant = { .val = ~w, .reg = ~w, .is_y_reg = ~w } }', [Val, Idx, IsY]).
 wam_line_to_c_instr(["get_variable", Xn, Ai], Instr) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     c_reg_index(CXn, IsY_Xn, XIdx), c_reg_index(CAi, IsY_Ai, AIdx),
-    format(atom(Instr), '{ .tag = INSTR_GET_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
+    format(atom(Instr), '{ .tag = INSTR_GET_VARIABLE, .as.reg_pair = { .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w } }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
 wam_line_to_c_instr(["get_value", Xn, Ai], Instr) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     c_reg_index(CXn, IsY_Xn, XIdx), c_reg_index(CAi, IsY_Ai, AIdx),
-    format(atom(Instr), '{ .tag = INSTR_GET_VALUE, .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
+    format(atom(Instr), '{ .tag = INSTR_GET_VALUE, .as.reg_pair = { .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w } }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
 wam_line_to_c_instr(["put_constant", C, Ai], Instr) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     c_value_literal(CC, Val), c_reg_index(CAi, IsY, Idx),
-    format(atom(Instr), '{ .tag = INSTR_PUT_CONSTANT, .val = ~w, .reg = ~w, .is_y_reg = ~w }', [Val, Idx, IsY]).
+    format(atom(Instr), '{ .tag = INSTR_PUT_CONSTANT, .as.constant = { .val = ~w, .reg = ~w, .is_y_reg = ~w } }', [Val, Idx, IsY]).
 wam_line_to_c_instr(["put_variable", Xn, Ai], Instr) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     c_reg_index(CXn, IsY_Xn, XIdx), c_reg_index(CAi, IsY_Ai, AIdx),
-    format(atom(Instr), '{ .tag = INSTR_PUT_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
+    format(atom(Instr), '{ .tag = INSTR_PUT_VARIABLE, .as.reg_pair = { .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w } }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
 wam_line_to_c_instr(["put_value", Xn, Ai], Instr) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     c_reg_index(CXn, IsY_Xn, XIdx), c_reg_index(CAi, IsY_Ai, AIdx),
-    format(atom(Instr), '{ .tag = INSTR_PUT_VALUE, .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
+    format(atom(Instr), '{ .tag = INSTR_PUT_VALUE, .as.reg_pair = { .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w } }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
 wam_line_to_c_instr(["get_structure", F, Ai], Instr) :-
     clean_comma(F, CF), clean_comma(Ai, CAi),
     c_reg_index(CAi, IsY, Idx),
-    format(atom(Instr), '{ .tag = INSTR_GET_STRUCTURE, .pred = "~w", .reg_ai = ~w, .is_y_ai = ~w }', [CF, Idx, IsY]).
+    format(atom(Instr), '{ .tag = INSTR_GET_STRUCTURE, .as.functor = { .pred = "~w", .reg = ~w, .is_y_reg = ~w } }', [CF, Idx, IsY]).
 wam_line_to_c_instr(["put_structure", F, Xn], Instr) :-
     clean_comma(F, CF), clean_comma(Xn, CXn),
     c_reg_index(CXn, IsY, Idx),
-    format(atom(Instr), '{ .tag = INSTR_PUT_STRUCTURE, .pred = "~w", .reg_xn = ~w, .is_y_xn = ~w }', [CF, Idx, IsY]).
+    format(atom(Instr), '{ .tag = INSTR_PUT_STRUCTURE, .as.functor = { .pred = "~w", .reg = ~w, .is_y_reg = ~w } }', [CF, Idx, IsY]).
 wam_line_to_c_instr(["get_list", Ai], Instr) :-
     clean_comma(Ai, CAi),
     c_reg_index(CAi, IsY, Idx),
-    format(atom(Instr), '{ .tag = INSTR_GET_LIST, .reg_ai = ~w, .is_y_ai = ~w }', [Idx, IsY]).
+    format(atom(Instr), '{ .tag = INSTR_GET_LIST, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [Idx, IsY]).
 wam_line_to_c_instr(["put_list", Xn], Instr) :-
     clean_comma(Xn, CXn),
     c_reg_index(CXn, IsY, Idx),
-    format(atom(Instr), '{ .tag = INSTR_PUT_LIST, .reg_xn = ~w, .is_y_xn = ~w }', [Idx, IsY]).
+    format(atom(Instr), '{ .tag = INSTR_PUT_LIST, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [Idx, IsY]).
 wam_line_to_c_instr(["set_variable", Xn], Instr) :-
     clean_comma(Xn, CXn),
     c_reg_index(CXn, IsY, Idx),
-    format(atom(Instr), '{ .tag = INSTR_SET_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w }', [Idx, IsY]).
+    format(atom(Instr), '{ .tag = INSTR_SET_VARIABLE, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [Idx, IsY]).
 wam_line_to_c_instr(["set_value", Xn], Instr) :-
     clean_comma(Xn, CXn),
     c_reg_index(CXn, IsY, Idx),
-    format(atom(Instr), '{ .tag = INSTR_SET_VALUE, .reg_xn = ~w, .is_y_xn = ~w }', [Idx, IsY]).
+    format(atom(Instr), '{ .tag = INSTR_SET_VALUE, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [Idx, IsY]).
 wam_line_to_c_instr(["set_constant", C], Instr) :-
     clean_comma(C, CC),
     c_value_literal(CC, Val),
-    format(atom(Instr), '{ .tag = INSTR_SET_CONSTANT, .val = ~w }', [Val]).
+    format(atom(Instr), '{ .tag = INSTR_SET_CONSTANT, .as.constant = { .val = ~w } }', [Val]).
 wam_line_to_c_instr(["unify_variable", Xn], Instr) :-
     clean_comma(Xn, CXn),
     c_reg_index(CXn, IsY, Idx),
-    format(atom(Instr), '{ .tag = INSTR_UNIFY_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w }', [Idx, IsY]).
+    format(atom(Instr), '{ .tag = INSTR_UNIFY_VARIABLE, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [Idx, IsY]).
 wam_line_to_c_instr(["unify_value", Xn], Instr) :-
     clean_comma(Xn, CXn),
     c_reg_index(CXn, IsY, Idx),
-    format(atom(Instr), '{ .tag = INSTR_UNIFY_VALUE, .reg_xn = ~w, .is_y_xn = ~w }', [Idx, IsY]).
+    format(atom(Instr), '{ .tag = INSTR_UNIFY_VALUE, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [Idx, IsY]).
 wam_line_to_c_instr(["unify_constant", C], Instr) :-
     clean_comma(C, CC),
     c_value_literal(CC, Val),
-    format(atom(Instr), '{ .tag = INSTR_UNIFY_CONSTANT, .val = ~w }', [Val]).
+    format(atom(Instr), '{ .tag = INSTR_UNIFY_CONSTANT, .as.constant = { .val = ~w } }', [Val]).
 wam_line_to_c_instr(["call", P, N], Instr) :-
     clean_comma(P, CP), clean_comma(N, CN),
-    format(atom(Instr), '{ .tag = INSTR_CALL, .pred = "~w", .arity = ~w }', [CP, CN]).
+    format(atom(Instr), '{ .tag = INSTR_CALL, .as.pred = { .pred = "~w", .arity = ~w } }', [CP, CN]).
 wam_line_to_c_instr(["execute", P], Instr) :-
     clean_comma(P, CP),
-    format(atom(Instr), '{ .tag = INSTR_EXECUTE, .pred = "~w" }', [CP]).
+    format(atom(Instr), '{ .tag = INSTR_EXECUTE, .as.pred = { .pred = "~w" } }', [CP]).
 wam_line_to_c_instr(["builtin_call", Op, N], Instr) :-
     clean_comma(Op, COp), clean_comma(N, CN),
-    format(atom(Instr), '{ .tag = INSTR_BUILTIN_CALL, .pred = "~w", .arity = ~w }', [COp, CN]).
+    format(atom(Instr), '{ .tag = INSTR_BUILTIN_CALL, .as.pred = { .pred = "~w", .arity = ~w } }', [COp, CN]).
 wam_line_to_c_instr(["call_foreign", P, N], Instr) :-
     clean_comma(P, CP), clean_comma(N, CN),
-    format(atom(Instr), '{ .tag = INSTR_CALL_FOREIGN, .pred = "~w", .arity = ~w }', [CP, CN]).
+    format(atom(Instr), '{ .tag = INSTR_CALL_FOREIGN, .as.pred = { .pred = "~w", .arity = ~w } }', [CP, CN]).
 wam_line_to_c_instr(["try_me_else", L], LabelMap, Arity, Instr) :-
     clean_comma(L, CL),
     ( member(CL-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
-    format(atom(Instr), '{ .tag = INSTR_TRY_ME_ELSE, .target_pc = ~w, .arity = ~w }', [TargetPC, Arity]).
+    format(atom(Instr), '{ .tag = INSTR_TRY_ME_ELSE, .as.choice = { .target_pc = ~w, .arity = ~w } }', [TargetPC, Arity]).
 wam_line_to_c_instr(["retry_me_else", L], LabelMap, Arity, Instr) :-
     clean_comma(L, CL),
     ( member(CL-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
-    format(atom(Instr), '{ .tag = INSTR_RETRY_ME_ELSE, .target_pc = ~w, .arity = ~w }', [TargetPC, Arity]).
+    format(atom(Instr), '{ .tag = INSTR_RETRY_ME_ELSE, .as.choice = { .target_pc = ~w, .arity = ~w } }', [TargetPC, Arity]).
 wam_line_to_c_instr(["trust_me"], _, '{ .tag = INSTR_TRUST_ME }').
 wam_line_to_c_instr(["proceed"], _, '{ .tag = INSTR_PROCEED }').
 wam_line_to_c_instr(["allocate"], _, '{ .tag = INSTR_ALLOCATE }').
@@ -412,15 +412,15 @@ wam_generate_c_instruction(PC, Parts, LabelMap, Arity, CodeLines) :-
             SwitchReg = 1
         )
     ->  length(Entries, HashSize),
-        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_CONSTANT, .reg = ~w, .hash_size = ~w };', [PC, SwitchReg, HashSize]),
-        format(atom(L1), '    state->code[~w].hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, HashSize]),
-        generate_hash_table_entries(PC, "hash_table", Entries, 0, LabelMap, HashLines),
+        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_CONSTANT, .as.switch_index = { .reg = ~w, .hash_size = ~w } };', [PC, SwitchReg, HashSize]),
+        format(atom(L1), '    state->code[~w].as.switch_index.hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, HashSize]),
+        generate_hash_table_entries(PC, "as.switch_index.hash_table", Entries, 0, LabelMap, HashLines),
         append([L0, L1], HashLines, CodeLines)
     ;   Parts = ["switch_on_structure" | Entries]
     ->  length(Entries, HashSize),
-        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_STRUCTURE, .hash_size = ~w };', [PC, HashSize]),
-        format(atom(L1), '    state->code[~w].hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, HashSize]),
-        generate_hash_table_entries(PC, "hash_table", Entries, 0, LabelMap, HashLines),
+        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_STRUCTURE, .as.switch_index = { .hash_size = ~w } };', [PC, HashSize]),
+        format(atom(L1), '    state->code[~w].as.switch_index.hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, HashSize]),
+        generate_hash_table_entries(PC, "as.switch_index.hash_table", Entries, 0, LabelMap, HashLines),
         append([L0, L1], HashLines, CodeLines)
     ;   Parts = ["switch_on_term", CLenStr | Rest1]
     ->  number_string(CLen, CLenStr),
@@ -437,11 +437,11 @@ wam_generate_c_instruction(PC, Parts, LabelMap, Arity, CodeLines) :-
         ->  true
         ;   ListPC = -1
         ),
-        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_TERM, .hash_size = ~w, .s_hash_size = ~w, .list_target_pc = ~w };', [PC, CLen, SLen, ListPC]),
-        format(atom(L1), '    state->code[~w].hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, CLen]),
-        format(atom(L2), '    state->code[~w].s_hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, SLen]),
-        generate_hash_table_entries(PC, "hash_table", CEntries, 0, LabelMap, CHashLines),
-        generate_hash_table_entries(PC, "s_hash_table", SEntries, 0, LabelMap, SHashLines),
+        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_TERM, .as.switch_index = { .hash_size = ~w, .s_hash_size = ~w, .list_target_pc = ~w } };', [PC, CLen, SLen, ListPC]),
+        format(atom(L1), '    state->code[~w].as.switch_index.hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, CLen]),
+        format(atom(L2), '    state->code[~w].as.switch_index.s_hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, SLen]),
+        generate_hash_table_entries(PC, "as.switch_index.hash_table", CEntries, 0, LabelMap, CHashLines),
+        generate_hash_table_entries(PC, "as.switch_index.s_hash_table", SEntries, 0, LabelMap, SHashLines),
         append([L0, L1, L2 | CHashLines], SHashLines, CodeLines)
     ;   (   wam_line_to_c_instr(Parts, LabelMap, Arity, CInstr)
         ->  true
@@ -492,13 +492,13 @@ compile_wam_predicate_to_c(PredIndicator, WamCode, _Options, CCode) :-
 void setup_~w_~w(WamState* state) {
     if (state->code) {
         for (int i = 0; i < state->code_size; i++) {
-            if ((state->code[i].tag == INSTR_SWITCH_ON_CONSTANT || state->code[i].tag == INSTR_SWITCH_ON_STRUCTURE || state->code[i].tag == INSTR_SWITCH_ON_TERM) && state->code[i].hash_table) {
-                free(state->code[i].hash_table);
-                state->code[i].hash_table = NULL;
+            if ((state->code[i].tag == INSTR_SWITCH_ON_CONSTANT || state->code[i].tag == INSTR_SWITCH_ON_STRUCTURE || state->code[i].tag == INSTR_SWITCH_ON_TERM) && state->code[i].as.switch_index.hash_table) {
+                free(state->code[i].as.switch_index.hash_table);
+                state->code[i].as.switch_index.hash_table = NULL;
             }
-            if (state->code[i].tag == INSTR_SWITCH_ON_TERM && state->code[i].s_hash_table) {
-                free(state->code[i].s_hash_table);
-                state->code[i].s_hash_table = NULL;
+            if (state->code[i].tag == INSTR_SWITCH_ON_TERM && state->code[i].as.switch_index.s_hash_table) {
+                free(state->code[i].as.switch_index.s_hash_table);
+                state->code[i].as.switch_index.s_hash_table = NULL;
             }
         }
     }
@@ -518,13 +518,13 @@ compile_step_wam_to_c(_Options, CCode) :-
 '    bool step_wam(WamState* state, Instruction* instr) {
         switch (instr->tag) {
             case INSTR_GET_CONSTANT: {
-                WamValue *cell = wam_deref_ptr(state, resolve_reg(state, instr->reg, instr->is_y_reg));
+                WamValue *cell = wam_deref_ptr(state, resolve_reg(state, instr->as.constant.reg, instr->as.constant.is_y_reg));
                 if (val_is_unbound(*cell)) {
                     trail_binding(state, cell);
-                    *cell = instr->val;
+                    *cell = instr->as.constant.val;
                     state->P++;
                     return true;
-                } else if (val_equal(*cell, instr->val)) {
+                } else if (val_equal(*cell, instr->as.constant.val)) {
                     state->P++;
                     return true;
                 }
@@ -533,37 +533,37 @@ compile_step_wam_to_c(_Options, CCode) :-
             case INSTR_GET_VARIABLE: {
                 // Per WAM spec: copy A[Ai] to X[Xn] without trailing.
                 // Trailing is only for mutations of already-bound cells.
-                WamValue *cell_xn = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
-                WamValue *cell_ai = resolve_reg(state, instr->reg_ai, instr->is_y_ai);
+                WamValue *cell_xn = resolve_reg(state, instr->as.reg_pair.reg_xn, instr->as.reg_pair.is_y_xn);
+                WamValue *cell_ai = resolve_reg(state, instr->as.reg_pair.reg_ai, instr->as.reg_pair.is_y_ai);
                 *cell_xn = *cell_ai;
                 state->P++;
                 return true;
             }
             case INSTR_GET_VALUE: {
-                WamValue *cell_xn = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
-                WamValue *cell_ai = resolve_reg(state, instr->reg_ai, instr->is_y_ai);
+                WamValue *cell_xn = resolve_reg(state, instr->as.reg_pair.reg_xn, instr->as.reg_pair.is_y_xn);
+                WamValue *cell_ai = resolve_reg(state, instr->as.reg_pair.reg_ai, instr->as.reg_pair.is_y_ai);
                 if (!wam_unify(state, cell_xn, cell_ai)) return false;
                 state->P++;
                 return true;
             }
             case INSTR_PUT_CONSTANT: {
-                WamValue *cell = resolve_reg(state, instr->reg, instr->is_y_reg);
-                *cell = instr->val;
+                WamValue *cell = resolve_reg(state, instr->as.constant.reg, instr->as.constant.is_y_reg);
+                *cell = instr->as.constant.val;
                 state->P++;
                 return true;
             }
             case INSTR_PUT_VARIABLE: {
                 WamValue ref = wam_make_ref(state);
-                WamValue *cell_xn = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
-                WamValue *cell_ai = resolve_reg(state, instr->reg_ai, instr->is_y_ai);
+                WamValue *cell_xn = resolve_reg(state, instr->as.reg_pair.reg_xn, instr->as.reg_pair.is_y_xn);
+                WamValue *cell_ai = resolve_reg(state, instr->as.reg_pair.reg_ai, instr->as.reg_pair.is_y_ai);
                 *cell_xn = ref;
                 *cell_ai = ref;
                 state->P++;
                 return true;
             }
             case INSTR_PUT_VALUE: {
-                WamValue *cell_xn = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
-                WamValue *cell_ai = resolve_reg(state, instr->reg_ai, instr->is_y_ai);
+                WamValue *cell_xn = resolve_reg(state, instr->as.reg_pair.reg_xn, instr->as.reg_pair.is_y_xn);
+                WamValue *cell_ai = resolve_reg(state, instr->as.reg_pair.reg_ai, instr->as.reg_pair.is_y_ai);
                 *cell_ai = *cell_xn;
                 state->P++;
                 return true;
@@ -601,39 +601,39 @@ compile_step_wam_to_c(_Options, CCode) :-
                 if (state->call_base_top >= WAM_CALL_STACK_SIZE) return false;
                 state->call_bases[state->call_base_top++] = state->B;
                 state->CP = state->P + 1;
-                int target = resolve_predicate_hash(state, instr->pred);
+                int target = resolve_predicate_hash(state, instr->as.pred.pred);
                 if (target >= 0) { state->P = target; return true; }
                 state->call_base_top--;
                 return false;
             }
             case INSTR_EXECUTE: {
-                int target = resolve_predicate_hash(state, instr->pred);
+                int target = resolve_predicate_hash(state, instr->as.pred.pred);
                 if (target >= 0) { state->P = target; return true; }
                 return false;
             }
             case INSTR_BUILTIN_CALL: {
-                if (wam_execute_builtin(state, instr->pred, instr->arity)) {
+                if (wam_execute_builtin(state, instr->as.pred.pred, instr->as.pred.arity)) {
                     state->P++;
                     return true;
                 }
                 return false;
             }
             case INSTR_CALL_FOREIGN: {
-                if (wam_execute_foreign_predicate(state, instr->pred, instr->arity)) {
+                if (wam_execute_foreign_predicate(state, instr->as.pred.pred, instr->as.pred.arity)) {
                     state->P++;
                     return true;
                 }
                 return false;
             }
             case INSTR_TRY_ME_ELSE: {
-                int target = instr->target_pc;
-                int arity = instr->arity ? instr->arity : 32;
+                int target = instr->as.choice.target_pc;
+                int arity = instr->as.choice.arity ? instr->as.choice.arity : 32;
                 push_choice_point(state, target, arity);
                 state->P++;
                 return true;
             }
             case INSTR_RETRY_ME_ELSE: {
-                int target = instr->target_pc;
+                int target = instr->as.choice.target_pc;
                 ChoicePoint *cp = &state->B_array[state->B - 1];
                 cp->next_pc = target;
                 state->P++;
@@ -645,7 +645,7 @@ compile_step_wam_to_c(_Options, CCode) :-
                 return true;
             }
             case INSTR_SWITCH_ON_CONSTANT: {
-                WamValue *cell = wam_deref_ptr(state, &state->A[instr->reg]);
+                WamValue *cell = wam_deref_ptr(state, &state->A[instr->as.switch_index.reg]);
                 if (val_is_unbound(*cell)) {
                     state->P++;
                     return true; // Unbound variable falls through to the sequential try_me_else chain
@@ -653,9 +653,9 @@ compile_step_wam_to_c(_Options, CCode) :-
                 if (cell->tag != VAL_ATOM && cell->tag != VAL_INT) {
                     return false; // Type mismatch, fail
                 }
-                for (int i = 0; i < instr->hash_size; i++) {
-                    if (val_equal(*cell, instr->hash_table[i].key)) {
-                        state->P = instr->hash_table[i].target_pc;
+                for (int i = 0; i < instr->as.switch_index.hash_size; i++) {
+                    if (val_equal(*cell, instr->as.switch_index.hash_table[i].key)) {
+                        state->P = instr->as.switch_index.hash_table[i].target_pc;
                         return true;
                     }
                 }
@@ -671,9 +671,9 @@ compile_step_wam_to_c(_Options, CCode) :-
                     return false; // Type mismatch, fail
                 }
                 WamValue *f = &state->H_array[cell->data.ref_addr];
-                for (int i = 0; i < instr->hash_size; i++) {
-                    if (val_equal(*f, instr->hash_table[i].key)) {
-                        state->P = instr->hash_table[i].target_pc;
+                for (int i = 0; i < instr->as.switch_index.hash_size; i++) {
+                    if (val_equal(*f, instr->as.switch_index.hash_table[i].key)) {
+                        state->P = instr->as.switch_index.hash_table[i].target_pc;
                         return true;
                     }
                 }
@@ -686,23 +686,23 @@ compile_step_wam_to_c(_Options, CCode) :-
                     return true; // Unbound variable falls through to the sequential try_me_else chain
                 }
                 if (cell->tag == VAL_ATOM || cell->tag == VAL_INT) {
-                    for (int i = 0; i < instr->hash_size; i++) {
-                        if (val_equal(*cell, instr->hash_table[i].key)) {
-                            state->P = instr->hash_table[i].target_pc;
+                    for (int i = 0; i < instr->as.switch_index.hash_size; i++) {
+                        if (val_equal(*cell, instr->as.switch_index.hash_table[i].key)) {
+                            state->P = instr->as.switch_index.hash_table[i].target_pc;
                             return true;
                         }
                     }
                 } else if (cell->tag == VAL_STR) {
                     WamValue *f = &state->H_array[cell->data.ref_addr];
-                    for (int i = 0; i < instr->s_hash_size; i++) {
-                        if (val_equal(*f, instr->s_hash_table[i].key)) {
-                            state->P = instr->s_hash_table[i].target_pc;
+                    for (int i = 0; i < instr->as.switch_index.s_hash_size; i++) {
+                        if (val_equal(*f, instr->as.switch_index.s_hash_table[i].key)) {
+                            state->P = instr->as.switch_index.s_hash_table[i].target_pc;
                             return true;
                         }
                     }
                 } else if (cell->tag == VAL_LIST) {
-                    if (instr->list_target_pc >= 0) {
-                        state->P = instr->list_target_pc;
+                    if (instr->as.switch_index.list_target_pc >= 0) {
+                        state->P = instr->as.switch_index.list_target_pc;
                     } else {
                         state->P++;
                     }
@@ -711,14 +711,14 @@ compile_step_wam_to_c(_Options, CCode) :-
                 return false; // Not found in either index — fail and backtrack
             }
             case INSTR_GET_STRUCTURE: {
-                WamValue *cell = wam_deref_ptr(state, resolve_reg(state, instr->reg_ai, instr->is_y_ai));
+                WamValue *cell = wam_deref_ptr(state, resolve_reg(state, instr->as.functor.reg, instr->as.functor.is_y_reg));
                 if (cell->tag == VAL_UNBOUND) {
                     trail_binding(state, cell);
                     WamValue s; s.tag = VAL_STR; s.data.ref_addr = state->H;
                     *cell = s;
                     
-                    // Note: instr->pred includes the arity suffix (e.g. "foo/2"), which is stored as the functor atom
-                    const char *slash = strchr(instr->pred, ''/'');
+                    // Note: instr->as.functor.pred includes the arity suffix (e.g. "foo/2"), which is stored as the functor atom
+                    const char *slash = strchr(instr->as.functor.pred, ''/'');
                     assert(slash != NULL && "Functor missing arity suffix");
                     int arity = strtol(slash + 1, NULL, 10);
                     
@@ -732,12 +732,12 @@ compile_step_wam_to_c(_Options, CCode) :-
                         while (required >= state->H_cap) state->H_cap *= 2;
                         state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
                     }
-                    state->H_array[state->H] = val_atom(instr->pred);
+                    state->H_array[state->H] = val_atom(instr->as.functor.pred);
                     state->H++;
                     state->mode = MODE_WRITE;
                 } else if (cell->tag == VAL_STR) {
                     WamValue *f = &state->H_array[cell->data.ref_addr];
-                    if (f->tag == VAL_ATOM && strcmp(f->data.atom, instr->pred) == 0) {
+                    if (f->tag == VAL_ATOM && strcmp(f->data.atom, instr->as.functor.pred) == 0) {
                         state->S = cell->data.ref_addr + 1;
                         state->mode = MODE_READ;
                     } else { return false; }
@@ -747,10 +747,10 @@ compile_step_wam_to_c(_Options, CCode) :-
             }
             case INSTR_PUT_STRUCTURE: {
                 WamValue s; s.tag = VAL_STR; s.data.ref_addr = state->H;
-                WamValue *cell = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
+                WamValue *cell = resolve_reg(state, instr->as.functor.reg, instr->as.functor.is_y_reg);
                 *cell = s;
                 
-                const char *slash = strchr(instr->pred, ''/'');
+                const char *slash = strchr(instr->as.functor.pred, ''/'');
                 assert(slash != NULL && "Functor missing arity suffix");
                 int arity = strtol(slash + 1, NULL, 10);
                 
@@ -762,14 +762,14 @@ compile_step_wam_to_c(_Options, CCode) :-
                     while (required >= state->H_cap) state->H_cap *= 2;
                     state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
                 }
-                state->H_array[state->H] = val_atom(instr->pred);
+                state->H_array[state->H] = val_atom(instr->as.functor.pred);
                 state->H++;
                 state->mode = MODE_WRITE;
                 state->P++;
                 return true;
             }
             case INSTR_GET_LIST: {
-                WamValue *cell = wam_deref_ptr(state, resolve_reg(state, instr->reg_ai, instr->is_y_ai));
+                WamValue *cell = wam_deref_ptr(state, resolve_reg(state, instr->as.reg.reg, instr->as.reg.is_y_reg));
                 if (cell->tag == VAL_UNBOUND) {
                     trail_binding(state, cell);
                     WamValue l; l.tag = VAL_LIST; l.data.ref_addr = state->H;
@@ -793,7 +793,7 @@ compile_step_wam_to_c(_Options, CCode) :-
             }
             case INSTR_PUT_LIST: {
                 WamValue l; l.tag = VAL_LIST; l.data.ref_addr = state->H;
-                WamValue *cell = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
+                WamValue *cell = resolve_reg(state, instr->as.reg.reg, instr->as.reg.is_y_reg);
                 *cell = l;
                 
                 // Invariant contract: Proactively pre-reserve capacity for [head|tail].
@@ -809,14 +809,14 @@ compile_step_wam_to_c(_Options, CCode) :-
                 return true;
             }
             case INSTR_SET_VARIABLE: {
-                WamValue *cell = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
+                WamValue *cell = resolve_reg(state, instr->as.reg.reg, instr->as.reg.is_y_reg);
                 WamValue ref = wam_make_ref(state);
                 *cell = ref;
                 state->P++;
                 return true;
             }
             case INSTR_SET_VALUE: {
-                WamValue *cell = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
+                WamValue *cell = resolve_reg(state, instr->as.reg.reg, instr->as.reg.is_y_reg);
                 if (state->H >= state->H_cap) {
                     state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
                     state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
@@ -831,13 +831,13 @@ compile_step_wam_to_c(_Options, CCode) :-
                     state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
                     state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
                 }
-                state->H_array[state->H] = instr->val;
+                state->H_array[state->H] = instr->as.constant.val;
                 state->H++;
                 state->P++;
                 return true;
             }
             case INSTR_UNIFY_VARIABLE: {
-                WamValue *cell = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
+                WamValue *cell = resolve_reg(state, instr->as.reg.reg, instr->as.reg.is_y_reg);
                 if (state->mode == MODE_READ) {
                     *cell = state->H_array[state->S];
                     state->S++;
@@ -851,7 +851,7 @@ compile_step_wam_to_c(_Options, CCode) :-
                 return true;
             }
             case INSTR_UNIFY_VALUE: {
-                WamValue *cell = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
+                WamValue *cell = resolve_reg(state, instr->as.reg.reg, instr->as.reg.is_y_reg);
                 if (state->mode == MODE_READ) {
                     if (!wam_unify(state, cell, &state->H_array[state->S])) return false;
                     state->S++;
@@ -871,8 +871,8 @@ compile_step_wam_to_c(_Options, CCode) :-
                     WamValue *cell = wam_deref_ptr(state, &state->H_array[state->S]);
                     if (cell->tag == VAL_UNBOUND) {
                         trail_binding(state, cell);
-                        *cell = instr->val;
-                    } else if (!val_equal(*cell, instr->val)) {
+                        *cell = instr->as.constant.val;
+                    } else if (!val_equal(*cell, instr->as.constant.val)) {
                         return false;
                     }
                     state->S++;
@@ -881,7 +881,7 @@ compile_step_wam_to_c(_Options, CCode) :-
                         state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
                         state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
                     }
-                    state->H_array[state->H] = instr->val;
+                    state->H_array[state->H] = instr->as.constant.val;
                     state->H++;
                 }
                 state->P++;
@@ -935,8 +935,12 @@ void wam_free_state(WamState *state) {
         }
     }
     for (int i = 0; i < state->code_size; i++) {
-        free(state->code[i].hash_table);
-        free(state->code[i].s_hash_table);
+        if (state->code[i].tag == INSTR_SWITCH_ON_CONSTANT || state->code[i].tag == INSTR_SWITCH_ON_STRUCTURE || state->code[i].tag == INSTR_SWITCH_ON_TERM) {
+            free(state->code[i].as.switch_index.hash_table);
+        }
+        if (state->code[i].tag == INSTR_SWITCH_ON_TERM) {
+            free(state->code[i].as.switch_index.s_hash_table);
+        }
     }
     free(state->code);
     free(state->H_array);

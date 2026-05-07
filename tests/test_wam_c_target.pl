@@ -142,8 +142,8 @@ test_switch_on_term_list_dispatch :-
     (   compile_step_wam_to_c([], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'cell->tag == VAL_LIST'),
-        sub_string(S, _, _, _, 'instr->list_target_pc >= 0'),
-        sub_string(S, _, _, _, 'state->P = instr->list_target_pc')
+        sub_string(S, _, _, _, 'instr->as.switch_index.list_target_pc >= 0'),
+        sub_string(S, _, _, _, 'state->P = instr->as.switch_index.list_target_pc')
     ->  pass(Test)
     ;   fail_test(Test, 'switch_on_term missing direct list dispatch')
     ).
@@ -201,7 +201,7 @@ test_predicate_hash_registration :-
         compile_step_wam_to_c([], StepCode),
         atom_string(StepCode, StepS),
         sub_string(PredS, _, _, _, 'wam_register_predicate_hash(state, "foo/1", 0)'),
-        sub_string(StepS, _, _, _, 'resolve_predicate_hash(state, instr->pred)')
+        sub_string(StepS, _, _, _, 'resolve_predicate_hash(state, instr->as.pred.pred)')
     ->  pass(Test)
     ;   fail_test(Test, 'predicate hash registration/lookup missing')
     ).
