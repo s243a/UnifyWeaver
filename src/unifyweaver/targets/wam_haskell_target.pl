@@ -2793,14 +2793,16 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     ->  QueryOptions = [use_ffi(true)|Options]
     ;   QueryOptions = Options
     ),
-    generate_query_body(QueryOptions, QueryBody),
     generate_merged_code_build(DetectedKernels, Options, MergedCodeBuild),
     generate_demand_filter(DetectedKernels, Options, DemandFilter, FactsSource),
+    generate_query_body(QueryOptions, RawQueryBody),
+    generate_demand_gated_query_body(DemandFilter, RawQueryBody, QueryBody),
     (   DemandFilter \= ''
     ->  DemandMetrics =
 '    hPutStrLn stderr $ "demand_set_size=" ++ show demandSize
     hPutStrLn stderr $ "demand_total_nodes=" ++ show totalNodes
-    hPutStrLn stderr $ "demand_filtered_nodes=" ++ show filteredSize'
+    hPutStrLn stderr $ "demand_filtered_nodes=" ++ show filteredSize
+    hPutStrLn stderr $ "demand_skipped_seeds=" ++ show demandSkippedSeeds'
     ;   DemandMetrics = ''
     ),
     % Phase F3/F4: generate wcInlineFacts wiring from InlineDefs
@@ -2970,11 +2972,21 @@ generate_demand_filter(DetectedKernels, Options, FilterCode, FactsSource) :-
         !demandSize = IS.size demandSet
         !totalNodes = IM.size parentsIndexInterned
         !filteredParents = filterByDemand demandSet parentsIndexInterned
-        !filteredSize = IM.size filteredParents',
+        !filteredSize = IM.size filteredParents
+        !demandSkippedSeeds = length [cat | cat <- seedCats, not (IS.member (iAtom cat) demandSet)]',
         FactsSource = 'filteredParents'
     ;   FilterCode = '',
         FactsSource = 'parentsIndexInterned'
     ).
+
+%% generate_demand_gated_query_body(+DemandFilter, +RawQueryBody, -QueryBody)
+%  If a structural demand set is available, avoid constructing WAM state or
+%  calling the FFI kernel for seeds that cannot reach the bound root.
+generate_demand_gated_query_body('', QueryBody, QueryBody) :- !.
+generate_demand_gated_query_body(_, RawQueryBody, QueryBody) :-
+    format(string(QueryBody),
+'if not (IS.member (iAtom cat) demandSet) then (cat, 0.0) else ~w',
+           [RawQueryBody]).
 
 %% generate_merged_code_build(+DetectedKernels, +Options, -Code)
 %  Emit the merged-code construction block for Main.hs.

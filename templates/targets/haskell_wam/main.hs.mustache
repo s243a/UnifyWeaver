@@ -4,7 +4,7 @@ module Main where
 import qualified Data.Map.Strict as Map
 import qualified Data.IntMap.Strict as IM
 import qualified Data.IntSet as IS
-import Data.List (nub, sort, isPrefixOf, intercalate, foldl')
+import Data.List (group, sort, isPrefixOf, intercalate, foldl')
 import qualified Numeric
 import Data.Maybe (fromMaybe, mapMaybe)
 import System.Environment (getArgs, lookupEnv)
@@ -186,7 +186,7 @@ main = do
 
 {{^int_atom_seeds}}
     -- Collect seed categories from article_category and TSV roots
-    let seedCatsAll = nub $ sort $ map snd articleCategories
+    let seedCatsAll = map head $ group $ sort $ map snd articleCategories
         root = head roots
         n = fromIntegral ({{dimension_n}} :: Int) :: Double
         negN = -n
@@ -379,9 +379,8 @@ computeDemandSet :: IM.IntMap [Int] -> Int -> IS.IntSet
 computeDemandSet parents rootId = bfs (IS.singleton rootId) (IS.singleton rootId)
   where
     -- Build reverse adjacency: parent → [children]
-    !reverseAdj = IM.foldlWithKey' (\m child ps ->
-        foldl' (\m' p -> IM.insertWith (++) p [child] m') m ps
-      ) IM.empty parents
+    !reverseAdj = IM.fromListWith (++)
+        [(p, [child]) | (child, ps) <- IM.toList parents, p <- ps]
     bfs frontier visited
       | IS.null frontier = visited
       | otherwise =
@@ -391,10 +390,15 @@ computeDemandSet parents rootId = bfs (IS.singleton rootId) (IS.singleton rootId
                     , not (IS.member c visited) ]
           in bfs newNodes (IS.union visited newNodes)
 
--- | Filter a child→[parents] map to only include parents in the demand set.
--- Removes edges to unreachable parents, and drops entries with no remaining parents.
+-- | Filter a child→[parents] map to the structural demand set.
+-- Iterates the usually-small demand set instead of scanning every graph node.
 filterByDemand :: IS.IntSet -> IM.IntMap [Int] -> IM.IntMap [Int]
-filterByDemand demandSet = IM.mapMaybe $ \ps ->
-    case filter (`IS.member` demandSet) ps of
-      [] -> Nothing
-      ps' -> Just ps'
+filterByDemand demandSet parents = IS.foldl' addChild IM.empty demandSet
+  where
+    addChild acc child =
+      case IM.lookup child parents of
+        Nothing -> acc
+        Just ps ->
+          case filter (`IS.member` demandSet) ps of
+            [] -> acc
+            ps' -> IM.insert child ps' acc
