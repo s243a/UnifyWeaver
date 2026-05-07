@@ -273,8 +273,13 @@ The `atom`/`string` distinction is collapsed at the WAM-text level
 alias onto their `atom_*` counterparts.
 
 `term_to_atom/2` reverse mode parses canonical structural Prolog
-(`f(a, b)`, `[1, 2, 3]`, atoms, integers, floats). **Operator
-notation is not supported** in the parser.
+(`f(a, b)`, `[1, 2, 3]`, atoms, integers, floats) **and operator
+notation**: arithmetic (`+`, `-`, `*`, `/`, `**`, `^`, ...),
+comparison (`=`, `\=`, `==`, `\==`, `=:=`, `=\=`, `<`, `>`, `=<`,
+`>=`, `@<`, `@>`, `@=<`, `@>=`, `=..`), control (`:-`, `-->`, `;`,
+`->`, `,`), and prefix (`\+`, `:-`, `?-`, `-`, `+`, `\`).
+Precedence and associativity follow the standard Prolog operator
+table; non-standard user-defined operators are not recognised.
 
 ### I/O
 
@@ -366,9 +371,11 @@ WamRuntime$run(shared_program, state)
 
 ## Limitations
 
-- **No operator notation in the term parser**. `term_to_atom/2`
-  reverse mode requires canonical structural form (`+(1, 2)` not
-  `1 + 2`).
+- **User-defined operators in the term parser**. The parser handles
+  the standard Prolog operator table (arithmetic, comparison,
+  control, common prefix forms); custom `op/3` declarations are not
+  consulted, so terms using them must be supplied in canonical
+  structural form.
 - **WAM-text quoting collision**. The atom `'42'` and the integer
   `42` both serialise as `set_constant 42` in SWI's WAM emitter,
   so the codegen can't distinguish them. The runtime's `atom_*`
@@ -400,7 +407,7 @@ WamRuntime$run(shared_program, state)
 
 The full test suite lives in
 [tests/test_wam_r_generator.pl](../tests/test_wam_r_generator.pl)
-and contains 37 tests covering both structural assertions on the
+and contains 38 tests covering both structural assertions on the
 generated source and end-to-end execution via `Rscript`. The
 `*_e2e_rscript` tests auto-skip when `Rscript` is not on `PATH`.
 
@@ -431,6 +438,7 @@ Coverage map (e2e tests, by feature group):
 | `enumerable_builtins_e2e_rscript` | enumerable `member/2` / `between/3` inside aggregators |
 | `catch_throw_dyn_aggregator_e2e_rscript` | `catch/3`, `throw/1`, dynamic-pred aggregation |
 | `stdlib_polish_e2e_rscript` | `numlist/3`, `tab/1`, `sub_atom/5`, `char_type/2`, `term_to_atom/2` |
+| `operator_parser_e2e_rscript` | operator-precedence parsing (`+`, `*`, `^`, `=:=`, `\+`, `,`, ...) |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 
