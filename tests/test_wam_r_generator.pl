@@ -795,6 +795,81 @@ e2e_list_atom_builtins_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for extended arithmetic in is/2.
+% Covers atom constants (pi, e), unary transcendentals (sqrt, exp, log,
+% sin, cos), rounding family (floor, ceiling, truncate, round, sign),
+% and binary ops (^, **, atan2, gcd). Auto-skips when Rscript is not
+% on PATH.
+% ------------------------------------------------------------------
+test(extended_arith_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_extended_arith_via_rscript
+    ;   true
+    )).
+
+e2e_extended_arith_via_rscript :-
+    % Atom constants.
+    assertz((user:ar_pi      :- X is pi,         X > 3.14, X < 3.15)),
+    assertz((user:ar_e       :- X is e,          X > 2.71, X < 2.72)),
+    % Unary transcendentals.
+    assertz((user:ar_sqrt    :- X is sqrt(16),   X =:= 4)),
+    assertz((user:ar_sqrt_f  :- X is sqrt(2),    X > 1.4, X < 1.5)),
+    assertz((user:ar_exp     :- X is exp(0),     X =:= 1)),
+    assertz((user:ar_log     :- X is log(1),     X =:= 0)),
+    assertz((user:ar_sin     :- X is sin(0),     X =:= 0)),
+    assertz((user:ar_cos     :- X is cos(0),     X =:= 1)),
+    % Rounding family.
+    assertz((user:ar_floor   :- X is floor(3.7),    X =:= 3)),
+    assertz((user:ar_ceil    :- X is ceiling(3.2),  X =:= 4)),
+    assertz((user:ar_trunc   :- X is truncate(3.9), X =:= 3)),
+    assertz((user:ar_round_d :- X is round(3.5),    X =:= 4)),
+    assertz((user:ar_round_u :- X is round(3.4),    X =:= 3)),
+    assertz((user:ar_sign_p  :- X is sign(7),       X =:= 1)),
+    assertz((user:ar_sign_n  :- X is sign(-7),      X =:= -1)),
+    assertz((user:ar_sign_z  :- X is sign(0),       X =:= 0)),
+    assertz((user:ar_abs     :- X is abs(-12),      X =:= 12)),
+    % Binary.
+    assertz((user:ar_pow     :- X is 2^10,           X =:= 1024)),
+    assertz((user:ar_starpow :- X is 2**10,          X =:= 1024)),
+    assertz((user:ar_atan2   :- X is atan2(1, 1),    X > 0.78, X < 0.79)),
+    assertz((user:ar_gcd     :- X is gcd(12, 8),     X =:= 4)),
+    assertz((user:ar_gcd2    :- X is gcd(100, 75),   X =:= 25)),
+    % Failure cases.
+    assertz((user:ar_unknown :- X is bogus(1))),
+    unique_r_tmp_dir('tmp_r_extarith_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:ar_pi/0, user:ar_e/0,
+          user:ar_sqrt/0, user:ar_sqrt_f/0, user:ar_exp/0, user:ar_log/0,
+          user:ar_sin/0, user:ar_cos/0,
+          user:ar_floor/0, user:ar_ceil/0, user:ar_trunc/0,
+          user:ar_round_d/0, user:ar_round_u/0,
+          user:ar_sign_p/0, user:ar_sign_n/0, user:ar_sign_z/0, user:ar_abs/0,
+          user:ar_pow/0, user:ar_starpow/0, user:ar_atan2/0,
+          user:ar_gcd/0, user:ar_gcd2/0,
+          user:ar_unknown/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [ar_pi, ar_e,
+           ar_sqrt, ar_sqrt_f, ar_exp, ar_log, ar_sin, ar_cos,
+           ar_floor, ar_ceil, ar_trunc, ar_round_d, ar_round_u,
+           ar_sign_p, ar_sign_n, ar_sign_z, ar_abs,
+           ar_pow, ar_starpow, ar_atan2, ar_gcd, ar_gcd2],
+    No  = [ar_unknown],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-

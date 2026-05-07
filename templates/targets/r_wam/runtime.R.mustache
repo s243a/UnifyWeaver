@@ -856,14 +856,29 @@ WamRuntime$call_foreign <- function(program, state, pred, arity, tail_call) {
 # Recursively evaluate an arithmetic term against the current bindings.
 # Returns a numeric scalar on success or NULL on failure (unbound var,
 # unknown operator, type mismatch). Tagged-list constants resolve to
-# their $val; structures resolve to op(eval(arg1), eval(arg2)). Atoms
-# can be added later (pi, e, ...) but are not supported here.
+# their $val; structures resolve to op(eval(arg1), eval(arg2)). Bare
+# atoms resolve to standard arithmetic constants (pi, e, inf, nan,
+# epsilon, max_tagged_integer).
 WamRuntime$eval_arith <- function(state, term, table) {
   v <- WamRuntime$deref(state, term)
   if (is.null(v) || !is.list(v) || is.null(v$tag)) return(NULL)
   if (v$tag == "int")   return(v$val)
   if (v$tag == "float") return(v$val)
   if (v$tag == "unbound") return(NULL)
+  if (v$tag == "atom") {
+    name <- WamRuntime$string_of(table, v$id)
+    return(switch(name,
+      "pi"                  = pi,
+      "e"                   = exp(1),
+      "inf"                 = Inf,
+      "infinite"            = Inf,
+      "nan"                 = NaN,
+      "epsilon"             = .Machine$double.eps,
+      "max_tagged_integer"  =  .Machine$integer.max,
+      "min_tagged_integer"  = -.Machine$integer.max,
+      NULL
+    ))
+  }
   if (v$tag == "struct") {
     op <- WamRuntime$string_of(table, v$fid)
     args <- v$args
@@ -871,9 +886,27 @@ WamRuntime$eval_arith <- function(state, term, table) {
       a <- WamRuntime$eval_arith(state, args[[1]], table)
       if (is.null(a)) return(NULL)
       return(switch(op,
-        "-"   = -a,
-        "+"   = +a,
-        "abs" = abs(a),
+        "-"        = -a,
+        "+"        = +a,
+        "abs"      = abs(a),
+        "sign"     = sign(a),
+        "sqrt"     = sqrt(a),
+        "exp"      = exp(a),
+        "log"      = log(a),
+        "log2"     = log2(a),
+        "sin"      = sin(a),
+        "cos"      = cos(a),
+        "tan"      = tan(a),
+        "asin"     = asin(a),
+        "acos"     = acos(a),
+        "atan"     = atan(a),
+        "sinh"     = sinh(a),
+        "cosh"     = cosh(a),
+        "tanh"     = tanh(a),
+        "floor"    = floor(a),
+        "ceiling"  = ceiling(a),
+        "truncate" = trunc(a),
+        "round"    = round(a),
         NULL
       ))
     }
@@ -882,20 +915,33 @@ WamRuntime$eval_arith <- function(state, term, table) {
       b <- WamRuntime$eval_arith(state, args[[2]], table)
       if (is.null(a) || is.null(b)) return(NULL)
       return(switch(op,
-        "+"   = a + b,
-        "-"   = a - b,
-        "*"   = a * b,
-        "/"   = a / b,
-        "//"  = a %/% b,
-        "mod" = a %% b,
-        "rem" = a - (a %/% b) * b,
-        "min" = min(a, b),
-        "max" = max(a, b),
+        "+"     = a + b,
+        "-"     = a - b,
+        "*"     = a * b,
+        "/"     = a / b,
+        "//"    = a %/% b,
+        "mod"   = a %% b,
+        "rem"   = a - (a %/% b) * b,
+        "min"   = min(a, b),
+        "max"   = max(a, b),
+        "^"     = a ^ b,
+        "**"    = a ^ b,
+        "atan2" = atan2(a, b),
+        "gcd"   = wam_gcd(as.integer(a), as.integer(b)),
         NULL
       ))
     }
   }
   NULL
+}
+
+# Standard Euclidean GCD; both args coerced to non-negative integers.
+wam_gcd <- function(a, b) {
+  a <- abs(as.integer(a)); b <- abs(as.integer(b))
+  while (b != 0L) {
+    t <- b; b <- a %% b; a <- t
+  }
+  a
 }
 
 # Wrap an R numeric back into a WAM term, keeping integer-ness when the
