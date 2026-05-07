@@ -786,6 +786,79 @@ WamRuntime$step <- function(program, state, instr) {
       }
       state$pc <- state$pc + 1L; TRUE
     },
+    # ----- Aggregation (findall/3 etc.) -----
+    # The WAM compiles findall(T, G, B) into:
+    #   begin_aggregate <kind>, <template_reg>, <bag_reg>
+    #     ... G's body ...
+    #   end_aggregate <template_reg>
+    # BeginAggregate snapshots state and pushes an aggregate-frame
+    # choice point. EndAggregate collects the current template value
+    # then *forces backtrack* (returns FALSE) so the goal's normal
+    # CPs get re-entered to find more solutions. When all goal CPs
+    # are exhausted, backtrack reaches the aggregate frame and
+    # finalizes -- binding the bag register to the accumulated list.
+    "BeginAggregate" = {
+      # Pre-compute the matching end_aggregate's PC so the aggregate
+      # frame has a valid continuation even when the goal has zero
+      # solutions (and thus EndAggregate never fires). We scan from
+      # the current PC forward; a depth counter handles nested
+      # aggregates. The next_pc is end+1.
+      end_pc <- 0L
+      depth <- 1L
+      for (j in seq.int(state$pc + 1L, length(program$instructions))) {
+        op <- program$instructions[[j]]$op
+        if (op == "BeginAggregate") depth <- depth + 1L
+        else if (op == "EndAggregate") {
+          depth <- depth - 1L
+          if (depth == 0L) { end_pc <- j; break }
+        }
+      }
+      if (end_pc == 0L) return(FALSE)
+      agg <- list(
+        kind         = "aggregate",
+        agg_kind     = instr$kind,
+        template_reg = as.integer(instr$template),
+        bag_reg      = as.integer(instr$bag),
+        next_pc      = end_pc + 1L,
+        regs         = as.list.environment(state$regs2),
+        cp           = state$cp,
+        trail_len    = length(state$trail),
+        var_counter  = state$var_counter,
+        mode         = state$mode,
+        build_stack  = state$build_stack,
+        table        = program$intern_table,
+        collected    = list()
+      )
+      state$cps <- c(state$cps, list(agg))
+      state$pc <- state$pc + 1L
+      TRUE
+    },
+    "EndAggregate" = {
+      # Find the top-most aggregate frame (typically the topmost CP
+      # if the goal didn't push any, or buried under the goal's CPs
+      # if it did).
+      n <- length(state$cps)
+      agg_idx <- 0L
+      for (i in seq.int(n, 1L, by = -1L)) {
+        cpi <- state$cps[[i]]
+        if (!is.null(cpi$kind) && cpi$kind == "aggregate") {
+          agg_idx <- i; break
+        }
+      }
+      if (agg_idx == 0L) return(FALSE)
+      agg <- state$cps[[agg_idx]]
+      v <- WamRuntime$deref(state, WamRuntime$get_reg(state, instr$template))
+      # copy_term so the collected value is independent of subsequent
+      # binding rewrites during backtracking.
+      collected_v <- WamRuntime$copy_term(state, v)
+      agg$collected <- c(agg$collected, list(collected_v))
+      state$cps[[agg_idx]] <- agg
+      # Force a backtrack: the run loop will pop the most-recent CP.
+      # If the goal pushed normal CPs, those re-try the goal at the
+      # next clause; if not, the next backtrack hits this aggregate
+      # frame and finalizes via WamRuntime$backtrack's special arm.
+      return(FALSE)
+    },
     # ----- Compound terms -----
     # PutStructure / PutList both start a write-mode build; the only
     # difference is the functor id (PutList is hard-wired to "[|]"/2).
@@ -1121,8 +1194,12 @@ WamRuntime$copy_term_clause <- function(state, clause) {
 
 # Try to dispatch pred/arity through the runtime dynamic store.
 # Returns:
-#   TRUE  -- the first matching clause unified and (if present) its
-#            body succeeded; bindings persist on success.
+#   TRUE  -- a matching clause unified and (if present) its body
+#            succeeded; bindings persist on success. If more clauses
+#            remain after the matched one, a "dynamic" choice point
+#            is pushed so backtracking re-enters the iteration at
+#            the next clause -- this is what lets findall/3 enumerate
+#            the full bag of solutions over a dynamic predicate.
 #   FALSE -- clauses exist for this key but none matched / succeeded.
 #   NULL  -- no dynamic clauses are registered for this key (caller
 #            should try the next dispatch tier).
@@ -1132,12 +1209,28 @@ WamRuntime$try_dynamic <- function(program, state, pred, arity) {
   if (!exists(key, envir = program$dynamic, inherits = FALSE)) return(NULL)
   clauses <- get(key, envir = program$dynamic, inherits = FALSE)
   if (length(clauses) == 0L) return(FALSE)
-  args <- vector("list", arity)
-  for (i in seq_len(arity)) args[[i]] <- WamRuntime$get_reg(state, i)
-  for (clause in clauses) {
+  WamRuntime$dynamic_iter(program, state, clauses, 1L, arity, state$pc + 1L)
+}
+
+# Iterate dynamic-store clauses starting from `start_idx`. On the
+# first success, optionally push a "dynamic" CP so backtracking
+# re-enters at the next clause and then jumps to resume_pc (typically
+# the instruction after the Call/Execute that triggered the dispatch).
+WamRuntime$dynamic_iter <- function(program, state, clauses, start_idx, arity, resume_pc) {
+  if (start_idx > length(clauses)) return(FALSE)
+  for (idx in seq.int(start_idx, length(clauses))) {
+    clause <- clauses[[idx]]
     if (length(clause$head_args) != arity) next
-    trail0 <- length(state$trail)
-    var_counter0 <- state$var_counter
+    # Snapshot for rollback / CP. Taken BEFORE any unification so the
+    # snapshot is the pre-dispatch state.
+    snap_regs        <- as.list.environment(state$regs2)
+    snap_trail       <- length(state$trail)
+    snap_cp          <- state$cp
+    snap_vc          <- state$var_counter
+    snap_mode        <- state$mode
+    snap_build       <- state$build_stack
+    args <- vector("list", arity)
+    for (i in seq_len(arity)) args[[i]] <- WamRuntime$get_reg(state, i)
     fresh <- WamRuntime$copy_term_clause(state, clause)
     ok <- TRUE
     for (i in seq_len(arity)) {
@@ -1148,9 +1241,43 @@ WamRuntime$try_dynamic <- function(program, state, pred, arity) {
     if (ok && !is.null(fresh$body)) {
       ok <- isTRUE(WamRuntime$call_goal(program, state, fresh$body))
     }
-    if (ok) return(TRUE)
-    WamRuntime$undo_trail_to(state, trail0)
-    state$var_counter <- var_counter0
+    if (ok) {
+      if (idx < length(clauses)) {
+        dyn_cp <- list(
+          kind        = "dynamic",
+          regs        = snap_regs,
+          trail_len   = snap_trail,
+          cp          = snap_cp,
+          var_counter = snap_vc,
+          mode        = snap_mode,
+          build_stack = snap_build,
+          clauses     = clauses,
+          idx         = idx,
+          arity       = arity,
+          resume_pc   = resume_pc,
+          program     = program
+        )
+        state$cps <- c(state$cps, list(dyn_cp))
+      }
+      return(TRUE)
+    }
+    # Rollback to snapshot before trying the next clause.
+    e <- new.env(parent = emptyenv(), hash = TRUE)
+    for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
+    state$regs2 <- e
+    if (length(state$trail) > snap_trail) {
+      to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
+      for (name in to_undo) {
+        if (exists(name, envir = state$bindings, inherits = FALSE)) {
+          rm(list = name, envir = state$bindings)
+        }
+      }
+      state$trail <- state$trail[seq_len(snap_trail)]
+    }
+    state$cp          <- snap_cp
+    state$var_counter <- snap_vc
+    state$mode        <- snap_mode
+    state$build_stack <- snap_build
   }
   FALSE
 }
@@ -2151,11 +2278,76 @@ WamRuntime$backtrack <- function(state) {
   n <- length(state$cps)
   if (n == 0L) return(FALSE)
   cp <- state$cps[[n]]
-  # Restore registers
+  # Dynamic-CP resume: the previous clause succeeded; backtracking
+  # now means "try the next stored clause for the same predicate".
+  # If a later clause matches, jump to resume_pc; if all are
+  # exhausted, recurse so the next CP on the stack handles the
+  # backtrack (or the surrounding aggregate frame finalizes).
+  if (!is.null(cp$kind) && cp$kind == "dynamic") {
+    state$cps <- state$cps[-n]
+    e <- new.env(parent = emptyenv(), hash = TRUE)
+    for (k in names(cp$regs)) assign(k, cp$regs[[k]], envir = e)
+    state$regs2 <- e
+    if (length(state$trail) > cp$trail_len) {
+      to_undo <- state$trail[(cp$trail_len + 1L):length(state$trail)]
+      for (name in to_undo) {
+        if (exists(name, envir = state$bindings, inherits = FALSE)) {
+          rm(list = name, envir = state$bindings)
+        }
+      }
+      state$trail <- state$trail[seq_len(cp$trail_len)]
+    }
+    state$cp          <- cp$cp
+    state$var_counter <- cp$var_counter
+    state$mode        <- cp$mode
+    state$build_stack <- cp$build_stack
+    if (WamRuntime$dynamic_iter(cp$program, state, cp$clauses, cp$idx + 1L, cp$arity, cp$resume_pc)) {
+      state$pc <- as.integer(cp$resume_pc)
+      return(TRUE)
+    }
+    return(WamRuntime$backtrack(state))
+  }
+
+  # Aggregate-frame finalization: when backtrack reaches a frame
+  # left by BeginAggregate, the goal has exhausted all its solutions.
+  # Restore the snapshot, bind the bag register to the collected list,
+  # and resume at the instruction after end_aggregate.
+  if (!is.null(cp$kind) && cp$kind == "aggregate") {
+    state$cps <- state$cps[-n]
+    e <- new.env(parent = emptyenv(), hash = TRUE)
+    for (k in names(cp$regs)) assign(k, cp$regs[[k]], envir = e)
+    state$regs2 <- e
+    if (length(state$trail) > cp$trail_len) {
+      to_undo <- state$trail[(cp$trail_len + 1L):length(state$trail)]
+      for (name in to_undo) {
+        if (exists(name, envir = state$bindings, inherits = FALSE)) {
+          rm(list = name, envir = state$bindings)
+        }
+      }
+      state$trail <- state$trail[seq_len(cp$trail_len)]
+    }
+    state$cp          <- cp$cp
+    state$var_counter <- cp$var_counter
+    state$mode        <- cp$mode
+    state$build_stack <- cp$build_stack
+    bag <- WamRuntime$wam_list_build(cp$collected, cp$table)
+    cur <- WamRuntime$get_reg(state, cp$bag_reg)
+    if (is.null(cur)) {
+      # Bag register was unset at begin_aggregate time (typical case
+      # when the user wrote findall(T, G, B) with B unbound). Just
+      # write the bag in.
+      WamRuntime$put_reg(state, cp$bag_reg, bag)
+    } else if (!WamRuntime$unify(state, cur, bag)) {
+      # Bag unification failed - propagate as another backtrack.
+      return(WamRuntime$backtrack(state))
+    }
+    state$pc <- as.integer(cp$next_pc)
+    return(TRUE)
+  }
+  # Standard backtrack: restore from CP and jump to its alt PC.
   e <- new.env(parent = emptyenv(), hash = TRUE)
   for (k in names(cp$regs)) assign(k, cp$regs[[k]], envir = e)
   state$regs2 <- e
-  # Unbind trail entries beyond cp$trail_len
   if (length(state$trail) > cp$trail_len) {
     to_undo <- state$trail[(cp$trail_len + 1L):length(state$trail)]
     for (name in to_undo) {

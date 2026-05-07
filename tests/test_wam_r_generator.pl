@@ -1321,6 +1321,74 @@ e2e_dynamic_preds_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for findall/3 (multi-solution machinery
+% via BeginAggregate / EndAggregate). Auto-skips when Rscript is not
+% on PATH.
+% ------------------------------------------------------------------
+test(findall_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_findall_via_rscript
+    ;   true
+    )).
+
+e2e_findall_via_rscript :-
+    % Static multi-clause source.
+    assertz(user:fa_f(a)),
+    assertz(user:fa_f(b)),
+    assertz(user:fa_f(c)),
+    assertz(user:fa_n(1)),
+    assertz(user:fa_n(2)),
+    assertz(user:fa_n(3)),
+    % Basic enumeration.
+    assertz((user:fa_basic    :- findall(X, user:fa_f(X), L),
+                                  L == [a, b, c])),
+    % Empty case (goal has no solutions).
+    assertz((user:fa_empty    :- findall(X, user:fa_nope(X), L),
+                                  L == [])),
+    % Conjunctive goal with a guard.
+    assertz((user:fa_filter   :- findall(X, (user:fa_n(X), X > 1), L),
+                                  L == [2, 3])),
+    % Bag with non-trivial template (X*X is a struct, not evaluated).
+    assertz((user:fa_template :- findall(X * X, user:fa_n(X), L),
+                                  L = [_, _, _])),
+    % findall over a dynamic predicate (asserted at runtime). This
+    % exercises the multi-solution path through try_dynamic.
+    assertz((user:fa_dyn      :- assertz(fa_d(x)), assertz(fa_d(y)),
+                                  assertz(fa_d(z)),
+                                  findall(V, fa_d(V), L),
+                                  L == [x, y, z])),
+    % Length of the bag.
+    assertz((user:fa_count    :- findall(X, user:fa_f(X), L),
+                                  length(L, 3))),
+    % Negative case: condition makes the WHOLE pred fail.
+    assertz((user:fa_basic_no :- findall(X, user:fa_f(X), L),
+                                  L == [a, b])),
+    unique_r_tmp_dir('tmp_r_findall_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:fa_f/1, user:fa_n/1,
+          user:fa_basic/0, user:fa_empty/0, user:fa_filter/0,
+          user:fa_template/0, user:fa_dyn/0, user:fa_count/0,
+          user:fa_basic_no/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [fa_basic, fa_empty, fa_filter, fa_template,
+           fa_dyn, fa_count],
+    No  = [fa_basic_no],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-
