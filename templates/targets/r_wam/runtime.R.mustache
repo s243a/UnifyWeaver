@@ -543,17 +543,31 @@ WamRuntime$step <- function(program, state, instr) {
     "Call" = {
       key <- paste0(instr$pred, "/", instr$arity)
       tgt <- program$labels[[key]]
-      if (is.null(tgt)) return(FALSE)
-      state$cp <- state$pc + 1L
-      state$pc <- as.integer(tgt)
-      TRUE
+      if (!is.null(tgt)) {
+        state$cp <- state$pc + 1L
+        state$pc <- as.integer(tgt)
+        return(TRUE)
+      }
+      # No label match. Try the runtime library (e.g. atom_codes/2,
+      # reverse/2 etc. that the WAM compiler emits as a plain Execute).
+      lib <- WamRuntime$call_library(program, state, instr$pred, instr$arity)
+      if (is.null(lib)) return(FALSE)
+      if (!isTRUE(lib)) return(FALSE)
+      state$pc <- state$pc + 1L; TRUE
     },
     "Execute" = {
       key <- paste0(instr$pred, "/", instr$arity)
       tgt <- program$labels[[key]]
-      if (is.null(tgt)) return(FALSE)
-      state$pc <- as.integer(tgt)
-      TRUE
+      if (!is.null(tgt)) {
+        state$pc <- as.integer(tgt)
+        return(TRUE)
+      }
+      lib <- WamRuntime$call_library(program, state, instr$pred, instr$arity)
+      if (is.null(lib)) return(FALSE)
+      if (!isTRUE(lib)) return(FALSE)
+      # Tail-call return: same protocol as Proceed.
+      if (state$cp == 0L) { state$halt <- TRUE; return(TRUE) }
+      state$pc <- state$cp; state$cp <- 0L; TRUE
     },
     "CallForeign" = {
       ok <- WamRuntime$call_foreign(program, state, instr$pred, instr$arity, tail_call = FALSE)
@@ -959,6 +973,47 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
     ))
   }
 
+  # length/2: deterministic modes only.
+  #   (+, -): traverse the list, count cells, unify N with the count.
+  #   (-, +): build a list of N fresh unbound vars, unify with L.
+  # The (-, -) enumerable mode is intentionally not supported -- it
+  # requires choice-point machinery this scaffold doesn't provide for
+  # generated solutions.
+  if (pred == "length/2" && arity == 2L) {
+    raw_list <- WamRuntime$get_reg(state, 1L)
+    raw_n    <- WamRuntime$get_reg(state, 2L)
+    list_v <- WamRuntime$deref(state, raw_list)
+    n_v    <- WamRuntime$deref(state, raw_n)
+    if (!is.null(list_v) && !is.null(list_v$tag) && list_v$tag != "unbound") {
+      elems <- WamRuntime$wam_list_decompose(state, raw_list, table)
+      if (is.null(elems)) return(FALSE)
+      return(WamRuntime$unify(state, raw_n, IntTerm(length(elems))))
+    }
+    if (!is.null(n_v) && !is.null(n_v$tag) && n_v$tag == "int") {
+      n <- n_v$val
+      if (n < 0L) return(FALSE)
+      args <- vector("list", n)
+      for (i in seq_len(n)) {
+        args[[i]] <- Unbound(paste0("V", state$var_counter))
+        state$var_counter <- state$var_counter + 1L
+      }
+      return(WamRuntime$unify(state, raw_list, WamRuntime$wam_list_build(args, table)))
+    }
+    return(FALSE)
+  }
+
+  # append/3: deterministic (+, +, -) mode.
+  #   append([1,2], [3,4], C) -> C = [1,2,3,4]
+  # The other modes (split-on-third-arg etc.) are non-deterministic
+  # and are intentionally skipped.
+  if (pred == "append/3" && arity == 3L) {
+    a_elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 1L), table)
+    b_elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 2L), table)
+    if (is.null(a_elems) || is.null(b_elems)) return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L),
+                            WamRuntime$wam_list_build(c(a_elems, b_elems), table)))
+  }
+
   # Term equality / identity / standard order. =/2 may bind; the others
   # never do (and \=/2 specifically rolls back any transient bindings
   # via undo_trail_to).
@@ -1080,6 +1135,136 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
 
   # Unknown builtin -> failure (matches WAM convention).
   FALSE
+}
+
+# ----------------------------------------------------------
+# Library predicates (WAM Execute / Call fallback)
+# ----------------------------------------------------------
+# The WAM compiler emits many useful Prolog library predicates as
+# plain Execute / Call rather than builtin_call (atom_codes/2,
+# atom_chars/2, atom_length/2, atom_concat/3, reverse/2, last/2 etc.).
+# When the dispatcher can't find a label for one of these, it
+# delegates here. Returns:
+#   TRUE  -- handled, succeeded
+#   FALSE -- handled, failed (proper WAM failure)
+#   NULL  -- not a known library pred (caller should propagate failure)
+#
+# All implementations are deterministic. Modes that require multi-
+# solution backtracking (e.g. atom_concat split mode) are skipped.
+
+WamRuntime$call_library <- function(program, state, pred, arity) {
+  table <- program$intern_table
+  key <- paste0(pred, "/", arity)
+
+  # ----- atom_codes/2: atom <-> list of code points -----
+  if (key == "atom_codes/2") {
+    raw_a <- WamRuntime$get_reg(state, 1L)
+    raw_c <- WamRuntime$get_reg(state, 2L)
+    a_v <- WamRuntime$deref(state, raw_a)
+    if (!is.null(a_v) && !is.null(a_v$tag) && a_v$tag != "unbound") {
+      s <- if (a_v$tag == "atom")        WamRuntime$string_of(table, a_v$id)
+           else if (a_v$tag == "int")    as.character(a_v$val)
+           else if (a_v$tag == "float")  as.character(a_v$val)
+           else return(FALSE)
+      codes <- utf8ToInt(s)
+      if (length(s) == 0L) codes <- integer(0)
+      elems <- lapply(codes, IntTerm)
+      return(WamRuntime$unify(state, raw_c, WamRuntime$wam_list_build(elems, table)))
+    }
+    # Construct mode: A unbound, Codes bound.
+    elems <- WamRuntime$wam_list_decompose(state, raw_c, table)
+    if (is.null(elems)) return(FALSE)
+    codes <- vapply(elems, function(e) {
+      if (is.null(e) || is.null(e$tag) || e$tag != "int") NA_integer_
+      else as.integer(e$val)
+    }, integer(1))
+    if (any(is.na(codes))) return(FALSE)
+    s <- if (length(codes) == 0L) "" else intToUtf8(codes)
+    new_id <- WamRuntime$intern(table, s)
+    return(WamRuntime$unify(state, raw_a, Atom(new_id)))
+  }
+
+  # ----- atom_chars/2: atom <-> list of single-char atoms -----
+  if (key == "atom_chars/2") {
+    raw_a <- WamRuntime$get_reg(state, 1L)
+    raw_l <- WamRuntime$get_reg(state, 2L)
+    a_v <- WamRuntime$deref(state, raw_a)
+    if (!is.null(a_v) && !is.null(a_v$tag) && a_v$tag != "unbound") {
+      s <- if (a_v$tag == "atom")       WamRuntime$string_of(table, a_v$id)
+           else if (a_v$tag == "int")   as.character(a_v$val)
+           else if (a_v$tag == "float") as.character(a_v$val)
+           else return(FALSE)
+      chars <- if (nchar(s) == 0L) character(0)
+               else strsplit(s, "", fixed = TRUE)[[1]]
+      elems <- lapply(chars, function(ch) Atom(WamRuntime$intern(table, ch)))
+      return(WamRuntime$unify(state, raw_l, WamRuntime$wam_list_build(elems, table)))
+    }
+    elems <- WamRuntime$wam_list_decompose(state, raw_l, table)
+    if (is.null(elems)) return(FALSE)
+    chars <- vapply(elems, function(e) {
+      if (is.null(e) || is.null(e$tag) || e$tag != "atom") NA_character_
+      else WamRuntime$string_of(table, e$id)
+    }, character(1))
+    if (any(is.na(chars))) return(FALSE)
+    s <- paste0(chars, collapse = "")
+    new_id <- WamRuntime$intern(table, s)
+    return(WamRuntime$unify(state, raw_a, Atom(new_id)))
+  }
+
+  # ----- atom_length/2 -----
+  if (key == "atom_length/2") {
+    a_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    if (is.null(a_v) || is.null(a_v$tag) || a_v$tag != "atom") return(FALSE)
+    s <- WamRuntime$string_of(table, a_v$id)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L), IntTerm(nchar(s))))
+  }
+
+  # ----- atom_concat/3 (deterministic mode: A and B both bound) -----
+  if (key == "atom_concat/3") {
+    a_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    b_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    if (is.null(a_v) || is.null(b_v)) return(FALSE)
+    sa <- if (a_v$tag == "atom")       WamRuntime$string_of(table, a_v$id)
+          else if (a_v$tag == "int")   as.character(a_v$val)
+          else if (a_v$tag == "float") as.character(a_v$val)
+          else return(FALSE)
+    sb <- if (b_v$tag == "atom")       WamRuntime$string_of(table, b_v$id)
+          else if (b_v$tag == "int")   as.character(b_v$val)
+          else if (b_v$tag == "float") as.character(b_v$val)
+          else return(FALSE)
+    new_id <- WamRuntime$intern(table, paste0(sa, sb))
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L), Atom(new_id)))
+  }
+
+  # ----- reverse/2 (deterministic if either side is bound) -----
+  if (key == "reverse/2") {
+    a_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    b_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    if (!is.null(a_v) && !is.null(a_v$tag) && a_v$tag != "unbound") {
+      elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 1L), table)
+      if (is.null(elems)) return(FALSE)
+      return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
+                              WamRuntime$wam_list_build(rev(elems), table)))
+    }
+    if (!is.null(b_v) && !is.null(b_v$tag) && b_v$tag != "unbound") {
+      elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 2L), table)
+      if (is.null(elems)) return(FALSE)
+      return(WamRuntime$unify(state, WamRuntime$get_reg(state, 1L),
+                              WamRuntime$wam_list_build(rev(elems), table)))
+    }
+    return(FALSE)
+  }
+
+  # ----- last/2 -----
+  if (key == "last/2") {
+    elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(elems) || length(elems) == 0L) return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
+                            elems[[length(elems)]]))
+  }
+
+  # Unknown library predicate.
+  NULL
 }
 
 # ----------------------------------------------------------

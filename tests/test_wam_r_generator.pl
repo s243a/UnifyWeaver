@@ -726,6 +726,75 @@ e2e_term_inspection_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end: list / atom library builtins.
+% length/2 and append/3 dispatch via builtin_call; atom_codes/2,
+% atom_chars/2, atom_length/2, atom_concat/3, reverse/2 and last/2
+% dispatch via the runtime's call_library fallback when the WAM-emitted
+% Execute / Call hits a missing label. Auto-skips when Rscript is not
+% on PATH.
+% ------------------------------------------------------------------
+test(list_atom_builtins_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_list_atom_builtins_via_rscript
+    ;   true
+    )).
+
+e2e_list_atom_builtins_via_rscript :-
+    % length/2 (both deterministic modes).
+    assertz((user:lb_len_count :- length([a, b, c], 3))),
+    assertz((user:lb_len_zero  :- length([], 0))),
+    assertz((user:lb_len_wrong :- length([a, b, c], 4))),
+    assertz((user:lb_len_build :- length(L, 3), is_list(L))),
+    % append/3 deterministic mode.
+    assertz((user:lb_app_ok    :- append([1, 2], [3, 4], [1, 2, 3, 4]))),
+    assertz((user:lb_app_empty :- append([], [a, b], [a, b]))),
+    assertz((user:lb_app_no    :- append([1, 2], [3, 4], [1, 2, 3, 5]))),
+    % reverse/2.
+    assertz((user:lb_rev_ok :- reverse([a, b, c], [c, b, a]))),
+    assertz((user:lb_rev_no :- reverse([a, b, c], [a, b, c]))),
+    % last/2.
+    assertz((user:lb_last_ok  :- last([a, b, c], c))),
+    assertz((user:lb_last_no  :- last([a, b, c], a))),
+    % atom_length/2 / atom_codes/2 / atom_chars/2 / atom_concat/3.
+    assertz((user:lb_alen_ok    :- atom_length(hello, 5))),
+    assertz((user:lb_alen_no    :- atom_length(hello, 4))),
+    assertz((user:lb_acodes_ok  :- atom_codes(hi, [104, 105]))),
+    assertz((user:lb_achars_ok  :- atom_chars(hi, [h, i]))),
+    assertz((user:lb_aconcat_ok :- atom_concat(hello, world, helloworld))),
+    assertz((user:lb_aconcat_no :- atom_concat(hello, world, hellounlikely))),
+    unique_r_tmp_dir('tmp_r_listatom_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:lb_len_count/0, user:lb_len_zero/0, user:lb_len_wrong/0,
+          user:lb_len_build/0,
+          user:lb_app_ok/0, user:lb_app_empty/0, user:lb_app_no/0,
+          user:lb_rev_ok/0, user:lb_rev_no/0,
+          user:lb_last_ok/0, user:lb_last_no/0,
+          user:lb_alen_ok/0, user:lb_alen_no/0,
+          user:lb_acodes_ok/0, user:lb_achars_ok/0,
+          user:lb_aconcat_ok/0, user:lb_aconcat_no/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [lb_len_count, lb_len_zero, lb_len_build,
+           lb_app_ok, lb_app_empty,
+           lb_rev_ok, lb_last_ok,
+           lb_alen_ok, lb_acodes_ok, lb_achars_ok, lb_aconcat_ok],
+    No  = [lb_len_wrong, lb_app_no, lb_rev_no, lb_last_no,
+           lb_alen_no, lb_aconcat_no],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-
