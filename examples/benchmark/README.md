@@ -93,6 +93,28 @@ Semantic note:
 - current runs also report `query_vs_prolog_accumulated = match` at
   `300`, `1k`, `5k`, and `10k`
 
+### C# Query Source-Mode Calibration
+
+`benchmark_csharp_query_source_mode_sweep.py` runs the generated C# query
+graph workloads across relation source modes and reports each workload's
+best observed mode, `auto` versus best ratio, output hash agreement, resolved
+source mode, and relation registration shape. Its default workload set is
+`all`, covering every registered graph workload:
+
+```bash
+python examples/benchmark/benchmark_csharp_query_source_mode_sweep.py \
+  --scales 300 \
+  --source-modes auto,preload,artifact-prebuilt \
+  --repetitions 1 \
+  --fail-on-output-mismatch \
+  --max-auto-vs-best-ratio 2.00
+```
+
+The checked-in scale-300 calibration snapshot is
+`examples/benchmark/csharp_query_graph_source_mode_calibration.tsv`. It is a
+baseline for the current graph `auto` policy, not a permanent benchmark
+claim: use a fresh sweep before changing `RelationSourceModePolicy`.
+
 ### WAM-Rust and WAM-Haskell Benchmark Variants
 
 The effective-distance harness also includes hybrid WAM benchmark targets:
