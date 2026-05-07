@@ -1577,10 +1577,60 @@ WamRuntime$iterate_goal <- function(program, state, goal_term, on_each) {
     return(invisible(NULL))
   }
 
+  # Dynamic-store predicate: enumerate clauses at the R level. The
+  # default fallback would push dynamic CPs whose resume_pc points
+  # past the surrounding library dispatch (no good in this context).
+  # Detection: deref the goal struct, look up its key in the dynamic
+  # env. Module qualification (M:G) is unwrapped first.
+  goal_v <- v
+  if (goal_v$tag == "struct" && length(goal_v$args) == 2L &&
+      identical(WamRuntime$string_of(table, goal_v$fid), ":")) {
+    goal_v <- WamRuntime$deref(state, goal_v$args[[2]])
+  }
+  if (!is.null(goal_v) && !is.null(goal_v$tag) && !is.null(program$dynamic)) {
+    if (goal_v$tag == "atom") {
+      dyn_pred <- WamRuntime$string_of(table, goal_v$id); dyn_arity <- 0L
+    } else if (goal_v$tag == "struct") {
+      dyn_pred <- WamRuntime$string_of(table, goal_v$fid); dyn_arity <- length(goal_v$args)
+    } else {
+      dyn_pred <- NULL
+    }
+    if (!is.null(dyn_pred)) {
+      dyn_key <- paste0(dyn_pred, "/", dyn_arity)
+      if (exists(dyn_key, envir = program$dynamic, inherits = FALSE)) {
+        clauses <- get(dyn_key, envir = program$dynamic, inherits = FALSE)
+        head_args <- if (goal_v$tag == "struct") goal_v$args else list()
+        for (clause in clauses) {
+          if (length(clause$head_args) != dyn_arity) next
+          snap_t <- length(state$trail)
+          fresh  <- WamRuntime$copy_term_clause(state, clause)
+          ok <- TRUE
+          if (dyn_arity > 0L) {
+            for (i in seq_len(dyn_arity)) {
+              if (!WamRuntime$unify(state, head_args[[i]], fresh$head_args[[i]])) {
+                ok <- FALSE; break
+              }
+            }
+          }
+          if (ok && !is.null(fresh$body)) {
+            ok <- isTRUE(WamRuntime$call_goal(program, state, fresh$body))
+          }
+          if (ok) {
+            cont <- on_each()
+            WamRuntime$undo_trail_to(state, snap_t)
+            if (!isTRUE(cont)) return(invisible(NULL))
+          } else {
+            WamRuntime$undo_trail_to(state, snap_t)
+          }
+        }
+        return(invisible(NULL))
+      }
+    }
+  }
+
   # Default: call_goal-driven iteration. Works for multi-clause user
-  # predicates (try_me_else CPs) and dynamic-store predicates (dynamic
-  # CPs). After backtrack, run() drives the alt clause body until it
-  # proceeds back through the call boundary.
+  # predicates (try_me_else CPs). After backtrack, run() drives the
+  # alt clause body until it proceeds back through the call boundary.
   snap_cps_len <- length(state$cps)
   ok <- WamRuntime$call_goal(program, state, goal_term)
   while (isTRUE(ok)) {
@@ -2201,6 +2251,50 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     return(result)
   }
 
+  # ----- throw/1 and catch/3: exception handling -----
+  # throw/1 raises an R condition whose `error_term` field carries a
+  # copy_term'd snapshot of the thrown Prolog term (so the thrown term
+  # is independent of post-throw bindings). catch/3 wraps call_goal in
+  # an R tryCatch and, on prolog_throw, unifies the thrown term with
+  # the Catcher; if it unifies, the Recovery is run; otherwise the
+  # condition is rethrown for an outer catch to handle. CPs and trail
+  # made by Goal are unwound to the catch's snapshot before Recovery
+  # runs, matching SWI semantics.
+  if (key == "throw/1") {
+    raw <- WamRuntime$get_reg(state, 1L)
+    err_copy <- WamRuntime$copy_term(state, WamRuntime$deref(state, raw))
+    cond <- structure(
+      list(message = "prolog_throw", error_term = err_copy),
+      class = c("prolog_throw", "condition")
+    )
+    stop(cond)
+  }
+  if (key == "catch/3") {
+    goal     <- WamRuntime$get_reg(state, 1L)
+    catcher  <- WamRuntime$get_reg(state, 2L)
+    recovery <- WamRuntime$get_reg(state, 3L)
+    cps_snap   <- length(state$cps)
+    trail_snap <- length(state$trail)
+    handler <- function(cond) {
+      # Restore: drop CPs the goal pushed and unwind the trail, so
+      # the recovery sees the catch's pre-call state.
+      if (length(state$cps) > cps_snap) {
+        state$cps <- state$cps[seq_len(cps_snap)]
+      }
+      WamRuntime$undo_trail_to(state, trail_snap)
+      if (WamRuntime$unify(state, catcher, cond$error_term)) {
+        WamRuntime$call_goal(program, state, recovery)
+      } else {
+        # Rethrow for an outer catch.
+        stop(cond)
+      }
+    }
+    return(isTRUE(tryCatch(
+      WamRuntime$call_goal(program, state, goal),
+      prolog_throw = handler
+    )))
+  }
+
   # ----- I/O: writeln/1, print/1, format/1, format/2 -----
   # writeln/1 == write/1 + newline. print/1 is the same as write/1 in
   # this scaffold (no portray/1 hook). format/N processes the template
@@ -2764,5 +2858,8 @@ WamRuntime$run_predicate <- function(program, start_pc, args) {
   }
   state$pc <- as.integer(start_pc)
   state$cp <- 0L
-  WamRuntime$run(program, state)
+  # Top-level prolog_throw catcher: an uncaught throw becomes a query
+  # failure (matches Prolog top-level "error" handling, scaled down).
+  tryCatch(WamRuntime$run(program, state),
+           prolog_throw = function(cond) FALSE)
 }
