@@ -870,6 +870,82 @@ e2e_extended_arith_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for bitwise arithmetic, copy_term/2,
+% number<->atom conversions, and msort/2 / sort/2.
+% ------------------------------------------------------------------
+test(stdlib_round4_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_stdlib_round4_via_rscript
+    ;   true
+    )).
+
+e2e_stdlib_round4_via_rscript :-
+    % Bitwise arithmetic.
+    assertz((user:bw_and    :- X is 12 /\ 10, X =:= 8)),
+    assertz((user:bw_or     :- X is 12 \/ 10, X =:= 14)),
+    assertz((user:bw_xor    :- X is 12 xor 10, X =:= 6)),
+    assertz((user:bw_shl    :- X is 1 << 4,   X =:= 16)),
+    assertz((user:bw_shr    :- X is 32 >> 2,  X =:= 8)),
+    assertz((user:bw_chain  :- X is (255 /\ 0xF0) >> 4, X =:= 15)),
+    % copy_term/2.
+    assertz((user:ct_atom   :- copy_term(hello, hello))),
+    assertz((user:ct_struct :- copy_term(f(a, b), f(a, b)))),
+    % copy_term should produce a structurally-equal but variable-fresh copy.
+    assertz((user:ct_fresh  :- copy_term(f(X, X), f(Y, Z)), Y == Z)),
+    assertz((user:ct_indep  :- copy_term(f(X), f(Y)),
+                              X = same, Y \== same)),
+    % Numeric <-> atom conversions.
+    % Note: WAM text loses the atom-vs-number quoting distinction (the
+    % literal `'42'` and the integer `42` both serialize as a bare 42),
+    % so tests for the *atom* side of these conversions are written as
+    % round-trips through atom_codes / number_codes rather than using
+    % atom-of-digits literals.
+    assertz((user:nc_dec     :- number_codes(123, [49, 50, 51]))),
+    assertz((user:nc_con     :- number_codes(N, [52, 50]), N =:= 42)),
+    assertz((user:nch_round  :- number_chars(123, Cs), number_chars(N, Cs), N =:= 123)),
+    assertz((user:an_round   :- atom_number(A, 42), atom_codes(A, [52, 50]))),
+    assertz((user:an_to_num  :- atom_codes(AS, [51, 46, 49, 52]),  % "3.14"
+                                atom_number(AS, N), N > 3.13, N < 3.15)),
+    assertz((user:an_no      :- atom_codes(AS, [97, 98, 99]),       % "abc"
+                                atom_number(AS, _))),
+    % msort and sort.
+    assertz((user:ms_keep   :- msort([3, 1, 2, 1], [1, 1, 2, 3]))),
+    assertz((user:so_dedup  :- sort([3, 1, 2, 1, 3], [1, 2, 3]))),
+    assertz((user:so_atoms  :- sort([c, a, b, a], [a, b, c]))),
+    assertz((user:so_mixed  :- sort([2, a, 1, b], [1, 2, a, b]))),
+    unique_r_tmp_dir('tmp_r_round4_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:bw_and/0, user:bw_or/0, user:bw_xor/0,
+          user:bw_shl/0, user:bw_shr/0, user:bw_chain/0,
+          user:ct_atom/0, user:ct_struct/0, user:ct_fresh/0, user:ct_indep/0,
+          user:nc_dec/0, user:nc_con/0,
+          user:nch_round/0,
+          user:an_round/0, user:an_to_num/0, user:an_no/0,
+          user:ms_keep/0,
+          user:so_dedup/0, user:so_atoms/0, user:so_mixed/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [bw_and, bw_or, bw_xor, bw_shl, bw_shr, bw_chain,
+           ct_atom, ct_struct, ct_fresh, ct_indep,
+           nc_dec, nc_con, nch_round,
+           an_round, an_to_num,
+           ms_keep, so_dedup, so_atoms, so_mixed],
+    No  = [an_no],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-
