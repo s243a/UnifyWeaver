@@ -308,6 +308,10 @@ clojure_direct_builtin("compound/1", "1").
 clojure_direct_builtin("compound/1", 1).
 clojure_direct_builtin('compound/1', "1").
 clojure_direct_builtin('compound/1', 1).
+clojure_direct_builtin("callable/1", "1").
+clojure_direct_builtin("callable/1", 1).
+clojure_direct_builtin('callable/1', "1").
+clojure_direct_builtin('callable/1', 1).
 clojure_direct_builtin("!/0", "0").
 clojure_direct_builtin("!/0", 0).
 clojure_direct_builtin('!/0', "0").
@@ -341,6 +345,8 @@ clojure_unary_guard_test("var/1", "(or (= value ::lowered-unbound) (runtime/logi
 clojure_unary_guard_test('var/1', "(or (= value ::lowered-unbound) (runtime/logic-var? value))").
 clojure_unary_guard_test("compound/1", "(runtime/structure-term? value)").
 clojure_unary_guard_test('compound/1', "(runtime/structure-term? value)").
+clojure_unary_guard_test("callable/1", "(or (runtime/atom-term? value) (runtime/structure-term? value))").
+clojure_unary_guard_test('callable/1', "(or (runtime/atom-term? value) (runtime/structure-term? value))").
 
 emit_lowered_unary_guard(TestExpr, S, Expr) :-
     format(atom(Expr),
