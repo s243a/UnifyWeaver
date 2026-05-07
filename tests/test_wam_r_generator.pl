@@ -640,6 +640,236 @@ e2e_extended_builtins_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% Term inspection: functor/3, arg/3, =../2 emit BuiltinCall literals.
+% ------------------------------------------------------------------
+test(term_inspection_emitted) :-
+    once((
+        unique_r_tmp_dir('tmp_r_terminsp', TmpDir),
+        assertz((user:ti_funct(T, F, A) :- functor(T, F, A))),
+        assertz((user:ti_arg(N, T, A)   :- arg(N, T, A))),
+        assertz((user:ti_univ(T, L)     :- T =.. L)),
+        write_wam_r_project(
+            [user:ti_funct/3, user:ti_arg/3, user:ti_univ/2],
+            [],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("functor/3", 3)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("arg/3", 3)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("=../2", 2)')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+% ------------------------------------------------------------------
+% End-to-end Rscript run for term inspection. Covers:
+%   - functor/3 decompose for struct, atom, integer
+%   - functor/3 construct (fresh var args)
+%   - arg/3 extraction
+%   - =../2 decompose for struct, atom
+%   - =../2 construct from a list
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(term_inspection_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_term_inspection_via_rscript
+    ;   true
+    )).
+
+e2e_term_inspection_via_rscript :-
+    % Decompose: pull functor name + arity out of a struct.
+    assertz((user:ti_dec_struct  :- functor(f(a, b), f, 2))),
+    assertz((user:ti_dec_struct_n :- functor(f(a, b), g, 2))),
+    assertz((user:ti_dec_atom    :- functor(hello, hello, 0))),
+    assertz((user:ti_dec_int     :- functor(7, 7, 0))),
+    % Construct: build a fresh struct from name + arity.
+    assertz((user:ti_con_struct :- functor(T, f, 2), arg(1, T, _), arg(2, T, _))),
+    assertz((user:ti_con_atom   :- functor(T, hello, 0), T == hello)),
+    % arg/3 indexing (1-based).
+    assertz((user:ti_arg_first  :- arg(1, f(a, b, c), a))),
+    assertz((user:ti_arg_third  :- arg(3, f(a, b, c), c))),
+    assertz((user:ti_arg_oob    :- arg(4, f(a, b, c), _))),
+    % =../2 decompose: f(a,b) =.. [f, a, b].
+    assertz((user:ti_univ_dec   :- f(a, b) =.. [f, a, b])),
+    assertz((user:ti_univ_dec_n :- f(a, b) =.. [g, a, b])),
+    assertz((user:ti_univ_atom  :- hello =.. [hello])),
+    % =../2 construct: T =.. [f, a, b]  ->  T = f(a, b).
+    assertz((user:ti_univ_con   :- T =.. [f, a, b], T == f(a, b))),
+    assertz((user:ti_univ_con_a :- T =.. [hello],   T == hello)),
+    unique_r_tmp_dir('tmp_r_terminsp_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:ti_dec_struct/0, user:ti_dec_struct_n/0,
+          user:ti_dec_atom/0, user:ti_dec_int/0,
+          user:ti_con_struct/0, user:ti_con_atom/0,
+          user:ti_arg_first/0, user:ti_arg_third/0, user:ti_arg_oob/0,
+          user:ti_univ_dec/0, user:ti_univ_dec_n/0, user:ti_univ_atom/0,
+          user:ti_univ_con/0, user:ti_univ_con_a/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [ti_dec_struct, ti_dec_atom, ti_dec_int,
+           ti_con_struct, ti_con_atom,
+           ti_arg_first, ti_arg_third,
+           ti_univ_dec, ti_univ_atom,
+           ti_univ_con, ti_univ_con_a],
+    No  = [ti_dec_struct_n, ti_arg_oob, ti_univ_dec_n],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% End-to-end: list / atom library builtins.
+% length/2 and append/3 dispatch via builtin_call; atom_codes/2,
+% atom_chars/2, atom_length/2, atom_concat/3, reverse/2 and last/2
+% dispatch via the runtime's call_library fallback when the WAM-emitted
+% Execute / Call hits a missing label. Auto-skips when Rscript is not
+% on PATH.
+% ------------------------------------------------------------------
+test(list_atom_builtins_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_list_atom_builtins_via_rscript
+    ;   true
+    )).
+
+e2e_list_atom_builtins_via_rscript :-
+    % length/2 (both deterministic modes).
+    assertz((user:lb_len_count :- length([a, b, c], 3))),
+    assertz((user:lb_len_zero  :- length([], 0))),
+    assertz((user:lb_len_wrong :- length([a, b, c], 4))),
+    assertz((user:lb_len_build :- length(L, 3), is_list(L))),
+    % append/3 deterministic mode.
+    assertz((user:lb_app_ok    :- append([1, 2], [3, 4], [1, 2, 3, 4]))),
+    assertz((user:lb_app_empty :- append([], [a, b], [a, b]))),
+    assertz((user:lb_app_no    :- append([1, 2], [3, 4], [1, 2, 3, 5]))),
+    % reverse/2.
+    assertz((user:lb_rev_ok :- reverse([a, b, c], [c, b, a]))),
+    assertz((user:lb_rev_no :- reverse([a, b, c], [a, b, c]))),
+    % last/2.
+    assertz((user:lb_last_ok  :- last([a, b, c], c))),
+    assertz((user:lb_last_no  :- last([a, b, c], a))),
+    % atom_length/2 / atom_codes/2 / atom_chars/2 / atom_concat/3.
+    assertz((user:lb_alen_ok    :- atom_length(hello, 5))),
+    assertz((user:lb_alen_no    :- atom_length(hello, 4))),
+    assertz((user:lb_acodes_ok  :- atom_codes(hi, [104, 105]))),
+    assertz((user:lb_achars_ok  :- atom_chars(hi, [h, i]))),
+    assertz((user:lb_aconcat_ok :- atom_concat(hello, world, helloworld))),
+    assertz((user:lb_aconcat_no :- atom_concat(hello, world, hellounlikely))),
+    unique_r_tmp_dir('tmp_r_listatom_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:lb_len_count/0, user:lb_len_zero/0, user:lb_len_wrong/0,
+          user:lb_len_build/0,
+          user:lb_app_ok/0, user:lb_app_empty/0, user:lb_app_no/0,
+          user:lb_rev_ok/0, user:lb_rev_no/0,
+          user:lb_last_ok/0, user:lb_last_no/0,
+          user:lb_alen_ok/0, user:lb_alen_no/0,
+          user:lb_acodes_ok/0, user:lb_achars_ok/0,
+          user:lb_aconcat_ok/0, user:lb_aconcat_no/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [lb_len_count, lb_len_zero, lb_len_build,
+           lb_app_ok, lb_app_empty,
+           lb_rev_ok, lb_last_ok,
+           lb_alen_ok, lb_acodes_ok, lb_achars_ok, lb_aconcat_ok],
+    No  = [lb_len_wrong, lb_app_no, lb_rev_no, lb_last_no,
+           lb_alen_no, lb_aconcat_no],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% End-to-end Rscript run for extended arithmetic in is/2.
+% Covers atom constants (pi, e), unary transcendentals (sqrt, exp, log,
+% sin, cos), rounding family (floor, ceiling, truncate, round, sign),
+% and binary ops (^, **, atan2, gcd). Auto-skips when Rscript is not
+% on PATH.
+% ------------------------------------------------------------------
+test(extended_arith_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_extended_arith_via_rscript
+    ;   true
+    )).
+
+e2e_extended_arith_via_rscript :-
+    % Atom constants.
+    assertz((user:ar_pi      :- X is pi,         X > 3.14, X < 3.15)),
+    assertz((user:ar_e       :- X is e,          X > 2.71, X < 2.72)),
+    % Unary transcendentals.
+    assertz((user:ar_sqrt    :- X is sqrt(16),   X =:= 4)),
+    assertz((user:ar_sqrt_f  :- X is sqrt(2),    X > 1.4, X < 1.5)),
+    assertz((user:ar_exp     :- X is exp(0),     X =:= 1)),
+    assertz((user:ar_log     :- X is log(1),     X =:= 0)),
+    assertz((user:ar_sin     :- X is sin(0),     X =:= 0)),
+    assertz((user:ar_cos     :- X is cos(0),     X =:= 1)),
+    % Rounding family.
+    assertz((user:ar_floor   :- X is floor(3.7),    X =:= 3)),
+    assertz((user:ar_ceil    :- X is ceiling(3.2),  X =:= 4)),
+    assertz((user:ar_trunc   :- X is truncate(3.9), X =:= 3)),
+    assertz((user:ar_round_d :- X is round(3.5),    X =:= 4)),
+    assertz((user:ar_round_u :- X is round(3.4),    X =:= 3)),
+    assertz((user:ar_sign_p  :- X is sign(7),       X =:= 1)),
+    assertz((user:ar_sign_n  :- X is sign(-7),      X =:= -1)),
+    assertz((user:ar_sign_z  :- X is sign(0),       X =:= 0)),
+    assertz((user:ar_abs     :- X is abs(-12),      X =:= 12)),
+    % Binary.
+    assertz((user:ar_pow     :- X is 2^10,           X =:= 1024)),
+    assertz((user:ar_starpow :- X is 2**10,          X =:= 1024)),
+    assertz((user:ar_atan2   :- X is atan2(1, 1),    X > 0.78, X < 0.79)),
+    assertz((user:ar_gcd     :- X is gcd(12, 8),     X =:= 4)),
+    assertz((user:ar_gcd2    :- X is gcd(100, 75),   X =:= 25)),
+    % Failure cases.
+    assertz((user:ar_unknown :- X is bogus(1))),
+    unique_r_tmp_dir('tmp_r_extarith_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:ar_pi/0, user:ar_e/0,
+          user:ar_sqrt/0, user:ar_sqrt_f/0, user:ar_exp/0, user:ar_log/0,
+          user:ar_sin/0, user:ar_cos/0,
+          user:ar_floor/0, user:ar_ceil/0, user:ar_trunc/0,
+          user:ar_round_d/0, user:ar_round_u/0,
+          user:ar_sign_p/0, user:ar_sign_n/0, user:ar_sign_z/0, user:ar_abs/0,
+          user:ar_pow/0, user:ar_starpow/0, user:ar_atan2/0,
+          user:ar_gcd/0, user:ar_gcd2/0,
+          user:ar_unknown/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [ar_pi, ar_e,
+           ar_sqrt, ar_sqrt_f, ar_exp, ar_log, ar_sin, ar_cos,
+           ar_floor, ar_ceil, ar_trunc, ar_round_d, ar_round_u,
+           ar_sign_p, ar_sign_n, ar_sign_z, ar_abs,
+           ar_pow, ar_starpow, ar_atan2, ar_gcd, ar_gcd2],
+    No  = [ar_unknown],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-

@@ -151,6 +151,7 @@ parts_supported(["execute", _]).
 parts_supported(["execute", _, _]).
 parts_supported(["call_foreign", _, _]).
 parts_supported(["builtin_call", _, _]).
+parts_supported(["arg", _, _, _]).
 
 % =====================================================================
 % Function-name generation

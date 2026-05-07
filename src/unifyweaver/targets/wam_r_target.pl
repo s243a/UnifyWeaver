@@ -345,6 +345,16 @@ wam_parts_to_r(["call_foreign", Pred, ArityStr], Lit) :-
     number_string(Arity, ArityStr),
     format(string(Lit), 'CallForeign("~w", ~w)', [Pred, Arity]).
 
+% --- arg N, Reg, OutReg ---
+% The WAM compiler optimises arg/3 into a dedicated opcode (faster
+% than builtin_call when N is a literal and the source term is already
+% in a register). Format: "arg <N> <Reg> <OutReg>".
+wam_parts_to_r(["arg", NStr, RegStr, OutRegStr], Lit) :-
+    number_string(N, NStr),
+    reg_to_int(RegStr, RegIdx),
+    reg_to_int(OutRegStr, OutIdx),
+    format(string(Lit), 'ArgInstr(~w, ~w, ~w)', [N, RegIdx, OutIdx]).
+
 % --- Switch on constant ---
 wam_parts_to_r(["switch_on_constant" | Cases], Lit) :-
     normalize_switch_case_tokens(Cases, NormalizedCases),
