@@ -1788,6 +1788,77 @@ e2e_operator_parser_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for multi-solution retract/1. Asserts a
+% handful of facts, drives findall(X, retract(p(X)), L) so the
+% retract iterates across all matches via the iter-CP retry, and
+% verifies (a) the bag captures every original X and (b) the dynamic
+% store is empty afterwards.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(multi_solution_retract_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_multi_solution_retract_via_rscript
+    ;   true
+    )).
+
+e2e_multi_solution_retract_via_rscript :-
+    % Drive: assert three facts, retract them all via findall +
+    % retract, check the bag is [1,2,3] (in assertion order) and
+    % that the store is now empty (a fourth retract fails).
+    assertz((user:msr_all :-
+        assertz(p(1)), assertz(p(2)), assertz(p(3)),
+        findall(X, retract(p(X)), L),
+        L == [1, 2, 3],
+        \+ retract(p(_)))),
+    % Pattern-restricted retract: an inline filter inside the goal
+    % still iterates retract over every clause (retract's removal
+    % side-effect is permanent regardless of subsequent goal
+    % failure). Odds collects only the survivors of the filter; the
+    % store is empty afterwards.
+    assertz((user:msr_filtered :-
+        assertz(q(1)), assertz(q(2)), assertz(q(3)), assertz(q(4)),
+        findall(X, (retract(q(X)), X mod 2 =:= 1), Odds),
+        Odds == [1, 3],
+        % All q clauses retracted.
+        findall(Y, retract(q(Y)), Rest),
+        Rest == [])),
+    % Pattern-arg retract: retract clauses whose second arg matches
+    % a pattern. Survivors stay in the store.
+    assertz((user:msr_pattern :-
+        assertz(qq(1, odd)),  assertz(qq(2, even)),
+        assertz(qq(3, odd)),  assertz(qq(4, even)),
+        findall(X, retract(qq(X, even)), Evens),
+        Evens == [2, 4],
+        findall(Y, retract(qq(Y, odd)), OddsLeft),
+        OddsLeft == [1, 3])),
+    % Rule retract: retract clauses whose body matches.
+    assertz((user:msr_rule :-
+        assertz((rr(1) :- true)),
+        assertz((rr(2) :- fail)),
+        assertz((rr(3) :- true)),
+        % Retract rules whose body is `true`.
+        findall(X, retract((rr(X) :- true)), Trues),
+        Trues == [1, 3],
+        % rr(2) (with body `fail`) survives.
+        findall(Y, retract((rr(Y) :- _)), Rest),
+        Rest == [2])),
+    unique_r_tmp_dir('tmp_r_msr_e2e', TmpDir),
+    write_wam_r_project(
+        [user:msr_all/0, user:msr_filtered/0, user:msr_pattern/0,
+         user:msr_rule/0],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [msr_all, msr_filtered, msr_pattern, msr_rule],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-

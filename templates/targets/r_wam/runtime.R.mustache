@@ -308,13 +308,51 @@ WamRuntime$append_build_arg <- function(state, val) {
     cur <- WamRuntime$get_reg(state, top$target_reg)
     cur <- WamRuntime$deref(state, cur)
     if (!is.null(cur) && is.list(cur) && !is.null(cur$tag) && cur$tag == "unbound") {
-      WamRuntime$bind(state, cur$name, new_struct)
+      # Skip the bind if cur appears anywhere inside new_struct -- the
+      # bind would create a self-cycle. This happens when the WAM
+      # emits sequences like
+      #   put_variable Y201, A1
+      #   put_structure f/1, A1
+      #   set_value Y201
+      # where the build's lone arg is the same Unbound that's in A1,
+      # or when nested struct builds chain back to the outer target
+      # via a transitive var-binding (e.g. `:-`(rr(X), true) where
+      # rr/1's intermediate var binds to a struct containing X, and
+      # X happens to be the outer A1 unbound). Without this guard,
+      # deref(cur) eventually loops back to a struct containing cur
+      # and downstream unifications see a recursive struct instead
+      # of a fresh var.
+      if (!WamRuntime$wam_term_contains_var(state, new_struct, cur$name)) {
+        WamRuntime$bind(state, cur$name, new_struct)
+      }
     }
     WamRuntime$put_reg(state, top$target_reg, new_struct)
     n <- length(state$build_stack)
   }
   if (length(state$build_stack) == 0L) state$mode <- NULL
   invisible(NULL)
+}
+
+# Recursive structural check: does `term` reference an Unbound named
+# `name`, walking through binding chains? Used by append_build_arg's
+# cycle guard: catches both direct references (build arg is `cur`
+# itself) and transitive ones (build arg is a var that's bound to a
+# struct that ultimately contains `cur`). The depth cap is a safety
+# net for any pre-existing cycles that already pass through `name`;
+# returning FALSE in that pathological case lets the bind proceed
+# (matching the pre-guard behaviour).
+WamRuntime$wam_term_contains_var <- function(state, term, name, depth = 0L) {
+  if (depth > 256L) return(FALSE)
+  if (is.null(term) || !is.list(term) || is.null(term$tag)) return(FALSE)
+  v <- WamRuntime$deref(state, term)
+  if (is.null(v) || !is.list(v) || is.null(v$tag)) return(FALSE)
+  if (v$tag == "unbound") return(identical(v$name, name))
+  if (v$tag == "struct") {
+    for (a in v$args) {
+      if (WamRuntime$wam_term_contains_var(state, a, name, depth + 1L)) return(TRUE)
+    }
+  }
+  FALSE
 }
 
 WamRuntime$begin_read <- function(state, args) {
@@ -1583,6 +1621,84 @@ WamRuntime$dynamic_iter <- function(program, state, clauses, start_idx, arity, r
     state$var_counter <- snap_vc
     state$mode        <- snap_mode
     state$build_stack <- snap_build
+  }
+  FALSE
+}
+
+# Multi-solution retract/1. Walks `snapshot` (the clause list captured
+# at the original retract call) from `start_idx`, trying each clause
+# against the caller's pattern (head_args + optional body). On the
+# first match, the matching clause is deleted from the live store
+# (matched by object identity, since the live store may have been
+# mutated since the snapshot) and -- if more snapshot entries remain
+# -- an iter CP is pushed so backtracking re-enters the iteration at
+# `idx + 1` and re-binds the caller's pattern against that next
+# match. The captured snapshot is value-stable: asserts/retracts that
+# happen during the iteration don't perturb the order, and clauses
+# already retracted are simply skipped on subsequent identity checks.
+WamRuntime$retract_iter <- function(program, state, head_args, body, arity,
+                                     ck, snapshot, start_idx, resume_pc) {
+  if (start_idx > length(snapshot)) return(FALSE)
+  for (idx in seq.int(start_idx, length(snapshot))) {
+    cl <- snapshot[[idx]]
+    if (length(cl$head_args) != arity) next
+    snap_trail <- length(state$trail)
+    snap_vc    <- state$var_counter
+    fresh <- WamRuntime$copy_term_clause(state, cl)
+    ok <- TRUE
+    for (j in seq_len(arity)) {
+      if (!WamRuntime$unify(state, head_args[[j]], fresh$head_args[[j]])) {
+        ok <- FALSE; break
+      }
+    }
+    if (ok && !is.null(body) && !is.null(fresh$body)) {
+      ok <- WamRuntime$unify(state, body, fresh$body)
+    }
+    if (ok) {
+      # Remove the matched clause from the live store. Identity match
+      # rather than index, because the store may have been mutated.
+      if (exists(ck, envir = program$dynamic, inherits = FALSE)) {
+        live <- get(ck, envir = program$dynamic, inherits = FALSE)
+        for (li in seq_along(live)) {
+          if (identical(live[[li]], cl)) {
+            new_live <- if (length(live) == 1L) list() else live[-li]
+            assign(ck, new_live, envir = program$dynamic)
+            break
+          }
+        }
+      }
+      if (idx < length(snapshot)) {
+        captured_head_args <- head_args
+        captured_body      <- body
+        captured_arity     <- arity
+        captured_ck        <- ck
+        captured_snapshot  <- snapshot
+        captured_next_idx  <- idx + 1L
+        captured_resume    <- resume_pc
+        captured_program   <- program
+        cp <- list(
+          kind        = "iter",
+          regs        = as.list.environment(state$regs2),
+          trail_len   = snap_trail,
+          cp          = state$cp,
+          var_counter = snap_vc,
+          mode        = state$mode,
+          build_stack = state$build_stack,
+          resume_pc   = resume_pc,
+          retry       = function(state) {
+            WamRuntime$retract_iter(captured_program, state,
+                                     captured_head_args, captured_body,
+                                     captured_arity, captured_ck,
+                                     captured_snapshot, captured_next_idx,
+                                     captured_resume)
+          }
+        )
+        state$cps <- c(state$cps, list(cp))
+      }
+      return(TRUE)
+    }
+    WamRuntime$undo_trail_to(state, snap_trail)
+    state$var_counter <- snap_vc
   }
   FALSE
 }
@@ -3053,41 +3169,22 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     return(TRUE)
   }
 
-  # ----- retract/1: remove the first matching clause -----
+  # ----- retract/1: remove a matching clause; multi-solution -----
   # Bindings made by the unification persist on success (standard
-  # Prolog semantics). Multi-solution retract (backtrackable removal
-  # of subsequent matches) is not supported in this scaffold.
+  # Prolog semantics). On backtracking, retract_iter scans the rest
+  # of the snapshot taken at the original call and removes the next
+  # matching clause; when the snapshot is exhausted, backtracking
+  # continues outward as failure.
   if (key == "retract/1") {
     raw <- WamRuntime$get_reg(state, 1L)
     parts <- WamRuntime$split_clause(state, raw, table)
     if (is.null(parts)) return(FALSE)
     ck <- paste0(parts$pred, "/", parts$arity)
     if (!exists(ck, envir = program$dynamic, inherits = FALSE)) return(FALSE)
-    clauses <- get(ck, envir = program$dynamic, inherits = FALSE)
-    for (i in seq_along(clauses)) {
-      cl <- clauses[[i]]
-      if (length(cl$head_args) != parts$arity) next
-      trail0 <- length(state$trail)
-      var_counter0 <- state$var_counter
-      fresh <- WamRuntime$copy_term_clause(state, cl)
-      ok <- TRUE
-      for (j in seq_len(parts$arity)) {
-        if (!WamRuntime$unify(state, parts$head_args[[j]], fresh$head_args[[j]])) {
-          ok <- FALSE; break
-        }
-      }
-      if (ok && !is.null(parts$body) && !is.null(fresh$body)) {
-        ok <- WamRuntime$unify(state, parts$body, fresh$body)
-      }
-      if (ok) {
-        remaining <- if (length(clauses) == 1L) list() else clauses[-i]
-        assign(ck, remaining, envir = program$dynamic)
-        return(TRUE)
-      }
-      WamRuntime$undo_trail_to(state, trail0)
-      state$var_counter <- var_counter0
-    }
-    return(FALSE)
+    snapshot <- get(ck, envir = program$dynamic, inherits = FALSE)
+    return(WamRuntime$retract_iter(program, state,
+                                    parts$head_args, parts$body, parts$arity,
+                                    ck, snapshot, 1L, state$pc + 1L))
   }
 
   # ----- abolish/1: drop all clauses for Name/Arity -----

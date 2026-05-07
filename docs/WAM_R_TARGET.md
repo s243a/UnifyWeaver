@@ -290,11 +290,13 @@ abstraction.
 
 ### Dynamic predicates
 
-`assertz/1`, `asserta/1`, `retract/1` (deterministic first match),
-`abolish/1` (takes `Name/Arity`). Clauses are stored in
-`program$dynamic` (an R env, so mutations propagate across
-queries). Multi-clause dynamic predicates are dispatched through a
-`dynamic` CP that walks the clause list on backtracking.
+`assertz/1`, `asserta/1`, `retract/1` (multi-solution: iter-CP
+walks the snapshot taken at the call, removing each match in turn
+on backtracking), `abolish/1` (takes `Name/Arity`). Clauses are
+stored in `program$dynamic` (an R env, so mutations propagate
+across queries). Multi-clause dynamic predicate calls are
+dispatched through a `dynamic` CP that walks the clause list on
+backtracking.
 
 ### Exception handling
 
@@ -382,9 +384,13 @@ WamRuntime$run(shared_program, state)
   family is intentionally lenient (accepts ints/floats with their
   decimal name) to compensate. To round-trip an atom-of-digits
   reliably, build it via `atom_codes/2`.
-- **Multi-solution `retract/1`** is not supported -- only the first
-  match is removed. Subsequent backtracking does not retract more
-  clauses.
+- **`retract/1` snapshot semantics**. `retract/1` is multi-solution
+  via an iter-CP, but the iteration walks a snapshot of the clause
+  list captured at the original call -- so clauses asserted *during*
+  the iteration are not retracted by the same `retract/1` call.
+  Removed clauses are matched against the live store by object
+  identity, so concurrent retracts/asserts of unrelated clauses
+  don't disturb the iteration order.
 - **`bagof/3` / `setof/3`** do not support free-variable witnesses
   (`X^Goal`). Witness vars are silently aggregated rather than
   producing one bag per witness.
@@ -407,7 +413,7 @@ WamRuntime$run(shared_program, state)
 
 The full test suite lives in
 [tests/test_wam_r_generator.pl](../tests/test_wam_r_generator.pl)
-and contains 38 tests covering both structural assertions on the
+and contains 39 tests covering both structural assertions on the
 generated source and end-to-end execution via `Rscript`. The
 `*_e2e_rscript` tests auto-skip when `Rscript` is not on `PATH`.
 
@@ -439,6 +445,7 @@ Coverage map (e2e tests, by feature group):
 | `catch_throw_dyn_aggregator_e2e_rscript` | `catch/3`, `throw/1`, dynamic-pred aggregation |
 | `stdlib_polish_e2e_rscript` | `numlist/3`, `tab/1`, `sub_atom/5`, `char_type/2`, `term_to_atom/2` |
 | `operator_parser_e2e_rscript` | operator-precedence parsing (`+`, `*`, `^`, `=:=`, `\+`, `,`, ...) |
+| `multi_solution_retract_e2e_rscript` | multi-solution `retract/1` via iter-CP |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 
