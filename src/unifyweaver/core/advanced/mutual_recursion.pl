@@ -16,6 +16,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(debug)).
 :- use_module('../template_system').
 :- use_module('../constraint_analyzer').
 :- use_module('call_graph').
@@ -96,26 +97,26 @@ merge_scc_constraints(Predicates, MergedConstraints) :-
 %  - If ANY predicate has unique(false), memoization is disabled for all
 %  - If ANY predicate requires ordered, hash-based memo is used for all
 compile_mutual_recursion(Predicates, Options, Code) :-
-    format('  Compiling mutual recursion group: ~w~n', [Predicates]),
+    debug(recursion_compile, 'Compiling mutual recursion group: ~w', [Predicates]),
 
     % Merge constraints from all predicates in the SCC
     merge_scc_constraints(Predicates, SCCConstraints),
-    format('  Merged SCC constraints: ~w~n', [SCCConstraints]),
+    debug(recursion_compile, 'Merged SCC constraints: ~w', [SCCConstraints]),
 
     % Merge runtime options with merged constraints (runtime options override)
     append(Options, SCCConstraints, AllOptions),
-    format('  Final options: ~w~n', [AllOptions]),
+    debug(recursion_compile, 'Final options: ~w', [AllOptions]),
 
     % Determine memoization strategy based on constraints
     (   member(unique(false), AllOptions) ->
-        format('  Applying unique(false): Shared memo disabled~n', []),
+        debug(recursion_compile, 'Applying unique(false): Shared memo disabled', []),
         MemoEnabled = false
     ;   MemoEnabled = true
     ),
 
     % Determine memo lookup strategy
     (   member(unordered(false), AllOptions) ->  % ordered = true
-        format('  Applying ordered constraint: Using hash-based shared memo~n', []),
+        debug(recursion_compile, 'Applying ordered constraint: Using hash-based shared memo', []),
         MemoStrategy = hash
     ;   MemoStrategy = standard
     ),
@@ -124,7 +125,7 @@ compile_mutual_recursion(Predicates, Options, Code) :-
     (   member(target(Target), AllOptions) -> true
     ;   Target = bash
     ),
-    format('  Target: ~w~n', [Target]),
+    debug(recursion_compile, 'Target: ~w', [Target]),
 
     % Generate code for the group
     (   compile_mutual_pattern(Target, Predicates, MemoEnabled, MemoStrategy, Code) ->

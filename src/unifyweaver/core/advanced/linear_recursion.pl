@@ -24,6 +24,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(debug)).
 :- use_module('../template_system').
 :- use_module('../constraint_analyzer').
 :- use_module('pattern_matchers').
@@ -47,25 +48,25 @@ can_compile_linear_recursion(Pred/Arity) :-
 %  - ordered(true): Use hash-based memoization (faster lookup, preserves order)
 %  - ordered(false): Use standard memoization (default)
 compile_linear_recursion(Pred/Arity, Options, Code) :-
-    format('  Compiling linear recursion: ~w/~w~n', [Pred, Arity]),
+    debug(recursion_compile, 'Compiling linear recursion: ~w/~w', [Pred, Arity]),
 
     % Query constraints
     get_constraints(Pred/Arity, Constraints),
-    format('  Constraints: ~w~n', [Constraints]),
+    debug(recursion_compile, 'Constraints: ~w', [Constraints]),
 
     % Merge runtime options with constraints for diagnostics/template hooks.
     % Explicit caller options take precedence when we read an option below.
     append(Options, Constraints, AllOptions),
-    format('  Final options: ~w~n', [AllOptions]),
+    debug(recursion_compile, 'Final options: ~w', [AllOptions]),
 
     % Determine memoization strategy based on constraints and options
     (   option_value(memo, Options, Constraints, MemoValue),
         MemoValue == false ->
-        format('  Applying memo(false): Memo disabled~n', []),
+        debug(recursion_compile, 'Applying memo(false): Memo disabled', []),
         MemoEnabled = false
     ;   option_value(unique, Options, Constraints, UniqueValue),
         UniqueValue == false ->
-        format('  Applying unique(false): Memo disabled~n', []),
+        debug(recursion_compile, 'Applying unique(false): Memo disabled', []),
         MemoEnabled = false
     ;   MemoEnabled = true
     ),
@@ -73,7 +74,7 @@ compile_linear_recursion(Pred/Arity, Options, Code) :-
     % Determine memo lookup strategy
     (   option_value(unordered, Options, Constraints, UnorderedValue),
         UnorderedValue == false ->  % ordered = true
-        format('  Applying ordered constraint: Using hash-based memo~n', []),
+        debug(recursion_compile, 'Applying ordered constraint: Using hash-based memo', []),
         MemoStrategy = hash
     ;   MemoStrategy = standard
     ),
@@ -85,7 +86,7 @@ compile_linear_recursion(Pred/Arity, Options, Code) :-
     (   option_value(target, Options, Constraints, Target) -> true
     ;   Target = bash
     ),
-    format('  Target: ~w~n', [Target]),
+    debug(recursion_compile, 'Target: ~w', [Target]),
 
     % Get clauses - use user:clause to access predicates from any module (including test predicates)
     findall(clause(Head, Body), user:clause(Head, Body), Clauses),

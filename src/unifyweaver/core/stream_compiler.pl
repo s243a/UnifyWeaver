@@ -15,6 +15,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(debug)).
 :- use_module('constraint_analyzer').
 :- use_module('template_system').
 :- use_module('optimizer').
@@ -25,11 +26,11 @@ compile_predicate(Pred/Arity, Options) :-
 
 compile_predicate(PredIndicator, Options, BashCode) :-
     PredIndicator = PredAtom/Arity,
-    format('=== Compiling ~w/~w ===~n', [PredAtom, Arity]),
+    debug(stream_compile, 'Compiling ~w/~w', [PredAtom, Arity]),
 
     % Get constraints for this predicate (from declarations or defaults)
     get_constraints(PredAtom/Arity, Constraints),
-    format('  Constraints: ~w~n', [Constraints]),
+    debug(stream_compile, 'Constraints: ~w', [Constraints]),
 
     % Merge with any runtime options (options take precedence)
     merge_options(Options, Constraints, MergedOptions),

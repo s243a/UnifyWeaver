@@ -12,6 +12,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(debug)).
 :- use_module('../template_system').
 :- use_module('../constraint_analyzer').
 :- use_module('pattern_matchers').
@@ -32,28 +33,28 @@ can_compile_tail_recursion(Pred/Arity) :-
 %  so deduplication constraints don't apply. Options are reserved for
 %  future use (e.g., output language selection).
 compile_tail_recursion(Pred/Arity, Options, Code) :-
-    format('  Compiling tail recursion: ~w/~w~n', [Pred, Arity]),
+    debug(recursion_compile, 'Compiling tail recursion: ~w/~w', [Pred, Arity]),
 
     % Query constraints (for logging and future use)
     get_constraints(Pred/Arity, Constraints),
-    format('  Constraints: ~w~n', [Constraints]),
+    debug(recursion_compile, 'Constraints: ~w', [Constraints]),
 
     % Merge runtime options with constraints for diagnostics/template hooks.
     % Explicit caller options take precedence when we read an option below.
     append(Options, Constraints, AllOptions),
-    format('  Final options: ~w~n', [AllOptions]),
+    debug(recursion_compile, 'Final options: ~w', [AllOptions]),
     
     % Determine target (default to bash)
     (   option_value(target, Options, Constraints, Target) -> true
     ;   Target = bash
     ),
-    format('  Target: ~w~n', [Target]),
+    debug(recursion_compile, 'Target: ~w', [Target]),
 
     % Apply unique constraint optimization
     % Tail recursive predicates with unique(true) can exit after first result
     (   option_value(unique, Options, Constraints, UniqueValue),
         UniqueValue == true ->
-        format('  Applying unique constraint optimization~n', []),
+        debug(recursion_compile, 'Applying unique constraint optimization', []),
         ExitAfterResult = true
     ;   ExitAfterResult = false
     ),
