@@ -2331,7 +2331,10 @@ defmodule WamRuntime.FactSource.LmdbIntIds do
   No string interning at lookup time; the kernel sees integers throughout.
   """
   @behaviour WamRuntime.FactSource
-  defstruct [:env, :facts_dbi, :key_to_id_dbi, :id_to_key_dbi, :arity, :dupsort]
+  defstruct [
+    :env, :facts_dbi, :key_to_id_dbi, :id_to_key_dbi, :arity, :dupsort,
+    :cache_table, :cache_capacity
+  ]
 
   defp lmdb_module, do: Module.concat([Elmdb])
 
@@ -2342,13 +2345,23 @@ defmodule WamRuntime.FactSource.LmdbIntIds do
   def open(%{env: env, facts_dbi: facts, key_to_id_dbi: k2i,
              id_to_key_dbi: i2k, arity: arity} = spec, _pred_arity, _state)
       when arity == 2 do
+    cache_capacity = Map.get(spec, :cache_capacity, 0)
+    cache_table =
+      if cache_capacity > 0 do
+        :ets.new(__MODULE__, [:set, :public, read_concurrency: true, write_concurrency: true])
+      else
+        nil
+      end
+
     %__MODULE__{
       env: env,
       facts_dbi: facts,
       key_to_id_dbi: k2i,
       id_to_key_dbi: i2k,
       arity: arity,
-      dupsort: Map.get(spec, :dupsort, true)
+      dupsort: Map.get(spec, :dupsort, true),
+      cache_table: cache_table,
+      cache_capacity: cache_capacity
     }
   end
 
@@ -2358,8 +2371,21 @@ defmodule WamRuntime.FactSource.LmdbIntIds do
   kernel-dispatch wrapper should call when the FactSource is int-id
   backed.
   """
-  def lookup_by_arg1_id(%__MODULE__{env: env, facts_dbi: dbi, dupsort: dupsort},
-                        key_id, _state) when is_integer(key_id) do
+  def lookup_by_arg1_id(%__MODULE__{} = handle, key_id, _state) when is_integer(key_id) do
+    case cache_get(handle, key_id) do
+      {:hit, pairs} ->
+        pairs
+      :miss ->
+        pairs = lookup_by_arg1_id_uncached(handle, key_id)
+        cache_put(handle, key_id, pairs)
+        pairs
+    end
+  end
+
+  defp lookup_by_arg1_id_uncached(
+         %__MODULE__{env: env, facts_dbi: dbi, dupsort: dupsort},
+         key_id
+       ) do
     mod = lmdb_module()
     bin_key = encode_id(key_id)
     {:ok, txn} = apply(mod, :ro_txn_begin, [env])
@@ -2381,6 +2407,43 @@ defmodule WamRuntime.FactSource.LmdbIntIds do
     after
       apply(mod, :ro_txn_commit, [txn])
     end
+  end
+
+  defp cache_get(%__MODULE__{cache_table: nil}, _key_id), do: :miss
+  defp cache_get(%__MODULE__{cache_capacity: cap}, _key_id) when cap <= 0, do: :miss
+  defp cache_get(%__MODULE__{cache_table: table, cache_capacity: cap}, key_id) do
+    slot = :erlang.phash2(key_id, cap)
+    case :ets.lookup(table, slot) do
+      [{^slot, ^key_id, pairs}] -> {:hit, pairs}
+      _ -> :miss
+    end
+  end
+
+  defp cache_put(%__MODULE__{cache_table: nil}, _key_id, _pairs), do: :ok
+  defp cache_put(%__MODULE__{cache_capacity: cap}, _key_id, _pairs) when cap <= 0, do: :ok
+  defp cache_put(%__MODULE__{cache_table: table, cache_capacity: cap}, key_id, pairs) do
+    slot = :erlang.phash2(key_id, cap)
+    :ets.insert(table, {slot, key_id, pairs})
+    :ok
+  end
+
+  @doc """
+  Warm the bounded arg1 cache from one sequential LMDB scan. This mirrors
+  the Haskell cache idea that batched reads are cheaper than many small
+  cursor lookups: each arg1 adjacency list is inserted into the same
+  overwrite-on-collision cache used by `lookup_by_arg1_id/3`.
+  """
+  def preload_arg1_cache(%__MODULE__{cache_table: nil}, _state), do: :disabled
+  def preload_arg1_cache(%__MODULE__{cache_capacity: cap}, _state) when cap <= 0, do: :disabled
+  def preload_arg1_cache(%__MODULE__{} = handle, state) do
+    handle
+    |> stream_all(state)
+    |> Enum.chunk_by(fn {key_id, _value_id} -> key_id end)
+    |> Enum.reduce(0, fn pairs, count ->
+      [{key_id, _} | _] = pairs
+      cache_put(handle, key_id, pairs)
+      count + 1
+    end)
   end
 
   @impl true
@@ -2578,7 +2641,8 @@ defmodule WamRuntime.FactSource.LmdbIntIds do
   end
 
   @impl true
-  def close(%__MODULE__{env: _env}, _state) do
+  def close(%__MODULE__{env: _env, cache_table: table}, _state) do
+    if is_reference(table), do: :ets.delete(table)
     # Env lifecycle belongs to the driver — multiple FactSources may share
     # one env. The driver calls env_close when its done with all of them.
     :ok

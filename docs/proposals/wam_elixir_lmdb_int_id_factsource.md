@@ -267,13 +267,31 @@ for the original Lmdb adaptor.
 - [ ] Measure the Elixir int-tuple vs LMDB crossover around 50k facts.
   The current Elixir benchmark paths no longer pay dependency
   installation or compilation inside timed commands, but both still pay
-  BEAM startup via `mix run --no-compile`. Haskell's `use_lmdb(auto)`
-  currently defaults to `lmdb_auto_threshold(50000)` when the `lmdb`
-  package is available; Elixir should get a comparable auto policy once
-  the 50k-adjacent data points confirm the crossover. On the largest
-  checked-in fixture today (`10k`), int-tuple still wins locally
-  (`4.270s` vs `14.160s`, same output hash), so the next measurement
-  needs a generated or checked-in 50k-adjacent fixture.
+  BEAM startup via `mix run --no-compile`. The first `50k_cats`
+  measurement did **not** show a crossover: `wam-elixir-int-tuple`
+  completed in `187.200s`, while uncached `wam-elixir-lmdb-int-ids`
+  took `643.895s` against the same output hash (`9ada853b4403`).
+  A first point-cache attempt (`cache_capacity: 1_048_576`) only
+  improved LMDB to `629.919s`, which showed that per-lookup caching is
+  not enough by itself.
+  Porting Haskell's demand-set filter changed the result: the driver
+  now computes the nodes that can reach the selected root, filters
+  traversal edges to that demand set, and skips seeds outside it. With
+  the int-tuple builder fixed to construct adjacency in linear time,
+  `50k_cats` is `4.927s` for `wam-elixir-int-tuple` and `3.412s` for
+  `wam-elixir-lmdb-int-ids`; `100k_cats` is `4.893s` vs `3.894s`.
+  Both scales match Rust and Haskell output hashes (`9ada853b4403`).
+  The demand set for these fixtures is only 11 nodes, matching the
+  Haskell benchmark's `demand_set_size=11` / `demand_filtered_nodes=10`
+  lesson.
+  Haskell's `use_lmdb(auto)` currently defaults to
+  `lmdb_auto_threshold(50000)` when the `lmdb` package is available,
+  but the comparable Haskell LMDB path also has bounded cache modes
+  (`per_hec`, `sharded`, `two_level`) with overwrite-on-collision
+  retention and benefits from batched/sequential reads. Elixir's LMDB
+  int-id benchmark path now has the same bounded overwrite cache shape
+  plus a `preload_arg1_cache/2` hook that can warm it from one LMDB
+  scan; the 50k/100k measurements above use that batched preload.
 - [x] Add reusable large-scale preparation lifecycle. The benchmark
   harness now accepts `--build-root` plus `--prepare-only`, and
   `wam-elixir-lmdb-int-ids` reuses an existing `lmdb_int_ids/data.mdb`

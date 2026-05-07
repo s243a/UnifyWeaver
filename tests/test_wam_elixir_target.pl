@@ -773,8 +773,15 @@ test_lmdb_int_ids_adaptor_emitted_in_runtime :-
         sub_string(RuntimeCode, _, _, _, ':facts_dbi'),
         sub_string(RuntimeCode, _, _, _, ':key_to_id_dbi'),
         sub_string(RuntimeCode, _, _, _, ':id_to_key_dbi'),
+        % Bounded overwrite cache fields for Haskell-style LMDB reuse.
+        sub_string(RuntimeCode, _, _, _, ':cache_table'),
+        sub_string(RuntimeCode, _, _, _, ':cache_capacity'),
         % Fast-path int-id API (the whole point of this adaptor).
         sub_string(RuntimeCode, _, _, _, 'def lookup_by_arg1_id('),
+        sub_string(RuntimeCode, _, _, _, 'defp cache_get('),
+        sub_string(RuntimeCode, _, _, _, 'def preload_arg1_cache('),
+        sub_string(RuntimeCode, _, _, _, 'Enum.chunk_by(fn {key_id, _value_id} -> key_id end)'),
+        sub_string(RuntimeCode, _, _, _, ':erlang.phash2(key_id, cap)'),
         % Boundary translators for input/output id↔string conversion.
         sub_string(RuntimeCode, _, _, _, 'def lookup_id('),
         sub_string(RuntimeCode, _, _, _, 'def lookup_key('),

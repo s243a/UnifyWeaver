@@ -27,6 +27,7 @@ BENCHMARK = ROOT / "examples" / "benchmark" / "benchmark_effective_distance.py"
 DEFAULT_DB_CANDIDATES = [
     ROOT / "data" / "simplewiki" / "simplewiki_categories.db",
     ROOT / "context" / "gemini" / "UnifyWeaver" / "data" / "simplewiki" / "simplewiki_categories.db",
+    ROOT.parent.parent / "gemini" / "UnifyWeaver" / "data" / "simplewiki" / "simplewiki_categories.db",
 ]
 
 
