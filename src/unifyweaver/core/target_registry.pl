@@ -187,6 +187,7 @@ register_builtin_targets :-
 
     % Lua family
     register_target(lua, lua, [scripting, fast, embedded, tables, coroutines]),
+    register_target(wam_lua, lua, [compiled, scripting, embedded, wam, choice_points, hybrid, tables]),
 
     % .NET family - can share process
     register_target(csharp, dotnet, [compiled, streaming, linq, async]),
@@ -265,6 +266,7 @@ target_module(r, r_target).
 target_module(typr, typr_target).
 target_module(ruby, ruby_target).
 target_module(lua, lua_target).
+target_module(wam_lua, wam_lua_target).
 target_module(typescript, typescript_target).
 target_module(haskell, haskell_target).
 target_module(elixir, elixir_target).
