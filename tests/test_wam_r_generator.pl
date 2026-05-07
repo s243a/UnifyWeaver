@@ -1389,6 +1389,75 @@ e2e_findall_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for bagof/3, setof/3, once/1, forall/2.
+% These build on the multi-solution machinery and require the goal
+% argument to push choice points for enumeration; that means a
+% multi-clause user predicate or dynamic-store predicate. Builtin
+% goals like member/2 currently dispatch deterministically (first-
+% match only) and are NOT enumerable from these aggregators -- a
+% separate follow-up that adds CPs to those builtins is needed.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(bagof_setof_once_forall_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_bagof_setof_once_forall_via_rscript
+    ;   true
+    )).
+
+e2e_bagof_setof_once_forall_via_rscript :-
+    % Multi-clause sources for enumeration.
+    assertz(user:bso_letter(a)),
+    assertz(user:bso_letter(b)),
+    assertz(user:bso_letter(c)),
+    assertz(user:bso_num(3)),
+    assertz(user:bso_num(1)),
+    assertz(user:bso_num(2)),
+    assertz(user:bso_num(1)),
+    % bagof/3: same as findall but fails on empty.
+    assertz((user:bg_basic    :- bagof(X, user:bso_letter(X), L), L == [a, b, c])),
+    assertz((user:bg_empty_no :- bagof(X, user:nope(X), _))),
+    % setof/3: bag + sort + dedup.
+    assertz((user:so_basic    :- setof(X, user:bso_num(X), L), L == [1, 2, 3])),
+    assertz((user:so_atoms    :- setof(X, user:bso_letter(X), L), L == [a, b, c])),
+    assertz((user:so_empty_no :- setof(X, user:nope(X), _))),
+    % once/1: commits to first solution; outer backtracking can't
+    % re-enter the goal.
+    assertz((user:on_basic    :- once(user:bso_letter(X)), X == a)),
+    assertz((user:on_inner_no :- once(user:nope(_)))),
+    % forall/2 over a user predicate. fa_pos and fa_atom both succeed
+    % because every element of the source matches Action.
+    assertz((user:fa_atom     :- forall(user:bso_letter(X), atom(X)))),
+    assertz((user:fa_atom_no  :- forall(user:bso_letter(X), integer(X)))),
+    unique_r_tmp_dir('tmp_r_bso_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:bso_letter/1, user:bso_num/1,
+          user:bg_basic/0, user:bg_empty_no/0,
+          user:so_basic/0, user:so_atoms/0, user:so_empty_no/0,
+          user:on_basic/0, user:on_inner_no/0,
+          user:fa_atom/0, user:fa_atom_no/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [bg_basic, so_basic, so_atoms,
+           on_basic,
+           fa_atom],
+    No  = [bg_empty_no, so_empty_no,
+           on_inner_no,
+           fa_atom_no],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-

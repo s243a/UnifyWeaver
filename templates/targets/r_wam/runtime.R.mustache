@@ -1405,6 +1405,68 @@ WamRuntime$dispatch_call <- function(program, state, pred, arity) {
   isTRUE(WamRuntime$call_builtin(program, state, key, arity))
 }
 
+# Collect all solutions of a goal, returning their copy_term'd
+# template values as an R list. Used by bagof/3, setof/3, and forall/2
+# (when implemented as a "no Action failures" check). Restores state
+# completely on return -- bindings produced by the goal don't leak to
+# the caller.
+#
+# The iteration drives the run loop manually:
+#   1. call_goal dispatches the goal once.
+#   2. After each success, copy_term the template and snapshot it.
+#   3. Trigger backtrack to find the next goal solution; if backtrack
+#      pops past the snapshot's cps_len, the goal has exhausted its
+#      choice points and we stop.
+#   4. Re-enter the run loop with state$halt = FALSE so the alt body
+#      can execute. Loop until the goal stops succeeding.
+WamRuntime$collect_solutions <- function(program, state, template_term, goal_term) {
+  snap_cps_len   <- length(state$cps)
+  snap_regs      <- as.list.environment(state$regs2)
+  snap_trail     <- length(state$trail)
+  snap_pc        <- state$pc
+  snap_cp        <- state$cp
+  snap_halt      <- state$halt
+  snap_vc        <- state$var_counter
+  snap_mode      <- state$mode
+  snap_build     <- state$build_stack
+
+  collected <- list()
+  ok <- WamRuntime$call_goal(program, state, goal_term)
+  while (isTRUE(ok)) {
+    v <- WamRuntime$deref(state, template_term)
+    collected <- c(collected, list(WamRuntime$copy_term(state, v)))
+    if (length(state$cps) <= snap_cps_len) break
+    if (!WamRuntime$backtrack(state)) break
+    state$halt <- FALSE
+    ok <- WamRuntime$run(program, state)
+  }
+
+  # Restore: pop any extra CPs and roll back regs / trail / state.
+  if (length(state$cps) > snap_cps_len) {
+    state$cps <- state$cps[seq_len(snap_cps_len)]
+  }
+  e <- new.env(parent = emptyenv(), hash = TRUE)
+  for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
+  state$regs2 <- e
+  if (length(state$trail) > snap_trail) {
+    to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
+    for (name in to_undo) {
+      if (exists(name, envir = state$bindings, inherits = FALSE)) {
+        rm(list = name, envir = state$bindings)
+      }
+    }
+    state$trail <- state$trail[seq_len(snap_trail)]
+  }
+  state$pc          <- snap_pc
+  state$cp          <- snap_cp
+  state$halt        <- snap_halt
+  state$var_counter <- snap_vc
+  state$mode        <- snap_mode
+  state$build_stack <- snap_build
+
+  collected
+}
+
 WamRuntime$call_builtin <- function(program, state, pred, arity) {
   table <- program$intern_table
   # Pred uses the with-/N convention here (matches BuiltinCall instr$pred).
@@ -1859,6 +1921,115 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
       return(x_v$val >= lo && x_v$val <= hi)
     }
     return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L), IntTerm(lo)))
+  }
+
+  # ----- bagof/3: like findall but fails on empty bag -----
+  # Note: this scaffold does NOT support free-variable witnesses.
+  # bagof(T, G, B) here is equivalent to findall(T, G, B) with the
+  # extra rule "fail if no solutions". Common idiom: existentially
+  # quantify any non-template variables with `^/2` (e.g.
+  # bagof(X, Y^p(X,Y), L)). Without `^`, witness variables are
+  # silently aggregated rather than producing one bag per witness.
+  if (key == "bagof/3") {
+    template <- WamRuntime$get_reg(state, 1L)
+    goal     <- WamRuntime$get_reg(state, 2L)
+    collected <- WamRuntime$collect_solutions(program, state, template, goal)
+    if (length(collected) == 0L) return(FALSE)
+    bag <- WamRuntime$wam_list_build(collected, table)
+    cur <- WamRuntime$get_reg(state, 3L)
+    if (is.null(cur)) {
+      WamRuntime$put_reg(state, 3L, bag)
+      return(TRUE)
+    }
+    return(WamRuntime$unify(state, cur, bag))
+  }
+
+  # ----- setof/3: bagof + sort + dedup (standard order of terms) -----
+  if (key == "setof/3") {
+    template <- WamRuntime$get_reg(state, 1L)
+    goal     <- WamRuntime$get_reg(state, 2L)
+    collected <- WamRuntime$collect_solutions(program, state, template, goal)
+    if (length(collected) == 0L) return(FALSE)
+    sorted <- WamRuntime$wam_sort_terms(state, collected, table)
+    deduped <- list()
+    for (i in seq_along(sorted)) {
+      if (i == 1L ||
+          WamRuntime$compare_terms(state, sorted[[i - 1L]], sorted[[i]], table) != 0L) {
+        deduped <- c(deduped, list(sorted[[i]]))
+      }
+    }
+    bag <- WamRuntime$wam_list_build(deduped, table)
+    cur <- WamRuntime$get_reg(state, 3L)
+    if (is.null(cur)) {
+      WamRuntime$put_reg(state, 3L, bag)
+      return(TRUE)
+    }
+    return(WamRuntime$unify(state, cur, bag))
+  }
+
+  # ----- once/1: run goal, commit to first solution -----
+  # Drops any choice points the goal pushed, so backtracking outside
+  # once/1 won't re-enter the goal body.
+  if (key == "once/1") {
+    cps_before <- length(state$cps)
+    ok <- WamRuntime$call_goal(program, state, WamRuntime$get_reg(state, 1L))
+    if (!isTRUE(ok)) return(FALSE)
+    if (length(state$cps) > cps_before) {
+      state$cps <- state$cps[seq_len(cps_before)]
+    }
+    return(TRUE)
+  }
+
+  # ----- forall/2: forall(Cond, Action) succeeds iff Action succeeds
+  # for every Cond binding -----
+  # Implemented by enumerating Cond and checking Action at each step.
+  # State is fully restored at the end (forall doesn't bind anything
+  # through to the surrounding query).
+  if (key == "forall/2") {
+    cond   <- WamRuntime$get_reg(state, 1L)
+    action <- WamRuntime$get_reg(state, 2L)
+    snap_cps_len <- length(state$cps)
+    snap_regs    <- as.list.environment(state$regs2)
+    snap_trail   <- length(state$trail)
+    snap_pc      <- state$pc
+    snap_cp      <- state$cp
+    snap_halt    <- state$halt
+    snap_vc      <- state$var_counter
+    snap_mode    <- state$mode
+    snap_build   <- state$build_stack
+    ok <- WamRuntime$call_goal(program, state, cond)
+    result <- TRUE
+    while (isTRUE(ok)) {
+      action_ok <- WamRuntime$call_goal(program, state, action)
+      if (!isTRUE(action_ok)) { result <- FALSE; break }
+      if (length(state$cps) <= snap_cps_len) break
+      if (!WamRuntime$backtrack(state)) break
+      state$halt <- FALSE
+      ok <- WamRuntime$run(program, state)
+    }
+    # Restore (forall does not produce bindings on success).
+    if (length(state$cps) > snap_cps_len) {
+      state$cps <- state$cps[seq_len(snap_cps_len)]
+    }
+    e <- new.env(parent = emptyenv(), hash = TRUE)
+    for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
+    state$regs2 <- e
+    if (length(state$trail) > snap_trail) {
+      to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
+      for (name in to_undo) {
+        if (exists(name, envir = state$bindings, inherits = FALSE)) {
+          rm(list = name, envir = state$bindings)
+        }
+      }
+      state$trail <- state$trail[seq_len(snap_trail)]
+    }
+    state$pc          <- snap_pc
+    state$cp          <- snap_cp
+    state$halt        <- snap_halt
+    state$var_counter <- snap_vc
+    state$mode        <- snap_mode
+    state$build_stack <- snap_build
+    return(result)
   }
 
   # ----- I/O: writeln/1, print/1, format/1, format/2 -----
