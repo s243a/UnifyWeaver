@@ -325,20 +325,22 @@ e2e_builtin_arith_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
-% Test: lowered emitter exports + lowerability semantics (Phase 2)
+% Test: lowered emitter exports + lowerability semantics (Phase 3)
 % ------------------------------------------------------------------
-test(lowered_emitter_phase2) :-
+test(lowered_emitter_phase3) :-
     assertion(current_predicate(wam_r_lowered_emitter:wam_r_lowerable/3)),
     assertion(current_predicate(wam_r_lowered_emitter:lower_predicate_to_r/4)),
     assertion(current_predicate(wam_r_lowered_emitter:r_lowered_func_name/2)),
-    % Multi-clause predicates are not lowerable (need backtracking).
+    % Multi-clause predicates are now lowerable as multi_clause_1
+    % (clause 1 inline + fallback to the array path on failure).
     compile_predicate_to_wam_string(user:wam_r_choice_fact/1, ChoiceWam),
-    \+ wam_r_lowered_emitter:wam_r_lowerable(user:wam_r_choice_fact/1,
-                                             ChoiceWam, _),
-    % Single-clause deterministic rule is lowerable.
+    once(wam_r_lowered_emitter:wam_r_lowerable(user:wam_r_choice_fact/1,
+                                               ChoiceWam, multi_clause_1)),
+    % Single-clause deterministic rule is lowered with reason
+    % `deterministic`.
     compile_predicate_to_wam_string(user:wam_r_caller/1, CallerWam),
-    wam_r_lowered_emitter:wam_r_lowerable(user:wam_r_caller/1,
-                                          CallerWam, deterministic).
+    once(wam_r_lowered_emitter:wam_r_lowerable(user:wam_r_caller/1,
+                                               CallerWam, deterministic)).
 
 compile_predicate_to_wam_string(Pred, WamStr) :-
     wam_target:compile_predicate_to_wam(Pred, [], WamCode),
@@ -383,20 +385,27 @@ test(emit_mode_functions_lowers_caller) :-
     )).
 
 % ------------------------------------------------------------------
-% Test: multi-clause predicates fall back to interpreter even under
-%       emit_mode(functions).
+% Test: multi-clause predicates lower to a multi_clause_1 wrapper
+%       (clause 1 inline; backtrack into the array path on failure).
 % ------------------------------------------------------------------
-test(emit_mode_functions_skips_multi_clause) :-
+test(emit_mode_functions_lowers_multi_clause) :-
     once((
-        unique_r_tmp_dir('tmp_r_mode_skip', TmpDir),
+        unique_r_tmp_dir('tmp_r_mode_multi', TmpDir),
         write_wam_r_project(
             [user:wam_r_choice_fact/1],
             [emit_mode(functions)],
             TmpDir),
         directory_file_path(TmpDir, 'R/generated_program.R', Program),
         read_file_to_string(Program, Code, []),
-        assertion(\+ sub_string(Code, _, _, _, 'lowered_wam_r_choice_fact_1')),
-        assertion(sub_string(Code, _, _, _, 'WamRuntime$run_predicate(shared_program,')),
+        % Lowered fn definition exists.
+        assertion(sub_string(Code, _, _, _, 'lowered_wam_r_choice_fact_1 <- function(program, state)')),
+        % multi_clause_1 marker is in the comment header.
+        assertion(sub_string(Code, _, _, _, 'multi-clause; clause 1 inline, fall back to array')),
+        % Clause-1 closure structure is in place.
+        assertion(sub_string(Code, _, _, _, 'clause1_ok <- (function() {')),
+        assertion(sub_string(Code, _, _, _, 'WamRuntime$backtrack(state)')),
+        % Wrapper points at the lowered fn.
+        assertion(sub_string(Code, _, _, _, 'isTRUE(lowered_wam_r_choice_fact_1(shared_program, state))')),
         delete_directory_and_contents(TmpDir)
     )).
 
@@ -434,6 +443,200 @@ e2e_lowered_via_rscript :-
     run_rscript_query(RDir, 'e2e_bad/0', BadOut),
     assertion(sub_string(OkOut,  _, _, _, "true")),
     assertion(sub_string(BadOut, _, _, _, "false")),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% Phase 3: native per-instruction inlining replaces step delegation
+% for the simple register ops (allocate, deallocate, put_constant,
+% put_variable, put_value, get_variable). Verify the codegen actually
+% emits the inline form and stops emitting WamRuntime$step for them.
+% ------------------------------------------------------------------
+test(phase3_inlines_simple_ops) :-
+    once((
+        % p3_dual(X) :- p3_a(X), p3_b(X). forces variable preservation
+        % across two calls, so the WAM emits get_variable + put_value
+        % rather than optimizing them away. p3_a/p3_b are stubs solely
+        % to give the call sites a target.
+        assertz(user:p3_a(_)),
+        assertz(user:p3_b(_)),
+        assertz((user:p3_dual(X) :- user:p3_a(X), user:p3_b(X))),
+        unique_r_tmp_dir('tmp_r_inline', TmpDir),
+        write_wam_r_project(
+            [user:p3_dual/1, user:p3_a/1, user:p3_b/1],
+            [emit_mode(functions)],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        % Inline put_reg/get_reg replaces step delegation for put_value
+        % and get_variable.
+        assertion(sub_string(Code, _, _, _, 'WamRuntime$put_reg(state, 201, WamRuntime$get_reg(state, 1))')),
+        assertion(sub_string(Code, _, _, _, 'WamRuntime$put_reg(state, 1, WamRuntime$get_reg(state, 201))')),
+        % Allocate inlines as a direct stack push.
+        assertion(sub_string(Code, _, _, _, 'state$stack <- c(state$stack, list(list(cp = state$cp')),
+        % And we no longer see the step-dispatch wrapper for these ops.
+        assertion(\+ sub_string(Code, _, _, _, 'WamRuntime$step(program, state, Allocate())')),
+        assertion(\+ sub_string(Code, _, _, _, 'WamRuntime$step(program, state, GetVariable')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+% ------------------------------------------------------------------
+% Phase 3 e2e: multi-clause lowered fact + backtracking. Clause 1
+% matches `a`; for `b` and `c` we should backtrack into clause 2/3.
+% ------------------------------------------------------------------
+test(phase3_multi_clause_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_phase3_multi_clause
+    ;   true
+    )).
+
+e2e_phase3_multi_clause :-
+    assertz(user:p3_fact(a)),
+    assertz(user:p3_fact(b)),
+    assertz(user:p3_fact(c)),
+    assertz((user:p3_a :- user:p3_fact(a))),
+    assertz((user:p3_b :- user:p3_fact(b))),
+    assertz((user:p3_c :- user:p3_fact(c))),
+    assertz((user:p3_z :- user:p3_fact(z))),
+    unique_r_tmp_dir('tmp_r_phase3_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:p3_fact/1,
+          user:p3_a/0, user:p3_b/0, user:p3_c/0, user:p3_z/0 ],
+        [emit_mode(functions)],
+        TmpDir),
+    directory_file_path(TmpDir, 'R/generated_program.R', Program),
+    read_file_to_string(Program, Code, []),
+    % p3_fact/1 should be lowered as multi_clause_1.
+    assertion(sub_string(Code, _, _, _, 'lowered_p3_fact_1 <- function(program, state)')),
+    directory_file_path(TmpDir, 'R', RDir),
+    run_rscript_query(RDir, 'p3_a/0', A),  % matches clause 1
+    run_rscript_query(RDir, 'p3_b/0', B),  % must backtrack to clause 2
+    run_rscript_query(RDir, 'p3_c/0', C),  % must backtrack to clause 3
+    run_rscript_query(RDir, 'p3_z/0', Z),  % all three clauses fail
+    assertion(sub_string(A, _, _, _, "true")),
+    assertion(sub_string(B, _, _, _, "true")),
+    assertion(sub_string(C, _, _, _, "true")),
+    assertion(sub_string(Z, _, _, _, "false")),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% Phase-3 follow-up: extended builtins.
+% Type checks, term equality / identity, standard order of terms,
+% and the cut (!/0). Each predicate compiles to the corresponding
+% builtin_call literal; here we verify the codegen emits them.
+% ------------------------------------------------------------------
+test(extended_builtins_emitted) :-
+    once((
+        unique_r_tmp_dir('tmp_r_extbi', TmpDir),
+        % `atomic/1` and `ground/1` are *runtime-supported* but the WAM
+        % compiler emits them as plain Execute, not BuiltinCall, so we
+        % can't structurally assert them in the generated program.
+        assertz((user:bi_atom(X)        :- atom(X))),
+        assertz((user:bi_integer(X)     :- integer(X))),
+        assertz((user:bi_var(X)         :- var(X))),
+        assertz((user:bi_is_list(X)     :- is_list(X))),
+        assertz((user:bi_eq(X, Y)       :- X = Y)),
+        assertz((user:bi_neq(X, Y)      :- X \= Y)),
+        assertz((user:bi_id(X, Y)       :- X == Y)),
+        assertz((user:bi_nid(X, Y)      :- X \== Y)),
+        assertz((user:bi_ord(X, Y)      :- X @< Y)),
+        assertz((user:bi_cut            :- !)),
+        write_wam_r_project(
+            [ user:bi_atom/1, user:bi_integer/1, user:bi_var/1,
+              user:bi_is_list/1,
+              user:bi_eq/2, user:bi_neq/2, user:bi_id/2, user:bi_nid/2,
+              user:bi_ord/2, user:bi_cut/0 ],
+            [],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("atom/1", 1)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("integer/1", 1)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("var/1", 1)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("is_list/1", 1)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("=/2", 2)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("==/2", 2)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("@</2", 2)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("!/0", 0)')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+% ------------------------------------------------------------------
+% End-to-end Rscript run for the extended builtins. Runs a battery of
+% predicates through Rscript and asserts the truth pattern. Auto-skips
+% when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(extended_builtins_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_extended_builtins_via_rscript
+    ;   true
+    )).
+
+e2e_extended_builtins_via_rscript :-
+    % atomic/ground are runtime-supported but compile to Execute, so
+    % we leave them out of the e2e battery (they would dispatch as
+    % missing predicates). Coverage is across the actually-emitted
+    % builtin family.
+    assertz((user:bi_atom_y     :- atom(a))),
+    assertz((user:bi_atom_n     :- atom(7))),
+    assertz((user:bi_int_y      :- integer(7))),
+    assertz((user:bi_int_n      :- integer(a))),
+    assertz((user:bi_num_y      :- number(7))),
+    assertz((user:bi_num_n      :- number(a))),
+    assertz((user:bi_compound_y :- compound(f(a)))),
+    assertz((user:bi_compound_n :- compound(a))),
+    assertz((user:bi_is_list_y  :- is_list([a, b, c]))),
+    assertz((user:bi_is_list_e  :- is_list([]))),
+    assertz((user:bi_is_list_n  :- is_list(f(a)))),
+    % Term equality / identity.
+    assertz((user:bi_eq_y       :- a = a)),
+    assertz((user:bi_eq_n       :- a = b)),
+    assertz((user:bi_neq_y      :- a \= b)),
+    assertz((user:bi_neq_n      :- a \= a)),
+    assertz((user:bi_id_y       :- a == a)),
+    assertz((user:bi_id_n       :- a == b)),
+    assertz((user:bi_nid_y      :- a \== b)),
+    assertz((user:bi_nid_n      :- a \== a)),
+    % Standard order of terms.
+    assertz((user:bi_lt_y       :- a @< b)),
+    assertz((user:bi_lt_n       :- b @< a)),
+    assertz((user:bi_le_y       :- a @=< a)),
+    assertz((user:bi_gt_y       :- b @> a)),
+    % Cut: succeeds (it's just `:- !`).
+    assertz((user:bi_cut_y      :- !)),
+    unique_r_tmp_dir('tmp_r_extbi_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:bi_atom_y/0, user:bi_atom_n/0,
+          user:bi_int_y/0, user:bi_int_n/0,
+          user:bi_num_y/0, user:bi_num_n/0,
+          user:bi_compound_y/0, user:bi_compound_n/0,
+          user:bi_is_list_y/0, user:bi_is_list_e/0, user:bi_is_list_n/0,
+          user:bi_eq_y/0, user:bi_eq_n/0,
+          user:bi_neq_y/0, user:bi_neq_n/0,
+          user:bi_id_y/0, user:bi_id_n/0,
+          user:bi_nid_y/0, user:bi_nid_n/0,
+          user:bi_lt_y/0, user:bi_lt_n/0, user:bi_le_y/0, user:bi_gt_y/0,
+          user:bi_cut_y/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [bi_atom_y, bi_int_y, bi_num_y,
+           bi_compound_y, bi_is_list_y, bi_is_list_e,
+           bi_eq_y, bi_neq_y, bi_id_y, bi_nid_y,
+           bi_lt_y, bi_le_y, bi_gt_y, bi_cut_y],
+    No  = [bi_atom_n, bi_int_n, bi_num_n, bi_compound_n,
+           bi_is_list_n, bi_eq_n, bi_neq_n, bi_id_n, bi_nid_n, bi_lt_n],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------

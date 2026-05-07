@@ -40,6 +40,9 @@
     tokenize_wam_line/2,             % +Line, -Tokens
     wam_parts_to_r/3,                % +Tokens, +Options, -RLiteral
     parse_functor_arity/3,           % +Str, -Name, -Arity
+    reg_to_int/2,                    % +RegName, -Index
+    constant_to_r_term/2,            % +ConstStr, -RTermLiteral
+    intern_r_atom/2,                 % +AtomStr, -Id
     wam_r_resolve_emit_mode/2        % +Options, -Mode
 ]).
 

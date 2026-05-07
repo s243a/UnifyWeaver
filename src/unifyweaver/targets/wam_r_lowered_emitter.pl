@@ -2,24 +2,34 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2026 John William Creighton (@s243a)
 %
-% wam_r_lowered_emitter.pl -- WAM-lowered R emission (Phase 2)
+% wam_r_lowered_emitter.pl -- WAM-lowered R emission (Phase 3)
 %
 % Plan mirrors the Haskell hybrid path in
 %   docs/design/WAM_HASKELL_LOWERED_{PHILOSOPHY,SPECIFICATION,
 %                                     IMPLEMENTATION_PLAN}.md
 %
-% Phase 2 (this file): real lowering for deterministic single-clause
-%                      predicates whose body shape is in the supported
-%                      set. Each lowered predicate becomes one R
-%                      function that delegates per-instruction work to
-%                      WamRuntime$step (so semantics stay identical to
-%                      the array path) but handles control-flow
-%                      instructions natively (Call/Execute/Proceed).
+% Phase 2 covered deterministic single-clause predicates and emitted
+% one R function per predicate, delegating every instruction to
+% WamRuntime$step. Phase 3 (this iteration) adds two refinements:
 %
-% Phase 3+ would inline simple register ops, threaded across calls to
-% other lowered predicates; that's deferred. The Phase-2 design keeps
-% the surface area small while wiring up the emit-mode plumbing and
-% exercising the project-writer integration end-to-end.
+%   1. Expanded lowerability. Multi-clause predicates whose first
+%      clause is in the supported set are now lowerable with reason
+%      multi_clause_1. The lowered function inlines clause 1 and, if
+%      clause 1 fails, drops back into the array path so the standard
+%      backtracking machinery can run clause 2+. This is the same
+%      design the Haskell lowered emitter uses for its multi-clause
+%      path.
+%
+%   2. Native per-instruction emission for the simple register ops
+%      (allocate/deallocate, put_constant/put_variable/put_value,
+%      get_variable). These never fail and never allocate heap, so we
+%      avoid the WamRuntime$step dispatch entirely. Anything that
+%      involves deref/unify/heap-build (get_constant, get_value,
+%      get_structure, *_list, unify_*, set_*, builtin_call,
+%      call_foreign) still delegates to step.
+%
+% Output under emit_mode(interpreter) is unchanged; this file is only
+% consulted under emit_mode(functions) / emit_mode(mixed([...])).
 
 :- module(wam_r_lowered_emitter, [
     wam_r_lowerable/3,           % +Pred, +WamCode, -Reason
@@ -30,114 +40,117 @@
 :- use_module(library(lists)).
 
 % =====================================================================
-% WAM-text parsing
+% Emission plan
 % =====================================================================
-% We re-parse the WAM-assembly text into a list of structured terms so
-% the lowerability check can pattern-match on instruction shape. Lines
-% that are blank or contain a label header (foo/2:) are dropped.
+%
+% A predicate's WAM text is summarised into a `plan(Mode, AltLabel,
+% ClauseLines)` record:
+%
+%   - Mode is `deterministic` or `multi_clause_1`.
+%   - AltLabel is the label to backtrack to under multi_clause_1; it's
+%     the literal label string from the try_me_else operand. For
+%     deterministic predicates this is the atom `none`.
+%   - ClauseLines is the list of WAM-text lines that make up the
+%     emitted body. For deterministic mode this is every non-switch
+%     instruction line; for multi_clause_1 it's the lines of clause 1
+%     only (the lines between try_me_else and the corresponding
+%     trust_me, ending at proceed).
+%
+% switch_on_constant / switch_on_structure prefixes are dropped: they
+% were optimisations the array path uses to short-circuit dispatch.
+% Skipping them in the lowered path is correctness-preserving (clause
+% 1 either matches or we fall back to the array, which still runs the
+% switch).
 
-parse_wam_text(WamText, Instrs) :-
-    atom_string(WamText, S),
-    split_string(S, "\n", "", Lines),
-    parse_lines(Lines, Instrs).
+build_emission_plan(WamCode, plan(Mode, AltLabel, ClauseLines)) :-
+    atom_string(WamCode, S),
+    split_string(S, "\n", "", AllLines),
+    skip_to_first_real_instr(AllLines, Filtered),
+    classify_clause_shape(Filtered, plan(Mode, AltLabel, ClauseLines)).
 
-parse_lines([], []).
-parse_lines([Line|Rest], Instrs) :-
-    split_string(Line, " \t,", " \t,", Parts),
-    delete(Parts, "", CleanParts),
-    (   CleanParts == []
-    ->  parse_lines(Rest, Instrs)
-    ;   CleanParts = [First|_],
-        sub_string(First, _, 1, 0, ":")
-    ->  parse_lines(Rest, Instrs)
-    ;   instr_from_parts(CleanParts, Instr)
-    ->  Instrs = [Instr|RestInstrs],
-        parse_lines(Rest, RestInstrs)
-    ;   parse_lines(Rest, Instrs)
+% Drop blank lines, label-only lines, and switch_on_* dispatch prefixes
+% until we find the first real WAM instruction.
+skip_to_first_real_instr([], []).
+skip_to_first_real_instr([Line|Rest], Out) :-
+    wam_r_target:tokenize_wam_line(Line, Parts),
+    (   skippable_prefix_line(Parts)
+    ->  skip_to_first_real_instr(Rest, Out)
+    ;   Out = [Line|Rest]
     ).
 
-instr_from_parts(["allocate"], allocate).
-instr_from_parts(["deallocate"], deallocate).
-instr_from_parts(["proceed"], proceed).
-instr_from_parts(["fail"], fail).
-instr_from_parts(["get_constant", C, Ai], get_constant(C, Ai)).
-instr_from_parts(["get_variable", X, Ai], get_variable(X, Ai)).
-instr_from_parts(["get_value", X, Ai], get_value(X, Ai)).
-instr_from_parts(["get_structure", F, Ai], get_structure(F, Ai)).
-instr_from_parts(["get_list", Ai], get_list(Ai)).
-instr_from_parts(["put_constant", C, Ai], put_constant(C, Ai)).
-instr_from_parts(["put_variable", X, Ai], put_variable(X, Ai)).
-instr_from_parts(["put_value", X, Ai], put_value(X, Ai)).
-instr_from_parts(["put_structure", F, Ai], put_structure(F, Ai)).
-instr_from_parts(["put_list", Ai], put_list(Ai)).
-instr_from_parts(["unify_variable", X], unify_variable(X)).
-instr_from_parts(["unify_value", X], unify_value(X)).
-instr_from_parts(["unify_constant", C], unify_constant(C)).
-instr_from_parts(["set_variable", X], set_variable(X)).
-instr_from_parts(["set_value", X], set_value(X)).
-instr_from_parts(["set_constant", C], set_constant(C)).
-instr_from_parts(["call", Pred, N], call(Pred, N)).
-instr_from_parts(["call", PredArity], call(PredArity)).
-instr_from_parts(["execute", Pred, N], execute(Pred, N)).
-instr_from_parts(["execute", PredArity], execute(PredArity)).
-instr_from_parts(["call_foreign", Pred, N], call_foreign(Pred, N)).
-instr_from_parts(["builtin_call", Op, N], builtin_call(Op, N)).
-instr_from_parts(["try_me_else", L], try_me_else(L)).
-instr_from_parts(["retry_me_else", L], retry_me_else(L)).
-instr_from_parts(["trust_me"], trust_me).
-instr_from_parts(["jump", L], jump(L)).
-instr_from_parts(["cut_ite"], cut_ite).
-instr_from_parts(["switch_on_constant" | _], switch_on_constant).
-instr_from_parts(["switch_on_structure" | _], switch_on_structure).
+skippable_prefix_line([]).
+skippable_prefix_line([First|_]) :- sub_string(First, _, 1, 0, ":").
+skippable_prefix_line(["switch_on_constant"|_]).
+skippable_prefix_line(["switch_on_structure"|_]).
+
+% First-real-instruction discriminates between deterministic and
+% multi_clause_1. A try_me_else here means clause 1 starts at the next
+% line and ends at the trust_me/proceed boundary.
+classify_clause_shape([FirstLine|Rest], plan(multi_clause_1, AltAtom, ClauseLines)) :-
+    wam_r_target:tokenize_wam_line(FirstLine, ["try_me_else", AltStr]), !,
+    atom_string(AltAtom, AltStr),
+    take_clause1_lines(Rest, ClauseLines).
+classify_clause_shape(Lines, plan(deterministic, none, Lines)).
+
+% Clause 1 ends either at a `proceed` (success path; we keep the
+% proceed line so the emitter renders return(TRUE) at that point) or
+% at a `trust_me` (start of clause 2; we stop without including it).
+take_clause1_lines([], []).
+take_clause1_lines([Line|Rest], Out) :-
+    wam_r_target:tokenize_wam_line(Line, Parts),
+    (   Parts == ["proceed"]
+    ->  Out = [Line]
+    ;   Parts == ["trust_me"]
+    ->  Out = []
+    ;   Out = [Line|RestOut],
+        take_clause1_lines(Rest, RestOut)
+    ).
 
 % =====================================================================
 % Lowerability
 % =====================================================================
-%
-% A predicate is Phase-2-lowerable if:
-%   (1) all its instructions are in the supported set,
-%   (2) it has no choice-point instructions (try_me_else / retry_me_else
-%       / trust_me) -- multi-clause predicates stay on the array path
-%       so the standard backtracking machinery handles them, and
-%   (3) it contains no switch_on_* dispatch (those imply multi-clause).
-%
-% Reason is unified with `deterministic` on success; future phases can
-% add more granular reasons.
 
-wam_r_lowerable(_PI, WamCode, deterministic) :-
-    parse_wam_text(WamCode, Instrs),
-    \+ member(try_me_else(_),   Instrs),
-    \+ member(retry_me_else(_), Instrs),
-    \+ member(trust_me,         Instrs),
-    \+ member(switch_on_constant,  Instrs),
-    \+ member(switch_on_structure, Instrs),
-    forall(member(I, Instrs), supported_op(I)).
+%% wam_r_lowerable(+Pred, +WamCode, -Reason) is semidet.
+%  Reason is one of `deterministic` or `multi_clause_1`. Lowerability
+%  is decided against the emission-plan's clause lines.
+wam_r_lowerable(_PI, WamCode, Reason) :-
+    catch(build_emission_plan(WamCode, plan(Mode, _, ClauseLines)), _, fail),
+    forall(member(Line, ClauseLines), line_supported(Line)),
+    Reason = Mode.
 
-supported_op(allocate).
-supported_op(deallocate).
-supported_op(proceed).
-supported_op(get_constant(_, _)).
-supported_op(get_variable(_, _)).
-supported_op(get_value(_, _)).
-supported_op(get_structure(_, _)).
-supported_op(get_list(_)).
-supported_op(put_constant(_, _)).
-supported_op(put_variable(_, _)).
-supported_op(put_value(_, _)).
-supported_op(put_structure(_, _)).
-supported_op(put_list(_)).
-supported_op(unify_variable(_)).
-supported_op(unify_value(_)).
-supported_op(unify_constant(_)).
-supported_op(set_variable(_)).
-supported_op(set_value(_)).
-supported_op(set_constant(_)).
-supported_op(call(_, _)).
-supported_op(call(_)).
-supported_op(execute(_, _)).
-supported_op(execute(_)).
-supported_op(call_foreign(_, _)).
-supported_op(builtin_call(_, _)).
+line_supported(Line) :-
+    wam_r_target:tokenize_wam_line(Line, Parts),
+    (   Parts == [] -> true
+    ;   Parts = [F|_], sub_string(F, _, 1, 0, ":") -> true
+    ;   parts_supported(Parts)
+    ).
+
+parts_supported(["allocate"]).
+parts_supported(["deallocate"]).
+parts_supported(["proceed"]).
+parts_supported(["fail"]).
+parts_supported(["get_constant", _, _]).
+parts_supported(["get_variable", _, _]).
+parts_supported(["get_value", _, _]).
+parts_supported(["get_structure", _, _]).
+parts_supported(["get_list", _]).
+parts_supported(["put_constant", _, _]).
+parts_supported(["put_variable", _, _]).
+parts_supported(["put_value", _, _]).
+parts_supported(["put_structure", _, _]).
+parts_supported(["put_list", _]).
+parts_supported(["unify_variable", _]).
+parts_supported(["unify_value", _]).
+parts_supported(["unify_constant", _]).
+parts_supported(["set_variable", _]).
+parts_supported(["set_value", _]).
+parts_supported(["set_constant", _]).
+parts_supported(["call", _]).
+parts_supported(["call", _, _]).
+parts_supported(["execute", _]).
+parts_supported(["execute", _, _]).
+parts_supported(["call_foreign", _, _]).
+parts_supported(["builtin_call", _, _]).
 
 % =====================================================================
 % Function-name generation
@@ -166,17 +179,8 @@ r_safe_code(C, C) :-
 r_safe_code(_, 0'_).
 
 % =====================================================================
-% Per-instruction emission
+% Lowered-function emission
 % =====================================================================
-%
-% The lowered function body is a sequence of R statements, one per WAM
-% instruction. Most instructions delegate to WamRuntime$step using the
-% same R Instruction-literal that the array path uses; we re-tokenize
-% and feed wam_r_target's wam_parts_to_r/3 to keep the literal shape
-% identical. Control instructions are emitted natively:
-%   proceed       -> return(TRUE)
-%   call P/N      -> save cp, set pc to label, run, restore cp
-%   execute P/N   -> tail call (set pc, return WamRuntime$run(...))
 
 %% lower_predicate_to_r(+Pred/Arity, +WamCode, +Options, -Entry)
 %  Entry = lowered(PredName, FuncName, RCode).
@@ -185,14 +189,57 @@ lower_predicate_to_r(PI, WamCode, _Opts,
     ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
     format(atom(PredName), '~w/~w', [Pred, Arity]),
     r_lowered_func_name(Pred/Arity, FuncName),
-    atom_string(WamCode, Str),
-    split_string(Str, "\n", "", Lines),
-    with_output_to(string(Body), emit_lines(Lines, "  ")),
+    build_emission_plan(WamCode, plan(Mode, AltLabel, ClauseLines)),
+    (   Mode == deterministic
+    ->  emit_deterministic_function(PredName, FuncName, ClauseLines, Code)
+    ;   Mode == multi_clause_1
+    ->  emit_multi_clause_function(PredName, FuncName, AltLabel, ClauseLines, Code)
+    ).
+
+emit_deterministic_function(PredName, FuncName, ClauseLines, Code) :-
+    with_output_to(string(Body), emit_lines(ClauseLines, "  ")),
+    % The clause body always ends with `proceed`, which emits
+    % `return(TRUE)`. We keep an explicit `invisible(TRUE)` after the
+    % body as a defensive fallback in case future codegen produces a
+    % proceed-less clause; the wrapper does isTRUE() on the result.
     format(string(Code),
-'# Lowered: ~w  (Phase-2 deterministic single-clause)
+'# Lowered: ~w  (deterministic single-clause)
 ~w <- function(program, state) {
-~w  return(TRUE)
+~w  invisible(TRUE)
 }', [PredName, FuncName, Body]).
+
+% Multi-clause: push a CP whose next_pc points at clause 2+, run
+% clause 1 inline. If clause 1 succeeds the lowered fn returns TRUE
+% (the CP stays in $cps for downstream backtracking). If clause 1
+% fails we backtrack via the runtime helper, advance past the
+% trust_me, and drop into the run loop so it can drive clause 2+.
+emit_multi_clause_function(PredName, FuncName, AltLabel, ClauseLines, Code) :-
+    with_output_to(string(Body), emit_lines(ClauseLines, "    ")),
+    % clause1_ok is the value of the closure's last expression, which
+    % is the `return(TRUE)` emitted by the proceed line at the end of
+    % clause 1. invisible(FALSE) is a defensive fallback for the
+    % proceed-less case (caller does isTRUE() on the result).
+    format(string(Code),
+'# Lowered: ~w  (multi-clause; clause 1 inline, fall back to array)
+~w <- function(program, state) {
+  alt_pc <- program$labels[["~w"]]
+  if (is.null(alt_pc)) return(FALSE)
+  state$cps <- c(state$cps, list(list(
+    next_pc     = as.integer(alt_pc),
+    regs        = as.list.environment(state$regs2),
+    cp          = state$cp,
+    trail_len   = length(state$trail),
+    var_counter = state$var_counter
+  )))
+  clause1_ok <- (function() {
+~w    invisible(FALSE)
+  })()
+  if (isTRUE(clause1_ok)) return(TRUE)
+  if (!isTRUE(WamRuntime$backtrack(state))) return(FALSE)
+  state$pc   <- state$pc + 1L
+  state$halt <- FALSE
+  isTRUE(WamRuntime$run(program, state))
+}', [PredName, FuncName, AltLabel, Body]).
 
 emit_lines([], _).
 emit_lines([Line|Rest], Ind) :-
@@ -205,22 +252,56 @@ emit_lines([Line|Rest], Ind) :-
     ),
     emit_lines(Rest, Ind).
 
-% --- Control instructions: special emission --------------------------
+% --- Control instructions ------------------------------------------------
 
-emit_line_parts(["proceed"], I) :-
+emit_line_parts(["proceed"], I) :- !,
     format("~wreturn(TRUE)~n", [I]).
-emit_line_parts(["call", PredArity], I) :-
+emit_line_parts(["fail"], I) :- !,
+    format("~wreturn(FALSE)~n", [I]).
+emit_line_parts(["call", PredArity], I) :- !,
     emit_call(PredArity, I).
-emit_line_parts(["call", Pred, ArityStr], I) :-
+emit_line_parts(["call", Pred, ArityStr], I) :- !,
     strip_arity_local(Pred, PredName),
     format(string(PredArity), "~w/~w", [PredName, ArityStr]),
     emit_call(PredArity, I).
-emit_line_parts(["execute", PredArity], I) :-
+emit_line_parts(["execute", PredArity], I) :- !,
     emit_execute(PredArity, I).
-emit_line_parts(["execute", Pred, ArityStr], I) :-
+emit_line_parts(["execute", Pred, ArityStr], I) :- !,
     strip_arity_local(Pred, PredName),
     format(string(PredArity), "~w/~w", [PredName, ArityStr]),
     emit_execute(PredArity, I).
+
+% --- Native register ops (always succeed; skip the step dispatcher) ------
+%
+% These are the paydirt of Phase 3's per-instruction inlining: each
+% one is a direct mutation on state$regs2 / state$stack / state, no
+% heap-build state machine, no deref, no unify. The R generated for
+% them is the same code WamRuntime$step would have run, just inline.
+
+emit_line_parts(["allocate"], I) :- !,
+    format("~wstate$stack <- c(state$stack, list(list(cp = state$cp, locals = new.env(parent = emptyenv()))))~n", [I]).
+emit_line_parts(["deallocate"], I) :- !,
+    format("~w{ n_ <- length(state$stack); if (n_ > 0L) { state$cp <- state$stack[[n_]]$cp; state$stack <- state$stack[-n_] } }~n", [I]).
+emit_line_parts(["put_constant", CStr, RegStr], I) :- !,
+    wam_r_target:reg_to_int(RegStr, RegIdx),
+    wam_r_target:constant_to_r_term(CStr, CTerm),
+    format("~wWamRuntime$put_reg(state, ~w, ~w)~n", [I, RegIdx, CTerm]).
+emit_line_parts(["put_variable", XStr, AiStr], I) :- !,
+    wam_r_target:reg_to_int(XStr, XIdx),
+    wam_r_target:reg_to_int(AiStr, AIdx),
+    format("~w{ v_ <- Unbound(paste0(\"V\", state$var_counter)); state$var_counter <- state$var_counter + 1L; WamRuntime$put_reg(state, ~w, v_); WamRuntime$put_reg(state, ~w, v_) }~n",
+           [I, XIdx, AIdx]).
+emit_line_parts(["put_value", XStr, AiStr], I) :- !,
+    wam_r_target:reg_to_int(XStr, XIdx),
+    wam_r_target:reg_to_int(AiStr, AIdx),
+    format("~wWamRuntime$put_reg(state, ~w, WamRuntime$get_reg(state, ~w))~n",
+           [I, AIdx, XIdx]).
+emit_line_parts(["get_variable", XStr, AiStr], I) :- !,
+    wam_r_target:reg_to_int(XStr, XIdx),
+    wam_r_target:reg_to_int(AiStr, AIdx),
+    format("~wWamRuntime$put_reg(state, ~w, WamRuntime$get_reg(state, ~w))~n",
+           [I, XIdx, AIdx]).
+
 % --- Default: delegate to step with the same R literal the array uses
 emit_line_parts(Parts, I) :-
     wam_r_target:wam_parts_to_r(Parts, [], Lit),

@@ -89,6 +89,31 @@ wam_member <- function(elem, lst) {
   FALSE
 }
 
+# wam_is_proper_list / wam_is_ground are stateful (need deref) so they
+# take state explicitly. They power the is_list/1 and ground/1 builtins.
+wam_is_proper_list <- function(state, v, table) {
+  v <- WamRuntime$deref(state, v)
+  if (is.null(v) || is.null(v$tag)) return(FALSE)
+  if (v$tag == "atom") {
+    return(WamRuntime$string_of(table, v$id) == "[]")
+  }
+  if (v$tag != "struct") return(FALSE)
+  if (length(v$args) != 2L) return(FALSE)
+  if (WamRuntime$string_of(table, v$fid) != "[|]") return(FALSE)
+  wam_is_proper_list(state, v$args[[2]], table)
+}
+
+wam_is_ground <- function(state, v) {
+  v <- WamRuntime$deref(state, v)
+  if (is.null(v) || is.null(v$tag)) return(FALSE)
+  if (v$tag == "unbound") return(FALSE)
+  if (v$tag != "struct") return(TRUE)
+  for (a in v$args) {
+    if (!wam_is_ground(state, a)) return(FALSE)
+  }
+  TRUE
+}
+
 # ----------------------------------------------------------
 # Instruction constructors
 # ----------------------------------------------------------
@@ -303,6 +328,98 @@ WamRuntime$bind <- function(state, name, val) {
   invisible(NULL)
 }
 
+# Undo trail entries until length(state$trail) == n. Used by \=/2 (and
+# any other "try-then-rollback" builtin) so a transient unification
+# attempt doesn't leak its bindings into the surrounding query.
+WamRuntime$undo_trail_to <- function(state, n) {
+  while (length(state$trail) > n) {
+    last <- length(state$trail)
+    name <- state$trail[[last]]
+    if (exists(name, envir = state$bindings, inherits = FALSE)) {
+      rm(list = name, envir = state$bindings)
+    }
+    state$trail <- state$trail[-last]
+  }
+  invisible(NULL)
+}
+
+# Strict structural identity (==/2 semantics). Both sides are derefed;
+# unbound vars are equal iff they have the same name (identity, not
+# unification). Structures recurse element-wise after dereffing args.
+WamRuntime$identical_terms <- function(state, a, b) {
+  a <- WamRuntime$deref(state, a)
+  b <- WamRuntime$deref(state, b)
+  if (is.null(a) || is.null(b)) return(identical(a, b))
+  if (a$tag != b$tag) return(FALSE)
+  switch(a$tag,
+    "atom"    = identical(a$id, b$id),
+    "int"     = identical(a$val, b$val),
+    "float"   = identical(a$val, b$val),
+    "unbound" = identical(a$name, b$name),
+    "struct"  = {
+      if (!identical(a$fid, b$fid)) return(FALSE)
+      if (length(a$args) != length(b$args)) return(FALSE)
+      for (i in seq_along(a$args)) {
+        if (!WamRuntime$identical_terms(state, a$args[[i]], b$args[[i]])) return(FALSE)
+      }
+      TRUE
+    },
+    FALSE
+  )
+}
+
+# Standard order of terms (@</@>/@=</@>= semantics), returning -1/0/1.
+# Order: unbound < numbers < atoms < structs. Within a type, by natural
+# order. Structures order by arity, then functor name, then args.
+WamRuntime$compare_terms <- function(state, a, b, table) {
+  a <- WamRuntime$deref(state, a)
+  b <- WamRuntime$deref(state, b)
+  ra <- wam_term_rank(a)
+  rb <- wam_term_rank(b)
+  if (ra != rb) return(if (ra < rb) -1L else 1L)
+  switch(a$tag,
+    "unbound" = wam_compare_strings(a$name, b$name),
+    "int"     = wam_compare_nums(a$val, b$val),
+    "float"   = wam_compare_nums(a$val, b$val),
+    "atom"    = wam_compare_strings(WamRuntime$string_of(table, a$id),
+                                    WamRuntime$string_of(table, b$id)),
+    "struct"  = {
+      ar <- length(a$args); br <- length(b$args)
+      if (ar != br) return(if (ar < br) -1L else 1L)
+      sa <- WamRuntime$string_of(table, a$fid)
+      sb <- WamRuntime$string_of(table, b$fid)
+      cmp <- wam_compare_strings(sa, sb)
+      if (cmp != 0L) return(cmp)
+      for (i in seq_along(a$args)) {
+        cmp <- WamRuntime$compare_terms(state, a$args[[i]], b$args[[i]], table)
+        if (cmp != 0L) return(cmp)
+      }
+      0L
+    },
+    0L
+  )
+}
+
+wam_term_rank <- function(v) {
+  if (is.null(v) || is.null(v$tag)) return(9L)
+  switch(v$tag,
+    "unbound" = 0L,
+    "int"     = 1L,
+    "float"   = 1L,
+    "atom"    = 2L,
+    "struct"  = 3L,
+    9L
+  )
+}
+
+wam_compare_strings <- function(a, b) {
+  if (a < b) -1L else if (a > b) 1L else 0L
+}
+
+wam_compare_nums <- function(a, b) {
+  if (a < b) -1L else if (a > b) 1L else 0L
+}
+
 WamRuntime$unify <- function(state, a, b) {
   a <- WamRuntime$deref(state, a)
   b <- WamRuntime$deref(state, b)
@@ -429,9 +546,13 @@ WamRuntime$step <- function(program, state, instr) {
       state$pc <- state$pc + 1L; TRUE
     },
     "RetryMeElse" = {
+      # When the dispatcher reaches RetryMeElse via switch_on_constant /
+      # switch_on_structure (for the 3+ clause indexed-jump case), no
+      # choice point has been pushed yet. Be permissive in that case --
+      # mirror TrustMe and just advance. When entered via the standard
+      # try-chain, the CP exists and we update its next_pc as usual.
       n <- length(state$cps)
-      if (n == 0L) return(FALSE)
-      state$cps[[n]]$next_pc <- program$labels[[instr$label]]
+      if (n > 0L) state$cps[[n]]$next_pc <- program$labels[[instr$label]]
       state$pc <- state$pc + 1L; TRUE
     },
     "TrustMe" = {
@@ -725,6 +846,18 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
   table <- program$intern_table
   if (pred == "true"  && arity == 0L) return(TRUE)
   if (pred == "fail"  && arity == 0L) return(FALSE)
+
+  # Cut (!/0): scaffold semantics drop the most recent choice point so
+  # the surrounding predicate's try-chain stops backtracking. A full
+  # cut-bar implementation tracks the depth at clause entry; a follow-up
+  # commit can replace this once the lowered emitter wants to honour it
+  # in nested-call positions.
+  if (pred == "!/0" && arity == 0L) {
+    n <- length(state$cps)
+    if (n > 0L) state$cps <- state$cps[-n]
+    return(TRUE)
+  }
+
   # is/2: eval A2, unify with A1.
   if (pred == "is/2" && arity == 2L) {
     target <- WamRuntime$get_reg(state, 1L)
@@ -735,7 +868,7 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
     if (is.null(res)) return(FALSE)
     return(WamRuntime$unify(state, target, res))
   }
-  # Comparison builtins: eval both args, compare.
+  # Numeric comparison builtins: eval both args, compare.
   if (arity == 2L && pred %in% c("=:=/2", "=\\=/2", "</2", ">/2", "=</2", ">=/2")) {
     a <- WamRuntime$eval_arith(state, WamRuntime$get_reg(state, 1L), table)
     b <- WamRuntime$eval_arith(state, WamRuntime$get_reg(state, 2L), table)
@@ -750,6 +883,55 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
       FALSE
     ))
   }
+
+  # Type-check builtins: deref A1, classify.
+  if (arity == 1L && pred %in% c("atom/1", "integer/1", "float/1", "number/1",
+                                 "var/1", "nonvar/1", "compound/1", "atomic/1",
+                                 "is_list/1", "ground/1")) {
+    raw <- WamRuntime$get_reg(state, 1L)
+    v   <- WamRuntime$deref(state, raw)
+    return(switch(pred,
+      "atom/1"     = wam_is_atom(v),
+      "integer/1"  = wam_is_integer(v),
+      "float/1"    = wam_is_float(v),
+      "number/1"   = wam_is_number(v),
+      "var/1"      = wam_is_var(v),
+      "nonvar/1"   = !wam_is_var(v),
+      "compound/1" = wam_is_compound(v),
+      "atomic/1"   = wam_is_atom(v) || wam_is_number(v),
+      "is_list/1"  = wam_is_proper_list(state, v, table),
+      "ground/1"   = wam_is_ground(state, v),
+      FALSE
+    ))
+  }
+
+  # Term equality / identity / standard order. =/2 may bind; the others
+  # never do (and \=/2 specifically rolls back any transient bindings
+  # via undo_trail_to).
+  if (arity == 2L) {
+    a <- WamRuntime$get_reg(state, 1L)
+    b <- WamRuntime$get_reg(state, 2L)
+    if (pred == "=/2") return(WamRuntime$unify(state, a, b))
+    if (pred == "\\=/2") {
+      trail0 <- length(state$trail)
+      ok <- WamRuntime$unify(state, a, b)
+      WamRuntime$undo_trail_to(state, trail0)
+      return(!isTRUE(ok))
+    }
+    if (pred == "==/2")  return( WamRuntime$identical_terms(state, a, b))
+    if (pred == "\\==/2") return(!WamRuntime$identical_terms(state, a, b))
+    if (pred %in% c("@</2", "@>/2", "@=</2", "@>=/2")) {
+      cmp <- WamRuntime$compare_terms(state, a, b, table)
+      return(switch(pred,
+        "@</2"  = cmp <  0L,
+        "@>/2"  = cmp >  0L,
+        "@=</2" = cmp <= 0L,
+        "@>=/2" = cmp >= 0L,
+        FALSE
+      ))
+    }
+  }
+
   # Unknown builtin -> failure (matches WAM convention).
   FALSE
 }
