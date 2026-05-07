@@ -1195,6 +1195,72 @@ e2e_io_between_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for the string family (string_concat,
+% string_length, atom_string, string_to_atom, string_chars,
+% string_codes, string_upper, string_lower, string_code,
+% split_string). The codegen collapses strings into atoms (the
+% WAM-text serialisation doesn't distinguish them), so the string_*
+% predicates either alias onto their atom_* counterpart or are
+% implemented fresh.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(string_ops_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_string_ops_via_rscript
+    ;   true
+    )).
+
+e2e_string_ops_via_rscript :-
+    assertz((user:str_concat   :- string_concat("foo", "bar", "foobar"))),
+    assertz((user:str_concat_n :- string_concat("foo", "bar", "fooXbar"))),
+    assertz((user:str_length   :- string_length("hello", 5))),
+    assertz((user:str_length_n :- string_length("hello", 4))),
+    assertz((user:str_atom     :- atom_string(hello, "hello"))),
+    assertz((user:str_to_atom  :- string_to_atom("hello", hello))),
+    assertz((user:str_chars    :- string_chars("hi", [h, i]))),
+    assertz((user:str_codes    :- string_codes("AB", [65, 66]))),
+    assertz((user:str_upper    :- string_upper("abc", "ABC"))),
+    assertz((user:str_lower    :- string_lower("ABC", "abc"))),
+    assertz((user:str_code     :- string_code(2, "abc", 98))),
+    assertz((user:str_code_n   :- string_code(2, "abc", 99))),
+    assertz((user:str_code_oob :- string_code(99, "abc", _))),
+    assertz((user:str_split    :- split_string("a,b,c", ",", "", ["a", "b", "c"]))),
+    assertz((user:str_split_p  :- split_string(" a , b , c ", ",", " ", ["a", "b", "c"]))),
+    assertz((user:str_split_e  :- split_string("abc", "", "", ["abc"]))),
+    unique_r_tmp_dir('tmp_r_strops_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:str_concat/0, user:str_concat_n/0,
+          user:str_length/0, user:str_length_n/0,
+          user:str_atom/0, user:str_to_atom/0,
+          user:str_chars/0, user:str_codes/0,
+          user:str_upper/0, user:str_lower/0,
+          user:str_code/0, user:str_code_n/0, user:str_code_oob/0,
+          user:str_split/0, user:str_split_p/0, user:str_split_e/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [str_concat, str_length,
+           str_atom, str_to_atom,
+           str_chars, str_codes,
+           str_upper, str_lower,
+           str_code,
+           str_split, str_split_p, str_split_e],
+    No  = [str_concat_n, str_length_n,
+           str_code_n, str_code_oob],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-
