@@ -417,6 +417,19 @@ wam_compare_strings <- function(a, b) {
   if (a < b) -1L else if (a > b) 1L else 0L
 }
 
+# Return the "name string" of an atom-like term (atom, int, or float)
+# or NULL for any other shape. Used by the atom-and-number library
+# builtins to paper over the WAM-text quoting ambiguity.
+wam_term_name_string <- function(v, table) {
+  if (is.null(v) || is.null(v$tag)) return(NULL)
+  switch(v$tag,
+    "atom"  = WamRuntime$string_of(table, v$id),
+    "int"   = as.character(v$val),
+    "float" = as.character(v$val),
+    NULL
+  )
+}
+
 wam_compare_nums <- function(a, b) {
   if (a < b) -1L else if (a > b) 1L else 0L
 }
@@ -907,6 +920,7 @@ WamRuntime$eval_arith <- function(state, term, table) {
         "ceiling"  = ceiling(a),
         "truncate" = trunc(a),
         "round"    = round(a),
+        "\\"       = bitwNot(as.integer(a)),
         NULL
       ))
     }
@@ -928,6 +942,11 @@ WamRuntime$eval_arith <- function(state, term, table) {
         "**"    = a ^ b,
         "atan2" = atan2(a, b),
         "gcd"   = wam_gcd(as.integer(a), as.integer(b)),
+        "/\\"   = bitwAnd(as.integer(a), as.integer(b)),
+        "\\/"   = bitwOr(as.integer(a), as.integer(b)),
+        "xor"   = bitwXor(as.integer(a), as.integer(b)),
+        "<<"    = bitwShiftL(as.integer(a), as.integer(b)),
+        ">>"    = bitwShiftR(as.integer(a), as.integer(b)),
         NULL
       ))
     }
@@ -942,6 +961,59 @@ wam_gcd <- function(a, b) {
     t <- b; b <- a %% b; a <- t
   }
   a
+}
+
+# Walk a term and produce a copy with every unbound var replaced by a
+# fresh new unbound. Multiple references to the same source var resolve
+# to the same fresh var, so structure-level sharing is preserved.
+# Atoms / numbers are immutable and returned as-is.
+WamRuntime$copy_term <- function(state, term) {
+  mapping <- new.env(parent = emptyenv())
+  WamRuntime$copy_term_walk(state, term, mapping)
+}
+
+WamRuntime$copy_term_walk <- function(state, term, mapping) {
+  v <- WamRuntime$deref(state, term)
+  if (is.null(v) || is.null(v$tag)) return(v)
+  if (v$tag == "unbound") {
+    if (exists(v$name, envir = mapping, inherits = FALSE)) {
+      return(get(v$name, envir = mapping, inherits = FALSE))
+    }
+    fresh <- Unbound(paste0("V", state$var_counter))
+    state$var_counter <- state$var_counter + 1L
+    assign(v$name, fresh, envir = mapping)
+    return(fresh)
+  }
+  if (v$tag == "struct") {
+    new_args <- lapply(v$args, function(a)
+      WamRuntime$copy_term_walk(state, a, mapping))
+    return(StructTerm(v$fid, new_args))
+  }
+  v
+}
+
+# Term-comparison-based merge sort. Used by msort/2 (keep dups) and
+# sort/2 (dedup after sorting). The compare_terms call orders unbound
+# vars first, then numbers, atoms, structs.
+WamRuntime$wam_sort_terms <- function(state, elems, table) {
+  n <- length(elems)
+  if (n <= 1L) return(elems)
+  mid <- n %/% 2L
+  left  <- WamRuntime$wam_sort_terms(state, elems[1:mid],     table)
+  right <- WamRuntime$wam_sort_terms(state, elems[(mid+1):n], table)
+  out <- list()
+  i <- 1L; j <- 1L
+  na <- length(left); nb <- length(right)
+  while (i <= na && j <= nb) {
+    if (WamRuntime$compare_terms(state, left[[i]], right[[j]], table) <= 0L) {
+      out <- c(out, list(left[[i]])); i <- i + 1L
+    } else {
+      out <- c(out, list(right[[j]])); j <- j + 1L
+    }
+  }
+  if (i <= na) out <- c(out, left[i:na])
+  if (j <= nb) out <- c(out, right[j:nb])
+  out
 }
 
 # Wrap an R numeric back into a WAM term, keeping integer-ness when the
@@ -1166,6 +1238,14 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
     return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L), arity_term))
   }
 
+  # copy_term/2: build a fresh copy of A1 with all unbound vars
+  # renamed; unify with A2. Atoms / numbers are shared (immutable).
+  if (pred == "copy_term/2" && arity == 2L) {
+    src  <- WamRuntime$get_reg(state, 1L)
+    copy <- WamRuntime$copy_term(state, src)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L), copy))
+  }
+
   # arg/3: 1-based argument extraction. Always called with N and T
   # ground; A may be any term (we unify with the extracted arg).
   if (pred == "arg/3" && arity == 3L) {
@@ -1231,15 +1311,18 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
   }
 
   # ----- atom_chars/2: atom <-> list of single-char atoms -----
+  # Char-list elements are accepted as atoms or as ints/floats with
+  # their decimal name. The leniency exists because WAM-text loses the
+  # atom-vs-number quoting distinction: the literal `'1'` and the
+  # integer `1` both serialise as `set_constant 1`, so the codegen
+  # can't tell them apart and emits IntTerm for both.
   if (key == "atom_chars/2") {
     raw_a <- WamRuntime$get_reg(state, 1L)
     raw_l <- WamRuntime$get_reg(state, 2L)
     a_v <- WamRuntime$deref(state, raw_a)
     if (!is.null(a_v) && !is.null(a_v$tag) && a_v$tag != "unbound") {
-      s <- if (a_v$tag == "atom")       WamRuntime$string_of(table, a_v$id)
-           else if (a_v$tag == "int")   as.character(a_v$val)
-           else if (a_v$tag == "float") as.character(a_v$val)
-           else return(FALSE)
+      s <- wam_term_name_string(a_v, table)
+      if (is.null(s)) return(FALSE)
       chars <- if (nchar(s) == 0L) character(0)
                else strsplit(s, "", fixed = TRUE)[[1]]
       elems <- lapply(chars, function(ch) Atom(WamRuntime$intern(table, ch)))
@@ -1248,20 +1331,20 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     elems <- WamRuntime$wam_list_decompose(state, raw_l, table)
     if (is.null(elems)) return(FALSE)
     chars <- vapply(elems, function(e) {
-      if (is.null(e) || is.null(e$tag) || e$tag != "atom") NA_character_
-      else WamRuntime$string_of(table, e$id)
+      s <- wam_term_name_string(e, table)
+      if (is.null(s)) NA_character_ else s
     }, character(1))
     if (any(is.na(chars))) return(FALSE)
-    s <- paste0(chars, collapse = "")
-    new_id <- WamRuntime$intern(table, s)
+    new_id <- WamRuntime$intern(table, paste0(chars, collapse = ""))
     return(WamRuntime$unify(state, raw_a, Atom(new_id)))
   }
 
   # ----- atom_length/2 -----
+  # Same atom-or-numeric leniency as atom_chars (see note above).
   if (key == "atom_length/2") {
     a_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
-    if (is.null(a_v) || is.null(a_v$tag) || a_v$tag != "atom") return(FALSE)
-    s <- WamRuntime$string_of(table, a_v$id)
+    s <- wam_term_name_string(a_v, table)
+    if (is.null(s)) return(FALSE)
     return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L), IntTerm(nchar(s))))
   }
 
@@ -1269,15 +1352,9 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
   if (key == "atom_concat/3") {
     a_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
     b_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
-    if (is.null(a_v) || is.null(b_v)) return(FALSE)
-    sa <- if (a_v$tag == "atom")       WamRuntime$string_of(table, a_v$id)
-          else if (a_v$tag == "int")   as.character(a_v$val)
-          else if (a_v$tag == "float") as.character(a_v$val)
-          else return(FALSE)
-    sb <- if (b_v$tag == "atom")       WamRuntime$string_of(table, b_v$id)
-          else if (b_v$tag == "int")   as.character(b_v$val)
-          else if (b_v$tag == "float") as.character(b_v$val)
-          else return(FALSE)
+    sa <- wam_term_name_string(a_v, table)
+    sb <- wam_term_name_string(b_v, table)
+    if (is.null(sa) || is.null(sb)) return(FALSE)
     new_id <- WamRuntime$intern(table, paste0(sa, sb))
     return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L), Atom(new_id)))
   }
@@ -1307,6 +1384,103 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     if (is.null(elems) || length(elems) == 0L) return(FALSE)
     return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
                             elems[[length(elems)]]))
+  }
+
+  # ----- number_codes/2: number <-> list of code points -----
+  if (key == "number_codes/2") {
+    raw_n <- WamRuntime$get_reg(state, 1L)
+    raw_c <- WamRuntime$get_reg(state, 2L)
+    n_v <- WamRuntime$deref(state, raw_n)
+    if (!is.null(n_v) && !is.null(n_v$tag) && n_v$tag != "unbound") {
+      if (!(n_v$tag %in% c("int", "float"))) return(FALSE)
+      s <- as.character(n_v$val)
+      elems <- lapply(utf8ToInt(s), IntTerm)
+      return(WamRuntime$unify(state, raw_c, WamRuntime$wam_list_build(elems, table)))
+    }
+    elems <- WamRuntime$wam_list_decompose(state, raw_c, table)
+    if (is.null(elems) || length(elems) == 0L) return(FALSE)
+    codes <- vapply(elems, function(e) {
+      if (is.null(e) || is.null(e$tag) || e$tag != "int") NA_integer_
+      else as.integer(e$val)
+    }, integer(1))
+    if (any(is.na(codes))) return(FALSE)
+    parsed <- suppressWarnings(as.numeric(intToUtf8(codes)))
+    if (is.na(parsed)) return(FALSE)
+    return(WamRuntime$unify(state, raw_n, WamRuntime$arith_to_term(parsed)))
+  }
+
+  # ----- number_chars/2: number <-> list of single-char atoms -----
+  # Char-list elements accept atoms or ints/floats with decimal name
+  # (same WAM-text-quoting workaround as atom_chars/2).
+  if (key == "number_chars/2") {
+    raw_n <- WamRuntime$get_reg(state, 1L)
+    raw_l <- WamRuntime$get_reg(state, 2L)
+    n_v <- WamRuntime$deref(state, raw_n)
+    if (!is.null(n_v) && !is.null(n_v$tag) && n_v$tag != "unbound") {
+      if (!(n_v$tag %in% c("int", "float"))) return(FALSE)
+      s <- as.character(n_v$val)
+      chars <- if (nchar(s) == 0L) character(0) else strsplit(s, "", fixed = TRUE)[[1]]
+      elems <- lapply(chars, function(ch) Atom(WamRuntime$intern(table, ch)))
+      return(WamRuntime$unify(state, raw_l, WamRuntime$wam_list_build(elems, table)))
+    }
+    elems <- WamRuntime$wam_list_decompose(state, raw_l, table)
+    if (is.null(elems) || length(elems) == 0L) return(FALSE)
+    chars <- vapply(elems, function(e) {
+      s <- wam_term_name_string(e, table)
+      if (is.null(s)) NA_character_ else s
+    }, character(1))
+    if (any(is.na(chars))) return(FALSE)
+    parsed <- suppressWarnings(as.numeric(paste0(chars, collapse = "")))
+    if (is.na(parsed)) return(FALSE)
+    return(WamRuntime$unify(state, raw_n, WamRuntime$arith_to_term(parsed)))
+  }
+
+  # ----- atom_number/2: atom <-> number (atom contains decimal repr) -----
+  # The atom side accepts atoms or ints/floats with decimal name
+  # (WAM-text quoting workaround). The construct mode (A unbound,
+  # N bound) always builds an Atom. Tests that compare against a
+  # literal `'42'` will fail by construction because the literal
+  # codegens as IntTerm(42); use atom_codes/2 for indirect comparison.
+  if (key == "atom_number/2") {
+    raw_a <- WamRuntime$get_reg(state, 1L)
+    raw_n <- WamRuntime$get_reg(state, 2L)
+    a_v <- WamRuntime$deref(state, raw_a)
+    if (!is.null(a_v) && !is.null(a_v$tag) && a_v$tag != "unbound") {
+      s <- wam_term_name_string(a_v, table)
+      if (is.null(s)) return(FALSE)
+      parsed <- suppressWarnings(as.numeric(s))
+      if (is.na(parsed)) return(FALSE)
+      return(WamRuntime$unify(state, raw_n, WamRuntime$arith_to_term(parsed)))
+    }
+    n_v <- WamRuntime$deref(state, raw_n)
+    if (is.null(n_v) || is.null(n_v$tag) || !(n_v$tag %in% c("int", "float"))) return(FALSE)
+    new_id <- WamRuntime$intern(table, as.character(n_v$val))
+    return(WamRuntime$unify(state, raw_a, Atom(new_id)))
+  }
+
+  # ----- msort/2: sort, keep duplicates -----
+  if (key == "msort/2") {
+    elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(elems)) return(FALSE)
+    sorted <- WamRuntime$wam_sort_terms(state, elems, table)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
+                            WamRuntime$wam_list_build(sorted, table)))
+  }
+
+  # ----- sort/2: sort + dedup (standard order of terms) -----
+  if (key == "sort/2") {
+    elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(elems)) return(FALSE)
+    sorted <- WamRuntime$wam_sort_terms(state, elems, table)
+    deduped <- list()
+    for (i in seq_along(sorted)) {
+      if (i == 1L ||
+          WamRuntime$compare_terms(state, sorted[[i - 1L]], sorted[[i]], table) != 0L) {
+        deduped <- c(deduped, list(sorted[[i]]))
+      }
+    }
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
+                            WamRuntime$wam_list_build(deduped, table)))
   }
 
   # Unknown library predicate.
