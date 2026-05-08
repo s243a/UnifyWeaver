@@ -2976,6 +2976,33 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     return(WamRuntime$call_goal(program, state, WamRuntime$get_reg(state, 1L)))
   }
 
+  # ----- phrase/2 and phrase/3 -----
+  # phrase(?Body, ?List)         is call(Body, List, []).
+  # phrase(?Body, ?List, ?Rest)  is call(Body, List, Rest).
+  # Used to invoke DCG-translated nonterminals (rule head + 2 extra
+  # difference-list args). The translation itself happens at SWI's
+  # consult time (term_expansion) or via dcg_translate_rule/2 at
+  # runtime; by the time clauses reach the WAM compiler they are
+  # ordinary Prolog with the difference-list args already in place.
+  if (key == "phrase/2") {
+    goal <- WamRuntime$get_reg(state, 1L)
+    list_in <- WamRuntime$get_reg(state, 2L)
+    empty_list <- Atom(WamRuntime$intern(table, "[]"))
+    ext <- WamRuntime$wam_extend_goal(state, goal,
+                                       list(list_in, empty_list), table)
+    if (is.null(ext)) return(FALSE)
+    return(isTRUE(WamRuntime$call_goal(program, state, ext)))
+  }
+  if (key == "phrase/3") {
+    goal <- WamRuntime$get_reg(state, 1L)
+    list_in <- WamRuntime$get_reg(state, 2L)
+    list_out <- WamRuntime$get_reg(state, 3L)
+    ext <- WamRuntime$wam_extend_goal(state, goal,
+                                       list(list_in, list_out), table)
+    if (is.null(ext)) return(FALSE)
+    return(isTRUE(WamRuntime$call_goal(program, state, ext)))
+  }
+
   # ----- atom_codes/2 (also string_codes/2): atom <-> list of code points -----
   # Strings and atoms are not distinguished at the WAM-text level, so
   # the string_* family aliases onto its atom_* counterpart.
