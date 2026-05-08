@@ -378,23 +378,80 @@ extractDouble _ (Float h) = Just h
 extractDouble tbl (Atom aid) = case reads (lookupAtom tbl aid) of [(h, "")] -> Just h; _ -> Nothing
 extractDouble _ _ = Nothing
 
--- | Compute the backward-reachable demand set from a root node.
--- Given a child→[parents] adjacency map, returns all nodes that can
--- reach rootId via the edge relation (backward BFS fixpoint).
-computeDemandSet :: IM.IntMap [Int] -> Int -> IS.IntSet
-computeDemandSet parents rootId = bfs (IS.singleton rootId) (IS.singleton rootId)
+-- | DemandFilterSpec selects which demand-filter strategy the runtime
+-- runs. See docs/design/WAM_DEMAND_FILTER_SPECIFICATION.md.
+--   HopLimit Nothing  — unbounded reverse BFS (legacy default, matches
+--                       today's behaviour when no directive is declared).
+--   HopLimit (Just n) — depth-bounded reverse BFS (sound when n ≥ kernel
+--                       max_depth; misses unreachable seeds otherwise).
+--   Flux _ _          — flux-weighted top-K with optional spark sort.
+--                       Phase 2.5; emits panic at runtime in Phase 2.
+--   DfNone            — no filter; demand set is the full universe of
+--                       node IDs in the edge map.
+data DemandFilterSpec
+  = HopLimit { dfMaxHops :: !(Maybe Int) }
+  | Flux     { dfCacheTopK :: !Int, dfSortSparks :: !Bool }
+  | DfNone
+  deriving (Show)
+
+-- | Output of a single runDemandBFS call. The seed pre-filter consumes
+-- dfrInSet; cache warming consumes dfrFluxScores when present;
+-- spark scheduling consumes dfrSortedSeeds when present.
+data DemandFilterResult = DemandFilterResult
+  { dfrInSet       :: !IS.IntSet
+  , dfrSortedSeeds :: !(Maybe [Int])
+  , dfrFluxScores  :: !(Maybe (IM.IntMap Double))
+  } deriving (Show)
+
+-- | Dispatch on DemandFilterSpec and produce a DemandFilterResult.
+-- HopLimit and DfNone are implemented in Phase 2; Flux is a panic stub
+-- until Phase 2.5.
+runDemandBFS :: DemandFilterSpec -> IM.IntMap [Int] -> Int -> DemandFilterResult
+runDemandBFS spec parents rootId = case spec of
+  HopLimit maxHops ->
+    DemandFilterResult
+      { dfrInSet       = computeDemandSetHopLimited parents rootId maxHops
+      , dfrSortedSeeds = Nothing
+      , dfrFluxScores  = Nothing
+      }
+  Flux {} ->
+    error "runDemandBFS: Flux strategy not yet implemented (Phase 2.5). \
+          \Use HopLimit or DfNone."
+  DfNone ->
+    DemandFilterResult
+      { dfrInSet       = IS.fromList (IM.keys parents)
+      , dfrSortedSeeds = Nothing
+      , dfrFluxScores  = Nothing
+      }
+
+-- | Compute the backward-reachable demand set from a root node, with an
+-- optional hop limit. Nothing = unbounded (legacy behaviour). The bound
+-- counts edges traversed, so HopLimit (Just 0) returns just {rootId}.
+computeDemandSetHopLimited :: IM.IntMap [Int] -> Int -> Maybe Int -> IS.IntSet
+computeDemandSetHopLimited parents rootId maxHops =
+    bfs 0 (IS.singleton rootId) (IS.singleton rootId)
   where
     -- Build reverse adjacency: parent → [children]
     !reverseAdj = IM.fromListWith (++)
         [(p, [child]) | (child, ps) <- IM.toList parents, p <- ps]
-    bfs frontier visited
+    bfs !depth !frontier !visited
       | IS.null frontier = visited
+      | exceededHopLimit depth = visited
       | otherwise =
           let newNodes = IS.fromList
                 [ c | node <- IS.toList frontier
                     , c <- IM.findWithDefault [] node reverseAdj
                     , not (IS.member c visited) ]
-          in bfs newNodes (IS.union visited newNodes)
+          in bfs (depth + 1) newNodes (IS.union visited newNodes)
+    exceededHopLimit !d = case maxHops of
+      Nothing -> False
+      Just n  -> d >= n
+
+-- | Backward-compat alias for unbounded demand BFS. Pre-Phase-2 callers
+-- and any test asserting this name keep working unchanged.
+computeDemandSet :: IM.IntMap [Int] -> Int -> IS.IntSet
+computeDemandSet parents rootId =
+    computeDemandSetHopLimited parents rootId Nothing
 
 -- | Filter a child→[parents] map to the structural demand set.
 -- Iterates the usually-small demand set instead of scanning every graph node.

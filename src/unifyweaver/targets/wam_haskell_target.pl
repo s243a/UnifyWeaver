@@ -2969,16 +2969,27 @@ generate_lmdb_wiring(Options, SetupCode, ContextCode, ImportCode) :-
 
 %% generate_demand_filter(+DetectedKernels, +Options, -FilterCode, -FactsSource)
 %  When demand filtering is enabled (kernels detected with an edge predicate),
-%  emit code to compute the demand set via backward BFS and filter the parents
-%  index. Otherwise emit nothing and use the unfiltered index.
+%  emit code that builds a DemandFilterSpec, dispatches via runDemandBFS, and
+%  filters the parents index. Otherwise emit nothing and use the unfiltered
+%  index.
+%
+%  The DemandFilterSpec is selected by:
+%    - declare_demand_filter/2 directive in user code (preferred)
+%    - declare_demand_filter(Strategy, Opts) option (override)
+%    - default `HopLimit Nothing` (unbounded — matches pre-Phase-2 behaviour)
+%
+%  See docs/design/WAM_DEMAND_FILTER_SPECIFICATION.md for the type.
 generate_demand_filter(DetectedKernels, Options, FilterCode, FactsSource) :-
     (   option(demand_filter(false), Options)
     ->  FilterCode = '',
         FactsSource = 'parentsIndexInterned'
     ;   DetectedKernels \= []
-    ->  FilterCode =
+    ->  resolve_demand_filter_spec(Options, SpecHs),
+        format(string(FilterCode),
 '    let !rootId = iAtom root
-        !demandSet = computeDemandSet parentsIndexInterned rootId
+        !demandFilterSpec = ~w
+        !demandFilterResult = runDemandBFS demandFilterSpec parentsIndexInterned rootId
+        !demandSet = dfrInSet demandFilterResult
         !demandSize = IS.size demandSet
         !totalNodes = IM.size parentsIndexInterned
         !filteredParents = filterByDemand demandSet parentsIndexInterned
@@ -2990,10 +3001,56 @@ generate_demand_filter(DetectedKernels, Options, FilterCode, FactsSource) :-
         -- seeds are gated out (e.g. 50k_cats: 49989/50000 skipped).
         !filteredSeedCats = filter (\\cat -> IS.member (iAtom cat) demandSet) seedCats
         !demandSkippedSeeds = length seedCats - length filteredSeedCats',
+            [SpecHs]),
         FactsSource = 'filteredParents'
     ;   FilterCode = '',
         FactsSource = 'parentsIndexInterned'
     ).
+
+%% resolve_demand_filter_spec(+Options, -SpecHs)
+%  Pick the DemandFilterSpec literal to emit into Main.hs.
+%  Precedence:
+%    1. demand_filter_spec(Strategy, Opts) in Options.
+%    2. user:demand_filter_spec(Strategy, Opts) declared in workload.
+%    3. Default: HopLimit Nothing (unbounded — legacy behaviour).
+resolve_demand_filter_spec(Options, SpecHs) :-
+    (   option(demand_filter_spec(Strategy, FilterOpts), Options)
+    ->  emit_demand_filter_spec(Strategy, FilterOpts, SpecHs)
+    ;   catch(user:demand_filter_spec(Strategy, FilterOpts), _, fail)
+    ->  emit_demand_filter_spec(Strategy, FilterOpts, SpecHs)
+    ;   SpecHs = '(HopLimit Nothing)'
+    ).
+
+%% emit_demand_filter_spec(+Strategy, +FilterOpts, -SpecHs)
+%  Translate a (Strategy, Options) Prolog term into a Haskell
+%  DemandFilterSpec literal. Validates strategy + options.
+emit_demand_filter_spec(hop_limit, FilterOpts, SpecHs) :- !,
+    (   memberchk(max_hops(N), FilterOpts), integer(N), N >= 0
+    ->  format(string(SpecHs), '(HopLimit (Just ~d))', [N])
+    ;   memberchk(unbounded, FilterOpts)
+    ->  SpecHs = '(HopLimit Nothing)'
+    ;   SpecHs = '(HopLimit Nothing)'
+    ).
+emit_demand_filter_spec(flux, FilterOpts, SpecHs) :- !,
+    %% Flux is accepted at codegen but panics at runtime until Phase 2.5.
+    (   memberchk(target_count(K), FilterOpts), integer(K), K >= 0
+    ->  CacheTopK = K
+    ;   memberchk(target_fraction(_F), FilterOpts)
+    ->  %% target_fraction needs runtime knowledge of universe size; emit
+        %% a placeholder K that the Phase 2.5 implementation will replace.
+        CacheTopK = 0
+    ;   CacheTopK = 0
+    ),
+    (   memberchk(sort_sparks(false), FilterOpts)
+    ->  SortSparks = 'False'
+    ;   SortSparks = 'True'
+    ),
+    format(string(SpecHs), '(Flux ~d ~w)', [CacheTopK, SortSparks]).
+emit_demand_filter_spec(none, _FilterOpts, 'DfNone') :- !.
+emit_demand_filter_spec(Strategy, _FilterOpts, _) :-
+    format(user_error,
+        '[wam_haskell] unknown demand filter strategy: ~w~n', [Strategy]),
+    throw(error(domain_error(demand_filter_strategy, Strategy), _)).
 
 %% generate_demand_gated_query_body(+DemandFilter, +RawQueryBody, -QueryBody)
 %
