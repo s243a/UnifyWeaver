@@ -1019,6 +1019,16 @@ WamRuntime$step <- function(program, state, instr) {
     },
     "Call" = {
       key <- paste0(instr$pred, "/", instr$arity)
+      # Lowered fast path (kernel / fact-table) wins over the WAM
+      # array. The lowered fn pushes any iter CPs it needs and
+      # returns TRUE/FALSE, so we just advance PC on success.
+      if (!is.null(program$lowered_dispatch) &&
+          exists(key, envir = program$lowered_dispatch, inherits = FALSE)) {
+        fn <- get(key, envir = program$lowered_dispatch, inherits = FALSE)
+        ok <- isTRUE(fn(program, state))
+        if (!ok) return(FALSE)
+        state$pc <- state$pc + 1L; return(TRUE)
+      }
       tgt <- program$labels[[key]]
       if (!is.null(tgt)) {
         state$cp <- state$pc + 1L
@@ -1039,6 +1049,17 @@ WamRuntime$step <- function(program, state, instr) {
     },
     "Execute" = {
       key <- paste0(instr$pred, "/", instr$arity)
+      # Lowered fast path (kernel / fact-table) wins over the WAM
+      # array. Tail-call: hand control back to the caller's CP via
+      # the same path the dynamic-store branch uses on success.
+      if (!is.null(program$lowered_dispatch) &&
+          exists(key, envir = program$lowered_dispatch, inherits = FALSE)) {
+        fn <- get(key, envir = program$lowered_dispatch, inherits = FALSE)
+        ok <- isTRUE(fn(program, state))
+        if (!ok) return(FALSE)
+        if (state$cp == 0L) { state$halt <- TRUE; return(TRUE) }
+        state$pc <- state$cp; state$cp <- 0L; return(TRUE)
+      }
       tgt <- program$labels[[key]]
       if (!is.null(tgt)) {
         state$pc <- as.integer(tgt)
@@ -1814,6 +1835,143 @@ WamRuntime$clause_iter <- function(program, state, head_args, body, arity,
 }
 
 # ----------------------------------------------------------
+# Recursive-kernel: transitive_closure2
+# ----------------------------------------------------------
+# Native BFS over the source's reachability set, given an "edge"
+# binary predicate. The detector in
+# src/unifyweaver/core/recursive_kernel_detection.pl recognises the
+# canonical shape
+#   closure(X,Y) :- edge(X,Y).
+#   closure(X,Y) :- edge(X,Z), closure(Z,Y).
+# and the wam_r_target codegen emits a one-line dispatch fn that
+# calls this helper. Edges are enumerated by driving call_goal on
+# `edge(<cur>, Y)` -- so the underlying edge predicate can be a
+# fact-table, a dynamic store, a WAM-compiled predicate, or any
+# other registered dispatch path.
+#
+# Mode support: source must be ground; target may be ground (check)
+# or unground (enumerate). Unground source falls back to FALSE for
+# now; the proper enumeration would BFS from every node, which
+# this scope leaves to a follow-up.
+WamRuntime$transitive_closure2 <- function(program, state, key, edge_pred,
+                                            edge_key, source, target,
+                                            resume_pc) {
+  table <- program$intern_table
+  src_v <- WamRuntime$deref(state, source)
+  if (is.null(src_v) || is.null(src_v$tag) || src_v$tag != "atom") {
+    return(FALSE)
+  }
+  # Snapshot state so the iterate_goal calls below don't leak
+  # bindings or CPs into the caller.
+  snap_cps   <- length(state$cps)
+  snap_regs  <- as.list.environment(state$regs2)
+  snap_trail <- length(state$trail)
+  snap_pc    <- state$pc
+  snap_cp    <- state$cp
+  snap_halt  <- state$halt
+  snap_vc    <- state$var_counter
+  snap_mode  <- state$mode
+  snap_build <- state$build_stack
+
+  edge_atom_id <- WamRuntime$intern(table, edge_pred)
+  visited <- new.env(parent = emptyenv())
+  queue   <- list(src_v)
+  reached <- list()
+  assign(as.character(src_v$id), TRUE, envir = visited)
+
+  while (length(queue) > 0L) {
+    cur <- queue[[1L]]
+    queue <- queue[-1L]
+    y_var <- Unbound(paste0("V_kt_", state$var_counter))
+    state$var_counter <- state$var_counter + 1L
+    edge_goal <- StructTerm(edge_atom_id, list(cur, y_var))
+    WamRuntime$iterate_goal(program, state, edge_goal, function() {
+      y_v <- WamRuntime$deref(state, y_var)
+      if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "atom") {
+        k <- as.character(y_v$id)
+        if (!exists(k, envir = visited, inherits = FALSE)) {
+          assign(k, TRUE, envir = visited)
+          queue   <<- c(queue, list(y_v))
+          reached <<- c(reached, list(y_v))
+        }
+      }
+      TRUE
+    })
+  }
+
+  # Restore state.
+  if (length(state$cps) > snap_cps) {
+    state$cps <- state$cps[seq_len(snap_cps)]
+  }
+  e <- new.env(parent = emptyenv(), hash = TRUE)
+  for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
+  state$regs2 <- e
+  if (length(state$trail) > snap_trail) {
+    to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
+    for (name in to_undo) {
+      if (exists(name, envir = state$bindings, inherits = FALSE)) {
+        rm(list = name, envir = state$bindings)
+      }
+    }
+    state$trail <- state$trail[seq_len(snap_trail)]
+  }
+  state$pc          <- snap_pc
+  state$cp          <- snap_cp
+  state$halt        <- snap_halt
+  state$var_counter <- snap_vc
+  state$mode        <- snap_mode
+  state$build_stack <- snap_build
+
+  # Iterate the reached set, unifying each with target. Multi-
+  # solution: push iter CP after the first match.
+  WamRuntime$kernel_stream_iter(program, state, key, reached, target, 1L,
+                                 resume_pc)
+}
+
+# Iterate a precomputed result list, unifying each entry with the
+# target reg. Mirrors fact_table_iter_subset's iter-CP shape but
+# unifies a single-arg target instead of an arg tuple.
+WamRuntime$kernel_stream_iter <- function(program, state, key, results, target,
+                                           start_idx, resume_pc) {
+  if (start_idx > length(results)) return(FALSE)
+  for (idx in seq.int(start_idx, length(results))) {
+    snap_trail <- length(state$trail)
+    snap_vc    <- state$var_counter
+    if (WamRuntime$unify(state, target, results[[idx]])) {
+      if (idx < length(results)) {
+        captured_results <- results
+        captured_target  <- target
+        captured_next    <- idx + 1L
+        captured_resume  <- resume_pc
+        captured_program <- program
+        captured_key     <- key
+        cp <- list(
+          kind        = "iter",
+          regs        = as.list.environment(state$regs2),
+          trail_len   = snap_trail,
+          cp          = state$cp,
+          var_counter = snap_vc,
+          mode        = state$mode,
+          build_stack = state$build_stack,
+          resume_pc   = resume_pc,
+          retry       = function(state) {
+            WamRuntime$kernel_stream_iter(captured_program, state,
+                                           captured_key, captured_results,
+                                           captured_target, captured_next,
+                                           captured_resume)
+          }
+        )
+        state$cps <- c(state$cps, list(cp))
+      }
+      return(TRUE)
+    }
+    WamRuntime$undo_trail_to(state, snap_trail)
+    state$var_counter <- snap_vc
+  }
+  FALSE
+}
+
+# ----------------------------------------------------------
 # Fact-table iterator for lowered fact predicates
 # ----------------------------------------------------------
 # Predicates that are pure fact tables (all clauses are
@@ -2169,6 +2327,14 @@ WamRuntime$call_goal <- function(program, state, goal_term) {
 
 WamRuntime$dispatch_call <- function(program, state, pred, arity) {
   key <- paste0(pred, "/", arity)
+  # Lowered fast path (kernel / fact-table) wins over the WAM
+  # array; the lowered fn manages its own iter CPs and returns
+  # TRUE/FALSE.
+  if (!is.null(program$lowered_dispatch) &&
+      exists(key, envir = program$lowered_dispatch, inherits = FALSE)) {
+    fn <- get(key, envir = program$lowered_dispatch, inherits = FALSE)
+    return(isTRUE(fn(program, state)))
+  }
   tgt <- program$labels[[key]]
   if (!is.null(tgt)) {
     # User predicate (or foreign-stub label). Run as a sub-call:
@@ -2336,6 +2502,37 @@ WamRuntime$iterate_goal <- function(program, state, goal_term, on_each) {
           } else {
             WamRuntime$undo_trail_to(state, snap_t)
           }
+        }
+        return(invisible(NULL))
+      }
+    }
+  }
+
+  # Lowered fast-path predicate (kernel / fact-table): the goal's
+  # iter CPs aren't tied to the WAM stepping engine, so we drive
+  # backtracking by calling backtrack() directly and skip run().
+  # The backtrack handler restores state and invokes the iter CP's
+  # retry; on TRUE we just hand control to on_each.
+  if (!is.null(goal_v) && !is.null(goal_v$tag) &&
+      !is.null(program$lowered_dispatch)) {
+    if (goal_v$tag == "atom") {
+      ld_pred <- WamRuntime$string_of(table, goal_v$id); ld_arity <- 0L
+    } else if (goal_v$tag == "struct") {
+      ld_pred <- WamRuntime$string_of(table, goal_v$fid); ld_arity <- length(goal_v$args)
+    } else {
+      ld_pred <- NULL
+    }
+    if (!is.null(ld_pred)) {
+      ld_key <- paste0(ld_pred, "/", ld_arity)
+      if (exists(ld_key, envir = program$lowered_dispatch, inherits = FALSE)) {
+        snap_cps_len <- length(state$cps)
+        ok <- WamRuntime$call_goal(program, state, goal_term)
+        while (isTRUE(ok)) {
+          cont <- on_each()
+          if (!isTRUE(cont)) break
+          if (length(state$cps) <= snap_cps_len) break
+          if (!WamRuntime$backtrack(state)) break
+          ok <- TRUE  # backtrack already invoked retry; keep iterating
         }
         return(invisible(NULL))
       }
