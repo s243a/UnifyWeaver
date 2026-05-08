@@ -191,8 +191,8 @@ that bypasses the WAM stepping engine entirely. The classifier
 lives in
 [`src/unifyweaver/core/recursive_kernel_detection.pl`](../src/unifyweaver/core/recursive_kernel_detection.pl)
 and is shared with the Haskell / Rust / Elixir targets; this
-target wires up `transitive_closure2` and `transitive_distance3`
-so far. Canonical shapes:
+target wires up `transitive_closure2`, `transitive_distance3`,
+and `weighted_shortest_path3` so far. Canonical shapes:
 
 ```prolog
 % transitive_closure2 -- streams reachable nodes
@@ -202,16 +202,24 @@ ancestor(X, Y) :- parent(X, Z), ancestor(Z, Y).
 % transitive_distance3 -- streams (target, distance-from-source)
 tdist(X, Y, 1) :- edge(X, Y).
 tdist(X, Y, D) :- edge(X, Z), tdist(Z, Y, D1), D is D1 + 1.
+
+% weighted_shortest_path3 -- streams (target, shortest-weight)
+wsp(X, Y, W) :- edge(X, Y, W).
+wsp(X, Y, W) :- edge(X, Z, W1), wsp(Z, Y, RestW), W is RestW + W1.
 ```
 
-The runtime helpers (`WamRuntime$transitive_closure2`,
-`WamRuntime$transitive_distance3`) BFS from a ground source over
-the underlying edge predicate (invoked via `iterate_goal`, so the
-edges can be a fact-table, a dynamic store, a WAM-compiled
-predicate, or any other registered dispatch path) and stream
-results via iter-CPs. Source must be ground; target may be ground
-(check) or unground (enumerate); for the distance variant, the
-distance arg is computed (always unground at the call).
+The runtime helpers BFS (`transitive_closure2`,
+`transitive_distance3`) or run Dijkstra (`weighted_shortest_path3`)
+from a ground source over the underlying edge predicate (invoked
+via `iterate_goal`, so the edges can be a fact-table, a dynamic
+store, a WAM-compiled predicate, or any other registered dispatch
+path) and stream results via iter-CPs. Source must be ground;
+target may be ground (check) or unground (enumerate); for the
+distance / weight variants, those args are computed (always
+unground at the call). Note that the Prolog source clauses
+enumerate *all* paths, but the native fast paths return the
+*shortest* per reachable node -- that's the labelling implied by
+the kernel name and matches the Haskell / Rust semantics.
 
 The lowered function is registered in `program$lowered_dispatch`,
 so `Call` and `Execute` instructions for kernel-detected
@@ -522,7 +530,7 @@ WamRuntime$run(shared_program, state)
 
 The full test suite lives in
 [tests/test_wam_r_generator.pl](../tests/test_wam_r_generator.pl)
-and contains 48 tests covering both structural assertions on the
+and contains 49 tests covering both structural assertions on the
 generated source and end-to-end execution via `Rscript`. The
 `*_e2e_rscript` tests auto-skip when `Rscript` is not on `PATH`.
 
@@ -564,6 +572,7 @@ Coverage map (e2e tests, by feature group):
 | `fact_table_e2e_rscript` | fact-table lowering: hash-indexed dispatch, multi-solution backtracking, atoms + integers |
 | `kernel_tc2_e2e_rscript` | recursive-kernel detection: `transitive_closure2` BFS over a fact-table edge predicate |
 | `kernel_td3_e2e_rscript` | recursive-kernel detection: `transitive_distance3` BFS-with-depth over a fact-table edge predicate |
+| `kernel_wsp3_e2e_rscript` | recursive-kernel detection: `weighted_shortest_path3` Dijkstra over a weighted fact-table edge predicate |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 

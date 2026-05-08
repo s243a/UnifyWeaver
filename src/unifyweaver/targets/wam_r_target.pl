@@ -847,6 +847,22 @@ emit_kernel(Pred, recursive_kernel(transitive_distance3, _, ConfigOps),
                                    source, target, dist, state$pc + 1L)
 }',
            [FuncName, Pred, EdgePred, EdgePred]).
+emit_kernel(Pred, recursive_kernel(weighted_shortest_path3, _, ConfigOps),
+            DataDecl, LoweredFunc, FuncName) :-
+    member(edge_pred(EdgePred/EdgeArity), ConfigOps),
+    EdgeArity =:= 3,
+    r_pred_name(Pred, RName),
+    format(atom(FuncName), '~w_kernel_wsp3', [RName]),
+    DataDecl = "",
+    format(string(LoweredFunc),
+'~w <- function(program, state) {
+  source <- WamRuntime$get_reg(state, 1L)
+  target <- WamRuntime$get_reg(state, 2L)
+  weight <- WamRuntime$get_reg(state, 3L)
+  WamRuntime$weighted_shortest_path3(program, state, "~w/3", "~w", "~w/3",
+                                      source, target, weight, state$pc + 1L)
+}',
+           [FuncName, Pred, EdgePred, EdgePred]).
 
 % ============================================================================
 % FACT-TABLE CLASSIFICATION + EMISSION

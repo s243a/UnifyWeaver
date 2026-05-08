@@ -2490,6 +2490,72 @@ e2e_kernel_td3_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for the weighted_shortest_path3 kernel.
+% Dijkstra over a weighted edge predicate of arity 3 -- yields
+% (target, total-weight) for the SHORTEST path per reachable node,
+% not all paths. Tests cover:
+%   * shorter detour beating a single direct heavy edge,
+%   * multi-hop sum,
+%   * wrong-distance failure (heavy direct edge),
+%   * findall over the reachable set with shortest weights.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(kernel_wsp3_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_kernel_wsp3_via_rscript
+    ;   true
+    )).
+
+e2e_kernel_wsp3_via_rscript :-
+    retractall(user:wedge(_, _, _)),
+    retractall(user:wsp(_, _, _)),
+    % a -1-> b -2-> c -3-> d, plus a heavy direct a-5->c.
+    assertz(user:wedge(a, b, 1)),
+    assertz(user:wedge(b, c, 2)),
+    assertz(user:wedge(c, d, 3)),
+    assertz(user:wedge(a, c, 5)),
+    assertz((user:wsp(X, Y, W) :- user:wedge(X, Y, W))),
+    assertz((user:wsp(X, Y, W) :- user:wedge(X, Z, W1),
+                                   user:wsp(Z, Y, W2),
+                                   W is W1 + W2)),
+    assertz((user:wsp_direct  :- wsp(a, b, 1))),
+    assertz((user:wsp_shorter :- wsp(a, c, 3))),       % via b, not 5
+    assertz((user:wsp_threehop :- wsp(a, d, 6))),
+    assertz((user:wsp_no_heavy :- wsp(a, c, 5))),      % wrong weight
+    assertz((user:wsp_no_back  :- wsp(d, a, _))),
+    assertz((user:wsp_findall :-
+        findall(Y-W, wsp(a, Y, W), L),
+        msort(L, S),
+        S == [b-1, c-3, d-6])),
+    unique_r_tmp_dir('tmp_r_kernel_wsp3_e2e', TmpDir),
+    write_wam_r_project(
+        [user:wedge/3, user:wsp/3,
+         user:wsp_direct/0, user:wsp_shorter/0, user:wsp_threehop/0,
+         user:wsp_no_heavy/0, user:wsp_no_back/0, user:wsp_findall/0],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [wsp_direct, wsp_shorter, wsp_threehop, wsp_findall],
+    No  = [wsp_no_heavy, wsp_no_back],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
+    read_file_to_string(ProgPath, Code, []),
+    assertion(sub_string(Code, _, _, _, 'pred_wsp_kernel_wsp3 <- function(')),
+    assertion(sub_string(Code, _, _, _,
+        'assign("wsp/3", pred_wsp_kernel_wsp3, envir = shared_program$lowered_dispatch)')),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-
