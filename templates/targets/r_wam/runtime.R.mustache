@@ -1721,6 +1721,72 @@ WamRuntime$retract_iter <- function(program, state, head_args, body, arity,
   FALSE
 }
 
+# Multi-solution clause/2. Same shape as retract_iter except the
+# matched clauses are *not* removed from the live store -- clause/2
+# is non-destructive introspection. Walks the snapshot taken at the
+# original call, unifying the caller's Head pattern against each
+# stored clause's head args and the caller's Body against the
+# stored body (with a fact's implicit body treated as the atom
+# `true`, matching SWI semantics). On the first match an iter CP is
+# pushed so backtracking re-binds against the next snapshot entry.
+WamRuntime$clause_iter <- function(program, state, head_args, body, arity,
+                                    ck, snapshot, start_idx, resume_pc) {
+  if (start_idx > length(snapshot)) return(FALSE)
+  table <- program$intern_table
+  true_atom <- Atom(WamRuntime$intern(table, "true"))
+  for (idx in seq.int(start_idx, length(snapshot))) {
+    cl <- snapshot[[idx]]
+    if (length(cl$head_args) != arity) next
+    snap_trail <- length(state$trail)
+    snap_vc    <- state$var_counter
+    fresh <- WamRuntime$copy_term_clause(state, cl)
+    ok <- TRUE
+    for (j in seq_len(arity)) {
+      if (!WamRuntime$unify(state, head_args[[j]], fresh$head_args[[j]])) {
+        ok <- FALSE; break
+      }
+    }
+    if (ok) {
+      fresh_body <- if (is.null(fresh$body)) true_atom else fresh$body
+      ok <- WamRuntime$unify(state, body, fresh_body)
+    }
+    if (ok) {
+      if (idx < length(snapshot)) {
+        captured_head_args <- head_args
+        captured_body      <- body
+        captured_arity     <- arity
+        captured_ck        <- ck
+        captured_snapshot  <- snapshot
+        captured_next_idx  <- idx + 1L
+        captured_resume    <- resume_pc
+        captured_program   <- program
+        cp <- list(
+          kind        = "iter",
+          regs        = as.list.environment(state$regs2),
+          trail_len   = snap_trail,
+          cp          = state$cp,
+          var_counter = snap_vc,
+          mode        = state$mode,
+          build_stack = state$build_stack,
+          resume_pc   = resume_pc,
+          retry       = function(state) {
+            WamRuntime$clause_iter(captured_program, state,
+                                    captured_head_args, captured_body,
+                                    captured_arity, captured_ck,
+                                    captured_snapshot, captured_next_idx,
+                                    captured_resume)
+          }
+        )
+        state$cps <- c(state$cps, list(cp))
+      }
+      return(TRUE)
+    }
+    WamRuntime$undo_trail_to(state, snap_trail)
+    state$var_counter <- snap_vc
+  }
+  FALSE
+}
+
 # Enumerable iteration over a list of WAM terms, used by member/2 (and
 # any future enumerator with the same shape). Tries to unify `target`
 # with each element starting at `start_idx`. On success, pushes an iter
@@ -3124,8 +3190,9 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
   #   form of Term (uses term_to_string -- list notation, struct
   #   `f(a,b)`, atom names, numbers).
   #   Reverse mode (Atom bound):  parse Atom's name as a Prolog term
-  #   and unify with Term. Operator notation is *not* supported in
-  #   the parser; user terms must be in canonical structural form.
+  #   and unify with Term. The parser handles canonical structural
+  #   form *and* operator notation for the standard Prolog operator
+  #   table (see WamRuntime$op_infix / WamRuntime$op_prefix).
   if (key == "term_to_atom/2") {
     raw_t <- WamRuntime$get_reg(state, 1L)
     raw_a <- WamRuntime$get_reg(state, 2L)
@@ -3142,6 +3209,52 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     parsed <- WamRuntime$parse_term(text, table, state)
     if (is.null(parsed)) return(FALSE)
     return(WamRuntime$unify(state, raw_t, parsed))
+  }
+
+  # ----- read_term_from_atom/2 and read_term_from_atom/3 -----
+  # read_term_from_atom(+Atom, -Term[, +Options]).
+  #   Parse Atom's name as a Prolog term and unify with Term. The
+  #   /3 variant accepts an Options list (e.g. variable_names(VN));
+  #   options other than `[]` are silently ignored in this
+  #   scaffold. Same parser as term_to_atom/2 reverse mode.
+  if (key == "read_term_from_atom/2" || key == "read_term_from_atom/3") {
+    a_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    if (is.null(a_v)) return(FALSE)
+    text <- wam_term_name_string(a_v, table)
+    if (is.null(text)) return(FALSE)
+    parsed <- WamRuntime$parse_term(text, table, state)
+    if (is.null(parsed)) return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L), parsed))
+  }
+
+  # ----- clause/2: enumerate matching clauses in the dynamic store -----
+  # clause(?Head, ?Body) succeeds, and on backtracking re-succeeds,
+  # for every clause stored in program$dynamic that matches Head
+  # and Body. Facts are treated as having body = `true` (matching
+  # SWI semantics). Multi-solution: an iter CP is pushed after the
+  # first match; the snapshot is value-stable across asserts/
+  # retracts that happen during the iteration (same approach as
+  # retract_iter).
+  if (key == "clause/2") {
+    head_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    body   <- WamRuntime$get_reg(state, 2L)
+    if (is.null(head_v) || is.null(head_v$tag)) return(FALSE)
+    if (head_v$tag == "atom") {
+      pred <- WamRuntime$string_of(table, head_v$id)
+      arity <- 0L
+      head_args <- list()
+    } else if (head_v$tag == "struct") {
+      pred <- WamRuntime$string_of(table, head_v$fid)
+      arity <- length(head_v$args)
+      head_args <- head_v$args
+    } else {
+      return(FALSE)
+    }
+    ck <- paste0(pred, "/", arity)
+    if (!exists(ck, envir = program$dynamic, inherits = FALSE)) return(FALSE)
+    snapshot <- get(ck, envir = program$dynamic, inherits = FALSE)
+    return(WamRuntime$clause_iter(program, state, head_args, body, arity, ck,
+                                   snapshot, 1L, state$pc + 1L))
   }
 
   # ----- string_upper/2 and string_lower/2 -----

@@ -2064,6 +2064,92 @@ e2e_base_name_clash_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for read_term_from_atom/2,3 and clause/2.
+% Both build on existing infrastructure: read_term_from_atom shares
+% the parser with term_to_atom/2 reverse mode; clause/2 walks the
+% dynamic store via clause_iter (same iter-CP shape as retract_iter
+% from PR #1900, but without the removal side-effect).
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(read_term_clause_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_read_term_clause_via_rscript
+    ;   true
+    )).
+
+e2e_read_term_clause_via_rscript :-
+    % read_term_from_atom/2: parse a structural term.
+    assertz((user:rt_struct :-
+        atom_codes(A, [102, 40, 49, 44, 50, 41]),  % "f(1,2)"
+        read_term_from_atom(A, T),
+        T == f(1, 2))),
+    % read_term_from_atom/2: parse an operator expression.
+    assertz((user:rt_op :-
+        atom_codes(A, [49, 43, 50, 42, 51]),  % "1+2*3"
+        read_term_from_atom(A, T),
+        T == 1+2*3)),
+    % read_term_from_atom/3: options arg is accepted (ignored).
+    assertz((user:rt_three :-
+        atom_codes(A, [104, 105]),  % "hi"
+        read_term_from_atom(A, T, []),
+        T == hi)),
+    % Garbage input fails.
+    assertz((user:rt_fail :-
+        atom_codes(A, [102, 40]),  % "f("
+        read_term_from_atom(A, _))),
+    % clause/2: collect every fact of fact/1.
+    assertz((user:cl_collect :-
+        assertz(fact(1)), assertz(fact(2)), assertz(fact(3)),
+        findall(X, clause(fact(X), true), L),
+        L == [1, 2, 3])),
+    % clause/2: rule with body. The body in the dynamic store comes
+    % out via the second arg.
+    assertz((user:cl_body :-
+        assertz((rul(X) :- X > 0)),
+        clause(rul(_), B),
+        B = (_ > 0))),
+    % clause/2 unifies head -- selects which clauses match.
+    assertz((user:cl_filter :-
+        assertz(typed(1, odd)),
+        assertz(typed(2, even)),
+        assertz(typed(3, odd)),
+        findall(X, clause(typed(X, odd), true), Odds),
+        Odds == [1, 3])),
+    % clause/2 over an unknown predicate fails.
+    assertz((user:cl_no :- clause(nope(_), _))),
+    % clause/2 doesn't remove anything; the store survives.
+    assertz((user:cl_nondestr :-
+        assertz(persists(1)), assertz(persists(2)),
+        findall(X, clause(persists(X), _), L1),
+        L1 == [1, 2],
+        % After clause/2, the facts must still be there.
+        findall(Y, clause(persists(Y), _), L2),
+        L2 == [1, 2])),
+    unique_r_tmp_dir('tmp_r_readterm_clause_e2e', TmpDir),
+    write_wam_r_project(
+        [user:rt_struct/0, user:rt_op/0, user:rt_three/0, user:rt_fail/0,
+         user:cl_collect/0, user:cl_body/0, user:cl_filter/0,
+         user:cl_no/0, user:cl_nondestr/0],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [rt_struct, rt_op, rt_three,
+           cl_collect, cl_body, cl_filter, cl_nondestr],
+    No  = [rt_fail, cl_no],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-

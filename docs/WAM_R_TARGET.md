@@ -273,7 +273,9 @@ WAM stepping loop.
 Before and Length given), `char_type/2` (forward mode: char given;
 types `alpha`, `alnum`, `digit`, `space`, `upper`, `lower`,
 `punct`, `ascii`, `csym`, `csymf`, `newline`, `white`),
-`term_to_atom/2`, `tab/1`.
+`term_to_atom/2`, `read_term_from_atom/2`,
+`read_term_from_atom/3` (the options arg is accepted but ignored
+in this scaffold), `tab/1`.
 
 The `atom`/`string` distinction is collapsed at the WAM-text level
 (SWI's WAM emitter doesn't preserve it), so `string_*` predicates
@@ -299,11 +301,13 @@ abstraction.
 
 `assertz/1`, `asserta/1`, `retract/1` (multi-solution: iter-CP
 walks the snapshot taken at the call, removing each match in turn
-on backtracking), `abolish/1` (takes `Name/Arity`). Clauses are
-stored in `program$dynamic` (an R env, so mutations propagate
-across queries). Multi-clause dynamic predicate calls are
-dispatched through a `dynamic` CP that walks the clause list on
-backtracking.
+on backtracking), `abolish/1` (takes `Name/Arity`), `clause/2`
+(multi-solution introspection: same iter-CP shape as
+`retract/1`, without the removal side-effect; facts are surfaced
+with body = `true`). Clauses are stored in `program$dynamic` (an
+R env, so mutations propagate across queries). Multi-clause
+dynamic predicate calls are dispatched through a `dynamic` CP
+that walks the clause list on backtracking.
 
 ### Exception handling
 
@@ -426,7 +430,7 @@ WamRuntime$run(shared_program, state)
 
 The full test suite lives in
 [tests/test_wam_r_generator.pl](../tests/test_wam_r_generator.pl)
-and contains 42 tests covering both structural assertions on the
+and contains 43 tests covering both structural assertions on the
 generated source and end-to-end execution via `Rscript`. The
 `*_e2e_rscript` tests auto-skip when `Rscript` is not on `PATH`.
 
@@ -462,6 +466,7 @@ Coverage map (e2e tests, by feature group):
 | `bagof_setof_existential_e2e_rscript` | `^/2` existential scope in `bagof`/`setof`/`findall` |
 | `cli_arg_parser_e2e_rscript` | structured CLI args (lists, structs, expressions) parse via the runtime parser |
 | `base_name_clash_e2e_rscript` | predicates named after base R functions (`c`, `t`, `q`, `cat`) don't shadow them |
+| `read_term_clause_e2e_rscript` | `read_term_from_atom/2,3` and multi-solution `clause/2` |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 
