@@ -6,7 +6,7 @@ document records the ordered rollout.
 
 ## 0. Starting point
 
-Current state on `main` after PR #1882:
+Current state on `main` after PR #1882 / #1901:
 
 - `data/benchmark/100k_cats/lmdb_proj/src/Main.hs:131-180` parses two
   TSVs (~280k pairs) and rebuilds the intern table on every run, even
@@ -16,68 +16,104 @@ Current state on `main` after PR #1882:
   `int_atom_seeds(true)` mode that skips TSV loading and reads
   pre-interned int-id files. Used by the enwiki path; not used by the
   matrix bench fixtures.
-- `src/unifyweaver/runtime/rust/mysql_stream/` parses MySQL INSERT
-  dumps and emits TSV to stdout. ~555 lines, well-tested.
+- **`src/unifyweaver/runtime/rust/mysql_stream/`** — Rust parser for
+  MySQL INSERT dumps. ~555 lines, validated against simplewiki (2.2 M
+  rows, byte-exact match to SQLite ground truth, ~28 MB/s gzipped on
+  one core). Schema-agnostic, emits TSV to stdout.
+- **`src/unifyweaver/runtime/python/lmdb_ingest/ingest_to_lmdb.py`** —
+  Python LMDB consumer. ~206 lines. Reads TSV from stdin, writes LMDB
+  with filtering, projection, encoding (`int32_le`), and dupsort. Already
+  in production for the integer-keyed enwiki ingest.
+- **`examples/streaming/enwiki_category_ingest.pl`** — Prolog glue
+  composing the Rust producer and Python consumer.
+- **`examples/streaming/enwiki_category_ingest_awk.pl`** — AWK variant
+  of the parser, demonstrating the one-line `declare_target` swap.
+- **`examples/streaming/enwiki_category_ingest_csharp.pl`** — C#
+  consumer variant.
+- `src/unifyweaver/glue/streaming_glue.pl` — the producer/consumer
+  composer.
 - `examples/benchmark/prepare_effective_distance_large_scales.py` builds
   the `100k_cats` fixture by extracting from a SimpleWiki SQLite db.
 
-## 1. Phase 1 — Rust ingester (`mysql_stream` extension)
+The plan below **extends the existing Python consumer** with text-keyed
+intern support. It does **not** add a new Rust crate or a new LMDB
+binding; the parser stays untouched, and the consumer's existing
+codepath stays the default for the integer-keyed enwiki regime.
 
-**Branch:** `feat/mysql-stream-lmdb-sink`
+## 1. Phase 1 — extend Python consumer with text-keyed intern support
 
-### 1.1 Add `heed` dependency
+**Branch:** `feat/lmdb-ingest-text-keyed-intern`
 
-Edit `src/unifyweaver/runtime/rust/mysql_stream/Cargo.toml` to add
-`heed = "0.20"` (or current stable). Keep it behind a feature flag
-`lmdb-sink` so the existing TSV-stdout path has no new compile-time
-dependency by default.
+The Rust parser stays unchanged. All work in this phase is in
+`src/unifyweaver/runtime/python/lmdb_ingest/ingest_to_lmdb.py` and a
+new Prolog example.
 
-### 1.2 `IngestSink` trait
+### 1.1 New env-var surface
 
-Refactor `iter_mysql_rows` consumers behind a small trait:
+Per `SPECIFICATION §3.2`, add the env vars `UW_INTERN_KEY`,
+`UW_INTERN_VAL`, `UW_LMDB_S2I_DB`, `UW_LMDB_I2S_DB`, `UW_LMDB_META_DB`,
+`UW_LMDB_APPEND`, `UW_COMPILE_TIME_ATOMS`, `UW_SOURCE_SHA`,
+`UW_SCHEMA_VERSION`, `UW_FORCE_REINGEST`. All default off; existing
+behaviour is preserved exactly.
 
-```rust
-pub trait IngestSink {
-    fn on_row(&mut self, row: &[Field]) -> Result<()>;
-    fn finalize(self) -> Result<()>;
-}
-```
+### 1.2 Intern map + sub-db writes
 
-The existing TSV-stdout writer becomes `TsvSink`; the new sink is
-`LmdbSink`. The streaming loop is unchanged.
+When `UW_INTERN_KEY=1` (and/or `UW_INTERN_VAL=1`):
 
-### 1.3 `LmdbSink` implementation
+- Maintain a Python `dict[str, int]` for the in-memory intern map.
+- On each row: look up the string in the dict; if absent, allocate the
+  next ID (starting from `compile_time_atoms_count`), append to `i2s`
+  with `append=True` (IDs are monotonic by construction), and record
+  in the dict.
+- On finalize: sort the dict by key, bulk-load `s2i` with
+  `append=True`. Write `meta` keys. Commit.
 
-New module `src/lmdb_sink.rs` (gated by `lmdb-sink` feature):
+When `UW_LMDB_APPEND=1` and the input is sorted, edge writes use
+`append=True` for the corresponding sub-db.
 
-- Holds a `heed::Env`, the four named databases, an
-  `IndexMap<String, u32>` for the in-memory intern map, and a write
-  txn that is committed in `finalize`.
-- `on_row` extracts (child, parent) per the configured column indices,
-  applies any filters, interns both strings, writes the edge with
-  `MDB_APPENDDUP`, and writes any new `i2s` entries with `MDB_APPEND`.
-- `finalize` sorts the intern map by string and bulk-loads `s2i` with
-  `MDB_APPEND`. Computes / writes `meta` keys. Commits the txn.
+### 1.3 Compile-time atoms sidecar
 
-### 1.4 New binary `mysql_stream_lmdb`
+Read the optional one-atom-per-line file at `UW_COMPILE_TIME_ATOMS`.
+Pre-populate `s2i` and `i2s` at the low IDs (0 .. N-1). Set
+`meta.compile_time_atoms_count = N`. Subsequent runtime atoms get IDs
+starting at N.
 
-Adds `[[bin]]` entry in `Cargo.toml`. CLI per
-`SPECIFICATION §3`. Wraps `iter_mysql_rows` + `LmdbSink`.
+If the input contains a string that collides with a reserved
+compile-time atom (e.g. literal `"true"`), it returns the existing
+reserved ID — no new ID is allocated.
 
-### 1.5 Tests
+### 1.4 Idempotence + reingestion guard
 
-- Unit tests on `LmdbSink`: small fixture (10 rows), check `s2i`,
-  `i2s`, edges, `meta` keys.
-- Round-trip test: run `mysql_stream_lmdb` on a synthetic dump, then a
-  Rust reader iterates the LMDB and reproduces the input edges.
-- Reserved-ID collision test: input dump containing the literal
-  string `"true"`, verify it gets the reserved low ID.
+On startup, if the LMDB exists and has `meta.schema_version` matching
+`UW_SCHEMA_VERSION`, exit with a diagnostic unless
+`UW_FORCE_REINGEST=1`. This prevents accidental double-ingestion
+into a populated database.
 
-### 1.6 Acceptance
+### 1.5 New Prolog example
 
-`cargo test --features lmdb-sink` green. Spike measurement: ingest
-SimpleWiki categorylinks (~280k pairs) end-to-end in well under the
-3.2 s the current Haskell setup phase takes.
+`examples/streaming/simplewiki_category_ingest_text.pl` — same shape
+as `enwiki_category_ingest.pl` but configured for text-keyed input
+(string columns, `UW_INTERN_KEY=1 UW_INTERN_VAL=1`, sub-db names per
+the spec). Producer declaration is unchanged from the enwiki example.
+
+### 1.6 Tests
+
+- Unit test on the consumer with a small synthetic TSV:
+  - Text-keyed input → check `s2i`, `i2s`, edges, `meta` keys.
+  - Reserved-ID collision: input containing the literal string
+    `"true"` → returns the reserved low ID, not a fresh one.
+  - Idempotence: rerun without `UW_FORCE_REINGEST` → exits non-zero
+    with a clear diagnostic.
+- Round-trip test driven by the existing Prolog harness:
+  produce → consume → read back → reconstruct edges → byte-equal.
+
+### 1.7 Acceptance
+
+Tests green. Spike measurement: ingest SimpleWiki categorylinks
+(~280k pairs) end-to-end in well under the 3.2 s the current Haskell
+setup phase takes. The integer-keyed enwiki path keeps producing
+byte-identical LMDB output (no behaviour change when the new env
+vars are unset).
 
 ## 2. Phase 2 — Haskell runtime support (`int_atom_seeds(lmdb)`)
 
@@ -178,23 +214,34 @@ as Phase L appendix #5.
 Audit WAM-Rust and WAM-Elixir runtimes against the same LMDB layout.
 The Rust target already uses LMDB for its FFI kernel; the Elixir
 target's "lmdb int IDs" path is the closest analogue. If both can
-adopt the same `s2i` / `i2s` / `meta` schema, the ingester serves all
+adopt the same `s2i` / `i2s` / `meta` schema, the consumer serves all
 three without per-target schema branches.
 
-This phase is exploratory; the deliverable is a memo on whether the
-schema needs adjustment to be cross-target, and an issue tracking the
-follow-up rollouts.
+The Python consumer is already shared across the C# and AWK pipeline
+variants (via the streaming-glue layer), so cross-target reuse is the
+default rather than the exception. This phase is exploratory: the
+deliverable is a memo confirming the schema needs no per-target
+adjustment, plus issues tracking the rollout to WAM-Rust and
+WAM-Elixir.
+
+### 5.1 Optional follow-up: parser-language extension
+
+The current parser variants are Rust (canonical for benchmarks) and
+AWK. If a deployment ever needs a Haskell-language parser (e.g. for
+single-binary distribution), it slots into the same `declare_target`
+shape. This is **not** in scope for this implementation arc; it is
+documented here so the option is preserved if the need arises.
 
 ## 6. Risks
 
 | Risk | Mitigation |
 |------|-----------|
-| `heed` API changes between minor versions | Pin a specific `heed` version in `Cargo.toml`. |
-| `MDB_INTEGERKEY` incompat with BE bytes | Already chose **not** to use it (`SPECIFICATION §1.7`). |
-| Reserved ID drift between codegen and ingester | Single source of truth: a sidecar text file consumed by both, asserted at runtime via `meta.compile_time_atoms_count`. |
-| Demand-set BFS over LMDB is slow without reverse edges | Phase 1 ships option 1 (build reverse adjacency in memory at startup); option 2 (`--with-reverse-edges` writing a reverse sub-db) is a follow-up if the in-memory build dominates. |
+| Reserved ID drift between codegen and consumer | Single source of truth: the `UW_COMPILE_TIME_ATOMS` sidecar file consumed by the Python consumer, asserted at runtime via `meta.compile_time_atoms_count`. |
+| Demand-set BFS over LMDB is slow without reverse edges | Phase 2 ships option 1 (build reverse adjacency in memory at startup); option 2 (write a reverse sub-db at ingestion time) is a follow-up if the in-memory build dominates. |
 | Disk size: full enwiki LMDB might not fit a CI cache | Document the size, run small fixtures in CI, run enwiki only locally. |
 | TSV path drift: the kept TSV fallback rots from disuse | Matrix bench keeps a small-scale TSV run alongside the LMDB run; if the TSV path breaks the bench fails. |
+| Python `lmdb` package's `append=True` rejects unsorted keys | The streaming pass writes `i2s` in monotonic ID order (always sorted) and writes edges in input-order (sorted by `cl_from` for categorylinks); `s2i` is bulk-loaded after sort at finalize. |
+| Parser-cost variation contaminating benchmarks | Benchmark harness fixes the parser to Rust via `declare_target`; pluggable-parser property exists but is not exercised in the perf path. |
 
 ## 7. Verification
 
