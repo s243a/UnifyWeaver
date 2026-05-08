@@ -49,7 +49,10 @@ function I.CutIte() return instr("CutIte") end
 function I.BuiltinCall(p, n) return instr("BuiltinCall", { pred = p, arity = n }) end
 function I.ArgInstr(n, ai, out) return instr("ArgInstr", { n = n, ai = ai, out = out }) end
 function I.SwitchOnConstant(cases) return instr("SwitchOnConstant", { cases = cases }) end
+function I.SwitchOnConstantA2(cases) return instr("SwitchOnConstantA2", { cases = cases }) end
 function I.SwitchOnStructure(cases) return instr("SwitchOnStructure", { cases = cases }) end
+function I.BeginAggregate(kind, template, bag) return instr("BeginAggregate", { kind = kind, template = template, bag = bag }) end
+function I.EndAggregate(template) return instr("EndAggregate", { template = template }) end
 function I.Raw(text) return instr("Raw", { text = text }) end
 
 function Runtime.new_intern_table(seed)
@@ -81,6 +84,26 @@ function Runtime.copy_table(t)
   local out = {}
   for k, v in pairs(t or {}) do out[k] = v end
   return out
+end
+
+function Runtime.copy_term(state, v, seen)
+  v = Runtime.deref(state, v)
+  if type(v) ~= "table" then return v end
+  seen = seen or {}
+  if seen[v] then return seen[v] end
+  if v.tag == "struct" then
+    local out = V.Struct(v.fid, {})
+    seen[v] = out
+    for i, arg in ipairs(v.args or {}) do
+      out.args[i] = Runtime.copy_term(state, arg, seen)
+    end
+    return out
+  end
+  if v.tag == "atom" then return V.Atom(v.id) end
+  if v.tag == "int" then return V.Int(v.val) end
+  if v.tag == "float" then return V.Float(v.val) end
+  if v.tag == "unbound" then return V.Unbound(v.name) end
+  return v
 end
 
 function Runtime.new_state()
@@ -161,6 +184,10 @@ local function push_built_term(state, term)
       table.insert(parent.args, built)
       top = parent
     else
+      local target_val = Runtime.get_reg(state, top.target)
+      if type(target_val) == "table" and target_val.tag == "unbound" then
+        bind_var(state, target_val, built)
+      end
       Runtime.put_reg(state, top.target, built)
       state.mode = nil
       return true
@@ -180,9 +207,35 @@ local function begin_read(state, args)
   state.read_cursor = 1
 end
 
+local aggregate_result
+
 function Runtime.backtrack(state)
-  local cp = table.remove(state.cps)
+  local n = #state.cps
+  if n == 0 then return false end
+  local cp = state.cps[n]
   if cp == nil then return false end
+  if cp.kind == "aggregate" then
+    table.remove(state.cps)
+    while #state.trail > cp.trail_len do
+      local name = table.remove(state.trail)
+      state.bindings[name] = nil
+    end
+    state.regs = Runtime.copy_table(cp.regs)
+    state.cp = cp.cp
+    state.var_counter = cp.var_counter
+    state.mode = cp.mode
+    state.build_stack = cp.build_stack or {}
+    local bag = aggregate_result(cp.agg_kind, cp.collected or {}, cp.table)
+    local cur = Runtime.get_reg(state, cp.bag_reg)
+    if cur == nil then
+      Runtime.put_reg(state, cp.bag_reg, bag)
+    elseif Runtime.unify(state, cur, bag) ~= true then
+      return Runtime.backtrack(state)
+    end
+    state.pc = cp.next_pc
+    state.halt = false
+    return true
+  end
   while #state.trail > cp.trail_len do
     local name = table.remove(state.trail)
     state.bindings[name] = nil
@@ -192,6 +245,124 @@ function Runtime.backtrack(state)
   state.var_counter = cp.var_counter
   state.pc = cp.next_pc
   state.halt = false
+  return true
+end
+
+function Runtime.list_from_terms(items, intern_table)
+  local nil_id = Runtime.intern(intern_table, "[]")
+  local cons_id = Runtime.intern(intern_table, "[|]")
+  local out = V.Atom(nil_id)
+  for i = #items, 1, -1 do
+    out = V.Struct(cons_id, { items[i], out })
+  end
+  return out
+end
+
+local function numeric_value(v)
+  if type(v) == "table" and (v.tag == "int" or v.tag == "float") then return v.val end
+  return nil
+end
+
+local function term_key(v)
+  if type(v) ~= "table" then return tostring(v) end
+  if v.tag == "atom" then return "a:" .. tostring(v.id) end
+  if v.tag == "int" then return "i:" .. tostring(v.val) end
+  if v.tag == "float" then return "f:" .. tostring(v.val) end
+  if v.tag == "unbound" then return "u:" .. tostring(v.name) end
+  if v.tag == "struct" then
+    local parts = { "s:" .. tostring(v.fid) .. "/" .. tostring(#(v.args or {})) }
+    for _, arg in ipairs(v.args or {}) do table.insert(parts, term_key(arg)) end
+    return table.concat(parts, "|")
+  end
+  return tostring(v)
+end
+
+function aggregate_result(kind, items, intern_table)
+  kind = kind or "collect"
+  if kind == "count" then return V.Int(#items) end
+  if kind == "sum" then
+    local total = 0
+    local saw_float = false
+    for _, item in ipairs(items) do
+      local n = numeric_value(item)
+      if n ~= nil then
+        total = total + n
+        if math.type and math.type(n) == "float" then saw_float = true end
+      end
+    end
+    if saw_float then return V.Float(total) end
+    return V.Int(total)
+  end
+  if kind == "min" or kind == "max" then
+    local best = nil
+    local best_n = nil
+    for _, item in ipairs(items) do
+      local n = numeric_value(item)
+      if n ~= nil and (best_n == nil or (kind == "min" and n < best_n) or (kind == "max" and n > best_n)) then
+        best = item
+        best_n = n
+      end
+    end
+    return best or Runtime.list_from_terms({}, intern_table)
+  end
+  if kind == "set" then
+    local seen = {}
+    local unique = {}
+    for _, item in ipairs(items) do
+      local key = term_key(item)
+      if seen[key] ~= true then
+        seen[key] = true
+        table.insert(unique, item)
+      end
+    end
+    return Runtime.list_from_terms(unique, intern_table)
+  end
+  return Runtime.list_from_terms(items, intern_table)
+end
+
+local function find_matching_end_aggregate(program, start_pc)
+  local depth = 1
+  for pc = start_pc + 1, #program.instructions do
+    local op = program.instructions[pc].op
+    if op == "BeginAggregate" then
+      depth = depth + 1
+    elseif op == "EndAggregate" then
+      depth = depth - 1
+      if depth == 0 then return pc end
+    end
+  end
+  return nil
+end
+
+local function switch_constant(program, state, instr, reg)
+  local v = Runtime.deref(state, Runtime.get_reg(state, reg))
+  local target = nil
+  if type(v) == "table" and v.tag == "atom" then
+    for _, case in ipairs(instr.cases or {}) do
+      if case.value and case.value.tag == "atom" and case.value.id == v.id then
+        target = case.label
+        break
+      end
+    end
+  end
+  local pc = target and target ~= "default" and program.labels[target] or nil
+  state.pc = pc or (state.pc + 1)
+  return true
+end
+
+local function switch_structure(program, state, instr)
+  local v = Runtime.deref(state, Runtime.get_reg(state, 1))
+  local target = nil
+  if type(v) == "table" and v.tag == "struct" then
+    for _, case in ipairs(instr.cases or {}) do
+      if case.fid == v.fid and case.arity == #v.args then
+        target = case.label
+        break
+      end
+    end
+  end
+  local pc = target and target ~= "default" and program.labels[target] or nil
+  state.pc = pc or (state.pc + 1)
   return true
 end
 
@@ -246,7 +417,10 @@ end
 
 function Runtime.step(program, state, instr)
   local op = instr.op
-  if op == "Proceed" then state.halt = true; return true end
+  if op == "Proceed" then
+    if state.cp == 0 then state.halt = true else state.pc = state.cp; state.cp = 0 end
+    return true
+  end
   if op == "Fail" then return false end
   if op == "Allocate" then table.insert(state.stack, { cp = state.cp, locals = {} }); state.pc = state.pc + 1; return true end
   if op == "Deallocate" then local f = table.remove(state.stack); if f then state.cp = f.cp end; state.pc = state.pc + 1; return true end
@@ -318,26 +492,27 @@ function Runtime.step(program, state, instr)
   end
   if op == "RetryMeElse" then
     local cp = state.cps[#state.cps]
-    if cp == nil then return false end
+    if cp == nil or cp.kind == "aggregate" then state.pc = state.pc + 1; return true end
     while #state.trail > cp.trail_len do state.bindings[table.remove(state.trail)] = nil end
     state.regs = Runtime.copy_table(cp.regs)
     cp.next_pc = program.labels[instr.label]
     state.pc = state.pc + 1; return true
   end
-  if op == "TrustMe" then table.remove(state.cps); state.pc = state.pc + 1; return true end
+  if op == "TrustMe" then
+    local cp = state.cps[#state.cps]
+    if cp ~= nil and cp.kind ~= "aggregate" then table.remove(state.cps) end
+    state.pc = state.pc + 1
+    return true
+  end
   if op == "Jump" then state.pc = program.labels[instr.label]; return state.pc ~= nil end
-  if op == "SwitchOnConstant" or op == "SwitchOnStructure" then state.pc = state.pc + 1; return true end
+  if op == "SwitchOnConstant" then return switch_constant(program, state, instr, 1) end
+  if op == "SwitchOnConstantA2" then return switch_constant(program, state, instr, 2) end
+  if op == "SwitchOnStructure" then return switch_structure(program, state, instr) end
   if op == "Call" then
     local target = program.labels[call_key(instr)]
     if target == nil then return false end
-    local saved_cp = state.cp
-    state.cp = 0
+    state.cp = state.pc + 1
     state.pc = target
-    local ok = Runtime.run(program, state)
-    state.halt = false
-    state.cp = saved_cp
-    if ok ~= true then return false end
-    state.pc = state.pc + 1
     return true
   end
   if op == "Execute" then
@@ -357,6 +532,39 @@ function Runtime.step(program, state, instr)
     local term = Runtime.deref(state, Runtime.get_reg(state, instr.ai))
     if type(term) ~= "table" or term.tag ~= "struct" then return false end
     return bind_or_compare(state, instr.out, term.args[instr.n])
+  end
+  if op == "BeginAggregate" then
+    local end_pc = find_matching_end_aggregate(program, state.pc)
+    if end_pc == nil then return false end
+    table.insert(state.cps, {
+      kind = "aggregate",
+      agg_kind = instr.kind,
+      template_reg = instr.template,
+      bag_reg = instr.bag,
+      next_pc = end_pc + 1,
+      regs = Runtime.copy_table(state.regs),
+      cp = state.cp,
+      trail_len = #state.trail,
+      var_counter = state.var_counter,
+      mode = state.mode,
+      build_stack = state.build_stack,
+      table = program.intern_table,
+      collected = {}
+    })
+    state.pc = state.pc + 1
+    return true
+  end
+  if op == "EndAggregate" then
+    local agg = nil
+    for i = #state.cps, 1, -1 do
+      if state.cps[i].kind == "aggregate" then
+        agg = state.cps[i]
+        break
+      end
+    end
+    if agg == nil then return false end
+    table.insert(agg.collected, Runtime.copy_term(state, Runtime.get_reg(state, instr.template)))
+    return false
   end
   return false
 end
