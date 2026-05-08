@@ -813,8 +813,9 @@ strip_module_qualifiers(Goal, Goal).
 
 %% emit_kernel(+Pred, +Kernel, -DataDecl, -LoweredFunc, -FuncName)
 %  Emits the lowered R function for a detected kernel. Currently
-%  handles transitive_closure2 only; other kinds fall through (the
-%  caller falls back to the fact-table or compiled path).
+%  handles transitive_closure2 and transitive_distance3; other
+%  kinds fall through (the caller falls back to the fact-table or
+%  compiled path).
 emit_kernel(Pred, recursive_kernel(transitive_closure2, _, ConfigOps),
             DataDecl, LoweredFunc, FuncName) :-
     member(edge_pred(EdgePred/EdgeArity), ConfigOps),
@@ -828,6 +829,22 @@ emit_kernel(Pred, recursive_kernel(transitive_closure2, _, ConfigOps),
   target <- WamRuntime$get_reg(state, 2L)
   WamRuntime$transitive_closure2(program, state, "~w/2", "~w", "~w/2",
                                   source, target, state$pc + 1L)
+}',
+           [FuncName, Pred, EdgePred, EdgePred]).
+emit_kernel(Pred, recursive_kernel(transitive_distance3, _, ConfigOps),
+            DataDecl, LoweredFunc, FuncName) :-
+    member(edge_pred(EdgePred/EdgeArity), ConfigOps),
+    EdgeArity =:= 2,
+    r_pred_name(Pred, RName),
+    format(atom(FuncName), '~w_kernel_td3', [RName]),
+    DataDecl = "",
+    format(string(LoweredFunc),
+'~w <- function(program, state) {
+  source <- WamRuntime$get_reg(state, 1L)
+  target <- WamRuntime$get_reg(state, 2L)
+  dist   <- WamRuntime$get_reg(state, 3L)
+  WamRuntime$transitive_distance3(program, state, "~w/3", "~w", "~w/2",
+                                   source, target, dist, state$pc + 1L)
 }',
            [FuncName, Pred, EdgePred, EdgePred]).
 
