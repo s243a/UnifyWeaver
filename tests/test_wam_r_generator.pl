@@ -2424,6 +2424,72 @@ e2e_kernel_tc2_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for the transitive_distance3 kernel. Same
+% BFS shape as transitive_closure2 but tracks depth-from-source and
+% yields (target, distance) pairs. Direct hits, multi-hop reach,
+% wrong-distance failure, branch traversal, and findall over the
+% reachable set. The lowered_dispatch tier means internal calls
+% (from tc_findall's body) hit the kernel just like top-level CLI.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(kernel_td3_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_kernel_td3_via_rscript
+    ;   true
+    )).
+
+e2e_kernel_td3_via_rscript :-
+    retractall(user:edge(_, _)),
+    retractall(user:tdist(_, _, _)),
+    assertz(user:edge(a, b)),
+    assertz(user:edge(b, c)),
+    assertz(user:edge(c, d)),
+    assertz(user:edge(a, e)),
+    assertz(user:edge(e, f)),
+    assertz((user:tdist(X, Y, 1) :- user:edge(X, Y))),
+    assertz((user:tdist(X, Y, D) :- user:edge(X, Z), user:tdist(Z, Y, D1),
+                                     D is D1 + 1)),
+    assertz((user:td_one  :- tdist(a, b, 1))),
+    assertz((user:td_two  :- tdist(a, c, 2))),
+    assertz((user:td_three :- tdist(a, d, 3))),
+    assertz((user:td_branch :- tdist(a, e, 1))),
+    assertz((user:td_deep_branch :- tdist(a, f, 2))),
+    assertz((user:td_wrong_dist :- tdist(a, c, 1))),
+    assertz((user:td_no_path    :- tdist(b, a, _))),
+    assertz((user:td_findall :-
+        findall(Y-D, tdist(a, Y, D), L),
+        msort(L, S),
+        S == [b-1, c-2, d-3, e-1, f-2])),
+    unique_r_tmp_dir('tmp_r_kernel_td3_e2e', TmpDir),
+    write_wam_r_project(
+        [user:edge/2, user:tdist/3,
+         user:td_one/0, user:td_two/0, user:td_three/0,
+         user:td_branch/0, user:td_deep_branch/0,
+         user:td_wrong_dist/0, user:td_no_path/0, user:td_findall/0],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [td_one, td_two, td_three, td_branch, td_deep_branch, td_findall],
+    No  = [td_wrong_dist, td_no_path],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
+    read_file_to_string(ProgPath, Code, []),
+    assertion(sub_string(Code, _, _, _, 'pred_tdist_kernel_td3 <- function(')),
+    assertion(sub_string(Code, _, _, _,
+        'assign("tdist/3", pred_tdist_kernel_td3, envir = shared_program$lowered_dispatch)')),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-

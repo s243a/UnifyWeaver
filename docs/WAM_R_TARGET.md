@@ -191,21 +191,27 @@ that bypasses the WAM stepping engine entirely. The classifier
 lives in
 [`src/unifyweaver/core/recursive_kernel_detection.pl`](../src/unifyweaver/core/recursive_kernel_detection.pl)
 and is shared with the Haskell / Rust / Elixir targets; this
-target wires up `transitive_closure2` so far. The canonical
-shape is
+target wires up `transitive_closure2` and `transitive_distance3`
+so far. Canonical shapes:
 
 ```prolog
+% transitive_closure2 -- streams reachable nodes
 ancestor(X, Y) :- parent(X, Y).
 ancestor(X, Y) :- parent(X, Z), ancestor(Z, Y).
+
+% transitive_distance3 -- streams (target, distance-from-source)
+tdist(X, Y, 1) :- edge(X, Y).
+tdist(X, Y, D) :- edge(X, Z), tdist(Z, Y, D1), D is D1 + 1.
 ```
 
-The runtime helper `WamRuntime$transitive_closure2` does a BFS
-from a ground source over the underlying edge predicate
-(invoked via `iterate_goal`, so the edges can be a fact-table,
-a dynamic store, a WAM-compiled predicate, or any other
-registered dispatch path) and streams reached nodes via
-iter-CPs. Source must be ground; target may be ground (check)
-or unground (enumerate).
+The runtime helpers (`WamRuntime$transitive_closure2`,
+`WamRuntime$transitive_distance3`) BFS from a ground source over
+the underlying edge predicate (invoked via `iterate_goal`, so the
+edges can be a fact-table, a dynamic store, a WAM-compiled
+predicate, or any other registered dispatch path) and stream
+results via iter-CPs. Source must be ground; target may be ground
+(check) or unground (enumerate); for the distance variant, the
+distance arg is computed (always unground at the call).
 
 The lowered function is registered in `program$lowered_dispatch`,
 so `Call` and `Execute` instructions for kernel-detected
@@ -516,7 +522,7 @@ WamRuntime$run(shared_program, state)
 
 The full test suite lives in
 [tests/test_wam_r_generator.pl](../tests/test_wam_r_generator.pl)
-and contains 47 tests covering both structural assertions on the
+and contains 48 tests covering both structural assertions on the
 generated source and end-to-end execution via `Rscript`. The
 `*_e2e_rscript` tests auto-skip when `Rscript` is not on `PATH`.
 
@@ -557,6 +563,7 @@ Coverage map (e2e tests, by feature group):
 | `streams_e2e_rscript` | `open/3`, `close/1`, `read/2`, `write/2`, `writeln/2`, `format/3` round-trip |
 | `fact_table_e2e_rscript` | fact-table lowering: hash-indexed dispatch, multi-solution backtracking, atoms + integers |
 | `kernel_tc2_e2e_rscript` | recursive-kernel detection: `transitive_closure2` BFS over a fact-table edge predicate |
+| `kernel_td3_e2e_rscript` | recursive-kernel detection: `transitive_distance3` BFS-with-depth over a fact-table edge predicate |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 
