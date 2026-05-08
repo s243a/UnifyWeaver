@@ -254,6 +254,22 @@ run_rscript_query(RDir, Query, Out) :-
     read_string(ErrStream, _, _),   close(ErrStream),
     process_wait(PID, _).
 
+% Like run_rscript_query but takes an explicit list of additional
+% argv entries (after the predicate indicator). Used by the CLI
+% arg-parser test, which exercises the operator-precedence parser
+% on the command-line args.
+run_rscript_with_args(RDir, Query, ExtraArgs, Out) :-
+    append(['generated_program.R', Query], ExtraArgs, Argv),
+    process_create(path('Rscript'), Argv,
+                   [ cwd(RDir),
+                     stdout(pipe(OutStream)),
+                     stderr(pipe(ErrStream)),
+                     process(PID)
+                   ]),
+    read_string(OutStream, _, Out), close(OutStream),
+    read_string(ErrStream, _, _),   close(ErrStream),
+    process_wait(PID, _).
+
 rscript_available :-
     catch((
         process_create(path('Rscript'), ['--version'],
@@ -1923,6 +1939,75 @@ e2e_bagof_setof_existential_via_rscript :-
         format(string(Q), '~w/0', [P]),
         run_rscript_query(RDir, Q, Out),
         assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% End-to-end Rscript run for structured CLI argument parsing. The
+% generated program's main no longer falls back to atom-or-integer
+% only -- it parses each argv entry through the runtime's operator-
+% precedence parser, so lists, structs, and arithmetic expressions
+% reach the predicate as proper WAM terms.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(cli_arg_parser_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_cli_arg_parser_via_rscript
+    ;   true
+    )).
+
+e2e_cli_arg_parser_via_rscript :-
+    % `=/2` is a builtin, so we can call it directly with two args
+    % and rely on the parser to produce structurally identical terms
+    % on both sides.
+    assertz((user:check_eq(X, Y) :- X == Y)),
+    % Tests with bound args.
+    assertz((user:check_list_3([1, 2, 3]))),
+    assertz((user:check_struct(f(a, b)))),
+    assertz((user:check_nested(g(h(1), [2, 3])))),
+    assertz((user:check_arith_expr(3 + 2 * 2))),  % Not evaluated, just structural.
+    unique_r_tmp_dir('tmp_r_cli_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:check_eq/2,
+          user:check_list_3/1,
+          user:check_struct/1,
+          user:check_nested/1,
+          user:check_arith_expr/1 ],
+        [intern_atoms([a, b, h])],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    % Each entry: (Predicate/arity, list-of-args, expected stdout).
+    % The args go through the new CLI parser and must produce terms
+    % that unify with the asserted clause's pattern.
+    Cases = [
+        % Two atoms via shared parse state -- both X and Y are atoms.
+        'check_eq/2'-["foo", "foo"]-"true",
+        'check_eq/2'-["foo", "bar"]-"false",
+        % Same struct on both sides.
+        'check_eq/2'-["f(a, b)", "f(a, b)"]-"true",
+        % Different struct -> mismatch.
+        'check_eq/2'-["f(a, b)", "f(a, c)"]-"false",
+        % List input.
+        'check_list_3/1'-["[1, 2, 3]"]-"true",
+        'check_list_3/1'-["[1, 2, 4]"]-"false",
+        % Compound term.
+        'check_struct/1'-["f(a, b)"]-"true",
+        'check_struct/1'-["f(b, a)"]-"false",
+        % Nested compound + list.
+        'check_nested/1'-["g(h(1), [2, 3])"]-"true",
+        % Arithmetic expression as a structural term (not evaluated).
+        'check_arith_expr/1'-["3 + 2 * 2"]-"true"
+    ],
+    forall(member(Pred-Args-Expected, Cases), (
+        run_rscript_with_args(RDir, Pred, Args, Out),
+        (   sub_string(Out, _, _, _, Expected)
+        ->  true
+        ;   format(user_error,
+                   'CLI test FAILED: pred=~w args=~w expected=~w got=~w~n',
+                   [Pred, Args, Expected, Out]),
+            assertion(false)
+        )
     )),
     delete_directory_and_contents(TmpDir).
 
