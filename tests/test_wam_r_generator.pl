@@ -1859,6 +1859,74 @@ e2e_multi_solution_retract_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for `^/2` existential scope in
+% bagof/setof/findall. Asserts a 2-arg dynamic predicate, then
+% drives bagof(X, Y^p(X,Y), L) etc. The `^/2` wrapper should be
+% transparent: all X bindings get aggregated regardless of Y's
+% value. This scaffold doesn't do per-witness grouping, so non-
+% existentially-quantified free vars are also aggregated -- the
+% test only covers the `^`-wrapped case.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(bagof_setof_existential_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_bagof_setof_existential_via_rscript
+    ;   true
+    )).
+
+e2e_bagof_setof_existential_via_rscript :-
+    % bagof + ^/2 over a 2-arg dynamic predicate. Y is existentially
+    % scoped, so all X bindings are collected (with duplicates).
+    assertz((user:be_bagof_basic :-
+        assertz(pp(1, a)), assertz(pp(1, b)), assertz(pp(2, a)),
+        bagof(X, Y^pp(X, Y), L),
+        L == [1, 1, 2])),
+    % setof + ^/2 dedups and sorts.
+    assertz((user:be_setof_basic :-
+        assertz(qq(3, x)), assertz(qq(1, y)), assertz(qq(3, z)),
+        assertz(qq(2, x)),
+        setof(X, Y^qq(X, Y), L),
+        L == [1, 2, 3])),
+    % Nested existentials: Y^Z^Goal unwraps both layers.
+    assertz((user:be_nested_caret :-
+        assertz(rr(1, a, p)), assertz(rr(2, b, q)),
+        assertz(rr(2, c, r)), assertz(rr(1, d, s)),
+        bagof(X, Y^Z^rr(X, Y, Z), L),
+        L == [1, 2, 2, 1])),
+    % findall + ^/2 (compiled aggregate path). findall already
+    % ignores witness scoping; ^/2 must just be transparent.
+    assertz((user:be_findall_caret :-
+        assertz(ss(1, x)), assertz(ss(2, y)), assertz(ss(3, z)),
+        findall(X, Y^ss(X, Y), L),
+        L == [1, 2, 3])),
+    % Empty bag fails (bagof semantics).
+    assertz((user:be_bagof_empty_no :-
+        bagof(X, Y^nonexistent(X, Y), _))),
+    unique_r_tmp_dir('tmp_r_caret_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:be_bagof_basic/0, user:be_setof_basic/0,
+          user:be_nested_caret/0, user:be_findall_caret/0,
+          user:be_bagof_empty_no/0 ],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [be_bagof_basic, be_setof_basic, be_nested_caret,
+           be_findall_caret],
+    No  = [be_bagof_empty_no],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-

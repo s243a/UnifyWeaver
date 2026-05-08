@@ -391,9 +391,13 @@ WamRuntime$run(shared_program, state)
   Removed clauses are matched against the live store by object
   identity, so concurrent retracts/asserts of unrelated clauses
   don't disturb the iteration order.
-- **`bagof/3` / `setof/3`** do not support free-variable witnesses
-  (`X^Goal`). Witness vars are silently aggregated rather than
-  producing one bag per witness.
+- **`bagof/3` / `setof/3` per-witness grouping**. The `^/2`
+  existential scoping operator is supported (the wrapper is
+  transparent in `call_goal` / `iterate_goal` / `call_library`,
+  so `bagof(X, Y^p(X,Y), L)` runs `p(X,Y)` and aggregates X). What
+  isn't supported is the per-witness grouping for non-quantified
+  free vars: `bagof(X, p(X,Y), L)` produces one bag containing
+  every X (regardless of Y) rather than one bag per Y binding.
 - **`length/2` (-, -)** generative mode is not supported (would
   need a CP-driving generator).
 - **`between/3` (+, +, -)** in compiled-goal context produces an
@@ -413,7 +417,7 @@ WamRuntime$run(shared_program, state)
 
 The full test suite lives in
 [tests/test_wam_r_generator.pl](../tests/test_wam_r_generator.pl)
-and contains 39 tests covering both structural assertions on the
+and contains 40 tests covering both structural assertions on the
 generated source and end-to-end execution via `Rscript`. The
 `*_e2e_rscript` tests auto-skip when `Rscript` is not on `PATH`.
 
@@ -446,6 +450,7 @@ Coverage map (e2e tests, by feature group):
 | `stdlib_polish_e2e_rscript` | `numlist/3`, `tab/1`, `sub_atom/5`, `char_type/2`, `term_to_atom/2` |
 | `operator_parser_e2e_rscript` | operator-precedence parsing (`+`, `*`, `^`, `=:=`, `\+`, `,`, ...) |
 | `multi_solution_retract_e2e_rscript` | multi-solution `retract/1` via iter-CP |
+| `bagof_setof_existential_e2e_rscript` | `^/2` existential scope in `bagof`/`setof`/`findall` |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 
