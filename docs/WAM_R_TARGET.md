@@ -469,6 +469,36 @@ tests have repeatedly missed real runtime bugs in this target;
 hand-checking the actual runtime output is the only reliable
 signal.
 
+## Benchmark
+
+A small fact-source bench compares the WAM-compiled and
+foreign-handler paths on a chain of `c0 -> c1 -> ... -> cN`:
+
+```bash
+swipl -g main -t halt tests/benchmarks/wam_r_fact_source_bench.pl
+swipl -g main -t halt tests/benchmarks/wam_r_fact_source_bench.pl -- 50 --inner 1000
+```
+
+For each backend x size combination it emits:
+
+```
+RESULT n=<N> backend=<wam|foreign>
+       gen=<sec>           # write_wam_r_project/3
+       run=<sec>           # cold-start single-shot Rscript invocation
+       inner_total=<sec>   # `--bench M` invocation; R startup paid once
+       per_iter=<sec>      # inner_total / M
+```
+
+Cold-start time (`run`) is dominated by `Rscript` startup; the
+`inner_total`/`per_iter` columns amortise that fixed cost over
+`M` iterations and reveal the real per-query difference between
+backends. Auto-skips when `Rscript` is not on PATH.
+
+The generated program also accepts `--bench N <pred>/<arity> <args>...`
+directly when invoked via `Rscript`; it warmups for 5% of the
+iterations (capped at 50) so the R-level data structures settle
+before timing, then prints `BENCH n=<N> elapsed=<sec> last=<true|false>`.
+
 When adding a builtin:
 
 1. Implement it in `WamRuntime$call_builtin` (if the WAM compiler
