@@ -17,6 +17,7 @@ from benchmark_csharp_query_source_mode_sweep import (  # noqa: E402
     WORKLOAD_SCRIPTS,
     calibration_failures,
     compare_calibration,
+    filter_workload_scales,
     load_calibration_artifact,
     parse_args,
     parse_mode_summary,
@@ -24,6 +25,7 @@ from benchmark_csharp_query_source_mode_sweep import (  # noqa: E402
     parse_runner_output,
     parse_workloads,
     summarize_stability,
+    supported_scales_for_workload,
 )
 from benchmark_common import csharp_query_source_mode_choices  # noqa: E402
 
@@ -47,6 +49,26 @@ class CSharpQuerySourceModeSweepTests(unittest.TestCase):
     def test_parse_workloads_rejects_unknown_workloads(self) -> None:
         with self.assertRaisesRegex(SystemExit, "unknown workload"):
             parse_workloads("category-influence,not-a-workload")
+
+    def test_filter_workload_scales_skips_unsupported_generated_graph_scales(self) -> None:
+        self.assertEqual(
+            supported_scales_for_workload("dependency-depth"),
+            ("300", "1k", "5k", "10k"),
+        )
+        self.assertEqual(
+            filter_workload_scales("dependency-depth", "dev,300"),
+            ("300", ["dev"]),
+        )
+
+    def test_filter_workload_scales_keeps_dev_for_file_backed_graph_scales(self) -> None:
+        self.assertEqual(
+            filter_workload_scales("effective-distance", "dev,300"),
+            ("dev,300", []),
+        )
+        self.assertEqual(
+            filter_workload_scales("shortest-path", "dev"),
+            ("dev", []),
+        )
 
     def test_calibration_artifact_covers_registered_graph_workloads(self) -> None:
         rows = load_calibration_artifact(CALIBRATION_ARTIFACT)

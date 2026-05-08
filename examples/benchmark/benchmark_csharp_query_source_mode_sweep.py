@@ -34,6 +34,17 @@ WORKLOAD_SCRIPTS = {
     "weighted-shortest-path": BENCHMARK_DIR / "benchmark_weighted_shortest_path_cross_target.py",
 }
 
+FILE_BACKED_GRAPH_SCALES = ("dev", "300", "1k", "5k", "10k")
+GENERATED_GRAPH_SCALES = ("300", "1k", "5k", "10k")
+WORKLOAD_SUPPORTED_SCALES = {
+    "category-influence": FILE_BACKED_GRAPH_SCALES,
+    "dependency-depth": GENERATED_GRAPH_SCALES,
+    "dependency-longest-depth": GENERATED_GRAPH_SCALES,
+    "effective-distance": FILE_BACKED_GRAPH_SCALES,
+    "shortest-path": FILE_BACKED_GRAPH_SCALES,
+    "weighted-shortest-path": FILE_BACKED_GRAPH_SCALES,
+}
+
 DEFAULT_WORKLOADS = "all"
 CALIBRATION_ARTIFACT = BENCHMARK_DIR / "csharp_query_graph_source_mode_calibration.tsv"
 
@@ -164,6 +175,23 @@ def parse_workloads(value: str) -> list[str]:
     if not workloads:
         raise SystemExit("expected at least one workload")
     return workloads
+
+
+def supported_scales_for_workload(workload: str) -> tuple[str, ...]:
+    try:
+        return WORKLOAD_SUPPORTED_SCALES[workload]
+    except KeyError as exc:
+        raise SystemExit(
+            f"unknown workload {workload!r}; expected one of {', '.join(WORKLOAD_SCRIPTS)}"
+        ) from exc
+
+
+def filter_workload_scales(workload: str, scales: str) -> tuple[str, list[str]]:
+    requested = split_csv(scales)
+    supported = set(supported_scales_for_workload(workload))
+    selected = [scale for scale in requested if scale in supported]
+    skipped = [scale for scale in requested if scale not in supported]
+    return ",".join(selected), skipped
 
 
 def load_calibration_artifact(path: Path = CALIBRATION_ARTIFACT) -> list[CalibrationArtifactRow]:
@@ -596,10 +624,22 @@ def main() -> int:
     for _ in range(args.stability_runs):
         run_summaries: list[SourceModeSummary] = []
         for workload in workloads:
+            selected_scales, skipped_scales = filter_workload_scales(workload, args.scales)
+            for scale in skipped_scales:
+                supported = ", ".join(supported_scales_for_workload(workload))
+                print(
+                    (
+                        f"WARNING: skipping unsupported scale {scale!r} "
+                        f"for {workload}; supported scales: {supported}"
+                    ),
+                    file=sys.stderr,
+                )
+            if not selected_scales:
+                continue
             run_summaries.extend(
                 run_workload(
                     workload,
-                    scales=args.scales,
+                    scales=selected_scales,
                     source_modes=args.source_modes,
                     repetitions=args.repetitions,
                     trace=args.trace,
@@ -611,6 +651,8 @@ def main() -> int:
         for run_summaries in sweep_runs
         for summary in run_summaries
     ]
+    if not summaries:
+        raise SystemExit("no supported workload/scale combinations selected")
 
     if args.stability_runs > 1:
         stability_summaries = summarize_stability(sweep_runs)
