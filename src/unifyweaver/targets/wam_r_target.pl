@@ -58,6 +58,8 @@
     wam_r_lowerable/3,
     lower_predicate_to_r/4
 ]).
+:- use_module('../core/recursive_kernel_detection',
+             [detect_recursive_kernel/4, kernel_config/2]).
 
 % ============================================================================
 % EMIT MODE
@@ -535,7 +537,8 @@ compile_wam_predicate_to_r(_Pred, _WamCode, _Options, "").
 %%                                -AllLabels, -WrapperCode)
 compile_predicates_for_project(Predicates, Options,
                                AllInstrs, TopLevelLabelEntries,
-                               AllLabelEntries, WrapperCode, LoweredCode) :-
+                               AllLabelEntries, WrapperCode, LoweredCode,
+                               LoweredDispatchCode) :-
     init_r_atom_intern_table,
     option(intern_atoms(ExtraAtoms), Options, []),
     forall(member(A, ExtraAtoms),
@@ -545,11 +548,13 @@ compile_predicates_for_project(Predicates, Options,
                                       CompilePredicates),
     wam_r_resolve_emit_mode(Options, Mode),
     compile_all_predicates(CompilePredicates, Options, Mode, 1,
-                           [], [], [], [], [],
+                           [], [], [], [], [], [],
                            AllInstrs, TopLevelLabelEntries,
-                           AllLabelEntries, Wrappers, LoweredEntries),
+                           AllLabelEntries, Wrappers, LoweredEntries,
+                           LoweredDispatchEntries),
     atomic_list_concat(Wrappers, '\n', WrapperCode),
-    atomic_list_concat(LoweredEntries, '\n', LoweredCode).
+    atomic_list_concat(LoweredEntries, '\n', LoweredCode),
+    atomic_list_concat(LoweredDispatchEntries, '\n', LoweredDispatchCode).
 
 append_missing_foreign_predicates(Predicates, ForeignPredicates,
                                   CompilePredicates) :-
@@ -569,12 +574,15 @@ same_predicate_indicator(P0, P1) :-
 predicate_indicator_key(_:Pred/Arity, Pred/Arity) :- !.
 predicate_indicator_key(Pred/Arity, Pred/Arity).
 
-compile_all_predicates([], _, _, _, Instrs, TopLabels, AllLabels, Wrappers, Lowered,
-                       Instrs, TopLabels, AllLabels, Wrappers, Lowered).
+compile_all_predicates([], _, _, _, Instrs, TopLabels, AllLabels, Wrappers,
+                       Lowered, Dispatch,
+                       Instrs, TopLabels, AllLabels, Wrappers, Lowered, Dispatch).
 compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
                        InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc, LoweredAcc,
+                       LoweredDispAcc,
                        AllInstrs, TopLevelLabelEntries,
-                       AllLabelEntries, AllWrappers, AllLowered) :-
+                       AllLabelEntries, AllWrappers, AllLowered,
+                       AllLoweredDispatch) :-
     (   Pred = _Module:P/Arity -> true ; Pred = P/Arity ),
     (   r_foreign_predicate(P, Arity, Options)
     ->  format(string(FLit), 'CallForeign("~w", ~w)', [P, Arity]),
@@ -602,18 +610,30 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
         NewTopLabels = [MainEntry | TopLabelAcc],
         append([MainEntry | PredSubLabelEntries], AllLabelAcc, NewAllLabels)
     ),
-    % Decide whether this predicate should be lowered. The fact-
-    % table path is preferred when applicable; otherwise we try the
-    % regular Phase-3 lowered emitter; otherwise we fall back to the
-    % WAM array dispatch.
-    (   WamCodeForLower \= "",
+    % Decide whether this predicate should be lowered. The kernel
+    % detector wins first (a recognised graph pattern dispatches to
+    % a native R fast path); then the fact-table path; then the
+    % regular Phase-3 lowered emitter; otherwise the WAM array.
+    (   kernel_layout_enabled(Options),
+        catch(wam_r_kernel_detect(Pred, Kernel), _, fail),
+        catch(emit_kernel(P, Kernel, KData, KFunc, KFuncName), _, fail)
+    ->  (   KData == ""
+        ->  NewLoweredAcc = [KFunc | LoweredAcc]
+        ;   NewLoweredAcc = [KData, KFunc | LoweredAcc]
+        ),
+        emit_r_lowered_wrapper(P, Arity, KFuncName, WrapperCode),
+        emit_lowered_dispatch_entry(P, Arity, KFuncName, DispEntry),
+        NewLoweredDispAcc = [DispEntry | LoweredDispAcc]
+    ;   WamCodeForLower \= "",
         catch(wam_r_fact_classify(WamCodeForLower,
                                    fact_info(NCls, _FArity, FTuples)),
               _, fail),
         fact_layout_enabled(P, Arity, NCls, Options)
     ->  emit_fact_table(P, Arity, FTuples, FactData, FactFunc, FactFuncName),
         NewLoweredAcc = [FactData, FactFunc | LoweredAcc],
-        emit_r_lowered_wrapper(P, Arity, FactFuncName, WrapperCode)
+        emit_r_lowered_wrapper(P, Arity, FactFuncName, WrapperCode),
+        emit_lowered_dispatch_entry(P, Arity, FactFuncName, DispEntry),
+        NewLoweredDispAcc = [DispEntry | LoweredDispAcc]
     ;   should_try_lower(Mode, P, Arity),
         WamCodeForLower \= "",
         catch(wam_r_lowerable(Pred, WamCodeForLower, _Reason), _, fail),
@@ -621,15 +641,34 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
                                    lowered(_PName, FuncName, LoweredR)),
               _, fail)
     ->  NewLoweredAcc = [LoweredR | LoweredAcc],
-        emit_r_lowered_wrapper(P, Arity, FuncName, WrapperCode)
+        emit_r_lowered_wrapper(P, Arity, FuncName, WrapperCode),
+        % Phase-3 lowered functions are NOT registered for internal
+        % dispatch -- they expect their own pre-set state via the
+        % per-pred wrapper. Internal calls keep going through the
+        % WAM array, matching the pre-PR behaviour.
+        NewLoweredDispAcc = LoweredDispAcc
     ;   NewLoweredAcc = LoweredAcc,
+        NewLoweredDispAcc = LoweredDispAcc,
         emit_r_wrapper(P, Arity, BasePC, WrapperCode)
     ),
     compile_all_predicates(Rest, Options, Mode, NewPC,
                            NewInstrs, NewTopLabels, NewAllLabels,
                            [WrapperCode|WrapperAcc], NewLoweredAcc,
+                           NewLoweredDispAcc,
                            AllInstrs, TopLevelLabelEntries,
-                           AllLabelEntries, AllWrappers, AllLowered).
+                           AllLabelEntries, AllWrappers, AllLowered,
+                           AllLoweredDispatch).
+
+%% emit_lowered_dispatch_entry(+Pred, +Arity, +FuncName, -Entry)
+%  Generates an `assign("Pred/Arity", FuncName, envir = ...)` line
+%  that's stitched into the program template. The runtime tier
+%  dispatch_call consults program$lowered_dispatch first, so kernel
+%  / fact-table fast paths fire for both top-level R-API calls and
+%  internal Call/Execute instructions.
+emit_lowered_dispatch_entry(Pred, Arity, FuncName, Entry) :-
+    format(string(Entry),
+           'assign("~w/~w", ~w, envir = shared_program$lowered_dispatch)',
+           [Pred, Arity, FuncName]).
 
 offset_label_entry(Offset, Entry0, Entry) :-
     atom_string(Entry0, S),
@@ -709,6 +748,88 @@ r_safe_ident_char(C, C) :-
 r_safe_ident_char('.', '.') :- !.
 r_safe_ident_char('_', '_') :- !.
 r_safe_ident_char(_, '_').
+
+% ============================================================================
+% RECURSIVE KERNEL DETECTION + EMISSION
+% ============================================================================
+%
+% Detects predicates that match a registered kernel pattern (so far:
+% transitive_closure2 -- ancestor(X,Y) :- edge(X,Y). ancestor(X,Y) :-
+% edge(X,Z), ancestor(Z,Y).) and emits a native R BFS that runs the
+% reachability set in one pass, streaming hits via iter-CP. The
+% detector lives in src/unifyweaver/core/recursive_kernel_detection.pl
+% and is shared with the Haskell/Rust targets.
+%
+% Per-call: kernel_layout(off) in Options or
+% user:wam_r_kernel_layout(off) globally disables detection.
+
+:- multifile user:wam_r_kernel_layout/1.
+
+kernel_layout_enabled(Options) :-
+    option(kernel_layout(Setting), Options, auto),
+    kernel_layout_setting_ok(Setting).
+
+kernel_layout_setting_ok(auto) :-
+    (   catch(user:wam_r_kernel_layout(Override), _, fail)
+    ->  Override \== off
+    ;   true
+    ).
+kernel_layout_setting_ok(on).
+
+%% wam_r_kernel_detect(+PredIndicator, -Kernel) is semidet.
+%  Pulls the user clauses for PredIndicator and asks the shared
+%  detector to classify them. Fails silently when the predicate
+%  doesn't match any registered kernel pattern.
+wam_r_kernel_detect(PI, Kernel) :-
+    (   PI = _Mod:Pred/Arity -> true ; PI = Pred/Arity ),
+    functor(Head, Pred, Arity),
+    catch(findall(Head-StrippedBody,
+                  ( user:clause(Head, RawBody),
+                    strip_module_qualifiers(RawBody, StrippedBody) ),
+                  Clauses), _, fail),
+    Clauses \= [],
+    detect_recursive_kernel(Pred, Arity, Clauses, Kernel).
+
+% Recursively peel `Mod:Goal` wrappers and walk through the goal
+% structure (conjunction, disjunction, if-then) so the recursive-
+% kernel detector sees the underlying predicate calls. This is
+% needed because plunit wraps test-asserted clause bodies in its
+% own `plunit_<test>:user:Goal` -- bare `clause/2` returns the
+% wrapped form, which `detect_recursive_kernel` doesn't recognise.
+strip_module_qualifiers(Var, Var) :-
+    var(Var), !.
+strip_module_qualifiers(_:G, Stripped) :-
+    !, strip_module_qualifiers(G, Stripped).
+strip_module_qualifiers((A, B), (As, Bs)) :-
+    !, strip_module_qualifiers(A, As),
+       strip_module_qualifiers(B, Bs).
+strip_module_qualifiers((A ; B), (As ; Bs)) :-
+    !, strip_module_qualifiers(A, As),
+       strip_module_qualifiers(B, Bs).
+strip_module_qualifiers((A -> B), (As -> Bs)) :-
+    !, strip_module_qualifiers(A, As),
+       strip_module_qualifiers(B, Bs).
+strip_module_qualifiers(Goal, Goal).
+
+%% emit_kernel(+Pred, +Kernel, -DataDecl, -LoweredFunc, -FuncName)
+%  Emits the lowered R function for a detected kernel. Currently
+%  handles transitive_closure2 only; other kinds fall through (the
+%  caller falls back to the fact-table or compiled path).
+emit_kernel(Pred, recursive_kernel(transitive_closure2, _, ConfigOps),
+            DataDecl, LoweredFunc, FuncName) :-
+    member(edge_pred(EdgePred/EdgeArity), ConfigOps),
+    EdgeArity =:= 2,
+    r_pred_name(Pred, RName),
+    format(atom(FuncName), '~w_kernel_tc2', [RName]),
+    DataDecl = "",  % no per-pred data; the kernel just dispatches.
+    format(string(LoweredFunc),
+'~w <- function(program, state) {
+  source <- WamRuntime$get_reg(state, 1L)
+  target <- WamRuntime$get_reg(state, 2L)
+  WamRuntime$transitive_closure2(program, state, "~w/2", "~w", "~w/2",
+                                  source, target, state$pc + 1L)
+}',
+           [FuncName, Pred, EdgePred, EdgePred]).
 
 % ============================================================================
 % FACT-TABLE CLASSIFICATION + EMISSION
@@ -975,7 +1096,7 @@ write_wam_r_project(Predicates, Options, ProjectDir) :-
     write_description(ProjectDir, ModName),
     compile_predicates_for_project(Predicates, Options,
         AllInstrs, TopLevelLabelEntries, AllLabelEntries,
-        WrapperCode, LoweredFunctionsCode),
+        WrapperCode, LoweredFunctionsCode, LoweredDispatchCode),
     emit_r_intern_table(IdToStringStr),
     maplist([I, Line]>>(format(string(Line), '    ~w', [I])), AllInstrs,
             InstrLines),
@@ -986,7 +1107,7 @@ write_wam_r_project(Predicates, Options, ProjectDir) :-
     write_runtime_source(RDir),
     write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
                          WrapperCode, IdToStringStr, ForeignHandlersBody,
-                         LoweredFunctionsCode).
+                         LoweredFunctionsCode, LoweredDispatchCode).
 
 write_description(ProjectDir, ModName) :-
     find_template('templates/targets/r_wam/DESCRIPTION.mustache', Template),
@@ -1005,7 +1126,7 @@ write_runtime_source(RDir) :-
 
 write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
                      WrapperCode, IdToStringStr, ForeignHandlersBody,
-                     LoweredFunctionsCode) :-
+                     LoweredFunctionsCode, LoweredDispatchCode) :-
     find_template('templates/targets/r_wam/program.R.mustache', Template),
     get_time(T), format_time(string(DateStr), "%Y-%m-%d", T),
     render_template(Template,
@@ -1015,6 +1136,7 @@ write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
           'dispatch'=DispatchBody,
           'wrappers'=WrapperCode,
           'intern_id_to_string'=IdToStringStr,
+          'lowered_dispatch_assignments'=LoweredDispatchCode,
           'foreign_handlers'=ForeignHandlersBody,
           'lowered_functions'=LoweredFunctionsCode
         ], Content),

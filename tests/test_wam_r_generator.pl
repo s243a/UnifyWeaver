@@ -2359,6 +2359,71 @@ e2e_fact_table_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for the recursive-kernel detector. The
+% ancestor/2 predicate matches the transitive_closure2 pattern from
+% recursive_kernel_detection.pl, so the codegen swaps its WAM body
+% for a native R BFS over the underlying parent/2 fact-table. Tests
+% direct hit, multi-hop reach, branch traversal, no-path failure,
+% and findall-style enumeration through the new lowered_dispatch
+% tier in dispatch_call / Call / Execute.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(kernel_tc2_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_kernel_tc2_via_rscript
+    ;   true
+    )).
+
+e2e_kernel_tc2_via_rscript :-
+    retractall(user:parent_of(_, _)),
+    retractall(user:anc(_, _)),
+    assertz(user:parent_of(alice, bob)),
+    assertz(user:parent_of(bob, carol)),
+    assertz(user:parent_of(carol, dan)),
+    assertz(user:parent_of(alice, eve)),
+    assertz(user:parent_of(eve, frank)),
+    assertz((user:anc(X, Y) :- user:parent_of(X, Y))),
+    assertz((user:anc(X, Y) :- user:parent_of(X, Z), user:anc(Z, Y))),
+    assertz((user:tc_direct  :- anc(alice, bob))),
+    assertz((user:tc_deep    :- anc(alice, dan))),
+    assertz((user:tc_branch  :- anc(alice, frank))),
+    assertz((user:tc_no_back :- anc(bob, alice))),
+    assertz((user:tc_disjoint :- anc(eve, carol))),
+    assertz((user:tc_findall :-
+        findall(Y, anc(alice, Y), L),
+        msort(L, S),
+        S == [bob, carol, dan, eve, frank])),
+    unique_r_tmp_dir('tmp_r_kernel_tc2_e2e', TmpDir),
+    write_wam_r_project(
+        [user:parent_of/2, user:anc/2,
+         user:tc_direct/0, user:tc_deep/0, user:tc_branch/0,
+         user:tc_no_back/0, user:tc_disjoint/0, user:tc_findall/0],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [tc_direct, tc_deep, tc_branch, tc_findall],
+    No  = [tc_no_back, tc_disjoint],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    % The generator should emit the kernel function and register it
+    % in the lowered-dispatch env.
+    directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
+    read_file_to_string(ProgPath, Code, []),
+    assertion(sub_string(Code, _, _, _, 'pred_anc_kernel_tc2 <- function(')),
+    assertion(sub_string(Code, _, _, _,
+        'assign("anc/2", pred_anc_kernel_tc2, envir = shared_program$lowered_dispatch)')),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-
