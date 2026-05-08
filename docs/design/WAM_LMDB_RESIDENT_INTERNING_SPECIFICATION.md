@@ -115,40 +115,101 @@ a category literally named `"true"`), the existing well-known ID is
 returned; no new ID is allocated. This is the same contract
 `internAtom` already enforces in-process.
 
-## 3. CLI contract
+## 3. Pipeline composition contract
 
-A new binary in the existing `mysql_stream` crate (or a sibling crate
-re-exporting the parser):
+The pipeline is **already in production** for integer-keyed enwiki
+ingestion. The text-keyed extension reuses the same composition; only
+the consumer's environment changes.
 
-```
-mysql_stream_lmdb \
-  --output PATH \
-  [--cols CHILD,PARENT] \
-  [--filter COL=VALUE] \
-  [--articles-cols COL,COL --articles-filter COL=VALUE] \
-  [--articles] \
-  [--compile-time-atoms FILE.txt] \
-  [--map-size BYTES] \
-  [--no-articles] \
-  [--source-sha PRECOMPUTED_SHA] \
-  INPUT.sql.gz
+### 3.1 Producer (parser) — pluggable, Rust is canonical
+
+The streaming-glue layer (`src/unifyweaver/glue/streaming_glue.pl`)
+selects the parser declaratively:
+
+```prolog
+:- declare_target(parse_mysql_rows/2, rust,
+                  [leaf(true), native_crate(mysql_stream)]).
 ```
 
-- `--cols 0,1` selects (child, parent) column indices in the categorylinks
-  rows. Defaults are tuned for the SimpleWiki / enwiki categorylinks
-  schema: `cl_from` and `cl_to`.
-- `--filter 2=subcat` keeps only rows where column index 2 (i.e.
-  `cl_type`) equals `subcat`. Multiple `--filter` flags AND together.
-- `--compile-time-atoms` is a one-line-per-atom text file aligned with
-  the codegen's compile-time table.
-- `--map-size` is the LMDB env max size in bytes. The default is large
-  enough for full enwiki; the user can shrink it for small fixtures.
-- `--source-sha`, if provided, is written to `meta.source_dump_sha256`
-  verbatim. If omitted the binary computes it while streaming.
+Swapping to AWK is a one-line change to `declare_target`. A Haskell
+variant would slot in identically; it has not been written yet.
 
-The binary writes the LMDB at `--output`. If the directory exists and
-`meta.schema_version` matches, the binary is idempotent: it exits
-non-zero with a diagnostic unless `--force` is given.
+**For benchmarking we fix the parser to Rust.** Preprocessing cost
+must be constant across query-target measurements; varying the parser
+contaminates the comparison. The pluggable-parser property exists for
+deployments and one-off experiments; it does not appear in the
+benchmark harness.
+
+### 3.2 Consumer (LMDB sink) — pluggable, Python is canonical for now
+
+The consumer is also selected via `declare_target`. The current
+production sink is `ingest_to_lmdb.py`; an alternate Rust-native sink
+that links the parser and writer in-process would be a one-line
+Prolog swap:
+
+```prolog
+% Today:
+:- declare_target(ingest_to_lmdb/3, python,
+                  [leaf(true),
+                   script_path('src/.../ingest_to_lmdb.py'),
+                   pip_packages([lmdb])]).
+
+% Future (Rust-native, no producer→consumer pipe):
+:- declare_target(ingest_to_lmdb/3, rust,
+                  [leaf(true),
+                   native_crate(lmdb_sink)]).
+```
+
+This implementation arc extends the Python sink only. Building a
+Rust-native sink is deferred until profiling shows the producer→consumer
+pipe is itself a meaningful cost. The contract below describes the
+Python extension; the Rust alternative would honour the same env-var
+semantics and produce byte-identical LMDB output.
+
+### 3.2.1 Python sink env-var surface
+
+The existing consumer at
+`src/unifyweaver/runtime/python/lmdb_ingest/ingest_to_lmdb.py` already
+handles the integer-keyed regime via env vars:
+
+```
+UW_LMDB_PATH=/path/to/data.mdb
+UW_FILTER_COL=4 UW_FILTER_VAL=subcat
+UW_KEY_COL=0 UW_VAL_COL=6
+UW_KEY_ENCODING=int32_le UW_VAL_ENCODING=int32_le
+UW_LMDB_DUPSORT=1
+UW_BATCH_SIZE=50000
+```
+
+The text-keyed regime adds the following env vars on top of the
+existing set; behaviour is fully backward-compatible (when these are
+unset the consumer behaves exactly as today):
+
+| Env var | Purpose |
+|---|---|
+| `UW_INTERN_KEY=1` | Intern key column; write to `s2i` / `i2s` sub-dbs; output is the assigned Int. |
+| `UW_INTERN_VAL=1` | Intern value column; same. |
+| `UW_LMDB_EDGES_DB=category_parent` | Named sub-db for edge writes (default `category_parent`). |
+| `UW_LMDB_S2I_DB=s2i` | Named sub-db for forward intern map. |
+| `UW_LMDB_I2S_DB=i2s` | Named sub-db for reverse intern map. |
+| `UW_LMDB_META_DB=meta` | Named sub-db for metadata keys. |
+| `UW_LMDB_APPEND=1` | Use `append=True` on edge writes (only when input is sorted). |
+| `UW_COMPILE_TIME_ATOMS=PATH` | Sidecar file pre-populating low IDs (see §2). |
+| `UW_SOURCE_SHA=...` | Recorded in `meta.source_dump_sha256`. |
+| `UW_SCHEMA_VERSION=1` | Recorded in `meta.schema_version`. |
+
+The consumer is idempotent: if `meta.schema_version` matches the env
+and the LMDB is non-empty, it exits with a diagnostic unless
+`UW_FORCE_REINGEST=1`.
+
+### 3.3 Prolog glue surface
+
+A new example
+`examples/streaming/simplewiki_category_ingest_text.pl` mirrors the
+existing `enwiki_category_ingest.pl` but sets `UW_INTERN_KEY=1`,
+`UW_INTERN_VAL=1`, and the appropriate sub-db names. The producer
+declaration is unchanged. The consumer declaration is unchanged
+(same script path; only env differs).
 
 ## 4. Runtime contract
 
@@ -237,14 +298,26 @@ sees the same `EdgeLookup` interface.
 ## 7. Compatibility with existing `int_atom_seeds(true)`
 
 The current `int_atom_seeds(true)` mode reads `seed_ids.txt` and
-`root_ids.txt` from disk. It stays as-is. The new
-`int_atom_seeds(lmdb)` mode supersedes it for fixtures that come with a
-preprocessed LMDB; the old mode remains for hand-prepared int-id
-files.
+`root_ids.txt` from disk and is used by the enwiki integer-keyed
+pipeline. It stays as-is. The new `int_atom_seeds(lmdb)` mode
+supersedes it for fixtures that come with a preprocessed LMDB; the
+old mode remains for hand-prepared int-id files.
 
 The two modes share the same downstream code (everything from
 `fullInternTable` onward in `Main.hs`); they differ only in how they
 populate it.
+
+### 7.1 Regime selection
+
+| Fixture shape | Producer | Consumer env | Runtime mode |
+|---|---|---|---|
+| Integer-keyed (enwiki) | `mysql_stream` (Rust) | int32_le keys, no intern | `int_atom_seeds(true)` reading `seed_ids.txt` |
+| Text-keyed (100k_cats) | `mysql_stream` (Rust) | `UW_INTERN_KEY=1 UW_INTERN_VAL=1` | `int_atom_seeds(lmdb)` reading from `s2i`/`i2s` |
+| Small TSV (dev / scale-300) | n/a (TSV is the input) | n/a | TSV path (current default) |
+
+The matrix bench picks the regime based on input shape and
+`fact_count`. The TSV path stays as a fallback for small fixtures
+where preprocessing overhead is irrelevant.
 
 ## 8. Output sha equivalence
 
