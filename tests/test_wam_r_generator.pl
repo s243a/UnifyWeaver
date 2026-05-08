@@ -49,6 +49,8 @@ test(exports) :-
     assertion(current_predicate(wam_r_target:write_wam_r_project/3)),
     assertion(current_predicate(wam_r_target:compile_wam_predicate_to_r/4)),
     assertion(current_predicate(wam_r_target:r_foreign_predicate/3)),
+    assertion(current_predicate(wam_r_target:classify_r_fact_predicate/4)),
+    assertion(current_predicate(wam_r_target:split_wam_into_segments_r/2)),
     assertion(current_predicate(wam_r_target:init_r_atom_intern_table/0)).
 
 % ------------------------------------------------------------------
@@ -102,6 +104,88 @@ test(label_map_has_pred_entry) :-
         directory_file_path(TmpDir, 'R/generated_program.R', Program),
         read_file_to_string(Program, Code, []),
         assertion(sub_string(Code, _, _, _, '"wam_r_fact/1" =')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+% ------------------------------------------------------------------
+% Test 4b: R fact-shape classifier mirrors Haskell F1 policy basics
+% ------------------------------------------------------------------
+test(fact_shape_classifier_fact_only) :-
+    once((
+        retractall(user:r_f1_color(_)),
+        assertz(user:r_f1_color(red)),
+        assertz(user:r_f1_color(green)),
+        assertz(user:r_f1_color(blue)),
+        wam_target:compile_predicate_to_wam(r_f1_color/1, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        wam_r_target:classify_r_fact_predicate(r_f1_color/1, Lines, [], Info),
+        assertion(Info = fact_shape_info(3, true, all_ground, compiled)),
+        retractall(user:r_f1_color(_))
+    )).
+
+test(fact_shape_classifier_rule_not_fact_only) :-
+    once((
+        retractall(user:r_f1_parent(_, _)),
+        retractall(user:r_f1_ancestor(_, _)),
+        assertz(user:r_f1_parent(tom, bob)),
+        assertz((user:r_f1_ancestor(X, Y) :- user:r_f1_parent(X, Y))),
+        assertz((user:r_f1_ancestor(X, Y) :-
+            user:r_f1_parent(X, Z),
+            user:r_f1_ancestor(Z, Y))),
+        wam_target:compile_predicate_to_wam(r_f1_ancestor/2, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        wam_r_target:classify_r_fact_predicate(r_f1_ancestor/2, Lines, [], Info),
+        Info = fact_shape_info(_, FactOnly, _, _),
+        assertion(FactOnly == false),
+        retractall(user:r_f1_ancestor(_, _)),
+        retractall(user:r_f1_parent(_, _))
+    )).
+
+test(fact_shape_layout_auto_threshold) :-
+    once((
+        retractall(user:r_f1_big(_)),
+        forall(between(1, 6, I), (
+            atom_number(A, I),
+            assertz(user:r_f1_big(A))
+        )),
+        wam_target:compile_predicate_to_wam(r_f1_big/1, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        wam_r_target:classify_r_fact_predicate(
+            r_f1_big/1, Lines, [fact_count_threshold(5)], Info),
+        assertion(Info = fact_shape_info(6, true, all_ground, inline_data([]))),
+        retractall(user:r_f1_big(_))
+    )).
+
+test(fact_shape_layout_user_override) :-
+    once((
+        retractall(user:r_f1_override(_)),
+        assertz(user:r_f1_override(a)),
+        wam_target:compile_predicate_to_wam(r_f1_override/1, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        wam_r_target:classify_r_fact_predicate(
+            r_f1_override/1,
+            Lines,
+            [fact_layout(r_f1_override/1, external_source(tsv("data.tsv")))],
+            Info),
+        assertion(Info = fact_shape_info(_, _, _, external_source(tsv("data.tsv")))),
+        retractall(user:r_f1_override(_))
+    )).
+
+test(fact_shape_comment_emitted) :-
+    once((
+        unique_r_tmp_dir('tmp_r_fact_shape', TmpDir),
+        write_wam_r_project(
+            [user:wam_r_fact/1],
+            [],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        assertion(sub_string(Code, _, _, _, 'Fact shape classification')),
+        assertion(sub_string(Code, _, _, _, 'wam_r_fact/1: fact_only=true')),
         delete_directory_and_contents(TmpDir)
     )).
 
@@ -2018,16 +2102,36 @@ test(r_wam_bindings_loads) :-
     assertion(current_predicate(r_wam_bindings:init_r_wam_bindings/0)),
     assertion(current_predicate(r_wam_bindings:r_wam_binding/5)).
 
+test(r_wam_bindings_list_parity) :-
+    assertion(r_wam_bindings:r_wam_binding(nth0/3, _, _, _, _)),
+    assertion(r_wam_bindings:r_wam_binding(nth1/3, _, _, _, _)),
+    assertion(r_wam_bindings:r_wam_binding(is_list/1, _, _, _, _)),
+    assertion(r_wam_bindings:r_wam_binding(ground/1, _, _, _, _)).
+
 :- end_tests(wam_r_generator).
 
 % ------------------------------------------------------------------
 % Helpers
 % ------------------------------------------------------------------
 unique_r_tmp_dir(Prefix, Dir) :-
+    r_tmp_root(Root),
     get_time(Now),
     StampF is Now,
-    format(atom(Dir), '/tmp/~w_~w', [Prefix, StampF]),
+    format(atom(Base), '~w_~w', [Prefix, StampF]),
+    directory_file_path(Root, Base, Dir),
     (   exists_directory(Dir)
     ->  delete_directory_and_contents(Dir)
     ;   true
     ).
+
+r_tmp_root(Root) :-
+    getenv('TMPDIR', EnvRoot),
+    exists_directory(EnvRoot),
+    access_file(EnvRoot, write),
+    !,
+    Root = EnvRoot.
+r_tmp_root('/data/data/com.termux/files/usr/tmp') :-
+    exists_directory('/data/data/com.termux/files/usr/tmp'),
+    access_file('/data/data/com.termux/files/usr/tmp', write),
+    !.
+r_tmp_root('/tmp').

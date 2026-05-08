@@ -178,6 +178,26 @@ r_wam_binding(member/2,
     [elem-value, list-list], [bool],
     [pure, deterministic, partial, pattern(call)]).
 
+r_wam_binding(nth0/3,
+    '~list[[~idx + 1L]]',
+    [idx-usize, list-list], [value],
+    [pure, deterministic, partial, pattern(index_0_based)]).
+
+r_wam_binding(nth1/3,
+    '~list[[~idx]]',
+    [idx-usize, list-list], [value],
+    [pure, deterministic, partial, pattern(index_1_based)]).
+
+r_wam_binding(is_list/1,
+    'wam_is_proper_list(state, ~val, table)',
+    [val-value], [bool],
+    [pure, deterministic, total, stateful, pattern(call)]).
+
+r_wam_binding(ground/1,
+    'wam_is_ground(state, ~val)',
+    [val-value], [bool],
+    [pure, deterministic, total, stateful, pattern(call)]).
+
 % --- I/O (impure) ---
 
 r_wam_binding(write/1,

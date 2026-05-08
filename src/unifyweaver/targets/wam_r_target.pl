@@ -36,6 +36,11 @@
     write_wam_r_project/3,           % +Predicates, +Options, +ProjectDir
     r_foreign_predicate/3,           % +Pred, +Arity, +Options
     init_r_atom_intern_table/0,      % reinitialize atom intern table
+    classify_r_fact_predicate/4,     % +PredIndicator, +WamLines, +Options, -Info
+    r_fact_only/2,                   % +Segments, -Bool
+    r_first_arg_groundness/3,        % +Segments, +Arity, -Status
+    r_pick_layout/5,                 % +PredIndicator, +NClauses, +FactOnly, +Options, -Layout
+    split_wam_into_segments_r/2,     % +Lines, -Segments
     % --- Re-exported helpers used by wam_r_lowered_emitter -----
     tokenize_wam_line/2,             % +Line, -Tokens
     wam_parts_to_r/3,                % +Tokens, +Options, -RLiteral
@@ -73,6 +78,8 @@
 % multifile fact -> default interpreter.
 
 :- multifile user:wam_r_emit_mode/1.
+:- multifile user:fact_layout/2.
+:- multifile user:wam_r_layout_policy/5.
 
 wam_r_resolve_emit_mode(Options, Mode) :-
     (   option(emit_mode(M0), Options)
@@ -522,6 +529,166 @@ wam_lines_to_data([Line|Rest], Options, PC, Instructions, LabelMap, LabelEntries
     ).
 
 % ============================================================================
+% FACT SHAPE CLASSIFICATION
+% ============================================================================
+
+%% classify_r_fact_predicate(+PredIndicator, +WamLines, +Options, -Info) is det.
+%  Classifies each predicate as fact-only or rule-bearing and selects a
+%  layout strategy. This mirrors the Haskell F1 classifier; R currently
+%  emits all layouts through the compiled WAM path, so this is metadata
+%  and testable policy plumbing rather than a runtime behavior change.
+classify_r_fact_predicate(PredIndicator, WamLines, Options, Info) :-
+    split_wam_into_segments_r(WamLines, Segments),
+    length(Segments, NClauses),
+    r_fact_only(Segments, FactOnly),
+    (PredIndicator = _:_/Arity -> true ; PredIndicator = _/Arity),
+    r_first_arg_groundness(Segments, Arity, FirstArg),
+    r_pick_layout(PredIndicator, NClauses, FactOnly, Options, Layout),
+    Info = fact_shape_info(NClauses, FactOnly, FirstArg, Layout).
+
+%% split_wam_into_segments_r(+Lines, -Segments) is det.
+%  Groups WAM text lines into Label-InstrList pairs.
+split_wam_into_segments_r([], []).
+split_wam_into_segments_r([Line|Rest], Segments) :-
+    tokenize_wam_line(Line, Parts),
+    (   Parts == []
+    ->  split_wam_into_segments_r(Rest, Segments)
+    ;   Parts = [First|_],
+        sub_string(First, _, 1, 0, ":")
+    ->  sub_string(First, 0, _, 1, LabelName),
+        extract_r_segment_instrs(Rest, Instrs, Remaining),
+        Segments = [LabelName-Instrs | RestSegs],
+        split_wam_into_segments_r(Remaining, RestSegs)
+    ;   split_wam_into_segments_r(Rest, Segments)
+    ).
+
+extract_r_segment_instrs([], [], []).
+extract_r_segment_instrs([Line|Rest], Instrs, Remaining) :-
+    tokenize_wam_line(Line, Parts),
+    (   Parts == []
+    ->  extract_r_segment_instrs(Rest, Instrs, Remaining)
+    ;   Parts = [First|_],
+        sub_string(First, _, 1, 0, ":")
+    ->  Instrs = [],
+        Remaining = [Line|Rest]
+    ;   (   parse_wam_instr_r(Parts, Instr)
+        ->  Instrs = [Instr | RestInstrs],
+            extract_r_segment_instrs(Rest, RestInstrs, Remaining)
+        ;   extract_r_segment_instrs(Rest, Instrs, Remaining)
+        )
+    ).
+
+parse_wam_instr_r(["get_constant", C, Ai], get_constant(C, Ai)).
+parse_wam_instr_r(["get_variable", Xn, Ai], get_variable(Xn, Ai)).
+parse_wam_instr_r(["get_value", Xn, Ai], get_value(Xn, Ai)).
+parse_wam_instr_r(["get_structure", F, Ai], get_structure(F, Ai)).
+parse_wam_instr_r(["put_constant", C, Ai], put_constant(C, Ai)).
+parse_wam_instr_r(["put_variable", Xn, Ai], put_variable(Xn, Ai)).
+parse_wam_instr_r(["put_value", Xn, Ai], put_value(Xn, Ai)).
+parse_wam_instr_r(["put_structure", F|_], put_structure(F)).
+parse_wam_instr_r(["put_list", Ai], put_list(Ai)).
+parse_wam_instr_r(["unify_variable", Xn], unify_variable(Xn)).
+parse_wam_instr_r(["unify_value", Xn], unify_value(Xn)).
+parse_wam_instr_r(["unify_constant", C], unify_constant(C)).
+parse_wam_instr_r(["call", P, N], call(P, N)).
+parse_wam_instr_r(["execute", P], execute(P)).
+parse_wam_instr_r(["builtin_call", Op, Ar], builtin_call(Op, Ar)).
+parse_wam_instr_r(["proceed"], proceed).
+parse_wam_instr_r(["try_me_else", L], try_me_else(L)).
+parse_wam_instr_r(["retry_me_else", L], retry_me_else(L)).
+parse_wam_instr_r(["trust_me"], trust_me).
+parse_wam_instr_r(["allocate"], allocate).
+parse_wam_instr_r(["deallocate"], deallocate).
+parse_wam_instr_r(["switch_on_constant"|_], switch_on_constant).
+
+%% r_fact_only(+Segments, -Bool) is det.
+%  true iff no clause has a body-level call instruction.
+r_fact_only(Segments, true) :-
+    forall(member(_-Instrs, Segments),
+           forall(member(Instr, Instrs),
+                  \+ r_is_body_call(Instr))), !.
+r_fact_only(_, false).
+
+r_is_body_call(call(_, _)).
+r_is_body_call(execute(_)).
+r_is_body_call(builtin_call(_, _)).
+
+%% r_first_arg_groundness(+Segments, +Arity, -Status) is det.
+%  Status is one of: none, all_ground, all_variable, mixed.
+r_first_arg_groundness(_Segments, 0, none) :- !.
+r_first_arg_groundness(Segments, Arity, Status) :-
+    Arity > 0,
+    maplist(r_clause_arg1_type, Segments, Types),
+    r_combine_groundness(Types, Status).
+
+r_clause_arg1_type(_-Instrs, Type) :-
+    (   member(get_constant(_, "A1"), Instrs) -> Type = ground
+    ;   member(get_structure(_, "A1"), Instrs) -> Type = ground
+    ;   member(get_variable(_, "A1"), Instrs) -> Type = variable
+    ;   member(get_value(_, "A1"), Instrs) -> Type = variable
+    ;   Type = unknown
+    ).
+
+r_combine_groundness(Types, all_ground) :-
+    forall(member(T, Types), T == ground), !.
+r_combine_groundness(Types, all_variable) :-
+    forall(member(T, Types), T == variable), !.
+r_combine_groundness(_, mixed).
+
+%% r_pick_layout(+PredIndicator, +NClauses, +FactOnly, +Options, -Layout) is det.
+%  User overrides win. Built-in policies mirror the Haskell target.
+r_pick_layout(PredIndicator, _NClauses, _FactOnly, Options, Layout) :-
+    option(fact_layout(PredIndicator, UserLayout), Options), !,
+    Layout = UserLayout.
+r_pick_layout(PredIndicator, _NClauses, _FactOnly, _Options, Layout) :-
+    catch(user:fact_layout(PredIndicator, UserLayout), _, fail), !,
+    Layout = UserLayout.
+r_pick_layout(PredIndicator, NClauses, FactOnly, Options, Layout) :-
+    option(fact_layout_policy(PolicyName), Options, auto),
+    r_layout_policy(PolicyName, PredIndicator, NClauses, FactOnly, Options, Layout).
+
+r_layout_policy(Policy, PredIndicator, NClauses, FactOnly, Options, Layout) :-
+    catch(user:wam_r_layout_policy(Policy, PredIndicator, NClauses, FactOnly, Layout0),
+          _, fail),
+    !,
+    (   nonvar(Layout0)
+    ->  Layout = Layout0
+    ;   r_builtin_layout_policy(Policy, PredIndicator, NClauses, FactOnly, Options, Layout)
+    ).
+r_layout_policy(Policy, PredIndicator, NClauses, FactOnly, Options, Layout) :-
+    r_builtin_layout_policy(Policy, PredIndicator, NClauses, FactOnly, Options, Layout).
+
+r_builtin_layout_policy(auto, _Pred, NClauses, FactOnly, Options, Layout) :-
+    option(fact_count_threshold(Threshold), Options, 100),
+    (   FactOnly == true,
+        NClauses > Threshold
+    ->  Layout = inline_data([])
+    ;   Layout = compiled
+    ).
+r_builtin_layout_policy(compiled_only, _, _, _, _, compiled).
+r_builtin_layout_policy(inline_eager, _, _, FactOnly, _, Layout) :-
+    (   FactOnly == true
+    ->  Layout = inline_data([])
+    ;   Layout = compiled
+    ).
+r_builtin_layout_policy(cost_aware, PredIndicator, NClauses, FactOnly, Options, Layout) :-
+    (PredIndicator = _:_/Arity -> true ; PredIndicator = _/Arity),
+    option(fact_cost_threshold(Threshold), Options, 200),
+    Mult is max(1, Arity),
+    CostScore is NClauses * Mult,
+    (   FactOnly == true,
+        CostScore > Threshold
+    ->  Layout = inline_data([])
+    ;   Layout = compiled
+    ).
+
+format_r_fact_shape_comment(PredIndicator, fact_shape_info(N, FO, FA, Layout), Comment) :-
+    (PredIndicator = _:P/A -> true ; PredIndicator = P/A),
+    format(string(Comment),
+           '# ~w/~w: fact_only=~w, clauses=~w, first_arg=~w, layout=~w',
+           [P, A, FO, N, FA, Layout]).
+
+% ============================================================================
 % PREDICATE COMPILATION
 % ============================================================================
 
@@ -532,10 +699,12 @@ compile_wam_predicate_to_r(_Pred, _WamCode, _Options, "").
 
 %% compile_predicates_for_project(+Predicates, +Options,
 %%                                -AllInstrs, -TopLabels,
-%%                                -AllLabels, -WrapperCode)
+%%                                -AllLabels, -WrapperCode, -LoweredCode,
+%%                                -FactShapeComments)
 compile_predicates_for_project(Predicates, Options,
                                AllInstrs, TopLevelLabelEntries,
-                               AllLabelEntries, WrapperCode, LoweredCode) :-
+                               AllLabelEntries, WrapperCode, LoweredCode,
+                               FactShapeComments) :-
     init_r_atom_intern_table,
     option(intern_atoms(ExtraAtoms), Options, []),
     forall(member(A, ExtraAtoms),
@@ -545,11 +714,13 @@ compile_predicates_for_project(Predicates, Options,
                                       CompilePredicates),
     wam_r_resolve_emit_mode(Options, Mode),
     compile_all_predicates(CompilePredicates, Options, Mode, 1,
-                           [], [], [], [], [],
+                           [], [], [], [], [], [],
                            AllInstrs, TopLevelLabelEntries,
-                           AllLabelEntries, Wrappers, LoweredEntries),
+                           AllLabelEntries, Wrappers, LoweredEntries,
+                           FactComments),
     atomic_list_concat(Wrappers, '\n', WrapperCode),
-    atomic_list_concat(LoweredEntries, '\n', LoweredCode).
+    atomic_list_concat(LoweredEntries, '\n', LoweredCode),
+    atomic_list_concat(FactComments, '\n', FactShapeComments).
 
 append_missing_foreign_predicates(Predicates, ForeignPredicates,
                                   CompilePredicates) :-
@@ -569,12 +740,12 @@ same_predicate_indicator(P0, P1) :-
 predicate_indicator_key(_:Pred/Arity, Pred/Arity) :- !.
 predicate_indicator_key(Pred/Arity, Pred/Arity).
 
-compile_all_predicates([], _, _, _, Instrs, TopLabels, AllLabels, Wrappers, Lowered,
-                       Instrs, TopLabels, AllLabels, Wrappers, Lowered).
+compile_all_predicates([], _, _, _, Instrs, TopLabels, AllLabels, Wrappers, Lowered, FactComments,
+                       Instrs, TopLabels, AllLabels, Wrappers, Lowered, FactComments).
 compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
-                       InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc, LoweredAcc,
+                       InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc, LoweredAcc, FactCommentAcc,
                        AllInstrs, TopLevelLabelEntries,
-                       AllLabelEntries, AllWrappers, AllLowered) :-
+                       AllLabelEntries, AllWrappers, AllLowered, AllFactComments) :-
     (   Pred = _Module:P/Arity -> true ; Pred = P/Arity ),
     (   r_foreign_predicate(P, Arity, Options)
     ->  format(string(FLit), 'CallForeign("~w", ~w)', [P, Arity]),
@@ -584,9 +755,15 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
         format(string(MainEntry), '    "~w/~w" = ~wL', [P, Arity, BasePC]),
         NewTopLabels = [MainEntry | TopLabelAcc],
         NewAllLabels = [MainEntry | AllLabelAcc],
-        WamCodeForLower = ""
+        WamCodeForLower = "",
+        NewFactCommentAcc = FactCommentAcc
     ;   compile_predicate_to_wam(P/Arity, [], WamCode),
         WamCodeForLower = WamCode,
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", WamLines),
+        classify_r_fact_predicate(Pred, WamLines, Options, FactInfo),
+        format_r_fact_shape_comment(Pred, FactInfo, FactComment),
+        NewFactCommentAcc = [FactComment | FactCommentAcc],
         wam_code_to_r_data(WamCode, Options, PredInstrs, _LMap,
                            PredSubLabelEntries0),
         length(PredInstrs, PredLen),
@@ -617,8 +794,10 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
     compile_all_predicates(Rest, Options, Mode, NewPC,
                            NewInstrs, NewTopLabels, NewAllLabels,
                            [WrapperCode|WrapperAcc], NewLoweredAcc,
+                           NewFactCommentAcc,
                            AllInstrs, TopLevelLabelEntries,
-                           AllLabelEntries, AllWrappers, AllLowered).
+                           AllLabelEntries, AllWrappers, AllLowered,
+                           AllFactComments).
 
 offset_label_entry(Offset, Entry0, Entry) :-
     atom_string(Entry0, S),
@@ -745,7 +924,7 @@ write_wam_r_project(Predicates, Options, ProjectDir) :-
     write_description(ProjectDir, ModName),
     compile_predicates_for_project(Predicates, Options,
         AllInstrs, TopLevelLabelEntries, AllLabelEntries,
-        WrapperCode, LoweredFunctionsCode),
+        WrapperCode, LoweredFunctionsCode, FactShapeComments),
     emit_r_intern_table(IdToStringStr),
     maplist([I, Line]>>(format(string(Line), '    ~w', [I])), AllInstrs,
             InstrLines),
@@ -756,7 +935,7 @@ write_wam_r_project(Predicates, Options, ProjectDir) :-
     write_runtime_source(RDir),
     write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
                          WrapperCode, IdToStringStr, ForeignHandlersBody,
-                         LoweredFunctionsCode).
+                         LoweredFunctionsCode, FactShapeComments).
 
 write_description(ProjectDir, ModName) :-
     find_template('templates/targets/r_wam/DESCRIPTION.mustache', Template),
@@ -775,7 +954,7 @@ write_runtime_source(RDir) :-
 
 write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
                      WrapperCode, IdToStringStr, ForeignHandlersBody,
-                     LoweredFunctionsCode) :-
+                     LoweredFunctionsCode, FactShapeComments) :-
     find_template('templates/targets/r_wam/program.R.mustache', Template),
     get_time(T), format_time(string(DateStr), "%Y-%m-%d", T),
     render_template(Template,
@@ -786,7 +965,8 @@ write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
           'wrappers'=WrapperCode,
           'intern_id_to_string'=IdToStringStr,
           'foreign_handlers'=ForeignHandlersBody,
-          'lowered_functions'=LoweredFunctionsCode
+          'lowered_functions'=LoweredFunctionsCode,
+          'fact_shape_comments'=FactShapeComments
         ], Content),
     directory_file_path(RDir, 'generated_program.R', Path),
     write_file(Path, Content).
