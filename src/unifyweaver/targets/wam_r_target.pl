@@ -63,6 +63,8 @@
     wam_r_lowerable/3,
     lower_predicate_to_r/4
 ]).
+:- use_module('../core/recursive_kernel_detection',
+             [detect_recursive_kernel/4, kernel_config/2]).
 
 % ============================================================================
 % EMIT MODE
@@ -700,11 +702,12 @@ compile_wam_predicate_to_r(_Pred, _WamCode, _Options, "").
 %% compile_predicates_for_project(+Predicates, +Options,
 %%                                -AllInstrs, -TopLabels,
 %%                                -AllLabels, -WrapperCode, -LoweredCode,
-%%                                -FactShapeComments)
+%%                                -FactShapeComments, -LoweredDispatchCode)
 compile_predicates_for_project(Predicates, Options,
                                AllInstrs, TopLevelLabelEntries,
                                AllLabelEntries, WrapperCode, LoweredCode,
-                               FactShapeComments) :-
+                               FactShapeComments,
+                               LoweredDispatchCode) :-
     init_r_atom_intern_table,
     option(intern_atoms(ExtraAtoms), Options, []),
     forall(member(A, ExtraAtoms),
@@ -714,13 +717,14 @@ compile_predicates_for_project(Predicates, Options,
                                       CompilePredicates),
     wam_r_resolve_emit_mode(Options, Mode),
     compile_all_predicates(CompilePredicates, Options, Mode, 1,
-                           [], [], [], [], [], [],
+                           [], [], [], [], [], [], [],
                            AllInstrs, TopLevelLabelEntries,
                            AllLabelEntries, Wrappers, LoweredEntries,
-                           FactComments),
+                           FactComments, LoweredDispatchEntries),
     atomic_list_concat(Wrappers, '\n', WrapperCode),
     atomic_list_concat(LoweredEntries, '\n', LoweredCode),
-    atomic_list_concat(FactComments, '\n', FactShapeComments).
+    atomic_list_concat(FactComments, '\n', FactShapeComments),
+    atomic_list_concat(LoweredDispatchEntries, '\n', LoweredDispatchCode).
 
 append_missing_foreign_predicates(Predicates, ForeignPredicates,
                                   CompilePredicates) :-
@@ -740,12 +744,16 @@ same_predicate_indicator(P0, P1) :-
 predicate_indicator_key(_:Pred/Arity, Pred/Arity) :- !.
 predicate_indicator_key(Pred/Arity, Pred/Arity).
 
-compile_all_predicates([], _, _, _, Instrs, TopLabels, AllLabels, Wrappers, Lowered, FactComments,
-                       Instrs, TopLabels, AllLabels, Wrappers, Lowered, FactComments).
+compile_all_predicates([], _, _, _, Instrs, TopLabels, AllLabels, Wrappers,
+                       Lowered, FactComments, Dispatch,
+                       Instrs, TopLabels, AllLabels, Wrappers,
+                       Lowered, FactComments, Dispatch).
 compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
-                       InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc, LoweredAcc, FactCommentAcc,
+                       InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc, LoweredAcc,
+                       FactCommentAcc, LoweredDispAcc,
                        AllInstrs, TopLevelLabelEntries,
-                       AllLabelEntries, AllWrappers, AllLowered, AllFactComments) :-
+                       AllLabelEntries, AllWrappers, AllLowered,
+                       AllFactComments, AllLoweredDispatch) :-
     (   Pred = _Module:P/Arity -> true ; Pred = P/Arity ),
     (   r_foreign_predicate(P, Arity, Options)
     ->  format(string(FLit), 'CallForeign("~w", ~w)', [P, Arity]),
@@ -779,25 +787,66 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
         NewTopLabels = [MainEntry | TopLabelAcc],
         append([MainEntry | PredSubLabelEntries], AllLabelAcc, NewAllLabels)
     ),
-    % Decide whether this predicate should be lowered.
-    (   should_try_lower(Mode, P, Arity),
+    % Decide whether this predicate should be lowered. The kernel
+    % detector wins first (a recognised graph pattern dispatches to
+    % a native R fast path); then the fact-table path; then the
+    % regular Phase-3 lowered emitter; otherwise the WAM array.
+    (   kernel_layout_enabled(Options),
+        catch(wam_r_kernel_detect(Pred, Kernel), _, fail),
+        catch(emit_kernel(P, Kernel, KData, KFunc, KFuncName), _, fail)
+    ->  (   KData == ""
+        ->  NewLoweredAcc = [KFunc | LoweredAcc]
+        ;   NewLoweredAcc = [KData, KFunc | LoweredAcc]
+        ),
+        emit_r_lowered_wrapper(P, Arity, KFuncName, WrapperCode),
+        emit_lowered_dispatch_entry(P, Arity, KFuncName, DispEntry),
+        NewLoweredDispAcc = [DispEntry | LoweredDispAcc]
+    ;   WamCodeForLower \= "",
+        catch(wam_r_fact_classify(WamCodeForLower,
+                                   fact_info(NCls, _FArity, FTuples)),
+              _, fail),
+        fact_layout_enabled(P, Arity, NCls, Options)
+    ->  emit_fact_table(P, Arity, FTuples, FactData, FactFunc, FactFuncName),
+        NewLoweredAcc = [FactData, FactFunc | LoweredAcc],
+        emit_r_lowered_wrapper(P, Arity, FactFuncName, WrapperCode),
+        emit_lowered_dispatch_entry(P, Arity, FactFuncName, DispEntry),
+        NewLoweredDispAcc = [DispEntry | LoweredDispAcc]
+    ;   should_try_lower(Mode, P, Arity),
         WamCodeForLower \= "",
         catch(wam_r_lowerable(Pred, WamCodeForLower, _Reason), _, fail),
         catch(lower_predicate_to_r(Pred, WamCodeForLower, [],
                                    lowered(_PName, FuncName, LoweredR)),
               _, fail)
     ->  NewLoweredAcc = [LoweredR | LoweredAcc],
-        emit_r_lowered_wrapper(P, Arity, FuncName, WrapperCode)
+        emit_r_lowered_wrapper(P, Arity, FuncName, WrapperCode),
+        % Phase-3 lowered functions are NOT registered for internal
+        % dispatch -- they expect their own pre-set state via the
+        % per-pred wrapper. Internal calls keep going through the
+        % WAM array, matching the pre-PR behaviour.
+        NewLoweredDispAcc = LoweredDispAcc
     ;   NewLoweredAcc = LoweredAcc,
+        NewLoweredDispAcc = LoweredDispAcc,
         emit_r_wrapper(P, Arity, BasePC, WrapperCode)
     ),
     compile_all_predicates(Rest, Options, Mode, NewPC,
                            NewInstrs, NewTopLabels, NewAllLabels,
                            [WrapperCode|WrapperAcc], NewLoweredAcc,
                            NewFactCommentAcc,
+                           NewLoweredDispAcc,
                            AllInstrs, TopLevelLabelEntries,
                            AllLabelEntries, AllWrappers, AllLowered,
-                           AllFactComments).
+                           AllFactComments, AllLoweredDispatch).
+
+%% emit_lowered_dispatch_entry(+Pred, +Arity, +FuncName, -Entry)
+%  Generates an `assign("Pred/Arity", FuncName, envir = ...)` line
+%  that's stitched into the program template. The runtime tier
+%  dispatch_call consults program$lowered_dispatch first, so kernel
+%  / fact-table fast paths fire for both top-level R-API calls and
+%  internal Call/Execute instructions.
+emit_lowered_dispatch_entry(Pred, Arity, FuncName, Entry) :-
+    format(string(Entry),
+           'assign("~w/~w", ~w, envir = shared_program$lowered_dispatch)',
+           [Pred, Arity, FuncName]).
 
 offset_label_entry(Offset, Entry0, Entry) :-
     atom_string(Entry0, S),
@@ -858,19 +907,18 @@ pred_arg_strings(Arity, ArgDeclStr, ArgListStr) :-
     format(string(ArgListStr), 'list(~w)', [ArgDeclStr]).
 
 %% r_pred_name(+PrologName, -RName)
-%  R uses snake_case by convention; identifiers are looser than Scala
-%  so we keep the Prolog name verbatim, with safety substitutions.
+%  Generates the R identifier for a per-predicate wrapper. We
+%  always prefix with `pred_` so the wrapper can never collide
+%  with a base R function (e.g. `c`, `t`, `q`, `cat`, `paste`,
+%  `tryCatch`); without the prefix, asserting a Prolog predicate
+%  literally named `c/2` would shadow `base::c` and crash the
+%  runtime's own use of `c(...)` for vector construction.
 r_pred_name(Pred, RName) :-
     atom_string(Pred, PStr),
     string_chars(PStr, Chars),
     maplist(r_safe_ident_char, Chars, SafeChars),
     string_chars(SafeStr, SafeChars),
-    % R identifiers can't start with a digit
-    (   string_chars(SafeStr, [First|_]),
-        char_type(First, digit)
-    ->  string_concat("p_", SafeStr, RName0)
-    ;   RName0 = SafeStr
-    ),
+    string_concat("pred_", SafeStr, RName0),
     atom_string(RName, RName0).
 
 r_safe_ident_char(C, C) :-
@@ -878,6 +926,325 @@ r_safe_ident_char(C, C) :-
 r_safe_ident_char('.', '.') :- !.
 r_safe_ident_char('_', '_') :- !.
 r_safe_ident_char(_, '_').
+
+% ============================================================================
+% RECURSIVE KERNEL DETECTION + EMISSION
+% ============================================================================
+%
+% Detects predicates that match a registered kernel pattern (so far:
+% transitive_closure2 -- ancestor(X,Y) :- edge(X,Y). ancestor(X,Y) :-
+% edge(X,Z), ancestor(Z,Y).) and emits a native R BFS that runs the
+% reachability set in one pass, streaming hits via iter-CP. The
+% detector lives in src/unifyweaver/core/recursive_kernel_detection.pl
+% and is shared with the Haskell/Rust targets.
+%
+% Per-call: kernel_layout(off) in Options or
+% user:wam_r_kernel_layout(off) globally disables detection.
+
+:- multifile user:wam_r_kernel_layout/1.
+
+kernel_layout_enabled(Options) :-
+    option(kernel_layout(Setting), Options, auto),
+    kernel_layout_setting_ok(Setting).
+
+kernel_layout_setting_ok(auto) :-
+    (   catch(user:wam_r_kernel_layout(Override), _, fail)
+    ->  Override \== off
+    ;   true
+    ).
+kernel_layout_setting_ok(on).
+
+%% wam_r_kernel_detect(+PredIndicator, -Kernel) is semidet.
+%  Pulls the user clauses for PredIndicator and asks the shared
+%  detector to classify them. Fails silently when the predicate
+%  doesn't match any registered kernel pattern.
+wam_r_kernel_detect(PI, Kernel) :-
+    (   PI = _Mod:Pred/Arity -> true ; PI = Pred/Arity ),
+    functor(Head, Pred, Arity),
+    catch(findall(Head-StrippedBody,
+                  ( user:clause(Head, RawBody),
+                    strip_module_qualifiers(RawBody, StrippedBody) ),
+                  Clauses), _, fail),
+    Clauses \= [],
+    detect_recursive_kernel(Pred, Arity, Clauses, Kernel).
+
+% Recursively peel `Mod:Goal` wrappers and walk through the goal
+% structure (conjunction, disjunction, if-then) so the recursive-
+% kernel detector sees the underlying predicate calls. This is
+% needed because plunit wraps test-asserted clause bodies in its
+% own `plunit_<test>:user:Goal` -- bare `clause/2` returns the
+% wrapped form, which `detect_recursive_kernel` doesn't recognise.
+strip_module_qualifiers(Var, Var) :-
+    var(Var), !.
+strip_module_qualifiers(_:G, Stripped) :-
+    !, strip_module_qualifiers(G, Stripped).
+strip_module_qualifiers((A, B), (As, Bs)) :-
+    !, strip_module_qualifiers(A, As),
+       strip_module_qualifiers(B, Bs).
+strip_module_qualifiers((A ; B), (As ; Bs)) :-
+    !, strip_module_qualifiers(A, As),
+       strip_module_qualifiers(B, Bs).
+strip_module_qualifiers((A -> B), (As -> Bs)) :-
+    !, strip_module_qualifiers(A, As),
+       strip_module_qualifiers(B, Bs).
+strip_module_qualifiers(Goal, Goal).
+
+%% emit_kernel(+Pred, +Kernel, -DataDecl, -LoweredFunc, -FuncName)
+%  Emits the lowered R function for a detected kernel. Currently
+%  handles transitive_closure2 and transitive_distance3; other
+%  kinds fall through (the caller falls back to the fact-table or
+%  compiled path).
+emit_kernel(Pred, recursive_kernel(transitive_closure2, _, ConfigOps),
+            DataDecl, LoweredFunc, FuncName) :-
+    member(edge_pred(EdgePred/EdgeArity), ConfigOps),
+    EdgeArity =:= 2,
+    r_pred_name(Pred, RName),
+    format(atom(FuncName), '~w_kernel_tc2', [RName]),
+    DataDecl = "",  % no per-pred data; the kernel just dispatches.
+    format(string(LoweredFunc),
+'~w <- function(program, state) {
+  source <- WamRuntime$get_reg(state, 1L)
+  target <- WamRuntime$get_reg(state, 2L)
+  WamRuntime$transitive_closure2(program, state, "~w/2", "~w", "~w/2",
+                                  source, target, state$pc + 1L)
+}',
+           [FuncName, Pred, EdgePred, EdgePred]).
+emit_kernel(Pred, recursive_kernel(transitive_distance3, _, ConfigOps),
+            DataDecl, LoweredFunc, FuncName) :-
+    member(edge_pred(EdgePred/EdgeArity), ConfigOps),
+    EdgeArity =:= 2,
+    r_pred_name(Pred, RName),
+    format(atom(FuncName), '~w_kernel_td3', [RName]),
+    DataDecl = "",
+    format(string(LoweredFunc),
+'~w <- function(program, state) {
+  source <- WamRuntime$get_reg(state, 1L)
+  target <- WamRuntime$get_reg(state, 2L)
+  dist   <- WamRuntime$get_reg(state, 3L)
+  WamRuntime$transitive_distance3(program, state, "~w/3", "~w", "~w/2",
+                                   source, target, dist, state$pc + 1L)
+}',
+           [FuncName, Pred, EdgePred, EdgePred]).
+
+% ============================================================================
+% FACT-TABLE CLASSIFICATION + EMISSION
+% ============================================================================
+%
+% Policy: by default the fact-table path triggers for any predicate
+% the classifier accepts (i.e. pure get_constant + proceed clauses)
+% with at least one clause. The behaviour can be disabled per-call
+% via fact_table_layout(off) in Options or globally via
+% user:wam_r_fact_layout/1 — useful for regression bisection.
+
+:- multifile user:wam_r_fact_layout/1.
+
+fact_layout_enabled(_P, _Arity, _NCls, Options) :-
+    option(fact_table_layout(Setting), Options, auto),
+    fact_layout_setting_ok(Setting).
+
+fact_layout_setting_ok(auto) :-
+    (   catch(user:wam_r_fact_layout(Override), _, fail)
+    ->  Override \== off
+    ;   true
+    ).
+fact_layout_setting_ok(on).
+fact_layout_setting_ok(eager).
+%
+% A pure fact predicate (every clause is `get_constant` for each arg
+% position then `proceed`, with no body call) compiles to a flat R
+% list of arg-tuples plus a one-liner lowered function that calls
+% WamRuntime$fact_table_iter. This bypasses the WAM stepping engine
+% entirely on dispatch -- big speedup for large fact tables.
+%
+% wam_r_fact_classify(+WamCode, -fact_info(NClauses, Arity, Tuples))
+%   Tuples is a list of length NClauses; each element is a list of
+%   Arity R-source strings (one per arg slot, e.g. "Atom(7)" /
+%   "IntTerm(42)") in arg-1..arg-N order.
+%   Fails if any clause body has a call/builtin_call/execute, or if
+%   any arg slot is missing a get_constant. (Any other unsupported
+%   shape such as get_structure or get_variable also fails.)
+
+wam_r_fact_classify(WamCode, fact_info(NClauses, Arity, Tuples)) :-
+    split_string(WamCode, "\n", "", Lines0),
+    exclude(=( ""), Lines0, Lines),
+    fact_segment_lines(Lines, Segments),
+    Segments \= [],
+    length(Segments, NClauses),
+    Segments = [FirstSeg | _],
+    fact_seg_arity(FirstSeg, Arity),
+    Arity > 0,
+    maplist(fact_seg_arity_eq(Arity), Segments),
+    maplist(fact_seg_to_tuple(Arity), Segments, Tuples).
+
+% Group lines into segments by label boundary. A segment is a list of
+% non-label lines belonging to one clause (between two label lines or
+% between the last label and EOF). The very first label is the
+% predicate entry; subsequent labels are clause-alt entries.
+fact_segment_lines(Lines, Segments) :-
+    fact_segment_walk(Lines, [], [], Segments).
+
+fact_segment_walk([], CurRev, AccRev, Segments) :-
+    (   CurRev = []
+    ->  reverse(AccRev, Segments)
+    ;   reverse(CurRev, Cur),
+        reverse([Cur | AccRev], Segments)
+    ).
+fact_segment_walk([L | Rest], CurRev, AccRev, Segments) :-
+    string_chars(L, Chars),
+    list_to_set(Chars, _),  % cheap touch
+    (   sub_string(L, _, 1, 0, ":")
+    ->  % Label line: end current segment if non-empty.
+        (   CurRev = []
+        ->  fact_segment_walk(Rest, [], AccRev, Segments)
+        ;   reverse(CurRev, Cur),
+            fact_segment_walk(Rest, [], [Cur | AccRev], Segments)
+        )
+    ;   tokenize_wam_line(L, Parts),
+        (   Parts = []
+        ->  fact_segment_walk(Rest, CurRev, AccRev, Segments)
+        ;   fact_part_supported(Parts),
+            fact_segment_walk(Rest, [Parts | CurRev], AccRev, Segments)
+        )
+    ).
+
+% Allowed instructions inside a fact clause's body. switch_on_constant
+% is variable-length, so we admit any tokenisation that begins with it.
+fact_part_supported(["get_constant", _, _]).
+fact_part_supported(["proceed"]).
+fact_part_supported(["allocate"]).
+fact_part_supported(["deallocate"]).
+fact_part_supported(["try_me_else", _]).
+fact_part_supported(["retry_me_else", _]).
+fact_part_supported(["trust_me"]).
+fact_part_supported([Head | _]) :- Head == "switch_on_constant".
+
+% Determine the arity of a clause segment from the highest A_i it
+% touches via get_constant.
+fact_seg_arity(SegParts, Arity) :-
+    findall(N, (member(["get_constant", _, AReg], SegParts),
+                fact_a_idx(AReg, N)),
+            Ns),
+    Ns \= [],
+    max_list(Ns, Arity).
+
+fact_a_idx(Str, N) :-
+    string_chars(Str, [C | Rest]),
+    (C == 'A' ; C == 'a'), !,
+    string_chars(NStr, Rest),
+    number_string(N, NStr),
+    integer(N), N >= 1.
+
+fact_seg_arity_eq(Arity, SegParts) :-
+    fact_seg_arity(SegParts, Arity).
+
+% Extract the R-source literal for each arg slot in order.
+fact_seg_to_tuple(Arity, SegParts, Tuple) :-
+    numlist(1, Arity, Idxs),
+    maplist(fact_seg_arg_lit(SegParts), Idxs, Tuple).
+
+fact_seg_arg_lit(SegParts, Idx, Lit) :-
+    format(atom(Want), 'A~w', [Idx]),
+    atom_string(Want, WantStr),
+    member(["get_constant", ValStr, WantStr], SegParts), !,
+    constant_to_r_term(ValStr, Lit).
+
+%% emit_fact_table(+Pred, +Arity, +Tuples, -DataDecl, -LoweredFunc, -FuncName)
+%  Renders the per-predicate fact-data declaration and a lowered
+%  function that delegates to WamRuntime$fact_table_dispatch.
+%  Emits a first-arg index (an R env mapping "a<id>" / "i<val>" to
+%  the integer-vector of tuple indices) so ground first-arg queries
+%  hit a hash bucket instead of a full linear scan -- the speed-up
+%  vs the WAM `switch_on_constant` path comes from skipping the
+%  stepping engine and the get_constant unify chain.
+emit_fact_table(Pred, Arity, Tuples, DataDecl, LoweredFunc, FuncName) :-
+    r_pred_name(Pred, RName),
+    format(atom(DataName), '~w_facts', [RName]),
+    format(atom(IndexName), '~w_index', [RName]),
+    format(atom(FuncName), '~w_fact_iter', [RName]),
+    length(Tuples, NTuples),
+    fact_tuples_to_r_list(Tuples, ListBody),
+    fact_index_assignments(Tuples, IndexName, IndexBody),
+    format(string(DataDecl),
+'# Fact table for ~w/~w (~w tuples)
+~w <- list(
+~w
+)
+~w <- new.env(parent = emptyenv())
+~w', [Pred, Arity, NTuples, DataName, ListBody, IndexName, IndexBody]),
+    fact_args_collect(Arity, ArgsCollect),
+    format(string(LoweredFunc),
+'~w <- function(program, state) {
+  args <- ~w
+  WamRuntime$fact_table_dispatch(program, state, "~w/~w", ~w, ~w,
+                                  args, state$pc + 1L)
+}', [FuncName, ArgsCollect, Pred, Arity, DataName, IndexName]).
+
+% Build the R-side index population block. Each tuple's first arg
+% (which our classifier guarantees is a ground IntTerm/Atom literal)
+% maps to a bucket key "a<id>" or "i<val>"; the bucket value is the
+% list of 1-based tuple indices that share that key, in source order.
+fact_index_assignments(Tuples, IndexName, Body) :-
+    fact_index_pairs(Tuples, 1, Pairs),
+    fact_index_group(Pairs, [], Buckets),
+    maplist(fact_index_emit_assign(IndexName), Buckets, Lines),
+    atomic_list_concat(Lines, '\n', Body).
+
+fact_index_pairs([], _, []).
+fact_index_pairs([Tuple | Rest], Idx, [Key-Idx | RestPairs]) :-
+    Tuple = [First | _],
+    fact_index_key(First, Key), !,
+    Idx1 is Idx + 1,
+    fact_index_pairs(Rest, Idx1, RestPairs).
+fact_index_pairs([_ | Rest], Idx, RestPairs) :-
+    Idx1 is Idx + 1,
+    fact_index_pairs(Rest, Idx1, RestPairs).
+
+% Source literals are produced by constant_to_r_term: "Atom(<id>)"
+% or "IntTerm(<val>)" / "FloatTerm(<val>)". We pull the prefix to
+% pick the bucket namespace; floats get no index (still scanable via
+% the fallback linear path).
+fact_index_key(Lit, Key) :-
+    (   sub_string(Lit, 0, 5, _, "Atom(")
+    ->  string_concat("Atom(", AfterPrefix, Lit),
+        string_concat(NumStr, ")", AfterPrefix),
+        format(string(Key), 'a~w', [NumStr])
+    ;   sub_string(Lit, 0, 8, _, "IntTerm(")
+    ->  string_concat("IntTerm(", AfterPrefix, Lit),
+        string_concat(NumStr, ")", AfterPrefix),
+        format(string(Key), 'i~w', [NumStr])
+    ).
+
+fact_index_group([], Acc, Buckets) :-
+    reverse(Acc, Buckets).
+fact_index_group([Key-Idx | Rest], Acc, Buckets) :-
+    (   select(Key-Idxs, Acc, Acc1)
+    ->  append(Idxs, [Idx], NewIdxs),
+        fact_index_group(Rest, [Key-NewIdxs | Acc1], Buckets)
+    ;   fact_index_group(Rest, [Key-[Idx] | Acc], Buckets)
+    ).
+
+fact_index_emit_assign(IndexName, Key-Idxs, Line) :-
+    maplist([N, S]>>format(string(S), '~wL', [N]), Idxs, IdxStrs),
+    atomic_list_concat(IdxStrs, ', ', IdxList),
+    format(string(Line),
+           'assign("~w", c(~w), envir = ~w)', [Key, IdxList, IndexName]).
+
+fact_tuples_to_r_list(Tuples, Body) :-
+    maplist(fact_tuple_to_r_entry, Tuples, Entries),
+    atomic_list_concat(Entries, ',\n', Body).
+
+fact_tuple_to_r_entry(Tuple, Entry) :-
+    atomic_list_concat(Tuple, ', ', ArgList),
+    format(string(Entry), '  list(~w)', [ArgList]).
+
+fact_args_collect(0, 'list()') :- !.
+fact_args_collect(Arity, Code) :-
+    Arity > 0,
+    numlist(1, Arity, Idxs),
+    maplist([N, S]>>format(string(S),
+            'WamRuntime$get_reg(state, ~wL)', [N]), Idxs, Parts),
+    atomic_list_concat(Parts, ', ', Joined),
+    format(string(Code), 'list(~w)', [Joined]).
 
 % ============================================================================
 % FOREIGN PREDICATE DETECTION
@@ -924,7 +1291,8 @@ write_wam_r_project(Predicates, Options, ProjectDir) :-
     write_description(ProjectDir, ModName),
     compile_predicates_for_project(Predicates, Options,
         AllInstrs, TopLevelLabelEntries, AllLabelEntries,
-        WrapperCode, LoweredFunctionsCode, FactShapeComments),
+        WrapperCode, LoweredFunctionsCode, FactShapeComments,
+        LoweredDispatchCode),
     emit_r_intern_table(IdToStringStr),
     maplist([I, Line]>>(format(string(Line), '    ~w', [I])), AllInstrs,
             InstrLines),
@@ -935,7 +1303,8 @@ write_wam_r_project(Predicates, Options, ProjectDir) :-
     write_runtime_source(RDir),
     write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
                          WrapperCode, IdToStringStr, ForeignHandlersBody,
-                         LoweredFunctionsCode, FactShapeComments).
+                         LoweredFunctionsCode, FactShapeComments,
+                         LoweredDispatchCode).
 
 write_description(ProjectDir, ModName) :-
     find_template('templates/targets/r_wam/DESCRIPTION.mustache', Template),
@@ -954,7 +1323,8 @@ write_runtime_source(RDir) :-
 
 write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
                      WrapperCode, IdToStringStr, ForeignHandlersBody,
-                     LoweredFunctionsCode, FactShapeComments) :-
+                     LoweredFunctionsCode, FactShapeComments,
+                     LoweredDispatchCode) :-
     find_template('templates/targets/r_wam/program.R.mustache', Template),
     get_time(T), format_time(string(DateStr), "%Y-%m-%d", T),
     render_template(Template,
@@ -964,6 +1334,7 @@ write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
           'dispatch'=DispatchBody,
           'wrappers'=WrapperCode,
           'intern_id_to_string'=IdToStringStr,
+          'lowered_dispatch_assignments'=LoweredDispatchCode,
           'foreign_handlers'=ForeignHandlersBody,
           'lowered_functions'=LoweredFunctionsCode,
           'fact_shape_comments'=FactShapeComments

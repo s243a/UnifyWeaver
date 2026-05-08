@@ -126,6 +126,26 @@ main = do
 
     t0 <- getCurrentTime
 
+{{#int_atom_seeds_lmdb}}
+    -- Phase 2b.2b: int_atom_seeds(lmdb) mode — LMDB-resident interning.
+    -- Reads the s2i / i2s / article_category / category_parent sub-dbs
+    -- written by the Phase 1 ingester
+    -- (src/unifyweaver/runtime/python/lmdb_ingest/ingest_to_lmdb.py).
+    -- Skips TSV parsing + string interning entirely; the intern table
+    -- and edge index are loaded from binary LMDB pages.
+    --
+    -- The 5_000_000-edge threshold caps in-memory parentsIndex growth
+    -- at ~80 MB; enwiki-scale inputs (~28M edges) need to switch to
+    -- LMDB-cursor BFS (Phase 2b.3 follow-up). See loader docstring.
+    --
+    -- See docs/design/WAM_LMDB_RESIDENT_INTERNING_*.md.
+    let lmdbInternDir = factsDir ++ "/lmdb"
+    internEnv <- openLmdbInternEnvReadonly lmdbInternDir
+    !lmdbInternTable <- loadInternTableFromLmdb internEnv "s2i" "i2s"
+    !lmdbArticleCategories <- loadArticleCategoriesFromLmdb internEnv "article_category"
+    !lmdbParentsIndex <- loadForwardEdgesFromLmdb internEnv "category_parent" 5000000
+{{/int_atom_seeds_lmdb}}
+
 {{^int_atom_seeds}}
     -- Load facts from TSV (string-keyed seeds and edges)
     categoryParents <- loadTsvPairs (factsDir ++ "/category_parent.tsv")
@@ -163,6 +183,7 @@ main = do
         iAtom s = internAtomPure fullInternTable s
 {{/int_atom_seeds}}
 {{#int_atom_seeds}}
+{{^int_atom_seeds_lmdb}}
     -- Int-atom-seeds mode: only the compile-time atom table is needed.
     -- Seed/edge IDs are raw int32 from LMDB ingest; they don't need
     -- string interning.  iAtom is identity (Int -> Int) so the rest of
@@ -170,6 +191,15 @@ main = do
     let !fullInternTable = compileTimeAtomTable
         iAtom :: Int -> Int
         iAtom = id
+{{/int_atom_seeds_lmdb}}
+{{#int_atom_seeds_lmdb}}
+    -- Int-atom-seeds(lmdb) mode: the intern table comes from LMDB
+    -- (s2i / i2s sub-dbs) — already loaded into lmdbInternTable above.
+    -- iAtom is identity since seed/edge IDs are pre-interned int32.
+    let !fullInternTable = lmdbInternTable
+        iAtom :: Int -> Int
+        iAtom = id
+{{/int_atom_seeds_lmdb}}
 {{/int_atom_seeds}}
 
     -- Build merged code: compiled predicates + runtime facts.
@@ -197,6 +227,7 @@ main = do
             [(iAtom child, [iAtom parent]) | (child, parent) <- categoryParents]
 {{/int_atom_seeds}}
 {{#int_atom_seeds}}
+{{^int_atom_seeds_lmdb}}
     -- Int-atom-seeds: seeds and root come from int-id files.  Edges
     -- live in LMDB (use_lmdb(true) is expected; the in-memory
     -- parentsIndexInterned is empty as a sentinel).
@@ -209,6 +240,22 @@ main = do
         seedLimitMetric  = Nothing :: Maybe String
         seedFilterMetric = Nothing :: Maybe String
         !parentsIndexInterned = IM.empty :: IM.IntMap [Int]
+{{/int_atom_seeds_lmdb}}
+{{#int_atom_seeds_lmdb}}
+    -- Int-atom-seeds(lmdb): seeds and root still come from int-id
+    -- config files (seed_ids.txt / root_ids.txt). Edges populate
+    -- parentsIndexInterned directly from the LMDB category_parent
+    -- sub-db (loaded above into lmdbParentsIndex).
+    let !seedCats = seedIds
+        !root = case rootIds of
+                  []      -> 0
+                  (r:_)   -> r
+        n = fromIntegral ({{dimension_n}} :: Int) :: Double
+        negN = -n
+        seedLimitMetric  = Nothing :: Maybe String
+        seedFilterMetric = Nothing :: Maybe String
+        !parentsIndexInterned = lmdbParentsIndex
+{{/int_atom_seeds_lmdb}}
 {{/int_atom_seeds}}
 
     -- Demand-driven pruning: compute the backward-reachable set from root,

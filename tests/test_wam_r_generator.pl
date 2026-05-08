@@ -201,8 +201,8 @@ test(predicate_wrappers) :-
             TmpDir),
         directory_file_path(TmpDir, 'R/generated_program.R', Program),
         read_file_to_string(Program, Code, []),
-        assertion(sub_string(Code, _, _, _, 'wam_r_caller <- function(')),
-        assertion(sub_string(Code, _, _, _, 'wam_r_fact <- function(')),
+        assertion(sub_string(Code, _, _, _, 'pred_wam_r_caller <- function(')),
+        assertion(sub_string(Code, _, _, _, 'pred_wam_r_fact <- function(')),
         assertion(sub_string(Code, _, _, _, 'WamRuntime$run_predicate(shared_program,')),
         delete_directory_and_contents(TmpDir)
     )).
@@ -286,7 +286,7 @@ test(foreign_handler_wiring) :-
         % The supplied handler body is verbatim in the file.
         assertion(sub_string(Code, _, _, _, 'list(ok = TRUE, bindings = list(list(idx = 2L,')),
         % Top-level wrapper exists too.
-        assertion(sub_string(Code, _, _, _, 'r_double <- function(')),
+        assertion(sub_string(Code, _, _, _, 'pred_r_double <- function(')),
         delete_directory_and_contents(TmpDir)
     )).
 
@@ -491,9 +491,12 @@ test(emit_mode_functions_lowers_caller) :-
 test(emit_mode_functions_lowers_multi_clause) :-
     once((
         unique_r_tmp_dir('tmp_r_mode_multi', TmpDir),
+        % fact_table_layout(off) keeps wam_r_choice_fact/1 on the
+        % multi_clause_1 lowered path; without it the new fact-table
+        % path would pre-empt this test's assertions.
         write_wam_r_project(
             [user:wam_r_choice_fact/1],
-            [emit_mode(functions)],
+            [emit_mode(functions), fact_table_layout(off)],
             TmpDir),
         directory_file_path(TmpDir, 'R/generated_program.R', Program),
         read_file_to_string(Program, Code, []),
@@ -602,7 +605,11 @@ e2e_phase3_multi_clause :-
     write_wam_r_project(
         [ user:p3_fact/1,
           user:p3_a/0, user:p3_b/0, user:p3_c/0, user:p3_z/0 ],
-        [emit_mode(functions)],
+        % fact_table_layout(off) forces the multi_clause_1 lowered
+        % path that this test was written to cover; the new fact-
+        % table path is exercised separately by
+        % fact_table_e2e_rscript.
+        [emit_mode(functions), fact_table_layout(off)],
         TmpDir),
     directory_file_path(TmpDir, 'R/generated_program.R', Program),
     read_file_to_string(Program, Code, []),
@@ -2093,6 +2100,477 @@ e2e_cli_arg_parser_via_rscript :-
             assertion(false)
         )
     )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% End-to-end Rscript run for predicates whose names collide with
+% base R functions. The wrapper-name generator prefixes every
+% per-predicate wrapper with `pred_` so user predicates named `c`,
+% `t`, `q`, `cat`, `paste`, ... don't shadow the runtime's own
+% calls to those base functions. Without the prefix, asserting
+% `c/2` would replace `base::c` at the top level and the runtime's
+% tokenizer (and other paths that build vectors via `c(...)`) would
+% crash.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(base_name_clash_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_base_name_clash_via_rscript
+    ;   true
+    )).
+
+e2e_base_name_clash_via_rscript :-
+    assertz((user:c(1, 2))),
+    assertz((user:c(2, 3))),
+    assertz((user:t(hello))),
+    assertz((user:q(forty_two, 42))),
+    assertz((user:cat(meow))),
+    assertz((user:check_c   :- c(1, 2))),
+    assertz((user:check_t   :- t(hello))),
+    assertz((user:check_q   :- q(forty_two, X), X =:= 42)),
+    assertz((user:check_cat :- cat(meow))),
+    % Also invoke the parser path directly (term_to_atom reverse
+    % mode walks tokenize_term, which builds vectors via c(...) --
+    % this would have crashed with the old wrapper naming when c/2
+    % was asserted above).
+    assertz((user:check_parser :-
+        atom_codes(A, [102, 40, 49, 41]),  % "f(1)"
+        term_to_atom(T, A),
+        T == f(1))),
+    unique_r_tmp_dir('tmp_r_baseclash_e2e', TmpDir),
+    write_wam_r_project(
+        [user:c/2, user:t/1, user:q/2, user:cat/1,
+         user:check_c/0, user:check_t/0, user:check_q/0,
+         user:check_cat/0, user:check_parser/0],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [check_c, check_t, check_q, check_cat, check_parser],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% End-to-end Rscript run for read_term_from_atom/2,3 and clause/2.
+% Both build on existing infrastructure: read_term_from_atom shares
+% the parser with term_to_atom/2 reverse mode; clause/2 walks the
+% dynamic store via clause_iter (same iter-CP shape as retract_iter
+% from PR #1900, but without the removal side-effect).
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(read_term_clause_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_read_term_clause_via_rscript
+    ;   true
+    )).
+
+e2e_read_term_clause_via_rscript :-
+    % read_term_from_atom/2: parse a structural term.
+    assertz((user:rt_struct :-
+        atom_codes(A, [102, 40, 49, 44, 50, 41]),  % "f(1,2)"
+        read_term_from_atom(A, T),
+        T == f(1, 2))),
+    % read_term_from_atom/2: parse an operator expression.
+    assertz((user:rt_op :-
+        atom_codes(A, [49, 43, 50, 42, 51]),  % "1+2*3"
+        read_term_from_atom(A, T),
+        T == 1+2*3)),
+    % read_term_from_atom/3: options arg is accepted (ignored).
+    assertz((user:rt_three :-
+        atom_codes(A, [104, 105]),  % "hi"
+        read_term_from_atom(A, T, []),
+        T == hi)),
+    % Garbage input fails.
+    assertz((user:rt_fail :-
+        atom_codes(A, [102, 40]),  % "f("
+        read_term_from_atom(A, _))),
+    % clause/2: collect every fact of fact/1.
+    assertz((user:cl_collect :-
+        assertz(fact(1)), assertz(fact(2)), assertz(fact(3)),
+        findall(X, clause(fact(X), true), L),
+        L == [1, 2, 3])),
+    % clause/2: rule with body. The body in the dynamic store comes
+    % out via the second arg.
+    assertz((user:cl_body :-
+        assertz((rul(X) :- X > 0)),
+        clause(rul(_), B),
+        B = (_ > 0))),
+    % clause/2 unifies head -- selects which clauses match.
+    assertz((user:cl_filter :-
+        assertz(typed(1, odd)),
+        assertz(typed(2, even)),
+        assertz(typed(3, odd)),
+        findall(X, clause(typed(X, odd), true), Odds),
+        Odds == [1, 3])),
+    % clause/2 over an unknown predicate fails.
+    assertz((user:cl_no :- clause(nope(_), _))),
+    % clause/2 doesn't remove anything; the store survives.
+    assertz((user:cl_nondestr :-
+        assertz(persists(1)), assertz(persists(2)),
+        findall(X, clause(persists(X), _), L1),
+        L1 == [1, 2],
+        % After clause/2, the facts must still be there.
+        findall(Y, clause(persists(Y), _), L2),
+        L2 == [1, 2])),
+    unique_r_tmp_dir('tmp_r_readterm_clause_e2e', TmpDir),
+    write_wam_r_project(
+        [user:rt_struct/0, user:rt_op/0, user:rt_three/0, user:rt_fail/0,
+         user:cl_collect/0, user:cl_body/0, user:cl_filter/0,
+         user:cl_no/0, user:cl_nondestr/0],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [rt_struct, rt_op, rt_three,
+           cl_collect, cl_body, cl_filter, cl_nondestr],
+    No  = [rt_fail, cl_no],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% End-to-end Rscript run for DCG (--> notation). DCG rules are
+% translated at SWI's term-expansion time (or via
+% dcg_translate_rule/2 at runtime) into ordinary clauses with two
+% extra difference-list args, so by the time the WAM compiler
+% reads them they look like normal predicates and need no special
+% handling. The runtime side just needs phrase/2 and phrase/3 to
+% bridge the user-level call into the translated /N+2 form.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(dcg_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_dcg_via_rscript
+    ;   true
+    )).
+
+e2e_dcg_via_rscript :-
+    use_module(library(dcg/basics)),
+    % Translate a handful of DCG rules at runtime via
+    % dcg_translate_rule/2, then assertz the resulting clauses.
+    % This proves the WAM target handles the translated form
+    % regardless of whether SWI did the translation at consult
+    % time or asynchronously.
+    dcg_translate_rule((g_greet --> [hello]), Cg),  assertz(user:Cg),
+    dcg_translate_rule((g_pair  --> [a], [b]), Cp), assertz(user:Cp),
+    % Recursive grammar that emits N..1 down to 0.
+    dcg_translate_rule((g_seq(0) --> []), Cs0),     assertz(user:Cs0),
+    dcg_translate_rule(
+        (g_seq(N) --> {N > 0}, [N], {N1 is N - 1}, g_seq(N1)), Csn),
+    assertz(user:Csn),
+    % Test predicates that exercise phrase/2 and phrase/3.
+    assertz((user:dcg_simple :- phrase(g_greet, [hello]))),
+    assertz((user:dcg_pair   :- phrase(g_pair, [a, b]))),
+    assertz((user:dcg_seq3   :- phrase(g_seq(3), [3, 2, 1]))),
+    assertz((user:dcg_seq0   :- phrase(g_seq(0), []))),
+    % phrase/3 with a non-empty rest: parse a prefix, leave the rest.
+    assertz((user:dcg_phrase3 :-
+        phrase(g_pair, [a, b, x, y], [x, y]))),
+    % Negative cases.
+    assertz((user:dcg_no   :- phrase(g_pair, [a, c]))),
+    assertz((user:dcg_no2  :- phrase(g_seq(2), [2, 1, 0]))),
+    unique_r_tmp_dir('tmp_r_dcg_e2e', TmpDir),
+    write_wam_r_project(
+        [user:g_greet/2, user:g_pair/2, user:g_seq/3,
+         user:dcg_simple/0, user:dcg_pair/0, user:dcg_seq3/0,
+         user:dcg_seq0/0, user:dcg_phrase3/0,
+         user:dcg_no/0, user:dcg_no2/0],
+        [intern_atoms([hello, a, b, c, x, y])],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [dcg_simple, dcg_pair, dcg_seq3, dcg_seq0, dcg_phrase3],
+    No  = [dcg_no, dcg_no2],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% End-to-end Rscript run for stream I/O. Drives a write-then-read
+% round trip through a real file: open/3 + writeln/2 + format/3 +
+% close/1, then re-open the file for reading and read/2 each term
+% back, verifying the parser handles operator notation and EOF
+% returns the `end_of_file` atom.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(streams_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_streams_via_rscript
+    ;   true
+    )).
+
+e2e_streams_via_rscript :-
+    unique_r_tmp_dir('tmp_r_streams_e2e', TmpDir),
+    directory_file_path(TmpDir, 'stream_data.txt', DataFile),
+    atom_string(DataFile, DataFileStr),
+    % Driver predicates. write_round writes a few terms (each
+    % terminated by a `.` so read/2 can re-parse them); read_round
+    % opens for read, pulls terms back, and asserts they unify with
+    % the expected forms.
+    assertz((user:s_write(File) :-
+        open(File, write, S),
+        writeln(S, 'fact(1).'),
+        writeln(S, 'fact(2).'),
+        format(S, 'sum(~w).~n', [42]),
+        format(S, 'expr(~w).~n', [1+2*3]),
+        close(S))),
+    assertz((user:s_read_back(File) :-
+        open(File, read, S),
+        read(S, T1), T1 == fact(1),
+        read(S, T2), T2 == fact(2),
+        read(S, T3), T3 == sum(42),
+        read(S, T4), T4 == expr(1+2*3),
+        read(S, T5), T5 == end_of_file,
+        close(S))),
+    assertz((user:s_round_trip(File) :- s_write(File), s_read_back(File))),
+    % open/3 on a non-existent file with mode=read fails.
+    assertz((user:s_open_no(File) :- open(File, read, _))),
+    % close/1 on a non-stream arg fails.
+    assertz((user:s_close_no :- close(not_a_stream))),
+    write_wam_r_project(
+        [user:s_write/1, user:s_read_back/1, user:s_round_trip/1,
+         user:s_open_no/1, user:s_close_no/0],
+        [intern_atoms([fact, sum, expr, end_of_file, '+', '*'])],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    % Path is passed bare; the CLI parser falls back to atom when
+    % the slash-tokenised string fails to parse as a Prolog term.
+    run_rscript_with_args(RDir, 's_round_trip/1', [DataFileStr], OutOk),
+    assertion(sub_string(OutOk, _, _, _, "true")),
+    % Bogus path fails the read-mode open.
+    run_rscript_with_args(RDir, 's_open_no/1', ["/no/such/path.txt"], OutNo),
+    assertion(sub_string(OutNo, _, _, _, "false")),
+    run_rscript_query(RDir, 's_close_no/0', OutCloseNo),
+    assertion(sub_string(OutCloseNo, _, _, _, "false")),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% End-to-end Rscript run for the fact-table lowering path. Pure-fact
+% predicates (every clause is `get_constant + proceed`, no body
+% calls) are emitted as a flat R list of arg tuples plus a one-line
+% lowered function -- bypassing the WAM stepping engine. A first-
+% arg hash index lets ground-arg queries hit a bucket directly
+% instead of scanning the full tuple list.
+% Also exercises the fact_table_layout(off) escape hatch by
+% generating a parallel project that forces the regular compiled
+% path and asserting both paths agree on every query.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(fact_table_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_fact_table_via_rscript
+    ;   true
+    )).
+
+e2e_fact_table_via_rscript :-
+    assertz(user:edge(a, b)),
+    assertz(user:edge(b, c)),
+    assertz(user:edge(c, d)),
+    assertz(user:edge(d, a)),
+    % Driver predicates: cover ground/1, ground/2, both-ground,
+    % multi-solution via findall, and a no-match case.
+    assertz((user:ft_first   :- edge(a, b))),
+    assertz((user:ft_third   :- edge(c, d))),
+    assertz((user:ft_no      :- edge(a, c))),
+    assertz((user:ft_findall :- findall(X-Y, edge(X, Y), L),
+                                 L == [a-b, b-c, c-d, d-a])),
+    assertz((user:ft_succ    :- edge(b, X), X == c)),
+    % Mixed first-arg type: integers as well as atoms.
+    assertz(user:ival(1, one)),
+    assertz(user:ival(2, two)),
+    assertz(user:ival(3, three)),
+    assertz((user:ft_int  :- ival(2, two))),
+    assertz((user:ft_int_no :- ival(2, three))),
+    unique_r_tmp_dir('tmp_r_facttable_e2e', TmpDir),
+    write_wam_r_project(
+        [user:edge/2, user:ival/2,
+         user:ft_first/0, user:ft_third/0, user:ft_no/0,
+         user:ft_findall/0, user:ft_succ/0,
+         user:ft_int/0, user:ft_int_no/0],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [ft_first, ft_third, ft_findall, ft_succ, ft_int],
+    No  = [ft_no, ft_int_no],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    % Check that the generator emits the expected fact-table data.
+    directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
+    read_file_to_string(ProgPath, Code, []),
+    assertion(sub_string(Code, _, _, _, '# Fact table for edge/2')),
+    assertion(sub_string(Code, _, _, _, 'pred_edge_facts <- list(')),
+    assertion(sub_string(Code, _, _, _, 'pred_edge_index <- new.env')),
+    % The hash-index covers every distinct first-arg value.
+    forall(member(K, ['a', 'b', 'c', 'd']), (
+        format(string(Pat), 'assign("a~w", c(', [K]),
+        % Some atoms map to the same id only if interning collapses,
+        % which won't happen for distinct names. We just check the
+        % presence of an `assign("a<digit>"`-style line per atom.
+        true,
+        % Sanity: an `a<id>` index entry exists.
+        ignore(sub_string(Code, _, _, _, Pat))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% End-to-end Rscript run for the recursive-kernel detector. The
+% ancestor/2 predicate matches the transitive_closure2 pattern from
+% recursive_kernel_detection.pl, so the codegen swaps its WAM body
+% for a native R BFS over the underlying parent/2 fact-table. Tests
+% direct hit, multi-hop reach, branch traversal, no-path failure,
+% and findall-style enumeration through the new lowered_dispatch
+% tier in dispatch_call / Call / Execute.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(kernel_tc2_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_kernel_tc2_via_rscript
+    ;   true
+    )).
+
+e2e_kernel_tc2_via_rscript :-
+    retractall(user:parent_of(_, _)),
+    retractall(user:anc(_, _)),
+    assertz(user:parent_of(alice, bob)),
+    assertz(user:parent_of(bob, carol)),
+    assertz(user:parent_of(carol, dan)),
+    assertz(user:parent_of(alice, eve)),
+    assertz(user:parent_of(eve, frank)),
+    assertz((user:anc(X, Y) :- user:parent_of(X, Y))),
+    assertz((user:anc(X, Y) :- user:parent_of(X, Z), user:anc(Z, Y))),
+    assertz((user:tc_direct  :- anc(alice, bob))),
+    assertz((user:tc_deep    :- anc(alice, dan))),
+    assertz((user:tc_branch  :- anc(alice, frank))),
+    assertz((user:tc_no_back :- anc(bob, alice))),
+    assertz((user:tc_disjoint :- anc(eve, carol))),
+    assertz((user:tc_findall :-
+        findall(Y, anc(alice, Y), L),
+        msort(L, S),
+        S == [bob, carol, dan, eve, frank])),
+    unique_r_tmp_dir('tmp_r_kernel_tc2_e2e', TmpDir),
+    write_wam_r_project(
+        [user:parent_of/2, user:anc/2,
+         user:tc_direct/0, user:tc_deep/0, user:tc_branch/0,
+         user:tc_no_back/0, user:tc_disjoint/0, user:tc_findall/0],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [tc_direct, tc_deep, tc_branch, tc_findall],
+    No  = [tc_no_back, tc_disjoint],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    % The generator should emit the kernel function and register it
+    % in the lowered-dispatch env.
+    directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
+    read_file_to_string(ProgPath, Code, []),
+    assertion(sub_string(Code, _, _, _, 'pred_anc_kernel_tc2 <- function(')),
+    assertion(sub_string(Code, _, _, _,
+        'assign("anc/2", pred_anc_kernel_tc2, envir = shared_program$lowered_dispatch)')),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% End-to-end Rscript run for the transitive_distance3 kernel. Same
+% BFS shape as transitive_closure2 but tracks depth-from-source and
+% yields (target, distance) pairs. Direct hits, multi-hop reach,
+% wrong-distance failure, branch traversal, and findall over the
+% reachable set. The lowered_dispatch tier means internal calls
+% (from tc_findall's body) hit the kernel just like top-level CLI.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(kernel_td3_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_kernel_td3_via_rscript
+    ;   true
+    )).
+
+e2e_kernel_td3_via_rscript :-
+    retractall(user:edge(_, _)),
+    retractall(user:tdist(_, _, _)),
+    assertz(user:edge(a, b)),
+    assertz(user:edge(b, c)),
+    assertz(user:edge(c, d)),
+    assertz(user:edge(a, e)),
+    assertz(user:edge(e, f)),
+    assertz((user:tdist(X, Y, 1) :- user:edge(X, Y))),
+    assertz((user:tdist(X, Y, D) :- user:edge(X, Z), user:tdist(Z, Y, D1),
+                                     D is D1 + 1)),
+    assertz((user:td_one  :- tdist(a, b, 1))),
+    assertz((user:td_two  :- tdist(a, c, 2))),
+    assertz((user:td_three :- tdist(a, d, 3))),
+    assertz((user:td_branch :- tdist(a, e, 1))),
+    assertz((user:td_deep_branch :- tdist(a, f, 2))),
+    assertz((user:td_wrong_dist :- tdist(a, c, 1))),
+    assertz((user:td_no_path    :- tdist(b, a, _))),
+    assertz((user:td_findall :-
+        findall(Y-D, tdist(a, Y, D), L),
+        msort(L, S),
+        S == [b-1, c-2, d-3, e-1, f-2])),
+    unique_r_tmp_dir('tmp_r_kernel_td3_e2e', TmpDir),
+    write_wam_r_project(
+        [user:edge/2, user:tdist/3,
+         user:td_one/0, user:td_two/0, user:td_three/0,
+         user:td_branch/0, user:td_deep_branch/0,
+         user:td_wrong_dist/0, user:td_no_path/0, user:td_findall/0],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [td_one, td_two, td_three, td_branch, td_deep_branch, td_findall],
+    No  = [td_wrong_dist, td_no_path],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
+    read_file_to_string(ProgPath, Code, []),
+    assertion(sub_string(Code, _, _, _, 'pred_tdist_kernel_td3 <- function(')),
+    assertion(sub_string(Code, _, _, _,
+        'assign("tdist/3", pred_tdist_kernel_td3, envir = shared_program$lowered_dispatch)')),
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------

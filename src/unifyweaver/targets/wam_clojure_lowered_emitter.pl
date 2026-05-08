@@ -316,6 +316,10 @@ clojure_direct_builtin("float/1", "1").
 clojure_direct_builtin("float/1", 1).
 clojure_direct_builtin('float/1', "1").
 clojure_direct_builtin('float/1', 1).
+clojure_direct_builtin("is_list/1", "1").
+clojure_direct_builtin("is_list/1", 1).
+clojure_direct_builtin('is_list/1', "1").
+clojure_direct_builtin('is_list/1', 1).
 clojure_direct_builtin("!/0", "0").
 clojure_direct_builtin("!/0", 0).
 clojure_direct_builtin('!/0', "0").
@@ -450,6 +454,13 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "fail/0" ; Op == 'fail/0'),
     !,
     format(atom(Expr), '(runtime/backtrack ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "is_list/1" ; Op == 'is_list/1'),
+    !,
+    format(atom(Expr),
+           '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if (runtime/proper-list-term? ~w value) (runtime/advance ~w) (runtime/backtrack ~w)))',
+           [S, S, S, S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     clojure_unary_guard_test(Op, TestExpr),

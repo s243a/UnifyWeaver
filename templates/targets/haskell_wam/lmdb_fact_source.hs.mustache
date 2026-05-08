@@ -776,3 +776,179 @@ ingestTsvToLmdb :: InternTable -> FilePath -> FilePath -> String -> IO ()
 ingestTsvToLmdb _ _ _ _ = error
     "ingestTsvToLmdb: not supported for dupsort layout (LMDB built externally)"
 {{/lmdb_dupsort}}
+
+-- ===========================================================================
+-- Phase 2b.2 LMDB-resident loaders (called from int_atom_seeds(lmdb) mode)
+-- ===========================================================================
+--
+-- These functions populate runtime state directly from the LMDB sub-dbs
+-- written by the Phase 1 ingester (PR #1905):
+--
+--   s2i              : UTF-8 string  -> int32_le      (forward intern map)
+--   i2s              : int32_le      -> UTF-8 string  (reverse intern map)
+--   article_category : int32_le      -> int32_le      (dupsort)
+--   category_parent  : int32_le      -> int32_le      (dupsort)
+--
+-- ASCII / UTF-8 caveat
+-- --------------------
+-- These loaders treat byte-for-byte equality as the equality semantics for
+-- atoms. For ASCII-only inputs (English Wikipedia category names, which
+-- are URL-encoded ASCII) the resulting Haskell `String` is byte-identical
+-- to what `decodeUtf8 . readFile` would produce, so atom equality is
+-- preserved across TSV and LMDB regimes.
+--
+-- For inputs containing multi-byte UTF-8 sequences (e.g. simplewiki's
+-- "Geografía"), the byte-by-byte conversion produces the Latin-1
+-- interpretation, NOT the Unicode codepoint. This will cause atom
+-- inequality with the TSV path's `decodeUtf8` reader. If/when we
+-- exercise an internationalized fixture, the fix is to add `bytestring`
+-- + `text` deps and use `Data.Text.Encoding.decodeUtf8`. Filed as a
+-- follow-up; documented here so a future failure mode is recoverable.
+
+-- | Open an LMDB env read-only for the int_atom_seeds(lmdb) loaders.
+-- Independent of {{lmdb_setup}}'s env (which is held by the FFI kernel
+-- path); opens its own handle so the loaders can run before the FFI
+-- setup block. LMDB safely supports multiple MDB_env handles per
+-- process; the OS shares the underlying mmap pages.
+--
+-- maxdbs=4 covers the four named sub-dbs the loaders touch: s2i, i2s,
+-- article_category, category_parent. mapsize matches the ingester's
+-- 4 GB ceiling (sufficient for enwiki).
+openLmdbInternEnvReadonly :: FilePath -> IO MDB_env
+openLmdbInternEnvReadonly dbPath = do
+    env <- mdb_env_create
+    mdb_env_set_mapsize env (4 * 1024 * 1024 * 1024)
+    mdb_env_set_maxdbs env 4
+    mdb_env_set_maxreaders env 126
+    mdb_env_open env dbPath [MDB_RDONLY]
+    return env
+
+-- | Decode bytes pointed to by a CChar pointer as a Haskell String,
+-- byte-by-byte (ASCII-correct, Latin-1 fallback for non-ASCII).
+peekStringBytes :: Ptr CChar -> Int -> IO String
+peekStringBytes p len
+    | len <= 0  = return []
+    | otherwise = do
+        bytes <- mapM (\i -> peekElemOff (castPtr p :: Ptr Word8) i)
+                      [0 .. len - 1]
+        return (map (toEnum . fromIntegral) bytes)
+
+-- | Iterate every (key, value) pair in a sub-db with a single read txn,
+-- applying a decoder to each pair. Returns results in iteration order.
+-- The cursor is opened on the supplied txn and discarded when the txn
+-- aborts at the end. Caller is responsible for managing the txn lifetime
+-- (typically: bracket with mdb_txn_begin/mdb_txn_abort).
+iterateAllPairs :: MDB_txn -> MDB_dbi'
+                -> (MDB_val -> MDB_val -> IO a)
+                -> IO [a]
+iterateAllPairs txn dbi decode = do
+    cursor <- mdb_cursor_open' txn dbi
+    alloca $ \kvPtr -> alloca $ \dvPtr -> do
+      poke kvPtr (MDB_val 0 nullPtr)
+      poke dvPtr (MDB_val 0 nullPtr)
+      found0 <- mdb_cursor_get' MDB_FIRST cursor kvPtr dvPtr
+      go cursor kvPtr dvPtr found0 []
+  where
+    go _ _ _ False acc = return (Prelude.reverse acc)
+    go cursor kvPtr dvPtr True acc = do
+      kv <- peek kvPtr
+      dv <- peek dvPtr
+      x <- decode kv dv
+      more <- mdb_cursor_get' MDB_NEXT cursor kvPtr dvPtr
+      go cursor kvPtr dvPtr more (x : acc)
+
+-- | Read s2i and i2s sub-dbs into the existing InternTable record shape.
+-- Skips TSV parsing + intern rebuild on warm runs of the LMDB-resident
+-- pipeline. Memory cost: O(unique strings * average length) — same as
+-- today, just loaded faster from binary instead of from text TSV.
+loadInternTableFromLmdb :: MDB_env -> String -> String -> IO InternTable
+loadInternTableFromLmdb env s2iName i2sName = do
+    txn <- mdb_txn_begin env Nothing True
+    s2iDb <- mdb_dbi_open' txn (Just s2iName) []
+    i2sDb <- mdb_dbi_open' txn (Just i2sName) []
+    forwardPairs <- iterateAllPairs txn s2iDb decodeStrInt
+    reversePairs <- iterateAllPairs txn i2sDb decodeIntStr
+    mdb_txn_abort txn
+    let !forward = Map.fromList forwardPairs
+        !reverse_ = IM.fromList reversePairs
+        !sz = if null reversePairs then 0 else 1 + maximum (map fst reversePairs)
+    return $! InternTable forward reverse_ sz
+  where
+    decodeStrInt (MDB_val ksz kp) (MDB_val vsz vp) = do
+      keyStr <- peekStringBytes (castPtr kp) (fromIntegral ksz)
+      val <- if vsz >= 4
+              then fromIntegral <$> peekElemOff (castPtr vp :: Ptr Int32) 0
+              else return 0
+      return (keyStr, val)
+    decodeIntStr (MDB_val ksz kp) (MDB_val vsz vp) = do
+      key <- if ksz >= 4
+              then fromIntegral <$> peekElemOff (castPtr kp :: Ptr Int32) 0
+              else return 0
+      valStr <- peekStringBytes (castPtr vp) (fromIntegral vsz)
+      return (key, valStr)
+
+-- | Read the article_category dupsort sub-db into a [(article_id,
+-- category_id)] list. Used in place of TSV-derived `articleCategories`
+-- when int_atom_seeds(lmdb) is active.
+loadArticleCategoriesFromLmdb :: MDB_env -> String -> IO [(Int, Int)]
+loadArticleCategoriesFromLmdb env dbName = do
+    txn <- mdb_txn_begin env Nothing True
+    db <- mdb_dbi_open' txn (Just dbName) [MDB_DUPSORT]
+    pairs <- iterateAllPairs txn db decodeIntIntPair
+    mdb_txn_abort txn
+    return pairs
+  where
+    decodeIntIntPair (MDB_val ksz kp) (MDB_val vsz vp) = do
+      k <- if ksz >= 4
+            then fromIntegral <$> peekElemOff (castPtr kp :: Ptr Int32) 0
+            else return 0
+      v <- if vsz >= 4
+            then fromIntegral <$> peekElemOff (castPtr vp :: Ptr Int32) 0
+            else return 0
+      return (k, v)
+
+-- | Read the category_parent dupsort sub-db into an in-memory IntMap
+-- (child_id -> [parent_ids]). This builds the same shape as today's
+-- `parentsIndexInterned` but populated from LMDB binary instead of
+-- parsed TSV. The size threshold guards against materialising an
+-- enwiki-scale (~28M edge) graph in memory: callers above the
+-- threshold should switch to LMDB-cursor BFS (Phase 2b.3 follow-up)
+-- or pass --with-reverse-edges to the ingester.
+--
+-- Threshold convention: 0 means unlimited (returns whatever fits in
+-- RAM); a positive number panics with a clear message above that
+-- count of edges loaded so far.
+loadForwardEdgesFromLmdb :: MDB_env -> String -> Int -> IO (IM.IntMap [Int])
+loadForwardEdgesFromLmdb env dbName threshold = do
+    txn <- mdb_txn_begin env Nothing True
+    db <- mdb_dbi_open' txn (Just dbName) [MDB_DUPSORT]
+    !edges <- iterateAndAccumulate txn db threshold IM.empty 0
+    mdb_txn_abort txn
+    return edges
+  where
+    iterateAndAccumulate txn db lim acc count = do
+      cursor <- mdb_cursor_open' txn db
+      alloca $ \kvPtr -> alloca $ \dvPtr -> do
+        poke kvPtr (MDB_val 0 nullPtr)
+        poke dvPtr (MDB_val 0 nullPtr)
+        found0 <- mdb_cursor_get' MDB_FIRST cursor kvPtr dvPtr
+        go cursor kvPtr dvPtr found0 acc count
+      where
+        go _ _ _ False a _ = return a
+        go cursor kvPtr dvPtr True a c = do
+          when (lim > 0 && c >= lim) $
+            error $ "loadForwardEdgesFromLmdb: edge count exceeded threshold "
+                 ++ show lim ++ " (loaded " ++ show c ++ " so far). "
+                 ++ "Switch to LMDB-cursor BFS (Phase 2b.3) or use the "
+                 ++ "ingester's --with-reverse-edges follow-up."
+          MDB_val ksz kp <- peek kvPtr
+          MDB_val vsz vp <- peek dvPtr
+          k <- if ksz >= 4
+                then fromIntegral <$> peekElemOff (castPtr kp :: Ptr Int32) 0
+                else return 0
+          v <- if vsz >= 4
+                then fromIntegral <$> peekElemOff (castPtr vp :: Ptr Int32) 0
+                else return 0
+          let !a' = IM.insertWith (++) k [v] a
+          more <- mdb_cursor_get' MDB_NEXT cursor kvPtr dvPtr
+          go cursor kvPtr dvPtr more a' (c + 1)

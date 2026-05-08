@@ -101,7 +101,11 @@ The program prints `true` or `false` and exits with status 0 / 1.
 
 For richer drivers, source the generated program from another R
 script and call `WamRuntime$run_predicate(shared_program, start_pc,
-args)` directly.
+args)` directly. Each predicate also gets a `pred_<name>(...)`
+wrapper at top level (e.g. a Prolog `ancestor/2` exposes
+`pred_ancestor(x, y)`); the `pred_` prefix avoids clashes with
+base R functions when the user's predicate name is `c`, `t`, `q`,
+`cat`, etc.
 
 ## Architecture
 
@@ -179,6 +183,63 @@ tries handlers in order and stops at the first hit:
 
 If none match, the call fails and triggers backtracking.
 
+### Recursive-kernel detection
+
+Predicates that match a registered graph-traversal pattern are
+classified at codegen time and emitted as a native R fast path
+that bypasses the WAM stepping engine entirely. The classifier
+lives in
+[`src/unifyweaver/core/recursive_kernel_detection.pl`](../src/unifyweaver/core/recursive_kernel_detection.pl)
+and is shared with the Haskell / Rust / Elixir targets; this
+target wires up `transitive_closure2` and `transitive_distance3`
+so far. Canonical shapes:
+
+```prolog
+% transitive_closure2 -- streams reachable nodes
+ancestor(X, Y) :- parent(X, Y).
+ancestor(X, Y) :- parent(X, Z), ancestor(Z, Y).
+
+% transitive_distance3 -- streams (target, distance-from-source)
+tdist(X, Y, 1) :- edge(X, Y).
+tdist(X, Y, D) :- edge(X, Z), tdist(Z, Y, D1), D is D1 + 1.
+```
+
+The runtime helpers (`WamRuntime$transitive_closure2`,
+`WamRuntime$transitive_distance3`) BFS from a ground source over
+the underlying edge predicate (invoked via `iterate_goal`, so the
+edges can be a fact-table, a dynamic store, a WAM-compiled
+predicate, or any other registered dispatch path) and stream
+results via iter-CPs. Source must be ground; target may be ground
+(check) or unground (enumerate); for the distance variant, the
+distance arg is computed (always unground at the call).
+
+The lowered function is registered in `program$lowered_dispatch`,
+so `Call` and `Execute` instructions for kernel-detected
+predicates pick up the fast path before the WAM array tier --
+not just direct R-API calls through the per-pred wrapper.
+
+Disable per-call with `kernel_layout(off)` in Options or
+globally via `user:wam_r_kernel_layout(off)`.
+
+### Fact-table lowering
+
+Predicates whose every clause is just `get_constant + proceed` are
+classified as pure fact tables and lowered to a flat R list of arg
+tuples plus a one-line dispatch function -- the WAM stepping
+engine isn't entered at all. A first-arg hash index (an R env
+keyed by `"a<atom-id>"` / `"i<int-val>"`) routes ground-arg
+queries to a bucket lookup; unground first args fall back to a
+linear scan over the full tuple list.
+
+The bench (`tests/benchmarks/wam_r_fact_source_bench.pl`) shows
+modest per-query wins (~10% at N=100 chains, querying the deepest
+element) over the WAM `switch_on_constant` path. The bigger wins
+are structural: codegen-time savings, simpler emitted R, and the
+infrastructure to build richer indexes (multi-arg, range) on top.
+
+Disable per-call with `fact_table_layout(off)` in Options, or
+globally via the multifile `user:wam_r_fact_layout(off)` fact.
+
 ### Emit modes
 
 The Phase-3 lowered emitter can replace the instruction-array body
@@ -244,7 +305,8 @@ keep duplicates), `maplist/2..3`.
 ### Higher-order / meta
 
 `call/1..N`, `\+/1`, `once/1`, `forall/2`, `findall/3`, `bagof/3`,
-`setof/3`. Aggregators back-end via two paths:
+`setof/3`, `phrase/2`, `phrase/3`. Aggregators back-end via two
+paths:
 
 - Compiled goals push an `aggregate` CP at `BeginAggregate`,
   collect on every backtrack, and finalise at `EndAggregate`.
@@ -269,7 +331,9 @@ WAM stepping loop.
 Before and Length given), `char_type/2` (forward mode: char given;
 types `alpha`, `alnum`, `digit`, `space`, `upper`, `lower`,
 `punct`, `ascii`, `csym`, `csymf`, `newline`, `white`),
-`term_to_atom/2`, `tab/1`.
+`term_to_atom/2`, `read_term_from_atom/2`,
+`read_term_from_atom/3` (the options arg is accepted but ignored
+in this scaffold), `tab/1`.
 
 The `atom`/`string` distinction is collapsed at the WAM-text level
 (SWI's WAM emitter doesn't preserve it), so `string_*` predicates
@@ -286,20 +350,53 @@ table; non-standard user-defined operators are not recognised.
 
 ### I/O
 
-`write/1`, `writeln/1`, `print/1`, `nl/0`, `format/1`, `format/2`.
-Format control sequences supported: `~w`, `~a`, `~d`, `~p`, `~s`,
-`~n`, `~~`. Output goes to standard `cat()` -- no stream
-abstraction.
+Stdout family: `write/1`, `writeln/1`, `print/1`, `nl/0`,
+`format/1`, `format/2`. Stream-aware variants: `write/2`,
+`writeln/2`, `nl/1`, `format/3`. Format control sequences
+supported: `~w`, `~a`, `~d`, `~p`, `~s`, `~n`, `~~`.
+
+### Streams (file I/O)
+
+`open/3`, `close/1`, `read/2`. Streams are opaque `stream(<id>)`
+structs whose integer id keys into `program$streams`, an R env
+that maps id -> R connection. `open/3` accepts modes `read`,
+`write`, `append` and returns a `stream(<id>)` term; `close/1`
+closes the connection and removes the entry. `read/2` is
+line-buffered: it consumes one line, strips a trailing `.` (with
+optional whitespace), parses the rest via the operator-precedence
+parser, and unifies with the second arg. EOF binds the term to
+the atom `end_of_file` (matches SWI semantics). Multi-line terms
+are not supported in this scaffold.
+
+### DCG (`-->`)
+
+DCG rules are translated at SWI's term-expansion time (or at
+runtime via `dcg_translate_rule/2`) into ordinary clauses with
+two extra difference-list args, so by the time the WAM compiler
+reads them they look like normal predicates and need no special
+handling. The runtime supports `phrase/2` and `phrase/3` to
+bridge the user-level call into the translated `<head>/N+2` form.
+
+```prolog
+:- use_module(library(dcg/basics)).
+dcg_translate_rule((seq(0) --> []), C0), assertz(user:C0),
+dcg_translate_rule(
+    (seq(N) --> {N > 0}, [N], {N1 is N - 1}, seq(N1)), Cn),
+assertz(user:Cn),
+% phrase(seq(3), [3, 2, 1]) succeeds via seq/3.
+```
 
 ### Dynamic predicates
 
 `assertz/1`, `asserta/1`, `retract/1` (multi-solution: iter-CP
 walks the snapshot taken at the call, removing each match in turn
-on backtracking), `abolish/1` (takes `Name/Arity`). Clauses are
-stored in `program$dynamic` (an R env, so mutations propagate
-across queries). Multi-clause dynamic predicate calls are
-dispatched through a `dynamic` CP that walks the clause list on
-backtracking.
+on backtracking), `abolish/1` (takes `Name/Arity`), `clause/2`
+(multi-solution introspection: same iter-CP shape as
+`retract/1`, without the removal side-effect; facts are surfaced
+with body = `true`). Clauses are stored in `program$dynamic` (an
+R env, so mutations propagate across queries). Multi-clause
+dynamic predicate calls are dispatched through a `dynamic` CP
+that walks the clause list on backtracking.
 
 ### Exception handling
 
@@ -412,8 +509,11 @@ WamRuntime$run(shared_program, state)
   the R-level fast path enumerates directly. Mixed contexts that
   need iter-CP-driven generation from inside library dispatch are
   not exhaustively covered.
-- **No streams**. All I/O goes to `cat()`. There is no `open/3`,
-  no `read/1`, no `current_output`.
+- **Stream-aware predicate set is partial**. `open/3`, `close/1`,
+  `read/2`, `write/2`, `writeln/2`, `nl/1`, and `format/3` are
+  supported, but multi-line term reads, `current_input/1` /
+  `current_output/1`, `set_input/1` / `set_output/1`, character
+  I/O (`get_char/1,2`, `put_char/1,2`), and binary streams are not.
 - **Float arithmetic is `double` only**; bigints and rationals are
   not supported. Integer overflow follows R's normal `integer`
   semantics.
@@ -422,7 +522,7 @@ WamRuntime$run(shared_program, state)
 
 The full test suite lives in
 [tests/test_wam_r_generator.pl](../tests/test_wam_r_generator.pl)
-and contains 41 tests covering both structural assertions on the
+and contains 48 tests covering both structural assertions on the
 generated source and end-to-end execution via `Rscript`. The
 `*_e2e_rscript` tests auto-skip when `Rscript` is not on `PATH`.
 
@@ -457,6 +557,13 @@ Coverage map (e2e tests, by feature group):
 | `multi_solution_retract_e2e_rscript` | multi-solution `retract/1` via iter-CP |
 | `bagof_setof_existential_e2e_rscript` | `^/2` existential scope in `bagof`/`setof`/`findall` |
 | `cli_arg_parser_e2e_rscript` | structured CLI args (lists, structs, expressions) parse via the runtime parser |
+| `base_name_clash_e2e_rscript` | predicates named after base R functions (`c`, `t`, `q`, `cat`) don't shadow them |
+| `read_term_clause_e2e_rscript` | `read_term_from_atom/2,3` and multi-solution `clause/2` |
+| `dcg_e2e_rscript` | DCG `-->` rules + `phrase/2,3` (recursive grammars, prefix-with-rest) |
+| `streams_e2e_rscript` | `open/3`, `close/1`, `read/2`, `write/2`, `writeln/2`, `format/3` round-trip |
+| `fact_table_e2e_rscript` | fact-table lowering: hash-indexed dispatch, multi-solution backtracking, atoms + integers |
+| `kernel_tc2_e2e_rscript` | recursive-kernel detection: `transitive_closure2` BFS over a fact-table edge predicate |
+| `kernel_td3_e2e_rscript` | recursive-kernel detection: `transitive_distance3` BFS-with-depth over a fact-table edge predicate |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 

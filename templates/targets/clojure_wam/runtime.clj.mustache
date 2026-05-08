@@ -373,6 +373,22 @@
 (defn list-functor-term [ctx]
   (normalize-literal-atom ctx "[|]/2"))
 
+(defn proper-list-term? [state value]
+  (let [bindings (:bindings state)
+        empty-list (normalize-literal-atom (:intern-context state) "[]")
+        list-functor (list-functor-term (:intern-context state))]
+    (loop [cur (deref-value bindings value)
+           seen #{}]
+      (cond
+        (interned-equal? cur empty-list) true
+        (or (= cur ::unbound) (logic-var? cur)) false
+        (contains? seen cur) false
+        (and (structure-term? cur)
+             (interned-equal? (:functor cur) list-functor)
+             (= 2 (count (:args cur))))
+        (recur (deref-value bindings (second (:args cur))) (conj seen cur))
+        :else false))))
+
 (defn normalize-term* [ctx term]
   (cond
     (atom-term? term) [ctx term]
@@ -865,6 +881,13 @@
           (let [value (deref-value (:bindings state)
                                    (or (reg-get-raw state "A1") ::unbound))]
             (if (float? value)
+              (advance state)
+              (backtrack state)))
+
+          "is_list/1"
+          (let [value (deref-value (:bindings state)
+                                   (or (reg-get-raw state "A1") ::unbound))]
+            (if (proper-list-term? state value)
               (advance state)
               (backtrack state)))
 

@@ -68,7 +68,18 @@ shared_program <- list(
   # Keyed by "pred/arity"; each value is a list of clause records
   # of shape list(head_args, body). An env (rather than a list) so
   # mutations propagate across query invocations.
-  dynamic          = new.env(parent = emptyenv())
+  dynamic          = new.env(parent = emptyenv()),
+  # Stream registry for open/3, read/2, write/2, etc. Keyed by the
+  # stringified integer id stored inside `stream(<id>)` terms; the
+  # special key "__next_id__" holds the next-id counter.
+  streams          = new.env(parent = emptyenv()),
+  # Lowered-dispatch registry for predicates that have a native R
+  # fast path (kernels, fact-tables). Keyed by "pred/arity"; value
+  # is the lowered R function. dispatch_call consults this before
+  # falling through to label/foreign/dynamic/library/builtin tiers,
+  # so internal Call/Execute instructions also reach the fast path
+  # (not just direct R-API calls through the per-pred wrapper).
+  lowered_dispatch = new.env(parent = emptyenv())
 )
 
 # ----------------------------------------------------------
@@ -76,6 +87,13 @@ shared_program <- list(
 # Empty when emit_mode is interpreter.
 # ----------------------------------------------------------
 {{lowered_functions}}
+
+# ----------------------------------------------------------
+# Lowered-dispatch registrations. Must come AFTER the lowered
+# function definitions above so the assignments can reference
+# the functions by name.
+# ----------------------------------------------------------
+{{lowered_dispatch_assignments}}
 
 # ----------------------------------------------------------
 # Per-predicate wrapper functions

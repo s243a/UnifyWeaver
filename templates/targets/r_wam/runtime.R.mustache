@@ -589,12 +589,9 @@ WamRuntime$tokenize_term <- function(text) {
   is_digit <- function(ch) grepl("^[0-9]$", ch)
   # Symbol chars used in Prolog operators. `,`, `;`, `|` get their
   # own token types so the parser can switch behaviour at separator
-  # vs operator positions. We qualify `c` and other base helpers
-  # below as `base::*` because the generated program may contain a
-  # per-predicate wrapper that shadows `c`/`t`/`q` etc. when the
-  # user has a predicate of the same name.
-  sym_chars <- base::c("+", "-", "*", "/", "\\", "^", "<", ">",
-                       "=", ":", "@", ".", "?", "~", "#", "$", "&")
+  # vs operator positions.
+  sym_chars <- c("+", "-", "*", "/", "\\", "^", "<", ">",
+                 "=", ":", "@", ".", "?", "~", "#", "$", "&")
   is_sym <- function(ch) ch %in% sym_chars
   while (i <= n) {
     c <- chars[i]
@@ -983,19 +980,55 @@ WamRuntime$step <- function(program, state, instr) {
       state$pc <- state$pc + 1L; TRUE
     },
     "Allocate" = {
-      state$stack <- c(state$stack, list(list(cp = state$cp, locals = new.env(parent = emptyenv()))))
+      # Save the caller's Y registers (idx >= 201) so the callee's
+      # Y writes don't stomp them. Without this, nested calls
+      # `rt(F) :- do_write(F), do_read(F).` lose F when do_write's
+      # Y201 (= S) overwrites rt's Y201 (= F) in the flat regs2
+      # env. Deallocate restores the saved Y values.
+      saved_ys <- list()
+      for (k in ls(state$regs2)) {
+        ki <- suppressWarnings(as.integer(k))
+        if (!is.na(ki) && ki >= 201L) {
+          saved_ys[[k]] <- get(k, envir = state$regs2, inherits = FALSE)
+        }
+      }
+      state$stack <- c(state$stack,
+                       list(list(cp = state$cp, saved_ys = saved_ys)))
       state$pc <- state$pc + 1L; TRUE
     },
     "Deallocate" = {
+      # Pop the call frame and restore the caller's Y registers.
+      # Note: we *only* overwrite the slots that were live in the
+      # caller (frame$saved_ys); any Y the callee added beyond
+      # those is left in place because SWI's WAM emit can read a
+      # Y register *after* Deallocate (e.g. an ArgInstr that
+      # follows the trim), and removing the value would break it.
       n <- length(state$stack)
       if (n > 0L) {
-        state$cp    <- state$stack[[n]]$cp
+        frame <- state$stack[[n]]
+        state$cp <- frame$cp
+        saved <- frame$saved_ys
+        if (!is.null(saved)) {
+          for (k in names(saved)) {
+            assign(k, saved[[k]], envir = state$regs2)
+          }
+        }
         state$stack <- state$stack[-n]
       }
       state$pc <- state$pc + 1L; TRUE
     },
     "Call" = {
       key <- paste0(instr$pred, "/", instr$arity)
+      # Lowered fast path (kernel / fact-table) wins over the WAM
+      # array. The lowered fn pushes any iter CPs it needs and
+      # returns TRUE/FALSE, so we just advance PC on success.
+      if (!is.null(program$lowered_dispatch) &&
+          exists(key, envir = program$lowered_dispatch, inherits = FALSE)) {
+        fn <- get(key, envir = program$lowered_dispatch, inherits = FALSE)
+        ok <- isTRUE(fn(program, state))
+        if (!ok) return(FALSE)
+        state$pc <- state$pc + 1L; return(TRUE)
+      }
       tgt <- program$labels[[key]]
       if (!is.null(tgt)) {
         state$cp <- state$pc + 1L
@@ -1016,6 +1049,17 @@ WamRuntime$step <- function(program, state, instr) {
     },
     "Execute" = {
       key <- paste0(instr$pred, "/", instr$arity)
+      # Lowered fast path (kernel / fact-table) wins over the WAM
+      # array. Tail-call: hand control back to the caller's CP via
+      # the same path the dynamic-store branch uses on success.
+      if (!is.null(program$lowered_dispatch) &&
+          exists(key, envir = program$lowered_dispatch, inherits = FALSE)) {
+        fn <- get(key, envir = program$lowered_dispatch, inherits = FALSE)
+        ok <- isTRUE(fn(program, state))
+        if (!ok) return(FALSE)
+        if (state$cp == 0L) { state$halt <- TRUE; return(TRUE) }
+        state$pc <- state$cp; state$cp <- 0L; return(TRUE)
+      }
       tgt <- program$labels[[key]]
       if (!is.null(tgt)) {
         state$pc <- as.integer(tgt)
@@ -1724,6 +1768,448 @@ WamRuntime$retract_iter <- function(program, state, head_args, body, arity,
   FALSE
 }
 
+# Multi-solution clause/2. Same shape as retract_iter except the
+# matched clauses are *not* removed from the live store -- clause/2
+# is non-destructive introspection. Walks the snapshot taken at the
+# original call, unifying the caller's Head pattern against each
+# stored clause's head args and the caller's Body against the
+# stored body (with a fact's implicit body treated as the atom
+# `true`, matching SWI semantics). On the first match an iter CP is
+# pushed so backtracking re-binds against the next snapshot entry.
+WamRuntime$clause_iter <- function(program, state, head_args, body, arity,
+                                    ck, snapshot, start_idx, resume_pc) {
+  if (start_idx > length(snapshot)) return(FALSE)
+  table <- program$intern_table
+  true_atom <- Atom(WamRuntime$intern(table, "true"))
+  for (idx in seq.int(start_idx, length(snapshot))) {
+    cl <- snapshot[[idx]]
+    if (length(cl$head_args) != arity) next
+    snap_trail <- length(state$trail)
+    snap_vc    <- state$var_counter
+    fresh <- WamRuntime$copy_term_clause(state, cl)
+    ok <- TRUE
+    for (j in seq_len(arity)) {
+      if (!WamRuntime$unify(state, head_args[[j]], fresh$head_args[[j]])) {
+        ok <- FALSE; break
+      }
+    }
+    if (ok) {
+      fresh_body <- if (is.null(fresh$body)) true_atom else fresh$body
+      ok <- WamRuntime$unify(state, body, fresh_body)
+    }
+    if (ok) {
+      if (idx < length(snapshot)) {
+        captured_head_args <- head_args
+        captured_body      <- body
+        captured_arity     <- arity
+        captured_ck        <- ck
+        captured_snapshot  <- snapshot
+        captured_next_idx  <- idx + 1L
+        captured_resume    <- resume_pc
+        captured_program   <- program
+        cp <- list(
+          kind        = "iter",
+          regs        = as.list.environment(state$regs2),
+          trail_len   = snap_trail,
+          cp          = state$cp,
+          var_counter = snap_vc,
+          mode        = state$mode,
+          build_stack = state$build_stack,
+          resume_pc   = resume_pc,
+          retry       = function(state) {
+            WamRuntime$clause_iter(captured_program, state,
+                                    captured_head_args, captured_body,
+                                    captured_arity, captured_ck,
+                                    captured_snapshot, captured_next_idx,
+                                    captured_resume)
+          }
+        )
+        state$cps <- c(state$cps, list(cp))
+      }
+      return(TRUE)
+    }
+    WamRuntime$undo_trail_to(state, snap_trail)
+    state$var_counter <- snap_vc
+  }
+  FALSE
+}
+
+# ----------------------------------------------------------
+# Recursive-kernel: transitive_closure2
+# ----------------------------------------------------------
+# Native BFS over the source's reachability set, given an "edge"
+# binary predicate. The detector in
+# src/unifyweaver/core/recursive_kernel_detection.pl recognises the
+# canonical shape
+#   closure(X,Y) :- edge(X,Y).
+#   closure(X,Y) :- edge(X,Z), closure(Z,Y).
+# and the wam_r_target codegen emits a one-line dispatch fn that
+# calls this helper. Edges are enumerated by driving call_goal on
+# `edge(<cur>, Y)` -- so the underlying edge predicate can be a
+# fact-table, a dynamic store, a WAM-compiled predicate, or any
+# other registered dispatch path.
+#
+# Mode support: source must be ground; target may be ground (check)
+# or unground (enumerate). Unground source falls back to FALSE for
+# now; the proper enumeration would BFS from every node, which
+# this scope leaves to a follow-up.
+WamRuntime$transitive_closure2 <- function(program, state, key, edge_pred,
+                                            edge_key, source, target,
+                                            resume_pc) {
+  table <- program$intern_table
+  src_v <- WamRuntime$deref(state, source)
+  if (is.null(src_v) || is.null(src_v$tag) || src_v$tag != "atom") {
+    return(FALSE)
+  }
+  # Snapshot state so the iterate_goal calls below don't leak
+  # bindings or CPs into the caller.
+  snap_cps   <- length(state$cps)
+  snap_regs  <- as.list.environment(state$regs2)
+  snap_trail <- length(state$trail)
+  snap_pc    <- state$pc
+  snap_cp    <- state$cp
+  snap_halt  <- state$halt
+  snap_vc    <- state$var_counter
+  snap_mode  <- state$mode
+  snap_build <- state$build_stack
+
+  edge_atom_id <- WamRuntime$intern(table, edge_pred)
+  visited <- new.env(parent = emptyenv())
+  queue   <- list(src_v)
+  reached <- list()
+  assign(as.character(src_v$id), TRUE, envir = visited)
+
+  while (length(queue) > 0L) {
+    cur <- queue[[1L]]
+    queue <- queue[-1L]
+    y_var <- Unbound(paste0("V_kt_", state$var_counter))
+    state$var_counter <- state$var_counter + 1L
+    edge_goal <- StructTerm(edge_atom_id, list(cur, y_var))
+    WamRuntime$iterate_goal(program, state, edge_goal, function() {
+      y_v <- WamRuntime$deref(state, y_var)
+      if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "atom") {
+        k <- as.character(y_v$id)
+        if (!exists(k, envir = visited, inherits = FALSE)) {
+          assign(k, TRUE, envir = visited)
+          queue   <<- c(queue, list(y_v))
+          reached <<- c(reached, list(y_v))
+        }
+      }
+      TRUE
+    })
+  }
+
+  # Restore state.
+  if (length(state$cps) > snap_cps) {
+    state$cps <- state$cps[seq_len(snap_cps)]
+  }
+  e <- new.env(parent = emptyenv(), hash = TRUE)
+  for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
+  state$regs2 <- e
+  if (length(state$trail) > snap_trail) {
+    to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
+    for (name in to_undo) {
+      if (exists(name, envir = state$bindings, inherits = FALSE)) {
+        rm(list = name, envir = state$bindings)
+      }
+    }
+    state$trail <- state$trail[seq_len(snap_trail)]
+  }
+  state$pc          <- snap_pc
+  state$cp          <- snap_cp
+  state$halt        <- snap_halt
+  state$var_counter <- snap_vc
+  state$mode        <- snap_mode
+  state$build_stack <- snap_build
+
+  # Iterate the reached set, unifying each with target. Multi-
+  # solution: push iter CP after the first match.
+  WamRuntime$kernel_stream_iter(program, state, key, reached, target, 1L,
+                                 resume_pc)
+}
+
+# ----------------------------------------------------------
+# Recursive-kernel: transitive_distance3
+# ----------------------------------------------------------
+# BFS variant that yields (target, distance) pairs. Pattern:
+#   tdist(X, Y, 1) :- edge(X, Y).
+#   tdist(X, Y, D) :- edge(X, Z), tdist(Z, Y, D1), D is D1 + 1.
+# We BFS from the (ground) source and record the depth at which
+# each node is first reached. The source itself is *not* yielded
+# unless there's a self-loop, matching the SWI semantics of the
+# clauses above (one edge step is required).
+WamRuntime$transitive_distance3 <- function(program, state, key, edge_pred,
+                                             edge_key, source, target, dist,
+                                             resume_pc) {
+  table <- program$intern_table
+  src_v <- WamRuntime$deref(state, source)
+  if (is.null(src_v) || is.null(src_v$tag) || src_v$tag != "atom") {
+    return(FALSE)
+  }
+  snap_cps   <- length(state$cps)
+  snap_regs  <- as.list.environment(state$regs2)
+  snap_trail <- length(state$trail)
+  snap_pc    <- state$pc
+  snap_cp    <- state$cp
+  snap_halt  <- state$halt
+  snap_vc    <- state$var_counter
+  snap_mode  <- state$mode
+  snap_build <- state$build_stack
+
+  edge_atom_id <- WamRuntime$intern(table, edge_pred)
+  visited <- new.env(parent = emptyenv())
+  # Queue stored as parallel lists: nodes + depths.
+  q_nodes  <- list(src_v)
+  q_depths <- list(0L)
+  reached  <- list()  # list of list(node, depth)
+  assign(as.character(src_v$id), TRUE, envir = visited)
+
+  while (length(q_nodes) > 0L) {
+    cur   <- q_nodes[[1L]]
+    depth <- q_depths[[1L]]
+    q_nodes  <- q_nodes[-1L]
+    q_depths <- q_depths[-1L]
+    y_var <- Unbound(paste0("V_kd_", state$var_counter))
+    state$var_counter <- state$var_counter + 1L
+    edge_goal <- StructTerm(edge_atom_id, list(cur, y_var))
+    next_depth <- depth + 1L
+    WamRuntime$iterate_goal(program, state, edge_goal, function() {
+      y_v <- WamRuntime$deref(state, y_var)
+      if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "atom") {
+        k <- as.character(y_v$id)
+        if (!exists(k, envir = visited, inherits = FALSE)) {
+          assign(k, TRUE, envir = visited)
+          q_nodes  <<- c(q_nodes,  list(y_v))
+          q_depths <<- c(q_depths, list(next_depth))
+          reached  <<- c(reached,  list(list(node = y_v, depth = next_depth)))
+        }
+      }
+      TRUE
+    })
+  }
+
+  # Restore state.
+  if (length(state$cps) > snap_cps) {
+    state$cps <- state$cps[seq_len(snap_cps)]
+  }
+  e <- new.env(parent = emptyenv(), hash = TRUE)
+  for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
+  state$regs2 <- e
+  if (length(state$trail) > snap_trail) {
+    to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
+    for (name in to_undo) {
+      if (exists(name, envir = state$bindings, inherits = FALSE)) {
+        rm(list = name, envir = state$bindings)
+      }
+    }
+    state$trail <- state$trail[seq_len(snap_trail)]
+  }
+  state$pc          <- snap_pc
+  state$cp          <- snap_cp
+  state$halt        <- snap_halt
+  state$var_counter <- snap_vc
+  state$mode        <- snap_mode
+  state$build_stack <- snap_build
+
+  WamRuntime$kernel_pair_iter(program, state, key, reached, target, dist,
+                               1L, resume_pc)
+}
+
+# Iterate a precomputed list of (node, depth) pairs, unifying each
+# pair with the (target, distance) reg pair. Same iter-CP shape as
+# kernel_stream_iter but with two unify slots per result.
+WamRuntime$kernel_pair_iter <- function(program, state, key, results, target,
+                                         dist, start_idx, resume_pc) {
+  if (start_idx > length(results)) return(FALSE)
+  for (idx in seq.int(start_idx, length(results))) {
+    snap_trail <- length(state$trail)
+    snap_vc    <- state$var_counter
+    entry <- results[[idx]]
+    ok_t <- WamRuntime$unify(state, target, entry$node)
+    ok_d <- ok_t && WamRuntime$unify(state, dist, IntTerm(entry$depth))
+    if (ok_d) {
+      if (idx < length(results)) {
+        captured_results <- results
+        captured_target  <- target
+        captured_dist    <- dist
+        captured_next    <- idx + 1L
+        captured_resume  <- resume_pc
+        captured_program <- program
+        captured_key     <- key
+        cp <- list(
+          kind        = "iter",
+          regs        = as.list.environment(state$regs2),
+          trail_len   = snap_trail,
+          cp          = state$cp,
+          var_counter = snap_vc,
+          mode        = state$mode,
+          build_stack = state$build_stack,
+          resume_pc   = resume_pc,
+          retry       = function(state) {
+            WamRuntime$kernel_pair_iter(captured_program, state, captured_key,
+                                         captured_results, captured_target,
+                                         captured_dist, captured_next,
+                                         captured_resume)
+          }
+        )
+        state$cps <- c(state$cps, list(cp))
+      }
+      return(TRUE)
+    }
+    WamRuntime$undo_trail_to(state, snap_trail)
+    state$var_counter <- snap_vc
+  }
+  FALSE
+}
+
+# Iterate a precomputed result list, unifying each entry with the
+# target reg. Mirrors fact_table_iter_subset's iter-CP shape but
+# unifies a single-arg target instead of an arg tuple.
+WamRuntime$kernel_stream_iter <- function(program, state, key, results, target,
+                                           start_idx, resume_pc) {
+  if (start_idx > length(results)) return(FALSE)
+  for (idx in seq.int(start_idx, length(results))) {
+    snap_trail <- length(state$trail)
+    snap_vc    <- state$var_counter
+    if (WamRuntime$unify(state, target, results[[idx]])) {
+      if (idx < length(results)) {
+        captured_results <- results
+        captured_target  <- target
+        captured_next    <- idx + 1L
+        captured_resume  <- resume_pc
+        captured_program <- program
+        captured_key     <- key
+        cp <- list(
+          kind        = "iter",
+          regs        = as.list.environment(state$regs2),
+          trail_len   = snap_trail,
+          cp          = state$cp,
+          var_counter = snap_vc,
+          mode        = state$mode,
+          build_stack = state$build_stack,
+          resume_pc   = resume_pc,
+          retry       = function(state) {
+            WamRuntime$kernel_stream_iter(captured_program, state,
+                                           captured_key, captured_results,
+                                           captured_target, captured_next,
+                                           captured_resume)
+          }
+        )
+        state$cps <- c(state$cps, list(cp))
+      }
+      return(TRUE)
+    }
+    WamRuntime$undo_trail_to(state, snap_trail)
+    state$var_counter <- snap_vc
+  }
+  FALSE
+}
+
+# ----------------------------------------------------------
+# Fact-table iterator for lowered fact predicates
+# ----------------------------------------------------------
+# Predicates that are pure fact tables (all clauses are
+# get_constant + proceed, no body calls) are emitted as a list of
+# arg-tuples plus a one-line lowered function. Calling that
+# function jumps straight here, bypassing the WAM dispatch loop.
+# Walks the tuple list from `start_idx`, unifying the caller's
+# args with each tuple's components. On the first match: if more
+# tuples remain, push an iter CP so backtracking re-enters at
+# idx+1 and resumes at `resume_pc` (the post-call instruction).
+WamRuntime$fact_table_iter <- function(program, state, key, tuples, args,
+                                        start_idx, resume_pc) {
+  WamRuntime$fact_table_iter_subset(program, state, key, tuples,
+                                     seq.int(start_idx, length(tuples)),
+                                     args, 1L, resume_pc)
+}
+
+# Iterate over a *subset* of tuples (passed as integer indices into
+# the master tuple list). Used by the indexed dispatcher below: when
+# the caller's first arg is ground, we can pre-compute the bucket of
+# matching tuple indices via a hash and walk only those instead of
+# the full table. The CP retry replays the same subset starting at
+# the next position.
+WamRuntime$fact_table_iter_subset <- function(program, state, key, tuples,
+                                               indices, args, pos, resume_pc) {
+  if (pos > length(indices)) return(FALSE)
+  arity <- length(args)
+  for (p in seq.int(pos, length(indices))) {
+    idx   <- indices[[p]]
+    tuple <- tuples[[idx]]
+    snap_trail <- length(state$trail)
+    snap_vc    <- state$var_counter
+    ok <- TRUE
+    for (j in seq_len(arity)) {
+      if (!WamRuntime$unify(state, args[[j]], tuple[[j]])) {
+        ok <- FALSE; break
+      }
+    }
+    if (ok) {
+      if (p < length(indices)) {
+        captured_args     <- args
+        captured_tuples   <- tuples
+        captured_indices  <- indices
+        captured_next_pos <- p + 1L
+        captured_resume   <- resume_pc
+        captured_program  <- program
+        captured_key      <- key
+        cp <- list(
+          kind        = "iter",
+          regs        = as.list.environment(state$regs2),
+          trail_len   = snap_trail,
+          cp          = state$cp,
+          var_counter = snap_vc,
+          mode        = state$mode,
+          build_stack = state$build_stack,
+          resume_pc   = resume_pc,
+          retry       = function(state) {
+            WamRuntime$fact_table_iter_subset(captured_program, state,
+                                               captured_key, captured_tuples,
+                                               captured_indices, captured_args,
+                                               captured_next_pos,
+                                               captured_resume)
+          }
+        )
+        state$cps <- c(state$cps, list(cp))
+      }
+      return(TRUE)
+    }
+    WamRuntime$undo_trail_to(state, snap_trail)
+    state$var_counter <- snap_vc
+  }
+  FALSE
+}
+
+# Indexed dispatch for fact tables: if the caller's first arg derefs
+# to a ground atom or integer, we look its bucket up in the index
+# (an env mapping "atom-id" / "int-value" to the integer-vector of
+# matching tuple indices). On a hit we iterate just that bucket; on
+# a miss we fail outright (the index already enumerated every value
+# present in the table). For an unground first arg or any other tag,
+# we fall back to a full-table scan.
+WamRuntime$fact_table_dispatch <- function(program, state, key, tuples, index,
+                                            args, resume_pc) {
+  arity <- length(args)
+  if (arity >= 1L) {
+    v <- WamRuntime$deref(state, args[[1]])
+    if (!is.null(v) && !is.null(v$tag)) {
+      bk <- NULL
+      if (v$tag == "atom") bk <- paste0("a", v$id)
+      else if (v$tag == "int") bk <- paste0("i", v$val)
+      if (!is.null(bk)) {
+        if (exists(bk, envir = index, inherits = FALSE)) {
+          bucket <- get(bk, envir = index, inherits = FALSE)
+          return(WamRuntime$fact_table_iter_subset(program, state, key,
+                                                    tuples, bucket, args, 1L,
+                                                    resume_pc))
+        }
+        return(FALSE)
+      }
+    }
+  }
+  WamRuntime$fact_table_iter(program, state, key, tuples, args, 1L, resume_pc)
+}
+
 # Enumerable iteration over a list of WAM terms, used by member/2 (and
 # any future enumerator with the same shape). Tries to unify `target`
 # with each element starting at `start_idx`. On success, pushes an iter
@@ -1862,6 +2348,63 @@ WamRuntime$arith_to_term <- function(n) {
 # is labels -> foreign handlers -> library -> builtin, matching what
 # a directly-compiled call would have hit.
 
+# ----------------------------------------------------------
+# Stream registry helpers
+# ----------------------------------------------------------
+# Streams are opaque `stream(<int>)` structs whose integer id keys
+# into program$streams (an R env). open/3 allocates a fresh id and
+# stores the underlying R connection; close/1 closes the connection
+# and removes the entry; read/2 / write/2 / writeln/2 / nl/1 /
+# format/3 look up the connection by id.
+WamRuntime$stream_alloc <- function(program) {
+  next_id <- if (exists("__next_id__", envir = program$streams, inherits = FALSE)) {
+    get("__next_id__", envir = program$streams, inherits = FALSE)
+  } else {
+    1L
+  }
+  assign("__next_id__", as.integer(next_id + 1L), envir = program$streams)
+  as.integer(next_id)
+}
+
+WamRuntime$stream_register <- function(program, conn) {
+  id <- WamRuntime$stream_alloc(program)
+  assign(as.character(id), conn, envir = program$streams)
+  id
+}
+
+WamRuntime$stream_get <- function(program, id) {
+  k <- as.character(id)
+  if (!exists(k, envir = program$streams, inherits = FALSE)) return(NULL)
+  get(k, envir = program$streams, inherits = FALSE)
+}
+
+WamRuntime$stream_close <- function(program, id) {
+  k <- as.character(id)
+  if (!exists(k, envir = program$streams, inherits = FALSE)) return(FALSE)
+  conn <- get(k, envir = program$streams, inherits = FALSE)
+  # Explicit flush before close: R's close() should flush, but
+  # in practice cat(..., file=conn, sep="") doesn't always push
+  # buffered output through before the file handle goes away when
+  # the program immediately reopens the same path for reading.
+  tryCatch(flush(conn), error = function(e) NULL)
+  tryCatch(close(conn), error = function(e) NULL)
+  rm(list = k, envir = program$streams)
+  TRUE
+}
+
+# Extract the integer stream id from a `stream(<int>)` struct, or
+# NULL if the term doesn't have that shape. Used by every stream
+# builtin to validate its first arg.
+WamRuntime$stream_id_of <- function(state, term, table) {
+  v <- WamRuntime$deref(state, term)
+  if (is.null(v) || is.null(v$tag) || v$tag != "struct") return(NULL)
+  if (length(v$args) != 1L) return(NULL)
+  if (!identical(WamRuntime$string_of(table, v$fid), "stream")) return(NULL)
+  id_v <- WamRuntime$deref(state, v$args[[1]])
+  if (is.null(id_v) || is.null(id_v$tag) || id_v$tag != "int") return(NULL)
+  id_v$val
+}
+
 # Extend a goal term with extra args (call/N+1 semantics). An atom G
 # becomes the struct G(extra_args...); a struct F(...) becomes
 # F(..., extra_args...). Module-qualified goals are unwrapped first.
@@ -1918,6 +2461,14 @@ WamRuntime$call_goal <- function(program, state, goal_term) {
 
 WamRuntime$dispatch_call <- function(program, state, pred, arity) {
   key <- paste0(pred, "/", arity)
+  # Lowered fast path (kernel / fact-table) wins over the WAM
+  # array; the lowered fn manages its own iter CPs and returns
+  # TRUE/FALSE.
+  if (!is.null(program$lowered_dispatch) &&
+      exists(key, envir = program$lowered_dispatch, inherits = FALSE)) {
+    fn <- get(key, envir = program$lowered_dispatch, inherits = FALSE)
+    return(isTRUE(fn(program, state)))
+  }
   tgt <- program$labels[[key]]
   if (!is.null(tgt)) {
     # User predicate (or foreign-stub label). Run as a sub-call:
@@ -2085,6 +2636,37 @@ WamRuntime$iterate_goal <- function(program, state, goal_term, on_each) {
           } else {
             WamRuntime$undo_trail_to(state, snap_t)
           }
+        }
+        return(invisible(NULL))
+      }
+    }
+  }
+
+  # Lowered fast-path predicate (kernel / fact-table): the goal's
+  # iter CPs aren't tied to the WAM stepping engine, so we drive
+  # backtracking by calling backtrack() directly and skip run().
+  # The backtrack handler restores state and invokes the iter CP's
+  # retry; on TRUE we just hand control to on_each.
+  if (!is.null(goal_v) && !is.null(goal_v$tag) &&
+      !is.null(program$lowered_dispatch)) {
+    if (goal_v$tag == "atom") {
+      ld_pred <- WamRuntime$string_of(table, goal_v$id); ld_arity <- 0L
+    } else if (goal_v$tag == "struct") {
+      ld_pred <- WamRuntime$string_of(table, goal_v$fid); ld_arity <- length(goal_v$args)
+    } else {
+      ld_pred <- NULL
+    }
+    if (!is.null(ld_pred)) {
+      ld_key <- paste0(ld_pred, "/", ld_arity)
+      if (exists(ld_key, envir = program$lowered_dispatch, inherits = FALSE)) {
+        snap_cps_len <- length(state$cps)
+        ok <- WamRuntime$call_goal(program, state, goal_term)
+        while (isTRUE(ok)) {
+          cont <- on_each()
+          if (!isTRUE(cont)) break
+          if (length(state$cps) <= snap_cps_len) break
+          if (!WamRuntime$backtrack(state)) break
+          ok <- TRUE  # backtrack already invoked retry; keep iterating
         }
         return(invisible(NULL))
       }
@@ -2906,11 +3488,145 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     return(TRUE)
   }
 
+  # ----- Stream I/O builtins -----
+  # All stream-aware variants take a `stream(<id>)` struct as their
+  # first arg. Stream lookups go through stream_id_of -- a non-stream
+  # arg or a stale id (after close/1) makes the call fail rather
+  # than throw, matching the WAM convention.
+  if (key == "open/3") {
+    path_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    mode_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    path <- wam_term_name_string(path_v, table)
+    mode_name <- wam_term_name_string(mode_v, table)
+    if (is.null(path) || is.null(mode_name)) return(FALSE)
+    r_mode <- switch(mode_name,
+      "read"   = "r",
+      "write"  = "w",
+      "append" = "a",
+      NULL
+    )
+    if (is.null(r_mode)) return(FALSE)
+    conn <- tryCatch(file(path, open = r_mode), error = function(e) NULL,
+                                                warning = function(w) NULL)
+    if (is.null(conn)) return(FALSE)
+    id <- WamRuntime$stream_register(program, conn)
+    stream_term <- StructTerm(WamRuntime$intern(table, "stream"),
+                               list(IntTerm(id)))
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L), stream_term))
+  }
+
+  if (key == "close/1") {
+    sid <- WamRuntime$stream_id_of(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(sid)) return(FALSE)
+    return(isTRUE(WamRuntime$stream_close(program, sid)))
+  }
+
+  # read/2 is line-buffered: each call consumes one line, strips a
+  # trailing `.` (with optional whitespace), and parses the rest via
+  # the operator-precedence parser. Multi-line terms are not
+  # supported in this scaffold. EOF binds the term to the atom
+  # `end_of_file` (matches SWI semantics).
+  if (key == "read/2") {
+    sid <- WamRuntime$stream_id_of(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(sid)) return(FALSE)
+    conn <- WamRuntime$stream_get(program, sid)
+    if (is.null(conn)) return(FALSE)
+    txt <- ""
+    repeat {
+      line <- tryCatch(readLines(conn, n = 1L, warn = FALSE),
+                       error = function(e) NULL)
+      if (is.null(line) || length(line) == 0L) {
+        return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
+                                Atom(WamRuntime$intern(table, "end_of_file"))))
+      }
+      candidate <- sub("\\s*\\.\\s*$", "", line)
+      if (nchar(candidate) > 0L) { txt <- candidate; break }
+    }
+    parsed <- WamRuntime$parse_term(txt, table, state)
+    if (is.null(parsed)) return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L), parsed))
+  }
+
+  if (key == "write/2") {
+    sid <- WamRuntime$stream_id_of(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(sid)) return(FALSE)
+    conn <- WamRuntime$stream_get(program, sid)
+    if (is.null(conn)) return(FALSE)
+    text <- WamRuntime$term_to_string(state, WamRuntime$get_reg(state, 2L), table)
+    cat(text, file = conn, sep = "")
+    return(TRUE)
+  }
+
+  if (key == "writeln/2") {
+    sid <- WamRuntime$stream_id_of(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(sid)) return(FALSE)
+    conn <- WamRuntime$stream_get(program, sid)
+    if (is.null(conn)) return(FALSE)
+    text <- WamRuntime$term_to_string(state, WamRuntime$get_reg(state, 2L), table)
+    cat(text, "\n", file = conn, sep = "")
+    return(TRUE)
+  }
+
+  if (key == "nl/1") {
+    sid <- WamRuntime$stream_id_of(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(sid)) return(FALSE)
+    conn <- WamRuntime$stream_get(program, sid)
+    if (is.null(conn)) return(FALSE)
+    cat("\n", file = conn, sep = "")
+    return(TRUE)
+  }
+
+  if (key == "format/3") {
+    sid <- WamRuntime$stream_id_of(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(sid)) return(FALSE)
+    conn <- WamRuntime$stream_get(program, sid)
+    if (is.null(conn)) return(FALSE)
+    t_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    s <- wam_term_name_string(t_v, table)
+    if (is.null(s)) return(FALSE)
+    raw_args <- WamRuntime$get_reg(state, 3L)
+    args <- WamRuntime$wam_list_decompose(state, raw_args, table)
+    if (is.null(args)) {
+      args <- list(WamRuntime$deref(state, raw_args))
+    }
+    out <- WamRuntime$wam_format(state, s, args, table)
+    if (is.null(out)) return(FALSE)
+    cat(out, file = conn, sep = "")
+    return(TRUE)
+  }
+
   # call/1: meta-call. Just delegate the goal to the goal evaluator;
   # bindings made by the goal persist on success (unlike \+/1 which
   # rolls them back).
   if (key == "call/1") {
     return(WamRuntime$call_goal(program, state, WamRuntime$get_reg(state, 1L)))
+  }
+
+  # ----- phrase/2 and phrase/3 -----
+  # phrase(?Body, ?List)         is call(Body, List, []).
+  # phrase(?Body, ?List, ?Rest)  is call(Body, List, Rest).
+  # Used to invoke DCG-translated nonterminals (rule head + 2 extra
+  # difference-list args). The translation itself happens at SWI's
+  # consult time (term_expansion) or via dcg_translate_rule/2 at
+  # runtime; by the time clauses reach the WAM compiler they are
+  # ordinary Prolog with the difference-list args already in place.
+  if (key == "phrase/2") {
+    goal <- WamRuntime$get_reg(state, 1L)
+    list_in <- WamRuntime$get_reg(state, 2L)
+    empty_list <- Atom(WamRuntime$intern(table, "[]"))
+    ext <- WamRuntime$wam_extend_goal(state, goal,
+                                       list(list_in, empty_list), table)
+    if (is.null(ext)) return(FALSE)
+    return(isTRUE(WamRuntime$call_goal(program, state, ext)))
+  }
+  if (key == "phrase/3") {
+    goal <- WamRuntime$get_reg(state, 1L)
+    list_in <- WamRuntime$get_reg(state, 2L)
+    list_out <- WamRuntime$get_reg(state, 3L)
+    ext <- WamRuntime$wam_extend_goal(state, goal,
+                                       list(list_in, list_out), table)
+    if (is.null(ext)) return(FALSE)
+    return(isTRUE(WamRuntime$call_goal(program, state, ext)))
   }
 
   # ----- atom_codes/2 (also string_codes/2): atom <-> list of code points -----
@@ -3127,8 +3843,9 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
   #   form of Term (uses term_to_string -- list notation, struct
   #   `f(a,b)`, atom names, numbers).
   #   Reverse mode (Atom bound):  parse Atom's name as a Prolog term
-  #   and unify with Term. Operator notation is *not* supported in
-  #   the parser; user terms must be in canonical structural form.
+  #   and unify with Term. The parser handles canonical structural
+  #   form *and* operator notation for the standard Prolog operator
+  #   table (see WamRuntime$op_infix / WamRuntime$op_prefix).
   if (key == "term_to_atom/2") {
     raw_t <- WamRuntime$get_reg(state, 1L)
     raw_a <- WamRuntime$get_reg(state, 2L)
@@ -3145,6 +3862,52 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     parsed <- WamRuntime$parse_term(text, table, state)
     if (is.null(parsed)) return(FALSE)
     return(WamRuntime$unify(state, raw_t, parsed))
+  }
+
+  # ----- read_term_from_atom/2 and read_term_from_atom/3 -----
+  # read_term_from_atom(+Atom, -Term[, +Options]).
+  #   Parse Atom's name as a Prolog term and unify with Term. The
+  #   /3 variant accepts an Options list (e.g. variable_names(VN));
+  #   options other than `[]` are silently ignored in this
+  #   scaffold. Same parser as term_to_atom/2 reverse mode.
+  if (key == "read_term_from_atom/2" || key == "read_term_from_atom/3") {
+    a_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    if (is.null(a_v)) return(FALSE)
+    text <- wam_term_name_string(a_v, table)
+    if (is.null(text)) return(FALSE)
+    parsed <- WamRuntime$parse_term(text, table, state)
+    if (is.null(parsed)) return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L), parsed))
+  }
+
+  # ----- clause/2: enumerate matching clauses in the dynamic store -----
+  # clause(?Head, ?Body) succeeds, and on backtracking re-succeeds,
+  # for every clause stored in program$dynamic that matches Head
+  # and Body. Facts are treated as having body = `true` (matching
+  # SWI semantics). Multi-solution: an iter CP is pushed after the
+  # first match; the snapshot is value-stable across asserts/
+  # retracts that happen during the iteration (same approach as
+  # retract_iter).
+  if (key == "clause/2") {
+    head_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    body   <- WamRuntime$get_reg(state, 2L)
+    if (is.null(head_v) || is.null(head_v$tag)) return(FALSE)
+    if (head_v$tag == "atom") {
+      pred <- WamRuntime$string_of(table, head_v$id)
+      arity <- 0L
+      head_args <- list()
+    } else if (head_v$tag == "struct") {
+      pred <- WamRuntime$string_of(table, head_v$fid)
+      arity <- length(head_v$args)
+      head_args <- head_v$args
+    } else {
+      return(FALSE)
+    }
+    ck <- paste0(pred, "/", arity)
+    if (!exists(ck, envir = program$dynamic, inherits = FALSE)) return(FALSE)
+    snapshot <- get(ck, envir = program$dynamic, inherits = FALSE)
+    return(WamRuntime$clause_iter(program, state, head_args, body, arity, ck,
+                                   snapshot, 1L, state$pc + 1L))
   }
 
   # ----- string_upper/2 and string_lower/2 -----
