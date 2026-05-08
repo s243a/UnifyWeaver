@@ -5,6 +5,12 @@ interning design. For *why* each decision, see
 `WAM_LMDB_RESIDENT_INTERNING_PHILOSOPHY.md`. For the rollout sequence,
 see `WAM_LMDB_RESIDENT_INTERNING_IMPLEMENTATION_PLAN.md`.
 
+The demand-filter dispatch (`HopLimit` / `Flux` / `None`) walks the
+edge sub-dbs defined here. For its design, see the companion triad:
+`WAM_DEMAND_FILTER_PHILOSOPHY.md`,
+`WAM_DEMAND_FILTER_SPECIFICATION.md`,
+`WAM_DEMAND_FILTER_IMPLEMENTATION_PLAN.md`.
+
 ## 1. LMDB layout
 
 A single `data.mdb` file (LMDB environment) with the following
