@@ -101,7 +101,11 @@ The program prints `true` or `false` and exits with status 0 / 1.
 
 For richer drivers, source the generated program from another R
 script and call `WamRuntime$run_predicate(shared_program, start_pc,
-args)` directly.
+args)` directly. Each predicate also gets a `pred_<name>(...)`
+wrapper at top level (e.g. a Prolog `ancestor/2` exposes
+`pred_ancestor(x, y)`); the `pred_` prefix avoids clashes with
+base R functions when the user's predicate name is `c`, `t`, `q`,
+`cat`, etc.
 
 ## Architecture
 
@@ -422,7 +426,7 @@ WamRuntime$run(shared_program, state)
 
 The full test suite lives in
 [tests/test_wam_r_generator.pl](../tests/test_wam_r_generator.pl)
-and contains 41 tests covering both structural assertions on the
+and contains 42 tests covering both structural assertions on the
 generated source and end-to-end execution via `Rscript`. The
 `*_e2e_rscript` tests auto-skip when `Rscript` is not on `PATH`.
 
@@ -457,6 +461,7 @@ Coverage map (e2e tests, by feature group):
 | `multi_solution_retract_e2e_rscript` | multi-solution `retract/1` via iter-CP |
 | `bagof_setof_existential_e2e_rscript` | `^/2` existential scope in `bagof`/`setof`/`findall` |
 | `cli_arg_parser_e2e_rscript` | structured CLI args (lists, structs, expressions) parse via the runtime parser |
+| `base_name_clash_e2e_rscript` | predicates named after base R functions (`c`, `t`, `q`, `cat`) don't shadow them |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 

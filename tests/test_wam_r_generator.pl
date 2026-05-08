@@ -117,8 +117,8 @@ test(predicate_wrappers) :-
             TmpDir),
         directory_file_path(TmpDir, 'R/generated_program.R', Program),
         read_file_to_string(Program, Code, []),
-        assertion(sub_string(Code, _, _, _, 'wam_r_caller <- function(')),
-        assertion(sub_string(Code, _, _, _, 'wam_r_fact <- function(')),
+        assertion(sub_string(Code, _, _, _, 'pred_wam_r_caller <- function(')),
+        assertion(sub_string(Code, _, _, _, 'pred_wam_r_fact <- function(')),
         assertion(sub_string(Code, _, _, _, 'WamRuntime$run_predicate(shared_program,')),
         delete_directory_and_contents(TmpDir)
     )).
@@ -202,7 +202,7 @@ test(foreign_handler_wiring) :-
         % The supplied handler body is verbatim in the file.
         assertion(sub_string(Code, _, _, _, 'list(ok = TRUE, bindings = list(list(idx = 2L,')),
         % Top-level wrapper exists too.
-        assertion(sub_string(Code, _, _, _, 'r_double <- function(')),
+        assertion(sub_string(Code, _, _, _, 'pred_r_double <- function(')),
         delete_directory_and_contents(TmpDir)
     )).
 
@@ -2008,6 +2008,58 @@ e2e_cli_arg_parser_via_rscript :-
                    [Pred, Args, Expected, Out]),
             assertion(false)
         )
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% End-to-end Rscript run for predicates whose names collide with
+% base R functions. The wrapper-name generator prefixes every
+% per-predicate wrapper with `pred_` so user predicates named `c`,
+% `t`, `q`, `cat`, `paste`, ... don't shadow the runtime's own
+% calls to those base functions. Without the prefix, asserting
+% `c/2` would replace `base::c` at the top level and the runtime's
+% tokenizer (and other paths that build vectors via `c(...)`) would
+% crash.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(base_name_clash_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_base_name_clash_via_rscript
+    ;   true
+    )).
+
+e2e_base_name_clash_via_rscript :-
+    assertz((user:c(1, 2))),
+    assertz((user:c(2, 3))),
+    assertz((user:t(hello))),
+    assertz((user:q(forty_two, 42))),
+    assertz((user:cat(meow))),
+    assertz((user:check_c   :- c(1, 2))),
+    assertz((user:check_t   :- t(hello))),
+    assertz((user:check_q   :- q(forty_two, X), X =:= 42)),
+    assertz((user:check_cat :- cat(meow))),
+    % Also invoke the parser path directly (term_to_atom reverse
+    % mode walks tokenize_term, which builds vectors via c(...) --
+    % this would have crashed with the old wrapper naming when c/2
+    % was asserted above).
+    assertz((user:check_parser :-
+        atom_codes(A, [102, 40, 49, 41]),  % "f(1)"
+        term_to_atom(T, A),
+        T == f(1))),
+    unique_r_tmp_dir('tmp_r_baseclash_e2e', TmpDir),
+    write_wam_r_project(
+        [user:c/2, user:t/1, user:q/2, user:cat/1,
+         user:check_c/0, user:check_t/0, user:check_q/0,
+         user:check_cat/0, user:check_parser/0],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [check_c, check_t, check_q, check_cat, check_parser],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
     )),
     delete_directory_and_contents(TmpDir).
 

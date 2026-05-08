@@ -589,12 +589,9 @@ WamRuntime$tokenize_term <- function(text) {
   is_digit <- function(ch) grepl("^[0-9]$", ch)
   # Symbol chars used in Prolog operators. `,`, `;`, `|` get their
   # own token types so the parser can switch behaviour at separator
-  # vs operator positions. We qualify `c` and other base helpers
-  # below as `base::*` because the generated program may contain a
-  # per-predicate wrapper that shadows `c`/`t`/`q` etc. when the
-  # user has a predicate of the same name.
-  sym_chars <- base::c("+", "-", "*", "/", "\\", "^", "<", ">",
-                       "=", ":", "@", ".", "?", "~", "#", "$", "&")
+  # vs operator positions.
+  sym_chars <- c("+", "-", "*", "/", "\\", "^", "<", ">",
+                 "=", ":", "@", ".", "?", "~", "#", "$", "&")
   is_sym <- function(ch) ch %in% sym_chars
   while (i <= n) {
     c <- chars[i]
