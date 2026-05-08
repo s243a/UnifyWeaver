@@ -86,28 +86,65 @@ a different machine than the benchmark itself."
 ## What already exists
 
 This is **not** a green-field project. The streaming pipeline is in
-production for the integer-keyed enwiki path:
+production for the integer-keyed enwiki path. Provenance:
 
-- `src/unifyweaver/runtime/rust/mysql_stream/` — the Rust parser. ~555
-  lines, validated against simplewiki (2.2 M rows, byte-exact match to
-  the SQLite ground truth, ~28 MB/s gzipped on one core).
-- `src/unifyweaver/runtime/python/lmdb_ingest/ingest_to_lmdb.py` — the
-  Python consumer. ~206 lines. Reads TSV from stdin, writes LMDB.
-  Already handles filtering (`UW_FILTER_COL=4 UW_FILTER_VAL=subcat`),
-  column projection (`UW_KEY_COL=0 UW_VAL_COL=6`), encoding
-  (`int32_le`), and dupsort (`UW_LMDB_DUPSORT=1`).
-- `examples/streaming/enwiki_category_ingest.pl` — the Prolog glue
-  composing producer + consumer.
-- AWK and C# consumer variants live alongside (`enwiki_category_ingest_awk.pl`,
-  `enwiki_category_ingest_csharp.pl`), demonstrating the pluggable
-  shape — see "Pluggable parsers" below.
+| Component | Path | Originating PR | Originating commit |
+|---|---|---|---|
+| Rust parser | `src/unifyweaver/runtime/rust/mysql_stream/` | [#1596](https://github.com/s243a/UnifyWeaver/pull/1596) (`feat/streaming-pipelines-s1`) | `43b61008` |
+| Python LMDB consumer | `src/unifyweaver/runtime/python/lmdb_ingest/ingest_to_lmdb.py` | [#1597](https://github.com/s243a/UnifyWeaver/pull/1597) (`feat/streaming-pipelines-s2-glue`) | `d212a946` |
+| Streaming-glue layer | `src/unifyweaver/glue/streaming_glue.pl` | [#1597](https://github.com/s243a/UnifyWeaver/pull/1597) | `d212a946` |
+| AWK parser variant | `src/unifyweaver/runtime/awk/mysql_stream/parse_inserts.awk` + `examples/streaming/enwiki_category_ingest_awk.pl` | [#1601](https://github.com/s243a/UnifyWeaver/pull/1601) (`feat/streaming-pipelines-awk-variant`) | — |
+| C# consumer variant | `src/unifyweaver/runtime/csharp/lmdb_ingest/` + `examples/streaming/enwiki_category_ingest_csharp.pl` | [#1616](https://github.com/s243a/UnifyWeaver/pull/1616) (`feat/streaming-pipelines-csharp-glue`) | — |
+| Streaming pipelines design | `docs/design/cross-target-glue/streaming-pipelines/` | [#1593](https://github.com/s243a/UnifyWeaver/pull/1593) (`docs/streaming-pipelines`) | — |
 
-The text-keyed extension is small relative to this surface: extend the
-Python consumer to optionally write `s2i` / `i2s` / `meta` sub-dbs when
-the producer is configured for text-keyed input, plus add `MDB_APPEND`
-flags when the input is sorted. No new Rust crate, no new dependency
-on `heed`; the Python `lmdb` package already supports both `append=True`
-and named sub-dbs.
+Throughput note for the parser: simplewiki categorylinks (27 MB
+gzipped, ~230 MB raw, 2.2 M rows) parses end-to-end at ~28 MB/s of
+gzipped input on a single core, with byte-exact match to the SQLite
+ground truth across `subcat` (297,283), `page` (1,908,512), and
+`file` (250) row counts. End-to-end ingest into LMDB completes in
+6.7 s — that's the title of the consumer's landing commit.
+
+### Public API surface (Rust parser)
+
+The parser exposes a small, stable API in
+`src/unifyweaver/runtime/rust/mysql_stream/src/lib.rs`:
+
+```rust
+/// A single column value from a MySQL INSERT row.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Field {
+    Int(i64),
+    Str(Vec<u8>),  // raw bytes, may not be valid UTF-8
+    Null,
+}
+
+/// Open a file (optionally gzipped based on extension) and return an
+/// iterator over INSERT rows. Path ending in `.gz` is auto-decompressed.
+pub fn iter_mysql_rows(
+    path: &str,
+) -> io::Result<MysqlInsertIter<BufReader<Box<dyn Read + Send>>>>;
+```
+
+Each yielded `Vec<Field>` is one INSERT row. `Field::Str` is `Vec<u8>`
+deliberately — MySQL VARBINARY columns (e.g. MediaWiki's `cl_sortkey`)
+contain arbitrary bytes that aren't necessarily valid UTF-8. Consumers
+decode as needed.
+
+The TSV escape convention (used at the producer/consumer boundary) is
+defined in `src/main.rs` of the same crate: `\\` `\t` `\n` `\r` as
+two-byte escapes; non-printable / non-ASCII bytes as `\xNN`; `NULL`
+emitted as `\N`. The Python consumer's `tsv_unescape` reverses this
+exactly.
+
+### Why the text-keyed extension is small
+
+Given the surface above, the work this design package motivates is
+narrow: extend the Python consumer to optionally write `s2i` / `i2s` /
+`meta` sub-dbs when the producer is configured for text-keyed input,
+plus add `MDB_APPEND` flags when the input is sorted. No new Rust
+crate, no new dependency on `heed`; the Python `lmdb` package already
+supports both `append=True` and named sub-dbs. The parser is
+untouched.
 
 ## Pluggable parsers — but Rust is canonical for benchmarks
 
