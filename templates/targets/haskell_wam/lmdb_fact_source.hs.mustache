@@ -805,6 +805,24 @@ ingestTsvToLmdb _ _ _ _ = error
 -- + `text` deps and use `Data.Text.Encoding.decodeUtf8`. Filed as a
 -- follow-up; documented here so a future failure mode is recoverable.
 
+-- | Open an LMDB env read-only for the int_atom_seeds(lmdb) loaders.
+-- Independent of {{lmdb_setup}}'s env (which is held by the FFI kernel
+-- path); opens its own handle so the loaders can run before the FFI
+-- setup block. LMDB safely supports multiple MDB_env handles per
+-- process; the OS shares the underlying mmap pages.
+--
+-- maxdbs=4 covers the four named sub-dbs the loaders touch: s2i, i2s,
+-- article_category, category_parent. mapsize matches the ingester's
+-- 4 GB ceiling (sufficient for enwiki).
+openLmdbInternEnvReadonly :: FilePath -> IO MDB_env
+openLmdbInternEnvReadonly dbPath = do
+    env <- mdb_env_create
+    mdb_env_set_mapsize env (4 * 1024 * 1024 * 1024)
+    mdb_env_set_maxdbs env 4
+    mdb_env_set_maxreaders env 126
+    mdb_env_open env dbPath [MDB_RDONLY]
+    return env
+
 -- | Decode bytes pointed to by a CChar pointer as a Haskell String,
 -- byte-by-byte (ASCII-correct, Latin-1 fallback for non-ASCII).
 peekStringBytes :: Ptr CChar -> Int -> IO String
