@@ -248,7 +248,8 @@ keep duplicates), `maplist/2..3`.
 ### Higher-order / meta
 
 `call/1..N`, `\+/1`, `once/1`, `forall/2`, `findall/3`, `bagof/3`,
-`setof/3`. Aggregators back-end via two paths:
+`setof/3`, `phrase/2`, `phrase/3`. Aggregators back-end via two
+paths:
 
 - Compiled goals push an `aggregate` CP at `BeginAggregate`,
   collect on every backtrack, and finalise at `EndAggregate`.
@@ -296,6 +297,24 @@ table; non-standard user-defined operators are not recognised.
 Format control sequences supported: `~w`, `~a`, `~d`, `~p`, `~s`,
 `~n`, `~~`. Output goes to standard `cat()` -- no stream
 abstraction.
+
+### DCG (`-->`)
+
+DCG rules are translated at SWI's term-expansion time (or at
+runtime via `dcg_translate_rule/2`) into ordinary clauses with
+two extra difference-list args, so by the time the WAM compiler
+reads them they look like normal predicates and need no special
+handling. The runtime supports `phrase/2` and `phrase/3` to
+bridge the user-level call into the translated `<head>/N+2` form.
+
+```prolog
+:- use_module(library(dcg/basics)).
+dcg_translate_rule((seq(0) --> []), C0), assertz(user:C0),
+dcg_translate_rule(
+    (seq(N) --> {N > 0}, [N], {N1 is N - 1}, seq(N1)), Cn),
+assertz(user:Cn),
+% phrase(seq(3), [3, 2, 1]) succeeds via seq/3.
+```
 
 ### Dynamic predicates
 
@@ -430,7 +449,7 @@ WamRuntime$run(shared_program, state)
 
 The full test suite lives in
 [tests/test_wam_r_generator.pl](../tests/test_wam_r_generator.pl)
-and contains 43 tests covering both structural assertions on the
+and contains 44 tests covering both structural assertions on the
 generated source and end-to-end execution via `Rscript`. The
 `*_e2e_rscript` tests auto-skip when `Rscript` is not on `PATH`.
 
@@ -467,6 +486,7 @@ Coverage map (e2e tests, by feature group):
 | `cli_arg_parser_e2e_rscript` | structured CLI args (lists, structs, expressions) parse via the runtime parser |
 | `base_name_clash_e2e_rscript` | predicates named after base R functions (`c`, `t`, `q`, `cat`) don't shadow them |
 | `read_term_clause_e2e_rscript` | `read_term_from_atom/2,3` and multi-solution `clause/2` |
+| `dcg_e2e_rscript` | DCG `-->` rules + `phrase/2,3` (recursive grammars, prefix-with-rest) |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 

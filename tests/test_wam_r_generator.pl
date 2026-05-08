@@ -2150,6 +2150,71 @@ e2e_read_term_clause_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for DCG (--> notation). DCG rules are
+% translated at SWI's term-expansion time (or via
+% dcg_translate_rule/2 at runtime) into ordinary clauses with two
+% extra difference-list args, so by the time the WAM compiler
+% reads them they look like normal predicates and need no special
+% handling. The runtime side just needs phrase/2 and phrase/3 to
+% bridge the user-level call into the translated /N+2 form.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(dcg_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_dcg_via_rscript
+    ;   true
+    )).
+
+e2e_dcg_via_rscript :-
+    use_module(library(dcg/basics)),
+    % Translate a handful of DCG rules at runtime via
+    % dcg_translate_rule/2, then assertz the resulting clauses.
+    % This proves the WAM target handles the translated form
+    % regardless of whether SWI did the translation at consult
+    % time or asynchronously.
+    dcg_translate_rule((g_greet --> [hello]), Cg),  assertz(user:Cg),
+    dcg_translate_rule((g_pair  --> [a], [b]), Cp), assertz(user:Cp),
+    % Recursive grammar that emits N..1 down to 0.
+    dcg_translate_rule((g_seq(0) --> []), Cs0),     assertz(user:Cs0),
+    dcg_translate_rule(
+        (g_seq(N) --> {N > 0}, [N], {N1 is N - 1}, g_seq(N1)), Csn),
+    assertz(user:Csn),
+    % Test predicates that exercise phrase/2 and phrase/3.
+    assertz((user:dcg_simple :- phrase(g_greet, [hello]))),
+    assertz((user:dcg_pair   :- phrase(g_pair, [a, b]))),
+    assertz((user:dcg_seq3   :- phrase(g_seq(3), [3, 2, 1]))),
+    assertz((user:dcg_seq0   :- phrase(g_seq(0), []))),
+    % phrase/3 with a non-empty rest: parse a prefix, leave the rest.
+    assertz((user:dcg_phrase3 :-
+        phrase(g_pair, [a, b, x, y], [x, y]))),
+    % Negative cases.
+    assertz((user:dcg_no   :- phrase(g_pair, [a, c]))),
+    assertz((user:dcg_no2  :- phrase(g_seq(2), [2, 1, 0]))),
+    unique_r_tmp_dir('tmp_r_dcg_e2e', TmpDir),
+    write_wam_r_project(
+        [user:g_greet/2, user:g_pair/2, user:g_seq/3,
+         user:dcg_simple/0, user:dcg_pair/0, user:dcg_seq3/0,
+         user:dcg_seq0/0, user:dcg_phrase3/0,
+         user:dcg_no/0, user:dcg_no2/0],
+        [intern_atoms([hello, a, b, c, x, y])],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [dcg_simple, dcg_pair, dcg_seq3, dcg_seq0, dcg_phrase3],
+    No  = [dcg_no, dcg_no2],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-
