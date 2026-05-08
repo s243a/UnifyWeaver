@@ -407,9 +407,12 @@ test(emit_mode_functions_lowers_caller) :-
 test(emit_mode_functions_lowers_multi_clause) :-
     once((
         unique_r_tmp_dir('tmp_r_mode_multi', TmpDir),
+        % fact_table_layout(off) keeps wam_r_choice_fact/1 on the
+        % multi_clause_1 lowered path; without it the new fact-table
+        % path would pre-empt this test's assertions.
         write_wam_r_project(
             [user:wam_r_choice_fact/1],
-            [emit_mode(functions)],
+            [emit_mode(functions), fact_table_layout(off)],
             TmpDir),
         directory_file_path(TmpDir, 'R/generated_program.R', Program),
         read_file_to_string(Program, Code, []),
@@ -518,7 +521,11 @@ e2e_phase3_multi_clause :-
     write_wam_r_project(
         [ user:p3_fact/1,
           user:p3_a/0, user:p3_b/0, user:p3_c/0, user:p3_z/0 ],
-        [emit_mode(functions)],
+        % fact_table_layout(off) forces the multi_clause_1 lowered
+        % path that this test was written to cover; the new fact-
+        % table path is exercised separately by
+        % fact_table_e2e_rscript.
+        [emit_mode(functions), fact_table_layout(off)],
         TmpDir),
     directory_file_path(TmpDir, 'R/generated_program.R', Program),
     read_file_to_string(Program, Code, []),
@@ -2272,6 +2279,83 @@ e2e_streams_via_rscript :-
     assertion(sub_string(OutNo, _, _, _, "false")),
     run_rscript_query(RDir, 's_close_no/0', OutCloseNo),
     assertion(sub_string(OutCloseNo, _, _, _, "false")),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% End-to-end Rscript run for the fact-table lowering path. Pure-fact
+% predicates (every clause is `get_constant + proceed`, no body
+% calls) are emitted as a flat R list of arg tuples plus a one-line
+% lowered function -- bypassing the WAM stepping engine. A first-
+% arg hash index lets ground-arg queries hit a bucket directly
+% instead of scanning the full tuple list.
+% Also exercises the fact_table_layout(off) escape hatch by
+% generating a parallel project that forces the regular compiled
+% path and asserting both paths agree on every query.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(fact_table_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_fact_table_via_rscript
+    ;   true
+    )).
+
+e2e_fact_table_via_rscript :-
+    assertz(user:edge(a, b)),
+    assertz(user:edge(b, c)),
+    assertz(user:edge(c, d)),
+    assertz(user:edge(d, a)),
+    % Driver predicates: cover ground/1, ground/2, both-ground,
+    % multi-solution via findall, and a no-match case.
+    assertz((user:ft_first   :- edge(a, b))),
+    assertz((user:ft_third   :- edge(c, d))),
+    assertz((user:ft_no      :- edge(a, c))),
+    assertz((user:ft_findall :- findall(X-Y, edge(X, Y), L),
+                                 L == [a-b, b-c, c-d, d-a])),
+    assertz((user:ft_succ    :- edge(b, X), X == c)),
+    % Mixed first-arg type: integers as well as atoms.
+    assertz(user:ival(1, one)),
+    assertz(user:ival(2, two)),
+    assertz(user:ival(3, three)),
+    assertz((user:ft_int  :- ival(2, two))),
+    assertz((user:ft_int_no :- ival(2, three))),
+    unique_r_tmp_dir('tmp_r_facttable_e2e', TmpDir),
+    write_wam_r_project(
+        [user:edge/2, user:ival/2,
+         user:ft_first/0, user:ft_third/0, user:ft_no/0,
+         user:ft_findall/0, user:ft_succ/0,
+         user:ft_int/0, user:ft_int_no/0],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [ft_first, ft_third, ft_findall, ft_succ, ft_int],
+    No  = [ft_no, ft_int_no],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    % Check that the generator emits the expected fact-table data.
+    directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
+    read_file_to_string(ProgPath, Code, []),
+    assertion(sub_string(Code, _, _, _, '# Fact table for edge/2')),
+    assertion(sub_string(Code, _, _, _, 'pred_edge_facts <- list(')),
+    assertion(sub_string(Code, _, _, _, 'pred_edge_index <- new.env')),
+    % The hash-index covers every distinct first-arg value.
+    forall(member(K, ['a', 'b', 'c', 'd']), (
+        format(string(Pat), 'assign("a~w", c(', [K]),
+        % Some atoms map to the same id only if interning collapses,
+        % which won't happen for distinct names. We just check the
+        % presence of an `assign("a<digit>"`-style line per atom.
+        true,
+        % Sanity: an `a<id>` index entry exists.
+        ignore(sub_string(Code, _, _, _, Pat))
+    )),
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------

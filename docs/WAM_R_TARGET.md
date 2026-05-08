@@ -183,6 +183,25 @@ tries handlers in order and stops at the first hit:
 
 If none match, the call fails and triggers backtracking.
 
+### Fact-table lowering
+
+Predicates whose every clause is just `get_constant + proceed` are
+classified as pure fact tables and lowered to a flat R list of arg
+tuples plus a one-line dispatch function -- the WAM stepping
+engine isn't entered at all. A first-arg hash index (an R env
+keyed by `"a<atom-id>"` / `"i<int-val>"`) routes ground-arg
+queries to a bucket lookup; unground first args fall back to a
+linear scan over the full tuple list.
+
+The bench (`tests/benchmarks/wam_r_fact_source_bench.pl`) shows
+modest per-query wins (~10% at N=100 chains, querying the deepest
+element) over the WAM `switch_on_constant` path. The bigger wins
+are structural: codegen-time savings, simpler emitted R, and the
+infrastructure to build richer indexes (multi-arg, range) on top.
+
+Disable per-call with `fact_table_layout(off)` in Options, or
+globally via the multifile `user:wam_r_fact_layout(off)` fact.
+
 ### Emit modes
 
 The Phase-3 lowered emitter can replace the instruction-array body
@@ -465,7 +484,7 @@ WamRuntime$run(shared_program, state)
 
 The full test suite lives in
 [tests/test_wam_r_generator.pl](../tests/test_wam_r_generator.pl)
-and contains 45 tests covering both structural assertions on the
+and contains 46 tests covering both structural assertions on the
 generated source and end-to-end execution via `Rscript`. The
 `*_e2e_rscript` tests auto-skip when `Rscript` is not on `PATH`.
 
@@ -504,6 +523,7 @@ Coverage map (e2e tests, by feature group):
 | `read_term_clause_e2e_rscript` | `read_term_from_atom/2,3` and multi-solution `clause/2` |
 | `dcg_e2e_rscript` | DCG `-->` rules + `phrase/2,3` (recursive grammars, prefix-with-rest) |
 | `streams_e2e_rscript` | `open/3`, `close/1`, `read/2`, `write/2`, `writeln/2`, `format/3` round-trip |
+| `fact_table_e2e_rscript` | fact-table lowering: hash-indexed dispatch, multi-solution backtracking, atoms + integers |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 
