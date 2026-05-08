@@ -1813,6 +1813,111 @@ WamRuntime$clause_iter <- function(program, state, head_args, body, arity,
   FALSE
 }
 
+# ----------------------------------------------------------
+# Fact-table iterator for lowered fact predicates
+# ----------------------------------------------------------
+# Predicates that are pure fact tables (all clauses are
+# get_constant + proceed, no body calls) are emitted as a list of
+# arg-tuples plus a one-line lowered function. Calling that
+# function jumps straight here, bypassing the WAM dispatch loop.
+# Walks the tuple list from `start_idx`, unifying the caller's
+# args with each tuple's components. On the first match: if more
+# tuples remain, push an iter CP so backtracking re-enters at
+# idx+1 and resumes at `resume_pc` (the post-call instruction).
+WamRuntime$fact_table_iter <- function(program, state, key, tuples, args,
+                                        start_idx, resume_pc) {
+  WamRuntime$fact_table_iter_subset(program, state, key, tuples,
+                                     seq.int(start_idx, length(tuples)),
+                                     args, 1L, resume_pc)
+}
+
+# Iterate over a *subset* of tuples (passed as integer indices into
+# the master tuple list). Used by the indexed dispatcher below: when
+# the caller's first arg is ground, we can pre-compute the bucket of
+# matching tuple indices via a hash and walk only those instead of
+# the full table. The CP retry replays the same subset starting at
+# the next position.
+WamRuntime$fact_table_iter_subset <- function(program, state, key, tuples,
+                                               indices, args, pos, resume_pc) {
+  if (pos > length(indices)) return(FALSE)
+  arity <- length(args)
+  for (p in seq.int(pos, length(indices))) {
+    idx   <- indices[[p]]
+    tuple <- tuples[[idx]]
+    snap_trail <- length(state$trail)
+    snap_vc    <- state$var_counter
+    ok <- TRUE
+    for (j in seq_len(arity)) {
+      if (!WamRuntime$unify(state, args[[j]], tuple[[j]])) {
+        ok <- FALSE; break
+      }
+    }
+    if (ok) {
+      if (p < length(indices)) {
+        captured_args     <- args
+        captured_tuples   <- tuples
+        captured_indices  <- indices
+        captured_next_pos <- p + 1L
+        captured_resume   <- resume_pc
+        captured_program  <- program
+        captured_key      <- key
+        cp <- list(
+          kind        = "iter",
+          regs        = as.list.environment(state$regs2),
+          trail_len   = snap_trail,
+          cp          = state$cp,
+          var_counter = snap_vc,
+          mode        = state$mode,
+          build_stack = state$build_stack,
+          resume_pc   = resume_pc,
+          retry       = function(state) {
+            WamRuntime$fact_table_iter_subset(captured_program, state,
+                                               captured_key, captured_tuples,
+                                               captured_indices, captured_args,
+                                               captured_next_pos,
+                                               captured_resume)
+          }
+        )
+        state$cps <- c(state$cps, list(cp))
+      }
+      return(TRUE)
+    }
+    WamRuntime$undo_trail_to(state, snap_trail)
+    state$var_counter <- snap_vc
+  }
+  FALSE
+}
+
+# Indexed dispatch for fact tables: if the caller's first arg derefs
+# to a ground atom or integer, we look its bucket up in the index
+# (an env mapping "atom-id" / "int-value" to the integer-vector of
+# matching tuple indices). On a hit we iterate just that bucket; on
+# a miss we fail outright (the index already enumerated every value
+# present in the table). For an unground first arg or any other tag,
+# we fall back to a full-table scan.
+WamRuntime$fact_table_dispatch <- function(program, state, key, tuples, index,
+                                            args, resume_pc) {
+  arity <- length(args)
+  if (arity >= 1L) {
+    v <- WamRuntime$deref(state, args[[1]])
+    if (!is.null(v) && !is.null(v$tag)) {
+      bk <- NULL
+      if (v$tag == "atom") bk <- paste0("a", v$id)
+      else if (v$tag == "int") bk <- paste0("i", v$val)
+      if (!is.null(bk)) {
+        if (exists(bk, envir = index, inherits = FALSE)) {
+          bucket <- get(bk, envir = index, inherits = FALSE)
+          return(WamRuntime$fact_table_iter_subset(program, state, key,
+                                                    tuples, bucket, args, 1L,
+                                                    resume_pc))
+        }
+        return(FALSE)
+      }
+    }
+  }
+  WamRuntime$fact_table_iter(program, state, key, tuples, args, 1L, resume_pc)
+}
+
 # Enumerable iteration over a list of WAM terms, used by member/2 (and
 # any future enumerator with the same shape). Tries to unify `target`
 # with each element starting at `start_idx`. On success, pushes an iter
