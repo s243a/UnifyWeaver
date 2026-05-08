@@ -65,7 +65,11 @@ shared_program <- list(
   # Keyed by "pred/arity"; each value is a list of clause records
   # of shape list(head_args, body). An env (rather than a list) so
   # mutations propagate across query invocations.
-  dynamic          = new.env(parent = emptyenv())
+  dynamic          = new.env(parent = emptyenv()),
+  # Stream registry for open/3, read/2, write/2, etc. Keyed by the
+  # stringified integer id stored inside `stream(<id>)` terms; the
+  # special key "__next_id__" holds the next-id counter.
+  streams          = new.env(parent = emptyenv())
 )
 
 # ----------------------------------------------------------
