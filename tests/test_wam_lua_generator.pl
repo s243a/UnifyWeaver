@@ -14,11 +14,50 @@
 :- dynamic user:wam_lua_fact/1.
 :- dynamic user:wam_lua_choice/1.
 :- dynamic user:wam_lua_caller/1.
+:- dynamic user:wam_lua_fa_fact/1.
+:- dynamic user:wam_lua_fa_basic/0.
+:- dynamic user:wam_lua_fa_greet/0.
+:- dynamic user:wam_lua_greet/2.
+:- dynamic user:wam_lua_num/1.
+:- dynamic user:wam_lua_agg_count/0.
+:- dynamic user:wam_lua_agg_sum/0.
+:- dynamic user:wam_lua_agg_min/0.
+:- dynamic user:wam_lua_agg_max/0.
+:- dynamic user:wam_lua_agg_set/0.
 
 user:wam_lua_fact(a).
 user:wam_lua_choice(a).
 user:wam_lua_choice(b).
 user:wam_lua_caller(X) :- user:wam_lua_fact(X).
+user:wam_lua_fa_fact(a).
+user:wam_lua_fa_fact(b).
+user:wam_lua_fa_basic :-
+    findall(X, user:wam_lua_fa_fact(X), L),
+    L = [a, b].
+user:wam_lua_greet(X, hello) :- X = world.
+user:wam_lua_greet(X, goodbye) :- X = moon.
+user:wam_lua_fa_greet :-
+    findall(X, user:wam_lua_greet(X, hello), L),
+    L = [world].
+user:wam_lua_num(1).
+user:wam_lua_num(2).
+user:wam_lua_num(2).
+user:wam_lua_num(3).
+user:wam_lua_agg_count :-
+    aggregate_all(count, user:wam_lua_num(_), N),
+    N = 4.
+user:wam_lua_agg_sum :-
+    aggregate_all(sum(X), user:wam_lua_num(X), S),
+    S = 8.
+user:wam_lua_agg_min :-
+    aggregate_all(min(X), user:wam_lua_num(X), M),
+    M = 1.
+user:wam_lua_agg_max :-
+    aggregate_all(max(X), user:wam_lua_num(X), M),
+    M = 3.
+user:wam_lua_agg_set :-
+    aggregate_all(set(X), user:wam_lua_num(X), S),
+    S = [1, 2, 3].
 
 test(exports) :-
     assertion(current_predicate(wam_lua_target:write_wam_lua_project/3)),
@@ -70,6 +109,23 @@ test(choice_points_emitted) :-
         delete_directory_and_contents(TmpDir)
     ).
 
+test(aggregate_and_second_arg_switch_emitted) :-
+    unique_lua_tmp_dir('tmp_lua_agg_emit', TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project(
+            [user:wam_lua_fa_basic/0, user:wam_lua_fa_fact/1,
+             user:wam_lua_greet/2],
+            [],
+            TmpDir),
+        ( directory_file_path(TmpDir, 'lua/generated_program.lua', Program),
+          read_file_to_string(Program, Code, []),
+          assertion(sub_string(Code, _, _, _, 'I.BeginAggregate("collect"')),
+          assertion(sub_string(Code, _, _, _, 'I.EndAggregate(')),
+          assertion(sub_string(Code, _, _, _, 'I.SwitchOnConstantA2('))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
 test(lowered_functions_mode) :-
     unique_lua_tmp_dir('tmp_lua_lowered', TmpDir),
     setup_call_cleanup(
@@ -105,6 +161,59 @@ test(lua_choice_e2e, [condition(lua_available)]) :-
           run_lua_query(LuaDir, 'wam_lua_choice/1', [a], true),
           run_lua_query(LuaDir, 'wam_lua_choice/1', [b], true),
           run_lua_query(LuaDir, 'wam_lua_choice/1', [c], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(lua_findall_e2e, [condition(lua_available)]) :-
+    unique_lua_tmp_dir('tmp_lua_findall_e2e', TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project(
+            [ user:wam_lua_fa_basic/0,
+              user:wam_lua_fa_fact/1,
+              user:wam_lua_fa_greet/0,
+              user:wam_lua_greet/2
+            ],
+            [],
+            TmpDir),
+        ( directory_file_path(TmpDir, 'lua', LuaDir),
+          run_lua_query(LuaDir, 'wam_lua_fa_basic/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_fa_greet/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(lua_aggregate_all_e2e, [condition(lua_available)]) :-
+    unique_lua_tmp_dir('tmp_lua_agg_all_e2e', TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project(
+            [ user:wam_lua_num/1,
+              user:wam_lua_agg_count/0,
+              user:wam_lua_agg_sum/0,
+              user:wam_lua_agg_min/0,
+              user:wam_lua_agg_max/0,
+              user:wam_lua_agg_set/0
+            ],
+            [],
+            TmpDir),
+        ( directory_file_path(TmpDir, 'lua', LuaDir),
+          run_lua_query(LuaDir, 'wam_lua_agg_count/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_agg_sum/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_agg_min/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_agg_max/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_agg_set/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(lua_second_arg_switch_e2e, [condition(lua_available)]) :-
+    unique_lua_tmp_dir('tmp_lua_a2_e2e', TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project([user:wam_lua_greet/2], [], TmpDir),
+        ( directory_file_path(TmpDir, 'lua', LuaDir),
+          run_lua_query(LuaDir, 'wam_lua_greet/2', [world, hello], true),
+          run_lua_query(LuaDir, 'wam_lua_greet/2', [moon, goodbye], true),
+          run_lua_query(LuaDir, 'wam_lua_greet/2', [moon, hello], false)
         ),
         delete_directory_and_contents(TmpDir)
     ).

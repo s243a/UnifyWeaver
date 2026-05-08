@@ -269,12 +269,25 @@ wam_parts_to_lua(["switch_on_constant" | Cases], Lit) :-
     parse_switch_cases(Norm, CaseLits),
     atomic_list_concat(CaseLits, ', ', CasesStr),
     format(string(Lit), 'I.SwitchOnConstant({~w})', [CasesStr]).
+wam_parts_to_lua(["switch_on_constant_a2" | Cases], Lit) :-
+    normalize_switch_case_tokens(Cases, Norm),
+    parse_switch_cases(Norm, CaseLits),
+    atomic_list_concat(CaseLits, ', ', CasesStr),
+    format(string(Lit), 'I.SwitchOnConstantA2({~w})', [CasesStr]).
 wam_parts_to_lua(["switch_on_structure" | Cases], Lit) :-
     normalize_switch_case_tokens(Cases, Norm),
     parse_struct_switch_cases(Norm, CaseLits),
     atomic_list_concat(CaseLits, ', ', CasesStr),
     format(string(Lit), 'I.SwitchOnStructure({~w})', [CasesStr]).
 wam_parts_to_lua(["cut_ite"], 'I.CutIte()').
+wam_parts_to_lua(["begin_aggregate", Kind, TemplateReg, BagReg], Lit) :-
+    reg_to_int(TemplateReg, TIdx),
+    reg_to_int(BagReg, BIdx),
+    lua_string_literal(Kind, K),
+    format(string(Lit), 'I.BeginAggregate(~w, ~w, ~w)', [K, TIdx, BIdx]).
+wam_parts_to_lua(["end_aggregate", TemplateReg], Lit) :-
+    reg_to_int(TemplateReg, TIdx),
+    format(string(Lit), 'I.EndAggregate(~w)', [TIdx]).
 wam_parts_to_lua(Parts, Lit) :-
     atomic_list_concat(Parts, ' ', Text),
     lua_string_literal(Text, Q),
