@@ -1410,7 +1410,9 @@ test_demand_filter_gates_seed_query_body :-
             Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, "let seedCatsAll = map head $ group $ sort $ map snd articleCategories"),
-        sub_string(S, _, _, _, "!demandSet = computeDemandSet parentsIndexInterned rootId"),
+        sub_string(S, _, _, _, "!demandFilterSpec = (HopLimit Nothing)"),
+        sub_string(S, _, _, _, "!demandFilterResult = runDemandBFS demandFilterSpec parentsIndexInterned rootId"),
+        sub_string(S, _, _, _, "!demandSet = dfrInSet demandFilterResult"),
         sub_string(S, _, _, _, "!reverseAdj = IM.fromListWith (++)"),
         sub_string(S, _, _, _, "filterByDemand demandSet parents = IS.foldl' addChild IM.empty demandSet"),
         sub_string(S, _, _, _, "!filteredSeedCats = filter (\\cat -> IS.member (iAtom cat) demandSet) seedCats"),
@@ -1421,6 +1423,76 @@ test_demand_filter_gates_seed_query_body :-
         sub_string(S, _, _, _, "demand_skipped_seeds=")
     ->  pass(Test)
     ;   fail_test(Test, 'Demand-filtered Main.hs should pre-filter seeds before parMap')
+    ).
+
+test_demand_filter_hop_limit_with_max_hops :-
+    Test = 'WAM-Haskell: demand_filter_spec(hop_limit, [max_hops(N)]) emits HopLimit (Just N)',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [demand_filter_spec(hop_limit, [max_hops(7)])],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "!demandFilterSpec = (HopLimit (Just 7))"),
+        sub_string(S, _, _, _, "runDemandBFS demandFilterSpec parentsIndexInterned rootId")
+    ->  pass(Test)
+    ;   fail_test(Test, 'demand_filter_spec(hop_limit, [max_hops(7)]) should emit HopLimit (Just 7)')
+    ).
+
+test_demand_filter_none_emits_dfnone :-
+    Test = 'WAM-Haskell: demand_filter_spec(none, []) emits DfNone',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [demand_filter_spec(none, [])],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "!demandFilterSpec = DfNone"),
+        sub_string(S, _, _, _, "runDemandBFS demandFilterSpec parentsIndexInterned rootId")
+    ->  pass(Test)
+    ;   fail_test(Test, 'demand_filter_spec(none, []) should emit DfNone')
+    ).
+
+test_demand_filter_flux_emits_panic_stub_compatible :-
+    Test = 'WAM-Haskell: demand_filter_spec(flux, [...]) emits Flux constructor (panics at runtime in Phase 2)',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [demand_filter_spec(flux, [target_count(5000), sort_sparks(true)])],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "!demandFilterSpec = (Flux 5000 True)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'demand_filter_spec(flux, [...]) should emit Flux constructor for runtime to panic on')
+    ).
+
+test_demand_filter_invalid_strategy_rejected :-
+    Test = 'WAM-Haskell: demand_filter_spec with unknown strategy throws domain_error',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   catch(
+            wam_haskell_target:generate_main_hs(
+                [],
+                ['category_ancestor/4'-Kernel],
+                [],
+                [demand_filter_spec(bogus_strategy, [])],
+                _Code),
+            error(domain_error(demand_filter_strategy, bogus_strategy), _),
+            (true, ThrewDomainError = true))
+    ->  (   ThrewDomainError == true
+        ->  pass(Test)
+        ;   fail_test(Test, 'unknown strategy should throw domain_error')
+        )
+    ;   fail_test(Test, 'unknown strategy should throw domain_error')
     ).
 
 test_demand_filter_false_leaves_query_ungated :-
@@ -1979,6 +2051,10 @@ run_tests :-
     test_b1_external_source_default_allow_list,
     test_b1_external_source_off_without_use_lmdb,
     test_demand_filter_gates_seed_query_body,
+    test_demand_filter_hop_limit_with_max_hops,
+    test_demand_filter_none_emits_dfnone,
+    test_demand_filter_flux_emits_panic_stub_compatible,
+    test_demand_filter_invalid_strategy_rejected,
     test_demand_filter_false_leaves_query_ungated,
     %% max_depth substitution (regression for linear-chain-zero-results)
     test_max_depth_default_10_when_no_user_fact,
