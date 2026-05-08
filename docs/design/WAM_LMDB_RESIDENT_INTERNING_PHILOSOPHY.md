@@ -247,21 +247,63 @@ The matrix bench will pick the LMDB-resident path automatically when
 Below that, the in-process intern-table build is faster than opening a
 file and the difference doesn't matter anyway.
 
-## Demand set: why this design doesn't address it
+## Demand set: how it composes with this design
 
 The demand set is computed at startup by a backward BFS from the root.
 With LMDB-resident edges, that BFS becomes a sequence of LMDB cursor
-walks instead of `IM.lookup` calls. On a memory-mapped LMDB the lookups
-are roughly the same cost as in-memory `IntMap` lookups once the OS
-page cache is warm — and for warm runs (the common case) it is warm by
-construction.
+walks instead of `IM.lookup` calls. The result is the same small
+`IntSet` (typically <100k Ints) that today's path produces.
 
-So the demand set stays in memory as a small `IntSet` (typically <100k
-Ints), built at startup by walking the LMDB. No precomputation of
-demand sets per root, no caching strategy. If profiling later shows
-demand-set construction is itself a bottleneck, the right answer is
-either to walk in parallel or to memoise it next to the LMDB — but
-neither is needed up front.
+### Lookup order: cache → LMDB
+
+The runtime already has a tiered cache infrastructure for edge
+lookups, configured via the `lmdb_cache_mode` option in
+`wam_haskell_target.pl`:
+
+- `per_hec` — per-HEC L1 cache (mutable `IOArray` per Haskell
+  capability, no synchronisation). Lives in
+  `lmdb_fact_source.hs.mustache:218+`.
+- `sharded` — shared L2 cache, single `IORef`-protected `Map`.
+- `two_level` — L1 + L2 composed: L1 for hot per-thread reuse, L2 for
+  cross-thread overlap.
+- `auto` — Phase 3 hook that picks based on workload hints.
+
+The contract this design adopts is: **edge lookups always go through
+the configured cache layers first, falling back to LMDB on miss**.
+The demand-set BFS uses the same `EdgeLookup` interface, so it
+benefits from the cache automatically. This matters because LMDB's
+"reads are free once the OS page cache is warm" property only holds
+when the working set actually fits in memory; for the full enwiki
+edge set (~28 M edges, ~340 MB on disk) on a memory-constrained box,
+the user-space cache is what bounds latency.
+
+### Prepopulating the cache from the demand set
+
+When a cache is declared and the workload is demand-bounded, the
+demand set is exactly the working set the kernel will touch. The
+runtime can prepopulate the L1 (or L2) cache with the demand set's
+edges as a one-time warming step right after the BFS completes — no
+extra LMDB scan needed beyond what the BFS already did.
+
+The flow becomes:
+
+1. Open LMDB, read `meta`, build `InternTable`.
+2. Compute `demandSet` via backward BFS over LMDB cursors. *During*
+   the BFS, every edge that gets visited is also a hot edge, so
+   we route it through the cache write path on the way out.
+3. Run the parMap query. Edge lookups for demand-set members hit
+   the cache; lookups outside the demand set (rare on a
+   demand-filtered workload) fall through to LMDB.
+
+This is a pure composition — no new cache mode, no new code path
+beyond a single "warm cache during BFS" hook. With no cache declared
+(`lmdb_cache_mode` unset), the BFS does nothing extra and the runtime
+behaves exactly as the demand-set logic does today.
+
+If profiling later shows demand-set construction is itself a
+bottleneck, the right answer is either to walk in parallel or to
+memoise per-root demand sets next to the LMDB — but neither is needed
+up front.
 
 ## What this rules out
 
