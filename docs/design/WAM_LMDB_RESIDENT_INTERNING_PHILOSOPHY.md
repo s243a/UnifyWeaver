@@ -86,28 +86,65 @@ a different machine than the benchmark itself."
 ## What already exists
 
 This is **not** a green-field project. The streaming pipeline is in
-production for the integer-keyed enwiki path:
+production for the integer-keyed enwiki path. Provenance:
 
-- `src/unifyweaver/runtime/rust/mysql_stream/` — the Rust parser. ~555
-  lines, validated against simplewiki (2.2 M rows, byte-exact match to
-  the SQLite ground truth, ~28 MB/s gzipped on one core).
-- `src/unifyweaver/runtime/python/lmdb_ingest/ingest_to_lmdb.py` — the
-  Python consumer. ~206 lines. Reads TSV from stdin, writes LMDB.
-  Already handles filtering (`UW_FILTER_COL=4 UW_FILTER_VAL=subcat`),
-  column projection (`UW_KEY_COL=0 UW_VAL_COL=6`), encoding
-  (`int32_le`), and dupsort (`UW_LMDB_DUPSORT=1`).
-- `examples/streaming/enwiki_category_ingest.pl` — the Prolog glue
-  composing producer + consumer.
-- AWK and C# consumer variants live alongside (`enwiki_category_ingest_awk.pl`,
-  `enwiki_category_ingest_csharp.pl`), demonstrating the pluggable
-  shape — see "Pluggable parsers" below.
+| Component | Path | Originating PR | Originating commit |
+|---|---|---|---|
+| Rust parser | `src/unifyweaver/runtime/rust/mysql_stream/` | [#1596](https://github.com/s243a/UnifyWeaver/pull/1596) (`feat/streaming-pipelines-s1`) | `43b61008` |
+| Python LMDB consumer | `src/unifyweaver/runtime/python/lmdb_ingest/ingest_to_lmdb.py` | [#1597](https://github.com/s243a/UnifyWeaver/pull/1597) (`feat/streaming-pipelines-s2-glue`) | `d212a946` |
+| Streaming-glue layer | `src/unifyweaver/glue/streaming_glue.pl` | [#1597](https://github.com/s243a/UnifyWeaver/pull/1597) | `d212a946` |
+| AWK parser variant | `src/unifyweaver/runtime/awk/mysql_stream/parse_inserts.awk` + `examples/streaming/enwiki_category_ingest_awk.pl` | [#1601](https://github.com/s243a/UnifyWeaver/pull/1601) (`feat/streaming-pipelines-awk-variant`) | — |
+| C# consumer variant | `src/unifyweaver/runtime/csharp/lmdb_ingest/` + `examples/streaming/enwiki_category_ingest_csharp.pl` | [#1616](https://github.com/s243a/UnifyWeaver/pull/1616) (`feat/streaming-pipelines-csharp-glue`) | — |
+| Streaming pipelines design | `docs/design/cross-target-glue/streaming-pipelines/` | [#1593](https://github.com/s243a/UnifyWeaver/pull/1593) (`docs/streaming-pipelines`) | — |
 
-The text-keyed extension is small relative to this surface: extend the
-Python consumer to optionally write `s2i` / `i2s` / `meta` sub-dbs when
-the producer is configured for text-keyed input, plus add `MDB_APPEND`
-flags when the input is sorted. No new Rust crate, no new dependency
-on `heed`; the Python `lmdb` package already supports both `append=True`
-and named sub-dbs.
+Throughput note for the parser: simplewiki categorylinks (27 MB
+gzipped, ~230 MB raw, 2.2 M rows) parses end-to-end at ~28 MB/s of
+gzipped input on a single core, with byte-exact match to the SQLite
+ground truth across `subcat` (297,283), `page` (1,908,512), and
+`file` (250) row counts. End-to-end ingest into LMDB completes in
+6.7 s — that's the title of the consumer's landing commit.
+
+### Public API surface (Rust parser)
+
+The parser exposes a small, stable API in
+`src/unifyweaver/runtime/rust/mysql_stream/src/lib.rs`:
+
+```rust
+/// A single column value from a MySQL INSERT row.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Field {
+    Int(i64),
+    Str(Vec<u8>),  // raw bytes, may not be valid UTF-8
+    Null,
+}
+
+/// Open a file (optionally gzipped based on extension) and return an
+/// iterator over INSERT rows. Path ending in `.gz` is auto-decompressed.
+pub fn iter_mysql_rows(
+    path: &str,
+) -> io::Result<MysqlInsertIter<BufReader<Box<dyn Read + Send>>>>;
+```
+
+Each yielded `Vec<Field>` is one INSERT row. `Field::Str` is `Vec<u8>`
+deliberately — MySQL VARBINARY columns (e.g. MediaWiki's `cl_sortkey`)
+contain arbitrary bytes that aren't necessarily valid UTF-8. Consumers
+decode as needed.
+
+The TSV escape convention (used at the producer/consumer boundary) is
+defined in `src/main.rs` of the same crate: `\\` `\t` `\n` `\r` as
+two-byte escapes; non-printable / non-ASCII bytes as `\xNN`; `NULL`
+emitted as `\N`. The Python consumer's `tsv_unescape` reverses this
+exactly.
+
+### Why the text-keyed extension is small
+
+Given the surface above, the work this design package motivates is
+narrow: extend the Python consumer to optionally write `s2i` / `i2s` /
+`meta` sub-dbs when the producer is configured for text-keyed input,
+plus add `MDB_APPEND` flags when the input is sorted. No new Rust
+crate, no new dependency on `heed`; the Python `lmdb` package already
+supports both `append=True` and named sub-dbs. The parser is
+untouched.
 
 ## Pluggable parsers — but Rust is canonical for benchmarks
 
@@ -210,21 +247,63 @@ The matrix bench will pick the LMDB-resident path automatically when
 Below that, the in-process intern-table build is faster than opening a
 file and the difference doesn't matter anyway.
 
-## Demand set: why this design doesn't address it
+## Demand set: how it composes with this design
 
 The demand set is computed at startup by a backward BFS from the root.
 With LMDB-resident edges, that BFS becomes a sequence of LMDB cursor
-walks instead of `IM.lookup` calls. On a memory-mapped LMDB the lookups
-are roughly the same cost as in-memory `IntMap` lookups once the OS
-page cache is warm — and for warm runs (the common case) it is warm by
-construction.
+walks instead of `IM.lookup` calls. The result is the same small
+`IntSet` (typically <100k Ints) that today's path produces.
 
-So the demand set stays in memory as a small `IntSet` (typically <100k
-Ints), built at startup by walking the LMDB. No precomputation of
-demand sets per root, no caching strategy. If profiling later shows
-demand-set construction is itself a bottleneck, the right answer is
-either to walk in parallel or to memoise it next to the LMDB — but
-neither is needed up front.
+### Lookup order: cache → LMDB
+
+The runtime already has a tiered cache infrastructure for edge
+lookups, configured via the `lmdb_cache_mode` option in
+`wam_haskell_target.pl`:
+
+- `per_hec` — per-HEC L1 cache (mutable `IOArray` per Haskell
+  capability, no synchronisation). Lives in
+  `lmdb_fact_source.hs.mustache:218+`.
+- `sharded` — shared L2 cache, single `IORef`-protected `Map`.
+- `two_level` — L1 + L2 composed: L1 for hot per-thread reuse, L2 for
+  cross-thread overlap.
+- `auto` — Phase 3 hook that picks based on workload hints.
+
+The contract this design adopts is: **edge lookups always go through
+the configured cache layers first, falling back to LMDB on miss**.
+The demand-set BFS uses the same `EdgeLookup` interface, so it
+benefits from the cache automatically. This matters because LMDB's
+"reads are free once the OS page cache is warm" property only holds
+when the working set actually fits in memory; for the full enwiki
+edge set (~28 M edges, ~340 MB on disk) on a memory-constrained box,
+the user-space cache is what bounds latency.
+
+### Prepopulating the cache from the demand set
+
+When a cache is declared and the workload is demand-bounded, the
+demand set is exactly the working set the kernel will touch. The
+runtime can prepopulate the L1 (or L2) cache with the demand set's
+edges as a one-time warming step right after the BFS completes — no
+extra LMDB scan needed beyond what the BFS already did.
+
+The flow becomes:
+
+1. Open LMDB, read `meta`, build `InternTable`.
+2. Compute `demandSet` via backward BFS over LMDB cursors. *During*
+   the BFS, every edge that gets visited is also a hot edge, so
+   we route it through the cache write path on the way out.
+3. Run the parMap query. Edge lookups for demand-set members hit
+   the cache; lookups outside the demand set (rare on a
+   demand-filtered workload) fall through to LMDB.
+
+This is a pure composition — no new cache mode, no new code path
+beyond a single "warm cache during BFS" hook. With no cache declared
+(`lmdb_cache_mode` unset), the BFS does nothing extra and the runtime
+behaves exactly as the demand-set logic does today.
+
+If profiling later shows demand-set construction is itself a
+bottleneck, the right answer is either to walk in parallel or to
+memoise per-root demand sets next to the LMDB — but neither is needed
+up front.
 
 ## What this rules out
 
