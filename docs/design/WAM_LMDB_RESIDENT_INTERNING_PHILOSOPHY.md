@@ -320,6 +320,13 @@ up front.
 
 - `WAM_LMDB_RESIDENT_INTERNING_SPECIFICATION.md` — schema, CLI, runtime contract.
 - `WAM_LMDB_RESIDENT_INTERNING_IMPLEMENTATION_PLAN.md` — phased steps.
+- `WAM_DEMAND_FILTER_PHILOSOPHY.md` — the demand-filter dispatch
+  (HopLimit / Flux / None) that walks LMDB cursors emitted here.
+  Read alongside this doc for the full runtime picture.
+- `WAM_DEMAND_FILTER_SPECIFICATION.md` — `DemandFilterSpec` API and
+  cache-warming integration.
+- `WAM_DEMAND_FILTER_IMPLEMENTATION_PLAN.md` — the demand-filter
+  rollout that interleaves with the LMDB-resident phases.
 - `WAM_PERF_OPTIMIZATION_LOG.md` — measurements that motivated this work,
   especially Phase L appendix #4.
 - `src/unifyweaver/runtime/rust/mysql_stream/` — Rust parser (canonical

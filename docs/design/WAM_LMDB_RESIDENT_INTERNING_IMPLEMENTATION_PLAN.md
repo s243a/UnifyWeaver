@@ -4,6 +4,9 @@ For the *why*, see `WAM_LMDB_RESIDENT_INTERNING_PHILOSOPHY.md`. For the
 *what*, see `WAM_LMDB_RESIDENT_INTERNING_SPECIFICATION.md`. This
 document records the ordered rollout.
 
+The demand-filter rollout interleaves with this plan; its phases are
+defined in `WAM_DEMAND_FILTER_IMPLEMENTATION_PLAN.md`.
+
 ## 0. Starting point
 
 Current state on `main` after PR #1882 / #1901:
