@@ -1488,8 +1488,8 @@ test_demand_filter_flux_emits_panic_stub_compatible :-
     ;   fail_test(Test, 'demand_filter_spec(flux, [...]) should emit Flux constructor for runtime to panic on')
     ).
 
-test_int_atom_seeds_lmdb_emits_panic_stub :-
-    Test = 'WAM-Haskell: int_atom_seeds(lmdb) emits Phase 2b.2 runtime panic stub',
+test_int_atom_seeds_lmdb_calls_loaders :-
+    Test = 'WAM-Haskell: int_atom_seeds(lmdb) calls Phase 2b.2 loaders (no panic stub)',
     Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
                               [max_depth(10), edge_pred(category_parent/2)]),
     (   wam_haskell_target:generate_main_hs(
@@ -1499,15 +1499,19 @@ test_int_atom_seeds_lmdb_emits_panic_stub :-
             [int_atom_seeds(lmdb)],
             Code),
         atom_string(Code, S),
-        sub_string(S, _, _, _, "int_atom_seeds(lmdb): runtime LMDB-resident loaders not yet"),
-        sub_string(S, _, _, _, "Phase 2b.2"),
-        sub_string(S, _, _, _, "fail \"")
+        sub_string(S, _, _, _, "openLmdbInternEnvReadonly"),
+        sub_string(S, _, _, _, "loadInternTableFromLmdb internEnv \"s2i\" \"i2s\""),
+        sub_string(S, _, _, _, "loadArticleCategoriesFromLmdb internEnv \"article_category\""),
+        sub_string(S, _, _, _, "loadForwardEdgesFromLmdb internEnv \"category_parent\""),
+        sub_string(S, _, _, _, "!fullInternTable = lmdbInternTable"),
+        sub_string(S, _, _, _, "!parentsIndexInterned = lmdbParentsIndex"),
+        \+ sub_string(S, _, _, _, "int_atom_seeds(lmdb): runtime LMDB-resident loaders not yet")
     ->  pass(Test)
-    ;   fail_test(Test, 'int_atom_seeds(lmdb) should emit a runtime panic stub')
+    ;   fail_test(Test, 'int_atom_seeds(lmdb) should call the Phase 2b.2 loaders, not emit a panic stub')
     ).
 
-test_int_atom_seeds_true_does_not_emit_lmdb_panic :-
-    Test = 'WAM-Haskell: int_atom_seeds(true) does NOT emit the LMDB panic stub',
+test_int_atom_seeds_true_does_not_call_lmdb_loaders :-
+    Test = 'WAM-Haskell: int_atom_seeds(true) does NOT call LMDB loaders',
     Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
                               [max_depth(10), edge_pred(category_parent/2)]),
     (   wam_haskell_target:generate_main_hs(
@@ -1517,14 +1521,15 @@ test_int_atom_seeds_true_does_not_emit_lmdb_panic :-
             [int_atom_seeds(true)],
             Code),
         atom_string(Code, S),
-        \+ sub_string(S, _, _, _, "Phase 2b.2"),
-        \+ sub_string(S, _, _, _, "int_atom_seeds(lmdb): runtime LMDB-resident")
+        \+ sub_string(S, _, _, _, "openLmdbInternEnvReadonly"),
+        \+ sub_string(S, _, _, _, "loadInternTableFromLmdb internEnv"),
+        \+ sub_string(S, _, _, _, "lmdbParentsIndex")
     ->  pass(Test)
-    ;   fail_test(Test, 'int_atom_seeds(true) should not emit the LMDB-mode panic')
+    ;   fail_test(Test, 'int_atom_seeds(true) should not call the LMDB loaders')
     ).
 
-test_int_atom_seeds_default_does_not_emit_lmdb_panic :-
-    Test = 'WAM-Haskell: default mode does NOT emit the LMDB panic stub',
+test_int_atom_seeds_default_does_not_call_lmdb_loaders :-
+    Test = 'WAM-Haskell: default mode does NOT call LMDB loaders',
     Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
                               [max_depth(10), edge_pred(category_parent/2)]),
     (   wam_haskell_target:generate_main_hs(
@@ -1534,10 +1539,11 @@ test_int_atom_seeds_default_does_not_emit_lmdb_panic :-
             [],
             Code),
         atom_string(Code, S),
-        \+ sub_string(S, _, _, _, "Phase 2b.2"),
-        \+ sub_string(S, _, _, _, "int_atom_seeds(lmdb): runtime LMDB-resident")
+        \+ sub_string(S, _, _, _, "openLmdbInternEnvReadonly"),
+        \+ sub_string(S, _, _, _, "loadInternTableFromLmdb internEnv"),
+        \+ sub_string(S, _, _, _, "lmdbParentsIndex")
     ->  pass(Test)
-    ;   fail_test(Test, 'default mode should not emit the LMDB-mode panic')
+    ;   fail_test(Test, 'default mode should not call the LMDB loaders')
     ).
 
 test_demand_filter_invalid_strategy_rejected :-
@@ -2120,9 +2126,9 @@ run_tests :-
     test_demand_filter_hop_limit_with_max_hops,
     test_demand_filter_none_emits_dfnone,
     test_demand_filter_flux_emits_panic_stub_compatible,
-    test_int_atom_seeds_lmdb_emits_panic_stub,
-    test_int_atom_seeds_true_does_not_emit_lmdb_panic,
-    test_int_atom_seeds_default_does_not_emit_lmdb_panic,
+    test_int_atom_seeds_lmdb_calls_loaders,
+    test_int_atom_seeds_true_does_not_call_lmdb_loaders,
+    test_int_atom_seeds_default_does_not_call_lmdb_loaders,
     test_demand_filter_invalid_strategy_rejected,
     test_demand_filter_false_leaves_query_ungated,
     %% max_depth substitution (regression for linear-chain-zero-results)
