@@ -2215,6 +2215,66 @@ e2e_dcg_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for stream I/O. Drives a write-then-read
+% round trip through a real file: open/3 + writeln/2 + format/3 +
+% close/1, then re-open the file for reading and read/2 each term
+% back, verifying the parser handles operator notation and EOF
+% returns the `end_of_file` atom.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(streams_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_streams_via_rscript
+    ;   true
+    )).
+
+e2e_streams_via_rscript :-
+    unique_r_tmp_dir('tmp_r_streams_e2e', TmpDir),
+    directory_file_path(TmpDir, 'stream_data.txt', DataFile),
+    atom_string(DataFile, DataFileStr),
+    % Driver predicates. write_round writes a few terms (each
+    % terminated by a `.` so read/2 can re-parse them); read_round
+    % opens for read, pulls terms back, and asserts they unify with
+    % the expected forms.
+    assertz((user:s_write(File) :-
+        open(File, write, S),
+        writeln(S, 'fact(1).'),
+        writeln(S, 'fact(2).'),
+        format(S, 'sum(~w).~n', [42]),
+        format(S, 'expr(~w).~n', [1+2*3]),
+        close(S))),
+    assertz((user:s_read_back(File) :-
+        open(File, read, S),
+        read(S, T1), T1 == fact(1),
+        read(S, T2), T2 == fact(2),
+        read(S, T3), T3 == sum(42),
+        read(S, T4), T4 == expr(1+2*3),
+        read(S, T5), T5 == end_of_file,
+        close(S))),
+    assertz((user:s_round_trip(File) :- s_write(File), s_read_back(File))),
+    % open/3 on a non-existent file with mode=read fails.
+    assertz((user:s_open_no(File) :- open(File, read, _))),
+    % close/1 on a non-stream arg fails.
+    assertz((user:s_close_no :- close(not_a_stream))),
+    write_wam_r_project(
+        [user:s_write/1, user:s_read_back/1, user:s_round_trip/1,
+         user:s_open_no/1, user:s_close_no/0],
+        [intern_atoms([fact, sum, expr, end_of_file, '+', '*'])],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    % Path is passed bare; the CLI parser falls back to atom when
+    % the slash-tokenised string fails to parse as a Prolog term.
+    run_rscript_with_args(RDir, 's_round_trip/1', [DataFileStr], OutOk),
+    assertion(sub_string(OutOk, _, _, _, "true")),
+    % Bogus path fails the read-mode open.
+    run_rscript_with_args(RDir, 's_open_no/1', ["/no/such/path.txt"], OutNo),
+    assertion(sub_string(OutNo, _, _, _, "false")),
+    run_rscript_query(RDir, 's_close_no/0', OutCloseNo),
+    assertion(sub_string(OutCloseNo, _, _, _, "false")),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-

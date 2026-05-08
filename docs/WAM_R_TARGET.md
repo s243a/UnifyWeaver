@@ -293,10 +293,23 @@ table; non-standard user-defined operators are not recognised.
 
 ### I/O
 
-`write/1`, `writeln/1`, `print/1`, `nl/0`, `format/1`, `format/2`.
-Format control sequences supported: `~w`, `~a`, `~d`, `~p`, `~s`,
-`~n`, `~~`. Output goes to standard `cat()` -- no stream
-abstraction.
+Stdout family: `write/1`, `writeln/1`, `print/1`, `nl/0`,
+`format/1`, `format/2`. Stream-aware variants: `write/2`,
+`writeln/2`, `nl/1`, `format/3`. Format control sequences
+supported: `~w`, `~a`, `~d`, `~p`, `~s`, `~n`, `~~`.
+
+### Streams (file I/O)
+
+`open/3`, `close/1`, `read/2`. Streams are opaque `stream(<id>)`
+structs whose integer id keys into `program$streams`, an R env
+that maps id -> R connection. `open/3` accepts modes `read`,
+`write`, `append` and returns a `stream(<id>)` term; `close/1`
+closes the connection and removes the entry. `read/2` is
+line-buffered: it consumes one line, strips a trailing `.` (with
+optional whitespace), parses the rest via the operator-precedence
+parser, and unifies with the second arg. EOF binds the term to
+the atom `end_of_file` (matches SWI semantics). Multi-line terms
+are not supported in this scaffold.
 
 ### DCG (`-->`)
 
@@ -439,8 +452,11 @@ WamRuntime$run(shared_program, state)
   the R-level fast path enumerates directly. Mixed contexts that
   need iter-CP-driven generation from inside library dispatch are
   not exhaustively covered.
-- **No streams**. All I/O goes to `cat()`. There is no `open/3`,
-  no `read/1`, no `current_output`.
+- **Stream-aware predicate set is partial**. `open/3`, `close/1`,
+  `read/2`, `write/2`, `writeln/2`, `nl/1`, and `format/3` are
+  supported, but multi-line term reads, `current_input/1` /
+  `current_output/1`, `set_input/1` / `set_output/1`, character
+  I/O (`get_char/1,2`, `put_char/1,2`), and binary streams are not.
 - **Float arithmetic is `double` only**; bigints and rationals are
   not supported. Integer overflow follows R's normal `integer`
   semantics.
@@ -449,7 +465,7 @@ WamRuntime$run(shared_program, state)
 
 The full test suite lives in
 [tests/test_wam_r_generator.pl](../tests/test_wam_r_generator.pl)
-and contains 44 tests covering both structural assertions on the
+and contains 45 tests covering both structural assertions on the
 generated source and end-to-end execution via `Rscript`. The
 `*_e2e_rscript` tests auto-skip when `Rscript` is not on `PATH`.
 
@@ -487,6 +503,7 @@ Coverage map (e2e tests, by feature group):
 | `base_name_clash_e2e_rscript` | predicates named after base R functions (`c`, `t`, `q`, `cat`) don't shadow them |
 | `read_term_clause_e2e_rscript` | `read_term_from_atom/2,3` and multi-solution `clause/2` |
 | `dcg_e2e_rscript` | DCG `-->` rules + `phrase/2,3` (recursive grammars, prefix-with-rest) |
+| `streams_e2e_rscript` | `open/3`, `close/1`, `read/2`, `write/2`, `writeln/2`, `format/3` round-trip |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 

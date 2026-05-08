@@ -980,13 +980,39 @@ WamRuntime$step <- function(program, state, instr) {
       state$pc <- state$pc + 1L; TRUE
     },
     "Allocate" = {
-      state$stack <- c(state$stack, list(list(cp = state$cp, locals = new.env(parent = emptyenv()))))
+      # Save the caller's Y registers (idx >= 201) so the callee's
+      # Y writes don't stomp them. Without this, nested calls
+      # `rt(F) :- do_write(F), do_read(F).` lose F when do_write's
+      # Y201 (= S) overwrites rt's Y201 (= F) in the flat regs2
+      # env. Deallocate restores the saved Y values.
+      saved_ys <- list()
+      for (k in ls(state$regs2)) {
+        ki <- suppressWarnings(as.integer(k))
+        if (!is.na(ki) && ki >= 201L) {
+          saved_ys[[k]] <- get(k, envir = state$regs2, inherits = FALSE)
+        }
+      }
+      state$stack <- c(state$stack,
+                       list(list(cp = state$cp, saved_ys = saved_ys)))
       state$pc <- state$pc + 1L; TRUE
     },
     "Deallocate" = {
+      # Pop the call frame and restore the caller's Y registers.
+      # Note: we *only* overwrite the slots that were live in the
+      # caller (frame$saved_ys); any Y the callee added beyond
+      # those is left in place because SWI's WAM emit can read a
+      # Y register *after* Deallocate (e.g. an ArgInstr that
+      # follows the trim), and removing the value would break it.
       n <- length(state$stack)
       if (n > 0L) {
-        state$cp    <- state$stack[[n]]$cp
+        frame <- state$stack[[n]]
+        state$cp <- frame$cp
+        saved <- frame$saved_ys
+        if (!is.null(saved)) {
+          for (k in names(saved)) {
+            assign(k, saved[[k]], envir = state$regs2)
+          }
+        }
         state$stack <- state$stack[-n]
       }
       state$pc <- state$pc + 1L; TRUE
@@ -1924,6 +1950,63 @@ WamRuntime$arith_to_term <- function(n) {
 # and dispatch it through the standard pipeline. The dispatch order
 # is labels -> foreign handlers -> library -> builtin, matching what
 # a directly-compiled call would have hit.
+
+# ----------------------------------------------------------
+# Stream registry helpers
+# ----------------------------------------------------------
+# Streams are opaque `stream(<int>)` structs whose integer id keys
+# into program$streams (an R env). open/3 allocates a fresh id and
+# stores the underlying R connection; close/1 closes the connection
+# and removes the entry; read/2 / write/2 / writeln/2 / nl/1 /
+# format/3 look up the connection by id.
+WamRuntime$stream_alloc <- function(program) {
+  next_id <- if (exists("__next_id__", envir = program$streams, inherits = FALSE)) {
+    get("__next_id__", envir = program$streams, inherits = FALSE)
+  } else {
+    1L
+  }
+  assign("__next_id__", as.integer(next_id + 1L), envir = program$streams)
+  as.integer(next_id)
+}
+
+WamRuntime$stream_register <- function(program, conn) {
+  id <- WamRuntime$stream_alloc(program)
+  assign(as.character(id), conn, envir = program$streams)
+  id
+}
+
+WamRuntime$stream_get <- function(program, id) {
+  k <- as.character(id)
+  if (!exists(k, envir = program$streams, inherits = FALSE)) return(NULL)
+  get(k, envir = program$streams, inherits = FALSE)
+}
+
+WamRuntime$stream_close <- function(program, id) {
+  k <- as.character(id)
+  if (!exists(k, envir = program$streams, inherits = FALSE)) return(FALSE)
+  conn <- get(k, envir = program$streams, inherits = FALSE)
+  # Explicit flush before close: R's close() should flush, but
+  # in practice cat(..., file=conn, sep="") doesn't always push
+  # buffered output through before the file handle goes away when
+  # the program immediately reopens the same path for reading.
+  tryCatch(flush(conn), error = function(e) NULL)
+  tryCatch(close(conn), error = function(e) NULL)
+  rm(list = k, envir = program$streams)
+  TRUE
+}
+
+# Extract the integer stream id from a `stream(<int>)` struct, or
+# NULL if the term doesn't have that shape. Used by every stream
+# builtin to validate its first arg.
+WamRuntime$stream_id_of <- function(state, term, table) {
+  v <- WamRuntime$deref(state, term)
+  if (is.null(v) || is.null(v$tag) || v$tag != "struct") return(NULL)
+  if (length(v$args) != 1L) return(NULL)
+  if (!identical(WamRuntime$string_of(table, v$fid), "stream")) return(NULL)
+  id_v <- WamRuntime$deref(state, v$args[[1]])
+  if (is.null(id_v) || is.null(id_v$tag) || id_v$tag != "int") return(NULL)
+  id_v$val
+}
 
 # Extend a goal term with extra args (call/N+1 semantics). An atom G
 # becomes the struct G(extra_args...); a struct F(...) becomes
@@ -2966,6 +3049,113 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     out <- WamRuntime$wam_format(state, s, args, table)
     if (is.null(out)) return(FALSE)
     cat(out)
+    return(TRUE)
+  }
+
+  # ----- Stream I/O builtins -----
+  # All stream-aware variants take a `stream(<id>)` struct as their
+  # first arg. Stream lookups go through stream_id_of -- a non-stream
+  # arg or a stale id (after close/1) makes the call fail rather
+  # than throw, matching the WAM convention.
+  if (key == "open/3") {
+    path_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    mode_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    path <- wam_term_name_string(path_v, table)
+    mode_name <- wam_term_name_string(mode_v, table)
+    if (is.null(path) || is.null(mode_name)) return(FALSE)
+    r_mode <- switch(mode_name,
+      "read"   = "r",
+      "write"  = "w",
+      "append" = "a",
+      NULL
+    )
+    if (is.null(r_mode)) return(FALSE)
+    conn <- tryCatch(file(path, open = r_mode), error = function(e) NULL,
+                                                warning = function(w) NULL)
+    if (is.null(conn)) return(FALSE)
+    id <- WamRuntime$stream_register(program, conn)
+    stream_term <- StructTerm(WamRuntime$intern(table, "stream"),
+                               list(IntTerm(id)))
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L), stream_term))
+  }
+
+  if (key == "close/1") {
+    sid <- WamRuntime$stream_id_of(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(sid)) return(FALSE)
+    return(isTRUE(WamRuntime$stream_close(program, sid)))
+  }
+
+  # read/2 is line-buffered: each call consumes one line, strips a
+  # trailing `.` (with optional whitespace), and parses the rest via
+  # the operator-precedence parser. Multi-line terms are not
+  # supported in this scaffold. EOF binds the term to the atom
+  # `end_of_file` (matches SWI semantics).
+  if (key == "read/2") {
+    sid <- WamRuntime$stream_id_of(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(sid)) return(FALSE)
+    conn <- WamRuntime$stream_get(program, sid)
+    if (is.null(conn)) return(FALSE)
+    txt <- ""
+    repeat {
+      line <- tryCatch(readLines(conn, n = 1L, warn = FALSE),
+                       error = function(e) NULL)
+      if (is.null(line) || length(line) == 0L) {
+        return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
+                                Atom(WamRuntime$intern(table, "end_of_file"))))
+      }
+      candidate <- sub("\\s*\\.\\s*$", "", line)
+      if (nchar(candidate) > 0L) { txt <- candidate; break }
+    }
+    parsed <- WamRuntime$parse_term(txt, table, state)
+    if (is.null(parsed)) return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L), parsed))
+  }
+
+  if (key == "write/2") {
+    sid <- WamRuntime$stream_id_of(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(sid)) return(FALSE)
+    conn <- WamRuntime$stream_get(program, sid)
+    if (is.null(conn)) return(FALSE)
+    text <- WamRuntime$term_to_string(state, WamRuntime$get_reg(state, 2L), table)
+    cat(text, file = conn, sep = "")
+    return(TRUE)
+  }
+
+  if (key == "writeln/2") {
+    sid <- WamRuntime$stream_id_of(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(sid)) return(FALSE)
+    conn <- WamRuntime$stream_get(program, sid)
+    if (is.null(conn)) return(FALSE)
+    text <- WamRuntime$term_to_string(state, WamRuntime$get_reg(state, 2L), table)
+    cat(text, "\n", file = conn, sep = "")
+    return(TRUE)
+  }
+
+  if (key == "nl/1") {
+    sid <- WamRuntime$stream_id_of(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(sid)) return(FALSE)
+    conn <- WamRuntime$stream_get(program, sid)
+    if (is.null(conn)) return(FALSE)
+    cat("\n", file = conn, sep = "")
+    return(TRUE)
+  }
+
+  if (key == "format/3") {
+    sid <- WamRuntime$stream_id_of(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(sid)) return(FALSE)
+    conn <- WamRuntime$stream_get(program, sid)
+    if (is.null(conn)) return(FALSE)
+    t_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    s <- wam_term_name_string(t_v, table)
+    if (is.null(s)) return(FALSE)
+    raw_args <- WamRuntime$get_reg(state, 3L)
+    args <- WamRuntime$wam_list_decompose(state, raw_args, table)
+    if (is.null(args)) {
+      args <- list(WamRuntime$deref(state, raw_args))
+    }
+    out <- WamRuntime$wam_format(state, s, args, table)
+    if (is.null(out)) return(FALSE)
+    cat(out, file = conn, sep = "")
     return(TRUE)
   }
 
