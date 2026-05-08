@@ -125,6 +125,11 @@ summarize stable winners. Values above `1` report majority winners, winner
 counts, stable resolved `auto` modes, and per-mode median timings across the
 independent runs.
 
+Mixed-scale sweeps are filtered per workload. File-backed graph workloads can
+use `dev`, `300`, `1k`, `5k`, and `10k`; generated dependency-depth workloads
+use `300`, `1k`, `5k`, and `10k`. Unsupported workload/scale pairs are skipped
+with warnings instead of aborting the full sweep.
+
 ### WAM-Rust and WAM-Haskell Benchmark Variants
 
 The effective-distance harness also includes hybrid WAM benchmark targets:
@@ -1133,7 +1138,8 @@ Comparison note:
 - use `benchmark_csharp_query_source_mode_sweep.py` when you want a compact
   cross-workload TSV or Markdown summary of best source mode, auto-vs-best
   ratio, output agreement, per-mode medians, and source-registration storage
-  families
+  families; mixed requests such as `--scales dev,300` skip unsupported
+  workload/scale pairs with warnings
 - cache reuse remains disabled for these one-shot generated benchmark
   programs, and trace creation is now opt-in rather than always-on
 - the hand-written C# DFS baseline is still cheaper after its lighter
