@@ -60,11 +60,11 @@ compile_tail_recursion(Pred/Arity, Options, Code) :-
     ),
 
     % Get accumulator pattern info
-    is_tail_recursive_accumulator(Pred/Arity, AccInfo),
+    once(is_tail_recursive_accumulator(Pred/Arity, AccInfo)),
     AccInfo = acc_pattern(BaseClauses, RecClauses, AccPos),
 
     % Extract the step operation pattern
-    extract_accumulator_pattern(Pred/Arity, Pattern),
+    once(extract_accumulator_pattern(Pred/Arity, Pattern)),
     Pattern = pattern(_InitValue, StepOp, _UnifyType),
 
     % Generate code based on pattern and target - delegate to multifile

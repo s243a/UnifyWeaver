@@ -9,6 +9,7 @@
     test_regressions/0
 ]).
 
+:- use_module(library(plunit)).
 :- use_module(library(lists)).
 :- use_module(pattern_matchers).
 :- use_module(linear_recursion).
@@ -22,161 +23,60 @@
 %% test_regressions/0
 %  Run all regression tests for POST_RELEASE_TODO items 1-3
 test_regressions :-
-    writeln('=== REGRESSION TESTS (POST_RELEASE_TODO Items 1-3) ==='),
-    writeln(''),
+    run_tests([advanced_regressions]).
 
-    % Item 1: list_length/2 linear recursion detection
-    test_list_length_detection,
-    writeln(''),
+:- begin_tests(advanced_regressions).
 
-    % Item 2: descendant/2 transitive closure classification
-    test_descendant_classification,
-    writeln(''),
-
-    % Item 3: Linear recursion bash generation
-    test_linear_recursion_codegen,
-    writeln(''),
-
-    % Bonus: Fibonacci exclusion (bug found during Item 3)
-    test_fibonacci_exclusion,
-    writeln(''),
-
-    % Constraint/option precedence regressions
-    test_runtime_option_precedence,
-    writeln(''),
-
-    writeln('=== ALL REGRESSION TESTS PASSED ===').
-
-%% test_list_length_detection
+%% list_length_detection
 %  Regression test for POST_RELEASE_TODO Item 1
 %  Bug: list_length/2 was not detected as linear recursion
 %  Fix: Updated has_structural_head_pattern to distinguish [H|T] from [V,L,R]
-test_list_length_detection :-
-    writeln('Regression Test 1: list_length/2 detection (Item 1)'),
-
-    % Clear any existing definition
-    catch(abolish(list_length/2), _, true),
-
-    % Define list_length
+test(list_length_detection, [setup(clear_user_predicate(list_length/2)),
+                             cleanup(clear_user_predicate(list_length/2))]) :-
     assertz(user:(list_length([], 0))),
     assertz(user:(list_length([_|T], N) :- list_length(T, N1), N is N1 + 1)),
-
-    % Test 1a: Should be detected as linear recursion
-    (   is_linear_recursive_streamable(list_length/2) ->
-        writeln('  ✓ PASS - list_length detected as linear recursion')
-    ;   writeln('  ✗ FAIL - list_length should be detected as linear'),
-        fail
-    ),
-
-    % Test 1b: Should compile successfully
-    (   can_compile_linear_recursion(list_length/2) ->
-        writeln('  ✓ PASS - list_length can be compiled')
-    ;   writeln('  ✗ FAIL - list_length should be compilable'),
-        fail
-    ),
-
-    % Test 1c: Generated code should be non-empty
+    assertion(is_linear_recursive_streamable(list_length/2)),
+    assertion(can_compile_linear_recursion(list_length/2)),
     compile_linear_recursion(list_length/2, [], Code),
-    (   Code \= "" ->
-        writeln('  ✓ PASS - Generated code is non-empty')
-    ;   writeln('  ✗ FAIL - Code generation failed'),
-        fail
-    ),
+    assertion(Code \= ""),
+    assertion(sub_string(Code, _, _, _, "_memo")).
 
-    % Test 1d: Code should contain memoization
-    (   sub_string(Code, _, _, _, "_memo") ->
-        writeln('  ✓ PASS - Generated code includes memoization')
-    ;   writeln('  ✗ FAIL - Expected memoization support'),
-        fail
-    ).
-
-%% test_descendant_classification
+%% descendant_classification
 %  Regression test for POST_RELEASE_TODO Item 2
 %  Bug: descendant/2 was misclassified as tail_recursion
 %  Fix: Added reverse transitive closure pattern support
-test_descendant_classification :-
-    writeln('Regression Test 2: descendant/2 classification (Item 2)'),
-
-    % Clear any existing definitions
-    catch(abolish(parent/2), _, true),
-    catch(abolish(descendant/2), _, true),
-
-    % Define test predicates
+test(descendant_classification, [setup((clear_user_predicate(parent/2),
+                                        clear_user_predicate(descendant/2))),
+                                 cleanup((clear_user_predicate(parent/2),
+                                          clear_user_predicate(descendant/2)))]) :-
     assertz(user:(parent(alice, bob))),
     assertz(user:(parent(bob, charlie))),
     assertz(user:(descendant(X, Y) :- parent(X, Y))),
     assertz(user:(descendant(X, Z) :- parent(X, Y), descendant(Y, Z))),
-
-    % Test 2a: Reverse transitive closure pattern should exist
-    % Check the structure matches: descendant(X, Z) :- parent(X, Y), descendant(Y, Z)
     functor(Head, descendant, 2),
     findall(clause(Head, Body), user:clause(Head, Body), Clauses),
-    (   member(clause(_, (parent(_, _), descendant(_, _))), Clauses) ->
-        writeln('  ✓ PASS - descendant has reverse transitive closure structure')
-    ;   writeln('  ✗ FAIL - Expected reverse transitive closure structure'),
-        fail
-    ),
+    assertion(member(clause(_, (parent(_, _), descendant(_, _))), Clauses)).
 
-    % Test 2b: Note about tail recursion classification
-    % Before fix: descendant WAS misclassified as tail recursion
-    % After fix (in merged PR): descendant is correctly not tail recursive
-    % This test just documents that the pattern is recognized
-    writeln('  ✓ PASS - Regression test verifies pattern structure').
-
-%% test_linear_recursion_codegen
+%% linear_recursion_codegen
 %  Regression test for POST_RELEASE_TODO Item 3
 %  Bug: Linear recursion bash generation had TODO placeholders
 %  Fix: Implemented fold-based code generation with variable translation
-test_linear_recursion_codegen :-
-    writeln('Regression Test 3: Linear recursion codegen (Item 3)'),
-
-    % Clear any existing definition
-    catch(abolish(factorial/2), _, true),
-
-    % Define factorial
+test(linear_recursion_codegen, [setup(clear_user_predicate(factorial/2)),
+                                cleanup(clear_user_predicate(factorial/2))]) :-
     assertz(user:(factorial(0, 1))),
     assertz(user:(factorial(N, F) :- N > 0, N1 is N - 1, factorial(N1, F1), F is N * F1)),
-
-    % Test 3a: Should compile successfully
-    (   can_compile_linear_recursion(factorial/2) ->
-        writeln('  ✓ PASS - factorial can be compiled')
-    ;   writeln('  ✗ FAIL - factorial should be compilable'),
-        fail
-    ),
-
-    % Test 3b: Generated code should be non-empty
+    assertion(can_compile_linear_recursion(factorial/2)),
     compile_linear_recursion(factorial/2, [], Code),
-    (   Code \= "" ->
-        writeln('  ✓ PASS - Generated code is non-empty')
-    ;   writeln('  ✗ FAIL - Code generation failed'),
-        fail
-    ),
+    assertion(Code \= ""),
+    assertion(sub_string(Code, _, _, _, "factorial")),
+    assertion(sub_string(Code, _, _, _, "_memo")).
 
-    % Test 3c: Code should contain factorial function
-    (   sub_string(Code, _, _, _, "factorial") ->
-        writeln('  ✓ PASS - Generated code includes factorial function')
-    ;   writeln('  ✗ FAIL - Expected factorial function'),
-        fail
-    ),
-
-    % Test 3d: Code should contain memoization
-    (   sub_string(Code, _, _, _, "_memo") ->
-        writeln('  ✓ PASS - Generated code includes memoization')
-    ;   writeln('  ✗ FAIL - Expected memoization support'),
-        fail
-    ).
-
-%% test_fibonacci_exclusion
+%% fibonacci_exclusion
 %  Regression test for bug found during Item 3 implementation
 %  Bug: Fibonacci (2 recursive calls) was incorrectly detected as linear
 %  Fix: Added count check to require exactly 1 recursive call
-test_fibonacci_exclusion :-
-    writeln('Regression Test 4: Fibonacci exclusion (bonus fix)'),
-
-    % Clear any existing definition
-    catch(abolish(fibonacci/2), _, true),
-
-    % Define fibonacci
+test(fibonacci_exclusion, [setup(clear_user_predicate(fibonacci/2)),
+                           cleanup(clear_user_predicate(fibonacci/2))]) :-
     assertz(user:(fibonacci(0, 0))),
     assertz(user:(fibonacci(1, 1))),
     assertz(user:(fibonacci(N, F) :-
@@ -187,49 +87,33 @@ test_fibonacci_exclusion :-
         fibonacci(N2, F2),
         F is F1 + F2
     )),
+    assertion(is_tree_recursive(fibonacci/2)),
+    assertion(\+ is_linear_recursive_streamable(fibonacci/2)).
 
-    % Test 4a: Check fibonacci pattern
-    % Before fix: fibonacci WAS incorrectly detected as linear (bug!)
-    % After fix (in merged PR): fibonacci is correctly excluded (has 2 calls)
-    % This test documents the fix regardless of which version is running
-    (   is_tree_recursive(fibonacci/2) ->
-        writeln('  ✓ PASS - Fibonacci detected as tree recursion')
-    ;   writeln('  ⚠ SKIP - Fibonacci pattern not detected (pre-fix version)')
-    ),
-
-    % Test 4b: Document the intended behavior
-    % The fix ensures fibonacci is NOT classified as linear
-    writeln('  ✓ PASS - Regression test verifies fibonacci has 2 recursive calls').
-
-%% test_runtime_option_precedence
+%% runtime_option_precedence
 %  Regression test for explicit caller options overriding declared/default
 %  constraints in advanced recursion compilers.
-test_runtime_option_precedence :-
-    writeln('Regression Test 5: Runtime option precedence'),
-
-    % Tail recursion: unique(false) must suppress the unique exit even though
-    % defaults include unique(true).
-    catch(abolish(tail_override/3), _, true),
+test(runtime_option_precedence, [setup((clear_user_predicate(tail_override/3),
+                                        clear_user_predicate(linear_override/2),
+                                        clear_constraints(linear_override/2))),
+                                 cleanup((clear_user_predicate(tail_override/3),
+                                          clear_user_predicate(linear_override/2),
+                                          clear_constraints(linear_override/2)))]) :-
     assertz(user:(tail_override([], Acc, Acc))),
     assertz(user:(tail_override([_|T], Acc, N) :- Acc1 is Acc + 1, tail_override(T, Acc1, N))),
     compile_tail_recursion(tail_override/3, [unique(false), target(bash)], TailCode),
-    (   \+ sub_string(TailCode, _, _, _, "Unique constraint") ->
-        writeln('  ✓ PASS - unique(false) suppresses tail-recursion early exit')
-    ;   writeln('  ✗ FAIL - unique(false) should suppress tail-recursion early exit'),
-        fail
-    ),
-
-    % Linear recursion: explicit unique(true) must override a declared
-    % unique(false) constraint and keep memoization enabled.
-    catch(abolish(linear_override/2), _, true),
+    assertion(\+ sub_string(TailCode, _, _, _, "Unique constraint")),
     assertz(user:(linear_override(0, 0))),
     assertz(user:(linear_override(N, S) :- N > 0, N1 is N - 1, linear_override(N1, S1), S is N + S1)),
     declare_constraint(linear_override/2, [unique(false)]),
     compile_linear_recursion(linear_override/2, [unique(true), target(bash)], LinearCode),
     clear_constraints(linear_override/2),
-    (   sub_string(LinearCode, _, _, _, "standard strategy"),
-        \+ sub_string(LinearCode, _, _, _, "Memoization disabled") ->
-        writeln('  ✓ PASS - unique(true) keeps linear-recursion memoization enabled')
-    ;   writeln('  ✗ FAIL - unique(true) should override declared unique(false)'),
-        fail
-    ).
+    assertion(sub_string(LinearCode, _, _, _, "standard strategy")),
+    assertion(\+ sub_string(LinearCode, _, _, _, "Memoization disabled")).
+
+:- end_tests(advanced_regressions).
+
+clear_user_predicate(Name/Arity) :-
+    functor(Head, Name, Arity),
+    retractall(user:Head),
+    catch(abolish(user:Name/Arity), _, true).
