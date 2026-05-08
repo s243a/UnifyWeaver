@@ -95,7 +95,30 @@ if (!interactive() && sys.nframe() == 0L) {
     quit(status = 1L)
   }
   raw_args <- argv[-1L]
+  # Each CLI arg is parsed as a Prolog term via the runtime's
+  # operator-precedence parser: integers/floats/atoms map to their
+  # primitive forms; lists `[a, b]`, structs `f(a, b)`, and operator
+  # expressions `1+2*3` parse to the corresponding WAM terms; bare
+  # uppercase names become fresh unbound vars. A single shared parse
+  # state lets the same variable name (e.g. `X`) refer to the same
+  # logical variable across multiple args. If parsing fails the arg
+  # falls back to the legacy integer-or-atom interpretation so
+  # plain inputs like `bob` still work.
+  parse_state <- WamRuntime$new_state()
+  WamRuntime$promote_regs(parse_state)
+  parse_vars <- new.env(parent = emptyenv())
   parsed <- lapply(raw_args, function(a) {
+    toks <- WamRuntime$tokenize_term(a)
+    if (!is.null(toks) && length(toks) > 0L) {
+      p <- new.env(parent = emptyenv())
+      p$tokens <- toks
+      p$pos    <- 1L
+      p$table  <- intern_table
+      p$state  <- parse_state
+      p$vars   <- parse_vars
+      term <- WamRuntime$wam_parse_expr(p, 1200L)
+      if (!is.null(term) && p$pos > length(toks)) return(term)
+    }
     n <- suppressWarnings(as.integer(a))
     if (!is.na(n) && as.character(n) == a) IntTerm(n)
     else Atom(WamRuntime$intern(intern_table, a))

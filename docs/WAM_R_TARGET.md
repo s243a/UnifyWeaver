@@ -90,11 +90,14 @@ below.
 Rscript R/generated_program.R <pred>/<arity> <arg1> [arg2 ...]
 ```
 
-CLI argument syntax is intentionally minimal: integers (`42`, `-3`)
-are parsed as `IntTerm`; everything else becomes an `Atom` with the
-literal name string. Compound terms and lists must be supplied via
-the R API rather than the CLI. The program prints `true` or `false`
-and exits with status 0 / 1.
+Each CLI arg is parsed via the runtime's operator-precedence
+parser, so atoms (`alice`), integers (`-3`), floats (`3.14`),
+lists (`[1, 2, 3]`), compound terms (`f(a, b)`), nested compounds
+(`g(h(1), [2, 3])`), and operator expressions (`1+2*3`) all reach
+the predicate as proper WAM terms. Bare uppercase names parse as
+fresh unbound variables; the same name in multiple args refers to
+the same logical variable (the parser shares state across args).
+The program prints `true` or `false` and exits with status 0 / 1.
 
 For richer drivers, source the generated program from another R
 script and call `WamRuntime$run_predicate(shared_program, start_pc,
@@ -317,6 +320,10 @@ fallthrough), `cut_ite`, `builtin_call`, `call_foreign`, and
 for `findall/3`-style goals when the surrounding predicate is
 compiled).
 
+A runnable variant of this example -- with an R foreign handler
+for `age_of/2` and a `findall/3` aggregator -- lives in
+[examples/wam_r_demo/](../examples/wam_r_demo/).
+
 ## End-to-end example: ancestor with arithmetic guard
 
 ```prolog
@@ -410,14 +417,12 @@ WamRuntime$run(shared_program, state)
 - **Float arithmetic is `double` only**; bigints and rationals are
   not supported. Integer overflow follows R's normal `integer`
   semantics.
-- **CLI argument parsing** is integers-or-atoms only; compound
-  terms must be built via the R API.
 
 ## Testing
 
 The full test suite lives in
 [tests/test_wam_r_generator.pl](../tests/test_wam_r_generator.pl)
-and contains 40 tests covering both structural assertions on the
+and contains 41 tests covering both structural assertions on the
 generated source and end-to-end execution via `Rscript`. The
 `*_e2e_rscript` tests auto-skip when `Rscript` is not on `PATH`.
 
@@ -451,6 +456,7 @@ Coverage map (e2e tests, by feature group):
 | `operator_parser_e2e_rscript` | operator-precedence parsing (`+`, `*`, `^`, `=:=`, `\+`, `,`, ...) |
 | `multi_solution_retract_e2e_rscript` | multi-solution `retract/1` via iter-CP |
 | `bagof_setof_existential_e2e_rscript` | `^/2` existential scope in `bagof`/`setof`/`findall` |
+| `cli_arg_parser_e2e_rscript` | structured CLI args (lists, structs, expressions) parse via the runtime parser |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 

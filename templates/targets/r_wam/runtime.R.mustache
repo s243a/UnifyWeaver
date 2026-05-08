@@ -231,12 +231,15 @@ WamRuntime$new_state <- function() {
   #               Stack form is required because nested compound terms
   #               (e.g. arithmetic like X is 3 * 4 + 1) interleave
   #               builds of the inner and outer functors.
-  #   read mode:  read_args / read_cursor (1-based) -- unify_* in read
-  #               mode consume one arg per step.
+  #   read mode:  read_stack -- a stack of frames mirroring the
+  #               build_stack. Each frame carries (args, cursor,
+  #               remaining); next_read_arg consumes from the top
+  #               frame and pops it once `remaining` reaches 0, so
+  #               nested GetStructure correctly resumes the outer
+  #               read after the inner finishes.
   s$mode        <- NULL
   s$build_stack <- list()
-  s$read_args   <- list()
-  s$read_cursor <- 1L
+  s$read_stack  <- list()
   s
 }
 
@@ -356,17 +359,32 @@ WamRuntime$wam_term_contains_var <- function(state, term, name, depth = 0L) {
 }
 
 WamRuntime$begin_read <- function(state, args) {
-  state$mode        <- "read"
-  state$read_args   <- args
-  state$read_cursor <- 1L
+  state$mode <- "read"
+  frame <- list(args = args, cursor = 1L, remaining = length(args))
+  state$read_stack <- c(state$read_stack, list(frame))
   invisible(NULL)
 }
 
+# Consume the next arg from the topmost read frame. When the frame
+# is exhausted, pop it and -- if no outer frames remain -- exit read
+# mode. This stack discipline lets nested GetStructure (e.g. the
+# inner h/1 inside g(h(1), 7)) resume the outer's remaining unify_*
+# correctly after the inner sequence finishes.
 WamRuntime$next_read_arg <- function(state) {
-  i <- state$read_cursor
-  if (i > length(state$read_args)) return(NULL)
-  state$read_cursor <- i + 1L
-  state$read_args[[i]]
+  n <- length(state$read_stack)
+  if (n == 0L) return(NULL)
+  frame <- state$read_stack[[n]]
+  if (frame$cursor > length(frame$args)) return(NULL)
+  v <- frame$args[[frame$cursor]]
+  frame$cursor    <- frame$cursor + 1L
+  frame$remaining <- frame$remaining - 1L
+  if (frame$remaining <= 0L) {
+    state$read_stack <- state$read_stack[-n]
+    if (length(state$read_stack) == 0L) state$mode <- NULL
+  } else {
+    state$read_stack[[n]] <- frame
+  }
+  v
 }
 
 # When GetStructure / GetList lands on an unbound variable we need to know
