@@ -73,8 +73,15 @@ class CSharpQuerySourceModeSweepTests(unittest.TestCase):
     def test_calibration_artifact_covers_registered_graph_workloads(self) -> None:
         rows = load_calibration_artifact(CALIBRATION_ARTIFACT)
 
-        self.assertEqual([row.workload for row in rows], list(WORKLOAD_SCRIPTS))
-        self.assertEqual({row.scale for row in rows}, {"300"})
+        self.assertEqual(
+            [(row.workload, row.scale) for row in rows],
+            [
+                (workload, scale)
+                for workload in WORKLOAD_SCRIPTS
+                for scale in ("300", "1k")
+            ],
+        )
+        self.assertEqual({row.scale for row in rows}, {"300", "1k"})
 
     def test_calibration_artifact_matches_current_auto_policy_boundary(self) -> None:
         rows = load_calibration_artifact(CALIBRATION_ARTIFACT)
