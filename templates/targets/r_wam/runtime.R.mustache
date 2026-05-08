@@ -1872,6 +1872,14 @@ WamRuntime$call_goal <- function(program, state, goal_term) {
       identical(WamRuntime$string_of(table, v$fid), ":")) {
     return(WamRuntime$call_goal(program, state, v$args[[2]]))
   }
+  # Unwrap `^/2` existential scope: in `bagof(X, Y^Goal, B)` the
+  # `Y^` is a hint that Y is locally scoped (no per-witness
+  # grouping). Since this scaffold doesn't do per-witness grouping
+  # anyway, the wrapper is transparent for call purposes.
+  if (v$tag == "struct" && length(v$args) == 2L &&
+      identical(WamRuntime$string_of(table, v$fid), "^")) {
+    return(WamRuntime$call_goal(program, state, v$args[[2]]))
+  }
   if (v$tag == "atom") {
     pred <- WamRuntime$string_of(table, v$id)
     return(WamRuntime$dispatch_call(program, state, pred, 0L))
@@ -1937,6 +1945,19 @@ WamRuntime$iterate_goal <- function(program, state, goal_term, on_each) {
   table <- program$intern_table
   v <- WamRuntime$deref(state, goal_term)
   if (is.null(v) || is.null(v$tag)) return(invisible(NULL))
+
+  # Unwrap `Y^Goal` existential scope (and module-qualified
+  # `Module:Goal`) so the inner goal drives iteration directly. The
+  # outer wrapper has no semantic effect on enumeration in this
+  # scaffold (no per-witness grouping for bagof/setof).
+  if (v$tag == "struct" && length(v$args) == 2L &&
+      identical(WamRuntime$string_of(table, v$fid), "^")) {
+    return(WamRuntime$iterate_goal(program, state, v$args[[2]], on_each))
+  }
+  if (v$tag == "struct" && length(v$args) == 2L &&
+      identical(WamRuntime$string_of(table, v$fid), ":")) {
+    return(WamRuntime$iterate_goal(program, state, v$args[[2]], on_each))
+  }
 
   # Conjunction `(A, B)`: iterate A; for each A binding, iterate B.
   if (v$tag == "struct" && length(v$args) == 2L &&
@@ -2416,6 +2437,15 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
 WamRuntime$call_library <- function(program, state, pred, arity) {
   table <- program$intern_table
   key <- paste0(pred, "/", arity)
+
+  # ----- ^/2 existential scope -----
+  # When the WAM compiler emits `Y^Goal` as a Call("^", 2), treat
+  # the wrapper as transparent and run Goal. Y is locally scoped
+  # (matches the bagof/setof idiom); we don't do per-witness
+  # grouping, so the wrapper has no further effect.
+  if (key == "^/2") {
+    return(WamRuntime$call_goal(program, state, WamRuntime$get_reg(state, 2L)))
+  }
 
   # ----- maplist/2: apply Goal to each element of List -----
   # Standard semantics: maplist(_, []). maplist(G, [X|Xs]) :- call(G, X),
