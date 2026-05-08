@@ -1360,6 +1360,19 @@ test_b1_lmdb_raw_zero_copy_reads :-
     ;   fail_test(Test, 'Raw LMDB zero-copy read patterns not found')
     ).
 
+test_b1_phase2b2_loaders_emitted :-
+    Test = 'B1: Phase 2b.2 loaders (loadInternTableFromLmdb / loadArticleCategoriesFromLmdb / loadForwardEdgesFromLmdb) emitted',
+    (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "loadInternTableFromLmdb :: MDB_env -> String -> String -> IO InternTable"),
+        sub_string(S, _, _, _, "loadArticleCategoriesFromLmdb :: MDB_env -> String -> IO [(Int, Int)]"),
+        sub_string(S, _, _, _, "loadForwardEdgesFromLmdb :: MDB_env -> String -> Int -> IO (IM.IntMap [Int])"),
+        sub_string(S, _, _, _, "iterateAllPairs txn dbi decode = do"),
+        sub_string(S, _, _, _, "peekStringBytes p len")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Phase 2b.2 LMDB-resident loaders should be emitted when use_lmdb(true)')
+    ).
+
 test_b1_lmdb_scan_support_present :-
     Test = 'B1: raw LMDB FactSource emits scan support',
     (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
@@ -2078,6 +2091,7 @@ run_tests :-
     test_b1_lmdb_cabal_dependency,
     test_b1_no_lmdb_cabal_default,
     test_b1_lmdb_raw_zero_copy_reads,
+    test_b1_phase2b2_loaders_emitted,
     test_b1_lmdb_scan_support_present,
     test_b1_lmdb_manifest_fact_source_present,
     test_b1_lmdb_manifest_wiring_option_present,
