@@ -679,19 +679,18 @@ pred_arg_strings(Arity, ArgDeclStr, ArgListStr) :-
     format(string(ArgListStr), 'list(~w)', [ArgDeclStr]).
 
 %% r_pred_name(+PrologName, -RName)
-%  R uses snake_case by convention; identifiers are looser than Scala
-%  so we keep the Prolog name verbatim, with safety substitutions.
+%  Generates the R identifier for a per-predicate wrapper. We
+%  always prefix with `pred_` so the wrapper can never collide
+%  with a base R function (e.g. `c`, `t`, `q`, `cat`, `paste`,
+%  `tryCatch`); without the prefix, asserting a Prolog predicate
+%  literally named `c/2` would shadow `base::c` and crash the
+%  runtime's own use of `c(...)` for vector construction.
 r_pred_name(Pred, RName) :-
     atom_string(Pred, PStr),
     string_chars(PStr, Chars),
     maplist(r_safe_ident_char, Chars, SafeChars),
     string_chars(SafeStr, SafeChars),
-    % R identifiers can't start with a digit
-    (   string_chars(SafeStr, [First|_]),
-        char_type(First, digit)
-    ->  string_concat("p_", SafeStr, RName0)
-    ;   RName0 = SafeStr
-    ),
+    string_concat("pred_", SafeStr, RName0),
     atom_string(RName, RName0).
 
 r_safe_ident_char(C, C) :-
