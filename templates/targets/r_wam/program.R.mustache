@@ -85,8 +85,21 @@ shared_program <- list(
 if (!interactive() && sys.nframe() == 0L) {
   argv <- commandArgs(trailingOnly = TRUE)
   if (length(argv) == 0L) {
-    cat("usage: Rscript generated_program.R <pred>/<arity> <arg> ...\n")
+    cat("usage: Rscript generated_program.R [--bench N] <pred>/<arity> <arg> ...\n")
     quit(status = 0L)
+  }
+  # Optional `--bench N` prefix: run the same query N times in this
+  # one Rscript invocation, then print one parseable summary line:
+  #   BENCH n=<N> elapsed=<sec> last=<true|false>
+  # so external benchmark drivers can amortise Rscript startup over
+  # many iterations.
+  bench_n <- 0L
+  if (length(argv) >= 2L && argv[1L] == "--bench") {
+    bench_n <- suppressWarnings(as.integer(argv[2L]))
+    if (is.na(bench_n) || bench_n <= 0L) {
+      cat("--bench expects a positive integer\n"); quit(status = 1L)
+    }
+    argv <- argv[-(1:2)]
   }
   pred_arity <- argv[1L]
   start_pc   <- shared_labels[[pred_arity]]
@@ -123,6 +136,23 @@ if (!interactive() && sys.nframe() == 0L) {
     if (!is.na(n) && as.character(n) == a) IntTerm(n)
     else Atom(WamRuntime$intern(intern_table, a))
   })
+  if (bench_n > 0L) {
+    # Warmup (5% of iterations, capped at 50) so the JIT-less R
+    # interpreter can settle data structures before timing starts.
+    warmup <- min(50L, max(1L, as.integer(bench_n %/% 20L)))
+    for (i in seq_len(warmup)) {
+      WamRuntime$run_predicate(shared_program, start_pc, parsed)
+    }
+    last_ok <- FALSE
+    t0 <- proc.time()[["elapsed"]]
+    for (i in seq_len(bench_n)) {
+      last_ok <- WamRuntime$run_predicate(shared_program, start_pc, parsed)
+    }
+    elapsed <- proc.time()[["elapsed"]] - t0
+    cat(sprintf("BENCH n=%d elapsed=%.6f last=%s\n",
+                bench_n, elapsed, if (isTRUE(last_ok)) "true" else "false"))
+    quit(status = if (isTRUE(last_ok)) 0L else 1L)
+  }
   ok <- WamRuntime$run_predicate(shared_program, start_pc, parsed)
   cat(if (isTRUE(ok)) "true" else "false", "\n", sep = "")
   quit(status = if (isTRUE(ok)) 0L else 1L)
