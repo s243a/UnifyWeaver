@@ -2822,9 +2822,22 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     % as int32 IDs from the LMDB ingest pipeline, skip the TSV-based
     % seed loading and string interning.  Gated by section blocks in the
     % template; this just exposes the flag to the renderer.
-    (   option(int_atom_seeds(true), Options)
-    ->  IntAtomSeeds = true
-    ;   IntAtomSeeds = false
+    %
+    % Three modes:
+    %   int_atom_seeds(false) (default) — TSV mode; full string parsing.
+    %   int_atom_seeds(true)            — int_ids.txt files; iAtom = id.
+    %   int_atom_seeds(lmdb)            — Phase 2b.1: codegen surface only;
+    %                                     runtime panics with a clear
+    %                                     "not yet implemented" message
+    %                                     pending Phase 2b.2.
+    (   option(int_atom_seeds(lmdb), Options)
+    ->  IntAtomSeeds = true,
+        IntAtomSeedsLmdb = true
+    ;   option(int_atom_seeds(true), Options)
+    ->  IntAtomSeeds = true,
+        IntAtomSeedsLmdb = false
+    ;   IntAtomSeeds = false,
+        IntAtomSeedsLmdb = false
     ),
     % Resolve max_depth at codegen time. Reads user:max_depth/1 (asserted
     % by the workload or overridden by tests) so the generated FFI kernel
@@ -2850,6 +2863,7 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
         , lmdb_context=LmdbContext
         , lmdb_import=LmdbImport
         , int_atom_seeds=IntAtomSeeds
+        , int_atom_seeds_lmdb=IntAtomSeedsLmdb
         , max_depth=MaxDepth
         , dimension_n=DimN
         , parmap_seed_source=ParmapSeedSource

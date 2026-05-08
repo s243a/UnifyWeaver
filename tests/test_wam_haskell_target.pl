@@ -1475,6 +1475,58 @@ test_demand_filter_flux_emits_panic_stub_compatible :-
     ;   fail_test(Test, 'demand_filter_spec(flux, [...]) should emit Flux constructor for runtime to panic on')
     ).
 
+test_int_atom_seeds_lmdb_emits_panic_stub :-
+    Test = 'WAM-Haskell: int_atom_seeds(lmdb) emits Phase 2b.2 runtime panic stub',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [int_atom_seeds(lmdb)],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "int_atom_seeds(lmdb): runtime LMDB-resident loaders not yet"),
+        sub_string(S, _, _, _, "Phase 2b.2"),
+        sub_string(S, _, _, _, "fail \"")
+    ->  pass(Test)
+    ;   fail_test(Test, 'int_atom_seeds(lmdb) should emit a runtime panic stub')
+    ).
+
+test_int_atom_seeds_true_does_not_emit_lmdb_panic :-
+    Test = 'WAM-Haskell: int_atom_seeds(true) does NOT emit the LMDB panic stub',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [int_atom_seeds(true)],
+            Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "Phase 2b.2"),
+        \+ sub_string(S, _, _, _, "int_atom_seeds(lmdb): runtime LMDB-resident")
+    ->  pass(Test)
+    ;   fail_test(Test, 'int_atom_seeds(true) should not emit the LMDB-mode panic')
+    ).
+
+test_int_atom_seeds_default_does_not_emit_lmdb_panic :-
+    Test = 'WAM-Haskell: default mode does NOT emit the LMDB panic stub',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [],
+            Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "Phase 2b.2"),
+        \+ sub_string(S, _, _, _, "int_atom_seeds(lmdb): runtime LMDB-resident")
+    ->  pass(Test)
+    ;   fail_test(Test, 'default mode should not emit the LMDB-mode panic')
+    ).
+
 test_demand_filter_invalid_strategy_rejected :-
     Test = 'WAM-Haskell: demand_filter_spec with unknown strategy throws domain_error',
     Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
@@ -2054,6 +2106,9 @@ run_tests :-
     test_demand_filter_hop_limit_with_max_hops,
     test_demand_filter_none_emits_dfnone,
     test_demand_filter_flux_emits_panic_stub_compatible,
+    test_int_atom_seeds_lmdb_emits_panic_stub,
+    test_int_atom_seeds_true_does_not_emit_lmdb_panic,
+    test_int_atom_seeds_default_does_not_emit_lmdb_panic,
     test_demand_filter_invalid_strategy_rejected,
     test_demand_filter_false_leaves_query_ungated,
     %% max_depth substitution (regression for linear-chain-zero-results)

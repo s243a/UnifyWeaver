@@ -126,6 +126,21 @@ main = do
 
     t0 <- getCurrentTime
 
+{{#int_atom_seeds_lmdb}}
+    -- Phase 2b.1: int_atom_seeds(lmdb) codegen surface is wired up,
+    -- but the runtime LMDB-resident loaders (loadInternTableFromLmdb,
+    -- loadArticleCategoriesFromLmdb, loadForwardEdgesFromLmdb) ship
+    -- in Phase 2b.2.  Until then, this mode panics at startup with a
+    -- clear message.  Falls back to int_atom_seeds(true) (seed_ids.txt)
+    -- or omitting the flag (TSV mode) for current workloads.
+    --
+    -- See docs/design/WAM_LMDB_RESIDENT_INTERNING_*.md and
+    -- docs/design/WAM_DEMAND_FILTER_*.md for the design.
+    fail "int_atom_seeds(lmdb): runtime LMDB-resident loaders not yet \
+         \implemented (Phase 2b.2). Use int_atom_seeds(true) with \
+         \seed_ids.txt / root_ids.txt, or omit the flag for TSV mode."
+{{/int_atom_seeds_lmdb}}
+
 {{^int_atom_seeds}}
     -- Load facts from TSV (string-keyed seeds and edges)
     categoryParents <- loadTsvPairs (factsDir ++ "/category_parent.tsv")
