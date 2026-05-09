@@ -55,6 +55,9 @@
 :- dynamic user:wam_float_unbound/1.
 :- dynamic user:wam_is_list_guard/1.
 :- dynamic user:wam_is_list_unbound/1.
+:- dynamic user:wam_ground_guard/1.
+:- dynamic user:wam_ground_unbound/1.
+:- dynamic user:wam_ground_nested_unbound/1.
 
 has(Code, Substr) :-
     once(sub_string(Code, _, _, _, Substr)).
@@ -112,6 +115,9 @@ user:wam_float_guard(X) :- float(X).
 user:wam_float_unbound(_) :- user:wam_unbound_arg(Y), float(Y).
 user:wam_is_list_guard(X) :- is_list(X).
 user:wam_is_list_unbound(_) :- user:wam_unbound_arg(Y), is_list(Y).
+user:wam_ground_guard(X) :- ground(X).
+user:wam_ground_unbound(_) :- user:wam_unbound_arg(Y), ground(Y).
+user:wam_ground_nested_unbound(_) :- user:wam_unbound_arg(Y), ground(f(Y)).
 
 :- initialization(main, main).
 
@@ -173,7 +179,10 @@ run_smoke :-
           user:wam_float_guard/1,
           user:wam_float_unbound/1,
           user:wam_is_list_guard/1,
-          user:wam_is_list_unbound/1
+          user:wam_is_list_unbound/1,
+          user:wam_ground_guard/1,
+          user:wam_ground_unbound/1,
+          user:wam_ground_nested_unbound/1
         ],
         [ namespace('generated.wam_exec_test'),
           module_name('wam-clojure-exec-test'),
@@ -202,6 +211,7 @@ run_smoke :-
     assert_lowered_callable_builtin_emitted(TmpDir),
     assert_lowered_float_builtin_emitted(TmpDir),
     assert_lowered_is_list_builtin_emitted(TmpDir),
+    assert_lowered_ground_builtin_emitted(TmpDir),
     assert_multiclause_wrappers_runtime_mediated(TmpDir),
     verify_output(TmpDir, 'wam_execute_caller/1', 'a', "true"),
     verify_output(TmpDir, 'wam_execute_caller/1', 'b', "false"),
@@ -297,6 +307,13 @@ run_smoke :-
     verify_output(TmpDir, 'wam_is_list_guard/1', a, "false"),
     verify_output(TmpDir, 'wam_is_list_guard/1', 'f(a)', "false"),
     verify_output(TmpDir, 'wam_is_list_unbound/1', a, "false"),
+    verify_output(TmpDir, 'wam_ground_guard/1', a, "true"),
+    verify_output(TmpDir, 'wam_ground_guard/1', 42, "true"),
+    verify_output(TmpDir, 'wam_ground_guard/1', 3.5, "true"),
+    verify_output(TmpDir, 'wam_ground_guard/1', 'f(a)', "true"),
+    verify_output(TmpDir, 'wam_ground_guard/1', '[a,b]', "true"),
+    verify_output(TmpDir, 'wam_ground_unbound/1', a, "false"),
+    verify_output(TmpDir, 'wam_ground_nested_unbound/1', a, "false"),
     delete_directory_and_contents(TmpDir),
     writeln('wam_clojure_runtime_smoke: ok').
 
@@ -426,6 +443,14 @@ assert_lowered_is_list_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-is-list-guard-1"),
     has(CoreCode, "defn lowered-wam-is-list-unbound-1"),
     has(CoreCode, "runtime/proper-list-term?").
+
+assert_lowered_ground_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-ground-guard-1"),
+    has(CoreCode, "defn lowered-wam-ground-unbound-1"),
+    has(CoreCode, "defn lowered-wam-ground-nested-unbound-1"),
+    has(CoreCode, "runtime/ground-term?").
 
 assert_multiclause_wrappers_runtime_mediated(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
