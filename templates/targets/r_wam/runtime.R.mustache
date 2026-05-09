@@ -1375,7 +1375,9 @@ WamRuntime$step <- function(program, state, instr) {
       # frame has a valid continuation even when the goal has zero
       # solutions (and thus EndAggregate never fires). We scan from
       # the current PC forward; a depth counter handles nested
-      # aggregates. The next_pc is end+1.
+      # aggregates. Nested aggregates are represented by the same
+      # instruction pair; ordinary Raw or library calls do not affect
+      # this structural scan. The next_pc is end+1.
       end_pc <- 0L
       depth <- 1L
       for (j in seq.int(state$pc + 1L, length(program$instructions))) {
@@ -1399,6 +1401,7 @@ WamRuntime$step <- function(program, state, instr) {
         var_counter  = state$var_counter,
         mode         = state$mode,
         build_stack  = state$build_stack,
+        read_stack   = state$read_stack,
         table        = program$intern_table,
         collected    = list()
       )
@@ -1422,7 +1425,10 @@ WamRuntime$step <- function(program, state, instr) {
       agg <- state$cps[[agg_idx]]
       v <- WamRuntime$deref(state, WamRuntime$get_reg(state, instr$template))
       # copy_term so the collected value is independent of subsequent
-      # binding rewrites during backtracking.
+      # binding rewrites during backtracking. EndAggregate runs while
+      # the goal solution bindings are still live; the forced backtrack
+      # immediately after this will undo them before trying the next
+      # solution or finalizing the aggregate frame.
       collected_v <- WamRuntime$copy_term(state, v)
       agg$collected <- c(agg$collected, list(collected_v))
       state$cps[[agg_idx]] <- agg
@@ -3705,6 +3711,7 @@ WamRuntime$collect_solutions <- function(program, state, template_term, goal_ter
   snap_vc        <- state$var_counter
   snap_mode      <- state$mode
   snap_build     <- state$build_stack
+  snap_read      <- state$read_stack
 
   collected <- list()
   WamRuntime$iterate_goal(program, state, goal_term, function() {
@@ -3735,6 +3742,7 @@ WamRuntime$collect_solutions <- function(program, state, template_term, goal_ter
   state$var_counter <- snap_vc
   state$mode        <- snap_mode
   state$build_stack <- snap_build
+  state$read_stack  <- snap_read
 
   collected
 }
@@ -3757,6 +3765,7 @@ WamRuntime$collect_bag_groups <- function(program, state, template_term, goal_te
   snap_vc        <- state$var_counter
   snap_mode      <- state$mode
   snap_build     <- state$build_stack
+  snap_read      <- state$read_stack
 
   groups <- list()
   group_index <- new.env(parent = emptyenv(), hash = TRUE)
@@ -3806,6 +3815,7 @@ WamRuntime$collect_bag_groups <- function(program, state, template_term, goal_te
   state$var_counter <- snap_vc
   state$mode        <- snap_mode
   state$build_stack <- snap_build
+  state$read_stack  <- snap_read
 
   groups
 }
@@ -5277,6 +5287,7 @@ WamRuntime$backtrack <- function(state) {
     state$var_counter <- cp$var_counter
     state$mode        <- cp$mode
     state$build_stack <- cp$build_stack
+    state$read_stack  <- cp$read_stack
     bag <- WamRuntime$wam_list_build(cp$collected, cp$table)
     cur <- WamRuntime$get_reg(state, cp$bag_reg)
     if (is.null(cur)) {
