@@ -66,9 +66,16 @@ generate(FactsPath, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, Out
     delete_file(TmpPath),
     collect_wam_predicates(VariantAtom, Predicates),
     query_pred_for_variant(VariantAtom, QueryPredOpts),
+    %% Default -A64M nursery for the matrix bench: at -N>=2 it cuts
+    %% GC time from ~3.9s to ~1.1s on 100k_cats and roughly halves
+    %% total_ms; the -N1 regression is ~24% (1.0 -> 1.3s) which we
+    %% accept as the bench's typical run is parallel.  Documented in
+    %% WAM_PERF_OPTIMIZATION_LOG.md Phase L appendix #6.  Override by
+    %% passing +RTS -A1M -RTS at run time.
     append([[module_name('wam-haskell-matrix-bench'),
              emit_mode(EmitMode),
-             fact_count(FactCount)],
+             fact_count(FactCount),
+             with_rtsopts('-A64M')],
             KernelOptions, LmdbOptions, QueryPredOpts], Options),
     write_wam_haskell_project(Predicates, Options, OutputDir),
     format(user_error,

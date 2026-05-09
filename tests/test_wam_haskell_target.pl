@@ -1281,6 +1281,25 @@ test_b1_no_lmdb_cabal_default :-
     ;   fail_test(Test, 'lmdb-simple should not appear in default cabal deps')
     ).
 
+test_with_rtsopts_emits_in_cabal :-
+    Test = 'WAM-Haskell: with_rtsopts(Flags) bakes -with-rtsopts into ghc-options',
+    (   wam_haskell_target:generate_cabal_file('test', false,
+            [with_rtsopts('-A64M')], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "\"-with-rtsopts=-A64M\"")
+    ->  pass(Test)
+    ;   fail_test(Test, 'with_rtsopts(-A64M) should add -with-rtsopts=-A64M to ghc-options')
+    ).
+
+test_with_rtsopts_absent_by_default :-
+    Test = 'WAM-Haskell: cabal omits -with-rtsopts when option not set',
+    (   wam_haskell_target:generate_cabal_file('test', false, [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "-with-rtsopts")
+    ->  pass(Test)
+    ;   fail_test(Test, 'cabal should not contain -with-rtsopts when option absent')
+    ).
+
 test_b1_external_source_skips_wam_compilation :-
     Test = 'B1: external_source fact predicate skips WAM compilation',
     (   retractall(user:b1_ext(_, _)),
@@ -2096,6 +2115,8 @@ run_tests :-
     test_b1_lmdb_absent_when_disabled,
     test_b1_lmdb_cabal_dependency,
     test_b1_no_lmdb_cabal_default,
+    test_with_rtsopts_emits_in_cabal,
+    test_with_rtsopts_absent_by_default,
     test_b1_lmdb_raw_zero_copy_reads,
     test_b1_phase2b2_loaders_emitted,
     test_b1_lmdb_scan_support_present,

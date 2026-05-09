@@ -3761,8 +3761,21 @@ generate_cabal_file(Name, UseHM, Options, Code) :-
     % -threaded enables multi-core runtime (+RTS -N to use cores).
     % -rtsopts is needed so +RTS flags are accepted at runtime.
     (   option(profiling(true), Options)
-    ->  GhcOpts = "-O2 -threaded -rtsopts -prof -fprof-auto"
-    ;   GhcOpts = "-O2 -threaded -rtsopts"
+    ->  BaseGhcOpts = "-O2 -threaded -rtsopts -prof -fprof-auto"
+    ;   BaseGhcOpts = "-O2 -threaded -rtsopts"
+    ),
+    %% with_rtsopts(Flags): bake default RTS flags into the executable
+    %% so +RTS args don't need to be passed every run. Caller-supplied
+    %% +RTS flags still override (per GHC's "last flag wins" rule).
+    %% Used by the matrix bench to default -A64M (Phase L appendix #6
+    %% in WAM_PERF_OPTIMIZATION_LOG.md): the GC-pressure win at -N>=2
+    %% is large enough that we'd rather pay the small -N1 regression
+    %% than make every bench user pass +RTS flags. Cost-model-driven
+    %% selection (à la C# target's source-mode resolver) is deferred.
+    (   option(with_rtsopts(RtsFlags), Options),
+        RtsFlags \= ''
+    ->  format(string(GhcOpts), '~w "-with-rtsopts=~w"', [BaseGhcOpts, RtsFlags])
+    ;   GhcOpts = BaseGhcOpts
     ),
     format(string(Code),
 'cabal-version: 2.4
