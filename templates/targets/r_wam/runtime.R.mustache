@@ -3083,6 +3083,50 @@ WamRuntime$read_facts_csv <- function(path, intern_table) {
   out
 }
 
+# Reads a "grouped-by-first" TSV file and explodes each row into
+# separate arity-2 tuples. Each non-comment, non-blank line has the
+# shape `key<TAB>v1<TAB>v2<TAB>...`; the loader emits one tuple per
+# value `(key, vK)`. Lines with no values (just a key) are skipped.
+# Field parsing matches read_facts_csv: numeric -> Int/FloatTerm,
+# otherwise interned as an Atom.
+#
+# Mirrors the Scala target's grouped_by_first(Path) backend (see
+# wam_scala_target.pl). Arity-2 only -- the codegen layer is
+# responsible for refusing other arities at codegen time.
+WamRuntime$read_facts_grouped_tsv <- function(path, intern_table) {
+  if (!file.exists(path)) return(list())
+  lines <- tryCatch(readLines(path, warn = FALSE),
+                    error = function(e) character(0))
+  parse_field <- function(p) {
+    n <- suppressWarnings(as.numeric(p))
+    if (!is.na(n) && is.finite(n)) {
+      if (n == as.integer(n) && abs(n) < .Machine$integer.max) {
+        IntTerm(as.integer(n))
+      } else {
+        FloatTerm(as.numeric(n))
+      }
+    } else {
+      Atom(WamRuntime$intern(intern_table, p))
+    }
+  }
+  out <- list()
+  for (raw in lines) {
+    line <- gsub("^\\s+|\\s+$", "", raw)
+    if (nchar(line) == 0L) next
+    if (substr(line, 1L, 1L) == "#") next
+    parts <- strsplit(line, "\t", fixed = TRUE)[[1]]
+    parts <- trimws(parts)
+    parts <- parts[nchar(parts) > 0L]
+    if (length(parts) < 2L) next
+    key_term <- parse_field(parts[[1]])
+    for (k in seq.int(2L, length(parts))) {
+      val_term <- parse_field(parts[[k]])
+      out <- c(out, list(list(key_term, val_term)))
+    }
+  }
+  out
+}
+
 # Build per-arg hash indexes for a runtime-loaded fact table.
 # Returns a list of N envs (one per arg position, where N = arity).
 # Each env follows the same shape as the codegen-emitted

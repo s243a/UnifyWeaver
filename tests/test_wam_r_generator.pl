@@ -3269,6 +3269,73 @@ e2e_external_fact_source_via_rscript :-
         'assign("cpedge/2", pred_cpedge_fact_iter, envir = shared_program$lowered_dispatch)')),
     delete_directory_and_contents(TmpDir).
 
+test(external_fact_source_grouped_tsv_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_external_fact_source_grouped_tsv_via_rscript
+    ;   true
+    )).
+
+e2e_external_fact_source_grouped_tsv_via_rscript :-
+    retractall(user:gpedge(_, _)),
+    unique_r_tmp_dir('tmp_r_grouped_tsv_fact_e2e', TmpDir),
+    make_directory_path(TmpDir),
+    directory_file_path(TmpDir, 'gpedge.tsv', TsvPath),
+    atom_string(TsvPath, TsvPathStr),
+    % grouped-by-first shape: <key>\t<v1>\t<v2>...; the loader explodes
+    % each row into multiple (key, vK) tuples. The 'alice' row tests
+    % multi-value rows; the 'eve' row tests a single-value row;
+    % '# comment' and the blank line test the skip rules.
+    setup_call_cleanup(
+        open(TsvPath, write, Stream),
+        ( write(Stream, '# Auto-generated for the grouped-by-first TSV test.'),
+          nl(Stream),
+          write(Stream, 'alice\tbob\tcarol\teve'), nl(Stream),
+          write(Stream, ''), nl(Stream),
+          write(Stream, 'bob\tdan'), nl(Stream),
+          write(Stream, 'eve\tfrank'), nl(Stream) ),
+        close(Stream)),
+    assertz((user:gs_direct  :- gpedge(alice, bob))),
+    assertz((user:gs_third   :- gpedge(alice, eve))),
+    assertz((user:gs_no_back :- gpedge(bob, alice))),
+    assertz((user:gs_findall :-
+        findall(Y, gpedge(alice, Y), L),
+        msort(L, S),
+        S == [bob, carol, eve])),
+    assertz((user:gs_findall_all :-
+        findall(X-Y, gpedge(X, Y), L),
+        length(L, N),
+        N == 5)),
+    write_wam_r_project(
+        [user:gpedge/2, user:gs_direct/0, user:gs_third/0,
+         user:gs_no_back/0, user:gs_findall/0, user:gs_findall_all/0],
+        [intern_atoms([alice, bob, carol, dan, eve, frank]),
+         r_fact_sources([source(gpedge/2,
+                                grouped_by_first(TsvPathStr))])],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [gs_direct, gs_third, gs_findall, gs_findall_all],
+    No  = [gs_no_back],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
+    read_file_to_string(ProgPath, Code, []),
+    assertion(sub_string(Code, _, _, _,
+        '# External fact source for gpedge/2 (grouped-by-first tsv file:')),
+    assertion(sub_string(Code, _, _, _,
+        'pred_gpedge_facts <- WamRuntime$read_facts_grouped_tsv(')),
+    assertion(sub_string(Code, _, _, _,
+        'assign("gpedge/2", pred_gpedge_fact_iter, envir = shared_program$lowered_dispatch)')),
+    delete_directory_and_contents(TmpDir).
+
 % ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
