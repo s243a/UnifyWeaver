@@ -92,6 +92,7 @@ test(instructions_and_labels) :-
           assertion(sub_string(Code, _, _, _, 'local intern_seed = {')),
           assertion(sub_string(Code, _, _, _, 'local shared_instructions = {')),
           assertion(sub_string(Code, _, _, _, 'Runtime.resolve_program(shared_program)')),
+          assertion(sub_string(Code, _, _, _, 'indexed_atom_fact2 = {}')),
           assertion(sub_string(Code, _, _, _, 'I.GetConstant(V.Atom(')),
           assertion(sub_string(Code, _, _, _, '["wam_lua_fact/1"] = 1'))
         ),
@@ -123,6 +124,32 @@ test(aggregate_and_second_arg_switch_emitted) :-
           assertion(sub_string(Code, _, _, _, 'I.BeginAggregate("collect"')),
           assertion(sub_string(Code, _, _, _, 'I.EndAggregate(')),
           assertion(sub_string(Code, _, _, _, 'I.SwitchOnConstantA2('))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(call_indexed_atom_fact2_literal) :-
+    once(wam_parts_to_lua(["call_indexed_atom_fact2", "edge/2"], [], Lit)),
+    assertion(Lit == "I.CallIndexedAtomFact2(\"edge/2\")").
+
+test(lua_indexed_atom_fact2_e2e, [condition(lua_available)]) :-
+    unique_lua_tmp_dir('tmp_lua_indexed_fact2_e2e', TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project([user:wam_lua_fact/1], [], TmpDir),
+        ( directory_file_path(TmpDir, 'lua', LuaDir),
+          atomic_list_concat([
+              'local rt=require("wam_runtime"); ',
+              'local R=rt.Runtime; local V=rt.V; local I=rt.I; ',
+              'local p={instructions={I.CallIndexedAtomFact2("edge/2"),I.Proceed()}, labels={["idx/2"]=1}, indexed_atom_fact2={}, intern_table=R.new_intern_table({"true","fail","[]",".","","[|]"})}; ',
+              'R.register_indexed_atom_fact2_pairs(p, "edge/2", {{"a","b"},{"a","c"}}); ',
+              'local function atom(s) return V.Atom(R.intern(p.intern_table,s)) end; ',
+              'print(R.run_predicate(p,1,{atom("a"),atom("b")})); ',
+              'print(R.run_predicate(p,1,{atom("a"),atom("c")})); ',
+              'print(R.run_predicate(p,1,{atom("a"),atom("d")}))'
+          ], Script),
+          run_lua_script(LuaDir, Script, Output),
+          normalize_space(string(Trimmed), Output),
+          assertion(Trimmed == "true true false")
         ),
         delete_directory_and_contents(TmpDir)
     ).

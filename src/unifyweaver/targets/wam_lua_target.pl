@@ -261,6 +261,10 @@ wam_parts_to_lua(["builtin_call", Pred, ArityStr], Lit) :-
 wam_parts_to_lua(["call_foreign", Pred, ArityStr], Lit) :-
     number_string(Arity, ArityStr), lua_string_literal(Pred, P),
     format(string(Lit), 'I.CallForeign(~w, ~w)', [P, Arity]).
+wam_parts_to_lua(["call_indexed_atom_fact2", Pred], Lit) :-
+    strip_operand_comma(Pred, CleanPred),
+    lua_string_literal(CleanPred, P),
+    format(string(Lit), 'I.CallIndexedAtomFact2(~w)', [P]).
 wam_parts_to_lua(["arg", NStr, RegStr, OutRegStr], Lit) :-
     number_string(N, NStr), reg_to_int(RegStr, R), reg_to_int(OutRegStr, O),
     format(string(Lit), 'I.ArgInstr(~w, ~w, ~w)', [N, R, O]).
