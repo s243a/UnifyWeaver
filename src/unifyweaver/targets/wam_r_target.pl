@@ -755,7 +755,21 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
                        AllLabelEntries, AllWrappers, AllLowered,
                        AllFactComments, AllLoweredDispatch) :-
     (   Pred = _Module:P/Arity -> true ; Pred = P/Arity ),
-    (   r_foreign_predicate(P, Arity, Options)
+    (   r_fact_source_spec(P, Arity, Options, _FactSourceSpec)
+    ->  % External fact source -- skip Prolog clause extraction.
+        % The body is a single Execute("P", A) which falls through
+        % to lowered_dispatch (set up below), and the lowered fn
+        % loads the file at program-init time and dispatches via
+        % WamRuntime$fact_table_dispatch.
+        format(string(EFLit), 'Execute("~w", ~w)', [P, Arity]),
+        ExternalSeq = [EFLit],
+        append(InstrAcc, ExternalSeq, NewInstrs),
+        NewPC is BasePC + 1,
+        format(string(MainEntry), '    "~w/~w" = ~wL', [P, Arity, BasePC]),
+        NewTopLabels = [MainEntry | TopLabelAcc],
+        NewAllLabels = [MainEntry | AllLabelAcc],
+        WamCodeForLower = ""
+    ;   r_foreign_predicate(P, Arity, Options)
     ->  format(string(FLit), 'CallForeign("~w", ~w)', [P, Arity]),
         ForeignSeq = [FLit, 'Proceed()'],
         append(InstrAcc, ForeignSeq, NewInstrs),
@@ -787,11 +801,20 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
         NewTopLabels = [MainEntry | TopLabelAcc],
         append([MainEntry | PredSubLabelEntries], AllLabelAcc, NewAllLabels)
     ),
-    % Decide whether this predicate should be lowered. The kernel
-    % detector wins first (a recognised graph pattern dispatches to
-    % a native R fast path); then the fact-table path; then the
-    % regular Phase-3 lowered emitter; otherwise the WAM array.
-    (   kernel_layout_enabled(Options),
+    % Decide whether this predicate should be lowered. External
+    % fact sources (r_fact_sources option) win first -- they have
+    % no Prolog clauses, just a file-loader; then the kernel
+    % detector (recognised graph pattern -> native R fast path);
+    % then the fact-table path; then the regular Phase-3 lowered
+    % emitter; otherwise the WAM array.
+    (   r_fact_source_spec(P, Arity, Options, ExternalFactSpec)
+    ->  emit_external_fact_source(P, Arity, ExternalFactSpec,
+                                   ExtData, ExtFunc, ExtFuncName),
+        NewLoweredAcc = [ExtData, ExtFunc | LoweredAcc],
+        emit_r_lowered_wrapper(P, Arity, ExtFuncName, WrapperCode),
+        emit_lowered_dispatch_entry(P, Arity, ExtFuncName, DispEntry),
+        NewLoweredDispAcc = [DispEntry | LoweredDispAcc]
+    ;   kernel_layout_enabled(Options),
         catch(wam_r_kernel_detect(Pred, Kernel), _, fail),
         catch(emit_kernel(P, Kernel, KData, KFunc, KFuncName), _, fail)
     ->  (   KData == ""
@@ -1123,6 +1146,61 @@ emit_kernel(Pred, recursive_kernel(astar_shortest_path4, _, ConfigOps),
 
 astar_dist_pred_name(Name/_Arity, Name) :- atom(Name), !.
 astar_dist_pred_name(Name, Name) :- atom(Name).
+
+% ============================================================================
+% EXTERNAL FACT SOURCES
+% ============================================================================
+%
+% Mirrors the Scala target's scala_fact_sources option: users
+% declare `r_fact_sources([source(P/A, file('data.csv')), ...])`
+% and the codegen wires up a runtime CSV loader that populates the
+% standard fact-table data structures (`<pred>_facts` /
+% `<pred>_index`) at program-load time. The predicate then
+% dispatches via the same fact_table_dispatch path used by
+% inline-clause fact tables (PR #1921).
+%
+% The external-source path WINS over Prolog clause compilation:
+% the predicate's body is replaced by a single
+% `Execute("P", A)` instruction that falls through to the
+% lowered_dispatch tier (which the codegen registers below). No
+% Prolog clauses are required for the predicate.
+
+r_fact_source_spec(P, Arity, Options, Spec) :-
+    option(r_fact_sources(Sources), Options, []),
+    member(source(PI, Spec), Sources),
+    fact_source_pi_match(PI, P, Arity).
+
+fact_source_pi_match(_:Name/Ar, P, Arity) :- !,
+    Name == P, Ar =:= Arity.
+fact_source_pi_match(Name/Ar, P, Arity) :-
+    Name == P, Ar =:= Arity.
+
+%% emit_external_fact_source(+P, +Arity, +Spec,
+%%                            -DataDecl, -LoweredFunc, -FuncName)
+%  Emits the CSV loader + fact-iter dispatch fn. Spec must be
+%  file('path') for now; future shapes (LMDB, gzipped tables, ...)
+%  can branch here.
+emit_external_fact_source(Pred, Arity, file(Path),
+                          DataDecl, LoweredFunc, FuncName) :-
+    r_pred_name(Pred, RName),
+    format(atom(DataName), '~w_facts', [RName]),
+    format(atom(IndexName), '~w_index', [RName]),
+    format(atom(FuncName), '~w_fact_iter', [RName]),
+    atom_string(Path, PathStr),
+    r_string_literal(PathStr, PathLit),
+    format(string(DataDecl),
+'# External fact source for ~w/~w (file: ~w)
+~w <- WamRuntime$read_facts_csv(~w, intern_table)
+~w <- WamRuntime$build_fact_index(~w)',
+        [Pred, Arity, PathStr, DataName, PathLit, IndexName, DataName]),
+    fact_args_collect(Arity, ArgsCollect),
+    format(string(LoweredFunc),
+'~w <- function(program, state) {
+  args <- ~w
+  WamRuntime$fact_table_dispatch(program, state, "~w/~w", ~w, ~w,
+                                  args, state$pc + 1L)
+}',
+        [FuncName, ArgsCollect, Pred, Arity, DataName, IndexName]).
 
 % ============================================================================
 % FACT-TABLE CLASSIFICATION + EMISSION

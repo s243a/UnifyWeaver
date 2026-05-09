@@ -2941,6 +2941,79 @@ e2e_kernel_astar4_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for external fact sources via CSV. The
+% predicate has no Prolog clauses; the codegen emits a runtime
+% loader that reads the file at program-init time and dispatches
+% via the same fact_table_dispatch path used by inline fact tables
+% (PR #1921). The CLI hits the loader through a 1-instruction
+% Execute body that falls into lowered_dispatch.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(external_fact_source_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_external_fact_source_via_rscript
+    ;   true
+    )).
+
+e2e_external_fact_source_via_rscript :-
+    retractall(user:cpedge(_, _)),
+    retractall(user:fs_check/0),
+    unique_r_tmp_dir('tmp_r_csv_fact_e2e', TmpDir),
+    make_directory_path(TmpDir),
+    directory_file_path(TmpDir, 'cpedge.csv', CsvPath),
+    atom_string(CsvPath, CsvPathStr),
+    setup_call_cleanup(
+        open(CsvPath, write, Stream),
+        ( write(Stream, '# Auto-generated for the CSV fact-source test.'),
+          nl(Stream),
+          write(Stream, 'alice,bob'), nl(Stream),
+          write(Stream, 'bob,carol'), nl(Stream),
+          write(Stream, 'carol,dan'), nl(Stream),
+          write(Stream, 'alice,eve'), nl(Stream),
+          write(Stream, 'eve,frank'), nl(Stream) ),
+        close(Stream)),
+    % cpedge/2 has no clauses; the loader populates pred_cpedge_facts.
+    assertz((user:fs_direct  :- cpedge(alice, bob))),
+    assertz((user:fs_branch  :- cpedge(alice, eve))),
+    assertz((user:fs_no_back :- cpedge(bob, alice))),
+    assertz((user:fs_findall :-
+        findall(Y, cpedge(alice, Y), L),
+        msort(L, S),
+        S == [bob, eve])),
+    assertz((user:fs_findall_all :-
+        findall(X-Y, cpedge(X, Y), L),
+        length(L, N),
+        N == 5)),
+    write_wam_r_project(
+        [user:cpedge/2, user:fs_direct/0, user:fs_branch/0,
+         user:fs_no_back/0, user:fs_findall/0, user:fs_findall_all/0],
+        [intern_atoms([alice, bob, carol, dan, eve, frank]),
+         r_fact_sources([source(cpedge/2, file(CsvPathStr))])],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [fs_direct, fs_branch, fs_findall, fs_findall_all],
+    No  = [fs_no_back],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
+    read_file_to_string(ProgPath, Code, []),
+    assertion(sub_string(Code, _, _, _, '# External fact source for cpedge/2')),
+    assertion(sub_string(Code, _, _, _,
+        'pred_cpedge_facts <- WamRuntime$read_facts_csv(')),
+    assertion(sub_string(Code, _, _, _,
+        'assign("cpedge/2", pred_cpedge_fact_iter, envir = shared_program$lowered_dispatch)')),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-

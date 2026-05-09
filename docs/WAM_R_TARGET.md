@@ -283,6 +283,43 @@ infrastructure to build richer indexes (multi-arg, range) on top.
 Disable per-call with `fact_table_layout(off)` in Options, or
 globally via the multifile `user:wam_r_fact_layout(off)` fact.
 
+### External fact sources (CSV)
+
+Mirrors the Scala target's `scala_fact_sources` option. Users can
+declare a predicate's facts as a separate CSV file:
+
+```prolog
+:- write_wam_r_project(
+       [user:cp/2, user:test/0],
+       [intern_atoms([alice, bob, carol]),
+        r_fact_sources([source(cp/2, file('data.csv'))])],
+       '/tmp/proj').
+```
+
+The predicate has **no Prolog clauses** -- the codegen emits a
+runtime CSV loader that reads the file at program-init time and
+populates the standard fact-table data structures
+(`<pred>_facts` / `<pred>_index`). The predicate then dispatches
+via the same `fact_table_dispatch` path used by inline-clause
+fact tables (PR #1921), so first-arg hash indexing, multi-
+solution backtracking, and `iterate_goal` integration all work
+the same way.
+
+CSV format: one row per fact, comma-separated; lines starting
+with `#` and blank lines are skipped. Fields that parse as a
+finite numeric become `IntTerm` / `FloatTerm`; everything else
+interns as an atom.
+
+For atoms that don't appear in any compiled WAM body but are
+needed by the loaded facts, declare them via `intern_atoms(...)`
+so the intern table includes them at startup -- otherwise the
+loader interns them lazily, which is fine but means some atoms
+get IDs outside the codegen-known range.
+
+The CLI path works the same as inline fact tables: the
+predicate's body is a single `Execute("P", A)` instruction that
+falls through to the lowered_dispatch tier.
+
 ### Emit modes
 
 The Phase-3 lowered emitter can replace the instruction-array body
@@ -565,7 +602,7 @@ WamRuntime$run(shared_program, state)
 
 The full test suite lives in
 [tests/test_wam_r_generator.pl](../tests/test_wam_r_generator.pl)
-and contains 53 tests covering both structural assertions on the
+and contains 54 tests covering both structural assertions on the
 generated source and end-to-end execution via `Rscript`. The
 `*_e2e_rscript` tests auto-skip when `Rscript` is not on `PATH`.
 
@@ -612,6 +649,7 @@ Coverage map (e2e tests, by feature group):
 | `kernel_tspd5_e2e_rscript` | recursive-kernel detection: `transitive_step_parent_distance5` BFS with step + parent + distance |
 | `kernel_ca_e2e_rscript` | recursive-kernel detection: `category_ancestor` BFS with depth-cap + visited-set cycle detection |
 | `kernel_astar4_e2e_rscript` | recursive-kernel detection: `astar_shortest_path4` goal-directed search with user heuristic |
+| `external_fact_source_e2e_rscript` | external CSV fact sources via `r_fact_sources([source(P/A, file(...))])` |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 
