@@ -23,6 +23,14 @@ intern_seed <- c(
 intern_table <- WamRuntime$new_intern_table(intern_seed)
 
 # ----------------------------------------------------------
+# Compile-time operator declarations (from r_op_decls option)
+# Mutates WamRuntime$op_infix / WamRuntime$op_prefix before any
+# read_term_from_atom or CLI arg parsing happens. Empty when
+# r_op_decls is unspecified.
+# ----------------------------------------------------------
+{{op_decls}}
+
+# ----------------------------------------------------------
 # Shared WAM instruction array (1-based)
 # ----------------------------------------------------------
 # Fact shape classification

@@ -444,7 +444,23 @@ comparison (`=`, `\=`, `==`, `\==`, `=:=`, `=\=`, `<`, `>`, `=<`,
 `>=`, `@<`, `@>`, `@=<`, `@>=`, `=..`), control (`:-`, `-->`, `;`,
 `->`, `,`), and prefix (`\+`, `:-`, `?-`, `-`, `+`, `\`).
 Precedence and associativity follow the standard Prolog operator
-table; non-standard user-defined operators are not recognised.
+table.
+
+User-defined operators are supported via the runtime `op/3` builtin
+and the codegen `r_op_decls(...)` option. `op(+Priority, +Type,
++Name)` mutates the parser's operator table at runtime; subsequent
+`read_term_from_atom/2,3` and CLI arg parses see the new operator.
+Type is one of `xfx`, `xfy`, `yfx`, `fx`, `fy` (binary infix and
+prefix); postfix `xf` / `yf` are recognised but raise an error in
+this scaffold. Priority `0` removes the operator. Name may be an
+atom or a proper list of atoms. `current_op/3` enumerates the
+table with backtracking.
+
+For compile-time declarations (so the operator is known before any
+runtime call), pass `r_op_decls([op(P, T, N), ...])` to
+`write_wam_r_project/3`. Each declaration emits a
+`WamRuntime$op_set("<N>", <P>L, "<T>")` line at program init,
+ahead of CLI parsing.
 
 ### I/O
 
@@ -575,11 +591,10 @@ WamRuntime$run(shared_program, state)
 
 ## Limitations
 
-- **User-defined operators in the term parser**. The parser handles
-  the standard Prolog operator table (arithmetic, comparison,
-  control, common prefix forms); custom `op/3` declarations are not
-  consulted, so terms using them must be supplied in canonical
-  structural form.
+- **Postfix operators**. `op/3` recognises `xf` and `yf` types but
+  raises an error -- the parser doesn't have a postfix operator
+  path yet. Workaround: supply postfix terms in canonical
+  structural form. Infix and prefix custom operators work.
 - **WAM-text quoting collision**. The atom `'42'` and the integer
   `42` both serialise as `set_constant 42` in SWI's WAM emitter,
   so the codegen can't distinguish them. The runtime's `atom_*`
@@ -620,7 +635,7 @@ WamRuntime$run(shared_program, state)
 
 The full test suite lives in
 [tests/test_wam_r_generator.pl](../tests/test_wam_r_generator.pl)
-and contains 55 tests covering both structural assertions on the
+and contains 57 tests covering both structural assertions on the
 generated source and end-to-end execution via `Rscript`. The
 `*_e2e_rscript` tests auto-skip when `Rscript` is not on `PATH`.
 
@@ -652,6 +667,8 @@ Coverage map (e2e tests, by feature group):
 | `catch_throw_dyn_aggregator_e2e_rscript` | `catch/3`, `throw/1`, dynamic-pred aggregation |
 | `stdlib_polish_e2e_rscript` | `numlist/3`, `tab/1`, `sub_atom/5`, `char_type/2`, `term_to_atom/2` |
 | `operator_parser_e2e_rscript` | operator-precedence parsing (`+`, `*`, `^`, `=:=`, `\+`, `,`, ...) |
+| `op_3_runtime_e2e_rscript` | runtime `op/3` builtin: add infix / prefix custom ops, xfy right-associativity, `op(0, ...)` removal, `current_op/3` enumeration |
+| `op_3_decl_e2e_rscript` | codegen `r_op_decls([op(P, T, N), ...])` option seeds the operator table at program init; covers atom-name and list-of-names forms |
 | `multi_solution_retract_e2e_rscript` | multi-solution `retract/1` via iter-CP |
 | `bagof_setof_existential_e2e_rscript` | `^/2` existential scope in `bagof`/`setof`/`findall` |
 | `cli_arg_parser_e2e_rscript` | structured CLI args (lists, structs, expressions) parse via the runtime parser |

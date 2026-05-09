@@ -725,6 +725,124 @@ WamRuntime$op_prefix <- list(
   "\\"  = list(prec = 200L)
 )
 
+# ----------------------------------------------------------
+# Operator-table mutation helpers (used by op/3, current_op/3,
+# and the codegen-emitted r_op_decls block).
+# ----------------------------------------------------------
+
+# Resolve op/3's third arg: an atom (single name) or a proper list of
+# atoms (multiple names). Returns a character vector or NULL on bad
+# input. Bound atoms only -- unbound vars or non-atom list elements
+# fail the lookup.
+WamRuntime$op_resolve_names <- function(state, name_v, table) {
+  if (is.null(name_v) || is.null(name_v$tag)) return(NULL)
+  if (name_v$tag == "atom") {
+    return(WamRuntime$string_of(table, name_v$id))
+  }
+  if (name_v$tag == "struct") {
+    elems <- WamRuntime$wam_list_decompose(state, name_v, table)
+    if (is.null(elems)) return(NULL)
+    out <- character(length(elems))
+    for (i in seq_along(elems)) {
+      e <- WamRuntime$deref(state, elems[[i]])
+      if (is.null(e) || is.null(e$tag) || e$tag != "atom") return(NULL)
+      out[i] <- WamRuntime$string_of(table, e$id)
+    }
+    return(out)
+  }
+  NULL
+}
+
+# Insert / replace / remove an entry in op_infix or op_prefix based on
+# the fixity type. Priority 0 removes; non-zero inserts. The type's
+# table choice is implicit: xfx/xfy/yfx -> infix, fx/fy -> prefix.
+# Note: assigning to `WamRuntime$op_infix[[name]]` reads the list,
+# updates the named element, and assigns the modified list back; the
+# parser sees the new entry on its next read of the table.
+WamRuntime$op_set <- function(name, prec, type_str) {
+  is_infix  <- type_str %in% c("xfx", "xfy", "yfx")
+  is_prefix <- type_str %in% c("fx", "fy")
+  if (prec == 0L) {
+    if (is_infix) WamRuntime$op_infix[[name]]   <- NULL
+    if (is_prefix) WamRuntime$op_prefix[[name]] <- NULL
+    return(invisible(NULL))
+  }
+  if (is_infix) {
+    WamRuntime$op_infix[[name]] <- list(prec = as.integer(prec),
+                                         assoc = type_str)
+  } else if (is_prefix) {
+    WamRuntime$op_prefix[[name]] <- list(prec = as.integer(prec),
+                                          assoc = type_str)
+  }
+  invisible(NULL)
+}
+
+# Materialize a (prec, type, name) snapshot of both op tables. Used
+# by current_op/3 to enumerate ops with stable semantics under
+# concurrent table mutation.
+WamRuntime$op_snapshot <- function(table) {
+  out <- list()
+  for (nm in names(WamRuntime$op_infix)) {
+    entry <- WamRuntime$op_infix[[nm]]
+    out <- c(out, list(list(prec = entry$prec, type = entry$assoc, name = nm)))
+  }
+  for (nm in names(WamRuntime$op_prefix)) {
+    entry <- WamRuntime$op_prefix[[nm]]
+    type <- if (!is.null(entry$assoc)) entry$assoc else "fx"
+    out <- c(out, list(list(prec = entry$prec, type = type, name = nm)))
+  }
+  out
+}
+
+# current_op/3 iterator: tries each (prec, type, name) tuple in turn;
+# on success pushes an iter CP to resume at the next index. Same
+# CP shape as fact_table_iter_subset / member_iter.
+WamRuntime$current_op_iter <- function(program, state, snapshot, idx,
+                                        resume_pc) {
+  if (idx > length(snapshot)) return(FALSE)
+  table <- program$intern_table
+  for (i in seq.int(idx, length(snapshot))) {
+    entry <- snapshot[[i]]
+    snap_trail <- length(state$trail)
+    snap_vc    <- state$var_counter
+    ok <- WamRuntime$unify(state, WamRuntime$get_reg(state, 1L),
+                           IntTerm(entry$prec)) &&
+          WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
+                           Atom(WamRuntime$intern(table, entry$type))) &&
+          WamRuntime$unify(state, WamRuntime$get_reg(state, 3L),
+                           Atom(WamRuntime$intern(table, entry$name)))
+    if (ok) {
+      if (i < length(snapshot)) {
+        captured_program  <- program
+        captured_snapshot <- snapshot
+        captured_next     <- i + 1L
+        captured_resume   <- resume_pc
+        cp <- list(
+          kind        = "iter",
+          regs        = as.list.environment(state$regs2),
+          trail_len   = snap_trail,
+          cp          = state$cp,
+          var_counter = snap_vc,
+          mode        = state$mode,
+          build_stack = state$build_stack,
+          resume_pc   = resume_pc,
+          retry       = function(state) {
+            WamRuntime$current_op_iter(captured_program, state,
+                                        captured_snapshot,
+                                        captured_next,
+                                        captured_resume)
+          }
+        )
+        state$cps <- c(state$cps, list(cp))
+      }
+      return(TRUE)
+    }
+    WamRuntime$undo_trail_to(state, snap_trail)
+    state$var_counter <- snap_vc
+  }
+  FALSE
+}
+
 WamRuntime$parse_term <- function(text, table, state) {
   toks <- WamRuntime$tokenize_term(text)
   if (is.null(toks) || length(toks) == 0L) return(NULL)
@@ -4656,6 +4774,50 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     parsed <- WamRuntime$parse_term(text, table, state)
     if (is.null(parsed)) return(FALSE)
     return(WamRuntime$unify(state, raw_t, parsed))
+  }
+
+  # ----- op/3 -----
+  # op(+Priority, +Type, +Name).
+  #   Declare a custom operator. Type is one of the standard Prolog
+  #   fixities: xfx / xfy / yfx (binary) or fx / fy (prefix). Postfix
+  #   xf / yf are recognised but not yet supported -- they raise an R
+  #   error rather than silently failing, so callers know not to rely
+  #   on them. Priority 0 removes the operator from the table that
+  #   matches the type. Name is either an atom or a proper list of
+  #   atoms; the latter applies the same declaration to every name.
+  if (key == "op/3") {
+    prec_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    type_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    name_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 3L))
+    if (is.null(prec_v) || is.null(prec_v$tag) || prec_v$tag != "int") return(FALSE)
+    if (is.null(type_v) || is.null(type_v$tag) || type_v$tag != "atom") return(FALSE)
+    prec <- as.integer(prec_v$val)
+    if (prec < 0L || prec > 1200L) return(FALSE)
+    type_str <- WamRuntime$string_of(table, type_v$id)
+    if (type_str %in% c("xf", "yf")) {
+      stop(sprintf("op/3: postfix operators (%s) not yet supported in WAM-R", type_str))
+    }
+    if (!(type_str %in% c("xfx", "xfy", "yfx", "fx", "fy"))) return(FALSE)
+    names_vec <- WamRuntime$op_resolve_names(state, name_v, table)
+    if (is.null(names_vec)) return(FALSE)
+    for (nm in names_vec) {
+      WamRuntime$op_set(nm, prec, type_str)
+    }
+    return(TRUE)
+  }
+
+  # ----- current_op/3 -----
+  # current_op(?Priority, ?Type, ?Name).
+  #   Backtrackable enumeration over the operator tables. We materialize
+  #   a snapshot list of all (prec, type, name) triples, then unify
+  #   against the args; an iter CP replays the next index on backtrack.
+  #   Snapshot semantics match `clause/2` / `retract/1`: ops added or
+  #   removed during the iteration are not seen.
+  if (key == "current_op/3") {
+    snapshot <- WamRuntime$op_snapshot(table)
+    if (length(snapshot) == 0L) return(FALSE)
+    return(WamRuntime$current_op_iter(program, state, snapshot, 1L,
+                                       state$pc + 1L))
   }
 
   # ----- read_term_from_atom/2 and read_term_from_atom/3 -----

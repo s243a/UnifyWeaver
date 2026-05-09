@@ -15,8 +15,8 @@ then read `docs/WAM_R_TARGET.md` for the user-facing reference.
 
 ### Numbers
 
-- **55 tests** in `tests/test_wam_r_generator.pl` (38 e2e via Rscript,
-  the rest structural). Full suite runs in ~5-9 minutes; bottleneck is
+- **57 tests** in `tests/test_wam_r_generator.pl` (40 e2e via Rscript,
+  the rest structural). Full suite runs in ~6-10 minutes; bottleneck is
   Rscript startup, not the runtime.
 - **3 main source files**:
   - `src/unifyweaver/targets/wam_r_target.pl` -- codegen + project writer.
@@ -46,7 +46,7 @@ then read `docs/WAM_R_TARGET.md` for the user-facing reference.
 | **Dynamic** | `assertz/1`, `asserta/1`, `retract/1` (multi-solution), `abolish/1`, `clause/2` (multi-solution introspection). |
 | **Exceptions** | `throw/1`, `catch/3` (on R's `tryCatch`). |
 | **DCG** | `-->` via SWI's term-expansion + `phrase/2,3`. |
-| **Parser** | Operator-precedence parser for the standard Prolog operator table; lists, structs, integers, floats, vars. |
+| **Parser** | Operator-precedence parser for the standard Prolog operator table; lists, structs, integers, floats, vars. User-defined infix and prefix operators via runtime `op/3` / `current_op/3` and codegen `r_op_decls(...)`. |
 | **Streams** | File I/O via R `file()` connections; line-buffered `read/2` parses through the term parser. |
 | **Fact-table lowering** | Pure-fact predicates (only `get_constant + proceed`) emit a flat R tuple list + per-arg hash indexes (one env per arg position), dispatched via `WamRuntime$fact_table_dispatch`. Smallest matching bound-arg bucket wins; O(N · F) memory. |
 | **External fact sources (CSV)** | `r_fact_sources([source(P/A, file('data.csv'))])` -- predicate has no Prolog clauses; loader runs at program init. |
@@ -103,8 +103,11 @@ relevant feature sections. Not bugs -- intentional scope boundaries.
 - **`length/2` (-,-)** generative mode unsupported.
 - **`retract/1` snapshot semantics.** The snapshot is taken at the
   original call; clauses asserted during the iteration are not seen.
-- **CLI argument parsing.** Goes through the operator-precedence parser,
-  which doesn't support user-defined operators (`op/3`).
+- **Postfix operators in the term parser.** `op/3` recognises `xf` /
+  `yf` types but raises an error -- the parser doesn't have a
+  postfix path yet. Infix and prefix custom operators work, both at
+  runtime via `op/3` and at codegen time via the `r_op_decls`
+  option.
 - **`astar_shortest_path4`** is correct only when the user-supplied
   heuristic is admissible. Documented; the fallback (using the edge
   pred itself) is not generally admissible.
@@ -117,17 +120,17 @@ relevant feature sections. Not bugs -- intentional scope boundaries.
 If you're picking up this campaign, these are the obvious next steps in
 roughly priority order:
 
-1. **Operator declarations (`op/3`)** in the term parser. Quality-of-life
-   for `read_term_from_atom/2,3` and any user code that ports Prolog
-   source between targets.
-2. **LMDB / grouped-by-first TSV backends** for `r_fact_sources`. Mirrors
+1. **LMDB / grouped-by-first TSV backends** for `r_fact_sources`. Mirrors
    the Scala precedent; the `fact_source_spec_to_*` clauses in
    `wam_scala_target.pl` are templates.
-3. **Performance profiling + targeted optimization.** First PR should
+2. **Performance profiling + targeted optimization.** First PR should
    add `Rprof` instrumentation around `wam_r_fact_source_bench.pl` and
    identify a single hot path; subsequent PRs each fix one bottleneck.
    Tagged-list `$tag` access and env-based register lookups are likely
    suspects.
+3. **Postfix operator parser path.** Add `WamRuntime$op_postfix` and
+   the parser case so `op(P, xf, ...)` / `op(P, yf, ...)` work. Small
+   bounded follow-up to the `op/3` PR.
 4. **Mode analysis (start).** Big multi-PR effort. Phase 1 collects
    mode info per predicate (in/out per arg); Phase 2 wires it to
    specialised emission (skip unifications when the mode says the slot
