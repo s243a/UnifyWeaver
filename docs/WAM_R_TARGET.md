@@ -426,9 +426,11 @@ paths:
 - Compiled goals push an `aggregate` CP at `BeginAggregate`,
   collect on every backtrack, and finalise at `EndAggregate`.
 - Library-level aggregators (`bagof`, `setof`, runtime-only
-  predicates) call `WamRuntime$collect_solutions`, which snapshots
-  state, drives the goal via `iterate_goal`, and restores state
-  fully before returning.
+  predicates) call `WamRuntime$collect_solutions` or
+  `WamRuntime$collect_bag_groups`, which snapshot state, drive the
+  goal via `iterate_goal`, and restore state fully before returning.
+  `bagof/3` and `setof/3` honor `^/2` existential scope and group
+  non-existential free variables for the selected witness group.
 
 `iterate_goal` has R-level fast paths for `member/2`, `between/3`,
 `,/2` conjunctions over the above, and dynamic predicates -- so
@@ -625,13 +627,12 @@ WamRuntime$run(shared_program, state)
   Removed clauses are matched against the live store by object
   identity, so concurrent retracts/asserts of unrelated clauses
   don't disturb the iteration order.
-- **`bagof/3` / `setof/3` per-witness grouping**. The `^/2`
-  existential scoping operator is supported (the wrapper is
-  transparent in `call_goal` / `iterate_goal` / `call_library`,
-  so `bagof(X, Y^p(X,Y), L)` runs `p(X,Y)` and aggregates X). What
-  isn't supported is the per-witness grouping for non-quantified
-  free vars: `bagof(X, p(X,Y), L)` produces one bag containing
-  every X (regardless of Y) rather than one bag per Y binding.
+- **`bagof/3` / `setof/3` group enumeration on backtracking**.
+  Non-existential free variables are grouped and the first witness
+  group is bound, so `bagof(X, p(X,Y), L)` can bind `Y` and `L`
+  consistently. Backtracking across additional witness groups is a
+  follow-up; the current library path does not yet push a group
+  choice point.
 - **`length/2` (-, -)** generative mode is not supported (would
   need a CP-driving generator).
 - **`between/3` (+, +, -)** in compiled-goal context produces an
@@ -687,7 +688,7 @@ Coverage map (e2e tests, by feature group):
 | `op_3_runtime_e2e_rscript` | runtime `op/3` builtin: add infix / prefix custom ops, xfy right-associativity, `op(0, ...)` removal, `current_op/3` enumeration |
 | `op_3_decl_e2e_rscript` | codegen `r_op_decls([op(P, T, N), ...])` option seeds the operator table at program init; covers atom-name and list-of-names forms |
 | `multi_solution_retract_e2e_rscript` | multi-solution `retract/1` via iter-CP |
-| `bagof_setof_existential_e2e_rscript` | `^/2` existential scope in `bagof`/`setof`/`findall` |
+| `bagof_setof_existential_e2e_rscript` | `^/2` existential scope and first witness grouping in `bagof`/`setof`; `findall` caret transparency |
 | `cli_arg_parser_e2e_rscript` | structured CLI args (lists, structs, expressions) parse via the runtime parser |
 | `base_name_clash_e2e_rscript` | predicates named after base R functions (`c`, `t`, `q`, `cat`) don't shadow them |
 | `read_term_clause_e2e_rscript` | `read_term_from_atom/2,3` and multi-solution `clause/2` |
