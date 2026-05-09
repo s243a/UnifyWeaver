@@ -1182,11 +1182,18 @@ emit_fact_table(Pred, Arity, Tuples, DataDecl, LoweredFunc, FuncName) :-
 % 1..Arity, emit a `<RName>_index_arg<K> <- new.env(...)` plus one
 % `assign("a<id>"/"i<val>", c(...), envir = ...)` line per bucket.
 % Finally bundle all per-arg envs into `<IndexesName> <- list(...)`.
-fact_indexes_block(_Tuples, 0, _RName, IndexesName, Body) :- !,
-    format(string(Body), '~w <- list()', [IndexesName]).
+%
+% Arity must be a positive integer: the fact-table classifier requires
+% `get_constant + proceed`, which implies arity >= 1. An arity-0 fact
+% table would emit `<IndexesName> <- list()`, which fact_table_dispatch
+% would reject loudly via its own arity-vs-indexes check, but it's
+% still better to fail at codegen time with a clear domain error.
 fact_indexes_block(Tuples, Arity, RName, IndexesName, Body) :-
-    Arity > 0,
+    must_be(positive_integer, Arity),
     numlist(1, Arity, ArgPositions),
+    % maplist/4 with two output lists: each call to fact_index_per_arg/5
+    % produces one block of R code (Block) and the matching env name
+    % (IndexName), zipped over ArgPositions.
     maplist(fact_index_per_arg(Tuples, RName), ArgPositions, PerArgBlocks,
             PerArgNames),
     atomic_list_concat(PerArgBlocks, '\n', Joined),

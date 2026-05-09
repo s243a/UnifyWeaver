@@ -2876,22 +2876,27 @@ WamRuntime$fact_table_iter_subset <- function(program, state, key, tuples,
 # out the rest of the conditions.
 #
 # A bound atom/int arg whose bucket is missing means no fact has that
-# value at that position -> short-circuit FALSE. A float / unbound /
-# struct query value doesn't hit the index path at all (`bk` stays NULL)
-# and is filtered during the per-tuple scan instead. If no bound arg
-# yields a usable bucket (all unbound, or all floats), we fall back to
-# a full-table scan.
+# value at that position -> short-circuit FALSE. (The short-circuit
+# fires on the first miss encountered in left-to-right arg order; any
+# later miss would also produce FALSE, so the order-dependent early
+# return is sound.) A float / unbound / struct query value doesn't
+# hit the index path at all (`bk` stays NULL) and is filtered during
+# the per-tuple scan instead. If no bound arg yields a usable bucket
+# (all unbound, or all floats), we fall back to a full-table scan.
 #
 # Memory: O(N * F) for F facts; each fact contributes at most one entry
 # per arg position. No composite-key indexes -- avoids the 2^N blowup.
 WamRuntime$fact_table_dispatch <- function(program, state, key, tuples, indexes,
                                             args, resume_pc) {
   arity <- length(args)
-  best_bucket <- NULL
-  best_size   <- NA_integer_
   n_idx <- length(indexes)
+  if (n_idx != arity) {
+    stop(sprintf("fact_table_dispatch: indexes length (%d) != arity (%d) for %s",
+                 n_idx, arity, key))
+  }
+  best_bucket <- NULL
+  best_size   <- .Machine$integer.max
   for (j in seq_len(arity)) {
-    if (j > n_idx) break
     idx_env <- indexes[[j]]
     if (is.null(idx_env)) next
     v <- WamRuntime$deref(state, args[[j]])
@@ -2905,7 +2910,7 @@ WamRuntime$fact_table_dispatch <- function(program, state, key, tuples, indexes,
     }
     bucket <- get(bk, envir = idx_env, inherits = FALSE)
     sz <- length(bucket)
-    if (is.na(best_size) || sz < best_size) {
+    if (sz < best_size) {
       best_bucket <- bucket
       best_size   <- sz
     }
