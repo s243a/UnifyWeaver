@@ -364,6 +364,30 @@
 (defn unifiable? [state left right]
   (first (unify-values state left right)))
 
+(defn parse-numeric-atom [text]
+  (when (and (string? text)
+             (re-matches #"[+-]?(?:\d+(?:\.\d*)?|\.\d+)" text))
+    (if (str/includes? text ".")
+      (Double/parseDouble text)
+      (Long/parseLong text))))
+
+(defn arithmetic-value [state value]
+  (let [cur (deref-value (:bindings state) value)]
+    (cond
+      (number? cur) cur
+      (atom-term? cur) (parse-numeric-atom (deintern-atom (:intern-context state) (:id cur)))
+      :else nil)))
+
+(defn arithmetic-equal? [state left right]
+  (let [left* (arithmetic-value state left)
+        right* (arithmetic-value state right)]
+    (and (some? left*) (some? right*) (== left* right*))))
+
+(defn arithmetic-not-equal? [state left right]
+  (let [left* (arithmetic-value state left)
+        right* (arithmetic-value state right)]
+    (and (some? left*) (some? right*) (not (== left* right*)))))
+
 (defn structure-term [functor args]
   {:tag :struct :functor functor :args (vec args)})
 
@@ -826,6 +850,24 @@
             (if (unifiable? state left right)
               (backtrack state)
               (advance state)))
+
+          "=:=/2"
+          (let [left (deref-value (:bindings state)
+                                  (or (reg-get-raw state "A1") ::unbound))
+                right (deref-value (:bindings state)
+                                   (or (reg-get-raw state "A2") ::unbound))]
+            (if (arithmetic-equal? state left right)
+              (advance state)
+              (backtrack state)))
+
+          "=\\=/2"
+          (let [left (deref-value (:bindings state)
+                                  (or (reg-get-raw state "A1") ::unbound))
+                right (deref-value (:bindings state)
+                                   (or (reg-get-raw state "A2") ::unbound))]
+            (if (arithmetic-not-equal? state left right)
+              (advance state)
+              (backtrack state)))
 
           "true/0"
           (advance state)

@@ -146,6 +146,26 @@ test(simple_builtin_not_unify_is_direct_lowered_in_prefix) :-
         has(Code, "runtime/backtrack")
     )).
 
+test(simple_builtin_arithmetic_equal_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_arith_eq/2, [builtin_call('=:=/2', 2), proceed], [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/arithmetic-equal?"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(simple_builtin_arithmetic_not_equal_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_arith_neq/2, [builtin_call('=\\=/2', 2), proceed], [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/arithmetic-not-equal?"),
+        has(Code, "runtime/backtrack")
+    )).
+
 test(simple_builtin_true_is_direct_lowered_in_prefix) :-
     once((
         lower_predicate_to_clojure(test_true/0, [builtin_call('true/0', 0), proceed], [], Code),
