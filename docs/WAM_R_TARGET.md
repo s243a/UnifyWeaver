@@ -467,11 +467,17 @@ User-defined operators are supported via the runtime `op/3` builtin
 and the codegen `r_op_decls(...)` option. `op(+Priority, +Type,
 +Name)` mutates the parser's operator table at runtime; subsequent
 `read_term_from_atom/2,3` and CLI arg parses see the new operator.
-Type is one of `xfx`, `xfy`, `yfx`, `fx`, `fy` (binary infix and
-prefix); postfix `xf` / `yf` are recognised but raise an error in
-this scaffold. Priority `0` removes the operator. Name may be an
-atom or a proper list of atoms. `current_op/3` enumerates the
-table with backtracking.
+Type is one of `xfx`, `xfy`, `yfx`, `fx`, `fy`, `xf`, `yf` (binary
+infix, prefix, and postfix). Priority `0` removes the operator.
+Name may be an atom or a proper list of atoms. `current_op/3`
+enumerates the table with backtracking. When a name is registered
+as both infix and postfix, the parser tries infix first and only
+falls through to postfix when no infix entry fits the current
+precedence ceiling -- matches SWI behaviour. The parser does not
+distinguish `xf` from `yf` at chained-postfix sites: both accept
+`5!!` rather than the ISO-strict `xf` rejecting it. Real code rarely
+relies on that distinction; the existing prefix path makes the same
+simplification (`fx` and `fy` are treated identically).
 
 For compile-time declarations (so the operator is known before any
 runtime call), pass `r_op_decls([op(P, T, N), ...])` to
@@ -608,10 +614,12 @@ WamRuntime$run(shared_program, state)
 
 ## Limitations
 
-- **Postfix operators**. `op/3` recognises `xf` and `yf` types but
-  raises an error -- the parser doesn't have a postfix operator
-  path yet. Workaround: supply postfix terms in canonical
-  structural form. Infix and prefix custom operators work.
+- **Postfix `xf` vs `yf` chaining**. Single postfix application is
+  correct; chained applications (`5!!`) accept either type without
+  enforcing the ISO `xf` rule that the operand precedence be
+  strictly less than the operator precedence. Symmetric with the
+  existing prefix simplification. Documented; not a real-world
+  blocker.
 - **WAM-text quoting collision**. The atom `'42'` and the integer
   `42` both serialise as `set_constant 42` in SWI's WAM emitter,
   so the codegen can't distinguish them. The runtime's `atom_*`
@@ -704,6 +712,7 @@ Coverage map (e2e tests, by feature group):
 | `kernel_astar4_e2e_rscript` | recursive-kernel detection: `astar_shortest_path4` goal-directed search with user heuristic |
 | `external_fact_source_e2e_rscript` | external CSV fact sources via `r_fact_sources([source(P/A, file(...))])` |
 | `external_fact_source_grouped_tsv_e2e_rscript` | external grouped-by-first TSV fact sources (arity-2): `r_fact_sources([source(P/2, grouped_by_first(...))])` |
+| `op_3_postfix_e2e_rscript` | runtime postfix-operator support: `op(P, xf|yf, N)`, parser wraps primary as postfix struct, mixed infix+postfix, yf chaining, `current_op/3` enumeration, `op(0, ...)` removal |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 
