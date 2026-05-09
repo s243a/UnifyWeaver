@@ -1895,6 +1895,151 @@ e2e_operator_parser_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for the runtime op/3 builtin. The driver
+% predicates declare a custom operator at runtime and then exercise
+% read_term_from_atom and current_op/3 against the augmented parser
+% table. Covers infix add, prefix add, xfy right-associativity for a
+% custom op, op(0, ...) removal, and current_op/3 enumeration.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(op_3_runtime_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_op_3_runtime_via_rscript
+    ;   true
+    )).
+
+e2e_op_3_runtime_via_rscript :-
+    setup_call_cleanup(
+        e2e_op_3_runtime_setup(TmpDir),
+        e2e_op_3_runtime_body(TmpDir),
+        e2e_op_3_runtime_cleanup(TmpDir)).
+
+e2e_op_3_runtime_setup(TmpDir) :-
+    % op/3 adds an infix op; subsequent read_term_from_atom uses it.
+    % Decompose via =.. to avoid needing the op at SWI-Prolog level.
+    assertz((user:op_runtime_infix :-
+        op(900, xfy, '==>'),
+        read_term_from_atom('a==>b', T),
+        T =.. [F, A, B],
+        F == '==>', A == a, B == b)),
+    % xfy right-associativity: 'a ==> b ==> c' parses as (a ==> (b ==> c)).
+    assertz((user:op_runtime_xfy :-
+        op(900, xfy, '==>'),
+        read_term_from_atom('a==>b==>c', T),
+        T =.. [_, _, RHS],
+        RHS =.. [F2, B, C],
+        F2 == '==>', B == b, C == c)),
+    % Prefix op: 'neg foo' parses as neg(foo). The space matters --
+    % 'neg(foo)' would parse as a function call regardless of op decl.
+    assertz((user:op_runtime_prefix :-
+        op(200, fy, neg),
+        read_term_from_atom('neg foo', T),
+        T =.. [F, X],
+        F == neg, X == foo)),
+    % current_op/3 enumeration finds the new op.
+    assertz((user:op_runtime_current :-
+        op(900, xfy, '==>'),
+        findall(P, current_op(P, xfy, '==>'), Precs),
+        Precs == [900])),
+    % op(0, T, N) removes; subsequent parse fails.
+    assertz((user:op_runtime_remove :-
+        op(900, xfy, '==>'),
+        op(0, xfy, '==>'),
+        \+ read_term_from_atom('a==>b', _))),
+    unique_r_tmp_dir('tmp_r_op_3_runtime_e2e', TmpDir).
+
+e2e_op_3_runtime_body(TmpDir) :-
+    write_wam_r_project(
+        [user:op_runtime_infix/0, user:op_runtime_xfy/0,
+         user:op_runtime_prefix/0, user:op_runtime_current/0,
+         user:op_runtime_remove/0],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [op_runtime_infix, op_runtime_xfy, op_runtime_prefix,
+           op_runtime_current, op_runtime_remove],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )).
+
+e2e_op_3_runtime_cleanup(TmpDir) :-
+    retractall(user:op_runtime_infix),
+    retractall(user:op_runtime_xfy),
+    retractall(user:op_runtime_prefix),
+    retractall(user:op_runtime_current),
+    retractall(user:op_runtime_remove),
+    ignore(catch(delete_directory_and_contents(TmpDir), _, true)).
+
+% ------------------------------------------------------------------
+% End-to-end Rscript run for the r_op_decls codegen option. The
+% generated program seeds the operator table at init time, so no
+% runtime op/3 call is needed -- read_term_from_atom recognises
+% the custom ops out of the box.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(op_3_decl_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_op_3_decl_via_rscript
+    ;   true
+    )).
+
+e2e_op_3_decl_via_rscript :-
+    setup_call_cleanup(
+        e2e_op_3_decl_setup(TmpDir),
+        e2e_op_3_decl_body(TmpDir),
+        e2e_op_3_decl_cleanup(TmpDir)).
+
+e2e_op_3_decl_setup(TmpDir) :-
+    assertz((user:op_decl_infix :-
+        read_term_from_atom('a==>b', T),
+        T =.. [F, A, B],
+        F == '==>', A == a, B == b)),
+    assertz((user:op_decl_prefix :-
+        read_term_from_atom('neg foo', T),
+        T =.. [F, X],
+        F == neg, X == foo)),
+    % Multi-name list form: r_op_decls accepts op(P, T, [N1, N2, ...]).
+    assertz((user:op_decl_listform :-
+        read_term_from_atom('a~b', T1),
+        T1 =.. [F1, _, _], F1 == '~',
+        read_term_from_atom('a@b', T2),
+        T2 =.. [F2, _, _], F2 == '@')),
+    unique_r_tmp_dir('tmp_r_op_3_decl_e2e', TmpDir).
+
+e2e_op_3_decl_body(TmpDir) :-
+    write_wam_r_project(
+        [user:op_decl_infix/0, user:op_decl_prefix/0,
+         user:op_decl_listform/0],
+        [r_op_decls([op(900, xfy, '==>'),
+                     op(200, fy, neg),
+                     op(700, xfx, ['~', '@'])])],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [op_decl_infix, op_decl_prefix, op_decl_listform],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    % Structural: codegen emits one op_set call per name (list-form
+    % expanded into a `for (nm in c(...))` loop).
+    directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
+    read_file_to_string(ProgPath, Code, []),
+    assertion(sub_string(Code, _, _, _, 'WamRuntime$op_set("==>", 900L, "xfy")')),
+    assertion(sub_string(Code, _, _, _, 'WamRuntime$op_set("neg", 200L, "fy")')),
+    assertion(sub_string(Code, _, _, _, 'for (nm in c("~", "@")) WamRuntime$op_set(nm, 700L, "xfx")')).
+
+e2e_op_3_decl_cleanup(TmpDir) :-
+    retractall(user:op_decl_infix),
+    retractall(user:op_decl_prefix),
+    retractall(user:op_decl_listform),
+    ignore(catch(delete_directory_and_contents(TmpDir), _, true)).
+
+% ------------------------------------------------------------------
 % End-to-end Rscript run for multi-solution retract/1. Asserts a
 % handful of facts, drives findall(X, retract(p(X)), L) so the
 % retract iterates across all matches via the iter-CP retry, and

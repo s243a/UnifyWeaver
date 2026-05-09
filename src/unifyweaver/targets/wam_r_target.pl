@@ -1478,6 +1478,54 @@ r_foreign_handlers_code(Options, Code) :-
 r_foreign_handler_entry(handler(Pred/Arity, HandlerCode), Entry) :-
     format(string(Entry), '    "~w/~w" = ~w', [Pred, Arity, HandlerCode]).
 
+%% r_op_decls_code(+Options, -Code) is det.
+%  Renders the program-init operator-declaration block. Reads
+%  r_op_decls([op(P, T, N), ...]) from Options. Each `op(P, T, N)`
+%  emits one `WamRuntime$op_set("<N>", <P>L, "<T>")` call so the
+%  parser sees the operator before any read_term_from_atom or CLI
+%  arg parsing happens. Names that collide with the built-in ops
+%  override the built-in entry.
+r_op_decls_code(Options, Code) :-
+    option(r_op_decls(Decls), Options, []),
+    maplist(r_op_decl_line, Decls, Lines),
+    atomic_list_concat(Lines, '\n', Code).
+
+r_op_decl_line(op(Prec, Type, Name), Line) :-
+    must_be(integer, Prec),
+    must_be(atom, Type),
+    Prec >= 0, Prec =< 1200,
+    memberchk(Type, [xfx, xfy, yfx, fx, fy, xf, yf]),
+    (   atom(Name)
+    ->  r_string_literal_atom(Name, NameLit),
+        format(string(Line), 'WamRuntime$op_set(~w, ~wL, "~w")',
+               [NameLit, Prec, Type])
+    ;   is_list(Name),
+        forall(member(N, Name), must_be(atom, N))
+    ->  maplist([N, NL]>>r_string_literal_atom(N, NL), Name, NameLits),
+        atomic_list_concat(NameLits, ', ', NamesJoined),
+        format(string(Line),
+               'for (nm in c(~w)) WamRuntime$op_set(nm, ~wL, "~w")',
+               [NamesJoined, Prec, Type])
+    ).
+
+% Quote an atom as a double-quoted R string literal, escaping
+% backslashes and double quotes. Used by r_op_decls_code so an op
+% name like `\\+` survives as `"\\\\+"` in emitted R source.
+r_string_literal_atom(Atom, Lit) :-
+    atom_string(Atom, S),
+    string_chars(S, Chars),
+    r_escape_chars(Chars, Escaped),
+    string_chars(EscStr, Escaped),
+    format(string(Lit), '"~w"', [EscStr]).
+
+r_escape_chars([], []).
+r_escape_chars(['\\' | T], ['\\', '\\' | RestEsc]) :- !,
+    r_escape_chars(T, RestEsc).
+r_escape_chars(['"'  | T], ['\\', '"'  | RestEsc]) :- !,
+    r_escape_chars(T, RestEsc).
+r_escape_chars([C    | T], [C | RestEsc]) :-
+    r_escape_chars(T, RestEsc).
+
 % ============================================================================
 % PROJECT WRITER
 % ============================================================================
@@ -1504,11 +1552,12 @@ write_wam_r_project(Predicates, Options, ProjectDir) :-
     atomic_list_concat(TopLevelLabelEntries, ',\n', DispatchBody),
     atomic_list_concat(AllLabelEntries, ',\n', LabelBody),
     r_foreign_handlers_code(Options, ForeignHandlersBody),
+    r_op_decls_code(Options, OpDeclsBody),
     write_runtime_source(RDir),
     write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
                          WrapperCode, IdToStringStr, ForeignHandlersBody,
                          LoweredFunctionsCode, FactShapeComments,
-                         LoweredDispatchCode).
+                         LoweredDispatchCode, OpDeclsBody).
 
 write_description(ProjectDir, ModName) :-
     find_template('templates/targets/r_wam/DESCRIPTION.mustache', Template),
@@ -1528,7 +1577,7 @@ write_runtime_source(RDir) :-
 write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
                      WrapperCode, IdToStringStr, ForeignHandlersBody,
                      LoweredFunctionsCode, FactShapeComments,
-                     LoweredDispatchCode) :-
+                     LoweredDispatchCode, OpDeclsBody) :-
     find_template('templates/targets/r_wam/program.R.mustache', Template),
     get_time(T), format_time(string(DateStr), "%Y-%m-%d", T),
     render_template(Template,
@@ -1541,7 +1590,8 @@ write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
           'lowered_dispatch_assignments'=LoweredDispatchCode,
           'foreign_handlers'=ForeignHandlersBody,
           'lowered_functions'=LoweredFunctionsCode,
-          'fact_shape_comments'=FactShapeComments
+          'fact_shape_comments'=FactShapeComments,
+          'op_decls'=OpDeclsBody
         ], Content),
     directory_file_path(RDir, 'generated_program.R', Path),
     write_file(Path, Content).
