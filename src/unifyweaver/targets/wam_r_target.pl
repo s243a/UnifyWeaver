@@ -768,7 +768,12 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
         format(string(MainEntry), '    "~w/~w" = ~wL', [P, Arity, BasePC]),
         NewTopLabels = [MainEntry | TopLabelAcc],
         NewAllLabels = [MainEntry | AllLabelAcc],
-        WamCodeForLower = ""
+        WamCodeForLower = "",
+        % External fact sources have no clause body to classify, so
+        % no fact-shape comment is emitted. Without this binding the
+        % accumulator carries an unbound tail, blowing up the
+        % atomic_list_concat in compile_predicates_for_project.
+        NewFactCommentAcc = FactCommentAcc
     ;   r_foreign_predicate(P, Arity, Options)
     ->  format(string(FLit), 'CallForeign("~w", ~w)', [P, Arity]),
         ForeignSeq = [FLit, 'Proceed()'],
