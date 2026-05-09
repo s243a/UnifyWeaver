@@ -24,6 +24,8 @@
 :- dynamic user:wam_lua_agg_min/0.
 :- dynamic user:wam_lua_agg_max/0.
 :- dynamic user:wam_lua_agg_set/0.
+:- dynamic user:wam_lua_stream_fact/2.
+:- dynamic user:wam_lua_stream_caller/2.
 
 user:wam_lua_fact(a).
 user:wam_lua_choice(a).
@@ -58,6 +60,9 @@ user:wam_lua_agg_max :-
 user:wam_lua_agg_set :-
     aggregate_all(set(X), user:wam_lua_num(X), S),
     S = [1, 2, 3].
+user:wam_lua_stream_fact(a, b).
+user:wam_lua_stream_fact(a, c).
+user:wam_lua_stream_caller(X, Y) :- user:wam_lua_stream_fact(X, Y).
 
 test(exports) :-
     assertion(current_predicate(wam_lua_target:write_wam_lua_project/3)),
@@ -132,6 +137,19 @@ test(call_indexed_atom_fact2_literal) :-
     once(wam_parts_to_lua(["call_indexed_atom_fact2", "edge/2"], [], Lit)),
     assertion(Lit == "I.CallIndexedAtomFact2(\"edge/2\")").
 
+test(fact_stream_emitted) :-
+    unique_lua_tmp_dir('tmp_lua_fact_stream_emit', TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project([user:wam_lua_stream_fact/2], [], TmpDir),
+        ( directory_file_path(TmpDir, 'lua/generated_program.lua', Program),
+          read_file_to_string(Program, Code, []),
+          assertion(sub_string(Code, _, _, _, 'I.CallFactStream("wam_lua_stream_fact/2", 2)')),
+          assertion(sub_string(Code, _, _, _, 'local inline_facts = {')),
+          assertion(sub_string(Code, _, _, _, '["wam_lua_stream_fact/2"] = {{V.Atom('))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
 test(lua_indexed_atom_fact2_e2e, [condition(lua_available)]) :-
     unique_lua_tmp_dir('tmp_lua_indexed_fact2_e2e', TmpDir),
     setup_call_cleanup(
@@ -150,6 +168,19 @@ test(lua_indexed_atom_fact2_e2e, [condition(lua_available)]) :-
           run_lua_script(LuaDir, Script, Output),
           normalize_space(string(Trimmed), Output),
           assertion(Trimmed == "true true false")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(lua_fact_stream_e2e, [condition(lua_available)]) :-
+    unique_lua_tmp_dir('tmp_lua_fact_stream_e2e', TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project([user:wam_lua_stream_fact/2, user:wam_lua_stream_caller/2], [], TmpDir),
+        ( directory_file_path(TmpDir, 'lua', LuaDir),
+          run_lua_query(LuaDir, 'wam_lua_stream_fact/2', [a, b], true),
+          run_lua_query(LuaDir, 'wam_lua_stream_fact/2', [a, c], true),
+          run_lua_query(LuaDir, 'wam_lua_stream_fact/2', [a, d], false),
+          run_lua_query(LuaDir, 'wam_lua_stream_caller/2', [a, c], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

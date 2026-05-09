@@ -36,6 +36,7 @@ function I.SetConstant(c) return instr("SetConstant", { c = c }) end
 function I.Call(p, n) return instr("Call", { pred = p, arity = n }) end
 function I.CallPc(pc, n) return instr("CallPc", { pc = pc, arity = n }) end
 function I.CallIndexedAtomFact2(p) return instr("CallIndexedAtomFact2", { pred = p }) end
+function I.CallFactStream(p, n) return instr("CallFactStream", { pred = p, arity = n }) end
 function I.Execute(p, n) return instr("Execute", { pred = p, arity = n }) end
 function I.ExecutePc(pc) return instr("ExecutePc", { pc = pc }) end
 function I.CallForeign(p, n) return instr("CallForeign", { pred = p, arity = n }) end
@@ -258,6 +259,28 @@ function Runtime.backtrack(state)
     state.halt = false
     return true
   end
+  if cp.kind == "fact_stream" then
+    while #state.trail > cp.trail_len do
+      local name = table.remove(state.trail)
+      state.bindings[name] = nil
+    end
+    state.regs = Runtime.copy_table(cp.regs)
+    state.cp = cp.cp
+    state.var_counter = cp.var_counter
+    state.mode = cp.mode
+    state.build_stack = cp.build_stack or {}
+    local row = table.remove(cp.rows, 1)
+    if #cp.rows == 0 then table.remove(state.cps) end
+    if Runtime.unify(state, Runtime.get_reg(state, 1), row[1]) ~= true then
+      return Runtime.backtrack(state)
+    end
+    if Runtime.unify(state, Runtime.get_reg(state, 2), row[2]) ~= true then
+      return Runtime.backtrack(state)
+    end
+    state.pc = cp.next_pc
+    state.halt = false
+    return true
+  end
   if cp.kind == "aggregate" then
     table.remove(state.cps)
     while #state.trail > cp.trail_len do
@@ -444,6 +467,30 @@ local function call_indexed_atom_fact2(program, state, instr)
   end
   local atom = V.Atom(Runtime.intern(program.intern_table, values[1]))
   if Runtime.unify(state, Runtime.get_reg(state, 2), atom) ~= true then return false end
+  state.pc = state.pc + 1
+  return true
+end
+
+local function call_fact_stream(program, state, instr)
+  local rows = program.inline_facts and program.inline_facts[instr.pred] or nil
+  if rows == nil or #rows == 0 then return false end
+  if #rows > 1 then
+    local rest = {}
+    for i = 2, #rows do rest[#rest + 1] = rows[i] end
+    table.insert(state.cps, {
+      kind = "fact_stream",
+      next_pc = state.pc + 1,
+      regs = Runtime.copy_table(state.regs),
+      cp = state.cp,
+      trail_len = #state.trail,
+      var_counter = state.var_counter,
+      mode = state.mode,
+      build_stack = state.build_stack,
+      rows = rest
+    })
+  end
+  if Runtime.unify(state, Runtime.get_reg(state, 1), rows[1][1]) ~= true then return false end
+  if Runtime.unify(state, Runtime.get_reg(state, 2), rows[1][2]) ~= true then return false end
   state.pc = state.pc + 1
   return true
 end
@@ -648,6 +695,7 @@ function Runtime.step(program, state, instr)
     return true
   end
   if op == "CallIndexedAtomFact2" then return call_indexed_atom_fact2(program, state, instr) end
+  if op == "CallFactStream" then return call_fact_stream(program, state, instr) end
   if op == "CallPc" then
     state.cp = state.pc + 1
     state.pc = instr.pc
