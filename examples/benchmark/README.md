@@ -120,6 +120,12 @@ comparison fails on output, resolved-policy, coverage, or relation-registration
 drift, while reporting best-mode and median changes as timing warnings because
 single-repetition benchmark winners can move with local noise.
 
+Add `--require-idle` for timing-sensitive calibration refreshes. It fails
+before running child benchmarks if `MemAvailable` is below
+`--min-free-memory-mib` (default `1024`) or if another process is already above
+`--max-competing-cpu-percent` (default `50.0`), preventing known-noisy timing
+rows from being captured accidentally.
+
 Use `--stability-runs <n>` to run the wrapper-level sweep repeatedly and
 summarize stable winners. Values above `1` report majority winners, winner
 counts, stable resolved `auto` modes, and per-mode median timings across the

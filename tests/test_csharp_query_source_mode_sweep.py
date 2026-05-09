@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "examples" / "benchmark"))
 from benchmark_csharp_query_source_mode_sweep import (  # noqa: E402
     CALIBRATION_ARTIFACT,
     CalibrationArtifactRow,
+    CompetingProcess,
     DEFAULT_WORKLOADS,
     SourceModeSummary,
     WORKLOAD_SCRIPTS,
@@ -20,10 +21,13 @@ from benchmark_csharp_query_source_mode_sweep import (  # noqa: E402
     filter_workload_scales,
     load_calibration_artifact,
     parse_args,
+    parse_competing_processes,
+    parse_mem_available_mib,
     parse_mode_summary,
     parse_ratio,
     parse_runner_output,
     parse_workloads,
+    resource_preflight_failures,
     summarize_stability,
     supported_scales_for_workload,
 )
@@ -68,6 +72,50 @@ class CSharpQuerySourceModeSweepTests(unittest.TestCase):
         self.assertEqual(
             filter_workload_scales("shortest-path", "dev"),
             ("dev", []),
+        )
+
+    def test_parse_mem_available_mib(self) -> None:
+        self.assertEqual(
+            parse_mem_available_mib("MemTotal:       4096000 kB\nMemAvailable:   2097152 kB\n"),
+            2048,
+        )
+        self.assertIsNone(parse_mem_available_mib("MemTotal:       4096000 kB\n"))
+
+    def test_parse_competing_processes_filters_current_pid_and_threshold(self) -> None:
+        processes = parse_competing_processes(
+            "\n".join(
+                [
+                    "PID %CPU COMMAND",
+                    "100 75.0 swipl -q benchmark.pl",
+                    "101 10.0 idle-process",
+                    "102 99.0 current-python",
+                ]
+            ),
+            current_pid=102,
+            cpu_threshold=50.0,
+        )
+
+        self.assertEqual(
+            processes,
+            [CompetingProcess(pid=100, cpu_percent=75.0, command="swipl -q benchmark.pl")],
+        )
+
+    def test_resource_preflight_failures_checks_memory_and_cpu(self) -> None:
+        failures = resource_preflight_failures(
+            min_free_memory_mib=1024,
+            max_competing_cpu_percent=50.0,
+            available_memory_mib=512,
+            competing_processes=[
+                CompetingProcess(pid=100, cpu_percent=75.0, command="swipl -q benchmark.pl")
+            ],
+        )
+
+        self.assertEqual(
+            failures,
+            [
+                "available memory 512 MiB is below required 1024 MiB",
+                "competing process 100 uses 75.0% CPU (threshold 50.0%): swipl -q benchmark.pl",
+            ],
         )
 
     def test_calibration_artifact_covers_registered_graph_workloads(self) -> None:

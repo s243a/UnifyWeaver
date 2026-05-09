@@ -14,6 +14,7 @@ import argparse
 import csv
 import os
 import statistics
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -94,6 +95,13 @@ class SourceModeStabilitySummary:
     median_summary: str
 
 
+@dataclass
+class CompetingProcess:
+    pid: int
+    cpu_percent: float
+    command: str
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -157,6 +165,26 @@ def parse_args() -> argparse.Namespace:
         default=1.50,
         help="Warn when a per-mode median or auto-vs-best ratio changes by more than this ratio.",
     )
+    parser.add_argument(
+        "--require-idle",
+        action="store_true",
+        help=(
+            "Before timing-sensitive runs, fail fast if competing high-CPU processes "
+            "are active or available memory is below --min-free-memory-mib."
+        ),
+    )
+    parser.add_argument(
+        "--max-competing-cpu-percent",
+        type=float,
+        default=50.0,
+        help="CPU-percent threshold for --require-idle competing-process detection.",
+    )
+    parser.add_argument(
+        "--min-free-memory-mib",
+        type=int,
+        default=1024,
+        help="Minimum MemAvailable MiB required by --require-idle.",
+    )
     return parser.parse_args()
 
 
@@ -192,6 +220,110 @@ def filter_workload_scales(workload: str, scales: str) -> tuple[str, list[str]]:
     selected = [scale for scale in requested if scale in supported]
     skipped = [scale for scale in requested if scale not in supported]
     return ",".join(selected), skipped
+
+
+def parse_mem_available_mib(meminfo_text: str) -> int | None:
+    for line in meminfo_text.splitlines():
+        if not line.startswith("MemAvailable:"):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            return None
+        try:
+            return int(parts[1]) // 1024
+        except ValueError:
+            return None
+    return None
+
+
+def read_mem_available_mib(meminfo_path: Path = Path("/proc/meminfo")) -> int | None:
+    try:
+        return parse_mem_available_mib(meminfo_path.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+
+
+def parse_competing_processes(
+    ps_output: str,
+    *,
+    current_pid: int,
+    cpu_threshold: float,
+) -> list[CompetingProcess]:
+    processes: list[CompetingProcess] = []
+    for line in ps_output.splitlines()[1:]:
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+            cpu_percent = float(parts[1])
+        except ValueError:
+            continue
+        if pid == current_pid or cpu_percent < cpu_threshold:
+            continue
+        processes.append(
+            CompetingProcess(
+                pid=pid,
+                cpu_percent=cpu_percent,
+                command=parts[2],
+            )
+        )
+    return processes
+
+
+def collect_competing_processes(
+    *,
+    cpu_threshold: float,
+    current_pid: int | None = None,
+) -> list[CompetingProcess]:
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pid=,%cpu=,args="],
+            check=True,
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    header = "PID %CPU COMMAND\n"
+    return parse_competing_processes(
+        header + result.stdout,
+        current_pid=current_pid or os.getpid(),
+        cpu_threshold=cpu_threshold,
+    )
+
+
+def resource_preflight_failures(
+    *,
+    min_free_memory_mib: int,
+    max_competing_cpu_percent: float,
+    available_memory_mib: int | None = None,
+    competing_processes: list[CompetingProcess] | None = None,
+) -> list[str]:
+    failures: list[str] = []
+    memory_mib = read_mem_available_mib() if available_memory_mib is None else available_memory_mib
+    if memory_mib is None:
+        failures.append("could not determine available memory from /proc/meminfo")
+    elif memory_mib < min_free_memory_mib:
+        failures.append(
+            f"available memory {memory_mib} MiB is below required {min_free_memory_mib} MiB"
+        )
+
+    processes = (
+        collect_competing_processes(cpu_threshold=max_competing_cpu_percent)
+        if competing_processes is None
+        else competing_processes
+    )
+    for process in processes:
+        failures.append(
+            (
+                f"competing process {process.pid} uses {process.cpu_percent:.1f}% CPU "
+                f"(threshold {max_competing_cpu_percent:.1f}%): {process.command}"
+            )
+        )
+    return failures
 
 
 def load_calibration_artifact(path: Path = CALIBRATION_ARTIFACT) -> list[CalibrationArtifactRow]:
@@ -619,6 +751,15 @@ def main() -> int:
         validate_csharp_query_source_modes(args.source_modes)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    if args.require_idle:
+        preflight_failures = resource_preflight_failures(
+            min_free_memory_mib=args.min_free_memory_mib,
+            max_competing_cpu_percent=args.max_competing_cpu_percent,
+        )
+        if preflight_failures:
+            for failure in preflight_failures:
+                print(f"ERROR: resource preflight: {failure}", file=sys.stderr)
+            return 1
 
     sweep_runs: list[list[SourceModeSummary]] = []
     for _ in range(args.stability_runs):
