@@ -91,6 +91,7 @@ test(instructions_and_labels) :-
           read_file_to_string(Program, Code, []),
           assertion(sub_string(Code, _, _, _, 'local intern_seed = {')),
           assertion(sub_string(Code, _, _, _, 'local shared_instructions = {')),
+          assertion(sub_string(Code, _, _, _, 'Runtime.resolve_program(shared_program)')),
           assertion(sub_string(Code, _, _, _, 'I.GetConstant(V.Atom(')),
           assertion(sub_string(Code, _, _, _, '["wam_lua_fact/1"] = 1'))
         ),
@@ -122,6 +123,31 @@ test(aggregate_and_second_arg_switch_emitted) :-
           assertion(sub_string(Code, _, _, _, 'I.BeginAggregate("collect"')),
           assertion(sub_string(Code, _, _, _, 'I.EndAggregate(')),
           assertion(sub_string(Code, _, _, _, 'I.SwitchOnConstantA2('))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(resolved_dispatch_loaded, [condition(lua_available)]) :-
+    unique_lua_tmp_dir('tmp_lua_resolved_dispatch', TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project(
+            [ user:wam_lua_caller/1,
+              user:wam_lua_fact/1,
+              user:wam_lua_choice/1,
+              user:wam_lua_greet/2,
+              user:wam_lua_fa_basic/0,
+              user:wam_lua_fa_fact/1
+            ],
+            [],
+            TmpDir),
+        ( directory_file_path(TmpDir, 'lua', LuaDir),
+          run_lua_script(
+              LuaDir,
+              'local m=require("generated_program"); for _,i in ipairs(m.program.instructions) do print(i.op) end',
+              Output),
+          assertion(sub_string(Output, _, _, _, 'CallPc')),
+          assertion(sub_string(Output, _, _, _, 'TryMeElsePc')),
+          assertion(sub_string(Output, _, _, _, 'SwitchOnConstantA2Pc'))
         ),
         delete_directory_and_contents(TmpDir)
     ).
@@ -237,3 +263,10 @@ run_lua_query(LuaDir, PredArity, Args, Expected) :-
     process_wait(PID, _Status),
     normalize_space(string(Trimmed), Output),
     (Expected == true -> assertion(Trimmed == "true") ; assertion(Trimmed == "false")).
+
+run_lua_script(LuaDir, Script, Output) :-
+    process_create(path(lua), ['-e', Script],
+                   [cwd(LuaDir), stdout(pipe(Out)), stderr(null), process(PID)]),
+    read_string(Out, _, Output),
+    close(Out),
+    process_wait(PID, exit(0)).

@@ -34,7 +34,9 @@ function I.SetVariable(xn) return instr("SetVariable", { xn = xn }) end
 function I.SetValue(xn) return instr("SetValue", { xn = xn }) end
 function I.SetConstant(c) return instr("SetConstant", { c = c }) end
 function I.Call(p, n) return instr("Call", { pred = p, arity = n }) end
+function I.CallPc(pc, n) return instr("CallPc", { pc = pc, arity = n }) end
 function I.Execute(p, n) return instr("Execute", { pred = p, arity = n }) end
+function I.ExecutePc(pc) return instr("ExecutePc", { pc = pc }) end
 function I.CallForeign(p, n) return instr("CallForeign", { pred = p, arity = n }) end
 function I.ExecuteForeign(p, n) return instr("ExecuteForeign", { pred = p, arity = n }) end
 function I.Proceed() return instr("Proceed") end
@@ -42,15 +44,21 @@ function I.Fail() return instr("Fail") end
 function I.Allocate() return instr("Allocate") end
 function I.Deallocate() return instr("Deallocate") end
 function I.TryMeElse(label) return instr("TryMeElse", { label = label }) end
+function I.TryMeElsePc(pc) return instr("TryMeElsePc", { pc = pc }) end
 function I.RetryMeElse(label) return instr("RetryMeElse", { label = label }) end
+function I.RetryMeElsePc(pc) return instr("RetryMeElsePc", { pc = pc }) end
 function I.TrustMe() return instr("TrustMe") end
 function I.Jump(label) return instr("Jump", { label = label }) end
+function I.JumpPc(pc) return instr("JumpPc", { pc = pc }) end
 function I.CutIte() return instr("CutIte") end
 function I.BuiltinCall(p, n) return instr("BuiltinCall", { pred = p, arity = n }) end
 function I.ArgInstr(n, ai, out) return instr("ArgInstr", { n = n, ai = ai, out = out }) end
 function I.SwitchOnConstant(cases) return instr("SwitchOnConstant", { cases = cases }) end
+function I.SwitchOnConstantPc(cases) return instr("SwitchOnConstantPc", { cases = cases }) end
 function I.SwitchOnConstantA2(cases) return instr("SwitchOnConstantA2", { cases = cases }) end
+function I.SwitchOnConstantA2Pc(cases) return instr("SwitchOnConstantA2Pc", { cases = cases }) end
 function I.SwitchOnStructure(cases) return instr("SwitchOnStructure", { cases = cases }) end
+function I.SwitchOnStructurePc(cases) return instr("SwitchOnStructurePc", { cases = cases }) end
 function I.BeginAggregate(kind, template, bag) return instr("BeginAggregate", { kind = kind, template = template, bag = bag }) end
 function I.EndAggregate(template) return instr("EndAggregate", { template = template }) end
 function I.Raw(text) return instr("Raw", { text = text }) end
@@ -337,15 +345,17 @@ end
 local function switch_constant(program, state, instr, reg)
   local v = Runtime.deref(state, Runtime.get_reg(state, reg))
   local target = nil
+  local target_pc = nil
   if type(v) == "table" and v.tag == "atom" then
     for _, case in ipairs(instr.cases or {}) do
       if case.value and case.value.tag == "atom" and case.value.id == v.id then
         target = case.label
+        target_pc = case.pc
         break
       end
     end
   end
-  local pc = target and target ~= "default" and program.labels[target] or nil
+  local pc = target_pc or (target and target ~= "default" and program.labels[target] or nil)
   state.pc = pc or (state.pc + 1)
   return true
 end
@@ -353,21 +363,76 @@ end
 local function switch_structure(program, state, instr)
   local v = Runtime.deref(state, Runtime.get_reg(state, 1))
   local target = nil
+  local target_pc = nil
   if type(v) == "table" and v.tag == "struct" then
     for _, case in ipairs(instr.cases or {}) do
       if case.fid == v.fid and case.arity == #v.args then
         target = case.label
+        target_pc = case.pc
         break
       end
     end
   end
-  local pc = target and target ~= "default" and program.labels[target] or nil
+  local pc = target_pc or (target and target ~= "default" and program.labels[target] or nil)
   state.pc = pc or (state.pc + 1)
   return true
 end
 
 local function call_key(instr)
   return instr.pred .. "/" .. tostring(instr.arity)
+end
+
+local function resolve_switch_cases(labels, cases)
+  local resolved = {}
+  local any = false
+  for _, case in ipairs(cases or {}) do
+    local pc = case.label and case.label ~= "default" and labels[case.label] or nil
+    if pc ~= nil then
+      local next_case = {}
+      for k, v in pairs(case) do next_case[k] = v end
+      next_case.pc = pc
+      table.insert(resolved, next_case)
+      any = true
+    end
+  end
+  return any and resolved or nil
+end
+
+function Runtime.resolve_program(program)
+  local labels = program.labels or {}
+  local resolved = {}
+  for i, instr0 in ipairs(program.instructions or {}) do
+    local instr = instr0
+    if instr0.op == "Call" then
+      local pc = labels[call_key(instr0)]
+      if pc ~= nil then instr = I.CallPc(pc, instr0.arity) end
+    elseif instr0.op == "Execute" then
+      local pc = labels[call_key(instr0)]
+      if pc ~= nil then instr = I.ExecutePc(pc) end
+    elseif instr0.op == "Jump" then
+      local pc = labels[instr0.label]
+      if pc ~= nil then instr = I.JumpPc(pc) end
+    elseif instr0.op == "TryMeElse" then
+      local pc = labels[instr0.label]
+      if pc ~= nil then instr = I.TryMeElsePc(pc) end
+    elseif instr0.op == "RetryMeElse" then
+      local pc = labels[instr0.label]
+      if pc ~= nil then instr = I.RetryMeElsePc(pc) end
+    elseif instr0.op == "SwitchOnConstant" then
+      local cases = resolve_switch_cases(labels, instr0.cases)
+      if cases ~= nil then instr = I.SwitchOnConstantPc(cases) end
+    elseif instr0.op == "SwitchOnConstantA2" then
+      local cases = resolve_switch_cases(labels, instr0.cases)
+      if cases ~= nil then instr = I.SwitchOnConstantA2Pc(cases) end
+    elseif instr0.op == "SwitchOnStructure" then
+      local cases = resolve_switch_cases(labels, instr0.cases)
+      if cases ~= nil then instr = I.SwitchOnStructurePc(cases) end
+    end
+    resolved[i] = instr
+  end
+  program.instructions = resolved
+  program.resolved = true
+  return program
 end
 
 local function number_value(v)
@@ -486,16 +551,16 @@ function Runtime.step(program, state, instr)
     end
     return false
   end
-  if op == "TryMeElse" then
-    table.insert(state.cps, { next_pc = program.labels[instr.label], regs = Runtime.copy_table(state.regs), cp = state.cp, trail_len = #state.trail, var_counter = state.var_counter })
+  if op == "TryMeElse" or op == "TryMeElsePc" then
+    table.insert(state.cps, { next_pc = instr.pc or program.labels[instr.label], regs = Runtime.copy_table(state.regs), cp = state.cp, trail_len = #state.trail, var_counter = state.var_counter })
     state.pc = state.pc + 1; return true
   end
-  if op == "RetryMeElse" then
+  if op == "RetryMeElse" or op == "RetryMeElsePc" then
     local cp = state.cps[#state.cps]
     if cp == nil or cp.kind == "aggregate" then state.pc = state.pc + 1; return true end
     while #state.trail > cp.trail_len do state.bindings[table.remove(state.trail)] = nil end
     state.regs = Runtime.copy_table(cp.regs)
-    cp.next_pc = program.labels[instr.label]
+    cp.next_pc = instr.pc or program.labels[instr.label]
     state.pc = state.pc + 1; return true
   end
   if op == "TrustMe" then
@@ -505,9 +570,10 @@ function Runtime.step(program, state, instr)
     return true
   end
   if op == "Jump" then state.pc = program.labels[instr.label]; return state.pc ~= nil end
-  if op == "SwitchOnConstant" then return switch_constant(program, state, instr, 1) end
-  if op == "SwitchOnConstantA2" then return switch_constant(program, state, instr, 2) end
-  if op == "SwitchOnStructure" then return switch_structure(program, state, instr) end
+  if op == "JumpPc" then state.pc = instr.pc; return state.pc ~= nil end
+  if op == "SwitchOnConstant" or op == "SwitchOnConstantPc" then return switch_constant(program, state, instr, 1) end
+  if op == "SwitchOnConstantA2" or op == "SwitchOnConstantA2Pc" then return switch_constant(program, state, instr, 2) end
+  if op == "SwitchOnStructure" or op == "SwitchOnStructurePc" then return switch_structure(program, state, instr) end
   if op == "Call" then
     local target = program.labels[call_key(instr)]
     if target == nil then return false end
@@ -515,8 +581,17 @@ function Runtime.step(program, state, instr)
     state.pc = target
     return true
   end
+  if op == "CallPc" then
+    state.cp = state.pc + 1
+    state.pc = instr.pc
+    return state.pc ~= nil
+  end
   if op == "Execute" then
     state.pc = program.labels[call_key(instr)]
+    return state.pc ~= nil
+  end
+  if op == "ExecutePc" then
+    state.pc = instr.pc
     return state.pc ~= nil
   end
   if op == "BuiltinCall" then
