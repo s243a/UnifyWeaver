@@ -410,7 +410,7 @@ compile_wam_predicate_to_lua(_Pred, _WamCode, _Options, "").
 
 compile_predicates_for_project(Predicates, Options,
                                AllInstrs, TopLabels, AllLabels,
-                               WrapperCode, LoweredCode, InlineFactsCode) :-
+                               WrapperCode, LoweredCode, InlineFactsCode, FactSourcesCode) :-
     init_lua_atom_intern_table,
     option(intern_atoms(ExtraAtoms), Options, []),
     forall(member(A, ExtraAtoms), (atom_string(A, S), intern_lua_atom(S, _))),
@@ -418,11 +418,12 @@ compile_predicates_for_project(Predicates, Options,
     append_missing_foreign_predicates(Predicates, ForeignPredicates, CompilePreds),
     wam_lua_resolve_emit_mode(Options, Mode),
     compile_all_predicates(CompilePreds, Options, Mode, 1,
-        [], [], [], [], [], [],
-        AllInstrs, TopLabels, AllLabels, Wrappers, LoweredEntries, InlineFacts),
+        [], [], [], [], [], [], [],
+        AllInstrs, TopLabels, AllLabels, Wrappers, LoweredEntries, InlineFacts, FactSources),
     atomic_list_concat(Wrappers, '\n', WrapperCode),
     atomic_list_concat(LoweredEntries, '\n', LoweredCode),
-    atomic_list_concat(InlineFacts, ',\n', InlineFactsCode).
+    atomic_list_concat(InlineFacts, ',\n', InlineFactsCode),
+    atomic_list_concat(FactSources, ',\n', FactSourcesCode).
 
 append_missing_foreign_predicates(Predicates, ForeignPredicates, CompilePredicates) :-
     findall(F, (member(F, ForeignPredicates), \+ (member(P, Predicates), same_pi(P, F))), Missing),
@@ -432,19 +433,29 @@ same_pi(P0, P1) :- pi_key(P0, K), pi_key(P1, K).
 pi_key(_:P/A, P/A) :- !.
 pi_key(P/A, P/A).
 
-compile_all_predicates([], _, _, _, Instrs, TopLabels, AllLabels, Wrappers, Lowered, InlineFacts,
-                       Instrs, TopLabels, AllLabels, Wrappers, Lowered, InlineFacts).
+compile_all_predicates([], _, _, _, Instrs, TopLabels, AllLabels, Wrappers, Lowered, InlineFacts, FactSources,
+                       Instrs, TopLabels, AllLabels, Wrappers, Lowered, InlineFacts, FactSources).
 compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
-                       InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc, LoweredAcc, InlineFactAcc,
-                       AllInstrs, TopLabels, AllLabels, Wrappers, Lowered, InlineFacts) :-
+                       InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc, LoweredAcc, InlineFactAcc, FactSourceAcc,
+                       AllInstrs, TopLabels, AllLabels, Wrappers, Lowered, InlineFacts, FactSources) :-
     (Pred = _M:P/Arity -> true ; Pred = P/Arity),
-    (   lua_foreign_predicate(P, Arity, Options)
+    (   lua_fact_source_spec(P, Arity, Options, SourceSpec)
+    ->  format(string(Key), '~w/~w', [P, Arity]),
+        lua_string_literal(Key, KeyQ),
+        format(string(FLit), 'I.CallFactStream(~w, ~w)', [KeyQ, Arity]),
+        PredInstrs = [FLit, 'I.Proceed()'],
+        WamForLower = "",
+        PredSubLabelEntries0 = [],
+        InlineFactEntry = none,
+        lua_fact_source_entry(Key, SourceSpec, FactSourceEntry)
+    ;   lua_foreign_predicate(P, Arity, Options)
     ->  lua_string_literal(P, PQ),
         format(string(FLit), 'I.CallForeign(~w, ~w)', [PQ, Arity]),
         PredInstrs = [FLit, 'I.Proceed()'],
         WamForLower = "",
         PredSubLabelEntries0 = [],
-        InlineFactEntry = none
+        InlineFactEntry = none,
+        FactSourceEntry = none
     ;   compile_predicate_to_wam(P/Arity, [], WamForLower),
         (   Arity == 2,
             lua_inline_fact_tuples(WamForLower, Tuples),
@@ -454,9 +465,11 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
             format(string(FLit), 'I.CallFactStream(~w, ~w)', [KeyQ, Arity]),
             PredInstrs = [FLit, 'I.Proceed()'],
             PredSubLabelEntries0 = [],
-            lua_inline_fact_entry(Key, Tuples, InlineFactEntry)
+            lua_inline_fact_entry(Key, Tuples, InlineFactEntry),
+            FactSourceEntry = none
         ;   wam_code_to_lua_data(WamForLower, Options, PredInstrs, PredSubLabelEntries0),
-            InlineFactEntry = none
+            InlineFactEntry = none,
+            FactSourceEntry = none
         )
     ),
     length(PredInstrs, PredLen),
@@ -486,9 +499,31 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
         emit_lua_wrapper(P, Arity, BasePC, Wrapper)
     ),
     (InlineFactEntry == none -> NewInlineFactAcc = InlineFactAcc ; NewInlineFactAcc = [InlineFactEntry|InlineFactAcc]),
+    (FactSourceEntry == none -> NewFactSourceAcc = FactSourceAcc ; NewFactSourceAcc = [FactSourceEntry|FactSourceAcc]),
     compile_all_predicates(Rest, Options, Mode, NewPC,
-        NewInstrs, NewTopLabels, NewAllLabels, [Wrapper|WrapperAcc], NewLoweredAcc, NewInlineFactAcc,
-        AllInstrs, TopLabels, AllLabels, Wrappers, Lowered, InlineFacts).
+        NewInstrs, NewTopLabels, NewAllLabels, [Wrapper|WrapperAcc], NewLoweredAcc, NewInlineFactAcc, NewFactSourceAcc,
+        AllInstrs, TopLabels, AllLabels, Wrappers, Lowered, InlineFacts, FactSources).
+
+lua_fact_source_spec(P, Arity, Options, Spec) :-
+    Arity =:= 2,
+    option(lua_fact_sources(Sources), Options, []),
+    member(source(PI, Spec), Sources),
+    fact_source_pi_match(PI, P, Arity).
+
+fact_source_pi_match(_:Name/Ar, P, Arity) :- !,
+    Name == P, Ar =:= Arity.
+fact_source_pi_match(Name/Ar, P, Arity) :-
+    Name == P, Ar =:= Arity.
+
+lua_fact_source_entry(Key, file(Path), Entry) :-
+    atom_string(Path, PathStr),
+    (   absolute_file_name(PathStr, AbsPath, [access(read), file_errors(fail)])
+    ->  SourcePath = AbsPath
+    ;   SourcePath = PathStr
+    ),
+    lua_string_literal(Key, KeyQ),
+    lua_string_literal(SourcePath, PathQ),
+    format(string(Entry), '  [~w] = { path = ~w }', [KeyQ, PathQ]).
 
 lua_inline_fact_tuples(WamCode, Tuples) :-
     atom_string(WamCode, Str),
@@ -624,7 +659,7 @@ write_wam_lua_project(Predicates, Options, ProjectDir) :-
     directory_file_path(ProjectDir, 'lua', LuaDir),
     make_directory_path(LuaDir),
     compile_predicates_for_project(Predicates, Options,
-        AllInstrs, TopLabels, AllLabels, WrapperCode, LoweredCode, InlineFactsCode),
+        AllInstrs, TopLabels, AllLabels, WrapperCode, LoweredCode, InlineFactsCode, FactSourcesCode),
     emit_lua_intern_table(InternSeed),
     maplist([I, Line]>>(format(string(Line), '  ~w', [I])), AllInstrs, InstrLines),
     atomic_list_concat(InstrLines, ',\n', InstrBody),
@@ -633,7 +668,7 @@ write_wam_lua_project(Predicates, Options, ProjectDir) :-
     lua_foreign_handlers_code(Options, ForeignHandlers),
     write_runtime_source(LuaDir),
     write_program_source(LuaDir, InstrBody, LabelBody, DispatchBody,
-                         WrapperCode, InternSeed, ForeignHandlers, LoweredCode, InlineFactsCode).
+                         WrapperCode, InternSeed, ForeignHandlers, LoweredCode, InlineFactsCode, FactSourcesCode).
 
 write_runtime_source(LuaDir) :-
     find_template('templates/targets/lua_wam/runtime.lua.mustache', Template),
@@ -643,7 +678,7 @@ write_runtime_source(LuaDir) :-
     write_file(Path, Content).
 
 write_program_source(LuaDir, InstrBody, LabelBody, DispatchBody,
-                     WrapperCode, InternSeed, ForeignHandlers, LoweredCode, InlineFactsCode) :-
+                     WrapperCode, InternSeed, ForeignHandlers, LoweredCode, InlineFactsCode, FactSourcesCode) :-
     find_template('templates/targets/lua_wam/program.lua.mustache', Template),
     get_time(T), format_time(string(Date), "%Y-%m-%d", T),
     render_template(Template,
@@ -655,7 +690,8 @@ write_program_source(LuaDir, InstrBody, LabelBody, DispatchBody,
          'intern_id_to_string'=InternSeed,
          'foreign_handlers'=ForeignHandlers,
          'lowered_functions'=LoweredCode,
-         'inline_facts'=InlineFactsCode], Content),
+         'inline_facts'=InlineFactsCode,
+         'fact_sources'=FactSourcesCode], Content),
     directory_file_path(LuaDir, 'generated_program.lua', Path),
     write_file(Path, Content).
 

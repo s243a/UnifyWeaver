@@ -471,8 +471,51 @@ local function call_indexed_atom_fact2(program, state, instr)
   return true
 end
 
+local function trim(s)
+  return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function parse_fact_source_value(program, text)
+  text = trim(text)
+  local n = tonumber(text)
+  if n and tostring(math.tointeger(n) or n) == text then return V.Int(n) end
+  return V.Atom(Runtime.intern(program.intern_table, text))
+end
+
+function Runtime.read_facts_file(program, path)
+  local rows = {}
+  local fh = io.open(path, "r")
+  if fh == nil then return rows end
+  for line in fh:lines() do
+    local cleaned = trim(line)
+    if cleaned ~= "" and cleaned:sub(1, 1) ~= "#" then
+      local sep = cleaned:find("\t", 1, true) and "\t" or ","
+      local parts = {}
+      for part in cleaned:gmatch("([^" .. sep .. "]+)") do
+        parts[#parts + 1] = part
+      end
+      if #parts >= 2 then
+        rows[#rows + 1] = {
+          parse_fact_source_value(program, parts[1]),
+          parse_fact_source_value(program, parts[2])
+        }
+      end
+    end
+  end
+  fh:close()
+  return rows
+end
+
+local function fact_source_rows(program, pred)
+  local source = program.fact_sources and program.fact_sources[pred] or nil
+  if source == nil then return nil end
+  if source.rows == nil then source.rows = Runtime.read_facts_file(program, source.path) end
+  return source.rows
+end
+
 local function call_fact_stream(program, state, instr)
   local rows = program.inline_facts and program.inline_facts[instr.pred] or nil
+  if rows == nil or #rows == 0 then rows = fact_source_rows(program, instr.pred) end
   if rows == nil or #rows == 0 then return false end
   if #rows > 1 then
     local rest = {}
