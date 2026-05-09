@@ -127,7 +127,8 @@ test(guard_with_computation) :-
 test(fallback_for_recursive) :-
     assert(user:factorial(0, 1)),
     assert(user:(factorial(N, F) :- N > 0, N1 is N - 1, factorial(N1, F1), F is N * F1)),
-    compile_py(factorial/2, Code),
+    call_cleanup(compile_py(factorial/2, Code), Deterministic = true),
+    assertion(Deterministic == true),
     % Recursive predicates go through compile_recursive_predicate
     % so native lowering doesn't apply — should not produce def factorial(arg1)
     \+ once(sub_string(Code, _, _, _, "def factorial(arg1)")),

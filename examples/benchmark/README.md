@@ -93,6 +93,33 @@ Semantic note:
 - current runs also report `query_vs_prolog_accumulated = match` at
   `300`, `1k`, `5k`, and `10k`
 
+### C# Query Source-Mode Calibration
+
+`benchmark_csharp_query_source_mode_sweep.py` runs the generated C# query
+graph workloads across relation source modes and reports each workload's
+best observed mode, `auto` versus best ratio, output hash agreement, resolved
+source mode, and relation registration shape. Its default workload set is
+`all`, covering every registered graph workload:
+
+```bash
+python examples/benchmark/benchmark_csharp_query_source_mode_sweep.py \
+  --scales 300 \
+  --source-modes auto,preload,artifact-prebuilt \
+  --repetitions 1 \
+  --fail-on-output-mismatch \
+  --max-auto-vs-best-ratio 2.00
+```
+
+The checked-in scale-300 calibration snapshot is
+`examples/benchmark/csharp_query_graph_source_mode_calibration.tsv`. It is a
+baseline for the current graph `auto` policy, not a permanent benchmark
+claim: use a fresh sweep before changing `RelationSourceModePolicy`.
+
+Add `--compare-calibration` to compare a fresh sweep with that snapshot. The
+comparison fails on output, resolved-policy, coverage, or relation-registration
+drift, while reporting best-mode and median changes as timing warnings because
+single-repetition benchmark winners can move with local noise.
+
 ### WAM-Rust and WAM-Haskell Benchmark Variants
 
 The effective-distance harness also includes hybrid WAM benchmark targets:
@@ -343,9 +370,12 @@ When both sides of a registered pair run for the same scale, the benchmark
 summary also emits a paired delta table with median timings, a
 `kernels_speedup_vs_no_kernels` ratio, and output/row-count match flags. A
 ratio above `1.0` means the kernel-enabled target was faster than its
-no-kernel counterpart for that pair. Targets reported as `timeout` or
-`compile_only` are listed in the primary table but excluded from output
-matching, baseline speedups, and kernel-pair deltas.
+no-kernel counterpart for that pair. Targets reported as `timeout`, `error`,
+or `compile_only` are listed in the primary table but excluded from output
+matching, baseline speedups, and kernel-pair deltas. Error rows preserve any
+normalized stdout digest and row count that were produced before the process
+failed, which is useful for diagnosing partial-output crashes without aborting
+the rest of the matrix.
 
 Artifact-vs-sidecar Clojure comparisons are available through the
 `clojure-wam-artifact` target set, which adds:

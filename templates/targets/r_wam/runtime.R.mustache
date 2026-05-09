@@ -82,11 +82,77 @@ wam_term_to_string <- function(v, table = NULL) {
   )
 }
 
+# Stateful pretty printer used by I/O builtins. Derefs every node and
+# renders cons cells (`[|]`/2 chains terminated by `[]`) as native list
+# notation. Improper lists fall back to the `[h1, ..., hn | tail]` form.
+WamRuntime$term_to_string <- function(state, term, table) {
+  v <- WamRuntime$deref(state, term)
+  if (is.null(v) || is.null(v$tag)) return("<null>")
+  switch(v$tag,
+    "atom"    = WamRuntime$string_of(table, v$id),
+    "int"     = as.character(v$val),
+    "float"   = as.character(v$val),
+    "unbound" = paste0("_", v$name),
+    "struct"  = {
+      head <- WamRuntime$string_of(table, v$fid)
+      if (head == "[|]" && length(v$args) == 2L) {
+        elems <- character(0)
+        cur <- v
+        while (TRUE) {
+          cur <- WamRuntime$deref(state, cur)
+          if (is.null(cur) || is.null(cur$tag)) break
+          if (cur$tag == "atom" && WamRuntime$string_of(table, cur$id) == "[]") {
+            return(paste0("[", paste(elems, collapse = ","), "]"))
+          }
+          if (cur$tag == "struct" && length(cur$args) == 2L &&
+              WamRuntime$string_of(table, cur$fid) == "[|]") {
+            elems <- c(elems, WamRuntime$term_to_string(state, cur$args[[1]], table))
+            cur <- cur$args[[2]]
+          } else {
+            return(paste0("[", paste(elems, collapse = ","), "|",
+                          WamRuntime$term_to_string(state, cur, table), "]"))
+          }
+        }
+        return(paste0("[", paste(elems, collapse = ","), "...]"))
+      }
+      args_str <- vapply(v$args, function(a)
+        WamRuntime$term_to_string(state, a, table), character(1))
+      paste0(head, "(", paste(args_str, collapse = ","), ")")
+    },
+    "<unknown>"
+  )
+}
+
 wam_member <- function(elem, lst) {
   for (x in lst) {
     if (identical(x, elem)) return(TRUE)
   }
   FALSE
+}
+
+# wam_is_proper_list / wam_is_ground are stateful (need deref) so they
+# take state explicitly. They power the is_list/1 and ground/1 builtins.
+wam_is_proper_list <- function(state, v, table) {
+  v <- WamRuntime$deref(state, v)
+  if (is.null(v) || is.null(v$tag)) return(FALSE)
+  if (v$tag == "atom") {
+    return(WamRuntime$string_of(table, v$id) == "[]")
+  }
+  if (v$tag != "struct") return(FALSE)
+  if (length(v$args) != 2L) return(FALSE)
+  if (WamRuntime$string_of(table, v$fid) != "[|]") return(FALSE)
+  wam_is_proper_list(state, v$args[[2]], table)
+}
+
+wam_is_ground <- function(state, v) {
+  v <- WamRuntime$deref(state, v)
+  if (is.null(v) || is.null(v$tag)) return(FALSE)
+  if (v$tag == "unbound") return(FALSE)
+  if (v$tag != "struct") return(TRUE)
+  for (a in v$args) {
+    if (!wam_is_ground(state, a)) return(FALSE)
+  }
+  TRUE
 }
 
 # ----------------------------------------------------------
@@ -129,6 +195,7 @@ Jump           <- function(label)      list(op = "Jump",          label = label)
 CutIte         <- function()           list(op = "CutIte")
 
 BuiltinCall    <- function(p, n)       list(op = "BuiltinCall",   pred = p, arity = n)
+ArgInstr       <- function(n, ai, out) list(op = "ArgInstr",      n = as.integer(n), ai = as.integer(ai), out = as.integer(out))
 
 SwitchOnConstant  <- function(cases)    list(op = "SwitchOnConstant",  cases = cases)
 SwitchCase        <- function(val, label) list(value = val, label = label)
@@ -303,6 +370,183 @@ WamRuntime$bind <- function(state, name, val) {
   invisible(NULL)
 }
 
+# Undo trail entries until length(state$trail) == n. Used by \=/2 (and
+# any other "try-then-rollback" builtin) so a transient unification
+# attempt doesn't leak its bindings into the surrounding query.
+WamRuntime$undo_trail_to <- function(state, n) {
+  while (length(state$trail) > n) {
+    last <- length(state$trail)
+    name <- state$trail[[last]]
+    if (exists(name, envir = state$bindings, inherits = FALSE)) {
+      rm(list = name, envir = state$bindings)
+    }
+    state$trail <- state$trail[-last]
+  }
+  invisible(NULL)
+}
+
+# Strict structural identity (==/2 semantics). Both sides are derefed;
+# unbound vars are equal iff they have the same name (identity, not
+# unification). Structures recurse element-wise after dereffing args.
+WamRuntime$identical_terms <- function(state, a, b) {
+  a <- WamRuntime$deref(state, a)
+  b <- WamRuntime$deref(state, b)
+  if (is.null(a) || is.null(b)) return(identical(a, b))
+  if (a$tag != b$tag) return(FALSE)
+  switch(a$tag,
+    "atom"    = identical(a$id, b$id),
+    "int"     = identical(a$val, b$val),
+    "float"   = identical(a$val, b$val),
+    "unbound" = identical(a$name, b$name),
+    "struct"  = {
+      if (!identical(a$fid, b$fid)) return(FALSE)
+      if (length(a$args) != length(b$args)) return(FALSE)
+      for (i in seq_along(a$args)) {
+        if (!WamRuntime$identical_terms(state, a$args[[i]], b$args[[i]])) return(FALSE)
+      }
+      TRUE
+    },
+    FALSE
+  )
+}
+
+# Standard order of terms (@</@>/@=</@>= semantics), returning -1/0/1.
+# Order: unbound < numbers < atoms < structs. Within a type, by natural
+# order. Structures order by arity, then functor name, then args.
+WamRuntime$compare_terms <- function(state, a, b, table) {
+  a <- WamRuntime$deref(state, a)
+  b <- WamRuntime$deref(state, b)
+  ra <- wam_term_rank(a)
+  rb <- wam_term_rank(b)
+  if (ra != rb) return(if (ra < rb) -1L else 1L)
+  switch(a$tag,
+    "unbound" = wam_compare_strings(a$name, b$name),
+    "int"     = wam_compare_nums(a$val, b$val),
+    "float"   = wam_compare_nums(a$val, b$val),
+    "atom"    = wam_compare_strings(WamRuntime$string_of(table, a$id),
+                                    WamRuntime$string_of(table, b$id)),
+    "struct"  = {
+      ar <- length(a$args); br <- length(b$args)
+      if (ar != br) return(if (ar < br) -1L else 1L)
+      sa <- WamRuntime$string_of(table, a$fid)
+      sb <- WamRuntime$string_of(table, b$fid)
+      cmp <- wam_compare_strings(sa, sb)
+      if (cmp != 0L) return(cmp)
+      for (i in seq_along(a$args)) {
+        cmp <- WamRuntime$compare_terms(state, a$args[[i]], b$args[[i]], table)
+        if (cmp != 0L) return(cmp)
+      }
+      0L
+    },
+    0L
+  )
+}
+
+wam_term_rank <- function(v) {
+  if (is.null(v) || is.null(v$tag)) return(9L)
+  switch(v$tag,
+    "unbound" = 0L,
+    "int"     = 1L,
+    "float"   = 1L,
+    "atom"    = 2L,
+    "struct"  = 3L,
+    9L
+  )
+}
+
+wam_compare_strings <- function(a, b) {
+  if (a < b) -1L else if (a > b) 1L else 0L
+}
+
+# Return the "name string" of an atom-like term (atom, int, or float)
+# or NULL for any other shape. Used by the atom-and-number library
+# builtins to paper over the WAM-text quoting ambiguity.
+wam_term_name_string <- function(v, table) {
+  if (is.null(v) || is.null(v$tag)) return(NULL)
+  switch(v$tag,
+    "atom"  = WamRuntime$string_of(table, v$id),
+    "int"   = as.character(v$val),
+    "float" = as.character(v$val),
+    NULL
+  )
+}
+
+# Format-template processor used by format/1 and format/2. Supports the
+# common SWI control-sequence subset:
+#   ~w, ~a, ~p, ~q, ~d  -> consume one arg and write its string form
+#   ~n                  -> newline
+#   ~~                  -> literal '~'
+# Unknown directives are emitted verbatim. Returns NULL on missing args.
+WamRuntime$wam_format <- function(state, template, args, table) {
+  result <- ""
+  i <- 1L
+  arg_idx <- 1L
+  chars <- if (nchar(template) == 0L) character(0)
+           else strsplit(template, "", fixed = TRUE)[[1]]
+  n <- length(chars)
+  while (i <= n) {
+    c <- chars[i]
+    if (c == "~" && i < n) {
+      d <- chars[i + 1L]
+      if (d == "n") {
+        result <- paste0(result, "\n"); i <- i + 2L
+      } else if (d == "~") {
+        result <- paste0(result, "~");  i <- i + 2L
+      } else if (d %in% c("w", "a", "d", "p", "q")) {
+        if (arg_idx > length(args)) return(NULL)
+        result <- paste0(result, WamRuntime$term_to_string(state, args[[arg_idx]], table))
+        arg_idx <- arg_idx + 1L
+        i <- i + 2L
+      } else {
+        result <- paste0(result, c, d); i <- i + 2L
+      }
+    } else {
+      result <- paste0(result, c); i <- i + 1L
+    }
+  }
+  result
+}
+
+wam_compare_nums <- function(a, b) {
+  if (a < b) -1L else if (a > b) 1L else 0L
+}
+
+# Build a Prolog-style cons-list term from a list of WAM terms.
+# []      -> Atom("[]")
+# [a]     -> StructTerm("[|]", list(a, Atom("[]")))
+# [a, b]  -> StructTerm("[|]", list(a, StructTerm("[|]", list(b, Atom("[]")))))
+WamRuntime$wam_list_build <- function(elements, table) {
+  cons_id <- WamRuntime$intern(table, "[|]")
+  nil_id  <- WamRuntime$intern(table, "[]")
+  result <- Atom(nil_id)
+  if (length(elements) > 0L) {
+    for (i in seq.int(length(elements), 1L, by = -1L)) {
+      result <- StructTerm(cons_id, list(elements[[i]], result))
+    }
+  }
+  result
+}
+
+# Walk a cons-list term and return its elements as an R list of WAM
+# terms. Returns NULL on a malformed (non-proper) list. Used by =../2
+# in construct mode to read the [Functor | Args] specification.
+WamRuntime$wam_list_decompose <- function(state, term, table) {
+  cons_id <- WamRuntime$intern(table, "[|]")
+  nil_id  <- WamRuntime$intern(table, "[]")
+  out <- list()
+  v <- WamRuntime$deref(state, term)
+  while (!is.null(v) && is.list(v) && !is.null(v$tag)) {
+    if (v$tag == "atom" && identical(v$id, nil_id)) return(out)
+    if (v$tag == "struct" && identical(v$fid, cons_id) && length(v$args) == 2L) {
+      out <- c(out, list(WamRuntime$deref(state, v$args[[1]])))
+      v <- WamRuntime$deref(state, v$args[[2]])
+    } else {
+      return(NULL)
+    }
+  }
+  NULL
+}
+
 WamRuntime$unify <- function(state, a, b) {
   a <- WamRuntime$deref(state, a)
   b <- WamRuntime$deref(state, b)
@@ -389,17 +633,42 @@ WamRuntime$step <- function(program, state, instr) {
     "Call" = {
       key <- paste0(instr$pred, "/", instr$arity)
       tgt <- program$labels[[key]]
-      if (is.null(tgt)) return(FALSE)
-      state$cp <- state$pc + 1L
-      state$pc <- as.integer(tgt)
-      TRUE
+      if (!is.null(tgt)) {
+        state$cp <- state$pc + 1L
+        state$pc <- as.integer(tgt)
+        return(TRUE)
+      }
+      # No label match. Try the dynamic store (asserted clauses) next,
+      # then the runtime library (atom_codes/2 etc.).
+      dyn <- WamRuntime$try_dynamic(program, state, instr$pred, instr$arity)
+      if (!is.null(dyn)) {
+        if (!isTRUE(dyn)) return(FALSE)
+        state$pc <- state$pc + 1L; return(TRUE)
+      }
+      lib <- WamRuntime$call_library(program, state, instr$pred, instr$arity)
+      if (is.null(lib)) return(FALSE)
+      if (!isTRUE(lib)) return(FALSE)
+      state$pc <- state$pc + 1L; TRUE
     },
     "Execute" = {
       key <- paste0(instr$pred, "/", instr$arity)
       tgt <- program$labels[[key]]
-      if (is.null(tgt)) return(FALSE)
-      state$pc <- as.integer(tgt)
-      TRUE
+      if (!is.null(tgt)) {
+        state$pc <- as.integer(tgt)
+        return(TRUE)
+      }
+      dyn <- WamRuntime$try_dynamic(program, state, instr$pred, instr$arity)
+      if (!is.null(dyn)) {
+        if (!isTRUE(dyn)) return(FALSE)
+        if (state$cp == 0L) { state$halt <- TRUE; return(TRUE) }
+        state$pc <- state$cp; state$cp <- 0L; return(TRUE)
+      }
+      lib <- WamRuntime$call_library(program, state, instr$pred, instr$arity)
+      if (is.null(lib)) return(FALSE)
+      if (!isTRUE(lib)) return(FALSE)
+      # Tail-call return: same protocol as Proceed.
+      if (state$cp == 0L) { state$halt <- TRUE; return(TRUE) }
+      state$pc <- state$cp; state$cp <- 0L; TRUE
     },
     "CallForeign" = {
       ok <- WamRuntime$call_foreign(program, state, instr$pred, instr$arity, tail_call = FALSE)
@@ -429,9 +698,13 @@ WamRuntime$step <- function(program, state, instr) {
       state$pc <- state$pc + 1L; TRUE
     },
     "RetryMeElse" = {
+      # When the dispatcher reaches RetryMeElse via switch_on_constant /
+      # switch_on_structure (for the 3+ clause indexed-jump case), no
+      # choice point has been pushed yet. Be permissive in that case --
+      # mirror TrustMe and just advance. When entered via the standard
+      # try-chain, the CP exists and we update its next_pc as usual.
       n <- length(state$cps)
-      if (n == 0L) return(FALSE)
-      state$cps[[n]]$next_pc <- program$labels[[instr$label]]
+      if (n > 0L) state$cps[[n]]$next_pc <- program$labels[[instr$label]]
       state$pc <- state$pc + 1L; TRUE
     },
     "TrustMe" = {
@@ -495,6 +768,96 @@ WamRuntime$step <- function(program, state, instr) {
       ok <- WamRuntime$call_builtin(program, state, instr$pred, instr$arity)
       if (!ok) return(FALSE)
       state$pc <- state$pc + 1L; TRUE
+    },
+    "ArgInstr" = {
+      # WAM-optimised arg/3 with literal index. Read from register
+      # instr$ai (must deref to a struct), grab the n-th 1-based arg,
+      # unify it with the OutReg target. Same semantics as the
+      # builtin_call arg/3 dispatch in call_builtin.
+      v <- WamRuntime$deref(state, WamRuntime$get_reg(state, instr$ai))
+      if (is.null(v) || is.null(v$tag) || v$tag != "struct") return(FALSE)
+      i <- instr$n
+      if (i < 1L || i > length(v$args)) return(FALSE)
+      cur <- WamRuntime$get_reg(state, instr$out)
+      if (is.null(cur)) {
+        WamRuntime$put_reg(state, instr$out, v$args[[i]])
+      } else if (!WamRuntime$unify(state, cur, v$args[[i]])) {
+        return(FALSE)
+      }
+      state$pc <- state$pc + 1L; TRUE
+    },
+    # ----- Aggregation (findall/3 etc.) -----
+    # The WAM compiles findall(T, G, B) into:
+    #   begin_aggregate <kind>, <template_reg>, <bag_reg>
+    #     ... G's body ...
+    #   end_aggregate <template_reg>
+    # BeginAggregate snapshots state and pushes an aggregate-frame
+    # choice point. EndAggregate collects the current template value
+    # then *forces backtrack* (returns FALSE) so the goal's normal
+    # CPs get re-entered to find more solutions. When all goal CPs
+    # are exhausted, backtrack reaches the aggregate frame and
+    # finalizes -- binding the bag register to the accumulated list.
+    "BeginAggregate" = {
+      # Pre-compute the matching end_aggregate's PC so the aggregate
+      # frame has a valid continuation even when the goal has zero
+      # solutions (and thus EndAggregate never fires). We scan from
+      # the current PC forward; a depth counter handles nested
+      # aggregates. The next_pc is end+1.
+      end_pc <- 0L
+      depth <- 1L
+      for (j in seq.int(state$pc + 1L, length(program$instructions))) {
+        op <- program$instructions[[j]]$op
+        if (op == "BeginAggregate") depth <- depth + 1L
+        else if (op == "EndAggregate") {
+          depth <- depth - 1L
+          if (depth == 0L) { end_pc <- j; break }
+        }
+      }
+      if (end_pc == 0L) return(FALSE)
+      agg <- list(
+        kind         = "aggregate",
+        agg_kind     = instr$kind,
+        template_reg = as.integer(instr$template),
+        bag_reg      = as.integer(instr$bag),
+        next_pc      = end_pc + 1L,
+        regs         = as.list.environment(state$regs2),
+        cp           = state$cp,
+        trail_len    = length(state$trail),
+        var_counter  = state$var_counter,
+        mode         = state$mode,
+        build_stack  = state$build_stack,
+        table        = program$intern_table,
+        collected    = list()
+      )
+      state$cps <- c(state$cps, list(agg))
+      state$pc <- state$pc + 1L
+      TRUE
+    },
+    "EndAggregate" = {
+      # Find the top-most aggregate frame (typically the topmost CP
+      # if the goal didn't push any, or buried under the goal's CPs
+      # if it did).
+      n <- length(state$cps)
+      agg_idx <- 0L
+      for (i in seq.int(n, 1L, by = -1L)) {
+        cpi <- state$cps[[i]]
+        if (!is.null(cpi$kind) && cpi$kind == "aggregate") {
+          agg_idx <- i; break
+        }
+      }
+      if (agg_idx == 0L) return(FALSE)
+      agg <- state$cps[[agg_idx]]
+      v <- WamRuntime$deref(state, WamRuntime$get_reg(state, instr$template))
+      # copy_term so the collected value is independent of subsequent
+      # binding rewrites during backtracking.
+      collected_v <- WamRuntime$copy_term(state, v)
+      agg$collected <- c(agg$collected, list(collected_v))
+      state$cps[[agg_idx]] <- agg
+      # Force a backtrack: the run loop will pop the most-recent CP.
+      # If the goal pushed normal CPs, those re-try the goal at the
+      # next clause; if not, the next backtrack hits this aggregate
+      # frame and finalizes via WamRuntime$backtrack's special arm.
+      return(FALSE)
     },
     # ----- Compound terms -----
     # PutStructure / PutList both start a write-mode build; the only
@@ -667,14 +1030,29 @@ WamRuntime$call_foreign <- function(program, state, pred, arity, tail_call) {
 # Recursively evaluate an arithmetic term against the current bindings.
 # Returns a numeric scalar on success or NULL on failure (unbound var,
 # unknown operator, type mismatch). Tagged-list constants resolve to
-# their $val; structures resolve to op(eval(arg1), eval(arg2)). Atoms
-# can be added later (pi, e, ...) but are not supported here.
+# their $val; structures resolve to op(eval(arg1), eval(arg2)). Bare
+# atoms resolve to standard arithmetic constants (pi, e, inf, nan,
+# epsilon, max_tagged_integer).
 WamRuntime$eval_arith <- function(state, term, table) {
   v <- WamRuntime$deref(state, term)
   if (is.null(v) || !is.list(v) || is.null(v$tag)) return(NULL)
   if (v$tag == "int")   return(v$val)
   if (v$tag == "float") return(v$val)
   if (v$tag == "unbound") return(NULL)
+  if (v$tag == "atom") {
+    name <- WamRuntime$string_of(table, v$id)
+    return(switch(name,
+      "pi"                  = pi,
+      "e"                   = exp(1),
+      "inf"                 = Inf,
+      "infinite"            = Inf,
+      "nan"                 = NaN,
+      "epsilon"             = .Machine$double.eps,
+      "max_tagged_integer"  =  .Machine$integer.max,
+      "min_tagged_integer"  = -.Machine$integer.max,
+      NULL
+    ))
+  }
   if (v$tag == "struct") {
     op <- WamRuntime$string_of(table, v$fid)
     args <- v$args
@@ -682,9 +1060,28 @@ WamRuntime$eval_arith <- function(state, term, table) {
       a <- WamRuntime$eval_arith(state, args[[1]], table)
       if (is.null(a)) return(NULL)
       return(switch(op,
-        "-"   = -a,
-        "+"   = +a,
-        "abs" = abs(a),
+        "-"        = -a,
+        "+"        = +a,
+        "abs"      = abs(a),
+        "sign"     = sign(a),
+        "sqrt"     = sqrt(a),
+        "exp"      = exp(a),
+        "log"      = log(a),
+        "log2"     = log2(a),
+        "sin"      = sin(a),
+        "cos"      = cos(a),
+        "tan"      = tan(a),
+        "asin"     = asin(a),
+        "acos"     = acos(a),
+        "atan"     = atan(a),
+        "sinh"     = sinh(a),
+        "cosh"     = cosh(a),
+        "tanh"     = tanh(a),
+        "floor"    = floor(a),
+        "ceiling"  = ceiling(a),
+        "truncate" = trunc(a),
+        "round"    = round(a),
+        "\\"       = bitwNot(as.integer(a)),
         NULL
       ))
     }
@@ -693,20 +1090,314 @@ WamRuntime$eval_arith <- function(state, term, table) {
       b <- WamRuntime$eval_arith(state, args[[2]], table)
       if (is.null(a) || is.null(b)) return(NULL)
       return(switch(op,
-        "+"   = a + b,
-        "-"   = a - b,
-        "*"   = a * b,
-        "/"   = a / b,
-        "//"  = a %/% b,
-        "mod" = a %% b,
-        "rem" = a - (a %/% b) * b,
-        "min" = min(a, b),
-        "max" = max(a, b),
+        "+"     = a + b,
+        "-"     = a - b,
+        "*"     = a * b,
+        "/"     = a / b,
+        "//"    = a %/% b,
+        "mod"   = a %% b,
+        "rem"   = a - (a %/% b) * b,
+        "min"   = min(a, b),
+        "max"   = max(a, b),
+        "^"     = a ^ b,
+        "**"    = a ^ b,
+        "atan2" = atan2(a, b),
+        "gcd"   = wam_gcd(as.integer(a), as.integer(b)),
+        "/\\"   = bitwAnd(as.integer(a), as.integer(b)),
+        "\\/"   = bitwOr(as.integer(a), as.integer(b)),
+        "xor"   = bitwXor(as.integer(a), as.integer(b)),
+        "<<"    = bitwShiftL(as.integer(a), as.integer(b)),
+        ">>"    = bitwShiftR(as.integer(a), as.integer(b)),
         NULL
       ))
     }
   }
   NULL
+}
+
+# Standard Euclidean GCD; both args coerced to non-negative integers.
+wam_gcd <- function(a, b) {
+  a <- abs(as.integer(a)); b <- abs(as.integer(b))
+  while (b != 0L) {
+    t <- b; b <- a %% b; a <- t
+  }
+  a
+}
+
+# Walk a term and produce a copy with every unbound var replaced by a
+# fresh new unbound. Multiple references to the same source var resolve
+# to the same fresh var, so structure-level sharing is preserved.
+# Atoms / numbers are immutable and returned as-is.
+WamRuntime$copy_term <- function(state, term) {
+  mapping <- new.env(parent = emptyenv())
+  WamRuntime$copy_term_walk(state, term, mapping)
+}
+
+WamRuntime$copy_term_walk <- function(state, term, mapping) {
+  v <- WamRuntime$deref(state, term)
+  if (is.null(v) || is.null(v$tag)) return(v)
+  if (v$tag == "unbound") {
+    if (exists(v$name, envir = mapping, inherits = FALSE)) {
+      return(get(v$name, envir = mapping, inherits = FALSE))
+    }
+    fresh <- Unbound(paste0("V", state$var_counter))
+    state$var_counter <- state$var_counter + 1L
+    assign(v$name, fresh, envir = mapping)
+    return(fresh)
+  }
+  if (v$tag == "struct") {
+    new_args <- lapply(v$args, function(a)
+      WamRuntime$copy_term_walk(state, a, mapping))
+    return(StructTerm(v$fid, new_args))
+  }
+  v
+}
+
+# Decompose a clause term into head args + optional body. The clause
+# is the form passed to assertz/asserta/retract: either a head (fact)
+# or a `:-`/2(Head, Body) struct (rule). Returns list(pred, arity,
+# head_args, body) or NULL if the shape isn't recognised.
+WamRuntime$split_clause <- function(state, term, table) {
+  v <- WamRuntime$deref(state, term)
+  if (is.null(v) || is.null(v$tag)) return(NULL)
+  body <- NULL
+  head_v <- v
+  if (v$tag == "struct" && length(v$args) == 2L &&
+      identical(WamRuntime$string_of(table, v$fid), ":-")) {
+    head_v <- WamRuntime$deref(state, v$args[[1]])
+    body   <- WamRuntime$deref(state, v$args[[2]])
+    if (is.null(head_v) || is.null(head_v$tag)) return(NULL)
+  }
+  if (head_v$tag == "atom") {
+    return(list(pred = WamRuntime$string_of(table, head_v$id), arity = 0L,
+                head_args = list(), body = body))
+  }
+  if (head_v$tag == "struct") {
+    return(list(pred = WamRuntime$string_of(table, head_v$fid),
+                arity = length(head_v$args),
+                head_args = head_v$args, body = body))
+  }
+  NULL
+}
+
+# Like copy_term but for a stored clause record. Walks both head args
+# and body, sharing the same fresh-var mapping so a var that appears
+# in both still resolves to one fresh var per clause invocation.
+WamRuntime$copy_term_clause <- function(state, clause) {
+  mapping <- new.env(parent = emptyenv())
+  fresh_args <- lapply(clause$head_args, function(a)
+    WamRuntime$copy_term_walk(state, a, mapping))
+  fresh_body <- if (is.null(clause$body)) NULL
+                else WamRuntime$copy_term_walk(state, clause$body, mapping)
+  list(head_args = fresh_args, body = fresh_body)
+}
+
+# Try to dispatch pred/arity through the runtime dynamic store.
+# Returns:
+#   TRUE  -- a matching clause unified and (if present) its body
+#            succeeded; bindings persist on success. If more clauses
+#            remain after the matched one, a "dynamic" choice point
+#            is pushed so backtracking re-enters the iteration at
+#            the next clause -- this is what lets findall/3 enumerate
+#            the full bag of solutions over a dynamic predicate.
+#   FALSE -- clauses exist for this key but none matched / succeeded.
+#   NULL  -- no dynamic clauses are registered for this key (caller
+#            should try the next dispatch tier).
+WamRuntime$try_dynamic <- function(program, state, pred, arity) {
+  key <- paste0(pred, "/", arity)
+  if (is.null(program$dynamic)) return(NULL)
+  if (!exists(key, envir = program$dynamic, inherits = FALSE)) return(NULL)
+  clauses <- get(key, envir = program$dynamic, inherits = FALSE)
+  if (length(clauses) == 0L) return(FALSE)
+  WamRuntime$dynamic_iter(program, state, clauses, 1L, arity, state$pc + 1L)
+}
+
+# Iterate dynamic-store clauses starting from `start_idx`. On the
+# first success, push a "dynamic" CP so backtracking re-enters at the
+# next clause and then jumps to resume_pc -- the instruction after
+# the Call/Execute that triggered the dispatch.
+WamRuntime$dynamic_iter <- function(program, state, clauses, start_idx, arity, resume_pc) {
+  if (start_idx > length(clauses)) return(FALSE)
+  for (idx in seq.int(start_idx, length(clauses))) {
+    clause <- clauses[[idx]]
+    if (length(clause$head_args) != arity) next
+    # Snapshot for rollback / CP. Taken BEFORE any unification so the
+    # snapshot is the pre-dispatch state.
+    snap_regs        <- as.list.environment(state$regs2)
+    snap_trail       <- length(state$trail)
+    snap_cp          <- state$cp
+    snap_vc          <- state$var_counter
+    snap_mode        <- state$mode
+    snap_build       <- state$build_stack
+    args <- vector("list", arity)
+    for (i in seq_len(arity)) args[[i]] <- WamRuntime$get_reg(state, i)
+    fresh <- WamRuntime$copy_term_clause(state, clause)
+    ok <- TRUE
+    for (i in seq_len(arity)) {
+      if (!WamRuntime$unify(state, args[[i]], fresh$head_args[[i]])) {
+        ok <- FALSE; break
+      }
+    }
+    if (ok && !is.null(fresh$body)) {
+      ok <- isTRUE(WamRuntime$call_goal(program, state, fresh$body))
+    }
+    if (ok) {
+      if (idx < length(clauses)) {
+        dyn_cp <- list(
+          kind        = "dynamic",
+          regs        = snap_regs,
+          trail_len   = snap_trail,
+          cp          = snap_cp,
+          var_counter = snap_vc,
+          mode        = snap_mode,
+          build_stack = snap_build,
+          clauses     = clauses,
+          idx         = idx,
+          arity       = arity,
+          resume_pc   = resume_pc,
+          program     = program
+        )
+        state$cps <- c(state$cps, list(dyn_cp))
+      }
+      return(TRUE)
+    }
+    # Rollback to snapshot before trying the next clause.
+    e <- new.env(parent = emptyenv(), hash = TRUE)
+    for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
+    state$regs2 <- e
+    if (length(state$trail) > snap_trail) {
+      to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
+      for (name in to_undo) {
+        if (exists(name, envir = state$bindings, inherits = FALSE)) {
+          rm(list = name, envir = state$bindings)
+        }
+      }
+      state$trail <- state$trail[seq_len(snap_trail)]
+    }
+    state$cp          <- snap_cp
+    state$var_counter <- snap_vc
+    state$mode        <- snap_mode
+    state$build_stack <- snap_build
+  }
+  FALSE
+}
+
+# Enumerable iteration over a list of WAM terms, used by member/2 (and
+# any future enumerator with the same shape). Tries to unify `target`
+# with each element starting at `start_idx`. On success, pushes an iter
+# CP so backtrack re-enters at idx+1 then resumes at `resume_pc` (the
+# instruction after the Call/Execute that triggered the dispatch).
+WamRuntime$member_iter <- function(state, target, elems, start_idx, resume_pc) {
+  if (start_idx > length(elems)) return(FALSE)
+  for (idx in seq.int(start_idx, length(elems))) {
+    snap_regs  <- as.list.environment(state$regs2)
+    snap_trail <- length(state$trail)
+    snap_cp    <- state$cp
+    snap_vc    <- state$var_counter
+    snap_mode  <- state$mode
+    snap_build <- state$build_stack
+    if (WamRuntime$unify(state, target, elems[[idx]])) {
+      if (idx < length(elems)) {
+        next_idx <- idx + 1L
+        captured_target <- target
+        captured_elems  <- elems
+        captured_resume <- resume_pc
+        cp <- list(
+          kind        = "iter",
+          regs        = snap_regs,
+          trail_len   = snap_trail,
+          cp          = snap_cp,
+          var_counter = snap_vc,
+          mode        = snap_mode,
+          build_stack = snap_build,
+          resume_pc   = resume_pc,
+          retry       = function(state) {
+            WamRuntime$member_iter(state, captured_target, captured_elems, next_idx, captured_resume)
+          }
+        )
+        state$cps <- c(state$cps, list(cp))
+      }
+      return(TRUE)
+    }
+    # Rollback for the next iteration.
+    e <- new.env(parent = emptyenv(), hash = TRUE)
+    for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
+    state$regs2 <- e
+    if (length(state$trail) > snap_trail) {
+      to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
+      for (name in to_undo) {
+        if (exists(name, envir = state$bindings, inherits = FALSE)) {
+          rm(list = name, envir = state$bindings)
+        }
+      }
+      state$trail <- state$trail[seq_len(snap_trail)]
+    }
+    state$cp          <- snap_cp
+    state$var_counter <- snap_vc
+    state$mode        <- snap_mode
+    state$build_stack <- snap_build
+  }
+  FALSE
+}
+
+# Enumerable iteration over an integer range, used by between/3 in
+# generate mode. Same iter-CP machinery as member_iter.
+WamRuntime$between_iter <- function(state, target, current, hi, resume_pc) {
+  if (current > hi) return(FALSE)
+  snap_regs  <- as.list.environment(state$regs2)
+  snap_trail <- length(state$trail)
+  snap_cp    <- state$cp
+  snap_vc    <- state$var_counter
+  snap_mode  <- state$mode
+  snap_build <- state$build_stack
+  if (WamRuntime$unify(state, target, IntTerm(current))) {
+    if (current < hi) {
+      next_val <- current + 1L
+      captured_target <- target
+      captured_hi <- hi
+      captured_resume <- resume_pc
+      cp <- list(
+        kind        = "iter",
+        regs        = snap_regs,
+        trail_len   = snap_trail,
+        cp          = snap_cp,
+        var_counter = snap_vc,
+        mode        = snap_mode,
+        build_stack = snap_build,
+        resume_pc   = resume_pc,
+        retry       = function(state) {
+          WamRuntime$between_iter(state, captured_target, next_val, captured_hi, captured_resume)
+        }
+      )
+      state$cps <- c(state$cps, list(cp))
+    }
+    return(TRUE)
+  }
+  FALSE
+}
+
+# Term-comparison-based merge sort. Used by msort/2 (keep dups) and
+# sort/2 (dedup after sorting). The compare_terms call orders unbound
+# vars first, then numbers, atoms, structs.
+WamRuntime$wam_sort_terms <- function(state, elems, table) {
+  n <- length(elems)
+  if (n <= 1L) return(elems)
+  mid <- n %/% 2L
+  left  <- WamRuntime$wam_sort_terms(state, elems[1:mid],     table)
+  right <- WamRuntime$wam_sort_terms(state, elems[(mid+1):n], table)
+  out <- list()
+  i <- 1L; j <- 1L
+  na <- length(left); nb <- length(right)
+  while (i <= na && j <= nb) {
+    if (WamRuntime$compare_terms(state, left[[i]], right[[j]], table) <= 0L) {
+      out <- c(out, list(left[[i]])); i <- i + 1L
+    } else {
+      out <- c(out, list(right[[j]])); j <- j + 1L
+    }
+  }
+  if (i <= na) out <- c(out, left[i:na])
+  if (j <= nb) out <- c(out, right[j:nb])
+  out
 }
 
 # Wrap an R numeric back into a WAM term, keeping integer-ness when the
@@ -721,10 +1412,334 @@ WamRuntime$arith_to_term <- function(n) {
   }
 }
 
+# ----------------------------------------------------------
+# Goal evaluator (call/1, \+/1)
+# ----------------------------------------------------------
+# Take a Prolog goal in term form (atom for arity-0, struct otherwise)
+# and dispatch it through the standard pipeline. The dispatch order
+# is labels -> foreign handlers -> library -> builtin, matching what
+# a directly-compiled call would have hit.
+
+# Extend a goal term with extra args (call/N+1 semantics). An atom G
+# becomes the struct G(extra_args...); a struct F(...) becomes
+# F(..., extra_args...). Module-qualified goals are unwrapped first.
+# Returns NULL for any other shape.
+WamRuntime$wam_extend_goal <- function(state, goal_term, extra_args, table) {
+  v <- WamRuntime$deref(state, goal_term)
+  if (is.null(v) || is.null(v$tag)) return(NULL)
+  if (v$tag == "struct" && length(v$args) == 2L &&
+      identical(WamRuntime$string_of(table, v$fid), ":")) {
+    return(WamRuntime$wam_extend_goal(state, v$args[[2]], extra_args, table))
+  }
+  if (v$tag == "atom") {
+    return(StructTerm(v$id, extra_args))
+  }
+  if (v$tag == "struct") {
+    return(StructTerm(v$fid, c(v$args, extra_args)))
+  }
+  NULL
+}
+
+WamRuntime$call_goal <- function(program, state, goal_term) {
+  table <- program$intern_table
+  v <- WamRuntime$deref(state, goal_term)
+  if (is.null(v) || is.null(v$tag)) return(FALSE)
+  # Unwrap module qualification: the WAM compiler emits `Module:Goal`
+  # as a `:`/2 struct. We don't model modules in this scaffold, but
+  # the wrapper should be transparent for goal-call purposes.
+  if (v$tag == "struct" && length(v$args) == 2L &&
+      identical(WamRuntime$string_of(table, v$fid), ":")) {
+    return(WamRuntime$call_goal(program, state, v$args[[2]]))
+  }
+  if (v$tag == "atom") {
+    pred <- WamRuntime$string_of(table, v$id)
+    return(WamRuntime$dispatch_call(program, state, pred, 0L))
+  }
+  if (v$tag != "struct") return(FALSE)
+  pred  <- WamRuntime$string_of(table, v$fid)
+  arity <- length(v$args)
+  # The goal's args overwrite A1..An; outer A-regs are call-volatile
+  # in the WAM convention, so this is safe.
+  for (i in seq_len(arity)) {
+    WamRuntime$put_reg(state, i, v$args[[i]])
+  }
+  WamRuntime$dispatch_call(program, state, pred, arity)
+}
+
+WamRuntime$dispatch_call <- function(program, state, pred, arity) {
+  key <- paste0(pred, "/", arity)
+  tgt <- program$labels[[key]]
+  if (!is.null(tgt)) {
+    # User predicate (or foreign-stub label). Run as a sub-call:
+    # save the outer pc / cp / halt, run to Proceed, restore.
+    saved_pc   <- state$pc
+    saved_cp   <- state$cp
+    saved_halt <- state$halt
+    state$pc   <- as.integer(tgt)
+    state$cp   <- 0L
+    state$halt <- FALSE
+    ok <- WamRuntime$run(program, state)
+    state$pc   <- saved_pc
+    state$cp   <- saved_cp
+    state$halt <- saved_halt
+    return(isTRUE(ok))
+  }
+  if (!is.null(program$foreign_handlers[[key]])) {
+    return(isTRUE(WamRuntime$call_foreign(program, state, pred, arity, FALSE)))
+  }
+  # Dynamic clauses (assertz/asserta) live in their own per-program env.
+  dyn <- WamRuntime$try_dynamic(program, state, pred, arity)
+  if (!is.null(dyn)) return(isTRUE(dyn))
+  # Note: call_foreign and call_library compute their own key from
+  # bare pred, but call_builtin's checks compare against the with-/N
+  # form (matching the WAM-emitted instr$pred convention), so we
+  # pass `key` to it explicitly.
+  lib <- WamRuntime$call_library(program, state, pred, arity)
+  if (!is.null(lib)) return(isTRUE(lib))
+  isTRUE(WamRuntime$call_builtin(program, state, key, arity))
+}
+
+# iterate_goal walks a goal term and invokes `on_each(state)` once per
+# solution, returning silently. Special-cases the common "enumerable"
+# shapes (member/2, between/3, and `,/2` conjunctions whose left side
+# is enumerable) at the R level so they iterate without touching the
+# choice-point machinery. Other goals -- including multi-clause user
+# predicates and dynamic-store predicates -- go through the default
+# fallback, which uses call_goal + backtrack + run to drive the
+# standard try_me_else / dynamic CP iteration.
+#
+# The callback `on_each` is invoked while the iteration's bindings
+# are still in scope. It returns TRUE to continue iterating, FALSE to
+# stop early. Trail snapshots between iterations isolate the goal's
+# bindings -- two iterations don't see each other's binding changes.
+WamRuntime$iterate_goal <- function(program, state, goal_term, on_each) {
+  table <- program$intern_table
+  v <- WamRuntime$deref(state, goal_term)
+  if (is.null(v) || is.null(v$tag)) return(invisible(NULL))
+
+  # Conjunction `(A, B)`: iterate A; for each A binding, iterate B.
+  if (v$tag == "struct" && length(v$args) == 2L &&
+      identical(WamRuntime$string_of(table, v$fid), ",")) {
+    a <- v$args[[1]]
+    b <- v$args[[2]]
+    keep_going <- TRUE
+    WamRuntime$iterate_goal(program, state, a, function() {
+      if (!keep_going) return(FALSE)
+      cont <- TRUE
+      WamRuntime$iterate_goal(program, state, b, function() {
+        c2 <- on_each()
+        if (!isTRUE(c2)) { cont <<- FALSE; keep_going <<- FALSE }
+        c2
+      })
+      cont
+    })
+    return(invisible(NULL))
+  }
+
+  # member/2: iterate list elements directly (no CP machinery).
+  if (v$tag == "struct" && length(v$args) == 2L &&
+      identical(WamRuntime$string_of(table, v$fid), "member")) {
+    target <- v$args[[1]]
+    elems  <- WamRuntime$wam_list_decompose(state, v$args[[2]], table)
+    if (is.null(elems)) return(invisible(NULL))
+    for (e in elems) {
+      snap_t <- length(state$trail)
+      if (WamRuntime$unify(state, target, e)) {
+        cont <- on_each()
+        WamRuntime$undo_trail_to(state, snap_t)
+        if (!isTRUE(cont)) return(invisible(NULL))
+      } else {
+        WamRuntime$undo_trail_to(state, snap_t)
+      }
+    }
+    return(invisible(NULL))
+  }
+
+  # between/3: iterate the range [Low, High] inclusive.
+  if (v$tag == "struct" && length(v$args) == 3L &&
+      identical(WamRuntime$string_of(table, v$fid), "between")) {
+    lo_v <- WamRuntime$deref(state, v$args[[1]])
+    hi_v <- WamRuntime$deref(state, v$args[[2]])
+    target <- v$args[[3]]
+    if (is.null(lo_v) || is.null(lo_v$tag) || lo_v$tag != "int") return(invisible(NULL))
+    if (is.null(hi_v) || is.null(hi_v$tag) || hi_v$tag != "int") return(invisible(NULL))
+    if (lo_v$val > hi_v$val) return(invisible(NULL))
+    for (i in seq.int(lo_v$val, hi_v$val)) {
+      snap_t <- length(state$trail)
+      if (WamRuntime$unify(state, target, IntTerm(i))) {
+        cont <- on_each()
+        WamRuntime$undo_trail_to(state, snap_t)
+        if (!isTRUE(cont)) return(invisible(NULL))
+      } else {
+        WamRuntime$undo_trail_to(state, snap_t)
+      }
+    }
+    return(invisible(NULL))
+  }
+
+  # Dynamic-store predicate: enumerate clauses at the R level. The
+  # default fallback would push dynamic CPs whose resume_pc points
+  # past the surrounding library dispatch (no good in this context).
+  # Detection: deref the goal struct, look up its key in the dynamic
+  # env. Module qualification (M:G) is unwrapped first.
+  goal_v <- v
+  if (goal_v$tag == "struct" && length(goal_v$args) == 2L &&
+      identical(WamRuntime$string_of(table, goal_v$fid), ":")) {
+    goal_v <- WamRuntime$deref(state, goal_v$args[[2]])
+  }
+  if (!is.null(goal_v) && !is.null(goal_v$tag) && !is.null(program$dynamic)) {
+    if (goal_v$tag == "atom") {
+      dyn_pred <- WamRuntime$string_of(table, goal_v$id); dyn_arity <- 0L
+    } else if (goal_v$tag == "struct") {
+      dyn_pred <- WamRuntime$string_of(table, goal_v$fid); dyn_arity <- length(goal_v$args)
+    } else {
+      dyn_pred <- NULL
+    }
+    if (!is.null(dyn_pred)) {
+      dyn_key <- paste0(dyn_pred, "/", dyn_arity)
+      if (exists(dyn_key, envir = program$dynamic, inherits = FALSE)) {
+        clauses <- get(dyn_key, envir = program$dynamic, inherits = FALSE)
+        head_args <- if (goal_v$tag == "struct") goal_v$args else list()
+        for (clause in clauses) {
+          if (length(clause$head_args) != dyn_arity) next
+          snap_t <- length(state$trail)
+          fresh  <- WamRuntime$copy_term_clause(state, clause)
+          ok <- TRUE
+          if (dyn_arity > 0L) {
+            for (i in seq_len(dyn_arity)) {
+              if (!WamRuntime$unify(state, head_args[[i]], fresh$head_args[[i]])) {
+                ok <- FALSE; break
+              }
+            }
+          }
+          if (ok && !is.null(fresh$body)) {
+            ok <- isTRUE(WamRuntime$call_goal(program, state, fresh$body))
+          }
+          if (ok) {
+            cont <- on_each()
+            WamRuntime$undo_trail_to(state, snap_t)
+            if (!isTRUE(cont)) return(invisible(NULL))
+          } else {
+            WamRuntime$undo_trail_to(state, snap_t)
+          }
+        }
+        return(invisible(NULL))
+      }
+    }
+  }
+
+  # Default: call_goal-driven iteration. Works for multi-clause user
+  # predicates (try_me_else CPs). After backtrack, run() drives the
+  # alt clause body until it proceeds back through the call boundary.
+  snap_cps_len <- length(state$cps)
+  ok <- WamRuntime$call_goal(program, state, goal_term)
+  while (isTRUE(ok)) {
+    cont <- on_each()
+    if (!isTRUE(cont)) break
+    if (length(state$cps) <= snap_cps_len) break
+    if (!WamRuntime$backtrack(state)) break
+    state$halt <- FALSE
+    ok <- WamRuntime$run(program, state)
+  }
+  invisible(NULL)
+}
+
+# Collect all solutions of a goal, returning their copy_term'd
+# template values as an R list. Used by bagof/3, setof/3 (and indirectly
+# findall/3 alternatives). Restores state completely on return.
+WamRuntime$collect_solutions <- function(program, state, template_term, goal_term) {
+  snap_cps_len   <- length(state$cps)
+  snap_regs      <- as.list.environment(state$regs2)
+  snap_trail     <- length(state$trail)
+  snap_pc        <- state$pc
+  snap_cp        <- state$cp
+  snap_halt      <- state$halt
+  snap_vc        <- state$var_counter
+  snap_mode      <- state$mode
+  snap_build     <- state$build_stack
+
+  collected <- list()
+  WamRuntime$iterate_goal(program, state, goal_term, function() {
+    val <- WamRuntime$deref(state, template_term)
+    collected[[length(collected) + 1L]] <<- WamRuntime$copy_term(state, val)
+    TRUE
+  })
+
+  # Restore: pop any extra CPs and roll back regs / trail / state.
+  if (length(state$cps) > snap_cps_len) {
+    state$cps <- state$cps[seq_len(snap_cps_len)]
+  }
+  e <- new.env(parent = emptyenv(), hash = TRUE)
+  for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
+  state$regs2 <- e
+  if (length(state$trail) > snap_trail) {
+    to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
+    for (name in to_undo) {
+      if (exists(name, envir = state$bindings, inherits = FALSE)) {
+        rm(list = name, envir = state$bindings)
+      }
+    }
+    state$trail <- state$trail[seq_len(snap_trail)]
+  }
+  state$pc          <- snap_pc
+  state$cp          <- snap_cp
+  state$halt        <- snap_halt
+  state$var_counter <- snap_vc
+  state$mode        <- snap_mode
+  state$build_stack <- snap_build
+
+  collected
+}
+
 WamRuntime$call_builtin <- function(program, state, pred, arity) {
   table <- program$intern_table
-  if (pred == "true"  && arity == 0L) return(TRUE)
-  if (pred == "fail"  && arity == 0L) return(FALSE)
+  # Pred uses the with-/N convention here (matches BuiltinCall instr$pred).
+  if (pred == "true/0" && arity == 0L) return(TRUE)
+  if (pred == "fail/0" && arity == 0L) return(FALSE)
+
+  # Cut (!/0): scaffold semantics drop the most recent choice point so
+  # the surrounding predicate's try-chain stops backtracking. A full
+  # cut-bar implementation tracks the depth at clause entry; a follow-up
+  # commit can replace this once the lowered emitter wants to honour it
+  # in nested-call positions.
+  if (pred == "!/0" && arity == 0L) {
+    n <- length(state$cps)
+    if (n > 0L) state$cps <- state$cps[-n]
+    return(TRUE)
+  }
+
+  # write/1 and nl/0: side-effecting I/O. Atoms / numbers print as
+  # their name string; structs render with the term_to_string pretty
+  # printer (cons cells become list notation).
+  if (pred == "write/1" && arity == 1L) {
+    cat(WamRuntime$term_to_string(state, WamRuntime$get_reg(state, 1L), table))
+    return(TRUE)
+  }
+  if (pred == "nl/0" && arity == 0L) {
+    cat("\n")
+    return(TRUE)
+  }
+
+  # \+/1, not/1: negation as failure. Run the goal in a snapshot --
+  # rolling back the trail, build state and choice points after --
+  # then invert the outcome. Note: the WAM compiler emits not/1 as
+  # an alias for \+/1, so we accept both.
+  if (arity == 1L && (pred == "\\+/1" || pred == "not/1")) {
+    goal              <- WamRuntime$get_reg(state, 1L)
+    trail0            <- length(state$trail)
+    cps0              <- length(state$cps)
+    saved_var_counter <- state$var_counter
+    saved_mode        <- state$mode
+    saved_build_stack <- state$build_stack
+    ok <- WamRuntime$call_goal(program, state, goal)
+    WamRuntime$undo_trail_to(state, trail0)
+    state$var_counter <- saved_var_counter
+    state$mode        <- saved_mode
+    state$build_stack <- saved_build_stack
+    if (length(state$cps) > cps0) state$cps <- state$cps[seq_len(cps0)]
+    return(!isTRUE(ok))
+  }
+
   # is/2: eval A2, unify with A1.
   if (pred == "is/2" && arity == 2L) {
     target <- WamRuntime$get_reg(state, 1L)
@@ -735,7 +1750,7 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
     if (is.null(res)) return(FALSE)
     return(WamRuntime$unify(state, target, res))
   }
-  # Comparison builtins: eval both args, compare.
+  # Numeric comparison builtins: eval both args, compare.
   if (arity == 2L && pred %in% c("=:=/2", "=\\=/2", "</2", ">/2", "=</2", ">=/2")) {
     a <- WamRuntime$eval_arith(state, WamRuntime$get_reg(state, 1L), table)
     b <- WamRuntime$eval_arith(state, WamRuntime$get_reg(state, 2L), table)
@@ -750,8 +1765,944 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
       FALSE
     ))
   }
+
+  # Type-check builtins: deref A1, classify.
+  if (arity == 1L && pred %in% c("atom/1", "integer/1", "float/1", "number/1",
+                                 "var/1", "nonvar/1", "compound/1", "atomic/1",
+                                 "is_list/1", "ground/1")) {
+    raw <- WamRuntime$get_reg(state, 1L)
+    v   <- WamRuntime$deref(state, raw)
+    return(switch(pred,
+      "atom/1"     = wam_is_atom(v),
+      "integer/1"  = wam_is_integer(v),
+      "float/1"    = wam_is_float(v),
+      "number/1"   = wam_is_number(v),
+      "var/1"      = wam_is_var(v),
+      "nonvar/1"   = !wam_is_var(v),
+      "compound/1" = wam_is_compound(v),
+      "atomic/1"   = wam_is_atom(v) || wam_is_number(v),
+      "is_list/1"  = wam_is_proper_list(state, v, table),
+      "ground/1"   = wam_is_ground(state, v),
+      FALSE
+    ))
+  }
+
+  # member/2: enumerable. Pushes an iter CP after the first match
+  # so backtracking re-enters the iteration at the next list element.
+  # memberchk/2: deterministic first-match (no CP push).
+  if (arity == 2L && (pred == "member/2" || pred == "memberchk/2")) {
+    elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 2L), table)
+    if (is.null(elems)) return(FALSE)
+    target <- WamRuntime$get_reg(state, 1L)
+    if (pred == "memberchk/2") {
+      for (e in elems) {
+        trail0 <- length(state$trail)
+        if (WamRuntime$unify(state, target, e)) return(TRUE)
+        WamRuntime$undo_trail_to(state, trail0)
+      }
+      return(FALSE)
+    }
+    return(WamRuntime$member_iter(state, target, elems, 1L, state$pc + 1L))
+  }
+
+  # length/2: deterministic modes only.
+  #   (+, -): traverse the list, count cells, unify N with the count.
+  #   (-, +): build a list of N fresh unbound vars, unify with L.
+  # The (-, -) enumerable mode is intentionally not supported -- it
+  # requires choice-point machinery this scaffold doesn't provide for
+  # generated solutions.
+  if (pred == "length/2" && arity == 2L) {
+    raw_list <- WamRuntime$get_reg(state, 1L)
+    raw_n    <- WamRuntime$get_reg(state, 2L)
+    list_v <- WamRuntime$deref(state, raw_list)
+    n_v    <- WamRuntime$deref(state, raw_n)
+    if (!is.null(list_v) && !is.null(list_v$tag) && list_v$tag != "unbound") {
+      elems <- WamRuntime$wam_list_decompose(state, raw_list, table)
+      if (is.null(elems)) return(FALSE)
+      return(WamRuntime$unify(state, raw_n, IntTerm(length(elems))))
+    }
+    if (!is.null(n_v) && !is.null(n_v$tag) && n_v$tag == "int") {
+      n <- n_v$val
+      if (n < 0L) return(FALSE)
+      args <- vector("list", n)
+      for (i in seq_len(n)) {
+        args[[i]] <- Unbound(paste0("V", state$var_counter))
+        state$var_counter <- state$var_counter + 1L
+      }
+      return(WamRuntime$unify(state, raw_list, WamRuntime$wam_list_build(args, table)))
+    }
+    return(FALSE)
+  }
+
+  # append/3: deterministic (+, +, -) mode.
+  #   append([1,2], [3,4], C) -> C = [1,2,3,4]
+  # The other modes (split-on-third-arg etc.) are non-deterministic
+  # and are intentionally skipped.
+  if (pred == "append/3" && arity == 3L) {
+    a_elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 1L), table)
+    b_elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 2L), table)
+    if (is.null(a_elems) || is.null(b_elems)) return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L),
+                            WamRuntime$wam_list_build(c(a_elems, b_elems), table)))
+  }
+
+  # Term equality / identity / standard order. =/2 may bind; the others
+  # never do (and \=/2 specifically rolls back any transient bindings
+  # via undo_trail_to).
+  if (arity == 2L) {
+    a <- WamRuntime$get_reg(state, 1L)
+    b <- WamRuntime$get_reg(state, 2L)
+    if (pred == "=/2") return(WamRuntime$unify(state, a, b))
+    if (pred == "\\=/2") {
+      trail0 <- length(state$trail)
+      ok <- WamRuntime$unify(state, a, b)
+      WamRuntime$undo_trail_to(state, trail0)
+      return(!isTRUE(ok))
+    }
+    if (pred == "==/2")  return( WamRuntime$identical_terms(state, a, b))
+    if (pred == "\\==/2") return(!WamRuntime$identical_terms(state, a, b))
+    if (pred %in% c("@</2", "@>/2", "@=</2", "@>=/2")) {
+      cmp <- WamRuntime$compare_terms(state, a, b, table)
+      return(switch(pred,
+        "@</2"  = cmp <  0L,
+        "@>/2"  = cmp >  0L,
+        "@=</2" = cmp <= 0L,
+        "@>=/2" = cmp >= 0L,
+        FALSE
+      ))
+    }
+    # =../2 (univ): bidirectional struct <-> list conversion.
+    #   Decompose: f(a,b) =.. L  -> L = [f, a, b]
+    #              a      =.. L  -> L = [a]
+    #              7      =.. L  -> L = [7]
+    #   Construct: T =.. [f, a, b]  -> T = f(a,b)
+    #              T =.. [a]        -> T = a
+    if (pred == "=../2") {
+      raw_t <- a
+      v <- WamRuntime$deref(state, raw_t)
+      if (is.null(v) || is.null(v$tag)) return(FALSE)
+      if (v$tag == "unbound") {
+        elems <- WamRuntime$wam_list_decompose(state, b, table)
+        if (is.null(elems) || length(elems) == 0L) return(FALSE)
+        head <- elems[[1]]
+        rest <- elems[-1]
+        if (length(rest) == 0L) {
+          # arity 0: bind T to head (atom or number).
+          return(WamRuntime$unify(state, raw_t, head))
+        }
+        if (is.null(head$tag) || head$tag != "atom") return(FALSE)
+        new_t <- StructTerm(head$id, rest)
+        return(WamRuntime$unify(state, raw_t, new_t))
+      }
+      # Decompose: build [Functor | Args].
+      if (v$tag == "struct") {
+        elems <- c(list(Atom(v$fid)), v$args)
+      } else if (v$tag %in% c("atom", "int", "float")) {
+        elems <- list(v)
+      } else {
+        return(FALSE)
+      }
+      list_term <- WamRuntime$wam_list_build(elems, table)
+      return(WamRuntime$unify(state, b, list_term))
+    }
+  }
+
+  # functor/3: bidirectional name/arity inspection.
+  #   Decompose: functor(f(a,b), F, A)  -> F=f, A=2
+  #              functor(a,      F, A)  -> F=a, A=0
+  #              functor(7,      F, A)  -> F=7, A=0
+  #   Construct: functor(T, f, 2)       -> T = f(_V, _V)  (fresh vars)
+  #              functor(T, a, 0)       -> T = a
+  #              functor(T, 7, 0)       -> T = 7
+  if (pred == "functor/3" && arity == 3L) {
+    raw_t <- WamRuntime$get_reg(state, 1L)
+    v <- WamRuntime$deref(state, raw_t)
+    if (is.null(v) || is.null(v$tag)) return(FALSE)
+    if (v$tag == "unbound") {
+      name_v  <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+      arity_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 3L))
+      if (is.null(name_v) || is.null(arity_v)) return(FALSE)
+      if (is.null(arity_v$tag) || arity_v$tag != "int") return(FALSE)
+      n <- arity_v$val
+      if (n == 0L) {
+        # arity 0: T must be the atom/number itself.
+        return(WamRuntime$unify(state, raw_t, name_v))
+      }
+      if (n < 0L) return(FALSE)
+      if (is.null(name_v$tag) || name_v$tag != "atom") return(FALSE)
+      args <- vector("list", n)
+      for (i in seq_len(n)) {
+        args[[i]] <- Unbound(paste0("V", state$var_counter))
+        state$var_counter <- state$var_counter + 1L
+      }
+      new_t <- StructTerm(name_v$id, args)
+      return(WamRuntime$unify(state, raw_t, new_t))
+    }
+    # Decompose mode.
+    if (v$tag == "struct") {
+      name_term  <- Atom(v$fid)
+      arity_term <- IntTerm(length(v$args))
+    } else if (v$tag %in% c("atom", "int", "float")) {
+      name_term  <- v
+      arity_term <- IntTerm(0L)
+    } else {
+      return(FALSE)
+    }
+    if (!WamRuntime$unify(state, WamRuntime$get_reg(state, 2L), name_term))  return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L), arity_term))
+  }
+
+  # copy_term/2: build a fresh copy of A1 with all unbound vars
+  # renamed; unify with A2. Atoms / numbers are shared (immutable).
+  if (pred == "copy_term/2" && arity == 2L) {
+    src  <- WamRuntime$get_reg(state, 1L)
+    copy <- WamRuntime$copy_term(state, src)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L), copy))
+  }
+
+  # arg/3: 1-based argument extraction. Always called with N and T
+  # ground; A may be any term (we unify with the extracted arg).
+  if (pred == "arg/3" && arity == 3L) {
+    n_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    t_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    if (is.null(n_v) || is.null(t_v)) return(FALSE)
+    if (is.null(n_v$tag) || n_v$tag != "int") return(FALSE)
+    if (is.null(t_v$tag) || t_v$tag != "struct") return(FALSE)
+    i <- n_v$val
+    if (i < 1L || i > length(t_v$args)) return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L), t_v$args[[i]]))
+  }
+
   # Unknown builtin -> failure (matches WAM convention).
   FALSE
+}
+
+# ----------------------------------------------------------
+# Library predicates (WAM Execute / Call fallback)
+# ----------------------------------------------------------
+# The WAM compiler emits many useful Prolog library predicates as
+# plain Execute / Call rather than builtin_call (atom_codes/2,
+# atom_chars/2, atom_length/2, atom_concat/3, reverse/2, last/2 etc.).
+# When the dispatcher can't find a label for one of these, it
+# delegates here. Returns:
+#   TRUE  -- handled, succeeded
+#   FALSE -- handled, failed (proper WAM failure)
+#   NULL  -- not a known library pred (caller should propagate failure)
+#
+# All implementations are deterministic. Modes that require multi-
+# solution backtracking (e.g. atom_concat split mode) are skipped.
+
+WamRuntime$call_library <- function(program, state, pred, arity) {
+  table <- program$intern_table
+  key <- paste0(pred, "/", arity)
+
+  # ----- maplist/2: apply Goal to each element of List -----
+  # Standard semantics: maplist(_, []). maplist(G, [X|Xs]) :- call(G, X),
+  # maplist(G, Xs). G is shared across iterations (no copy_term), so any
+  # unbound vars in G persist their first binding -- matches the Prolog
+  # library implementation.
+  if (key == "maplist/2") {
+    goal  <- WamRuntime$get_reg(state, 1L)
+    elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 2L), table)
+    if (is.null(elems)) return(FALSE)
+    for (e in elems) {
+      ext <- WamRuntime$wam_extend_goal(state, goal, list(e), table)
+      if (is.null(ext)) return(FALSE)
+      if (!isTRUE(WamRuntime$call_goal(program, state, ext))) return(FALSE)
+    }
+    return(TRUE)
+  }
+
+  # ----- maplist/3: lockstep across two lists -----
+  # If one list is unbound, generate a list of fresh vars matching the
+  # other's length. If both are bound, lengths must match.
+  if (key == "maplist/3") {
+    goal <- WamRuntime$get_reg(state, 1L)
+    raw_l1 <- WamRuntime$get_reg(state, 2L)
+    raw_l2 <- WamRuntime$get_reg(state, 3L)
+    l1 <- WamRuntime$wam_list_decompose(state, raw_l1, table)
+    l2 <- WamRuntime$wam_list_decompose(state, raw_l2, table)
+    if (is.null(l1) && is.null(l2)) return(FALSE)
+    if (is.null(l1)) {
+      l1 <- lapply(seq_along(l2), function(i) {
+        v <- Unbound(paste0("V", state$var_counter))
+        state$var_counter <- state$var_counter + 1L
+        v
+      })
+      if (!isTRUE(WamRuntime$unify(state, raw_l1,
+                                   WamRuntime$wam_list_build(l1, table)))) return(FALSE)
+    }
+    if (is.null(l2)) {
+      l2 <- lapply(seq_along(l1), function(i) {
+        v <- Unbound(paste0("V", state$var_counter))
+        state$var_counter <- state$var_counter + 1L
+        v
+      })
+      if (!isTRUE(WamRuntime$unify(state, raw_l2,
+                                   WamRuntime$wam_list_build(l2, table)))) return(FALSE)
+    }
+    if (length(l1) != length(l2)) return(FALSE)
+    for (i in seq_along(l1)) {
+      ext <- WamRuntime$wam_extend_goal(state, goal, list(l1[[i]], l2[[i]]), table)
+      if (is.null(ext)) return(FALSE)
+      if (!isTRUE(WamRuntime$call_goal(program, state, ext))) return(FALSE)
+    }
+    return(TRUE)
+  }
+
+  # ----- compare/3: standard order three-way comparison -----
+  # compare(?Order, +X, +Y) where Order is one of '<', '=', '>'.
+  if (key == "compare/3") {
+    cmp <- WamRuntime$compare_terms(state,
+                                    WamRuntime$get_reg(state, 2L),
+                                    WamRuntime$get_reg(state, 3L), table)
+    ord <- if (cmp <  0L) "<" else if (cmp >  0L) ">" else "="
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 1L),
+                            Atom(WamRuntime$intern(table, ord))))
+  }
+
+  # ----- nth0/3, nth1/3: 0-/1-based list indexing -----
+  if (key == "nth0/3" || key == "nth1/3") {
+    n_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    if (is.null(n_v) || is.null(n_v$tag) || n_v$tag != "int") return(FALSE)
+    elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 2L), table)
+    if (is.null(elems)) return(FALSE)
+    base <- if (key == "nth0/3") 0L else 1L
+    i <- n_v$val - base + 1L
+    if (i < 1L || i > length(elems)) return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L), elems[[i]]))
+  }
+
+  # ----- select/3: select(?X, +L, ?Rest) -----
+  # Find the first list element that unifies with X; Rest is L minus
+  # that element. Backtracking enumeration over multiple matches is
+  # not supported (deterministic first-match only).
+  if (key == "select/3") {
+    target <- WamRuntime$get_reg(state, 1L)
+    elems  <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 2L), table)
+    if (is.null(elems)) return(FALSE)
+    for (i in seq_along(elems)) {
+      trail0 <- length(state$trail)
+      if (WamRuntime$unify(state, target, elems[[i]])) {
+        rest <- if (length(elems) == 1L) list() else elems[-i]
+        return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L),
+                                WamRuntime$wam_list_build(rest, table)))
+      }
+      WamRuntime$undo_trail_to(state, trail0)
+    }
+    return(FALSE)
+  }
+
+  # ----- delete/3: delete(+L, @Elem, -Rest) -----
+  # Remove every element of L that is structurally identical to Elem
+  # (==/2 semantics; does not bind unbound vars).
+  if (key == "delete/3") {
+    elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(elems)) return(FALSE)
+    target <- WamRuntime$get_reg(state, 2L)
+    keep <- list()
+    for (e in elems) {
+      if (!WamRuntime$identical_terms(state, e, target)) {
+        keep <- c(keep, list(e))
+      }
+    }
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L),
+                            WamRuntime$wam_list_build(keep, table)))
+  }
+
+  # ----- succ/2: successor (bidirectional integer +1) -----
+  if (key == "succ/2") {
+    x_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    y_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    if (!is.null(x_v) && !is.null(x_v$tag) && x_v$tag == "int") {
+      if (x_v$val < 0L) return(FALSE)
+      return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
+                              IntTerm(x_v$val + 1L)))
+    }
+    if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "int") {
+      if (y_v$val <= 0L) return(FALSE)
+      return(WamRuntime$unify(state, WamRuntime$get_reg(state, 1L),
+                              IntTerm(y_v$val - 1L)))
+    }
+    return(FALSE)
+  }
+
+  # ----- between/3: deterministic mode (test only) -----
+  # between(+Low, +High, +X) succeeds iff Low <= X <= High.
+  # The (+,+,-) enumerable mode unifies X with Low (the smallest valid
+  # value). Iterating across the range needs choice-point machinery
+  # this scaffold doesn't drive from inside library dispatches.
+  if (key == "between/3") {
+    lo_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    hi_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    x_v  <- WamRuntime$deref(state, WamRuntime$get_reg(state, 3L))
+    if (is.null(lo_v) || is.null(lo_v$tag) || lo_v$tag != "int") return(FALSE)
+    if (is.null(hi_v) || is.null(hi_v$tag) || hi_v$tag != "int") return(FALSE)
+    lo <- lo_v$val
+    hi <- hi_v$val
+    if (lo > hi) return(FALSE)
+    if (!is.null(x_v) && !is.null(x_v$tag) && x_v$tag == "int") {
+      return(x_v$val >= lo && x_v$val <= hi)
+    }
+    return(WamRuntime$between_iter(state, WamRuntime$get_reg(state, 3L), lo, hi, state$pc + 1L))
+  }
+
+  # ----- bagof/3: like findall but fails on empty bag -----
+  # Note: this scaffold does NOT support free-variable witnesses.
+  # bagof(T, G, B) here is equivalent to findall(T, G, B) with the
+  # extra rule "fail if no solutions". Common idiom: existentially
+  # quantify any non-template variables with `^/2` (e.g.
+  # bagof(X, Y^p(X,Y), L)). Without `^`, witness variables are
+  # silently aggregated rather than producing one bag per witness.
+  if (key == "bagof/3") {
+    template <- WamRuntime$get_reg(state, 1L)
+    goal     <- WamRuntime$get_reg(state, 2L)
+    collected <- WamRuntime$collect_solutions(program, state, template, goal)
+    if (length(collected) == 0L) return(FALSE)
+    bag <- WamRuntime$wam_list_build(collected, table)
+    cur <- WamRuntime$get_reg(state, 3L)
+    if (is.null(cur)) {
+      WamRuntime$put_reg(state, 3L, bag)
+      return(TRUE)
+    }
+    return(WamRuntime$unify(state, cur, bag))
+  }
+
+  # ----- setof/3: bagof + sort + dedup (standard order of terms) -----
+  if (key == "setof/3") {
+    template <- WamRuntime$get_reg(state, 1L)
+    goal     <- WamRuntime$get_reg(state, 2L)
+    collected <- WamRuntime$collect_solutions(program, state, template, goal)
+    if (length(collected) == 0L) return(FALSE)
+    sorted <- WamRuntime$wam_sort_terms(state, collected, table)
+    deduped <- list()
+    for (i in seq_along(sorted)) {
+      if (i == 1L ||
+          WamRuntime$compare_terms(state, sorted[[i - 1L]], sorted[[i]], table) != 0L) {
+        deduped <- c(deduped, list(sorted[[i]]))
+      }
+    }
+    bag <- WamRuntime$wam_list_build(deduped, table)
+    cur <- WamRuntime$get_reg(state, 3L)
+    if (is.null(cur)) {
+      WamRuntime$put_reg(state, 3L, bag)
+      return(TRUE)
+    }
+    return(WamRuntime$unify(state, cur, bag))
+  }
+
+  # ----- once/1: run goal, commit to first solution -----
+  # Drops any choice points the goal pushed, so backtracking outside
+  # once/1 won't re-enter the goal body.
+  if (key == "once/1") {
+    cps_before <- length(state$cps)
+    ok <- WamRuntime$call_goal(program, state, WamRuntime$get_reg(state, 1L))
+    if (!isTRUE(ok)) return(FALSE)
+    if (length(state$cps) > cps_before) {
+      state$cps <- state$cps[seq_len(cps_before)]
+    }
+    return(TRUE)
+  }
+
+  # ----- forall/2: forall(Cond, Action) succeeds iff Action succeeds
+  # for every Cond binding -----
+  # Implemented via iterate_goal so member/2 / between/3 / conjunctions
+  # of those enumerate properly. State is fully restored at the end.
+  if (key == "forall/2") {
+    cond   <- WamRuntime$get_reg(state, 1L)
+    action <- WamRuntime$get_reg(state, 2L)
+    snap_cps_len <- length(state$cps)
+    snap_regs    <- as.list.environment(state$regs2)
+    snap_trail   <- length(state$trail)
+    snap_pc      <- state$pc
+    snap_cp      <- state$cp
+    snap_halt    <- state$halt
+    snap_vc      <- state$var_counter
+    snap_mode    <- state$mode
+    snap_build   <- state$build_stack
+    result <- TRUE
+    WamRuntime$iterate_goal(program, state, cond, function() {
+      action_ok <- isTRUE(WamRuntime$call_goal(program, state, action))
+      if (!action_ok) { result <<- FALSE; return(FALSE) }
+      TRUE
+    })
+    # Restore (forall does not produce bindings on success).
+    if (length(state$cps) > snap_cps_len) {
+      state$cps <- state$cps[seq_len(snap_cps_len)]
+    }
+    e <- new.env(parent = emptyenv(), hash = TRUE)
+    for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
+    state$regs2 <- e
+    if (length(state$trail) > snap_trail) {
+      to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
+      for (name in to_undo) {
+        if (exists(name, envir = state$bindings, inherits = FALSE)) {
+          rm(list = name, envir = state$bindings)
+        }
+      }
+      state$trail <- state$trail[seq_len(snap_trail)]
+    }
+    state$pc          <- snap_pc
+    state$cp          <- snap_cp
+    state$halt        <- snap_halt
+    state$var_counter <- snap_vc
+    state$mode        <- snap_mode
+    state$build_stack <- snap_build
+    return(result)
+  }
+
+  # ----- throw/1 and catch/3: exception handling -----
+  # throw/1 raises an R condition whose `error_term` field carries a
+  # copy_term'd snapshot of the thrown Prolog term (so the thrown term
+  # is independent of post-throw bindings). catch/3 wraps call_goal in
+  # an R tryCatch and, on prolog_throw, unifies the thrown term with
+  # the Catcher; if it unifies, the Recovery is run; otherwise the
+  # condition is rethrown for an outer catch to handle. CPs and trail
+  # made by Goal are unwound to the catch's snapshot before Recovery
+  # runs, matching SWI semantics.
+  if (key == "throw/1") {
+    raw <- WamRuntime$get_reg(state, 1L)
+    err_copy <- WamRuntime$copy_term(state, WamRuntime$deref(state, raw))
+    cond <- structure(
+      list(message = "prolog_throw", error_term = err_copy),
+      class = c("prolog_throw", "condition")
+    )
+    stop(cond)
+  }
+  if (key == "catch/3") {
+    goal     <- WamRuntime$get_reg(state, 1L)
+    catcher  <- WamRuntime$get_reg(state, 2L)
+    recovery <- WamRuntime$get_reg(state, 3L)
+    cps_snap   <- length(state$cps)
+    trail_snap <- length(state$trail)
+    handler <- function(cond) {
+      # Restore: drop CPs the goal pushed and unwind the trail, so
+      # the recovery sees the catch's pre-call state.
+      if (length(state$cps) > cps_snap) {
+        state$cps <- state$cps[seq_len(cps_snap)]
+      }
+      WamRuntime$undo_trail_to(state, trail_snap)
+      if (WamRuntime$unify(state, catcher, cond$error_term)) {
+        WamRuntime$call_goal(program, state, recovery)
+      } else {
+        # Rethrow for an outer catch.
+        stop(cond)
+      }
+    }
+    return(isTRUE(tryCatch(
+      WamRuntime$call_goal(program, state, goal),
+      prolog_throw = handler
+    )))
+  }
+
+  # ----- I/O: writeln/1, print/1, format/1, format/2 -----
+  # writeln/1 == write/1 + newline. print/1 is the same as write/1 in
+  # this scaffold (no portray/1 hook). format/N processes the template
+  # via WamRuntime$wam_format -- see that helper for supported
+  # control sequences.
+  if (key == "writeln/1") {
+    cat(WamRuntime$term_to_string(state, WamRuntime$get_reg(state, 1L), table), "\n", sep = "")
+    return(TRUE)
+  }
+  if (key == "print/1") {
+    cat(WamRuntime$term_to_string(state, WamRuntime$get_reg(state, 1L), table))
+    return(TRUE)
+  }
+  if (key == "format/1") {
+    t_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    s <- wam_term_name_string(t_v, table)
+    if (is.null(s)) return(FALSE)
+    out <- WamRuntime$wam_format(state, s, list(), table)
+    if (is.null(out)) return(FALSE)
+    cat(out)
+    return(TRUE)
+  }
+  if (key == "format/2") {
+    t_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    s <- wam_term_name_string(t_v, table)
+    if (is.null(s)) return(FALSE)
+    raw_args <- WamRuntime$get_reg(state, 2L)
+    args <- WamRuntime$wam_list_decompose(state, raw_args, table)
+    if (is.null(args)) {
+      # Non-list arg: treat as singleton ([Arg]).
+      args <- list(WamRuntime$deref(state, raw_args))
+    }
+    out <- WamRuntime$wam_format(state, s, args, table)
+    if (is.null(out)) return(FALSE)
+    cat(out)
+    return(TRUE)
+  }
+
+  # call/1: meta-call. Just delegate the goal to the goal evaluator;
+  # bindings made by the goal persist on success (unlike \+/1 which
+  # rolls them back).
+  if (key == "call/1") {
+    return(WamRuntime$call_goal(program, state, WamRuntime$get_reg(state, 1L)))
+  }
+
+  # ----- atom_codes/2 (also string_codes/2): atom <-> list of code points -----
+  # Strings and atoms are not distinguished at the WAM-text level, so
+  # the string_* family aliases onto its atom_* counterpart.
+  if (key == "atom_codes/2" || key == "string_codes/2") {
+    raw_a <- WamRuntime$get_reg(state, 1L)
+    raw_c <- WamRuntime$get_reg(state, 2L)
+    a_v <- WamRuntime$deref(state, raw_a)
+    if (!is.null(a_v) && !is.null(a_v$tag) && a_v$tag != "unbound") {
+      s <- if (a_v$tag == "atom")        WamRuntime$string_of(table, a_v$id)
+           else if (a_v$tag == "int")    as.character(a_v$val)
+           else if (a_v$tag == "float")  as.character(a_v$val)
+           else return(FALSE)
+      codes <- utf8ToInt(s)
+      if (length(s) == 0L) codes <- integer(0)
+      elems <- lapply(codes, IntTerm)
+      return(WamRuntime$unify(state, raw_c, WamRuntime$wam_list_build(elems, table)))
+    }
+    # Construct mode: A unbound, Codes bound.
+    elems <- WamRuntime$wam_list_decompose(state, raw_c, table)
+    if (is.null(elems)) return(FALSE)
+    codes <- vapply(elems, function(e) {
+      if (is.null(e) || is.null(e$tag) || e$tag != "int") NA_integer_
+      else as.integer(e$val)
+    }, integer(1))
+    if (any(is.na(codes))) return(FALSE)
+    s <- if (length(codes) == 0L) "" else intToUtf8(codes)
+    new_id <- WamRuntime$intern(table, s)
+    return(WamRuntime$unify(state, raw_a, Atom(new_id)))
+  }
+
+  # ----- atom_chars/2 (also string_chars/2): atom <-> list of single-char atoms -----
+  # Char-list elements are accepted as atoms or as ints/floats with
+  # their decimal name. The leniency exists because WAM-text loses the
+  # atom-vs-number quoting distinction: the literal `'1'` and the
+  # integer `1` both serialise as `set_constant 1`, so the codegen
+  # can't tell them apart and emits IntTerm for both.
+  if (key == "atom_chars/2" || key == "string_chars/2") {
+    raw_a <- WamRuntime$get_reg(state, 1L)
+    raw_l <- WamRuntime$get_reg(state, 2L)
+    a_v <- WamRuntime$deref(state, raw_a)
+    if (!is.null(a_v) && !is.null(a_v$tag) && a_v$tag != "unbound") {
+      s <- wam_term_name_string(a_v, table)
+      if (is.null(s)) return(FALSE)
+      chars <- if (nchar(s) == 0L) character(0)
+               else strsplit(s, "", fixed = TRUE)[[1]]
+      elems <- lapply(chars, function(ch) Atom(WamRuntime$intern(table, ch)))
+      return(WamRuntime$unify(state, raw_l, WamRuntime$wam_list_build(elems, table)))
+    }
+    elems <- WamRuntime$wam_list_decompose(state, raw_l, table)
+    if (is.null(elems)) return(FALSE)
+    chars <- vapply(elems, function(e) {
+      s <- wam_term_name_string(e, table)
+      if (is.null(s)) NA_character_ else s
+    }, character(1))
+    if (any(is.na(chars))) return(FALSE)
+    new_id <- WamRuntime$intern(table, paste0(chars, collapse = ""))
+    return(WamRuntime$unify(state, raw_a, Atom(new_id)))
+  }
+
+  # ----- atom_length/2 (also string_length/2) -----
+  # Same atom-or-numeric leniency as atom_chars (see note above).
+  if (key == "atom_length/2" || key == "string_length/2") {
+    a_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    s <- wam_term_name_string(a_v, table)
+    if (is.null(s)) return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L), IntTerm(nchar(s))))
+  }
+
+  # ----- atom_concat/3 (also string_concat/3, deterministic mode) -----
+  if (key == "atom_concat/3" || key == "string_concat/3") {
+    a_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    b_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    sa <- wam_term_name_string(a_v, table)
+    sb <- wam_term_name_string(b_v, table)
+    if (is.null(sa) || is.null(sb)) return(FALSE)
+    new_id <- WamRuntime$intern(table, paste0(sa, sb))
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L), Atom(new_id)))
+  }
+
+  # ----- reverse/2 (deterministic if either side is bound) -----
+  if (key == "reverse/2") {
+    a_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    b_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    if (!is.null(a_v) && !is.null(a_v$tag) && a_v$tag != "unbound") {
+      elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 1L), table)
+      if (is.null(elems)) return(FALSE)
+      return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
+                              WamRuntime$wam_list_build(rev(elems), table)))
+    }
+    if (!is.null(b_v) && !is.null(b_v$tag) && b_v$tag != "unbound") {
+      elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 2L), table)
+      if (is.null(elems)) return(FALSE)
+      return(WamRuntime$unify(state, WamRuntime$get_reg(state, 1L),
+                              WamRuntime$wam_list_build(rev(elems), table)))
+    }
+    return(FALSE)
+  }
+
+  # ----- last/2 -----
+  if (key == "last/2") {
+    elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(elems) || length(elems) == 0L) return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
+                            elems[[length(elems)]]))
+  }
+
+  # ----- number_codes/2: number <-> list of code points -----
+  if (key == "number_codes/2") {
+    raw_n <- WamRuntime$get_reg(state, 1L)
+    raw_c <- WamRuntime$get_reg(state, 2L)
+    n_v <- WamRuntime$deref(state, raw_n)
+    if (!is.null(n_v) && !is.null(n_v$tag) && n_v$tag != "unbound") {
+      if (!(n_v$tag %in% c("int", "float"))) return(FALSE)
+      s <- as.character(n_v$val)
+      elems <- lapply(utf8ToInt(s), IntTerm)
+      return(WamRuntime$unify(state, raw_c, WamRuntime$wam_list_build(elems, table)))
+    }
+    elems <- WamRuntime$wam_list_decompose(state, raw_c, table)
+    if (is.null(elems) || length(elems) == 0L) return(FALSE)
+    codes <- vapply(elems, function(e) {
+      if (is.null(e) || is.null(e$tag) || e$tag != "int") NA_integer_
+      else as.integer(e$val)
+    }, integer(1))
+    if (any(is.na(codes))) return(FALSE)
+    parsed <- suppressWarnings(as.numeric(intToUtf8(codes)))
+    if (is.na(parsed)) return(FALSE)
+    return(WamRuntime$unify(state, raw_n, WamRuntime$arith_to_term(parsed)))
+  }
+
+  # ----- number_chars/2: number <-> list of single-char atoms -----
+  # Char-list elements accept atoms or ints/floats with decimal name
+  # (same WAM-text-quoting workaround as atom_chars/2).
+  if (key == "number_chars/2") {
+    raw_n <- WamRuntime$get_reg(state, 1L)
+    raw_l <- WamRuntime$get_reg(state, 2L)
+    n_v <- WamRuntime$deref(state, raw_n)
+    if (!is.null(n_v) && !is.null(n_v$tag) && n_v$tag != "unbound") {
+      if (!(n_v$tag %in% c("int", "float"))) return(FALSE)
+      s <- as.character(n_v$val)
+      chars <- if (nchar(s) == 0L) character(0) else strsplit(s, "", fixed = TRUE)[[1]]
+      elems <- lapply(chars, function(ch) Atom(WamRuntime$intern(table, ch)))
+      return(WamRuntime$unify(state, raw_l, WamRuntime$wam_list_build(elems, table)))
+    }
+    elems <- WamRuntime$wam_list_decompose(state, raw_l, table)
+    if (is.null(elems) || length(elems) == 0L) return(FALSE)
+    chars <- vapply(elems, function(e) {
+      s <- wam_term_name_string(e, table)
+      if (is.null(s)) NA_character_ else s
+    }, character(1))
+    if (any(is.na(chars))) return(FALSE)
+    parsed <- suppressWarnings(as.numeric(paste0(chars, collapse = "")))
+    if (is.na(parsed)) return(FALSE)
+    return(WamRuntime$unify(state, raw_n, WamRuntime$arith_to_term(parsed)))
+  }
+
+  # ----- atom_number/2: atom <-> number (atom contains decimal repr) -----
+  # The atom side accepts atoms or ints/floats with decimal name
+  # (WAM-text quoting workaround). The construct mode (A unbound,
+  # N bound) always builds an Atom. Tests that compare against a
+  # literal `'42'` will fail by construction because the literal
+  # codegens as IntTerm(42); use atom_codes/2 for indirect comparison.
+  if (key == "atom_number/2") {
+    raw_a <- WamRuntime$get_reg(state, 1L)
+    raw_n <- WamRuntime$get_reg(state, 2L)
+    a_v <- WamRuntime$deref(state, raw_a)
+    if (!is.null(a_v) && !is.null(a_v$tag) && a_v$tag != "unbound") {
+      s <- wam_term_name_string(a_v, table)
+      if (is.null(s)) return(FALSE)
+      parsed <- suppressWarnings(as.numeric(s))
+      if (is.na(parsed)) return(FALSE)
+      return(WamRuntime$unify(state, raw_n, WamRuntime$arith_to_term(parsed)))
+    }
+    n_v <- WamRuntime$deref(state, raw_n)
+    if (is.null(n_v) || is.null(n_v$tag) || !(n_v$tag %in% c("int", "float"))) return(FALSE)
+    new_id <- WamRuntime$intern(table, as.character(n_v$val))
+    return(WamRuntime$unify(state, raw_a, Atom(new_id)))
+  }
+
+  # ----- atom_string/2 and string_to_atom/2 -----
+  # Bidirectional atom <-> string conversion. Since this scaffold
+  # collapses strings into atoms (the WAM-text serialisation doesn't
+  # distinguish them), both predicates reduce to a unification of
+  # whichever side is bound with the other side as an atom of the
+  # same name string.
+  if (key == "atom_string/2" || key == "string_to_atom/2") {
+    # atom_string(?Atom, ?String); string_to_atom(?String, ?Atom).
+    if (key == "atom_string/2") {
+      atom_reg <- 1L; str_reg <- 2L
+    } else {
+      atom_reg <- 2L; str_reg <- 1L
+    }
+    a_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, atom_reg))
+    s_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, str_reg))
+    if (!is.null(a_v) && !is.null(a_v$tag) && a_v$tag != "unbound") {
+      s <- wam_term_name_string(a_v, table)
+      if (is.null(s)) return(FALSE)
+      return(WamRuntime$unify(state, WamRuntime$get_reg(state, str_reg),
+                              Atom(WamRuntime$intern(table, s))))
+    }
+    if (!is.null(s_v) && !is.null(s_v$tag) && s_v$tag != "unbound") {
+      s <- wam_term_name_string(s_v, table)
+      if (is.null(s)) return(FALSE)
+      return(WamRuntime$unify(state, WamRuntime$get_reg(state, atom_reg),
+                              Atom(WamRuntime$intern(table, s))))
+    }
+    return(FALSE)
+  }
+
+  # ----- string_upper/2 and string_lower/2 -----
+  # Case conversion. The first arg must be bound (atom or numeric);
+  # the result is interned as an Atom with the case-converted name.
+  if (key == "string_upper/2" || key == "string_lower/2") {
+    in_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    s <- wam_term_name_string(in_v, table)
+    if (is.null(s)) return(FALSE)
+    converted <- if (key == "string_upper/2") toupper(s) else tolower(s)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
+                            Atom(WamRuntime$intern(table, converted))))
+  }
+
+  # ----- string_code/3: 1-based code at index -----
+  # string_code(+Index, +String, ?Code).
+  if (key == "string_code/3") {
+    n_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    s_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    if (is.null(n_v) || is.null(n_v$tag) || n_v$tag != "int") return(FALSE)
+    s <- wam_term_name_string(s_v, table)
+    if (is.null(s)) return(FALSE)
+    i <- n_v$val
+    if (i < 1L || i > nchar(s)) return(FALSE)
+    code <- utf8ToInt(s)[i]
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L), IntTerm(code)))
+  }
+
+  # ----- split_string/4 -----
+  # split_string(+String, +Separators, +Pad, -SubStrings).
+  # Each char in Separators is a split delimiter; each char in Pad is
+  # trimmed from both ends of every substring. Returns a list of
+  # atom-strings.
+  if (key == "split_string/4") {
+    s_v   <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    sep_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    pad_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 3L))
+    s   <- wam_term_name_string(s_v,   table)
+    sep <- wam_term_name_string(sep_v, table)
+    pad <- wam_term_name_string(pad_v, table)
+    if (is.null(s) || is.null(sep) || is.null(pad)) return(FALSE)
+    parts <- if (nchar(sep) == 0L) list(s)
+             else strsplit(s, paste0("[", gsub("([\\^\\\\\\]\\-])", "\\\\\\1", sep), "]"),
+                           perl = TRUE)[[1]]
+    if (nchar(pad) > 0L) {
+      pad_re <- paste0("[", gsub("([\\^\\\\\\]\\-])", "\\\\\\1", pad), "]")
+      parts <- gsub(paste0("^", pad_re, "+|", pad_re, "+$"), "", parts, perl = TRUE)
+    }
+    elems <- lapply(as.character(parts), function(p)
+      Atom(WamRuntime$intern(table, p)))
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 4L),
+                            WamRuntime$wam_list_build(elems, table)))
+  }
+
+  # ----- assertz/1, asserta/1: add a clause to the dynamic store -----
+  # The arg is either a Head (fact) or a `:-`/2(Head, Body) struct.
+  # We split it via split_clause and store a fresh copy of the args
+  # so subsequent unification doesn't see leaked bindings.
+  if (key == "assertz/1" || key == "asserta/1") {
+    raw <- WamRuntime$get_reg(state, 1L)
+    parts <- WamRuntime$split_clause(state, raw, table)
+    if (is.null(parts)) return(FALSE)
+    ck <- paste0(parts$pred, "/", parts$arity)
+    cur <- if (exists(ck, envir = program$dynamic, inherits = FALSE))
+             get(ck, envir = program$dynamic, inherits = FALSE)
+           else list()
+    new_clause <- list(head_args = parts$head_args, body = parts$body)
+    if (key == "assertz/1") {
+      assign(ck, c(cur, list(new_clause)), envir = program$dynamic)
+    } else {
+      assign(ck, c(list(new_clause), cur), envir = program$dynamic)
+    }
+    return(TRUE)
+  }
+
+  # ----- retract/1: remove the first matching clause -----
+  # Bindings made by the unification persist on success (standard
+  # Prolog semantics). Multi-solution retract (backtrackable removal
+  # of subsequent matches) is not supported in this scaffold.
+  if (key == "retract/1") {
+    raw <- WamRuntime$get_reg(state, 1L)
+    parts <- WamRuntime$split_clause(state, raw, table)
+    if (is.null(parts)) return(FALSE)
+    ck <- paste0(parts$pred, "/", parts$arity)
+    if (!exists(ck, envir = program$dynamic, inherits = FALSE)) return(FALSE)
+    clauses <- get(ck, envir = program$dynamic, inherits = FALSE)
+    for (i in seq_along(clauses)) {
+      cl <- clauses[[i]]
+      if (length(cl$head_args) != parts$arity) next
+      trail0 <- length(state$trail)
+      var_counter0 <- state$var_counter
+      fresh <- WamRuntime$copy_term_clause(state, cl)
+      ok <- TRUE
+      for (j in seq_len(parts$arity)) {
+        if (!WamRuntime$unify(state, parts$head_args[[j]], fresh$head_args[[j]])) {
+          ok <- FALSE; break
+        }
+      }
+      if (ok && !is.null(parts$body) && !is.null(fresh$body)) {
+        ok <- WamRuntime$unify(state, parts$body, fresh$body)
+      }
+      if (ok) {
+        remaining <- if (length(clauses) == 1L) list() else clauses[-i]
+        assign(ck, remaining, envir = program$dynamic)
+        return(TRUE)
+      }
+      WamRuntime$undo_trail_to(state, trail0)
+      state$var_counter <- var_counter0
+    }
+    return(FALSE)
+  }
+
+  # ----- abolish/1: drop all clauses for Name/Arity -----
+  if (key == "abolish/1") {
+    raw <- WamRuntime$get_reg(state, 1L)
+    v <- WamRuntime$deref(state, raw)
+    if (is.null(v) || is.null(v$tag) || v$tag != "struct") return(FALSE)
+    if (length(v$args) != 2L) return(FALSE)
+    if (!identical(WamRuntime$string_of(table, v$fid), "/")) return(FALSE)
+    name_v  <- WamRuntime$deref(state, v$args[[1]])
+    arity_v <- WamRuntime$deref(state, v$args[[2]])
+    if (is.null(name_v)  || is.null(name_v$tag)  || name_v$tag  != "atom") return(FALSE)
+    if (is.null(arity_v) || is.null(arity_v$tag) || arity_v$tag != "int")  return(FALSE)
+    ck <- paste0(WamRuntime$string_of(table, name_v$id), "/", arity_v$val)
+    if (exists(ck, envir = program$dynamic, inherits = FALSE)) {
+      rm(list = ck, envir = program$dynamic)
+    }
+    return(TRUE)
+  }
+
+  # ----- msort/2: sort, keep duplicates -----
+  if (key == "msort/2") {
+    elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(elems)) return(FALSE)
+    sorted <- WamRuntime$wam_sort_terms(state, elems, table)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
+                            WamRuntime$wam_list_build(sorted, table)))
+  }
+
+  # ----- sort/2: sort + dedup (standard order of terms) -----
+  if (key == "sort/2") {
+    elems <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 1L), table)
+    if (is.null(elems)) return(FALSE)
+    sorted <- WamRuntime$wam_sort_terms(state, elems, table)
+    deduped <- list()
+    for (i in seq_along(sorted)) {
+      if (i == 1L ||
+          WamRuntime$compare_terms(state, sorted[[i - 1L]], sorted[[i]], table) != 0L) {
+        deduped <- c(deduped, list(sorted[[i]]))
+      }
+    }
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
+                            WamRuntime$wam_list_build(deduped, table)))
+  }
+
+  # Unknown library predicate.
+  NULL
 }
 
 # ----------------------------------------------------------
@@ -761,11 +2712,108 @@ WamRuntime$backtrack <- function(state) {
   n <- length(state$cps)
   if (n == 0L) return(FALSE)
   cp <- state$cps[[n]]
-  # Restore registers
+  # Dynamic-CP resume: the previous clause succeeded; backtracking
+  # now means "try the next stored clause for the same predicate". On
+  # success we set state$pc = cp$resume_pc -- the instruction after
+  # the Call/Execute that triggered the dispatch -- so the run loop
+  # re-executes the post-call body with the new bindings. If all
+  # clauses are exhausted, recurse so the next CP on the stack
+  # handles the backtrack.
+  if (!is.null(cp$kind) && cp$kind == "dynamic") {
+    state$cps <- state$cps[-n]
+    e <- new.env(parent = emptyenv(), hash = TRUE)
+    for (k in names(cp$regs)) assign(k, cp$regs[[k]], envir = e)
+    state$regs2 <- e
+    if (length(state$trail) > cp$trail_len) {
+      to_undo <- state$trail[(cp$trail_len + 1L):length(state$trail)]
+      for (name in to_undo) {
+        if (exists(name, envir = state$bindings, inherits = FALSE)) {
+          rm(list = name, envir = state$bindings)
+        }
+      }
+      state$trail <- state$trail[seq_len(cp$trail_len)]
+    }
+    state$cp          <- cp$cp
+    state$var_counter <- cp$var_counter
+    state$mode        <- cp$mode
+    state$build_stack <- cp$build_stack
+    if (WamRuntime$dynamic_iter(cp$program, state, cp$clauses, cp$idx + 1L, cp$arity, cp$resume_pc)) {
+      state$pc <- as.integer(cp$resume_pc)
+      return(TRUE)
+    }
+    return(WamRuntime$backtrack(state))
+  }
+
+  # Iter-CP resume: builtin enumerators (member/2, between/3, ...)
+  # push these. The CP's `retry` closure does the next iteration's
+  # unification (and may push a new iter CP if more elements remain).
+  # On success we set state$pc = cp$resume_pc so the run loop re-
+  # executes the post-call body with the new bindings.
+  if (!is.null(cp$kind) && cp$kind == "iter") {
+    state$cps <- state$cps[-n]
+    e <- new.env(parent = emptyenv(), hash = TRUE)
+    for (k in names(cp$regs)) assign(k, cp$regs[[k]], envir = e)
+    state$regs2 <- e
+    if (length(state$trail) > cp$trail_len) {
+      to_undo <- state$trail[(cp$trail_len + 1L):length(state$trail)]
+      for (name in to_undo) {
+        if (exists(name, envir = state$bindings, inherits = FALSE)) {
+          rm(list = name, envir = state$bindings)
+        }
+      }
+      state$trail <- state$trail[seq_len(cp$trail_len)]
+    }
+    state$cp          <- cp$cp
+    state$var_counter <- cp$var_counter
+    state$mode        <- cp$mode
+    state$build_stack <- cp$build_stack
+    if (cp$retry(state)) {
+      state$pc <- as.integer(cp$resume_pc)
+      return(TRUE)
+    }
+    return(WamRuntime$backtrack(state))
+  }
+
+  # Aggregate-frame finalization: when backtrack reaches a frame
+  # left by BeginAggregate, the goal has exhausted all its solutions.
+  # Restore the snapshot, bind the bag register to the collected list,
+  # and resume at the instruction after end_aggregate.
+  if (!is.null(cp$kind) && cp$kind == "aggregate") {
+    state$cps <- state$cps[-n]
+    e <- new.env(parent = emptyenv(), hash = TRUE)
+    for (k in names(cp$regs)) assign(k, cp$regs[[k]], envir = e)
+    state$regs2 <- e
+    if (length(state$trail) > cp$trail_len) {
+      to_undo <- state$trail[(cp$trail_len + 1L):length(state$trail)]
+      for (name in to_undo) {
+        if (exists(name, envir = state$bindings, inherits = FALSE)) {
+          rm(list = name, envir = state$bindings)
+        }
+      }
+      state$trail <- state$trail[seq_len(cp$trail_len)]
+    }
+    state$cp          <- cp$cp
+    state$var_counter <- cp$var_counter
+    state$mode        <- cp$mode
+    state$build_stack <- cp$build_stack
+    bag <- WamRuntime$wam_list_build(cp$collected, cp$table)
+    cur <- WamRuntime$get_reg(state, cp$bag_reg)
+    if (is.null(cur)) {
+      # Bag register was unset at begin_aggregate time (typical case
+      # when the user wrote findall(T, G, B) with B unbound). Just
+      # write the bag in.
+      WamRuntime$put_reg(state, cp$bag_reg, bag)
+    } else if (!WamRuntime$unify(state, cur, bag)) {
+      # Bag unification failed - propagate as another backtrack.
+      return(WamRuntime$backtrack(state))
+    }
+    state$pc <- as.integer(cp$next_pc)
+    return(TRUE)
+  }
+  # Standard backtrack: restore from CP and jump to its alt PC.
   e <- new.env(parent = emptyenv(), hash = TRUE)
   for (k in names(cp$regs)) assign(k, cp$regs[[k]], envir = e)
   state$regs2 <- e
-  # Unbind trail entries beyond cp$trail_len
   if (length(state$trail) > cp$trail_len) {
     to_undo <- state$trail[(cp$trail_len + 1L):length(state$trail)]
     for (name in to_undo) {
@@ -810,5 +2858,8 @@ WamRuntime$run_predicate <- function(program, start_pc, args) {
   }
   state$pc <- as.integer(start_pc)
   state$cp <- 0L
-  WamRuntime$run(program, state)
+  # Top-level prolog_throw catcher: an uncaught throw becomes a query
+  # failure (matches Prolog top-level "error" handling, scaled down).
+  tryCatch(WamRuntime$run(program, state),
+           prolog_throw = function(cond) FALSE)
 }

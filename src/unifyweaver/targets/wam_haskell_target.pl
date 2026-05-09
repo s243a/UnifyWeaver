@@ -2793,14 +2793,25 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     ->  QueryOptions = [use_ffi(true)|Options]
     ;   QueryOptions = Options
     ),
-    generate_query_body(QueryOptions, QueryBody),
     generate_merged_code_build(DetectedKernels, Options, MergedCodeBuild),
     generate_demand_filter(DetectedKernels, Options, DemandFilter, FactsSource),
+    generate_query_body(QueryOptions, RawQueryBody),
+    generate_demand_gated_query_body(DemandFilter, RawQueryBody, QueryBody),
+    %% When the demand filter is active, parMap iterates over the
+    %% pre-filtered seed list (so skipped seeds don't pay spark
+    %% synchronization cost). Otherwise it iterates over seedCats as
+    %% before. See generate_demand_filter for the filteredSeedCats
+    %% binding.
+    (   DemandFilter \= ''
+    ->  ParmapSeedSource = 'filteredSeedCats'
+    ;   ParmapSeedSource = 'seedCats'
+    ),
     (   DemandFilter \= ''
     ->  DemandMetrics =
 '    hPutStrLn stderr $ "demand_set_size=" ++ show demandSize
     hPutStrLn stderr $ "demand_total_nodes=" ++ show totalNodes
-    hPutStrLn stderr $ "demand_filtered_nodes=" ++ show filteredSize'
+    hPutStrLn stderr $ "demand_filtered_nodes=" ++ show filteredSize
+    hPutStrLn stderr $ "demand_skipped_seeds=" ++ show demandSkippedSeeds'
     ;   DemandMetrics = ''
     ),
     % Phase F3/F4: generate wcInlineFacts wiring from InlineDefs
@@ -2841,6 +2852,7 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
         , int_atom_seeds=IntAtomSeeds
         , max_depth=MaxDepth
         , dimension_n=DimN
+        , parmap_seed_source=ParmapSeedSource
         ], Code).
 
 %% resolve_max_depth(+Options, -MaxDepth)
@@ -2970,11 +2982,31 @@ generate_demand_filter(DetectedKernels, Options, FilterCode, FactsSource) :-
         !demandSize = IS.size demandSet
         !totalNodes = IM.size parentsIndexInterned
         !filteredParents = filterByDemand demandSet parentsIndexInterned
-        !filteredSize = IM.size filteredParents',
+        !filteredSize = IM.size filteredParents
+        -- Pre-filter seedCats so parMap below only sparks seeds that can
+        -- actually reach root. Without this, every skipped seed pays
+        -- spark synchronization overhead even though its work is trivial,
+        -- which kills parallel speedup at -N>1 on workloads where most
+        -- seeds are gated out (e.g. 50k_cats: 49989/50000 skipped).
+        !filteredSeedCats = filter (\\cat -> IS.member (iAtom cat) demandSet) seedCats
+        !demandSkippedSeeds = length seedCats - length filteredSeedCats',
         FactsSource = 'filteredParents'
     ;   FilterCode = '',
         FactsSource = 'parentsIndexInterned'
     ).
+
+%% generate_demand_gated_query_body(+DemandFilter, +RawQueryBody, -QueryBody)
+%
+%  Historical: PR #1876 wrapped the parMap closure with an inline
+%  IS.member check. That kept the spark count equal to seedCats (50k+
+%  on enwiki-style fixtures), so 49989/50000 sparks paid synchronization
+%  cost while doing trivial work — total parallel scaling broke at -N>1.
+%
+%  Current: the filter happens BEFORE parMap (in
+%  generate_demand_filter via filteredSeedCats), so the closure here
+%  no longer needs an inline gate. This predicate is kept as an
+%  identity wrapper for backwards compat with the codegen call site.
+generate_demand_gated_query_body(_, QueryBody, QueryBody).
 
 %% generate_merged_code_build(+DetectedKernels, +Options, -Code)
 %  Emit the merged-code construction block for Main.hs.

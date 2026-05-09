@@ -6417,9 +6417,11 @@ extract_recursive_pattern(Body, Name, Pattern) :-
     (   Exprs \= [],
         last(Exprs, RecExpr),
         functor(RecExpr, Op, 2),
-        member(Op, ['*', '+', '-', '/'])
-    ->  member(RecCall, Goals),
-        functor(RecCall, Name, _),
+        memberchk(Op, ['*', '+', '-', '/'])
+    ->  once((
+            member(RecCall, Goals),
+            functor(RecCall, Name, _)
+        )),
         Pattern = arithmetic(RecExpr, RecCall)
     ;   Pattern = unknown
     ).

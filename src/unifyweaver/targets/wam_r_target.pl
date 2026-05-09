@@ -40,6 +40,9 @@
     tokenize_wam_line/2,             % +Line, -Tokens
     wam_parts_to_r/3,                % +Tokens, +Options, -RLiteral
     parse_functor_arity/3,           % +Str, -Name, -Arity
+    reg_to_int/2,                    % +RegName, -Index
+    constant_to_r_term/2,            % +ConstStr, -RTermLiteral
+    intern_r_atom/2,                 % +AtomStr, -Id
     wam_r_resolve_emit_mode/2        % +Options, -Mode
 ]).
 
@@ -181,7 +184,12 @@ tokenize_wam_chars([], [], Acc, _, Tokens) :- !,
 tokenize_wam_chars([], CurR, Acc, outside, Tokens) :- !,
     reverse(CurR, CurC), string_chars(T0, CurC),
     strip_operand_comma(T0, T),
-    reverse([T|Acc], Tokens).
+    % Bare comma at end-of-input: skip rather than emit "". Quoted-empty
+    % atoms come through the inside-mode branch below and are kept.
+    (   T == ""
+    ->  reverse(Acc, Tokens)
+    ;   reverse([T|Acc], Tokens)
+    ).
 tokenize_wam_chars([], CurR, Acc, inside, Tokens) :- !,
     reverse(CurR, CurC), string_chars(T, CurC),
     reverse([T|Acc], Tokens).
@@ -191,7 +199,11 @@ tokenize_wam_chars([C|Rest], CurR, Acc, outside, Tokens) :-
         ->  tokenize_wam_chars(Rest, [], Acc, outside, Tokens)
         ;   reverse(CurR, CurC), string_chars(T0, CurC),
             strip_operand_comma(T0, T),
-            tokenize_wam_chars(Rest, [], [T|Acc], outside, Tokens)
+            (   T == ""
+            ->  NewAcc = Acc
+            ;   NewAcc = [T|Acc]
+            ),
+            tokenize_wam_chars(Rest, [], NewAcc, outside, Tokens)
         )
     ;   C == '\''
     ->  (   CurR == []
@@ -341,6 +353,16 @@ wam_parts_to_r(["builtin_call", Pred, ArityStr], Lit) :-
 wam_parts_to_r(["call_foreign", Pred, ArityStr], Lit) :-
     number_string(Arity, ArityStr),
     format(string(Lit), 'CallForeign("~w", ~w)', [Pred, Arity]).
+
+% --- arg N, Reg, OutReg ---
+% The WAM compiler optimises arg/3 into a dedicated opcode (faster
+% than builtin_call when N is a literal and the source term is already
+% in a register). Format: "arg <N> <Reg> <OutReg>".
+wam_parts_to_r(["arg", NStr, RegStr, OutRegStr], Lit) :-
+    number_string(N, NStr),
+    reg_to_int(RegStr, RegIdx),
+    reg_to_int(OutRegStr, OutIdx),
+    format(string(Lit), 'ArgInstr(~w, ~w, ~w)', [N, RegIdx, OutIdx]).
 
 % --- Switch on constant ---
 wam_parts_to_r(["switch_on_constant" | Cases], Lit) :-

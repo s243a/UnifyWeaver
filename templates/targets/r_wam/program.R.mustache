@@ -60,7 +60,12 @@ shared_program <- list(
   labels           = shared_labels,
   dispatch         = dispatch,
   foreign_handlers = foreign_handlers,
-  intern_table     = intern_table
+  intern_table     = intern_table,
+  # Dynamic predicate store for runtime assertz/asserta/retract.
+  # Keyed by "pred/arity"; each value is a list of clause records
+  # of shape list(head_args, body). An env (rather than a list) so
+  # mutations propagate across query invocations.
+  dynamic          = new.env(parent = emptyenv())
 )
 
 # ----------------------------------------------------------

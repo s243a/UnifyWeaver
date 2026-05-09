@@ -307,6 +307,16 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
                     status="timeout",
                     message="timed out after 10.000s",
                 ),
+                RunResult(
+                    "c-wam-accumulated",
+                    "dev",
+                    [0.5],
+                    "digest",
+                    10,
+                    "",
+                    status="error",
+                    message="exited with status 134",
+                ),
             ],
         )
 
@@ -338,6 +348,16 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
                         status="compile_only",
                         message="generated/built but not executed",
                     ),
+                    RunResult(
+                        "c-wam-accumulated",
+                        "dev",
+                        [0.5],
+                        "b",
+                        19,
+                        "",
+                        status="error",
+                        message="exited with status 134",
+                    ),
                 ],
                 "prolog-accumulated",
             )
@@ -346,6 +366,7 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         self.assertIn("scale\ttarget\tcategory\tstatus\tmedian_s", text)
         self.assertIn("dev\tscala-wam-accumulated-no-kernels\thybrid-wam\ttimeout", text)
         self.assertIn("dev\tc-wam-accumulated-no-kernels\thybrid-wam\tcompile_only", text)
+        self.assertIn("dev\tc-wam-accumulated\thybrid-wam\terror", text)
         self.assertNotIn("all_outputs", text)
         self.assertNotIn("speedup_vs_prolog-accumulated", text)
 

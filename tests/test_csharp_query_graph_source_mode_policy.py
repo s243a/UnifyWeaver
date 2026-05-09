@@ -17,6 +17,7 @@ from generate_pipeline import (  # noqa: E402
     generate_csharp_query_shortest_path,
     generate_csharp_query_weighted_shortest_path,
 )
+from benchmark_csharp_query_source_mode_sweep import load_calibration_artifact  # noqa: E402
 
 
 class CSharpQueryGraphSourceModePolicyTests(unittest.TestCase):
@@ -69,6 +70,27 @@ class CSharpQueryGraphSourceModePolicyTests(unittest.TestCase):
                     "configuredSourceMode == RelationSourceMode.Auto ? RelationSourceMode.Preload : configuredSourceMode",
                     source,
                 )
+
+    def test_runtime_source_mode_policy_matches_calibration_artifact(self) -> None:
+        runtime_source = (
+            ROOT / "src" / "unifyweaver" / "targets" / "csharp_query_runtime" / "QueryRuntime.cs"
+        ).read_text()
+
+        for row in load_calibration_artifact():
+            with self.subTest(workload=row.workload):
+                self.assertIn(
+                    f'"{row.workload}" => RelationSourceMode.{self._source_mode_member(row.current_auto_resolved_source_mode)}',
+                    runtime_source,
+                )
+
+    @staticmethod
+    def _source_mode_member(source_mode: str) -> str:
+        return {
+            "preload": "Preload",
+            "delimited": "Delimited",
+            "artifact": "Artifact",
+            "artifact-prebuilt": "ArtifactPrebuilt",
+        }[source_mode]
 
 
 if __name__ == "__main__":

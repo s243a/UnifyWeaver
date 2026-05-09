@@ -1398,6 +1398,51 @@ test_b1_lmdb_manifest_wiring_option_present :-
     ;   fail_test(Test, 'Manifest-backed FactSource wiring option not found')
     ).
 
+test_demand_filter_gates_seed_query_body :-
+    Test = 'WAM-Haskell: demand filter pre-filters seeds before parMap',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "let seedCatsAll = map head $ group $ sort $ map snd articleCategories"),
+        sub_string(S, _, _, _, "!demandSet = computeDemandSet parentsIndexInterned rootId"),
+        sub_string(S, _, _, _, "!reverseAdj = IM.fromListWith (++)"),
+        sub_string(S, _, _, _, "filterByDemand demandSet parents = IS.foldl' addChild IM.empty demandSet"),
+        sub_string(S, _, _, _, "!filteredSeedCats = filter (\\cat -> IS.member (iAtom cat) demandSet) seedCats"),
+        sub_string(S, _, _, _, "!demandSkippedSeeds = length seedCats - length filteredSeedCats"),
+        sub_string(S, _, _, _, ") filteredSeedCats"),
+        \+ sub_string(S, _, _, _, "if not (IS.member (iAtom cat) demandSet) then (cat, 0.0) else"),
+        sub_string(S, _, _, _, "collectForeignSolutions ctx \"category_ancestor/4\""),
+        sub_string(S, _, _, _, "demand_skipped_seeds=")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Demand-filtered Main.hs should pre-filter seeds before parMap')
+    ).
+
+test_demand_filter_false_leaves_query_ungated :-
+    Test = 'WAM-Haskell: demand_filter(false) leaves seed query ungated',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [demand_filter(false)],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "collectForeignSolutions ctx \"category_ancestor/4\""),
+        \+ sub_string(S, _, _, _, "if not (IS.member (iAtom cat) demandSet)"),
+        \+ sub_string(S, _, _, _, "filteredSeedCats = filter"),
+        sub_string(S, _, _, _, ") seedCats"),
+        \+ sub_string(S, _, _, _, "demand_skipped_seeds=")
+    ->  pass(Test)
+    ;   fail_test(Test, 'demand_filter(false) should not emit pre-filter or seed gate')
+    ).
+
 %% Regression test for the linear-chain-zero-results bug: the FFI kernel's
 %% max_depth must be substituted from user:max_depth/1 (or an option) at
 %% codegen time. Hardcoding 10 in the Main.hs template caused chain-shaped
@@ -1933,6 +1978,8 @@ run_tests :-
     test_b1_external_source_skips_wam_compilation,
     test_b1_external_source_default_allow_list,
     test_b1_external_source_off_without_use_lmdb,
+    test_demand_filter_gates_seed_query_body,
+    test_demand_filter_false_leaves_query_ungated,
     %% max_depth substitution (regression for linear-chain-zero-results)
     test_max_depth_default_10_when_no_user_fact,
     test_max_depth_from_user_fact,

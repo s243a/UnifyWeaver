@@ -363,6 +363,12 @@ void setup_category_ancestor_4(WamState* state);
 
 static WamValue make_visited_singleton(WamState *state, const char *atom) {
     WamValue list;
+    int required = state->H + 2;
+    if (required > state->H_cap) {
+        if (state->H_cap == 0) state->H_cap = WAM_INITIAL_CAP;
+        while (required > state->H_cap) state->H_cap *= 2;
+        state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+    }
     list.tag = VAL_LIST;
     list.data.ref_addr = state->H;
     state->H_array[state->H++] = val_atom(atom);
@@ -417,11 +423,13 @@ static void collect_hops(WamState *state,
                          int kernels_on,
                          WamIntResults *results) {
     if (kernels_on) {
+        int heap_mark = state->H;
         state->A[0] = val_atom(cat);
         state->A[1] = val_atom(root);
         state->A[2] = val_unbound("Hops");
         state->A[3] = make_visited_singleton(state, cat);
         (void)wam_collect_category_ancestor_hops(state, results);
+        state->H = heap_mark;
     } else {
         const char *visited[64];
         visited[0] = cat;
