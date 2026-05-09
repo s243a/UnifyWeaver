@@ -269,16 +269,28 @@ globally via `user:wam_r_kernel_layout(off)`.
 Predicates whose every clause is just `get_constant + proceed` are
 classified as pure fact tables and lowered to a flat R list of arg
 tuples plus a one-line dispatch function -- the WAM stepping
-engine isn't entered at all. A first-arg hash index (an R env
-keyed by `"a<atom-id>"` / `"i<int-val>"`) routes ground-arg
-queries to a bucket lookup; unground first args fall back to a
-linear scan over the full tuple list.
+engine isn't entered at all. **Per-arg hash indexes** (one R env
+per arg position, each keyed by `"a<atom-id>"` / `"i<int-val>"`)
+route any ground arg to a bucket lookup; the dispatcher picks the
+smallest matching bucket among bound atom/int args (most
+selective) and iterates just that bucket, with per-tuple unify
+filtering the rest of the conditions. A query with all args
+unbound (or all bound to floats / structs) falls back to a linear
+scan over the full tuple list.
+
+Memory: O(N · F) for F facts and arity N -- per-arg, not per-arg-
+*combination*, so no `2^N` composite-key blowup. Each fact
+contributes at most one entry per arg position. The codegen emits
+`<pred>_index_arg<K>` envs (K = 1..N) bundled into
+`<pred>_indexes <- list(...)`; the runtime equivalent for
+externally-loaded facts is `WamRuntime$build_fact_indexes(facts,
+arity)`.
 
 The bench (`tests/benchmarks/wam_r_fact_source_bench.pl`) shows
 modest per-query wins (~10% at N=100 chains, querying the deepest
 element) over the WAM `switch_on_constant` path. The bigger wins
-are structural: codegen-time savings, simpler emitted R, and the
-infrastructure to build richer indexes (multi-arg, range) on top.
+are structural: codegen-time savings, simpler emitted R, and now
+selective dispatch on any ground arg (not just the first).
 
 Disable per-call with `fact_table_layout(off)` in Options, or
 globally via the multifile `user:wam_r_fact_layout(off)` fact.
@@ -299,9 +311,9 @@ declare a predicate's facts as a separate CSV file:
 The predicate has **no Prolog clauses** -- the codegen emits a
 runtime CSV loader that reads the file at program-init time and
 populates the standard fact-table data structures
-(`<pred>_facts` / `<pred>_index`). The predicate then dispatches
+(`<pred>_facts` / `<pred>_indexes`). The predicate then dispatches
 via the same `fact_table_dispatch` path used by inline-clause
-fact tables (PR #1921), so first-arg hash indexing, multi-
+fact tables (PR #1921), so per-arg hash indexing, multi-
 solution backtracking, and `iterate_goal` integration all work
 the same way.
 
@@ -602,7 +614,7 @@ WamRuntime$run(shared_program, state)
 
 The full test suite lives in
 [tests/test_wam_r_generator.pl](../tests/test_wam_r_generator.pl)
-and contains 54 tests covering both structural assertions on the
+and contains 55 tests covering both structural assertions on the
 generated source and end-to-end execution via `Rscript`. The
 `*_e2e_rscript` tests auto-skip when `Rscript` is not on `PATH`.
 
@@ -642,6 +654,7 @@ Coverage map (e2e tests, by feature group):
 | `dcg_e2e_rscript` | DCG `-->` rules + `phrase/2,3` (recursive grammars, prefix-with-rest) |
 | `streams_e2e_rscript` | `open/3`, `close/1`, `read/2`, `write/2`, `writeln/2`, `format/3` round-trip |
 | `fact_table_e2e_rscript` | fact-table lowering: hash-indexed dispatch, multi-solution backtracking, atoms + integers |
+| `fact_table_multi_arg_index_e2e_rscript` | per-arg fact-table indexes: dispatch picks smallest matching bucket among bound atom/int args (arg2-only, arg3-only, multi-arg-bound queries) |
 | `kernel_tc2_e2e_rscript` | recursive-kernel detection: `transitive_closure2` BFS over a fact-table edge predicate |
 | `kernel_td3_e2e_rscript` | recursive-kernel detection: `transitive_distance3` BFS-with-depth over a fact-table edge predicate |
 | `kernel_wsp3_e2e_rscript` | recursive-kernel detection: `weighted_shortest_path3` Dijkstra over a weighted fact-table edge predicate |
