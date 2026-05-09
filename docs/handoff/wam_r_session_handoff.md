@@ -94,7 +94,9 @@ relevant feature sections. Not bugs -- intentional scope boundaries.
   indexes (one env per arg, dispatcher picks smallest bound
   bucket). Storage is O(N · F) -- linear in arity, no `2^N`
   composite-key blowup. Range / interval indexes are still future
-  work.
+  work. Design rationale + alternatives + connection to the
+  parameterized C# query runtime are documented in
+  [`docs/design/WAM_R_FACT_INDEXING.md`](../design/WAM_R_FACT_INDEXING.md).
 - **`bagof` / `setof` per-witness grouping.** `^/2` existential scope
   works; non-quantified free vars are silently aggregated rather than
   producing one bag per witness binding.

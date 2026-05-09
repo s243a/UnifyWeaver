@@ -295,6 +295,12 @@ selective dispatch on any ground arg (not just the first).
 Disable per-call with `fact_table_layout(off)` in Options, or
 globally via the multifile `user:wam_r_fact_layout(off)` fact.
 
+For the design rationale -- per-arg vs. composite indexes,
+smallest-bucket selection, alternatives ruled out (composite,
+successive hashing, bitmap intersection), and how this aligns
+with the parameterized C# query runtime -- see
+[`design/WAM_R_FACT_INDEXING.md`](design/WAM_R_FACT_INDEXING.md).
+
 ### External fact sources (CSV)
 
 Mirrors the Scala target's `scala_fact_sources` option. Users can
