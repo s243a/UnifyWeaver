@@ -2898,6 +2898,72 @@ WamRuntime$fact_table_dispatch <- function(program, state, key, tuples, index,
   WamRuntime$fact_table_iter(program, state, key, tuples, args, 1L, resume_pc)
 }
 
+# ----------------------------------------------------------
+# External fact-source loaders
+# ----------------------------------------------------------
+# Reads a CSV file and parses each line into a fact tuple. Each
+# field is trimmed; if it parses as a finite numeric and lands on
+# an integer it becomes IntTerm, on a non-integer FloatTerm,
+# otherwise it interns as an atom. Lines that are blank or start
+# with `#` are skipped. Returns a list of tuple-lists matching
+# the shape consumed by fact_table_dispatch.
+#
+# Used by the codegen-emitted `<pred>_facts <-
+# WamRuntime$read_facts_csv(...)` block when a predicate has an
+# r_fact_sources([source(P/A, file(...))]) declaration. The
+# parsing happens at program-load time, not per-query.
+WamRuntime$read_facts_csv <- function(path, intern_table) {
+  if (!file.exists(path)) return(list())
+  lines <- tryCatch(readLines(path, warn = FALSE),
+                    error = function(e) character(0))
+  out <- list()
+  for (raw in lines) {
+    line <- gsub("^\\s+|\\s+$", "", raw)
+    if (nchar(line) == 0L) next
+    if (substr(line, 1L, 1L) == "#") next
+    parts <- strsplit(line, ",", fixed = TRUE)[[1]]
+    parts <- trimws(parts)
+    tuple <- lapply(parts, function(p) {
+      n <- suppressWarnings(as.numeric(p))
+      if (!is.na(n) && is.finite(n)) {
+        if (n == as.integer(n) && abs(n) < .Machine$integer.max) {
+          IntTerm(as.integer(n))
+        } else {
+          FloatTerm(as.numeric(n))
+        }
+      } else {
+        Atom(WamRuntime$intern(intern_table, p))
+      }
+    })
+    out <- c(out, list(tuple))
+  }
+  out
+}
+
+# Build the first-arg hash index for a runtime-loaded fact table.
+# Same index shape as the codegen-emitted `<pred>_index <-
+# new.env(...); assign("a<id>", c(...))` blocks for inline fact
+# tables: keys are "a<atom-id>" / "i<int-value>", values are
+# integer vectors of 1-based tuple indices.
+WamRuntime$build_fact_index <- function(facts) {
+  idx <- new.env(parent = emptyenv())
+  for (i in seq_along(facts)) {
+    tuple <- facts[[i]]
+    if (length(tuple) < 1L) next
+    first <- tuple[[1L]]
+    if (is.null(first) || !is.list(first) || is.null(first$tag)) next
+    bk <- if (first$tag == "atom") paste0("a", first$id)
+          else if (first$tag == "int") paste0("i", first$val)
+          else NULL
+    if (is.null(bk)) next
+    existing <- if (exists(bk, envir = idx, inherits = FALSE)) {
+      get(bk, envir = idx, inherits = FALSE)
+    } else integer(0)
+    assign(bk, c(existing, as.integer(i)), envir = idx)
+  }
+  idx
+}
+
 # Enumerable iteration over a list of WAM terms, used by member/2 (and
 # any future enumerator with the same shape). Tries to unify `target`
 # with each element starting at `start_idx`. On success, pushes an iter
