@@ -2926,3 +2926,117 @@ grep ghc-options /tmp/wam_resident/wam-haskell-matrix-bench.cabal
 (cd /tmp/wam_resident && cabal new-build)
 .../wam-haskell-matrix-bench .../100k_cats_resident_run +RTS -N4 -s
 ```
+
+## Phase L appendix #7: cursor BFS at simplewiki scale (2026-05-09)
+
+### Why this measurement
+
+Phase 2b.3 (PR #1950) landed LMDB-cursor BFS as an alternative to the
+pre-loaded parentsIndex IntMap. The 1k smoke test in that PR showed
+parity (cursor + sharded L2 ≈ in_memory + sharded L2 within trial
+noise), which is the *correct* result at small scale but doesn't
+demonstrate the architectural win — that materialises only when
+pre-load isn't a viable option.
+
+Appendix #5 had also flagged the 100k_cats fixture as structurally
+broken for parMap measurement (4054 fragmented graph roots, max
+descendant subtree of 22). This appendix moves to simplewiki, which
+is real Wikipedia-derived data with proper few-roots-many-descendants
+topology.
+
+### Methodology
+
+The existing `simplewiki_cats/lmdb_proj/lmdb` was ingested earlier in
+the streaming-pipeline layout (single dupsort `main` sub-db with
+int32 child → int32 parent edges) — which Phase 2b.3 cursor mode
+can't read directly because it needs `category_parent` and
+`category_child` named sub-dbs. Instead of re-ingesting from the SQL
+dump, a small converter
+(`examples/benchmark/convert_lmdb_to_phase1_layout.py`) mirrors the
+existing data into the Phase 1 layout: copies `main` to
+`category_parent`, builds reverse-edge `category_child`, and stubs
+the intern table sub-dbs (s2i / i2s / article_category as empty —
+resident_cursor mode loads them at startup but doesn't exercise
+their contents at runtime). 297,283 edges; conversion runs in ~0.7s.
+
+3 trials per cell, default first root from the existing
+`root_ids.txt` (id 265340 — has 14,661 descendants in the simplewiki
+hierarchy), 5,000 seeds.
+
+### Results
+
+| mode             | -N | load_ms | query_ms | total_ms | peak_RSS_MB |
+|------------------|---:|--------:|---------:|---------:|------------:|
+| resident         |  1 |     183 |       36 |     443  |        179  |
+| resident_cursor  |  1 |     159 |       40 |    **226**|       **147** |
+| resident         |  2 |     141 |       33 |     335  |        221  |
+| resident_cursor  |  2 |     137 |       45 |    **207**|        217  |
+| resident         |  4 |     137 |       13 |     339  |        320  |
+| resident_cursor  |  4 |     140 |       15 |    **234**|        332  |
+
+Speedup (resident total / resident_cursor total):
+- -N1: **1.96×**  (443 → 226 ms)
+- -N2: **1.62×**  (335 → 207 ms)
+- -N4: **1.45×**  (339 → 234 ms)
+
+Both modes return identical `tuple_count=5000` and
+`demand_set_size=14661` across all 18 runs — correctness preserved.
+
+### Why cursor wins at scale
+
+At 297k edges, resident's `loadForwardEdgesFromLmdb` builds a
+~10 MB IntMap before queries can run. That's 80–150 ms of upfront
+work that cursor mode skips entirely (cursor reads only the edges
+the BFS actually visits — at most ~14k for the demand set, plus the
+kernel's per-seed walks).
+
+`peak_RSS_MB` at -N1 confirms this: cursor mode is **18% smaller**
+(147 vs 179 MB), the gap being the unbuilt parentsIndex IntMap.
+At higher -N levels GC scratch space dominates and the gap closes.
+
+The kernel's per-seed FFI overhead (highlighted in 2b.3 smoke
+results) is fully amortised by the sharded L2 cache: shared
+ancestors get cache hits across seeds and across multi-parent path
+enumeration. The default `lmdb_cache_mode(sharded)` from the same
+PR is doing real work here.
+
+### What's still open
+
+- **enwiki measurement** — `enwiki_cats/lmdb_proj/lmdb` has
+  9,932,244 edges (33× simplewiki). Same converter applies; would
+  need ~30s to convert + ~1 GB peak RSS for resident mode (which
+  hits the 5 M-edge guard) vs ~mid-to-high MB for cursor. The
+  cursor path is the only viable mode at that scale. Filed as
+  follow-up; needs a clean run on a system with enough RAM headroom.
+- **Empty intern table caveat** — the converter stubs s2i/i2s as
+  empty. Means int IDs in stdout don't reverse-map to Wikipedia
+  category names. For perf measurement that's fine; for any
+  use case that wants human-readable output, fresh ingest from
+  the SQL dump (via mysql_stream + ingest_to_lmdb.py) is needed.
+- **demand_set_size = 14,661** is the test root's descendant subtree
+  — well-defined and substantial. But seed_count = tuple_count =
+  5,000 means *every* seed is in the demand set; the filter didn't
+  prune any seeds. That's a property of the seed file (which was
+  generated to be drawn from this root's subtree) rather than a
+  general fact about Wikipedia. A "broad seeds, narrow root" workload
+  would exercise the filter differently. Future work.
+
+### Reproducer
+
+```bash
+# Convert existing simplewiki LMDB to Phase 1 layout.
+python3 examples/benchmark/convert_lmdb_to_phase1_layout.py \
+    data/benchmark/simplewiki_cats/lmdb_proj/lmdb \
+    data/benchmark/simplewiki_cats/lmdb_proj_resident/lmdb
+cp data/benchmark/simplewiki_cats/lmdb_proj/{seed_ids,root_ids}.txt \
+   data/benchmark/simplewiki_cats/lmdb_proj_resident/
+
+# Generate matrix bench in resident_cursor mode (any FactsPath works
+# because resident_cursor doesn't read facts.pl at runtime).
+swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
+    /dev/null /tmp/wam_simplewiki_cursor seeded interpreter kernels_on resident_cursor
+
+# Build + run.
+(cd /tmp/wam_simplewiki_cursor && cabal new-build)
+.../wam-haskell-matrix-bench data/benchmark/simplewiki_cats/lmdb_proj_resident +RTS -N4
+```
