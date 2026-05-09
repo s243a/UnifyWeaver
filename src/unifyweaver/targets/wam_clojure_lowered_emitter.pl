@@ -320,6 +320,10 @@ clojure_direct_builtin("is_list/1", "1").
 clojure_direct_builtin("is_list/1", 1).
 clojure_direct_builtin('is_list/1', "1").
 clojure_direct_builtin('is_list/1', 1).
+clojure_direct_builtin("ground/1", "1").
+clojure_direct_builtin("ground/1", 1).
+clojure_direct_builtin('ground/1', "1").
+clojure_direct_builtin('ground/1', 1).
 clojure_direct_builtin("!/0", "0").
 clojure_direct_builtin("!/0", 0).
 clojure_direct_builtin('!/0', "0").
@@ -460,6 +464,13 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     !,
     format(atom(Expr),
            '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if (runtime/proper-list-term? ~w value) (runtime/advance ~w) (runtime/backtrack ~w)))',
+           [S, S, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "ground/1" ; Op == 'ground/1'),
+    !,
+    format(atom(Expr),
+           '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if (runtime/ground-term? ~w value) (runtime/advance ~w) (runtime/backtrack ~w)))',
            [S, S, S, S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),

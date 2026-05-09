@@ -389,6 +389,18 @@
         (recur (deref-value bindings (second (:args cur))) (conj seen cur))
         :else false))))
 
+(defn ground-term? [state value]
+  (let [bindings (:bindings state)]
+    (letfn [(ground* [term seen]
+              (let [cur (deref-value bindings term)]
+                (cond
+                  (or (= cur ::unbound) (logic-var? cur)) false
+                  (contains? seen cur) true
+                  (structure-term? cur)
+                  (every? #(ground* % (conj seen cur)) (:args cur))
+                  :else true)))]
+      (ground* value #{}))))
+
 (defn normalize-term* [ctx term]
   (cond
     (atom-term? term) [ctx term]
@@ -888,6 +900,13 @@
           (let [value (deref-value (:bindings state)
                                    (or (reg-get-raw state "A1") ::unbound))]
             (if (proper-list-term? state value)
+              (advance state)
+              (backtrack state)))
+
+          "ground/1"
+          (let [value (deref-value (:bindings state)
+                                   (or (reg-get-raw state "A1") ::unbound))]
+            (if (ground-term? state value)
               (advance state)
               (backtrack state)))
 
