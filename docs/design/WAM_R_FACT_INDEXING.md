@@ -34,8 +34,13 @@ as part of the key. So `"aa"` in `arg1_env` and `"aa"` in `arg2_env` mean two
 totally different things, and there are no hash collisions between positions.
 
 Memory grows linearly in arity (`N × F` entries vs. `F` for first-arg only). It
-does **not** grow exponentially, because we only index single-arg keys -- not
-combinations of args.
+does **not** grow exponentially, because we build indexes for the N singleton
+arg-position subsets only -- not for combinations of args. (Note: the
+"exponential" cost of composite indexing comes from building all `2^N - 1`
+subsets, not from the key-space size of any single composite index. Each
+individual hash table only stores entries for keys that appear in the data.
+So a workload-driven *small* set of composite indexes would also be linear.
+We just don't have any today.)
 
 ## What we built
 
@@ -111,22 +116,44 @@ work. Q.E.D.
 
 ## Alternatives considered
 
-### A. Composite-key indexes
+### A. Composite-key indexes (exhaustive)
 
 Keep a separate index for each subset of bound positions: `(arg1)`, `(arg2)`,
 `(arg1, arg2)`, `(arg1, arg3)`, ..., `(arg1, ..., argN)`. Lookup becomes O(1)
 hash for any binding pattern.
 
-**Why not:** `2^N - 1` indexes per fact table. Storage is exponential in arity.
-Build time is exponential in arity. Even at N = 6 you have 63 indexes per
-table. The "n-tuple problem" -- this is what the user flagged.
+**Why not:** building all `2^N - 1` subsets means each fact contributes one
+entry per subset, so total storage is `O(F × 2^N)` -- exponential in arity,
+even though *each individual index* is just O(F) and the hash buckets only
+ever materialize for keys that actually appear in the data. Build time is
+exponential too. Even at N = 6 you have 63 indexes per table. This is the
+"n-tuple problem" -- and it's only a problem when the index choice is
+exhaustive.
 
-**When it would be worth it:** if a workload heavily exercises *one* specific
-multi-arg binding pattern and per-arg buckets aren't selective enough. Then
-emit only the indexes for that pattern (workload-driven, opt-in). Mentioned in
-the future-directions section below; not the default.
+> **Note on what's actually exponential.** The *key space* for composite
+> indexing is exponential in arity (`2^N - 1` binding patterns, each with a
+> potentially large value-space). Hash tables only store entries for keys that
+> actually appear in the data, so a *single* composite index is O(F) regardless
+> of key-space size. The exponential storage cost only appears when you build
+> indexes for *every* subset of bound positions; the alternative -- workload-
+> driven composite indexing on a chosen few subsets -- is O(F × k) for a small
+> constant k. See option B below and the future-directions section.
 
-### B. Successive / rolling hash chain
+### B. Composite-key indexes (workload-driven, opt-in)
+
+Same as A, but the user declares which composite indexes to build per
+workload, e.g. `r_fact_composite_index(p/3, [1, 2])` to build only the
+`(arg1, arg2)` index. Storage is O(F × k) for k declared indexes -- linear,
+not exponential.
+
+**Why not (yet):** no infrastructure for declaring or maintaining these in
+WAM-R today. Worth adding when a real workload shows that per-arg buckets
+aren't selective enough on a specific multi-arg binding pattern. Listed in
+future directions below. The parameterized C# query runtime already supports
+this in its manifest format (`DelimitedRelationArtifactIndexManifest.Columns`
+is `List<int>`) but currently emits only single-column indexes.
+
+### C. Successive / rolling hash chain
 
 Hash incrementally over the args of a fact: `h0 = init; h1 = mix(h0, arg1);
 h2 = mix(h1, arg2); ...; hN`. Store `hN -> tuple_index` for exact-tuple
@@ -139,7 +166,7 @@ don't match), or (b) precompute every possible `h2`, which collapses back to
 the exponential case. Successive hashing works for primary-key style lookups
 where every arg is always bound, but doesn't generalize to "any subset bound."
 
-### C. Single env with composite (position, value) keys
+### D. Single env with composite (position, value) keys
 
 One R env keyed by strings like `"1:a"`, `"2:b"`, where the position is part
 of the key string instead of being implicit in env identity.
@@ -148,7 +175,7 @@ of the key string instead of being implicit in env identity.
 keys (one extra string concat per lookup, slightly worse hash distribution
 because keys share a position-prefix). Per-arg envs avoid both. Same memory.
 
-### D. Bitmap intersection
+### E. Bitmap intersection
 
 Maintain per-(position, value) bitmaps over tuple indices; for each query,
 AND-together the bitmaps for all bound args, then iterate the result.
@@ -159,7 +186,7 @@ bucket), which is strictly better when at least one arg is selective. Bitmaps
 win only when *all* bound args have very high cardinality buckets that need to
 be intersected -- an uncommon case for fact tables.
 
-### E. Sorted per-arg indexes (range-aware)
+### F. Sorted per-arg indexes (range-aware)
 
 Same as our approach but with sorted vectors per bucket, supporting range
 queries (`X > 5`, `X between A B`). Strict superset of what we did.
@@ -347,9 +374,12 @@ places where the two converge on the same design.
 When *all* bound atom/int args are non-selective (every fact has the same value
 at the queried positions), the smallest bucket is still O(F), so we scan
 everything. There's no win over the old first-arg-only design (which would
-have scanned for the same reason). The fundamental tradeoff: composite indexes
-could intersect multiple non-selective buckets to find selective subsets, at
-exponential storage cost. We prefer the linear-storage worst case.
+have scanned for the same reason). A targeted composite index on the actual
+binding pattern (option B above) would solve the specific case at O(F)
+additional storage; an exhaustive composite-index scheme (option A) would
+solve every binding pattern at O(F × 2^N) storage. We prefer to keep the
+default linear in arity, with workload-driven composite indexes available as
+opt-in future work.
 
 In practice, on the WAM-R workloads we care about (genealogy, graph traversal,
 benchmark fact lookups), at least one bound arg is highly selective and the
