@@ -36,7 +36,7 @@ main :-
     ;   Argv = [FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom]
     ->  LmdbModeAtom = none
     ;   format(user_error,
-            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off> [<none|auto|true|false|resident>]~n',
+            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off> [<none|auto|true|false|resident|resident_cursor>]~n',
             []),
         halt(1)
     ),
@@ -122,10 +122,33 @@ parse_lmdb_mode(false, [use_lmdb(false)]).
 %% (src/unifyweaver/runtime/python/lmdb_ingest/ingest_to_lmdb.py).
 %% Requires the fixture's data.mdb to expose s2i / i2s / meta /
 %% category_parent / article_category sub-dbs.
+%% L2 sharded cache is the default for LMDB-using bench modes: hits
+%% the kernel's repeated edge lookups (multi-parent DAG paths and
+%% shared-ancestor seeds) while avoiding the per-HEC L1 duplication
+%% problem (sparks have no region affinity, so per-thread caches
+%% accumulate the same hot edges N times). MoE-style spark routing
+%% would unlock L1; until then sharded is the right default.
+%% Override at the matrix-bench-generator caller via additional Options.
 parse_lmdb_mode(resident, [
     use_lmdb(true),
     lmdb_layout(dupsort),
-    int_atom_seeds(lmdb)
+    int_atom_seeds(lmdb),
+    lmdb_cache_mode(sharded)
+]).
+%% resident_cursor: resident path + Phase 2b.3 cursor-based demand BFS.
+%% Skips the parentsIndex pre-load step and walks the LMDB
+%% category_child sub-db on demand. Requires the fixture to have been
+%% ingested with the reverse-edge sub-db (use ingest_resident_lmdb_fixture.py).
+%% L2 sharded cache especially matters in this mode: the kernel's
+%% category_parent lookups go through cpEdgeLookup (LMDB) instead of
+%% an in-memory IntMap, so cache hit rate directly closes the per-call
+%% FFI overhead gap vs `resident` mode.
+parse_lmdb_mode(resident_cursor, [
+    use_lmdb(true),
+    lmdb_layout(dupsort),
+    int_atom_seeds(lmdb),
+    demand_bfs_mode(cursor),
+    lmdb_cache_mode(sharded)
 ]).
 
 parse_variant(seeded, [
