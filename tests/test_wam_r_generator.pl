@@ -2640,6 +2640,76 @@ e2e_kernel_wsp3_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for the transitive_parent_distance4
+% kernel. BFS that tracks the immediate predecessor of each
+% reachable node alongside its distance, yielding (target, parent,
+% distance) triples. Direct/multi-hop checks, branch traversal,
+% wrong-parent failure, and a findall over the reachable set
+% (using a struct template t(Y,P,D) since the WAM compiler doesn't
+% accept pair templates like Y-P-D).
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(kernel_tpd4_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_kernel_tpd4_via_rscript
+    ;   true
+    )).
+
+e2e_kernel_tpd4_via_rscript :-
+    retractall(user:pedge(_, _)),
+    retractall(user:pd(_, _, _, _)),
+    % a -> b -> c -> d, plus branch a -> e -> f.
+    assertz(user:pedge(a, b)),
+    assertz(user:pedge(b, c)),
+    assertz(user:pedge(c, d)),
+    assertz(user:pedge(a, e)),
+    assertz(user:pedge(e, f)),
+    assertz((user:pd(X, Y, X, 1) :- user:pedge(X, Y))),
+    assertz((user:pd(X, Y, P, D) :- user:pedge(X, Z),
+                                     user:pd(Z, Y, P, D1),
+                                     D is D1 + 1)),
+    assertz((user:tpd_direct  :- pd(a, b, a, 1))),
+    assertz((user:tpd_two     :- pd(a, c, b, 2))),
+    assertz((user:tpd_three   :- pd(a, d, c, 3))),
+    assertz((user:tpd_branch  :- pd(a, e, a, 1))),
+    assertz((user:tpd_branch2 :- pd(a, f, e, 2))),
+    assertz((user:tpd_wrong   :- pd(a, c, a, 2))),
+    assertz((user:tpd_no_back :- pd(b, a, _, _))),
+    assertz((user:tpd_findall :-
+        findall(t(Y, P, D), pd(a, Y, P, D), L),
+        msort(L, S),
+        S == [t(b, a, 1), t(c, b, 2), t(d, c, 3), t(e, a, 1), t(f, e, 2)])),
+    unique_r_tmp_dir('tmp_r_kernel_tpd4_e2e', TmpDir),
+    write_wam_r_project(
+        [user:pedge/2, user:pd/4,
+         user:tpd_direct/0, user:tpd_two/0, user:tpd_three/0,
+         user:tpd_branch/0, user:tpd_branch2/0,
+         user:tpd_wrong/0, user:tpd_no_back/0, user:tpd_findall/0],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [tpd_direct, tpd_two, tpd_three, tpd_branch, tpd_branch2,
+           tpd_findall],
+    No  = [tpd_wrong, tpd_no_back],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
+    read_file_to_string(ProgPath, Code, []),
+    assertion(sub_string(Code, _, _, _, 'pred_pd_kernel_tpd4 <- function(')),
+    assertion(sub_string(Code, _, _, _,
+        'assign("pd/4", pred_pd_kernel_tpd4, envir = shared_program$lowered_dispatch)')),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-

@@ -192,7 +192,8 @@ lives in
 [`src/unifyweaver/core/recursive_kernel_detection.pl`](../src/unifyweaver/core/recursive_kernel_detection.pl)
 and is shared with the Haskell / Rust / Elixir targets; this
 target wires up `transitive_closure2`, `transitive_distance3`,
-and `weighted_shortest_path3` so far. Canonical shapes:
+`weighted_shortest_path3`, and `transitive_parent_distance4` so
+far. Canonical shapes:
 
 ```prolog
 % transitive_closure2 -- streams reachable nodes
@@ -206,6 +207,10 @@ tdist(X, Y, D) :- edge(X, Z), tdist(Z, Y, D1), D is D1 + 1.
 % weighted_shortest_path3 -- streams (target, shortest-weight)
 wsp(X, Y, W) :- edge(X, Y, W).
 wsp(X, Y, W) :- edge(X, Z, W1), wsp(Z, Y, RestW), W is RestW + W1.
+
+% transitive_parent_distance4 -- streams (target, parent, distance)
+pd(X, Y, X, 1) :- edge(X, Y).
+pd(X, Y, P, D) :- edge(X, Z), pd(Z, Y, P, D1), D is D1 + 1.
 ```
 
 The runtime helpers BFS (`transitive_closure2`,
@@ -530,7 +535,7 @@ WamRuntime$run(shared_program, state)
 
 The full test suite lives in
 [tests/test_wam_r_generator.pl](../tests/test_wam_r_generator.pl)
-and contains 49 tests covering both structural assertions on the
+and contains 50 tests covering both structural assertions on the
 generated source and end-to-end execution via `Rscript`. The
 `*_e2e_rscript` tests auto-skip when `Rscript` is not on `PATH`.
 
@@ -573,6 +578,7 @@ Coverage map (e2e tests, by feature group):
 | `kernel_tc2_e2e_rscript` | recursive-kernel detection: `transitive_closure2` BFS over a fact-table edge predicate |
 | `kernel_td3_e2e_rscript` | recursive-kernel detection: `transitive_distance3` BFS-with-depth over a fact-table edge predicate |
 | `kernel_wsp3_e2e_rscript` | recursive-kernel detection: `weighted_shortest_path3` Dijkstra over a weighted fact-table edge predicate |
+| `kernel_tpd4_e2e_rscript` | recursive-kernel detection: `transitive_parent_distance4` BFS with parent tracking |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 

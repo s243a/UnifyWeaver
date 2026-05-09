@@ -2141,6 +2141,104 @@ WamRuntime$weighted_shortest_path3 <- function(program, state, key, edge_pred,
                                1L, resume_pc)
 }
 
+# ----------------------------------------------------------
+# Recursive-kernel: transitive_parent_distance4
+# ----------------------------------------------------------
+# BFS variant that tracks the immediate predecessor of each node
+# in the search tree, yielding (target, parent, distance) triples.
+# Pattern detected:
+#   pd(X, Y, X, 1) :- edge(X, Y).
+#   pd(X, Y, P, D) :- edge(X, Z), pd(Z, Y, P, D1), D is D1 + 1.
+# The `parent` slot is the node that immediately preceded `target`
+# in the BFS path from `source` (i.e. for direct neighbours it's
+# `source` itself; for two-hop reach it's the intermediate node).
+# Source itself is *not* yielded -- the recursion always takes at
+# least one edge step.
+WamRuntime$transitive_parent_distance4 <- function(program, state, key,
+                                                     edge_pred, edge_key,
+                                                     source, target, parent,
+                                                     dist, resume_pc) {
+  table <- program$intern_table
+  src_v <- WamRuntime$deref(state, source)
+  if (is.null(src_v) || is.null(src_v$tag) || src_v$tag != "atom") {
+    return(FALSE)
+  }
+  snap_cps   <- length(state$cps)
+  snap_regs  <- as.list.environment(state$regs2)
+  snap_trail <- length(state$trail)
+  snap_pc    <- state$pc
+  snap_cp    <- state$cp
+  snap_halt  <- state$halt
+  snap_vc    <- state$var_counter
+  snap_mode  <- state$mode
+  snap_build <- state$build_stack
+
+  edge_atom_id <- WamRuntime$intern(table, edge_pred)
+  visited <- new.env(parent = emptyenv())
+  # Parallel queues: nodes, parents (immediate predecessor), depth.
+  q_nodes   <- list(src_v)
+  q_parents <- list(NULL)   # source has no parent in the BFS tree
+  q_depths  <- list(0L)
+  reached   <- list()       # (node, parent, distance) triples
+  assign(as.character(src_v$id), TRUE, envir = visited)
+
+  while (length(q_nodes) > 0L) {
+    cur     <- q_nodes[[1L]]
+    cur_par <- q_parents[[1L]]
+    depth   <- q_depths[[1L]]
+    q_nodes   <- q_nodes[-1L]
+    q_parents <- q_parents[-1L]
+    q_depths  <- q_depths[-1L]
+    next_depth <- depth + 1L
+    captured_cur <- cur
+    y_var <- Unbound(paste0("V_pd_", state$var_counter))
+    state$var_counter <- state$var_counter + 1L
+    edge_goal <- StructTerm(edge_atom_id, list(cur, y_var))
+    WamRuntime$iterate_goal(program, state, edge_goal, function() {
+      y_v <- WamRuntime$deref(state, y_var)
+      if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "atom") {
+        k <- as.character(y_v$id)
+        if (!exists(k, envir = visited, inherits = FALSE)) {
+          assign(k, TRUE, envir = visited)
+          q_nodes   <<- c(q_nodes,   list(y_v))
+          q_parents <<- c(q_parents, list(captured_cur))
+          q_depths  <<- c(q_depths,  list(next_depth))
+          reached   <<- c(reached,
+                          list(list(node   = y_v,
+                                    second = captured_cur,
+                                    third  = IntTerm(next_depth))))
+        }
+      }
+      TRUE
+    })
+  }
+
+  if (length(state$cps) > snap_cps) {
+    state$cps <- state$cps[seq_len(snap_cps)]
+  }
+  e <- new.env(parent = emptyenv(), hash = TRUE)
+  for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
+  state$regs2 <- e
+  if (length(state$trail) > snap_trail) {
+    to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
+    for (name in to_undo) {
+      if (exists(name, envir = state$bindings, inherits = FALSE)) {
+        rm(list = name, envir = state$bindings)
+      }
+    }
+    state$trail <- state$trail[seq_len(snap_trail)]
+  }
+  state$pc          <- snap_pc
+  state$cp          <- snap_cp
+  state$halt        <- snap_halt
+  state$var_counter <- snap_vc
+  state$mode        <- snap_mode
+  state$build_stack <- snap_build
+
+  WamRuntime$kernel_triple_iter(program, state, key, reached, target,
+                                  parent, dist, 1L, resume_pc)
+}
+
 # Iterate a precomputed list of result pairs, unifying each pair
 # with the (target, second) reg pair. Each entry is
 # `list(node = <WAM term>, second = <pre-built WAM term>)` so the
@@ -2180,6 +2278,59 @@ WamRuntime$kernel_pair_iter <- function(program, state, key, results, target,
                                          captured_results, captured_target,
                                          captured_second, captured_next,
                                          captured_resume)
+          }
+        )
+        state$cps <- c(state$cps, list(cp))
+      }
+      return(TRUE)
+    }
+    WamRuntime$undo_trail_to(state, snap_trail)
+    state$var_counter <- snap_vc
+  }
+  FALSE
+}
+
+# Iterate a precomputed list of 3-tuple results, unifying each
+# entry with the (target, second, third) reg triple. Each entry is
+# `list(node, second, third)` where `second` and `third` are pre-
+# built WAM terms. Used by transitive_parent_distance4 (target,
+# parent, distance) and other 4-arg kernels.
+WamRuntime$kernel_triple_iter <- function(program, state, key, results, target,
+                                            second, third, start_idx,
+                                            resume_pc) {
+  if (start_idx > length(results)) return(FALSE)
+  for (idx in seq.int(start_idx, length(results))) {
+    snap_trail <- length(state$trail)
+    snap_vc    <- state$var_counter
+    entry <- results[[idx]]
+    ok_t <- WamRuntime$unify(state, target, entry$node)
+    ok_s <- ok_t && WamRuntime$unify(state, second, entry$second)
+    ok_h <- ok_s && WamRuntime$unify(state, third,  entry$third)
+    if (ok_h) {
+      if (idx < length(results)) {
+        captured_results <- results
+        captured_target  <- target
+        captured_second  <- second
+        captured_third   <- third
+        captured_next    <- idx + 1L
+        captured_resume  <- resume_pc
+        captured_program <- program
+        captured_key     <- key
+        cp <- list(
+          kind        = "iter",
+          regs        = as.list.environment(state$regs2),
+          trail_len   = snap_trail,
+          cp          = state$cp,
+          var_counter = snap_vc,
+          mode        = state$mode,
+          build_stack = state$build_stack,
+          resume_pc   = resume_pc,
+          retry       = function(state) {
+            WamRuntime$kernel_triple_iter(captured_program, state,
+                                            captured_key, captured_results,
+                                            captured_target, captured_second,
+                                            captured_third, captured_next,
+                                            captured_resume)
           }
         )
         state$cps <- c(state$cps, list(cp))
