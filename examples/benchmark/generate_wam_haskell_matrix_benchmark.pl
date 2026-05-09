@@ -36,7 +36,7 @@ main :-
     ;   Argv = [FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom]
     ->  LmdbModeAtom = none
     ;   format(user_error,
-            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off> [<none|auto|true|false>]~n',
+            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off> [<none|auto|true|false|resident>]~n',
             []),
         halt(1)
     ),
@@ -109,6 +109,17 @@ parse_lmdb_mode(none, []).
 parse_lmdb_mode(auto, [use_lmdb(auto)]).
 parse_lmdb_mode(true, [use_lmdb(true)]).
 parse_lmdb_mode(false, [use_lmdb(false)]).
+%% resident: full LMDB-resident path (Phase 2b.2). Reads intern table,
+%% article-category map, and forward-edge index from named sub-dbs
+%% written by the streaming-pipeline ingester
+%% (src/unifyweaver/runtime/python/lmdb_ingest/ingest_to_lmdb.py).
+%% Requires the fixture's data.mdb to expose s2i / i2s / meta /
+%% category_parent / article_category sub-dbs.
+parse_lmdb_mode(resident, [
+    use_lmdb(true),
+    lmdb_layout(dupsort),
+    int_atom_seeds(lmdb)
+]).
 
 parse_variant(seeded, [
     dialect(swi),

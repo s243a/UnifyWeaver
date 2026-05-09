@@ -45,17 +45,15 @@ openLmdbEdgeStore path = do
     return (env, dbi)
 
 -- | Open the raw packed Int32 store read-only.
--- In dupsort layout the store is the named "main" subdb with MDB_DUPSORT
--- (one entry per (key, value) pair), built externally by the streaming
--- pipeline.  In the default layout it is the unnamed default db with
--- MDB_INTEGERKEY, packed Int32 array per key.
+-- In dupsort layout the store is a named subdb with MDB_DUPSORT (one
+-- entry per (key, value) pair), built externally by the streaming
+-- pipeline.  Caller passes the subdb name (e.g. "category_parent" for
+-- the Phase 1 ingester output, or "main" for legacy streaming-pipeline
+-- ingest); `Nothing` falls back to the unnamed default db.
+-- In the default layout it is the unnamed default db with MDB_INTEGERKEY,
+-- packed Int32 array per key.
 openLmdbRawReadonlyStore :: FilePath -> Maybe String -> IO (MDB_env, MDB_dbi')
-{{#lmdb_dupsort}}
-openLmdbRawReadonlyStore dbPath _dbName = do
-{{/lmdb_dupsort}}
-{{^lmdb_dupsort}}
 openLmdbRawReadonlyStore dbPath dbName = do
-{{/lmdb_dupsort}}
     env <- mdb_env_create
     mdb_env_set_mapsize env (1024 * 1024 * 1024)
     mdb_env_set_maxdbs env 4
@@ -68,7 +66,7 @@ openLmdbRawReadonlyStore dbPath dbName = do
     mdb_env_open env dbPath [MDB_RDONLY]
     txn <- mdb_txn_begin env Nothing True
 {{#lmdb_dupsort}}
-    dbi <- mdb_dbi_open' txn (Just "main") [MDB_DUPSORT]
+    dbi <- mdb_dbi_open' txn dbName [MDB_DUPSORT]
 {{/lmdb_dupsort}}
 {{^lmdb_dupsort}}
     dbi <- mdb_dbi_open' txn dbName [MDB_INTEGERKEY]
@@ -514,8 +512,18 @@ lmdbTwoLevelEdgeLookup env dbi cursorCache l1reg l2 key = unsafePerformIO $ do
 -- open for the process lifetime. This is correct because the fact
 -- database is read-only during queries.
 openLmdbEdgeLookup :: FilePath -> String -> IO EdgeLookup
+{{#lmdb_dupsort}}
+openLmdbEdgeLookup dbPath dbName = do
+    -- Dupsort layout: data lives in a named subdb.  Caller passes the
+    -- name (e.g. "category_parent" for Phase 1 ingester output).
+    (env, dbi) <- openLmdbRawReadonlyStore dbPath (Just dbName)
+{{/lmdb_dupsort}}
+{{^lmdb_dupsort}}
 openLmdbEdgeLookup dbPath _dbName = do
+    -- Default layout: data lives in the unnamed default db; the
+    -- caller-supplied name is only used for diagnostics.
     (env, dbi) <- openLmdbRawReadonlyStore dbPath Nothing
+{{/lmdb_dupsort}}
 {{#lmdb_dupsort}}
     -- Per-thread (txn, cursor) cache; entries are populated lazily
     -- on the first lookup from each parMap worker thread.
@@ -592,8 +600,14 @@ scanRawIntPairs txn dbi = do
 -- fsScan walks the packed values via a cursor; fsLookupArg1 uses the
 -- zero-copy EdgeLookup.
 lmdbFactSource :: FilePath -> String -> IO FactSource
+{{#lmdb_dupsort}}
+lmdbFactSource dbPath dbName = do
+    (env, dbi) <- openLmdbRawReadonlyStore dbPath (Just dbName)
+{{/lmdb_dupsort}}
+{{^lmdb_dupsort}}
 lmdbFactSource dbPath _dbName = do
     (env, dbi) <- openLmdbRawReadonlyStore dbPath Nothing
+{{/lmdb_dupsort}}
     txn <- mdb_txn_begin env Nothing True  -- long-lived read txn (used by fsScan)
 {{#lmdb_dupsort}}
     -- Lookups go through a per-thread cursor cache (independent of
