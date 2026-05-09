@@ -62,6 +62,11 @@
 :- dynamic user:wam_arith_eq_float/1.
 :- dynamic user:wam_arith_neq_42/1.
 :- dynamic user:wam_arith_eq_unbound/1.
+:- dynamic user:wam_arith_lt_42/1.
+:- dynamic user:wam_arith_gt_42/1.
+:- dynamic user:wam_arith_le_42/1.
+:- dynamic user:wam_arith_ge_42/1.
+:- dynamic user:wam_arith_lt_unbound/1.
 
 has(Code, Substr) :-
     once(sub_string(Code, _, _, _, Substr)).
@@ -126,6 +131,11 @@ user:wam_arith_eq_42(X) :- X =:= 42.
 user:wam_arith_eq_float(X) :- X =:= 3.5.
 user:wam_arith_neq_42(X) :- X =\= 42.
 user:wam_arith_eq_unbound(_) :- user:wam_unbound_arg(Y), Y =:= 42.
+user:wam_arith_lt_42(X) :- X < 42.
+user:wam_arith_gt_42(X) :- X > 42.
+user:wam_arith_le_42(X) :- X =< 42.
+user:wam_arith_ge_42(X) :- X >= 42.
+user:wam_arith_lt_unbound(_) :- user:wam_unbound_arg(Y), Y < 42.
 
 :- initialization(main, main).
 
@@ -194,7 +204,12 @@ run_smoke :-
           user:wam_arith_eq_42/1,
           user:wam_arith_eq_float/1,
           user:wam_arith_neq_42/1,
-          user:wam_arith_eq_unbound/1
+          user:wam_arith_eq_unbound/1,
+          user:wam_arith_lt_42/1,
+          user:wam_arith_gt_42/1,
+          user:wam_arith_le_42/1,
+          user:wam_arith_ge_42/1,
+          user:wam_arith_lt_unbound/1
         ],
         [ namespace('generated.wam_exec_test'),
           module_name('wam-clojure-exec-test'),
@@ -333,6 +348,15 @@ run_smoke :-
     verify_output(TmpDir, 'wam_arith_neq_42/1', 3.5, "true"),
     verify_output(TmpDir, 'wam_arith_neq_42/1', 42, "false"),
     verify_output(TmpDir, 'wam_arith_eq_unbound/1', a, "false"),
+    verify_output(TmpDir, 'wam_arith_lt_42/1', 3.5, "true"),
+    verify_output(TmpDir, 'wam_arith_lt_42/1', 42, "false"),
+    verify_output(TmpDir, 'wam_arith_gt_42/1', 43, "true"),
+    verify_output(TmpDir, 'wam_arith_gt_42/1', 42, "false"),
+    verify_output(TmpDir, 'wam_arith_le_42/1', 42, "true"),
+    verify_output(TmpDir, 'wam_arith_le_42/1', 43, "false"),
+    verify_output(TmpDir, 'wam_arith_ge_42/1', 42, "true"),
+    verify_output(TmpDir, 'wam_arith_ge_42/1', 3.5, "false"),
+    verify_output(TmpDir, 'wam_arith_lt_unbound/1', a, "false"),
     delete_directory_and_contents(TmpDir),
     writeln('wam_clojure_runtime_smoke: ok').
 
@@ -478,8 +502,17 @@ assert_lowered_arithmetic_comparison_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-arith-eq-float-1"),
     has(CoreCode, "defn lowered-wam-arith-neq-42-1"),
     has(CoreCode, "defn lowered-wam-arith-eq-unbound-1"),
+    has(CoreCode, "defn lowered-wam-arith-lt-42-1"),
+    has(CoreCode, "defn lowered-wam-arith-gt-42-1"),
+    has(CoreCode, "defn lowered-wam-arith-le-42-1"),
+    has(CoreCode, "defn lowered-wam-arith-ge-42-1"),
+    has(CoreCode, "defn lowered-wam-arith-lt-unbound-1"),
     has(CoreCode, "runtime/arithmetic-equal?"),
-    has(CoreCode, "runtime/arithmetic-not-equal?").
+    has(CoreCode, "runtime/arithmetic-not-equal?"),
+    has(CoreCode, "runtime/arithmetic-less?"),
+    has(CoreCode, "runtime/arithmetic-greater?"),
+    has(CoreCode, "runtime/arithmetic-less-or-equal?"),
+    has(CoreCode, "runtime/arithmetic-greater-or-equal?").
 
 assert_multiclause_wrappers_runtime_mediated(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
@@ -537,6 +570,7 @@ prolog_term_string_to_edn(z, "\"z\"") :- !.
 prolog_term_string_to_edn('[]', "\"[]\"") :- !.
 prolog_term_string_to_edn(3.5, "3.5") :- !.
 prolog_term_string_to_edn(42, "42") :- !.
+prolog_term_string_to_edn(43, "43") :- !.
 prolog_term_string_to_edn("a", "\"a\"") :- !.
 prolog_term_string_to_edn("b", "\"b\"") :- !.
 prolog_term_string_to_edn("c", "\"c\"") :- !.
