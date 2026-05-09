@@ -1182,23 +1182,24 @@ fact_source_pi_match(Name/Ar, P, Arity) :-
 
 %% emit_external_fact_source(+P, +Arity, +Spec,
 %%                            -DataDecl, -LoweredFunc, -FuncName)
-%  Emits the CSV loader + fact-iter dispatch fn. Spec must be
-%  file('path') for now; future shapes (LMDB, gzipped tables, ...)
-%  can branch here.
-emit_external_fact_source(Pred, Arity, file(Path),
+%  Emits the loader + fact-iter dispatch fn. Spec dispatches to a
+%  per-shape loader call (CSV, grouped-by-first TSV, ...); the
+%  generated loader output feeds the same build_fact_indexes +
+%  fact_table_dispatch pipeline used by inline fact tables, so
+%  per-arg indexing and dispatch are unchanged across backends.
+emit_external_fact_source(Pred, Arity, Spec,
                           DataDecl, LoweredFunc, FuncName) :-
     r_pred_name(Pred, RName),
     format(atom(DataName), '~w_facts', [RName]),
     format(atom(IndexesName), '~w_indexes', [RName]),
     format(atom(FuncName), '~w_fact_iter', [RName]),
-    atom_string(Path, PathStr),
-    r_string_literal(PathStr, PathLit),
+    fact_source_loader_call(Spec, Arity, LoaderCall, SpecComment),
     format(string(DataDecl),
-'# External fact source for ~w/~w (file: ~w)
-~w <- WamRuntime$read_facts_csv(~w, intern_table)
+'# External fact source for ~w/~w (~w)
+~w <- ~w
 ~w <- WamRuntime$build_fact_indexes(~w, ~wL)',
-        [Pred, Arity, PathStr, DataName, PathLit, IndexesName, DataName,
-         Arity]),
+        [Pred, Arity, SpecComment, DataName, LoaderCall, IndexesName,
+         DataName, Arity]),
     fact_args_collect(Arity, ArgsCollect),
     format(string(LoweredFunc),
 '~w <- function(program, state) {
@@ -1207,6 +1208,29 @@ emit_external_fact_source(Pred, Arity, file(Path),
                                   args, state$pc + 1L)
 }',
         [FuncName, ArgsCollect, Pred, Arity, DataName, IndexesName]).
+
+%% fact_source_loader_call(+Spec, +Arity, -LoaderCallSrc, -CommentTag)
+%  Maps a Spec to the R source that loads the table, plus a short
+%  human-readable tag for the comment header. New backends slot in
+%  by adding a clause here.
+fact_source_loader_call(file(Path), _Arity, LoaderCall, Comment) :-
+    atom_string(Path, PathStr),
+    r_string_literal(PathStr, PathLit),
+    format(string(LoaderCall),
+           'WamRuntime$read_facts_csv(~w, intern_table)',
+           [PathLit]),
+    format(string(Comment), 'csv file: ~w', [PathStr]).
+fact_source_loader_call(grouped_by_first(Path), Arity, LoaderCall, Comment) :-
+    (   Arity =:= 2
+    ->  true
+    ;   throw(error(domain_error(arity_2_for_grouped_by_first, Arity), _))
+    ),
+    atom_string(Path, PathStr),
+    r_string_literal(PathStr, PathLit),
+    format(string(LoaderCall),
+           'WamRuntime$read_facts_grouped_tsv(~w, intern_table)',
+           [PathLit]),
+    format(string(Comment), 'grouped-by-first tsv file: ~w', [PathStr]).
 
 % ============================================================================
 % FACT-TABLE CLASSIFICATION + EMISSION

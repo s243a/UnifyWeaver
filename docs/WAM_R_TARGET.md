@@ -301,10 +301,17 @@ successive hashing, bitmap intersection), and how this aligns
 with the parameterized C# query runtime -- see
 [`design/WAM_R_FACT_INDEXING.md`](design/WAM_R_FACT_INDEXING.md).
 
-### External fact sources (CSV)
+### External fact sources
 
 Mirrors the Scala target's `scala_fact_sources` option. Users can
-declare a predicate's facts as a separate CSV file:
+declare a predicate's facts as a separate file. Two backends are
+supported today:
+
+- `file('data.csv')` -- comma-separated rows, one fact per row.
+  Any arity.
+- `grouped_by_first('data.tsv')` -- tab-separated rows shaped as
+  `key<TAB>v1<TAB>v2<TAB>...`; the loader explodes each row into
+  separate `(key, vK)` tuples. Arity-2 only.
 
 ```prolog
 :- write_wam_r_project(
@@ -312,21 +319,29 @@ declare a predicate's facts as a separate CSV file:
        [intern_atoms([alice, bob, carol]),
         r_fact_sources([source(cp/2, file('data.csv'))])],
        '/tmp/proj').
+
+:- write_wam_r_project(
+       [user:parent/2, user:test/0],
+       [intern_atoms([alice, bob, carol]),
+        r_fact_sources([source(parent/2,
+                                grouped_by_first('parents.tsv'))])],
+       '/tmp/proj').
 ```
 
 The predicate has **no Prolog clauses** -- the codegen emits a
-runtime CSV loader that reads the file at program-init time and
+runtime loader that reads the file at program-init time and
 populates the standard fact-table data structures
 (`<pred>_facts` / `<pred>_indexes`). The predicate then dispatches
 via the same `fact_table_dispatch` path used by inline-clause
 fact tables (PR #1921), so per-arg hash indexing, multi-
 solution backtracking, and `iterate_goal` integration all work
-the same way.
+the same way regardless of backend.
 
-CSV format: one row per fact, comma-separated; lines starting
-with `#` and blank lines are skipped. Fields that parse as a
-finite numeric become `IntTerm` / `FloatTerm`; everything else
-interns as an atom.
+For both formats: lines starting with `#` and blank lines are
+skipped. Fields that parse as a finite numeric become `IntTerm` /
+`FloatTerm`; everything else interns as an atom. CSV trims each
+field; grouped-by-first additionally drops empty fields and
+silently skips rows with no values (just a key).
 
 For atoms that don't appear in any compiled WAM body but are
 needed by the loaded facts, declare them via `intern_atoms(...)`
@@ -336,7 +351,9 @@ get IDs outside the codegen-known range.
 
 The CLI path works the same as inline fact tables: the
 predicate's body is a single `Execute("P", A)` instruction that
-falls through to the lowered_dispatch tier.
+falls through to the lowered_dispatch tier. To add a new backend,
+add a `fact_source_loader_call/4` clause for the Spec shape and a
+`WamRuntime$read_facts_<shape>(...)` runtime helper.
 
 ### Emit modes
 
@@ -686,6 +703,7 @@ Coverage map (e2e tests, by feature group):
 | `kernel_ca_e2e_rscript` | recursive-kernel detection: `category_ancestor` BFS with depth-cap + visited-set cycle detection |
 | `kernel_astar4_e2e_rscript` | recursive-kernel detection: `astar_shortest_path4` goal-directed search with user heuristic |
 | `external_fact_source_e2e_rscript` | external CSV fact sources via `r_fact_sources([source(P/A, file(...))])` |
+| `external_fact_source_grouped_tsv_e2e_rscript` | external grouped-by-first TSV fact sources (arity-2): `r_fact_sources([source(P/2, grouped_by_first(...))])` |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 

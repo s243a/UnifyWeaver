@@ -120,9 +120,18 @@ relevant feature sections. Not bugs -- intentional scope boundaries.
 If you're picking up this campaign, these are the obvious next steps in
 roughly priority order:
 
-1. **LMDB / grouped-by-first TSV backends** for `r_fact_sources`. Mirrors
-   the Scala precedent; the `fact_source_spec_to_*` clauses in
-   `wam_scala_target.pl` are templates.
+1. **LMDB backend** for `r_fact_sources`. Grouped-by-first TSV landed
+   alongside this entry (`grouped_by_first('path.tsv')` Spec; arity-2;
+   exploded into per-value tuples by `WamRuntime$read_facts_grouped_tsv`,
+   then through the same `build_fact_indexes` + `fact_table_dispatch`
+   pipeline as the CSV backend). LMDB is harder: needs an R LMDB binding
+   (e.g. `thor` / `lmdbr`, both system-LMDB-dependent) and a different
+   dispatch path -- the Scala impl deliberately bypasses the
+   load-everything `fact_table_dispatch` and probes by `lookupByArg1`
+   for ground arg1, `streamAll` otherwise. To extend: add a
+   `fact_source_loader_call/4` clause for the new Spec shape **plus** a
+   parallel `WamRuntime$lmdb_fact_dispatch` to skip the in-memory tuple
+   list, since materialising every key defeats the point.
 2. **Performance profiling + targeted optimization.** First PR should
    add `Rprof` instrumentation around `wam_r_fact_source_bench.pl` and
    identify a single hot path; subsequent PRs each fix one bottleneck.
