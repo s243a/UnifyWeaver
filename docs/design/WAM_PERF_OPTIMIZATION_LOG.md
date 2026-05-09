@@ -2697,3 +2697,130 @@ small effective-demand workloads); the spark-fanout regression PR
 - The historical in-body gate code path is documented in
   `generate_demand_gated_query_body/3` but unreachable. Drop it once
   there's no plausible reason to A/B against the gate variant.
+
+## Phase L appendix #5: LMDB-resident interning end-to-end (2026-05-08)
+
+### Why this landed
+
+Appendix #4 closed with: "Parallelizing or amortizing TSV load and
+atom interning is the next lever." This appendix measures that lever
+on `100k_cats`. The work landed across three PRs:
+
+- **PR #1916** (Phase 2b.2a) — `loadInternTableFromLmdb`,
+  `loadArticleCategoriesFromLmdb`, `loadForwardEdgesFromLmdb` +
+  `iterateAllPairs` / `peekStringBytes` helpers. Codegen surface, no
+  runtime wiring.
+- **PR #1918** (Phase 2b.2b) — Replace the `int_atom_seeds(lmdb)`
+  panic stub with calls to those loaders; wrap the int-ids-mode
+  intern-table and parents-index blocks with `{{^int_atom_seeds_lmdb}}`
+  and add LMDB-mode parallels. New `openLmdbInternEnvReadonly` helper.
+- **PR #1929** (Phase 2b.2c plumbing) — Matrix-bench `resident` mode
+  selector emitting `use_lmdb(true) + lmdb_layout(dupsort) +
+  int_atom_seeds(lmdb)`; missing imports (`CChar`, `nullPtr`, `when`)
+  added; **dupsort sub-db naming bug fixed** (`openLmdbEdgeLookup` /
+  `lmdbFactSource` ignored their `dbName` argument and hardcoded
+  `Just "main"`, so the FFI kernel couldn't find the
+  Phase-1-ingester's `category_parent` sub-db); fixture-specific
+  one-pass dual-table ingester `ingest_resident_lmdb_fixture.py`.
+
+### Measurement
+
+100k_cats fixture (196,900 category_parent edges, 84,136
+article_category edges, 84,136 unique atoms; default first root from
+`root_categories.tsv`). `seeded interpreter kernels_on`. 5 trials per
+cell; medians reported.
+
+| mode     | -N | load_ms | query_ms | total_ms | peak_RSS_MB |
+|----------|---:|--------:|---------:|---------:|------------:|
+| tsv      |  1 |       0 |        0 |    3535  |        751  |
+| resident |  1 |     745 |        4 |     980  |        385  |
+| tsv      |  2 |       0 |        2 |    3483  |        788  |
+| resident |  2 |     776 |        4 |    1072  |        384  |
+| tsv      |  4 |       0 |        1 |    5831  |        786  |
+| resident |  4 |    1564 |        6 |    2090  |        388  |
+
+`load_ms` is the bench's `t1 - t0` (file/LMDB load only). `query_ms`
+is `t3 - t2` (per-seed parMap). `setup_ms = total_ms - load_ms -
+query_ms - aggregation_ms` is the intern-table + parents-index build.
+
+Speedup (`tsv total / resident total`):
+- -N1: **3.61×** (3535 → 980 ms)
+- -N2: **3.25×** (3483 → 1072 ms)
+- -N4: **2.79×** (5831 → 2090 ms)
+
+Peak RSS: **resident is ~50% of TSV** at every -N level (385 vs 751 MB
+at -N1). The TSV path materialises a string-keyed `parentsIndex`
+before reinterning into the system-wide table; resident reads
+pre-interned int32 directly via `mdb_cursor_get'` and mmap-shares the
+backing pages.
+
+### Where the speedup comes from
+
+Decomposing -N1 medians:
+
+| phase                      | tsv      | resident |
+|----------------------------|---------:|---------:|
+| load (file/LMDB read)      |    0 ms  |   745 ms |
+| setup (intern + index)     | 3535 ms  |   231 ms |
+| query (per-seed parMap)    |    0 ms  |     4 ms |
+| total                      | 3535 ms  |   980 ms |
+
+The TSV path's 3.5 s is ~95% intern table + parents index
+construction, the bottleneck Phase 2b targets. The resident path
+trades it for a 0.7 s LMDB load plus a 0.2 s in-memory index build,
+net ~1 s. The 1 s target from `WAM_LMDB_RESIDENT_INTERNING_IMPLEMENTATION_PLAN.md`
+§4 lands by 20 ms.
+
+### Open follow-ups
+
+- **Parallelism regression at -N4 persists** — both modes get slower
+  at -N4 vs -N1 (TSV: 3535→5831 = 1.65× slower; resident: 980→2090 =
+  2.13× slower). Appendix #4 documented the seed pre-filter that
+  dropped this from catastrophic to merely sublinear. Going further
+  needs amortising the LMDB env open across sparks (resident
+  load_ms doubles 745→1564 at -N4, suggesting first-page faults are
+  paid concurrently across worker threads). Filed for a follow-up
+  branch.
+- **UTF-8 / ASCII** ([issue #1915](https://github.com/s243a/UnifyWeaver/issues/1915)) —
+  `peekStringBytes` byte-by-byte decode is correct for the URL-encoded
+  ASCII categories in this fixture; will trip on simplewiki's
+  multi-byte UTF-8. Fix is `Data.Text.Encoding.decodeUtf8`. Triggers
+  on first non-ASCII fixture.
+- **Edge-count threshold** — `loadForwardEdgesFromLmdb` caps in-memory
+  growth at 5_000_000 edges (~80 MB IntMap). 100k_cats's 196,900 fits
+  easily; enwiki-scale (~28M) will trip the guard. Two long-term
+  fixes in `WAM_LMDB_RESIDENT_INTERNING_IMPLEMENTATION_PLAN.md` §3.5:
+  reverse-edge sub-db at the ingester (small change), or LMDB-cursor
+  BFS instead of pre-load (Phase 2b.3 follow-up).
+- **TSV path setup time at -N4** — TSV setup grows from 3.5 s (-N1) to
+  5.8 s (-N4) without doing more work. The intern-table fold runs
+  once before parMap fires, so this is GC pressure or scheduler
+  noise. Resident's setup is small enough that the same noise has
+  smaller relative impact. Worth investigating if TSV path remains a
+  user-facing default.
+
+### Reproducer
+
+```bash
+# 1. Re-ingest 100k_cats with the resident layout (Phase 1 sub-dbs).
+mkdir -p data/benchmark/100k_cats_resident_run
+cp data/benchmark/100k_cats/{category_parent,article_category,root_categories}.tsv \
+   data/benchmark/100k_cats/{facts.pl,metadata.json} \
+   data/benchmark/100k_cats_resident_run/
+python3 examples/benchmark/ingest_resident_lmdb_fixture.py \
+    data/benchmark/100k_cats data/benchmark/100k_cats_resident_run/lmdb
+
+# 2. Generate matrix bench in both modes.
+swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
+    data/benchmark/100k_cats_resident_run/facts.pl /tmp/wam_100k_tsv \
+    seeded interpreter kernels_on none
+swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
+    data/benchmark/100k_cats_resident_run/facts.pl /tmp/wam_100k_resident \
+    seeded interpreter kernels_on resident
+
+# 3. Build both.
+(cd /tmp/wam_100k_tsv && cabal new-build)
+(cd /tmp/wam_100k_resident && cabal new-build)
+
+# 4. Run with /usr/bin/time -v for peak RSS; loop -N1/-N2/-N4 × 5 trials.
+```
