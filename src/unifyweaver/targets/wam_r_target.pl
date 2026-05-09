@@ -1184,15 +1184,16 @@ emit_external_fact_source(Pred, Arity, file(Path),
                           DataDecl, LoweredFunc, FuncName) :-
     r_pred_name(Pred, RName),
     format(atom(DataName), '~w_facts', [RName]),
-    format(atom(IndexName), '~w_index', [RName]),
+    format(atom(IndexesName), '~w_indexes', [RName]),
     format(atom(FuncName), '~w_fact_iter', [RName]),
     atom_string(Path, PathStr),
     r_string_literal(PathStr, PathLit),
     format(string(DataDecl),
 '# External fact source for ~w/~w (file: ~w)
 ~w <- WamRuntime$read_facts_csv(~w, intern_table)
-~w <- WamRuntime$build_fact_index(~w)',
-        [Pred, Arity, PathStr, DataName, PathLit, IndexName, DataName]),
+~w <- WamRuntime$build_fact_indexes(~w, ~wL)',
+        [Pred, Arity, PathStr, DataName, PathLit, IndexesName, DataName,
+         Arity]),
     fact_args_collect(Arity, ArgsCollect),
     format(string(LoweredFunc),
 '~w <- function(program, state) {
@@ -1200,7 +1201,7 @@ emit_external_fact_source(Pred, Arity, file(Path),
   WamRuntime$fact_table_dispatch(program, state, "~w/~w", ~w, ~w,
                                   args, state$pc + 1L)
 }',
-        [FuncName, ArgsCollect, Pred, Arity, DataName, IndexName]).
+        [FuncName, ArgsCollect, Pred, Arity, DataName, IndexesName]).
 
 % ============================================================================
 % FACT-TABLE CLASSIFICATION + EMISSION
@@ -1327,53 +1328,80 @@ fact_seg_arg_lit(SegParts, Idx, Lit) :-
 %% emit_fact_table(+Pred, +Arity, +Tuples, -DataDecl, -LoweredFunc, -FuncName)
 %  Renders the per-predicate fact-data declaration and a lowered
 %  function that delegates to WamRuntime$fact_table_dispatch.
-%  Emits a first-arg index (an R env mapping "a<id>" / "i<val>" to
-%  the integer-vector of tuple indices) so ground first-arg queries
-%  hit a hash bucket instead of a full linear scan -- the speed-up
-%  vs the WAM `switch_on_constant` path comes from skipping the
-%  stepping engine and the get_constant unify chain.
+%  Emits N per-arg indexes (one R env per arg position, each mapping
+%  "a<id>" / "i<val>" -> integer vector of matching tuple indices),
+%  bundled into an `<RName>_indexes <- list(...)` list. Dispatch picks
+%  the smallest matching bucket among bound atom/int args and iterates
+%  just that bucket; a non-leading-ground query is no longer a full
+%  scan. Memory: O(N * F); per-arg, no composite keys.
 emit_fact_table(Pred, Arity, Tuples, DataDecl, LoweredFunc, FuncName) :-
     r_pred_name(Pred, RName),
     format(atom(DataName), '~w_facts', [RName]),
-    format(atom(IndexName), '~w_index', [RName]),
+    format(atom(IndexesName), '~w_indexes', [RName]),
     format(atom(FuncName), '~w_fact_iter', [RName]),
     length(Tuples, NTuples),
     fact_tuples_to_r_list(Tuples, ListBody),
-    fact_index_assignments(Tuples, IndexName, IndexBody),
+    fact_indexes_block(Tuples, Arity, RName, IndexesName, IndexBody),
     format(string(DataDecl),
 '# Fact table for ~w/~w (~w tuples)
 ~w <- list(
 ~w
 )
-~w <- new.env(parent = emptyenv())
-~w', [Pred, Arity, NTuples, DataName, ListBody, IndexName, IndexBody]),
+~w', [Pred, Arity, NTuples, DataName, ListBody, IndexBody]),
     fact_args_collect(Arity, ArgsCollect),
     format(string(LoweredFunc),
 '~w <- function(program, state) {
   args <- ~w
   WamRuntime$fact_table_dispatch(program, state, "~w/~w", ~w, ~w,
                                   args, state$pc + 1L)
-}', [FuncName, ArgsCollect, Pred, Arity, DataName, IndexName]).
+}', [FuncName, ArgsCollect, Pred, Arity, DataName, IndexesName]).
 
-% Build the R-side index population block. Each tuple's first arg
-% (which our classifier guarantees is a ground IntTerm/Atom literal)
-% maps to a bucket key "a<id>" or "i<val>"; the bucket value is the
-% list of 1-based tuple indices that share that key, in source order.
-fact_index_assignments(Tuples, IndexName, Body) :-
-    fact_index_pairs(Tuples, 1, Pairs),
+% Build the per-arg index population block. For each arg position
+% 1..Arity, emit a `<RName>_index_arg<K> <- new.env(...)` plus one
+% `assign("a<id>"/"i<val>", c(...), envir = ...)` line per bucket.
+% Finally bundle all per-arg envs into `<IndexesName> <- list(...)`.
+%
+% Arity must be a positive integer: the fact-table classifier requires
+% `get_constant + proceed`, which implies arity >= 1. An arity-0 fact
+% table would emit `<IndexesName> <- list()`, which fact_table_dispatch
+% would reject loudly via its own arity-vs-indexes check, but it's
+% still better to fail at codegen time with a clear domain error.
+fact_indexes_block(Tuples, Arity, RName, IndexesName, Body) :-
+    must_be(positive_integer, Arity),
+    numlist(1, Arity, ArgPositions),
+    % maplist/4 with two output lists: each call to fact_index_per_arg/5
+    % produces one block of R code (Block) and the matching env name
+    % (IndexName), zipped over ArgPositions.
+    maplist(fact_index_per_arg(Tuples, RName), ArgPositions, PerArgBlocks,
+            PerArgNames),
+    atomic_list_concat(PerArgBlocks, '\n', Joined),
+    atomic_list_concat(PerArgNames, ', ', NamesList),
+    format(string(Body), '~w\n~w <- list(~w)',
+           [Joined, IndexesName, NamesList]).
+
+% Emit the new.env + bucket assigns for a single arg position.
+fact_index_per_arg(Tuples, RName, ArgPos, Block, IndexName) :-
+    format(atom(IndexName), '~w_index_arg~w', [RName, ArgPos]),
+    fact_index_pairs_at(Tuples, ArgPos, 1, Pairs),
     fact_index_group(Pairs, [], Buckets),
-    maplist(fact_index_emit_assign(IndexName), Buckets, Lines),
-    atomic_list_concat(Lines, '\n', Body).
+    maplist(fact_index_emit_assign(IndexName), Buckets, AssignLines),
+    atomic_list_concat(AssignLines, '\n', AssignsBody),
+    (   AssignsBody == ''
+    ->  format(string(Block), '~w <- new.env(parent = emptyenv())',
+               [IndexName])
+    ;   format(string(Block), '~w <- new.env(parent = emptyenv())\n~w',
+               [IndexName, AssignsBody])
+    ).
 
-fact_index_pairs([], _, []).
-fact_index_pairs([Tuple | Rest], Idx, [Key-Idx | RestPairs]) :-
-    Tuple = [First | _],
-    fact_index_key(First, Key), !,
+fact_index_pairs_at([], _ArgPos, _Idx, []).
+fact_index_pairs_at([Tuple | Rest], ArgPos, Idx, [Key-Idx | RestPairs]) :-
+    nth1(ArgPos, Tuple, Lit),
+    fact_index_key(Lit, Key), !,
     Idx1 is Idx + 1,
-    fact_index_pairs(Rest, Idx1, RestPairs).
-fact_index_pairs([_ | Rest], Idx, RestPairs) :-
+    fact_index_pairs_at(Rest, ArgPos, Idx1, RestPairs).
+fact_index_pairs_at([_ | Rest], ArgPos, Idx, RestPairs) :-
     Idx1 is Idx + 1,
-    fact_index_pairs(Rest, Idx1, RestPairs).
+    fact_index_pairs_at(Rest, ArgPos, Idx1, RestPairs).
 
 % Source literals are produced by constant_to_r_term: "Atom(<id>)"
 % or "IntTerm(<val>)" / "FloatTerm(<val>)". We pull the prefix to

@@ -15,8 +15,8 @@ then read `docs/WAM_R_TARGET.md` for the user-facing reference.
 
 ### Numbers
 
-- **54 tests** in `tests/test_wam_r_generator.pl` (37 e2e via Rscript,
-  the rest structural). Full suite runs in ~5-7 minutes; bottleneck is
+- **55 tests** in `tests/test_wam_r_generator.pl` (38 e2e via Rscript,
+  the rest structural). Full suite runs in ~5-9 minutes; bottleneck is
   Rscript startup, not the runtime.
 - **3 main source files**:
   - `src/unifyweaver/targets/wam_r_target.pl` -- codegen + project writer.
@@ -48,7 +48,7 @@ then read `docs/WAM_R_TARGET.md` for the user-facing reference.
 | **DCG** | `-->` via SWI's term-expansion + `phrase/2,3`. |
 | **Parser** | Operator-precedence parser for the standard Prolog operator table; lists, structs, integers, floats, vars. |
 | **Streams** | File I/O via R `file()` connections; line-buffered `read/2` parses through the term parser. |
-| **Fact-table lowering** | Pure-fact predicates (only `get_constant + proceed`) emit a flat R tuple list + first-arg hash index, dispatched via `WamRuntime$fact_table_dispatch`. |
+| **Fact-table lowering** | Pure-fact predicates (only `get_constant + proceed`) emit a flat R tuple list + per-arg hash indexes (one env per arg position), dispatched via `WamRuntime$fact_table_dispatch`. Smallest matching bound-arg bucket wins; O(N · F) memory. |
 | **External fact sources (CSV)** | `r_fact_sources([source(P/A, file('data.csv'))])` -- predicate has no Prolog clauses; loader runs at program init. |
 | **Kernels (7/7)** | All seven patterns from `recursive_kernel_detection.pl`: `transitive_closure2`, `transitive_distance3`, `weighted_shortest_path3`, `transitive_parent_distance4`, `transitive_step_parent_distance5`, `category_ancestor`, `astar_shortest_path4`. Native R BFS / Dijkstra / A* implementations that bypass the WAM stepper. |
 | **Lowered dispatch** | `program$lowered_dispatch` env consulted by `Call` / `Execute` / `dispatch_call` before label dispatch, so internal Prolog-to-Prolog calls reach the fast path (not just direct R-API). |
@@ -90,8 +90,13 @@ relevant feature sections. Not bugs -- intentional scope boundaries.
 - **No multi-line term reads.** `read/2` is line-buffered.
 - **No streams beyond file I/O.** No `current_input/1`, `current_output/1`,
   `set_input/1`, character I/O, binary streams.
-- **Fact-table indexing is first-arg only.** Multi-arg indexing is
-  feasible but not yet wired.
+- **Fact-table indexing covers any arg position.** Per-arg hash
+  indexes (one env per arg, dispatcher picks smallest bound
+  bucket). Storage is O(N · F) -- linear in arity, no `2^N`
+  composite-key blowup. Range / interval indexes are still future
+  work. Design rationale + alternatives + connection to the
+  parameterized C# query runtime are documented in
+  [`docs/design/WAM_R_FACT_INDEXING.md`](../design/WAM_R_FACT_INDEXING.md).
 - **`bagof` / `setof` per-witness grouping.** `^/2` existential scope
   works; non-quantified free vars are silently aggregated rather than
   producing one bag per witness binding.
@@ -112,34 +117,35 @@ relevant feature sections. Not bugs -- intentional scope boundaries.
 If you're picking up this campaign, these are the obvious next steps in
 roughly priority order:
 
-1. **Multi-arg fact-table indexing.** Extend the first-arg index to
-   second/third args. Modest perf gain on non-leading-ground queries.
-   Bounded scope; reuses the existing `fact_table_dispatch` machinery.
-2. **Operator declarations (`op/3`)** in the term parser. Quality-of-life
+1. **Operator declarations (`op/3`)** in the term parser. Quality-of-life
    for `read_term_from_atom/2,3` and any user code that ports Prolog
    source between targets.
-3. **LMDB / grouped-by-first TSV backends** for `r_fact_sources`. Mirrors
+2. **LMDB / grouped-by-first TSV backends** for `r_fact_sources`. Mirrors
    the Scala precedent; the `fact_source_spec_to_*` clauses in
    `wam_scala_target.pl` are templates.
-4. **Performance profiling + targeted optimization.** First PR should
+3. **Performance profiling + targeted optimization.** First PR should
    add `Rprof` instrumentation around `wam_r_fact_source_bench.pl` and
    identify a single hot path; subsequent PRs each fix one bottleneck.
    Tagged-list `$tag` access and env-based register lookups are likely
    suspects.
-5. **Mode analysis (start).** Big multi-PR effort. Phase 1 collects
+4. **Mode analysis (start).** Big multi-PR effort. Phase 1 collects
    mode info per predicate (in/out per arg); Phase 2 wires it to
    specialised emission (skip unifications when the mode says the slot
    is unbound, etc.). Look at the Haskell target's
    `WAM_HASKELL_MODE_ANALYSIS_*.md` design docs for the precedent.
-6. **Multi-line `read/2`.** Read until a `.` terminator across lines.
+5. **Multi-line `read/2`.** Read until a `.` terminator across lines.
    Niche but completes the streams story.
-7. **Multi-solution `retract/1` ignoring snapshot.** I.e. re-read the
+6. **Multi-solution `retract/1` ignoring snapshot.** I.e. re-read the
    live clause list on each backtrack. Trickier semantics; document
    carefully if pursued.
-8. **Phase-3 lowered emitter expansion.** Currently handles only
+7. **Phase-3 lowered emitter expansion.** Currently handles only
    `deterministic` and `multi_clause_1` shapes. Could grow N-clause
    general lowering; would compete with the kernel / fact-table paths
    so the value is unclear.
+8. **Range / interval indexes** on fact tables. Per-arg hash indexes
+   land queries with ground atom/int args; range queries (`X > 5`,
+   `X between A B`) still go through the per-tuple scan. A sorted-
+   per-arg index would route these. Niche but a natural extension.
 
 ## Things to know before you start a follow-up
 

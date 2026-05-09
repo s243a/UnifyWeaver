@@ -2385,6 +2385,12 @@ test(fact_table_e2e_rscript) :-
     )).
 
 e2e_fact_table_via_rscript :-
+    setup_call_cleanup(
+        e2e_fact_table_setup(TmpDir),
+        e2e_fact_table_body(TmpDir),
+        e2e_fact_table_cleanup(TmpDir)).
+
+e2e_fact_table_setup(TmpDir) :-
     assertz(user:edge(a, b)),
     assertz(user:edge(b, c)),
     assertz(user:edge(c, d)),
@@ -2403,7 +2409,9 @@ e2e_fact_table_via_rscript :-
     assertz(user:ival(3, three)),
     assertz((user:ft_int  :- ival(2, two))),
     assertz((user:ft_int_no :- ival(2, three))),
-    unique_r_tmp_dir('tmp_r_facttable_e2e', TmpDir),
+    unique_r_tmp_dir('tmp_r_facttable_e2e', TmpDir).
+
+e2e_fact_table_body(TmpDir) :-
     write_wam_r_project(
         [user:edge/2, user:ival/2,
          user:ft_first/0, user:ft_third/0, user:ft_no/0,
@@ -2429,18 +2437,121 @@ e2e_fact_table_via_rscript :-
     read_file_to_string(ProgPath, Code, []),
     assertion(sub_string(Code, _, _, _, '# Fact table for edge/2')),
     assertion(sub_string(Code, _, _, _, 'pred_edge_facts <- list(')),
-    assertion(sub_string(Code, _, _, _, 'pred_edge_index <- new.env')),
-    % The hash-index covers every distinct first-arg value.
-    forall(member(K, ['a', 'b', 'c', 'd']), (
-        format(string(Pat), 'assign("a~w", c(', [K]),
-        % Some atoms map to the same id only if interning collapses,
-        % which won't happen for distinct names. We just check the
-        % presence of an `assign("a<digit>"`-style line per atom.
-        true,
-        % Sanity: an `a<id>` index entry exists.
-        ignore(sub_string(Code, _, _, _, Pat))
+    % Per-arg indexes (one env per arg position) bundled into a list.
+    assertion(sub_string(Code, _, _, _, 'pred_edge_index_arg1 <- new.env')),
+    assertion(sub_string(Code, _, _, _, 'pred_edge_index_arg2 <- new.env')),
+    assertion(sub_string(Code, _, _, _, 'pred_edge_indexes <- list(pred_edge_index_arg1, pred_edge_index_arg2)')),
+    % Both arg envs should be populated: each fact contributes one
+    % entry to each arg position's index. 4 facts, 4 distinct atoms
+    % at arg1 (a, b, c, d) and 4 distinct atoms at arg2 (b, c, d, a)
+    % -> 4 `assign(..., envir = <env>)` lines per env. We don't bind
+    % to specific atom-ids since interning order is not stable.
+    aggregate_all(count,
+        sub_string(Code, _, _, _, ', envir = pred_edge_index_arg1)'),
+        Arg1Count),
+    aggregate_all(count,
+        sub_string(Code, _, _, _, ', envir = pred_edge_index_arg2)'),
+        Arg2Count),
+    assertion(Arg1Count =:= 4),
+    assertion(Arg2Count =:= 4).
+
+e2e_fact_table_cleanup(TmpDir) :-
+    retractall(user:edge(_, _)),
+    retractall(user:ival(_, _)),
+    retractall(user:ft_first),
+    retractall(user:ft_third),
+    retractall(user:ft_no),
+    retractall(user:ft_findall),
+    retractall(user:ft_succ),
+    retractall(user:ft_int),
+    retractall(user:ft_int_no),
+    ignore(catch(delete_directory_and_contents(TmpDir), _, true)).
+
+% ------------------------------------------------------------------
+% End-to-end Rscript run for multi-arg fact-table indexing.
+% A 3-arg edge_w/3 table with deliberately skewed buckets exercises
+% the smallest-bucket pick: arg1 has 5 values for one of them and
+% just 1 for another, while arg2 / arg3 have different selectivities.
+% Drivers query with just arg2 bound, just arg3 bound, and (arg2, arg3)
+% bound -- all three should hit the per-arg indexes rather than fall
+% back to a full scan. We assert on the answers (correctness) and on
+% the emitted index code (the indexes list contains 3 envs).
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(fact_table_multi_arg_index_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_multi_arg_index_via_rscript
+    ;   true
+    )).
+
+e2e_multi_arg_index_via_rscript :-
+    setup_call_cleanup(
+        e2e_multi_arg_index_setup(TmpDir),
+        e2e_multi_arg_index_body(TmpDir),
+        e2e_multi_arg_index_cleanup(TmpDir)).
+
+e2e_multi_arg_index_setup(TmpDir) :-
+    % edge_w(Src, Dst, Weight) -- 6 facts. Skew arg1: `a` has 4 outgoing,
+    % everyone else has 1. So a query with arg2=z bound reaches 1 fact;
+    % a query with arg1=a bound reaches 4. Smallest-bucket pick should
+    % use arg2 in those cases.
+    assertz(user:edge_w(a, x, 1)),
+    assertz(user:edge_w(a, y, 2)),
+    assertz(user:edge_w(a, z, 3)),
+    assertz(user:edge_w(a, w, 4)),
+    assertz(user:edge_w(b, x, 5)),
+    assertz(user:edge_w(c, x, 6)),
+    % q_arg2_only:  edge_w(_, z, _) -- 1 match (a, z, 3).
+    % q_arg3_only:  edge_w(_, _, 5) -- 1 match (b, x, 5).
+    % q_arg23:      edge_w(_, x, 6) -- 1 match (c, x, 6).
+    % q_arg2_no:    edge_w(_, q, _) -- 0 matches (atom q absent at arg2).
+    % q_arg3_no:    edge_w(_, _, 99) -- 0 matches.
+    assertz((user:q_arg2_only :- edge_w(_, z, W), W == 3)),
+    assertz((user:q_arg3_only :- edge_w(S, _, 5), S == b)),
+    assertz((user:q_arg23     :- edge_w(S, x, 6), S == c)),
+    assertz((user:q_arg2_no   :- edge_w(_, q, _))),
+    assertz((user:q_arg3_no   :- edge_w(_, _, 99))),
+    unique_r_tmp_dir('tmp_r_multi_arg_index_e2e', TmpDir).
+
+e2e_multi_arg_index_body(TmpDir) :-
+    write_wam_r_project(
+        [user:edge_w/3,
+         user:q_arg2_only/0, user:q_arg3_only/0,
+         user:q_arg23/0,
+         user:q_arg2_no/0, user:q_arg3_no/0],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [q_arg2_only, q_arg3_only, q_arg23],
+    No  = [q_arg2_no, q_arg3_no],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
     )),
-    delete_directory_and_contents(TmpDir).
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    % Structural: 3 per-arg index envs are emitted and bundled.
+    directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
+    read_file_to_string(ProgPath, Code, []),
+    assertion(sub_string(Code, _, _, _, 'pred_edge_w_index_arg1 <- new.env')),
+    assertion(sub_string(Code, _, _, _, 'pred_edge_w_index_arg2 <- new.env')),
+    assertion(sub_string(Code, _, _, _, 'pred_edge_w_index_arg3 <- new.env')),
+    assertion(sub_string(Code, _, _, _,
+        'pred_edge_w_indexes <- list(pred_edge_w_index_arg1, pred_edge_w_index_arg2, pred_edge_w_index_arg3)')).
+
+e2e_multi_arg_index_cleanup(TmpDir) :-
+    retractall(user:edge_w(_, _, _)),
+    retractall(user:q_arg2_only),
+    retractall(user:q_arg3_only),
+    retractall(user:q_arg23),
+    retractall(user:q_arg2_no),
+    retractall(user:q_arg3_no),
+    ignore(catch(delete_directory_and_contents(TmpDir), _, true)).
 
 % ------------------------------------------------------------------
 % End-to-end Rscript run for the recursive-kernel detector. The

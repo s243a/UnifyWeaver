@@ -2868,32 +2868,57 @@ WamRuntime$fact_table_iter_subset <- function(program, state, key, tuples,
   FALSE
 }
 
-# Indexed dispatch for fact tables: if the caller's first arg derefs
-# to a ground atom or integer, we look its bucket up in the index
-# (an env mapping "atom-id" / "int-value" to the integer-vector of
-# matching tuple indices). On a hit we iterate just that bucket; on
-# a miss we fail outright (the index already enumerated every value
-# present in the table). For an unground first arg or any other tag,
-# we fall back to a full-table scan.
-WamRuntime$fact_table_dispatch <- function(program, state, key, tuples, index,
+# Indexed dispatch for fact tables. `indexes` is a list of N envs (one
+# per arg position); each env maps "a<atom-id>" / "i<int-value>" to
+# an integer vector of matching tuple indices. We scan all bound atom/int
+# args, look each one up, and iterate just the smallest matching bucket
+# (most selective). Per-tuple unify in fact_table_iter_subset filters
+# out the rest of the conditions.
+#
+# A bound atom/int arg whose bucket is missing means no fact has that
+# value at that position -> short-circuit FALSE. (The short-circuit
+# fires on the first miss encountered in left-to-right arg order; any
+# later miss would also produce FALSE, so the order-dependent early
+# return is sound.) A float / unbound / struct query value doesn't
+# hit the index path at all (`bk` stays NULL) and is filtered during
+# the per-tuple scan instead. If no bound arg yields a usable bucket
+# (all unbound, or all floats), we fall back to a full-table scan.
+#
+# Memory: O(N * F) for F facts; each fact contributes at most one entry
+# per arg position. No composite-key indexes -- avoids the 2^N blowup.
+WamRuntime$fact_table_dispatch <- function(program, state, key, tuples, indexes,
                                             args, resume_pc) {
   arity <- length(args)
-  if (arity >= 1L) {
-    v <- WamRuntime$deref(state, args[[1]])
-    if (!is.null(v) && !is.null(v$tag)) {
-      bk <- NULL
-      if (v$tag == "atom") bk <- paste0("a", v$id)
-      else if (v$tag == "int") bk <- paste0("i", v$val)
-      if (!is.null(bk)) {
-        if (exists(bk, envir = index, inherits = FALSE)) {
-          bucket <- get(bk, envir = index, inherits = FALSE)
-          return(WamRuntime$fact_table_iter_subset(program, state, key,
-                                                    tuples, bucket, args, 1L,
-                                                    resume_pc))
-        }
-        return(FALSE)
-      }
+  n_idx <- length(indexes)
+  if (n_idx != arity) {
+    stop(sprintf("fact_table_dispatch: indexes length (%d) != arity (%d) for %s",
+                 n_idx, arity, key))
+  }
+  best_bucket <- NULL
+  best_size   <- .Machine$integer.max
+  for (j in seq_len(arity)) {
+    idx_env <- indexes[[j]]
+    if (is.null(idx_env)) next
+    v <- WamRuntime$deref(state, args[[j]])
+    if (is.null(v) || is.null(v$tag)) next
+    bk <- if (v$tag == "atom") paste0("a", v$id)
+          else if (v$tag == "int") paste0("i", v$val)
+          else NULL
+    if (is.null(bk)) next
+    if (!exists(bk, envir = idx_env, inherits = FALSE)) {
+      return(FALSE)
     }
+    bucket <- get(bk, envir = idx_env, inherits = FALSE)
+    sz <- length(bucket)
+    if (sz < best_size) {
+      best_bucket <- bucket
+      best_size   <- sz
+    }
+  }
+  if (!is.null(best_bucket)) {
+    return(WamRuntime$fact_table_iter_subset(program, state, key, tuples,
+                                              best_bucket, args, 1L,
+                                              resume_pc))
   }
   WamRuntime$fact_table_iter(program, state, key, tuples, args, 1L, resume_pc)
 }
@@ -2940,28 +2965,43 @@ WamRuntime$read_facts_csv <- function(path, intern_table) {
   out
 }
 
-# Build the first-arg hash index for a runtime-loaded fact table.
-# Same index shape as the codegen-emitted `<pred>_index <-
-# new.env(...); assign("a<id>", c(...))` blocks for inline fact
-# tables: keys are "a<atom-id>" / "i<int-value>", values are
-# integer vectors of 1-based tuple indices.
-WamRuntime$build_fact_index <- function(facts) {
-  idx <- new.env(parent = emptyenv())
+# Build per-arg hash indexes for a runtime-loaded fact table.
+# Returns a list of N envs (one per arg position, where N = arity).
+# Each env follows the same shape as the codegen-emitted
+# `<pred>_index_argK <- new.env(...); assign("a<id>", c(...))` blocks
+# for inline fact tables: keys are "a<atom-id>" / "i<int-value>",
+# values are integer vectors of 1-based tuple indices. Floats /
+# unbounds / structs at a given position are skipped for that
+# position's index but still appear in the master tuple list.
+#
+# Memory: O(N * F) for F facts; each fact contributes at most one
+# entry per arg position. Per-arg, not per-arg-combination -- no
+# 2^N composite indexes.
+WamRuntime$build_fact_indexes <- function(facts, arity) {
+  if (arity < 1L) return(list())
+  idxs <- vector("list", arity)
+  for (j in seq_len(arity)) {
+    idxs[[j]] <- new.env(parent = emptyenv())
+  }
   for (i in seq_along(facts)) {
     tuple <- facts[[i]]
     if (length(tuple) < 1L) next
-    first <- tuple[[1L]]
-    if (is.null(first) || !is.list(first) || is.null(first$tag)) next
-    bk <- if (first$tag == "atom") paste0("a", first$id)
-          else if (first$tag == "int") paste0("i", first$val)
-          else NULL
-    if (is.null(bk)) next
-    existing <- if (exists(bk, envir = idx, inherits = FALSE)) {
-      get(bk, envir = idx, inherits = FALSE)
-    } else integer(0)
-    assign(bk, c(existing, as.integer(i)), envir = idx)
+    for (j in seq_len(arity)) {
+      if (j > length(tuple)) break
+      v <- tuple[[j]]
+      if (is.null(v) || !is.list(v) || is.null(v$tag)) next
+      bk <- if (v$tag == "atom") paste0("a", v$id)
+            else if (v$tag == "int") paste0("i", v$val)
+            else NULL
+      if (is.null(bk)) next
+      env_j <- idxs[[j]]
+      existing <- if (exists(bk, envir = env_j, inherits = FALSE)) {
+        get(bk, envir = env_j, inherits = FALSE)
+      } else integer(0)
+      assign(bk, c(existing, as.integer(i)), envir = env_j)
+    }
   }
-  idx
+  idxs
 }
 
 # Enumerable iteration over a list of WAM terms, used by member/2 (and
