@@ -2710,6 +2710,89 @@ e2e_kernel_tpd4_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for the transitive_step_parent_distance5
+% kernel. BFS that records, for each reachable node, the FIRST
+% hop neighbour of source on the path (step) plus immediate
+% predecessor (parent) and distance. Yields 4-tuple results via
+% kernel_quad_iter. Direct/multi-hop checks, branch traversal,
+% wrong-step / wrong-parent failures, and findall over the full
+% reachable set with all four slots.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(kernel_tspd5_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_kernel_tspd5_via_rscript
+    ;   true
+    )).
+
+e2e_kernel_tspd5_via_rscript :-
+    retractall(user:sedge(_, _)),
+    retractall(user:tspd(_, _, _, _, _)),
+    assertz(user:sedge(a, b)),
+    assertz(user:sedge(b, c)),
+    assertz(user:sedge(c, d)),
+    assertz(user:sedge(a, e)),
+    assertz(user:sedge(e, f)),
+    % Canonical tspd5 shape -- the 3rd head arg in the recursive
+    % clause IS the second arg of the edge call (not a separate
+    % variable bound later), which is what the detector requires.
+    assertz((user:tspd(X, Y, Y, X, 1) :- user:sedge(X, Y))),
+    assertz((user:tspd(X, Y, M, P, D) :-
+        user:sedge(X, M), user:tspd(M, Y, _, P, D1), D is D1 + 1)),
+    % Direct edge: step==target, parent==source, dist=1.
+    assertz((user:tspd_direct  :- tspd(a, b, b, a, 1))),
+    % Two-hop a->b->c: step=b (first hop), parent=b (predecessor of c), dist=2.
+    assertz((user:tspd_two     :- tspd(a, c, b, b, 2))),
+    % Three-hop a->b->c->d: step=b, parent=c, dist=3.
+    assertz((user:tspd_three   :- tspd(a, d, b, c, 3))),
+    % Branch a->e direct: step=e, parent=a, dist=1.
+    assertz((user:tspd_branch  :- tspd(a, e, e, a, 1))),
+    % Branch two-hop a->e->f: step=e, parent=e, dist=2.
+    assertz((user:tspd_branch2 :- tspd(a, f, e, e, 2))),
+    % Wrong step: claims step=e for c, but actual is b.
+    assertz((user:tspd_no_step :- tspd(a, c, e, b, 2))),
+    % Wrong parent.
+    assertz((user:tspd_no_par  :- tspd(a, c, b, a, 2))),
+    % No reachable.
+    assertz((user:tspd_no_back :- tspd(d, a, _, _, _))),
+    % findall over the full reachable set.
+    assertz((user:tspd_findall :-
+        findall(t(Y, S, P, D), tspd(a, Y, S, P, D), L),
+        msort(L, Sorted),
+        Sorted == [t(b, b, a, 1), t(c, b, b, 2), t(d, b, c, 3),
+                    t(e, e, a, 1), t(f, e, e, 2)])),
+    unique_r_tmp_dir('tmp_r_kernel_tspd5_e2e', TmpDir),
+    write_wam_r_project(
+        [user:sedge/2, user:tspd/5,
+         user:tspd_direct/0, user:tspd_two/0, user:tspd_three/0,
+         user:tspd_branch/0, user:tspd_branch2/0,
+         user:tspd_no_step/0, user:tspd_no_par/0, user:tspd_no_back/0,
+         user:tspd_findall/0],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [tspd_direct, tspd_two, tspd_three,
+           tspd_branch, tspd_branch2, tspd_findall],
+    No  = [tspd_no_step, tspd_no_par, tspd_no_back],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
+    read_file_to_string(ProgPath, Code, []),
+    assertion(sub_string(Code, _, _, _, 'pred_tspd_kernel_tspd5 <- function(')),
+    assertion(sub_string(Code, _, _, _,
+        'assign("tspd/5", pred_tspd_kernel_tspd5, envir = shared_program$lowered_dispatch)')),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-

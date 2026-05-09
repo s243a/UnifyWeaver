@@ -192,8 +192,8 @@ lives in
 [`src/unifyweaver/core/recursive_kernel_detection.pl`](../src/unifyweaver/core/recursive_kernel_detection.pl)
 and is shared with the Haskell / Rust / Elixir targets; this
 target wires up `transitive_closure2`, `transitive_distance3`,
-`weighted_shortest_path3`, and `transitive_parent_distance4` so
-far. Canonical shapes:
+`weighted_shortest_path3`, `transitive_parent_distance4`, and
+`transitive_step_parent_distance5` so far. Canonical shapes:
 
 ```prolog
 % transitive_closure2 -- streams reachable nodes
@@ -211,6 +211,11 @@ wsp(X, Y, W) :- edge(X, Z, W1), wsp(Z, Y, RestW), W is RestW + W1.
 % transitive_parent_distance4 -- streams (target, parent, distance)
 pd(X, Y, X, 1) :- edge(X, Y).
 pd(X, Y, P, D) :- edge(X, Z), pd(Z, Y, P, D1), D is D1 + 1.
+
+% transitive_step_parent_distance5 -- streams (target, step, parent, distance)
+% step is the FIRST hop neighbour of source on the path X -> ... -> Y.
+tspd(X, Y, Y, X, 1) :- edge(X, Y).
+tspd(X, Y, M, P, D) :- edge(X, M), tspd(M, Y, _, P, D1), D is D1 + 1.
 ```
 
 The runtime helpers BFS (`transitive_closure2`,
@@ -535,7 +540,7 @@ WamRuntime$run(shared_program, state)
 
 The full test suite lives in
 [tests/test_wam_r_generator.pl](../tests/test_wam_r_generator.pl)
-and contains 50 tests covering both structural assertions on the
+and contains 51 tests covering both structural assertions on the
 generated source and end-to-end execution via `Rscript`. The
 `*_e2e_rscript` tests auto-skip when `Rscript` is not on `PATH`.
 
@@ -579,6 +584,7 @@ Coverage map (e2e tests, by feature group):
 | `kernel_td3_e2e_rscript` | recursive-kernel detection: `transitive_distance3` BFS-with-depth over a fact-table edge predicate |
 | `kernel_wsp3_e2e_rscript` | recursive-kernel detection: `weighted_shortest_path3` Dijkstra over a weighted fact-table edge predicate |
 | `kernel_tpd4_e2e_rscript` | recursive-kernel detection: `transitive_parent_distance4` BFS with parent tracking |
+| `kernel_tspd5_e2e_rscript` | recursive-kernel detection: `transitive_step_parent_distance5` BFS with step + parent + distance |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 
