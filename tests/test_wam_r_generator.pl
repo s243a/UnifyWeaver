@@ -2869,6 +2869,78 @@ e2e_kernel_ca_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for the astar_shortest_path4 kernel.
+% Goal-directed shortest-path search with a user-supplied heuristic
+% (read from user:direct_dist_pred/1 at codegen time). Result
+% layout is tuple(1) -- single shortest distance. Admissibility of
+% the heuristic is the user's responsibility; this test uses
+% under-estimates so the path returned is optimal.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(kernel_astar4_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_kernel_astar4_via_rscript
+    ;   true
+    )).
+
+e2e_kernel_astar4_via_rscript :-
+    retractall(user:wedge2(_, _, _)),
+    retractall(user:h_dist2(_, _, _)),
+    retractall(user:astar(_, _, _, _)),
+    retractall(user:direct_dist_pred(_)),
+    % a -1-> b -2-> c -3-> d, plus a heavy direct a -5-> c.
+    assertz(user:wedge2(a, b, 1)),
+    assertz(user:wedge2(b, c, 2)),
+    assertz(user:wedge2(c, d, 3)),
+    assertz(user:wedge2(a, c, 5)),
+    % Heuristic to goal d (admissible: each value <= true cost).
+    assertz(user:h_dist2(a, d, 5)),  % true cost is 6
+    assertz(user:h_dist2(b, d, 4)),  % true cost is 5
+    assertz(user:h_dist2(c, d, 3)),  % exact
+    assertz(user:h_dist2(d, d, 0)),
+    assertz(user:direct_dist_pred(h_dist2/3)),
+    % Canonical astar shape: 4-arity with Dim passthrough.
+    assertz((user:astar(X, Y, _, W) :- user:wedge2(X, Y, W))),
+    assertz((user:astar(X, Y, D, W) :-
+        user:wedge2(X, Z, W1),
+        user:astar(Z, Y, D, RestW),
+        W is W1 + RestW)),
+    assertz((user:astar_direct  :- astar(a, b, 5, 1))),
+    assertz((user:astar_shorter :- astar(a, c, 5, 3))),     % via b, not 5
+    assertz((user:astar_three   :- astar(a, d, 5, 6))),
+    assertz((user:astar_no_heavy :- astar(a, c, 5, 5))),     % wrong cost
+    assertz((user:astar_no_back :- astar(d, a, 5, _))),
+    unique_r_tmp_dir('tmp_r_kernel_astar4_e2e', TmpDir),
+    write_wam_r_project(
+        [user:wedge2/3, user:h_dist2/3, user:astar/4,
+         user:astar_direct/0, user:astar_shorter/0, user:astar_three/0,
+         user:astar_no_heavy/0, user:astar_no_back/0],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [astar_direct, astar_shorter, astar_three],
+    No  = [astar_no_heavy, astar_no_back],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
+    read_file_to_string(ProgPath, Code, []),
+    assertion(sub_string(Code, _, _, _, 'pred_astar_kernel_astar4 <- function(')),
+    assertion(sub_string(Code, _, _, _,
+        'assign("astar/4", pred_astar_kernel_astar4, envir = shared_program$lowered_dispatch)')),
+    % Heuristic-pred name should appear in the generated dispatch call.
+    assertion(sub_string(Code, _, _, _, '"h_dist2", "h_dist2/3"')),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-

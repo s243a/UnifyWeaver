@@ -2442,6 +2442,155 @@ WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
                                   1L, resume_pc)
 }
 
+# ----------------------------------------------------------
+# Recursive-kernel: astar_shortest_path4
+# ----------------------------------------------------------
+# A* from a ground source to a ground target over a weighted edge
+# predicate of arity 3. Pattern detected:
+#   astar(X, Y, _, W) :- edge(X, Y, W).
+#   astar(X, Y, D, W) :- edge(X, Z, W1), astar(Z, Y, D, W2), W is W1 + W2.
+# (the 3rd arg is a Dim passthrough that the native impl ignores).
+# The heuristic is queried via a user-configurable predicate of
+# arity 3: dist_pred(Node, Target, H) yields H. If the user didn't
+# set `direct_dist_pred/1`, the detector falls back to the edge
+# predicate -- which gives h=0 for nodes with no direct edge to
+# the goal (degenerating A* to Dijkstra) and h = direct-edge-cost
+# otherwise. Admissibility of the heuristic is the user's
+# responsibility; non-admissible heuristics may produce non-
+# optimal results.
+#
+# Result layout is tuple(1) -- the single shortest-path distance.
+# Mode: source and target both ground; dim ignored; dist unground
+# (output). Failure when no path exists.
+WamRuntime$astar_shortest_path4 <- function(program, state, key, edge_pred,
+                                              edge_key, dist_pred, dist_key,
+                                              source, target_node, dim, dist,
+                                              resume_pc) {
+  table <- program$intern_table
+  src_v <- WamRuntime$deref(state, source)
+  tgt_v <- WamRuntime$deref(state, target_node)
+  if (is.null(src_v) || is.null(src_v$tag) || src_v$tag != "atom" ||
+      is.null(tgt_v) || is.null(tgt_v$tag) || tgt_v$tag != "atom") {
+    return(FALSE)
+  }
+  snap_cps   <- length(state$cps)
+  snap_regs  <- as.list.environment(state$regs2)
+  snap_trail <- length(state$trail)
+  snap_pc    <- state$pc
+  snap_cp    <- state$cp
+  snap_halt  <- state$halt
+  snap_vc    <- state$var_counter
+  snap_mode  <- state$mode
+  snap_build <- state$build_stack
+
+  edge_atom_id <- WamRuntime$intern(table, edge_pred)
+  dist_atom_id <- WamRuntime$intern(table, dist_pred)
+
+  # Heuristic estimate: h(node, target). Returns 0 when the dist
+  # pred fails (no direct distance available -- safe / admissible).
+  heuristic_at <- function(node) {
+    if (identical(node$id, tgt_v$id)) return(0)
+    h_var <- Unbound(paste0("V_astar_h_", state$var_counter))
+    state$var_counter <- state$var_counter + 1L
+    h_goal <- StructTerm(dist_atom_id, list(node, tgt_v, h_var))
+    h_val <- 0
+    WamRuntime$iterate_goal(program, state, h_goal, function() {
+      v <- WamRuntime$deref(state, h_var)
+      if (!is.null(v) && !is.null(v$tag) &&
+          (v$tag == "int" || v$tag == "float")) {
+        h_val <<- v$val
+      }
+      FALSE  # one solution is enough
+    })
+    h_val
+  }
+
+  visited <- new.env(parent = emptyenv())
+  # PQ entry: list(f = priority, g = cost-so-far, node).
+  pq <- list(list(f = heuristic_at(src_v), g = 0, node = src_v))
+  found_dist <- NULL
+
+  while (length(pq) > 0L) {
+    entry <- pq[[1L]]
+    pq    <- pq[-1L]
+    cur   <- entry$node
+    g     <- entry$g
+    k     <- as.character(cur$id)
+    if (exists(k, envir = visited, inherits = FALSE)) next
+    assign(k, TRUE, envir = visited)
+    if (identical(cur$id, tgt_v$id)) {
+      found_dist <- g
+      break
+    }
+    captured_g <- g
+    y_var <- Unbound(paste0("V_astar_y_", state$var_counter))
+    state$var_counter <- state$var_counter + 1L
+    w_var <- Unbound(paste0("V_astar_w_", state$var_counter))
+    state$var_counter <- state$var_counter + 1L
+    edge_goal <- StructTerm(edge_atom_id, list(cur, y_var, w_var))
+    WamRuntime$iterate_goal(program, state, edge_goal, function() {
+      y_v <- WamRuntime$deref(state, y_var)
+      w_v <- WamRuntime$deref(state, w_var)
+      if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "atom" &&
+          !is.null(w_v) && !is.null(w_v$tag) &&
+          (w_v$tag == "int" || w_v$tag == "float")) {
+        nk <- as.character(y_v$id)
+        if (!exists(nk, envir = visited, inherits = FALSE)) {
+          new_g <- captured_g + w_v$val
+          new_f <- new_g + heuristic_at(y_v)
+          if (length(pq) == 0L) {
+            pq <<- list(list(f = new_f, g = new_g, node = y_v))
+          } else {
+            placed <- FALSE
+            for (i in seq_along(pq)) {
+              if (pq[[i]]$f > new_f) {
+                pq <<- append(pq, list(list(f = new_f, g = new_g, node = y_v)),
+                              after = i - 1L)
+                placed <- TRUE; break
+              }
+            }
+            if (!placed) {
+              pq <<- c(pq, list(list(f = new_f, g = new_g, node = y_v)))
+            }
+          }
+        }
+      }
+      TRUE
+    })
+  }
+
+  if (length(state$cps) > snap_cps) {
+    state$cps <- state$cps[seq_len(snap_cps)]
+  }
+  e <- new.env(parent = emptyenv(), hash = TRUE)
+  for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
+  state$regs2 <- e
+  if (length(state$trail) > snap_trail) {
+    to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
+    for (name in to_undo) {
+      if (exists(name, envir = state$bindings, inherits = FALSE)) {
+        rm(list = name, envir = state$bindings)
+      }
+    }
+    state$trail <- state$trail[seq_len(snap_trail)]
+  }
+  state$pc          <- snap_pc
+  state$cp          <- snap_cp
+  state$halt        <- snap_halt
+  state$var_counter <- snap_vc
+  state$mode        <- snap_mode
+  state$build_stack <- snap_build
+
+  if (is.null(found_dist)) return(FALSE)
+  dt <- if (is.finite(found_dist) && found_dist == as.integer(found_dist) &&
+            abs(found_dist) < .Machine$integer.max) {
+          IntTerm(as.integer(found_dist))
+        } else {
+          FloatTerm(as.numeric(found_dist))
+        }
+  WamRuntime$unify(state, dist, dt)
+}
+
 # Iterate a precomputed list of result pairs, unifying each pair
 # with the (target, second) reg pair. Each entry is
 # `list(node = <WAM term>, second = <pre-built WAM term>)` so the
