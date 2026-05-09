@@ -410,7 +410,7 @@ compile_wam_predicate_to_lua(_Pred, _WamCode, _Options, "").
 
 compile_predicates_for_project(Predicates, Options,
                                AllInstrs, TopLabels, AllLabels,
-                               WrapperCode, LoweredCode) :-
+                               WrapperCode, LoweredCode, InlineFactsCode) :-
     init_lua_atom_intern_table,
     option(intern_atoms(ExtraAtoms), Options, []),
     forall(member(A, ExtraAtoms), (atom_string(A, S), intern_lua_atom(S, _))),
@@ -418,10 +418,11 @@ compile_predicates_for_project(Predicates, Options,
     append_missing_foreign_predicates(Predicates, ForeignPredicates, CompilePreds),
     wam_lua_resolve_emit_mode(Options, Mode),
     compile_all_predicates(CompilePreds, Options, Mode, 1,
-        [], [], [], [], [],
-        AllInstrs, TopLabels, AllLabels, Wrappers, LoweredEntries),
+        [], [], [], [], [], [],
+        AllInstrs, TopLabels, AllLabels, Wrappers, LoweredEntries, InlineFacts),
     atomic_list_concat(Wrappers, '\n', WrapperCode),
-    atomic_list_concat(LoweredEntries, '\n', LoweredCode).
+    atomic_list_concat(LoweredEntries, '\n', LoweredCode),
+    atomic_list_concat(InlineFacts, ',\n', InlineFactsCode).
 
 append_missing_foreign_predicates(Predicates, ForeignPredicates, CompilePredicates) :-
     findall(F, (member(F, ForeignPredicates), \+ (member(P, Predicates), same_pi(P, F))), Missing),
@@ -431,19 +432,32 @@ same_pi(P0, P1) :- pi_key(P0, K), pi_key(P1, K).
 pi_key(_:P/A, P/A) :- !.
 pi_key(P/A, P/A).
 
-compile_all_predicates([], _, _, _, Instrs, TopLabels, AllLabels, Wrappers, Lowered,
-                       Instrs, TopLabels, AllLabels, Wrappers, Lowered).
+compile_all_predicates([], _, _, _, Instrs, TopLabels, AllLabels, Wrappers, Lowered, InlineFacts,
+                       Instrs, TopLabels, AllLabels, Wrappers, Lowered, InlineFacts).
 compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
-                       InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc, LoweredAcc,
-                       AllInstrs, TopLabels, AllLabels, Wrappers, Lowered) :-
+                       InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc, LoweredAcc, InlineFactAcc,
+                       AllInstrs, TopLabels, AllLabels, Wrappers, Lowered, InlineFacts) :-
     (Pred = _M:P/Arity -> true ; Pred = P/Arity),
     (   lua_foreign_predicate(P, Arity, Options)
     ->  lua_string_literal(P, PQ),
         format(string(FLit), 'I.CallForeign(~w, ~w)', [PQ, Arity]),
         PredInstrs = [FLit, 'I.Proceed()'],
-        WamForLower = ""
+        WamForLower = "",
+        PredSubLabelEntries0 = [],
+        InlineFactEntry = none
     ;   compile_predicate_to_wam(P/Arity, [], WamForLower),
-        wam_code_to_lua_data(WamForLower, Options, PredInstrs, PredSubLabelEntries0)
+        (   Arity == 2,
+            lua_inline_fact_tuples(WamForLower, Tuples),
+            Tuples \= []
+        ->  format(string(Key), '~w/~w', [P, Arity]),
+            lua_string_literal(Key, KeyQ),
+            format(string(FLit), 'I.CallFactStream(~w, ~w)', [KeyQ, Arity]),
+            PredInstrs = [FLit, 'I.Proceed()'],
+            PredSubLabelEntries0 = [],
+            lua_inline_fact_entry(Key, Tuples, InlineFactEntry)
+        ;   wam_code_to_lua_data(WamForLower, Options, PredInstrs, PredSubLabelEntries0),
+            InlineFactEntry = none
+        )
     ),
     length(PredInstrs, PredLen),
     append(InstrAcc, PredInstrs, NewInstrs),
@@ -462,6 +476,7 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
     append([MainEntry|PredSubLabelEntries], AllLabelAcc, NewAllLabels),
     (   should_try_lower(Mode, P, Arity),
         WamForLower \= "",
+        InlineFactEntry == none,
         catch(wam_lua_lowerable(Pred, WamForLower, _), _, fail),
         catch(lower_predicate_to_lua(Pred, WamForLower, [],
                                      lowered(_, FuncName, LoweredLua)), _, fail)
@@ -470,9 +485,64 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
     ;   NewLoweredAcc = LoweredAcc,
         emit_lua_wrapper(P, Arity, BasePC, Wrapper)
     ),
+    (InlineFactEntry == none -> NewInlineFactAcc = InlineFactAcc ; NewInlineFactAcc = [InlineFactEntry|InlineFactAcc]),
     compile_all_predicates(Rest, Options, Mode, NewPC,
-        NewInstrs, NewTopLabels, NewAllLabels, [Wrapper|WrapperAcc], NewLoweredAcc,
-        AllInstrs, TopLabels, AllLabels, Wrappers, Lowered).
+        NewInstrs, NewTopLabels, NewAllLabels, [Wrapper|WrapperAcc], NewLoweredAcc, NewInlineFactAcc,
+        AllInstrs, TopLabels, AllLabels, Wrappers, Lowered, InlineFacts).
+
+lua_inline_fact_tuples(WamCode, Tuples) :-
+    atom_string(WamCode, Str),
+    split_string(Str, "\n", "", Lines),
+    lua_wam_segments(Lines, Segments),
+    Segments \= [],
+    lua_fact_only_segments(Segments),
+    findall(A1-A2, (
+        member(Instrs, Segments),
+        member(["get_constant", A1, "A1"], Instrs),
+        member(["get_constant", A2, "A2"], Instrs)
+    ), Tuples).
+
+lua_wam_segments([], []).
+lua_wam_segments([Line|Rest], Segments) :-
+    tokenize_wam_line(Line, Parts),
+    (   Parts == []
+    ->  lua_wam_segments(Rest, Segments)
+    ;   Parts = [First|_], sub_string(First, _, 1, 0, ":")
+    ->  lua_segment_instrs(Rest, Instrs, Remaining),
+        Segments = [Instrs|More],
+        lua_wam_segments(Remaining, More)
+    ;   lua_wam_segments(Rest, Segments)
+    ).
+
+lua_segment_instrs([], [], []).
+lua_segment_instrs([Line|Rest], Instrs, Remaining) :-
+    tokenize_wam_line(Line, Parts),
+    (   Parts == []
+    ->  lua_segment_instrs(Rest, Instrs, Remaining)
+    ;   Parts = [First|_], sub_string(First, _, 1, 0, ":")
+    ->  Instrs = [], Remaining = [Line|Rest]
+    ;   Instrs = [Parts|More],
+        lua_segment_instrs(Rest, More, Remaining)
+    ).
+
+lua_fact_only_segments(Segments) :-
+    forall(member(Instrs, Segments),
+           forall(member(Parts, Instrs), \+ lua_body_call_instr(Parts))).
+
+lua_body_call_instr(["call"|_]).
+lua_body_call_instr(["execute"|_]).
+lua_body_call_instr(["builtin_call"|_]).
+
+lua_inline_fact_entry(Key, Tuples, Entry) :-
+    lua_string_literal(Key, KeyQ),
+    maplist(lua_inline_fact_tuple_lit, Tuples, TupleLits),
+    atomic_list_concat(TupleLits, ', ', TuplesText),
+    format(string(Entry), '  [~w] = {~w}', [KeyQ, TuplesText]).
+
+lua_inline_fact_tuple_lit(A1-A2, Lit) :-
+    intern_lua_atom(A1, I1),
+    intern_lua_atom(A2, I2),
+    format(string(Lit), '{V.Atom(~w), V.Atom(~w)}', [I1, I2]).
 
 offset_label_entry(Offset, Entry0, Entry) :-
     atom_string(Entry0, S),
@@ -554,7 +624,7 @@ write_wam_lua_project(Predicates, Options, ProjectDir) :-
     directory_file_path(ProjectDir, 'lua', LuaDir),
     make_directory_path(LuaDir),
     compile_predicates_for_project(Predicates, Options,
-        AllInstrs, TopLabels, AllLabels, WrapperCode, LoweredCode),
+        AllInstrs, TopLabels, AllLabels, WrapperCode, LoweredCode, InlineFactsCode),
     emit_lua_intern_table(InternSeed),
     maplist([I, Line]>>(format(string(Line), '  ~w', [I])), AllInstrs, InstrLines),
     atomic_list_concat(InstrLines, ',\n', InstrBody),
@@ -563,7 +633,7 @@ write_wam_lua_project(Predicates, Options, ProjectDir) :-
     lua_foreign_handlers_code(Options, ForeignHandlers),
     write_runtime_source(LuaDir),
     write_program_source(LuaDir, InstrBody, LabelBody, DispatchBody,
-                         WrapperCode, InternSeed, ForeignHandlers, LoweredCode).
+                         WrapperCode, InternSeed, ForeignHandlers, LoweredCode, InlineFactsCode).
 
 write_runtime_source(LuaDir) :-
     find_template('templates/targets/lua_wam/runtime.lua.mustache', Template),
@@ -573,7 +643,7 @@ write_runtime_source(LuaDir) :-
     write_file(Path, Content).
 
 write_program_source(LuaDir, InstrBody, LabelBody, DispatchBody,
-                     WrapperCode, InternSeed, ForeignHandlers, LoweredCode) :-
+                     WrapperCode, InternSeed, ForeignHandlers, LoweredCode, InlineFactsCode) :-
     find_template('templates/targets/lua_wam/program.lua.mustache', Template),
     get_time(T), format_time(string(Date), "%Y-%m-%d", T),
     render_template(Template,
@@ -584,7 +654,8 @@ write_program_source(LuaDir, InstrBody, LabelBody, DispatchBody,
          'wrappers'=WrapperCode,
          'intern_id_to_string'=InternSeed,
          'foreign_handlers'=ForeignHandlers,
-         'lowered_functions'=LoweredCode], Content),
+         'lowered_functions'=LoweredCode,
+         'inline_facts'=InlineFactsCode], Content),
     directory_file_path(LuaDir, 'generated_program.lua', Path),
     write_file(Path, Content).
 

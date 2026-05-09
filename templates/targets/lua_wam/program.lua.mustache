@@ -29,11 +29,16 @@ local foreign_handlers = {
 {{foreign_handlers}}
 }
 
+local inline_facts = {
+{{inline_facts}}
+}
+
 local shared_program = {
   instructions = shared_instructions,
   labels = shared_labels,
   dispatch = dispatch,
   foreign_handlers = foreign_handlers,
+  inline_facts = inline_facts,
   indexed_atom_fact2 = {},
   intern_table = intern_table
 }
