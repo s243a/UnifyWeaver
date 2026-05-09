@@ -110,7 +110,7 @@ python examples/benchmark/benchmark_csharp_query_source_mode_sweep.py \
   --max-auto-vs-best-ratio 2.00
 ```
 
-The checked-in scale-300 and scale-1k calibration snapshot is
+The checked-in scale-300/1k/5k/10k calibration snapshot is
 `examples/benchmark/csharp_query_graph_source_mode_calibration.tsv`. It is a
 baseline for the current graph `auto` policy, not a permanent benchmark
 claim: use a fresh sweep before changing `RelationSourceModePolicy`.
