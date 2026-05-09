@@ -166,6 +166,46 @@ test(simple_builtin_arithmetic_not_equal_is_direct_lowered_in_prefix) :-
         has(Code, "runtime/backtrack")
     )).
 
+test(simple_builtin_arithmetic_less_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_arith_lt/2, [builtin_call('</2', 2), proceed], [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/arithmetic-less?"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(simple_builtin_arithmetic_greater_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_arith_gt/2, [builtin_call('>/2', 2), proceed], [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/arithmetic-greater?"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(simple_builtin_arithmetic_less_or_equal_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_arith_le/2, [builtin_call('=</2', 2), proceed], [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/arithmetic-less-or-equal?"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(simple_builtin_arithmetic_greater_or_equal_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_arith_ge/2, [builtin_call('>=/2', 2), proceed], [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/arithmetic-greater-or-equal?"),
+        has(Code, "runtime/backtrack")
+    )).
+
 test(simple_builtin_true_is_direct_lowered_in_prefix) :-
     once((
         lower_predicate_to_clojure(test_true/0, [builtin_call('true/0', 0), proceed], [], Code),

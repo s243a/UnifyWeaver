@@ -388,6 +388,23 @@
         right* (arithmetic-value state right)]
     (and (some? left*) (some? right*) (not (== left* right*)))))
 
+(defn arithmetic-compare? [state pred left right]
+  (let [left* (arithmetic-value state left)
+        right* (arithmetic-value state right)]
+    (and (some? left*) (some? right*) (pred left* right*))))
+
+(defn arithmetic-less? [state left right]
+  (arithmetic-compare? state < left right))
+
+(defn arithmetic-greater? [state left right]
+  (arithmetic-compare? state > left right))
+
+(defn arithmetic-less-or-equal? [state left right]
+  (arithmetic-compare? state <= left right))
+
+(defn arithmetic-greater-or-equal? [state left right]
+  (arithmetic-compare? state >= left right))
+
 (defn structure-term [functor args]
   {:tag :struct :functor functor :args (vec args)})
 
@@ -866,6 +883,42 @@
                 right (deref-value (:bindings state)
                                    (or (reg-get-raw state "A2") ::unbound))]
             (if (arithmetic-not-equal? state left right)
+              (advance state)
+              (backtrack state)))
+
+          "</2"
+          (let [left (deref-value (:bindings state)
+                                  (or (reg-get-raw state "A1") ::unbound))
+                right (deref-value (:bindings state)
+                                   (or (reg-get-raw state "A2") ::unbound))]
+            (if (arithmetic-less? state left right)
+              (advance state)
+              (backtrack state)))
+
+          ">/2"
+          (let [left (deref-value (:bindings state)
+                                  (or (reg-get-raw state "A1") ::unbound))
+                right (deref-value (:bindings state)
+                                   (or (reg-get-raw state "A2") ::unbound))]
+            (if (arithmetic-greater? state left right)
+              (advance state)
+              (backtrack state)))
+
+          "=</2"
+          (let [left (deref-value (:bindings state)
+                                  (or (reg-get-raw state "A1") ::unbound))
+                right (deref-value (:bindings state)
+                                   (or (reg-get-raw state "A2") ::unbound))]
+            (if (arithmetic-less-or-equal? state left right)
+              (advance state)
+              (backtrack state)))
+
+          ">=/2"
+          (let [left (deref-value (:bindings state)
+                                  (or (reg-get-raw state "A1") ::unbound))
+                right (deref-value (:bindings state)
+                                   (or (reg-get-raw state "A2") ::unbound))]
+            (if (arithmetic-greater-or-equal? state left right)
               (advance state)
               (backtrack state)))
 

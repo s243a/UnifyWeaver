@@ -280,6 +280,22 @@ clojure_direct_builtin("=\\=/2", "2").
 clojure_direct_builtin("=\\=/2", 2).
 clojure_direct_builtin('=\\=/2', "2").
 clojure_direct_builtin('=\\=/2', 2).
+clojure_direct_builtin("</2", "2").
+clojure_direct_builtin("</2", 2).
+clojure_direct_builtin('</2', "2").
+clojure_direct_builtin('</2', 2).
+clojure_direct_builtin(">/2", "2").
+clojure_direct_builtin(">/2", 2).
+clojure_direct_builtin('>/2', "2").
+clojure_direct_builtin('>/2', 2).
+clojure_direct_builtin("=</2", "2").
+clojure_direct_builtin("=</2", 2).
+clojure_direct_builtin('=</2', "2").
+clojure_direct_builtin('=</2', 2).
+clojure_direct_builtin(">=/2", "2").
+clojure_direct_builtin(">=/2", 2).
+clojure_direct_builtin('>=/2', "2").
+clojure_direct_builtin('>=/2', 2).
 clojure_direct_builtin("true/0", "0").
 clojure_direct_builtin("true/0", 0).
 clojure_direct_builtin('true/0', "0").
@@ -369,6 +385,15 @@ clojure_unary_guard_test("callable/1", "(or (runtime/atom-term? value) (runtime/
 clojure_unary_guard_test('callable/1', "(or (runtime/atom-term? value) (runtime/structure-term? value))").
 clojure_unary_guard_test("float/1", "(float? value)").
 clojure_unary_guard_test('float/1', "(float? value)").
+
+clojure_arithmetic_order_builtin("</2", 'arithmetic-less?').
+clojure_arithmetic_order_builtin('</2', 'arithmetic-less?').
+clojure_arithmetic_order_builtin(">/2", 'arithmetic-greater?').
+clojure_arithmetic_order_builtin('>/2', 'arithmetic-greater?').
+clojure_arithmetic_order_builtin("=</2", 'arithmetic-less-or-equal?').
+clojure_arithmetic_order_builtin('=</2', 'arithmetic-less-or-equal?').
+clojure_arithmetic_order_builtin(">=/2", 'arithmetic-greater-or-equal?').
+clojure_arithmetic_order_builtin('>=/2', 'arithmetic-greater-or-equal?').
 
 emit_lowered_unary_guard(TestExpr, S, Expr) :-
     format(atom(Expr),
@@ -470,6 +495,13 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     format(atom(Expr),
            '(let [left (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound))] (if (runtime/arithmetic-not-equal? ~w left right) (runtime/advance ~w) (runtime/backtrack ~w)))',
            [S, S, S, S, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    clojure_arithmetic_order_builtin(Op, RuntimePred),
+    !,
+    format(atom(Expr),
+           '(let [left (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound))] (if (runtime/~w ~w left right) (runtime/advance ~w) (runtime/backtrack ~w)))',
+           [S, S, S, S, RuntimePred, S, S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "true/0" ; Op == 'true/0'),
