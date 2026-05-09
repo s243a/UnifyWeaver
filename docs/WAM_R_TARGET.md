@@ -191,11 +191,11 @@ that bypasses the WAM stepping engine entirely. The classifier
 lives in
 [`src/unifyweaver/core/recursive_kernel_detection.pl`](../src/unifyweaver/core/recursive_kernel_detection.pl)
 and is shared with the Haskell / Rust / Elixir targets; this
-target wires up `transitive_closure2`, `transitive_distance3`,
+target wires up all seven registered kernel patterns:
+`transitive_closure2`, `transitive_distance3`,
 `weighted_shortest_path3`, `transitive_parent_distance4`,
-`transitive_step_parent_distance5`, and `category_ancestor` so far
-(6/7 of the registered kernel patterns; only `astar_shortest_path4`
-remains). Canonical shapes:
+`transitive_step_parent_distance5`, `category_ancestor`, and
+`astar_shortest_path4`. Canonical shapes:
 
 ```prolog
 % transitive_closure2 -- streams reachable nodes
@@ -229,6 +229,18 @@ ca(Cat, Anc, Visited, 0) :- \+ member(Cat, Visited), edge(Cat, Anc).
 ca(Cat, Anc, Visited, Hops) :- \+ member(Cat, Visited),
     edge(Cat, Mid), ca(Mid, Anc, [Cat | Visited], Hops0),
     Hops is Hops0 + 1.
+
+% astar_shortest_path4 -- goal-directed shortest-path search.
+% direct_dist_pred/1 names the heuristic predicate (arity 3:
+% h(N, Goal, H)); the detector falls back to the edge predicate
+% when not set. Dim is a passthrough arg the native impl ignores.
+% Result is the single shortest distance source->target.
+% Admissibility of the heuristic is the user's responsibility;
+% non-admissible heuristics may produce non-optimal results.
+:- assertz(user:direct_dist_pred(h_dist/3)).
+astar(X, Y, _, W) :- edge(X, Y, W).
+astar(X, Y, D, W) :- edge(X, Z, W1), astar(Z, Y, D, RestW),
+    W is W1 + RestW.
 ```
 
 The runtime helpers BFS (`transitive_closure2`,
@@ -553,7 +565,7 @@ WamRuntime$run(shared_program, state)
 
 The full test suite lives in
 [tests/test_wam_r_generator.pl](../tests/test_wam_r_generator.pl)
-and contains 52 tests covering both structural assertions on the
+and contains 53 tests covering both structural assertions on the
 generated source and end-to-end execution via `Rscript`. The
 `*_e2e_rscript` tests auto-skip when `Rscript` is not on `PATH`.
 
@@ -599,6 +611,7 @@ Coverage map (e2e tests, by feature group):
 | `kernel_tpd4_e2e_rscript` | recursive-kernel detection: `transitive_parent_distance4` BFS with parent tracking |
 | `kernel_tspd5_e2e_rscript` | recursive-kernel detection: `transitive_step_parent_distance5` BFS with step + parent + distance |
 | `kernel_ca_e2e_rscript` | recursive-kernel detection: `category_ancestor` BFS with depth-cap + visited-set cycle detection |
+| `kernel_astar4_e2e_rscript` | recursive-kernel detection: `astar_shortest_path4` goal-directed search with user heuristic |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 

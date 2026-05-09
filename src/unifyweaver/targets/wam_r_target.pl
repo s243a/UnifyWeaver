@@ -918,6 +918,33 @@ emit_kernel(Pred, recursive_kernel(category_ancestor, _, ConfigOps),
                                 ~wL, source, ancestor, state$pc + 1L)
 }',
            [FuncName, Pred, EdgePred, EdgePred, MaxDepth]).
+emit_kernel(Pred, recursive_kernel(astar_shortest_path4, _, ConfigOps),
+            DataDecl, LoweredFunc, FuncName) :-
+    member(edge_pred(EdgePred/EdgeArity), ConfigOps),
+    EdgeArity =:= 3,
+    % direct_dist_pred(Spec) -- Spec may be a `Name/Arity` pair or
+    % a bare atom. Normalize to a name + arity for the codegen.
+    member(direct_dist_pred(DistSpec), ConfigOps),
+    astar_dist_pred_name(DistSpec, DistPred),
+    r_pred_name(Pred, RName),
+    format(atom(FuncName), '~w_kernel_astar4', [RName]),
+    DataDecl = "",
+    format(string(LoweredFunc),
+'~w <- function(program, state) {
+  source <- WamRuntime$get_reg(state, 1L)
+  target <- WamRuntime$get_reg(state, 2L)
+  dim    <- WamRuntime$get_reg(state, 3L)
+  dist   <- WamRuntime$get_reg(state, 4L)
+  WamRuntime$astar_shortest_path4(program, state, "~w/4",
+                                    "~w", "~w/3",
+                                    "~w", "~w/3",
+                                    source, target, dim, dist,
+                                    state$pc + 1L)
+}',
+           [FuncName, Pred, EdgePred, EdgePred, DistPred, DistPred]).
+
+astar_dist_pred_name(Name/_Arity, Name) :- atom(Name), !.
+astar_dist_pred_name(Name, Name) :- atom(Name).
 
 % ============================================================================
 % FACT-TABLE CLASSIFICATION + EMISSION
