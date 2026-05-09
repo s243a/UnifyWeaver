@@ -2930,7 +2930,7 @@ generate_inline_facts_wiring(InlineDefs, Code) :-
 %  When not enabled, all are empty strings.
 generate_lmdb_wiring(Options, SetupCode, ContextCode, ImportCode) :-
     (   option(use_lmdb(true), Options)
-    ->  ImportCode = 'import System.Directory (doesDirectoryExist, createDirectory)',
+    ->  ImportCode = 'import System.Directory (doesDirectoryExist, createDirectory)\nimport Database.LMDB.Raw (MDB_env)',
         % Three layout/source variants:
         %   - lmdb_layout(dupsort): LMDB is built externally by the
         %     streaming pipeline (no in-process ingest, error if missing).
@@ -2999,7 +2999,28 @@ generate_demand_filter(DetectedKernels, Options, FilterCode, FactsSource) :-
         FactsSource = 'parentsIndexInterned'
     ;   DetectedKernels \= []
     ->  resolve_demand_filter_spec(Options, SpecHs),
-        format(string(FilterCode),
+        %% Phase 2b.3 demand_bfs_mode: cursor walks the LMDB
+        %% category_child sub-db, no in-memory parentsIndex needed.
+        %% Default = in_memory (preserves Phase 2b.2 behaviour for
+        %% callers without LMDB or with the pre-load IntMap path).
+        %% cursor mode requires int_atom_seeds(lmdb) (so internEnv is
+        %% in scope) and the fixture to have been ingested with the
+        %% category_child reverse-edge sub-db.
+        resolve_auto_demand_bfs_mode(Options, BfsMode),
+        (   BfsMode == cursor
+        ->  format(string(FilterCode),
+'    let !rootId = iAtom root
+        !demandFilterSpec = ~w
+    !demandFilterResult <- runDemandBFSCursor demandFilterSpec internEnv "category_child" rootId
+    let !demandSet = dfrInSet demandFilterResult
+        !demandSize = IS.size demandSet
+        !totalNodes = -1 :: Int  -- unknown without iterating LMDB
+        !filteredSize = -1 :: Int  -- LMDB is the source of truth; no filteredParents map
+        !filteredSeedCats = filter (\\cat -> IS.member (iAtom cat) demandSet) seedCats
+        !demandSkippedSeeds = length seedCats - length filteredSeedCats',
+                [SpecHs]),
+            FactsSource = 'parentsIndexInterned'  % unused at runtime in this mode
+        ;   format(string(FilterCode),
 '    let !rootId = iAtom root
         !demandFilterSpec = ~w
         !demandFilterResult = runDemandBFS demandFilterSpec parentsIndexInterned rootId
@@ -3015,10 +3036,38 @@ generate_demand_filter(DetectedKernels, Options, FilterCode, FactsSource) :-
         -- seeds are gated out (e.g. 50k_cats: 49989/50000 skipped).
         !filteredSeedCats = filter (\\cat -> IS.member (iAtom cat) demandSet) seedCats
         !demandSkippedSeeds = length seedCats - length filteredSeedCats',
-            [SpecHs]),
-        FactsSource = 'filteredParents'
+                [SpecHs]),
+            FactsSource = 'filteredParents'
+        )
     ;   FilterCode = '',
         FactsSource = 'parentsIndexInterned'
+    ).
+
+%% resolve_auto_demand_bfs_mode(+Options, -Mode)
+%  Pick the demand BFS implementation. Precedence:
+%    1. demand_bfs_mode(in_memory|cursor) explicit option.
+%    2. demand_bfs_mode(auto) — pick by fact_count threshold:
+%       - fact_count >= 50_000 -> cursor (avoids materialising the full
+%         reverse adjacency in memory)
+%       - otherwise            -> in_memory (faster at small scale,
+%         no per-edge LMDB cursor overhead)
+%    3. Default: in_memory (preserves Phase 2b.2 behaviour).
+%  Note: cursor mode requires int_atom_seeds(lmdb) AND a fixture with
+%  the category_child reverse-edge sub-db. Caller is responsible for
+%  ensuring those preconditions hold before opting in.
+resolve_auto_demand_bfs_mode(Options, Mode) :-
+    (   option(demand_bfs_mode(in_memory), Options)
+    ->  Mode = in_memory
+    ;   option(demand_bfs_mode(cursor), Options)
+    ->  Mode = cursor
+    ;   option(demand_bfs_mode(auto), Options)
+    ->  (   option(fact_count(N), Options),
+            integer(N),
+            N >= 50000
+        ->  Mode = cursor
+        ;   Mode = in_memory
+        )
+    ;   Mode = in_memory
     ).
 
 %% resolve_demand_filter_spec(+Options, -SpecHs)
@@ -3188,7 +3237,7 @@ compile_wam_runtime_to_haskell(Options, DetectedKernels, Code) :-
                     BacktrackCode),
     % Phase B1: conditional LMDB imports and functions
     (   option(use_lmdb(true), Options)
-    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr, nullPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (alloca, allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.String (withCStringLen, peekCStringLen)\nimport Foreign.C.Types (CSize(..), CChar)\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Data.Bits ((.&.))\nimport Data.IORef (IORef, newIORef, readIORef, writeIORef, atomicModifyIORef')\nimport qualified Data.Array as A\nimport qualified Data.Array.IO as IOA\nimport qualified Control.Exception as E\nimport Control.Monad (forM_, when)\nimport Control.Concurrent (runInBoundThread, myThreadId, ThreadId, threadCapability, getNumCapabilities)",
+    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr, nullPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (alloca, allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.String (withCStringLen, peekCStringLen)\nimport Foreign.C.Types (CSize(..), CChar)\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Data.Bits ((.&.))\nimport Data.IORef (IORef, newIORef, readIORef, writeIORef, atomicModifyIORef')\nimport qualified Data.Array as A\nimport qualified Data.Array.IO as IOA\nimport qualified Control.Exception as E\nimport Control.Monad (forM_, when, foldM)\nimport Control.Concurrent (runInBoundThread, myThreadId, ThreadId, threadCapability, getNumCapabilities)",
         generate_lmdb_functions(Options, LmdbFunctions)
     ;   LmdbImports = "",
         LmdbFunctions = ""

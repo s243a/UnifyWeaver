@@ -21,7 +21,14 @@ directory containing `category_parent.tsv` and `article_category.tsv`
   i2s              int32_le      -> UTF-8 string  (reverse intern map)
   meta             ASCII keys    -> bytes         (schema_version, next_id)
   category_parent  int32_le      -> int32_le      (dupsort, child -> parent)
+  category_child   int32_le      -> int32_le      (dupsort, parent -> child)
   article_category int32_le      -> int32_le      (dupsort, article -> cat)
+
+The `category_child` sub-db is the reverse-edge mirror of
+`category_parent`, written so the Phase 2b.3 cursor-based demand BFS
+can walk root → descendants without materialising the full reverse
+adjacency in memory at startup. Storage cost: 1 extra dupsort entry
+per edge (~8 bytes); negligible for any fixture < 100 GB.
 
 Atom IDs allocated dense-from-zero in TSV-row order (category_parent
 first, then article_category). No compile-time atom reservation: the
@@ -99,6 +106,7 @@ def main() -> int:
         i2s_db = env.open_db(b"i2s")
         meta_db = env.open_db(b"meta")
         cp_db = env.open_db(b"category_parent", dupsort=True)
+        cc_db = env.open_db(b"category_child", dupsort=True)
         ac_db = env.open_db(b"article_category", dupsort=True)
 
         intern: dict[str, int] = {}
@@ -123,6 +131,7 @@ def main() -> int:
                 cid = intern_atom(child, txn)
                 pid = intern_atom(parent, txn)
                 txn.put(le32(cid), le32(pid), db=cp_db)
+                txn.put(le32(pid), le32(cid), db=cc_db)
                 cp_count += 1
             for article, category in iter_tsv_pairs(ac_tsv):
                 aid = intern_atom(article, txn)

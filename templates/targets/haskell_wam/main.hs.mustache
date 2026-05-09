@@ -471,6 +471,31 @@ runDemandBFS spec parents rootId = case spec of
       , dfrFluxScores  = Nothing
       }
 
+-- | Phase 2b.3 cursor-mode counterpart of runDemandBFS. Same dispatch
+-- shape but the demand set is computed via LMDB cursor on the
+-- category_child sub-db instead of an in-memory IntMap. No 5M-edge
+-- ceiling. DfNone returns an empty set in this mode (the universe of
+-- nodes is unknown without iterating LMDB; the seed pre-filter just
+-- skips the membership test when the set is empty).
+runDemandBFSCursor :: DemandFilterSpec -> MDB_env -> String -> Int
+                   -> IO DemandFilterResult
+runDemandBFSCursor spec env childDbName rootId = case spec of
+  HopLimit maxHops -> do
+    inSet <- computeDemandSetCursorBFS env childDbName rootId maxHops
+    return DemandFilterResult
+      { dfrInSet       = inSet
+      , dfrSortedSeeds = Nothing
+      , dfrFluxScores  = Nothing
+      }
+  Flux {} ->
+    error "runDemandBFSCursor: Flux strategy not yet implemented (Phase 2.5)."
+  DfNone ->
+    return DemandFilterResult
+      { dfrInSet       = IS.empty
+      , dfrSortedSeeds = Nothing
+      , dfrFluxScores  = Nothing
+      }
+
 -- | Compute the backward-reachable demand set from a root node, with an
 -- optional hop limit. Nothing = unbounded (legacy behaviour). The bound
 -- counts edges traversed, so HopLimit (Just 0) returns just {rootId}.

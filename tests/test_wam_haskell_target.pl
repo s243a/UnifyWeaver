@@ -1457,6 +1457,74 @@ test_demand_filter_gates_seed_query_body :-
     ;   fail_test(Test, 'Demand-filtered Main.hs should pre-filter seeds before parMap')
     ).
 
+test_demand_bfs_mode_cursor_emits_runDemandBFSCursor :-
+    Test = 'WAM-Haskell: demand_bfs_mode(cursor) emits runDemandBFSCursor instead of in-memory variant',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [demand_bfs_mode(cursor)],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "runDemandBFSCursor demandFilterSpec internEnv \"category_child\" rootId"),
+        \+ sub_string(S, _, _, _, "runDemandBFS demandFilterSpec parentsIndexInterned"),
+        \+ sub_string(S, _, _, _, "filterByDemand demandSet parentsIndexInterned")
+    ->  pass(Test)
+    ;   fail_test(Test, 'cursor mode should emit runDemandBFSCursor and skip filteredParents materialisation')
+    ).
+
+test_demand_bfs_mode_in_memory_default :-
+    Test = 'WAM-Haskell: default demand BFS mode is in_memory (no behavior change)',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "runDemandBFS demandFilterSpec parentsIndexInterned rootId"),
+        \+ sub_string(S, _, _, _, "runDemandBFSCursor demandFilterSpec internEnv")
+    ->  pass(Test)
+    ;   fail_test(Test, 'default should keep emitting runDemandBFS (in-memory)')
+    ).
+
+test_demand_bfs_mode_auto_high_fact_count_picks_cursor :-
+    Test = 'WAM-Haskell: demand_bfs_mode(auto) + fact_count >= 50000 picks cursor',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [demand_bfs_mode(auto), fact_count(196900)],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "runDemandBFSCursor demandFilterSpec internEnv")
+    ->  pass(Test)
+    ;   fail_test(Test, 'auto + high fact_count should resolve to cursor')
+    ).
+
+test_demand_bfs_mode_auto_low_fact_count_picks_in_memory :-
+    Test = 'WAM-Haskell: demand_bfs_mode(auto) + fact_count < 50000 picks in_memory',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [demand_bfs_mode(auto), fact_count(5000)],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "runDemandBFS demandFilterSpec parentsIndexInterned"),
+        \+ sub_string(S, _, _, _, "runDemandBFSCursor demandFilterSpec internEnv")
+    ->  pass(Test)
+    ;   fail_test(Test, 'auto + low fact_count should resolve to in_memory')
+    ).
+
 test_demand_filter_hop_limit_with_max_hops :-
     Test = 'WAM-Haskell: demand_filter_spec(hop_limit, [max_hops(N)]) emits HopLimit (Just N)',
     Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
@@ -2144,6 +2212,10 @@ run_tests :-
     test_b1_external_source_default_allow_list,
     test_b1_external_source_off_without_use_lmdb,
     test_demand_filter_gates_seed_query_body,
+    test_demand_bfs_mode_cursor_emits_runDemandBFSCursor,
+    test_demand_bfs_mode_in_memory_default,
+    test_demand_bfs_mode_auto_high_fact_count_picks_cursor,
+    test_demand_bfs_mode_auto_low_fact_count_picks_in_memory,
     test_demand_filter_hop_limit_with_max_hops,
     test_demand_filter_none_emits_dfnone,
     test_demand_filter_flux_emits_panic_stub_compatible,

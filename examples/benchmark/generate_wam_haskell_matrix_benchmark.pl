@@ -36,7 +36,7 @@ main :-
     ;   Argv = [FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom]
     ->  LmdbModeAtom = none
     ;   format(user_error,
-            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off> [<none|auto|true|false|resident>]~n',
+            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off> [<none|auto|true|false|resident|resident_cursor>]~n',
             []),
         halt(1)
     ),
@@ -126,6 +126,16 @@ parse_lmdb_mode(resident, [
     use_lmdb(true),
     lmdb_layout(dupsort),
     int_atom_seeds(lmdb)
+]).
+%% resident_cursor: resident path + Phase 2b.3 cursor-based demand BFS.
+%% Skips the parentsIndex pre-load step and walks the LMDB
+%% category_child sub-db on demand. Requires the fixture to have been
+%% ingested with the reverse-edge sub-db (use ingest_resident_lmdb_fixture.py).
+parse_lmdb_mode(resident_cursor, [
+    use_lmdb(true),
+    lmdb_layout(dupsort),
+    int_atom_seeds(lmdb),
+    demand_bfs_mode(cursor)
 ]).
 
 parse_variant(seeded, [

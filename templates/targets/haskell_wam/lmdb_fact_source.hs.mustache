@@ -966,3 +966,65 @@ loadForwardEdgesFromLmdb env dbName threshold = do
           let !a' = IM.insertWith (++) k [v] a
           more <- mdb_cursor_get' MDB_NEXT cursor kvPtr dvPtr
           go cursor kvPtr dvPtr more a' (c + 1)
+
+-- | Phase 2b.3 cursor-based demand-set BFS: walk root → descendants
+-- via the `category_child` reverse-edge sub-db using a single LMDB
+-- cursor; never materialises the full reverse adjacency in memory.
+--
+-- Compared to `loadForwardEdgesFromLmdb` + the pure
+-- `computeDemandSetHopLimited` traversal, this is:
+--
+--   * O(|demand_set|) RAM instead of O(|edges|) — only the visited
+--     set lives in the heap; edges are streamed through the cursor.
+--   * Removes the 5_000_000-edge threshold guard. Scales to enwiki.
+--   * Does not benefit from L1/L2 caching (one-shot traversal, every
+--     edge is visited at most once). The OS page cache is the only
+--     cache layer that matters; warm runs after a cold cache may
+--     show 2-5x improvement on the BFS phase.
+--
+-- The reverse-edge sub-db must exist (use the fixture ingester with
+-- `category_child` written). If absent, returns just {rootId}.
+computeDemandSetCursorBFS :: MDB_env -> String -> Int -> Maybe Int -> IO IS.IntSet
+computeDemandSetCursorBFS env childDbName rootId maxHops = do
+    txn <- mdb_txn_begin env Nothing True
+    -- Caller must ensure the fixture has the reverse-edge sub-db; if it
+    -- is absent mdb_dbi_open' throws MDB_NOTFOUND and the program halts
+    -- with a clear LMDB error message. No silent fallback.
+    dbi <- mdb_dbi_open' txn (Just childDbName) [MDB_DUPSORT]
+    cursor <- mdb_cursor_open' txn dbi
+    let go !depth !frontier !visited
+          | IS.null frontier = return visited
+          | exceededHopLimit depth = return visited
+          | otherwise = do
+              newNodes <- foldM (stepNode cursor visited) IS.empty
+                                (IS.toList frontier)
+              if IS.null newNodes
+                then return visited
+                else go (depth + 1) newNodes (IS.union visited newNodes)
+    result <- go 0 (IS.singleton rootId) (IS.singleton rootId)
+    mdb_txn_abort txn
+    return result
+  where
+    exceededHopLimit !d = case maxHops of
+      Nothing -> False
+      Just n  -> d >= n
+    stepNode cursor visited !acc node =
+      allocaBytes 4 $ \kp -> do
+        poke (castPtr kp :: Ptr Int32) (fromIntegral node :: Int32)
+        alloca $ \kvPtr -> alloca $ \dvPtr -> do
+          poke kvPtr (MDB_val 4 kp)
+          found <- mdb_cursor_get' MDB_SET cursor kvPtr dvPtr
+          if not found
+            then return acc
+            else collectDups cursor kvPtr dvPtr visited acc
+    collectDups cursor kvPtr dvPtr visited !acc = do
+      MDB_val sz dataPtr <- peek dvPtr
+      v <- if sz >= 4
+            then fromIntegral <$> peekElemOff (castPtr dataPtr :: Ptr Int32) 0
+            else return 0
+      let !acc' = if IS.member v visited then acc else IS.insert v acc
+      more <- mdb_cursor_get' MDB_NEXT_DUP cursor kvPtr dvPtr
+      if more
+        then collectDups cursor kvPtr dvPtr visited acc'
+        else return acc'
+
