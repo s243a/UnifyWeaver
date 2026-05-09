@@ -603,6 +603,14 @@ WamRuntime$tokenize_term <- function(text) {
     if (c == ",") { push(list(type = "comma"));    i <- i + 1L; next }
     if (c == ";") { push(list(type = "semicolon")); i <- i + 1L; next }
     if (c == "|") { push(list(type = "pipe"));     i <- i + 1L; next }
+    # ISO solo atom: `!` (the cut, also usable as a postfix-op name).
+    # Doesn't combine with the symbol-run chars; emitted as a single-
+    # char atom token so the parser can treat it like any other atom.
+    if (c == "!") {
+      push(list(type = "atom", value = "!", is_symbol = TRUE))
+      i <- i + 1L
+      next
+    }
     # Quoted atom: 'foo bar' with backslash escapes for ' and \.
     if (c == "'") {
       i <- i + 1L
@@ -725,6 +733,14 @@ WamRuntime$op_prefix <- list(
   "\\"  = list(prec = 200L)
 )
 
+# Postfix operator table. Empty by default -- canonical Prolog
+# defines no postfix operators. Users introduce them via op/3 or
+# the codegen-time r_op_decls option (e.g. `op(100, yf, '!')` for
+# factorial-style notation `5!`). Format mirrors op_prefix:
+# name -> list(prec, assoc) where assoc is "xf" (operand prec <
+# op prec) or "yf" (operand prec <= op prec).
+WamRuntime$op_postfix <- list()
+
 # ----------------------------------------------------------
 # Operator-table mutation helpers (used by op/3, current_op/3,
 # and the codegen-emitted r_op_decls block).
@@ -753,18 +769,21 @@ WamRuntime$op_resolve_names <- function(state, name_v, table) {
   NULL
 }
 
-# Insert / replace / remove an entry in op_infix or op_prefix based on
-# the fixity type. Priority 0 removes; non-zero inserts. The type's
-# table choice is implicit: xfx/xfy/yfx -> infix, fx/fy -> prefix.
-# Note: assigning to `WamRuntime$op_infix[[name]]` reads the list,
-# updates the named element, and assigns the modified list back; the
-# parser sees the new entry on its next read of the table.
+# Insert / replace / remove an entry in op_infix, op_prefix, or
+# op_postfix based on the fixity type. Priority 0 removes; non-zero
+# inserts. The type's table choice is implicit: xfx/xfy/yfx -> infix,
+# fx/fy -> prefix, xf/yf -> postfix. Note: assigning to
+# `WamRuntime$op_infix[[name]]` reads the list, updates the named
+# element, and assigns the modified list back; the parser sees the
+# new entry on its next read of the table.
 WamRuntime$op_set <- function(name, prec, type_str) {
-  is_infix  <- type_str %in% c("xfx", "xfy", "yfx")
-  is_prefix <- type_str %in% c("fx", "fy")
+  is_infix   <- type_str %in% c("xfx", "xfy", "yfx")
+  is_prefix  <- type_str %in% c("fx", "fy")
+  is_postfix <- type_str %in% c("xf", "yf")
   if (prec == 0L) {
-    if (is_infix) WamRuntime$op_infix[[name]]   <- NULL
-    if (is_prefix) WamRuntime$op_prefix[[name]] <- NULL
+    if (is_infix)   WamRuntime$op_infix[[name]]   <- NULL
+    if (is_prefix)  WamRuntime$op_prefix[[name]]  <- NULL
+    if (is_postfix) WamRuntime$op_postfix[[name]] <- NULL
     return(invisible(NULL))
   }
   if (is_infix) {
@@ -773,6 +792,9 @@ WamRuntime$op_set <- function(name, prec, type_str) {
   } else if (is_prefix) {
     WamRuntime$op_prefix[[name]] <- list(prec = as.integer(prec),
                                           assoc = type_str)
+  } else if (is_postfix) {
+    WamRuntime$op_postfix[[name]] <- list(prec = as.integer(prec),
+                                           assoc = type_str)
   }
   invisible(NULL)
 }
@@ -789,6 +811,11 @@ WamRuntime$op_snapshot <- function(table) {
   for (nm in names(WamRuntime$op_prefix)) {
     entry <- WamRuntime$op_prefix[[nm]]
     type <- if (!is.null(entry$assoc)) entry$assoc else "fx"
+    out <- c(out, list(list(prec = entry$prec, type = type, name = nm)))
+  }
+  for (nm in names(WamRuntime$op_postfix)) {
+    entry <- WamRuntime$op_postfix[[nm]]
+    type <- if (!is.null(entry$assoc)) entry$assoc else "xf"
     out <- c(out, list(list(prec = entry$prec, type = type, name = nm)))
   }
   out
@@ -874,13 +901,30 @@ WamRuntime$wam_parse_expr <- function(p, max_prec) {
                else if (tok$type == "semicolon") ";"
                else NULL
     if (is.null(op_name)) return(left)
-    op <- WamRuntime$op_infix[[op_name]]
-    if (is.null(op) || op$prec > max_prec) return(left)
-    p$pos <- p$pos + 1L
-    rhs_max <- if (op$assoc == "xfy") op$prec else op$prec - 1L
-    rhs <- WamRuntime$wam_parse_expr(p, rhs_max)
-    if (is.null(rhs)) return(NULL)
-    left <- StructTerm(WamRuntime$intern(p$table, op_name), list(left, rhs))
+    iop <- WamRuntime$op_infix[[op_name]]
+    if (!is.null(iop) && iop$prec <= max_prec) {
+      p$pos <- p$pos + 1L
+      rhs_max <- if (iop$assoc == "xfy") iop$prec else iop$prec - 1L
+      rhs <- WamRuntime$wam_parse_expr(p, rhs_max)
+      if (is.null(rhs)) return(NULL)
+      left <- StructTerm(WamRuntime$intern(p$table, op_name),
+                         list(left, rhs))
+      next
+    }
+    # Postfix: prefer infix when both are defined and applicable
+    # (matches SWI). Fires only when no infix entry fits the
+    # current precedence ceiling. yf accepts left at op$prec; xf
+    # requires left at op$prec - 1, but the operand precedence is
+    # already bounded by the recursive call and the outer loop's
+    # max_prec; we defer to max_prec here.
+    pop <- WamRuntime$op_postfix[[op_name]]
+    if (!is.null(pop) && pop$prec <= max_prec) {
+      p$pos <- p$pos + 1L
+      left <- StructTerm(WamRuntime$intern(p$table, op_name),
+                         list(left))
+      next
+    }
+    return(left)
   }
 }
 
@@ -4838,10 +4882,7 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     prec <- as.integer(prec_v$val)
     if (prec < 0L || prec > 1200L) return(FALSE)
     type_str <- WamRuntime$string_of(table, type_v$id)
-    if (type_str %in% c("xf", "yf")) {
-      stop(sprintf("op/3: postfix operators (%s) not yet supported in WAM-R", type_str))
-    }
-    if (!(type_str %in% c("xfx", "xfy", "yfx", "fx", "fy"))) return(FALSE)
+    if (!(type_str %in% c("xfx", "xfy", "yfx", "fx", "fy", "xf", "yf"))) return(FALSE)
     names_vec <- WamRuntime$op_resolve_names(state, name_v, table)
     if (is.null(names_vec)) return(FALSE)
     for (nm in names_vec) {

@@ -3269,6 +3269,80 @@ e2e_external_fact_source_via_rscript :-
         'assign("cpedge/2", pred_cpedge_fact_iter, envir = shared_program$lowered_dispatch)')),
     delete_directory_and_contents(TmpDir).
 
+% End-to-end Rscript run for runtime postfix-operator support. Covers
+% op/3 accepting xf/yf without throwing, the parser wrapping a primary
+% as a postfix struct, mixed infix+postfix in one expression, yf
+% chaining, current_op/3 enumeration, and op(0, ...) removal. Uses
+% =.. to decompose terms so SWI doesn't need the operator declared.
+test(op_3_postfix_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_op_3_postfix_via_rscript
+    ;   true
+    )).
+
+e2e_op_3_postfix_via_rscript :-
+    retractall(user:op_postfix_yf/0),
+    retractall(user:op_postfix_xf/0),
+    retractall(user:op_postfix_yf_chain/0),
+    retractall(user:op_postfix_with_infix/0),
+    retractall(user:op_postfix_current/0),
+    retractall(user:op_postfix_remove/0),
+    assertz((user:op_postfix_yf :-
+        op(100, yf, '!'),
+        read_term_from_atom('5!', T),
+        T =.. [F, A],
+        F == '!', A == 5)),
+    assertz((user:op_postfix_xf :-
+        op(100, xf, '!'),
+        read_term_from_atom('5!', T),
+        T =.. [F, A],
+        F == '!', A == 5)),
+    % yf permits the operand at the op's own precedence, so `5!!`
+    % parses as `'!'('!'(5))`. The parser keeps wrapping while the
+    % postfix entry matches.
+    assertz((user:op_postfix_yf_chain :-
+        op(100, yf, '!'),
+        read_term_from_atom('5!!', T),
+        T =.. [F, Inner],
+        F == '!',
+        Inner =.. [F, A],
+        A == 5)),
+    % Mixed: postfix binds tighter than the surrounding infix, so
+    % `5! + 3` parses as `+('!'(5), 3)`.
+    assertz((user:op_postfix_with_infix :-
+        op(100, yf, '!'),
+        read_term_from_atom('5! + 3', T),
+        T =.. ['+', L, R],
+        L =.. [F, A],
+        F == '!', A == 5, R == 3)),
+    assertz((user:op_postfix_current :-
+        op(100, yf, '!'),
+        findall(Type, current_op(100, Type, '!'), Types),
+        Types == [yf])),
+    % op(0, yf, ...) removes the postfix entry; subsequent parse fails.
+    assertz((user:op_postfix_remove :-
+        op(100, yf, '!'),
+        op(0, yf, '!'),
+        \+ read_term_from_atom('5!', _))),
+    unique_r_tmp_dir('tmp_r_op_3_postfix_e2e', TmpDir),
+    write_wam_r_project(
+        [user:op_postfix_yf/0, user:op_postfix_xf/0,
+         user:op_postfix_yf_chain/0, user:op_postfix_with_infix/0,
+         user:op_postfix_current/0, user:op_postfix_remove/0],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [op_postfix_yf, op_postfix_xf, op_postfix_yf_chain,
+           op_postfix_with_infix, op_postfix_current,
+           op_postfix_remove],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
 test(external_fact_source_grouped_tsv_e2e_rscript) :-
     once((
         rscript_available

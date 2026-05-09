@@ -103,11 +103,13 @@ relevant feature sections. Not bugs -- intentional scope boundaries.
 - **`length/2` (-,-)** generative mode unsupported.
 - **`retract/1` snapshot semantics.** The snapshot is taken at the
   original call; clauses asserted during the iteration are not seen.
-- **Postfix operators in the term parser.** `op/3` recognises `xf` /
-  `yf` types but raises an error -- the parser doesn't have a
-  postfix path yet. Infix and prefix custom operators work, both at
-  runtime via `op/3` and at codegen time via the `r_op_decls`
-  option.
+- **Postfix `xf` vs `yf` chaining.** Single postfix application is
+  correct (e.g. `5!` parses to `'!'(5)`). Chained postfix accepts
+  either type without enforcing the ISO `xf` rule that the operand
+  precedence be strictly less than the operator precedence. Same
+  simplification the existing prefix path already makes (`fx` and
+  `fy` are treated identically). Infix/prefix/postfix operators
+  work at runtime via `op/3` and at codegen time via `r_op_decls`.
 - **`astar_shortest_path4`** is correct only when the user-supplied
   heuristic is admissible. Documented; the fallback (using the edge
   pred itself) is not generally admissible.
@@ -137,9 +139,11 @@ roughly priority order:
    identify a single hot path; subsequent PRs each fix one bottleneck.
    Tagged-list `$tag` access and env-based register lookups are likely
    suspects.
-3. **Postfix operator parser path.** Add `WamRuntime$op_postfix` and
-   the parser case so `op(P, xf, ...)` / `op(P, yf, ...)` work. Small
-   bounded follow-up to the `op/3` PR.
+3. **Strict `xf` precedence rule** (small). Threading the precedence
+   of the current `left` expression through `wam_parse_expr` so `xf`
+   and `yf` differ correctly at chained-postfix sites. Fixes the
+   simplification documented as a known limitation. Same fix would
+   let `fx` / `fy` differ correctly in the prefix path.
 4. **Mode analysis (start).** Big multi-PR effort. Phase 1 collects
    mode info per predicate (in/out per arg); Phase 2 wires it to
    specialised emission (skip unifications when the mode says the slot
