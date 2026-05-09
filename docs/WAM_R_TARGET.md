@@ -192,8 +192,10 @@ lives in
 [`src/unifyweaver/core/recursive_kernel_detection.pl`](../src/unifyweaver/core/recursive_kernel_detection.pl)
 and is shared with the Haskell / Rust / Elixir targets; this
 target wires up `transitive_closure2`, `transitive_distance3`,
-`weighted_shortest_path3`, `transitive_parent_distance4`, and
-`transitive_step_parent_distance5` so far. Canonical shapes:
+`weighted_shortest_path3`, `transitive_parent_distance4`,
+`transitive_step_parent_distance5`, and `category_ancestor` so far
+(6/7 of the registered kernel patterns; only `astar_shortest_path4`
+remains). Canonical shapes:
 
 ```prolog
 % transitive_closure2 -- streams reachable nodes
@@ -216,6 +218,17 @@ pd(X, Y, P, D) :- edge(X, Z), pd(Z, Y, P, D1), D is D1 + 1.
 % step is the FIRST hop neighbour of source on the path X -> ... -> Y.
 tspd(X, Y, Y, X, 1) :- edge(X, Y).
 tspd(X, Y, M, P, D) :- edge(X, M), tspd(M, Y, _, P, D1), D is D1 + 1.
+
+% category_ancestor -- streams reachable ancestors with depth cap.
+% max_depth/1 must be asserted before write_wam_r_project/3 runs;
+% the detector reads it at codegen time and the cap is embedded
+% in the lowered function. Visited and Hops are inputs / discarded
+% outputs that the native impl doesn't touch.
+:- assertz(user:max_depth(3)).
+ca(Cat, Anc, Visited, 0) :- \+ member(Cat, Visited), edge(Cat, Anc).
+ca(Cat, Anc, Visited, Hops) :- \+ member(Cat, Visited),
+    edge(Cat, Mid), ca(Mid, Anc, [Cat | Visited], Hops0),
+    Hops is Hops0 + 1.
 ```
 
 The runtime helpers BFS (`transitive_closure2`,
@@ -540,7 +553,7 @@ WamRuntime$run(shared_program, state)
 
 The full test suite lives in
 [tests/test_wam_r_generator.pl](../tests/test_wam_r_generator.pl)
-and contains 51 tests covering both structural assertions on the
+and contains 52 tests covering both structural assertions on the
 generated source and end-to-end execution via `Rscript`. The
 `*_e2e_rscript` tests auto-skip when `Rscript` is not on `PATH`.
 
@@ -585,6 +598,7 @@ Coverage map (e2e tests, by feature group):
 | `kernel_wsp3_e2e_rscript` | recursive-kernel detection: `weighted_shortest_path3` Dijkstra over a weighted fact-table edge predicate |
 | `kernel_tpd4_e2e_rscript` | recursive-kernel detection: `transitive_parent_distance4` BFS with parent tracking |
 | `kernel_tspd5_e2e_rscript` | recursive-kernel detection: `transitive_step_parent_distance5` BFS with step + parent + distance |
+| `kernel_ca_e2e_rscript` | recursive-kernel detection: `category_ancestor` BFS with depth-cap + visited-set cycle detection |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 

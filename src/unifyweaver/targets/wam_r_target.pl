@@ -1078,6 +1078,24 @@ emit_kernel(Pred, recursive_kernel(transitive_step_parent_distance5, _, ConfigOp
                                                 dist, state$pc + 1L)
 }',
            [FuncName, Pred, EdgePred, EdgePred]).
+emit_kernel(Pred, recursive_kernel(category_ancestor, _, ConfigOps),
+            DataDecl, LoweredFunc, FuncName) :-
+    member(edge_pred(EdgePred/EdgeArity), ConfigOps),
+    EdgeArity =:= 2,
+    member(max_depth(MaxDepth), ConfigOps),
+    integer(MaxDepth),
+    MaxDepth > 0,
+    r_pred_name(Pred, RName),
+    format(atom(FuncName), '~w_kernel_ca', [RName]),
+    DataDecl = "",
+    format(string(LoweredFunc),
+'~w <- function(program, state) {
+  source   <- WamRuntime$get_reg(state, 1L)
+  ancestor <- WamRuntime$get_reg(state, 2L)
+  WamRuntime$category_ancestor(program, state, "~w/4", "~w", "~w/2",
+                                ~wL, source, ancestor, state$pc + 1L)
+}',
+           [FuncName, Pred, EdgePred, EdgePred, MaxDepth]).
 
 % ============================================================================
 % FACT-TABLE CLASSIFICATION + EMISSION
