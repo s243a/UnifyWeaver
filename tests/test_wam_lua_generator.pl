@@ -26,6 +26,8 @@
 :- dynamic user:wam_lua_agg_set/0.
 :- dynamic user:wam_lua_stream_fact/2.
 :- dynamic user:wam_lua_stream_caller/2.
+:- dynamic user:wam_lua_ext_fact/2.
+:- dynamic user:wam_lua_ext_caller/2.
 
 user:wam_lua_fact(a).
 user:wam_lua_choice(a).
@@ -63,6 +65,7 @@ user:wam_lua_agg_set :-
 user:wam_lua_stream_fact(a, b).
 user:wam_lua_stream_fact(a, c).
 user:wam_lua_stream_caller(X, Y) :- user:wam_lua_stream_fact(X, Y).
+user:wam_lua_ext_caller(X, Y) :- user:wam_lua_ext_fact(X, Y).
 
 test(exports) :-
     assertion(current_predicate(wam_lua_target:write_wam_lua_project/3)),
@@ -181,6 +184,35 @@ test(lua_fact_stream_e2e, [condition(lua_available)]) :-
           run_lua_query(LuaDir, 'wam_lua_stream_fact/2', [a, c], true),
           run_lua_query(LuaDir, 'wam_lua_stream_fact/2', [a, d], false),
           run_lua_query(LuaDir, 'wam_lua_stream_caller/2', [a, c], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(lua_external_fact_source_e2e, [condition(lua_available)]) :-
+    unique_lua_tmp_dir('tmp_lua_ext_fact_e2e', TmpDir),
+    setup_call_cleanup(
+        ( make_directory_path(TmpDir),
+          directory_file_path(TmpDir, 'ext_facts.csv', CsvPath),
+          setup_call_cleanup(
+              open(CsvPath, write, Stream),
+              ( writeln(Stream, 'a,b'),
+                writeln(Stream, 'a,c')
+              ),
+              close(Stream)),
+          write_wam_lua_project(
+              [user:wam_lua_ext_fact/2, user:wam_lua_ext_caller/2],
+              [lua_fact_sources([source(wam_lua_ext_fact/2, file(CsvPath))])],
+              TmpDir)
+        ),
+        ( directory_file_path(TmpDir, 'lua/generated_program.lua', Program),
+          read_file_to_string(Program, Code, []),
+          assertion(sub_string(Code, _, _, _, 'local fact_sources = {')),
+          assertion(sub_string(Code, _, _, _, '["wam_lua_ext_fact/2"] = { path = ')),
+          directory_file_path(TmpDir, 'lua', LuaDir),
+          run_lua_query(LuaDir, 'wam_lua_ext_fact/2', [a, b], true),
+          run_lua_query(LuaDir, 'wam_lua_ext_fact/2', [a, c], true),
+          run_lua_query(LuaDir, 'wam_lua_ext_fact/2', [a, d], false),
+          run_lua_query(LuaDir, 'wam_lua_ext_caller/2', [a, c], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
