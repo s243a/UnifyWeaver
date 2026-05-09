@@ -2824,3 +2824,105 @@ swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
 
 # 4. Run with /usr/bin/time -v for peak RSS; loop -N1/-N2/-N4 × 5 trials.
 ```
+
+## Phase L appendix #6: parMap regression at -N>=2 is GC pressure (2026-05-08)
+
+### Why this landed
+
+Appendix #5 left this open: "both modes get slower at -N4 vs -N1
+(TSV: 3535→5831 = 1.65× slower; resident: 980→2090 = 2.13× slower)".
+The hypothesis was first-page faults paid concurrently across worker
+threads on the LMDB load. This appendix tests it.
+
+### Diagnosis
+
+Resident binary, 100k_cats, +RTS -N4 -s, three trials per config:
+
+| config       | total_ms | GC time |  RSS_MB |
+|--------------|---------:|--------:|--------:|
+| default      |     3327 |  5.66 s |     397 |
+| -A64M        |     1146 |  1.36 s |     619 |
+| -A256M       |     1031 |  0.65 s |    1244 |
+| -A1G         |      892 |   ~0  s |    1318 |
+| -A64M -qg    |     1286 |  0.66 s |     619 |
+
+The regression is **GC pressure**, not LMDB or thread contention. At
+-N4 the default 1 MB nursery triggers a parallel GC pass roughly
+every 1 MB of allocation; with 4 threads competing for the GC's stop-
+the-world phase, GC time blows up to 5.7 s out of 3.3 s wall (because
+parallel GC accounts wall time across each capability separately).
+
+`-A64M` lifts the nursery to 64 MB so collections happen ~64× less
+often. `-A1G` is even better (near-zero GC) but uses 1.3 GB RSS.
+`-A64M -qg` (use sequential GC) is comparable to `-A64M` alone — the
+nursery size is the dominant lever, not the parallelism mode of GC
+itself.
+
+### Validation across -N
+
+5 trials per cell, medians:
+
+| cell           | total_ms | GC time | RSS_MB |
+|----------------|---------:|--------:|-------:|
+| default -N1    |     1016 |  0.68 s |    394 |
+| **A64M    -N1**|   **1260**| **0.89 s** |**521** |
+| default -N2    |     1079 |  1.19 s |    394 |
+| **A64M    -N2**|    **801**| **0.71 s** |**504** |
+| default -N4    |     2126 |  3.85 s |    397 |
+| **A64M    -N4**|   **1062**| **1.10 s** |**619** |
+
+`-A64M` is **only correct at -N≥2**. At -N1 it costs ~24% (1016 →
+1260 ms): the small default nursery's frequent minor GCs beat one
+big nursery + occasional major GC, when there's no parallel GC
+synchronisation cost. Crossover is between -N1 and -N2.
+
+### What landed
+
+The matrix bench's primary use case is `+RTS -N>=2`, so we accept
+the -N1 cost in exchange for halving total_ms at -N4. New
+`with_rtsopts(Flags)` codegen option in `generate_cabal_file/4` bakes
+`-with-rtsopts="..."` into the executable's `ghc-options`. The
+matrix bench generator passes `with_rtsopts('-A64M')`. Per GHC's
+"last flag wins" rule, callers can override at runtime with
+`+RTS -A1M -RTS`.
+
+| Codegen surface               | Default       | Override |
+|-------------------------------|---------------|---------|
+| `generate_cabal_file/4`       | no rtsopts    | `with_rtsopts(Flags)` |
+| matrix bench generator        | `-A64M`       | `+RTS -A1M -RTS` |
+| other WAM-Haskell projects    | unchanged     | n/a    |
+
+Only the matrix bench opts in. Other generated projects (typical
+user code, single-target benches, etc.) get the original GHC defaults
+because the right -A varies with workload + intended -N.
+
+### What's still open
+
+A workload-aware nursery size is the proper fix, à la the C# target's
+source-mode cost-model resolver
+(`docs/design/CSHARP_QUERY_SOURCE_MODE_*.md`). For the WAM-Haskell
+target the inputs are: number of seeds, number of edges, intended
+-N, available RAM. Output: an -A choice that optimises total_ms
+without exceeding budget. Not done in this iteration; the static
+`-A64M` is a reasonable point on the curve for the matrix bench.
+
+The TSV setup-growth observation from appendix #5 (TSV setup_ms
+3.5→5.8 s going N1→N4) is the same phenomenon — a sequential
+allocation-heavy phase running while the GC scales with -N. -A64M
+helps there too; the matrix bench's resident mode is the canonical
+test, but TSV mode benefits as a side effect.
+
+### Reproducer
+
+```bash
+# Generate the matrix bench (resident or none — both inherit -A64M).
+swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
+    data/benchmark/100k_cats_resident_run/facts.pl /tmp/wam_resident \
+    seeded interpreter kernels_on resident
+grep ghc-options /tmp/wam_resident/wam-haskell-matrix-bench.cabal
+# -> ghc-options:      -O2 -threaded -rtsopts "-with-rtsopts=-A64M"
+
+# Build and run; -A64M is now the runtime default at every -N.
+(cd /tmp/wam_resident && cabal new-build)
+.../wam-haskell-matrix-bench .../100k_cats_resident_run +RTS -N4 -s
+```
