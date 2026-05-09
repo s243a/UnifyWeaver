@@ -3446,9 +3446,9 @@ WamRuntime$call_goal <- function(program, state, goal_term) {
     return(WamRuntime$call_goal(program, state, v$args[[2]]))
   }
   # Unwrap `^/2` existential scope: in `bagof(X, Y^Goal, B)` the
-  # `Y^` is a hint that Y is locally scoped (no per-witness
-  # grouping). Since this scaffold doesn't do per-witness grouping
-  # anyway, the wrapper is transparent for call purposes.
+  # `Y^` is a hint that Y is locally scoped. Witness grouping is
+  # handled by collect_bag_groups; direct goal calls treat the
+  # wrapper as transparent.
   if (v$tag == "struct" && length(v$args) == 2L &&
       identical(WamRuntime$string_of(table, v$fid), "^")) {
     return(WamRuntime$call_goal(program, state, v$args[[2]]))
@@ -3528,9 +3528,9 @@ WamRuntime$iterate_goal <- function(program, state, goal_term, on_each) {
   if (is.null(v) || is.null(v$tag)) return(invisible(NULL))
 
   # Unwrap `Y^Goal` existential scope (and module-qualified
-  # `Module:Goal`) so the inner goal drives iteration directly. The
-  # outer wrapper has no semantic effect on enumeration in this
-  # scaffold (no per-witness grouping for bagof/setof).
+  # `Module:Goal`) so the inner goal drives iteration directly.
+  # collect_bag_groups separately records existential vars before
+  # calling into this iterator.
   if (v$tag == "struct" && length(v$args) == 2L &&
       identical(WamRuntime$string_of(table, v$fid), "^")) {
     return(WamRuntime$iterate_goal(program, state, v$args[[2]], on_each))
@@ -3775,6 +3775,11 @@ WamRuntime$collect_bag_groups <- function(program, state, template_term, goal_te
     witness_terms <- lapply(witness_names, function(n) {
       WamRuntime$copy_term(state, WamRuntime$deref(state, Unbound(n)))
     })
+    # Group keys are computed at collection time from copy_term'd
+    # witness values, while the solution bindings are still live.
+    # This avoids depending on deref chains after iterate_goal has
+    # moved on to later solutions or collect_bag_groups has restored
+    # the caller snapshot.
     key <- if (length(witness_terms) == 0L) {
       "__all__"
     } else {
@@ -4138,8 +4143,8 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
   # ----- ^/2 existential scope -----
   # When the WAM compiler emits `Y^Goal` as a Call("^", 2), treat
   # the wrapper as transparent and run Goal. Y is locally scoped
-  # (matches the bagof/setof idiom); we don't do per-witness
-  # grouping, so the wrapper has no further effect.
+  # (matches the bagof/setof idiom); collect_bag_groups handles the
+  # witness/existential split for library bagof/setof.
   if (key == "^/2") {
     return(WamRuntime$call_goal(program, state, WamRuntime$get_reg(state, 2L)))
   }
