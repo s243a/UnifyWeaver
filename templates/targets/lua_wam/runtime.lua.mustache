@@ -35,6 +35,7 @@ function I.SetValue(xn) return instr("SetValue", { xn = xn }) end
 function I.SetConstant(c) return instr("SetConstant", { c = c }) end
 function I.Call(p, n) return instr("Call", { pred = p, arity = n }) end
 function I.CallPc(pc, n) return instr("CallPc", { pc = pc, arity = n }) end
+function I.CallIndexedAtomFact2(p) return instr("CallIndexedAtomFact2", { pred = p }) end
 function I.Execute(p, n) return instr("Execute", { pred = p, arity = n }) end
 function I.ExecutePc(pc) return instr("ExecutePc", { pc = pc }) end
 function I.CallForeign(p, n) return instr("CallForeign", { pred = p, arity = n }) end
@@ -112,6 +113,21 @@ function Runtime.copy_term(state, v, seen)
   if v.tag == "float" then return V.Float(v.val) end
   if v.tag == "unbound" then return V.Unbound(v.name) end
   return v
+end
+
+function Runtime.register_indexed_atom_fact2_pairs(program, pred, pairs)
+  program.indexed_atom_fact2 = program.indexed_atom_fact2 or {}
+  local table_for_pred = program.indexed_atom_fact2[pred] or {}
+  program.indexed_atom_fact2[pred] = table_for_pred
+  for _, pair in ipairs(pairs or {}) do
+    local left = tostring(pair[1])
+    local right = tostring(pair[2])
+    Runtime.intern(program.intern_table, left)
+    Runtime.intern(program.intern_table, right)
+    local values = table_for_pred[left] or {}
+    table_for_pred[left] = values
+    table.insert(values, right)
+  end
 end
 
 function Runtime.new_state()
@@ -222,6 +238,26 @@ function Runtime.backtrack(state)
   if n == 0 then return false end
   local cp = state.cps[n]
   if cp == nil then return false end
+  if cp.kind == "indexed_atom_fact2" then
+    while #state.trail > cp.trail_len do
+      local name = table.remove(state.trail)
+      state.bindings[name] = nil
+    end
+    state.regs = Runtime.copy_table(cp.regs)
+    state.cp = cp.cp
+    state.var_counter = cp.var_counter
+    state.mode = cp.mode
+    state.build_stack = cp.build_stack or {}
+    local value = table.remove(cp.values, 1)
+    if #cp.values == 0 then table.remove(state.cps) end
+    local atom = V.Atom(Runtime.intern(cp.table, value))
+    if Runtime.unify(state, Runtime.get_reg(state, 2), atom) ~= true then
+      return Runtime.backtrack(state)
+    end
+    state.pc = cp.next_pc
+    state.halt = false
+    return true
+  end
   if cp.kind == "aggregate" then
     table.remove(state.cps)
     while #state.trail > cp.trail_len do
@@ -380,6 +416,36 @@ end
 
 local function call_key(instr)
   return instr.pred .. "/" .. tostring(instr.arity)
+end
+
+local function call_indexed_atom_fact2(program, state, instr)
+  local key_term = Runtime.deref(state, Runtime.get_reg(state, 1))
+  if type(key_term) ~= "table" or key_term.tag ~= "atom" then return false end
+  local key = Runtime.string_of(program.intern_table, key_term.id)
+  local values = program.indexed_atom_fact2
+      and program.indexed_atom_fact2[instr.pred]
+      and program.indexed_atom_fact2[instr.pred][key]
+  if values == nil or #values == 0 then return false end
+  if #values > 1 then
+    local rest = {}
+    for i = 2, #values do rest[#rest + 1] = values[i] end
+    table.insert(state.cps, {
+      kind = "indexed_atom_fact2",
+      next_pc = state.pc + 1,
+      regs = Runtime.copy_table(state.regs),
+      cp = state.cp,
+      trail_len = #state.trail,
+      var_counter = state.var_counter,
+      mode = state.mode,
+      build_stack = state.build_stack,
+      table = program.intern_table,
+      values = rest
+    })
+  end
+  local atom = V.Atom(Runtime.intern(program.intern_table, values[1]))
+  if Runtime.unify(state, Runtime.get_reg(state, 2), atom) ~= true then return false end
+  state.pc = state.pc + 1
+  return true
 end
 
 local function resolve_switch_cases(labels, cases)
@@ -581,6 +647,7 @@ function Runtime.step(program, state, instr)
     state.pc = target
     return true
   end
+  if op == "CallIndexedAtomFact2" then return call_indexed_atom_fact2(program, state, instr) end
   if op == "CallPc" then
     state.cp = state.pc + 1
     state.pc = instr.pc
