@@ -659,11 +659,24 @@ def compare_calibration(
     *,
     timing_drift_ratio: float = 1.50,
 ) -> CalibrationDrift:
+    return compare_calibration_rows(
+        calibration_rows_from_summaries(summaries),
+        baseline_rows,
+        timing_drift_ratio=timing_drift_ratio,
+    )
+
+
+def compare_calibration_rows(
+    fresh_rows: list[CalibrationArtifactRow],
+    baseline_rows: list[CalibrationArtifactRow],
+    *,
+    timing_drift_ratio: float = 1.50,
+) -> CalibrationDrift:
     critical: list[str] = []
     timing: list[str] = []
     fresh_by_key = {
-        (summary.workload, summary.scale): summary
-        for summary in summaries
+        (row.workload, row.scale): row
+        for row in fresh_rows
     }
     baseline_by_key = {
         (row.workload, row.scale): row
@@ -679,30 +692,37 @@ def compare_calibration(
         fresh = fresh_by_key[key]
         baseline = baseline_by_key[key]
         label = f"{fresh.workload}/{fresh.scale}"
-        fresh_resolved = parse_mode_summary(fresh.resolved_source_mode_summary)
         if fresh.output_agreement != "match":
             critical.append(f"{label}: fresh source-mode outputs {fresh.output_agreement}")
         if baseline.output_agreement != "match":
             critical.append(f"{label}: calibration baseline records output {baseline.output_agreement}")
-        if fresh_resolved.get("auto") != baseline.current_auto_resolved_source_mode:
+        if fresh.current_auto_resolved_source_mode != baseline.current_auto_resolved_source_mode:
             critical.append(
                 f"{label}: auto resolved source mode changed from "
-                f"{baseline.current_auto_resolved_source_mode} to {fresh_resolved.get('auto', '<missing>')}"
+                f"{baseline.current_auto_resolved_source_mode} "
+                f"to {fresh.current_auto_resolved_source_mode or '<missing>'}"
             )
         if fresh.source_registration_summary != baseline.source_registration_summary:
             critical.append(f"{label}: source registration shape changed")
 
-        if fresh.best_source_mode != baseline.observed_best_source_mode:
+        if (
+            fresh.observed_best_source_mode != baseline.observed_best_source_mode
+            and _best_mode_change_exceeds_threshold(
+                baseline.observed_auto_vs_best,
+                fresh.observed_auto_vs_best,
+                timing_drift_ratio,
+            )
+        ):
             timing.append(
                 f"{label}: best source mode changed from "
-                f"{baseline.observed_best_source_mode} to {fresh.best_source_mode}"
+                f"{baseline.observed_best_source_mode} to {fresh.observed_best_source_mode}"
             )
         _append_ratio_drift(
             timing,
             label,
             "auto_vs_best",
             baseline.observed_auto_vs_best,
-            fresh.auto_vs_best,
+            fresh.observed_auto_vs_best,
             timing_drift_ratio,
         )
         baseline_medians = parse_mode_summary(baseline.median_summary)
@@ -718,6 +738,22 @@ def compare_calibration(
             )
 
     return CalibrationDrift(critical=critical, timing=timing)
+
+
+def _best_mode_change_exceeds_threshold(
+    baseline_auto_vs_best: str,
+    fresh_auto_vs_best: str,
+    threshold: float,
+) -> bool:
+    ratios = [
+        ratio
+        for ratio in (
+            parse_ratio(baseline_auto_vs_best),
+            parse_ratio(fresh_auto_vs_best),
+        )
+        if ratio is not None
+    ]
+    return not ratios or max(ratios) >= threshold
 
 
 def _calibration_key_sort_key(key: tuple[str, str]) -> tuple[str, tuple[int, object]]:
@@ -930,19 +966,20 @@ def main() -> int:
     if not summaries:
         raise SystemExit("no supported workload/scale combinations selected")
 
+    calibration_rows: list[CalibrationArtifactRow]
     if args.stability_runs > 1:
         stability_summaries = summarize_stability(sweep_runs)
+        calibration_rows = calibration_rows_from_stability(stability_summaries, sweep_runs)
         if args.format == "calibration-tsv":
-            print_calibration_tsv(
-                calibration_rows_from_stability(stability_summaries, sweep_runs)
-            )
+            print_calibration_tsv(calibration_rows)
         elif args.format == "markdown":
             print_stability_markdown(stability_summaries)
         else:
             print_stability_tsv(stability_summaries)
     else:
+        calibration_rows = calibration_rows_from_summaries(summaries)
         if args.format == "calibration-tsv":
-            print_calibration_tsv(calibration_rows_from_summaries(summaries))
+            print_calibration_tsv(calibration_rows)
         elif args.format == "markdown":
             print_markdown(summaries)
         else:
@@ -955,26 +992,24 @@ def main() -> int:
     )
     if args.compare_calibration:
         baseline_rows = load_calibration_artifact(args.calibration_artifact)
-        for run_index, run_summaries in enumerate(sweep_runs, start=1):
-            fresh_keys = {
-                (summary.workload, summary.scale)
-                for summary in run_summaries
-            }
-            selected_baseline_rows = [
-                row
-                for row in baseline_rows
-                if (row.workload, row.scale) in fresh_keys
-            ]
-            drift = compare_calibration(
-                run_summaries,
-                selected_baseline_rows,
-                timing_drift_ratio=args.timing_drift_ratio,
-            )
-            prefix = f"run {run_index}: " if args.stability_runs > 1 else ""
-            for warning in drift.timing:
-                print(f"WARNING: calibration timing drift: {prefix}{warning}", file=sys.stderr)
-            for failure in drift.critical:
-                failures.append(f"calibration drift: {prefix}{failure}")
+        fresh_keys = {
+            (row.workload, row.scale)
+            for row in calibration_rows
+        }
+        selected_baseline_rows = [
+            row
+            for row in baseline_rows
+            if (row.workload, row.scale) in fresh_keys
+        ]
+        drift = compare_calibration_rows(
+            calibration_rows,
+            selected_baseline_rows,
+            timing_drift_ratio=args.timing_drift_ratio,
+        )
+        for warning in drift.timing:
+            print(f"WARNING: calibration timing drift: {warning}", file=sys.stderr)
+        for failure in drift.critical:
+            failures.append(f"calibration drift: {failure}")
     if failures:
         for failure in failures:
             print(f"ERROR: {failure}", file=sys.stderr)
