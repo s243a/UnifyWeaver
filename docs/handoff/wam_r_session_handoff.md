@@ -134,11 +134,35 @@ roughly priority order:
    `fact_source_loader_call/4` clause for the new Spec shape **plus** a
    parallel `WamRuntime$lmdb_fact_dispatch` to skip the in-memory tuple
    list, since materialising every key defeats the point.
-2. **Performance profiling + targeted optimization.** First PR should
-   add `Rprof` instrumentation around `wam_r_fact_source_bench.pl` and
-   identify a single hot path; subsequent PRs each fix one bottleneck.
-   Tagged-list `$tag` access and env-based register lookups are likely
-   suspects.
+2. **Replace `state$regs2` env with an integer-indexed vector / list.**
+   The Rprof instrumentation that just landed (see
+   `tests/benchmarks/wam_r_fact_source_bench.pl --profile` and the
+   "Rprof profile" subsection in `WAM_R_TARGET.md`) shows the
+   register-access machinery -- `get_reg` + `put_reg` + the
+   `as.character(idx)` / `exists(key, envir)` / `assign(key, val,
+   envir)` calls they make against the env-keyed `state$regs2` -- is
+   ~15-18% of total runtime on the WAM backend, and the underlying R
+   builtins themselves (`exists`, `as.character`, `assign`) account
+   for ~12% of self-time on top of `get_reg` / `put_reg`'s 16%.
+   Register indices are dense small integers (A: 1..100, X: 101..200,
+   Y: 201..~256), so an integer-indexed list (or a preallocated
+   vector) eliminates the string conversion + env hash-lookup per
+   access. CP / TryMeElse / Allocate snapshots of `state$regs2` need
+   to switch to list-copy semantics. Per-frame Y storage (`frame$ys`)
+   stays as is or moves to the same data structure. Should be a
+   single, contained PR with a clear before/after measurement via
+   the same `--profile` mode.
+
+   Other bottlenecks the same profile flagged, in priority order:
+   - `WamRuntime$step` (22% self): the big `switch(op_name, ...)`. A
+     per-instruction closure-based dispatch could shave this; bigger
+     refactor though.
+   - `WamRuntime$deref` (5.6% self / 25.6% total): same env-keyed
+     `state$bindings` lookup pattern as regs2; fixing one informs
+     the other.
+   - `WamRuntime$new_state` (5.1% self): re-allocates a full state
+     env on every `run_predicate` call. A pooled state would amortise
+     over the bench's tight loop, less impactful in real workloads.
 3. **Mode analysis (start).** Big multi-PR effort. Phase 1 collects
    mode info per predicate (in/out per arg); Phase 2 wires it to
    specialised emission (skip unifications when the mode says the slot

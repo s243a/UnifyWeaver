@@ -794,6 +794,50 @@ cross-target parser source remains valuable as the canonical spec
 and as the parser-of-record for any future target that doesn't
 have a hand-written inline path.
 
+### Rprof profile of the WAM stepping engine
+
+The fact-source bench has a `--profile` mode that drives the
+generated program via a small `profile_runner.R` (auto-written
+into the project on first use). The runner sources
+`generated_program.R` (which is a no-op for its main block since
+`sys.nframe() == 0L` is false), warms up, then runs the predicate
+N times under `Rprof()` and prints the top 25 hotspots from
+`summaryRprof()$by.self`.
+
+```bash
+swipl -g main -t halt tests/benchmarks/wam_r_fact_source_bench.pl \
+    -- --profile 100 --inner 100000
+```
+
+Representative hotspots for the WAM backend, single-row `cp(c0, X)`
+query against a 100-row chain, 100000 iterations (R 4.4):
+
+```
+  function                                       self.s  %self  total.s   %tot
+  WamRuntime$step                                 1.670  21.7%    3.850  49.9%
+  WamRuntime$run                                  0.910  11.8%    4.780  62.0%
+  WamRuntime$get_reg                              0.820  10.6%    1.510  19.6%
+  WamRuntime$deref                                0.430   5.6%    1.970  25.6%
+  exists                                          0.400   5.2%    0.400   5.2%
+  WamRuntime$put_reg                              0.390   5.1%    0.760   9.9%
+  WamRuntime$new_state                            0.390   5.1%    0.550   7.1%
+  WamRuntime$run_predicate                        0.340   4.4%    7.590  98.4%
+  as.character                                    0.260   3.4%    0.260   3.4%
+  assign                                          0.230   3.0%    0.230   3.0%
+```
+
+The pattern: per-instruction `step` dispatch (~22% self) plus the
+register-access machinery (`get_reg` + `put_reg` + the env-key
+plumbing they call -- `as.character`, `exists`, `assign`, `get`) is
+the bulk of the runtime, with a long tail in `deref` and
+`new_state`. Concretely, every `get_reg` / `put_reg` call does
+`as.character(idx)` -> `exists(key, envir)` (or `assign`) on
+`state$regs2`, which is an env keyed by stringified register
+indices. Replacing `state$regs2` with an integer-indexed list
+(or a preallocated vector for the dense small register-index
+range) is the most directly actionable single optimisation; that's
+the next planned PR (handoff item #2 follow-up).
+
 When adding a builtin:
 
 1. Implement it in `WamRuntime$call_builtin` (if the WAM compiler
