@@ -1965,6 +1965,46 @@ test_cache_strategy_auto_overrides_explicit_demand_bfs_mode :-
     ;   fail_test(Test, 'cache_strategy auto did not override explicit demand_bfs_mode')
     ).
 
+test_cache_strategy_footprint_guard_overrides_in_memory :-
+    %% Cold-regime case: cost_model would recommend scan → in_memory
+    %% (high selection ratio), but R_free < W means the in_memory
+    %% IntMap can't actually fit. Guard must override to cursor.
+    %% Inputs: 9.9M facts × 50 bytes/edge = 495 MB; wsf=0.05 → K=495k;
+    %% R_free=125 MB; K_cross at f_hot=0.25 ≈ 4k → scan picked first,
+    %% then footprint guard kicks in because 495 MB > 125 MB.
+    Test = 'WAM-Haskell: cache_strategy(auto) footprint guard overrides in_memory when W > R_free',
+    (   wam_haskell_target:resolve_auto_cache_strategy(
+            [cache_strategy(auto),
+             fact_count(9900000),
+             working_set_fraction(0.05),
+             db_size_bytes(495000000),
+             mem_available_bytes(125000000)],
+            R),
+        memberchk(demand_bfs_mode(cursor), R),
+        \+ memberchk(demand_bfs_mode(in_memory), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'footprint guard did not override in_memory when R_free < W')
+    ).
+
+test_cache_strategy_footprint_guard_inactive_in_hot_regime :-
+    %% Hot regime: cost_model recommends scan → in_memory and the
+    %% working set fits. Guard must NOT fire — in_memory stays.
+    %% 297k facts × 50 = 15 MB DB; wsf=0.5 → K=148k; R_free=16 GB
+    %% (W << R_free). K well above K_cross → scan → in_memory; guard
+    %% inactive because 15 MB < 16 GB.
+    Test = 'WAM-Haskell: cache_strategy(auto) footprint guard does NOT fire when W <= R_free',
+    (   wam_haskell_target:resolve_auto_cache_strategy(
+            [cache_strategy(auto),
+             fact_count(297000),
+             working_set_fraction(0.5),
+             db_size_bytes(15000000),
+             mem_available_bytes(16000000000)],
+            R),
+        memberchk(demand_bfs_mode(in_memory), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'footprint guard incorrectly fired in hot regime')
+    ).
+
 test_b1_lmdb_dupsort_per_thread_cursor :-
     Test = 'B1: dupsort layout uses per-thread cursor cache',
     (   compile_wam_runtime_to_haskell(
@@ -2396,6 +2436,8 @@ run_tests :-
     test_cache_strategy_auto_tiny_selection_picks_cursor,
     test_cache_strategy_absent_leaves_options_unchanged,
     test_cache_strategy_auto_overrides_explicit_demand_bfs_mode,
+    test_cache_strategy_footprint_guard_overrides_in_memory,
+    test_cache_strategy_footprint_guard_inactive_in_hot_regime,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)
