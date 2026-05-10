@@ -628,13 +628,14 @@ WamRuntime$run(shared_program, state)
   family is intentionally lenient (accepts ints/floats with their
   decimal name) to compensate. To round-trip an atom-of-digits
   reliably, build it via `atom_codes/2`.
-- **`retract/1` snapshot semantics**. `retract/1` is multi-solution
-  via an iter-CP, but the iteration walks a snapshot of the clause
-  list captured at the original call -- so clauses asserted *during*
-  the iteration are not retracted by the same `retract/1` call.
-  Removed clauses are matched against the live store by object
-  identity, so concurrent retracts/asserts of unrelated clauses
-  don't disturb the iteration order.
+- **`retract/1` immediate-update view**. `retract/1` is multi-solution
+  via an iter-CP, and the iteration reads the live clause list afresh
+  on every retry. Clauses asserted *during* the iteration are visible
+  to subsequent solutions; clauses already retracted (or retracted by
+  another call mid-iteration) are simply skipped. This deliberately
+  diverges from SWI's logical-update view (which would hide mid-
+  iteration asserts); see `streams_multiline_read_e2e_rscript`-adjacent
+  `multi_solution_retract_e2e_rscript` for the locked-in test case.
 - **Full ISO/SWI compatibility for every `bagof/3` / `setof/3` edge**.
   The runtime now groups non-existential free variables and enumerates
   additional witness groups on backtracking, but unusual attributed-var

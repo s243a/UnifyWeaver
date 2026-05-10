@@ -182,14 +182,47 @@ roughly priority order:
    inside a quoted atom / string / unclosed compound and reading
    continues. EOF on an empty buffer still binds `end_of_file`.
    Covered by `streams_multiline_read_e2e_rscript`.
-5. **Multi-solution `retract/1` ignoring snapshot.** I.e. re-read the
-   live clause list on each backtrack. Trickier semantics; document
-   carefully if pursued.
-6. **Phase-3 lowered emitter expansion.** Currently handles only
+5. ~~**Multi-solution `retract/1` ignoring snapshot.**~~ *Done.*
+   `retract_iter` now reads `program$dynamic[[ck]]` afresh on every
+   retry; the prior snapshot of the clause list is gone. Asserts
+   that happen between retract solutions become visible to
+   subsequent solutions (immediate-update view -- a deliberate
+   divergence from SWI's logical-update view, locked in by the
+   `msr_live_assert` sub-test). Implementing this also surfaced and
+   fixed a pre-existing bug in `assertz/1` / `asserta/1`: the
+   stored clause kept references to the caller's term nodes
+   directly, so a backtrack that undid the caller's bindings would
+   leave stored clauses with unbound args. Both predicates now
+   `copy_term` their head args + body before storing.
+
+   Surfaced but **not** fixed in this PR: the WAM compiler's
+   `compile_inner_call_goals` (used by `compile_disjunction`'s
+   left/right branches and a few other inner-conjunction sites)
+   does not recurse for nested if-then-else (`(C -> T ; E)`) inside
+   a conjunction body -- it falls through to a generic
+   `compile_goal_call` and ends up emitting `Call(";", 2)`, which
+   has no runtime implementation and just fails. So
+   `findall(X, (retract(...), (X > 0 -> Y is X+1 ; true)), L)`
+   silently produces `L = []`. Workaround: hoist the inner ITE out
+   of the conjunction (e.g., via a helper predicate) or replace
+   it with explicit disjunction. Filed as a separate item:
+6. **Nested if-then-else inside conjunction bodies.**
+   `src/unifyweaver/targets/wam_target.pl :: compile_inner_call_goals/4`
+   loops over each goal calling `compile_goal_call`, never recursing
+   into `compile_if_then_else` / `compile_disjunction` for nested
+   `(C -> T ; E)` / `(A ; B)` sub-goals. As a result, an inner ITE
+   in a disjunction-left branch or an aggregate body emits as
+   `Call(";", 2)` (with the term constructed as data via
+   PutStructure / SetConstant), which has no runtime handler and
+   just fails. Fix: have `compile_inner_call_goals` dispatch on
+   `(C -> T ; E)` / `(A ; B)` exactly like the outer
+   `compile_goals` does. Tests covering inner ITE inside a
+   `findall(...)` body would catch this; none exist today.
+7. **Phase-3 lowered emitter expansion.** Currently handles only
    `deterministic` and `multi_clause_1` shapes. Could grow N-clause
    general lowering; would compete with the kernel / fact-table paths
    so the value is unclear.
-7. **Range / interval indexes** on fact tables. Per-arg hash indexes
+8. **Range / interval indexes** on fact tables. Per-arg hash indexes
    land queries with ground atom/int args; range queries (`X > 5`,
    `X between A B`) still go through the per-tuple scan. A sorted-
    per-arg index would route these. Niche but a natural extension.

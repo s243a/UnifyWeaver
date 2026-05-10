@@ -2130,22 +2130,49 @@ WamRuntime$dynamic_iter <- function(program, state, clauses, start_idx, arity, r
   FALSE
 }
 
-# Multi-solution retract/1. Walks `snapshot` (the clause list captured
-# at the original retract call) from `start_idx`, trying each clause
-# against the caller's pattern (head_args + optional body). On the
-# first match, the matching clause is deleted from the live store
-# (matched by object identity, since the live store may have been
-# mutated since the snapshot) and -- if more snapshot entries remain
-# -- an iter CP is pushed so backtracking re-enters the iteration at
-# `idx + 1` and re-binds the caller's pattern against that next
-# match. The captured snapshot is value-stable: asserts/retracts that
-# happen during the iteration don't perturb the order, and clauses
-# already retracted are simply skipped on subsequent identity checks.
+# Multi-solution retract/1, live-store iteration (immediate-update
+# view). Unlike `clause/2` -- which captures a snapshot of the
+# dynamic store at the original call and walks it -- retract/1 reads
+# `program$dynamic[[ck]]` afresh on every iteration. Concretely:
+#
+#   1. Reads the current live list each call (initial + every retry).
+#   2. Walks it from index 1 looking for the first clause whose
+#      head args (and optional body) unify with the caller's pattern.
+#   3. On match: deletes that clause from the live list (matching
+#      *by index* in the just-read list, not by identity) and pushes
+#      an iter-CP whose `retry` re-enters this same function. On
+#      backtrack, that retry re-reads the (now-mutated) live list
+#      and looks for the next match.
+#
+# Why live and not snapshot? Asserts that happen between retract
+# solutions become visible to subsequent solutions; the user
+# program's view of the dynamic store stays "current". This is a
+# deliberate divergence from SWI's logical-update view (which would
+# hide mid-iteration asserts). The `multi_solution_retract_live_*`
+# tests cover the assert-during-retract case to lock in this choice.
+#
+# Performance vs snapshot: snapshot was O(N) to copy the clause list
+# at the first call plus O(N) per match (identity scan to find the
+# matched clause in live for deletion). Live is O(1) extra per
+# iteration (no snapshot copy, direct index-based delete) but
+# re-scans non-matching clauses on each retry, so net is similar
+# (O(N*K) where K is the number of matches) with a smaller constant
+# in the snapshot-copy direction and a larger constant on the
+# scanning side.
+#
+# Pushing a CP unconditionally on each successful match (rather
+# than only when more candidates remain) is intentional: with live
+# iteration we can't cheaply tell whether more matches exist
+# without scanning, and a no-match retry just returns FALSE which
+# triggers another backtrack -- no semantic difference, only one
+# extra CP frame on the stack.
 WamRuntime$retract_iter <- function(program, state, head_args, body, arity,
-                                     ck, snapshot, start_idx, resume_pc) {
-  if (start_idx > length(snapshot)) return(FALSE)
-  for (idx in seq.int(start_idx, length(snapshot))) {
-    cl <- snapshot[[idx]]
+                                     ck, resume_pc) {
+  if (!exists(ck, envir = program$dynamic, inherits = FALSE)) return(FALSE)
+  live <- get(ck, envir = program$dynamic, inherits = FALSE)
+  if (length(live) == 0L) return(FALSE)
+  for (idx in seq_along(live)) {
+    cl <- live[[idx]]
     if (length(cl$head_args) != arity) next
     snap_trail <- length(state$trail)
     snap_vc    <- state$var_counter
@@ -2160,46 +2187,33 @@ WamRuntime$retract_iter <- function(program, state, head_args, body, arity,
       ok <- WamRuntime$unify(state, body, fresh$body)
     }
     if (ok) {
-      # Remove the matched clause from the live store. Identity match
-      # rather than index, because the store may have been mutated.
-      if (exists(ck, envir = program$dynamic, inherits = FALSE)) {
-        live <- get(ck, envir = program$dynamic, inherits = FALSE)
-        for (li in seq_along(live)) {
-          if (identical(live[[li]], cl)) {
-            new_live <- if (length(live) == 1L) list() else live[-li]
-            assign(ck, new_live, envir = program$dynamic)
-            break
-          }
+      # Remove the matched clause from the live store. We just read
+      # `live` so `idx` is valid in it; assign the modified list back.
+      new_live <- if (length(live) == 1L) list() else live[-idx]
+      assign(ck, new_live, envir = program$dynamic)
+      captured_head_args <- head_args
+      captured_body      <- body
+      captured_arity     <- arity
+      captured_ck        <- ck
+      captured_resume    <- resume_pc
+      captured_program   <- program
+      cp <- list(
+        kind        = "iter",
+        regs        = state$regs2,
+        trail_len   = snap_trail,
+        cp          = state$cp,
+        var_counter = snap_vc,
+        mode        = state$mode,
+        build_stack = state$build_stack,
+        resume_pc   = resume_pc,
+        retry       = function(state) {
+          WamRuntime$retract_iter(captured_program, state,
+                                   captured_head_args, captured_body,
+                                   captured_arity, captured_ck,
+                                   captured_resume)
         }
-      }
-      if (idx < length(snapshot)) {
-        captured_head_args <- head_args
-        captured_body      <- body
-        captured_arity     <- arity
-        captured_ck        <- ck
-        captured_snapshot  <- snapshot
-        captured_next_idx  <- idx + 1L
-        captured_resume    <- resume_pc
-        captured_program   <- program
-        cp <- list(
-          kind        = "iter",
-          regs        = state$regs2,
-          trail_len   = snap_trail,
-          cp          = state$cp,
-          var_counter = snap_vc,
-          mode        = state$mode,
-          build_stack = state$build_stack,
-          resume_pc   = resume_pc,
-          retry       = function(state) {
-            WamRuntime$retract_iter(captured_program, state,
-                                     captured_head_args, captured_body,
-                                     captured_arity, captured_ck,
-                                     captured_snapshot, captured_next_idx,
-                                     captured_resume)
-          }
-        )
-        state$cps <- c(state$cps, list(cp))
-      }
+      )
+      state$cps <- c(state$cps, list(cp))
       return(TRUE)
     }
     WamRuntime$undo_trail_to(state, snap_trail)
@@ -5529,8 +5543,17 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
 
   # ----- assertz/1, asserta/1: add a clause to the dynamic store -----
   # The arg is either a Head (fact) or a `:-`/2(Head, Body) struct.
-  # We split it via split_clause and store a fresh copy of the args
-  # so subsequent unification doesn't see leaked bindings.
+  # We split it via split_clause, then copy_term the args + body so
+  # the stored clause is independent of the caller's bindings. Any
+  # ground-at-assert-time vars stay frozen at their values; any
+  # still-unbound vars become fresh, unrelated to the caller's
+  # var nodes (so a backtrack that undoes the caller's bindings
+  # doesn't unbind the stored copy). Without this, an assertz
+  # inside a fail-driven loop -- e.g.
+  #   ( retract(m(X)), assertz(seen(X)), fail ; true )
+  # would store seen(X) where X is the live ref bound to the
+  # current retract solution; the trail-undo on backtrack would
+  # then leave the stored seen/1 clauses with unbound args.
   if (key == "assertz/1" || key == "asserta/1") {
     raw <- WamRuntime$get_reg(state, 1L)
     parts <- WamRuntime$split_clause(state, raw, table)
@@ -5539,7 +5562,12 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     cur <- if (exists(ck, envir = program$dynamic, inherits = FALSE))
              get(ck, envir = program$dynamic, inherits = FALSE)
            else list()
-    new_clause <- list(head_args = parts$head_args, body = parts$body)
+    mapping <- new.env(parent = emptyenv())
+    copied_head_args <- lapply(parts$head_args, function(a)
+      WamRuntime$copy_term_walk(state, a, mapping))
+    copied_body <- if (is.null(parts$body)) NULL
+                   else WamRuntime$copy_term_walk(state, parts$body, mapping)
+    new_clause <- list(head_args = copied_head_args, body = copied_body)
     if (key == "assertz/1") {
       assign(ck, c(cur, list(new_clause)), envir = program$dynamic)
     } else {
@@ -5550,20 +5578,18 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
 
   # ----- retract/1: remove a matching clause; multi-solution -----
   # Bindings made by the unification persist on success (standard
-  # Prolog semantics). On backtracking, retract_iter scans the rest
-  # of the snapshot taken at the original call and removes the next
-  # matching clause; when the snapshot is exhausted, backtracking
-  # continues outward as failure.
+  # Prolog semantics). retract_iter reads `program$dynamic[[ck]]`
+  # afresh on every retry, so asserts that happen between solutions
+  # become visible to subsequent solutions (immediate-update view --
+  # see retract_iter's leading comment for why).
   if (key == "retract/1") {
     raw <- WamRuntime$get_reg(state, 1L)
     parts <- WamRuntime$split_clause(state, raw, table)
     if (is.null(parts)) return(FALSE)
     ck <- paste0(parts$pred, "/", parts$arity)
-    if (!exists(ck, envir = program$dynamic, inherits = FALSE)) return(FALSE)
-    snapshot <- get(ck, envir = program$dynamic, inherits = FALSE)
     return(WamRuntime$retract_iter(program, state,
                                     parts$head_args, parts$body, parts$arity,
-                                    ck, snapshot, 1L, state$pc + 1L))
+                                    ck, state$pc + 1L))
   }
 
   # ----- abolish/1: drop all clauses for Name/Arity -----
