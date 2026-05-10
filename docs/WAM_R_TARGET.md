@@ -713,7 +713,7 @@ Coverage map (e2e tests, by feature group):
 | `op_3_runtime_e2e_rscript` | runtime `op/3` builtin: add infix / prefix custom ops, xfy right-associativity, `op(0, ...)` removal, `current_op/3` enumeration |
 | `op_3_decl_e2e_rscript` | codegen `r_op_decls([op(P, T, N), ...])` option seeds the operator table at program init; covers atom-name and list-of-names forms |
 | `multi_solution_retract_e2e_rscript` | multi-solution `retract/1` via iter-CP |
-| `bagof_setof_existential_e2e_rscript` | `^/2` existential scope and first witness grouping in `bagof`/`setof`; `findall` caret transparency |
+| `bagof_setof_existential_e2e_rscript` | `^/2` existential scope, witness grouping/backtracking in `bagof`/`setof`, and compiled `findall` over runtime grouped aggregators |
 | `cli_arg_parser_e2e_rscript` | structured CLI args (lists, structs, expressions) parse via the runtime parser |
 | `base_name_clash_e2e_rscript` | predicates named after base R functions (`c`, `t`, `q`, `cat`) don't shadow them |
 | `read_term_clause_e2e_rscript` | `read_term_from_atom/2,3` and multi-solution `clause/2` |

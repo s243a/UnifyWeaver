@@ -2180,6 +2180,18 @@ e2e_bagof_setof_existential_via_rscript :-
         setof(X, jj(X, Y), L),
         Y == b,
         L == [2])),
+    % Nested compiled findall around runtime bagof/setof: compound
+    % findall template vars must not alias the inner call's A-register
+    % temporaries.
+    assertz((user:be_findall_bagof_groups :-
+        assertz(kk(1, a)), assertz(kk(2, b)),
+        findall(Y-L, bagof(X, kk(X, Y), L), Groups),
+        Groups == [a-[1], b-[2]])),
+    assertz((user:be_findall_setof_groups :-
+        assertz(ll(3, a)), assertz(ll(1, a)), assertz(ll(3, a)),
+        assertz(ll(2, b)),
+        findall(Y-L, setof(X, ll(X, Y), L), Groups),
+        Groups == [a-[1, 3], b-[2]])),
     unique_r_tmp_dir('tmp_r_caret_e2e', TmpDir),
     write_wam_r_project(
         [ user:be_bagof_basic/0, user:be_setof_basic/0,
@@ -2187,14 +2199,17 @@ e2e_bagof_setof_existential_via_rscript :-
           user:be_bagof_empty_no/0, user:be_bagof_group_first/0,
           user:be_setof_group_first/0,
           user:be_bagof_group_backtrack/0,
-          user:be_setof_group_backtrack/0 ],
+          user:be_setof_group_backtrack/0,
+          user:be_findall_bagof_groups/0,
+          user:be_findall_setof_groups/0 ],
         [],
         TmpDir),
     directory_file_path(TmpDir, 'R', RDir),
     Yes = [be_bagof_basic, be_setof_basic, be_nested_caret,
            be_findall_caret, be_bagof_group_first,
            be_setof_group_first, be_bagof_group_backtrack,
-           be_setof_group_backtrack],
+           be_setof_group_backtrack, be_findall_bagof_groups,
+           be_findall_setof_groups],
     No  = [be_bagof_empty_no],
     forall(member(P, Yes), (
         format(string(Q), '~w/0', [P]),

@@ -828,10 +828,12 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
 %% compile_compound_template(+Template, +V0, -Vf, -InitCode, -ConstructionCode)
 %  For findall(Functor(Arg1, Arg2, ...), Goal, L) with compound Template:
 %  - Each Arg is either a variable or a constant
-%  - Variables get Y-regs allocated (via allocate_var) so they have
-%    stable slots across the inner-goal call
-%  - InitCode emits put_variable Y_n, A_n for variables and
-%    put_constant for constants — fresh refs each iteration
+%  - Variables get Y-regs allocated (via allocate_var) and initialized
+%    directly so they have stable slots across the inner-goal call.
+%    Do not initialize through A-registers: those are scratch argument
+%    registers for the inner goal, and aliasing a template variable
+%    through A2 can bind it when the inner goal builds its own A2 term
+%    (for example findall(Y-L, bagof(X, p(X,Y), L), Groups)).
 %  - ConstructionCode emits put_structure + set_value/set_constant
 %    after the inner goal returns; A1 holds the heap ref to the
 %    constructed Template
@@ -853,13 +855,11 @@ compile_template_arg_init([], _, V, V, []).
 compile_template_arg_init([Arg | Rest], I, V0, Vf, Lines) :-
     (   var(Arg)
     ->  allocate_var(Arg, V0, V1, Reg),
-        format(string(Line), "    put_variable ~w, A~w", [Reg, I]),
+        format(string(Line), "    put_variable ~w, ~w", [Reg, Reg]),
         Lines = [Line | RestLines]
     ;   atomic(Arg)
     ->  V1 = V0,
-        quote_wam_constant(Arg, ArgStr),
-        format(string(Line), "    put_constant ~w, A~w", [ArgStr, I]),
-        Lines = [Line | RestLines]
+        Lines = RestLines
     ;   % Compound or other — not yet supported
         throw(error(unsupported_template_arg(Arg), compile_compound_template/5))
     ),
