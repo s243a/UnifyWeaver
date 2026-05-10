@@ -3578,6 +3578,53 @@ e2e_cut_ite_barrier_after_helper_via_rscript :-
     assertion(sub_string(Out, _, _, _, "true")),
     delete_directory_and_contents(TmpDir).
 
+% End-to-end: chained `(A -> B ; C -> D ; E)` if-then-else compiles
+% as nested cut_ite/try_me_else_ite pairs, so each branch dispatches
+% on its own Cond. Pre-fix, only the outermost `(A -> B ; rest)` was
+% recognised as an if-then-else; the inner `(C -> D ; E)` in Else
+% position emitted as `Call("->", 2)` (no runtime implementation),
+% so any input that should land on a non-first branch silently
+% failed.
+test(nested_if_then_else_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_nested_if_then_else_via_rscript
+    ;   true
+    )).
+
+e2e_nested_if_then_else_via_rscript :-
+    retractall(user:nite_classify/2),
+    retractall(user:nite_drv_one/0),
+    retractall(user:nite_drv_two/0),
+    retractall(user:nite_drv_three/0),
+    retractall(user:nite_drv_other/0),
+    % Three-way chain: matches arg 1 against 1, 2, 3 in order; falls
+    % through to "other". Each branch sets a distinct atom in arg 2.
+    assertz((user:nite_classify(X, Tag) :-
+        ( X =:= 1 -> Tag = one
+        ; X =:= 2 -> Tag = two
+        ; X =:= 3 -> Tag = three
+        ; Tag = other ))),
+    assertz((user:nite_drv_one   :- nite_classify(1, T), write(T), nl)),
+    assertz((user:nite_drv_two   :- nite_classify(2, T), write(T), nl)),
+    assertz((user:nite_drv_three :- nite_classify(3, T), write(T), nl)),
+    assertz((user:nite_drv_other :- nite_classify(7, T), write(T), nl)),
+    unique_r_tmp_dir('tmp_r_nested_ite_e2e', TmpDir),
+    write_wam_r_project([user:nite_classify/2,
+                         user:nite_drv_one/0, user:nite_drv_two/0,
+                         user:nite_drv_three/0, user:nite_drv_other/0],
+                        [], TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    run_rscript_query(RDir, 'nite_drv_one/0', Out1),
+    assertion(sub_string(Out1, _, _, _, "one")),
+    run_rscript_query(RDir, 'nite_drv_two/0', Out2),
+    assertion(sub_string(Out2, _, _, _, "two")),
+    run_rscript_query(RDir, 'nite_drv_three/0', Out3),
+    assertion(sub_string(Out3, _, _, _, "three")),
+    run_rscript_query(RDir, 'nite_drv_other/0', Out4),
+    assertion(sub_string(Out4, _, _, _, "other")),
+    delete_directory_and_contents(TmpDir).
+
 % ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------

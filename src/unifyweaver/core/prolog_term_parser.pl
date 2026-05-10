@@ -343,21 +343,14 @@ parse_atom_head(Name, R, OpTable, MaxPrec, Term, Env0, Env, Rest) :-
 parse_atom_head(Name, R, _, _, Name, Env, Env, R).
 
 % parse_args: comma-separated arg list inside `(...)`, max_prec 999 so the
-% top-level comma operator (1000) doesn't get folded in. Like
-% parse_op_loop and list_elem_continue, the post-arg dispatch uses
-% clause-level pattern matching rather than nested
-% `( A -> B ; C -> D )` -- the WAM compiler doesn't recursively
-% recognize Else as another if-then-else and emits the second ->/2
-% as a regular Call, which has no runtime implementation. Filed as
-% a separate compiler enhancement.
+% top-level comma operator (1000) doesn't get folded in.
 parse_args(Tokens, OpTable, [Arg|Rest], Env0, Env, RestOut) :-
     parse_expr(Tokens, OpTable, 999, Arg, Env0, Env1, Tokens1),
-    parse_args_continue(Tokens1, OpTable, Rest, Env1, Env, RestOut).
-
-parse_args_continue([tk_comma|Toks], OpTable, Rest, Env0, Env, RestOut) :-
-    !,
-    parse_args(Toks, OpTable, Rest, Env0, Env, RestOut).
-parse_args_continue([tk_rparen|RestOut], _, [], Env, Env, RestOut).
+    (   Tokens1 = [tk_comma|Tokens2]
+    ->  parse_args(Tokens2, OpTable, Rest, Env1, Env, RestOut)
+    ;   Tokens1 = [tk_rparen|RestOut]
+    ->  Rest = [], Env = Env1
+    ).
 
 % parse_list_body: handles `[]`, `[a, b, c]`, `[H|T]`. Element max_prec 999
 % (matches parse_args).
