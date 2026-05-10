@@ -131,6 +131,12 @@ summarize stable winners. Values above `1` report majority winners, winner
 counts, stable resolved `auto` modes, and per-mode median timings across the
 independent runs.
 
+Use `--format calibration-tsv` when refreshing
+`csharp_query_graph_source_mode_calibration.tsv`. Combined with
+`--stability-runs <n>`, it emits artifact-compatible rows whose median timing
+fields come from the independent-run stability summary instead of one noisy
+single run.
+
 Mixed-scale sweeps are filtered per workload. File-backed graph workloads can
 use `dev`, `300`, `1k`, `5k`, and `10k`; generated dependency-depth workloads
 use `300`, `1k`, `5k`, and `10k`. Unsupported workload/scale pairs are skipped
