@@ -468,12 +468,11 @@ test(simple_builtin_append_is_direct_lowered_in_prefix) :-
         WamCode = "test_append/3:\nbuiltin_call append/3, 3\nproceed\n",
         wam_clojure_lowerable(test_append/3, WamCode, deterministic),
         lower_predicate_to_clojure(test_append/3, WamCode, [], Code),
-        has(Code, "runtime/proper-list-items"),
-        has(Code, "runtime/list->term"),
+        has(Code, "runtime/apply-append-solution"),
         has(Code, "\"A1\""),
         has(Code, "\"A2\""),
         has(Code, "\"A3\""),
-        has(Code, "runtime/unify-values"),
+        has(Code, "inc (:pc"),
         assertion(\+ has(Code, "runtime/step"))
     )).
 
