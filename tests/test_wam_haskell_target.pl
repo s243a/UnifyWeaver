@@ -1878,6 +1878,93 @@ test_resolve_use_lmdb_auto_no_fact_count_false :-
     ;   fail_test(Test, 'auto without fact_count did not resolve to false')
     ).
 
+%% =================================================================
+%% Phase 2c: cache_strategy(auto) cost-model resolver
+%% =================================================================
+
+test_cache_strategy_auto_low_k_picks_in_memory :-
+    %% Small fact_count + ~5% wsf → K small. With huge mem_available
+    %% (forcing FHot=1 regime) and explicit constants pinning K_cross
+    %% near zero, force the model to pick `scan` → `in_memory`.
+    %% Concretely: 100k facts × 5MB DB × 1MB R_free → DB exceeds RAM,
+    %% but K=5000 vs K_cross at this regime puts us comfortably above
+    %% threshold; the resolver should map to in_memory.
+    Test = 'WAM-Haskell: cache_strategy(auto) at small selection picks in_memory',
+    (   wam_haskell_target:resolve_auto_cache_strategy(
+            [cache_strategy(auto),
+             fact_count(100),
+             working_set_fraction(0.5),
+             db_size_bytes(5000),
+             mem_available_bytes(16000000000)],
+            R),
+        memberchk(demand_bfs_mode(in_memory), R),
+        \+ memberchk(cache_strategy(auto), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'cache_strategy auto + small selection did not pick in_memory')
+    ).
+
+test_cache_strategy_auto_high_k_picks_in_memory_at_high_selection :-
+    %% Large fact_count + high working_set_fraction (touches >> K_cross)
+    %% → cost model says scan → in_memory.
+    Test = 'WAM-Haskell: cache_strategy(auto) at high selection picks in_memory',
+    (   wam_haskell_target:resolve_auto_cache_strategy(
+            [cache_strategy(auto),
+             fact_count(10000000),
+             working_set_fraction(0.5),
+             db_size_bytes(500000000),
+             mem_available_bytes(16000000000)],
+            R),
+        memberchk(demand_bfs_mode(in_memory), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'cache_strategy auto + high selection did not pick in_memory')
+    ).
+
+test_cache_strategy_auto_tiny_selection_picks_cursor :-
+    %% Large DB + tiny working_set_fraction (K << K_cross) → sort →
+    %% cursor. 10M facts × 0.0001 wsf = K=1000; K_cross at hot regime
+    %% on 500MB W is ~100k. So K << K_cross → sort → cursor.
+    Test = 'WAM-Haskell: cache_strategy(auto) at tiny selection picks cursor',
+    (   wam_haskell_target:resolve_auto_cache_strategy(
+            [cache_strategy(auto),
+             fact_count(10000000),
+             working_set_fraction(0.0001),
+             db_size_bytes(500000000),
+             mem_available_bytes(16000000000)],
+            R),
+        memberchk(demand_bfs_mode(cursor), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'cache_strategy auto + tiny selection did not pick cursor')
+    ).
+
+test_cache_strategy_absent_leaves_options_unchanged :-
+    %% No cache_strategy(auto) → resolver is a no-op. Existing
+    %% demand_bfs_mode (or its absence) flows through untouched.
+    Test = 'WAM-Haskell: resolve_auto_cache_strategy is a no-op without cache_strategy(auto)',
+    (   wam_haskell_target:resolve_auto_cache_strategy(
+            [fact_count(1000), demand_bfs_mode(in_memory)], R),
+        R == [fact_count(1000), demand_bfs_mode(in_memory)]
+    ->  pass(Test)
+    ;   fail_test(Test, 'resolve_auto_cache_strategy mutated options without cache_strategy(auto)')
+    ).
+
+test_cache_strategy_auto_overrides_explicit_demand_bfs_mode :-
+    %% cache_strategy(auto) takes precedence over an existing
+    %% demand_bfs_mode/1 entry — that's the whole point of opting in.
+    Test = 'WAM-Haskell: cache_strategy(auto) overrides explicit demand_bfs_mode',
+    (   wam_haskell_target:resolve_auto_cache_strategy(
+            [cache_strategy(auto),
+             demand_bfs_mode(in_memory),
+             fact_count(10000000),
+             working_set_fraction(0.0001),
+             db_size_bytes(500000000),
+             mem_available_bytes(16000000000)],
+            R),
+        memberchk(demand_bfs_mode(cursor), R),
+        \+ memberchk(demand_bfs_mode(in_memory), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'cache_strategy auto did not override explicit demand_bfs_mode')
+    ).
+
 test_b1_lmdb_dupsort_per_thread_cursor :-
     Test = 'B1: dupsort layout uses per-thread cursor cache',
     (   compile_wam_runtime_to_haskell(
@@ -2304,6 +2391,11 @@ run_tests :-
     test_resolve_use_lmdb_absent_unchanged,
     test_resolve_use_lmdb_auto_low_fact_count_false,
     test_resolve_use_lmdb_auto_no_fact_count_false,
+    test_cache_strategy_auto_low_k_picks_in_memory,
+    test_cache_strategy_auto_high_k_picks_in_memory_at_high_selection,
+    test_cache_strategy_auto_tiny_selection_picks_cursor,
+    test_cache_strategy_absent_leaves_options_unchanged,
+    test_cache_strategy_auto_overrides_explicit_demand_bfs_mode,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)
