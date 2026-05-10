@@ -59,6 +59,8 @@
              [analyze_predicate_purity/2]).
 :- use_module('../core/statistics',
              [select_cache_mode/2]).
+:- use_module('../core/cost_model',
+             [recommend_access_pattern/5, read_mem_available_bytes/1]).
 
 % Phase 3: the real lowerability check and emission helpers live in the
 % wam_haskell_lowered_emitter module. We reexport so existing callers can
@@ -2573,7 +2575,11 @@ write_wam_haskell_project(Predicates, Options0, ProjectDir) :-
     % BEFORE any downstream `option(use_lmdb(true), ...)` checks fire.
     % Auto consults ghc-pkg for the lmdb package + fact_count threshold;
     % see resolve_auto_use_lmdb/2.
-    resolve_auto_use_lmdb(Options0, Options),
+    resolve_auto_use_lmdb(Options0, Options1),
+    % Phase 2c: resolve cache_strategy(auto) into a concrete
+    % demand_bfs_mode/1 via cost_model:recommend_access_pattern/5.
+    % No-op when cache_strategy(auto) is absent.
+    resolve_auto_cache_strategy(Options1, Options),
 
     % Initialize the compile-time atom intern table with well-known atoms
     init_atom_intern_table,
@@ -3085,6 +3091,86 @@ resolve_auto_demand_bfs_mode(Options, Mode) :-
     ;   Mode = in_memory
     ).
 
+%% resolve_auto_cache_strategy(+Options0, -Options) is det.
+%
+%  Phase 2c opt-in resolver. When `cache_strategy(auto)` is set,
+%  consult cost_model:recommend_access_pattern/5 with workload
+%  metadata, then translate the pattern recommendation (sort/scan)
+%  into a concrete `demand_bfs_mode/1` option that downstream code
+%  already understands.
+%
+%  Inputs read from Options (with defaults):
+%
+%    - fact_count(N)              — total facts in the source DB
+%    - expected_query_count(M)    — anticipated number of queries
+%                                   (default: 1)
+%    - working_set_fraction(F)    — per-query touched fraction of facts
+%                                   (default: 0.05; i.e. each query
+%                                   touches ~5% of the data set)
+%    - db_size_bytes(B)           — bytes a full scan would touch
+%                                   (default: estimate as fact_count
+%                                   * 50 bytes/edge)
+%    - mem_available_bytes(R)     — override /proc/meminfo probe
+%                                   (default: probe MemAvailable;
+%                                   1 GB fallback on non-Linux)
+%    - cost_model_constants(L)    — override hardware constants list
+%                                   passed to cost_model
+%                                   (default: cost_model defaults)
+%    - cache_strategy_verbose(true) — emit a stderr trace of the
+%                                     decision (default: silent)
+%
+%  Output mapping:
+%
+%    cost_model says `sort` → demand_bfs_mode(cursor)
+%      (cursor BFS = per-key seek pattern)
+%    cost_model says `scan` → demand_bfs_mode(in_memory)
+%      (pre-load IntMap = sequential scan pattern)
+%
+%  Composes with `resolve_auto_demand_bfs_mode/2`: this resolver
+%  replaces any existing `demand_bfs_mode/1` term, so the downstream
+%  resolver sees a concrete value and is a no-op.
+%
+%  Behaviour unchanged when `cache_strategy(auto)` is absent.
+%
+%  See docs/design/CACHE_COST_MODEL_PHILOSOPHY.md and
+%  docs/design/WAM_PERF_OPTIMIZATION_LOG.md Phase M appendix #10.
+resolve_auto_cache_strategy(Options0, Options) :-
+    (   option(cache_strategy(auto), Options0)
+    ->  compute_cache_strategy_decision(Options0, BfsMode),
+        select(cache_strategy(auto), Options0, AfterStripStrategy),
+        exclude(=(demand_bfs_mode(_)), AfterStripStrategy, AfterStripBfs),
+        Options = [demand_bfs_mode(BfsMode) | AfterStripBfs]
+    ;   Options = Options0
+    ).
+
+compute_cache_strategy_decision(Options, BfsMode) :-
+    option(fact_count(FactCount), Options, 0),
+    option(expected_query_count(_QueryCount), Options, 1),
+    option(working_set_fraction(WSF), Options, 0.05),
+    (   option(db_size_bytes(DBSize), Options),
+        integer(DBSize), DBSize > 0
+    ->  WBytes = DBSize
+    ;   WBytes is FactCount * 50
+    ),
+    KKeys is integer(FactCount * WSF),
+    (   option(mem_available_bytes(R), Options),
+        integer(R), R > 0
+    ->  RFree = R
+    ;   catch(read_mem_available_bytes(RFree), _, RFree = 1_000_000_000)
+    ),
+    option(cost_model_constants(Constants), Options, []),
+    recommend_access_pattern(KKeys, WBytes, RFree, Constants, Pattern),
+    (   Pattern = sort
+    ->  BfsMode = cursor
+    ;   BfsMode = in_memory
+    ),
+    (   option(cache_strategy_verbose(true), Options)
+    ->  format(user_error,
+               '[WAM-Haskell] cache_strategy(auto): K=~w W=~w R_free=~w → ~w (~w)~n',
+               [KKeys, WBytes, RFree, Pattern, BfsMode])
+    ;   true
+    ).
+
 %% resolve_demand_filter_spec(+Options, -SpecHs)
 %  Pick the DemandFilterSpec literal to emit into Main.hs.
 %  Precedence:
@@ -3239,7 +3325,11 @@ build_predicate_loads(Predicates, Code) :-
     let allLabels = ~w', [CodeConcat, LabelUnion]).
 
 %% compile_wam_runtime_to_haskell(+Options, +DetectedKernels, -Code)
-compile_wam_runtime_to_haskell(Options, DetectedKernels, Code) :-
+compile_wam_runtime_to_haskell(Options0, DetectedKernels, Code) :-
+    % Phase 2c: resolve cache_strategy(auto) into a concrete
+    % demand_bfs_mode/1 BEFORE downstream code consults it. No-op
+    % when the option is absent.
+    resolve_auto_cache_strategy(Options0, Options),
     step_function_haskell(StepCode),
     backtrack_haskell(BacktrackCodeTemplate),
     run_loop_haskell(RunCode),
