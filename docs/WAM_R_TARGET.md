@@ -622,17 +622,30 @@ WamRuntime$run(shared_program, state)
   strictly less than the operator precedence. Symmetric with the
   existing prefix simplification. Documented; not a real-world
   blocker.
-- **Cut barrier scope**. The runtime's `!/0` and `CutIte` drop the
-  most-recent choice point, not the choice points created since the
-  current predicate's clause head. This is enough for cut in a
-  predicate whose body never calls another multi-clause predicate
-  before the cut, but loses cut-barrier semantics for any cut whose
-  preceding goals push CPs that aren't the predicate's own. The
-  cross-target Prolog parser (`src/unifyweaver/core/prolog_term_parser.pl`,
-  see `tests/test_prolog_term_parser_wam_r_compile.pl`) compiles
-  successfully but only its cut-free predicates execute correctly
-  end-to-end for this reason; full runtime equivalence with
-  `WamRuntime$parse_term` is gated on this fix.
+- **`CutIte` (soft cut) barrier scope**. `!/0` now truncates
+  `state$cps` back to the depth recorded at the predicate's call
+  site (Allocate stamps it onto the frame; backtrack restores the
+  scratch slot from the CP), so a cut in a clause body whose
+  preceding goals called multi-clause helpers commits correctly.
+  `CutIte` -- the soft-cut emitted for `( A -> B ; C )` -- still
+  drops only the most-recent choice point and would benefit from
+  the same per-construct barrier model. Predicates that need
+  if-then-else commit semantics today should factor the dispatch
+  into clause-level patterns (see `parse_op_loop`,
+  `parse_args_continue`, etc. in
+  `src/unifyweaver/core/prolog_term_parser.pl`).
+- **Y-register frame locality**. `state$regs2` is a single flat env
+  shared across all call frames, so a callee's `Y_n` writes to the
+  same slot as the caller's `Y_n`. `Allocate` saves the caller's
+  Y values and `Deallocate` restores them, which keeps register
+  state correct across the full caller-callee-caller path -- but
+  the WAM emit can read a Y register *after* `Deallocate` (e.g.
+  the `Term =.. [...]` after a `Call parse_args` in
+  `parse_atom_head`), expecting to see the body's value, not the
+  caller's restored value. That pattern silently reads the wrong
+  register. Real WAM emits use per-frame Y storage (each frame
+  has its own slot for Y_n); WAM-R will need the same. Documented
+  as the new follow-up gating the cross-target parser swap-in.
 - **WAM-text quoting collision**. The atom `'42'` and the integer
   `42` both serialise as `set_constant 42` in SWI's WAM emitter,
   so the codegen can't distinguish them. The runtime's `atom_*`
@@ -725,6 +738,8 @@ Coverage map (e2e tests, by feature group):
 | `external_fact_source_e2e_rscript` | external CSV fact sources via `r_fact_sources([source(P/A, file(...))])` |
 | `external_fact_source_grouped_tsv_e2e_rscript` | external grouped-by-first TSV fact sources (arity-2): `r_fact_sources([source(P/2, grouped_by_first(...))])` |
 | `op_3_postfix_e2e_rscript` | runtime postfix-operator support: `op(P, xf|yf, N)`, parser wraps primary as postfix struct, mixed infix+postfix, yf chaining, `current_op/3` enumeration, `op(0, ...)` removal |
+| `cut_barrier_after_helper_e2e_rscript` | `!/0` truncates `state$cps` to the predicate's call-site depth, dropping leftover CPs from multi-clause helpers and the predicate's own try-chain CP in one shot |
+| `stack_frame_cleanup_on_backtrack_e2e_rscript` | failed clauses' env frames get popped on backtrack via the CP's `stack_len` snapshot, so the outer predicate's `Deallocate` doesn't pop a stale frame and re-enter post-call code |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 

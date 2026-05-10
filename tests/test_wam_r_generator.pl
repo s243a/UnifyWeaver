@@ -3431,6 +3431,99 @@ e2e_external_fact_source_grouped_tsv_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end: cut barrier truncates state$cps back to the depth at the
+% predicate's call site, so a `!` in a clause body that has just
+% returned from a multi-clause helper drops both the helper's leftover
+% CP and the predicate's own try-chain CP. Pre-fix, `!/0` only popped
+% the most-recent CP, leaving alternatives alive whenever any inner
+% multi-clause goal sat between clause-head match and the cut.
+% Auto-skips when Rscript isn't on PATH.
+test(cut_barrier_after_helper_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_cut_barrier_after_helper_via_rscript
+    ;   true
+    )).
+
+e2e_cut_barrier_after_helper_via_rscript :-
+    retractall(user:cb_helper/1),
+    retractall(user:cb_caller/1),
+    retractall(user:cb_drv/0),
+    % cb_helper has three clauses, all succeed via head match. Its
+    % TryMeElse CP stays alive after clause 1 returns, exposing the
+    % old "drop-topmost" cut bug.
+    assertz(user:cb_helper(1)),
+    assertz(user:cb_helper(2)),
+    assertz(user:cb_helper(3)),
+    % cb_caller's clause 1 cut must commit to "selected 1": with proper
+    % cut-barrier scope it drops both cb_helper's CP and cb_caller's
+    % own try-chain CP, so a downstream backtrack (`fail`) must not
+    % land on cb_caller's clause 2 (the fallback) or re-enter the
+    % helper. Pre-fix, the runtime would print "selected 1" then fall
+    % through to "fallback" (or worse).
+    assertz((user:cb_caller(X) :-
+        cb_helper(X),
+        !,
+        write('selected '), write(X), nl)),
+    assertz((user:cb_caller(_) :-
+        write('fallback'), nl)),
+    % Driver: collect every solution and assert the result is a
+    % single "selected 1" line. No fallback, no second helper value.
+    assertz((user:cb_drv :-
+        ( cb_caller(_), fail ; true ))),
+    unique_r_tmp_dir('tmp_r_cut_barrier_e2e', TmpDir),
+    write_wam_r_project([user:cb_helper/1, user:cb_caller/1, user:cb_drv/0],
+                        [], TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    run_rscript_query(RDir, 'cb_drv/0', Out),
+    assertion(sub_string(Out, _, _, _, "selected 1")),
+    assertion(\+ sub_string(Out, _, _, _, "selected 2")),
+    assertion(\+ sub_string(Out, _, _, _, "selected 3")),
+    assertion(\+ sub_string(Out, _, _, _, "fallback")),
+    assertion(sub_string(Out, _, _, _, "true")),
+    delete_directory_and_contents(TmpDir).
+
+% End-to-end: each predicate's clauses Allocate per-clause (the WAM
+% emit's standard shape). Failed clauses leave stale env frames on
+% state$stack; before the fix, an outer Deallocate later popped a
+% stale frame and restored the wrong continuation pointer, silently
+% re-running post-call code. Backtrack now truncates state$stack
+% back to the depth recorded at the CP's TryMeElse, dropping
+% stale frames before the next clause's Allocate.
+test(stack_frame_cleanup_on_backtrack_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_stack_frame_cleanup_via_rscript
+    ;   true
+    )).
+
+e2e_stack_frame_cleanup_via_rscript :-
+    retractall(user:sf_pick/2),
+    retractall(user:sf_drv/0),
+    % sf_pick has three clauses each with a body (forces Allocate
+    % per clause). Clauses 1 and 2 reject via head guard; clause 3
+    % matches. Pre-fix, clauses 1 and 2 each leave a stale frame
+    % whose saved cp later mis-targets the runner.
+    assertz((user:sf_pick(a, X) :- X is 1)),
+    assertz((user:sf_pick(b, X) :- X is 2)),
+    assertz((user:sf_pick(c, X) :- X is 3)),
+    assertz((user:sf_drv :-
+        sf_pick(c, V),
+        write('value='), write(V), nl)),
+    unique_r_tmp_dir('tmp_r_stack_cleanup_e2e', TmpDir),
+    write_wam_r_project([user:sf_pick/2, user:sf_drv/0], [], TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    run_rscript_query(RDir, 'sf_drv/0', Out),
+    assertion(sub_string(Out, _, _, _, "value=3")),
+    assertion(sub_string(Out, _, _, _, "true")),
+    % Single line (post-frame-cleanup the runtime doesn't loop into
+    % stale post-call code).
+    split_string(Out, "\n", "", Lines),
+    include([L]>>( sub_string(L, _, _, _, "value=") ), Lines, ValueLines),
+    assertion(length(ValueLines, 1)),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
 test(r_wam_bindings_loads) :-

@@ -248,6 +248,17 @@ WamRuntime$new_state <- function() {
   s$mode        <- NULL
   s$build_stack <- list()
   s$read_stack  <- list()
+  # Cut barrier scratch. Set by Call / Execute right before jumping
+  # into the callee, captured by the callee's Allocate onto the new
+  # frame as `cps_barrier`. Read by `!/0` to truncate state$cps back
+  # to the depth that was current at the predicate's call site --
+  # i.e. drop ALL choice points created since the predicate was
+  # entered, including its own TryMeElse CP. Top-level predicates
+  # (entered via run_predicate, no Call instruction) see this as 0
+  # and their cut truncates to an empty cps stack, which matches
+  # "commit globally" -- correct, since there's no outer caller
+  # whose alternatives need preserving.
+  s$pending_call_barrier <- 0L
   s
 }
 
@@ -1209,8 +1220,16 @@ WamRuntime$step <- function(program, state, instr) {
           saved_ys[[k]] <- get(k, envir = state$regs2, inherits = FALSE)
         }
       }
+      # state$pending_call_barrier was set by the Call/Execute that
+      # routed us to this predicate's first instruction (or left at
+      # its initial 0 for a top-level run_predicate entry). Capture
+      # it onto the new frame so cut can truncate state$cps back to
+      # the depth at the call site -- i.e. drop every CP this
+      # predicate has created (including its own TryMeElse CP).
       state$stack <- c(state$stack,
-                       list(list(cp = state$cp, saved_ys = saved_ys)))
+                       list(list(cp = state$cp,
+                                 saved_ys = saved_ys,
+                                 cps_barrier = state$pending_call_barrier)))
       state$pc <- state$pc + 1L; TRUE
     },
     "Deallocate" = {
@@ -1248,6 +1267,10 @@ WamRuntime$step <- function(program, state, instr) {
       }
       tgt <- program$labels[[key]]
       if (!is.null(tgt)) {
+        # Snapshot the cut barrier for the callee: any CP it pushes
+        # (TryMeElse + later) is fair game for its `!/0`, but
+        # everything pushed before this Call belongs to outer frames.
+        state$pending_call_barrier <- length(state$cps)
         state$cp <- state$pc + 1L
         state$pc <- as.integer(tgt)
         return(TRUE)
@@ -1279,6 +1302,13 @@ WamRuntime$step <- function(program, state, instr) {
       }
       tgt <- program$labels[[key]]
       if (!is.null(tgt)) {
+        # Tail call: the caller has already Deallocated, so the callee
+        # is effectively a fresh predicate entry. Snapshot its cut
+        # barrier the same way Call does -- any CP the callee pushes
+        # is its own; everything currently on state$cps belongs to
+        # outer frames whose alternatives the callee's `!/0` must
+        # leave alone.
+        state$pending_call_barrier <- length(state$cps)
         state$pc <- as.integer(tgt)
         return(TRUE)
       }
@@ -1312,12 +1342,28 @@ WamRuntime$step <- function(program, state, instr) {
       state$pc <- state$cp; state$cp <- 0L; TRUE
     },
     "TryMeElse" = {
+      # Snapshot pending_call_barrier and state$stack length onto the
+      # CP. Two reasons:
+      #   - subsequent clauses of this predicate (reached via backtrack
+      #     -> RetryMeElse) must Allocate with the right cut barrier
+      #     value, even if the failed clause's body issued Calls that
+      #     left state$pending_call_barrier stale;
+      #   - each clause's Allocate pushes a new env frame, but failed
+      #     clauses never reach Deallocate. Without a stack-length
+      #     snapshot here, those stale frames pile up and the outer
+      #     predicate's Deallocate pops the wrong one (with the
+      #     wrong saved cp), which silently re-enters post-call code
+      #     after the predicate is supposed to have committed. Save
+      #     it now; backtrack truncates state$stack back to this
+      #     depth before jumping to the next clause.
       cp <- list(
-        next_pc      = program$labels[[instr$label]],
-        regs         = as.list.environment(state$regs2),
-        cp           = state$cp,
-        trail_len    = length(state$trail),
-        var_counter  = state$var_counter
+        next_pc       = program$labels[[instr$label]],
+        regs          = as.list.environment(state$regs2),
+        cp            = state$cp,
+        trail_len     = length(state$trail),
+        var_counter   = state$var_counter,
+        call_barrier  = state$pending_call_barrier,
+        stack_len     = length(state$stack)
       )
       state$cps <- c(state$cps, list(cp))
       state$pc <- state$pc + 1L; TRUE
@@ -3897,12 +3943,26 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
   if (pred == "true/0" && arity == 0L) return(TRUE)
   if (pred == "fail/0" && arity == 0L) return(FALSE)
 
-  # Cut (!/0): scaffold semantics drop the most recent choice point so
-  # the surrounding predicate's try-chain stops backtracking. A full
-  # cut-bar implementation tracks the depth at clause entry; a follow-up
-  # commit can replace this once the lowered emitter wants to honour it
-  # in nested-call positions.
+  # Cut (!/0): truncate state$cps back to the depth captured at the
+  # current predicate's call site (Allocate stamped this onto the
+  # topmost call frame as `cps_barrier`). This drops every CP this
+  # predicate has created -- including its own TryMeElse CP and any
+  # CPs left alive by multi-clause helpers it invoked before the
+  # cut. Falls back to the legacy "drop topmost CP" behaviour when
+  # no frame is on state$stack (rare: cut from a builtin handler
+  # called outside a Call/Allocate cycle), so existing call paths
+  # don't regress.
   if (pred == "!/0" && arity == 0L) {
+    sn <- length(state$stack)
+    if (sn > 0L) {
+      barrier <- state$stack[[sn]]$cps_barrier
+      if (!is.null(barrier)) {
+        if (length(state$cps) > barrier) {
+          state$cps <- state$cps[seq_len(barrier)]
+        }
+        return(TRUE)
+      }
+    }
     n <- length(state$cps)
     if (n > 0L) state$cps <- state$cps[-n]
     return(TRUE)
@@ -5375,6 +5435,21 @@ WamRuntime$backtrack <- function(state) {
   }
   state$cp <- cp$cp
   state$var_counter <- cp$var_counter
+  # Restore pending_call_barrier so the next clause's Allocate sees
+  # the value that was current at THIS predicate's call site, not
+  # whatever the failed-clause body's last Call left behind.
+  if (!is.null(cp$call_barrier)) {
+    state$pending_call_barrier <- cp$call_barrier
+  }
+  # Truncate state$stack to the depth recorded at the CP's TryMeElse.
+  # Drops env frames pushed by the failed clause body (and any clause
+  # bodies attempted before it via earlier RetryMeElse hops). Without
+  # this, an outer Deallocate later pops a stale frame and restores
+  # the wrong cp, silently re-running post-call code.
+  if (!is.null(cp$stack_len) &&
+      length(state$stack) > cp$stack_len) {
+    state$stack <- state$stack[seq_len(cp$stack_len)]
+  }
   state$pc <- as.integer(cp$next_pc)
   TRUE
 }
