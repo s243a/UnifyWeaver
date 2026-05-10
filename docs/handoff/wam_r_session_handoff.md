@@ -139,46 +139,37 @@ roughly priority order:
    identify a single hot path; subsequent PRs each fix one bottleneck.
    Tagged-list `$tag` access and env-based register lookups are likely
    suspects.
-3. **Inline `WamRuntime$parse_term` swap-in.** The cross-target Prolog
-   term parser at `src/unifyweaver/core/prolog_term_parser.pl` now
-   runs end-to-end through the WAM-R compiled path -- atoms, integers,
-   simple compounds, multi-arg compounds, lists, infix operators with
-   correct precedence, postfix, var sharing, nested. Coverage proven
-   by `tests/test_prolog_term_parser_wam_r_compile.pl:full_parser_e2e_via_rscript`.
-   Per-frame Y storage and the `dispatch_call` sub-call cleanup landed
-   alongside the cut-barrier work; nothing in the parser source needs
-   to change. The remaining work is wiring `WamRuntime$parse_term`
-   (and `term_to_atom/2`, `read_term_from_atom/2,3`, `read/2`, the
-   CLI arg parser) to dispatch into the compiled predicate instead of
-   the inline R parser. Important: existing op-related tests
-   (`op_3_runtime_e2e_rscript`, `op_3_decl_e2e_rscript`,
-   `op_3_postfix_e2e_rscript`, `term_to_atom*`) all exercise the
-   inline parser today; the swap needs to keep them green. Performance
-   Performance is unmeasured but the compiled parser will be slower
-   than the inline R version (WAM stepping engine vs. native R
-   control flow); the swap is a correctness / cross-target win, not
-   a speed win, so benchmark before pulling the trigger and consider
-   keeping the inline path for the CLI arg parser if startup latency
-   regresses too far.
-
-4. **Mode analysis (start).** Big multi-PR effort. Phase 1 collects
+3. **Mode analysis (start).** Big multi-PR effort. Phase 1 collects
    mode info per predicate (in/out per arg); Phase 2 wires it to
    specialised emission (skip unifications when the mode says the slot
    is unbound, etc.). Look at the Haskell target's
    `WAM_HASKELL_MODE_ANALYSIS_*.md` design docs for the precedent.
-5. **Multi-line `read/2`.** Read until a `.` terminator across lines.
+4. **Multi-line `read/2`.** Read until a `.` terminator across lines.
    Niche but completes the streams story.
-6. **Multi-solution `retract/1` ignoring snapshot.** I.e. re-read the
+5. **Multi-solution `retract/1` ignoring snapshot.** I.e. re-read the
    live clause list on each backtrack. Trickier semantics; document
    carefully if pursued.
-7. **Phase-3 lowered emitter expansion.** Currently handles only
+6. **Phase-3 lowered emitter expansion.** Currently handles only
    `deterministic` and `multi_clause_1` shapes. Could grow N-clause
    general lowering; would compete with the kernel / fact-table paths
    so the value is unclear.
-8. **Range / interval indexes** on fact tables. Per-arg hash indexes
+7. **Range / interval indexes** on fact tables. Per-arg hash indexes
    land queries with ground atom/int args; range queries (`X > 5`,
    `X between A B`) still go through the per-tuple scan. A sorted-
    per-arg index would route these. Niche but a natural extension.
+
+## Closed items (recent history)
+
+The cross-target Prolog term parser story landed across PRs #1948,
+#1954, #1960, #1964, #1965, #1968, #1977. The parser source at
+`src/unifyweaver/core/prolog_term_parser.pl` is the canonical spec
+(plain natural Prolog, ISO-correct on operator precedence,
+SWI-runnable + WAM-R compilable). The runtime keeps its inline R
+parser as the hot path because the compiled-from-Prolog parser is
+80-300x slower (see `tests/benchmarks/wam_r_parser_bench.pl` and
+the "Parser benchmark" section in WAM_R_TARGET.md). The compiled
+parser remains the parser-of-record for any future target that
+doesn't have a hand-written inline path.
 
 ## Things to know before you start a follow-up
 
