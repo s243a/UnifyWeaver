@@ -280,6 +280,10 @@ clojure_direct_builtin("=\\=/2", "2").
 clojure_direct_builtin("=\\=/2", 2).
 clojure_direct_builtin('=\\=/2', "2").
 clojure_direct_builtin('=\\=/2', 2).
+clojure_direct_builtin("is/2", "2").
+clojure_direct_builtin("is/2", 2).
+clojure_direct_builtin('is/2', "2").
+clojure_direct_builtin('is/2', 2).
 clojure_direct_builtin("</2", "2").
 clojure_direct_builtin("</2", 2).
 clojure_direct_builtin('</2', "2").
@@ -495,6 +499,13 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     format(atom(Expr),
            '(let [left (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound))] (if (runtime/arithmetic-not-equal? ~w left right) (runtime/advance ~w) (runtime/backtrack ~w)))',
            [S, S, S, S, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "is/2" ; Op == 'is/2'),
+    !,
+    format(atom(Expr),
+           '(let [left (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound)) expr (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound)) result (runtime/eval-arithmetic-term ~w expr)] (if (some? result) (let [[ok next-state] (runtime/unify-values ~w left result)] (if ok (runtime/advance next-state) (runtime/backtrack ~w))) (runtime/backtrack ~w)))',
+           [S, S, S, S, S, S, S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     clojure_arithmetic_order_builtin(Op, RuntimePred),

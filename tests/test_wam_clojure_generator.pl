@@ -109,6 +109,7 @@ test(project_emits_runtime_and_lowered_dispatch_scaffold) :-
         assertion(sub_string(RuntimeCode, _, _, _, '"\\\\=/2"')),
         assertion(sub_string(RuntimeCode, _, _, _, '"=:=/2"')),
         assertion(sub_string(RuntimeCode, _, _, _, '"=\\\\=/2"')),
+        assertion(sub_string(RuntimeCode, _, _, _, '"is/2"')),
         assertion(sub_string(RuntimeCode, _, _, _, '"</2"')),
         assertion(sub_string(RuntimeCode, _, _, _, '">/2"')),
         assertion(sub_string(RuntimeCode, _, _, _, '"=</2"')),
