@@ -227,7 +227,8 @@ WamRuntime$new_state <- function() {
   s <- new.env(parent = emptyenv())
   s$pc          <- 1L                       # 1-based; matches R indexing
   s$cp          <- 0L                       # 0 = top-level
-  s$regs        <- list()                   # integer-keyed: regs[[as.character(idx)]]
+  s$regs        <- list()                   # legacy field; promote_regs migrates into regs2
+  s$regs2       <- list()                   # integer-indexed list of X/A register values
   s$stack       <- list()                   # env frames
   s$cps         <- list()                   # choice-point stack
   s$bindings    <- new.env(parent = emptyenv(), hash = TRUE)
@@ -268,14 +269,18 @@ WamRuntime$new_state <- function() {
   # frame's `ys` env, not in s$regs2. Deallocate pops the frame but
   # parks its ys env on s$shadow_frame so the SWI WAM emit's typical
   # post-Deallocate Y reads still resolve. Allocate clears it; the
-  # next body's Y writes don't leak in. Also initialise the regs2
-  # env so X / A access works before the first Allocate.
+  # next body's Y writes don't leak in.
   s$shadow_frame <- NULL
   s
 }
 
+# X / A register access is integer-indexed on `state$regs2`, a plain R
+# list. R lists are copy-on-write, so CP snapshots can store the list
+# by reference (`cp$regs <- state$regs2`) and any subsequent
+# `state$regs2[[idx]] <- v` clones, leaving the snapshot untouched.
+# Reading past the list end (or an unset slot) returns NULL, which
+# matches the previous env-based semantics without an `exists()` probe.
 WamRuntime$get_reg <- function(state, idx) {
-  key <- as.character(idx)
   # Y registers live in the topmost frame's `ys` env, not in regs2.
   # When state$shadow_frame is set (a Deallocate has just popped a
   # frame and we're in the post-Deallocate code section of THAT
@@ -287,6 +292,7 @@ WamRuntime$get_reg <- function(state, idx) {
   # we're inside a normal pre-Deallocate body Y reads bypass shadow
   # and hit the topmost frame's ys directly.
   if (idx >= 201L) {
+    key <- as.character(idx)
     sf <- state$shadow_frame
     if (!is.null(sf)) {
       ys <- sf$ys
@@ -303,38 +309,48 @@ WamRuntime$get_reg <- function(state, idx) {
     }
     return(NULL)
   }
-  if (exists(key, envir = state$regs2, inherits = FALSE)) {
-    get(key, envir = state$regs2, inherits = FALSE)
-  } else {
-    NULL
-  }
+  if (idx > length(state$regs2)) return(NULL)
+  state$regs2[[idx]]
 }
 
 WamRuntime$put_reg <- function(state, idx, val) {
-  key <- as.character(idx)
   # Y writes go to the topmost frame's ys env. Outside any Allocate'd
   # frame (top-level pre-Allocate, builtin handlers without their own
   # frame) Y writes fall back to regs2 so we keep something accessible.
   if (idx >= 201L) {
     sn <- length(state$stack)
     if (sn > 0L) {
-      assign(key, val, envir = state$stack[[sn]]$ys)
+      assign(as.character(idx), val, envir = state$stack[[sn]]$ys)
       return(invisible(NULL))
     }
   }
-  assign(key, val, envir = state$regs2)
+  # Use single-bracket assignment to avoid removing the slot when val
+  # is NULL (`x[[i]] <- NULL` deletes; `x[i] <- list(NULL)` keeps).
+  if (is.null(val)) {
+    state$regs2[idx] <- list(NULL)
+  } else {
+    state$regs2[[idx]] <- val
+  }
   invisible(NULL)
 }
 
-# Promote $regs from a plain list to an environment for O(1) update.
-# Called once at run_predicate entry; lazy migration keeps the data
-# model self-describing for inspection in the REPL.
+# Migrate any legacy `$regs` named-list entries into the integer-indexed
+# `$regs2` list. Called once at run_predicate entry. With the new
+# storage model `$regs` is unused at runtime; this exists so external
+# callers that pre-populate `$regs` (tests, REPL inspection) still work.
 WamRuntime$promote_regs <- function(state) {
-  e <- new.env(parent = emptyenv(), hash = TRUE)
+  if (length(state$regs) == 0L) return(invisible(NULL))
   for (k in names(state$regs)) {
-    assign(k, state$regs[[k]], envir = e)
+    idx <- suppressWarnings(as.integer(k))
+    if (!is.na(idx)) {
+      v <- state$regs[[k]]
+      if (is.null(v)) {
+        state$regs2[idx] <- list(NULL)
+      } else {
+        state$regs2[[idx]] <- v
+      }
+    }
   }
-  state$regs2 <- e
 }
 
 # ----------------------------------------------------------
@@ -961,7 +977,7 @@ WamRuntime$current_op_iter <- function(program, state, snapshot, idx,
         captured_resume   <- resume_pc
         cp <- list(
           kind        = "iter",
-          regs        = as.list.environment(state$regs2),
+          regs        = state$regs2,
           trail_len   = snap_trail,
           cp          = state$cp,
           var_counter = snap_vc,
@@ -1443,7 +1459,7 @@ WamRuntime$step <- function(program, state, instr) {
       #     depth before jumping to the next clause.
       cp <- list(
         next_pc       = program$labels[[instr$label]],
-        regs          = as.list.environment(state$regs2),
+        regs          = state$regs2,
         cp            = state$cp,
         trail_len     = length(state$trail),
         var_counter   = state$var_counter,
@@ -1462,7 +1478,7 @@ WamRuntime$step <- function(program, state, instr) {
       cp <- list(
         kind          = "ite",
         next_pc       = program$labels[[instr$label]],
-        regs          = as.list.environment(state$regs2),
+        regs          = state$regs2,
         cp            = state$cp,
         trail_len     = length(state$trail),
         var_counter   = state$var_counter,
@@ -1625,7 +1641,7 @@ WamRuntime$step <- function(program, state, instr) {
         template_reg = as.integer(instr$template),
         bag_reg      = as.integer(instr$bag),
         next_pc      = end_pc + 1L,
-        regs         = as.list.environment(state$regs2),
+        regs         = state$regs2,
         cp           = state$cp,
         trail_len    = length(state$trail),
         var_counter  = state$var_counter,
@@ -2032,7 +2048,7 @@ WamRuntime$dynamic_iter <- function(program, state, clauses, start_idx, arity, r
     if (length(clause$head_args) != arity) next
     # Snapshot for rollback / CP. Taken BEFORE any unification so the
     # snapshot is the pre-dispatch state.
-    snap_regs        <- as.list.environment(state$regs2)
+    snap_regs        <- state$regs2
     snap_trail       <- length(state$trail)
     snap_cp          <- state$cp
     snap_vc          <- state$var_counter
@@ -2071,9 +2087,7 @@ WamRuntime$dynamic_iter <- function(program, state, clauses, start_idx, arity, r
       return(TRUE)
     }
     # Rollback to snapshot before trying the next clause.
-    e <- new.env(parent = emptyenv(), hash = TRUE)
-    for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
-    state$regs2 <- e
+    state$regs2 <- snap_regs
     if (length(state$trail) > snap_trail) {
       to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
       for (name in to_undo) {
@@ -2144,7 +2158,7 @@ WamRuntime$retract_iter <- function(program, state, head_args, body, arity,
         captured_program   <- program
         cp <- list(
           kind        = "iter",
-          regs        = as.list.environment(state$regs2),
+          regs        = state$regs2,
           trail_len   = snap_trail,
           cp          = state$cp,
           var_counter = snap_vc,
@@ -2210,7 +2224,7 @@ WamRuntime$clause_iter <- function(program, state, head_args, body, arity,
         captured_program   <- program
         cp <- list(
           kind        = "iter",
-          regs        = as.list.environment(state$regs2),
+          regs        = state$regs2,
           trail_len   = snap_trail,
           cp          = state$cp,
           var_counter = snap_vc,
@@ -2265,7 +2279,7 @@ WamRuntime$transitive_closure2 <- function(program, state, key, edge_pred,
   # Snapshot state so the iterate_goal calls below don't leak
   # bindings or CPs into the caller.
   snap_cps   <- length(state$cps)
-  snap_regs  <- as.list.environment(state$regs2)
+  snap_regs  <- state$regs2
   snap_trail <- length(state$trail)
   snap_pc    <- state$pc
   snap_cp    <- state$cp
@@ -2304,9 +2318,7 @@ WamRuntime$transitive_closure2 <- function(program, state, key, edge_pred,
   if (length(state$cps) > snap_cps) {
     state$cps <- state$cps[seq_len(snap_cps)]
   }
-  e <- new.env(parent = emptyenv(), hash = TRUE)
-  for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
-  state$regs2 <- e
+  state$regs2 <- snap_regs
   if (length(state$trail) > snap_trail) {
     to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
     for (name in to_undo) {
@@ -2348,7 +2360,7 @@ WamRuntime$transitive_distance3 <- function(program, state, key, edge_pred,
     return(FALSE)
   }
   snap_cps   <- length(state$cps)
-  snap_regs  <- as.list.environment(state$regs2)
+  snap_regs  <- state$regs2
   snap_trail <- length(state$trail)
   snap_pc    <- state$pc
   snap_cp    <- state$cp
@@ -2395,9 +2407,7 @@ WamRuntime$transitive_distance3 <- function(program, state, key, edge_pred,
   if (length(state$cps) > snap_cps) {
     state$cps <- state$cps[seq_len(snap_cps)]
   }
-  e <- new.env(parent = emptyenv(), hash = TRUE)
-  for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
-  state$regs2 <- e
+  state$regs2 <- snap_regs
   if (length(state$trail) > snap_trail) {
     to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
     for (name in to_undo) {
@@ -2442,7 +2452,7 @@ WamRuntime$weighted_shortest_path3 <- function(program, state, key, edge_pred,
     return(FALSE)
   }
   snap_cps   <- length(state$cps)
-  snap_regs  <- as.list.environment(state$regs2)
+  snap_regs  <- state$regs2
   snap_trail <- length(state$trail)
   snap_pc    <- state$pc
   snap_cp    <- state$cp
@@ -2519,9 +2529,7 @@ WamRuntime$weighted_shortest_path3 <- function(program, state, key, edge_pred,
   if (length(state$cps) > snap_cps) {
     state$cps <- state$cps[seq_len(snap_cps)]
   }
-  e <- new.env(parent = emptyenv(), hash = TRUE)
-  for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
-  state$regs2 <- e
+  state$regs2 <- snap_regs
   if (length(state$trail) > snap_trail) {
     to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
     for (name in to_undo) {
@@ -2565,7 +2573,7 @@ WamRuntime$transitive_parent_distance4 <- function(program, state, key,
     return(FALSE)
   }
   snap_cps   <- length(state$cps)
-  snap_regs  <- as.list.environment(state$regs2)
+  snap_regs  <- state$regs2
   snap_trail <- length(state$trail)
   snap_pc    <- state$pc
   snap_cp    <- state$cp
@@ -2617,9 +2625,7 @@ WamRuntime$transitive_parent_distance4 <- function(program, state, key,
   if (length(state$cps) > snap_cps) {
     state$cps <- state$cps[seq_len(snap_cps)]
   }
-  e <- new.env(parent = emptyenv(), hash = TRUE)
-  for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
-  state$regs2 <- e
+  state$regs2 <- snap_regs
   if (length(state$trail) > snap_trail) {
     to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
     for (name in to_undo) {
@@ -2665,7 +2671,7 @@ WamRuntime$transitive_step_parent_distance5 <- function(program, state, key,
     return(FALSE)
   }
   snap_cps   <- length(state$cps)
-  snap_regs  <- as.list.environment(state$regs2)
+  snap_regs  <- state$regs2
   snap_trail <- length(state$trail)
   snap_pc    <- state$pc
   snap_cp    <- state$cp
@@ -2726,9 +2732,7 @@ WamRuntime$transitive_step_parent_distance5 <- function(program, state, key,
   if (length(state$cps) > snap_cps) {
     state$cps <- state$cps[seq_len(snap_cps)]
   }
-  e <- new.env(parent = emptyenv(), hash = TRUE)
-  for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
-  state$regs2 <- e
+  state$regs2 <- snap_regs
   if (length(state$trail) > snap_trail) {
     to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
     for (name in to_undo) {
@@ -2776,7 +2780,7 @@ WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
     return(FALSE)
   }
   snap_cps   <- length(state$cps)
-  snap_regs  <- as.list.environment(state$regs2)
+  snap_regs  <- state$regs2
   snap_trail <- length(state$trail)
   snap_pc    <- state$pc
   snap_cp    <- state$cp
@@ -2820,9 +2824,7 @@ WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
   if (length(state$cps) > snap_cps) {
     state$cps <- state$cps[seq_len(snap_cps)]
   }
-  e <- new.env(parent = emptyenv(), hash = TRUE)
-  for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
-  state$regs2 <- e
+  state$regs2 <- snap_regs
   if (length(state$trail) > snap_trail) {
     to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
     for (name in to_undo) {
@@ -2875,7 +2877,7 @@ WamRuntime$astar_shortest_path4 <- function(program, state, key, edge_pred,
     return(FALSE)
   }
   snap_cps   <- length(state$cps)
-  snap_regs  <- as.list.environment(state$regs2)
+  snap_regs  <- state$regs2
   snap_trail <- length(state$trail)
   snap_pc    <- state$pc
   snap_cp    <- state$cp
@@ -2963,9 +2965,7 @@ WamRuntime$astar_shortest_path4 <- function(program, state, key, edge_pred,
   if (length(state$cps) > snap_cps) {
     state$cps <- state$cps[seq_len(snap_cps)]
   }
-  e <- new.env(parent = emptyenv(), hash = TRUE)
-  for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
-  state$regs2 <- e
+  state$regs2 <- snap_regs
   if (length(state$trail) > snap_trail) {
     to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
     for (name in to_undo) {
@@ -3019,7 +3019,7 @@ WamRuntime$kernel_pair_iter <- function(program, state, key, results, target,
         captured_key     <- key
         cp <- list(
           kind        = "iter",
-          regs        = as.list.environment(state$regs2),
+          regs        = state$regs2,
           trail_len   = snap_trail,
           cp          = state$cp,
           var_counter = snap_vc,
@@ -3071,7 +3071,7 @@ WamRuntime$kernel_triple_iter <- function(program, state, key, results, target,
         captured_key     <- key
         cp <- list(
           kind        = "iter",
-          regs        = as.list.environment(state$regs2),
+          regs        = state$regs2,
           trail_len   = snap_trail,
           cp          = state$cp,
           var_counter = snap_vc,
@@ -3126,7 +3126,7 @@ WamRuntime$kernel_quad_iter <- function(program, state, key, results, target,
         captured_key     <- key
         cp <- list(
           kind        = "iter",
-          regs        = as.list.environment(state$regs2),
+          regs        = state$regs2,
           trail_len   = snap_trail,
           cp          = state$cp,
           var_counter = snap_vc,
@@ -3170,7 +3170,7 @@ WamRuntime$kernel_stream_iter <- function(program, state, key, results, target,
         captured_key     <- key
         cp <- list(
           kind        = "iter",
-          regs        = as.list.environment(state$regs2),
+          regs        = state$regs2,
           trail_len   = snap_trail,
           cp          = state$cp,
           var_counter = snap_vc,
@@ -3244,7 +3244,7 @@ WamRuntime$fact_table_iter_subset <- function(program, state, key, tuples,
         captured_key      <- key
         cp <- list(
           kind        = "iter",
-          regs        = as.list.environment(state$regs2),
+          regs        = state$regs2,
           trail_len   = snap_trail,
           cp          = state$cp,
           var_counter = snap_vc,
@@ -3457,7 +3457,7 @@ WamRuntime$build_fact_indexes <- function(facts, arity) {
 WamRuntime$member_iter <- function(state, target, elems, start_idx, resume_pc) {
   if (start_idx > length(elems)) return(FALSE)
   for (idx in seq.int(start_idx, length(elems))) {
-    snap_regs  <- as.list.environment(state$regs2)
+    snap_regs  <- state$regs2
     snap_trail <- length(state$trail)
     snap_cp    <- state$cp
     snap_vc    <- state$var_counter
@@ -3489,9 +3489,7 @@ WamRuntime$member_iter <- function(state, target, elems, start_idx, resume_pc) {
       return(TRUE)
     }
     # Rollback for the next iteration.
-    e <- new.env(parent = emptyenv(), hash = TRUE)
-    for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
-    state$regs2 <- e
+    state$regs2 <- snap_regs
     if (length(state$trail) > snap_trail) {
       to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
       for (name in to_undo) {
@@ -3514,7 +3512,7 @@ WamRuntime$member_iter <- function(state, target, elems, start_idx, resume_pc) {
 # generate mode. Same iter-CP machinery as member_iter.
 WamRuntime$between_iter <- function(state, target, current, hi, resume_pc) {
   if (current > hi) return(FALSE)
-  snap_regs  <- as.list.environment(state$regs2)
+  snap_regs  <- state$regs2
   snap_trail <- length(state$trail)
   snap_cp    <- state$cp
   snap_vc    <- state$var_counter
@@ -3974,7 +3972,7 @@ WamRuntime$iterate_goal <- function(program, state, goal_term, on_each) {
 # findall/3 alternatives). Restores state completely on return.
 WamRuntime$collect_solutions <- function(program, state, template_term, goal_term) {
   snap_cps_len   <- length(state$cps)
-  snap_regs      <- as.list.environment(state$regs2)
+  snap_regs      <- state$regs2
   snap_trail     <- length(state$trail)
   snap_pc        <- state$pc
   snap_cp        <- state$cp
@@ -3995,9 +3993,7 @@ WamRuntime$collect_solutions <- function(program, state, template_term, goal_ter
   if (length(state$cps) > snap_cps_len) {
     state$cps <- state$cps[seq_len(snap_cps_len)]
   }
-  e <- new.env(parent = emptyenv(), hash = TRUE)
-  for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
-  state$regs2 <- e
+  state$regs2 <- snap_regs
   if (length(state$trail) > snap_trail) {
     to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
     for (name in to_undo) {
@@ -4028,7 +4024,7 @@ WamRuntime$collect_bag_groups <- function(program, state, template_term, goal_te
   witness_names <- setdiff(goal_vars, unique(c(template_vars, existential_vars)))
 
   snap_cps_len   <- length(state$cps)
-  snap_regs      <- as.list.environment(state$regs2)
+  snap_regs      <- state$regs2
   snap_trail     <- length(state$trail)
   snap_pc        <- state$pc
   snap_cp        <- state$cp
@@ -4073,9 +4069,7 @@ WamRuntime$collect_bag_groups <- function(program, state, template_term, goal_te
   if (length(state$cps) > snap_cps_len) {
     state$cps <- state$cps[seq_len(snap_cps_len)]
   }
-  e <- new.env(parent = emptyenv(), hash = TRUE)
-  for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
-  state$regs2 <- e
+  state$regs2 <- snap_regs
   if (length(state$trail) > snap_trail) {
     to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
     for (name in to_undo) {
@@ -4122,7 +4116,7 @@ WamRuntime$bag_group_values <- function(state, group, table, sort_dedup = FALSE)
 WamRuntime$bag_group_iter <- function(state, groups, start_idx, bag_target, table, sort_dedup, resume_pc) {
   if (start_idx > length(groups)) return(FALSE)
   for (idx in seq.int(start_idx, length(groups))) {
-    snap_regs  <- as.list.environment(state$regs2)
+    snap_regs  <- state$regs2
     snap_trail <- length(state$trail)
     snap_cp    <- state$cp
     snap_vc    <- state$var_counter
@@ -4172,9 +4166,7 @@ WamRuntime$bag_group_iter <- function(state, groups, start_idx, bag_target, tabl
       return(TRUE)
     }
 
-    e <- new.env(parent = emptyenv(), hash = TRUE)
-    for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
-    state$regs2 <- e
+    state$regs2 <- snap_regs
     WamRuntime$undo_trail_to(state, snap_trail)
     state$cp          <- snap_cp
     state$var_counter <- snap_vc
@@ -4816,7 +4808,7 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     cond   <- WamRuntime$get_reg(state, 1L)
     action <- WamRuntime$get_reg(state, 2L)
     snap_cps_len <- length(state$cps)
-    snap_regs    <- as.list.environment(state$regs2)
+    snap_regs    <- state$regs2
     snap_trail   <- length(state$trail)
     snap_pc      <- state$pc
     snap_cp      <- state$cp
@@ -4834,9 +4826,7 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     if (length(state$cps) > snap_cps_len) {
       state$cps <- state$cps[seq_len(snap_cps_len)]
     }
-    e <- new.env(parent = emptyenv(), hash = TRUE)
-    for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
-    state$regs2 <- e
+    state$regs2 <- snap_regs
     if (length(state$trail) > snap_trail) {
       to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
       for (name in to_undo) {
@@ -5554,9 +5544,7 @@ WamRuntime$backtrack <- function(state) {
   # handles the backtrack.
   if (!is.null(cp$kind) && cp$kind == "dynamic") {
     state$cps <- state$cps[-n]
-    e <- new.env(parent = emptyenv(), hash = TRUE)
-    for (k in names(cp$regs)) assign(k, cp$regs[[k]], envir = e)
-    state$regs2 <- e
+    state$regs2 <- cp$regs
     if (length(state$trail) > cp$trail_len) {
       to_undo <- state$trail[(cp$trail_len + 1L):length(state$trail)]
       for (name in to_undo) {
@@ -5584,9 +5572,7 @@ WamRuntime$backtrack <- function(state) {
   # executes the post-call body with the new bindings.
   if (!is.null(cp$kind) && cp$kind == "iter") {
     state$cps <- state$cps[-n]
-    e <- new.env(parent = emptyenv(), hash = TRUE)
-    for (k in names(cp$regs)) assign(k, cp$regs[[k]], envir = e)
-    state$regs2 <- e
+    state$regs2 <- cp$regs
     if (length(state$trail) > cp$trail_len) {
       to_undo <- state$trail[(cp$trail_len + 1L):length(state$trail)]
       for (name in to_undo) {
@@ -5614,9 +5600,7 @@ WamRuntime$backtrack <- function(state) {
   # and resume at the instruction after end_aggregate.
   if (!is.null(cp$kind) && cp$kind == "aggregate") {
     state$cps <- state$cps[-n]
-    e <- new.env(parent = emptyenv(), hash = TRUE)
-    for (k in names(cp$regs)) assign(k, cp$regs[[k]], envir = e)
-    state$regs2 <- e
+    state$regs2 <- cp$regs
     if (length(state$trail) > cp$trail_len) {
       to_undo <- state$trail[(cp$trail_len + 1L):length(state$trail)]
       for (name in to_undo) {
@@ -5646,9 +5630,7 @@ WamRuntime$backtrack <- function(state) {
     return(TRUE)
   }
   # Standard backtrack: restore from CP and jump to its alt PC.
-  e <- new.env(parent = emptyenv(), hash = TRUE)
-  for (k in names(cp$regs)) assign(k, cp$regs[[k]], envir = e)
-  state$regs2 <- e
+  state$regs2 <- cp$regs
   if (length(state$trail) > cp$trail_len) {
     to_undo <- state$trail[(cp$trail_len + 1L):length(state$trail)]
     for (name in to_undo) {

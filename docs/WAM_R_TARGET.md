@@ -810,33 +810,43 @@ swipl -g main -t halt tests/benchmarks/wam_r_fact_source_bench.pl \
 ```
 
 Representative hotspots for the WAM backend, single-row `cp(c0, X)`
-query against a 100-row chain, 100000 iterations (R 4.4):
+query against a 100-row chain, 100000 iterations (R 4.4), with X / A
+registers stored as an integer-indexed R list:
 
 ```
   function                                       self.s  %self  total.s   %tot
-  WamRuntime$step                                 1.670  21.7%    3.850  49.9%
-  WamRuntime$run                                  0.910  11.8%    4.780  62.0%
-  WamRuntime$get_reg                              0.820  10.6%    1.510  19.6%
-  WamRuntime$deref                                0.430   5.6%    1.970  25.6%
-  exists                                          0.400   5.2%    0.400   5.2%
-  WamRuntime$put_reg                              0.390   5.1%    0.760   9.9%
-  WamRuntime$new_state                            0.390   5.1%    0.550   7.1%
-  WamRuntime$run_predicate                        0.340   4.4%    7.590  98.4%
-  as.character                                    0.260   3.4%    0.260   3.4%
-  assign                                          0.230   3.0%    0.230   3.0%
+  WamRuntime$step                                 1.370  24.0%    2.230  39.1%
+  WamRuntime$run                                  0.900  15.8%    3.150  55.3%
+  WamRuntime$deref                                0.520   9.1%    0.760  13.3%
+  WamRuntime$new_state                            0.500   8.8%    0.650  11.4%
+  WamRuntime$run_predicate                        0.440   7.7%    5.550  97.4%
+  WamRuntime$put_reg                              0.290   5.1%    0.300   5.3%
+  WamRuntime$get_reg                              0.200   3.5%    0.210   3.7%
+  list                                            0.170   3.0%    0.170   3.0%
+  new.env                                         0.080   1.4%    0.090   1.6%
 ```
 
-The pattern: per-instruction `step` dispatch (~22% self) plus the
-register-access machinery (`get_reg` + `put_reg` + the env-key
-plumbing they call -- `as.character`, `exists`, `assign`, `get`) is
-the bulk of the runtime, with a long tail in `deref` and
-`new_state`. Concretely, every `get_reg` / `put_reg` call does
-`as.character(idx)` -> `exists(key, envir)` (or `assign`) on
-`state$regs2`, which is an env keyed by stringified register
-indices. Replacing `state$regs2` with an integer-indexed list
-(or a preallocated vector for the dense small register-index
-range) is the most directly actionable single optimisation; that's
-the next planned PR (handoff item #2 follow-up).
+`step` dispatch and `deref` lead, with a long tail in `new_state`
+(per-call cost of fresh state allocation). The register layer is
+near the floor: `state$regs2` is now a plain R list and X / A
+access is `state$regs2[[idx]]` / `state$regs2[[idx]] <- v`, so each
+read/write is a direct integer subscript -- no `as.character`,
+`exists`, `assign`, `get`, or environment hash lookup. R's
+copy-on-write keeps CP snapshots correct with a bare list
+assignment (`cp$regs <- state$regs2`); subsequent puts clone,
+leaving the snapshot intact.
+
+A prior profile of the same workload before this refactor showed
+`get_reg` self.s = 0.820 and a combined ~0.89 self.s spent in
+`exists` + `as.character` + `assign`, with elapsed = 7.7s. After
+the refactor, elapsed dropped to ~5.7s (≈26% wall-clock
+improvement); `get_reg` self time fell ≈4× and `exists` /
+`as.character` / `assign` no longer appear in the X / A path.
+(`as.character` is still used on the Y-register path; Y reads
+remain in per-frame envs because Allocate / Deallocate snapshot
+semantics rely on each call frame owning its own Y storage.) The
+next directly actionable target is `new_state` (per-call env
+allocation amortised across `run_predicate` invocations).
 
 When adding a builtin:
 

@@ -55,7 +55,7 @@ then read `docs/WAM_R_TARGET.md` for the user-facing reference.
 
 ### Architecture in one paragraph
 
-Tagged R lists for values (`list(tag = "atom" | "int" | "float" | "unbound" | "struct", ...)`); state lives in an R environment for pass-by-reference; A/X registers and Y registers are split (`regs2` for A/X, stack-frame `saved_ys` for Y, restored on `Deallocate`). Choice points are tagged `"iter"` / `"dynamic"` / `"aggregate"` plus the standard variant. Dispatch tier is: lowered-dispatch -> labels -> foreign-handlers -> dynamic-store -> library -> builtin. The `iterate_goal` helper has R-level fast paths for `member/2`, `between/3`, conjunctions, dynamic preds, and lowered-dispatch preds, falling back to a `call_goal + backtrack + run` loop.
+Tagged R lists for values (`list(tag = "atom" | "int" | "float" | "unbound" | "struct", ...)`); state lives in an R environment for pass-by-reference; A/X registers and Y registers are split (`regs2`, an integer-indexed list, for A/X; per-frame `ys` env on the call stack for Y, restored on `Deallocate`). Choice points are tagged `"iter"` / `"dynamic"` / `"aggregate"` plus the standard variant. Dispatch tier is: lowered-dispatch -> labels -> foreign-handlers -> dynamic-store -> library -> builtin. The `iterate_goal` helper has R-level fast paths for `member/2`, `between/3`, conjunctions, dynamic preds, and lowered-dispatch preds, falling back to a `call_goal + backtrack + run` loop.
 
 ## Following the campaign through the PR list
 
@@ -134,33 +134,30 @@ roughly priority order:
    `fact_source_loader_call/4` clause for the new Spec shape **plus** a
    parallel `WamRuntime$lmdb_fact_dispatch` to skip the in-memory tuple
    list, since materialising every key defeats the point.
-2. **Replace `state$regs2` env with an integer-indexed vector / list.**
-   The Rprof instrumentation that just landed (see
-   `tests/benchmarks/wam_r_fact_source_bench.pl --profile` and the
-   "Rprof profile" subsection in `WAM_R_TARGET.md`) shows the
-   register-access machinery -- `get_reg` + `put_reg` + the
-   `as.character(idx)` / `exists(key, envir)` / `assign(key, val,
-   envir)` calls they make against the env-keyed `state$regs2` -- is
-   ~15-18% of total runtime on the WAM backend, and the underlying R
-   builtins themselves (`exists`, `as.character`, `assign`) account
-   for ~12% of self-time on top of `get_reg` / `put_reg`'s 16%.
-   Register indices are dense small integers (A: 1..100, X: 101..200,
-   Y: 201..~256), so an integer-indexed list (or a preallocated
-   vector) eliminates the string conversion + env hash-lookup per
-   access. CP / TryMeElse / Allocate snapshots of `state$regs2` need
-   to switch to list-copy semantics. Per-frame Y storage (`frame$ys`)
-   stays as is or moves to the same data structure. Should be a
-   single, contained PR with a clear before/after measurement via
-   the same `--profile` mode.
+2. ~~**Replace `state$regs2` env with an integer-indexed vector / list.**~~
+   *Done.* `state$regs2` is now a plain R list, X / A access is
+   `state$regs2[[idx]]` / `state$regs2[[idx]] <- v`. R copy-on-write
+   keeps CP snapshots correct without a copy loop -- `cp$regs <-
+   state$regs2` shares the list, and the next `put_reg` clones.
+   Y registers stay in per-frame `frame$ys` envs (Allocate /
+   Deallocate semantics depend on each frame owning its own Y
+   storage); their `as.character(idx)` cost is unchanged but Y
+   reads are rare on the hot path. Profile result on the same
+   `--profile 100 --inner 100000` workload: elapsed 7.7s -> 5.7s
+   (~26% wall-clock improvement); `get_reg` self.s 0.820 -> 0.200
+   (4x); `exists` / `as.character` / `assign` no longer on the X /
+   A path. See "Rprof profile of the WAM stepping engine" in
+   `WAM_R_TARGET.md` for the after-snapshot.
 
-   Other bottlenecks the same profile flagged, in priority order:
-   - `WamRuntime$step` (22% self): the big `switch(op_name, ...)`. A
+   Bottlenecks the post-refactor profile flags, in priority order:
+   - `WamRuntime$step` (24% self): the big `switch(op_name, ...)`. A
      per-instruction closure-based dispatch could shave this; bigger
      refactor though.
-   - `WamRuntime$deref` (5.6% self / 25.6% total): same env-keyed
-     `state$bindings` lookup pattern as regs2; fixing one informs
-     the other.
-   - `WamRuntime$new_state` (5.1% self): re-allocates a full state
+   - `WamRuntime$deref` (9.1% self / 13.3% total): same env-keyed
+     `state$bindings` lookup pattern; bindings can't trivially move
+     to integer indices (variable names are strings) but a per-state
+     binding cache may help.
+   - `WamRuntime$new_state` (8.8% self): re-allocates a full state
      env on every `run_predicate` call. A pooled state would amortise
      over the bench's tight loop, less impactful in real workloads.
 3. **Mode analysis (start).** Big multi-PR effort. Phase 1 collects
@@ -213,13 +210,27 @@ prepending `pred_` to every wrapper. Keep it.
 
 ### The `Y`-register save/restore on `Allocate` / `Deallocate` is also load-bearing
 
-The flat `regs2` env stores A, X, and Y registers under the same
-namespace. Without the save/restore in `Allocate` / `Deallocate`,
-nested calls like `rt(F) :- do_write(F), do_read(F).` stomp each
-other's permanent vars. PR #1920 fixed this. The fix is conservative
-on `Deallocate` -- it restores caller's saved Ys but leaves callee-
-added Ys alone, because SWI's WAM emit reads Ys after `Deallocate`
-in some cases.
+X / A registers (`idx < 201`) live in the integer-indexed
+`state$regs2` list; Y registers (`idx >= 201`) live in a per-frame
+`frame$ys` env that Allocate pushes and Deallocate pops. Without
+the save/restore in `Allocate` / `Deallocate`, nested calls like
+`rt(F) :- do_write(F), do_read(F).` would stomp each other's
+permanent vars. PR #1920 fixed this. The fix is conservative on
+`Deallocate` -- it parks the popped frame's `ys` env on
+`state$shadow_frame` so SWI's WAM emit can still read Ys between
+Deallocate and Proceed/Execute.
+
+`state$regs2` is a plain R list (not an env). Reads use
+`state$regs2[[idx]]` with a guard `if (idx > length(state$regs2))
+return(NULL)`; writes use `state$regs2[[idx]] <- val` (or
+`state$regs2[idx] <- list(NULL)` for explicit NULL writes, since
+`[[<-` with NULL deletes). CP snapshots store `cp$regs <-
+state$regs2` directly; R's copy-on-write makes subsequent puts
+clone, leaving snapshots intact. Restore is a bare `state$regs2 <-
+cp$regs`. The legacy `state$regs` field exists only so external
+callers that pre-populate it (REPL inspection, tests) keep
+working; `WamRuntime$promote_regs` migrates any entries into
+`regs2` and is a no-op for the typical empty-`regs` case.
 
 ### Module qualifiers in clause bodies
 
