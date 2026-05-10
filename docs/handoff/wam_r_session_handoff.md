@@ -148,17 +148,28 @@ roughly priority order:
    A path. See "Rprof profile of the WAM stepping engine" in
    `WAM_R_TARGET.md` for the after-snapshot.
 
-   Bottlenecks the post-refactor profile flags, in priority order:
-   - `WamRuntime$step` (24% self): the big `switch(op_name, ...)`. A
-     per-instruction closure-based dispatch could shave this; bigger
-     refactor though.
-   - `WamRuntime$deref` (9.1% self / 13.3% total): same env-keyed
-     `state$bindings` lookup pattern; bindings can't trivially move
-     to integer indices (variable names are strings) but a per-state
-     binding cache may help.
-   - `WamRuntime$new_state` (8.8% self): re-allocates a full state
-     env on every `run_predicate` call. A pooled state would amortise
-     over the bench's tight loop, less impactful in real workloads.
+   Bottlenecks the post-refactor profile flagged, with current
+   status:
+   - `WamRuntime$deref` and `WamRuntime$new_state` were both
+     addressed in a follow-up PR (single-lookup `[[name]]` access on
+     the bindings env + single-slot state pool with `reset_state`).
+     Combined gain ~9% incremental; current `deref` self ~7%,
+     `reset_state` ~5% on the same workload.
+   - `WamRuntime$step` (now ~29% self after the deref / pool fix).
+     **Measured 2026-05: closure-table refactor is a regression.** An
+     A/B microbenchmark of an identical-shape `step` body comparing
+     R's `switch()` against an env-keyed dispatch table on the
+     ~37 op names returned: R `switch` 0.62μs / call dispatch
+     overhead vs env-table 1.26μs / call (i.e. 2x slower). R's
+     `switch` is a C-implemented hash dispatch and beats a closure-
+     table by the closure-call overhead. Hot-pathing the top-N ops
+     in `run` (skipping the `step` function call entirely for the
+     most common ops) could save the ~0.51μs function-call cost per
+     inlined op, but the recursive-workload op distribution is wide
+     enough (top-4 covers only 57%) that the payoff is bounded at
+     ~5% wall-clock with significant code duplication. Filed as not
+     worth pursuing further unless `run` / `step` together come to
+     dominate the profile on a workload other than fact-source.
 3. **Mode analysis (start).** Big multi-PR effort. Phase 1 collects
    mode info per predicate (in/out per arg); Phase 2 wires it to
    specialised emission (skip unifications when the mode says the slot
