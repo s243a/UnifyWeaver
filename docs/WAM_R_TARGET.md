@@ -410,7 +410,8 @@ and rationals are not supported.
 ### Lists
 
 `member/2` (multi-solution via iter-CP), `memberchk/2`, `length/2`
-((+, -) and (-, +) modes), `append/3` ((+, +, -) mode), `reverse/2`
+((+, -), (-, +), and (-, -) modes), `append/3` ((+, +, -) mode
+and finite split mode over a ground third list), `reverse/2`
 (deterministic if either side bound), `last/2`, `nth0/3`, `nth1/3`,
 `select/3` (first match), `delete/3` (==/2 semantics),
 `permutation/2` ((+, +) check + (+, -) identity), `numlist/3`,

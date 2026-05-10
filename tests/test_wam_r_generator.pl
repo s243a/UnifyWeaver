@@ -862,10 +862,25 @@ e2e_list_atom_builtins_via_rscript :-
         length(L, N),
         N == 3,
         L = [_, _, _])),
-    % append/3 deterministic mode.
+    % append/3 deterministic and finite split modes.
     assertz((user:lb_app_ok    :- append([1, 2], [3, 4], [1, 2, 3, 4]))),
     assertz((user:lb_app_empty :- append([], [a, b], [a, b]))),
     assertz((user:lb_app_no    :- append([1, 2], [3, 4], [1, 2, 3, 5]))),
+    assertz((user:lb_app_split_all :-
+        findall(P-S, append(P, S, [a, b]), Splits),
+        Splits == [ []-[a, b], [a]-[b], [a, b]-[] ])),
+    assertz((user:lb_app_split_later :-
+        append(P, S, [a, b, c]),
+        P == [a, b],
+        S == [c])),
+    assertz((user:lb_app_split_empty :-
+        append(P, S, []),
+        P == [],
+        S == [])),
+    assertz((user:lb_app_split_no :-
+        append(P, S, [a, b]),
+        P == [b],
+        S == [a])),
     % reverse/2.
     assertz((user:lb_rev_ok :- reverse([a, b, c], [c, b, a]))),
     assertz((user:lb_rev_no :- reverse([a, b, c], [a, b, c]))),
@@ -885,6 +900,8 @@ e2e_list_atom_builtins_via_rscript :-
           user:lb_len_build/0, user:lb_len_gen_zero/0,
           user:lb_len_gen_two/0, user:lb_len_gen_three/0,
           user:lb_app_ok/0, user:lb_app_empty/0, user:lb_app_no/0,
+          user:lb_app_split_all/0, user:lb_app_split_later/0,
+          user:lb_app_split_empty/0, user:lb_app_split_no/0,
           user:lb_rev_ok/0, user:lb_rev_no/0,
           user:lb_last_ok/0, user:lb_last_no/0,
           user:lb_alen_ok/0, user:lb_alen_no/0,
@@ -895,10 +912,12 @@ e2e_list_atom_builtins_via_rscript :-
     directory_file_path(TmpDir, 'R', RDir),
     Yes = [lb_len_count, lb_len_zero, lb_len_build,
            lb_len_gen_zero, lb_len_gen_two, lb_len_gen_three,
-           lb_app_ok, lb_app_empty,
+           lb_app_ok, lb_app_empty, lb_app_split_all,
+           lb_app_split_later, lb_app_split_empty,
            lb_rev_ok, lb_last_ok,
            lb_alen_ok, lb_acodes_ok, lb_achars_ok, lb_aconcat_ok],
-    No  = [lb_len_wrong, lb_app_no, lb_rev_no, lb_last_no,
+    No  = [lb_len_wrong, lb_app_no, lb_app_split_no,
+           lb_rev_no, lb_last_no,
            lb_alen_no, lb_aconcat_no],
     forall(member(P, Yes), (
         format(string(Q), '~w/0', [P]),
