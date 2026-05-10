@@ -837,15 +837,18 @@ openLmdbInternEnvReadonly dbPath = do
     mdb_env_open env dbPath [MDB_RDONLY]
     return env
 
--- | Decode bytes pointed to by a CChar pointer as a Haskell String,
--- byte-by-byte (ASCII-correct, Latin-1 fallback for non-ASCII).
+-- | Decode bytes pointed to by a CChar pointer as a Haskell String.
+-- Treats the bytes as UTF-8, so non-ASCII (e.g. accented categorylinks
+-- like "Caf\xc3\xa9s") round-trips correctly. Invalid byte sequences
+-- get U+FFFD via lenientDecode rather than throwing — the LMDB store
+-- is upstream-controlled (Phase 1 ingester), so a decode failure means
+-- the ingester wrote bad bytes, not a runtime fault to abort on.
 peekStringBytes :: Ptr CChar -> Int -> IO String
 peekStringBytes p len
     | len <= 0  = return []
     | otherwise = do
-        bytes <- mapM (\i -> peekElemOff (castPtr p :: Ptr Word8) i)
-                      [0 .. len - 1]
-        return (map (toEnum . fromIntegral) bytes)
+        bs <- BS.packCStringLen (p, len)
+        return $! T.unpack (TE.decodeUtf8With TEE.lenientDecode bs)
 
 -- | Iterate every (key, value) pair in a sub-db with a single read txn,
 -- applying a decoder to each pair. Returns results in iteration order.
