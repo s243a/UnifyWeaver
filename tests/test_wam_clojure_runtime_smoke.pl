@@ -55,6 +55,9 @@
 :- dynamic user:wam_float_unbound/1.
 :- dynamic user:wam_is_list_guard/1.
 :- dynamic user:wam_is_list_unbound/1.
+:- dynamic user:wam_length_guard/2.
+:- dynamic user:wam_length_bad_list/1.
+:- dynamic user:wam_length_unbound_list/1.
 :- dynamic user:wam_ground_guard/1.
 :- dynamic user:wam_ground_unbound/1.
 :- dynamic user:wam_ground_nested_unbound/1.
@@ -131,6 +134,9 @@ user:wam_float_guard(X) :- float(X).
 user:wam_float_unbound(_) :- user:wam_unbound_arg(Y), float(Y).
 user:wam_is_list_guard(X) :- is_list(X).
 user:wam_is_list_unbound(_) :- user:wam_unbound_arg(Y), is_list(Y).
+user:wam_length_guard(L, N) :- length(L, N).
+user:wam_length_bad_list(N) :- length([a|b], N).
+user:wam_length_unbound_list(N) :- user:wam_unbound_arg(Y), length(Y, N).
 user:wam_ground_guard(X) :- ground(X).
 user:wam_ground_unbound(_) :- user:wam_unbound_arg(Y), ground(Y).
 user:wam_ground_nested_unbound(_) :- user:wam_unbound_arg(Y), ground(f(Y)).
@@ -212,6 +218,9 @@ run_smoke :-
           user:wam_float_unbound/1,
           user:wam_is_list_guard/1,
           user:wam_is_list_unbound/1,
+          user:wam_length_guard/2,
+          user:wam_length_bad_list/1,
+          user:wam_length_unbound_list/1,
           user:wam_ground_guard/1,
           user:wam_ground_unbound/1,
           user:wam_ground_nested_unbound/1,
@@ -259,6 +268,7 @@ run_smoke :-
     assert_lowered_callable_builtin_emitted(TmpDir),
     assert_lowered_float_builtin_emitted(TmpDir),
     assert_lowered_is_list_builtin_emitted(TmpDir),
+    assert_lowered_length_builtin_emitted(TmpDir),
     assert_lowered_ground_builtin_emitted(TmpDir),
     assert_lowered_arithmetic_comparison_builtin_emitted(TmpDir),
     assert_multiclause_wrappers_runtime_mediated(TmpDir),
@@ -356,6 +366,11 @@ run_smoke :-
     verify_output(TmpDir, 'wam_is_list_guard/1', a, "false"),
     verify_output(TmpDir, 'wam_is_list_guard/1', 'f(a)', "false"),
     verify_output(TmpDir, 'wam_is_list_unbound/1', a, "false"),
+    verify_output(TmpDir, 'wam_length_guard/2', args('[a,b]', 2), "true"),
+    verify_output(TmpDir, 'wam_length_guard/2', args('[a,b]', 1), "false"),
+    verify_output(TmpDir, 'wam_length_guard/2', args('[]', 0), "true"),
+    verify_output(TmpDir, 'wam_length_bad_list/1', 1, "false"),
+    verify_output(TmpDir, 'wam_length_unbound_list/1', 0, "false"),
     verify_output(TmpDir, 'wam_ground_guard/1', a, "true"),
     verify_output(TmpDir, 'wam_ground_guard/1', 42, "true"),
     verify_output(TmpDir, 'wam_ground_guard/1', 3.5, "true"),
@@ -516,6 +531,14 @@ assert_lowered_is_list_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-is-list-unbound-1"),
     has(CoreCode, "runtime/proper-list-term?").
 
+assert_lowered_length_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-length-guard-2"),
+    has(CoreCode, "defn lowered-wam-length-bad-list-1"),
+    has(CoreCode, "defn lowered-wam-length-unbound-list-1"),
+    has(CoreCode, "runtime/proper-list-length").
+
 assert_lowered_ground_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
     read_file_to_string(CorePath, CoreCode, []),
@@ -582,6 +605,24 @@ verify_output(ProjectDir, PredKey, Arg, Expected) :-
     ;   throw(error(assertion_error(PredKey, Arg, Expected, Actual), _))
     ).
 
+run_clojure_predicate(ProjectDir, PredKey, args(Arg1, Arg2), Output) :-
+    find_clojure_classpath(ClassPath),
+    prolog_term_string_to_edn(Arg1, EdnArg1),
+    prolog_term_string_to_edn(Arg2, EdnArg2),
+    process_create(path(java),
+                   ['-cp', ClassPath, 'clojure.main', '-m',
+                    'generated.wam_exec_test.core', PredKey, EdnArg1, EdnArg2],
+                   [cwd(ProjectDir), stdout(pipe(Out)), stderr(pipe(Err))]),
+    read_string(Out, _, OutStr0),
+    read_string(Err, _, ErrStr),
+    close(Out),
+    close(Err),
+    normalize_space(string(Output), OutStr0),
+    (   ErrStr == ""
+    ->  true
+    ;   throw(error(java_stderr(PredKey, args(Arg1, Arg2), ErrStr), _))
+    ).
+
 run_clojure_predicate(ProjectDir, PredKey, Arg, Output) :-
     find_clojure_classpath(ClassPath),
     prolog_term_string_to_edn(Arg, EdnArg),
@@ -606,6 +647,7 @@ prolog_term_string_to_edn(d, "\"d\"") :- !.
 prolog_term_string_to_edn(z, "\"z\"") :- !.
 prolog_term_string_to_edn('[]', "\"[]\"") :- !.
 prolog_term_string_to_edn(-42, "-42") :- !.
+prolog_term_string_to_edn(0, "0") :- !.
 prolog_term_string_to_edn(1, "1") :- !.
 prolog_term_string_to_edn(2, "2") :- !.
 prolog_term_string_to_edn(2.5, "2.5") :- !.

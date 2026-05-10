@@ -438,6 +438,18 @@ test(terminal_execute_is_list_is_direct_lowered_as_succeeding_builtin) :-
         assertion(\+ has(Code, ":pc target-pc"))
     )).
 
+test(simple_builtin_length_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_length/2:\nbuiltin_call length/2, 2\nproceed\n",
+        wam_clojure_lowerable(test_length/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_length/2, WamCode, [], Code),
+        has(Code, "runtime/deref-value"),
+        has(Code, "runtime/proper-list-length"),
+        has(Code, "runtime/unify-values"),
+        has(Code, "runtime/advance"),
+        has(Code, "runtime/backtrack")
+    )).
+
 test(simple_builtin_ground_is_direct_lowered_in_prefix) :-
     once((
         WamCode = "test_ground/1:\nbuiltin_call ground/1, 1\nproceed\n",

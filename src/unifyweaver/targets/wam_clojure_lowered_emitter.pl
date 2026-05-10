@@ -348,6 +348,10 @@ clojure_direct_builtin("is_list/1", "1").
 clojure_direct_builtin("is_list/1", 1).
 clojure_direct_builtin('is_list/1', "1").
 clojure_direct_builtin('is_list/1', 1).
+clojure_direct_builtin("length/2", "2").
+clojure_direct_builtin("length/2", 2).
+clojure_direct_builtin('length/2', "2").
+clojure_direct_builtin('length/2', 2).
 clojure_direct_builtin("ground/1", "1").
 clojure_direct_builtin("ground/1", 1).
 clojure_direct_builtin('ground/1', "1").
@@ -530,6 +534,13 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     format(atom(Expr),
            '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if (runtime/proper-list-term? ~w value) (runtime/advance ~w) (runtime/backtrack ~w)))',
            [S, S, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "length/2" ; Op == 'length/2'),
+    !,
+    format(atom(Expr),
+           '(let [list-value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound)) len (runtime/proper-list-length ~w list-value) out (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound))] (if (some? len) (let [[ok next-state] (runtime/unify-values ~w out len)] (if ok (runtime/advance next-state) (runtime/backtrack ~w))) (runtime/backtrack ~w)))',
+           [S, S, S, S, S, S, S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "ground/1" ; Op == 'ground/1'),
