@@ -286,6 +286,31 @@ contributes at most one entry per arg position. The codegen emits
 externally-loaded facts is `WamRuntime$build_fact_indexes(facts,
 arity)`.
 
+**Range queries** on integer-valued arg positions use a separate
+sorted-by-value index. For every numeric (Int/FloatTerm) position
+the codegen emits `<pred>_sorted_arg<K> <- list(vals = c(...),
+idxs = c(...))` -- two parallel vectors sorted ascending by value
+-- and bundles them into `<pred>_range_indexes <- list(arg1 =
+<sorted-or-NULL>, ...)`. The bundle is registered in
+`program$fact_range_indexes` at program-init time. The
+runtime-exposed builtin
+
+```prolog
+fact_in_range(+PredArity, +ArgPos, +Lo, +Hi, ?ArgList)
+```
+
+binary-searches the `vals` vector for the index range covering
+`[Lo, Hi]` (inclusive), extracts the corresponding `idxs` subset,
+and iterates matching tuples via the existing
+`fact_table_iter_subset` enumeration path (so multi-solution
+backtracking just works). `ArgList` is a Prolog list of length
+`Arity` that gets unified against each matching fact's args. The
+builtin fails if the predicate isn't fact-tabled, the position
+doesn't have a sorted index (atom-only column), `Lo`/`Hi` aren't
+numeric, or `ArgList` isn't a proper list of the predicate's
+arity. Memory: O(F) per numeric-valued arg position, on top of
+the hash-index O(N · F).
+
 The bench (`tests/benchmarks/wam_r_fact_source_bench.pl`) shows
 modest per-query wins (~10% at N=100 chains, querying the deepest
 element) over the WAM `switch_on_constant` path. The bigger wins
@@ -706,6 +731,7 @@ Coverage map (e2e tests, by feature group):
 | `streams_e2e_rscript` | `open/3`, `close/1`, `read/2`, `write/2`, `writeln/2`, `format/3` round-trip |
 | `streams_multiline_read_e2e_rscript` | `read/2` across multi-line clauses: buffer accumulates lines until trimmed buffer ends with `.` and parser accepts |
 | `fact_table_e2e_rscript` | fact-table lowering: hash-indexed dispatch, multi-solution backtracking, atoms + integers |
+| `fact_in_range_e2e_rscript` | `fact_in_range/5` range query on fact tables (sorted-arg index + binary search + iter-CP), inclusive bounds, atom-only column = fail, out-of-range ArgPos = fail |
 | `fact_table_multi_arg_index_e2e_rscript` | per-arg fact-table indexes: dispatch picks smallest matching bucket among bound atom/int args (arg2-only, arg3-only, multi-arg-bound queries) |
 | `kernel_tc2_e2e_rscript` | recursive-kernel detection: `transitive_closure2` BFS over a fact-table edge predicate |
 | `kernel_td3_e2e_rscript` | recursive-kernel detection: `transitive_distance3` BFS-with-depth over a fact-table edge predicate |

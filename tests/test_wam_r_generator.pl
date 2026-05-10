@@ -2241,6 +2241,88 @@ e2e_nested_ite_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for fact_in_range/5: range queries on
+% fact-tabled predicates via the per-arg sorted index. The codegen
+% builds the sorted index alongside the existing hash index; the
+% builtin binary-searches for tuples whose ArgPos value is in
+% [Lo, Hi] and iterates via fact_table_iter_subset's iter-CP. Each
+% sub-test uses a fail-driven loop with assertz/retract accumulators
+% to drive backtracking without findall -- a separate
+% PutVariable + PutStructure-on-A1 interaction in the WAM compiler
+% leaks the template var when findall captures a non-anonymous
+% template that also appears inside a struct arg of the call (filed
+% as a follow-up; orthogonal to fact_in_range).
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(fact_in_range_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_fact_in_range_via_rscript
+    ;   true
+    )).
+
+e2e_fact_in_range_via_rscript :-
+    % price/2: fact table with int values at arg 2.
+    assertz(user:price(apple,     5)),
+    assertz(user:price(banana,    8)),
+    assertz(user:price(cherry,   12)),
+    assertz(user:price(date,     15)),
+    assertz(user:price(eggplant,  3)),
+    % q_mid: tuples with arg2 in [5,10] -> apple, banana.
+    assertz((user:q_mid :-
+        (   fact_in_range(price/2, 2, 5, 10, [Item, _P]),
+            assertz(found(Item)),
+            fail
+        ;   true
+        ),
+        findall(X, retract(found(X)), Xs),
+        msort(Xs, Sorted),
+        Sorted == [apple, banana])),
+    % q_high: arg2 in [12,99] -> cherry, date.
+    assertz((user:q_high :-
+        (   fact_in_range(price/2, 2, 12, 99, [Item, _P]),
+            assertz(found(Item)),
+            fail
+        ;   true
+        ),
+        findall(X, retract(found(X)), Xs),
+        msort(Xs, Sorted),
+        Sorted == [cherry, date])),
+    % q_empty: arg2 in [100,200] -> empty.
+    assertz((user:q_empty :-
+        \+ fact_in_range(price/2, 2, 100, 200, [_Item, _P]))),
+    % q_exact: arg2 = exactly 12 -> just cherry.
+    assertz((user:q_exact :-
+        (   fact_in_range(price/2, 2, 12, 12, [Item, _P]),
+            assertz(found(Item)),
+            fail
+        ;   true
+        ),
+        findall(X, retract(found(X)), Xs),
+        Xs == [cherry])),
+    % q_atom_arg: ArgPos 1 has only atom values, no sorted index
+    %             -> always fails.
+    assertz((user:q_atom_arg :-
+        \+ fact_in_range(price/2, 1, 0, 100, [_Item, _P]))),
+    % q_bad_pos: out-of-range ArgPos -> fails.
+    assertz((user:q_bad_pos :-
+        \+ fact_in_range(price/2, 99, 0, 100, [_Item, _P]))),
+    unique_r_tmp_dir('tmp_r_fact_range_e2e', TmpDir),
+    write_wam_r_project(
+        [user:price/2, user:q_mid/0, user:q_high/0, user:q_empty/0,
+         user:q_exact/0, user:q_atom_arg/0, user:q_bad_pos/0],
+        [intern_atoms([apple, banana, cherry, date, eggplant])],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [q_mid, q_high, q_empty, q_exact, q_atom_arg, q_bad_pos],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % End-to-end Rscript run for `^/2` existential scope and first
 % free-variable grouping in bagof/setof. Asserts 2-arg dynamic
 % predicates, then drives bagof(X, Y^p(X,Y), L) and

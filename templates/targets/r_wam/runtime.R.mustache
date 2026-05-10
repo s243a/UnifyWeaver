@@ -3474,6 +3474,38 @@ WamRuntime$build_fact_indexes <- function(facts, arity) {
   idxs
 }
 
+# Binary-search a sorted-by-value index for tuple indices whose value
+# falls within [lo, hi] inclusive. sorted_idx is a list(vals = <sorted
+# numeric vector>, idxs = <parallel integer vector of tuple indices>)
+# emitted by the codegen for each integer-valued arg position of a
+# fact-tabled predicate (see emit_fact_sorted_arg in wam_r_target.pl).
+# Returns an integer vector of matching tuple indices, in the original
+# tuple order (the order is preserved by re-sorting the matching range
+# back to ascending idx; not strictly required for correctness but
+# keeps fact_in_range's enumeration order stable across calls and
+# matches a full-scan's order).
+WamRuntime$fact_range_lookup <- function(sorted_idx, lo, hi) {
+  if (is.null(sorted_idx)) return(NULL)
+  vals <- sorted_idx$vals
+  if (length(vals) == 0L) return(integer(0))
+  # findInterval(v, x) returns max{i : x[i] <= v}, or 0 if v < x[1].
+  # - left:  first i with vals[i] >= lo. findInterval(lo - 0.5, vals)
+  #          counts vals strictly < lo for integer-valued vals (since
+  #          the 0.5 offset is smaller than any integer gap); +1L gives
+  #          the first index with vals[i] >= lo. For float vals the
+  #          0.5 offset is still safe as long as the chosen precision
+  #          doesn't put distinct values within 0.5 of each other,
+  #          which is true for the typical fact-source positions
+  #          covered by this index.
+  # - right: last i with vals[i] <= hi. That's findInterval(hi, vals)
+  #          directly -- no offset needed since findInterval is
+  #          already an inclusive lower-bound search.
+  left  <- findInterval(lo - 0.5, vals) + 1L
+  right <- findInterval(hi, vals)
+  if (left > right) return(integer(0))
+  sort(sorted_idx$idxs[left:right])
+}
+
 # Enumerable iteration over a list of WAM terms, used by member/2 (and
 # any future enumerator with the same shape). Tries to unify `target`
 # with each element starting at `start_idx`. On success, pushes an iter
@@ -5657,6 +5689,62 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     return(WamRuntime$retract_iter(program, state,
                                     parts$head_args, parts$body, parts$arity,
                                     ck, state$pc + 1L))
+  }
+
+  # ----- fact_in_range/5: range query over a fact-tabled predicate -----
+  # fact_in_range(+PredArity, +ArgPos, +Lo, +Hi, ?ArgList).
+  #
+  # Multi-solution. For a predicate emitted with the fact-table layout
+  # (every clause `get_constant + proceed`, no body calls), enumerates
+  # the tuples whose integer-valued ArgPos-th argument is in [Lo, Hi]
+  # inclusive, unifying each with ArgList (which must be a Prolog list
+  # of length Arity). Uses the codegen-built sorted-by-value index for
+  # ArgPos with a binary-search range lookup, then delegates to
+  # fact_table_iter_subset for the unify-and-push-iter-CP loop. The
+  # backtracking shape matches retract/1's iter-CP: a no-match retry
+  # returns FALSE which triggers another backtrack outward.
+  #
+  # Falls back to FALSE if:
+  #   - the predicate isn't fact-tabled (no entry in fact_range_indexes)
+  #   - ArgPos doesn't have a sorted index (atom-only column, or a
+  #     position the codegen didn't build a sorted vector for)
+  #   - Lo / Hi aren't numeric
+  #   - ArgList isn't a proper list of the predicate's arity
+  if (key == "fact_in_range/5") {
+    pa <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    if (is.null(pa) || is.null(pa$tag) || pa$tag != "struct" ||
+        length(pa$args) != 2L ||
+        !identical(WamRuntime$string_of(table, pa$fid), "/")) return(FALSE)
+    name_v  <- WamRuntime$deref(state, pa$args[[1]])
+    arity_v <- WamRuntime$deref(state, pa$args[[2]])
+    if (is.null(name_v)  || is.null(name_v$tag)  || name_v$tag  != "atom") return(FALSE)
+    if (is.null(arity_v) || is.null(arity_v$tag) || arity_v$tag != "int")  return(FALSE)
+    ck <- paste0(WamRuntime$string_of(table, name_v$id), "/", arity_v$val)
+    if (!exists(ck, envir = program$fact_range_indexes, inherits = FALSE)) return(FALSE)
+    entry <- get(ck, envir = program$fact_range_indexes, inherits = FALSE)
+    pos_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+    if (is.null(pos_v) || is.null(pos_v$tag) || pos_v$tag != "int") return(FALSE)
+    pos <- as.integer(pos_v$val)
+    if (pos < 1L || pos > length(entry$range)) return(FALSE)
+    sorted_idx <- entry$range[[pos]]
+    if (is.null(sorted_idx)) return(FALSE)
+    lo_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 3L))
+    hi_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 4L))
+    if (is.null(lo_v) || is.null(lo_v$tag) ||
+        (lo_v$tag != "int" && lo_v$tag != "float")) return(FALSE)
+    if (is.null(hi_v) || is.null(hi_v$tag) ||
+        (hi_v$tag != "int" && hi_v$tag != "float")) return(FALSE)
+    lo <- as.numeric(lo_v$val)
+    hi <- as.numeric(hi_v$val)
+    subset <- WamRuntime$fact_range_lookup(sorted_idx, lo, hi)
+    if (is.null(subset) || length(subset) == 0L) return(FALSE)
+    args_term <- WamRuntime$deref(state, WamRuntime$get_reg(state, 5L))
+    args_list <- WamRuntime$wam_list_decompose(state, args_term, table)
+    if (is.null(args_list)) return(FALSE)
+    if (length(args_list) != as.integer(arity_v$val)) return(FALSE)
+    return(WamRuntime$fact_table_iter_subset(program, state, ck, entry$facts,
+                                              subset, args_list, 1L,
+                                              state$pc + 1L))
   }
 
   # ----- abolish/1: drop all clauses for Name/Arity -----

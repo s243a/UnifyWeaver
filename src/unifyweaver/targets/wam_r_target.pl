@@ -889,11 +889,18 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
                                    fact_info(NCls, _FArity, FTuples)),
               _, fail),
         fact_layout_enabled(P, Arity, NCls, Options)
-    ->  emit_fact_table(P, Arity, FTuples, FactData, FactFunc, FactFuncName),
+    ->  emit_fact_table(P, Arity, FTuples, FactData, FactFunc, FactFuncName,
+                        RangeReg),
         NewLoweredAcc = [FactData, FactFunc | LoweredAcc],
         emit_r_lowered_wrapper(P, Arity, FactFuncName, WrapperCode),
         emit_lowered_dispatch_entry(P, Arity, FactFuncName, DispEntry),
-        NewLoweredDispAcc = [DispEntry | LoweredDispAcc]
+        % Two entries per fact-tabled pred: the lowered-dispatch
+        % registration (consumed by dispatch_call's fast path) and
+        % the fact_range_indexes registration (consumed by the
+        % fact_in_range/5 builtin). Both go into the same
+        % lowered-dispatch-assignments block of the program template
+        % so they run after the lowered functions are defined.
+        NewLoweredDispAcc = [RangeReg, DispEntry | LoweredDispAcc]
     ;   should_try_lower(Mode, P, Arity),
         WamCodeForLower \= "",
         catch(wam_r_lowerable(Pred, WamCodeForLower, _Reason), _, fail),
@@ -1409,36 +1416,134 @@ fact_seg_arg_lit(SegParts, Idx, Lit) :-
     member(["get_constant", ValStr, WantStr], SegParts), !,
     constant_to_r_term(ValStr, Lit).
 
-%% emit_fact_table(+Pred, +Arity, +Tuples, -DataDecl, -LoweredFunc, -FuncName)
+%% emit_fact_table(+Pred, +Arity, +Tuples, -DataDecl, -LoweredFunc, -FuncName,
+%%                 -RangeRegistration)
 %  Renders the per-predicate fact-data declaration and a lowered
 %  function that delegates to WamRuntime$fact_table_dispatch.
-%  Emits N per-arg indexes (one R env per arg position, each mapping
-%  "a<id>" / "i<val>" -> integer vector of matching tuple indices),
-%  bundled into an `<RName>_indexes <- list(...)` list. Dispatch picks
-%  the smallest matching bucket among bound atom/int args and iterates
-%  just that bucket; a non-leading-ground query is no longer a full
-%  scan. Memory: O(N * F); per-arg, no composite keys.
-emit_fact_table(Pred, Arity, Tuples, DataDecl, LoweredFunc, FuncName) :-
+%  Emits N per-arg hash indexes (one R env per arg position, each
+%  mapping "a<id>" / "i<val>" -> integer vector of matching tuple
+%  indices), bundled into an `<RName>_indexes <- list(...)` list.
+%  Dispatch picks the smallest matching bucket among bound atom/int
+%  args and iterates just that bucket; a non-leading-ground query
+%  is no longer a full scan.
+%
+%  Additionally emits per-arg SORTED indexes for any position whose
+%  literals are numeric (Int/FloatTerm); these power the range-query
+%  builtin `fact_in_range/5`. Each sorted index is a parallel pair
+%  of vectors `<RName>_sorted_arg<K> <- list(vals = c(...), idxs =
+%  c(...))` sorted ascending by val; the dispatch builtin
+%  binary-searches the vals vector to extract the tuple-idx subset
+%  for [Lo, Hi]. Positions whose literals are atom-only (no
+%  numerics) emit no sorted index and appear as NULL in the
+%  per-pred bundle; the builtin treats NULL as "no range support at
+%  this position" and returns FALSE.
+%
+%  RangeRegistration is an R assignment block that registers the
+%  per-pred range entry into shared_program$fact_range_indexes;
+%  callers stitch it into the lowered-dispatch assignments block.
+%
+%  Memory: O(N * F) for the hash indexes, plus O(F) per numeric-
+%  valued arg for the sorted index (parallel vectors). Per-arg,
+%  no composite keys.
+emit_fact_table(Pred, Arity, Tuples, DataDecl, LoweredFunc, FuncName,
+                RangeRegistration) :-
     r_pred_name(Pred, RName),
     format(atom(DataName), '~w_facts', [RName]),
     format(atom(IndexesName), '~w_indexes', [RName]),
+    format(atom(RangeIndexesName), '~w_range_indexes', [RName]),
     format(atom(FuncName), '~w_fact_iter', [RName]),
     length(Tuples, NTuples),
     fact_tuples_to_r_list(Tuples, ListBody),
     fact_indexes_block(Tuples, Arity, RName, IndexesName, IndexBody),
+    fact_sorted_indexes_block(Tuples, Arity, RName, RangeIndexesName,
+                              SortedBody),
     format(string(DataDecl),
 '# Fact table for ~w/~w (~w tuples)
 ~w <- list(
 ~w
 )
-~w', [Pred, Arity, NTuples, DataName, ListBody, IndexBody]),
+~w
+~w', [Pred, Arity, NTuples, DataName, ListBody, IndexBody, SortedBody]),
     fact_args_collect(Arity, ArgsCollect),
     format(string(LoweredFunc),
 '~w <- function(program, state) {
   args <- ~w
   WamRuntime$fact_table_dispatch(program, state, "~w/~w", ~w, ~w,
                                   args, state$pc + 1L)
-}', [FuncName, ArgsCollect, Pred, Arity, DataName, IndexesName]).
+}', [FuncName, ArgsCollect, Pred, Arity, DataName, IndexesName]),
+    format(string(RangeRegistration),
+'assign("~w/~w", list(facts = ~w, range = ~w), envir = shared_program$fact_range_indexes)',
+           [Pred, Arity, DataName, RangeIndexesName]).
+
+%% fact_sorted_indexes_block(+Tuples, +Arity, +RName, +RangeIndexesName, -Body)
+%  Emits per-arg sorted-by-value indexes alongside the hash indexes
+%  (one `<RName>_sorted_arg<K> <- list(vals = c(...), idxs = c(...))`
+%  block per numeric-valued position) plus a bundle list
+%  `<RangeIndexesName> <- list(arg<K> = <sorted-or-NULL>, ...)`.
+%  Numeric-valued = IntTerm() / FloatTerm() literals at that
+%  position; atom positions contribute no sorted entry.
+fact_sorted_indexes_block(Tuples, Arity, RName, RangeIndexesName, Body) :-
+    must_be(positive_integer, Arity),
+    numlist(1, Arity, ArgPositions),
+    maplist(fact_sorted_per_arg(Tuples, RName), ArgPositions,
+            PerArgBlocks, PerArgBundleEntries),
+    exclude(==(''), PerArgBlocks, NonEmptyBlocks),
+    atomic_list_concat(NonEmptyBlocks, '\n', BlocksJoined),
+    atomic_list_concat(PerArgBundleEntries, ', ', BundleEntries),
+    (   BlocksJoined == ''
+    ->  format(string(Body), '~w <- list(~w)',
+               [RangeIndexesName, BundleEntries])
+    ;   format(string(Body), '~w\n~w <- list(~w)',
+               [BlocksJoined, RangeIndexesName, BundleEntries])
+    ).
+
+% Emit the sorted-index block for one arg position. Block is the R
+% assignment for `<RName>_sorted_arg<K>` (empty string when no
+% numerics at that position). BundleEntry is the `arg<K> = <name>` or
+% `arg<K> = NULL` fragment for the bundle list.
+fact_sorted_per_arg(Tuples, RName, ArgPos, Block, BundleEntry) :-
+    format(atom(SortedName), '~w_sorted_arg~w', [RName, ArgPos]),
+    fact_sorted_pairs_at(Tuples, ArgPos, 1, Pairs0),
+    (   Pairs0 == []
+    ->  Block = '',
+        format(atom(BundleEntry), 'arg~w = NULL', [ArgPos])
+    ;   keysort(Pairs0, Pairs1),
+        pairs_keys_values(Pairs1, Vals, Idxs),
+        atomic_list_concat(Vals, ', ', ValsStr),
+        maplist([N, S]>>format(string(S), '~wL', [N]), Idxs, IdxStrs),
+        atomic_list_concat(IdxStrs, ', ', IdxsStr),
+        format(string(Block),
+               '~w <- list(vals = c(~w), idxs = c(~w))',
+               [SortedName, ValsStr, IdxsStr]),
+        format(atom(BundleEntry), 'arg~w = ~w', [ArgPos, SortedName])
+    ).
+
+% Collect (NumericValue, TupleIdx) pairs for an arg position. Skips
+% tuples whose literal at ArgPos isn't IntTerm() / FloatTerm() --
+% those positions contribute nothing to the sorted index.
+fact_sorted_pairs_at([], _ArgPos, _Idx, []).
+fact_sorted_pairs_at([Tuple | Rest], ArgPos, Idx, Pairs) :-
+    (   nth1(ArgPos, Tuple, Lit),
+        fact_sorted_value(Lit, N)
+    ->  Pairs = [N-Idx | RestPairs]
+    ;   Pairs = RestPairs
+    ),
+    Idx1 is Idx + 1,
+    fact_sorted_pairs_at(Rest, ArgPos, Idx1, RestPairs).
+
+% Extract a numeric value from a fact-table literal. IntTerm(N) and
+% FloatTerm(N) are recognised; everything else (Atom, struct, list)
+% fails so the position is skipped.
+fact_sorted_value(Lit, N) :-
+    (   sub_string(Lit, 0, 8, _, "IntTerm(")
+    ->  string_concat("IntTerm(", AfterPrefix, Lit),
+        string_concat(NumStr, ")", AfterPrefix),
+        number_string(N, NumStr)
+    ;   sub_string(Lit, 0, 10, _, "FloatTerm(")
+    ->  string_concat("FloatTerm(", AfterPrefix, Lit),
+        string_concat(NumStr, ")", AfterPrefix),
+        number_string(N, NumStr)
+    ).
 
 % Build the per-arg index population block. For each arg position
 % 1..Arity, emit a `<RName>_index_arg<K> <- new.env(...)` plus one
