@@ -380,6 +380,15 @@ wam_parts_to_r(["switch_on_constant" | Cases], Lit) :-
     atomic_list_concat(CaseLits, ', ', CasesStr),
     format(string(Lit), 'SwitchOnConstant(list(~w))', [CasesStr]).
 
+% --- Switch on term (type-mixed dispatch) ---
+% Emitted by the WAM compiler when a predicate's clauses have a mix
+% of first-arg types (constant + struct + list). The runtime
+% implements this as a no-op that advances PC; the standard
+% try/retry chain visits each clause and clause-head unification
+% filters non-matching ones, so correctness is preserved without
+% the optimisation.
+wam_parts_to_r(["switch_on_term" | _], 'SwitchOnTerm()').
+
 % --- Switch on structure (functor-shape dispatch) ---
 % Each case is "F/N:label". Behaviour parallels switch_on_constant: when
 % the first arg is a struct of matching shape, jump to the labelled
@@ -784,7 +793,12 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
         NewAllLabels = [MainEntry | AllLabelAcc],
         WamCodeForLower = "",
         NewFactCommentAcc = FactCommentAcc
-    ;   compile_predicate_to_wam(P/Arity, [], WamCode),
+    ;   % Pass Pred (which may be Module:P/Arity or P/Arity) so cross-
+        % module compilation can find clauses outside `user`. Stripping
+        % to P/Arity defaults compile_predicate_to_wam's module to
+        % `user`, which silently produces "no clauses" for predicates
+        % defined in any other module.
+        compile_predicate_to_wam(Pred, [], WamCode),
         WamCodeForLower = WamCode,
         atom_string(WamCode, WamStr),
         split_string(WamStr, "\n", "", WamLines),

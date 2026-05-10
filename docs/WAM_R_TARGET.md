@@ -620,6 +620,17 @@ WamRuntime$run(shared_program, state)
   strictly less than the operator precedence. Symmetric with the
   existing prefix simplification. Documented; not a real-world
   blocker.
+- **Cut barrier scope**. The runtime's `!/0` and `CutIte` drop the
+  most-recent choice point, not the choice points created since the
+  current predicate's clause head. This is enough for cut in a
+  predicate whose body never calls another multi-clause predicate
+  before the cut, but loses cut-barrier semantics for any cut whose
+  preceding goals push CPs that aren't the predicate's own. The
+  cross-target Prolog parser (`src/unifyweaver/core/prolog_term_parser.pl`,
+  see `tests/test_prolog_term_parser_wam_r_compile.pl`) compiles
+  successfully but only its cut-free predicates execute correctly
+  end-to-end for this reason; full runtime equivalence with
+  `WamRuntime$parse_term` is gated on this fix.
 - **WAM-text quoting collision**. The atom `'42'` and the integer
   `42` both serialise as `set_constant 42` in SWI's WAM emitter,
   so the codegen can't distinguish them. The runtime's `atom_*`
