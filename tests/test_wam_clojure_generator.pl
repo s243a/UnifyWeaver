@@ -130,6 +130,7 @@ test(project_emits_runtime_and_lowered_dispatch_scaffold) :-
         assertion(sub_string(RuntimeCode, _, _, _, '"is_list/1"')),
         assertion(sub_string(RuntimeCode, _, _, _, '"length/2"')),
         assertion(sub_string(RuntimeCode, _, _, _, '"member/2"')),
+        assertion(sub_string(RuntimeCode, _, _, _, '"append/3"')),
         assertion(sub_string(RuntimeCode, _, _, _, '"ground/1"')),
         assertion(sub_string(RuntimeCode, _, _, _, ':call-foreign')),
         assertion(sub_string(RuntimeCode, _, _, _, '(defn apply-foreign-result [state result]')),

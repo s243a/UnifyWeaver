@@ -61,6 +61,9 @@
 :- dynamic user:wam_member_guard/2.
 :- dynamic user:wam_member_backtrack_b/0.
 :- dynamic user:wam_member_unbound_list/1.
+:- dynamic user:wam_append_guard/3.
+:- dynamic user:wam_append_bad_left/1.
+:- dynamic user:wam_append_unbound_left/1.
 :- dynamic user:wam_ground_guard/1.
 :- dynamic user:wam_ground_unbound/1.
 :- dynamic user:wam_ground_nested_unbound/1.
@@ -143,6 +146,9 @@ user:wam_length_unbound_list(N) :- user:wam_unbound_arg(Y), length(Y, N).
 user:wam_member_guard(X, L) :- member(X, L).
 user:wam_member_backtrack_b :- member(X, [a,b]), X = b.
 user:wam_member_unbound_list(X) :- user:wam_unbound_arg(Y), member(X, Y).
+user:wam_append_guard(A, B, C) :- append(A, B, C).
+user:wam_append_bad_left(C) :- append([a|b], [c], C).
+user:wam_append_unbound_left(C) :- user:wam_unbound_arg(A), append(A, [b], C).
 user:wam_ground_guard(X) :- ground(X).
 user:wam_ground_unbound(_) :- user:wam_unbound_arg(Y), ground(Y).
 user:wam_ground_nested_unbound(_) :- user:wam_unbound_arg(Y), ground(f(Y)).
@@ -230,6 +236,9 @@ run_smoke :-
           user:wam_member_guard/2,
           user:wam_member_backtrack_b/0,
           user:wam_member_unbound_list/1,
+          user:wam_append_guard/3,
+          user:wam_append_bad_left/1,
+          user:wam_append_unbound_left/1,
           user:wam_ground_guard/1,
           user:wam_ground_unbound/1,
           user:wam_ground_nested_unbound/1,
@@ -279,6 +288,7 @@ run_smoke :-
     assert_lowered_is_list_builtin_emitted(TmpDir),
     assert_lowered_length_builtin_emitted(TmpDir),
     assert_lowered_member_builtin_emitted(TmpDir),
+    assert_lowered_append_builtin_emitted(TmpDir),
     assert_lowered_ground_builtin_emitted(TmpDir),
     assert_lowered_arithmetic_comparison_builtin_emitted(TmpDir),
     assert_multiclause_wrappers_runtime_mediated(TmpDir),
@@ -390,6 +400,12 @@ smoke_cases([
     case('wam_member_guard/2', args(c, '[a,b]'), "false"),
     case('wam_member_backtrack_b/0', no_args, "true"),
     case('wam_member_unbound_list/1', a, "false"),
+    case('wam_append_guard/3', args('[a]', '[b,c]', '[a,b,c]'), "true"),
+    case('wam_append_guard/3', args('[]', '[a,b]', '[a,b]'), "true"),
+    case('wam_append_guard/3', args('[a,b]', '[]', '[a,b]'), "true"),
+    case('wam_append_guard/3', args('[a]', '[b]', '[a,c]'), "false"),
+    case('wam_append_bad_left/1', '[a,c]', "false"),
+    case('wam_append_unbound_left/1', '[a,b]', "false"),
     case('wam_ground_guard/1', a, "true"),
     case('wam_ground_guard/1', 42, "true"),
     case('wam_ground_guard/1', 3.5, "true"),
@@ -565,6 +581,15 @@ assert_lowered_member_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-member-unbound-list-1"),
     has(CoreCode, "runtime/apply-member-solution").
 
+assert_lowered_append_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-append-guard-3"),
+    has(CoreCode, "defn lowered-wam-append-bad-left-1"),
+    has(CoreCode, "defn lowered-wam-append-unbound-left-1"),
+    has(CoreCode, "runtime/proper-list-items"),
+    has(CoreCode, "runtime/list->term").
+
 assert_lowered_ground_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
     read_file_to_string(CorePath, CoreCode, []),
@@ -672,6 +697,12 @@ arg_to_edn_vector(args(Arg1, Arg2), ArgsEdn) :-
     prolog_term_string_to_edn(Arg1, EdnArg1),
     prolog_term_string_to_edn(Arg2, EdnArg2),
     format(string(ArgsEdn), "[~w ~w]", [EdnArg1, EdnArg2]).
+arg_to_edn_vector(args(Arg1, Arg2, Arg3), ArgsEdn) :-
+    !,
+    prolog_term_string_to_edn(Arg1, EdnArg1),
+    prolog_term_string_to_edn(Arg2, EdnArg2),
+    prolog_term_string_to_edn(Arg3, EdnArg3),
+    format(string(ArgsEdn), "[~w ~w ~w]", [EdnArg1, EdnArg2, EdnArg3]).
 arg_to_edn_vector(Arg, ArgsEdn) :-
     prolog_term_string_to_edn(Arg, EdnArg),
     format(string(ArgsEdn), "[~w]", [EdnArg]).
@@ -758,13 +789,19 @@ prolog_term_string_to_edn("d", "\"d\"") :- !.
 prolog_term_string_to_edn("z", "\"z\"") :- !.
 prolog_term_string_to_edn('f(a)', "{:tag :struct :functor \"f/1\" :args [\"a\"]}") :- !.
 prolog_term_string_to_edn('f(b)', "{:tag :struct :functor \"f/1\" :args [\"b\"]}") :- !.
+prolog_term_string_to_edn('[a]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}") :- !.
 prolog_term_string_to_edn('[a,b]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}") :- !.
+prolog_term_string_to_edn('[b,c]', "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[a,c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
+prolog_term_string_to_edn('[a,b,c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[a|b]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" \"b\"]}") :- !.
 prolog_term_string_to_edn("f(a)", "{:tag :struct :functor \"f/1\" :args [\"a\"]}") :- !.
 prolog_term_string_to_edn("f(b)", "{:tag :struct :functor \"f/1\" :args [\"b\"]}") :- !.
+prolog_term_string_to_edn("[a]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}") :- !.
 prolog_term_string_to_edn("[a,b]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}") :- !.
+prolog_term_string_to_edn("[b,c]", "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn("[a,c]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
+prolog_term_string_to_edn("[a,b,c]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn(Atom, Atom).
 
 find_clojure_classpath(ClassPath) :-
