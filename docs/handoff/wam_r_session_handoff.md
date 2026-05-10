@@ -92,9 +92,11 @@ relevant feature sections. Not bugs -- intentional scope boundaries.
 - **Fact-table indexing covers any arg position.** Per-arg hash
   indexes (one env per arg, dispatcher picks smallest bound
   bucket). Storage is O(N · F) -- linear in arity, no `2^N`
-  composite-key blowup. Range / interval indexes are still future
-  work. Design rationale + alternatives + connection to the
-  parameterized C# query runtime are documented in
+  composite-key blowup. Range / interval queries on numeric
+  positions go through a separate sorted-by-value index + the
+  `fact_in_range/5` builtin (binary search + iter-CP). Design
+  rationale + alternatives + connection to the parameterized C#
+  query runtime are documented in
   [`docs/design/WAM_R_FACT_INDEXING.md`](../design/WAM_R_FACT_INDEXING.md).
 - **`bagof` / `setof` per-witness grouping.** `^/2` existential scope
   works; non-quantified free vars are silently aggregated rather than
@@ -217,14 +219,47 @@ roughly priority order:
    `nested_ite_e2e_rscript` with four sub-tests: ITE in `findall`
    body, ITE in disjunction-left branch, bare disjunction in
    `findall` body, bare `(C -> T)` in `findall` body.
-7. **Phase-3 lowered emitter expansion.** Currently handles only
+7. ~~**Range / interval indexes** on fact tables.~~ *Done.* Codegen
+   now emits a sorted-by-value index alongside the hash index for
+   every numeric (Int/FloatTerm) arg position
+   (`<pred>_sorted_arg<K> <- list(vals = c(...), idxs = c(...))`)
+   and registers the per-pred bundle in
+   `program$fact_range_indexes`. The runtime exposes a new builtin
+   `fact_in_range(+PredArity, +ArgPos, +Lo, +Hi, ?ArgList)` that
+   binary-searches the sorted vector for `[Lo, Hi]` and iterates
+   matching tuples via the existing `fact_table_iter_subset`
+   enumeration path. Multi-solution via iter-CP; atom-only columns
+   and out-of-range positions return FALSE. The interface is
+   explicit (users have to call `fact_in_range/5` directly --
+   there's no compiler-level pattern detection that rewrites
+   `p(X, Y), X >= Lo, X =< Hi` automatically). Covered by
+   `fact_in_range_e2e_rscript`.
+
+8. **Compiler bug: `PutVariable(Yn, Ai)` + later `PutStructure(_,
+   Ai, _)` leaks the template var.** Surfaced while writing the
+   `fact_in_range/5` test. When the WAM compiler emits
+   `PutVariable(201, 1)` to initialize a permanent var (e.g. the
+   template of a `findall`) into both Y1 and A1, then later builds
+   a call whose first arg is a compound (e.g. `price/2`) via
+   `PutStructure(_, 1, _)`, the build's auto-bind logic in
+   `append_build_arg` sees A1's value is the shared unbound and
+   binds it to the new struct. Y1 (which shared that unbound)
+   transitively dereferences to the struct, so the user's template
+   var is silently bound to the call's first arg. Repro:
+   `findall(X, fact_in_range(p/2, 2, 5, 10, [X, _]), L)` -- X is
+   the template but X never appears as a direct arg of the call,
+   so `PutVariable` sharing was inappropriate. Fix is in the
+   compiler: don't share Y/A registers when the next call's first
+   arg is a constructed compound, or rebuild the shared unbound
+   before the PutStructure. Workaround for users: drive the
+   accumulator with assertz + fail-driven loops instead of
+   findall when the template appears inside a struct arg of the
+   inner goal.
+
+9. **Phase-3 lowered emitter expansion.** Currently handles only
    `deterministic` and `multi_clause_1` shapes. Could grow N-clause
    general lowering; would compete with the kernel / fact-table paths
    so the value is unclear.
-8. **Range / interval indexes** on fact tables. Per-arg hash indexes
-   land queries with ground atom/int args; range queries (`X > 5`,
-   `X between A B`) still go through the per-tuple scan. A sorted-
-   per-arg index would route these. Niche but a natural extension.
 
 ## Closed items (recent history)
 

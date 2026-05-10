@@ -87,7 +87,16 @@ shared_program <- list(
   # falling through to label/foreign/dynamic/library/builtin tiers,
   # so internal Call/Execute instructions also reach the fast path
   # (not just direct R-API calls through the per-pred wrapper).
-  lowered_dispatch = new.env(parent = emptyenv())
+  lowered_dispatch = new.env(parent = emptyenv()),
+  # Range-index registry for fact-tabled predicates. Keyed by
+  # "pred/arity"; value is list(facts = <flat-tuple-list>, range =
+  # list(arg1 = <sorted-vectors> or NULL, arg2 = ..., ...)) where
+  # each non-NULL entry is list(vals = <sorted-numeric-vector>,
+  # idxs = <parallel-integer-vector-of-tuple-indices>) built at
+  # codegen time over the integer-valued positions. Consumed by
+  # the fact_in_range/5 builtin via binary-search + the existing
+  # fact_table_iter_subset enumeration path.
+  fact_range_indexes = new.env(parent = emptyenv())
 )
 
 # ----------------------------------------------------------
