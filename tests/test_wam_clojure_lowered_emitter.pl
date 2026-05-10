@@ -450,6 +450,19 @@ test(simple_builtin_length_is_direct_lowered_in_prefix) :-
         has(Code, "runtime/backtrack")
     )).
 
+test(simple_builtin_member_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_member/2:\nbuiltin_call member/2, 2\nproceed\n",
+        wam_clojure_lowerable(test_member/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_member/2, WamCode, [], Code),
+        has(Code, "runtime/apply-member-solution"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "inc (:pc"),
+        has(Code, "runtime/deref-value"),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
 test(simple_builtin_ground_is_direct_lowered_in_prefix) :-
     once((
         WamCode = "test_ground/1:\nbuiltin_call ground/1, 1\nproceed\n",

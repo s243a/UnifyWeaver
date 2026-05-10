@@ -220,7 +220,7 @@
 (defn restore-choice-regs [state saved-regs]
   (assoc state :regs saved-regs))
 
-(declare activate-foreign-choice)
+(declare activate-choice)
 
 (defn choice-snapshot [state target-pc]
   {:kind :wam
@@ -245,6 +245,12 @@
    :cut-bar (:cut-bar state)
    :next-var-id (:next-var-id state)
    :foreign-results (vec results)})
+
+(defn member-choice-snapshot [state target-pc elem rest-list]
+  (assoc (choice-snapshot state target-pc)
+         :kind :member
+         :member-elem elem
+         :member-rest rest-list))
 
 (defn push-choice-point [state target-pc]
   (update state :choice-points conj (choice-snapshot state target-pc)))
@@ -291,7 +297,7 @@
   (if-let [cp (peek (:choice-points state))]
     (-> state
         (restore-choice-state cp)
-        (activate-foreign-choice cp))
+        (activate-choice cp))
     (fail-state state)))
 
 (defn y-slot? [reg]
@@ -491,6 +497,44 @@
              (= 2 (count (:args cur))))
         (recur (deref-value bindings (second (:args cur))) (conj seen cur) (inc n))
         :else nil))))
+
+(declare apply-member-solution)
+
+(defn push-member-choice-point [state base-state resume-pc elem rest-list]
+  (let [rest* (deref-value (:bindings base-state) rest-list)
+        empty-list (normalize-literal-atom (:intern-context base-state) "[]")]
+    (if (interned-equal? rest* empty-list)
+      state
+      (update state :choice-points conj
+              (member-choice-snapshot base-state resume-pc elem rest*)))))
+
+(defn apply-member-solution [base-state resume-pc elem list-value]
+  (let [bindings (:bindings base-state)
+        empty-list (normalize-literal-atom (:intern-context base-state) "[]")
+        list-functor (list-functor-term (:intern-context base-state))]
+    (loop [cur (deref-value bindings list-value)
+           seen #{}]
+      (cond
+        (interned-equal? cur empty-list)
+        (backtrack base-state)
+
+        (or (= cur ::unbound) (logic-var? cur) (contains? seen cur))
+        (backtrack base-state)
+
+        (and (structure-term? cur)
+             (interned-equal? (:functor cur) list-functor)
+             (= 2 (count (:args cur))))
+        (let [head (first (:args cur))
+              tail (second (:args cur))
+              [ok next-state] (unify-values base-state elem head)]
+          (if ok
+            (-> next-state
+                (push-member-choice-point base-state resume-pc elem tail)
+                (assoc :pc resume-pc))
+            (recur (deref-value bindings tail) (conj seen cur))))
+
+        :else
+        (backtrack base-state)))))
 
 (defn ground-term? [state value]
   (let [bindings (:bindings state)]
@@ -712,9 +756,16 @@
           (recur (next remaining))))
       (backtrack base-state))))
 
-(defn activate-foreign-choice [state cp]
-  (if-let [results (seq (:foreign-results cp))]
-    (apply-first-foreign-solution state (:pc cp) results)
+(defn activate-choice [state cp]
+  (case (:kind cp)
+    :foreign
+    (if-let [results (seq (:foreign-results cp))]
+      (apply-first-foreign-solution state (:pc cp) results)
+      (assoc state :status :running))
+
+    :member
+    (apply-member-solution state (:pc cp) (:member-elem cp) (:member-rest cp))
+
     (assoc state :status :running)))
 
 (defn execute-foreign [state instr]
@@ -1085,6 +1136,13 @@
                   (advance next-state)
                   (backtrack state)))
               (backtrack state)))
+
+          "member/2"
+          (let [elem (deref-value (:bindings state)
+                                  (or (reg-get-raw state "A1") ::unbound))
+                list-value (deref-value (:bindings state)
+                                        (or (reg-get-raw state "A2") ::unbound))]
+            (apply-member-solution state (inc (:pc state)) elem list-value))
 
           "ground/1"
           (let [value (deref-value (:bindings state)
