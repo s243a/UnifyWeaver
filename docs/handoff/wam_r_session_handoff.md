@@ -131,10 +131,37 @@ roughly priority order:
    (e.g. `thor` / `lmdbr`, both system-LMDB-dependent) and a different
    dispatch path -- the Scala impl deliberately bypasses the
    load-everything `fact_table_dispatch` and probes by `lookupByArg1`
-   for ground arg1, `streamAll` otherwise. To extend: add a
-   `fact_source_loader_call/4` clause for the new Spec shape **plus** a
-   parallel `WamRuntime$lmdb_fact_dispatch` to skip the in-memory tuple
-   list, since materialising every key defeats the point.
+   for ground arg1, `streamAll` otherwise.
+
+   Two-step plan if pursued:
+
+   - **Step 1 (load-everything):** add the `lmdb('path.lmdb')` Spec
+     shape to `fact_source_loader_call/4` in `wam_r_target.pl`, plus
+     a `WamRuntime$read_facts_lmdb(path, intern_table)` runtime
+     helper that opens the env, iterates all key/value pairs, decodes
+     each into a tuple, and returns the standard tuple list.
+     Materialises the whole table at program-init time, so the
+     existing per-arg hash + sorted indexes (PR #1998 added range
+     indexes) still work without changes. Smaller PR; treats LMDB as
+     just a serialization format. Requires a writer helper
+     `WamRuntime$lmdb_write_facts(path, facts, intern_table)` so
+     tests can produce LMDB files. Auto-skip the e2e test when the
+     R LMDB pkg isn't installed (mirror `rscript_available`).
+
+   - **Step 2 (probe-on-demand):** add a parallel
+     `WamRuntime$lmdb_fact_dispatch` that bypasses the in-memory
+     tuple list -- probes by ground arg1 via LMDB key lookup
+     (matching the Scala precedent), full-cursor scan for
+     non-arg1-ground queries, and an LMDB cursor range walk for
+     `fact_in_range/5`-style queries. This is the actual memory-
+     efficiency win for huge tables; should be a follow-up PR after
+     step 1 lands.
+
+   Risks: R LMDB pkg may not be installed in CI / dev env. Tests
+   must auto-skip cleanly (probe via `Rscript -e 'library(thor)'`
+   on the path side). Document install steps in
+   `docs/WAM_R_TARGET.md` (`apt install liblmdb-dev`, then
+   `R -e 'install.packages("thor")'`).
 2. ~~**Replace `state$regs2` env with an integer-indexed vector / list.**~~
    *Done.* `state$regs2` is now a plain R list, X / A access is
    `state$regs2[[idx]]` / `state$regs2[[idx]] <- v`. R copy-on-write
@@ -267,6 +294,26 @@ parser as the hot path because the compiled-from-Prolog parser is
 the "Parser benchmark" section in WAM_R_TARGET.md). The compiled
 parser remains the parser-of-record for any future target that
 doesn't have a hand-written inline path.
+
+The 2026-05 perf + correctness sub-campaign landed nine PRs
+covering the runtime hot path, two compiler bugs, and two new
+features. In merge order:
+
+| PR    | Type | Summary |
+|-------|------|---------|
+| #1983 | perf | `regs2` -> integer-indexed list (~26% wall-clock). |
+| #1987 | perf | Single-lookup bindings + single-slot state pool (~9% incremental). |
+| #1989 | feat | Multi-line `read/2` (accumulates lines until parser accepts). |
+| #1990 | docs | Step-dispatch closure-table refactor measured a 2x regression vs R `switch()` -- captured so future contributors don't redundantly retry. |
+| #1993 | fix  | `retract/1` immediate-update view; `assertz` / `asserta` `copy_term` at assert time so backtrack-undone bindings don't leak into stored clauses. |
+| #1995 | fix  | `compile_inner_call_goals` recurses for nested `(C -> T ; E)` / `(A ; B)` in conjunction bodies (was emitting useless `Call(";", 2)`). |
+| #1998 | feat | `fact_in_range/5` range queries on fact tables (sorted-by-value index + binary search + iter-CP). |
+| #2000 | fix  | `compile_aggregate_all` var-template branch: `put_variable Y_n, Y_n` (self-init) instead of `Y_n, A1`, fixing the auto-bind leak when the inner goal's first arg is a compound. |
+
+Cumulative WAM-R speedup vs the pre-campaign baseline on the
+fact-source bench (`tests/benchmarks/wam_r_fact_source_bench.pl
+--profile 100 --inner 100000`): 7.7s -> ~5.2s (~33%). Test suite
+grew 71 -> 75 (4 new e2e tests for the new features / fixes).
 
 ## Things to know before you start a follow-up
 
