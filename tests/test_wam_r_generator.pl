@@ -1497,12 +1497,9 @@ e2e_findall_via_rscript :-
 
 % ------------------------------------------------------------------
 % End-to-end Rscript run for bagof/3, setof/3, once/1, forall/2.
-% These build on the multi-solution machinery and require the goal
-% argument to push choice points for enumeration; that means a
-% multi-clause user predicate or dynamic-store predicate. Builtin
-% goals like member/2 currently dispatch deterministically (first-
-% match only) and are NOT enumerable from these aggregators -- a
-% separate follow-up that adds CPs to those builtins is needed.
+% These build on the multi-solution machinery and cover user
+% predicates as aggregate goals. Builtin enumerators are covered
+% separately by enumerable_builtins_e2e_rscript.
 % Auto-skips when Rscript is not on PATH.
 % ------------------------------------------------------------------
 test(bagof_setof_once_forall_e2e_rscript) :-
@@ -1567,10 +1564,7 @@ e2e_bagof_setof_once_forall_via_rscript :-
 % ------------------------------------------------------------------
 % End-to-end Rscript run for enumerable builtins inside aggregators.
 % Tests that findall/3, bagof/3, setof/3, forall/2 all enumerate over
-% member/2, between/3, and `,/2` conjunctions thereof. This is the
-% follow-up that closes the gap noted in the previous PR -- the
-% aggregators previously only worked over multi-clause user/dynamic
-% predicates because builtins didn't push choice points.
+% member/2, between/3, and `,/2` conjunctions thereof.
 % Auto-skips when Rscript is not on PATH.
 % ------------------------------------------------------------------
 test(enumerable_builtins_e2e_rscript) :-
@@ -1651,8 +1645,7 @@ e2e_enumerable_builtins_via_rscript :-
 
 % ------------------------------------------------------------------
 % End-to-end Rscript run for catch/3 + throw/1 (exception handling)
-% and runtime aggregator support for dynamic predicates (the small
-% gap noted in the previous PR).
+% and runtime aggregator support for dynamic predicates.
 % Auto-skips when Rscript is not on PATH.
 % ------------------------------------------------------------------
 test(catch_throw_dyn_aggregator_e2e_rscript) :-
