@@ -984,30 +984,63 @@ loadForwardEdgesFromLmdb env dbName threshold = do
 --
 -- The reverse-edge sub-db must exist (use the fixture ingester with
 -- `category_child` written). If absent, returns just {rootId}.
+{{#lmdb_dupsort}}
 computeDemandSetCursorBFS :: MDB_env -> String -> Int -> Maybe Int -> IO IS.IntSet
 computeDemandSetCursorBFS env childDbName rootId maxHops = do
-    txn <- mdb_txn_begin env Nothing True
-    -- Caller must ensure the fixture has the reverse-edge sub-db; if it
-    -- is absent mdb_dbi_open' throws MDB_NOTFOUND and the program halts
-    -- with a clear LMDB error message. No silent fallback.
-    dbi <- mdb_dbi_open' txn (Just childDbName) [MDB_DUPSORT]
-    cursor <- mdb_cursor_open' txn dbi
-    let go !depth !frontier !visited
+    -- Open the dbi once and commit so the handle persists across the
+    -- per-worker read transactions opened below.  Caller must ensure
+    -- the fixture has the reverse-edge sub-db; if absent mdb_dbi_open'
+    -- throws MDB_NOTFOUND and the program halts with a clear LMDB
+    -- error message.  No silent fallback.
+    dbiTxn <- mdb_txn_begin env Nothing True
+    dbi <- mdb_dbi_open' dbiTxn (Just childDbName) [MDB_DUPSORT]
+    mdb_txn_commit dbiTxn
+    -- Per-thread cursor cache: each bound worker thread lazily opens
+    -- its own (read txn, cursor) pair on first access. Reused across
+    -- BFS levels for that worker so we pay one cursor-open per worker
+    -- per binary launch, not per level.
+    cache <- newDupsortCursorCache
+    numCaps <- getNumCapabilities
+    let nWorkers = max 1 numCaps
+        go !depth !frontier !visited
           | IS.null frontier = return visited
           | exceededHopLimit depth = return visited
           | otherwise = do
-              newNodes <- foldM (stepNode cursor visited) IS.empty
-                                (IS.toList frontier)
+              let frontierList = IS.toList frontier
+                  chunks = chunkInto nWorkers frontierList
+              -- mapConcurrently spawns one bound thread per chunk; each
+              -- thread's LMDB cursor stays pinned to its OS thread
+              -- (LMDB read-txn requirement). At -N1 mapConcurrently
+              -- still works correctly — sequential evaluation, no
+              -- parallelism gained, but only ~1 bound-thread overhead.
+              chunkResults <- mapConcurrently
+                (processChunk env dbi cache visited)
+                chunks
+              let !newNodes = IS.unions chunkResults
               if IS.null newNodes
                 then return visited
                 else go (depth + 1) newNodes (IS.union visited newNodes)
-    result <- go 0 (IS.singleton rootId) (IS.singleton rootId)
-    mdb_txn_abort txn
-    return result
+    go 0 (IS.singleton rootId) (IS.singleton rootId)
   where
     exceededHopLimit !d = case maxHops of
       Nothing -> False
       Just n  -> d >= n
+    -- Split a list into n roughly-equal chunks. Empty chunks are
+    -- dropped so workers aren't spawned with no work.
+    chunkInto !n xs =
+      let len = length xs
+          sz  = max 1 ((len + n - 1) `div` n)
+          go' [] = []
+          go' ys = let (h, t) = splitAt sz ys in h : go' t
+      in filter (not . null) (go' xs)
+    -- Process one chunk of frontier nodes with a per-thread LMDB
+    -- cursor. runInBoundThread pins the worker to one OS thread so
+    -- the cursor (and its parent read-txn) don't migrate mid-traversal,
+    -- which LMDB forbids.
+    processChunk !env' !dbi' cache' !visited' !chunk =
+      runInBoundThread $ do
+        cursor <- getOrOpenDupsortCursor env' dbi' cache'
+        foldM (stepNode cursor visited') IS.empty chunk
     stepNode cursor visited !acc node =
       allocaBytes 4 $ \kp -> do
         poke (castPtr kp :: Ptr Int32) (fromIntegral node :: Int32)
@@ -1027,4 +1060,15 @@ computeDemandSetCursorBFS env childDbName rootId maxHops = do
       if more
         then collectDups cursor kvPtr dvPtr visited acc'
         else return acc'
+{{/lmdb_dupsort}}
+{{^lmdb_dupsort}}
+-- Stub for non-dupsort layout: cursor BFS requires the dupsort
+-- per-thread cursor infrastructure. The codegen only emits a call
+-- to this function when both demand_bfs_mode(cursor) AND
+-- lmdb_layout(dupsort) are set, so this branch should be
+-- unreachable in practice.
+computeDemandSetCursorBFS :: MDB_env -> String -> Int -> Maybe Int -> IO IS.IntSet
+computeDemandSetCursorBFS _ _ _ _ =
+    error "computeDemandSetCursorBFS: requires lmdb_layout(dupsort)"
+{{/lmdb_dupsort}}
 

@@ -3171,3 +3171,100 @@ swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
 (cd /tmp/wam_enwiki_cursor && cabal new-build)
 .../wam-haskell-matrix-bench data/benchmark/enwiki_cats/lmdb_proj_resident +RTS -N1
 ```
+
+## Phase L appendix #9: parallel demand BFS (2026-05-09)
+
+### Why this measurement
+
+Appendix #8 showed cursor BFS *runs* at enwiki scale but doesn't
+*scale with -N*: the demand BFS itself is sequential (one cursor,
+one thread, walking 796,695 descendants), and that BFS dominates
+total time. parMap over per-seed work can't help when the seeds
+themselves wait ~1s for the demand set to be computed.
+
+### What changed
+
+`computeDemandSetCursorBFS` now splits each BFS level's frontier
+across `getNumCapabilities` workers via `Control.Concurrent.Async.mapConcurrently`.
+Each worker:
+
+1. Runs in a bound thread (`runInBoundThread`) so its LMDB cursor
+   stays pinned to one OS thread (LMDB read-txn requirement).
+2. Lazily opens its own (read txn, cursor) pair via the existing
+   `DupsortCursorCache` infrastructure (same pattern used by the
+   FFI kernel's `cpEdgeLookup`).
+3. Sequentially does `mdb_cursor_get' MDB_SET` + `MDB_NEXT_DUP`
+   iteration over its assigned chunk of frontier nodes.
+4. Returns its slice of new descendants as an `IS.IntSet`.
+
+The main thread unions all chunk results, advances to the next
+BFS level, and repeats until the frontier is empty. Levels remain
+sequential (depth N+1 needs depth N's frontier), but per-level
+work is now parallel.
+
+### Results (enwiki, 9.93M edges, 796,695-node demand set)
+
+Medians of 3 trials, kernels_on, +RTS -A64M (baked):
+
+| -N | sequential (PR #1955) | **parallel (this PR)** | delta vs sequential |
+|---:|----------------------:|-----------------------:|--------------------:|
+|  1 |                  1129 |               **1264** |               −12% |
+|  2 |                  1066 |                **928** |              **+13%** |
+|  4 |                  1138 |                **733** |              **+36%** |
+
+Going N1 → N4 in parallel mode: **1264 → 733 ms = 1.73× parallel
+speedup**. Compare to sequential mode where N1 → N4 was flat
+(1129 → 1138). The architecture now actually scales.
+
+### -N1 regression analysis
+
+The 12% regression at -N1 is real and expected: `mapConcurrently`
+spawns one bound thread per BFS level even at -N1 (vs zero in the
+prior sequential implementation). Across ~10-20 BFS levels at
+enwiki scale, the fork/join overhead adds ~135 ms.
+
+This is acceptable because cursor mode at -N1 isn't the design
+target — at sub-50k scales the auto resolver picks `in_memory`
+mode (which doesn't go through this code path at all), and at
+50k+ scales users typically run with -N≥2 anyway. The `auto`
+resolver path is unaffected.
+
+### What this closes
+
+The -N scaling gap from appendix #8. Together with the simplewiki
+appendix #7 (1.96× cursor-mode speedup at 297k edges) and the
+sharded L2 default from PR #1950, the resident-cursor path now
+delivers:
+
+- Architectural scalability: runs where in_memory cannot
+  (>5M edges).
+- Memory efficiency: ~50% peak RSS reduction vs in_memory at
+  comparable scale.
+- Real parallel speedup: 1.73× at -N4 on enwiki.
+
+### Open follow-ups
+
+- **The mutator-side per-seed FFI overhead is still amortised by
+  sharded L2** — that's PR #1950's contribution. Independent of
+  this work but still load-bearing.
+- **-N1 micro-regression** (12%) could be eliminated with a
+  numCaps=1 fast path (skip mapConcurrently, evaluate inline). Not
+  done because cursor mode at -N1 is off-target (auto resolver
+  picks in_memory).
+- **Cost-model auto-resolver** for cache_mode + -N selection still
+  deferred to Phase 2c.
+- **Parallel BFS chunking strategy** is currently uniform-size
+  splits. A frontier where some nodes have 100k children and
+  others have 1 will load-imbalance. Work-stealing or branch-
+  weighted partitioning would tighten this further. Filed.
+
+### Reproducer
+
+```bash
+# Same fixture as appendix #8.
+swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
+    /dev/null /tmp/wam_enwiki_cursor seeded interpreter kernels_on resident_cursor
+
+(cd /tmp/wam_enwiki_cursor && cabal new-build)
+.../wam-haskell-matrix-bench data/benchmark/enwiki_cats/lmdb_proj_resident +RTS -N4
+```
