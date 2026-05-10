@@ -5022,30 +5022,53 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     return(isTRUE(WamRuntime$stream_close(program, sid)))
   }
 
-  # read/2 is line-buffered: each call consumes one line, strips a
-  # trailing `.` (with optional whitespace), and parses the rest via
-  # the operator-precedence parser. Multi-line terms are not
-  # supported in this scaffold. EOF binds the term to the atom
-  # `end_of_file` (matches SWI semantics).
+  # read/2 reads one Prolog term, possibly spanning multiple lines.
+  # The terminator is a `.` at the end of the (trimmed) buffer; lines
+  # are accumulated until the trimmed buffer ends with `.` AND the
+  # parser succeeds on the buffer minus the terminator. If the
+  # parse fails despite the trailing `.`, the `.` is treated as
+  # being inside a quoted atom / string / unclosed compound and we
+  # keep reading. EOF on an empty buffer binds the term to the atom
+  # `end_of_file` (matches SWI semantics); EOF on a non-empty buffer
+  # makes one final parse attempt and fails if that doesn't yield a
+  # term.
   if (key == "read/2") {
     sid <- WamRuntime$stream_id_of(state, WamRuntime$get_reg(state, 1L), table)
     if (is.null(sid)) return(FALSE)
     conn <- WamRuntime$stream_get(program, sid)
     if (is.null(conn)) return(FALSE)
-    txt <- ""
+    buffer <- ""
     repeat {
       line <- tryCatch(readLines(conn, n = 1L, warn = FALSE),
                        error = function(e) NULL)
       if (is.null(line) || length(line) == 0L) {
-        return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
-                                Atom(WamRuntime$intern(table, "end_of_file"))))
+        # EOF.
+        buf_trim <- trimws(buffer)
+        if (nchar(buf_trim) == 0L) {
+          return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
+                                  Atom(WamRuntime$intern(table, "end_of_file"))))
+        }
+        candidate <- sub("\\s*\\.\\s*$", "", buf_trim)
+        parsed <- WamRuntime$parse_term(candidate, table, state)
+        if (is.null(parsed)) return(FALSE)
+        return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L), parsed))
       }
-      candidate <- sub("\\s*\\.\\s*$", "", line)
-      if (nchar(candidate) > 0L) { txt <- candidate; break }
+      buffer <- if (nchar(buffer) > 0L) paste0(buffer, "\n", line) else line
+      buf_trim <- trimws(buffer)
+      if (nchar(buf_trim) == 0L) next
+      # Completion check: trimmed buffer ends with `.`. Try parsing;
+      # on success we have a complete clause. On failure the `.` may
+      # be inside a quoted atom / string / unclosed compound, so keep
+      # reading until either the parser accepts or we hit EOF.
+      if (grepl("\\.$", buf_trim)) {
+        candidate <- sub("\\s*\\.\\s*$", "", buf_trim)
+        parsed <- WamRuntime$parse_term(candidate, table, state)
+        if (!is.null(parsed)) {
+          return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L), parsed))
+        }
+      }
     }
-    parsed <- WamRuntime$parse_term(txt, table, state)
-    if (is.null(parsed)) return(FALSE)
-    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L), parsed))
+    FALSE
   }
 
   if (key == "write/2") {
