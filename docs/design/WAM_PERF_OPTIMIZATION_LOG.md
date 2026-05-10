@@ -3463,3 +3463,116 @@ not a runtime ML model. Streaming-hop is cheap enough to be a default
 Phase M is measurement-only; no production codegen change. The
 cost-model resolver itself remains deferred to Phase 2c, but it now
 has empirical inputs to consume.
+
+### Cost-model formula (cache-regime aware)
+
+The "10–18% selection crossover" reported above is conditional on the
+working set fitting in the page cache. On databases that exceed
+**free** RAM (note: on WSL, this swings dynamically as the host
+reclaims pages — `/proc/meminfo:MemAvailable`, not `MemTotal`), the
+crossover shifts left dramatically because random seeks become real
+disk operations.
+
+**Variables**:
+
+| symbol | meaning |
+|---|---|
+| `W` | bytes a full scan would touch (≈ DB size on disk) |
+| `X` | working-set fraction the workload actually uses (BFS reachability fraction; cumulative across M queries: union of working sets) |
+| `R_free` | **free** RAM available to the process (`/proc/meminfo:MemAvailable`) |
+| `S_mem_seq` | sequential read throughput when data is page-cached (~5 GB/s mmap memcpy) |
+| `S_disk_seq` | sequential read throughput from cold storage (~500 MB/s SSD, ~100 MB/s HDD) |
+| `t_mem_seek` | one B-tree-walk seek with leaves cached (~1 µs) |
+| `t_disk_seek` | one B-tree-walk seek with the leaf not cached (~100 µs SSD, ~10 ms HDD) |
+| `K` | number of distinct keys the query looks up |
+
+**Cache-regime weight**:
+
+```
+W_working = X * W
+f_hot     = min(1, R_free / W_working)
+```
+
+`f_hot = 1` is the all-RAM regime we measured. `f_hot = 0` is the
+cold-disk regime Hadoop was designed for.
+
+**Effective costs**:
+
+```
+T_scan = W_working * [f_hot / S_mem_seq + (1 - f_hot) / S_disk_seq]
+T_sort = K         * [f_hot * t_mem_seek + (1 - f_hot) * t_disk_seek]
+```
+
+**Crossover K** (sort = scan):
+
+```
+K_cross = W_working / [bandwidth_eff * latency_eff]
+        where
+          bandwidth_eff = f_hot * S_mem_seq    + (1 - f_hot) * S_disk_seq
+          latency_eff   = f_hot * t_mem_seek   + (1 - f_hot) * t_disk_seek
+```
+
+If `K_query < K_cross` → sorted seeks. Otherwise → scan.
+
+**Plugged in**:
+
+| regime | W_working | bw_eff | lat_eff | K_cross | as % keys |
+|---|---|---|---|---|---|
+| simplewiki, hot (R_free ≫ W) | 15 MB | 5 GB/s | 1 µs | ~3,000 | ~2% |
+| simplewiki, cold (R_free ≪ W) | 15 MB | 500 MB/s | 100 µs | ~300 | ~0.2% |
+| enwiki, hot (R_free ≫ W) | 500 MB | 5 GB/s | 1 µs | ~100,000 | ~10% |
+| enwiki, cold (R_free ≪ W) | 500 MB | 500 MB/s | 100 µs | ~10,000 | ~1% |
+
+The hot-regime simplewiki value (~2%) is consistent with M1.b: sort
+beats scan at all measured ratios up to 7% true selection.
+
+**Warming-pays-off threshold** — for M queries each touching `K_q`
+keys, warming a working set of `W_warm` bytes pays off at:
+
+```
+M_warm ≥ T_warm_load / (T_query_cold - T_query_hot)
+```
+
+The denominator collapses to ≈ 0 when `R_free ≫ W_warm` (matches our
+M3 simplewiki result — warming is pointless when everything's already
+cached). The numerator stays small because warming is one sequential
+scan. So warming pays off when `R_free ≪ W_warm` and `M ≥ small`.
+
+**What the resolver should read**:
+
+- `R_free` from `/proc/meminfo:MemAvailable` (recheck per-bench, since
+  WSL claims/releases pages dynamically).
+- `W` from `mdb_env_info.me_mapsize` or `stat()` of the data file.
+- `X_query`, `K_query`, `M` from workload metadata; defaults derivable
+  from BFS-depth heuristics + declared workload type.
+
+The hardware constants (`S_mem_seq`, `S_disk_seq`, `t_mem_seek`,
+`t_disk_seek`) need a one-time per-machine calibration probe. SSD-
+typical defaults are within an order of magnitude on commodity
+hardware; the order of magnitude is what matters for the regime
+selection, not the second decimal place.
+
+### When this matters
+
+Categories-only fixtures (simplewiki ≈ 15 MB, enwiki ≈ 500 MB) fit
+in any modern machine's free RAM. The cost model is groundwork, not
+an immediate optimization — at this scale, all regimes are `f_hot ≈ 1`
+and the formula reduces to "sorted seeks always".
+
+The regime starts to matter at:
+
+- **Article-level Wikipedia ingest** — full enwiki article texts are
+  ~80 GB compressed, ~250 GB uncompressed. Past free RAM on any
+  consumer machine.
+- **Multi-fixture aggregation** (e.g. enwiki categories + page
+  metadata + revision counts joined into one LMDB).
+- **Memory-pressured environments** — WSL2 in particular, where the
+  Windows host can reclaim large fractions of the VM's RAM.
+- **Spinning-disk targets** — `t_disk_seek` jumps 100×, shifting the
+  crossover left aggressively.
+
+The Prolog predicates in `src/unifyweaver/core/cost_model.pl`
+implement these formulas. They're opt-in: callers pass `cost_model`
+options to enable, otherwise targets fall back to the existing
+fact-count-threshold heuristic.
+
