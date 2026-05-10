@@ -2162,6 +2162,85 @@ e2e_multi_solution_retract_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for nested control flow inside conjunction
+% bodies. `compile_inner_call_goals` (used by findall / aggregate
+% bodies, by if-then-else cond-and-branch goals, and by both arms
+% of a bare disjunction) used to fall through to `compile_goal_call`
+% for any nested `(C -> T ; E)` or `(A ; B)` sub-goal -- emitting a
+% useless `Call(";", 2)` (with the term constructed as data via
+% PutStructure / SetConstant) that has no runtime handler and just
+% fails. Locks in the recursive dispatch so an inner ITE / disjunction
+% compiles to inline try/cut/trust + jump.
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(nested_ite_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_nested_ite_via_rscript
+    ;   true
+    )).
+
+e2e_nested_ite_via_rscript :-
+    % ITE inside findall body: findall iterates retract(m(X)); on
+    % each solution an inner ITE asserts m(99) when X =:= 1. With
+    % the fix, the inner ITE compiles and runs; live retract sees
+    % the newly-asserted clause; the bag is [1, 2, 99].
+    assertz((user:ite_in_findall :-
+        assertz(m(1)), assertz(m(2)),
+        findall(X,
+                ( retract(m(X)),
+                  ( X =:= 1 -> assertz(m(99)) ; true )
+                ),
+                Bag),
+        Bag == [1, 2, 99],
+        \+ retract(m(_)))),
+    % ITE inside a disjunction's left branch (fail-driven loop).
+    % Without the fix this also routed through Call(";", 2) and
+    % silently failed; with the fix odd/even classification runs
+    % and prints in order.
+    assertz((user:ite_in_disj :-
+        findall(Tag-V,
+                ( member(V, [1, 2, 3]),
+                  ( V mod 2 =:= 0 -> Tag = even ; Tag = odd )
+                ),
+                Tagged),
+        Tagged == [odd-1, even-2, odd-3])),
+    % Bare disjunction (no ->) inside findall body. Same root cause
+    % path; with the fix the disjunction compiles as inline
+    % try_me_else + trust_me and routes both alternatives.
+    assertz((user:disj_in_findall :-
+        findall(X,
+                ( member(X, [1, 2, 3, 4, 5]),
+                  ( X > 3 ; X < 2 )
+                ),
+                Bag),
+        Bag == [1, 4, 5])),
+    % bare `(C -> T)` (implicit `; fail`) inside findall body.
+    % The compiler now treats this as `(C -> T ; fail)` per SWI
+    % convention -- prior to the fix it emitted Call("->", 2).
+    assertz((user:bare_arrow_in_findall :-
+        findall(X,
+                ( member(X, [1, 2, 3]),
+                  ( X >= 2 -> true )
+                ),
+                Bag),
+        Bag == [2, 3])),
+    unique_r_tmp_dir('tmp_r_nested_ite_e2e', TmpDir),
+    write_wam_r_project(
+        [user:ite_in_findall/0, user:ite_in_disj/0,
+         user:disj_in_findall/0, user:bare_arrow_in_findall/0],
+        [intern_atoms([even, odd])],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [ite_in_findall, ite_in_disj, disj_in_findall, bare_arrow_in_findall],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % End-to-end Rscript run for `^/2` existential scope and first
 % free-variable grouping in bagof/setof. Asserts 2-arg dynamic
 % predicates, then drives bagof(X, Y^p(X,Y), L) and

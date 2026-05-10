@@ -206,18 +206,17 @@ roughly priority order:
    silently produces `L = []`. Workaround: hoist the inner ITE out
    of the conjunction (e.g., via a helper predicate) or replace
    it with explicit disjunction. Filed as a separate item:
-6. **Nested if-then-else inside conjunction bodies.**
-   `src/unifyweaver/targets/wam_target.pl :: compile_inner_call_goals/4`
-   loops over each goal calling `compile_goal_call`, never recursing
-   into `compile_if_then_else` / `compile_disjunction` for nested
-   `(C -> T ; E)` / `(A ; B)` sub-goals. As a result, an inner ITE
-   in a disjunction-left branch or an aggregate body emits as
-   `Call(";", 2)` (with the term constructed as data via
-   PutStructure / SetConstant), which has no runtime handler and
-   just fails. Fix: have `compile_inner_call_goals` dispatch on
-   `(C -> T ; E)` / `(A ; B)` exactly like the outer
-   `compile_goals` does. Tests covering inner ITE inside a
-   `findall(...)` body would catch this; none exist today.
+6. ~~**Nested if-then-else inside conjunction bodies.**~~ *Done.*
+   `compile_inner_call_goals/4` now dispatches on `(C -> T ; E)`,
+   bare `(C -> T)` (treated as `(C -> T ; fail)`, matching SWI),
+   and `(A ; B)` exactly the way the outer `compile_goals` does --
+   so nested ITE / disjunction inside an aggregate body, an
+   if-then-else cond, an ite-branch, or a disjunction arm compiles
+   to inline try/cut/trust + jump rather than falling through to
+   `Call(";", 2)` / `Call("->", 2)`. Covered by
+   `nested_ite_e2e_rscript` with four sub-tests: ITE in `findall`
+   body, ITE in disjunction-left branch, bare disjunction in
+   `findall` body, bare `(C -> T)` in `findall` body.
 7. **Phase-3 lowered emitter expansion.** Currently handles only
    `deterministic` and `multi_clause_1` shapes. Could grow N-clause
    general lowering; would compete with the kernel / fact-table paths
