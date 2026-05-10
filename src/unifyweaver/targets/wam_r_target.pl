@@ -282,6 +282,12 @@ wam_parts_to_r(["jump", Label], Lit) :-
 % --- Choice instructions ---
 wam_parts_to_r(["try_me_else", Label], Lit) :-
     format(string(Lit), 'TryMeElse("~w")', [Label]).
+% Soft variant for if-then-else's choice point (introduced by
+% mark_ite_try_me_else). Pushes the same CP shape as TryMeElse but
+% tagged kind="ite", so CutIte can find and truncate to it
+% regardless of how deep Cond's evaluation buried the stack.
+wam_parts_to_r(["try_me_else_ite", Label], Lit) :-
+    format(string(Lit), 'TryMeElseIte("~w")', [Label]).
 wam_parts_to_r(["retry_me_else", Label], Lit) :-
     format(string(Lit), 'RetryMeElse("~w")', [Label]).
 wam_parts_to_r(["trust_me"], 'TrustMe()').
@@ -519,8 +525,43 @@ split_at_first_colon(Token, Before, After) :-
 %    LabelEntries: formatted "<label>" = N pair lines
 wam_code_to_r_data(WamCode, Options, Instructions, LabelMap, LabelEntries) :-
     atom_string(WamCode, Str),
-    split_string(Str, "\n", "", Lines),
+    split_string(Str, "\n", "", Lines0),
+    mark_ite_try_me_else(Lines0, Lines),
     wam_lines_to_data(Lines, Options, 1, Instructions, LabelMap, LabelEntries).
+
+%% mark_ite_try_me_else(+Lines, -Lines)
+%  Rewrites every `try_me_else <label>` whose NEXT branch marker
+%  (skipping Allocate / Get* / Put* / Call / etc.) is `cut_ite` so
+%  it emits as `try_me_else_ite <label>` instead. The runtime then
+%  pushes a CP marked `kind="ite"` for if-then-else's choice point,
+%  and CutIte truncates state$cps back to that CP's pre-push depth
+%  rather than dropping a stale topmost CP. Regular clause try-
+%  chains (`try_me_else` followed by `retry_me_else` or `trust_me`)
+%  are left untouched. Nested if-then-else works because each level's
+%  own `try_me_else` finds its own `cut_ite` first.
+mark_ite_try_me_else([], []).
+mark_ite_try_me_else([Line|Rest], [Line2|Rest2]) :-
+    (   tokenize_wam_line(Line, ["try_me_else", LabelStr]),
+        next_branch_marker(Rest, "cut_ite")
+    ->  format(string(Line2),
+               "    try_me_else_ite ~w", [LabelStr])
+    ;   Line2 = Line
+    ),
+    mark_ite_try_me_else(Rest, Rest2).
+
+%% next_branch_marker(+Lines, -Marker)
+%  Walks forward through Lines, skipping non-branch instructions and
+%  blank lines. Succeeds with the first branch marker found; fails
+%  if none are found before the lines run out.
+next_branch_marker([], _) :- fail.
+next_branch_marker([Line|Rest], Marker) :-
+    tokenize_wam_line(Line, Parts),
+    (   Parts = [First|_],
+        memberchk(First, ["try_me_else", "retry_me_else",
+                           "trust_me", "cut_ite", "try_me_else_ite"])
+    ->  Marker = First
+    ;   next_branch_marker(Rest, Marker)
+    ).
 
 wam_lines_to_data([], _, _, [], [], []).
 wam_lines_to_data([Line|Rest], Options, PC, Instructions, LabelMap, LabelEntries) :-
