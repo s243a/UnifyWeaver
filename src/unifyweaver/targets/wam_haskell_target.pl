@@ -482,7 +482,12 @@ config_ops_to_template_vars([Op|Rest], [Key=Value|RestVars]) :-
 
 read_kernel_template(FileName, Template) :-
     atom_concat('templates/targets/haskell_wam/', FileName, RelPath),
-    (   source_file(wam_haskell_target, SrcFile)
+    %% Resolve the project root from this module's source file rather than
+    %% trusting the caller's cwd. Walks up: targets/ → unifyweaver/ → src/
+    %% → project root. Uses a callable head (`read_kernel_template/2`) so
+    %% source_file/2 actually matches; the bare-atom form was a no-op and
+    %% silently fell through to a cwd-relative path.
+    (   source_file(read_kernel_template(_,_), SrcFile)
     ->  file_directory_name(SrcFile, SrcDir),
         file_directory_name(SrcDir, TargetsDir),
         file_directory_name(TargetsDir, UnifyWeaverDir),
