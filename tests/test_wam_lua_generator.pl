@@ -44,6 +44,12 @@
 :- dynamic user:wam_lua_arg_struct/0.
 :- dynamic user:wam_lua_arg_list/0.
 :- dynamic user:wam_lua_arg_no/0.
+:- dynamic user:wam_lua_univ_decompose_struct/0.
+:- dynamic user:wam_lua_univ_decompose_atom/0.
+:- dynamic user:wam_lua_univ_decompose_list/0.
+:- dynamic user:wam_lua_univ_compose_struct/0.
+:- dynamic user:wam_lua_univ_compose_atom/0.
+:- dynamic user:wam_lua_univ_no/0.
 
 user:wam_lua_fact(a).
 user:wam_lua_choice(a).
@@ -113,6 +119,20 @@ user:wam_lua_functor_construct :-
 user:wam_lua_arg_struct :- arg(2, f(a, b), b).
 user:wam_lua_arg_list :- arg(2, [a, b], [b]).
 user:wam_lua_arg_no :- arg(3, f(a, b), _).
+user:wam_lua_univ_decompose_struct :- f(a, b) =.. [f, a, b].
+user:wam_lua_univ_decompose_atom :- a =.. [a].
+user:wam_lua_univ_decompose_list :-
+    [a, b] =.. L,
+    arg(1, L, '[|]'),
+    arg(2, L, Tail),
+    arg(1, Tail, a).
+user:wam_lua_univ_compose_struct :-
+    T =.. [f, a, b],
+    T = f(a, b).
+user:wam_lua_univ_compose_atom :-
+    T =.. [a],
+    T = a.
+user:wam_lua_univ_no :- f(a) =.. [g, a].
 
 test(exports) :-
     assertion(current_predicate(wam_lua_target:write_wam_lua_project/3)),
@@ -444,6 +464,30 @@ test(lua_term_inspection_builtins_e2e, [condition(lua_available)]) :-
           run_lua_query(LuaDir, 'wam_lua_arg_struct/0', [], true),
           run_lua_query(LuaDir, 'wam_lua_arg_list/0', [], true),
           run_lua_query(LuaDir, 'wam_lua_arg_no/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(lua_univ_builtin_e2e, [condition(lua_available)]) :-
+    unique_lua_tmp_dir('tmp_lua_univ_builtin_e2e', TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project(
+            [ user:wam_lua_univ_decompose_struct/0,
+              user:wam_lua_univ_decompose_atom/0,
+              user:wam_lua_univ_decompose_list/0,
+              user:wam_lua_univ_compose_struct/0,
+              user:wam_lua_univ_compose_atom/0,
+              user:wam_lua_univ_no/0
+            ],
+            [],
+            TmpDir),
+        ( directory_file_path(TmpDir, 'lua', LuaDir),
+          run_lua_query(LuaDir, 'wam_lua_univ_decompose_struct/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_univ_decompose_atom/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_univ_decompose_list/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_univ_compose_struct/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_univ_compose_atom/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_univ_no/0', [], false)
         ),
         delete_directory_and_contents(TmpDir)
     ).
