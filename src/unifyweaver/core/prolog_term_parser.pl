@@ -278,33 +278,21 @@ parse_expr(Tokens0, OpTable, MaxPrec, Term, Env0, Env, Rest) :-
 
 parse_op_loop([], _, _, Left, Left, Env, Env, []).
 parse_op_loop([T|Toks], OpTable, MaxPrec, Left, Term, Env0, Env, Rest) :-
-    op_loop_step(T, Toks, OpTable, MaxPrec, Left, Term, Env0, Env, Rest).
-
-% op_loop_step: factored out of parse_op_loop to keep the disjunction
-% depth shallow -- the WAM compiler's clause_body_analysis pass
-% stack-overflows on deeply nested ( A -> B ; C -> D ; E ).
-op_loop_step(T, Toks, OpTable, MaxPrec, Left, Term, Env0, Env, Rest) :-
-    token_op_name(T, Name),
-    op_loop_with_op(Name, Toks, OpTable, MaxPrec, Left, Term, Env0, Env, Rest),
-    !.
-op_loop_step(T, Toks, _, _, Left, Left, Env, Env, [T|Toks]).
-
-% Tries infix first (matches SWI), falls through to postfix. Fails if
-% neither resolution applies, letting op_loop_step backtrack to the
-% no-op clause.
-op_loop_with_op(Name, Toks, OpTable, MaxPrec, Left, Term, Env0, Env, Rest) :-
-    resolve_infix(Name, OpTable, Prec, Type),
-    Prec =< MaxPrec,
-    !,
-    rhs_max_prec(Type, Prec, RhsMax),
-    parse_expr(Toks, OpTable, RhsMax, Right, Env0, Env1, Toks1),
-    T2 =.. [Name, Left, Right],
-    parse_op_loop(Toks1, OpTable, MaxPrec, T2, Term, Env1, Env, Rest).
-op_loop_with_op(Name, Toks, OpTable, MaxPrec, Left, Term, Env0, Env, Rest) :-
-    resolve_postfix(Name, OpTable, Prec, _Type),
-    Prec =< MaxPrec,
-    T2 =.. [Name, Left],
-    parse_op_loop(Toks, OpTable, MaxPrec, T2, Term, Env0, Env, Rest).
+    (   token_op_name(T, Name)
+    ->  (   resolve_infix(Name, OpTable, Prec, Type),
+            Prec =< MaxPrec
+        ->  rhs_max_prec(Type, Prec, RhsMax),
+            parse_expr(Toks, OpTable, RhsMax, Right, Env0, Env1, Toks1),
+            T2 =.. [Name, Left, Right],
+            parse_op_loop(Toks1, OpTable, MaxPrec, T2, Term, Env1, Env, Rest)
+        ;   resolve_postfix(Name, OpTable, Prec, _PType),
+            Prec =< MaxPrec
+        ->  T2 =.. [Name, Left],
+            parse_op_loop(Toks, OpTable, MaxPrec, T2, Term, Env0, Env, Rest)
+        ;   Term = Left, Env = Env0, Rest = [T|Toks]
+        )
+    ;   Term = Left, Env = Env0, Rest = [T|Toks]
+    ).
 
 % parse_primary: the leading token of an expression. Number / var / atom /
 % list / parenthesised / prefix-op application.
@@ -343,21 +331,14 @@ parse_atom_head(Name, R, OpTable, MaxPrec, Term, Env0, Env, Rest) :-
 parse_atom_head(Name, R, _, _, Name, Env, Env, R).
 
 % parse_args: comma-separated arg list inside `(...)`, max_prec 999 so the
-% top-level comma operator (1000) doesn't get folded in. Like
-% parse_op_loop and list_elem_continue, the post-arg dispatch uses
-% clause-level pattern matching rather than nested
-% `( A -> B ; C -> D )` -- the WAM compiler doesn't recursively
-% recognize Else as another if-then-else and emits the second ->/2
-% as a regular Call, which has no runtime implementation. Filed as
-% a separate compiler enhancement.
+% top-level comma operator (1000) doesn't get folded in.
 parse_args(Tokens, OpTable, [Arg|Rest], Env0, Env, RestOut) :-
     parse_expr(Tokens, OpTable, 999, Arg, Env0, Env1, Tokens1),
-    parse_args_continue(Tokens1, OpTable, Rest, Env1, Env, RestOut).
-
-parse_args_continue([tk_comma|Toks], OpTable, Rest, Env0, Env, RestOut) :-
-    !,
-    parse_args(Toks, OpTable, Rest, Env0, Env, RestOut).
-parse_args_continue([tk_rparen|RestOut], _, [], Env, Env, RestOut).
+    (   Tokens1 = [tk_comma|Tokens2]
+    ->  parse_args(Tokens2, OpTable, Rest, Env1, Env, RestOut)
+    ;   Tokens1 = [tk_rparen|RestOut]
+    ->  Rest = [], Env = Env1
+    ).
 
 % parse_list_body: handles `[]`, `[a, b, c]`, `[H|T]`. Element max_prec 999
 % (matches parse_args).
@@ -368,21 +349,15 @@ parse_list_body(Tokens, OpTable, List, Env0, Env, Rest) :-
 
 parse_list_elems(Tokens, OpTable, [E|Rest], Tail, Env0, Env, RestOut) :-
     parse_expr(Tokens, OpTable, 999, E, Env0, Env1, Tokens1),
-    list_elem_continue(Tokens1, OpTable, Rest, Tail, Env1, Env, RestOut).
-
-% Three-way clause-level dispatch instead of nested
-% `( A -> B ; C -> D ; E )`. The WAM compiler's clause_body_analysis
-% pass stack-overflows on the deeply nested disjunction shape (a
-% bug separate from the CutIte semantics that motivated the
-% other workarounds). Until that's fixed, keep this factored.
-list_elem_continue([tk_comma|Toks], OpTable, Rest, Tail, Env0, Env, RestOut) :-
-    !,
-    parse_list_elems(Toks, OpTable, Rest, Tail, Env0, Env, RestOut).
-list_elem_continue([tk_pipe|Toks], OpTable, [], Tail, Env0, Env, RestOut) :-
-    !,
-    parse_expr(Toks, OpTable, 999, Tail, Env0, Env, Tokens3),
-    Tokens3 = [tk_rbracket|RestOut].
-list_elem_continue([tk_rbracket|RestOut], _, [], [], Env, Env, RestOut).
+    (   Tokens1 = [tk_comma|Tokens2]
+    ->  parse_list_elems(Tokens2, OpTable, Rest, Tail, Env1, Env, RestOut)
+    ;   Tokens1 = [tk_pipe|Tokens2]
+    ->  parse_expr(Tokens2, OpTable, 999, Tail, Env1, Env, Tokens3),
+        Tokens3 = [tk_rbracket|RestOut],
+        Rest = []
+    ;   Tokens1 = [tk_rbracket|RestOut]
+    ->  Rest = [], Tail = [], Env = Env1
+    ).
 
 list_build([], Tail, Tail).
 list_build([E|Es], Tail, [E|Rest]) :- list_build(Es, Tail, Rest).
