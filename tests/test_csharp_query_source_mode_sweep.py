@@ -20,6 +20,7 @@ from benchmark_csharp_query_source_mode_sweep import (  # noqa: E402
     calibration_rows_from_stability,
     calibration_rows_from_summaries,
     compare_calibration,
+    compare_calibration_rows,
     filter_workload_scales,
     load_calibration_artifact,
     parse_args,
@@ -218,6 +219,52 @@ class CSharpQuerySourceModeSweepTests(unittest.TestCase):
                 "category-influence/300: median[preload] changed from 0.360 to 0.900 (2.50x)",
             ],
         )
+
+    def test_compare_calibration_rows_uses_stability_artifact_shape(self) -> None:
+        drift = compare_calibration_rows(
+            [
+                CalibrationArtifactRow(
+                    workload="category-influence",
+                    scale="300",
+                    observed_best_source_mode="auto",
+                    current_auto_resolved_source_mode="preload",
+                    observed_auto_vs_best="1.00x",
+                    output_agreement="match",
+                    median_summary="artifact-prebuilt:0.904,auto:0.300,preload:0.400",
+                    resolved_source_mode_summary=(
+                        "artifact-prebuilt:artifact-prebuilt,auto:preload"
+                    ),
+                    source_registration_summary="auto:preloaded_preload_arity2=2",
+                )
+            ],
+            [self._baseline(source_registration_summary="auto:preloaded_preload_arity2=2")],
+            timing_drift_ratio=1.20,
+        )
+
+        self.assertEqual(drift.critical, [])
+        self.assertEqual(
+            drift.timing,
+            [
+                "category-influence/300: best source mode changed from preload to auto",
+                "category-influence/300: auto_vs_best changed from 1.30x to 1.00x (1.30x)",
+                "category-influence/300: median[auto] changed from 0.467 to 0.300 (1.56x)",
+            ],
+        )
+
+    def test_compare_calibration_ignores_best_mode_flips_near_tie(self) -> None:
+        drift = compare_calibration(
+            [
+                self._summary(
+                    best_source_mode="auto",
+                    auto_vs_best="1.00x",
+                )
+            ],
+            [self._baseline(observed_auto_vs_best="1.03x")],
+            timing_drift_ratio=1.20,
+        )
+
+        self.assertEqual(drift.critical, [])
+        self.assertEqual(drift.timing, [])
 
     def test_compare_calibration_flags_missing_baseline_for_fresh_rows(self) -> None:
         drift = compare_calibration([self._summary()], [])
