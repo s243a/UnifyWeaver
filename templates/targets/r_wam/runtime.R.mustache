@@ -201,6 +201,14 @@ SwitchOnConstant  <- function(cases)    list(op = "SwitchOnConstant",  cases = c
 SwitchCase        <- function(val, label) list(value = val, label = label)
 SwitchOnStructure <- function(cases)    list(op = "SwitchOnStructure", cases = cases)
 StructCase        <- function(fid, arity, label) list(fid = as.integer(fid), arity = as.integer(arity), label = label)
+# switch_on_term is the type-mixed dispatch instruction emitted by the
+# WAM compiler when a predicate's clauses have a mix of first-arg
+# types (constant + struct + list). We don't currently use it for
+# optimised type dispatch -- the standard try/retry chain visits
+# every clause and uses clause-head unification to filter -- so the
+# instruction is a correctness-preserving no-op. Adding the proper
+# dispatch later is a pure speed win.
+SwitchOnTerm      <- function()         list(op = "SwitchOnTerm")
 
 BeginAggregate <- function(kind, t, b) list(op = "BeginAggregate", kind = kind, template = t, bag = b)
 EndAggregate   <- function(t)          list(op = "EndAggregate",   template = t)
@@ -1380,6 +1388,10 @@ WamRuntime$step <- function(program, state, instr) {
         state$pc <- as.integer(tgt)
       }
       TRUE
+    },
+    "SwitchOnTerm" = {
+      # Correctness-preserving no-op (see SwitchOnTerm constructor).
+      state$pc <- state$pc + 1L; TRUE
     },
     "BuiltinCall" = {
       ok <- WamRuntime$call_builtin(program, state, instr$pred, instr$arity)

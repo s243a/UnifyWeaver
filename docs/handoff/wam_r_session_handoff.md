@@ -139,26 +139,40 @@ roughly priority order:
    identify a single hot path; subsequent PRs each fix one bottleneck.
    Tagged-list `$tag` access and env-based register lookups are likely
    suspects.
-3. **Strict `xf` precedence rule** (small). Threading the precedence
+3. **Proper cut-barrier scope.** The runtime's `!/0` and `CutIte`
+   drop only the most-recent CP; they don't track the cut barrier
+   at clause-head entry. Fine for shallow predicates, but loses
+   cut semantics whenever a multi-clause callee leaves CPs alive
+   before the cut runs. Direct unblocks the compiled Prolog term
+   parser at `src/unifyweaver/core/prolog_term_parser.pl` -- the
+   structural compile test
+   (`tests/test_prolog_term_parser_wam_r_compile.pl`) shows the
+   source compiles cleanly; full end-to-end equivalence with
+   `WamRuntime$parse_term` is gated on this. To fix: stamp every
+   choice point with the depth at clause-head entry, and have
+   `!/0` truncate `state$cps` back to that depth instead of
+   popping one. Same change makes `CutIte` correct for nested
+   if-then-else.
+4. **Strict `xf` precedence rule** (small). Threading the precedence
    of the current `left` expression through `wam_parse_expr` so `xf`
    and `yf` differ correctly at chained-postfix sites. Fixes the
    simplification documented as a known limitation. Same fix would
    let `fx` / `fy` differ correctly in the prefix path.
-4. **Mode analysis (start).** Big multi-PR effort. Phase 1 collects
+5. **Mode analysis (start).** Big multi-PR effort. Phase 1 collects
    mode info per predicate (in/out per arg); Phase 2 wires it to
    specialised emission (skip unifications when the mode says the slot
    is unbound, etc.). Look at the Haskell target's
    `WAM_HASKELL_MODE_ANALYSIS_*.md` design docs for the precedent.
-5. **Multi-line `read/2`.** Read until a `.` terminator across lines.
+6. **Multi-line `read/2`.** Read until a `.` terminator across lines.
    Niche but completes the streams story.
-6. **Multi-solution `retract/1` ignoring snapshot.** I.e. re-read the
+7. **Multi-solution `retract/1` ignoring snapshot.** I.e. re-read the
    live clause list on each backtrack. Trickier semantics; document
    carefully if pursued.
-7. **Phase-3 lowered emitter expansion.** Currently handles only
+8. **Phase-3 lowered emitter expansion.** Currently handles only
    `deterministic` and `multi_clause_1` shapes. Could grow N-clause
    general lowering; would compete with the kernel / fact-table paths
    so the value is unclear.
-8. **Range / interval indexes** on fact tables. Per-arg hash indexes
+9. **Range / interval indexes** on fact tables. Per-arg hash indexes
    land queries with ground atom/int args; range queries (`X > 5`,
    `X between A B`) still go through the per-tuple scan. A sorted-
    per-arg index would route these. Niche but a natural extension.
