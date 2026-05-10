@@ -523,11 +523,28 @@ local function fact_source_rows(program, pred, state)
   return source.cache.rows
 end
 
+local function fact_row_matches(state, row)
+  local a1 = Runtime.deref(state, Runtime.get_reg(state, 1))
+  local a2 = Runtime.deref(state, Runtime.get_reg(state, 2))
+  if type(a1) == "table" and a1.tag ~= "unbound" and same_atomic(a1, row[1]) ~= true then return false end
+  if type(a2) == "table" and a2.tag ~= "unbound" and same_atomic(a2, row[2]) ~= true then return false end
+  return true
+end
+
+local function filter_fact_rows(state, rows)
+  local out = {}
+  for _, row in ipairs(rows or {}) do
+    if fact_row_matches(state, row) then out[#out + 1] = row end
+  end
+  return out
+end
+
 local function call_fact_stream(program, state, instr)
   local rows = program.inline_facts and program.inline_facts[instr.pred] or nil
   if rows == nil or #rows == 0 then
     rows = fact_source_rows(program, instr.pred, state)
   end
+  rows = filter_fact_rows(state, rows)
   if rows == nil or #rows == 0 then return false end
   if #rows > 1 then
     local rest = {}

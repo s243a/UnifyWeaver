@@ -183,6 +183,7 @@ test(lua_fact_stream_e2e, [condition(lua_available)]) :-
           run_lua_query(LuaDir, 'wam_lua_stream_fact/2', [a, b], true),
           run_lua_query(LuaDir, 'wam_lua_stream_fact/2', [a, c], true),
           run_lua_query(LuaDir, 'wam_lua_stream_fact/2', [a, d], false),
+          run_lua_query(LuaDir, 'wam_lua_stream_fact/2', [x, c], false),
           run_lua_query(LuaDir, 'wam_lua_stream_caller/2', [a, c], true)
         ),
         delete_directory_and_contents(TmpDir)
@@ -215,6 +216,7 @@ test(lua_external_fact_source_e2e, [condition(lua_available)]) :-
           run_lua_query(LuaDir, 'wam_lua_ext_fact/2', [a, d], false),
           run_lua_query(LuaDir, 'wam_lua_ext_fact/2', [x, z], true),
           run_lua_query(LuaDir, 'wam_lua_ext_fact/2', [a, z], false),
+          run_lua_query(LuaDir, 'wam_lua_ext_fact/2', [x, c], false),
           run_lua_query(LuaDir, 'wam_lua_ext_caller/2', [a, c], true),
           run_lua_script(
               LuaDir,
