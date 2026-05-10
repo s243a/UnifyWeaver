@@ -143,7 +143,17 @@ main = do
     internEnv <- openLmdbInternEnvReadonly lmdbInternDir
     !lmdbInternTable <- loadInternTableFromLmdb internEnv "s2i" "i2s"
     !lmdbArticleCategories <- loadArticleCategoriesFromLmdb internEnv "article_category"
+{{^demand_bfs_mode_cursor}}
+    -- in_memory demand-BFS mode: pre-load the full child->parent
+    -- IntMap. Capped at 5M edges; for >5M use demand_bfs_mode(cursor).
     !lmdbParentsIndex <- loadForwardEdgesFromLmdb internEnv "category_parent" 5000000
+{{/demand_bfs_mode_cursor}}
+{{#demand_bfs_mode_cursor}}
+    -- cursor demand-BFS mode: skip the pre-load entirely. Edges live
+    -- in LMDB (cpEdgeLookup for kernel walks; category_child cursor
+    -- for demand-set BFS). parentsIndexInterned will be IM.empty.
+    let !lmdbParentsIndex = IM.empty :: IM.IntMap [Int]
+{{/demand_bfs_mode_cursor}}
 {{/int_atom_seeds_lmdb}}
 
 {{^int_atom_seeds}}

@@ -3040,3 +3040,134 @@ swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
 (cd /tmp/wam_simplewiki_cursor && cabal new-build)
 .../wam-haskell-matrix-bench data/benchmark/simplewiki_cats/lmdb_proj_resident +RTS -N4
 ```
+
+## Phase L appendix #8: enwiki at-scale finale (2026-05-09)
+
+### Why this measurement
+
+Phase L appendix #7 validated cursor BFS at simplewiki scale (297k
+edges, 1.96× speedup vs in_memory at -N1) but didn't yet exercise
+the architectural argument: *can the cursor path run where the
+in-memory path literally cannot?* enwiki at 9.9M edges puts that to
+the test.
+
+### Codegen fix (in this PR)
+
+A bug in the Phase 2b.3 codegen: cursor mode was calling
+`loadForwardEdgesFromLmdb` unconditionally before the demand filter
+ran. The 5_000_000-edge guard would fire even though the result was
+unused at runtime. Fix: thread `demand_bfs_mode_cursor` through
+`generate_main_hs` and gate the loader call with mustache. Cursor
+mode now binds `let !lmdbParentsIndex = IM.empty` directly. No load,
+no guard, no wasted IntMap construction.
+
+This was masked at simplewiki scale because 297k edges fit under the
+5M cap. Without the fix the enwiki measurement would have been
+impossible.
+
+### Resident mode at enwiki: cannot run
+
+Confirmed deterministically:
+
+```
+$ ./wam-haskell-matrix-bench .../enwiki_cats/lmdb_proj_resident +RTS -N1
+wam-haskell-matrix-bench: loadForwardEdgesFromLmdb: edge count
+  exceeded threshold 5000000 (loaded 5000000 so far). Switch to
+  LMDB-cursor BFS (Phase 2b.3) or use the ingester's
+  --with-reverse-edges follow-up.
+Exit status: 1
+```
+
+The guard's "switch to cursor BFS" message is exactly what landed
+this PR's predecessor. Closing the loop.
+
+### Cursor mode at enwiki: runs comfortably
+
+Fixture: `data/benchmark/enwiki_cats/lmdb_proj_resident` after
+running the converter on 9,932,244 edges (28s). Single root id
+97,688,913 with **796,695 descendants** in the category hierarchy.
+1000 seeds, 860 produced nonzero results.
+
+Medians of 3 trials, kernels_on, +RTS -A64M (baked):
+
+| -N | load_ms | query_ms | total_ms | RSS_MB |
+|---:|--------:|---------:|---------:|-------:|
+|  1 |       0 |       11 |     1129 |    752 |
+|  2 |       0 |       12 |     1066 |    807 |
+|  4 |       0 |        7 |     1138 |    922 |
+
+`load_ms = 0` because cursor mode skips the IntMap pre-load
+entirely. Total time is dominated by the demand BFS itself (walking
+796k descendants via category_child cursor) plus the kernel's
+per-seed work over 1000 seeds.
+
+System: 4.8 GB total RAM, ~1.7 GB available pre-bench. **Cursor mode
+finishes in ~1.1s with 750-920 MB peak RSS** — well within the
+machine's headroom, on data that resident mode cannot load at all.
+
+### Why -N scaling is flat at enwiki
+
+Going N1 → N2 → N4 leaves total_ms essentially unchanged
+(1129 / 1066 / 1138). Two reasons:
+
+1. **Demand BFS is sequential**. One cursor, one thread, walks
+   796k nodes. Doesn't parallelize.
+2. **Per-seed parMap work is tiny** (`query_ms` 7-12ms). Even with
+   perfect parallel scaling, that's a small fraction of total time.
+
+Future work: parallelize the demand BFS itself (concurrent cursors
+per worker, partition the descendant tree). That's Phase 2c
+territory, requires the cache instrumentation + workload-aware
+gating that the user has been (correctly) deferring.
+
+### What this closes
+
+Phase 2b's headline arc:
+- Phase 2b.1-2b.2c: codegen, runtime, fixture infrastructure
+- Phase 2b.3: cursor BFS architecture
+- Phase L #5: 100k_cats measurement (showed 3.61× but on a
+  structurally-broken fixture)
+- Phase L #6: parMap regression diagnosis (GC pressure)
+- Phase L #7: simplewiki real-scale measurement (1.96× cursor win)
+- Phase L #8 (this): enwiki — cursor runs where resident cannot
+
+The architecture handles every scale the existing fixtures expose,
+from 1k (parity with cache) through 297k (1.96× cursor win) to
+9.9M (cursor only). Caveat: the per-seed FFI cost amortizes
+through the sharded L2 cache; without it, cursor mode at enwiki
+would be much slower.
+
+### Open follow-ups
+
+- **Parallel demand BFS** — partition the descendant tree across
+  workers. Phase 2c. Probably needs a new sub-db structure or an
+  in-memory frontier-partitioning algorithm.
+- **Multi-query workloads** — single-query benches don't expose
+  cache hit rates that vary across queries. The matrix bench does
+  one query per binary launch. Phase 2c.
+- **Cost-model auto-resolver** — the user explicitly flagged this
+  as the prerequisite for cache warming work. Inputs:
+  fact_count, demand_set_size estimate, available RAM. Outputs:
+  cache_mode + size budget. Phase 2c.
+- **Real Flux strategy** (Phase 2.5) — replace the panic stub
+  with personalised PageRank scoring. Self-contained feature work.
+
+### Reproducer
+
+```bash
+# Convert enwiki LMDB to Phase 1 layout (~28s, 9.9M edges).
+mkdir -p data/benchmark/enwiki_cats/lmdb_proj_resident
+python3 examples/benchmark/convert_lmdb_to_phase1_layout.py \
+    data/benchmark/enwiki_cats/lmdb_proj/lmdb \
+    data/benchmark/enwiki_cats/lmdb_proj_resident/lmdb
+cp data/benchmark/enwiki_cats/lmdb_proj/{seed_ids,root_ids}.txt \
+   data/benchmark/enwiki_cats/lmdb_proj_resident/
+
+# Generate cursor-mode bench. Resident mode would crash at 5M
+# edges, so cursor is the only option here.
+swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
+    /dev/null /tmp/wam_enwiki_cursor seeded interpreter kernels_on resident_cursor
+
+(cd /tmp/wam_enwiki_cursor && cabal new-build)
+.../wam-haskell-matrix-bench data/benchmark/enwiki_cats/lmdb_proj_resident +RTS -N1
+```

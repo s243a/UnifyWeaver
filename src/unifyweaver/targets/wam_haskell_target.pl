@@ -2850,6 +2850,15 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     % aggregation formula (n in Hops^(-N) and the inverse exponent), not
     % be silently overridden by a hardcoded 5.0 in the template.
     resolve_dimension_n(Options, DimN),
+    %% Phase 2b.3: also resolve demand_bfs_mode so the int_atom_seeds_lmdb
+    %% loader block can skip loadForwardEdgesFromLmdb in cursor mode.
+    %% Otherwise the 5_000_000-edge guard fires before demand BFS even
+    %% runs, defeating the whole purpose of cursor mode at scale.
+    resolve_auto_demand_bfs_mode(Options, BfsModeForLoaders),
+    (   BfsModeForLoaders == cursor
+    ->  DemandBfsModeCursor = true
+    ;   DemandBfsModeCursor = false
+    ),
     render_template(Template,
         [ foreign_preds=ForeignPredsStr
         , benchmark_mode=Mode
@@ -2864,6 +2873,7 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
         , lmdb_import=LmdbImport
         , int_atom_seeds=IntAtomSeeds
         , int_atom_seeds_lmdb=IntAtomSeedsLmdb
+        , demand_bfs_mode_cursor=DemandBfsModeCursor
         , max_depth=MaxDepth
         , dimension_n=DimN
         , parmap_seed_source=ParmapSeedSource
