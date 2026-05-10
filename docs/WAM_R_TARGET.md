@@ -812,42 +812,53 @@ swipl -g main -t halt tests/benchmarks/wam_r_fact_source_bench.pl \
 
 Representative hotspots for the WAM backend, single-row `cp(c0, X)`
 query against a 100-row chain, 100000 iterations (R 4.4), with X / A
-registers stored as an integer-indexed R list:
+registers stored as an integer-indexed R list, the `state$bindings`
+env accessed via `e[[name]]` (single lookup) and trail rollback via
+`e[[name]] <- NULL` (env-delete), and a single-slot state pool that
+recycles state envs across `run_predicate` calls:
 
 ```
   function                                       self.s  %self  total.s   %tot
-  WamRuntime$step                                 1.370  24.0%    2.230  39.1%
-  WamRuntime$run                                  0.900  15.8%    3.150  55.3%
-  WamRuntime$deref                                0.520   9.1%    0.760  13.3%
-  WamRuntime$new_state                            0.500   8.8%    0.650  11.4%
-  WamRuntime$run_predicate                        0.440   7.7%    5.550  97.4%
-  WamRuntime$put_reg                              0.290   5.1%    0.300   5.3%
-  WamRuntime$get_reg                              0.200   3.5%    0.210   3.7%
-  list                                            0.170   3.0%    0.170   3.0%
-  new.env                                         0.080   1.4%    0.090   1.6%
+  WamRuntime$step                                 1.500  29.0%    2.180  42.2%
+  WamRuntime$run                                  0.760  14.7%    2.940  56.9%
+  WamRuntime$run_predicate                        0.690  13.3%    5.090  98.5%
+  WamRuntime$deref                                0.380   7.3%    0.610  11.8%
+  WamRuntime$put_reg                              0.260   5.0%    0.260   5.0%
+  WamRuntime$reset_state                          0.240   4.6%    0.360   7.0%
+  WamRuntime$get_reg                              0.160   3.1%    0.180   3.5%
 ```
 
-`step` dispatch and `deref` lead, with a long tail in `new_state`
-(per-call cost of fresh state allocation). The register layer is
-near the floor: `state$regs2` is now a plain R list and X / A
-access is `state$regs2[[idx]]` / `state$regs2[[idx]] <- v`, so each
-read/write is a direct integer subscript -- no `as.character`,
-`exists`, `assign`, `get`, or environment hash lookup. R's
-copy-on-write keeps CP snapshots correct with a bare list
-assignment (`cp$regs <- state$regs2`); subsequent puts clone,
-leaving the snapshot intact.
+`step` dispatch and `run` lead. `deref` was overhauled to a single
+env subscript -- `state$bindings[[v$name]]` returns the bound value or
+NULL in one operation, replacing the prior `exists()` + `get()` pair.
+The trail rollback sites (`undo_trail_to` and ~16 backtrack/CP-restore
+sites) likewise use `state$bindings[[name]] <- NULL` to delete
+bindings, replacing the prior `if (exists) rm()` pattern.
 
-A prior profile of the same workload before this refactor showed
-`get_reg` self.s = 0.820 and a combined ~0.89 self.s spent in
-`exists` + `as.character` + `assign`, with elapsed = 7.7s. After
-the refactor, elapsed dropped to ~5.7s (≈26% wall-clock
-improvement); `get_reg` self time fell ≈4× and `exists` /
-`as.character` / `assign` no longer appear in the X / A path.
-(`as.character` is still used on the Y-register path; Y reads
-remain in per-frame envs because Allocate / Deallocate snapshot
-semantics rely on each call frame owning its own Y storage.) The
-next directly actionable target is `new_state` (per-call env
-allocation amortised across `run_predicate` invocations).
+`new_state` no longer appears in the top hotspots: a single-slot pool
+(`WamRuntime$state_pool_idle`) parks the state env on
+`run_predicate` exit and the next call recycles it via `reset_state`.
+That swaps a fresh `new.env()` for the state record (the bindings env
+is still freshly allocated each call -- cheaper than rm-ing entries
+when bindings is non-empty, and correctness-trivial). Recursive
+`run_predicate` calls -- if they ever happen -- see a NULL pool,
+allocate fresh, and only re-park if the slot is still NULL on exit.
+
+A prior profile of the same workload before these refactors showed
+elapsed = 7.7s (env-keyed regs2). After the regs2 -> integer-indexed
+list refactor: 5.7s (~26%). After the bindings + state-pool refactor:
+~5.2s (~33% total, ~9% incremental). `deref` self.s 0.520 -> 0.380
+(~27%); the `exists` / `rm` calls dropped off the by-self table for
+the X / A path entirely; `new_state` dropped from 8.8% to 0%
+(replaced by `reset_state` at 4.6%).
+
+Remaining levers, in priority order:
+- `step` (29% self): the big `switch(op_name, ...)`. A per-instruction
+  closure-based dispatch could shave this.
+- `run_predicate` (10-13% self): on.exit + tryCatch + the pool dance
+  itself adds overhead. Trimming this would also help, though it's
+  inherent to the recycling pattern.
+- `run` (14.7% self): the main interpreter loop body.
 
 When adding a builtin:
 
