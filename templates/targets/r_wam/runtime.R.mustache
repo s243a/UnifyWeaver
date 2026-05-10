@@ -353,6 +353,35 @@ WamRuntime$promote_regs <- function(state) {
   }
 }
 
+# Single-slot state pool. `run_predicate` parks its used state here on
+# exit and the next call retrieves it (if non-NULL) instead of running
+# `new_state` from scratch -- skipping the outer-env allocation. The
+# bindings env is replaced with a fresh one on reset (cheaper than
+# rm-ing entries when bindings is non-empty, and correctness-trivial).
+# Recursive `run_predicate` calls -- if they ever happen -- see a NULL
+# pool, allocate fresh, and only re-park if the slot is still NULL on
+# exit; this loses one state to GC per recursion but stays correct.
+WamRuntime$state_pool_idle <- NULL
+
+WamRuntime$reset_state <- function(s) {
+  s$pc          <- 1L
+  s$cp          <- 0L
+  s$regs        <- list()
+  s$regs2       <- list()
+  s$stack       <- list()
+  s$cps         <- list()
+  s$bindings    <- new.env(parent = emptyenv(), hash = TRUE)
+  s$trail       <- list()
+  s$var_counter <- 0L
+  s$halt        <- FALSE
+  s$mode        <- NULL
+  s$build_stack <- list()
+  s$read_stack  <- list()
+  s$pending_call_barrier <- 0L
+  s$shadow_frame <- NULL
+  invisible(NULL)
+}
+
 # ----------------------------------------------------------
 # Structure build helpers (write mode)
 # ----------------------------------------------------------
@@ -497,15 +526,15 @@ WamRuntime$count_following_unify <- function(program, pc) {
 # ----------------------------------------------------------
 WamRuntime$deref <- function(state, v) {
   while (is.list(v) && !is.null(v$tag) && v$tag == "unbound") {
-    name <- v$name
-    if (!exists(name, envir = state$bindings, inherits = FALSE)) break
-    v <- get(name, envir = state$bindings, inherits = FALSE)
+    bound <- state$bindings[[v$name]]
+    if (is.null(bound)) break
+    v <- bound
   }
   v
 }
 
 WamRuntime$bind <- function(state, name, val) {
-  assign(name, val, envir = state$bindings)
+  state$bindings[[name]] <- val
   state$trail <- c(state$trail, list(name))
   invisible(NULL)
 }
@@ -517,9 +546,7 @@ WamRuntime$undo_trail_to <- function(state, n) {
   while (length(state$trail) > n) {
     last <- length(state$trail)
     name <- state$trail[[last]]
-    if (exists(name, envir = state$bindings, inherits = FALSE)) {
-      rm(list = name, envir = state$bindings)
-    }
+    state$bindings[[name]] <- NULL
     state$trail <- state$trail[-last]
   }
   invisible(NULL)
@@ -2091,9 +2118,7 @@ WamRuntime$dynamic_iter <- function(program, state, clauses, start_idx, arity, r
     if (length(state$trail) > snap_trail) {
       to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
       for (name in to_undo) {
-        if (exists(name, envir = state$bindings, inherits = FALSE)) {
-          rm(list = name, envir = state$bindings)
-        }
+        state$bindings[[name]] <- NULL
       }
       state$trail <- state$trail[seq_len(snap_trail)]
     }
@@ -2322,9 +2347,7 @@ WamRuntime$transitive_closure2 <- function(program, state, key, edge_pred,
   if (length(state$trail) > snap_trail) {
     to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
     for (name in to_undo) {
-      if (exists(name, envir = state$bindings, inherits = FALSE)) {
-        rm(list = name, envir = state$bindings)
-      }
+      state$bindings[[name]] <- NULL
     }
     state$trail <- state$trail[seq_len(snap_trail)]
   }
@@ -2411,9 +2434,7 @@ WamRuntime$transitive_distance3 <- function(program, state, key, edge_pred,
   if (length(state$trail) > snap_trail) {
     to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
     for (name in to_undo) {
-      if (exists(name, envir = state$bindings, inherits = FALSE)) {
-        rm(list = name, envir = state$bindings)
-      }
+      state$bindings[[name]] <- NULL
     }
     state$trail <- state$trail[seq_len(snap_trail)]
   }
@@ -2533,9 +2554,7 @@ WamRuntime$weighted_shortest_path3 <- function(program, state, key, edge_pred,
   if (length(state$trail) > snap_trail) {
     to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
     for (name in to_undo) {
-      if (exists(name, envir = state$bindings, inherits = FALSE)) {
-        rm(list = name, envir = state$bindings)
-      }
+      state$bindings[[name]] <- NULL
     }
     state$trail <- state$trail[seq_len(snap_trail)]
   }
@@ -2629,9 +2648,7 @@ WamRuntime$transitive_parent_distance4 <- function(program, state, key,
   if (length(state$trail) > snap_trail) {
     to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
     for (name in to_undo) {
-      if (exists(name, envir = state$bindings, inherits = FALSE)) {
-        rm(list = name, envir = state$bindings)
-      }
+      state$bindings[[name]] <- NULL
     }
     state$trail <- state$trail[seq_len(snap_trail)]
   }
@@ -2736,9 +2753,7 @@ WamRuntime$transitive_step_parent_distance5 <- function(program, state, key,
   if (length(state$trail) > snap_trail) {
     to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
     for (name in to_undo) {
-      if (exists(name, envir = state$bindings, inherits = FALSE)) {
-        rm(list = name, envir = state$bindings)
-      }
+      state$bindings[[name]] <- NULL
     }
     state$trail <- state$trail[seq_len(snap_trail)]
   }
@@ -2828,9 +2843,7 @@ WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
   if (length(state$trail) > snap_trail) {
     to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
     for (name in to_undo) {
-      if (exists(name, envir = state$bindings, inherits = FALSE)) {
-        rm(list = name, envir = state$bindings)
-      }
+      state$bindings[[name]] <- NULL
     }
     state$trail <- state$trail[seq_len(snap_trail)]
   }
@@ -2969,9 +2982,7 @@ WamRuntime$astar_shortest_path4 <- function(program, state, key, edge_pred,
   if (length(state$trail) > snap_trail) {
     to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
     for (name in to_undo) {
-      if (exists(name, envir = state$bindings, inherits = FALSE)) {
-        rm(list = name, envir = state$bindings)
-      }
+      state$bindings[[name]] <- NULL
     }
     state$trail <- state$trail[seq_len(snap_trail)]
   }
@@ -3493,9 +3504,7 @@ WamRuntime$member_iter <- function(state, target, elems, start_idx, resume_pc) {
     if (length(state$trail) > snap_trail) {
       to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
       for (name in to_undo) {
-        if (exists(name, envir = state$bindings, inherits = FALSE)) {
-          rm(list = name, envir = state$bindings)
-        }
+        state$bindings[[name]] <- NULL
       }
       state$trail <- state$trail[seq_len(snap_trail)]
     }
@@ -3997,9 +4006,7 @@ WamRuntime$collect_solutions <- function(program, state, template_term, goal_ter
   if (length(state$trail) > snap_trail) {
     to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
     for (name in to_undo) {
-      if (exists(name, envir = state$bindings, inherits = FALSE)) {
-        rm(list = name, envir = state$bindings)
-      }
+      state$bindings[[name]] <- NULL
     }
     state$trail <- state$trail[seq_len(snap_trail)]
   }
@@ -4073,9 +4080,7 @@ WamRuntime$collect_bag_groups <- function(program, state, template_term, goal_te
   if (length(state$trail) > snap_trail) {
     to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
     for (name in to_undo) {
-      if (exists(name, envir = state$bindings, inherits = FALSE)) {
-        rm(list = name, envir = state$bindings)
-      }
+      state$bindings[[name]] <- NULL
     }
     state$trail <- state$trail[seq_len(snap_trail)]
   }
@@ -4830,9 +4835,7 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     if (length(state$trail) > snap_trail) {
       to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
       for (name in to_undo) {
-        if (exists(name, envir = state$bindings, inherits = FALSE)) {
-          rm(list = name, envir = state$bindings)
-        }
+        state$bindings[[name]] <- NULL
       }
       state$trail <- state$trail[seq_len(snap_trail)]
     }
@@ -5548,9 +5551,7 @@ WamRuntime$backtrack <- function(state) {
     if (length(state$trail) > cp$trail_len) {
       to_undo <- state$trail[(cp$trail_len + 1L):length(state$trail)]
       for (name in to_undo) {
-        if (exists(name, envir = state$bindings, inherits = FALSE)) {
-          rm(list = name, envir = state$bindings)
-        }
+        state$bindings[[name]] <- NULL
       }
       state$trail <- state$trail[seq_len(cp$trail_len)]
     }
@@ -5576,9 +5577,7 @@ WamRuntime$backtrack <- function(state) {
     if (length(state$trail) > cp$trail_len) {
       to_undo <- state$trail[(cp$trail_len + 1L):length(state$trail)]
       for (name in to_undo) {
-        if (exists(name, envir = state$bindings, inherits = FALSE)) {
-          rm(list = name, envir = state$bindings)
-        }
+        state$bindings[[name]] <- NULL
       }
       state$trail <- state$trail[seq_len(cp$trail_len)]
     }
@@ -5604,9 +5603,7 @@ WamRuntime$backtrack <- function(state) {
     if (length(state$trail) > cp$trail_len) {
       to_undo <- state$trail[(cp$trail_len + 1L):length(state$trail)]
       for (name in to_undo) {
-        if (exists(name, envir = state$bindings, inherits = FALSE)) {
-          rm(list = name, envir = state$bindings)
-        }
+        state$bindings[[name]] <- NULL
       }
       state$trail <- state$trail[seq_len(cp$trail_len)]
     }
@@ -5634,9 +5631,7 @@ WamRuntime$backtrack <- function(state) {
   if (length(state$trail) > cp$trail_len) {
     to_undo <- state$trail[(cp$trail_len + 1L):length(state$trail)]
     for (name in to_undo) {
-      if (exists(name, envir = state$bindings, inherits = FALSE)) {
-        rm(list = name, envir = state$bindings)
-      }
+      state$bindings[[name]] <- NULL
     }
     state$trail <- state$trail[seq_len(cp$trail_len)]
   }
@@ -5686,9 +5681,20 @@ WamRuntime$run <- function(program, state, max_steps = 1e7) {
 }
 
 WamRuntime$run_predicate <- function(program, start_pc, args) {
-  state <- WamRuntime$new_state()
-  state$regs <- list()
-  WamRuntime$promote_regs(state)
+  state <- WamRuntime$state_pool_idle
+  if (is.null(state)) {
+    state <- WamRuntime$new_state()
+  } else {
+    WamRuntime$state_pool_idle <- NULL
+    WamRuntime$reset_state(state)
+  }
+  on.exit({
+    # Park back in the pool if the slot is still free; recursive calls
+    # that allocated their own state silently drop on exit.
+    if (is.null(WamRuntime$state_pool_idle)) {
+      WamRuntime$state_pool_idle <- state
+    }
+  })
   for (i in seq_along(args)) {
     WamRuntime$put_reg(state, i, args[[i]])
   }
