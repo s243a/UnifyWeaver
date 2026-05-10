@@ -17,6 +17,8 @@ from benchmark_csharp_query_source_mode_sweep import (  # noqa: E402
     SourceModeSummary,
     WORKLOAD_SCRIPTS,
     calibration_failures,
+    calibration_rows_from_stability,
+    calibration_rows_from_summaries,
     compare_calibration,
     filter_workload_scales,
     load_calibration_artifact,
@@ -279,6 +281,76 @@ class CSharpQuerySourceModeSweepTests(unittest.TestCase):
 
         self.assertEqual(stability[0].stable_best_source_mode, "")
         self.assertEqual(stability[0].best_source_mode_counts, "auto:1,preload:1")
+
+    def test_calibration_rows_from_summaries_match_artifact_shape(self) -> None:
+        rows = calibration_rows_from_summaries(
+            [
+                self._summary(
+                    resolved_source_mode_summary="artifact-prebuilt:artifact-prebuilt,auto:preload",
+                    source_registration_summary="auto:preloaded_preload_arity2=2",
+                )
+            ]
+        )
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row.workload, "category-influence")
+        self.assertEqual(row.scale, "300")
+        self.assertEqual(row.observed_best_source_mode, "preload")
+        self.assertEqual(row.current_auto_resolved_source_mode, "preload")
+        self.assertEqual(row.observed_auto_vs_best, "1.30x")
+        self.assertEqual(row.output_agreement, "match")
+        self.assertEqual(
+            row.median_summary,
+            "artifact-prebuilt:0.904,auto:0.467,preload:0.360",
+        )
+        self.assertEqual(
+            row.resolved_source_mode_summary,
+            "artifact-prebuilt:artifact-prebuilt,auto:preload",
+        )
+        self.assertEqual(row.source_registration_summary, "auto:preloaded_preload_arity2=2")
+
+    def test_calibration_rows_from_stability_use_median_timing_fields(self) -> None:
+        run_one = self._summary(
+            best_source_mode="preload",
+            auto_vs_best="1.30x",
+            median_summary="artifact-prebuilt:0.904,auto:0.467,preload:0.360",
+            resolved_source_mode_summary="artifact-prebuilt:artifact-prebuilt,auto:preload",
+            source_registration_summary="auto:preloaded_preload_arity2=2",
+        )
+        run_two = self._summary(
+            best_source_mode="auto",
+            auto_vs_best="1.00x",
+            median_summary="artifact-prebuilt:0.800,auto:0.200,preload:0.400",
+            resolved_source_mode_summary="artifact-prebuilt:artifact-prebuilt,auto:preload",
+            source_registration_summary="auto:preloaded_preload_arity2=2",
+        )
+        run_three = self._summary(
+            best_source_mode="auto",
+            auto_vs_best="1.00x",
+            median_summary="artifact-prebuilt:1.000,auto:0.300,preload:0.500",
+            resolved_source_mode_summary="artifact-prebuilt:artifact-prebuilt,auto:preload",
+            source_registration_summary="auto:preloaded_preload_arity2=2",
+        )
+        sweep_runs = [[run_one], [run_two], [run_three]]
+        stability = summarize_stability(sweep_runs)
+
+        rows = calibration_rows_from_stability(stability, sweep_runs)
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row.observed_best_source_mode, "auto")
+        self.assertEqual(row.current_auto_resolved_source_mode, "preload")
+        self.assertEqual(row.observed_auto_vs_best, "1.00x")
+        self.assertEqual(
+            row.median_summary,
+            "artifact-prebuilt:0.904,auto:0.300,preload:0.400",
+        )
+        self.assertEqual(
+            row.resolved_source_mode_summary,
+            "artifact-prebuilt:artifact-prebuilt,auto:preload",
+        )
+        self.assertEqual(row.source_registration_summary, "auto:preloaded_preload_arity2=2")
 
     def test_parse_runner_output_summarizes_modes_and_registrations(self) -> None:
         output = "\n".join(

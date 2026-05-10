@@ -125,7 +125,7 @@ def parse_args() -> argparse.Namespace:
             "Values above 1 print a stability summary instead of the raw per-run table."
         ),
     )
-    parser.add_argument("--format", choices=["tsv", "markdown"], default="tsv")
+    parser.add_argument("--format", choices=["tsv", "markdown", "calibration-tsv"], default="tsv")
     parser.add_argument(
         "--trace",
         action="store_true",
@@ -531,6 +531,66 @@ def summarize_stability(sweep_runs: list[list[SourceModeSummary]]) -> list[Sourc
     return stability
 
 
+def calibration_rows_from_summaries(summaries: list[SourceModeSummary]) -> list[CalibrationArtifactRow]:
+    rows: list[CalibrationArtifactRow] = []
+    for summary in sorted(summaries, key=lambda item: _calibration_key_sort_key((item.workload, item.scale))):
+        rows.append(
+            CalibrationArtifactRow(
+                workload=summary.workload,
+                scale=summary.scale,
+                observed_best_source_mode=summary.best_source_mode,
+                current_auto_resolved_source_mode=parse_mode_summary(
+                    summary.resolved_source_mode_summary
+                ).get("auto", ""),
+                observed_auto_vs_best=summary.auto_vs_best,
+                output_agreement=summary.output_agreement,
+                median_summary=summary.median_summary,
+                resolved_source_mode_summary=summary.resolved_source_mode_summary,
+                source_registration_summary=summary.source_registration_summary,
+            )
+        )
+    return rows
+
+
+def calibration_rows_from_stability(
+    stability_summaries: list[SourceModeStabilitySummary],
+    sweep_runs: list[list[SourceModeSummary]],
+) -> list[CalibrationArtifactRow]:
+    summaries_by_key: dict[tuple[str, str], list[SourceModeSummary]] = {}
+    for run in sweep_runs:
+        for summary in run:
+            summaries_by_key.setdefault((summary.workload, summary.scale), []).append(summary)
+
+    rows: list[CalibrationArtifactRow] = []
+    for summary in stability_summaries:
+        key = (summary.workload, summary.scale)
+        raw_summaries = summaries_by_key.get(key, [])
+        rows.append(
+            CalibrationArtifactRow(
+                workload=summary.workload,
+                scale=summary.scale,
+                observed_best_source_mode=(
+                    summary.stable_best_source_mode
+                    or _first_count_value(summary.best_source_mode_counts)
+                ),
+                current_auto_resolved_source_mode=(
+                    summary.stable_auto_resolved_source_mode
+                    or _first_count_value(summary.auto_resolved_source_mode_counts)
+                ),
+                observed_auto_vs_best=summary.auto_vs_best_median,
+                output_agreement=summary.output_agreement,
+                median_summary=summary.median_summary,
+                resolved_source_mode_summary=_most_common_nonempty(
+                    item.resolved_source_mode_summary for item in raw_summaries
+                ),
+                source_registration_summary=_most_common_nonempty(
+                    item.source_registration_summary for item in raw_summaries
+                ),
+            )
+        )
+    return rows
+
+
 def _value_counts(values: list[str]) -> str:
     counts: dict[str, int] = {}
     for value in values:
@@ -539,6 +599,24 @@ def _value_counts(values: list[str]) -> str:
         f"{value}:{count}"
         for value, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     )
+
+
+def _first_count_value(counts: str) -> str:
+    first = split_csv(counts)
+    if not first or ":" not in first[0]:
+        return ""
+    return first[0].split(":", 1)[0]
+
+
+def _most_common_nonempty(values: Iterable[str]) -> str:
+    counts: dict[str, int] = {}
+    for value in values:
+        if not value:
+            continue
+        counts[value] = counts.get(value, 0) + 1
+    if not counts:
+        return ""
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
 
 
 def _majority_value(values: list[str], total_count: int) -> str:
@@ -788,6 +866,17 @@ def print_stability_markdown(summaries: list[SourceModeStabilitySummary]) -> Non
         )
 
 
+def print_calibration_tsv(rows: list[CalibrationArtifactRow]) -> None:
+    print("workload\tscale\tobserved_best_source_mode\tcurrent_auto_resolved_source_mode\tobserved_auto_vs_best\toutput_agreement\tmedian_s_by_mode\tresolved_source_modes_by_mode\tsource_registrations_by_mode")
+    for row in rows:
+        print(
+            f"{row.workload}\t{row.scale}\t{row.observed_best_source_mode}\t"
+            f"{row.current_auto_resolved_source_mode}\t{row.observed_auto_vs_best}\t"
+            f"{row.output_agreement}\t{row.median_summary}\t"
+            f"{row.resolved_source_mode_summary}\t{row.source_registration_summary}"
+        )
+
+
 def main() -> int:
     args = parse_args()
     workloads = parse_workloads(args.workloads)
@@ -843,12 +932,18 @@ def main() -> int:
 
     if args.stability_runs > 1:
         stability_summaries = summarize_stability(sweep_runs)
-        if args.format == "markdown":
+        if args.format == "calibration-tsv":
+            print_calibration_tsv(
+                calibration_rows_from_stability(stability_summaries, sweep_runs)
+            )
+        elif args.format == "markdown":
             print_stability_markdown(stability_summaries)
         else:
             print_stability_tsv(stability_summaries)
     else:
-        if args.format == "markdown":
+        if args.format == "calibration-tsv":
+            print_calibration_tsv(calibration_rows_from_summaries(summaries))
+        elif args.format == "markdown":
             print_markdown(summaries)
         else:
             print_tsv(summaries)
