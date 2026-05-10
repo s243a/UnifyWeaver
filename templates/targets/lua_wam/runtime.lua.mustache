@@ -430,6 +430,37 @@ local function builtin_arg(_program, state)
   return bind_or_compare(state, 3, arg)
 end
 
+local function builtin_univ(program, state)
+  local term = Runtime.deref(state, Runtime.get_reg(state, 1))
+  if type(term) == "table" and term.tag == "unbound" then
+    local items = list_items(program, state, Runtime.get_reg(state, 2))
+    if items == nil or #items == 0 then return false end
+    local built = nil
+    if #items == 1 then
+      built = items[1]
+    else
+      local name = Runtime.deref(state, items[1])
+      if type(name) ~= "table" or name.tag ~= "atom" then return false end
+      local args = {}
+      for i = 2, #items do args[#args + 1] = items[i] end
+      built = V.Struct(name.id, args)
+    end
+    return Runtime.unify(state, term, built)
+  end
+
+  local out = nil
+  if type(term) == "table" and term.tag == "struct" then
+    local items = { V.Atom(term.fid) }
+    for _, arg in ipairs(term.args or {}) do items[#items + 1] = arg end
+    out = Runtime.list_from_terms(items, program.intern_table)
+  elseif type(term) == "table" and (term.tag == "atom" or term.tag == "int" or term.tag == "float") then
+    out = Runtime.list_from_terms({ term }, program.intern_table)
+  else
+    return false
+  end
+  return bind_or_compare(state, 2, out)
+end
+
 local function numeric_value(v)
   if type(v) == "table" and (v.tag == "int" or v.tag == "float") then return v.val end
   return nil
@@ -789,6 +820,7 @@ function Runtime.builtin_call(program, state, instr)
   if p == "length" or p == "length/2" then return builtin_length(program, state) end
   if p == "functor" or p == "functor/3" then return builtin_functor(program, state) end
   if p == "arg" or p == "arg/3" then return builtin_arg(program, state) end
+  if p == "=.." or p == "=../2" then return builtin_univ(program, state) end
   if p == "is" or p == "is/2" then
     local n = number_value(Runtime.deref(state, Runtime.get_reg(state, 2)))
     if n == nil then return false end
