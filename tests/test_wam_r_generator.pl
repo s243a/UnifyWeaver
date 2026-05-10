@@ -3647,6 +3647,72 @@ e2e_nested_if_then_else_via_rscript :-
 % The nonvar guard makes the function safe to call with any term;
 % as a side benefit the parser's natural-form `parse_op_loop` /
 % `parse_list_elems` bodies (triple-nested ITE) compile cleanly.
+% End-to-end: the runtime parser (WamRuntime$wam_parse_expr) enforces
+% strict (xf / xfx / xfy / fx) vs non-strict (yf / yfx / fy) lhs-prec
+% rules. yf / fy permit chaining `5!!` / `neg neg foo`; xf / fx
+% reject the second application because the operand precedence is
+% required to be strictly less than the operator precedence.
+test(strict_xf_chain_fails_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_strict_xf_chain_fails_via_rscript
+    ;   true
+    )).
+
+e2e_strict_xf_chain_fails_via_rscript :-
+    retractall(user:strict_xf_single_ok/0),
+    retractall(user:strict_xf_chain_fails/0),
+    retractall(user:strict_fx_chain_fails/0),
+    retractall(user:nonstrict_yf_chain_ok/0),
+    retractall(user:nonstrict_fy_chain_ok/0),
+    % yf permits chaining (5!! parses to !(!(5))).
+    assertz((user:nonstrict_yf_chain_ok :-
+        op(100, yf, '!'),
+        read_term_from_atom('5!!', T),
+        T =.. [F, Inner],
+        F == '!',
+        Inner =.. [F, A],
+        A == 5)),
+    % xf single application still works.
+    assertz((user:strict_xf_single_ok :-
+        op(100, xf, '!'),
+        read_term_from_atom('5!', T),
+        T =.. [F, A],
+        F == '!', A == 5)),
+    % xf chained: parser refuses 5!! because the inner !(5) has prec
+    % 100 and the outer ! requires its operand at < 100.
+    assertz((user:strict_xf_chain_fails :-
+        op(100, xf, '!'),
+        \+ read_term_from_atom('5!!', _))),
+    % fy permits chaining; fx rejects.
+    assertz((user:nonstrict_fy_chain_ok :-
+        op(900, fy, neg),
+        read_term_from_atom('neg neg foo', T),
+        T =.. [F, Inner],
+        F == neg,
+        Inner =.. [F, A],
+        A == foo)),
+    assertz((user:strict_fx_chain_fails :-
+        op(900, fx, neg),
+        \+ read_term_from_atom('neg neg foo', _))),
+    unique_r_tmp_dir('tmp_r_strict_xf_chain_e2e', TmpDir),
+    write_wam_r_project(
+        [user:nonstrict_yf_chain_ok/0, user:strict_xf_single_ok/0,
+         user:strict_xf_chain_fails/0, user:nonstrict_fy_chain_ok/0,
+         user:strict_fx_chain_fails/0],
+        [],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [nonstrict_yf_chain_ok, strict_xf_single_ok,
+           strict_xf_chain_fails, nonstrict_fy_chain_ok,
+           strict_fx_chain_fails],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
 test(deeply_nested_ite_compiles) :-
     retractall(user:dni_chain/1),
     % Triple-nested if-then-else. The exact shape that previously

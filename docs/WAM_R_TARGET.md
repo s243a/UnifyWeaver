@@ -617,12 +617,6 @@ WamRuntime$run(shared_program, state)
 
 ## Limitations
 
-- **Postfix `xf` vs `yf` chaining**. Single postfix application is
-  correct; chained applications (`5!!`) accept either type without
-  enforcing the ISO `xf` rule that the operand precedence be
-  strictly less than the operator precedence. Symmetric with the
-  existing prefix simplification. Documented; not a real-world
-  blocker.
 - **WAM-text quoting collision**. The atom `'42'` and the integer
   `42` both serialise as `set_constant 42` in SWI's WAM emitter,
   so the codegen can't distinguish them. The runtime's `atom_*`
@@ -718,6 +712,7 @@ Coverage map (e2e tests, by feature group):
 | `cut_ite_barrier_after_helper_e2e_rscript` | `( A -> B ; C )` soft-cut commits past CPs that A's evaluation left alive (the codegen marks the if-then-else's `try_me_else` as `try_me_else_ite`, the runtime tags the CP `kind="ite"`, and `CutIte` truncates `state$cps` back to that CP's pre-push depth) |
 | `nested_if_then_else_e2e_rscript` | chained `( A -> B ; C -> D ; E )` compiles as nested cut_ite/try_me_else_ite pairs (each `->` in Else position is recognised recursively rather than emitted as a stub `Call("->", 2)`) |
 | `deeply_nested_ite_compiles` | clause_body_analysis no longer stack-overflows on triple-nested if-then-else bodies (the `nonvar` guard on `disjunction_alternatives/2` keeps it from infinitely-expanding an unbound goal that passes through the analyser) |
+| `strict_xf_chain_fails_e2e_rscript` | runtime parser enforces strict (xf / fx) vs non-strict (yf / fy) lhs-precedence rules: `5!!` parses with `op(100, yf, '!')` but fails with `op(100, xf, '!')`; `neg neg foo` parses with `op(900, fy, neg)` but fails with `op(900, fx, neg)` |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 

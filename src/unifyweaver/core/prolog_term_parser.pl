@@ -60,7 +60,7 @@ parse_term_from_atom(Atom, OpTable, Term) :-
 
 parse_term_from_codes(Codes, OpTable, Term) :-
     tokenize(Codes, Tokens),
-    parse_expr(Tokens, OpTable, 1200, Term, [], _Env, Rest),
+    parse_expr(Tokens, OpTable, 1200, Term, _Prec, [], _Env, Rest),
     Rest == [].
 
 % -----------------------------------------------------------------------------
@@ -271,69 +271,97 @@ separator_token(tk_pipe).
 % Parser (Pratt-style)
 % -----------------------------------------------------------------------------
 
-% parse_expr(+Tokens, +OpTable, +MaxPrec, -Term, +Env0, -Env, -Rest).
-parse_expr(Tokens0, OpTable, MaxPrec, Term, Env0, Env, Rest) :-
-    parse_primary(Tokens0, OpTable, MaxPrec, Left, Env0, Env1, Tokens1),
-    parse_op_loop(Tokens1, OpTable, MaxPrec, Left, Term, Env1, Env, Rest).
+% parse_expr(+Tokens, +OpTable, +MaxPrec, -Term, -TermPrec, +Env0, -Env, -Rest).
+%   Returns the parsed term plus its precedence so the caller (the
+%   recursive parse_op_loop) can enforce strict-vs-non-strict
+%   associativity rules: xfx/xfy/xf require lhs strictly less than
+%   the op's prec; yfx/yf accept lhs at op prec (left-fold).
+parse_expr(Tokens0, OpTable, MaxPrec, Term, TermPrec, Env0, Env, Rest) :-
+    parse_primary(Tokens0, OpTable, MaxPrec, Left, LeftPrec, Env0, Env1, Tokens1),
+    parse_op_loop(Tokens1, OpTable, MaxPrec, Left, LeftPrec,
+                  Term, TermPrec, Env1, Env, Rest).
 
-parse_op_loop([], _, _, Left, Left, Env, Env, []).
-parse_op_loop([T|Toks], OpTable, MaxPrec, Left, Term, Env0, Env, Rest) :-
+parse_op_loop([], _, _, Left, LeftPrec, Left, LeftPrec, Env, Env, []).
+parse_op_loop([T|Toks], OpTable, MaxPrec, Left, LeftPrec,
+              Term, TermPrec, Env0, Env, Rest) :-
     (   token_op_name(T, Name)
     ->  (   resolve_infix(Name, OpTable, Prec, Type),
-            Prec =< MaxPrec
+            Prec =< MaxPrec,
+            infix_lhs_ok(Type, LeftPrec, Prec)
         ->  rhs_max_prec(Type, Prec, RhsMax),
-            parse_expr(Toks, OpTable, RhsMax, Right, Env0, Env1, Toks1),
+            parse_expr(Toks, OpTable, RhsMax, Right, _, Env0, Env1, Toks1),
             T2 =.. [Name, Left, Right],
-            parse_op_loop(Toks1, OpTable, MaxPrec, T2, Term, Env1, Env, Rest)
-        ;   resolve_postfix(Name, OpTable, Prec, _PType),
-            Prec =< MaxPrec
+            parse_op_loop(Toks1, OpTable, MaxPrec, T2, Prec,
+                          Term, TermPrec, Env1, Env, Rest)
+        ;   resolve_postfix(Name, OpTable, Prec, PType),
+            Prec =< MaxPrec,
+            postfix_lhs_ok(PType, LeftPrec, Prec)
         ->  T2 =.. [Name, Left],
-            parse_op_loop(Toks, OpTable, MaxPrec, T2, Term, Env0, Env, Rest)
-        ;   Term = Left, Env = Env0, Rest = [T|Toks]
+            parse_op_loop(Toks, OpTable, MaxPrec, T2, Prec,
+                          Term, TermPrec, Env0, Env, Rest)
+        ;   Term = Left, TermPrec = LeftPrec,
+            Env = Env0, Rest = [T|Toks]
         )
-    ;   Term = Left, Env = Env0, Rest = [T|Toks]
+    ;   Term = Left, TermPrec = LeftPrec,
+        Env = Env0, Rest = [T|Toks]
     ).
 
-% parse_primary: the leading token of an expression. Number / var / atom /
-% list / parenthesised / prefix-op application.
-parse_primary([tk_num(V)|R], _, _, V, Env, Env, R) :- !.
+% infix_lhs_ok / postfix_lhs_ok: enforce strict (xfx/xfy/xf) vs
+% non-strict (yfx/yf) lhs precedence.
+infix_lhs_ok(yfx, LeftPrec, OpPrec) :- !, LeftPrec =< OpPrec.
+infix_lhs_ok(_,   LeftPrec, OpPrec) :- LeftPrec < OpPrec.
 
-parse_primary([tk_var(Name)|R], _, _, V, Env0, Env, R) :- !,
+postfix_lhs_ok(yf, LeftPrec, OpPrec) :- !, LeftPrec =< OpPrec.
+postfix_lhs_ok(_,  LeftPrec, OpPrec) :- LeftPrec < OpPrec.
+
+% parse_primary: the leading token of an expression. Number / var / atom /
+% list / parenthesised / prefix-op application. Returns the parsed term
+% AND its precedence (0 for atomic / list / parens / functor, op_prec
+% for a prefix-op application) so parse_op_loop can enforce
+% strict-vs-non-strict associativity.
+parse_primary([tk_num(V)|R], _, _, V, 0, Env, Env, R) :- !.
+
+parse_primary([tk_var(Name)|R], _, _, V, 0, Env0, Env, R) :- !,
     bind_var(Name, V, Env0, Env).
 
-parse_primary([tk_atom(Name)|R], OpTable, MaxPrec, Term, Env0, Env, Rest) :- !,
-    parse_atom_head(Name, R, OpTable, MaxPrec, Term, Env0, Env, Rest).
+parse_primary([tk_atom(Name)|R], OpTable, MaxPrec, Term, TermPrec, Env0, Env, Rest) :- !,
+    parse_atom_head(Name, R, OpTable, MaxPrec, Term, TermPrec, Env0, Env, Rest).
 
-parse_primary([tk_sym(Name)|R], OpTable, MaxPrec, Term, Env0, Env, Rest) :- !,
-    parse_atom_head(Name, R, OpTable, MaxPrec, Term, Env0, Env, Rest).
+parse_primary([tk_sym(Name)|R], OpTable, MaxPrec, Term, TermPrec, Env0, Env, Rest) :- !,
+    parse_atom_head(Name, R, OpTable, MaxPrec, Term, TermPrec, Env0, Env, Rest).
 
-parse_primary([tk_lparen|R], OpTable, _, Term, Env0, Env, Rest) :- !,
-    parse_expr(R, OpTable, 1200, Term, Env0, Env, [tk_rparen|Rest]).
+parse_primary([tk_lparen|R], OpTable, _, Term, 0, Env0, Env, Rest) :- !,
+    parse_expr(R, OpTable, 1200, Term, _, Env0, Env, [tk_rparen|Rest]).
 
-parse_primary([tk_lbracket|R], OpTable, _, Term, Env0, Env, Rest) :- !,
+parse_primary([tk_lbracket|R], OpTable, _, Term, 0, Env0, Env, Rest) :- !,
     parse_list_body(R, OpTable, Term, Env0, Env, Rest).
 
 % parse_atom_head: an atom token at primary position can be (1) a functor
 % application (atom immediately followed by `(`), (2) a prefix-op application,
-% or (3) a stand-alone atom.
-parse_atom_head(Name, [tk_lparen|R], OpTable, _, Term, Env0, Env, Rest) :- !,
+% or (3) a stand-alone atom. Functor / atom are precedence 0; prefix-op is
+% the op's own precedence so chained `\+ \+ X` differs correctly between
+% `op(900, fx, \+)` and `op(900, fy, \+)`.
+parse_atom_head(Name, [tk_lparen|R], OpTable, _, Term, 0, Env0, Env, Rest) :- !,
     parse_args(R, OpTable, Args, Env0, Env, Rest),
     Term =.. [Name|Args].
-parse_atom_head(Name, R, OpTable, MaxPrec, Term, Env0, Env, Rest) :-
+parse_atom_head(Name, R, OpTable, MaxPrec, Term, Prec, Env0, Env, Rest) :-
     R = [Next|_],
     starts_term(Next),
-    resolve_prefix(Name, OpTable, Prec),
+    resolve_prefix(Name, OpTable, Prec, Type),
     Prec =< MaxPrec,
     !,
-    OperandMax is Prec - 1,
-    parse_expr(R, OpTable, OperandMax, Operand, Env0, Env, Rest),
+    prefix_rhs_max(Type, Prec, OperandMax),
+    parse_expr(R, OpTable, OperandMax, Operand, _, Env0, Env, Rest),
     Term =.. [Name, Operand].
-parse_atom_head(Name, R, _, _, Name, Env, Env, R).
+parse_atom_head(Name, R, _, _, Name, 0, Env, Env, R).
+
+prefix_rhs_max(fy, Prec, Prec) :- !.
+prefix_rhs_max(_,  Prec, Max)  :- Max is Prec - 1.
 
 % parse_args: comma-separated arg list inside `(...)`, max_prec 999 so the
 % top-level comma operator (1000) doesn't get folded in.
 parse_args(Tokens, OpTable, [Arg|Rest], Env0, Env, RestOut) :-
-    parse_expr(Tokens, OpTable, 999, Arg, Env0, Env1, Tokens1),
+    parse_expr(Tokens, OpTable, 999, Arg, _ArgPrec, Env0, Env1, Tokens1),
     (   Tokens1 = [tk_comma|Tokens2]
     ->  parse_args(Tokens2, OpTable, Rest, Env1, Env, RestOut)
     ;   Tokens1 = [tk_rparen|RestOut]
@@ -348,11 +376,11 @@ parse_list_body(Tokens, OpTable, List, Env0, Env, Rest) :-
     list_build(Elems, Tail, List).
 
 parse_list_elems(Tokens, OpTable, [E|Rest], Tail, Env0, Env, RestOut) :-
-    parse_expr(Tokens, OpTable, 999, E, Env0, Env1, Tokens1),
+    parse_expr(Tokens, OpTable, 999, E, _EPrec, Env0, Env1, Tokens1),
     (   Tokens1 = [tk_comma|Tokens2]
     ->  parse_list_elems(Tokens2, OpTable, Rest, Tail, Env1, Env, RestOut)
     ;   Tokens1 = [tk_pipe|Tokens2]
-    ->  parse_expr(Tokens2, OpTable, 999, Tail, Env1, Env, Tokens3),
+    ->  parse_expr(Tokens2, OpTable, 999, Tail, _TPrec, Env1, Env, Tokens3),
         Tokens3 = [tk_rbracket|RestOut],
         Rest = []
     ;   Tokens1 = [tk_rbracket|RestOut]
@@ -379,7 +407,7 @@ resolve_postfix(Name, OpTable, Prec, Type) :-
     is_postfix_type(Type),
     !.
 
-resolve_prefix(Name, OpTable, Prec) :-
+resolve_prefix(Name, OpTable, Prec, Type) :-
     member(op(Name, Prec, Type), OpTable),
     is_prefix_type(Type),
     !.

@@ -840,12 +840,12 @@ WamRuntime$op_infix <- list(
 )
 
 WamRuntime$op_prefix <- list(
-  ":-"  = list(prec = 1200L),
-  "?-"  = list(prec = 1200L),
-  "\\+" = list(prec = 900L),
-  "-"   = list(prec = 200L),
-  "+"   = list(prec = 200L),
-  "\\"  = list(prec = 200L)
+  ":-"  = list(prec = 1200L, assoc = "fx"),
+  "?-"  = list(prec = 1200L, assoc = "fx"),
+  "\\+" = list(prec = 900L,  assoc = "fy"),
+  "-"   = list(prec = 200L,  assoc = "fy"),
+  "+"   = list(prec = 200L,  assoc = "fy"),
+  "\\"  = list(prec = 200L,  assoc = "fy")
 )
 
 # Postfix operator table. Empty by default -- canonical Prolog
@@ -1008,6 +1008,12 @@ WamRuntime$parse_term <- function(text, table, state) {
 WamRuntime$wam_parse_expr <- function(p, max_prec) {
   left <- WamRuntime$wam_parse_primary(p, max_prec)
   if (is.null(left)) return(NULL)
+  # Precedence of the parsed primary. Atoms / numbers / vars / lists /
+  # parenthesised exprs / functor-applied compounds are 0; a prefix-op
+  # application carries the op's precedence. wam_parse_primary stashes
+  # the value on p$last_prec; we copy it to a local so the recursive
+  # rhs parse below can't clobber it before we use it.
+  left_prec <- p$last_prec
   repeat {
     if (p$pos > length(p$tokens)) return(left)
     tok <- p$tokens[[p$pos]]
@@ -1016,34 +1022,48 @@ WamRuntime$wam_parse_expr <- function(p, max_prec) {
                else if (tok$type == "semicolon") ";"
                else NULL
     if (is.null(op_name)) return(left)
+    # Infix: xfx / xfy require lhs prec STRICTLY less than the op's;
+    # yfx accepts lhs at the op's prec (left-fold). All three drop
+    # the rhs ceiling per associativity.
     iop <- WamRuntime$op_infix[[op_name]]
     if (!is.null(iop) && iop$prec <= max_prec) {
-      p$pos <- p$pos + 1L
-      rhs_max <- if (iop$assoc == "xfy") iop$prec else iop$prec - 1L
-      rhs <- WamRuntime$wam_parse_expr(p, rhs_max)
-      if (is.null(rhs)) return(NULL)
-      left <- StructTerm(WamRuntime$intern(p$table, op_name),
-                         list(left, rhs))
-      next
+      lhs_ok <- if (identical(iop$assoc, "yfx")) left_prec <= iop$prec
+                else left_prec < iop$prec
+      if (lhs_ok) {
+        p$pos <- p$pos + 1L
+        rhs_max <- if (iop$assoc == "xfy") iop$prec else iop$prec - 1L
+        rhs <- WamRuntime$wam_parse_expr(p, rhs_max)
+        if (is.null(rhs)) return(NULL)
+        left <- StructTerm(WamRuntime$intern(p$table, op_name),
+                           list(left, rhs))
+        left_prec <- iop$prec
+        next
+      }
     }
-    # Postfix: prefer infix when both are defined and applicable
-    # (matches SWI). Fires only when no infix entry fits the
-    # current precedence ceiling. yf accepts left at op$prec; xf
-    # requires left at op$prec - 1, but the operand precedence is
-    # already bounded by the recursive call and the outer loop's
-    # max_prec; we defer to max_prec here.
+    # Postfix: yf accepts operand at op$prec (left-fold), xf demands
+    # strictly less. Prefer infix when both apply and infix is the
+    # better fit; postfix fires when no infix matched.
     pop <- WamRuntime$op_postfix[[op_name]]
     if (!is.null(pop) && pop$prec <= max_prec) {
-      p$pos <- p$pos + 1L
-      left <- StructTerm(WamRuntime$intern(p$table, op_name),
-                         list(left))
-      next
+      lhs_ok <- if (identical(pop$assoc, "yf")) left_prec <= pop$prec
+                else left_prec < pop$prec
+      if (lhs_ok) {
+        p$pos <- p$pos + 1L
+        left <- StructTerm(WamRuntime$intern(p$table, op_name),
+                           list(left))
+        left_prec <- pop$prec
+        next
+      }
     }
     return(left)
   }
 }
 
 WamRuntime$wam_parse_primary <- function(p, max_prec) {
+  # Default precedence for the primary term. Atomic terms, lists,
+  # parens, and functor applications are 0. A prefix-op application
+  # overrides this to its own precedence below.
+  p$last_prec <- 0L
   if (p$pos > length(p$tokens)) return(NULL)
   tok <- p$tokens[[p$pos]]
   if (tok$type == "number") {
@@ -1089,15 +1109,22 @@ WamRuntime$wam_parse_primary <- function(p, max_prec) {
       return(StructTerm(WamRuntime$intern(p$table, tok$value), args))
     }
     # Prefix operator: name in op_prefix, prec fits, and the next
-    # token can start a term. Otherwise stand-alone atom.
+    # token can start a term. Otherwise stand-alone atom. The
+    # operand-precedence ceiling depends on associativity: fx wants
+    # operand prec strictly less than op_prec, fy accepts at op_prec
+    # (left-folding, so `\+ \+ X` parses for `op(900, fy, \+)` but
+    # not for `op(900, fx, \+)`).
     op <- WamRuntime$op_prefix[[tok$value]]
     if (!is.null(op) && op$prec <= max_prec && p$pos <= length(p$tokens)) {
       next_tok <- p$tokens[[p$pos]]
       starts_term <- next_tok$type %in%
         c("number", "var", "atom", "lparen", "lbracket")
       if (starts_term) {
-        operand <- WamRuntime$wam_parse_expr(p, op$prec - 1L)
+        rhs_max <- if (identical(op$assoc, "fy")) op$prec
+                   else op$prec - 1L
+        operand <- WamRuntime$wam_parse_expr(p, rhs_max)
         if (is.null(operand)) return(NULL)
+        p$last_prec <- op$prec
         return(StructTerm(WamRuntime$intern(p$table, tok$value),
                           list(operand)))
       }

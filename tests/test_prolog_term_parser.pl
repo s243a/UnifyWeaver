@@ -124,6 +124,59 @@ test(postfix_with_infix) :-
     parse_term_from_atom('5! + 3', Ops, T),
     T == '!'(5) + 3.
 
+% xf is the strict variant: operand precedence must be < op prec.
+% So `5!` parses (5 has prec 0, 0 < 100), but `5!!` does not (the
+% inner `!(5)` has prec 100, and 100 < 100 is false).
+strict_postfix_op_table(Ops) :-
+    canonical_op_table(Base),
+    Ops = [op('!', 100, xf) | Base].
+
+test(postfix_xf_single) :-
+    strict_postfix_op_table(Ops),
+    parse_term_from_atom('5!', Ops, T),
+    T == '!'(5).
+
+test(postfix_xf_chain_fails, [fail]) :-
+    strict_postfix_op_table(Ops),
+    parse_term_from_atom('5!!', Ops, _).
+
+% Prefix fy permits chaining (operand at op prec OK); fx forbids it.
+fy_neg_op_table(Ops) :-
+    canonical_op_table(Base),
+    Ops = [op('neg', 900, fy) | Base].
+
+fx_neg_op_table(Ops) :-
+    canonical_op_table(Base),
+    Ops = [op('neg', 900, fx) | Base].
+
+test(prefix_fy_chain) :-
+    fy_neg_op_table(Ops),
+    parse_term_from_atom('neg neg foo', Ops, T),
+    T == neg(neg(foo)).
+
+test(prefix_fx_chain_fails, [fail]) :-
+    fx_neg_op_table(Ops),
+    parse_term_from_atom('neg neg foo', Ops, _).
+
+% Infix associativity. `1 - 2 - 3` should fold left under yfx (the
+% canonical binding for `-`); under xfx it fails because both sides
+% must be strictly less than op prec.
+test(infix_yfx_chain) :-
+    canonical_op_table(Ops),
+    parse_term_from_atom('1 - 2 - 3', Ops, T),
+    T == (1 - 2) - 3.
+
+test(infix_xfx_chain_fails, [fail]) :-
+    canonical_op_table(Base),
+    Ops = [op('@@', 700, xfx) | Base],
+    parse_term_from_atom('a @@ b @@ c', Ops, _).
+
+% xfy is right-associative: `a -> b -> c` parses as a -> (b -> c).
+test(infix_xfy_right_assoc) :-
+    canonical_op_table(Ops),
+    parse_term_from_atom('a -> b -> c', Ops, T),
+    T == (a -> (b -> c)).
+
 % --- failure modes ----------------------------------------------------------
 
 test(unterminated_quote_fails, [fail]) :-
