@@ -171,6 +171,35 @@ test_parameterized_render_kernel_function :-
     ;   fail_test(Test, 'render_kernel_function failed for category_ancestor')
     ).
 
+%% Regression test for the read_kernel_template/2 cwd-independence fix.
+%% Prior to the fix, the predicate fell through to a cwd-relative path
+%% when the source_file/2 lookup silently failed; codegen worked from
+%% the project root but emitted "Template not found" stubs elsewhere.
+%% This test pins the fix down by running codegen from /tmp.
+test_render_kernel_function_cwd_independent :-
+    Test = 'WAM-Haskell: render_kernel_function works from any cwd (regression)',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4, [max_depth(10), edge_pred(category_parent/2)]),
+    working_directory(SavedCwd, '/tmp'),
+    catch(
+        (   wam_haskell_target:render_kernel_function('category_ancestor/4'-Kernel, Code),
+            atom_string(Code, S),
+            \+ sub_string(S, _, _, _, "Template not found"),
+            sub_string(S, _, _, _, "nativeKernel_category_ancestor")
+        ->  Result = pass
+        ;   Result = fail
+        ),
+        E,
+        Result = error(E)
+    ),
+    working_directory(_, SavedCwd),
+    (   Result == pass
+    ->  pass(Test)
+    ;   Result = error(Err)
+    ->  format(string(Reason), 'codegen from /tmp threw: ~w', [Err]),
+        fail_test(Test, Reason)
+    ;   fail_test(Test, 'codegen from /tmp produced "Template not found"')
+    ).
+
 test_transitive_closure_kernel_function :-
     Test = 'WAM-Haskell: transitive_closure2 kernel template renders',
     Kernel = recursive_kernel(transitive_closure2, closure/2, [edge_pred(edge/2)]),
@@ -2121,6 +2150,7 @@ run_tests :-
     test_parameterized_execute_foreign_category_ancestor,
     test_parameterized_execute_foreign_empty,
     test_parameterized_render_kernel_function,
+    test_render_kernel_function_cwd_independent,
     test_transitive_closure_kernel_function,
     test_transitive_closure_execute_foreign,
     test_multi_kernel_execute_foreign,
