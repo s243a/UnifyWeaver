@@ -106,8 +106,16 @@ compile_predicates_for_project([], _, CoreNamespace, RuntimeNamespace, Code) :-
 (defn invoke-predicate [_pred-key _args]
   false)
 
+(defn invoke-batch [cases]
+  (mapv (fn [case]
+          (invoke-predicate (:pred case) (:args case)))
+        cases))
+
 (defn -main [& _args]
-    (println false))
+  (if (= "--batch" (first _args))
+    (doseq [result (invoke-batch (edn/read-string (slurp *in*)))]
+      (println result))
+    (println false)))
 ', [CoreNamespace, CoreNamespace, RuntimeNamespace]).
 compile_predicates_for_project(Predicates, Options, CoreNamespace, RuntimeNamespace, Code) :-
     collect_wam_entries(Predicates, Options, 0,
@@ -167,9 +175,17 @@ compile_predicates_for_project(Predicates, Options, CoreNamespace, RuntimeNamesp
     (boolean (apply f args))
     false))
 
+(defn invoke-batch [cases]
+  (mapv (fn [case]
+          (invoke-predicate (:pred case) (:args case)))
+        cases))
+
 (defn -main [& args]
-  (let [[pred-key & pred-args] args]
-    (println (invoke-predicate pred-key (mapv edn/read-string pred-args)))))
+  (if (= "--batch" (first args))
+    (doseq [result (invoke-batch (edn/read-string (slurp *in*)))]
+      (println result))
+    (let [[pred-key & pred-args] args]
+      (println (invoke-predicate pred-key (mapv edn/read-string pred-args))))))
 
 ', [CoreNamespace, CoreNamespace, RuntimeNamespace,
     AtomSeedsCode, FunctorSeedsCode,
