@@ -755,6 +755,45 @@ directly when invoked via `Rscript`; it warmups for 5% of the
 iterations (capped at 50) so the R-level data structures settle
 before timing, then prints `BENCH n=<N> elapsed=<sec> last=<true|false>`.
 
+### Parser benchmark (inline vs compiled-from-Prolog)
+
+`tests/benchmarks/wam_r_parser_bench.pl` measures the cost of the
+inline R parser (`WamRuntime$wam_parse_expr` / `parse_term`, called
+by `read/2` / `term_to_atom/2` / `read_term_from_atom/2,3` and the
+CLI arg parser) versus the cross-target Prolog parser at
+`src/unifyweaver/core/prolog_term_parser.pl` compiled to WAM-R.
+Both produce identical terms (verified by
+`tests/test_prolog_term_parser_wam_r_compile.pl`); this is purely
+a "should we swap?" benchmark.
+
+```bash
+swipl -g main -t halt tests/benchmarks/wam_r_parser_bench.pl
+swipl -g main -t halt tests/benchmarks/wam_r_parser_bench.pl -- --inner 2000
+```
+
+Representative numbers (200 iters each, single-threaded R 4.4):
+
+```
+     input  inline (s)  compiled (s)   per-iter (us)       ratio
+      atom    0.042000      4.081000         20405.0       97.2x
+   integer    0.043000      3.756000         18780.0       87.3x
+  compound    0.058000     15.028000         75140.0      259.1x
+     arith    0.067000     13.869000         69345.0      207.0x
+      list    0.072000     20.261000        101305.0      281.4x
+    nested    0.093000     25.770000        128850.0      277.1x
+```
+
+The compiled parser is **80-300x slower** than the inline one
+across the parser surface (atoms / integers / compounds / operator
+expressions / lists / nested compounds). The slowdown comes from
+running the Pratt parser through the WAM stepping engine instead
+of native R control flow plus inline tagged-list construction.
+Per the project directive *"only swap if equivalent or better"*,
+the runtime keeps the inline parser as the hot path. The
+cross-target parser source remains valuable as the canonical spec
+and as the parser-of-record for any future target that doesn't
+have a hand-written inline path.
+
 When adding a builtin:
 
 1. Implement it in `WamRuntime$call_builtin` (if the WAM compiler
