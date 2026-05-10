@@ -3792,6 +3792,148 @@ e2e_external_fact_source_grouped_tsv_via_rscript :-
         'assign("gpedge/2", pred_gpedge_fact_iter, envir = shared_program$lowered_dispatch)')),
     delete_directory_and_contents(TmpDir).
 
+% End-to-end Rscript run for the LMDB external fact-source backend.
+% Step-1 semantics (load-everything): the runtime reads all key/value
+% pairs from the LMDB env at program-load time and feeds them through
+% the same build_fact_indexes + fact_table_dispatch pipeline as the
+% inline / CSV / grouped-TSV backends, so per-arg indexing and
+% backtracking behaviour are identical. Step-2 (probe-on-demand) is
+% tracked as a follow-up; see docs/handoff/wam_r_session_handoff.md
+% item #1.
+%
+% Auto-skips when Rscript or an R LMDB binding (thor / lmdbr) isn't
+% installed. Documented install steps live in docs/WAM_R_TARGET.md.
+test(external_fact_source_lmdb_e2e_rscript) :-
+    once((
+        rscript_available,
+        r_lmdb_pkg_available
+    ->  e2e_external_fact_source_lmdb_via_rscript
+    ;   true
+    )).
+
+% Succeeds when an R LMDB binding (thor or lmdbr) is installed in the
+% Rscript environment. Used as an auto-skip guard for the LMDB e2e
+% test so the suite still passes on machines without liblmdb / the
+% R wrapper.
+r_lmdb_pkg_available :-
+    catch((
+        process_create(path('Rscript'),
+                       ['-e',
+                        'q(status = if (requireNamespace("thor", quietly = TRUE) || requireNamespace("lmdbr", quietly = TRUE)) 0L else 1L)'],
+                       [ stdout(null), stderr(null), process(PID) ]),
+        process_wait(PID, exit(0))
+    ), _, fail).
+
+e2e_external_fact_source_lmdb_via_rscript :-
+    retractall(user:lpedge(_, _)),
+    unique_r_tmp_dir('tmp_r_lmdb_fact_e2e', TmpDir),
+    make_directory_path(TmpDir),
+    directory_file_path(TmpDir, 'lpedge.lmdb', LmdbPath),
+    atom_string(LmdbPath, LmdbPathStr),
+    % Seed the LMDB env via a small Rscript that writes the tab-encoded
+    % `tag:payload` values matching read_facts_lmdb's decoder. The five
+    % tuples mirror the CSV / grouped-TSV e2e tests so the assertions
+    % can stay analogous.
+    seed_lmdb_for_test(TmpDir, LmdbPath,
+        ["a:alice\ta:bob",
+         "a:bob\ta:carol",
+         "a:carol\ta:dan",
+         "a:alice\ta:eve",
+         "a:eve\ta:frank"]),
+    % lpedge/2 has no clauses; the loader populates pred_lpedge_facts.
+    assertz((user:ls_direct  :- lpedge(alice, bob))),
+    assertz((user:ls_branch  :- lpedge(alice, eve))),
+    assertz((user:ls_no_back :- lpedge(bob, alice))),
+    assertz((user:ls_findall :-
+        findall(Y, lpedge(alice, Y), L),
+        msort(L, S),
+        S == [bob, eve])),
+    assertz((user:ls_findall_all :-
+        findall(X-Y, lpedge(X, Y), L),
+        length(L, N),
+        N == 5)),
+    write_wam_r_project(
+        [user:lpedge/2, user:ls_direct/0, user:ls_branch/0,
+         user:ls_no_back/0, user:ls_findall/0, user:ls_findall_all/0],
+        [intern_atoms([alice, bob, carol, dan, eve, frank]),
+         r_fact_sources([source(lpedge/2, lmdb(LmdbPathStr))])],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [ls_direct, ls_branch, ls_findall, ls_findall_all],
+    No  = [ls_no_back],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    forall(member(P, No), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "false"))
+    )),
+    directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
+    read_file_to_string(ProgPath, Code, []),
+    assertion(sub_string(Code, _, _, _,
+        '# External fact source for lpedge/2 (lmdb env:')),
+    assertion(sub_string(Code, _, _, _,
+        'pred_lpedge_facts <- WamRuntime$read_facts_lmdb(')),
+    assertion(sub_string(Code, _, _, _,
+        'assign("lpedge/2", pred_lpedge_fact_iter, envir = shared_program$lowered_dispatch)')),
+    delete_directory_and_contents(TmpDir).
+
+% Writes a tiny R script that opens an LMDB env at LmdbPath via thor
+% and puts each Value at a key "kN". Order doesn't matter -- the
+% load-everything reader iterates all keys and feeds them through
+% build_fact_indexes. Used by the LMDB e2e test.
+seed_lmdb_for_test(TmpDir, LmdbPath, EncodedTuples) :-
+    directory_file_path(TmpDir, 'seed_lmdb.R', SeedScript),
+    atom_string(LmdbPath, LmdbPathStr),
+    findall(PutLine,
+            (   nth1(I, EncodedTuples, Tuple),
+                format(string(KeyLit), '"k~d"', [I]),
+                r_double_quoted_literal(Tuple, TupleLit),
+                format(string(PutLine), 'env$put(~w, ~w)',
+                       [KeyLit, TupleLit])
+            ),
+            PutLines),
+    atomic_list_concat(PutLines, '\n', PutBlock),
+    r_double_quoted_literal(LmdbPathStr, LmdbPathLit),
+    format(string(R),
+'library(thor)
+env <- thor::mdb_env(~w, create = TRUE)
+~w
+env$close()
+',
+           [LmdbPathLit, PutBlock]),
+    setup_call_cleanup(
+        open(SeedScript, write, S),
+        write(S, R),
+        close(S)),
+    process_create(path('Rscript'), [SeedScript],
+                   [ stdout(null), stderr(null), process(PID) ]),
+    process_wait(PID, exit(0)).
+
+% Minimal double-quoted-R-string escaper (test-only). The strings we
+% pass in are TmpDir paths and tab-encoded ASCII; the only chars that
+% need attention are backslash and double-quote. Tab characters are
+% passed through as literal "\t" via the `\\t` substitution so they
+% survive the file write -> Rscript read trip as actual tabs.
+r_double_quoted_literal(Str, Lit) :-
+    string_chars(Str, Chars),
+    r_escape_chars(Chars, Escaped),
+    string_chars(Body, Escaped),
+    format(string(Lit), '"~w"', [Body]).
+
+r_escape_chars([], []).
+r_escape_chars([C | Rest], Out) :-
+    (   C == '"'  -> Out = ['\\', '"' | OutRest]
+    ;   C == '\\' -> Out = ['\\', '\\' | OutRest]
+    ;   C == '\t' -> Out = ['\\', 't'  | OutRest]
+    ;   C == '\n' -> Out = ['\\', 'n'  | OutRest]
+    ;   Out = [C | OutRest]
+    ),
+    r_escape_chars(Rest, OutRest).
+
 % ------------------------------------------------------------------
 % End-to-end: cut barrier truncates state$cps back to the depth at the
 % predicate's call site, so a `!` in a clause body that has just

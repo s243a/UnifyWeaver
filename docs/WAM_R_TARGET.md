@@ -329,7 +329,7 @@ with the parameterized C# query runtime -- see
 ### External fact sources
 
 Mirrors the Scala target's `scala_fact_sources` option. Users can
-declare a predicate's facts as a separate file. Two backends are
+declare a predicate's facts as a separate file. Three backends are
 supported today:
 
 - `file('data.csv')` -- comma-separated rows, one fact per row.
@@ -337,6 +337,12 @@ supported today:
 - `grouped_by_first('data.tsv')` -- tab-separated rows shaped as
   `key<TAB>v1<TAB>v2<TAB>...`; the loader explodes each row into
   separate `(key, vK)` tuples. Arity-2 only.
+- `lmdb('path.lmdb')` -- on-disk LMDB env containing one fact per
+  key, value encoded as TAB-separated `tag:payload` fields. Any
+  arity. Requires an R LMDB binding (see *LMDB install* below);
+  loader returns an empty fact table with a warning if the binding
+  is absent. Step-1 semantics: load-everything (treats LMDB as a
+  serialization format); step-2 probe-on-demand is a follow-up.
 
 ```prolog
 :- write_wam_r_project(
@@ -351,7 +357,72 @@ supported today:
         r_fact_sources([source(parent/2,
                                 grouped_by_first('parents.tsv'))])],
        '/tmp/proj').
+
+:- write_wam_r_project(
+       [user:edge/2, user:test/0],
+       [intern_atoms([alice, bob, carol]),
+        r_fact_sources([source(edge/2, lmdb('edges.lmdb'))])],
+       '/tmp/proj').
 ```
+
+#### LMDB encoding
+
+Values stored in the LMDB env are TAB-separated strings. Each field
+has the shape `tag:payload` where:
+
+- `a:<string>` -- atom (re-interned via the program's intern table
+  at load time)
+- `i:<integer>` -- IntTerm (decimal text, parsed via `as.integer`)
+- `f:<double>` -- FloatTerm (decimal or scientific, parsed via
+  `as.numeric`)
+
+Keys are opaque to the loader (it iterates all keys via
+`env$list()`); ordering doesn't affect correctness since the result
+feeds the same `build_fact_indexes` pipeline as the inline / CSV /
+grouped-TSV backends. The runtime writer
+(`WamRuntime$lmdb_write_facts`) emits keys as
+`sprintf("%010d", i)` so a binary cursor walk returns tuples in
+insertion order, which is convenient for inspection with `mdb_dump`
+but not required.
+
+To produce an LMDB env at setup time, either pre-bake one with any
+LMDB-aware tool (`mdb_load`, the Scala backend's writer, etc.) or
+call the runtime helper from R:
+
+```r
+source("R/generated_program.R")  # or sourcing just runtime.R
+WamRuntime$lmdb_write_facts("edges.lmdb",
+                            list(list(Atom(1), Atom(2)),  # alice, bob
+                                 list(Atom(2), Atom(3))), # bob, carol
+                            intern_table)
+```
+
+#### LMDB install
+
+The runtime auto-detects an R LMDB binding; in priority order:
+
+1. [`thor`](https://cran.r-project.org/package=thor) (Mozilla wrapper,
+   recommended)
+2. [`lmdbr`](https://cran.r-project.org/package=lmdbr) (lighter
+   alternative)
+
+System LMDB is required first:
+
+```sh
+apt install liblmdb-dev   # Debian / Ubuntu
+brew install lmdb         # macOS
+```
+
+Then install the R binding of your choice:
+
+```sh
+R -e 'install.packages("thor")'   # or "lmdbr"
+```
+
+If no binding is available at runtime, `read_facts_lmdb` logs a
+message and returns an empty fact table -- downstream queries
+fail (no solutions) rather than erroring out. Tests that depend on
+LMDB auto-skip when no binding is present.
 
 The predicate has **no Prolog clauses** -- the codegen emits a
 runtime loader that reads the file at program-init time and
@@ -743,6 +814,7 @@ Coverage map (e2e tests, by feature group):
 | `kernel_astar4_e2e_rscript` | recursive-kernel detection: `astar_shortest_path4` goal-directed search with user heuristic |
 | `external_fact_source_e2e_rscript` | external CSV fact sources via `r_fact_sources([source(P/A, file(...))])` |
 | `external_fact_source_grouped_tsv_e2e_rscript` | external grouped-by-first TSV fact sources (arity-2): `r_fact_sources([source(P/2, grouped_by_first(...))])` |
+| `external_fact_source_lmdb_e2e_rscript` | external LMDB fact sources: `r_fact_sources([source(P/A, lmdb(...))])`, load-everything semantics, tab-encoded `tag:payload` values; auto-skips when no R LMDB binding (`thor` / `lmdbr`) is installed |
 | `op_3_postfix_e2e_rscript` | runtime postfix-operator support: `op(P, xf|yf, N)`, parser wraps primary as postfix struct, mixed infix+postfix, yf chaining, `current_op/3` enumeration, `op(0, ...)` removal |
 | `cut_barrier_after_helper_e2e_rscript` | `!/0` truncates `state$cps` to the predicate's call-site depth, dropping leftover CPs from multi-clause helpers and the predicate's own try-chain CP in one shot |
 | `stack_frame_cleanup_on_backtrack_e2e_rscript` | failed clauses' env frames get popped on backtrack via the CP's `stack_len` snapshot, so the outer predicate's `Deallocate` doesn't pop a stale frame and re-enter post-call code |
