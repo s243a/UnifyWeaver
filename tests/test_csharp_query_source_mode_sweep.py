@@ -333,6 +333,55 @@ class CSharpQuerySourceModeSweepTests(unittest.TestCase):
             ),
         )
 
+    def test_parse_runner_output_handles_single_auto_mode_labels(self) -> None:
+        output = "\n".join(
+            [
+                "scale\ttarget\tmedian_s\tmin_s\tmax_s\trows\tstdout_sha256",
+                "300\tcsharp-query\t0.200\t0.200\t0.200\t42\tsamehash",
+                (
+                    "300\tcsharp-query-metrics\t"
+                    "source_mode=auto resolved_source_mode=preload "
+                    "source_registration_preloaded_preload_arity2=2"
+                ),
+            ]
+        )
+
+        summaries = parse_runner_output("dependency-depth", output, default_source_mode="auto")
+
+        self.assertEqual(len(summaries), 1)
+        summary = summaries[0]
+        self.assertEqual(summary.best_source_mode, "auto")
+        self.assertEqual(summary.auto_vs_best, "1.00x")
+        self.assertEqual(summary.output_agreement, "match")
+        self.assertEqual(summary.median_summary, "auto:0.200")
+        self.assertEqual(summary.resolved_source_mode_summary, "auto:preload")
+        self.assertEqual(
+            summary.source_registration_summary,
+            "auto:preloaded_preload_arity2=2",
+        )
+
+    def test_parse_runner_output_handles_single_preload_mode_labels(self) -> None:
+        output = "\n".join(
+            [
+                "scale\ttarget\tmedian_s\tmin_s\tmax_s\trows\tstdout_sha256",
+                "300\tcsharp-query\t0.180\t0.180\t0.180\t42\tsamehash",
+                (
+                    "300\tcsharp-query-metrics\t"
+                    "source_mode=preload resolved_source_mode=preload "
+                    "source_registration_preloaded_preload_arity2=2"
+                ),
+            ]
+        )
+
+        summaries = parse_runner_output("dependency-depth", output, default_source_mode="preload")
+
+        self.assertEqual(len(summaries), 1)
+        summary = summaries[0]
+        self.assertEqual(summary.best_source_mode, "preload")
+        self.assertEqual(summary.auto_vs_best, "")
+        self.assertEqual(summary.median_summary, "preload:0.180")
+        self.assertEqual(summary.resolved_source_mode_summary, "preload:preload")
+
     def test_parse_runner_output_flags_hash_mismatch(self) -> None:
         output = "\n".join(
             [

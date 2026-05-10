@@ -347,7 +347,12 @@ def load_calibration_artifact(path: Path = CALIBRATION_ARTIFACT) -> list[Calibra
     return rows
 
 
-def parse_runner_output(workload: str, output: str) -> list[SourceModeSummary]:
+def parse_runner_output(
+    workload: str,
+    output: str,
+    *,
+    default_source_mode: str = "auto",
+) -> list[SourceModeSummary]:
     medians: dict[str, dict[str, str]] = {}
     hashes: dict[str, dict[str, str]] = {}
     resolved_source_modes: dict[str, dict[str, str]] = {}
@@ -357,16 +362,19 @@ def parse_runner_output(workload: str, output: str) -> list[SourceModeSummary]:
 
     for line in output.splitlines():
         parts = line.rstrip("\n").split("\t")
-        if len(parts) >= 7 and parts[0] != "scale" and parts[1].startswith("csharp-query:"):
+        if len(parts) >= 7 and parts[0] != "scale" and _is_csharp_query_result(parts[1]):
             scale = parts[0]
-            source_mode = parts[1].split(":", 1)[1]
+            source_mode = _source_mode_from_result_target(parts[1], default_source_mode)
             medians.setdefault(scale, {})[source_mode] = parts[2]
             hashes.setdefault(scale, {})[source_mode] = parts[6]
-        elif len(parts) >= 3 and parts[1].startswith("csharp-query:") and parts[1].endswith("-metrics"):
+        elif len(parts) >= 3 and _is_csharp_query_metrics(parts[1]):
             scale = parts[0]
             target = parts[1][:-len("-metrics")]
-            source_mode = target.split(":", 1)[1]
             metrics = parse_metric_tokens(parts[2])
+            source_mode = metrics.get("source_mode") or _source_mode_from_result_target(
+                target,
+                default_source_mode,
+            )
             resolved_mode = metrics.get("resolved_source_mode")
             if resolved_mode:
                 resolved_source_modes.setdefault(scale, {})[source_mode] = resolved_mode
@@ -384,6 +392,22 @@ def parse_runner_output(workload: str, output: str) -> list[SourceModeSummary]:
         mode_hashes = hashes.get(scale, {})
         unique_hashes = set(mode_hashes.values())
         output_agreement = "match" if len(unique_hashes) == 1 else "MISMATCH"
+        best_source_mode = best_modes.get(scale, "")
+        auto_vs_best_ratio = auto_vs_best.get(scale, "")
+        inferred_single_mode = False
+        if not best_source_mode and len(mode_medians) == 1:
+            best_source_mode = next(iter(mode_medians))
+            inferred_single_mode = True
+        if (
+            inferred_single_mode
+            and not auto_vs_best_ratio
+            and "auto" in mode_medians
+            and best_source_mode in mode_medians
+        ):
+            best_median = parse_ratio(mode_medians[best_source_mode])
+            auto_median = parse_ratio(mode_medians["auto"])
+            if best_median and auto_median is not None:
+                auto_vs_best_ratio = f"{auto_median / best_median:.2f}x"
         median_summary = ",".join(
             f"{mode}:{mode_medians[mode]}"
             for mode in sorted(mode_medians)
@@ -400,8 +424,8 @@ def parse_runner_output(workload: str, output: str) -> list[SourceModeSummary]:
             SourceModeSummary(
                 workload=workload,
                 scale=scale,
-                best_source_mode=best_modes.get(scale, ""),
-                auto_vs_best=auto_vs_best.get(scale, ""),
+                best_source_mode=best_source_mode,
+                auto_vs_best=auto_vs_best_ratio,
                 output_agreement=output_agreement,
                 median_summary=median_summary,
                 resolved_source_mode_summary=resolved_summary,
@@ -409,6 +433,22 @@ def parse_runner_output(workload: str, output: str) -> list[SourceModeSummary]:
             )
         )
     return summaries
+
+
+def _is_csharp_query_result(target: str) -> bool:
+    return target == "csharp-query" or target.startswith("csharp-query:")
+
+
+def _is_csharp_query_metrics(target: str) -> bool:
+    return target == "csharp-query-metrics" or (
+        target.startswith("csharp-query:") and target.endswith("-metrics")
+    )
+
+
+def _source_mode_from_result_target(target: str, default_source_mode: str) -> str:
+    if target.startswith("csharp-query:"):
+        return target.split(":", 1)[1]
+    return default_source_mode
 
 
 def parse_metric_tokens(metrics: str) -> dict[str, str]:
@@ -690,7 +730,13 @@ def run_workload(
         cwd=ROOT,
         env=env,
     )
-    return parse_runner_output(workload, result.stdout)
+    source_mode_values = split_csv(source_modes)
+    default_source_mode = source_mode_values[0] if len(source_mode_values) == 1 else "auto"
+    return parse_runner_output(
+        workload,
+        result.stdout,
+        default_source_mode=default_source_mode,
+    )
 
 
 def print_tsv(summaries: list[SourceModeSummary]) -> None:
