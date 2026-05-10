@@ -161,35 +161,47 @@ roughly priority order:
    keeping the inline path for the CLI arg parser if startup latency
    regresses too far.
 
-4. **`CutIte` (soft cut) barrier scope.** `!/0` now uses a proper
-   cut barrier (PR #1960); `CutIte` -- emitted for
-   `( A -> B ; C )` -- still drops only the most-recent CP. The
-   same Allocate-stamps-barrier model would work for soft cut, with
-   the barrier saved at the start of A so CutIte truncates back to
-   it on commit. Until then, predicates that depend on if-then-else
-   commit semantics need to be written with clause-level dispatch
-   (see `parse_op_loop`, `parse_args_continue`,
-   `tokenize_loop_step`, etc. in the cross-target parser).
-5. **Strict `xf` precedence rule** (small). Threading the precedence
+4. **Nested if-then-else (`A -> B ; C -> D`)**. `compile_if_then_else`
+   in `src/unifyweaver/targets/wam_target.pl` only matches the
+   outermost `(Cond -> Then ; Else)` and compiles Else as an opaque
+   goal sequence, so a second `->` in Else position emits as
+   `Call("->", 2)` -- which has no runtime implementation, so it
+   just fails. Workaround in the cross-target parser today is
+   factoring chains into clause-level dispatch
+   (`parse_args_continue`, `list_elem_continue`,
+   `op_loop_step`). Proper fix: make `compile_if_then_else`
+   recognise that an Else of shape `(Cond2 -> Then2)` is itself an
+   if-then-else with `fail` as the implicit innermost Else, and
+   recursively emit nested CutIte/TryMeElseIte. Should be a small
+   compiler change.
+5. **WAM compiler `clause_body_analysis` stack overflow** on triple-
+   nested `( A -> B ; C -> D ; E )` disjunctions. Independent of
+   the nested-if-then-else point above (this is the analyser, not
+   the emitter). Lives in
+   `src/unifyweaver/core/clause_body_analysis.pl`'s
+   `disjunction_alternatives/2`. Rewrite the recursion as
+   tail-recursive accumulator (or memoise) so the call depth doesn't
+   scale with disjunction nesting.
+6. **Strict `xf` precedence rule** (small). Threading the precedence
    of the current `left` expression through `wam_parse_expr` so `xf`
    and `yf` differ correctly at chained-postfix sites. Fixes the
    simplification documented as a known limitation. Same fix would
    let `fx` / `fy` differ correctly in the prefix path.
-6. **Mode analysis (start).** Big multi-PR effort. Phase 1 collects
+7. **Mode analysis (start).** Big multi-PR effort. Phase 1 collects
    mode info per predicate (in/out per arg); Phase 2 wires it to
    specialised emission (skip unifications when the mode says the slot
    is unbound, etc.). Look at the Haskell target's
    `WAM_HASKELL_MODE_ANALYSIS_*.md` design docs for the precedent.
-7. **Multi-line `read/2`.** Read until a `.` terminator across lines.
+9. **Multi-line `read/2`.** Read until a `.` terminator across lines.
    Niche but completes the streams story.
-8. **Multi-solution `retract/1` ignoring snapshot.** I.e. re-read the
-   live clause list on each backtrack. Trickier semantics; document
-   carefully if pursued.
-9. **Phase-3 lowered emitter expansion.** Currently handles only
-   `deterministic` and `multi_clause_1` shapes. Could grow N-clause
-   general lowering; would compete with the kernel / fact-table paths
-   so the value is unclear.
-10. **Range / interval indexes** on fact tables. Per-arg hash indexes
+10. **Multi-solution `retract/1` ignoring snapshot.** I.e. re-read the
+    live clause list on each backtrack. Trickier semantics; document
+    carefully if pursued.
+11. **Phase-3 lowered emitter expansion.** Currently handles only
+    `deterministic` and `multi_clause_1` shapes. Could grow N-clause
+    general lowering; would compete with the kernel / fact-table paths
+    so the value is unclear.
+12. **Range / interval indexes** on fact tables. Per-arg hash indexes
     land queries with ground atom/int args; range queries (`X > 5`,
     `X between A B`) still go through the per-tuple scan. A sorted-
     per-arg index would route these. Niche but a natural extension.

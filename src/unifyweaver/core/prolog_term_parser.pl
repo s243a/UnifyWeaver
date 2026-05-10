@@ -130,18 +130,11 @@ tokenize(Codes, Tokens) :-
 
 tokenize_loop([], Acc, Acc).
 tokenize_loop([C|Cs], Acc, Out) :-
-    tokenize_loop_step(C, Cs, Acc, Out).
-
-% Split out so the post-classify dispatch is at the clause level,
-% not inside an if-then-else. Same workaround used elsewhere in this
-% module: keeps the WAM target's CutIte semantics out of the picture.
-tokenize_loop_step(C, Cs, Acc, Out) :-
-    ws_code(C),
-    !,
-    tokenize_loop(Cs, Acc, Out).
-tokenize_loop_step(C, Cs, Acc, Out) :-
-    tokenize_one([C|Cs], Acc, Acc1, Rest),
-    tokenize_loop(Rest, Acc1, Out).
+    (   ws_code(C)
+    ->  tokenize_loop(Cs, Acc, Out)
+    ;   tokenize_one([C|Cs], Acc, Acc1, Rest),
+        tokenize_loop(Rest, Acc1, Out)
+    ).
 
 ws_code(32). ws_code(9). ws_code(10). ws_code(13).
 
@@ -235,16 +228,11 @@ take_syms([C|R], [], [C|R])    :- \+ sym_code(C).
 % already consumed by the caller (passed in via Lead); we splice it back.
 take_number_after_sign(Lead, R, [Lead|Cs], Rest) :-
     take_digits(R, IntCs, Rest1),
-    take_number_frac(IntCs, Rest1, Cs, Rest).
-
-% Clause-level dispatch instead of an inner if-then-else, for the
-% same WAM CutIte avoidance reason.
-take_number_frac(IntCs, [0'., D | Rest2], Cs, Rest) :-
-    digit_code(D),
-    !,
-    take_digits(Rest2, FracCs, Rest),
-    append(IntCs, [0'., D | FracCs], Cs).
-take_number_frac(IntCs, Rest, IntCs, Rest).
+    (   Rest1 = [0'., D | Rest2], digit_code(D)
+    ->  take_digits(Rest2, FracCs, Rest),
+        append(IntCs, [0'., D | FracCs], Cs)
+    ;   Cs = IntCs, Rest = Rest1
+    ).
 
 take_digits([], [], []).
 take_digits([C|R], [C|Cs], Rest) :- digit_code(C), !, take_digits(R, Cs, Rest).
@@ -355,10 +343,13 @@ parse_atom_head(Name, R, OpTable, MaxPrec, Term, Env0, Env, Rest) :-
 parse_atom_head(Name, R, _, _, Name, Env, Env, R).
 
 % parse_args: comma-separated arg list inside `(...)`, max_prec 999 so the
-% top-level comma operator (1000) doesn't get folded in. Like parse_op_loop,
-% the post-arg dispatch is split into a separate predicate's clauses
-% (rather than nested if-then-else) so the WAM target's CutIte semantics
-% don't matter to correctness.
+% top-level comma operator (1000) doesn't get folded in. Like
+% parse_op_loop and list_elem_continue, the post-arg dispatch uses
+% clause-level pattern matching rather than nested
+% `( A -> B ; C -> D )` -- the WAM compiler doesn't recursively
+% recognize Else as another if-then-else and emits the second ->/2
+% as a regular Call, which has no runtime implementation. Filed as
+% a separate compiler enhancement.
 parse_args(Tokens, OpTable, [Arg|Rest], Env0, Env, RestOut) :-
     parse_expr(Tokens, OpTable, 999, Arg, Env0, Env1, Tokens1),
     parse_args_continue(Tokens1, OpTable, Rest, Env1, Env, RestOut).
@@ -379,7 +370,11 @@ parse_list_elems(Tokens, OpTable, [E|Rest], Tail, Env0, Env, RestOut) :-
     parse_expr(Tokens, OpTable, 999, E, Env0, Env1, Tokens1),
     list_elem_continue(Tokens1, OpTable, Rest, Tail, Env1, Env, RestOut).
 
-% Same disjunction-depth workaround as op_loop_step.
+% Three-way clause-level dispatch instead of nested
+% `( A -> B ; C -> D ; E )`. The WAM compiler's clause_body_analysis
+% pass stack-overflows on the deeply nested disjunction shape (a
+% bug separate from the CutIte semantics that motivated the
+% other workarounds). Until that's fixed, keep this factored.
 list_elem_continue([tk_comma|Toks], OpTable, Rest, Tail, Env0, Env, RestOut) :-
     !,
     parse_list_elems(Toks, OpTable, Rest, Tail, Env0, Env, RestOut).

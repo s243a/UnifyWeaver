@@ -189,6 +189,11 @@ Allocate       <- function()           list(op = "Allocate")
 Deallocate     <- function()           list(op = "Deallocate")
 
 TryMeElse      <- function(label)      list(op = "TryMeElse",     label = label)
+# Soft variant: same shape as TryMeElse, but the CP it pushes is
+# tagged kind="ite" so CutIte can locate this construct's CP
+# (and truncate state$cps back to its pre-push depth) regardless
+# of how many inner CPs Cond's evaluation pushed.
+TryMeElseIte   <- function(label)      list(op = "TryMeElseIte",  label = label)
 RetryMeElse    <- function(label)      list(op = "RetryMeElse",   label = label)
 TrustMe        <- function()           list(op = "TrustMe")
 Jump           <- function(label)      list(op = "Jump",          label = label)
@@ -1421,6 +1426,25 @@ WamRuntime$step <- function(program, state, instr) {
       state$cps <- c(state$cps, list(cp))
       state$pc <- state$pc + 1L; TRUE
     },
+    "TryMeElseIte" = {
+      # Soft variant: same fields as TryMeElse, plus kind="ite" so
+      # CutIte can locate this construct's CP. Cond's evaluation
+      # may push more CPs above this one before CutIte fires; the
+      # tag lets us walk back through them to find the right
+      # truncation depth.
+      cp <- list(
+        kind          = "ite",
+        next_pc       = program$labels[[instr$label]],
+        regs          = as.list.environment(state$regs2),
+        cp            = state$cp,
+        trail_len     = length(state$trail),
+        var_counter   = state$var_counter,
+        call_barrier  = state$pending_call_barrier,
+        stack_len     = length(state$stack)
+      )
+      state$cps <- c(state$cps, list(cp))
+      state$pc <- state$pc + 1L; TRUE
+    },
     "RetryMeElse" = {
       # When the dispatcher reaches RetryMeElse via switch_on_constant /
       # switch_on_structure (for the 3+ clause indexed-jump case), no
@@ -1442,8 +1466,32 @@ WamRuntime$step <- function(program, state, instr) {
       state$pc <- as.integer(tgt); TRUE
     },
     "CutIte" = {
+      # Soft cut: commit to the if-then-else's "then" branch. We
+      # locate this construct's CP by walking state$cps backwards
+      # for the most recent kind="ite" entry (pushed by
+      # TryMeElseIte at the start of the if-then-else); everything
+      # at or above that index is dropped. Drops both the
+      # if-then-else's own CP (no fallthrough to "else") and any
+      # CPs Cond's evaluation left alive (no re-try into Cond).
+      # Falls back to the legacy "drop topmost CP" behaviour when
+      # no ite CP is found, so out-of-band CutIte uses (e.g. tests
+      # that emit cut_ite by hand) don't regress.
       n <- length(state$cps)
-      if (n > 0L) state$cps <- state$cps[-n]
+      ite_idx <- 0L
+      i <- n
+      while (i > 0L) {
+        kind <- state$cps[[i]]$kind
+        if (!is.null(kind) && identical(kind, "ite")) {
+          ite_idx <- i
+          break
+        }
+        i <- i - 1L
+      }
+      if (ite_idx > 0L) {
+        state$cps <- state$cps[seq_len(ite_idx - 1L)]
+      } else if (n > 0L) {
+        state$cps <- state$cps[-n]
+      }
       state$pc <- state$pc + 1L; TRUE
     },
     "SwitchOnConstant" = {

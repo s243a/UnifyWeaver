@@ -3533,6 +3533,51 @@ e2e_stack_frame_cleanup_via_rscript :-
     assertion(length(ValueLines, 1)),
     delete_directory_and_contents(TmpDir).
 
+% End-to-end: `( A -> B ; C )` soft-cut commits past CPs that A's
+% evaluation left alive. Pre-fix CutIte popped only the topmost CP,
+% which silently picked up an inner Cond CP instead of the if-then-
+% else's own choice point -- so a downstream `fail` would re-enter
+% A and rerun B. With the fix, mark_ite_try_me_else tags the
+% if-then-else CP and CutIte truncates state$cps back to that CP's
+% pre-push depth.
+test(cut_ite_barrier_after_helper_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_cut_ite_barrier_after_helper_via_rscript
+    ;   true
+    )).
+
+e2e_cut_ite_barrier_after_helper_via_rscript :-
+    retractall(user:ci_pick/1),
+    retractall(user:ci_caller/1),
+    retractall(user:ci_drv/0),
+    % ci_pick is multi-clause and leaves a CP alive after returning
+    % the first solution. Without proper soft-cut barrier, that CP
+    % sits between CutIte and the if-then-else's own CP, so the
+    % naive "drop topmost" semantic kills the wrong one.
+    assertz(user:ci_pick(1)),
+    assertz(user:ci_pick(2)),
+    assertz(user:ci_pick(3)),
+    % If ci_pick succeeds (it does), commit to the "then" branch.
+    % "else" should never run after a successful Cond; a downstream
+    % `fail` should not re-enter Cond either.
+    assertz((user:ci_caller(X) :-
+        ( ci_pick(X) -> write('then '), write(X), nl
+        ; write('else'), nl ))),
+    assertz((user:ci_drv :-
+        ( ci_caller(_), fail ; true ))),
+    unique_r_tmp_dir('tmp_r_cut_ite_barrier_e2e', TmpDir),
+    write_wam_r_project([user:ci_pick/1, user:ci_caller/1, user:ci_drv/0],
+                        [], TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    run_rscript_query(RDir, 'ci_drv/0', Out),
+    assertion(sub_string(Out, _, _, _, "then 1")),
+    assertion(\+ sub_string(Out, _, _, _, "then 2")),
+    assertion(\+ sub_string(Out, _, _, _, "then 3")),
+    assertion(\+ sub_string(Out, _, _, _, "else")),
+    assertion(sub_string(Out, _, _, _, "true")),
+    delete_directory_and_contents(TmpDir).
+
 % ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------
