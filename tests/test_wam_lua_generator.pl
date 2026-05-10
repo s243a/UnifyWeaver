@@ -196,7 +196,8 @@ test(lua_external_fact_source_e2e, [condition(lua_available)]) :-
           setup_call_cleanup(
               open(CsvPath, write, Stream),
               ( writeln(Stream, 'a,b'),
-                writeln(Stream, 'a,c')
+                writeln(Stream, 'a,c'),
+                writeln(Stream, 'x,z')
               ),
               close(Stream)),
           write_wam_lua_project(
@@ -212,7 +213,15 @@ test(lua_external_fact_source_e2e, [condition(lua_available)]) :-
           run_lua_query(LuaDir, 'wam_lua_ext_fact/2', [a, b], true),
           run_lua_query(LuaDir, 'wam_lua_ext_fact/2', [a, c], true),
           run_lua_query(LuaDir, 'wam_lua_ext_fact/2', [a, d], false),
-          run_lua_query(LuaDir, 'wam_lua_ext_caller/2', [a, c], true)
+          run_lua_query(LuaDir, 'wam_lua_ext_fact/2', [x, z], true),
+          run_lua_query(LuaDir, 'wam_lua_ext_fact/2', [a, z], false),
+          run_lua_query(LuaDir, 'wam_lua_ext_caller/2', [a, c], true),
+          run_lua_script(
+              LuaDir,
+              'local m=require("generated_program"); local R=m.Runtime; local V=m.V; local function atom(s) return V.Atom(R.intern(m.program.intern_table,s)) end; print(m.wam_lua_ext_fact(atom("a"), atom("b"))); local src=m.program.fact_sources["wam_lua_ext_fact/2"]; local aid=R.intern(m.program.intern_table,"a"); print(#src.cache.rows, #src.cache.arg1_index["a:"..aid])',
+              Output),
+          normalize_space(string(CacheInfo), Output),
+          assertion(CacheInfo == "true 3 2")
         ),
         delete_directory_and_contents(TmpDir)
     ).

@@ -484,8 +484,9 @@ end
 
 function Runtime.read_facts_file(program, path)
   local rows = {}
+  local arg1_index = {}
   local fh = io.open(path, "r")
-  if fh == nil then return rows end
+  if fh == nil then return { rows = rows, arg1_index = arg1_index } end
   for line in fh:lines() do
     local cleaned = trim(line)
     if cleaned ~= "" and cleaned:sub(1, 1) ~= "#" then
@@ -495,27 +496,38 @@ function Runtime.read_facts_file(program, path)
         parts[#parts + 1] = part
       end
       if #parts >= 2 then
-        rows[#rows + 1] = {
+        local row = {
           parse_fact_source_value(program, parts[1]),
           parse_fact_source_value(program, parts[2])
         }
+        rows[#rows + 1] = row
+        local key = term_key(row[1])
+        local bucket = arg1_index[key] or {}
+        arg1_index[key] = bucket
+        bucket[#bucket + 1] = row
       end
     end
   end
   fh:close()
-  return rows
+  return { rows = rows, arg1_index = arg1_index }
 end
 
-local function fact_source_rows(program, pred)
+local function fact_source_rows(program, pred, state)
   local source = program.fact_sources and program.fact_sources[pred] or nil
   if source == nil then return nil end
-  if source.rows == nil then source.rows = Runtime.read_facts_file(program, source.path) end
-  return source.rows
+  if source.cache == nil then source.cache = Runtime.read_facts_file(program, source.path) end
+  local a1 = Runtime.deref(state, Runtime.get_reg(state, 1))
+  if type(a1) == "table" and a1.tag ~= "unbound" then
+    return source.cache.arg1_index[term_key(a1)] or {}
+  end
+  return source.cache.rows
 end
 
 local function call_fact_stream(program, state, instr)
   local rows = program.inline_facts and program.inline_facts[instr.pred] or nil
-  if rows == nil or #rows == 0 then rows = fact_source_rows(program, instr.pred) end
+  if rows == nil or #rows == 0 then
+    rows = fact_source_rows(program, instr.pred, state)
+  end
   if rows == nil or #rows == 0 then return false end
   if #rows > 1 then
     local rest = {}
