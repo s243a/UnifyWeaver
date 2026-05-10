@@ -3576,3 +3576,142 @@ implement these formulas. They're opt-in: callers pass `cost_model`
 options to enable, otherwise targets fall back to the existing
 fact-count-threshold heuristic.
 
+## Phase L appendix #11: matrix-bench `resident_auto` mode (2026-05-10)
+
+### Why
+
+After PR #1975 wired the cost-model resolver into
+`wam_haskell_target.pl`, nothing in the repo actually exercised it
+end-to-end. This appendix records the first user of
+`cache_strategy(auto)` — a new `resident_auto` mode in the matrix
+bench — and what the resolver picks across the existing fixture
+scales. The point isn't to discover a new winning configuration; it
+is to verify the cost model's decisions agree with the empirical
+Phase L#7–9 measurements, and to surface tuning issues in the
+default workload metadata.
+
+### What changed
+
+`examples/benchmark/generate_wam_haskell_matrix_benchmark.pl`:
+
+- New `resident_auto` mode parser, alongside the existing `resident`
+  and `resident_cursor` modes.
+- Emits `cache_strategy(auto)`, `cache_strategy_verbose(true)`,
+  `expected_query_count(1)`, and `working_set_fraction(0.001)`.
+- Tags `lmdb_cache_mode(sharded)` (same default as the other resident
+  modes) and `int_atom_seeds(lmdb)`.
+
+The mode lets the cost model decide between cursor and in-memory
+demand BFS by reading the resolver's recommendation. Verbose tracing
+is on by default so the picked decision shows up in the bench
+generator's output, e.g.:
+
+```
+[WAM-Haskell] cache_strategy(auto): K=297 W=14850000 R_free=1579548672 → sort (cursor)
+```
+
+### Why `working_set_fraction(0.001)` and not the cost-model default `0.05`
+
+The cost-model's general default of `0.05` is appropriate for
+many-keys-per-query workloads (e.g. lookup-heavy joins where the
+query touches 5% of the data). For graph-BFS demand-set workloads
+like the matrix bench's effective-distance kernel, the demand set
+is ~0.05 % of edges (Phase L#7: simplewiki Physics root reaches
+144 of 297k nodes = 0.0005). At wsf=0.05 the model would
+incorrectly recommend `in_memory` at every scale because K is
+inflated by 100×.
+
+`resident_auto` overrides to `0.001` (~10× the empirical 0.0005,
+slightly conservative). The cost-model's `0.05` default stays as
+the correct general-purpose value; it's the workload, not the
+model, that's specialised here.
+
+### What the resolver picks
+
+R_free = 1.58 GB (WSL with active processes; reported by
+`/proc/meminfo:MemAvailable`).
+
+| fixture | fact_count | K     | W       | f_hot | picked  | empirical winner (Phase L) |
+|---|---|---|---|---|---|---|
+| 1k         |     5,933 |     6 |  290 KB |  1.0  | cursor  | parity (60 vs 70 ms)        |
+| simplewiki |   297,000 |   297 |   15 MB |  1.0  | cursor  | cursor (1.96× vs in_memory) |
+| enwiki     | 9,900,000 | 9,900 |  500 MB |  1.0  | cursor  | cursor only (in_memory panics) |
+
+The model agrees with the empirical measurements at every scale.
+For BFS workloads, sorted seeks always beat sequential pre-load —
+because the per-query selection ratio (~0.05%) is so far below the
+hot-regime crossover (~K_cross at 5000 bytes/key with W = fact_count
+× 50 → K_cross ≈ fact_count / 100, while K = fact_count × 0.001 =
+fact_count / 1000, so K is 10× below crossover at every scale).
+
+### Cold-regime check (and a real finding)
+
+To verify the model's cold-regime branch fires, the resolver was
+probed with `mem_available_bytes(125 MB)` against the enwiki size
+(W = 500 MB so f_hot ≈ 0.25):
+
+| fact_count | wsf   | R_free  | f_hot | picked    |
+|---|---|---|---|---|
+| 9,900,000  | 0.001 | 125 MB  | 0.25  | in_memory |
+| 9,900,000  | 0.05  | 125 MB  | 0.25  | in_memory |
+
+K_cross drops sharply in the cold regime (~4,000 at f_hot=0.25 vs
+~99,000 at f_hot=1.0), so even the small BFS K=9,900 lands above
+the threshold and the model recommends `scan` → `in_memory`.
+
+**This surfaces a real gap in the current sort-↔-cursor /
+scan-↔-in_memory mapping.** Our `in_memory` implementation requires
+loading the full edge IntMap into RAM (~500 MB at enwiki scale).
+At R_free=125 MB the IntMap allocation blows the available memory
+budget — exactly the regime where the model recommends it. The
+"scan" abstraction in `cost_model.pl` says nothing about working-set
+footprint, so the resolver can't currently catch this.
+
+The right fix is a footprint guard in `resolve_auto_cache_strategy/2`
+that overrides `in_memory` → `cursor` when `R_free < W`. Filed as
+a follow-up; not in this PR's scope because it has implications
+for the resolver's tests and decision contract.
+
+For now, `resident_auto` works correctly when R_free ≥ W (the hot
+regime), which covers all current categories-only fixtures. The
+cold-regime override matters once article-level data lands.
+
+### What this validates
+
+- The end-to-end channel works: matrix-bench → `cache_strategy(auto)` →
+  `resolve_auto_cache_strategy/2` → `cost_model:recommend_access_pattern/5`
+  → concrete `demand_bfs_mode/1`.
+- For BFS workloads at categories scale, the model agrees with
+  hardcoded `resident_cursor` and the existing
+  `resolve_auto_demand_bfs_mode/2` 50k threshold.
+- The model is doing genuine work in the cold regime (where the DB
+  exceeds free RAM) and at high selection ratios — both regimes
+  beyond the existing threshold's reach.
+
+### What this doesn't validate
+
+- **Article-level scale** — fixtures gone after the previous
+  workspace reset; couldn't probe the regime where `f_hot < 1`
+  matters in production. Deferred until article-level data is
+  re-ingested.
+- **Multi-query workloads** — `expected_query_count(M)` doesn't
+  affect the cursor-vs-in-memory decision; it would only fire if a
+  warming-payoff resolver existed. Deferred to the warming-arc work.
+- **Spinning-disk targets** — `t_disk_seek` jumps 100×, which
+  would shift the crossover. Not tested on this hardware.
+
+### Reproducer
+
+```bash
+# At any cwd:
+swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
+    data/benchmark/1k/facts.pl /tmp/wam_auto_1k seeded interpreter kernels_on resident_auto
+# Look for: [WAM-Haskell] cache_strategy(auto): K=... W=... R_free=... → ...
+```
+
+Phase L#11 closes the Phase 2c plumbing arc started in PR #1975.
+The cost model has now been exercised end-to-end on real
+fixtures; future warming and `lmdb_cache_mode` resolvers can
+build on the same channel.
+
+

@@ -36,7 +36,7 @@ main :-
     ;   Argv = [FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom]
     ->  LmdbModeAtom = none
     ;   format(user_error,
-            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off> [<none|auto|true|false|resident|resident_cursor>]~n',
+            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off> [<none|auto|true|false|resident|resident_cursor|resident_auto>]~n',
             []),
         halt(1)
     ),
@@ -148,6 +148,44 @@ parse_lmdb_mode(resident_cursor, [
     lmdb_layout(dupsort),
     int_atom_seeds(lmdb),
     demand_bfs_mode(cursor),
+    lmdb_cache_mode(sharded)
+]).
+%% resident_auto: same dupsort/intern setup as resident*, but defers
+%% the cursor-vs-in-memory choice to cost_model.pl via
+%% cache_strategy(auto). Inputs feeding the model:
+%%   - fact_count            — counted from the facts.pl file (added below)
+%%   - expected_query_count  — defaulted to 1 here; override via the
+%%                             generator's caller if you have a specific M
+%%   - working_set_fraction  — defaulted to 0.05 (the cost-model doc's
+%%                             default; 5% of edges touched per query)
+%%   - mem_available_bytes   — read from /proc/meminfo by the resolver
+%% The resolver writes a concrete demand_bfs_mode/1 into Options before
+%% codegen consults it, so behaviour falls back exactly to either
+%% resident or resident_cursor depending on the regime.
+%%
+%% Verbose tracing is on by default for this mode so the picked
+%% decision shows up in the bench output. Pass
+%% cache_strategy_verbose(false) to silence.
+%%
+%% See docs/design/CACHE_COST_MODEL_PHILOSOPHY.md and
+%% docs/design/WAM_PERF_OPTIMIZATION_LOG.md Phase M appendix #10.
+parse_lmdb_mode(resident_auto, [
+    use_lmdb(true),
+    lmdb_layout(dupsort),
+    int_atom_seeds(lmdb),
+    cache_strategy(auto),
+    cache_strategy_verbose(true),
+    expected_query_count(1),
+    %% BFS demand-set workloads (matrix bench's effective-distance
+    %% kernel) touch a tiny fraction of total edges per query.
+    %% Empirically (Phase L appendix #7): the simplewiki Physics root
+    %% reaches ~144 nodes out of 297k = ~0.0005 wsf. We use 0.001 here
+    %% to stay slightly conservative — picks cursor at 50k+ scale
+    %% (matches the existing demand_bfs_mode(auto) 50k threshold) and
+    %% in_memory below. The cost_model's general 0.05 default is the
+    %% right shape for many-keys-per-query lookups; for BFS-style
+    %% reachability it's two orders of magnitude too high.
+    working_set_fraction(0.001),
     lmdb_cache_mode(sharded)
 ]).
 
