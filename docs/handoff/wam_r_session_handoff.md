@@ -161,36 +161,26 @@ roughly priority order:
    keeping the inline path for the CLI arg parser if startup latency
    regresses too far.
 
-4. **WAM compiler `clause_body_analysis` stack overflow** on triple-
-   nested `( A -> B ; C -> D ; E )` disjunctions at compile time
-   (the emitter handles them correctly post-PR #1966; this is a
-   separate bug in the analyser). Lives in
-   `src/unifyweaver/core/clause_body_analysis.pl`'s
-   `disjunction_alternatives/2`. Rewrite the recursion as
-   tail-recursive accumulator (or memoise) so the call depth doesn't
-   scale with disjunction nesting. Removes the last in-the-source
-   workarounds in the cross-target Prolog parser
-   (`list_elem_continue`, `op_loop_step`).
-5. **Strict `xf` precedence rule** (small). Threading the precedence
+4. **Strict `xf` precedence rule** (small). Threading the precedence
    of the current `left` expression through `wam_parse_expr` so `xf`
    and `yf` differ correctly at chained-postfix sites. Fixes the
    simplification documented as a known limitation. Same fix would
    let `fx` / `fy` differ correctly in the prefix path.
-6. **Mode analysis (start).** Big multi-PR effort. Phase 1 collects
+5. **Mode analysis (start).** Big multi-PR effort. Phase 1 collects
    mode info per predicate (in/out per arg); Phase 2 wires it to
    specialised emission (skip unifications when the mode says the slot
    is unbound, etc.). Look at the Haskell target's
    `WAM_HASKELL_MODE_ANALYSIS_*.md` design docs for the precedent.
-7. **Multi-line `read/2`.** Read until a `.` terminator across lines.
+6. **Multi-line `read/2`.** Read until a `.` terminator across lines.
    Niche but completes the streams story.
-8. **Multi-solution `retract/1` ignoring snapshot.** I.e. re-read the
+7. **Multi-solution `retract/1` ignoring snapshot.** I.e. re-read the
    live clause list on each backtrack. Trickier semantics; document
    carefully if pursued.
-9. **Phase-3 lowered emitter expansion.** Currently handles only
+8. **Phase-3 lowered emitter expansion.** Currently handles only
    `deterministic` and `multi_clause_1` shapes. Could grow N-clause
    general lowering; would compete with the kernel / fact-table paths
    so the value is unclear.
-10. **Range / interval indexes** on fact tables. Per-arg hash indexes
+9. **Range / interval indexes** on fact tables. Per-arg hash indexes
     land queries with ground atom/int args; range queries (`X > 5`,
     `X between A B`) still go through the per-tuple scan. A sorted-
     per-arg index would route these. Niche but a natural extension.

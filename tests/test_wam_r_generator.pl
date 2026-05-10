@@ -3625,6 +3625,33 @@ e2e_nested_if_then_else_via_rscript :-
     assertion(sub_string(Out4, _, _, _, "other")),
     delete_directory_and_contents(TmpDir).
 
+% Compile-time: deeply-nested if-then-else bodies don't blow the
+% clause_body_analysis stack. Pre-fix `disjunction_alternatives/2`
+% unified an unbound goal with `(Left ; Right)`, binding Left and
+% Right to fresh unbounds and recursing into them indefinitely.
+% The nonvar guard makes the function safe to call with any term;
+% as a side benefit the parser's natural-form `parse_op_loop` /
+% `parse_list_elems` bodies (triple-nested ITE) compile cleanly.
+test(deeply_nested_ite_compiles) :-
+    retractall(user:dni_chain/1),
+    % Triple-nested if-then-else. The exact shape that previously
+    % stack-overflowed clause_body_analysis at compile time.
+    assertz((user:dni_chain(X) :-
+        ( integer(X), X > 0
+        -> Y = pos_int
+        ; integer(X), X < 0
+        -> Y = neg_int
+        ; atom(X)
+        -> Y = atom
+        ; Y = other
+        ),
+        write(Y), nl)),
+    set_prolog_flag(stack_limit, 67_108_864),
+    wam_target:compile_predicate_to_wam(user:dni_chain/1, [], Code),
+    string_length(Code, CodeLen),
+    assertion(CodeLen > 0),
+    retractall(user:dni_chain/1).
+
 % ------------------------------------------------------------------
 % Test 8: r_wam bindings module loads
 % ------------------------------------------------------------------

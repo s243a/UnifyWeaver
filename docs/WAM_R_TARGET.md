@@ -623,15 +623,6 @@ WamRuntime$run(shared_program, state)
   strictly less than the operator precedence. Symmetric with the
   existing prefix simplification. Documented; not a real-world
   blocker.
-- **WAM compiler's `clause_body_analysis` stack overflow on deeply
-  nested disjunctions**. Triple-nested `( A -> B ; C -> D ; E )`
-  shapes blow the analyser's stack at compile time, even though
-  `compile_if_then_else` itself handles them correctly. Workaround
-  for now: factor the chain into a separate predicate's clauses
-  and dispatch by head pattern (see `list_elem_continue`,
-  `op_loop_step` in `src/unifyweaver/core/prolog_term_parser.pl`).
-  Lives in `src/unifyweaver/core/clause_body_analysis.pl`'s
-  `disjunction_alternatives/2` and is independent of the runtime.
 - **WAM-text quoting collision**. The atom `'42'` and the integer
   `42` both serialise as `set_constant 42` in SWI's WAM emitter,
   so the codegen can't distinguish them. The runtime's `atom_*`
@@ -726,6 +717,7 @@ Coverage map (e2e tests, by feature group):
 | `stack_frame_cleanup_on_backtrack_e2e_rscript` | failed clauses' env frames get popped on backtrack via the CP's `stack_len` snapshot, so the outer predicate's `Deallocate` doesn't pop a stale frame and re-enter post-call code |
 | `cut_ite_barrier_after_helper_e2e_rscript` | `( A -> B ; C )` soft-cut commits past CPs that A's evaluation left alive (the codegen marks the if-then-else's `try_me_else` as `try_me_else_ite`, the runtime tags the CP `kind="ite"`, and `CutIte` truncates `state$cps` back to that CP's pre-push depth) |
 | `nested_if_then_else_e2e_rscript` | chained `( A -> B ; C -> D ; E )` compiles as nested cut_ite/try_me_else_ite pairs (each `->` in Else position is recognised recursively rather than emitted as a stub `Call("->", 2)`) |
+| `deeply_nested_ite_compiles` | clause_body_analysis no longer stack-overflows on triple-nested if-then-else bodies (the `nonvar` guard on `disjunction_alternatives/2` keeps it from infinitely-expanding an unbound goal that passes through the analyser) |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 

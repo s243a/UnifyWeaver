@@ -914,17 +914,14 @@ flatten_conjunction(Goal, [Goal]).
 %  implementation and just fails.
 compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, Vf, _HasEnv, Code) :-
     next_ite_label(ElseLabel, ContLabel),
-    % Flatten condition and then-branch into goal lists
+    % Flatten condition into a goal list
     flatten_conjunction(CondGoal, CondGoals),
-    flatten_conjunction(ThenGoal, ThenGoals),
-    % Compile condition goals as calls (never TCO)
     compile_inner_call_goals(CondGoals, V0, V1, CondCode),
-    % Compile then-branch goals as calls
-    compile_inner_call_goals(ThenGoals, V1, V2, ThenCode),
-    % Compile else-branch -- if it's a nested if-then-else recurse,
-    % otherwise treat it as a flat goal list. Start from V0 since
-    % backtrack restores to before the condition.
-    compile_else_branch(ElseGoal, V0, V3, ElseCode),
+    % Then and Else can each be themselves a nested if-then-else --
+    % compile_ite_branch recurses on those forms. Else starts from
+    % V0 since backtrack restores to before the condition.
+    compile_ite_branch(ThenGoal, V1, V2, ThenCode),
+    compile_ite_branch(ElseGoal, V0, V3, ElseCode),
     % Use the wider variable map as output
     (   V2 = V3 -> Vf = V2
     ;   Vf = V2  % prefer then-branch vars (else-branch is alternative)
@@ -938,20 +935,20 @@ compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, Vf, _HasEnv, Code) :-
         "    try_me_else ~w~n~w~n    cut_ite~n~w~n    jump ~w~n~w:~n    trust_me~n~w~n~w:",
         [ElseLabel, CondCode, ThenCode, ContLabel, ElseLabel, ElseCode, ContLabel]).
 
-%% compile_else_branch(+Else, +V0, -Vf, -Code) is det.
-%  The Else position of `(Cond -> Then ; Else)`. If Else is itself
-%  another if-then-else, recurse; otherwise compile as a flat goal
-%  sequence. A bare `(C -> T)` in Else position is interpreted as
-%  `(C -> T ; fail)` -- the branch fails when C fails, matching SWI.
-compile_else_branch((Cond2 -> Then2 ; Else2), V0, Vf, Code) :-
+%% compile_ite_branch(+Branch, +V0, -Vf, -Code) is det.
+%  Compile a Then- or Else-branch of an if-then-else. If the branch
+%  is itself another if-then-else (`(C -> T ; E)` or bare `(C -> T)`,
+%  the latter treated as `(C -> T ; fail)` to match SWI), recurse;
+%  otherwise compile as a flat goal sequence.
+compile_ite_branch((Cond2 -> Then2 ; Else2), V0, Vf, Code) :-
     !,
     compile_if_then_else(Cond2, Then2, Else2, V0, Vf, no, Code).
-compile_else_branch((Cond2 -> Then2), V0, Vf, Code) :-
+compile_ite_branch((Cond2 -> Then2), V0, Vf, Code) :-
     !,
     compile_if_then_else(Cond2, Then2, fail, V0, Vf, no, Code).
-compile_else_branch(ElseGoal, V0, Vf, Code) :-
-    flatten_conjunction(ElseGoal, ElseGoals),
-    compile_inner_call_goals(ElseGoals, V0, Vf, Code).
+compile_ite_branch(Branch, V0, Vf, Code) :-
+    flatten_conjunction(Branch, BranchGoals),
+    compile_inner_call_goals(BranchGoals, V0, Vf, Code).
 
 %% compile_disjunction(+Left, +Right, +V0, -Vf, +HasEnv, -Code)
 %  Compile (A ; B) to WAM try/trust + jump pattern (no cut).
