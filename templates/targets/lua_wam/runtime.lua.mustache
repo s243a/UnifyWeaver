@@ -281,6 +281,25 @@ function Runtime.backtrack(state)
     state.halt = false
     return true
   end
+  if cp.kind == "member" then
+    while #state.trail > cp.trail_len do
+      local name = table.remove(state.trail)
+      state.bindings[name] = nil
+    end
+    state.regs = Runtime.copy_table(cp.regs)
+    state.cp = cp.cp
+    state.var_counter = cp.var_counter
+    state.mode = cp.mode
+    state.build_stack = cp.build_stack or {}
+    local value = table.remove(cp.values, 1)
+    if #cp.values == 0 then table.remove(state.cps) end
+    if Runtime.unify(state, Runtime.get_reg(state, 1), value) ~= true then
+      return Runtime.backtrack(state)
+    end
+    state.pc = cp.next_pc
+    state.halt = false
+    return true
+  end
   if cp.kind == "aggregate" then
     table.remove(state.cps)
     while #state.trail > cp.trail_len do
@@ -323,6 +342,49 @@ function Runtime.list_from_terms(items, intern_table)
     out = V.Struct(cons_id, { items[i], out })
   end
   return out
+end
+
+local bind_or_compare
+
+local function list_items(program, state, list)
+  local nil_id = Runtime.intern(program.intern_table, "[]")
+  local cons_id = Runtime.intern(program.intern_table, "[|]")
+  local items = {}
+  local cur = Runtime.deref(state, list)
+  while type(cur) == "table" do
+    if cur.tag == "atom" and cur.id == nil_id then return items end
+    if cur.tag ~= "struct" or cur.fid ~= cons_id or #(cur.args or {}) ~= 2 then return nil end
+    table.insert(items, cur.args[1])
+    cur = Runtime.deref(state, cur.args[2])
+  end
+  return nil
+end
+
+local function builtin_member(program, state)
+  local items = list_items(program, state, Runtime.get_reg(state, 2))
+  if items == nil or #items == 0 then return false end
+  if #items > 1 then
+    local rest = {}
+    for i = 2, #items do rest[#rest + 1] = items[i] end
+    table.insert(state.cps, {
+      kind = "member",
+      next_pc = state.pc + 1,
+      regs = Runtime.copy_table(state.regs),
+      cp = state.cp,
+      trail_len = #state.trail,
+      var_counter = state.var_counter,
+      mode = state.mode,
+      build_stack = state.build_stack,
+      values = rest
+    })
+  end
+  return Runtime.unify(state, Runtime.get_reg(state, 1), items[1])
+end
+
+local function builtin_length(program, state)
+  local items = list_items(program, state, Runtime.get_reg(state, 1))
+  if items == nil then return false end
+  return bind_or_compare(state, 2, V.Int(#items))
 end
 
 local function numeric_value(v)
@@ -626,7 +688,7 @@ local function number_value(v)
   return nil
 end
 
-local function bind_or_compare(state, idx, val)
+bind_or_compare = function(state, idx, val)
   local cur = Runtime.get_reg(state, idx)
   if cur == nil then Runtime.put_reg(state, idx, val); return true end
   return Runtime.unify(state, cur, val)
@@ -635,6 +697,8 @@ end
 function Runtime.builtin_call(program, state, instr)
   local p = instr.pred
   if p == "=" or p == "=/2" then return Runtime.unify(state, Runtime.get_reg(state, 1), Runtime.get_reg(state, 2)) end
+  if p == "member" or p == "member/2" then return builtin_member(program, state) end
+  if p == "length" or p == "length/2" then return builtin_length(program, state) end
   if p == "is" or p == "is/2" then
     local n = number_value(Runtime.deref(state, Runtime.get_reg(state, 2)))
     if n == nil then return false end
