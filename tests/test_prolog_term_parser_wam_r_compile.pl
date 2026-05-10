@@ -32,7 +32,18 @@ parser_predicates(Preds) :-
     findall(prolog_term_parser:N/A,
             (   current_predicate(prolog_term_parser:N/A),
                 functor(H, N, A),
-                once(clause(prolog_term_parser:H, _))
+                once(clause(prolog_term_parser:H, _)),
+                % Exclude imported predicates (member/2, append/3,
+                % reverse/2 from the lists library) -- clause/2 finds
+                % them through the module qualifier, but they aren't
+                % defined here and shouldn't be compiled as if they
+                % were. Without this filter, the SWI tests' calls
+                % autoload list helpers into prolog_term_parser, the
+                % filter sees them as "predicates with clauses", and
+                % the compiled R project ends up with conflicting
+                % shadow definitions of the runtime's library calls.
+                \+ predicate_property(prolog_term_parser:H,
+                                       imported_from(_))
             ),
             Raw),
     sort(Raw, Preds).
@@ -143,6 +154,90 @@ cut_free_subset_runs_body :-
     assertion(sub_string(RhsYfxOut, _, _, _, "499")),
     run_rscript_query(RDir, 'drv_starts/0', StartsOut),
     assertion(sub_string(StartsOut, _, _, _, "ok")),
+    delete_directory_and_contents(TmpDir).
+
+% ---------------------------------------------------------------------------
+% Test: the full compiled parser produces the same terms under Rscript as
+% it does under SWI. End-to-end proof that the cross-target loop works.
+% Auto-skips when Rscript isn't on PATH.
+% ---------------------------------------------------------------------------
+
+test(full_parser_e2e_via_rscript) :-
+    once((
+        rscript_available
+    ->  full_parser_e2e_body
+    ;   true
+    )).
+
+full_parser_e2e_body :-
+    parser_predicates(ParserPreds),
+    fresh_tmp_dir(TmpDir),
+    % Drivers cover the parser surface: bare atom, integer, simple
+    % compound, multi-arg compound, list, infix operator with
+    % precedence, postfix operator, repeated variable (var sharing
+    % within one parse), nested compound + list. Each prints the
+    % parsed term so we can sub-string match the expected output.
+    retractall(user:dpe_atom/0),
+    retractall(user:dpe_num/0),
+    retractall(user:dpe_compound/0),
+    retractall(user:dpe_arith/0),
+    retractall(user:dpe_list/0),
+    retractall(user:dpe_postfix/0),
+    retractall(user:dpe_var/0),
+    retractall(user:dpe_nested/0),
+    assertz((user:dpe_atom :-
+        canonical_op_table(O), parse_term_from_atom('foo', O, T),
+        write(T), nl)),
+    assertz((user:dpe_num :-
+        canonical_op_table(O), parse_term_from_atom('42', O, T),
+        write(T), nl)),
+    assertz((user:dpe_compound :-
+        canonical_op_table(O), parse_term_from_atom('foo(a, b)', O, T),
+        write(T), nl)),
+    assertz((user:dpe_arith :-
+        canonical_op_table(O), parse_term_from_atom('1 + 2 * 3', O, T),
+        write(T), nl)),
+    assertz((user:dpe_list :-
+        canonical_op_table(O), parse_term_from_atom('[a, b]', O, T),
+        write(T), nl)),
+    assertz((user:dpe_postfix :-
+        canonical_op_table(B), Ops = [op('!', 100, yf) | B],
+        parse_term_from_atom('5!', Ops, T),
+        write(T), nl)),
+    assertz((user:dpe_var :-
+        canonical_op_table(O), parse_term_from_atom('f(X, X)', O, T),
+        ( T = f(A, B), var(A), A == B
+        -> write(shared_var) ; write(not_shared) ),
+        nl)),
+    assertz((user:dpe_nested :-
+        canonical_op_table(O),
+        parse_term_from_atom('foo(bar(1), [a, b])', O, T),
+        write(T), nl)),
+    Drivers = [user:dpe_atom/0, user:dpe_num/0, user:dpe_compound/0,
+               user:dpe_arith/0, user:dpe_list/0, user:dpe_postfix/0,
+               user:dpe_var/0, user:dpe_nested/0],
+    append(Drivers, ParserPreds, Compile),
+    write_wam_r_project(Compile, [intern_atoms(['!'])], TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    run_rscript_query(RDir, 'dpe_atom/0', AtomOut),
+    assertion(sub_string(AtomOut, _, _, _, "foo")),
+    run_rscript_query(RDir, 'dpe_num/0', NumOut),
+    assertion(sub_string(NumOut, _, _, _, "42")),
+    run_rscript_query(RDir, 'dpe_compound/0', CompOut),
+    assertion(sub_string(CompOut, _, _, _, "foo(a,b)")),
+    run_rscript_query(RDir, 'dpe_arith/0', ArithOut),
+    % WAM-R's write/1 prints structs in canonical-functor form; the
+    % Pratt parser produced `+(1, *(2, 3))` so precedence is right
+    % (mult binds tighter than add).
+    assertion(sub_string(ArithOut, _, _, _, "+(1,*(2,3))")),
+    run_rscript_query(RDir, 'dpe_list/0', ListOut),
+    assertion(sub_string(ListOut, _, _, _, "[a,b]")),
+    run_rscript_query(RDir, 'dpe_postfix/0', PostfixOut),
+    assertion(sub_string(PostfixOut, _, _, _, "!(5)")),
+    run_rscript_query(RDir, 'dpe_var/0', VarOut),
+    assertion(sub_string(VarOut, _, _, _, "shared_var")),
+    run_rscript_query(RDir, 'dpe_nested/0', NestedOut),
+    assertion(sub_string(NestedOut, _, _, _, "foo(bar(1),[a,b])")),
     delete_directory_and_contents(TmpDir).
 
 run_rscript_query(RDir, Query, Out) :-

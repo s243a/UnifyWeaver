@@ -259,11 +259,45 @@ WamRuntime$new_state <- function() {
   # "commit globally" -- correct, since there's no outer caller
   # whose alternatives need preserving.
   s$pending_call_barrier <- 0L
+  # Per-frame Y storage. Y registers (idx >= 201) live in the topmost
+  # frame's `ys` env, not in s$regs2. Deallocate pops the frame but
+  # parks its ys env on s$shadow_frame so the SWI WAM emit's typical
+  # post-Deallocate Y reads still resolve. Allocate clears it; the
+  # next body's Y writes don't leak in. Also initialise the regs2
+  # env so X / A access works before the first Allocate.
+  s$shadow_frame <- NULL
   s
 }
 
 WamRuntime$get_reg <- function(state, idx) {
   key <- as.character(idx)
+  # Y registers live in the topmost frame's `ys` env, not in regs2.
+  # When state$shadow_frame is set (a Deallocate has just popped a
+  # frame and we're in the post-Deallocate code section of THAT
+  # predicate), Y reads route through the shadow first -- the SWI
+  # WAM emit reads Y_n between Deallocate and the predicate's
+  # Proceed/Execute, expecting the body's value, and the just-
+  # popped frame is the only place that holds it. Shadow is cleared
+  # at every Allocate / Proceed / Execute / backtrack, so any time
+  # we're inside a normal pre-Deallocate body Y reads bypass shadow
+  # and hit the topmost frame's ys directly.
+  if (idx >= 201L) {
+    sf <- state$shadow_frame
+    if (!is.null(sf)) {
+      ys <- sf$ys
+      if (!is.null(ys) && exists(key, envir = ys, inherits = FALSE)) {
+        return(get(key, envir = ys, inherits = FALSE))
+      }
+    }
+    sn <- length(state$stack)
+    if (sn > 0L) {
+      ys <- state$stack[[sn]]$ys
+      if (!is.null(ys) && exists(key, envir = ys, inherits = FALSE)) {
+        return(get(key, envir = ys, inherits = FALSE))
+      }
+    }
+    return(NULL)
+  }
   if (exists(key, envir = state$regs2, inherits = FALSE)) {
     get(key, envir = state$regs2, inherits = FALSE)
   } else {
@@ -273,6 +307,16 @@ WamRuntime$get_reg <- function(state, idx) {
 
 WamRuntime$put_reg <- function(state, idx, val) {
   key <- as.character(idx)
+  # Y writes go to the topmost frame's ys env. Outside any Allocate'd
+  # frame (top-level pre-Allocate, builtin handlers without their own
+  # frame) Y writes fall back to regs2 so we keep something accessible.
+  if (idx >= 201L) {
+    sn <- length(state$stack)
+    if (sn > 0L) {
+      assign(key, val, envir = state$stack[[sn]]$ys)
+      return(invisible(NULL))
+    }
+  }
   assign(key, val, envir = state$regs2)
   invisible(NULL)
 }
@@ -1208,18 +1252,12 @@ WamRuntime$step <- function(program, state, instr) {
       state$pc <- state$pc + 1L; TRUE
     },
     "Allocate" = {
-      # Save the caller's Y registers (idx >= 201) so the callee's
-      # Y writes don't stomp them. Without this, nested calls
-      # `rt(F) :- do_write(F), do_read(F).` lose F when do_write's
-      # Y201 (= S) overwrites rt's Y201 (= F) in the flat regs2
-      # env. Deallocate restores the saved Y values.
-      saved_ys <- list()
-      for (k in ls(state$regs2)) {
-        ki <- suppressWarnings(as.integer(k))
-        if (!is.na(ki) && ki >= 201L) {
-          saved_ys[[k]] <- get(k, envir = state$regs2, inherits = FALSE)
-        }
-      }
+      # Push a new env frame with its OWN Y-register storage. Y writes
+      # in this clause body live in `frame$ys` (idx >= 201); X and A
+      # registers stay in the shared state$regs2. This matches real
+      # WAM semantics where each frame has its own Y slot vector,
+      # so a callee's Y_n cannot stomp the caller's Y_n.
+      ys <- new.env(parent = emptyenv(), hash = TRUE)
       # state$pending_call_barrier was set by the Call/Execute that
       # routed us to this predicate's first instruction (or left at
       # its initial 0 for a top-level run_predicate entry). Capture
@@ -1228,27 +1266,27 @@ WamRuntime$step <- function(program, state, instr) {
       # predicate has created (including its own TryMeElse CP).
       state$stack <- c(state$stack,
                        list(list(cp = state$cp,
-                                 saved_ys = saved_ys,
+                                 ys = ys,
                                  cps_barrier = state$pending_call_barrier)))
+      # The previous frame's `ys` is no longer reachable as a "shadow"
+      # for post-Deallocate Y reads -- a fresh body starts here.
+      state$shadow_frame <- NULL
       state$pc <- state$pc + 1L; TRUE
     },
     "Deallocate" = {
-      # Pop the call frame and restore the caller's Y registers.
-      # Note: we *only* overwrite the slots that were live in the
-      # caller (frame$saved_ys); any Y the callee added beyond
-      # those is left in place because SWI's WAM emit can read a
-      # Y register *after* Deallocate (e.g. an ArgInstr that
-      # follows the trim), and removing the value would break it.
+      # Pop the call frame. Y registers were stored in `frame$ys`,
+      # which is now retained on `state$shadow_frame` so the next
+      # few instructions -- the SWI WAM emit routinely reads Y
+      # registers after Deallocate (e.g. `Call X; Deallocate;
+      # PutValue Y_n; ...; BuiltinCall =.. ; Proceed`) -- still see
+      # the body's writes. The shadow is invalidated by the next
+      # Allocate (a fresh body cannot leak into stale slots) and by
+      # backtrack (truncates state$stack and clears shadow).
       n <- length(state$stack)
       if (n > 0L) {
         frame <- state$stack[[n]]
         state$cp <- frame$cp
-        saved <- frame$saved_ys
-        if (!is.null(saved)) {
-          for (k in names(saved)) {
-            assign(k, saved[[k]], envir = state$regs2)
-          }
-        }
+        state$shadow_frame <- frame
         state$stack <- state$stack[-n]
       }
       state$pc <- state$pc + 1L; TRUE
@@ -1297,6 +1335,7 @@ WamRuntime$step <- function(program, state, instr) {
         fn <- get(key, envir = program$lowered_dispatch, inherits = FALSE)
         ok <- isTRUE(fn(program, state))
         if (!ok) return(FALSE)
+        state$shadow_frame <- NULL
         if (state$cp == 0L) { state$halt <- TRUE; return(TRUE) }
         state$pc <- state$cp; state$cp <- 0L; return(TRUE)
       }
@@ -1307,21 +1346,28 @@ WamRuntime$step <- function(program, state, instr) {
         # barrier the same way Call does -- any CP the callee pushes
         # is its own; everything currently on state$cps belongs to
         # outer frames whose alternatives the callee's `!/0` must
-        # leave alone.
+        # leave alone. Also clear the shadow_frame the caller's
+        # Deallocate left -- the callee shouldn't see the caller's
+        # Y values via shadow fallthrough.
         state$pending_call_barrier <- length(state$cps)
+        state$shadow_frame <- NULL
         state$pc <- as.integer(tgt)
         return(TRUE)
       }
       dyn <- WamRuntime$try_dynamic(program, state, instr$pred, instr$arity)
       if (!is.null(dyn)) {
         if (!isTRUE(dyn)) return(FALSE)
+        state$shadow_frame <- NULL
         if (state$cp == 0L) { state$halt <- TRUE; return(TRUE) }
         state$pc <- state$cp; state$cp <- 0L; return(TRUE)
       }
       lib <- WamRuntime$call_library(program, state, instr$pred, instr$arity)
       if (is.null(lib)) return(FALSE)
       if (!isTRUE(lib)) return(FALSE)
-      # Tail-call return: same protocol as Proceed.
+      # Tail-call return: same protocol as Proceed -- clear shadow so
+      # the caller's body's Y reads don't pick up our just-popped
+      # frame's ys.
+      state$shadow_frame <- NULL
       if (state$cp == 0L) { state$halt <- TRUE; return(TRUE) }
       state$pc <- state$cp; state$cp <- 0L; TRUE
     },
@@ -1333,11 +1379,18 @@ WamRuntime$step <- function(program, state, instr) {
     "ExecuteForeign" = {
       ok <- WamRuntime$call_foreign(program, state, instr$pred, instr$arity, tail_call = TRUE)
       if (!ok) return(FALSE)
-      # tail-call returns to caller's CP
+      # tail-call returns to caller's CP; clear shadow so the
+      # caller's Y reads don't pick up our just-popped frame.
+      state$shadow_frame <- NULL
       if (state$cp == 0L) { state$halt <- TRUE; return(TRUE) }
       state$pc <- state$cp; state$cp <- 0L; TRUE
     },
     "Proceed" = {
+      # Returning to caller. Any post-Deallocate shadow that this
+      # predicate left for its own post-Deallocate Y reads has done
+      # its job; the caller's frame is the next live env, so clear
+      # shadow to keep its ys from leaking into caller's Y access.
+      state$shadow_frame <- NULL
       if (state$cp == 0L) { state$halt <- TRUE; return(TRUE) }
       state$pc <- state$cp; state$cp <- 0L; TRUE
     },
@@ -3588,10 +3641,20 @@ WamRuntime$dispatch_call <- function(program, state, pred, arity) {
   tgt <- program$labels[[key]]
   if (!is.null(tgt)) {
     # User predicate (or foreign-stub label). Run as a sub-call:
-    # save the outer pc / cp / halt, run to Proceed, restore.
-    saved_pc   <- state$pc
-    saved_cp   <- state$cp
-    saved_halt <- state$halt
+    # save the outer pc / cp / halt + env stack depth + shadow frame,
+    # run to Proceed, restore. The stack/shadow restore is critical:
+    # if the sub-call fails without a choice point to backtrack to,
+    # `run` returns FALSE leaving the callee's Allocated frame still
+    # on state$stack -- subsequent Y register reads in the OUTER
+    # body would then land in the stale callee frame instead of the
+    # caller's. Same logic for shadow_frame, since the sub-call's
+    # Deallocates can leave it pointing at a popped callee frame
+    # that the outer body's Y reads must not see.
+    saved_pc       <- state$pc
+    saved_cp       <- state$cp
+    saved_halt     <- state$halt
+    saved_stack_n  <- length(state$stack)
+    saved_shadow   <- state$shadow_frame
     state$pc   <- as.integer(tgt)
     state$cp   <- 0L
     state$halt <- FALSE
@@ -3599,6 +3662,10 @@ WamRuntime$dispatch_call <- function(program, state, pred, arity) {
     state$pc   <- saved_pc
     state$cp   <- saved_cp
     state$halt <- saved_halt
+    if (length(state$stack) > saved_stack_n) {
+      state$stack <- state$stack[seq_len(saved_stack_n)]
+    }
+    state$shadow_frame <- saved_shadow
     return(isTRUE(ok))
   }
   if (!is.null(program$foreign_handlers[[key]])) {
@@ -5533,6 +5600,10 @@ WamRuntime$backtrack <- function(state) {
       length(state$stack) > cp$stack_len) {
     state$stack <- state$stack[seq_len(cp$stack_len)]
   }
+  # The shadow frame held the most-recently popped frame's ys env so
+  # post-Deallocate Y reads still resolved. Backtracking past that
+  # boundary makes the shadow stale -- clear it.
+  state$shadow_frame <- NULL
   state$pc <- as.integer(cp$next_pc)
   TRUE
 }

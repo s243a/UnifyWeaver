@@ -635,18 +635,14 @@ WamRuntime$run(shared_program, state)
   into clause-level patterns (see `parse_op_loop`,
   `parse_args_continue`, etc. in
   `src/unifyweaver/core/prolog_term_parser.pl`).
-- **Y-register frame locality**. `state$regs2` is a single flat env
-  shared across all call frames, so a callee's `Y_n` writes to the
-  same slot as the caller's `Y_n`. `Allocate` saves the caller's
-  Y values and `Deallocate` restores them, which keeps register
-  state correct across the full caller-callee-caller path -- but
-  the WAM emit can read a Y register *after* `Deallocate` (e.g.
-  the `Term =.. [...]` after a `Call parse_args` in
-  `parse_atom_head`), expecting to see the body's value, not the
-  caller's restored value. That pattern silently reads the wrong
-  register. Real WAM emits use per-frame Y storage (each frame
-  has its own slot for Y_n); WAM-R will need the same. Documented
-  as the new follow-up gating the cross-target parser swap-in.
+- **`CutIte` (soft-cut) barrier scope**. `!/0` truncates `state$cps`
+  back to the predicate's call-site depth (correct cut barrier);
+  `CutIte` -- emitted for `( A -> B ; C )` -- still drops only the
+  most-recent CP. Predicates that depend on if-then-else commit
+  semantics need to be written with clause-level dispatch (see
+  `parse_op_loop`, `parse_args_continue`, `tokenize_loop_step` in
+  `src/unifyweaver/core/prolog_term_parser.pl`) until the same
+  Allocate-stamps-barrier model is wired up for soft cut.
 - **WAM-text quoting collision**. The atom `'42'` and the integer
   `42` both serialise as `set_constant 42` in SWI's WAM emitter,
   so the codegen can't distinguish them. The runtime's `atom_*`

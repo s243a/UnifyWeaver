@@ -139,26 +139,30 @@ roughly priority order:
    identify a single hot path; subsequent PRs each fix one bottleneck.
    Tagged-list `$tag` access and env-based register lookups are likely
    suspects.
-3. **Per-frame Y-register storage.** `state$regs2` is one flat env
-   shared across all call frames, so a callee's `Y_n` writes to the
-   same slot as the caller's. `Allocate`/`Deallocate` save+restore
-   keeps state correct on the boundary, but the WAM emit can read
-   a Y register *after* `Deallocate` (the SWI emitter's normal
-   shape, e.g. `Call parse_args; Deallocate; PutValue Y6, A1; ...
-   =../2`) expecting to see the body's value. Today that read
-   silently picks up the caller's restored value. The cross-target
-   Prolog parser at `src/unifyweaver/core/prolog_term_parser.pl`
-   compiles cleanly and now executes much further than before
-   (cut-barrier and stack-cleanup fixes both shipped, see #1948),
-   but `parse_atom_head`'s post-`Call` `=..` hits this register
-   conflict and the swap-in of `WamRuntime$parse_term` is gated on
-   the fix. Real WAM impls give each frame its own Y slot vector;
-   the easiest version here is a per-frame env (`frame$ys`) that
-   `GetVariable`/`PutValue`/etc. dispatch into when the index is
-   `>= 201`, leaving X registers in the shared env.
+3. **Inline `WamRuntime$parse_term` swap-in.** The cross-target Prolog
+   term parser at `src/unifyweaver/core/prolog_term_parser.pl` now
+   runs end-to-end through the WAM-R compiled path -- atoms, integers,
+   simple compounds, multi-arg compounds, lists, infix operators with
+   correct precedence, postfix, var sharing, nested. Coverage proven
+   by `tests/test_prolog_term_parser_wam_r_compile.pl:full_parser_e2e_via_rscript`.
+   Per-frame Y storage and the `dispatch_call` sub-call cleanup landed
+   alongside the cut-barrier work; nothing in the parser source needs
+   to change. The remaining work is wiring `WamRuntime$parse_term`
+   (and `term_to_atom/2`, `read_term_from_atom/2,3`, `read/2`, the
+   CLI arg parser) to dispatch into the compiled predicate instead of
+   the inline R parser. Important: existing op-related tests
+   (`op_3_runtime_e2e_rscript`, `op_3_decl_e2e_rscript`,
+   `op_3_postfix_e2e_rscript`, `term_to_atom*`) all exercise the
+   inline parser today; the swap needs to keep them green. Performance
+   Performance is unmeasured but the compiled parser will be slower
+   than the inline R version (WAM stepping engine vs. native R
+   control flow); the swap is a correctness / cross-target win, not
+   a speed win, so benchmark before pulling the trigger and consider
+   keeping the inline path for the CLI arg parser if startup latency
+   regresses too far.
 
 4. **`CutIte` (soft cut) barrier scope.** `!/0` now uses a proper
-   cut barrier (PR #1948); `CutIte` -- emitted for
+   cut barrier (PR #1960); `CutIte` -- emitted for
    `( A -> B ; C )` -- still drops only the most-recent CP. The
    same Allocate-stamps-barrier model would work for soft cut, with
    the barrier saved at the start of A so CutIte truncates back to
