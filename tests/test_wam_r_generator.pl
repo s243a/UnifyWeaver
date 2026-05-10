@@ -2111,13 +2111,11 @@ e2e_multi_solution_retract_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
-% End-to-end Rscript run for `^/2` existential scope in
-% bagof/setof/findall. Asserts a 2-arg dynamic predicate, then
-% drives bagof(X, Y^p(X,Y), L) etc. The `^/2` wrapper should be
-% transparent: all X bindings get aggregated regardless of Y's
-% value. This scaffold doesn't do per-witness grouping, so non-
-% existentially-quantified free vars are also aggregated -- the
-% test only covers the `^`-wrapped case.
+% End-to-end Rscript run for `^/2` existential scope and first
+% free-variable grouping in bagof/setof. Asserts 2-arg dynamic
+% predicates, then drives bagof(X, Y^p(X,Y), L) and
+% bagof(X, p(X,Y), L). The `^/2` wrapper keeps Y existential;
+% without it, Y is bound to the selected witness group.
 % Auto-skips when Rscript is not on PATH.
 % ------------------------------------------------------------------
 test(bagof_setof_existential_e2e_rscript) :-
@@ -2155,16 +2153,38 @@ e2e_bagof_setof_existential_via_rscript :-
     % Empty bag fails (bagof semantics).
     assertz((user:be_bagof_empty_no :-
         bagof(X, Y^nonexistent(X, Y), _))),
+    % Non-existential free witness: first group binds Y and collects
+    % only matching X values.
+    assertz((user:be_bagof_group_first :-
+        assertz(gg(1, a)), assertz(gg(2, a)), assertz(gg(3, b)),
+        bagof(X, gg(X, Y), L),
+        Y == a,
+        L == [1, 2])),
+    % setof does the same grouping, then sorts and dedups the selected
+    % group's template values.
+    assertz((user:be_setof_group_first :-
+        assertz(hh(3, a)), assertz(hh(1, a)), assertz(hh(3, a)),
+        assertz(hh(2, b)),
+        setof(X, hh(X, Y), L),
+        Y == a,
+        L == [1, 3])),
+    % Boundary for this partial implementation: additional witness
+    % groups are not enumerated on backtracking yet.
+    assertz((user:be_bagof_no_second_group :-
+        assertz(ii(1, a)), assertz(ii(2, b)),
+        \+ (bagof(X, ii(X, Y), L), Y == b, L == [2]))),
     unique_r_tmp_dir('tmp_r_caret_e2e', TmpDir),
     write_wam_r_project(
         [ user:be_bagof_basic/0, user:be_setof_basic/0,
           user:be_nested_caret/0, user:be_findall_caret/0,
-          user:be_bagof_empty_no/0 ],
+          user:be_bagof_empty_no/0, user:be_bagof_group_first/0,
+          user:be_setof_group_first/0, user:be_bagof_no_second_group/0 ],
         [],
         TmpDir),
     directory_file_path(TmpDir, 'R', RDir),
     Yes = [be_bagof_basic, be_setof_basic, be_nested_caret,
-           be_findall_caret],
+           be_findall_caret, be_bagof_group_first,
+           be_setof_group_first, be_bagof_no_second_group],
     No  = [be_bagof_empty_no],
     forall(member(P, Yes), (
         format(string(Q), '~w/0', [P]),

@@ -527,6 +527,53 @@ wam_term_name_string <- function(v, table) {
   )
 }
 
+WamRuntime$term_key <- function(state, term, table) {
+  v <- WamRuntime$deref(state, term)
+  if (is.null(v) || is.null(v$tag)) return("null")
+  switch(v$tag,
+    "unbound" = paste0("var:", v$name),
+    "int"     = paste0("int:", v$val),
+    "float"   = paste0("float:", format(v$val, scientific = FALSE)),
+    "atom"    = paste0("atom:", WamRuntime$string_of(table, v$id)),
+    "struct"  = {
+      args <- vapply(v$args, function(a)
+        WamRuntime$term_key(state, a, table), character(1))
+      paste0("struct:", WamRuntime$string_of(table, v$fid), "/",
+             length(v$args), "(", paste(args, collapse = ","), ")")
+    },
+    "unknown"
+  )
+}
+
+WamRuntime$term_var_names <- function(state, term) {
+  v <- WamRuntime$deref(state, term)
+  if (is.null(v) || is.null(v$tag)) return(character(0))
+  if (v$tag == "unbound") return(v$name)
+  if (v$tag != "struct") return(character(0))
+  unique(unlist(lapply(v$args, function(a)
+    WamRuntime$term_var_names(state, a)), use.names = FALSE))
+}
+
+WamRuntime$strip_existentials <- function(state, goal_term, table) {
+  v <- WamRuntime$deref(state, goal_term)
+  if (is.null(v) || is.null(v$tag)) {
+    return(list(goal = goal_term, vars = character(0)))
+  }
+  if (v$tag == "struct" && length(v$args) == 2L) {
+    fun <- WamRuntime$string_of(table, v$fid)
+    if (fun == ":") {
+      inner <- WamRuntime$strip_existentials(state, v$args[[2]], table)
+      return(list(goal = inner$goal, vars = inner$vars))
+    }
+    if (fun == "^") {
+      inner <- WamRuntime$strip_existentials(state, v$args[[2]], table)
+      scoped <- WamRuntime$term_var_names(state, v$args[[1]])
+      return(list(goal = inner$goal, vars = unique(c(scoped, inner$vars))))
+    }
+  }
+  list(goal = goal_term, vars = character(0))
+}
+
 # Format-template processor used by format/1 and format/2. Supports the
 # common SWI control-sequence subset:
 #   ~w, ~a, ~p, ~q, ~d  -> consume one arg and write its string form
@@ -1372,7 +1419,9 @@ WamRuntime$step <- function(program, state, instr) {
       # frame has a valid continuation even when the goal has zero
       # solutions (and thus EndAggregate never fires). We scan from
       # the current PC forward; a depth counter handles nested
-      # aggregates. The next_pc is end+1.
+      # aggregates. Nested aggregates are represented by the same
+      # instruction pair; ordinary Raw or library calls do not affect
+      # this structural scan. The next_pc is end+1.
       end_pc <- 0L
       depth <- 1L
       for (j in seq.int(state$pc + 1L, length(program$instructions))) {
@@ -1396,6 +1445,7 @@ WamRuntime$step <- function(program, state, instr) {
         var_counter  = state$var_counter,
         mode         = state$mode,
         build_stack  = state$build_stack,
+        read_stack   = state$read_stack,
         table        = program$intern_table,
         collected    = list()
       )
@@ -1419,7 +1469,10 @@ WamRuntime$step <- function(program, state, instr) {
       agg <- state$cps[[agg_idx]]
       v <- WamRuntime$deref(state, WamRuntime$get_reg(state, instr$template))
       # copy_term so the collected value is independent of subsequent
-      # binding rewrites during backtracking.
+      # binding rewrites during backtracking. EndAggregate runs while
+      # the goal solution bindings are still live; the forced backtrack
+      # immediately after this will undo them before trying the next
+      # solution or finalizing the aggregate frame.
       collected_v <- WamRuntime$copy_term(state, v)
       agg$collected <- c(agg$collected, list(collected_v))
       state$cps[[agg_idx]] <- agg
@@ -3437,9 +3490,9 @@ WamRuntime$call_goal <- function(program, state, goal_term) {
     return(WamRuntime$call_goal(program, state, v$args[[2]]))
   }
   # Unwrap `^/2` existential scope: in `bagof(X, Y^Goal, B)` the
-  # `Y^` is a hint that Y is locally scoped (no per-witness
-  # grouping). Since this scaffold doesn't do per-witness grouping
-  # anyway, the wrapper is transparent for call purposes.
+  # `Y^` is a hint that Y is locally scoped. Witness grouping is
+  # handled by collect_bag_groups; direct goal calls treat the
+  # wrapper as transparent.
   if (v$tag == "struct" && length(v$args) == 2L &&
       identical(WamRuntime$string_of(table, v$fid), "^")) {
     return(WamRuntime$call_goal(program, state, v$args[[2]]))
@@ -3519,9 +3572,9 @@ WamRuntime$iterate_goal <- function(program, state, goal_term, on_each) {
   if (is.null(v) || is.null(v$tag)) return(invisible(NULL))
 
   # Unwrap `Y^Goal` existential scope (and module-qualified
-  # `Module:Goal`) so the inner goal drives iteration directly. The
-  # outer wrapper has no semantic effect on enumeration in this
-  # scaffold (no per-witness grouping for bagof/setof).
+  # `Module:Goal`) so the inner goal drives iteration directly.
+  # collect_bag_groups separately records existential vars before
+  # calling into this iterator.
   if (v$tag == "struct" && length(v$args) == 2L &&
       identical(WamRuntime$string_of(table, v$fid), "^")) {
     return(WamRuntime$iterate_goal(program, state, v$args[[2]], on_each))
@@ -3702,6 +3755,7 @@ WamRuntime$collect_solutions <- function(program, state, template_term, goal_ter
   snap_vc        <- state$var_counter
   snap_mode      <- state$mode
   snap_build     <- state$build_stack
+  snap_read      <- state$read_stack
 
   collected <- list()
   WamRuntime$iterate_goal(program, state, goal_term, function() {
@@ -3732,8 +3786,97 @@ WamRuntime$collect_solutions <- function(program, state, template_term, goal_ter
   state$var_counter <- snap_vc
   state$mode        <- snap_mode
   state$build_stack <- snap_build
+  state$read_stack  <- snap_read
 
   collected
+}
+
+WamRuntime$collect_bag_groups <- function(program, state, template_term, goal_term) {
+  table <- program$intern_table
+  stripped <- WamRuntime$strip_existentials(state, goal_term, table)
+  goal_inner <- stripped$goal
+  existential_vars <- stripped$vars
+  template_vars <- WamRuntime$term_var_names(state, template_term)
+  goal_vars <- WamRuntime$term_var_names(state, goal_inner)
+  witness_names <- setdiff(goal_vars, unique(c(template_vars, existential_vars)))
+
+  snap_cps_len   <- length(state$cps)
+  snap_regs      <- as.list.environment(state$regs2)
+  snap_trail     <- length(state$trail)
+  snap_pc        <- state$pc
+  snap_cp        <- state$cp
+  snap_halt      <- state$halt
+  snap_vc        <- state$var_counter
+  snap_mode      <- state$mode
+  snap_build     <- state$build_stack
+  snap_read      <- state$read_stack
+
+  groups <- list()
+  group_index <- new.env(parent = emptyenv(), hash = TRUE)
+  WamRuntime$iterate_goal(program, state, goal_inner, function() {
+    val <- WamRuntime$deref(state, template_term)
+    copied_val <- WamRuntime$copy_term(state, val)
+    witness_terms <- lapply(witness_names, function(n) {
+      WamRuntime$copy_term(state, WamRuntime$deref(state, Unbound(n)))
+    })
+    # Group keys are computed at collection time from copy_term'd
+    # witness values, while the solution bindings are still live.
+    # This avoids depending on deref chains after iterate_goal has
+    # moved on to later solutions or collect_bag_groups has restored
+    # the caller snapshot.
+    key <- if (length(witness_terms) == 0L) {
+      "__all__"
+    } else {
+      paste(vapply(witness_terms, function(w)
+        WamRuntime$term_key(state, w, table), character(1)), collapse = "\001")
+    }
+    if (!exists(key, envir = group_index, inherits = FALSE)) {
+      groups[[length(groups) + 1L]] <<- list(
+        names = witness_names,
+        witnesses = witness_terms,
+        values = list()
+      )
+      assign(key, length(groups), envir = group_index)
+    }
+    idx <- get(key, envir = group_index, inherits = FALSE)
+    groups[[idx]]$values[[length(groups[[idx]]$values) + 1L]] <<- copied_val
+    TRUE
+  })
+
+  if (length(state$cps) > snap_cps_len) {
+    state$cps <- state$cps[seq_len(snap_cps_len)]
+  }
+  e <- new.env(parent = emptyenv(), hash = TRUE)
+  for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
+  state$regs2 <- e
+  if (length(state$trail) > snap_trail) {
+    to_undo <- state$trail[(snap_trail + 1L):length(state$trail)]
+    for (name in to_undo) {
+      if (exists(name, envir = state$bindings, inherits = FALSE)) {
+        rm(list = name, envir = state$bindings)
+      }
+    }
+    state$trail <- state$trail[seq_len(snap_trail)]
+  }
+  state$pc          <- snap_pc
+  state$cp          <- snap_cp
+  state$halt        <- snap_halt
+  state$var_counter <- snap_vc
+  state$mode        <- snap_mode
+  state$build_stack <- snap_build
+  state$read_stack  <- snap_read
+
+  groups
+}
+
+WamRuntime$bind_bag_group_witnesses <- function(state, group) {
+  if (length(group$names) == 0L) return(TRUE)
+  for (i in seq_along(group$names)) {
+    if (!WamRuntime$unify(state, Unbound(group$names[[i]]), group$witnesses[[i]])) {
+      return(FALSE)
+    }
+  }
+  TRUE
 }
 
 WamRuntime$call_builtin <- function(program, state, pred, arity) {
@@ -4044,8 +4187,8 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
   # ----- ^/2 existential scope -----
   # When the WAM compiler emits `Y^Goal` as a Call("^", 2), treat
   # the wrapper as transparent and run Goal. Y is locally scoped
-  # (matches the bagof/setof idiom); we don't do per-witness
-  # grouping, so the wrapper has no further effect.
+  # (matches the bagof/setof idiom); collect_bag_groups handles the
+  # witness/existential split for library bagof/setof.
   if (key == "^/2") {
     return(WamRuntime$call_goal(program, state, WamRuntime$get_reg(state, 2L)))
   }
@@ -4302,34 +4445,37 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     return(isTRUE(res))
   }
 
-  # ----- bagof/3: like findall but fails on empty bag -----
-  # Note: this scaffold does NOT support free-variable witnesses.
-  # bagof(T, G, B) here is equivalent to findall(T, G, B) with the
-  # extra rule "fail if no solutions". Common idiom: existentially
-  # quantify any non-template variables with `^/2` (e.g.
-  # bagof(X, Y^p(X,Y), L)). Without `^`, witness variables are
-  # silently aggregated rather than producing one bag per witness.
+  # ----- bagof/3: findall plus non-empty, grouped by free witnesses -----
   if (key == "bagof/3") {
     template <- WamRuntime$get_reg(state, 1L)
     goal     <- WamRuntime$get_reg(state, 2L)
-    collected <- WamRuntime$collect_solutions(program, state, template, goal)
-    if (length(collected) == 0L) return(FALSE)
-    bag <- WamRuntime$wam_list_build(collected, table)
+    groups <- WamRuntime$collect_bag_groups(program, state, template, goal)
+    if (length(groups) == 0L) return(FALSE)
+    group <- groups[[1L]]
+    bag <- WamRuntime$wam_list_build(group$values, table)
+    trail0 <- length(state$trail)
+    if (!WamRuntime$bind_bag_group_witnesses(state, group)) {
+      WamRuntime$undo_trail_to(state, trail0)
+      return(FALSE)
+    }
     cur <- WamRuntime$get_reg(state, 3L)
     if (is.null(cur)) {
       WamRuntime$put_reg(state, 3L, bag)
       return(TRUE)
     }
-    return(WamRuntime$unify(state, cur, bag))
+    ok <- WamRuntime$unify(state, cur, bag)
+    if (!isTRUE(ok)) WamRuntime$undo_trail_to(state, trail0)
+    return(ok)
   }
 
   # ----- setof/3: bagof + sort + dedup (standard order of terms) -----
   if (key == "setof/3") {
     template <- WamRuntime$get_reg(state, 1L)
     goal     <- WamRuntime$get_reg(state, 2L)
-    collected <- WamRuntime$collect_solutions(program, state, template, goal)
-    if (length(collected) == 0L) return(FALSE)
-    sorted <- WamRuntime$wam_sort_terms(state, collected, table)
+    groups <- WamRuntime$collect_bag_groups(program, state, template, goal)
+    if (length(groups) == 0L) return(FALSE)
+    group <- groups[[1L]]
+    sorted <- WamRuntime$wam_sort_terms(state, group$values, table)
     deduped <- list()
     for (i in seq_along(sorted)) {
       if (i == 1L ||
@@ -4338,12 +4484,19 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
       }
     }
     bag <- WamRuntime$wam_list_build(deduped, table)
+    trail0 <- length(state$trail)
+    if (!WamRuntime$bind_bag_group_witnesses(state, group)) {
+      WamRuntime$undo_trail_to(state, trail0)
+      return(FALSE)
+    }
     cur <- WamRuntime$get_reg(state, 3L)
     if (is.null(cur)) {
       WamRuntime$put_reg(state, 3L, bag)
       return(TRUE)
     }
-    return(WamRuntime$unify(state, cur, bag))
+    ok <- WamRuntime$unify(state, cur, bag)
+    if (!isTRUE(ok)) WamRuntime$undo_trail_to(state, trail0)
+    return(ok)
   }
 
   # ----- once/1: run goal, commit to first solution -----
@@ -5180,6 +5333,7 @@ WamRuntime$backtrack <- function(state) {
     state$var_counter <- cp$var_counter
     state$mode        <- cp$mode
     state$build_stack <- cp$build_stack
+    state$read_stack  <- cp$read_stack
     bag <- WamRuntime$wam_list_build(cp$collected, cp$table)
     cur <- WamRuntime$get_reg(state, cp$bag_reg)
     if (is.null(cur)) {
