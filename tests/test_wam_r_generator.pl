@@ -1215,6 +1215,15 @@ e2e_higherorder_listutil_via_rscript :-
     assertz((user:hl_select_mid :- select(b, [a, b, c], [a, c]))),
     assertz((user:hl_select_no  :- select(z, [a, b, c], _))),
     assertz((user:hl_select_one :- select(only, [only], []))),
+    assertz((user:hl_select_dup_all :-
+        findall(Rest, select(a, [a, b, a], Rest), Rests),
+        Rests == [[b, a], [a, b]])),
+    assertz((user:hl_select_var_all :-
+        findall(X-Rest, select(X, [a, b, a], Rest), Pairs),
+        Pairs == [a-[b, a], b-[a, a], a-[a, b]])),
+    assertz((user:hl_select_bound_rest :-
+        select(X, [a, b, c], [a, c]),
+        X == b)),
     % delete/3 (==/2 semantics, no var binding).
     assertz((user:hl_del_all    :- delete([a, b, a, c, a], a, [b, c]))),
     assertz((user:hl_del_none   :- delete([a, b, c], z, [a, b, c]))),
@@ -1232,6 +1241,8 @@ e2e_higherorder_listutil_via_rscript :-
           user:hl_nth0_first/0, user:hl_nth0_last/0, user:hl_nth0_oob/0,
           user:hl_nth1_first/0, user:hl_nth1_oob/0,
           user:hl_select_mid/0, user:hl_select_no/0, user:hl_select_one/0,
+          user:hl_select_dup_all/0, user:hl_select_var_all/0,
+          user:hl_select_bound_rest/0,
           user:hl_del_all/0, user:hl_del_none/0,
           user:hl_succ_fwd/0, user:hl_succ_back/0, user:hl_succ_zero/0,
           user:hl_succ_neg/0 ],
@@ -1242,7 +1253,8 @@ e2e_higherorder_listutil_via_rscript :-
            hl_maplist3_succ, hl_maplist3_build,
            hl_cmp_lt, hl_cmp_eq, hl_cmp_gt,
            hl_nth0_first, hl_nth0_last, hl_nth1_first,
-           hl_select_mid, hl_select_one,
+           hl_select_mid, hl_select_one, hl_select_dup_all,
+           hl_select_var_all, hl_select_bound_rest,
            hl_del_all, hl_del_none,
            hl_succ_fwd, hl_succ_back, hl_succ_zero],
     No  = [hl_maplist_int_n, hl_maplist3_n,

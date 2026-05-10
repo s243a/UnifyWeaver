@@ -3689,6 +3689,63 @@ WamRuntime$append_split_iter <- function(state, left_target, right_target, elems
   FALSE
 }
 
+WamRuntime$select_iter <- function(state, target, elems, rest_target, start_idx,
+                                   resume_pc, table) {
+  if (start_idx > length(elems)) return(FALSE)
+  for (idx in seq.int(start_idx, length(elems))) {
+    snap_regs  <- state$regs2
+    snap_trail <- length(state$trail)
+    snap_cp    <- state$cp
+    snap_vc    <- state$var_counter
+    snap_mode  <- state$mode
+    snap_build <- state$build_stack
+    snap_read  <- state$read_stack
+
+    rest <- if (length(elems) == 1L) list() else elems[-idx]
+    ok <- WamRuntime$unify(state, target, elems[[idx]])
+    if (isTRUE(ok)) {
+      ok <- WamRuntime$unify(state, rest_target, WamRuntime$wam_list_build(rest, table))
+    }
+    if (isTRUE(ok)) {
+      if (idx < length(elems)) {
+        next_idx <- idx + 1L
+        captured_target <- target
+        captured_elems <- elems
+        captured_rest <- rest_target
+        captured_resume <- resume_pc
+        captured_table <- table
+        cp <- list(
+          kind        = "iter",
+          regs        = snap_regs,
+          trail_len   = snap_trail,
+          cp          = snap_cp,
+          var_counter = snap_vc,
+          mode        = snap_mode,
+          build_stack = snap_build,
+          read_stack  = snap_read,
+          resume_pc   = resume_pc,
+          retry       = function(state) {
+            WamRuntime$select_iter(state, captured_target, captured_elems,
+                                   captured_rest, next_idx,
+                                   captured_resume, captured_table)
+          }
+        )
+        state$cps <- c(state$cps, list(cp))
+      }
+      return(TRUE)
+    }
+
+    state$regs2 <- snap_regs
+    WamRuntime$undo_trail_to(state, snap_trail)
+    state$cp          <- snap_cp
+    state$var_counter <- snap_vc
+    state$mode        <- snap_mode
+    state$build_stack <- snap_build
+    state$read_stack  <- snap_read
+  }
+  FALSE
+}
+
 # Term-comparison-based merge sort. Used by msort/2 (keep dups) and
 # sort/2 (dedup after sorting). The compare_terms call orders unbound
 # vars first, then numbers, atoms, structs.
@@ -4728,23 +4785,14 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
   }
 
   # ----- select/3: select(?X, +L, ?Rest) -----
-  # Find the first list element that unifies with X; Rest is L minus
-  # that element. Backtracking enumeration over multiple matches is
-  # not supported (deterministic first-match only).
+  # Enumerate list elements that unify with X; Rest is L minus the
+  # selected occurrence.
   if (key == "select/3") {
     target <- WamRuntime$get_reg(state, 1L)
     elems  <- WamRuntime$wam_list_decompose(state, WamRuntime$get_reg(state, 2L), table)
     if (is.null(elems)) return(FALSE)
-    for (i in seq_along(elems)) {
-      trail0 <- length(state$trail)
-      if (WamRuntime$unify(state, target, elems[[i]])) {
-        rest <- if (length(elems) == 1L) list() else elems[-i]
-        return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L),
-                                WamRuntime$wam_list_build(rest, table)))
-      }
-      WamRuntime$undo_trail_to(state, trail0)
-    }
-    return(FALSE)
+    return(WamRuntime$select_iter(state, target, elems, WamRuntime$get_reg(state, 3L),
+                                  1L, state$pc + 1L, table))
   }
 
   # ----- delete/3: delete(+L, @Elem, -Rest) -----
