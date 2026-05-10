@@ -54,6 +54,13 @@
 :- dynamic user:wam_lua_copy_term_fresh/0.
 :- dynamic user:wam_lua_copy_term_sharing/0.
 :- dynamic user:wam_lua_copy_term_independent_vars/0.
+:- dynamic user:wam_lua_cut_choice/1.
+:- dynamic user:wam_lua_if_then_else_then/0.
+:- dynamic user:wam_lua_if_then_else_else/0.
+:- dynamic user:wam_lua_naf_true/0.
+:- dynamic user:wam_lua_naf_false/0.
+:- dynamic user:wam_lua_naf_member/0.
+:- dynamic user:wam_lua_naf_member_no/0.
 
 user:wam_lua_fact(a).
 user:wam_lua_choice(a).
@@ -155,6 +162,18 @@ user:wam_lua_copy_term_independent_vars :-
     C = f(A, B),
     A = a,
     B = b.
+user:wam_lua_cut_choice(X) :-
+    (X = a ; X = b),
+    !,
+    X = a.
+user:wam_lua_if_then_else_then :-
+    (true -> true ; fail).
+user:wam_lua_if_then_else_else :-
+    (fail -> fail ; true).
+user:wam_lua_naf_true :- \+ fail.
+user:wam_lua_naf_false :- \+ true.
+user:wam_lua_naf_member :- \+ member(d, [a, b, c]).
+user:wam_lua_naf_member_no :- \+ member(a, [a, b, c]).
 
 test(exports) :-
     assertion(current_predicate(wam_lua_target:write_wam_lua_project/3)),
@@ -530,6 +549,33 @@ test(lua_copy_term_builtin_e2e, [condition(lua_available)]) :-
           run_lua_query(LuaDir, 'wam_lua_copy_term_fresh/0', [], true),
           run_lua_query(LuaDir, 'wam_lua_copy_term_sharing/0', [], true),
           run_lua_query(LuaDir, 'wam_lua_copy_term_independent_vars/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(lua_control_builtins_e2e, [condition(lua_available)]) :-
+    unique_lua_tmp_dir('tmp_lua_control_builtins_e2e', TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project(
+            [ user:wam_lua_cut_choice/1,
+              user:wam_lua_if_then_else_then/0,
+              user:wam_lua_if_then_else_else/0,
+              user:wam_lua_naf_true/0,
+              user:wam_lua_naf_false/0,
+              user:wam_lua_naf_member/0,
+              user:wam_lua_naf_member_no/0
+            ],
+            [],
+            TmpDir),
+        ( directory_file_path(TmpDir, 'lua', LuaDir),
+          run_lua_query(LuaDir, 'wam_lua_cut_choice/1', [a], true),
+          run_lua_query(LuaDir, 'wam_lua_cut_choice/1', [b], false),
+          run_lua_query(LuaDir, 'wam_lua_if_then_else_then/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_if_then_else_else/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_naf_true/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_naf_false/0', [], false),
+          run_lua_query(LuaDir, 'wam_lua_naf_member/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_naf_member_no/0', [], false)
         ),
         delete_directory_and_contents(TmpDir)
     ).

@@ -500,6 +500,14 @@ local function builtin_copy_term(_program, state)
   return bind_or_compare(state, 2, copied)
 end
 
+local goal_succeeds
+
+local function builtin_naf(program, state)
+  local goal = Runtime.deref(state, Runtime.get_reg(state, 1))
+  if goal_succeeds(program, state, goal) == true then return false end
+  return true
+end
+
 local function numeric_value(v)
   if type(v) == "table" and (v.tag == "int" or v.tag == "float") then return v.val end
   return nil
@@ -853,6 +861,10 @@ function Runtime.builtin_call(program, state, instr)
   local p = instr.pred
   local type_ok = type_builtin(program, state, p)
   if type_ok ~= nil then return type_ok end
+  if p == "true" or p == "true/0" then return true end
+  if p == "fail" or p == "fail/0" then return false end
+  if p == "!" or p == "!/0" then state.cps = {}; return true end
+  if p == "\\+" or p == "\\+/1" then return builtin_naf(program, state) end
   if p == "=" or p == "=/2" then return Runtime.unify(state, Runtime.get_reg(state, 1), Runtime.get_reg(state, 2)) end
   if p == "==" or p == "==/2" then return exact_equal(state, Runtime.get_reg(state, 1), Runtime.get_reg(state, 2)) end
   if p == "member" or p == "member/2" then return builtin_member(program, state) end
@@ -897,6 +909,49 @@ function Runtime.builtin_call(program, state, instr)
     return a ~= nil and b ~= nil and a <= b
   end
   return false
+end
+
+goal_succeeds = function(program, parent_state, goal)
+  goal = Runtime.deref(parent_state, goal)
+  if type(goal) ~= "table" then return false end
+  if goal.tag == "atom" then
+    local name = Runtime.string_of(program.intern_table, goal.id)
+    if name == "true" then return true end
+    if name == "fail" then return false end
+    local target = program.labels[name .. "/0"]
+    if target == nil then return false end
+    local substate = Runtime.new_state()
+    substate.pc = target
+    substate.bindings = Runtime.copy_table(parent_state.bindings)
+    substate.var_counter = parent_state.var_counter
+    return Runtime.run(program, substate) == true
+  end
+  if goal.tag ~= "struct" then return false end
+  local pred = Runtime.string_of(program.intern_table, goal.fid)
+  local arity = #(goal.args or {})
+  local substate = Runtime.new_state()
+  substate.bindings = Runtime.copy_table(parent_state.bindings)
+  substate.var_counter = parent_state.var_counter
+  for i, arg in ipairs(goal.args or {}) do Runtime.put_reg(substate, i, arg) end
+  local temp_program = {
+    instructions = { I.BuiltinCall(pred, arity), I.Proceed() },
+    labels = {},
+    intern_table = program.intern_table,
+    indexed_atom_fact2 = program.indexed_atom_fact2,
+    inline_facts = program.inline_facts,
+    fact_sources = program.fact_sources,
+    foreign_handlers = program.foreign_handlers
+  }
+  substate.pc = 1
+  if Runtime.run(temp_program, substate) == true then return true end
+  local target = program.labels[pred]
+  if target == nil then return false end
+  substate = Runtime.new_state()
+  substate.bindings = Runtime.copy_table(parent_state.bindings)
+  substate.var_counter = parent_state.var_counter
+  for i, arg in ipairs(goal.args or {}) do Runtime.put_reg(substate, i, arg) end
+  substate.pc = target
+  return Runtime.run(program, substate) == true
 end
 
 function Runtime.call_foreign(program, state, instr)
@@ -992,6 +1047,11 @@ function Runtime.step(program, state, instr)
   if op == "TrustMe" then
     local cp = state.cps[#state.cps]
     if cp ~= nil and cp.kind ~= "aggregate" then table.remove(state.cps) end
+    state.pc = state.pc + 1
+    return true
+  end
+  if op == "CutIte" then
+    if #state.cps > 0 then table.remove(state.cps) end
     state.pc = state.pc + 1
     return true
   end
