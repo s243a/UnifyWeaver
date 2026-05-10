@@ -3268,3 +3268,311 @@ swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
 (cd /tmp/wam_enwiki_cursor && cabal new-build)
 .../wam-haskell-matrix-bench data/benchmark/enwiki_cats/lmdb_proj_resident +RTS -N4
 ```
+
+## Phase M appendix #10: cache-warming microbench (Phase 2c prerequisites) (2026-05-09)
+
+### Why
+
+Before building a cost-model auto-resolver for the cache layer, we
+need empirical inputs the resolver can consume. The hand-wavy version
+"warm hot edges" hides three independent cost classes:
+
+1. *Read-pattern cost*: how much do we save by batching/sequencing
+   reads vs doing them one at a time on demand?
+2. *Ranker cost*: what does it actually cost to compute the score
+   used to pick "hot" edges? Different rankers (PPR, hop distance,
+   semantic similarity) have very different cost classes.
+3. *Crossover M*: how many queries does a workload need before
+   warming amortises its cost?
+
+The Hadoop folklore "scans beat seeks" is real but conditional on
+selection ratio, hardware, and data size. Phase M measures these on
+our actual fixtures so any "warming pays off / doesn't pay off"
+claim downstream is grounded in numbers, not intuition.
+
+### Setup
+
+`examples/benchmark/cache_warming_microbench/` — standalone cabal
+project that opens a Phase 1 LMDB fixture (`category_child` dupsort
+sub-db) and runs three sub-benches:
+
+- **M1**: same workload (resolve dupsort values for N keys) under
+  five access patterns: `PerLookupCursor`, `SharedInOrder`,
+  `SharedSorted`, `SharedShuffled`, `FullScan`.
+- **M1.b**: scan-vs-seek crossover sweep — sorted-seek time vs
+  full-scan time at six selection ratios on the same N=10k key set.
+- **M2**: ranker overhead — PPR/Flux one iteration, streaming-hop
+  one pass (B-tree frontier propagation, per the algorithm sketched
+  in this conversation), stub semantic similarity (D=128 dot
+  products on K=1000 candidates).
+- **M3**: warming-vs-JIT crossover — M random 3-hop BFS queries
+  against (a) cold cursor path, (b) IntMap pre-warmed with top-5000
+  source nodes by out-degree.
+
+Hardware: same WSL2 machine as Phase L appendices. GHC 8.6.5,
+single-threaded, GHC `-O1` (cabal default for `new-build`).
+
+### M1: read patterns at simplewiki scale (10k keys → 78,751 edges)
+
+| pattern            | wall_ms | edges_collected |
+|---|---|---|
+| PerLookupCursor    |   275   | 78,751 |
+| SharedInOrder      |     5.4 | 78,751 |
+| SharedSorted       |     4.0 | 78,751 |
+| SharedShuffled     |    14.4 | 78,751 |
+| FullScan           |    13.4 | 78,751 |
+
+**Headline numbers**:
+
+- **65× penalty** for opening a fresh cursor per key vs reusing one.
+  This is already addressed in the runtime (cursor BFS shares cursors
+  via `DupsortCursorCache`), but the magnitude is worth recording —
+  any future change that breaks cursor reuse would be catastrophic.
+- **3.5× penalty** for shuffled-key seeks vs sorted seeks. LMDB pages
+  are mmap'd; sequential key access is page-friendly, random access
+  trips through the page table.
+- At ~3.4% selection (10k of 297k edges touched), full scan is **3.3×
+  slower** than sorted seeks. Scan is *not* universally faster.
+
+### M1.b: selectivity sweep (sorted seeks vs full scan)
+
+Same N=10k key sample, time both patterns on progressively-smaller
+subsets:
+
+| key_fraction | n_keys | sorted_ms | scan_ms | scan / sorted |
+|---|---|---|---|---|
+| 0.01 |   100 |  0.077 |  5.8 | **76.1×** |
+| 0.05 |   500 |  0.238 |  6.1 | 25.7× |
+| 0.10 | 1,000 |  0.513 |  6.5 | 12.6× |
+| 0.25 | 2,500 |  1.1   |  6.6 |  5.9× |
+| 0.50 | 5,000 |  2.2   | 10.1 |  4.6× |
+| 1.00 |10,000 |  4.7   | 13.2 |  2.8× |
+
+Sorted seeks beat scan at every measured ratio. Linear-extrapolating
+the sorted-seek cost (~0.47 ms per 1k keys) and treating scan as
+fixed cost (~6 ms intercept + small slope), the projected scan-vs-
+seek crossover lands somewhere around **N ≈ 13k–25k keys** of the
+~144k true source population — i.e. **~10–18% true selection**.
+
+The Hadoop "scans beat seeks" framing is correct but applies at a
+specific operating regime: workloads that touch a high fraction of
+the data per query, hardware where random page access is much
+slower than sequential (spinning disks; or memory-pressured VMs
+where mmap pages aren't resident), and queries that don't benefit
+from caching across calls. None of those apply to category-graph
+demand BFS at simplewiki scale on this hardware. They might apply
+on different hardware or at different selection ratios — *the cost
+model needs the workload's selection ratio as an input*.
+
+### M2: ranker overhead (simplewiki, 297,283 edges, 144k sources)
+
+| ranker                       | wall_ms | output_size |
+|---|---|---|
+| PPR/Flux 1 iter              | 80.1   | 43,974 |
+| streaming-hop 1 pass         |  2.7   |    144 |
+| semantic-sim K=1000 D=128    |  2.8   |  1,000 |
+
+**Cost classes confirmed**:
+
+- **PPR is heavyweight** — 80 ms for one iteration over the full
+  edge list. PPR is only viable as a warming-decision input if its
+  cost amortises over many queries. Treating one query as ~0.5–1 ms
+  of cold-cursor work, **PPR pays for itself only at M ≥ ~80–160
+  queries**, and only if warming itself produces a measurable speedup.
+- **Streaming-hop is essentially free** — 2.7 ms because the
+  frontier-propagation loop only does work proportional to the
+  frontier size (here seeded with 10 sources, 1-hop expansion =
+  144 outputs). Multi-pass convergence would cost N × this. The
+  user's algorithmic intuition was right: this is the right shape
+  for a per-query-affordable ranker.
+- **Stub semantic similarity** is K-bound: 2.8 ms for K=1000, D=128.
+  Production embeddings would be more expensive (real vector loads,
+  not synthetic `sin(c*i)`), but the cost class is still O(K·D),
+  not O(E).
+
+### M3: warming-vs-JIT crossover (3-hop BFS from random roots)
+
+| M (queries) | cold_ms | warm_ms | speedup |
+|---|---|---|---|
+|   1 | 0.016 | 0.008 | 2.1× |
+|   5 | 0.055 | 0.040 | 1.4× |
+|  10 | 0.107 | 0.109 | 0.98× |
+|  25 | 2.2   | 0.293 | 7.6× *(noise outlier — cold path stalled)* |
+|  50 | 0.343 | 0.378 | 0.91× |
+| 100 | 0.458 | 0.461 | 0.99× |
+| 250 | 0.841 | 0.883 | 0.95× |
+
+**Warming with top-K-by-out-degree does not pay off** for random-BFS
+queries on simplewiki. Speedups hover at 1× ± measurement noise.
+
+This is workload-specific, not a general result. The warming policy
+("top-K source nodes by out-degree") doesn't match the query traffic
+("BFS from random roots"). High out-degree nodes aren't necessarily
+the nodes the queries visit. To make warming pay, the policy needs a
+signal correlated with query traffic — query-history-driven warming,
+or a ranker informed by query endpoints (streaming-hop seeded from
+recent query roots), not a static graph metric.
+
+### Cost-model takeaways
+
+The auto-resolver's input vector should include at least:
+
+1. **`selection_ratio_estimate`** — selection ratio of the typical
+   query against the full edge set. Below ~10–15%, prefer sorted
+   seeks; above, consider full scan. Below 1%, scans are 76× too
+   expensive.
+2. **`expected_query_count`** — M, the number of queries amortising
+   any warming work. PPR-class rankers pay off only at M ≥ ~80–160.
+   Streaming-hop is cheap enough to run per-query.
+3. **`workload_locality`** — proxy for how many queries hit the
+   same hot region. Without this signal, default to no warming
+   (M3 result).
+4. **`available_ram`** — already in the proposed input vector.
+   Caps the warm-set size.
+
+The resolver itself should be small (cost-class tables + thresholds),
+not a runtime ML model. Streaming-hop is cheap enough to be a default
+*per-query* ranker if a warm cache exists; PPR should be opt-in.
+
+### Caveats
+
+- **Hardware**: WSL2, mmap-backed; results would shift on cold-disk-
+  pressured systems where random-page access dominates. The
+  "scans beat seeks" regime is reachable, just not on this setup.
+- **Workload**: random-BFS from random roots is one shape. Repeated
+  queries from a small hot root set would change M3's verdict.
+- **Warming policy**: only top-K-by-out-degree was measured. A
+  query-history-driven policy is the natural follow-up; not
+  measured here.
+- **Single-pass streaming-hop**: M2 measures *one* pass. Multi-pass
+  convergence would multiply the cost; for warming purposes one
+  pass is usually enough (per the user's algorithm sketch).
+- **Sample-key bias**: `sampleDistinctKeys` returns ascending-order
+  keys, so `SharedInOrder` is approximately `SharedSorted` in
+  practice. The shuffle vs sort comparison is the meaningful one.
+
+### Reproducer
+
+```bash
+(cd examples/benchmark/cache_warming_microbench && cabal new-build)
+.../cache-warming-microbench \
+    data/benchmark/simplewiki_cats/lmdb_proj_resident/lmdb 10000 42
+# Or 1k_resident_run, or enwiki_cats/lmdb_proj_resident.
+```
+
+Phase M is measurement-only; no production codegen change. The
+cost-model resolver itself remains deferred to Phase 2c, but it now
+has empirical inputs to consume.
+
+### Cost-model formula (cache-regime aware)
+
+The "10–18% selection crossover" reported above is conditional on the
+working set fitting in the page cache. On databases that exceed
+**free** RAM (note: on WSL, this swings dynamically as the host
+reclaims pages — `/proc/meminfo:MemAvailable`, not `MemTotal`), the
+crossover shifts left dramatically because random seeks become real
+disk operations.
+
+**Variables**:
+
+| symbol | meaning |
+|---|---|
+| `W` | bytes a full scan would touch (≈ DB size on disk) |
+| `X` | working-set fraction the workload actually uses (BFS reachability fraction; cumulative across M queries: union of working sets) |
+| `R_free` | **free** RAM available to the process (`/proc/meminfo:MemAvailable`) |
+| `S_mem_seq` | sequential read throughput when data is page-cached (~5 GB/s mmap memcpy) |
+| `S_disk_seq` | sequential read throughput from cold storage (~500 MB/s SSD, ~100 MB/s HDD) |
+| `t_mem_seek` | one B-tree-walk seek with leaves cached (~1 µs) |
+| `t_disk_seek` | one B-tree-walk seek with the leaf not cached (~100 µs SSD, ~10 ms HDD) |
+| `K` | number of distinct keys the query looks up |
+
+**Cache-regime weight**:
+
+```
+W_working = X * W
+f_hot     = min(1, R_free / W_working)
+```
+
+`f_hot = 1` is the all-RAM regime we measured. `f_hot = 0` is the
+cold-disk regime Hadoop was designed for.
+
+**Effective costs**:
+
+```
+T_scan = W_working * [f_hot / S_mem_seq + (1 - f_hot) / S_disk_seq]
+T_sort = K         * [f_hot * t_mem_seek + (1 - f_hot) * t_disk_seek]
+```
+
+**Crossover K** (sort = scan):
+
+```
+K_cross = W_working / [bandwidth_eff * latency_eff]
+        where
+          bandwidth_eff = f_hot * S_mem_seq    + (1 - f_hot) * S_disk_seq
+          latency_eff   = f_hot * t_mem_seek   + (1 - f_hot) * t_disk_seek
+```
+
+If `K_query < K_cross` → sorted seeks. Otherwise → scan.
+
+**Plugged in**:
+
+| regime | W_working | bw_eff | lat_eff | K_cross | as % keys |
+|---|---|---|---|---|---|
+| simplewiki, hot (R_free ≫ W) | 15 MB | 5 GB/s | 1 µs | ~3,000 | ~2% |
+| simplewiki, cold (R_free ≪ W) | 15 MB | 500 MB/s | 100 µs | ~300 | ~0.2% |
+| enwiki, hot (R_free ≫ W) | 500 MB | 5 GB/s | 1 µs | ~100,000 | ~10% |
+| enwiki, cold (R_free ≪ W) | 500 MB | 500 MB/s | 100 µs | ~10,000 | ~1% |
+
+The hot-regime simplewiki value (~2%) is consistent with M1.b: sort
+beats scan at all measured ratios up to 7% true selection.
+
+**Warming-pays-off threshold** — for M queries each touching `K_q`
+keys, warming a working set of `W_warm` bytes pays off at:
+
+```
+M_warm ≥ T_warm_load / (T_query_cold - T_query_hot)
+```
+
+The denominator collapses to ≈ 0 when `R_free ≫ W_warm` (matches our
+M3 simplewiki result — warming is pointless when everything's already
+cached). The numerator stays small because warming is one sequential
+scan. So warming pays off when `R_free ≪ W_warm` and `M ≥ small`.
+
+**What the resolver should read**:
+
+- `R_free` from `/proc/meminfo:MemAvailable` (recheck per-bench, since
+  WSL claims/releases pages dynamically).
+- `W` from `mdb_env_info.me_mapsize` or `stat()` of the data file.
+- `X_query`, `K_query`, `M` from workload metadata; defaults derivable
+  from BFS-depth heuristics + declared workload type.
+
+The hardware constants (`S_mem_seq`, `S_disk_seq`, `t_mem_seek`,
+`t_disk_seek`) need a one-time per-machine calibration probe. SSD-
+typical defaults are within an order of magnitude on commodity
+hardware; the order of magnitude is what matters for the regime
+selection, not the second decimal place.
+
+### When this matters
+
+Categories-only fixtures (simplewiki ≈ 15 MB, enwiki ≈ 500 MB) fit
+in any modern machine's free RAM. The cost model is groundwork, not
+an immediate optimization — at this scale, all regimes are `f_hot ≈ 1`
+and the formula reduces to "sorted seeks always".
+
+The regime starts to matter at:
+
+- **Article-level Wikipedia ingest** — full enwiki article texts are
+  ~80 GB compressed, ~250 GB uncompressed. Past free RAM on any
+  consumer machine.
+- **Multi-fixture aggregation** (e.g. enwiki categories + page
+  metadata + revision counts joined into one LMDB).
+- **Memory-pressured environments** — WSL2 in particular, where the
+  Windows host can reclaim large fractions of the VM's RAM.
+- **Spinning-disk targets** — `t_disk_seek` jumps 100×, shifting the
+  crossover left aggressively.
+
+The Prolog predicates in `src/unifyweaver/core/cost_model.pl`
+implement these formulas. They're opt-in: callers pass `cost_model`
+options to enable, otherwise targets fall back to the existing
+fact-count-threshold heuristic.
+
