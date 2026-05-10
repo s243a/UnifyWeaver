@@ -67,6 +67,13 @@
 :- dynamic user:wam_arith_le_42/1.
 :- dynamic user:wam_arith_ge_42/1.
 :- dynamic user:wam_arith_lt_unbound/1.
+:- dynamic user:wam_arith_is_inc_42/1.
+:- dynamic user:wam_arith_is_combo_3_4/1.
+:- dynamic user:wam_arith_is_neg_42/1.
+:- dynamic user:wam_arith_is_div_5/1.
+:- dynamic user:wam_arith_is_int_div_5/1.
+:- dynamic user:wam_arith_is_mod_5/1.
+:- dynamic user:wam_arith_is_unbound/1.
 
 has(Code, Substr) :-
     once(sub_string(Code, _, _, _, Substr)).
@@ -136,6 +143,13 @@ user:wam_arith_gt_42(X) :- X > 42.
 user:wam_arith_le_42(X) :- X =< 42.
 user:wam_arith_ge_42(X) :- X >= 42.
 user:wam_arith_lt_unbound(_) :- user:wam_unbound_arg(Y), Y < 42.
+user:wam_arith_is_inc_42(M) :- M is 42 + 1.
+user:wam_arith_is_combo_3_4(R) :- R is 3 + 4 * 2.
+user:wam_arith_is_neg_42(M) :- M is -42.
+user:wam_arith_is_div_5(M) :- M is 5 / 2.
+user:wam_arith_is_int_div_5(M) :- M is 5 // 2.
+user:wam_arith_is_mod_5(M) :- M is 5 mod 2.
+user:wam_arith_is_unbound(_) :- user:wam_unbound_arg(Y), _ is Y + 1.
 
 :- initialization(main, main).
 
@@ -209,7 +223,14 @@ run_smoke :-
           user:wam_arith_gt_42/1,
           user:wam_arith_le_42/1,
           user:wam_arith_ge_42/1,
-          user:wam_arith_lt_unbound/1
+          user:wam_arith_lt_unbound/1,
+          user:wam_arith_is_inc_42/1,
+          user:wam_arith_is_combo_3_4/1,
+          user:wam_arith_is_neg_42/1,
+          user:wam_arith_is_div_5/1,
+          user:wam_arith_is_int_div_5/1,
+          user:wam_arith_is_mod_5/1,
+          user:wam_arith_is_unbound/1
         ],
         [ namespace('generated.wam_exec_test'),
           module_name('wam-clojure-exec-test'),
@@ -357,6 +378,14 @@ run_smoke :-
     verify_output(TmpDir, 'wam_arith_ge_42/1', 42, "true"),
     verify_output(TmpDir, 'wam_arith_ge_42/1', 3.5, "false"),
     verify_output(TmpDir, 'wam_arith_lt_unbound/1', a, "false"),
+    verify_output(TmpDir, 'wam_arith_is_inc_42/1', 43, "true"),
+    verify_output(TmpDir, 'wam_arith_is_inc_42/1', 42, "false"),
+    verify_output(TmpDir, 'wam_arith_is_combo_3_4/1', 11, "true"),
+    verify_output(TmpDir, 'wam_arith_is_neg_42/1', -42, "true"),
+    verify_output(TmpDir, 'wam_arith_is_div_5/1', 2.5, "true"),
+    verify_output(TmpDir, 'wam_arith_is_int_div_5/1', 2, "true"),
+    verify_output(TmpDir, 'wam_arith_is_mod_5/1', 1, "true"),
+    verify_output(TmpDir, 'wam_arith_is_unbound/1', a, "false"),
     delete_directory_and_contents(TmpDir),
     writeln('wam_clojure_runtime_smoke: ok').
 
@@ -507,8 +536,16 @@ assert_lowered_arithmetic_comparison_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-arith-le-42-1"),
     has(CoreCode, "defn lowered-wam-arith-ge-42-1"),
     has(CoreCode, "defn lowered-wam-arith-lt-unbound-1"),
+    has(CoreCode, "defn lowered-wam-arith-is-inc-42-1"),
+    has(CoreCode, "defn lowered-wam-arith-is-combo-3-4-1"),
+    has(CoreCode, "defn lowered-wam-arith-is-neg-42-1"),
+    has(CoreCode, "defn lowered-wam-arith-is-div-5-1"),
+    has(CoreCode, "defn lowered-wam-arith-is-int-div-5-1"),
+    has(CoreCode, "defn lowered-wam-arith-is-mod-5-1"),
+    has(CoreCode, "defn lowered-wam-arith-is-unbound-1"),
     has(CoreCode, "runtime/arithmetic-equal?"),
     has(CoreCode, "runtime/arithmetic-not-equal?"),
+    has(CoreCode, "runtime/eval-arithmetic-term"),
     has(CoreCode, "runtime/arithmetic-less?"),
     has(CoreCode, "runtime/arithmetic-greater?"),
     has(CoreCode, "runtime/arithmetic-less-or-equal?"),
@@ -568,7 +605,12 @@ prolog_term_string_to_edn(c, "\"c\"") :- !.
 prolog_term_string_to_edn(d, "\"d\"") :- !.
 prolog_term_string_to_edn(z, "\"z\"") :- !.
 prolog_term_string_to_edn('[]', "\"[]\"") :- !.
+prolog_term_string_to_edn(-42, "-42") :- !.
+prolog_term_string_to_edn(1, "1") :- !.
+prolog_term_string_to_edn(2, "2") :- !.
+prolog_term_string_to_edn(2.5, "2.5") :- !.
 prolog_term_string_to_edn(3.5, "3.5") :- !.
+prolog_term_string_to_edn(11, "11") :- !.
 prolog_term_string_to_edn(42, "42") :- !.
 prolog_term_string_to_edn(43, "43") :- !.
 prolog_term_string_to_edn("a", "\"a\"") :- !.

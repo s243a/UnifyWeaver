@@ -7,7 +7,8 @@
 (def well-known-intern-seeds ["true" "fail" "[]" "." "" "[|]" "[|]/2"])
 
 (defn parse-functor-arity [functor]
-  (let [[_ arity-str] (str/split functor #"/")]
+  (let [slash (.lastIndexOf ^String functor "/")
+        arity-str (when (pos? slash) (subs functor (inc slash)))]
     (Integer/parseInt arity-str)))
 
 (defn build-intern-context
@@ -404,6 +405,50 @@
 
 (defn arithmetic-greater-or-equal? [state left right]
   (arithmetic-compare? state >= left right))
+
+(defn arithmetic-result-term [value]
+  (cond
+    (integer? value) value
+    (number? value)
+    (let [as-double (double value)]
+      (if (== as-double (Math/rint as-double))
+        (long as-double)
+        as-double))
+    :else nil))
+
+(defn eval-arithmetic-term [state term]
+  (letfn [(binary [args f]
+            (when (= 2 (count args))
+              (when-let [left (eval* (first args))]
+                (when-let [right (eval* (second args))]
+                  (f left right)))))
+          (safe-div [left right]
+            (when-not (zero? right) (/ (double left) (double right))))
+          (safe-int-div [left right]
+            (when-not (zero? right) (quot (long left) (long right))))
+          (safe-mod [left right]
+            (when-not (zero? right) (mod left right)))
+          (eval* [value]
+            (let [cur (deref-value (:bindings state) value)]
+              (cond
+                (number? cur) cur
+                (atom-term? cur)
+                (parse-numeric-atom (deintern-atom (:intern-context state) (:id cur)))
+                (structure-term? cur)
+                (let [op (functor-key (:intern-context state) (:functor cur))
+                      args (:args cur)]
+                  (case op
+                    "+/1" (when (= 1 (count args)) (eval* (first args)))
+                    "-/1" (when-let [v (and (= 1 (count args)) (eval* (first args)))] (- v))
+                    "+/2" (binary args +)
+                    "-/2" (binary args -)
+                    "*/2" (binary args *)
+                    "//2" (binary args safe-div)
+                    "///2" (binary args safe-int-div)
+                    "mod/2" (binary args safe-mod)
+                    nil))
+                :else nil)))]
+    (arithmetic-result-term (eval* term))))
 
 (defn structure-term [functor args]
   {:tag :struct :functor functor :args (vec args)})
@@ -884,6 +929,19 @@
                                    (or (reg-get-raw state "A2") ::unbound))]
             (if (arithmetic-not-equal? state left right)
               (advance state)
+              (backtrack state)))
+
+          "is/2"
+          (let [left (deref-value (:bindings state)
+                                  (or (reg-get-raw state "A1") ::unbound))
+                expr (deref-value (:bindings state)
+                                  (or (reg-get-raw state "A2") ::unbound))
+                result (eval-arithmetic-term state expr)]
+            (if (some? result)
+              (let [[ok next-state] (unify-values state left result)]
+                (if ok
+                  (advance next-state)
+                  (backtrack state)))
               (backtrack state)))
 
           "</2"
