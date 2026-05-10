@@ -964,10 +964,24 @@ compile_disjunction(LeftGoal, RightGoal, V0, Vf, _HasEnv, Code) :-
         [RightLabel, LeftCode, ContLabel, RightLabel, RightCode, ContLabel]).
 
 %% compile_inner_call_goals(+Goals, +V0, -Vf, -Code)
-%  Compile all goals as calls (never execute/TCO) for use inside aggregate bodies.
+%  Compile all goals as calls (never execute/TCO) for use inside aggregate
+%  bodies, if-then-else cond clauses, ite-branch bodies, and disjunction
+%  arms. Dispatches on `(C -> T ; E)` / `(A ; B)` the same way the outer
+%  `compile_goals` does, so nested if-then-else / disjunction inside a
+%  conjunction body compiles to inline try/cut/trust + jump rather than
+%  falling through to a generic `Call(";", 2)` (which has no runtime
+%  handler and silently fails).
 compile_inner_call_goals([], V, V, "").
 compile_inner_call_goals([Goal|Rest], V0, Vf, Code) :-
-    compile_goal_call(Goal, V0, V1, GoalCode),
+    (   Goal = (CondGoal -> ThenGoal ; ElseGoal)
+    ->  compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, V1, no, GoalCode)
+    ;   Goal = (CondGoal -> ThenGoal)
+    ->  compile_if_then_else(CondGoal, ThenGoal, fail, V0, V1, no, GoalCode)
+    ;   Goal = (LeftGoal ; RightGoal),
+        \+ (LeftGoal = (_ -> _))
+    ->  compile_disjunction(LeftGoal, RightGoal, V0, V1, no, GoalCode)
+    ;   compile_goal_call(Goal, V0, V1, GoalCode)
+    ),
     compile_inner_call_goals(Rest, V1, Vf, RestCode),
     (   RestCode == ""
     ->  Code = GoalCode
