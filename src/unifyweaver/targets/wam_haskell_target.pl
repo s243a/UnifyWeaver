@@ -3126,6 +3126,13 @@ resolve_auto_demand_bfs_mode(Options, Mode) :-
 %    cost_model says `scan` → demand_bfs_mode(in_memory)
 %      (pre-load IntMap = sequential scan pattern)
 %
+%  Footprint guard: when the cost model recommends `scan` but
+%  `W > R_free`, the in_memory implementation would materialise an
+%  IntMap larger than available RAM. The guard overrides the
+%  recommendation to `cursor` in that case. Phase L#11 (Phase 2c
+%  validation) surfaced this gap; the cost model decides access
+%  patterns but says nothing about working-set footprint.
+%
 %  Composes with `resolve_auto_demand_bfs_mode/2`: this resolver
 %  replaces any existing `demand_bfs_mode/1` term, so the downstream
 %  resolver sees a concrete value and is a no-op.
@@ -3160,14 +3167,32 @@ compute_cache_strategy_decision(Options, BfsMode) :-
     ),
     option(cost_model_constants(Constants), Options, []),
     recommend_access_pattern(KKeys, WBytes, RFree, Constants, Pattern),
+    %% Footprint guard: cost_model decides between sort/scan access
+    %% patterns, but our `in_memory` implementation materialises the
+    %% full edge IntMap (working-set bytes resident in RAM). When
+    %% R_free < W the IntMap allocation would blow the available
+    %% memory budget — even though the model considers in_memory the
+    %% cheaper access pattern, we can't actually run it. Override to
+    %% cursor in that case. Documented in Phase L appendix #11
+    %% (the cold-regime probe that surfaced this).
     (   Pattern = sort
-    ->  BfsMode = cursor
-    ;   BfsMode = in_memory
+    ->  BfsMode = cursor,
+        Override = none
+    ;   WBytes > RFree
+    ->  BfsMode = cursor,
+        Override = footprint_guard
+    ;   BfsMode = in_memory,
+        Override = none
     ),
     (   option(cache_strategy_verbose(true), Options)
-    ->  format(user_error,
-               '[WAM-Haskell] cache_strategy(auto): K=~w W=~w R_free=~w → ~w (~w)~n',
-               [KKeys, WBytes, RFree, Pattern, BfsMode])
+    ->  (   Override == footprint_guard
+        ->  format(user_error,
+                   '[WAM-Haskell] cache_strategy(auto): K=~w W=~w R_free=~w → ~w (cursor, footprint guard: W > R_free)~n',
+                   [KKeys, WBytes, RFree, Pattern])
+        ;   format(user_error,
+                   '[WAM-Haskell] cache_strategy(auto): K=~w W=~w R_free=~w → ~w (~w)~n',
+                   [KKeys, WBytes, RFree, Pattern, BfsMode])
+        )
     ;   true
     ).
 
