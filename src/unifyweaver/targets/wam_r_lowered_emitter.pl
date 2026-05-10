@@ -227,7 +227,7 @@ emit_multi_clause_function(PredName, FuncName, AltLabel, ClauseLines, Code) :-
   if (is.null(alt_pc)) return(FALSE)
   state$cps <- c(state$cps, list(list(
     next_pc     = as.integer(alt_pc),
-    regs        = as.list.environment(state$regs2),
+    regs        = state$regs2,
     cp          = state$cp,
     trail_len   = length(state$trail),
     var_counter = state$var_counter
