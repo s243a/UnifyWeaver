@@ -2099,14 +2099,42 @@ e2e_multi_solution_retract_via_rscript :-
         % rr(2) (with body `fail`) survives.
         findall(Y, retract((rr(Y) :- _)), Rest),
         Rest == [2])),
+    % Live (immediate-update) view: assertz that happens between
+    % retract solutions is visible to subsequent solutions. The
+    % fail-driven loop retracts m/1 and asserts m(X*10) on the way
+    % out. With live-store iteration the next backtrack sees the
+    % new clauses and retracts them in turn until the X*10 result
+    % >= 1000. SWI's logical-update view would stop after the
+    % original m(1) is retracted (snapshot doesn't see the asserts).
+    %
+    % Result accumulator uses dynamic retracted/1 so we don't have
+    % to use findall + nested if-then-else here -- the compiler's
+    % handling of nested ITE inside disjunction bodies has a
+    % separate gap (Call(";", 2) emitted instead of inline ITE),
+    % so this test stays in flat-conjunction territory.
+    assertz((user:msr_live_assert :-
+        assertz(m(1)),
+        (   retract(m(X)),
+            assertz(retracted(X)),
+            Y is X * 10,
+            Y < 1000,
+            assertz(m(Y)),
+            fail
+        ;   true
+        ),
+        findall(R, retract(retracted(R)), Rs),
+        msort(Rs, Sorted),
+        Sorted == [1, 10, 100],
+        \+ retract(m(_)))),
     unique_r_tmp_dir('tmp_r_msr_e2e', TmpDir),
     write_wam_r_project(
         [user:msr_all/0, user:msr_filtered/0, user:msr_pattern/0,
-         user:msr_rule/0],
+         user:msr_rule/0, user:msr_live_assert/0],
         [],
         TmpDir),
     directory_file_path(TmpDir, 'R', RDir),
-    Yes = [msr_all, msr_filtered, msr_pattern, msr_rule],
+    Yes = [msr_all, msr_filtered, msr_pattern, msr_rule,
+           msr_live_assert],
     forall(member(P, Yes), (
         format(string(Q), '~w/0', [P]),
         run_rscript_query(RDir, Q, Out),
