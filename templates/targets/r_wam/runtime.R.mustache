@@ -3562,7 +3562,7 @@ WamRuntime$fresh_var_list <- function(state, n, table) {
 # backtracking. Callers should add their own guard when they need a
 # finite search.
 WamRuntime$length_iter <- function(state, list_target, n_target, current, resume_pc, table) {
-  snap_regs  <- as.list.environment(state$regs2)
+  snap_regs  <- state$regs2
   snap_trail <- length(state$trail)
   snap_cp    <- state$cp
   snap_vc    <- state$var_counter
@@ -3598,9 +3598,7 @@ WamRuntime$length_iter <- function(state, list_target, n_target, current, resume
     return(TRUE)
   }
 
-  e <- new.env(parent = emptyenv(), hash = TRUE)
-  for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
-  state$regs2 <- e
+  state$regs2 <- snap_regs
   WamRuntime$undo_trail_to(state, snap_trail)
   state$cp          <- snap_cp
   state$var_counter <- snap_vc
