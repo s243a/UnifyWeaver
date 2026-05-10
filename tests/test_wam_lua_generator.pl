@@ -34,6 +34,10 @@
 :- dynamic user:wam_lua_length_basic/0.
 :- dynamic user:wam_lua_length_bind/0.
 :- dynamic user:wam_lua_length_no/0.
+:- dynamic user:wam_lua_type_builtins/0.
+:- dynamic user:wam_lua_type_var/0.
+:- dynamic user:wam_lua_type_no/0.
+:- dynamic user:wam_lua_compare_builtins/0.
 
 user:wam_lua_fact(a).
 user:wam_lua_choice(a).
@@ -78,6 +82,21 @@ user:wam_lua_member_no :- member(d, [a, b, c]).
 user:wam_lua_length_basic :- length([a, b, c], 3).
 user:wam_lua_length_bind :- length([a, b, c], N), N = 3.
 user:wam_lua_length_no :- length([a, b, c], 2).
+user:wam_lua_type_builtins :-
+    atom(a),
+    integer(3),
+    number(3),
+    compound(f(a)),
+    nonvar(a),
+    is_list([a, b]).
+user:wam_lua_type_var :- var(_).
+user:wam_lua_type_no :- atom(3).
+user:wam_lua_compare_builtins :-
+    3 >= 2,
+    2 =< 3,
+    3 =:= 3,
+    3 =\= 2,
+    a == a.
 
 test(exports) :-
     assertion(current_predicate(wam_lua_target:write_wam_lua_project/3)),
@@ -365,6 +384,26 @@ test(lua_structural_builtins_e2e, [condition(lua_available)]) :-
           run_lua_query(LuaDir, 'wam_lua_length_basic/0', [], true),
           run_lua_query(LuaDir, 'wam_lua_length_bind/0', [], true),
           run_lua_query(LuaDir, 'wam_lua_length_no/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(lua_type_and_compare_builtins_e2e, [condition(lua_available)]) :-
+    unique_lua_tmp_dir('tmp_lua_type_compare_builtins_e2e', TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project(
+            [ user:wam_lua_type_builtins/0,
+              user:wam_lua_type_var/0,
+              user:wam_lua_type_no/0,
+              user:wam_lua_compare_builtins/0
+            ],
+            [],
+            TmpDir),
+        ( directory_file_path(TmpDir, 'lua', LuaDir),
+          run_lua_query(LuaDir, 'wam_lua_type_builtins/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_type_var/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_type_no/0', [], false),
+          run_lua_query(LuaDir, 'wam_lua_compare_builtins/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
