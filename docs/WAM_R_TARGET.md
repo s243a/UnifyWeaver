@@ -732,6 +732,7 @@ Coverage map (e2e tests, by feature group):
 | `streams_multiline_read_e2e_rscript` | `read/2` across multi-line clauses: buffer accumulates lines until trimmed buffer ends with `.` and parser accepts |
 | `fact_table_e2e_rscript` | fact-table lowering: hash-indexed dispatch, multi-solution backtracking, atoms + integers |
 | `fact_in_range_e2e_rscript` | `fact_in_range/5` range query on fact tables (sorted-arg index + binary search + iter-CP), inclusive bounds, atom-only column = fail, out-of-range ArgPos = fail |
+| `findall_template_in_struct_arg_e2e_rscript` | findall template var initialised via `put_variable Y, Y` self-init so a later `put_structure` on A1 (when the inner goal's first arg is a compound) doesn't auto-bind a shared ref into the template |
 | `fact_table_multi_arg_index_e2e_rscript` | per-arg fact-table indexes: dispatch picks smallest matching bucket among bound atom/int args (arg2-only, arg3-only, multi-arg-bound queries) |
 | `kernel_tc2_e2e_rscript` | recursive-kernel detection: `transitive_closure2` BFS over a fact-table edge predicate |
 | `kernel_td3_e2e_rscript` | recursive-kernel detection: `transitive_distance3` BFS-with-depth over a fact-table edge predicate |

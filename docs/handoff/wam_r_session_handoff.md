@@ -235,26 +235,20 @@ roughly priority order:
    `p(X, Y), X >= Lo, X =< Hi` automatically). Covered by
    `fact_in_range_e2e_rscript`.
 
-8. **Compiler bug: `PutVariable(Yn, Ai)` + later `PutStructure(_,
-   Ai, _)` leaks the template var.** Surfaced while writing the
-   `fact_in_range/5` test. When the WAM compiler emits
-   `PutVariable(201, 1)` to initialize a permanent var (e.g. the
-   template of a `findall`) into both Y1 and A1, then later builds
-   a call whose first arg is a compound (e.g. `price/2`) via
-   `PutStructure(_, 1, _)`, the build's auto-bind logic in
-   `append_build_arg` sees A1's value is the shared unbound and
-   binds it to the new struct. Y1 (which shared that unbound)
-   transitively dereferences to the struct, so the user's template
-   var is silently bound to the call's first arg. Repro:
-   `findall(X, fact_in_range(p/2, 2, 5, 10, [X, _]), L)` -- X is
-   the template but X never appears as a direct arg of the call,
-   so `PutVariable` sharing was inappropriate. Fix is in the
-   compiler: don't share Y/A registers when the next call's first
-   arg is a constructed compound, or rebuild the shared unbound
-   before the PutStructure. Workaround for users: drive the
-   accumulator with assertz + fail-driven loops instead of
-   findall when the template appears inside a struct arg of the
-   inner goal.
+8. ~~**Compiler bug: `PutVariable(Yn, Ai)` + later `PutStructure(_,
+   Ai, _)` leaks the template var.**~~ *Done.* The fix is in
+   `compile_aggregate_all` (which handles `findall` /
+   `aggregate_all` template-var initialization): the
+   `put_variable Y_n, A1` emission for the var-template branch is
+   now `put_variable Y_n, Y_n` (self-init, no A-register sharing).
+   The compound-template branch already used the self-init pattern,
+   so it was unaffected. The inner goal's compilation emits
+   `put_value Y_n, A_k` when the template var IS a direct call arg
+   (e.g. `findall(X, member(X, [1,2,3]), L)`), so cases that don't
+   have the struct-first-arg conflict are unchanged. Covered by
+   `findall_template_in_struct_arg_e2e_rscript` with three sub-
+   tests: template inside list arg, template inside compound arg,
+   and the sanity case where the template IS a direct call arg.
 
 9. **Phase-3 lowered emitter expansion.** Currently handles only
    `deterministic` and `multi_clause_1` shapes. Could grow N-clause

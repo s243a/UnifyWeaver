@@ -781,8 +781,21 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
     (   var(ValueVar)
     ->  % ValueVar is a Prolog variable — allocate a Y-register for it
         allocate_var(ValueVar, V1, V2, ValueReg),
-        % Emit put_variable to actually create the Y-register in the env frame
-        format(string(InitValueCode), "    put_variable ~w, A1", [ValueReg]),
+        % Emit put_variable to actually create the Y-register in the env
+        % frame. Use the SELF-INIT form (put_variable Y_n, Y_n) rather
+        % than (put_variable Y_n, A1): the latter would share a fresh
+        % unbound between Y_n and A1, and if the inner goal's first
+        % arg is a constructed compound (e.g.
+        % `findall(X, fact_in_range(p/2, ..., [X,_]), L)` where A1
+        % holds `p/2`), put_structure_'s auto-bind in append_build_arg
+        % would bind the shared unbound to the new struct -- silently
+        % capturing the inner goal's first arg into the template var.
+        % Self-init avoids the A1 share entirely; the inner goal's
+        % compilation emits `put_value Y_n, A_k` when the template
+        % var IS a direct call arg, so cases that don't have the
+        % struct-first-arg conflict are unaffected.
+        format(string(InitValueCode), "    put_variable ~w, ~w",
+               [ValueReg, ValueReg]),
         ConstructionCode = ""
     ;   compound(ValueVar)
     ->  % Compound Template — `findall(p(X, Y), Goal, L)` and similar.

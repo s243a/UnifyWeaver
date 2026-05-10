@@ -2335,6 +2335,69 @@ e2e_fact_in_range_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for findall whose template var appears
+% inside a struct arg of the inner goal. Prior to the put_variable
+% self-init fix in compile_aggregate_all, the compiler emitted
+% `put_variable Y_template, A1` -- sharing a fresh unbound between
+% the Y register and A1. When the inner goal's first arg was then
+% built as a compound (e.g. `p/2`), append_build_arg's auto-bind
+% logic bound the shared unbound to the new struct, silently
+% capturing the inner goal's first arg into the template var.
+% Now put_variable self-inits (put_variable Y, Y) so A1 is left
+% untouched until the call's arg construction.
+%
+% Three sub-tests:
+%   - template inside list arg: findall(X, p(.../2, ..., [X, _]), L)
+%   - template inside a compound arg: findall(Y, q(f(Y)), L)
+%   - sanity: template as a direct call arg still works (member/2)
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(findall_template_in_struct_arg_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_findall_template_in_struct_arg_via_rscript
+    ;   true
+    )).
+
+e2e_findall_template_in_struct_arg_via_rscript :-
+    % t_list: template inside a list arg of fact_in_range.
+    assertz(user:tprice(apple,  5)),
+    assertz(user:tprice(banana, 8)),
+    assertz(user:tprice(cherry, 12)),
+    assertz((user:t_list :-
+        findall(Item,
+                fact_in_range(tprice/2, 2, 5, 10, [Item, _P]),
+                L),
+        L == [apple, banana])),
+    % t_compound: template inside a compound (non-list) arg.
+    % Defines q/1 dynamically so the inner goal compiles as a Call
+    % whose first arg is built via put_structure.
+    assertz((user:tq(f(red)))),
+    assertz((user:tq(f(green)))),
+    assertz((user:tq(f(blue)))),
+    assertz((user:t_compound :-
+        findall(Y, tq(f(Y)), Ys),
+        Ys == [red, green, blue])),
+    % t_member: template as a direct call arg (sanity, was always OK).
+    assertz((user:t_member :-
+        findall(X, member(X, [1, 2, 3]), Xs),
+        Xs == [1, 2, 3])),
+    unique_r_tmp_dir('tmp_r_findall_struct_e2e', TmpDir),
+    write_wam_r_project(
+        [user:tprice/2, user:tq/1, user:t_list/0, user:t_compound/0,
+         user:t_member/0],
+        [intern_atoms([apple, banana, cherry, red, green, blue, f])],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    Yes = [t_list, t_compound, t_member],
+    forall(member(P, Yes), (
+        format(string(Q), '~w/0', [P]),
+        run_rscript_query(RDir, Q, Out),
+        assertion(sub_string(Out, _, _, _, "true"))
+    )),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % End-to-end Rscript run for `^/2` existential scope and first
 % free-variable grouping in bagof/setof. Asserts 2-arg dynamic
 % predicates, then drives bagof(X, Y^p(X,Y), L) and
