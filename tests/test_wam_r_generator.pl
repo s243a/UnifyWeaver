@@ -848,11 +848,20 @@ test(list_atom_builtins_e2e_rscript) :-
     )).
 
 e2e_list_atom_builtins_via_rscript :-
-    % length/2 (both deterministic modes).
+    % length/2 deterministic and generative modes.
     assertz((user:lb_len_count :- length([a, b, c], 3))),
     assertz((user:lb_len_zero  :- length([], 0))),
     assertz((user:lb_len_wrong :- length([a, b, c], 4))),
     assertz((user:lb_len_build :- length(L, 3), is_list(L))),
+    assertz((user:lb_len_gen_zero :- length(L, N), L == [], N == 0)),
+    assertz((user:lb_len_gen_two :-
+        length(L, N),
+        N == 2,
+        L = [_, _])),
+    assertz((user:lb_len_gen_three :-
+        length(L, N),
+        N == 3,
+        L = [_, _, _])),
     % append/3 deterministic mode.
     assertz((user:lb_app_ok    :- append([1, 2], [3, 4], [1, 2, 3, 4]))),
     assertz((user:lb_app_empty :- append([], [a, b], [a, b]))),
@@ -873,7 +882,8 @@ e2e_list_atom_builtins_via_rscript :-
     unique_r_tmp_dir('tmp_r_listatom_e2e', TmpDir),
     write_wam_r_project(
         [ user:lb_len_count/0, user:lb_len_zero/0, user:lb_len_wrong/0,
-          user:lb_len_build/0,
+          user:lb_len_build/0, user:lb_len_gen_zero/0,
+          user:lb_len_gen_two/0, user:lb_len_gen_three/0,
           user:lb_app_ok/0, user:lb_app_empty/0, user:lb_app_no/0,
           user:lb_rev_ok/0, user:lb_rev_no/0,
           user:lb_last_ok/0, user:lb_last_no/0,
@@ -884,6 +894,7 @@ e2e_list_atom_builtins_via_rscript :-
         TmpDir),
     directory_file_path(TmpDir, 'R', RDir),
     Yes = [lb_len_count, lb_len_zero, lb_len_build,
+           lb_len_gen_zero, lb_len_gen_two, lb_len_gen_three,
            lb_app_ok, lb_app_empty,
            lb_rev_ok, lb_last_ok,
            lb_alen_ok, lb_acodes_ok, lb_achars_ok, lb_aconcat_ok],
