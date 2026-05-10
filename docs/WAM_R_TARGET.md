@@ -413,7 +413,7 @@ and rationals are not supported.
 ((+, -), (-, +), and (-, -) modes), `append/3` ((+, +, -) mode
 and finite split mode over a ground third list), `reverse/2`
 (deterministic if either side bound), `last/2`, `nth0/3`, `nth1/3`,
-`select/3` (first match), `delete/3` (==/2 semantics),
+`select/3` (multi-solution over list positions), `delete/3` (==/2 semantics),
 `permutation/2` ((+, +) check + (+, -) identity), `numlist/3`,
 `sort/2` (sort + dedup, standard order of terms), `msort/2` (sort,
 keep duplicates), `maplist/2..3`.
