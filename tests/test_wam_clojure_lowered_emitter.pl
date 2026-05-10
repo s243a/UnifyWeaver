@@ -463,6 +463,20 @@ test(simple_builtin_member_is_direct_lowered_in_prefix) :-
         assertion(\+ has(Code, "runtime/step"))
     )).
 
+test(simple_builtin_append_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_append/3:\nbuiltin_call append/3, 3\nproceed\n",
+        wam_clojure_lowerable(test_append/3, WamCode, deterministic),
+        lower_predicate_to_clojure(test_append/3, WamCode, [], Code),
+        has(Code, "runtime/proper-list-items"),
+        has(Code, "runtime/list->term"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "\"A3\""),
+        has(Code, "runtime/unify-values"),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
 test(simple_builtin_ground_is_direct_lowered_in_prefix) :-
     once((
         WamCode = "test_ground/1:\nbuiltin_call ground/1, 1\nproceed\n",
