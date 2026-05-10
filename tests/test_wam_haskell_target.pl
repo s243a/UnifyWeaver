@@ -1392,6 +1392,39 @@ test_b1_phase2b2_loaders_emitted :-
     ;   fail_test(Test, 'Phase 2b.2 LMDB-resident loaders should be emitted when use_lmdb(true)')
     ).
 
+test_b1_peekstringbytes_decodes_utf8 :-
+    Test = 'B1: peekStringBytes decodes UTF-8 via TE.decodeUtf8With',
+    (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BS.packCStringLen (p, len)"),
+        sub_string(S, _, _, _, "TE.decodeUtf8With TEE.lenientDecode"),
+        \+ sub_string(S, _, _, _, "map (toEnum . fromIntegral) bytes")
+    ->  pass(Test)
+    ;   fail_test(Test, 'peekStringBytes should decode UTF-8 via Data.Text.Encoding')
+    ).
+
+test_b1_lmdb_text_imports_present :-
+    Test = 'B1: bytestring + text imports emitted with use_lmdb(true)',
+    (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "import qualified Data.ByteString as BS"),
+        sub_string(S, _, _, _, "import qualified Data.Text as T"),
+        sub_string(S, _, _, _, "import qualified Data.Text.Encoding as TE"),
+        sub_string(S, _, _, _, "import qualified Data.Text.Encoding.Error as TEE")
+    ->  pass(Test)
+    ;   fail_test(Test, 'bytestring/text imports missing under use_lmdb(true)')
+    ).
+
+test_b1_lmdb_cabal_text_dependencies :-
+    Test = 'B1: cabal includes bytestring + text when use_lmdb(true)',
+    (   wam_haskell_target:generate_cabal_file('test', false, [use_lmdb(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "bytestring >= 0.10"),
+        sub_string(S, _, _, _, "text >= 1.2")
+    ->  pass(Test)
+    ;   fail_test(Test, 'bytestring/text not in cabal deps when use_lmdb(true)')
+    ).
+
 test_b1_lmdb_scan_support_present :-
     Test = 'B1: raw LMDB FactSource emits scan support',
     (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
@@ -2187,6 +2220,9 @@ run_tests :-
     test_with_rtsopts_absent_by_default,
     test_b1_lmdb_raw_zero_copy_reads,
     test_b1_phase2b2_loaders_emitted,
+    test_b1_peekstringbytes_decodes_utf8,
+    test_b1_lmdb_text_imports_present,
+    test_b1_lmdb_cabal_text_dependencies,
     test_b1_lmdb_scan_support_present,
     test_b1_lmdb_manifest_fact_source_present,
     test_b1_lmdb_manifest_wiring_option_present,

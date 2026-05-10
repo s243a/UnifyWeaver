@@ -3247,7 +3247,7 @@ compile_wam_runtime_to_haskell(Options, DetectedKernels, Code) :-
                     BacktrackCode),
     % Phase B1: conditional LMDB imports and functions
     (   option(use_lmdb(true), Options)
-    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr, nullPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (alloca, allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.String (withCStringLen, peekCStringLen)\nimport Foreign.C.Types (CSize(..), CChar)\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Data.Bits ((.&.))\nimport Data.IORef (IORef, newIORef, readIORef, writeIORef, atomicModifyIORef')\nimport qualified Data.Array as A\nimport qualified Data.Array.IO as IOA\nimport qualified Control.Exception as E\nimport Control.Monad (forM_, when, foldM)\nimport Control.Concurrent (runInBoundThread, myThreadId, ThreadId, threadCapability, getNumCapabilities)\nimport Control.Concurrent.Async (mapConcurrently)",
+    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr, nullPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (alloca, allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.String (withCStringLen, peekCStringLen)\nimport Foreign.C.Types (CSize(..), CChar)\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Data.Bits ((.&.))\nimport Data.IORef (IORef, newIORef, readIORef, writeIORef, atomicModifyIORef')\nimport qualified Data.Array as A\nimport qualified Data.Array.IO as IOA\nimport qualified Data.ByteString as BS\nimport qualified Data.Text as T\nimport qualified Data.Text.Encoding as TE\nimport qualified Data.Text.Encoding.Error as TEE\nimport qualified Control.Exception as E\nimport Control.Monad (forM_, when, foldM)\nimport Control.Concurrent (runInBoundThread, myThreadId, ThreadId, threadCapability, getNumCapabilities)\nimport Control.Concurrent.Async (mapConcurrently)",
         generate_lmdb_functions(Options, LmdbFunctions)
     ;   LmdbImports = "",
         LmdbFunctions = ""
@@ -3812,9 +3812,12 @@ generate_cabal_file(Name, UseHM, Options, Code) :-
     ->  BaseDeps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, unordered-containers >= 0.2, hashable >= 1.2, deepseq >= 1.4, parallel >= 3.2, async >= 2.2"
     ;   BaseDeps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, deepseq >= 1.4, parallel >= 3.2, async >= 2.2"
     ),
-    % Phase B1: conditional LMDB dependency
+    % Phase B1: conditional LMDB dependency.
+    % bytestring + text are added with use_lmdb(true) so peekStringBytes
+    % can decode UTF-8 — the byte loop got mojibake on non-ASCII fixtures
+    % (e.g. accented Wikipedia categorylinks).
     (   option(use_lmdb(true), Options)
-    ->  format(string(Deps), "~w, lmdb >= 0.2.5, directory >= 1.3", [BaseDeps])
+    ->  format(string(Deps), "~w, lmdb >= 0.2.5, directory >= 1.3, bytestring >= 0.10, text >= 1.2", [BaseDeps])
     ;   Deps = BaseDeps
     ),
     % -threaded enables multi-core runtime (+RTS -N to use cores).
