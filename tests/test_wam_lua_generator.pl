@@ -50,6 +50,10 @@
 :- dynamic user:wam_lua_univ_compose_struct/0.
 :- dynamic user:wam_lua_univ_compose_atom/0.
 :- dynamic user:wam_lua_univ_no/0.
+:- dynamic user:wam_lua_copy_term_ground/0.
+:- dynamic user:wam_lua_copy_term_fresh/0.
+:- dynamic user:wam_lua_copy_term_sharing/0.
+:- dynamic user:wam_lua_copy_term_independent_vars/0.
 
 user:wam_lua_fact(a).
 user:wam_lua_choice(a).
@@ -133,6 +137,24 @@ user:wam_lua_univ_compose_atom :-
     T =.. [a],
     T = a.
 user:wam_lua_univ_no :- f(a) =.. [g, a].
+user:wam_lua_copy_term_ground :-
+    copy_term(f(a, b), C),
+    C = f(a, b).
+user:wam_lua_copy_term_fresh :-
+    copy_term(f(X), C),
+    C = f(a),
+    var(X).
+user:wam_lua_copy_term_sharing :-
+    copy_term(f(X, X), C),
+    C = f(A, B),
+    A = b,
+    B = b,
+    var(X).
+user:wam_lua_copy_term_independent_vars :-
+    copy_term(f(_, _), C),
+    C = f(A, B),
+    A = a,
+    B = b.
 
 test(exports) :-
     assertion(current_predicate(wam_lua_target:write_wam_lua_project/3)),
@@ -488,6 +510,26 @@ test(lua_univ_builtin_e2e, [condition(lua_available)]) :-
           run_lua_query(LuaDir, 'wam_lua_univ_compose_struct/0', [], true),
           run_lua_query(LuaDir, 'wam_lua_univ_compose_atom/0', [], true),
           run_lua_query(LuaDir, 'wam_lua_univ_no/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(lua_copy_term_builtin_e2e, [condition(lua_available)]) :-
+    unique_lua_tmp_dir('tmp_lua_copy_term_builtin_e2e', TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project(
+            [ user:wam_lua_copy_term_ground/0,
+              user:wam_lua_copy_term_fresh/0,
+              user:wam_lua_copy_term_sharing/0,
+              user:wam_lua_copy_term_independent_vars/0
+            ],
+            [],
+            TmpDir),
+        ( directory_file_path(TmpDir, 'lua', LuaDir),
+          run_lua_query(LuaDir, 'wam_lua_copy_term_ground/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_copy_term_fresh/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_copy_term_sharing/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_copy_term_independent_vars/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
