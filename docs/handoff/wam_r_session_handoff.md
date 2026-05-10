@@ -42,12 +42,12 @@ then read `docs/WAM_R_TARGET.md` for the user-facing reference.
 | **Lists** | `member/2` (multi-sol via iter-CP), `memberchk/2`, `length/2` ((+,-) and (-,+)), `append/3` ((+,+,-)), `reverse/2`, `last/2`, `nth0/3`, `nth1/3`, `select/3`, `delete/3`, `permutation/2` (det check + identity), `numlist/3`, `sort/2`, `msort/2`, `maplist/2..3`. |
 | **Higher-order / meta** | `call/1..N`, `\+/1`, `once/1`, `forall/2`, `findall/3`, `bagof/3`, `setof/3` (with `^/2` existential), `phrase/2,3`. |
 | **Strings / atoms** | `atom_codes`, `atom_chars`, `atom_length`, `atom_concat`, `atom_number`, `atom_string`, `string_to_atom`, `number_codes`, `number_chars`, `string_upper`, `string_lower`, `string_code`, `split_string/4`, `sub_atom/5`, `char_type/2`, `tab/1`, `term_to_atom/2`, `read_term_from_atom/2,3`. |
-| **I/O** | `write`, `writeln`, `print`, `nl`, `format/1,2,3`. Stream I/O: `open/3`, `close/1`, `read/2` (line-buffered), `write/2`, `writeln/2`, `nl/1`. |
+| **I/O** | `write`, `writeln`, `print`, `nl`, `format/1,2,3`. Stream I/O: `open/3`, `close/1`, `read/2` (multi-line, accumulates until trimmed buffer ends with `.` and parser accepts), `write/2`, `writeln/2`, `nl/1`. |
 | **Dynamic** | `assertz/1`, `asserta/1`, `retract/1` (multi-solution), `abolish/1`, `clause/2` (multi-solution introspection). |
 | **Exceptions** | `throw/1`, `catch/3` (on R's `tryCatch`). |
 | **DCG** | `-->` via SWI's term-expansion + `phrase/2,3`. |
 | **Parser** | Operator-precedence parser for the standard Prolog operator table; lists, structs, integers, floats, vars. User-defined infix and prefix operators via runtime `op/3` / `current_op/3` and codegen `r_op_decls(...)`. |
-| **Streams** | File I/O via R `file()` connections; line-buffered `read/2` parses through the term parser. |
+| **Streams** | File I/O via R `file()` connections; multi-line `read/2` accumulates input until the trimmed buffer ends with `.` and the term parser accepts. |
 | **Fact-table lowering** | Pure-fact predicates (only `get_constant + proceed`) emit a flat R tuple list + per-arg hash indexes (one env per arg position), dispatched via `WamRuntime$fact_table_dispatch`. Smallest matching bound-arg bucket wins; O(N · F) memory. |
 | **External fact sources (CSV)** | `r_fact_sources([source(P/A, file('data.csv'))])` -- predicate has no Prolog clauses; loader runs at program init. |
 | **Kernels (7/7)** | All seven patterns from `recursive_kernel_detection.pl`: `transitive_closure2`, `transitive_distance3`, `weighted_shortest_path3`, `transitive_parent_distance4`, `transitive_step_parent_distance5`, `category_ancestor`, `astar_shortest_path4`. Native R BFS / Dijkstra / A* implementations that bypass the WAM stepper. |
@@ -87,7 +87,6 @@ These are documented in `docs/WAM_R_TARGET.md` and called out in the
 relevant feature sections. Not bugs -- intentional scope boundaries.
 
 - **No bigints / rationals.** Float arithmetic is `double` only.
-- **No multi-line term reads.** `read/2` is line-buffered.
 - **No streams beyond file I/O.** No `current_input/1`, `current_output/1`,
   `set_input/1`, character I/O, binary streams.
 - **Fact-table indexing covers any arg position.** Per-arg hash
@@ -165,8 +164,13 @@ roughly priority order:
    specialised emission (skip unifications when the mode says the slot
    is unbound, etc.). Look at the Haskell target's
    `WAM_HASKELL_MODE_ANALYSIS_*.md` design docs for the precedent.
-4. **Multi-line `read/2`.** Read until a `.` terminator across lines.
-   Niche but completes the streams story.
+4. ~~**Multi-line `read/2`.**~~ *Done.* `read/2` now accumulates
+   lines until the trimmed buffer ends with `.` AND the operator-
+   precedence parser accepts the buffer minus the terminator. If the
+   parser fails despite a trailing `.`, the `.` is treated as being
+   inside a quoted atom / string / unclosed compound and reading
+   continues. EOF on an empty buffer still binds `end_of_file`.
+   Covered by `streams_multiline_read_e2e_rscript`.
 5. **Multi-solution `retract/1` ignoring snapshot.** I.e. re-read the
    live clause list on each backtrack. Trickier semantics; document
    carefully if pursued.

@@ -2560,6 +2560,56 @@ e2e_streams_via_rscript :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% End-to-end Rscript run for read/2 across multi-line clauses.
+% Writes a file with terms whose source spans several lines (open
+% paren on one line, args on the next, closing `).` on the line
+% after) and reads them back, asserting the parsed terms match the
+% expected single-line forms. Also covers a clause that contains a
+% `.` literal mid-string (the `.` should not be mistaken for the
+% clause terminator).
+% Auto-skips when Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(streams_multiline_read_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_streams_multiline_via_rscript
+    ;   true
+    )).
+
+e2e_streams_multiline_via_rscript :-
+    unique_r_tmp_dir('tmp_r_streams_mlread', TmpDir),
+    directory_file_path(TmpDir, 'multiline.txt', DataFile),
+    atom_string(DataFile, DataFileStr),
+    % Write a file with three terms:
+    %   1. A two-line compound `foo(\n  bar,\n  baz\n).`
+    %   2. A single-line term to verify backward compat.
+    %   3. A four-line operator term `expr(\n  1 +\n  2 *\n  3\n).`
+    assertz((user:s_ml_write(File) :-
+        open(File, write, S),
+        format(S, 'foo(~n  bar,~n  baz~n).~n', []),
+        writeln(S, 'simple(1).'),
+        format(S, 'expr(~n  1 +~n  2 *~n  3~n).~n', []),
+        close(S))),
+    assertz((user:s_ml_read_back(File) :-
+        open(File, read, S),
+        read(S, T1), T1 == foo(bar, baz),
+        read(S, T2), T2 == simple(1),
+        read(S, T3), T3 == expr(1+2*3),
+        read(S, T4), T4 == end_of_file,
+        close(S))),
+    assertz((user:s_ml_round_trip(File) :-
+        s_ml_write(File), s_ml_read_back(File))),
+    write_wam_r_project(
+        [user:s_ml_write/1, user:s_ml_read_back/1, user:s_ml_round_trip/1],
+        [intern_atoms([foo, bar, baz, simple, expr,
+                       end_of_file, '+', '*'])],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    run_rscript_with_args(RDir, 's_ml_round_trip/1', [DataFileStr], Out),
+    assertion(sub_string(Out, _, _, _, "true")),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % End-to-end Rscript run for the fact-table lowering path. Pure-fact
 % predicates (every clause is `get_constant + proceed`, no body
 % calls) are emitted as a flat R list of arg tuples plus a one-line

@@ -501,12 +501,17 @@ supported: `~w`, `~a`, `~d`, `~p`, `~s`, `~n`, `~~`.
 structs whose integer id keys into `program$streams`, an R env
 that maps id -> R connection. `open/3` accepts modes `read`,
 `write`, `append` and returns a `stream(<id>)` term; `close/1`
-closes the connection and removes the entry. `read/2` is
-line-buffered: it consumes one line, strips a trailing `.` (with
-optional whitespace), parses the rest via the operator-precedence
-parser, and unifies with the second arg. EOF binds the term to
-the atom `end_of_file` (matches SWI semantics). Multi-line terms
-are not supported in this scaffold.
+closes the connection and removes the entry. `read/2` accumulates
+lines into a buffer until the trimmed buffer ends with `.` AND the
+operator-precedence parser accepts the buffer minus the trailing
+`.`. This handles single-line clauses (the common case) and terms
+whose source spans multiple lines (open paren on one line, args on
+the next, closing `).` on a third). When the trimmed buffer ends
+with `.` but the parser fails, the `.` is treated as being inside a
+quoted atom / string / unclosed compound and reading continues. EOF
+on an empty buffer binds the term to the atom `end_of_file` (matches
+SWI semantics); EOF on a non-empty buffer makes one final parse
+attempt and fails if that doesn't yield a term.
 
 ### DCG (`-->`)
 
@@ -696,6 +701,7 @@ Coverage map (e2e tests, by feature group):
 | `read_term_clause_e2e_rscript` | `read_term_from_atom/2,3` and multi-solution `clause/2` |
 | `dcg_e2e_rscript` | DCG `-->` rules + `phrase/2,3` (recursive grammars, prefix-with-rest) |
 | `streams_e2e_rscript` | `open/3`, `close/1`, `read/2`, `write/2`, `writeln/2`, `format/3` round-trip |
+| `streams_multiline_read_e2e_rscript` | `read/2` across multi-line clauses: buffer accumulates lines until trimmed buffer ends with `.` and parser accepts |
 | `fact_table_e2e_rscript` | fact-table lowering: hash-indexed dispatch, multi-solution backtracking, atoms + integers |
 | `fact_table_multi_arg_index_e2e_rscript` | per-arg fact-table indexes: dispatch picks smallest matching bucket among bound atom/int args (arg2-only, arg3-only, multi-arg-bound queries) |
 | `kernel_tc2_e2e_rscript` | recursive-kernel detection: `transitive_closure2` BFS over a fact-table edge predicate |
