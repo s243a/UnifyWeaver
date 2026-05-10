@@ -387,6 +387,49 @@ local function builtin_length(program, state)
   return bind_or_compare(state, 2, V.Int(#items))
 end
 
+local function builtin_functor(program, state)
+  local term = Runtime.deref(state, Runtime.get_reg(state, 1))
+  if type(term) == "table" and term.tag == "unbound" then
+    local name = Runtime.deref(state, Runtime.get_reg(state, 2))
+    local arity = Runtime.deref(state, Runtime.get_reg(state, 3))
+    if type(arity) ~= "table" or arity.tag ~= "int" or arity.val < 0 then return false end
+    if type(name) ~= "table" or name.tag == "unbound" then return false end
+    local built = nil
+    if arity.val == 0 then
+      built = name
+    else
+      if type(name) ~= "table" or name.tag ~= "atom" then return false end
+      local args = {}
+      for i = 1, arity.val do args[i] = Runtime.new_var(state) end
+      built = V.Struct(name.id, args)
+    end
+    return Runtime.unify(state, term, built)
+  end
+  local name = nil
+  local arity = nil
+  if type(term) == "table" and term.tag == "struct" then
+    name = V.Atom(term.fid)
+    arity = #(term.args or {})
+  elseif type(term) == "table" and (term.tag == "atom" or term.tag == "int" or term.tag == "float") then
+    name = term
+    arity = 0
+  else
+    return false
+  end
+  if bind_or_compare(state, 2, name) ~= true then return false end
+  return bind_or_compare(state, 3, V.Int(arity))
+end
+
+local function builtin_arg(_program, state)
+  local n = Runtime.deref(state, Runtime.get_reg(state, 1))
+  local term = Runtime.deref(state, Runtime.get_reg(state, 2))
+  if type(n) ~= "table" or n.tag ~= "int" or n.val < 1 then return false end
+  if type(term) ~= "table" or term.tag ~= "struct" then return false end
+  local arg = (term.args or {})[n.val]
+  if arg == nil then return false end
+  return bind_or_compare(state, 3, arg)
+end
+
 local function numeric_value(v)
   if type(v) == "table" and (v.tag == "int" or v.tag == "float") then return v.val end
   return nil
@@ -744,6 +787,8 @@ function Runtime.builtin_call(program, state, instr)
   if p == "==" or p == "==/2" then return exact_equal(state, Runtime.get_reg(state, 1), Runtime.get_reg(state, 2)) end
   if p == "member" or p == "member/2" then return builtin_member(program, state) end
   if p == "length" or p == "length/2" then return builtin_length(program, state) end
+  if p == "functor" or p == "functor/3" then return builtin_functor(program, state) end
+  if p == "arg" or p == "arg/3" then return builtin_arg(program, state) end
   if p == "is" or p == "is/2" then
     local n = number_value(Runtime.deref(state, Runtime.get_reg(state, 2)))
     if n == nil then return false end

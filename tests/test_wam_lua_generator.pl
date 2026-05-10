@@ -38,6 +38,12 @@
 :- dynamic user:wam_lua_type_var/0.
 :- dynamic user:wam_lua_type_no/0.
 :- dynamic user:wam_lua_compare_builtins/0.
+:- dynamic user:wam_lua_functor_read/0.
+:- dynamic user:wam_lua_functor_atom/0.
+:- dynamic user:wam_lua_functor_construct/0.
+:- dynamic user:wam_lua_arg_struct/0.
+:- dynamic user:wam_lua_arg_list/0.
+:- dynamic user:wam_lua_arg_no/0.
 
 user:wam_lua_fact(a).
 user:wam_lua_choice(a).
@@ -97,6 +103,16 @@ user:wam_lua_compare_builtins :-
     3 =:= 3,
     3 =\= 2,
     a == a.
+user:wam_lua_functor_read :- functor(f(a, b), f, 2).
+user:wam_lua_functor_atom :- functor(a, a, 0).
+user:wam_lua_functor_construct :-
+    functor(T, f, 2),
+    compound(T),
+    arg(1, T, A),
+    var(A).
+user:wam_lua_arg_struct :- arg(2, f(a, b), b).
+user:wam_lua_arg_list :- arg(2, [a, b], [b]).
+user:wam_lua_arg_no :- arg(3, f(a, b), _).
 
 test(exports) :-
     assertion(current_predicate(wam_lua_target:write_wam_lua_project/3)),
@@ -404,6 +420,30 @@ test(lua_type_and_compare_builtins_e2e, [condition(lua_available)]) :-
           run_lua_query(LuaDir, 'wam_lua_type_var/0', [], true),
           run_lua_query(LuaDir, 'wam_lua_type_no/0', [], false),
           run_lua_query(LuaDir, 'wam_lua_compare_builtins/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(lua_term_inspection_builtins_e2e, [condition(lua_available)]) :-
+    unique_lua_tmp_dir('tmp_lua_term_inspection_builtins_e2e', TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project(
+            [ user:wam_lua_functor_read/0,
+              user:wam_lua_functor_atom/0,
+              user:wam_lua_functor_construct/0,
+              user:wam_lua_arg_struct/0,
+              user:wam_lua_arg_list/0,
+              user:wam_lua_arg_no/0
+            ],
+            [],
+            TmpDir),
+        ( directory_file_path(TmpDir, 'lua', LuaDir),
+          run_lua_query(LuaDir, 'wam_lua_functor_read/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_functor_atom/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_functor_construct/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_arg_struct/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_arg_list/0', [], true),
+          run_lua_query(LuaDir, 'wam_lua_arg_no/0', [], false)
         ),
         delete_directory_and_contents(TmpDir)
     ).
