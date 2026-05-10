@@ -430,7 +430,8 @@ paths:
   `WamRuntime$collect_bag_groups`, which snapshot state, drive the
   goal via `iterate_goal`, and restore state fully before returning.
   `bagof/3` and `setof/3` honor `^/2` existential scope and group
-  non-existential free variables for the selected witness group.
+  non-existential free variables; additional witness groups are
+  exposed through normal backtracking.
 
 `iterate_goal` has R-level fast paths for `member/2`, `between/3`,
 `,/2` conjunctions over the above, and dynamic predicates -- so
@@ -635,12 +636,10 @@ WamRuntime$run(shared_program, state)
   Removed clauses are matched against the live store by object
   identity, so concurrent retracts/asserts of unrelated clauses
   don't disturb the iteration order.
-- **`bagof/3` / `setof/3` group enumeration on backtracking**.
-  Non-existential free variables are grouped and the first witness
-  group is bound, so `bagof(X, p(X,Y), L)` can bind `Y` and `L`
-  consistently. Backtracking across additional witness groups is a
-  follow-up; the current library path does not yet push a group
-  choice point.
+- **Full ISO/SWI compatibility for every `bagof/3` / `setof/3` edge**.
+  The runtime now groups non-existential free variables and enumerates
+  additional witness groups on backtracking, but unusual attributed-var
+  or cyclic-term cases still need broader compatibility coverage.
 - **`length/2` (-, -)** generative mode is not supported (would
   need a CP-driving generator).
 - **`between/3` (+, +, -)** in compiled-goal context produces an

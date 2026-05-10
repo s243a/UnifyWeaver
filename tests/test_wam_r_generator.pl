@@ -2168,23 +2168,33 @@ e2e_bagof_setof_existential_via_rscript :-
         setof(X, hh(X, Y), L),
         Y == a,
         L == [1, 3])),
-    % Boundary for this partial implementation: additional witness
-    % groups are not enumerated on backtracking yet.
-    assertz((user:be_bagof_no_second_group :-
+    % Additional witness groups are enumerated on backtracking.
+    assertz((user:be_bagof_group_backtrack :-
         assertz(ii(1, a)), assertz(ii(2, b)),
-        \+ (bagof(X, ii(X, Y), L), Y == b, L == [2]))),
+        bagof(X, ii(X, Y), L),
+        Y == b,
+        L == [2])),
+    assertz((user:be_setof_group_backtrack :-
+        assertz(jj(3, a)), assertz(jj(1, a)), assertz(jj(3, a)),
+        assertz(jj(2, b)),
+        setof(X, jj(X, Y), L),
+        Y == b,
+        L == [2])),
     unique_r_tmp_dir('tmp_r_caret_e2e', TmpDir),
     write_wam_r_project(
         [ user:be_bagof_basic/0, user:be_setof_basic/0,
           user:be_nested_caret/0, user:be_findall_caret/0,
           user:be_bagof_empty_no/0, user:be_bagof_group_first/0,
-          user:be_setof_group_first/0, user:be_bagof_no_second_group/0 ],
+          user:be_setof_group_first/0,
+          user:be_bagof_group_backtrack/0,
+          user:be_setof_group_backtrack/0 ],
         [],
         TmpDir),
     directory_file_path(TmpDir, 'R', RDir),
     Yes = [be_bagof_basic, be_setof_basic, be_nested_caret,
            be_findall_caret, be_bagof_group_first,
-           be_setof_group_first, be_bagof_no_second_group],
+           be_setof_group_first, be_bagof_group_backtrack,
+           be_setof_group_backtrack],
     No  = [be_bagof_empty_no],
     forall(member(P, Yes), (
         format(string(Q), '~w/0', [P]),
