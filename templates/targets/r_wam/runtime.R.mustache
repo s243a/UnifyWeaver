@@ -3548,6 +3548,70 @@ WamRuntime$between_iter <- function(state, target, current, hi, resume_pc) {
   FALSE
 }
 
+WamRuntime$fresh_var_list <- function(state, n, table) {
+  args <- vector("list", n)
+  if (n > 0L) {
+    for (i in seq_len(n)) {
+      args[[i]] <- Unbound(paste0("V", state$var_counter))
+      state$var_counter <- state$var_counter + 1L
+    }
+  }
+  WamRuntime$wam_list_build(args, table)
+}
+
+# Unbounded length/2 generator for the (-, -) mode. Produces
+# length([], 0), then length([_], 1), length([_, _], 2), ... on
+# backtracking. Callers should add their own guard when they need a
+# finite search.
+WamRuntime$length_iter <- function(state, list_target, n_target, current, resume_pc, table) {
+  snap_regs  <- as.list.environment(state$regs2)
+  snap_trail <- length(state$trail)
+  snap_cp    <- state$cp
+  snap_vc    <- state$var_counter
+  snap_mode  <- state$mode
+  snap_build <- state$build_stack
+  snap_read  <- state$read_stack
+
+  list_term <- WamRuntime$fresh_var_list(state, current, table)
+  ok <- WamRuntime$unify(state, n_target, IntTerm(current))
+  if (isTRUE(ok)) ok <- WamRuntime$unify(state, list_target, list_term)
+  if (isTRUE(ok)) {
+    next_val <- current + 1L
+    captured_list <- list_target
+    captured_n <- n_target
+    captured_resume <- resume_pc
+    captured_table <- table
+    cp <- list(
+      kind        = "iter",
+      regs        = snap_regs,
+      trail_len   = snap_trail,
+      cp          = snap_cp,
+      var_counter = snap_vc,
+      mode        = snap_mode,
+      build_stack = snap_build,
+      read_stack  = snap_read,
+      resume_pc   = resume_pc,
+      retry       = function(state) {
+        WamRuntime$length_iter(state, captured_list, captured_n, next_val,
+                               captured_resume, captured_table)
+      }
+    )
+    state$cps <- c(state$cps, list(cp))
+    return(TRUE)
+  }
+
+  e <- new.env(parent = emptyenv(), hash = TRUE)
+  for (k in names(snap_regs)) assign(k, snap_regs[[k]], envir = e)
+  state$regs2 <- e
+  WamRuntime$undo_trail_to(state, snap_trail)
+  state$cp          <- snap_cp
+  state$var_counter <- snap_vc
+  state$mode        <- snap_mode
+  state$build_stack <- snap_build
+  state$read_stack  <- snap_read
+  FALSE
+}
+
 # Term-comparison-based merge sort. Used by msort/2 (keep dups) and
 # sort/2 (dedup after sorting). The compare_terms call orders unbound
 # vars first, then numbers, atoms, structs.
@@ -4313,12 +4377,10 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
     return(WamRuntime$member_iter(state, target, elems, 1L, state$pc + 1L))
   }
 
-  # length/2: deterministic modes only.
+  # length/2.
   #   (+, -): traverse the list, count cells, unify N with the count.
   #   (-, +): build a list of N fresh unbound vars, unify with L.
-  # The (-, -) enumerable mode is intentionally not supported -- it
-  # requires choice-point machinery this scaffold doesn't provide for
-  # generated solutions.
+  #   (-, -): generate lists of increasing length on backtracking.
   if (pred == "length/2" && arity == 2L) {
     raw_list <- WamRuntime$get_reg(state, 1L)
     raw_n    <- WamRuntime$get_reg(state, 2L)
@@ -4332,12 +4394,11 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
     if (!is.null(n_v) && !is.null(n_v$tag) && n_v$tag == "int") {
       n <- n_v$val
       if (n < 0L) return(FALSE)
-      args <- vector("list", n)
-      for (i in seq_len(n)) {
-        args[[i]] <- Unbound(paste0("V", state$var_counter))
-        state$var_counter <- state$var_counter + 1L
-      }
-      return(WamRuntime$unify(state, raw_list, WamRuntime$wam_list_build(args, table)))
+      return(WamRuntime$unify(state, raw_list, WamRuntime$fresh_var_list(state, n, table)))
+    }
+    if (!is.null(list_v) && !is.null(list_v$tag) && list_v$tag == "unbound" &&
+        !is.null(n_v) && !is.null(n_v$tag) && n_v$tag == "unbound") {
+      return(WamRuntime$length_iter(state, raw_list, raw_n, 0L, state$pc + 1L, table))
     }
     return(FALSE)
   }

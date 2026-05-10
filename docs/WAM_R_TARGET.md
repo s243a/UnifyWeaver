@@ -634,8 +634,9 @@ WamRuntime$run(shared_program, state)
   The runtime now groups non-existential free variables and enumerates
   additional witness groups on backtracking, but unusual attributed-var
   or cyclic-term cases still need broader compatibility coverage.
-- **`length/2` (-, -)** generative mode is not supported (would
-  need a CP-driving generator).
+- **`length/2` (-, -)** is an unbounded generator. It enumerates
+  `([], 0)`, then one-element lists, two-element lists, and so on via
+  an iter-CP; callers should add guards when collecting solutions.
 - **`between/3` (+, +, -)** in compiled-goal context produces an
   iter-CP and works as a generator. In runtime-aggregator context
   the R-level fast path enumerates directly. Mixed contexts that
