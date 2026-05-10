@@ -130,11 +130,18 @@ tokenize(Codes, Tokens) :-
 
 tokenize_loop([], Acc, Acc).
 tokenize_loop([C|Cs], Acc, Out) :-
-    (   ws_code(C)
-    ->  tokenize_loop(Cs, Acc, Out)
-    ;   tokenize_one([C|Cs], Acc, Acc1, Rest),
-        tokenize_loop(Rest, Acc1, Out)
-    ).
+    tokenize_loop_step(C, Cs, Acc, Out).
+
+% Split out so the post-classify dispatch is at the clause level,
+% not inside an if-then-else. Same workaround used elsewhere in this
+% module: keeps the WAM target's CutIte semantics out of the picture.
+tokenize_loop_step(C, Cs, Acc, Out) :-
+    ws_code(C),
+    !,
+    tokenize_loop(Cs, Acc, Out).
+tokenize_loop_step(C, Cs, Acc, Out) :-
+    tokenize_one([C|Cs], Acc, Acc1, Rest),
+    tokenize_loop(Rest, Acc1, Out).
 
 ws_code(32). ws_code(9). ws_code(10). ws_code(13).
 
@@ -228,11 +235,16 @@ take_syms([C|R], [], [C|R])    :- \+ sym_code(C).
 % already consumed by the caller (passed in via Lead); we splice it back.
 take_number_after_sign(Lead, R, [Lead|Cs], Rest) :-
     take_digits(R, IntCs, Rest1),
-    (   Rest1 = [0'., D | Rest2], digit_code(D)
-    ->  take_digits(Rest2, FracCs, Rest),
-        append(IntCs, [0'., D | FracCs], Cs)
-    ;   Cs = IntCs, Rest = Rest1
-    ).
+    take_number_frac(IntCs, Rest1, Cs, Rest).
+
+% Clause-level dispatch instead of an inner if-then-else, for the
+% same WAM CutIte avoidance reason.
+take_number_frac(IntCs, [0'., D | Rest2], Cs, Rest) :-
+    digit_code(D),
+    !,
+    take_digits(Rest2, FracCs, Rest),
+    append(IntCs, [0'., D | FracCs], Cs).
+take_number_frac(IntCs, Rest, IntCs, Rest).
 
 take_digits([], [], []).
 take_digits([C|R], [C|Cs], Rest) :- digit_code(C), !, take_digits(R, Cs, Rest).
@@ -249,13 +261,11 @@ take_quoted([C|R], Acc, Out, Rest) :-
     append(Acc, [C], Acc1),
     take_quoted(R, Acc1, Out, Rest).
 
-% codes_to_number: codes -> integer or float. Tries integer first by checking
-% for a `.` in the digit run.
+% codes_to_number: codes -> integer or float. number_codes/2 handles
+% both shapes, so the float-vs-int check the original ITE did was
+% redundant. Single-clause body avoids the WAM CutIte dependency.
 codes_to_number(Cs, N) :-
-    (   memberchk(0'., Cs)
-    ->  number_codes(N, Cs)             % float
-    ;   number_codes(N, Cs)             % integer; same path, ISO behaviour
-    ).
+    number_codes(N, Cs).
 
 % can_lead_negative: a bare `-` followed by a digit is a signed-number lead
 % only when the previous emitted token (top of Acc, a reverse stack) is a
@@ -345,14 +355,18 @@ parse_atom_head(Name, R, OpTable, MaxPrec, Term, Env0, Env, Rest) :-
 parse_atom_head(Name, R, _, _, Name, Env, Env, R).
 
 % parse_args: comma-separated arg list inside `(...)`, max_prec 999 so the
-% top-level comma operator (1000) doesn't get folded in.
+% top-level comma operator (1000) doesn't get folded in. Like parse_op_loop,
+% the post-arg dispatch is split into a separate predicate's clauses
+% (rather than nested if-then-else) so the WAM target's CutIte semantics
+% don't matter to correctness.
 parse_args(Tokens, OpTable, [Arg|Rest], Env0, Env, RestOut) :-
     parse_expr(Tokens, OpTable, 999, Arg, Env0, Env1, Tokens1),
-    (   Tokens1 = [tk_comma|Tokens2]
-    ->  parse_args(Tokens2, OpTable, Rest, Env1, Env, RestOut)
-    ;   Tokens1 = [tk_rparen|RestOut]
-    ->  Rest = [], Env = Env1
-    ).
+    parse_args_continue(Tokens1, OpTable, Rest, Env1, Env, RestOut).
+
+parse_args_continue([tk_comma|Toks], OpTable, Rest, Env0, Env, RestOut) :-
+    !,
+    parse_args(Toks, OpTable, Rest, Env0, Env, RestOut).
+parse_args_continue([tk_rparen|RestOut], _, [], Env, Env, RestOut).
 
 % parse_list_body: handles `[]`, `[a, b, c]`, `[H|T]`. Element max_prec 999
 % (matches parse_args).
