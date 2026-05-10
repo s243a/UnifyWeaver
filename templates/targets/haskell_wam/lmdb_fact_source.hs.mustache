@@ -987,41 +987,55 @@ loadForwardEdgesFromLmdb env dbName threshold = do
 {{#lmdb_dupsort}}
 computeDemandSetCursorBFS :: MDB_env -> String -> Int -> Maybe Int -> IO IS.IntSet
 computeDemandSetCursorBFS env childDbName rootId maxHops = do
-    -- Open the dbi once and commit so the handle persists across the
-    -- per-worker read transactions opened below.  Caller must ensure
-    -- the fixture has the reverse-edge sub-db; if absent mdb_dbi_open'
-    -- throws MDB_NOTFOUND and the program halts with a clear LMDB
-    -- error message.  No silent fallback.
-    dbiTxn <- mdb_txn_begin env Nothing True
-    dbi <- mdb_dbi_open' dbiTxn (Just childDbName) [MDB_DUPSORT]
-    mdb_txn_commit dbiTxn
-    -- Per-thread cursor cache: each bound worker thread lazily opens
-    -- its own (read txn, cursor) pair on first access. Reused across
-    -- BFS levels for that worker so we pay one cursor-open per worker
-    -- per binary launch, not per level.
-    cache <- newDupsortCursorCache
     numCaps <- getNumCapabilities
-    let nWorkers = max 1 numCaps
-        go !depth !frontier !visited
-          | IS.null frontier = return visited
-          | exceededHopLimit depth = return visited
-          | otherwise = do
-              let frontierList = IS.toList frontier
-                  chunks = chunkInto nWorkers frontierList
-              -- mapConcurrently spawns one bound thread per chunk; each
-              -- thread's LMDB cursor stays pinned to its OS thread
-              -- (LMDB read-txn requirement). At -N1 mapConcurrently
-              -- still works correctly — sequential evaluation, no
-              -- parallelism gained, but only ~1 bound-thread overhead.
-              chunkResults <- mapConcurrently
-                (processChunk env dbi cache visited)
-                chunks
-              let !newNodes = IS.unions chunkResults
-              if IS.null newNodes
-                then return visited
-                else go (depth + 1) newNodes (IS.union visited newNodes)
-    go 0 (IS.singleton rootId) (IS.singleton rootId)
+    if numCaps <= 1
+      then sequentialBFS
+      else parallelBFS numCaps
   where
+    -- -N1 fast path: open dbi + cursor in one txn, walk inline, abort
+    -- the txn at the end. No dbi commit, no cache, no bound-thread
+    -- fork/join, no cross-thread coordination. Matches the pre-parallel
+    -- (PR #1956) sequential implementation's overhead profile exactly.
+    sequentialBFS = do
+        txn <- mdb_txn_begin env Nothing True
+        dbi <- mdb_dbi_open' txn (Just childDbName) [MDB_DUPSORT]
+        cursor <- mdb_cursor_open' txn dbi
+        let go !depth !frontier !visited
+              | IS.null frontier = return visited
+              | exceededHopLimit depth = return visited
+              | otherwise = do
+                  newNodes <- foldM (stepNode cursor visited) IS.empty
+                                    (IS.toList frontier)
+                  if IS.null newNodes
+                    then return visited
+                    else go (depth + 1) newNodes (IS.union visited newNodes)
+        result <- go 0 (IS.singleton rootId) (IS.singleton rootId)
+        mdb_txn_abort txn
+        return result
+    -- Parallel path: open dbi in its own txn and commit so the dbi
+    -- handle persists across per-worker read txns. Each worker is a
+    -- bound thread with its own (txn, cursor) pair from a shared
+    -- DupsortCursorCache. At -N>=2 the parMap-style parallelism more
+    -- than pays for the cache + fork/join overhead.
+    parallelBFS nWorkers = do
+        dbiTxn <- mdb_txn_begin env Nothing True
+        dbi <- mdb_dbi_open' dbiTxn (Just childDbName) [MDB_DUPSORT]
+        mdb_txn_commit dbiTxn
+        cache <- newDupsortCursorCache
+        let go !depth !frontier !visited
+              | IS.null frontier = return visited
+              | exceededHopLimit depth = return visited
+              | otherwise = do
+                  let frontierList = IS.toList frontier
+                      chunks = chunkInto nWorkers frontierList
+                  chunkResults <- mapConcurrently
+                    (processChunk env dbi cache visited)
+                    chunks
+                  let !newNodes = IS.unions chunkResults
+                  if IS.null newNodes
+                    then return visited
+                    else go (depth + 1) newNodes (IS.union visited newNodes)
+        go 0 (IS.singleton rootId) (IS.singleton rootId)
     exceededHopLimit !d = case maxHops of
       Nothing -> False
       Just n  -> d >= n
