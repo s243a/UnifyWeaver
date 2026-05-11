@@ -534,6 +534,35 @@ shorthand (input / output / any), the same convention
 [`design/WAM_R_MODE_ANALYSIS_PLAN.md`](design/WAM_R_MODE_ANALYSIS_PLAN.md)
 for the phase roadmap and measured impact.
 
+### `is/2` specialisation (phase 3)
+
+Two complementary specialisations targeting the `is/2` arithmetic
+builtin (dominant cost on arith-heavy recursive predicates):
+
+**Runtime fast-path** (in `WamRuntime$call_builtin`'s is/2 branch).
+When the expression is a 2-arg arithmetic struct (`+`, `-`, `*`,
+`//`, `mod`) with both operands derefing to ints, bypasses the
+recursive `eval_arith` walk + `arith_to_term` dispatch and
+fast-binds when the target is unbound. Falls through to the
+original slow path for floats, nested expressions, unbound vars in
+the RHS, etc. Always active, no codegen flag needed.
+
+**Lowered-emitter inline.** For `builtin_call is/2 2` lines in a
+lowered function body, the emitter emits inline R that bypasses
+`WamRuntime$step` → `WamRuntime$call_builtin` (saving 2 function
+calls + 2 switch lookups per is/2 hit). Always fires when the
+lowered emitter handles the clause; the runtime fast-path then
+applies inside the inline body.
+
+Note: both specialisations only affect `is/2` calls that reach the
+lowered emitter (phase-3 b) or the array path / step (phase-3 a). A
+multi-clause predicate where clause 2+ contains the is/2 will go
+through the array path for those clauses, so phase-3 (a) handles
+it. The lowered-emitter inline (b) only helps for the lowered
+clauses (today: deterministic or multi_clause_1's first clause).
+See `WAM_R_MODE_ANALYSIS_PLAN.md` phase 4 for the multi_clause_n
+extension that would unlock more of the win.
+
 ## Supported features
 
 ### Control
@@ -891,6 +920,8 @@ Coverage map (e2e tests, by feature group):
 | `mode_analysis_phase1_comments` | Mode-analysis visibility: `mode_comments(on)` option prepends `# Mode analysis:` block to each lowered function with per-clause head-binding states; covers `+`, `-`, `?`, undeclared mode shapes |
 | `mode_analysis_phase2_get_constant_inlined` | Mode-analysis phase 2: structural assertion that `get_constant` head match is emitted as inline `WamRuntime$deref + identical()` when the target A-register's declared mode is `+`; falls back to `WamRuntime$step` when no mode declaration or `mode_specialise(off)` |
 | `mode_analysis_phase2_get_constant_e2e_rscript` | Mode-analysis phase 2: e2e correctness -- a predicate with `:- mode(p(+))` and three clauses compiles + runs via Rscript, queries return correct true/false matching across the multi-clause backtracking path |
+| `mode_analysis_phase3_is_inlined` | Mode-analysis phase 3: structural assertion that `builtin_call is/2 2` is emitted as inline `WamRuntime$eval_arith + bind/unify` in the lowered function (instead of `WamRuntime$step(... BuiltinCall("is/2", 2))`) |
+| `mode_analysis_phase3_is_e2e_rscript` | Mode-analysis phase 3: e2e correctness -- a predicate using `is/2` with simple binary int op (runtime fast-path), nested arith (slow path), and negative-result arith compiles + runs via Rscript with correct values |
 
 ## Contributing
 
