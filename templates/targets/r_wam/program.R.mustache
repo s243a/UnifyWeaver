@@ -124,7 +124,33 @@ if (!interactive() && sys.nframe() == 0L) {
   argv <- commandArgs(trailingOnly = TRUE)
   if (length(argv) == 0L) {
     cat("usage: Rscript generated_program.R [--bench N] <pred>/<arity> <arg> ...\n")
+    cat("       Rscript generated_program.R --batch <pred>/0 ...\n")
     quit(status = 0L)
+  }
+  if (length(argv) >= 1L && argv[1L] == "--batch") {
+    status <- 0L
+    for (pred_arity in argv[-1L]) {
+      start_pc <- shared_labels[[pred_arity]]
+      if (is.null(start_pc)) {
+        cat(pred_arity, "\tunknown\n", sep = "")
+        status <- 1L
+        next
+      }
+      if (!grepl("/0$", pred_arity)) {
+        cat(pred_arity, "\tunsupported\n", sep = "")
+        status <- 1L
+        next
+      }
+      ok <- tryCatch(
+        WamRuntime$run_predicate(shared_program, start_pc, list()),
+        error = function(e) {
+          message(conditionMessage(e))
+          status <<- 1L
+          FALSE
+        })
+      cat(pred_arity, "\t", if (isTRUE(ok)) "true" else "false", "\n", sep = "")
+    }
+    quit(status = status)
   }
   # Optional `--bench N` prefix: run the same query N times in this
   # one Rscript invocation, then print one parseable summary line:

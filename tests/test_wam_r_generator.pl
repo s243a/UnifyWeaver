@@ -338,6 +338,37 @@ run_rscript_query(RDir, Query, Out) :-
     read_string(ErrStream, _, _),   close(ErrStream),
     process_wait(PID, _).
 
+run_rscript_query_batch(RDir, Queries, Results) :-
+    process_create(path('Rscript'),
+                   ['generated_program.R', '--batch' | Queries],
+                   [ cwd(RDir),
+                     stdout(pipe(OutStream)),
+                     stderr(pipe(ErrStream)),
+                     process(PID)
+                   ]),
+    read_string(OutStream, _, Out), close(OutStream),
+    read_string(ErrStream, _, _),   close(ErrStream),
+    process_wait(PID, exit(0)),
+    split_string(Out, "\n", "\r\n", Lines0),
+    exclude(=("") , Lines0, Lines),
+    maplist(rscript_batch_result, Lines, Results).
+
+rscript_batch_result(Line, Query-Result) :-
+    split_string(Line, "\t", "", [Query, Result]).
+
+assert_rscript_truth_batch(RDir, Yes, No) :-
+    maplist(zero_arity_query, Yes, YesQueries),
+    maplist(zero_arity_query, No, NoQueries),
+    append(YesQueries, NoQueries, Queries),
+    run_rscript_query_batch(RDir, Queries, Results),
+    forall(member(Q, YesQueries),
+           assertion(memberchk(Q-"true", Results))),
+    forall(member(Q, NoQueries),
+           assertion(memberchk(Q-"false", Results))).
+
+zero_arity_query(Pred, Query) :-
+    format(string(Query), '~w/0', [Pred]).
+
 % Like run_rscript_query but takes an explicit list of additional
 % argv entries (after the predicate indicator). Used by the CLI
 % arg-parser test, which exercises the operator-precedence parser
@@ -974,16 +1005,7 @@ e2e_list_atom_builtins_via_rscript :-
     No  = [lb_len_wrong, lb_app_no, lb_app_split_no,
            lb_rev_no, lb_last_no,
            lb_alen_no, lb_aconcat_no],
-    forall(member(P, Yes), (
-        format(string(Q), '~w/0', [P]),
-        run_rscript_query(RDir, Q, Out),
-        assertion(sub_string(Out, _, _, _, "true"))
-    )),
-    forall(member(P, No), (
-        format(string(Q), '~w/0', [P]),
-        run_rscript_query(RDir, Q, Out),
-        assertion(sub_string(Out, _, _, _, "false"))
-    )),
+    assert_rscript_truth_batch(RDir, Yes, No),
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
@@ -1316,16 +1338,7 @@ e2e_higherorder_listutil_via_rscript :-
            hl_nth0_oob, hl_nth1_oob,
            hl_select_no,
            hl_succ_neg],
-    forall(member(P, Yes), (
-        format(string(Q), '~w/0', [P]),
-        run_rscript_query(RDir, Q, Out),
-        assertion(sub_string(Out, _, _, _, "true"))
-    )),
-    forall(member(P, No), (
-        format(string(Q), '~w/0', [P]),
-        run_rscript_query(RDir, Q, Out),
-        assertion(sub_string(Out, _, _, _, "false"))
-    )),
+    assert_rscript_truth_batch(RDir, Yes, No),
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
@@ -2337,7 +2350,7 @@ e2e_fact_in_range_via_rscript :-
     assertz(user:price(eggplant,  3)),
     % q_mid: tuples with arg2 in [5,10] -> apple, banana.
     assertz((user:q_mid :-
-        (   fact_in_range(price/2, 2, 5, 10, [Item, _P]),
+        (   fact_in_range(price/2, 2, 5, 10, [Item, _]),
             assertz(found(Item)),
             fail
         ;   true
@@ -2347,7 +2360,7 @@ e2e_fact_in_range_via_rscript :-
         Sorted == [apple, banana])),
     % q_high: arg2 in [12,99] -> cherry, date.
     assertz((user:q_high :-
-        (   fact_in_range(price/2, 2, 12, 99, [Item, _P]),
+        (   fact_in_range(price/2, 2, 12, 99, [Item, _]),
             assertz(found(Item)),
             fail
         ;   true
@@ -2357,10 +2370,10 @@ e2e_fact_in_range_via_rscript :-
         Sorted == [cherry, date])),
     % q_empty: arg2 in [100,200] -> empty.
     assertz((user:q_empty :-
-        \+ fact_in_range(price/2, 2, 100, 200, [_Item, _P]))),
+        \+ fact_in_range(price/2, 2, 100, 200, [_, _]))),
     % q_exact: arg2 = exactly 12 -> just cherry.
     assertz((user:q_exact :-
-        (   fact_in_range(price/2, 2, 12, 12, [Item, _P]),
+        (   fact_in_range(price/2, 2, 12, 12, [Item, _]),
             assertz(found(Item)),
             fail
         ;   true
@@ -2370,10 +2383,10 @@ e2e_fact_in_range_via_rscript :-
     % q_atom_arg: ArgPos 1 has only atom values, no sorted index
     %             -> always fails.
     assertz((user:q_atom_arg :-
-        \+ fact_in_range(price/2, 1, 0, 100, [_Item, _P]))),
+        \+ fact_in_range(price/2, 1, 0, 100, [_, _]))),
     % q_bad_pos: out-of-range ArgPos -> fails.
     assertz((user:q_bad_pos :-
-        \+ fact_in_range(price/2, 99, 0, 100, [_Item, _P]))),
+        \+ fact_in_range(price/2, 99, 0, 100, [_, _]))),
     unique_r_tmp_dir('tmp_r_fact_range_e2e', TmpDir),
     write_wam_r_project(
         [user:price/2, user:q_mid/0, user:q_high/0, user:q_empty/0,
