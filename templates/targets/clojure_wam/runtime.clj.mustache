@@ -659,6 +659,41 @@
   (let [id (:next-var-id state)]
     [(var-term id) (update state :next-var-id inc)]))
 
+(defn copy-term-walk [state term var-map]
+  (let [term* (deref-value (:bindings state) term)]
+    (cond
+      (logic-var? term*)
+      (if-let [fresh (get var-map (:var term*))]
+        [fresh state var-map]
+        (let [[fresh next-state] (fresh-var state)]
+          [fresh next-state (assoc var-map (:var term*) fresh)]))
+
+      (structure-term? term*)
+      (loop [s state
+             env var-map
+             args (:args term*)
+             out []]
+        (if-let [arg (first args)]
+          (let [[arg-copy s* env*] (copy-term-walk s arg env)]
+            (recur s* env* (next args) (conj out arg-copy)))
+          [(structure-term (:functor term*) out) s env]))
+
+      :else
+      [term* state var-map])))
+
+(defn copy-term [state term]
+  (let [[copied next-state _] (copy-term-walk state term {})]
+    [copied next-state]))
+
+(defn apply-copy-term-solution [state]
+  (let [source (or (reg-get-raw state "A1") ::unbound)
+        target (or (reg-get-raw state "A2") ::unbound)
+        [copied copy-state] (copy-term state source)
+        [ok next-state] (unify-values copy-state target copied)]
+    (if ok
+      (advance next-state)
+      (backtrack state))))
+
 (defn push-build-frame [state target-reg functor arity]
   (update state :build-stack conj {:target-reg target-reg
                                    :functor functor
@@ -1197,6 +1232,9 @@
                 out (deref-value (:bindings state)
                                  (or (reg-get-raw state "A3") ::unbound))]
             (apply-append-solution state (inc (:pc state)) left right out))
+
+          "copy_term/2"
+          (apply-copy-term-solution state)
 
           "ground/1"
           (let [value (deref-value (:bindings state)
