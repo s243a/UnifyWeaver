@@ -1293,6 +1293,20 @@ fact_source_loader_call(grouped_by_first(Path), Arity, LoaderCall, Comment) :-
            'WamRuntime$read_facts_grouped_tsv(~w, intern_table)',
            [PathLit]),
     format(string(Comment), 'grouped-by-first tsv file: ~w', [PathStr]).
+fact_source_loader_call(lmdb(Path), _Arity, LoaderCall, Comment) :-
+    % Step-1 backend: load-everything. Treats LMDB as a serialization
+    % format -- the runtime reads all key/value pairs at program-load
+    % time and feeds them through the same build_fact_indexes +
+    % fact_table_dispatch pipeline as inline / CSV / grouped-TSV
+    % tables. Step-2 (probe-on-demand) is a separate follow-up that
+    % bypasses the in-memory tuple list; see
+    % docs/handoff/wam_r_session_handoff.md item #1.
+    atom_string(Path, PathStr),
+    r_string_literal(PathStr, PathLit),
+    format(string(LoaderCall),
+           'WamRuntime$read_facts_lmdb(~w, intern_table)',
+           [PathLit]),
+    format(string(Comment), 'lmdb env: ~w', [PathStr]).
 
 % ============================================================================
 % FACT-TABLE CLASSIFICATION + EMISSION

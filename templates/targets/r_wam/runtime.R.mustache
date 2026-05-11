@@ -3435,6 +3435,151 @@ WamRuntime$read_facts_grouped_tsv <- function(path, intern_table) {
   out
 }
 
+# Reads an LMDB env at `path` and returns a list of fact tuples.
+# Each value in the LMDB env is a TAB-separated string of fields; each
+# field has the shape `tag:payload` where tag is one of:
+#   a   atom (payload is the atom-string; re-interned via intern_table)
+#   i   integer
+#   f   double
+# Keys are opaque (the loader iterates all keys; ordering doesn't
+# affect correctness since the result feeds the same indexer as the
+# inline / CSV path).
+#
+# Requires an R LMDB binding. Tries `thor` first, then `lmdbr`.
+# Returns `list()` (empty fact table) if no binding is available or
+# the env is unreadable -- callers see the same shape as an absent
+# CSV file, so a missing LMDB pkg degrades to "no facts" rather than
+# a hard error. Users who need a hard failure can install the pkg.
+#
+# See docs/WAM_R_TARGET.md "External fact sources" for the install
+# steps (apt install liblmdb-dev; R -e 'install.packages("thor")').
+WamRuntime$read_facts_lmdb <- function(path, intern_table) {
+  pkg <- WamRuntime$lmdb_pick_pkg()
+  if (is.null(pkg)) {
+    message("WamRuntime$read_facts_lmdb: no R LMDB pkg available; ",
+            "returning empty fact table for ", path)
+    return(list())
+  }
+  if (!file.exists(path) && !dir.exists(path)) return(list())
+  parse_field <- function(p) {
+    if (nchar(p) < 2L || substr(p, 2L, 2L) != ":") {
+      return(Atom(WamRuntime$intern(intern_table, p)))
+    }
+    tag <- substr(p, 1L, 1L)
+    payload <- substr(p, 3L, nchar(p))
+    if (tag == "a") {
+      Atom(WamRuntime$intern(intern_table, payload))
+    } else if (tag == "i") {
+      IntTerm(as.integer(payload))
+    } else if (tag == "f") {
+      FloatTerm(as.numeric(payload))
+    } else {
+      Atom(WamRuntime$intern(intern_table, p))
+    }
+  }
+  parse_value <- function(raw) {
+    if (is.null(raw)) return(NULL)
+    s <- if (is.raw(raw)) rawToChar(raw) else as.character(raw)
+    parts <- strsplit(s, "\t", fixed = TRUE)[[1]]
+    if (length(parts) == 0L) return(NULL)
+    lapply(parts, parse_field)
+  }
+  out <- list()
+  if (pkg == "thor") {
+    env <- tryCatch(thor::mdb_env(path, create = FALSE),
+                    error = function(e) NULL)
+    if (is.null(env)) return(list())
+    on.exit(try(env$close(), silent = TRUE), add = TRUE)
+    keys <- tryCatch(env$list(), error = function(e) NULL)
+    if (is.null(keys) || length(keys) == 0L) return(list())
+    vals <- tryCatch(env$mget(keys), error = function(e) NULL)
+    if (is.null(vals)) return(list())
+    for (i in seq_along(vals)) {
+      tup <- parse_value(vals[[i]])
+      if (!is.null(tup)) out <- c(out, list(tup))
+    }
+  } else if (pkg == "lmdbr") {
+    env <- tryCatch(lmdbr::mdb_env(path), error = function(e) NULL)
+    if (is.null(env)) return(list())
+    on.exit(try(lmdbr::mdb_env_close(env), silent = TRUE), add = TRUE)
+    keys <- tryCatch(lmdbr::mdb_list(env), error = function(e) NULL)
+    if (is.null(keys) || length(keys) == 0L) return(list())
+    for (k in keys) {
+      raw <- tryCatch(lmdbr::mdb_get(env, k), error = function(e) NULL)
+      tup <- parse_value(raw)
+      if (!is.null(tup)) out <- c(out, list(tup))
+    }
+  }
+  out
+}
+
+# Writes a list of fact tuples to an LMDB env at `path`. Each tuple
+# is serialised as a TAB-separated string of `tag:payload` fields
+# (see read_facts_lmdb for the decoding side). Keys are
+# `sprintf("%010d", i)` so a binary cursor walk returns tuples in
+# insertion order.
+#
+# Provided as a setup-time helper for tests / users who want to
+# convert a list of facts (or a CSV) into an LMDB env once at
+# project init. Returns TRUE on success, FALSE if no LMDB pkg
+# is available or the write fails.
+WamRuntime$lmdb_write_facts <- function(path, facts, intern_table) {
+  pkg <- WamRuntime$lmdb_pick_pkg()
+  if (is.null(pkg)) return(FALSE)
+  atom_string <- function(id) {
+    names_v <- intern_table$names
+    if (id >= 1L && id <= length(names_v)) names_v[[id]] else as.character(id)
+  }
+  encode_field <- function(v) {
+    if (is.null(v) || !is.list(v) || is.null(v$tag)) return("a:?")
+    if (v$tag == "atom") paste0("a:", atom_string(v$id))
+    else if (v$tag == "int") paste0("i:", as.character(v$val))
+    else if (v$tag == "float") paste0("f:", format(v$val, digits = 17))
+    else paste0("a:?", v$tag)
+  }
+  encode_tuple <- function(tup) {
+    paste(vapply(tup, encode_field, character(1)), collapse = "\t")
+  }
+  if (pkg == "thor") {
+    env <- tryCatch(thor::mdb_env(path, create = TRUE),
+                    error = function(e) NULL)
+    if (is.null(env)) return(FALSE)
+    on.exit(try(env$close(), silent = TRUE), add = TRUE)
+    ok <- tryCatch({
+      for (i in seq_along(facts)) {
+        env$put(sprintf("%010d", i), encode_tuple(facts[[i]]))
+      }
+      TRUE
+    }, error = function(e) FALSE)
+    return(ok)
+  }
+  if (pkg == "lmdbr") {
+    env <- tryCatch(lmdbr::mdb_env(path, create = TRUE),
+                    error = function(e) NULL)
+    if (is.null(env)) return(FALSE)
+    on.exit(try(lmdbr::mdb_env_close(env), silent = TRUE), add = TRUE)
+    ok <- tryCatch({
+      for (i in seq_along(facts)) {
+        lmdbr::mdb_put(env, sprintf("%010d", i),
+                       encode_tuple(facts[[i]]))
+      }
+      TRUE
+    }, error = function(e) FALSE)
+    return(ok)
+  }
+  FALSE
+}
+
+# Picks the first available R LMDB binding. Returns "thor", "lmdbr",
+# or NULL. Memoised on shared_program if available, but resolves
+# correctly even when called outside the program context (so test
+# scripts can use it before constructing shared_program).
+WamRuntime$lmdb_pick_pkg <- function() {
+  if (requireNamespace("thor", quietly = TRUE)) return("thor")
+  if (requireNamespace("lmdbr", quietly = TRUE)) return("lmdbr")
+  NULL
+}
+
 # Build per-arg hash indexes for a runtime-loaded fact table.
 # Returns a list of N envs (one per arg position, where N = arity).
 # Each env follows the same shape as the codegen-emitted
