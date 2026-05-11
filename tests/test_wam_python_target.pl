@@ -711,3 +711,61 @@ test(runtime_resolves_recurse_category_ancestor_to_pc, [nondet]) :-
 	sub_string(Content, _, _, _, "recurse_category_ancestor_pc").
 
 :- end_tests(wam_python_kernel_parity).
+
+% ============================================================================
+% Lua/Rust/Haskell builtin parity guard for packaged static runtime
+% ============================================================================
+
+:- begin_tests(wam_python_builtin_parity_guard).
+
+runtime_py_path(SrcPath) :-
+	source_file(wam_python_target:compile_step_wam_to_python(_,_), ThisFile),
+	file_directory_name(ThisFile, ThisDir),
+	directory_file_path(ThisDir, 'wam_python_runtime/WamRuntime.py', SrcPath).
+
+test(static_runtime_has_lua_baseline_builtins, [nondet]) :-
+	runtime_py_path(P), read_file_to_string(P, Content, []),
+	forall(member(Needle, [
+		"member/2",
+		"length/2",
+		"atom/1",
+		"integer/1",
+		"float/1",
+		"number/1",
+		"compound/1",
+		"var/1",
+		"nonvar/1",
+		"is_list/1",
+		"==/2",
+		"=/2",
+		"\\\\=/2",
+		"=:=/2",
+		"=\\\\=/2",
+		">/2",
+		"</2",
+		">=/2",
+		"=</2",
+		"functor/3",
+		"arg/3",
+		"=../2",
+		"copy_term/2",
+		"true/0",
+		"fail/0",
+		"\\\\+/1",
+		"write/1",
+		"display/1",
+		"nl/0"
+	]), sub_string(Content, _, _, _, Needle)).
+
+test(static_runtime_naf_uses_isolated_goal_execution, [nondet]) :-
+	runtime_py_path(P), read_file_to_string(P, Content, []),
+	sub_string(Content, _, _, _, "def _goal_succeeds_once"),
+	sub_string(Content, _, _, _, "return not _goal_succeeds_once(goal, state)"),
+	\+ sub_string(Content, _, _, _, "default: treat unknown \\+ as success").
+
+test(static_runtime_io_emits_output, [nondet]) :-
+	runtime_py_path(P), read_file_to_string(P, Content, []),
+	sub_string(Content, _, _, _, "print(_format_value(get_reg(state, 1), state), end='')"),
+	sub_string(Content, _, _, _, "print()").
+
+:- end_tests(wam_python_builtin_parity_guard).

@@ -235,6 +235,23 @@ def _terms_equal(a: 'Term', b: 'Term') -> bool:
         return a.f == b.f
     return False
 
+def _term_identical(a: 'Term', b: 'Term', state: WamState) -> bool:
+    """Prolog ==/2-style identity after dereferencing bound variables."""
+    a = deref(a, state)
+    b = deref(b, state)
+    if isinstance(a, Var) or isinstance(b, Var):
+        return a is b
+    if isinstance(a, Atom) and isinstance(b, Atom):
+        return a.name == b.name
+    if isinstance(a, Int) and isinstance(b, Int):
+        return a.n == b.n
+    if isinstance(a, Float) and isinstance(b, Float):
+        return a.f == b.f
+    if isinstance(a, Compound) and isinstance(b, Compound):
+        return (a.functor == b.functor and len(a.args) == len(b.args)
+                and all(_term_identical(x, y, state) for x, y in zip(a.args, b.args)))
+    return False
+
 
 def _make_cons(head: 'Term', tail: 'Term') -> 'Compound':
     """Construct a cons cell Compound('.', [head, tail])."""
@@ -606,11 +623,96 @@ def _constant_matches(val: 'Term', name: str) -> bool:
     return False
 
 
+def _term_to_list(term: 'Term', state: WamState) -> Optional[List['Term']]:
+    """Convert a proper Prolog list to a Python list of terms."""
+    items = []
+    cur = deref(term, state)
+    while isinstance(cur, Compound) and cur.functor == '.' and len(cur.args) == 2:
+        items.append(deref(cur.args[0], state))
+        cur = deref(cur.args[1], state)
+    if isinstance(cur, Atom) and cur.name == '[]':
+        return items
+    return None
+
+
+def _list_from_terms(items: List['Term']) -> 'Term':
+    """Build a proper Prolog list from Python terms."""
+    result: Term = make_atom('[]')
+    for item in reversed(items):
+        result = Compound('.', [item, result])
+    return result
+
+
+def _format_value(val: 'Term', state: WamState) -> str:
+    """Format a WAM term using compact Prolog-style syntax."""
+    val = deref(val, state)
+    if isinstance(val, Atom):
+        return val.name
+    if isinstance(val, Int):
+        return str(val.n)
+    if isinstance(val, Float):
+        return str(val.f)
+    if isinstance(val, Var):
+        return f"_V{val.id}"
+    if isinstance(val, Compound):
+        if val.functor == '.' and len(val.args) == 2:
+            items = _term_to_list(val, state)
+            if items is not None:
+                return '[' + ', '.join(_format_value(item, state) for item in items) + ']'
+        return f"{val.functor}(" + ', '.join(_format_value(arg, state) for arg in val.args) + ')'
+    if isinstance(val, Ref):
+        return _format_value(deref(val, state), state)
+    return str(val)
+
+
+def _deep_copy_term(val: 'Term', var_map: Dict[int, Var], state: WamState) -> 'Term':
+    """Copy a term, giving each source variable one fresh target variable."""
+    val = deref(val, state)
+    if isinstance(val, Var):
+        key = id(val)
+        if key not in var_map:
+            var_map[key] = state.fresh_var()
+        return var_map[key]
+    if isinstance(val, Compound):
+        return Compound(val.functor, [_deep_copy_term(arg, var_map, state) for arg in val.args])
+    return val
+
+
+def _goal_succeeds_once(goal: 'Term', state: WamState) -> bool:
+    """Evaluate a callable goal against an isolated copy of the current state."""
+    isolated_goal = copy.deepcopy(deref(goal, state))
+    sub = copy.deepcopy(state)
+    goal = deref(isolated_goal, sub)
+    if isinstance(goal, Atom):
+        return _execute_builtin(goal.name, 0, sub)
+    if not isinstance(goal, Compound):
+        return False
+    functor = goal.functor
+    arity = len(goal.args)
+    pred_key = functor if '/' in functor else f"{functor}/{arity}"
+    for i, arg in enumerate(goal.args, start=1):
+        set_reg(sub, i, deref(arg, sub))
+    if _execute_builtin(pred_key, arity, sub):
+        return True
+    code = getattr(state, '_code', None)
+    labels = getattr(state, '_labels', None)
+    if code is not None and labels is not None and pred_key in labels:
+        return run_wam(code, labels, pred_key, sub)
+    return False
+
+
 def _execute_builtin(builtin: str, arity: int, state: 'WamState') -> bool:
     """Execute a WAM builtin_call instruction."""
     if builtin == '!/0' or builtin == '!':  # cut
         state.cut_b = state.b
         return True
+    if builtin in ('=/2', '=') and arity == 2:
+        return unify(get_reg(state, 1), get_reg(state, 2), state)
+    if builtin in ('\\=/2', '\\=') and arity == 2:
+        sub = copy.deepcopy(state)
+        return not unify(get_reg(sub, 1), get_reg(sub, 2), sub)
+    if builtin in ('==/2', '==') and arity == 2:
+        return _term_identical(get_reg(state, 1), get_reg(state, 2), state)
     if builtin in ('is/2', 'is'):
         dst = deref(get_reg(state, 1), state)
         expr = deref(get_reg(state, 2), state)
@@ -663,32 +765,8 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState') -> bool:
         except WAMError:
             return False
     if builtin in ('\\+/1', '\\+'):  # negation as failure
-        # \+ Goal: try to call Goal; succeed if it fails, fail if it succeeds
-        # Simple approach: check register 1 for the goal atom/compound
         goal = deref(get_reg(state, 1), state)
-        # We can't re-enter run_wam here without a fresh state easily;
-        # for the WAM benchmark pattern (member/2 check) we detect common cases
-        if isinstance(goal, Compound) and _strip_arity(goal.functor) == 'member' and len(goal.args) == 2:
-            elem = deref(goal.args[0], state) if goal.args[0] is not None else Var(ref=[None], id=-1)
-            lst = deref(goal.args[1], state) if goal.args[1] is not None else Var(ref=[None], id=-1)
-            # member(X, List) succeeds if X is in List
-            while isinstance(lst, Ref):
-                lst = deref(lst, state)
-            def member_check(e, l):
-                if isinstance(l, Atom) and l.name == '[]':
-                    return False
-                if isinstance(l, Compound) and l.functor == '.':
-                    head = deref(l.args[0], state) if l.args[0] is not None else Var(ref=[None], id=-1)
-                    tail = deref(l.args[1], state) if l.args[1] is not None else Var(ref=[None], id=-1)
-                    # unification check (no binding)
-                    if isinstance(e, Var) or isinstance(head, Var):
-                        return True  # would unify
-                    if isinstance(e, Atom) and isinstance(head, Atom) and e.name == head.name:
-                        return True
-                    return member_check(e, tail)
-                return False
-            return not member_check(elem, lst)
-        return True  # default: treat unknown \+ as success (conservative)
+        return not _goal_succeeds_once(goal, state)
     if builtin in ('length/2', 'length'):
         lst = deref(get_reg(state, 1), state)
         n_reg = deref(get_reg(state, 2), state)
@@ -713,12 +791,21 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState') -> bool:
     if builtin in ('number/1', 'number'):
         val = deref(get_reg(state, 1), state)
         return isinstance(val, (Int, Float))
+    if builtin in ('float/1', 'float'):
+        val = deref(get_reg(state, 1), state)
+        return isinstance(val, Float)
     if builtin in ('atom/1', 'atom'):
         val = deref(get_reg(state, 1), state)
         return isinstance(val, Atom)
     if builtin in ('integer/1', 'integer'):
         val = deref(get_reg(state, 1), state)
         return isinstance(val, Int)
+    if builtin in ('compound/1', 'compound'):
+        val = deref(get_reg(state, 1), state)
+        return isinstance(val, Compound)
+    if builtin in ('is_list/1', 'is_list'):
+        val = deref(get_reg(state, 1), state)
+        return _term_to_list(val, state) is not None
     if builtin in ('true/0', 'true'):
         return True
     if builtin in ('fail/0', 'fail', 'false/0', 'false'):
@@ -736,10 +823,61 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState') -> bool:
                 return member_find(e, tail)
             return False
         return member_find(elem, lst)
-    if builtin in ('write/1', 'writeln/1', 'print/1', 'nl/0'):
-        return True  # ignore output builtins
-    # Unknown builtin: skip (return True to avoid crashing)
-    return True
+    if builtin in ('functor/3', 'functor') and arity == 3:
+        term = deref(get_reg(state, 1), state)
+        name = deref(get_reg(state, 2), state)
+        arity_term = deref(get_reg(state, 3), state)
+        if isinstance(term, Compound):
+            return (unify(name, make_atom(term.functor), state)
+                    and unify(arity_term, Int(len(term.args)), state))
+        if isinstance(term, (Atom, Int, Float)):
+            return unify(name, term, state) and unify(arity_term, Int(0), state)
+        if isinstance(term, Var) and isinstance(name, Atom) and isinstance(arity_term, Int) and arity_term.n >= 0:
+            built = name if arity_term.n == 0 else Compound(name.name, [state.fresh_var() for _ in range(arity_term.n)])
+            return unify(term, built, state)
+        return False
+    if builtin in ('arg/3', 'arg') and arity == 3:
+        idx = deref(get_reg(state, 1), state)
+        term = deref(get_reg(state, 2), state)
+        out = deref(get_reg(state, 3), state)
+        if not isinstance(idx, Int) or not isinstance(term, Compound):
+            return False
+        if idx.n < 1 or idx.n > len(term.args):
+            return False
+        return unify(out, term.args[idx.n - 1], state)
+    if builtin in ('=../2', '=..') and arity == 2:
+        term = deref(get_reg(state, 1), state)
+        list_term = deref(get_reg(state, 2), state)
+        if isinstance(term, Var):
+            items = _term_to_list(list_term, state)
+            if not items:
+                return False
+            head = deref(items[0], state)
+            args = [deref(arg, state) for arg in items[1:]]
+            if not args:
+                return unify(term, head, state)
+            if not isinstance(head, Atom):
+                return False
+            return unify(term, Compound(head.name, args), state)
+        if isinstance(term, Compound):
+            return unify(list_term, _list_from_terms([make_atom(term.functor)] + term.args), state)
+        if isinstance(term, (Atom, Int, Float)):
+            return unify(list_term, _list_from_terms([term]), state)
+        return False
+    if builtin in ('copy_term/2', 'copy_term') and arity == 2:
+        original = get_reg(state, 1)
+        target = get_reg(state, 2)
+        return unify(target, _deep_copy_term(original, {}, state), state)
+    if builtin in ('write/1', 'display/1', 'print/1'):
+        print(_format_value(get_reg(state, 1), state), end='')
+        return True
+    if builtin in ('writeln/1',):
+        print(_format_value(get_reg(state, 1), state))
+        return True
+    if builtin in ('nl/0', 'nl'):
+        print()
+        return True
+    return False
 
 
 # -- Main WAM interpreter loop ---------------------------------------------
@@ -758,6 +896,8 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
     ip = labels.get(entry, -1)
     if ip < 0:
         return False
+    state._code = code
+    state._labels = labels
     code_len = len(code)
     # Argument register snapshot: taken at each clause entry so that
     # get_* instructions read the original argument values even after
