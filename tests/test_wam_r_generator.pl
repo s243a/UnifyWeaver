@@ -681,12 +681,12 @@ test(mode_analysis_phase1_comments) :-
         % The lowered emitter picks all of them; we assert the visibility
         % comment reports the correct head-binding for each.
         assertz(user:mode(ma_pin(+))),
-        assertz((user:ma_pin(_X)   :- true)),
+        assertz((user:ma_pin(_)   :- true)),
         assertz(user:mode(ma_pout(-))),
-        assertz((user:ma_pout(_X)  :- true)),
+        assertz((user:ma_pout(_)  :- true)),
         assertz(user:mode(ma_pany(?))),
-        assertz((user:ma_pany(_X)  :- true)),
-        assertz((user:ma_pnone(_X) :- true)),
+        assertz((user:ma_pany(_)  :- true)),
+        assertz((user:ma_pnone(_) :- true)),
         unique_r_tmp_dir('tmp_r_mode_comments', TmpDir),
         write_wam_r_project(
             [ user:ma_pin/1, user:ma_pout/1,
