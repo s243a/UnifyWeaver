@@ -517,6 +517,47 @@
                (conj items (first (:args cur))))
         :else nil))))
 
+(defn functor-name-from-key [key]
+  (let [slash (.lastIndexOf ^String key "/")]
+    (if (pos? slash)
+      (subs key 0 slash)
+      key)))
+
+(defn functor-read-pair [state value]
+  (let [value* (deref-value (:bindings state) value)
+        ctx (:intern-context state)]
+    (cond
+      (atom-term? value*)
+      [value* 0]
+
+      (number? value*)
+      [value* 0]
+
+      (structure-term? value*)
+      (let [key (functor-key ctx (:functor value*))
+            name (normalize-literal-atom ctx (functor-name-from-key key))]
+        [name (count (:args value*))])
+
+      :else
+      nil)))
+
+(defn apply-functor-solution [state]
+  (let [term (deref-value (:bindings state)
+                          (or (reg-get-raw state "A1") ::unbound))]
+    (if-let [[name arity] (functor-read-pair state term)]
+      (let [name-out (deref-value (:bindings state)
+                                  (or (reg-get-raw state "A2") ::unbound))
+            arity-out (deref-value (:bindings state)
+                                   (or (reg-get-raw state "A3") ::unbound))
+            [ok-name name-state] (unify-values state name-out name)]
+        (if ok-name
+          (let [[ok-arity arity-state] (unify-values name-state arity-out arity)]
+            (if ok-arity
+              (advance arity-state)
+              (backtrack state)))
+          (backtrack state)))
+      (backtrack state))))
+
 (declare apply-member-solution)
 (declare apply-append-solution)
 (declare apply-first-foreign-solution)
@@ -1240,6 +1281,9 @@
 
           "copy_term/2"
           (apply-copy-term-solution state)
+
+          "functor/3"
+          (apply-functor-solution state)
 
           "ground/1"
           (let [value (deref-value (:bindings state)
