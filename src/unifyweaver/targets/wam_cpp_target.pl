@@ -40,6 +40,12 @@
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module(wam_cpp_lowered_emitter, [
+    wam_cpp_lowerable/3,
+    lower_predicate_to_cpp/4,
+    cpp_lowered_func_name/2,
+    parse_wam_text/2
+]).
 
 :- multifile user:wam_cpp_emit_mode/1.
 
@@ -248,24 +254,20 @@ compile_wam_predicate_to_cpp(PI, WamCode, Options, CppCode) :-
     ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
     cpp_wam_resolve_emit_mode(Options, Mode),
     (   should_lower(Mode, Pred, Arity),
-        catch(
-            ( use_module(wam_cpp_lowered_emitter,
-                         [wam_cpp_lowerable/3, lower_predicate_to_cpp/4]),
-              wam_cpp_lowerable(Pred/Arity, WamCode, _Reason)
-            ),
-            _,
-            fail)
+        wam_cpp_lowerable(Pred/Arity, WamCode, _Reason)
     ->  lower_predicate_to_cpp(Pred/Arity, WamCode, Options, Lines),
         atomic_list_concat(Lines, '\n', CppCode)
     ;   instrs_for(WamCode, Instrs),
         compile_predicate_wrapper(Pred, Arity, Instrs, Options, CppCode)
     ).
 
-% Raw-text WAM is parsed by the lowered emitter when lowering. For the
-% interpreter-wrapper path we expect compile_predicate_to_wam/3 to deliver
-% an instruction list, so a non-list input here is treated as empty.
+% Accept either an instruction list (from in-memory pipelines) or raw WAM
+% text (compile_predicate_to_wam/3 returns a string). The text parser is
+% shared with the lowered emitter to keep a single source of truth.
 instrs_for(WamCode, Instrs) :-
     is_list(WamCode), !, Instrs = WamCode.
+instrs_for(WamCode, Instrs) :-
+    catch(parse_wam_text(WamCode, Instrs), _, fail), !.
 instrs_for(_, []).
 
 compile_predicate_wrapper(Pred, Arity, Instrs, _Options, CppCode) :-
@@ -324,7 +326,10 @@ write_wam_cpp_project(Predicates, Options, ProjectDir) :-
 
 compile_predicates_for_project(Predicates, Options, PredicatesCode) :-
     foreign_pred_keys_from_options(Options, ForeignKeys),
-    merge_options([foreign_pred_keys(ForeignKeys)], Options, Options1),
+    (   member(foreign_pred_keys(_), Options)
+    ->  Options1 = Options
+    ;   Options1 = [foreign_pred_keys(ForeignKeys)|Options]
+    ),
     findall(Code, (
         member(PI, Predicates),
         catch(
@@ -340,13 +345,6 @@ foreign_pred_keys_from_options(Options, Keys) :-
     (   member(foreign_pred_keys(Keys0), Options)
     ->  Keys = Keys0
     ;   Keys = []
-    ).
-
-merge_options([], Acc, Acc).
-merge_options([Opt|Rest], Acc, Out) :-
-    (   member(Opt, Acc)
-    ->  merge_options(Rest, Acc, Out)
-    ;   merge_options(Rest, [Opt|Acc], Out)
     ).
 
 write_text_file(Path, Content) :-

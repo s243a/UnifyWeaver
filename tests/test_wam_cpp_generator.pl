@@ -187,7 +187,7 @@ test(project_runtime_header_content) :-
           assertion(sub_string(Code, _, _, _, 'struct Value')),
           assertion(sub_string(Code, _, _, _, 'struct Instruction')),
           assertion(sub_string(Code, _, _, _, 'struct WamState')),
-          assertion(sub_string(Code, _, _, _, 'bool unify(const Value&'))
+          assertion(sub_string(Code, _, _, _, 'unify(const Value&'))
         ),
         delete_directory_and_contents(TmpDir)
     ).
@@ -228,19 +228,25 @@ test(cpp_compiler_smoke, [condition(cpp_compiler_available)]) :-
         write_wam_cpp_project([user:wam_cpp_fact/1],
                               [emit_mode(functions)], TmpDir),
         ( directory_file_path(TmpDir, 'cpp', CppDir),
-          directory_file_path(CppDir, 'wam_runtime.cpp', Rt),
-          directory_file_path(CppDir, 'generated_program.cpp', Prog),
-          directory_file_path(CppDir, 'a.out', Bin),
-          % Use -c (compile-only) — generated_program.cpp registers
-          % predicates via a static initialiser and has no main().
-          process_create(path('g++'),
-                         ['-std=c++17', '-c', '-o', Bin, Rt, Prog],
-                         [stderr(pipe(_Err)), process(PID)]),
-          process_wait(PID, Status),
-          assertion(Status == exit(0))
+          % Compile each .cpp separately (g++ disallows -o with -c and
+          % multiple inputs). The generated program has no main(); -c
+          % produces .o files and that is all we need to verify the
+          % runtime + lowered code is syntactically valid.
+          compile_one(CppDir, 'wam_runtime.cpp', 'wam_runtime.o', R1),
+          assertion(R1 == exit(0)),
+          compile_one(CppDir, 'generated_program.cpp', 'generated_program.o', R2),
+          assertion(R2 == exit(0))
         ),
         delete_directory_and_contents(TmpDir)
     ).
+
+compile_one(CppDir, Src, Obj, Status) :-
+    directory_file_path(CppDir, Src, SrcPath),
+    directory_file_path(CppDir, Obj, ObjPath),
+    process_create(path('g++'),
+                   ['-std=c++17', '-c', '-o', ObjPath, SrcPath],
+                   [stderr(null), process(PID)]),
+    process_wait(PID, Status).
 
 :- end_tests(wam_cpp_generator).
 

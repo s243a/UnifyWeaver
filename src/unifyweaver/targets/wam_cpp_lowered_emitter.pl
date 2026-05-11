@@ -21,11 +21,13 @@
     wam_cpp_lowerable/3,
     lower_predicate_to_cpp/4,
     is_deterministic_pred_cpp/1,
-    cpp_lowered_func_name/2
+    cpp_lowered_func_name/2,
+    parse_wam_text/2
 ]).
 
 :- use_module(library(lists)).
-:- use_module(wam_cpp_target, [escape_cpp_string/2]).
+% Inlined escape helper to avoid a circular import with wam_cpp_target.
+% Keeps this module standalone-loadable.
 
 % =====================================================================
 % Parsing — accept either an instruction list or a WAM-text blob.
@@ -408,7 +410,7 @@ emit_one(execute(PredStr), I) :-
 
 emit_one(builtin_call(OpStr, NStr), I) :-
     format("~w// builtin_call ~w ~w~n", [I, OpStr, NStr]),
-    escape_cpp_string(OpStr, EscOp),
+    local_escape_cpp_string(OpStr, EscOp),
     format("~wif (!vm->step(Instruction::BuiltinCall(\"~w\", ~w))) return false;~n",
            [I, EscOp, NStr]).
 
@@ -438,6 +440,23 @@ emit_one(Instr, I) :-
 cpp_reg_name(RegStr, Name) :-
     atom_string(RegA, RegStr),
     atom_string(RegA, Name).
+
+%% local_escape_cpp_string(+In, -Out)
+%  Inlined copy of wam_cpp_target:escape_cpp_string/2 to keep this module
+%  loadable without a back-import to wam_cpp_target.
+local_escape_cpp_string(In, Out) :-
+    atom_string(In, S),
+    split_string(S, "\\", "", Parts),
+    local_join(Parts, "\\\\", Escaped1),
+    split_string(Escaped1, "\"", "", Parts2),
+    local_join(Parts2, "\\\"", Out).
+
+local_join([], _, "").
+local_join([X], _, X).
+local_join([X, Y|Rest], Sep, Result) :-
+    local_join([Y|Rest], Sep, Tail),
+    string_concat(X, Sep, XSep),
+    string_concat(XSep, Tail, Result).
 
 %% cpp_val_literal(+Str, -CppLiteral)
 %  Convert a WAM constant token to a C++ Value literal.
