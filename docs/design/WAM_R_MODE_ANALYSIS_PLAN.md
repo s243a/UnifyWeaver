@@ -168,7 +168,35 @@ one cheap if/else; not worth the codegen complexity for this op.
 
 ### Measured impact
 
-(_filled in after bench completes_)
+Same pn recursive bench as phase 2 (`pn(0). pn(N) :- N > 0, N1 is N -
+1, pn(N1).` with `:- mode(pn(+))`, 200 iterations × recursion depth
+2000). Phase-2 baseline built from `main` worktree (clean phase-2
+codegen + runtime), phase-3 built from this branch.
+
+Alternating runs to defeat time-correlated noise:
+
+| Run | PHASE2 baseline | PHASE3 |
+|-----|-----------------|--------|
+| 1 | 73.37s | 71.91s |
+| 2 | 73.73s | 69.60s |
+| 3 | 73.83s | 70.43s |
+| 4 | 73.66s | 71.66s |
+
+| Stat | PHASE2 | PHASE3 |
+|------|--------|--------|
+| Mean | 73.6s | 70.9s |
+| Min  | 73.37s | 69.60s |
+| Max  | 73.83s | 71.91s |
+| Range | 0.46s | 2.31s |
+
+**Phase 3 is consistently ~3.7% faster** (max PHASE3 < min PHASE2 by
+1.46s -- no overlap in distributions). This is the first clearly-
+above-noise mode-analysis-campaign win on the recursive workload.
+
+The win comes mostly from the runtime fast-path (a): clause 2 of pn
+runs through the array path / step, so the lowered-emitter inline
+(b) doesn't apply to it. Phase 4's multi_clause_n would bring (b)
+into play for clause 2 as well, multiplying the win.
 
 ### Connection to mode analysis
 
