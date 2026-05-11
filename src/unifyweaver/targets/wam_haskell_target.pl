@@ -3233,7 +3233,13 @@ compute_cache_strategy_decision(Options, BfsMode) :-
 %    edge IntMap *is* the cache and adding another tier is redundant.
 %    Pick `none` in that case regardless of locality / M.
 %
-%  Decision matrix for the cursor path:
+%  Memory budget guard (Phase L#13): when R_free is below
+%  `cache_tier_floor_bytes(N)` (default 4 MB), pick `none` regardless
+%  of locality/M. Symmetric to the working-set footprint guard in
+%  `compute_cache_strategy_decision/2` but for the cache layer rather
+%  than the BFS state.
+%
+%  Decision matrix for the cursor path (when memory budget allows):
 %
 %    M = 1                          → none      (no queries to amortise over)
 %    M > 1 & intra_thread          → per_hec   (L1)
@@ -3264,6 +3270,9 @@ compute_lmdb_cache_mode_decision(Options, Mode) :-
     (   option(demand_bfs_mode(in_memory), Options)
     ->  Mode = none,
         Reason = in_memory_path
+    ;   cache_tier_memory_budget_short(Options, FloorBytes, RFree)
+    ->  Mode = none,
+        Reason = memory_budget(RFree, FloorBytes)
     ;   option(expected_query_count(M), Options, 1),
         option(workload_locality(Locality), Options, unknown),
         (   M =< 1
@@ -3283,6 +3292,31 @@ compute_lmdb_cache_mode_decision(Options, Mode) :-
                [Mode, Reason])
     ;   true
     ).
+
+%% cache_tier_memory_budget_short(+Options, -FloorBytes, -RFree) is semidet.
+%
+%  True when free RAM is below the minimum needed to host even a
+%  modest cache. Reads:
+%    - cache_tier_floor_bytes(N): minimum RAM the cache layer needs
+%      to be useful. Default 4 MB — enough headroom for a small L2
+%      with the default capacity, leaves the budget guard biased
+%      toward enabling caching when free RAM is plentiful but
+%      protects against OOM under memory pressure.
+%    - mem_available_bytes(R): /proc/meminfo:MemAvailable override
+%      (same fallback chain as the cache_strategy resolver).
+%  Symmetric to the working-set footprint guard in
+%  compute_cache_strategy_decision/2 (Phase L#11) but for the cache
+%  layer rather than the BFS state.
+cache_tier_memory_budget_short(Options, FloorBytes, RFree) :-
+    option(cache_tier_floor_bytes(FloorBytes), Options, 4_000_000),
+    integer(FloorBytes),
+    FloorBytes > 0,
+    (   option(mem_available_bytes(R), Options),
+        integer(R), R > 0
+    ->  RFree = R
+    ;   catch(read_mem_available_bytes(RFree), _, RFree = 1_000_000_000)
+    ),
+    RFree < FloorBytes.
 
 %% resolve_demand_filter_spec(+Options, -SpecHs)
 %  Pick the DemandFilterSpec literal to emit into Main.hs.

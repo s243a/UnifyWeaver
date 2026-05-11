@@ -2128,6 +2128,54 @@ test_lmdb_cache_mode_explicit_unchanged :-
     ;   fail_test(Test, 'explicit lmdb_cache_mode was mutated')
     ).
 
+test_lmdb_cache_mode_memory_budget_guard_fires :-
+    %% R_free below the cache-tier floor: even with a locality that
+    %% would otherwise pick a tier, the guard overrides to `none`.
+    %% 1 MB free vs 4 MB default floor → none.
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) memory-budget guard overrides tier → none',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(cross_thread),
+             expected_query_count(100),
+             mem_available_bytes(1_000_000)],
+            R),
+        memberchk(lmdb_cache_mode(none), R),
+        \+ memberchk(lmdb_cache_mode(sharded), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'memory budget guard did not override tier under pressure')
+    ).
+
+test_lmdb_cache_mode_memory_budget_guard_inactive_when_rfree_above_floor :-
+    %% R_free comfortably above floor: guard inactive, normal matrix runs.
+    %% 64 MB free vs 4 MB default floor → cross_thread → sharded.
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) memory-budget guard inactive when R_free >= floor',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(cross_thread),
+             expected_query_count(100),
+             mem_available_bytes(64_000_000)],
+            R),
+        memberchk(lmdb_cache_mode(sharded), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'memory budget guard incorrectly fired with ample R_free')
+    ).
+
+test_lmdb_cache_mode_memory_budget_floor_override :-
+    %% Custom floor via cache_tier_floor_bytes/1. Set floor to 100 MB:
+    %% 64 MB free is now below floor → guard fires → none.
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) cache_tier_floor_bytes overrides default',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(cross_thread),
+             expected_query_count(100),
+             mem_available_bytes(64_000_000),
+             cache_tier_floor_bytes(100_000_000)],
+            R),
+        memberchk(lmdb_cache_mode(none), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'custom cache_tier_floor_bytes did not raise the threshold')
+    ).
+
 test_b1_lmdb_dupsort_per_thread_cursor :-
     Test = 'B1: dupsort layout uses per-thread cursor cache',
     (   compile_wam_runtime_to_haskell(
@@ -2570,6 +2618,9 @@ run_tests :-
     test_lmdb_cache_mode_auto_composes_with_in_memory_bfs,
     test_lmdb_cache_mode_auto_no_op_without_workload_locality,
     test_lmdb_cache_mode_explicit_unchanged,
+    test_lmdb_cache_mode_memory_budget_guard_fires,
+    test_lmdb_cache_mode_memory_budget_guard_inactive_when_rfree_above_floor,
+    test_lmdb_cache_mode_memory_budget_floor_override,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)

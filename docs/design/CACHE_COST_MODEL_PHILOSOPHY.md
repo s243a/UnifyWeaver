@@ -233,14 +233,24 @@ is the key piece of information they share — it's what lets one
 opt-in (`workload_locality(unknown)` + `cache_strategy(auto)`)
 produce a self-consistent end-to-end decision.
 
+### Memory budget guard (Phase L#13)
+
+Symmetric to the working-set footprint guard from Phase L#11. The
+cache layer needs *some* RAM to be useful; under memory pressure
+the resolver picks `none` rather than risk OOM. Concretely: when
+`R_free < cache_tier_floor_bytes` the resolver short-circuits to
+`none` regardless of locality/M.
+
+- Default floor: 4 MB. Enough headroom for a modest L2 with the
+  default capacity, biases toward enabling caching when RAM is
+  plentiful, protects against thrashing when it isn't.
+- Override per-call via `cache_tier_floor_bytes(N)`.
+- Reads `mem_available_bytes(R)` (option) or
+  `/proc/meminfo:MemAvailable` (fallback), with a 1 GB fallback on
+  non-Linux — same chain as the cache_strategy resolver.
+
 ### What this isn't doing (yet)
 
-- **No memory-budget guard on the cache itself.** Tier choice is
-  based on quantity and locality, not on whether the cache size
-  fits after the working set is accounted for. `lmdb_cache_l2_capacity_bytes`
-  lets users override the L2 size manually; an automatic floor
-  ("`R_free - W_working < N MB` → fall back to `none`") is a
-  follow-up.
 - **No automatic locality inference.** `workload_locality(...)`
   comes from the workload author. Inferring it from purity
   analysis or kernel metadata is research-y and deferred.

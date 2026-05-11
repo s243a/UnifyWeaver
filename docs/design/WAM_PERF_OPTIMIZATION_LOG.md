@@ -3798,4 +3798,65 @@ cost_model tests unchanged.
   picks against measured wall-clock numbers needs them re-ingested.
   Filed.
 
+## Phase L appendix #13: cache-tier memory-budget guard (2026-05-10)
+
+### What landed
+
+Symmetric to the working-set footprint guard from Phase L#11 (PR
+#2001), but for the cache layer. The Phase L#11 guard catches
+"the BFS state won't fit in RAM" (forces cursor mode). The new
+guard catches "even a small cache won't fit" (forces `none` for
+the cache tier).
+
+`compute_lmdb_cache_mode_decision/2` short-circuits to `Mode = none`
+when `R_free < cache_tier_floor_bytes`:
+
+```prolog
+;   cache_tier_memory_budget_short(Options, FloorBytes, RFree)
+->  Mode = none,
+    Reason = memory_budget(RFree, FloorBytes)
+```
+
+Default floor: 4 MB. Configurable via `cache_tier_floor_bytes(N)`.
+Reads `mem_available_bytes/1` (option) or
+`/proc/meminfo:MemAvailable` (fallback), same chain as the
+cache_strategy resolver.
+
+### Tests
+
+Three new tests in `tests/test_wam_haskell_target.pl`:
+
+- `memory_budget_guard_fires` — 1 MB free + cross_thread + M=100
+  → `none` (guard overrides what would have been `sharded`).
+- `memory_budget_guard_inactive_when_rfree_above_floor` — 64 MB
+  free → `sharded` (normal matrix runs).
+- `memory_budget_floor_override` — custom floor of 100 MB vs
+  64 MB free → `none` (override raises the threshold).
+
+All 167 WAM-Haskell tests pass (164 existing + 3 new); 21
+cost_model tests unchanged.
+
+### What this closes
+
+The cost-model arc now has symmetric resource-safety guards:
+
+- **Working-set footprint** (Phase L#11, PR #2001):
+  `cache_strategy(auto)` overrides `in_memory` → `cursor` when
+  `R_free < W`. Prevents allocating a working-set IntMap bigger
+  than RAM.
+- **Cache-tier memory budget** (Phase L#13, this PR):
+  `lmdb_cache_mode(auto)` overrides any tier → `none` when
+  `R_free < cache_tier_floor_bytes`. Prevents thrashing the
+  cache when there's no headroom left.
+
+The two together mean every cost-model decision is honest about
+the runtime's actual memory budget, not just the access-pattern
+math.
+
+### Open follow-ups
+
+The remaining items from Phase L#12 stand — automatic locality
+inference and at-scale empirical validation. No new follow-ups
+land here.
+
 
