@@ -174,10 +174,76 @@ share:
 - **User override is always available**. The model is a default
   picker, not a gatekeeper.
 
-Phase 2c will add a fourth resolver, `resolve_auto_cache_strategy/2`,
-that uses `cost_model.pl` as its decision engine. That resolver is
-not built yet — it needs the workload-metadata channel (`K_query`,
-`M`, `X_query`) plumbed through the codegen pipeline first.
+Phase 2c added `resolve_auto_cache_strategy/2` as the fourth
+resolver. It uses `cost_model.pl` to decide between cursor and
+in-memory demand BFS via the workload-metadata channel. A
+footprint guard (Phase L#11 follow-up) overrides `in_memory` →
+`cursor` when `R_free < W`.
+
+Phase 2c+ added a fifth resolver, `resolve_auto_lmdb_cache_mode/2`,
+covered in the next section.
+
+## The `lmdb_cache_mode` auto-resolver
+
+`resolve_auto_cache_strategy/2` picks the *access pattern*
+(cursor vs in-memory). `resolve_auto_lmdb_cache_mode/2` picks the
+*cache tier* on top of that. The two compose.
+
+### Inputs
+
+| input | source | purpose |
+|---|---|---|
+| `lmdb_cache_mode(auto)` | option | triggers resolution |
+| `workload_locality(L)` | option (opt-in signal) | tier choice — `L ∈ {intra_thread, cross_thread, mixed, unknown}` |
+| `expected_query_count(M)` | option | reused from cost_model channel; whether caching pays off |
+| `demand_bfs_mode/1` | already-resolved by cache_strategy | composition: `in_memory` → no cache |
+
+The opt-in signal is `workload_locality/1`. Without it, the new
+resolver is a no-op and the existing in-place auto resolution
+(`statistics:select_cache_mode/2` consulted in
+`generate_lmdb_functions/2`) handles `lmdb_cache_mode(auto)`. This
+preserves backwards compatibility for callers using the older
+`statistics:declare_cache_hints/1` channel.
+
+### Decision matrix
+
+| condition | pick | rationale |
+|---|---|---|
+| `demand_bfs_mode = in_memory` | `none` | the edge IntMap *is* the cache; another tier is redundant |
+| `M = 1` | `none` | nothing to amortise the cache fill against |
+| `M > 1` and `intra_thread` | `per_hec` (L1) | per-HEC L1 wins when sparks have region affinity |
+| `M > 1` and `cross_thread` | `sharded` (L2) | single shared cache, mild contention, captures inter-thread hits |
+| `M > 10` and `mixed` | `two_level` (L1+L2) | both intra- and inter-thread locality |
+| `M > 1` and (`mixed` with low M, or `unknown`) | `sharded` (L2) | safe default |
+
+### Why the `unknown → sharded` default
+
+Mirrors the conventional wisdom documented in the matrix bench:
+per-HEC L1 caches duplicate hot edges across threads when sparks
+have no region affinity (parMap-scheduled). Until MoE-style spark
+routing lands, L1 is dominated by sharded L2 in the unknown-
+locality case.
+
+### Composition with `cache_strategy(auto)`
+
+The two resolvers run in order: `cache_strategy(auto)` first
+(picks cursor or in_memory), then `lmdb_cache_mode(auto)` reads
+the result. The composition rule "in_memory → none cache tier"
+is the key piece of information they share — it's what lets one
+opt-in (`workload_locality(unknown)` + `cache_strategy(auto)`)
+produce a self-consistent end-to-end decision.
+
+### What this isn't doing (yet)
+
+- **No memory-budget guard on the cache itself.** Tier choice is
+  based on quantity and locality, not on whether the cache size
+  fits after the working set is accounted for. `lmdb_cache_l2_capacity_bytes`
+  lets users override the L2 size manually; an automatic floor
+  ("`R_free - W_working < N MB` → fall back to `none`") is a
+  follow-up.
+- **No automatic locality inference.** `workload_locality(...)`
+  comes from the workload author. Inferring it from purity
+  analysis or kernel metadata is research-y and deferred.
 
 ## What this isn't
 
@@ -196,9 +262,14 @@ not built yet — it needs the workload-metadata channel (`K_query`,
 ## See also
 
 - `docs/design/WAM_PERF_OPTIMIZATION_LOG.md` — Phase M appendix #10
-  (measurements that motivate the formula).
+  (measurements that motivate the formula), Phase L#11 (the
+  matrix-bench validation that surfaced the footprint-guard gap),
+  and the resolvers' usage notes.
 - `examples/benchmark/cache_warming_microbench/` — the M1/M1.b/M2/M3
   microbench that produced those measurements.
 - `src/unifyweaver/core/cost_model.pl` — the formula implementation.
 - `tests/core/test_cost_model.pl` — unit tests for the predicates
   with the simplewiki/enwiki crossover values from this document.
+- `src/unifyweaver/targets/wam_haskell_target.pl` —
+  `resolve_auto_cache_strategy/2` and `resolve_auto_lmdb_cache_mode/2`
+  (the Phase 2c/2c+ resolvers).

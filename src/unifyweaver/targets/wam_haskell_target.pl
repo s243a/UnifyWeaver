@@ -2579,7 +2579,13 @@ write_wam_haskell_project(Predicates, Options0, ProjectDir) :-
     % Phase 2c: resolve cache_strategy(auto) into a concrete
     % demand_bfs_mode/1 via cost_model:recommend_access_pattern/5.
     % No-op when cache_strategy(auto) is absent.
-    resolve_auto_cache_strategy(Options1, Options),
+    resolve_auto_cache_strategy(Options1, Options2),
+    % Phase 2c+: resolve lmdb_cache_mode(auto) into a concrete tier
+    % (none/per_hec/sharded/two_level) when workload_locality/1 is
+    % set. Composes with the cache_strategy decision above: in_memory
+    % → none. No-op when workload_locality is absent (the in-place
+    % auto resolver in generate_lmdb_functions/2 then takes over).
+    resolve_auto_lmdb_cache_mode(Options2, Options),
 
     % Initialize the compile-time atom intern table with well-known atoms
     init_atom_intern_table,
@@ -3196,6 +3202,88 @@ compute_cache_strategy_decision(Options, BfsMode) :-
     ;   true
     ).
 
+%% resolve_auto_lmdb_cache_mode(+Options0, -Options) is det.
+%
+%  Phase 2c+ opt-in resolver for `lmdb_cache_mode(auto)`. Decides
+%  between `none` / `per_hec` (L1) / `sharded` (L2) / `two_level`
+%  (L1+L2) from workload metadata.
+%
+%  Opt-in signal: presence of `workload_locality/1` in Options. Without
+%  it, this resolver is a no-op and the existing in-place resolution
+%  in `generate_lmdb_functions/2` (via
+%  `statistics:select_cache_mode/2`) continues to handle the auto
+%  path. With it, the new resolver runs and the in-place path becomes
+%  a no-op because `lmdb_cache_mode(auto)` has already been replaced
+%  with a concrete value.
+%
+%  Inputs:
+%
+%    - `lmdb_cache_mode(auto)`         — triggers resolution
+%    - `workload_locality(L)`          — opt-in signal; L ∈
+%                                        {intra_thread, cross_thread,
+%                                         mixed, unknown}
+%    - `expected_query_count(M)`       — defaults to 1
+%    - `demand_bfs_mode/1`             — read to compose with
+%                                        cache_strategy resolver
+%    - `cache_strategy_verbose(true)`  — stderr trace of decision
+%
+%  Composition with `resolve_auto_cache_strategy/2`:
+%
+%    If the cache_strategy resolver already picked `in_memory`, the
+%    edge IntMap *is* the cache and adding another tier is redundant.
+%    Pick `none` in that case regardless of locality / M.
+%
+%  Decision matrix for the cursor path:
+%
+%    M = 1                          → none      (no queries to amortise over)
+%    M > 1 & intra_thread          → per_hec   (L1)
+%    M > 1 & cross_thread          → sharded   (L2)
+%    M > 10 & mixed                → two_level (L1+L2)
+%    M > 1 & (mixed but M ≤ 10)    → sharded   (safe default)
+%    M > 1 & unknown               → sharded   (safe default;
+%                                                matches the existing
+%                                                resident_auto hardcode)
+%
+%  The `unknown → sharded` default mirrors the conventional wisdom
+%  documented in the matrix-bench: per-HEC L1 caches duplicate hot
+%  edges across threads when sparks have no region affinity, so until
+%  MoE-style spark routing lands, sharded is the right floor.
+%
+%  See docs/design/CACHE_COST_MODEL_PHILOSOPHY.md (decision-matrix
+%  section).
+resolve_auto_lmdb_cache_mode(Options0, Options) :-
+    (   option(lmdb_cache_mode(auto), Options0),
+        memberchk(workload_locality(_), Options0)
+    ->  compute_lmdb_cache_mode_decision(Options0, Mode),
+        select(lmdb_cache_mode(auto), Options0, Rest),
+        Options = [lmdb_cache_mode(Mode) | Rest]
+    ;   Options = Options0
+    ).
+
+compute_lmdb_cache_mode_decision(Options, Mode) :-
+    (   option(demand_bfs_mode(in_memory), Options)
+    ->  Mode = none,
+        Reason = in_memory_path
+    ;   option(expected_query_count(M), Options, 1),
+        option(workload_locality(Locality), Options, unknown),
+        (   M =< 1
+        ->  Mode = none, Reason = m_too_small
+        ;   Locality == intra_thread
+        ->  Mode = per_hec, Reason = intra_thread
+        ;   Locality == cross_thread
+        ->  Mode = sharded, Reason = cross_thread
+        ;   Locality == mixed, M > 10
+        ->  Mode = two_level, Reason = mixed
+        ;   Mode = sharded, Reason = default_safe
+        )
+    ),
+    (   option(cache_strategy_verbose(true), Options)
+    ->  format(user_error,
+               '[WAM-Haskell] lmdb_cache_mode(auto) → ~w (~w)~n',
+               [Mode, Reason])
+    ;   true
+    ).
+
 %% resolve_demand_filter_spec(+Options, -SpecHs)
 %  Pick the DemandFilterSpec literal to emit into Main.hs.
 %  Precedence:
@@ -3354,7 +3442,10 @@ compile_wam_runtime_to_haskell(Options0, DetectedKernels, Code) :-
     % Phase 2c: resolve cache_strategy(auto) into a concrete
     % demand_bfs_mode/1 BEFORE downstream code consults it. No-op
     % when the option is absent.
-    resolve_auto_cache_strategy(Options0, Options),
+    resolve_auto_cache_strategy(Options0, Options1),
+    % Phase 2c+: resolve lmdb_cache_mode(auto) → concrete tier.
+    % No-op when workload_locality/1 is absent.
+    resolve_auto_lmdb_cache_mode(Options1, Options),
     step_function_haskell(StepCode),
     backtrack_haskell(BacktrackCodeTemplate),
     run_loop_haskell(RunCode),

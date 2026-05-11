@@ -2005,6 +2005,129 @@ test_cache_strategy_footprint_guard_inactive_in_hot_regime :-
     ;   fail_test(Test, 'footprint guard incorrectly fired in hot regime')
     ).
 
+%% =================================================================
+%% lmdb_cache_mode(auto) resolver (Phase 2c+)
+%% =================================================================
+
+test_lmdb_cache_mode_auto_intra_thread_picks_per_hec :-
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) + intra_thread → per_hec',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(intra_thread),
+             expected_query_count(10)],
+            R),
+        memberchk(lmdb_cache_mode(per_hec), R),
+        \+ memberchk(lmdb_cache_mode(auto), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'intra_thread did not resolve to per_hec')
+    ).
+
+test_lmdb_cache_mode_auto_cross_thread_picks_sharded :-
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) + cross_thread → sharded',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(cross_thread),
+             expected_query_count(10)],
+            R),
+        memberchk(lmdb_cache_mode(sharded), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'cross_thread did not resolve to sharded')
+    ).
+
+test_lmdb_cache_mode_auto_mixed_high_m_picks_two_level :-
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) + mixed + M>10 → two_level',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(mixed),
+             expected_query_count(100)],
+            R),
+        memberchk(lmdb_cache_mode(two_level), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'mixed + high M did not resolve to two_level')
+    ).
+
+test_lmdb_cache_mode_auto_mixed_low_m_picks_sharded :-
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) + mixed + M<=10 → sharded (safe default)',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(mixed),
+             expected_query_count(5)],
+            R),
+        memberchk(lmdb_cache_mode(sharded), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'mixed + low M did not fall back to sharded')
+    ).
+
+test_lmdb_cache_mode_auto_unknown_picks_sharded :-
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) + unknown → sharded (safe default)',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(unknown),
+             expected_query_count(10)],
+            R),
+        memberchk(lmdb_cache_mode(sharded), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'unknown did not resolve to sharded')
+    ).
+
+test_lmdb_cache_mode_auto_m_le_one_picks_none :-
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) + M=1 → none (nothing to amortise)',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(cross_thread),
+             expected_query_count(1)],
+            R),
+        memberchk(lmdb_cache_mode(none), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'M=1 did not resolve to none')
+    ).
+
+test_lmdb_cache_mode_auto_composes_with_in_memory_bfs :-
+    %% Composition with cache_strategy: when demand_bfs_mode is already
+    %% in_memory (the IntMap *is* the cache), adding a tier is redundant.
+    %% Pick none regardless of locality/M.
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) → none when demand_bfs_mode is in_memory',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(cross_thread),
+             expected_query_count(100),
+             demand_bfs_mode(in_memory)],
+            R),
+        memberchk(lmdb_cache_mode(none), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'in_memory composition did not produce none')
+    ).
+
+test_lmdb_cache_mode_auto_no_op_without_workload_locality :-
+    %% Opt-in signal: without workload_locality/1, the new resolver is
+    %% a no-op and the existing in-place auto resolution handles it.
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) is a no-op without workload_locality',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             expected_query_count(10)],
+            R),
+        memberchk(lmdb_cache_mode(auto), R),
+        \+ memberchk(lmdb_cache_mode(per_hec), R),
+        \+ memberchk(lmdb_cache_mode(sharded), R),
+        \+ memberchk(lmdb_cache_mode(two_level), R),
+        \+ memberchk(lmdb_cache_mode(none), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'no-op condition mutated Options')
+    ).
+
+test_lmdb_cache_mode_explicit_unchanged :-
+    %% Explicit lmdb_cache_mode/1 (non-auto) flows through untouched.
+    Test = 'WAM-Haskell: explicit lmdb_cache_mode flows through unchanged',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(sharded),
+             workload_locality(intra_thread),
+             expected_query_count(10)],
+            R),
+        memberchk(lmdb_cache_mode(sharded), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'explicit lmdb_cache_mode was mutated')
+    ).
+
 test_b1_lmdb_dupsort_per_thread_cursor :-
     Test = 'B1: dupsort layout uses per-thread cursor cache',
     (   compile_wam_runtime_to_haskell(
@@ -2438,6 +2561,15 @@ run_tests :-
     test_cache_strategy_auto_overrides_explicit_demand_bfs_mode,
     test_cache_strategy_footprint_guard_overrides_in_memory,
     test_cache_strategy_footprint_guard_inactive_in_hot_regime,
+    test_lmdb_cache_mode_auto_intra_thread_picks_per_hec,
+    test_lmdb_cache_mode_auto_cross_thread_picks_sharded,
+    test_lmdb_cache_mode_auto_mixed_high_m_picks_two_level,
+    test_lmdb_cache_mode_auto_mixed_low_m_picks_sharded,
+    test_lmdb_cache_mode_auto_unknown_picks_sharded,
+    test_lmdb_cache_mode_auto_m_le_one_picks_none,
+    test_lmdb_cache_mode_auto_composes_with_in_memory_bfs,
+    test_lmdb_cache_mode_auto_no_op_without_workload_locality,
+    test_lmdb_cache_mode_explicit_unchanged,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)
