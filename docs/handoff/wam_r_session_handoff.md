@@ -99,9 +99,12 @@ relevant feature sections. Not bugs -- intentional scope boundaries.
   query runtime are documented in
   [`docs/design/WAM_R_FACT_INDEXING.md`](../design/WAM_R_FACT_INDEXING.md).
 - **`bagof` / `setof` per-witness grouping.** `^/2` existential scope
-  works; non-quantified free vars are silently aggregated rather than
-  producing one bag per witness binding.
-- **`length/2` (-,-)** generative mode unsupported.
+  works; non-quantified free vars are grouped, and additional witness
+  groups are exposed on backtracking. Unusual attributed-var or cyclic-
+  term compatibility cases remain outside the current coverage.
+- **`length/2` (-,-)** is an unbounded generator. It enumerates
+  `([], 0)`, then one-element lists, two-element lists, and so on via
+  an iter-CP; callers should guard it when collecting solutions.
 - **`retract/1` snapshot semantics.** The snapshot is taken at the
   original call; clauses asserted during the iteration are not seen.
 - **Postfix `xf` vs `yf` chaining.** Single postfix application is
@@ -123,18 +126,17 @@ relevant feature sections. Not bugs -- intentional scope boundaries.
 If you're picking up this campaign, these are the obvious next steps in
 roughly priority order:
 
-1. **LMDB backend** for `r_fact_sources`. Grouped-by-first TSV landed
-   alongside this entry (`grouped_by_first('path.tsv')` Spec; arity-2;
-   exploded into per-value tuples by `WamRuntime$read_facts_grouped_tsv`,
-   then through the same `build_fact_indexes` + `fact_table_dispatch`
-   pipeline as the CSV backend). LMDB is harder: needs an R LMDB binding
-   (e.g. `thor` / `lmdbr`, both system-LMDB-dependent) and a different
-   dispatch path -- the Scala impl deliberately bypasses the
-   load-everything `fact_table_dispatch` and probes by `lookupByArg1`
-   for ground arg1, `streamAll` otherwise. To extend: add a
-   `fact_source_loader_call/4` clause for the new Spec shape **plus** a
-   parallel `WamRuntime$lmdb_fact_dispatch` to skip the in-memory tuple
-   list, since materialising every key defeats the point.
+1. **Probe-on-demand LMDB dispatch** for `r_fact_sources`. The initial
+   LMDB backend is present: `source(Pred/Arity, lmdb(Path))` loads all
+   key/value pairs through an R LMDB binding (`thor` or `lmdbr`) and
+   feeds them into the same `build_fact_indexes` + `fact_table_dispatch`
+   path as inline, CSV, and grouped-TSV sources. The remaining high-
+   value follow-up is a dispatch path that avoids materialising the
+   whole store. The Scala impl is the reference shape: probe by
+   `lookupByArg1` for ground arg1 and `streamAll` otherwise. To extend,
+   keep the existing loader for compatibility and add a parallel
+   `WamRuntime$lmdb_fact_dispatch` that can service indexed lookups
+   directly from the LMDB env.
 2. ~~**Replace `state$regs2` env with an integer-indexed vector / list.**~~
    *Done.* `state$regs2` is now a plain R list, X / A access is
    `state$regs2[[idx]]` / `state$regs2[[idx]] <- v`. R copy-on-write
