@@ -904,7 +904,7 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
     ;   should_try_lower(Mode, P, Arity),
         WamCodeForLower \= "",
         catch(wam_r_lowerable(Pred, WamCodeForLower, _Reason), _, fail),
-        catch(lower_predicate_to_r(Pred, WamCodeForLower, [],
+        catch(lower_predicate_to_r(Pred, WamCodeForLower, Options,
                                    lowered(_PName, FuncName, LoweredR)),
               _, fail)
     ->  NewLoweredAcc = [LoweredR | LoweredAcc],

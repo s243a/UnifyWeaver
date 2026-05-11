@@ -34,10 +34,13 @@
 :- module(wam_r_lowered_emitter, [
     wam_r_lowerable/3,           % +Pred, +WamCode, -Reason
     lower_predicate_to_r/4,      % +Pred, +WamCode, +Options, -Entry
-    r_lowered_func_name/2        % +Functor/Arity, -RFuncName
+    r_lowered_func_name/2,       % +Functor/Arity, -RFuncName
+    gather_pred_mode_records/2   % +PredIndicator, -Records
 ]).
 
 :- use_module(library(lists)).
+:- use_module('../core/binding_state_analysis').
+:- use_module('../core/demand_analysis').
 
 % =====================================================================
 % Emission plan
@@ -185,43 +188,175 @@ r_safe_code(_, 0'_).
 
 %% lower_predicate_to_r(+Pred/Arity, +WamCode, +Options, -Entry)
 %  Entry = lowered(PredName, FuncName, RCode).
-lower_predicate_to_r(PI, WamCode, _Opts,
+%
+%  Options:
+%    mode_comments(on)  -- prepend a `# Mode analysis:` comment block
+%                          summarising the inferred binding env per
+%                          clause. Off by default. Visibility-only;
+%                          no codegen change. Phase 1 of WAM-R mode-
+%                          analysis integration (see
+%                          docs/design/WAM_R_MODE_ANALYSIS_PLAN.md).
+lower_predicate_to_r(PI, WamCode, Opts,
                      lowered(PredName, FuncName, Code)) :-
     ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
     format(atom(PredName), '~w/~w', [Pred, Arity]),
     r_lowered_func_name(Pred/Arity, FuncName),
     build_emission_plan(WamCode, plan(Mode, AltLabel, ClauseLines)),
+    mode_comment_header(PI, Opts, ModeHeader),
     (   Mode == deterministic
-    ->  emit_deterministic_function(PredName, FuncName, ClauseLines, Code)
+    ->  emit_deterministic_function(PredName, FuncName, ClauseLines,
+                                    ModeHeader, Code)
     ;   Mode == multi_clause_1
-    ->  emit_multi_clause_function(PredName, FuncName, AltLabel, ClauseLines, Code)
+    ->  emit_multi_clause_function(PredName, FuncName, AltLabel,
+                                   ClauseLines, ModeHeader, Code)
     ).
 
-emit_deterministic_function(PredName, FuncName, ClauseLines, Code) :-
+%% mode_comment_header(+PI, +Opts, -Header) is det.
+%  Builds the R comment block for the predicate's mode analysis when
+%  Opts contains mode_comments(on). Otherwise Header is the empty
+%  string. The block is intended to be visible in the generated R
+%  file so developers can see what the analyser inferred without
+%  re-running it.
+mode_comment_header(PI, Opts, Header) :-
+    (   member(mode_comments(on), Opts),
+        catch(gather_pred_mode_records(PI, Records), _, fail),
+        Records \= []
+    ->  format_mode_records(Records, Lines),
+        atomic_list_concat(Lines, '', Header)
+    ;   Header = ""
+    ).
+
+%% gather_pred_mode_records(+PredIndicator, -Records) is det.
+%  Pulls the user-asserted clauses for the predicate, runs the
+%  binding-state analyser per clause, and returns one
+%  `mode_record(Idx, ModeDecl, HeadVars, GoalBindings)` per clause.
+%
+%    - Idx        : 1-based clause number.
+%    - ModeDecl   : list of mode atoms (input/output/any) from
+%                   `:- mode/1`, or `none` if undeclared.
+%    - HeadVars   : list of `Var-Name-State` triples for each head
+%                   variable, where Name is the numbervars-assigned
+%                   atom and State is the binding state immediately
+%                   after head unification (i.e. BeforeEnv of goal 1).
+%    - GoalBindings : the raw goal_binding(Idx, Before, After) list
+%                     from the analyser (renderable via
+%                     format_mode_records/2).
+%
+%  Module qualifiers in clause bodies are stripped (plunit wraps
+%  asserted bodies in plunit_<test>:user:Goal). Failure is silent --
+%  any error in the analyser causes the records to be empty so the
+%  caller can degrade gracefully.
+gather_pred_mode_records(PI, Records) :-
+    ( PI = _Mod:Pred/Arity -> true ; PI = Pred/Arity ),
+    functor(HeadTpl, Pred, Arity),
+    catch(findall(HeadCopy-BodyCopy,
+                  ( user:clause(HeadTpl, RawBody),
+                    wam_r_target:strip_module_qualifiers(RawBody,
+                                                         StrippedBody),
+                    copy_term(HeadTpl-StrippedBody,
+                              HeadCopy-BodyCopy),
+                    numbervars(HeadCopy-BodyCopy, 0, _) ),
+                  Clauses), _, Clauses = []),
+    (   demand_analysis:read_mode_declaration(Pred, Arity, ModeDecl)
+    ->  true
+    ;   ModeDecl = none
+    ),
+    gather_clause_records(Clauses, 1, ModeDecl, Records).
+
+gather_clause_records([], _, _, []).
+gather_clause_records([Head-Body | Rest], Idx, ModeDecl,
+                      [mode_record(Idx, ModeDecl, HeadVars, GBs) | Tail]) :-
+    catch(binding_state_analysis:analyse_clause_bindings(Head, Body, GBs0),
+          _, GBs0 = []),
+    GBs = GBs0,
+    head_var_states(Head, GBs, HeadVars),
+    Idx1 is Idx + 1,
+    gather_clause_records(Rest, Idx1, ModeDecl, Tail).
+
+%% head_var_states(+Head, +GoalBindings, -HeadVars) is det.
+%  Returns a list of `Name-State` pairs, one per direct head-arg
+%  variable. State is read from goal_binding(1, BeforeEnv, _) --
+%  the env right before the first body goal, which is what an
+%  optimizer choosing a head-match specialisation would consult.
+head_var_states(Head, GBs, HeadVars) :-
+    Head =.. [_ | Args],
+    (   member(goal_binding(1, BeforeEnv, _), GBs)
+    ->  true
+    ;   binding_state_analysis:empty_binding_env(BeforeEnv)
+    ),
+    head_var_states_(Args, BeforeEnv, HeadVars).
+
+head_var_states_([], _, []).
+head_var_states_([Arg | Rest], Env, [Name-State | Tail]) :-
+    (   var(Arg)
+    ->  format(atom(Name), '_var_~w', [Arg])
+    ;   Arg = '$VAR'(N)
+    ->  numbered_var_atom(N, Name)
+    ;   Name = '<nonvar>'
+    ),
+    (   var(Arg)
+    ->  State = unbound
+    ;   binding_state_analysis:get_binding_state(Env, Arg, State0)
+    ->  State = State0
+    ;   State = unknown
+    ),
+    head_var_states_(Rest, Env, Tail).
+
+%% numbered_var_atom(+N, -Atom) is det.
+%  Mirrors the SWI numbervars convention: 0..25 -> A..Z, then A1..Z1,
+%  A2..Z2, etc. Used so head-arg variable names in the emitted
+%  comments match what numbervars/3 displays elsewhere.
+numbered_var_atom(N, Atom) :-
+    Letter is N mod 26,
+    Suffix is N // 26,
+    Code is 0'A + Letter,
+    (   Suffix =:= 0
+    ->  char_code(Char, Code), atom_concat(Char, '', Atom)
+    ;   char_code(Char, Code), atom_concat(Char, Suffix, Atom)
+    ).
+
+%% format_mode_records(+Records, -Lines) is det.
+%  Renders the analyser output as a block of R comment lines.
+%  Empty record list yields the empty string (no comment block).
+format_mode_records([], [""]) :- !.
+format_mode_records(Records, [Header | Body]) :-
+    Header = "# Mode analysis (phase 1, visibility-only):\n",
+    maplist(format_one_clause, Records, Bodies),
+    flatten(Bodies, Body0),
+    append(Body0, ["#\n"], Body).
+
+format_one_clause(mode_record(Idx, ModeDecl, HeadVars, _GBs), Lines) :-
+    format(string(L1), "#   clause ~w head: ~w   (mode_decl=~w)\n",
+           [Idx, HeadVars, ModeDecl]),
+    Lines = [L1].
+
+emit_deterministic_function(PredName, FuncName, ClauseLines,
+                            ModeHeader, Code) :-
     with_output_to(string(Body), emit_lines(ClauseLines, "  ")),
     % The clause body always ends with `proceed`, which emits
     % `return(TRUE)`. We keep an explicit `invisible(TRUE)` after the
     % body as a defensive fallback in case future codegen produces a
     % proceed-less clause; the wrapper does isTRUE() on the result.
     format(string(Code),
-'# Lowered: ~w  (deterministic single-clause)
+'~w# Lowered: ~w  (deterministic single-clause)
 ~w <- function(program, state) {
 ~w  invisible(TRUE)
-}', [PredName, FuncName, Body]).
+}', [ModeHeader, PredName, FuncName, Body]).
 
 % Multi-clause: push a CP whose next_pc points at clause 2+, run
 % clause 1 inline. If clause 1 succeeds the lowered fn returns TRUE
 % (the CP stays in $cps for downstream backtracking). If clause 1
 % fails we backtrack via the runtime helper, advance past the
 % trust_me, and drop into the run loop so it can drive clause 2+.
-emit_multi_clause_function(PredName, FuncName, AltLabel, ClauseLines, Code) :-
+emit_multi_clause_function(PredName, FuncName, AltLabel, ClauseLines,
+                           ModeHeader, Code) :-
     with_output_to(string(Body), emit_lines(ClauseLines, "    ")),
     % clause1_ok is the value of the closure's last expression, which
     % is the `return(TRUE)` emitted by the proceed line at the end of
     % clause 1. invisible(FALSE) is a defensive fallback for the
     % proceed-less case (caller does isTRUE() on the result).
     format(string(Code),
-'# Lowered: ~w  (multi-clause; clause 1 inline, fall back to array)
+'~w# Lowered: ~w  (multi-clause; clause 1 inline, fall back to array)
 ~w <- function(program, state) {
   alt_pc <- program$labels[["~w"]]
   if (is.null(alt_pc)) return(FALSE)
@@ -240,7 +375,7 @@ emit_multi_clause_function(PredName, FuncName, AltLabel, ClauseLines, Code) :-
   state$pc   <- state$pc + 1L
   state$halt <- FALSE
   isTRUE(WamRuntime$run(program, state))
-}', [PredName, FuncName, AltLabel, Body]).
+}', [ModeHeader, PredName, FuncName, AltLabel, Body]).
 
 emit_lines([], _).
 emit_lines([Line|Rest], Ind) :-
