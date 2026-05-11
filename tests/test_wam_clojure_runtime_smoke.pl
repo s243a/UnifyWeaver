@@ -65,6 +65,9 @@
 :- dynamic user:wam_append_bad_left/1.
 :- dynamic user:wam_append_unbound_left/1.
 :- dynamic user:wam_append_split/2.
+:- dynamic user:wam_copy_term_guard/2.
+:- dynamic user:wam_copy_term_sharing_fail/0.
+:- dynamic user:wam_copy_term_independent_ok/0.
 :- dynamic user:wam_ground_guard/1.
 :- dynamic user:wam_ground_unbound/1.
 :- dynamic user:wam_ground_nested_unbound/1.
@@ -151,6 +154,9 @@ user:wam_append_guard(A, B, C) :- append(A, B, C).
 user:wam_append_bad_left(C) :- append([a|b], [c], C).
 user:wam_append_unbound_left(C) :- user:wam_unbound_arg(A), append(A, [b], C).
 user:wam_append_split(A, B) :- append(A, B, [a,b,c]).
+user:wam_copy_term_guard(A, B) :- copy_term(A, B).
+user:wam_copy_term_sharing_fail :- copy_term(f(X, X), f(a, b)).
+user:wam_copy_term_independent_ok :- copy_term(f(_, _), f(a, b)).
 user:wam_ground_guard(X) :- ground(X).
 user:wam_ground_unbound(_) :- user:wam_unbound_arg(Y), ground(Y).
 user:wam_ground_nested_unbound(_) :- user:wam_unbound_arg(Y), ground(f(Y)).
@@ -242,6 +248,9 @@ run_smoke :-
           user:wam_append_bad_left/1,
           user:wam_append_unbound_left/1,
           user:wam_append_split/2,
+          user:wam_copy_term_guard/2,
+          user:wam_copy_term_sharing_fail/0,
+          user:wam_copy_term_independent_ok/0,
           user:wam_ground_guard/1,
           user:wam_ground_unbound/1,
           user:wam_ground_nested_unbound/1,
@@ -292,6 +301,7 @@ run_smoke :-
     assert_lowered_length_builtin_emitted(TmpDir),
     assert_lowered_member_builtin_emitted(TmpDir),
     assert_lowered_append_builtin_emitted(TmpDir),
+    assert_lowered_copy_term_builtin_emitted(TmpDir),
     assert_lowered_ground_builtin_emitted(TmpDir),
     assert_lowered_arithmetic_comparison_builtin_emitted(TmpDir),
     assert_multiclause_wrappers_runtime_mediated(TmpDir),
@@ -414,6 +424,12 @@ smoke_cases([
     case('wam_append_split/2', args('[a,b]', '[c]'), "true"),
     case('wam_append_split/2', args('[a,b,c]', '[]'), "true"),
     case('wam_append_split/2', args('[a]', '[c]'), "false"),
+    case('wam_copy_term_guard/2', args(a, a), "true"),
+    case('wam_copy_term_guard/2', args(a, b), "false"),
+    case('wam_copy_term_guard/2', args('f(a)', 'f(a)'), "true"),
+    case('wam_copy_term_guard/2', args('f(a)', 'f(b)'), "false"),
+    case('wam_copy_term_sharing_fail/0', no_args, "false"),
+    case('wam_copy_term_independent_ok/0', no_args, "true"),
     case('wam_ground_guard/1', a, "true"),
     case('wam_ground_guard/1', 42, "true"),
     case('wam_ground_guard/1', 3.5, "true"),
@@ -597,6 +613,14 @@ assert_lowered_append_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-append-unbound-left-1"),
     has(CoreCode, "defn lowered-wam-append-split-2"),
     has(CoreCode, "runtime/apply-append-solution").
+
+assert_lowered_copy_term_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-copy-term-guard-2"),
+    has(CoreCode, "defn lowered-wam-copy-term-sharing-fail-0"),
+    has(CoreCode, "defn lowered-wam-copy-term-independent-ok-0"),
+    has(CoreCode, "runtime/apply-copy-term-solution").
 
 assert_lowered_ground_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
