@@ -211,6 +211,7 @@ register_builtin_targets :-
     register_target(rust, native, [compiled, streaming, memory_safe, performance]),
     register_target(c, native, [compiled, performance, low_level]),
     register_target(wam_c, native, [compiled, performance, low_level, wam, manual_memory]),
+    register_target(wam_cpp, native, [compiled, performance, low_level, wam, hybrid, manual_memory, choice_points]),
 
     % JavaScript family - runtime selection via js_runtime_choice/2
     register_target(typescript, javascript, [types, async, modules, generics]),
@@ -245,6 +246,7 @@ target_module(go, go_target).
 target_module(rust, rust_target).
 target_module(c, c_target).
 target_module(wam_c, wam_c_target).
+target_module(wam_cpp, wam_cpp_target).
 target_module(csharp, csharp_target).
 target_module(csharp_native, csharp_native_target).
 target_module(fsharp, fsharp_target).
