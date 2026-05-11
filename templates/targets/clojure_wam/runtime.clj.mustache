@@ -712,6 +712,9 @@
   (let [frame (peek (:build-stack state))]
     (and frame (= (count (:args frame)) (:arity frame)))))
 
+(defn a-slot? [reg]
+  (and (string? reg) (.startsWith reg "A")))
+
 (defn assign-or-unify-reg [state reg term]
   (let [current (or (reg-get-raw state reg) ::unbound)]
     (cond
@@ -725,11 +728,13 @@
   (let [frame (peek (:build-stack state))
         built (structure-term (:functor frame) (:args frame))
         target-reg (:target-reg frame)
-        next-state (update state :build-stack pop)
-        [ok bound-state] (assign-or-unify-reg next-state target-reg built)]
-    (if ok
-      bound-state
-      (backtrack state))))
+        next-state (update state :build-stack pop)]
+    (if (a-slot? target-reg)
+      (reg-set-raw next-state target-reg built)
+      (let [[ok bound-state] (assign-or-unify-reg next-state target-reg built)]
+        (if ok
+          bound-state
+          (backtrack state))))))
 
 (defn finalize-complete-builds [state]
   (loop [s state]

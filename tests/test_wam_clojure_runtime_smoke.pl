@@ -155,7 +155,7 @@ user:wam_append_bad_left(C) :- append([a|b], [c], C).
 user:wam_append_unbound_left(C) :- user:wam_unbound_arg(A), append(A, [b], C).
 user:wam_append_split(A, B) :- append(A, B, [a,b,c]).
 user:wam_copy_term_guard(A, B) :- copy_term(A, B).
-user:wam_copy_term_sharing_fail :- copy_term(f(X, X), f(a, b)).
+user:wam_copy_term_sharing_fail :- user:wam_unbound_arg(X), copy_term(f(X, X), f(a, b)).
 user:wam_copy_term_independent_ok :- copy_term(f(_, _), f(a, b)).
 user:wam_ground_guard(X) :- ground(X).
 user:wam_ground_unbound(_) :- user:wam_unbound_arg(Y), ground(Y).
