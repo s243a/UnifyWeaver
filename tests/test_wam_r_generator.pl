@@ -853,6 +853,84 @@ e2e_mode_phase2_get_constant :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% Mode-analysis phase 3: is/2 specialisations.
+%
+% Two combined changes:
+%   (a) Runtime fast-path: the is/2 handler in call_builtin recognises
+%       simple binary int-only expressions and bypasses eval_arith's
+%       recursion + arith_to_term dispatch, plus fast-binds the target
+%       when it derefs to unbound.
+%   (b) Lowered-emitter inline: the lowered emitter emits is/2 directly,
+%       skipping the WamRuntime$step -> WamRuntime$call_builtin
+%       function-call + switch hop.
+%
+% Two structural assertions on the codegen (for (b)), plus an e2e
+% Rscript correctness check covering simple + nested + non-int cases
+% (validates both (a) and (b) together).
+% ------------------------------------------------------------------
+test(mode_analysis_phase3_is_inlined) :-
+    once((
+        retractall(user:p3_compute(_, _)),
+        % Single-clause arith predicate; lowered emitter will emit the
+        % is/2 inline form for this clause body.
+        assertz((user:p3_compute(N, R) :- R is N * 2 + 1)),
+        unique_r_tmp_dir('tmp_r_phase3_is_inlined', TmpDir),
+        write_wam_r_project(
+            [ user:p3_compute/2 ],
+            [emit_mode(functions), fact_table_layout(off)],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        % Inline is/2 form present.
+        assertion(sub_string(Code, _, _, _,
+            'is_target_ <- WamRuntime$get_reg(state, 1L)')),
+        assertion(sub_string(Code, _, _, _,
+            'is_n_      <- WamRuntime$eval_arith(state, is_expr_,')),
+        % AND the step-delegating form for builtin_call is/2 is absent.
+        assertion(\+ sub_string(Code, _, _, _,
+            'WamRuntime$step(program, state, BuiltinCall("is/2"')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(mode_analysis_phase3_is_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_phase3_is
+    ;   true
+    )).
+
+e2e_phase3_is :-
+    retractall(user:p3_simple(_, _)),
+    retractall(user:p3_nested(_, _)),
+    retractall(user:p3_simple_check/0),
+    retractall(user:p3_nested_check/0),
+    retractall(user:p3_negative_check/0),
+    % Simple binary int op -- runtime fast-path target.
+    assertz((user:p3_simple(N, R) :- R is N + 41)),
+    % Nested arith -- runtime fast-path doesn't apply (>2 levels), so
+    % the slow eval_arith path runs. Still must be correct.
+    assertz((user:p3_nested(N, R) :- R is (N * 3) + (N - 1))),
+    assertz((user:p3_simple_check :- p3_simple(1, 42))),
+    assertz((user:p3_nested_check :- p3_nested(10, 39))),
+    % Negative result -- exercises subtraction.
+    assertz((user:p3_negative_check :- p3_simple(-50, -9))),
+    unique_r_tmp_dir('tmp_r_phase3_is_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:p3_simple/2, user:p3_nested/2,
+          user:p3_simple_check/0, user:p3_nested_check/0,
+          user:p3_negative_check/0 ],
+        [emit_mode(functions), fact_table_layout(off)],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    run_rscript_query(RDir, 'p3_simple_check/0', OutS),
+    run_rscript_query(RDir, 'p3_nested_check/0', OutN),
+    run_rscript_query(RDir, 'p3_negative_check/0', OutNeg),
+    assertion(sub_string(OutS,   _, _, _, "true")),
+    assertion(sub_string(OutN,   _, _, _, "true")),
+    assertion(sub_string(OutNeg, _, _, _, "true")),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Phase-3 follow-up: extended builtins.
 % Type checks, term equality / identity, standard order of terms,
 % and the cut (!/0). Each predicate compiles to the corresponding

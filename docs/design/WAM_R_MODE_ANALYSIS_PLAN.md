@@ -110,7 +110,135 @@ is a dominant fraction would show a clean win. The existing
 fact-source bench doesn't fit because its fact predicates go through
 the dedicated fact_table dispatch, not the lowered emitter.
 
-## Phase 3 candidates
+## Phase 3 — is/2 specialisation (LANDED)
+
+**PR**: see commit history on `claude/wam-r-mode-analysis-phase3-is-fastpath`.
+
+Two combined changes targeting the `is/2` arithmetic builtin, which
+is a dominant cost on any predicate that recurses while doing
+arithmetic (the most common shape outside fact tables):
+
+**(a) Runtime fast-path in the is/2 handler.** When the expression
+is a 2-arg arithmetic struct (`+`, `-`, `*`, `//`, `mod`) and both
+operands deref to ints, bypass the recursive `eval_arith` walk +
+`arith_to_term` dispatch. Additionally fast-bind the target when it
+derefs to unbound, skipping the unify. Falls through to the original
+slow path for anything that doesn't match the fast shape.
+
+```r
+# In WamRuntime$call_builtin, is/2 branch:
+expr_d <- WamRuntime$deref(state, expr)
+if (struct + 2 args + both int) {
+  fast_val <- switch(op, "+" = a + b, ...)
+  if (!is.null(fast_val)) {
+    res <- IntTerm(as.integer(fast_val))
+    if (target derefs to unbound) {
+      WamRuntime$bind(state, name, res)
+      return(TRUE)
+    }
+    return(WamRuntime$unify(state, target, res))
+  }
+}
+# slow path: eval_arith + arith_to_term + unify
+```
+
+Saves 3-4 function calls per is/2 hit (top-level `eval_arith` + 2
+recursive calls for args + `arith_to_term`).
+
+**(b) Lowered-emitter inline for `builtin_call is/2 2`.** Bypasses
+`WamRuntime$step` → `WamRuntime$call_builtin` → big switch dispatch:
+
+```r
+{
+  is_target_ <- WamRuntime$get_reg(state, 1L)
+  is_expr_   <- WamRuntime$get_reg(state, 2L)
+  is_n_      <- WamRuntime$eval_arith(state, is_expr_, intern_table)
+  if (is.null(is_n_)) return(FALSE)
+  is_res_    <- WamRuntime$arith_to_term(is_n_)
+  if (is.null(is_res_)) return(FALSE)
+  is_target_d_ <- WamRuntime$deref(state, is_target_)
+  if (target_d unbound) bind  else unify
+}
+```
+
+Saves 2 function calls + 2 switch lookups per is/2 hit. The fast-bind
+branch is gated by a runtime tag check (not mode info), so it works
+without `:- mode/1` declarations. Mode info would only save us the
+one cheap if/else; not worth the codegen complexity for this op.
+
+### Measured impact
+
+Same pn recursive bench as phase 2 (`pn(0). pn(N) :- N > 0, N1 is N -
+1, pn(N1).` with `:- mode(pn(+))`, 200 iterations × recursion depth
+2000). Phase-2 baseline built from `main` worktree (clean phase-2
+codegen + runtime), phase-3 built from this branch.
+
+Alternating runs to defeat time-correlated noise:
+
+| Run | PHASE2 baseline | PHASE3 |
+|-----|-----------------|--------|
+| 1 | 73.37s | 71.91s |
+| 2 | 73.73s | 69.60s |
+| 3 | 73.83s | 70.43s |
+| 4 | 73.66s | 71.66s |
+
+| Stat | PHASE2 | PHASE3 |
+|------|--------|--------|
+| Mean | 73.6s | 70.9s |
+| Min  | 73.37s | 69.60s |
+| Max  | 73.83s | 71.91s |
+| Range | 0.46s | 2.31s |
+
+**Phase 3 is consistently ~3.7% faster** (max PHASE3 < min PHASE2 by
+1.46s -- no overlap in distributions). This is the first clearly-
+above-noise mode-analysis-campaign win on the recursive workload.
+
+The win comes mostly from the runtime fast-path (a): clause 2 of pn
+runs through the array path / step, so the lowered-emitter inline
+(b) doesn't apply to it. Phase 4's multi_clause_n would bring (b)
+into play for clause 2 as well, multiplying the win.
+
+### Connection to mode analysis
+
+Phase 3 (b) is only weakly mode-driven: the unbound check is at
+runtime. Phase 2's `get_constant` was the clearer example of mode-
+driven inline. The is/2 work is in the same campaign because it
+extends the same "skip dispatch hop" pattern -- and once the user
+adds `:- mode(p(-, +, +, ...))`-style annotations, future phases
+can drop even the unbound runtime check for the dominant idiom
+`X is Expr` (X unbound, Expr bound).
+
+### Important: get_constant inline + is/2 inline only fire on the
+### lowered emitter path
+
+Both phase-2 and phase-3 (b) specialisations only fire inside
+`lowered_*` functions. The lowered emitter currently handles
+`deterministic` (single-clause) and `multi_clause_1` (multi-clause,
+first clause inline + array fallback) shapes. Clauses 2+ of a
+multi-clause predicate run through the WAM array path / `step` /
+`call_builtin` unchanged. To unlock more of the win, the next
+direction is to *broaden what gets lowered*: a `multi_clause_n`
+emitter that handles ALL clauses inline (gated on every clause being
+individually lowerable). Listed as the leading phase-4 candidate
+below.
+
+## Phase 4 candidates
+
+1. **`multi_clause_n` lowered emission.** When `forall(C in clauses,
+   wam_r_lowerable(C))` holds, emit each clause as an inline closure
+   inside the lowered function. Push a CP pointing at the next
+   inline clause, try each clause with state-restore between
+   attempts, leave the CP in place on success so caller-side
+   backtracking still works correctly via the array path.
+2. **`get_value` head match -- skip deref-then-unify when both
+   sides are provably bound atomics.** Same shape as the phase-2
+   `get_constant` specialisation but for var-to-var matching.
+3. **Auto-mode-inference from call sites.** Today the analyser
+   only knows what `:- mode/1` declarations tell it. A whole-
+   program pass could infer modes from observed call sites,
+   eliminating the user's burden of declaring modes (and
+   broadening phase-2/3 specialisation coverage). Big project --
+   probably a separate sub-campaign.
 
 The fact-source-bench Rprof profile (see WAM_R_TARGET.md "Rprof
 profile of the WAM stepping engine") flags the dominant costs:
@@ -123,38 +251,17 @@ profile of the WAM stepping engine") flags the dominant costs:
 | `WamRuntime$deref` | 0.380 | 7.3% | **YES** -- skip deref at known-bound slots |
 | `WamRuntime$put_reg` | 0.260 | 5.0% | no -- already trivial |
 
-Top phase-3 candidates, in priority order:
+Phase 4 should pick **one** candidate (likely #1, since it
+multiplies the impact of every other specialisation), implement +
+bench on a workload that's actually dominated by the targeted op.
 
-1. **`get_value` head match -- skip deref-then-unify when both
-   sides are provably bound atomics.** Same shape as the phase-2
-   `get_constant` specialisation but for var-to-var matching.
-2. **`is/2` arithmetic fast path -- skip per-call type-tag checks
-   when all RHS vars are provably bound to numerics.** Lives in
-   builtin handlers, not the lowered emitter. Independent project.
-3. **Lowering more shapes.** When mode info proves a multi-clause
-   predicate is deterministic at this call site, the emitter could
-   pick `deterministic` instead of `multi_clause_1`, skipping the
-   CP push. Requires call-site mode info, not just clause-level.
-4. **Auto-mode-inference from call sites.** Today the analyser
-   only knows what `:- mode/1` declarations tell it. A whole-
-   program pass could infer modes from observed call sites,
-   eliminating the user's burden of declaring modes (and
-   broadening phase-2/3 specialisation coverage). Big project --
-   probably a separate sub-campaign.
-
-Phase 3 should pick **one** candidate, implement + bench on a
-workload that's actually dominated by the targeted op (not the
-fact-source bench, which goes through fact_table_dispatch). The
-bench command is documented in WAM_R_TARGET.md ("Rprof profile
-of the WAM stepping engine").
-
-## Phase 4+ — adaptive specialisation
+## Phase 5+ — adaptive specialisation
 
 Call-site-driven specialisation: the analyser tracks not just
 "variables in this clause body" but "modes of every call site I
 see," and the emitter picks specialised emission per call site.
 This is a much bigger change (requires whole-program mode
-propagation) and is deferred until phase 3 establishes the
+propagation) and is deferred until earlier phases establish the
 pay-for-itself baseline on a representative workload.
 
 ## Risks / open questions

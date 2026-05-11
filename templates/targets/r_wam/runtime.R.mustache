@@ -4614,9 +4614,45 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
   }
 
   # is/2: eval A2, unify with A1.
+  #
+  # Fast path: when the expression is a 2-arg arithmetic struct whose
+  # both args deref to ints, and the operator is one of the common
+  # integer ops, do the arith inline and skip the eval_arith recursion
+  # (which would otherwise call itself 2-3 times for this single op)
+  # and the arith_to_term dispatch. Additionally, when the target derefs
+  # to unbound, fast-bind (skipping unify). Falls through to the slow
+  # path for anything else.
   if (pred == "is/2" && arity == 2L) {
     target <- WamRuntime$get_reg(state, 1L)
     expr   <- WamRuntime$get_reg(state, 2L)
+    expr_d <- WamRuntime$deref(state, expr)
+    if (!is.null(expr_d) && is.list(expr_d) && !is.null(expr_d$tag) &&
+        expr_d$tag == "struct" && length(expr_d$args) == 2L) {
+      a_d <- WamRuntime$deref(state, expr_d$args[[1L]])
+      b_d <- WamRuntime$deref(state, expr_d$args[[2L]])
+      if (!is.null(a_d) && !is.null(b_d) &&
+          !is.null(a_d$tag) && !is.null(b_d$tag) &&
+          a_d$tag == "int" && b_d$tag == "int") {
+        op <- WamRuntime$string_of(table, expr_d$fid)
+        fast_val <- switch(op,
+          "+"   = a_d$val + b_d$val,
+          "-"   = a_d$val - b_d$val,
+          "*"   = a_d$val * b_d$val,
+          "//"  = a_d$val %/% b_d$val,
+          "mod" = a_d$val %% b_d$val,
+          NULL)
+        if (!is.null(fast_val)) {
+          res <- IntTerm(as.integer(fast_val))
+          target_d <- WamRuntime$deref(state, target)
+          if (!is.null(target_d) && !is.null(target_d$tag) &&
+              target_d$tag == "unbound") {
+            WamRuntime$bind(state, target_d$name, res)
+            return(TRUE)
+          }
+          return(WamRuntime$unify(state, target, res))
+        }
+      }
+    }
     n <- WamRuntime$eval_arith(state, expr, table)
     if (is.null(n)) return(FALSE)
     res <- WamRuntime$arith_to_term(n)

@@ -522,6 +522,27 @@ emit_line_parts(["get_constant", CStr, AiStr], I) :-
     format("~w{ val_ <- WamRuntime$deref(state, WamRuntime$get_reg(state, ~w)); if (is.null(val_) || !identical(val_, ~w)) return(FALSE) }~n",
            [I, AIdx, CTerm]).
 
+% --- Builtin specialisations: inline the most common BuiltinCall
+% targets so they skip the WamRuntime$step -> WamRuntime$call_builtin
+% function-call + switch-dispatch hop. The inline path is semantically
+% identical to the slow path; it just avoids two function calls and
+% two switch lookups per call. Used heavily on arith-heavy workloads
+% where is/2 is the dominant builtin.
+
+emit_line_parts(["builtin_call", "is/2", "2"], I) :- !,
+    format("~w{~n", [I]),
+    format("~w  is_target_ <- WamRuntime$get_reg(state, 1L)~n", [I]),
+    format("~w  is_expr_   <- WamRuntime$get_reg(state, 2L)~n", [I]),
+    format("~w  is_n_      <- WamRuntime$eval_arith(state, is_expr_, intern_table)~n", [I]),
+    format("~w  if (is.null(is_n_)) return(FALSE)~n", [I]),
+    format("~w  is_res_    <- WamRuntime$arith_to_term(is_n_)~n", [I]),
+    format("~w  if (is.null(is_res_)) return(FALSE)~n", [I]),
+    format("~w  is_target_d_ <- WamRuntime$deref(state, is_target_)~n", [I]),
+    format("~w  if (!is.null(is_target_d_) && !is.null(is_target_d_$tag) && is_target_d_$tag == \"unbound\") {~n", [I]),
+    format("~w    WamRuntime$bind(state, is_target_d_$name, is_res_)~n", [I]),
+    format("~w  } else if (!isTRUE(WamRuntime$unify(state, is_target_, is_res_))) return(FALSE)~n", [I]),
+    format("~w}~n", [I]).
+
 % --- Default: delegate to step with the same R literal the array uses
 emit_line_parts(Parts, I) :-
     wam_r_target:wam_parts_to_r(Parts, [], Lit),
