@@ -903,17 +903,29 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
         NewLoweredDispAcc = [RangeReg, DispEntry | LoweredDispAcc]
     ;   should_try_lower(Mode, P, Arity),
         WamCodeForLower \= "",
-        catch(wam_r_lowerable(Pred, WamCodeForLower, _Reason), _, fail),
+        catch(wam_r_lowerable(Pred, WamCodeForLower, LowerReason), _, fail),
         catch(lower_predicate_to_r(Pred, WamCodeForLower, Options,
                                    lowered(_PName, FuncName, LoweredR)),
               _, fail)
     ->  NewLoweredAcc = [LoweredR | LoweredAcc],
         emit_r_lowered_wrapper(P, Arity, FuncName, WrapperCode),
-        % Phase-3 lowered functions are NOT registered for internal
-        % dispatch -- they expect their own pre-set state via the
-        % per-pred wrapper. Internal calls keep going through the
-        % WAM array, matching the pre-PR behaviour.
-        NewLoweredDispAcc = LoweredDispAcc
+        % multi_clause_n lowered fns are self-contained (no array
+        % fallback) and safe to install in the lowered_dispatch tier,
+        % which the dispatch_call / "Call" / "Execute" runtime
+        % handlers consult before the WAM-array path. That lets
+        % internal recursive calls re-enter the lowered fn instead of
+        % iterating the array through `step`, which is where phase-4's
+        % material win comes from on recursive predicates like pn/1.
+        %
+        % deterministic + multi_clause_1 stay off lowered_dispatch
+        % because their failure paths assume state$pc points at a
+        % WAM-array instruction (they advance pc + drop into run),
+        % which would not hold when invoked through dispatch_call.
+        (   LowerReason = multi_clause_n(_)
+        ->  emit_lowered_dispatch_entry(P, Arity, FuncName, DispEntry),
+            NewLoweredDispAcc = [DispEntry | LoweredDispAcc]
+        ;   NewLoweredDispAcc = LoweredDispAcc
+        )
     ;   NewLoweredAcc = LoweredAcc,
         NewLoweredDispAcc = LoweredDispAcc,
         emit_r_wrapper(P, Arity, BasePC, WrapperCode)

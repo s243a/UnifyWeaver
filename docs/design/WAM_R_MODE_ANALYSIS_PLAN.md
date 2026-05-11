@@ -222,17 +222,95 @@ emitter that handles ALL clauses inline (gated on every clause being
 individually lowerable). Listed as the leading phase-4 candidate
 below.
 
-## Phase 4 candidates
+## Phase 4 — multi_clause_n lowered emission + lowered_dispatch self-jump (LANDED)
 
-1. **`multi_clause_n` lowered emission.** When `forall(C in clauses,
-   wam_r_lowerable(C))` holds, emit each clause as an inline closure
-   inside the lowered function. Push a CP pointing at the next
-   inline clause, try each clause with state-restore between
-   attempts, leave the CP in place on success so caller-side
-   backtracking still works correctly via the array path.
-2. **`get_value` head match -- skip deref-then-unify when both
-   sides are provably bound atomics.** Same shape as the phase-2
+**PR**: see commit history on `claude/wam-r-mode-analysis-phase4-multi-clause-n`.
+
+Two combined changes that compound the phase-3 wins on recursive
+arith-heavy predicates:
+
+**(a) `multi_clause_n` lowered emission.** When every clause is
+individually `wam_r_lowerable`, all clauses are emitted inline within
+one lowered function, with state snapshot/restore between attempts:
+
+```r
+lowered_<pred>(program, state) <- function() {
+  saved_regs_      <- state$regs2
+  saved_cp_        <- state$cp
+  saved_trail_len_ <- length(state$trail)
+  saved_var_count_ <- state$var_counter
+  clause_ok_ <- (function() { <clause 1 inline>; invisible(FALSE) })()
+  if (isTRUE(clause_ok_)) return(TRUE)
+  state$regs2       <- saved_regs_         # restore
+  state$cp          <- saved_cp_
+  WamRuntime$undo_trail_to(state, saved_trail_len_)
+  state$var_counter <- saved_var_count_
+  clause_ok_ <- (function() { <clause 2 inline>; invisible(FALSE) })()
+  if (isTRUE(clause_ok_)) return(TRUE)
+  ... (recursively for clauses 3..N)
+  return(FALSE)
+}
+```
+
+The emitter helper is recursive over the clause list (base case:
+no more clauses, fall through to `return(FALSE)`; recursive case:
+emit inline-try-then-restore-and-recurse). When only clause 1 is
+lowerable (clauses 2+ contain unsupported ops), the emitter
+degrades to the existing `multi_clause_1` shape: clause 1 inline +
+WAM-array fallback.
+
+**(b) `lowered_dispatch` self-jump.** Phase-1 lowered fns were
+deliberately NOT registered in `program$lowered_dispatch`, so
+internal `call`/`execute` of one lowered pred from another (or
+recursion) went through the WAM array via `WamRuntime$step`.
+Phase 4 changes this for `multi_clause_n` preds (which are
+self-contained -- no `state$pc` dependency on entry):
+
+  - At codegen, register the lowered fn in
+    `shared_program$lowered_dispatch` alongside the kernel /
+    fact-table fns.
+  - The lowered emitter's `emit_call` / `emit_execute` consult
+    `program$lowered_dispatch` first, falling back to the WAM array
+    only when no lowered fn is registered.
+
+The combination means a recursive predicate like pn can run
+end-to-end through the lowered path: every recursive call to
+`pn/1` self-jumps into `lowered_pn_1` instead of step-iterating
+the WAM array.
+
+`deterministic` and `multi_clause_1` preds stay off
+`lowered_dispatch` because their failure paths assume `state$pc`
+points at a WAM-array instruction (they advance pc + drop into
+`run`), which would not hold when invoked via the dispatch tier.
+
+### Frame-shape fix
+
+Pre-existing bug: the inline `allocate` / `deallocate` emission
+used a frame field name `locals` while the runtime expects `ys`
+and `cps_barrier`. The mismatch never surfaced because
+`multi_clause_1` lowering only inlined clause 1 of multi-clause
+predicates, and the only clauses that include `allocate` are
+non-base recursive cases that stayed in the WAM array. Phase 4
+puts every clause inline, so the inline `allocate` now actually
+runs -- the fix brings the inline emission into exact agreement
+with the runtime's `"Allocate"` / `"Deallocate"` handlers
+(including `state$shadow_frame` retention so post-`deallocate` Y
+reads still resolve).
+
+### Measured impact
+
+(_filled in after bench completes_)
+
+## Phase 5 candidates
+
+1. **`get_value` head match.** Skip deref-then-unify when both
+   sides are provably bound atomics. Same shape as phase-2's
    `get_constant` specialisation but for var-to-var matching.
+2. **Inline more step-delegated ops in `multi_clause_n` bodies.**
+   The phase-4 lowered pn body still has 4 `WamRuntime$step(...)`
+   calls (`BuiltinCall(">/2", 2)`, `PutStructure`, `SetValue`,
+   `SetConstant`). Each is a function call + switch hop. Inlining
+   these would yield smaller-but-additive wins.
 3. **Auto-mode-inference from call sites.** Today the analyser
    only knows what `:- mode/1` declarations tell it. A whole-
    program pass could infer modes from observed call sites,

@@ -931,6 +931,101 @@ e2e_phase3_is :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% Mode-analysis phase 4: multi_clause_n -- lower ALL clauses inline.
+%
+% Generalisation of phase-1's multi_clause_1 (which inlined only
+% clause 1 and fell back to the WAM array for clauses 2+). When all
+% clauses are individually wam_r_lowerable, the emitter now drops
+% each clause body inline within the same lowered fn, with state
+% snapshot/restore between attempts.
+%
+% Multi_clause_n preds are also registered in program$lowered_dispatch,
+% and emit_call / emit_execute consult lowered_dispatch first before
+% the WAM array, so recursive calls (e.g. pn calling pn) jump back
+% into the lowered fn instead of iterating the array through `step`.
+%
+% Two structural assertions and an e2e correctness check on pn.
+% ------------------------------------------------------------------
+test(mode_analysis_phase4_multi_clause_n_inlined) :-
+    once((
+        retractall(user:p4_two(_)),
+        retractall(user:mode(p4_two(_))),
+        assertz(user:mode(p4_two(+))),
+        % Two-clause predicate with the recursive shape -- exactly
+        % the pn pattern. Both clauses must be lowerable, and the
+        % recursive call must use lowered_dispatch.
+        assertz((user:p4_two(0))),
+        assertz((user:p4_two(N) :- N > 0, N1 is N - 1, user:p4_two(N1))),
+        unique_r_tmp_dir('tmp_r_phase4_inlined', TmpDir),
+        write_wam_r_project(
+            [ user:p4_two/1 ],
+            [emit_mode(functions), fact_table_layout(off)],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        % Multi-clause-n comment header appears.
+        assertion(sub_string(Code, _, _, _,
+            'multi-clause; all clauses inline, no array fallback')),
+        % Two clause closures emitted -- expect two `clause_ok_ <-`
+        % bindings in the lowered function.
+        sub_string_count(Code, "clause_ok_ <-", Count),
+        assertion(Count >= 2),
+        % lowered_dispatch registration for the predicate.
+        assertion(sub_string(Code, _, _, _,
+            'assign("p4_two/1", lowered_p4_two_1, envir = shared_program$lowered_dispatch)')),
+        retractall(user:mode(p4_two(_))),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(mode_analysis_phase4_multi_clause_n_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_phase4_multi_clause_n
+    ;   true
+    )).
+
+e2e_phase4_multi_clause_n :-
+    retractall(user:p4_pn(_)),
+    retractall(user:mode(p4_pn(_))),
+    retractall(user:p4_pn_check0/0),
+    retractall(user:p4_pn_check5/0),
+    retractall(user:p4_pn_check50/0),
+    assertz(user:mode(p4_pn(+))),
+    assertz((user:p4_pn(0))),
+    assertz((user:p4_pn(N) :- N > 0, N1 is N - 1, user:p4_pn(N1))),
+    % Three drivers covering: base case (no recursion), shallow recursion,
+    % and deeper recursion (exercises the lowered_dispatch self-jump).
+    assertz((user:p4_pn_check0  :- p4_pn(0))),
+    assertz((user:p4_pn_check5  :- p4_pn(5))),
+    assertz((user:p4_pn_check50 :- p4_pn(50))),
+    unique_r_tmp_dir('tmp_r_phase4_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:p4_pn/1, user:p4_pn_check0/0,
+          user:p4_pn_check5/0, user:p4_pn_check50/0 ],
+        [emit_mode(functions), fact_table_layout(off)],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    run_rscript_query(RDir, 'p4_pn_check0/0',  Out0),
+    run_rscript_query(RDir, 'p4_pn_check5/0',  Out5),
+    run_rscript_query(RDir, 'p4_pn_check50/0', Out50),
+    assertion(sub_string(Out0,  _, _, _, "true")),
+    assertion(sub_string(Out5,  _, _, _, "true")),
+    assertion(sub_string(Out50, _, _, _, "true")),
+    retractall(user:mode(p4_pn(_))),
+    delete_directory_and_contents(TmpDir).
+
+% Helper: count non-overlapping occurrences of Needle in Haystack.
+sub_string_count(Haystack, Needle, Count) :-
+    sub_string_count_(Haystack, Needle, 0, 0, Count).
+sub_string_count_(Haystack, Needle, Start, Acc, Count) :-
+    (   sub_string(Haystack, Pos, Len, _, Needle), Pos >= Start
+    ->  NextStart is Pos + Len,
+        Acc1 is Acc + 1,
+        sub_string_count_(Haystack, Needle, NextStart, Acc1, Count)
+    ;   Count = Acc
+    ).
+
+% ------------------------------------------------------------------
 % Phase-3 follow-up: extended builtins.
 % Type checks, term equality / identity, standard order of terms,
 % and the cut (!/0). Each predicate compiles to the corresponding
