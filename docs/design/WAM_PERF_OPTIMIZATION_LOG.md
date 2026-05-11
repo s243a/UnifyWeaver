@@ -3714,4 +3714,88 @@ The cost model has now been exercised end-to-end on real
 fixtures; future warming and `lmdb_cache_mode` resolvers can
 build on the same channel.
 
+## Phase L appendix #12: `lmdb_cache_mode(auto)` resolver wiring (2026-05-10)
+
+### What landed
+
+`resolve_auto_lmdb_cache_mode/2` in `wam_haskell_target.pl`. Picks
+`none` / `per_hec` / `sharded` / `two_level` from
+`expected_query_count`, `workload_locality(...)`, and the already-
+resolved `demand_bfs_mode/1`. Opt-in signal is presence of
+`workload_locality/1`; without it, the existing in-place
+resolution (via `statistics:select_cache_mode/2`) continues to
+handle the auto path.
+
+Decision matrix mirrors the philosophy doc:
+
+| M    | locality        | pick      |
+|---|---|---|
+| ≤ 1  | *               | none      |
+| > 1  | intra_thread    | per_hec   |
+| > 1  | cross_thread    | sharded   |
+| > 10 | mixed           | two_level |
+| > 1  | mixed (low M)   | sharded   |
+| > 1  | unknown         | sharded   |
+| (any) | * + in_memory  | none (composition rule) |
+
+The `unknown → sharded` default is the same call the matrix bench
+has been making by hand since Phase L#5 — now explicit and
+overridable per-workload.
+
+### Matrix-bench `resident_auto` update
+
+The mode previously hardcoded `lmdb_cache_mode(sharded)` and
+`expected_query_count(1)`. Both are replaced with:
+
+```prolog
+expected_query_count(10),  % bench runs many parMap-driven queries
+lmdb_cache_mode(auto),
+workload_locality(unknown)
+```
+
+Smoke run at 1k confirms both resolvers fire:
+
+```
+[WAM-Haskell] cache_strategy(auto): K=6 W=296650 R_free=3653779456 → sort (cursor)
+[WAM-Haskell] lmdb_cache_mode(auto) → sharded (default_safe)
+```
+
+The picks match the previous hardcoded values exactly, so this is
+a behaviour-preserving refactor for the matrix bench. The
+benefit is that workload authors can now override locality via
+`workload_locality(intra_thread)` etc. without touching the bench
+generator.
+
+### Tests
+
+9 new tests in `tests/test_wam_haskell_target.pl`:
+
+- `intra_thread + M > 1 → per_hec`
+- `cross_thread + M > 1 → sharded`
+- `mixed + M > 10 → two_level`
+- `mixed + M ≤ 10 → sharded (low-M fallback)`
+- `unknown → sharded (safe default)`
+- `M = 1 → none (no amortisation)`
+- `composition: in_memory → none`
+- `no-op without workload_locality`
+- `explicit lmdb_cache_mode flows through unchanged`
+
+All 164 WAM-Haskell tests pass (155 existing + 9 new); 21
+cost_model tests unchanged.
+
+### Open follow-ups
+
+- **Memory budget guard on the cache layer itself.** The footprint
+  guard from Phase L#11 covers the working set (`R_free < W` →
+  cursor). The cache tier doesn't have an analogous guard yet:
+  when `R_free - W_working < L2_capacity_floor` the L2 cache
+  would thrash. Filed for a follow-up.
+- **Automatic locality inference.** `workload_locality(...)` is
+  authored by hand. Could be derived from kernel metadata
+  (purity certificate, parMap usage). Research-y.
+- **At-scale empirical validation.** The fixtures from Phase L#7–9
+  were swept in the workspace reset; re-validating the resolvers'
+  picks against measured wall-clock numbers needs them re-ingested.
+  Filed.
+
 

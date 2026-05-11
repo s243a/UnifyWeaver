@@ -175,7 +175,12 @@ parse_lmdb_mode(resident_auto, [
     int_atom_seeds(lmdb),
     cache_strategy(auto),
     cache_strategy_verbose(true),
-    expected_query_count(1),
+    %% expected_query_count: the matrix bench runs many parMap-driven
+    %% query expansions per binary invocation (seed × root × sweep).
+    %% Set to 10 as a reasonable lower bound so the lmdb_cache_mode
+    %% auto-resolver picks a tier rather than `none`. Workloads with
+    %% genuinely 1-shot queries can override to 1.
+    expected_query_count(10),
     %% BFS demand-set workloads (matrix bench's effective-distance
     %% kernel) touch a tiny fraction of total edges per query.
     %% Empirically (Phase L appendix #7): the simplewiki Physics root
@@ -186,7 +191,12 @@ parse_lmdb_mode(resident_auto, [
     %% right shape for many-keys-per-query lookups; for BFS-style
     %% reachability it's two orders of magnitude too high.
     working_set_fraction(0.001),
-    lmdb_cache_mode(sharded)
+    %% Let the lmdb_cache_mode auto-resolver pick the tier. `unknown`
+    %% locality (the safe default) routes to `sharded` (L2), which is
+    %% the existing hardcode we're replacing — but now the choice is
+    %% explicit and overridable per-workload via workload_locality/1.
+    lmdb_cache_mode(auto),
+    workload_locality(unknown)
 ]).
 
 parse_variant(seeded, [
