@@ -627,6 +627,61 @@ e2e_phase3_multi_clause :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% Mode-analysis phase 1 (visibility-only). With mode_comments(on) in
+% Options, the lowered emitter prepends a `# Mode analysis:` comment
+% block above each lowered function summarising the analyser's per-
+% clause head-binding states. Pure visibility -- no runtime / codegen
+% behaviour change. Foundation for phase 2 specialisations.
+%
+% This is a structural test (no Rscript needed); it asserts on the
+% generated R file contents directly.
+% ------------------------------------------------------------------
+test(mode_analysis_phase1_comments) :-
+    once((
+        % Cleanup previous assertions if any.
+        retractall(user:ma_caller/1),
+        retractall(user:ma_callee/1),
+        retractall(user:mode(ma_caller(_))),
+        % Single-clause deterministic predicate so the lowered emitter
+        % picks it up. The mode declaration seeds the analyser: arg 1
+        % is input (-> bound at clause entry).
+        assertz(user:mode(ma_caller(+))),
+        assertz(user:ma_callee(_)),
+        assertz((user:ma_caller(X) :- user:ma_callee(X))),
+        unique_r_tmp_dir('tmp_r_mode_comments', TmpDir),
+        write_wam_r_project(
+            [ user:ma_caller/1, user:ma_callee/1 ],
+            [emit_mode(functions), mode_comments(on)],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        % The lowered function for ma_caller/1 should be preceded by
+        % the mode-analysis comment block, including the head-binding
+        % summary that mirrors the input-mode declaration.
+        assertion(sub_string(Code, _, _, _,
+            '# Mode analysis (phase 1, visibility-only):')),
+        assertion(sub_string(Code, _, _, _,
+            'mode_decl=[input]')),
+        % And the lowered function itself is still emitted.
+        assertion(sub_string(Code, _, _, _,
+            'lowered_ma_caller_1 <- function(program, state)')),
+        % Sanity: with the option OFF, the comment block is absent.
+        unique_r_tmp_dir('tmp_r_mode_comments_off', TmpDir2),
+        write_wam_r_project(
+            [ user:ma_caller/1, user:ma_callee/1 ],
+            [emit_mode(functions)],
+            TmpDir2),
+        directory_file_path(TmpDir2, 'R/generated_program.R', Program2),
+        read_file_to_string(Program2, Code2, []),
+        assertion(\+ sub_string(Code2, _, _, _,
+            '# Mode analysis (phase 1, visibility-only):')),
+        % Cleanup.
+        retractall(user:mode(ma_caller(_))),
+        delete_directory_and_contents(TmpDir),
+        delete_directory_and_contents(TmpDir2)
+    )).
+
+% ------------------------------------------------------------------
 % Phase-3 follow-up: extended builtins.
 % Type checks, term equality / identity, standard order of terms,
 % and the cut (!/0). Each predicate compiles to the corresponding
