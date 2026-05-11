@@ -639,36 +639,51 @@ e2e_phase3_multi_clause :-
 test(mode_analysis_phase1_comments) :-
     once((
         % Cleanup previous assertions if any.
-        retractall(user:ma_caller/1),
-        retractall(user:ma_callee/1),
-        retractall(user:mode(ma_caller(_))),
-        % Single-clause deterministic predicate so the lowered emitter
-        % picks it up. The mode declaration seeds the analyser: arg 1
-        % is input (-> bound at clause entry).
-        assertz(user:mode(ma_caller(+))),
-        assertz(user:ma_callee(_)),
-        assertz((user:ma_caller(X) :- user:ma_callee(X))),
+        retractall(user:ma_pin(_)),
+        retractall(user:ma_pout(_)),
+        retractall(user:ma_pany(_)),
+        retractall(user:ma_pnone(_)),
+        retractall(user:mode(ma_pin(_))),
+        retractall(user:mode(ma_pout(_))),
+        retractall(user:mode(ma_pany(_))),
+        % Four single-clause deterministic predicates, one per mode shape.
+        % The lowered emitter picks all of them; we assert the visibility
+        % comment reports the correct head-binding for each.
+        assertz(user:mode(ma_pin(+))),
+        assertz((user:ma_pin(_X)   :- true)),
+        assertz(user:mode(ma_pout(-))),
+        assertz((user:ma_pout(_X)  :- true)),
+        assertz(user:mode(ma_pany(?))),
+        assertz((user:ma_pany(_X)  :- true)),
+        assertz((user:ma_pnone(_X) :- true)),
         unique_r_tmp_dir('tmp_r_mode_comments', TmpDir),
         write_wam_r_project(
-            [ user:ma_caller/1, user:ma_callee/1 ],
+            [ user:ma_pin/1, user:ma_pout/1,
+              user:ma_pany/1, user:ma_pnone/1 ],
             [emit_mode(functions), mode_comments(on)],
             TmpDir),
         directory_file_path(TmpDir, 'R/generated_program.R', Program),
         read_file_to_string(Program, Code, []),
-        % The lowered function for ma_caller/1 should be preceded by
-        % the mode-analysis comment block, including the head-binding
-        % summary that mirrors the input-mode declaration.
+        % The lowered function for each is preceded by the mode-analysis
+        % comment block; head-binding state matches the mode declaration.
         assertion(sub_string(Code, _, _, _,
             '# Mode analysis (phase 1, visibility-only):')),
         assertion(sub_string(Code, _, _, _,
-            'mode_decl=[input]')),
-        % And the lowered function itself is still emitted.
+            '[Arg1-bound]   (mode_decl=[input])')),
         assertion(sub_string(Code, _, _, _,
-            'lowered_ma_caller_1 <- function(program, state)')),
+            '[Arg1-unbound]   (mode_decl=[output])')),
+        assertion(sub_string(Code, _, _, _,
+            '[Arg1-unknown]   (mode_decl=[any])')),
+        assertion(sub_string(Code, _, _, _,
+            '[Arg1-unknown]   (mode_decl=none)')),
+        % And the lowered functions themselves are still emitted.
+        assertion(sub_string(Code, _, _, _,
+            'lowered_ma_pin_1 <- function(program, state)')),
         % Sanity: with the option OFF, the comment block is absent.
         unique_r_tmp_dir('tmp_r_mode_comments_off', TmpDir2),
         write_wam_r_project(
-            [ user:ma_caller/1, user:ma_callee/1 ],
+            [ user:ma_pin/1, user:ma_pout/1,
+              user:ma_pany/1, user:ma_pnone/1 ],
             [emit_mode(functions)],
             TmpDir2),
         directory_file_path(TmpDir2, 'R/generated_program.R', Program2),
@@ -676,10 +691,135 @@ test(mode_analysis_phase1_comments) :-
         assertion(\+ sub_string(Code2, _, _, _,
             '# Mode analysis (phase 1, visibility-only):')),
         % Cleanup.
-        retractall(user:mode(ma_caller(_))),
+        retractall(user:mode(ma_pin(_))),
+        retractall(user:mode(ma_pout(_))),
+        retractall(user:mode(ma_pany(_))),
         delete_directory_and_contents(TmpDir),
         delete_directory_and_contents(TmpDir2)
     )).
+
+% ------------------------------------------------------------------
+% Mode-analysis phase 2: get_constant head match specialisation.
+% When the analyser proves the target A-register is bound at the head
+% match (via `:- mode(p(+, ...))`), the lowered emitter emits an
+% inline `WamRuntime$deref + identical()` check instead of delegating
+% to WamRuntime$step. Saves one function call (~0.5us, the dominant
+% cost) per get_constant on the hot path.
+%
+% This test asserts the inlined form appears for the +mode case and
+% the step-delegating form appears for the no-mode case. Structural
+% (no Rscript required); the e2e correctness path is exercised by the
+% existing fact_table tests, which the full suite verifies still
+% pass.
+% ------------------------------------------------------------------
+test(mode_analysis_phase2_get_constant_inlined) :-
+    once((
+        retractall(user:ma_pc(_)),
+        retractall(user:mode(ma_pc(_))),
+        % Predicate matches against an atom constant in the head -- the
+        % shared compiler emits `get_constant alice, A1` here. With
+        % :- mode(ma_pc(+)) the analyser proves Arg1 is bound, so the
+        % lowered emitter should inline the get_constant.
+        assertz(user:mode(ma_pc(+))),
+        assertz((user:ma_pc(alice) :- true)),
+        unique_r_tmp_dir('tmp_r_get_const_specialised', TmpDir),
+        write_wam_r_project(
+            [ user:ma_pc/1 ],
+            [emit_mode(functions), fact_table_layout(off)],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        % Specialised inline form present.
+        assertion(sub_string(Code, _, _, _,
+            'val_ <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1))')),
+        assertion(sub_string(Code, _, _, _,
+            'if (is.null(val_) || !identical(val_, Atom(')),
+        % AND the step-delegating form for THIS get_constant must be
+        % absent (the assertion verifies the specialised clause won.)
+        assertion(\+ sub_string(Code, _, _, _,
+            'WamRuntime$step(program, state, GetConstant(Atom(')),
+        % --- Negative path: same predicate compiled WITHOUT mode decl
+        % (and WITHOUT the global mode option). The analyser can't prove
+        % Arg1 is bound, so the specialisation must NOT fire -- the
+        % default step-delegating form should appear.
+        retractall(user:mode(ma_pc(_))),
+        unique_r_tmp_dir('tmp_r_get_const_unspecialised', TmpDir2),
+        write_wam_r_project(
+            [ user:ma_pc/1 ],
+            [emit_mode(functions), fact_table_layout(off)],
+            TmpDir2),
+        directory_file_path(TmpDir2, 'R/generated_program.R', Program2),
+        read_file_to_string(Program2, Code2, []),
+        assertion(sub_string(Code2, _, _, _,
+            'WamRuntime$step(program, state, GetConstant(Atom(')),
+        assertion(\+ sub_string(Code2, _, _, _,
+            'val_ <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1))')),
+        % --- mode_specialise(off) opt-out: even with the mode decl, the
+        % user can disable the specialisation if needed for debugging /
+        % bisection. Verify the opt-out works.
+        assertz(user:mode(ma_pc(+))),
+        unique_r_tmp_dir('tmp_r_get_const_optout', TmpDir3),
+        write_wam_r_project(
+            [ user:ma_pc/1 ],
+            [emit_mode(functions), fact_table_layout(off),
+             mode_specialise(off)],
+            TmpDir3),
+        directory_file_path(TmpDir3, 'R/generated_program.R', Program3),
+        read_file_to_string(Program3, Code3, []),
+        assertion(sub_string(Code3, _, _, _,
+            'WamRuntime$step(program, state, GetConstant(Atom(')),
+        % Cleanup.
+        retractall(user:mode(ma_pc(_))),
+        delete_directory_and_contents(TmpDir),
+        delete_directory_and_contents(TmpDir2),
+        delete_directory_and_contents(TmpDir3)
+    )).
+
+% ------------------------------------------------------------------
+% Mode-analysis phase 2: e2e correctness of the get_constant
+% specialisation. A predicate with declared input mode is compiled
+% with the specialisation enabled; the runtime must produce the same
+% true/false results as the unspecialised path. Auto-skips when
+% Rscript is not on PATH.
+% ------------------------------------------------------------------
+test(mode_analysis_phase2_get_constant_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_mode_phase2_get_constant
+    ;   true
+    )).
+
+e2e_mode_phase2_get_constant :-
+    retractall(user:ma_pe(_)),
+    retractall(user:mode(ma_pe(_))),
+    retractall(user:ma_check_a/0),
+    retractall(user:ma_check_b/0),
+    retractall(user:ma_check_z/0),
+    % `+` mode -- caller will always pass a bound atom; specialisation
+    % fires. Use three clauses so multi_clause_1 lowering also kicks in,
+    % exercising the inlined get_constant in the multi-clause path.
+    assertz(user:mode(ma_pe(+))),
+    assertz((user:ma_pe(a))),
+    assertz((user:ma_pe(b))),
+    assertz((user:ma_pe(c))),
+    assertz((user:ma_check_a :- ma_pe(a))),
+    assertz((user:ma_check_b :- ma_pe(b))),
+    assertz((user:ma_check_z :- ma_pe(z))),
+    unique_r_tmp_dir('tmp_r_mode_phase2_e2e', TmpDir),
+    write_wam_r_project(
+        [ user:ma_pe/1, user:ma_check_a/0,
+          user:ma_check_b/0, user:ma_check_z/0 ],
+        [emit_mode(functions), fact_table_layout(off)],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    run_rscript_query(RDir, 'ma_check_a/0', OutA),
+    run_rscript_query(RDir, 'ma_check_b/0', OutB),
+    run_rscript_query(RDir, 'ma_check_z/0', OutZ),
+    assertion(sub_string(OutA, _, _, _, "true")),
+    assertion(sub_string(OutB, _, _, _, "true")),
+    assertion(sub_string(OutZ, _, _, _, "false")),
+    retractall(user:mode(ma_pe(_))),
+    delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
 % Phase-3 follow-up: extended builtins.

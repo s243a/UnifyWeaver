@@ -470,14 +470,17 @@ A lowered predicate is dispatched the same way as a compiled label:
 the wrapper calls the lowered function instead of stepping the
 instruction array. Failure semantics are identical.
 
-### Mode-analysis visibility (`mode_comments`)
+### Mode analysis (`mode_comments`, `mode_specialise`)
 
-Phase 1 of WAM-R mode-analysis integration. The shared
+WAM-R mode-analysis integration. The shared
 `core/binding_state_analysis.pl` analyser is already wired into the
-WAM compiler for `=../2` / `functor/3` / `arg/3` /
-`not_member_set` specialisations. The WAM-R lowered emitter
-now optionally surfaces the same analyser output as comments
-prepended to each generated function:
+WAM compiler for `=../2` / `functor/3` / `arg/3` / `not_member_set`
+specialisations. The WAM-R lowered emitter wires the same analyser
+output into two consumers:
+
+**1. Visibility (`mode_comments(on)`)** -- prepend a
+`# Mode analysis:` comment block above each lowered function so
+developers can inspect what the analyser inferred:
 
 ```prolog
 :- assertz(user:mode(p(+, -))).
@@ -488,27 +491,48 @@ prepended to each generated function:
        '/tmp/proj').
 ```
 
-The generated R contains:
-
 ```r
 # Mode analysis (phase 1, visibility-only):
-#   clause 1 head: [A-bound, B-unbound]   (mode_decl=[input, output])
+#   clause 1 head: [Arg1-bound, Arg2-unbound]   (mode_decl=[input, output])
 #
 # Lowered: p/2  (deterministic single-clause)
 lowered_p_2 <- function(program, state) { ... }
 ```
 
-`mode_comments(on)` is **visibility-only** -- no runtime or codegen
-behaviour change. The block is intended as a debugging aid and as
-the foundation for phase 2, which will consume the same analyser
-records to pick specialised emission paths (e.g. skipping deref on
-known-bound register slots). See
-[`design/WAM_R_MODE_ANALYSIS_PLAN.md`](design/WAM_R_MODE_ANALYSIS_PLAN.md)
-for the phase roadmap.
+Head-arg state legend: `bound` (mode +), `unbound` (mode -),
+`unknown` (mode ?, no declaration, or analyser can't prove either
+way). Non-variable head patterns (e.g. `p(alice)`) report `bound`
+because head unification by definition binds them, but this is
+visibility-only -- the specialisation below uses the mode
+declaration directly, not the visibility output.
+
+**2. Specialised inline emission (default ON)** -- when the mode
+declaration says `+` for a head arg position, the lowered emitter
+inlines `get_constant` head matches as:
+
+```r
+{ val_ <- WamRuntime$deref(state, WamRuntime$get_reg(state, AIdx))
+  if (is.null(val_) || !identical(val_, CTerm)) return(FALSE) }
+```
+
+instead of delegating to `WamRuntime$step`. Saves one `step()` call
+(list construction + function call + switch dispatch) per
+get_constant. Opt out via `mode_specialise(off)` if you need the
+unspecialised codegen (testing / regression bisection).
+
+**Soundness:** the specialisation skips the "rebind unbound to the
+constant" branch of `step`'s GetConstant handler, since mode `+`
+promises A_k is bound at clause entry. If a caller passes an
+unbound term where the mode says `+`, the inline form returns
+`FALSE` (treating unbound as a tag mismatch) where the step path
+would have bound it. Document; user is responsible for honest mode
+declarations.
 
 The mode declaration uses `user:mode/1` with `+` / `-` / `?`
 shorthand (input / output / any), the same convention
-`demand_analysis:read_mode_declaration/3` reads.
+`demand_analysis:read_mode_declaration/3` reads. See
+[`design/WAM_R_MODE_ANALYSIS_PLAN.md`](design/WAM_R_MODE_ANALYSIS_PLAN.md)
+for the phase roadmap and measured impact.
 
 ## Supported features
 
@@ -864,7 +888,9 @@ Coverage map (e2e tests, by feature group):
 | `strict_xf_chain_fails_e2e_rscript` | runtime parser enforces strict (xf / fx) vs non-strict (yf / fy) lhs-precedence rules: `5!!` parses with `op(100, yf, '!')` but fails with `op(100, xf, '!')`; `neg neg foo` parses with `op(900, fy, neg)` but fails with `op(900, fx, neg)` |
 | `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
-| `mode_analysis_phase1_comments` | Mode-analysis phase 1 visibility: `mode_comments(on)` option prepends `# Mode analysis:` block to each lowered function with per-clause head-binding states; foundation for phase 2 specialisations |
+| `mode_analysis_phase1_comments` | Mode-analysis visibility: `mode_comments(on)` option prepends `# Mode analysis:` block to each lowered function with per-clause head-binding states; covers `+`, `-`, `?`, undeclared mode shapes |
+| `mode_analysis_phase2_get_constant_inlined` | Mode-analysis phase 2: structural assertion that `get_constant` head match is emitted as inline `WamRuntime$deref + identical()` when the target A-register's declared mode is `+`; falls back to `WamRuntime$step` when no mode declaration or `mode_specialise(off)` |
+| `mode_analysis_phase2_get_constant_e2e_rscript` | Mode-analysis phase 2: e2e correctness -- a predicate with `:- mode(p(+))` and three clauses compiles + runs via Rscript, queries return correct true/false matching across the multi-clause backtracking path |
 
 ## Contributing
 

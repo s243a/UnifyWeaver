@@ -193,33 +193,96 @@ r_safe_code(_, 0'_).
 %    mode_comments(on)  -- prepend a `# Mode analysis:` comment block
 %                          summarising the inferred binding env per
 %                          clause. Off by default. Visibility-only;
-%                          no codegen change. Phase 1 of WAM-R mode-
-%                          analysis integration (see
-%                          docs/design/WAM_R_MODE_ANALYSIS_PLAN.md).
+%                          phase 1 of WAM-R mode-analysis integration.
+%    mode_specialise(off) -- disable the analyser-driven instruction
+%                          specialisations (currently: inline
+%                          get_constant when the target A-register is
+%                          provably bound). Phase 2 specialisations
+%                          are ON by default since they're always
+%                          sound when mode declarations are honest
+%                          and degrade to the step-delegating path
+%                          when mode info is insufficient.
+%
+%  See docs/design/WAM_R_MODE_ANALYSIS_PLAN.md for the roadmap.
 lower_predicate_to_r(PI, WamCode, Opts,
                      lowered(PredName, FuncName, Code)) :-
     ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
     format(atom(PredName), '~w/~w', [Pred, Arity]),
     r_lowered_func_name(Pred/Arity, FuncName),
     build_emission_plan(WamCode, plan(Mode, AltLabel, ClauseLines)),
-    mode_comment_header(PI, Opts, ModeHeader),
+    catch(gather_pred_mode_records(PI, Records), _, Records = []),
+    set_lowered_mode_context(Records, Opts),
+    mode_comment_header_from_records(Opts, Records, ModeHeader),
     (   Mode == deterministic
     ->  emit_deterministic_function(PredName, FuncName, ClauseLines,
                                     ModeHeader, Code)
     ;   Mode == multi_clause_1
     ->  emit_multi_clause_function(PredName, FuncName, AltLabel,
                                    ClauseLines, ModeHeader, Code)
-    ).
+    ),
+    clear_lowered_mode_context.
 
-%% mode_comment_header(+PI, +Opts, -Header) is det.
+%% set_lowered_mode_context(+Records, +Opts) is det.
+%  Stashes clause 1's `:- mode/1` declaration on a non-backtrackable
+%  global so emit_line_parts can consult it without threading extra
+%  args through the entire emission chain. Mirrors the shared
+%  compiler's wam_clause_binding_records pattern.
+%
+%  Specialisations are gated by `mode_specialise(off)` in Opts --
+%  defaulting to ON. When OFF (or when no mode declaration exists),
+%  the stashed value is `none` so the specialised emit_line_parts
+%  clauses all fail and the default step-delegating path runs.
+%
+%  IMPORTANT: the specialisation uses the mode declaration directly,
+%  not the analyser's BeforeEnv. The BeforeEnv conflates head-pattern
+%  binding (a literal `alice` looks `bound`) with caller-side binding
+%  (whether A_k was bound when the caller invoked us). For head-match
+%  instructions like get_constant we need the latter, and only the
+%  mode declaration gives it to us.
+set_lowered_mode_context(Records, Opts) :-
+    (   member(mode_specialise(off), Opts)
+    ->  ModeDecl = none
+    ;   clause1_mode_decl(Records, ModeDecl)
+    ),
+    b_setval(wam_r_lowered_mode_decl, ModeDecl).
+
+clear_lowered_mode_context :-
+    b_setval(wam_r_lowered_mode_decl, none).
+
+%% clause1_mode_decl(+Records, -ModeDecl) is det.
+%  Pulls the ModeDecl component of clause 1's record. Returns `none`
+%  when there are no records or no declaration.
+clause1_mode_decl([mode_record(1, ModeDecl, _, _) | _], ModeDecl) :- !.
+clause1_mode_decl(_, none).
+
+%% head_state_for_areg(+AiStr, -State) is semidet.
+%  Returns the caller-side binding state for the A-register named by
+%  AiStr (e.g. "A1" -> first head arg position). Uses the stashed
+%  mode declaration:
+%    +  (input)  -> bound
+%    -  (output) -> unbound
+%    ?  (any)    -> fails (no provable state)
+%  Fails if AiStr isn't in the A-register range (1..100), if no mode
+%  declaration is stashed, or if the position is out of range in the
+%  mode list. Used by the get_constant specialised emit_line_parts
+%  clause.
+head_state_for_areg(AiStr, State) :-
+    wam_r_target:reg_to_int(AiStr, AIdx),
+    AIdx >= 1, AIdx =< 100,
+    catch(b_getval(wam_r_lowered_mode_decl, ModeDecl), _, fail),
+    is_list(ModeDecl),
+    nth1(AIdx, ModeDecl, Mode),
+    mode_atom_to_state(Mode, State).
+
+mode_atom_to_state(input,  bound).
+mode_atom_to_state(output, unbound).
+
+%% mode_comment_header_from_records(+Opts, +Records, -Header) is det.
 %  Builds the R comment block for the predicate's mode analysis when
 %  Opts contains mode_comments(on). Otherwise Header is the empty
-%  string. The block is intended to be visible in the generated R
-%  file so developers can see what the analyser inferred without
-%  re-running it.
-mode_comment_header(PI, Opts, Header) :-
+%  string.
+mode_comment_header_from_records(Opts, Records, Header) :-
     (   member(mode_comments(on), Opts),
-        catch(gather_pred_mode_records(PI, Records), _, fail),
         Records \= []
     ->  format_mode_records(Records, Lines),
         atomic_list_concat(Lines, '', Header)
@@ -234,13 +297,21 @@ mode_comment_header(PI, Opts, Header) :-
 %    - Idx        : 1-based clause number.
 %    - ModeDecl   : list of mode atoms (input/output/any) from
 %                   `:- mode/1`, or `none` if undeclared.
-%    - HeadVars   : list of `Var-Name-State` triples for each head
-%                   variable, where Name is the numbervars-assigned
-%                   atom and State is the binding state immediately
-%                   after head unification (i.e. BeforeEnv of goal 1).
+%    - HeadVars   : list of `Name-State` pairs, one per head arg
+%                   position. Name is `Arg<N>` for the Nth arg
+%                   position (1-based); State is the analyser's
+%                   binding-state for that arg right before the
+%                   first body goal (== entry to the clause body).
+%                   Non-variable head args render as `Arg<N>-bound`
+%                   (literal terms are always bound).
 %    - GoalBindings : the raw goal_binding(Idx, Before, After) list
 %                     from the analyser (renderable via
 %                     format_mode_records/2).
+%
+%  IMPORTANT: the analyser is called on plain Prolog variables (NOT
+%  numbervars-renamed), because `get_binding_state(_, NonVar, bound)`
+%  treats `'$VAR'(N)` as a nonvar and would always return `bound`.
+%  Head arg names in HeadVars are position-based for display only.
 %
 %  Module qualifiers in clause bodies are stripped (plunit wraps
 %  asserted bodies in plunit_<test>:user:Goal). Failure is silent --
@@ -254,8 +325,7 @@ gather_pred_mode_records(PI, Records) :-
                     wam_r_target:strip_module_qualifiers(RawBody,
                                                          StrippedBody),
                     copy_term(HeadTpl-StrippedBody,
-                              HeadCopy-BodyCopy),
-                    numbervars(HeadCopy-BodyCopy, 0, _) ),
+                              HeadCopy-BodyCopy) ),
                   Clauses), _, Clauses = []),
     (   demand_analysis:read_mode_declaration(Pred, Arity, ModeDecl)
     ->  true
@@ -269,51 +339,44 @@ gather_clause_records([Head-Body | Rest], Idx, ModeDecl,
     catch(binding_state_analysis:analyse_clause_bindings(Head, Body, GBs0),
           _, GBs0 = []),
     GBs = GBs0,
-    head_var_states(Head, GBs, HeadVars),
+    head_var_states(Head, ModeDecl, GBs, HeadVars),
     Idx1 is Idx + 1,
     gather_clause_records(Rest, Idx1, ModeDecl, Tail).
 
-%% head_var_states(+Head, +GoalBindings, -HeadVars) is det.
-%  Returns a list of `Name-State` pairs, one per direct head-arg
-%  variable. State is read from goal_binding(1, BeforeEnv, _) --
-%  the env right before the first body goal, which is what an
-%  optimizer choosing a head-match specialisation would consult.
-head_var_states(Head, GBs, HeadVars) :-
+%% head_var_states(+Head, +ModeDecl, +GoalBindings, -HeadVars) is det.
+%  Returns one `Arg<N>-State` pair per head arg position, where State
+%  is the analyser's binding state for that arg right before the first
+%  body goal (the env that an optimizer would consult when deciding
+%  whether to specialise a head-match instruction). Non-variable head
+%  args (compound, atomic, struct, ...) always render as `bound`
+%  because head unification by definition binds them. Variable head
+%  args render with the analyser's actual state -- `bound` (mode +),
+%  `unbound` (mode -), or `unknown` (no info).
+%
+%  When the body has no goals (e.g. `true` / a fact clause), the
+%  analyser returns an empty GoalBindings list; we fall back to the
+%  initial env from `initial_binding_env/3` so head modes still
+%  surface in the visibility comment.
+head_var_states(Head, ModeDecl, GBs, HeadVars) :-
     Head =.. [_ | Args],
     (   member(goal_binding(1, BeforeEnv, _), GBs)
-    ->  true
-    ;   binding_state_analysis:empty_binding_env(BeforeEnv)
+    ->  Env = BeforeEnv
+    ;   binding_state_analysis:initial_binding_env(Head, ModeDecl, Env)
     ),
-    head_var_states_(Args, BeforeEnv, HeadVars).
+    head_var_states_(Args, 1, Env, HeadVars).
 
-head_var_states_([], _, []).
-head_var_states_([Arg | Rest], Env, [Name-State | Tail]) :-
-    (   var(Arg)
-    ->  format(atom(Name), '_var_~w', [Arg])
-    ;   Arg = '$VAR'(N)
-    ->  numbered_var_atom(N, Name)
-    ;   Name = '<nonvar>'
-    ),
-    (   var(Arg)
-    ->  State = unbound
-    ;   binding_state_analysis:get_binding_state(Env, Arg, State0)
-    ->  State = State0
-    ;   State = unknown
-    ),
-    head_var_states_(Rest, Env, Tail).
+head_var_states_([], _, _, []).
+head_var_states_([Arg | Rest], Pos, Env, [Name-State | Tail]) :-
+    format(atom(Name), 'Arg~w', [Pos]),
+    head_arg_state(Arg, Env, State),
+    Pos1 is Pos + 1,
+    head_var_states_(Rest, Pos1, Env, Tail).
 
-%% numbered_var_atom(+N, -Atom) is det.
-%  Mirrors the SWI numbervars convention: 0..25 -> A..Z, then A1..Z1,
-%  A2..Z2, etc. Used so head-arg variable names in the emitted
-%  comments match what numbervars/3 displays elsewhere.
-numbered_var_atom(N, Atom) :-
-    Letter is N mod 26,
-    Suffix is N // 26,
-    Code is 0'A + Letter,
-    (   Suffix =:= 0
-    ->  char_code(Char, Code), atom_concat(Char, '', Atom)
-    ;   char_code(Char, Code), atom_concat(Char, Suffix, Atom)
-    ).
+head_arg_state(Arg, _Env, bound) :-
+    nonvar(Arg), !.
+head_arg_state(Arg, Env, State) :-
+    var(Arg),
+    binding_state_analysis:get_binding_state(Env, Arg, State).
 
 %% format_mode_records(+Records, -Lines) is det.
 %  Renders the analyser output as a block of R comment lines.
@@ -437,6 +500,27 @@ emit_line_parts(["get_variable", XStr, AiStr], I) :- !,
     wam_r_target:reg_to_int(AiStr, AIdx),
     format("~wWamRuntime$put_reg(state, ~w, WamRuntime$get_reg(state, ~w))~n",
            [I, XIdx, AIdx]).
+
+% --- Mode-driven specialisation: inline get_constant when the analyser
+% proves the target A-register is bound. The default path delegates to
+% WamRuntime$step which handles the unbound branch (binds A_i to the
+% constant). When mode info promises A_i is already bound, the unbound
+% branch is dead code -- we just need a deref + identical-equality
+% check. Saves one function call (~0.5us, the dominant cost) per
+% get_constant; significant on head-match-heavy workloads.
+%
+% Soundness: relies on the analyser's `bound` answer being correct,
+% which in turn relies on `:- mode/1` declarations being honest. If a
+% caller passes an unbound term where the mode says +, the inline
+% form returns FALSE (treating unbound as a tag mismatch) where the
+% step path would have bound it. Document; user is responsible.
+emit_line_parts(["get_constant", CStr, AiStr], I) :-
+    head_state_for_areg(AiStr, bound),
+    !,
+    wam_r_target:reg_to_int(AiStr, AIdx),
+    wam_r_target:constant_to_r_term(CStr, CTerm),
+    format("~w{ val_ <- WamRuntime$deref(state, WamRuntime$get_reg(state, ~w)); if (is.null(val_) || !identical(val_, ~w)) return(FALSE) }~n",
+           [I, AIdx, CTerm]).
 
 % --- Default: delegate to step with the same R literal the array uses
 emit_line_parts(Parts, I) :-
