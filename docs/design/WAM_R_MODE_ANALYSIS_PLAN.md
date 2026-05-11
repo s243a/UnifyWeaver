@@ -327,7 +327,41 @@ workload) runs to completion in bounded R stack.
 
 ### Measured impact
 
-(_filled in after bench completes_)
+Same pn recursive bench as phases 2/3 (depth 2000 x 200 iter).
+Phase-3 baseline built from `main` worktree (just before this PR);
+phase 4 built from this branch.
+
+Alternating runs to defeat time-correlated noise:
+
+| Run | PHASE3 baseline | PHASE4 |
+|-----|-----------------|--------|
+| 1 | 161.5s (warmup outlier) | 139.1s |
+| 2 | 142.1s | 136.2s |
+| 3 | 142.5s | 135.9s |
+| 4 | 139.6s | 135.7s |
+
+| Stat | PHASE3 (runs 2-4) | PHASE4 (runs 2-4) |
+|------|--------|--------|
+| Mean | 141.4s | 135.9s |
+| Min  | 139.6s | 135.7s |
+| Max  | 142.5s | 136.2s |
+| Range | 2.9s | 0.5s |
+
+**Phase 4 is ~3.9% faster than phase 3** in steady state (max PHASE4
+136.2s < min PHASE3 139.6s -- distributions don't overlap). PHASE3's
+run-1 measurement was a warmup outlier; the steady-state means are
+the more honest comparison.
+
+Note absolute timings here are ~2x slower than the phase-3 PR's
+numbers on the same workload (73.6s vs 141.4s). This appears to be
+system-load drift between sessions, not a regression: the alternating
+runs are taken back-to-back on the same machine, so the within-run
+comparison is valid.
+
+The win compounds with phase 3's: end-to-end (phase 2 baseline ->
+phase 4) the same pn bench gained ~3.7% from phase 3 plus another
+~3.9% here, for a cumulative ~7% wall-clock improvement on the
+recursive arith path.
 
 ## Phase 5 candidates
 
