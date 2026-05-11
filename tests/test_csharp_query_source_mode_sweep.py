@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from benchmark_csharp_query_source_mode_sweep import (  # noqa: E402
     compare_calibration_rows,
     filter_workload_scales,
     load_calibration_artifact,
+    merge_calibration_rows,
     parse_args,
     parse_competing_processes,
     parse_mem_available_mib,
@@ -30,9 +32,12 @@ from benchmark_csharp_query_source_mode_sweep import (  # noqa: E402
     parse_ratio,
     parse_runner_output,
     parse_workloads,
+    render_calibration_tsv,
     resource_preflight_failures,
     summarize_stability,
     supported_scales_for_workload,
+    write_calibration_artifact,
+    write_merged_calibration_artifact,
 )
 from benchmark_common import csharp_query_source_mode_choices  # noqa: E402
 
@@ -56,6 +61,18 @@ class CSharpQuerySourceModeSweepTests(unittest.TestCase):
     def test_parse_workloads_rejects_unknown_workloads(self) -> None:
         with self.assertRaisesRegex(SystemExit, "unknown workload"):
             parse_workloads("category-influence,not-a-workload")
+
+    def test_write_calibration_artifact_requires_calibration_tsv_format(self) -> None:
+        original_argv = sys.argv
+        try:
+            sys.argv = [
+                "benchmark_csharp_query_source_mode_sweep.py",
+                "--write-calibration-artifact",
+            ]
+            with self.assertRaisesRegex(SystemExit, "requires --format calibration-tsv"):
+                parse_args()
+        finally:
+            sys.argv = original_argv
 
     def test_filter_workload_scales_skips_unsupported_generated_graph_scales(self) -> None:
         self.assertEqual(
@@ -398,6 +415,67 @@ class CSharpQuerySourceModeSweepTests(unittest.TestCase):
             "artifact-prebuilt:artifact-prebuilt,auto:preload",
         )
         self.assertEqual(row.source_registration_summary, "auto:preloaded_preload_arity2=2")
+
+    def test_render_calibration_tsv_matches_artifact_shape(self) -> None:
+        rendered = render_calibration_tsv([self._baseline()])
+
+        self.assertEqual(
+            rendered,
+            "\n".join(
+                [
+                    (
+                        "workload\tscale\tobserved_best_source_mode\t"
+                        "current_auto_resolved_source_mode\tobserved_auto_vs_best\t"
+                        "output_agreement\tmedian_s_by_mode\tresolved_source_modes_by_mode\t"
+                        "source_registrations_by_mode"
+                    ),
+                    (
+                        "category-influence\t300\tpreload\tpreload\t1.30x\tmatch\t"
+                        "artifact-prebuilt:0.904,auto:0.467,preload:0.360\t"
+                        "artifact-prebuilt:artifact-prebuilt,auto:preload,preload:preload\t"
+                        "auto:preloaded_preload_arity2=2"
+                    ),
+                    "",
+                ]
+            ),
+        )
+
+    def test_write_calibration_artifact_round_trips_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            artifact_path = Path(tmp_dir) / "calibration.tsv"
+
+            write_calibration_artifact(artifact_path, [self._baseline()])
+
+            self.assertEqual(load_calibration_artifact(artifact_path), [self._baseline()])
+
+    def test_merge_calibration_rows_replaces_selected_keys_only(self) -> None:
+        baseline = self._baseline()
+        untouched = self._baseline(workload="dependency-depth", scale="1k")
+        fresh = self._baseline(
+            observed_best_source_mode="auto",
+            observed_auto_vs_best="1.00x",
+        )
+
+        self.assertEqual(
+            merge_calibration_rows([untouched, baseline], [fresh]),
+            [fresh, untouched],
+        )
+
+    def test_write_merged_calibration_artifact_preserves_unselected_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            artifact_path = Path(tmp_dir) / "calibration.tsv"
+            untouched = self._baseline(workload="dependency-depth", scale="1k")
+            write_calibration_artifact(artifact_path, [self._baseline(), untouched])
+
+            fresh = self._baseline(
+                observed_best_source_mode="auto",
+                observed_auto_vs_best="1.00x",
+            )
+
+            written = write_merged_calibration_artifact(artifact_path, [fresh])
+
+            self.assertEqual(written, [fresh, untouched])
+            self.assertEqual(load_calibration_artifact(artifact_path), [fresh, untouched])
 
     def test_parse_runner_output_summarizes_modes_and_registrations(self) -> None:
         output = "\n".join(

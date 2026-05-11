@@ -135,7 +135,23 @@ Use `--format calibration-tsv` when refreshing
 `csharp_query_graph_source_mode_calibration.tsv`. Combined with
 `--stability-runs <n>`, it emits artifact-compatible rows whose median timing
 fields come from the independent-run stability summary instead of one noisy
-single run.
+single run. Add `--write-calibration-artifact` to write those rows directly to
+`--calibration-artifact` after validation succeeds. If the artifact already
+exists, only the selected workload/scale rows are replaced; unselected rows are
+preserved.
+
+```bash
+python examples/benchmark/benchmark_csharp_query_source_mode_sweep.py \
+  --require-idle \
+  --workloads all \
+  --scales 300,1k,5k,10k \
+  --source-modes auto,preload,artifact-prebuilt \
+  --repetitions 1 \
+  --stability-runs 3 \
+  --compare-calibration \
+  --format calibration-tsv \
+  --write-calibration-artifact
+```
 
 Mixed-scale sweeps are filtered per workload. File-backed graph workloads can
 use `dev`, `300`, `1k`, `5k`, and `10k`; generated dependency-depth workloads

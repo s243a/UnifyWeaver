@@ -16,6 +16,7 @@ import os
 import statistics
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -157,7 +158,15 @@ def parse_args() -> argparse.Namespace:
         "--calibration-artifact",
         type=Path,
         default=CALIBRATION_ARTIFACT,
-        help="TSV calibration artifact used by --compare-calibration.",
+        help="TSV calibration artifact used by --compare-calibration and --write-calibration-artifact.",
+    )
+    parser.add_argument(
+        "--write-calibration-artifact",
+        action="store_true",
+        help=(
+            "Write the fresh calibration TSV to --calibration-artifact. "
+            "Use with --format calibration-tsv and usually --stability-runs > 1."
+        ),
     )
     parser.add_argument(
         "--timing-drift-ratio",
@@ -185,7 +194,10 @@ def parse_args() -> argparse.Namespace:
         default=1024,
         help="Minimum MemAvailable MiB required by --require-idle.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.write_calibration_artifact and args.format != "calibration-tsv":
+        raise SystemExit("--write-calibration-artifact requires --format calibration-tsv")
+    return args
 
 
 def parse_workloads(value: str) -> list[str]:
@@ -903,14 +915,68 @@ def print_stability_markdown(summaries: list[SourceModeStabilitySummary]) -> Non
 
 
 def print_calibration_tsv(rows: list[CalibrationArtifactRow]) -> None:
-    print("workload\tscale\tobserved_best_source_mode\tcurrent_auto_resolved_source_mode\tobserved_auto_vs_best\toutput_agreement\tmedian_s_by_mode\tresolved_source_modes_by_mode\tsource_registrations_by_mode")
+    print(render_calibration_tsv(rows), end="")
+
+
+def render_calibration_tsv(rows: list[CalibrationArtifactRow]) -> str:
+    lines = [
+        (
+            "workload\tscale\tobserved_best_source_mode\t"
+            "current_auto_resolved_source_mode\tobserved_auto_vs_best\t"
+            "output_agreement\tmedian_s_by_mode\tresolved_source_modes_by_mode\t"
+            "source_registrations_by_mode"
+        )
+    ]
     for row in rows:
-        print(
+        lines.append(
             f"{row.workload}\t{row.scale}\t{row.observed_best_source_mode}\t"
             f"{row.current_auto_resolved_source_mode}\t{row.observed_auto_vs_best}\t"
             f"{row.output_agreement}\t{row.median_summary}\t"
             f"{row.resolved_source_mode_summary}\t{row.source_registration_summary}"
         )
+    return "\n".join(lines) + "\n"
+
+
+def merge_calibration_rows(
+    baseline_rows: list[CalibrationArtifactRow],
+    fresh_rows: list[CalibrationArtifactRow],
+) -> list[CalibrationArtifactRow]:
+    merged_by_key = {
+        (row.workload, row.scale): row
+        for row in baseline_rows
+    }
+    for row in fresh_rows:
+        merged_by_key[(row.workload, row.scale)] = row
+    return [
+        merged_by_key[key]
+        for key in sorted(merged_by_key, key=_calibration_key_sort_key)
+    ]
+
+
+def write_calibration_artifact(path: Path, rows: list[CalibrationArtifactRow]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        newline="",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        tmp_path = Path(handle.name)
+        handle.write(render_calibration_tsv(rows))
+    tmp_path.replace(path)
+
+
+def write_merged_calibration_artifact(
+    path: Path,
+    fresh_rows: list[CalibrationArtifactRow],
+) -> list[CalibrationArtifactRow]:
+    baseline_rows = load_calibration_artifact(path) if path.exists() else []
+    merged_rows = merge_calibration_rows(baseline_rows, fresh_rows)
+    write_calibration_artifact(path, merged_rows)
+    return merged_rows
 
 
 def main() -> int:
@@ -1014,6 +1080,9 @@ def main() -> int:
         for failure in failures:
             print(f"ERROR: {failure}", file=sys.stderr)
         return 1
+    if args.write_calibration_artifact:
+        write_merged_calibration_artifact(args.calibration_artifact, calibration_rows)
+        print(f"Wrote calibration artifact: {args.calibration_artifact}", file=sys.stderr)
     return 0
 
 
