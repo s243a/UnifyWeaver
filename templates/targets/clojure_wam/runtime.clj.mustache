@@ -518,6 +518,9 @@
         :else nil))))
 
 (declare apply-member-solution)
+(declare apply-append-solution)
+(declare apply-first-foreign-solution)
+(declare list->term)
 
 (defn push-member-choice-point [state base-state resume-pc elem rest-list]
   (let [rest* (deref-value (:bindings base-state) rest-list)
@@ -553,6 +556,29 @@
             (recur (deref-value bindings tail) (conj seen cur))))
 
         :else
+        (backtrack base-state)))))
+
+(defn append-split-results [state items]
+  (let [ctx (:intern-context state)]
+    (mapv (fn [idx]
+            (let [[left right] (split-at idx items)]
+              {:bindings {1 (list->term ctx left)
+                          2 (list->term ctx right)}}))
+          (range (inc (count items))))))
+
+(defn apply-append-solution [base-state resume-pc left right out]
+  (let [left-items (proper-list-items base-state left)
+        right-items (proper-list-items base-state right)]
+    (if (and (some? left-items) (some? right-items))
+      (let [joined (list->term (:intern-context base-state)
+                               (concat left-items right-items))
+            [ok next-state] (unify-values base-state out joined)]
+        (if ok
+          (assoc next-state :pc resume-pc)
+          (backtrack base-state)))
+      (if-let [out-items (proper-list-items base-state out)]
+        (apply-first-foreign-solution base-state resume-pc
+                                      (append-split-results base-state out-items))
         (backtrack base-state)))))
 
 (defn ground-term? [state value]
@@ -1169,17 +1195,8 @@
                 right (deref-value (:bindings state)
                                    (or (reg-get-raw state "A2") ::unbound))
                 out (deref-value (:bindings state)
-                                 (or (reg-get-raw state "A3") ::unbound))
-                left-items (proper-list-items state left)
-                right-items (proper-list-items state right)]
-            (if (and (some? left-items) (some? right-items))
-              (let [joined (list->term (:intern-context state)
-                                       (concat left-items right-items))
-                    [ok next-state] (unify-values state out joined)]
-                (if ok
-                  (advance next-state)
-                  (backtrack state)))
-              (backtrack state)))
+                                 (or (reg-get-raw state "A3") ::unbound))]
+            (apply-append-solution state (inc (:pc state)) left right out))
 
           "ground/1"
           (let [value (deref-value (:bindings state)

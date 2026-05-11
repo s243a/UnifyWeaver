@@ -561,8 +561,8 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "append/3" ; Op == 'append/3'),
     !,
     format(atom(Expr),
-           '(let [left (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound)) out (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A3") ::lowered-unbound)) left-items (runtime/proper-list-items ~w left) right-items (runtime/proper-list-items ~w right)] (if (and (some? left-items) (some? right-items)) (let [joined (runtime/list->term (:intern-context ~w) (concat left-items right-items)) [ok next-state] (runtime/unify-values ~w out joined)] (if ok (runtime/advance next-state) (runtime/backtrack ~w))) (runtime/backtrack ~w)))',
-           [S, S, S, S, S, S, S, S, S, S, S, S]).
+           '(let [left (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound)) out (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A3") ::lowered-unbound))] (runtime/apply-append-solution ~w (inc (:pc ~w)) left right out))',
+           [S, S, S, S, S, S, S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "ground/1" ; Op == 'ground/1'),
