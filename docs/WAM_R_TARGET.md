@@ -534,6 +534,27 @@ shorthand (input / output / any), the same convention
 [`design/WAM_R_MODE_ANALYSIS_PLAN.md`](design/WAM_R_MODE_ANALYSIS_PLAN.md)
 for the phase roadmap and measured impact.
 
+### `multi_clause_n` lowering + self-jump (phase 4)
+
+Generalises phase-1's `multi_clause_1` (clause 1 inline, clauses 2+
+via the WAM array): when every clause of a multi-clause predicate
+is individually `wam_r_lowerable`, all clauses are emitted inline
+within one lowered function, with state snapshot/restore between
+attempts. The emitter helper is recursive over the clause list.
+
+Additionally, `multi_clause_n` preds are registered in
+`program$lowered_dispatch` so internal `call`/`execute` (including
+recursive self-calls) re-enter the lowered fn directly instead of
+iterating the WAM array via `step`. The lowered emitter's
+`emit_call` / `emit_execute` consult `lowered_dispatch` before
+falling back to the array path. `deterministic` and
+`multi_clause_1` preds stay off `lowered_dispatch` because their
+failure paths assume `state$pc` points into the WAM array.
+
+This compounds the phase-3 `is/2` inline: every recursive call of
+an arith-heavy predicate now runs entirely on the lowered path,
+hitting the inline `is/2` emission on each iteration.
+
 ### `is/2` specialisation (phase 3)
 
 Two complementary specialisations targeting the `is/2` arithmetic
@@ -922,6 +943,8 @@ Coverage map (e2e tests, by feature group):
 | `mode_analysis_phase2_get_constant_e2e_rscript` | Mode-analysis phase 2: e2e correctness -- a predicate with `:- mode(p(+))` and three clauses compiles + runs via Rscript, queries return correct true/false matching across the multi-clause backtracking path |
 | `mode_analysis_phase3_is_inlined` | Mode-analysis phase 3: structural assertion that `builtin_call is/2 2` is emitted as inline `WamRuntime$eval_arith + bind/unify` in the lowered function (instead of `WamRuntime$step(... BuiltinCall("is/2", 2))`) |
 | `mode_analysis_phase3_is_e2e_rscript` | Mode-analysis phase 3: e2e correctness -- a predicate using `is/2` with simple binary int op (runtime fast-path), nested arith (slow path), and negative-result arith compiles + runs via Rscript with correct values |
+| `mode_analysis_phase4_multi_clause_n_inlined` | Mode-analysis phase 4: structural assertion that a 2-clause recursive predicate emits BOTH clauses inline in the lowered function (multiple `clause_ok_` closures), and is registered in `shared_program$lowered_dispatch` |
+| `mode_analysis_phase4_multi_clause_n_e2e_rscript` | Mode-analysis phase 4: e2e correctness -- the pn recursive predicate (`pn(0). pn(N) :- N > 0, N1 is N-1, pn(N1).`) runs correctly at depths 0, 5, and 50, validating that the recursive self-jump via `lowered_dispatch` works end-to-end |
 
 ## Contributing
 

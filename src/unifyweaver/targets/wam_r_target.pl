@@ -903,17 +903,29 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
         NewLoweredDispAcc = [RangeReg, DispEntry | LoweredDispAcc]
     ;   should_try_lower(Mode, P, Arity),
         WamCodeForLower \= "",
-        catch(wam_r_lowerable(Pred, WamCodeForLower, _Reason), _, fail),
+        catch(wam_r_lowerable(Pred, WamCodeForLower, LowerReason), _, fail),
         catch(lower_predicate_to_r(Pred, WamCodeForLower, Options,
                                    lowered(_PName, FuncName, LoweredR)),
               _, fail)
     ->  NewLoweredAcc = [LoweredR | LoweredAcc],
         emit_r_lowered_wrapper(P, Arity, FuncName, WrapperCode),
-        % Phase-3 lowered functions are NOT registered for internal
-        % dispatch -- they expect their own pre-set state via the
-        % per-pred wrapper. Internal calls keep going through the
-        % WAM array, matching the pre-PR behaviour.
-        NewLoweredDispAcc = LoweredDispAcc
+        % multi_clause_n lowered fns are self-contained (no array
+        % fallback) and safe to install in the lowered_dispatch tier,
+        % which the dispatch_call / "Call" / "Execute" runtime
+        % handlers consult before the WAM-array path. That lets
+        % internal recursive calls re-enter the lowered fn instead of
+        % iterating the array through `step`, which is where phase-4's
+        % material win comes from on recursive predicates like pn/1.
+        %
+        % deterministic + multi_clause_1 stay off lowered_dispatch
+        % because their failure paths assume state$pc points at a
+        % WAM-array instruction (they advance pc + drop into run),
+        % which would not hold when invoked through dispatch_call.
+        (   LowerReason = multi_clause_n(_)
+        ->  emit_lowered_dispatch_entry(P, Arity, FuncName, DispEntry),
+            NewLoweredDispAcc = [DispEntry | LoweredDispAcc]
+        ;   NewLoweredDispAcc = LoweredDispAcc
+        )
     ;   NewLoweredAcc = LoweredAcc,
         NewLoweredDispAcc = LoweredDispAcc,
         emit_r_wrapper(P, Arity, BasePC, WrapperCode)
@@ -977,6 +989,13 @@ emit_r_wrapper(Pred, Arity, StartPc, Code) :-
 emit_r_lowered_wrapper(Pred, Arity, LoweredFuncName, Code) :-
     pred_arg_strings(Arity, ArgDeclStr, ArgListStr),
     r_pred_name(Pred, RName),
+    % Initial call to the lowered fn is direct; subsequent tail-call
+    % signals are consumed by the trampoline loop in the helper. For
+    % preds not registered in lowered_dispatch (deterministic /
+    % multi_clause_1), state$tail_call is never set, so the loop body
+    % never runs and the result is the direct fn invocation. For
+    % multi_clause_n preds, the loop drains self-recursive tail calls
+    % without growing the R C stack.
     format(string(Code),
 '~w <- function(~w) {
   state <- WamRuntime$new_state()
@@ -984,7 +1003,14 @@ emit_r_lowered_wrapper(Pred, Arity, LoweredFuncName, Code) :-
   args <- ~w
   for (i in seq_along(args)) WamRuntime$put_reg(state, i, args[[i]])
   state$cp <- 0L
-  isTRUE(~w(shared_program, state))
+  state$tail_call <- NULL
+  result <- isTRUE(~w(shared_program, state))
+  while (isTRUE(result) && !is.null(state$tail_call) &&
+         !is.null(shared_program$lowered_dispatch) &&
+         exists(state$tail_call, envir = shared_program$lowered_dispatch, inherits = FALSE)) {
+    result <- isTRUE(WamRuntime$invoke_lowered_with_tco(shared_program, state, state$tail_call))
+  }
+  isTRUE(result)
 }
 ', [RName, ArgDeclStr, ArgListStr, LoweredFuncName]).
 

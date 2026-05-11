@@ -222,17 +222,157 @@ emitter that handles ALL clauses inline (gated on every clause being
 individually lowerable). Listed as the leading phase-4 candidate
 below.
 
-## Phase 4 candidates
+## Phase 4 — multi_clause_n lowered emission + lowered_dispatch self-jump (LANDED)
 
-1. **`multi_clause_n` lowered emission.** When `forall(C in clauses,
-   wam_r_lowerable(C))` holds, emit each clause as an inline closure
-   inside the lowered function. Push a CP pointing at the next
-   inline clause, try each clause with state-restore between
-   attempts, leave the CP in place on success so caller-side
-   backtracking still works correctly via the array path.
-2. **`get_value` head match -- skip deref-then-unify when both
-   sides are provably bound atomics.** Same shape as the phase-2
+**PR**: see commit history on `claude/wam-r-mode-analysis-phase4-multi-clause-n`.
+
+Two combined changes that compound the phase-3 wins on recursive
+arith-heavy predicates:
+
+**(a) `multi_clause_n` lowered emission.** When every clause is
+individually `wam_r_lowerable`, all clauses are emitted inline within
+one lowered function, with state snapshot/restore between attempts:
+
+```r
+lowered_<pred>(program, state) <- function() {
+  saved_regs_      <- state$regs2
+  saved_cp_        <- state$cp
+  saved_trail_len_ <- length(state$trail)
+  saved_var_count_ <- state$var_counter
+  clause_ok_ <- (function() { <clause 1 inline>; invisible(FALSE) })()
+  if (isTRUE(clause_ok_)) return(TRUE)
+  state$regs2       <- saved_regs_         # restore
+  state$cp          <- saved_cp_
+  WamRuntime$undo_trail_to(state, saved_trail_len_)
+  state$var_counter <- saved_var_count_
+  clause_ok_ <- (function() { <clause 2 inline>; invisible(FALSE) })()
+  if (isTRUE(clause_ok_)) return(TRUE)
+  ... (recursively for clauses 3..N)
+  return(FALSE)
+}
+```
+
+The emitter helper is recursive over the clause list (base case:
+no more clauses, fall through to `return(FALSE)`; recursive case:
+emit inline-try-then-restore-and-recurse). When only clause 1 is
+lowerable (clauses 2+ contain unsupported ops), the emitter
+degrades to the existing `multi_clause_1` shape: clause 1 inline +
+WAM-array fallback.
+
+**(b) `lowered_dispatch` self-jump.** Phase-1 lowered fns were
+deliberately NOT registered in `program$lowered_dispatch`, so
+internal `call`/`execute` of one lowered pred from another (or
+recursion) went through the WAM array via `WamRuntime$step`.
+Phase 4 changes this for `multi_clause_n` preds (which are
+self-contained -- no `state$pc` dependency on entry):
+
+  - At codegen, register the lowered fn in
+    `shared_program$lowered_dispatch` alongside the kernel /
+    fact-table fns.
+  - The lowered emitter's `emit_call` / `emit_execute` consult
+    `program$lowered_dispatch` first, falling back to the WAM array
+    only when no lowered fn is registered.
+
+The combination means a recursive predicate like pn can run
+end-to-end through the lowered path: every recursive call to
+`pn/1` self-jumps into `lowered_pn_1` instead of step-iterating
+the WAM array.
+
+`deterministic` and `multi_clause_1` preds stay off
+`lowered_dispatch` because their failure paths assume `state$pc`
+points at a WAM-array instruction (they advance pc + drop into
+`run`), which would not hold when invoked via the dispatch tier.
+
+### Frame-shape fix
+
+Pre-existing bug: the inline `allocate` / `deallocate` emission
+used a frame field name `locals` while the runtime expects `ys`
+and `cps_barrier`. The mismatch never surfaced because
+`multi_clause_1` lowering only inlined clause 1 of multi-clause
+predicates, and the only clauses that include `allocate` are
+non-base recursive cases that stayed in the WAM array. Phase 4
+puts every clause inline, so the inline `allocate` now actually
+runs -- the fix brings the inline emission into exact agreement
+with the runtime's `"Allocate"` / `"Deallocate"` handlers
+(including `state$shadow_frame` retention so post-`deallocate` Y
+reads still resolve).
+
+### Tail-call trampoline
+
+First-cut phase-4 hit an R C-stack overflow at pn depth 2000: the
+self-jump from `execute pn/1` recursed *into* `lowered_pn_1`, so
+each Prolog recursion level added an R stack frame. R's default
+C stack (~7 MiB) overflowed around depth ~1500.
+
+Fix: trampoline the self-recursion through a state-borne signal.
+
+  - `state$tail_call` slot added to `WamRuntime$new_state`.
+  - `emit_execute` (Prolog tail call) sets `state$tail_call <-
+    "X/Y"` and returns `TRUE` instead of invoking the lowered fn
+    directly. The closest enclosing trampoline consumes the
+    signal.
+  - `WamRuntime$invoke_lowered_with_tco(program, state, key)` is
+    the trampoline -- a `repeat` loop that calls the lowered fn,
+    inspects `state$tail_call`, and dispatches the next iteration
+    in-place (no extra R frame).
+  - Every entry point to a lowered fn is routed through the
+    helper: the runtime's `"Call"` / `"Execute"` / `dispatch_call`
+    handlers, the lowered emitter's `emit_call`, and the per-pred
+    wrapper. `emit_execute` is the *only* call site that signals
+    instead of invoking, because Prolog's `execute` is by
+    definition the tail-call WAM op.
+
+With the trampoline, pn at depth 2000 (the original bench
+workload) runs to completion in bounded R stack.
+
+### Measured impact
+
+Same pn recursive bench as phases 2/3 (depth 2000 x 200 iter).
+Phase-3 baseline built from `main` worktree (just before this PR);
+phase 4 built from this branch.
+
+Alternating runs to defeat time-correlated noise:
+
+| Run | PHASE3 baseline | PHASE4 |
+|-----|-----------------|--------|
+| 1 | 161.5s (warmup outlier) | 139.1s |
+| 2 | 142.1s | 136.2s |
+| 3 | 142.5s | 135.9s |
+| 4 | 139.6s | 135.7s |
+
+| Stat | PHASE3 (runs 2-4) | PHASE4 (runs 2-4) |
+|------|--------|--------|
+| Mean | 141.4s | 135.9s |
+| Min  | 139.6s | 135.7s |
+| Max  | 142.5s | 136.2s |
+| Range | 2.9s | 0.5s |
+
+**Phase 4 is ~3.9% faster than phase 3** in steady state (max PHASE4
+136.2s < min PHASE3 139.6s -- distributions don't overlap). PHASE3's
+run-1 measurement was a warmup outlier; the steady-state means are
+the more honest comparison.
+
+Note absolute timings here are ~2x slower than the phase-3 PR's
+numbers on the same workload (73.6s vs 141.4s). This appears to be
+system-load drift between sessions, not a regression: the alternating
+runs are taken back-to-back on the same machine, so the within-run
+comparison is valid.
+
+The win compounds with phase 3's: end-to-end (phase 2 baseline ->
+phase 4) the same pn bench gained ~3.7% from phase 3 plus another
+~3.9% here, for a cumulative ~7% wall-clock improvement on the
+recursive arith path.
+
+## Phase 5 candidates
+
+1. **`get_value` head match.** Skip deref-then-unify when both
+   sides are provably bound atomics. Same shape as phase-2's
    `get_constant` specialisation but for var-to-var matching.
+2. **Inline more step-delegated ops in `multi_clause_n` bodies.**
+   The phase-4 lowered pn body still has 4 `WamRuntime$step(...)`
+   calls (`BuiltinCall(">/2", 2)`, `PutStructure`, `SetValue`,
+   `SetConstant`). Each is a function call + switch hop. Inlining
+   these would yield smaller-but-additive wins.
 3. **Auto-mode-inference from call sites.** Today the analyser
    only knows what `:- mode/1` declarations tell it. A whole-
    program pass could infer modes from observed call sites,
