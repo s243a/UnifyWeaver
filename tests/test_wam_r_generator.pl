@@ -42,6 +42,8 @@ user:wam_r_caller(X) :- user:wam_r_fact(X).
 user:wam_r_pair(f(a, b)).
 user:wam_r_list([a, b, c]).
 
+:- dynamic user:mode/1.
+
 % ------------------------------------------------------------------
 % Test 1: module exports the documented entry points
 % ------------------------------------------------------------------
@@ -385,6 +387,17 @@ run_rscript_with_args(RDir, Query, ExtraArgs, Out) :-
     read_string(ErrStream, _, _),   close(ErrStream),
     process_wait(PID, _).
 
+run_rscript_expr(RDir, Expr, Out) :-
+    process_create(path('Rscript'), ['-e', Expr],
+                   [ cwd(RDir),
+                     stdout(pipe(OutStream)),
+                     stderr(pipe(ErrStream)),
+                     process(PID)
+                   ]),
+    read_string(OutStream, _, Out), close(OutStream),
+    read_string(ErrStream, _, _),   close(ErrStream),
+    process_wait(PID, _).
+
 rscript_available :-
     catch((
         process_create(path('Rscript'), ['--version'],
@@ -462,11 +475,11 @@ test(lowered_emitter_phase3) :-
     assertion(current_predicate(wam_r_lowered_emitter:wam_r_lowerable/3)),
     assertion(current_predicate(wam_r_lowered_emitter:lower_predicate_to_r/4)),
     assertion(current_predicate(wam_r_lowered_emitter:r_lowered_func_name/2)),
-    % Multi-clause predicates are now lowerable as multi_clause_1
-    % (clause 1 inline + fallback to the array path on failure).
+    % Multi-clause predicates are now lowerable as multi_clause_n
+    % (all supported clauses inline).
     compile_predicate_to_wam_string(user:wam_r_choice_fact/1, ChoiceWam),
     once(wam_r_lowered_emitter:wam_r_lowerable(user:wam_r_choice_fact/1,
-                                               ChoiceWam, multi_clause_1)),
+                                               ChoiceWam, multi_clause_n)),
     % Single-clause deterministic rule is lowered with reason
     % `deterministic`.
     compile_predicate_to_wam_string(user:wam_r_caller/1, CallerWam),
@@ -516,14 +529,14 @@ test(emit_mode_functions_lowers_caller) :-
     )).
 
 % ------------------------------------------------------------------
-% Test: multi-clause predicates lower to a multi_clause_1 wrapper
-%       (clause 1 inline; backtrack into the array path on failure).
+% Test: multi-clause predicates lower to a multi_clause_n wrapper
+%       (all supported clauses inline).
 % ------------------------------------------------------------------
 test(emit_mode_functions_lowers_multi_clause) :-
     once((
         unique_r_tmp_dir('tmp_r_mode_multi', TmpDir),
         % fact_table_layout(off) keeps wam_r_choice_fact/1 on the
-        % multi_clause_1 lowered path; without it the new fact-table
+        % multi_clause_n lowered path; without it the new fact-table
         % path would pre-empt this test's assertions.
         write_wam_r_project(
             [user:wam_r_choice_fact/1],
@@ -533,11 +546,12 @@ test(emit_mode_functions_lowers_multi_clause) :-
         read_file_to_string(Program, Code, []),
         % Lowered fn definition exists.
         assertion(sub_string(Code, _, _, _, 'lowered_wam_r_choice_fact_1 <- function(program, state)')),
-        % multi_clause_1 marker is in the comment header.
-        assertion(sub_string(Code, _, _, _, 'multi-clause; clause 1 inline, fall back to array')),
-        % Clause-1 closure structure is in place.
-        assertion(sub_string(Code, _, _, _, 'clause1_ok <- (function() {')),
-        assertion(sub_string(Code, _, _, _, 'WamRuntime$backtrack(state)')),
+        % multi_clause_n marker is in the comment header.
+        assertion(sub_string(Code, _, _, _, 'multi-clause; all clauses inline')),
+        % Clause dispatch and retry CP structure are in place.
+        assertion(sub_string(Code, _, _, _, 'try_clause_ <- function(idx_)')),
+        assertion(sub_string(Code, _, _, _, 'push_next_clause_ <- function(next_idx_)')),
+        assertion(sub_string(Code, _, _, _, 'for (idx_ in seq_len(3L))')),
         % Wrapper points at the lowered fn.
         assertion(sub_string(Code, _, _, _, 'isTRUE(lowered_wam_r_choice_fact_1(shared_program, state))')),
         delete_directory_and_contents(TmpDir)
@@ -636,7 +650,7 @@ e2e_phase3_multi_clause :-
     write_wam_r_project(
         [ user:p3_fact/1,
           user:p3_a/0, user:p3_b/0, user:p3_c/0, user:p3_z/0 ],
-        % fact_table_layout(off) forces the multi_clause_1 lowered
+        % fact_table_layout(off) forces the multi_clause_n lowered
         % path that this test was written to cover; the new fact-
         % table path is exercised separately by
         % fact_table_e2e_rscript.
@@ -644,8 +658,9 @@ e2e_phase3_multi_clause :-
         TmpDir),
     directory_file_path(TmpDir, 'R/generated_program.R', Program),
     read_file_to_string(Program, Code, []),
-    % p3_fact/1 should be lowered as multi_clause_1.
+    % p3_fact/1 should be lowered as multi_clause_n.
     assertion(sub_string(Code, _, _, _, 'lowered_p3_fact_1 <- function(program, state)')),
+    assertion(sub_string(Code, _, _, _, 'multi-clause; all clauses inline')),
     directory_file_path(TmpDir, 'R', RDir),
     run_rscript_query(RDir, 'p3_a/0', A),  % matches clause 1
     run_rscript_query(RDir, 'p3_b/0', B),  % must backtrack to clause 2
@@ -827,7 +842,7 @@ e2e_mode_phase2_get_constant :-
     retractall(user:ma_check_b/0),
     retractall(user:ma_check_z/0),
     % `+` mode -- caller will always pass a bound atom; specialisation
-    % fires. Use three clauses so multi_clause_1 lowering also kicks in,
+    % fires. Use three clauses so multi_clause_n lowering also kicks in,
     % exercising the inlined get_constant in the multi-clause path.
     assertz(user:mode(ma_pe(+))),
     assertz((user:ma_pe(a))),
@@ -928,6 +943,49 @@ e2e_phase3_is :-
     assertion(sub_string(OutS,   _, _, _, "true")),
     assertion(sub_string(OutN,   _, _, _, "true")),
     assertion(sub_string(OutNeg, _, _, _, "true")),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% Mode-analysis phase 4: multi_clause_n lowered emission.
+% All supported clauses are emitted into the lowered wrapper, so
+% specialisations such as inline is/2 apply to clause 2+ instead of
+% those clauses falling back through the WAM array path.
+% ------------------------------------------------------------------
+test(mode_analysis_phase4_multiclause_n_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_phase4_multiclause_n
+    ;   true
+    )).
+
+e2e_phase4_multiclause_n :-
+    retractall(user:p4_mc(_, _)),
+    retractall(user:p4_enum(_)),
+    retractall(user:p4_call(_)),
+    assertz((user:p4_mc(1, R) :- R is 40 + 2)),
+    assertz((user:p4_mc(2, R) :- R is 98 + 1)),
+    assertz(user:p4_enum(a)),
+    assertz(user:p4_enum(b)),
+    assertz((user:p4_call(a) :- p4_enum(a))),
+    assertz((user:p4_call(b) :- p4_enum(b))),
+    unique_r_tmp_dir('tmp_r_phase4_mcn_e2e', TmpDir),
+    write_wam_r_project(
+        [user:p4_mc/2, user:p4_enum/1, user:p4_call/1],
+        [emit_mode(functions), fact_table_layout(off)],
+        TmpDir),
+    directory_file_path(TmpDir, 'R/generated_program.R', Program),
+    read_file_to_string(Program, Code, []),
+    assertion(sub_string(Code, _, _, _, 'multi-clause; all clauses inline')),
+    assertion(sub_string(Code, _, _, _, 'if (identical(idx_, 2L))')),
+    assertion(sub_string(Code, _, _, _, 'is_target_ <- WamRuntime$get_reg(state, 1L)')),
+    assertion(sub_string(Code, _, _, _, 'lowered_p4_call_1 <- function(program, state)')),
+    directory_file_path(TmpDir, 'R', RDir),
+    Expr =
+        'source("generated_program.R"); cat(if (isTRUE(pred_p4_mc(IntTerm(2L), IntTerm(99L)))) "true\\n" else "false\\n"); cat(if (isTRUE(pred_p4_mc(IntTerm(2L), IntTerm(100L)))) "true\\n" else "false\\n"); cat(if (isTRUE(pred_p4_call(Atom(WamRuntime$intern(intern_table, "b"))))) "true\\n" else "false\\n"); st <- WamRuntime$new_state(); WamRuntime$promote_regs(st); WamRuntime$put_reg(st, 1L, Unbound("X")); ok1 <- lowered_p4_enum_1(shared_program, st); x1 <- WamRuntime$deref(st, Unbound("X")); ok2 <- WamRuntime$backtrack(st); x2 <- WamRuntime$deref(st, Unbound("X")); cat(paste(isTRUE(ok1), WamRuntime$string_of(intern_table, x1$id), isTRUE(ok2), WamRuntime$string_of(intern_table, x2$id), sep=":"), "\\n", sep="")',
+    run_rscript_expr(RDir, Expr, Out),
+    split_string(Out, "\n", "\r\n", Lines0),
+    exclude(=("") , Lines0, Lines),
+    assertion(Lines == ["true", "false", "true", "TRUE:a:TRUE:b"]),
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------

@@ -2,7 +2,7 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2026 John William Creighton (@s243a)
 %
-% wam_r_lowered_emitter.pl -- WAM-lowered R emission (Phase 3)
+% wam_r_lowered_emitter.pl -- WAM-lowered R emission (Phase 4)
 %
 % Plan mirrors the Haskell hybrid path in
 %   docs/design/WAM_HASKELL_LOWERED_{PHILOSOPHY,SPECIFICATION,
@@ -10,15 +10,11 @@
 %
 % Phase 2 covered deterministic single-clause predicates and emitted
 % one R function per predicate, delegating every instruction to
-% WamRuntime$step. Phase 3 (this iteration) adds two refinements:
+% WamRuntime$step. Phase 3 added two refinements:
 %
 %   1. Expanded lowerability. Multi-clause predicates whose first
-%      clause is in the supported set are now lowerable with reason
-%      multi_clause_1. The lowered function inlines clause 1 and, if
-%      clause 1 fails, drops back into the array path so the standard
-%      backtracking machinery can run clause 2+. This is the same
-%      design the Haskell lowered emitter uses for its multi-clause
-%      path.
+%      clause is in the supported set became lowerable with reason
+%      multi_clause_1.
 %
 %   2. Native per-instruction emission for the simple register ops
 %      (allocate/deallocate, put_constant/put_variable/put_value,
@@ -27,6 +23,10 @@
 %      involves deref/unify/heap-build (get_constant, get_value,
 %      get_structure, *_list, unify_*, set_*, builtin_call,
 %      call_foreign) still delegates to step.
+%
+% Phase 4 broadens multi-clause lowering to multi_clause_n: when every
+% clause is supported, each clause is emitted inline and later clauses
+% are exposed through an iter-style retry CP.
 %
 % Output under emit_mode(interpreter) is unchanged; this file is only
 % consulted under emit_mode(functions) / emit_mode(mixed([...])).
@@ -49,21 +49,17 @@
 % A predicate's WAM text is summarised into a `plan(Mode, AltLabel,
 % ClauseLines)` record:
 %
-%   - Mode is `deterministic` or `multi_clause_1`.
-%   - AltLabel is the label to backtrack to under multi_clause_1; it's
-%     the literal label string from the try_me_else operand. For
-%     deterministic predicates this is the atom `none`.
-%   - ClauseLines is the list of WAM-text lines that make up the
-%     emitted body. For deterministic mode this is every non-switch
-%     instruction line; for multi_clause_1 it's the lines of clause 1
-%     only (the lines between try_me_else and the corresponding
-%     trust_me, ending at proceed).
+%   - Mode is `deterministic` or `multi_clause_n`.
+%   - AltLabel is retained for the older multi_clause_1 shape; phase 4
+%     multi_clause_n does not need it and uses `none`.
+%   - ClauseLines is either the deterministic clause's WAM-text lines
+%     or, for multi_clause_n, a list of per-clause WAM-text line lists.
 %
 % switch_on_constant / switch_on_structure prefixes are dropped: they
 % were optimisations the array path uses to short-circuit dispatch.
-% Skipping them in the lowered path is correctness-preserving (clause
-% 1 either matches or we fall back to the array, which still runs the
-% switch).
+% Skipping them in the lowered path is correctness-preserving: each
+% lowered clause tries its own head match and failures move to the next
+% lowered clause.
 
 build_emission_plan(WamCode, plan(Mode, AltLabel, ClauseLines)) :-
     atom_string(WamCode, S),
@@ -87,39 +83,87 @@ skippable_prefix_line(["switch_on_constant"|_]).
 skippable_prefix_line(["switch_on_structure"|_]).
 
 % First-real-instruction discriminates between deterministic and
-% multi_clause_1. A try_me_else here means clause 1 starts at the next
-% line and ends at the trust_me/proceed boundary.
-classify_clause_shape([FirstLine|Rest], plan(multi_clause_1, AltAtom, ClauseLines)) :-
-    wam_r_target:tokenize_wam_line(FirstLine, ["try_me_else", AltStr]), !,
-    atom_string(AltAtom, AltStr),
-    take_clause1_lines(Rest, ClauseLines).
+% multi_clause_n. A try_me_else here means a standard WAM try-chain
+% follows, which we split into per-clause line groups.
+classify_clause_shape([FirstLine|Rest], plan(multi_clause_n, none, Clauses)) :-
+    wam_r_target:tokenize_wam_line(FirstLine, ["try_me_else", _AltStr]), !,
+    take_multi_clause_lines(Rest, Clauses).
 classify_clause_shape(Lines, plan(deterministic, none, Lines)).
 
-% Clause 1 ends either at a `proceed` (success path; we keep the
-% proceed line so the emitter renders return(TRUE) at that point) or
-% at a `trust_me` (start of clause 2; we stop without including it).
-take_clause1_lines([], []).
-take_clause1_lines([Line|Rest], Out) :-
-    wam_r_target:tokenize_wam_line(Line, Parts),
-    (   Parts == ["proceed"]
-    ->  Out = [Line]
-    ;   Parts == ["trust_me"]
-    ->  Out = []
-    ;   Out = [Line|RestOut],
-        take_clause1_lines(Rest, RestOut)
+% Multi-clause WAM emitted by the shared compiler has the shape:
+%   try_me_else L2, clause1..., L2:, retry_me_else L3, clause2...,
+%   L3:, trust_me, clause3...
+% We drop labels and choice instructions, preserving each clause body
+% through its `proceed` so the lowered closure returns TRUE at success.
+take_multi_clause_lines(Lines0, Clauses) :-
+    skip_clause_prefix(Lines0, Lines),
+    take_one_clause(Lines, Clause, Rest),
+    (   Clause == []
+    ->  Clauses = []
+    ;   Clauses = [Clause | Tail],
+        take_multi_clause_lines(Rest, Tail)
     ).
+
+skip_clause_prefix([], []).
+skip_clause_prefix([Line|Rest], Out) :-
+    wam_r_target:tokenize_wam_line(Line, Parts),
+    (   Parts == []
+    ->  skip_clause_prefix(Rest, Out)
+    ;   Parts = [First|_],
+        sub_string(First, _, 1, 0, ":")
+    ->  skip_clause_prefix(Rest, Out)
+    ;   Parts = ["retry_me_else", _]
+    ->  skip_clause_prefix(Rest, Out)
+    ;   Parts == ["trust_me"]
+    ->  skip_clause_prefix(Rest, Out)
+    ;   Out = [Line|Rest]
+    ).
+
+take_one_clause(Lines, Clause, Tail) :-
+    take_one_clause_(Lines, [], RevClause, Tail),
+    reverse(RevClause, Clause).
+
+take_one_clause_([], Acc, Acc, []).
+take_one_clause_([Line|Rest], Acc, Acc, [Line|Rest]) :-
+    wam_r_target:tokenize_wam_line(Line, Parts),
+    Acc \= [],
+    clause_boundary_parts(Parts),
+    !.
+take_one_clause_([Line|Rest], Acc, Out, Tail) :-
+    wam_r_target:tokenize_wam_line(Line, Parts),
+    Acc1 = [Line|Acc],
+    (   terminal_clause_parts(Parts)
+    ->  Out = Acc1,
+        Tail = Rest
+    ;   take_one_clause_(Rest, Acc1, Out, Tail)
+    ).
+
+clause_boundary_parts([First|_]) :-
+    sub_string(First, _, 1, 0, ":"), !.
+clause_boundary_parts(["retry_me_else", _]).
+clause_boundary_parts(["trust_me"]).
+
+terminal_clause_parts(["proceed"]).
+terminal_clause_parts(["fail"]).
+terminal_clause_parts(["execute", _]).
+terminal_clause_parts(["execute", _, _]).
 
 % =====================================================================
 % Lowerability
 % =====================================================================
 
 %% wam_r_lowerable(+Pred, +WamCode, -Reason) is semidet.
-%  Reason is one of `deterministic` or `multi_clause_1`. Lowerability
+%  Reason is one of `deterministic` or `multi_clause_n`. Lowerability
 %  is decided against the emission-plan's clause lines.
 wam_r_lowerable(_PI, WamCode, Reason) :-
-    catch(build_emission_plan(WamCode, plan(Mode, _, ClauseLines)), _, fail),
-    forall(member(Line, ClauseLines), line_supported(Line)),
+    catch(build_emission_plan(WamCode, plan(Mode, _, ClauseData)), _, fail),
+    emission_plan_lines(Mode, ClauseData, Lines),
+    forall(member(Line, Lines), line_supported(Line)),
     Reason = Mode.
+
+emission_plan_lines(deterministic, Lines, Lines).
+emission_plan_lines(multi_clause_n, Clauses, Lines) :-
+    append(Clauses, Lines).
 
 line_supported(Line) :-
     wam_r_target:tokenize_wam_line(Line, Parts),
@@ -209,16 +253,16 @@ lower_predicate_to_r(PI, WamCode, Opts,
     ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
     format(atom(PredName), '~w/~w', [Pred, Arity]),
     r_lowered_func_name(Pred/Arity, FuncName),
-    build_emission_plan(WamCode, plan(Mode, AltLabel, ClauseLines)),
+    build_emission_plan(WamCode, plan(Mode, _AltLabel, ClauseLines)),
     catch(gather_pred_mode_records(PI, Records), _, Records = []),
     set_lowered_mode_context(Records, Opts),
     mode_comment_header_from_records(Opts, Records, ModeHeader),
     (   Mode == deterministic
     ->  emit_deterministic_function(PredName, FuncName, ClauseLines,
                                     ModeHeader, Code)
-    ;   Mode == multi_clause_1
-    ->  emit_multi_clause_function(PredName, FuncName, AltLabel,
-                                   ClauseLines, ModeHeader, Code)
+    ;   Mode == multi_clause_n
+    ->  emit_multi_clause_function(PredName, FuncName, ClauseLines,
+                                   ModeHeader, Code)
     ),
     clear_lowered_mode_context.
 
@@ -406,39 +450,94 @@ emit_deterministic_function(PredName, FuncName, ClauseLines,
 ~w  invisible(TRUE)
 }', [ModeHeader, PredName, FuncName, Body]).
 
-% Multi-clause: push a CP whose next_pc points at clause 2+, run
-% clause 1 inline. If clause 1 succeeds the lowered fn returns TRUE
-% (the CP stays in $cps for downstream backtracking). If clause 1
-% fails we backtrack via the runtime helper, advance past the
-% trust_me, and drop into the run loop so it can drive clause 2+.
-emit_multi_clause_function(PredName, FuncName, AltLabel, ClauseLines,
+% Multi-clause: every supported clause is emitted as an inline closure.
+% On success, a lightweight iter CP is pushed for the next clause so
+% caller-side backtracking can resume at clause N+1. On failure, the
+% original entry snapshot is restored before the next inline clause is
+% tried.
+emit_multi_clause_function(PredName, FuncName, Clauses,
                            ModeHeader, Code) :-
-    with_output_to(string(Body), emit_lines(ClauseLines, "    ")),
-    % clause1_ok is the value of the closure's last expression, which
-    % is the `return(TRUE)` emitted by the proceed line at the end of
-    % clause 1. invisible(FALSE) is a defensive fallback for the
-    % proceed-less case (caller does isTRUE() on the result).
+    length(Clauses, NClauses),
+    with_output_to(string(ClauseCode), emit_clause_dispatch(Clauses, 1)),
     format(string(Code),
-'~w# Lowered: ~w  (multi-clause; clause 1 inline, fall back to array)
+'~w# Lowered: ~w  (multi-clause; all clauses inline)
 ~w <- function(program, state) {
-  alt_pc <- program$labels[["~w"]]
-  if (is.null(alt_pc)) return(FALSE)
-  state$cps <- c(state$cps, list(list(
-    next_pc     = as.integer(alt_pc),
-    regs        = state$regs2,
-    cp          = state$cp,
-    trail_len   = length(state$trail),
-    var_counter = state$var_counter
-  )))
-  clause1_ok <- (function() {
-~w    invisible(FALSE)
-  })()
-  if (isTRUE(clause1_ok)) return(TRUE)
-  if (!isTRUE(WamRuntime$backtrack(state))) return(FALSE)
-  state$pc   <- state$pc + 1L
-  state$halt <- FALSE
-  isTRUE(WamRuntime$run(program, state))
-}', [ModeHeader, PredName, FuncName, AltLabel, Body]).
+  snap_regs_      <- state$regs2
+  snap_cp_        <- state$cp
+  snap_trail_     <- length(state$trail)
+  snap_var_count_ <- state$var_counter
+  snap_mode_      <- state$mode
+  snap_build_     <- state$build_stack
+  snap_read_      <- state$read_stack
+  snap_stack_len_ <- length(state$stack)
+  snap_barrier_   <- state$pending_call_barrier
+  resume_pc_      <- state$pc + 1L
+  restore_clause_entry_ <- function() {
+    state$regs2 <- snap_regs_
+    WamRuntime$undo_trail_to(state, snap_trail_)
+    state$cp <- snap_cp_
+    state$var_counter <- snap_var_count_
+    state$mode <- snap_mode_
+    state$build_stack <- snap_build_
+    state$read_stack <- snap_read_
+    state$pending_call_barrier <- snap_barrier_
+    if (length(state$stack) > snap_stack_len_) {
+      if (snap_stack_len_ == 0L) state$stack <- list()
+      else state$stack <- state$stack[seq_len(snap_stack_len_)]
+    }
+    state$shadow_frame <- NULL
+  }
+  try_clause_ <- function(idx_) {
+~w    FALSE
+  }
+  push_next_clause_ <- function(next_idx_) {
+    state$cps <- c(state$cps, list(list(
+      kind        = "iter",
+      regs        = snap_regs_,
+      trail_len   = snap_trail_,
+      cp          = snap_cp_,
+      var_counter = snap_var_count_,
+      mode        = snap_mode_,
+      build_stack = snap_build_,
+      read_stack  = snap_read_,
+      call_barrier = snap_barrier_,
+      stack_len   = snap_stack_len_,
+      resume_pc   = resume_pc_,
+      retry       = function(state) {
+        for (idx_ in seq.int(next_idx_, ~wL)) {
+          ok_ <- isTRUE(try_clause_(idx_))
+          if (ok_) {
+            if (idx_ < ~wL) push_next_clause_(idx_ + 1L)
+            return(TRUE)
+          }
+          restore_clause_entry_()
+        }
+        FALSE
+      }
+    )))
+  }
+  for (idx_ in seq_len(~wL)) {
+    ok_ <- isTRUE(try_clause_(idx_))
+    if (ok_) {
+      if (idx_ < ~wL) push_next_clause_(idx_ + 1L)
+      return(TRUE)
+    }
+    restore_clause_entry_()
+  }
+  FALSE
+}', [ModeHeader, PredName, FuncName, ClauseCode,
+      NClauses, NClauses, NClauses, NClauses]).
+
+emit_clause_dispatch([], _).
+emit_clause_dispatch([Lines|Rest], Idx) :-
+    format("    if (identical(idx_, ~wL)) {~n", [Idx]),
+    format("      return((function() {~n"),
+    emit_lines(Lines, "        "),
+    format("        invisible(FALSE)~n"),
+    format("      })())~n"),
+    format("    }~n"),
+    Idx1 is Idx + 1,
+    emit_clause_dispatch(Rest, Idx1).
 
 emit_lines([], _).
 emit_lines([Line|Rest], Ind) :-

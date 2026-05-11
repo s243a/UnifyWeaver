@@ -6078,6 +6078,13 @@ WamRuntime$backtrack <- function(state) {
     state$mode        <- cp$mode
     state$build_stack <- cp$build_stack
     if (!is.null(cp$read_stack)) state$read_stack <- cp$read_stack
+    if (!is.null(cp$call_barrier)) state$pending_call_barrier <- cp$call_barrier
+    if (!is.null(cp$stack_len) &&
+        length(state$stack) > cp$stack_len) {
+      if (cp$stack_len == 0L) state$stack <- list()
+      else state$stack <- state$stack[seq_len(cp$stack_len)]
+    }
+    state$shadow_frame <- NULL
     if (cp$retry(state)) {
       state$pc <- as.integer(cp$resume_pc)
       return(TRUE)

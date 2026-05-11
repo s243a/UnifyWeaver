@@ -453,7 +453,7 @@ add a `fact_source_loader_call/4` clause for the Spec shape and a
 
 ### Emit modes
 
-The Phase-3 lowered emitter can replace the instruction-array body
+The Phase-4 lowered emitter can replace the instruction-array body
 of a predicate with hand-emitted R that calls runtime helpers
 directly. This skips the per-instruction `step` dispatch and is a
 useful hot-path optimisation.
@@ -554,14 +554,11 @@ calls + 2 switch lookups per is/2 hit). Always fires when the
 lowered emitter handles the clause; the runtime fast-path then
 applies inside the inline body.
 
-Note: both specialisations only affect `is/2` calls that reach the
-lowered emitter (phase-3 b) or the array path / step (phase-3 a). A
-multi-clause predicate where clause 2+ contains the is/2 will go
-through the array path for those clauses, so phase-3 (a) handles
-it. The lowered-emitter inline (b) only helps for the lowered
-clauses (today: deterministic or multi_clause_1's first clause).
-See `WAM_R_MODE_ANALYSIS_PLAN.md` phase 4 for the multi_clause_n
-extension that would unlock more of the win.
+Note: phase 4 broadens lowered emission from the older
+`multi_clause_1` shape to `multi_clause_n`: when every clause is in
+the lowered emitter's supported instruction subset, each clause is
+emitted inline. That means lowered-emitter inline `is/2` now applies
+to clause 2+ as well as deterministic predicates and first clauses.
 
 ## Supported features
 
@@ -915,13 +912,14 @@ Coverage map (e2e tests, by feature group):
 | `nested_if_then_else_e2e_rscript` | chained `( A -> B ; C -> D ; E )` compiles as nested cut_ite/try_me_else_ite pairs (each `->` in Else position is recognised recursively rather than emitted as a stub `Call("->", 2)`) |
 | `deeply_nested_ite_compiles` | clause_body_analysis no longer stack-overflows on triple-nested if-then-else bodies (the `nonvar` guard on `disjunction_alternatives/2` keeps it from infinitely-expanding an unbound goal that passes through the analyser) |
 | `strict_xf_chain_fails_e2e_rscript` | runtime parser enforces strict (xf / fx) vs non-strict (yf / fy) lhs-precedence rules: `5!!` parses with `op(100, yf, '!')` but fails with `op(100, xf, '!')`; `neg neg foo` parses with `op(900, fy, neg)` but fails with `op(900, fx, neg)` |
-| `phase3_multi_clause_e2e_rscript` | Phase-3 lowered emitter (multi-clause) |
+| `phase3_multi_clause_e2e_rscript` | Lowered emitter multi-clause truth checks |
 | `lowered_emitter_e2e_rscript` | Phase-3 lowered emitter (single-clause) |
 | `mode_analysis_phase1_comments` | Mode-analysis visibility: `mode_comments(on)` option prepends `# Mode analysis:` block to each lowered function with per-clause head-binding states; covers `+`, `-`, `?`, undeclared mode shapes |
 | `mode_analysis_phase2_get_constant_inlined` | Mode-analysis phase 2: structural assertion that `get_constant` head match is emitted as inline `WamRuntime$deref + identical()` when the target A-register's declared mode is `+`; falls back to `WamRuntime$step` when no mode declaration or `mode_specialise(off)` |
 | `mode_analysis_phase2_get_constant_e2e_rscript` | Mode-analysis phase 2: e2e correctness -- a predicate with `:- mode(p(+))` and three clauses compiles + runs via Rscript, queries return correct true/false matching across the multi-clause backtracking path |
 | `mode_analysis_phase3_is_inlined` | Mode-analysis phase 3: structural assertion that `builtin_call is/2 2` is emitted as inline `WamRuntime$eval_arith + bind/unify` in the lowered function (instead of `WamRuntime$step(... BuiltinCall("is/2", 2))`) |
 | `mode_analysis_phase3_is_e2e_rscript` | Mode-analysis phase 3: e2e correctness -- a predicate using `is/2` with simple binary int op (runtime fast-path), nested arith (slow path), and negative-result arith compiles + runs via Rscript with correct values |
+| `mode_analysis_phase4_multiclause_n_e2e_rscript` | Mode-analysis phase 4: all-supported-clause `multi_clause_n` lowering, including direct R-wrapper execution of clause 2's inline `is/2` path |
 
 ## Contributing
 
