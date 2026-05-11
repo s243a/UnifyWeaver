@@ -462,11 +462,13 @@ test(lowered_emitter_phase3) :-
     assertion(current_predicate(wam_r_lowered_emitter:wam_r_lowerable/3)),
     assertion(current_predicate(wam_r_lowered_emitter:lower_predicate_to_r/4)),
     assertion(current_predicate(wam_r_lowered_emitter:r_lowered_func_name/2)),
-    % Multi-clause predicates are now lowerable as multi_clause_1
-    % (clause 1 inline + fallback to the array path on failure).
+    % Multi-clause predicates whose every clause is line-supported
+    % lower as multi_clause_n (all clauses inline, no array fallback).
+    % wam_r_choice_fact/1 has 3 fact-shape clauses, each consisting
+    % of get_constant + proceed -- all individually lowerable.
     compile_predicate_to_wam_string(user:wam_r_choice_fact/1, ChoiceWam),
     once(wam_r_lowered_emitter:wam_r_lowerable(user:wam_r_choice_fact/1,
-                                               ChoiceWam, multi_clause_1)),
+                                               ChoiceWam, multi_clause_n(3))),
     % Single-clause deterministic rule is lowered with reason
     % `deterministic`.
     compile_predicate_to_wam_string(user:wam_r_caller/1, CallerWam),
@@ -516,15 +518,15 @@ test(emit_mode_functions_lowers_caller) :-
     )).
 
 % ------------------------------------------------------------------
-% Test: multi-clause predicates lower to a multi_clause_1 wrapper
-%       (clause 1 inline; backtrack into the array path on failure).
+% Test: multi-clause predicates whose every clause is line-supported
+%       lower as multi_clause_n (all clauses inline, no array fallback).
 % ------------------------------------------------------------------
 test(emit_mode_functions_lowers_multi_clause) :-
     once((
         unique_r_tmp_dir('tmp_r_mode_multi', TmpDir),
         % fact_table_layout(off) keeps wam_r_choice_fact/1 on the
-        % multi_clause_1 lowered path; without it the new fact-table
-        % path would pre-empt this test's assertions.
+        % lowered path; without it the new fact-table layout would
+        % pre-empt this test's assertions.
         write_wam_r_project(
             [user:wam_r_choice_fact/1],
             [emit_mode(functions), fact_table_layout(off)],
@@ -533,13 +535,18 @@ test(emit_mode_functions_lowers_multi_clause) :-
         read_file_to_string(Program, Code, []),
         % Lowered fn definition exists.
         assertion(sub_string(Code, _, _, _, 'lowered_wam_r_choice_fact_1 <- function(program, state)')),
-        % multi_clause_1 marker is in the comment header.
-        assertion(sub_string(Code, _, _, _, 'multi-clause; clause 1 inline, fall back to array')),
-        % Clause-1 closure structure is in place.
-        assertion(sub_string(Code, _, _, _, 'clause1_ok <- (function() {')),
-        assertion(sub_string(Code, _, _, _, 'WamRuntime$backtrack(state)')),
+        % multi_clause_n marker is in the comment header.
+        assertion(sub_string(Code, _, _, _, 'multi-clause; all clauses inline, no array fallback')),
+        % Clause closures are in place (one per clause).
+        assertion(sub_string(Code, _, _, _, 'clause_ok_ <- (function() {')),
+        % State snapshot variables are emitted.
+        assertion(sub_string(Code, _, _, _, 'saved_regs_       <- state$regs2')),
+        assertion(sub_string(Code, _, _, _, 'WamRuntime$undo_trail_to(state, saved_trail_len_)')),
+        % multi_clause_n preds register in lowered_dispatch.
+        assertion(sub_string(Code, _, _, _,
+            'assign("wam_r_choice_fact/1", lowered_wam_r_choice_fact_1, envir = shared_program$lowered_dispatch)')),
         % Wrapper points at the lowered fn.
-        assertion(sub_string(Code, _, _, _, 'isTRUE(lowered_wam_r_choice_fact_1(shared_program, state))')),
+        assertion(sub_string(Code, _, _, _, 'lowered_wam_r_choice_fact_1(shared_program, state)')),
         delete_directory_and_contents(TmpDir)
     )).
 
