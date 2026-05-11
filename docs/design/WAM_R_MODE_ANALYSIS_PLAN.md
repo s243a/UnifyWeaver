@@ -194,9 +194,9 @@ Alternating runs to defeat time-correlated noise:
 above-noise mode-analysis-campaign win on the recursive workload.
 
 The win comes mostly from the runtime fast-path (a): clause 2 of pn
-runs through the array path / step, so the lowered-emitter inline
-(b) doesn't apply to it. Phase 4's multi_clause_n would bring (b)
-into play for clause 2 as well, multiplying the win.
+ran through the array path / step in phase 3, so the lowered-emitter
+inline (b) did not apply to it. Phase 4's multi_clause_n broadens the
+lowered path so clause 2+ can use the inline body as well.
 
 ### Connection to mode analysis
 
@@ -212,24 +212,17 @@ can drop even the unbound runtime check for the dominant idiom
 ### lowered emitter path
 
 Both phase-2 and phase-3 (b) specialisations only fire inside
-`lowered_*` functions. The lowered emitter currently handles
-`deterministic` (single-clause) and `multi_clause_1` (multi-clause,
-first clause inline + array fallback) shapes. Clauses 2+ of a
-multi-clause predicate run through the WAM array path / `step` /
-`call_builtin` unchanged. To unlock more of the win, the next
-direction is to *broaden what gets lowered*: a `multi_clause_n`
-emitter that handles ALL clauses inline (gated on every clause being
-individually lowerable). Listed as the leading phase-4 candidate
-below.
+`lowered_*` functions. Phase 4 broadens the lowered emitter from
+`deterministic` and `multi_clause_1` to `multi_clause_n`: if every
+clause is individually lowerable, the generated function emits each
+clause inline and uses an iter-style retry CP for later clauses.
 
-## Phase 4 candidates
+## Phase 4 status and remaining candidates
 
-1. **`multi_clause_n` lowered emission.** When `forall(C in clauses,
-   wam_r_lowerable(C))` holds, emit each clause as an inline closure
-   inside the lowered function. Push a CP pointing at the next
-   inline clause, try each clause with state-restore between
-   attempts, leave the CP in place on success so caller-side
-   backtracking still works correctly via the array path.
+1. **`multi_clause_n` lowered emission.** Delivered: when all clauses
+   are in the supported subset, the lowered function emits each clause
+   as an inline closure, restores state between failed attempts, and
+   leaves an iter-style retry CP for later clauses.
 2. **`get_value` head match -- skip deref-then-unify when both
    sides are provably bound atomics.** Same shape as the phase-2
    `get_constant` specialisation but for var-to-var matching.
@@ -251,9 +244,8 @@ profile of the WAM stepping engine") flags the dominant costs:
 | `WamRuntime$deref` | 0.380 | 7.3% | **YES** -- skip deref at known-bound slots |
 | `WamRuntime$put_reg` | 0.260 | 5.0% | no -- already trivial |
 
-Phase 4 should pick **one** candidate (likely #1, since it
-multiplies the impact of every other specialisation), implement +
-bench on a workload that's actually dominated by the targeted op.
+The next phase should pick one remaining candidate and bench on a
+workload that's actually dominated by the targeted op.
 
 ## Phase 5+ — adaptive specialisation
 
