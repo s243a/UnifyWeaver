@@ -70,9 +70,14 @@ the place.
 
 - All 167+ existing WAM-Haskell tests pass (no behaviour change).
 - New manifest unit tests pass.
-- A demo workload using `algorithm/2` + `algorithm_optimization/2`
-  emits the same Haskell code as the equivalent caller-options
-  invocation.
+- A demo workload using `decl_algorithm/2` +
+  `decl_algorithm_optimization/2` emits the same Haskell code
+  as the equivalent caller-options invocation.
+- **Negative test**: a workload that declares
+  `decl_algorithm(foo, [kernel(does_not_exist/3)])` (or any
+  reference to an undeclared predicate) fails at codegen with a
+  clear error ("manifest references undeclared kernel
+  `does_not_exist/3`"), not silently producing incorrect code.
 
 ### Estimated effort
 
@@ -120,6 +125,10 @@ preparation.
   `tree_cost_function(hop_distance, [max_hops(5)])` emits
   code that produces a non-zero score for nodes within 5 hops.
 - The existing Flux-panic test still passes (regression check).
+- A new test exercises the *new* `CostFn`-dispatch path with
+  `tree_cost_function(flux, [...])` and asserts the panic still
+  fires — protects against accidentally swallowing the panic
+  during the refactor.
 
 ### Estimated effort
 
@@ -158,8 +167,11 @@ No code changes. Tooling and measurement only.
 
 ### Success criteria
 
-- `resident_auto` runs within 5% of `resident_cursor` baseline at
-  every scale (resolver agrees with empirical best).
+- Median of 3 trials of `resident_auto` is within 10% of median
+  of 3 trials of `resident_cursor` at every scale. (10% to match
+  P3's tolerance and to account for the 3–8% multi-trial variance
+  Phase L measurements have shown at -N4 for BFS workloads,
+  especially under cold-start enwiki conditions.)
 - Branching-factor distribution captured: median, P90, P99 for
   parent and child legs separately.
 
@@ -192,7 +204,12 @@ Haskell side (`templates/targets/haskell_wam/`):
 
 - `scan_strategy.hs.mustache` — new template with:
   - `WarmHeap`, `WarmIndex`, `Frontier`, `Visited` types
-  - `runWarmBuild :: CostFn -> WarmConfig -> IO (WarmHeap, WarmIndex)`
+  - `runWarmBuild :: CostFn -> WarmConfig -> IO WarmHeap`
+    (The `WarmIndex`, `Frontier`, and `Visited` are warm-phase
+    internals; they're created and discarded inside `runWarmBuild`.
+    Callers don't see them. `live`-mode consumers in P7+ that need
+    them get a separate `runWarmBuildLive` entry point that
+    returns the full warm state.)
   - `snapshotCache :: WarmHeap -> IntMap NodeId [EdgeTarget]`
   - `snapshotRanked :: WarmHeap -> [(NodeId, Cost)]`
   - Stage-1 cursor loop + stage-2 scan trigger
@@ -290,14 +307,22 @@ per-HEC L1 cache from being useful.
 
 - `partitionByRank :: Int -> RankedView -> [[NodeId]]` in
   `scan_strategy.hs.mustache`.
-- `main.hs.mustache` — when `tree_retention(retain)` is set,
+- `main.hs.mustache` — when `tree_retention(snapshot_only)` is set,
   replace the seed `parMap rdeepseq` with a per-capability
-  `mapConcurrently` driven by `partitionByRank`.
+  `mapConcurrently` driven by `partitionByRank`. (The spec's
+  retention enum is `discard | snapshot_only | live`; there is no
+  `retain` value.)
 - New option: `spark_routing(capability_local)` (default
   `unsharded`).
 - Resolver hook: `scan_strategy(auto)` + `expected_query_count > 1`
-  → automatically opts into retention + capability_local routing
-  if L1 is the chosen cache mode.
+  → automatically opts into `tree_retention(snapshot_only)` +
+  `spark_routing(capability_local)` when the **resolved**
+  `lmdb_cache_mode` (i.e. the value after
+  `resolve_auto_lmdb_cache_mode/2` runs) is `per_hec`. The
+  resolver chain ordering (`load_manifest → cache_strategy →
+  lmdb_cache_mode → scan_strategy`) ensures the scan-strategy
+  resolver sees the finalised cache mode, not the raw `auto`
+  marker. No chicken-and-egg.
 - Tests pinning the partition algorithm + routing emission.
 - Phase L appendix #16: empirical comparison of
   `parMap` baseline vs capability-routed L1 at simplewiki -N4.
@@ -393,17 +418,23 @@ fine in steady-state but warm needs reproducibility for tests.
 P3's warm phase peaks at:
 
 ```
-peak_warm_mem ≈ |WarmHeap| × (cost + node_id + edges)
+peak_warm_mem ≈ |WarmHeap| × (cost + node_id + edges_pointer)
+              + |WarmHeap| × avg_edges × bytes_per_edge   (the edge data itself)
               + |WarmIndex| × (node_id + cost)
               + |Frontier| × (node_id + cost)
               + |Visited| × node_id
 ```
 
-For warm_budget_nodes = 10% of fact_count = 30k at simplewiki,
-average 5 children/node, ~30 bytes per entry: ≈ 5 MB. Fits
-easily. enwiki at 10% = 990k nodes × ~30 bytes = ~30 MB. Still
-fine. Article-level scales would push this; defer until that
-data lands.
+The second term is the edge-data payload — easy to miss. At
+simplewiki with 30k warm nodes × 5 children/node × 16 bytes/edge
+≈ 2.4 MB additional. At enwiki at 990k nodes ×
+5 × 16 ≈ 80 MB additional. Sums:
+
+- simplewiki: ~5 MB structural + 2.4 MB edge data = ~7 MB total.
+- enwiki: ~30 MB structural + 80 MB edge data = ~110 MB total.
+
+Both still fit easily. Article-level scales would push this;
+defer until that data lands.
 
 ### Telemetry
 
@@ -422,7 +453,10 @@ option `scan_strategy_verbose(true)` for full traces.
 
 Out of scope, file and forget:
 
-- Online cache growth (cache misses don't memoise).
+- Online cache *capacity* growth (cache misses *do* memoise — see
+  the Spec's Phase R lookup pseudocode — but the bucket array is
+  sized at codegen time and never resizes at runtime; high-volume
+  miss memoisation just overwrites buckets via collision).
 - Mid-workload re-warming.
 - Cost-function autoselect via ML — the registry has 3 options
   for now; pick one explicitly.

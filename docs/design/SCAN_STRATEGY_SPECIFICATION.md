@@ -10,8 +10,8 @@ list, formulas, composition rules) of the design laid out in
 ### Phase W (warm-build)
 
 | name | type sketch | role |
-|---|---|---|
-| `WarmHeap`  | `Data.Heap.MinPrioHeap Cost (NodeId, Edges)` | bounded-capacity ordered structure; lowest-cost evicted first |
+| --- | --- | --- |
+| `WarmHeap`  | `Data.Heap.MinPrioHeap Cost (NodeId, Edges)` | bounded-capacity **min-heap** keyed by cost; on insertion when at capacity, the minimum (lowest-cost) entry is evicted to make room for a higher-scored candidate |
 | `WarmIndex` | `IntMap NodeId Cost`                          | "do we already have this node, and at what cost?" — O(log N) lookup back into the heap |
 | `Frontier`  | `IntMap NodeId Cost`                          | candidate nodes not yet visited; same shape, separate logical role |
 | `Visited`   | `IntSet NodeId`                                | nodes whose edges we've already loaded |
@@ -32,11 +32,21 @@ Single conversion pass over `WarmHeap`:
 snapshotCache :: WarmHeap -> IntMap NodeId [EdgeTarget]
 ```
 
+**Cost values are not retained in the `Cache`.** Steady-state
+lookup is by-node only; there's no use for cost metadata once the
+cache is built. If cost information is needed post-snapshot (e.g.
+for spark routing in P5), it is retained separately via
+`snapshotRanked` below, not embedded in `Cache` entries.
+
 Optionally, also produce a flux-ranked view for retention:
 
 ```haskell
 snapshotRanked :: WarmHeap -> [(NodeId, Cost)]   -- descending by cost
 ```
+
+`RankedView` is immutable post-snapshot; concurrent reads from
+multiple capabilities (the P5 spark-routing use case) are safe
+without synchronisation by Haskell's GC contract on pure data.
 
 After snapshot, `WarmHeap`, `WarmIndex`, `Frontier`, `Visited` can
 all be GC'd. Steady-state holds only the cache (and optionally the
@@ -97,16 +107,26 @@ The Haskell-side generated code consumes a `CostFn` abstraction:
 
 ```haskell
 data CostFn = CostFn
-  { cfScore   :: !(NodeId -> Edges -> Cost)   -- pure scorer
-  , cfRelax   :: !(NodeId -> [NodeId] -> Cost -> ScoreMap -> ScoreMap)
-                                              -- propagation step
-  , cfInitial :: !(NodeId -> Cost)            -- endpoint score
+  { cfInitial :: !(NodeId -> Cost)
+      -- initial score for an endpoint node (seed or root)
+  , cfRelax   :: !(NodeId -> [NodeId] -> ScoreMap -> ScoreMap)
+      -- one round of score propagation:
+      -- given a node, its neighbours, and the current score map,
+      -- update the score map with the relaxed neighbour scores
   }
 ```
 
-Each concrete cost function (flux, hop, semantic) implements this
-record. The tree-building algorithm consumes a `CostFn` and is
-generic over which one.
+The "score" of a node is just its value in the `ScoreMap` — we
+intentionally don't have a separate `cfScore` field. Flux scoring
+depends on the global score map (parent/child contributions
+require already-scored neighbours), so a pure
+`NodeId -> Edges -> Cost` signature can't express it. Keeping the
+state in `ScoreMap` and treating `cfRelax` as the sole
+score-producing operation avoids the overlap.
+
+Each concrete cost function (flux, hop, semantic) implements
+this record. The tree-building algorithm consumes a `CostFn`
+and is generic over which one.
 
 ### Flux
 
@@ -119,6 +139,15 @@ flux(n) = parent_flux(n) + child_flux(n)
 parent_flux(n) = Σ_{p ∈ parents(n)}  (parent_decay / |children(p)|) ^ hops_from_endpoint(p)
 child_flux(n)  = Σ_{c ∈ children(n)} (child_decay  / |parents(c)|)  ^ hops_from_endpoint(c)
 ```
+
+**`hops_from_endpoint` semantics**: the BFS distance from `n` (or its
+parent/child neighbour, as in the formulas above) to the *nearest
+endpoint*. Endpoints are nodes named by the algorithm's `seeds/1`
+predicate. When the workload also declares `roots/1`, both seeds and
+roots are treated as endpoints — `hops_from_endpoint(x) = min(BFS to
+seeds, BFS to roots)`. This makes flux symmetric for workloads with
+two-sided endpoint sets (e.g. effective-distance computing reachability
+between an article and a target category).
 
 Reading the formula:
 
@@ -158,13 +187,24 @@ should be open to it.
 Unified meaning across access patterns:
 
 | iterations | meaning |
-|---|---|
+| --- | --- |
 | 1 | one round of score propagation. Cursor mode: expand frontier by 1 hop, update scores within that hop. Scan mode: one full pass over the edge list, propagating from scored nodes to neighbours. |
-| N | N rounds. Approaches converged scoring as N → ∞. |
-| auto | until score-change-per-iteration drops below a threshold (deferred — needs a convergence metric to be defined). |
+| N (positive integer) | N rounds. Approaches converged scoring as N → ∞. |
 
 The cost vs accuracy knob. Default `iterations(1)` for the cheap
 path; workload-authors who need converged scoring opt up.
+
+#### Future iteration modes (not yet exposed)
+
+`iterations(auto)` — runs until score-change-per-iteration drops
+below a threshold — is a natural endpoint of the cost/accuracy
+curve but is **not in the public option space for P0–P5**. It
+needs a convergence metric definition (e.g. max-delta or
+sum-of-deltas across the score map) plus a per-cost-function
+sensible default threshold. Filed as a Phase 6+ extension; until
+then, callers passing `iterations(auto)` are coerced to
+`iterations(1)` with a stderr warning so a workload author who
+typed it doesn't get silent surprises.
 
 ## Stage-1 → Stage-2 crossover
 
@@ -177,9 +217,17 @@ to a scan pass.
 K_cross_stage2 = W_remaining / (bandwidth_eff * latency_eff)
 ```
 
-where `W_remaining` is the bytes of edge data not yet materialised
-into the heap, and `bandwidth_eff` / `latency_eff` come from the
-cost model's formula (`CACHE_COST_MODEL_PHILOSOPHY.md`).
+where `bandwidth_eff` / `latency_eff` come from the cost model's
+formula (`CACHE_COST_MODEL_PHILOSOPHY.md`).
+
+**Static threshold, runtime check.** `K_cross_stage2` is computed
+**at codegen time** using the same formula as the cost model
+(static estimates of `W_remaining` from `db_size_bytes`,
+hardware constants from `cost_model_constants/1`). The frontier
+size `|Frontier|` is measured **at runtime** during warm-build and
+compared against the precomputed threshold. Implementors should
+*not* recompute the threshold dynamically — the inputs would
+require a runtime probe and the comparison is meant to be cheap.
 
 Concretely:
 
@@ -237,9 +285,24 @@ codebase. No metadata per entry, no priority queue, no LRU chain.
 Hash distribution decides what stays.
 
 The cache is sized at codegen time (`cache_capacity_buckets/1`,
-default `2 × warm_budget_nodes` so the snapshot can populate
-without immediately overwriting itself, and miss memoisation
-has headroom before colliding with snapshot entries).
+default `4 × warm_budget_nodes`). At `B = 4N` the expected
+collision rate during snapshot population is roughly
+`N(1 - (1 - 1/B)^N) / N ≈ 1 - e^{-1/4} ≈ 22%`. That is, ~22% of
+snapshot inserts will hit an occupied bucket and overwrite —
+acceptable because:
+
+1. The displaced snapshot entry is one cursor seek to recover on
+   first access; the cache catches it via miss-memoisation
+   thereafter.
+2. Steady-state miss memoisation will overwrite some snapshot
+   entries anyway as the workload's actual hot set diverges
+   from the prediction.
+
+Workloads that want a tighter floor on snapshot retention can
+override (`8×` halves the collision rate again, at the cost of
+~2× the cache memory). The Phase L#5/#7 measurements informed
+the `4×` default; revisit at P3 when warm-build measurements
+land.
 
 ## Cache miss handling
 
@@ -345,7 +408,7 @@ parentheses.
 | `stage2_scan_threshold(K)` | derived from cost model | crossover trigger |
 | `stage2_max_scans(N)` | `2` | fixed-point bound |
 | `tree_retention(R)` | `discard` | `discard` / `snapshot_only` / `live` |
-| `cache_capacity_buckets(N)` | `2 × warm_budget_nodes` | hashtable bucket count |
+| `cache_capacity_buckets(N)` | `4 × warm_budget_nodes` | hashtable bucket count |
 
 ### Flux-specific sub-options
 
@@ -399,6 +462,37 @@ existing resolvers. This is the default; warm-build is strictly
 opt-in (either via a caller option or via an algorithm manifest
 that declares it).
 
+### `tree_cost_function` auto-selection
+
+When `scan_strategy(auto)` is set but `tree_cost_function/2` is
+not supplied (neither by the caller nor by the manifest), the
+resolver picks one by priority:
+
+1. **`semantic_similarity`** — only if `embedding_path(P)` is set
+   AND the file exists at codegen time. Requires real
+   embeddings; degenerate scoring without them.
+2. **`flux`** — only if branching-factor data is available
+   (typically from P2's at-scale measurements feeding
+   `parent_branching_factor/1` / `child_branching_factor/1`
+   options). Without this data, the default decay constants are
+   arbitrary; better to fall through.
+3. **`hop_distance`** — the safe fallback. Cheap, no
+   data-dependent parameters, gives a useful (if coarse) ranking
+   for any graph.
+
+Each priority gate has its own `(if-available)` check. The
+resolver emits a verbose trace explaining the pick:
+
+```
+[WAM-Haskell] scan_strategy(auto): tree_cost_function defaulted to hop_distance
+  (no embedding_path; no branching_factor data)
+```
+
+Callers who want a specific function just set
+`tree_cost_function(flux, [...])` (or whichever) in their
+options or manifest; the auto-selection only fires when the slot
+is unspecified.
+
 ## Edge cases
 
 ### Warm produces zero useful nodes
@@ -415,9 +509,13 @@ entirely on cursor fallback. Verbose trace warns:
 
 If the workload's actual access pattern doesn't match the cost
 function's predictions, miss rate will be high. Measurement —
-not architecture — catches this. Recommend exposing
-`cache_strategy_verbose(true)`-style stats (hit/miss counters)
-during steady-state for diagnostic runs.
+not architecture — catches this. Recommend exposing the
+`scan_strategy_verbose(true)` option (defined in the
+implementation plan's cross-cutting telemetry section) to get
+hit/miss counters during steady-state for diagnostic runs. Note:
+this is a separate option from `cache_strategy_verbose(true)`,
+which is the cache-cost-model resolver's existing trace flag —
+the two flags toggle different telemetry paths.
 
 ### Endpoint disappears mid-warm
 

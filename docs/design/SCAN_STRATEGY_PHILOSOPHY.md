@@ -12,8 +12,9 @@ This is the next layer above the cost model that landed in Phase
 makes a *one-shot* decision at codegen time: sort or scan, this
 cache tier or that. The scan-strategy work generalises that to a
 *staged, iterative* decision: start with cursor seeks while the
-frontier is small, switch to scan when the frontier grows past
-the seek-vs-scan crossover, optionally repeat as the tree grows.
+frontier is small, switch to a sequential scan pass that absorbs
+the frontier's edge data when the frontier grows past the
+seek-vs-scan crossover, optionally repeat as the tree grows.
 
 The deliverable, in one sentence: a runtime that **warms a tree
 of cost-ranked candidates, snapshots it into a fast lookup cache,
@@ -93,13 +94,17 @@ overflow. Tree miss + L2 hit = serve from L2; tree miss + L2 miss
 = cursor + populate L2.
 
 **Why we didn't pick this for the first cut**: Two parallel
-structures means two lookups per query in the miss case. If the
-tree's predictions are accurate (10% covers most queries), L2 is
-dead weight; if predictions are poor, we should fix the cost
-function rather than paper over with spillover.
+structures means two lookups per query in the miss case. The
+design we picked already gets the same benefit cheaply — the
+overwrite-on-collision cache memoises misses, so a node that
+the cost function didn't predict but the workload queries twice
+becomes a hit on the second access. That's effectively a
+single-level spillover, just inside the same hashtable rather
+than in a parallel structure.
 
-We can add L2 spillover later if miss-rate measurements warrant
-it. Better to start simpler.
+If miss-rate measurements show systematic mis-prediction (not
+just random outliers), we'd fix the cost function or warm budget
+rather than add a second structure.
 
 ### 3. Single-pass scan-only
 
@@ -171,10 +176,12 @@ Specifically:
 - **Warm budget** targets 1–10% of the DB by node count. Below 1%
   the tree is too small to be useful; above 10% we've defeated the
   point of being selective.
-- **Cache misses** during steady-state fall back to LMDB cursor.
-  No memoisation of misses (no spillover) for the first cut. If
-  measurement shows miss rate is high, we widen the cache or
-  re-warm — tuning, not architecture.
+- **Cache misses** during steady-state fall back to LMDB cursor
+  and **memoise into the cache** (overwrite-on-collision; same
+  mechanism as the existing L1/L2 hashtables). The snapshot
+  provides the *initial state* of a real cache, not a frozen
+  lookup table. There's no separate spillover structure — the
+  cache itself plays that role via miss memoisation.
 - **Tree retention** has three modes (default `discard`):
   - `discard` — GC the tree after snapshot. Minimum memory.
   - `snapshot_only` — keep the flux-sorted view (a frozen list).
@@ -220,7 +227,9 @@ Same regime checklist as the cost model itself:
 3. **Repeated queries from a hot root subset** — Phase M3 said
    warming doesn't pay off for random-BFS, but it *would* pay off
    for repeated queries against a small region. Warming a tree
-   per region is how we capture that.
+   per region would capture that; we don't address sub-region
+   partitioning in the current spec — it's scoped as future work
+   when a workload that needs it lands.
 4. **Workloads where parallelisation matters** — even without the
    cold regime, the retained flux ranking unlocks
    region-affinity-aware spark routing.

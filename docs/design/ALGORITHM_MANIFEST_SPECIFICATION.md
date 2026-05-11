@@ -1,5 +1,15 @@
 # Algorithm Optimization Manifest — Specification
 
+## Naming note
+
+The user-level directives are `decl_algorithm/2` and
+`decl_algorithm_optimization/2`. The `decl_` prefix signals that
+these are *declarative directives* (facts that describe metadata
+about the workload), not callable predicates. The prefix also
+avoids any collision with library predicates that might define a
+plain `algorithm/2` — defensive even if no current standard
+library uses that name.
+
 ## Terminology note
 
 In this document and the scan-strategy docs that reference it,
@@ -57,7 +67,7 @@ This generalises three patterns already present in the codebase:
 | existing | how the manifest subsumes it |
 |---|---|
 | `user:demand_filter_spec(Strategy, Opts)` | an entry in the manifest's option list |
-| `user:max_depth/1`, `user:dimension_n/1` | algorithm-level metadata in `algorithm/2` |
+| `user:max_depth/1`, `user:dimension_n/1` | algorithm-level metadata in `decl_algorithm/2` |
 | `statistics:declare_cache_hints/1` | `workload_locality/1` entry in the manifest |
 
 The manifest is **additive**, not replacing existing mechanisms.
@@ -71,7 +81,7 @@ Two user-level predicates. Both declared in workload files via
 `:- ...` directives (the standard Prolog idiom for facts about
 the workload).
 
-### `algorithm(+Name, +AlgorithmOpts) is det.`
+### `decl_algorithm(+Name, +AlgorithmOpts) is det.`
 
 Declares an algorithm. `Name` is an atom identifying the
 algorithm (e.g. `effective_distance`, `transitive_closure`,
@@ -88,7 +98,7 @@ the algorithm's structural metadata:
 Example:
 
 ```prolog
-:- algorithm(effective_distance, [
+:- decl_algorithm(effective_distance, [
        kernel(category_ancestor/4),
        seeds(article/1),
        roots(root_category/1),
@@ -97,20 +107,20 @@ Example:
    ]).
 ```
 
-At most one `algorithm/2` declaration per file. Multiple
+At most one `decl_algorithm/2` declaration per file. Multiple
 declarations with the same name in different files are an error;
 the codegen rejects compilation rather than silently picking one.
 
-### `algorithm_optimization(+Name, +OptList) is det.`
+### `decl_algorithm_optimization(+Name, +OptList) is det.`
 
 Declares optimizations for an algorithm. `Name` matches an
-`algorithm/2` declaration. `OptList` contains any options that
+`decl_algorithm/2` declaration. `OptList` contains any options that
 downstream resolvers consume.
 
 Example:
 
 ```prolog
-:- algorithm_optimization(effective_distance, [
+:- decl_algorithm_optimization(effective_distance, [
        cache_strategy(auto),
        working_set_fraction(0.001),
        expected_query_count(10),
@@ -119,21 +129,30 @@ Example:
        scan_strategy(auto),
        tree_cost_function(flux, [iterations(1), parent_decay(0.5), child_decay(0.3)]),
        tree_retention(snapshot_only),
+       %% warm_budget_nodes_fraction(F) is a manifest-friendly alias
+       %% that scan_strategy's resolver converts to an absolute
+       %% warm_budget_nodes(N) before codegen. See the option list in
+       %% SCAN_STRATEGY_SPECIFICATION.md for both forms.
        warm_budget_nodes_fraction(0.1),
        demand_filter_spec(hop_limit, [max_hops(10)])
    ]).
 ```
 
-Multiple `algorithm_optimization/2` facts for the same algorithm
-are allowed — their option lists concatenate with `option/3`
-first-match semantics. This lets workload authors split
+Multiple `decl_algorithm_optimization/2` facts for the same algorithm
+are allowed — their option lists are concatenated in declaration
+order using `append/2` (shallow concat — see the `load_algorithm_manifest/2`
+sketch below for the trap with `flatten/2`). The manifest itself
+does no de-duplication at concat time. When the merged list is
+later read via SWI-Prolog's `option/3` accessor, the first
+occurrence of any key wins — that's `option/3`'s documented
+behaviour for repeated keys. This lets workload authors split
 optimizations by concern:
 
 ```prolog
-:- algorithm_optimization(effective_distance, [
+:- decl_algorithm_optimization(effective_distance, [
        cache_strategy(auto), working_set_fraction(0.001), ...
    ]).
-:- algorithm_optimization(effective_distance, [
+:- decl_algorithm_optimization(effective_distance, [
        scan_strategy(auto), tree_cost_function(flux, [...]), ...
    ]).
 ```
@@ -151,7 +170,7 @@ When the codegen enters `write_wam_haskell_project/3` (or
 ```
 1. Caller-provided options: Options0
 2. Manifest options:        ManifestOpts
-                              = concat of all algorithm_optimization(Name, _)
+                              = concat of all decl_algorithm_optimization(Name, _)
                                 facts for the declared algorithm
 3. Merged options:          Options' = merge(Options0, ManifestOpts)
    - For each key in either:
@@ -195,26 +214,46 @@ A small Prolog helper, conceptually:
 ```prolog
 %% load_algorithm_manifest(+Options0, -OptionsWithManifest) is det.
 %
-%  Reads user:algorithm/2 and user:algorithm_optimization/2 (if
+%  Reads user:decl_algorithm/2 and user:decl_algorithm_optimization/2 (if
 %  declared) and merges the optimization options into the codegen's
 %  option list. Caller-provided options always win on conflict.
 load_algorithm_manifest(Options0, OptionsWithManifest) :-
-    (   user:algorithm(Name, _AlgOpts)
-    ->  findall(Opts, user:algorithm_optimization(Name, Opts), AllOpts),
-        flatten(AllOpts, ManifestOpts),
-        merge_options(Options0, ManifestOpts, OptionsWithManifest)
+    (   user:decl_algorithm(Name, _AlgOpts)
+    ->  findall(Opts, user:decl_algorithm_optimization(Name, Opts), AllOpts),
+        %% IMPORTANT: shallow concat, not deep flatten. flatten/2 would
+        %% destructure option terms whose values are themselves lists —
+        %% e.g. `tree_cost_function(flux, [iterations(1), parent_decay(0.5)])`
+        %% would have its inner parameter list pulled into the outer
+        %% option list and corrupt the structure.
+        append(AllOpts, ManifestOpts),
+        merge_caller_and_manifest_options(Options0, ManifestOpts,
+                                          OptionsWithManifest)
     ;   OptionsWithManifest = Options0
     ).
 ```
 
-`merge_options/3` is implemented to give caller options precedence
-on duplicate keys (this is *not* the SWI-Prolog library
-`merge_options/3` — that one's argument order convention is
-different; we'd implement our own or pick a clear name).
+The merge helper is `merge_caller_and_manifest_options/3` — same
+name used in `SCAN_STRATEGY_IMPLEMENTATION_PLAN.md` P0. We
+deliberately avoid the bare name `merge_options/3` because
+SWI-Prolog's `library(option)` exports a different
+`merge_options/3` with reversed argument-order conventions;
+sharing the name would invite confusion at use sites.
 
-This helper runs once at the top of
-`write_wam_haskell_project/3` (and `compile_wam_runtime_to_haskell/3`
-for the codegen-test path), before any resolver.
+This helper runs once at the head of the codegen pipeline. There
+are two public entry points:
+
+- `write_wam_haskell_project/3` — the end-to-end path used by
+  bench harnesses and users.
+- `compile_wam_runtime_to_haskell/3` — the inner path used by
+  codegen tests that don't want to write a project to disk.
+
+`write_wam_haskell_project/3` calls `compile_wam_runtime_to_haskell/3`
+internally, so if the manifest load lives only at the inner entry
+point, both paths benefit. The current implementation puts it
+explicitly at both for symmetry with the existing cost-model
+resolver wiring (`resolve_auto_use_lmdb/2` already lives at both
+sites); P0's deliverables include making `load_algorithm_manifest/2`
+idempotent so the duplicate call in the outer path is harmless.
 
 ## Edge cases
 
@@ -226,7 +265,7 @@ manifests are unaffected.
 
 ### Algorithm declared but no optimization manifest
 
-Same as caller-provided options only. The `algorithm/2` declaration
+Same as caller-provided options only. The `decl_algorithm/2` declaration
 itself is informational (the codegen reads its `kernel/1`,
 `seeds/1`, etc. — same way it currently reads `user:max_depth/1`),
 but no optimization options are merged.
@@ -252,7 +291,7 @@ existing manifests pick it up without changes. If a resolver
 removes support for a key, the unknown entry is silently ignored
 (or warned, depending on strict-mode setting).
 
-### Conflicting `algorithm_optimization/2` facts
+### Conflicting `decl_algorithm_optimization/2` facts
 
 Multiple facts concat with first-match semantics. If two facts
 both set `cache_strategy/1` to different values, the first one
@@ -265,7 +304,7 @@ should consolidate into a single fact.
 :- module(workload_effective_distance, []).
 
 %% Algorithm declaration
-:- algorithm(effective_distance, [
+:- decl_algorithm(effective_distance, [
        kernel(category_ancestor/4),
        seeds(article/1),
        roots(root_category/1),
@@ -274,20 +313,24 @@ should consolidate into a single fact.
    ]).
 
 %% Optimization manifest, split by concern
-:- algorithm_optimization(effective_distance, [
+:- decl_algorithm_optimization(effective_distance, [
        %% Cache cost-model
        cache_strategy(auto),
        working_set_fraction(0.001),
        expected_query_count(10),
-       mem_available_bytes(8_000_000_000)  % overrides /proc/meminfo
+       mem_available_bytes(8000000000)  % 8 GB; overrides /proc/meminfo
+                                        % (underscore-grouped literals
+                                        %  also work in SWI-Prolog 8.x+,
+                                        %  but the plain form is portable
+                                        %  to older Prologs)
    ]).
-:- algorithm_optimization(effective_distance, [
+:- decl_algorithm_optimization(effective_distance, [
        %% Cache tier
        lmdb_cache_mode(auto),
        workload_locality(unknown),
-       cache_tier_floor_bytes(8_000_000)
+       cache_tier_floor_bytes(8000000)  % 8 MB
    ]).
-:- algorithm_optimization(effective_distance, [
+:- decl_algorithm_optimization(effective_distance, [
        %% Scan strategy
        scan_strategy(auto),
        tree_cost_function(flux, [
@@ -299,12 +342,15 @@ should consolidate into a single fact.
        tree_retention(snapshot_only),
        warm_budget_nodes_fraction(0.1)
    ]).
-:- algorithm_optimization(effective_distance, [
+:- decl_algorithm_optimization(effective_distance, [
        %% Demand filter
        demand_filter_spec(hop_limit, [max_hops(10)])
    ]).
 
 %% Kernel definition (unchanged)
+%% Base case: a node reaches itself at hop 0.
+category_ancestor(Root, Root, 0, _).
+%% Recursive case: step to a parent, recurse, account for the hop.
 category_ancestor(Cat, Root, Hops, Visited) :-
     category_parent(Cat, Mid),
     \+ member(Mid, Visited),
@@ -336,7 +382,7 @@ To experiment with a different optimization:
 
 ## What this isn't
 
-- **Not a DSL for algorithms.** `algorithm/2` is a metadata
+- **Not a DSL for algorithms.** `decl_algorithm/2` is a metadata
   declaration, not a language for *defining* algorithms. The
   kernel still lives in normal Prolog clauses.
 - **Not a runtime mechanism.** Manifests are read at codegen time
