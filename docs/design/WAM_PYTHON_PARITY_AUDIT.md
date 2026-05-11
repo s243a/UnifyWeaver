@@ -16,14 +16,14 @@ matters for parity.
 | Direct fact dispatch | `call_indexed_atom_fact2`, category ancestor helpers | Indexed fact paths | Present |
 | Aggregates | `begin_aggregate`, `end_aggregate` runtime paths | `findall/3`, `aggregate_all/3` families | Present, but not covered by a parity guard |
 | Structural builtins | `member/2`, `length/2` | `member/2`, `length/2` | Partial: `member/2` returns only the first solution |
-| Type builtins | `atom/1`, `integer/1`, `number/1`, `var/1`, `nonvar/1` | Also `float/1`, `compound/1`, `is_list/1` | Gap |
-| Comparison builtins | `=:=/2`, `=\=/2`, `</2`, `>/2`, `=</2`, `>=/2` | Also term equality `==/2` | Gap |
-| Unification builtins | Not in static runtime builtin dispatch | `=/2`, `\=/2` in comparable runtimes | Gap |
-| Term inspection | Not in static runtime builtin dispatch | `functor/3`, `arg/3` | Gap |
-| Univ | Not in static runtime builtin dispatch | `=../2` compose and decompose | Gap |
-| Copying | Not in static runtime builtin dispatch | `copy_term/2` with fresh variables and preserved sharing | Gap |
-| Control | `true/0`, `fail/0`, `!/0`, `\+/1`, `cut_ite` opcode | `true/0`, `fail/0`, `!/0`, `\+/1`, `CutIte` | Partial: `\+/1` has a `member/2` fast path and otherwise succeeds by default |
-| IO | `write/1`, `writeln/1`, `print/1`, `nl/0` dispatch returns success only | `write/1`, `display/1`, `nl/0` output behavior | Gap |
+| Type builtins | `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `var/1`, `nonvar/1`, `is_list/1` | Same baseline set | Present |
+| Comparison builtins | `==/2`, `=:=/2`, `=\=/2`, `</2`, `>/2`, `=</2`, `>=/2` | Same baseline set | Present |
+| Unification builtins | `=/2`, `\=/2` | `=/2`, `\=/2` in comparable runtimes | Present |
+| Term inspection | `functor/3`, `arg/3` | `functor/3`, `arg/3` | Present |
+| Univ | `=../2` compose and decompose | `=../2` compose and decompose | Present |
+| Copying | `copy_term/2` with fresh variables and preserved sharing | `copy_term/2` with fresh variables and preserved sharing | Present |
+| Control | `true/0`, `fail/0`, `!/0`, `\+/1`, `cut_ite` opcode | `true/0`, `fail/0`, `!/0`, `\+/1`, `CutIte` | Present |
+| IO | `write/1`, `display/1`, `nl/0` output behavior | `write/1`, `display/1`, `nl/0` output behavior | Present |
 
 ## Generated Fallback Runtime
 
@@ -40,20 +40,17 @@ packaged static runtime:
 This split is a parity risk: tests that inspect the generated fallback runtime
 can pass while generated Python projects still run against the static runtime.
 
-## Highest-Value Next Slice
+## Remaining Follow-Up
 
-Bring the static Python runtime up to the Lua/Rust/Haskell builtin baseline
-before changing lowered codegen:
+The packaged static runtime now carries the Lua/Rust/Haskell builtin baseline.
+The remaining parity work is narrower:
 
-1. Add static-runtime dispatch for `float/1`, `compound/1`, `is_list/1`,
-   `==/2`, `=/2`, `\=/2`, `functor/3`, `arg/3`, `=../2`, `copy_term/2`,
-   `display/1`, and real `write/1`/`nl/0` output.
-2. Replace the default-success `\+/1` fallback with isolated sub-execution
-   behavior, matching the Lua audit's non-leaking binding semantics.
-3. Add a Python parity guard test similar to `lua_parity_guard` that checks the
-   packaged static runtime for every baseline builtin.
-4. Reconcile or retire the generated fallback runtime so it cannot drift from
+1. Add end-to-end generated Python programs that exercise the newly guarded
+   builtins, rather than only checking static runtime coverage.
+2. Reconcile or retire the generated fallback runtime so it cannot drift from
    `WamRuntime.py`.
+3. Decide whether `member/2` should enumerate all solutions via builtin choice
+   points, or remain first-solution-only like the current packaged runtime.
 
 ## Verification Commands
 
