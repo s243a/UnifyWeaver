@@ -392,6 +392,31 @@ local function builtin_length(program, state)
   return bind_or_compare(state, 2, V.Int(#items))
 end
 
+local function term_to_string(program, state, term)
+  term = Runtime.deref(state, term)
+  if type(term) ~= "table" then return tostring(term) end
+  if term.tag == "atom" then return Runtime.string_of(program.intern_table, term.id) end
+  if term.tag == "int" or term.tag == "float" then return tostring(term.val) end
+  if term.tag == "unbound" then return "_" .. tostring(term.name) end
+  if term.tag == "struct" then
+    local items = list_items(program, state, term)
+    if items ~= nil then
+      local parts = {}
+      for _, item in ipairs(items) do parts[#parts + 1] = term_to_string(program, state, item) end
+      return "[" .. table.concat(parts, ", ") .. "]"
+    end
+    local parts = {}
+    for _, arg in ipairs(term.args or {}) do parts[#parts + 1] = term_to_string(program, state, arg) end
+    return Runtime.string_of(program.intern_table, term.fid) .. "(" .. table.concat(parts, ", ") .. ")"
+  end
+  return tostring(term)
+end
+
+local function builtin_write(program, state)
+  io.write(term_to_string(program, state, Runtime.get_reg(state, 1)))
+  return true
+end
+
 local function builtin_functor(program, state)
   local term = Runtime.deref(state, Runtime.get_reg(state, 1))
   if type(term) == "table" and term.tag == "unbound" then
@@ -865,6 +890,8 @@ function Runtime.builtin_call(program, state, instr)
   if p == "fail" or p == "fail/0" then return false end
   if p == "!" or p == "!/0" then state.cps = {}; return true end
   if p == "\\+" or p == "\\+/1" then return builtin_naf(program, state) end
+  if p == "write" or p == "write/1" or p == "display" or p == "display/1" then return builtin_write(program, state) end
+  if p == "nl" or p == "nl/0" then io.write("\n"); return true end
   if p == "=" or p == "=/2" then return Runtime.unify(state, Runtime.get_reg(state, 1), Runtime.get_reg(state, 2)) end
   if p == "==" or p == "==/2" then return exact_equal(state, Runtime.get_reg(state, 1), Runtime.get_reg(state, 2)) end
   if p == "member" or p == "member/2" then return builtin_member(program, state) end
