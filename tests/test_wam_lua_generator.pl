@@ -61,6 +61,7 @@
 :- dynamic user:wam_lua_naf_false/0.
 :- dynamic user:wam_lua_naf_member/0.
 :- dynamic user:wam_lua_naf_member_no/0.
+:- dynamic user:wam_lua_write_line/0.
 
 user:wam_lua_fact(a).
 user:wam_lua_choice(a).
@@ -174,6 +175,9 @@ user:wam_lua_naf_true :- \+ fail.
 user:wam_lua_naf_false :- \+ true.
 user:wam_lua_naf_member :- \+ member(d, [a, b, c]).
 user:wam_lua_naf_member_no :- \+ member(a, [a, b, c]).
+user:wam_lua_write_line :-
+    write(hello),
+    nl.
 
 test(exports) :-
     assertion(current_predicate(wam_lua_target:write_wam_lua_project/3)),
@@ -576,6 +580,36 @@ test(lua_control_builtins_e2e, [condition(lua_available)]) :-
           run_lua_query(LuaDir, 'wam_lua_naf_false/0', [], false),
           run_lua_query(LuaDir, 'wam_lua_naf_member/0', [], true),
           run_lua_query(LuaDir, 'wam_lua_naf_member_no/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(lua_io_builtins_e2e, [condition(lua_available)]) :-
+    unique_lua_tmp_dir('tmp_lua_io_builtins_e2e', TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project([user:wam_lua_write_line/0], [], TmpDir),
+        ( directory_file_path(TmpDir, 'lua', LuaDir),
+          run_lua_script(
+              LuaDir,
+              'local m=require("generated_program"); assert(m.wam_lua_write_line())',
+              WriteOutput),
+          assertion(WriteOutput == "hello\n"),
+          atomic_list_concat([
+              'local rt=require("wam_runtime"); ',
+              'local R=rt.Runtime; local V=rt.V; local I=rt.I; ',
+              'local p={instructions={}, labels={}, ',
+              'intern_table=R.new_intern_table({"true","fail","[]",".","","[|]","f","a"})}; ',
+              'local fid=R.intern(p.intern_table,"f"); ',
+              'local aid=R.intern(p.intern_table,"a"); ',
+              'p.instructions={I.PutStructure(fid,1,1),I.SetConstant(V.Atom(aid)),',
+              'I.BuiltinCall("display/1",1),I.BuiltinCall("nl/0",0),I.Proceed()}; ',
+              'R.run_predicate(p,1,{})'
+          ], DisplayScript),
+          run_lua_script(
+              LuaDir,
+              DisplayScript,
+              DisplayOutput),
+          assertion(DisplayOutput == "f(a)\n")
         ),
         delete_directory_and_contents(TmpDir)
     ).
