@@ -191,6 +191,42 @@ test(registry) :-
     assertion(target_family(wam_lua, lua)),
     assertion(target_module(wam_lua, wam_lua_target)).
 
+test(lua_parity_guard) :-
+    read_file_to_string('templates/targets/lua_wam/runtime.lua.mustache', Runtime, []),
+    read_file_to_string('tests/test_wam_lua_generator.pl', Tests, []),
+    read_file_to_string('docs/design/WAM_LUA_PARITY_AUDIT.md', Audit, []),
+    assert_contains_all(Runtime,
+        [ 'builtin_member',
+          'builtin_length',
+          'type_builtin',
+          'builtin_functor',
+          'builtin_arg',
+          'builtin_univ',
+          'builtin_copy_term',
+          'builtin_naf',
+          'builtin_write',
+          'CutIte'
+        ]),
+    assert_contains_all(Tests,
+        [ 'lua_structural_builtins_e2e',
+          'lua_type_and_compare_builtins_e2e',
+          'lua_term_inspection_builtins_e2e',
+          'lua_univ_builtin_e2e',
+          'lua_copy_term_builtin_e2e',
+          'lua_control_builtins_e2e',
+          'lua_io_builtins_e2e'
+        ]),
+    assert_contains_all(Audit,
+        [ 'member/2',
+          'length/2',
+          'functor/3',
+          'arg/3',
+          '=../2',
+          'copy_term/2',
+          'CutIte',
+          'write/1'
+        ]).
+
 test(project_layout) :-
     unique_lua_tmp_dir('tmp_lua_layout', TmpDir),
     setup_call_cleanup(
@@ -652,3 +688,9 @@ run_lua_script(LuaDir, Script, Output) :-
     read_string(Out, _, Output),
     close(Out),
     process_wait(PID, exit(0)).
+
+assert_contains_all(Haystack, Needles) :-
+    forall(member(Needle, Needles),
+           ( atom_string(Needle, Text),
+             assertion(sub_string(Haystack, _, _, _, Text))
+           )).
