@@ -708,13 +708,15 @@ emit_line_parts(Parts, I) :-
 % can now jump straight back into lowered_pn_1 instead of step-iterating
 % pn/1's WAM array.
 
+% emit_call: non-tail call. Invokes the lowered fn (via the
+% trampoline helper so any tail-calls inside the callee are drained
+% before we return) and continues with the rest of the caller's body.
 emit_call(PredArity, I) :-
     format("~w{~n", [I]),
     format("~w  saved_cp <- state$cp~n", [I]),
     format("~w  disp_key_ <- \"~w\"~n", [I, PredArity]),
     format("~w  if (!is.null(program$lowered_dispatch) && exists(disp_key_, envir = program$lowered_dispatch, inherits = FALSE)) {~n", [I]),
-    format("~w    fn_ <- get(disp_key_, envir = program$lowered_dispatch, inherits = FALSE)~n", [I]),
-    format("~w    if (!isTRUE(fn_(program, state))) return(FALSE)~n", [I]),
+    format("~w    if (!isTRUE(WamRuntime$invoke_lowered_with_tco(program, state, disp_key_))) return(FALSE)~n", [I]),
     format("~w    state$cp <- saved_cp~n", [I]),
     format("~w  } else {~n", [I]),
     format("~w    tgt <- program$labels[[disp_key_]]~n", [I]),
@@ -727,12 +729,19 @@ emit_call(PredArity, I) :-
     format("~w  }~n", [I]),
     format("~w}~n", [I]).
 
+% emit_execute: tail call (Prolog TCO). Instead of recursing into the
+% target lowered fn directly (which would grow R\'s C stack on every
+% self-recursion level), set state$tail_call and return TRUE. The
+% closest enclosing trampoline -- the per-pred wrapper, the runtime
+% Call/Execute handlers, or an outer emit_call\'s invoke_lowered_with_tco
+% loop -- consumes the signal and dispatches the next iteration
+% without adding a frame.
 emit_execute(PredArity, I) :-
     format("~w{~n", [I]),
     format("~w  disp_key_ <- \"~w\"~n", [I, PredArity]),
     format("~w  if (!is.null(program$lowered_dispatch) && exists(disp_key_, envir = program$lowered_dispatch, inherits = FALSE)) {~n", [I]),
-    format("~w    fn_ <- get(disp_key_, envir = program$lowered_dispatch, inherits = FALSE)~n", [I]),
-    format("~w    return(isTRUE(fn_(program, state)))~n", [I]),
+    format("~w    state$tail_call <- disp_key_~n", [I]),
+    format("~w    return(TRUE)~n", [I]),
     format("~w  }~n", [I]),
     format("~w  tgt <- program$labels[[disp_key_]]~n", [I]),
     format("~w  if (is.null(tgt)) return(FALSE)~n", [I]),

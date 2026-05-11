@@ -297,6 +297,34 @@ with the runtime's `"Allocate"` / `"Deallocate"` handlers
 (including `state$shadow_frame` retention so post-`deallocate` Y
 reads still resolve).
 
+### Tail-call trampoline
+
+First-cut phase-4 hit an R C-stack overflow at pn depth 2000: the
+self-jump from `execute pn/1` recursed *into* `lowered_pn_1`, so
+each Prolog recursion level added an R stack frame. R's default
+C stack (~7 MiB) overflowed around depth ~1500.
+
+Fix: trampoline the self-recursion through a state-borne signal.
+
+  - `state$tail_call` slot added to `WamRuntime$new_state`.
+  - `emit_execute` (Prolog tail call) sets `state$tail_call <-
+    "X/Y"` and returns `TRUE` instead of invoking the lowered fn
+    directly. The closest enclosing trampoline consumes the
+    signal.
+  - `WamRuntime$invoke_lowered_with_tco(program, state, key)` is
+    the trampoline -- a `repeat` loop that calls the lowered fn,
+    inspects `state$tail_call`, and dispatches the next iteration
+    in-place (no extra R frame).
+  - Every entry point to a lowered fn is routed through the
+    helper: the runtime's `"Call"` / `"Execute"` / `dispatch_call`
+    handlers, the lowered emitter's `emit_call`, and the per-pred
+    wrapper. `emit_execute` is the *only* call site that signals
+    instead of invoking, because Prolog's `execute` is by
+    definition the tail-call WAM op.
+
+With the trampoline, pn at depth 2000 (the original bench
+workload) runs to completion in bounded R stack.
+
 ### Measured impact
 
 (_filled in after bench completes_)

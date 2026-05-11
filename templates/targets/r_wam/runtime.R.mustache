@@ -232,6 +232,14 @@ WamRuntime$new_state <- function() {
   s$stack       <- list()                   # env frames
   s$cps         <- list()                   # choice-point stack
   s$bindings    <- new.env(parent = emptyenv(), hash = TRUE)
+  # Tail-call signal slot consumed by WamRuntime$invoke_lowered_with_tco.
+  # A multi_clause_n lowered fn whose body ends with `execute X/Y`
+  # (a Prolog tail call) sets s$tail_call <- "X/Y" and returns TRUE
+  # instead of invoking the lowered fn directly. The trampoline loop
+  # then dispatches to "X/Y" without growing the R call stack -- the
+  # whole point is so deeply-recursive arith predicates (pn at depth
+  # 2000) don't exhaust R's C stack on self-recursion.
+  s$tail_call   <- NULL
   s$trail       <- list()
   s$var_counter <- 0L
   s$halt        <- FALSE                    # set by foreign top-level wrapper
@@ -371,6 +379,14 @@ WamRuntime$reset_state <- function(s) {
   s$stack       <- list()
   s$cps         <- list()
   s$bindings    <- new.env(parent = emptyenv(), hash = TRUE)
+  # Tail-call signal slot consumed by WamRuntime$invoke_lowered_with_tco.
+  # A multi_clause_n lowered fn whose body ends with `execute X/Y`
+  # (a Prolog tail call) sets s$tail_call <- "X/Y" and returns TRUE
+  # instead of invoking the lowered fn directly. The trampoline loop
+  # then dispatches to "X/Y" without growing the R call stack -- the
+  # whole point is so deeply-recursive arith predicates (pn at depth
+  # 2000) don't exhaust R's C stack on self-recursion.
+  s$tail_call   <- NULL
   s$trail       <- list()
   s$var_counter <- 0L
   s$halt        <- FALSE
@@ -537,6 +553,31 @@ WamRuntime$bind <- function(state, name, val) {
   state$bindings[[name]] <- val
   state$trail <- c(state$trail, list(name))
   invisible(NULL)
+}
+
+# Trampolining dispatcher for lowered fns. The caller invokes this
+# instead of calling the lowered fn directly; the helper loops as
+# long as the fn signals a tail call (by setting state$tail_call
+# to the next predicate key + returning TRUE). The recursion of
+# self-recursive arith predicates (pn etc.) folds into this loop,
+# so R's C stack does not grow on each recursive level.
+WamRuntime$invoke_lowered_with_tco <- function(program, state, key) {
+  cur_key <- key
+  repeat {
+    fn <- get(cur_key, envir = program$lowered_dispatch, inherits = FALSE)
+    state$tail_call <- NULL
+    if (!isTRUE(fn(program, state))) return(FALSE)
+    if (is.null(state$tail_call)) return(TRUE)
+    cur_key <- state$tail_call
+    # If the tail-call target isn't itself lowered, exit the loop and
+    # dispatch via the standard array path. (Common when a lowered
+    # pred tail-calls into a non-lowered builtin or user pred.)
+    if (is.null(program$lowered_dispatch) ||
+        !exists(cur_key, envir = program$lowered_dispatch, inherits = FALSE)) {
+      state$tail_call <- cur_key   # restore for caller to consume
+      return(TRUE)
+    }
+  }
 }
 
 # Undo trail entries until length(state$trail) == n. Used by \=/2 (and
@@ -1368,14 +1409,12 @@ WamRuntime$step <- function(program, state, instr) {
     },
     "Call" = {
       key <- paste0(instr$pred, "/", instr$arity)
-      # Lowered fast path (kernel / fact-table) wins over the WAM
-      # array. The lowered fn pushes any iter CPs it needs and
-      # returns TRUE/FALSE, so we just advance PC on success.
+      # Lowered fast path (kernel / fact-table / multi_clause_n) wins
+      # over the WAM array. Routed through the trampoline so a lowered
+      # fn that tail-calls back into itself does not grow the R stack.
       if (!is.null(program$lowered_dispatch) &&
           exists(key, envir = program$lowered_dispatch, inherits = FALSE)) {
-        fn <- get(key, envir = program$lowered_dispatch, inherits = FALSE)
-        ok <- isTRUE(fn(program, state))
-        if (!ok) return(FALSE)
+        if (!isTRUE(WamRuntime$invoke_lowered_with_tco(program, state, key))) return(FALSE)
         state$pc <- state$pc + 1L; return(TRUE)
       }
       tgt <- program$labels[[key]]
@@ -1402,14 +1441,13 @@ WamRuntime$step <- function(program, state, instr) {
     },
     "Execute" = {
       key <- paste0(instr$pred, "/", instr$arity)
-      # Lowered fast path (kernel / fact-table) wins over the WAM
-      # array. Tail-call: hand control back to the caller's CP via
-      # the same path the dynamic-store branch uses on success.
+      # Lowered fast path (kernel / fact-table / multi_clause_n) wins
+      # over the WAM array. Trampolined: a lowered fn that ends with a
+      # tail call back into itself loops in the helper rather than
+      # growing the R call stack.
       if (!is.null(program$lowered_dispatch) &&
           exists(key, envir = program$lowered_dispatch, inherits = FALSE)) {
-        fn <- get(key, envir = program$lowered_dispatch, inherits = FALSE)
-        ok <- isTRUE(fn(program, state))
-        if (!ok) return(FALSE)
+        if (!isTRUE(WamRuntime$invoke_lowered_with_tco(program, state, key))) return(FALSE)
         state$shadow_frame <- NULL
         if (state$cp == 0L) { state$halt <- TRUE; return(TRUE) }
         state$pc <- state$cp; state$cp <- 0L; return(TRUE)
@@ -4080,13 +4118,12 @@ WamRuntime$call_goal <- function(program, state, goal_term) {
 
 WamRuntime$dispatch_call <- function(program, state, pred, arity) {
   key <- paste0(pred, "/", arity)
-  # Lowered fast path (kernel / fact-table) wins over the WAM
-  # array; the lowered fn manages its own iter CPs and returns
-  # TRUE/FALSE.
+  # Lowered fast path (kernel / fact-table / multi_clause_n) wins
+  # over the WAM array. Trampolined so a lowered fn that ends with
+  # a tail call back into itself does not grow R's C stack.
   if (!is.null(program$lowered_dispatch) &&
       exists(key, envir = program$lowered_dispatch, inherits = FALSE)) {
-    fn <- get(key, envir = program$lowered_dispatch, inherits = FALSE)
-    return(isTRUE(fn(program, state)))
+    return(isTRUE(WamRuntime$invoke_lowered_with_tco(program, state, key)))
   }
   tgt <- program$labels[[key]]
   if (!is.null(tgt)) {

@@ -989,6 +989,13 @@ emit_r_wrapper(Pred, Arity, StartPc, Code) :-
 emit_r_lowered_wrapper(Pred, Arity, LoweredFuncName, Code) :-
     pred_arg_strings(Arity, ArgDeclStr, ArgListStr),
     r_pred_name(Pred, RName),
+    % Initial call to the lowered fn is direct; subsequent tail-call
+    % signals are consumed by the trampoline loop in the helper. For
+    % preds not registered in lowered_dispatch (deterministic /
+    % multi_clause_1), state$tail_call is never set, so the loop body
+    % never runs and the result is the direct fn invocation. For
+    % multi_clause_n preds, the loop drains self-recursive tail calls
+    % without growing the R C stack.
     format(string(Code),
 '~w <- function(~w) {
   state <- WamRuntime$new_state()
@@ -996,7 +1003,14 @@ emit_r_lowered_wrapper(Pred, Arity, LoweredFuncName, Code) :-
   args <- ~w
   for (i in seq_along(args)) WamRuntime$put_reg(state, i, args[[i]])
   state$cp <- 0L
-  isTRUE(~w(shared_program, state))
+  state$tail_call <- NULL
+  result <- isTRUE(~w(shared_program, state))
+  while (isTRUE(result) && !is.null(state$tail_call) &&
+         !is.null(shared_program$lowered_dispatch) &&
+         exists(state$tail_call, envir = shared_program$lowered_dispatch, inherits = FALSE)) {
+    result <- isTRUE(WamRuntime$invoke_lowered_with_tco(shared_program, state, state$tail_call))
+  }
+  isTRUE(result)
 }
 ', [RName, ArgDeclStr, ArgListStr, LoweredFuncName]).
 
