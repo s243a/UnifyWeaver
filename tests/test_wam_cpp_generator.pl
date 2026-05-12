@@ -46,8 +46,29 @@
 :- dynamic user:wam_cpp_test_unify/0.
 :- dynamic user:wam_cpp_test_unify_fail/0.
 :- dynamic user:wam_cpp_test_write/0.
+:- dynamic user:wam_cpp_item/1.
+:- dynamic user:wam_cpp_num/1.
+:- dynamic user:wam_cpp_test_findall/0.
+:- dynamic user:wam_cpp_test_findall_empty/0.
+:- dynamic user:wam_cpp_test_findall_doubled/0.
+:- dynamic user:wam_cpp_test_count/0.
+:- dynamic user:wam_cpp_test_sum/0.
+:- dynamic user:wam_cpp_test_min/0.
+:- dynamic user:wam_cpp_test_max/0.
+:- dynamic user:wam_cpp_test_set/0.
 
 user:wam_cpp_test_write :- write(hello), nl.
+user:wam_cpp_item(a). user:wam_cpp_item(b). user:wam_cpp_item(c).
+user:wam_cpp_num(1).  user:wam_cpp_num(2).  user:wam_cpp_num(3). user:wam_cpp_num(2).
+user:wam_cpp_test_findall         :- findall(X, user:wam_cpp_item(X), L), L = [a, b, c].
+user:wam_cpp_test_findall_empty   :- findall(X, fail, L), L = [].
+user:wam_cpp_test_findall_doubled :- findall(p(X, X), user:wam_cpp_item(X), L),
+                                     L = [p(a, a), p(b, b), p(c, c)].
+user:wam_cpp_test_count :- aggregate_all(count, user:wam_cpp_item(_), N), N = 3.
+user:wam_cpp_test_sum   :- aggregate_all(sum(X),  user:wam_cpp_num(X), S), S = 8.
+user:wam_cpp_test_min   :- aggregate_all(min(X),  user:wam_cpp_num(X), M), M = 1.
+user:wam_cpp_test_max   :- aggregate_all(max(X),  user:wam_cpp_num(X), M), M = 3.
+user:wam_cpp_test_set   :- aggregate_all(set(X),  user:wam_cpp_num(X), S), S = [1, 2, 3].
 
 user:wam_cpp_fact(a).
 user:wam_cpp_choice(a).
@@ -476,6 +497,45 @@ test(cpp_e2e_builtin_io, [condition(cpp_compiler_available)]) :-
           process_wait(PID, _),
           normalize_space(string(Trimmed), Output),
           assertion(Trimmed == "hello true")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% findall/3 + aggregate_all/3 — exercises BeginAggregate / EndAggregate
+% with all standard aggregate kinds (collect / count / sum / min / max / set).
+% ------------------------------------------------------------------
+
+test(cpp_e2e_findall, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_findall', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_item/1,
+                               user:wam_cpp_test_findall/0,
+                               user:wam_cpp_test_findall_empty/0,
+                               user:wam_cpp_test_findall_doubled/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_findall/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_findall_empty/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_findall_doubled/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_aggregate_all, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_agg', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_item/1, user:wam_cpp_num/1,
+                               user:wam_cpp_test_count/0, user:wam_cpp_test_sum/0,
+                               user:wam_cpp_test_min/0,   user:wam_cpp_test_max/0,
+                               user:wam_cpp_test_set/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_count/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_sum/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_min/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_max/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_set/0',   [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

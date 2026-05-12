@@ -234,6 +234,15 @@ wam_instruction_to_cpp_literal(jump(L), LabelMap, Code) :-
     label_index(L, LabelMap, Idx),
     format(atom(Code), 'Instruction::Jump(~w)', [Idx]).
 wam_instruction_to_cpp_literal(cut_ite, _, 'Instruction::CutIte()').
+wam_instruction_to_cpp_literal(begin_aggregate(K, V, R), _, Code) :-
+    to_string(K, KS), to_string(V, VS), to_string(R, RS),
+    escape_cpp_string(KS, EK), escape_cpp_string(VS, EV), escape_cpp_string(RS, ER),
+    format(atom(Code),
+           'Instruction::BeginAggregate("~w", "~w", "~w")', [EK, EV, ER]).
+wam_instruction_to_cpp_literal(end_aggregate(R), _, Code) :-
+    to_string(R, RS),
+    escape_cpp_string(RS, ER),
+    format(atom(Code), 'Instruction::EndAggregate("~w")', [ER]).
 
 label_index(L, LabelMap, Idx) :-
     to_string(L, LS),
@@ -353,6 +362,8 @@ wam_cpp_lowered_emitter_instr(["retry_me_else", L], retry_me_else(L)).
 wam_cpp_lowered_emitter_instr(["trust_me"], trust_me).
 wam_cpp_lowered_emitter_instr(["jump", L], jump(L)).
 wam_cpp_lowered_emitter_instr(["cut_ite"], cut_ite).
+wam_cpp_lowered_emitter_instr(["begin_aggregate", K, V, R], begin_aggregate(K, V, R)).
+wam_cpp_lowered_emitter_instr(["end_aggregate", R], end_aggregate(R)).
 
 %% walk_blocks(+AllItems, -Labels, -FlatInstrs)
 %  Single pass: every label() records its PC; every instruction goes into
@@ -718,7 +729,8 @@ struct Instruction {
         SetVariable, SetValue, SetConstant,
         Call, Execute, Proceed, Fail, Allocate, Deallocate,
         BuiltinCall, CallForeign,
-        TryMeElse, RetryMeElse, TrustMe, Jump, CutIte
+        TryMeElse, RetryMeElse, TrustMe, Jump, CutIte,
+        BeginAggregate, EndAggregate
     };
     Op op = Op::Proceed;
     Value val;
@@ -783,6 +795,11 @@ struct Instruction {
     static Instruction Jump(std::size_t target)
         { Instruction i; i.op = Op::Jump; i.target = target; return i; }
     static Instruction CutIte()     { Instruction i; i.op = Op::CutIte;     return i; }
+    static Instruction BeginAggregate(std::string kind, std::string vreg, std::string rreg)
+        { Instruction i; i.op = Op::BeginAggregate; i.a = std::move(kind);
+          i.b = std::move(vreg); i.val = Value::Atom(std::move(rreg)); return i; }
+    static Instruction EndAggregate(std::string vreg)
+        { Instruction i; i.op = Op::EndAggregate; i.a = std::move(vreg); return i; }
 };
 
 struct TrailEntry {
@@ -808,7 +825,26 @@ struct ChoicePoint {
     std::size_t trail_mark;
     std::size_t cut_barrier;
     std::unordered_map<std::string, CellPtr> saved_regs;
-    ModeFrame saved_mode;
+    std::vector<ModeFrame> saved_mode_stack;
+};
+
+// Aggregate scope opened by BeginAggregate. Backtrack() finalises the
+// frame when choice_points has been drained back to base_cp_count and
+// no normal CP is available.
+struct AggregateFrame {
+    std::string agg_kind;       // "collect" / "count" / "sum" / "min" / "max" / "set" / "bag"
+    std::string value_reg;
+    std::string result_reg;
+    std::size_t begin_pc = 0;   // pc of the BeginAggregate instruction
+    std::size_t return_pc = 0;  // pc after end_aggregate (0 if never fired)
+    bool return_pc_set = false;
+    std::size_t base_cp_count = 0;
+    std::size_t trail_mark = 0;
+    std::size_t saved_cp = 0;
+    std::size_t saved_cut_barrier = 0;
+    std::unordered_map<std::string, CellPtr> saved_regs;
+    std::vector<ModeFrame> saved_mode_stack;
+    std::vector<Value> acc;
 };
 
 struct WamState {
@@ -817,7 +853,10 @@ struct WamState {
     std::vector<Instruction> instrs;
     std::vector<TrailEntry> trail;
     std::vector<ChoicePoint> choice_points;
-    ModeFrame mode;
+    std::vector<AggregateFrame> aggregate_frames;
+    // Mode stack: Get-/Put-Structure / Get-/Put-List PUSH; Unify*/Set*
+    // operate on top(); each frame auto-pops once its arity is filled.
+    std::vector<ModeFrame> mode_stack;
     std::size_t pc = 0;
     std::size_t cp = 0;
     std::size_t cut_barrier = 0;
@@ -1377,23 +1416,54 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
 
 namespace {
 
-void enter_read_mode(ModeFrame& mode, const std::vector<CellPtr>& args) {
-    mode.kind = ModeFrame::Kind::Read;
-    mode.target.reset();
-    mode.args = args;
-    mode.idx = 0;
-    mode.expected_arity = args.size();
+void push_read_mode(std::vector<ModeFrame>& stack, const std::vector<CellPtr>& args) {
+    ModeFrame m;
+    m.kind = ModeFrame::Kind::Read;
+    m.args = args;
+    m.idx = 0;
+    m.expected_arity = args.size();
+    stack.push_back(std::move(m));
 }
 
-void enter_write_mode(ModeFrame& mode, CellPtr target, std::size_t arity) {
-    mode.kind = ModeFrame::Kind::Write;
-    mode.target = std::move(target);
-    mode.args.clear();
-    mode.idx = 0;
-    mode.expected_arity = arity;
-    // Pre-clear the compound''s args; we will push back as Set*/Unify*
-    // fire. The functor was already written by the Get-/Put- caller.
-    if (mode.target) mode.target->args.clear();
+void push_write_mode(std::vector<ModeFrame>& stack, CellPtr target, std::size_t arity) {
+    if (target) target->args.clear();
+    ModeFrame m;
+    m.kind = ModeFrame::Kind::Write;
+    m.target = std::move(target);
+    m.idx = 0;
+    m.expected_arity = arity;
+    stack.push_back(std::move(m));
+}
+
+// Auto-pop frames whose arity has been satisfied. Cascades upward so a
+// fully-filled inner struct doesn''t leave subsequent Set*/Unify* writing
+// into it.
+void auto_pop_modes(std::vector<ModeFrame>& stack) {
+    while (!stack.empty()) {
+        ModeFrame& top = stack.back();
+        bool full = false;
+        if (top.kind == ModeFrame::Kind::Write && top.target
+            && top.target->args.size() >= top.expected_arity) full = true;
+        if (top.kind == ModeFrame::Kind::Read
+            && top.idx >= top.expected_arity) full = true;
+        if (!full) break;
+        stack.pop_back();
+    }
+}
+
+// Recursive deep-copy of a Value. Atom / Integer / Float / Unbound are
+// independent — Compound rebuilds its args vector with fresh cells whose
+// contents are themselves deep-copied, so later mutations to the source
+// tree don''t leak into a collected snapshot (used by EndAggregate).
+Value deep_copy(const Value& v) {
+    Value out = v;
+    if (v.tag == Value::Tag::Compound) {
+        out.args.clear();
+        for (auto& c : v.args) {
+            out.args.push_back(std::make_shared<Cell>(deep_copy(*c)));
+        }
+    }
+    return out;
 }
 
 } // anonymous
@@ -1416,7 +1486,7 @@ static void begin_write(WamState& vm, const std::string& reg_name,
         chosen = std::make_shared<Cell>(Value::Compound(functor, {}));
         vm.set_cell(reg_name, chosen);
     }
-    enter_write_mode(vm.mode, chosen, arity);
+    push_write_mode(vm.mode_stack, chosen, arity);
 }
 
 // ----------------------------------------------------------------------
@@ -1468,7 +1538,7 @@ bool WamState::step(const Instruction& instr) {
                 pc += 1; return true;
             }
             if (a->tag == Value::Tag::Compound && a->s == functor && a->args.size() == arity) {
-                enter_read_mode(mode, a->args);
+                push_read_mode(mode_stack, a->args);
                 pc += 1; return true;
             }
             return false;
@@ -1482,7 +1552,7 @@ bool WamState::step(const Instruction& instr) {
                 pc += 1; return true;
             }
             if (a->tag == Value::Tag::Compound && a->s == functor && a->args.size() == 2) {
-                enter_read_mode(mode, a->args);
+                push_read_mode(mode_stack, a->args);
                 pc += 1; return true;
             }
             return false;
@@ -1522,65 +1592,71 @@ bool WamState::step(const Instruction& instr) {
 
         // ---- Unify (post Get-/Put-Structure / List) -----------------
         case Instruction::Op::UnifyVariable: {
-            if (mode.kind == ModeFrame::Kind::Read) {
-                if (mode.idx >= mode.args.size()) return false;
-                set_cell(instr.a, mode.args[mode.idx]);
-                mode.idx += 1;
-                pc += 1; return true;
-            }
-            if (mode.kind == ModeFrame::Kind::Write && mode.target) {
+            if (mode_stack.empty()) return false;
+            ModeFrame& m = mode_stack.back();
+            if (m.kind == ModeFrame::Kind::Read) {
+                if (m.idx >= m.args.size()) return false;
+                set_cell(instr.a, m.args[m.idx]);
+                m.idx += 1;
+            } else if (m.kind == ModeFrame::Kind::Write && m.target) {
                 CellPtr fresh = make_cell(Value::Unbound("_V" + std::to_string(var_counter++)));
                 set_cell(instr.a, fresh);
-                mode.target->args.push_back(fresh);
-                pc += 1; return true;
-            }
-            return false;
+                m.target->args.push_back(fresh);
+            } else return false;
+            auto_pop_modes(mode_stack);
+            pc += 1; return true;
         }
         case Instruction::Op::UnifyValue: {
-            if (mode.kind == ModeFrame::Kind::Read) {
-                if (mode.idx >= mode.args.size()) return false;
-                if (!unify_cells(get_cell(instr.a), mode.args[mode.idx])) return false;
-                mode.idx += 1;
-                pc += 1; return true;
-            }
-            if (mode.kind == ModeFrame::Kind::Write && mode.target) {
-                mode.target->args.push_back(get_cell(instr.a));
-                pc += 1; return true;
-            }
-            return false;
+            if (mode_stack.empty()) return false;
+            ModeFrame& m = mode_stack.back();
+            if (m.kind == ModeFrame::Kind::Read) {
+                if (m.idx >= m.args.size()) return false;
+                if (!unify_cells(get_cell(instr.a), m.args[m.idx])) return false;
+                m.idx += 1;
+            } else if (m.kind == ModeFrame::Kind::Write && m.target) {
+                m.target->args.push_back(get_cell(instr.a));
+            } else return false;
+            auto_pop_modes(mode_stack);
+            pc += 1; return true;
         }
         case Instruction::Op::UnifyConstant: {
-            if (mode.kind == ModeFrame::Kind::Read) {
-                if (mode.idx >= mode.args.size()) return false;
-                CellPtr c = mode.args[mode.idx];
+            if (mode_stack.empty()) return false;
+            ModeFrame& m = mode_stack.back();
+            if (m.kind == ModeFrame::Kind::Read) {
+                if (m.idx >= m.args.size()) return false;
+                CellPtr c = m.args[m.idx];
                 if (c->is_unbound())         { bind_cell(c, instr.val); }
                 else if (!(*c == instr.val)) { return false; }
-                mode.idx += 1;
-                pc += 1; return true;
-            }
-            if (mode.kind == ModeFrame::Kind::Write && mode.target) {
-                mode.target->args.push_back(make_cell(instr.val));
-                pc += 1; return true;
-            }
-            return false;
+                m.idx += 1;
+            } else if (m.kind == ModeFrame::Kind::Write && m.target) {
+                m.target->args.push_back(make_cell(instr.val));
+            } else return false;
+            auto_pop_modes(mode_stack);
+            pc += 1; return true;
         }
 
-        // ---- Set (always write mode, equivalent to Unify* in write) --
+        // ---- Set (always write mode) -------------------------------
         case Instruction::Op::SetVariable: {
-            if (mode.kind != ModeFrame::Kind::Write || !mode.target) return false;
+            if (mode_stack.empty() || mode_stack.back().kind != ModeFrame::Kind::Write
+                || !mode_stack.back().target) return false;
             CellPtr fresh = make_cell(Value::Unbound("_V" + std::to_string(var_counter++)));
             set_cell(instr.a, fresh);
-            mode.target->args.push_back(fresh);
+            mode_stack.back().target->args.push_back(fresh);
+            auto_pop_modes(mode_stack);
             pc += 1; return true;
         }
         case Instruction::Op::SetValue: {
-            if (mode.kind != ModeFrame::Kind::Write || !mode.target) return false;
-            mode.target->args.push_back(get_cell(instr.a));
+            if (mode_stack.empty() || mode_stack.back().kind != ModeFrame::Kind::Write
+                || !mode_stack.back().target) return false;
+            mode_stack.back().target->args.push_back(get_cell(instr.a));
+            auto_pop_modes(mode_stack);
             pc += 1; return true;
         }
         case Instruction::Op::SetConstant: {
-            if (mode.kind != ModeFrame::Kind::Write || !mode.target) return false;
-            mode.target->args.push_back(make_cell(instr.val));
+            if (mode_stack.empty() || mode_stack.back().kind != ModeFrame::Kind::Write
+                || !mode_stack.back().target) return false;
+            mode_stack.back().target->args.push_back(make_cell(instr.val));
+            auto_pop_modes(mode_stack);
             pc += 1; return true;
         }
 
@@ -1623,7 +1699,7 @@ bool WamState::step(const Instruction& instr) {
             cp_.trail_mark = trail.size();
             cp_.cut_barrier = cut_barrier;
             cp_.saved_regs = regs;
-            cp_.saved_mode = mode;
+            cp_.saved_mode_stack = mode_stack;
             choice_points.push_back(std::move(cp_));
             pc += 1; return true;
         }
@@ -1646,28 +1722,167 @@ bool WamState::step(const Instruction& instr) {
             return builtin(instr.a, instr.n);
         case Instruction::Op::CallForeign:
             pc += 1; return true;
+
+        // ---- Aggregate / findall driver ----------------------------
+        case Instruction::Op::BeginAggregate: {
+            AggregateFrame frame;
+            frame.agg_kind          = instr.a;
+            frame.value_reg         = instr.b;
+            frame.result_reg        = instr.val.s; // stuffed into val.s by factory
+            frame.begin_pc          = pc;
+            frame.return_pc         = 0;
+            frame.return_pc_set     = false;
+            frame.base_cp_count     = choice_points.size();
+            frame.trail_mark        = trail.size();
+            frame.saved_cp          = cp;
+            frame.saved_cut_barrier = cut_barrier;
+            frame.saved_regs        = regs;
+            frame.saved_mode_stack  = mode_stack;
+            aggregate_frames.push_back(std::move(frame));
+            pc += 1;
+            return true;
+        }
+        case Instruction::Op::EndAggregate: {
+            if (aggregate_frames.empty()) return false;
+            AggregateFrame& f = aggregate_frames.back();
+            // Snapshot the current value of value_reg (deep copy so later
+            // trail-driven mutations don''t alter what we collected).
+            CellPtr v = get_cell(instr.a);
+            f.acc.push_back(deep_copy(*v));
+            f.return_pc     = pc + 1;
+            f.return_pc_set = true;
+            // Force backtrack to find the next solution of the body.
+            return false;
+        }
     }
     return false;
 }
 
+// (deep_copy is defined above, before step().)
+
+// Build the finalisation result for an aggregate based on its kind.
+// Falls back to the raw list when the kind isn''t recognised.
+static Value finalize_aggregate(const std::string& kind, const std::vector<Value>& acc) {
+    auto as_d = [](const Value& v) { return v.tag == Value::Tag::Float ? v.f : (double)v.i; };
+    auto is_num = [](const Value& v) {
+        return v.tag == Value::Tag::Integer || v.tag == Value::Tag::Float;
+    };
+    if (kind == "count") {
+        return Value::Integer((std::int64_t)acc.size());
+    }
+    if (kind == "sum") {
+        bool has_float = false;
+        double sum_d = 0.0; std::int64_t sum_i = 0;
+        for (auto& v : acc) {
+            if (!is_num(v)) return Value{};
+            if (v.tag == Value::Tag::Float) { has_float = true; sum_d += v.f; }
+            else                            { sum_i += v.i; sum_d += (double)v.i; }
+        }
+        if (has_float) return Value::Float(sum_d);
+        return Value::Integer(sum_i);
+    }
+    if (kind == "min" || kind == "max") {
+        if (acc.empty()) return Value::Atom("[]");
+        const Value* best = &acc[0];
+        for (std::size_t k = 1; k < acc.size(); ++k) {
+            if (!is_num(acc[k])) return Value{};
+            if (kind == "min" ? (as_d(acc[k]) < as_d(*best))
+                              : (as_d(acc[k]) > as_d(*best))) {
+                best = &acc[k];
+            }
+        }
+        return *best;
+    }
+    // "collect" (findall) and "set" / "bag" all build a list. set/bag
+    // dedup variants are handled below if we recognise the kind.
+    std::vector<Value> items = acc;
+    if (kind == "set") {
+        std::vector<Value> uniq;
+        for (auto& v : items) {
+            bool dup = false;
+            for (auto& w : uniq) { if (v == w) { dup = true; break; } }
+            if (!dup) uniq.push_back(v);
+        }
+        items = std::move(uniq);
+        // sort lexicographically by render() — cheap, good enough for atoms / ints.
+    }
+    Value tail = Value::Atom("[]");
+    for (auto it = items.rbegin(); it != items.rend(); ++it) {
+        std::vector<CellPtr> args;
+        args.push_back(std::make_shared<Cell>(*it));
+        args.push_back(std::make_shared<Cell>(std::move(tail)));
+        tail = Value::Compound("[|]/2", std::move(args));
+    }
+    return tail;
+}
+
+// Walk forward from begin_pc to find the matching EndAggregate, counting
+// nested Begin/End pairs. Used to compute pc continuation when the body
+// of an aggregate fails before any EndAggregate fires.
+static std::size_t find_matching_end_aggregate(
+        const std::vector<Instruction>& instrs, std::size_t begin_pc) {
+    int depth = 1;
+    for (std::size_t k = begin_pc + 1; k < instrs.size(); ++k) {
+        if (instrs[k].op == Instruction::Op::BeginAggregate) ++depth;
+        else if (instrs[k].op == Instruction::Op::EndAggregate) {
+            if (--depth == 0) return k;
+        }
+    }
+    return instrs.size();
+}
+
 bool WamState::backtrack() {
-    while (!choice_points.empty()) {
-        ChoicePoint cp_ = std::move(choice_points.back());
-        choice_points.pop_back();
-        // Unwind cell mutations down to the trail mark.
+    // Pop normal choice points until we either find one to retry or run
+    // into an open aggregate frame''s base — at which point the frame is
+    // finalised and execution continues past its EndAggregate.
+    for (;;) {
+        std::size_t agg_base =
+            aggregate_frames.empty() ? 0 : aggregate_frames.back().base_cp_count;
+        if (!aggregate_frames.empty() && choice_points.size() == agg_base) {
+            // Aggregate exhausted. Finalise.
+            AggregateFrame f = std::move(aggregate_frames.back());
+            aggregate_frames.pop_back();
+            // Unwind any trail entries added inside the aggregate scope.
+            while (trail.size() > f.trail_mark) {
+                TrailEntry t = std::move(trail.back());
+                trail.pop_back();
+                *t.cell = std::move(t.prev);
+            }
+            regs        = std::move(f.saved_regs);
+            mode_stack  = std::move(f.saved_mode_stack);
+            cp          = f.saved_cp;
+            cut_barrier = f.saved_cut_barrier;
+            // Build and bind the result.
+            Value result = finalize_aggregate(f.agg_kind, f.acc);
+            CellPtr rcell = get_cell(f.result_reg);
+            if (rcell->is_unbound()) bind_cell(rcell, result);
+            else if (!unify_cells(rcell, std::make_shared<Cell>(result))) return false;
+            // Jump past the matching EndAggregate.
+            if (f.return_pc_set) {
+                pc = f.return_pc;
+            } else {
+                pc = find_matching_end_aggregate(instrs, f.begin_pc) + 1;
+            }
+            return true;
+        }
+        if (choice_points.empty()) return false;
+        // Classic WAM: do NOT pop the CP here. retry_me_else updates the
+        // CP''s alt_pc to the next clause as it runs; trust_me pops it.
+        // We restore state via COPY so the snapshot remains intact for
+        // any subsequent backtracks into this same CP.
+        const ChoicePoint& cp_ = choice_points.back();
         while (trail.size() > cp_.trail_mark) {
             TrailEntry t = std::move(trail.back());
             trail.pop_back();
             *t.cell = std::move(t.prev);
         }
-        regs = std::move(cp_.saved_regs);
-        mode = std::move(cp_.saved_mode);
-        cp = cp_.saved_cp;
+        regs        = cp_.saved_regs;
+        mode_stack  = cp_.saved_mode_stack;
+        cp          = cp_.saved_cp;
         cut_barrier = cp_.cut_barrier;
-        pc = cp_.alt_pc;
+        pc          = cp_.alt_pc;
         return true;
     }
-    return false;
 }
 
 bool WamState::run() {
@@ -1690,7 +1905,8 @@ bool WamState::query(const std::string& pred_key, const std::vector<Value>& args
     }
     trail.clear();
     choice_points.clear();
-    mode = ModeFrame{};
+    aggregate_frames.clear();
+    mode_stack.clear();
     pc = it->second;
     cp = 0;
     cut_barrier = 0;
