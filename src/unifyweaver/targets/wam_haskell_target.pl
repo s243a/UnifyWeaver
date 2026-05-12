@@ -63,6 +63,8 @@
              [recommend_access_pattern/5, read_mem_available_bytes/1]).
 :- use_module('../core/algorithm_manifest',
              [load_algorithm_manifest/2]).
+:- use_module('../core/cost_function',
+             [validate_cost_function/1, cost_function_with_defaults/2]).
 
 % Phase 3: the real lowerability check and emission helpers live in the
 % wam_haskell_lowered_emitter module. We reexport so existing callers can
@@ -3508,6 +3510,14 @@ compile_wam_runtime_to_haskell(Options0, DetectedKernels, Code) :-
     ;   LmdbImports = "",
         LmdbFunctions = ""
     ),
+    % P1 (scan-strategy): conditional cost-function code.
+    % Emitted when option(tree_cost_function(Name, Params), Options) is
+    % present. Renders cost_function.hs.mustache and a `theCostFn`
+    % binding that selects the concrete CostFn constructor at codegen
+    % time. P3+ warm-build code will reference `theCostFn`; in P1 it's
+    % a top-level binding that GHC may flag as unused — accepted as
+    % a warning since the build still succeeds.
+    generate_cost_function_code(Options, CostFunctionCode),
     format(string(Code),
 '{-# LANGUAGE BangPatterns #-}
 module WamRuntime where
@@ -3703,7 +3713,9 @@ resolveCallInstrs labels foreignPreds = map resolve
       in SwitchOnConstantPc (IM.fromList [(extractId v, pc) | (v, label) <- Map.toList table,
                                                                Just pc <- [Map.lookup label labels]])
     resolve i = i
-', [LmdbImports, StepCode, BacktrackCode, RunCode, LmdbFunctions]).
+
+~w
+', [LmdbImports, StepCode, BacktrackCode, RunCode, LmdbFunctions, CostFunctionCode]).
 
 %% generate_wam_types_hs(-Code)
 generate_wam_types_hs(Code) :-
@@ -4553,6 +4565,64 @@ generate_lmdb_functions(Options, Code) :-
                      lmdb_cache_two_level=CacheTwoLevel,
                      lmdb_l2_capacity_bytes=L2CapacityBytes],
                     Code).
+
+%% generate_cost_function_code(+Options, -Code) is det.
+%
+%  Phase 1 (scan-strategy). When option(tree_cost_function(Name, Params),
+%  Options) is present, emit:
+%    1. The cost_function.hs.mustache template (CostFn record + concrete
+%       constructors hopDistanceCostFn / fluxCostFn / semanticCostFn).
+%    2. A `theCostFn :: CostFn` binding that selects the appropriate
+%       constructor with the chosen parameters.
+%
+%  The chosen tree_cost_function term is validated and filled with
+%  defaults via cost_function:cost_function_with_defaults/2. Bad terms
+%  (unknown name, wrong types, missing required params) throw at
+%  codegen time — no silent acceptance.
+%
+%  When the option is absent, returns the empty string. Existing
+%  workloads see no Haskell-level change.
+generate_cost_function_code(Options, Code) :-
+    (   option(tree_cost_function(Name, ProvidedParams), Options)
+    ->  validate_cost_function(tree_cost_function(Name, ProvidedParams)),
+        cost_function_with_defaults(
+            tree_cost_function(Name, ProvidedParams),
+            tree_cost_function(Name, FullParams)),
+        read_kernel_template('cost_function.hs.mustache', Template),
+        cost_function_haskell_constructor(Name, FullParams, ConstructorExpr),
+        format(string(Code),
+'-- ==================================================================
+-- Cost-function strategy slot (scan-strategy P1).
+-- ==================================================================
+
+~w
+
+-- | Cost function selected at codegen time from
+-- tree_cost_function(~w, ...) in workload options. P3+ warm-build
+-- consumes this to rank candidate nodes during tree construction.
+theCostFn :: CostFn
+theCostFn = ~w
+',                  [Template, Name, ConstructorExpr])
+    ;   Code = ""
+    ).
+
+%% cost_function_haskell_constructor(+Name, +Params, -Expr)
+%
+%  Map a (validated, defaults-filled) tree_cost_function/2 term into
+%  the Haskell expression that constructs the corresponding CostFn.
+cost_function_haskell_constructor(hop_distance, Params, Expr) :- !,
+    option(max_hops(MaxHops), Params),
+    format(string(Expr), 'hopDistanceCostFn ~d', [MaxHops]).
+cost_function_haskell_constructor(flux, Params, Expr) :- !,
+    option(parent_decay(PD), Params),
+    option(child_decay(CD), Params),
+    %% Third arg is currently a placeholder for the flux_merge mode;
+    %% the panic stub ignores it. P3+ will define a sensible encoding.
+    format(string(Expr), 'fluxCostFn ~w ~w 0.0', [PD, CD]).
+cost_function_haskell_constructor(semantic_similarity, Params, Expr) :- !,
+    option(dim(Dim), Params),
+    option(embedding_path(Path), Params),
+    format(string(Expr), 'semanticCostFn ~d "~w"', [Dim, Path]).
 
 %% maybe_parallelize_instrs(+PredIndicator, +Options, +InstrExprs0, -InstrExprs)
 %  Rewrite TryMeElse → ParTryMeElse etc. when the predicate certifies
