@@ -851,6 +851,15 @@ struct WamState {
     bool    backtrack();
     bool    builtin(const std::string& op, std::int64_t arity);
     bool    query(const std::string& pred_key, const std::vector<Value>& args);
+
+    // ---- Builtin helpers ---------------------------------------------
+    // Arithmetic: returns Integer or Float; sets ok=false on failure
+    // (unbound argument, unknown operator, division by zero, ...).
+    Value   eval_arith(CellPtr c, bool& ok) const;
+    bool    arith_compare(const std::string& op, const Value& a, const Value& b) const;
+
+    // Term rendering for write/1 — recursive, prints Prolog-like syntax.
+    std::string render(const Value& v) const;
 };
 
 struct Program {
@@ -882,6 +891,9 @@ compile_wam_runtime_to_cpp(_Options,
 
 #include "wam_runtime.h"
 
+#include <cstdio>
+#include <sstream>
+#include <string>
 #include <utility>
 
 namespace wam_cpp {
@@ -972,13 +984,390 @@ bool WamState::unify(const Value& a, const Value& b) {
     return a == b;
 }
 
+// ----------------------------------------------------------------------
+// Arithmetic eval
+// ----------------------------------------------------------------------
+
+Value WamState::eval_arith(CellPtr c, bool& ok) const {
+    if (!c) { ok = false; return Value{}; }
+    const Value& v = *c;
+    switch (v.tag) {
+        case Value::Tag::Integer:
+        case Value::Tag::Float:
+            return v;
+        case Value::Tag::Atom:
+            // Numeric atoms ("5", "-3.14") are tolerated for robustness.
+            try {
+                std::size_t pos;
+                long long n = std::stoll(v.s, &pos);
+                if (pos == v.s.size()) return Value::Integer(n);
+            } catch (...) {}
+            try {
+                std::size_t pos;
+                double d = std::stod(v.s, &pos);
+                if (pos == v.s.size()) return Value::Float(d);
+            } catch (...) {}
+            ok = false; return Value{};
+        case Value::Tag::Compound: {
+            // Unary minus
+            if (v.s == "-/1" && v.args.size() == 1) {
+                Value a = eval_arith(v.args[0], ok);
+                if (!ok) return Value{};
+                if (a.tag == Value::Tag::Integer) return Value::Integer(-a.i);
+                return Value::Float(-a.f);
+            }
+            if (v.args.size() != 2) { ok = false; return Value{}; }
+            Value a = eval_arith(v.args[0], ok);
+            if (!ok) return Value{};
+            Value b = eval_arith(v.args[1], ok);
+            if (!ok) return Value{};
+            bool either_float = (a.tag == Value::Tag::Float || b.tag == Value::Tag::Float);
+            auto as_d = [](const Value& w){ return w.tag == Value::Tag::Float ? w.f : (double)w.i; };
+            if (v.s == "+/2") {
+                if (either_float) return Value::Float(as_d(a) + as_d(b));
+                return Value::Integer(a.i + b.i);
+            }
+            if (v.s == "-/2") {
+                if (either_float) return Value::Float(as_d(a) - as_d(b));
+                return Value::Integer(a.i - b.i);
+            }
+            if (v.s == "*/2") {
+                if (either_float) return Value::Float(as_d(a) * as_d(b));
+                return Value::Integer(a.i * b.i);
+            }
+            if (v.s == "//2") {
+                // Prolog ''/'' is float division.
+                if (as_d(b) == 0.0) { ok = false; return Value{}; }
+                if (either_float) return Value::Float(as_d(a) / as_d(b));
+                if (a.i % b.i == 0) return Value::Integer(a.i / b.i);
+                return Value::Float((double)a.i / (double)b.i);
+            }
+            if (v.s == "///2") {
+                if (b.i == 0) { ok = false; return Value{}; }
+                return Value::Integer(a.i / b.i);
+            }
+            if (v.s == "mod/2") {
+                if (b.i == 0) { ok = false; return Value{}; }
+                return Value::Integer(a.i % b.i);
+            }
+            ok = false; return Value{};
+        }
+        default:
+            ok = false; return Value{};
+    }
+}
+
+bool WamState::arith_compare(const std::string& op, const Value& a, const Value& b) const {
+    auto as_d = [](const Value& v){ return v.tag == Value::Tag::Float ? v.f : (double)v.i; };
+    double x = as_d(a), y = as_d(b);
+    if (op == ">/2")  return x >  y;
+    if (op == "</2")  return x <  y;
+    if (op == ">=/2") return x >= y;
+    if (op == "=</2") return x <= y;
+    if (op == "=:=/2") return x == y;
+    if (op == "=\\\\=/2") return x != y;
+    return false;
+}
+
+// ----------------------------------------------------------------------
+// Term rendering for write/1
+// ----------------------------------------------------------------------
+
+std::string WamState::render(const Value& v) const {
+    switch (v.tag) {
+        case Value::Tag::Atom:    return v.s;
+        case Value::Tag::Integer: return std::to_string(v.i);
+        case Value::Tag::Float: {
+            std::ostringstream os; os << v.f; return os.str();
+        }
+        case Value::Tag::Unbound: return v.s.empty() ? std::string("_") : v.s;
+        case Value::Tag::Compound: {
+            // Pretty-print lists as [a, b, c] when the spine is well-formed.
+            if (v.s == "[|]/2" && v.args.size() == 2) {
+                std::string out = "[";
+                const Value* cur = &v;
+                bool first = true;
+                while (cur && cur->tag == Value::Tag::Compound
+                       && cur->s == "[|]/2" && cur->args.size() == 2) {
+                    if (!first) out += ", ";
+                    first = false;
+                    out += render(*cur->args[0]);
+                    cur = cur->args[1].get();
+                }
+                if (cur && !(cur->tag == Value::Tag::Atom && cur->s == "[]")) {
+                    out += " | "; out += render(*cur);
+                }
+                out += "]";
+                return out;
+            }
+            // functor(arg1, arg2, ...). Strip "/N" suffix from functor.
+            std::string name = v.s;
+            auto slash = name.find_last_of(\'/\');
+            if (slash != std::string::npos) name.resize(slash);
+            std::string out = name + "(";
+            for (std::size_t k = 0; k < v.args.size(); ++k) {
+                if (k) out += ", ";
+                out += render(*v.args[k]);
+            }
+            out += ")";
+            return out;
+        }
+        default: return "_";
+    }
+}
+
+// ----------------------------------------------------------------------
+// Builtin dispatch
+// ----------------------------------------------------------------------
+
 bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
+    // ---- Control ----------------------------------------------------
     if (op == "true/0") { pc += 1; return true; }
     if (op == "fail/0") { return false; }
     if (op == "!/0")    {
         if (choice_points.size() > cut_barrier) choice_points.resize(cut_barrier);
         pc += 1; return true;
     }
+
+    // ---- =/2 (unify) -----------------------------------------------
+    if (op == "=/2") {
+        if (!unify_cells(get_cell("A1"), get_cell("A2"))) return false;
+        pc += 1; return true;
+    }
+    // ---- \\=/2 (cannot unify) --------------------------------------
+    if (op == "\\\\=/2") {
+        // Try to unify; if it succeeds we have to undo and fail.
+        std::size_t mark = trail.size();
+        bool ok = unify_cells(get_cell("A1"), get_cell("A2"));
+        // Roll back any bindings we just made.
+        while (trail.size() > mark) {
+            TrailEntry t = std::move(trail.back());
+            trail.pop_back();
+            *t.cell = std::move(t.prev);
+        }
+        if (ok) return false;
+        pc += 1; return true;
+    }
+
+    // ---- is/2 -------------------------------------------------------
+    if (op == "is/2") {
+        bool ok = true;
+        Value rhs = eval_arith(get_cell("A2"), ok);
+        if (!ok) return false;
+        CellPtr lhs = get_cell("A1");
+        if (lhs->is_unbound()) { bind_cell(lhs, std::move(rhs)); pc += 1; return true; }
+        if (!(*lhs == rhs)) return false;
+        pc += 1; return true;
+    }
+
+    // ---- Arithmetic comparisons ------------------------------------
+    if (op == ">/2" || op == "</2" || op == ">=/2" || op == "=</2"
+        || op == "=:=/2" || op == "=\\\\=/2") {
+        bool ok = true;
+        Value a = eval_arith(get_cell("A1"), ok);
+        if (!ok) return false;
+        Value b = eval_arith(get_cell("A2"), ok);
+        if (!ok) return false;
+        if (!arith_compare(op, a, b)) return false;
+        pc += 1; return true;
+    }
+
+    // ---- ==/2 and \\==/2 (structural equality) ----------------------
+    if (op == "==/2" || op == "\\\\==/2") {
+        Value a = *get_cell("A1");
+        Value b = *get_cell("A2");
+        bool eq = (a == b);
+        if (op == "==/2"  && !eq) return false;
+        if (op == "\\\\==/2" && eq) return false;
+        pc += 1; return true;
+    }
+
+    // ---- Type checks -----------------------------------------------
+    if (op == "atom/1") {
+        Value a = *get_cell("A1");
+        if (a.tag != Value::Tag::Atom) return false;
+        pc += 1; return true;
+    }
+    if (op == "integer/1") {
+        Value a = *get_cell("A1");
+        if (a.tag != Value::Tag::Integer) return false;
+        pc += 1; return true;
+    }
+    if (op == "float/1") {
+        Value a = *get_cell("A1");
+        if (a.tag != Value::Tag::Float) return false;
+        pc += 1; return true;
+    }
+    if (op == "number/1") {
+        Value a = *get_cell("A1");
+        if (a.tag != Value::Tag::Integer && a.tag != Value::Tag::Float) return false;
+        pc += 1; return true;
+    }
+    if (op == "atomic/1") {
+        Value a = *get_cell("A1");
+        if (a.tag == Value::Tag::Compound || a.is_unbound()) return false;
+        pc += 1; return true;
+    }
+    if (op == "compound/1") {
+        Value a = *get_cell("A1");
+        if (a.tag != Value::Tag::Compound) return false;
+        pc += 1; return true;
+    }
+    if (op == "var/1") {
+        if (!get_cell("A1")->is_unbound()) return false;
+        pc += 1; return true;
+    }
+    if (op == "nonvar/1") {
+        if (get_cell("A1")->is_unbound()) return false;
+        pc += 1; return true;
+    }
+    if (op == "ground/1") {
+        // Recursive groundness check.
+        std::function<bool(const Value&)> g = [&](const Value& v) -> bool {
+            if (v.is_unbound()) return false;
+            if (v.tag == Value::Tag::Compound) {
+                for (auto& c : v.args) if (!g(*c)) return false;
+            }
+            return true;
+        };
+        if (!g(*get_cell("A1"))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- functor/3 -------------------------------------------------
+    if (op == "functor/3") {
+        CellPtr t = get_cell("A1");
+        if (!t->is_unbound()) {
+            // Decompose: t -> functor name + arity
+            const Value& v = *t;
+            std::string name;
+            std::int64_t arity = 0;
+            if (v.tag == Value::Tag::Compound) {
+                name = v.s;
+                auto sl = name.find_last_of(\'/\');
+                if (sl != std::string::npos) name.resize(sl);
+                arity = (std::int64_t)v.args.size();
+            } else if (v.tag == Value::Tag::Atom) {
+                name = v.s; arity = 0;
+            } else if (v.tag == Value::Tag::Integer) {
+                // Numbers are their own functor with arity 0.
+                CellPtr fc = get_cell("A2");
+                CellPtr ac = get_cell("A3");
+                if (fc->is_unbound()) bind_cell(fc, v);
+                else if (!(*fc == v)) return false;
+                Value zero = Value::Integer(0);
+                if (ac->is_unbound()) bind_cell(ac, zero);
+                else if (!(*ac == zero)) return false;
+                pc += 1; return true;
+            } else {
+                return false;
+            }
+            CellPtr fc = get_cell("A2");
+            CellPtr ac = get_cell("A3");
+            Value fv = Value::Atom(name);
+            Value av = Value::Integer(arity);
+            if (fc->is_unbound()) bind_cell(fc, fv); else if (!(*fc == fv)) return false;
+            if (ac->is_unbound()) bind_cell(ac, av); else if (!(*ac == av)) return false;
+            pc += 1; return true;
+        }
+        // Build mode: A2 = functor name, A3 = arity.
+        Value name_v = *get_cell("A2");
+        Value ar_v   = *get_cell("A3");
+        if (name_v.tag != Value::Tag::Atom || ar_v.tag != Value::Tag::Integer) return false;
+        if (ar_v.i == 0) { bind_cell(t, name_v); pc += 1; return true; }
+        std::vector<CellPtr> args;
+        for (std::int64_t k = 0; k < ar_v.i; ++k) {
+            args.push_back(std::make_shared<Value>(Value::Unbound("_FA" + std::to_string(k))));
+        }
+        std::string functor = name_v.s + "/" + std::to_string(ar_v.i);
+        bind_cell(t, Value::Compound(functor, std::move(args)));
+        pc += 1; return true;
+    }
+
+    // ---- arg/3 -----------------------------------------------------
+    if (op == "arg/3") {
+        Value n_v = *get_cell("A1");
+        Value t_v = *get_cell("A2");
+        if (n_v.tag != Value::Tag::Integer) return false;
+        if (t_v.tag != Value::Tag::Compound) return false;
+        std::int64_t idx = n_v.i;
+        if (idx < 1 || (std::size_t)idx > t_v.args.size()) return false;
+        CellPtr want = t_v.args[idx - 1];
+        if (!unify_cells(get_cell("A3"), want)) return false;
+        pc += 1; return true;
+    }
+
+    // ---- =../2 (univ) ----------------------------------------------
+    if (op == "=../2") {
+        CellPtr t = get_cell("A1");
+        CellPtr l = get_cell("A2");
+        if (!t->is_unbound()) {
+            // Decompose: t -> [Functor | Args]
+            const Value& v = *t;
+            std::vector<CellPtr> items;
+            if (v.tag == Value::Tag::Compound) {
+                std::string name = v.s;
+                auto sl = name.find_last_of(\'/\');
+                if (sl != std::string::npos) name.resize(sl);
+                items.push_back(std::make_shared<Value>(Value::Atom(name)));
+                for (auto& a : v.args) items.push_back(a);
+            } else {
+                // Atomic term: univ -> [v]
+                items.push_back(std::make_shared<Value>(v));
+            }
+            // Build [|]/2 chain
+            Value tail = Value::Atom("[]");
+            for (auto it = items.rbegin(); it != items.rend(); ++it) {
+                std::vector<CellPtr> args;
+                args.push_back(*it);
+                args.push_back(std::make_shared<Value>(std::move(tail)));
+                tail = Value::Compound("[|]/2", std::move(args));
+            }
+            CellPtr built = std::make_shared<Value>(std::move(tail));
+            if (!unify_cells(l, built)) return false;
+            pc += 1; return true;
+        }
+        // Build mode: collect list elements from A2.
+        std::vector<Value> items;
+        const Value* cur = l.get();
+        while (cur && cur->tag == Value::Tag::Compound
+               && cur->s == "[|]/2" && cur->args.size() == 2) {
+            items.push_back(*cur->args[0]);
+            cur = cur->args[1].get();
+        }
+        if (!(cur && cur->tag == Value::Tag::Atom && cur->s == "[]")) return false;
+        if (items.empty()) return false;
+        if (items.size() == 1) {
+            bind_cell(t, items[0]);
+            pc += 1; return true;
+        }
+        if (items[0].tag != Value::Tag::Atom) return false;
+        std::vector<CellPtr> args;
+        for (std::size_t k = 1; k < items.size(); ++k) {
+            args.push_back(std::make_shared<Value>(items[k]));
+        }
+        std::string functor = items[0].s + "/" + std::to_string(items.size() - 1);
+        bind_cell(t, Value::Compound(functor, std::move(args)));
+        pc += 1; return true;
+    }
+
+    // ---- I/O -------------------------------------------------------
+    if (op == "write/1") {
+        std::printf("%s", render(*get_cell("A1")).c_str());
+        std::fflush(stdout);
+        pc += 1; return true;
+    }
+    if (op == "nl/0") {
+        std::printf("\\n");
+        std::fflush(stdout);
+        pc += 1; return true;
+    }
+    if (op == "write_atom/1" || op == "writeln/1") {
+        std::printf("%s\\n", render(*get_cell("A1")).c_str());
+        std::fflush(stdout);
+        pc += 1; return true;
+    }
+
     return false;
 }
 
@@ -1009,12 +1398,25 @@ void enter_write_mode(ModeFrame& mode, CellPtr target, std::size_t arity) {
 
 } // anonymous
 
-// Begin a write-mode structure / list with the given functor and arity.
-// Binds (or rebinds) `target` to Compound{functor, []} and enters write mode.
-static void begin_write(WamState& vm, CellPtr target, const std::string& functor,
-                        std::size_t arity) {
-    vm.bind_cell(target, Value::Compound(functor, {}));
-    enter_write_mode(vm.mode, target, arity);
+// Begin a write-mode structure / list. When the register''s existing
+// cell is Unbound, we MUTATE it via bind_cell — so chained patterns
+// like set_variable + put_structure that share a cell with a parent
+// struct see the new compound. When the cell already holds a concrete
+// value (atom/integer/compound), we instead allocate a FRESH cell and
+// rebind only the named register (classic WAM "put_structure overwrites
+// Ai" semantics) — other aliases keep their old value.
+static void begin_write(WamState& vm, const std::string& reg_name,
+                        const std::string& functor, std::size_t arity,
+                        CellPtr& chosen) {
+    CellPtr existing = vm.get_cell(reg_name);
+    if (existing->is_unbound()) {
+        vm.bind_cell(existing, Value::Compound(functor, {}));
+        chosen = existing;
+    } else {
+        chosen = std::make_shared<Cell>(Value::Compound(functor, {}));
+        vm.set_cell(reg_name, chosen);
+    }
+    enter_write_mode(vm.mode, chosen, arity);
 }
 
 // ----------------------------------------------------------------------
@@ -1061,8 +1463,8 @@ bool WamState::step(const Instruction& instr) {
             auto p = functor.find_last_of(\'/\');
             if (p != std::string::npos) arity = std::stoull(functor.substr(p + 1));
             if (a->is_unbound()) {
-                // Write mode: bind a to a fresh compound, expect `arity` Unify*.
-                begin_write(*this, a, functor, arity);
+                CellPtr target;
+                begin_write(*this, instr.b, functor, arity, target);
                 pc += 1; return true;
             }
             if (a->tag == Value::Tag::Compound && a->s == functor && a->args.size() == arity) {
@@ -1075,7 +1477,8 @@ bool WamState::step(const Instruction& instr) {
             CellPtr a = get_cell(instr.a);
             const std::string functor = "[|]/2";
             if (a->is_unbound()) {
-                begin_write(*this, a, functor, 2);
+                CellPtr target;
+                begin_write(*this, instr.a, functor, 2, target);
                 pc += 1; return true;
             }
             if (a->tag == Value::Tag::Compound && a->s == functor && a->args.size() == 2) {
@@ -1107,16 +1510,13 @@ bool WamState::step(const Instruction& instr) {
             std::size_t arity = 0;
             auto p = functor.find_last_of(\'/\');
             if (p != std::string::npos) arity = std::stoull(functor.substr(p + 1));
-            // Reuse / allocate the cell for instr.b. If it''s already an
-            // Unbound shared with some parent struct, mutating *cell here
-            // is what makes the chain-write pattern work.
-            CellPtr target = get_cell(instr.b);
-            begin_write(*this, target, functor, arity);
+            CellPtr target;
+            begin_write(*this, instr.b, functor, arity, target);
             pc += 1; return true;
         }
         case Instruction::Op::PutList: {
-            CellPtr target = get_cell(instr.a);
-            begin_write(*this, target, "[|]/2", 2);
+            CellPtr target;
+            begin_write(*this, instr.a, "[|]/2", 2, target);
             pc += 1; return true;
         }
 

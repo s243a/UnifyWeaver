@@ -27,6 +27,27 @@
 :- dynamic user:wam_cpp_has_rect_wrong/0.
 :- dynamic user:wam_cpp_first/2.
 :- dynamic user:wam_cpp_lst/1.
+:- dynamic user:wam_cpp_add1/2.
+:- dynamic user:wam_cpp_gt/2.
+:- dynamic user:wam_cpp_test_arith/0.
+:- dynamic user:wam_cpp_test_eq/0.
+:- dynamic user:wam_cpp_test_neq/0.
+:- dynamic user:wam_cpp_is_atom/1.
+:- dynamic user:wam_cpp_is_int/1.
+:- dynamic user:wam_cpp_is_num/1.
+:- dynamic user:wam_cpp_is_var/1.
+:- dynamic user:wam_cpp_is_compound/1.
+:- dynamic user:wam_cpp_test_nonvar/0.
+:- dynamic user:wam_cpp_test_functor/0.
+:- dynamic user:wam_cpp_test_arg1/0.
+:- dynamic user:wam_cpp_test_arg_bad/0.
+:- dynamic user:wam_cpp_test_univ_decompose/0.
+:- dynamic user:wam_cpp_test_univ_compose/0.
+:- dynamic user:wam_cpp_test_unify/0.
+:- dynamic user:wam_cpp_test_unify_fail/0.
+:- dynamic user:wam_cpp_test_write/0.
+
+user:wam_cpp_test_write :- write(hello), nl.
 
 user:wam_cpp_fact(a).
 user:wam_cpp_choice(a).
@@ -37,6 +58,28 @@ user:wam_cpp_has_rect          :- user:wam_cpp_rect(box(1, 2)).
 user:wam_cpp_has_rect_wrong    :- user:wam_cpp_rect(box(1, 3)).
 user:wam_cpp_first(box(X, _), X).
 user:wam_cpp_lst([a, b, c]).
+% Arithmetic & comparison
+user:wam_cpp_add1(X, Y)        :- Y is X + 1.
+user:wam_cpp_gt(X, Y)          :- X > Y.
+user:wam_cpp_test_arith        :- 6 is 2 + 4, 12 is 3 * 4, 5 is 10 / 2.
+user:wam_cpp_test_eq           :- 5 =:= 2 + 3.
+user:wam_cpp_test_neq          :- 5 =\= 6.
+% Type checks
+user:wam_cpp_is_atom(X)        :- atom(X).
+user:wam_cpp_is_int(X)         :- integer(X).
+user:wam_cpp_is_num(X)         :- number(X).
+user:wam_cpp_is_var(X)         :- var(X).
+user:wam_cpp_is_compound(X)    :- compound(X).
+user:wam_cpp_test_nonvar       :- X = foo, nonvar(X).
+% Term inspection
+user:wam_cpp_test_functor      :- functor(box(1, 2), box, 2).
+user:wam_cpp_test_arg1         :- arg(1, box(a, b), a).
+user:wam_cpp_test_arg_bad      :- arg(1, box(a, b), z).
+user:wam_cpp_test_univ_decompose :- box(1, 2) =.. [box, 1, 2].
+user:wam_cpp_test_univ_compose   :- T =.. [foo, a, b], T = foo(a, b).
+% =/2 / \\=/2
+user:wam_cpp_test_unify        :- X = foo, X = foo.
+user:wam_cpp_test_unify_fail   :- foo \= foo.
 
 % --------------------------------------------------------------------
 % Module-level exports
@@ -341,6 +384,111 @@ test(cpp_e2e_structure_destructure, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_first/2', ['box(1,2)', '1'], true),
           run_query(BinPath, 'wam_cpp_first/2', ['box(7,8)', '7'], true),
           run_query(BinPath, 'wam_cpp_first/2', ['box(1,2)', '9'], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% Builtins: arithmetic, comparison, type checks, term inspection, =/2.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_builtin_arithmetic, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_arith', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_add1/2, user:wam_cpp_test_arith/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_add1/2',     [5, 6], true),
+          run_query(BinPath, 'wam_cpp_add1/2',     [5, 7], false),
+          run_query(BinPath, 'wam_cpp_test_arith/0', [],  true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_builtin_comparison, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_cmp', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_gt/2,
+                               user:wam_cpp_test_eq/0,
+                               user:wam_cpp_test_neq/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_gt/2',     [5, 3], true),
+          run_query(BinPath, 'wam_cpp_gt/2',     [3, 5], false),
+          run_query(BinPath, 'wam_cpp_test_eq/0',  [],  true),
+          run_query(BinPath, 'wam_cpp_test_neq/0', [],  true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_builtin_type_checks, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_types', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_is_atom/1, user:wam_cpp_is_int/1,
+                               user:wam_cpp_is_num/1, user:wam_cpp_is_compound/1,
+                               user:wam_cpp_test_nonvar/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_is_atom/1',  [foo],         true),
+          run_query(BinPath, 'wam_cpp_is_atom/1',  [5],           false),
+          run_query(BinPath, 'wam_cpp_is_int/1',   [5],           true),
+          run_query(BinPath, 'wam_cpp_is_int/1',   [foo],         false),
+          run_query(BinPath, 'wam_cpp_is_num/1',   [5],           true),
+          run_query(BinPath, 'wam_cpp_is_num/1',   [foo],         false),
+          run_query(BinPath, 'wam_cpp_is_compound/1', ['box(1,2)'], true),
+          run_query(BinPath, 'wam_cpp_is_compound/1', [foo],        false),
+          run_query(BinPath, 'wam_cpp_test_nonvar/0', [],            true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_builtin_term_inspection, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_term', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_functor/0,
+                               user:wam_cpp_test_arg1/0,
+                               user:wam_cpp_test_arg_bad/0,
+                               user:wam_cpp_test_univ_decompose/0,
+                               user:wam_cpp_test_univ_compose/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_functor/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_arg1/0',            [], true),
+          run_query(BinPath, 'wam_cpp_test_arg_bad/0',         [], false),
+          run_query(BinPath, 'wam_cpp_test_univ_decompose/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_univ_compose/0',    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_builtin_io, [condition(cpp_compiler_available)]) :-
+    % write/1 + nl/0 should print "hello\n" before the driver prints
+    % "true". Captures full stdout (not just the last line).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_io', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_write/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          process_create(BinPath, ['wam_cpp_test_write/0'],
+                         [stdout(pipe(Out)), stderr(null), process(PID)]),
+          read_string(Out, _, Output),
+          close(Out),
+          process_wait(PID, _),
+          normalize_space(string(Trimmed), Output),
+          assertion(Trimmed == "hello true")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_builtin_unification, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_unif', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_unify/0,
+                               user:wam_cpp_test_unify_fail/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_unify/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_unify_fail/0', [], false)
         ),
         delete_directory_and_contents(TmpDir)
     ).
