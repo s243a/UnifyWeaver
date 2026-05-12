@@ -2176,6 +2176,86 @@ test_lmdb_cache_mode_memory_budget_floor_override :-
     ;   fail_test(Test, 'custom cache_tier_floor_bytes did not raise the threshold')
     ).
 
+%% =================================================================
+%% Scan-strategy P1: tree_cost_function emission
+%% =================================================================
+
+test_cost_function_absent_emits_nothing :-
+    Test = 'WAM-Haskell: tree_cost_function absent → no CostFn code',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "CostFn"),
+        \+ sub_string(S, _, _, _, "theCostFn")
+    ->  pass(Test)
+    ;   fail_test(Test, 'CostFn code emitted without tree_cost_function option')
+    ).
+
+test_cost_function_hop_distance_emits_constructor :-
+    Test = 'WAM-Haskell: tree_cost_function(hop_distance, ...) → hopDistanceCostFn',
+    (   compile_wam_runtime_to_haskell(
+            [tree_cost_function(hop_distance, [max_hops(10)])], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "data CostFn"),
+        sub_string(S, _, _, _, "hopDistanceCostFn"),
+        sub_string(S, _, _, _, "theCostFn = hopDistanceCostFn 10")
+    ->  pass(Test)
+    ;   fail_test(Test, 'hop_distance constructor not emitted correctly')
+    ).
+
+test_cost_function_hop_distance_fills_default :-
+    Test = 'WAM-Haskell: tree_cost_function(hop_distance, []) → uses default max_hops=5',
+    (   compile_wam_runtime_to_haskell(
+            [tree_cost_function(hop_distance, [])], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "theCostFn = hopDistanceCostFn 5")
+    ->  pass(Test)
+    ;   fail_test(Test, 'default max_hops=5 not filled in')
+    ).
+
+test_cost_function_flux_emits_panic_stub_constructor :-
+    Test = 'WAM-Haskell: tree_cost_function(flux, ...) → fluxCostFn (panic stub)',
+    (   compile_wam_runtime_to_haskell(
+            [tree_cost_function(flux, [parent_decay(0.7), child_decay(0.4)])], [],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "fluxCostFn"),
+        %% Verify the panic message is present, indicating the stub is wired
+        sub_string(S, _, _, _, "Flux cost function not yet implemented"),
+        sub_string(S, _, _, _, "theCostFn = fluxCostFn 0.7 0.4")
+    ->  pass(Test)
+    ;   fail_test(Test, 'flux constructor / panic stub not emitted correctly')
+    ).
+
+test_cost_function_unknown_name_throws :-
+    Test = 'WAM-Haskell: tree_cost_function with unregistered name throws at codegen',
+    catch(
+        ( compile_wam_runtime_to_haskell(
+              [tree_cost_function(bogus_function, [])], [], _),
+          Caught = no
+        ),
+        error(domain_error(cost_function_name, bogus_function), _),
+        Caught = yes
+    ),
+    (   Caught == yes
+    ->  pass(Test)
+    ;   fail_test(Test, 'unknown cost function did not throw')
+    ).
+
+test_cost_function_bad_param_type_throws :-
+    Test = 'WAM-Haskell: tree_cost_function with bad param type throws',
+    catch(
+        ( compile_wam_runtime_to_haskell(
+              [tree_cost_function(hop_distance, [max_hops(not_an_int)])], [], _),
+          Caught = no
+        ),
+        error(type_error(positive_integer, not_an_int), _),
+        Caught = yes
+    ),
+    (   Caught == yes
+    ->  pass(Test)
+    ;   fail_test(Test, 'bad param type did not throw')
+    ).
+
 test_b1_lmdb_dupsort_per_thread_cursor :-
     Test = 'B1: dupsort layout uses per-thread cursor cache',
     (   compile_wam_runtime_to_haskell(
@@ -2621,6 +2701,12 @@ run_tests :-
     test_lmdb_cache_mode_memory_budget_guard_fires,
     test_lmdb_cache_mode_memory_budget_guard_inactive_when_rfree_above_floor,
     test_lmdb_cache_mode_memory_budget_floor_override,
+    test_cost_function_absent_emits_nothing,
+    test_cost_function_hop_distance_emits_constructor,
+    test_cost_function_hop_distance_fills_default,
+    test_cost_function_flux_emits_panic_stub_constructor,
+    test_cost_function_unknown_name_throws,
+    test_cost_function_bad_param_type_throws,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)
