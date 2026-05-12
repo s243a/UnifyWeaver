@@ -61,6 +61,8 @@
              [select_cache_mode/2]).
 :- use_module('../core/cost_model',
              [recommend_access_pattern/5, read_mem_available_bytes/1]).
+:- use_module('../core/algorithm_manifest',
+             [load_algorithm_manifest/2]).
 
 % Phase 3: the real lowerability check and emission helpers live in the
 % wam_haskell_lowered_emitter module. We reexport so existing callers can
@@ -2571,11 +2573,17 @@ callForeign !ctx pred !sc = executeForeign ctx pred sc'.
 %  - Predicates.hs: compiled predicates
 %  - Main.hs: benchmark driver
 write_wam_haskell_project(Predicates, Options0, ProjectDir) :-
+    % Phase 0: merge any declared algorithm manifest into the option
+    % list BEFORE the resolvers run, so they see manifest-supplied
+    % values as defaults that caller options can still override.
+    % No-op (and idempotent — guarded by an internal sentinel) when no
+    % decl_algorithm/2 is in scope.
+    load_algorithm_manifest(Options0, OptionsM),
     % Resolve `use_lmdb(auto)` (if present) to a concrete true/false
     % BEFORE any downstream `option(use_lmdb(true), ...)` checks fire.
     % Auto consults ghc-pkg for the lmdb package + fact_count threshold;
     % see resolve_auto_use_lmdb/2.
-    resolve_auto_use_lmdb(Options0, Options1),
+    resolve_auto_use_lmdb(OptionsM, Options1),
     % Phase 2c: resolve cache_strategy(auto) into a concrete
     % demand_bfs_mode/1 via cost_model:recommend_access_pattern/5.
     % No-op when cache_strategy(auto) is absent.
@@ -3473,10 +3481,13 @@ build_predicate_loads(Predicates, Code) :-
 
 %% compile_wam_runtime_to_haskell(+Options, +DetectedKernels, -Code)
 compile_wam_runtime_to_haskell(Options0, DetectedKernels, Code) :-
+    % Phase 0: merge any declared algorithm manifest. Idempotent when
+    % the outer write_wam_haskell_project/3 already merged.
+    load_algorithm_manifest(Options0, OptionsM),
     % Phase 2c: resolve cache_strategy(auto) into a concrete
     % demand_bfs_mode/1 BEFORE downstream code consults it. No-op
     % when the option is absent.
-    resolve_auto_cache_strategy(Options0, Options1),
+    resolve_auto_cache_strategy(OptionsM, Options1),
     % Phase 2c+: resolve lmdb_cache_mode(auto) → concrete tier.
     % No-op when workload_locality/1 is absent.
     resolve_auto_lmdb_cache_mode(Options1, Options),
