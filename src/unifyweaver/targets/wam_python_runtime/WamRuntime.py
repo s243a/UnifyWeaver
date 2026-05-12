@@ -635,6 +635,40 @@ def _term_to_list(term: 'Term', state: WamState) -> Optional[List['Term']]:
     return None
 
 
+def _unify_would_succeed(left: 'Term', right: 'Term', state: WamState) -> bool:
+    """Check unification against an isolated state before mutating the live one."""
+    sub = copy.deepcopy(state)
+    return unify(copy.deepcopy(left), copy.deepcopy(right), sub)
+
+
+def _execute_member_from_index(elem: 'Term', items: List['Term'], start_idx: int,
+                               resume_ip: int, state: WamState) -> bool:
+    for idx in range(start_idx, len(items)):
+        candidate = items[idx]
+        if not _unify_would_succeed(elem, candidate, state):
+            continue
+
+        if resume_ip >= 0 and idx + 1 < len(items):
+            def make_cont(next_idx, rip):
+                def cont(s):
+                    if s.b >= 0 and isinstance(s.stack[s.b], ChoicePoint):
+                        cp_index = s.b
+                        parent_b = s.stack[cp_index].saved_b
+                        del s.stack[cp_index:]
+                        s.b = parent_b
+                    resumed_items = _term_to_list(get_reg(s, 2), s)
+                    if resumed_items is None:
+                        return -1
+                    if _execute_member_from_index(get_reg(s, 1), resumed_items, next_idx, rip, s):
+                        return rip
+                    return -1
+                return cont
+            push_choice_point(state, 2, make_cont(idx + 1, resume_ip))
+
+        return unify(elem, candidate, state)
+    return False
+
+
 def _list_from_terms(items: List['Term']) -> 'Term':
     """Build a proper Prolog list from Python terms."""
     result: Term = make_atom('[]')
@@ -701,7 +735,7 @@ def _goal_succeeds_once(goal: 'Term', state: WamState) -> bool:
     return False
 
 
-def _execute_builtin(builtin: str, arity: int, state: 'WamState') -> bool:
+def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int = -1) -> bool:
     """Execute a WAM builtin_call instruction."""
     if builtin == '!/0' or builtin == '!':  # cut
         state.cut_b = state.b
@@ -811,18 +845,12 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState') -> bool:
     if builtin in ('fail/0', 'fail', 'false/0', 'false'):
         return False
     if builtin in ('member/2', 'member'):
-        # member(Elem, List): succeeds if Elem is in List (only first solution)
-        elem = deref(get_reg(state, 1), state)
-        lst = deref(get_reg(state, 2), state)
-        def member_find(e, l):
-            if isinstance(l, Atom) and l.name == '[]': return False
-            if isinstance(l, Compound) and _strip_arity(l.functor) == '.':
-                head = deref(l.args[0], state) if l.args[0] is not None else None
-                tail = deref(l.args[1], state) if l.args[1] is not None else None
-                if head is not None and unify(e, head, state): return True
-                return member_find(e, tail)
+        # member(Elem, List): bind the first solution and leave choice points
+        # for later list elements so aggregate/backtracking consumers enumerate.
+        items = _term_to_list(get_reg(state, 2), state)
+        if items is None:
             return False
-        return member_find(elem, lst)
+        return _execute_member_from_index(get_reg(state, 1), items, 0, resume_ip, state)
     if builtin in ('functor/3', 'functor') and arity == 3:
         term = deref(get_reg(state, 1), state)
         name = deref(get_reg(state, 2), state)
@@ -1646,7 +1674,7 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
 
         elif op == 'builtin_call':
             _, builtin, arity = instr
-            ok = _execute_builtin(builtin, arity, state)
+            ok = _execute_builtin(builtin, arity, state, resume_ip=ip)
             if not ok:
                 if not fail(): return False
                 continue
@@ -2116,7 +2144,7 @@ def _run_aggregate_body(code: list, labels: dict, body_start: int, end_pc: int,
                 continue
         elif op == 'builtin_call':
             _, builtin, arity = instr
-            ok = _execute_builtin(builtin, arity, sub)
+            ok = _execute_builtin(builtin, arity, sub, resume_ip=sub_ip)
             if not ok:
                 if not sub_fail(): break
                 sub_arg_snap = list(sub.regs)

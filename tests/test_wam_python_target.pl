@@ -818,14 +818,25 @@ test(generated_project_runs_type_and_comparison_builtins) :-
 		),
 		cleanup_tmp_dir(ProjectDir)).
 
+test(generated_project_enumerates_member_builtin) :-
+	setup_call_cleanup(
+		unique_tmp_dir('tmp_wam_python_builtin_e2e', ProjectDir),
+		(   write_builtin_project(ProjectDir),
+			run_generated_query(ProjectDir, 'member_collect_demo/0', Output),
+			once(sub_string(Output, _, _, _, "A3 = .(a, .(b, []))"))
+		),
+		cleanup_tmp_dir(ProjectDir)).
+
 write_builtin_project(ProjectDir) :-
 	term_builtin_wam(TermWam),
 	copy_naf_io_wam(CopyNafIoWam),
 	type_compare_wam(TypeCompareWam),
+	member_collect_wam(MemberCollectWam),
 	wam_python_target:write_wam_python_project(
 		[term_demo/0-TermWam,
 		 copy_naf_io_demo/0-CopyNafIoWam,
-		 type_compare_demo/0-TypeCompareWam],
+		 type_compare_demo/0-TypeCompareWam,
+		 member_collect_demo/0-MemberCollectWam],
 		[],
 		ProjectDir).
 
@@ -890,6 +901,21 @@ type_compare_wam(
   put_integer 3, 2
   builtin_call =\\=/2 2
   put_constant ok, 1
+  proceed').
+
+member_collect_wam(
+'member_collect_demo/0:
+  put_variable 8, 3
+  begin_aggregate collect 1 3
+  put_variable 6, 1
+  put_list 4
+  set_constant b
+  set_nil
+  put_list 2
+  set_constant a
+  set_value 4
+  builtin_call member/2 2
+  end_aggregate 1
   proceed').
 
 run_generated_query(ProjectDir, Query, Output) :-
