@@ -1311,19 +1311,15 @@ wam_lines_to_python([Line|Rest], PC, Instrs, Labels) :-
 % ============================================================================
 
 %% compile_wam_runtime_to_python(+Options, -PythonCode)
-%  Generates the complete runtime Python code (types + step + helpers).
-compile_wam_runtime_to_python(Options, PythonCode) :-
-	python_wam_type_header(TypeHeader),
-	compile_step_wam_to_python(Options, StepCode),
-	compile_wam_helpers_to_python(Options, HelpersCode),
-	compile_format_value_to_python(FormatCode),
-	atomic_list_concat([
-		TypeHeader, '\n\n',
-		FormatCode, '\n\n',
-		'# === WamState methods (mixed into class) ===\n',
-		StepCode, '\n\n',
-		HelpersCode
-	], PythonCode).
+%  Return the packaged static runtime source.
+%
+%  Historically this predicate generated a second WAM runtime from bindings,
+%  which drifted from the WamRuntime.py copied into real generated projects.
+%  Keep this API as a read-through compatibility layer so callers and tests see
+%  the same runtime that write_wam_python_project/3 packages.
+compile_wam_runtime_to_python(_Options, PythonCode) :-
+	static_runtime_source_path(SrcPath),
+	read_file_to_string(SrcPath, PythonCode, []).
 
 % ============================================================================
 % PHASE 7: Project Generation
@@ -1333,8 +1329,7 @@ compile_wam_runtime_to_python(Options, PythonCode) :-
 %  Generates a runnable Python WAM project in ProjectDir.
 %
 %  Generated files:
-%    - wam_runtime.py   — WAM runtime (copied from wam_python_runtime/ or
-%                         generated from bindings if the static file is absent)
+%    - wam_runtime.py   — WAM runtime copied from wam_python_runtime/
 %    - predicates.py    — compiled predicates (via compile_wam_predicate_to_python/4)
 %    - main.py          — entry point: parses argv, runs a named predicate,
 %                         prints register results
@@ -1383,16 +1378,16 @@ write_wam_python_project(Predicates, Options, ProjectDir) :-
 %  Uses module source location for reliable path resolution.
 copy_static_runtime(ProjectDir) :-
 	directory_file_path(ProjectDir, 'wam_runtime.py', DestPath),
-	% Resolve relative to this module's source file
-	(   source_file(wam_python_target:compile_step_wam_to_python(_,_), ThisFile),
-		file_directory_name(ThisFile, ThisDir),
-		directory_file_path(ThisDir, 'wam_python_runtime/WamRuntime.py', SrcPath),
-		exists_file(SrcPath)
-	->  copy_file(SrcPath, DestPath)
-	;   % Generate from bindings if static file not found
-		compile_wam_runtime_to_python([], RuntimeCode),
-		write_file(DestPath, RuntimeCode)
-	).
+	static_runtime_source_path(SrcPath),
+	copy_file(SrcPath, DestPath).
+
+%% static_runtime_source_path(-SrcPath)
+%  Resolve the packaged Python WAM runtime relative to this module.
+static_runtime_source_path(SrcPath) :-
+	source_file(wam_python_target:compile_step_wam_to_python(_,_), ThisFile),
+	file_directory_name(ThisFile, ThisDir),
+	directory_file_path(ThisDir, 'wam_python_runtime/WamRuntime.py', SrcPath),
+	exists_file(SrcPath).
 
 %% is_ffi_predicate(+Functor, +Arity, +Options)
 %  True if this predicate is handled by a registered foreign predicate,
