@@ -45,12 +45,15 @@ can pass while generated Python projects still run against the static runtime.
 The packaged static runtime now carries the Lua/Rust/Haskell builtin baseline.
 The remaining parity work is narrower:
 
-1. Add end-to-end generated Python programs that exercise the newly guarded
-   builtins, rather than only checking static runtime coverage.
-2. Reconcile or retire the generated fallback runtime so it cannot drift from
+1. Reconcile or retire the generated fallback runtime so it cannot drift from
    `WamRuntime.py`.
-3. Decide whether `member/2` should enumerate all solutions via builtin choice
+2. Decide whether `member/2` should enumerate all solutions via builtin choice
    points, or remain first-solution-only like the current packaged runtime.
+
+Completed follow-up:
+
+- Generated-project E2E tests now exercise term builtins, copy/NAF/IO, and
+  type/comparison builtins through the packaged static runtime.
 
 ## Verification Commands
 
