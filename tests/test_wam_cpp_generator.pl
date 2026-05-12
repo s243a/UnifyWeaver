@@ -56,8 +56,35 @@
 :- dynamic user:wam_cpp_test_min/0.
 :- dynamic user:wam_cpp_test_max/0.
 :- dynamic user:wam_cpp_test_set/0.
+:- dynamic user:wam_cpp_h1/1.
+:- dynamic user:wam_cpp_h2/1.
+:- dynamic user:wam_cpp_two_helpers/0.
+:- dynamic user:wam_cpp_two_helpers_swap/0.
+:- dynamic user:wam_cpp_length_acc/3.
+:- dynamic user:wam_cpp_list_length/2.
+:- dynamic user:wam_cpp_test_len_empty/0.
+:- dynamic user:wam_cpp_test_len_one/0.
+:- dynamic user:wam_cpp_test_len_three/0.
+:- dynamic user:wam_cpp_test_len_five/0.
 
 user:wam_cpp_test_write :- write(hello), nl.
+% Y-reg isolation: both helpers use Y1/Y2 internally. Caller relies on
+% preserved Y1 across the two calls.
+user:wam_cpp_h1(X) :- user:wam_cpp_num(_), X = a.
+user:wam_cpp_h2(Y) :- user:wam_cpp_num(_), Y = b.
+user:wam_cpp_two_helpers      :- user:wam_cpp_h1(A), user:wam_cpp_h2(B), A = a, B = b.
+user:wam_cpp_two_helpers_swap :- user:wam_cpp_h1(A), user:wam_cpp_h2(B), A = b, B = a.
+% Tail-recursive list length — exercises cp threading + Y-reg framing
+% across recursive calls.
+user:wam_cpp_length_acc([], Acc, Acc).
+user:wam_cpp_length_acc([_|T], Acc, N) :-
+    Acc1 is Acc + 1,
+    user:wam_cpp_length_acc(T, Acc1, N).
+user:wam_cpp_list_length(L, N) :- user:wam_cpp_length_acc(L, 0, N).
+user:wam_cpp_test_len_empty :- user:wam_cpp_list_length([], 0).
+user:wam_cpp_test_len_one   :- user:wam_cpp_list_length([a], 1).
+user:wam_cpp_test_len_three :- user:wam_cpp_list_length([a, b, c], 3).
+user:wam_cpp_test_len_five  :- user:wam_cpp_list_length([a, b, c, d, e], 5).
 user:wam_cpp_item(a). user:wam_cpp_item(b). user:wam_cpp_item(c).
 user:wam_cpp_num(1).  user:wam_cpp_num(2).  user:wam_cpp_num(3). user:wam_cpp_num(2).
 user:wam_cpp_test_findall         :- findall(X, user:wam_cpp_item(X), L), L = [a, b, c].
@@ -536,6 +563,55 @@ test(cpp_e2e_aggregate_all, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_min/0',   [], true),
           run_query(BinPath, 'wam_cpp_test_max/0',   [], true),
           run_query(BinPath, 'wam_cpp_test_set/0',   [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% Environment frames: Y-reg isolation across nested calls + cp threading
+% through tail-recursive arithmetic. Both are correctness bugs that
+% existed in #2036 and are fixed by this PR''s env-frame implementation
+% (Allocate pushes a frame saving cp; Deallocate pops + restores;
+% Y-reg lookup is scoped to the top frame).
+% ------------------------------------------------------------------
+
+test(cpp_e2e_yreg_isolation, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_yreg', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_num/1,
+                               user:wam_cpp_h1/1, user:wam_cpp_h2/1,
+                               user:wam_cpp_two_helpers/0,
+                               user:wam_cpp_two_helpers_swap/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          % Both helpers use Y1/Y2 internally. The caller calls h1 then h2
+          % and must NOT see h2''s Y1 stomp on h1''s result.
+          run_query(BinPath, 'wam_cpp_two_helpers/0',      [], true),
+          run_query(BinPath, 'wam_cpp_two_helpers_swap/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_recursive_arithmetic, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_recur', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_length_acc/3,
+                               user:wam_cpp_list_length/2,
+                               user:wam_cpp_test_len_empty/0,
+                               user:wam_cpp_test_len_one/0,
+                               user:wam_cpp_test_len_three/0,
+                               user:wam_cpp_test_len_five/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          % Tail-recursive length with accumulator. Exercises:
+          %   - cp threading through nested Call/Execute
+          %   - Y-reg isolation across recursive frames
+          %   - PutConstant allocating fresh cells (not mutating
+          %     X-reg-aliased cells)
+          run_query(BinPath, 'wam_cpp_test_len_empty/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_len_one/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_len_three/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_len_five/0',  [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

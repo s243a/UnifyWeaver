@@ -807,6 +807,15 @@ struct TrailEntry {
     Value prev;
 };
 
+// Environment frame for permanent variables (Y-regs) and continuation
+// preservation. Allocate pushes one; Deallocate pops. Y-reg lookup goes
+// through env_stack.back().y_regs rather than the flat regs map, so two
+// nested calls that both use Y1 don''t clobber each other.
+struct EnvFrame {
+    std::size_t saved_cp = 0;
+    std::unordered_map<std::string, CellPtr> y_regs;
+};
+
 // Read/write mode for the most recent Get-/Put-Structure / Get-/Put-List.
 // Only one is "active" at a time — nested compounds restart the mode
 // when their own Get-/Put-Structure fires.
@@ -826,6 +835,7 @@ struct ChoicePoint {
     std::size_t cut_barrier;
     std::unordered_map<std::string, CellPtr> saved_regs;
     std::vector<ModeFrame> saved_mode_stack;
+    std::vector<EnvFrame> saved_env_stack;
 };
 
 // Aggregate scope opened by BeginAggregate. Backtrack() finalises the
@@ -844,6 +854,7 @@ struct AggregateFrame {
     std::size_t saved_cut_barrier = 0;
     std::unordered_map<std::string, CellPtr> saved_regs;
     std::vector<ModeFrame> saved_mode_stack;
+    std::vector<EnvFrame> saved_env_stack;
     std::vector<Value> acc;
 };
 
@@ -857,6 +868,9 @@ struct WamState {
     // Mode stack: Get-/Put-Structure / Get-/Put-List PUSH; Unify*/Set*
     // operate on top(); each frame auto-pops once its arity is filled.
     std::vector<ModeFrame> mode_stack;
+    // Environment stack: Allocate pushes (saving cp + giving fresh Y-regs),
+    // Deallocate pops (restoring cp). Y-reg lookup is scoped to top().
+    std::vector<EnvFrame> env_stack;
     std::size_t pc = 0;
     std::size_t cp = 0;
     std::size_t cut_barrier = 0;
@@ -945,7 +959,21 @@ static CellPtr make_cell(Value v = Value{}) {
     return std::make_shared<Cell>(std::move(v));
 }
 
+// Y-regs are scoped to the top env frame; A/X-regs use the flat map.
+static bool is_y_reg(const std::string& name) {
+    return !name.empty() && name[0] == \'Y\';
+}
+
 CellPtr WamState::get_cell(const std::string& name) {
+    if (is_y_reg(name)) {
+        if (env_stack.empty()) env_stack.emplace_back();
+        auto& y = env_stack.back().y_regs;
+        auto it = y.find(name);
+        if (it != y.end()) return it->second;
+        CellPtr c = make_cell(Value::Unbound("_U_" + name));
+        y[name] = c;
+        return c;
+    }
     auto it = regs.find(name);
     if (it != regs.end()) return it->second;
     CellPtr c = make_cell(Value::Unbound("_U_" + name));
@@ -954,16 +982,36 @@ CellPtr WamState::get_cell(const std::string& name) {
 }
 
 void WamState::set_cell(const std::string& name, CellPtr c) {
+    if (is_y_reg(name)) {
+        if (env_stack.empty()) env_stack.emplace_back();
+        env_stack.back().y_regs[name] = std::move(c);
+        return;
+    }
     regs[name] = std::move(c);
 }
 
 Value WamState::get_reg(const std::string& name) const {
+    if (is_y_reg(name)) {
+        if (env_stack.empty()) return Value{};
+        auto& y = env_stack.back().y_regs;
+        auto it = y.find(name);
+        if (it == y.end()) return Value{};
+        return *it->second;
+    }
     auto it = regs.find(name);
     if (it == regs.end()) return Value{};
     return *it->second;
 }
 
 void WamState::put_reg(const std::string& name, Value v) {
+    if (is_y_reg(name)) {
+        if (env_stack.empty()) env_stack.emplace_back();
+        auto& y = env_stack.back().y_regs;
+        auto it = y.find(name);
+        if (it == y.end()) y[name] = make_cell(std::move(v));
+        else               *it->second = std::move(v);
+        return;
+    }
     auto it = regs.find(name);
     if (it == regs.end()) regs[name] = make_cell(std::move(v));
     else                  *it->second = std::move(v);
@@ -1560,7 +1608,10 @@ bool WamState::step(const Instruction& instr) {
 
         // ---- Body construction -------------------------------------
         case Instruction::Op::PutConstant: {
-            put_reg(instr.a, instr.val);
+            // Must allocate a fresh cell, not mutate the existing one:
+            // any X-reg aliasing this register (e.g. via prior
+            // get_variable) must NOT see the new value.
+            set_cell(instr.a, make_cell(instr.val));
             pc += 1; return true;
         }
         case Instruction::Op::PutVariable: {
@@ -1660,10 +1711,20 @@ bool WamState::step(const Instruction& instr) {
             pc += 1; return true;
         }
 
-        // ---- Environment frames (no Y-reg discipline yet) ----------
-        case Instruction::Op::Allocate:
-        case Instruction::Op::Deallocate:
+        // ---- Environment frames -----------------------------------
+        case Instruction::Op::Allocate: {
+            EnvFrame f;
+            f.saved_cp = cp;
+            env_stack.push_back(std::move(f));
             pc += 1; return true;
+        }
+        case Instruction::Op::Deallocate: {
+            if (!env_stack.empty()) {
+                cp = env_stack.back().saved_cp;
+                env_stack.pop_back();
+            }
+            pc += 1; return true;
+        }
 
         // ---- Control flow ------------------------------------------
         case Instruction::Op::Call: {
@@ -1700,6 +1761,7 @@ bool WamState::step(const Instruction& instr) {
             cp_.cut_barrier = cut_barrier;
             cp_.saved_regs = regs;
             cp_.saved_mode_stack = mode_stack;
+            cp_.saved_env_stack = env_stack;
             choice_points.push_back(std::move(cp_));
             pc += 1; return true;
         }
@@ -1738,6 +1800,7 @@ bool WamState::step(const Instruction& instr) {
             frame.saved_cut_barrier = cut_barrier;
             frame.saved_regs        = regs;
             frame.saved_mode_stack  = mode_stack;
+            frame.saved_env_stack   = env_stack;
             aggregate_frames.push_back(std::move(frame));
             pc += 1;
             return true;
@@ -1850,6 +1913,7 @@ bool WamState::backtrack() {
             }
             regs        = std::move(f.saved_regs);
             mode_stack  = std::move(f.saved_mode_stack);
+            env_stack   = std::move(f.saved_env_stack);
             cp          = f.saved_cp;
             cut_barrier = f.saved_cut_barrier;
             // Build and bind the result.
@@ -1878,6 +1942,7 @@ bool WamState::backtrack() {
         }
         regs        = cp_.saved_regs;
         mode_stack  = cp_.saved_mode_stack;
+        env_stack   = cp_.saved_env_stack;
         cp          = cp_.saved_cp;
         cut_barrier = cp_.cut_barrier;
         pc          = cp_.alt_pc;
@@ -1907,6 +1972,7 @@ bool WamState::query(const std::string& pred_key, const std::vector<Value>& args
     choice_points.clear();
     aggregate_frames.clear();
     mode_stack.clear();
+    env_stack.clear();
     pc = it->second;
     cp = 0;
     cut_barrier = 0;
