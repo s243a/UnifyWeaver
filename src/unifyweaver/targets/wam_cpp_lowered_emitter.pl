@@ -153,6 +153,8 @@ cpp_supported(try_me_else(_)).
 cpp_supported(trust_me).
 cpp_supported(cut_ite).
 cpp_supported(jump(_)).
+cpp_supported(begin_aggregate(_, _, _)).
+cpp_supported(end_aggregate(_)).
 
 % =====================================================================
 % Function name generation
@@ -425,6 +427,21 @@ emit_one(try_me_else(_), _) :- !.
 emit_one(trust_me, _) :- !.
 emit_one(cut_ite, _) :- !.
 emit_one(jump(_), _) :- !.
+
+% Aggregate ops delegate to vm->step() (the interpreter handles the
+% findall / aggregate_all driver loop).
+emit_one(begin_aggregate(KStr, VStr, RStr), I) :-
+    local_escape_cpp_string(KStr, EK),
+    local_escape_cpp_string(VStr, EV),
+    local_escape_cpp_string(RStr, ER),
+    format("~w// begin_aggregate ~w ~w ~w~n", [I, KStr, VStr, RStr]),
+    format("~wif (!vm->step(Instruction::BeginAggregate(\"~w\", \"~w\", \"~w\"))) return false;~n",
+           [I, EK, EV, ER]).
+emit_one(end_aggregate(VStr), I) :-
+    local_escape_cpp_string(VStr, EV),
+    format("~w// end_aggregate ~w~n", [I, VStr]),
+    format("~wif (!vm->step(Instruction::EndAggregate(\"~w\"))) return false;~n",
+           [I, EV]).
 
 % --- Fallback ---
 
