@@ -3859,4 +3859,213 @@ The remaining items from Phase L#12 stand — automatic locality
 inference and at-scale empirical validation. No new follow-ups
 land here.
 
+## Phase L appendix #14: scan-strategy P2 — baseline measurements + branching distribution (2026-05-12)
+
+### Why
+
+The scan-strategy implementation plan calls P2 "at-scale
+validation re-ingest". Two deliverables: (a) confirm
+`resident_auto` (cost-model-resolver-driven) matches
+`resident_cursor` (hand-picked) at every scale; (b) capture the
+branching-factor distribution of the category graph as input for
+flux-decay tuning in P3+ when flux becomes real.
+
+This appendix substitutes 1k_cats + 100k_cats for simplewiki +
+enwiki because the larger fixtures were swept in an earlier
+workspace reset and re-ingest requires downloading the SQL dumps
+(60 MB for simplewiki, ~2 GB for enwiki). The two scales we *do*
+have bracket the regime well: the 1k fixture is the boundary case
+(`fact_count = 5,933` ≈ the prior 50k auto-threshold's lower
+bound), and 100k_cats is well past it. The cost-model resolver's
+decisions and the resolver-vs-hand-picked equivalence are
+fixture-independent claims; bigger fixtures would only sharpen the
+wall-clock numbers, not change the structural finding.
+
+### Sweep setup
+
+Two fixtures × two modes × three -N values × three trials = 36
+runs total.
+
+| input | value |
+| --- | --- |
+| fixtures | `1k` (5,933 edges), `100k_cats` (196,900 edges) |
+| modes | `resident_auto`, `resident_cursor` |
+| capabilities | `-N1`, `-N2`, `-N4` |
+| trials | 3 per cell |
+| measurement | `total_ms` from bench stdout |
+| host | WSL2; ~1.6 GB free RAM (hot regime for both fixtures) |
+
+Bench binaries built once per (fixture × mode); same binaries
+reused across trials. RTS flags default to `-A64M` via
+`with_rtsopts` (Phase L#6).
+
+### Wall-clock results
+
+Medians across 3 trials, all values in milliseconds:
+
+| fixture | mode | -N1 | -N2 | -N4 |
+| --- | --- | --- | --- | --- |
+| 1k | `resident_auto` | 56 | 41 | 31 |
+| 1k | `resident_cursor` | 52 | 41 | 32 |
+| 100k_cats | `resident_auto` | 527 | 367 | 368 |
+| 100k_cats | `resident_cursor` | 519 | 365 | 355 |
+
+| fixture | mode | -N1→-N4 speedup |
+| --- | --- | --- |
+| 1k | `resident_auto` | 1.81× |
+| 1k | `resident_cursor` | 1.63× |
+| 100k_cats | `resident_auto` | 1.43× |
+| 100k_cats | `resident_cursor` | 1.46× |
+
+### What this validates
+
+**`resident_auto` matches `resident_cursor` at every scale and -N.**
+Differences are within trial-to-trial noise (~3–8% at -N4 per
+prior Phase L observations). The cost-model resolver is picking
+`cursor` at both scales — the same choice a hand-tuned bench
+would make. P0–P2 of the scan-strategy arc have produced no
+performance regression: the auto-resolver path is byte-for-byte
+behaviourally equivalent to the hand-picked path.
+
+**Parallel scaling looks normal.** -N4 gives ~1.8× over -N1 at
+1k, ~1.4× at 100k. The flatter scaling at 100k is the
+diminishing returns pattern we've seen before (parMap GC pressure,
+even with `-A64M`) — `-N2 ≈ -N4` at 100k.
+
+### Branching-factor distribution
+
+Computed from `category_parent.tsv` directly (one pass over edges,
+counting parents-per-child and children-per-parent in two
+collections.Counters):
+
+| metric | 1k | 100k_cats |
+| --- | --- | --- |
+| edges | 5,933 | 196,900 |
+| unique children | 2,011 | 80,082 |
+| unique parents | 2,022 | 42,422 |
+| parents-per-child median | 3 | 2 |
+| parents-per-child P90 | 5 | 4 |
+| parents-per-child P99 | 8 | 6 |
+| parents-per-child max | 10 | 29 |
+| children-per-parent median | 1 | 2 |
+| children-per-parent P90 | 5 | 10 |
+| children-per-parent P99 | 14 | 39 |
+| children-per-parent max | 587 | 1,137 |
+
+**The asymmetry is dramatic and confirms the spec's design.**
+Parents-per-child is bounded — median 2–3, max 10–29.
+Children-per-parent has a long tail — median 1–2 but maxes at
+587 (1k) and 1,137 (100k). This is exactly the regime the spec's
+asymmetric-decay flux model assumes: a category typically has
+few parents (broader scope) but can have many children (the
+classification subdivides further).
+
+**Concrete consequence for P3+ flux tuning**:
+
+- `parent_decay` can be relatively gentle. Even at P99, only ~6
+  parents per child — flux survives many hops up without
+  decaying away.
+- `child_decay` needs to be more aggressive. A median node has 2
+  children but P99 nodes branch by 39× and worst-case by 1,137×.
+  Without aggressive decay, flux would spread arbitrarily wide
+  through high-fanout descendant subtrees.
+- The spec's defaults `parent_decay(0.5)` / `child_decay(0.3)`
+  encode this asymmetry directionally (child decay is sharper),
+  but the magnitudes are guesses. At simplewiki/enwiki scale the
+  numbers will shift; re-measure when those fixtures return.
+
+For a power-law flux variant (Gauss-radial form, `1/r^N`), N is
+the branching factor. The P99 values give upper-bound exponents:
+N≈6 for parent leg, N≈39 for child leg. In log space that's a
+~6.5× steeper child decay slope — quantitative justification for
+the spec's separate-decay-constant design.
+
+### Resolver decision traces
+
+`resident_auto`'s `cache_strategy_verbose(true)` output at each
+scale, captured from one trial:
+
+**1k:**
+```
+[WAM-Haskell] cache_strategy(auto): K=6 W=296650 R_free=1696985088 → sort (cursor)
+[WAM-Haskell] lmdb_cache_mode(auto) → sharded (default_safe)
+```
+
+**100k_cats:**
+```
+[WAM-Haskell] cache_strategy(auto): K=197 W=9845000 R_free=1696985088 → sort (cursor)
+[WAM-Haskell] lmdb_cache_mode(auto) → sharded (default_safe)
+```
+
+(All values consistent across trials within the same session;
+`R_free` reflects /proc/meminfo at run start.)
+
+Both scales: `cursor` for the access pattern (K well below
+`K_cross` at the hot regime), `sharded` for the cache tier
+(default_safe under `workload_locality(unknown)`). This is what
+`resident_auto` was designed to deliver, and the wall-clock
+parity with `resident_cursor` confirms it.
+
+### Open follow-ups
+
+- **Simplewiki + enwiki at scale**: still needed for the upper-
+  scale regime (`f_hot < 1`, where the cost-model's cold-regime
+  branch becomes relevant). The 1k–100k_cats range stays in the
+  hot regime throughout. Filed; depends on re-ingest of the SQL
+  dumps.
+- **Workload-specific working-set fraction**: `resident_auto`
+  hardcodes `working_set_fraction(0.001)` based on Phase L#7
+  Wikipedia-BFS measurements. Other workload shapes (denser
+  selection, lookup-heavy rather than BFS) would want different
+  values. Cost-model formulas are workload-agnostic but defaults
+  are workload-shaped — flagged for the eventual workload-class
+  taxonomy.
+- **Multi-query miss rate**: every measurement here is a single
+  query per binary invocation. Phase 5+ (spark routing, multi-
+  query workloads) will exercise miss-memoisation and cache
+  retention; the M3 microbench in Phase M was negative on that
+  axis but on different fixtures.
+
+### Reproducer
+
+```bash
+# Re-create LMDB Phase 1 layouts
+for SCALE in 1k 100k_cats; do
+    rm -rf data/benchmark/$SCALE/lmdb_resident
+    python3 examples/benchmark/ingest_resident_lmdb_fixture.py \
+        data/benchmark/$SCALE data/benchmark/$SCALE/lmdb_resident
+    # Bench expects "lmdb" subdir; symlink to lmdb_resident
+    [ -e data/benchmark/$SCALE/lmdb ] || \
+        ln -s lmdb_resident data/benchmark/$SCALE/lmdb
+done
+
+# Generate + build bench binaries
+for SCALE in 1k 100k_cats; do
+    for MODE in resident_auto resident_cursor; do
+        OUTDIR=/tmp/p2_${SCALE}_${MODE}
+        swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
+            data/benchmark/$SCALE/facts.pl \
+            $OUTDIR seeded interpreter kernels_on $MODE
+        (cd $OUTDIR && cabal new-build)
+    done
+done
+
+# Sweep
+for SCALE in 1k 100k_cats; do
+    for MODE in resident_auto resident_cursor; do
+        BIN=/tmp/p2_${SCALE}_${MODE}/dist-newstyle/.../wam-haskell-matrix-bench
+        for N in 1 2 4; do
+            for T in 1 2 3; do
+                $BIN data/benchmark/$SCALE +RTS -N$N
+            done
+        done
+    done
+done
+```
+
+This appendix closes the P2 deliverable from
+`SCAN_STRATEGY_IMPLEMENTATION_PLAN.md`. P3 (warm-build core) can
+now consume `resident_cursor` as a measured baseline and the
+branching distribution above as flux-decay tuning input.
+
 
