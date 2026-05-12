@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +20,7 @@ from benchmark_csharp_query_source_mode_sweep import (  # noqa: E402
     DEFAULT_WORKLOADS,
     SourceModeSummary,
     WORKLOAD_SCRIPTS,
+    main,
     calibration_failures,
     calibration_rows_from_stability,
     calibration_rows_from_summaries,
@@ -73,6 +77,22 @@ class CSharpQuerySourceModeSweepTests(unittest.TestCase):
                 parse_args()
         finally:
             sys.argv = original_argv
+
+    def test_write_calibration_artifact_allows_quiet_format(self) -> None:
+        original_argv = sys.argv
+        try:
+            sys.argv = [
+                "benchmark_csharp_query_source_mode_sweep.py",
+                "--format",
+                "none",
+                "--write-calibration-artifact",
+            ]
+            args = parse_args()
+        finally:
+            sys.argv = original_argv
+
+        self.assertEqual(args.format, "none")
+        self.assertTrue(args.write_calibration_artifact)
 
     def test_filter_workload_scales_skips_unsupported_generated_graph_scales(self) -> None:
         self.assertEqual(
@@ -476,6 +496,42 @@ class CSharpQuerySourceModeSweepTests(unittest.TestCase):
 
             self.assertEqual(written, [fresh, untouched])
             self.assertEqual(load_calibration_artifact(artifact_path), [fresh, untouched])
+
+    def test_main_quiet_writer_suppresses_table_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            artifact_path = Path(tmp_dir) / "calibration.tsv"
+            write_calibration_artifact(artifact_path, [self._baseline()])
+            original_argv = sys.argv
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            try:
+                sys.argv = [
+                    "benchmark_csharp_query_source_mode_sweep.py",
+                    "--workloads",
+                    "category-influence",
+                    "--scales",
+                    "300",
+                    "--source-modes",
+                    "auto,preload",
+                    "--format",
+                    "none",
+                    "--calibration-artifact",
+                    str(artifact_path),
+                    "--write-calibration-artifact",
+                ]
+                with mock.patch(
+                    "benchmark_csharp_query_source_mode_sweep.run_workload",
+                    return_value=[self._summary()],
+                ):
+                    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                        result = main()
+            finally:
+                sys.argv = original_argv
+
+            self.assertEqual(result, 0)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertIn("Wrote calibration artifact:", stderr.getvalue())
+            self.assertEqual(load_calibration_artifact(artifact_path), [self._baseline()])
 
     def test_parse_runner_output_summarizes_modes_and_registrations(self) -> None:
         output = "\n".join(

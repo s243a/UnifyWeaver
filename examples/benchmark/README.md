@@ -138,7 +138,9 @@ fields come from the independent-run stability summary instead of one noisy
 single run. Add `--write-calibration-artifact` to write those rows directly to
 `--calibration-artifact` after validation succeeds. If the artifact already
 exists, only the selected workload/scale rows are replaced; unselected rows are
-preserved.
+preserved. Use `--format none` instead of `--format calibration-tsv` for
+scripted refreshes that should only write the artifact and avoid printing the
+full table to stdout.
 
 ```bash
 python examples/benchmark/benchmark_csharp_query_source_mode_sweep.py \
@@ -149,7 +151,7 @@ python examples/benchmark/benchmark_csharp_query_source_mode_sweep.py \
   --repetitions 1 \
   --stability-runs 3 \
   --compare-calibration \
-  --format calibration-tsv \
+  --format none \
   --write-calibration-artifact
 ```
 
