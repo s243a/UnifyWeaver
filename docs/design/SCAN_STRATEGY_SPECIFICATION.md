@@ -94,6 +94,14 @@ data structure that gets filled by whatever queries actually run.
 
 ## Cost functions
 
+This section is the *formal contract* for the cost-function
+strategy slot. The theoretical landscape — what each variant
+*means*, when each is appropriate, how aggregation and
+convergence modes relate — is covered separately in
+`docs/design/COST_FUNCTION_PHILOSOPHY.md`. Workload authors
+deciding which variant to use should read the philosophy doc;
+implementors of the slot should read this section.
+
 ### Strategy slot
 
 ```prolog
@@ -270,6 +278,29 @@ When the heap is at capacity:
 Standard min-heap-bounded operations. The cost function's score
 is the eviction key. No LRU/LFU; the score *is* the prediction
 of relevance.
+
+#### Tiebreaker (composite eviction key)
+
+Many cost functions — `hop_distance` being the obvious example —
+produce ties: multiple nodes at the same hop distance from the
+endpoint set have the same score. Without a tiebreaker, peek-min
+returns a non-deterministic element among the tied minima, and
+top-K queries depend on heap-internal insertion order.
+
+The eviction key is therefore a **composite tuple**: `(cost,
+node_id)`, compared lexicographically. The cost is the primary
+key (cost-function value); the `node_id` is the secondary
+(stable; the integer node identifier already in the heap entry).
+
+Lower `node_id` ranks higher within a cost tie. This is an
+arbitrary but stable convention — workloads that want different
+tie-break behaviour (oldest-inserted, lowest-degree, etc.) can
+expose another option later; `node_id` is the cheap, correct
+default.
+
+This makes the eviction order a *total* order even when the cost
+function produces ties, which keeps top-K queries deterministic
+across runs.
 
 ### Cache eviction (steady-state)
 
@@ -535,6 +566,11 @@ prediction was wrong.
 - `SCAN_STRATEGY_PHILOSOPHY.md` — the why.
 - `SCAN_STRATEGY_IMPLEMENTATION_PLAN.md` — the how (phased
   rollout).
+- `COST_FUNCTION_PHILOSOPHY.md` — theoretical landscape for the
+  cost-function slot. Variant taxonomy (hop_distance, exp /
+  power-law / additive flux, semantic), convergence spectrum
+  (one-pass → bounded → local exact → global exact),
+  aggregation rules, decision guide.
 - `CACHE_COST_MODEL_PHILOSOPHY.md` — the cost model this layer
   builds on; provides `bandwidth_eff` / `latency_eff` /
   `K_cross` formulas.

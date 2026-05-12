@@ -283,3 +283,11 @@ the resolver picks `none` rather than risk OOM. Concretely: when
 - `src/unifyweaver/targets/wam_haskell_target.pl` —
   `resolve_auto_cache_strategy/2` and `resolve_auto_lmdb_cache_mode/2`
   (the Phase 2c/2c+ resolvers).
+- `docs/design/COST_FUNCTION_PHILOSOPHY.md` — companion design doc
+  covering the *cost-function variants* used by scan-strategy
+  warm-build (hop_distance, exp / power-law / additive flux,
+  semantic similarity), with computational profiles and an
+  approximation-vs-convergence spectrum. The cost-model formulas
+  here (`K_cross`, `bandwidth_eff`, `latency_eff`) gate which
+  cost-function variants are affordable at runtime; the
+  cost-function doc covers what each variant *means*.
