@@ -508,25 +508,31 @@ declaration directly, not the visibility output.
 
 **2. Specialised inline emission (default ON)** -- when the mode
 declaration says `+` for a head arg position, the lowered emitter
-inlines `get_constant` head matches as:
+inlines selected head matches.
+
+For `get_constant`, it emits:
 
 ```r
 { val_ <- WamRuntime$deref(state, WamRuntime$get_reg(state, AIdx))
   if (is.null(val_) || !identical(val_, CTerm)) return(FALSE) }
 ```
 
-instead of delegating to `WamRuntime$step`. Saves one `step()` call
-(list construction + function call + switch dispatch) per
-get_constant. Opt out via `mode_specialise(off)` if you need the
+For repeated head variables (`p(X, X)`) that compile to
+`get_variable X1, A1` followed by `get_value X1, A2`, mode `(+,+)`
+lets the emitter inline a bound-pair check. Atomic pairs use direct
+tag/value identity; non-atomic bound terms fall back to
+`WamRuntime$unify` to preserve structural semantics.
+
+Both paths avoid the `WamRuntime$step` dispatcher for the specialised
+instruction. Opt out via `mode_specialise(off)` if you need the
 unspecialised codegen (testing / regression bisection).
 
 **Soundness:** the specialisation skips the "rebind unbound to the
-constant" branch of `step`'s GetConstant handler, since mode `+`
-promises A_k is bound at clause entry. If a caller passes an
-unbound term where the mode says `+`, the inline form returns
-`FALSE` (treating unbound as a tag mismatch) where the step path
-would have bound it. Document; user is responsible for honest mode
-declarations.
+constant" / "bind unbound variable" branches of the step handlers,
+since mode `+` promises the relevant slots are bound at clause entry.
+If a caller passes an unbound term where the mode says `+`, the inline
+form returns `FALSE` where the step path would have bound it. Document;
+user is responsible for honest mode declarations.
 
 The mode declaration uses `user:mode/1` with `+` / `-` / `?`
 shorthand (input / output / any), the same convention
@@ -920,6 +926,8 @@ Coverage map (e2e tests, by feature group):
 | `mode_analysis_phase3_is_inlined` | Mode-analysis phase 3: structural assertion that `builtin_call is/2 2` is emitted as inline `WamRuntime$eval_arith + bind/unify` in the lowered function (instead of `WamRuntime$step(... BuiltinCall("is/2", 2))`) |
 | `mode_analysis_phase3_is_e2e_rscript` | Mode-analysis phase 3: e2e correctness -- a predicate using `is/2` with simple binary int op (runtime fast-path), nested arith (slow path), and negative-result arith compiles + runs via Rscript with correct values |
 | `mode_analysis_phase4_multiclause_n_e2e_rscript` | Mode-analysis phase 4: all-supported-clause `multi_clause_n` lowering, including direct R-wrapper execution of clause 2's inline `is/2` path |
+| `mode_analysis_get_value_inlined` | Mode-analysis follow-up: structural assertion that repeated bound head variables compile `get_value` to an inline atomic identity fast path with safe fallback |
+| `mode_analysis_get_value_e2e_rscript` | Mode-analysis follow-up: e2e correctness for inline `get_value` on matching and non-matching bound atom pairs |
 
 ## Contributing
 

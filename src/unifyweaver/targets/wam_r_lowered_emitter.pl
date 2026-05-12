@@ -288,10 +288,12 @@ set_lowered_mode_context(Records, Opts) :-
     ->  ModeDecl = none
     ;   clause1_mode_decl(Records, ModeDecl)
     ),
-    b_setval(wam_r_lowered_mode_decl, ModeDecl).
+    b_setval(wam_r_lowered_mode_decl, ModeDecl),
+    b_setval(wam_r_lowered_x_states, []).
 
 clear_lowered_mode_context :-
-    b_setval(wam_r_lowered_mode_decl, none).
+    b_setval(wam_r_lowered_mode_decl, none),
+    b_setval(wam_r_lowered_x_states, []).
 
 %% clause1_mode_decl(+Records, -ModeDecl) is det.
 %  Pulls the ModeDecl component of clause 1's record. Returns `none`
@@ -320,6 +322,27 @@ head_state_for_areg(AiStr, State) :-
 
 mode_atom_to_state(input,  bound).
 mode_atom_to_state(output, unbound).
+
+%% x_reg_state(+XStr, -State) is semidet.
+%  Returns the simple binding state tracked for X registers during
+%  lowered emission. This is intentionally shallow: get_variable from
+%  a known-bound A register marks the destination X register as bound;
+%  get_variable from a known-unbound A register marks it unbound.
+x_reg_state(XStr, State) :-
+    catch(b_getval(wam_r_lowered_x_states, States), _, fail),
+    memberchk(XStr-State, States).
+
+%% set_x_reg_state(+XStr, +State) is det.
+set_x_reg_state(XStr, State) :-
+    catch(b_getval(wam_r_lowered_x_states, States0), _, States0 = []),
+    exclude(same_x_reg(XStr), States0, States),
+    b_setval(wam_r_lowered_x_states, [XStr-State | States]).
+
+same_x_reg(XStr, K-_) :-
+    K == XStr.
+
+reset_x_reg_states :-
+    b_setval(wam_r_lowered_x_states, []).
 
 %% mode_comment_header_from_records(+Opts, +Records, -Header) is det.
 %  Builds the R comment block for the predicate's mode analysis when
@@ -439,6 +462,7 @@ format_one_clause(mode_record(Idx, ModeDecl, HeadVars, _GBs), Lines) :-
 
 emit_deterministic_function(PredName, FuncName, ClauseLines,
                             ModeHeader, Code) :-
+    reset_x_reg_states,
     with_output_to(string(Body), emit_lines(ClauseLines, "  ")),
     % The clause body always ends with `proceed`, which emits
     % `return(TRUE)`. We keep an explicit `invisible(TRUE)` after the
@@ -532,6 +556,7 @@ emit_clause_dispatch([], _).
 emit_clause_dispatch([Lines|Rest], Idx) :-
     format("    if (identical(idx_, ~wL)) {~n", [Idx]),
     format("      return((function() {~n"),
+    reset_x_reg_states,
     emit_lines(Lines, "        "),
     format("        invisible(FALSE)~n"),
     format("      })())~n"),
@@ -597,6 +622,10 @@ emit_line_parts(["put_value", XStr, AiStr], I) :- !,
 emit_line_parts(["get_variable", XStr, AiStr], I) :- !,
     wam_r_target:reg_to_int(XStr, XIdx),
     wam_r_target:reg_to_int(AiStr, AIdx),
+    (   head_state_for_areg(AiStr, State)
+    ->  set_x_reg_state(XStr, State)
+    ;   true
+    ),
     format("~wWamRuntime$put_reg(state, ~w, WamRuntime$get_reg(state, ~w))~n",
            [I, XIdx, AIdx]).
 
@@ -620,6 +649,33 @@ emit_line_parts(["get_constant", CStr, AiStr], I) :-
     wam_r_target:constant_to_r_term(CStr, CTerm),
     format("~w{ val_ <- WamRuntime$deref(state, WamRuntime$get_reg(state, ~w)); if (is.null(val_) || !identical(val_, ~w)) return(FALSE) }~n",
            [I, AIdx, CTerm]).
+
+% Mode-driven specialisation for head get_value. In the common
+% repeated-head-var pattern (`p(X, X)`), WAM emits get_variable for
+% the first occurrence and get_value for the second. When mode decls
+% prove both positions are bound, the unbound-binding branch of unify
+% is dead. Atomic bound pairs can be checked by tag/value identity;
+% non-atomic bound terms fall back to unify to preserve structural
+% semantics.
+emit_line_parts(["get_value", XStr, AiStr], I) :-
+    x_reg_state(XStr, bound),
+    head_state_for_areg(AiStr, bound),
+    !,
+    wam_r_target:reg_to_int(XStr, XIdx),
+    wam_r_target:reg_to_int(AiStr, AIdx),
+    format("~w{~n", [I]),
+    format("~w  gv_x_ <- WamRuntime$get_reg(state, ~w)~n", [I, XIdx]),
+    format("~w  gv_a_ <- WamRuntime$get_reg(state, ~w)~n", [I, AIdx]),
+    format("~w  gv_x_d_ <- WamRuntime$deref(state, gv_x_)~n", [I]),
+    format("~w  gv_a_d_ <- WamRuntime$deref(state, gv_a_)~n", [I]),
+    format("~w  if (is.null(gv_x_d_) || is.null(gv_a_d_)) return(FALSE)~n", [I]),
+    format("~w  if (!is.null(gv_x_d_$tag) && gv_x_d_$tag == \"unbound\") return(FALSE)~n", [I]),
+    format("~w  if (!is.null(gv_a_d_$tag) && gv_a_d_$tag == \"unbound\") return(FALSE)~n", [I]),
+    format("~w  gv_atomic_ <- c(\"atom\", \"int\", \"float\")~n", [I]),
+    format("~w  if (!is.null(gv_x_d_$tag) && !is.null(gv_a_d_$tag) && gv_x_d_$tag %in% gv_atomic_ && gv_a_d_$tag %in% gv_atomic_) {~n", [I]),
+    format("~w    if (!identical(gv_x_d_, gv_a_d_)) return(FALSE)~n", [I]),
+    format("~w  } else if (!isTRUE(WamRuntime$unify(state, gv_x_, gv_a_))) return(FALSE)~n", [I]),
+    format("~w}~n", [I]).
 
 % --- Builtin specialisations: inline the most common BuiltinCall
 % targets so they skip the WamRuntime$step -> WamRuntime$call_builtin
