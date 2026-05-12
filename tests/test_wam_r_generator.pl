@@ -989,6 +989,82 @@ e2e_phase4_multiclause_n :-
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% Mode-analysis follow-up: get_value head-match specialisation.
+% For repeated bound head variables (`p(X, X)` with mode(+,+)), the
+% lowered emitter can fast-check atomic pairs without delegating the
+% get_value instruction through WamRuntime$step.
+% ------------------------------------------------------------------
+test(mode_analysis_get_value_inlined) :-
+    once((
+        retractall(user:mode(ma_gv(_, _))),
+        retractall(user:ma_gv(_, _)),
+        assertz(user:mode(ma_gv(+, +))),
+        assertz((user:ma_gv(X, X) :- true)),
+        unique_r_tmp_dir('tmp_r_get_value_specialised', TmpDir),
+        write_wam_r_project(
+            [user:ma_gv/2],
+            [emit_mode(functions), fact_table_layout(off)],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        assertion(sub_string(Code, _, _, _, 'gv_x_d_ <- WamRuntime$deref(state, gv_x_)')),
+        assertion(sub_string(Code, _, _, _, 'gv_atomic_ <- c("atom", "int", "float")')),
+        assertion(\+ sub_string(Code, _, _, _, 'WamRuntime$step(program, state, GetValue')),
+        retractall(user:mode(ma_gv(_, _))),
+        unique_r_tmp_dir('tmp_r_get_value_unspecialised', TmpDir2),
+        write_wam_r_project(
+            [user:ma_gv/2],
+            [emit_mode(functions), fact_table_layout(off)],
+            TmpDir2),
+        directory_file_path(TmpDir2, 'R/generated_program.R', Program2),
+        read_file_to_string(Program2, Code2, []),
+        assertion(sub_string(Code2, _, _, _, 'WamRuntime$step(program, state, GetValue')),
+        assertz(user:mode(ma_gv(+, +))),
+        unique_r_tmp_dir('tmp_r_get_value_optout', TmpDir3),
+        write_wam_r_project(
+            [user:ma_gv/2],
+            [emit_mode(functions), fact_table_layout(off),
+             mode_specialise(off)],
+            TmpDir3),
+        directory_file_path(TmpDir3, 'R/generated_program.R', Program3),
+        read_file_to_string(Program3, Code3, []),
+        assertion(sub_string(Code3, _, _, _, 'WamRuntime$step(program, state, GetValue')),
+        retractall(user:mode(ma_gv(_, _))),
+        delete_directory_and_contents(TmpDir),
+        delete_directory_and_contents(TmpDir2),
+        delete_directory_and_contents(TmpDir3)
+    )).
+
+test(mode_analysis_get_value_e2e_rscript) :-
+    once((
+        rscript_available
+    ->  e2e_mode_analysis_get_value
+    ;   true
+    )).
+
+e2e_mode_analysis_get_value :-
+    retractall(user:mode(ma_gv(_, _))),
+    retractall(user:ma_gv(_, _)),
+    retractall(user:ma_gv_same/0),
+    retractall(user:ma_gv_diff/0),
+    assertz(user:mode(ma_gv(+, +))),
+    assertz((user:ma_gv(X, X) :- true)),
+    assertz((user:ma_gv_same :- ma_gv(alice, alice))),
+    assertz((user:ma_gv_diff :- ma_gv(alice, bob))),
+    unique_r_tmp_dir('tmp_r_get_value_e2e', TmpDir),
+    write_wam_r_project(
+        [user:ma_gv/2, user:ma_gv_same/0, user:ma_gv_diff/0],
+        [emit_mode(functions), fact_table_layout(off)],
+        TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    run_rscript_query(RDir, 'ma_gv_same/0', SameOut),
+    run_rscript_query(RDir, 'ma_gv_diff/0', DiffOut),
+    assertion(sub_string(SameOut, _, _, _, "true")),
+    assertion(sub_string(DiffOut, _, _, _, "false")),
+    retractall(user:mode(ma_gv(_, _))),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % Phase-3 follow-up: extended builtins.
 % Type checks, term equality / identity, standard order of terms,
 % and the cut (!/0). Each predicate compiles to the corresponding

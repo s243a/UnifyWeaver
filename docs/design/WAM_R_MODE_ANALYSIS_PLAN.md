@@ -223,9 +223,10 @@ clause inline and uses an iter-style retry CP for later clauses.
    are in the supported subset, the lowered function emits each clause
    as an inline closure, restores state between failed attempts, and
    leaves an iter-style retry CP for later clauses.
-2. **`get_value` head match -- skip deref-then-unify when both
-   sides are provably bound atomics.** Same shape as the phase-2
-   `get_constant` specialisation but for var-to-var matching.
+2. **`get_value` head match.** Delivered: repeated head variables
+   such as `p(X, X)` with mode `(+,+)` now inline the lowered
+   `get_value` instruction. Atomic bound pairs use direct identity;
+   non-atomic bound terms fall back to `WamRuntime$unify`.
 3. **Auto-mode-inference from call sites.** Today the analyser
    only knows what `:- mode/1` declarations tell it. A whole-
    program pass could infer modes from observed call sites,
