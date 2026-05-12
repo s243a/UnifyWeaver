@@ -22,11 +22,21 @@
 :- dynamic user:wam_cpp_fact/1.
 :- dynamic user:wam_cpp_choice/1.
 :- dynamic user:wam_cpp_caller/1.
+:- dynamic user:wam_cpp_rect/1.
+:- dynamic user:wam_cpp_has_rect/0.
+:- dynamic user:wam_cpp_has_rect_wrong/0.
+:- dynamic user:wam_cpp_first/2.
+:- dynamic user:wam_cpp_lst/1.
 
 user:wam_cpp_fact(a).
 user:wam_cpp_choice(a).
 user:wam_cpp_choice(b).
 user:wam_cpp_caller(X) :- user:wam_cpp_fact(X).
+user:wam_cpp_rect(box(1, 2)).
+user:wam_cpp_has_rect          :- user:wam_cpp_rect(box(1, 2)).
+user:wam_cpp_has_rect_wrong    :- user:wam_cpp_rect(box(1, 3)).
+user:wam_cpp_first(box(X, _), X).
+user:wam_cpp_lst([a, b, c]).
 
 % --------------------------------------------------------------------
 % Module-level exports
@@ -281,6 +291,72 @@ test(cpp_e2e_caller, [condition(cpp_compiler_available)]) :-
           % through the labels table.
           run_query(BinPath, 'wam_cpp_caller/1', [a], true),
           run_query(BinPath, 'wam_cpp_caller/1', [b], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% Compound terms + lists: heap-resident structures via shared_ptr cells.
+% Exercises Get/PutStructure + Get/PutList + Unify*/Set* + the CLI parser
+% for compound and list syntax.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_structure_head_match, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_struct', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_rect/1],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_rect/1', ['box(1,2)'], true),
+          run_query(BinPath, 'wam_cpp_rect/1', ['box(1,3)'], false),
+          run_query(BinPath, 'wam_cpp_rect/1', ['box(2,2)'], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_structure_build_and_match, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_build', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_has_rect/0, user:wam_cpp_has_rect_wrong/0,
+             user:wam_cpp_rect/1],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          % has_rect builds box(1,2) and calls rect/1 — exercises
+          % PutStructure + SetConstant + Execute.
+          run_query(BinPath, 'wam_cpp_has_rect/0',       [], true),
+          run_query(BinPath, 'wam_cpp_has_rect_wrong/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_structure_destructure, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_destr', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_first/2],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          % first(box(X, _), X). Pulls X out of the compound and unifies
+          % with A2 — exercises UnifyVariable + GetValue across compounds.
+          run_query(BinPath, 'wam_cpp_first/2', ['box(1,2)', '1'], true),
+          run_query(BinPath, 'wam_cpp_first/2', ['box(7,8)', '7'], true),
+          run_query(BinPath, 'wam_cpp_first/2', ['box(1,2)', '9'], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_list_head_match, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_list', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_lst/1],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          % lst([a, b, c]). Exercises GetList + UnifyConstant +
+          % UnifyVariable + GetStructure([|]/2) cell-by-cell.
+          run_query(BinPath, 'wam_cpp_lst/1', ['[a,b,c]'], true),
+          run_query(BinPath, 'wam_cpp_lst/1', ['[a,b]'],   false),
+          run_query(BinPath, 'wam_cpp_lst/1', ['[a,b,d]'], false),
+          run_query(BinPath, 'wam_cpp_lst/1', ['[]'],      false)
         ),
         delete_directory_and_contents(TmpDir)
     ).
