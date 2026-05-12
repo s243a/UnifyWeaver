@@ -25,35 +25,27 @@ matters for parity.
 | Control | `true/0`, `fail/0`, `!/0`, `\+/1`, `cut_ite` opcode | `true/0`, `fail/0`, `!/0`, `\+/1`, `CutIte` | Present |
 | IO | `write/1`, `display/1`, `nl/0` output behavior | `write/1`, `display/1`, `nl/0` output behavior | Present |
 
-## Generated Fallback Runtime
+## Runtime Source Of Truth
 
-`compile_wam_runtime_to_python/2` emits a fallback runtime only when the static
-runtime file cannot be copied. Its builtin dispatch is not equivalent to the
-packaged static runtime:
-
-- It includes `=/2`, `\=/2`, `float/1`, `compound/1`, `write/1`, `writeln/1`,
-  `nl/0`, `copy_term/2`, `functor/3`, and `=../2`.
-- It does not include the static runtime's `member/2`, `length/2`, `true/0`,
-  `fail/0`, `!/0`, or `\+/1` dispatch.
-- It does not include `arg/3`, `is_list/1`, `==/2`, or `display/1`.
-
-This split is a parity risk: tests that inspect the generated fallback runtime
-can pass while generated Python projects still run against the static runtime.
+`compile_wam_runtime_to_python/2` now reads the packaged static runtime source
+instead of assembling a second runtime from Prolog string fragments. Generated
+projects also copy the same `WamRuntime.py`, so tests and generated projects
+now share one Python WAM runtime surface.
 
 ## Remaining Follow-Up
 
 The packaged static runtime now carries the Lua/Rust/Haskell builtin baseline.
 The remaining parity work is narrower:
 
-1. Reconcile or retire the generated fallback runtime so it cannot drift from
-   `WamRuntime.py`.
-2. Decide whether `member/2` should enumerate all solutions via builtin choice
+1. Decide whether `member/2` should enumerate all solutions via builtin choice
    points, or remain first-solution-only like the current packaged runtime.
 
 Completed follow-up:
 
 - Generated-project E2E tests now exercise term builtins, copy/NAF/IO, and
   type/comparison builtins through the packaged static runtime.
+- `compile_wam_runtime_to_python/2` now returns the packaged static runtime,
+  removing the separate fallback runtime surface.
 
 ## Verification Commands
 

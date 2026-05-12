@@ -280,7 +280,7 @@ test(wamstate_has_trail_len, [nondet]) :-
 test(wamstate_heap_is_dict, [nondet]) :-
 	% Heap is initialised as dict, not list
 	wam_python_target:compile_wam_runtime_to_python([], Code),
-	sub_string(Code, _, _, _, "self.heap = {}").
+	sub_string(Code, _, _, _, "self.heap: Dict[int, Term] = {}").
 
 test(heap_put_uses_heap_len, [nondet]) :-
 	% heap_put helper uses heap_len as the address counter
@@ -291,6 +291,14 @@ test(heap_trim_emitted, [nondet]) :-
 	% heap_trim helper is emitted (dict-based trimming)
 	wam_python_target:compile_wam_runtime_to_python([], Code),
 	sub_string(Code, _, _, _, "heap_trim").
+
+test(compile_runtime_reads_static_runtime_source) :-
+	wam_python_target:compile_wam_runtime_to_python([], Code),
+	source_file(wam_python_target:compile_step_wam_to_python(_,_), ThisFile),
+	file_directory_name(ThisFile, ThisDir),
+	directory_file_path(ThisDir, 'wam_python_runtime/WamRuntime.py', SrcPath),
+	read_file_to_string(SrcPath, StaticCode, []),
+	assertion(Code == StaticCode).
 
 :- end_tests(wam_python_phase_a).
 
