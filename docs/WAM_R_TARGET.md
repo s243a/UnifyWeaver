@@ -968,6 +968,39 @@ directly when invoked via `Rscript`; it warmups for 5% of the
 iterations (capped at 50) so the R-level data structures settle
 before timing, then prints `BENCH n=<N> elapsed=<sec> last=<true|false>`.
 
+### Mode-analysis benchmark
+
+`tests/benchmarks/wam_r_mode_analysis_bench.pl` measures the lowered
+emitter work against opt-in baselines:
+
+```bash
+swipl -g main -t halt tests/benchmarks/wam_r_mode_analysis_bench.pl
+swipl -g main -t halt tests/benchmarks/wam_r_mode_analysis_bench.pl -- --inner 100 --depth 200
+```
+
+It reports:
+
+```
+RESULT case=recursive_pn variant=<interpreter|functions> inner_total=<sec> per_iter_us=<usec>
+RATIO case=recursive_pn functions_over_interpreter=<ratio>
+RESULT case=get_value_same variant=<functions_no_specialise|functions> inner_total=<sec> per_iter_us=<usec>
+RATIO case=get_value_same functions_over_functions_no_specialise=<ratio>
+```
+
+`recursive_pn` compares `emit_mode(interpreter)` with
+`emit_mode(functions)` for a two-clause recursive decrement predicate,
+so it measures the current lowered multi-clause path as a whole.
+`get_value_same` compares `emit_mode(functions)` with and without
+`mode_specialise(off)` for `same(X, X)` under `:- mode(same(+,+))`,
+isolating the repeated-bound-head `get_value` specialisation.
+
+On a Termux/Rscript local run with `--inner 100 --depth 200`, the
+lowered recursive path measured slower than the interpreter baseline
+(`functions_over_interpreter=1.107`) and the tiny `get_value` case was
+also slower/noisy (`functions_over_functions_no_specialise=1.182`).
+Treat these numbers as a regression guard and investigation signal,
+not as a claimed performance win.
+
 ### Parser benchmark (inline vs compiled-from-Prolog)
 
 `tests/benchmarks/wam_r_parser_bench.pl` measures the cost of the

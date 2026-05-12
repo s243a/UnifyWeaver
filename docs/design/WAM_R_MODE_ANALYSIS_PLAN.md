@@ -227,7 +227,19 @@ clause inline and uses an iter-style retry CP for later clauses.
    such as `p(X, X)` with mode `(+,+)` now inline the lowered
    `get_value` instruction. Atomic bound pairs use direct identity;
    non-atomic bound terms fall back to `WamRuntime$unify`.
-3. **Auto-mode-inference from call sites.** Today the analyser
+3. **Measurement harness.** Delivered:
+   `tests/benchmarks/wam_r_mode_analysis_bench.pl` now compares the
+   recursive `pn/1` workload under `emit_mode(interpreter)` vs
+   `emit_mode(functions)`, and compares repeated-bound-head
+   `get_value` under `emit_mode(functions)` vs
+   `mode_specialise(off)`. A local Termux run with `--inner 100
+   --depth 200` measured the current lowered recursive path slower
+   than the interpreter baseline (`functions_over_interpreter=1.107`)
+   and the tiny get_value case slower/noisy
+   (`functions_over_functions_no_specialise=1.182`). This gives the
+   campaign a reproducible guardrail but does not claim a post-phase-4
+   speedup.
+4. **Auto-mode-inference from call sites.** Today the analyser
    only knows what `:- mode/1` declarations tell it. A whole-
    program pass could infer modes from observed call sites,
    eliminating the user's burden of declaring modes (and
