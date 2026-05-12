@@ -9,6 +9,8 @@
 % Usage: swipl -g run_tests -t halt tests/test_wam_python_target.pl
 
 :- use_module(library(plunit)).
+:- use_module(library(filesex), [delete_directory_and_contents/1, make_directory_path/1]).
+:- use_module(library(process)).
 :- use_module('../src/unifyweaver/targets/wam_python_target').
 :- use_module('../src/unifyweaver/core/target_registry').
 
@@ -769,3 +771,139 @@ test(static_runtime_io_emits_output, [nondet]) :-
 	sub_string(Content, _, _, _, "print()").
 
 :- end_tests(wam_python_builtin_parity_guard).
+
+% ============================================================================
+% Generated-project E2E coverage for packaged static runtime builtins
+% ============================================================================
+
+:- begin_tests(wam_python_builtin_e2e).
+
+test(generated_project_runs_term_builtins) :-
+	setup_call_cleanup(
+		unique_tmp_dir('tmp_wam_python_builtin_e2e', ProjectDir),
+		(   write_builtin_project(ProjectDir),
+			run_generated_query(ProjectDir, 'term_demo/0', Output),
+			once(sub_string(Output, _, _, _, "A1 = g")),
+			once(sub_string(Output, _, _, _, "A3 = 7")),
+			once(sub_string(Output, _, _, _, "A4 = f/2")),
+			once(sub_string(Output, _, _, _, "A5 = 2"))
+		),
+		cleanup_tmp_dir(ProjectDir)).
+
+test(generated_project_runs_copy_naf_and_io) :-
+	setup_call_cleanup(
+		unique_tmp_dir('tmp_wam_python_builtin_e2e', ProjectDir),
+		(   write_builtin_project(ProjectDir),
+			run_generated_query(ProjectDir, 'copy_naf_io_demo/0', Output),
+			once(sub_string(Output, _, _, _, "ok")),
+			once(sub_string(Output, _, _, _, "A1 = ok")),
+			once(sub_string(Output, _, _, _, "A2 = pair/2("))
+		),
+		cleanup_tmp_dir(ProjectDir)).
+
+test(generated_project_runs_type_and_comparison_builtins) :-
+	setup_call_cleanup(
+		unique_tmp_dir('tmp_wam_python_builtin_e2e', ProjectDir),
+		(   write_builtin_project(ProjectDir),
+			run_generated_query(ProjectDir, 'type_compare_demo/0', Output),
+			once(sub_string(Output, _, _, _, "A1 = ok"))
+		),
+		cleanup_tmp_dir(ProjectDir)).
+
+write_builtin_project(ProjectDir) :-
+	term_builtin_wam(TermWam),
+	copy_naf_io_wam(CopyNafIoWam),
+	type_compare_wam(TypeCompareWam),
+	wam_python_target:write_wam_python_project(
+		[term_demo/0-TermWam,
+		 copy_naf_io_demo/0-CopyNafIoWam,
+		 type_compare_demo/0-TypeCompareWam],
+		[],
+		ProjectDir).
+
+term_builtin_wam(
+'term_demo/0:
+  put_structure f/2, 1
+  set_constant a
+  set_integer 7
+  put_variable 4, 2
+  put_variable 5, 3
+  builtin_call functor/3 3
+  put_integer 2, 1
+  put_structure f/2, 2
+  set_constant a
+  set_integer 7
+  put_variable 6, 3
+  builtin_call arg/3 3
+  put_variable 7, 1
+  put_list 2
+  set_constant g
+  set_nil
+  builtin_call =../2 2
+  proceed').
+
+copy_naf_io_wam(
+'copy_naf_io_demo/0:
+  put_structure pair/2, 1
+  set_variable 4
+  set_value 4
+  put_variable 5, 2
+  builtin_call copy_term/2 2
+  put_structure member/2, 1
+  set_constant z
+  put_list 3
+  set_constant a
+  set_nil
+  builtin_call \\+/1 1
+  put_constant ok, 1
+  builtin_call write/1 1
+  builtin_call nl/0 0
+  proceed').
+
+type_compare_wam(
+'type_compare_demo/0:
+  put_float 3.5, 1
+  builtin_call float/1 1
+  builtin_call number/1 1
+  put_structure f/1, 1
+  set_constant a
+  builtin_call compound/1 1
+  put_list 1
+  set_constant a
+  set_nil
+  builtin_call is_list/1 1
+  put_constant same, 1
+  put_constant same, 2
+  builtin_call ==/2 2
+  put_integer 2, 1
+  put_integer 2, 2
+  builtin_call =:=/2 2
+  put_integer 2, 1
+  put_integer 3, 2
+  builtin_call =\\=/2 2
+  put_constant ok, 1
+  proceed').
+
+run_generated_query(ProjectDir, Query, Output) :-
+	process_create(path(python), ['main.py', Query],
+		[cwd(ProjectDir), stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]),
+	read_string(Out, _, Output),
+	read_string(Err, _, ErrText),
+	close(Out),
+	close(Err),
+	process_wait(Pid, Status),
+	(   Status = exit(0)
+	->  true
+	;   format(user_error, 'generated WAM Python query ~w failed: ~w~n', [Query, ErrText]),
+		fail
+	).
+
+unique_tmp_dir(Prefix, TmpDir) :-
+	tmp_file(Prefix, TmpDir),
+	catch(delete_directory_and_contents(TmpDir), _, true),
+	make_directory_path(TmpDir).
+
+cleanup_tmp_dir(TmpDir) :-
+	catch(delete_directory_and_contents(TmpDir), _, true).
+
+:- end_tests(wam_python_builtin_e2e).
