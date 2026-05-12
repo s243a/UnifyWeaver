@@ -240,6 +240,51 @@ test(cpp_compiler_smoke, [condition(cpp_compiler_available)]) :-
         delete_directory_and_contents(TmpDir)
     ).
 
+% ------------------------------------------------------------------
+% End-to-end: build a binary with main.cpp, run queries, check exit.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_fact, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_fact', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_fact/1],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_fact/1', [a], true),
+          run_query(BinPath, 'wam_cpp_fact/1', [b], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_choice_backtracking, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_choice', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_choice/1],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_choice/1', [a], true),
+          % Clause 2 only reachable via backtracking — exercises the
+          % choice point / trail / TrustMe path.
+          run_query(BinPath, 'wam_cpp_choice/1', [b], true),
+          run_query(BinPath, 'wam_cpp_choice/1', [c], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_caller, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_caller', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_caller/1, user:wam_cpp_fact/1],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          % caller(X) :- fact(X). Exercises Call dispatch + Proceed
+          % through the labels table.
+          run_query(BinPath, 'wam_cpp_caller/1', [a], true),
+          run_query(BinPath, 'wam_cpp_caller/1', [b], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
 compile_one(CppDir, Src, Obj, Status) :-
     directory_file_path(CppDir, Src, SrcPath),
     directory_file_path(CppDir, Obj, ObjPath),
@@ -247,6 +292,32 @@ compile_one(CppDir, Src, Obj, Status) :-
                    ['-std=c++17', '-c', '-o', ObjPath, SrcPath],
                    [stderr(null), process(PID)]),
     process_wait(PID, Status).
+
+build_e2e_binary(TmpDir, BinPath) :-
+    directory_file_path(TmpDir, 'cpp', CppDir),
+    directory_file_path(CppDir, 'wam_runtime.cpp', Rt),
+    directory_file_path(CppDir, 'generated_program.cpp', Prog),
+    directory_file_path(CppDir, 'main.cpp', Main),
+    directory_file_path(CppDir, 'cpp_test', BinPath),
+    process_create(path('g++'),
+                   ['-std=c++17', '-O0', '-o', BinPath, Rt, Prog, Main],
+                   [stderr(null), process(PID)]),
+    process_wait(PID, Status),
+    assertion(Status == exit(0)).
+
+run_query(BinPath, PredKey, Args, Expected) :-
+    maplist(atom_string, Args, ArgStrs),
+    process_create(BinPath, [PredKey|ArgStrs],
+                   [stdout(pipe(Out)), stderr(null), process(PID)]),
+    read_string(Out, _, Output),
+    close(Out),
+    process_wait(PID, _),
+    normalize_space(string(Trimmed), Output),
+    expected_str(Expected, ExpStr),
+    assertion(Trimmed == ExpStr).
+
+expected_str(true,  "true").
+expected_str(false, "false").
 
 :- end_tests(wam_cpp_generator).
 
