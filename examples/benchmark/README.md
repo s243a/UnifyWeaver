@@ -142,6 +142,12 @@ preserved. Use `--format none` instead of `--format calibration-tsv` for
 scripted refreshes that should only write the artifact and avoid printing the
 full table to stdout.
 
+The usual full guarded refresh is wrapped by:
+
+```bash
+python examples/benchmark/refresh_csharp_query_source_mode_calibration.py
+```
+
 ```bash
 python examples/benchmark/benchmark_csharp_query_source_mode_sweep.py \
   --require-idle \
