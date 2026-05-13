@@ -52,13 +52,17 @@ write_wam_c_project(Predicates, Options, ProjectDir) :-
 
     % Compile predicates and generate lib.c
     pairs_keys(DetectedKernels, DetectedKeys),
+    compile_lowered_helpers_for_project(Predicates, Options, LoweredKeys, LoweredCode, SetupLoweredCode),
     generate_setup_detected_kernels_c(DetectedKernels, SetupKernelCode),
-    compile_predicates_for_project(Predicates, [detected_kernel_keys(DetectedKeys)|Options],
+    compile_predicates_for_project(Predicates,
+                                   [detected_kernel_keys(DetectedKeys),
+                                    lowered_helper_keys(LoweredKeys)|Options],
                                    PredicatesCode),
-    format(atom(LibCode), '#include "wam_runtime.h"~n~n~w~n~n~w',
-           [SetupKernelCode, PredicatesCode]),
+    format(atom(LibCode), '#include "wam_runtime.h"~n~n~w~n~n~w~n~n~w',
+           [SetupKernelCode, LoweredCode, SetupLoweredCode]),
+    format(atom(LibCodeWithPredicates), '~w~n~n~w', [LibCode, PredicatesCode]),
     directory_file_path(ProjectDir, 'lib.c', LibPath),
-    write_file(LibPath, LibCode),
+    write_file(LibPath, LibCodeWithPredicates),
 
     format('WAM C project created at: ~w~n', [ProjectDir]).
 
@@ -76,7 +80,12 @@ compile_predicates_for_project([PredIndicator|Rest], Options, Code) :-
     predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
     format(atom(Key), '~w/~w', [Pred, Arity]),
     option(detected_kernel_keys(DetectedKeys), Options, []),
+    option(lowered_helper_keys(LoweredKeys), Options, []),
     (   memberchk(Key, DetectedKeys)
+    ->  format(atom(WamCode), '~w/~w:\n    call_foreign ~w, ~w\n    proceed',
+               [Pred, Arity, Key, Arity]),
+        compile_wam_predicate_to_c(Module:Pred/Arity, WamCode, Options, PredCode)
+    ;   memberchk(Key, LoweredKeys)
     ->  format(atom(WamCode), '~w/~w:\n    call_foreign ~w, ~w\n    proceed',
                [Pred, Arity, Key, Arity]),
         compile_wam_predicate_to_c(Module:Pred/Arity, WamCode, Options, PredCode)
@@ -145,6 +154,103 @@ wam_c_kernel_max_depth(ConfigOps, MaxDepth) :-
     ->  MaxDepth = MaxDepth0
     ;   MaxDepth = 10
     ).
+
+% ============================================================================
+% Prototype native lowered helpers
+% ============================================================================
+
+compile_lowered_helpers_for_project(Predicates, Options, LoweredKeys, Code, SetupCode) :-
+    (   option(lowered_helpers(true), Options)
+    ->  findall(Key-CodePart-SetupLine,
+                (   member(PredIndicator, Predicates),
+                    lowered_fact_helper_for_predicate(PredIndicator, Key, CodePart, SetupLine)
+                ),
+                Entries),
+        findall(K, member(K-_-_, Entries), LoweredKeys),
+        findall(C, member(_-C-_, Entries), Codes),
+        findall(S, member(_-_-S, Entries), SetupLines),
+        atomic_list_concat(Codes, '\n\n', Code),
+        atomic_list_concat(SetupLines, '\n', SetupBody),
+        format(atom(SetupCode),
+               'void setup_lowered_wam_c_helpers(WamState* state) {\n~w\n}',
+               [SetupBody])
+    ;   LoweredKeys = [],
+        Code = '',
+        SetupCode = 'void setup_lowered_wam_c_helpers(WamState* state) {\n    (void)state;\n}'
+    ).
+
+lowered_fact_helper_for_predicate(PredIndicator, Key, Code, SetupLine) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    functor(Head, Pred, Arity),
+    findall(Args,
+            (   user:clause(Head, true),
+                Head =.. [_|Args],
+                maplist(wam_c_lowered_constant, Args)
+            ),
+            Rows),
+    Rows \= [],
+    \+ ( user:clause(Head, Body), Body \== true ),
+    format(atom(Key), '~w/~w', [Pred, Arity]),
+    wam_c_symbol_name(Pred, Arity, Symbol),
+    maplist(wam_c_lowered_fact_row(Arity), Rows, RowCodes),
+    atomic_list_concat(RowCodes, '\n', BodyCode),
+    format(atom(Code),
+'static bool ~w(WamState *state, const char *pred, int arity) {
+    (void)pred;
+    if (arity != ~w) return false;
+~w
+    return false;
+}',
+           [Symbol, Arity, BodyCode]),
+    format(atom(SetupLine),
+           '    wam_register_foreign_predicate(state, "~w", ~w, ~w);',
+           [Key, Arity, Symbol]).
+
+wam_c_lowered_constant(Arg) :- atom(Arg), !.
+wam_c_lowered_constant(Arg) :- integer(Arg).
+
+wam_c_symbol_name(Pred, Arity, Symbol) :-
+    atom_chars(Pred, Chars),
+    maplist(wam_c_symbol_char, Chars, SafeChars),
+    atom_chars(SafePred, SafeChars),
+    format(atom(Symbol), 'wam_c_lowered_~w_~w', [SafePred, Arity]).
+
+wam_c_symbol_char(Char, Char) :-
+    char_type(Char, alnum), !.
+wam_c_symbol_char('_', '_') :- !.
+wam_c_symbol_char(_, '_').
+
+wam_c_lowered_fact_row(Arity, Args, Code) :-
+    findall(MatchLine,
+            (   nth0(I, Args, Arg),
+                c_value_literal(Arg, ValLit),
+                format(atom(MatchLine),
+                       '    if (!val_is_unbound(*cells[~w]) && !val_equal(*cells[~w], ~w)) match = false;',
+                       [I, I, ValLit])
+            ),
+            MatchLines),
+    findall(BindLine,
+            (   nth0(I, Args, Arg),
+                c_value_literal(Arg, ValLit),
+                format(atom(BindLine),
+                       '        if (val_is_unbound(*cells[~w])) { trail_binding(state, cells[~w]); *cells[~w] = ~w; }',
+                       [I, I, I, ValLit])
+            ),
+            BindLines),
+    atomic_list_concat(MatchLines, '\n', MatchCode),
+    atomic_list_concat(BindLines, '\n', BindCode),
+    format(atom(Code),
+'    {
+        WamValue *cells[~w];
+        for (int i = 0; i < ~w; i++) cells[i] = wam_deref_ptr(state, &state->A[i]);
+        bool match = true;
+~w
+        if (match) {
+~w
+            return true;
+        }
+    }',
+           [Arity, Arity, MatchCode, BindCode]).
 
 % ============================================================================
 % PHASE 2: WAM instructions -> C Struct Literals

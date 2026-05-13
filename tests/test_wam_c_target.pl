@@ -310,6 +310,26 @@ test_kernel_detector_project_generation :-
         fail_test(Test, 'generated project did not lower detected kernel')
     ).
 
+test_lowered_fact_helper_generation :-
+    Test = 'WAM-C: fact-only predicates can lower to native helper',
+    assertz(user:wam_c_lowered_pair(a, b)),
+    assertz(user:wam_c_lowered_pair(a, c)),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    format(atom(ProjectDir), '/tmp/unifyweaver_wam_c_lowered_fact_project_~w', [Stamp]),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    (   write_wam_c_project([user:wam_c_lowered_pair/2], [lowered_helpers(true)], ProjectDir),
+        read_file_to_string(LibPath, LibS, []),
+        sub_string(LibS, _, _, _, 'static bool wam_c_lowered_wam_c_lowered_pair_2'),
+        sub_string(LibS, _, _, _, 'void setup_lowered_wam_c_helpers'),
+        sub_string(LibS, _, _, _, 'wam_register_foreign_predicate(state, "wam_c_lowered_pair/2", 2'),
+        sub_string(LibS, _, _, _, 'INSTR_CALL_FOREIGN'),
+        sub_string(LibS, _, _, _, '.pred = "wam_c_lowered_pair/2"')
+    ->  pass(Test)
+    ;   fail_test(Test, 'lowered fact helper was not emitted')
+    ),
+    retractall(user:wam_c_lowered_pair(_, _)).
+
 test_unsupported_instruction_fails_loudly :-
     Test = 'WAM-C: unsupported instructions fail loudly',
     BadWamCode = 'foo/1:\n    unknown_opcode A1\n    proceed',
@@ -500,6 +520,16 @@ test_real_prolog_classic_recursive_executable_smoke :-
     ->  (   run_real_prolog_classic_recursive_executable_smoke
         ->  pass(Test)
         ;   fail_test(Test, 'real Prolog classic recursive executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_lowered_fact_helper_executable_smoke :-
+    Test = 'WAM-C: lowered fact helper executable smoke',
+    (   gcc_available
+    ->  (   run_lowered_fact_helper_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'lowered fact helper executable failed')
         )
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
@@ -881,6 +911,26 @@ run_real_prolog_classic_recursive_executable_smoke :-
         run_c_smoke_plain(ExePath)
     ->  retractall(user:wam_c_classic_fib(_, _))
     ;   retractall(user:wam_c_classic_fib(_, _)),
+        fail
+    ).
+
+run_lowered_fact_helper_executable_smoke :-
+    assertz(user:wam_c_lowered_pair(a, b)),
+    assertz(user:wam_c_lowered_pair(a, c)),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    format(atom(ProjectDir), '/tmp/unifyweaver_wam_c_lowered_fact_smoke_~w', [Stamp]),
+    directory_file_path(ProjectDir, 'wam_runtime.c', RuntimePath),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    directory_file_path(ProjectDir, 'main.c', MainPath),
+    directory_file_path(ProjectDir, 'wam_c_lowered_fact_smoke', ExePath),
+    (   write_wam_c_project([user:wam_c_lowered_pair/2], [lowered_helpers(true)], ProjectDir),
+        wam_c_lowered_fact_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, LibPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  retractall(user:wam_c_lowered_pair(_, _))
+    ;   retractall(user:wam_c_lowered_pair(_, _)),
         fail
     ).
 
@@ -1591,6 +1641,45 @@ int main(void) {
 }
 ', [DataPath]).
 
+wam_c_lowered_fact_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_lowered_pair_2(WamState* state);
+void setup_lowered_wam_c_helpers(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_lowered_pair_2(&state);
+    setup_lowered_wam_c_helpers(&state);
+
+    WamValue ok_args[2] = { val_atom("a"), val_unbound("Out") };
+    int ok_rc = wam_run_predicate(&state, "wam_c_lowered_pair/2", ok_args, 2);
+    if (ok_rc != 0 || state.P != WAM_HALT ||
+        state.A[1].tag != VAL_ATOM || strcmp(state.A[1].data.atom, "b") != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue ground_args[2] = { val_atom("a"), val_atom("c") };
+    int ground_rc = wam_run_predicate(&state, "wam_c_lowered_pair/2", ground_args, 2);
+    if (ground_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue fail_args[2] = { val_atom("z"), val_unbound("Out") };
+    int fail_rc = wam_run_predicate(&state, "wam_c_lowered_pair/2", fail_args, 2);
+    if (fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 wam_c_real_builtin_smoke_main(
 '#include "wam_runtime.h"
 
@@ -1922,6 +2011,7 @@ run_tests_once :-
     test_streaming_foreign_results_generation,
     test_kernel_detector_setup_generation,
     test_kernel_detector_project_generation,
+    test_lowered_fact_helper_generation,
     test_unsupported_instruction_fails_loudly,
     test_no_zero_instruction_fallback,
     test_list_target_pc_emission,
@@ -1940,6 +2030,7 @@ run_tests_once :-
     test_real_prolog_is_list_executable_smoke,
     test_real_prolog_unify_executable_smoke,
     test_real_prolog_classic_recursive_executable_smoke,
+    test_lowered_fact_helper_executable_smoke,
     test_asan_memory_lifecycle_executable_smoke,
     format('~n=== WAM-C Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
