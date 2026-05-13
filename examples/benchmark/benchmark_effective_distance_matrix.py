@@ -70,6 +70,7 @@ WAM_RUST_MATRIX_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_rust
 WAM_HASKELL_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_haskell_matrix_benchmark.pl"
 WAM_GO_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_go_effective_distance_benchmark.pl"
 WAM_C_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_c_effective_distance_benchmark.pl"
+WAM_C_LOWERED_HELPER_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_c_lowered_helper_benchmark.pl"
 WAM_CLOJURE_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_clojure_optimized_benchmark.pl"
 WAM_SCALA_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_scala_effective_distance_benchmark.pl"
 DEFAULT_FACTS = BENCH_DIR / "10k" / "facts.pl"
@@ -333,6 +334,46 @@ def build_wam_c_effective_distance(
             str(lib_path),
             str(main_path),
             *link_flags,
+            "-o",
+            str(binary_path),
+        ],
+        cwd=ROOT,
+    )
+    quoted_dir = shlex.quote(str(project_dir))
+    quoted_binary = shlex.quote(str(binary_path))
+    return ["sh", "-c", f"cd {quoted_dir} && {quoted_binary}"]
+
+
+def build_wam_c_lowered_helper_benchmark(root: Path, scale: str, mode: str) -> list[str]:
+    project_dir = root / f"wam_c_lowered_helper_{mode}" / scale
+    project_dir.mkdir(parents=True, exist_ok=True)
+    run_command(
+        [
+            "swipl",
+            "-q",
+            "-s",
+            str(WAM_C_LOWERED_HELPER_GENERATOR),
+            "--",
+            str(project_dir),
+            mode,
+        ],
+        cwd=ROOT,
+    )
+    runtime_path = project_dir / "wam_runtime.c"
+    lib_path = project_dir / "lib.c"
+    main_path = project_dir / "main.c"
+    binary_path = project_dir / "wam_c_lowered_helper_benchmark"
+    run_command(
+        [
+            "gcc",
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-I",
+            str(ROOT / "src" / "unifyweaver" / "targets" / "wam_c_runtime"),
+            str(runtime_path),
+            str(lib_path),
+            str(main_path),
             "-o",
             str(binary_path),
         ],
@@ -1017,6 +1058,10 @@ def main() -> int:
                     command = build_wam_c_effective_distance(temp_root, scale, "kernels_on", "facts_lmdb")
                 elif target == "c-wam-accumulated-no-kernels-lmdb":
                     command = build_wam_c_effective_distance(temp_root, scale, "kernels_off", "facts_lmdb")
+                elif target == "c-wam-lowered-helper":
+                    command = build_wam_c_lowered_helper_benchmark(temp_root, scale, "lowered")
+                elif target == "c-wam-lowered-helper-interpreted":
+                    command = build_wam_c_lowered_helper_benchmark(temp_root, scale, "interpreted")
                 elif target == "scala-wam-seeded":
                     command = build_wam_scala_effective_distance(temp_root, scale, "seeded", "kernels_on")
                 elif target == "scala-wam-seeded-artifact":
