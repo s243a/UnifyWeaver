@@ -634,8 +634,10 @@ compile_step_wam_to_c(_Options, CCode) :-
             }
             case INSTR_RETRY_ME_ELSE: {
                 int target = instr->as.choice.target_pc;
-                ChoicePoint *cp = &state->B_array[state->B - 1];
-                cp->next_pc = target;
+                if (state->B > 0) {
+                    ChoicePoint *cp = &state->B_array[state->B - 1];
+                    cp->next_pc = target;
+                }
                 state->P++;
                 return true;
             }
@@ -955,10 +957,15 @@ int wam_run_predicate(WamState *state, const char *pred,
                       WamValue *args, int arity) {
     int entry = resolve_predicate_hash(state, pred);
     if (entry < 0) return WAM_ERR_OOB;
+    int base_b = state->B;
+    int base_call_base_top = state->call_base_top;
     for (int i = 0; i < arity; i++) state->A[i] = args[i];
     state->CP = WAM_HALT;
     state->P = entry;
-    return wam_run(state);
+    int rc = wam_run(state);
+    wam_prune_choice_points(state, base_b);
+    state->call_base_top = base_call_base_top;
+    return rc;
 }
 
 static bool wam_eval_arith(WamState *state, WamValue value, int *out) {
