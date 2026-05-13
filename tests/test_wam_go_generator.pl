@@ -22,7 +22,7 @@ wam_only_caller(X, Z) :- wam_only_inner(X, Y), wam_only_inner(Y, Z).
 
 test(wam_get_constant) :-
     wam_instruction_to_go_literal(get_constant(atom(john), 'A1'), Literal),
-    assertion(Literal == '&GetConstant{C: &Atom{Name: "john"}, Ai: 0}').
+    assertion(Literal == '&GetConstant{C: internAtom("john"), Ai: 0}').
 
 test(wam_get_variable) :-
     wam_instruction_to_go_literal(get_variable('X1', 'A1'), Literal),
@@ -37,8 +37,8 @@ test(wam_switch_on_constant) :-
         Table = [john-default, jane-'L1'],
         wam_instruction_to_go_literal(switch_on_constant(Table), Literal),
         assertion(sub_string(Literal, _, _, _, '&SwitchOnConstant{Cases: []ConstCase{')),
-        assertion(sub_string(Literal, _, _, _, '{Val: &Atom{Name: "john"}, Label: "default"}')),
-        assertion(sub_string(Literal, _, _, _, '{Val: &Atom{Name: "jane"}, Label: "L1"}'))
+        assertion(sub_string(Literal, _, _, _, '{Val: internAtom("john"), Label: "default"}')),
+        assertion(sub_string(Literal, _, _, _, '{Val: internAtom("jane"), Label: "L1"}'))
     )).
 
 test(parse_wam_line_label) :-
@@ -49,7 +49,7 @@ test(parse_wam_line_label) :-
 test(parse_wam_line_instruction) :-
     WamCode = "    get_constant john, A1",
     compile_wam_predicate_to_go(test/1, WamCode, [], GoCode),
-    assertion(sub_string(GoCode, _, _, _, '&GetConstant{C: &Atom{Name: "john"}, Ai: 0}')).
+    assertion(sub_string(GoCode, _, _, _, '&GetConstant{C: internAtom("john"), Ai: 0}')).
 
 test(parse_wam_line_switch) :-
     once((
@@ -89,7 +89,7 @@ test(robust_switch_parsing) :-
     once((
         % Test malformed input robustness
         wam_line_to_go_literal(["switch_on_constant", "john"], Literal),
-        assertion(sub_string(Literal, _, _, _, '&Atom{Name: "malformed"}'))
+        assertion(sub_string(Literal, _, _, _, 'internAtom("malformed")'))
     )).
 
 :- end_tests(wam_go_generator).
