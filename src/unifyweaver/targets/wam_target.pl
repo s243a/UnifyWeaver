@@ -91,6 +91,10 @@ compile_wam_module(Predicates, Options, Code) :-
 %% compile_clauses_to_wam(+Pred, +Arity, +Clauses, +Options, -Code)
 compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
     format(string(Label), "~w/~w:", [Pred, Arity]),
+    (   option(inline_bagof_setof(true), Options)
+    ->  b_setval(wam_inline_bagof_setof, true)
+    ;   b_setval(wam_inline_bagof_setof, false)
+    ),
     (   length(Clauses, 1)
     ->  Clauses = [Clause],
         compile_single_clause_wam(Clause, Options, ClausesCode0)
@@ -344,16 +348,22 @@ compile_single_clause_wam(Head-Body, Options, Code) :-
 
 %% goals_contain_call_or_aggregate(+Goals)
 %  True if any goal in the list is a Call to a user predicate or an
-%  aggregate_all/findall that internally produces Call instructions.
+%  aggregate_all/findall/bagof/setof that internally produces Call
+%  instructions.
 %  Used to force permanent variable allocation in single-goal clauses
 %  that would otherwise skip it (since length(Goals) == 1).
 goals_contain_call_or_aggregate(Goals) :-
     member(G, Goals),
     ( G = aggregate_all(_, _, _)
     ; G = findall(_, _, _)
+    ; wam_inline_bagof_setof_enabled, G = bagof(_, _, _)
+    ; wam_inline_bagof_setof_enabled, G = setof(_, _, _)
     ; callable(G), functor(G, F, _), \+ is_builtin_goal(F)
     ),
     !.
+
+wam_inline_bagof_setof_enabled :-
+    catch(b_getval(wam_inline_bagof_setof, true), _, fail).
 
 is_builtin_goal(is).
 is_builtin_goal(=).
@@ -375,8 +385,8 @@ is_builtin_goal(append).
 is_builtin_goal((\+)).
 
 %% expand_aggregate_goals_for_perm_vars(+Goals, -Expanded)
-%  For permanent-variable detection, expand aggregate_all/findall into
-%  their inner goals + a synthetic "result" goal. This ensures
+%  For permanent-variable detection, expand aggregate_all/findall/
+%  bagof/setof into their inner goals + a synthetic "result" goal. This ensures
 %  variables shared between the clause head and the aggregate body
 %  are detected as permanent (appear in >1 "goal").
 expand_aggregate_goals_for_perm_vars([], []).
@@ -388,6 +398,14 @@ expand_aggregate_goals_for_perm_vars([G|Rest], Expanded) :-
         % inner body register as permanent (cross-goal).
         append([G|InnerGoals], RestExpanded, Expanded)
     ;   G = findall(_Template, InnerGoal, _Result)
+    ->  flatten_conjunction(InnerGoal, InnerGoals),
+        append([G|InnerGoals], RestExpanded, Expanded)
+    ;   wam_inline_bagof_setof_enabled,
+        G = bagof(_Template, InnerGoal, _Result)
+    ->  flatten_conjunction(InnerGoal, InnerGoals),
+        append([G|InnerGoals], RestExpanded, Expanded)
+    ;   wam_inline_bagof_setof_enabled,
+        G = setof(_Template, InnerGoal, _Result)
     ->  flatten_conjunction(InnerGoal, InnerGoals),
         append([G|InnerGoals], RestExpanded, Expanded)
     ;   ( G = (_;_) ; G = (_->_) )
@@ -652,7 +670,8 @@ pre_bind_unbound_yi([Var|Rest], Bindings, YI, NewBindings) :-
 %% compile_goals(+Goals, +VarMap, +HasEnv, -Vf, -Code)
 compile_goals([], V, _, V, "").
 compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
-    % Check for aggregate_all/findall first — these are always compiled inline
+    % Check for aggregate_all/findall/bagof/setof first — these are
+    % always compiled inline.
     (   Goal = aggregate_all(Template, InnerGoal, Result)
     ->  compile_aggregate_all(Template, InnerGoal, Result, V0, V1, GoalCode),
         (   Rest == []
@@ -666,6 +685,30 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
         )
     ;   Goal = findall(Template, InnerGoal, Result)
     ->  compile_findall(Template, InnerGoal, Result, V0, V1, GoalCode),
+        (   Rest == []
+        ->  Vf = V1,
+            (   HasEnv == yes
+            ->  format(string(Code), "~w~n    deallocate~n    proceed", [GoalCode])
+            ;   format(string(Code), "~w~n    proceed", [GoalCode])
+            )
+        ;   compile_goals(Rest, V1, HasEnv, Vf, RestCode),
+            format(string(Code), "~w~n~w", [GoalCode, RestCode])
+        )
+    ;   wam_inline_bagof_setof_enabled,
+        Goal = bagof(Template, InnerGoal, Result)
+    ->  compile_bagof(Template, InnerGoal, Result, V0, V1, GoalCode),
+        (   Rest == []
+        ->  Vf = V1,
+            (   HasEnv == yes
+            ->  format(string(Code), "~w~n    deallocate~n    proceed", [GoalCode])
+            ;   format(string(Code), "~w~n    proceed", [GoalCode])
+            )
+        ;   compile_goals(Rest, V1, HasEnv, Vf, RestCode),
+            format(string(Code), "~w~n~w", [GoalCode, RestCode])
+        )
+    ;   wam_inline_bagof_setof_enabled,
+        Goal = setof(Template, InnerGoal, Result)
+    ->  compile_setof(Template, InnerGoal, Result, V0, V1, GoalCode),
         (   Rest == []
         ->  Vf = V1,
             (   HasEnv == yes
@@ -760,6 +803,8 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
     ;   Template = min(ValueVar) -> AggType = min
     ;   Template = bag(ValueVar) -> AggType = bag
     ;   Template = set(ValueVar) -> AggType = set
+    ;   Template = bagof-BagVar -> AggType = bagof, ValueVar = BagVar
+    ;   Template = setof-SetVar -> AggType = setof, ValueVar = SetVar
     % findall/3 → compile_findall/5 wraps Template as `collect-Template`.
     % Unwrap to expose the real ValueVar so the var(ValueVar) branch
     % below allocates a Y-register and emits put_variable Y_n, A1.
@@ -896,6 +941,18 @@ compile_template_arg_set([Arg | Rest], V0, Vf, [Line | Lines]) :-
 %% compile_findall(+Template, +InnerGoal, +Result, +V0, -Vf, -Code)
 compile_findall(Template, InnerGoal, Result, V0, Vf, Code) :-
     compile_aggregate_all(collect-Template, InnerGoal, Result, V0, Vf, Code).
+
+%% compile_bagof(+Template, +InnerGoal, +Result, +V0, -Vf, -Code)
+%  Compile the no-witness-group subset of bagof/3. The runtime fails
+%  empty bags, unlike findall/3.
+compile_bagof(Template, InnerGoal, Result, V0, Vf, Code) :-
+    compile_aggregate_all(bagof-Template, InnerGoal, Result, V0, Vf, Code).
+
+%% compile_setof(+Template, +InnerGoal, +Result, +V0, -Vf, -Code)
+%  Compile the no-witness-group subset of setof/3. The runtime fails
+%  empty sets, then sorts/deduplicates collected values.
+compile_setof(Template, InnerGoal, Result, V0, Vf, Code) :-
+    compile_aggregate_all(setof-Template, InnerGoal, Result, V0, Vf, Code).
 
 %% next_ite_label(-ElseLabel, -ContLabel)
 %  Generate unique labels for if-then-else compilation.

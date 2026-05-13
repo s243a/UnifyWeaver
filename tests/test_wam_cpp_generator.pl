@@ -51,6 +51,10 @@
 :- dynamic user:wam_cpp_test_findall/0.
 :- dynamic user:wam_cpp_test_findall_empty/0.
 :- dynamic user:wam_cpp_test_findall_doubled/0.
+:- dynamic user:wam_cpp_test_bagof/0.
+:- dynamic user:wam_cpp_test_bagof_empty/0.
+:- dynamic user:wam_cpp_test_setof/0.
+:- dynamic user:wam_cpp_test_setof_empty/0.
 :- dynamic user:wam_cpp_test_count/0.
 :- dynamic user:wam_cpp_test_sum/0.
 :- dynamic user:wam_cpp_test_min/0.
@@ -88,9 +92,13 @@ user:wam_cpp_test_len_five  :- user:wam_cpp_list_length([a, b, c, d, e], 5).
 user:wam_cpp_item(a). user:wam_cpp_item(b). user:wam_cpp_item(c).
 user:wam_cpp_num(1).  user:wam_cpp_num(2).  user:wam_cpp_num(3). user:wam_cpp_num(2).
 user:wam_cpp_test_findall         :- findall(X, user:wam_cpp_item(X), L), L = [a, b, c].
-user:wam_cpp_test_findall_empty   :- findall(X, fail, L), L = [].
+user:wam_cpp_test_findall_empty   :- findall(_, fail, L), L = [].
 user:wam_cpp_test_findall_doubled :- findall(p(X, X), user:wam_cpp_item(X), L),
                                      L = [p(a, a), p(b, b), p(c, c)].
+user:wam_cpp_test_bagof           :- bagof(X, user:wam_cpp_item(X), L), L = [a, b, c].
+user:wam_cpp_test_bagof_empty     :- bagof(_, fail, _).
+user:wam_cpp_test_setof           :- setof(X, user:wam_cpp_num(X), L), L = [1, 2, 3].
+user:wam_cpp_test_setof_empty     :- setof(_, fail, _).
 user:wam_cpp_test_count :- aggregate_all(count, user:wam_cpp_item(_), N), N = 3.
 user:wam_cpp_test_sum   :- aggregate_all(sum(X),  user:wam_cpp_num(X), S), S = 8.
 user:wam_cpp_test_min   :- aggregate_all(min(X),  user:wam_cpp_num(X), M), M = 1.
@@ -545,6 +553,24 @@ test(cpp_e2e_findall, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_findall/0',         [], true),
           run_query(BinPath, 'wam_cpp_test_findall_empty/0',   [], true),
           run_query(BinPath, 'wam_cpp_test_findall_doubled/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_bagof_setof, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_bagof_setof', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_item/1, user:wam_cpp_num/1,
+                               user:wam_cpp_test_bagof/0,
+                               user:wam_cpp_test_bagof_empty/0,
+                               user:wam_cpp_test_setof/0,
+                               user:wam_cpp_test_setof_empty/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_bagof/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_bagof_empty/0', [], false),
+          run_query(BinPath, 'wam_cpp_test_setof/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_setof_empty/0', [], false)
         ),
         delete_directory_and_contents(TmpDir)
     ).
