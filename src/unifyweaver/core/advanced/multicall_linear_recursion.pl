@@ -16,6 +16,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(debug)).
 :- use_module('pattern_matchers').
 
 %% compile_multicall_pattern/6 is multifile - targets register their own clauses.
@@ -118,7 +119,7 @@ compile_multicall_linear_recursion(Pred/Arity, Options, Code) :-
     (   member(target(Target), Options) -> true
     ;   Target = bash
     ),
-    format('  Target: ~w~n', [Target]),
+    debug(recursion_compile, 'Target: ~w', [Target]),
 
     % Generate code - delegate to multifile
     (   compile_multicall_pattern(Target, PredStr, BaseClauses, RecClauses, MemoEnabled, Code) ->

@@ -239,6 +239,7 @@ fsharp_wam_instruction_type :-
     | Execute        of pred: string
     | ExecutePc      of pc: int
     | Proceed
+    | Fail
     | Allocate
     | Deallocate
     | Jump           of label: string
@@ -363,7 +364,7 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
                          WsRegs    = r
                          WsBuilder = None }
         else
-            Some { s with WsBuilder = Some (BuildStruct (fn, reg, arity, args')) }
+            Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (BuildStruct (fn, reg, arity, args')) }
     | Some (BuildList (reg, items)) ->
         let items' = items @ [value]
         if List.length items' = 2 then
@@ -391,7 +392,7 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
                          WsRegs    = r
                          WsBuilder = None }
         else
-            Some { s with WsBuilder = Some (BuildList (reg, items')) }
+            Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (BuildList (reg, items')) }
     | Some (ReadArgs _) -> None
 
 let readNextArg (s: WamState) : (Value * WamState) option =

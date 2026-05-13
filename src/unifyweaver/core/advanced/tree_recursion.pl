@@ -15,6 +15,7 @@
 
 :- use_module(library(lists)).
 :- use_module(library(filesex)).
+:- use_module(library(debug)).
 :- use_module(pattern_matchers).
 :- use_module('../template_system').
 
@@ -128,7 +129,7 @@ compile_tree_recursion(Pred/Arity, Options, Code) :-
     (   member(target(Target), Options) -> true
     ;   Target = bash
     ),
-    format('  Target: ~w~n', [Target]),
+    debug(recursion_compile, 'Target: ~w', [Target]),
 
     % Detect pattern type (fibonacci checked first — more specific)
     (   is_fibonacci_pattern(Pred/Arity) ->

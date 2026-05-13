@@ -23,8 +23,19 @@ intern_seed <- c(
 intern_table <- WamRuntime$new_intern_table(intern_seed)
 
 # ----------------------------------------------------------
+# Compile-time operator declarations (from r_op_decls option)
+# Mutates WamRuntime$op_infix / WamRuntime$op_prefix before any
+# read_term_from_atom or CLI arg parsing happens. Empty when
+# r_op_decls is unspecified.
+# ----------------------------------------------------------
+{{op_decls}}
+
+# ----------------------------------------------------------
 # Shared WAM instruction array (1-based)
 # ----------------------------------------------------------
+# Fact shape classification
+{{fact_shape_comments}}
+
 shared_instructions <- list(
 {{instructions}}
 )
@@ -60,8 +71,46 @@ shared_program <- list(
   labels           = shared_labels,
   dispatch         = dispatch,
   foreign_handlers = foreign_handlers,
-  intern_table     = intern_table
+  intern_table     = intern_table,
+  # Dynamic predicate store for runtime assertz/asserta/retract.
+  # Keyed by "pred/arity"; each value is a list of clause records
+  # of shape list(head_args, body). An env (rather than a list) so
+  # mutations propagate across query invocations.
+  dynamic          = new.env(parent = emptyenv()),
+  # Stream registry for open/3, read/2, write/2, etc. Keyed by the
+  # stringified integer id stored inside `stream(<id>)` terms; the
+  # special key "__next_id__" holds the next-id counter.
+  streams          = new.env(parent = emptyenv()),
+  # Lowered-dispatch registry for predicates that have a native R
+  # fast path (kernels, fact-tables). Keyed by "pred/arity"; value
+  # is the lowered R function. dispatch_call consults this before
+  # falling through to label/foreign/dynamic/library/builtin tiers,
+  # so internal Call/Execute instructions also reach the fast path
+  # (not just direct R-API calls through the per-pred wrapper).
+  lowered_dispatch = new.env(parent = emptyenv()),
+  # Range-index registry for fact-tabled predicates. Keyed by
+  # "pred/arity"; value is list(facts = <flat-tuple-list>, range =
+  # list(arg1 = <sorted-vectors> or NULL, arg2 = ..., ...)) where
+  # each non-NULL entry is list(vals = <sorted-numeric-vector>,
+  # idxs = <parallel-integer-vector-of-tuple-indices>) built at
+  # codegen time over the integer-valued positions. Consumed by
+  # the fact_in_range/5 builtin via binary-search + the existing
+  # fact_table_iter_subset enumeration path.
+  fact_range_indexes = new.env(parent = emptyenv())
 )
+
+# ----------------------------------------------------------
+# Lowered native R functions (Phase-2 emitter output)
+# Empty when emit_mode is interpreter.
+# ----------------------------------------------------------
+{{lowered_functions}}
+
+# ----------------------------------------------------------
+# Lowered-dispatch registrations. Must come AFTER the lowered
+# function definitions above so the assignments can reference
+# the functions by name.
+# ----------------------------------------------------------
+{{lowered_dispatch_assignments}}
 
 # ----------------------------------------------------------
 # Per-predicate wrapper functions
@@ -74,8 +123,47 @@ shared_program <- list(
 if (!interactive() && sys.nframe() == 0L) {
   argv <- commandArgs(trailingOnly = TRUE)
   if (length(argv) == 0L) {
-    cat("usage: Rscript generated_program.R <pred>/<arity> <arg> ...\n")
+    cat("usage: Rscript generated_program.R [--bench N] <pred>/<arity> <arg> ...\n")
+    cat("       Rscript generated_program.R --batch <pred>/0 ...\n")
     quit(status = 0L)
+  }
+  if (length(argv) >= 1L && argv[1L] == "--batch") {
+    status <- 0L
+    for (pred_arity in argv[-1L]) {
+      start_pc <- shared_labels[[pred_arity]]
+      if (is.null(start_pc)) {
+        cat(pred_arity, "\tunknown\n", sep = "")
+        status <- 1L
+        next
+      }
+      if (!grepl("/0$", pred_arity)) {
+        cat(pred_arity, "\tunsupported\n", sep = "")
+        status <- 1L
+        next
+      }
+      ok <- tryCatch(
+        WamRuntime$run_predicate(shared_program, start_pc, list()),
+        error = function(e) {
+          message(conditionMessage(e))
+          status <<- 1L
+          FALSE
+        })
+      cat(pred_arity, "\t", if (isTRUE(ok)) "true" else "false", "\n", sep = "")
+    }
+    quit(status = status)
+  }
+  # Optional `--bench N` prefix: run the same query N times in this
+  # one Rscript invocation, then print one parseable summary line:
+  #   BENCH n=<N> elapsed=<sec> last=<true|false>
+  # so external benchmark drivers can amortise Rscript startup over
+  # many iterations.
+  bench_n <- 0L
+  if (length(argv) >= 2L && argv[1L] == "--bench") {
+    bench_n <- suppressWarnings(as.integer(argv[2L]))
+    if (is.na(bench_n) || bench_n <= 0L) {
+      cat("--bench expects a positive integer\n"); quit(status = 1L)
+    }
+    argv <- argv[-(1:2)]
   }
   pred_arity <- argv[1L]
   start_pc   <- shared_labels[[pred_arity]]
@@ -84,11 +172,51 @@ if (!interactive() && sys.nframe() == 0L) {
     quit(status = 1L)
   }
   raw_args <- argv[-1L]
+  # Each CLI arg is parsed as a Prolog term via the runtime's
+  # operator-precedence parser: integers/floats/atoms map to their
+  # primitive forms; lists `[a, b]`, structs `f(a, b)`, and operator
+  # expressions `1+2*3` parse to the corresponding WAM terms; bare
+  # uppercase names become fresh unbound vars. A single shared parse
+  # state lets the same variable name (e.g. `X`) refer to the same
+  # logical variable across multiple args. If parsing fails the arg
+  # falls back to the legacy integer-or-atom interpretation so
+  # plain inputs like `bob` still work.
+  parse_state <- WamRuntime$new_state()
+  WamRuntime$promote_regs(parse_state)
+  parse_vars <- new.env(parent = emptyenv())
   parsed <- lapply(raw_args, function(a) {
+    toks <- WamRuntime$tokenize_term(a)
+    if (!is.null(toks) && length(toks) > 0L) {
+      p <- new.env(parent = emptyenv())
+      p$tokens <- toks
+      p$pos    <- 1L
+      p$table  <- intern_table
+      p$state  <- parse_state
+      p$vars   <- parse_vars
+      term <- WamRuntime$wam_parse_expr(p, 1200L)
+      if (!is.null(term) && p$pos > length(toks)) return(term)
+    }
     n <- suppressWarnings(as.integer(a))
     if (!is.na(n) && as.character(n) == a) IntTerm(n)
     else Atom(WamRuntime$intern(intern_table, a))
   })
+  if (bench_n > 0L) {
+    # Warmup (5% of iterations, capped at 50) so the JIT-less R
+    # interpreter can settle data structures before timing starts.
+    warmup <- min(50L, max(1L, as.integer(bench_n %/% 20L)))
+    for (i in seq_len(warmup)) {
+      WamRuntime$run_predicate(shared_program, start_pc, parsed)
+    }
+    last_ok <- FALSE
+    t0 <- proc.time()[["elapsed"]]
+    for (i in seq_len(bench_n)) {
+      last_ok <- WamRuntime$run_predicate(shared_program, start_pc, parsed)
+    }
+    elapsed <- proc.time()[["elapsed"]] - t0
+    cat(sprintf("BENCH n=%d elapsed=%.6f last=%s\n",
+                bench_n, elapsed, if (isTRUE(last_ok)) "true" else "false"))
+    quit(status = if (isTRUE(last_ok)) 0L else 1L)
+  }
   ok <- WamRuntime$run_predicate(shared_program, start_pc, parsed)
   cat(if (isTRUE(ok)) "true" else "false", "\n", sep = "")
   quit(status = if (isTRUE(ok)) 0L else 1L)

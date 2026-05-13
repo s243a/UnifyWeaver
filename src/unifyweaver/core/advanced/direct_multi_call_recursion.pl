@@ -16,6 +16,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(debug)).
 :- use_module('pattern_matchers').
 
 %% compile_direct_multicall_pattern/5 is multifile - targets register their own clauses.
@@ -76,7 +77,7 @@ compile_direct_binary_recursion(Pred, Options, Code) :-
     (   member(target(Target), Options) -> true
     ;   Target = bash
     ),
-    format('  Target: ~w~n', [Target]),
+    debug(recursion_compile, 'Target: ~w', [Target]),
 
     % Get clauses
     functor(Head, Pred, 2),

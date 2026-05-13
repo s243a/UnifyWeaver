@@ -52,6 +52,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(debug)).
 
 % ============================================================================
 % DYNAMIC STORAGE
@@ -61,6 +62,9 @@
 :- dynamic stored_type/4.               % stored_type(Category, Type, Module, Options)
 :- dynamic stored_component/5.          % stored_component(Category, Name, Type, Config, Metadata)
 :- dynamic component_init_state/2.      % component_init_state(Name, State) - State: initialized | pending
+
+registry_info(Format, Args) :-
+    debug(component_registry, Format, Args).
 
 % ============================================================================
 % CATEGORY MANAGEMENT
@@ -86,7 +90,7 @@ define_category(Category, Description, Options) :-
     ;   true
     ),
     assertz(stored_category(Category, Description, Options)),
-    format('Defined category: ~w~n', [Category]).
+    registry_info('Defined category: ~w', [Category]).
 
 %% category(?Category, ?Description, ?Options)
 %
@@ -135,7 +139,7 @@ register_component_type(Category, Type, Module, Options) :-
     % Remove existing registration if any
     retractall(stored_type(Category, Type, _, _)),
     assertz(stored_type(Category, Type, Module, Options)),
-    format('Registered type: ~w/~w -> ~w~n', [Category, Type, Module]).
+    registry_info('Registered type: ~w/~w -> ~w', [Category, Type, Module]).
 
 %% component_type(?Category, ?Type, ?Module, ?Options)
 %
@@ -191,7 +195,7 @@ declare_component(Category, Name, Type, Config) :-
     retractall(component_init_state(Name, _)),
     assertz(stored_component(Category, Name, Type, Config, Metadata)),
     assertz(component_init_state(Name, pending)),
-    format('Declared component: ~w/~w (type: ~w)~n', [Category, Name, Type]),
+    registry_info('Declared component: ~w/~w (type: ~w)', [Category, Name, Type]),
     % Record dependencies
     (   member(depends(Deps), Config)
     ->  true
@@ -322,7 +326,7 @@ init_eager_components :-
 %  Can be extended by other modules.
 %
 on_component_ready(Name) :-
-    format('Component ready: ~w~n', [Name]).
+    registry_info('Component ready: ~w', [Name]).
 
 % ============================================================================
 % INVOCATION

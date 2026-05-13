@@ -49,6 +49,45 @@
 :- dynamic user:wam_var_unbound/1.
 :- dynamic user:wam_compound_guard/1.
 :- dynamic user:wam_compound_unbound/1.
+:- dynamic user:wam_callable_guard/1.
+:- dynamic user:wam_callable_unbound/1.
+:- dynamic user:wam_float_guard/1.
+:- dynamic user:wam_float_unbound/1.
+:- dynamic user:wam_is_list_guard/1.
+:- dynamic user:wam_is_list_unbound/1.
+:- dynamic user:wam_length_guard/2.
+:- dynamic user:wam_length_bad_list/1.
+:- dynamic user:wam_length_unbound_list/1.
+:- dynamic user:wam_member_guard/2.
+:- dynamic user:wam_member_backtrack_b/0.
+:- dynamic user:wam_member_unbound_list/1.
+:- dynamic user:wam_append_guard/3.
+:- dynamic user:wam_append_bad_left/1.
+:- dynamic user:wam_append_unbound_left/1.
+:- dynamic user:wam_append_split/2.
+:- dynamic user:wam_copy_term_guard/2.
+:- dynamic user:wam_copy_term_sharing_fail/0.
+:- dynamic user:wam_copy_term_independent_ok/0.
+:- dynamic user:wam_functor_guard/3.
+:- dynamic user:wam_ground_guard/1.
+:- dynamic user:wam_ground_unbound/1.
+:- dynamic user:wam_ground_nested_unbound/1.
+:- dynamic user:wam_arith_eq_42/1.
+:- dynamic user:wam_arith_eq_float/1.
+:- dynamic user:wam_arith_neq_42/1.
+:- dynamic user:wam_arith_eq_unbound/1.
+:- dynamic user:wam_arith_lt_42/1.
+:- dynamic user:wam_arith_gt_42/1.
+:- dynamic user:wam_arith_le_42/1.
+:- dynamic user:wam_arith_ge_42/1.
+:- dynamic user:wam_arith_lt_unbound/1.
+:- dynamic user:wam_arith_is_inc_42/1.
+:- dynamic user:wam_arith_is_combo_3_4/1.
+:- dynamic user:wam_arith_is_neg_42/1.
+:- dynamic user:wam_arith_is_div_5/1.
+:- dynamic user:wam_arith_is_int_div_5/1.
+:- dynamic user:wam_arith_is_mod_5/1.
+:- dynamic user:wam_arith_is_unbound/1.
 
 has(Code, Substr) :-
     once(sub_string(Code, _, _, _, Substr)).
@@ -100,6 +139,45 @@ user:wam_var_guard(X) :- var(X).
 user:wam_var_unbound(_) :- user:wam_unbound_arg(Y), var(Y).
 user:wam_compound_guard(X) :- compound(X).
 user:wam_compound_unbound(_) :- user:wam_unbound_arg(Y), compound(Y).
+user:wam_callable_guard(X) :- callable(X).
+user:wam_callable_unbound(_) :- user:wam_unbound_arg(Y), callable(Y).
+user:wam_float_guard(X) :- float(X).
+user:wam_float_unbound(_) :- user:wam_unbound_arg(Y), float(Y).
+user:wam_is_list_guard(X) :- is_list(X).
+user:wam_is_list_unbound(_) :- user:wam_unbound_arg(Y), is_list(Y).
+user:wam_length_guard(L, N) :- length(L, N).
+user:wam_length_bad_list(N) :- length([a|b], N).
+user:wam_length_unbound_list(N) :- user:wam_unbound_arg(Y), length(Y, N).
+user:wam_member_guard(X, L) :- member(X, L).
+user:wam_member_backtrack_b :- member(X, [a,b]), X = b.
+user:wam_member_unbound_list(X) :- user:wam_unbound_arg(Y), member(X, Y).
+user:wam_append_guard(A, B, C) :- append(A, B, C).
+user:wam_append_bad_left(C) :- append([a|b], [c], C).
+user:wam_append_unbound_left(C) :- user:wam_unbound_arg(A), append(A, [b], C).
+user:wam_append_split(A, B) :- append(A, B, [a,b,c]).
+user:wam_copy_term_guard(A, B) :- copy_term(A, B).
+user:wam_copy_term_sharing_fail :- user:wam_unbound_arg(X), copy_term(f(X, X), f(a, b)).
+user:wam_copy_term_independent_ok :- copy_term(f(_, _), f(a, b)).
+user:wam_functor_guard(Term, Name, Arity) :- functor(Term, Name, Arity).
+user:wam_ground_guard(X) :- ground(X).
+user:wam_ground_unbound(_) :- user:wam_unbound_arg(Y), ground(Y).
+user:wam_ground_nested_unbound(_) :- user:wam_unbound_arg(Y), ground(f(Y)).
+user:wam_arith_eq_42(X) :- X =:= 42.
+user:wam_arith_eq_float(X) :- X =:= 3.5.
+user:wam_arith_neq_42(X) :- X =\= 42.
+user:wam_arith_eq_unbound(_) :- user:wam_unbound_arg(Y), Y =:= 42.
+user:wam_arith_lt_42(X) :- X < 42.
+user:wam_arith_gt_42(X) :- X > 42.
+user:wam_arith_le_42(X) :- X =< 42.
+user:wam_arith_ge_42(X) :- X >= 42.
+user:wam_arith_lt_unbound(_) :- user:wam_unbound_arg(Y), Y < 42.
+user:wam_arith_is_inc_42(M) :- M is 42 + 1.
+user:wam_arith_is_combo_3_4(R) :- R is 3 + 4 * 2.
+user:wam_arith_is_neg_42(M) :- M is -42.
+user:wam_arith_is_div_5(M) :- M is 5 / 2.
+user:wam_arith_is_int_div_5(M) :- M is 5 // 2.
+user:wam_arith_is_mod_5(M) :- M is 5 mod 2.
+user:wam_arith_is_unbound(_) :- user:wam_unbound_arg(Y), _ is Y + 1.
 
 :- initialization(main, main).
 
@@ -155,7 +233,46 @@ run_smoke :-
           user:wam_var_guard/1,
           user:wam_var_unbound/1,
           user:wam_compound_guard/1,
-          user:wam_compound_unbound/1
+          user:wam_compound_unbound/1,
+          user:wam_callable_guard/1,
+          user:wam_callable_unbound/1,
+          user:wam_float_guard/1,
+          user:wam_float_unbound/1,
+          user:wam_is_list_guard/1,
+          user:wam_is_list_unbound/1,
+          user:wam_length_guard/2,
+          user:wam_length_bad_list/1,
+          user:wam_length_unbound_list/1,
+          user:wam_member_guard/2,
+          user:wam_member_backtrack_b/0,
+          user:wam_member_unbound_list/1,
+          user:wam_append_guard/3,
+          user:wam_append_bad_left/1,
+          user:wam_append_unbound_left/1,
+          user:wam_append_split/2,
+          user:wam_copy_term_guard/2,
+          user:wam_copy_term_sharing_fail/0,
+          user:wam_copy_term_independent_ok/0,
+          user:wam_functor_guard/3,
+          user:wam_ground_guard/1,
+          user:wam_ground_unbound/1,
+          user:wam_ground_nested_unbound/1,
+          user:wam_arith_eq_42/1,
+          user:wam_arith_eq_float/1,
+          user:wam_arith_neq_42/1,
+          user:wam_arith_eq_unbound/1,
+          user:wam_arith_lt_42/1,
+          user:wam_arith_gt_42/1,
+          user:wam_arith_le_42/1,
+          user:wam_arith_ge_42/1,
+          user:wam_arith_lt_unbound/1,
+          user:wam_arith_is_inc_42/1,
+          user:wam_arith_is_combo_3_4/1,
+          user:wam_arith_is_neg_42/1,
+          user:wam_arith_is_div_5/1,
+          user:wam_arith_is_int_div_5/1,
+          user:wam_arith_is_mod_5/1,
+          user:wam_arith_is_unbound/1
         ],
         [ namespace('generated.wam_exec_test'),
           module_name('wam-clojure-exec-test'),
@@ -181,87 +298,177 @@ run_smoke :-
     assert_lowered_nonvar_builtin_emitted(TmpDir),
     assert_lowered_var_builtin_emitted(TmpDir),
     assert_lowered_compound_builtin_emitted(TmpDir),
+    assert_lowered_callable_builtin_emitted(TmpDir),
+    assert_lowered_float_builtin_emitted(TmpDir),
+    assert_lowered_is_list_builtin_emitted(TmpDir),
+    assert_lowered_length_builtin_emitted(TmpDir),
+    assert_lowered_member_builtin_emitted(TmpDir),
+    assert_lowered_append_builtin_emitted(TmpDir),
+    assert_lowered_copy_term_builtin_emitted(TmpDir),
+    assert_lowered_functor_builtin_emitted(TmpDir),
+    assert_lowered_ground_builtin_emitted(TmpDir),
+    assert_lowered_arithmetic_comparison_builtin_emitted(TmpDir),
     assert_multiclause_wrappers_runtime_mediated(TmpDir),
-    verify_output(TmpDir, 'wam_execute_caller/1', 'a', "true"),
-    verify_output(TmpDir, 'wam_execute_caller/1', 'b', "false"),
-    verify_output(TmpDir, 'wam_call_caller/1', 'a', "true"),
-    verify_output(TmpDir, 'wam_call_caller/1', 'b', "false"),
-    verify_output(TmpDir, 'wam_foreign_pair_query/1', b, "true"),
-    verify_output(TmpDir, 'wam_foreign_pair_query/1', c, "false"),
-    verify_output(TmpDir, 'wam_foreign_stream_pair_query/1', a, "false"),
-    verify_output(TmpDir, 'wam_foreign_stream_pair_query/1', b, "true"),
-    verify_output(TmpDir, 'wam_foreign_stream_pair_query/1', c, "false"),
-    verify_output(TmpDir, 'wam_choice_caller/1', 'a', "true"),
-    verify_output(TmpDir, 'wam_choice_caller/1', 'b', "true"),
-    verify_output(TmpDir, 'wam_choice_caller/1', 'c', "true"),
-    verify_output(TmpDir, 'wam_choice_caller/1', 'd', "false"),
-    verify_output(TmpDir, 'wam_choice_or_z/1', 'z', "true"),
-    verify_output(TmpDir, 'wam_bind_then_fact/1', 'a', "true"),
-    verify_output(TmpDir, 'wam_bind_then_fact/1', 'b', "false"),
-    verify_output(TmpDir, 'wam_bind_after_call/1', 'a', "true"),
-    verify_output(TmpDir, 'wam_bind_after_call/1', 'b', "false"),
-    verify_output(TmpDir, 'wam_bind_before_execute/1', 'a', "true"),
-    verify_output(TmpDir, 'wam_bind_before_execute/1', 'b', "false"),
-    verify_output(TmpDir, 'wam_if_then_else/1', 'a', "true"),
-    verify_output(TmpDir, 'wam_if_then_else/1', 'b', "true"),
-    verify_output(TmpDir, 'wam_if_then_else/1', 'c', "false"),
-    verify_output(TmpDir, 'wam_use_struct/1', 'f(a)', "true"),
-    verify_output(TmpDir, 'wam_use_struct/1', 'f(b)', "false"),
-    verify_output(TmpDir, 'wam_use_list/1', '[a,b]', "true"),
-    verify_output(TmpDir, 'wam_use_list/1', '[a,c]', "false"),
-    verify_output(TmpDir, 'wam_double_struct_match/1', 'f(a)', "true"),
-    verify_output(TmpDir, 'wam_double_struct_match/1', 'f(b)', "false"),
-    verify_output(TmpDir, 'wam_double_list_match/1', '[a,b]', "true"),
-    verify_output(TmpDir, 'wam_double_list_match/1', '[a,c]', "false"),
-    % Write-mode smoke path. We only assert the generated program runs and
-    % succeeds for the canonical constructed term case in this environment.
-    verify_output(TmpDir, 'wam_make_struct/1', 'f(a)', "true"),
-    verify_output(TmpDir, 'wam_make_list/1', '[a,b]', "true"),
-    verify_output(TmpDir, 'wam_build_backtrack/1', 'f(a)', "false"),
-    verify_output(TmpDir, 'wam_build_backtrack/1', 'f(b)', "true"),
-    verify_output(TmpDir, 'wam_env_build_backtrack/1', 'f(a)', "false"),
-    verify_output(TmpDir, 'wam_env_build_backtrack/1', 'f(b)', "true"),
-    verify_output(TmpDir, 'wam_list_build_backtrack/1', '[a,b]', "false"),
-    verify_output(TmpDir, 'wam_list_build_backtrack/1', '[a,c]', "true"),
-    verify_output(TmpDir, 'wam_env1/1', a, "true"),
-    verify_output(TmpDir, 'wam_env1/1', b, "false"),
-    verify_output(TmpDir, 'wam_env2/1', a, "true"),
-    verify_output(TmpDir, 'wam_env2/1', b, "false"),
-    verify_output(TmpDir, 'wam_env3/1', a, "true"),
-    verify_output(TmpDir, 'wam_env3/1', b, "false"),
-    verify_output(TmpDir, 'wam_trail_choice/1', a, "true"),
-    verify_output(TmpDir, 'wam_trail_choice/1', b, "true"),
-    verify_output(TmpDir, 'wam_trail_choice/1', c, "false"),
-    verify_output(TmpDir, 'wam_soft_cut_outer_ok/1', b, "true"),
-    verify_output(TmpDir, 'wam_hard_cut_outer_ok/1', b, "true"),
-    verify_output(TmpDir, 'wam_not_b/1', a, "true"),
-    verify_output(TmpDir, 'wam_not_b/1', b, "false"),
-    verify_output(TmpDir, 'wam_fail_after_bind/1', a, "false"),
-    verify_output(TmpDir, 'wam_fail_after_bind/1', b, "false"),
-    verify_output(TmpDir, 'wam_atom_guard/1', a, "true"),
-    verify_output(TmpDir, 'wam_atom_guard/1', 'f(a)', "false"),
-    verify_output(TmpDir, 'wam_integer_guard/1', 42, "true"),
-    verify_output(TmpDir, 'wam_integer_guard/1', a, "false"),
-    verify_output(TmpDir, 'wam_number_guard/1', 42, "true"),
-    verify_output(TmpDir, 'wam_number_guard/1', a, "false"),
-    verify_output(TmpDir, 'wam_atomic_guard/1', a, "true"),
-    verify_output(TmpDir, 'wam_atomic_guard/1', 42, "true"),
-    verify_output(TmpDir, 'wam_atomic_guard/1', 'f(a)', "false"),
-    verify_output(TmpDir, 'wam_nonvar_guard/1', a, "true"),
-    verify_output(TmpDir, 'wam_nonvar_guard/1', 42, "true"),
-    verify_output(TmpDir, 'wam_nonvar_guard/1', 'f(a)', "true"),
-    verify_output(TmpDir, 'wam_nonvar_unbound/1', a, "false"),
-    verify_output(TmpDir, 'wam_var_guard/1', a, "false"),
-    verify_output(TmpDir, 'wam_var_guard/1', 42, "false"),
-    verify_output(TmpDir, 'wam_var_guard/1', 'f(a)', "false"),
-    verify_output(TmpDir, 'wam_var_unbound/1', a, "true"),
-    verify_output(TmpDir, 'wam_compound_guard/1', a, "false"),
-    verify_output(TmpDir, 'wam_compound_guard/1', 42, "false"),
-    verify_output(TmpDir, 'wam_compound_guard/1', 'f(a)', "true"),
-    verify_output(TmpDir, 'wam_compound_guard/1', '[a,b]', "true"),
-    verify_output(TmpDir, 'wam_compound_unbound/1', a, "false"),
+    smoke_cases(Cases),
+    verify_outputs(TmpDir, Cases),
     delete_directory_and_contents(TmpDir),
     writeln('wam_clojure_runtime_smoke: ok').
+
+smoke_cases([
+    case('wam_execute_caller/1', 'a', "true"),
+    case('wam_execute_caller/1', 'b', "false"),
+    case('wam_call_caller/1', 'a', "true"),
+    case('wam_call_caller/1', 'b', "false"),
+    case('wam_foreign_pair_query/1', b, "true"),
+    case('wam_foreign_pair_query/1', c, "false"),
+    case('wam_foreign_stream_pair_query/1', a, "false"),
+    case('wam_foreign_stream_pair_query/1', b, "true"),
+    case('wam_foreign_stream_pair_query/1', c, "false"),
+    case('wam_choice_caller/1', 'a', "true"),
+    case('wam_choice_caller/1', 'b', "true"),
+    case('wam_choice_caller/1', 'c', "true"),
+    case('wam_choice_caller/1', 'd', "false"),
+    case('wam_choice_or_z/1', 'z', "true"),
+    case('wam_bind_then_fact/1', 'a', "true"),
+    case('wam_bind_then_fact/1', 'b', "false"),
+    case('wam_bind_after_call/1', 'a', "true"),
+    case('wam_bind_after_call/1', 'b', "false"),
+    case('wam_bind_before_execute/1', 'a', "true"),
+    case('wam_bind_before_execute/1', 'b', "false"),
+    case('wam_if_then_else/1', 'a', "true"),
+    case('wam_if_then_else/1', 'b', "true"),
+    case('wam_if_then_else/1', 'c', "false"),
+    case('wam_use_struct/1', 'f(a)', "true"),
+    case('wam_use_struct/1', 'f(b)', "false"),
+    case('wam_use_list/1', '[a,b]', "true"),
+    case('wam_use_list/1', '[a,c]', "false"),
+    case('wam_double_struct_match/1', 'f(a)', "true"),
+    case('wam_double_struct_match/1', 'f(b)', "false"),
+    case('wam_double_list_match/1', '[a,b]', "true"),
+    case('wam_double_list_match/1', '[a,c]', "false"),
+    case('wam_make_struct/1', 'f(a)', "true"),
+    case('wam_make_list/1', '[a,b]', "true"),
+    case('wam_build_backtrack/1', 'f(a)', "false"),
+    case('wam_build_backtrack/1', 'f(b)', "true"),
+    case('wam_env_build_backtrack/1', 'f(a)', "false"),
+    case('wam_env_build_backtrack/1', 'f(b)', "true"),
+    case('wam_list_build_backtrack/1', '[a,b]', "false"),
+    case('wam_list_build_backtrack/1', '[a,c]', "true"),
+    case('wam_env1/1', a, "true"),
+    case('wam_env1/1', b, "false"),
+    case('wam_env2/1', a, "true"),
+    case('wam_env2/1', b, "false"),
+    case('wam_env3/1', a, "true"),
+    case('wam_env3/1', b, "false"),
+    case('wam_trail_choice/1', a, "true"),
+    case('wam_trail_choice/1', b, "true"),
+    case('wam_trail_choice/1', c, "false"),
+    case('wam_soft_cut_outer_ok/1', b, "true"),
+    case('wam_hard_cut_outer_ok/1', b, "true"),
+    case('wam_not_b/1', a, "true"),
+    case('wam_not_b/1', b, "false"),
+    case('wam_fail_after_bind/1', a, "false"),
+    case('wam_fail_after_bind/1', b, "false"),
+    case('wam_atom_guard/1', a, "true"),
+    case('wam_atom_guard/1', 'f(a)', "false"),
+    case('wam_integer_guard/1', 42, "true"),
+    case('wam_integer_guard/1', a, "false"),
+    case('wam_number_guard/1', 42, "true"),
+    case('wam_number_guard/1', a, "false"),
+    case('wam_atomic_guard/1', a, "true"),
+    case('wam_atomic_guard/1', 42, "true"),
+    case('wam_atomic_guard/1', 'f(a)', "false"),
+    case('wam_nonvar_guard/1', a, "true"),
+    case('wam_nonvar_guard/1', 42, "true"),
+    case('wam_nonvar_guard/1', 'f(a)', "true"),
+    case('wam_nonvar_unbound/1', a, "false"),
+    case('wam_var_guard/1', a, "false"),
+    case('wam_var_guard/1', 42, "false"),
+    case('wam_var_guard/1', 'f(a)', "false"),
+    case('wam_var_unbound/1', a, "true"),
+    case('wam_compound_guard/1', a, "false"),
+    case('wam_compound_guard/1', 42, "false"),
+    case('wam_compound_guard/1', 'f(a)', "true"),
+    case('wam_compound_guard/1', '[a,b]', "true"),
+    case('wam_compound_unbound/1', a, "false"),
+    case('wam_callable_guard/1', a, "true"),
+    case('wam_callable_guard/1', 42, "false"),
+    case('wam_callable_guard/1', 'f(a)', "true"),
+    case('wam_callable_guard/1', '[a,b]', "true"),
+    case('wam_callable_unbound/1', a, "false"),
+    case('wam_float_guard/1', 3.5, "true"),
+    case('wam_float_guard/1', 42, "false"),
+    case('wam_float_guard/1', a, "false"),
+    case('wam_float_guard/1', 'f(a)', "false"),
+    case('wam_float_unbound/1', a, "false"),
+    case('wam_is_list_guard/1', '[]', "true"),
+    case('wam_is_list_guard/1', '[a,b]', "true"),
+    case('wam_is_list_guard/1', '[a|b]', "false"),
+    case('wam_is_list_guard/1', a, "false"),
+    case('wam_is_list_guard/1', 'f(a)', "false"),
+    case('wam_is_list_unbound/1', a, "false"),
+    case('wam_length_guard/2', args('[a,b]', 2), "true"),
+    case('wam_length_guard/2', args('[a,b]', 1), "false"),
+    case('wam_length_guard/2', args('[]', 0), "true"),
+    case('wam_length_bad_list/1', 1, "false"),
+    case('wam_length_unbound_list/1', 0, "false"),
+    case('wam_member_guard/2', args(a, '[a,b]'), "true"),
+    case('wam_member_guard/2', args(b, '[a,b]'), "true"),
+    case('wam_member_guard/2', args(c, '[a,b]'), "false"),
+    case('wam_member_backtrack_b/0', no_args, "true"),
+    case('wam_member_unbound_list/1', a, "false"),
+    case('wam_append_guard/3', args('[a]', '[b,c]', '[a,b,c]'), "true"),
+    case('wam_append_guard/3', args('[]', '[a,b]', '[a,b]'), "true"),
+    case('wam_append_guard/3', args('[a,b]', '[]', '[a,b]'), "true"),
+    case('wam_append_guard/3', args('[a]', '[b]', '[a,c]'), "false"),
+    case('wam_append_bad_left/1', '[a,c]', "false"),
+    case('wam_append_unbound_left/1', '[a,b]', "true"),
+    case('wam_append_split/2', args('[]', '[a,b,c]'), "true"),
+    case('wam_append_split/2', args('[a]', '[b,c]'), "true"),
+    case('wam_append_split/2', args('[a,b]', '[c]'), "true"),
+    case('wam_append_split/2', args('[a,b,c]', '[]'), "true"),
+    case('wam_append_split/2', args('[a]', '[c]'), "false"),
+    case('wam_copy_term_guard/2', args(a, a), "true"),
+    case('wam_copy_term_guard/2', args(a, b), "false"),
+    case('wam_copy_term_guard/2', args('f(a)', 'f(a)'), "true"),
+    case('wam_copy_term_guard/2', args('f(a)', 'f(b)'), "false"),
+    case('wam_copy_term_sharing_fail/0', no_args, "false"),
+    case('wam_copy_term_independent_ok/0', no_args, "true"),
+    case('wam_functor_guard/3', args('f(a)', f, 1), "true"),
+    case('wam_functor_guard/3', args('f(a)', a, 1), "false"),
+    case('wam_functor_guard/3', args(a, a, 0), "true"),
+    case('wam_functor_guard/3', args(42, 42, 0), "true"),
+    case('wam_ground_guard/1', a, "true"),
+    case('wam_ground_guard/1', 42, "true"),
+    case('wam_ground_guard/1', 3.5, "true"),
+    case('wam_ground_guard/1', 'f(a)', "true"),
+    case('wam_ground_guard/1', '[a,b]', "true"),
+    case('wam_ground_unbound/1', a, "false"),
+    case('wam_ground_nested_unbound/1', a, "false"),
+    case('wam_arith_eq_42/1', 42, "true"),
+    case('wam_arith_eq_42/1', 3.5, "false"),
+    case('wam_arith_eq_float/1', 3.5, "true"),
+    case('wam_arith_neq_42/1', 3.5, "true"),
+    case('wam_arith_neq_42/1', 42, "false"),
+    case('wam_arith_eq_unbound/1', a, "false"),
+    case('wam_arith_lt_42/1', 3.5, "true"),
+    case('wam_arith_lt_42/1', 42, "false"),
+    case('wam_arith_gt_42/1', 43, "true"),
+    case('wam_arith_gt_42/1', 42, "false"),
+    case('wam_arith_le_42/1', 42, "true"),
+    case('wam_arith_le_42/1', 43, "false"),
+    case('wam_arith_ge_42/1', 42, "true"),
+    case('wam_arith_ge_42/1', 3.5, "false"),
+    case('wam_arith_lt_unbound/1', a, "false"),
+    case('wam_arith_is_inc_42/1', 43, "true"),
+    case('wam_arith_is_inc_42/1', 42, "false"),
+    case('wam_arith_is_combo_3_4/1', 11, "true"),
+    case('wam_arith_is_neg_42/1', -42, "true"),
+    case('wam_arith_is_div_5/1', 2.5, "true"),
+    case('wam_arith_is_int_div_5/1', 2, "true"),
+    case('wam_arith_is_mod_5/1', 1, "true"),
+    case('wam_arith_is_unbound/1', a, "false")
+]).
 
 assert_lowered_read_unify_prefix_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
@@ -368,6 +575,102 @@ assert_lowered_compound_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-compound-unbound-1"),
     has(CoreCode, "runtime/structure-term? value").
 
+assert_lowered_callable_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-callable-guard-1"),
+    has(CoreCode, "defn lowered-wam-callable-unbound-1"),
+    has(CoreCode, "runtime/atom-term? value"),
+    has(CoreCode, "runtime/structure-term? value").
+
+assert_lowered_float_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-float-guard-1"),
+    has(CoreCode, "defn lowered-wam-float-unbound-1"),
+    has(CoreCode, "float? value").
+
+assert_lowered_is_list_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-is-list-guard-1"),
+    has(CoreCode, "defn lowered-wam-is-list-unbound-1"),
+    has(CoreCode, "runtime/proper-list-term?").
+
+assert_lowered_length_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-length-guard-2"),
+    has(CoreCode, "defn lowered-wam-length-bad-list-1"),
+    has(CoreCode, "defn lowered-wam-length-unbound-list-1"),
+    has(CoreCode, "runtime/proper-list-length").
+
+assert_lowered_member_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-member-guard-2"),
+    has(CoreCode, "defn lowered-wam-member-backtrack-b-0"),
+    has(CoreCode, "defn lowered-wam-member-unbound-list-1"),
+    has(CoreCode, "runtime/apply-member-solution").
+
+assert_lowered_append_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-append-guard-3"),
+    has(CoreCode, "defn lowered-wam-append-bad-left-1"),
+    has(CoreCode, "defn lowered-wam-append-unbound-left-1"),
+    has(CoreCode, "defn lowered-wam-append-split-2"),
+    has(CoreCode, "runtime/apply-append-solution").
+
+assert_lowered_copy_term_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-copy-term-guard-2"),
+    has(CoreCode, "defn lowered-wam-copy-term-sharing-fail-0"),
+    has(CoreCode, "defn lowered-wam-copy-term-independent-ok-0"),
+    has(CoreCode, "runtime/apply-copy-term-solution").
+
+assert_lowered_functor_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-functor-guard-3"),
+    has(CoreCode, "runtime/apply-functor-solution").
+
+assert_lowered_ground_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-ground-guard-1"),
+    has(CoreCode, "defn lowered-wam-ground-unbound-1"),
+    has(CoreCode, "defn lowered-wam-ground-nested-unbound-1"),
+    has(CoreCode, "runtime/ground-term?").
+
+assert_lowered_arithmetic_comparison_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-arith-eq-42-1"),
+    has(CoreCode, "defn lowered-wam-arith-eq-float-1"),
+    has(CoreCode, "defn lowered-wam-arith-neq-42-1"),
+    has(CoreCode, "defn lowered-wam-arith-eq-unbound-1"),
+    has(CoreCode, "defn lowered-wam-arith-lt-42-1"),
+    has(CoreCode, "defn lowered-wam-arith-gt-42-1"),
+    has(CoreCode, "defn lowered-wam-arith-le-42-1"),
+    has(CoreCode, "defn lowered-wam-arith-ge-42-1"),
+    has(CoreCode, "defn lowered-wam-arith-lt-unbound-1"),
+    has(CoreCode, "defn lowered-wam-arith-is-inc-42-1"),
+    has(CoreCode, "defn lowered-wam-arith-is-combo-3-4-1"),
+    has(CoreCode, "defn lowered-wam-arith-is-neg-42-1"),
+    has(CoreCode, "defn lowered-wam-arith-is-div-5-1"),
+    has(CoreCode, "defn lowered-wam-arith-is-int-div-5-1"),
+    has(CoreCode, "defn lowered-wam-arith-is-mod-5-1"),
+    has(CoreCode, "defn lowered-wam-arith-is-unbound-1"),
+    has(CoreCode, "runtime/arithmetic-equal?"),
+    has(CoreCode, "runtime/arithmetic-not-equal?"),
+    has(CoreCode, "runtime/eval-arithmetic-term"),
+    has(CoreCode, "runtime/arithmetic-less?"),
+    has(CoreCode, "runtime/arithmetic-greater?"),
+    has(CoreCode, "runtime/arithmetic-less-or-equal?"),
+    has(CoreCode, "runtime/arithmetic-greater-or-equal?").
+
 assert_multiclause_wrappers_runtime_mediated(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
     read_file_to_string(CorePath, CoreCode, []),
@@ -392,11 +695,105 @@ empty_lowered_wrapper(CoreCode, FuncName) :-
     format(string(Expected), "(defn ~w [state]\n  state\n)", [FuncName]),
     has(CoreCode, Expected).
 
+verify_outputs(ProjectDir, Cases) :-
+    run_clojure_predicates_batch(ProjectDir, Cases, Actuals),
+    verify_expected_outputs(Cases, Actuals).
+
+verify_expected_outputs([], []).
+verify_expected_outputs([case(PredKey, Arg, Expected)|RestCases], [Actual|RestActuals]) :-
+    (   Actual == Expected
+    ->  verify_expected_outputs(RestCases, RestActuals)
+    ;   throw(error(assertion_error(PredKey, Arg, Expected, Actual), _))
+    ).
+verify_expected_outputs(Cases, Actuals) :-
+    throw(error(batch_output_count_mismatch(Cases, Actuals), _)).
+
+run_clojure_predicates_batch(ProjectDir, Cases, Outputs) :-
+    find_clojure_classpath(ClassPath),
+    cases_to_edn(Cases, Input),
+    process_create(path(java),
+                   ['-cp', ClassPath, 'clojure.main', '-m',
+                    'generated.wam_exec_test.core', '--batch'],
+                   [cwd(ProjectDir), stdin(pipe(In)), stdout(pipe(Out)), stderr(pipe(Err))]),
+    write(In, Input),
+    close(In),
+    read_string(Out, _, OutStr0),
+    read_string(Err, _, ErrStr),
+    close(Out),
+    close(Err),
+    split_string(OutStr0, "\n", "\r\t ", OutputLines0),
+    exclude(empty_string, OutputLines0, Outputs),
+    (   ErrStr == ""
+    ->  true
+    ;   throw(error(java_batch_stderr(ErrStr), _))
+    ).
+
+cases_to_edn(Cases, Edn) :-
+    maplist(case_to_edn, Cases, CaseEdns),
+    atomic_list_concat(CaseEdns, '\n ', Body),
+    format(string(Edn), "[~w]", [Body]).
+
+case_to_edn(case(PredKey, Arg, _Expected), Edn) :-
+    arg_to_edn_vector(Arg, ArgsEdn),
+    format(string(Edn), "{:pred \"~w\" :args ~w}", [PredKey, ArgsEdn]).
+
+arg_to_edn_vector(no_args, "[]") :- !.
+arg_to_edn_vector(args(Arg1, Arg2), ArgsEdn) :-
+    !,
+    prolog_term_string_to_edn(Arg1, EdnArg1),
+    prolog_term_string_to_edn(Arg2, EdnArg2),
+    format(string(ArgsEdn), "[~w ~w]", [EdnArg1, EdnArg2]).
+arg_to_edn_vector(args(Arg1, Arg2, Arg3), ArgsEdn) :-
+    !,
+    prolog_term_string_to_edn(Arg1, EdnArg1),
+    prolog_term_string_to_edn(Arg2, EdnArg2),
+    prolog_term_string_to_edn(Arg3, EdnArg3),
+    format(string(ArgsEdn), "[~w ~w ~w]", [EdnArg1, EdnArg2, EdnArg3]).
+arg_to_edn_vector(Arg, ArgsEdn) :-
+    prolog_term_string_to_edn(Arg, EdnArg),
+    format(string(ArgsEdn), "[~w]", [EdnArg]).
+
+empty_string("").
+
 verify_output(ProjectDir, PredKey, Arg, Expected) :-
     run_clojure_predicate(ProjectDir, PredKey, Arg, Actual),
     (   Actual == Expected
     ->  true
     ;   throw(error(assertion_error(PredKey, Arg, Expected, Actual), _))
+    ).
+
+run_clojure_predicate(ProjectDir, PredKey, args(Arg1, Arg2), Output) :-
+    find_clojure_classpath(ClassPath),
+    prolog_term_string_to_edn(Arg1, EdnArg1),
+    prolog_term_string_to_edn(Arg2, EdnArg2),
+    process_create(path(java),
+                   ['-cp', ClassPath, 'clojure.main', '-m',
+                    'generated.wam_exec_test.core', PredKey, EdnArg1, EdnArg2],
+                   [cwd(ProjectDir), stdout(pipe(Out)), stderr(pipe(Err))]),
+    read_string(Out, _, OutStr0),
+    read_string(Err, _, ErrStr),
+    close(Out),
+    close(Err),
+    normalize_space(string(Output), OutStr0),
+    (   ErrStr == ""
+    ->  true
+    ;   throw(error(java_stderr(PredKey, args(Arg1, Arg2), ErrStr), _))
+    ).
+
+run_clojure_predicate(ProjectDir, PredKey, no_args, Output) :-
+    find_clojure_classpath(ClassPath),
+    process_create(path(java),
+                   ['-cp', ClassPath, 'clojure.main', '-m',
+                    'generated.wam_exec_test.core', PredKey],
+                   [cwd(ProjectDir), stdout(pipe(Out)), stderr(pipe(Err))]),
+    read_string(Out, _, OutStr0),
+    read_string(Err, _, ErrStr),
+    close(Out),
+    close(Err),
+    normalize_space(string(Output), OutStr0),
+    (   ErrStr == ""
+    ->  true
+    ;   throw(error(java_stderr(PredKey, no_args, ErrStr), _))
     ).
 
 run_clojure_predicate(ProjectDir, PredKey, Arg, Output) :-
@@ -421,20 +818,40 @@ prolog_term_string_to_edn(b, "\"b\"") :- !.
 prolog_term_string_to_edn(c, "\"c\"") :- !.
 prolog_term_string_to_edn(d, "\"d\"") :- !.
 prolog_term_string_to_edn(z, "\"z\"") :- !.
+prolog_term_string_to_edn('[]', "\"[]\"") :- !.
+prolog_term_string_to_edn(-42, "-42") :- !.
+prolog_term_string_to_edn(0, "0") :- !.
+prolog_term_string_to_edn(1, "1") :- !.
+prolog_term_string_to_edn(2, "2") :- !.
+prolog_term_string_to_edn(2.5, "2.5") :- !.
+prolog_term_string_to_edn(3.5, "3.5") :- !.
+prolog_term_string_to_edn(11, "11") :- !.
 prolog_term_string_to_edn(42, "42") :- !.
+prolog_term_string_to_edn(43, "43") :- !.
 prolog_term_string_to_edn("a", "\"a\"") :- !.
 prolog_term_string_to_edn("b", "\"b\"") :- !.
 prolog_term_string_to_edn("c", "\"c\"") :- !.
 prolog_term_string_to_edn("d", "\"d\"") :- !.
+prolog_term_string_to_edn(f, "\"f\"") :- !.
+prolog_term_string_to_edn("f", "\"f\"") :- !.
 prolog_term_string_to_edn("z", "\"z\"") :- !.
 prolog_term_string_to_edn('f(a)', "{:tag :struct :functor \"f/1\" :args [\"a\"]}") :- !.
 prolog_term_string_to_edn('f(b)', "{:tag :struct :functor \"f/1\" :args [\"b\"]}") :- !.
+prolog_term_string_to_edn('[a]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}") :- !.
 prolog_term_string_to_edn('[a,b]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}") :- !.
+prolog_term_string_to_edn('[b,c]', "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
+prolog_term_string_to_edn('[c]', "{:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}") :- !.
 prolog_term_string_to_edn('[a,c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
+prolog_term_string_to_edn('[a,b,c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn('[a|b]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" \"b\"]}") :- !.
 prolog_term_string_to_edn("f(a)", "{:tag :struct :functor \"f/1\" :args [\"a\"]}") :- !.
 prolog_term_string_to_edn("f(b)", "{:tag :struct :functor \"f/1\" :args [\"b\"]}") :- !.
+prolog_term_string_to_edn("[a]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}") :- !.
 prolog_term_string_to_edn("[a,b]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}") :- !.
+prolog_term_string_to_edn("[b,c]", "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
+prolog_term_string_to_edn("[c]", "{:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}") :- !.
 prolog_term_string_to_edn("[a,c]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
+prolog_term_string_to_edn("[a,b,c]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn(Atom, Atom).
 
 find_clojure_classpath(ClassPath) :-

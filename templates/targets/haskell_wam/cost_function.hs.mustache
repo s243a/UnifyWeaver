@@ -1,0 +1,86 @@
+-- | Pluggable cost-function strategy slot for warm-build node ranking.
+-- See docs/design/SCAN_STRATEGY_SPECIFICATION.md for the design.
+--
+-- Three concrete cost functions are defined:
+--
+--   hopDistanceCostFn   — real implementation; ranks nodes by their
+--                         BFS distance from the nearest endpoint.
+--                         Cheap, no per-graph tuning, ships in P1.
+--   fluxCostFn          — panic stub (P3+); will become flux scoring
+--                         with separate parent/child decay.
+--   semanticCostFn      — panic stub (embeddings pending).
+--
+-- The CostFn record itself has two fields:
+--
+--   cfInitial — initial score for an endpoint node (seed/root).
+--   cfRelax   — one round of score propagation: given a node, its
+--               neighbours, and the current score map, return the
+--               updated map.
+--
+-- The score of a node IS its value in the ScoreMap. There is no
+-- separate "compute score from node" function — that would require
+-- different signatures for flux (needs the global score map) vs hop
+-- distance (doesn't). Keeping cfRelax as the sole score-producing
+-- operation keeps the abstraction uniform.
+
+type NodeId   = Int
+type Cost     = Double
+type ScoreMap = IM.IntMap Cost
+
+data CostFn = CostFn
+  { cfInitial :: !(NodeId -> Cost)
+  , cfRelax   :: !(NodeId -> [NodeId] -> ScoreMap -> ScoreMap)
+  }
+
+-- | Hop-distance cost function: real implementation.
+--
+-- An endpoint scores `fromIntegral maxHops` (the cap). Each
+-- propagation step decreases the score by 1 per hop. Nodes more
+-- than maxHops away never get added.
+--
+-- This is the safe default: cheap to compute, no per-graph tuning
+-- needed, gives a useful (if coarse) ranking for any graph.
+hopDistanceCostFn :: Int -> CostFn
+hopDistanceCostFn maxHops = CostFn
+  { cfInitial = \_n -> fromIntegral maxHops
+  , cfRelax   = \u neighbours sm ->
+      case IM.lookup u sm of
+        Nothing      -> sm
+        Just costU
+          | costU <= 1 -> sm
+          | otherwise  ->
+              let costV = costU - 1
+                  relax_one acc v =
+                    case IM.lookup v acc of
+                      Just existing | existing >= costV -> acc
+                      _ -> IM.insert v costV acc
+              in foldl relax_one sm neighbours
+  }
+
+-- | Flux cost function — PANIC STUB.
+--
+-- Will become: flux(n) = parent_flux(n) + child_flux(n)
+-- where each leg decays by (decay / branching_factor)^hops from the
+-- nearest endpoint. See SCAN_STRATEGY_SPECIFICATION.md.
+--
+-- Implementation pending Phase 2.5 / scan-strategy P3+.
+fluxCostFn :: Double -> Double -> Double -> CostFn
+fluxCostFn _parentDecay _childDecay _ignored = CostFn
+  { cfInitial = \_n ->
+      error "Flux cost function not yet implemented (pending Phase 2.5/P3+)"
+  , cfRelax   = \_u _ns _sm ->
+      error "Flux cost function not yet implemented (pending Phase 2.5/P3+)"
+  }
+
+-- | Semantic-similarity cost function — PANIC STUB.
+--
+-- Will become: score = cosine_similarity(embedding(n), query_embedding)
+-- where embeddings are loaded from `embedding_path`. Implementation
+-- pending availability of an embeddings table at our scale.
+semanticCostFn :: Int -> FilePath -> CostFn
+semanticCostFn _dim _path = CostFn
+  { cfInitial = \_n ->
+      error "Semantic similarity cost function not yet implemented (embeddings pending)"
+  , cfRelax   = \_u _ns _sm ->
+      error "Semantic similarity cost function not yet implemented (embeddings pending)"
+  }

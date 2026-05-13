@@ -137,7 +137,17 @@ if_then_goal(->(IfGoal, ThenGoal), IfGoal, ThenGoal) :- !.
 
 %% disjunction_alternatives(+Goal, -Alternatives)
 %  Flatten a Prolog disjunction (A ; B ; C) into a list [A, B, C].
-disjunction_alternatives((Left ; Right), Alternatives) :-
+%  The `nonvar(Goal)` guard is load-bearing: without it, an unbound
+%  Goal unifies with `(L ; R)` against fresh unbound L and R, the
+%  recursion then walks those fresh unbounds, each call manufactures
+%  more unbounds, and the recursion never terminates. Some callers
+%  (most notably the WAM compiler's analysis pass on bodies whose
+%  if-then-else trees temporarily expose unbound subterms) hit this
+%  shape easily; the guard makes the whole module safe to call with
+%  any term.
+disjunction_alternatives(Goal, Alternatives) :-
+    nonvar(Goal),
+    Goal = (Left ; Right),
     !,
     disjunction_alternatives(Left, LeftAlts),
     disjunction_alternatives(Right, RightAlts),

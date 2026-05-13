@@ -59,6 +59,12 @@
              [analyze_predicate_purity/2]).
 :- use_module('../core/statistics',
              [select_cache_mode/2]).
+:- use_module('../core/cost_model',
+             [recommend_access_pattern/5, read_mem_available_bytes/1]).
+:- use_module('../core/algorithm_manifest',
+             [load_algorithm_manifest/2]).
+:- use_module('../core/cost_function',
+             [validate_cost_function/1, cost_function_with_defaults/2]).
 
 % Phase 3: the real lowerability check and emission helpers live in the
 % wam_haskell_lowered_emitter module. We reexport so existing callers can
@@ -482,7 +488,12 @@ config_ops_to_template_vars([Op|Rest], [Key=Value|RestVars]) :-
 
 read_kernel_template(FileName, Template) :-
     atom_concat('templates/targets/haskell_wam/', FileName, RelPath),
-    (   source_file(wam_haskell_target, SrcFile)
+    %% Resolve the project root from this module's source file rather than
+    %% trusting the caller's cwd. Walks up: targets/ → unifyweaver/ → src/
+    %% → project root. Uses a callable head (`read_kernel_template/2`) so
+    %% source_file/2 actually matches; the bare-atom form was a no-op and
+    %% silently fell through to a cwd-relative path.
+    (   source_file(read_kernel_template(_,_), SrcFile)
     ->  file_directory_name(SrcFile, SrcDir),
         file_directory_name(SrcDir, TargetsDir),
         file_directory_name(TargetsDir, UnifyWeaverDir),
@@ -2564,11 +2575,27 @@ callForeign !ctx pred !sc = executeForeign ctx pred sc'.
 %  - Predicates.hs: compiled predicates
 %  - Main.hs: benchmark driver
 write_wam_haskell_project(Predicates, Options0, ProjectDir) :-
+    % Phase 0: merge any declared algorithm manifest into the option
+    % list BEFORE the resolvers run, so they see manifest-supplied
+    % values as defaults that caller options can still override.
+    % No-op (and idempotent — guarded by an internal sentinel) when no
+    % decl_algorithm/2 is in scope.
+    load_algorithm_manifest(Options0, OptionsM),
     % Resolve `use_lmdb(auto)` (if present) to a concrete true/false
     % BEFORE any downstream `option(use_lmdb(true), ...)` checks fire.
     % Auto consults ghc-pkg for the lmdb package + fact_count threshold;
     % see resolve_auto_use_lmdb/2.
-    resolve_auto_use_lmdb(Options0, Options),
+    resolve_auto_use_lmdb(OptionsM, Options1),
+    % Phase 2c: resolve cache_strategy(auto) into a concrete
+    % demand_bfs_mode/1 via cost_model:recommend_access_pattern/5.
+    % No-op when cache_strategy(auto) is absent.
+    resolve_auto_cache_strategy(Options1, Options2),
+    % Phase 2c+: resolve lmdb_cache_mode(auto) into a concrete tier
+    % (none/per_hec/sharded/two_level) when workload_locality/1 is
+    % set. Composes with the cache_strategy decision above: in_memory
+    % → none. No-op when workload_locality is absent (the in-place
+    % auto resolver in generate_lmdb_functions/2 then takes over).
+    resolve_auto_lmdb_cache_mode(Options2, Options),
 
     % Initialize the compile-time atom intern table with well-known atoms
     init_atom_intern_table,
@@ -2793,14 +2820,25 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     ->  QueryOptions = [use_ffi(true)|Options]
     ;   QueryOptions = Options
     ),
-    generate_query_body(QueryOptions, QueryBody),
     generate_merged_code_build(DetectedKernels, Options, MergedCodeBuild),
     generate_demand_filter(DetectedKernels, Options, DemandFilter, FactsSource),
+    generate_query_body(QueryOptions, RawQueryBody),
+    generate_demand_gated_query_body(DemandFilter, RawQueryBody, QueryBody),
+    %% When the demand filter is active, parMap iterates over the
+    %% pre-filtered seed list (so skipped seeds don't pay spark
+    %% synchronization cost). Otherwise it iterates over seedCats as
+    %% before. See generate_demand_filter for the filteredSeedCats
+    %% binding.
+    (   DemandFilter \= ''
+    ->  ParmapSeedSource = 'filteredSeedCats'
+    ;   ParmapSeedSource = 'seedCats'
+    ),
     (   DemandFilter \= ''
     ->  DemandMetrics =
 '    hPutStrLn stderr $ "demand_set_size=" ++ show demandSize
     hPutStrLn stderr $ "demand_total_nodes=" ++ show totalNodes
-    hPutStrLn stderr $ "demand_filtered_nodes=" ++ show filteredSize'
+    hPutStrLn stderr $ "demand_filtered_nodes=" ++ show filteredSize
+    hPutStrLn stderr $ "demand_skipped_seeds=" ++ show demandSkippedSeeds'
     ;   DemandMetrics = ''
     ),
     % Phase F3/F4: generate wcInlineFacts wiring from InlineDefs
@@ -2811,9 +2849,22 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     % as int32 IDs from the LMDB ingest pipeline, skip the TSV-based
     % seed loading and string interning.  Gated by section blocks in the
     % template; this just exposes the flag to the renderer.
-    (   option(int_atom_seeds(true), Options)
-    ->  IntAtomSeeds = true
-    ;   IntAtomSeeds = false
+    %
+    % Three modes:
+    %   int_atom_seeds(false) (default) — TSV mode; full string parsing.
+    %   int_atom_seeds(true)            — int_ids.txt files; iAtom = id.
+    %   int_atom_seeds(lmdb)            — Phase 2b.1: codegen surface only;
+    %                                     runtime panics with a clear
+    %                                     "not yet implemented" message
+    %                                     pending Phase 2b.2.
+    (   option(int_atom_seeds(lmdb), Options)
+    ->  IntAtomSeeds = true,
+        IntAtomSeedsLmdb = true
+    ;   option(int_atom_seeds(true), Options)
+    ->  IntAtomSeeds = true,
+        IntAtomSeedsLmdb = false
+    ;   IntAtomSeeds = false,
+        IntAtomSeedsLmdb = false
     ),
     % Resolve max_depth at codegen time. Reads user:max_depth/1 (asserted
     % by the workload or overridden by tests) so the generated FFI kernel
@@ -2826,6 +2877,15 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     % aggregation formula (n in Hops^(-N) and the inverse exponent), not
     % be silently overridden by a hardcoded 5.0 in the template.
     resolve_dimension_n(Options, DimN),
+    %% Phase 2b.3: also resolve demand_bfs_mode so the int_atom_seeds_lmdb
+    %% loader block can skip loadForwardEdgesFromLmdb in cursor mode.
+    %% Otherwise the 5_000_000-edge guard fires before demand BFS even
+    %% runs, defeating the whole purpose of cursor mode at scale.
+    resolve_auto_demand_bfs_mode(Options, BfsModeForLoaders),
+    (   BfsModeForLoaders == cursor
+    ->  DemandBfsModeCursor = true
+    ;   DemandBfsModeCursor = false
+    ),
     render_template(Template,
         [ foreign_preds=ForeignPredsStr
         , benchmark_mode=Mode
@@ -2839,8 +2899,11 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
         , lmdb_context=LmdbContext
         , lmdb_import=LmdbImport
         , int_atom_seeds=IntAtomSeeds
+        , int_atom_seeds_lmdb=IntAtomSeedsLmdb
+        , demand_bfs_mode_cursor=DemandBfsModeCursor
         , max_depth=MaxDepth
         , dimension_n=DimN
+        , parmap_seed_source=ParmapSeedSource
         ], Code).
 
 %% resolve_max_depth(+Options, -MaxDepth)
@@ -2904,7 +2967,7 @@ generate_inline_facts_wiring(InlineDefs, Code) :-
 %  When not enabled, all are empty strings.
 generate_lmdb_wiring(Options, SetupCode, ContextCode, ImportCode) :-
     (   option(use_lmdb(true), Options)
-    ->  ImportCode = 'import System.Directory (doesDirectoryExist, createDirectory)',
+    ->  ImportCode = 'import System.Directory (doesDirectoryExist, createDirectory)\nimport Database.LMDB.Raw (MDB_env)',
         % Three layout/source variants:
         %   - lmdb_layout(dupsort): LMDB is built externally by the
         %     streaming pipeline (no in-process ingest, error if missing).
@@ -2957,24 +3020,371 @@ generate_lmdb_wiring(Options, SetupCode, ContextCode, ImportCode) :-
 
 %% generate_demand_filter(+DetectedKernels, +Options, -FilterCode, -FactsSource)
 %  When demand filtering is enabled (kernels detected with an edge predicate),
-%  emit code to compute the demand set via backward BFS and filter the parents
-%  index. Otherwise emit nothing and use the unfiltered index.
+%  emit code that builds a DemandFilterSpec, dispatches via runDemandBFS, and
+%  filters the parents index. Otherwise emit nothing and use the unfiltered
+%  index.
+%
+%  The DemandFilterSpec is selected by:
+%    - declare_demand_filter/2 directive in user code (preferred)
+%    - declare_demand_filter(Strategy, Opts) option (override)
+%    - default `HopLimit Nothing` (unbounded — matches pre-Phase-2 behaviour)
+%
+%  See docs/design/WAM_DEMAND_FILTER_SPECIFICATION.md for the type.
 generate_demand_filter(DetectedKernels, Options, FilterCode, FactsSource) :-
     (   option(demand_filter(false), Options)
     ->  FilterCode = '',
         FactsSource = 'parentsIndexInterned'
     ;   DetectedKernels \= []
-    ->  FilterCode =
+    ->  resolve_demand_filter_spec(Options, SpecHs),
+        %% Phase 2b.3 demand_bfs_mode: cursor walks the LMDB
+        %% category_child sub-db, no in-memory parentsIndex needed.
+        %% Default = in_memory (preserves Phase 2b.2 behaviour for
+        %% callers without LMDB or with the pre-load IntMap path).
+        %% cursor mode requires int_atom_seeds(lmdb) (so internEnv is
+        %% in scope) and the fixture to have been ingested with the
+        %% category_child reverse-edge sub-db.
+        resolve_auto_demand_bfs_mode(Options, BfsMode),
+        (   BfsMode == cursor
+        ->  format(string(FilterCode),
 '    let !rootId = iAtom root
-        !demandSet = computeDemandSet parentsIndexInterned rootId
+        !demandFilterSpec = ~w
+    !demandFilterResult <- runDemandBFSCursor demandFilterSpec internEnv "category_child" rootId
+    let !demandSet = dfrInSet demandFilterResult
+        !demandSize = IS.size demandSet
+        !totalNodes = -1 :: Int  -- unknown without iterating LMDB
+        !filteredSize = -1 :: Int  -- LMDB is the source of truth; no filteredParents map
+        !filteredSeedCats = filter (\\cat -> IS.member (iAtom cat) demandSet) seedCats
+        !demandSkippedSeeds = length seedCats - length filteredSeedCats',
+                [SpecHs]),
+            FactsSource = 'parentsIndexInterned'  % unused at runtime in this mode
+        ;   format(string(FilterCode),
+'    let !rootId = iAtom root
+        !demandFilterSpec = ~w
+        !demandFilterResult = runDemandBFS demandFilterSpec parentsIndexInterned rootId
+        !demandSet = dfrInSet demandFilterResult
         !demandSize = IS.size demandSet
         !totalNodes = IM.size parentsIndexInterned
         !filteredParents = filterByDemand demandSet parentsIndexInterned
-        !filteredSize = IM.size filteredParents',
-        FactsSource = 'filteredParents'
+        !filteredSize = IM.size filteredParents
+        -- Pre-filter seedCats so parMap below only sparks seeds that can
+        -- actually reach root. Without this, every skipped seed pays
+        -- spark synchronization overhead even though its work is trivial,
+        -- which kills parallel speedup at -N>1 on workloads where most
+        -- seeds are gated out (e.g. 50k_cats: 49989/50000 skipped).
+        !filteredSeedCats = filter (\\cat -> IS.member (iAtom cat) demandSet) seedCats
+        !demandSkippedSeeds = length seedCats - length filteredSeedCats',
+                [SpecHs]),
+            FactsSource = 'filteredParents'
+        )
     ;   FilterCode = '',
         FactsSource = 'parentsIndexInterned'
     ).
+
+%% resolve_auto_demand_bfs_mode(+Options, -Mode)
+%  Pick the demand BFS implementation. Precedence:
+%    1. demand_bfs_mode(in_memory|cursor) explicit option.
+%    2. demand_bfs_mode(auto) — pick by fact_count threshold:
+%       - fact_count >= 50_000 -> cursor (avoids materialising the full
+%         reverse adjacency in memory)
+%       - otherwise            -> in_memory (faster at small scale,
+%         no per-edge LMDB cursor overhead)
+%    3. Default: in_memory (preserves Phase 2b.2 behaviour).
+%  Note: cursor mode requires int_atom_seeds(lmdb) AND a fixture with
+%  the category_child reverse-edge sub-db. Caller is responsible for
+%  ensuring those preconditions hold before opting in.
+resolve_auto_demand_bfs_mode(Options, Mode) :-
+    (   option(demand_bfs_mode(in_memory), Options)
+    ->  Mode = in_memory
+    ;   option(demand_bfs_mode(cursor), Options)
+    ->  Mode = cursor
+    ;   option(demand_bfs_mode(auto), Options)
+    ->  (   option(fact_count(N), Options),
+            integer(N),
+            N >= 50000
+        ->  Mode = cursor
+        ;   Mode = in_memory
+        )
+    ;   Mode = in_memory
+    ).
+
+%% resolve_auto_cache_strategy(+Options0, -Options) is det.
+%
+%  Phase 2c opt-in resolver. When `cache_strategy(auto)` is set,
+%  consult cost_model:recommend_access_pattern/5 with workload
+%  metadata, then translate the pattern recommendation (sort/scan)
+%  into a concrete `demand_bfs_mode/1` option that downstream code
+%  already understands.
+%
+%  Inputs read from Options (with defaults):
+%
+%    - fact_count(N)              — total facts in the source DB
+%    - expected_query_count(M)    — anticipated number of queries
+%                                   (default: 1)
+%    - working_set_fraction(F)    — per-query touched fraction of facts
+%                                   (default: 0.05; i.e. each query
+%                                   touches ~5% of the data set)
+%    - db_size_bytes(B)           — bytes a full scan would touch
+%                                   (default: estimate as fact_count
+%                                   * 50 bytes/edge)
+%    - mem_available_bytes(R)     — override /proc/meminfo probe
+%                                   (default: probe MemAvailable;
+%                                   1 GB fallback on non-Linux)
+%    - cost_model_constants(L)    — override hardware constants list
+%                                   passed to cost_model
+%                                   (default: cost_model defaults)
+%    - cache_strategy_verbose(true) — emit a stderr trace of the
+%                                     decision (default: silent)
+%
+%  Output mapping:
+%
+%    cost_model says `sort` → demand_bfs_mode(cursor)
+%      (cursor BFS = per-key seek pattern)
+%    cost_model says `scan` → demand_bfs_mode(in_memory)
+%      (pre-load IntMap = sequential scan pattern)
+%
+%  Footprint guard: when the cost model recommends `scan` but
+%  `W > R_free`, the in_memory implementation would materialise an
+%  IntMap larger than available RAM. The guard overrides the
+%  recommendation to `cursor` in that case. Phase L#11 (Phase 2c
+%  validation) surfaced this gap; the cost model decides access
+%  patterns but says nothing about working-set footprint.
+%
+%  Composes with `resolve_auto_demand_bfs_mode/2`: this resolver
+%  replaces any existing `demand_bfs_mode/1` term, so the downstream
+%  resolver sees a concrete value and is a no-op.
+%
+%  Behaviour unchanged when `cache_strategy(auto)` is absent.
+%
+%  See docs/design/CACHE_COST_MODEL_PHILOSOPHY.md and
+%  docs/design/WAM_PERF_OPTIMIZATION_LOG.md Phase M appendix #10.
+resolve_auto_cache_strategy(Options0, Options) :-
+    (   option(cache_strategy(auto), Options0)
+    ->  compute_cache_strategy_decision(Options0, BfsMode),
+        select(cache_strategy(auto), Options0, AfterStripStrategy),
+        exclude(=(demand_bfs_mode(_)), AfterStripStrategy, AfterStripBfs),
+        Options = [demand_bfs_mode(BfsMode) | AfterStripBfs]
+    ;   Options = Options0
+    ).
+
+compute_cache_strategy_decision(Options, BfsMode) :-
+    option(fact_count(FactCount), Options, 0),
+    option(expected_query_count(_QueryCount), Options, 1),
+    option(working_set_fraction(WSF), Options, 0.05),
+    (   option(db_size_bytes(DBSize), Options),
+        integer(DBSize), DBSize > 0
+    ->  WBytes = DBSize
+    ;   WBytes is FactCount * 50
+    ),
+    KKeys is integer(FactCount * WSF),
+    (   option(mem_available_bytes(R), Options),
+        integer(R), R > 0
+    ->  RFree = R
+    ;   catch(read_mem_available_bytes(RFree), _, RFree = 1_000_000_000)
+    ),
+    option(cost_model_constants(Constants), Options, []),
+    recommend_access_pattern(KKeys, WBytes, RFree, Constants, Pattern),
+    %% Footprint guard: cost_model decides between sort/scan access
+    %% patterns, but our `in_memory` implementation materialises the
+    %% full edge IntMap (working-set bytes resident in RAM). When
+    %% R_free < W the IntMap allocation would blow the available
+    %% memory budget — even though the model considers in_memory the
+    %% cheaper access pattern, we can't actually run it. Override to
+    %% cursor in that case. Documented in Phase L appendix #11
+    %% (the cold-regime probe that surfaced this).
+    (   Pattern = sort
+    ->  BfsMode = cursor,
+        Override = none
+    ;   WBytes > RFree
+    ->  BfsMode = cursor,
+        Override = footprint_guard
+    ;   BfsMode = in_memory,
+        Override = none
+    ),
+    (   option(cache_strategy_verbose(true), Options)
+    ->  (   Override == footprint_guard
+        ->  format(user_error,
+                   '[WAM-Haskell] cache_strategy(auto): K=~w W=~w R_free=~w → ~w (cursor, footprint guard: W > R_free)~n',
+                   [KKeys, WBytes, RFree, Pattern])
+        ;   format(user_error,
+                   '[WAM-Haskell] cache_strategy(auto): K=~w W=~w R_free=~w → ~w (~w)~n',
+                   [KKeys, WBytes, RFree, Pattern, BfsMode])
+        )
+    ;   true
+    ).
+
+%% resolve_auto_lmdb_cache_mode(+Options0, -Options) is det.
+%
+%  Phase 2c+ opt-in resolver for `lmdb_cache_mode(auto)`. Decides
+%  between `none` / `per_hec` (L1) / `sharded` (L2) / `two_level`
+%  (L1+L2) from workload metadata.
+%
+%  Opt-in signal: presence of `workload_locality/1` in Options. Without
+%  it, this resolver is a no-op and the existing in-place resolution
+%  in `generate_lmdb_functions/2` (via
+%  `statistics:select_cache_mode/2`) continues to handle the auto
+%  path. With it, the new resolver runs and the in-place path becomes
+%  a no-op because `lmdb_cache_mode(auto)` has already been replaced
+%  with a concrete value.
+%
+%  Inputs:
+%
+%    - `lmdb_cache_mode(auto)`         — triggers resolution
+%    - `workload_locality(L)`          — opt-in signal; L ∈
+%                                        {intra_thread, cross_thread,
+%                                         mixed, unknown}
+%    - `expected_query_count(M)`       — defaults to 1
+%    - `demand_bfs_mode/1`             — read to compose with
+%                                        cache_strategy resolver
+%    - `cache_strategy_verbose(true)`  — stderr trace of decision
+%
+%  Composition with `resolve_auto_cache_strategy/2`:
+%
+%    If the cache_strategy resolver already picked `in_memory`, the
+%    edge IntMap *is* the cache and adding another tier is redundant.
+%    Pick `none` in that case regardless of locality / M.
+%
+%  Memory budget guard (Phase L#13): when R_free is below
+%  `cache_tier_floor_bytes(N)` (default 4 MB), pick `none` regardless
+%  of locality/M. Symmetric to the working-set footprint guard in
+%  `compute_cache_strategy_decision/2` but for the cache layer rather
+%  than the BFS state.
+%
+%  Decision matrix for the cursor path (when memory budget allows):
+%
+%    M = 1                          → none      (no queries to amortise over)
+%    M > 1 & intra_thread          → per_hec   (L1)
+%    M > 1 & cross_thread          → sharded   (L2)
+%    M > 10 & mixed                → two_level (L1+L2)
+%    M > 1 & (mixed but M ≤ 10)    → sharded   (safe default)
+%    M > 1 & unknown               → sharded   (safe default;
+%                                                matches the existing
+%                                                resident_auto hardcode)
+%
+%  The `unknown → sharded` default mirrors the conventional wisdom
+%  documented in the matrix-bench: per-HEC L1 caches duplicate hot
+%  edges across threads when sparks have no region affinity, so until
+%  MoE-style spark routing lands, sharded is the right floor.
+%
+%  See docs/design/CACHE_COST_MODEL_PHILOSOPHY.md (decision-matrix
+%  section).
+resolve_auto_lmdb_cache_mode(Options0, Options) :-
+    (   option(lmdb_cache_mode(auto), Options0),
+        memberchk(workload_locality(_), Options0)
+    ->  compute_lmdb_cache_mode_decision(Options0, Mode),
+        select(lmdb_cache_mode(auto), Options0, Rest),
+        Options = [lmdb_cache_mode(Mode) | Rest]
+    ;   Options = Options0
+    ).
+
+compute_lmdb_cache_mode_decision(Options, Mode) :-
+    (   option(demand_bfs_mode(in_memory), Options)
+    ->  Mode = none,
+        Reason = in_memory_path
+    ;   cache_tier_memory_budget_short(Options, FloorBytes, RFree)
+    ->  Mode = none,
+        Reason = memory_budget(RFree, FloorBytes)
+    ;   option(expected_query_count(M), Options, 1),
+        option(workload_locality(Locality), Options, unknown),
+        (   M =< 1
+        ->  Mode = none, Reason = m_too_small
+        ;   Locality == intra_thread
+        ->  Mode = per_hec, Reason = intra_thread
+        ;   Locality == cross_thread
+        ->  Mode = sharded, Reason = cross_thread
+        ;   Locality == mixed, M > 10
+        ->  Mode = two_level, Reason = mixed
+        ;   Mode = sharded, Reason = default_safe
+        )
+    ),
+    (   option(cache_strategy_verbose(true), Options)
+    ->  format(user_error,
+               '[WAM-Haskell] lmdb_cache_mode(auto) → ~w (~w)~n',
+               [Mode, Reason])
+    ;   true
+    ).
+
+%% cache_tier_memory_budget_short(+Options, -FloorBytes, -RFree) is semidet.
+%
+%  True when free RAM is below the minimum needed to host even a
+%  modest cache. Reads:
+%    - cache_tier_floor_bytes(N): minimum RAM the cache layer needs
+%      to be useful. Default 4 MB — enough headroom for a small L2
+%      with the default capacity, leaves the budget guard biased
+%      toward enabling caching when free RAM is plentiful but
+%      protects against OOM under memory pressure.
+%    - mem_available_bytes(R): /proc/meminfo:MemAvailable override
+%      (same fallback chain as the cache_strategy resolver).
+%  Symmetric to the working-set footprint guard in
+%  compute_cache_strategy_decision/2 (Phase L#11) but for the cache
+%  layer rather than the BFS state.
+cache_tier_memory_budget_short(Options, FloorBytes, RFree) :-
+    option(cache_tier_floor_bytes(FloorBytes), Options, 4_000_000),
+    integer(FloorBytes),
+    FloorBytes > 0,
+    (   option(mem_available_bytes(R), Options),
+        integer(R), R > 0
+    ->  RFree = R
+    ;   catch(read_mem_available_bytes(RFree), _, RFree = 1_000_000_000)
+    ),
+    RFree < FloorBytes.
+
+%% resolve_demand_filter_spec(+Options, -SpecHs)
+%  Pick the DemandFilterSpec literal to emit into Main.hs.
+%  Precedence:
+%    1. demand_filter_spec(Strategy, Opts) in Options.
+%    2. user:demand_filter_spec(Strategy, Opts) declared in workload.
+%    3. Default: HopLimit Nothing (unbounded — legacy behaviour).
+resolve_demand_filter_spec(Options, SpecHs) :-
+    (   option(demand_filter_spec(Strategy, FilterOpts), Options)
+    ->  emit_demand_filter_spec(Strategy, FilterOpts, SpecHs)
+    ;   catch(user:demand_filter_spec(Strategy, FilterOpts), _, fail)
+    ->  emit_demand_filter_spec(Strategy, FilterOpts, SpecHs)
+    ;   SpecHs = '(HopLimit Nothing)'
+    ).
+
+%% emit_demand_filter_spec(+Strategy, +FilterOpts, -SpecHs)
+%  Translate a (Strategy, Options) Prolog term into a Haskell
+%  DemandFilterSpec literal. Validates strategy + options.
+emit_demand_filter_spec(hop_limit, FilterOpts, SpecHs) :- !,
+    (   memberchk(max_hops(N), FilterOpts), integer(N), N >= 0
+    ->  format(string(SpecHs), '(HopLimit (Just ~d))', [N])
+    ;   memberchk(unbounded, FilterOpts)
+    ->  SpecHs = '(HopLimit Nothing)'
+    ;   SpecHs = '(HopLimit Nothing)'
+    ).
+emit_demand_filter_spec(flux, FilterOpts, SpecHs) :- !,
+    %% Flux is accepted at codegen but panics at runtime until Phase 2.5.
+    (   memberchk(target_count(K), FilterOpts), integer(K), K >= 0
+    ->  CacheTopK = K
+    ;   memberchk(target_fraction(_F), FilterOpts)
+    ->  %% target_fraction needs runtime knowledge of universe size; emit
+        %% a placeholder K that the Phase 2.5 implementation will replace.
+        CacheTopK = 0
+    ;   CacheTopK = 0
+    ),
+    (   memberchk(sort_sparks(false), FilterOpts)
+    ->  SortSparks = 'False'
+    ;   SortSparks = 'True'
+    ),
+    format(string(SpecHs), '(Flux ~d ~w)', [CacheTopK, SortSparks]).
+emit_demand_filter_spec(none, _FilterOpts, 'DfNone') :- !.
+emit_demand_filter_spec(Strategy, _FilterOpts, _) :-
+    format(user_error,
+        '[wam_haskell] unknown demand filter strategy: ~w~n', [Strategy]),
+    throw(error(domain_error(demand_filter_strategy, Strategy), _)).
+
+%% generate_demand_gated_query_body(+DemandFilter, +RawQueryBody, -QueryBody)
+%
+%  Historical: PR #1876 wrapped the parMap closure with an inline
+%  IS.member check. That kept the spark count equal to seedCats (50k+
+%  on enwiki-style fixtures), so 49989/50000 sparks paid synchronization
+%  cost while doing trivial work — total parallel scaling broke at -N>1.
+%
+%  Current: the filter happens BEFORE parMap (in
+%  generate_demand_filter via filteredSeedCats), so the closure here
+%  no longer needs an inline gate. This predicate is kept as an
+%  identity wrapper for backwards compat with the codegen call site.
+generate_demand_gated_query_body(_, QueryBody, QueryBody).
 
 %% generate_merged_code_build(+DetectedKernels, +Options, -Code)
 %  Emit the merged-code construction block for Main.hs.
@@ -3072,7 +3482,17 @@ build_predicate_loads(Predicates, Code) :-
     let allLabels = ~w', [CodeConcat, LabelUnion]).
 
 %% compile_wam_runtime_to_haskell(+Options, +DetectedKernels, -Code)
-compile_wam_runtime_to_haskell(Options, DetectedKernels, Code) :-
+compile_wam_runtime_to_haskell(Options0, DetectedKernels, Code) :-
+    % Phase 0: merge any declared algorithm manifest. Idempotent when
+    % the outer write_wam_haskell_project/3 already merged.
+    load_algorithm_manifest(Options0, OptionsM),
+    % Phase 2c: resolve cache_strategy(auto) into a concrete
+    % demand_bfs_mode/1 BEFORE downstream code consults it. No-op
+    % when the option is absent.
+    resolve_auto_cache_strategy(OptionsM, Options1),
+    % Phase 2c+: resolve lmdb_cache_mode(auto) → concrete tier.
+    % No-op when workload_locality/1 is absent.
+    resolve_auto_lmdb_cache_mode(Options1, Options),
     step_function_haskell(StepCode),
     backtrack_haskell(BacktrackCodeTemplate),
     run_loop_haskell(RunCode),
@@ -3085,11 +3505,19 @@ compile_wam_runtime_to_haskell(Options, DetectedKernels, Code) :-
                     BacktrackCode),
     % Phase B1: conditional LMDB imports and functions
     (   option(use_lmdb(true), Options)
-    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (alloca, allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.String (withCStringLen, peekCStringLen)\nimport Foreign.C.Types (CSize(..))\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Data.Bits ((.&.))\nimport Data.IORef (IORef, newIORef, readIORef, writeIORef, atomicModifyIORef')\nimport qualified Data.Array as A\nimport qualified Data.Array.IO as IOA\nimport qualified Control.Exception as E\nimport Control.Monad (forM_)\nimport Control.Concurrent (runInBoundThread, myThreadId, ThreadId, threadCapability, getNumCapabilities)",
+    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr, nullPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (alloca, allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.String (withCStringLen, peekCStringLen)\nimport Foreign.C.Types (CSize(..), CChar)\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Data.Bits ((.&.))\nimport Data.IORef (IORef, newIORef, readIORef, writeIORef, atomicModifyIORef')\nimport qualified Data.Array as A\nimport qualified Data.Array.IO as IOA\nimport qualified Data.ByteString as BS\nimport qualified Data.Text as T\nimport qualified Data.Text.Encoding as TE\nimport qualified Data.Text.Encoding.Error as TEE\nimport qualified Control.Exception as E\nimport Control.Monad (forM_, when, foldM)\nimport Control.Concurrent (runInBoundThread, myThreadId, ThreadId, threadCapability, getNumCapabilities)\nimport Control.Concurrent.Async (mapConcurrently)",
         generate_lmdb_functions(Options, LmdbFunctions)
     ;   LmdbImports = "",
         LmdbFunctions = ""
     ),
+    % P1 (scan-strategy): conditional cost-function code.
+    % Emitted when option(tree_cost_function(Name, Params), Options) is
+    % present. Renders cost_function.hs.mustache and a `theCostFn`
+    % binding that selects the concrete CostFn constructor at codegen
+    % time. P3+ warm-build code will reference `theCostFn`; in P1 it's
+    % a top-level binding that GHC may flag as unused — accepted as
+    % a warning since the build still succeeds.
+    generate_cost_function_code(Options, CostFunctionCode),
     format(string(Code),
 '{-# LANGUAGE BangPatterns #-}
 module WamRuntime where
@@ -3285,7 +3713,9 @@ resolveCallInstrs labels foreignPreds = map resolve
       in SwitchOnConstantPc (IM.fromList [(extractId v, pc) | (v, label) <- Map.toList table,
                                                                Just pc <- [Map.lookup label labels]])
     resolve i = i
-', [LmdbImports, StepCode, BacktrackCode, RunCode, LmdbFunctions]).
+
+~w
+', [LmdbImports, StepCode, BacktrackCode, RunCode, LmdbFunctions, CostFunctionCode]).
 
 %% generate_wam_types_hs(-Code)
 generate_wam_types_hs(Code) :-
@@ -3650,16 +4080,32 @@ generate_cabal_file(Name, UseHM, Options, Code) :-
     ->  BaseDeps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, unordered-containers >= 0.2, hashable >= 1.2, deepseq >= 1.4, parallel >= 3.2, async >= 2.2"
     ;   BaseDeps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, deepseq >= 1.4, parallel >= 3.2, async >= 2.2"
     ),
-    % Phase B1: conditional LMDB dependency
+    % Phase B1: conditional LMDB dependency.
+    % bytestring + text are added with use_lmdb(true) so peekStringBytes
+    % can decode UTF-8 — the byte loop got mojibake on non-ASCII fixtures
+    % (e.g. accented Wikipedia categorylinks).
     (   option(use_lmdb(true), Options)
-    ->  format(string(Deps), "~w, lmdb >= 0.2.5, directory >= 1.3", [BaseDeps])
+    ->  format(string(Deps), "~w, lmdb >= 0.2.5, directory >= 1.3, bytestring >= 0.10, text >= 1.2", [BaseDeps])
     ;   Deps = BaseDeps
     ),
     % -threaded enables multi-core runtime (+RTS -N to use cores).
     % -rtsopts is needed so +RTS flags are accepted at runtime.
     (   option(profiling(true), Options)
-    ->  GhcOpts = "-O2 -threaded -rtsopts -prof -fprof-auto"
-    ;   GhcOpts = "-O2 -threaded -rtsopts"
+    ->  BaseGhcOpts = "-O2 -threaded -rtsopts -prof -fprof-auto"
+    ;   BaseGhcOpts = "-O2 -threaded -rtsopts"
+    ),
+    %% with_rtsopts(Flags): bake default RTS flags into the executable
+    %% so +RTS args don't need to be passed every run. Caller-supplied
+    %% +RTS flags still override (per GHC's "last flag wins" rule).
+    %% Used by the matrix bench to default -A64M (Phase L appendix #6
+    %% in WAM_PERF_OPTIMIZATION_LOG.md): the GC-pressure win at -N>=2
+    %% is large enough that we'd rather pay the small -N1 regression
+    %% than make every bench user pass +RTS flags. Cost-model-driven
+    %% selection (à la C# target's source-mode resolver) is deferred.
+    (   option(with_rtsopts(RtsFlags), Options),
+        RtsFlags \= ''
+    ->  format(string(GhcOpts), '~w "-with-rtsopts=~w"', [BaseGhcOpts, RtsFlags])
+    ;   GhcOpts = BaseGhcOpts
     ),
     format(string(Code),
 'cabal-version: 2.4
@@ -4119,6 +4565,64 @@ generate_lmdb_functions(Options, Code) :-
                      lmdb_cache_two_level=CacheTwoLevel,
                      lmdb_l2_capacity_bytes=L2CapacityBytes],
                     Code).
+
+%% generate_cost_function_code(+Options, -Code) is det.
+%
+%  Phase 1 (scan-strategy). When option(tree_cost_function(Name, Params),
+%  Options) is present, emit:
+%    1. The cost_function.hs.mustache template (CostFn record + concrete
+%       constructors hopDistanceCostFn / fluxCostFn / semanticCostFn).
+%    2. A `theCostFn :: CostFn` binding that selects the appropriate
+%       constructor with the chosen parameters.
+%
+%  The chosen tree_cost_function term is validated and filled with
+%  defaults via cost_function:cost_function_with_defaults/2. Bad terms
+%  (unknown name, wrong types, missing required params) throw at
+%  codegen time — no silent acceptance.
+%
+%  When the option is absent, returns the empty string. Existing
+%  workloads see no Haskell-level change.
+generate_cost_function_code(Options, Code) :-
+    (   option(tree_cost_function(Name, ProvidedParams), Options)
+    ->  validate_cost_function(tree_cost_function(Name, ProvidedParams)),
+        cost_function_with_defaults(
+            tree_cost_function(Name, ProvidedParams),
+            tree_cost_function(Name, FullParams)),
+        read_kernel_template('cost_function.hs.mustache', Template),
+        cost_function_haskell_constructor(Name, FullParams, ConstructorExpr),
+        format(string(Code),
+'-- ==================================================================
+-- Cost-function strategy slot (scan-strategy P1).
+-- ==================================================================
+
+~w
+
+-- | Cost function selected at codegen time from
+-- tree_cost_function(~w, ...) in workload options. P3+ warm-build
+-- consumes this to rank candidate nodes during tree construction.
+theCostFn :: CostFn
+theCostFn = ~w
+',                  [Template, Name, ConstructorExpr])
+    ;   Code = ""
+    ).
+
+%% cost_function_haskell_constructor(+Name, +Params, -Expr)
+%
+%  Map a (validated, defaults-filled) tree_cost_function/2 term into
+%  the Haskell expression that constructs the corresponding CostFn.
+cost_function_haskell_constructor(hop_distance, Params, Expr) :- !,
+    option(max_hops(MaxHops), Params),
+    format(string(Expr), 'hopDistanceCostFn ~d', [MaxHops]).
+cost_function_haskell_constructor(flux, Params, Expr) :- !,
+    option(parent_decay(PD), Params),
+    option(child_decay(CD), Params),
+    %% Third arg is currently a placeholder for the flux_merge mode;
+    %% the panic stub ignores it. P3+ will define a sensible encoding.
+    format(string(Expr), 'fluxCostFn ~w ~w 0.0', [PD, CD]).
+cost_function_haskell_constructor(semantic_similarity, Params, Expr) :- !,
+    option(dim(Dim), Params),
+    option(embedding_path(Path), Params),
+    format(string(Expr), 'semanticCostFn ~d "~w"', [Dim, Path]).
 
 %% maybe_parallelize_instrs(+PredIndicator, +Options, +InstrExprs0, -InstrExprs)
 %  Rewrite TryMeElse → ParTryMeElse etc. when the predicate certifies

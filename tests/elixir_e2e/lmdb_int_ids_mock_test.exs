@@ -47,7 +47,7 @@ defmodule LmdbIntIdsTest do
   defp pass(name), do: IO.puts("[PASS] #{name}")
   defp fail(name, reason), do: IO.puts("[FAIL] #{name}: #{reason}")
 
-  defp open_handle(dupsort) do
+  defp open_handle(dupsort, cache_capacity \\ 0) do
     {:ok, env} = Elmdb.env_open()
     {:ok, facts} = Elmdb.db_open(env, "facts", if(dupsort, do: [:dupsort], else: []))
     {:ok, k_to_id} = Elmdb.db_open(env, "key_to_id", [])
@@ -61,7 +61,8 @@ defmodule LmdbIntIdsTest do
           key_to_id_dbi: k_to_id,
           id_to_key_dbi: id_to_k,
           arity: 2,
-          dupsort: dupsort
+          dupsort: dupsort,
+          cache_capacity: cache_capacity
         },
         2,
         nil
@@ -188,6 +189,47 @@ defmodule LmdbIntIdsTest do
     end
   end
 
+  def test_lookup_cache_is_bounded_and_collision_safe do
+    name = "lookup_by_arg1_id cache is bounded and collision-safe"
+    {handle, env} = open_handle(true, 1)
+
+    {:ok, _} = LmdbIntIds.ingest_pairs(handle, [
+      {"alpha", "beta"},
+      {"alpha", "gamma"},
+      {"delta", "epsilon"}
+    ])
+
+    alpha_id = LmdbIntIds.lookup_id(handle, "alpha")
+    delta_id = LmdbIntIds.lookup_id(handle, "delta")
+
+    warmed = LmdbIntIds.preload_arg1_cache(handle, nil)
+    alpha_first = LmdbIntIds.lookup_by_arg1_id(handle, alpha_id, nil)
+    delta_pairs = LmdbIntIds.lookup_by_arg1_id(handle, delta_id, nil)
+    alpha_second = LmdbIntIds.lookup_by_arg1_id(handle, alpha_id, nil)
+
+    alpha_ok =
+      alpha_first == alpha_second and
+        alpha_first |> Enum.map(fn {_, v} -> v end) |> Enum.sort() ==
+          ["beta", "gamma"] |> Enum.map(&LmdbIntIds.lookup_id(handle, &1)) |> Enum.sort()
+
+    delta_ok =
+      delta_pairs == [{delta_id, LmdbIntIds.lookup_id(handle, "epsilon")}]
+
+    LmdbIntIds.close(handle, nil)
+    Elmdb.env_close(env)
+
+    cond do
+      warmed != 2 ->
+        fail(name, "expected preload to warm 2 arg1 entries, got #{inspect(warmed)}")
+      not alpha_ok ->
+        fail(name, "alpha lookup changed across cache collision: #{inspect(alpha_first)} / #{inspect(alpha_second)}")
+      not delta_ok ->
+        fail(name, "delta lookup mismatch: #{inspect(delta_pairs)}")
+      true ->
+        pass(name)
+    end
+  end
+
   def test_lookup_missing_key_returns_empty do
     name = "lookup_id on missing string returns nil; lookup_by_arg1_id on missing ID returns []"
     {handle, env} = open_handle(false)
@@ -302,6 +344,7 @@ defmodule LmdbIntIdsTest do
     test_ingest_idempotent()
     test_lookup_by_arg1_id_dupsort()
     test_lookup_by_arg1_string_round_trip()
+    test_lookup_cache_is_bounded_and_collision_safe()
     test_lookup_missing_key_returns_empty()
     test_stream_all_returns_int_pairs()
     test_migrate_from_string_keyed()

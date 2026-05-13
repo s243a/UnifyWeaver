@@ -93,6 +93,71 @@ Semantic note:
 - current runs also report `query_vs_prolog_accumulated = match` at
   `300`, `1k`, `5k`, and `10k`
 
+### C# Query Source-Mode Calibration
+
+`benchmark_csharp_query_source_mode_sweep.py` runs the generated C# query
+graph workloads across relation source modes and reports each workload's
+best observed mode, `auto` versus best ratio, output hash agreement, resolved
+source mode, and relation registration shape. Its default workload set is
+`all`, covering every registered graph workload:
+
+```bash
+python examples/benchmark/benchmark_csharp_query_source_mode_sweep.py \
+  --scales 300 \
+  --source-modes auto,preload,artifact-prebuilt \
+  --repetitions 1 \
+  --fail-on-output-mismatch \
+  --max-auto-vs-best-ratio 2.00
+```
+
+The checked-in scale-300/1k/5k/10k calibration snapshot is
+`examples/benchmark/csharp_query_graph_source_mode_calibration.tsv`. It is a
+baseline for the current graph `auto` policy, not a permanent benchmark
+claim: use a fresh sweep before changing `RelationSourceModePolicy`.
+
+Add `--compare-calibration` to compare a fresh sweep with that snapshot. The
+comparison fails on output, resolved-policy, coverage, or relation-registration
+drift, while reporting best-mode and median changes as timing warnings because
+single-repetition benchmark winners can move with local noise.
+
+Add `--require-idle` for timing-sensitive calibration refreshes. It fails
+before running child benchmarks if `MemAvailable` is below
+`--min-free-memory-mib` (default `1024`) or if another process is already above
+`--max-competing-cpu-percent` (default `50.0`), preventing known-noisy timing
+rows from being captured accidentally.
+
+Use `--stability-runs <n>` to run the wrapper-level sweep repeatedly and
+summarize stable winners. Values above `1` report majority winners, winner
+counts, stable resolved `auto` modes, and per-mode median timings across the
+independent runs.
+
+Use `--format calibration-tsv` when refreshing
+`csharp_query_graph_source_mode_calibration.tsv`. Combined with
+`--stability-runs <n>`, it emits artifact-compatible rows whose median timing
+fields come from the independent-run stability summary instead of one noisy
+single run. Add `--write-calibration-artifact` to write those rows directly to
+`--calibration-artifact` after validation succeeds. If the artifact already
+exists, only the selected workload/scale rows are replaced; unselected rows are
+preserved.
+
+```bash
+python examples/benchmark/benchmark_csharp_query_source_mode_sweep.py \
+  --require-idle \
+  --workloads all \
+  --scales 300,1k,5k,10k \
+  --source-modes auto,preload,artifact-prebuilt \
+  --repetitions 1 \
+  --stability-runs 3 \
+  --compare-calibration \
+  --format calibration-tsv \
+  --write-calibration-artifact
+```
+
+Mixed-scale sweeps are filtered per workload. File-backed graph workloads can
+use `dev`, `300`, `1k`, `5k`, and `10k`; generated dependency-depth workloads
+use `300`, `1k`, `5k`, and `10k`. Unsupported workload/scale pairs are skipped
+with warnings instead of aborting the full sweep.
+
 ### WAM-Rust and WAM-Haskell Benchmark Variants
 
 The effective-distance harness also includes hybrid WAM benchmark targets:
@@ -284,9 +349,38 @@ swipl -q -s examples/benchmark/generate_wam_scala_effective_distance_benchmark.p
 It emits a Scala WAM project plus an `EffectiveDistanceRunner` companion that
 prints the standard `article	root_category	effective_distance` table from
 `category_parent.tsv` and `article_category.tsv`. The generator supports
-`kernels_on` via the Scala fact-source handler and `kernels_off` via compiled
-WAM facts, but the targets are not registered in the Python matrix until the
-runner wiring has a dedicated smoke gate.
+`kernels_on` via the Scala fact-source handler and `kernels_off` via WAM
+`category_ancestor/4` recursion over the same fact-source seam. The registered
+matrix targets are:
+
+- `scala-wam-seeded`
+- `scala-wam-seeded-no-kernels`
+- `scala-wam-accumulated`
+- `scala-wam-accumulated-no-kernels`
+
+Slow fallback probes can be bounded from the matrix harness instead of relying
+on an external watchdog. For example, to validate that a large no-kernel Scala
+project still generates and compiles without running the slow fallback:
+
+```bash
+python3 examples/benchmark/benchmark_effective_distance_matrix.py \
+  --scales 300 \
+  --targets scala-wam-accumulated-no-kernels \
+  --compile-only-targets scala-wam-accumulated-no-kernels \
+  --repetitions 1
+```
+
+To run a bounded kernel/no-kernel comparison and report a timeout row rather
+than hanging the benchmark process:
+
+```bash
+python3 examples/benchmark/benchmark_effective_distance_matrix.py \
+  --scales dev \
+  --targets scala-wam-accumulated,scala-wam-accumulated-no-kernels \
+  --timeout-targets scala-wam-accumulated-no-kernels \
+  --run-timeout-seconds 10 \
+  --repetitions 1
+```
 
 The configurable benchmark matrix now treats all Clojure WAM effective-distance
 modes as result-producing `hybrid-wam` targets:
@@ -307,14 +401,19 @@ python3 examples/benchmark/benchmark_effective_distance_matrix.py --list-kernel-
 
 The report is TSV with `family`, `mode`, `kernels_target`, and
 `no_kernels_target` columns. It currently covers registered Rust
-seeded/accumulated and Rust interpreter/lowered pairings, plus Go, Clojure,
-and Haskell effective-distance WAM pairings.
+seeded/accumulated and Rust interpreter/lowered pairings, plus Go, C, Scala,
+Clojure, and Haskell effective-distance WAM pairings.
 
 When both sides of a registered pair run for the same scale, the benchmark
 summary also emits a paired delta table with median timings, a
 `kernels_speedup_vs_no_kernels` ratio, and output/row-count match flags. A
 ratio above `1.0` means the kernel-enabled target was faster than its
-no-kernel counterpart for that pair.
+no-kernel counterpart for that pair. Targets reported as `timeout`, `error`,
+or `compile_only` are listed in the primary table but excluded from output
+matching, baseline speedups, and kernel-pair deltas. Error rows preserve any
+normalized stdout digest and row count that were produced before the process
+failed, which is useful for diagnosing partial-output crashes without aborting
+the rest of the matrix.
 
 Artifact-vs-sidecar Clojure comparisons are available through the
 `clojure-wam-artifact` target set, which adds:
@@ -1067,7 +1166,8 @@ Comparison note:
 - use `benchmark_csharp_query_source_mode_sweep.py` when you want a compact
   cross-workload TSV or Markdown summary of best source mode, auto-vs-best
   ratio, output agreement, per-mode medians, and source-registration storage
-  families
+  families; mixed requests such as `--scales dev,300` skip unsupported
+  workload/scale pairs with warnings
 - cache reuse remains disabled for these one-shot generated benchmark
   programs, and trace creation is now opt-in rather than always-on
 - the hand-written C# DFS baseline is still cheaper after its lighter

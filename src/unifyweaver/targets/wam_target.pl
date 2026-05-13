@@ -781,8 +781,21 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
     (   var(ValueVar)
     ->  % ValueVar is a Prolog variable — allocate a Y-register for it
         allocate_var(ValueVar, V1, V2, ValueReg),
-        % Emit put_variable to actually create the Y-register in the env frame
-        format(string(InitValueCode), "    put_variable ~w, A1", [ValueReg]),
+        % Emit put_variable to actually create the Y-register in the env
+        % frame. Use the SELF-INIT form (put_variable Y_n, Y_n) rather
+        % than (put_variable Y_n, A1): the latter would share a fresh
+        % unbound between Y_n and A1, and if the inner goal's first
+        % arg is a constructed compound (e.g.
+        % `findall(X, fact_in_range(p/2, ..., [X,_]), L)` where A1
+        % holds `p/2`), put_structure_'s auto-bind in append_build_arg
+        % would bind the shared unbound to the new struct -- silently
+        % capturing the inner goal's first arg into the template var.
+        % Self-init avoids the A1 share entirely; the inner goal's
+        % compilation emits `put_value Y_n, A_k` when the template
+        % var IS a direct call arg, so cases that don't have the
+        % struct-first-arg conflict are unaffected.
+        format(string(InitValueCode), "    put_variable ~w, ~w",
+               [ValueReg, ValueReg]),
         ConstructionCode = ""
     ;   compound(ValueVar)
     ->  % Compound Template — `findall(p(X, Y), Goal, L)` and similar.
@@ -828,10 +841,12 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
 %% compile_compound_template(+Template, +V0, -Vf, -InitCode, -ConstructionCode)
 %  For findall(Functor(Arg1, Arg2, ...), Goal, L) with compound Template:
 %  - Each Arg is either a variable or a constant
-%  - Variables get Y-regs allocated (via allocate_var) so they have
-%    stable slots across the inner-goal call
-%  - InitCode emits put_variable Y_n, A_n for variables and
-%    put_constant for constants — fresh refs each iteration
+%  - Variables get Y-regs allocated (via allocate_var) and initialized
+%    directly so they have stable slots across the inner-goal call.
+%    Do not initialize through A-registers: those are scratch argument
+%    registers for the inner goal, and aliasing a template variable
+%    through A2 can bind it when the inner goal builds its own A2 term
+%    (for example findall(Y-L, bagof(X, p(X,Y), L), Groups)).
 %  - ConstructionCode emits put_structure + set_value/set_constant
 %    after the inner goal returns; A1 holds the heap ref to the
 %    constructed Template
@@ -853,13 +868,11 @@ compile_template_arg_init([], _, V, V, []).
 compile_template_arg_init([Arg | Rest], I, V0, Vf, Lines) :-
     (   var(Arg)
     ->  allocate_var(Arg, V0, V1, Reg),
-        format(string(Line), "    put_variable ~w, A~w", [Reg, I]),
+        format(string(Line), "    put_variable ~w, ~w", [Reg, Reg]),
         Lines = [Line | RestLines]
     ;   atomic(Arg)
     ->  V1 = V0,
-        quote_wam_constant(Arg, ArgStr),
-        format(string(Line), "    put_constant ~w, A~w", [ArgStr, I]),
-        Lines = [Line | RestLines]
+        Lines = RestLines
     ;   % Compound or other — not yet supported
         throw(error(unsupported_template_arg(Arg), compile_compound_template/5))
     ),
@@ -905,19 +918,23 @@ flatten_conjunction(Goal, [Goal]).
 %  Compile (Cond -> Then ; Else) to WAM try/cut/trust + jump pattern.
 %  The condition runs in a temporary choice point; if it succeeds, cut
 %  commits to Then. If it fails, backtrack to Else.
+%
+%  When Else is itself another if-then-else (`(C2 -> T2 ; E2)`) or a
+%  bare `(C2 -> T2)` (implicit `; fail`), we recurse so a chain like
+%  `(A -> B ; C -> D ; E)` compiles to nested cut_ite/try_me_else
+%  pairs. Without this, the second `->` in Else position would emit
+%  as a regular `Call("->", 2)` -- which has no runtime
+%  implementation and just fails.
 compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, Vf, _HasEnv, Code) :-
     next_ite_label(ElseLabel, ContLabel),
-    % Flatten condition and branch bodies into goal lists
+    % Flatten condition into a goal list
     flatten_conjunction(CondGoal, CondGoals),
-    flatten_conjunction(ThenGoal, ThenGoals),
-    flatten_conjunction(ElseGoal, ElseGoals),
-    % Compile condition goals as calls (never TCO)
     compile_inner_call_goals(CondGoals, V0, V1, CondCode),
-    % Compile then-branch goals as calls
-    compile_inner_call_goals(ThenGoals, V1, V2, ThenCode),
-    % Compile else-branch goals as calls (start from V0 since backtrack
-    % restores to before the condition)
-    compile_inner_call_goals(ElseGoals, V0, V3, ElseCode),
+    % Then and Else can each be themselves a nested if-then-else --
+    % compile_ite_branch recurses on those forms. Else starts from
+    % V0 since backtrack restores to before the condition.
+    compile_ite_branch(ThenGoal, V1, V2, ThenCode),
+    compile_ite_branch(ElseGoal, V0, V3, ElseCode),
     % Use the wider variable map as output
     (   V2 = V3 -> Vf = V2
     ;   Vf = V2  % prefer then-branch vars (else-branch is alternative)
@@ -930,6 +947,21 @@ compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, Vf, _HasEnv, Code) :-
     format(string(Code),
         "    try_me_else ~w~n~w~n    cut_ite~n~w~n    jump ~w~n~w:~n    trust_me~n~w~n~w:",
         [ElseLabel, CondCode, ThenCode, ContLabel, ElseLabel, ElseCode, ContLabel]).
+
+%% compile_ite_branch(+Branch, +V0, -Vf, -Code) is det.
+%  Compile a Then- or Else-branch of an if-then-else. If the branch
+%  is itself another if-then-else (`(C -> T ; E)` or bare `(C -> T)`,
+%  the latter treated as `(C -> T ; fail)` to match SWI), recurse;
+%  otherwise compile as a flat goal sequence.
+compile_ite_branch((Cond2 -> Then2 ; Else2), V0, Vf, Code) :-
+    !,
+    compile_if_then_else(Cond2, Then2, Else2, V0, Vf, no, Code).
+compile_ite_branch((Cond2 -> Then2), V0, Vf, Code) :-
+    !,
+    compile_if_then_else(Cond2, Then2, fail, V0, Vf, no, Code).
+compile_ite_branch(Branch, V0, Vf, Code) :-
+    flatten_conjunction(Branch, BranchGoals),
+    compile_inner_call_goals(BranchGoals, V0, Vf, Code).
 
 %% compile_disjunction(+Left, +Right, +V0, -Vf, +HasEnv, -Code)
 %  Compile (A ; B) to WAM try/trust + jump pattern (no cut).
@@ -945,10 +977,24 @@ compile_disjunction(LeftGoal, RightGoal, V0, Vf, _HasEnv, Code) :-
         [RightLabel, LeftCode, ContLabel, RightLabel, RightCode, ContLabel]).
 
 %% compile_inner_call_goals(+Goals, +V0, -Vf, -Code)
-%  Compile all goals as calls (never execute/TCO) for use inside aggregate bodies.
+%  Compile all goals as calls (never execute/TCO) for use inside aggregate
+%  bodies, if-then-else cond clauses, ite-branch bodies, and disjunction
+%  arms. Dispatches on `(C -> T ; E)` / `(A ; B)` the same way the outer
+%  `compile_goals` does, so nested if-then-else / disjunction inside a
+%  conjunction body compiles to inline try/cut/trust + jump rather than
+%  falling through to a generic `Call(";", 2)` (which has no runtime
+%  handler and silently fails).
 compile_inner_call_goals([], V, V, "").
 compile_inner_call_goals([Goal|Rest], V0, Vf, Code) :-
-    compile_goal_call(Goal, V0, V1, GoalCode),
+    (   Goal = (CondGoal -> ThenGoal ; ElseGoal)
+    ->  compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, V1, no, GoalCode)
+    ;   Goal = (CondGoal -> ThenGoal)
+    ->  compile_if_then_else(CondGoal, ThenGoal, fail, V0, V1, no, GoalCode)
+    ;   Goal = (LeftGoal ; RightGoal),
+        \+ (LeftGoal = (_ -> _))
+    ->  compile_disjunction(LeftGoal, RightGoal, V0, V1, no, GoalCode)
+    ;   compile_goal_call(Goal, V0, V1, GoalCode)
+    ),
     compile_inner_call_goals(Rest, V1, Vf, RestCode),
     (   RestCode == ""
     ->  Code = GoalCode

@@ -4,7 +4,7 @@ module Main where
 import qualified Data.Map.Strict as Map
 import qualified Data.IntMap.Strict as IM
 import qualified Data.IntSet as IS
-import Data.List (nub, sort, isPrefixOf, intercalate, foldl')
+import Data.List (group, sort, isPrefixOf, intercalate, foldl')
 import qualified Numeric
 import Data.Maybe (fromMaybe, mapMaybe)
 import System.Environment (getArgs, lookupEnv)
@@ -126,6 +126,36 @@ main = do
 
     t0 <- getCurrentTime
 
+{{#int_atom_seeds_lmdb}}
+    -- Phase 2b.2b: int_atom_seeds(lmdb) mode — LMDB-resident interning.
+    -- Reads the s2i / i2s / article_category / category_parent sub-dbs
+    -- written by the Phase 1 ingester
+    -- (src/unifyweaver/runtime/python/lmdb_ingest/ingest_to_lmdb.py).
+    -- Skips TSV parsing + string interning entirely; the intern table
+    -- and edge index are loaded from binary LMDB pages.
+    --
+    -- The 5_000_000-edge threshold caps in-memory parentsIndex growth
+    -- at ~80 MB; enwiki-scale inputs (~28M edges) need to switch to
+    -- LMDB-cursor BFS (Phase 2b.3 follow-up). See loader docstring.
+    --
+    -- See docs/design/WAM_LMDB_RESIDENT_INTERNING_*.md.
+    let lmdbInternDir = factsDir ++ "/lmdb"
+    internEnv <- openLmdbInternEnvReadonly lmdbInternDir
+    !lmdbInternTable <- loadInternTableFromLmdb internEnv "s2i" "i2s"
+    !lmdbArticleCategories <- loadArticleCategoriesFromLmdb internEnv "article_category"
+{{^demand_bfs_mode_cursor}}
+    -- in_memory demand-BFS mode: pre-load the full child->parent
+    -- IntMap. Capped at 5M edges; for >5M use demand_bfs_mode(cursor).
+    !lmdbParentsIndex <- loadForwardEdgesFromLmdb internEnv "category_parent" 5000000
+{{/demand_bfs_mode_cursor}}
+{{#demand_bfs_mode_cursor}}
+    -- cursor demand-BFS mode: skip the pre-load entirely. Edges live
+    -- in LMDB (cpEdgeLookup for kernel walks; category_child cursor
+    -- for demand-set BFS). parentsIndexInterned will be IM.empty.
+    let !lmdbParentsIndex = IM.empty :: IM.IntMap [Int]
+{{/demand_bfs_mode_cursor}}
+{{/int_atom_seeds_lmdb}}
+
 {{^int_atom_seeds}}
     -- Load facts from TSV (string-keyed seeds and edges)
     categoryParents <- loadTsvPairs (factsDir ++ "/category_parent.tsv")
@@ -163,6 +193,7 @@ main = do
         iAtom s = internAtomPure fullInternTable s
 {{/int_atom_seeds}}
 {{#int_atom_seeds}}
+{{^int_atom_seeds_lmdb}}
     -- Int-atom-seeds mode: only the compile-time atom table is needed.
     -- Seed/edge IDs are raw int32 from LMDB ingest; they don't need
     -- string interning.  iAtom is identity (Int -> Int) so the rest of
@@ -170,6 +201,15 @@ main = do
     let !fullInternTable = compileTimeAtomTable
         iAtom :: Int -> Int
         iAtom = id
+{{/int_atom_seeds_lmdb}}
+{{#int_atom_seeds_lmdb}}
+    -- Int-atom-seeds(lmdb) mode: the intern table comes from LMDB
+    -- (s2i / i2s sub-dbs) — already loaded into lmdbInternTable above.
+    -- iAtom is identity since seed/edge IDs are pre-interned int32.
+    let !fullInternTable = lmdbInternTable
+        iAtom :: Int -> Int
+        iAtom = id
+{{/int_atom_seeds_lmdb}}
 {{/int_atom_seeds}}
 
     -- Build merged code: compiled predicates + runtime facts.
@@ -186,7 +226,7 @@ main = do
 
 {{^int_atom_seeds}}
     -- Collect seed categories from article_category and TSV roots
-    let seedCatsAll = nub $ sort $ map snd articleCategories
+    let seedCatsAll = map head $ group $ sort $ map snd articleCategories
         root = head roots
         n = fromIntegral ({{dimension_n}} :: Int) :: Double
         negN = -n
@@ -197,6 +237,7 @@ main = do
             [(iAtom child, [iAtom parent]) | (child, parent) <- categoryParents]
 {{/int_atom_seeds}}
 {{#int_atom_seeds}}
+{{^int_atom_seeds_lmdb}}
     -- Int-atom-seeds: seeds and root come from int-id files.  Edges
     -- live in LMDB (use_lmdb(true) is expected; the in-memory
     -- parentsIndexInterned is empty as a sentinel).
@@ -209,6 +250,22 @@ main = do
         seedLimitMetric  = Nothing :: Maybe String
         seedFilterMetric = Nothing :: Maybe String
         !parentsIndexInterned = IM.empty :: IM.IntMap [Int]
+{{/int_atom_seeds_lmdb}}
+{{#int_atom_seeds_lmdb}}
+    -- Int-atom-seeds(lmdb): seeds and root still come from int-id
+    -- config files (seed_ids.txt / root_ids.txt). Edges populate
+    -- parentsIndexInterned directly from the LMDB category_parent
+    -- sub-db (loaded above into lmdbParentsIndex).
+    let !seedCats = seedIds
+        !root = case rootIds of
+                  []      -> 0
+                  (r:_)   -> r
+        n = fromIntegral ({{dimension_n}} :: Int) :: Double
+        negN = -n
+        seedLimitMetric  = Nothing :: Maybe String
+        seedFilterMetric = Nothing :: Maybe String
+        !parentsIndexInterned = lmdbParentsIndex
+{{/int_atom_seeds_lmdb}}
 {{/int_atom_seeds}}
 
     -- Demand-driven pruning: compute the backward-reachable set from root,
@@ -244,9 +301,15 @@ main = do
     -- rdeepseq forces each (cat, weightSum) fully in parallel. Without
     -- deepseq, the tuple constructor would be WHNF but the Double inside
     -- could remain a thunk, deferring the actual work to later.
+    -- parMap iterates over `{{parmap_seed_source}}`. With demand
+    -- filtering active, that's `filteredSeedCats` (defined in the
+    -- demand-filter block above) — seeds outside the root-bound demand
+    -- set are removed BEFORE we spawn sparks, so we don't pay
+    -- synchronization overhead for trivial work. With demand filtering
+    -- off, this is `seedCats` and behaviour matches the pre-#1876 path.
     let !seedResultsForced = parMap rdeepseq (\cat ->
             {{query_body}}
-            ) seedCats
+            ) {{parmap_seed_source}}
         -- Force the spine so parMap sparks all run before the timing
         -- endpoint. deepseq on the list forces every element too.
         !_ = seedResultsForced `deepseq` ()
@@ -372,29 +435,115 @@ extractDouble _ (Float h) = Just h
 extractDouble tbl (Atom aid) = case reads (lookupAtom tbl aid) of [(h, "")] -> Just h; _ -> Nothing
 extractDouble _ _ = Nothing
 
--- | Compute the backward-reachable demand set from a root node.
--- Given a child→[parents] adjacency map, returns all nodes that can
--- reach rootId via the edge relation (backward BFS fixpoint).
-computeDemandSet :: IM.IntMap [Int] -> Int -> IS.IntSet
-computeDemandSet parents rootId = bfs (IS.singleton rootId) (IS.singleton rootId)
+-- | DemandFilterSpec selects which demand-filter strategy the runtime
+-- runs. See docs/design/WAM_DEMAND_FILTER_SPECIFICATION.md.
+--   HopLimit Nothing  — unbounded reverse BFS (legacy default, matches
+--                       today's behaviour when no directive is declared).
+--   HopLimit (Just n) — depth-bounded reverse BFS (sound when n ≥ kernel
+--                       max_depth; misses unreachable seeds otherwise).
+--   Flux _ _          — flux-weighted top-K with optional spark sort.
+--                       Phase 2.5; emits panic at runtime in Phase 2.
+--   DfNone            — no filter; demand set is the full universe of
+--                       node IDs in the edge map.
+data DemandFilterSpec
+  = HopLimit { dfMaxHops :: !(Maybe Int) }
+  | Flux     { dfCacheTopK :: !Int, dfSortSparks :: !Bool }
+  | DfNone
+  deriving (Show)
+
+-- | Output of a single runDemandBFS call. The seed pre-filter consumes
+-- dfrInSet; cache warming consumes dfrFluxScores when present;
+-- spark scheduling consumes dfrSortedSeeds when present.
+data DemandFilterResult = DemandFilterResult
+  { dfrInSet       :: !IS.IntSet
+  , dfrSortedSeeds :: !(Maybe [Int])
+  , dfrFluxScores  :: !(Maybe (IM.IntMap Double))
+  } deriving (Show)
+
+-- | Dispatch on DemandFilterSpec and produce a DemandFilterResult.
+-- HopLimit and DfNone are implemented in Phase 2; Flux is a panic stub
+-- until Phase 2.5.
+runDemandBFS :: DemandFilterSpec -> IM.IntMap [Int] -> Int -> DemandFilterResult
+runDemandBFS spec parents rootId = case spec of
+  HopLimit maxHops ->
+    DemandFilterResult
+      { dfrInSet       = computeDemandSetHopLimited parents rootId maxHops
+      , dfrSortedSeeds = Nothing
+      , dfrFluxScores  = Nothing
+      }
+  Flux {} ->
+    error "runDemandBFS: Flux strategy not yet implemented (Phase 2.5). \
+          \Use HopLimit or DfNone."
+  DfNone ->
+    DemandFilterResult
+      { dfrInSet       = IS.fromList (IM.keys parents)
+      , dfrSortedSeeds = Nothing
+      , dfrFluxScores  = Nothing
+      }
+
+-- | Phase 2b.3 cursor-mode counterpart of runDemandBFS. Same dispatch
+-- shape but the demand set is computed via LMDB cursor on the
+-- category_child sub-db instead of an in-memory IntMap. No 5M-edge
+-- ceiling. DfNone returns an empty set in this mode (the universe of
+-- nodes is unknown without iterating LMDB; the seed pre-filter just
+-- skips the membership test when the set is empty).
+runDemandBFSCursor :: DemandFilterSpec -> MDB_env -> String -> Int
+                   -> IO DemandFilterResult
+runDemandBFSCursor spec env childDbName rootId = case spec of
+  HopLimit maxHops -> do
+    inSet <- computeDemandSetCursorBFS env childDbName rootId maxHops
+    return DemandFilterResult
+      { dfrInSet       = inSet
+      , dfrSortedSeeds = Nothing
+      , dfrFluxScores  = Nothing
+      }
+  Flux {} ->
+    error "runDemandBFSCursor: Flux strategy not yet implemented (Phase 2.5)."
+  DfNone ->
+    return DemandFilterResult
+      { dfrInSet       = IS.empty
+      , dfrSortedSeeds = Nothing
+      , dfrFluxScores  = Nothing
+      }
+
+-- | Compute the backward-reachable demand set from a root node, with an
+-- optional hop limit. Nothing = unbounded (legacy behaviour). The bound
+-- counts edges traversed, so HopLimit (Just 0) returns just {rootId}.
+computeDemandSetHopLimited :: IM.IntMap [Int] -> Int -> Maybe Int -> IS.IntSet
+computeDemandSetHopLimited parents rootId maxHops =
+    bfs 0 (IS.singleton rootId) (IS.singleton rootId)
   where
     -- Build reverse adjacency: parent → [children]
-    !reverseAdj = IM.foldlWithKey' (\m child ps ->
-        foldl' (\m' p -> IM.insertWith (++) p [child] m') m ps
-      ) IM.empty parents
-    bfs frontier visited
+    !reverseAdj = IM.fromListWith (++)
+        [(p, [child]) | (child, ps) <- IM.toList parents, p <- ps]
+    bfs !depth !frontier !visited
       | IS.null frontier = visited
+      | exceededHopLimit depth = visited
       | otherwise =
           let newNodes = IS.fromList
                 [ c | node <- IS.toList frontier
                     , c <- IM.findWithDefault [] node reverseAdj
                     , not (IS.member c visited) ]
-          in bfs newNodes (IS.union visited newNodes)
+          in bfs (depth + 1) newNodes (IS.union visited newNodes)
+    exceededHopLimit !d = case maxHops of
+      Nothing -> False
+      Just n  -> d >= n
 
--- | Filter a child→[parents] map to only include parents in the demand set.
--- Removes edges to unreachable parents, and drops entries with no remaining parents.
+-- | Backward-compat alias for unbounded demand BFS. Pre-Phase-2 callers
+-- and any test asserting this name keep working unchanged.
+computeDemandSet :: IM.IntMap [Int] -> Int -> IS.IntSet
+computeDemandSet parents rootId =
+    computeDemandSetHopLimited parents rootId Nothing
+
+-- | Filter a child→[parents] map to the structural demand set.
+-- Iterates the usually-small demand set instead of scanning every graph node.
 filterByDemand :: IS.IntSet -> IM.IntMap [Int] -> IM.IntMap [Int]
-filterByDemand demandSet = IM.mapMaybe $ \ps ->
-    case filter (`IS.member` demandSet) ps of
-      [] -> Nothing
-      ps' -> Just ps'
+filterByDemand demandSet parents = IS.foldl' addChild IM.empty demandSet
+  where
+    addChild acc child =
+      case IM.lookup child parents of
+        Nothing -> acc
+        Just ps ->
+          case filter (`IS.member` demandSet) ps of
+            [] -> acc
+            ps' -> IM.insert child ps' acc

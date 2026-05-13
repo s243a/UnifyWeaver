@@ -171,6 +171,35 @@ test_parameterized_render_kernel_function :-
     ;   fail_test(Test, 'render_kernel_function failed for category_ancestor')
     ).
 
+%% Regression test for the read_kernel_template/2 cwd-independence fix.
+%% Prior to the fix, the predicate fell through to a cwd-relative path
+%% when the source_file/2 lookup silently failed; codegen worked from
+%% the project root but emitted "Template not found" stubs elsewhere.
+%% This test pins the fix down by running codegen from /tmp.
+test_render_kernel_function_cwd_independent :-
+    Test = 'WAM-Haskell: render_kernel_function works from any cwd (regression)',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4, [max_depth(10), edge_pred(category_parent/2)]),
+    working_directory(SavedCwd, '/tmp'),
+    catch(
+        (   wam_haskell_target:render_kernel_function('category_ancestor/4'-Kernel, Code),
+            atom_string(Code, S),
+            \+ sub_string(S, _, _, _, "Template not found"),
+            sub_string(S, _, _, _, "nativeKernel_category_ancestor")
+        ->  Result = pass
+        ;   Result = fail
+        ),
+        E,
+        Result = error(E)
+    ),
+    working_directory(_, SavedCwd),
+    (   Result == pass
+    ->  pass(Test)
+    ;   Result = error(Err)
+    ->  format(string(Reason), 'codegen from /tmp threw: ~w', [Err]),
+        fail_test(Test, Reason)
+    ;   fail_test(Test, 'codegen from /tmp produced "Template not found"')
+    ).
+
 test_transitive_closure_kernel_function :-
     Test = 'WAM-Haskell: transitive_closure2 kernel template renders',
     Kernel = recursive_kernel(transitive_closure2, closure/2, [edge_pred(edge/2)]),
@@ -1281,6 +1310,25 @@ test_b1_no_lmdb_cabal_default :-
     ;   fail_test(Test, 'lmdb-simple should not appear in default cabal deps')
     ).
 
+test_with_rtsopts_emits_in_cabal :-
+    Test = 'WAM-Haskell: with_rtsopts(Flags) bakes -with-rtsopts into ghc-options',
+    (   wam_haskell_target:generate_cabal_file('test', false,
+            [with_rtsopts('-A64M')], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "\"-with-rtsopts=-A64M\"")
+    ->  pass(Test)
+    ;   fail_test(Test, 'with_rtsopts(-A64M) should add -with-rtsopts=-A64M to ghc-options')
+    ).
+
+test_with_rtsopts_absent_by_default :-
+    Test = 'WAM-Haskell: cabal omits -with-rtsopts when option not set',
+    (   wam_haskell_target:generate_cabal_file('test', false, [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "-with-rtsopts")
+    ->  pass(Test)
+    ;   fail_test(Test, 'cabal should not contain -with-rtsopts when option absent')
+    ).
+
 test_b1_external_source_skips_wam_compilation :-
     Test = 'B1: external_source fact predicate skips WAM compilation',
     (   retractall(user:b1_ext(_, _)),
@@ -1360,6 +1408,52 @@ test_b1_lmdb_raw_zero_copy_reads :-
     ;   fail_test(Test, 'Raw LMDB zero-copy read patterns not found')
     ).
 
+test_b1_phase2b2_loaders_emitted :-
+    Test = 'B1: Phase 2b.2 loaders (loadInternTableFromLmdb / loadArticleCategoriesFromLmdb / loadForwardEdgesFromLmdb) emitted',
+    (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "loadInternTableFromLmdb :: MDB_env -> String -> String -> IO InternTable"),
+        sub_string(S, _, _, _, "loadArticleCategoriesFromLmdb :: MDB_env -> String -> IO [(Int, Int)]"),
+        sub_string(S, _, _, _, "loadForwardEdgesFromLmdb :: MDB_env -> String -> Int -> IO (IM.IntMap [Int])"),
+        sub_string(S, _, _, _, "iterateAllPairs txn dbi decode = do"),
+        sub_string(S, _, _, _, "peekStringBytes p len")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Phase 2b.2 LMDB-resident loaders should be emitted when use_lmdb(true)')
+    ).
+
+test_b1_peekstringbytes_decodes_utf8 :-
+    Test = 'B1: peekStringBytes decodes UTF-8 via TE.decodeUtf8With',
+    (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BS.packCStringLen (p, len)"),
+        sub_string(S, _, _, _, "TE.decodeUtf8With TEE.lenientDecode"),
+        \+ sub_string(S, _, _, _, "map (toEnum . fromIntegral) bytes")
+    ->  pass(Test)
+    ;   fail_test(Test, 'peekStringBytes should decode UTF-8 via Data.Text.Encoding')
+    ).
+
+test_b1_lmdb_text_imports_present :-
+    Test = 'B1: bytestring + text imports emitted with use_lmdb(true)',
+    (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "import qualified Data.ByteString as BS"),
+        sub_string(S, _, _, _, "import qualified Data.Text as T"),
+        sub_string(S, _, _, _, "import qualified Data.Text.Encoding as TE"),
+        sub_string(S, _, _, _, "import qualified Data.Text.Encoding.Error as TEE")
+    ->  pass(Test)
+    ;   fail_test(Test, 'bytestring/text imports missing under use_lmdb(true)')
+    ).
+
+test_b1_lmdb_cabal_text_dependencies :-
+    Test = 'B1: cabal includes bytestring + text when use_lmdb(true)',
+    (   wam_haskell_target:generate_cabal_file('test', false, [use_lmdb(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "bytestring >= 0.10"),
+        sub_string(S, _, _, _, "text >= 1.2")
+    ->  pass(Test)
+    ;   fail_test(Test, 'bytestring/text not in cabal deps when use_lmdb(true)')
+    ).
+
 test_b1_lmdb_scan_support_present :-
     Test = 'B1: raw LMDB FactSource emits scan support',
     (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
@@ -1396,6 +1490,249 @@ test_b1_lmdb_manifest_wiring_option_present :-
         \+ sub_string(S, _, _, _, "cpFactSource <- lmdbFactSource lmdbDir \"category_parent\"")
     ->  pass(Test)
     ;   fail_test(Test, 'Manifest-backed FactSource wiring option not found')
+    ).
+
+test_demand_filter_gates_seed_query_body :-
+    Test = 'WAM-Haskell: demand filter pre-filters seeds before parMap',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "let seedCatsAll = map head $ group $ sort $ map snd articleCategories"),
+        sub_string(S, _, _, _, "!demandFilterSpec = (HopLimit Nothing)"),
+        sub_string(S, _, _, _, "!demandFilterResult = runDemandBFS demandFilterSpec parentsIndexInterned rootId"),
+        sub_string(S, _, _, _, "!demandSet = dfrInSet demandFilterResult"),
+        sub_string(S, _, _, _, "!reverseAdj = IM.fromListWith (++)"),
+        sub_string(S, _, _, _, "filterByDemand demandSet parents = IS.foldl' addChild IM.empty demandSet"),
+        sub_string(S, _, _, _, "!filteredSeedCats = filter (\\cat -> IS.member (iAtom cat) demandSet) seedCats"),
+        sub_string(S, _, _, _, "!demandSkippedSeeds = length seedCats - length filteredSeedCats"),
+        sub_string(S, _, _, _, ") filteredSeedCats"),
+        \+ sub_string(S, _, _, _, "if not (IS.member (iAtom cat) demandSet) then (cat, 0.0) else"),
+        sub_string(S, _, _, _, "collectForeignSolutions ctx \"category_ancestor/4\""),
+        sub_string(S, _, _, _, "demand_skipped_seeds=")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Demand-filtered Main.hs should pre-filter seeds before parMap')
+    ).
+
+test_demand_bfs_mode_cursor_emits_runDemandBFSCursor :-
+    Test = 'WAM-Haskell: demand_bfs_mode(cursor) emits runDemandBFSCursor instead of in-memory variant',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [demand_bfs_mode(cursor)],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "runDemandBFSCursor demandFilterSpec internEnv \"category_child\" rootId"),
+        \+ sub_string(S, _, _, _, "runDemandBFS demandFilterSpec parentsIndexInterned"),
+        \+ sub_string(S, _, _, _, "filterByDemand demandSet parentsIndexInterned")
+    ->  pass(Test)
+    ;   fail_test(Test, 'cursor mode should emit runDemandBFSCursor and skip filteredParents materialisation')
+    ).
+
+test_demand_bfs_mode_in_memory_default :-
+    Test = 'WAM-Haskell: default demand BFS mode is in_memory (no behavior change)',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "runDemandBFS demandFilterSpec parentsIndexInterned rootId"),
+        \+ sub_string(S, _, _, _, "runDemandBFSCursor demandFilterSpec internEnv")
+    ->  pass(Test)
+    ;   fail_test(Test, 'default should keep emitting runDemandBFS (in-memory)')
+    ).
+
+test_demand_bfs_mode_auto_high_fact_count_picks_cursor :-
+    Test = 'WAM-Haskell: demand_bfs_mode(auto) + fact_count >= 50000 picks cursor',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [demand_bfs_mode(auto), fact_count(196900)],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "runDemandBFSCursor demandFilterSpec internEnv")
+    ->  pass(Test)
+    ;   fail_test(Test, 'auto + high fact_count should resolve to cursor')
+    ).
+
+test_demand_bfs_mode_auto_low_fact_count_picks_in_memory :-
+    Test = 'WAM-Haskell: demand_bfs_mode(auto) + fact_count < 50000 picks in_memory',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [demand_bfs_mode(auto), fact_count(5000)],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "runDemandBFS demandFilterSpec parentsIndexInterned"),
+        \+ sub_string(S, _, _, _, "runDemandBFSCursor demandFilterSpec internEnv")
+    ->  pass(Test)
+    ;   fail_test(Test, 'auto + low fact_count should resolve to in_memory')
+    ).
+
+test_demand_filter_hop_limit_with_max_hops :-
+    Test = 'WAM-Haskell: demand_filter_spec(hop_limit, [max_hops(N)]) emits HopLimit (Just N)',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [demand_filter_spec(hop_limit, [max_hops(7)])],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "!demandFilterSpec = (HopLimit (Just 7))"),
+        sub_string(S, _, _, _, "runDemandBFS demandFilterSpec parentsIndexInterned rootId")
+    ->  pass(Test)
+    ;   fail_test(Test, 'demand_filter_spec(hop_limit, [max_hops(7)]) should emit HopLimit (Just 7)')
+    ).
+
+test_demand_filter_none_emits_dfnone :-
+    Test = 'WAM-Haskell: demand_filter_spec(none, []) emits DfNone',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [demand_filter_spec(none, [])],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "!demandFilterSpec = DfNone"),
+        sub_string(S, _, _, _, "runDemandBFS demandFilterSpec parentsIndexInterned rootId")
+    ->  pass(Test)
+    ;   fail_test(Test, 'demand_filter_spec(none, []) should emit DfNone')
+    ).
+
+test_demand_filter_flux_emits_panic_stub_compatible :-
+    Test = 'WAM-Haskell: demand_filter_spec(flux, [...]) emits Flux constructor (panics at runtime in Phase 2)',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [demand_filter_spec(flux, [target_count(5000), sort_sparks(true)])],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "!demandFilterSpec = (Flux 5000 True)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'demand_filter_spec(flux, [...]) should emit Flux constructor for runtime to panic on')
+    ).
+
+test_int_atom_seeds_lmdb_calls_loaders :-
+    Test = 'WAM-Haskell: int_atom_seeds(lmdb) calls Phase 2b.2 loaders (no panic stub)',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [int_atom_seeds(lmdb)],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "openLmdbInternEnvReadonly"),
+        sub_string(S, _, _, _, "loadInternTableFromLmdb internEnv \"s2i\" \"i2s\""),
+        sub_string(S, _, _, _, "loadArticleCategoriesFromLmdb internEnv \"article_category\""),
+        sub_string(S, _, _, _, "loadForwardEdgesFromLmdb internEnv \"category_parent\""),
+        sub_string(S, _, _, _, "!fullInternTable = lmdbInternTable"),
+        sub_string(S, _, _, _, "!parentsIndexInterned = lmdbParentsIndex"),
+        \+ sub_string(S, _, _, _, "int_atom_seeds(lmdb): runtime LMDB-resident loaders not yet")
+    ->  pass(Test)
+    ;   fail_test(Test, 'int_atom_seeds(lmdb) should call the Phase 2b.2 loaders, not emit a panic stub')
+    ).
+
+test_int_atom_seeds_true_does_not_call_lmdb_loaders :-
+    Test = 'WAM-Haskell: int_atom_seeds(true) does NOT call LMDB loaders',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [int_atom_seeds(true)],
+            Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "openLmdbInternEnvReadonly"),
+        \+ sub_string(S, _, _, _, "loadInternTableFromLmdb internEnv"),
+        \+ sub_string(S, _, _, _, "lmdbParentsIndex")
+    ->  pass(Test)
+    ;   fail_test(Test, 'int_atom_seeds(true) should not call the LMDB loaders')
+    ).
+
+test_int_atom_seeds_default_does_not_call_lmdb_loaders :-
+    Test = 'WAM-Haskell: default mode does NOT call LMDB loaders',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [],
+            Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "openLmdbInternEnvReadonly"),
+        \+ sub_string(S, _, _, _, "loadInternTableFromLmdb internEnv"),
+        \+ sub_string(S, _, _, _, "lmdbParentsIndex")
+    ->  pass(Test)
+    ;   fail_test(Test, 'default mode should not call the LMDB loaders')
+    ).
+
+test_demand_filter_invalid_strategy_rejected :-
+    Test = 'WAM-Haskell: demand_filter_spec with unknown strategy throws domain_error',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   catch(
+            wam_haskell_target:generate_main_hs(
+                [],
+                ['category_ancestor/4'-Kernel],
+                [],
+                [demand_filter_spec(bogus_strategy, [])],
+                _Code),
+            error(domain_error(demand_filter_strategy, bogus_strategy), _),
+            (true, ThrewDomainError = true))
+    ->  (   ThrewDomainError == true
+        ->  pass(Test)
+        ;   fail_test(Test, 'unknown strategy should throw domain_error')
+        )
+    ;   fail_test(Test, 'unknown strategy should throw domain_error')
+    ).
+
+test_demand_filter_false_leaves_query_ungated :-
+    Test = 'WAM-Haskell: demand_filter(false) leaves seed query ungated',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4,
+                              [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            ['category_ancestor/4'-Kernel],
+            [],
+            [demand_filter(false)],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "collectForeignSolutions ctx \"category_ancestor/4\""),
+        \+ sub_string(S, _, _, _, "if not (IS.member (iAtom cat) demandSet)"),
+        \+ sub_string(S, _, _, _, "filteredSeedCats = filter"),
+        sub_string(S, _, _, _, ") seedCats"),
+        \+ sub_string(S, _, _, _, "demand_skipped_seeds=")
+    ->  pass(Test)
+    ;   fail_test(Test, 'demand_filter(false) should not emit pre-filter or seed gate')
     ).
 
 %% Regression test for the linear-chain-zero-results bug: the FFI kernel's
@@ -1539,6 +1876,384 @@ test_resolve_use_lmdb_auto_no_fact_count_false :-
         \+ memberchk(use_lmdb(auto), R)
     ->  pass(Test)
     ;   fail_test(Test, 'auto without fact_count did not resolve to false')
+    ).
+
+%% =================================================================
+%% Phase 2c: cache_strategy(auto) cost-model resolver
+%% =================================================================
+
+test_cache_strategy_auto_low_k_picks_in_memory :-
+    %% Small fact_count + ~5% wsf → K small. With huge mem_available
+    %% (forcing FHot=1 regime) and explicit constants pinning K_cross
+    %% near zero, force the model to pick `scan` → `in_memory`.
+    %% Concretely: 100k facts × 5MB DB × 1MB R_free → DB exceeds RAM,
+    %% but K=5000 vs K_cross at this regime puts us comfortably above
+    %% threshold; the resolver should map to in_memory.
+    Test = 'WAM-Haskell: cache_strategy(auto) at small selection picks in_memory',
+    (   wam_haskell_target:resolve_auto_cache_strategy(
+            [cache_strategy(auto),
+             fact_count(100),
+             working_set_fraction(0.5),
+             db_size_bytes(5000),
+             mem_available_bytes(16000000000)],
+            R),
+        memberchk(demand_bfs_mode(in_memory), R),
+        \+ memberchk(cache_strategy(auto), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'cache_strategy auto + small selection did not pick in_memory')
+    ).
+
+test_cache_strategy_auto_high_k_picks_in_memory_at_high_selection :-
+    %% Large fact_count + high working_set_fraction (touches >> K_cross)
+    %% → cost model says scan → in_memory.
+    Test = 'WAM-Haskell: cache_strategy(auto) at high selection picks in_memory',
+    (   wam_haskell_target:resolve_auto_cache_strategy(
+            [cache_strategy(auto),
+             fact_count(10000000),
+             working_set_fraction(0.5),
+             db_size_bytes(500000000),
+             mem_available_bytes(16000000000)],
+            R),
+        memberchk(demand_bfs_mode(in_memory), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'cache_strategy auto + high selection did not pick in_memory')
+    ).
+
+test_cache_strategy_auto_tiny_selection_picks_cursor :-
+    %% Large DB + tiny working_set_fraction (K << K_cross) → sort →
+    %% cursor. 10M facts × 0.0001 wsf = K=1000; K_cross at hot regime
+    %% on 500MB W is ~100k. So K << K_cross → sort → cursor.
+    Test = 'WAM-Haskell: cache_strategy(auto) at tiny selection picks cursor',
+    (   wam_haskell_target:resolve_auto_cache_strategy(
+            [cache_strategy(auto),
+             fact_count(10000000),
+             working_set_fraction(0.0001),
+             db_size_bytes(500000000),
+             mem_available_bytes(16000000000)],
+            R),
+        memberchk(demand_bfs_mode(cursor), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'cache_strategy auto + tiny selection did not pick cursor')
+    ).
+
+test_cache_strategy_absent_leaves_options_unchanged :-
+    %% No cache_strategy(auto) → resolver is a no-op. Existing
+    %% demand_bfs_mode (or its absence) flows through untouched.
+    Test = 'WAM-Haskell: resolve_auto_cache_strategy is a no-op without cache_strategy(auto)',
+    (   wam_haskell_target:resolve_auto_cache_strategy(
+            [fact_count(1000), demand_bfs_mode(in_memory)], R),
+        R == [fact_count(1000), demand_bfs_mode(in_memory)]
+    ->  pass(Test)
+    ;   fail_test(Test, 'resolve_auto_cache_strategy mutated options without cache_strategy(auto)')
+    ).
+
+test_cache_strategy_auto_overrides_explicit_demand_bfs_mode :-
+    %% cache_strategy(auto) takes precedence over an existing
+    %% demand_bfs_mode/1 entry — that's the whole point of opting in.
+    Test = 'WAM-Haskell: cache_strategy(auto) overrides explicit demand_bfs_mode',
+    (   wam_haskell_target:resolve_auto_cache_strategy(
+            [cache_strategy(auto),
+             demand_bfs_mode(in_memory),
+             fact_count(10000000),
+             working_set_fraction(0.0001),
+             db_size_bytes(500000000),
+             mem_available_bytes(16000000000)],
+            R),
+        memberchk(demand_bfs_mode(cursor), R),
+        \+ memberchk(demand_bfs_mode(in_memory), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'cache_strategy auto did not override explicit demand_bfs_mode')
+    ).
+
+test_cache_strategy_footprint_guard_overrides_in_memory :-
+    %% Cold-regime case: cost_model would recommend scan → in_memory
+    %% (high selection ratio), but R_free < W means the in_memory
+    %% IntMap can't actually fit. Guard must override to cursor.
+    %% Inputs: 9.9M facts × 50 bytes/edge = 495 MB; wsf=0.05 → K=495k;
+    %% R_free=125 MB; K_cross at f_hot=0.25 ≈ 4k → scan picked first,
+    %% then footprint guard kicks in because 495 MB > 125 MB.
+    Test = 'WAM-Haskell: cache_strategy(auto) footprint guard overrides in_memory when W > R_free',
+    (   wam_haskell_target:resolve_auto_cache_strategy(
+            [cache_strategy(auto),
+             fact_count(9900000),
+             working_set_fraction(0.05),
+             db_size_bytes(495000000),
+             mem_available_bytes(125000000)],
+            R),
+        memberchk(demand_bfs_mode(cursor), R),
+        \+ memberchk(demand_bfs_mode(in_memory), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'footprint guard did not override in_memory when R_free < W')
+    ).
+
+test_cache_strategy_footprint_guard_inactive_in_hot_regime :-
+    %% Hot regime: cost_model recommends scan → in_memory and the
+    %% working set fits. Guard must NOT fire — in_memory stays.
+    %% 297k facts × 50 = 15 MB DB; wsf=0.5 → K=148k; R_free=16 GB
+    %% (W << R_free). K well above K_cross → scan → in_memory; guard
+    %% inactive because 15 MB < 16 GB.
+    Test = 'WAM-Haskell: cache_strategy(auto) footprint guard does NOT fire when W <= R_free',
+    (   wam_haskell_target:resolve_auto_cache_strategy(
+            [cache_strategy(auto),
+             fact_count(297000),
+             working_set_fraction(0.5),
+             db_size_bytes(15000000),
+             mem_available_bytes(16000000000)],
+            R),
+        memberchk(demand_bfs_mode(in_memory), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'footprint guard incorrectly fired in hot regime')
+    ).
+
+%% =================================================================
+%% lmdb_cache_mode(auto) resolver (Phase 2c+)
+%% =================================================================
+
+test_lmdb_cache_mode_auto_intra_thread_picks_per_hec :-
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) + intra_thread → per_hec',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(intra_thread),
+             expected_query_count(10)],
+            R),
+        memberchk(lmdb_cache_mode(per_hec), R),
+        \+ memberchk(lmdb_cache_mode(auto), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'intra_thread did not resolve to per_hec')
+    ).
+
+test_lmdb_cache_mode_auto_cross_thread_picks_sharded :-
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) + cross_thread → sharded',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(cross_thread),
+             expected_query_count(10)],
+            R),
+        memberchk(lmdb_cache_mode(sharded), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'cross_thread did not resolve to sharded')
+    ).
+
+test_lmdb_cache_mode_auto_mixed_high_m_picks_two_level :-
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) + mixed + M>10 → two_level',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(mixed),
+             expected_query_count(100)],
+            R),
+        memberchk(lmdb_cache_mode(two_level), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'mixed + high M did not resolve to two_level')
+    ).
+
+test_lmdb_cache_mode_auto_mixed_low_m_picks_sharded :-
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) + mixed + M<=10 → sharded (safe default)',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(mixed),
+             expected_query_count(5)],
+            R),
+        memberchk(lmdb_cache_mode(sharded), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'mixed + low M did not fall back to sharded')
+    ).
+
+test_lmdb_cache_mode_auto_unknown_picks_sharded :-
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) + unknown → sharded (safe default)',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(unknown),
+             expected_query_count(10)],
+            R),
+        memberchk(lmdb_cache_mode(sharded), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'unknown did not resolve to sharded')
+    ).
+
+test_lmdb_cache_mode_auto_m_le_one_picks_none :-
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) + M=1 → none (nothing to amortise)',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(cross_thread),
+             expected_query_count(1)],
+            R),
+        memberchk(lmdb_cache_mode(none), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'M=1 did not resolve to none')
+    ).
+
+test_lmdb_cache_mode_auto_composes_with_in_memory_bfs :-
+    %% Composition with cache_strategy: when demand_bfs_mode is already
+    %% in_memory (the IntMap *is* the cache), adding a tier is redundant.
+    %% Pick none regardless of locality/M.
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) → none when demand_bfs_mode is in_memory',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(cross_thread),
+             expected_query_count(100),
+             demand_bfs_mode(in_memory)],
+            R),
+        memberchk(lmdb_cache_mode(none), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'in_memory composition did not produce none')
+    ).
+
+test_lmdb_cache_mode_auto_no_op_without_workload_locality :-
+    %% Opt-in signal: without workload_locality/1, the new resolver is
+    %% a no-op and the existing in-place auto resolution handles it.
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) is a no-op without workload_locality',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             expected_query_count(10)],
+            R),
+        memberchk(lmdb_cache_mode(auto), R),
+        \+ memberchk(lmdb_cache_mode(per_hec), R),
+        \+ memberchk(lmdb_cache_mode(sharded), R),
+        \+ memberchk(lmdb_cache_mode(two_level), R),
+        \+ memberchk(lmdb_cache_mode(none), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'no-op condition mutated Options')
+    ).
+
+test_lmdb_cache_mode_explicit_unchanged :-
+    %% Explicit lmdb_cache_mode/1 (non-auto) flows through untouched.
+    Test = 'WAM-Haskell: explicit lmdb_cache_mode flows through unchanged',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(sharded),
+             workload_locality(intra_thread),
+             expected_query_count(10)],
+            R),
+        memberchk(lmdb_cache_mode(sharded), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'explicit lmdb_cache_mode was mutated')
+    ).
+
+test_lmdb_cache_mode_memory_budget_guard_fires :-
+    %% R_free below the cache-tier floor: even with a locality that
+    %% would otherwise pick a tier, the guard overrides to `none`.
+    %% 1 MB free vs 4 MB default floor → none.
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) memory-budget guard overrides tier → none',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(cross_thread),
+             expected_query_count(100),
+             mem_available_bytes(1_000_000)],
+            R),
+        memberchk(lmdb_cache_mode(none), R),
+        \+ memberchk(lmdb_cache_mode(sharded), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'memory budget guard did not override tier under pressure')
+    ).
+
+test_lmdb_cache_mode_memory_budget_guard_inactive_when_rfree_above_floor :-
+    %% R_free comfortably above floor: guard inactive, normal matrix runs.
+    %% 64 MB free vs 4 MB default floor → cross_thread → sharded.
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) memory-budget guard inactive when R_free >= floor',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(cross_thread),
+             expected_query_count(100),
+             mem_available_bytes(64_000_000)],
+            R),
+        memberchk(lmdb_cache_mode(sharded), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'memory budget guard incorrectly fired with ample R_free')
+    ).
+
+test_lmdb_cache_mode_memory_budget_floor_override :-
+    %% Custom floor via cache_tier_floor_bytes/1. Set floor to 100 MB:
+    %% 64 MB free is now below floor → guard fires → none.
+    Test = 'WAM-Haskell: lmdb_cache_mode(auto) cache_tier_floor_bytes overrides default',
+    (   wam_haskell_target:resolve_auto_lmdb_cache_mode(
+            [lmdb_cache_mode(auto),
+             workload_locality(cross_thread),
+             expected_query_count(100),
+             mem_available_bytes(64_000_000),
+             cache_tier_floor_bytes(100_000_000)],
+            R),
+        memberchk(lmdb_cache_mode(none), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'custom cache_tier_floor_bytes did not raise the threshold')
+    ).
+
+%% =================================================================
+%% Scan-strategy P1: tree_cost_function emission
+%% =================================================================
+
+test_cost_function_absent_emits_nothing :-
+    Test = 'WAM-Haskell: tree_cost_function absent → no CostFn code',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "CostFn"),
+        \+ sub_string(S, _, _, _, "theCostFn")
+    ->  pass(Test)
+    ;   fail_test(Test, 'CostFn code emitted without tree_cost_function option')
+    ).
+
+test_cost_function_hop_distance_emits_constructor :-
+    Test = 'WAM-Haskell: tree_cost_function(hop_distance, ...) → hopDistanceCostFn',
+    (   compile_wam_runtime_to_haskell(
+            [tree_cost_function(hop_distance, [max_hops(10)])], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "data CostFn"),
+        sub_string(S, _, _, _, "hopDistanceCostFn"),
+        sub_string(S, _, _, _, "theCostFn = hopDistanceCostFn 10")
+    ->  pass(Test)
+    ;   fail_test(Test, 'hop_distance constructor not emitted correctly')
+    ).
+
+test_cost_function_hop_distance_fills_default :-
+    Test = 'WAM-Haskell: tree_cost_function(hop_distance, []) → uses default max_hops=5',
+    (   compile_wam_runtime_to_haskell(
+            [tree_cost_function(hop_distance, [])], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "theCostFn = hopDistanceCostFn 5")
+    ->  pass(Test)
+    ;   fail_test(Test, 'default max_hops=5 not filled in')
+    ).
+
+test_cost_function_flux_emits_panic_stub_constructor :-
+    Test = 'WAM-Haskell: tree_cost_function(flux, ...) → fluxCostFn (panic stub)',
+    (   compile_wam_runtime_to_haskell(
+            [tree_cost_function(flux, [parent_decay(0.7), child_decay(0.4)])], [],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "fluxCostFn"),
+        %% Verify the panic message is present, indicating the stub is wired
+        sub_string(S, _, _, _, "Flux cost function not yet implemented"),
+        sub_string(S, _, _, _, "theCostFn = fluxCostFn 0.7 0.4")
+    ->  pass(Test)
+    ;   fail_test(Test, 'flux constructor / panic stub not emitted correctly')
+    ).
+
+test_cost_function_unknown_name_throws :-
+    Test = 'WAM-Haskell: tree_cost_function with unregistered name throws at codegen',
+    catch(
+        ( compile_wam_runtime_to_haskell(
+              [tree_cost_function(bogus_function, [])], [], _),
+          Caught = no
+        ),
+        error(domain_error(cost_function_name, bogus_function), _),
+        Caught = yes
+    ),
+    (   Caught == yes
+    ->  pass(Test)
+    ;   fail_test(Test, 'unknown cost function did not throw')
+    ).
+
+test_cost_function_bad_param_type_throws :-
+    Test = 'WAM-Haskell: tree_cost_function with bad param type throws',
+    catch(
+        ( compile_wam_runtime_to_haskell(
+              [tree_cost_function(hop_distance, [max_hops(not_an_int)])], [], _),
+          Caught = no
+        ),
+        error(type_error(positive_integer, not_an_int), _),
+        Caught = yes
+    ),
+    (   Caught == yes
+    ->  pass(Test)
+    ;   fail_test(Test, 'bad param type did not throw')
     ).
 
 test_b1_lmdb_dupsort_per_thread_cursor :-
@@ -1813,6 +2528,7 @@ run_tests :-
     test_parameterized_execute_foreign_category_ancestor,
     test_parameterized_execute_foreign_empty,
     test_parameterized_render_kernel_function,
+    test_render_kernel_function_cwd_independent,
     test_transitive_closure_kernel_function,
     test_transitive_closure_execute_foreign,
     test_multi_kernel_execute_foreign,
@@ -1908,7 +2624,13 @@ run_tests :-
     test_b1_lmdb_absent_when_disabled,
     test_b1_lmdb_cabal_dependency,
     test_b1_no_lmdb_cabal_default,
+    test_with_rtsopts_emits_in_cabal,
+    test_with_rtsopts_absent_by_default,
     test_b1_lmdb_raw_zero_copy_reads,
+    test_b1_phase2b2_loaders_emitted,
+    test_b1_peekstringbytes_decodes_utf8,
+    test_b1_lmdb_text_imports_present,
+    test_b1_lmdb_cabal_text_dependencies,
     test_b1_lmdb_scan_support_present,
     test_b1_lmdb_manifest_fact_source_present,
     test_b1_lmdb_manifest_wiring_option_present,
@@ -1933,6 +2655,19 @@ run_tests :-
     test_b1_external_source_skips_wam_compilation,
     test_b1_external_source_default_allow_list,
     test_b1_external_source_off_without_use_lmdb,
+    test_demand_filter_gates_seed_query_body,
+    test_demand_bfs_mode_cursor_emits_runDemandBFSCursor,
+    test_demand_bfs_mode_in_memory_default,
+    test_demand_bfs_mode_auto_high_fact_count_picks_cursor,
+    test_demand_bfs_mode_auto_low_fact_count_picks_in_memory,
+    test_demand_filter_hop_limit_with_max_hops,
+    test_demand_filter_none_emits_dfnone,
+    test_demand_filter_flux_emits_panic_stub_compatible,
+    test_int_atom_seeds_lmdb_calls_loaders,
+    test_int_atom_seeds_true_does_not_call_lmdb_loaders,
+    test_int_atom_seeds_default_does_not_call_lmdb_loaders,
+    test_demand_filter_invalid_strategy_rejected,
+    test_demand_filter_false_leaves_query_ungated,
     %% max_depth substitution (regression for linear-chain-zero-results)
     test_max_depth_default_10_when_no_user_fact,
     test_max_depth_from_user_fact,
@@ -1947,6 +2682,31 @@ run_tests :-
     test_resolve_use_lmdb_absent_unchanged,
     test_resolve_use_lmdb_auto_low_fact_count_false,
     test_resolve_use_lmdb_auto_no_fact_count_false,
+    test_cache_strategy_auto_low_k_picks_in_memory,
+    test_cache_strategy_auto_high_k_picks_in_memory_at_high_selection,
+    test_cache_strategy_auto_tiny_selection_picks_cursor,
+    test_cache_strategy_absent_leaves_options_unchanged,
+    test_cache_strategy_auto_overrides_explicit_demand_bfs_mode,
+    test_cache_strategy_footprint_guard_overrides_in_memory,
+    test_cache_strategy_footprint_guard_inactive_in_hot_regime,
+    test_lmdb_cache_mode_auto_intra_thread_picks_per_hec,
+    test_lmdb_cache_mode_auto_cross_thread_picks_sharded,
+    test_lmdb_cache_mode_auto_mixed_high_m_picks_two_level,
+    test_lmdb_cache_mode_auto_mixed_low_m_picks_sharded,
+    test_lmdb_cache_mode_auto_unknown_picks_sharded,
+    test_lmdb_cache_mode_auto_m_le_one_picks_none,
+    test_lmdb_cache_mode_auto_composes_with_in_memory_bfs,
+    test_lmdb_cache_mode_auto_no_op_without_workload_locality,
+    test_lmdb_cache_mode_explicit_unchanged,
+    test_lmdb_cache_mode_memory_budget_guard_fires,
+    test_lmdb_cache_mode_memory_budget_guard_inactive_when_rfree_above_floor,
+    test_lmdb_cache_mode_memory_budget_floor_override,
+    test_cost_function_absent_emits_nothing,
+    test_cost_function_hop_distance_emits_constructor,
+    test_cost_function_hop_distance_fills_default,
+    test_cost_function_flux_emits_panic_stub_constructor,
+    test_cost_function_unknown_name_throws,
+    test_cost_function_bad_param_type_throws,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)

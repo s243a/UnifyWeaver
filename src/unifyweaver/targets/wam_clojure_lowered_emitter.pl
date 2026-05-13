@@ -272,6 +272,34 @@ clojure_direct_builtin("\\=/2", "2").
 clojure_direct_builtin("\\=/2", 2).
 clojure_direct_builtin('\\=/2', "2").
 clojure_direct_builtin('\\=/2', 2).
+clojure_direct_builtin("=:=/2", "2").
+clojure_direct_builtin("=:=/2", 2).
+clojure_direct_builtin('=:=/2', "2").
+clojure_direct_builtin('=:=/2', 2).
+clojure_direct_builtin("=\\=/2", "2").
+clojure_direct_builtin("=\\=/2", 2).
+clojure_direct_builtin('=\\=/2', "2").
+clojure_direct_builtin('=\\=/2', 2).
+clojure_direct_builtin("is/2", "2").
+clojure_direct_builtin("is/2", 2).
+clojure_direct_builtin('is/2', "2").
+clojure_direct_builtin('is/2', 2).
+clojure_direct_builtin("</2", "2").
+clojure_direct_builtin("</2", 2).
+clojure_direct_builtin('</2', "2").
+clojure_direct_builtin('</2', 2).
+clojure_direct_builtin(">/2", "2").
+clojure_direct_builtin(">/2", 2).
+clojure_direct_builtin('>/2', "2").
+clojure_direct_builtin('>/2', 2).
+clojure_direct_builtin("=</2", "2").
+clojure_direct_builtin("=</2", 2).
+clojure_direct_builtin('=</2', "2").
+clojure_direct_builtin('=</2', 2).
+clojure_direct_builtin(">=/2", "2").
+clojure_direct_builtin(">=/2", 2).
+clojure_direct_builtin('>=/2', "2").
+clojure_direct_builtin('>=/2', 2).
 clojure_direct_builtin("true/0", "0").
 clojure_direct_builtin("true/0", 0).
 clojure_direct_builtin('true/0', "0").
@@ -308,6 +336,42 @@ clojure_direct_builtin("compound/1", "1").
 clojure_direct_builtin("compound/1", 1).
 clojure_direct_builtin('compound/1', "1").
 clojure_direct_builtin('compound/1', 1).
+clojure_direct_builtin("callable/1", "1").
+clojure_direct_builtin("callable/1", 1).
+clojure_direct_builtin('callable/1', "1").
+clojure_direct_builtin('callable/1', 1).
+clojure_direct_builtin("float/1", "1").
+clojure_direct_builtin("float/1", 1).
+clojure_direct_builtin('float/1', "1").
+clojure_direct_builtin('float/1', 1).
+clojure_direct_builtin("is_list/1", "1").
+clojure_direct_builtin("is_list/1", 1).
+clojure_direct_builtin('is_list/1', "1").
+clojure_direct_builtin('is_list/1', 1).
+clojure_direct_builtin("length/2", "2").
+clojure_direct_builtin("length/2", 2).
+clojure_direct_builtin('length/2', "2").
+clojure_direct_builtin('length/2', 2).
+clojure_direct_builtin("member/2", "2").
+clojure_direct_builtin("member/2", 2).
+clojure_direct_builtin('member/2', "2").
+clojure_direct_builtin('member/2', 2).
+clojure_direct_builtin("append/3", "3").
+clojure_direct_builtin("append/3", 3).
+clojure_direct_builtin('append/3', "3").
+clojure_direct_builtin('append/3', 3).
+clojure_direct_builtin("copy_term/2", "2").
+clojure_direct_builtin("copy_term/2", 2).
+clojure_direct_builtin('copy_term/2', "2").
+clojure_direct_builtin('copy_term/2', 2).
+clojure_direct_builtin("functor/3", "3").
+clojure_direct_builtin("functor/3", 3).
+clojure_direct_builtin('functor/3', "3").
+clojure_direct_builtin('functor/3', 3).
+clojure_direct_builtin("ground/1", "1").
+clojure_direct_builtin("ground/1", 1).
+clojure_direct_builtin('ground/1', "1").
+clojure_direct_builtin('ground/1', 1).
 clojure_direct_builtin("!/0", "0").
 clojure_direct_builtin("!/0", 0).
 clojure_direct_builtin('!/0', "0").
@@ -341,6 +405,19 @@ clojure_unary_guard_test("var/1", "(or (= value ::lowered-unbound) (runtime/logi
 clojure_unary_guard_test('var/1', "(or (= value ::lowered-unbound) (runtime/logic-var? value))").
 clojure_unary_guard_test("compound/1", "(runtime/structure-term? value)").
 clojure_unary_guard_test('compound/1', "(runtime/structure-term? value)").
+clojure_unary_guard_test("callable/1", "(or (runtime/atom-term? value) (runtime/structure-term? value))").
+clojure_unary_guard_test('callable/1', "(or (runtime/atom-term? value) (runtime/structure-term? value))").
+clojure_unary_guard_test("float/1", "(float? value)").
+clojure_unary_guard_test('float/1', "(float? value)").
+
+clojure_arithmetic_order_builtin("</2", 'arithmetic-less?').
+clojure_arithmetic_order_builtin('</2', 'arithmetic-less?').
+clojure_arithmetic_order_builtin(">/2", 'arithmetic-greater?').
+clojure_arithmetic_order_builtin('>/2', 'arithmetic-greater?').
+clojure_arithmetic_order_builtin("=</2", 'arithmetic-less-or-equal?').
+clojure_arithmetic_order_builtin('=</2', 'arithmetic-less-or-equal?').
+clojure_arithmetic_order_builtin(">=/2", 'arithmetic-greater-or-equal?').
+clojure_arithmetic_order_builtin('>=/2', 'arithmetic-greater-or-equal?').
 
 emit_lowered_unary_guard(TestExpr, S, Expr) :-
     format(atom(Expr),
@@ -430,6 +507,34 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
            [S, S, S, S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
+    (Op == "=:=/2" ; Op == '=:=/2'),
+    !,
+    format(atom(Expr),
+           '(let [left (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound))] (if (runtime/arithmetic-equal? ~w left right) (runtime/advance ~w) (runtime/backtrack ~w)))',
+           [S, S, S, S, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "=\\=/2" ; Op == '=\\=/2'),
+    !,
+    format(atom(Expr),
+           '(let [left (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound))] (if (runtime/arithmetic-not-equal? ~w left right) (runtime/advance ~w) (runtime/backtrack ~w)))',
+           [S, S, S, S, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "is/2" ; Op == 'is/2'),
+    !,
+    format(atom(Expr),
+           '(let [left (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound)) expr (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound)) result (runtime/eval-arithmetic-term ~w expr)] (if (some? result) (let [[ok next-state] (runtime/unify-values ~w left result)] (if ok (runtime/advance next-state) (runtime/backtrack ~w))) (runtime/backtrack ~w)))',
+           [S, S, S, S, S, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    clojure_arithmetic_order_builtin(Op, RuntimePred),
+    !,
+    format(atom(Expr),
+           '(let [left (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound))] (if (runtime/~w ~w left right) (runtime/advance ~w) (runtime/backtrack ~w)))',
+           [S, S, S, S, RuntimePred, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
     (Op == "true/0" ; Op == 'true/0'),
     !,
     format(atom(Expr), '(runtime/advance ~w)', [S]).
@@ -438,6 +543,51 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "fail/0" ; Op == 'fail/0'),
     !,
     format(atom(Expr), '(runtime/backtrack ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "is_list/1" ; Op == 'is_list/1'),
+    !,
+    format(atom(Expr),
+           '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if (runtime/proper-list-term? ~w value) (runtime/advance ~w) (runtime/backtrack ~w)))',
+           [S, S, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "length/2" ; Op == 'length/2'),
+    !,
+    format(atom(Expr),
+           '(let [list-value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound)) len (runtime/proper-list-length ~w list-value) out (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound))] (if (some? len) (let [[ok next-state] (runtime/unify-values ~w out len)] (if ok (runtime/advance next-state) (runtime/backtrack ~w))) (runtime/backtrack ~w)))',
+           [S, S, S, S, S, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "member/2" ; Op == 'member/2'),
+    !,
+    format(atom(Expr),
+           '(let [elem (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound)) list-value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound))] (runtime/apply-member-solution ~w (inc (:pc ~w)) elem list-value))',
+           [S, S, S, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "append/3" ; Op == 'append/3'),
+    !,
+    format(atom(Expr),
+           '(let [left (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound)) out (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A3") ::lowered-unbound))] (runtime/apply-append-solution ~w (inc (:pc ~w)) left right out))',
+           [S, S, S, S, S, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "copy_term/2" ; Op == 'copy_term/2'),
+    !,
+    format(atom(Expr), '(runtime/apply-copy-term-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "functor/3" ; Op == 'functor/3'),
+    !,
+    format(atom(Expr), '(runtime/apply-functor-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "ground/1" ; Op == 'ground/1'),
+    !,
+    format(atom(Expr),
+           '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if (runtime/ground-term? ~w value) (runtime/advance ~w) (runtime/backtrack ~w)))',
+           [S, S, S, S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     clojure_unary_guard_test(Op, TestExpr),

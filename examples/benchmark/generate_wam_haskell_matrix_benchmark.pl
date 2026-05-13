@@ -36,7 +36,7 @@ main :-
     ;   Argv = [FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom]
     ->  LmdbModeAtom = none
     ;   format(user_error,
-            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off> [<none|auto|true|false>]~n',
+            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off> [<none|auto|true|false|resident|resident_cursor|resident_auto>]~n',
             []),
         halt(1)
     ),
@@ -66,9 +66,16 @@ generate(FactsPath, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, Out
     delete_file(TmpPath),
     collect_wam_predicates(VariantAtom, Predicates),
     query_pred_for_variant(VariantAtom, QueryPredOpts),
+    %% Default -A64M nursery for the matrix bench: at -N>=2 it cuts
+    %% GC time from ~3.9s to ~1.1s on 100k_cats and roughly halves
+    %% total_ms; the -N1 regression is ~24% (1.0 -> 1.3s) which we
+    %% accept as the bench's typical run is parallel.  Documented in
+    %% WAM_PERF_OPTIMIZATION_LOG.md Phase L appendix #6.  Override by
+    %% passing +RTS -A1M -RTS at run time.
     append([[module_name('wam-haskell-matrix-bench'),
              emit_mode(EmitMode),
-             fact_count(FactCount)],
+             fact_count(FactCount),
+             with_rtsopts('-A64M')],
             KernelOptions, LmdbOptions, QueryPredOpts], Options),
     write_wam_haskell_project(Predicates, Options, OutputDir),
     format(user_error,
@@ -109,6 +116,88 @@ parse_lmdb_mode(none, []).
 parse_lmdb_mode(auto, [use_lmdb(auto)]).
 parse_lmdb_mode(true, [use_lmdb(true)]).
 parse_lmdb_mode(false, [use_lmdb(false)]).
+%% resident: full LMDB-resident path (Phase 2b.2). Reads intern table,
+%% article-category map, and forward-edge index from named sub-dbs
+%% written by the streaming-pipeline ingester
+%% (src/unifyweaver/runtime/python/lmdb_ingest/ingest_to_lmdb.py).
+%% Requires the fixture's data.mdb to expose s2i / i2s / meta /
+%% category_parent / article_category sub-dbs.
+%% L2 sharded cache is the default for LMDB-using bench modes: hits
+%% the kernel's repeated edge lookups (multi-parent DAG paths and
+%% shared-ancestor seeds) while avoiding the per-HEC L1 duplication
+%% problem (sparks have no region affinity, so per-thread caches
+%% accumulate the same hot edges N times). MoE-style spark routing
+%% would unlock L1; until then sharded is the right default.
+%% Override at the matrix-bench-generator caller via additional Options.
+parse_lmdb_mode(resident, [
+    use_lmdb(true),
+    lmdb_layout(dupsort),
+    int_atom_seeds(lmdb),
+    lmdb_cache_mode(sharded)
+]).
+%% resident_cursor: resident path + Phase 2b.3 cursor-based demand BFS.
+%% Skips the parentsIndex pre-load step and walks the LMDB
+%% category_child sub-db on demand. Requires the fixture to have been
+%% ingested with the reverse-edge sub-db (use ingest_resident_lmdb_fixture.py).
+%% L2 sharded cache especially matters in this mode: the kernel's
+%% category_parent lookups go through cpEdgeLookup (LMDB) instead of
+%% an in-memory IntMap, so cache hit rate directly closes the per-call
+%% FFI overhead gap vs `resident` mode.
+parse_lmdb_mode(resident_cursor, [
+    use_lmdb(true),
+    lmdb_layout(dupsort),
+    int_atom_seeds(lmdb),
+    demand_bfs_mode(cursor),
+    lmdb_cache_mode(sharded)
+]).
+%% resident_auto: same dupsort/intern setup as resident*, but defers
+%% the cursor-vs-in-memory choice to cost_model.pl via
+%% cache_strategy(auto). Inputs feeding the model:
+%%   - fact_count            — counted from the facts.pl file (added below)
+%%   - expected_query_count  — defaulted to 1 here; override via the
+%%                             generator's caller if you have a specific M
+%%   - working_set_fraction  — defaulted to 0.05 (the cost-model doc's
+%%                             default; 5% of edges touched per query)
+%%   - mem_available_bytes   — read from /proc/meminfo by the resolver
+%% The resolver writes a concrete demand_bfs_mode/1 into Options before
+%% codegen consults it, so behaviour falls back exactly to either
+%% resident or resident_cursor depending on the regime.
+%%
+%% Verbose tracing is on by default for this mode so the picked
+%% decision shows up in the bench output. Pass
+%% cache_strategy_verbose(false) to silence.
+%%
+%% See docs/design/CACHE_COST_MODEL_PHILOSOPHY.md and
+%% docs/design/WAM_PERF_OPTIMIZATION_LOG.md Phase M appendix #10.
+parse_lmdb_mode(resident_auto, [
+    use_lmdb(true),
+    lmdb_layout(dupsort),
+    int_atom_seeds(lmdb),
+    cache_strategy(auto),
+    cache_strategy_verbose(true),
+    %% expected_query_count: the matrix bench runs many parMap-driven
+    %% query expansions per binary invocation (seed × root × sweep).
+    %% Set to 10 as a reasonable lower bound so the lmdb_cache_mode
+    %% auto-resolver picks a tier rather than `none`. Workloads with
+    %% genuinely 1-shot queries can override to 1.
+    expected_query_count(10),
+    %% BFS demand-set workloads (matrix bench's effective-distance
+    %% kernel) touch a tiny fraction of total edges per query.
+    %% Empirically (Phase L appendix #7): the simplewiki Physics root
+    %% reaches ~144 nodes out of 297k = ~0.0005 wsf. We use 0.001 here
+    %% to stay slightly conservative — picks cursor at 50k+ scale
+    %% (matches the existing demand_bfs_mode(auto) 50k threshold) and
+    %% in_memory below. The cost_model's general 0.05 default is the
+    %% right shape for many-keys-per-query lookups; for BFS-style
+    %% reachability it's two orders of magnitude too high.
+    working_set_fraction(0.001),
+    %% Let the lmdb_cache_mode auto-resolver pick the tier. `unknown`
+    %% locality (the safe default) routes to `sharded` (L2), which is
+    %% the existing hardcode we're replacing — but now the choice is
+    %% explicit and overridable per-workload via workload_locality/1.
+    lmdb_cache_mode(auto),
+    workload_locality(unknown)
+]).
 
 parse_variant(seeded, [
     dialect(swi),

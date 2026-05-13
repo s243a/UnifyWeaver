@@ -146,6 +146,77 @@ test(simple_builtin_not_unify_is_direct_lowered_in_prefix) :-
         has(Code, "runtime/backtrack")
     )).
 
+test(simple_builtin_arithmetic_equal_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_arith_eq/2, [builtin_call('=:=/2', 2), proceed], [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/arithmetic-equal?"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(simple_builtin_arithmetic_not_equal_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_arith_neq/2, [builtin_call('=\\=/2', 2), proceed], [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/arithmetic-not-equal?"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(simple_builtin_is_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_is/2, [builtin_call('is/2', 2), proceed], [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/eval-arithmetic-term"),
+        has(Code, "runtime/unify-values"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(simple_builtin_arithmetic_less_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_arith_lt/2, [builtin_call('</2', 2), proceed], [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/arithmetic-less?"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(simple_builtin_arithmetic_greater_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_arith_gt/2, [builtin_call('>/2', 2), proceed], [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/arithmetic-greater?"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(simple_builtin_arithmetic_less_or_equal_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_arith_le/2, [builtin_call('=</2', 2), proceed], [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/arithmetic-less-or-equal?"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(simple_builtin_arithmetic_greater_or_equal_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_arith_ge/2, [builtin_call('>=/2', 2), proceed], [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/arithmetic-greater-or-equal?"),
+        has(Code, "runtime/backtrack")
+    )).
+
 test(simple_builtin_true_is_direct_lowered_in_prefix) :-
     once((
         lower_predicate_to_clojure(test_true/0, [builtin_call('true/0', 0), proceed], [], Code),
@@ -296,6 +367,152 @@ test(terminal_execute_compound_is_direct_lowered_as_succeeding_builtin) :-
         has(Code, "runtime/structure-term? value"),
         has(Code, "runtime/succeed-state next-state"),
         assertion(\+ has(Code, "\"compound/1\"")),
+        assertion(\+ has(Code, ":pc target-pc"))
+    )).
+
+test(simple_builtin_callable_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_callable/1:\nbuiltin_call callable/1, 1\nproceed\n",
+        wam_clojure_lowerable(test_callable/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_callable/1, WamCode, [], Code),
+        has(Code, "runtime/deref-value"),
+        has(Code, "runtime/atom-term? value"),
+        has(Code, "runtime/structure-term? value"),
+        has(Code, "runtime/advance"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(terminal_execute_callable_is_direct_lowered_as_succeeding_builtin) :-
+    once((
+        WamCode = "test_execute_callable/1:\nallocate\ndeallocate\nexecute callable/1\n",
+        wam_clojure_lowerable(test_execute_callable/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_execute_callable/1, WamCode, [], Code),
+        has(Code, "runtime/atom-term? value"),
+        has(Code, "runtime/structure-term? value"),
+        has(Code, "runtime/succeed-state next-state"),
+        assertion(\+ has(Code, "\"callable/1\"")),
+        assertion(\+ has(Code, ":pc target-pc"))
+    )).
+
+test(simple_builtin_float_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_float/1:\nbuiltin_call float/1, 1\nproceed\n",
+        wam_clojure_lowerable(test_float/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_float/1, WamCode, [], Code),
+        has(Code, "runtime/deref-value"),
+        has(Code, "float? value"),
+        has(Code, "runtime/advance"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(terminal_execute_float_is_direct_lowered_as_succeeding_builtin) :-
+    once((
+        WamCode = "test_execute_float/1:\nallocate\ndeallocate\nexecute float/1\n",
+        wam_clojure_lowerable(test_execute_float/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_execute_float/1, WamCode, [], Code),
+        has(Code, "float? value"),
+        has(Code, "runtime/succeed-state next-state"),
+        assertion(\+ has(Code, "\"float/1\"")),
+        assertion(\+ has(Code, ":pc target-pc"))
+    )).
+
+test(simple_builtin_is_list_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_is_list/1:\nbuiltin_call is_list/1, 1\nproceed\n",
+        wam_clojure_lowerable(test_is_list/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_is_list/1, WamCode, [], Code),
+        has(Code, "runtime/deref-value"),
+        has(Code, "runtime/proper-list-term?"),
+        has(Code, "runtime/advance"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(terminal_execute_is_list_is_direct_lowered_as_succeeding_builtin) :-
+    once((
+        WamCode = "test_execute_is_list/1:\nallocate\ndeallocate\nexecute is_list/1\n",
+        wam_clojure_lowerable(test_execute_is_list/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_execute_is_list/1, WamCode, [], Code),
+        has(Code, "runtime/proper-list-term?"),
+        has(Code, "runtime/succeed-state next-state"),
+        assertion(\+ has(Code, "\"is_list/1\"")),
+        assertion(\+ has(Code, ":pc target-pc"))
+    )).
+
+test(simple_builtin_length_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_length/2:\nbuiltin_call length/2, 2\nproceed\n",
+        wam_clojure_lowerable(test_length/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_length/2, WamCode, [], Code),
+        has(Code, "runtime/deref-value"),
+        has(Code, "runtime/proper-list-length"),
+        has(Code, "runtime/unify-values"),
+        has(Code, "runtime/advance"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(simple_builtin_member_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_member/2:\nbuiltin_call member/2, 2\nproceed\n",
+        wam_clojure_lowerable(test_member/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_member/2, WamCode, [], Code),
+        has(Code, "runtime/apply-member-solution"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "inc (:pc"),
+        has(Code, "runtime/deref-value"),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
+test(simple_builtin_append_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_append/3:\nbuiltin_call append/3, 3\nproceed\n",
+        wam_clojure_lowerable(test_append/3, WamCode, deterministic),
+        lower_predicate_to_clojure(test_append/3, WamCode, [], Code),
+        has(Code, "runtime/apply-append-solution"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "\"A3\""),
+        has(Code, "inc (:pc"),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
+test(simple_builtin_copy_term_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_copy_term/2:\nbuiltin_call copy_term/2, 2\nproceed\n",
+        wam_clojure_lowerable(test_copy_term/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_copy_term/2, WamCode, [], Code),
+        has(Code, "runtime/apply-copy-term-solution"),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
+test(simple_builtin_functor_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_functor/3:\nbuiltin_call functor/3, 3\nproceed\n",
+        wam_clojure_lowerable(test_functor/3, WamCode, deterministic),
+        lower_predicate_to_clojure(test_functor/3, WamCode, [], Code),
+        has(Code, "runtime/apply-functor-solution"),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
+test(simple_builtin_ground_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_ground/1:\nbuiltin_call ground/1, 1\nproceed\n",
+        wam_clojure_lowerable(test_ground/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_ground/1, WamCode, [], Code),
+        has(Code, "runtime/deref-value"),
+        has(Code, "runtime/ground-term?"),
+        has(Code, "runtime/advance"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(terminal_execute_ground_is_direct_lowered_as_succeeding_builtin) :-
+    once((
+        WamCode = "test_execute_ground/1:\nallocate\ndeallocate\nexecute ground/1\n",
+        wam_clojure_lowerable(test_execute_ground/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_execute_ground/1, WamCode, [], Code),
+        has(Code, "runtime/ground-term?"),
+        has(Code, "runtime/succeed-state next-state"),
+        assertion(\+ has(Code, "\"ground/1\"")),
         assertion(\+ has(Code, ":pc target-pc"))
     )).
 

@@ -22,6 +22,8 @@ templates/legacy/
 output/
 tests/output/
 test_output/
+data/benchmark/50k_cats/
+data/benchmark/100k_cats/
 test_input/
 output_*/
 
@@ -163,6 +165,7 @@ training-data/
 # Sandbox folders
 sandbox/
 CLAUDE.md
+memory.md
 
 # Local tools and subprojects (optional, not in repo)
 .local/

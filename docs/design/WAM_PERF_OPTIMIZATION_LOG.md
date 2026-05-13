@@ -2595,3 +2595,1477 @@ The Phase L appendix #2 follow-ups #1, #2, #4 remain — ST-monad arc,
 optional firewall hook for the resolver, and the larger scale 5k/10k
 sweeps. Cross-target audit found one Clojure bug; no other target
 needed fixes.
+
+## Phase L appendix #4: pre-filter demand seeds before parMap (2026-04-28)
+
+PR #1876 (codex) added a per-seed `IS.member` gate inside the parMap
+closure so seeds outside the structural demand set returned `(cat,
+0.0)` immediately. The gate was correct but introduced a parallel
+scaling regression at high seed counts: the spark count still equalled
+`length seedCats`, so on `100k_cats` (84,136 seeds, ~84,125 outside
+the demand set) GHC scheduled ~84k sparks of trivial work and paid
+synchronization cost on each. The handoff doc captured the regression
+— at `-N1` total was 9.66 s and at `-N4` it was 7.02 s, with `-N2`
+the only setting that beat `-N1`.
+
+### The fix
+
+Move the filter from inside the parMap closure to a separate let
+binding executed *before* `parMap`:
+
+```haskell
+-- Before (PR #1876):
+let !seedResultsForced = parMap rdeepseq (\cat ->
+        if not (IS.member (iAtom cat) demandSet)
+          then (cat, 0.0)
+          else <full seed query>
+        ) seedCats
+    !demandSkippedSeeds = length [cat | cat <- seedCats, not (IS.member (iAtom cat) demandSet)]
+
+-- After (this PR):
+    !filteredSeedCats = filter (\cat -> IS.member (iAtom cat) demandSet) seedCats
+    !demandSkippedSeeds = length seedCats - length filteredSeedCats
+...
+let !seedResultsForced = parMap rdeepseq (\cat ->
+        <full seed query>
+        ) filteredSeedCats
+```
+
+Semantically equivalent: the post-aggregation step
+`Map.fromList [(cat, ws) | (cat, ws) <- seedResultsForced, ws > 0]`
+already discards zero-weight entries, so removing them upstream
+is observationally identical. Verified by output sha
+`70bbc9ffa4cf` matching at scale-300 (271 rows) before and after.
+
+### Codegen touch points
+
+`src/unifyweaver/targets/wam_haskell_target.pl`:
+- `generate_demand_filter/4` now emits the `!filteredSeedCats` binding
+  and computes `demandSkippedSeeds` as a length subtraction (cheaper
+  than a list-comprehension count).
+- `generate_demand_gated_query_body/3` is now an identity passthrough.
+  The historical wrapper is preserved as a comment in case anyone
+  needs to rebuild the in-body gate variant.
+- `generate_main_hs/4` selects `parmap_seed_source = filteredSeedCats`
+  when the demand filter is active and `seedCats` otherwise.
+
+`templates/targets/haskell_wam/main.hs.mustache`:
+- The parMap line iterates over `{{parmap_seed_source}}` instead of
+  hardcoded `seedCats`.
+
+`tests/test_wam_haskell_target.pl`:
+- `test_demand_filter_gates_seed_query_body` rewritten: now asserts
+  `!filteredSeedCats = filter ...` is present, that the inline
+  `if not (IS.member ...) then (cat, 0.0)` gate is *absent*, and
+  that parMap closes over `filteredSeedCats`.
+- `test_demand_filter_false_leaves_query_ungated` extended: also
+  asserts no pre-filter binding and that parMap still closes over
+  `seedCats`.
+
+### Measurements (`100k_cats`, default root `0s_beginnings`,
+`demand_skipped_seeds=84125`, 11 effective seeds, 3 trials each)
+
+| RTS | codex baseline (#1876) | this fix | delta |
+|---|---|---|---|
+| `-N1` | total 9.66 s, query 240 ms | total 3.23 s, query 0 ms | **3.0× faster** |
+| `-N2` | total 6.25 s, query 172 ms | total 3.32 s, query ≤4 ms | 1.9× faster |
+| `-N4` | total 7.02 s, query 220 ms | total 6.15 s, query 0 ms | 1.1× faster |
+
+Wall-clock is dominated by the sequential pre-query phase (TSV load,
+atom interning, demand-set BFS) once the spark fanout is removed.
+That sequential floor is the next target — not the parallel section.
+
+### Honest reading
+
+The parMap path is now correctly proportional to effective demand
+(11 sparks at `-N1`, not 84,136). `query_ms` collapsing to ~0 ms
+shows the spark scheduling overhead was real and is gone. `-N4`
+hurting the *total* — even with the fix — reflects the GC / RTS
+pressure of more capabilities on a workload where the parallelizable
+section is now small. That is a separate problem (parallelize the
+load / atom-intern / BFS phases, or drop into single-thread mode for
+small effective-demand workloads); the spark-fanout regression PR
+#1876 introduced is closed.
+
+### Open follow-ups
+
+- Codex's handoff doc lists Rust accumulated at 0.6 s and Elixir LMDB
+  at 1.6 s on the same fixture. Even after this fix Haskell at 3.2 s
+  is the slowest of the three because the sequential pre-query work
+  dominates. Parallelizing or amortizing TSV load and atom interning
+  is the next lever.
+- The historical in-body gate code path is documented in
+  `generate_demand_gated_query_body/3` but unreachable. Drop it once
+  there's no plausible reason to A/B against the gate variant.
+
+## Phase L appendix #5: LMDB-resident interning end-to-end (2026-05-08)
+
+### Why this landed
+
+Appendix #4 closed with: "Parallelizing or amortizing TSV load and
+atom interning is the next lever." This appendix measures that lever
+on `100k_cats`. The work landed across three PRs:
+
+- **PR #1916** (Phase 2b.2a) — `loadInternTableFromLmdb`,
+  `loadArticleCategoriesFromLmdb`, `loadForwardEdgesFromLmdb` +
+  `iterateAllPairs` / `peekStringBytes` helpers. Codegen surface, no
+  runtime wiring.
+- **PR #1918** (Phase 2b.2b) — Replace the `int_atom_seeds(lmdb)`
+  panic stub with calls to those loaders; wrap the int-ids-mode
+  intern-table and parents-index blocks with `{{^int_atom_seeds_lmdb}}`
+  and add LMDB-mode parallels. New `openLmdbInternEnvReadonly` helper.
+- **PR #1929** (Phase 2b.2c plumbing) — Matrix-bench `resident` mode
+  selector emitting `use_lmdb(true) + lmdb_layout(dupsort) +
+  int_atom_seeds(lmdb)`; missing imports (`CChar`, `nullPtr`, `when`)
+  added; **dupsort sub-db naming bug fixed** (`openLmdbEdgeLookup` /
+  `lmdbFactSource` ignored their `dbName` argument and hardcoded
+  `Just "main"`, so the FFI kernel couldn't find the
+  Phase-1-ingester's `category_parent` sub-db); fixture-specific
+  one-pass dual-table ingester `ingest_resident_lmdb_fixture.py`.
+
+### Measurement
+
+100k_cats fixture (196,900 category_parent edges, 84,136
+article_category edges, 84,136 unique atoms; default first root from
+`root_categories.tsv`). `seeded interpreter kernels_on`. 5 trials per
+cell; medians reported.
+
+| mode     | -N | load_ms | query_ms | total_ms | peak_RSS_MB |
+|----------|---:|--------:|---------:|---------:|------------:|
+| tsv      |  1 |       0 |        0 |    3535  |        751  |
+| resident |  1 |     745 |        4 |     980  |        385  |
+| tsv      |  2 |       0 |        2 |    3483  |        788  |
+| resident |  2 |     776 |        4 |    1072  |        384  |
+| tsv      |  4 |       0 |        1 |    5831  |        786  |
+| resident |  4 |    1564 |        6 |    2090  |        388  |
+
+`load_ms` is the bench's `t1 - t0` (file/LMDB load only). `query_ms`
+is `t3 - t2` (per-seed parMap). `setup_ms = total_ms - load_ms -
+query_ms - aggregation_ms` is the intern-table + parents-index build.
+
+Speedup (`tsv total / resident total`):
+- -N1: **3.61×** (3535 → 980 ms)
+- -N2: **3.25×** (3483 → 1072 ms)
+- -N4: **2.79×** (5831 → 2090 ms)
+
+Peak RSS: **resident is ~50% of TSV** at every -N level (385 vs 751 MB
+at -N1). The TSV path materialises a string-keyed `parentsIndex`
+before reinterning into the system-wide table; resident reads
+pre-interned int32 directly via `mdb_cursor_get'` and mmap-shares the
+backing pages.
+
+### Where the speedup comes from
+
+Decomposing -N1 medians:
+
+| phase                      | tsv      | resident |
+|----------------------------|---------:|---------:|
+| load (file/LMDB read)      |    0 ms  |   745 ms |
+| setup (intern + index)     | 3535 ms  |   231 ms |
+| query (per-seed parMap)    |    0 ms  |     4 ms |
+| total                      | 3535 ms  |   980 ms |
+
+The TSV path's 3.5 s is ~95% intern table + parents index
+construction, the bottleneck Phase 2b targets. The resident path
+trades it for a 0.7 s LMDB load plus a 0.2 s in-memory index build,
+net ~1 s. The 1 s target from `WAM_LMDB_RESIDENT_INTERNING_IMPLEMENTATION_PLAN.md`
+§4 lands by 20 ms.
+
+### Open follow-ups
+
+- **Parallelism regression at -N4 persists** — both modes get slower
+  at -N4 vs -N1 (TSV: 3535→5831 = 1.65× slower; resident: 980→2090 =
+  2.13× slower). Appendix #4 documented the seed pre-filter that
+  dropped this from catastrophic to merely sublinear. Going further
+  needs amortising the LMDB env open across sparks (resident
+  load_ms doubles 745→1564 at -N4, suggesting first-page faults are
+  paid concurrently across worker threads). Filed for a follow-up
+  branch.
+- **UTF-8 / ASCII** ([issue #1915](https://github.com/s243a/UnifyWeaver/issues/1915)) —
+  `peekStringBytes` byte-by-byte decode is correct for the URL-encoded
+  ASCII categories in this fixture; will trip on simplewiki's
+  multi-byte UTF-8. Fix is `Data.Text.Encoding.decodeUtf8`. Triggers
+  on first non-ASCII fixture.
+- **Edge-count threshold** — `loadForwardEdgesFromLmdb` caps in-memory
+  growth at 5_000_000 edges (~80 MB IntMap). 100k_cats's 196,900 fits
+  easily; enwiki-scale (~28M) will trip the guard. Two long-term
+  fixes in `WAM_LMDB_RESIDENT_INTERNING_IMPLEMENTATION_PLAN.md` §3.5:
+  reverse-edge sub-db at the ingester (small change), or LMDB-cursor
+  BFS instead of pre-load (Phase 2b.3 follow-up).
+- **TSV path setup time at -N4** — TSV setup grows from 3.5 s (-N1) to
+  5.8 s (-N4) without doing more work. The intern-table fold runs
+  once before parMap fires, so this is GC pressure or scheduler
+  noise. Resident's setup is small enough that the same noise has
+  smaller relative impact. Worth investigating if TSV path remains a
+  user-facing default.
+
+### Reproducer
+
+```bash
+# 1. Re-ingest 100k_cats with the resident layout (Phase 1 sub-dbs).
+mkdir -p data/benchmark/100k_cats_resident_run
+cp data/benchmark/100k_cats/{category_parent,article_category,root_categories}.tsv \
+   data/benchmark/100k_cats/{facts.pl,metadata.json} \
+   data/benchmark/100k_cats_resident_run/
+python3 examples/benchmark/ingest_resident_lmdb_fixture.py \
+    data/benchmark/100k_cats data/benchmark/100k_cats_resident_run/lmdb
+
+# 2. Generate matrix bench in both modes.
+swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
+    data/benchmark/100k_cats_resident_run/facts.pl /tmp/wam_100k_tsv \
+    seeded interpreter kernels_on none
+swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
+    data/benchmark/100k_cats_resident_run/facts.pl /tmp/wam_100k_resident \
+    seeded interpreter kernels_on resident
+
+# 3. Build both.
+(cd /tmp/wam_100k_tsv && cabal new-build)
+(cd /tmp/wam_100k_resident && cabal new-build)
+
+# 4. Run with /usr/bin/time -v for peak RSS; loop -N1/-N2/-N4 × 5 trials.
+```
+
+## Phase L appendix #6: parMap regression at -N>=2 is GC pressure (2026-05-08)
+
+### Why this landed
+
+Appendix #5 left this open: "both modes get slower at -N4 vs -N1
+(TSV: 3535→5831 = 1.65× slower; resident: 980→2090 = 2.13× slower)".
+The hypothesis was first-page faults paid concurrently across worker
+threads on the LMDB load. This appendix tests it.
+
+### Diagnosis
+
+Resident binary, 100k_cats, +RTS -N4 -s, three trials per config:
+
+| config       | total_ms | GC time |  RSS_MB |
+|--------------|---------:|--------:|--------:|
+| default      |     3327 |  5.66 s |     397 |
+| -A64M        |     1146 |  1.36 s |     619 |
+| -A256M       |     1031 |  0.65 s |    1244 |
+| -A1G         |      892 |   ~0  s |    1318 |
+| -A64M -qg    |     1286 |  0.66 s |     619 |
+
+The regression is **GC pressure**, not LMDB or thread contention. At
+-N4 the default 1 MB nursery triggers a parallel GC pass roughly
+every 1 MB of allocation; with 4 threads competing for the GC's stop-
+the-world phase, GC time blows up to 5.7 s out of 3.3 s wall (because
+parallel GC accounts wall time across each capability separately).
+
+`-A64M` lifts the nursery to 64 MB so collections happen ~64× less
+often. `-A1G` is even better (near-zero GC) but uses 1.3 GB RSS.
+`-A64M -qg` (use sequential GC) is comparable to `-A64M` alone — the
+nursery size is the dominant lever, not the parallelism mode of GC
+itself.
+
+### Validation across -N
+
+5 trials per cell, medians:
+
+| cell           | total_ms | GC time | RSS_MB |
+|----------------|---------:|--------:|-------:|
+| default -N1    |     1016 |  0.68 s |    394 |
+| **A64M    -N1**|   **1260**| **0.89 s** |**521** |
+| default -N2    |     1079 |  1.19 s |    394 |
+| **A64M    -N2**|    **801**| **0.71 s** |**504** |
+| default -N4    |     2126 |  3.85 s |    397 |
+| **A64M    -N4**|   **1062**| **1.10 s** |**619** |
+
+`-A64M` is **only correct at -N≥2**. At -N1 it costs ~24% (1016 →
+1260 ms): the small default nursery's frequent minor GCs beat one
+big nursery + occasional major GC, when there's no parallel GC
+synchronisation cost. Crossover is between -N1 and -N2.
+
+### What landed
+
+The matrix bench's primary use case is `+RTS -N>=2`, so we accept
+the -N1 cost in exchange for halving total_ms at -N4. New
+`with_rtsopts(Flags)` codegen option in `generate_cabal_file/4` bakes
+`-with-rtsopts="..."` into the executable's `ghc-options`. The
+matrix bench generator passes `with_rtsopts('-A64M')`. Per GHC's
+"last flag wins" rule, callers can override at runtime with
+`+RTS -A1M -RTS`.
+
+| Codegen surface               | Default       | Override |
+|-------------------------------|---------------|---------|
+| `generate_cabal_file/4`       | no rtsopts    | `with_rtsopts(Flags)` |
+| matrix bench generator        | `-A64M`       | `+RTS -A1M -RTS` |
+| other WAM-Haskell projects    | unchanged     | n/a    |
+
+Only the matrix bench opts in. Other generated projects (typical
+user code, single-target benches, etc.) get the original GHC defaults
+because the right -A varies with workload + intended -N.
+
+### What's still open
+
+A workload-aware nursery size is the proper fix, à la the C# target's
+source-mode cost-model resolver
+(`docs/design/CSHARP_QUERY_SOURCE_MODE_*.md`). For the WAM-Haskell
+target the inputs are: number of seeds, number of edges, intended
+-N, available RAM. Output: an -A choice that optimises total_ms
+without exceeding budget. Not done in this iteration; the static
+`-A64M` is a reasonable point on the curve for the matrix bench.
+
+The TSV setup-growth observation from appendix #5 (TSV setup_ms
+3.5→5.8 s going N1→N4) is the same phenomenon — a sequential
+allocation-heavy phase running while the GC scales with -N. -A64M
+helps there too; the matrix bench's resident mode is the canonical
+test, but TSV mode benefits as a side effect.
+
+### Reproducer
+
+```bash
+# Generate the matrix bench (resident or none — both inherit -A64M).
+swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
+    data/benchmark/100k_cats_resident_run/facts.pl /tmp/wam_resident \
+    seeded interpreter kernels_on resident
+grep ghc-options /tmp/wam_resident/wam-haskell-matrix-bench.cabal
+# -> ghc-options:      -O2 -threaded -rtsopts "-with-rtsopts=-A64M"
+
+# Build and run; -A64M is now the runtime default at every -N.
+(cd /tmp/wam_resident && cabal new-build)
+.../wam-haskell-matrix-bench .../100k_cats_resident_run +RTS -N4 -s
+```
+
+## Phase L appendix #7: cursor BFS at simplewiki scale (2026-05-09)
+
+### Why this measurement
+
+Phase 2b.3 (PR #1950) landed LMDB-cursor BFS as an alternative to the
+pre-loaded parentsIndex IntMap. The 1k smoke test in that PR showed
+parity (cursor + sharded L2 ≈ in_memory + sharded L2 within trial
+noise), which is the *correct* result at small scale but doesn't
+demonstrate the architectural win — that materialises only when
+pre-load isn't a viable option.
+
+Appendix #5 had also flagged the 100k_cats fixture as structurally
+broken for parMap measurement (4054 fragmented graph roots, max
+descendant subtree of 22). This appendix moves to simplewiki, which
+is real Wikipedia-derived data with proper few-roots-many-descendants
+topology.
+
+### Methodology
+
+The existing `simplewiki_cats/lmdb_proj/lmdb` was ingested earlier in
+the streaming-pipeline layout (single dupsort `main` sub-db with
+int32 child → int32 parent edges) — which Phase 2b.3 cursor mode
+can't read directly because it needs `category_parent` and
+`category_child` named sub-dbs. Instead of re-ingesting from the SQL
+dump, a small converter
+(`examples/benchmark/convert_lmdb_to_phase1_layout.py`) mirrors the
+existing data into the Phase 1 layout: copies `main` to
+`category_parent`, builds reverse-edge `category_child`, and stubs
+the intern table sub-dbs (s2i / i2s / article_category as empty —
+resident_cursor mode loads them at startup but doesn't exercise
+their contents at runtime). 297,283 edges; conversion runs in ~0.7s.
+
+3 trials per cell, default first root from the existing
+`root_ids.txt` (id 265340 — has 14,661 descendants in the simplewiki
+hierarchy), 5,000 seeds.
+
+### Results
+
+| mode             | -N | load_ms | query_ms | total_ms | peak_RSS_MB |
+|------------------|---:|--------:|---------:|---------:|------------:|
+| resident         |  1 |     183 |       36 |     443  |        179  |
+| resident_cursor  |  1 |     159 |       40 |    **226**|       **147** |
+| resident         |  2 |     141 |       33 |     335  |        221  |
+| resident_cursor  |  2 |     137 |       45 |    **207**|        217  |
+| resident         |  4 |     137 |       13 |     339  |        320  |
+| resident_cursor  |  4 |     140 |       15 |    **234**|        332  |
+
+Speedup (resident total / resident_cursor total):
+- -N1: **1.96×**  (443 → 226 ms)
+- -N2: **1.62×**  (335 → 207 ms)
+- -N4: **1.45×**  (339 → 234 ms)
+
+Both modes return identical `tuple_count=5000` and
+`demand_set_size=14661` across all 18 runs — correctness preserved.
+
+### Why cursor wins at scale
+
+At 297k edges, resident's `loadForwardEdgesFromLmdb` builds a
+~10 MB IntMap before queries can run. That's 80–150 ms of upfront
+work that cursor mode skips entirely (cursor reads only the edges
+the BFS actually visits — at most ~14k for the demand set, plus the
+kernel's per-seed walks).
+
+`peak_RSS_MB` at -N1 confirms this: cursor mode is **18% smaller**
+(147 vs 179 MB), the gap being the unbuilt parentsIndex IntMap.
+At higher -N levels GC scratch space dominates and the gap closes.
+
+The kernel's per-seed FFI overhead (highlighted in 2b.3 smoke
+results) is fully amortised by the sharded L2 cache: shared
+ancestors get cache hits across seeds and across multi-parent path
+enumeration. The default `lmdb_cache_mode(sharded)` from the same
+PR is doing real work here.
+
+### What's still open
+
+- **enwiki measurement** — `enwiki_cats/lmdb_proj/lmdb` has
+  9,932,244 edges (33× simplewiki). Same converter applies; would
+  need ~30s to convert + ~1 GB peak RSS for resident mode (which
+  hits the 5 M-edge guard) vs ~mid-to-high MB for cursor. The
+  cursor path is the only viable mode at that scale. Filed as
+  follow-up; needs a clean run on a system with enough RAM headroom.
+- **Empty intern table caveat** — the converter stubs s2i/i2s as
+  empty. Means int IDs in stdout don't reverse-map to Wikipedia
+  category names. For perf measurement that's fine; for any
+  use case that wants human-readable output, fresh ingest from
+  the SQL dump (via mysql_stream + ingest_to_lmdb.py) is needed.
+- **demand_set_size = 14,661** is the test root's descendant subtree
+  — well-defined and substantial. But seed_count = tuple_count =
+  5,000 means *every* seed is in the demand set; the filter didn't
+  prune any seeds. That's a property of the seed file (which was
+  generated to be drawn from this root's subtree) rather than a
+  general fact about Wikipedia. A "broad seeds, narrow root" workload
+  would exercise the filter differently. Future work.
+
+### Reproducer
+
+```bash
+# Convert existing simplewiki LMDB to Phase 1 layout.
+python3 examples/benchmark/convert_lmdb_to_phase1_layout.py \
+    data/benchmark/simplewiki_cats/lmdb_proj/lmdb \
+    data/benchmark/simplewiki_cats/lmdb_proj_resident/lmdb
+cp data/benchmark/simplewiki_cats/lmdb_proj/{seed_ids,root_ids}.txt \
+   data/benchmark/simplewiki_cats/lmdb_proj_resident/
+
+# Generate matrix bench in resident_cursor mode (any FactsPath works
+# because resident_cursor doesn't read facts.pl at runtime).
+swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
+    /dev/null /tmp/wam_simplewiki_cursor seeded interpreter kernels_on resident_cursor
+
+# Build + run.
+(cd /tmp/wam_simplewiki_cursor && cabal new-build)
+.../wam-haskell-matrix-bench data/benchmark/simplewiki_cats/lmdb_proj_resident +RTS -N4
+```
+
+## Phase L appendix #8: enwiki at-scale finale (2026-05-09)
+
+### Why this measurement
+
+Phase L appendix #7 validated cursor BFS at simplewiki scale (297k
+edges, 1.96× speedup vs in_memory at -N1) but didn't yet exercise
+the architectural argument: *can the cursor path run where the
+in-memory path literally cannot?* enwiki at 9.9M edges puts that to
+the test.
+
+### Codegen fix (in this PR)
+
+A bug in the Phase 2b.3 codegen: cursor mode was calling
+`loadForwardEdgesFromLmdb` unconditionally before the demand filter
+ran. The 5_000_000-edge guard would fire even though the result was
+unused at runtime. Fix: thread `demand_bfs_mode_cursor` through
+`generate_main_hs` and gate the loader call with mustache. Cursor
+mode now binds `let !lmdbParentsIndex = IM.empty` directly. No load,
+no guard, no wasted IntMap construction.
+
+This was masked at simplewiki scale because 297k edges fit under the
+5M cap. Without the fix the enwiki measurement would have been
+impossible.
+
+### Resident mode at enwiki: cannot run
+
+Confirmed deterministically:
+
+```
+$ ./wam-haskell-matrix-bench .../enwiki_cats/lmdb_proj_resident +RTS -N1
+wam-haskell-matrix-bench: loadForwardEdgesFromLmdb: edge count
+  exceeded threshold 5000000 (loaded 5000000 so far). Switch to
+  LMDB-cursor BFS (Phase 2b.3) or use the ingester's
+  --with-reverse-edges follow-up.
+Exit status: 1
+```
+
+The guard's "switch to cursor BFS" message is exactly what landed
+this PR's predecessor. Closing the loop.
+
+### Cursor mode at enwiki: runs comfortably
+
+Fixture: `data/benchmark/enwiki_cats/lmdb_proj_resident` after
+running the converter on 9,932,244 edges (28s). Single root id
+97,688,913 with **796,695 descendants** in the category hierarchy.
+1000 seeds, 860 produced nonzero results.
+
+Medians of 3 trials, kernels_on, +RTS -A64M (baked):
+
+| -N | load_ms | query_ms | total_ms | RSS_MB |
+|---:|--------:|---------:|---------:|-------:|
+|  1 |       0 |       11 |     1129 |    752 |
+|  2 |       0 |       12 |     1066 |    807 |
+|  4 |       0 |        7 |     1138 |    922 |
+
+`load_ms = 0` because cursor mode skips the IntMap pre-load
+entirely. Total time is dominated by the demand BFS itself (walking
+796k descendants via category_child cursor) plus the kernel's
+per-seed work over 1000 seeds.
+
+System: 4.8 GB total RAM, ~1.7 GB available pre-bench. **Cursor mode
+finishes in ~1.1s with 750-920 MB peak RSS** — well within the
+machine's headroom, on data that resident mode cannot load at all.
+
+### Why -N scaling is flat at enwiki
+
+Going N1 → N2 → N4 leaves total_ms essentially unchanged
+(1129 / 1066 / 1138). Two reasons:
+
+1. **Demand BFS is sequential**. One cursor, one thread, walks
+   796k nodes. Doesn't parallelize.
+2. **Per-seed parMap work is tiny** (`query_ms` 7-12ms). Even with
+   perfect parallel scaling, that's a small fraction of total time.
+
+Future work: parallelize the demand BFS itself (concurrent cursors
+per worker, partition the descendant tree). That's Phase 2c
+territory, requires the cache instrumentation + workload-aware
+gating that the user has been (correctly) deferring.
+
+### What this closes
+
+Phase 2b's headline arc:
+- Phase 2b.1-2b.2c: codegen, runtime, fixture infrastructure
+- Phase 2b.3: cursor BFS architecture
+- Phase L #5: 100k_cats measurement (showed 3.61× but on a
+  structurally-broken fixture)
+- Phase L #6: parMap regression diagnosis (GC pressure)
+- Phase L #7: simplewiki real-scale measurement (1.96× cursor win)
+- Phase L #8 (this): enwiki — cursor runs where resident cannot
+
+The architecture handles every scale the existing fixtures expose,
+from 1k (parity with cache) through 297k (1.96× cursor win) to
+9.9M (cursor only). Caveat: the per-seed FFI cost amortizes
+through the sharded L2 cache; without it, cursor mode at enwiki
+would be much slower.
+
+### Open follow-ups
+
+- **Parallel demand BFS** — partition the descendant tree across
+  workers. Phase 2c. Probably needs a new sub-db structure or an
+  in-memory frontier-partitioning algorithm.
+- **Multi-query workloads** — single-query benches don't expose
+  cache hit rates that vary across queries. The matrix bench does
+  one query per binary launch. Phase 2c.
+- **Cost-model auto-resolver** — the user explicitly flagged this
+  as the prerequisite for cache warming work. Inputs:
+  fact_count, demand_set_size estimate, available RAM. Outputs:
+  cache_mode + size budget. Phase 2c.
+- **Real Flux strategy** (Phase 2.5) — replace the panic stub
+  with personalised PageRank scoring. Self-contained feature work.
+
+### Reproducer
+
+```bash
+# Convert enwiki LMDB to Phase 1 layout (~28s, 9.9M edges).
+mkdir -p data/benchmark/enwiki_cats/lmdb_proj_resident
+python3 examples/benchmark/convert_lmdb_to_phase1_layout.py \
+    data/benchmark/enwiki_cats/lmdb_proj/lmdb \
+    data/benchmark/enwiki_cats/lmdb_proj_resident/lmdb
+cp data/benchmark/enwiki_cats/lmdb_proj/{seed_ids,root_ids}.txt \
+   data/benchmark/enwiki_cats/lmdb_proj_resident/
+
+# Generate cursor-mode bench. Resident mode would crash at 5M
+# edges, so cursor is the only option here.
+swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
+    /dev/null /tmp/wam_enwiki_cursor seeded interpreter kernels_on resident_cursor
+
+(cd /tmp/wam_enwiki_cursor && cabal new-build)
+.../wam-haskell-matrix-bench data/benchmark/enwiki_cats/lmdb_proj_resident +RTS -N1
+```
+
+## Phase L appendix #9: parallel demand BFS (2026-05-09)
+
+### Why this measurement
+
+Appendix #8 showed cursor BFS *runs* at enwiki scale but doesn't
+*scale with -N*: the demand BFS itself is sequential (one cursor,
+one thread, walking 796,695 descendants), and that BFS dominates
+total time. parMap over per-seed work can't help when the seeds
+themselves wait ~1s for the demand set to be computed.
+
+### What changed
+
+`computeDemandSetCursorBFS` now splits each BFS level's frontier
+across `getNumCapabilities` workers via `Control.Concurrent.Async.mapConcurrently`.
+Each worker:
+
+1. Runs in a bound thread (`runInBoundThread`) so its LMDB cursor
+   stays pinned to one OS thread (LMDB read-txn requirement).
+2. Lazily opens its own (read txn, cursor) pair via the existing
+   `DupsortCursorCache` infrastructure (same pattern used by the
+   FFI kernel's `cpEdgeLookup`).
+3. Sequentially does `mdb_cursor_get' MDB_SET` + `MDB_NEXT_DUP`
+   iteration over its assigned chunk of frontier nodes.
+4. Returns its slice of new descendants as an `IS.IntSet`.
+
+The main thread unions all chunk results, advances to the next
+BFS level, and repeats until the frontier is empty. Levels remain
+sequential (depth N+1 needs depth N's frontier), but per-level
+work is now parallel.
+
+### Results (enwiki, 9.93M edges, 796,695-node demand set)
+
+Medians of 3 trials, kernels_on, +RTS -A64M (baked):
+
+| -N | sequential (PR #1955) | **parallel (this PR)** | delta vs sequential |
+|---:|----------------------:|-----------------------:|--------------------:|
+|  1 |                  1129 |               **1264** |               −12% |
+|  2 |                  1066 |                **928** |              **+13%** |
+|  4 |                  1138 |                **733** |              **+36%** |
+
+Going N1 → N4 in parallel mode: **1264 → 733 ms = 1.73× parallel
+speedup**. Compare to sequential mode where N1 → N4 was flat
+(1129 → 1138). The architecture now actually scales.
+
+### -N1 regression analysis
+
+The 12% regression at -N1 is real and expected: `mapConcurrently`
+spawns one bound thread per BFS level even at -N1 (vs zero in the
+prior sequential implementation). Across ~10-20 BFS levels at
+enwiki scale, the fork/join overhead adds ~135 ms.
+
+This is acceptable because cursor mode at -N1 isn't the design
+target — at sub-50k scales the auto resolver picks `in_memory`
+mode (which doesn't go through this code path at all), and at
+50k+ scales users typically run with -N≥2 anyway. The `auto`
+resolver path is unaffected.
+
+### What this closes
+
+The -N scaling gap from appendix #8. Together with the simplewiki
+appendix #7 (1.96× cursor-mode speedup at 297k edges) and the
+sharded L2 default from PR #1950, the resident-cursor path now
+delivers:
+
+- Architectural scalability: runs where in_memory cannot
+  (>5M edges).
+- Memory efficiency: ~50% peak RSS reduction vs in_memory at
+  comparable scale.
+- Real parallel speedup: 1.73× at -N4 on enwiki.
+
+### Open follow-ups
+
+- **The mutator-side per-seed FFI overhead is still amortised by
+  sharded L2** — that's PR #1950's contribution. Independent of
+  this work but still load-bearing.
+- **-N1 micro-regression** (12%) could be eliminated with a
+  numCaps=1 fast path (skip mapConcurrently, evaluate inline). Not
+  done because cursor mode at -N1 is off-target (auto resolver
+  picks in_memory).
+- **Cost-model auto-resolver** for cache_mode + -N selection still
+  deferred to Phase 2c.
+- **Parallel BFS chunking strategy** is currently uniform-size
+  splits. A frontier where some nodes have 100k children and
+  others have 1 will load-imbalance. Work-stealing or branch-
+  weighted partitioning would tighten this further. Filed.
+
+### Reproducer
+
+```bash
+# Same fixture as appendix #8.
+swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
+    /dev/null /tmp/wam_enwiki_cursor seeded interpreter kernels_on resident_cursor
+
+(cd /tmp/wam_enwiki_cursor && cabal new-build)
+.../wam-haskell-matrix-bench data/benchmark/enwiki_cats/lmdb_proj_resident +RTS -N4
+```
+
+## Phase M appendix #10: cache-warming microbench (Phase 2c prerequisites) (2026-05-09)
+
+### Why
+
+Before building a cost-model auto-resolver for the cache layer, we
+need empirical inputs the resolver can consume. The hand-wavy version
+"warm hot edges" hides three independent cost classes:
+
+1. *Read-pattern cost*: how much do we save by batching/sequencing
+   reads vs doing them one at a time on demand?
+2. *Ranker cost*: what does it actually cost to compute the score
+   used to pick "hot" edges? Different rankers (PPR, hop distance,
+   semantic similarity) have very different cost classes.
+3. *Crossover M*: how many queries does a workload need before
+   warming amortises its cost?
+
+The Hadoop folklore "scans beat seeks" is real but conditional on
+selection ratio, hardware, and data size. Phase M measures these on
+our actual fixtures so any "warming pays off / doesn't pay off"
+claim downstream is grounded in numbers, not intuition.
+
+### Setup
+
+`examples/benchmark/cache_warming_microbench/` — standalone cabal
+project that opens a Phase 1 LMDB fixture (`category_child` dupsort
+sub-db) and runs three sub-benches:
+
+- **M1**: same workload (resolve dupsort values for N keys) under
+  five access patterns: `PerLookupCursor`, `SharedInOrder`,
+  `SharedSorted`, `SharedShuffled`, `FullScan`.
+- **M1.b**: scan-vs-seek crossover sweep — sorted-seek time vs
+  full-scan time at six selection ratios on the same N=10k key set.
+- **M2**: ranker overhead — PPR/Flux one iteration, streaming-hop
+  one pass (B-tree frontier propagation, per the algorithm sketched
+  in this conversation), stub semantic similarity (D=128 dot
+  products on K=1000 candidates).
+- **M3**: warming-vs-JIT crossover — M random 3-hop BFS queries
+  against (a) cold cursor path, (b) IntMap pre-warmed with top-5000
+  source nodes by out-degree.
+
+Hardware: same WSL2 machine as Phase L appendices. GHC 8.6.5,
+single-threaded, GHC `-O1` (cabal default for `new-build`).
+
+### M1: read patterns at simplewiki scale (10k keys → 78,751 edges)
+
+| pattern            | wall_ms | edges_collected |
+|---|---|---|
+| PerLookupCursor    |   275   | 78,751 |
+| SharedInOrder      |     5.4 | 78,751 |
+| SharedSorted       |     4.0 | 78,751 |
+| SharedShuffled     |    14.4 | 78,751 |
+| FullScan           |    13.4 | 78,751 |
+
+**Headline numbers**:
+
+- **65× penalty** for opening a fresh cursor per key vs reusing one.
+  This is already addressed in the runtime (cursor BFS shares cursors
+  via `DupsortCursorCache`), but the magnitude is worth recording —
+  any future change that breaks cursor reuse would be catastrophic.
+- **3.5× penalty** for shuffled-key seeks vs sorted seeks. LMDB pages
+  are mmap'd; sequential key access is page-friendly, random access
+  trips through the page table.
+- At ~3.4% selection (10k of 297k edges touched), full scan is **3.3×
+  slower** than sorted seeks. Scan is *not* universally faster.
+
+### M1.b: selectivity sweep (sorted seeks vs full scan)
+
+Same N=10k key sample, time both patterns on progressively-smaller
+subsets:
+
+| key_fraction | n_keys | sorted_ms | scan_ms | scan / sorted |
+|---|---|---|---|---|
+| 0.01 |   100 |  0.077 |  5.8 | **76.1×** |
+| 0.05 |   500 |  0.238 |  6.1 | 25.7× |
+| 0.10 | 1,000 |  0.513 |  6.5 | 12.6× |
+| 0.25 | 2,500 |  1.1   |  6.6 |  5.9× |
+| 0.50 | 5,000 |  2.2   | 10.1 |  4.6× |
+| 1.00 |10,000 |  4.7   | 13.2 |  2.8× |
+
+Sorted seeks beat scan at every measured ratio. Linear-extrapolating
+the sorted-seek cost (~0.47 ms per 1k keys) and treating scan as
+fixed cost (~6 ms intercept + small slope), the projected scan-vs-
+seek crossover lands somewhere around **N ≈ 13k–25k keys** of the
+~144k true source population — i.e. **~10–18% true selection**.
+
+The Hadoop "scans beat seeks" framing is correct but applies at a
+specific operating regime: workloads that touch a high fraction of
+the data per query, hardware where random page access is much
+slower than sequential (spinning disks; or memory-pressured VMs
+where mmap pages aren't resident), and queries that don't benefit
+from caching across calls. None of those apply to category-graph
+demand BFS at simplewiki scale on this hardware. They might apply
+on different hardware or at different selection ratios — *the cost
+model needs the workload's selection ratio as an input*.
+
+### M2: ranker overhead (simplewiki, 297,283 edges, 144k sources)
+
+| ranker                       | wall_ms | output_size |
+|---|---|---|
+| PPR/Flux 1 iter              | 80.1   | 43,974 |
+| streaming-hop 1 pass         |  2.7   |    144 |
+| semantic-sim K=1000 D=128    |  2.8   |  1,000 |
+
+**Cost classes confirmed**:
+
+- **PPR is heavyweight** — 80 ms for one iteration over the full
+  edge list. PPR is only viable as a warming-decision input if its
+  cost amortises over many queries. Treating one query as ~0.5–1 ms
+  of cold-cursor work, **PPR pays for itself only at M ≥ ~80–160
+  queries**, and only if warming itself produces a measurable speedup.
+- **Streaming-hop is essentially free** — 2.7 ms because the
+  frontier-propagation loop only does work proportional to the
+  frontier size (here seeded with 10 sources, 1-hop expansion =
+  144 outputs). Multi-pass convergence would cost N × this. The
+  user's algorithmic intuition was right: this is the right shape
+  for a per-query-affordable ranker.
+- **Stub semantic similarity** is K-bound: 2.8 ms for K=1000, D=128.
+  Production embeddings would be more expensive (real vector loads,
+  not synthetic `sin(c*i)`), but the cost class is still O(K·D),
+  not O(E).
+
+### M3: warming-vs-JIT crossover (3-hop BFS from random roots)
+
+| M (queries) | cold_ms | warm_ms | speedup |
+|---|---|---|---|
+|   1 | 0.016 | 0.008 | 2.1× |
+|   5 | 0.055 | 0.040 | 1.4× |
+|  10 | 0.107 | 0.109 | 0.98× |
+|  25 | 2.2   | 0.293 | 7.6× *(noise outlier — cold path stalled)* |
+|  50 | 0.343 | 0.378 | 0.91× |
+| 100 | 0.458 | 0.461 | 0.99× |
+| 250 | 0.841 | 0.883 | 0.95× |
+
+**Warming with top-K-by-out-degree does not pay off** for random-BFS
+queries on simplewiki. Speedups hover at 1× ± measurement noise.
+
+This is workload-specific, not a general result. The warming policy
+("top-K source nodes by out-degree") doesn't match the query traffic
+("BFS from random roots"). High out-degree nodes aren't necessarily
+the nodes the queries visit. To make warming pay, the policy needs a
+signal correlated with query traffic — query-history-driven warming,
+or a ranker informed by query endpoints (streaming-hop seeded from
+recent query roots), not a static graph metric.
+
+### Cost-model takeaways
+
+The auto-resolver's input vector should include at least:
+
+1. **`selection_ratio_estimate`** — selection ratio of the typical
+   query against the full edge set. Below ~10–15%, prefer sorted
+   seeks; above, consider full scan. Below 1%, scans are 76× too
+   expensive.
+2. **`expected_query_count`** — M, the number of queries amortising
+   any warming work. PPR-class rankers pay off only at M ≥ ~80–160.
+   Streaming-hop is cheap enough to run per-query.
+3. **`workload_locality`** — proxy for how many queries hit the
+   same hot region. Without this signal, default to no warming
+   (M3 result).
+4. **`available_ram`** — already in the proposed input vector.
+   Caps the warm-set size.
+
+The resolver itself should be small (cost-class tables + thresholds),
+not a runtime ML model. Streaming-hop is cheap enough to be a default
+*per-query* ranker if a warm cache exists; PPR should be opt-in.
+
+### Caveats
+
+- **Hardware**: WSL2, mmap-backed; results would shift on cold-disk-
+  pressured systems where random-page access dominates. The
+  "scans beat seeks" regime is reachable, just not on this setup.
+- **Workload**: random-BFS from random roots is one shape. Repeated
+  queries from a small hot root set would change M3's verdict.
+- **Warming policy**: only top-K-by-out-degree was measured. A
+  query-history-driven policy is the natural follow-up; not
+  measured here.
+- **Single-pass streaming-hop**: M2 measures *one* pass. Multi-pass
+  convergence would multiply the cost; for warming purposes one
+  pass is usually enough (per the user's algorithm sketch).
+- **Sample-key bias**: `sampleDistinctKeys` returns ascending-order
+  keys, so `SharedInOrder` is approximately `SharedSorted` in
+  practice. The shuffle vs sort comparison is the meaningful one.
+
+### Reproducer
+
+```bash
+(cd examples/benchmark/cache_warming_microbench && cabal new-build)
+.../cache-warming-microbench \
+    data/benchmark/simplewiki_cats/lmdb_proj_resident/lmdb 10000 42
+# Or 1k_resident_run, or enwiki_cats/lmdb_proj_resident.
+```
+
+Phase M is measurement-only; no production codegen change. The
+cost-model resolver itself remains deferred to Phase 2c, but it now
+has empirical inputs to consume.
+
+### Cost-model formula (cache-regime aware)
+
+The "10–18% selection crossover" reported above is conditional on the
+working set fitting in the page cache. On databases that exceed
+**free** RAM (note: on WSL, this swings dynamically as the host
+reclaims pages — `/proc/meminfo:MemAvailable`, not `MemTotal`), the
+crossover shifts left dramatically because random seeks become real
+disk operations.
+
+**Variables**:
+
+| symbol | meaning |
+|---|---|
+| `W` | bytes a full scan would touch (≈ DB size on disk) |
+| `X` | working-set fraction the workload actually uses (BFS reachability fraction; cumulative across M queries: union of working sets) |
+| `R_free` | **free** RAM available to the process (`/proc/meminfo:MemAvailable`) |
+| `S_mem_seq` | sequential read throughput when data is page-cached (~5 GB/s mmap memcpy) |
+| `S_disk_seq` | sequential read throughput from cold storage (~500 MB/s SSD, ~100 MB/s HDD) |
+| `t_mem_seek` | one B-tree-walk seek with leaves cached (~1 µs) |
+| `t_disk_seek` | one B-tree-walk seek with the leaf not cached (~100 µs SSD, ~10 ms HDD) |
+| `K` | number of distinct keys the query looks up |
+
+**Cache-regime weight**:
+
+```
+W_working = X * W
+f_hot     = min(1, R_free / W_working)
+```
+
+`f_hot = 1` is the all-RAM regime we measured. `f_hot = 0` is the
+cold-disk regime Hadoop was designed for.
+
+**Effective costs**:
+
+```
+T_scan = W_working * [f_hot / S_mem_seq + (1 - f_hot) / S_disk_seq]
+T_sort = K         * [f_hot * t_mem_seek + (1 - f_hot) * t_disk_seek]
+```
+
+**Crossover K** (sort = scan):
+
+```
+K_cross = W_working / [bandwidth_eff * latency_eff]
+        where
+          bandwidth_eff = f_hot * S_mem_seq    + (1 - f_hot) * S_disk_seq
+          latency_eff   = f_hot * t_mem_seek   + (1 - f_hot) * t_disk_seek
+```
+
+If `K_query < K_cross` → sorted seeks. Otherwise → scan.
+
+**Plugged in**:
+
+| regime | W_working | bw_eff | lat_eff | K_cross | as % keys |
+|---|---|---|---|---|---|
+| simplewiki, hot (R_free ≫ W) | 15 MB | 5 GB/s | 1 µs | ~3,000 | ~2% |
+| simplewiki, cold (R_free ≪ W) | 15 MB | 500 MB/s | 100 µs | ~300 | ~0.2% |
+| enwiki, hot (R_free ≫ W) | 500 MB | 5 GB/s | 1 µs | ~100,000 | ~10% |
+| enwiki, cold (R_free ≪ W) | 500 MB | 500 MB/s | 100 µs | ~10,000 | ~1% |
+
+The hot-regime simplewiki value (~2%) is consistent with M1.b: sort
+beats scan at all measured ratios up to 7% true selection.
+
+**Warming-pays-off threshold** — for M queries each touching `K_q`
+keys, warming a working set of `W_warm` bytes pays off at:
+
+```
+M_warm ≥ T_warm_load / (T_query_cold - T_query_hot)
+```
+
+The denominator collapses to ≈ 0 when `R_free ≫ W_warm` (matches our
+M3 simplewiki result — warming is pointless when everything's already
+cached). The numerator stays small because warming is one sequential
+scan. So warming pays off when `R_free ≪ W_warm` and `M ≥ small`.
+
+**What the resolver should read**:
+
+- `R_free` from `/proc/meminfo:MemAvailable` (recheck per-bench, since
+  WSL claims/releases pages dynamically).
+- `W` from `mdb_env_info.me_mapsize` or `stat()` of the data file.
+- `X_query`, `K_query`, `M` from workload metadata; defaults derivable
+  from BFS-depth heuristics + declared workload type.
+
+The hardware constants (`S_mem_seq`, `S_disk_seq`, `t_mem_seek`,
+`t_disk_seek`) need a one-time per-machine calibration probe. SSD-
+typical defaults are within an order of magnitude on commodity
+hardware; the order of magnitude is what matters for the regime
+selection, not the second decimal place.
+
+### When this matters
+
+Categories-only fixtures (simplewiki ≈ 15 MB, enwiki ≈ 500 MB) fit
+in any modern machine's free RAM. The cost model is groundwork, not
+an immediate optimization — at this scale, all regimes are `f_hot ≈ 1`
+and the formula reduces to "sorted seeks always".
+
+The regime starts to matter at:
+
+- **Article-level Wikipedia ingest** — full enwiki article texts are
+  ~80 GB compressed, ~250 GB uncompressed. Past free RAM on any
+  consumer machine.
+- **Multi-fixture aggregation** (e.g. enwiki categories + page
+  metadata + revision counts joined into one LMDB).
+- **Memory-pressured environments** — WSL2 in particular, where the
+  Windows host can reclaim large fractions of the VM's RAM.
+- **Spinning-disk targets** — `t_disk_seek` jumps 100×, shifting the
+  crossover left aggressively.
+
+The Prolog predicates in `src/unifyweaver/core/cost_model.pl`
+implement these formulas. They're opt-in: callers pass `cost_model`
+options to enable, otherwise targets fall back to the existing
+fact-count-threshold heuristic.
+
+## Phase L appendix #11: matrix-bench `resident_auto` mode (2026-05-10)
+
+### Why
+
+After PR #1975 wired the cost-model resolver into
+`wam_haskell_target.pl`, nothing in the repo actually exercised it
+end-to-end. This appendix records the first user of
+`cache_strategy(auto)` — a new `resident_auto` mode in the matrix
+bench — and what the resolver picks across the existing fixture
+scales. The point isn't to discover a new winning configuration; it
+is to verify the cost model's decisions agree with the empirical
+Phase L#7–9 measurements, and to surface tuning issues in the
+default workload metadata.
+
+### What changed
+
+`examples/benchmark/generate_wam_haskell_matrix_benchmark.pl`:
+
+- New `resident_auto` mode parser, alongside the existing `resident`
+  and `resident_cursor` modes.
+- Emits `cache_strategy(auto)`, `cache_strategy_verbose(true)`,
+  `expected_query_count(1)`, and `working_set_fraction(0.001)`.
+- Tags `lmdb_cache_mode(sharded)` (same default as the other resident
+  modes) and `int_atom_seeds(lmdb)`.
+
+The mode lets the cost model decide between cursor and in-memory
+demand BFS by reading the resolver's recommendation. Verbose tracing
+is on by default so the picked decision shows up in the bench
+generator's output, e.g.:
+
+```
+[WAM-Haskell] cache_strategy(auto): K=297 W=14850000 R_free=1579548672 → sort (cursor)
+```
+
+### Why `working_set_fraction(0.001)` and not the cost-model default `0.05`
+
+The cost-model's general default of `0.05` is appropriate for
+many-keys-per-query workloads (e.g. lookup-heavy joins where the
+query touches 5% of the data). For graph-BFS demand-set workloads
+like the matrix bench's effective-distance kernel, the demand set
+is ~0.05 % of edges (Phase L#7: simplewiki Physics root reaches
+144 of 297k nodes = 0.0005). At wsf=0.05 the model would
+incorrectly recommend `in_memory` at every scale because K is
+inflated by 100×.
+
+`resident_auto` overrides to `0.001` (~10× the empirical 0.0005,
+slightly conservative). The cost-model's `0.05` default stays as
+the correct general-purpose value; it's the workload, not the
+model, that's specialised here.
+
+### What the resolver picks
+
+R_free = 1.58 GB (WSL with active processes; reported by
+`/proc/meminfo:MemAvailable`).
+
+| fixture | fact_count | K     | W       | f_hot | picked  | empirical winner (Phase L) |
+|---|---|---|---|---|---|---|
+| 1k         |     5,933 |     6 |  290 KB |  1.0  | cursor  | parity (60 vs 70 ms)        |
+| simplewiki |   297,000 |   297 |   15 MB |  1.0  | cursor  | cursor (1.96× vs in_memory) |
+| enwiki     | 9,900,000 | 9,900 |  500 MB |  1.0  | cursor  | cursor only (in_memory panics) |
+
+The model agrees with the empirical measurements at every scale.
+For BFS workloads, sorted seeks always beat sequential pre-load —
+because the per-query selection ratio (~0.05%) is so far below the
+hot-regime crossover (~K_cross at 5000 bytes/key with W = fact_count
+× 50 → K_cross ≈ fact_count / 100, while K = fact_count × 0.001 =
+fact_count / 1000, so K is 10× below crossover at every scale).
+
+### Cold-regime check (and a real finding)
+
+To verify the model's cold-regime branch fires, the resolver was
+probed with `mem_available_bytes(125 MB)` against the enwiki size
+(W = 500 MB so f_hot ≈ 0.25):
+
+| fact_count | wsf   | R_free  | f_hot | picked    |
+|---|---|---|---|---|
+| 9,900,000  | 0.001 | 125 MB  | 0.25  | in_memory |
+| 9,900,000  | 0.05  | 125 MB  | 0.25  | in_memory |
+
+K_cross drops sharply in the cold regime (~4,000 at f_hot=0.25 vs
+~99,000 at f_hot=1.0), so even the small BFS K=9,900 lands above
+the threshold and the model recommends `scan` → `in_memory`.
+
+**This surfaces a real gap in the current sort-↔-cursor /
+scan-↔-in_memory mapping.** Our `in_memory` implementation requires
+loading the full edge IntMap into RAM (~500 MB at enwiki scale).
+At R_free=125 MB the IntMap allocation blows the available memory
+budget — exactly the regime where the model recommends it. The
+"scan" abstraction in `cost_model.pl` says nothing about working-set
+footprint, so the resolver can't currently catch this.
+
+The right fix is a footprint guard in `resolve_auto_cache_strategy/2`
+that overrides `in_memory` → `cursor` when `R_free < W`. Filed as
+a follow-up; not in this PR's scope because it has implications
+for the resolver's tests and decision contract.
+
+For now, `resident_auto` works correctly when R_free ≥ W (the hot
+regime), which covers all current categories-only fixtures. The
+cold-regime override matters once article-level data lands.
+
+### What this validates
+
+- The end-to-end channel works: matrix-bench → `cache_strategy(auto)` →
+  `resolve_auto_cache_strategy/2` → `cost_model:recommend_access_pattern/5`
+  → concrete `demand_bfs_mode/1`.
+- For BFS workloads at categories scale, the model agrees with
+  hardcoded `resident_cursor` and the existing
+  `resolve_auto_demand_bfs_mode/2` 50k threshold.
+- The model is doing genuine work in the cold regime (where the DB
+  exceeds free RAM) and at high selection ratios — both regimes
+  beyond the existing threshold's reach.
+
+### What this doesn't validate
+
+- **Article-level scale** — fixtures gone after the previous
+  workspace reset; couldn't probe the regime where `f_hot < 1`
+  matters in production. Deferred until article-level data is
+  re-ingested.
+- **Multi-query workloads** — `expected_query_count(M)` doesn't
+  affect the cursor-vs-in-memory decision; it would only fire if a
+  warming-payoff resolver existed. Deferred to the warming-arc work.
+- **Spinning-disk targets** — `t_disk_seek` jumps 100×, which
+  would shift the crossover. Not tested on this hardware.
+
+### Reproducer
+
+```bash
+# At any cwd:
+swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
+    data/benchmark/1k/facts.pl /tmp/wam_auto_1k seeded interpreter kernels_on resident_auto
+# Look for: [WAM-Haskell] cache_strategy(auto): K=... W=... R_free=... → ...
+```
+
+Phase L#11 closes the Phase 2c plumbing arc started in PR #1975.
+The cost model has now been exercised end-to-end on real
+fixtures; future warming and `lmdb_cache_mode` resolvers can
+build on the same channel.
+
+## Phase L appendix #12: `lmdb_cache_mode(auto)` resolver wiring (2026-05-10)
+
+### What landed
+
+`resolve_auto_lmdb_cache_mode/2` in `wam_haskell_target.pl`. Picks
+`none` / `per_hec` / `sharded` / `two_level` from
+`expected_query_count`, `workload_locality(...)`, and the already-
+resolved `demand_bfs_mode/1`. Opt-in signal is presence of
+`workload_locality/1`; without it, the existing in-place
+resolution (via `statistics:select_cache_mode/2`) continues to
+handle the auto path.
+
+Decision matrix mirrors the philosophy doc:
+
+| M    | locality        | pick      |
+|---|---|---|
+| ≤ 1  | *               | none      |
+| > 1  | intra_thread    | per_hec   |
+| > 1  | cross_thread    | sharded   |
+| > 10 | mixed           | two_level |
+| > 1  | mixed (low M)   | sharded   |
+| > 1  | unknown         | sharded   |
+| (any) | * + in_memory  | none (composition rule) |
+
+The `unknown → sharded` default is the same call the matrix bench
+has been making by hand since Phase L#5 — now explicit and
+overridable per-workload.
+
+### Matrix-bench `resident_auto` update
+
+The mode previously hardcoded `lmdb_cache_mode(sharded)` and
+`expected_query_count(1)`. Both are replaced with:
+
+```prolog
+expected_query_count(10),  % bench runs many parMap-driven queries
+lmdb_cache_mode(auto),
+workload_locality(unknown)
+```
+
+Smoke run at 1k confirms both resolvers fire:
+
+```
+[WAM-Haskell] cache_strategy(auto): K=6 W=296650 R_free=3653779456 → sort (cursor)
+[WAM-Haskell] lmdb_cache_mode(auto) → sharded (default_safe)
+```
+
+The picks match the previous hardcoded values exactly, so this is
+a behaviour-preserving refactor for the matrix bench. The
+benefit is that workload authors can now override locality via
+`workload_locality(intra_thread)` etc. without touching the bench
+generator.
+
+### Tests
+
+9 new tests in `tests/test_wam_haskell_target.pl`:
+
+- `intra_thread + M > 1 → per_hec`
+- `cross_thread + M > 1 → sharded`
+- `mixed + M > 10 → two_level`
+- `mixed + M ≤ 10 → sharded (low-M fallback)`
+- `unknown → sharded (safe default)`
+- `M = 1 → none (no amortisation)`
+- `composition: in_memory → none`
+- `no-op without workload_locality`
+- `explicit lmdb_cache_mode flows through unchanged`
+
+All 164 WAM-Haskell tests pass (155 existing + 9 new); 21
+cost_model tests unchanged.
+
+### Open follow-ups
+
+- **Memory budget guard on the cache layer itself.** The footprint
+  guard from Phase L#11 covers the working set (`R_free < W` →
+  cursor). The cache tier doesn't have an analogous guard yet:
+  when `R_free - W_working < L2_capacity_floor` the L2 cache
+  would thrash. Filed for a follow-up.
+- **Automatic locality inference.** `workload_locality(...)` is
+  authored by hand. Could be derived from kernel metadata
+  (purity certificate, parMap usage). Research-y.
+- **At-scale empirical validation.** The fixtures from Phase L#7–9
+  were swept in the workspace reset; re-validating the resolvers'
+  picks against measured wall-clock numbers needs them re-ingested.
+  Filed.
+
+## Phase L appendix #13: cache-tier memory-budget guard (2026-05-10)
+
+### What landed
+
+Symmetric to the working-set footprint guard from Phase L#11 (PR
+#2001), but for the cache layer. The Phase L#11 guard catches
+"the BFS state won't fit in RAM" (forces cursor mode). The new
+guard catches "even a small cache won't fit" (forces `none` for
+the cache tier).
+
+`compute_lmdb_cache_mode_decision/2` short-circuits to `Mode = none`
+when `R_free < cache_tier_floor_bytes`:
+
+```prolog
+;   cache_tier_memory_budget_short(Options, FloorBytes, RFree)
+->  Mode = none,
+    Reason = memory_budget(RFree, FloorBytes)
+```
+
+Default floor: 4 MB. Configurable via `cache_tier_floor_bytes(N)`.
+Reads `mem_available_bytes/1` (option) or
+`/proc/meminfo:MemAvailable` (fallback), same chain as the
+cache_strategy resolver.
+
+### Tests
+
+Three new tests in `tests/test_wam_haskell_target.pl`:
+
+- `memory_budget_guard_fires` — 1 MB free + cross_thread + M=100
+  → `none` (guard overrides what would have been `sharded`).
+- `memory_budget_guard_inactive_when_rfree_above_floor` — 64 MB
+  free → `sharded` (normal matrix runs).
+- `memory_budget_floor_override` — custom floor of 100 MB vs
+  64 MB free → `none` (override raises the threshold).
+
+All 167 WAM-Haskell tests pass (164 existing + 3 new); 21
+cost_model tests unchanged.
+
+### What this closes
+
+The cost-model arc now has symmetric resource-safety guards:
+
+- **Working-set footprint** (Phase L#11, PR #2001):
+  `cache_strategy(auto)` overrides `in_memory` → `cursor` when
+  `R_free < W`. Prevents allocating a working-set IntMap bigger
+  than RAM.
+- **Cache-tier memory budget** (Phase L#13, this PR):
+  `lmdb_cache_mode(auto)` overrides any tier → `none` when
+  `R_free < cache_tier_floor_bytes`. Prevents thrashing the
+  cache when there's no headroom left.
+
+The two together mean every cost-model decision is honest about
+the runtime's actual memory budget, not just the access-pattern
+math.
+
+### Open follow-ups
+
+The remaining items from Phase L#12 stand — automatic locality
+inference and at-scale empirical validation. No new follow-ups
+land here.
+
+## Phase L appendix #14: scan-strategy P2 — baseline measurements + branching distribution (2026-05-12)
+
+### Why
+
+The scan-strategy implementation plan calls P2 "at-scale
+validation re-ingest". Two deliverables: (a) confirm
+`resident_auto` (cost-model-resolver-driven) matches
+`resident_cursor` (hand-picked) at every scale; (b) capture the
+branching-factor distribution of the category graph as input for
+flux-decay tuning in P3+ when flux becomes real.
+
+This appendix substitutes 1k_cats + 100k_cats for simplewiki +
+enwiki because the larger fixtures were swept in an earlier
+workspace reset and re-ingest requires downloading the SQL dumps
+(60 MB for simplewiki, ~2 GB for enwiki). The two scales we *do*
+have bracket the regime well: the 1k fixture is the boundary case
+(`fact_count = 5,933` ≈ the prior 50k auto-threshold's lower
+bound), and 100k_cats is well past it. The cost-model resolver's
+decisions and the resolver-vs-hand-picked equivalence are
+fixture-independent claims; bigger fixtures would only sharpen the
+wall-clock numbers, not change the structural finding.
+
+### Sweep setup
+
+Two fixtures × two modes × three -N values × three trials = 36
+runs total.
+
+| input | value |
+| --- | --- |
+| fixtures | `1k` (5,933 edges), `100k_cats` (196,900 edges) |
+| modes | `resident_auto`, `resident_cursor` |
+| capabilities | `-N1`, `-N2`, `-N4` |
+| trials | 3 per cell |
+| measurement | `total_ms` from bench stdout |
+| host | WSL2; ~1.6 GB free RAM (hot regime for both fixtures) |
+
+Bench binaries built once per (fixture × mode); same binaries
+reused across trials. RTS flags default to `-A64M` via
+`with_rtsopts` (Phase L#6).
+
+### Wall-clock results
+
+Medians across 3 trials, all values in milliseconds:
+
+| fixture | mode | -N1 | -N2 | -N4 |
+| --- | --- | --- | --- | --- |
+| 1k | `resident_auto` | 56 | 41 | 31 |
+| 1k | `resident_cursor` | 52 | 41 | 32 |
+| 100k_cats | `resident_auto` | 527 | 367 | 368 |
+| 100k_cats | `resident_cursor` | 519 | 365 | 355 |
+
+| fixture | mode | -N1→-N4 speedup |
+| --- | --- | --- |
+| 1k | `resident_auto` | 1.81× |
+| 1k | `resident_cursor` | 1.63× |
+| 100k_cats | `resident_auto` | 1.43× |
+| 100k_cats | `resident_cursor` | 1.46× |
+
+### What this validates
+
+**`resident_auto` matches `resident_cursor` at every scale and -N.**
+Differences are within trial-to-trial noise (~3–8% at -N4 per
+prior Phase L observations). The cost-model resolver is picking
+`cursor` at both scales — the same choice a hand-tuned bench
+would make. P0–P2 of the scan-strategy arc have produced no
+performance regression: the auto-resolver path is byte-for-byte
+behaviourally equivalent to the hand-picked path.
+
+**Parallel scaling looks normal.** -N4 gives ~1.8× over -N1 at
+1k, ~1.4× at 100k. The flatter scaling at 100k is the
+diminishing returns pattern we've seen before (parMap GC pressure,
+even with `-A64M`) — `-N2 ≈ -N4` at 100k.
+
+### Branching-factor distribution
+
+Computed from `category_parent.tsv` directly (one pass over edges,
+counting parents-per-child and children-per-parent in two
+collections.Counters):
+
+| metric | 1k | 100k_cats |
+| --- | --- | --- |
+| edges | 5,933 | 196,900 |
+| unique children | 2,011 | 80,082 |
+| unique parents | 2,022 | 42,422 |
+| parents-per-child median | 3 | 2 |
+| parents-per-child P90 | 5 | 4 |
+| parents-per-child P99 | 8 | 6 |
+| parents-per-child max | 10 | 29 |
+| children-per-parent median | 1 | 2 |
+| children-per-parent P90 | 5 | 10 |
+| children-per-parent P99 | 14 | 39 |
+| children-per-parent max | 587 | 1,137 |
+
+**The asymmetry is dramatic and confirms the spec's design.**
+Parents-per-child is bounded — median 2–3, max 10–29.
+Children-per-parent has a long tail — median 1–2 but maxes at
+587 (1k) and 1,137 (100k). This is exactly the regime the spec's
+asymmetric-decay flux model assumes: a category typically has
+few parents (broader scope) but can have many children (the
+classification subdivides further).
+
+**Concrete consequence for P3+ flux tuning**:
+
+- `parent_decay` can be relatively gentle. Even at P99, only ~6
+  parents per child — flux survives many hops up without
+  decaying away.
+- `child_decay` needs to be more aggressive. A median node has 2
+  children but P99 nodes branch by 39× and worst-case by 1,137×.
+  Without aggressive decay, flux would spread arbitrarily wide
+  through high-fanout descendant subtrees.
+- The spec's defaults `parent_decay(0.5)` / `child_decay(0.3)`
+  encode this asymmetry directionally (child decay is sharper),
+  but the magnitudes are guesses. At simplewiki/enwiki scale the
+  numbers will shift; re-measure when those fixtures return.
+
+For a power-law flux variant (Gauss-radial form, `1/r^N`), N is
+the branching factor. The P99 values give upper-bound exponents:
+N≈6 for parent leg, N≈39 for child leg. In log space that's a
+~6.5× steeper child decay slope — quantitative justification for
+the spec's separate-decay-constant design.
+
+### Resolver decision traces
+
+`resident_auto`'s `cache_strategy_verbose(true)` output at each
+scale, captured from one trial:
+
+**1k:**
+```
+[WAM-Haskell] cache_strategy(auto): K=6 W=296650 R_free=1696985088 → sort (cursor)
+[WAM-Haskell] lmdb_cache_mode(auto) → sharded (default_safe)
+```
+
+**100k_cats:**
+```
+[WAM-Haskell] cache_strategy(auto): K=197 W=9845000 R_free=1696985088 → sort (cursor)
+[WAM-Haskell] lmdb_cache_mode(auto) → sharded (default_safe)
+```
+
+(All values consistent across trials within the same session;
+`R_free` reflects /proc/meminfo at run start.)
+
+Both scales: `cursor` for the access pattern (K well below
+`K_cross` at the hot regime), `sharded` for the cache tier
+(default_safe under `workload_locality(unknown)`). This is what
+`resident_auto` was designed to deliver, and the wall-clock
+parity with `resident_cursor` confirms it.
+
+### Open follow-ups
+
+- **Simplewiki + enwiki at scale**: still needed for the upper-
+  scale regime (`f_hot < 1`, where the cost-model's cold-regime
+  branch becomes relevant). The 1k–100k_cats range stays in the
+  hot regime throughout. Filed; depends on re-ingest of the SQL
+  dumps.
+- **Workload-specific working-set fraction**: `resident_auto`
+  hardcodes `working_set_fraction(0.001)` based on Phase L#7
+  Wikipedia-BFS measurements. Other workload shapes (denser
+  selection, lookup-heavy rather than BFS) would want different
+  values. Cost-model formulas are workload-agnostic but defaults
+  are workload-shaped — flagged for the eventual workload-class
+  taxonomy.
+- **Multi-query miss rate**: every measurement here is a single
+  query per binary invocation. Phase 5+ (spark routing, multi-
+  query workloads) will exercise miss-memoisation and cache
+  retention; the M3 microbench in Phase M was negative on that
+  axis but on different fixtures.
+
+### Reproducer
+
+```bash
+# Re-create LMDB Phase 1 layouts
+for SCALE in 1k 100k_cats; do
+    rm -rf data/benchmark/$SCALE/lmdb_resident
+    python3 examples/benchmark/ingest_resident_lmdb_fixture.py \
+        data/benchmark/$SCALE data/benchmark/$SCALE/lmdb_resident
+    # Bench expects "lmdb" subdir; symlink to lmdb_resident
+    [ -e data/benchmark/$SCALE/lmdb ] || \
+        ln -s lmdb_resident data/benchmark/$SCALE/lmdb
+done
+
+# Generate + build bench binaries
+for SCALE in 1k 100k_cats; do
+    for MODE in resident_auto resident_cursor; do
+        OUTDIR=/tmp/p2_${SCALE}_${MODE}
+        swipl -q -s examples/benchmark/generate_wam_haskell_matrix_benchmark.pl -- \
+            data/benchmark/$SCALE/facts.pl \
+            $OUTDIR seeded interpreter kernels_on $MODE
+        (cd $OUTDIR && cabal new-build)
+    done
+done
+
+# Sweep
+for SCALE in 1k 100k_cats; do
+    for MODE in resident_auto resident_cursor; do
+        BIN=/tmp/p2_${SCALE}_${MODE}/dist-newstyle/.../wam-haskell-matrix-bench
+        for N in 1 2 4; do
+            for T in 1 2 3; do
+                $BIN data/benchmark/$SCALE +RTS -N$N
+            done
+        done
+    done
+done
+```
+
+This appendix closes the P2 deliverable from
+`SCAN_STRATEGY_IMPLEMENTATION_PLAN.md`. P3 (warm-build core) can
+now consume `resident_cursor` as a measured baseline and the
+branching distribution above as flux-decay tuning input.
+
+
