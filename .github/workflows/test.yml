@@ -55,6 +55,11 @@ jobs:
         run: |
           SKIP_CSHARP_EXECUTION=1 swipl -q -f init.pl -s tests/core/test_csharp_query_target.pl -g "test_csharp_query_target:test_csharp_query_target" -t halt
 
+      - name: Run C# query calibration wrapper contract tests
+        run: |
+          python3 -m unittest tests/test_csharp_query_calibration_refresh_wrapper.py
+          python3 examples/benchmark/refresh_csharp_query_source_mode_calibration.py --dry-run
+
       - name: Generate and run inference test runner
         run: |
           swipl -g "use_module('src/unifyweaver/core/advanced/test_runner_inference'), generate_test_runner_inferred('output/advanced/inferred_test_runner.sh'), halt."
