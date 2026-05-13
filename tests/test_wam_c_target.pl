@@ -330,6 +330,49 @@ test_lowered_fact_helper_generation :-
     ),
     retractall(user:wam_c_lowered_pair(_, _)).
 
+test_lowered_helper_planner_metadata :-
+    Test = 'WAM-C: lowered helper planner reports routing decisions',
+    assertz(user:wam_c_plan_fact(a, b)),
+    assertz((user:wam_c_plan_rule(X) :- user:wam_c_plan_fact(X, _))),
+    (   plan_wam_c_lowered_helpers([user:wam_c_plan_fact/2,
+                                     user:wam_c_plan_rule/1,
+                                     user:category_ancestor/4],
+                                    [lowered_helpers(true)],
+                                    ['category_ancestor/4'],
+                                    Plans),
+        member(wam_c_lowered_helper_plan('wam_c_plan_fact/2', _, lowered, fact_only([[a,b]])), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_plan_rule/1', _, rejected, non_fact_clause), Plans),
+        member(wam_c_lowered_helper_plan('category_ancestor/4', _, interpreted, detected_kernel), Plans)
+    ->  pass(Test)
+    ;   fail_test(Test, 'planner did not classify lowered/rejected/interpreted predicates')
+    ),
+    retractall(user:wam_c_plan_fact(_, _)),
+    retractall(user:wam_c_plan_rule(_)).
+
+test_lowered_helper_plan_generation :-
+    Test = 'WAM-C: generated project reports lowered helper plan',
+    assertz(user:wam_c_plan_emit_fact(a, b)),
+    assertz((user:wam_c_plan_emit_rule(X) :- user:wam_c_plan_emit_fact(X, _))),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    format(atom(ProjectDir), '/tmp/unifyweaver_wam_c_lowered_plan_project_~w', [Stamp]),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    (   write_wam_c_project([user:wam_c_plan_emit_fact/2,
+                             user:wam_c_plan_emit_rule/1],
+                            [lowered_helpers(true), report_lowered_helpers(true)],
+                            ProjectDir),
+        read_file_to_string(LibPath, LibS, []),
+        sub_string(LibS, _, _, _, '// WAM-C lowered helper plan'),
+        sub_string(LibS, _, _, _, '// - lowered wam_c_plan_emit_fact/2: fact_only'),
+        sub_string(LibS, _, _, _, '// - rejected wam_c_plan_emit_rule/1: non_fact_clause'),
+        sub_string(LibS, _, _, _, 'INSTR_CALL_FOREIGN'),
+        sub_string(LibS, _, _, _, 'setup_wam_c_plan_emit_rule_1')
+    ->  pass(Test)
+    ;   fail_test(Test, 'generated project did not include lowered helper plan metadata')
+    ),
+    retractall(user:wam_c_plan_emit_fact(_, _)),
+    retractall(user:wam_c_plan_emit_rule(_)).
+
 test_unsupported_instruction_fails_loudly :-
     Test = 'WAM-C: unsupported instructions fail loudly',
     BadWamCode = 'foo/1:\n    unknown_opcode A1\n    proceed',
@@ -2018,6 +2061,8 @@ run_tests_once :-
     test_kernel_detector_setup_generation,
     test_kernel_detector_project_generation,
     test_lowered_fact_helper_generation,
+    test_lowered_helper_planner_metadata,
+    test_lowered_helper_plan_generation,
     test_unsupported_instruction_fails_loudly,
     test_no_zero_instruction_fallback,
     test_list_target_pc_emission,

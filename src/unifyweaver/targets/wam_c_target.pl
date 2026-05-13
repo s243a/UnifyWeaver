@@ -21,6 +21,7 @@
     wam_instruction_to_c_literal/3,   % +WamInstr, +LabelMap, -CCode
     detect_kernels/2,                 % +Predicates, -DetectedKernels
     generate_setup_detected_kernels_c/2, % +DetectedKernels, -CCode
+    plan_wam_c_lowered_helpers/4,     % +Predicates, +Options, +DetectedKeys, -Plans
     write_wam_c_project/3             % +Predicates, +Options, +ProjectDir
 ]).
 
@@ -52,14 +53,17 @@ write_wam_c_project(Predicates, Options, ProjectDir) :-
 
     % Compile predicates and generate lib.c
     pairs_keys(DetectedKernels, DetectedKeys),
-    compile_lowered_helpers_for_project(Predicates, Options, LoweredKeys, LoweredCode, SetupLoweredCode),
+    plan_wam_c_lowered_helpers(Predicates, Options, DetectedKeys, LoweredPlans),
+    maybe_report_wam_c_lowered_helper_plan(Options, LoweredPlans),
+    compile_lowered_helpers_for_project(LoweredPlans, LoweredKeys, LoweredCode, SetupLoweredCode),
+    render_wam_c_lowered_helper_plan(LoweredPlans, LoweredPlanCode),
     generate_setup_detected_kernels_c(DetectedKernels, SetupKernelCode),
     compile_predicates_for_project(Predicates,
                                    [detected_kernel_keys(DetectedKeys),
                                     lowered_helper_keys(LoweredKeys)|Options],
                                    PredicatesCode),
-    format(atom(LibCode), '#include "wam_runtime.h"~n~n~w~n~n~w~n~n~w',
-           [SetupKernelCode, LoweredCode, SetupLoweredCode]),
+    format(atom(LibCode), '#include "wam_runtime.h"~n~n~w~n~n~w~n~n~w~n~n~w',
+           [LoweredPlanCode, SetupKernelCode, LoweredCode, SetupLoweredCode]),
     format(atom(LibCodeWithPredicates), '~w~n~n~w', [LibCode, PredicatesCode]),
     directory_file_path(ProjectDir, 'lib.c', LibPath),
     write_file(LibPath, LibCodeWithPredicates),
@@ -159,27 +163,87 @@ wam_c_kernel_max_depth(ConfigOps, MaxDepth) :-
 % Prototype native lowered helpers
 % ============================================================================
 
-compile_lowered_helpers_for_project(Predicates, Options, LoweredKeys, Code, SetupCode) :-
+plan_wam_c_lowered_helpers(Predicates, Options, DetectedKeys, Plans) :-
     (   option(lowered_helpers(true), Options)
-    ->  findall(Key-CodePart-SetupLine,
-                (   member(PredIndicator, Predicates),
-                    lowered_fact_helper_for_predicate(PredIndicator, Key, CodePart, SetupLine)
-                ),
-                Entries),
-        findall(K, member(K-_-_, Entries), LoweredKeys),
-        findall(C, member(_-C-_, Entries), Codes),
-        findall(S, member(_-_-S, Entries), SetupLines),
-        atomic_list_concat(Codes, '\n\n', Code),
-        atomic_list_concat(SetupLines, '\n', SetupBody),
+    ->  maplist(plan_wam_c_lowered_helper(DetectedKeys), Predicates, Plans)
+    ;   maplist(plan_wam_c_lowered_helper_disabled, Predicates, Plans)
+    ).
+
+plan_wam_c_lowered_helper(DetectedKeys, PredIndicator, Plan) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    format(atom(Key), '~w/~w', [Pred, Arity]),
+    (   memberchk(Key, DetectedKeys)
+    ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, interpreted, detected_kernel)
+    ;   lowered_fact_helper_rows(PredIndicator, Rows)
+    ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, fact_only(Rows))
+    ;   lowered_fact_helper_rejection_reason(PredIndicator, Reason),
+        Plan = wam_c_lowered_helper_plan(Key, PredIndicator, rejected, Reason)
+    ).
+
+plan_wam_c_lowered_helper_disabled(PredIndicator, Plan) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    format(atom(Key), '~w/~w', [Pred, Arity]),
+    Plan = wam_c_lowered_helper_plan(Key, PredIndicator, interpreted, lowering_disabled).
+
+lowered_fact_helper_rejection_reason(PredIndicator, non_fact_clause) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    functor(Head, Pred, Arity),
+    user:clause(Head, Body),
+    Body \== true,
+    !.
+lowered_fact_helper_rejection_reason(PredIndicator, unsupported_fact_arguments) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    functor(Head, Pred, Arity),
+    user:clause(Head, true),
+    !.
+lowered_fact_helper_rejection_reason(_, no_clauses).
+
+compile_lowered_helpers_for_project(Plans, LoweredKeys, Code, SetupCode) :-
+    findall(Key-CodePart-SetupLine,
+            (   member(wam_c_lowered_helper_plan(Key, PredIndicator, lowered, fact_only(Rows)), Plans),
+                lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, CodePart, SetupLine)
+            ),
+            Entries),
+    findall(K, member(K-_-_, Entries), LoweredKeys),
+    findall(C, member(_-C-_, Entries), Codes),
+    findall(S, member(_-_-S, Entries), SetupLines),
+    atomic_list_concat(Codes, '\n\n', Code),
+    (   SetupLines = []
+    ->  SetupCode = 'void setup_lowered_wam_c_helpers(WamState* state) {\n    (void)state;\n}'
+    ;   atomic_list_concat(SetupLines, '\n', SetupBody),
         format(atom(SetupCode),
                'void setup_lowered_wam_c_helpers(WamState* state) {\n~w\n}',
                [SetupBody])
-    ;   LoweredKeys = [],
-        Code = '',
-        SetupCode = 'void setup_lowered_wam_c_helpers(WamState* state) {\n    (void)state;\n}'
     ).
 
-lowered_fact_helper_for_predicate(PredIndicator, Key, Code, SetupLine) :-
+render_wam_c_lowered_helper_plan([], '// WAM-C lowered helper plan: none').
+render_wam_c_lowered_helper_plan(Plans, Code) :-
+    maplist(render_wam_c_lowered_helper_plan_line, Plans, Lines),
+    atomic_list_concat(['// WAM-C lowered helper plan'|Lines], '\n', Code).
+
+render_wam_c_lowered_helper_plan_line(wam_c_lowered_helper_plan(Key, _PredIndicator, Action, Reason), Line) :-
+    wam_c_lowered_plan_reason_label(Reason, ReasonLabel),
+    format(atom(Line), '// - ~w ~w: ~w', [Action, Key, ReasonLabel]).
+
+maybe_report_wam_c_lowered_helper_plan(Options, Plans) :-
+    (   option(report_lowered_helpers(true), Options)
+    ->  findall(Key-ReasonLabel, wam_c_lowered_helper_plan_by_action(Plans, lowered, Key, ReasonLabel), Lowered),
+        findall(Key-ReasonLabel, wam_c_lowered_helper_plan_by_action(Plans, interpreted, Key, ReasonLabel), Interpreted),
+        findall(Key-ReasonLabel, wam_c_lowered_helper_plan_by_action(Plans, rejected, Key, ReasonLabel), Rejected),
+        format(user_error,
+               '[WAM-C] lowered helper plan: lowered=~w interpreted=~w rejected=~w~n',
+               [Lowered, Interpreted, Rejected])
+    ;   true
+    ).
+
+wam_c_lowered_helper_plan_by_action(Plans, Action, Key, ReasonLabel) :-
+    member(wam_c_lowered_helper_plan(Key, _, Action, Reason), Plans),
+    wam_c_lowered_plan_reason_label(Reason, ReasonLabel).
+
+wam_c_lowered_plan_reason_label(fact_only(_Rows), fact_only) :- !.
+wam_c_lowered_plan_reason_label(Reason, Reason).
+
+lowered_fact_helper_rows(PredIndicator, Rows) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     functor(Head, Pred, Arity),
     findall(Args,
@@ -189,7 +253,10 @@ lowered_fact_helper_for_predicate(PredIndicator, Key, Code, SetupLine) :-
             ),
             Rows),
     Rows \= [],
-    \+ ( user:clause(Head, Body), Body \== true ),
+    \+ ( user:clause(Head, Body), Body \== true ).
+
+lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, Code, SetupLine) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     format(atom(Key), '~w/~w', [Pred, Arity]),
     wam_c_symbol_name(Pred, Arity, Symbol),
     maplist(wam_c_lowered_fact_row(Arity), Rows, RowCodes),
