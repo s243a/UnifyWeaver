@@ -5,13 +5,13 @@ Status date: 2026-05-12
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `8268a7cd` (`Merge pull request #2039 from s243a/perf/wam-c-pack-instruction`)
+- `main` at `ae7d6d0e` (`Merge pull request #2040 from s243a/test/wam-c-memory-lifecycle-asan`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels --repetitions 1`
 
 Active branch:
 
-- `test/wam-c-memory-lifecycle-asan`
+- `feat/wam-c-lowered-helper-prototype`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -37,7 +37,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Effective-distance LMDB fact-storage wiring | Done | `facts_lmdb` generator mode, LMDB seeder/validator, `c-wam-accumulated-lmdb` matrix targets, `dev` parity smoke against Prolog |
 | Classic recursive program e2e | Done | Generated Prolog-to-WAM-C Fibonacci smoke, `set_*` instruction support, dereferenced constants/results, call-base choicepoint pruning |
 | Packed instruction layout | Done | `InstructionPayload` union keyed by `WamInstrTag`, typed generated initializers, typed runtime dispatch payload reads, switch-table cleanup guarded by switch tags |
-| ASAN memory lifecycle smoke | Done on active branch | ASAN-generated executable smoke covers switch table setup replacement, indexed clauses, FactSource loading, native foreign kernel dispatch, and repeated top-level calls |
+| ASAN memory lifecycle smoke | Done | ASAN-generated executable smoke covers switch table setup replacement, indexed clauses, FactSource loading, native foreign kernel dispatch, and repeated top-level calls |
+| Lowered fact-only helper prototype | In progress | `lowered_helpers(true)` emits native C foreign handlers for constant fact-only predicates plus a `call_foreign` trampoline |
 
 ## Current C Target Baseline
 
@@ -57,6 +58,9 @@ The C target is now a credible small WAM backend:
 - Supports basic `builtin_call` delegation for tested builtins:
   `atom/1`, `integer/1`, `is_list/1`, `=/2`, and `is/2`.
 - Supports deterministic `call_foreign` dispatch through a C handler registry.
+- Can opt into a prototype lowered-helper path for constant fact-only
+  predicates, emitted as native C foreign handlers behind `call_foreign`
+  trampolines.
 - Supports a deterministic native `category_ancestor/4` handler over an
   in-memory category-parent edge table.
 - Supports loading category-parent facts from TSV through a small
@@ -105,7 +109,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
 | Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup and all-hop collection; add more kernel kinds only after runtime support exists. |
 | Shared kernel detector integration | Partial | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`; broaden as more native C kernels land. |
-| Lowered/native helper functions | Missing | Done | Done | Consider after foreign kernels; C can lower simple fact-only or deterministic predicates. |
+| Lowered/native helper functions | Partial/Active | Done | Done | Active branch prototypes constant fact-only native helpers via the existing foreign registry. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
 | LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts and generated effective-distance LMDB wiring; larger artifact layout support remains. |
 | Effective-distance benchmark harness | Partial/Done | Done | Done | C is wired into the shared matrix for TSV and LMDB `kernels_on`/`kernels_off`; next gap is larger artifact layouts. |
@@ -115,23 +119,7 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `test/wam-c-memory-lifecycle-asan`
-
-Goal: make the C runtime cleanup story harder to regress as generated programs
-grow.
-
-Scope:
-
-- Add an AddressSanitizer-friendly generated executable smoke, ideally covering
-  switch tables, predicate setup replacement, atoms, facts, foreign handlers,
-  and classic recursive execution in one path.
-- Keep the default suite portable if ASAN is unavailable; run the sanitizer
-  smoke opportunistically or behind a clearly named test helper.
-- Use this to validate the packed-instruction cleanup path on larger programs.
-
-Status: ready on the active branch pending PR/merge.
-
-### 2. `feat/wam-c-lowered-helper-prototype`
+### 1. `feat/wam-c-lowered-helper-prototype`
 
 Goal: start closing the C gap with the Haskell and Rust hybrid WAM lowered
 helper paths.
@@ -144,12 +132,24 @@ Scope:
 - Prefer a fact-only or simple deterministic helper before attempting aggregate
   or multi-result helpers.
 
+Status: active; constant fact-only helper prototype is implemented and passing
+local executable smoke.
+
+### 2. `feat/wam-c-lowered-helper-planner`
+
+Goal: make C lowered-helper selection less ad hoc and closer to Haskell/Rust
+hybrid routing.
+
+Scope:
+
+- Add explicit selection/planning metadata for C lowered helpers.
+- Keep detected recursive kernels excluded from generic lowering.
+- Report which predicates were lowered, interpreted, or rejected.
+
 ## Suggested Immediate Next Step
 
-Open a PR for `test/wam-c-memory-lifecycle-asan`, then continue with
-`feat/wam-c-lowered-helper-prototype`.
+Continue validating `feat/wam-c-lowered-helper-prototype`.
 
-The branch already has an ASAN lifecycle smoke running locally and has exposed
-two runtime correctness fixes: pruning top-level choicepoints after
-`wam_run_predicate/4` returns, and guarding indexed `retry_me_else` execution
-when no sequential choicepoint exists.
+The active branch now prototypes native C lowered helpers for constant
+fact-only predicates using the existing foreign registry and generated
+`call_foreign` trampolines.
