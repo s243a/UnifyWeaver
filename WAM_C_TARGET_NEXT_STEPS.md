@@ -5,13 +5,13 @@ Status date: 2026-05-12
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `ae7d6d0e` (`Merge pull request #2040 from s243a/test/wam-c-memory-lifecycle-asan`)
+- `main` at `e03da1d5` (`Merge pull request #2042 from s243a/feat/wam-c-lowered-helper-prototype`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels --repetitions 1`
 
 Active branch:
 
-- `feat/wam-c-lowered-helper-prototype`
+- `fix/wam-c-asan-availability-probe`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -38,7 +38,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Classic recursive program e2e | Done | Generated Prolog-to-WAM-C Fibonacci smoke, `set_*` instruction support, dereferenced constants/results, call-base choicepoint pruning |
 | Packed instruction layout | Done | `InstructionPayload` union keyed by `WamInstrTag`, typed generated initializers, typed runtime dispatch payload reads, switch-table cleanup guarded by switch tags |
 | ASAN memory lifecycle smoke | Done | ASAN-generated executable smoke covers switch table setup replacement, indexed clauses, FactSource loading, native foreign kernel dispatch, and repeated top-level calls |
-| Lowered fact-only helper prototype | In progress | `lowered_helpers(true)` emits native C foreign handlers for constant fact-only predicates plus a `call_foreign` trampoline |
+| Lowered fact-only helper prototype | Done | `lowered_helpers(true)` emits native C foreign handlers for constant fact-only predicates plus a `call_foreign` trampoline |
+| ASAN availability probe hardening | In progress | Active branch requires a trivial ASAN executable to compile and run before enabling the optional ASAN lifecycle smoke |
 
 ## Current C Target Baseline
 
@@ -119,23 +120,7 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-lowered-helper-prototype`
-
-Goal: start closing the C gap with the Haskell and Rust hybrid WAM lowered
-helper paths.
-
-Scope:
-
-- Prototype one small deterministic lowered/native helper path for C.
-- Keep the runtime interface narrow and compatible with existing
-  `call_foreign` registration.
-- Prefer a fact-only or simple deterministic helper before attempting aggregate
-  or multi-result helpers.
-
-Status: active; constant fact-only helper prototype is implemented and passing
-local executable smoke.
-
-### 2. `feat/wam-c-lowered-helper-planner`
+### 1. `feat/wam-c-lowered-helper-planner`
 
 Goal: make C lowered-helper selection less ad hoc and closer to Haskell/Rust
 hybrid routing.
@@ -146,10 +131,29 @@ Scope:
 - Keep detected recursive kernels excluded from generic lowering.
 - Report which predicates were lowered, interpreted, or rejected.
 
+Status: recommended next feature branch after
+`fix/wam-c-asan-availability-probe` lands.
+
+### 2. `feat/wam-c-lowered-helper-benchmark-wiring`
+
+Goal: prove the lowered-helper path on a small benchmark surface before
+attempting broader helper classes.
+
+Scope:
+
+- Add a narrow generated benchmark or matrix target that exercises C lowered
+  fact helpers.
+- Keep the comparison against interpreted C and Prolog small enough for routine
+  local validation.
+- Record lowered/interpreted planning output with the benchmark artifacts.
+
 ## Suggested Immediate Next Step
 
-Continue validating `feat/wam-c-lowered-helper-prototype`.
+Finish `fix/wam-c-asan-availability-probe`, then move to
+`feat/wam-c-lowered-helper-planner`.
 
-The active branch now prototypes native C lowered helpers for constant
-fact-only predicates using the existing foreign registry and generated
-`call_foreign` trampolines.
+The merged lowered-helper prototype is passing locally, but `main` verification
+exposed that the optional ASAN lifecycle smoke can fail when the local ASAN
+runtime is unhealthy. The active fix branch hardens `asan_available/0` by
+requiring a trivial sanitized executable to compile and run before the optional
+ASAN lifecycle smoke is enabled.

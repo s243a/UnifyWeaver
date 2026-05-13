@@ -557,12 +557,18 @@ asan_available :-
     format(atom(TmpBase), '/tmp/unifyweaver_wam_c_asan_probe_~w', [Stamp]),
     format(atom(SourcePath), '~w.c', [TmpBase]),
     format(atom(ExePath), '~w_bin', [TmpBase]),
+    format(atom(LogPath), '~w.log', [TmpBase]),
     write_text_file(SourcePath, 'int main(void) { return 0; }\n'),
     format(atom(CompileCmd),
            'gcc -std=c11 -fsanitize=address ~w -o ~w',
            [SourcePath, ExePath]),
     catch(shell(CompileCmd, CompileStatus), _, fail),
-    CompileStatus =:= 0.
+    CompileStatus =:= 0,
+    format(atom(RunCmd),
+           'ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 timeout 5 ~w > ~w 2>&1',
+           [ExePath, LogPath]),
+    catch(shell(RunCmd, RunStatus), _, fail),
+    RunStatus =:= 0.
 
 lmdb_available :-
     catch(process_create(path('pkg-config'), ['--exists', 'lmdb'],
