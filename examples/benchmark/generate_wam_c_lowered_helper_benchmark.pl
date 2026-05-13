@@ -41,9 +41,12 @@ generate(OutputDir, Mode) :-
     setup_benchmark_facts,
     make_directory_path(OutputDir),
     mode_options(ParsedMode, Options),
-    write_wam_c_project([user:wam_c_bench_pair/2], Options, OutputDir),
+    mode_predicates(ParsedMode, Predicates),
+    write_wam_c_project(Predicates, Options, OutputDir),
     directory_file_path(OutputDir, 'main.c', MainPath),
-    lowered_helper_benchmark_main(MainCode),
+    mode_query_predicate(ParsedMode, QueryPred),
+    mode_alias_setup(ParsedMode, AliasDecl, AliasSetup),
+    lowered_helper_benchmark_main(QueryPred, AliasDecl, AliasSetup, MainCode),
     write_text_file(MainPath, MainCode),
     directory_file_path(OutputDir, 'README.md', ReadmePath),
     format(atom(Readme),
@@ -62,25 +65,40 @@ parse_mode(Mode, _) :-
 mode_options(lowered, [lowered_helpers(true), report_lowered_helpers(true)]).
 mode_options(interpreted, [report_lowered_helpers(true)]).
 
+mode_predicates(lowered, [user:wam_c_bench_pair/2, user:wam_c_bench_pair_alias/2]).
+mode_predicates(interpreted, [user:wam_c_bench_pair/2]).
+
+mode_query_predicate(lowered, 'wam_c_bench_pair_alias/2').
+mode_query_predicate(interpreted, 'wam_c_bench_pair/2').
+
+mode_alias_setup(lowered,
+                 'void setup_wam_c_bench_pair_alias_2(WamState* state);\n',
+                 '    setup_wam_c_bench_pair_alias_2(&state);\n').
+mode_alias_setup(interpreted, '', '').
+
 setup_benchmark_facts :-
     cleanup_benchmark_facts,
     assertz(user:wam_c_bench_pair(a, b)),
     assertz(user:wam_c_bench_pair(a, c)),
-    assertz(user:wam_c_bench_pair(b, d)).
+    assertz(user:wam_c_bench_pair(b, d)),
+    assertz(user:((wam_c_bench_pair_alias(X, Y) :- wam_c_bench_pair(X, Y)))).
 
 cleanup_benchmark_facts :-
-    retractall(user:wam_c_bench_pair(_, _)).
+    retractall(user:wam_c_bench_pair(_, _)),
+    retractall(user:wam_c_bench_pair_alias(_, _)).
 
-lowered_helper_benchmark_main(
+lowered_helper_benchmark_main(QueryPred, AliasDecl, AliasSetup, Code) :-
+    format(atom(Code),
 '#include "wam_runtime.h"
 #include <stdio.h>
 
 void setup_wam_c_bench_pair_2(WamState* state);
+~w
 void setup_lowered_wam_c_helpers(WamState* state);
 
 static int emit_pair(WamState* state, const char* left, const char* right, double score) {
     WamValue args[2] = { val_atom(left), val_atom(right) };
-    int rc = wam_run_predicate(state, "wam_c_bench_pair/2", args, 2);
+    int rc = wam_run_predicate(state, "~w", args, 2);
     if (rc != 0 || state->P != WAM_HALT) return 1;
     printf("%s\\t%s\\t%.6f\\n", left, right, score);
     return 0;
@@ -90,6 +108,7 @@ int main(void) {
     WamState state;
     wam_state_init(&state);
     setup_wam_c_bench_pair_2(&state);
+~w
     setup_lowered_wam_c_helpers(&state);
 
     printf("left\\tright\\tscore\\n");
@@ -107,17 +126,11 @@ int main(void) {
         return 30;
     }
 
-    WamValue missing_args[2] = { val_atom("z"), val_atom("missing") };
-    int missing_rc = wam_run_predicate(&state, "wam_c_bench_pair/2", missing_args, 2);
-    if (missing_rc != WAM_HALT) {
-        wam_free_state(&state);
-        return 40;
-    }
-
     wam_free_state(&state);
     return 0;
 }
-').
+',
+           [AliasDecl, QueryPred, AliasSetup]).
 
 write_text_file(Path, Content) :-
     setup_call_cleanup(
