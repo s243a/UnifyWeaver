@@ -93,6 +93,27 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         self.assertIn("clojure-wam-accumulated-no-kernels", targets)
         self.assertIn("clojure-wam-seeded", targets)
         self.assertIn("clojure-wam-seeded-no-kernels", targets)
+        self.assertNotIn("c-wam-lowered-helper", targets)
+        self.assertNotIn("c-wam-lowered-helper-interpreted", targets)
+
+    def test_c_lowered_helper_targets_are_registered_separately(self) -> None:
+        targets = resolve_targets(
+            explicit_targets=None,
+            target_set_names=["c-wam-lowered-helper"],
+        )
+
+        self.assertEqual(
+            targets,
+            [
+                "c-wam-lowered-helper-interpreted",
+                "c-wam-lowered-helper",
+            ],
+        )
+        self.assertEqual(TARGETS["c-wam-lowered-helper"].category, "hybrid-wam-lowered-helper")
+        self.assertEqual(
+            TARGETS["c-wam-lowered-helper-interpreted"].category,
+            "hybrid-wam-lowered-helper",
+        )
 
     def test_scala_targets_are_registered(self) -> None:
         targets = resolve_targets(

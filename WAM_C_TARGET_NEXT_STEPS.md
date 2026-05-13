@@ -5,13 +5,13 @@ Status date: 2026-05-12
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `b78879ed` (`Merge pull request #2043 from s243a/fix/wam-c-asan-availability-probe`)
+- `main` at `55b898f9` (`Merge pull request #2046 from s243a/feat/wam-c-lowered-helper-planner`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels --repetitions 1`
 
 Active branch:
 
-- `feat/wam-c-lowered-helper-planner`
+- `feat/wam-c-lowered-helper-benchmark-wiring`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -40,7 +40,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | ASAN memory lifecycle smoke | Done | ASAN-generated executable smoke covers switch table setup replacement, indexed clauses, FactSource loading, native foreign kernel dispatch, and repeated top-level calls |
 | Lowered fact-only helper prototype | Done | `lowered_helpers(true)` emits native C foreign handlers for constant fact-only predicates plus a `call_foreign` trampoline |
 | ASAN availability probe hardening | Done | `asan_available/0` requires a trivial sanitized executable to compile and run before enabling the optional ASAN lifecycle smoke |
-| Lowered helper planner metadata | In progress | Active branch adds explicit lowered/interpreted/rejected helper plans, excludes detected kernels, emits plan comments in generated `lib.c`, and supports `report_lowered_helpers(true)` |
+| Lowered helper planner metadata | Done | Explicit lowered/interpreted/rejected helper plans, detected-kernel exclusion, generated `lib.c` plan comments, and `report_lowered_helpers(true)` |
+| Lowered helper benchmark wiring | In progress | Active branch adds `c-wam-lowered-helper` and `c-wam-lowered-helper-interpreted` matrix targets over a tiny fact-helper benchmark |
 
 ## Current C Target Baseline
 
@@ -111,7 +112,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
 | Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup and all-hop collection; add more kernel kinds only after runtime support exists. |
 | Shared kernel detector integration | Partial | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`; broaden as more native C kernels land. |
-| Lowered/native helper functions | Partial/Active | Done | Done | C has constant fact-only native helpers plus active planner metadata for lowered/interpreted/rejected routing. |
+| Lowered/native helper functions | Partial/Active | Done | Done | C has constant fact-only native helpers, planner metadata, and active interpreted-vs-lowered matrix wiring. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
 | LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts and generated effective-distance LMDB wiring; larger artifact layout support remains. |
 | Effective-distance benchmark harness | Partial/Done | Done | Done | C is wired into the shared matrix for TSV and LMDB `kernels_on`/`kernels_off`; next gap is larger artifact layouts. |
@@ -121,22 +122,7 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-lowered-helper-planner`
-
-Goal: make C lowered-helper selection less ad hoc and closer to Haskell/Rust
-hybrid routing.
-
-Scope:
-
-- Add explicit selection/planning metadata for C lowered helpers.
-- Keep detected recursive kernels excluded from generic lowering.
-- Report which predicates were lowered, interpreted, or rejected.
-
-Status: active; planner metadata is implemented for constant fact-only helper
-routing, detected-kernel exclusion, generated project reporting, and optional
-console summaries.
-
-### 2. `feat/wam-c-lowered-helper-benchmark-wiring`
+### 1. `feat/wam-c-lowered-helper-benchmark-wiring`
 
 Goal: prove the lowered-helper path on a small benchmark surface before
 attempting broader helper classes.
@@ -149,10 +135,25 @@ Scope:
   local validation.
 - Record lowered/interpreted planning output with the benchmark artifacts.
 
+Status: active; a tiny fact-helper matrix target pair is implemented for
+interpreted-vs-lowered WAM-C comparison.
+
+### 2. `feat/wam-c-lowered-helper-body-calls`
+
+Goal: broaden C lowered helpers past fact-only predicates into one small
+deterministic body-call shape.
+
+Scope:
+
+- Pick one simple deterministic helper body that Haskell/Rust already lower.
+- Keep fallback/interpreter routing explicit through the planner metadata.
+- Add executable smoke coverage before expanding to aggregates or multi-result
+  helpers.
+
 ## Suggested Immediate Next Step
 
-Continue validating `feat/wam-c-lowered-helper-planner`.
+Continue validating `feat/wam-c-lowered-helper-benchmark-wiring`.
 
-The active branch now exposes explicit WAM-C lowered-helper planning metadata
-in generated projects and through `report_lowered_helpers(true)`. The next
-check is final validation for this branch before moving to benchmark wiring.
+The active branch wires a tiny fact-helper benchmark into the existing matrix
+surface as separate interpreted and lowered WAM-C targets. The next check is
+final validation, then the following branch can broaden lowered helper shapes.

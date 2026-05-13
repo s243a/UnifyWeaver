@@ -155,6 +155,8 @@ def available_targets(requested: list[str]) -> list[str]:
     c_wam_targets = {
         "c-wam-accumulated",
         "c-wam-accumulated-no-kernels",
+        "c-wam-lowered-helper",
+        "c-wam-lowered-helper-interpreted",
     }
     c_wam_lmdb_targets = {
         "c-wam-accumulated-lmdb",

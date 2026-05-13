@@ -102,6 +102,16 @@ TARGETS: dict[str, TargetInfo] = {
         "hybrid-wam",
         "Hybrid WAM C effective-distance runner with reference DFS, kernels disabled, and LMDB fact storage",
     ),
+    "c-wam-lowered-helper": TargetInfo(
+        "c-wam-lowered-helper",
+        "hybrid-wam-lowered-helper",
+        "Hybrid WAM C fact-helper smoke benchmark with lowered helpers enabled",
+    ),
+    "c-wam-lowered-helper-interpreted": TargetInfo(
+        "c-wam-lowered-helper-interpreted",
+        "hybrid-wam-lowered-helper",
+        "Hybrid WAM C fact-helper smoke benchmark through interpreted WAM facts",
+    ),
     "scala-wam-seeded": TargetInfo(
         "scala-wam-seeded",
         "hybrid-wam",
@@ -364,6 +374,10 @@ TARGET_SETS: dict[str, list[str]] = {
         "scala-wam-seeded-no-kernels",
         "scala-wam-accumulated",
         "scala-wam-accumulated-no-kernels",
+    ],
+    "c-wam-lowered-helper": [
+        "c-wam-lowered-helper-interpreted",
+        "c-wam-lowered-helper",
     ],
     "scala-wam-artifact": [
         "scala-wam-seeded",
