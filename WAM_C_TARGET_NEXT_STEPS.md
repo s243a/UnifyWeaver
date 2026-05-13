@@ -1,17 +1,17 @@
 # WAM C Target - Status And Next Steps
 
-Status date: 2026-05-06
+Status date: 2026-05-12
 
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `a91d8521` (`Merge pull request #1870 from s243a/feat/wam-c-classic-program-e2e`)
+- `main` at `8268a7cd` (`Merge pull request #2039 from s243a/perf/wam-c-pack-instruction`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels --repetitions 1`
 
 Active branch:
 
-- `perf/wam-c-pack-instruction`
+- `test/wam-c-memory-lifecycle-asan`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -36,7 +36,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Effective-distance matrix wiring | Done | `c-wam-accumulated`, `c-wam-accumulated-no-kernels`, C kernel-pair delta, `dev` parity smoke against Prolog |
 | Effective-distance LMDB fact-storage wiring | Done | `facts_lmdb` generator mode, LMDB seeder/validator, `c-wam-accumulated-lmdb` matrix targets, `dev` parity smoke against Prolog |
 | Classic recursive program e2e | Done | Generated Prolog-to-WAM-C Fibonacci smoke, `set_*` instruction support, dereferenced constants/results, call-base choicepoint pruning |
-| Packed instruction layout | Done on active branch | `InstructionPayload` union keyed by `WamInstrTag`, typed generated initializers, typed runtime dispatch payload reads, switch-table cleanup guarded by switch tags |
+| Packed instruction layout | Done | `InstructionPayload` union keyed by `WamInstrTag`, typed generated initializers, typed runtime dispatch payload reads, switch-table cleanup guarded by switch tags |
+| ASAN memory lifecycle smoke | Done on active branch | ASAN-generated executable smoke covers switch table setup replacement, indexed clauses, FactSource loading, native foreign kernel dispatch, and repeated top-level calls |
 
 ## Current C Target Baseline
 
@@ -51,8 +52,8 @@ The C target is now a credible small WAM backend:
   choice-point instructions.
 - Supports `switch_on_constant`, `switch_on_structure`, `switch_on_term`,
   second-argument constant dispatch, and direct list dispatch.
-- Uses a tagged `InstructionPayload` union on the active branch instead of a
-  single wide instruction struct.
+- Uses a tagged `InstructionPayload` union instead of a single wide instruction
+  struct.
 - Supports basic `builtin_call` delegation for tested builtins:
   `atom/1`, `integer/1`, `is_list/1`, `=/2`, and `is/2`.
 - Supports deterministic `call_foreign` dispatch through a C handler registry.
@@ -109,25 +110,12 @@ missing important target features; `Missing` = no comparable C path yet.
 | LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts and generated effective-distance LMDB wiring; larger artifact layout support remains. |
 | Effective-distance benchmark harness | Partial/Done | Done | Done | C is wired into the shared matrix for TSV and LMDB `kernels_on`/`kernels_off`; next gap is larger artifact layouts. |
 | Classic-program e2e suite | Partial/Done | Partial/Done | Partial/Done | C now covers generated Fibonacci-style recursion with arithmetic; add Ackermann-style depth only if routine runtime stays acceptable. |
-| Memory lifecycle | Partial | Runtime-managed | Runtime-managed | C has init/free; needs ASAN/Valgrind CI-style coverage for larger programs. |
-| Instruction layout efficiency | Done on active branch | N/A | N/A | C now packs instruction fields into tag-specific payload arms; benchmark larger generated programs if layout becomes performance-sensitive. |
+| Memory lifecycle | Partial/Done | Runtime-managed | Runtime-managed | Active branch adds an ASAN lifecycle smoke and fixes stale top-level choicepoints plus indexed `retry_me_else` without an active choicepoint. |
+| Instruction layout efficiency | Done | N/A | N/A | C now packs instruction fields into tag-specific payload arms; benchmark larger generated programs if layout becomes performance-sensitive. |
 
 ## Recommended Next Branches
 
-### 1. `perf/wam-c-pack-instruction`
-
-Goal: reduce `Instruction` memory footprint.
-
-Scope:
-
-- Replace the current wide struct with a tagged union keyed by `WamInstrTag`.
-- Keep setup emission readable.
-- Add compile-time or smoke coverage to ensure every instruction arm reads the
-  correct union member.
-
-Status: ready on the active branch pending PR/merge.
-
-### 2. `test/wam-c-memory-lifecycle-asan`
+### 1. `test/wam-c-memory-lifecycle-asan`
 
 Goal: make the C runtime cleanup story harder to regress as generated programs
 grow.
@@ -141,10 +129,27 @@ Scope:
   smoke opportunistically or behind a clearly named test helper.
 - Use this to validate the packed-instruction cleanup path on larger programs.
 
+Status: ready on the active branch pending PR/merge.
+
+### 2. `feat/wam-c-lowered-helper-prototype`
+
+Goal: start closing the C gap with the Haskell and Rust hybrid WAM lowered
+helper paths.
+
+Scope:
+
+- Prototype one small deterministic lowered/native helper path for C.
+- Keep the runtime interface narrow and compatible with existing
+  `call_foreign` registration.
+- Prefer a fact-only or simple deterministic helper before attempting aggregate
+  or multi-result helpers.
+
 ## Suggested Immediate Next Step
 
-Open a PR for `perf/wam-c-pack-instruction`, then continue with
-`test/wam-c-memory-lifecycle-asan`.
+Open a PR for `test/wam-c-memory-lifecycle-asan`, then continue with
+`feat/wam-c-lowered-helper-prototype`.
 
-The packed-instruction branch is validated locally with WAM-C target tests,
-focused effective-distance tests, and the dev effective-distance matrix.
+The branch already has an ASAN lifecycle smoke running locally and has exposed
+two runtime correctness fixes: pruning top-level choicepoints after
+`wam_run_predicate/4` returns, and guarding indexed `retry_me_else` execution
+when no sequential choicepoint exists.

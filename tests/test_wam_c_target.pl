@@ -504,11 +504,35 @@ test_real_prolog_classic_recursive_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_asan_memory_lifecycle_executable_smoke :-
+    Test = 'WAM-C: ASAN memory lifecycle executable smoke',
+    (   asan_available
+    ->  (   run_asan_memory_lifecycle_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'ASAN memory lifecycle executable failed')
+        )
+    ;   format('[PASS] ~w (ASAN unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 gcc_available :-
     catch(process_create(path(gcc), ['--version'],
                          [stdout(null), stderr(null), process(Pid)]),
           _, fail),
     process_wait(Pid, exit(0)).
+
+asan_available :-
+    gcc_available,
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    format(atom(TmpBase), '/tmp/unifyweaver_wam_c_asan_probe_~w', [Stamp]),
+    format(atom(SourcePath), '~w.c', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(SourcePath, 'int main(void) { return 0; }\n'),
+    format(atom(CompileCmd),
+           'gcc -std=c11 -fsanitize=address ~w -o ~w',
+           [SourcePath, ExePath]),
+    catch(shell(CompileCmd, CompileStatus), _, fail),
+    CompileStatus =:= 0.
 
 lmdb_available :-
     catch(process_create(path('pkg-config'), ['--exists', 'lmdb'],
@@ -860,6 +884,37 @@ run_real_prolog_classic_recursive_executable_smoke :-
         fail
     ).
 
+run_asan_memory_lifecycle_executable_smoke :-
+    assertz((user:wam_c_asan_term(a, atom) :- true)),
+    assertz((user:wam_c_asan_term(foo(_), struct) :- true)),
+    assertz((user:wam_c_asan_term([_|_], list) :- true)),
+    (   compile_predicate_to_wam(user:wam_c_asan_term/2, [], TermWamCode),
+        sub_string(TermWamCode, _, _, _, 'switch_on_term'),
+        compile_wam_predicate_to_c(user:wam_c_asan_term/2, TermWamCode, [], TermPredCode),
+        CategoryWamCode = 'category_ancestor/4:\n    call_foreign category_ancestor/4, 4\n    proceed',
+        compile_wam_predicate_to_c(user:category_ancestor/4, CategoryWamCode, [], CategoryPredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        format(atom(TmpBase), '/tmp/unifyweaver_wam_c_asan_lifecycle_smoke_~w', [Stamp]),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(DataPath), '~w_edges.tsv', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w~n~n~w', [TermPredCode, CategoryPredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        write_text_file(DataPath, 'leaf\tmid\nmid\troot\nleaf\tother\n'),
+        wam_c_asan_lifecycle_smoke_main(DataPath, MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke(ExePath)
+    ->  retractall(user:wam_c_asan_term(_, _))
+    ;   retractall(user:wam_c_asan_term(_, _)),
+        fail
+    ).
+
 write_text_file(Path, Content) :-
     setup_call_cleanup(
         open(Path, write, Stream),
@@ -924,13 +979,14 @@ cleanup_wam_c_detector_category_ancestor :-
     retractall(user:category_ancestor(_, _, _, _)).
 
 run_c_smoke(ExePath) :-
+    format(atom(LogPath), '~w.asan.log', [ExePath]),
     format(atom(Cmd),
-           'ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 timeout 10 ~w',
-           [ExePath]),
+           'ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 timeout 10 ~w > ~w 2>&1',
+           [ExePath, LogPath]),
     shell(Cmd, Status),
     (   Status =:= 0
     ->  true
-    ;   format(user_error, 'generated executable failed with status ~w~n', [Status]),
+    ;   format(user_error, 'generated executable failed with status ~w (log: ~w)~n', [Status, LogPath]),
         fail
     ).
 
@@ -1429,6 +1485,112 @@ int main(void) {
 }
 ').
 
+wam_c_asan_lifecycle_smoke_main(DataPath, MainCode) :-
+    format(atom(MainCode),
+'#include "wam_runtime.h"
+
+void setup_wam_c_asan_term_2(WamState* state);
+void setup_category_ancestor_4(WamState* state);
+
+static WamValue make_list_pair(WamState *state, const char *head, const char *tail) {
+    WamValue list;
+    list.tag = VAL_LIST;
+    list.data.ref_addr = state->H;
+    state->H_array[state->H++] = val_atom(head);
+    state->H_array[state->H++] = val_atom(tail);
+    return list;
+}
+
+static WamValue make_unary_struct(WamState *state, const char *functor, const char *arg) {
+    WamValue term;
+    term.tag = VAL_STR;
+    term.data.ref_addr = state->H;
+    state->H_array[state->H++] = val_atom(functor);
+    state->H_array[state->H++] = val_atom(arg);
+    return term;
+}
+
+static bool expect_label(WamState *state, WamValue input, const char *label) {
+    WamValue args[2] = { input, val_unbound("Kind") };
+    int rc = wam_run_predicate(state, "wam_c_asan_term/2", args, 2);
+    return rc == 0 &&
+           state->P == WAM_HALT &&
+           state->A[1].tag == VAL_ATOM &&
+           strcmp(state->A[1].data.atom, label) == 0;
+}
+
+static WamValue make_visited_singleton(WamState *state, const char *atom) {
+    return make_list_pair(state, atom, "[]");
+}
+
+int main(void) {
+    WamState state;
+    WamFactSource source;
+    CategoryEdge matches[4];
+    wam_state_init(&state);
+    wam_fact_source_init(&source);
+
+    setup_wam_c_asan_term_2(&state);
+    setup_wam_c_asan_term_2(&state);
+
+    if (!expect_label(&state, val_atom("a"), "atom")) {
+        wam_fact_source_close(&source);
+        wam_free_state(&state);
+        return 10;
+    }
+    if (!expect_label(&state, make_list_pair(&state, "head", "tail"), "list")) {
+        wam_fact_source_close(&source);
+        wam_free_state(&state);
+        return 20;
+    }
+    if (!expect_label(&state, make_unary_struct(&state, "foo/1", "arg"), "struct")) {
+        wam_fact_source_close(&source);
+        wam_free_state(&state);
+        return 30;
+    }
+
+    setup_category_ancestor_4(&state);
+    if (!wam_fact_source_load_tsv(&state, &source, "~w")) {
+        wam_fact_source_close(&source);
+        wam_free_state(&state);
+        return 40;
+    }
+    int match_count = wam_fact_source_lookup_arg1(&source, "leaf", matches, 4);
+    if (match_count != 2) {
+        wam_fact_source_close(&source);
+        wam_free_state(&state);
+        return 50;
+    }
+    wam_register_category_parent_fact_source(&state, &source);
+    wam_register_category_ancestor_kernel(&state, "category_ancestor/4", 10);
+
+    WamValue args[4] = {
+        val_atom("leaf"),
+        val_atom("root"),
+        val_unbound("Hops"),
+        make_visited_singleton(&state, "leaf")
+    };
+    int rc = wam_run_predicate(&state, "category_ancestor/4", args, 4);
+    if (rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_INT || state.A[2].data.integer != 2) {
+        wam_fact_source_close(&source);
+        wam_free_state(&state);
+        return 60;
+    }
+
+    setup_wam_c_asan_term_2(&state);
+    if (!expect_label(&state, val_atom("a"), "atom")) {
+        wam_fact_source_close(&source);
+        wam_free_state(&state);
+        return 70;
+    }
+
+    wam_fact_source_close(&source);
+    wam_free_state(&state);
+    return 0;
+}
+', [DataPath]).
+
 wam_c_real_builtin_smoke_main(
 '#include "wam_runtime.h"
 
@@ -1778,6 +1940,7 @@ run_tests_once :-
     test_real_prolog_is_list_executable_smoke,
     test_real_prolog_unify_executable_smoke,
     test_real_prolog_classic_recursive_executable_smoke,
+    test_asan_memory_lifecycle_executable_smoke,
     format('~n=== WAM-C Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
 
