@@ -126,7 +126,12 @@ def parse_args() -> argparse.Namespace:
             "Values above 1 print a stability summary instead of the raw per-run table."
         ),
     )
-    parser.add_argument("--format", choices=["tsv", "markdown", "calibration-tsv"], default="tsv")
+    parser.add_argument(
+        "--format",
+        choices=["tsv", "markdown", "calibration-tsv", "none"],
+        default="tsv",
+        help="Output format. Use 'none' to suppress table output for artifact-writer runs.",
+    )
     parser.add_argument(
         "--trace",
         action="store_true",
@@ -165,7 +170,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "Write the fresh calibration TSV to --calibration-artifact. "
-            "Use with --format calibration-tsv and usually --stability-runs > 1."
+            "Use with --format calibration-tsv or --format none and usually --stability-runs > 1."
         ),
     )
     parser.add_argument(
@@ -195,8 +200,10 @@ def parse_args() -> argparse.Namespace:
         help="Minimum MemAvailable MiB required by --require-idle.",
     )
     args = parser.parse_args()
-    if args.write_calibration_artifact and args.format != "calibration-tsv":
-        raise SystemExit("--write-calibration-artifact requires --format calibration-tsv")
+    if args.write_calibration_artifact and args.format not in {"calibration-tsv", "none"}:
+        raise SystemExit(
+            "--write-calibration-artifact requires --format calibration-tsv or --format none"
+        )
     return args
 
 
@@ -1040,6 +1047,8 @@ def main() -> int:
             print_calibration_tsv(calibration_rows)
         elif args.format == "markdown":
             print_stability_markdown(stability_summaries)
+        elif args.format == "none":
+            pass
         else:
             print_stability_tsv(stability_summaries)
     else:
@@ -1048,6 +1057,8 @@ def main() -> int:
             print_calibration_tsv(calibration_rows)
         elif args.format == "markdown":
             print_markdown(summaries)
+        elif args.format == "none":
+            pass
         else:
             print_tsv(summaries)
 
