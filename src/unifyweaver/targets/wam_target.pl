@@ -367,10 +367,12 @@ is_builtin_goal(=\=).
 is_builtin_goal(true).
 is_builtin_goal(fail).
 is_builtin_goal(write).
+is_builtin_goal(display).
 is_builtin_goal(nl).
 is_builtin_goal(format).
 is_builtin_goal(member).
 is_builtin_goal(length).
+is_builtin_goal(is_list).
 is_builtin_goal(append).
 is_builtin_goal((\+)).
 
@@ -1252,8 +1254,10 @@ is_builtin_pred(arg, 3).     % term inspection: Nth argument access
 is_builtin_pred((=..), 2).   % term inspection: univ (decompose/compose)
 is_builtin_pred(copy_term, 2). % term inspection: fresh-variable copy
 is_builtin_pred(write, 1).  % I/O — useful for runtime instrumentation.
+is_builtin_pred(display, 1).
 is_builtin_pred(nl, 0).
 is_builtin_pred(=, 2).       % unification: bind / structurally unify two terms.
+is_builtin_pred(is_list, 1).
                              % Without this entry, X = Y in a body goal
                              % would compile to `execute =/2`, which looks
                              % up "=/2" as a user predicate, misses, and

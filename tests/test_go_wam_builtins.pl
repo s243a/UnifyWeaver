@@ -9,7 +9,17 @@ test(builtins_execution) :-
     get_time(T),
     format(atom(TmpDir), 'tmp_wam_builtins_~w', [T]),
     setup_call_cleanup(
-        assertz(user:test_builtins(X) :- (X is 1 + 2, X < 5, X =:= 3, atom(foo), \+ atom(5))),
+        assertz(user:test_builtins(X) :-
+            (   X is 1 + 2,
+                X < 5,
+                X =:= 3,
+                X =< 3,
+                is_list([a,b]),
+                display(ok),
+                nl,
+                atom(foo),
+                \+ atom(5)
+            )),
         run_builtins_test(TmpDir),
         ( retractall(user:test_builtins(_)),
           delete_directory_and_contents(TmpDir) )
@@ -25,6 +35,11 @@ run_builtins_test(TmpDir) :-
     directory_file_path(TmpDir, 'value.go', ValuePath),
     read_file_to_string(ValuePath, ValueCode, []),
     assertion(sub_string(ValueCode, _, _, _, "type Structure struct")),
+    directory_file_path(TmpDir, 'lib.go', LibPath),
+    read_file_to_string(LibPath, LibCode, []),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "=</2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "is_list/1"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "display/1"')),
 
     % Add a main.go to run the test in a separate cmd directory
     directory_file_path(TmpDir, 'cmd', CmdDir),
@@ -68,6 +83,7 @@ func main() {
         process_wait(Pid, Exit),
         format('Full output from Go: ~s~n', [FullOutput]),
         assertion(Exit == exit(0)),
+        assertion(sub_string(FullOutput, _, _, _, "ok")),
         assertion(sub_string(FullOutput, _, _, _, "SUCCESS: X=3"))
     ;   format("Go not found, skipping execution test.~n")
     ).

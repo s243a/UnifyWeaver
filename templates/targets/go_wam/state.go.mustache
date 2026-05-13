@@ -814,6 +814,9 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	if arity >= 3 { arg3 = vm.getReg(2) } // A3
 
 	switch op {
+	case "display/1":
+		fmt.Print(vm.deref(arg1).String())
+		return true
 	case "write/1":
 		fmt.Print(vm.deref(arg1).String())
 		return true
@@ -857,7 +860,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		v1, ok1 := vm.evalArithmetic(arg1)
 		v2, ok2 := vm.evalArithmetic(arg2)
 		return ok1 && ok2 && v1 > v2
-	case "=< /2":
+	case "=</2":
 		v1, ok1 := vm.evalArithmetic(arg1)
 		v2, ok2 := vm.evalArithmetic(arg2)
 		return ok1 && ok2 && v1 <= v2
@@ -874,6 +877,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "number/1": return isNumber(vm.deref(arg1))
 	case "compound/1": return isCompound(vm.deref(arg1))
 	case "atomic/1": return isAtomic(vm.deref(arg1))
+	case "is_list/1": return isList(vm.deref(arg1))
 
 	case "==/2": return valueEquals(vm.deref(arg1), vm.deref(arg2))
 	case "\\==/2": return !valueEquals(vm.deref(arg1), vm.deref(arg2))
