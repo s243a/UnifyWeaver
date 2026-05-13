@@ -106,14 +106,16 @@ escape_cpp_string(In, Out) :-
     split_string(S, "\\", "", Parts),
     cpp_atomics_to_string(Parts, "\\\\", Escaped1),
     split_string(Escaped1, "\"", "", Parts2),
-    cpp_atomics_to_string(Parts2, "\\\"", Out).
+    cpp_atomics_to_string(Parts2, "\\\"", Out),
+    !.
 
-cpp_atomics_to_string([], _, "").
-cpp_atomics_to_string([X], _, X).
+cpp_atomics_to_string([], _, "") :- !.
+cpp_atomics_to_string([X], _, X) :- !.
 cpp_atomics_to_string([X, Y|Rest], Sep, Result) :-
     cpp_atomics_to_string([Y|Rest], Sep, Tail),
     string_concat(X, Sep, XSep),
-    string_concat(XSep, Tail, Result).
+    string_concat(XSep, Tail, Result),
+    !.
 
 %% cpp_value_literal(+ConstantToken, -CppLiteral)
 %  Convert a WAM constant (atom, integer, float, []) into a C++ Value
@@ -145,101 +147,106 @@ to_string(X, S) :- format(string(S), "~w", [X]).
 % C++17 without the GCC extension).
 
 wam_instruction_to_cpp_literal(Instr, Code) :-
-    wam_instruction_to_cpp_literal(Instr, [], Code).
+    wam_instruction_to_cpp_literal(Instr, [], Code),
+    !.
 
-wam_instruction_to_cpp_literal(get_constant(C, Ai), _, Code) :-
+wam_instruction_to_cpp_literal(Instr, LabelMap, Code) :-
+    wam_instruction_to_cpp_literal_det(Instr, LabelMap, Code),
+    !.
+
+wam_instruction_to_cpp_literal_det(get_constant(C, Ai), _, Code) :-
     cpp_value_literal(C, V), to_string(Ai, R),
     format(atom(Code), 'Instruction::GetConstant(~w, "~w")', [V, R]).
-wam_instruction_to_cpp_literal(get_variable(Xn, Ai), _, Code) :-
+wam_instruction_to_cpp_literal_det(get_variable(Xn, Ai), _, Code) :-
     to_string(Xn, X), to_string(Ai, R),
     format(atom(Code), 'Instruction::GetVariable("~w", "~w")', [X, R]).
-wam_instruction_to_cpp_literal(get_value(Xn, Ai), _, Code) :-
+wam_instruction_to_cpp_literal_det(get_value(Xn, Ai), _, Code) :-
     to_string(Xn, X), to_string(Ai, R),
     format(atom(Code), 'Instruction::GetValue("~w", "~w")', [X, R]).
-wam_instruction_to_cpp_literal(get_structure(F, Ai), _, Code) :-
+wam_instruction_to_cpp_literal_det(get_structure(F, Ai), _, Code) :-
     to_string(F, FS), to_string(Ai, R),
     escape_cpp_string(FS, EF),
     format(atom(Code), 'Instruction::GetStructure("~w", "~w")', [EF, R]).
-wam_instruction_to_cpp_literal(get_list(Ai), _, Code) :-
+wam_instruction_to_cpp_literal_det(get_list(Ai), _, Code) :-
     to_string(Ai, R),
     format(atom(Code), 'Instruction::GetList("~w")', [R]).
-wam_instruction_to_cpp_literal(get_nil(Ai), _, Code) :-
+wam_instruction_to_cpp_literal_det(get_nil(Ai), _, Code) :-
     to_string(Ai, R),
     format(atom(Code), 'Instruction::GetNil("~w")', [R]).
-wam_instruction_to_cpp_literal(get_integer(N, Ai), _, Code) :-
+wam_instruction_to_cpp_literal_det(get_integer(N, Ai), _, Code) :-
     to_string(N, NS), to_string(Ai, R),
     format(atom(Code), 'Instruction::GetInteger(~w, "~w")', [NS, R]).
-wam_instruction_to_cpp_literal(put_constant(C, Ai), _, Code) :-
+wam_instruction_to_cpp_literal_det(put_constant(C, Ai), _, Code) :-
     cpp_value_literal(C, V), to_string(Ai, R),
     format(atom(Code), 'Instruction::PutConstant(~w, "~w")', [V, R]).
-wam_instruction_to_cpp_literal(put_variable(Xn, Ai), _, Code) :-
+wam_instruction_to_cpp_literal_det(put_variable(Xn, Ai), _, Code) :-
     to_string(Xn, X), to_string(Ai, R),
     format(atom(Code), 'Instruction::PutVariable("~w", "~w")', [X, R]).
-wam_instruction_to_cpp_literal(put_value(Xn, Ai), _, Code) :-
+wam_instruction_to_cpp_literal_det(put_value(Xn, Ai), _, Code) :-
     to_string(Xn, X), to_string(Ai, R),
     format(atom(Code), 'Instruction::PutValue("~w", "~w")', [X, R]).
-wam_instruction_to_cpp_literal(put_structure(F, Ai), _, Code) :-
+wam_instruction_to_cpp_literal_det(put_structure(F, Ai), _, Code) :-
     to_string(F, FS), to_string(Ai, R),
     escape_cpp_string(FS, EF),
     format(atom(Code), 'Instruction::PutStructure("~w", "~w")', [EF, R]).
-wam_instruction_to_cpp_literal(put_list(Ai), _, Code) :-
+wam_instruction_to_cpp_literal_det(put_list(Ai), _, Code) :-
     to_string(Ai, R),
     format(atom(Code), 'Instruction::PutList("~w")', [R]).
-wam_instruction_to_cpp_literal(unify_variable(Xn), _, Code) :-
+wam_instruction_to_cpp_literal_det(unify_variable(Xn), _, Code) :-
     to_string(Xn, X),
     format(atom(Code), 'Instruction::UnifyVariable("~w")', [X]).
-wam_instruction_to_cpp_literal(unify_value(Xn), _, Code) :-
+wam_instruction_to_cpp_literal_det(unify_value(Xn), _, Code) :-
     to_string(Xn, X),
     format(atom(Code), 'Instruction::UnifyValue("~w")', [X]).
-wam_instruction_to_cpp_literal(unify_constant(C), _, Code) :-
+wam_instruction_to_cpp_literal_det(unify_constant(C), _, Code) :-
     cpp_value_literal(C, V),
     format(atom(Code), 'Instruction::UnifyConstant(~w)', [V]).
-wam_instruction_to_cpp_literal(set_variable(Xn), _, Code) :-
+wam_instruction_to_cpp_literal_det(set_variable(Xn), _, Code) :-
     to_string(Xn, X),
     format(atom(Code), 'Instruction::SetVariable("~w")', [X]).
-wam_instruction_to_cpp_literal(set_value(Xn), _, Code) :-
+wam_instruction_to_cpp_literal_det(set_value(Xn), _, Code) :-
     to_string(Xn, X),
     format(atom(Code), 'Instruction::SetValue("~w")', [X]).
-wam_instruction_to_cpp_literal(set_constant(C), _, Code) :-
+wam_instruction_to_cpp_literal_det(set_constant(C), _, Code) :-
     cpp_value_literal(C, V),
     format(atom(Code), 'Instruction::SetConstant(~w)', [V]).
-wam_instruction_to_cpp_literal(call(P, N), _, Code) :-
+wam_instruction_to_cpp_literal_det(call(P, N), _, Code) :-
     to_string(P, PS), to_string(N, NS),
     escape_cpp_string(PS, EP),
     format(atom(Code), 'Instruction::Call("~w", ~w)', [EP, NS]).
-wam_instruction_to_cpp_literal(execute(P), _, Code) :-
+wam_instruction_to_cpp_literal_det(execute(P), _, Code) :-
     to_string(P, PS),
     escape_cpp_string(PS, EP),
     format(atom(Code), 'Instruction::Execute("~w")', [EP]).
-wam_instruction_to_cpp_literal(proceed, _, 'Instruction::Proceed()').
-wam_instruction_to_cpp_literal(fail, _, 'Instruction::Fail()').
-wam_instruction_to_cpp_literal(allocate, _, 'Instruction::Allocate()').
-wam_instruction_to_cpp_literal(deallocate, _, 'Instruction::Deallocate()').
-wam_instruction_to_cpp_literal(builtin_call(Op, Ar), _, Code) :-
+wam_instruction_to_cpp_literal_det(proceed, _, 'Instruction::Proceed()').
+wam_instruction_to_cpp_literal_det(fail, _, 'Instruction::Fail()').
+wam_instruction_to_cpp_literal_det(allocate, _, 'Instruction::Allocate()').
+wam_instruction_to_cpp_literal_det(deallocate, _, 'Instruction::Deallocate()').
+wam_instruction_to_cpp_literal_det(builtin_call(Op, Ar), _, Code) :-
     to_string(Op, OpS), to_string(Ar, ArS),
     escape_cpp_string(OpS, EOp),
     format(atom(Code), 'Instruction::BuiltinCall("~w", ~w)', [EOp, ArS]).
-wam_instruction_to_cpp_literal(call_foreign(P, Ar), _, Code) :-
+wam_instruction_to_cpp_literal_det(call_foreign(P, Ar), _, Code) :-
     to_string(P, PS), to_string(Ar, ArS),
     escape_cpp_string(PS, EP),
     format(atom(Code), 'Instruction::CallForeign("~w", ~w)', [EP, ArS]).
-wam_instruction_to_cpp_literal(try_me_else(L), LabelMap, Code) :-
+wam_instruction_to_cpp_literal_det(try_me_else(L), LabelMap, Code) :-
     label_index(L, LabelMap, Idx),
     format(atom(Code), 'Instruction::TryMeElse(~w)', [Idx]).
-wam_instruction_to_cpp_literal(retry_me_else(L), LabelMap, Code) :-
+wam_instruction_to_cpp_literal_det(retry_me_else(L), LabelMap, Code) :-
     label_index(L, LabelMap, Idx),
     format(atom(Code), 'Instruction::RetryMeElse(~w)', [Idx]).
-wam_instruction_to_cpp_literal(trust_me, _, 'Instruction::TrustMe()').
-wam_instruction_to_cpp_literal(jump(L), LabelMap, Code) :-
+wam_instruction_to_cpp_literal_det(trust_me, _, 'Instruction::TrustMe()').
+wam_instruction_to_cpp_literal_det(jump(L), LabelMap, Code) :-
     label_index(L, LabelMap, Idx),
     format(atom(Code), 'Instruction::Jump(~w)', [Idx]).
-wam_instruction_to_cpp_literal(cut_ite, _, 'Instruction::CutIte()').
-wam_instruction_to_cpp_literal(begin_aggregate(K, V, R), _, Code) :-
+wam_instruction_to_cpp_literal_det(cut_ite, _, 'Instruction::CutIte()').
+wam_instruction_to_cpp_literal_det(begin_aggregate(K, V, R), _, Code) :-
     to_string(K, KS), to_string(V, VS), to_string(R, RS),
     escape_cpp_string(KS, EK), escape_cpp_string(VS, EV), escape_cpp_string(RS, ER),
     format(atom(Code),
            'Instruction::BeginAggregate("~w", "~w", "~w")', [EK, EV, ER]).
-wam_instruction_to_cpp_literal(end_aggregate(R), _, Code) :-
+wam_instruction_to_cpp_literal_det(end_aggregate(R), _, Code) :-
     to_string(R, RS),
     escape_cpp_string(RS, ER),
     format(atom(Code), 'Instruction::EndAggregate("~w")', [ER]).
@@ -393,7 +400,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     findall(Items, (
         member(PI, Predicates),
         catch(
-            ( compile_predicate_to_wam(PI, [], WamText),
+            ( compile_predicate_to_wam(PI, [inline_bagof_setof(true)], WamText),
               parse_pred_blocks(WamText, Items)
             ),
             _, fail)
@@ -625,7 +632,7 @@ compile_predicates_for_project(Predicates, Options, PredicatesCode) :-
     findall(Code, (
         member(PI, Predicates),
         catch(
-            ( compile_predicate_to_wam(PI, [], WamCode),
+            ( compile_predicate_to_wam(PI, [inline_bagof_setof(true)], WamCode),
               compile_wam_predicate_to_cpp(PI, WamCode, Options1, Code)
             ),
             _Err,
@@ -930,6 +937,7 @@ compile_wam_runtime_to_cpp(_Options,
 
 #include "wam_runtime.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <sstream>
 #include <string>
@@ -1793,10 +1801,14 @@ static Value finalize_aggregate(const std::string& kind, const std::vector<Value
         }
         return *best;
     }
-    // "collect" (findall) and "set" / "bag" all build a list. set/bag
-    // dedup variants are handled below if we recognise the kind.
+    // "collect" (findall), bagof/setof, and aggregate_all bag/set all
+    // build a list. bagof/setof fail on empty; findall and
+    // aggregate_all(bag/set) keep the historical empty-list behaviour.
+    if ((kind == "bagof" || kind == "setof") && acc.empty()) {
+        return Value{};
+    }
     std::vector<Value> items = acc;
-    if (kind == "set") {
+    if (kind == "set" || kind == "setof") {
         std::vector<Value> uniq;
         for (auto& v : items) {
             bool dup = false;
@@ -1804,7 +1816,21 @@ static Value finalize_aggregate(const std::string& kind, const std::vector<Value
             if (!dup) uniq.push_back(v);
         }
         items = std::move(uniq);
-        // sort lexicographically by render() — cheap, good enough for atoms / ints.
+        std::sort(items.begin(), items.end(), [](const Value& a, const Value& b) {
+            if (a.tag != b.tag) return static_cast<int>(a.tag) < static_cast<int>(b.tag);
+            switch (a.tag) {
+                case Value::Tag::Atom:
+                case Value::Tag::Unbound:
+                case Value::Tag::Compound:
+                    return a.s < b.s;
+                case Value::Tag::Integer:
+                    return a.i < b.i;
+                case Value::Tag::Float:
+                    return a.f < b.f;
+                default:
+                    return false;
+            }
+        });
     }
     Value tail = Value::Atom("[]");
     for (auto it = items.rbegin(); it != items.rend(); ++it) {
@@ -1854,6 +1880,7 @@ bool WamState::backtrack() {
             cut_barrier = f.saved_cut_barrier;
             // Build and bind the result.
             Value result = finalize_aggregate(f.agg_kind, f.acc);
+            if (result.tag == Value::Tag::Uninit) return false;
             CellPtr rcell = get_cell(f.result_reg);
             if (rcell->is_unbound()) bind_cell(rcell, result);
             else if (!unify_cells(rcell, std::make_shared<Cell>(result))) return false;
