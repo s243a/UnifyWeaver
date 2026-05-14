@@ -717,17 +717,38 @@
       :else
       nil)))
 
+(defn univ-compose-term [state list-value]
+  (when-let [items (proper-list-items state list-value)]
+    (when (seq items)
+      (if (= 1 (count items))
+        [state (deref-value (:bindings state) (first items))]
+        (let [head (deref-value (:bindings state) (first items))
+              args (vec (rest items))]
+          (when (atom-term? head)
+            (let [name (deintern-atom (:intern-context state) (:id head))
+                  functor-key (str name "/" (count args))
+                  [ctx* functor-id] (intern-atom (:intern-context state) functor-key)
+                  state* (assoc state :intern-context ctx*)]
+              [state* (structure-term (atom-term functor-id) args)])))))))
+
 (defn apply-univ-solution [state]
-  (let [term (deref-value (:bindings state)
-                          (or (reg-get-raw state "A1") ::unbound))
+  (let [raw-term (or (reg-get-raw state "A1") ::unbound)
+        term (deref-value (:bindings state) raw-term)
         out (deref-value (:bindings state)
                          (or (reg-get-raw state "A2") ::unbound))]
-    (if-let [list-term (univ-decompose-term state term)]
-      (let [[ok next-state] (unify-values state out list-term)]
-        (if ok
-          (advance next-state)
-          (backtrack state)))
-      (backtrack state))))
+    (if (logic-var? term)
+      (if-let [[compose-state built] (univ-compose-term state out)]
+        (let [[ok next-state] (unify-values compose-state raw-term built)]
+          (if ok
+            (advance next-state)
+            (backtrack state)))
+        (backtrack state))
+      (if-let [list-term (univ-decompose-term state term)]
+        (let [[ok next-state] (unify-values state out list-term)]
+          (if ok
+            (advance next-state)
+            (backtrack state)))
+        (backtrack state)))))
 
 (defn term->unify-items [term]
   (if (structure-term? term)

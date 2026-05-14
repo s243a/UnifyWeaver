@@ -5,7 +5,7 @@ Status date: 2026-05-14
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `dd446eac` (`Merge pull request #2064 from s243a/feat/wam-c-lowered-helper-comparison-filter-rejections`)
+- `main` at `27cee291` (`Merge pull request #2066 from s243a/ci/csharp-query-calibration-policy-contract-tests`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
 - `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py`
@@ -45,7 +45,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | ASAN availability probe hardening | Done | `asan_available/0` requires a trivial sanitized executable to compile and run before enabling the optional ASAN lifecycle smoke |
 | Lowered helper planner metadata | Done | Explicit lowered/interpreted/rejected helper plans, detected-kernel exclusion, generated `lib.c` plan comments, and `report_lowered_helpers(true)` |
 | Lowered helper benchmark wiring | Done | `c-wam-lowered-helper` and `c-wam-lowered-helper-interpreted` matrix targets compare a tiny fact-helper benchmark |
-| Lowered helper body-call shape | Done | Deterministic alias-to-fact body calls lower through the existing foreign registry |
+| Lowered helper body-call shape | Done | Deterministic alias-to-fact body calls lower through direct native fact-helper dispatch |
 | Lowered helper filtered-fact shape | Done | Constant-guarded fact projections lower to native fact rows and the tiny lowered-helper matrix exercises the filtered helper in lowered mode |
 | Lowered helper filter rejection metadata | Done | Planner reports explicit rejection reasons for non-constant filter arguments, unsupported comparison guards, multi-goal bodies, and unsupported filter callees |
 | Lowered helper comparison-filter shape | Done | Fact-only callee plus one integer comparison guard lowers into native fact rows and the tiny lowered-helper matrix exercises it |
@@ -71,8 +71,8 @@ The C target is now a credible small WAM backend:
   `atom/1`, `integer/1`, `is_list/1`, `=/2`, and `is/2`.
 - Supports deterministic `call_foreign` dispatch through a C handler registry.
 - Can opt into a prototype lowered-helper path for constant fact-only
-  predicates, emitted as native C foreign handlers behind `call_foreign`
-  trampolines.
+  predicates, plus same-arity alias bodies that call those native fact helpers,
+  emitted as native C foreign handlers behind `call_foreign` trampolines.
 - Supports a deterministic native `category_ancestor/4` handler over an
   in-memory category-parent edge table.
 - Supports loading category-parent facts from TSV through a small
