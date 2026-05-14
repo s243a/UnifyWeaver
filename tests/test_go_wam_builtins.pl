@@ -7,6 +7,7 @@
 
 :- dynamic user:test_builtins/1.
 :- dynamic user:test_term_builtins/0.
+:- dynamic user:test_member_collect/0.
 
 test(builtins_execution) :-
     get_time(T),
@@ -38,16 +39,23 @@ test(builtins_execution) :-
                 arg(1, C, Y),
                 arg(2, C, Z),
                 Y == Z
+            )),
+          assertz(user:test_member_collect :-
+            (   findall(X, member(X, [a,b]), L),
+                length(L, 2),
+                member(a, L),
+                member(b, L)
             ))
         ),
         run_builtins_test(TmpDir),
         ( retractall(user:test_builtins(_)),
           retractall(user:test_term_builtins),
+          retractall(user:test_member_collect),
           delete_directory_and_contents(TmpDir) )
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0],
+    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0],
     Options = [module_name(builtin_test)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -99,6 +107,14 @@ func main() {
 	} else {
 		fmt.Println("TERM_FAILURE")
 	}
+
+	memberVM := wam.NewWamState(wam.Test_member_collectCode, wam.Test_member_collectLabels)
+	memberVM.PC = wam.Test_member_collectStartPC
+	if memberVM.Run() {
+		fmt.Println("MEMBER_SUCCESS")
+	} else {
+		fmt.Println("MEMBER_FAILURE")
+	}
 }
 '),
 
@@ -118,7 +134,8 @@ func main() {
         assertion(Exit == exit(0)),
         assertion(sub_string(FullOutput, _, _, _, "ok")),
         assertion(sub_string(FullOutput, _, _, _, "SUCCESS: X=3")),
-        assertion(sub_string(FullOutput, _, _, _, "TERM_SUCCESS"))
+        assertion(sub_string(FullOutput, _, _, _, "TERM_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "MEMBER_SUCCESS"))
     ;   format("Go not found, skipping execution test.~n")
     ).
 
