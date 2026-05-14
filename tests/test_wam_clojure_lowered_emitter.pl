@@ -166,6 +166,46 @@ test(simple_builtin_not_identity_is_direct_lowered_in_prefix) :-
         has(Code, "runtime/backtrack")
     )).
 
+test(simple_builtin_term_less_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_term_less/2, [builtin_call('@</2', 2), proceed], [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/term-less?"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(simple_builtin_term_less_or_equal_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_term_less_or_equal/2, [builtin_call('@=</2', 2), proceed], [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/term-less-or-equal?"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(simple_builtin_term_greater_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_term_greater/2, [builtin_call('@>/2', 2), proceed], [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/term-greater?"),
+        has(Code, "runtime/backtrack")
+    )).
+
+test(simple_builtin_term_greater_or_equal_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_term_greater_or_equal/2, [builtin_call('@>=/2', 2), proceed], [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/term-greater-or-equal?"),
+        has(Code, "runtime/backtrack")
+    )).
+
 test(simple_builtin_arithmetic_equal_is_direct_lowered_in_prefix) :-
     once((
         lower_predicate_to_clojure(test_arith_eq/2, [builtin_call('=:=/2', 2), proceed], [], Code),

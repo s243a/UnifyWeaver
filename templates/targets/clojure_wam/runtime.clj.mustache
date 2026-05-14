@@ -388,6 +388,78 @@
                   :else (interned-equal? l* r*))))]
       (identical* left right))))
 
+(defn term-compare [state left right]
+  (let [bindings (:bindings state)
+        ctx (:intern-context state)]
+    (letfn [(variable-like? [v]
+              (or (= v ::unbound) (keyword? v) (logic-var? v)))
+            (term-rank [v]
+              (cond
+                (variable-like? v) 0
+                (number? v) 1
+                (atom-term? v) 2
+                (structure-term? v) 3
+                :else 2))
+            (variable-key [v]
+              (cond
+                (logic-var? v) (format "v%020d" (long (:var v)))
+                (keyword? v) (name v)
+                :else ""))
+            (atom-key [v]
+              (cond
+                (atom-term? v) (deintern-atom ctx (:id v))
+                :else (str v)))
+            (sign [n]
+              (cond
+                (neg? n) -1
+                (pos? n) 1
+                :else 0))
+            (compare-args [xs ys]
+              (loop [left-args xs
+                     right-args ys]
+                (cond
+                  (and (empty? left-args) (empty? right-args)) 0
+                  (empty? left-args) -1
+                  (empty? right-args) 1
+                  :else
+                  (let [c (compare* (first left-args) (first right-args))]
+                    (if (zero? c)
+                      (recur (rest left-args) (rest right-args))
+                      c)))))
+            (compare* [l r]
+              (let [l* (deref-value bindings l)
+                    r* (deref-value bindings r)
+                    l-rank (term-rank l*)
+                    r-rank (term-rank r*)]
+                (cond
+                  (not= l-rank r-rank) (compare l-rank r-rank)
+                  (variable-like? l*) (sign (compare (variable-key l*) (variable-key r*)))
+                  (number? l*) (sign (compare l* r*))
+                  (atom-term? l*) (sign (compare (atom-key l*) (atom-key r*)))
+                  (structure-term? l*)
+                  (let [arity-c (compare (count (:args l*)) (count (:args r*)))]
+                    (if (zero? arity-c)
+                      (let [functor-c (compare (atom-key (:functor l*))
+                                               (atom-key (:functor r*)))]
+                        (if (zero? functor-c)
+                          (compare-args (:args l*) (:args r*))
+                          (sign functor-c)))
+                      (sign arity-c)))
+                  :else (sign (compare (str l*) (str r*))))))]
+      (compare* left right))))
+
+(defn term-less? [state left right]
+  (neg? (term-compare state left right)))
+
+(defn term-less-or-equal? [state left right]
+  (not (pos? (term-compare state left right))))
+
+(defn term-greater? [state left right]
+  (pos? (term-compare state left right)))
+
+(defn term-greater-or-equal? [state left right]
+  (not (neg? (term-compare state left right))))
+
 (defn parse-numeric-atom [text]
   (when (and (string? text)
              (re-matches #"[+-]?(?:\d+(?:\.\d*)?|\.\d+)" text))
@@ -1203,6 +1275,34 @@
             (if (term-identical? state left right)
               (backtrack state)
               (advance state)))
+
+          "@</2"
+          (let [left (or (reg-get-raw state "A1") ::unbound)
+                right (or (reg-get-raw state "A2") ::unbound)]
+            (if (term-less? state left right)
+              (advance state)
+              (backtrack state)))
+
+          "@=</2"
+          (let [left (or (reg-get-raw state "A1") ::unbound)
+                right (or (reg-get-raw state "A2") ::unbound)]
+            (if (term-less-or-equal? state left right)
+              (advance state)
+              (backtrack state)))
+
+          "@>/2"
+          (let [left (or (reg-get-raw state "A1") ::unbound)
+                right (or (reg-get-raw state "A2") ::unbound)]
+            (if (term-greater? state left right)
+              (advance state)
+              (backtrack state)))
+
+          "@>=/2"
+          (let [left (or (reg-get-raw state "A1") ::unbound)
+                right (or (reg-get-raw state "A2") ::unbound)]
+            (if (term-greater-or-equal? state left right)
+              (advance state)
+              (backtrack state)))
 
           "=:=/2"
           (let [left (deref-value (:bindings state)
