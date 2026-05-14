@@ -191,16 +191,115 @@ duplicates their work.
 
 ## 6. Backwards compatibility
 
-The text API stays. `compile_predicate_to_wam/3` continues to
-return strings, byte-identical to today. Tests that match against
-specific text output (and there are some) keep passing without
-changes.
+The text *path* stays. The text *default* changes.
 
-After migration, the text API would be implemented as
-`wam_items_to_text(Items, Text)` driven by
-`compile_predicate_to_wam_items/3`. The compiler internally is
-items-first; the text path is derived. No external consumer can
-tell the difference.
+The bare-name `compile_predicate_to_wam/3` becomes a generic
+dispatch wrapper (see SPECIFICATION §1) selecting items or text
+via an `output/1` option. **Default is items**, because items is
+the new primary path and the dominant caller (every WAM target)
+is going to migrate to it anyway. Forcing every text consumer to
+say so explicitly keeps the cheap path the easy one.
+
+Migration is mechanical:
+
+- Tests that pin specific text output (a small handful) switch to
+  `compile_predicate_to_wam_text/3` or pass `output(text)` —
+  one-line edit per call site.
+- Existing target generators that treat the result as text
+  continue working in Phase 1 because their migration PR (Phase
+  2) deletes both the parser AND the bare-name call together,
+  switching to `compile_predicate_to_wam_items/3` directly.
+- The text format itself is byte-identical — `wam_items_to_text`
+  preserves the existing emission down to whitespace.
+
+The text API as a *capability* is permanent. The text API as a
+*default* is replaced by the items default.
+
+## 6.1 Common parser as a complement
+
+The items API removes the **need** to parse for in-process target
+generation: the compiler and the target emitter both speak items
+natively, so text never enters the pipeline. But parsing isn't
+gone from the world — three cases keep it relevant:
+
+- **External WAM input.** If a user hand-writes WAM text or
+  imports a dump from another tool, a target needs to parse it
+  before emitting.
+- **Debug dump round-tripping.** Tooling that consumes
+  `compile_predicate_to_wam_text/3` output (CI snapshot tests,
+  WAM diff tools) may want to re-parse for analysis.
+- **Target-specific WAM extensions.** A target that introduces
+  custom instructions still needs a parser for the standard subset
+  + special handling for its extensions.
+
+Today every target that touches text ships its own parser — the
+same redundancy the items API removes for in-process flows. The
+fix for the parsing case is **one shared parser**, exposed from
+`wam_target.pl` alongside the items API:
+
+```prolog
+%% wam_text_to_items(+Text, -Items)
+%  Inverse of wam_items_to_text/2. Parses canonical WAM text into
+%  the structured items list. Used by any target that needs to
+%  consume text it didn't generate itself.
+wam_text_to_items(Text, Items).
+```
+
+Symmetry:
+
+| Source | Predicate | Output |
+|---|---|---|
+| Prolog clauses (compile) | `compile_predicate_to_wam_items/3` | Items |
+| Prolog clauses (compile) | `compile_predicate_to_wam_text/3` | Text |
+| Existing text (parse) | `wam_text_to_items/2` | Items |
+| Existing items (print) | `wam_items_to_text/2` | Text |
+
+Targets always consume **items** — the difference is whether items
+came from compilation or from parsing. The 15 per-target parsers
+collapse into one shared `wam_text_to_items/2` that every target
+imports. Per-target parsers shrink to extension-recognising shims
+(or disappear entirely for targets that don't extend the
+instruction set).
+
+For *finer-grained sharing* — targets with custom instructions
+that need to compose their own parser around the standard set —
+we also expose the building blocks:
+
+```prolog
+%% wam_tokenize_line(+Line, -Tokens)
+%  The quote-aware whitespace+selective-comma tokenizer. Reusable
+%  primitive for any custom parser.
+wam_tokenize_line(Line, Tokens).
+
+%% wam_recognise_instruction(+Tokens, -Item)
+%  Given a token list, recognise a standard WAM instruction and
+%  return the corresponding item term. Fails (no exception) if the
+%  tokens don't match a standard instruction — caller can fall
+%  back to its own recogniser for extensions.
+wam_recognise_instruction(Tokens, Item).
+
+%% wam_recognise_label(+Tokens, -LabelName)
+%  Companion to wam_recognise_instruction/2 for label lines.
+wam_recognise_label(Tokens, LabelName).
+```
+
+Targets with extensions compose:
+
+```prolog
+my_target_recognise(Tokens, Item) :-
+    (   wam_recognise_label(Tokens, Name)
+    ->  Item = label(Name)
+    ;   wam_recognise_instruction(Tokens, Item)
+    ->  true
+    ;   my_target_extension_recognise(Tokens, Item)
+    ).
+```
+
+This is layered: the simple case (no extensions) gets a one-line
+import of `wam_text_to_items/2`. The advanced case (extensions)
+opts into the building blocks and adds its own clauses. Either
+way, the bug-prone tokenizer and the bulk of instruction-shape
+recognition lives in **one** place.
 
 ## 7. What's intentionally out of scope
 

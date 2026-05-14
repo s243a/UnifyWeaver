@@ -7,44 +7,179 @@ the per-target section in §6 below.
 
 ## 1. Public API
 
-Two new exports from `wam_target.pl`. The existing
-`compile_predicate_to_wam/3` keeps its semantics — it's now
-implemented as `wam_items_to_text(Items, Text)` driven by the new
-items predicate.
+Three predicates. The two `_items/3` and `_text/3` predicates are
+the **definitional** ones — each owns its pipeline. The bare-name
+`compile_predicate_to_wam/3` is a generic dispatch wrapper that
+picks one based on the `output(Mode)` option. **Default is items**
+so the new primary path is the cheap one; text is opt-in.
 
 ```prolog
 %% compile_predicate_to_wam_items(+PredIndicator, +Options, -Items)
 %
-%  Returns a list of structured WAM items for the predicate. Each
-%  item is either label(NameStr) or an instruction term whose
-%  shape matches the existing parser-output convention (so
-%  consumers that have been parsing the text format can switch
-%  with minimal code changes).
+%  Definitional. Returns a structured items list directly — no
+%  text round-trip. Each item is either label(NameStr) or an
+%  instruction term whose shape matches the catalogue in §2.
 %
-%  Options accepts the same flags as compile_predicate_to_wam/3
+%  Options accepts the same flags as the legacy text path
 %  (module/1, inline_bagof_setof/1, etc.).
 compile_predicate_to_wam_items(PredIndicator, Options, Items).
 
+%% compile_predicate_to_wam_text(+PredIndicator, +Options, -Text)
+%
+%  Definitional. Returns the canonical multi-line WAM text format
+%  that compile_predicate_to_wam/3 produced historically. Output
+%  is byte-identical to the legacy emission, achieved by walking
+%  items through wam_items_to_text/2.
+compile_predicate_to_wam_text(PredIndicator, Options, Text) :-
+    compile_predicate_to_wam_items(PredIndicator, Options, Items),
+    wam_items_to_text(Items, Text).
+
+%% compile_predicate_to_wam(+PredIndicator, +Options, -Output)
+%
+%  Generic API. Output type is selected by the output/1 option:
+%    output(items)  → Output is a structured items list (default).
+%    output(text)   → Output is the canonical text dump.
+%
+%  Existing callers that expected text get migrated to either
+%  pass output(text) explicitly or switch to
+%  compile_predicate_to_wam_text/3 — see the per-target
+%  migration plan in §6.
+compile_predicate_to_wam(PI, Options, Output) :-
+    (   option(output(text), Options)
+    ->  compile_predicate_to_wam_text(PI, Options, Output)
+    ;   compile_predicate_to_wam_items(PI, Options, Output)
+    ).
+
 %% wam_items_to_text(+Items, -Text)
 %
-%  Pretty-prints an items list as the canonical multi-line WAM
-%  text format that compile_predicate_to_wam/3 has produced
-%  historically. The output is byte-identical to the existing text
-%  emission for any items list that compile_predicate_to_wam_items
-%  could produce.
+%  Pretty-prints an items list as the canonical WAM text format.
+%  Output is byte-identical to historical emission for any items
+%  list compile_predicate_to_wam_items could produce. Used
+%  internally by compile_predicate_to_wam_text/3 and exposed for
+%  any consumer that already has items in hand and needs text.
 wam_items_to_text(Items, Text).
 ```
 
-The existing predicate becomes a one-liner:
+### 1.1 Default-flip rationale
+
+Items is the default because:
+
+- **It''s the cheap path.** Skipping the text round-trip is the
+  whole point.
+- **Targets are the dominant caller.** All 15 WAM targets are
+  going to migrate to items eventually; making items the
+  default-output means each migration PR is "delete the parser
+  call and the import," not "delete the parser AND change the
+  output option."
+- **Text consumers are explicit by nature.** Tests pinning text
+  output, debug dumps, external tooling — these all want text
+  *intentionally*. Forcing them to ask for it is fine.
+
+### 1.2 Backwards compatibility
+
+`compile_predicate_to_wam/3`''s default behaviour changes. Every
+existing caller is either:
+
+- A WAM target that immediately parses the text (15 of these). These
+  migrate to items in Phase 2 anyway — the parser deletion AND the
+  output-mode flip happen together in the same PR.
+- A test that pins specific text output (~handful). These switch to
+  `compile_predicate_to_wam_text/3` (one-line edit) in Phase 1.
+- An external user that we don''t know about. The compatibility
+  shim: anyone passing no `output/1` option AND treating the result
+  as a string immediately discovers the breakage in their first
+  test run; the fix is "add `output(text)` to the option list" —
+  one line.
+
+The Phase 1 PR audits the tree for any caller that expects text
+without specifying `output(_)`, and migrates them in the same
+commit.
+
+### 1.3 Common parser — text → items
+
+For consumers that need to ingest text they didn't generate
+themselves (external WAM dumps, debug round-tripping,
+target-specific extensions on top of the standard instruction set
+— see PHILOSOPHY §6.1 for the rationale), `wam_target.pl` exports
+a shared parser. **Targets never need to ship their own.**
 
 ```prolog
-compile_predicate_to_wam(PI, Options, Text) :-
-    compile_predicate_to_wam_items(PI, Options, Items),
-    wam_items_to_text(Items, Text).
+%% wam_text_to_items(+Text, -Items)
+%
+%  Inverse of wam_items_to_text/2. Parses canonical WAM text into
+%  a structured items list using the same item shapes as
+%  compile_predicate_to_wam_items/3. Designed so that
+%  wam_text_to_items(Text, Items),
+%  wam_items_to_text(Items, Text2)
+%  yields Text2 == Text for any well-formed Text the printer
+%  could have produced.
+%
+%  Throws domain_error if Text contains a line that doesn''t parse
+%  as a label or known instruction. Callers that want lenient
+%  parsing can compose the building blocks below instead.
+wam_text_to_items(Text, Items).
 ```
 
-Tests that pin the exact text output continue to pass without
-modification.
+Three lower-level building blocks for targets that need to extend
+or customise:
+
+```prolog
+%% wam_tokenize_line(+Line, -Tokens)
+%
+%  The quote-aware tokenizer: splits on whitespace; bare commas
+%  are separators except when followed by ''/'' (so the conjunction
+%  functor ",/N" survives as one token); single-quoted regions
+%  preserve spaces / commas as content. Returns a list of strings.
+wam_tokenize_line(Line, Tokens).
+
+%% wam_recognise_label(+Tokens, -LabelName)
+%
+%  True iff Tokens is a single token ending in '':''. Strips the
+%  colon and returns the LabelName as a string. Fails on anything
+%  else — no exception.
+wam_recognise_label(Tokens, LabelName).
+
+%% wam_recognise_instruction(+Tokens, -Item)
+%
+%  True iff Tokens matches one of the standard WAM instruction
+%  shapes from §2. Returns the corresponding item term. Fails on
+%  unrecognised tokens — caller can fall back to its own
+%  extension recogniser without an exception.
+wam_recognise_instruction(Tokens, Item).
+```
+
+### 1.4 Composition pattern for targets with extensions
+
+Targets that introduce custom instructions (e.g., a JIT target
+with profiling pseudo-ops, a debugger target with breakpoint
+markers) compose the building blocks instead of using
+`wam_text_to_items/2` directly:
+
+```prolog
+my_target_text_to_items(Text, Items) :-
+    string_lines(Text, Lines),
+    maplist(my_target_recognise_line, Lines, MaybeItems),
+    exclude(==(skip), MaybeItems, Items).
+
+my_target_recognise_line(Line, Item) :-
+    wam_tokenize_line(Line, Tokens),
+    (   Tokens == []
+    ->  Item = skip
+    ;   wam_recognise_label(Tokens, Name)
+    ->  Item = label(Name)
+    ;   wam_recognise_instruction(Tokens, Item)
+    ->  true
+    ;   my_target_extension_recognise(Tokens, Item)
+    ->  true
+    ;   format(user_error,
+               'my_target: unrecognised WAM line: ~w~n', [Line]),
+        Item = skip
+    ).
+```
+
+The bulk of parsing (~80-90% of any target''s parser today) lives
+in the shared building blocks. Targets ship only what's unique to
+them.
 
 ## 2. Item term shapes
 
@@ -221,21 +356,56 @@ Forces us to keep item shapes stable.
 
 ## 6. Migration plan
 
-### Phase 1 — items pipeline lands (this design's PR)
+### Phase 1 — items pipeline lands (this design's follow-up PR)
 
-Sole change: refactor `wam_target.pl` to be items-first. Existing
-text API keeps working byte-identically. No target migrates yet.
+Three changes in one PR:
+
+1. Refactor `wam_target.pl` to be items-first.
+   `compile_predicate_to_wam_items/3` becomes the load-bearing
+   pipeline; `wam_items_to_text/2` is the new printer.
+   `compile_predicate_to_wam/3` becomes the dispatch wrapper from
+   §1, defaulting to items.
+2. Audit every caller in the tree of the bare-name predicate. Any
+   site that treats the result as text gets either an explicit
+   `output(text)` option or switches to
+   `compile_predicate_to_wam_text/3` (whichever is cleaner at the
+   call site). Targets stay on text in this PR — their migration
+   to items is Phase 2.
+3. Round-trip tests (§5.1) pin
+   `wam_items_to_text(compile_predicate_to_wam_items(...))` ==
+   legacy text for every fixture. Items-shape tests (§5.2) pin
+   the items list for representative predicates.
 
 Expected diff: ~500-700 LOC in `wam_target.pl` (extracts each
 emission site into a constructor + items-list build), ~200 LOC for
 `wam_items_to_text/2` (the displaced format strings), ~100 LOC of
-new tests (round-trip + items shape).
+new tests (round-trip + items shape), ~30-50 LOC across consumer
+files for the explicit-text-option migration.
 
 ### Phase 2 — per-target migration
 
 One PR per target, in roughly increasing order of parser
 complexity (start with the smallest so the migration pattern
-stabilises before tackling the heavyweights):
+stabilises before tackling the heavyweights). Each target has
+three migration paths to choose from:
+
+- **Delete the parser entirely.** The target generator switches
+  from `parse_wam_text → ... → emit` to
+  `compile_predicate_to_wam_items → emit`. Parser is gone. This
+  is the default path for any target that doesn't have custom
+  instructions.
+- **Switch to `wam_text_to_items/2`.** For targets that need to
+  parse text from external sources (debug round-tripping, file
+  imports), the per-target tokenizer + recogniser collapses to
+  one library call.
+- **Compose building blocks.** For targets with custom
+  instructions or unusual recognisers, replace the per-target
+  tokenizer with `wam_tokenize_line/2` and the standard
+  instruction recogniser with `wam_recognise_instruction/2`,
+  keeping only the extension-specific clauses.
+
+Most targets fall in path 1 (delete entirely). A few may keep a
+small parser-like surface via paths 2 or 3.
 
 1. `wam_clojure_target.pl` (7 format calls) — proof of concept.
 2. `wam_python_target.pl` (19).
@@ -275,10 +445,18 @@ they'd benefit from items, migrate; if not, leave them alone.
 
 ## 7. Files touched (Phase 1 estimate)
 
-- `src/unifyweaver/targets/wam_target.pl` — items refactor +
-  printer + walk helpers (~700 LOC changed/added).
-- `tests/test_wam_target.pl` (or new `test_wam_items.pl`) — round-
-  trip + items-shape tests (~150 LOC).
+- `src/unifyweaver/targets/wam_target.pl`
+  - Items refactor + printer + walk helpers (~700 LOC).
+  - Common parser (`wam_text_to_items/2`,
+    `wam_tokenize_line/2`, `wam_recognise_label/2`,
+    `wam_recognise_instruction/2`) (~250 LOC). Largely lifted
+    from the existing per-target parsers — the C++ target''s
+    quote-aware tokenizer is the canonical starting point.
+- `tests/test_wam_target.pl` (or new `test_wam_items.pl`) —
+  - Round-trip + items-shape tests (~150 LOC).
+  - Parser tests:
+    `wam_text_to_items(wam_items_to_text(I), I2), I == I2` for
+    every items-shape fixture (~50 LOC).
 - `docs/design/WAM_ITEMS_API_PHILOSOPHY.md` — this design.
 - `docs/design/WAM_ITEMS_API_SPECIFICATION.md` — this design.
 
