@@ -5,11 +5,14 @@
 
 :- begin_tests(go_wam_builtins).
 
+:- dynamic user:test_builtins/1.
+:- dynamic user:test_term_builtins/0.
+
 test(builtins_execution) :-
     get_time(T),
     format(atom(TmpDir), 'tmp_wam_builtins_~w', [T]),
     setup_call_cleanup(
-        assertz(user:test_builtins(X) :-
+        ( assertz(user:test_builtins(X) :-
             (   X is 1 + 2,
                 X < 5,
                 X =:= 3,
@@ -20,13 +23,31 @@ test(builtins_execution) :-
                 atom(foo),
                 \+ atom(5)
             )),
+          assertz(user:test_term_builtins :-
+            (   functor(f(a, 7), F, A),
+                F == f,
+                A =:= 2,
+                arg(2, f(a, 7), V),
+                V =:= 7,
+                f(a, 7) =.. L,
+                length(L, 3),
+                member(f, L),
+                member(a, L),
+                member(7, L),
+                copy_term(f(X, X), C),
+                arg(1, C, Y),
+                arg(2, C, Z),
+                Y == Z
+            ))
+        ),
         run_builtins_test(TmpDir),
         ( retractall(user:test_builtins(_)),
+          retractall(user:test_term_builtins),
           delete_directory_and_contents(TmpDir) )
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1],
+    Predicates = [test_builtins/1, test_term_builtins/0],
     Options = [module_name(builtin_test)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -40,6 +61,10 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "=</2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "is_list/1"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "display/1"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "functor/3"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "arg/3"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "=../2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "copy_term/2"')),
 
     % Add a main.go to run the test in a separate cmd directory
     directory_file_path(TmpDir, 'cmd', CmdDir),
@@ -66,6 +91,14 @@ func main() {
 	} else {
 		fmt.Println("FAILURE")
 	}
+
+	termVM := wam.NewWamState(wam.Test_term_builtinsCode, wam.Test_term_builtinsLabels)
+	termVM.PC = wam.Test_term_builtinsStartPC
+	if termVM.Run() {
+		fmt.Println("TERM_SUCCESS")
+	} else {
+		fmt.Println("TERM_FAILURE")
+	}
 }
 '),
 
@@ -84,7 +117,8 @@ func main() {
         format('Full output from Go: ~s~n', [FullOutput]),
         assertion(Exit == exit(0)),
         assertion(sub_string(FullOutput, _, _, _, "ok")),
-        assertion(sub_string(FullOutput, _, _, _, "SUCCESS: X=3"))
+        assertion(sub_string(FullOutput, _, _, _, "SUCCESS: X=3")),
+        assertion(sub_string(FullOutput, _, _, _, "TERM_SUCCESS"))
     ;   format("Go not found, skipping execution test.~n")
     ).
 
