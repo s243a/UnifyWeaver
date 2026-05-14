@@ -170,6 +170,18 @@ remains graph-only; scan rows are emitted as `scan-materialization:<mode>` when
 selected explicitly with `--workloads scan-materialization` or
 `--workloads all-with-scan`.
 
+The scan-materialization source-mode policy has its own artifact,
+`csharp_query_scan_source_mode_calibration.tsv`, so graph calibration refreshes
+do not accidentally rewrite scan rows. The default scan refresh is intentionally
+small and uses `dev` scale:
+
+```bash
+python examples/benchmark/refresh_csharp_query_scan_source_mode_calibration.py
+```
+
+Pass `--scales 300,1k` or a larger scale list when a broader scan refresh is
+needed.
+
 ### WAM-Rust and WAM-Haskell Benchmark Variants
 
 The effective-distance harness also includes hybrid WAM benchmark targets:
@@ -580,6 +592,8 @@ Tables:
 | `benchmark_dependency_depth_cross_target.py` | Compare synthetic dependency reach-count across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_dependency_longest_depth_cross_target.py` | Compare true DAG longest dependency-chain depth across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_csharp_query_source_mode_sweep.py` | Run generated C# query source-mode sweeps across selected workloads and emit a compact TSV/Markdown comparison |
+| `refresh_csharp_query_source_mode_calibration.py` | Refresh the graph source-mode calibration TSV with guarded idle checks |
+| `refresh_csharp_query_scan_source_mode_calibration.py` | Refresh the scan-materialization source-mode calibration TSV with guarded idle checks |
 | `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
 | `benchmark_scan_materialization.py` | Exercise relation scan, pattern scan, binary/n-ary join, negation, and aggregate under the scan materialization planner; use `--format markdown` or `--format report-tsv` with `join,nary_join` to compare source registrations and artifact bucket strategy rows; use `--format calibration-tsv` or `--format calibration-markdown` to summarize auto-policy chosen-vs-best status, 10% timing tolerance, overlap confidence, slow matches, auto median, and timing spread; use `--format actionable-tsv` or `--format actionable-markdown` to show only separated timing regressions worth policy review |
 | `benchmark_closure_materialization.py` | Exercise generic seeded closure and streamed auxiliary accumulation under the closure materialization planner |
