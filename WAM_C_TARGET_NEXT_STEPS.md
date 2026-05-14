@@ -5,7 +5,7 @@ Status date: 2026-05-14
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `27cee291` (`Merge pull request #2066 from s243a/ci/csharp-query-calibration-policy-contract-tests`)
+- `main` at `69d5b9e9` (`Merge pull request #2070 from s243a/test/wam-c-asan-smoke-stderr-log`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
 - `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py`
@@ -14,7 +14,7 @@ Base verified locally:
 
 Active branch:
 
-- `feat/wam-c-lowered-helper-repeated-variable-filters`
+- `feat/wam-c-lowered-helper-empty-result-rejections`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -50,7 +50,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Lowered helper filter rejection metadata | Done | Planner reports explicit rejection reasons for non-constant filter arguments, unsupported comparison guards, multi-goal bodies, and unsupported filter callees |
 | Lowered helper comparison-filter shape | Done | Fact-only callee plus one integer comparison guard lowers into native fact rows and the tiny lowered-helper matrix exercises it |
 | Lowered helper comparison-filter rejection metadata | Done | Planner reports explicit rejection reasons for unbound comparison guard variables, unsupported expressions, non-integer ordering rows, and no matching rows |
-| Lowered helper repeated-variable filters | In progress | Active branch preserves repeated callee-variable row constraints in constant and comparison filtered helpers |
+| Lowered helper repeated-variable filters | Done | Constant and comparison filtered helpers preserve repeated callee-variable row constraints with planner and executable coverage |
+| Lowered helper empty-result rejections | In progress | Active branch reports `no_matching_filter_rows` for supported constant filtered helpers whose constraints produce no rows, alongside existing comparison no-match metadata |
 
 ## Current C Target Baseline
 
@@ -121,7 +122,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
 | Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup and all-hop collection; add more kernel kinds only after runtime support exists. |
 | Shared kernel detector integration | Partial | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`; broaden as more native C kernels land. |
-| Lowered/native helper functions | Partial/Active | Done | Done | C has constant fact-only native helpers, planner metadata, interpreted-vs-lowered matrix wiring, body-call helpers, filtered-fact helpers, comparison-filter helpers, rejection metadata, and active repeated-variable filter hardening. |
+| Lowered/native helper functions | Partial/Active | Done | Done | C has constant fact-only native helpers, planner metadata, interpreted-vs-lowered matrix wiring, body-call helpers, filtered-fact helpers, comparison-filter helpers, rejection metadata, repeated-variable filter hardening, and active empty-result rejection metadata. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
 | LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts and generated effective-distance LMDB wiring; larger artifact layout support remains. |
 | Effective-distance benchmark harness | Partial/Done | Done | Done | C is wired into the shared matrix for TSV and LMDB `kernels_on`/`kernels_off`; next gap is larger artifact layouts. |
@@ -131,23 +132,7 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-lowered-helper-repeated-variable-filters`
-
-Goal: tighten repeated-variable behavior in lowered filtered helpers.
-
-Scope:
-
-- Add planner tests for repeated head/callee variables in constant and
-  comparison-filtered helper shapes.
-- Keep existing supported lowering unchanged where repeated variables are
-  already handled correctly.
-- Add explicit rejection metadata if a repeated-variable shape is ambiguous.
-
-Status: active; constant filtered helpers now apply the same repeated callee
-variable row constraints already used by comparison-filtered helpers, with
-planner and executable coverage.
-
-### 2. `feat/wam-c-lowered-helper-empty-result-rejections`
+### 1. `feat/wam-c-lowered-helper-empty-result-rejections`
 
 Goal: make empty lowered-helper result sets explicit across supported filter
 families.
@@ -160,10 +145,26 @@ Scope:
   and repeated-variable paths unchanged.
 - Prefer planner tests and generated plan comments over new runtime paths.
 
+Status: active; constant filtered helpers now report
+`no_matching_filter_rows` when supported constraints produce no projected rows,
+matching the existing explicit comparison no-match metadata.
+
+### 2. `feat/wam-c-lowered-helper-body-call-rejections`
+
+Goal: make unsupported body-call lowering failures explicit before expanding
+the body-call helper surface.
+
+Scope:
+
+- Add planner metadata for alias/body-call shapes whose callee is not available
+  for native lowering.
+- Keep the existing direct native fact-helper dispatch unchanged.
+- Prefer planner tests and generated plan comments over runtime changes.
+
 ## Suggested Immediate Next Step
 
-Continue validating `feat/wam-c-lowered-helper-repeated-variable-filters`.
+Continue validating `feat/wam-c-lowered-helper-empty-result-rejections`.
 
-The active branch tightens repeated callee-variable row constraints for lowered
-filtered helpers and adds runtime coverage for constant and comparison
-filtered repeated-variable shapes.
+The active branch adds explicit planner and generated-comment metadata for
+supported constant filtered helpers whose constraints produce no rows, while
+leaving successful lowered helper paths unchanged.
