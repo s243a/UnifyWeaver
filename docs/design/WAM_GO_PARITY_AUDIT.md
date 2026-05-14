@@ -10,7 +10,7 @@ current cross-target builtin/runtime baseline.
 | --- | --- | --- | --- |
 | Choice points and backtracking | `try_me_else`, `retry_me_else`, `trust_me`, indexed alternatives, foreign stream retries, `member/2` builtin retries | Choice point stack with normal, builtin, and fact-stream resume states | Partial |
 | Direct fact dispatch | Foreign/native kernel registration and indexed atom/weighted fact tables | `call_indexed_atom_fact2`, inline/external fact stream paths | Partial |
-| Aggregates | `begin_aggregate`, `end_aggregate`; `collect`, `count`, `sum`, `min`, `max` | `findall/3`, `aggregate_all/3` count/sum/min/max/set families | Partial: no `set` aggregate result |
+| Aggregates | `begin_aggregate`, `end_aggregate`; `collect`, `bag`, `bagof`, `count`, `sum`, `min`, `max`, `set`, `setof` | `findall/3`, `aggregate_all/3` count/sum/min/max/set families | Present for current aggregate baseline |
 | Structural builtins | `member/2`, `length/2`, `append/3` | `member/2`, `length/2`; Rust `append/3` is explicitly unimplemented | Present for current baseline structural checks |
 | Type builtins | `var/1`, `nonvar/1`, `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `atomic/1`, `is_list/1` | Includes `is_list/1` in the current baseline | Present for current baseline type checks |
 | Comparison builtins | `==/2`, `\==/2`, `\=/2`, `=:=/2`, `=\=/2`, `</2`, `>/2`, `=</2`, `>=/2` | Includes `=</2` | Present for current baseline comparisons |
@@ -27,21 +27,23 @@ current cross-target builtin/runtime baseline.
   The Go target now emits `internAtom("...")` instead of raw
   `&Atom{Name: "..."}` literals, so the assertions needed to follow the
   current intern-table design.
-- The Go WAM runtime has a substantial execution core; the remaining obvious
-  builtin parity gap is `set` aggregate support.
+- The Go WAM runtime has a substantial execution core; `set` aggregate results
+  are now deduplicated like Haskell's `nub` behavior.
 - `member/2` now pushes builtin choice points for later list members, so
   `findall/3` can collect every unifiable element.
 - `=</2`, `is_list/1`, and `display/1` are now covered by the generated Go
   WAM builtin E2E test.
 - `functor/3`, `arg/3`, `=../2`, and `copy_term/2` are now covered by the
   generated Go WAM builtin E2E test.
+- `aggregate_all(set(X), Goal, Set)` is now covered by the generated Go WAM
+  builtin E2E test.
 
 ## Recommended Follow-Up Order
 
-1. Continue broadening the generated Go WAM builtin E2E as each remaining gap
-   is closed.
-2. Add `set` aggregate support if Go is expected to match the current Lua/Python
-   aggregate parity surface.
+1. Continue broadening generated Go WAM E2E coverage for control and fact-source
+   behavior that remains marked partial.
+2. Compare Go direct fact dispatch against Rust/Haskell external fact stream
+   paths if Go should close the remaining direct-fact parity gap.
 
 ## Verification Commands
 

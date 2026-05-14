@@ -2103,6 +2103,10 @@ func aggregateResultValue(aggType string, values []Value, count int) (Value, boo
         return &Integer{Val: int64(count)}, true
     case "collect":
         return &List{Elements: append([]Value(nil), values...)}, true
+    case "bag", "bagof":
+        return &List{Elements: append([]Value(nil), values...)}, true
+    case "set", "setof":
+        return &List{Elements: uniqueAggregateValues(values)}, true
     case "sum":
         total := 0.0
         for _, value := range values {
@@ -2152,6 +2156,23 @@ func aggregateResultValue(aggType string, values []Value, count int) (Value, boo
     default:
         return nil, false
     }
+}
+
+func uniqueAggregateValues(values []Value) []Value {
+    out := make([]Value, 0, len(values))
+    for _, value := range values {
+        found := false
+        for _, existing := range out {
+            if valueEquals(existing, value) {
+                found = true
+                break
+            }
+        }
+        if !found {
+            out = append(out, value)
+        }
+    }
+    return out
 }
 
 func aggregateNumericValue(value Value) (float64, bool) {
