@@ -240,6 +240,19 @@ lowered_filter_rejection_reason(HeadArgs, Body0, non_constant_filter_argument) :
     member(Arg, CalleeArgs),
     \+ lowered_filter_arg_supported(Arg, HeadArgs),
     !.
+lowered_filter_rejection_reason(HeadArgs, Body0, no_matching_filter_rows) :-
+    strip_module_qualification(Body0, Body),
+    Body =.. [CalleePred|CalleeArgs],
+    length(CalleeArgs, CalleeArity),
+    \+ wam_c_lowered_comparison_guard(CalleePred/CalleeArity),
+    maplist(var, HeadArgs),
+    callee_args_supported_for_filter(CalleeArgs, HeadArgs),
+    CalleeIndicator = user:CalleePred/CalleeArity,
+    lowered_fact_helper_rows(CalleeIndicator, CalleeRows),
+    \+ (   member(CalleeRow, CalleeRows),
+           callee_row_matches_filter(CalleeArgs, HeadArgs, CalleeRow)
+       ),
+    !.
 lowered_filter_rejection_reason(HeadArgs, Body0, unsupported_filter_callee) :-
     strip_module_qualification(Body0, Body),
     Body =.. [CalleePred|CalleeArgs],
