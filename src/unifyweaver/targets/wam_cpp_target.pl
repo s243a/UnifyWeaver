@@ -655,7 +655,38 @@ helper_predicate_items(Items) :-
         put_value("Y3", "A2"),
         put_value("Y4", "A3"),
         deallocate,
-        execute("nth0/3")
+        execute("nth0/3"),
+        % --- between/3 ---------------------------------------------------
+        % between(L, H, L) :- L =< H.
+        % between(L, H, X) :- L < H, L1 is L + 1, between(L1, H, X).
+        label("between/3"),
+        try_me_else("L_cpp_between_3_2"),
+        get_variable("X1", "A1"),
+        get_variable("X2", "A2"),
+        get_value("X1", "A3"),
+        put_value("X1", "A1"),
+        put_value("X2", "A2"),
+        builtin_call("=</2", "2"),
+        proceed,
+        label("L_cpp_between_3_2"),
+        trust_me,
+        allocate,
+        get_variable("Y1", "A1"),
+        get_variable("Y3", "A2"),
+        get_variable("Y4", "A3"),
+        put_value("Y1", "A1"),
+        put_value("Y3", "A2"),
+        builtin_call("</2", "2"),
+        put_variable("Y2", "A1"),
+        put_structure("+/2", "A2"),
+        set_value("Y1"),
+        set_constant("1"),
+        builtin_call("is/2", "2"),
+        put_value("Y2", "A1"),
+        put_value("Y3", "A2"),
+        put_value("Y4", "A3"),
+        deallocate,
+        execute("between/3")
     ].
 
 flatten_blocks([], []).
@@ -1653,6 +1684,37 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         CellPtr copy = rec(get_cell("A1"));
         if (!unify_cells(get_cell("A2"), copy)) return false;
         pc += 1; return true;
+    }
+
+    // ---- succ/2 ----------------------------------------------------
+    // succ(X, Y): Y is X + 1. Bidirectional — if X is a non-negative
+    // integer, derive Y; if Y is a positive integer, derive X. Fails
+    // if X < 0 or Y <= 0 or both args unbound (ISO would throw
+    // instantiation_error in the both-unbound case; v1 just fails).
+    if (op == "succ/2") {
+        Value a = deref(*get_cell("A1"));
+        Value b = deref(*get_cell("A2"));
+        if (a.tag == Value::Tag::Integer) {
+            if (a.i < 0) return false;
+            long long next = a.i + 1;
+            if (b.tag == Value::Tag::Integer) {
+                if (b.i != next) return false;
+                pc += 1; return true;
+            }
+            if (!unify_cells(get_cell("A2"),
+                             std::make_shared<Cell>(Value::Integer(next))))
+                return false;
+            pc += 1; return true;
+        }
+        if (b.tag == Value::Tag::Integer) {
+            if (b.i <= 0) return false;
+            long long prev = b.i - 1;
+            if (!unify_cells(get_cell("A1"),
+                             std::make_shared<Cell>(Value::Integer(prev))))
+                return false;
+            pc += 1; return true;
+        }
+        return false;
     }
     // ---- \\=/2 (cannot unify) --------------------------------------
     if (op == "\\\\=/2") {
