@@ -411,7 +411,11 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
             ),
             _, fail)
     ), PerPredItems),
-    flatten_blocks(PerPredItems, AllItems),
+    % Auto-inject builtin helper predicates (member/2, length/2). They
+    % go BEFORE user predicates so user definitions of member/2 or
+    % length/2 (rare) shadow the helpers via labels-map overwrite.
+    helper_predicate_items(HelperItems),
+    flatten_blocks([HelperItems|PerPredItems], AllItems),
     walk_blocks(AllItems, Labels, FlatInstrs),
     findall(LabelLine, (
         member(NameStr-PC, Labels),
@@ -438,6 +442,64 @@ static const int _wam_cpp_setup_register = []() {
     return 0;
 }();
 ', [Reserve, LabelBody, InstrBody]).
+
+%% helper_predicate_items(-Items)
+%  Canonical WAM for builtin "library" predicates the user can call via
+%  builtin_call but that aren''t implemented directly by builtin().
+%  These instructions match what compile_predicate_to_wam emits for the
+%  standard Prolog definitions of member/2 and length/2 (verified via
+%  probe during this PR''s development). When a user predicate of the
+%  same name is also emitted, the user''s label-map entry overwrites
+%  ours and the helper instructions become harmless dead code.
+helper_predicate_items(Items) :-
+    Items = [
+        % --- member/2 ----------------------------------------------------
+        % member(X, [X|_]).
+        % member(X, [_|T]) :- member(X, T).
+        label("member/2"),
+        try_me_else("L_cpp_member_2_2"),
+        get_variable("X1", "A1"),
+        get_list("A2"),
+        unify_value("X1"),
+        unify_variable("X2"),
+        proceed,
+        label("L_cpp_member_2_2"),
+        trust_me,
+        allocate,
+        get_variable("X1", "A1"),
+        get_list("A2"),
+        unify_variable("X2"),
+        unify_variable("X3"),
+        put_value("X1", "A1"),
+        put_value("X3", "A2"),
+        deallocate,
+        execute("member/2"),
+        % --- length/2 ----------------------------------------------------
+        % length([], 0).
+        % length([_|T], N) :- length(T, M), N is M + 1.
+        label("length/2"),
+        try_me_else("L_cpp_length_2_2"),
+        get_constant("[]", "A1"),
+        get_constant("0", "A2"),
+        proceed,
+        label("L_cpp_length_2_2"),
+        trust_me,
+        allocate,
+        get_list("A1"),
+        unify_variable("X3"),
+        unify_variable("X4"),
+        get_variable("Y1", "A2"),
+        put_value("X4", "A1"),
+        put_variable("Y2", "A2"),
+        call("length/2", "2"),
+        put_value("Y1", "A1"),
+        put_structure("+/2", "A2"),
+        set_value("Y2"),
+        set_constant("1"),
+        builtin_call("is/2", "2"),
+        deallocate,
+        proceed
+    ].
 
 flatten_blocks([], []).
 flatten_blocks([Items|Rest], All) :-
@@ -1362,6 +1424,37 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         if (!unify_cells(get_cell("A1"), get_cell("A2"))) return false;
         pc += 1; return true;
     }
+
+    // ---- copy_term/2 -----------------------------------------------
+    // copy_term(T1, T2) makes T2 a structural copy of T1 where each
+    // unbound variable in T1 maps to a single fresh cell in T2 (so
+    // copy_term(foo(X, X), C) yields C = foo(Y, Y) with Y fresh).
+    if (op == "copy_term/2") {
+        std::unordered_map<std::string, CellPtr> rename;
+        std::function<CellPtr(CellPtr)> rec = [&](CellPtr src) -> CellPtr {
+            Value& v = *src;
+            if (v.tag == Value::Tag::Unbound || v.tag == Value::Tag::Uninit) {
+                const std::string& name = v.s;
+                auto it = rename.find(name);
+                if (it != rename.end()) return it->second;
+                CellPtr fresh = std::make_shared<Cell>(
+                    Value::Unbound("_C" + std::to_string(var_counter++)));
+                rename[name] = fresh;
+                return fresh;
+            }
+            if (v.tag == Value::Tag::Compound) {
+                std::vector<CellPtr> args;
+                for (auto& c : v.args) args.push_back(rec(c));
+                return std::make_shared<Cell>(
+                    Value::Compound(v.s, std::move(args)));
+            }
+            // Atom / Integer / Float: cheap shallow copy.
+            return std::make_shared<Cell>(v);
+        };
+        CellPtr copy = rec(get_cell("A1"));
+        if (!unify_cells(get_cell("A2"), copy)) return false;
+        pc += 1; return true;
+    }
     // ---- \\=/2 (cannot unify) --------------------------------------
     if (op == "\\\\=/2") {
         // Try to unify; if it succeeds we have to undo and fail.
@@ -1926,8 +2019,18 @@ bool WamState::step(const Instruction& instr) {
         }
 
         // ---- Builtins ----------------------------------------------
-        case Instruction::Op::BuiltinCall:
+        case Instruction::Op::BuiltinCall: {
+            // If the op has a registered label (e.g. an auto-injected
+            // helper like member/2 or length/2), dispatch as a Call so
+            // backtracking through clauses works naturally.
+            auto it = labels.find(instr.a);
+            if (it != labels.end()) {
+                cp = pc + 1;
+                pc = it->second;
+                return true;
+            }
             return builtin(instr.a, instr.n);
+        }
         case Instruction::Op::CallForeign:
             pc += 1; return true;
 

@@ -70,6 +70,28 @@
 :- dynamic user:wam_cpp_test_len_one/0.
 :- dynamic user:wam_cpp_test_len_three/0.
 :- dynamic user:wam_cpp_test_len_five/0.
+% List & term builtins (member/2, length/2, copy_term/2):
+:- dynamic user:wam_cpp_test_member_yes/0.
+:- dynamic user:wam_cpp_test_member_no/0.
+:- dynamic user:wam_cpp_test_member_first/0.
+:- dynamic user:wam_cpp_test_length_three/0.
+:- dynamic user:wam_cpp_test_length_zero/0.
+:- dynamic user:wam_cpp_test_length_bad/0.
+:- dynamic user:wam_cpp_test_copy_basic/0.
+:- dynamic user:wam_cpp_test_copy_atom/0.
+:- dynamic user:wam_cpp_test_enum_member/0.
+
+user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
+user:wam_cpp_test_member_no    :- member(z, [a, b, c]).
+user:wam_cpp_test_member_first :- member(a, [a, b, c]).
+user:wam_cpp_test_length_three :- length([a, b, c], 3).
+user:wam_cpp_test_length_zero  :- length([], 0).
+user:wam_cpp_test_length_bad   :- length([a, b, c], 5).
+user:wam_cpp_test_copy_basic   :- copy_term(foo(X, X, _Y), T), T = foo(A, A, _B).
+user:wam_cpp_test_copy_atom    :- copy_term(hello, T), T = hello.
+user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
+                                  L = [a, b, c].
+
 % Indexing-instruction fixtures (switch_on_constant / switch_on_term):
 :- dynamic user:wam_cpp_color/1.
 :- dynamic user:wam_cpp_shape/2.
@@ -694,6 +716,73 @@ test(cpp_e2e_list_head_match, [condition(cpp_compiler_available)]) :-
 % Exercises constant-bound A1 dispatch (color, shape) and the
 % combined type dispatch (mixed atom/int/struct/list).
 % ------------------------------------------------------------------
+
+% ------------------------------------------------------------------
+% List & term builtins: member/2, length/2, copy_term/2. member and
+% length are auto-injected as helper predicates (so they can backtrack
+% naturally through their two clauses); copy_term is a direct builtin
+% with structural deep-copy and shared-variable renaming.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_member, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_member', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_member_yes/0,
+                               user:wam_cpp_test_member_no/0,
+                               user:wam_cpp_test_member_first/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_member_yes/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_member_no/0',    [], false),
+          run_query(BinPath, 'wam_cpp_test_member_first/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_length, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_length', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_length_three/0,
+                               user:wam_cpp_test_length_zero/0,
+                               user:wam_cpp_test_length_bad/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_length_three/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_length_zero/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_length_bad/0',   [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_copy_term, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_copy', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_copy_basic/0,
+                               user:wam_cpp_test_copy_atom/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          % copy_term(foo(X,X,Y), T) → T = foo(A,A,B) with A and B fresh.
+          % The two X-positions in source must share a single fresh var
+          % in the copy; Y becomes a different fresh var.
+          run_query(BinPath, 'wam_cpp_test_copy_basic/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_copy_atom/0',  [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_member_enumeration, [condition(cpp_compiler_available)]) :-
+    % findall enumerating through member is the full nondet test:
+    % member must push a choice point on each match so the driver can
+    % backtrack into it for the next solution.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_enum', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_enum_member/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_enum_member/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
 
 test(cpp_e2e_switch_on_constant, [condition(cpp_compiler_available)]) :-
     unique_cpp_tmp_dir('tmp_cpp_e2e_swc', TmpDir),
