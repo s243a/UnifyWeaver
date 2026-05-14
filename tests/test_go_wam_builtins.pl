@@ -9,6 +9,7 @@
 :- dynamic user:test_term_builtins/0.
 :- dynamic user:test_member_collect/0.
 :- dynamic user:test_set_aggregate/0.
+:- dynamic user:test_unify_builtin/0.
 
 test(builtins_execution) :-
     get_time(T),
@@ -52,6 +53,11 @@ test(builtins_execution) :-
                 length(S, 2),
                 member(a, S),
                 member(b, S)
+            )),
+          assertz(user:test_unify_builtin :-
+            (   =(f(a, X), f(a, b)),
+                X == b,
+                \+ =(a, b)
             ))
         ),
         run_builtins_test(TmpDir),
@@ -59,11 +65,12 @@ test(builtins_execution) :-
           retractall(user:test_term_builtins),
           retractall(user:test_member_collect),
           retractall(user:test_set_aggregate),
+          retractall(user:test_unify_builtin),
           delete_directory_and_contents(TmpDir) )
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_set_aggregate/0],
+    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_set_aggregate/0, test_unify_builtin/0],
     Options = [module_name(builtin_test)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -81,6 +88,7 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "arg/3"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "=../2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "copy_term/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "=/2"')),
     assertion(sub_string(LibCode, _, _, _, 'AggType: "set"')),
 
     % Add a main.go to run the test in a separate cmd directory
@@ -132,6 +140,14 @@ func main() {
 	} else {
 		fmt.Println("SET_FAILURE")
 	}
+
+	unifyVM := wam.NewWamState(wam.Test_unify_builtinCode, wam.Test_unify_builtinLabels)
+	unifyVM.PC = wam.Test_unify_builtinStartPC
+	if unifyVM.Run() {
+		fmt.Println("UNIFY_SUCCESS")
+	} else {
+		fmt.Println("UNIFY_FAILURE")
+	}
 }
 '),
 
@@ -153,7 +169,8 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "SUCCESS: X=3")),
         assertion(sub_string(FullOutput, _, _, _, "TERM_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "MEMBER_SUCCESS")),
-        assertion(sub_string(FullOutput, _, _, _, "SET_SUCCESS"))
+        assertion(sub_string(FullOutput, _, _, _, "SET_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "UNIFY_SUCCESS"))
     ;   format("Go not found, skipping execution test.~n")
     ).
 

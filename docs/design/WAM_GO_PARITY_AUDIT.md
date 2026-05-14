@@ -14,7 +14,7 @@ current cross-target builtin/runtime baseline.
 | Structural builtins | `member/2`, `length/2`, `append/3` | `member/2`, `length/2`; Rust `append/3` is explicitly unimplemented | Present for current baseline structural checks |
 | Type builtins | `var/1`, `nonvar/1`, `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `atomic/1`, `is_list/1` | Includes `is_list/1` in the current baseline | Present for current baseline type checks |
 | Comparison builtins | `==/2`, `\==/2`, `\=/2`, `=:=/2`, `=\=/2`, `</2`, `>/2`, `=</2`, `>=/2` | Includes `=</2` | Present for current baseline comparisons |
-| Unification builtin | `\=/2` | `=/2`, `\=/2` | Partial: no explicit `=/2` builtin handler |
+| Unification builtin | `=/2`, `\=/2` | `=/2`, `\=/2` | Present |
 | Term inspection | `functor/3`, `arg/3` | `functor/3`, `arg/3` | Present |
 | Univ | `=../2` compose/decompose | `=../2` compose/decompose | Present |
 | Copying | `copy_term/2` with fresh variables and preserved sharing | `copy_term/2` with fresh variables and preserved sharing | Present |
@@ -33,6 +33,7 @@ current cross-target builtin/runtime baseline.
   `findall/3` can collect every unifiable element.
 - `=</2`, `is_list/1`, and `display/1` are now covered by the generated Go
   WAM builtin E2E test.
+- `=/2` and `\=/2` are now covered by the generated Go WAM builtin E2E test.
 - `functor/3`, `arg/3`, `=../2`, and `copy_term/2` are now covered by the
   generated Go WAM builtin E2E test.
 - `aggregate_all(set(X), Goal, Set)` is now covered by the generated Go WAM
