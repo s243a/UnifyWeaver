@@ -543,6 +543,65 @@ test_lowered_filter_rejection_metadata :-
     retractall(user:wam_c_filter_reject_builtin(_)),
     retractall(user:wam_c_filter_reject_multi_goal(_)).
 
+test_lowered_comparison_filter_rejection_metadata :-
+    Test = 'WAM-C: lowered helper planner explains unsupported comparison filters',
+    assertz(user:wam_c_cmp_reject_score(a, 1)),
+    assertz(user:wam_c_cmp_reject_score(b, 2)),
+    assertz(user:wam_c_cmp_reject_label(a, low)),
+    assertz((user:wam_c_cmp_reject_unbound(X) :-
+                 user:wam_c_cmp_reject_score(X, _N),
+                 _Missing =< 2)),
+    assertz((user:wam_c_cmp_reject_expr(X) :-
+                 user:wam_c_cmp_reject_score(X, N),
+                 N + 1 =< 3)),
+    assertz((user:wam_c_cmp_reject_non_integer(X) :-
+                 user:wam_c_cmp_reject_label(X, Label),
+                 Label > 1)),
+    assertz((user:wam_c_cmp_reject_no_match(X) :-
+                 user:wam_c_cmp_reject_score(X, N),
+                 N < 0)),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_lowered_comparison_reject_project', Stamp, ProjectDir),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    (   plan_wam_c_lowered_helpers([user:wam_c_cmp_reject_score/2,
+                                     user:wam_c_cmp_reject_label/2,
+                                     user:wam_c_cmp_reject_unbound/1,
+                                     user:wam_c_cmp_reject_expr/1,
+                                     user:wam_c_cmp_reject_non_integer/1,
+                                     user:wam_c_cmp_reject_no_match/1],
+                                    [lowered_helpers(true)],
+                                    [],
+                                    Plans),
+        member(wam_c_lowered_helper_plan('wam_c_cmp_reject_score/2', _, lowered, fact_only([[a,1],[b,2]])), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_cmp_reject_label/2', _, lowered, fact_only([[a,low]])), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_cmp_reject_unbound/1', _, rejected, comparison_guard_unbound_variable), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_cmp_reject_expr/1', _, rejected, unsupported_comparison_expression), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_cmp_reject_non_integer/1', _, rejected, non_integer_comparison_rows), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_cmp_reject_no_match/1', _, rejected, no_matching_comparison_rows), Plans),
+        write_wam_c_project([user:wam_c_cmp_reject_score/2,
+                             user:wam_c_cmp_reject_label/2,
+                             user:wam_c_cmp_reject_unbound/1,
+                             user:wam_c_cmp_reject_expr/1,
+                             user:wam_c_cmp_reject_non_integer/1,
+                             user:wam_c_cmp_reject_no_match/1],
+                            [lowered_helpers(true)],
+                            ProjectDir),
+        read_file_to_string(LibPath, LibS, []),
+        sub_string(LibS, _, _, _, '// - rejected wam_c_cmp_reject_unbound/1: comparison_guard_unbound_variable'),
+        sub_string(LibS, _, _, _, '// - rejected wam_c_cmp_reject_expr/1: unsupported_comparison_expression'),
+        sub_string(LibS, _, _, _, '// - rejected wam_c_cmp_reject_non_integer/1: non_integer_comparison_rows'),
+        sub_string(LibS, _, _, _, '// - rejected wam_c_cmp_reject_no_match/1: no_matching_comparison_rows')
+    ->  pass(Test)
+    ;   fail_test(Test, 'planner did not report explicit comparison-filter rejection reasons')
+    ),
+    retractall(user:wam_c_cmp_reject_score(_, _)),
+    retractall(user:wam_c_cmp_reject_label(_, _)),
+    retractall(user:wam_c_cmp_reject_unbound(_)),
+    retractall(user:wam_c_cmp_reject_expr(_)),
+    retractall(user:wam_c_cmp_reject_non_integer(_)),
+    retractall(user:wam_c_cmp_reject_no_match(_)).
+
 test_unsupported_instruction_fails_loudly :-
     Test = 'WAM-C: unsupported instructions fail loudly',
     BadWamCode = 'foo/1:\n    unknown_opcode A1\n    proceed',
@@ -2472,6 +2531,7 @@ run_tests_once :-
     test_lowered_filtered_fact_helper_generation,
     test_lowered_comparison_filter_helper_generation,
     test_lowered_filter_rejection_metadata,
+    test_lowered_comparison_filter_rejection_metadata,
     test_unsupported_instruction_fails_loudly,
     test_no_zero_instruction_fallback,
     test_list_target_pc_emission,

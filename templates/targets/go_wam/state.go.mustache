@@ -52,6 +52,7 @@ type ChoicePoint struct {
 	ForeignPredKey   string
 	ForeignResultRegs []int
 	ForeignResults   []Value
+	MemberTail       Value
 }
 
 type EnvFrame struct {
@@ -653,8 +654,40 @@ func (vm *WamState) listHeadTail(list *List) (Value, Value, bool) {
 		if isEmptyListValue(tail) {
 			return list.Elements[0], emptyListAtom, true
 		}
+		switch t := tail.(type) {
+		case *Compound:
+			if isConsFunctor(t.Functor) && len(t.Args) == 2 {
+				return list.Elements[0], tail, true
+			}
+		case *Structure:
+			if isConsFunctor(t.Functor) && len(t.Args) == 2 {
+				return list.Elements[0], tail, true
+			}
+		}
 	}
 	return list.Elements[0], &List{Elements: list.Elements[1:]}, true
+}
+
+func isConsFunctor(functor string) bool {
+	name := parseFunctorName(functor)
+	return name == "." || name == "[|]"
+}
+
+func (vm *WamState) valueListHeadTail(v Value) (Value, Value, bool) {
+	v = vm.deref(v)
+	switch t := v.(type) {
+	case *List:
+		return vm.listHeadTail(t)
+	case *Compound:
+		if isConsFunctor(t.Functor) && len(t.Args) == 2 {
+			return t.Args[0], t.Args[1], true
+		}
+	case *Structure:
+		if isConsFunctor(t.Functor) && len(t.Args) == 2 {
+			return t.Args[0], t.Args[1], true
+		}
+	}
+	return nil, nil, false
 }
 
 // listToSlice walks a Prolog cons list and collects its elements
@@ -677,13 +710,9 @@ func (vm *WamState) listToSlice(v Value) ([]Value, bool) {
 		if isEmptyListValue(v) {
 			return out, true
 		}
-		list, ok := v.(*List)
+		head, tail, ok := vm.valueListHeadTail(v)
 		if !ok {
 			return nil, false
-		}
-		head, tail, ok := vm.listHeadTail(list)
-		if !ok {
-			return out, true
 		}
 		out = append(out, head)
 		v = vm.deref(tail)
@@ -990,7 +1019,13 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			if len(args) > 1 { vm.Regs[1] = args[1] }
 			if len(args) > 2 { vm.Regs[2] = args[2] }
 			opName := fmt.Sprintf("%s/%d", f, len(args))
+			trailMark := vm.TrailLen
+			cpLen := len(vm.ChoicePoints)
 			res := vm.executeBuiltin(opName, len(args))
+			vm.unwindTrailTo(trailMark)
+			if cpLen <= len(vm.ChoicePoints) {
+				vm.ChoicePoints = vm.ChoicePoints[:cpLen]
+			}
 			for idx := 0; idx < 3; idx++ {
 				vm.Regs[idx] = oldRegs[idx]
 			}
@@ -1010,13 +1045,9 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			if isEmptyListValue(v) {
 				break
 			}
-			list, ok := v.(*List)
+			head, tail, ok := vm.valueListHeadTail(v)
 			if !ok {
 				return false
-			}
-			head, tail, ok := vm.listHeadTail(list)
-			if !ok {
-				break
 			}
 			_ = head
 			count++
@@ -1024,29 +1055,31 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		}
 		return vm.Unify(arg2, &Integer{Val: count})
 	case "member/2":
-		// Walk-and-unify; no intermediate slice. The bench's
-		// `\+ member(M, Visited)` is the hot caller — depth-10
-		// Visited × thousands of recursion steps was previously
-		// allocating a 10-element slice per call just to discard
-		// it after the first match (or after a no-match scan).
 		v := vm.deref(arg2)
 		for {
 			if isEmptyListValue(v) {
 				return false
 			}
-			list, ok := v.(*List)
+			head, tail, ok := vm.valueListHeadTail(v)
 			if !ok {
 				return false
 			}
-			head, tail, ok := vm.listHeadTail(list)
-			if !ok {
-				return false
-			}
-			// Saving and restoring the trail mark lets a failed
-			// Unify on this element not leak bindings into the
-			// next iteration. (Standard WAM member/2 semantics.)
 			mark := vm.TrailLen
+			savedRegs := vm.snapshotAllRegs()
 			if vm.Unify(arg1, head) {
+				tail = vm.deref(tail)
+				if !isEmptyListValue(tail) {
+					vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+						ResumePC: vm.PC + 1,
+						CP:       vm.CP,
+						E:        vm.E,
+						StackLen: len(vm.Stack),
+						SavedRegs: savedRegs,
+						HeapTop:   vm.HeapLen,
+						TrailMark: mark,
+						MemberTail: tail,
+					})
+				}
 				return true
 			}
 			vm.unwindTrailTo(mark)
@@ -1217,6 +1250,45 @@ func (vm *WamState) backtrack() bool {
         }
         vm.PC = nextPC
         return true
+    }
+    if cp.MemberTail != nil {
+        for cp.MemberTail != nil {
+            vm.unwindTrailTo(cp.TrailMark)
+            vm.restoreSavedRegs(cp.SavedRegs)
+            if cp.StackLen <= len(vm.Stack) {
+                vm.Stack = vm.Stack[:cp.StackLen]
+            }
+            vm.E = cp.E
+            if cp.HeapTop >= 0 && cp.HeapTop <= vm.HeapLen {
+                vm.heapTrimTo(cp.HeapTop)
+            }
+            vm.CP = cp.CP
+            vm.Halted = false
+            vm.CurrentStruct = nil
+            vm.CurrentList = nil
+            v := vm.deref(cp.MemberTail)
+            if isEmptyListValue(v) {
+                vm.ChoicePoints = vm.ChoicePoints[:topIdx]
+                return vm.backtrack()
+            }
+            item, tail, ok := vm.valueListHeadTail(v)
+            if !ok {
+                vm.ChoicePoints = vm.ChoicePoints[:topIdx]
+                return vm.backtrack()
+            }
+            cp.MemberTail = vm.deref(tail)
+            resumePC := cp.ResumePC
+            if isEmptyListValue(cp.MemberTail) {
+                vm.ChoicePoints = vm.ChoicePoints[:topIdx]
+            }
+            if !vm.Unify(vm.getReg(0), item) {
+                vm.unwindTrailTo(cp.TrailMark)
+                continue
+            }
+            vm.PC = resumePC
+            return true
+        }
+        return vm.backtrack()
     }
     if len(cp.ForeignResults) > 0 {
         for len(cp.ForeignResults) > 0 {

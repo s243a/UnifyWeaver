@@ -8,10 +8,10 @@ current cross-target builtin/runtime baseline.
 
 | Area | Go support | Rust/Haskell baseline | Status |
 | --- | --- | --- | --- |
-| Choice points and backtracking | `try_me_else`, `retry_me_else`, `trust_me`, indexed alternatives, foreign stream retries | Choice point stack with normal, builtin, and fact-stream resume states | Partial |
+| Choice points and backtracking | `try_me_else`, `retry_me_else`, `trust_me`, indexed alternatives, foreign stream retries, `member/2` builtin retries | Choice point stack with normal, builtin, and fact-stream resume states | Partial |
 | Direct fact dispatch | Foreign/native kernel registration and indexed atom/weighted fact tables | `call_indexed_atom_fact2`, inline/external fact stream paths | Partial |
 | Aggregates | `begin_aggregate`, `end_aggregate`; `collect`, `count`, `sum`, `min`, `max` | `findall/3`, `aggregate_all/3` count/sum/min/max/set families | Partial: no `set` aggregate result |
-| Structural builtins | `member/2`, `length/2`, `append/3` | `member/2`, `length/2`; Rust `append/3` is explicitly unimplemented | Partial: `member/2` is first-solution only |
+| Structural builtins | `member/2`, `length/2`, `append/3` | `member/2`, `length/2`; Rust `append/3` is explicitly unimplemented | Present for current baseline structural checks |
 | Type builtins | `var/1`, `nonvar/1`, `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `atomic/1`, `is_list/1` | Includes `is_list/1` in the current baseline | Present for current baseline type checks |
 | Comparison builtins | `==/2`, `\==/2`, `\=/2`, `=:=/2`, `=\=/2`, `</2`, `>/2`, `=</2`, `>=/2` | Includes `=</2` | Present for current baseline comparisons |
 | Unification builtin | `\=/2` | `=/2`, `\=/2` | Partial: no explicit `=/2` builtin handler |
@@ -27,11 +27,10 @@ current cross-target builtin/runtime baseline.
   The Go target now emits `internAtom("...")` instead of raw
   `&Atom{Name: "..."}` literals, so the assertions needed to follow the
   current intern-table design.
-- The Go WAM runtime has a substantial execution core, but its builtin set is
-  behind Rust/Haskell/Lua/Python for term inspection and copying.
-- `member/2` succeeds on the first unifiable element and does not push builtin
-  choice points for later list members. This mirrors the Python gap that was
-  recently closed.
+- The Go WAM runtime has a substantial execution core; the remaining obvious
+  builtin parity gap is `set` aggregate support.
+- `member/2` now pushes builtin choice points for later list members, so
+  `findall/3` can collect every unifiable element.
 - `=</2`, `is_list/1`, and `display/1` are now covered by the generated Go
   WAM builtin E2E test.
 - `functor/3`, `arg/3`, `=../2`, and `copy_term/2` are now covered by the
@@ -41,9 +40,7 @@ current cross-target builtin/runtime baseline.
 
 1. Continue broadening the generated Go WAM builtin E2E as each remaining gap
    is closed.
-2. Upgrade `member/2` to enumerate through builtin choice points so aggregate
-   collection can observe all list members.
-3. Add `set` aggregate support if Go is expected to match the current Lua/Python
+2. Add `set` aggregate support if Go is expected to match the current Lua/Python
    aggregate parity surface.
 
 ## Verification Commands
