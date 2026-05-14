@@ -59,6 +59,8 @@ jobs:
         run: |
           python3 -m unittest tests/test_csharp_query_calibration_refresh_wrapper.py
           python3 examples/benchmark/refresh_csharp_query_source_mode_calibration.py --dry-run
+          python3 -m unittest tests/test_csharp_query_scan_calibration_refresh_wrapper.py
+          python3 examples/benchmark/refresh_csharp_query_scan_source_mode_calibration.py --dry-run
 
       - name: Generate and run inference test runner
         run: |
