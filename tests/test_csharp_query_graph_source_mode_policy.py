@@ -92,6 +92,15 @@ class CSharpQueryGraphSourceModePolicyTests(unittest.TestCase):
             source,
         )
 
+    def test_scan_materialization_output_hash_ignores_row_order(self) -> None:
+        left = "value\nb\na\n"
+        right = "value\na\nb\n"
+
+        self.assertEqual(
+            benchmark_scan_materialization.normalized_output_hash(left),
+            benchmark_scan_materialization.normalized_output_hash(right),
+        )
+
     def test_runtime_scan_source_mode_policy_matches_documented_cases(self) -> None:
         runtime_source = (
             ROOT / "src" / "unifyweaver" / "targets" / "csharp_query_runtime" / "QueryRuntime.cs"

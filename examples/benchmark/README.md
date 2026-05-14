@@ -161,10 +161,14 @@ python examples/benchmark/benchmark_csharp_query_source_mode_sweep.py \
   --write-calibration-artifact
 ```
 
-Mixed-scale sweeps are filtered per workload. File-backed graph workloads can
-use `dev`, `300`, `1k`, `5k`, and `10k`; generated dependency-depth workloads
-use `300`, `1k`, `5k`, and `10k`. Unsupported workload/scale pairs are skipped
-with warnings instead of aborting the full sweep.
+Mixed-scale sweeps are filtered per workload. File-backed graph and
+scan-materialization workloads can use `dev`, `300`, `1k`, `5k`, and `10k`;
+generated dependency-depth workloads use `300`, `1k`, `5k`, and `10k`.
+Unsupported workload/scale pairs are skipped with warnings instead of aborting
+the full sweep. The checked-in `csharp_query_graph_source_mode_calibration.tsv`
+remains graph-only; scan rows are emitted as `scan-materialization:<mode>` when
+selected explicitly with `--workloads scan-materialization` or
+`--workloads all-with-scan`.
 
 ### WAM-Rust and WAM-Haskell Benchmark Variants
 

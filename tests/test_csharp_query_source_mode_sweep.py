@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -18,6 +19,9 @@ from benchmark_csharp_query_source_mode_sweep import (  # noqa: E402
     CalibrationArtifactRow,
     CompetingProcess,
     DEFAULT_WORKLOADS,
+    SCAN_WORKLOAD,
+    SCAN_WORKLOAD_MODES,
+    SCAN_WORKLOAD_SCRIPT,
     SourceModeSummary,
     WORKLOAD_SCRIPTS,
     main,
@@ -35,9 +39,11 @@ from benchmark_csharp_query_source_mode_sweep import (  # noqa: E402
     parse_mode_summary,
     parse_ratio,
     parse_runner_output,
+    parse_scan_runner_output,
     parse_workloads,
     render_calibration_tsv,
     resource_preflight_failures,
+    run_scan_workload,
     summarize_stability,
     supported_scales_for_workload,
     write_calibration_artifact,
@@ -61,6 +67,9 @@ class CSharpQuerySourceModeSweepTests(unittest.TestCase):
     def test_parse_workloads_all_expands_to_all_graph_workloads(self) -> None:
         self.assertEqual(parse_workloads("all"), list(WORKLOAD_SCRIPTS))
         self.assertEqual(parse_workloads(" ALL "), list(WORKLOAD_SCRIPTS))
+
+    def test_parse_workloads_all_with_scan_includes_scan_workload(self) -> None:
+        self.assertEqual(parse_workloads("all-with-scan"), list(WORKLOAD_SCRIPTS) + [SCAN_WORKLOAD])
 
     def test_parse_workloads_rejects_unknown_workloads(self) -> None:
         with self.assertRaisesRegex(SystemExit, "unknown workload"):
@@ -112,6 +121,16 @@ class CSharpQuerySourceModeSweepTests(unittest.TestCase):
         self.assertEqual(
             filter_workload_scales("shortest-path", "dev"),
             ("dev", []),
+        )
+
+    def test_filter_workload_scales_keeps_dev_for_scan_workload(self) -> None:
+        self.assertEqual(
+            supported_scales_for_workload(SCAN_WORKLOAD),
+            ("dev", "300", "1k", "5k", "10k"),
+        )
+        self.assertEqual(
+            filter_workload_scales(SCAN_WORKLOAD, "dev,300"),
+            ("dev,300", []),
         )
 
     def test_parse_mem_available_mib(self) -> None:
@@ -650,6 +669,77 @@ class CSharpQuerySourceModeSweepTests(unittest.TestCase):
         self.assertEqual(len(summaries), 1)
         self.assertEqual(summaries[0].output_agreement, "MISMATCH")
         self.assertEqual(summaries[0].auto_vs_best, "")
+
+    def test_parse_scan_runner_output_keys_rows_by_scan_mode(self) -> None:
+        output = "\n".join(
+            [
+                (
+                    "scale\tmode\tpolicy_status\toverlap_status\toutput_agreement\tchosen_source_mode\t"
+                    "best_source_mode\tauto_median_s\tauto_vs_best\t"
+                    "median_s_by_source_mode\tspread_s_by_source_mode\t"
+                    "source_registrations_by_source_mode"
+                ),
+                (
+                    "300\tjoin\tmatch\tsingle-sample\tmatch\tartifact-prebuilt\t"
+                    "artifact-prebuilt\t0.120\t1.00x\t"
+                    "artifact-prebuilt:0.120,auto:0.120,preload:0.200\t"
+                    "artifact-prebuilt:0.120-0.120,auto:0.120-0.120,preload:0.200-0.200\t"
+                    "artifact-prebuilt:binary_artifact_artifact-prebuilt_arity2=2,"
+                    "auto:binary_artifact_artifact-prebuilt_arity2=2,"
+                    "preload:preloaded_preload_arity2=2"
+                ),
+            ]
+        )
+
+        summaries = parse_scan_runner_output(output)
+
+        self.assertEqual(len(summaries), 1)
+        summary = summaries[0]
+        self.assertEqual(summary.workload, f"{SCAN_WORKLOAD}:join")
+        self.assertEqual(summary.scale, "300")
+        self.assertEqual(summary.best_source_mode, "artifact-prebuilt")
+        self.assertEqual(summary.auto_vs_best, "1.00x")
+        self.assertEqual(summary.output_agreement, "match")
+        self.assertEqual(summary.resolved_source_mode_summary, "auto:artifact-prebuilt")
+        self.assertIn("auto:binary_artifact_artifact-prebuilt_arity2=2", summary.source_registration_summary)
+
+    def test_run_scan_workload_uses_scan_calibration_runner(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=(
+                "scale\tmode\tpolicy_status\toverlap_status\toutput_agreement\tchosen_source_mode\t"
+                "best_source_mode\tauto_median_s\tauto_vs_best\t"
+                "median_s_by_source_mode\tspread_s_by_source_mode\t"
+                "source_registrations_by_source_mode\n"
+                "300\tjoin\tmatch\tsingle-sample\tmatch\tartifact-prebuilt\t"
+                "artifact-prebuilt\t0.120\t1.00x\t"
+                "artifact-prebuilt:0.120,auto:0.120\t"
+                "artifact-prebuilt:0.120-0.120,auto:0.120-0.120\t"
+                "artifact-prebuilt:binary_artifact_artifact-prebuilt_arity2=2,"
+                "auto:binary_artifact_artifact-prebuilt_arity2=2\n"
+            ),
+            stderr="",
+        )
+
+        with mock.patch(
+            "benchmark_csharp_query_source_mode_sweep.run_command",
+            return_value=completed,
+        ) as run_command:
+            summaries = run_scan_workload(
+                scales="300",
+                source_modes="auto,artifact-prebuilt",
+                repetitions=1,
+                trace=True,
+            )
+
+        command = run_command.call_args.args[0]
+        self.assertEqual(command[1], str(SCAN_WORKLOAD_SCRIPT))
+        self.assertIn("--modes", command)
+        self.assertIn(",".join(SCAN_WORKLOAD_MODES), command)
+        self.assertIn("--format", command)
+        self.assertIn("calibration-tsv", command)
+        self.assertEqual(summaries[0].workload, f"{SCAN_WORKLOAD}:join")
 
     def test_calibration_failures_detect_slow_auto(self) -> None:
         output = "\n".join(
