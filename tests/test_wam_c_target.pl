@@ -17,6 +17,19 @@ fail_test(Test, Reason) :-
     format('[FAIL] ~w: ~w~n', [Test, Reason]),
     (   test_failed -> true ; assert(test_failed) ).
 
+wam_c_temp_root(Root) :-
+    (   getenv('TMPDIR', EnvRoot),
+        EnvRoot \= ''
+    ->  Root = EnvRoot
+    ;   exists_directory('/data/data/com.termux/files/usr/tmp')
+    ->  Root = '/data/data/com.termux/files/usr/tmp'
+    ;   Root = '/tmp'
+    ).
+
+wam_c_temp_path(Prefix, Stamp, Path) :-
+    wam_c_temp_root(Root),
+    format(atom(Path), '~w/~w_~w', [Root, Prefix, Stamp]).
+
 %% Core generation tests
 
 test_step_generation :-
@@ -296,7 +309,7 @@ test_kernel_detector_project_generation :-
     setup_wam_c_detector_category_ancestor,
     get_time(Now),
     Stamp is round(Now * 1000000),
-    format(atom(ProjectDir), '/tmp/unifyweaver_wam_c_kernel_detector_project_~w', [Stamp]),
+    wam_c_temp_path('unifyweaver_wam_c_kernel_detector_project', Stamp, ProjectDir),
     (   write_wam_c_project([user:category_ancestor/4], [], ProjectDir),
         directory_file_path(ProjectDir, 'lib.c', LibPath),
         read_file_to_string(LibPath, LibCode, []),
@@ -316,7 +329,7 @@ test_lowered_fact_helper_generation :-
     assertz(user:wam_c_lowered_pair(a, c)),
     get_time(Now),
     Stamp is round(Now * 1000000),
-    format(atom(ProjectDir), '/tmp/unifyweaver_wam_c_lowered_fact_project_~w', [Stamp]),
+    wam_c_temp_path('unifyweaver_wam_c_lowered_fact_project', Stamp, ProjectDir),
     directory_file_path(ProjectDir, 'lib.c', LibPath),
     (   write_wam_c_project([user:wam_c_lowered_pair/2], [lowered_helpers(true)], ProjectDir),
         read_file_to_string(LibPath, LibS, []),
@@ -334,43 +347,52 @@ test_lowered_helper_planner_metadata :-
     Test = 'WAM-C: lowered helper planner reports routing decisions',
     assertz(user:wam_c_plan_fact(a, b)),
     assertz((user:wam_c_plan_rule(X) :- user:wam_c_plan_fact(X, _))),
+    assertz((user:wam_c_plan_alias(X, Y) :- user:wam_c_plan_fact(X, Y))),
     (   plan_wam_c_lowered_helpers([user:wam_c_plan_fact/2,
+                                     user:wam_c_plan_alias/2,
                                      user:wam_c_plan_rule/1,
                                      user:category_ancestor/4],
                                     [lowered_helpers(true)],
                                     ['category_ancestor/4'],
                                     Plans),
         member(wam_c_lowered_helper_plan('wam_c_plan_fact/2', _, lowered, fact_only([[a,b]])), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_plan_alias/2', _, lowered, alias_call('wam_c_plan_fact/2', 2)), Plans),
         member(wam_c_lowered_helper_plan('wam_c_plan_rule/1', _, rejected, non_fact_clause), Plans),
         member(wam_c_lowered_helper_plan('category_ancestor/4', _, interpreted, detected_kernel), Plans)
     ->  pass(Test)
     ;   fail_test(Test, 'planner did not classify lowered/rejected/interpreted predicates')
     ),
     retractall(user:wam_c_plan_fact(_, _)),
+    retractall(user:wam_c_plan_alias(_, _)),
     retractall(user:wam_c_plan_rule(_)).
 
 test_lowered_helper_plan_generation :-
     Test = 'WAM-C: generated project reports lowered helper plan',
     assertz(user:wam_c_plan_emit_fact(a, b)),
+    assertz((user:wam_c_plan_emit_alias(X, Y) :- user:wam_c_plan_emit_fact(X, Y))),
     assertz((user:wam_c_plan_emit_rule(X) :- user:wam_c_plan_emit_fact(X, _))),
     get_time(Now),
     Stamp is round(Now * 1000000),
-    format(atom(ProjectDir), '/tmp/unifyweaver_wam_c_lowered_plan_project_~w', [Stamp]),
+    wam_c_temp_path('unifyweaver_wam_c_lowered_plan_project', Stamp, ProjectDir),
     directory_file_path(ProjectDir, 'lib.c', LibPath),
     (   write_wam_c_project([user:wam_c_plan_emit_fact/2,
+                             user:wam_c_plan_emit_alias/2,
                              user:wam_c_plan_emit_rule/1],
                             [lowered_helpers(true), report_lowered_helpers(true)],
                             ProjectDir),
         read_file_to_string(LibPath, LibS, []),
         sub_string(LibS, _, _, _, '// WAM-C lowered helper plan'),
         sub_string(LibS, _, _, _, '// - lowered wam_c_plan_emit_fact/2: fact_only'),
+        sub_string(LibS, _, _, _, '// - lowered wam_c_plan_emit_alias/2: alias_call(wam_c_plan_emit_fact/2)'),
         sub_string(LibS, _, _, _, '// - rejected wam_c_plan_emit_rule/1: non_fact_clause'),
         sub_string(LibS, _, _, _, 'INSTR_CALL_FOREIGN'),
+        sub_string(LibS, _, _, _, 'static bool wam_c_lowered_wam_c_plan_emit_alias_2'),
         sub_string(LibS, _, _, _, 'setup_wam_c_plan_emit_rule_1')
     ->  pass(Test)
     ;   fail_test(Test, 'generated project did not include lowered helper plan metadata')
     ),
     retractall(user:wam_c_plan_emit_fact(_, _)),
+    retractall(user:wam_c_plan_emit_alias(_, _)),
     retractall(user:wam_c_plan_emit_rule(_)).
 
 test_unsupported_instruction_fails_loudly :-
@@ -577,6 +599,16 @@ test_lowered_fact_helper_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_lowered_alias_helper_executable_smoke :-
+    Test = 'WAM-C: lowered alias helper executable smoke',
+    (   gcc_available
+    ->  (   run_lowered_alias_helper_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'lowered alias helper executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_asan_memory_lifecycle_executable_smoke :-
     Test = 'WAM-C: ASAN memory lifecycle executable smoke',
     (   asan_available
@@ -597,7 +629,7 @@ asan_available :-
     gcc_available,
     get_time(Now),
     Stamp is round(Now * 1000000),
-    format(atom(TmpBase), '/tmp/unifyweaver_wam_c_asan_probe_~w', [Stamp]),
+    wam_c_temp_path('unifyweaver_wam_c_asan_probe', Stamp, TmpBase),
     format(atom(SourcePath), '~w.c', [TmpBase]),
     format(atom(ExePath), '~w_bin', [TmpBase]),
     format(atom(LogPath), '~w.log', [TmpBase]),
@@ -625,7 +657,7 @@ run_generated_runtime_executable_smoke :-
     compile_wam_runtime_to_c([], RuntimeCode),
     get_time(Now),
     Stamp is round(Now * 1000000),
-    format(atom(TmpBase), '/tmp/unifyweaver_wam_c_exec_smoke_~w', [Stamp]),
+    wam_c_temp_path('unifyweaver_wam_c_exec_smoke', Stamp, TmpBase),
     format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
     format(atom(PredPath), '~w_pred.c', [TmpBase]),
     format(atom(MainPath), '~w_main.c', [TmpBase]),
@@ -644,7 +676,7 @@ run_cross_predicate_executable_smoke :-
     compile_wam_runtime_to_c([], RuntimeCode),
     get_time(Now),
     Stamp is round(Now * 1000000),
-    format(atom(TmpBase), '/tmp/unifyweaver_wam_c_cross_exec_smoke_~w', [Stamp]),
+    wam_c_temp_path('unifyweaver_wam_c_cross_exec_smoke', Stamp, TmpBase),
     format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
     format(atom(PredPath), '~w_pred.c', [TmpBase]),
     format(atom(MainPath), '~w_main.c', [TmpBase]),
@@ -663,7 +695,7 @@ run_builtin_call_executable_smoke :-
     compile_wam_runtime_to_c([], RuntimeCode),
     get_time(Now),
     Stamp is round(Now * 1000000),
-    format(atom(TmpBase), '/tmp/unifyweaver_wam_c_builtin_smoke_~w', [Stamp]),
+    wam_c_temp_path('unifyweaver_wam_c_builtin_smoke', Stamp, TmpBase),
     format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
     format(atom(PredPath), '~w_pred.c', [TmpBase]),
     format(atom(MainPath), '~w_main.c', [TmpBase]),
@@ -682,7 +714,7 @@ run_call_foreign_executable_smoke :-
     compile_wam_runtime_to_c([], RuntimeCode),
     get_time(Now),
     Stamp is round(Now * 1000000),
-    format(atom(TmpBase), '/tmp/unifyweaver_wam_c_foreign_smoke_~w', [Stamp]),
+    wam_c_temp_path('unifyweaver_wam_c_foreign_smoke', Stamp, TmpBase),
     format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
     format(atom(PredPath), '~w_pred.c', [TmpBase]),
     format(atom(MainPath), '~w_main.c', [TmpBase]),
@@ -701,7 +733,7 @@ run_category_ancestor_kernel_executable_smoke :-
     compile_wam_runtime_to_c([], RuntimeCode),
     get_time(Now),
     Stamp is round(Now * 1000000),
-    format(atom(TmpBase), '/tmp/unifyweaver_wam_c_category_ancestor_smoke_~w', [Stamp]),
+    wam_c_temp_path('unifyweaver_wam_c_category_ancestor_smoke', Stamp, TmpBase),
     format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
     format(atom(PredPath), '~w_pred.c', [TmpBase]),
     format(atom(MainPath), '~w_main.c', [TmpBase]),
@@ -720,7 +752,7 @@ run_fact_source_executable_smoke :-
     compile_wam_runtime_to_c([], RuntimeCode),
     get_time(Now),
     Stamp is round(Now * 1000000),
-    format(atom(TmpBase), '/tmp/unifyweaver_wam_c_fact_source_smoke_~w', [Stamp]),
+    wam_c_temp_path('unifyweaver_wam_c_fact_source_smoke', Stamp, TmpBase),
     format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
     format(atom(PredPath), '~w_pred.c', [TmpBase]),
     format(atom(MainPath), '~w_main.c', [TmpBase]),
@@ -741,7 +773,7 @@ run_lmdb_fact_source_executable_smoke :-
     compile_wam_runtime_to_c([], RuntimeCode),
     get_time(Now),
     Stamp is round(Now * 1000000),
-    format(atom(TmpBase), '/tmp/unifyweaver_wam_c_lmdb_fact_source_smoke_~w', [Stamp]),
+    wam_c_temp_path('unifyweaver_wam_c_lmdb_fact_source_smoke', Stamp, TmpBase),
     format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
     format(atom(PredPath), '~w_pred.c', [TmpBase]),
     format(atom(MainPath), '~w_main.c', [TmpBase]),
@@ -759,7 +791,7 @@ run_kernel_detector_executable_smoke :-
     setup_wam_c_detector_category_ancestor,
     get_time(Now),
     Stamp is round(Now * 1000000),
-    format(atom(ProjectDir), '/tmp/unifyweaver_wam_c_kernel_detector_smoke_~w', [Stamp]),
+    wam_c_temp_path('unifyweaver_wam_c_kernel_detector_smoke', Stamp, ProjectDir),
     directory_file_path(ProjectDir, 'wam_runtime.c', RuntimePath),
     directory_file_path(ProjectDir, 'lib.c', LibPath),
     directory_file_path(ProjectDir, 'main.c', MainPath),
@@ -780,7 +812,7 @@ run_streaming_foreign_results_executable_smoke :-
     compile_wam_runtime_to_c([], RuntimeCode),
     get_time(Now),
     Stamp is round(Now * 1000000),
-    format(atom(TmpBase), '/tmp/unifyweaver_wam_c_streaming_foreign_smoke_~w', [Stamp]),
+    wam_c_temp_path('unifyweaver_wam_c_streaming_foreign_smoke', Stamp, TmpBase),
     format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
     format(atom(PredPath), '~w_pred.c', [TmpBase]),
     format(atom(MainPath), '~w_main.c', [TmpBase]),
@@ -802,7 +834,7 @@ run_real_prolog_builtin_executable_smoke :-
         compile_wam_runtime_to_c([], RuntimeCode),
         get_time(Now),
         Stamp is round(Now * 1000000),
-        format(atom(TmpBase), '/tmp/unifyweaver_wam_c_real_builtin_smoke_~w', [Stamp]),
+        wam_c_temp_path('unifyweaver_wam_c_real_builtin_smoke', Stamp, TmpBase),
         format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
         format(atom(PredPath), '~w_pred.c', [TmpBase]),
         format(atom(MainPath), '~w_main.c', [TmpBase]),
@@ -831,7 +863,7 @@ run_real_prolog_multiclause_executable_smoke :-
         compile_wam_runtime_to_c([], RuntimeCode),
         get_time(Now),
         Stamp is round(Now * 1000000),
-        format(atom(TmpBase), '/tmp/unifyweaver_wam_c_real_multi_smoke_~w', [Stamp]),
+        wam_c_temp_path('unifyweaver_wam_c_real_multi_smoke', Stamp, TmpBase),
         format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
         format(atom(PredPath), '~w_pred.c', [TmpBase]),
         format(atom(MainPath), '~w_main.c', [TmpBase]),
@@ -859,7 +891,7 @@ run_real_prolog_structure_index_executable_smoke :-
         compile_wam_runtime_to_c([], RuntimeCode),
         get_time(Now),
         Stamp is round(Now * 1000000),
-        format(atom(TmpBase), '/tmp/unifyweaver_wam_c_real_struct_smoke_~w', [Stamp]),
+        wam_c_temp_path('unifyweaver_wam_c_real_struct_smoke', Stamp, TmpBase),
         format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
         format(atom(PredPath), '~w_pred.c', [TmpBase]),
         format(atom(MainPath), '~w_main.c', [TmpBase]),
@@ -884,7 +916,7 @@ run_real_prolog_is_list_executable_smoke :-
         compile_wam_runtime_to_c([], RuntimeCode),
         get_time(Now),
         Stamp is round(Now * 1000000),
-        format(atom(TmpBase), '/tmp/unifyweaver_wam_c_real_is_list_smoke_~w', [Stamp]),
+        wam_c_temp_path('unifyweaver_wam_c_real_is_list_smoke', Stamp, TmpBase),
         format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
         format(atom(PredPath), '~w_pred.c', [TmpBase]),
         format(atom(MainPath), '~w_main.c', [TmpBase]),
@@ -909,7 +941,7 @@ run_real_prolog_unify_executable_smoke :-
         compile_wam_runtime_to_c([], RuntimeCode),
         get_time(Now),
         Stamp is round(Now * 1000000),
-        format(atom(TmpBase), '/tmp/unifyweaver_wam_c_real_unify_smoke_~w', [Stamp]),
+        wam_c_temp_path('unifyweaver_wam_c_real_unify_smoke', Stamp, TmpBase),
         format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
         format(atom(PredPath), '~w_pred.c', [TmpBase]),
         format(atom(MainPath), '~w_main.c', [TmpBase]),
@@ -946,7 +978,7 @@ run_real_prolog_classic_recursive_executable_smoke :-
         compile_wam_runtime_to_c([], RuntimeCode),
         get_time(Now),
         Stamp is round(Now * 1000000),
-        format(atom(TmpBase), '/tmp/unifyweaver_wam_c_classic_fib_smoke_~w', [Stamp]),
+        wam_c_temp_path('unifyweaver_wam_c_classic_fib_smoke', Stamp, TmpBase),
         format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
         format(atom(PredPath), '~w_pred.c', [TmpBase]),
         format(atom(MainPath), '~w_main.c', [TmpBase]),
@@ -968,7 +1000,7 @@ run_lowered_fact_helper_executable_smoke :-
     assertz(user:wam_c_lowered_pair(a, c)),
     get_time(Now),
     Stamp is round(Now * 1000000),
-    format(atom(ProjectDir), '/tmp/unifyweaver_wam_c_lowered_fact_smoke_~w', [Stamp]),
+    wam_c_temp_path('unifyweaver_wam_c_lowered_fact_smoke', Stamp, ProjectDir),
     directory_file_path(ProjectDir, 'wam_runtime.c', RuntimePath),
     directory_file_path(ProjectDir, 'lib.c', LibPath),
     directory_file_path(ProjectDir, 'main.c', MainPath),
@@ -980,6 +1012,32 @@ run_lowered_fact_helper_executable_smoke :-
         run_c_smoke_plain(ExePath)
     ->  retractall(user:wam_c_lowered_pair(_, _))
     ;   retractall(user:wam_c_lowered_pair(_, _)),
+        fail
+    ).
+
+run_lowered_alias_helper_executable_smoke :-
+    assertz(user:wam_c_lowered_pair(a, b)),
+    assertz(user:wam_c_lowered_pair(a, c)),
+    assertz((user:wam_c_lowered_alias(X, Y) :- user:wam_c_lowered_pair(X, Y))),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_lowered_alias_smoke', Stamp, ProjectDir),
+    directory_file_path(ProjectDir, 'wam_runtime.c', RuntimePath),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    directory_file_path(ProjectDir, 'main.c', MainPath),
+    directory_file_path(ProjectDir, 'wam_c_lowered_alias_smoke', ExePath),
+    (   write_wam_c_project([user:wam_c_lowered_pair/2,
+                             user:wam_c_lowered_alias/2],
+                            [lowered_helpers(true)],
+                            ProjectDir),
+        wam_c_lowered_alias_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, LibPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  retractall(user:wam_c_lowered_pair(_, _)),
+        retractall(user:wam_c_lowered_alias(_, _))
+    ;   retractall(user:wam_c_lowered_pair(_, _)),
+        retractall(user:wam_c_lowered_alias(_, _)),
         fail
     ).
 
@@ -995,7 +1053,7 @@ run_asan_memory_lifecycle_executable_smoke :-
         compile_wam_runtime_to_c([], RuntimeCode),
         get_time(Now),
         Stamp is round(Now * 1000000),
-        format(atom(TmpBase), '/tmp/unifyweaver_wam_c_asan_lifecycle_smoke_~w', [Stamp]),
+        wam_c_temp_path('unifyweaver_wam_c_asan_lifecycle_smoke', Stamp, TmpBase),
         format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
         format(atom(PredPath), '~w_pred.c', [TmpBase]),
         format(atom(MainPath), '~w_main.c', [TmpBase]),
@@ -1729,6 +1787,47 @@ int main(void) {
 }
 ').
 
+wam_c_lowered_alias_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_lowered_pair_2(WamState* state);
+void setup_wam_c_lowered_alias_2(WamState* state);
+void setup_lowered_wam_c_helpers(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_lowered_pair_2(&state);
+    setup_wam_c_lowered_alias_2(&state);
+    setup_lowered_wam_c_helpers(&state);
+
+    WamValue ok_args[2] = { val_atom("a"), val_unbound("Out") };
+    int ok_rc = wam_run_predicate(&state, "wam_c_lowered_alias/2", ok_args, 2);
+    if (ok_rc != 0 || state.P != WAM_HALT ||
+        state.A[1].tag != VAL_ATOM || strcmp(state.A[1].data.atom, "b") != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue ground_args[2] = { val_atom("a"), val_atom("c") };
+    int ground_rc = wam_run_predicate(&state, "wam_c_lowered_alias/2", ground_args, 2);
+    if (ground_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue fail_args[2] = { val_atom("z"), val_unbound("Out") };
+    int fail_rc = wam_run_predicate(&state, "wam_c_lowered_alias/2", fail_args, 2);
+    if (fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 wam_c_real_builtin_smoke_main(
 '#include "wam_runtime.h"
 
@@ -2082,6 +2181,7 @@ run_tests_once :-
     test_real_prolog_unify_executable_smoke,
     test_real_prolog_classic_recursive_executable_smoke,
     test_lowered_fact_helper_executable_smoke,
+    test_lowered_alias_helper_executable_smoke,
     test_asan_memory_lifecycle_executable_smoke,
     format('~n=== WAM-C Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).

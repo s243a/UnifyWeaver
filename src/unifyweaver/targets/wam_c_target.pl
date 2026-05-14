@@ -165,17 +165,24 @@ wam_c_kernel_max_depth(ConfigOps, MaxDepth) :-
 
 plan_wam_c_lowered_helpers(Predicates, Options, DetectedKeys, Plans) :-
     (   option(lowered_helpers(true), Options)
-    ->  maplist(plan_wam_c_lowered_helper(DetectedKeys), Predicates, Plans)
+    ->  maplist(wam_c_predicate_key, Predicates, AvailableKeys),
+        maplist(plan_wam_c_lowered_helper(DetectedKeys, AvailableKeys), Predicates, Plans)
     ;   maplist(plan_wam_c_lowered_helper_disabled, Predicates, Plans)
     ).
 
-plan_wam_c_lowered_helper(DetectedKeys, PredIndicator, Plan) :-
+wam_c_predicate_key(PredIndicator, Key) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    format(atom(Key), '~w/~w', [Pred, Arity]).
+
+plan_wam_c_lowered_helper(DetectedKeys, AvailableKeys, PredIndicator, Plan) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     format(atom(Key), '~w/~w', [Pred, Arity]),
     (   memberchk(Key, DetectedKeys)
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, interpreted, detected_kernel)
     ;   lowered_fact_helper_rows(PredIndicator, Rows)
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, fact_only(Rows))
+    ;   lowered_alias_helper_call(PredIndicator, AvailableKeys, TargetKey, TargetArity)
+    ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, alias_call(TargetKey, TargetArity))
     ;   lowered_fact_helper_rejection_reason(PredIndicator, Reason),
         Plan = wam_c_lowered_helper_plan(Key, PredIndicator, rejected, Reason)
     ).
@@ -201,9 +208,15 @@ lowered_fact_helper_rejection_reason(_, no_clauses).
 compile_lowered_helpers_for_project(Plans, LoweredKeys, Code, SetupCode) :-
     findall(Key-CodePart-SetupLine,
             (   member(wam_c_lowered_helper_plan(Key, PredIndicator, lowered, fact_only(Rows)), Plans),
-                lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, CodePart, SetupLine)
+                lowered_helper_for_predicate(fact_only(Rows), PredIndicator, Key, CodePart, SetupLine)
             ),
-            Entries),
+            FactEntries),
+    findall(Key-CodePart-SetupLine,
+            (   member(wam_c_lowered_helper_plan(Key, PredIndicator, lowered, alias_call(TargetKey, TargetArity)), Plans),
+                lowered_helper_for_predicate(alias_call(TargetKey, TargetArity), PredIndicator, Key, CodePart, SetupLine)
+            ),
+            AliasEntries),
+    append(FactEntries, AliasEntries, Entries),
     findall(K, member(K-_-_, Entries), LoweredKeys),
     findall(C, member(_-C-_, Entries), Codes),
     findall(S, member(_-_-S, Entries), SetupLines),
@@ -241,6 +254,8 @@ wam_c_lowered_helper_plan_by_action(Plans, Action, Key, ReasonLabel) :-
     wam_c_lowered_plan_reason_label(Reason, ReasonLabel).
 
 wam_c_lowered_plan_reason_label(fact_only(_Rows), fact_only) :- !.
+wam_c_lowered_plan_reason_label(alias_call(TargetKey, _Arity), Label) :- !,
+    format(atom(Label), 'alias_call(~w)', [TargetKey]).
 wam_c_lowered_plan_reason_label(Reason, Reason).
 
 lowered_fact_helper_rows(PredIndicator, Rows) :-
@@ -254,6 +269,38 @@ lowered_fact_helper_rows(PredIndicator, Rows) :-
             Rows),
     Rows \= [],
     \+ ( user:clause(Head, Body), Body \== true ).
+
+lowered_alias_helper_call(PredIndicator, AvailableKeys, TargetKey, Arity) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), [Head-Body]),
+    lowered_alias_body_goal(Body, TargetPred, BodyArgs),
+    atom(TargetPred),
+    TargetPred \== Pred,
+    Head =.. [_|HeadArgs],
+    same_variable_arguments(HeadArgs, BodyArgs),
+    TargetIndicator = user:TargetPred/Arity,
+    lowered_fact_helper_rows(TargetIndicator, _TargetRows),
+    format(atom(TargetKey), '~w/~w', [TargetPred, Arity]),
+    memberchk(TargetKey, AvailableKeys).
+
+lowered_alias_body_goal(Module:Goal, TargetPred, BodyArgs) :-
+    Module == user,
+    !,
+    Goal =.. [TargetPred|BodyArgs].
+lowered_alias_body_goal(Goal, TargetPred, BodyArgs) :-
+    Goal =.. [TargetPred|BodyArgs].
+
+same_variable_arguments([], []).
+same_variable_arguments([Left|LeftRest], [Right|RightRest]) :-
+    var(Left),
+    Left == Right,
+    same_variable_arguments(LeftRest, RightRest).
+
+lowered_helper_for_predicate(fact_only(Rows), PredIndicator, Key, Code, SetupLine) :-
+    lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, Code, SetupLine).
+lowered_helper_for_predicate(alias_call(TargetKey, TargetArity), PredIndicator, Key, Code, SetupLine) :-
+    lowered_alias_helper_for_predicate(PredIndicator, TargetKey, TargetArity, Key, Code, SetupLine).
 
 lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, Code, SetupLine) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
@@ -272,6 +319,27 @@ lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, Code, SetupLine) :-
     format(atom(SetupLine),
            '    wam_register_foreign_predicate(state, "~w", ~w, ~w);',
            [Key, Arity, Symbol]).
+
+lowered_alias_helper_for_predicate(PredIndicator, TargetKey, TargetArity, Key, Code, SetupLine) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    format(atom(Key), '~w/~w', [Pred, Arity]),
+    wam_c_symbol_name(Pred, Arity, Symbol),
+    wam_c_symbol_for_key(TargetKey, TargetSymbol),
+    format(atom(Code),
+'static bool ~w(WamState *state, const char *pred, int arity) {
+    (void)pred;
+    if (arity != ~w) return false;
+    return ~w(state, "~w", ~w);
+}',
+           [Symbol, Arity, TargetSymbol, TargetKey, TargetArity]),
+    format(atom(SetupLine),
+           '    wam_register_foreign_predicate(state, "~w", ~w, ~w);',
+           [Key, Arity, Symbol]).
+
+wam_c_symbol_for_key(Key, Symbol) :-
+    atomic_list_concat([PredAtom, ArityAtom], '/', Key),
+    atom_number(ArityAtom, Arity),
+    wam_c_symbol_name(PredAtom, Arity, Symbol).
 
 wam_c_lowered_constant(Arg) :- atom(Arg), !.
 wam_c_lowered_constant(Arg) :- integer(Arg).

@@ -1,17 +1,17 @@
 # WAM C Target - Status And Next Steps
 
-Status date: 2026-05-12
+Status date: 2026-05-13
 
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `55b898f9` (`Merge pull request #2046 from s243a/feat/wam-c-lowered-helper-planner`)
+- `main` at `36066e58` (`Merge pull request #2048 from s243a/feat/wam-cpp-bagof-setof`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
-- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels --repetitions 1`
+- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --target-sets c-wam-lowered-helper --repetitions 1 --run-timeout-seconds 20`
 
 Active branch:
 
-- `feat/wam-c-lowered-helper-benchmark-wiring`
+- `feat/wam-c-lowered-helper-alias-body`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -41,7 +41,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Lowered fact-only helper prototype | Done | `lowered_helpers(true)` emits native C foreign handlers for constant fact-only predicates plus a `call_foreign` trampoline |
 | ASAN availability probe hardening | Done | `asan_available/0` requires a trivial sanitized executable to compile and run before enabling the optional ASAN lifecycle smoke |
 | Lowered helper planner metadata | Done | Explicit lowered/interpreted/rejected helper plans, detected-kernel exclusion, generated `lib.c` plan comments, and `report_lowered_helpers(true)` |
-| Lowered helper benchmark wiring | In progress | Active branch adds `c-wam-lowered-helper` and `c-wam-lowered-helper-interpreted` matrix targets over a tiny fact-helper benchmark |
+| Lowered helper benchmark wiring | Done | `c-wam-lowered-helper` and `c-wam-lowered-helper-interpreted` matrix targets over a tiny fact-helper benchmark; Termux `dev` smoke output matches |
+| Lowered alias-body helper prototype | Done | `p(X, Y) :- q(X, Y)` lowers to a native alias helper when `q/2` is fact-only; planner metadata, generated plan comments, and executable smoke cover the path |
 
 ## Current C Target Baseline
 
@@ -62,8 +63,8 @@ The C target is now a credible small WAM backend:
   `atom/1`, `integer/1`, `is_list/1`, `=/2`, and `is/2`.
 - Supports deterministic `call_foreign` dispatch through a C handler registry.
 - Can opt into a prototype lowered-helper path for constant fact-only
-  predicates, emitted as native C foreign handlers behind `call_foreign`
-  trampolines.
+  predicates, plus same-arity alias bodies that call those native fact helpers,
+  emitted as native C foreign handlers behind `call_foreign` trampolines.
 - Supports a deterministic native `category_ancestor/4` handler over an
   in-memory category-parent edge table.
 - Supports loading category-parent facts from TSV through a small
@@ -112,7 +113,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
 | Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup and all-hop collection; add more kernel kinds only after runtime support exists. |
 | Shared kernel detector integration | Partial | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`; broaden as more native C kernels land. |
-| Lowered/native helper functions | Partial/Active | Done | Done | C has constant fact-only native helpers, planner metadata, and active interpreted-vs-lowered matrix wiring. |
+| Lowered/native helper functions | Partial/Active | Done | Done | C has constant fact-only native helpers, same-arity alias helper bodies, planner metadata, and interpreted-vs-lowered matrix wiring. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
 | LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts and generated effective-distance LMDB wiring; larger artifact layout support remains. |
 | Effective-distance benchmark harness | Partial/Done | Done | Done | C is wired into the shared matrix for TSV and LMDB `kernels_on`/`kernels_off`; next gap is larger artifact layouts. |
@@ -135,10 +136,10 @@ Scope:
   local validation.
 - Record lowered/interpreted planning output with the benchmark artifacts.
 
-Status: active; a tiny fact-helper matrix target pair is implemented for
+Status: complete; a tiny fact-helper matrix target pair is implemented for
 interpreted-vs-lowered WAM-C comparison.
 
-### 2. `feat/wam-c-lowered-helper-body-calls`
+### 2. `feat/wam-c-lowered-helper-alias-body`
 
 Goal: broaden C lowered helpers past fact-only predicates into one small
 deterministic body-call shape.
@@ -150,10 +151,14 @@ Scope:
 - Add executable smoke coverage before expanding to aggregates or multi-result
   helpers.
 
+Status: active; starts with a same-arity alias body such as
+`p(X, Y) :- q(X, Y)` where `q/2` is already fact-only and lowered.
+
 ## Suggested Immediate Next Step
 
-Continue validating `feat/wam-c-lowered-helper-benchmark-wiring`.
+Finish reviewing `feat/wam-c-lowered-helper-alias-body`.
 
-The active branch wires a tiny fact-helper benchmark into the existing matrix
-surface as separate interpreted and lowered WAM-C targets. The next check is
-final validation, then the following branch can broaden lowered helper shapes.
+The active branch adds the first non-fact lowered helper shape for WAM-C while
+keeping routing explicit in the planner. The next expansion should stay narrow:
+either another deterministic one-literal helper shape or more robust generated
+project layout for multiple WAM trampolines before any nested WAM dispatch.
