@@ -110,6 +110,31 @@ user:wam_cpp_test_catch_compound  :- catch(throw(error(type_error, ctx)),
                                            error(Kind, _),
                                            Kind = type_error).
 
+% List-builtin batch 2 (append/3, reverse/2, last/2, nth0/3):
+:- dynamic user:wam_cpp_test_append_basic/0.
+:- dynamic user:wam_cpp_test_append_empty_first/0.
+:- dynamic user:wam_cpp_test_append_empty_second/0.
+:- dynamic user:wam_cpp_test_reverse_basic/0.
+:- dynamic user:wam_cpp_test_reverse_empty/0.
+:- dynamic user:wam_cpp_test_reverse_singleton/0.
+:- dynamic user:wam_cpp_test_last_basic/0.
+:- dynamic user:wam_cpp_test_last_single/0.
+:- dynamic user:wam_cpp_test_nth0_first/0.
+:- dynamic user:wam_cpp_test_nth0_middle/0.
+:- dynamic user:wam_cpp_test_nth0_last/0.
+
+user:wam_cpp_test_append_basic         :- append([a,b], [c,d], L), L = [a,b,c,d].
+user:wam_cpp_test_append_empty_first   :- append([], [a,b], [a,b]).
+user:wam_cpp_test_append_empty_second  :- append([a,b], [], [a,b]).
+user:wam_cpp_test_reverse_basic        :- reverse([a,b,c], R), R = [c,b,a].
+user:wam_cpp_test_reverse_empty        :- reverse([], R), R = [].
+user:wam_cpp_test_reverse_singleton    :- reverse([x], R), R = [x].
+user:wam_cpp_test_last_basic           :- last([a,b,c], X), X = c.
+user:wam_cpp_test_last_single          :- last([only], X), X = only.
+user:wam_cpp_test_nth0_first           :- nth0(0, [a,b,c], X), X = a.
+user:wam_cpp_test_nth0_middle          :- nth0(1, [a,b,c], X), X = b.
+user:wam_cpp_test_nth0_last            :- nth0(2, [a,b,c], X), X = c.
+
 % Indexing-instruction fixtures (switch_on_constant / switch_on_term):
 :- dynamic user:wam_cpp_color/1.
 :- dynamic user:wam_cpp_shape/2.
@@ -876,6 +901,75 @@ test(cpp_e2e_catch_compound_pattern, [condition(cpp_compiler_available)]) :-
                               [emit_main(true)], TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath, 'wam_cpp_test_catch_compound/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% List-builtin batch 2: append/3, reverse/2, last/2, nth0/3. All four
+% are auto-injected helper predicates (same mechanism as member/2 +
+% length/2 from the prior batch). reverse/2 dispatches to a helper
+% reverse_acc/3 (also injected) for tail-recursive accumulator form.
+% nth0/3 exercises the helper path with arithmetic builtins (>/2 and
+% is/2) in the recursive clause.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_append, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_append', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_append_basic/0,
+                               user:wam_cpp_test_append_empty_first/0,
+                               user:wam_cpp_test_append_empty_second/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_append_basic/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_append_empty_first/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_append_empty_second/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_reverse, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_reverse', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_reverse_basic/0,
+                               user:wam_cpp_test_reverse_empty/0,
+                               user:wam_cpp_test_reverse_singleton/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_reverse_basic/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_reverse_empty/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_reverse_singleton/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_last, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_last', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_last_basic/0,
+                               user:wam_cpp_test_last_single/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_last_basic/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_last_single/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_nth0, [condition(cpp_compiler_available)]) :-
+    % nth0''s recursive clause uses >/2 and is/2 — verifies that the
+    % helper-injection path interoperates with arithmetic builtins.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_nth0', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_nth0_first/0,
+                               user:wam_cpp_test_nth0_middle/0,
+                               user:wam_cpp_test_nth0_last/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_nth0_first/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_nth0_middle/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_nth0_last/0',   [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
