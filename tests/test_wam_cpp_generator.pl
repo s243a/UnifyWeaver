@@ -92,6 +92,24 @@ user:wam_cpp_test_copy_atom    :- copy_term(hello, T), T = hello.
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
 
+% Exception handling (catch/3 + throw/1) fixtures:
+:- dynamic user:wam_cpp_test_catch_basic/0.
+:- dynamic user:wam_cpp_test_catch_pass/0.
+:- dynamic user:wam_cpp_test_catch_no_match/0.
+:- dynamic user:wam_cpp_test_catch_nested/0.
+:- dynamic user:wam_cpp_test_catch_fail/0.
+:- dynamic user:wam_cpp_test_catch_compound/0.
+
+user:wam_cpp_test_catch_basic     :- catch(throw(my_error), E, E = my_error).
+user:wam_cpp_test_catch_pass      :- catch(true, _E, fail).
+user:wam_cpp_test_catch_no_match  :- catch(throw(err_a), other, true).
+user:wam_cpp_test_catch_nested    :- catch(catch(throw(inner), no_match, fail),
+                                           E, E = inner).
+user:wam_cpp_test_catch_fail      :- catch(fail, _, true).
+user:wam_cpp_test_catch_compound  :- catch(throw(error(type_error, ctx)),
+                                           error(Kind, _),
+                                           Kind = type_error).
+
 % Indexing-instruction fixtures (switch_on_constant / switch_on_term):
 :- dynamic user:wam_cpp_color/1.
 :- dynamic user:wam_cpp_shape/2.
@@ -780,6 +798,84 @@ test(cpp_e2e_member_enumeration, [condition(cpp_compiler_available)]) :-
                               [emit_main(true)], TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath, 'wam_cpp_test_enum_member/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% Exception handling: catch/3 + throw/1. catch/3 pushes a side-stack
+% CatcherFrame and dispatches the protected goal as a tail-call to an
+% auto-injected CatchReturn instruction; throw/1 walks the catcher
+% stack, unwinds VM state for each frame, and invokes the first
+% matching frame''s recovery goal. Uncaught throws print to stderr and
+% return false; backtrack() pops catcher frames whose protected goal
+% exhausted solutions without throwing.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_catch_caught, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_catch_caught', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_catch_basic/0,
+                               user:wam_cpp_test_catch_pass/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_catch_basic/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_catch_pass/0',  [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_catch_uncaught, [condition(cpp_compiler_available)]) :-
+    % An uncaught throw walks past all frames and exits with false,
+    % printing "uncaught exception: <term>" to stderr (which run_query
+    % discards). The query result on stdout is "false".
+    unique_cpp_tmp_dir('tmp_cpp_e2e_catch_uncaught', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_catch_no_match/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_catch_no_match/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_catch_nested, [condition(cpp_compiler_available)]) :-
+    % Inner catcher doesn''t unify with the thrown term, so its frame
+    % is popped and the throw walk continues to the outer catcher,
+    % which matches and runs its recovery.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_catch_nested', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_catch_nested/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_catch_nested/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_catch_fail_propagates, [condition(cpp_compiler_available)]) :-
+    % catch(fail, _, true) — the goal fails without throwing, so the
+    % failure propagates past catch (recovery is NOT invoked).
+    % backtrack() pops the catcher frame when CPs run below its base.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_catch_fail', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_catch_fail/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_catch_fail/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_catch_compound_pattern, [condition(cpp_compiler_available)]) :-
+    % error(type_error, ctx) thrown; catcher pattern error(Kind, _)
+    % unifies, binding Kind. Recovery confirms binding.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_catch_cmpd', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_catch_compound/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_catch_compound/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
