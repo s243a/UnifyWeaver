@@ -26,72 +26,25 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(wam_text_parser, [wam_text_to_items/2]).
 % Inlined escape helper to avoid a circular import with wam_cpp_target.
 % Keeps this module standalone-loadable.
 
 % =====================================================================
 % Parsing — accept either an instruction list or a WAM-text blob.
-% Mirrors parse_wam_text/2 from wam_rust_lowered_emitter.pl exactly.
+% Delegates to the shared wam_text_parser module so this module gets
+% the quote-aware tokenizer + ",/N" handling for free (previously
+% used a split_string-based parser that mis-tokenised any predicate
+% with a quoted atom argument or a conjunction-as-data, silently
+% returning empty instruction lists and disabling lowering for those
+% predicates).
 % =====================================================================
 
 parse_wam_text(WamText, Instrs) :-
-    atom_string(WamText, S),
-    split_string(S, "\n", "", Lines),
-    parse_lines(Lines, Instrs).
+    wam_text_to_items(WamText, Items),
+    exclude(is_label_item, Items, Instrs).
 
-parse_lines([], []).
-parse_lines([Line|Rest], Instrs) :-
-    split_string(Line, " \t,", " \t,", Parts),
-    delete(Parts, "", CleanParts),
-    (   CleanParts == []
-    ->  parse_lines(Rest, Instrs)
-    ;   CleanParts = [First|_],
-        (   sub_string(First, _, 1, 0, ":")
-        ->  parse_lines(Rest, Instrs)
-        ;   instr_from_parts(CleanParts, Instr)
-        ->  Instrs = [Instr|RestInstrs],
-            parse_lines(Rest, RestInstrs)
-        ;   parse_lines(Rest, Instrs)
-        )
-    ).
-
-instr_from_parts(["get_constant", C, Ai], get_constant(C, Ai)).
-instr_from_parts(["get_variable", Xn, Ai], get_variable(Xn, Ai)).
-instr_from_parts(["get_value", Xn, Ai], get_value(Xn, Ai)).
-instr_from_parts(["get_structure", F, Ai], get_structure(F, Ai)).
-instr_from_parts(["get_list", Ai], get_list(Ai)).
-instr_from_parts(["get_nil", Ai], get_nil(Ai)).
-instr_from_parts(["get_integer", N, Ai], get_integer(N, Ai)).
-instr_from_parts(["unify_variable", Xn], unify_variable(Xn)).
-instr_from_parts(["unify_value", Xn], unify_value(Xn)).
-instr_from_parts(["unify_constant", C], unify_constant(C)).
-instr_from_parts(["put_variable", Xn, Ai], put_variable(Xn, Ai)).
-instr_from_parts(["put_value", Xn, Ai], put_value(Xn, Ai)).
-instr_from_parts(["put_constant", C, Ai], put_constant(C, Ai)).
-instr_from_parts(["put_structure", F, Ai], put_structure(F, Ai)).
-instr_from_parts(["put_list", Ai], put_list(Ai)).
-instr_from_parts(["set_variable", Xn], set_variable(Xn)).
-instr_from_parts(["set_value", Xn], set_value(Xn)).
-instr_from_parts(["set_constant", C], set_constant(C)).
-instr_from_parts(["call", P, N], call(P, N)).
-instr_from_parts(["execute", P], execute(P)).
-instr_from_parts(["proceed"], proceed).
-instr_from_parts(["fail"], fail).
-instr_from_parts(["allocate"], allocate).
-instr_from_parts(["deallocate"], deallocate).
-instr_from_parts(["builtin_call", Op, Ar], builtin_call(Op, Ar)).
-instr_from_parts(["call_foreign", Pred, Ar], call_foreign(Pred, Ar)).
-instr_from_parts(["try_me_else", L], try_me_else(L)).
-instr_from_parts(["retry_me_else", L], retry_me_else(L)).
-instr_from_parts(["trust_me"], trust_me).
-instr_from_parts(["jump", L], jump(L)).
-instr_from_parts(["cut_ite"], cut_ite).
-instr_from_parts(["begin_aggregate", K, V, R], begin_aggregate(K, V, R)).
-instr_from_parts(["end_aggregate", R], end_aggregate(R)).
-instr_from_parts(["switch_on_constant" | Entries], switch_on_constant(Entries)).
-instr_from_parts(["switch_on_constant_a2" | Entries], switch_on_constant_a2(Entries)).
-instr_from_parts(["switch_on_structure" | Entries], switch_on_structure(Entries)).
-instr_from_parts(["switch_on_term" | Tokens], switch_on_term(Tokens)).
+is_label_item(label(_)).
 
 % =====================================================================
 % Lowerability
