@@ -471,6 +471,53 @@ test_lowered_comparison_filter_helper_generation :-
     retractall(user:wam_c_filter_score(_, _)),
     retractall(user:wam_c_filter_small(_)).
 
+test_lowered_repeated_variable_filter_generation :-
+    Test = 'WAM-C: repeated-variable filtered helpers preserve row constraints',
+    assertz(user:wam_c_repeat_edge(a, a, keep)),
+    assertz(user:wam_c_repeat_edge(a, b, keep)),
+    assertz(user:wam_c_repeat_edge(c, c, drop)),
+    assertz(user:wam_c_repeat_score(a, a, 1)),
+    assertz(user:wam_c_repeat_score(a, b, 1)),
+    assertz(user:wam_c_repeat_score(c, c, 3)),
+    assertz((user:wam_c_repeat_keep(X) :- user:wam_c_repeat_edge(X, X, keep))),
+    assertz((user:wam_c_repeat_small(X) :-
+                 user:wam_c_repeat_score(X, X, Score),
+                 Score =< 2)),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    format(atom(ProjectDir), '/tmp/unifyweaver_wam_c_lowered_repeat_filter_project_~w', [Stamp]),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    (   plan_wam_c_lowered_helpers([user:wam_c_repeat_edge/3,
+                                     user:wam_c_repeat_score/3,
+                                     user:wam_c_repeat_keep/1,
+                                     user:wam_c_repeat_small/1],
+                                    [lowered_helpers(true)],
+                                    [],
+                                    Plans),
+        member(wam_c_lowered_helper_plan('wam_c_repeat_edge/3', _, lowered, fact_only([[a,a,keep],[a,b,keep],[c,c,drop]])), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_repeat_score/3', _, lowered, fact_only([[a,a,1],[a,b,1],[c,c,3]])), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_repeat_keep/1', _, lowered, filtered_fact('wam_c_repeat_edge/3', [[a]])), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_repeat_small/1', _, lowered, comparison_filtered_fact('wam_c_repeat_score/3', [[a]])), Plans),
+        write_wam_c_project([user:wam_c_repeat_edge/3,
+                             user:wam_c_repeat_score/3,
+                             user:wam_c_repeat_keep/1,
+                             user:wam_c_repeat_small/1],
+                            [lowered_helpers(true)],
+                            ProjectDir),
+        read_file_to_string(LibPath, LibS, []),
+        sub_string(LibS, _, _, _, '// - lowered wam_c_repeat_keep/1: filtered_fact'),
+        sub_string(LibS, _, _, _, '// - lowered wam_c_repeat_small/1: comparison_filtered_fact'),
+        sub_string(LibS, _, _, _, 'static bool wam_c_lowered_wam_c_repeat_keep_1'),
+        sub_string(LibS, _, _, _, 'static bool wam_c_lowered_wam_c_repeat_small_1'),
+        sub_string(LibS, _, _, _, 'val_atom("a")')
+    ->  pass(Test)
+    ;   fail_test(Test, 'repeated-variable filter helpers did not preserve row constraints')
+    ),
+    retractall(user:wam_c_repeat_edge(_, _, _)),
+    retractall(user:wam_c_repeat_score(_, _, _)),
+    retractall(user:wam_c_repeat_keep(_)),
+    retractall(user:wam_c_repeat_small(_)).
+
 test_lowered_filter_rejection_metadata :-
     Test = 'WAM-C: lowered helper planner explains unsupported filter shapes',
     assertz(user:wam_c_filter_reject_fact(a, 1, keep)),
@@ -810,6 +857,16 @@ test_lowered_comparison_filter_helper_executable_smoke :-
     ->  (   run_lowered_comparison_filter_helper_executable_smoke
         ->  pass(Test)
         ;   fail_test(Test, 'lowered comparison-filter helper executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_lowered_repeated_variable_filter_executable_smoke :-
+    Test = 'WAM-C: lowered repeated-variable filter executable smoke',
+    (   gcc_available
+    ->  (   run_lowered_repeated_variable_filter_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'lowered repeated-variable filter executable failed')
         )
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
@@ -1299,6 +1356,45 @@ run_lowered_comparison_filter_helper_executable_smoke :-
         retractall(user:wam_c_filter_small(_))
     ;   retractall(user:wam_c_filter_score(_, _)),
         retractall(user:wam_c_filter_small(_)),
+        fail
+    ).
+
+run_lowered_repeated_variable_filter_executable_smoke :-
+    assertz(user:wam_c_repeat_edge(a, a, keep)),
+    assertz(user:wam_c_repeat_edge(a, b, keep)),
+    assertz(user:wam_c_repeat_edge(c, c, drop)),
+    assertz(user:wam_c_repeat_score(a, a, 1)),
+    assertz(user:wam_c_repeat_score(a, b, 1)),
+    assertz(user:wam_c_repeat_score(c, c, 3)),
+    assertz((user:wam_c_repeat_keep(X) :- user:wam_c_repeat_edge(X, X, keep))),
+    assertz((user:wam_c_repeat_small(X) :-
+                 user:wam_c_repeat_score(X, X, Score),
+                 Score =< 2)),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    format(atom(ProjectDir), '/tmp/unifyweaver_wam_c_lowered_repeat_filter_smoke_~w', [Stamp]),
+    directory_file_path(ProjectDir, 'wam_runtime.c', RuntimePath),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    directory_file_path(ProjectDir, 'main.c', MainPath),
+    directory_file_path(ProjectDir, 'wam_c_lowered_repeat_filter_smoke', ExePath),
+    (   write_wam_c_project([user:wam_c_repeat_edge/3,
+                             user:wam_c_repeat_score/3,
+                             user:wam_c_repeat_keep/1,
+                             user:wam_c_repeat_small/1],
+                            [lowered_helpers(true)],
+                            ProjectDir),
+        wam_c_lowered_repeat_filter_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, LibPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  retractall(user:wam_c_repeat_edge(_, _, _)),
+        retractall(user:wam_c_repeat_score(_, _, _)),
+        retractall(user:wam_c_repeat_keep(_)),
+        retractall(user:wam_c_repeat_small(_))
+    ;   retractall(user:wam_c_repeat_edge(_, _, _)),
+        retractall(user:wam_c_repeat_score(_, _, _)),
+        retractall(user:wam_c_repeat_keep(_)),
+        retractall(user:wam_c_repeat_small(_)),
         fail
     ).
 
@@ -2171,6 +2267,58 @@ int main(void) {
 }
 ').
 
+wam_c_lowered_repeat_filter_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_repeat_edge_3(WamState* state);
+void setup_wam_c_repeat_score_3(WamState* state);
+void setup_wam_c_repeat_keep_1(WamState* state);
+void setup_wam_c_repeat_small_1(WamState* state);
+void setup_lowered_wam_c_helpers(WamState* state);
+
+static int expect_success(WamState* state, const char* pred, const char* atom) {
+    WamValue args[1] = { val_atom(atom) };
+    int rc = wam_run_predicate(state, pred, args, 1);
+    return rc == 0 && state->P == WAM_HALT;
+}
+
+static int expect_failure(WamState* state, const char* pred, const char* atom) {
+    WamValue args[1] = { val_atom(atom) };
+    int rc = wam_run_predicate(state, pred, args, 1);
+    return rc == WAM_HALT;
+}
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_repeat_edge_3(&state);
+    setup_wam_c_repeat_score_3(&state);
+    setup_wam_c_repeat_keep_1(&state);
+    setup_wam_c_repeat_small_1(&state);
+    setup_lowered_wam_c_helpers(&state);
+
+    if (!expect_success(&state, "wam_c_repeat_keep/1", "a")) {
+        wam_free_state(&state);
+        return 10;
+    }
+    if (!expect_failure(&state, "wam_c_repeat_keep/1", "c")) {
+        wam_free_state(&state);
+        return 20;
+    }
+    if (!expect_success(&state, "wam_c_repeat_small/1", "a")) {
+        wam_free_state(&state);
+        return 30;
+    }
+    if (!expect_failure(&state, "wam_c_repeat_small/1", "c")) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 wam_c_real_builtin_smoke_main(
 '#include "wam_runtime.h"
 
@@ -2508,6 +2656,7 @@ run_tests_once :-
     test_lowered_body_call_helper_generation,
     test_lowered_filtered_fact_helper_generation,
     test_lowered_comparison_filter_helper_generation,
+    test_lowered_repeated_variable_filter_generation,
     test_lowered_filter_rejection_metadata,
     test_lowered_comparison_filter_rejection_metadata,
     test_unsupported_instruction_fails_loudly,
@@ -2532,6 +2681,7 @@ run_tests_once :-
     test_lowered_body_call_helper_executable_smoke,
     test_lowered_filtered_fact_helper_executable_smoke,
     test_lowered_comparison_filter_helper_executable_smoke,
+    test_lowered_repeated_variable_filter_executable_smoke,
     test_asan_memory_lifecycle_executable_smoke,
     format('~n=== WAM-C Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
