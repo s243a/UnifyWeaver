@@ -18,7 +18,7 @@ current cross-target builtin/runtime baseline.
 | Term inspection | `functor/3`, `arg/3` | `functor/3`, `arg/3` | Present |
 | Univ | `=../2` compose/decompose | `=../2` compose/decompose | Present |
 | Copying | `copy_term/2` with fresh variables and preserved sharing | `copy_term/2` with fresh variables and preserved sharing | Present |
-| Control | `true/0`, `fail/0`, `!/0`, `\+/1`, `CutIte` | Same baseline, with broader isolated-goal NAF in Haskell/Python | Partial: `\+/1` only dispatches builtin-shaped goals |
+| Control | `true/0`, `fail/0`, `!/0`, `\+/1`, `CutIte` | Same baseline, with broader isolated-goal NAF in Haskell/Python | Partial: `\+/1` handles builtin-shaped and sequential user goals; no parallel race path |
 | IO | `write/1`, `display/1`, `nl/0` | `write/1`, `display/1`, `nl/0` | Present |
 
 ## Immediate Findings
@@ -38,6 +38,8 @@ current cross-target builtin/runtime baseline.
   generated Go WAM builtin E2E test.
 - `aggregate_all(set(X), Goal, Set)` is now covered by the generated Go WAM
   builtin E2E test.
+- `\+/1` over user predicates is now covered by the generated Go WAM builtin
+  E2E test for both failing and succeeding inner goals.
 
 ## Recommended Follow-Up Order
 
