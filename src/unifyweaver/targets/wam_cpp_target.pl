@@ -33,7 +33,12 @@
     wam_instruction_to_cpp_literal/3,      % +Instr, +LabelMap, -CppCode
     cpp_safe_function_name/2,              % +Pred, -CppFuncName
     escape_cpp_string/2,                   % +InStr, -OutStr
-    cpp_value_literal/2                    % +Constant, -CppLiteral
+    cpp_value_literal/2,                   % +Constant, -CppLiteral
+    iso_errors_resolve_options/2,          % +Options, -Config
+    iso_errors_load_config/2,              % +File, -Config
+    iso_errors_mode_for/3,                 % +Config, +PI, -Mode
+    wam_cpp_iso_audit/3,                   % +Predicates, +Options, -Audit
+    wam_cpp_iso_audit_report/1             % +Audit
 ]).
 
 :- use_module(library(lists)).
@@ -443,11 +448,14 @@ lookup_label(NameStr, Labels, PC) :-
 %  wam_cpp_setup() function that populates WamState::instrs / labels.
 emit_setup_function(Predicates, Options, SetupCpp) :-
     foreign_pred_keys_from_options(Options, _ForeignKeys),
+    iso_errors_resolve_options(Options, IsoConfig),
+    iso_errors_warn_multi_module(IsoConfig, Predicates),
     findall(Items, (
         member(PI, Predicates),
         catch(
             ( compile_predicate_to_wam(PI, [inline_bagof_setof(true)], WamText),
-              parse_pred_blocks(WamText, Items)
+              parse_pred_blocks(WamText, Items0),
+              iso_errors_rewrite(IsoConfig, PI, Items0, Items)
             ),
             _, fail)
     ), PerPredItems),
@@ -488,6 +496,248 @@ static const int _wam_cpp_setup_register = []() {
     return 0;
 }();
 ', [Reserve, CatchReturnPC, LabelBody, InstrBody]).
+
+% ============================================================================
+% ISO error configuration
+% ============================================================================
+%
+% Per-predicate ISO-error dispatch. See:
+%   docs/design/WAM_CPP_ISO_ERRORS_PHILOSOPHY.md
+%   docs/design/WAM_CPP_ISO_ERRORS_SPECIFICATION.md
+%
+% The key tables iso_errors_default_to_iso/2 and iso_errors_default_to_lax/2
+% are intentionally empty in this plumbing PR. iso_errors_rewrite/4 is a
+% no-op when both tables are empty (every default key falls through
+% unchanged). The first ISO-aware builtin lands in the follow-up PR.
+
+%% iso_errors_default_to_iso(+DefaultKey, -IsoKey)
+%  Maps a default builtin key (e.g. "is/2") to its ISO flavour
+%  ("is_iso/2"). Empty in this PR. Declared `dynamic` so calls
+%  with no clauses simply fail (rather than throwing
+%  existence_error) and so follow-up PRs can populate it either as
+%  asserted facts or as ordinary static clauses below this line.
+%
+%% iso_errors_default_to_lax(+DefaultKey, -LaxKey)
+%  Maps a default key to its explicit-lax flavour. Same shape as
+%  the iso table — empty for now since default and lax will share
+%  an implementation in the runtime, so the rewrite stays a no-op
+%  even when populated.
+:- dynamic iso_errors_default_to_iso/2.
+:- dynamic iso_errors_default_to_lax/2.
+
+%% iso_errors_resolve_options(+Options, -Config)
+%  Merges the (optional) file config with inline options into one
+%  iso_config(Default, Overrides) struct. Inline options override
+%  file entries for the same PI.
+iso_errors_resolve_options(Options, iso_config(Default, Overrides)) :-
+    (   option(iso_errors_config(File), Options)
+    ->  iso_errors_load_config(File, iso_config(FileDefault, FileOv))
+    ;   FileDefault = false, FileOv = []
+    ),
+    iso_errors_inline_default(Options, FileDefault, Default),
+    iso_errors_inline_overrides(Options, InlineOv),
+    iso_errors_merge_overrides(FileOv, InlineOv, Overrides).
+
+iso_errors_inline_default(Options, FileDefault, Default) :-
+    (   member(iso_errors(M), Options),
+        (M == true ; M == false)
+    ->  Default = M
+    ;   Default = FileDefault
+    ).
+
+iso_errors_inline_overrides(Options, InlineOv) :-
+    findall(PI-Mode,
+            ( member(iso_errors(PI, Mode), Options),
+              (Mode == true ; Mode == false),
+              iso_errors_valid_pi(PI)
+            ),
+            InlineOv).
+
+% Accepts both bare Name/Arity and Module:Name/Arity.
+iso_errors_valid_pi(Name/Arity) :- atom(Name), integer(Arity), Arity >= 0, !.
+iso_errors_valid_pi(Module:Name/Arity) :-
+    atom(Module), atom(Name), integer(Arity), Arity >= 0.
+
+iso_errors_merge_overrides(FileOv, InlineOv, Merged) :-
+    exclude(iso_errors_shadowed(InlineOv), FileOv, Kept),
+    append(Kept, InlineOv, Merged).
+
+iso_errors_shadowed(InlineOv, PI-_) :-
+    member(InlinePI-_, InlineOv),
+    iso_errors_pi_matches(InlinePI, PI), !.
+
+% PI matching: bare Name/Arity matches Module:Name/Arity in any
+% module; Module:Name/Arity matches only its own module.
+iso_errors_pi_matches(PI, PI) :- !.
+iso_errors_pi_matches(Name/Arity, _:Name/Arity) :-
+    atom(Name), integer(Arity), !.
+iso_errors_pi_matches(_:Name/Arity, Name/Arity) :-
+    atom(Name), integer(Arity), !.
+
+%% iso_errors_load_config(+File, -Config)
+%  Reads a Prolog facts file and extracts iso_errors_default/1 +
+%  iso_errors_override/2 terms. Unrecognised terms are silently
+%  ignored. Returns iso_config(false, []) on I/O error.
+iso_errors_load_config(File, iso_config(Default, Overrides)) :-
+    catch(
+        setup_call_cleanup(
+            open(File, read, Stream),
+            iso_errors_read_terms(Stream, RawTerms),
+            close(Stream)),
+        _,
+        RawTerms = []),
+    iso_errors_extract_terms(RawTerms, false, [], Default, RevOv),
+    reverse(RevOv, Overrides).
+
+iso_errors_read_terms(Stream, Terms) :-
+    read_term(Stream, T, []),
+    ( T == end_of_file
+    -> Terms = []
+    ; Terms = [T|Rest],
+      iso_errors_read_terms(Stream, Rest)
+    ).
+
+iso_errors_extract_terms([], D, Ov, D, Ov).
+iso_errors_extract_terms([T|Rest], D0, Ov0, D, Ov) :-
+    (   T = iso_errors_default(NewD), (NewD == true ; NewD == false)
+    ->  iso_errors_extract_terms(Rest, NewD, Ov0, D, Ov)
+    ;   T = iso_errors_override(PI, Mode),
+        (Mode == true ; Mode == false),
+        iso_errors_valid_pi(PI)
+    ->  iso_errors_extract_terms(Rest, D0, [PI-Mode|Ov0], D, Ov)
+    ;   iso_errors_extract_terms(Rest, D0, Ov0, D, Ov)
+    ).
+
+%% iso_errors_mode_for(+Config, +PI, -Mode)
+%  Resolves a predicate''s ISO mode. Bare Name/Arity in overrides
+%  matches Module:Name/Arity in any module and vice versa. Falls
+%  back to the config''s default when no override matches.
+iso_errors_mode_for(iso_config(Default, Overrides), PI, Mode) :-
+    (   member(OvPI-OvMode, Overrides),
+        iso_errors_pi_matches(OvPI, PI)
+    ->  Mode = OvMode
+    ;   Mode = Default
+    ).
+
+%% iso_errors_warn_multi_module(+Config, +Predicates)
+%  Emits a user_error warning for each bare override that matches
+%  predicates from more than one module in the input list. Catches
+%  the safe_div/2-in-two-modules footgun (SPECIFICATION §1).
+iso_errors_warn_multi_module(iso_config(_, Overrides), Predicates) :-
+    forall(member(OvPI-_, Overrides),
+           iso_errors_check_override_scope(OvPI, Predicates)).
+
+iso_errors_check_override_scope(Name/Arity, Predicates) :-
+    atom(Name), integer(Arity), !,
+    findall(M, ( member(P, Predicates),
+                 iso_errors_pi_module(P, Name, Arity, M)
+               ), Modules),
+    list_to_set(Modules, Unique),
+    (   Unique = [_, _ | _]
+    ->  length(Unique, N),
+        format(user_error,
+               'Warning: iso_errors_override(~w/~w, _) matches ~w predicates~n         in different modules (~w).~n         Qualify with `mod:~w/~w` for module-scoped overrides.~n',
+               [Name, Arity, N, Unique, Name, Arity])
+    ;   true
+    ).
+iso_errors_check_override_scope(_, _).
+
+iso_errors_pi_module(Module:Name/Arity, Name, Arity, Module) :- !.
+iso_errors_pi_module(Name/Arity,         Name, Arity, user).
+
+%% iso_errors_rewrite(+Config, +PI, +Items0, -Items)
+%  Rewrites the default-form builtin_call keys for one predicate.
+%  Explicit *_iso / *_lax keys pass through unchanged. With empty
+%  key tables (this PR), the rewrite is a no-op.
+iso_errors_rewrite(Config, PI, Items0, Items) :-
+    iso_errors_mode_for(Config, PI, Mode),
+    maplist(iso_errors_rewrite_item(Mode), Items0, Items).
+
+iso_errors_rewrite_item(true, builtin_call(Key, N), builtin_call(IsoKey, N)) :-
+    iso_errors_default_to_iso(Key, IsoKey), !.
+iso_errors_rewrite_item(false, builtin_call(Key, N), builtin_call(LaxKey, N)) :-
+    iso_errors_default_to_lax(Key, LaxKey), !.
+iso_errors_rewrite_item(_, Item, Item).
+
+%% wam_cpp_iso_audit(+Predicates, +Options, -Audit)
+%  Read-only inspection of how each predicate''s builtin_call sites
+%  would resolve under the given options. Returns a list of
+%  audit(PI, Mode, Sites). Each Site is:
+%    site(PC, OrigKey, ResolvedKey, Source, WouldChangeOnFlip)
+%  Source is one of: default, explicit_iso, explicit_lax.
+wam_cpp_iso_audit(Predicates, Options, Audit) :-
+    iso_errors_resolve_options(Options, Config),
+    findall(audit(PI, Mode, Sites), (
+        member(PI, Predicates),
+        iso_errors_mode_for(Config, PI, Mode),
+        iso_errors_audit_predicate(PI, Mode, Sites)
+    ), Audit).
+
+iso_errors_audit_predicate(PI, Mode, Sites) :-
+    (   catch(
+            ( compile_predicate_to_wam(PI, [inline_bagof_setof(true)], WamText),
+              parse_pred_blocks(WamText, Items)
+            ),
+            _, fail)
+    ->  iso_errors_audit_walk(Items, 0, Mode, [], SitesRev),
+        reverse(SitesRev, Sites)
+    ;   Sites = []
+    ).
+
+iso_errors_audit_walk([], _, _, Acc, Acc).
+iso_errors_audit_walk([label(_)|Rest], PC, Mode, Acc, Out) :- !,
+    iso_errors_audit_walk(Rest, PC, Mode, Acc, Out).
+iso_errors_audit_walk([builtin_call(Key, _)|Rest], PC, Mode, Acc, Out) :- !,
+    iso_errors_audit_classify(Key, Mode, Source, Resolved, Flip),
+    Site = site(PC, Key, Resolved, Source, Flip),
+    PC1 is PC + 1,
+    iso_errors_audit_walk(Rest, PC1, Mode, [Site|Acc], Out).
+iso_errors_audit_walk([_|Rest], PC, Mode, Acc, Out) :-
+    PC1 is PC + 1,
+    iso_errors_audit_walk(Rest, PC1, Mode, Acc, Out).
+
+% Classify a builtin_call key. Explicit *_iso/N or *_lax/N suffix
+% always wins; otherwise it's a default site whose resolution
+% depends on Mode and the (currently empty) swap tables.
+iso_errors_audit_classify(Key, _Mode, explicit_iso, Key, false) :-
+    iso_errors_key_has_suffix(Key, '_iso'), !.
+iso_errors_audit_classify(Key, _Mode, explicit_lax, Key, false) :-
+    iso_errors_key_has_suffix(Key, '_lax'), !.
+iso_errors_audit_classify(Key, Mode, default, Resolved, Flip) :-
+    iso_errors_resolve_default(Key, Mode, Resolved),
+    iso_errors_other_mode(Mode, OtherMode),
+    iso_errors_resolve_default(Key, OtherMode, OtherResolved),
+    ( Resolved == OtherResolved -> Flip = false ; Flip = true ).
+
+iso_errors_resolve_default(Key, true, IsoKey) :-
+    iso_errors_default_to_iso(Key, IsoKey), !.
+iso_errors_resolve_default(Key, false, LaxKey) :-
+    iso_errors_default_to_lax(Key, LaxKey), !.
+iso_errors_resolve_default(Key, _, Key).
+
+iso_errors_other_mode(true,  false).
+iso_errors_other_mode(false, true).
+
+% Match keys like "foo_iso/N" or "foo_lax/N" — Suffix is e.g.
+% '_iso'. Splits on the / first, then checks the name component.
+iso_errors_key_has_suffix(Key, Suffix) :-
+    atom(Key),
+    atomic_list_concat(Parts, '/', Key),
+    Parts = [Name | _],
+    atom_concat(_, Suffix, Name).
+
+%% wam_cpp_iso_audit_report(+Audit)
+%  Human-readable pretty-print of an audit result.
+wam_cpp_iso_audit_report([]).
+wam_cpp_iso_audit_report([audit(PI, Mode, Sites)|Rest]) :-
+    format('~w [~w]~n', [PI, Mode]),
+    (   Sites == []
+    ->  format('  (no builtin_call sites)~n', [])
+    ;   forall(member(site(PC, Orig, Res, Src, Flip), Sites),
+               format('  pc=~w  ~w -> ~w  (~w)  flip-changes=~w~n',
+                      [PC, Orig, Res, Src, Flip]))
+    ),
+    wam_cpp_iso_audit_report(Rest).
 
 %% helper_predicate_items(-Items)
 %  Canonical WAM for builtin "library" predicates the user can call via
@@ -1331,6 +1581,23 @@ struct WamState {
     bool    invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc);
     bool    execute_catch();
     bool    execute_throw();
+
+    // ---- ISO error term helpers --------------------------------------
+    // Construct error(ErrTerm, _) with a fresh unbound Context slot,
+    // bind it into A1, and dispatch via execute_throw(). Callers
+    // typically build ErrTerm with one of the make_*_error helpers
+    // below. Returns whatever execute_throw() returns (always false
+    // unless a matching catcher exists).
+    bool    throw_iso_error(Value err_term);
+
+    // Concrete error-term constructors. Each returns a Value that
+    // sits inside the outer error/2 wrapper built by
+    // throw_iso_error. Shapes match WAM_CPP_ISO_ERRORS_SPECIFICATION
+    // §6 (the table of thrown terms per builtin per trigger).
+    Value   make_type_error(const std::string& expected, Value culprit);
+    Value   make_instantiation_error();
+    Value   make_domain_error(const std::string& domain, Value culprit);
+    Value   make_evaluation_error(const std::string& kind);
     // Deep-copy a value tree, allocating fresh cells for any Unbound
     // leaves (multiple references to the same source name share the
     // same fresh cell). Used by throw/1 to snapshot the thrown term
@@ -2790,6 +3057,53 @@ bool WamState::execute_throw() {
                  render(deref(*thrown)).c_str());
     halt = true;
     return false;
+}
+
+// ----------------------------------------------------------------------
+// ISO error term constructors + thrower. Used by the *_iso/N builtin
+// flavours added in follow-up PRs. The shapes match
+// WAM_CPP_ISO_ERRORS_SPECIFICATION §6.
+// ----------------------------------------------------------------------
+
+bool WamState::throw_iso_error(Value err_term) {
+    // Wrap in error(ErrTerm, Context) with Context = fresh unbound.
+    CellPtr err_cell = std::make_shared<Cell>(std::move(err_term));
+    CellPtr ctx_cell = std::make_shared<Cell>(
+        Value::Unbound("_E" + std::to_string(var_counter++)));
+    std::vector<CellPtr> args = { err_cell, ctx_cell };
+    Value wrapper = Value::Compound("error/2", std::move(args));
+    // Set A1 = the wrapped error term, then dispatch through the
+    // existing throw machinery so catch/3 frames see a normal throw.
+    regs["A1"] = std::make_shared<Cell>(std::move(wrapper));
+    return execute_throw();
+}
+
+Value WamState::make_type_error(const std::string& expected, Value culprit) {
+    std::vector<CellPtr> args = {
+        std::make_shared<Cell>(Value::Atom(expected)),
+        std::make_shared<Cell>(std::move(culprit))
+    };
+    return Value::Compound("type_error/2", std::move(args));
+}
+
+Value WamState::make_instantiation_error() {
+    // ISO uses the atom "instantiation_error" (no args).
+    return Value::Atom("instantiation_error");
+}
+
+Value WamState::make_domain_error(const std::string& domain, Value culprit) {
+    std::vector<CellPtr> args = {
+        std::make_shared<Cell>(Value::Atom(domain)),
+        std::make_shared<Cell>(std::move(culprit))
+    };
+    return Value::Compound("domain_error/2", std::move(args));
+}
+
+Value WamState::make_evaluation_error(const std::string& kind) {
+    std::vector<CellPtr> args = {
+        std::make_shared<Cell>(Value::Atom(kind))
+    };
+    return Value::Compound("evaluation_error/1", std::move(args));
 }
 
 bool WamState::backtrack() {
