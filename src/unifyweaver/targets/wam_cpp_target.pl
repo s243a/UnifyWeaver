@@ -51,6 +51,13 @@
     cpp_lowered_func_name/2,
     parse_wam_text/2
 ]).
+% Shared WAM-text tokenizer + recogniser (PR following #2086). Local
+% tokenizer + parser predicates were lifted into this module; the
+% wrapper parse_pred_blocks/2 below is kept as a thin alias since
+% existing call sites still use that name.
+:- use_module(wam_text_parser, [
+    wam_text_to_items/2
+]).
 
 :- multifile user:wam_cpp_emit_mode/1.
 
@@ -313,123 +320,11 @@ extern void wam_cpp_setup_~w(WamState&);
 % ============================================================================
 
 %% parse_pred_blocks(+WamText, -Items)
-%  Items is a list interleaving label(Name) and instruction terms in
-%  source order. Unrecognised instructions (e.g. switch_on_constant) are
-%  silently skipped — the try_me_else / trust_me path still works.
+%  Thin alias for wam_text_parser:wam_text_to_items/2. Kept under the
+%  pre-existing name since several call sites in this file still use
+%  it; new code should call wam_text_to_items/2 directly.
 parse_pred_blocks(WamText, Items) :-
-    atom_string(WamText, S),
-    split_string(S, "\n", "", Lines),
-    parse_block_lines(Lines, Items).
-
-%% tokenize_wam_line(+Line, -Tokens)
-%  Splits a WAM-text line on whitespace and commas, but respects
-%  single-quoted atom literals so the content (which may contain
-%  spaces, commas, or ~-directives for format strings) becomes a
-%  single token. Surrounding single quotes are stripped from the
-%  resulting token. No escape sequences are recognised inside quotes —
-%  matches the printer''s own non-escaping behaviour.
-tokenize_wam_line(Line, Tokens) :-
-    string_chars(Line, Chars),
-    tokenize_wam_chars(Chars, Tokens).
-
-tokenize_wam_chars([], []).
-tokenize_wam_chars([C|Cs], Tokens) :-
-    (   wam_token_sep(C)
-    ->  tokenize_wam_chars(Cs, Tokens)
-    ;   C == '\''
-    ->  read_quoted_chars(Cs, QChars, Rest),
-        string_chars(Tok, QChars),
-        Tokens = [Tok|More],
-        tokenize_wam_chars(Rest, More)
-    ;   C == ',' , \+ ( Cs = ['/'|_] )
-    ->  % Bare comma (not followed by ''/'' as in ",/2") is the WAM
-        % printer''s argument separator — discard.
-        tokenize_wam_chars(Cs, Tokens)
-    ;   read_unquoted_chars([C|Cs], TChars, Rest),
-        string_chars(Tok, TChars),
-        Tokens = [Tok|More],
-        tokenize_wam_chars(Rest, More)
-    ).
-
-% Whitespace separators. Bare commas are handled in tokenize_wam_chars
-% above (treated as separators only when NOT immediately followed by
-% ''/'', so the conjunction functor ",/N" survives as one token).
-wam_token_sep(' ').
-wam_token_sep('\t').
-
-read_quoted_chars([], [], []).
-read_quoted_chars(['\''|Rest], [], Rest) :- !.
-read_quoted_chars([C|Cs], [C|More], Rest) :-
-    read_quoted_chars(Cs, More, Rest).
-
-read_unquoted_chars([], [], []).
-read_unquoted_chars([C|Cs], [], [C|Cs]) :-
-    wam_token_sep(C), !.
-read_unquoted_chars([',' | Cs], [], [',' | Cs]) :-
-    \+ ( Cs = ['/'|_] ), !.
-read_unquoted_chars([C|Cs], [C|More], Rest) :-
-    read_unquoted_chars(Cs, More, Rest).
-
-parse_block_lines([], []).
-parse_block_lines([Line|Rest], Items) :-
-    tokenize_wam_line(Line, CleanParts),
-    (   CleanParts == []
-    ->  parse_block_lines(Rest, Items)
-    ;   CleanParts = [First|_],
-        (   sub_string(First, _, 1, 0, ":")
-        ->  string_length(First, FLen),
-            L1 is FLen - 1,
-            sub_string(First, 0, L1, _, NameStr),
-            Items = [label(NameStr)|MoreItems],
-            parse_block_lines(Rest, MoreItems)
-        ;   wam_cpp_lowered_emitter_instr(CleanParts, Instr)
-        ->  Items = [Instr|MoreItems],
-            parse_block_lines(Rest, MoreItems)
-        ;   parse_block_lines(Rest, Items)
-        )
-    ).
-
-% Inline copy of the lowered emitter's instr_from_parts to avoid making
-% it public. Kept in lockstep with wam_cpp_lowered_emitter.pl.
-wam_cpp_lowered_emitter_instr(["get_constant", C, Ai], get_constant(C, Ai)).
-wam_cpp_lowered_emitter_instr(["get_variable", Xn, Ai], get_variable(Xn, Ai)).
-wam_cpp_lowered_emitter_instr(["get_value", Xn, Ai], get_value(Xn, Ai)).
-wam_cpp_lowered_emitter_instr(["get_structure", F, Ai], get_structure(F, Ai)).
-wam_cpp_lowered_emitter_instr(["get_list", Ai], get_list(Ai)).
-wam_cpp_lowered_emitter_instr(["get_nil", Ai], get_nil(Ai)).
-wam_cpp_lowered_emitter_instr(["get_integer", N, Ai], get_integer(N, Ai)).
-wam_cpp_lowered_emitter_instr(["unify_variable", Xn], unify_variable(Xn)).
-wam_cpp_lowered_emitter_instr(["unify_value", Xn], unify_value(Xn)).
-wam_cpp_lowered_emitter_instr(["unify_constant", C], unify_constant(C)).
-wam_cpp_lowered_emitter_instr(["put_variable", Xn, Ai], put_variable(Xn, Ai)).
-wam_cpp_lowered_emitter_instr(["put_value", Xn, Ai], put_value(Xn, Ai)).
-wam_cpp_lowered_emitter_instr(["put_constant", C, Ai], put_constant(C, Ai)).
-wam_cpp_lowered_emitter_instr(["put_structure", F, Ai], put_structure(F, Ai)).
-wam_cpp_lowered_emitter_instr(["put_list", Ai], put_list(Ai)).
-wam_cpp_lowered_emitter_instr(["set_variable", Xn], set_variable(Xn)).
-wam_cpp_lowered_emitter_instr(["set_value", Xn], set_value(Xn)).
-wam_cpp_lowered_emitter_instr(["set_constant", C], set_constant(C)).
-wam_cpp_lowered_emitter_instr(["call", P, N], call(P, N)).
-wam_cpp_lowered_emitter_instr(["execute", P], execute(P)).
-wam_cpp_lowered_emitter_instr(["proceed"], proceed).
-wam_cpp_lowered_emitter_instr(["fail"], fail).
-wam_cpp_lowered_emitter_instr(["allocate"], allocate).
-wam_cpp_lowered_emitter_instr(["deallocate"], deallocate).
-wam_cpp_lowered_emitter_instr(["builtin_call", Op, Ar], builtin_call(Op, Ar)).
-wam_cpp_lowered_emitter_instr(["call_foreign", Pred, Ar], call_foreign(Pred, Ar)).
-wam_cpp_lowered_emitter_instr(["try_me_else", L], try_me_else(L)).
-wam_cpp_lowered_emitter_instr(["retry_me_else", L], retry_me_else(L)).
-wam_cpp_lowered_emitter_instr(["trust_me"], trust_me).
-wam_cpp_lowered_emitter_instr(["jump", L], jump(L)).
-wam_cpp_lowered_emitter_instr(["cut_ite"], cut_ite).
-wam_cpp_lowered_emitter_instr(["begin_aggregate", K, V, R], begin_aggregate(K, V, R)).
-wam_cpp_lowered_emitter_instr(["end_aggregate", R], end_aggregate(R)).
-% Indexing instructions: variable-arity, so we capture all tail tokens
-% and parse them in instr_to_setup_line.
-wam_cpp_lowered_emitter_instr(["switch_on_constant" | Entries], switch_on_constant(Entries)).
-wam_cpp_lowered_emitter_instr(["switch_on_constant_a2" | Entries], switch_on_constant_a2(Entries)).
-wam_cpp_lowered_emitter_instr(["switch_on_structure" | Entries], switch_on_structure(Entries)).
-wam_cpp_lowered_emitter_instr(["switch_on_term" | Tokens], switch_on_term(Tokens)).
+    wam_text_to_items(WamText, Items).
 
 %% walk_blocks(+AllItems, -Labels, -FlatInstrs)
 %  Single pass: every label() records its PC; every instruction goes into
