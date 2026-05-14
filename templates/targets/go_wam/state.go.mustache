@@ -1003,6 +1003,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 
 	case "==/2": return valueEquals(vm.deref(arg1), vm.deref(arg2))
 	case "\\==/2": return !valueEquals(vm.deref(arg1), vm.deref(arg2))
+	case "=/2": return vm.Unify(arg1, arg2)
 	case "\\=/2":
 		clone := vm.Clone()
 		return !clone.Unify(arg1, arg2)
