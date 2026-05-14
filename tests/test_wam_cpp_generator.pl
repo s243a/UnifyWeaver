@@ -135,6 +135,23 @@ user:wam_cpp_test_nth0_first           :- nth0(0, [a,b,c], X), X = a.
 user:wam_cpp_test_nth0_middle          :- nth0(1, [a,b,c], X), X = b.
 user:wam_cpp_test_nth0_last            :- nth0(2, [a,b,c], X), X = c.
 
+% format/1 + format/2 fixtures. Each predicate prints something to
+% stdout; the e2e test asserts exact captured output (printed text +
+% the final true/false line).
+:- dynamic user:wam_cpp_test_fmt1_noargs/0.
+:- dynamic user:wam_cpp_test_fmt2_atoms/0.
+:- dynamic user:wam_cpp_test_fmt2_ints/0.
+:- dynamic user:wam_cpp_test_fmt2_compound/0.
+:- dynamic user:wam_cpp_test_fmt2_tilde/0.
+:- dynamic user:wam_cpp_test_fmt2_no_directives/0.
+
+user:wam_cpp_test_fmt1_noargs       :- format('plain text~n').
+user:wam_cpp_test_fmt2_atoms        :- format('a=~w b=~w~n', [hello, world]).
+user:wam_cpp_test_fmt2_ints         :- format('~d + ~d = ~d~n', [1, 2, 3]).
+user:wam_cpp_test_fmt2_compound     :- format('result: ~w~n', [foo(1, bar)]).
+user:wam_cpp_test_fmt2_tilde        :- format('100~~~n', []).
+user:wam_cpp_test_fmt2_no_directives :- format('hello world', []).
+
 % Indexing-instruction fixtures (switch_on_constant / switch_on_term):
 :- dynamic user:wam_cpp_color/1.
 :- dynamic user:wam_cpp_shape/2.
@@ -974,6 +991,74 @@ test(cpp_e2e_nth0, [condition(cpp_compiler_available)]) :-
         delete_directory_and_contents(TmpDir)
     ).
 
+% ------------------------------------------------------------------
+% format/1 + format/2: tilde-directive formatted printing to stdout.
+% Compiled as `execute format/N`, which now falls back to builtin()
+% in step()''s Execute/Call arms when no user label matches. Asserts
+% exact captured stdout to verify directive expansion is correct.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_format_noargs, [condition(cpp_compiler_available)]) :-
+    % format/1 takes only a format string. Exercises the 1-arity
+    % dispatch path (no args list to walk).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_fmt1', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_fmt1_noargs/0,
+                               user:wam_cpp_test_fmt2_no_directives/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_stdout(BinPath, 'wam_cpp_test_fmt1_noargs/0', [],
+                           true, "plain text\n"),
+          run_query_stdout(BinPath, 'wam_cpp_test_fmt2_no_directives/0', [],
+                           true, "hello world")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_format_atoms_and_ints, [condition(cpp_compiler_available)]) :-
+    % ~w (write) on atoms and ~d (integer) directives.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_fmt2_ai', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_fmt2_atoms/0,
+                               user:wam_cpp_test_fmt2_ints/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_stdout(BinPath, 'wam_cpp_test_fmt2_atoms/0', [],
+                           true, "a=hello b=world\n"),
+          run_query_stdout(BinPath, 'wam_cpp_test_fmt2_ints/0', [],
+                           true, "1 + 2 = 3\n")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_format_compound, [condition(cpp_compiler_available)]) :-
+    % ~w on a compound term goes through render(), exercising the
+    % full Value printer.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_fmt2_cmpd', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_fmt2_compound/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_stdout(BinPath, 'wam_cpp_test_fmt2_compound/0', [],
+                           true, "result: foo(1, bar)\n")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_format_tilde_escape, [condition(cpp_compiler_available)]) :-
+    % ~~ emits a literal tilde. The format string ''100~~~n'' contains
+    % "100" + "~~" (literal tilde) + "~n" (newline) = "100~\n".
+    unique_cpp_tmp_dir('tmp_cpp_e2e_fmt2_tilde', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_fmt2_tilde/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_stdout(BinPath, 'wam_cpp_test_fmt2_tilde/0', [],
+                           true, "100~\n")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
 test(cpp_e2e_switch_on_constant, [condition(cpp_compiler_available)]) :-
     unique_cpp_tmp_dir('tmp_cpp_e2e_swc', TmpDir),
     setup_call_cleanup(
@@ -1051,6 +1136,22 @@ run_query(BinPath, PredKey, Args, Expected) :-
 
 expected_str(true,  "true").
 expected_str(false, "false").
+
+% run_query_stdout(+BinPath, +PredKey, +Args, +Status, +ExpPrintedOut)
+%  Captures full stdout (printed bytes from the predicate body, then
+%  the trailing "true\n"/"false\n" line emitted by main) and asserts
+%  exact equality with ExpPrintedOut ++ Status + "\n".
+run_query_stdout(BinPath, PredKey, Args, Status, ExpPrint) :-
+    maplist(atom_string, Args, ArgStrs),
+    process_create(BinPath, [PredKey|ArgStrs],
+                   [stdout(pipe(Out)), stderr(null), process(PID)]),
+    read_string(Out, _, Output),
+    close(Out),
+    process_wait(PID, _),
+    expected_str(Status, StatusStr),
+    string_concat(ExpPrint, StatusStr, ExpWithStatus),
+    string_concat(ExpWithStatus, "\n", Expected),
+    assertion(Output == Expected).
 
 :- end_tests(wam_cpp_generator).
 
