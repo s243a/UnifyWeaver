@@ -215,6 +215,10 @@ lowered_fact_helper_rejection_reason(PredIndicator, unsupported_fact_arguments) 
     !.
 lowered_fact_helper_rejection_reason(_, no_clauses).
 
+lowered_filter_rejection_reason(HeadArgs, Body0, Reason) :-
+    strip_module_qualification(Body0, Body),
+    lowered_comparison_filter_rejection_reason(HeadArgs, Body, Reason),
+    !.
 lowered_filter_rejection_reason(_HeadArgs, Body0, multi_goal_body) :-
     strip_module_qualification(Body0, Body),
     Body = (_, _),
@@ -240,6 +244,56 @@ lowered_filter_rejection_reason(HeadArgs, Body0, unsupported_filter_callee) :-
     \+ lowered_fact_helper_rows(CalleeIndicator, _Rows),
     !.
 
+lowered_comparison_filter_rejection_reason(HeadArgs, Body, Reason) :-
+    Body = (Call0, Guard0),
+    Call0 \= (_, _),
+    Guard0 \= (_, _),
+    strip_module_qualification(Call0, Call),
+    strip_module_qualification(Guard0, Guard),
+    Guard =.. [GuardPred, Left, Right],
+    wam_c_lowered_comparison_guard(GuardPred/2),
+    comparison_filter_call_context(HeadArgs, Call, CalleeArgs, CalleeRows),
+    comparison_filter_guard_rejection_reason(CalleeArgs, CalleeRows, GuardPred, Left, Right, Reason).
+
+comparison_filter_call_context(HeadArgs, Call, CalleeArgs, CalleeRows) :-
+    Call =.. [CalleePred|CalleeArgs],
+    length(CalleeArgs, CalleeArity),
+    \+ wam_c_lowered_comparison_guard(CalleePred/CalleeArity),
+    maplist(var, HeadArgs),
+    maplist(callee_filter_arg_supported, CalleeArgs),
+    CalleeIndicator = user:CalleePred/CalleeArity,
+    lowered_fact_helper_rows(CalleeIndicator, CalleeRows).
+
+comparison_filter_guard_rejection_reason(CalleeArgs, _CalleeRows, _GuardPred, Left, Right, comparison_guard_unbound_variable) :-
+    (   comparison_arg_unbound_variable(Left, CalleeArgs)
+    ;   comparison_arg_unbound_variable(Right, CalleeArgs)
+    ),
+    !.
+comparison_filter_guard_rejection_reason(CalleeArgs, _CalleeRows, _GuardPred, Left, Right, unsupported_comparison_expression) :-
+    (   \+ comparison_arg_basic(Left, CalleeArgs)
+    ;   \+ comparison_arg_basic(Right, CalleeArgs)
+    ),
+    !.
+comparison_filter_guard_rejection_reason(CalleeArgs, CalleeRows, GuardPred, Left, Right, non_integer_comparison_rows) :-
+    wam_c_lowered_ordering_guard(GuardPred),
+    comparison_arg_supported(Left, CalleeArgs),
+    comparison_arg_supported(Right, CalleeArgs),
+    member(CalleeRow, CalleeRows),
+    callee_row_matches_arg_constraints(CalleeArgs, CalleeRow),
+    comparison_arg_value(Left, CalleeArgs, CalleeRow, LeftValue),
+    comparison_arg_value(Right, CalleeArgs, CalleeRow, RightValue),
+    (   \+ integer(LeftValue)
+    ;   \+ integer(RightValue)
+    ),
+    !.
+comparison_filter_guard_rejection_reason(CalleeArgs, CalleeRows, GuardPred, Left, Right, no_matching_comparison_rows) :-
+    comparison_arg_supported(Left, CalleeArgs),
+    comparison_arg_supported(Right, CalleeArgs),
+    \+ ( member(CalleeRow, CalleeRows),
+         callee_row_matches_comparison_filter(CalleeArgs, GuardPred, Left, Right, CalleeRow)
+       ),
+    !.
+
 wam_c_lowered_comparison_guard((=)/2).
 wam_c_lowered_comparison_guard((==)/2).
 wam_c_lowered_comparison_guard((\==)/2).
@@ -250,6 +304,13 @@ wam_c_lowered_comparison_guard((=<)/2).
 wam_c_lowered_comparison_guard((=:=)/2).
 wam_c_lowered_comparison_guard((=\=)/2).
 wam_c_lowered_comparison_guard(is/2).
+
+wam_c_lowered_ordering_guard((>)).
+wam_c_lowered_ordering_guard((<)).
+wam_c_lowered_ordering_guard((>=)).
+wam_c_lowered_ordering_guard((=<)).
+wam_c_lowered_ordering_guard((=:=)).
+wam_c_lowered_ordering_guard((=\=)).
 
 compile_lowered_helpers_for_project(Plans, LoweredKeys, Code, SetupCode) :-
     findall(Key-CodePart-SetupLine,
@@ -454,6 +515,19 @@ comparison_arg_supported(Arg, _CalleeArgs) :-
 comparison_arg_supported(Arg, CalleeArgs) :-
     member(CalleeArg, CalleeArgs),
     Arg == CalleeArg.
+
+comparison_arg_basic(Arg, CalleeArgs) :-
+    comparison_arg_supported(Arg, CalleeArgs),
+    !.
+comparison_arg_basic(Arg, _CalleeArgs) :-
+    var(Arg),
+    !.
+
+comparison_arg_unbound_variable(Arg, CalleeArgs) :-
+    var(Arg),
+    \+ ( member(CalleeArg, CalleeArgs),
+         Arg == CalleeArg
+       ).
 
 callee_row_matches_comparison_filter(CalleeArgs, GuardPred, Left, Right, CalleeRow) :-
     callee_row_matches_arg_constraints(CalleeArgs, CalleeRow),
