@@ -25,7 +25,7 @@ SCAN_WORKLOAD_PREFIX = "scan-materialization:"
 SMALL_PREBUILT_ARTIFACT_ROW_THRESHOLD = 7_500
 
 
-class CSharpQueryGraphSourceModePolicyTests(unittest.TestCase):
+class CSharpQuerySourceModePolicyTests(unittest.TestCase):
     def test_graph_benchmark_generators_use_source_mode_policy_helper(self) -> None:
         article_cats = [("Article", "Physics")]
         category_parents = [("Physics", "Science")]
@@ -170,10 +170,10 @@ class CSharpQueryGraphSourceModePolicyTests(unittest.TestCase):
     @staticmethod
     def _expected_scan_source_mode(scan_mode: str, scale: str) -> str:
         total_rows = (
-            CSharpQueryGraphSourceModePolicyTests._data_row_count(
+            CSharpQuerySourceModePolicyTests._data_row_count(
                 ROOT / "data" / "benchmark" / scale / "article_category.tsv"
             )
-            + CSharpQueryGraphSourceModePolicyTests._data_row_count(
+            + CSharpQuerySourceModePolicyTests._data_row_count(
                 ROOT / "data" / "benchmark" / scale / "category_parent.tsv"
             )
         )
