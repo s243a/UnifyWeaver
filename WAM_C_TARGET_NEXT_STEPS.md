@@ -1,17 +1,20 @@
 # WAM C Target - Status And Next Steps
 
-Status date: 2026-05-12
+Status date: 2026-05-14
 
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `5efae2f1` (`Merge pull request #2050 from s243a/feat/wam-c-lowered-helper-body-calls`)
+- `main` at `2ee720e8` (`Merge pull request #2052 from s243a/feat/wam-c-lowered-helper-filtered-facts`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
+- `python3 tests/test_benchmark_target_matrix.py`
+- `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py`
+- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --target-sets c-wam-lowered-helper --repetitions 1 --baseline-target c-wam-lowered-helper-interpreted`
 - `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels --repetitions 1`
 
 Active branch:
 
-- `feat/wam-c-lowered-helper-filtered-facts`
+- `feat/wam-c-lowered-helper-filter-rejections`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -43,7 +46,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Lowered helper planner metadata | Done | Explicit lowered/interpreted/rejected helper plans, detected-kernel exclusion, generated `lib.c` plan comments, and `report_lowered_helpers(true)` |
 | Lowered helper benchmark wiring | Done | `c-wam-lowered-helper` and `c-wam-lowered-helper-interpreted` matrix targets compare a tiny fact-helper benchmark |
 | Lowered helper body-call shape | Done | Deterministic alias-to-fact body calls lower through the existing foreign registry |
-| Lowered helper filtered-fact shape | In progress | Active branch lowers one constant-guarded fact projection shape and wires it into the tiny lowered-helper matrix |
+| Lowered helper filtered-fact shape | Done | Constant-guarded fact projections lower to native fact rows and the tiny lowered-helper matrix exercises the filtered helper in lowered mode |
+| Lowered helper filter rejection metadata | In progress | Active branch reports explicit planner reasons for unsupported filtered-helper bodies without adding new codegen paths |
 
 ## Current C Target Baseline
 
@@ -114,7 +118,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
 | Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup and all-hop collection; add more kernel kinds only after runtime support exists. |
 | Shared kernel detector integration | Partial | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`; broaden as more native C kernels land. |
-| Lowered/native helper functions | Partial/Active | Done | Done | C has constant fact-only native helpers, planner metadata, interpreted-vs-lowered matrix wiring, body-call helpers, and active filtered-fact helper work. |
+| Lowered/native helper functions | Partial/Active | Done | Done | C has constant fact-only native helpers, planner metadata, interpreted-vs-lowered matrix wiring, body-call helpers, filtered-fact helpers, and active rejection metadata work. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
 | LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts and generated effective-distance LMDB wiring; larger artifact layout support remains. |
 | Effective-distance benchmark harness | Partial/Done | Done | Done | C is wired into the shared matrix for TSV and LMDB `kernels_on`/`kernels_off`; next gap is larger artifact layouts. |
@@ -124,21 +128,7 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-lowered-helper-filtered-facts`
-
-Goal: add one constrained guard/filter shape on top of lowered fact helpers.
-
-Scope:
-
-- Pick a simple deterministic guard shape with atom/integer equality.
-- Keep unsupported guard bodies rejected with explicit planner metadata.
-- Extend the tiny lowered-helper matrix only if the shape remains small and
-  stable.
-
-Status: active; constant-guarded fact projection lowers to native fact rows and
-the tiny lowered-helper matrix exercises the filtered helper in lowered mode.
-
-### 2. `feat/wam-c-lowered-helper-filter-rejections`
+### 1. `feat/wam-c-lowered-helper-filter-rejections`
 
 Goal: make unsupported lowered-helper guard/filter cases more explainable.
 
@@ -150,10 +140,26 @@ Scope:
   filtered-fact helpers.
 - Add focused planner tests rather than new runtime paths.
 
+Status: active; planner metadata now distinguishes non-constant filter
+arguments, unsupported comparison guards, and multi-goal bodies.
+
+### 2. `feat/wam-c-lowered-helper-filter-guard-comparisons`
+
+Goal: consider one positive comparison-filter lowering only after rejection
+metadata is stable.
+
+Scope:
+
+- Pick one deterministic comparison shape with a fact-only callee.
+- Keep the first implementation planner-only unless the codegen and runtime
+  behavior remain obvious.
+- Preserve the explicit rejection reasons added by the current branch.
+
 ## Suggested Immediate Next Step
 
-Continue validating `feat/wam-c-lowered-helper-filtered-facts`.
+Continue validating `feat/wam-c-lowered-helper-filter-rejections`.
 
-The active branch lowers one constant-guarded fact projection shape, for
-example `keep(X) :- fact(X, keep)`, into native fact rows. The tiny
-lowered-helper matrix now exercises the filtered helper in its lowered target.
+The active branch keeps code generation unchanged and improves planner
+diagnostics for unsupported filtered-helper bodies. The next useful checks are
+the WAM-C target suite, the effective-distance benchmark suite, and `git diff
+--check`.

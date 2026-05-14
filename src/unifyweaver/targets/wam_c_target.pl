@@ -189,6 +189,17 @@ plan_wam_c_lowered_helper_disabled(PredIndicator, Plan) :-
     format(atom(Key), '~w/~w', [Pred, Arity]),
     Plan = wam_c_lowered_helper_plan(Key, PredIndicator, interpreted, lowering_disabled).
 
+lowered_fact_helper_rejection_reason(PredIndicator, Reason) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    functor(Head, Pred, Arity),
+    findall(Args-Body,
+            (   user:clause(Head, Body),
+                Head =.. [_|Args]
+            ),
+            [HeadArgs-Body0]),
+    Body0 \== true,
+    lowered_filter_rejection_reason(HeadArgs, Body0, Reason),
+    !.
 lowered_fact_helper_rejection_reason(PredIndicator, non_fact_clause) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     functor(Head, Pred, Arity),
@@ -201,6 +212,42 @@ lowered_fact_helper_rejection_reason(PredIndicator, unsupported_fact_arguments) 
     user:clause(Head, true),
     !.
 lowered_fact_helper_rejection_reason(_, no_clauses).
+
+lowered_filter_rejection_reason(_HeadArgs, Body0, multi_goal_body) :-
+    strip_module_qualification(Body0, Body),
+    Body = (_, _),
+    !.
+lowered_filter_rejection_reason(_HeadArgs, Body0, unsupported_comparison_guard) :-
+    strip_module_qualification(Body0, Body),
+    Body =.. [Pred|Args],
+    length(Args, Arity),
+    wam_c_lowered_comparison_guard(Pred/Arity),
+    !.
+lowered_filter_rejection_reason(HeadArgs, Body0, non_constant_filter_argument) :-
+    strip_module_qualification(Body0, Body),
+    Body =.. [_CalleePred|CalleeArgs],
+    member(Arg, CalleeArgs),
+    \+ lowered_filter_arg_supported(Arg, HeadArgs),
+    !.
+lowered_filter_rejection_reason(HeadArgs, Body0, unsupported_filter_callee) :-
+    strip_module_qualification(Body0, Body),
+    Body =.. [CalleePred|CalleeArgs],
+    length(CalleeArgs, CalleeArity),
+    maplist(lowered_filter_arg_supported_(HeadArgs), CalleeArgs),
+    CalleeIndicator = user:CalleePred/CalleeArity,
+    \+ lowered_fact_helper_rows(CalleeIndicator, _Rows),
+    !.
+
+wam_c_lowered_comparison_guard((=)/2).
+wam_c_lowered_comparison_guard((==)/2).
+wam_c_lowered_comparison_guard((\==)/2).
+wam_c_lowered_comparison_guard((>)/2).
+wam_c_lowered_comparison_guard((<)/2).
+wam_c_lowered_comparison_guard((>=)/2).
+wam_c_lowered_comparison_guard((=<)/2).
+wam_c_lowered_comparison_guard((=:=)/2).
+wam_c_lowered_comparison_guard((=\=)/2).
+wam_c_lowered_comparison_guard(is/2).
 
 compile_lowered_helpers_for_project(Plans, LoweredKeys, Code, SetupCode) :-
     findall(Key-CodePart-SetupLine,
@@ -254,6 +301,11 @@ wam_c_lowered_plan_reason_label(filtered_fact(_CalleeKey, _Rows), filtered_fact)
 wam_c_lowered_plan_reason_label(Reason, Reason).
 
 lowered_fact_helper_rows(PredIndicator, Rows) :-
+    catch(lowered_fact_helper_rows_(PredIndicator, Rows),
+          error(permission_error(access, private_procedure, _), _),
+          fail).
+
+lowered_fact_helper_rows_(PredIndicator, Rows) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     functor(Head, Pred, Arity),
     findall(Args,
@@ -327,8 +379,10 @@ lowered_filtered_fact_helper(PredIndicator, CalleeKey, Rows) :-
     Clauses = [HeadArgs-Body0],
     Body0 \== true,
     strip_module_qualification(Body0, Body),
+    Body \= (_, _),
     Body =.. [CalleePred|CalleeArgs],
     length(CalleeArgs, CalleeArity),
+    \+ wam_c_lowered_comparison_guard(CalleePred/CalleeArity),
     (Pred/Arity) \== (CalleePred/CalleeArity),
     maplist(var, HeadArgs),
     callee_args_supported_for_filter(CalleeArgs, HeadArgs),
@@ -352,12 +406,18 @@ strip_module_qualification(Body, Body).
 
 callee_args_supported_for_filter([], _).
 callee_args_supported_for_filter([Arg|Rest], HeadArgs) :-
+    lowered_filter_arg_supported(Arg, HeadArgs),
+    callee_args_supported_for_filter(Rest, HeadArgs).
+
+lowered_filter_arg_supported(Arg, HeadArgs) :-
+    lowered_filter_arg_supported_(HeadArgs, Arg).
+
+lowered_filter_arg_supported_(HeadArgs, Arg) :-
     (   member(HeadArg, HeadArgs),
         Arg == HeadArg
     ->  true
     ;   wam_c_lowered_constant(Arg)
-    ),
-    callee_args_supported_for_filter(Rest, HeadArgs).
+    ).
 
 callee_row_matches_filter(CalleeArgs, HeadArgs, CalleeRow) :-
     same_length(CalleeArgs, CalleeRow),

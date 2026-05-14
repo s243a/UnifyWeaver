@@ -341,7 +341,7 @@ test_lowered_helper_planner_metadata :-
                                     ['category_ancestor/4'],
                                     Plans),
         member(wam_c_lowered_helper_plan('wam_c_plan_fact/2', _, lowered, fact_only([[a,b]])), Plans),
-        member(wam_c_lowered_helper_plan('wam_c_plan_rule/1', _, rejected, non_fact_clause), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_plan_rule/1', _, rejected, non_constant_filter_argument), Plans),
         member(wam_c_lowered_helper_plan('category_ancestor/4', _, interpreted, detected_kernel), Plans)
     ->  pass(Test)
     ;   fail_test(Test, 'planner did not classify lowered/rejected/interpreted predicates')
@@ -364,7 +364,7 @@ test_lowered_helper_plan_generation :-
         read_file_to_string(LibPath, LibS, []),
         sub_string(LibS, _, _, _, '// WAM-C lowered helper plan'),
         sub_string(LibS, _, _, _, '// - lowered wam_c_plan_emit_fact/2: fact_only'),
-        sub_string(LibS, _, _, _, '// - rejected wam_c_plan_emit_rule/1: non_fact_clause'),
+        sub_string(LibS, _, _, _, '// - rejected wam_c_plan_emit_rule/1: non_constant_filter_argument'),
         sub_string(LibS, _, _, _, 'INSTR_CALL_FOREIGN'),
         sub_string(LibS, _, _, _, 'setup_wam_c_plan_emit_rule_1')
     ->  pass(Test)
@@ -435,6 +435,55 @@ test_lowered_filtered_fact_helper_generation :-
     ),
     retractall(user:wam_c_filter_fact(_, _)),
     retractall(user:wam_c_filter_keep(_)).
+
+test_lowered_filter_rejection_metadata :-
+    Test = 'WAM-C: lowered helper planner explains unsupported filter shapes',
+    assertz(user:wam_c_filter_reject_fact(a, 1, keep)),
+    assertz(user:wam_c_filter_reject_fact(b, 2, drop)),
+    assertz((user:wam_c_filter_reject_non_constant(X) :-
+                 user:wam_c_filter_reject_fact(X, _IgnoredN, keep))),
+    assertz((user:wam_c_filter_reject_comparison(X) :- X > 1)),
+    assertz((user:wam_c_filter_reject_builtin(X) :- atom(X))),
+    assertz((user:wam_c_filter_reject_multi_goal(X) :-
+                 user:wam_c_filter_reject_fact(X, _N, keep),
+                 X = a)),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    format(atom(ProjectDir), '/tmp/unifyweaver_wam_c_lowered_filter_reject_project_~w', [Stamp]),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    (   plan_wam_c_lowered_helpers([user:wam_c_filter_reject_fact/3,
+                                     user:wam_c_filter_reject_non_constant/1,
+                                     user:wam_c_filter_reject_comparison/1,
+                                     user:wam_c_filter_reject_builtin/1,
+                                     user:wam_c_filter_reject_multi_goal/1],
+                                    [lowered_helpers(true)],
+                                    [],
+                                    Plans),
+        member(wam_c_lowered_helper_plan('wam_c_filter_reject_fact/3', _, lowered, fact_only([[a,1,keep],[b,2,drop]])), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_filter_reject_non_constant/1', _, rejected, non_constant_filter_argument), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_filter_reject_comparison/1', _, rejected, unsupported_comparison_guard), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_filter_reject_builtin/1', _, rejected, unsupported_filter_callee), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_filter_reject_multi_goal/1', _, rejected, multi_goal_body), Plans),
+        write_wam_c_project([user:wam_c_filter_reject_fact/3,
+                             user:wam_c_filter_reject_non_constant/1,
+                             user:wam_c_filter_reject_comparison/1,
+                             user:wam_c_filter_reject_builtin/1,
+                             user:wam_c_filter_reject_multi_goal/1],
+                            [lowered_helpers(true)],
+                            ProjectDir),
+        read_file_to_string(LibPath, LibS, []),
+        sub_string(LibS, _, _, _, '// - rejected wam_c_filter_reject_non_constant/1: non_constant_filter_argument'),
+        sub_string(LibS, _, _, _, '// - rejected wam_c_filter_reject_comparison/1: unsupported_comparison_guard'),
+        sub_string(LibS, _, _, _, '// - rejected wam_c_filter_reject_builtin/1: unsupported_filter_callee'),
+        sub_string(LibS, _, _, _, '// - rejected wam_c_filter_reject_multi_goal/1: multi_goal_body')
+    ->  pass(Test)
+    ;   fail_test(Test, 'planner did not report explicit filter rejection reasons')
+    ),
+    retractall(user:wam_c_filter_reject_fact(_, _, _)),
+    retractall(user:wam_c_filter_reject_non_constant(_)),
+    retractall(user:wam_c_filter_reject_comparison(_)),
+    retractall(user:wam_c_filter_reject_builtin(_)),
+    retractall(user:wam_c_filter_reject_multi_goal(_)).
 
 test_unsupported_instruction_fails_loudly :-
     Test = 'WAM-C: unsupported instructions fail loudly',
@@ -2283,6 +2332,7 @@ run_tests_once :-
     test_lowered_helper_plan_generation,
     test_lowered_body_call_helper_generation,
     test_lowered_filtered_fact_helper_generation,
+    test_lowered_filter_rejection_metadata,
     test_unsupported_instruction_fails_loudly,
     test_no_zero_instruction_fallback,
     test_list_target_pc_emission,
