@@ -35,6 +35,10 @@ WORKLOAD_SCRIPTS = {
     "shortest-path": BENCHMARK_DIR / "benchmark_shortest_path_cross_target.py",
     "weighted-shortest-path": BENCHMARK_DIR / "benchmark_weighted_shortest_path_cross_target.py",
 }
+SCAN_WORKLOAD = "scan-materialization"
+SCAN_WORKLOAD_SCRIPT = BENCHMARK_DIR / "benchmark_scan_materialization.py"
+SCAN_WORKLOAD_MODES = ("scan", "bound_scan", "selective_join", "join", "nary_join")
+ALL_WORKLOADS = tuple(WORKLOAD_SCRIPTS) + (SCAN_WORKLOAD,)
 
 FILE_BACKED_GRAPH_SCALES = ("dev", "300", "1k", "5k", "10k")
 GENERATED_GRAPH_SCALES = ("300", "1k", "5k", "10k")
@@ -45,6 +49,7 @@ WORKLOAD_SUPPORTED_SCALES = {
     "effective-distance": FILE_BACKED_GRAPH_SCALES,
     "shortest-path": FILE_BACKED_GRAPH_SCALES,
     "weighted-shortest-path": FILE_BACKED_GRAPH_SCALES,
+    SCAN_WORKLOAD: FILE_BACKED_GRAPH_SCALES,
 }
 
 DEFAULT_WORKLOADS = "all"
@@ -108,7 +113,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workloads",
         default=DEFAULT_WORKLOADS,
-        help="Comma-separated workloads, or 'all' for every registered graph workload.",
+        help=(
+            "Comma-separated workloads, 'all' for graph workloads, or "
+            "'all-with-scan' to include scan-materialization."
+        ),
     )
     parser.add_argument("--scales", default="300")
     parser.add_argument(
@@ -210,14 +218,16 @@ def parse_args() -> argparse.Namespace:
 def parse_workloads(value: str) -> list[str]:
     if value.strip().lower() == "all":
         return list(WORKLOAD_SCRIPTS)
+    if value.strip().lower() == "all-with-scan":
+        return list(ALL_WORKLOADS)
     workloads = split_csv(value)
-    unknown = [workload for workload in workloads if workload not in WORKLOAD_SCRIPTS]
+    unknown = [workload for workload in workloads if workload not in ALL_WORKLOADS]
     if unknown:
         raise SystemExit(
             "unknown workload(s): "
             + ", ".join(unknown)
             + "; expected one of "
-            + ", ".join(WORKLOAD_SCRIPTS)
+            + ", ".join(ALL_WORKLOADS)
         )
     if not workloads:
         raise SystemExit("expected at least one workload")
@@ -229,7 +239,7 @@ def supported_scales_for_workload(workload: str) -> tuple[str, ...]:
         return WORKLOAD_SUPPORTED_SCALES[workload]
     except KeyError as exc:
         raise SystemExit(
-            f"unknown workload {workload!r}; expected one of {', '.join(WORKLOAD_SCRIPTS)}"
+            f"unknown workload {workload!r}; expected one of {', '.join(ALL_WORKLOADS)}"
         ) from exc
 
 
@@ -449,6 +459,45 @@ def parse_runner_output(
                 median_summary=median_summary,
                 resolved_source_mode_summary=resolved_summary,
                 source_registration_summary=registration_summary,
+            )
+        )
+    return summaries
+
+
+def parse_scan_runner_output(output: str) -> list[SourceModeSummary]:
+    summaries: list[SourceModeSummary] = []
+    header: list[str] = []
+    for line in output.splitlines():
+        parts = line.rstrip("\n").split("\t")
+        if not parts:
+            continue
+        if parts[0] == "scale":
+            header = parts
+            continue
+        if not header or len(parts) < len(header):
+            continue
+        row = dict(zip(header, parts))
+        scale = row.get("scale", "")
+        mode = row.get("mode", "")
+        chosen_source_mode = row.get("chosen_source_mode", "")
+        best_source_mode = row.get("best_source_mode", "")
+        auto_vs_best = row.get("auto_vs_best", "")
+        median_summary = row.get("median_s_by_source_mode", "")
+        source_registration_summary = row.get("source_registrations_by_source_mode", "")
+        output_agreement = row.get("output_agreement", "match")
+        resolved_source_mode_summary = (
+            f"auto:{chosen_source_mode}" if chosen_source_mode else ""
+        )
+        summaries.append(
+            SourceModeSummary(
+                workload=f"{SCAN_WORKLOAD}:{mode}",
+                scale=scale,
+                best_source_mode=best_source_mode,
+                auto_vs_best=auto_vs_best,
+                output_agreement=output_agreement,
+                median_summary=median_summary,
+                resolved_source_mode_summary=resolved_source_mode_summary,
+                source_registration_summary=source_registration_summary,
             )
         )
     return summaries
@@ -841,6 +890,14 @@ def run_workload(
     repetitions: int,
     trace: bool,
 ) -> list[SourceModeSummary]:
+    if workload == SCAN_WORKLOAD:
+        return run_scan_workload(
+            scales=scales,
+            source_modes=source_modes,
+            repetitions=repetitions,
+            trace=trace,
+        )
+
     env = dict(os.environ)
     if trace:
         env["UNIFYWEAVER_BENCH_TRACE"] = "1"
@@ -870,6 +927,42 @@ def run_workload(
         result.stdout,
         default_source_mode=default_source_mode,
     )
+
+
+def run_scan_workload(
+    *,
+    scales: str,
+    source_modes: str,
+    repetitions: int,
+    trace: bool,
+) -> list[SourceModeSummary]:
+    env = dict(os.environ)
+    if trace:
+        env["UNIFYWEAVER_BENCH_TRACE"] = "1"
+    else:
+        env.pop("UNIFYWEAVER_BENCH_TRACE", None)
+
+    result = run_command(
+        [
+            sys.executable,
+            str(SCAN_WORKLOAD_SCRIPT),
+            "--scales",
+            scales,
+            "--modes",
+            ",".join(SCAN_WORKLOAD_MODES),
+            "--source-modes",
+            source_modes,
+            "--strategies",
+            "auto",
+            "--repetitions",
+            str(repetitions),
+            "--format",
+            "calibration-tsv",
+        ],
+        cwd=ROOT,
+        env=env,
+    )
+    return parse_scan_runner_output(result.stdout)
 
 
 def print_tsv(summaries: list[SourceModeSummary]) -> None:
