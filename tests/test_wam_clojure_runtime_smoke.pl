@@ -70,6 +70,12 @@
 :- dynamic user:wam_copy_term_independent_ok/0.
 :- dynamic user:wam_functor_guard/3.
 :- dynamic user:wam_arg_guard/3.
+:- dynamic user:wam_univ_guard/2.
+:- dynamic user:wam_univ_decompose_struct/0.
+:- dynamic user:wam_univ_decompose_atom/0.
+:- dynamic user:wam_univ_decompose_number/0.
+:- dynamic user:wam_univ_decompose_list/0.
+:- dynamic user:wam_univ_decompose_mismatch/0.
 :- dynamic user:wam_ground_guard/1.
 :- dynamic user:wam_ground_unbound/1.
 :- dynamic user:wam_ground_nested_unbound/1.
@@ -161,6 +167,12 @@ user:wam_copy_term_sharing_fail :- user:wam_unbound_arg(X), copy_term(f(X, X), f
 user:wam_copy_term_independent_ok :- copy_term(f(_, _), f(a, b)).
 user:wam_functor_guard(Term, Name, Arity) :- functor(Term, Name, Arity).
 user:wam_arg_guard(Index, Term, Arg) :- arg(Index, Term, Arg).
+user:wam_univ_guard(Term, List) :- Term =.. List.
+user:wam_univ_decompose_struct :- f(a, b) =.. [f, a, b].
+user:wam_univ_decompose_atom :- a =.. [a].
+user:wam_univ_decompose_number :- 42 =.. [42].
+user:wam_univ_decompose_list :- [a, b] =.. ['[|]', a, [b]].
+user:wam_univ_decompose_mismatch :- f(a, b) =.. [g, a, b].
 user:wam_ground_guard(X) :- ground(X).
 user:wam_ground_unbound(_) :- user:wam_unbound_arg(Y), ground(Y).
 user:wam_ground_nested_unbound(_) :- user:wam_unbound_arg(Y), ground(f(Y)).
@@ -257,6 +269,12 @@ run_smoke :-
           user:wam_copy_term_independent_ok/0,
           user:wam_functor_guard/3,
           user:wam_arg_guard/3,
+          user:wam_univ_guard/2,
+          user:wam_univ_decompose_struct/0,
+          user:wam_univ_decompose_atom/0,
+          user:wam_univ_decompose_number/0,
+          user:wam_univ_decompose_list/0,
+          user:wam_univ_decompose_mismatch/0,
           user:wam_ground_guard/1,
           user:wam_ground_unbound/1,
           user:wam_ground_nested_unbound/1,
@@ -310,6 +328,7 @@ run_smoke :-
     assert_lowered_copy_term_builtin_emitted(TmpDir),
     assert_lowered_functor_builtin_emitted(TmpDir),
     assert_lowered_arg_builtin_emitted(TmpDir),
+    assert_lowered_univ_builtin_emitted(TmpDir),
     assert_lowered_ground_builtin_emitted(TmpDir),
     assert_lowered_arithmetic_comparison_builtin_emitted(TmpDir),
     assert_multiclause_wrappers_runtime_mediated(TmpDir),
@@ -447,6 +466,14 @@ smoke_cases([
     case('wam_arg_guard/3', args(1, '[a,b]', a), "true"),
     case('wam_arg_guard/3', args(3, 'f(a,b)', a), "false"),
     case('wam_arg_guard/3', args(1, a, a), "false"),
+    case('wam_univ_guard/2', args('f(a,b)', '[f,a,b]'), "true"),
+    case('wam_univ_guard/2', args(a, '[a]'), "true"),
+    case('wam_univ_guard/2', args(42, '[42]'), "true"),
+    case('wam_univ_decompose_struct/0', no_args, "true"),
+    case('wam_univ_decompose_atom/0', no_args, "true"),
+    case('wam_univ_decompose_number/0', no_args, "true"),
+    case('wam_univ_decompose_list/0', no_args, "true"),
+    case('wam_univ_decompose_mismatch/0', no_args, "false"),
     case('wam_ground_guard/1', a, "true"),
     case('wam_ground_guard/1', 42, "true"),
     case('wam_ground_guard/1', 3.5, "true"),
@@ -650,6 +677,13 @@ assert_lowered_arg_builtin_emitted(ProjectDir) :-
     read_file_to_string(CorePath, CoreCode, []),
     has(CoreCode, "defn lowered-wam-arg-guard-3"),
     has(CoreCode, "runtime/apply-arg-solution").
+
+assert_lowered_univ_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-univ-guard-2"),
+    has(CoreCode, "defn lowered-wam-univ-decompose-struct-0"),
+    has(CoreCode, "runtime/apply-univ-solution").
 
 assert_lowered_ground_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
@@ -855,6 +889,8 @@ prolog_term_string_to_edn('f(a)', "{:tag :struct :functor \"f/1\" :args [\"a\"]}
 prolog_term_string_to_edn('f(a,b)', "{:tag :struct :functor \"f/2\" :args [\"a\" \"b\"]}") :- !.
 prolog_term_string_to_edn('f(b)', "{:tag :struct :functor \"f/1\" :args [\"b\"]}") :- !.
 prolog_term_string_to_edn('[a]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}") :- !.
+prolog_term_string_to_edn('[42]', "{:tag :struct :functor \"[|]/2\" :args [42 \"[]\"]}") :- !.
+prolog_term_string_to_edn('[f,a,b]', "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[a,b]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[b,c]', "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[c]', "{:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}") :- !.
@@ -865,6 +901,8 @@ prolog_term_string_to_edn("f(a)", "{:tag :struct :functor \"f/1\" :args [\"a\"]}
 prolog_term_string_to_edn("f(a,b)", "{:tag :struct :functor \"f/2\" :args [\"a\" \"b\"]}") :- !.
 prolog_term_string_to_edn("f(b)", "{:tag :struct :functor \"f/1\" :args [\"b\"]}") :- !.
 prolog_term_string_to_edn("[a]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}") :- !.
+prolog_term_string_to_edn("[42]", "{:tag :struct :functor \"[|]/2\" :args [42 \"[]\"]}") :- !.
+prolog_term_string_to_edn("[f,a,b]", "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn("[a,b]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn("[b,c]", "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn("[c]", "{:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}") :- !.

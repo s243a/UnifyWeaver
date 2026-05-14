@@ -503,6 +503,15 @@ test(simple_builtin_arg_is_direct_lowered_in_prefix) :-
         assertion(\+ has(Code, "runtime/step"))
     )).
 
+test(simple_builtin_univ_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_univ/2:\nbuiltin_call =../2, 2\nproceed\n",
+        wam_clojure_lowerable(test_univ/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_univ/2, WamCode, [], Code),
+        has(Code, "runtime/apply-univ-solution"),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
 test(simple_builtin_ground_is_direct_lowered_in_prefix) :-
     once((
         WamCode = "test_ground/1:\nbuiltin_call ground/1, 1\nproceed\n",
