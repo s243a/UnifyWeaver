@@ -507,7 +507,7 @@ test_lowered_repeated_variable_filter_generation :-
                  Score =< 2)),
     get_time(Now),
     Stamp is round(Now * 1000000),
-    format(atom(ProjectDir), '/tmp/unifyweaver_wam_c_lowered_repeat_filter_project_~w', [Stamp]),
+    wam_c_temp_path('unifyweaver_wam_c_lowered_repeat_filter_project', Stamp, ProjectDir),
     directory_file_path(ProjectDir, 'lib.c', LibPath),
     (   plan_wam_c_lowered_helpers([user:wam_c_repeat_edge/3,
                                      user:wam_c_repeat_score/3,
@@ -1394,7 +1394,7 @@ run_lowered_repeated_variable_filter_executable_smoke :-
                  Score =< 2)),
     get_time(Now),
     Stamp is round(Now * 1000000),
-    format(atom(ProjectDir), '/tmp/unifyweaver_wam_c_lowered_repeat_filter_smoke_~w', [Stamp]),
+    wam_c_temp_path('unifyweaver_wam_c_lowered_repeat_filter_smoke', Stamp, ProjectDir),
     directory_file_path(ProjectDir, 'wam_runtime.c', RuntimePath),
     directory_file_path(ProjectDir, 'lib.c', LibPath),
     directory_file_path(ProjectDir, 'main.c', MainPath),
@@ -2311,32 +2311,38 @@ static int expect_failure(WamState* state, const char* pred, const char* atom) {
 }
 
 int main(void) {
-    WamState state;
-    wam_state_init(&state);
-    setup_wam_c_repeat_edge_3(&state);
-    setup_wam_c_repeat_score_3(&state);
-    setup_wam_c_repeat_keep_1(&state);
-    setup_wam_c_repeat_small_1(&state);
-    setup_lowered_wam_c_helpers(&state);
+    WamState keep_state;
+    wam_state_init(&keep_state);
+    setup_wam_c_repeat_edge_3(&keep_state);
+    setup_wam_c_repeat_keep_1(&keep_state);
+    setup_lowered_wam_c_helpers(&keep_state);
 
-    if (!expect_success(&state, "wam_c_repeat_keep/1", "a")) {
-        wam_free_state(&state);
+    if (!expect_success(&keep_state, "wam_c_repeat_keep/1", "a")) {
+        wam_free_state(&keep_state);
         return 10;
     }
-    if (!expect_failure(&state, "wam_c_repeat_keep/1", "c")) {
-        wam_free_state(&state);
+    if (!expect_failure(&keep_state, "wam_c_repeat_keep/1", "c")) {
+        wam_free_state(&keep_state);
         return 20;
     }
-    if (!expect_success(&state, "wam_c_repeat_small/1", "a")) {
-        wam_free_state(&state);
+    wam_free_state(&keep_state);
+
+    WamState small_state;
+    wam_state_init(&small_state);
+    setup_wam_c_repeat_score_3(&small_state);
+    setup_wam_c_repeat_small_1(&small_state);
+    setup_lowered_wam_c_helpers(&small_state);
+
+    if (!expect_success(&small_state, "wam_c_repeat_small/1", "a")) {
+        wam_free_state(&small_state);
         return 30;
     }
-    if (!expect_failure(&state, "wam_c_repeat_small/1", "c")) {
-        wam_free_state(&state);
+    if (!expect_failure(&small_state, "wam_c_repeat_small/1", "c")) {
+        wam_free_state(&small_state);
         return 40;
     }
 
-    wam_free_state(&state);
+    wam_free_state(&small_state);
     return 0;
 }
 ').
