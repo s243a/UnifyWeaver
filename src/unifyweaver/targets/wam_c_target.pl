@@ -610,6 +610,7 @@ lowered_filter_arg_supported_(HeadArgs, Arg) :-
 
 callee_row_matches_filter(CalleeArgs, HeadArgs, CalleeRow) :-
     same_length(CalleeArgs, CalleeRow),
+    callee_row_matches_arg_constraints(CalleeArgs, CalleeRow),
     callee_row_matches_filter_(CalleeArgs, HeadArgs, CalleeRow).
 
 callee_row_matches_filter_([], _, []).
