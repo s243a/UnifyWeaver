@@ -37,6 +37,12 @@
 :- dynamic user:wam_cut_helper/1.
 :- dynamic user:wam_hard_cut_outer_ok/1.
 :- dynamic user:wam_not_b/1.
+:- dynamic user:wam_identity_guard/2.
+:- dynamic user:wam_not_identity_guard/2.
+:- dynamic user:wam_identity_same_unbound/0.
+:- dynamic user:wam_identity_distinct_unbound/0.
+:- dynamic user:wam_identity_after_alias/0.
+:- dynamic user:wam_identity_does_not_bind/0.
 :- dynamic user:wam_fail_after_bind/1.
 :- dynamic user:wam_atom_guard/1.
 :- dynamic user:wam_integer_guard/1.
@@ -140,6 +146,12 @@ user:wam_soft_cut_outer_ok(X) :- (user:wam_soft_cut_helper(Y), X = Y ; X = b).
 user:wam_cut_helper(X) :- X = a, !, fail.
 user:wam_hard_cut_outer_ok(X) :- (user:wam_cut_helper(Y), X = Y ; X = b).
 user:wam_not_b(X) :- X \= b.
+user:wam_identity_guard(A, B) :- A == B.
+user:wam_not_identity_guard(A, B) :- A \== B.
+user:wam_identity_same_unbound :- user:wam_unbound_arg(X), X == X.
+user:wam_identity_distinct_unbound :- user:wam_unbound_arg(X), user:wam_unbound_arg(Y), X == Y.
+user:wam_identity_after_alias :- user:wam_unbound_arg(X), Y = X, X == Y.
+user:wam_identity_does_not_bind :- user:wam_unbound_arg(X), X == a.
 user:wam_fail_after_bind(X) :- X = a, fail.
 user:wam_atom_guard(X) :- atom(X).
 user:wam_integer_guard(X) :- integer(X).
@@ -248,6 +260,12 @@ run_smoke :-
           user:wam_cut_helper/1,
           user:wam_hard_cut_outer_ok/1,
           user:wam_not_b/1,
+          user:wam_identity_guard/2,
+          user:wam_not_identity_guard/2,
+          user:wam_identity_same_unbound/0,
+          user:wam_identity_distinct_unbound/0,
+          user:wam_identity_after_alias/0,
+          user:wam_identity_does_not_bind/0,
           user:wam_fail_after_bind/1,
           user:wam_atom_guard/1,
           user:wam_integer_guard/1,
@@ -329,6 +347,7 @@ run_smoke :-
     assert_lowered_call_emitted(TmpDir),
     assert_lowered_cut_builtin_emitted(TmpDir),
     assert_lowered_not_unify_builtin_emitted(TmpDir),
+    assert_lowered_identity_builtin_emitted(TmpDir),
     assert_lowered_fail_builtin_emitted(TmpDir),
     assert_lowered_atom_builtin_emitted(TmpDir),
     assert_lowered_integer_builtin_emitted(TmpDir),
@@ -408,6 +427,16 @@ smoke_cases([
     case('wam_hard_cut_outer_ok/1', b, "true"),
     case('wam_not_b/1', a, "true"),
     case('wam_not_b/1', b, "false"),
+    case('wam_identity_guard/2', args(a, a), "true"),
+    case('wam_identity_guard/2', args(a, b), "false"),
+    case('wam_identity_guard/2', args('f(a)', 'f(a)'), "true"),
+    case('wam_identity_guard/2', args('f(a)', 'f(b)'), "false"),
+    case('wam_not_identity_guard/2', args(a, a), "false"),
+    case('wam_not_identity_guard/2', args(a, b), "true"),
+    case('wam_identity_same_unbound/0', no_args, "true"),
+    case('wam_identity_distinct_unbound/0', no_args, "false"),
+    case('wam_identity_after_alias/0', no_args, "true"),
+    case('wam_identity_does_not_bind/0', no_args, "false"),
     case('wam_fail_after_bind/1', a, "false"),
     case('wam_fail_after_bind/1', b, "false"),
     case('wam_atom_guard/1', a, "true"),
@@ -580,6 +609,13 @@ assert_lowered_not_unify_builtin_emitted(ProjectDir) :-
     read_file_to_string(CorePath, CoreCode, []),
     has(CoreCode, "defn lowered-wam-not-b-1"),
     has(CoreCode, "runtime/unifiable?").
+
+assert_lowered_identity_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-identity-guard-2"),
+    has(CoreCode, "defn lowered-wam-not-identity-guard-2"),
+    has(CoreCode, "runtime/term-identical?").
 
 assert_lowered_fail_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),

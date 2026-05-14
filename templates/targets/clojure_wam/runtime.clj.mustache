@@ -371,6 +371,23 @@
 (defn unifiable? [state left right]
   (first (unify-values state left right)))
 
+(defn term-identical? [state left right]
+  (let [bindings (:bindings state)]
+    (letfn [(identical* [l r]
+              (let [l* (deref-value bindings l)
+                    r* (deref-value bindings r)]
+                (cond
+                  (logic-var? l*) (and (logic-var? r*) (= (:var l*) (:var r*)))
+                  (logic-var? r*) false
+                  (structure-term? l*)
+                  (and (structure-term? r*)
+                       (interned-equal? (:functor l*) (:functor r*))
+                       (= (count (:args l*)) (count (:args r*)))
+                       (every? true? (map identical* (:args l*) (:args r*))))
+                  (structure-term? r*) false
+                  :else (interned-equal? l* r*))))]
+      (identical* left right))))
+
 (defn parse-numeric-atom [text]
   (when (and (string? text)
              (re-matches #"[+-]?(?:\d+(?:\.\d*)?|\.\d+)" text))
@@ -1170,6 +1187,20 @@
           (let [left (or (reg-get-raw state "A1") ::unbound)
                 right (or (reg-get-raw state "A2") ::unbound)]
             (if (unifiable? state left right)
+              (backtrack state)
+              (advance state)))
+
+          "==/2"
+          (let [left (or (reg-get-raw state "A1") ::unbound)
+                right (or (reg-get-raw state "A2") ::unbound)]
+            (if (term-identical? state left right)
+              (advance state)
+              (backtrack state)))
+
+          "\\==/2"
+          (let [left (or (reg-get-raw state "A1") ::unbound)
+                right (or (reg-get-raw state "A2") ::unbound)]
+            (if (term-identical? state left right)
               (backtrack state)
               (advance state)))
 
