@@ -371,6 +371,12 @@ wam_cpp_lowered_emitter_instr(["jump", L], jump(L)).
 wam_cpp_lowered_emitter_instr(["cut_ite"], cut_ite).
 wam_cpp_lowered_emitter_instr(["begin_aggregate", K, V, R], begin_aggregate(K, V, R)).
 wam_cpp_lowered_emitter_instr(["end_aggregate", R], end_aggregate(R)).
+% Indexing instructions: variable-arity, so we capture all tail tokens
+% and parse them in instr_to_setup_line.
+wam_cpp_lowered_emitter_instr(["switch_on_constant" | Entries], switch_on_constant(Entries)).
+wam_cpp_lowered_emitter_instr(["switch_on_constant_a2" | Entries], switch_on_constant_a2(Entries)).
+wam_cpp_lowered_emitter_instr(["switch_on_structure" | Entries], switch_on_structure(Entries)).
+wam_cpp_lowered_emitter_instr(["switch_on_term" | Tokens], switch_on_term(Tokens)).
 
 %% walk_blocks(+AllItems, -Labels, -FlatInstrs)
 %  Single pass: every label() records its PC; every instruction goes into
@@ -453,6 +459,27 @@ instr_to_setup_line(jump(L), Labels, Line) :- !,
     label_resolve(L, Labels, PC),
     format(atom(Line),
            '    vm.instrs.push_back(Instruction::Jump(~w));', [PC]).
+instr_to_setup_line(switch_on_constant(Entries), Labels, Line) :- !,
+    parse_switch_entries(Entries, Labels, EntriesCpp),
+    format(atom(Line),
+           '    vm.instrs.push_back(Instruction::SwitchOnConstant({~w}));',
+           [EntriesCpp]).
+instr_to_setup_line(switch_on_constant_a2(Entries), Labels, Line) :- !,
+    % Treated as a no-op for now (interpreter falls through to the
+    % try_me_else chain on A2 dispatch). Emit as a comment.
+    parse_switch_entries(Entries, Labels, _EntriesCpp),
+    format(atom(Line),
+           '    // switch_on_constant_a2 ~w (no-op; falls through)', [Entries]).
+instr_to_setup_line(switch_on_structure(Entries), Labels, Line) :- !,
+    parse_switch_struct_entries(Entries, Labels, EntriesCpp),
+    format(atom(Line),
+           '    vm.instrs.push_back(Instruction::SwitchOnStructure({~w}));',
+           [EntriesCpp]).
+instr_to_setup_line(switch_on_term(Tokens), Labels, Line) :- !,
+    parse_switch_term(Tokens, Labels, ConstsCpp, StructsCpp, ListPC),
+    format(atom(Line),
+           '    vm.instrs.push_back(Instruction::SwitchOnTerm({~w}, {~w}, ~w));',
+           [ConstsCpp, StructsCpp, ListPC]).
 instr_to_setup_line(Instr, _Labels, Line) :-
     wam_instruction_to_cpp_literal(Instr, Lit),
     format(atom(Line), '    vm.instrs.push_back(~w);', [Lit]).
@@ -460,6 +487,90 @@ instr_to_setup_line(Instr, _Labels, Line) :-
 label_resolve(L, Labels, PC) :-
     to_string(L, LS),
     lookup_label(LS, Labels, PC).
+
+% =====================================================================
+% Switch-table parsing
+% =====================================================================
+% Switch entries arrive as tokens like "red:default" or "foo/1:L_xxx".
+% We split each on the LAST `:`, distinguishing the special sentinels
+% "default" (= fall through, SWITCH_DEFAULT) and "none" (= fail,
+% SWITCH_NONE) from real label names (resolved to PCs).
+
+%% switch_pc_for(+LabelStr, +Labels, -CppPc)
+%  CppPc is either a numeric PC or one of the sentinel C++ identifiers
+%  Instruction::SWITCH_DEFAULT / Instruction::SWITCH_NONE.
+switch_pc_for("default", _, 'Instruction::SWITCH_DEFAULT') :- !.
+switch_pc_for("none",    _, 'Instruction::SWITCH_NONE')    :- !.
+switch_pc_for(L, Labels, PC) :- lookup_label(L, Labels, PC).
+
+%% split_entry(+Entry, -Key, -LabelStr)
+%  Split "key:label" on the LAST `:` so functor keys like "foo/1" stay
+%  intact. Returns Key (string) and LabelStr (string).
+split_entry(Entry, Key, Label) :-
+    string_codes(Entry, Codes),
+    last_colon_index(Codes, 0, -1, Idx),
+    Idx >= 0,
+    length(Pre, Idx),
+    append(Pre, [_|Post], Codes),
+    string_codes(KeyStr, Pre),
+    string_codes(Label, Post),
+    Key = KeyStr.
+
+last_colon_index([], _, Acc, Acc).
+last_colon_index([0':|T], I, _, Out) :- !,
+    I1 is I + 1, last_colon_index(T, I1, I, Out).
+last_colon_index([_|T], I, Acc, Out) :-
+    I1 is I + 1, last_colon_index(T, I1, Acc, Out).
+
+%% key_to_cpp_value(+KeyStr, -CppLiteral)
+%  Atom / Integer / Float literal for a switch key.
+key_to_cpp_value(KeyStr, Lit) :-
+    (   number_string(N, KeyStr), integer(N)
+    ->  format(atom(Lit), 'Value::Integer(~w)', [N])
+    ;   number_string(F, KeyStr), float(F)
+    ->  format(atom(Lit), 'Value::Float(~w)', [F])
+    ;   escape_cpp_string(KeyStr, Esc),
+        format(atom(Lit), 'Value::Atom("~w")', [Esc])
+    ).
+
+%% parse_switch_entries(+Entries, +Labels, -CppPairs)
+%  CppPairs is a comma-joined list of "{ValueLiteral, PC}".
+parse_switch_entries(Entries, Labels, CppPairs) :-
+    findall(Pair, (
+        member(E, Entries),
+        split_entry(E, KeyStr, LabelStr),
+        key_to_cpp_value(KeyStr, KCpp),
+        switch_pc_for(LabelStr, Labels, PC),
+        format(atom(Pair), '{~w, ~w}', [KCpp, PC])
+    ), Pairs),
+    atomic_list_concat(Pairs, ', ', CppPairs).
+
+%% parse_switch_struct_entries(+Entries, +Labels, -CppPairs)
+%  Like parse_switch_entries but keys are functor strings (e.g. "foo/1").
+parse_switch_struct_entries(Entries, Labels, CppPairs) :-
+    findall(Pair, (
+        member(E, Entries),
+        split_entry(E, KeyStr, LabelStr),
+        escape_cpp_string(KeyStr, EscKey),
+        switch_pc_for(LabelStr, Labels, PC),
+        format(atom(Pair), '{"~w", ~w}', [EscKey, PC])
+    ), Pairs),
+    atomic_list_concat(Pairs, ', ', CppPairs).
+
+%% parse_switch_term(+Tokens, +Labels, -ConstsCpp, -StructsCpp, -ListPC)
+%  Token format: <NConsts> <consts...> <NStructs> <structs...> <listLabel>
+parse_switch_term(Tokens, Labels, ConstsCpp, StructsCpp, ListPC) :-
+    Tokens = [NCStr | Rest1],
+    number_string(NC, NCStr),
+    length(ConstEntries, NC),
+    append(ConstEntries, Rest2, Rest1),
+    Rest2 = [NSStr | Rest3],
+    number_string(NS, NSStr),
+    length(StructEntries, NS),
+    append(StructEntries, [ListLabel], Rest3),
+    parse_switch_entries(ConstEntries, Labels, ConstsCpp),
+    parse_switch_struct_entries(StructEntries, Labels, StructsCpp),
+    switch_pc_for(ListLabel, Labels, ListPC).
 
 % ============================================================================
 % Project-level assembly
@@ -737,14 +848,24 @@ struct Instruction {
         Call, Execute, Proceed, Fail, Allocate, Deallocate,
         BuiltinCall, CallForeign,
         TryMeElse, RetryMeElse, TrustMe, Jump, CutIte,
-        BeginAggregate, EndAggregate
+        BeginAggregate, EndAggregate,
+        SwitchOnConstant, SwitchOnStructure, SwitchOnTerm
     };
+    // Sentinel pc values for switch-table entries that should not jump.
+    static constexpr std::size_t SWITCH_DEFAULT = static_cast<std::size_t>(-1);
+    static constexpr std::size_t SWITCH_NONE    = static_cast<std::size_t>(-2);
+
     Op op = Op::Proceed;
     Value val;
     std::string a;
     std::string b;
     std::int64_t n = 0;
     std::size_t target = 0;
+    // Indexing dispatch tables. const_table holds Value→pc for atom/int
+    // dispatch; struct_table holds "functor/arity"→pc for compound
+    // dispatch; target doubles as the list-pc for SwitchOnTerm.
+    std::vector<std::pair<Value, std::size_t>> const_table;
+    std::vector<std::pair<std::string, std::size_t>> struct_table;
 
     static Instruction GetConstant(Value v, std::string ai)
         { Instruction i; i.op = Op::GetConstant; i.val = std::move(v); i.a = std::move(ai); return i; }
@@ -807,6 +928,18 @@ struct Instruction {
           i.b = std::move(vreg); i.val = Value::Atom(std::move(rreg)); return i; }
     static Instruction EndAggregate(std::string vreg)
         { Instruction i; i.op = Op::EndAggregate; i.a = std::move(vreg); return i; }
+    static Instruction SwitchOnConstant(std::vector<std::pair<Value, std::size_t>> table)
+        { Instruction i; i.op = Op::SwitchOnConstant; i.const_table = std::move(table); return i; }
+    static Instruction SwitchOnStructure(std::vector<std::pair<std::string, std::size_t>> table)
+        { Instruction i; i.op = Op::SwitchOnStructure; i.struct_table = std::move(table); return i; }
+    static Instruction SwitchOnTerm(std::vector<std::pair<Value, std::size_t>> consts,
+                                    std::vector<std::pair<std::string, std::size_t>> structs,
+                                    std::size_t list_pc)
+        { Instruction i; i.op = Op::SwitchOnTerm;
+          i.const_table = std::move(consts);
+          i.struct_table = std::move(structs);
+          i.target = list_pc;
+          return i; }
 };
 
 struct TrailEntry {
@@ -1774,8 +1907,13 @@ bool WamState::step(const Instruction& instr) {
             pc += 1; return true;
         }
         case Instruction::Op::RetryMeElse: {
-            if (choice_points.empty()) return false;
-            choice_points.back().alt_pc = instr.target;
+            // No-op if no CP exists (e.g. when an indexing instruction
+            // jumped past the originating try_me_else). Classic WAM:
+            // retry_me_else updates the top CP''s alt; if there is no
+            // top CP we simply continue with no alt to manage.
+            if (!choice_points.empty()) {
+                choice_points.back().alt_pc = instr.target;
+            }
             pc += 1; return true;
         }
         case Instruction::Op::TrustMe: {
@@ -1824,6 +1962,74 @@ bool WamState::step(const Instruction& instr) {
             f.return_pc_set = true;
             // Force backtrack to find the next solution of the body.
             return false;
+        }
+
+        // ---- Indexing ----------------------------------------------
+        case Instruction::Op::SwitchOnConstant: {
+            // Dispatch on A1''s atom/integer value.
+            CellPtr ac = get_cell("A1");
+            const Value& a = *ac;
+            if (a.is_unbound()) { pc += 1; return true; }
+            if (a.tag != Value::Tag::Atom && a.tag != Value::Tag::Integer
+                && a.tag != Value::Tag::Float) {
+                pc += 1; return true; // not a constant we index on
+            }
+            for (auto& kv : instr.const_table) {
+                if (kv.first == a) {
+                    if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                    if (kv.second == Instruction::SWITCH_NONE)    return false;
+                    pc = kv.second; return true;
+                }
+            }
+            return false; // bound constant with no matching clause
+        }
+        case Instruction::Op::SwitchOnStructure: {
+            CellPtr ac = get_cell("A1");
+            const Value& a = *ac;
+            if (a.is_unbound()) { pc += 1; return true; }
+            if (a.tag != Value::Tag::Compound) { pc += 1; return true; }
+            for (auto& kv : instr.struct_table) {
+                if (kv.first == a.s) {
+                    if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                    if (kv.second == Instruction::SWITCH_NONE)    return false;
+                    pc = kv.second; return true;
+                }
+            }
+            return false;
+        }
+        case Instruction::Op::SwitchOnTerm: {
+            CellPtr ac = get_cell("A1");
+            const Value& a = *ac;
+            if (a.is_unbound()) { pc += 1; return true; }
+            // Atom / integer / float → const_table.
+            if (a.tag == Value::Tag::Atom || a.tag == Value::Tag::Integer
+                || a.tag == Value::Tag::Float) {
+                for (auto& kv : instr.const_table) {
+                    if (kv.first == a) {
+                        if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                        if (kv.second == Instruction::SWITCH_NONE)    return false;
+                        pc = kv.second; return true;
+                    }
+                }
+                return false;
+            }
+            // Compound → list_pc for cons cells, otherwise struct_table.
+            if (a.tag == Value::Tag::Compound) {
+                if (a.s == "[|]/2") {
+                    if (instr.target == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                    if (instr.target == Instruction::SWITCH_NONE)    return false;
+                    pc = instr.target; return true;
+                }
+                for (auto& kv : instr.struct_table) {
+                    if (kv.first == a.s) {
+                        if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                        if (kv.second == Instruction::SWITCH_NONE)    return false;
+                        pc = kv.second; return true;
+                    }
+                }
+                return false;
+            }
+            pc += 1; return true;
         }
     }
     return false;

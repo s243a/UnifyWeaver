@@ -86,6 +86,12 @@ instr_from_parts(["retry_me_else", L], retry_me_else(L)).
 instr_from_parts(["trust_me"], trust_me).
 instr_from_parts(["jump", L], jump(L)).
 instr_from_parts(["cut_ite"], cut_ite).
+instr_from_parts(["begin_aggregate", K, V, R], begin_aggregate(K, V, R)).
+instr_from_parts(["end_aggregate", R], end_aggregate(R)).
+instr_from_parts(["switch_on_constant" | Entries], switch_on_constant(Entries)).
+instr_from_parts(["switch_on_constant_a2" | Entries], switch_on_constant_a2(Entries)).
+instr_from_parts(["switch_on_structure" | Entries], switch_on_structure(Entries)).
+instr_from_parts(["switch_on_term" | Tokens], switch_on_term(Tokens)).
 
 % =====================================================================
 % Lowerability
@@ -108,6 +114,12 @@ wam_cpp_lowerable(PI, WamCode, Reason) :-
     ( PI = _M:_P/_A -> true ; PI = _/_A2 -> true ; true ).
 
 clause1_instrs([], []).
+% Strip leading indexing instructions (switch_on_*) — they are dispatch
+% helpers ahead of try_me_else, not part of any clause body.
+clause1_instrs([switch_on_constant(_)|Rest], C1) :- !, clause1_instrs(Rest, C1).
+clause1_instrs([switch_on_constant_a2(_)|Rest], C1) :- !, clause1_instrs(Rest, C1).
+clause1_instrs([switch_on_structure(_)|Rest], C1) :- !, clause1_instrs(Rest, C1).
+clause1_instrs([switch_on_term(_)|Rest], C1) :- !, clause1_instrs(Rest, C1).
 clause1_instrs([try_me_else(_)|Rest], C1) :- !,
     take_to_proceed(Rest, C1).
 clause1_instrs(Instrs, Instrs).
@@ -155,6 +167,13 @@ cpp_supported(cut_ite).
 cpp_supported(jump(_)).
 cpp_supported(begin_aggregate(_, _, _)).
 cpp_supported(end_aggregate(_)).
+% Indexing instructions: lowered emitter doesn''t inline these, but it
+% must accept them as supported so a predicate containing them remains
+% lowerable. The actual dispatch lives in the interpreter''s step().
+cpp_supported(switch_on_constant(_)).
+cpp_supported(switch_on_constant_a2(_)).
+cpp_supported(switch_on_structure(_)).
+cpp_supported(switch_on_term(_)).
 
 % =====================================================================
 % Function name generation
