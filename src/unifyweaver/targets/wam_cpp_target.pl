@@ -416,7 +416,12 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     % length/2 (rare) shadow the helpers via labels-map overwrite.
     helper_predicate_items(HelperItems),
     flatten_blocks([HelperItems|PerPredItems], AllItems),
-    walk_blocks(AllItems, Labels, FlatInstrs),
+    walk_blocks(AllItems, Labels, FlatInstrs0),
+    % Append a single trailing CatchReturn instruction. catch/3 sets
+    % cp to its pc so the protected goal''s normal proceed lands here
+    % and pops the catcher frame.
+    append(FlatInstrs0, [catch_return], FlatInstrs),
+    length(FlatInstrs0, CatchReturnPC),
     findall(LabelLine, (
         member(NameStr-PC, Labels),
         format(atom(LabelLine),
@@ -434,6 +439,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     vm.instrs.clear();
     vm.labels.clear();
     vm.instrs.reserve(~w);
+    vm.catch_return_pc = ~w;
 ~w
 ~w
 }
@@ -441,7 +447,7 @@ static const int _wam_cpp_setup_register = []() {
     Program::register_setup(&wam_cpp_setup);
     return 0;
 }();
-', [Reserve, LabelBody, InstrBody]).
+', [Reserve, CatchReturnPC, LabelBody, InstrBody]).
 
 %% helper_predicate_items(-Items)
 %  Canonical WAM for builtin "library" predicates the user can call via
@@ -542,6 +548,8 @@ instr_to_setup_line(switch_on_term(Tokens), Labels, Line) :- !,
     format(atom(Line),
            '    vm.instrs.push_back(Instruction::SwitchOnTerm({~w}, {~w}, ~w));',
            [ConstsCpp, StructsCpp, ListPC]).
+instr_to_setup_line(catch_return, _Labels, Line) :- !,
+    Line = '    vm.instrs.push_back(Instruction::CatchReturn());'.
 instr_to_setup_line(Instr, _Labels, Line) :-
     wam_instruction_to_cpp_literal(Instr, Lit),
     format(atom(Line), '    vm.instrs.push_back(~w);', [Lit]).
@@ -911,7 +919,8 @@ struct Instruction {
         BuiltinCall, CallForeign,
         TryMeElse, RetryMeElse, TrustMe, Jump, CutIte,
         BeginAggregate, EndAggregate,
-        SwitchOnConstant, SwitchOnStructure, SwitchOnTerm
+        SwitchOnConstant, SwitchOnStructure, SwitchOnTerm,
+        CatchReturn
     };
     // Sentinel pc values for switch-table entries that should not jump.
     static constexpr std::size_t SWITCH_DEFAULT = static_cast<std::size_t>(-1);
@@ -1002,6 +1011,8 @@ struct Instruction {
           i.struct_table = std::move(structs);
           i.target = list_pc;
           return i; }
+    static Instruction CatchReturn()
+        { Instruction i; i.op = Op::CatchReturn; return i; }
 };
 
 struct TrailEntry {
@@ -1060,6 +1071,24 @@ struct AggregateFrame {
     std::vector<Value> acc;
 };
 
+// Catcher frame opened by catch/3. Sits on a side stack (not the
+// regular choice-point stack) so it doesn''t participate in normal
+// backtracking — throw/1 walks this stack explicitly to find a
+// catcher whose pattern unifies with the thrown term; backtrack()
+// pops frames whose protected goal has exhausted its solutions.
+struct CatcherFrame {
+    CellPtr catcher_term;       // A2 from catch/3 (pattern to match)
+    CellPtr recovery_term;      // A3 from catch/3 (goal to invoke on match)
+    std::size_t saved_cp = 0;   // proceed target after recovery returns
+    std::size_t trail_mark = 0;
+    std::size_t base_cp_count = 0;
+    std::size_t base_agg_count = 0;
+    std::size_t saved_cut_barrier = 0;
+    std::unordered_map<std::string, CellPtr> saved_regs;
+    std::vector<ModeFrame> saved_mode_stack;
+    std::vector<EnvFrame> saved_env_stack;
+};
+
 struct WamState {
     std::unordered_map<std::string, CellPtr> regs;
     std::unordered_map<std::string, std::size_t> labels;
@@ -1067,6 +1096,12 @@ struct WamState {
     std::vector<TrailEntry> trail;
     std::vector<ChoicePoint> choice_points;
     std::vector<AggregateFrame> aggregate_frames;
+    std::vector<CatcherFrame> catcher_frames;
+    // pc of the auto-injected single CatchReturn instruction. catch/3
+    // sets cp to this value before dispatching to the protected goal;
+    // when the goal proceeds, control lands here and the catcher frame
+    // is popped.
+    std::size_t catch_return_pc = 0;
     // Mode stack: Get-/Put-Structure / Get-/Put-List PUSH; Unify*/Set*
     // operate on top(); each frame auto-pops once its arity is filled.
     std::vector<ModeFrame> mode_stack;
@@ -1106,6 +1141,19 @@ struct WamState {
     bool    backtrack();
     bool    builtin(const std::string& op, std::int64_t arity);
     bool    query(const std::string& pred_key, const std::vector<Value>& args);
+
+    // ---- catch/3 + throw/1 helpers ----------------------------------
+    // Treats arg-register A1..AN setup + label dispatch like a Call.
+    // after_pc becomes the new cp (where the goal proceeds to).
+    // Returns false if the goal''s functor has no registered label.
+    bool    invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc);
+    bool    execute_catch();
+    bool    execute_throw();
+    // Deep-copy a value tree, allocating fresh cells for any Unbound
+    // leaves (multiple references to the same source name share the
+    // same fresh cell). Used by throw/1 to snapshot the thrown term
+    // before unwinding state.
+    CellPtr deep_copy_term(CellPtr src);
 
     // ---- Builtin helpers ---------------------------------------------
     // Arithmetic: returns Integer or Float; sets ok=false on failure
@@ -1962,6 +2010,8 @@ bool WamState::step(const Instruction& instr) {
 
         // ---- Control flow ------------------------------------------
         case Instruction::Op::Call: {
+            if (instr.a == "catch/3") { cp = pc + 1; return execute_catch(); }
+            if (instr.a == "throw/1") { cp = pc + 1; return execute_throw(); }
             auto it = labels.find(instr.a);
             if (it == labels.end()) return false;
             cp = pc + 1;
@@ -1969,9 +2019,28 @@ bool WamState::step(const Instruction& instr) {
             return true;
         }
         case Instruction::Op::Execute: {
+            if (instr.a == "catch/3") return execute_catch();
+            if (instr.a == "throw/1") return execute_throw();
             auto it = labels.find(instr.a);
             if (it == labels.end()) return false;
             pc = it->second;
+            return true;
+        }
+        case Instruction::Op::CatchReturn: {
+            // Reached when a catch-protected goal proceeds normally.
+            // Pop the topmost catcher frame and proceed to its
+            // saved continuation.
+            if (catcher_frames.empty()) {
+                // Should not happen — defensive: halt as if normal proceed.
+                if (cp == 0) { halt = true; return true; }
+                pc = cp; cp = 0; return true;
+            }
+            CatcherFrame f = std::move(catcher_frames.back());
+            catcher_frames.pop_back();
+            cp = f.saved_cp;
+            if (cp == 0) { halt = true; return true; }
+            pc = cp;
+            cp = 0;
             return true;
         }
         case Instruction::Op::Proceed: {
@@ -2229,11 +2298,211 @@ static std::size_t find_matching_end_aggregate(
     return instrs.size();
 }
 
+// Deep-copy a value tree. Unbound leaves are renamed via a name→cell
+// map so multiple occurrences in the source share a single fresh cell
+// in the copy. Used by throw/1 to snapshot the thrown term before
+// state-unwind tears down the goal''s bindings.
+CellPtr WamState::deep_copy_term(CellPtr src) {
+    std::unordered_map<std::string, CellPtr> rename;
+    std::function<CellPtr(CellPtr)> rec = [&](CellPtr c) -> CellPtr {
+        Value v = deref(*c);
+        if (v.tag == Value::Tag::Unbound || v.tag == Value::Tag::Uninit) {
+            const std::string& name = v.s;
+            auto it = rename.find(name);
+            if (it != rename.end()) return it->second;
+            CellPtr fresh = std::make_shared<Cell>(
+                Value::Unbound("_T" + std::to_string(var_counter++)));
+            rename[name] = fresh;
+            return fresh;
+        }
+        if (v.tag == Value::Tag::Compound) {
+            std::vector<CellPtr> args;
+            for (auto& a : v.args) args.push_back(rec(a));
+            return std::make_shared<Cell>(
+                Value::Compound(v.s, std::move(args)));
+        }
+        return std::make_shared<Cell>(v);
+    };
+    return rec(src);
+}
+
+// Treat goal_cell as a Prolog goal-term and dispatch to it as a Call:
+// sets A-registers from the goal''s args, looks up "<name>/<arity>" in
+// labels, and arranges for the goal to proceed to after_pc when done.
+// Atoms are treated as 0-arity calls. Returns false if the goal''s
+// functor isn''t a known label.
+bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
+    Value g = deref(*goal_cell);
+    if (g.tag == Value::Tag::Atom) {
+        // Special-case the trivial control atoms so a recovery goal of
+        // "true" or "fail" works without needing them registered as
+        // 0-arity predicates.
+        if (g.s == "true") {
+            cp = after_pc;
+            if (cp == 0) { halt = true; return true; }
+            pc = cp; cp = 0;
+            return true;
+        }
+        if (g.s == "fail" || g.s == "false") {
+            return false;
+        }
+        std::string key = g.s + "/0";
+        auto it = labels.find(key);
+        if (it == labels.end()) return false;
+        cp = after_pc;
+        pc = it->second;
+        return true;
+    }
+    if (g.tag == Value::Tag::Compound) {
+        // s is "<name>/<arity>".
+        const std::string& key = g.s;
+        auto slash = key.rfind(''/'');
+        if (slash == std::string::npos) return false;
+        std::size_t arity = 0;
+        try { arity = std::stoul(key.substr(slash + 1)); }
+        catch (...) { return false; }
+        if (arity != g.args.size()) return false;
+        // Always set up A-registers from the goal''s args before any
+        // dispatch path — meta-builtins, user predicates, and direct
+        // builtins all read them.
+        for (std::size_t i = 0; i < arity; ++i) {
+            std::string an = "A" + std::to_string(i + 1);
+            regs[an] = g.args[i];
+        }
+        // Meta-builtins handled directly by step() arms — go through
+        // the same code path so nested catch / re-throw works.
+        if (key == "throw/1")  { cp = after_pc; return execute_throw(); }
+        if (key == "catch/3")  { cp = after_pc; return execute_catch(); }
+        // User predicate path.
+        auto it = labels.find(key);
+        if (it != labels.end()) {
+            cp = after_pc;
+            pc = it->second;
+            return true;
+        }
+        // Builtin path: run the builtin inline. On success, jump to
+        // the catch continuation (overriding the pc advance builtin()
+        // performs on its own — that increment refers to a non-existent
+        // surrounding instruction).
+        if (!builtin(key, static_cast<std::int64_t>(arity))) return false;
+        if (after_pc == 0) { halt = true; return true; }
+        pc = after_pc;
+        cp = 0;
+        return true;
+    }
+    return false;
+}
+
+// catch(Goal, Catcher, Recovery): push a CatcherFrame snapshotting
+// current VM state, then dispatch to Goal as a tail-call whose
+// continuation is the auto-injected CatchReturn instruction.
+bool WamState::execute_catch() {
+    CatcherFrame f;
+    f.catcher_term = get_cell("A2");
+    f.recovery_term = get_cell("A3");
+    f.saved_cp = cp;
+    f.trail_mark = trail.size();
+    f.base_cp_count = choice_points.size();
+    f.base_agg_count = aggregate_frames.size();
+    f.saved_cut_barrier = cut_barrier;
+    f.saved_regs = regs;
+    f.saved_mode_stack = mode_stack;
+    f.saved_env_stack = env_stack;
+    std::size_t my_depth = catcher_frames.size();
+    catcher_frames.push_back(std::move(f));
+    // Snapshot the goal cell BEFORE we touch any A-registers (since
+    // invoke_goal_as_call sets A1..AN from the goal''s args, which
+    // would clobber A1 mid-read if goal_cell aliases A1).
+    CellPtr goal = get_cell("A1");
+    if (!invoke_goal_as_call(goal, catch_return_pc)) {
+        // Goal failed to dispatch. If the failure is a plain failure
+        // (frame still on stack), pop it ourselves and propagate. If
+        // the failure was an uncaught throw walking past us, the
+        // frame is already gone and we just propagate.
+        if (catcher_frames.size() > my_depth) catcher_frames.pop_back();
+        return false;
+    }
+    return true;
+}
+
+// throw(Term): snapshot Term, then walk catcher_frames top→bottom,
+// unwinding state at each frame and trying to unify the snapshot with
+// the frame''s catcher pattern. The first matching frame invokes its
+// recovery goal as a tail-call. No match → uncaught exception.
+bool WamState::execute_throw() {
+    CellPtr thrown = deep_copy_term(get_cell("A1"));
+    while (!catcher_frames.empty()) {
+        CatcherFrame f = std::move(catcher_frames.back());
+        catcher_frames.pop_back();
+        // Restore VM state to the frame''s snapshot.
+        while (trail.size() > f.trail_mark) {
+            TrailEntry t = std::move(trail.back());
+            trail.pop_back();
+            *t.cell = std::move(t.prev);
+        }
+        while (choice_points.size() > f.base_cp_count) choice_points.pop_back();
+        while (aggregate_frames.size() > f.base_agg_count) aggregate_frames.pop_back();
+        regs = f.saved_regs;
+        mode_stack = f.saved_mode_stack;
+        env_stack = f.saved_env_stack;
+        cut_barrier = f.saved_cut_barrier;
+        // Try to unify the thrown term with this frame''s catcher.
+        std::size_t mark = trail.size();
+        if (unify_cells(thrown, f.catcher_term)) {
+            // Matched. Invoke recovery as a tail call back to the
+            // saved continuation.
+            return invoke_goal_as_call(f.recovery_term, f.saved_cp);
+        }
+        // No match: undo the failed unify attempt and try the next
+        // outer frame.
+        while (trail.size() > mark) {
+            TrailEntry t = std::move(trail.back());
+            trail.pop_back();
+            *t.cell = std::move(t.prev);
+        }
+    }
+    // Uncaught exception. Print it and signal a hard failure.
+    std::fprintf(stderr, "uncaught exception: %s\\n",
+                 render(deref(*thrown)).c_str());
+    halt = true;
+    return false;
+}
+
 bool WamState::backtrack() {
     // Pop normal choice points until we either find one to retry or run
     // into an open aggregate frame''s base — at which point the frame is
     // finalised and execution continues past its EndAggregate.
     for (;;) {
+        // If the catch-protected goal has exhausted all its CPs (and
+        // didn''t throw), pop the catcher frame and propagate failure
+        // outside the catch. We do this only when the catcher''s
+        // base_cp_count is strictly above any open aggregate''s base
+        // (so aggregate finalisation still takes precedence).
+        if (!catcher_frames.empty()
+            && choice_points.size() == catcher_frames.back().base_cp_count
+            && (aggregate_frames.empty()
+                || aggregate_frames.back().base_cp_count
+                       <= catcher_frames.back().base_cp_count))
+        {
+            CatcherFrame f = std::move(catcher_frames.back());
+            catcher_frames.pop_back();
+            // Unwind trail to the catcher''s mark — failure of the
+            // protected goal undoes all bindings it made.
+            while (trail.size() > f.trail_mark) {
+                TrailEntry t = std::move(trail.back());
+                trail.pop_back();
+                *t.cell = std::move(t.prev);
+            }
+            // Restore regs/env/mode/cp/cut so the world looks exactly
+            // as it did at catch entry, then continue backtracking
+            // outside the catch.
+            regs        = std::move(f.saved_regs);
+            mode_stack  = std::move(f.saved_mode_stack);
+            env_stack   = std::move(f.saved_env_stack);
+            cp          = f.saved_cp;
+            cut_barrier = f.saved_cut_barrier;
+            continue;
+        }
         std::size_t agg_base =
             aggregate_frames.empty() ? 0 : aggregate_frames.back().base_cp_count;
         if (!aggregate_frames.empty() && choice_points.size() == agg_base) {
