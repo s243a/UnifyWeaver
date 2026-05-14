@@ -12,7 +12,7 @@
 - ✅ Recursive compiler
 - ✅ Advanced recursion (24 tests)
 - ✅ Constraint integration
-- ✅ C# query calibration wrapper contract (unit test + dry-run command shape)
+- ✅ C# query graph and scan calibration wrapper contracts (unit test + dry-run command shape)
 - ✅ Inference test runner generation
 - ✅ Generated bash script syntax validation
 

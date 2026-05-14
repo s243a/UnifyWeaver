@@ -183,6 +183,8 @@ plan_wam_c_lowered_helper(DetectedKeys, AvailableKeys, PredIndicator, Plan) :-
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, fact_only(Rows))
     ;   lowered_body_call_helper(PredIndicator, AvailableKeys, CalleeKey, CalleeArity)
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, body_call(CalleeKey, CalleeArity))
+    ;   lowered_comparison_filtered_fact_helper(PredIndicator, CalleeKey, Rows)
+    ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, comparison_filtered_fact(CalleeKey, Rows))
     ;   lowered_filtered_fact_helper(PredIndicator, CalleeKey, Rows)
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, filtered_fact(CalleeKey, Rows))
     ;   lowered_fact_helper_rejection_reason(PredIndicator, Reason),
@@ -260,6 +262,8 @@ compile_lowered_helpers_for_project(Plans, LoweredKeys, Code, SetupCode) :-
                 lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, CodePart, SetupLine)
             ;   member(wam_c_lowered_helper_plan(Key, PredIndicator, lowered, filtered_fact(_CalleeKey, Rows)), Plans),
                 lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, CodePart, SetupLine)
+            ;   member(wam_c_lowered_helper_plan(Key, PredIndicator, lowered, comparison_filtered_fact(_ComparisonCalleeKey, Rows)), Plans),
+                lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, CodePart, SetupLine)
             ),
             FactEntries),
     findall(Key-CodePart-SetupLine,
@@ -307,6 +311,7 @@ wam_c_lowered_helper_plan_by_action(Plans, Action, Key, ReasonLabel) :-
 wam_c_lowered_plan_reason_label(fact_only(_Rows), fact_only) :- !.
 wam_c_lowered_plan_reason_label(body_call(_CalleeKey, _CalleeArity), body_call) :- !.
 wam_c_lowered_plan_reason_label(filtered_fact(_CalleeKey, _Rows), filtered_fact) :- !.
+wam_c_lowered_plan_reason_label(comparison_filtered_fact(_CalleeKey, _Rows), comparison_filtered_fact) :- !.
 wam_c_lowered_plan_reason_label(Reason, Reason).
 
 lowered_fact_helper_rows(PredIndicator, Rows) :-
@@ -413,6 +418,100 @@ lowered_filtered_fact_helper(PredIndicator, CalleeKey, Rows) :-
     sort(ProjectedRows0, Rows),
     Rows \= [],
     format(atom(CalleeKey), '~w/~w', [CalleePred, CalleeArity]).
+
+lowered_comparison_filtered_fact_helper(PredIndicator, CalleeKey, Rows) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    functor(Head, Pred, Arity),
+    findall(HeadArgs-Body,
+            (   user:clause(Head, Body),
+                Head =.. [_|HeadArgs]
+            ),
+            Clauses),
+    Clauses = [HeadArgs-Body0],
+    Body0 \== true,
+    strip_module_qualification(Body0, Body),
+    Body = (Call0, Guard0),
+    strip_module_qualification(Call0, Call),
+    strip_module_qualification(Guard0, Guard),
+    lowered_fact_call_for_filter(Pred/Arity, HeadArgs, Call, CalleeKey, CalleeArgs, CalleeRows),
+    Guard =.. [GuardPred, Left, Right],
+    wam_c_lowered_comparison_guard(GuardPred/2),
+    comparison_arg_supported(Left, CalleeArgs),
+    comparison_arg_supported(Right, CalleeArgs),
+    include(callee_row_matches_comparison_filter(CalleeArgs, GuardPred, Left, Right), CalleeRows, MatchingRows),
+    findall(Projected,
+            (   member(CalleeRow, MatchingRows),
+                project_callee_row_to_head(HeadArgs, CalleeArgs, CalleeRow, Projected)
+            ),
+            ProjectedRows0),
+    sort(ProjectedRows0, Rows),
+    Rows \= [].
+
+lowered_fact_call_for_filter(CurrentPred/CurrentArity, HeadArgs, Call, CalleeKey, CalleeArgs, CalleeRows) :-
+    Call =.. [CalleePred|CalleeArgs],
+    length(CalleeArgs, CalleeArity),
+    \+ wam_c_lowered_comparison_guard(CalleePred/CalleeArity),
+    (CurrentPred/CurrentArity) \== (CalleePred/CalleeArity),
+    maplist(var, HeadArgs),
+    maplist(callee_filter_arg_supported, CalleeArgs),
+    CalleeIndicator = user:CalleePred/CalleeArity,
+    lowered_fact_helper_rows(CalleeIndicator, CalleeRows),
+    format(atom(CalleeKey), '~w/~w', [CalleePred, CalleeArity]).
+
+callee_filter_arg_supported(Arg) :-
+    var(Arg),
+    !.
+callee_filter_arg_supported(Arg) :-
+    wam_c_lowered_constant(Arg).
+
+comparison_arg_supported(Arg, _CalleeArgs) :-
+    wam_c_lowered_constant(Arg),
+    !.
+comparison_arg_supported(Arg, CalleeArgs) :-
+    member(CalleeArg, CalleeArgs),
+    Arg == CalleeArg.
+
+callee_row_matches_comparison_filter(CalleeArgs, GuardPred, Left, Right, CalleeRow) :-
+    callee_row_matches_arg_constraints(CalleeArgs, CalleeRow),
+    comparison_arg_value(Left, CalleeArgs, CalleeRow, LeftValue),
+    comparison_arg_value(Right, CalleeArgs, CalleeRow, RightValue),
+    wam_c_eval_lowered_comparison_guard(GuardPred, LeftValue, RightValue).
+
+callee_row_matches_arg_constraints(CalleeArgs, CalleeRow) :-
+    same_length(CalleeArgs, CalleeRow),
+    \+ ( nth0(I, CalleeArgs, Arg),
+         nth0(I, CalleeRow, Value),
+         wam_c_lowered_constant(Arg),
+         Arg \== Value
+       ),
+    \+ ( nth0(I, CalleeArgs, Arg),
+         var(Arg),
+         nth0(J, CalleeArgs, OtherArg),
+         J > I,
+         Arg == OtherArg,
+         nth0(I, CalleeRow, Value),
+         nth0(J, CalleeRow, OtherValue),
+         Value \== OtherValue
+       ).
+
+comparison_arg_value(Arg, _CalleeArgs, _CalleeRow, Arg) :-
+    wam_c_lowered_constant(Arg),
+    !.
+comparison_arg_value(Arg, CalleeArgs, CalleeRow, Value) :-
+    nth0(Index, CalleeArgs, CalleeArg),
+    Arg == CalleeArg,
+    !,
+    nth0(Index, CalleeRow, Value).
+
+wam_c_eval_lowered_comparison_guard((=), Left, Right) :- Left == Right.
+wam_c_eval_lowered_comparison_guard((==), Left, Right) :- Left == Right.
+wam_c_eval_lowered_comparison_guard((\==), Left, Right) :- Left \== Right.
+wam_c_eval_lowered_comparison_guard((>), Left, Right) :- integer(Left), integer(Right), Left > Right.
+wam_c_eval_lowered_comparison_guard((<), Left, Right) :- integer(Left), integer(Right), Left < Right.
+wam_c_eval_lowered_comparison_guard((>=), Left, Right) :- integer(Left), integer(Right), Left >= Right.
+wam_c_eval_lowered_comparison_guard((=<), Left, Right) :- integer(Left), integer(Right), Left =< Right.
+wam_c_eval_lowered_comparison_guard((=:=), Left, Right) :- integer(Left), integer(Right), Left =:= Right.
+wam_c_eval_lowered_comparison_guard((=\=), Left, Right) :- integer(Left), integer(Right), Left =\= Right.
 
 strip_module_qualification(Module:Body, Stripped) :-
     atom(Module),
