@@ -165,18 +165,23 @@ wam_c_kernel_max_depth(ConfigOps, MaxDepth) :-
 
 plan_wam_c_lowered_helpers(Predicates, Options, DetectedKeys, Plans) :-
     (   option(lowered_helpers(true), Options)
-    ->  maplist(plan_wam_c_lowered_helper(DetectedKeys), Predicates, Plans)
+    ->  maplist(wam_c_predicate_key, Predicates, AvailableKeys),
+        maplist(plan_wam_c_lowered_helper(DetectedKeys, AvailableKeys), Predicates, Plans)
     ;   maplist(plan_wam_c_lowered_helper_disabled, Predicates, Plans)
     ).
 
-plan_wam_c_lowered_helper(DetectedKeys, PredIndicator, Plan) :-
+wam_c_predicate_key(PredIndicator, Key) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    format(atom(Key), '~w/~w', [Pred, Arity]).
+
+plan_wam_c_lowered_helper(DetectedKeys, AvailableKeys, PredIndicator, Plan) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     format(atom(Key), '~w/~w', [Pred, Arity]),
     (   memberchk(Key, DetectedKeys)
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, interpreted, detected_kernel)
     ;   lowered_fact_helper_rows(PredIndicator, Rows)
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, fact_only(Rows))
-    ;   lowered_body_call_helper(PredIndicator, CalleeKey, CalleeArity)
+    ;   lowered_body_call_helper(PredIndicator, AvailableKeys, CalleeKey, CalleeArity)
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, body_call(CalleeKey, CalleeArity))
     ;   lowered_comparison_filtered_fact_helper(PredIndicator, CalleeKey, Rows)
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, comparison_filtered_fact(CalleeKey, Rows))
@@ -316,14 +321,18 @@ compile_lowered_helpers_for_project(Plans, LoweredKeys, Code, SetupCode) :-
     findall(Key-CodePart-SetupLine,
             (   member(wam_c_lowered_helper_plan(Key, PredIndicator, lowered, fact_only(Rows)), Plans),
                 lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, CodePart, SetupLine)
-            ;   member(wam_c_lowered_helper_plan(Key, PredIndicator, lowered, body_call(CalleeKey, CalleeArity)), Plans),
-                lowered_body_call_helper_for_predicate(PredIndicator, CalleeKey, CalleeArity, Key, CodePart, SetupLine)
-            ;   member(wam_c_lowered_helper_plan(Key, PredIndicator, lowered, filtered_fact(_FilteredCalleeKey, Rows)), Plans),
+            ;   member(wam_c_lowered_helper_plan(Key, PredIndicator, lowered, filtered_fact(_CalleeKey, Rows)), Plans),
                 lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, CodePart, SetupLine)
             ;   member(wam_c_lowered_helper_plan(Key, PredIndicator, lowered, comparison_filtered_fact(_ComparisonCalleeKey, Rows)), Plans),
                 lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, CodePart, SetupLine)
             ),
-            Entries),
+            FactEntries),
+    findall(Key-CodePart-SetupLine,
+            (   member(wam_c_lowered_helper_plan(Key, PredIndicator, lowered, body_call(CalleeKey, CalleeArity)), Plans),
+                lowered_body_call_helper_for_predicate(PredIndicator, CalleeKey, CalleeArity, Key, CodePart, SetupLine)
+            ),
+            BodyCallEntries),
+    append(FactEntries, BodyCallEntries, Entries),
     findall(K, member(K-_-_, Entries), LoweredKeys),
     findall(C, member(_-C-_, Entries), Codes),
     findall(S, member(_-_-S, Entries), SetupLines),
@@ -401,7 +410,7 @@ lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, Code, SetupLine) :-
            '    wam_register_foreign_predicate(state, "~w", ~w, ~w);',
            [Key, Arity, Symbol]).
 
-lowered_body_call_helper(PredIndicator, CalleeKey, CalleeArity) :-
+lowered_body_call_helper(PredIndicator, AvailableKeys, CalleeKey, CalleeArity) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     functor(Head, Pred, Arity),
     findall(Args-Body,
@@ -417,22 +426,29 @@ lowered_body_call_helper(PredIndicator, CalleeKey, CalleeArity) :-
     (Pred/Arity) \== (CalleePred/CalleeArity),
     CalleeIndicator = user:CalleePred/CalleeArity,
     lowered_fact_helper_rows(CalleeIndicator, _Rows),
-    format(atom(CalleeKey), '~w/~w', [CalleePred, CalleeArity]).
+    format(atom(CalleeKey), '~w/~w', [CalleePred, CalleeArity]),
+    memberchk(CalleeKey, AvailableKeys).
 
 lowered_body_call_helper_for_predicate(PredIndicator, CalleeKey, CalleeArity, Key, Code, SetupLine) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     format(atom(Key), '~w/~w', [Pred, Arity]),
     wam_c_symbol_name(Pred, Arity, Symbol),
+    wam_c_symbol_for_key(CalleeKey, CalleeSymbol),
     format(atom(Code),
 'static bool ~w(WamState *state, const char *pred, int arity) {
     (void)pred;
     if (arity != ~w) return false;
-    return wam_execute_foreign_predicate(state, "~w", ~w);
+    return ~w(state, "~w", ~w);
 }',
-           [Symbol, Arity, CalleeKey, CalleeArity]),
+           [Symbol, Arity, CalleeSymbol, CalleeKey, CalleeArity]),
     format(atom(SetupLine),
            '    wam_register_foreign_predicate(state, "~w", ~w, ~w);',
            [Key, Arity, Symbol]).
+
+wam_c_symbol_for_key(Key, Symbol) :-
+    atomic_list_concat([PredAtom, ArityAtom], '/', Key),
+    atom_number(ArityAtom, Arity),
+    wam_c_symbol_name(PredAtom, Arity, Symbol).
 
 lowered_filtered_fact_helper(PredIndicator, CalleeKey, Rows) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),

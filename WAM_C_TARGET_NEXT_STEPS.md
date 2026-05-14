@@ -14,7 +14,7 @@ Base verified locally:
 
 Active branch:
 
-- `feat/wam-c-lowered-helper-comparison-filter-rejections`
+- `feat/wam-c-lowered-helper-alias-body`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -45,11 +45,11 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | ASAN availability probe hardening | Done | `asan_available/0` requires a trivial sanitized executable to compile and run before enabling the optional ASAN lifecycle smoke |
 | Lowered helper planner metadata | Done | Explicit lowered/interpreted/rejected helper plans, detected-kernel exclusion, generated `lib.c` plan comments, and `report_lowered_helpers(true)` |
 | Lowered helper benchmark wiring | Done | `c-wam-lowered-helper` and `c-wam-lowered-helper-interpreted` matrix targets compare a tiny fact-helper benchmark |
-| Lowered helper body-call shape | Done | Deterministic alias-to-fact body calls lower through the existing foreign registry |
+| Lowered helper body-call shape | Done | Deterministic alias-to-fact body calls lower through direct native fact-helper dispatch |
 | Lowered helper filtered-fact shape | Done | Constant-guarded fact projections lower to native fact rows and the tiny lowered-helper matrix exercises the filtered helper in lowered mode |
 | Lowered helper filter rejection metadata | Done | Planner reports explicit rejection reasons for non-constant filter arguments, unsupported comparison guards, multi-goal bodies, and unsupported filter callees |
 | Lowered helper comparison-filter shape | Done | Fact-only callee plus one integer comparison guard lowers into native fact rows and the tiny lowered-helper matrix exercises it |
-| Lowered helper comparison-filter rejection metadata | In progress | Active branch reports explicit planner reasons for unsupported comparison-filter boundaries |
+| Lowered helper comparison-filter rejection metadata | Done | Reports explicit planner reasons for unsupported comparison-filter boundaries; this branch also preserves direct native body-call dispatch after merging it |
 
 ## Current C Target Baseline
 
@@ -70,8 +70,8 @@ The C target is now a credible small WAM backend:
   `atom/1`, `integer/1`, `is_list/1`, `=/2`, and `is/2`.
 - Supports deterministic `call_foreign` dispatch through a C handler registry.
 - Can opt into a prototype lowered-helper path for constant fact-only
-  predicates, emitted as native C foreign handlers behind `call_foreign`
-  trampolines.
+  predicates, plus same-arity alias bodies that call those native fact helpers,
+  emitted as native C foreign handlers behind `call_foreign` trampolines.
 - Supports a deterministic native `category_ancestor/4` handler over an
   in-memory category-parent edge table.
 - Supports loading category-parent facts from TSV through a small
@@ -120,7 +120,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
 | Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup and all-hop collection; add more kernel kinds only after runtime support exists. |
 | Shared kernel detector integration | Partial | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`; broaden as more native C kernels land. |
-| Lowered/native helper functions | Partial/Active | Done | Done | C has constant fact-only native helpers, planner metadata, interpreted-vs-lowered matrix wiring, body-call helpers, filtered-fact helpers, comparison-filter helpers, and active comparison-filter rejection metadata work. |
+| Lowered/native helper functions | Partial/Active | Done | Done | C has constant fact-only native helpers, planner metadata, interpreted-vs-lowered matrix wiring, body-call helpers, filtered-fact helpers, comparison-filter helpers, and comparison-filter rejection metadata. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
 | LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts and generated effective-distance LMDB wiring; larger artifact layout support remains. |
 | Effective-distance benchmark harness | Partial/Done | Done | Done | C is wired into the shared matrix for TSV and LMDB `kernels_on`/`kernels_off`; next gap is larger artifact layouts. |
@@ -162,7 +162,7 @@ Scope:
 
 Continue validating `feat/wam-c-lowered-helper-comparison-filter-rejections`.
 
-The active branch keeps supported comparison-filter lowering unchanged and
-improves planner diagnostics for unsupported comparison-filter boundaries. The
-next useful checks are the WAM-C target suite, the effective-distance benchmark
-suite, and `git diff --check`.
+After merging `origin/main`, `feat/wam-c-lowered-helper-alias-body` keeps the
+comparison-filter helper shape and rejection diagnostics, while preserving
+direct native dispatch for body-call helpers. The useful checks are the WAM-C
+target suite, the lowered-helper benchmark smoke, and `git diff --check`.
