@@ -178,6 +178,8 @@ plan_wam_c_lowered_helper(DetectedKeys, PredIndicator, Plan) :-
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, fact_only(Rows))
     ;   lowered_body_call_helper(PredIndicator, CalleeKey, CalleeArity)
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, body_call(CalleeKey, CalleeArity))
+    ;   lowered_filtered_fact_helper(PredIndicator, CalleeKey, Rows)
+    ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, filtered_fact(CalleeKey, Rows))
     ;   lowered_fact_helper_rejection_reason(PredIndicator, Reason),
         Plan = wam_c_lowered_helper_plan(Key, PredIndicator, rejected, Reason)
     ).
@@ -206,6 +208,8 @@ compile_lowered_helpers_for_project(Plans, LoweredKeys, Code, SetupCode) :-
                 lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, CodePart, SetupLine)
             ;   member(wam_c_lowered_helper_plan(Key, PredIndicator, lowered, body_call(CalleeKey, CalleeArity)), Plans),
                 lowered_body_call_helper_for_predicate(PredIndicator, CalleeKey, CalleeArity, Key, CodePart, SetupLine)
+            ;   member(wam_c_lowered_helper_plan(Key, PredIndicator, lowered, filtered_fact(_CalleeKey, Rows)), Plans),
+                lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, CodePart, SetupLine)
             ),
             Entries),
     findall(K, member(K-_-_, Entries), LoweredKeys),
@@ -246,6 +250,7 @@ wam_c_lowered_helper_plan_by_action(Plans, Action, Key, ReasonLabel) :-
 
 wam_c_lowered_plan_reason_label(fact_only(_Rows), fact_only) :- !.
 wam_c_lowered_plan_reason_label(body_call(_CalleeKey, _CalleeArity), body_call) :- !.
+wam_c_lowered_plan_reason_label(filtered_fact(_CalleeKey, _Rows), filtered_fact) :- !.
 wam_c_lowered_plan_reason_label(Reason, Reason).
 
 lowered_fact_helper_rows(PredIndicator, Rows) :-
@@ -310,6 +315,71 @@ lowered_body_call_helper_for_predicate(PredIndicator, CalleeKey, CalleeArity, Ke
     format(atom(SetupLine),
            '    wam_register_foreign_predicate(state, "~w", ~w, ~w);',
            [Key, Arity, Symbol]).
+
+lowered_filtered_fact_helper(PredIndicator, CalleeKey, Rows) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    functor(Head, Pred, Arity),
+    findall(HeadArgs-Body,
+            (   user:clause(Head, Body),
+                Head =.. [_|HeadArgs]
+            ),
+            Clauses),
+    Clauses = [HeadArgs-Body0],
+    Body0 \== true,
+    strip_module_qualification(Body0, Body),
+    Body =.. [CalleePred|CalleeArgs],
+    length(CalleeArgs, CalleeArity),
+    (Pred/Arity) \== (CalleePred/CalleeArity),
+    maplist(var, HeadArgs),
+    callee_args_supported_for_filter(CalleeArgs, HeadArgs),
+    CalleeIndicator = user:CalleePred/CalleeArity,
+    lowered_fact_helper_rows(CalleeIndicator, CalleeRows),
+    include(callee_row_matches_filter(CalleeArgs, HeadArgs), CalleeRows, MatchingRows),
+    findall(Projected,
+            (   member(CalleeRow, MatchingRows),
+                project_callee_row_to_head(HeadArgs, CalleeArgs, CalleeRow, Projected)
+            ),
+            ProjectedRows0),
+    sort(ProjectedRows0, Rows),
+    Rows \= [],
+    format(atom(CalleeKey), '~w/~w', [CalleePred, CalleeArity]).
+
+strip_module_qualification(Module:Body, Stripped) :-
+    atom(Module),
+    !,
+    strip_module_qualification(Body, Stripped).
+strip_module_qualification(Body, Body).
+
+callee_args_supported_for_filter([], _).
+callee_args_supported_for_filter([Arg|Rest], HeadArgs) :-
+    (   member(HeadArg, HeadArgs),
+        Arg == HeadArg
+    ->  true
+    ;   wam_c_lowered_constant(Arg)
+    ),
+    callee_args_supported_for_filter(Rest, HeadArgs).
+
+callee_row_matches_filter(CalleeArgs, HeadArgs, CalleeRow) :-
+    same_length(CalleeArgs, CalleeRow),
+    callee_row_matches_filter_(CalleeArgs, HeadArgs, CalleeRow).
+
+callee_row_matches_filter_([], _, []).
+callee_row_matches_filter_([Arg|ArgRest], HeadArgs, [Value|ValueRest]) :-
+    (   wam_c_lowered_constant(Arg)
+    ->  Arg == Value
+    ;   member(HeadArg, HeadArgs),
+        Arg == HeadArg
+    ->  true
+    ),
+    callee_row_matches_filter_(ArgRest, HeadArgs, ValueRest).
+
+project_callee_row_to_head([], _, _, []).
+project_callee_row_to_head([HeadArg|Rest], CalleeArgs, CalleeRow, [Value|Values]) :-
+    nth0(Index, CalleeArgs, CalleeArg),
+    CalleeArg == HeadArg,
+    !,
+    nth0(Index, CalleeRow, Value),
+    project_callee_row_to_head(Rest, CalleeArgs, CalleeRow, Values).
 
 wam_c_lowered_constant(Arg) :- atom(Arg), !.
 wam_c_lowered_constant(Arg) :- integer(Arg).

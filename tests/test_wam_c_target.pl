@@ -403,6 +403,39 @@ test_lowered_body_call_helper_generation :-
     retractall(user:wam_c_body_fact(_, _)),
     retractall(user:wam_c_body_alias(_, _)).
 
+test_lowered_filtered_fact_helper_generation :-
+    Test = 'WAM-C: guarded fact predicates can lower to filtered native helper',
+    assertz(user:wam_c_filter_fact(a, keep)),
+    assertz(user:wam_c_filter_fact(b, drop)),
+    assertz(user:wam_c_filter_fact(c, keep)),
+    assertz((user:wam_c_filter_keep(X) :- user:wam_c_filter_fact(X, keep))),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    format(atom(ProjectDir), '/tmp/unifyweaver_wam_c_lowered_filter_project_~w', [Stamp]),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    (   plan_wam_c_lowered_helpers([user:wam_c_filter_fact/2,
+                                     user:wam_c_filter_keep/1],
+                                    [lowered_helpers(true)],
+                                    [],
+                                    Plans),
+        member(wam_c_lowered_helper_plan('wam_c_filter_fact/2', _, lowered, fact_only([[a,keep],[b,drop],[c,keep]])), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_filter_keep/1', _, lowered, filtered_fact('wam_c_filter_fact/2', [[a],[c]])), Plans),
+        write_wam_c_project([user:wam_c_filter_fact/2,
+                             user:wam_c_filter_keep/1],
+                            [lowered_helpers(true)],
+                            ProjectDir),
+        read_file_to_string(LibPath, LibS, []),
+        sub_string(LibS, _, _, _, '// - lowered wam_c_filter_keep/1: filtered_fact'),
+        sub_string(LibS, _, _, _, 'static bool wam_c_lowered_wam_c_filter_keep_1'),
+        sub_string(LibS, _, _, _, 'val_atom("a")'),
+        sub_string(LibS, _, _, _, 'val_atom("c")'),
+        sub_string(LibS, _, _, _, '.pred = "wam_c_filter_keep/1"')
+    ->  pass(Test)
+    ;   fail_test(Test, 'lowered filtered fact helper was not emitted')
+    ),
+    retractall(user:wam_c_filter_fact(_, _)),
+    retractall(user:wam_c_filter_keep(_)).
+
 test_unsupported_instruction_fails_loudly :-
     Test = 'WAM-C: unsupported instructions fail loudly',
     BadWamCode = 'foo/1:\n    unknown_opcode A1\n    proceed',
@@ -613,6 +646,16 @@ test_lowered_body_call_helper_executable_smoke :-
     ->  (   run_lowered_body_call_helper_executable_smoke
         ->  pass(Test)
         ;   fail_test(Test, 'lowered body-call helper executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_lowered_filtered_fact_helper_executable_smoke :-
+    Test = 'WAM-C: lowered filtered fact helper executable smoke',
+    (   gcc_available
+    ->  (   run_lowered_filtered_fact_helper_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'lowered filtered fact helper executable failed')
         )
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
@@ -1046,6 +1089,33 @@ run_lowered_body_call_helper_executable_smoke :-
         retractall(user:wam_c_body_alias(_, _))
     ;   retractall(user:wam_c_body_fact(_, _)),
         retractall(user:wam_c_body_alias(_, _)),
+        fail
+    ).
+
+run_lowered_filtered_fact_helper_executable_smoke :-
+    assertz(user:wam_c_filter_fact(a, keep)),
+    assertz(user:wam_c_filter_fact(b, drop)),
+    assertz(user:wam_c_filter_fact(c, keep)),
+    assertz((user:wam_c_filter_keep(X) :- user:wam_c_filter_fact(X, keep))),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    format(atom(ProjectDir), '/tmp/unifyweaver_wam_c_lowered_filter_smoke_~w', [Stamp]),
+    directory_file_path(ProjectDir, 'wam_runtime.c', RuntimePath),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    directory_file_path(ProjectDir, 'main.c', MainPath),
+    directory_file_path(ProjectDir, 'wam_c_lowered_filter_smoke', ExePath),
+    (   write_wam_c_project([user:wam_c_filter_fact/2,
+                             user:wam_c_filter_keep/1],
+                            [lowered_helpers(true)],
+                            ProjectDir),
+        wam_c_lowered_filter_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, LibPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  retractall(user:wam_c_filter_fact(_, _)),
+        retractall(user:wam_c_filter_keep(_))
+    ;   retractall(user:wam_c_filter_fact(_, _)),
+        retractall(user:wam_c_filter_keep(_)),
         fail
     ).
 
@@ -1836,6 +1906,47 @@ int main(void) {
 }
 ').
 
+wam_c_lowered_filter_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_filter_fact_2(WamState* state);
+void setup_wam_c_filter_keep_1(WamState* state);
+void setup_lowered_wam_c_helpers(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_filter_fact_2(&state);
+    setup_wam_c_filter_keep_1(&state);
+    setup_lowered_wam_c_helpers(&state);
+
+    WamValue ok_args[1] = { val_unbound("Out") };
+    int ok_rc = wam_run_predicate(&state, "wam_c_filter_keep/1", ok_args, 1);
+    if (ok_rc != 0 || state.P != WAM_HALT ||
+        state.A[0].tag != VAL_ATOM || strcmp(state.A[0].data.atom, "a") != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue ground_args[1] = { val_atom("c") };
+    int ground_rc = wam_run_predicate(&state, "wam_c_filter_keep/1", ground_args, 1);
+    if (ground_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue fail_args[1] = { val_atom("b") };
+    int fail_rc = wam_run_predicate(&state, "wam_c_filter_keep/1", fail_args, 1);
+    if (fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 wam_c_real_builtin_smoke_main(
 '#include "wam_runtime.h"
 
@@ -2171,6 +2282,7 @@ run_tests_once :-
     test_lowered_helper_planner_metadata,
     test_lowered_helper_plan_generation,
     test_lowered_body_call_helper_generation,
+    test_lowered_filtered_fact_helper_generation,
     test_unsupported_instruction_fails_loudly,
     test_no_zero_instruction_fallback,
     test_list_target_pc_emission,
@@ -2191,6 +2303,7 @@ run_tests_once :-
     test_real_prolog_classic_recursive_executable_smoke,
     test_lowered_fact_helper_executable_smoke,
     test_lowered_body_call_helper_executable_smoke,
+    test_lowered_filtered_fact_helper_executable_smoke,
     test_asan_memory_lifecycle_executable_smoke,
     format('~n=== WAM-C Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
