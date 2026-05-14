@@ -425,6 +425,45 @@ test_lowered_body_call_helper_generation :-
     retractall(user:wam_c_body_fact(_, _)),
     retractall(user:wam_c_body_alias(_, _)).
 
+test_lowered_body_call_rejection_metadata :-
+    Test = 'WAM-C: lowered helper planner explains unsupported body-call shapes',
+    assertz(user:wam_c_body_reject_fact(a, b)),
+    assertz((user:wam_c_body_reject_missing(X, Y) :-
+                 user:wam_c_body_reject_fact(X, Y))),
+    assertz((user:wam_c_body_reject_rule_callee(X, Y) :-
+                 user:wam_c_body_reject_fact(X, Y))),
+    assertz((user:wam_c_body_reject_rule_alias(X, Y) :-
+                 user:wam_c_body_reject_rule_callee(X, Y))),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_lowered_body_reject_project', Stamp, ProjectDir),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    (   plan_wam_c_lowered_helpers([user:wam_c_body_reject_missing/2,
+                                     user:wam_c_body_reject_rule_callee/2,
+                                     user:wam_c_body_reject_rule_alias/2],
+                                    [lowered_helpers(true)],
+                                    [],
+                                    Plans),
+        member(wam_c_lowered_helper_plan('wam_c_body_reject_missing/2', _, rejected, body_call_callee_not_available), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_body_reject_rule_callee/2', _, rejected, body_call_callee_not_available), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_body_reject_rule_alias/2', _, rejected, body_call_callee_not_lowerable), Plans),
+        write_wam_c_project([user:wam_c_body_reject_missing/2,
+                             user:wam_c_body_reject_rule_callee/2,
+                             user:wam_c_body_reject_rule_alias/2],
+                            [lowered_helpers(true)],
+                            ProjectDir),
+        read_file_to_string(LibPath, LibS, []),
+        sub_string(LibS, _, _, _, '// - rejected wam_c_body_reject_missing/2: body_call_callee_not_available'),
+        sub_string(LibS, _, _, _, '// - rejected wam_c_body_reject_rule_callee/2: body_call_callee_not_available'),
+        sub_string(LibS, _, _, _, '// - rejected wam_c_body_reject_rule_alias/2: body_call_callee_not_lowerable')
+    ->  pass(Test)
+    ;   fail_test(Test, 'planner did not report explicit body-call rejection reasons')
+    ),
+    retractall(user:wam_c_body_reject_fact(_, _)),
+    retractall(user:wam_c_body_reject_missing(_, _)),
+    retractall(user:wam_c_body_reject_rule_callee(_, _)),
+    retractall(user:wam_c_body_reject_rule_alias(_, _)).
+
 test_lowered_filtered_fact_helper_generation :-
     Test = 'WAM-C: guarded fact predicates can lower to filtered native helper',
     assertz(user:wam_c_filter_fact(a, keep)),
@@ -2683,6 +2722,7 @@ run_tests_once :-
     test_lowered_helper_planner_metadata,
     test_lowered_helper_plan_generation,
     test_lowered_body_call_helper_generation,
+    test_lowered_body_call_rejection_metadata,
     test_lowered_filtered_fact_helper_generation,
     test_lowered_comparison_filter_helper_generation,
     test_lowered_repeated_variable_filter_generation,
