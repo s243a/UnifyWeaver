@@ -1517,7 +1517,7 @@ cleanup_wam_c_detector_category_ancestor :-
 run_c_smoke(ExePath) :-
     format(atom(LogPath), '~w.asan.log', [ExePath]),
     format(atom(Cmd),
-           'ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 timeout 10 ~w > ~w 2>&1',
+           'ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 timeout 10 ~w > /dev/null 2> ~w',
            [ExePath, LogPath]),
     shell(Cmd, Status),
     (   Status =:= 0
