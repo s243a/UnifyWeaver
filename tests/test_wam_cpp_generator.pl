@@ -198,6 +198,74 @@ user:wam_cpp_test_iso_unbound_context :-
           error(type_error(evaluable, Culprit), _Context),
           Culprit = foo/0).
 
+% ISO sweep fixtures — arith compares + succ/2 + IEEE-754 float
+% divide-by-zero. Each predicate tests one ISO/lax/explicit path.
+:- dynamic user:wam_cpp_test_iso_gt_throws_inst/0.
+:- dynamic user:wam_cpp_test_iso_lt_throws_type/0.
+:- dynamic user:wam_cpp_test_iso_eq_throws_zero_div/0.
+:- dynamic user:wam_cpp_test_lax_gt_silent_fail/0.
+:- dynamic user:wam_cpp_test_explicit_lax_gt_in_iso/0.
+:- dynamic user:wam_cpp_test_iso_succ_neg_throws/0.
+:- dynamic user:wam_cpp_test_iso_succ_unbound_throws/0.
+:- dynamic user:wam_cpp_test_iso_zero_div_throws/0.
+:- dynamic user:wam_cpp_test_lax_float_div_zero_inf/0.
+:- dynamic user:wam_cpp_test_lax_float_div_zero_nan/0.
+
+user:wam_cpp_test_iso_gt_throws_inst :-
+    % `_X > 5` with _X unbound → instantiation_error.
+    catch(_X > 5, error(instantiation_error, _), true).
+
+user:wam_cpp_test_iso_lt_throws_type :-
+    % `foo < 5` → type_error(evaluable, foo/0).
+    catch(foo < 5, error(type_error(evaluable, _), _), true).
+
+user:wam_cpp_test_iso_eq_throws_zero_div :-
+    % `1 / 0 =:= 0` → evaluation_error(zero_divisor) on int divide.
+    catch(1 / 0 =:= 0,
+          error(evaluation_error(zero_divisor), _),
+          true).
+
+user:wam_cpp_test_lax_gt_silent_fail :-
+    % Lax: `_X > 5` with _X unbound → just fails.
+    (_X > 5 -> true ; true).
+
+user:wam_cpp_test_explicit_lax_gt_in_iso :-
+    % Explicit `>_lax` inside an ISO-mode predicate must NOT throw —
+    % three-forms guarantee end-to-end on a non-is/2 builtin.
+    % Quoted because `>` is a Prolog operator and the unquoted form
+    % `>_lax(_X, 5)` is a syntax error.
+    ('>_lax'(_X, 5) -> true ; true).
+
+user:wam_cpp_test_iso_succ_neg_throws :-
+    % succ_iso(-1, _) → type_error(not_less_than_zero, -1).
+    catch(succ(-1, _Y),
+          error(type_error(not_less_than_zero, _), _),
+          true).
+
+user:wam_cpp_test_iso_succ_unbound_throws :-
+    % succ_iso(_X, _Y) → instantiation_error.
+    catch(succ(_X, _Y), error(instantiation_error, _), true).
+
+user:wam_cpp_test_iso_zero_div_throws :-
+    % Both int and float divide-by-zero throw under ISO.
+    catch(_R is 1.0 / 0.0,
+          error(evaluation_error(zero_divisor), _),
+          true).
+
+user:wam_cpp_test_lax_float_div_zero_inf :-
+    % Lax: `R is 1.0 / 0.0` succeeds with R = inf. Verifies the
+    % SPEC §6.1 IEEE-754 behavior change — previously this failed.
+    R is 1.0 / 0.0,
+    R > 1.0e308.
+
+user:wam_cpp_test_lax_float_div_zero_nan :-
+    % Lax: `R is 0.0 / 0.0` succeeds with NaN. IEEE 754 says
+    % NaN =\= NaN is true (NaN is not equal to anything, including
+    % itself), so this is the simplest self-checking NaN signature.
+    % Avoids \+/1 which the runtime doesn''t implement yet.
+    R is 0.0 / 0.0,
+    R =\= R.
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -1243,6 +1311,176 @@ test(cpp_e2e_iso_unbound_context, [condition(cpp_compiler_available)]) :-
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_iso_unbound_context/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% ISO sweep — arithmetic comparisons + succ + IEEE-754 lax floats
+% (PR #3 of the ISO series). Builds on the is_iso/2 + is_lax/2
+% infrastructure from #2084. Verifies:
+%   - >_iso/2, <_iso/2, =:=_iso/2 throw the right errors.
+%   - >_lax/2 inside an ISO-mode predicate survives the rewrite.
+%   - succ_iso/2 throws type_error / instantiation_error per §6.
+%   - Lax float divide-by-zero produces inf / NaN per §6.1.
+%   - ISO float and integer divide-by-zero both throw
+%     evaluation_error(zero_divisor).
+% ------------------------------------------------------------------
+
+test(cpp_e2e_iso_compare_throws_inst, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_iso_gt_inst', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_iso_gt_throws_inst/0],
+                              [emit_main(true),
+                               iso_errors(wam_cpp_test_iso_gt_throws_inst/0,
+                                          true)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_iso_gt_throws_inst/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_iso_compare_throws_type, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_iso_lt_type', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_iso_lt_throws_type/0],
+                              [emit_main(true),
+                               iso_errors(wam_cpp_test_iso_lt_throws_type/0,
+                                          true)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_iso_lt_throws_type/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_iso_compare_throws_zero_div,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_iso_eq_zerodiv', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_iso_eq_throws_zero_div/0],
+                              [emit_main(true),
+                               iso_errors(wam_cpp_test_iso_eq_throws_zero_div/0,
+                                          true)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_iso_eq_throws_zero_div/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lax_compare_silent_fail, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lax_gt', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_lax_gt_silent_fail/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_lax_gt_silent_fail/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_explicit_lax_compare_in_iso,
+     [condition(cpp_compiler_available)]) :-
+    % Three-forms guarantee for arith compares: explicit `>_lax/2`
+    % inside an ISO-mode predicate must survive the rewrite (silent
+    % fail), not be upgraded to `>_iso/2` (which would throw).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_explicit_lax_gt', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_explicit_lax_gt_in_iso/0],
+                              [emit_main(true),
+                               iso_errors(wam_cpp_test_explicit_lax_gt_in_iso/0,
+                                          true)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_explicit_lax_gt_in_iso/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_iso_succ_negative_throws,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_iso_succ_neg', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_iso_succ_neg_throws/0],
+                              [emit_main(true),
+                               iso_errors(wam_cpp_test_iso_succ_neg_throws/0,
+                                          true)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_iso_succ_neg_throws/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_iso_succ_unbound_throws,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_iso_succ_unbound', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_iso_succ_unbound_throws/0],
+                              [emit_main(true),
+                               iso_errors(wam_cpp_test_iso_succ_unbound_throws/0,
+                                          true)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_iso_succ_unbound_throws/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_iso_float_div_zero_throws,
+     [condition(cpp_compiler_available)]) :-
+    % ISO mode catches float divide-by-zero too (lax would silently
+    % succeed with inf — see the next test for that side).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_iso_zero_div', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_iso_zero_div_throws/0],
+                              [emit_main(true),
+                               iso_errors(wam_cpp_test_iso_zero_div_throws/0,
+                                          true)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_iso_zero_div_throws/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lax_float_div_zero_inf,
+     [condition(cpp_compiler_available)]) :-
+    % SPEC §6.1 lax behavior change: float divide-by-zero now
+    % produces inf instead of failing. Verifies R > 1e308 to avoid
+    % depending on Value::Float''s text rendering of "inf".
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lax_inf', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_lax_float_div_zero_inf/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_lax_float_div_zero_inf/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lax_float_div_zero_nan,
+     [condition(cpp_compiler_available)]) :-
+    % SPEC §6.1: 0.0 / 0.0 produces NaN. Verified via NaN \=:= NaN
+    % which is the IEEE-754 self-comparison signature.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lax_nan', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_lax_float_div_zero_nan/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_lax_float_div_zero_nan/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
