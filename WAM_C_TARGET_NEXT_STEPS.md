@@ -5,7 +5,7 @@ Status date: 2026-05-14
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `d4a8939d` (`Merge pull request #2056 from s243a/feat/wam-c-lowered-helper-filter-rejections`)
+- `main` at `209694ab` (`Merge pull request #2059 from s243a/feat/wam-c-lowered-helper-filter-guard-comparisons`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
 - `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py`
@@ -14,7 +14,7 @@ Base verified locally:
 
 Active branch:
 
-- `feat/wam-c-lowered-helper-filter-guard-comparisons`
+- `feat/wam-c-lowered-helper-comparison-filter-rejections`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -48,7 +48,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Lowered helper body-call shape | Done | Deterministic alias-to-fact body calls lower through the existing foreign registry |
 | Lowered helper filtered-fact shape | Done | Constant-guarded fact projections lower to native fact rows and the tiny lowered-helper matrix exercises the filtered helper in lowered mode |
 | Lowered helper filter rejection metadata | Done | Planner reports explicit rejection reasons for non-constant filter arguments, unsupported comparison guards, multi-goal bodies, and unsupported filter callees |
-| Lowered helper comparison-filter shape | In progress | Active branch lowers a fact-only callee plus one integer comparison guard into native fact rows |
+| Lowered helper comparison-filter shape | Done | Fact-only callee plus one integer comparison guard lowers into native fact rows and the tiny lowered-helper matrix exercises it |
+| Lowered helper comparison-filter rejection metadata | In progress | Active branch reports explicit planner reasons for unsupported comparison-filter boundaries |
 
 ## Current C Target Baseline
 
@@ -119,7 +120,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
 | Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup and all-hop collection; add more kernel kinds only after runtime support exists. |
 | Shared kernel detector integration | Partial | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`; broaden as more native C kernels land. |
-| Lowered/native helper functions | Partial/Active | Done | Done | C has constant fact-only native helpers, planner metadata, interpreted-vs-lowered matrix wiring, body-call helpers, filtered-fact helpers, rejection metadata, and active comparison-filter helper work. |
+| Lowered/native helper functions | Partial/Active | Done | Done | C has constant fact-only native helpers, planner metadata, interpreted-vs-lowered matrix wiring, body-call helpers, filtered-fact helpers, comparison-filter helpers, and active comparison-filter rejection metadata work. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
 | LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts and generated effective-distance LMDB wiring; larger artifact layout support remains. |
 | Effective-distance benchmark harness | Partial/Done | Done | Done | C is wired into the shared matrix for TSV and LMDB `kernels_on`/`kernels_off`; next gap is larger artifact layouts. |
@@ -129,23 +130,7 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-lowered-helper-filter-guard-comparisons`
-
-Goal: consider one positive comparison-filter lowering only after rejection
-metadata is stable.
-
-Scope:
-
-- Pick one deterministic comparison shape with a fact-only callee.
-- Keep the first implementation planner-only unless the codegen and runtime
-  behavior remain obvious.
-- Preserve the explicit rejection reasons added by the current branch.
-
-Status: active; a fact-only callee plus one integer comparison guard now lowers
-to projected native fact rows and the tiny lowered-helper matrix exercises the
-shape in lowered mode.
-
-### 2. `feat/wam-c-lowered-helper-comparison-filter-rejections`
+### 1. `feat/wam-c-lowered-helper-comparison-filter-rejections`
 
 Goal: make the remaining comparison-filter boundaries explicit.
 
@@ -157,11 +142,27 @@ Scope:
 - Keep the supported comparison-filter lowering unchanged.
 - Prefer planner tests and generated plan comments over new runtime paths.
 
+Status: active; planner metadata now distinguishes unbound comparison guard
+variables, unsupported comparison expressions, non-integer ordering rows, and
+comparison filters with no matching rows.
+
+### 2. `feat/wam-c-lowered-helper-repeated-variable-filters`
+
+Goal: tighten repeated-variable behavior in lowered filtered helpers.
+
+Scope:
+
+- Add planner tests for repeated head/callee variables in constant and
+  comparison-filtered helper shapes.
+- Keep existing supported lowering unchanged where repeated variables are
+  already handled correctly.
+- Add explicit rejection metadata if a repeated-variable shape is ambiguous.
+
 ## Suggested Immediate Next Step
 
-Continue validating `feat/wam-c-lowered-helper-filter-guard-comparisons`.
+Continue validating `feat/wam-c-lowered-helper-comparison-filter-rejections`.
 
-The active branch lowers one comparison-filter shape, for example
-`small(X) :- fact(X, N), N =< 2`, into native fact rows. The tiny
-lowered-helper matrix now exercises this comparison-filter helper in its
-lowered target.
+The active branch keeps supported comparison-filter lowering unchanged and
+improves planner diagnostics for unsupported comparison-filter boundaries. The
+next useful checks are the WAM-C target suite, the effective-distance benchmark
+suite, and `git diff --check`.
