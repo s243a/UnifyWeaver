@@ -372,6 +372,10 @@ clojure_direct_builtin("arg/3", "3").
 clojure_direct_builtin("arg/3", 3).
 clojure_direct_builtin('arg/3', "3").
 clojure_direct_builtin('arg/3', 3).
+clojure_direct_builtin("=../2", "2").
+clojure_direct_builtin("=../2", 2).
+clojure_direct_builtin('=../2', "2").
+clojure_direct_builtin('=../2', 2).
 clojure_direct_builtin("ground/1", "1").
 clojure_direct_builtin("ground/1", 1).
 clojure_direct_builtin('ground/1', "1").
@@ -590,6 +594,11 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "arg/3" ; Op == 'arg/3'),
     !,
     format(atom(Expr), '(runtime/apply-arg-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "=../2" ; Op == '=../2'),
+    !,
+    format(atom(Expr), '(runtime/apply-univ-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "ground/1" ; Op == 'ground/1'),

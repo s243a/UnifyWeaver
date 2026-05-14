@@ -702,6 +702,33 @@
           (normalize-literal-atom ctx "[]")
           (reverse items)))
 
+(defn univ-decompose-term [state term]
+  (let [term* (deref-value (:bindings state) term)
+        ctx (:intern-context state)]
+    (cond
+      (structure-term? term*)
+      (let [key (functor-key ctx (:functor term*))
+            name (normalize-literal-atom ctx (functor-name-from-key key))]
+        (list->term ctx (cons name (:args term*))))
+
+      (or (atom-term? term*) (number? term*))
+      (list->term ctx [term*])
+
+      :else
+      nil)))
+
+(defn apply-univ-solution [state]
+  (let [term (deref-value (:bindings state)
+                          (or (reg-get-raw state "A1") ::unbound))
+        out (deref-value (:bindings state)
+                         (or (reg-get-raw state "A2") ::unbound))]
+    (if-let [list-term (univ-decompose-term state term)]
+      (let [[ok next-state] (unify-values state out list-term)]
+        (if ok
+          (advance next-state)
+          (backtrack state)))
+      (backtrack state))))
+
 (defn term->unify-items [term]
   (if (structure-term? term)
     (seq (:args term))
@@ -1305,6 +1332,9 @@
 
           "arg/3"
           (apply-arg-solution state)
+
+          "=../2"
+          (apply-univ-solution state)
 
           "ground/1"
           (let [value (deref-value (:bindings state)
