@@ -1866,6 +1866,30 @@ func (vm *WamState) enterIndexedClause(targetPC int) bool {
     return vm.enterIndexedAlternatives([]int{vm.indexedClauseBodyStart(targetPC)})
 }
 
+func (vm *WamState) runIsolatedGoal(targetPC int, args []Value) bool {
+    sub := vm.Clone()
+    for idx := range sub.Regs {
+        sub.Regs[idx] = nil
+    }
+    for idx, arg := range args {
+        if idx >= len(sub.Regs) {
+            break
+        }
+        sub.Regs[idx] = arg
+    }
+    sub.PC = targetPC
+    sub.CP = 0
+    sub.E = -1
+    sub.Stack = nil
+    sub.Trail = nil
+    sub.TrailLen = 0
+    sub.ChoicePoints = nil
+    sub.Halted = false
+    sub.CurrentStruct = nil
+    sub.CurrentList = nil
+    return sub.Run()
+}
+
 // CollectResults gathers values from A registers (indices 0..N-1).
 func (vm *WamState) CollectResults() []Value {
 	results := make([]Value, 0)

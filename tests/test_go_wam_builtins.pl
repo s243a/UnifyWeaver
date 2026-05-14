@@ -10,6 +10,9 @@
 :- dynamic user:test_member_collect/0.
 :- dynamic user:test_set_aggregate/0.
 :- dynamic user:test_unify_builtin/0.
+:- dynamic user:test_neg_fact/1.
+:- dynamic user:test_neg_goal/0.
+:- dynamic user:test_neg_goal_fail/0.
 
 test(builtins_execution) :-
     get_time(T),
@@ -58,6 +61,14 @@ test(builtins_execution) :-
             (   =(f(a, X), f(a, b)),
                 X == b,
                 \+ =(a, b)
+            )),
+          assertz(user:test_neg_fact(a)),
+          assertz(user:test_neg_fact(b)),
+          assertz(user:test_neg_goal :-
+            (   \+ test_neg_fact(c)
+            )),
+          assertz(user:test_neg_goal_fail :-
+            (   \+ test_neg_fact(a)
             ))
         ),
         run_builtins_test(TmpDir),
@@ -66,12 +77,15 @@ test(builtins_execution) :-
           retractall(user:test_member_collect),
           retractall(user:test_set_aggregate),
           retractall(user:test_unify_builtin),
+          retractall(user:test_neg_fact(_)),
+          retractall(user:test_neg_goal),
+          retractall(user:test_neg_goal_fail),
           delete_directory_and_contents(TmpDir) )
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_set_aggregate/0, test_unify_builtin/0],
-    Options = [module_name(builtin_test)],
+    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
 
@@ -89,6 +103,7 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "=../2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "copy_term/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "=/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "\\\\+/1"')),
     assertion(sub_string(LibCode, _, _, _, 'AggType: "set"')),
 
     % Add a main.go to run the test in a separate cmd directory
@@ -148,6 +163,22 @@ func main() {
 	} else {
 		fmt.Println("UNIFY_FAILURE")
 	}
+
+	negVM := wam.NewWamState(wam.Test_neg_goalCode, wam.Test_neg_goalLabels)
+	negVM.PC = wam.Test_neg_goalStartPC
+	if negVM.Run() {
+		fmt.Println("NEG_SUCCESS")
+	} else {
+		fmt.Println("NEG_FAILURE")
+	}
+
+	negFailVM := wam.NewWamState(wam.Test_neg_goal_failCode, wam.Test_neg_goal_failLabels)
+	negFailVM.PC = wam.Test_neg_goal_failStartPC
+	if negFailVM.Run() {
+		fmt.Println("NEG_FAIL_UNEXPECTED_SUCCESS")
+	} else {
+		fmt.Println("NEG_FAIL_EXPECTED")
+	}
 }
 '),
 
@@ -170,7 +201,9 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "TERM_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "MEMBER_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SET_SUCCESS")),
-        assertion(sub_string(FullOutput, _, _, _, "UNIFY_SUCCESS"))
+        assertion(sub_string(FullOutput, _, _, _, "UNIFY_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "NEG_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "NEG_FAIL_EXPECTED"))
     ;   format("Go not found, skipping execution test.~n")
     ).
 
