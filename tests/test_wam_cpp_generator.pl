@@ -70,6 +70,23 @@
 :- dynamic user:wam_cpp_test_len_one/0.
 :- dynamic user:wam_cpp_test_len_three/0.
 :- dynamic user:wam_cpp_test_len_five/0.
+% Indexing-instruction fixtures (switch_on_constant / switch_on_term):
+:- dynamic user:wam_cpp_color/1.
+:- dynamic user:wam_cpp_shape/2.
+:- dynamic user:wam_cpp_mixed/1.
+:- dynamic user:wam_cpp_listy/1.
+
+user:wam_cpp_color(red).
+user:wam_cpp_color(green).
+user:wam_cpp_color(blue).
+user:wam_cpp_shape(circle,   round).
+user:wam_cpp_shape(square,   angular).
+user:wam_cpp_shape(triangle, angular).
+user:wam_cpp_mixed(a).
+user:wam_cpp_mixed(1).
+user:wam_cpp_mixed(foo(x)).
+user:wam_cpp_listy([]).
+user:wam_cpp_listy([_|_]).
 
 user:wam_cpp_test_write :- write(hello), nl.
 % Y-reg isolation: both helpers use Y1/Y2 internally. Caller relies on
@@ -667,6 +684,57 @@ test(cpp_e2e_list_head_match, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_lst/1', ['[a,b]'],   false),
           run_query(BinPath, 'wam_cpp_lst/1', ['[a,b,d]'], false),
           run_query(BinPath, 'wam_cpp_lst/1', ['[]'],      false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% Indexing instructions: switch_on_constant (atoms / integers) +
+% switch_on_term (typed dispatch with structure / list handling).
+% Exercises constant-bound A1 dispatch (color, shape) and the
+% combined type dispatch (mixed atom/int/struct/list).
+% ------------------------------------------------------------------
+
+test(cpp_e2e_switch_on_constant, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_swc', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_color/1, user:wam_cpp_shape/2],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          % First clause via "default" fall-through.
+          run_query(BinPath, 'wam_cpp_color/1', [red],    true),
+          % Later clauses reached via direct switch jump (bypassing
+          % try_me_else; verifies the retry_me_else no-op fix).
+          run_query(BinPath, 'wam_cpp_color/1', [green],  true),
+          run_query(BinPath, 'wam_cpp_color/1', [blue],   true),
+          % Bound non-key: switch returns false directly.
+          run_query(BinPath, 'wam_cpp_color/1', [orange], false),
+          run_query(BinPath, 'wam_cpp_shape/2', [circle,   round],   true),
+          run_query(BinPath, 'wam_cpp_shape/2', [square,   angular], true),
+          run_query(BinPath, 'wam_cpp_shape/2', [triangle, angular], true),
+          run_query(BinPath, 'wam_cpp_shape/2', [circle,   angular], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_switch_on_term, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_swt', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_mixed/1, user:wam_cpp_listy/1],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          % Mixed clauses: atom, integer, structure — switch_on_term
+          % dispatches by type.
+          run_query(BinPath, 'wam_cpp_mixed/1', [a],          true),
+          run_query(BinPath, 'wam_cpp_mixed/1', ['1'],        true),
+          run_query(BinPath, 'wam_cpp_mixed/1', ['foo(x)'],   true),
+          run_query(BinPath, 'wam_cpp_mixed/1', [b],          false),
+          run_query(BinPath, 'wam_cpp_mixed/1', ['bar(x)'],   false),
+          % List dispatch: [] takes the constant table, [_|_] takes
+          % the list-pc path.
+          run_query(BinPath, 'wam_cpp_listy/1', ['[]'],       true),
+          run_query(BinPath, 'wam_cpp_listy/1', ['[a,b]'],    true),
+          run_query(BinPath, 'wam_cpp_listy/1', [foo],        false)
         ),
         delete_directory_and_contents(TmpDir)
     ).
