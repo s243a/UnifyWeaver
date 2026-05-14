@@ -76,6 +76,12 @@
 :- dynamic user:wam_univ_decompose_number/0.
 :- dynamic user:wam_univ_decompose_list/0.
 :- dynamic user:wam_univ_decompose_mismatch/0.
+:- dynamic user:wam_univ_compose_struct/0.
+:- dynamic user:wam_univ_compose_atom/0.
+:- dynamic user:wam_univ_compose_number/0.
+:- dynamic user:wam_univ_compose_list/0.
+:- dynamic user:wam_univ_compose_empty/0.
+:- dynamic user:wam_univ_compose_bad_functor/0.
 :- dynamic user:wam_ground_guard/1.
 :- dynamic user:wam_ground_unbound/1.
 :- dynamic user:wam_ground_nested_unbound/1.
@@ -173,6 +179,12 @@ user:wam_univ_decompose_atom :- a =.. [a].
 user:wam_univ_decompose_number :- 42 =.. [42].
 user:wam_univ_decompose_list :- [a, b] =.. ['[|]', a, [b]].
 user:wam_univ_decompose_mismatch :- f(a, b) =.. [g, a, b].
+user:wam_univ_compose_struct :- T =.. [f, a, b], T = f(a, b).
+user:wam_univ_compose_atom :- T =.. [a], T = a.
+user:wam_univ_compose_number :- T =.. [42], T = 42.
+user:wam_univ_compose_list :- T =.. ['[|]', a, [b]], T = [a, b].
+user:wam_univ_compose_empty :- _T =.. [].
+user:wam_univ_compose_bad_functor :- user:wam_unbound_arg(F), _T =.. [F, a].
 user:wam_ground_guard(X) :- ground(X).
 user:wam_ground_unbound(_) :- user:wam_unbound_arg(Y), ground(Y).
 user:wam_ground_nested_unbound(_) :- user:wam_unbound_arg(Y), ground(f(Y)).
@@ -275,6 +287,12 @@ run_smoke :-
           user:wam_univ_decompose_number/0,
           user:wam_univ_decompose_list/0,
           user:wam_univ_decompose_mismatch/0,
+          user:wam_univ_compose_struct/0,
+          user:wam_univ_compose_atom/0,
+          user:wam_univ_compose_number/0,
+          user:wam_univ_compose_list/0,
+          user:wam_univ_compose_empty/0,
+          user:wam_univ_compose_bad_functor/0,
           user:wam_ground_guard/1,
           user:wam_ground_unbound/1,
           user:wam_ground_nested_unbound/1,
@@ -474,6 +492,12 @@ smoke_cases([
     case('wam_univ_decompose_number/0', no_args, "true"),
     case('wam_univ_decompose_list/0', no_args, "true"),
     case('wam_univ_decompose_mismatch/0', no_args, "false"),
+    case('wam_univ_compose_struct/0', no_args, "true"),
+    case('wam_univ_compose_atom/0', no_args, "true"),
+    case('wam_univ_compose_number/0', no_args, "true"),
+    case('wam_univ_compose_list/0', no_args, "true"),
+    case('wam_univ_compose_empty/0', no_args, "false"),
+    case('wam_univ_compose_bad_functor/0', no_args, "false"),
     case('wam_ground_guard/1', a, "true"),
     case('wam_ground_guard/1', 42, "true"),
     case('wam_ground_guard/1', 3.5, "true"),
@@ -683,6 +707,7 @@ assert_lowered_univ_builtin_emitted(ProjectDir) :-
     read_file_to_string(CorePath, CoreCode, []),
     has(CoreCode, "defn lowered-wam-univ-guard-2"),
     has(CoreCode, "defn lowered-wam-univ-decompose-struct-0"),
+    has(CoreCode, "defn lowered-wam-univ-compose-struct-0"),
     has(CoreCode, "runtime/apply-univ-solution").
 
 assert_lowered_ground_builtin_emitted(ProjectDir) :-
