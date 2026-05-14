@@ -6,16 +6,14 @@ Concrete shape of the ISO-error dispatch we're implementing in
 
 ## 1. Config schema
 
-A config is a Prolog file that asserts two kinds of facts using a
-dedicated module:
+A config is a Prolog file containing plain facts — no module
+declaration, no clauses with bodies, no directives. The loader reads
+terms one at a time and extracts the recognised fact shapes; anything
+else is silently ignored (so the file stays forward-compatible with
+new fact kinds we may add later).
 
 ```prolog
 % iso_errors.pl
-
-:- module(iso_errors_config, [
-       iso_errors_default/1,
-       iso_errors_override/2
-   ]).
 
 % Global default for predicates not otherwise listed.
 iso_errors_default(true).
@@ -40,8 +38,26 @@ match across all modules (this is the common case in single-module
 projects). We'll likely need to revisit this rule when multi-module
 projects appear.
 
+**Footgun mitigation — multi-module bare-PI matching.** The loader
+emits a warning when a bare `iso_errors_override/2` matches more
+than one module in the input predicate list, e.g.:
+
+```
+Warning: iso_errors_override(safe_div/2, false) matches
+         3 predicates in different modules
+         (mod_a:safe_div/2, mod_b:safe_div/2, util:safe_div/2).
+         Qualify with `mod:safe_div/2` for module-scoped overrides.
+```
+
+Code keeps compiling — the override applies to all matches — but
+reviewers see the surprise immediately. Reviewing this in CI before
+merging migration commits catches the case where a `safe_div/2`
+override silently changes the behavior of an unrelated module.
+
 **Conflict resolution:** later `iso_errors_override/2` facts in the
-file override earlier ones for the same `PI`. The
+file override earlier ones for the same `PI`. Inline options on the
+`write_wam_cpp_project/3` call line override the loaded config for
+the same `PI` (inline-wins precedence — see §2). The
 `iso_errors_default/1` fact is read once; multiple definitions are
 an error.
 
@@ -108,7 +124,7 @@ iso_errors_rewrite(IsoConfig, PI, Items0, Items) :-
     maplist(iso_errors_rewrite_item(Mode), Items0, Items).
 
 % Only the default form gets rewritten. Explicit _iso / _lax keys
-% survive untouched — that''s the three-forms guarantee from the
+% survive untouched - the three-forms guarantee from the
 % philosophy doc §3.3.
 iso_errors_rewrite_item(true,  builtin_call(Key, N),
                         builtin_call(IsoKey, N)) :-
@@ -140,6 +156,17 @@ but is kept for symmetry and future use.
 (Operator-name keys with `/2` suffix follow the existing convention.
 Builtins not in either table are left unchanged — they're considered
 ISO-equivalent or not yet audited.)
+
+**Intentionally excluded** from the table:
+
+- `\=/2` (not-unifiable) and `\==/2` (structural inequality) are
+  **not** arithmetic; they fail when their args don't unify or are
+  structurally unequal. ISO doesn't define error-throwing semantics
+  for them. Leaving them out of the table is a conscious choice.
+- `=/2` (unify) and `==/2` (structural equality) — same reasoning.
+- I/O builtins (`write/1`, `nl/0`, `format/2`) — ISO defines stream
+  errors, but our runtime writes to a fixed stdout and can't fail.
+  Out of scope for v1.
 
 ### 3.2 Default vs lax — share implementation, separate keys
 
@@ -279,7 +306,7 @@ same body and no `_iso` form exists yet).
 
 ## 7.1 Audit tooling
 
-`wam_cpp_iso_audit/2` is a read-only generator pass that mirrors
+`wam_cpp_iso_audit/3` is a read-only generator pass that mirrors
 the rewrite without actually emitting code. Useful for migration
 review and for verifying the config does what's intended.
 
@@ -287,7 +314,7 @@ review and for verifying the config does what's intended.
 %% wam_cpp_iso_audit(+Predicates, +Options, -Audit)
 %
 %  For each predicate in Predicates, walk its compiled WAM and
-%  report each builtin_call site''s key resolution. Options accepts
+%  report each builtin_call site's key resolution. Options accepts
 %  the same iso_errors_config / iso_errors / iso_errors(PI, Mode)
 %  options as write_wam_cpp_project/3.
 wam_cpp_iso_audit(Predicates, Options, Audit) :-
@@ -350,23 +377,61 @@ cpp_e2e_explicit_*  — verifies user code using is_iso/2 or
                       should fail silently on bad eval.
 ```
 
-Plus two unit tests for the generator-side helpers:
+Plus four unit tests for the generator-side helpers:
 
 ```
-test_iso_errors_config_loader — parses a sample config, verifies
-                                 iso_errors_mode_for/3 returns the
-                                 right Mode for several predicates
-                                 (with and without overrides,
-                                 module-qualified and bare).
+test_iso_errors_config_loader        — parses a sample config,
+                                        verifies iso_errors_mode_for/3
+                                        returns the right Mode for
+                                        several predicates (with and
+                                        without overrides,
+                                        module-qualified and bare).
 
-test_iso_errors_audit         — given a sample config + a couple
-                                 predicates with mixed default /
-                                 explicit_iso / explicit_lax call
-                                 sites, verify wam_cpp_iso_audit/3
-                                 reports the right `resolved`,
-                                 `source`, and
-                                 `would_change_on_flip` fields.
+test_iso_errors_inline_wins          — file config sets pred X to
+                                        false; inline option sets
+                                        same X to true. Verifies
+                                        iso_errors_mode_for/3
+                                        returns true (inline wins).
+
+test_iso_errors_multi_module_warning — config has bare
+                                        `safe_div/2` override;
+                                        predicate list contains
+                                        safe_div/2 from two modules.
+                                        Verifies the loader emits
+                                        the multi-module warning
+                                        (captured via with_output_to
+                                        on user_error or a hookable
+                                        sink).
+
+test_iso_errors_audit                — given a sample config +
+                                        predicates with mixed
+                                        default / explicit_iso /
+                                        explicit_lax call sites,
+                                        verify wam_cpp_iso_audit/3
+                                        reports the right
+                                        `resolved`, `source`, and
+                                        `would_change_on_flip`
+                                        fields.
 ```
+
+Once the first ISO builtin lands (PR #2 in §10), one more
+correctness test gates the catch-with-unbound-context path:
+
+```
+cpp_e2e_iso_unbound_context — Goal that throws an ISO error;
+                              catcher binds `error(Pattern, _)`
+                              with an unbound Context slot.
+                              Verifies the catch succeeds and the
+                              recovery goal sees Pattern bound to
+                              the type/instantiation/domain term
+                              even though Context is the fresh
+                              variable the runtime made.
+```
+
+This is the regression guard against the §5 SPECIFICATION decision
+to leave Context unbound for v1 — making sure that decision doesn't
+break user code that uses the standard `error(Pattern, _)` catcher
+shape.
 
 ## 9. Files touched (estimated)
 

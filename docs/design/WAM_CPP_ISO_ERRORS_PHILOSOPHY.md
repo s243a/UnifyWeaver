@@ -312,7 +312,7 @@ with the implementation, not the docs.
 User feedback called this out as a good idea; moving it from
 "probably not" into the plan.
 
-Ship a `wam_cpp_iso_audit/2` predicate alongside the rewrite. Given
+Ship a `wam_cpp_iso_audit/3` predicate alongside the rewrite. Given
 a predicate list and a config, it walks each predicate's compiled
 WAM and reports:
 

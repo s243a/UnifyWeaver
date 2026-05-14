@@ -1219,6 +1219,112 @@ run_query_stdout(BinPath, PredKey, Args, Status, ExpPrint) :-
     string_concat(ExpWithStatus, "\n", Expected),
     assertion(Output == Expected).
 
+% ------------------------------------------------------------------
+% ISO error configuration — plumbing PR tests. The key swap tables
+% are intentionally empty in this PR so the rewrite is a no-op; the
+% tests here exercise the config loader, the mode resolver, the
+% inline-wins precedence, and the multi-module warning emission.
+% Behavior-changing tests (cpp_e2e_iso_* / cpp_e2e_lax_* /
+% cpp_e2e_explicit_*) land with the first ISO builtin.
+% ------------------------------------------------------------------
+
+test(iso_errors_config_loader_basic) :-
+    iso_errors_temp_config_file(Path, [
+        'iso_errors_default(true).',
+        'iso_errors_override(legacy_lookup/3, false).',
+        'iso_errors_override(unsafe_div/3, false).',
+        'iso_errors_override(experimental:my_pred/2, true).',
+        'some_future_fact(hello).'
+    ]),
+    setup_call_cleanup(
+        true,
+        ( wam_cpp_target:iso_errors_load_config(Path, Config),
+          assertion(Config == iso_config(true,
+              [legacy_lookup/3-false,
+               unsafe_div/3-false,
+               (experimental:my_pred/2)-true])),
+          % mode_for resolution, including bare-PI cross-module match.
+          wam_cpp_target:iso_errors_mode_for(Config,
+              user:legacy_lookup/3, M1),
+          assertion(M1 == false),
+          wam_cpp_target:iso_errors_mode_for(Config,
+              user:never_listed/2, M2),
+          assertion(M2 == true),                  % falls back to default
+          wam_cpp_target:iso_errors_mode_for(Config,
+              experimental:my_pred/2, M3),
+          assertion(M3 == true),
+          wam_cpp_target:iso_errors_mode_for(Config,
+              other_mod:my_pred/2, M4),
+          assertion(M4 == true)                   % only experimental: matches; default wins
+        ),
+        delete_file(Path)
+    ).
+
+test(iso_errors_inline_wins_over_file) :-
+    iso_errors_temp_config_file(Path, [
+        'iso_errors_default(false).',
+        'iso_errors_override(legacy_lookup/3, false).'
+    ]),
+    setup_call_cleanup(
+        true,
+        ( % File says false; inline says true. Inline wins.
+          wam_cpp_target:iso_errors_resolve_options(
+              [iso_errors_config(Path),
+               iso_errors(true),
+               iso_errors(legacy_lookup/3, true)],
+              Config),
+          wam_cpp_target:iso_errors_mode_for(Config,
+              user:legacy_lookup/3, M1),
+          assertion(M1 == true),
+          wam_cpp_target:iso_errors_mode_for(Config,
+              user:never_listed/2, M2),
+          assertion(M2 == true)                   % inline default wins too
+        ),
+        delete_file(Path)
+    ).
+
+test(iso_errors_multi_module_warning) :-
+    % Capture user_error output via with_output_to. Verify the
+    % warning fires when a bare override matches predicates from
+    % two different modules in the input list.
+    Config = iso_config(false, [safe_div/2-false]),
+    Predicates = [mod_a:safe_div/2, mod_b:safe_div/2, mod_c:other/3],
+    with_output_to(string(Captured),
+        % stderr is the actual target — redirect via user_error.
+        ( current_output(Curr),
+          set_stream(Curr, alias(user_error)),
+          wam_cpp_target:iso_errors_warn_multi_module(Config, Predicates),
+          set_stream(user_error, alias(user_error))
+        )),
+    assertion(sub_string(Captured, _, _, _,
+        "matches 2 predicates")),
+    assertion(sub_string(Captured, _, _, _, "mod_a")),
+    assertion(sub_string(Captured, _, _, _, "mod_b")).
+
+test(iso_errors_audit_structure) :-
+    % With empty key tables, every site is `default` with no flip.
+    % Verifies the audit machinery walks predicates + reports the
+    % expected record shape, even without behavior changes yet.
+    Options = [iso_errors(test_audit_pred/0, true)],
+    wam_cpp_target:wam_cpp_iso_audit(
+        [user:wam_cpp_test_audit_pred/0],
+        Options,
+        Audit),
+    % One predicate in input → one audit record.
+    assertion(Audit = [audit(user:wam_cpp_test_audit_pred/0, _Mode, _Sites)]).
+
+:- dynamic user:wam_cpp_test_audit_pred/0.
+user:wam_cpp_test_audit_pred :- X is 1 + 2, X = 3.
+
+% Helper: write a list of lines to a temp file, return its path.
+iso_errors_temp_config_file(Path, Lines) :-
+    get_time(T), N is round(T * 1000),
+    format(atom(Path), '/tmp/iso_cfg_~w.pl', [N]),
+    setup_call_cleanup(
+        open(Path, write, Out),
+        forall(member(L, Lines), format(Out, '~w~n', [L])),
+        close(Out)).
+
 :- end_tests(wam_cpp_generator).
 
 % --------------------------------------------------------------------
