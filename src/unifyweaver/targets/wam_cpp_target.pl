@@ -316,10 +316,50 @@ parse_pred_blocks(WamText, Items) :-
     split_string(S, "\n", "", Lines),
     parse_block_lines(Lines, Items).
 
+%% tokenize_wam_line(+Line, -Tokens)
+%  Splits a WAM-text line on whitespace and commas, but respects
+%  single-quoted atom literals so the content (which may contain
+%  spaces, commas, or ~-directives for format strings) becomes a
+%  single token. Surrounding single quotes are stripped from the
+%  resulting token. No escape sequences are recognised inside quotes —
+%  matches the printer''s own non-escaping behaviour.
+tokenize_wam_line(Line, Tokens) :-
+    string_chars(Line, Chars),
+    tokenize_wam_chars(Chars, Tokens).
+
+tokenize_wam_chars([], []).
+tokenize_wam_chars([C|Cs], Tokens) :-
+    (   wam_token_sep(C)
+    ->  tokenize_wam_chars(Cs, Tokens)
+    ;   C == '\''
+    ->  read_quoted_chars(Cs, QChars, Rest),
+        string_chars(Tok, QChars),
+        Tokens = [Tok|More],
+        tokenize_wam_chars(Rest, More)
+    ;   read_unquoted_chars([C|Cs], TChars, Rest),
+        string_chars(Tok, TChars),
+        Tokens = [Tok|More],
+        tokenize_wam_chars(Rest, More)
+    ).
+
+wam_token_sep(' ').
+wam_token_sep('\t').
+wam_token_sep(',').
+
+read_quoted_chars([], [], []).
+read_quoted_chars(['\''|Rest], [], Rest) :- !.
+read_quoted_chars([C|Cs], [C|More], Rest) :-
+    read_quoted_chars(Cs, More, Rest).
+
+read_unquoted_chars([], [], []).
+read_unquoted_chars([C|Cs], [], [C|Cs]) :-
+    wam_token_sep(C), !.
+read_unquoted_chars([C|Cs], [C|More], Rest) :-
+    read_unquoted_chars(Cs, More, Rest).
+
 parse_block_lines([], []).
 parse_block_lines([Line|Rest], Items) :-
-    split_string(Line, " \t,", " \t,", Parts),
-    delete(Parts, "", CleanParts),
+    tokenize_wam_line(Line, CleanParts),
     (   CleanParts == []
     ->  parse_block_lines(Rest, Items)
     ;   CleanParts = [First|_],
@@ -1847,6 +1887,105 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         std::fflush(stdout);
         pc += 1; return true;
     }
+    // ---- format/1, format/2 ----------------------------------------
+    // Walks the format string A1 (Atom), expanding ~-directives.
+    // Supported: ~w (write), ~p (print, same as ~w), ~a (atom),
+    // ~d (integer), ~s (codes/atom), ~n (newline), ~~ (literal ~).
+    // Unsupported directives are echoed verbatim. Args list (A2, for
+    // format/2) is walked left-to-right; running off the end of args
+    // for a directive that needs one fails.
+    if (op == "format/1" || op == "format/2") {
+        Value fv = deref(*get_cell("A1"));
+        std::string fmt;
+        if (fv.tag == Value::Tag::Atom) fmt = fv.s;
+        else if (fv.tag == Value::Tag::Integer) fmt = std::to_string(fv.i);
+        else return false;
+        // Build a vector of arg cells from A2 (for format/2). For
+        // format/1 the list is implicitly empty.
+        std::vector<CellPtr> args;
+        if (op == "format/2") {
+            CellPtr lc = get_cell("A2");
+            for (;;) {
+                Value lv = deref(*lc);
+                if (lv.tag == Value::Tag::Atom && lv.s == "[]") break;
+                if (lv.tag == Value::Tag::Compound && lv.s == "[|]/2"
+                    && lv.args.size() == 2) {
+                    args.push_back(lv.args[0]);
+                    lc = lv.args[1];
+                    continue;
+                }
+                // Malformed args list (partial / unbound tail).
+                return false;
+            }
+        }
+        std::size_t ai = 0;
+        for (std::size_t i = 0; i < fmt.size(); ++i) {
+            char c = fmt[i];
+            if (c != ''~'' || i + 1 >= fmt.size()) {
+                std::fputc(c, stdout);
+                continue;
+            }
+            char d = fmt[++i];
+            switch (d) {
+                case ''n'': std::fputc(''\\n'', stdout); break;
+                case ''t'': std::fputc(''\\t'', stdout); break;
+                case ''~'': std::fputc(''~'', stdout); break;
+                case ''w'':
+                case ''p'': {
+                    if (ai >= args.size()) return false;
+                    std::printf("%s", render(deref(*args[ai++])).c_str());
+                    break;
+                }
+                case ''a'': {
+                    if (ai >= args.size()) return false;
+                    Value v = deref(*args[ai++]);
+                    if (v.tag == Value::Tag::Atom) std::printf("%s", v.s.c_str());
+                    else std::printf("%s", render(v).c_str());
+                    break;
+                }
+                case ''d'': {
+                    if (ai >= args.size()) return false;
+                    Value v = deref(*args[ai++]);
+                    if (v.tag == Value::Tag::Integer) std::printf("%lld",
+                        static_cast<long long>(v.i));
+                    else std::printf("%s", render(v).c_str());
+                    break;
+                }
+                case ''s'': {
+                    // String form: accept an atom (print as-is) or a
+                    // list of integer character codes.
+                    if (ai >= args.size()) return false;
+                    Value v = deref(*args[ai++]);
+                    if (v.tag == Value::Tag::Atom) {
+                        std::printf("%s", v.s.c_str());
+                    } else if (v.tag == Value::Tag::Compound
+                               && v.s == "[|]/2") {
+                        CellPtr lc = args[ai - 1];
+                        for (;;) {
+                            Value lv = deref(*lc);
+                            if (lv.tag == Value::Tag::Atom && lv.s == "[]") break;
+                            if (lv.tag != Value::Tag::Compound || lv.s != "[|]/2"
+                                || lv.args.size() != 2) return false;
+                            Value hv = deref(*lv.args[0]);
+                            if (hv.tag != Value::Tag::Integer) return false;
+                            std::fputc(static_cast<int>(hv.i), stdout);
+                            lc = lv.args[1];
+                        }
+                    } else {
+                        std::printf("%s", render(v).c_str());
+                    }
+                    break;
+                }
+                default:
+                    // Unknown directive: echo literally.
+                    std::fputc(''~'', stdout);
+                    std::fputc(d, stdout);
+                    break;
+            }
+        }
+        std::fflush(stdout);
+        pc += 1; return true;
+    }
 
     return false;
 }
@@ -2124,17 +2263,29 @@ bool WamState::step(const Instruction& instr) {
             if (instr.a == "catch/3") { cp = pc + 1; return execute_catch(); }
             if (instr.a == "throw/1") { cp = pc + 1; return execute_throw(); }
             auto it = labels.find(instr.a);
-            if (it == labels.end()) return false;
-            cp = pc + 1;
-            pc = it->second;
-            return true;
+            if (it != labels.end()) {
+                cp = pc + 1;
+                pc = it->second;
+                return true;
+            }
+            // No user predicate matches: fall back to builtin dispatch.
+            // builtin() advances pc itself on success, mirroring the
+            // BuiltinCall path.
+            return builtin(instr.a, instr.n);
         }
         case Instruction::Op::Execute: {
             if (instr.a == "catch/3") return execute_catch();
             if (instr.a == "throw/1") return execute_throw();
             auto it = labels.find(instr.a);
-            if (it == labels.end()) return false;
-            pc = it->second;
+            if (it != labels.end()) {
+                pc = it->second;
+                return true;
+            }
+            // Fall back to a deterministic builtin, then proceed to cp
+            // since execute is a tail call (no in-body continuation).
+            if (!builtin(instr.a, instr.n)) return false;
+            if (cp == 0) { halt = true; return true; }
+            pc = cp; cp = 0;
             return true;
         }
         case Instruction::Op::CatchReturn: {
