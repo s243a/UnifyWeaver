@@ -98,34 +98,64 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
 ```
 
 `iso_errors_rewrite/4` walks the items for one predicate and rewrites
-`builtin_call(Key, N)` lines according to the predicate's mode:
+**only the default-form** `builtin_call(Key, N)` lines according to
+the predicate's mode. Explicit `_iso`/`_lax` keys are passed through
+unchanged.
 
 ```prolog
 iso_errors_rewrite(IsoConfig, PI, Items0, Items) :-
     iso_errors_mode_for(IsoConfig, PI, Mode),
     maplist(iso_errors_rewrite_item(Mode), Items0, Items).
 
-iso_errors_rewrite_item(true,  builtin_call(Key, N), builtin_call(IsoKey, N)) :-
-    iso_errors_swap_key(Key, IsoKey), !.
+% Only the default form gets rewritten. Explicit _iso / _lax keys
+% survive untouched — that''s the three-forms guarantee from the
+% philosophy doc §3.3.
+iso_errors_rewrite_item(true,  builtin_call(Key, N),
+                        builtin_call(IsoKey, N)) :-
+    iso_errors_default_to_iso(Key, IsoKey), !.
+iso_errors_rewrite_item(false, builtin_call(Key, N),
+                        builtin_call(LaxKey, N)) :-
+    iso_errors_default_to_lax(Key, LaxKey), !.
 iso_errors_rewrite_item(_, Item, Item).
 ```
 
-`iso_errors_swap_key/2` is a simple lookup table:
+### 3.1 The three-form key tables
 
-| Lax key | ISO key |
-|---|---|
-| `is/2` | `is_iso/2` |
-| `>/2` | `>_iso/2` |
-| `</2` | `<_iso/2` |
-| `>=/2` | `>=_iso/2` |
-| `=</2` | `=<_iso/2` |
-| `=:=/2` | `=:=_iso/2` |
-| `=\\=/2` | `=\\=_iso/2` |
-| `succ/2` | `succ_iso/2` |
+There are two lookup tables, both registered as deterministic facts.
+The default → iso table fires in ISO-mode predicates; the default →
+lax table is a no-op for now (default and lax share the same key)
+but is kept for symmetry and future use.
+
+| Default key | ISO key | Lax key |
+|---|---|---|
+| `is/2` | `is_iso/2` | `is_lax/2` |
+| `>/2` | `>_iso/2` | `>_lax/2` |
+| `</2` | `<_iso/2` | `<_lax/2` |
+| `>=/2` | `>=_iso/2` | `>=_lax/2` |
+| `=</2` | `=<_iso/2` | `=<_lax/2` |
+| `=:=/2` | `=:=_iso/2` | `=:=_lax/2` |
+| `=\\=/2` | `=\\=_iso/2` | `=\\=_lax/2` |
+| `succ/2` | `succ_iso/2` | `succ_lax/2` |
 
 (Operator-name keys with `/2` suffix follow the existing convention.
-Builtins not in the table are left unchanged — they're considered
+Builtins not in either table are left unchanged — they're considered
 ISO-equivalent or not yet audited.)
+
+### 3.2 Default vs lax — share implementation, separate keys
+
+For each entry in the tables, the runtime registers **three** branches.
+`is/2` and `is_lax/2` execute the same body; `is_iso/2` has its own.
+This keeps the explicit-lax form available to user code without
+introducing a runtime mode register.
+
+```cpp
+if (op == "is/2" || op == "is_lax/2") {
+    // Shared lax body. One implementation, two dispatch keys.
+}
+if (op == "is_iso/2") {
+    // ISO body. Throws on bad eval.
+}
+```
 
 ## 4. Runtime registrations
 
@@ -188,14 +218,15 @@ correctness issue.
 
 ## 6. Error-term shapes
 
-These are the structures `throw_iso_error` builds for the v1
+These are the structures `throw_iso_error` builds for the v1 ISO
 builtins. The list will grow as more builtins are audited.
 
 | Builtin | Trigger | Thrown term |
 |---|---|---|
 | `is_iso/2` | RHS contains unbound | `error(instantiation_error, _)` |
 | `is_iso/2` | RHS non-evaluable atom `foo` | `error(type_error(evaluable, foo/0), _)` |
-| `is_iso/2` | Divide by zero | `error(evaluation_error(zero_divisor), _)` |
+| `is_iso/2` | Integer divide by zero | `error(evaluation_error(zero_divisor), _)` |
+| `is_iso/2` | Float divide by zero | `error(evaluation_error(zero_divisor), _)` |
 | `>_iso/2` etc. | Either arg unbound | `error(instantiation_error, _)` |
 | `>_iso/2` etc. | Either arg non-evaluable | `error(type_error(evaluable, X/N), _)` |
 | `succ_iso/2` | Both args unbound | `error(instantiation_error, _)` |
@@ -205,35 +236,121 @@ builtins. The list will grow as more builtins are audited.
 (Atom-form predicate indicators are constructed as `Atom/Arity`
 compound terms, matching ISO's recommendation.)
 
+### 6.1 Lax behavior — IEEE 754 for floats
+
+Lax / default-lax keys follow IEEE 754 float semantics rather than
+the uniform-fail behavior the runtime ships today. See
+`WAM_CPP_ISO_ERRORS_PHILOSOPHY.md` §8 for the comparison-language
+rationale.
+
+| Expression | Lax behavior |
+|---|---|
+| `X is 1 // 0` | `false` (fail) — integer divide stays uniform-fail |
+| `X is 1 / 0` | `false` (fail) — `/` is integer when both args are integer |
+| `X is 1.0 / 0.0` | `X = inf` (Value::Float with `+inf`) |
+| `X is 0.0 / 0.0` | `X = nan` |
+| `X is -1.0 / 0.0` | `X = -inf` |
+
+This is a small breaking change to the existing lax behavior
+(today: float `1.0/0.0` also fails). The implementation PR documents
+the change in its release notes.
+
 ## 7. Migration path
 
 For each existing ISO-relevant builtin:
 
 1. Decide what the ISO error should be (see §6).
 2. Add an `if (op == "<key>_iso/N")` branch alongside the existing
-   lax `if (op == "<key>/N")`.
-3. Add the key to `iso_errors_swap_key/2`.
+   lax `if (op == "<key>/N")`. The lax branch also matches
+   `<key>_lax/N` so the explicit-lax form is callable from user
+   code.
+3. Add the keys to `iso_errors_default_to_iso/2` and
+   `iso_errors_default_to_lax/2`.
 4. Add e2e tests that:
    - Verify lax behavior is unchanged (existing tests, no edits).
    - Verify ISO behavior with `catch(Goal, error(Pattern, _), ...)`.
+   - Verify explicit `_lax` and `_iso` forms work from user source
+     (call site bypasses the rewrite).
 
-The same pattern applies when adding a new builtin: ship both
-flavors from the start, or document that the lax flavor is the only
-one and gets the lax key.
+The same pattern applies when adding a new builtin: ship all three
+forms from the start, or document that the lax flavor is the only
+one (in which case the default key and the lax key alias to the
+same body and no `_iso` form exists yet).
+
+## 7.1 Audit tooling
+
+`wam_cpp_iso_audit/2` is a read-only generator pass that mirrors
+the rewrite without actually emitting code. Useful for migration
+review and for verifying the config does what's intended.
+
+```prolog
+%% wam_cpp_iso_audit(+Predicates, +Options, -Audit)
+%
+%  For each predicate in Predicates, walk its compiled WAM and
+%  report each builtin_call site''s key resolution. Options accepts
+%  the same iso_errors_config / iso_errors / iso_errors(PI, Mode)
+%  options as write_wam_cpp_project/3.
+wam_cpp_iso_audit(Predicates, Options, Audit) :-
+    iso_errors_resolve_options(Options, IsoConfig),
+    findall(PredEntry, (
+        member(PI, Predicates),
+        iso_errors_audit_predicate(IsoConfig, PI, PredEntry)
+    ), Audit).
+```
+
+Output records carry enough information to drive both a human
+report and machine-readable downstream tools:
+
+```prolog
+audit(my_calc/2, Mode, [
+    site(pc=12,
+         original=is/2,             % what the WAM compiler emitted
+         resolved=is_iso/2,         % what the generator will write out
+         source=default,            % default | explicit_iso | explicit_lax
+         iso_key=is_iso/2,          % what flipping to ISO would give
+         lax_key=is_lax/2,          % what flipping to lax would give
+         would_change_on_flip=true),
+    site(pc=18,
+         original=is_lax/2,
+         resolved=is_lax/2,
+         source=explicit_lax,
+         iso_key=is_iso/2,
+         lax_key=is_lax/2,
+         would_change_on_flip=false)
+])
+```
+
+A simple pretty-printer (`wam_cpp_iso_audit_report/1`) renders the
+audit as a human-readable table:
+
+```
+my_calc/2 [iso]
+  pc=12  is/2       -> is_iso/2  (default)      would-change-on-flip
+  pc=18  is_lax/2   -> is_lax/2  (explicit-lax) survives-flip
+```
+
+The audit ships in the same plumbing PR as the rewrite, since the
+two share `iso_errors_resolve_options/2` and the key tables. Cost:
+one extra exported predicate + a few hundred lines of inspection
+code.
 
 ## 8. Test surface
 
-Two new test categories in `test_wam_cpp_generator.pl`:
+Three new test categories in `test_wam_cpp_generator.pl`:
 
 ```
-cpp_e2e_iso_*    — verifies ISO-mode predicates throw the right
-                   error terms (catch with specific patterns).
-cpp_e2e_lax_*    — verifies lax-mode predicates still fail silently
-                   (regression guard against the rewrite accidentally
-                   touching lax call sites).
+cpp_e2e_iso_*       — verifies ISO-mode predicates throw the right
+                      error terms (catch with specific patterns).
+cpp_e2e_lax_*       — verifies lax-mode predicates still fail
+                      silently (regression guard).
+cpp_e2e_explicit_*  — verifies user code using is_iso/2 or
+                      is_lax/2 directly bypasses the rewrite (the
+                      three-forms guarantee). e.g. an ISO-mode
+                      predicate with an explicit is_lax/2 call
+                      should fail silently on bad eval.
 ```
 
-Plus a unit test for the config loader:
+Plus two unit tests for the generator-side helpers:
 
 ```
 test_iso_errors_config_loader — parses a sample config, verifies
@@ -241,17 +358,29 @@ test_iso_errors_config_loader — parses a sample config, verifies
                                  right Mode for several predicates
                                  (with and without overrides,
                                  module-qualified and bare).
+
+test_iso_errors_audit         — given a sample config + a couple
+                                 predicates with mixed default /
+                                 explicit_iso / explicit_lax call
+                                 sites, verify wam_cpp_iso_audit/3
+                                 reports the right `resolved`,
+                                 `source`, and
+                                 `would_change_on_flip` fields.
 ```
 
 ## 9. Files touched (estimated)
 
 - `src/unifyweaver/targets/wam_cpp_target.pl`
-  - `iso_errors_*` config-loading + rewrite predicates (~80 lines).
-  - Runtime `builtin()` gains `_iso/N` cases (~20 lines per builtin).
+  - `iso_errors_*` config-loading + rewrite predicates (~100 lines).
+  - `wam_cpp_iso_audit/3` + pretty-printer (~120 lines).
+  - Runtime `builtin()` gains `_iso/N` and `_lax/N` cases
+    (~25 lines per builtin, mostly the ISO body since lax shares
+    with default).
   - Runtime gains `throw_iso_error` + `make_*_error` helpers (~60
     lines).
 - `tests/test_wam_cpp_generator.pl`
-  - 1 config-loader unit test + 1 test per ISO-enabled builtin.
+  - 2 unit tests (config loader, audit).
+  - 3 e2e tests per ISO-enabled builtin (iso / lax / explicit).
 - `docs/design/WAM_CPP_ISO_ERRORS_PHILOSOPHY.md` — this design.
 - `docs/design/WAM_CPP_ISO_ERRORS_SPECIFICATION.md` — this design.
 
@@ -260,12 +389,16 @@ test_iso_errors_config_loader — parses a sample config, verifies
 This is sized for **three small PRs** so each is reviewable:
 
 1. **Plumbing PR**: config loader, `iso_errors_rewrite/4` machinery,
-   key-swap table, `throw_iso_error` runtime helper. No behavior
-   change yet — `iso_errors_swap_key/2` returns empty so nothing
-   gets rewritten. Smoke-tested by a config-loader unit test.
-2. **First builtin PR**: add `is_iso/2` registration and one entry
-   to the swap table. Tests cover lax-still-works + ISO-throws.
-3. **Sweep PR**: add the remaining arith compares + `succ_iso/2`
-   and their swap-table entries. Tests for each.
+   default→iso and default→lax key tables (initially empty),
+   `throw_iso_error` runtime helper, audit predicate + pretty
+   printer. No behavior change yet — tables are empty so nothing
+   gets rewritten. Smoke-tested by config-loader + audit unit tests.
+2. **First builtin PR**: add `is_iso/2` and `is_lax/2` registrations
+   and the matching entries to both key tables. Tests cover
+   lax-still-works + ISO-throws + explicit-lax-bypass-of-rewrite.
+3. **Sweep PR**: add the remaining arith compares + `succ_iso/2` /
+   `succ_lax/2` and their table entries. Tests for each. Also
+   ships the lax IEEE-754 float-divide behavior change documented
+   in §6.1.
 
 Future builtins follow the §7 pattern incrementally.

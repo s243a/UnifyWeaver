@@ -106,47 +106,61 @@ on every call, which gets expensive.
 ### 3.3 Compile-time per-predicate via distinct builtin keys (chosen)
 
 The generator already knows which predicate each instruction belongs
-to. Instead of emitting `builtin_call is/2`, it emits either:
+to. We register **three** flavors of each ISO-relevant builtin:
+
+| Form | Key | Behavior | Who writes it |
+|---|---|---|---|
+| Default | `is/2` | Resolves to lax or ISO at generator time based on the surrounding predicate's mode | The user writes `X is Expr`; the WAM compiler emits `builtin_call is/2` |
+| Explicit ISO | `is_iso/2` | Always throws ISO errors | The user writes `is_iso(X, Expr)` directly |
+| Explicit lax | `is_lax/2` | Always fails silently | The user writes `is_lax(X, Expr)` directly |
+
+Per-predicate dispatch only rewrites the **default** form. Explicit
+`is_iso/2` and `is_lax/2` call sites are never rewritten — they say
+what they mean and survive a mode flip on the enclosing predicate.
+This is what the user feedback asked for: "declaring a predicate ISO
+should mean the default versions in its clauses use ISO, unless we
+specify them explicitly as lax."
+
+**Concrete example.** A predicate annotated ISO with a mix of forms:
+
+```prolog
+:- iso_errors_override(my_calc/2, true).
+
+my_calc(X, R) :-
+    R1 is X + 1,           % default → rewrites to is_iso/2
+    R2 is_lax R1 * 2,      % explicit lax — stays lax
+    R is_iso R2 - 0.       % explicit ISO — stays ISO (redundant but legal).
+```
+
+After the generator pass, the WAM call sites emit:
 
 ```
-builtin_call is_iso/2, 2
-```
-
-or
-
-```
-builtin_call is/2, 2
-```
-
-per call site, driven by the surrounding predicate's mode. The
-runtime registers both flavors as separate builtins:
-
-```cpp
-if (op == "is/2") {
-    // lax: return false on bad eval
-}
-if (op == "is_iso/2") {
-    // strict: build error term and throw
-}
+builtin_call is_iso/2, 2    % rewritten from is/2
+builtin_call is_lax/2, 2    % unchanged
+builtin_call is_iso/2, 2    % unchanged
 ```
 
 **Properties:**
 
-- **Zero cost on the happy path**, either flavor. The builtins are
-  separate functions; the dispatch is the same single `if` chain it
-  was before. ISO mode literally just sends you to a different
+- **Zero cost on the happy path**, all three flavors. They are
+  separate functions; dispatch is the same single `if` chain it was
+  before. Mode choice literally just sends you to a different
   function.
-- **Per-predicate granularity**: each `is/2` call site picks its
+- **Per-predicate granularity**: each default call site picks its
   flavor independently. Module A can be ISO-strict, module B lax,
   they coexist in one binary with no global state.
 - **No runtime overhead**: the choice was made at compile time;
   nothing to check.
+- **Explicit overrides survive**: a developer who wants
+  belt-and-suspenders behavior writes `is_iso/2` directly and the
+  generator doesn't second-guess them.
 - **No coupling between predicates**: changing `pred_a/2`'s ISO mode
-  doesn't affect `pred_b/2` even when both call the same `is/2`.
+  doesn't affect `pred_b/2` even when both call `is/2`.
 
 The cost is some generator complexity (the per-call-site rewrite) and
-some runtime code duplication (two flavors per ISO-relevant builtin).
-Both are contained and easy to reason about.
+some runtime code duplication (three flavors per ISO-relevant
+builtin, though lax and default can share a function body). Both are
+contained and easy to reason about.
 
 ## 4. Why a config file
 
@@ -239,18 +253,102 @@ context-switch.
 - **Builtins not currently shipped.** `atom_length/2`, `functor/3`,
   `arg/3`, etc. would need their own audit when added — see the
   perf discussion in §2.
+- **Auto-fixing legacy code.** The audit tool (§9) reports; it
+  doesn't rewrite. Migration is opt-in per predicate by editing the
+  config.
 
-## 8. Open questions
+## 8. Divide-by-zero: throw, NaN, or both?
 
-These are flagged for review during the implementation PR, not now.
+Worth its own section because the user flagged that "for numbers,
+divide-by-zero should give NaN, which has rules in various
+programming languages." This is a real tension between ISO Prolog
+and floating-point conventions.
 
-- **Which `ErrorType` for divide-by-zero?** ISO says
-  `evaluation_error(zero_divisor)`. Our runtime currently fails
-  silently; the implementation should match ISO's choice here.
+**ISO Prolog says:**
+
+- `1 // 0` (integer division) → throw
+  `evaluation_error(zero_divisor)`.
+- `1 / 0`  (general division) → throw
+  `evaluation_error(zero_divisor)`.
+- IEEE 754 says floats divide to ±∞ or NaN; ISO predates wide IEEE
+  adoption and chose throw uniformly.
+
+**Languages we might compare to:**
+
+- C / C++: integer `1/0` is undefined behavior; float `1.0/0.0` is
+  `inf` (no exception).
+- JavaScript / Lua: `1/0` is `Infinity`, `0/0` is `NaN`. No
+  exceptions.
+- Python: integer `1//0` throws `ZeroDivisionError`; float `1.0/0.0`
+  *also* throws (Python doesn't follow IEEE here).
+- Haskell: integer throws; `Float`/`Double` divide produces `Infinity`
+  or `NaN`.
+
+**Our position:** ISO-mode follows ISO (throws for both). Lax-mode
+follows IEEE 754: integer divide-by-zero fails silently (preserves
+current behavior); float divide produces `inf` or `nan` and succeeds.
+This makes the choice consistent with the three-form design — if you
+want NaN/inf semantics, write `is_lax/2` (or have your predicate in
+lax mode); if you want exception semantics, write `is_iso/2` (or have
+it in ISO mode).
+
+Concrete behavior table:
+
+| Expression | Lax / Default(lax) | ISO / Default(iso) |
+|---|---|---|
+| `X is 1 // 0` | `false` (fail) | throw `evaluation_error(zero_divisor)` |
+| `X is 1 / 0` | `false` (fail) | throw `evaluation_error(zero_divisor)` |
+| `X is 1.0 / 0.0` | `X = inf` | throw `evaluation_error(zero_divisor)` |
+| `X is 0.0 / 0.0` | `X = nan` | throw `evaluation_error(zero_divisor)` |
+| `X is -1.0 / 0.0` | `X = -inf` | throw `evaluation_error(zero_divisor)` |
+
+The lax behavior change (currently divide-by-zero fails uniformly;
+proposed lax behavior: only integer fails, float produces
+inf/nan) is a small breaking change worth flagging. It comes online
+with the implementation, not the docs.
+
+## 9. Audit tooling
+
+User feedback called this out as a good idea; moving it from
+"probably not" into the plan.
+
+Ship a `wam_cpp_iso_audit/2` predicate alongside the rewrite. Given
+a predicate list and a config, it walks each predicate's compiled
+WAM and reports:
+
+- Which `builtin_call` sites would resolve to ISO vs lax under the
+  current config.
+- Which sites would change behavior if the predicate's mode flipped.
+- Which sites use explicit `is_iso/2` or `is_lax/2` overrides (so
+  reviewers know mode-flips won't touch them).
+
+Output is a Prolog list of records, e.g.:
+
+```prolog
+[ audit(my_calc/2, [
+      site(pc=12, lax_key=is/2, iso_key=is_iso/2,
+           resolved=is_iso/2, source=default,
+           would_change_under_lax=true),
+      site(pc=18, lax_key=is_lax/2, iso_key=is_lax/2,
+           resolved=is_lax/2, source=explicit_lax,
+           would_change_under_lax=false)
+  ])
+]
+```
+
+A pretty-printer renders this as a human-readable table for command-
+line use. The audit is read-only; it doesn't modify the generator
+state. Useful as both a migration aid and a sanity check on the
+config file.
+
+## 10. Other open questions
+
+Flagged for review during the implementation PR, not now.
+
 - **Should the `Context` part of `error(_, Context)` carry the call
   site?** ISO lets it be implementation-defined. A minimal version
   is just `Context = _` (unbound). A more useful version stores
   e.g. the predicate indicator that threw. Open.
-- **Migration tooling.** Should we ship a `--iso-audit` switch that
-  reports which existing predicates would change behavior under ISO?
-  Probably not in the first PR.
+- **Module-qualified config rules.** Bare `Name/Arity` matches in
+  any module today; multi-module projects may want explicit module
+  scoping. Revisit when those land.
