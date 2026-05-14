@@ -68,15 +68,17 @@ mode_options(interpreted, [report_lowered_helpers(true)]).
 mode_predicates(lowered, [user:wam_c_bench_pair/2,
                           user:wam_c_bench_pair_alias/2,
                           user:wam_c_bench_pair_tag/3,
-                          user:wam_c_bench_pair_keep/2]).
+                          user:wam_c_bench_pair_keep/2,
+                          user:wam_c_bench_pair_score/3,
+                          user:wam_c_bench_pair_small/2]).
 mode_predicates(interpreted, [user:wam_c_bench_pair/2]).
 
-mode_query_predicate(lowered, 'wam_c_bench_pair_keep/2').
+mode_query_predicate(lowered, 'wam_c_bench_pair_small/2').
 mode_query_predicate(interpreted, 'wam_c_bench_pair/2').
 
 mode_alias_setup(lowered,
-                 'void setup_wam_c_bench_pair_alias_2(WamState* state);\nvoid setup_wam_c_bench_pair_tag_3(WamState* state);\nvoid setup_wam_c_bench_pair_keep_2(WamState* state);\n',
-                 '    setup_wam_c_bench_pair_alias_2(&state);\n    setup_wam_c_bench_pair_tag_3(&state);\n    setup_wam_c_bench_pair_keep_2(&state);\n').
+                 'void setup_wam_c_bench_pair_alias_2(WamState* state);\nvoid setup_wam_c_bench_pair_tag_3(WamState* state);\nvoid setup_wam_c_bench_pair_keep_2(WamState* state);\nvoid setup_wam_c_bench_pair_score_3(WamState* state);\nvoid setup_wam_c_bench_pair_small_2(WamState* state);\n',
+                 '    setup_wam_c_bench_pair_alias_2(&state);\n    setup_wam_c_bench_pair_tag_3(&state);\n    setup_wam_c_bench_pair_keep_2(&state);\n    setup_wam_c_bench_pair_score_3(&state);\n    setup_wam_c_bench_pair_small_2(&state);\n').
 mode_alias_setup(interpreted, '', '').
 
 setup_benchmark_facts :-
@@ -87,14 +89,22 @@ setup_benchmark_facts :-
     assertz(user:wam_c_bench_pair_tag(a, b, keep)),
     assertz(user:wam_c_bench_pair_tag(a, c, keep)),
     assertz(user:wam_c_bench_pair_tag(b, d, keep)),
+    assertz(user:wam_c_bench_pair_score(a, b, 1)),
+    assertz(user:wam_c_bench_pair_score(a, c, 2)),
+    assertz(user:wam_c_bench_pair_score(b, d, 3)),
     assertz(user:((wam_c_bench_pair_alias(X, Y) :- wam_c_bench_pair(X, Y)))),
-    assertz(user:((wam_c_bench_pair_keep(X, Y) :- wam_c_bench_pair_tag(X, Y, keep)))).
+    assertz(user:((wam_c_bench_pair_keep(X, Y) :- wam_c_bench_pair_tag(X, Y, keep)))),
+    assertz(user:((wam_c_bench_pair_small(X, Y) :-
+        wam_c_bench_pair_score(X, Y, Score),
+        Score =< 3))).
 
 cleanup_benchmark_facts :-
     retractall(user:wam_c_bench_pair(_, _)),
     retractall(user:wam_c_bench_pair_alias(_, _)),
     retractall(user:wam_c_bench_pair_tag(_, _, _)),
-    retractall(user:wam_c_bench_pair_keep(_, _)).
+    retractall(user:wam_c_bench_pair_keep(_, _)),
+    retractall(user:wam_c_bench_pair_score(_, _, _)),
+    retractall(user:wam_c_bench_pair_small(_, _)).
 
 lowered_helper_benchmark_main(QueryPred, AliasDecl, AliasSetup, Code) :-
     format(atom(Code),
