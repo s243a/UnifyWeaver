@@ -183,6 +183,8 @@ plan_wam_c_lowered_helper(DetectedKeys, AvailableKeys, PredIndicator, Plan) :-
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, fact_only(Rows))
     ;   lowered_body_call_helper(PredIndicator, AvailableKeys, CalleeKey, CalleeArity)
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, body_call(CalleeKey, CalleeArity))
+    ;   lowered_body_call_rejection_reason(PredIndicator, AvailableKeys, Reason)
+    ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, rejected, Reason)
     ;   lowered_comparison_filtered_fact_helper(PredIndicator, CalleeKey, Rows)
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, comparison_filtered_fact(CalleeKey, Rows))
     ;   lowered_filtered_fact_helper(PredIndicator, CalleeKey, Rows)
@@ -441,6 +443,41 @@ lowered_body_call_helper(PredIndicator, AvailableKeys, CalleeKey, CalleeArity) :
     lowered_fact_helper_rows(CalleeIndicator, _Rows),
     format(atom(CalleeKey), '~w/~w', [CalleePred, CalleeArity]),
     memberchk(CalleeKey, AvailableKeys).
+
+lowered_body_call_rejection_reason(PredIndicator, AvailableKeys, Reason) :-
+    body_call_context(PredIndicator, CalleePred, CalleeArity, CalleeKey),
+    callee_has_user_clause(CalleePred, CalleeArity),
+    (   \+ memberchk(CalleeKey, AvailableKeys)
+    ->  Reason = body_call_callee_not_available
+    ;   CalleeIndicator = user:CalleePred/CalleeArity,
+        \+ lowered_fact_helper_rows(CalleeIndicator, _Rows)
+    ->  Reason = body_call_callee_not_lowerable
+    ),
+    !.
+
+body_call_context(PredIndicator, CalleePred, CalleeArity, CalleeKey) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    functor(Head, Pred, Arity),
+    findall(Args-Body,
+            (   user:clause(Head, Body),
+                Head =.. [_|Args]
+            ),
+            [Args-Body0]),
+    Body0 \== true,
+    strip_module_qualification(Body0, Body),
+    Body \= (_, _),
+    Body =.. [CalleePred|CalleeArgs],
+    length(CalleeArgs, CalleeArity),
+    Args == CalleeArgs,
+    (Pred/Arity) \== (CalleePred/CalleeArity),
+    format(atom(CalleeKey), '~w/~w', [CalleePred, CalleeArity]).
+
+callee_has_user_clause(Pred, Arity) :-
+    functor(Head, Pred, Arity),
+    catch(user:clause(Head, _Body),
+          error(permission_error(access, private_procedure, _), _),
+          fail),
+    !.
 
 lowered_body_call_helper_for_predicate(PredIndicator, CalleeKey, CalleeArity, Key, Code, SetupLine) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),

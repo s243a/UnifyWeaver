@@ -5,7 +5,7 @@ Status date: 2026-05-14
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `69d5b9e9` (`Merge pull request #2070 from s243a/test/wam-c-asan-smoke-stderr-log`)
+- `main` at `6e5e8cca` (`Merge pull request #2083 from s243a/feat/wam-c-lowered-helper-empty-result-rejections`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
 - `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py`
@@ -14,7 +14,7 @@ Base verified locally:
 
 Active branch:
 
-- `feat/wam-c-lowered-helper-empty-result-rejections`
+- `feat/wam-c-lowered-helper-body-call-rejections`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -51,7 +51,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Lowered helper comparison-filter shape | Done | Fact-only callee plus one integer comparison guard lowers into native fact rows and the tiny lowered-helper matrix exercises it |
 | Lowered helper comparison-filter rejection metadata | Done | Planner reports explicit rejection reasons for unbound comparison guard variables, unsupported expressions, non-integer ordering rows, and no matching rows |
 | Lowered helper repeated-variable filters | Done | Constant and comparison filtered helpers preserve repeated callee-variable row constraints with planner and executable coverage |
-| Lowered helper empty-result rejections | In progress | Active branch reports `no_matching_filter_rows` for supported constant filtered helpers whose constraints produce no rows, alongside existing comparison no-match metadata |
+| Lowered helper empty-result rejections | Done | Planner reports `no_matching_filter_rows` for supported constant filtered helpers whose constraints produce no rows, alongside existing comparison no-match metadata |
+| Lowered helper body-call rejection metadata | In progress | Active branch reports explicit unavailable and non-lowerable callee reasons for exact user-predicate body-call shapes |
 
 ## Current C Target Baseline
 
@@ -132,24 +133,7 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-lowered-helper-empty-result-rejections`
-
-Goal: make empty lowered-helper result sets explicit across supported filter
-families.
-
-Scope:
-
-- Add focused planner metadata for filters whose supported shape produces no
-  rows.
-- Keep successful fact-only, body-call, filtered-fact, comparison-filtered,
-  and repeated-variable paths unchanged.
-- Prefer planner tests and generated plan comments over new runtime paths.
-
-Status: active; constant filtered helpers now report
-`no_matching_filter_rows` when supported constraints produce no projected rows,
-matching the existing explicit comparison no-match metadata.
-
-### 2. `feat/wam-c-lowered-helper-body-call-rejections`
+### 1. `feat/wam-c-lowered-helper-body-call-rejections`
 
 Goal: make unsupported body-call lowering failures explicit before expanding
 the body-call helper surface.
@@ -161,10 +145,26 @@ Scope:
 - Keep the existing direct native fact-helper dispatch unchanged.
 - Prefer planner tests and generated plan comments over runtime changes.
 
+Status: active; exact user-predicate body-call shapes now report
+`body_call_callee_not_available` or `body_call_callee_not_lowerable` when they
+cannot use direct native helper dispatch.
+
+### 2. `feat/wam-c-lowered-helper-expanded-body-calls`
+
+Goal: expand body-call helper lowering beyond direct alias-to-fact dispatch only
+after unsupported body-call shapes have explicit planner metadata.
+
+Scope:
+
+- Evaluate simple body-call projections that are currently handled as filtered
+  fact helpers.
+- Keep explicit rejection metadata for unavailable and non-lowerable callees.
+- Add runtime coverage only for any newly supported body-call shape.
+
 ## Suggested Immediate Next Step
 
-Continue validating `feat/wam-c-lowered-helper-empty-result-rejections`.
+Continue validating `feat/wam-c-lowered-helper-body-call-rejections`.
 
 The active branch adds explicit planner and generated-comment metadata for
-supported constant filtered helpers whose constraints produce no rows, while
-leaving successful lowered helper paths unchanged.
+exact user-predicate body-call shapes whose callee is unavailable or not
+lowerable, while leaving successful direct body-call helper dispatch unchanged.
