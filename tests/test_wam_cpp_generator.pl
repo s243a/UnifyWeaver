@@ -152,6 +152,28 @@ user:wam_cpp_test_fmt2_compound     :- format('result: ~w~n', [foo(1, bar)]).
 user:wam_cpp_test_fmt2_tilde        :- format('100~~~n', []).
 user:wam_cpp_test_fmt2_no_directives :- format('hello world', []).
 
+% succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
+% between is helper-injected and exercises the nondet path via findall.
+:- dynamic user:wam_cpp_test_succ_fwd/0.
+:- dynamic user:wam_cpp_test_succ_bwd/0.
+:- dynamic user:wam_cpp_test_succ_zero/0.
+:- dynamic user:wam_cpp_test_succ_neg_fail/0.
+:- dynamic user:wam_cpp_test_succ_y_zero_fail/0.
+:- dynamic user:wam_cpp_test_between_first/0.
+:- dynamic user:wam_cpp_test_between_enum/0.
+:- dynamic user:wam_cpp_test_between_singleton/0.
+:- dynamic user:wam_cpp_test_between_empty/0.
+
+user:wam_cpp_test_succ_fwd          :- succ(3, X), X = 4.
+user:wam_cpp_test_succ_bwd          :- succ(X, 4), X = 3.
+user:wam_cpp_test_succ_zero         :- succ(0, X), X = 1.
+user:wam_cpp_test_succ_neg_fail     :- succ(-1, _).
+user:wam_cpp_test_succ_y_zero_fail  :- succ(_, 0).
+user:wam_cpp_test_between_first     :- between(1, 5, X), X = 1.
+user:wam_cpp_test_between_enum      :- findall(X, between(1, 3, X), L), L = [1, 2, 3].
+user:wam_cpp_test_between_singleton :- findall(X, between(5, 5, X), L), L = [5].
+user:wam_cpp_test_between_empty     :- findall(X, between(5, 3, X), L), L = [].
+
 % Indexing-instruction fixtures (switch_on_constant / switch_on_term):
 :- dynamic user:wam_cpp_color/1.
 :- dynamic user:wam_cpp_shape/2.
@@ -1055,6 +1077,50 @@ test(cpp_e2e_format_tilde_escape, [condition(cpp_compiler_available)]) :-
         ( build_e2e_binary(TmpDir, BinPath),
           run_query_stdout(BinPath, 'wam_cpp_test_fmt2_tilde/0', [],
                            true, "100~\n")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% Arithmetic builtins: succ/2 (direct bidirectional) and between/3
+% (helper-injected, nondet via the standard two-clause definition).
+% ------------------------------------------------------------------
+
+test(cpp_e2e_succ, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_succ', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_succ_fwd/0,
+                               user:wam_cpp_test_succ_bwd/0,
+                               user:wam_cpp_test_succ_zero/0,
+                               user:wam_cpp_test_succ_neg_fail/0,
+                               user:wam_cpp_test_succ_y_zero_fail/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_succ_fwd/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_succ_bwd/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_succ_zero/0',        [], true),
+          % succ(-1, _) and succ(_, 0) both fail per ISO domain.
+          run_query(BinPath, 'wam_cpp_test_succ_neg_fail/0',    [], false),
+          run_query(BinPath, 'wam_cpp_test_succ_y_zero_fail/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_between, [condition(cpp_compiler_available)]) :-
+    % between/3 is helper-injected. The enum case exercises the full
+    % nondet path: findall drives backtracking through both clauses.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_between', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_between_first/0,
+                               user:wam_cpp_test_between_enum/0,
+                               user:wam_cpp_test_between_singleton/0,
+                               user:wam_cpp_test_between_empty/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_between_first/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_between_enum/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_between_singleton/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_between_empty/0',     [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
