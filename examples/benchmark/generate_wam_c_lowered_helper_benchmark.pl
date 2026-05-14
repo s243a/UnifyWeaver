@@ -65,15 +65,18 @@ parse_mode(Mode, _) :-
 mode_options(lowered, [lowered_helpers(true), report_lowered_helpers(true)]).
 mode_options(interpreted, [report_lowered_helpers(true)]).
 
-mode_predicates(lowered, [user:wam_c_bench_pair/2, user:wam_c_bench_pair_alias/2]).
+mode_predicates(lowered, [user:wam_c_bench_pair/2,
+                          user:wam_c_bench_pair_alias/2,
+                          user:wam_c_bench_pair_tag/3,
+                          user:wam_c_bench_pair_keep/2]).
 mode_predicates(interpreted, [user:wam_c_bench_pair/2]).
 
-mode_query_predicate(lowered, 'wam_c_bench_pair_alias/2').
+mode_query_predicate(lowered, 'wam_c_bench_pair_keep/2').
 mode_query_predicate(interpreted, 'wam_c_bench_pair/2').
 
 mode_alias_setup(lowered,
-                 'void setup_wam_c_bench_pair_alias_2(WamState* state);\n',
-                 '    setup_wam_c_bench_pair_alias_2(&state);\n').
+                 'void setup_wam_c_bench_pair_alias_2(WamState* state);\nvoid setup_wam_c_bench_pair_tag_3(WamState* state);\nvoid setup_wam_c_bench_pair_keep_2(WamState* state);\n',
+                 '    setup_wam_c_bench_pair_alias_2(&state);\n    setup_wam_c_bench_pair_tag_3(&state);\n    setup_wam_c_bench_pair_keep_2(&state);\n').
 mode_alias_setup(interpreted, '', '').
 
 setup_benchmark_facts :-
@@ -81,11 +84,17 @@ setup_benchmark_facts :-
     assertz(user:wam_c_bench_pair(a, b)),
     assertz(user:wam_c_bench_pair(a, c)),
     assertz(user:wam_c_bench_pair(b, d)),
-    assertz(user:((wam_c_bench_pair_alias(X, Y) :- wam_c_bench_pair(X, Y)))).
+    assertz(user:wam_c_bench_pair_tag(a, b, keep)),
+    assertz(user:wam_c_bench_pair_tag(a, c, keep)),
+    assertz(user:wam_c_bench_pair_tag(b, d, keep)),
+    assertz(user:((wam_c_bench_pair_alias(X, Y) :- wam_c_bench_pair(X, Y)))),
+    assertz(user:((wam_c_bench_pair_keep(X, Y) :- wam_c_bench_pair_tag(X, Y, keep)))).
 
 cleanup_benchmark_facts :-
     retractall(user:wam_c_bench_pair(_, _)),
-    retractall(user:wam_c_bench_pair_alias(_, _)).
+    retractall(user:wam_c_bench_pair_alias(_, _)),
+    retractall(user:wam_c_bench_pair_tag(_, _, _)),
+    retractall(user:wam_c_bench_pair_keep(_, _)).
 
 lowered_helper_benchmark_main(QueryPred, AliasDecl, AliasSetup, Code) :-
     format(atom(Code),
