@@ -427,6 +427,11 @@ static const int _wam_cpp_setup_register = []() {
 %  even when populated.
 :- dynamic iso_errors_default_to_iso/2.
 :- dynamic iso_errors_default_to_lax/2.
+% Paired clauses (iso/lax for the same default key) interleave so
+% each builtin reads as a logical unit. Tell the consult-time
+% checker not to warn about that.
+:- discontiguous iso_errors_default_to_iso/2.
+:- discontiguous iso_errors_default_to_lax/2.
 
 % is/2 — first ISO-aware builtin. ISO-mode predicates get their
 % default is/2 calls rewritten to is_iso/2 (which throws on bad
@@ -434,8 +439,26 @@ static const int _wam_cpp_setup_register = []() {
 % since is/2 and is_lax/2 share the runtime body). Explicit
 % is_iso/2 or is_lax/2 in user source survives the rewrite — see
 % iso_errors_rewrite_item/3.
+% is/2 — landed in PR #2084.
 iso_errors_default_to_iso("is/2", "is_iso/2").
 iso_errors_default_to_lax("is/2", "is_lax/2").
+% Arithmetic comparisons. ISO body classifies args + throws via the
+% same machinery is_iso/2 uses; lax body shares with default.
+iso_errors_default_to_iso(">/2",   ">_iso/2").
+iso_errors_default_to_lax(">/2",   ">_lax/2").
+iso_errors_default_to_iso("</2",   "<_iso/2").
+iso_errors_default_to_lax("</2",   "<_lax/2").
+iso_errors_default_to_iso(">=/2",  ">=_iso/2").
+iso_errors_default_to_lax(">=/2",  ">=_lax/2").
+iso_errors_default_to_iso("=</2",  "=<_iso/2").
+iso_errors_default_to_lax("=</2",  "=<_lax/2").
+iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
+iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
+iso_errors_default_to_iso("=\\=/2","=\\=_iso/2").
+iso_errors_default_to_lax("=\\=/2","=\\=_lax/2").
+% succ/2 — bidirectional with proper ISO error throws.
+iso_errors_default_to_iso("succ/2", "succ_iso/2").
+iso_errors_default_to_lax("succ/2", "succ_lax/2").
 
 %% iso_errors_resolve_options(+Options, -Config)
 %  Merges the (optional) file config with inline options into one
@@ -1544,6 +1567,13 @@ struct WamState {
     // for the type_error culprit slot.
     bool    term_contains_unbound(CellPtr c) const;
     Value   arith_culprit(const Value& v) const;
+    // Walk an arith term tree looking for a "/" or "//" or "mod"
+    // node whose RHS dereferences to a zero integer or zero float.
+    // Used by ISO arith builtins to throw
+    // evaluation_error(zero_divisor) before eval_arith silently
+    // succeeds with IEEE 754 inf / NaN (lax behavior) — see
+    // SPECIFICATION §6.1.
+    bool    term_has_zero_divide(CellPtr c) const;
     // Deep-copy a value tree, allocating fresh cells for any Unbound
     // leaves (multiple references to the same source name share the
     // same fresh cell). Used by throw/1 to snapshot the thrown term
@@ -1590,7 +1620,9 @@ compile_wam_runtime_to_cpp(_Options,
 #include "wam_runtime.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -1769,8 +1801,25 @@ Value WamState::eval_arith(CellPtr c, bool& ok) const {
                 return Value::Integer(a.i * b.i);
             }
             if (v.s == "//2") {
-                // Prolog ''/'' is float division.
-                if (as_d(b) == 0.0) { ok = false; return Value{}; }
+                // Prolog ''/'' is float division. Lax / default mode
+                // follows IEEE 754 for float operands (inf / -inf /
+                // NaN on divide-by-zero) per
+                // WAM_CPP_ISO_ERRORS_SPECIFICATION §6.1; integer
+                // divide-by-zero remains uniform-fail. ISO mode
+                // detects divide-by-zero before calling eval_arith
+                // (via term_has_zero_divide) and throws
+                // evaluation_error(zero_divisor) regardless of
+                // operand type.
+                if (as_d(b) == 0.0) {
+                    if (either_float) {
+                        double num = as_d(a);
+                        if (num == 0.0) return Value::Float(std::nan(""));
+                        return Value::Float(num > 0
+                            ? std::numeric_limits<double>::infinity()
+                            : -std::numeric_limits<double>::infinity());
+                    }
+                    ok = false; return Value{};
+                }
                 if (either_float) return Value::Float(as_d(a) / as_d(b));
                 if (a.i % b.i == 0) return Value::Integer(a.i / b.i);
                 return Value::Float((double)a.i / (double)b.i);
@@ -1904,7 +1953,9 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
     // integer, derive Y; if Y is a positive integer, derive X. Fails
     // if X < 0 or Y <= 0 or both args unbound (ISO would throw
     // instantiation_error in the both-unbound case; v1 just fails).
-    if (op == "succ/2") {
+    // succ/2 and succ_lax/2 share the lax body. succ_lax exists as
+    // a distinct dispatch key for the three-forms guarantee.
+    if (op == "succ/2" || op == "succ_lax/2") {
         Value a = deref(*get_cell("A1"));
         Value b = deref(*get_cell("A2"));
         if (a.tag == Value::Tag::Integer) {
@@ -1928,6 +1979,55 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
             pc += 1; return true;
         }
         return false;
+    }
+    // ---- succ_iso/2 -------------------------------------------------
+    // ISO semantics:
+    //   - both args unbound → instantiation_error.
+    //   - either arg non-integer (and bound) → type_error(integer, X).
+    //   - X negative → type_error(not_less_than_zero, X).
+    //   - Y zero or negative → domain_error(not_less_than_zero, Y).
+    // (SPECIFICATION §6.)
+    if (op == "succ_iso/2") {
+        Value a = deref(*get_cell("A1"));
+        Value b = deref(*get_cell("A2"));
+        bool a_unbound = (a.tag == Value::Tag::Unbound
+                          || a.tag == Value::Tag::Uninit);
+        bool b_unbound = (b.tag == Value::Tag::Unbound
+                          || b.tag == Value::Tag::Uninit);
+        if (a_unbound && b_unbound) {
+            return throw_iso_error(make_instantiation_error());
+        }
+        if (!a_unbound && a.tag != Value::Tag::Integer) {
+            return throw_iso_error(make_type_error("integer", a));
+        }
+        if (!b_unbound && b.tag != Value::Tag::Integer) {
+            return throw_iso_error(make_type_error("integer", b));
+        }
+        if (a.tag == Value::Tag::Integer) {
+            if (a.i < 0) {
+                return throw_iso_error(
+                    make_type_error("not_less_than_zero", a));
+            }
+            long long next = a.i + 1;
+            if (b.tag == Value::Tag::Integer) {
+                if (b.i != next) return false;
+                pc += 1; return true;
+            }
+            if (!unify_cells(get_cell("A2"),
+                             std::make_shared<Cell>(Value::Integer(next))))
+                return false;
+            pc += 1; return true;
+        }
+        // a unbound, b is integer (covered by guards above).
+        if (b.i <= 0) {
+            return throw_iso_error(
+                make_domain_error("not_less_than_zero", b));
+        }
+        long long prev = b.i - 1;
+        if (!unify_cells(get_cell("A1"),
+                         std::make_shared<Cell>(Value::Integer(prev))))
+            return false;
+        pc += 1; return true;
     }
     // ---- \\=/2 (cannot unify) --------------------------------------
     if (op == "\\\\=/2") {
@@ -1960,19 +2060,22 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
     }
     // ---- is_iso/2 ---------------------------------------------------
     // ISO-strict arithmetic. Throws instantiation_error for unbound
-    // sub-terms; type_error(evaluable, Culprit) for non-evaluable
-    // atoms / unknown functors. The walk classifies BEFORE eval so
-    // the diagnostic is the actual culprit shape (matches SPEC §6).
+    // sub-terms, evaluation_error(zero_divisor) for /0 (regardless
+    // of operand type — see SPECIFICATION §6 + §6.1), and
+    // type_error(evaluable, Culprit) for non-evaluable atoms or
+    // unknown functors. Classification happens BEFORE eval so the
+    // diagnostic captures the actual culprit shape.
     if (op == "is_iso/2") {
         CellPtr rhs_cell = get_cell("A2");
         if (term_contains_unbound(rhs_cell)) {
             return throw_iso_error(make_instantiation_error());
         }
+        if (term_has_zero_divide(rhs_cell)) {
+            return throw_iso_error(make_evaluation_error("zero_divisor"));
+        }
         bool ok = true;
         Value rhs = eval_arith(rhs_cell, ok);
         if (!ok) {
-            // Build culprit as Name/Arity (or the raw value if shape
-            // is unrecognised — fallback for robustness).
             Value culprit = arith_culprit(deref(*rhs_cell));
             return throw_iso_error(make_type_error("evaluable", culprit));
         }
@@ -1982,15 +2085,59 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         pc += 1; return true;
     }
 
-    // ---- Arithmetic comparisons ------------------------------------
+    // ---- Arithmetic comparisons (lax / default) --------------------
+    // The _lax/2 keys share this body so user code can write e.g.
+    // `>_lax(X, Y)` to opt out of an enclosing ISO-mode predicate''s
+    // rewrite (three-forms guarantee from PHILOSOPHY §3.3). The
+    // dispatch op-name is also passed to arith_compare for the
+    // operator semantics, so we strip the "_lax" suffix first.
     if (op == ">/2" || op == "</2" || op == ">=/2" || op == "=</2"
-        || op == "=:=/2" || op == "=\\\\=/2") {
+        || op == "=:=/2" || op == "=\\\\=/2"
+        || op == ">_lax/2" || op == "<_lax/2" || op == ">=_lax/2"
+        || op == "=<_lax/2" || op == "=:=_lax/2" || op == "=\\\\=_lax/2") {
         bool ok = true;
         Value a = eval_arith(get_cell("A1"), ok);
         if (!ok) return false;
         Value b = eval_arith(get_cell("A2"), ok);
         if (!ok) return false;
-        if (!arith_compare(op, a, b)) return false;
+        std::string base_op = op;
+        // Strip "_lax" before "/" so arith_compare sees ">/2" etc.
+        auto pos = base_op.find("_lax/");
+        if (pos != std::string::npos) base_op.replace(pos, 4, "");
+        if (!arith_compare(base_op, a, b)) return false;
+        pc += 1; return true;
+    }
+    // ---- Arithmetic comparisons (ISO) ------------------------------
+    // ISO arith compares throw the same errors is_iso/2 throws:
+    // instantiation_error for unbound args, evaluation_error for
+    // zero_divisor in either operand subterm,
+    // type_error(evaluable, ...) for non-evaluable atoms / unknown
+    // functors. arith_compare gets the un-suffixed operator key.
+    if (op == ">_iso/2" || op == "<_iso/2" || op == ">=_iso/2"
+        || op == "=<_iso/2" || op == "=:=_iso/2" || op == "=\\\\=_iso/2") {
+        CellPtr a_cell = get_cell("A1");
+        CellPtr b_cell = get_cell("A2");
+        if (term_contains_unbound(a_cell) || term_contains_unbound(b_cell)) {
+            return throw_iso_error(make_instantiation_error());
+        }
+        if (term_has_zero_divide(a_cell) || term_has_zero_divide(b_cell)) {
+            return throw_iso_error(make_evaluation_error("zero_divisor"));
+        }
+        bool ok = true;
+        Value a = eval_arith(a_cell, ok);
+        if (!ok) {
+            Value culprit = arith_culprit(deref(*a_cell));
+            return throw_iso_error(make_type_error("evaluable", culprit));
+        }
+        Value b = eval_arith(b_cell, ok);
+        if (!ok) {
+            Value culprit = arith_culprit(deref(*b_cell));
+            return throw_iso_error(make_type_error("evaluable", culprit));
+        }
+        std::string base_op = op;
+        auto pos = base_op.find("_iso/");
+        if (pos != std::string::npos) base_op.replace(pos, 4, "");
+        if (!arith_compare(base_op, a, b)) return false;
         pc += 1; return true;
     }
 
@@ -3086,6 +3233,21 @@ bool WamState::term_contains_unbound(CellPtr c) const {
         for (auto& arg : v.args) {
             if (term_contains_unbound(arg)) return true;
         }
+    }
+    return false;
+}
+
+bool WamState::term_has_zero_divide(CellPtr c) const {
+    Value v = deref(*c);
+    if (v.tag != Value::Tag::Compound) return false;
+    if (v.args.size() == 2 && (v.s == "//2" || v.s == "///2"
+                            || v.s == "mod/2" || v.s == "rem/2")) {
+        Value rhs = deref(*v.args[1]);
+        if (rhs.tag == Value::Tag::Integer && rhs.i == 0) return true;
+        if (rhs.tag == Value::Tag::Float && rhs.f == 0.0) return true;
+    }
+    for (auto& arg : v.args) {
+        if (term_has_zero_divide(arg)) return true;
     }
     return false;
 }
