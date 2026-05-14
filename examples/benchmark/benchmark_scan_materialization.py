@@ -351,6 +351,7 @@ class BenchResult:
     strategy: str
     times: list[float]
     stderr: str
+    stdout_hash: str
 
     @property
     def median(self) -> float:
@@ -365,6 +366,7 @@ class SourceModeSummary:
     chosen_source_mode: str
     policy_status: str
     overlap_status: str
+    output_agreement: str
     auto_median: str
     auto_vs_best: str
     median_summary: str
@@ -450,6 +452,15 @@ def format_time_spread(result: BenchResult) -> str:
     return f"{min(result.times):.3f}-{max(result.times):.3f}"
 
 
+def normalized_output_hash(stdout: str) -> str:
+    lines = [line for line in stdout.splitlines() if line]
+    if not lines:
+        return ""
+    header, *rows = lines
+    normalized = "\n".join([header, *sorted(rows)]) + "\n"
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def classify_policy_status(
     chosen_source_mode: str,
     best_source_mode: str,
@@ -522,6 +533,11 @@ def summarize_by_source_mode(
             best_source_mode = best.source_mode if best is not None else ""
             policy_status = classify_policy_status(chosen_source_mode, best_source_mode, auto, best)
             overlap_status = classify_overlap_status(auto, best)
+            output_hashes = {
+                result.stdout_hash
+                for result in source_results.values()
+            }
+            output_agreement = "match" if len(output_hashes) == 1 else "MISMATCH"
             auto_median = f"{auto.median:.3f}" if auto is not None else ""
             auto_vs_best = ""
             if auto is not None and best is not None:
@@ -556,6 +572,7 @@ def summarize_by_source_mode(
                     chosen_source_mode=chosen_source_mode,
                     policy_status=policy_status,
                     overlap_status=overlap_status,
+                    output_agreement=output_agreement,
                     auto_median=auto_median,
                     auto_vs_best=auto_vs_best,
                     median_summary=median_summary,
@@ -628,43 +645,43 @@ def print_detail_tsv(
 
 
 def print_report_tsv(summaries: list[SourceModeSummary]) -> None:
-    print("scale	mode	best_source_mode	chosen_source_mode	auto_vs_best	median_s_by_source_mode	rows_by_source_mode	source_registrations_by_source_mode	bucket_strategies_by_source_mode")
+    print("scale	mode	best_source_mode	chosen_source_mode	output_agreement	auto_vs_best	median_s_by_source_mode	rows_by_source_mode	source_registrations_by_source_mode	bucket_strategies_by_source_mode")
     for summary in summaries:
         print(
             f"{summary.scale}	{summary.mode}	{summary.best_source_mode}	{summary.chosen_source_mode}	"
-            f"{summary.auto_vs_best}	{summary.median_summary}	{summary.row_summary}	"
+            f"{summary.output_agreement}	{summary.auto_vs_best}	{summary.median_summary}	{summary.row_summary}	"
             f"{summary.source_registration_summary}	{summary.bucket_strategy_summary}"
         )
 
 
 def print_markdown(summaries: list[SourceModeSummary]) -> None:
-    print("| Scale | Mode | Best source mode | Chosen source mode | Auto vs best | Median seconds by source mode | Rows by source mode | Source registrations by source mode | Bucket strategies by source mode |")
-    print("| --- | --- | --- | --- | ---: | --- | --- | --- | --- |")
+    print("| Scale | Mode | Best source mode | Chosen source mode | Outputs | Auto vs best | Median seconds by source mode | Rows by source mode | Source registrations by source mode | Bucket strategies by source mode |")
+    print("| --- | --- | --- | --- | --- | ---: | --- | --- | --- | --- |")
     for summary in summaries:
         print(
             f"| {summary.scale} | {summary.mode} | {summary.best_source_mode} | "
-            f"{summary.chosen_source_mode} | {summary.auto_vs_best} | `{summary.median_summary}` | "
+            f"{summary.chosen_source_mode} | {summary.output_agreement} | {summary.auto_vs_best} | `{summary.median_summary}` | "
             f"`{summary.row_summary}` | `{summary.source_registration_summary}` | "
             f"`{summary.bucket_strategy_summary}` |"
         )
 
 
 def print_calibration_tsv(summaries: list[SourceModeSummary]) -> None:
-    print("scale	mode	policy_status	overlap_status	chosen_source_mode	best_source_mode	auto_median_s	auto_vs_best	median_s_by_source_mode	spread_s_by_source_mode	source_registrations_by_source_mode")
+    print("scale	mode	policy_status	overlap_status	output_agreement	chosen_source_mode	best_source_mode	auto_median_s	auto_vs_best	median_s_by_source_mode	spread_s_by_source_mode	source_registrations_by_source_mode")
     for summary in summaries:
         print(
-            f"{summary.scale}	{summary.mode}	{summary.policy_status}	{summary.overlap_status}	"
+            f"{summary.scale}	{summary.mode}	{summary.policy_status}	{summary.overlap_status}	{summary.output_agreement}	"
             f"{summary.chosen_source_mode}	{summary.best_source_mode}	{summary.auto_median}	{summary.auto_vs_best}	"
             f"{summary.median_summary}	{summary.spread_summary}	{summary.source_registration_summary}"
         )
 
 
 def print_calibration_markdown(summaries: list[SourceModeSummary]) -> None:
-    print("| Scale | Mode | Policy | Overlap | Chosen source mode | Best source mode | Auto median seconds | Auto vs best | Median seconds by source mode | Spread seconds by source mode | Source registrations by source mode |")
-    print("| --- | --- | --- | --- | --- | --- | ---: | ---: | --- | --- | --- |")
+    print("| Scale | Mode | Policy | Overlap | Outputs | Chosen source mode | Best source mode | Auto median seconds | Auto vs best | Median seconds by source mode | Spread seconds by source mode | Source registrations by source mode |")
+    print("| --- | --- | --- | --- | --- | --- | --- | ---: | ---: | --- | --- | --- |")
     for summary in summaries:
         print(
-            f"| {summary.scale} | {summary.mode} | {summary.policy_status} | {summary.overlap_status} | "
+            f"| {summary.scale} | {summary.mode} | {summary.policy_status} | {summary.overlap_status} | {summary.output_agreement} | "
             f"{summary.chosen_source_mode} | {summary.best_source_mode} | {summary.auto_median} | {summary.auto_vs_best} | "
             f"`{summary.median_summary}` | `{summary.spread_summary}` | "
             f"`{summary.source_registration_summary}` |"
@@ -702,17 +719,20 @@ def benchmark_mode(
 
     times: list[float] = []
     stderr = ""
+    stdout = ""
     if repetitions > 0:
         run(command + [mode, str(edge_path), str(article_path)], env=env)
     for _ in range(repetitions):
         result = run(command + [mode, str(edge_path), str(article_path)], env=env)
         stderr = result.stderr
+        stdout = result.stdout
         metrics = parse_metrics(stderr)
         elapsed_ms = metrics.get("elapsed_ms")
         elapsed = float(elapsed_ms) / 1000.0 if elapsed_ms is not None else 0.0
         times.append(elapsed)
     metrics = parse_metrics(stderr)
     resolved_source_mode = metrics.get("resolved_source_mode", source_mode)
+    stdout_hash = normalized_output_hash(stdout)
 
     return BenchResult(
         scale=scale,
@@ -722,6 +742,7 @@ def benchmark_mode(
         strategy=strategy,
         times=times,
         stderr=stderr,
+        stdout_hash=stdout_hash,
     )
 
 

@@ -707,6 +707,99 @@ func decompose(v Value) (string, []Value) {
 	return "", nil
 }
 
+func makeStructureValue(name string, args []Value) Value {
+	return &Structure{
+		Functor: fmt.Sprintf("%s/%d", name, len(args)),
+		Arity:   len(args),
+		Args:    append([]Value(nil), args...),
+	}
+}
+
+func (vm *WamState) termFunctorArity(v Value) (Value, int64, bool) {
+	v = vm.deref(v)
+	switch t := v.(type) {
+	case *Atom:
+		return t, 0, true
+	case *Integer:
+		return t, 0, true
+	case *Float:
+		return t, 0, true
+	case *Compound:
+		return internAtom(parseFunctorName(t.Functor)), int64(len(t.Args)), true
+	case *Structure:
+		return internAtom(parseFunctorName(t.Functor)), int64(t.Arity), true
+	case *List:
+		if isEmptyListValue(t) {
+			return emptyListAtom, 0, true
+		}
+		return internAtom("."), 2, true
+	default:
+		return nil, 0, false
+	}
+}
+
+func (vm *WamState) termToUnivList(v Value) (Value, bool) {
+	v = vm.deref(v)
+	switch t := v.(type) {
+	case *Atom, *Integer, *Float:
+		return &List{Elements: []Value{t}}, true
+	case *Compound:
+		items := make([]Value, 0, len(t.Args)+1)
+		items = append(items, internAtom(parseFunctorName(t.Functor)))
+		items = append(items, t.Args...)
+		return &List{Elements: items}, true
+	case *Structure:
+		items := make([]Value, 0, len(t.Args)+1)
+		items = append(items, internAtom(parseFunctorName(t.Functor)))
+		items = append(items, t.Args...)
+		return &List{Elements: items}, true
+	case *List:
+		if isEmptyListValue(t) {
+			return &List{Elements: []Value{emptyListAtom}}, true
+		}
+		head, tail, ok := vm.listHeadTail(t)
+		if !ok {
+			return nil, false
+		}
+		return &List{Elements: []Value{internAtom("."), head, tail}}, true
+	default:
+		return nil, false
+	}
+}
+
+func (vm *WamState) copyTermValue(v Value, seen map[int]*Unbound) Value {
+	v = vm.deref(v)
+	switch t := v.(type) {
+	case *Unbound:
+		if existing, ok := seen[t.Idx]; ok {
+			return existing
+		}
+		fresh := &Unbound{Name: fmt.Sprintf("_C%d", len(seen)), Idx: vm.allocVarId()}
+		seen[t.Idx] = fresh
+		return fresh
+	case *Compound:
+		args := make([]Value, len(t.Args))
+		for i, arg := range t.Args {
+			args[i] = vm.copyTermValue(arg, seen)
+		}
+		return &Compound{Functor: t.Functor, Args: args}
+	case *Structure:
+		args := make([]Value, len(t.Args))
+		for i, arg := range t.Args {
+			args[i] = vm.copyTermValue(arg, seen)
+		}
+		return &Structure{Functor: t.Functor, Arity: t.Arity, Args: args}
+	case *List:
+		items := make([]Value, len(t.Elements))
+		for i, item := range t.Elements {
+			items[i] = vm.copyTermValue(item, seen)
+		}
+		return &List{Elements: items}
+	default:
+		return t
+	}
+}
+
 func (vm *WamState) Deref(v Value) Value {
 	return vm.deref(v)
 }
@@ -814,6 +907,9 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	if arity >= 3 { arg3 = vm.getReg(2) } // A3
 
 	switch op {
+	case "display/1":
+		fmt.Print(vm.deref(arg1).String())
+		return true
 	case "write/1":
 		fmt.Print(vm.deref(arg1).String())
 		return true
@@ -857,7 +953,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		v1, ok1 := vm.evalArithmetic(arg1)
 		v2, ok2 := vm.evalArithmetic(arg2)
 		return ok1 && ok2 && v1 > v2
-	case "=< /2":
+	case "=</2":
 		v1, ok1 := vm.evalArithmetic(arg1)
 		v2, ok2 := vm.evalArithmetic(arg2)
 		return ok1 && ok2 && v1 <= v2
@@ -874,6 +970,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "number/1": return isNumber(vm.deref(arg1))
 	case "compound/1": return isCompound(vm.deref(arg1))
 	case "atomic/1": return isAtomic(vm.deref(arg1))
+	case "is_list/1": return isList(vm.deref(arg1))
 
 	case "==/2": return valueEquals(vm.deref(arg1), vm.deref(arg2))
 	case "\\==/2": return !valueEquals(vm.deref(arg1), vm.deref(arg2))
@@ -961,6 +1058,92 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		if !ok1 || !ok2 { return false }
 		combined := &List{Elements: append(append([]Value{}, l1...), l2...)}
 		return vm.Unify(arg3, combined)
+	case "functor/3":
+		t := vm.deref(arg1)
+		if isUnbound(t) {
+			name := vm.deref(arg2)
+			arityVal := vm.deref(arg3)
+			arityInt, ok := arityVal.(*Integer)
+			if !ok || arityInt.Val < 0 {
+				return false
+			}
+			if arityInt.Val == 0 {
+				return vm.Unify(arg1, name)
+			}
+			nameAtom, ok := name.(*Atom)
+			if !ok {
+				return false
+			}
+			args := make([]Value, int(arityInt.Val))
+			for i := range args {
+				args[i] = &Unbound{Name: fmt.Sprintf("_F%d", i), Idx: vm.allocVarId()}
+			}
+			return vm.Unify(arg1, makeStructureValue(nameAtom.Name, args))
+		}
+		name, arityOut, ok := vm.termFunctorArity(t)
+		if !ok {
+			return false
+		}
+		return vm.Unify(arg2, name) && vm.Unify(arg3, &Integer{Val: arityOut})
+	case "arg/3":
+		idxVal := vm.deref(arg1)
+		idx, ok := idxVal.(*Integer)
+		if !ok || idx.Val < 1 {
+			return false
+		}
+		term := vm.deref(arg2)
+		var selected Value
+		switch t := term.(type) {
+		case *Compound:
+			if int(idx.Val) > len(t.Args) {
+				return false
+			}
+			selected = t.Args[int(idx.Val)-1]
+		case *Structure:
+			if int(idx.Val) > len(t.Args) {
+				return false
+			}
+			selected = t.Args[int(idx.Val)-1]
+		case *List:
+			head, tail, ok := vm.listHeadTail(t)
+			if !ok {
+				return false
+			}
+			if idx.Val == 1 {
+				selected = head
+			} else if idx.Val == 2 {
+				selected = tail
+			} else {
+				return false
+			}
+		default:
+			return false
+		}
+		return vm.Unify(arg3, selected)
+	case "=../2":
+		t := vm.deref(arg1)
+		if isUnbound(t) {
+			items, ok := vm.listToSlice(arg2)
+			if !ok || len(items) == 0 {
+				return false
+			}
+			if len(items) == 1 {
+				return vm.Unify(arg1, items[0])
+			}
+			nameAtom, ok := vm.deref(items[0]).(*Atom)
+			if !ok {
+				return false
+			}
+			return vm.Unify(arg1, makeStructureValue(nameAtom.Name, items[1:]))
+		}
+		list, ok := vm.termToUnivList(t)
+		if !ok {
+			return false
+		}
+		return vm.Unify(arg2, list)
+	case "copy_term/2":
+		copy := vm.copyTermValue(arg1, make(map[int]*Unbound))
+		return vm.Unify(arg2, copy)
 	}
 	return false
 }

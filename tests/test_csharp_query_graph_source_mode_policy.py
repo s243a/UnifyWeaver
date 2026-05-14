@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "examples" / "benchmark"))
 
+import benchmark_scan_materialization  # noqa: E402
 from generate_pipeline import (  # noqa: E402
     generate_csharp_query_category_influence,
     generate_csharp_query_dependency_depth,
@@ -70,6 +71,60 @@ class CSharpQueryGraphSourceModePolicyTests(unittest.TestCase):
                     "configuredSourceMode == RelationSourceMode.Auto ? RelationSourceMode.Preload : configuredSourceMode",
                     source,
                 )
+
+    def test_scan_materialization_uses_source_mode_policy_helper(self) -> None:
+        source = benchmark_scan_materialization.PROGRAM
+
+        self.assertIn(
+            "RelationSourceModePolicy.ResolveScanBenchmarkMode(configuredSourceMode, mode, articleRowCount, edgeRowCount)",
+            source,
+        )
+        self.assertIn(
+            'Console.Error.WriteLine($"source_mode={RelationSourceModePolicy.ToConfigValue(configuredSourceMode)}");',
+            source,
+        )
+        self.assertIn(
+            'Console.Error.WriteLine($"resolved_source_mode={RelationSourceModePolicy.ToConfigValue(sourceMode)}");',
+            source,
+        )
+        self.assertNotIn(
+            "configuredSourceMode == RelationSourceMode.Auto ? RelationSourceMode.Preload : configuredSourceMode",
+            source,
+        )
+
+    def test_scan_materialization_output_hash_ignores_row_order(self) -> None:
+        left = "value\nb\na\n"
+        right = "value\na\nb\n"
+
+        self.assertEqual(
+            benchmark_scan_materialization.normalized_output_hash(left),
+            benchmark_scan_materialization.normalized_output_hash(right),
+        )
+
+    def test_runtime_scan_source_mode_policy_matches_documented_cases(self) -> None:
+        runtime_source = (
+            ROOT / "src" / "unifyweaver" / "targets" / "csharp_query_runtime" / "QueryRuntime.cs"
+        ).read_text()
+
+        expected_cases = [
+            '"bound_scan" => RelationSourceMode.Artifact',
+            (
+                '"selective_join" when totalRows <= SmallPrebuiltArtifactRowThreshold '
+                "=> RelationSourceMode.ArtifactPrebuilt"
+            ),
+            '"selective_join" => RelationSourceMode.Artifact',
+            (
+                '"join" when totalRows <= SmallPrebuiltArtifactRowThreshold '
+                "=> RelationSourceMode.ArtifactPrebuilt"
+            ),
+            '"join" => RelationSourceMode.Artifact',
+            '"nary_join" => RelationSourceMode.ArtifactPrebuilt',
+            "_ => RelationSourceMode.Preload",
+        ]
+
+        for expected_case in expected_cases:
+            with self.subTest(expected_case=expected_case):
+                self.assertIn(expected_case, runtime_source)
 
     def test_runtime_source_mode_policy_matches_calibration_artifact(self) -> None:
         runtime_source = (

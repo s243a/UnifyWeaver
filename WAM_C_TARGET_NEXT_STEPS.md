@@ -1,13 +1,16 @@
 # WAM C Target - Status And Next Steps
 
-Status date: 2026-05-13
+Status date: 2026-05-14
 
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `36066e58` (`Merge pull request #2048 from s243a/feat/wam-cpp-bagof-setof`)
+- `main` at `d4a8939d` (`Merge pull request #2056 from s243a/feat/wam-c-lowered-helper-filter-rejections`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
-- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --target-sets c-wam-lowered-helper --repetitions 1 --run-timeout-seconds 20`
+- `python3 tests/test_benchmark_target_matrix.py`
+- `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py`
+- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --target-sets c-wam-lowered-helper --repetitions 1 --baseline-target c-wam-lowered-helper-interpreted`
+- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels --repetitions 1`
 
 Active branch:
 
@@ -41,8 +44,10 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Lowered fact-only helper prototype | Done | `lowered_helpers(true)` emits native C foreign handlers for constant fact-only predicates plus a `call_foreign` trampoline |
 | ASAN availability probe hardening | Done | `asan_available/0` requires a trivial sanitized executable to compile and run before enabling the optional ASAN lifecycle smoke |
 | Lowered helper planner metadata | Done | Explicit lowered/interpreted/rejected helper plans, detected-kernel exclusion, generated `lib.c` plan comments, and `report_lowered_helpers(true)` |
-| Lowered helper benchmark wiring | Done | `c-wam-lowered-helper` and `c-wam-lowered-helper-interpreted` matrix targets over a tiny fact-helper benchmark; Termux `dev` smoke output matches |
-| Lowered alias-body helper prototype | Done | `p(X, Y) :- q(X, Y)` lowers to a native alias helper when `q/2` is fact-only; planner metadata, generated plan comments, and executable smoke cover the path |
+| Lowered helper benchmark wiring | Done | `c-wam-lowered-helper` and `c-wam-lowered-helper-interpreted` matrix targets compare a tiny fact-helper benchmark |
+| Lowered helper body-call shape | Done | Deterministic alias-to-fact body calls lower through direct native fact-helper dispatch |
+| Lowered helper filtered-fact shape | Done | Constant-guarded fact projections lower to native fact rows and the tiny lowered-helper matrix exercises the filtered helper in lowered mode |
+| Lowered helper filter rejection metadata | Done | Reports explicit planner reasons for unsupported filtered-helper bodies without adding new codegen paths |
 
 ## Current C Target Baseline
 
@@ -113,7 +118,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
 | Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup and all-hop collection; add more kernel kinds only after runtime support exists. |
 | Shared kernel detector integration | Partial | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`; broaden as more native C kernels land. |
-| Lowered/native helper functions | Partial/Active | Done | Done | C has constant fact-only native helpers, same-arity alias helper bodies, planner metadata, and interpreted-vs-lowered matrix wiring. |
+| Lowered/native helper functions | Partial/Active | Done | Done | C has constant fact-only native helpers, planner metadata, interpreted-vs-lowered matrix wiring, body-call helpers, filtered-fact helpers, and rejection metadata. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
 | LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts and generated effective-distance LMDB wiring; larger artifact layout support remains. |
 | Effective-distance benchmark harness | Partial/Done | Done | Done | C is wired into the shared matrix for TSV and LMDB `kernels_on`/`kernels_off`; next gap is larger artifact layouts. |
@@ -123,42 +128,41 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-lowered-helper-benchmark-wiring`
+### 1. `feat/wam-c-lowered-helper-filter-rejections`
 
-Goal: prove the lowered-helper path on a small benchmark surface before
-attempting broader helper classes.
-
-Scope:
-
-- Add a narrow generated benchmark or matrix target that exercises C lowered
-  fact helpers.
-- Keep the comparison against interpreted C and Prolog small enough for routine
-  local validation.
-- Record lowered/interpreted planning output with the benchmark artifacts.
-
-Status: complete; a tiny fact-helper matrix target pair is implemented for
-interpreted-vs-lowered WAM-C comparison.
-
-### 2. `feat/wam-c-lowered-helper-alias-body`
-
-Goal: broaden C lowered helpers past fact-only predicates into one small
-deterministic body-call shape.
+Goal: make unsupported lowered-helper guard/filter cases more explainable.
 
 Scope:
 
-- Pick one simple deterministic helper body that Haskell/Rust already lower.
-- Keep fallback/interpreter routing explicit through the planner metadata.
-- Add executable smoke coverage before expanding to aggregates or multi-result
-  helpers.
+- Add explicit planner rejection reasons for non-constant guards, unsupported
+  comparison predicates, and multi-goal bodies.
+- Keep code generation unchanged for supported fact-only, body-call, and
+  filtered-fact helpers.
+- Add focused planner tests rather than new runtime paths.
 
-Status: active; starts with a same-arity alias body such as
-`p(X, Y) :- q(X, Y)` where `q/2` is already fact-only and lowered.
+Status: complete; planner metadata now distinguishes non-constant filter
+arguments, unsupported comparison guards, and multi-goal bodies.
+
+### 2. `feat/wam-c-lowered-helper-filter-guard-comparisons`
+
+Goal: consider one positive comparison-filter lowering only after rejection
+metadata is stable.
+
+Scope:
+
+- Pick one deterministic comparison shape with a fact-only callee.
+- Keep the first implementation planner-only unless the codegen and runtime
+  behavior remain obvious.
+- Preserve the explicit rejection reasons added by the current branch.
+
+Status: next; the body-call and filtered-fact helper shapes are now in place,
+so comparison-filter lowering can be evaluated as a separate narrow branch.
 
 ## Suggested Immediate Next Step
 
 Finish reviewing `feat/wam-c-lowered-helper-alias-body`.
 
-The active branch adds the first non-fact lowered helper shape for WAM-C while
-keeping routing explicit in the planner. The next expansion should stay narrow:
-either another deterministic one-literal helper shape or more robust generated
-project layout for multiple WAM trampolines before any nested WAM dispatch.
+After merging `origin/main`, this branch keeps the current body-call helper
+surface but routes body-call helpers directly to the generated native fact
+helper. The useful checks are the WAM-C target suite, the lowered-helper
+benchmark smoke, and `git diff --check`.

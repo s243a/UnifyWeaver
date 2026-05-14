@@ -494,6 +494,15 @@ test(simple_builtin_functor_is_direct_lowered_in_prefix) :-
         assertion(\+ has(Code, "runtime/step"))
     )).
 
+test(simple_builtin_arg_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_arg/3:\nbuiltin_call arg/3, 3\nproceed\n",
+        wam_clojure_lowerable(test_arg/3, WamCode, deterministic),
+        lower_predicate_to_clojure(test_arg/3, WamCode, [], Code),
+        has(Code, "runtime/apply-arg-solution"),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
 test(simple_builtin_ground_is_direct_lowered_in_prefix) :-
     once((
         WamCode = "test_ground/1:\nbuiltin_call ground/1, 1\nproceed\n",

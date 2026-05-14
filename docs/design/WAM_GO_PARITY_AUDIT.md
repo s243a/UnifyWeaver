@@ -12,14 +12,14 @@ current cross-target builtin/runtime baseline.
 | Direct fact dispatch | Foreign/native kernel registration and indexed atom/weighted fact tables | `call_indexed_atom_fact2`, inline/external fact stream paths | Partial |
 | Aggregates | `begin_aggregate`, `end_aggregate`; `collect`, `count`, `sum`, `min`, `max` | `findall/3`, `aggregate_all/3` count/sum/min/max/set families | Partial: no `set` aggregate result |
 | Structural builtins | `member/2`, `length/2`, `append/3` | `member/2`, `length/2`; Rust `append/3` is explicitly unimplemented | Partial: `member/2` is first-solution only |
-| Type builtins | `var/1`, `nonvar/1`, `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `atomic/1` | Includes `is_list/1` in the current baseline | Partial: no `is_list/1` |
-| Comparison builtins | `==/2`, `\==/2`, `\=/2`, `=:=/2`, `=\=/2`, `</2`, `>/2`, `>=/2` | Includes `=</2` | Partial: `=</2` handler is misspelled as `=< /2` |
+| Type builtins | `var/1`, `nonvar/1`, `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `atomic/1`, `is_list/1` | Includes `is_list/1` in the current baseline | Present for current baseline type checks |
+| Comparison builtins | `==/2`, `\==/2`, `\=/2`, `=:=/2`, `=\=/2`, `</2`, `>/2`, `=</2`, `>=/2` | Includes `=</2` | Present for current baseline comparisons |
 | Unification builtin | `\=/2` | `=/2`, `\=/2` | Partial: no explicit `=/2` builtin handler |
-| Term inspection | Not present in `executeBuiltin/2` | `functor/3`, `arg/3` | Gap |
-| Univ | Not present in `executeBuiltin/2` | `=../2` compose/decompose | Gap |
-| Copying | Not present in `executeBuiltin/2` | `copy_term/2` with fresh variables and preserved sharing | Gap |
+| Term inspection | `functor/3`, `arg/3` | `functor/3`, `arg/3` | Present |
+| Univ | `=../2` compose/decompose | `=../2` compose/decompose | Present |
+| Copying | `copy_term/2` with fresh variables and preserved sharing | `copy_term/2` with fresh variables and preserved sharing | Present |
 | Control | `true/0`, `fail/0`, `!/0`, `\+/1`, `CutIte` | Same baseline, with broader isolated-goal NAF in Haskell/Python | Partial: `\+/1` only dispatches builtin-shaped goals |
-| IO | `write/1`, `nl/0` | `write/1`, `display/1`, `nl/0` | Partial: no `display/1` |
+| IO | `write/1`, `display/1`, `nl/0` | `write/1`, `display/1`, `nl/0` | Present |
 
 ## Immediate Findings
 
@@ -32,19 +32,18 @@ current cross-target builtin/runtime baseline.
 - `member/2` succeeds on the first unifiable element and does not push builtin
   choice points for later list members. This mirrors the Python gap that was
   recently closed.
-- The `=</2` comparison appears unreachable because the handler key is
-  `=< /2` with a space.
+- `=</2`, `is_list/1`, and `display/1` are now covered by the generated Go
+  WAM builtin E2E test.
+- `functor/3`, `arg/3`, `=../2`, and `copy_term/2` are now covered by the
+  generated Go WAM builtin E2E test.
 
 ## Recommended Follow-Up Order
 
-1. Add a focused generated-project E2E parity suite for Go WAM builtins, similar
-   to the Python and Lua generated-project tests.
-2. Fix the narrow builtin dispatch typo for `=</2` and add `is_list/1` plus
-   `display/1`; these are small, low-risk surface parity patches.
-3. Add term builtin parity: `functor/3`, `arg/3`, `=../2`, and `copy_term/2`.
-4. Upgrade `member/2` to enumerate through builtin choice points so aggregate
+1. Continue broadening the generated Go WAM builtin E2E as each remaining gap
+   is closed.
+2. Upgrade `member/2` to enumerate through builtin choice points so aggregate
    collection can observe all list members.
-5. Add `set` aggregate support if Go is expected to match the current Lua/Python
+3. Add `set` aggregate support if Go is expected to match the current Lua/Python
    aggregate parity surface.
 
 ## Verification Commands

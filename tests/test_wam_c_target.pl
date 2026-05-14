@@ -356,8 +356,8 @@ test_lowered_helper_planner_metadata :-
                                     ['category_ancestor/4'],
                                     Plans),
         member(wam_c_lowered_helper_plan('wam_c_plan_fact/2', _, lowered, fact_only([[a,b]])), Plans),
-        member(wam_c_lowered_helper_plan('wam_c_plan_alias/2', _, lowered, alias_call('wam_c_plan_fact/2', 2)), Plans),
-        member(wam_c_lowered_helper_plan('wam_c_plan_rule/1', _, rejected, non_fact_clause), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_plan_alias/2', _, lowered, body_call('wam_c_plan_fact/2', 2)), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_plan_rule/1', _, rejected, non_constant_filter_argument), Plans),
         member(wam_c_lowered_helper_plan('category_ancestor/4', _, interpreted, detected_kernel), Plans)
     ->  pass(Test)
     ;   fail_test(Test, 'planner did not classify lowered/rejected/interpreted predicates')
@@ -383,8 +383,8 @@ test_lowered_helper_plan_generation :-
         read_file_to_string(LibPath, LibS, []),
         sub_string(LibS, _, _, _, '// WAM-C lowered helper plan'),
         sub_string(LibS, _, _, _, '// - lowered wam_c_plan_emit_fact/2: fact_only'),
-        sub_string(LibS, _, _, _, '// - lowered wam_c_plan_emit_alias/2: alias_call(wam_c_plan_emit_fact/2)'),
-        sub_string(LibS, _, _, _, '// - rejected wam_c_plan_emit_rule/1: non_fact_clause'),
+        sub_string(LibS, _, _, _, '// - lowered wam_c_plan_emit_alias/2: body_call'),
+        sub_string(LibS, _, _, _, '// - rejected wam_c_plan_emit_rule/1: non_constant_filter_argument'),
         sub_string(LibS, _, _, _, 'INSTR_CALL_FOREIGN'),
         sub_string(LibS, _, _, _, 'static bool wam_c_lowered_wam_c_plan_emit_alias_2'),
         sub_string(LibS, _, _, _, 'setup_wam_c_plan_emit_rule_1')
@@ -394,6 +394,118 @@ test_lowered_helper_plan_generation :-
     retractall(user:wam_c_plan_emit_fact(_, _)),
     retractall(user:wam_c_plan_emit_alias(_, _)),
     retractall(user:wam_c_plan_emit_rule(_)).
+
+test_lowered_body_call_helper_generation :-
+    Test = 'WAM-C: deterministic body-call predicates can lower to native helper',
+    assertz(user:wam_c_body_fact(a, b)),
+    assertz((user:wam_c_body_alias(X, Y) :- user:wam_c_body_fact(X, Y))),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_lowered_body_project', Stamp, ProjectDir),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    (   plan_wam_c_lowered_helpers([user:wam_c_body_fact/2,
+                                     user:wam_c_body_alias/2],
+                                    [lowered_helpers(true)],
+                                    [],
+                                    Plans),
+        member(wam_c_lowered_helper_plan('wam_c_body_fact/2', _, lowered, fact_only([[a,b]])), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_body_alias/2', _, lowered, body_call('wam_c_body_fact/2', 2)), Plans),
+        write_wam_c_project([user:wam_c_body_fact/2,
+                             user:wam_c_body_alias/2],
+                            [lowered_helpers(true)],
+                            ProjectDir),
+        read_file_to_string(LibPath, LibS, []),
+        sub_string(LibS, _, _, _, '// - lowered wam_c_body_alias/2: body_call'),
+        sub_string(LibS, _, _, _, 'static bool wam_c_lowered_wam_c_body_alias_2'),
+        sub_string(LibS, _, _, _, 'return wam_c_lowered_wam_c_body_fact_2(state, "wam_c_body_fact/2", 2);'),
+        sub_string(LibS, _, _, _, '.pred = "wam_c_body_alias/2"')
+    ->  pass(Test)
+    ;   fail_test(Test, 'lowered body-call helper was not emitted')
+    ),
+    retractall(user:wam_c_body_fact(_, _)),
+    retractall(user:wam_c_body_alias(_, _)).
+
+test_lowered_filtered_fact_helper_generation :-
+    Test = 'WAM-C: guarded fact predicates can lower to filtered native helper',
+    assertz(user:wam_c_filter_fact(a, keep)),
+    assertz(user:wam_c_filter_fact(b, drop)),
+    assertz(user:wam_c_filter_fact(c, keep)),
+    assertz((user:wam_c_filter_keep(X) :- user:wam_c_filter_fact(X, keep))),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_lowered_filter_project', Stamp, ProjectDir),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    (   plan_wam_c_lowered_helpers([user:wam_c_filter_fact/2,
+                                     user:wam_c_filter_keep/1],
+                                    [lowered_helpers(true)],
+                                    [],
+                                    Plans),
+        member(wam_c_lowered_helper_plan('wam_c_filter_fact/2', _, lowered, fact_only([[a,keep],[b,drop],[c,keep]])), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_filter_keep/1', _, lowered, filtered_fact('wam_c_filter_fact/2', [[a],[c]])), Plans),
+        write_wam_c_project([user:wam_c_filter_fact/2,
+                             user:wam_c_filter_keep/1],
+                            [lowered_helpers(true)],
+                            ProjectDir),
+        read_file_to_string(LibPath, LibS, []),
+        sub_string(LibS, _, _, _, '// - lowered wam_c_filter_keep/1: filtered_fact'),
+        sub_string(LibS, _, _, _, 'static bool wam_c_lowered_wam_c_filter_keep_1'),
+        sub_string(LibS, _, _, _, 'val_atom("a")'),
+        sub_string(LibS, _, _, _, 'val_atom("c")'),
+        sub_string(LibS, _, _, _, '.pred = "wam_c_filter_keep/1"')
+    ->  pass(Test)
+    ;   fail_test(Test, 'lowered filtered fact helper was not emitted')
+    ),
+    retractall(user:wam_c_filter_fact(_, _)),
+    retractall(user:wam_c_filter_keep(_)).
+
+test_lowered_filter_rejection_metadata :-
+    Test = 'WAM-C: lowered helper planner explains unsupported filter shapes',
+    assertz(user:wam_c_filter_reject_fact(a, 1, keep)),
+    assertz(user:wam_c_filter_reject_fact(b, 2, drop)),
+    assertz((user:wam_c_filter_reject_non_constant(X) :-
+                 user:wam_c_filter_reject_fact(X, _IgnoredN, keep))),
+    assertz((user:wam_c_filter_reject_comparison(X) :- X > 1)),
+    assertz((user:wam_c_filter_reject_builtin(X) :- atom(X))),
+    assertz((user:wam_c_filter_reject_multi_goal(X) :-
+                 user:wam_c_filter_reject_fact(X, _N, keep),
+                 X = a)),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_lowered_filter_reject_project', Stamp, ProjectDir),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    (   plan_wam_c_lowered_helpers([user:wam_c_filter_reject_fact/3,
+                                     user:wam_c_filter_reject_non_constant/1,
+                                     user:wam_c_filter_reject_comparison/1,
+                                     user:wam_c_filter_reject_builtin/1,
+                                     user:wam_c_filter_reject_multi_goal/1],
+                                    [lowered_helpers(true)],
+                                    [],
+                                    Plans),
+        member(wam_c_lowered_helper_plan('wam_c_filter_reject_fact/3', _, lowered, fact_only([[a,1,keep],[b,2,drop]])), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_filter_reject_non_constant/1', _, rejected, non_constant_filter_argument), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_filter_reject_comparison/1', _, rejected, unsupported_comparison_guard), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_filter_reject_builtin/1', _, rejected, unsupported_filter_callee), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_filter_reject_multi_goal/1', _, rejected, multi_goal_body), Plans),
+        write_wam_c_project([user:wam_c_filter_reject_fact/3,
+                             user:wam_c_filter_reject_non_constant/1,
+                             user:wam_c_filter_reject_comparison/1,
+                             user:wam_c_filter_reject_builtin/1,
+                             user:wam_c_filter_reject_multi_goal/1],
+                            [lowered_helpers(true)],
+                            ProjectDir),
+        read_file_to_string(LibPath, LibS, []),
+        sub_string(LibS, _, _, _, '// - rejected wam_c_filter_reject_non_constant/1: non_constant_filter_argument'),
+        sub_string(LibS, _, _, _, '// - rejected wam_c_filter_reject_comparison/1: unsupported_comparison_guard'),
+        sub_string(LibS, _, _, _, '// - rejected wam_c_filter_reject_builtin/1: unsupported_filter_callee'),
+        sub_string(LibS, _, _, _, '// - rejected wam_c_filter_reject_multi_goal/1: multi_goal_body')
+    ->  pass(Test)
+    ;   fail_test(Test, 'planner did not report explicit filter rejection reasons')
+    ),
+    retractall(user:wam_c_filter_reject_fact(_, _, _)),
+    retractall(user:wam_c_filter_reject_non_constant(_)),
+    retractall(user:wam_c_filter_reject_comparison(_)),
+    retractall(user:wam_c_filter_reject_builtin(_)),
+    retractall(user:wam_c_filter_reject_multi_goal(_)).
 
 test_unsupported_instruction_fails_loudly :-
     Test = 'WAM-C: unsupported instructions fail loudly',
@@ -599,12 +711,22 @@ test_lowered_fact_helper_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
-test_lowered_alias_helper_executable_smoke :-
-    Test = 'WAM-C: lowered alias helper executable smoke',
+test_lowered_body_call_helper_executable_smoke :-
+    Test = 'WAM-C: lowered body-call helper executable smoke',
     (   gcc_available
-    ->  (   run_lowered_alias_helper_executable_smoke
+    ->  (   run_lowered_body_call_helper_executable_smoke
         ->  pass(Test)
-        ;   fail_test(Test, 'lowered alias helper executable failed')
+        ;   fail_test(Test, 'lowered body-call helper executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_lowered_filtered_fact_helper_executable_smoke :-
+    Test = 'WAM-C: lowered filtered fact helper executable smoke',
+    (   gcc_available
+    ->  (   run_lowered_filtered_fact_helper_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'lowered filtered fact helper executable failed')
         )
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
@@ -1015,29 +1137,56 @@ run_lowered_fact_helper_executable_smoke :-
         fail
     ).
 
-run_lowered_alias_helper_executable_smoke :-
-    assertz(user:wam_c_lowered_pair(a, b)),
-    assertz(user:wam_c_lowered_pair(a, c)),
-    assertz((user:wam_c_lowered_alias(X, Y) :- user:wam_c_lowered_pair(X, Y))),
+run_lowered_body_call_helper_executable_smoke :-
+    assertz(user:wam_c_body_fact(a, b)),
+    assertz(user:wam_c_body_fact(a, c)),
+    assertz((user:wam_c_body_alias(X, Y) :- user:wam_c_body_fact(X, Y))),
     get_time(Now),
     Stamp is round(Now * 1000000),
-    wam_c_temp_path('unifyweaver_wam_c_lowered_alias_smoke', Stamp, ProjectDir),
+    wam_c_temp_path('unifyweaver_wam_c_lowered_body_smoke', Stamp, ProjectDir),
     directory_file_path(ProjectDir, 'wam_runtime.c', RuntimePath),
     directory_file_path(ProjectDir, 'lib.c', LibPath),
     directory_file_path(ProjectDir, 'main.c', MainPath),
-    directory_file_path(ProjectDir, 'wam_c_lowered_alias_smoke', ExePath),
-    (   write_wam_c_project([user:wam_c_lowered_pair/2,
-                             user:wam_c_lowered_alias/2],
+    directory_file_path(ProjectDir, 'wam_c_lowered_body_smoke', ExePath),
+    (   write_wam_c_project([user:wam_c_body_fact/2,
+                             user:wam_c_body_alias/2],
                             [lowered_helpers(true)],
                             ProjectDir),
-        wam_c_lowered_alias_smoke_main(MainCode),
+        wam_c_lowered_body_smoke_main(MainCode),
         write_text_file(MainPath, MainCode),
         compile_c_smoke_plain(RuntimePath, LibPath, MainPath, ExePath),
         run_c_smoke_plain(ExePath)
-    ->  retractall(user:wam_c_lowered_pair(_, _)),
-        retractall(user:wam_c_lowered_alias(_, _))
-    ;   retractall(user:wam_c_lowered_pair(_, _)),
-        retractall(user:wam_c_lowered_alias(_, _)),
+    ->  retractall(user:wam_c_body_fact(_, _)),
+        retractall(user:wam_c_body_alias(_, _))
+    ;   retractall(user:wam_c_body_fact(_, _)),
+        retractall(user:wam_c_body_alias(_, _)),
+        fail
+    ).
+
+run_lowered_filtered_fact_helper_executable_smoke :-
+    assertz(user:wam_c_filter_fact(a, keep)),
+    assertz(user:wam_c_filter_fact(b, drop)),
+    assertz(user:wam_c_filter_fact(c, keep)),
+    assertz((user:wam_c_filter_keep(X) :- user:wam_c_filter_fact(X, keep))),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_lowered_filter_smoke', Stamp, ProjectDir),
+    directory_file_path(ProjectDir, 'wam_runtime.c', RuntimePath),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    directory_file_path(ProjectDir, 'main.c', MainPath),
+    directory_file_path(ProjectDir, 'wam_c_lowered_filter_smoke', ExePath),
+    (   write_wam_c_project([user:wam_c_filter_fact/2,
+                             user:wam_c_filter_keep/1],
+                            [lowered_helpers(true)],
+                            ProjectDir),
+        wam_c_lowered_filter_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, LibPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  retractall(user:wam_c_filter_fact(_, _)),
+        retractall(user:wam_c_filter_keep(_))
+    ;   retractall(user:wam_c_filter_fact(_, _)),
+        retractall(user:wam_c_filter_keep(_)),
         fail
     ).
 
@@ -1787,22 +1936,22 @@ int main(void) {
 }
 ').
 
-wam_c_lowered_alias_smoke_main(
+wam_c_lowered_body_smoke_main(
 '#include "wam_runtime.h"
 
-void setup_wam_c_lowered_pair_2(WamState* state);
-void setup_wam_c_lowered_alias_2(WamState* state);
+void setup_wam_c_body_fact_2(WamState* state);
+void setup_wam_c_body_alias_2(WamState* state);
 void setup_lowered_wam_c_helpers(WamState* state);
 
 int main(void) {
     WamState state;
     wam_state_init(&state);
-    setup_wam_c_lowered_pair_2(&state);
-    setup_wam_c_lowered_alias_2(&state);
+    setup_wam_c_body_fact_2(&state);
+    setup_wam_c_body_alias_2(&state);
     setup_lowered_wam_c_helpers(&state);
 
     WamValue ok_args[2] = { val_atom("a"), val_unbound("Out") };
-    int ok_rc = wam_run_predicate(&state, "wam_c_lowered_alias/2", ok_args, 2);
+    int ok_rc = wam_run_predicate(&state, "wam_c_body_alias/2", ok_args, 2);
     if (ok_rc != 0 || state.P != WAM_HALT ||
         state.A[1].tag != VAL_ATOM || strcmp(state.A[1].data.atom, "b") != 0) {
         wam_free_state(&state);
@@ -1810,14 +1959,55 @@ int main(void) {
     }
 
     WamValue ground_args[2] = { val_atom("a"), val_atom("c") };
-    int ground_rc = wam_run_predicate(&state, "wam_c_lowered_alias/2", ground_args, 2);
+    int ground_rc = wam_run_predicate(&state, "wam_c_body_alias/2", ground_args, 2);
     if (ground_rc != 0 || state.P != WAM_HALT) {
         wam_free_state(&state);
         return 20;
     }
 
     WamValue fail_args[2] = { val_atom("z"), val_unbound("Out") };
-    int fail_rc = wam_run_predicate(&state, "wam_c_lowered_alias/2", fail_args, 2);
+    int fail_rc = wam_run_predicate(&state, "wam_c_body_alias/2", fail_args, 2);
+    if (fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_lowered_filter_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_filter_fact_2(WamState* state);
+void setup_wam_c_filter_keep_1(WamState* state);
+void setup_lowered_wam_c_helpers(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_filter_fact_2(&state);
+    setup_wam_c_filter_keep_1(&state);
+    setup_lowered_wam_c_helpers(&state);
+
+    WamValue ok_args[1] = { val_unbound("Out") };
+    int ok_rc = wam_run_predicate(&state, "wam_c_filter_keep/1", ok_args, 1);
+    if (ok_rc != 0 || state.P != WAM_HALT ||
+        state.A[0].tag != VAL_ATOM || strcmp(state.A[0].data.atom, "a") != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue ground_args[1] = { val_atom("c") };
+    int ground_rc = wam_run_predicate(&state, "wam_c_filter_keep/1", ground_args, 1);
+    if (ground_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue fail_args[1] = { val_atom("b") };
+    int fail_rc = wam_run_predicate(&state, "wam_c_filter_keep/1", fail_args, 1);
     if (fail_rc != WAM_HALT) {
         wam_free_state(&state);
         return 30;
@@ -2162,6 +2352,9 @@ run_tests_once :-
     test_lowered_fact_helper_generation,
     test_lowered_helper_planner_metadata,
     test_lowered_helper_plan_generation,
+    test_lowered_body_call_helper_generation,
+    test_lowered_filtered_fact_helper_generation,
+    test_lowered_filter_rejection_metadata,
     test_unsupported_instruction_fails_loudly,
     test_no_zero_instruction_fallback,
     test_list_target_pc_emission,
@@ -2181,7 +2374,8 @@ run_tests_once :-
     test_real_prolog_unify_executable_smoke,
     test_real_prolog_classic_recursive_executable_smoke,
     test_lowered_fact_helper_executable_smoke,
-    test_lowered_alias_helper_executable_smoke,
+    test_lowered_body_call_helper_executable_smoke,
+    test_lowered_filtered_fact_helper_executable_smoke,
     test_asan_memory_lifecycle_executable_smoke,
     format('~n=== WAM-C Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
