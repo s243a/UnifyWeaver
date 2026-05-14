@@ -152,6 +152,52 @@ user:wam_cpp_test_fmt2_compound     :- format('result: ~w~n', [foo(1, bar)]).
 user:wam_cpp_test_fmt2_tilde        :- format('100~~~n', []).
 user:wam_cpp_test_fmt2_no_directives :- format('hello world', []).
 
+% ISO-error fixtures for is_iso/2 + is_lax/2. Some predicates expect
+% to be flipped to ISO mode by the test''s write_wam_cpp_project
+% options; others stay in lax mode to exercise the no-rewrite path.
+:- dynamic user:wam_cpp_test_iso_is_type_error/0.
+:- dynamic user:wam_cpp_test_iso_is_instantiation/0.
+:- dynamic user:wam_cpp_test_iso_is_unmatched/0.
+:- dynamic user:wam_cpp_test_lax_is_silent/0.
+:- dynamic user:wam_cpp_test_explicit_lax_in_iso/0.
+:- dynamic user:wam_cpp_test_iso_unbound_context/0.
+
+user:wam_cpp_test_iso_is_type_error :-
+    catch(X is foo, error(type_error(evaluable, _Culprit), _), X = X).
+
+user:wam_cpp_test_iso_is_instantiation :-
+    catch(Y is _Z + 1, error(instantiation_error, _), Y = Y).
+
+% Unmatched catcher: ISO mode throws type_error, the catcher pattern
+% doesn''t unify, so the throw propagates uncaught. Result: false.
+user:wam_cpp_test_iso_is_unmatched :-
+    catch(X is foo, error(some_other_kind, _), X = X).
+
+% Lax mode: X is foo just fails. The (-> ; true) wrapper turns the
+% failure into success so the predicate as a whole returns true —
+% verifies that lax mode emits NO throw (otherwise the catch would
+% need to recover).
+user:wam_cpp_test_lax_is_silent :-
+    (X is foo -> X = X ; true).
+
+% Three-forms guarantee: explicit is_lax/2 inside an ISO-mode
+% predicate must still fail silently. If the rewrite incorrectly
+% touched the explicit form, this would throw and the (-> ; true)
+% wrapper would still succeed — but stderr would have a "uncaught
+% exception" trace and the catch above would catch type_error,
+% breaking the (-> ; true) branch. Easier to test: just verify the
+% (-> ; true) takes the false branch (returns true overall).
+user:wam_cpp_test_explicit_lax_in_iso :-
+    (is_lax(X, foo) -> X = X ; true).
+
+% Verifies catch(_, error(Pattern, _), _) works even though Context
+% is left unbound by throw_iso_error. Forward-looking test from
+% SPECIFICATION §8.
+user:wam_cpp_test_iso_unbound_context :-
+    catch(X is foo,
+          error(type_error(evaluable, Culprit), _Context),
+          Culprit = foo/0).
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -1077,6 +1123,126 @@ test(cpp_e2e_format_tilde_escape, [condition(cpp_compiler_available)]) :-
         ( build_e2e_binary(TmpDir, BinPath),
           run_query_stdout(BinPath, 'wam_cpp_test_fmt2_tilde/0', [],
                            true, "100~\n")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% ISO arithmetic — first ISO-aware builtin (is_iso/2 + is_lax/2).
+% Each test flips the relevant test predicate to ISO mode via the
+% inline `iso_errors(PI, true)` option; the explicit-lax test ALSO
+% flips its enclosing predicate to ISO mode and verifies the
+% explicit is_lax/2 call site survives the rewrite (three-forms
+% guarantee from WAM_CPP_ISO_ERRORS_PHILOSOPHY §3.3).
+% ------------------------------------------------------------------
+
+test(cpp_e2e_iso_is_throws_type_error, [condition(cpp_compiler_available)]) :-
+    % ISO mode + non-evaluable atom → catcher with
+    % error(type_error(evaluable, _), _) matches; recovery runs.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_iso_is_type', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_iso_is_type_error/0],
+                              [emit_main(true),
+                               iso_errors(wam_cpp_test_iso_is_type_error/0,
+                                          true)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_iso_is_type_error/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_iso_is_throws_instantiation, [condition(cpp_compiler_available)]) :-
+    % ISO mode + RHS contains unbound → catcher with
+    % error(instantiation_error, _) matches.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_iso_is_inst', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_iso_is_instantiation/0],
+                              [emit_main(true),
+                               iso_errors(wam_cpp_test_iso_is_instantiation/0,
+                                          true)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_iso_is_instantiation/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_iso_is_unmatched_propagates,
+     [condition(cpp_compiler_available)]) :-
+    % ISO mode throws type_error, but the catcher pattern is
+    % error(some_other_kind, _) which doesn''t unify. Throw walks
+    % past the catcher → uncaught → false on stdout, "uncaught
+    % exception" diagnostic on stderr (which run_query discards).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_iso_is_unmatched', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_iso_is_unmatched/0],
+                              [emit_main(true),
+                               iso_errors(wam_cpp_test_iso_is_unmatched/0,
+                                          true)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_iso_is_unmatched/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lax_is_silent_fail, [condition(cpp_compiler_available)]) :-
+    % Default-mode predicate: X is foo silently fails. The
+    % (-> ; true) wraps that into success → true.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lax_is', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_lax_is_silent/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_lax_is_silent/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_explicit_lax_in_iso_predicate,
+     [condition(cpp_compiler_available)]) :-
+    % Three-forms guarantee: predicate is flipped to ISO mode, but
+    % uses is_lax(X, foo) directly. The rewrite must NOT touch the
+    % explicit lax key; behavior stays lax (silent fail wrapped
+    % into success by -> ; true). If the rewrite incorrectly
+    % converted is_lax/2 → is_iso/2, throw would propagate and the
+    % program would not return true cleanly.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_explicit_lax_in_iso', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_explicit_lax_in_iso/0],
+                              [emit_main(true),
+                               iso_errors(wam_cpp_test_explicit_lax_in_iso/0,
+                                          true)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_explicit_lax_in_iso/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_iso_unbound_context, [condition(cpp_compiler_available)]) :-
+    % Catcher pattern is error(type_error(evaluable, Culprit), _) —
+    % the Context slot is bound to a fresh unbound, but the catch
+    % still succeeds because unification with an unbound is
+    % unconditional. Recovery verifies Culprit binds to foo/0 (per
+    % SPEC §6 culprit-shape rule). Regression guard against the
+    % decision to leave Context unbound for v1.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_iso_unbound_ctx', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_iso_unbound_context/0],
+                              [emit_main(true),
+                               iso_errors(wam_cpp_test_iso_unbound_context/0,
+                                          true)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_iso_unbound_context/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

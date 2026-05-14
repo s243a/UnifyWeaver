@@ -341,15 +341,21 @@ tokenize_wam_chars([C|Cs], Tokens) :-
         string_chars(Tok, QChars),
         Tokens = [Tok|More],
         tokenize_wam_chars(Rest, More)
+    ;   C == ',' , \+ ( Cs = ['/'|_] )
+    ->  % Bare comma (not followed by ''/'' as in ",/2") is the WAM
+        % printer''s argument separator — discard.
+        tokenize_wam_chars(Cs, Tokens)
     ;   read_unquoted_chars([C|Cs], TChars, Rest),
         string_chars(Tok, TChars),
         Tokens = [Tok|More],
         tokenize_wam_chars(Rest, More)
     ).
 
+% Whitespace separators. Bare commas are handled in tokenize_wam_chars
+% above (treated as separators only when NOT immediately followed by
+% ''/'', so the conjunction functor ",/N" survives as one token).
 wam_token_sep(' ').
 wam_token_sep('\t').
-wam_token_sep(',').
 
 read_quoted_chars([], [], []).
 read_quoted_chars(['\''|Rest], [], Rest) :- !.
@@ -359,6 +365,8 @@ read_quoted_chars([C|Cs], [C|More], Rest) :-
 read_unquoted_chars([], [], []).
 read_unquoted_chars([C|Cs], [], [C|Cs]) :-
     wam_token_sep(C), !.
+read_unquoted_chars([',' | Cs], [], [',' | Cs]) :-
+    \+ ( Cs = ['/'|_] ), !.
 read_unquoted_chars([C|Cs], [C|More], Rest) :-
     read_unquoted_chars(Cs, More, Rest).
 
@@ -525,6 +533,15 @@ static const int _wam_cpp_setup_register = []() {
 :- dynamic iso_errors_default_to_iso/2.
 :- dynamic iso_errors_default_to_lax/2.
 
+% is/2 — first ISO-aware builtin. ISO-mode predicates get their
+% default is/2 calls rewritten to is_iso/2 (which throws on bad
+% RHS); lax-mode predicates rewrite to is_lax/2 (a no-op rename
+% since is/2 and is_lax/2 share the runtime body). Explicit
+% is_iso/2 or is_lax/2 in user source survives the rewrite — see
+% iso_errors_rewrite_item/3.
+iso_errors_default_to_iso("is/2", "is_iso/2").
+iso_errors_default_to_lax("is/2", "is_lax/2").
+
 %% iso_errors_resolve_options(+Options, -Config)
 %  Merges the (optional) file config with inline options into one
 %  iso_config(Default, Overrides) struct. Inline options override
@@ -653,9 +670,34 @@ iso_errors_rewrite(Config, PI, Items0, Items) :-
     iso_errors_mode_for(Config, PI, Mode),
     maplist(iso_errors_rewrite_item(Mode), Items0, Items).
 
+% Two surfaces to rewrite for an ISO-relevant builtin:
+%
+% - builtin_call("is/2", _) — the direct call form (`X is Expr` in a
+%   regular conjunction).
+% - put_structure("is/2", _) — the data form when `X is Expr` appears
+%   inside a meta-goal that takes the goal as a term (notably
+%   catch(Goal, ...) — the WAM compiler builds `is(X, Expr)` into A1
+%   and passes it through). Without this rewrite,
+%   invoke_goal_as_call would dispatch the un-rewritten functor and
+%   miss the surrounding predicate''s ISO mode.
+%
+% Also `call("is/2", _)` and `execute("is/2")` for completeness, even
+% though the SWI WAM compiler emits these less commonly for is/2.
 iso_errors_rewrite_item(true, builtin_call(Key, N), builtin_call(IsoKey, N)) :-
     iso_errors_default_to_iso(Key, IsoKey), !.
+iso_errors_rewrite_item(true, put_structure(Key, Reg), put_structure(IsoKey, Reg)) :-
+    iso_errors_default_to_iso(Key, IsoKey), !.
+iso_errors_rewrite_item(true, call(Key, N), call(IsoKey, N)) :-
+    iso_errors_default_to_iso(Key, IsoKey), !.
+iso_errors_rewrite_item(true, execute(Key), execute(IsoKey)) :-
+    iso_errors_default_to_iso(Key, IsoKey), !.
 iso_errors_rewrite_item(false, builtin_call(Key, N), builtin_call(LaxKey, N)) :-
+    iso_errors_default_to_lax(Key, LaxKey), !.
+iso_errors_rewrite_item(false, put_structure(Key, Reg), put_structure(LaxKey, Reg)) :-
+    iso_errors_default_to_lax(Key, LaxKey), !.
+iso_errors_rewrite_item(false, call(Key, N), call(LaxKey, N)) :-
+    iso_errors_default_to_lax(Key, LaxKey), !.
+iso_errors_rewrite_item(false, execute(Key), execute(LaxKey)) :-
     iso_errors_default_to_lax(Key, LaxKey), !.
 iso_errors_rewrite_item(_, Item, Item).
 
@@ -719,12 +761,14 @@ iso_errors_other_mode(true,  false).
 iso_errors_other_mode(false, true).
 
 % Match keys like "foo_iso/N" or "foo_lax/N" — Suffix is e.g.
-% '_iso'. Splits on the / first, then checks the name component.
+% "_iso". Splits on the / first, then checks the name component.
+% Keys come through parse_pred_blocks as strings; convert defensively
+% so atom-shaped table entries also work.
 iso_errors_key_has_suffix(Key, Suffix) :-
-    atom(Key),
-    atomic_list_concat(Parts, '/', Key),
+    ( atom(Key) -> atom_string(Key, KS) ; KS = Key ),
+    split_string(KS, "/", "", Parts),
     Parts = [Name | _],
-    atom_concat(_, Suffix, Name).
+    string_concat(_, Suffix, Name).
 
 %% wam_cpp_iso_audit_report(+Audit)
 %  Human-readable pretty-print of an audit result.
@@ -1598,6 +1642,13 @@ struct WamState {
     Value   make_instantiation_error();
     Value   make_domain_error(const std::string& domain, Value culprit);
     Value   make_evaluation_error(const std::string& kind);
+
+    // ISO-arith helpers. term_contains_unbound walks an arith term
+    // tree to detect an instantiation_error condition; arith_culprit
+    // shapes a non-evaluable into the Name/Arity compound ISO mandates
+    // for the type_error culprit slot.
+    bool    term_contains_unbound(CellPtr c) const;
+    Value   arith_culprit(const Value& v) const;
     // Deep-copy a value tree, allocating fresh cells for any Unbound
     // leaves (multiple references to the same source name share the
     // same fresh cell). Used by throw/1 to snapshot the thrown term
@@ -1998,11 +2049,38 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         pc += 1; return true;
     }
 
-    // ---- is/2 -------------------------------------------------------
-    if (op == "is/2") {
+    // ---- is/2, is_lax/2 ---------------------------------------------
+    // Lax arithmetic evaluation. is_lax/2 shares the body so user
+    // code can write is_lax(X, Expr) directly to opt out of an
+    // enclosing ISO-mode predicate''s rewrite (the three-forms
+    // guarantee from WAM_CPP_ISO_ERRORS_PHILOSOPHY §3.3).
+    if (op == "is/2" || op == "is_lax/2") {
         bool ok = true;
         Value rhs = eval_arith(get_cell("A2"), ok);
         if (!ok) return false;
+        CellPtr lhs = get_cell("A1");
+        if (lhs->is_unbound()) { bind_cell(lhs, std::move(rhs)); pc += 1; return true; }
+        if (!(*lhs == rhs)) return false;
+        pc += 1; return true;
+    }
+    // ---- is_iso/2 ---------------------------------------------------
+    // ISO-strict arithmetic. Throws instantiation_error for unbound
+    // sub-terms; type_error(evaluable, Culprit) for non-evaluable
+    // atoms / unknown functors. The walk classifies BEFORE eval so
+    // the diagnostic is the actual culprit shape (matches SPEC §6).
+    if (op == "is_iso/2") {
+        CellPtr rhs_cell = get_cell("A2");
+        if (term_contains_unbound(rhs_cell)) {
+            return throw_iso_error(make_instantiation_error());
+        }
+        bool ok = true;
+        Value rhs = eval_arith(rhs_cell, ok);
+        if (!ok) {
+            // Build culprit as Name/Arity (or the raw value if shape
+            // is unrecognised — fallback for robustness).
+            Value culprit = arith_culprit(deref(*rhs_cell));
+            return throw_iso_error(make_type_error("evaluable", culprit));
+        }
         CellPtr lhs = get_cell("A1");
         if (lhs->is_unbound()) { bind_cell(lhs, std::move(rhs)); pc += 1; return true; }
         if (!(*lhs == rhs)) return false;
@@ -3104,6 +3182,50 @@ Value WamState::make_evaluation_error(const std::string& kind) {
         std::make_shared<Cell>(Value::Atom(kind))
     };
     return Value::Compound("evaluation_error/1", std::move(args));
+}
+
+bool WamState::term_contains_unbound(CellPtr c) const {
+    Value v = deref(*c);
+    if (v.tag == Value::Tag::Unbound || v.tag == Value::Tag::Uninit) return true;
+    if (v.tag == Value::Tag::Compound) {
+        for (auto& arg : v.args) {
+            if (term_contains_unbound(arg)) return true;
+        }
+    }
+    return false;
+}
+
+Value WamState::arith_culprit(const Value& v) const {
+    // ISO type_error(evaluable, Culprit) expects Culprit to be a
+    // Name/Arity compound (`foo/0` for an atom; `unknown/3` for an
+    // unknown compound). Fall back to the raw value if the shape is
+    // unrecognised — diagnostic is still useful, just not standards-
+    // perfect.
+    if (v.tag == Value::Tag::Atom) {
+        std::vector<CellPtr> args = {
+            std::make_shared<Cell>(Value::Atom(v.s)),
+            std::make_shared<Cell>(Value::Integer(0))
+        };
+        return Value::Compound("//2", std::move(args));
+    }
+    if (v.tag == Value::Tag::Compound) {
+        // Compound s is "name/arity". Split and rebuild as the
+        // ISO-shaped name/arity compound.
+        auto slash = v.s.rfind(''/'');
+        if (slash != std::string::npos) {
+            std::string name  = v.s.substr(0, slash);
+            std::string arity = v.s.substr(slash + 1);
+            try {
+                long long n = std::stoll(arity);
+                std::vector<CellPtr> args = {
+                    std::make_shared<Cell>(Value::Atom(name)),
+                    std::make_shared<Cell>(Value::Integer(n))
+                };
+                return Value::Compound("//2", std::move(args));
+            } catch (...) {}
+        }
+    }
+    return v;
 }
 
 bool WamState::backtrack() {
