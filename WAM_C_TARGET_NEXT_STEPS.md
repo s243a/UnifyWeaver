@@ -5,7 +5,7 @@ Status date: 2026-05-15
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `9b19eace` (`Merge pull request #2113 from s243a/test/wam-c-generated-project-multi-predicate-setup`)
+- `main` at `1bd3d43e` (`Merge pull request #2116 from s243a/feat/wam-c-lowered-helper-nonreordered-projections`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
 - `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py`
@@ -14,7 +14,7 @@ Base verified locally:
 
 Active branch:
 
-- `feat/wam-c-lowered-helper-nonreordered-projections`
+- `feat/wam-c-lowered-helper-ignored-output-contract`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -55,7 +55,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Lowered helper body-call rejection metadata | Done | Planner reports explicit unavailable and non-lowerable callee reasons for exact user-predicate body-call shapes |
 | Lowered helper projected body calls | Done | Variable-only reordered body-call projections lower through native fact-helper dispatch with executable coverage |
 | Generated multi-predicate setup | Done | Generated setup appends predicate code at per-setup base PCs and covers multiple setup functions in one executable |
-| Lowered helper non-reordered projection metadata | In progress | Active branch reports explicit planner rejection reasons for omitted head variables, repeated head variables, and unbound callee variables |
+| Lowered helper non-reordered projection metadata | Done | Planner reports explicit rejection reasons for omitted head variables, repeated head variables, and unbound callee variables |
+| Lowered helper ignored-output projections | In progress | Active branch allows projected body-call helpers to pass callee-local variables as fresh unbound arguments and ignore their returned bindings |
 
 ## Current C Target Baseline
 
@@ -136,22 +137,7 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-lowered-helper-nonreordered-projections`
-
-Goal: decide whether body-call helper lowering should support projection shapes
-that bind only a subset of callee variables.
-
-Scope:
-
-- Start with planner metadata for repeated or omitted head/callee variables.
-- Avoid runtime support until the binding contract for ignored callee outputs is
-  explicit.
-- Keep constant filters on the existing materialized `filtered_fact` path.
-
-Status: active; the planner now classifies unsupported variable-only projection
-shapes before they fall through to generic fact/filter rejection metadata.
-
-### 2. `feat/wam-c-lowered-helper-ignored-output-contract`
+### 1. `feat/wam-c-lowered-helper-ignored-output-contract`
 
 Goal: define the runtime contract for projected body calls whose callee produces
 variables that are not exposed by the caller.
@@ -163,10 +149,26 @@ Scope:
 - If supported, add executable coverage before enabling native helper lowering.
 - Keep constant filters on the existing materialized `filtered_fact` path.
 
+Status: active; ignored callee outputs are allowed when every caller-visible
+head variable is projected exactly once, with executable coverage for the
+lowered helper path.
+
+### 2. `feat/wam-c-lowered-helper-projection-row-constraints`
+
+Goal: decide whether repeated caller variables in projected body calls should
+lower through native row constraints instead of staying rejected.
+
+Scope:
+
+- Preserve the current rejection for omitted caller-visible head variables.
+- Consider lowering repeated caller variables only by materializing matching
+  fact rows, similar to repeated-variable filtered helpers.
+- Keep constant filters on the existing materialized `filtered_fact` path.
+
 ## Suggested Immediate Next Step
 
-Continue validating `feat/wam-c-lowered-helper-nonreordered-projections`.
+Continue validating `feat/wam-c-lowered-helper-ignored-output-contract`.
 
-The active branch keeps runtime lowering conservative and improves planner
-metadata first, so the next implementation step can be based on explicit
-projection-shape evidence instead of generic rejection comments.
+The active branch turns the previously classified unbound-callee projection
+case into supported lowering while keeping omitted caller-visible outputs and
+repeated caller variables explicit planner rejections.

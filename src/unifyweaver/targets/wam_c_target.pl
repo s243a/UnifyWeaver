@@ -453,12 +453,13 @@ lowered_body_call_helper(PredIndicator, AvailableKeys, CalleeKey, CalleeArity) :
     memberchk(CalleeKey, AvailableKeys).
 
 lowered_body_call_projected_helper(PredIndicator, AvailableKeys, CalleeKey, CalleeArity, CalleeArgs) :-
-    projected_body_call_context(PredIndicator, HeadArgs, CalleePred, CalleeArity, CalleeKey, CalleeArgs),
+    body_call_projection_context(PredIndicator, HeadArgs, CalleePred, CalleeArity, CalleeKey, CalleeArgs),
     format(atom(CalleeKey), '~w/~w', [CalleePred, CalleeArity]),
     memberchk(CalleeKey, AvailableKeys),
     CalleeIndicator = user:CalleePred/CalleeArity,
     lowered_fact_helper_rows(CalleeIndicator, _Rows),
-    head_args_project_once(HeadArgs, CalleeArgs).
+    head_args_project_once(HeadArgs, CalleeArgs),
+    callee_local_variables_singletons(HeadArgs, CalleeArgs).
 
 lowered_body_call_rejection_reason(PredIndicator, AvailableKeys, Reason) :-
     body_call_context(PredIndicator, CalleePred, CalleeArity, CalleeKey),
@@ -510,10 +511,6 @@ projected_body_call_arg_supported(HeadArgs, Arg) :-
     member(HeadArg, HeadArgs),
     Arg == HeadArg.
 
-body_call_projection_rejection_reason(HeadArgs, CalleeArgs, body_call_projection_unbound_callee_variable) :-
-    member(CalleeArg, CalleeArgs),
-    \+ projected_body_call_arg_supported(HeadArgs, CalleeArg),
-    !.
 body_call_projection_rejection_reason(HeadArgs, CalleeArgs, body_call_projection_omits_head_variable) :-
     member(HeadArg, HeadArgs),
     variable_occurrence_count(HeadArg, CalleeArgs, 0),
@@ -521,6 +518,12 @@ body_call_projection_rejection_reason(HeadArgs, CalleeArgs, body_call_projection
 body_call_projection_rejection_reason(HeadArgs, CalleeArgs, body_call_projection_repeats_head_variable) :-
     member(HeadArg, HeadArgs),
     variable_occurrence_count(HeadArg, CalleeArgs, Count),
+    Count > 1,
+    !.
+body_call_projection_rejection_reason(HeadArgs, CalleeArgs, body_call_projection_repeats_callee_local_variable) :-
+    member(CalleeArg, CalleeArgs),
+    \+ projected_body_call_arg_supported(HeadArgs, CalleeArg),
+    variable_occurrence_count(CalleeArg, CalleeArgs, Count),
     Count > 1,
     !.
 
@@ -532,6 +535,14 @@ head_args_project_once([], _CalleeArgs).
 head_args_project_once([HeadArg|Rest], CalleeArgs) :-
     variable_occurrence_count(HeadArg, CalleeArgs, 1),
     head_args_project_once(Rest, CalleeArgs).
+
+callee_local_variables_singletons(_HeadArgs, []).
+callee_local_variables_singletons(HeadArgs, [CalleeArg|Rest]) :-
+    (   projected_body_call_arg_supported(HeadArgs, CalleeArg)
+    ->  true
+    ;   variable_occurrence_count(CalleeArg, Rest, 0)
+    ),
+    callee_local_variables_singletons(HeadArgs, Rest).
 
 same_variable(Left, Right) :-
     Left == Right.
@@ -618,6 +629,8 @@ projected_body_call_arg_assignment(I, Arg, HeadArgs, Line) :-
     Arg == HeadArg,
     !,
     format(atom(Line), '    state->A[~w] = saved_args[~w];', [I, HeadIndex]).
+projected_body_call_arg_assignment(I, _Arg, _HeadArgs, Line) :-
+    format(atom(Line), '    state->A[~w] = val_unbound("_");', [I]).
 
 projected_body_call_result_copies(PredIndicator, Code) :-
     projected_body_call_clause_args(PredIndicator, HeadArgs, CalleeArgs),
