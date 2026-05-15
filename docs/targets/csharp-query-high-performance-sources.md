@@ -245,6 +245,8 @@ need manual override:
      manifest-declared ID strategy.
    - Acceptance: scan and lookup parity with delimited facts, plus benchmark
      comparison against LMDB.
+   - Status: implemented by `MmapArrayRelationArtifactProvider` and covered by
+     `tests/test_csharp_query_mmap_array_provider_smoke.py`.
 
 ## Non-Goals For The First Runtime PR
 

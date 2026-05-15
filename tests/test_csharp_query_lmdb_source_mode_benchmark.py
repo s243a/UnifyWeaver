@@ -41,13 +41,13 @@ class CSharpQueryLmdbSourceModeBenchmarkTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
 
         lines = result.stdout.strip().splitlines()
-        self.assertGreaterEqual(len(lines), 5)
+        self.assertGreaterEqual(len(lines), 6)
         headers = lines[0].split("\t")
         rows = [dict(zip(headers, line.split("\t"))) for line in lines[1:]]
 
         self.assertEqual(
             [row["mode"] for row in rows],
-            ["preload", "binary-artifact", "delimited-artifact", "lmdb"],
+            ["preload", "binary-artifact", "delimited-artifact", "lmdb", "mmap-array"],
         )
         self.assertEqual({row["scan_hash"] for row in rows}, {rows[0]["scan_hash"]})
         self.assertEqual({row["lookup_hash"] for row in rows}, {rows[0]["lookup_hash"]})

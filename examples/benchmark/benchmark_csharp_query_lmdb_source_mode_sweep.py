@@ -424,10 +424,10 @@ var lookupRepetitions = Math.Max(1, ReadIntArg(args, "--lookup-repetitions", 10)
 var root = Directory.GetCurrentDirectory();
 var predicate = new PredicateId("edge", 2);
 var rows = Enumerable.Range(0, rowCount)
-    .Select(index => (Key: $"k{index % keyCount:D6}", Value: $"v{index:D8}"))
+    .Select(index => (Key: (index % keyCount).ToString(System.Globalization.CultureInfo.InvariantCulture), Value: index.ToString(System.Globalization.CultureInfo.InvariantCulture)))
     .ToArray();
 var lookupKeys = Enumerable.Range(0, Math.Min(keyCount, rowCount))
-    .Select(index => (object)$"k{index:D6}")
+    .Select(index => (object)index.ToString(System.Globalization.CultureInfo.InvariantCulture))
     .ToArray();
 
 var inputPath = Path.Combine(root, "edge.tsv");
@@ -440,6 +440,8 @@ var delimitedDir = Path.Combine(root, "delimited-artifact");
 var delimitedManifest = DelimitedRelationArtifactBuilder.BuildFromDelimited(predicate, source, delimitedDir);
 var lmdbManifest = WriteLmdbArtifact(root, predicate, rows, inputPath);
 var lmdbDir = Path.Combine(root, "lmdb-edge");
+var mmapDir = Path.Combine(root, "mmap-array-artifact");
+var mmapManifest = MmapArrayRelationArtifactBuilder.BuildFromDelimited(predicate, source, mmapDir);
 
 Console.WriteLine("mode\trows\tlookup_keys\tartifact_bytes\topen_ms\tlookup_ms\tscan_ms\tretained_bytes\tscan_hash\tlookup_hash");
 BenchmarkProvider(
@@ -493,6 +495,19 @@ BenchmarkProvider(
     lookupKeys,
     lookupRepetitions,
     DirectorySize(lmdbDir) + new FileInfo(lmdbManifest).Length,
+    rowCount);
+BenchmarkProvider(
+    "mmap-array",
+    () =>
+    {
+        var provider = new MmapArrayRelationArtifactProvider();
+        provider.RegisterArtifact(predicate, mmapManifest);
+        return provider;
+    },
+    predicate,
+    lookupKeys,
+    lookupRepetitions,
+    DirectorySize(mmapDir),
     rowCount);
 """
 
