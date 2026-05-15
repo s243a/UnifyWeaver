@@ -2,14 +2,18 @@ package {{package_name}}
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 )
 
 var (
 	_ = fmt.Sprintf
+	_ = os.ReadFile
 	_ = runtime.GOMAXPROCS
+	_ = strings.Split
 	_ sync.Locker = (*sync.Mutex)(nil)
 )
 
