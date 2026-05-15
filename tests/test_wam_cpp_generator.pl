@@ -628,6 +628,54 @@ user:wam_cpp_test_bagof_inlined_flattens :-
     bagof(C, wam_cpp_parent_fixture(_P, C), L),
     L = [bob, alice, carol].
 
+% Bagof/setof GROUP BACKTRACKING — second-group binding works via
+% the aggregate_next_group_pc CP machinery. Outer findall drives
+% the inner bagof''s group iteration: each backtrack into bagof
+% binds the next group.
+:- dynamic user:wam_cpp_grandparent_fixture/2.
+:- dynamic user:wam_cpp_test_findall_of_bagof_groups/0.
+:- dynamic user:wam_cpp_test_findall_of_setof_groups/0.
+:- dynamic user:wam_cpp_test_bagof_witness_pairs/0.
+:- dynamic user:wam_cpp_test_bagof_single_group_unchanged/0.
+
+% Extend the fixture for a more thorough multi-group test.
+user:wam_cpp_grandparent_fixture(tom, bob).
+user:wam_cpp_grandparent_fixture(tom, alice).
+user:wam_cpp_grandparent_fixture(jane, carol).
+user:wam_cpp_grandparent_fixture(jane, dave).
+
+% Outer findall + inner bagof: groups iterate via the next-group
+% CP. With 2 parents (tom, jane), each having 2 children, we get
+% 2 groups.
+user:wam_cpp_test_findall_of_bagof_groups :-
+    findall(L,
+            bagof(C, wam_cpp_grandparent_fixture(_P, C), L),
+            Ls),
+    Ls = [[bob, alice], [carol, dave]].
+
+% Same with setof — each group sorted by term order.
+user:wam_cpp_test_findall_of_setof_groups :-
+    findall(L,
+            setof(C, wam_cpp_grandparent_fixture(_P, C), L),
+            Ls),
+    Ls = [[alice, bob], [carol, dave]].
+
+% Witness binding flows through to the outer findall: collect
+% P-L pairs so we can verify the witness binding per group.
+user:wam_cpp_test_bagof_witness_pairs :-
+    findall(P-L,
+            bagof(C, wam_cpp_grandparent_fixture(P, C), L),
+            Pairs),
+    Pairs = [tom-[bob, alice], jane-[carol, dave]].
+
+% Single-group case — ^/2 existential, all 4 children in one bag.
+% Regression guard that the existential path still works (no
+% iterator pushed when there are no witnesses).
+user:wam_cpp_test_bagof_single_group_unchanged :-
+    catch(bagof(C, P^wam_cpp_grandparent_fixture(P, C), L),
+          _, fail),
+    L = [bob, alice, carol, dave].
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -2693,6 +2741,95 @@ test(cpp_e2e_bagof_inlined_flattens,
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_bagof_inlined_flattens/0',
+                    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% bagof/setof group backtracking — completes the witness-grouping
+% story from PR #2108. The aggregate-finalise path now pushes an
+% AggregateGroupIterator and a CP whose alt_pc = aggregate_next_group_pc.
+% On backtrack into the aggregate, AggregateNextGroup pops the next
+% group from the iterator and binds it; if more remain, pushes
+% another CP. This makes `findall(L, bagof(C, parent(P, C), L), Ls)`
+% return the FULL list of groups, not just the first.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_findall_of_bagof_groups,
+     [condition(cpp_compiler_available)]) :-
+    % `findall(L, bagof(C, parent(_P, C), L), Ls)` — outer findall
+    % drives inner bagof''s group iteration. Two parents → two
+    % groups. The first group is bound on the initial bagof
+    % success; backtrack triggers the next-group CP which binds
+    % the second group.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_fa_bagof_grp', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_grandparent_fixture/2,
+             user:wam_cpp_test_findall_of_bagof_groups/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_findall_of_bagof_groups/0',
+                    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_findall_of_setof_groups,
+     [condition(cpp_compiler_available)]) :-
+    % Same shape with setof — each group is sorted via term_less.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_fa_setof_grp', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_grandparent_fixture/2,
+             user:wam_cpp_test_findall_of_setof_groups/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_findall_of_setof_groups/0',
+                    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_bagof_witness_pairs,
+     [condition(cpp_compiler_available)]) :-
+    % `findall(P-L, bagof(C, parent(P, C), L), Pairs)` — verifies
+    % that the witness binding flows back to the outer findall.
+    % First iteration: P=tom, L=[bob,alice]. Second: P=jane,
+    % L=[carol,dave]. Critical regression guard for the
+    % per-group witness rebinding via the CP machinery.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_bagof_pairs', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_grandparent_fixture/2,
+             user:wam_cpp_test_bagof_witness_pairs/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_bagof_witness_pairs/0',
+                    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_bagof_single_group_unchanged,
+     [condition(cpp_compiler_available)]) :-
+    % ^/2 existential — no witnesses, no iterator, no extra CP.
+    % Regression guard that the existential-quantified path still
+    % works as before (single-group binding, no backtrack
+    % artifacts).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_bagof_single', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_grandparent_fixture/2,
+             user:wam_cpp_test_bagof_single_group_unchanged/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_bagof_single_group_unchanged/0',
                     [], true)
         ),
         delete_directory_and_contents(TmpDir)
