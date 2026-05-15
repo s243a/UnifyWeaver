@@ -763,6 +763,51 @@ user:wam_cpp_test_ite_in_findall_no_cut_outer :-
     findall(X, (member(X, [1, 2, 3]), (X > 0 -> true ; fail)), L),
     L = [1, 2, 3].
 
+% format/1, /2, /3 — formatted output with ~-directives. /1 takes
+% just a format string; /2 takes Format + Args; /3 takes Dest +
+% Format + Args, where Dest selects user_output / user_error /
+% atom(V) / string(V) / codes(V).
+:- dynamic user:wam_cpp_test_format1/0.
+:- dynamic user:wam_cpp_test_format2_w/0.
+:- dynamic user:wam_cpp_test_format2_multi/0.
+:- dynamic user:wam_cpp_test_format2_d/0.
+:- dynamic user:wam_cpp_test_format2_a/0.
+:- dynamic user:wam_cpp_test_format3_atom/0.
+:- dynamic user:wam_cpp_test_format3_string/0.
+:- dynamic user:wam_cpp_test_format3_codes/0.
+:- dynamic user:wam_cpp_test_format3_chained/0.
+
+user:wam_cpp_test_format1 :-
+    format("plain text~n").
+
+user:wam_cpp_test_format2_w :-
+    format("X = ~w~n", [42]).
+
+user:wam_cpp_test_format2_multi :-
+    format("~w + ~w = ~w~n", [1, 2, 3]).
+
+user:wam_cpp_test_format2_d :-
+    format("~d~n", [42]).
+
+user:wam_cpp_test_format2_a :-
+    format("~a~n", [hello]).
+
+user:wam_cpp_test_format3_atom :-
+    format(atom(A), "X = ~w", [42]),
+    A = 'X = 42'.
+
+user:wam_cpp_test_format3_string :-
+    format(string(S), "S = ~a", [hello]),
+    S = 'S = hello'.
+
+user:wam_cpp_test_format3_codes :-
+    format(codes(C), "ab", []),
+    C = [97, 98].
+
+user:wam_cpp_test_format3_chained :-
+    format(atom(A), "n=~d", [42]),
+    A = 'n=42'.
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -3090,6 +3135,118 @@ test(cpp_e2e_ite_in_findall_no_cut_outer,
           run_query(BinPath,
                     'wam_cpp_test_ite_in_findall_no_cut_outer/0',
                     [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% format/1, /2, /3 — formatted output. /1 and /2 print to stdout;
+% /3 dispatches on a destination argument that selects user_output /
+% user_error / atom(V) / string(V) / codes(V). The string-building
+% variants (atom/string/codes) unify their argument with the
+% rendered output, enabling in-process string construction.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_format1, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_format1', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_format1/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_stdout(BinPath, 'wam_cpp_test_format1/0', [],
+                           true, "plain text\n")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_format2_w, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_format2_w', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_format2_w/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_stdout(BinPath, 'wam_cpp_test_format2_w/0', [],
+                           true, "X = 42\n")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_format2_multi, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_format2_multi', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_format2_multi/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_stdout(BinPath, 'wam_cpp_test_format2_multi/0', [],
+                           true, "1 + 2 = 3\n")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_format2_d, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_format2_d', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_format2_d/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_stdout(BinPath, 'wam_cpp_test_format2_d/0', [],
+                           true, "42\n")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_format2_a, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_format2_a', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_format2_a/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_stdout(BinPath, 'wam_cpp_test_format2_a/0', [],
+                           true, "hello\n")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_format3_atom, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_format3_atom', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_format3_atom/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_format3_atom/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_format3_string, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_format3_string', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_format3_string/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_format3_string/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_format3_codes, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_format3_codes', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_format3_codes/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_format3_codes/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_format3_chained, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_format3_chained', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_format3_chained/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_format3_chained/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
