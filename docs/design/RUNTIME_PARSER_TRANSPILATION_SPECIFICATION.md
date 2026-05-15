@@ -89,20 +89,22 @@ should remain visible until stricter ISO distinctions are implemented.
 R is the reference target because it already has runtime consumers:
 `read/2`, `read_term_from_atom/2,3`, reverse `term_to_atom/2`, and CLI parsing.
 The R target currently has an inline parser in `runtime.R.mustache`, while
-`prolog_term_parser.pl` compiles structurally to WAM-R.
+`prolog_term_parser.pl` compiles to WAM-R and runs representative parser
+drivers end to end.
 
-The structural guard is:
+The compile and runtime guard is:
 
 ```text
 tests/test_prolog_term_parser_wam_r_compile.pl
 ```
 
-Full replacement of the inline R parser is blocked by WAM-R cut-barrier
-semantics. The parser source relies on cuts in multi-clause helper predicates;
-the WAM-R runtime currently drops only the most recent choice point in cases
-where a proper cut barrier is needed. Once that runtime issue is fixed, the
-compiled parser should be compared against the inline parser and then used as
-the canonical R runtime parser.
+Full replacement of the inline R parser is not the current R target direction.
+The compiled parser is semantically useful, but R benchmark data shows it is
+far slower than the inline parser for ordinary atom, compound, list, and
+operator-expression parsing. R should keep the inline parser as its hot path
+unless future runtime changes close that gap. The portable parser remains the
+canonical cross-target specification and the preferred starting point for
+targets that do not already have a native runtime parser.
 
 ## Test Requirements
 

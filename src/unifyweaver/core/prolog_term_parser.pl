@@ -32,16 +32,13 @@
 %
 % Compile-target status: this source compiles cleanly to WAM-R
 % (every predicate produces a label + wrapper; see
-% tests/test_prolog_term_parser_wam_r_compile.pl), and SWI runs it
-% to spec. End-to-end equivalence with the inline R parser at
-% WamRuntime$parse_term is currently gated on the WAM-R cut
-% implementation: the runtime's `!/0` and `CutIte` drop only the
-% most-recent CP, which loses cut-barrier semantics whenever a
-% multi-clause callee leaves CPs alive before the cut runs (which
-% e.g. tokenize_one and take_ident hit). Fix is filed as follow-up
-% #3 in docs/handoff/wam_r_session_handoff.md. When that lands the
-% inline parser can be retired -- the structural compile test is
-% the regression guard.
+% tests/test_prolog_term_parser_wam_r_compile.pl), SWI runs it to
+% spec, and WAM-R runs representative full-parser drivers end to
+% end. R still keeps its inline parser as the hot runtime path
+% because benchmarks show the WAM-compiled parser is much slower;
+% this source remains the canonical cross-target parser spec and a
+% proof that non-trivial parser code can be hosted by generated WAM
+% runtimes.
 % =============================================================================
 
 :- module(prolog_term_parser, [
