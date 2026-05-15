@@ -511,6 +511,42 @@ user:wam_cpp_test_call_disj_first_fails :-
     call((fail ; X = 7)),
     X = 7.
 
+% If-then-else goal-terms `;(->(Cond, Then), Else)` — built by the
+% WAM compiler when the user writes `(Cond -> Then ; Else)` as data
+% (passed to catch/3, call/1, or inside a non-inlined meta-call).
+% Distinct from plain disjunction because of cut semantics: when
+% Cond succeeds, all of Cond''s choice points are committed away.
+:- dynamic user:wam_cpp_test_ite_then_branch/0.
+:- dynamic user:wam_cpp_test_ite_else_branch/0.
+:- dynamic user:wam_cpp_test_ite_inside_findall/0.
+:- dynamic user:wam_cpp_test_ite_cut_commits_cond/0.
+
+% Cond=true → Then branch fires.
+user:wam_cpp_test_ite_then_branch :-
+    call((true -> X = 1 ; X = 2)),
+    X = 1.
+
+% Cond=fail → Else branch fires (via IfThenElse path).
+user:wam_cpp_test_ite_else_branch :-
+    call((fail -> X = 1 ; X = 2)),
+    X = 2.
+
+% findall + if-then-else as call''d goal-term — each iteration of
+% the outer member picks Then or Else based on the condition.
+user:wam_cpp_test_ite_inside_findall :-
+    findall(Y, (member(X, [1, 2, 3, 4]),
+                call((X > 2 -> Y = big ; Y = small))),
+            L),
+    L = [small, small, big, big].
+
+% Cut semantics: Cond uses member/2 which has multiple solutions.
+% After Cond commits with X=1, we don''t backtrack to try X=2.
+% Y must be 1 — if cut weren''t happening, this would also succeed
+% with Y=2 via re-dispatch of Cond.
+user:wam_cpp_test_ite_cut_commits_cond :-
+    call((member(X, [1, 2, 3]) -> Y = X ; Y = none)),
+    Y = 1.
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -2337,6 +2373,79 @@ test(cpp_e2e_call_disjunction_first_fails,
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_call_disj_first_fails/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% If-then-else goal-terms `(Cond -> Then ; Else)` passed to a
+% meta-call. The WAM compiler builds them as `;(->(Cond, Then), Else)`.
+% invoke_goal_as_call peeks at the first arg of ;/2 — if it''s ->/2,
+% routes to an IfThenFrame + paired CP with cut-on-Cond-success
+% semantics. Otherwise falls through to plain disjunction.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_ite_then_branch,
+     [condition(cpp_compiler_available)]) :-
+    % Cond=true → IfThenCommit fires → Then branch dispatched.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ite_then', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_ite_then_branch/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_ite_then_branch/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_ite_else_branch,
+     [condition(cpp_compiler_available)]) :-
+    % Cond=fail → backtrack to our CP → IfThenElse fires → Else
+    % branch dispatched. Regression guard for the trust_me-style
+    % pop in IfThenElse (without it the alt_pc fires repeatedly
+    % into an empty if_then_frames, causing infinite recurse).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ite_else', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_ite_else_branch/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_ite_else_branch/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_ite_inside_findall,
+     [condition(cpp_compiler_available)]) :-
+    % findall + if-then-else as a call''d goal. Each iteration of
+    % member dispatches the if-then-else; for X∈{1,2} the Else
+    % branch fires (Y=small), for X∈{3,4} the Then branch fires
+    % (Y=big). Exercises if-then-else inside an aggregate context
+    % with backtracking.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ite_findall', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_ite_inside_findall/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_ite_inside_findall/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_ite_cut_commits_cond,
+     [condition(cpp_compiler_available)]) :-
+    % Cut semantics: `call((member(X, [1, 2, 3]) -> Y = X ; ...))`
+    % must commit to X=1 (Cond''s first solution) and NOT
+    % backtrack-retry for X=2 / X=3 later. IfThenCommit drops the
+    % CPs from Cond''s dispatch back to base_cp_count, achieving
+    % the cut. Critical regression guard.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ite_cut', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_ite_cut_commits_cond/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_ite_cut_commits_cond/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
