@@ -106,6 +106,10 @@ should keep the core runtime dependency-free and route LMDB, memory-mapped
 arrays, and sharded hash/block files through provider interfaces rather than
 hard-coding backend-specific behavior into query operators.
 
+External dependencies such as LightningDB should live in optional integration
+projects. Generated projects can opt into those integrations explicitly through
+Prolog target configuration when a backend is required.
+
 See `docs/targets/csharp-query-high-performance-sources.md` for the proposed
 backend inventory, provider-factory seam, LMDB path, memory-mapped array path,
 and recommended next branches.
