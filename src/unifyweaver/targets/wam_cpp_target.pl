@@ -1576,6 +1576,15 @@ struct WamState {
     // after_pc becomes the new cp (where the goal proceeds to).
     // Returns false if the goal''s functor has no registered label.
     bool    invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc);
+    // call/N meta-call dispatch. Total arity comes from the op
+    // suffix (call/3 → 3). For total_arity == 1 the goal in A1 is
+    // invoked as-is; otherwise A2..AN are appended to the goal''s
+    // existing args and the combined goal is dispatched. after_pc
+    // is supplied by the caller — pc+1 for non-tail (Call), cp for
+    // tail (Execute). Returns invoke_goal_as_call''s result.
+    bool    dispatch_call_meta(const std::string& op,
+                               std::int64_t total_arity,
+                               std::size_t after_pc);
     bool    execute_catch();
     bool    execute_throw();
 
@@ -2802,6 +2811,13 @@ bool WamState::step(const Instruction& instr) {
         case Instruction::Op::Call: {
             if (instr.a == "catch/3") { cp = pc + 1; return execute_catch(); }
             if (instr.a == "throw/1") { cp = pc + 1; return execute_throw(); }
+            // call/N meta — needs its own arm so the after_pc is
+            // correctly pc + 1 (non-tail) rather than going through
+            // the Execute fallback''s post-builtin pc=cp override.
+            if (instr.a.size() > 5
+                && instr.a.compare(0, 5, "call/") == 0) {
+                return dispatch_call_meta(instr.a, instr.n, pc + 1);
+            }
             auto it = labels.find(instr.a);
             if (it != labels.end()) {
                 cp = pc + 1;
@@ -2816,6 +2832,15 @@ bool WamState::step(const Instruction& instr) {
         case Instruction::Op::Execute: {
             if (instr.a == "catch/3") return execute_catch();
             if (instr.a == "throw/1") return execute_throw();
+            // call/N meta in tail position — after_pc is the
+            // caller''s saved cp (or halt if cp == 0).
+            if (instr.a.size() > 5
+                && instr.a.compare(0, 5, "call/") == 0) {
+                std::size_t tail_after = cp;
+                bool ok = dispatch_call_meta(instr.a, instr.n, tail_after);
+                if (!ok) return false;
+                return true;
+            }
             auto it = labels.find(instr.a);
             if (it != labels.end()) {
                 pc = it->second;
@@ -3221,6 +3246,60 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
         return true;
     }
     return false;
+}
+
+bool WamState::dispatch_call_meta(const std::string& op,
+                                  std::int64_t /* n_unused */,
+                                  std::size_t after_pc) {
+    // Parse arity from the op-name suffix. Execute instructions
+    // don''t carry an arity field (only Call does), so we always
+    // derive arity from the key — same result either way for
+    // Call but only this path works for Execute.
+    std::int64_t total_arity = 0;
+    auto slash = op.rfind(''/'');
+    if (slash == std::string::npos) return false;
+    try { total_arity = std::stoll(op.substr(slash + 1)); }
+    catch (...) { return false; }
+    if (total_arity < 1) return false;
+    CellPtr goal_cell = get_cell("A1");
+    if (total_arity == 1) {
+        // No extras — dispatch A1 as-is.
+        return invoke_goal_as_call(goal_cell, after_pc);
+    }
+    // Snapshot extras BEFORE we mutate A-registers further. Extras
+    // come from A2..AN as cell pointers (so any aliasing into the
+    // future combined goal stays sharing-correct).
+    std::vector<CellPtr> extras;
+    extras.reserve(total_arity - 1);
+    for (std::int64_t i = 2; i <= total_arity; ++i) {
+        extras.push_back(get_cell("A" + std::to_string(i)));
+    }
+    // Resolve the goal''s base name and existing args.
+    Value goal = deref(*goal_cell);
+    std::string base_name;
+    std::size_t base_arity = 0;
+    std::vector<CellPtr> all_args;
+    if (goal.tag == Value::Tag::Atom) {
+        base_name = goal.s;
+    } else if (goal.tag == Value::Tag::Compound) {
+        auto slash = goal.s.rfind(''/'');
+        if (slash == std::string::npos) return false;
+        base_name = goal.s.substr(0, slash);
+        try { base_arity = std::stoul(goal.s.substr(slash + 1)); }
+        catch (...) { return false; }
+        if (base_arity != goal.args.size()) return false;
+        all_args = goal.args;
+    } else {
+        // Unbound goal — ISO call/N throws instantiation_error;
+        // v1 lax just fails.
+        return false;
+    }
+    for (auto& e : extras) all_args.push_back(e);
+    std::size_t new_arity = base_arity + extras.size();
+    std::string new_functor = base_name + "/" + std::to_string(new_arity);
+    CellPtr combined = std::make_shared<Cell>(
+        Value::Compound(new_functor, std::move(all_args)));
+    return invoke_goal_as_call(combined, after_pc);
 }
 
 // catch(Goal, Catcher, Recovery): push a CatcherFrame snapshotting

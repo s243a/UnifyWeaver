@@ -285,6 +285,39 @@ user:wam_cpp_test_not_alias_fails    :- not(true).
 % because NaN =:= NaN is false but \=== NaN at the structural level.
 user:wam_cpp_test_not_nan_check   :- R is 0.0 / 0.0, \+ (R =:= R).
 
+% call/N (meta-call):
+:- dynamic user:wam_cpp_call_helper/1.
+:- dynamic user:wam_cpp_test_call_atom/0.
+:- dynamic user:wam_cpp_test_call_with_args/0.
+:- dynamic user:wam_cpp_test_call_partial/0.
+:- dynamic user:wam_cpp_test_call_compound_already/0.
+:- dynamic user:wam_cpp_test_call_user_pred/0.
+
+% Helper user predicate to dispatch indirectly.
+user:wam_cpp_call_helper(hello).
+
+% call(true) — 0-extra-args, atom goal. Tail-call path.
+user:wam_cpp_test_call_atom :- call(true).
+
+% call(=, X, 5) — 2 extras appended to atom functor. Mid-body Call
+% path. Verifies the X gets bound to 5 by the dispatched =/2.
+user:wam_cpp_test_call_with_args :- call(=, X, 5), X = 5.
+
+% call(=(X), 7) — 1 extra appended to a 1-arg compound. The combined
+% goal is =(X, 7), arity 2. Exercises the existing-args-plus-extras
+% path of dispatch_call_meta.
+user:wam_cpp_test_call_partial :- G = =(X), call(G, 7), X = 7.
+
+% call(G) where G is already a full goal — no extras, compound goal.
+user:wam_cpp_test_call_compound_already :-
+    G = wam_cpp_call_helper(hello),
+    call(G).
+
+% call(F, X) dispatching to a USER predicate (not a builtin). Tests
+% the user-label dispatch path inside invoke_goal_as_call.
+user:wam_cpp_test_call_user_pred :-
+    call(wam_cpp_call_helper, hello).
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -1584,6 +1617,87 @@ test(cpp_e2e_not_nan_check, [condition(cpp_compiler_available)]) :-
                               [emit_main(true)], TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath, 'wam_cpp_test_not_nan_check/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% call/N — meta-call. `call(Goal)` dispatches Goal as a goal;
+% `call(Goal, X1, ..., XK)` appends X1..XK to Goal''s existing args
+% and dispatches the resulting goal. The WAM compiler emits this as
+% `execute call/N` (tail) or `call call/N, N` (non-tail), with Goal
+% in A1 and the extras in A2..AN. dispatch_call_meta builds the
+% combined goal term and routes through invoke_goal_as_call (the
+% same path catch/3 and \+/1 use).
+% ------------------------------------------------------------------
+
+test(cpp_e2e_call_atom, [condition(cpp_compiler_available)]) :-
+    % call(true) — tail-call dispatch path through the Execute arm
+    % (where instr.n is 0 since Execute instructions don''t carry
+    % arity; dispatch_call_meta parses arity from the op-name
+    % suffix). Regression guard for that specific Execute/Call
+    % asymmetry.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_call_atom', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_call_atom/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_call_atom/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_call_with_args, [condition(cpp_compiler_available)]) :-
+    % call(=, X, 5) builds =(X, 5) and dispatches.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_call_args', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_call_with_args/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_call_with_args/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_call_partial, [condition(cpp_compiler_available)]) :-
+    % G = =(X), call(G, 7) — extras append to existing compound args.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_call_partial', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_call_partial/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_call_partial/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_call_compound_already,
+     [condition(cpp_compiler_available)]) :-
+    % G = full_goal, call(G) — no extras, already-complete compound.
+    % Tests the call/1 path with a compound argument.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_call_compound', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_call_compound_already/0,
+                               user:wam_cpp_call_helper/1],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_call_compound_already/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_call_user_pred, [condition(cpp_compiler_available)]) :-
+    % call(F, X) dispatching to a USER predicate (not a builtin).
+    % Tests the user-label dispatch path inside invoke_goal_as_call.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_call_user', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_call_user_pred/0,
+                               user:wam_cpp_call_helper/1],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_call_user_pred/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
