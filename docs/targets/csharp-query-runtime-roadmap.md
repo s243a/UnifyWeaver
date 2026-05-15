@@ -71,6 +71,10 @@ This roadmap tracks the next features for UnifyWeaver’s managed C# query engin
 
 ## “Nice Next” (post-milestones)
 - External fact providers: pluggable relation sources (CSV/JSONL streaming, DB-backed providers).
+  - Current design thread: `docs/targets/csharp-query-high-performance-sources.md`
+    maps the provider-factory seam for LMDB, memory-mapped arrays, and
+    hash/block-sharded artifacts without adding hard dependencies to the core
+    runtime.
 - Async execution: `IAsyncEnumerable` output + cancellation tokens for long-running fixpoints.
 - Memory strategy controls: spilling/materialisation controls for large result sets.
 - Plan serialisation: persist/query plans as JSON DTOs for offline inspection and execution.

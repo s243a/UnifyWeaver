@@ -4,6 +4,8 @@ This document describes the Query IR approach for the managed C# backend. The go
 
 Roadmap: `docs/targets/csharp-query-runtime-roadmap.md`
 
+High-performance relation sources: `docs/targets/csharp-query-high-performance-sources.md`
+
 ## Status (v0.1)
 - **Non-recursive clauses** – fact scans, joins, selections, projections, and unions translate to query nodes executed via LINQ.
 - **Arithmetic & comparisons** – `is/2`, inequality operators, and `dif/2` become arithmetic or selection nodes with runtime evaluation.
@@ -96,6 +98,17 @@ The core query runtime is intended to stay dependency-free (no LiteDB, ONNX, etc
 - ONNX embeddings: `src/unifyweaver/targets/csharp_query_runtime/OnnxEmbeddingProvider.cs`
   - Project: `src/unifyweaver/targets/csharp_query_runtime/UnifyWeaver.QueryRuntime.Onnx.csproj`
   - External deps: `Microsoft.ML.OnnxRuntime`
+
+## High-Performance Relation Sources
+The current runtime supports `preload`, `delimited`, `artifact`, and
+`artifact-prebuilt` relation source modes. Future high-performance source work
+should keep the core runtime dependency-free and route LMDB, memory-mapped
+arrays, and sharded hash/block files through provider interfaces rather than
+hard-coding backend-specific behavior into query operators.
+
+See `docs/targets/csharp-query-high-performance-sources.md` for the proposed
+backend inventory, provider-factory seam, LMDB path, memory-mapped array path,
+and recommended next branches.
 
 ## Smoke Testing (Runtime Execution)
 The Prolog test suite can generate per-plan C# console projects in codegen-only mode, and the PowerShell runner can then build/run them with dotnet and verify outputs.
