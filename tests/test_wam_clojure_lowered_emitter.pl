@@ -206,6 +206,20 @@ test(simple_builtin_term_greater_or_equal_is_direct_lowered_in_prefix) :-
         has(Code, "runtime/backtrack")
     )).
 
+test(simple_builtin_compare_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_compare/3, [builtin_call('compare/3', 3), proceed], [], Code),
+        has(Code, "runtime/apply-compare-solution"),
+        \+ has(Code, "runtime/step")
+    )).
+
+test(simple_compare_call_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_compare_call/0, [call('compare/3', 3), proceed], [], Code),
+        has(Code, "runtime/apply-compare-solution"),
+        \+ has(Code, "target-pc")
+    )).
+
 test(simple_builtin_arithmetic_equal_is_direct_lowered_in_prefix) :-
     once((
         lower_predicate_to_clojure(test_arith_eq/2, [builtin_call('=:=/2', 2), proceed], [], Code),

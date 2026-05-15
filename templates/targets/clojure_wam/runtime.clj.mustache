@@ -460,6 +460,25 @@
 (defn term-greater-or-equal? [state left right]
   (not (neg? (term-compare state left right))))
 
+(defn compare-result-term [state left right]
+  (let [order (term-compare state left right)
+        atom-name (cond
+                    (neg? order) "<"
+                    (pos? order) ">"
+                    :else "=")]
+    (normalize-literal-atom (:intern-context state) atom-name)))
+
+(defn apply-compare-solution [state]
+  (let [out (deref-value (:bindings state)
+                         (or (reg-get-raw state "A1") ::unbound))
+        left (or (reg-get-raw state "A2") ::unbound)
+        right (or (reg-get-raw state "A3") ::unbound)
+        result (compare-result-term state left right)
+        [ok next-state] (unify-values state out result)]
+    (if ok
+      (advance next-state)
+      (backtrack state))))
+
 (defn parse-numeric-atom [text]
   (when (and (string? text)
              (re-matches #"[+-]?(?:\d+(?:\.\d*)?|\.\d+)" text))
@@ -1303,6 +1322,9 @@
             (if (term-greater-or-equal? state left right)
               (advance state)
               (backtrack state)))
+
+          "compare/3"
+          (apply-compare-solution state)
 
           "=:=/2"
           (let [left (deref-value (:bindings state)
