@@ -50,6 +50,12 @@
 :- dynamic user:wam_term_var_lt_atom/0.
 :- dynamic user:wam_term_var_le_same/0.
 :- dynamic user:wam_term_order_does_not_bind/0.
+:- dynamic user:wam_compare_lt/0.
+:- dynamic user:wam_compare_eq/0.
+:- dynamic user:wam_compare_gt/0.
+:- dynamic user:wam_compare_atom_number/0.
+:- dynamic user:wam_compare_output_guard/1.
+:- dynamic user:wam_compare_does_not_bind/0.
 :- dynamic user:wam_fail_after_bind/1.
 :- dynamic user:wam_atom_guard/1.
 :- dynamic user:wam_integer_guard/1.
@@ -166,6 +172,12 @@ user:wam_term_ge(A, B) :- A @>= B.
 user:wam_term_var_lt_atom :- user:wam_unbound_arg(X), X @< a.
 user:wam_term_var_le_same :- user:wam_unbound_arg(X), X @=< X.
 user:wam_term_order_does_not_bind :- user:wam_unbound_arg(X), X @< a, X == a.
+user:wam_compare_lt :- compare(Order, a, b), Order == '<'.
+user:wam_compare_eq :- compare(Order, f(a), f(a)), Order == '='.
+user:wam_compare_gt :- compare(Order, b, a), Order == '>'.
+user:wam_compare_atom_number :- compare(Order, 42, a), Order == '<'.
+user:wam_compare_output_guard(Order) :- compare(Order, a, b).
+user:wam_compare_does_not_bind :- user:wam_unbound_arg(X), compare('<', X, a), X == a.
 user:wam_fail_after_bind(X) :- X = a, fail.
 user:wam_atom_guard(X) :- atom(X).
 user:wam_integer_guard(X) :- integer(X).
@@ -287,6 +299,12 @@ run_smoke :-
           user:wam_term_var_lt_atom/0,
           user:wam_term_var_le_same/0,
           user:wam_term_order_does_not_bind/0,
+          user:wam_compare_lt/0,
+          user:wam_compare_eq/0,
+          user:wam_compare_gt/0,
+          user:wam_compare_atom_number/0,
+          user:wam_compare_output_guard/1,
+          user:wam_compare_does_not_bind/0,
           user:wam_fail_after_bind/1,
           user:wam_atom_guard/1,
           user:wam_integer_guard/1,
@@ -370,6 +388,7 @@ run_smoke :-
     assert_lowered_not_unify_builtin_emitted(TmpDir),
     assert_lowered_identity_builtin_emitted(TmpDir),
     assert_lowered_term_order_builtin_emitted(TmpDir),
+    assert_lowered_compare_builtin_emitted(TmpDir),
     assert_lowered_fail_builtin_emitted(TmpDir),
     assert_lowered_atom_builtin_emitted(TmpDir),
     assert_lowered_integer_builtin_emitted(TmpDir),
@@ -474,6 +493,13 @@ smoke_cases([
     case('wam_term_var_lt_atom/0', no_args, "true"),
     case('wam_term_var_le_same/0', no_args, "true"),
     case('wam_term_order_does_not_bind/0', no_args, "false"),
+    case('wam_compare_lt/0', no_args, "true"),
+    case('wam_compare_eq/0', no_args, "true"),
+    case('wam_compare_gt/0', no_args, "true"),
+    case('wam_compare_atom_number/0', no_args, "true"),
+    case('wam_compare_output_guard/1', '<', "true"),
+    case('wam_compare_output_guard/1', '=', "false"),
+    case('wam_compare_does_not_bind/0', no_args, "false"),
     case('wam_fail_after_bind/1', a, "false"),
     case('wam_fail_after_bind/1', b, "false"),
     case('wam_atom_guard/1', a, "true"),
@@ -665,6 +691,13 @@ assert_lowered_term_order_builtin_emitted(ProjectDir) :-
     has(CoreCode, "runtime/term-less-or-equal?"),
     has(CoreCode, "runtime/term-greater?"),
     has(CoreCode, "runtime/term-greater-or-equal?").
+
+assert_lowered_compare_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-compare-lt-0"),
+    has(CoreCode, "defn lowered-wam-compare-output-guard-1"),
+    has(CoreCode, "runtime/apply-compare-solution").
 
 assert_lowered_fail_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
@@ -977,6 +1010,9 @@ prolog_term_string_to_edn(b, "\"b\"") :- !.
 prolog_term_string_to_edn(c, "\"c\"") :- !.
 prolog_term_string_to_edn(d, "\"d\"") :- !.
 prolog_term_string_to_edn(z, "\"z\"") :- !.
+prolog_term_string_to_edn('<', "\"<\"") :- !.
+prolog_term_string_to_edn('=', "\"=\"") :- !.
+prolog_term_string_to_edn('>', "\">\"") :- !.
 prolog_term_string_to_edn('[]', "\"[]\"") :- !.
 prolog_term_string_to_edn(-42, "-42") :- !.
 prolog_term_string_to_edn(0, "0") :- !.

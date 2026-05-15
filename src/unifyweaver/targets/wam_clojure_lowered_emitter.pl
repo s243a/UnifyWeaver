@@ -296,6 +296,10 @@ clojure_direct_builtin("@>=/2", "2").
 clojure_direct_builtin("@>=/2", 2).
 clojure_direct_builtin('@>=/2', "2").
 clojure_direct_builtin('@>=/2', 2).
+clojure_direct_builtin("compare/3", "3").
+clojure_direct_builtin("compare/3", 3).
+clojure_direct_builtin('compare/3', "3").
+clojure_direct_builtin('compare/3', 3).
 clojure_direct_builtin("=:=/2", "2").
 clojure_direct_builtin("=:=/2", 2).
 clojure_direct_builtin('=:=/2', "2").
@@ -418,8 +422,15 @@ clojure_pred_key_direct_builtin(Pred, Op, Arity) :-
     (   string(Pred) -> PredString = Pred
     ;   atom(Pred) -> atom_string(Pred, PredString)
     ),
-    split_string(PredString, "/", "", [Name, ArityString]),
-    number_string(Arity, ArityString),
+    (   split_string(PredString, "/", "", [Name, ArityString])
+    ->  (   var(Arity) -> number_string(Arity, ArityString)
+        ;   integer(Arity) -> number_string(Arity, ArityString)
+        ;   string(Arity) -> Arity = ArityString
+        ;   atom(Arity) -> atom_string(Arity, ArityString)
+        )
+    ;   integer(Arity),
+        Name = PredString
+    ),
     format(string(Op), "~w/~w", [Name, Arity]),
     clojure_direct_builtin(Op, Arity).
 
@@ -469,6 +480,10 @@ emit_lowered_expr(proceed, S, Expr) :-
     format(atom(Expr), '(runtime/succeed-state ~w)', [S]).
 emit_lowered_expr(fail, S, Expr) :-
     format(atom(Expr), '(runtime/fail-state ~w)', [S]).
+emit_lowered_expr(call(Pred, CallArity), S, Expr) :-
+    clojure_pred_key_direct_builtin(Pred, Op, CallArity),
+    !,
+    emit_lowered_expr(builtin_call(Op, CallArity), S, Expr).
 emit_lowered_expr(call(Pred, _Arity), S, Expr) :-
     clj_lowered_string_literal(Pred, PredLit),
     format(atom(Expr),
@@ -567,6 +582,11 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     format(atom(Expr),
            '(let [left (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound) right (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound)] (if (runtime/~w ~w left right) (runtime/advance ~w) (runtime/backtrack ~w)))',
            [S, S, RuntimePred, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "compare/3" ; Op == 'compare/3'),
+    !,
+    format(atom(Expr), '(runtime/apply-compare-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "=:=/2" ; Op == '=:=/2'),
