@@ -120,6 +120,11 @@ test(foreign_call_rewrite_generation) :-
         assertion(Lit2 == '&CallForeign{Pred: "test_tri_sum", Arity: 2}')
     )).
 
+test(call_indexed_atom_fact2_literal) :-
+    wam_go_target:wam_line_to_go_literal(["call_indexed_atom_fact2", "edge/2"], test_reaches/2,
+        [], Lit),
+    assertion(Lit == '&CallIndexedAtomFact2{Pred: "edge/2"}').
+
 test(foreign_auto_detect_generation) :-
     compile_wam_predicate_to_go(plunit_wam_go_foreign_lowering:test_reaches/2, "call test_reaches/2, 2",
         [foreign_lowering(true)], ClosureCode),
@@ -253,6 +258,50 @@ test(foreign_execution_graph_kernels) :-
 import "testing"
 
 func TestForeignGraphKernels(t *testing.T) {
+    factVM := NewWamState([]Instruction{&CallIndexedAtomFact2{Pred: "edge/2"}, &Proceed{}}, map[string]int{})
+    factVM.registerIndexedAtomFact2Pairs("edge/2", []AtomPair{
+        {Left: "a", Right: "b"},
+        {Left: "a", Right: "c"},
+        {Left: "b", Right: "d"},
+    })
+    factTarget := &Unbound{Name: "FACT_TARGET", Idx: 1}
+    factVM.Regs[0] = internAtom("a")
+    factVM.Regs[1] = factTarget
+    if !factVM.Run() {
+        t.Fatalf("call_indexed_atom_fact2 failed")
+    }
+    if got, ok := factVM.deref(factTarget).(*Atom); !ok || got.Name != "b" {
+        t.Fatalf("expected first indexed fact target b, got %#v", factVM.deref(factTarget))
+    }
+    if !factVM.backtrack() {
+        t.Fatalf("expected second indexed fact result")
+    }
+    if got, ok := factVM.deref(factTarget).(*Atom); !ok || got.Name != "c" {
+        t.Fatalf("expected second indexed fact target c, got %#v", factVM.deref(factTarget))
+    }
+    if factVM.backtrack() {
+        t.Fatalf("expected indexed fact stream to be exhausted")
+    }
+
+    factExact := NewWamState([]Instruction{&CallIndexedAtomFact2{Pred: "edge/2"}, &Proceed{}}, map[string]int{})
+    factExact.registerIndexedAtomFact2Pairs("edge/2", []AtomPair{
+        {Left: "a", Right: "b"},
+        {Left: "a", Right: "c"},
+    })
+    factExact.Regs[0] = internAtom("a")
+    factExact.Regs[1] = internAtom("c")
+    if !factExact.Run() {
+        t.Fatalf("expected exact indexed fact match a-c")
+    }
+
+    factFail := NewWamState([]Instruction{&CallIndexedAtomFact2{Pred: "edge/2"}, &Proceed{}}, map[string]int{})
+    factFail.registerIndexedAtomFact2Pairs("edge/2", []AtomPair{{Left: "a", Right: "b"}})
+    factFail.Regs[0] = internAtom("missing")
+    factFail.Regs[1] = &Unbound{Name: "NO_FACT", Idx: 1}
+    if factFail.Run() {
+        t.Fatalf("expected indexed fact lookup for missing key to fail")
+    }
+
     vm := NewWamState(nil, nil)
     vm.registerForeignNativeKind("test_reaches_dist/3", "transitive_distance3")
     vm.registerForeignResultLayout("test_reaches_dist/3", "tuple:2")
