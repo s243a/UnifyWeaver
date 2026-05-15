@@ -1451,6 +1451,9 @@ is_builtin_pred(copy_term, 2). % term inspection: fresh-variable copy
 is_builtin_pred(write, 1).  % I/O — useful for runtime instrumentation.
 is_builtin_pred(display, 1).
 is_builtin_pred(nl, 0).
+is_builtin_pred(format, 1).  % I/O — formatted output, ~-directives.
+is_builtin_pred(format, 2).
+is_builtin_pred(format, 3).
 is_builtin_pred(=, 2).       % unification: bind / structurally unify two terms.
 is_builtin_pred(is_list, 1).
                              % Without this entry, X = Y in a body goal

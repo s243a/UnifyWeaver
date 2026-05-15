@@ -2730,24 +2730,39 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         std::fflush(stdout);
         pc += 1; return true;
     }
-    // ---- format/1, format/2 ----------------------------------------
-    // Walks the format string A1 (Atom), expanding ~-directives.
+    // ---- format/1, format/2, format/3 -------------------------------
+    // Walks the format string, expanding ~-directives.
     // Supported: ~w (write), ~p (print, same as ~w), ~a (atom),
     // ~d (integer), ~s (codes/atom), ~n (newline), ~~ (literal ~).
-    // Unsupported directives are echoed verbatim. Args list (A2, for
-    // format/2) is walked left-to-right; running off the end of args
-    // for a directive that needs one fails.
-    if (op == "format/1" || op == "format/2") {
-        Value fv = deref(*get_cell("A1"));
+    // Unsupported directives are echoed verbatim. Args list is walked
+    // left-to-right; running off the end of args for a directive that
+    // needs one fails.
+    //
+    // Shape variants:
+    //   format/1   — just a format string, no args (implicit []).
+    //   format/2   — Format, Args.
+    //   format/3   — Dest, Format, Args. Dest selects output:
+    //     atom user_output / user_error → stdout / stderr (printed).
+    //     atom(V) / string(V)           → V is unified with the rendered
+    //                                     string as an Atom value.
+    //     codes(V)                      → V is unified with a list of
+    //                                     character codes.
+    if (op == "format/1" || op == "format/2" || op == "format/3") {
+        bool is_f3 = (op == "format/3");
+        // Resolve format-string + args-list positions.
+        CellPtr fmt_cell  = get_cell(is_f3 ? "A2" : "A1");
+        CellPtr args_cell = (op == "format/2")
+            ? get_cell("A2")
+            : (is_f3 ? get_cell("A3") : CellPtr{});
+        Value fv = deref(*fmt_cell);
         std::string fmt;
         if (fv.tag == Value::Tag::Atom) fmt = fv.s;
         else if (fv.tag == Value::Tag::Integer) fmt = std::to_string(fv.i);
         else return false;
-        // Build a vector of arg cells from A2 (for format/2). For
-        // format/1 the list is implicitly empty.
+        // Build a vector of arg cells from the args list (if any).
         std::vector<CellPtr> args;
-        if (op == "format/2") {
-            CellPtr lc = get_cell("A2");
+        if (args_cell) {
+            CellPtr lc = args_cell;
             for (;;) {
                 Value lv = deref(*lc);
                 if (lv.tag == Value::Tag::Atom && lv.s == "[]") break;
@@ -2761,46 +2776,49 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
                 return false;
             }
         }
+        // Render into a buffer first (used by format/3 string-destinations
+        // and by stdout/stderr printing alike — single rendering path).
+        std::string buf;
         std::size_t ai = 0;
         for (std::size_t i = 0; i < fmt.size(); ++i) {
             char c = fmt[i];
             if (c != ''~'' || i + 1 >= fmt.size()) {
-                std::fputc(c, stdout);
+                buf.push_back(c);
                 continue;
             }
             char d = fmt[++i];
             switch (d) {
-                case ''n'': std::fputc(''\\n'', stdout); break;
-                case ''t'': std::fputc(''\\t'', stdout); break;
-                case ''~'': std::fputc(''~'', stdout); break;
+                case ''n'': buf.push_back(''\\n''); break;
+                case ''t'': buf.push_back(''\\t''); break;
+                case ''~'': buf.push_back(''~''); break;
                 case ''w'':
                 case ''p'': {
                     if (ai >= args.size()) return false;
-                    std::printf("%s", render(deref(*args[ai++])).c_str());
+                    buf += render(deref(*args[ai++]));
                     break;
                 }
                 case ''a'': {
                     if (ai >= args.size()) return false;
                     Value v = deref(*args[ai++]);
-                    if (v.tag == Value::Tag::Atom) std::printf("%s", v.s.c_str());
-                    else std::printf("%s", render(v).c_str());
+                    if (v.tag == Value::Tag::Atom) buf += v.s;
+                    else buf += render(v);
                     break;
                 }
                 case ''d'': {
                     if (ai >= args.size()) return false;
                     Value v = deref(*args[ai++]);
-                    if (v.tag == Value::Tag::Integer) std::printf("%lld",
-                        static_cast<long long>(v.i));
-                    else std::printf("%s", render(v).c_str());
+                    if (v.tag == Value::Tag::Integer)
+                        buf += std::to_string(v.i);
+                    else buf += render(v);
                     break;
                 }
                 case ''s'': {
-                    // String form: accept an atom (print as-is) or a
-                    // list of integer character codes.
+                    // String form: accept an atom (use as-is) or a list
+                    // of integer character codes.
                     if (ai >= args.size()) return false;
                     Value v = deref(*args[ai++]);
                     if (v.tag == Value::Tag::Atom) {
-                        std::printf("%s", v.s.c_str());
+                        buf += v.s;
                     } else if (v.tag == Value::Tag::Compound
                                && v.s == "[|]/2") {
                         CellPtr lc = args[ai - 1];
@@ -2811,23 +2829,72 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
                                 || lv.args.size() != 2) return false;
                             Value hv = deref(*lv.args[0]);
                             if (hv.tag != Value::Tag::Integer) return false;
-                            std::fputc(static_cast<int>(hv.i), stdout);
+                            buf.push_back(static_cast<char>(hv.i));
                             lc = lv.args[1];
                         }
                     } else {
-                        std::printf("%s", render(v).c_str());
+                        buf += render(v);
                     }
                     break;
                 }
                 default:
                     // Unknown directive: echo literally.
-                    std::fputc(''~'', stdout);
-                    std::fputc(d, stdout);
+                    buf.push_back(''~'');
+                    buf.push_back(d);
                     break;
             }
         }
-        std::fflush(stdout);
-        pc += 1; return true;
+        // Dispatch on destination (format/3) or just print (format/1, /2).
+        if (!is_f3) {
+            std::fwrite(buf.data(), 1, buf.size(), stdout);
+            std::fflush(stdout);
+            pc += 1; return true;
+        }
+        // format/3: A1 selects destination.
+        Value dv = deref(*get_cell("A1"));
+        if (dv.tag == Value::Tag::Atom) {
+            if (dv.s == "user_output") {
+                std::fwrite(buf.data(), 1, buf.size(), stdout);
+                std::fflush(stdout);
+                pc += 1; return true;
+            }
+            if (dv.s == "user_error") {
+                std::fwrite(buf.data(), 1, buf.size(), stderr);
+                std::fflush(stderr);
+                pc += 1; return true;
+            }
+        }
+        if (dv.tag == Value::Tag::Compound && dv.args.size() == 1) {
+            // atom(V) / string(V) → V unifies with the buffer as Atom.
+            if (dv.s == "atom/1" || dv.s == "string/1") {
+                Value out = Value::Atom(buf);
+                CellPtr tgt = dv.args[0];
+                if (tgt->is_unbound()) { bind_cell(tgt, out); pc += 1; return true; }
+                if (!unify_cells(tgt, std::make_shared<Cell>(out))) return false;
+                pc += 1; return true;
+            }
+            // codes(V) → V unifies with a [|]/2 list of integer codes,
+            // built bottom-up: end with [], then prepend each code.
+            if (dv.s == "codes/1") {
+                CellPtr list = std::make_shared<Cell>(Value::Atom("[]"));
+                for (auto it = buf.rbegin(); it != buf.rend(); ++it) {
+                    CellPtr head = std::make_shared<Cell>(
+                        Value::Integer(static_cast<std::int64_t>(
+                            static_cast<unsigned char>(*it))));
+                    std::vector<CellPtr> cons_args;
+                    cons_args.push_back(head);
+                    cons_args.push_back(list);
+                    list = std::make_shared<Cell>(
+                        Value::Compound("[|]/2", std::move(cons_args)));
+                }
+                CellPtr tgt = dv.args[0];
+                if (tgt->is_unbound()) { bind_cell(tgt, *list); pc += 1; return true; }
+                if (!unify_cells(tgt, list)) return false;
+                pc += 1; return true;
+            }
+        }
+        // Unrecognised destination — fail.
+        return false;
     }
 
     return false;
