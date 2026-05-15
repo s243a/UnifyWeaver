@@ -748,6 +748,29 @@
                                       (append-split-results base-state out-items))
         (backtrack base-state)))))
 
+(defn sorted-unique-terms [state items]
+  (reduce (fn [out item]
+            (if (and (seq out)
+                     (zero? (term-compare state (peek out) item)))
+              out
+              (conj out item)))
+          []
+          (sort #(term-compare state %1 %2) items)))
+
+(defn apply-sort-solution [state]
+  (let [list-value (deref-value (:bindings state)
+                                (or (reg-get-raw state "A1") ::unbound))
+        out (deref-value (:bindings state)
+                         (or (reg-get-raw state "A2") ::unbound))]
+    (if-let [items (proper-list-items state list-value)]
+      (let [sorted-term (list->term (:intern-context state)
+                                    (sorted-unique-terms state items))
+            [ok next-state] (unify-values state out sorted-term)]
+        (if ok
+          (advance next-state)
+          (backtrack state)))
+      (backtrack state))))
+
 (defn ground-term? [state value]
   (let [bindings (:bindings state)]
     (letfn [(ground* [term seen]
@@ -1497,6 +1520,9 @@
                 out (deref-value (:bindings state)
                                  (or (reg-get-raw state "A3") ::unbound))]
             (apply-append-solution state (inc (:pc state)) left right out))
+
+          "sort/2"
+          (apply-sort-solution state)
 
           "copy_term/2"
           (apply-copy-term-solution state)
