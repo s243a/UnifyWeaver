@@ -230,6 +230,11 @@ wam_elixir_case(call,
 '      # Fast path: label pre-resolved at codegen to integer PC.
       {:call, target_pc, _n} when is_integer(target_pc) ->
         %{state | pc: target_pc, cp: state.pc + 1}
+      # Meta-call call/N — caught BEFORE label lookup so the
+      # "call/N" string is dispatched as the meta-call, not
+      # treated as a missing user predicate.
+      {:call, "call/" <> _, n} ->
+        dispatch_call_meta(state, n, state.pc + 1)
       # Fallback: unresolved string label (cross-module/orphan).
       {:call, p, _n} when is_binary(p) ->
         case Map.get(state.labels, p) do
@@ -241,6 +246,11 @@ wam_elixir_case(execute,
 '      # Fast path: label pre-resolved at codegen to integer PC.
       {:execute, target_pc} when is_integer(target_pc) ->
         %{state | pc: target_pc}
+      # Tail-position meta-call call/N. Total arity comes from
+      # the op-name suffix (Execute carries no arity field).
+      {:execute, "call/" <> arity_str} ->
+        total_arity = String.to_integer(arity_str)
+        dispatch_call_meta(state, total_arity, state.cp)
       # Fallback: unresolved string label.
       {:execute, p} when is_binary(p) ->
         case Map.get(state.labels, p) do
@@ -826,6 +836,11 @@ compile_utility_helpers_to_elixir(Code) :-
         # failure. (Pre-hardening, fail/0 worked accidentally because
         # the default arm returned :fail — same semantic, wrong reason.)
         :fail
+      {"true/0", 0} ->
+        # ISO `true` — succeeds unconditionally. Same default-arm
+        # hardening reasoning as fail/0 above.
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        %{state | pc: new_pc}
       {"</2", 2} ->
         v1 = eval_arith(state, get_reg(state, 1))
         v2 = eval_arith(state, get_reg(state, 2))
@@ -1144,6 +1159,14 @@ compile_utility_helpers_to_elixir(Code) :-
             preserved_aggs ++ state.cut_point
           end
         %{state | choice_points: new_cps, pc: new_pc}
+      {"call/" <> _, n} ->
+        # call/N meta-call. Lowered-mode dispatch arrives here via
+        # WamDispatcher.call("call/N", state) -> execute_builtin/3
+        # falling through. Interpreter mode also reaches the same
+        # helper from the :call / :execute step arms (see
+        # wam_elixir_case(call, ...) and wam_elixir_case(execute, ...)).
+        # See WAM_ELIXIR_GAPS_SPECIFICATION.md PR #1.
+        dispatch_call_meta(state, n, state.cp)
       _ ->
         # Hardening: surface unimplemented builtins instead of silently
         # returning :fail. The pre-hardening default arm masked
@@ -1155,6 +1178,86 @@ compile_utility_helpers_to_elixir(Code) :-
         # be added rather than relying on the silent-:fail accident.
         throw({:unknown_builtin, op, arity})
     end
+  end
+
+  # ---- call/N meta-call dispatch -----------------------------------
+  #
+  # Mirrors the C++ dispatch_call_meta in wam_cpp_target.pl. The
+  # WAM compiler emits call(Goal[, X1..Xk]) usage as
+  #   {:execute, "call/N"}        -- when call/N is the body tail
+  #   {:call,    "call/N", N}     -- otherwise (non-tail)
+  # with the base goal in A1 and any extras in A2..AN. The :call
+  # and :execute step arms catch the "call/" prefix BEFORE doing
+  # label lookup and route here.
+  #
+  # Build the combined goal:
+  #   - A1 atom        (`true`, `fail`, `append`)  -> use as-is, arity = total - 1
+  #   - A1 compound    ({:ref, addr} -> {:str, "name/baseN"}) ->
+  #       gather base args from heap, append extras, total = baseN + (total - 1)
+  # Then load the combined args into A1..A_total, set cp to after_pc,
+  # and route through WamDispatcher.call (which knows about user
+  # predicates and falls through to execute_builtin for builtins).
+  @doc "Dispatch a call/N meta-call. After the called goal returns, control resumes at after_pc."
+  def dispatch_call_meta(state, total_arity, after_pc) do
+    goal = deref_var(state, get_reg(state, 1))
+    extras =
+      if total_arity > 1 do
+        for i <- 2..total_arity, do: deref_var(state, get_reg(state, i))
+      else
+        []
+      end
+
+    case build_call_target(state, goal, extras) do
+      {:ok, pred_arity, prepared_state} ->
+        call_state = %{prepared_state | cp: after_pc}
+        try do
+          case WamDispatcher.call(pred_arity, call_state) do
+            {:ok, post_state} -> %{post_state | pc: after_pc}
+            :fail -> :fail
+          end
+        catch
+          :fail -> :fail
+          {:fail, _} -> :fail
+          {:return, post_state} -> %{post_state | pc: after_pc}
+        end
+      :fail -> :fail
+    end
+  end
+
+  # Build the combined predicate-key + load A-regs from the goal+extras.
+  # Atomic goal: arity is just the count of extras.
+  # Compound {:ref, addr} -> {:str, "name/baseN"}: read base args
+  # from heap, concat extras, total = baseN + length(extras).
+  defp build_call_target(state, goal, extras) when is_binary(goal) do
+    arity = length(extras)
+    pred_arity = "#{goal}/#{arity}"
+    new_state = load_args_into_regs(state, 1, extras)
+    {:ok, pred_arity, new_state}
+  end
+  defp build_call_target(state, goal, extras) when is_atom(goal) and not is_nil(goal) do
+    build_call_target(state, Atom.to_string(goal), extras)
+  end
+  defp build_call_target(state, {:ref, addr}, extras) do
+    case Map.get(state.heap, addr) do
+      {:str, base_pred_arity} ->
+        base_arity = parse_functor_arity(base_pred_arity)
+        name = parse_functor_name(base_pred_arity)
+        base_args = heap_slice(state, addr + 1, base_arity)
+        combined = base_args ++ extras
+        total = base_arity + length(extras)
+        pred_arity = "#{name}/#{total}"
+        new_state = load_args_into_regs(state, 1, combined)
+        {:ok, pred_arity, new_state}
+      _ -> :fail
+    end
+  end
+  defp build_call_target(_state, _goal, _extras), do: :fail
+
+  # Write a list of arg values into consecutive A-regs starting at start_reg.
+  defp load_args_into_regs(state, start_reg, args) do
+    args
+    |> Enum.with_index(start_reg)
+    |> Enum.reduce(state, fn {arg, i}, s -> %{s | regs: Map.put(s.regs, i, arg)} end)
   end
 
   # Extract the functor-name part from a "name/arity" string.

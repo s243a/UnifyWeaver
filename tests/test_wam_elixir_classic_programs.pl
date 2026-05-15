@@ -66,6 +66,22 @@ user:sum_of_squares(A, B, S) :- user:square(A, A2),
                                 user:square(B, B2),
                                 S is A2 + B2.
 
+% --- call/N meta-call acceptance cases (PR #1) ---
+% Spec: docs/design/WAM_ELIXIR_GAPS_SPECIFICATION.md §3 PR #1.
+% Each predicate exercises one shape of meta-call dispatch:
+%   - elx_call_true/0       atom goal, 0 extras  (succeeds)
+%   - elx_call_fail/0       atom goal, 0 extras  (fails)
+%   - elx_call_compound/1   compound goal, 0 extras (heap-built goal)
+%   - elx_call_extras/1     atom goal, 3 extras   (partial-application)
+:- dynamic user:elx_call_true/0.
+:- dynamic user:elx_call_fail/0.
+:- dynamic user:elx_call_compound/1.
+:- dynamic user:elx_call_extras/1.
+user:elx_call_true :- call(true).
+user:elx_call_fail :- call(fail).
+user:elx_call_compound(R) :- G = (X is 1 + 1), call(G), R = X.
+user:elx_call_extras(R) :- call(append, [a, b], [c, d], R).
+
 % ============================================================
 % elixir_available — same gating pattern as the Scala suite
 % ============================================================
@@ -145,6 +161,43 @@ test(pythagoras) :-
             % square direct: 7^2 = 49 -> true
             verify_elixir_args(TmpDir, 'square/2', ['7', '49'], "true")
         )).
+
+% --- call/N meta-call tests (PR #1 acceptance) ---
+
+test(call_atom_true) :-
+    with_elixir_project(
+        [user:elx_call_true/0],
+        _Opts,
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_call_true/0', [], "true")
+    ).
+
+test(call_atom_fail) :-
+    with_elixir_project(
+        [user:elx_call_fail/0],
+        _Opts,
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_call_fail/0', [], "false")
+    ).
+
+test(call_compound_goal) :-
+    % G = (X is 1+1), call(G), R = X.  R = 2 -> true.
+    with_elixir_project(
+        [user:elx_call_compound/1],
+        _Opts,
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_call_compound/1', ['2'], "true")
+    ).
+
+test(call_with_extras) :-
+    % call(append, [a,b], [c,d], R) -> R = [a,b,c,d].
+    with_elixir_project(
+        [user:elx_call_extras/1],
+        _Opts,
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_call_extras/1',
+                           ['[a,b,c,d]'], "true")
+    ).
 
 :- end_tests(wam_elixir_classic_programs).
 
