@@ -391,12 +391,13 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     helper_predicate_items(HelperItems),
     flatten_blocks([HelperItems|PerPredItems], AllItems),
     walk_blocks(AllItems, Labels, FlatInstrs0),
-    % Append seven trailing synthetic-return instructions for the
+    % Append eight trailing synthetic-return instructions for the
     % meta-call control-flow surface — see WamState for each pc''s
     % role.
     append(FlatInstrs0,
            [catch_return, negation_return, findall_collect,
-            conj_return, disj_alt, if_then_commit, if_then_else],
+            conj_return, disj_alt, if_then_commit, if_then_else,
+            aggregate_next_group],
            FlatInstrs),
     length(FlatInstrs0, CatchReturnPC),
     NegationReturnPC is CatchReturnPC + 1,
@@ -405,6 +406,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     DisjAltPC is CatchReturnPC + 4,
     IfThenCommitPC is CatchReturnPC + 5,
     IfThenElsePC is CatchReturnPC + 6,
+    AggregateNextGroupPC is CatchReturnPC + 7,
     findall(LabelLine, (
         member(NameStr-PC, Labels),
         format(atom(LabelLine),
@@ -429,6 +431,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     vm.disj_alt_pc = ~w;
     vm.if_then_commit_pc = ~w;
     vm.if_then_else_pc = ~w;
+    vm.aggregate_next_group_pc = ~w;
 ~w
 ~w
 }
@@ -438,6 +441,7 @@ static const int _wam_cpp_setup_register = []() {
 }();
 ', [Reserve, CatchReturnPC, NegationReturnPC, FindallCollectPC,
     ConjReturnPC, DisjAltPC, IfThenCommitPC, IfThenElsePC,
+    AggregateNextGroupPC,
     LabelBody, InstrBody]).
 
 % ============================================================================
@@ -1053,6 +1057,8 @@ instr_to_setup_line(if_then_commit, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::IfThenCommit());'.
 instr_to_setup_line(if_then_else, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::IfThenElse());'.
+instr_to_setup_line(aggregate_next_group, _Labels, Line) :- !,
+    Line = '    vm.instrs.push_back(Instruction::AggregateNextGroup());'.
 instr_to_setup_line(Instr, _Labels, Line) :-
     wam_instruction_to_cpp_literal(Instr, Lit),
     format(atom(Line), '    vm.instrs.push_back(~w);', [Lit]).
@@ -1425,7 +1431,7 @@ struct Instruction {
         BeginAggregate, EndAggregate,
         SwitchOnConstant, SwitchOnStructure, SwitchOnTerm,
         CatchReturn, NegationReturn, FindallCollect, ConjReturn, DisjAlt,
-        IfThenCommit, IfThenElse
+        IfThenCommit, IfThenElse, AggregateNextGroup
     };
     // Sentinel pc values for switch-table entries that should not jump.
     static constexpr std::size_t SWITCH_DEFAULT = static_cast<std::size_t>(-1);
@@ -1530,6 +1536,8 @@ struct Instruction {
         { Instruction i; i.op = Op::IfThenCommit; return i; }
     static Instruction IfThenElse()
         { Instruction i; i.op = Op::IfThenElse; return i; }
+    static Instruction AggregateNextGroup()
+        { Instruction i; i.op = Op::AggregateNextGroup; return i; }
 };
 
 struct TrailEntry {
@@ -1689,6 +1697,22 @@ struct IfThenFrame {
                                      // pushed the if-then-else CP
 };
 
+// Iterator pushed by aggregate-finalise for bagof/setof with
+// witnesses. Holds the remaining-groups list along with the cell
+// pointers needed to bind each group at backtrack time. The first
+// group is bound at finalise; if more remain, a ChoicePoint is
+// pushed whose alt_pc = aggregate_next_group_pc. The AggregateNextGroup
+// step arm reads the top iterator, pops one group, and binds it —
+// pushing another CP if any groups still remain.
+struct AggregateGroupIterator {
+    std::string agg_kind;                 // "bagof" or "setof"
+    std::vector<std::pair<std::vector<Value>, std::vector<Value>>>
+                remaining_groups;         // (witness_values, templates)
+    std::vector<CellPtr> witness_cells;
+    CellPtr     result_cell;
+    std::size_t return_pc = 0;
+};
+
 struct WamState {
     std::unordered_map<std::string, CellPtr> regs;
     std::unordered_map<std::string, std::size_t> labels;
@@ -1708,6 +1732,9 @@ struct WamState {
     // If-then-else-goal-term dispatch (;(->(Cond, Then), Else)).
     // Paired with a regular ChoicePoint — see IfThenFrame doc.
     std::vector<IfThenFrame> if_then_frames;
+    // Iterators for bagof/setof group backtracking — see
+    // AggregateGroupIterator struct doc.
+    std::vector<AggregateGroupIterator> aggregate_group_iters;
     // pc of the auto-injected single CatchReturn instruction. catch/3
     // sets cp to this value before dispatching to the protected goal;
     // when the goal proceeds, control lands here and the catcher frame
@@ -1741,6 +1768,12 @@ struct WamState {
     // failure (dispatch Else).
     std::size_t if_then_commit_pc = 0;
     std::size_t if_then_else_pc = 0;
+    // pc of the auto-injected AggregateNextGroup op. ChoicePoints
+    // pushed by aggregate-finalise (when bagof/setof has more than
+    // one witness group) point alt_pc here; on backtrack the op
+    // pops the next group from the top AggregateGroupIterator and
+    // binds it.
+    std::size_t aggregate_next_group_pc = 0;
     // Mode stack: Get-/Put-Structure / Get-/Put-List PUSH; Unify*/Set*
     // operate on top(); each frame auto-pops once its arity is filled.
     std::vector<ModeFrame> mode_stack;
@@ -1817,6 +1850,12 @@ struct WamState {
                                    const std::set<Cell*>& exclude,
                                    std::vector<CellPtr>& out,
                                    std::set<Cell*>& seen) const;
+    // Pop the next group from the top AggregateGroupIterator, bind
+    // its witness values + result list, and (if more groups remain)
+    // push a ChoicePoint for the next iteration. Sets pc =
+    // iterator.return_pc on success. Returns false if no iterator,
+    // no remaining groups, or a binding mismatch.
+    bool    aggregate_bind_next_group();
     bool    execute_catch();
     bool    execute_throw();
 
@@ -3267,6 +3306,15 @@ bool WamState::step(const Instruction& instr) {
             if (!f.else_goal) return false;
             return invoke_goal_as_call(f.else_goal, f.after_pc);
         }
+        case Instruction::Op::AggregateNextGroup: {
+            // Reached via the CP pushed by aggregate-finalise (or
+            // by aggregate_bind_next_group itself) when more
+            // witness groups remain. Pop the CP and bind the next
+            // group via the shared helper, which itself pushes a
+            // CP if even MORE groups remain.
+            if (!choice_points.empty()) choice_points.pop_back();
+            return aggregate_bind_next_group();
+        }
         case Instruction::Op::Proceed: {
             if (cp == 0) { halt = true; return true; }
             pc = cp;
@@ -3887,6 +3935,64 @@ void WamState::collect_goal_witnesses(CellPtr goal,
     }
 }
 
+bool WamState::aggregate_bind_next_group() {
+    if (aggregate_group_iters.empty()) return false;
+    AggregateGroupIterator& it = aggregate_group_iters.back();
+    if (it.remaining_groups.empty()) {
+        // No more groups — drop the iterator and propagate failure.
+        aggregate_group_iters.pop_back();
+        return false;
+    }
+    // Snapshot before popping the next group: if we have more
+    // groups after this one, we''ll push a CP that on retry brings
+    // us back here (with one fewer remaining).
+    std::pair<std::vector<Value>, std::vector<Value>> group =
+        std::move(it.remaining_groups.front());
+    it.remaining_groups.erase(it.remaining_groups.begin());
+    std::size_t saved_return_pc = it.return_pc;
+    std::string saved_kind = it.agg_kind;
+    std::vector<CellPtr> saved_witness_cells = it.witness_cells;
+    CellPtr saved_result_cell = it.result_cell;
+    bool more_groups = !it.remaining_groups.empty();
+    // Snapshot the FULL iterator state in case we need to push a
+    // CP — the CP''s saved_regs etc come from "now," and the iter
+    // remains on the stack for AggregateNextGroup to peek at.
+    // Push the CP BEFORE binding so trail-undo on backtrack
+    // restores pre-binding state.
+    if (more_groups) {
+        ChoicePoint cp_;
+        cp_.alt_pc            = aggregate_next_group_pc;
+        cp_.saved_cp          = cp;
+        cp_.trail_mark        = trail.size();
+        cp_.cut_barrier       = cut_barrier;
+        cp_.saved_regs        = regs;
+        cp_.saved_mode_stack  = mode_stack;
+        cp_.saved_env_stack   = env_stack;
+        choice_points.push_back(std::move(cp_));
+    }
+    // Bind witness cells to this group''s witness values.
+    for (std::size_t k = 0; k < saved_witness_cells.size()
+             && k < group.first.size(); ++k) {
+        CellPtr wc = saved_witness_cells[k];
+        if (!wc) continue;
+        if (wc->is_unbound()) bind_cell(wc, group.first[k]);
+        else if (!(*wc == group.first[k])) return false;
+    }
+    Value result = finalize_aggregate(saved_kind, group.second);
+    if (result.tag == Value::Tag::Uninit) return false;
+    if (!saved_result_cell) return false;
+    if (saved_result_cell->is_unbound()) {
+        bind_cell(saved_result_cell, result);
+    } else if (!unify_cells(saved_result_cell,
+                            std::make_shared<Cell>(result))) {
+        return false;
+    }
+    if (saved_return_pc == 0) { halt = true; return true; }
+    pc = saved_return_pc;
+    cp = 0;
+    return true;
+}
+
 // catch(Goal, Catcher, Recovery): push a CatcherFrame snapshotting
 // current VM state, then dispatch to Goal as a tail-call whose
 // continuation is the auto-injected CatchReturn instruction.
@@ -4166,45 +4272,76 @@ bool WamState::backtrack() {
             env_stack   = std::move(f.saved_env_stack);
             cp          = f.saved_cp;
             cut_barrier = f.saved_cut_barrier;
-            // For bagof/setof with free witnesses, narrow acc to the
-            // first group (matching first acc_witnesses[0]) and bind
-            // the witness cells to that group''s witness values.
-            // Other groups are silently dropped — full backtracking
-            // through groups is a planned follow-up. acc.empty()
-            // remains a failure signal handled by finalize_aggregate.
-            std::vector<Value> grouped_acc = f.acc;
+            // Resolve the result cell up-front so both the
+            // grouped-bagof/setof and the simple find-style paths
+            // can use it.
+            CellPtr rcell = f.result_cell
+                ? f.result_cell
+                : get_cell(f.result_reg);
+            if (!rcell) return false;
+            // Bagof/setof with free witnesses: partition acc by
+            // acc_witnesses, push an AggregateGroupIterator, and
+            // bind the first group via the shared helper. The
+            // helper also pushes a CP if more groups remain — that
+            // CP''s alt_pc = aggregate_next_group_pc takes over on
+            // backtrack to bind the next group.
             if (!f.witness_cells.empty() && !f.acc_witnesses.empty()
                 && f.acc.size() == f.acc_witnesses.size())
             {
-                const std::vector<Value>& first_w = f.acc_witnesses[0];
-                grouped_acc.clear();
+                // Build groups in discovery order, with each
+                // group''s template list filled in for matching
+                // witness rows.
+                std::vector<std::pair<std::vector<Value>, std::vector<Value>>> groups;
+                std::vector<bool> assigned(f.acc.size(), false);
                 for (std::size_t i = 0; i < f.acc.size(); ++i) {
-                    bool same = (f.acc_witnesses[i].size() == first_w.size());
-                    for (std::size_t k = 0; same && k < first_w.size(); ++k) {
-                        if (!(f.acc_witnesses[i][k] == first_w[k])) same = false;
+                    if (assigned[i]) continue;
+                    std::vector<Value> templates;
+                    templates.push_back(f.acc[i]);
+                    assigned[i] = true;
+                    for (std::size_t j = i + 1; j < f.acc.size(); ++j) {
+                        if (assigned[j]) continue;
+                        bool same = (f.acc_witnesses[j].size()
+                                     == f.acc_witnesses[i].size());
+                        for (std::size_t k = 0;
+                             same && k < f.acc_witnesses[i].size(); ++k)
+                        {
+                            if (!(f.acc_witnesses[j][k]
+                                  == f.acc_witnesses[i][k]))
+                                same = false;
+                        }
+                        if (same) {
+                            templates.push_back(f.acc[j]);
+                            assigned[j] = true;
+                        }
                     }
-                    if (same) grouped_acc.push_back(f.acc[i]);
+                    groups.emplace_back(f.acc_witnesses[i],
+                                        std::move(templates));
                 }
-                // Bind witness cells to first_w''s values (so the
-                // caller sees the bindings the group corresponds to).
-                for (std::size_t k = 0; k < f.witness_cells.size()
-                         && k < first_w.size(); ++k) {
-                    CellPtr wc = f.witness_cells[k];
-                    if (!wc) continue;
-                    if (wc->is_unbound()) bind_cell(wc, first_w[k]);
-                    else if (!(*wc == first_w[k])) {
-                        // Witness already bound to something else —
-                        // signal failure.
-                        grouped_acc.clear();
-                        break;
-                    }
+                if (groups.empty()) {
+                    // No solutions — bagof/setof fail per ISO.
+                    continue;
                 }
+                AggregateGroupIterator iter;
+                iter.agg_kind        = f.agg_kind;
+                iter.remaining_groups = std::move(groups);
+                iter.witness_cells   = std::move(f.witness_cells);
+                iter.result_cell     = rcell;
+                iter.return_pc       = f.return_pc_set
+                    ? f.return_pc
+                    : find_matching_end_aggregate(instrs, f.begin_pc) + 1;
+                aggregate_group_iters.push_back(std::move(iter));
+                if (!aggregate_bind_next_group()) {
+                    // Mismatch on bind (or empty groups race) —
+                    // continue backtracking.
+                    continue;
+                }
+                return true;
             }
             // Build and bind the result. The meta-call findall/3
             // path stores the result cell directly (set by
             // dispatch_findall_call); the inlined BeginAggregate
             // path uses the result_reg name.
-            Value result = finalize_aggregate(f.agg_kind, grouped_acc);
+            Value result = finalize_aggregate(f.agg_kind, f.acc);
             if (result.tag == Value::Tag::Uninit) {
                 // bagof/setof with empty acc → the aggregate
                 // FAILS (per ISO). Continue backtracking so any
@@ -4214,10 +4351,6 @@ bool WamState::backtrack() {
                 // propagation.
                 continue;
             }
-            CellPtr rcell = f.result_cell
-                ? f.result_cell
-                : get_cell(f.result_reg);
-            if (!rcell) return false;
             if (rcell->is_unbound()) bind_cell(rcell, result);
             else if (!unify_cells(rcell, std::make_shared<Cell>(result))) return false;
             // Jump past the matching EndAggregate.
