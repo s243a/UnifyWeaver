@@ -384,6 +384,64 @@ namespace UnifyWeaver.QueryRuntime
         bool TryGetRelationCardinality(PredicateId predicate, out long rowCount);
     }
 
+    public sealed record RelationArtifactProviderOpenResult(
+        IRelationProvider Provider,
+        string StorageKind);
+
+    public interface IRelationArtifactProviderFactory
+    {
+        bool TryOpen(
+            PredicateId predicate,
+            string manifestPath,
+            IRelationProvider? fallback,
+            out RelationArtifactProviderOpenResult result);
+    }
+
+    public sealed class DefaultRelationArtifactProviderFactory : IRelationArtifactProviderFactory
+    {
+        public bool TryOpen(
+            PredicateId predicate,
+            string manifestPath,
+            IRelationProvider? fallback,
+            out RelationArtifactProviderOpenResult result)
+        {
+            if (manifestPath is null) throw new ArgumentNullException(nameof(manifestPath));
+
+            var format = RelationArtifactManifestFormatReader.ReadFormat(manifestPath);
+            switch (format)
+            {
+                case BinaryRelationArtifactManifest.CurrentFormat:
+                    var binaryProvider = new BinaryRelationArtifactProvider(fallback);
+                    binaryProvider.RegisterArtifact(predicate, manifestPath);
+                    result = new RelationArtifactProviderOpenResult(binaryProvider, "binary_artifact");
+                    return true;
+                case DelimitedRelationArtifactManifest.CurrentFormat:
+                    var delimitedProvider = new DelimitedRelationArtifactProvider(fallback);
+                    delimitedProvider.RegisterArtifact(predicate, manifestPath);
+                    result = new RelationArtifactProviderOpenResult(delimitedProvider, "delimited_artifact");
+                    return true;
+                default:
+                    result = default!;
+                    return false;
+            }
+        }
+    }
+
+    internal static class RelationArtifactManifestFormatReader
+    {
+        public static string ReadFormat(string manifestPath)
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(manifestPath, Encoding.UTF8));
+            if (!document.RootElement.TryGetProperty("Format", out var formatElement) &&
+                !document.RootElement.TryGetProperty("format", out formatElement))
+            {
+                throw new InvalidDataException($"Relation artifact manifest has no format: {manifestPath}");
+            }
+
+            return formatElement.GetString() ?? string.Empty;
+        }
+    }
+
     internal static class RelationArtifactBucketRows
     {
         public static IEnumerable<IndexedRelationBucket> ReadBucketsFromBucketRows(
