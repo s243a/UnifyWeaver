@@ -1035,13 +1035,13 @@ wam_line_to_c_instr(["builtin_call", Op, N], Instr) :-
 wam_line_to_c_instr(["call_foreign", P, N], Instr) :-
     clean_comma(P, CP), clean_comma(N, CN),
     format(atom(Instr), '{ .tag = INSTR_CALL_FOREIGN, .as.pred = { .pred = "~w", .arity = ~w } }', [CP, CN]).
-wam_line_to_c_instr(["try_me_else", L], LabelMap, Arity, Instr) :-
+wam_line_to_c_instr(["try_me_else", L], LabelMap, Arity, OffsetVar, Instr) :-
     clean_comma(L, CL),
-    ( member(CL-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
+    ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
     format(atom(Instr), '{ .tag = INSTR_TRY_ME_ELSE, .as.choice = { .target_pc = ~w, .arity = ~w } }', [TargetPC, Arity]).
-wam_line_to_c_instr(["retry_me_else", L], LabelMap, Arity, Instr) :-
+wam_line_to_c_instr(["retry_me_else", L], LabelMap, Arity, OffsetVar, Instr) :-
     clean_comma(L, CL),
-    ( member(CL-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
+    ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
     format(atom(Instr), '{ .tag = INSTR_RETRY_ME_ELSE, .as.choice = { .target_pc = ~w, .arity = ~w } }', [TargetPC, Arity]).
 wam_line_to_c_instr(["trust_me"], _, '{ .tag = INSTR_TRUST_ME }').
 wam_line_to_c_instr(["proceed"], _, '{ .tag = INSTR_PROCEED }').
@@ -1071,43 +1071,45 @@ wam_lines_to_c_pass1([Line|Rest], PC, LabelMap) :-
         )
     ).
 
-wam_lines_to_c_pass2([], PC, _, _, PC, []).
-wam_lines_to_c_pass2([Line|Rest], PC, LabelMap, Arity, CodeSize, Instrs) :-
+wam_lines_to_c_pass2([], PC, _, _, _, PC, []).
+wam_lines_to_c_pass2([Line|Rest], PC, LabelMap, Arity, OffsetVar, CodeSize, Instrs) :-
     split_string(Line, " \t,", " \t,", Parts),
     delete(Parts, "", CleanParts),
-    (   CleanParts == [] -> wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, CodeSize, Instrs)
+    (   CleanParts == [] -> wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, OffsetVar, CodeSize, Instrs)
     ;   CleanParts = [First|_],
         (   sub_string(First, _, 1, 0, ":")
         ->  sub_string(First, 0, _, 1, LabelName),
             (   sub_string(LabelName, 0, 2, _, "L_")
-            ->  wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, CodeSize, Instrs)
-            ;   format(atom(PredReg), '    wam_register_predicate_hash(state, "~w", ~w);', [LabelName, PC]),
+            ->  wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, OffsetVar, CodeSize, Instrs)
+            ;   c_pc_expr(OffsetVar, PC, PCExpr),
+                format(atom(PredReg), '    wam_register_predicate_hash(state, "~w", ~w);', [LabelName, PCExpr]),
                 Instrs = [PredReg|RestInstrs],
-                wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, CodeSize, RestInstrs)
+                wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, OffsetVar, CodeSize, RestInstrs)
             )
-        ;   wam_generate_c_instruction(PC, CleanParts, LabelMap, Arity, CodeLines),
+        ;   wam_generate_c_instruction(PC, CleanParts, LabelMap, Arity, OffsetVar, CodeLines),
             NPC is PC + 1,
             append(CodeLines, RestInstrs, Instrs),
-            wam_lines_to_c_pass2(Rest, NPC, LabelMap, Arity, CodeSize, RestInstrs)
+            wam_lines_to_c_pass2(Rest, NPC, LabelMap, Arity, OffsetVar, CodeSize, RestInstrs)
         )
     ).
 
-wam_generate_c_instruction(PC, Parts, LabelMap, Arity, CodeLines) :-
+wam_generate_c_instruction(PC, Parts, LabelMap, Arity, OffsetVar, CodeLines) :-
+    c_pc_expr(OffsetVar, PC, PCExpr),
     (   (   Parts = ["switch_on_constant" | Entries],
             SwitchReg = 0
         ;   Parts = ["switch_on_constant_a2" | Entries],
             SwitchReg = 1
         )
     ->  length(Entries, HashSize),
-        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_CONSTANT, .as.switch_index = { .reg = ~w, .hash_size = ~w } };', [PC, SwitchReg, HashSize]),
-        format(atom(L1), '    state->code[~w].as.switch_index.hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, HashSize]),
-        generate_hash_table_entries(PC, "as.switch_index.hash_table", Entries, 0, LabelMap, HashLines),
+        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_CONSTANT, .as.switch_index = { .reg = ~w, .hash_size = ~w } };', [PCExpr, SwitchReg, HashSize]),
+        format(atom(L1), '    state->code[~w].as.switch_index.hash_table = malloc(sizeof(HashEntry) * ~w);', [PCExpr, HashSize]),
+        generate_hash_table_entries(PC, PCExpr, "as.switch_index.hash_table", Entries, 0, LabelMap, OffsetVar, HashLines),
         append([L0, L1], HashLines, CodeLines)
     ;   Parts = ["switch_on_structure" | Entries]
     ->  length(Entries, HashSize),
-        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_STRUCTURE, .as.switch_index = { .hash_size = ~w } };', [PC, HashSize]),
-        format(atom(L1), '    state->code[~w].as.switch_index.hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, HashSize]),
-        generate_hash_table_entries(PC, "as.switch_index.hash_table", Entries, 0, LabelMap, HashLines),
+        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_STRUCTURE, .as.switch_index = { .hash_size = ~w } };', [PCExpr, HashSize]),
+        format(atom(L1), '    state->code[~w].as.switch_index.hash_table = malloc(sizeof(HashEntry) * ~w);', [PCExpr, HashSize]),
+        generate_hash_table_entries(PC, PCExpr, "as.switch_index.hash_table", Entries, 0, LabelMap, OffsetVar, HashLines),
         append([L0, L1], HashLines, CodeLines)
     ;   Parts = ["switch_on_term", CLenStr | Rest1]
     ->  number_string(CLen, CLenStr),
@@ -1119,36 +1121,38 @@ wam_generate_c_instruction(PC, Parts, LabelMap, Arity, CodeLines) :-
         (   ListLabelStr == "none"
         ->  ListPC = -1
         ;   ListLabelStr == "default"
-        ->  ListPC is PC + 1
-        ;   member(ListLabelStr-ListPC, LabelMap)
-        ->  true
+        ->  ListPC0 is PC + 1,
+            c_pc_expr(OffsetVar, ListPC0, ListPC)
+        ;   member(ListLabelStr-ListPC0, LabelMap)
+        ->  c_pc_expr(OffsetVar, ListPC0, ListPC)
         ;   ListPC = -1
         ),
-        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_TERM, .as.switch_index = { .hash_size = ~w, .s_hash_size = ~w, .list_target_pc = ~w } };', [PC, CLen, SLen, ListPC]),
-        format(atom(L1), '    state->code[~w].as.switch_index.hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, CLen]),
-        format(atom(L2), '    state->code[~w].as.switch_index.s_hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, SLen]),
-        generate_hash_table_entries(PC, "as.switch_index.hash_table", CEntries, 0, LabelMap, CHashLines),
-        generate_hash_table_entries(PC, "as.switch_index.s_hash_table", SEntries, 0, LabelMap, SHashLines),
+        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_TERM, .as.switch_index = { .hash_size = ~w, .s_hash_size = ~w, .list_target_pc = ~w } };', [PCExpr, CLen, SLen, ListPC]),
+        format(atom(L1), '    state->code[~w].as.switch_index.hash_table = malloc(sizeof(HashEntry) * ~w);', [PCExpr, CLen]),
+        format(atom(L2), '    state->code[~w].as.switch_index.s_hash_table = malloc(sizeof(HashEntry) * ~w);', [PCExpr, SLen]),
+        generate_hash_table_entries(PC, PCExpr, "as.switch_index.hash_table", CEntries, 0, LabelMap, OffsetVar, CHashLines),
+        generate_hash_table_entries(PC, PCExpr, "as.switch_index.s_hash_table", SEntries, 0, LabelMap, OffsetVar, SHashLines),
         append([L0, L1, L2 | CHashLines], SHashLines, CodeLines)
-    ;   (   wam_line_to_c_instr(Parts, LabelMap, Arity, CInstr)
+    ;   (   wam_line_to_c_instr(Parts, LabelMap, Arity, OffsetVar, CInstr)
         ->  true
         ;   wam_line_to_c_instr(Parts, CInstr_NoMap)
         ->  CInstr = CInstr_NoMap
         ;   wam_line_to_c_instr(Parts, LabelMap, CInstr_NoArity)
         ->  CInstr = CInstr_NoArity
         ),
-        format(atom(L0), '    state->code[~w] = (Instruction)~w;', [PC, CInstr]),
+        format(atom(L0), '    state->code[~w] = (Instruction)~w;', [PCExpr, CInstr]),
         CodeLines = [L0]
     ).
 
-generate_hash_table_entries(_, _, [], _, _, []).
-generate_hash_table_entries(PC, TableName, [Entry|Rest], Idx, LabelMap, [Line|RestLines]) :-
+generate_hash_table_entries(_, _, _, [], _, _, _, []).
+generate_hash_table_entries(PC, PCExpr, TableName, [Entry|Rest], Idx, LabelMap, OffsetVar, [Line|RestLines]) :-
     split_string(Entry, ":", "", Parts),
     (   Parts = [KeyStr, LabelStr]
     ->  (   LabelStr == "default"
-        ->  TargetPC is PC + 1
-        ;   member(LabelStr-TargetPC, LabelMap)
-        ->  true
+        ->  TargetPC0 is PC + 1,
+            c_pc_expr(OffsetVar, TargetPC0, TargetPC)
+        ;   member(LabelStr-TargetPC0, LabelMap)
+        ->  c_pc_expr(OffsetVar, TargetPC0, TargetPC)
         ;   TargetPC = -1
         ),
         (   number_string(KeyNum, KeyStr), integer(KeyNum)
@@ -1156,10 +1160,16 @@ generate_hash_table_entries(PC, TableName, [Entry|Rest], Idx, LabelMap, [Line|Re
         ;   atom_string(KeyAtom, KeyStr),
             c_value_literal(KeyAtom, ValLit)
         ),
-        format(atom(Line), '    state->code[~w].~w[~w] = (HashEntry){ ~w, ~w };', [PC, TableName, Idx, ValLit, TargetPC]),
+        format(atom(Line), '    state->code[~w].~w[~w] = (HashEntry){ ~w, ~w };', [PCExpr, TableName, Idx, ValLit, TargetPC]),
         NextIdx is Idx + 1,
-        generate_hash_table_entries(PC, TableName, Rest, NextIdx, LabelMap, RestLines)
+        generate_hash_table_entries(PC, PCExpr, TableName, Rest, NextIdx, LabelMap, OffsetVar, RestLines)
     ;   throw(error(wam_c_target_error(invalid_switch_entry(Entry)), _))
+    ).
+
+c_pc_expr(OffsetVar, PC, Expr) :-
+    (   PC < 0
+    ->  Expr = '-1'
+    ;   format(atom(Expr), '~w + ~w', [OffsetVar, PC])
     ).
 
 compile_wam_predicate_to_c(PredIndicator, WamCode, _Options, CCode) :-
@@ -1171,30 +1181,18 @@ compile_wam_predicate_to_c(PredIndicator, WamCode, _Options, CCode) :-
     % We parse it line-by-line into structural C literals.
     split_string(WamStr, "\n", "", Lines),
     wam_lines_to_c_pass1(Lines, 0, LabelMap),
-    wam_lines_to_c_pass2(Lines, 0, LabelMap, Arity, CodeSize, InstrParts),
+    wam_lines_to_c_pass2(Lines, 0, LabelMap, Arity, base_pc, CodeSize, InstrParts),
     atomic_list_concat(InstrParts, '\n', InstrLiterals),
     
     format(atom(CCode), 
 '/* WAM-compiled predicate: ~w/~w */
 void setup_~w_~w(WamState* state) {
-    if (state->code) {
-        for (int i = 0; i < state->code_size; i++) {
-            if ((state->code[i].tag == INSTR_SWITCH_ON_CONSTANT || state->code[i].tag == INSTR_SWITCH_ON_STRUCTURE || state->code[i].tag == INSTR_SWITCH_ON_TERM) && state->code[i].as.switch_index.hash_table) {
-                free(state->code[i].as.switch_index.hash_table);
-                state->code[i].as.switch_index.hash_table = NULL;
-            }
-            if (state->code[i].tag == INSTR_SWITCH_ON_TERM && state->code[i].as.switch_index.s_hash_table) {
-                free(state->code[i].as.switch_index.s_hash_table);
-                state->code[i].as.switch_index.s_hash_table = NULL;
-            }
-        }
-    }
-    if (!state->code || state->code_size < ~w) {
-        state->code_size = ~w;
-        state->code = realloc(state->code, sizeof(Instruction) * state->code_size);
-    }
+    int base_pc = state->code_size;
+    int new_code_size = base_pc + ~w;
+    state->code_size = new_code_size;
+    state->code = realloc(state->code, sizeof(Instruction) * state->code_size);
 ~w
-}', [PredStr, Arity, PredStr, Arity, CodeSize, CodeSize, InstrLiterals]).
+}', [PredStr, Arity, PredStr, Arity, CodeSize, InstrLiterals]).
 
 % ============================================================================
 % PHASE 3: step_wam/3 -> C switch statement
