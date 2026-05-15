@@ -5,7 +5,7 @@ Status date: 2026-05-15
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `1bd3d43e` (`Merge pull request #2116 from s243a/feat/wam-c-lowered-helper-nonreordered-projections`)
+- `main` at `87bfe424` (`Merge pull request #2126 from s243a/feat/wam-c-lowered-helper-ignored-output-contract`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
 - `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py`
@@ -14,7 +14,7 @@ Base verified locally:
 
 Active branch:
 
-- `feat/wam-c-lowered-helper-ignored-output-contract`
+- `feat/wam-c-lowered-helper-projection-row-constraints`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -56,7 +56,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Lowered helper projected body calls | Done | Variable-only reordered body-call projections lower through native fact-helper dispatch with executable coverage |
 | Generated multi-predicate setup | Done | Generated setup appends predicate code at per-setup base PCs and covers multiple setup functions in one executable |
 | Lowered helper non-reordered projection metadata | Done | Planner reports explicit rejection reasons for omitted head variables, repeated head variables, and unbound callee variables |
-| Lowered helper ignored-output projections | In progress | Active branch allows projected body-call helpers to pass callee-local variables as fresh unbound arguments and ignore their returned bindings |
+| Lowered helper ignored-output projections | Done | Projected body-call helpers pass singleton callee-local variables as fresh unbound arguments and ignore their returned bindings |
+| Lowered helper projection row constraints | In progress | Active branch lowers repeated caller-variable projections through materialized native fact rows while preserving availability checks |
 
 ## Current C Target Baseline
 
@@ -137,23 +138,7 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-lowered-helper-ignored-output-contract`
-
-Goal: define the runtime contract for projected body calls whose callee produces
-variables that are not exposed by the caller.
-
-Scope:
-
-- Decide whether ignored callee outputs should be allowed only when they are
-  unconstrained, or whether they require materialized row filtering.
-- If supported, add executable coverage before enabling native helper lowering.
-- Keep constant filters on the existing materialized `filtered_fact` path.
-
-Status: active; ignored callee outputs are allowed when every caller-visible
-head variable is projected exactly once, with executable coverage for the
-lowered helper path.
-
-### 2. `feat/wam-c-lowered-helper-projection-row-constraints`
+### 1. `feat/wam-c-lowered-helper-projection-row-constraints`
 
 Goal: decide whether repeated caller variables in projected body calls should
 lower through native row constraints instead of staying rejected.
@@ -165,10 +150,27 @@ Scope:
   fact rows, similar to repeated-variable filtered helpers.
 - Keep constant filters on the existing materialized `filtered_fact` path.
 
+Status: active; repeated caller-variable projections now lower through
+availability-checked materialized native fact rows, while omitted caller-visible
+outputs and repeated callee-local variables remain explicit planner rejections.
+
+### 2. `feat/wam-c-lowered-helper-projection-bench`
+
+Goal: add a small benchmark workload for projected lowered helpers that covers
+reordered, ignored-output, and row-constrained projection shapes.
+
+Scope:
+
+- Extend the tiny lowered-helper matrix workload before adding broader C
+  target benchmark slices.
+- Compare interpreted, direct projected, ignored-output, and row-constrained
+  helper variants.
+- Keep constant filters on the existing materialized `filtered_fact` path.
+
 ## Suggested Immediate Next Step
 
-Continue validating `feat/wam-c-lowered-helper-ignored-output-contract`.
+Continue validating `feat/wam-c-lowered-helper-projection-row-constraints`.
 
-The active branch turns the previously classified unbound-callee projection
-case into supported lowering while keeping omitted caller-visible outputs and
-repeated caller variables explicit planner rejections.
+The active branch turns repeated caller-variable projections into a
+materialized-row helper path without weakening callee availability or omitted
+caller-output rejection semantics.

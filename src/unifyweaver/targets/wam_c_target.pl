@@ -185,6 +185,8 @@ plan_wam_c_lowered_helper(DetectedKeys, AvailableKeys, PredIndicator, Plan) :-
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, body_call(CalleeKey, CalleeArity))
     ;   lowered_body_call_projected_helper(PredIndicator, AvailableKeys, CalleeKey, CalleeArity, CalleeArgs)
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, body_call_projected(CalleeKey, CalleeArity, CalleeArgs))
+    ;   lowered_body_call_projection_row_constrained_helper(PredIndicator, AvailableKeys, CalleeKey, Rows)
+    ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, filtered_fact(CalleeKey, Rows))
     ;   lowered_body_call_rejection_reason(PredIndicator, AvailableKeys, Reason)
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, rejected, Reason)
     ;   lowered_comparison_filtered_fact_helper(PredIndicator, CalleeKey, Rows)
@@ -461,6 +463,24 @@ lowered_body_call_projected_helper(PredIndicator, AvailableKeys, CalleeKey, Call
     head_args_project_once(HeadArgs, CalleeArgs),
     callee_local_variables_singletons(HeadArgs, CalleeArgs).
 
+lowered_body_call_projection_row_constrained_helper(PredIndicator, AvailableKeys, CalleeKey, Rows) :-
+    body_call_projection_context(PredIndicator, HeadArgs, CalleePred, CalleeArity, CalleeKey, CalleeArgs),
+    format(atom(CalleeKey), '~w/~w', [CalleePred, CalleeArity]),
+    memberchk(CalleeKey, AvailableKeys),
+    CalleeIndicator = user:CalleePred/CalleeArity,
+    lowered_fact_helper_rows(CalleeIndicator, CalleeRows),
+    head_args_project_at_least_once(HeadArgs, CalleeArgs),
+    repeated_head_variable_projection(HeadArgs, CalleeArgs),
+    callee_local_variables_singletons(HeadArgs, CalleeArgs),
+    include(callee_row_matches_arg_constraints(CalleeArgs), CalleeRows, MatchingRows),
+    findall(Projected,
+            (   member(CalleeRow, MatchingRows),
+                project_callee_row_to_head(HeadArgs, CalleeArgs, CalleeRow, Projected)
+            ),
+            ProjectedRows0),
+    sort(ProjectedRows0, Rows),
+    Rows \= [].
+
 lowered_body_call_rejection_reason(PredIndicator, AvailableKeys, Reason) :-
     body_call_context(PredIndicator, CalleePred, CalleeArity, CalleeKey),
     callee_has_user_clause(CalleePred, CalleeArity),
@@ -535,6 +555,18 @@ head_args_project_once([], _CalleeArgs).
 head_args_project_once([HeadArg|Rest], CalleeArgs) :-
     variable_occurrence_count(HeadArg, CalleeArgs, 1),
     head_args_project_once(Rest, CalleeArgs).
+
+head_args_project_at_least_once([], _CalleeArgs).
+head_args_project_at_least_once([HeadArg|Rest], CalleeArgs) :-
+    variable_occurrence_count(HeadArg, CalleeArgs, Count),
+    Count >= 1,
+    head_args_project_at_least_once(Rest, CalleeArgs).
+
+repeated_head_variable_projection(HeadArgs, CalleeArgs) :-
+    member(HeadArg, HeadArgs),
+    variable_occurrence_count(HeadArg, CalleeArgs, Count),
+    Count > 1,
+    !.
 
 callee_local_variables_singletons(_HeadArgs, []).
 callee_local_variables_singletons(HeadArgs, [CalleeArg|Rest]) :-
