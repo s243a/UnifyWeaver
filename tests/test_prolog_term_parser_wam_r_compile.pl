@@ -5,17 +5,13 @@
 % src/unifyweaver/core/prolog_term_parser.pl through
 % write_wam_r_project/3 and verifies (a) the generated R is syntactically
 % valid, (b) every parser predicate has a generated label and wrapper
-% function, and (c) a cut-free subset runs end-to-end via Rscript.
+% function, and (c) parser drivers run end-to-end via Rscript.
 %
 % This is the cross-target proof point: the same canonical-Prolog parser
-% source can be transpiled to a WAM-R project. End-to-end execution of
-% the FULL parser is not yet covered; the WAM-R cut scaffold drops only
-% the most recent choice point (runtime.R.mustache: cut comment near
-% `pred == "!/0"`), which loses cut-barrier semantics when the cut sits
-% in a clause body that calls another multi-clause predicate. The parser
-% relies on those exact semantics via take_ident, ident_cont, and
-% friends. Filed as a separate follow-up; this PR ships the source +
-% structural compilation, not the runtime swap-in.
+% source can be transpiled to a WAM-R project and executed through the
+% generated runtime. R still has its inline runtime parser; these tests
+% prove the portable parser can be compiled and run as a generated WAM-R
+% library.
 % =============================================================================
 
 :- use_module(library(plunit)).
@@ -48,15 +44,31 @@ parser_predicates(Preds) :-
             Raw),
     sort(Raw, Preds).
 
-% Helper: tmp project dir under /tmp/prolog_term_parser_compile_e2e_<stamp>.
+% Helper: tmp project dir under a writable temp root. Termux commonly
+% cannot write to /tmp, so prefer TMPDIR or the Termux tmp path before
+% falling back to /tmp.
 fresh_tmp_dir(Dir) :-
+    parser_tmp_root(Root),
     get_time(T),
     StampF is T,
-    format(atom(Dir), '/tmp/prolog_term_parser_compile_e2e_~w', [StampF]),
+    format(atom(Base), 'prolog_term_parser_compile_e2e_~w', [StampF]),
+    directory_file_path(Root, Base, Dir),
     (   exists_directory(Dir)
     ->  delete_directory_and_contents(Dir)
     ;   true
     ).
+
+parser_tmp_root(Root) :-
+    getenv('TMPDIR', EnvRoot),
+    exists_directory(EnvRoot),
+    access_file(EnvRoot, write),
+    !,
+    Root = EnvRoot.
+parser_tmp_root('/data/data/com.termux/files/usr/tmp') :-
+    exists_directory('/data/data/com.termux/files/usr/tmp'),
+    access_file('/data/data/com.termux/files/usr/tmp', write),
+    !.
+parser_tmp_root('/tmp').
 
 rscript_available :-
     catch((
