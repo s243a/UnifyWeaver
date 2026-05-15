@@ -255,7 +255,8 @@ need manual override:
 
 ## Open Questions
 
-- Should the first C# LMDB reader consume the Rust prototype manifest or define
-  a C#-owned manifest that later converges with the shared proposal?
+- The first C# LMDB reader uses a C#-owned manifest
+  (`unifyweaver.lmdb_relation.v1`) that matches the existing C#/Python ingest
+  key/value contract and can later converge with the shared artifact proposal.
 - Which workloads should drive the first LMDB measurement: graph parent lookup,
   scan-materialization joins, or effective-distance support relations?

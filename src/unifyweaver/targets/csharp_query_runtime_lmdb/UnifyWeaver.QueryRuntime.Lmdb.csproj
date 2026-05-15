@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="LmdbRelationProvider.cs" />
+    <ProjectReference Include="../csharp_query_runtime/UnifyWeaver.QueryRuntime.Core.csproj" />
+    <PackageReference Include="LightningDB" Version="0.21.0" />
+  </ItemGroup>
+
+</Project>
