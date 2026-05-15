@@ -928,7 +928,64 @@ helper_predicate_items(Items) :-
         put_value("Y3", "A2"),
         put_value("Y4", "A3"),
         deallocate,
-        execute("between/3")
+        execute("between/3"),
+        % --- maplist/2 ---------------------------------------------------
+        % maplist(_, []).
+        % maplist(P, [X|Xs]) :- call(P, X), maplist(P, Xs).
+        % Higher-order: dispatches user predicate P over each list
+        % element via call/2 (added in PR #2094). Verifies the
+        % helper-injection mechanism scales to higher-order use.
+        label("maplist/2"),
+        try_me_else("L_cpp_maplist_2_2"),
+        get_variable("X1", "A1"),
+        get_constant("[]", "A2"),
+        proceed,
+        label("L_cpp_maplist_2_2"),
+        trust_me,
+        allocate,
+        get_variable("Y1", "A1"),
+        get_list("A2"),
+        unify_variable("X3"),
+        unify_variable("Y2"),
+        put_value("Y1", "A1"),
+        put_value("X3", "A2"),
+        call("call/2", "2"),
+        put_value("Y1", "A1"),
+        put_value("Y2", "A2"),
+        deallocate,
+        execute("maplist/2"),
+        % --- maplist/3 ---------------------------------------------------
+        % maplist(_, [], []).
+        % maplist(P, [X|Xs], [Y|Ys]) :- call(P, X, Y), maplist(P, Xs, Ys).
+        % Paired list mapping — the canonical "transform each X to Y
+        % via P" pattern. With both lists ground, succeeds iff P
+        % holds for every paired (X, Y); with the second list
+        % unbound, builds Ys by calling P(X, Y) per element.
+        label("maplist/3"),
+        try_me_else("L_cpp_maplist_3_2"),
+        get_variable("X1", "A1"),
+        get_constant("[]", "A2"),
+        get_constant("[]", "A3"),
+        proceed,
+        label("L_cpp_maplist_3_2"),
+        trust_me,
+        allocate,
+        get_variable("Y1", "A1"),
+        get_list("A2"),
+        unify_variable("X4"),
+        unify_variable("Y2"),
+        get_list("A3"),
+        unify_variable("X5"),
+        unify_variable("Y3"),
+        put_value("Y1", "A1"),
+        put_value("X4", "A2"),
+        put_value("X5", "A3"),
+        call("call/3", "3"),
+        put_value("Y1", "A1"),
+        put_value("Y2", "A2"),
+        put_value("Y3", "A3"),
+        deallocate,
+        execute("maplist/3")
     ].
 
 flatten_blocks([], []).
@@ -2731,17 +2788,50 @@ bool WamState::step(const Instruction& instr) {
             pc += 1; return true;
         }
         case Instruction::Op::PutStructure: {
+            // X-regs and Y-regs are local — when set_variable
+            // attached the cell to a parent structure''s args slot,
+            // the cell is shared between the X/Y reg AND the parent.
+            // Subsequent put_structure on that reg MUST bind in place
+            // so the parent''s args slot sees the new structure too.
+            //
+            // A-regs are different — they''re argument-passing slots
+            // that may be aliased with OTHER A-regs via PutValue
+            // (e.g. the maplist/3 + call/3 case where the callee''s
+            // A1 and A2 ended up sharing the same caller''s var).
+            // Always allocate fresh for A-regs so we don''t corrupt
+            // the aliased value.
             const std::string& functor = instr.a;
             std::size_t arity = 0;
             auto p = functor.find_last_of(\'/\');
             if (p != std::string::npos) arity = std::stoull(functor.substr(p + 1));
+            CellPtr existing = get_cell(instr.b);
+            bool is_a_reg = !instr.b.empty() && instr.b[0] == \'A\';
             CellPtr target;
-            begin_write(*this, instr.b, functor, arity, target);
+            if (existing->is_unbound() && !is_a_reg) {
+                bind_cell(existing, Value::Compound(functor, {}));
+                target = existing;
+            } else {
+                target = std::make_shared<Cell>(
+                    Value::Compound(functor, {}));
+                set_cell(instr.b, target);
+            }
+            push_write_mode(mode_stack, target, arity);
             pc += 1; return true;
         }
         case Instruction::Op::PutList: {
+            // See PutStructure — same A-reg-vs-X/Y-reg rule.
+            CellPtr existing = get_cell(instr.a);
+            bool is_a_reg = !instr.a.empty() && instr.a[0] == \'A\';
             CellPtr target;
-            begin_write(*this, instr.a, "[|]/2", 2, target);
+            if (existing->is_unbound() && !is_a_reg) {
+                bind_cell(existing, Value::Compound("[|]/2", {}));
+                target = existing;
+            } else {
+                target = std::make_shared<Cell>(
+                    Value::Compound("[|]/2", {}));
+                set_cell(instr.a, target);
+            }
+            push_write_mode(mode_stack, target, 2);
             pc += 1; return true;
         }
 
