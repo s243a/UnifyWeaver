@@ -391,27 +391,20 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     helper_predicate_items(HelperItems),
     flatten_blocks([HelperItems|PerPredItems], AllItems),
     walk_blocks(AllItems, Labels, FlatInstrs0),
-    % Append five trailing synthetic-return instructions:
-    %   catch_return     — CatchReturn (catch/3 success path).
-    %   negation_return  — NegationReturn (\+/1 + not/1 success path).
-    %   findall_collect  — FindallCollect (findall/3 meta-call
-    %                      per-solution collect + force-backtrack).
-    %   conj_return      — ConjReturn (,/2 goal-term''s G1 succeeded;
-    %                      dispatch G2 with the original after_pc).
-    %   disj_alt         — DisjAlt (;/2 goal-term''s CP fired:
-    %                      G1 exhausted; pop CP + DisjFrame and
-    %                      dispatch G2).
-    % Their PCs are emitted as state-register initialisers in the
-    % setup function.
+    % Append seven trailing synthetic-return instructions for the
+    % meta-call control-flow surface — see WamState for each pc''s
+    % role.
     append(FlatInstrs0,
            [catch_return, negation_return, findall_collect,
-            conj_return, disj_alt],
+            conj_return, disj_alt, if_then_commit, if_then_else],
            FlatInstrs),
     length(FlatInstrs0, CatchReturnPC),
     NegationReturnPC is CatchReturnPC + 1,
     FindallCollectPC is CatchReturnPC + 2,
     ConjReturnPC is CatchReturnPC + 3,
     DisjAltPC is CatchReturnPC + 4,
+    IfThenCommitPC is CatchReturnPC + 5,
+    IfThenElsePC is CatchReturnPC + 6,
     findall(LabelLine, (
         member(NameStr-PC, Labels),
         format(atom(LabelLine),
@@ -434,6 +427,8 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     vm.findall_collect_pc = ~w;
     vm.conj_return_pc = ~w;
     vm.disj_alt_pc = ~w;
+    vm.if_then_commit_pc = ~w;
+    vm.if_then_else_pc = ~w;
 ~w
 ~w
 }
@@ -442,7 +437,7 @@ static const int _wam_cpp_setup_register = []() {
     return 0;
 }();
 ', [Reserve, CatchReturnPC, NegationReturnPC, FindallCollectPC,
-    ConjReturnPC, DisjAltPC,
+    ConjReturnPC, DisjAltPC, IfThenCommitPC, IfThenElsePC,
     LabelBody, InstrBody]).
 
 % ============================================================================
@@ -1054,6 +1049,10 @@ instr_to_setup_line(conj_return, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::ConjReturn());'.
 instr_to_setup_line(disj_alt, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::DisjAlt());'.
+instr_to_setup_line(if_then_commit, _Labels, Line) :- !,
+    Line = '    vm.instrs.push_back(Instruction::IfThenCommit());'.
+instr_to_setup_line(if_then_else, _Labels, Line) :- !,
+    Line = '    vm.instrs.push_back(Instruction::IfThenElse());'.
 instr_to_setup_line(Instr, _Labels, Line) :-
     wam_instruction_to_cpp_literal(Instr, Lit),
     format(atom(Line), '    vm.instrs.push_back(~w);', [Lit]).
@@ -1424,7 +1423,8 @@ struct Instruction {
         TryMeElse, RetryMeElse, TrustMe, Jump, CutIte,
         BeginAggregate, EndAggregate,
         SwitchOnConstant, SwitchOnStructure, SwitchOnTerm,
-        CatchReturn, NegationReturn, FindallCollect, ConjReturn, DisjAlt
+        CatchReturn, NegationReturn, FindallCollect, ConjReturn, DisjAlt,
+        IfThenCommit, IfThenElse
     };
     // Sentinel pc values for switch-table entries that should not jump.
     static constexpr std::size_t SWITCH_DEFAULT = static_cast<std::size_t>(-1);
@@ -1525,6 +1525,10 @@ struct Instruction {
         { Instruction i; i.op = Op::ConjReturn; return i; }
     static Instruction DisjAlt()
         { Instruction i; i.op = Op::DisjAlt; return i; }
+    static Instruction IfThenCommit()
+        { Instruction i; i.op = Op::IfThenCommit; return i; }
+    static Instruction IfThenElse()
+        { Instruction i; i.op = Op::IfThenElse; return i; }
 };
 
 struct TrailEntry {
@@ -1650,6 +1654,26 @@ struct DisjFrame {
     std::size_t after_pc = 0;
 };
 
+// Frame for an if-then-else goal (;(->( Cond, Then), Else)) dispatched
+// as a goal-term. invoke_goal_as_call pushes an IfThenFrame and a
+// ChoicePoint with alt_pc = if_then_else_pc, then dispatches Cond
+// with cp = if_then_commit_pc.
+//
+//   - Cond succeeds  → IfThenCommit fires: cut CPs back to
+//                       cp_count_at_entry (so Cond can''t backtrack-
+//                       retry), pop the frame, dispatch Then with
+//                       the original after_pc.
+//   - Cond fails     → backtrack drains to our CP, lands on
+//                       if_then_else_pc: pop the frame, dispatch
+//                       Else with after_pc.
+struct IfThenFrame {
+    CellPtr     then_goal;
+    CellPtr     else_goal;
+    std::size_t after_pc = 0;
+    std::size_t base_cp_count = 0;   // CP-stack depth BEFORE we
+                                     // pushed the if-then-else CP
+};
+
 struct WamState {
     std::unordered_map<std::string, CellPtr> regs;
     std::unordered_map<std::string, std::size_t> labels;
@@ -1666,6 +1690,9 @@ struct WamState {
     // Disjunction-goal-term dispatch (;(G1, G2)). Paired with a
     // regular ChoicePoint — see DisjFrame struct doc.
     std::vector<DisjFrame> disj_frames;
+    // If-then-else-goal-term dispatch (;(->(Cond, Then), Else)).
+    // Paired with a regular ChoicePoint — see IfThenFrame doc.
+    std::vector<IfThenFrame> if_then_frames;
     // pc of the auto-injected single CatchReturn instruction. catch/3
     // sets cp to this value before dispatching to the protected goal;
     // when the goal proceeds, control lands here and the catcher frame
@@ -1693,6 +1720,12 @@ struct WamState {
     // alt_pc when G1 fails; pops the matching DisjFrame and CP,
     // then dispatches G2 with the original after_pc.
     std::size_t disj_alt_pc = 0;
+    // pcs for the two if-then-else synthetic ops. Cond reaches
+    // if_then_commit_pc on success (cut + dispatch Then); the
+    // paired CP''s alt_pc is if_then_else_pc, reached on Cond
+    // failure (dispatch Else).
+    std::size_t if_then_commit_pc = 0;
+    std::size_t if_then_else_pc = 0;
     // Mode stack: Get-/Put-Structure / Get-/Put-List PUSH; Unify*/Set*
     // operate on top(); each frame auto-pops once its arity is filled.
     std::vector<ModeFrame> mode_stack;
@@ -3173,6 +3206,29 @@ bool WamState::step(const Instruction& instr) {
             disj_frames.pop_back();
             return invoke_goal_as_call(f.second_goal, f.after_pc);
         }
+        case Instruction::Op::IfThenCommit: {
+            // Reached when Cond succeeded. Cut: drop all CPs the
+            // dispatch pushed (including our own paired CP). Pop
+            // the IfThenFrame. Dispatch Then with the original
+            // after_pc.
+            if (if_then_frames.empty()) return false;
+            IfThenFrame f = std::move(if_then_frames.back());
+            if_then_frames.pop_back();
+            while (choice_points.size() > f.base_cp_count)
+                choice_points.pop_back();
+            return invoke_goal_as_call(f.then_goal, f.after_pc);
+        }
+        case Instruction::Op::IfThenElse: {
+            // Reached when Cond failed and backtrack landed at our
+            // CP''s alt_pc. Pop the CP (trust_me-style — once-only,
+            // same as DisjAlt) and the matching IfThenFrame, then
+            // dispatch Else with the original after_pc.
+            if (!choice_points.empty()) choice_points.pop_back();
+            if (if_then_frames.empty()) return false;
+            IfThenFrame f = std::move(if_then_frames.back());
+            if_then_frames.pop_back();
+            return invoke_goal_as_call(f.else_goal, f.after_pc);
+        }
         case Instruction::Op::Proceed: {
             if (cp == 0) { halt = true; return true; }
             pc = cp;
@@ -3518,14 +3574,43 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
             conj_frames.push_back(std::move(f));
             return invoke_goal_as_call(g.args[0], conj_return_pc);
         }
-        // Disjunction goal-term (G1 ; G2): push a CP whose alt_pc
-        // is disj_alt_pc and a paired DisjFrame carrying G2 + the
-        // original after_pc. Dispatch G1 normally. If G1 succeeds,
-        // control flows past the disjunction; the CP stays so
-        // outer backtracking can retry G2 later. If G1 fails (or
-        // backtrack drains to this CP), DisjAlt pops the CP + the
-        // DisjFrame and dispatches G2 with after_pc.
+        // Disjunction goal-term — two flavours, both shaped ;/2.
+        // First check for the if-then-else special case
+        // `;(->( Cond, Then), Else)`: built by the WAM compiler
+        // when the user writes `(Cond -> Then ; Else)` as data
+        // (passed to catch/3, call/1, etc.). Cut semantics differ
+        // from plain disjunction, so we route to a separate frame.
         if (key == ";/2" && g.args.size() == 2) {
+            // Peek the first arg — is it ->/2 ?
+            Value first = deref(*g.args[0]);
+            if (first.tag == Value::Tag::Compound
+                && first.s == "->/2"
+                && first.args.size() == 2)
+            {
+                IfThenFrame itf;
+                itf.then_goal     = first.args[1];
+                itf.else_goal     = g.args[1];
+                itf.after_pc      = after_pc;
+                itf.base_cp_count = choice_points.size();
+                if_then_frames.push_back(std::move(itf));
+                // CP whose alt_pc dispatches Else on Cond failure.
+                ChoicePoint cp_;
+                cp_.alt_pc            = if_then_else_pc;
+                cp_.saved_cp          = cp;
+                cp_.trail_mark        = trail.size();
+                cp_.cut_barrier       = cut_barrier;
+                cp_.saved_regs        = regs;
+                cp_.saved_mode_stack  = mode_stack;
+                cp_.saved_env_stack   = env_stack;
+                choice_points.push_back(std::move(cp_));
+                // Dispatch Cond with cp = if_then_commit_pc so
+                // success lands at the commit op.
+                return invoke_goal_as_call(first.args[0],
+                                            if_then_commit_pc);
+            }
+            // Plain disjunction: push a CP whose alt_pc is
+            // disj_alt_pc and a paired DisjFrame carrying G2 + the
+            // original after_pc. Dispatch G1 normally.
             ChoicePoint cp_;
             cp_.alt_pc            = disj_alt_pc;
             cp_.saved_cp          = cp;
