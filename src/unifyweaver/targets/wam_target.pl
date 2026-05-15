@@ -876,14 +876,107 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
     ->  FullInnerCode = InnerCode
     ;   format(string(FullInnerCode), "~w~n~w", [InnerCode, ConstructionCode])
     ),
+    % For bagof/setof: compute free witnesses (vars in InnerGoal NOT
+    % in Template and NOT under ^/2) and emit their registers as a
+    % 4th `begin_aggregate` arg. Runtimes that recognise the 4-arg
+    % form use the witness regs for ISO grouping. The 3-arg form
+    % stays untouched for findall/count/sum/min/max/bag/set —
+    % grouping doesn''t apply there.
+    % Use Vf (post-inner-compile varmap) so witness vars allocated
+    % during inner-goal compilation have register slots available
+    % for lookup.
+    aggregate_witness_clause(AggType, ValueVar, InnerGoal, Vf,
+                             WitnessRegsClause),
     (   InitValueCode \= ""
     ->  format(string(Code),
-            "~w~n    begin_aggregate ~w, ~w, ~w~n~w~n    end_aggregate ~w",
-            [InitValueCode, AggType, ValueReg, ResultReg0, FullInnerCode, ValueReg])
+            "~w~n    begin_aggregate ~w, ~w, ~w~w~n~w~n    end_aggregate ~w",
+            [InitValueCode, AggType, ValueReg, ResultReg0,
+             WitnessRegsClause, FullInnerCode, ValueReg])
     ;   format(string(Code),
-            "    begin_aggregate ~w, ~w, ~w~n~w~n    end_aggregate ~w",
-            [AggType, ValueReg, ResultReg0, FullInnerCode, ValueReg])
+            "    begin_aggregate ~w, ~w, ~w~w~n~w~n    end_aggregate ~w",
+            [AggType, ValueReg, ResultReg0, WitnessRegsClause,
+             FullInnerCode, ValueReg])
     ).
+
+%% aggregate_witness_clause(+AggType, +ValueVar, +InnerGoal, +V, -Clause)
+%  Build the trailing ", 'W1;W2;...'" string for begin_aggregate
+%  when AggType is bagof or setof. Returns "" for other kinds (so
+%  the existing 3-arg shape stays).
+aggregate_witness_clause(AggType, ValueVar, InnerGoal, V, Clause) :-
+    (   ( AggType == bagof ; AggType == setof )
+    ->  find_free_witnesses(ValueVar, InnerGoal, Witnesses),
+        witness_var_regs(Witnesses, V, WitnessRegs),
+        atomic_list_concat(WitnessRegs, ';', WitnessStr),
+        format(string(Clause), ", '~w'", [WitnessStr])
+    ;   Clause = ""
+    ).
+
+%% find_free_witnesses(+Template, +InnerGoal, -Witnesses)
+%  Vars in InnerGoal not in Template and not under ^/2.
+find_free_witnesses(Template, InnerGoal, Witnesses) :-
+    term_variables(Template, TemplateVars),
+    free_witness_walk(InnerGoal, TemplateVars, [], WitnessesRev),
+    list_to_set_var(WitnessesRev, Witnesses).
+
+free_witness_walk(Var, Exclude, Acc, Out) :-
+    var(Var), !,
+    (   memberchk_var(Var, Exclude)
+    ->  Out = Acc
+    ;   Out = [Var|Acc]
+    ).
+free_witness_walk(Atomic, _, Acc, Acc) :- atomic(Atomic), !.
+free_witness_walk(LHS^RHS, Exclude, Acc, Out) :- !,
+    term_variables(LHS, LHSVars),
+    append(LHSVars, Exclude, Exclude2),
+    free_witness_walk(RHS, Exclude2, Acc, Out).
+% Nested aggregate-style binders introduce their own scope: vars in
+% the inner Template (and the inner Result) are local to the inner
+% aggregate and don''t escape as witnesses of the outer. Walk only
+% the inner Goal with those vars added to the exclude set.
+free_witness_walk(bagof(T, G, R), Exclude, Acc, Out) :- !,
+    nested_aggregate_walk(T, G, R, Exclude, Acc, Out).
+free_witness_walk(setof(T, G, R), Exclude, Acc, Out) :- !,
+    nested_aggregate_walk(T, G, R, Exclude, Acc, Out).
+free_witness_walk(findall(T, G, R), Exclude, Acc, Out) :- !,
+    nested_aggregate_walk(T, G, R, Exclude, Acc, Out).
+free_witness_walk(aggregate_all(T, G, R), Exclude, Acc, Out) :- !,
+    nested_aggregate_walk(T, G, R, Exclude, Acc, Out).
+free_witness_walk(Compound, Exclude, Acc, Out) :-
+    Compound =.. [_|Args],
+    free_witness_walk_list(Args, Exclude, Acc, Out).
+
+nested_aggregate_walk(T, G, R, Exclude, Acc, Out) :-
+    term_variables(T, TVars),
+    term_variables(R, RVars),
+    append(TVars, RVars, Local0),
+    append(Local0, Exclude, Exclude2),
+    free_witness_walk(G, Exclude2, Acc, Out).
+
+free_witness_walk_list([], _, Acc, Acc).
+free_witness_walk_list([G|Gs], Exclude, Acc, Out) :-
+    free_witness_walk(G, Exclude, Acc, Acc2),
+    free_witness_walk_list(Gs, Exclude, Acc2, Out).
+
+memberchk_var(V, [X|_]) :- V == X, !.
+memberchk_var(V, [_|Rest]) :- memberchk_var(V, Rest).
+
+list_to_set_var([], []).
+list_to_set_var([V|Rest], [V|Out]) :-
+    \+ memberchk_var(V, Rest), !,
+    list_to_set_var(Rest, Out).
+list_to_set_var([_|Rest], Out) :-
+    list_to_set_var(Rest, Out).
+
+%% witness_var_regs(+Vars, +Varmap, -Regs)
+%  Look up each witness var''s register name in Varmap. If a var
+%  doesn''t have a register yet (rare — would mean it''s an
+%  unallocated singleton), it''s skipped silently.
+witness_var_regs([], _, []).
+witness_var_regs([V|Vs], Varmap, [Reg|Rest]) :-
+    catch(get_var_reg(V, Varmap, Reg), _, fail), !,
+    witness_var_regs(Vs, Varmap, Rest).
+witness_var_regs([_|Vs], Varmap, Rest) :-
+    witness_var_regs(Vs, Varmap, Rest).
 
 %% compile_compound_template(+Template, +V0, -Vf, -InitCode, -ConstructionCode)
 %  For findall(Functor(Arg1, Arg2, ...), Goal, L) with compound Template:

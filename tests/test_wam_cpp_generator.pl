@@ -594,7 +594,9 @@ user:wam_cpp_test_bif_cut_commits :-
 :- dynamic user:wam_cpp_test_bagof_meta_groups_by_witness/0.
 :- dynamic user:wam_cpp_test_bagof_meta_existential_no_grouping/0.
 :- dynamic user:wam_cpp_test_setof_meta_groups_sorted/0.
-:- dynamic user:wam_cpp_test_bagof_inlined_flattens/0.
+:- dynamic user:wam_cpp_test_bagof_inlined_groups_by_witness/0.
+:- dynamic user:wam_cpp_test_bagof_inlined_existential_flattens/0.
+:- dynamic user:wam_cpp_test_setof_inlined_groups_sorted/0.
 
 user:wam_cpp_parent_fixture(tom, bob).
 user:wam_cpp_parent_fixture(tom, alice).
@@ -621,12 +623,27 @@ user:wam_cpp_test_setof_meta_groups_sorted :-
     L = [alice, bob],
     P = tom.
 
-% Inlined outer bagof — no witness collection (witness_cells
-% empty), so behaves like findall (all 3 children, no grouping).
-% Regression guard that the existing inlined path is untouched.
-user:wam_cpp_test_bagof_inlined_flattens :-
-    bagof(C, wam_cpp_parent_fixture(_P, C), L),
+% Inlined outer bagof — the WAM compiler now emits free-witness
+% register info alongside BeginAggregate (4-arg form), so the inlined
+% path does ISO witness grouping just like the meta-call path. First
+% group is P=tom -> L=[bob, alice]; witness binds back to the caller.
+user:wam_cpp_test_bagof_inlined_groups_by_witness :-
+    bagof(C, wam_cpp_parent_fixture(P, C), L),
+    L = [bob, alice],
+    P = tom.
+
+% Inlined bagof with caret existential — P is suppressed, so no
+% witnesses are emitted (empty 4-arg). Falls back to single-group
+% flat collection, matching the previous behaviour.
+user:wam_cpp_test_bagof_inlined_existential_flattens :-
+    bagof(C, P^wam_cpp_parent_fixture(P, C), L),
     L = [bob, alice, carol].
+
+% Inlined setof grouping — first group sorted by term order.
+user:wam_cpp_test_setof_inlined_groups_sorted :-
+    setof(C, wam_cpp_parent_fixture(P, C), L),
+    L = [alice, bob],
+    P = tom.
 
 % Bagof/setof GROUP BACKTRACKING — second-group binding works via
 % the aggregate_next_group_pc CP machinery. Outer findall drives
@@ -2724,23 +2741,64 @@ test(cpp_e2e_setof_meta_groups_sorted,
         delete_directory_and_contents(TmpDir)
     ).
 
-test(cpp_e2e_bagof_inlined_flattens,
+test(cpp_e2e_bagof_inlined_groups_by_witness,
      [condition(cpp_compiler_available)]) :-
     % Inlined outer bagof — the WAM compiler emits direct
-    % BeginAggregate/EndAggregate, NOT a meta-call. Witness
-    % collection requires a goal-term to walk; for inlined there''s
-    % no term so witness_cells stays empty → no grouping (findall-
-    % like). Regression guard that the existing inlined path is
-    % untouched.
-    unique_cpp_tmp_dir('tmp_cpp_e2e_bagof_inlined', TmpDir),
+    % BeginAggregate/EndAggregate with the 4-arg form carrying free-
+    % witness register info. The runtime resolves them lazily at
+    % EndAggregate (witness Y-regs get allocated INSIDE the aggregate
+    % body) and snapshots witness values parallel to acc, so the
+    % finaliser groups by witness equality. First group: P=tom,
+    % L=[bob, alice]; witness binding flows back to the caller.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_bagof_inl_grp', TmpDir),
     setup_call_cleanup(
         write_wam_cpp_project(
             [user:wam_cpp_parent_fixture/2,
-             user:wam_cpp_test_bagof_inlined_flattens/0],
+             user:wam_cpp_test_bagof_inlined_groups_by_witness/0],
             [emit_main(true)], TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
-                    'wam_cpp_test_bagof_inlined_flattens/0',
+                    'wam_cpp_test_bagof_inlined_groups_by_witness/0',
+                    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_bagof_inlined_existential_flattens,
+     [condition(cpp_compiler_available)]) :-
+    % ^/2 existential on the inlined path → no witnesses emitted
+    % (4th begin_aggregate arg is empty). The frame''s witness_regs
+    % stays empty, so EndAggregate does the simple non-grouping path
+    % and aggregate-finalise builds one flat group. Regression guard
+    % that the existential-quantified inlined path keeps working.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_bagof_inl_ex', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_parent_fixture/2,
+             user:wam_cpp_test_bagof_inlined_existential_flattens/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_bagof_inlined_existential_flattens/0',
+                    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_setof_inlined_groups_sorted,
+     [condition(cpp_compiler_available)]) :-
+    % setof on the inlined path: same witness grouping as bagof,
+    % per-group template list sorted via term_less. First group:
+    % P=tom, L=[alice, bob].
+    unique_cpp_tmp_dir('tmp_cpp_e2e_setof_inl_grp', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_parent_fixture/2,
+             user:wam_cpp_test_setof_inlined_groups_sorted/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_setof_inlined_groups_sorted/0',
                     [], true)
         ),
         delete_directory_and_contents(TmpDir)

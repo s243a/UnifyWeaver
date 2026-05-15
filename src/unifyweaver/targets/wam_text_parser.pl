@@ -174,6 +174,8 @@ wam_recognise_instruction(["trust_me"],                trust_me).
 wam_recognise_instruction(["jump", L],                 jump(L)).
 wam_recognise_instruction(["cut_ite"],                 cut_ite).
 wam_recognise_instruction(["begin_aggregate", K, V, R], begin_aggregate(K, V, R)).
+wam_recognise_instruction(["begin_aggregate", K, V, R, W],
+                                                       begin_aggregate(K, V, R, W)).
 wam_recognise_instruction(["end_aggregate", R],        end_aggregate(R)).
 % Indexing instructions: variable-arity tail tokens captured as a list,
 % target-side decoders parse them per the dispatch-table convention.

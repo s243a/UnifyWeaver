@@ -281,6 +281,13 @@ wam_instruction_to_cpp_literal_det(begin_aggregate(K, V, R), _, Code) :-
     escape_cpp_string(KS, EK), escape_cpp_string(VS, EV), escape_cpp_string(RS, ER),
     format(atom(Code),
            'Instruction::BeginAggregate("~w", "~w", "~w")', [EK, EV, ER]).
+wam_instruction_to_cpp_literal_det(begin_aggregate(K, V, R, W), _, Code) :-
+    to_string(K, KS), to_string(V, VS), to_string(R, RS), to_string(W, WS),
+    escape_cpp_string(KS, EK), escape_cpp_string(VS, EV),
+    escape_cpp_string(RS, ER), escape_cpp_string(WS, EW),
+    format(atom(Code),
+           'Instruction::BeginAggregate("~w", "~w", "~w", "~w")',
+           [EK, EV, ER, EW]).
 wam_instruction_to_cpp_literal_det(end_aggregate(R), _, Code) :-
     to_string(R, RS),
     escape_cpp_string(RS, ER),
@@ -1441,6 +1448,10 @@ struct Instruction {
     Value val;
     std::string a;
     std::string b;
+    // Reused by BeginAggregate for free-witness register names —
+    // a semicolon-delimited list ("Y1;Y2") matching the 4th arg of
+    // the 4-token wam-text shape. Empty for non-grouping aggregates.
+    std::string c;
     std::int64_t n = 0;
     std::size_t target = 0;
     // Indexing dispatch tables. const_table holds Value→pc for atom/int
@@ -1508,6 +1519,11 @@ struct Instruction {
     static Instruction BeginAggregate(std::string kind, std::string vreg, std::string rreg)
         { Instruction i; i.op = Op::BeginAggregate; i.a = std::move(kind);
           i.b = std::move(vreg); i.val = Value::Atom(std::move(rreg)); return i; }
+    static Instruction BeginAggregate(std::string kind, std::string vreg, std::string rreg,
+                                      std::string wregs)
+        { Instruction i; i.op = Op::BeginAggregate; i.a = std::move(kind);
+          i.b = std::move(vreg); i.val = Value::Atom(std::move(rreg));
+          i.c = std::move(wregs); return i; }
     static Instruction EndAggregate(std::string vreg)
         { Instruction i; i.op = Op::EndAggregate; i.a = std::move(vreg); return i; }
     static Instruction SwitchOnConstant(std::vector<std::pair<Value, std::size_t>> table)
@@ -1613,6 +1629,13 @@ struct AggregateFrame {
     // not yet supported (deferred follow-up).
     std::vector<CellPtr> witness_cells;
     std::vector<std::vector<Value>> acc_witnesses;
+    // Inlined-path witness registers: stored as names because Y-regs
+    // for free witnesses get allocated by put_variable INSIDE the
+    // aggregate body, AFTER BeginAggregate fires. EndAggregate resolves
+    // them once into witness_cells on the first iteration, then reuses
+    // the cached cells for later iterations (the env frame keeps the
+    // same Y-reg shared_ptr across body retries).
+    std::vector<std::string> witness_regs;
 };
 
 // Catcher frame opened by catch/3. Sits on a side stack (not the
@@ -3391,6 +3414,23 @@ bool WamState::step(const Instruction& instr) {
             frame.saved_regs        = regs;
             frame.saved_mode_stack  = mode_stack;
             frame.saved_env_stack   = env_stack;
+            // For bagof/setof with witnesses: instr.c is a semicolon-
+            // delimited list of register names ("Y2" / "Y1;Y2"). Store
+            // the names here — actual cell resolution happens lazily at
+            // EndAggregate, since Y-regs for free witnesses get
+            // allocated by put_variable INSIDE the aggregate body.
+            if (!instr.c.empty()) {
+                std::string buf;
+                for (char ch : instr.c) {
+                    if (ch == '';'') {
+                        if (!buf.empty()) frame.witness_regs.push_back(buf);
+                        buf.clear();
+                    } else {
+                        buf.push_back(ch);
+                    }
+                }
+                if (!buf.empty()) frame.witness_regs.push_back(buf);
+            }
             aggregate_frames.push_back(std::move(frame));
             pc += 1;
             return true;
@@ -3402,6 +3442,28 @@ bool WamState::step(const Instruction& instr) {
             // trail-driven mutations don''t alter what we collected).
             CellPtr v = get_cell(instr.a);
             f.acc.push_back(deep_copy(*v));
+            // For bagof/setof on the inlined path: resolve witness regs
+            // lazily on the first iteration (they get allocated inside
+            // the aggregate body, after BeginAggregate fired). The env
+            // frame keeps the same Y-reg shared_ptrs across body retries,
+            // so a single resolution is reusable for all later snapshots.
+            if (f.witness_cells.empty() && !f.witness_regs.empty()) {
+                for (auto& rname : f.witness_regs) {
+                    CellPtr wc = get_cell(rname);
+                    if (wc) f.witness_cells.push_back(wc);
+                }
+            }
+            // Snapshot witness values parallel to acc so finalise can
+            // partition by witness equality. Mirrors the FindallCollect
+            // arm used by the meta-call path.
+            if (!f.witness_cells.empty()) {
+                std::vector<Value> witness_snap;
+                witness_snap.reserve(f.witness_cells.size());
+                for (auto& wc : f.witness_cells) {
+                    witness_snap.push_back(deep_copy(*wc));
+                }
+                f.acc_witnesses.push_back(std::move(witness_snap));
+            }
             f.return_pc     = pc + 1;
             f.return_pc_set = true;
             // Force backtrack to find the next solution of the body.
