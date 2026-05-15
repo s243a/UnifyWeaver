@@ -43,6 +43,13 @@
 :- dynamic user:wam_identity_distinct_unbound/0.
 :- dynamic user:wam_identity_after_alias/0.
 :- dynamic user:wam_identity_does_not_bind/0.
+:- dynamic user:wam_term_lt/2.
+:- dynamic user:wam_term_le/2.
+:- dynamic user:wam_term_gt/2.
+:- dynamic user:wam_term_ge/2.
+:- dynamic user:wam_term_var_lt_atom/0.
+:- dynamic user:wam_term_var_le_same/0.
+:- dynamic user:wam_term_order_does_not_bind/0.
 :- dynamic user:wam_fail_after_bind/1.
 :- dynamic user:wam_atom_guard/1.
 :- dynamic user:wam_integer_guard/1.
@@ -152,6 +159,13 @@ user:wam_identity_same_unbound :- user:wam_unbound_arg(X), X == X.
 user:wam_identity_distinct_unbound :- user:wam_unbound_arg(X), user:wam_unbound_arg(Y), X == Y.
 user:wam_identity_after_alias :- user:wam_unbound_arg(X), Y = X, X == Y.
 user:wam_identity_does_not_bind :- user:wam_unbound_arg(X), X == a.
+user:wam_term_lt(A, B) :- A @< B.
+user:wam_term_le(A, B) :- A @=< B.
+user:wam_term_gt(A, B) :- A @> B.
+user:wam_term_ge(A, B) :- A @>= B.
+user:wam_term_var_lt_atom :- user:wam_unbound_arg(X), X @< a.
+user:wam_term_var_le_same :- user:wam_unbound_arg(X), X @=< X.
+user:wam_term_order_does_not_bind :- user:wam_unbound_arg(X), X @< a, X == a.
 user:wam_fail_after_bind(X) :- X = a, fail.
 user:wam_atom_guard(X) :- atom(X).
 user:wam_integer_guard(X) :- integer(X).
@@ -266,6 +280,13 @@ run_smoke :-
           user:wam_identity_distinct_unbound/0,
           user:wam_identity_after_alias/0,
           user:wam_identity_does_not_bind/0,
+          user:wam_term_lt/2,
+          user:wam_term_le/2,
+          user:wam_term_gt/2,
+          user:wam_term_ge/2,
+          user:wam_term_var_lt_atom/0,
+          user:wam_term_var_le_same/0,
+          user:wam_term_order_does_not_bind/0,
           user:wam_fail_after_bind/1,
           user:wam_atom_guard/1,
           user:wam_integer_guard/1,
@@ -348,6 +369,7 @@ run_smoke :-
     assert_lowered_cut_builtin_emitted(TmpDir),
     assert_lowered_not_unify_builtin_emitted(TmpDir),
     assert_lowered_identity_builtin_emitted(TmpDir),
+    assert_lowered_term_order_builtin_emitted(TmpDir),
     assert_lowered_fail_builtin_emitted(TmpDir),
     assert_lowered_atom_builtin_emitted(TmpDir),
     assert_lowered_integer_builtin_emitted(TmpDir),
@@ -437,6 +459,21 @@ smoke_cases([
     case('wam_identity_distinct_unbound/0', no_args, "false"),
     case('wam_identity_after_alias/0', no_args, "true"),
     case('wam_identity_does_not_bind/0', no_args, "false"),
+    case('wam_term_lt/2', args(a, b), "true"),
+    case('wam_term_lt/2', args(b, a), "false"),
+    case('wam_term_lt/2', args(42, a), "true"),
+    case('wam_term_lt/2', args(a, 'f(a)'), "true"),
+    case('wam_term_lt/2', args('f(a)', 'f(a,b)'), "true"),
+    case('wam_term_lt/2', args('f(a)', 'f(b)'), "true"),
+    case('wam_term_le/2', args(a, a), "true"),
+    case('wam_term_le/2', args(b, a), "false"),
+    case('wam_term_gt/2', args(b, a), "true"),
+    case('wam_term_gt/2', args(a, b), "false"),
+    case('wam_term_ge/2', args(a, a), "true"),
+    case('wam_term_ge/2', args(a, b), "false"),
+    case('wam_term_var_lt_atom/0', no_args, "true"),
+    case('wam_term_var_le_same/0', no_args, "true"),
+    case('wam_term_order_does_not_bind/0', no_args, "false"),
     case('wam_fail_after_bind/1', a, "false"),
     case('wam_fail_after_bind/1', b, "false"),
     case('wam_atom_guard/1', a, "true"),
@@ -616,6 +653,18 @@ assert_lowered_identity_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-identity-guard-2"),
     has(CoreCode, "defn lowered-wam-not-identity-guard-2"),
     has(CoreCode, "runtime/term-identical?").
+
+assert_lowered_term_order_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-term-lt-2"),
+    has(CoreCode, "defn lowered-wam-term-le-2"),
+    has(CoreCode, "defn lowered-wam-term-gt-2"),
+    has(CoreCode, "defn lowered-wam-term-ge-2"),
+    has(CoreCode, "runtime/term-less?"),
+    has(CoreCode, "runtime/term-less-or-equal?"),
+    has(CoreCode, "runtime/term-greater?"),
+    has(CoreCode, "runtime/term-greater-or-equal?").
 
 assert_lowered_fail_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),

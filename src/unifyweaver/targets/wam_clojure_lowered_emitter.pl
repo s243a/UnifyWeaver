@@ -280,6 +280,22 @@ clojure_direct_builtin("\\==/2", "2").
 clojure_direct_builtin("\\==/2", 2).
 clojure_direct_builtin('\\==/2', "2").
 clojure_direct_builtin('\\==/2', 2).
+clojure_direct_builtin("@</2", "2").
+clojure_direct_builtin("@</2", 2).
+clojure_direct_builtin('@</2', "2").
+clojure_direct_builtin('@</2', 2).
+clojure_direct_builtin("@=</2", "2").
+clojure_direct_builtin("@=</2", 2).
+clojure_direct_builtin('@=</2', "2").
+clojure_direct_builtin('@=</2', 2).
+clojure_direct_builtin("@>/2", "2").
+clojure_direct_builtin("@>/2", 2).
+clojure_direct_builtin('@>/2', "2").
+clojure_direct_builtin('@>/2', 2).
+clojure_direct_builtin("@>=/2", "2").
+clojure_direct_builtin("@>=/2", 2).
+clojure_direct_builtin('@>=/2', "2").
+clojure_direct_builtin('@>=/2', 2).
 clojure_direct_builtin("=:=/2", "2").
 clojure_direct_builtin("=:=/2", 2).
 clojure_direct_builtin('=:=/2', "2").
@@ -435,6 +451,15 @@ clojure_arithmetic_order_builtin('=</2', 'arithmetic-less-or-equal?').
 clojure_arithmetic_order_builtin(">=/2", 'arithmetic-greater-or-equal?').
 clojure_arithmetic_order_builtin('>=/2', 'arithmetic-greater-or-equal?').
 
+clojure_term_order_builtin("@</2", 'term-less?').
+clojure_term_order_builtin('@</2', 'term-less?').
+clojure_term_order_builtin("@=</2", 'term-less-or-equal?').
+clojure_term_order_builtin('@=</2', 'term-less-or-equal?').
+clojure_term_order_builtin("@>/2", 'term-greater?').
+clojure_term_order_builtin('@>/2', 'term-greater?').
+clojure_term_order_builtin("@>=/2", 'term-greater-or-equal?').
+clojure_term_order_builtin('@>=/2', 'term-greater-or-equal?').
+
 emit_lowered_unary_guard(TestExpr, S, Expr) :-
     format(atom(Expr),
            '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if ~w (runtime/advance ~w) (runtime/backtrack ~w)))',
@@ -535,6 +560,13 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     format(atom(Expr),
            '(let [left (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound) right (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound)] (if (runtime/term-identical? ~w left right) (runtime/backtrack ~w) (runtime/advance ~w)))',
            [S, S, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    clojure_term_order_builtin(Op, RuntimePred),
+    !,
+    format(atom(Expr),
+           '(let [left (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound) right (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound)] (if (runtime/~w ~w left right) (runtime/advance ~w) (runtime/backtrack ~w)))',
+           [S, S, RuntimePred, S, S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "=:=/2" ; Op == '=:=/2'),
