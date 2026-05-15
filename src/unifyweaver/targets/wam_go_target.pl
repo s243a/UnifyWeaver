@@ -116,10 +116,9 @@ write_wam_go_project(Predicates, Options, ProjectDir) :-
     compile_lowered_predicates(Predicates, Options, LoweredCode),
     emit_atom_table_go(AtomTableCode),
 
-    % Always write atoms.go when there are interned atoms, regardless of
-    % whether lowered.go gets generated. lib.go references these vars
-    % via the intern table, so the declarations have to exist as
-    % package-level vars even when there's no lowered code.
+    % Always write atoms.go. When there are interned atoms, lib.go references
+    % their package-level vars. When there are none, runtime helpers still need
+    % the internAtom function for dynamically sourced facts.
     (   AtomTableCode \== ""
     ->  format(atom(AtomsContent),
 'package ~w
@@ -134,7 +133,24 @@ write_wam_go_project(Predicates, Options, ProjectDir) :-
 ', [PackageName, AtomTableCode]),
         directory_file_path(ProjectDir, 'atoms.go', AtomsPath),
         write_file(AtomsPath, AtomsContent)
-    ;   true
+    ;   format(atom(AtomsContent),
+'package ~w
+
+// Runtime-only atom intern table. This project has no compile-time atom
+// literals, but fact-source helpers may still construct atoms dynamically.
+var atomInternMap = make(map[string]*Atom)
+
+func internAtom(name string) *Atom {
+    if a, ok := atomInternMap[name]; ok {
+        return a
+    }
+    a := &Atom{Name: name}
+    atomInternMap[name] = a
+    return a
+}
+', [PackageName]),
+        directory_file_path(ProjectDir, 'atoms.go', AtomsPath),
+        write_file(AtomsPath, AtomsContent)
     ),
 
     (   LoweredCode \== ""
@@ -456,6 +472,9 @@ wam_instruction_to_go_literal(allocate, '&Allocate{}').
 wam_instruction_to_go_literal(deallocate, '&Deallocate{}').
 wam_instruction_to_go_literal(call(P, N), GoLiteral) :-
     format(atom(GoLiteral), '&Call{Pred: "~w", Arity: ~w}', [P, N]).
+wam_instruction_to_go_literal(call_indexed_atom_fact2(Pred), GoLiteral) :-
+    escape_go_string(Pred, EscapedPred),
+    format(atom(GoLiteral), '&CallIndexedAtomFact2{Pred: "~w"}', [EscapedPred]).
 wam_instruction_to_go_literal(execute(P), GoLiteral) :-
     format(atom(GoLiteral), '&Execute{Pred: "~w"}', [P]).
 wam_instruction_to_go_literal(proceed, '&Proceed{}').
@@ -976,6 +995,9 @@ wam_line_to_go_literal(["call", P, N], PredIndicator, Options, GoLit) :-
     ->  format(atom(GoLit), '&CallForeign{Pred: "~w", Arity: ~w}', [ForeignPred, ForeignArity])
     ;   format(atom(GoLit), '&Call{Pred: "~w", Arity: ~w}', [CP, CN])
     ).
+wam_line_to_go_literal(["call_indexed_atom_fact2", Pred], _PredIndicator, _Options, GoLit) :-
+    clean_comma(Pred, CPred),
+    wam_instruction_to_go_literal(call_indexed_atom_fact2(CPred), GoLit).
 wam_line_to_go_literal(["execute", P], PredIndicator, Options, GoLit) :-
     clean_comma(P, CP),
     (   go_foreign_rewrite_execute(Options, PredIndicator, CP, ForeignPred, ForeignArity)
@@ -1608,6 +1630,8 @@ wam_go_case('Call', '        vm.CP = vm.PC + 1
         return false').
 
 wam_go_case('CallForeign', '        return vm.executeForeignPredicate(i.Pred, i.Arity)').
+
+wam_go_case('CallIndexedAtomFact2', '        return vm.executeIndexedAtomFact2(i.Pred)').
 
 wam_go_case('CallPc', '        vm.CP = vm.PC + 1
         vm.PC = i.TargetPC
@@ -2308,57 +2332,7 @@ func (vm *WamState) finishForeignResults(predKey string, resultRegs []int, resul
     mode := vm.foreignResultMode(predKey)
     switch mode {
     case "stream":
-        var baseRegs [320]Value
-        baseRegs = vm.Regs
-        // Capture stack length and the env-pointer instead of cloning
-        // the stack — backtrack truncates to baseStackLen and restores
-        // baseE the same way the regular CP path does.
-        baseStackLen := len(vm.Stack)
-        baseE := vm.E
-        trailMark := vm.TrailLen
-        heapTop := vm.HeapLen
-        for idx, result := range results {
-            vm.unwindTrailTo(trailMark)
-            vm.Regs = baseRegs
-            if baseStackLen <= len(vm.Stack) {
-                vm.Stack = vm.Stack[:baseStackLen]
-            }
-            vm.E = baseE
-            if heapTop >= 0 && heapTop <= vm.HeapLen {
-                vm.heapTrimTo(heapTop)
-            }
-            vm.Halted = false
-            vm.CurrentStruct = nil
-            vm.CurrentList = nil
-            if !vm.applyForeignResult(predKey, resultRegs, result) {
-                continue
-            }
-            if idx+1 < len(results) {
-                remaining := append([]Value(nil), results[idx+1:]...)
-                // Match the regular CP snapshot layout that
-                // restoreSavedRegs() expects: 8 A-regs + 100 Y-regs,
-                // skipping the clause-local X-reg range.
-                savedRegs := make([]Value, 108)
-                copy(savedRegs[:8], baseRegs[:8])
-                copy(savedRegs[8:], baseRegs[200:300])
-                vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
-                    NextPC: resumePC,
-                    ResumePC: resumePC,
-                    CP: vm.CP,
-                    E: baseE,
-                    StackLen: baseStackLen,
-                    SavedRegs: savedRegs,
-                    HeapTop: heapTop,
-                    TrailMark: trailMark,
-                    ForeignPredKey: predKey,
-                    ForeignResultRegs: append([]int(nil), resultRegs...),
-                    ForeignResults: remaining,
-                })
-            }
-            vm.PC = resumePC
-            return true
-        }
-        return false
+        return vm.finishStreamResults(predKey, resultRegs, results)
     default:
         if !vm.applyForeignResult(predKey, resultRegs, results[0]) {
             return false
@@ -2366,6 +2340,82 @@ func (vm *WamState) finishForeignResults(predKey string, resultRegs []int, resul
         vm.PC = resumePC
         return true
     }
+}
+
+func (vm *WamState) finishStreamResults(predKey string, resultRegs []int, results []Value) bool {
+    if len(results) == 0 {
+        return false
+    }
+    resumePC := vm.PC + 1
+    var baseRegs [320]Value
+    baseRegs = vm.Regs
+    // Capture stack length and the env-pointer instead of cloning
+    // the stack — backtrack truncates to baseStackLen and restores
+    // baseE the same way the regular CP path does.
+    baseStackLen := len(vm.Stack)
+    baseE := vm.E
+    trailMark := vm.TrailLen
+    heapTop := vm.HeapLen
+    for idx, result := range results {
+        vm.unwindTrailTo(trailMark)
+        vm.Regs = baseRegs
+        if baseStackLen <= len(vm.Stack) {
+            vm.Stack = vm.Stack[:baseStackLen]
+        }
+        vm.E = baseE
+        if heapTop >= 0 && heapTop <= vm.HeapLen {
+            vm.heapTrimTo(heapTop)
+        }
+        vm.Halted = false
+        vm.CurrentStruct = nil
+        vm.CurrentList = nil
+        if !vm.applyForeignResult(predKey, resultRegs, result) {
+            continue
+        }
+        if idx+1 < len(results) {
+            remaining := append([]Value(nil), results[idx+1:]...)
+            ycount := vm.MaxYReg - 200
+            if ycount < 0 {
+                ycount = 0
+            }
+            savedRegs := make([]Value, 8+ycount)
+            copy(savedRegs[:8], baseRegs[:8])
+            if ycount > 0 {
+                copy(savedRegs[8:], baseRegs[200:200+ycount])
+            }
+            vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+                NextPC: resumePC,
+                ResumePC: resumePC,
+                CP: vm.CP,
+                E: baseE,
+                StackLen: baseStackLen,
+                SavedRegs: savedRegs,
+                HeapTop: heapTop,
+                TrailMark: trailMark,
+                ForeignPredKey: predKey,
+                ForeignResultRegs: append([]int(nil), resultRegs...),
+                ForeignResults: remaining,
+            })
+        }
+        vm.PC = resumePC
+        return true
+    }
+    return false
+}
+
+func (vm *WamState) executeIndexedAtomFact2(predKey string) bool {
+    key, ok := valueAsAtomString(vm, vm.getReg(0))
+    if !ok {
+        return false
+    }
+    pairs := vm.Ctx.IndexedAtomFactPairs[predKey]
+    results := make([]Value, 0)
+    for _, pair := range pairs {
+        if pair.Left == key {
+            results = append(results, internAtom(pair.Right))
+        }
+    }
+    return vm.finishStreamResults(predKey, []int{1}, results)
 }
 
 func valueAsAtomString(vm *WamState, v Value) (string, bool) {

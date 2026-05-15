@@ -75,6 +75,9 @@ func (i *Call) instrTag() {}
 type CallForeign struct { Pred string; Arity int }
 func (i *CallForeign) instrTag() {}
 
+type CallIndexedAtomFact2 struct { Pred string }
+func (i *CallIndexedAtomFact2) instrTag() {}
+
 type CallPc struct { TargetPC int; Arity int }
 func (i *CallPc) instrTag() {}
 
