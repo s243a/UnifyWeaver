@@ -368,11 +368,17 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     helper_predicate_items(HelperItems),
     flatten_blocks([HelperItems|PerPredItems], AllItems),
     walk_blocks(AllItems, Labels, FlatInstrs0),
-    % Append a single trailing CatchReturn instruction. catch/3 sets
-    % cp to its pc so the protected goal''s normal proceed lands here
-    % and pops the catcher frame.
-    append(FlatInstrs0, [catch_return], FlatInstrs),
+    % Append two trailing synthetic-return instructions:
+    %   catch_return    — CatchReturn (catch/3 success path).
+    %   negation_return — NegationReturn (\+/1 + not/1 success path
+    %                     — fires when the protected goal succeeded,
+    %                     and triggers negation failure).
+    % Their PCs are emitted as state-register initialisers in the
+    % setup function. Both consume one slot each at the end of the
+    % instruction array.
+    append(FlatInstrs0, [catch_return, negation_return], FlatInstrs),
     length(FlatInstrs0, CatchReturnPC),
+    NegationReturnPC is CatchReturnPC + 1,
     findall(LabelLine, (
         member(NameStr-PC, Labels),
         format(atom(LabelLine),
@@ -391,6 +397,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     vm.labels.clear();
     vm.instrs.reserve(~w);
     vm.catch_return_pc = ~w;
+    vm.negation_return_pc = ~w;
 ~w
 ~w
 }
@@ -398,7 +405,7 @@ static const int _wam_cpp_setup_register = []() {
     Program::register_setup(&wam_cpp_setup);
     return 0;
 }();
-', [Reserve, CatchReturnPC, LabelBody, InstrBody]).
+', [Reserve, CatchReturnPC, NegationReturnPC, LabelBody, InstrBody]).
 
 % ============================================================================
 % ISO error configuration
@@ -944,6 +951,8 @@ instr_to_setup_line(switch_on_term(Tokens), Labels, Line) :- !,
            [ConstsCpp, StructsCpp, ListPC]).
 instr_to_setup_line(catch_return, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::CatchReturn());'.
+instr_to_setup_line(negation_return, _Labels, Line) :- !,
+    Line = '    vm.instrs.push_back(Instruction::NegationReturn());'.
 instr_to_setup_line(Instr, _Labels, Line) :-
     wam_instruction_to_cpp_literal(Instr, Lit),
     format(atom(Line), '    vm.instrs.push_back(~w);', [Lit]).
@@ -1314,7 +1323,7 @@ struct Instruction {
         TryMeElse, RetryMeElse, TrustMe, Jump, CutIte,
         BeginAggregate, EndAggregate,
         SwitchOnConstant, SwitchOnStructure, SwitchOnTerm,
-        CatchReturn
+        CatchReturn, NegationReturn
     };
     // Sentinel pc values for switch-table entries that should not jump.
     static constexpr std::size_t SWITCH_DEFAULT = static_cast<std::size_t>(-1);
@@ -1407,6 +1416,8 @@ struct Instruction {
           return i; }
     static Instruction CatchReturn()
         { Instruction i; i.op = Op::CatchReturn; return i; }
+    static Instruction NegationReturn()
+        { Instruction i; i.op = Op::NegationReturn; return i; }
 };
 
 struct TrailEntry {
@@ -1483,6 +1494,23 @@ struct CatcherFrame {
     std::vector<EnvFrame> saved_env_stack;
 };
 
+// Frame for \\+/1 and not/1 (negation as failure). Same shape as
+// CatcherFrame minus the pattern/recovery slots — symmetric inverse
+// of catch: NegationReturn fires when the protected goal SUCCEEDS
+// (negation then fails); backtrack() pops the frame when the goal
+// FAILS (negation then succeeds at saved_cp).
+struct NegationFrame {
+    std::size_t saved_cp = 0;
+    std::size_t trail_mark = 0;
+    std::size_t base_cp_count = 0;
+    std::size_t base_agg_count = 0;
+    std::size_t base_catcher_count = 0;
+    std::size_t saved_cut_barrier = 0;
+    std::unordered_map<std::string, CellPtr> saved_regs;
+    std::vector<ModeFrame> saved_mode_stack;
+    std::vector<EnvFrame> saved_env_stack;
+};
+
 struct WamState {
     std::unordered_map<std::string, CellPtr> regs;
     std::unordered_map<std::string, std::size_t> labels;
@@ -1491,11 +1519,18 @@ struct WamState {
     std::vector<ChoicePoint> choice_points;
     std::vector<AggregateFrame> aggregate_frames;
     std::vector<CatcherFrame> catcher_frames;
+    // \\+/1 + not/1 — symmetric inverse of catcher_frames.
+    std::vector<NegationFrame> negation_frames;
     // pc of the auto-injected single CatchReturn instruction. catch/3
     // sets cp to this value before dispatching to the protected goal;
     // when the goal proceeds, control lands here and the catcher frame
     // is popped.
     std::size_t catch_return_pc = 0;
+    // pc of the auto-injected single NegationReturn instruction. \\+/1
+    // sets cp to this value before dispatching the protected goal;
+    // when the goal succeeds via proceed, control lands here and the
+    // negation frame is popped + the negation FAILS.
+    std::size_t negation_return_pc = 0;
     // Mode stack: Get-/Put-Structure / Get-/Put-List PUSH; Unify*/Set*
     // operate on top(); each frame auto-pops once its arity is filled.
     std::vector<ModeFrame> mode_stack;
@@ -1949,6 +1984,62 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
     }
 
     // ---- succ/2 ----------------------------------------------------
+    // ---- \\+/1, not/1 (negation as failure) -------------------------
+    // Snapshot VM state into a NegationFrame, push it, dispatch A1
+    // as a goal with cp = negation_return_pc. Two outcomes:
+    //   - Goal succeeds via proceed → lands on NegationReturn op →
+    //     pops frame + restores state + returns false (negation
+    //     fails).
+    //   - Goal fails → backtrack() drains CPs to the frame''s base →
+    //     pops frame + restores state + succeeds at saved_cp
+    //     (negation succeeds).
+    // Symmetric inverse of catch/3 (without the pattern-match step).
+    if (op == "\\\\+/1" || op == "not/1") {
+        NegationFrame f;
+        f.saved_cp = pc + 1;
+        f.trail_mark = trail.size();
+        f.base_cp_count = choice_points.size();
+        f.base_agg_count = aggregate_frames.size();
+        f.base_catcher_count = catcher_frames.size();
+        f.saved_cut_barrier = cut_barrier;
+        f.saved_regs = regs;
+        f.saved_mode_stack = mode_stack;
+        f.saved_env_stack = env_stack;
+        std::size_t my_depth = negation_frames.size();
+        // Snapshot a backup of saved_cp before moving f into the
+        // stack, so the no-dispatch path can still proceed.
+        std::size_t restore_cp = f.saved_cp;
+        negation_frames.push_back(std::move(f));
+        CellPtr goal = get_cell("A1");
+        if (!invoke_goal_as_call(goal, negation_return_pc)) {
+            // Goal failed to dispatch (unknown functor, plain
+            // failure atom, etc.) → treat as G failed → negation
+            // succeeds. Pop our frame if still ours and proceed to
+            // saved_cp manually.
+            if (negation_frames.size() > my_depth) {
+                NegationFrame nf = std::move(negation_frames.back());
+                negation_frames.pop_back();
+                while (trail.size() > nf.trail_mark) {
+                    TrailEntry t = std::move(trail.back());
+                    trail.pop_back();
+                    *t.cell = std::move(t.prev);
+                }
+                while (aggregate_frames.size() > nf.base_agg_count)
+                    aggregate_frames.pop_back();
+                while (catcher_frames.size() > nf.base_catcher_count)
+                    catcher_frames.pop_back();
+                regs        = std::move(nf.saved_regs);
+                mode_stack  = std::move(nf.saved_mode_stack);
+                env_stack   = std::move(nf.saved_env_stack);
+                cut_barrier = nf.saved_cut_barrier;
+            }
+            if (restore_cp == 0) { halt = true; return true; }
+            pc = restore_cp; cp = 0;
+            return true;
+        }
+        return true;
+    }
+
     // succ(X, Y): Y is X + 1. Bidirectional — if X is a non-negative
     // integer, derive Y; if Y is a positive integer, derive X. Fails
     // if X < 0 or Y <= 0 or both args unbound (ISO would throw
@@ -2754,6 +2845,34 @@ bool WamState::step(const Instruction& instr) {
             cp = 0;
             return true;
         }
+        case Instruction::Op::NegationReturn: {
+            // Reached when a \\+ or not protected goal proceeds normally
+            // (i.e. the goal succeeded). Pop the frame, fully restore
+            // pre-call VM state so any bindings / CPs the goal made
+            // are undone, and return false — the negation FAILS.
+            // backtrack() then resumes the outer flow.
+            if (negation_frames.empty()) return false;
+            NegationFrame f = std::move(negation_frames.back());
+            negation_frames.pop_back();
+            while (trail.size() > f.trail_mark) {
+                TrailEntry t = std::move(trail.back());
+                trail.pop_back();
+                *t.cell = std::move(t.prev);
+            }
+            while (choice_points.size() > f.base_cp_count)
+                choice_points.pop_back();
+            while (aggregate_frames.size() > f.base_agg_count)
+                aggregate_frames.pop_back();
+            while (catcher_frames.size() > f.base_catcher_count)
+                catcher_frames.pop_back();
+            regs = std::move(f.saved_regs);
+            mode_stack = std::move(f.saved_mode_stack);
+            env_stack = std::move(f.saved_env_stack);
+            cut_barrier = f.saved_cut_barrier;
+            cp = f.saved_cp;
+            // Negation fails; let backtrack do its thing.
+            return false;
+        }
         case Instruction::Op::Proceed: {
             if (cp == 0) { halt = true; return true; }
             pc = cp;
@@ -3290,6 +3409,41 @@ bool WamState::backtrack() {
     // into an open aggregate frame''s base — at which point the frame is
     // finalised and execution continues past its EndAggregate.
     for (;;) {
+        // Negation frame: if the \\+ / not protected goal exhausted
+        // all its CPs (i.e. the goal FAILED), pop the frame, unwind
+        // state, and SUCCEED at saved_cp. Symmetric inverse of the
+        // catcher-frame pop below.
+        if (!negation_frames.empty()
+            && choice_points.size() == negation_frames.back().base_cp_count
+            && (aggregate_frames.empty()
+                || aggregate_frames.back().base_cp_count
+                       <= negation_frames.back().base_cp_count)
+            && (catcher_frames.empty()
+                || catcher_frames.back().base_cp_count
+                       <= negation_frames.back().base_cp_count))
+        {
+            NegationFrame f = std::move(negation_frames.back());
+            negation_frames.pop_back();
+            while (trail.size() > f.trail_mark) {
+                TrailEntry t = std::move(trail.back());
+                trail.pop_back();
+                *t.cell = std::move(t.prev);
+            }
+            while (aggregate_frames.size() > f.base_agg_count)
+                aggregate_frames.pop_back();
+            while (catcher_frames.size() > f.base_catcher_count)
+                catcher_frames.pop_back();
+            regs        = std::move(f.saved_regs);
+            mode_stack  = std::move(f.saved_mode_stack);
+            env_stack   = std::move(f.saved_env_stack);
+            cut_barrier = f.saved_cut_barrier;
+            cp          = f.saved_cp;
+            // Negation succeeds — proceed to the caller''s continuation.
+            if (cp == 0) { halt = true; return true; }
+            pc = cp;
+            cp = 0;
+            return true;
+        }
         // If the catch-protected goal has exhausted all its CPs (and
         // didn''t throw), pop the catcher frame and propagate failure
         // outside the catch. We do this only when the catcher''s

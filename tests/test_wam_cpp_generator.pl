@@ -262,9 +262,28 @@ user:wam_cpp_test_lax_float_div_zero_nan :-
     % Lax: `R is 0.0 / 0.0` succeeds with NaN. IEEE 754 says
     % NaN =\= NaN is true (NaN is not equal to anything, including
     % itself), so this is the simplest self-checking NaN signature.
-    % Avoids \+/1 which the runtime doesn''t implement yet.
     R is 0.0 / 0.0,
     R =\= R.
+
+% \+/1 and not/1 (negation as failure):
+:- dynamic user:wam_cpp_test_not_fail/0.
+:- dynamic user:wam_cpp_test_not_true/0.
+:- dynamic user:wam_cpp_test_not_compound/0.
+:- dynamic user:wam_cpp_test_not_alias_succeeds/0.
+:- dynamic user:wam_cpp_test_not_alias_fails/0.
+:- dynamic user:wam_cpp_test_not_nan_check/0.
+
+user:wam_cpp_test_not_fail        :- \+ fail.
+user:wam_cpp_test_not_true        :- \+ true.
+% Conjunction-as-data exercises the goal-term-with-,/2 dispatch path
+% (whose bug surfaced and was fixed in the ISO sweep). `X = a, X = b`
+% cannot succeed, so its negation succeeds.
+user:wam_cpp_test_not_compound    :- \+ (X = a, X = b).
+user:wam_cpp_test_not_alias_succeeds :- not(fail).
+user:wam_cpp_test_not_alias_fails    :- not(true).
+% The original gap that motivated this PR — NaN self-check needs \+/1
+% because NaN =:= NaN is false but \=== NaN at the structural level.
+user:wam_cpp_test_not_nan_check   :- R is 0.0 / 0.0, \+ (R =:= R).
 
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
@@ -1481,6 +1500,90 @@ test(cpp_e2e_lax_float_div_zero_nan,
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_lax_float_div_zero_nan/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% \+/1 and not/1 — negation as failure. Implemented via a
+% NegationFrame side stack symmetric to the catcher_frames machinery:
+% the protected goal is dispatched with cp set to a synthetic
+% NegationReturn instruction; if the goal succeeds (lands on
+% NegationReturn) the negation fails; if the goal fails (CPs drain
+% to the frame''s base) backtrack() pops the frame and the negation
+% succeeds at the saved continuation.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_not_fail, [condition(cpp_compiler_available)]) :-
+    % `\+ fail` — goal fails, negation succeeds → true.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_not_fail', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_not_fail/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_not_fail/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_not_true_fails, [condition(cpp_compiler_available)]) :-
+    % `\+ true` — goal succeeds, negation fails → false.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_not_true', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_not_true/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_not_true/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_not_compound_conjunction,
+     [condition(cpp_compiler_available)]) :-
+    % `\+ (X = a, X = b)` — conjunction-as-data goes through
+    % put_structure ,/2 → invoke_goal_as_call dispatches it. The
+    % conjunction cannot succeed (X can''t be both a and b), so the
+    % negation succeeds. Regression guard against the ,/2-tokenizer
+    % issue from PR #2084 surfacing on the negation path too.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_not_compound', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_not_compound/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_not_compound/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_not_alias, [condition(cpp_compiler_available)]) :-
+    % not/1 is an alias for \+/1. Test both success (not(fail)) and
+    % failure (not(true)) sides to verify the dispatch covers both
+    % keys equivalently.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_not_alias', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_not_alias_succeeds/0,
+                               user:wam_cpp_test_not_alias_fails/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_not_alias_succeeds/0', [], true),
+          run_query(BinPath,
+                    'wam_cpp_test_not_alias_fails/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_not_nan_check, [condition(cpp_compiler_available)]) :-
+    % The gap that motivated this PR: NaN self-check via \+ (=:=).
+    % R is 0.0/0.0 → NaN; NaN =:= NaN is false (per IEEE 754); \+
+    % flips that to true. Verifies the negation goal-dispatch path
+    % AND the IEEE-754 lax float-divide path interoperate.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_not_nan', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_not_nan_check/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_not_nan_check/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
