@@ -582,6 +582,52 @@ user:wam_cpp_test_bif_cut_commits :-
     call((member(X, [1, 2, 3]) -> Y = X)),
     Y = 1.
 
+% bagof/setof witness grouping. The WAM compiler inlines the
+% OUTERMOST bagof/setof — there the goal is direct WAM, no term to
+% walk for witnesses, so it behaves findall-like. For meta-call
+% (non-inlined) dispatch, dispatch_aggregate_call walks the goal
+% term to find free witnesses (vars in goal NOT in template and
+% NOT under ^/2) and groups results by witness binding. First-
+% group binding only for v1; backtracking through additional
+% groups is a planned follow-up.
+:- dynamic user:wam_cpp_parent_fixture/2.
+:- dynamic user:wam_cpp_test_bagof_meta_groups_by_witness/0.
+:- dynamic user:wam_cpp_test_bagof_meta_existential_no_grouping/0.
+:- dynamic user:wam_cpp_test_setof_meta_groups_sorted/0.
+:- dynamic user:wam_cpp_test_bagof_inlined_flattens/0.
+
+user:wam_cpp_parent_fixture(tom, bob).
+user:wam_cpp_parent_fixture(tom, alice).
+user:wam_cpp_parent_fixture(jane, carol).
+
+% bagof via catch wrapper → meta-call dispatch → witness grouping.
+% P is a free witness; first group is P=tom → L=[bob,alice].
+% Verifies BOTH the result list AND the witness binding.
+user:wam_cpp_test_bagof_meta_groups_by_witness :-
+    catch(bagof(C, wam_cpp_parent_fixture(P, C), L), _, fail),
+    L = [bob, alice],
+    P = tom.
+
+% Same goal but with ^/2 existential: P is suppressed → no
+% witnesses → single flat group with all 3 children.
+user:wam_cpp_test_bagof_meta_existential_no_grouping :-
+    catch(bagof(C, P^wam_cpp_parent_fixture(P, C), L), _, fail),
+    L = [bob, alice, carol].
+
+% setof grouping — same witness logic as bagof but the group''s
+% template list is sorted + dedup''d.
+user:wam_cpp_test_setof_meta_groups_sorted :-
+    catch(setof(C, wam_cpp_parent_fixture(P, C), L), _, fail),
+    L = [alice, bob],
+    P = tom.
+
+% Inlined outer bagof — no witness collection (witness_cells
+% empty), so behaves like findall (all 3 children, no grouping).
+% Regression guard that the existing inlined path is untouched.
+user:wam_cpp_test_bagof_inlined_flattens :-
+    bagof(C, wam_cpp_parent_fixture(_P, C), L),
+    L = [bob, alice, carol].
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -2561,6 +2607,93 @@ test(cpp_e2e_bif_cut_commits,
                               [emit_main(true)], TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath, 'wam_cpp_test_bif_cut_commits/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% bagof/setof witness grouping. Meta-call dispatch walks the goal
+% term to find free witnesses (unbound vars in Goal that aren''t in
+% Template and aren''t under ^/2). Results are grouped by witness
+% binding; first group''s template list is bound to the result and
+% the witness cells are bound to that group''s witness values.
+% Backtracking through additional groups is a planned follow-up.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_bagof_meta_groups_by_witness,
+     [condition(cpp_compiler_available)]) :-
+    % The key test: bagof(C, parent(P, C), L) via meta-call
+    % dispatch. P is a free witness. First group is P=tom →
+    % L=[bob, alice]. Verifies BOTH the list shape AND that P
+    % gets bound to tom (witness binding back to caller).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_bagof_grp', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_parent_fixture/2,
+             user:wam_cpp_test_bagof_meta_groups_by_witness/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_bagof_meta_groups_by_witness/0',
+                    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_bagof_meta_existential_no_grouping,
+     [condition(cpp_compiler_available)]) :-
+    % ^/2 existentially quantifies P → no witnesses → all 3
+    % children flatten into one group.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_bagof_excl', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_parent_fixture/2,
+             user:wam_cpp_test_bagof_meta_existential_no_grouping/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_bagof_meta_existential_no_grouping/0',
+                    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_setof_meta_groups_sorted,
+     [condition(cpp_compiler_available)]) :-
+    % setof: same witness grouping as bagof, but the per-group
+    % template list is sorted (and dedup''d via term_less).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_setof_grp', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_parent_fixture/2,
+             user:wam_cpp_test_setof_meta_groups_sorted/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_setof_meta_groups_sorted/0',
+                    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_bagof_inlined_flattens,
+     [condition(cpp_compiler_available)]) :-
+    % Inlined outer bagof — the WAM compiler emits direct
+    % BeginAggregate/EndAggregate, NOT a meta-call. Witness
+    % collection requires a goal-term to walk; for inlined there''s
+    % no term so witness_cells stays empty → no grouping (findall-
+    % like). Regression guard that the existing inlined path is
+    % untouched.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_bagof_inlined', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_parent_fixture/2,
+             user:wam_cpp_test_bagof_inlined_flattens/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_bagof_inlined_flattens/0',
+                    [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

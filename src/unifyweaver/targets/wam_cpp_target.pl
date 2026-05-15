@@ -1364,6 +1364,7 @@ compile_wam_runtime_header_to_cpp(_Options,
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -1593,6 +1594,17 @@ struct AggregateFrame {
     std::vector<ModeFrame> saved_mode_stack;
     std::vector<EnvFrame> saved_env_stack;
     std::vector<Value> acc;
+    // Witness vars for bagof/setof grouping. Populated by
+    // dispatch_aggregate_call from a walk of the goal-term (vars
+    // present in Goal but NOT in Template and NOT under ^/2). When
+    // empty, the aggregate behaves as findall (single flat group).
+    // When non-empty, acc_witnesses[i] is the witness snapshot
+    // parallel to acc[i]; finalise groups acc by witness equality
+    // and binds the result for the first group, with the witness
+    // vars also bound. Backtracking through additional groups is
+    // not yet supported (deferred follow-up).
+    std::vector<CellPtr> witness_cells;
+    std::vector<std::vector<Value>> acc_witnesses;
 };
 
 // Catcher frame opened by catch/3. Sits on a side stack (not the
@@ -1796,6 +1808,15 @@ struct WamState {
     // sorts + dedup''s + fails on empty (setof).
     bool    dispatch_aggregate_call(const std::string& kind,
                                     std::size_t after_pc);
+    // Walk a goal term collecting unbound-variable cells, ignoring
+    // any cells reachable through the LHS of a ^/2 binder (those
+    // are existentially quantified). Used by dispatch_aggregate_call
+    // to determine grouping witnesses for bagof/setof — see the
+    // AggregateFrame::witness_cells doc.
+    void    collect_goal_witnesses(CellPtr goal,
+                                   const std::set<Cell*>& exclude,
+                                   std::vector<CellPtr>& out,
+                                   std::set<Cell*>& seen) const;
     bool    execute_catch();
     bool    execute_throw();
 
@@ -3183,6 +3204,17 @@ bool WamState::step(const Instruction& instr) {
                 : get_cell(f.value_reg);
             if (!value_cell) return false;
             f.acc.push_back(deep_copy(*value_cell));
+            // For bagof/setof: also snapshot the current witness
+            // values (parallel to acc) so finalise can group by
+            // witness binding.
+            if (!f.witness_cells.empty()) {
+                std::vector<Value> witness_snap;
+                witness_snap.reserve(f.witness_cells.size());
+                for (auto& wc : f.witness_cells) {
+                    witness_snap.push_back(deep_copy(*wc));
+                }
+                f.acc_witnesses.push_back(std::move(witness_snap));
+            }
             return false;
         }
         case Instruction::Op::ConjReturn: {
@@ -3774,14 +3806,13 @@ bool WamState::dispatch_aggregate_call(const std::string& kind,
     // emitted as plain calls). kind selects finalize_aggregate''s
     // behaviour:
     //   "collect" — findall semantics (list, empty on no solutions).
-    //   "bagof"   — list, FAILS on no solutions.
-    //   "setof"   — sorted + dedup''d list, FAILS on no solutions.
+    //   "bagof"   — list, FAILS on no solutions, GROUPS by witness.
+    //   "setof"   — like bagof but sort+dedup within each group.
     //
-    // Snapshot Template''s cell as value_cell and List''s cell as
-    // result_cell — A1/A3 will get clobbered when we dispatch the
-    // goal in A2 via invoke_goal_as_call (it sets A-registers
-    // from the goal''s args). The synthetic FindallCollect op
-    // reads the value through these stored CellPtrs.
+    // For bagof/setof: walk Goal to find free witnesses (unbound
+    // vars that aren''t in Template and aren''t under ^/2). Witness
+    // values are snapshotted alongside each acc[i] for group
+    // partitioning at finalise time.
     AggregateFrame frame;
     frame.agg_kind          = kind;
     frame.value_cell        = get_cell("A1");
@@ -3796,9 +3827,64 @@ bool WamState::dispatch_aggregate_call(const std::string& kind,
     frame.saved_regs        = regs;
     frame.saved_mode_stack  = mode_stack;
     frame.saved_env_stack   = env_stack;
+    if (kind == "bagof" || kind == "setof") {
+        // Build the "vars in Template" exclude set, then walk Goal
+        // to find witness cells (skipping anything in the exclude
+        // set or reachable only via the LHS of ^/2). The result
+        // order is deterministic (DFS over the goal tree).
+        std::set<Cell*> exclude;
+        std::set<Cell*> seen_in_template;
+        std::vector<CellPtr> tmpl_vars_unused;
+        collect_goal_witnesses(get_cell("A1"), exclude,
+                               tmpl_vars_unused, seen_in_template);
+        for (auto& c : tmpl_vars_unused) exclude.insert(c.get());
+        std::set<Cell*> seen;
+        collect_goal_witnesses(get_cell("A2"), exclude,
+                               frame.witness_cells, seen);
+    }
     aggregate_frames.push_back(std::move(frame));
     CellPtr goal = get_cell("A2");
     return invoke_goal_as_call(goal, findall_collect_pc);
+}
+
+void WamState::collect_goal_witnesses(CellPtr goal,
+                                      const std::set<Cell*>& exclude,
+                                      std::vector<CellPtr>& out,
+                                      std::set<Cell*>& seen) const {
+    if (!goal) return;
+    // Use the DEREF''d underlying cell for identity (so var-chains
+    // collapse to one address).
+    Value v = deref(*goal);
+    Cell* key = goal.get();
+    // Re-deref via the trail: if goal is bound, follow the chain.
+    // For our purposes the cell-identity of goal''s direct pointer
+    // suffices, since unbound vars always point to themselves in
+    // this runtime''s cell model.
+    if (v.tag == Value::Tag::Unbound || v.tag == Value::Tag::Uninit) {
+        if (seen.count(key)) return;
+        seen.insert(key);
+        if (exclude.count(key)) return;
+        out.push_back(goal);
+        return;
+    }
+    if (v.tag == Value::Tag::Compound) {
+        // ^/2 binder: skip the LHS (existentially quantified vars),
+        // recurse into the RHS only.
+        if (v.s == "^/2" && v.args.size() == 2) {
+            // Collect LHS vars into a local exclude set merged with
+            // the caller''s, then walk only the RHS.
+            std::set<Cell*> exclude2 = exclude;
+            std::set<Cell*> lhs_seen;
+            std::vector<CellPtr> lhs_vars;
+            collect_goal_witnesses(v.args[0], exclude, lhs_vars, lhs_seen);
+            for (auto& c : lhs_vars) exclude2.insert(c.get());
+            collect_goal_witnesses(v.args[1], exclude2, out, seen);
+            return;
+        }
+        for (auto& arg : v.args) {
+            collect_goal_witnesses(arg, exclude, out, seen);
+        }
+    }
 }
 
 // catch(Goal, Catcher, Recovery): push a CatcherFrame snapshotting
@@ -4080,11 +4166,45 @@ bool WamState::backtrack() {
             env_stack   = std::move(f.saved_env_stack);
             cp          = f.saved_cp;
             cut_barrier = f.saved_cut_barrier;
+            // For bagof/setof with free witnesses, narrow acc to the
+            // first group (matching first acc_witnesses[0]) and bind
+            // the witness cells to that group''s witness values.
+            // Other groups are silently dropped — full backtracking
+            // through groups is a planned follow-up. acc.empty()
+            // remains a failure signal handled by finalize_aggregate.
+            std::vector<Value> grouped_acc = f.acc;
+            if (!f.witness_cells.empty() && !f.acc_witnesses.empty()
+                && f.acc.size() == f.acc_witnesses.size())
+            {
+                const std::vector<Value>& first_w = f.acc_witnesses[0];
+                grouped_acc.clear();
+                for (std::size_t i = 0; i < f.acc.size(); ++i) {
+                    bool same = (f.acc_witnesses[i].size() == first_w.size());
+                    for (std::size_t k = 0; same && k < first_w.size(); ++k) {
+                        if (!(f.acc_witnesses[i][k] == first_w[k])) same = false;
+                    }
+                    if (same) grouped_acc.push_back(f.acc[i]);
+                }
+                // Bind witness cells to first_w''s values (so the
+                // caller sees the bindings the group corresponds to).
+                for (std::size_t k = 0; k < f.witness_cells.size()
+                         && k < first_w.size(); ++k) {
+                    CellPtr wc = f.witness_cells[k];
+                    if (!wc) continue;
+                    if (wc->is_unbound()) bind_cell(wc, first_w[k]);
+                    else if (!(*wc == first_w[k])) {
+                        // Witness already bound to something else —
+                        // signal failure.
+                        grouped_acc.clear();
+                        break;
+                    }
+                }
+            }
             // Build and bind the result. The meta-call findall/3
             // path stores the result cell directly (set by
             // dispatch_findall_call); the inlined BeginAggregate
             // path uses the result_reg name.
-            Value result = finalize_aggregate(f.agg_kind, f.acc);
+            Value result = finalize_aggregate(f.agg_kind, grouped_acc);
             if (result.tag == Value::Tag::Uninit) {
                 // bagof/setof with empty acc → the aggregate
                 // FAILS (per ISO). Continue backtracking so any
