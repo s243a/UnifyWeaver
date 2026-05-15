@@ -140,6 +140,19 @@ python examples/benchmark/benchmark_csharp_query_lmdb_source_mode_sweep.py \
   --format markdown
 ```
 
+`benchmark_csharp_query_effective_distance_artifact_backends.py` repeats the
+same backend comparison on the real effective-distance `category_parent/2`
+support relation. It interns category names to integer IDs for the artifact
+formats, then reports open, lookup, bucket, and scan timings:
+
+```bash
+python examples/benchmark/benchmark_csharp_query_effective_distance_artifact_backends.py \
+  --scales 300 \
+  --lookup-keys 64 \
+  --lookup-repetitions 3 \
+  --format markdown
+```
+
 Use `--stability-runs <n>` to run the wrapper-level sweep repeatedly and
 summarize stable winners. Values above `1` report majority winners, winner
 counts, stable resolved `auto` modes, and per-mode median timings across the
@@ -628,6 +641,7 @@ Tables:
 | `benchmark_dependency_longest_depth_cross_target.py` | Compare true DAG longest dependency-chain depth across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_csharp_query_source_mode_sweep.py` | Run generated C# query source-mode sweeps across selected workloads and emit a compact TSV/Markdown comparison |
 | `benchmark_csharp_query_lmdb_source_mode_sweep.py` | Compare preload, binary artifact, delimited artifact, LMDB, and mmap-array providers on one arity-2 C# query relation workload |
+| `benchmark_csharp_query_effective_distance_artifact_backends.py` | Compare preload, binary artifact, delimited artifact, LMDB, and mmap-array providers on real effective-distance `category_parent/2` data |
 | `refresh_csharp_query_source_mode_calibration.py` | Refresh the graph source-mode calibration TSV with guarded idle checks |
 | `refresh_csharp_query_scan_source_mode_calibration.py` | Refresh the scan-materialization source-mode calibration TSV with guarded idle checks |
 | `report_csharp_query_source_mode_actions.py` | Report graph and scan calibration rows where the current source-mode policy differs from observed best or `auto` is slow |
