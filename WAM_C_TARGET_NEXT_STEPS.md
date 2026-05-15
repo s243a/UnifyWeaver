@@ -1,11 +1,11 @@
 # WAM C Target - Status And Next Steps
 
-Status date: 2026-05-14
+Status date: 2026-05-15
 
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `137a693f` (`Merge pull request #2096 from s243a/feat/wam-c-lowered-helper-expanded-body-calls`)
+- `main` at `9b19eace` (`Merge pull request #2113 from s243a/test/wam-c-generated-project-multi-predicate-setup`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
 - `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py`
@@ -14,7 +14,7 @@ Base verified locally:
 
 Active branch:
 
-- `test/wam-c-generated-project-multi-predicate-setup`
+- `feat/wam-c-lowered-helper-nonreordered-projections`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -54,7 +54,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Lowered helper empty-result rejections | Done | Planner reports `no_matching_filter_rows` for supported constant filtered helpers whose constraints produce no rows, alongside existing comparison no-match metadata |
 | Lowered helper body-call rejection metadata | Done | Planner reports explicit unavailable and non-lowerable callee reasons for exact user-predicate body-call shapes |
 | Lowered helper projected body calls | Done | Variable-only reordered body-call projections lower through native fact-helper dispatch with executable coverage |
-| Generated multi-predicate setup | In progress | Active branch appends generated predicate code at per-setup base PCs and covers multiple setup functions in one executable |
+| Generated multi-predicate setup | Done | Generated setup appends predicate code at per-setup base PCs and covers multiple setup functions in one executable |
+| Lowered helper non-reordered projection metadata | In progress | Active branch reports explicit planner rejection reasons for omitted head variables, repeated head variables, and unbound callee variables |
 
 ## Current C Target Baseline
 
@@ -135,23 +136,7 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `test/wam-c-generated-project-multi-predicate-setup`
-
-Goal: make generated-project smoke coverage less sensitive to setup-function
-ordering.
-
-Scope:
-
-- Cover multiple generated WAM predicate trampolines in one executable without
-  relying on the last `setup_*` call.
-- Preserve existing lowered-helper foreign registration behavior.
-- Prefer a focused runtime/setup smoke before changing generated setup layout.
-
-Status: active; generated setup now appends predicate code using `base_pc`
-relative labels and a focused executable smoke covers multiple setup functions
-in one process.
-
-### 2. `feat/wam-c-lowered-helper-nonreordered-projections`
+### 1. `feat/wam-c-lowered-helper-nonreordered-projections`
 
 Goal: decide whether body-call helper lowering should support projection shapes
 that bind only a subset of callee variables.
@@ -163,10 +148,25 @@ Scope:
   explicit.
 - Keep constant filters on the existing materialized `filtered_fact` path.
 
+Status: active; the planner now classifies unsupported variable-only projection
+shapes before they fall through to generic fact/filter rejection metadata.
+
+### 2. `feat/wam-c-lowered-helper-ignored-output-contract`
+
+Goal: define the runtime contract for projected body calls whose callee produces
+variables that are not exposed by the caller.
+
+Scope:
+
+- Decide whether ignored callee outputs should be allowed only when they are
+  unconstrained, or whether they require materialized row filtering.
+- If supported, add executable coverage before enabling native helper lowering.
+- Keep constant filters on the existing materialized `filtered_fact` path.
+
 ## Suggested Immediate Next Step
 
-Continue validating `test/wam-c-generated-project-multi-predicate-setup`.
+Continue validating `feat/wam-c-lowered-helper-nonreordered-projections`.
 
-The active branch makes generated predicate setup append code instead of
-replacing prior predicate trampolines, and covers the behavior with a focused
-multi-predicate executable smoke.
+The active branch keeps runtime lowering conservative and improves planner
+metadata first, so the next implementation step can be based on explicit
+projection-shape evidence instead of generic rejection comments.
