@@ -3378,7 +3378,24 @@ bool WamState::step(const Instruction& instr) {
             pc += 1; return true;
         }
         case Instruction::Op::CutIte: {
-            if (choice_points.size() > cut_barrier) choice_points.resize(cut_barrier);
+            // Soft cut for inlined if-then-else. The topmost CP at this
+            // point is the matching try_me_else (Cond just succeeded;
+            // anything Cond pushed sits above it and also wants to die
+            // on cut). Its saved cut_barrier is the OUTER barrier from
+            // before try_me_else fired — restoring it means subsequent
+            // !/0 in the Then branch still respects the enclosing scope.
+            // Crucially, CPs BELOW the try_me_else (e.g. an aggregate
+            // body''s generator CP) are preserved, so `findall(X, (gen,
+            // (cond -> then ; else)), L)` keeps iterating gen on
+            // backtrack — the previous behaviour of `resize(cut_barrier)`
+            // would have dropped gen''s CP too.
+            if (!choice_points.empty()) {
+                std::size_t top_idx = choice_points.size() - 1;
+                std::size_t saved_barrier =
+                    choice_points[top_idx].cut_barrier;
+                choice_points.resize(top_idx);
+                cut_barrier = saved_barrier;
+            }
             pc += 1; return true;
         }
 
@@ -3825,6 +3842,51 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
         // body; here we just dispatch the goal.)
         if (key == "^/2") {
             return invoke_goal_as_call(g.args[1], after_pc);
+        }
+        // once(G) — succeed once with G''s first solution, fail if
+        // G has no solutions. Equivalent to `(G -> true)`. Build an
+        // IfThenFrame with then_goal=true_atom and else_goal=null;
+        // the existing if-then machinery handles the rest (Cond
+        // success → IfThenCommit cuts and runs then; Cond failure →
+        // IfThenElse with null else propagates failure).
+        if (key == "once/1" && g.args.size() == 1) {
+            IfThenFrame itf;
+            itf.then_goal     = std::make_shared<Cell>(Value::Atom("true"));
+            // else_goal stays null — IfThenElse propagates failure.
+            itf.after_pc      = after_pc;
+            itf.base_cp_count = choice_points.size();
+            if_then_frames.push_back(std::move(itf));
+            ChoicePoint cp_;
+            cp_.alt_pc            = if_then_else_pc;
+            cp_.saved_cp          = cp;
+            cp_.trail_mark        = trail.size();
+            cp_.cut_barrier       = cut_barrier;
+            cp_.saved_regs        = regs;
+            cp_.saved_mode_stack  = mode_stack;
+            cp_.saved_env_stack   = env_stack;
+            choice_points.push_back(std::move(cp_));
+            return invoke_goal_as_call(g.args[0], if_then_commit_pc);
+        }
+        // forall(G, T) — succeed iff for every solution of G, T
+        // succeeds. Desugars to `\\+ (G, \\+ T)`: build the inner
+        // (G, \\+ T) conjunction on the heap and dispatch through
+        // \\+/1''s builtin handler, which handles double-negation
+        // correctly via paired NegationFrames.
+        if (key == "forall/2" && g.args.size() == 2) {
+            std::vector<CellPtr> neg_t_args;
+            neg_t_args.push_back(g.args[1]);
+            CellPtr neg_t = std::make_shared<Cell>(
+                Value::Compound("\\\\+/1", std::move(neg_t_args)));
+            std::vector<CellPtr> conj_args;
+            conj_args.push_back(g.args[0]);
+            conj_args.push_back(neg_t);
+            CellPtr conj = std::make_shared<Cell>(
+                Value::Compound(",/2", std::move(conj_args)));
+            std::vector<CellPtr> outer_neg_args;
+            outer_neg_args.push_back(conj);
+            CellPtr outer = std::make_shared<Cell>(
+                Value::Compound("\\\\+/1", std::move(outer_neg_args)));
+            return invoke_goal_as_call(outer, after_pc);
         }
         // User predicate path.
         auto it = labels.find(key);

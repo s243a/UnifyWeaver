@@ -693,6 +693,76 @@ user:wam_cpp_test_bagof_single_group_unchanged :-
           _, fail),
     L = [bob, alice, carol, dave].
 
+% once/1 + forall/2 — desugared at the WAM compiler level into
+% (G -> true) and \+ (G, \+ T) respectively. Inlined path uses the
+% if-then-else / negation infrastructure; meta-call path (when once
+% or forall appears inside a goal-term) is handled by the runtime''s
+% invoke_goal_as_call dispatcher.
+:- dynamic user:wam_cpp_test_once_first/0.
+:- dynamic user:wam_cpp_test_once_inner_fail/0.
+:- dynamic user:wam_cpp_test_once_no_backtrack/0.
+:- dynamic user:wam_cpp_test_forall_all_pass/0.
+:- dynamic user:wam_cpp_test_forall_some_fail/0.
+:- dynamic user:wam_cpp_test_forall_empty/0.
+:- dynamic user:wam_cpp_test_once_in_catch/0.
+:- dynamic user:wam_cpp_test_forall_in_catch/0.
+:- dynamic user:wam_cpp_test_findall_with_once/0.
+:- dynamic user:wam_cpp_test_ite_in_findall_no_cut_outer/0.
+
+% once succeeds with the first solution; subsequent solutions are
+% inaccessible (no backtracking through the protected goal).
+user:wam_cpp_test_once_first :-
+    once(member(X, [a, b, c])),
+    X = a.
+
+% once fails when the inner goal has no solutions.
+user:wam_cpp_test_once_inner_fail :-
+    \+ once(fail).
+
+% once commits to first solution — a follow-up `X = b` must fail
+% because X was already bound to a.
+user:wam_cpp_test_once_no_backtrack :-
+    once(member(X, [a, b, c])),
+    \+ X = b.
+
+% forall succeeds when the test holds for every generator solution.
+user:wam_cpp_test_forall_all_pass :-
+    forall(member(_X, [1, 2, 3]), true).
+
+% forall fails when at least one generator solution fails the test.
+user:wam_cpp_test_forall_some_fail :-
+    \+ forall(member(X, [1, 2, 3]), X = 1).
+
+% forall over an empty generator succeeds trivially (vacuous truth).
+user:wam_cpp_test_forall_empty :-
+    forall(fail, fail).
+
+% once inside catch — exercises the goal-term meta-call path
+% (invoke_goal_as_call builds an IfThenFrame at runtime).
+user:wam_cpp_test_once_in_catch :-
+    catch(once(member(X, [a, b])), _, fail),
+    X = a.
+
+% forall inside catch — exercises the goal-term meta-call path
+% (invoke_goal_as_call constructs \+ (G, \+ T) on the heap and
+% dispatches via the negation builtin).
+user:wam_cpp_test_forall_in_catch :-
+    catch(forall(member(_X, [1, 2, 3]), true), _, fail).
+
+% once inside findall — every member solution should be collected.
+% Regression guard for the cut_ite fix: previously the once''s
+% cut_ite would have dropped member''s iterator CP, causing only
+% the first solution to be collected.
+user:wam_cpp_test_findall_with_once :-
+    findall(X, (member(X, [1, 2, 3]), once(true)), L),
+    L = [1, 2, 3].
+
+% Bare if-then-else inside findall — same cut_ite-preservation
+% guarantee. Direct test of the fix without going through once.
+user:wam_cpp_test_ite_in_findall_no_cut_outer :-
+    findall(X, (member(X, [1, 2, 3]), (X > 0 -> true ; fail)), L),
+    L = [1, 2, 3].
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -2888,6 +2958,137 @@ test(cpp_e2e_bagof_single_group_unchanged,
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_bagof_single_group_unchanged/0',
+                    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% once/1 + forall/2 — desugared at the WAM compile level to
+% (G -> true) and \+ (G, \+ T) respectively. Inlined goals reuse
+% the if-then-else / negation infrastructure; goal-term position
+% (catch, call, nested aggregates) is handled by the runtime''s
+% invoke_goal_as_call dispatcher.
+% Includes a fix to CutIte that drops only the top CP and any CPs
+% Cond pushed above it, restoring cut_barrier from the saved value;
+% the previous behaviour cut all CPs above a global barrier, which
+% could swallow an enclosing aggregate''s generator CP.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_once_first, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_once_first', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_once_first/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_once_first/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_once_inner_fail, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_once_fail', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_once_inner_fail/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_once_inner_fail/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_once_no_backtrack, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_once_nobt', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_once_no_backtrack/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_once_no_backtrack/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_forall_all_pass, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_forall_all', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_forall_all_pass/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_forall_all_pass/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_forall_some_fail, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_forall_fail', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_forall_some_fail/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_forall_some_fail/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_forall_empty, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_forall_empty', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_forall_empty/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_forall_empty/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_once_in_catch, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_once_catch', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_once_in_catch/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_once_in_catch/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_forall_in_catch, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_forall_catch', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_forall_in_catch/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_forall_in_catch/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_findall_with_once, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_fa_once', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_findall_with_once/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_findall_with_once/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_ite_in_findall_no_cut_outer,
+     [condition(cpp_compiler_available)]) :-
+    % Direct regression guard for the CutIte fix: a bare if-then-else
+    % inside findall must not swallow the outer findall''s generator
+    % CPs. Without the fix, this returns [1] instead of [1, 2, 3].
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ite_in_fa', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_ite_in_findall_no_cut_outer/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_ite_in_findall_no_cut_outer/0',
                     [], true)
         ),
         delete_directory_and_contents(TmpDir)
