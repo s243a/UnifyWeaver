@@ -40,6 +40,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Do not pass --require-idle to the underlying sweep.",
     )
     parser.add_argument(
+        "--allow-new-calibration-rows",
+        action="store_true",
+        help="Allow refreshed scan workload/scale rows that are absent from the existing artifact.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print the underlying command without running it.",
@@ -70,6 +75,8 @@ def build_refresh_command(args: argparse.Namespace) -> list[str]:
     ]
     if not args.no_require_idle:
         command.insert(2, "--require-idle")
+    if args.allow_new_calibration_rows:
+        command.append("--allow-new-calibration-rows")
     return command
 
 

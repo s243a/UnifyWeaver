@@ -182,6 +182,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--allow-new-calibration-rows",
+        action="store_true",
+        help=(
+            "Allow selected fresh workload/scale rows that are absent from the calibration artifact. "
+            "Use only when intentionally expanding the checked-in calibration surface."
+        ),
+    )
+    parser.add_argument(
         "--timing-drift-ratio",
         type=float,
         default=1.50,
@@ -726,11 +734,13 @@ def compare_calibration(
     baseline_rows: list[CalibrationArtifactRow],
     *,
     timing_drift_ratio: float = 1.50,
+    allow_new_rows: bool = False,
 ) -> CalibrationDrift:
     return compare_calibration_rows(
         calibration_rows_from_summaries(summaries),
         baseline_rows,
         timing_drift_ratio=timing_drift_ratio,
+        allow_new_rows=allow_new_rows,
     )
 
 
@@ -739,6 +749,7 @@ def compare_calibration_rows(
     baseline_rows: list[CalibrationArtifactRow],
     *,
     timing_drift_ratio: float = 1.50,
+    allow_new_rows: bool = False,
 ) -> CalibrationDrift:
     critical: list[str] = []
     timing: list[str] = []
@@ -753,8 +764,9 @@ def compare_calibration_rows(
 
     for key in sorted(set(baseline_by_key) - set(fresh_by_key), key=_calibration_key_sort_key):
         critical.append(f"{key[0]}/{key[1]}: missing fresh sweep row")
-    for key in sorted(set(fresh_by_key) - set(baseline_by_key), key=_calibration_key_sort_key):
-        critical.append(f"{key[0]}/{key[1]}: no calibration baseline row")
+    if not allow_new_rows:
+        for key in sorted(set(fresh_by_key) - set(baseline_by_key), key=_calibration_key_sort_key):
+            critical.append(f"{key[0]}/{key[1]}: no calibration baseline row")
 
     for key in sorted(set(fresh_by_key) & set(baseline_by_key), key=_calibration_key_sort_key):
         fresh = fresh_by_key[key]
@@ -1175,6 +1187,7 @@ def main() -> int:
             calibration_rows,
             selected_baseline_rows,
             timing_drift_ratio=args.timing_drift_ratio,
+            allow_new_rows=args.allow_new_calibration_rows,
         )
         for warning in drift.timing:
             print(f"WARNING: calibration timing drift: {warning}", file=sys.stderr)

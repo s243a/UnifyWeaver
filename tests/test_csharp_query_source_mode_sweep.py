@@ -103,6 +103,19 @@ class CSharpQuerySourceModeSweepTests(unittest.TestCase):
         self.assertEqual(args.format, "none")
         self.assertTrue(args.write_calibration_artifact)
 
+    def test_allow_new_calibration_rows_parses(self) -> None:
+        original_argv = sys.argv
+        try:
+            sys.argv = [
+                "benchmark_csharp_query_source_mode_sweep.py",
+                "--allow-new-calibration-rows",
+            ]
+            args = parse_args()
+        finally:
+            sys.argv = original_argv
+
+        self.assertTrue(args.allow_new_calibration_rows)
+
     def test_filter_workload_scales_skips_unsupported_generated_graph_scales(self) -> None:
         self.assertEqual(
             supported_scales_for_workload("dependency-depth"),
@@ -330,6 +343,12 @@ class CSharpQuerySourceModeSweepTests(unittest.TestCase):
             drift.critical,
             ["category-influence/300: no calibration baseline row"],
         )
+
+    def test_compare_calibration_can_allow_new_fresh_rows(self) -> None:
+        drift = compare_calibration([self._summary()], [], allow_new_rows=True)
+
+        self.assertEqual(drift.timing, [])
+        self.assertEqual(drift.critical, [])
 
     def test_summarize_stability_reports_majority_and_medians(self) -> None:
         stability = summarize_stability(

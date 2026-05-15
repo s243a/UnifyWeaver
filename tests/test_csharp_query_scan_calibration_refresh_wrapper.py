@@ -54,6 +54,11 @@ class CSharpQueryScanCalibrationRefreshWrapperTests(unittest.TestCase):
 
         self.assertNotIn("--require-idle", command)
 
+    def test_allow_new_calibration_rows_is_forwarded(self) -> None:
+        command = build_refresh_command(parse_args(["--allow-new-calibration-rows"]))
+
+        self.assertIn("--allow-new-calibration-rows", command)
+
     def test_dry_run_prints_scan_refresh_command_without_running(self) -> None:
         stdout = io.StringIO()
 
@@ -72,7 +77,11 @@ class CSharpQueryScanCalibrationRefreshWrapperTests(unittest.TestCase):
 
         self.assertEqual(
             [(row.workload, row.scale) for row in rows],
-            [(f"{SCAN_WORKLOAD}:{mode}", "dev") for mode in sorted(SCAN_WORKLOAD_MODES)],
+            [
+                (f"{SCAN_WORKLOAD}:{mode}", scale)
+                for mode in sorted(SCAN_WORKLOAD_MODES)
+                for scale in ("dev", "300", "1k")
+            ],
         )
         for row in rows:
             with self.subTest(workload=row.workload):
