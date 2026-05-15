@@ -470,12 +470,24 @@ lowered_body_call_rejection_reason(PredIndicator, AvailableKeys, Reason) :-
     ->  Reason = body_call_callee_not_lowerable
     ),
     !.
+lowered_body_call_rejection_reason(PredIndicator, AvailableKeys, Reason) :-
+    body_call_projection_context(PredIndicator, HeadArgs, CalleePred, CalleeArity, CalleeKey, CalleeArgs),
+    callee_has_user_clause(CalleePred, CalleeArity),
+    memberchk(CalleeKey, AvailableKeys),
+    CalleeIndicator = user:CalleePred/CalleeArity,
+    lowered_fact_helper_rows(CalleeIndicator, _Rows),
+    body_call_projection_rejection_reason(HeadArgs, CalleeArgs, Reason),
+    !.
 
 body_call_context(PredIndicator, CalleePred, CalleeArity, CalleeKey) :-
     projected_body_call_context(PredIndicator, HeadArgs, CalleePred, CalleeArity, CalleeKey, CalleeArgs),
     HeadArgs == CalleeArgs.
 
 projected_body_call_context(PredIndicator, HeadArgs, CalleePred, CalleeArity, CalleeKey, CalleeArgs) :-
+    body_call_projection_context(PredIndicator, HeadArgs, CalleePred, CalleeArity, CalleeKey, CalleeArgs),
+    maplist(projected_body_call_arg_supported(HeadArgs), CalleeArgs).
+
+body_call_projection_context(PredIndicator, HeadArgs, CalleePred, CalleeArity, CalleeKey, CalleeArgs) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     functor(Head, Pred, Arity),
     findall(Args-Body,
@@ -491,17 +503,34 @@ projected_body_call_context(PredIndicator, HeadArgs, CalleePred, CalleeArity, Ca
     (Pred/Arity) \== (CalleePred/CalleeArity),
     HeadArgs = Args,
     maplist(var, HeadArgs),
-    maplist(projected_body_call_arg_supported(HeadArgs), CalleeArgs),
+    maplist(var, CalleeArgs),
     format(atom(CalleeKey), '~w/~w', [CalleePred, CalleeArity]).
 
 projected_body_call_arg_supported(HeadArgs, Arg) :-
     member(HeadArg, HeadArgs),
     Arg == HeadArg.
 
+body_call_projection_rejection_reason(HeadArgs, CalleeArgs, body_call_projection_unbound_callee_variable) :-
+    member(CalleeArg, CalleeArgs),
+    \+ projected_body_call_arg_supported(HeadArgs, CalleeArg),
+    !.
+body_call_projection_rejection_reason(HeadArgs, CalleeArgs, body_call_projection_omits_head_variable) :-
+    member(HeadArg, HeadArgs),
+    variable_occurrence_count(HeadArg, CalleeArgs, 0),
+    !.
+body_call_projection_rejection_reason(HeadArgs, CalleeArgs, body_call_projection_repeats_head_variable) :-
+    member(HeadArg, HeadArgs),
+    variable_occurrence_count(HeadArg, CalleeArgs, Count),
+    Count > 1,
+    !.
+
+variable_occurrence_count(Needle, Args, Count) :-
+    include(same_variable(Needle), Args, Matches),
+    length(Matches, Count).
+
 head_args_project_once([], _CalleeArgs).
 head_args_project_once([HeadArg|Rest], CalleeArgs) :-
-    include(same_variable(HeadArg), CalleeArgs, Matches),
-    Matches = [_],
+    variable_occurrence_count(HeadArg, CalleeArgs, 1),
     head_args_project_once(Rest, CalleeArgs).
 
 same_variable(Left, Right) :-
