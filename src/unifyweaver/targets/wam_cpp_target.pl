@@ -391,22 +391,27 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     helper_predicate_items(HelperItems),
     flatten_blocks([HelperItems|PerPredItems], AllItems),
     walk_blocks(AllItems, Labels, FlatInstrs0),
-    % Append four trailing synthetic-return instructions:
+    % Append five trailing synthetic-return instructions:
     %   catch_return     — CatchReturn (catch/3 success path).
     %   negation_return  — NegationReturn (\+/1 + not/1 success path).
     %   findall_collect  — FindallCollect (findall/3 meta-call
     %                      per-solution collect + force-backtrack).
     %   conj_return      — ConjReturn (,/2 goal-term''s G1 succeeded;
-    %                      pop frame and dispatch G2).
+    %                      dispatch G2 with the original after_pc).
+    %   disj_alt         — DisjAlt (;/2 goal-term''s CP fired:
+    %                      G1 exhausted; pop CP + DisjFrame and
+    %                      dispatch G2).
     % Their PCs are emitted as state-register initialisers in the
     % setup function.
     append(FlatInstrs0,
-           [catch_return, negation_return, findall_collect, conj_return],
+           [catch_return, negation_return, findall_collect,
+            conj_return, disj_alt],
            FlatInstrs),
     length(FlatInstrs0, CatchReturnPC),
     NegationReturnPC is CatchReturnPC + 1,
     FindallCollectPC is CatchReturnPC + 2,
     ConjReturnPC is CatchReturnPC + 3,
+    DisjAltPC is CatchReturnPC + 4,
     findall(LabelLine, (
         member(NameStr-PC, Labels),
         format(atom(LabelLine),
@@ -428,6 +433,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     vm.negation_return_pc = ~w;
     vm.findall_collect_pc = ~w;
     vm.conj_return_pc = ~w;
+    vm.disj_alt_pc = ~w;
 ~w
 ~w
 }
@@ -435,7 +441,8 @@ static const int _wam_cpp_setup_register = []() {
     Program::register_setup(&wam_cpp_setup);
     return 0;
 }();
-', [Reserve, CatchReturnPC, NegationReturnPC, FindallCollectPC, ConjReturnPC,
+', [Reserve, CatchReturnPC, NegationReturnPC, FindallCollectPC,
+    ConjReturnPC, DisjAltPC,
     LabelBody, InstrBody]).
 
 % ============================================================================
@@ -1045,6 +1052,8 @@ instr_to_setup_line(findall_collect, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::FindallCollect());'.
 instr_to_setup_line(conj_return, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::ConjReturn());'.
+instr_to_setup_line(disj_alt, _Labels, Line) :- !,
+    Line = '    vm.instrs.push_back(Instruction::DisjAlt());'.
 instr_to_setup_line(Instr, _Labels, Line) :-
     wam_instruction_to_cpp_literal(Instr, Lit),
     format(atom(Line), '    vm.instrs.push_back(~w);', [Lit]).
@@ -1415,7 +1424,7 @@ struct Instruction {
         TryMeElse, RetryMeElse, TrustMe, Jump, CutIte,
         BeginAggregate, EndAggregate,
         SwitchOnConstant, SwitchOnStructure, SwitchOnTerm,
-        CatchReturn, NegationReturn, FindallCollect, ConjReturn
+        CatchReturn, NegationReturn, FindallCollect, ConjReturn, DisjAlt
     };
     // Sentinel pc values for switch-table entries that should not jump.
     static constexpr std::size_t SWITCH_DEFAULT = static_cast<std::size_t>(-1);
@@ -1514,6 +1523,8 @@ struct Instruction {
         { Instruction i; i.op = Op::FindallCollect; return i; }
     static Instruction ConjReturn()
         { Instruction i; i.op = Op::ConjReturn; return i; }
+    static Instruction DisjAlt()
+        { Instruction i; i.op = Op::DisjAlt; return i; }
 };
 
 struct TrailEntry {
@@ -1628,6 +1639,17 @@ struct ConjFrame {
     std::size_t base_cp_count = 0;
 };
 
+// Frame for a disjunction goal (;(G1, G2)) dispatched as a goal-term.
+// invoke_goal_as_call pushes a DisjFrame AND a regular ChoicePoint
+// whose alt_pc = disj_alt_pc, then dispatches G1. If G1 succeeds the
+// CP stays around for outer backtracking to retry G2 later; if G1
+// fails (or backtrack reaches the CP), DisjAlt pops both the CP and
+// the DisjFrame and dispatches G2 with the original after_pc.
+struct DisjFrame {
+    CellPtr     second_goal;
+    std::size_t after_pc = 0;
+};
+
 struct WamState {
     std::unordered_map<std::string, CellPtr> regs;
     std::unordered_map<std::string, std::size_t> labels;
@@ -1641,6 +1663,9 @@ struct WamState {
     // Conjunction-goal-term dispatch (,(G1, G2) passed as a meta-call
     // argument, e.g. inside catch(_, _, _) or findall/3).
     std::vector<ConjFrame> conj_frames;
+    // Disjunction-goal-term dispatch (;(G1, G2)). Paired with a
+    // regular ChoicePoint — see DisjFrame struct doc.
+    std::vector<DisjFrame> disj_frames;
     // pc of the auto-injected single CatchReturn instruction. catch/3
     // sets cp to this value before dispatching to the protected goal;
     // when the goal proceeds, control lands here and the catcher frame
@@ -1663,6 +1688,11 @@ struct WamState {
     // the top ConjFrame and dispatches its G2 with the original
     // after_pc.
     std::size_t conj_return_pc = 0;
+    // pc of the auto-injected single DisjAlt instruction. ;/2
+    // dispatched as a goal-term arrives here via a ChoicePoint''s
+    // alt_pc when G1 fails; pops the matching DisjFrame and CP,
+    // then dispatches G2 with the original after_pc.
+    std::size_t disj_alt_pc = 0;
     // Mode stack: Get-/Put-Structure / Get-/Put-List PUSH; Unify*/Set*
     // operate on top(); each frame auto-pops once its arity is filled.
     std::vector<ModeFrame> mode_stack;
@@ -3131,6 +3161,18 @@ bool WamState::step(const Instruction& instr) {
             const ConjFrame& f = conj_frames.back();
             return invoke_goal_as_call(f.second_goal, f.after_pc);
         }
+        case Instruction::Op::DisjAlt: {
+            // Reached when the disjunction''s CP fired (G1 has
+            // exhausted its solutions). Pop the CP (trust_me-style —
+            // it''s a one-shot, no more alternatives after G2) and
+            // the matching DisjFrame, then dispatch G2 with the
+            // original after_pc.
+            if (!choice_points.empty()) choice_points.pop_back();
+            if (disj_frames.empty()) return false;
+            DisjFrame f = std::move(disj_frames.back());
+            disj_frames.pop_back();
+            return invoke_goal_as_call(f.second_goal, f.after_pc);
+        }
         case Instruction::Op::Proceed: {
             if (cp == 0) { halt = true; return true; }
             pc = cp;
@@ -3475,6 +3517,29 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
             f.base_cp_count = choice_points.size();
             conj_frames.push_back(std::move(f));
             return invoke_goal_as_call(g.args[0], conj_return_pc);
+        }
+        // Disjunction goal-term (G1 ; G2): push a CP whose alt_pc
+        // is disj_alt_pc and a paired DisjFrame carrying G2 + the
+        // original after_pc. Dispatch G1 normally. If G1 succeeds,
+        // control flows past the disjunction; the CP stays so
+        // outer backtracking can retry G2 later. If G1 fails (or
+        // backtrack drains to this CP), DisjAlt pops the CP + the
+        // DisjFrame and dispatches G2 with after_pc.
+        if (key == ";/2" && g.args.size() == 2) {
+            ChoicePoint cp_;
+            cp_.alt_pc            = disj_alt_pc;
+            cp_.saved_cp          = cp;
+            cp_.trail_mark        = trail.size();
+            cp_.cut_barrier       = cut_barrier;
+            cp_.saved_regs        = regs;
+            cp_.saved_mode_stack  = mode_stack;
+            cp_.saved_env_stack   = env_stack;
+            choice_points.push_back(std::move(cp_));
+            DisjFrame df;
+            df.second_goal = g.args[1];
+            df.after_pc    = after_pc;
+            disj_frames.push_back(std::move(df));
+            return invoke_goal_as_call(g.args[0], after_pc);
         }
         auto slash = key.rfind(''/'');
         if (slash == std::string::npos) return false;

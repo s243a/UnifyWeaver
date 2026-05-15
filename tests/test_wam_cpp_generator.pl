@@ -474,6 +474,43 @@ user:wam_cpp_test_setof_nested :-
           Ls),
     Ls = [[1, 2], [1, 2, 3]].
 
+% Disjunction goal-terms (;/2) as meta-call args. The WAM compiler
+% inlines disjunction inside findall/bagof/setof body but builds it
+% as a ;/2 compound when passed to catch/3, \+/1, call/1, or a
+% non-inlined meta-aggregate (inner findall/bagof/setof).
+:- dynamic user:wam_cpp_test_catch_disj/0.
+:- dynamic user:wam_cpp_test_not_disj_both_fail/0.
+:- dynamic user:wam_cpp_test_call_disj_first/0.
+:- dynamic user:wam_cpp_test_call_disj_second/0.
+:- dynamic user:wam_cpp_test_call_disj_first_fails/0.
+
+% catch with disjunction inside — first alternative succeeds.
+user:wam_cpp_test_catch_disj :-
+    catch((true ; fail), _E, fail).
+
+% \+ (fail ; fail) — both alternatives fail → \+ succeeds.
+user:wam_cpp_test_not_disj_both_fail :-
+    \+ (fail ; fail).
+
+% call((G1 ; G2)) — G1 succeeds, X = 1.
+user:wam_cpp_test_call_disj_first :-
+    call((X = 1 ; X = 2)),
+    X = 1.
+
+% call((G1 ; G2)) — backtrack into G2 by requiring X = 2.
+% Exercises the DisjAlt path: after G1 binds X=1, the X=2 check
+% fails, backtrack pops the disjunction''s CP, DisjAlt dispatches
+% G2 which binds X=2.
+user:wam_cpp_test_call_disj_second :-
+    call((X = 1 ; X = 2)),
+    X = 2.
+
+% call((fail ; G2)) — G1 fails immediately, G2 dispatched via
+% DisjAlt. Tests the failure-on-first-arm path.
+user:wam_cpp_test_call_disj_first_fails :-
+    call((fail ; X = 7)),
+    X = 7.
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -2213,6 +2250,93 @@ test(cpp_e2e_setof_nested, [condition(cpp_compiler_available)]) :-
                               [emit_main(true)], TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath, 'wam_cpp_test_setof_nested/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% Disjunction goal-terms (;/2) — handled by invoke_goal_as_call by
+% pushing a CP whose alt_pc = disj_alt_pc and a paired DisjFrame
+% carrying G2 + after_pc. G1 dispatched normally; on G1 exhaustion
+% backtrack reaches the CP, DisjAlt pops both CP and DisjFrame, then
+% dispatches G2.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_catch_disjunction,
+     [condition(cpp_compiler_available)]) :-
+    % catch((true ; fail), _, _) — the catch goal is a disjunction
+    % term. G1=true succeeds; the catch succeeds with no throw and
+    % the recovery never runs.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_catch_disj', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_catch_disj/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_catch_disj/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_negation_disjunction_both_fail,
+     [condition(cpp_compiler_available)]) :-
+    % \+ (fail ; fail) — both alternatives fail → \+ succeeds.
+    % Exercises the DisjAlt path: G1=fail fails immediately,
+    % DisjAlt fires, G2=fail also fails, full disjunction fails,
+    % which is what \+ needs to succeed.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_neg_disj', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_not_disj_both_fail/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_not_disj_both_fail/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_call_disjunction_first,
+     [condition(cpp_compiler_available)]) :-
+    % call((X = 1 ; X = 2)) with subsequent X = 1 — first
+    % alternative''s binding sticks (no backtrack needed).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_call_disj_first', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_call_disj_first/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_call_disj_first/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_call_disjunction_second,
+     [condition(cpp_compiler_available)]) :-
+    % call((X = 1 ; X = 2)) with subsequent X = 2 — forces backtrack
+    % into G2 via DisjAlt. The critical regression guard for the
+    % CP-paired-with-DisjFrame mechanism.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_call_disj_second', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_call_disj_second/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_call_disj_second/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_call_disjunction_first_fails,
+     [condition(cpp_compiler_available)]) :-
+    % call((fail ; X = 7)) — G1 fails immediately, DisjAlt
+    % dispatches G2 which binds X=7. Tests the
+    % immediate-failure-of-G1 path.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_call_disj_g1fail', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_call_disj_first_fails/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_call_disj_first_fails/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
