@@ -149,6 +149,23 @@ to_string(X, S) :- atom(X), !, atom_string(X, S).
 to_string(X, S) :- number(X), !, number_string(X, S).
 to_string(X, S) :- format(string(S), "~w", [X]).
 
+% execute_arity_from_key(+Key, -Arity)
+%   For a predicate key like "foo/3", returns the integer arity (3).
+%   For anything that doesn''t parse, returns 0. Used by the Execute
+%   instruction emitter so Instruction::Execute carries arity in
+%   instr.n — matches Call''s factory and lets meta-builtins
+%   (call/N) read arity uniformly from instr.n regardless of dispatch
+%   path.
+execute_arity_from_key(Key, Arity) :-
+    to_string(Key, KS),
+    (   split_string(KS, "/", "", Parts),
+        last(Parts, ArS),
+        number_string(N, ArS),
+        integer(N)
+    ->  Arity = N
+    ;   Arity = 0
+    ).
+
 % ============================================================================
 % Phase 2: WAM instructions -> C++ struct-initializer literals
 % ============================================================================
@@ -229,7 +246,13 @@ wam_instruction_to_cpp_literal_det(call(P, N), _, Code) :-
 wam_instruction_to_cpp_literal_det(execute(P), _, Code) :-
     to_string(P, PS),
     escape_cpp_string(PS, EP),
-    format(atom(Code), 'Instruction::Execute("~w")', [EP]).
+    % Derive arity from the "Name/Arity" predicate-key suffix so the
+    % runtime can read instr.n directly (matches Call''s factory).
+    % Anything that doesn''t parse falls back to arity 0 — Execute
+    % targeting a label-only predicate (e.g. the auto-injected
+    % helpers) doesn''t care about arity downstream.
+    execute_arity_from_key(PS, NArity),
+    format(atom(Code), 'Instruction::Execute("~w", ~w)', [EP, NArity]).
 wam_instruction_to_cpp_literal_det(proceed, _, 'Instruction::Proceed()').
 wam_instruction_to_cpp_literal_det(fail, _, 'Instruction::Fail()').
 wam_instruction_to_cpp_literal_det(allocate, _, 'Instruction::Allocate()').
@@ -1379,8 +1402,8 @@ struct Instruction {
         { Instruction i; i.op = Op::SetConstant; i.val = std::move(v); return i; }
     static Instruction Call(std::string p, std::int64_t n)
         { Instruction i; i.op = Op::Call; i.a = std::move(p); i.n = n; return i; }
-    static Instruction Execute(std::string p)
-        { Instruction i; i.op = Op::Execute; i.a = std::move(p); return i; }
+    static Instruction Execute(std::string p, std::int64_t n = 0)
+        { Instruction i; i.op = Op::Execute; i.a = std::move(p); i.n = n; return i; }
     static Instruction Proceed()    { Instruction i; i.op = Op::Proceed;    return i; }
     static Instruction Fail()       { Instruction i; i.op = Op::Fail;       return i; }
     static Instruction Allocate()   { Instruction i; i.op = Op::Allocate;   return i; }
@@ -3249,17 +3272,20 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
 }
 
 bool WamState::dispatch_call_meta(const std::string& op,
-                                  std::int64_t /* n_unused */,
+                                  std::int64_t instr_n,
                                   std::size_t after_pc) {
-    // Parse arity from the op-name suffix. Execute instructions
-    // don''t carry an arity field (only Call does), so we always
-    // derive arity from the key — same result either way for
-    // Call but only this path works for Execute.
-    std::int64_t total_arity = 0;
-    auto slash = op.rfind(''/'');
-    if (slash == std::string::npos) return false;
-    try { total_arity = std::stoll(op.substr(slash + 1)); }
-    catch (...) { return false; }
+    // Prefer the arity the caller passed (instr.n from both Call AND
+    // Execute now that Execute carries arity via its factory). Fall
+    // back to parsing the op-name suffix for robustness in case any
+    // direct caller forgets to pass it.
+    std::int64_t total_arity = instr_n;
+    if (total_arity < 1) {
+        auto slash = op.rfind(''/'');
+        if (slash != std::string::npos) {
+            try { total_arity = std::stoll(op.substr(slash + 1)); }
+            catch (...) { return false; }
+        }
+    }
     if (total_arity < 1) return false;
     CellPtr goal_cell = get_cell("A1");
     if (total_arity == 1) {
