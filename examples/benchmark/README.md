@@ -192,6 +192,17 @@ When intentionally adding new workload/scale rows to a calibration artifact,
 also pass `--allow-new-calibration-rows`. Keep that flag off for normal
 refreshes so missing baseline rows still fail as calibration drift.
 
+To review source-mode policy tuning candidates without reading every
+calibration row, use:
+
+```bash
+python examples/benchmark/report_csharp_query_source_mode_actions.py --format markdown
+```
+
+The report includes rows where the current `auto` policy differs from the
+observed best mode, plus rows where `auto` is slower than the best mode by the
+configured `--slow-ratio`.
+
 ### WAM-Rust and WAM-Haskell Benchmark Variants
 
 The effective-distance harness also includes hybrid WAM benchmark targets:
@@ -604,6 +615,7 @@ Tables:
 | `benchmark_csharp_query_source_mode_sweep.py` | Run generated C# query source-mode sweeps across selected workloads and emit a compact TSV/Markdown comparison |
 | `refresh_csharp_query_source_mode_calibration.py` | Refresh the graph source-mode calibration TSV with guarded idle checks |
 | `refresh_csharp_query_scan_source_mode_calibration.py` | Refresh the scan-materialization source-mode calibration TSV with guarded idle checks |
+| `report_csharp_query_source_mode_actions.py` | Report graph and scan calibration rows where the current source-mode policy differs from observed best or `auto` is slow |
 | `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
 | `benchmark_scan_materialization.py` | Exercise relation scan, pattern scan, binary/n-ary join, negation, and aggregate under the scan materialization planner; use `--format markdown` or `--format report-tsv` with `join,nary_join` to compare source registrations and artifact bucket strategy rows; use `--format calibration-tsv` or `--format calibration-markdown` to summarize auto-policy chosen-vs-best status, 10% timing tolerance, overlap confidence, slow matches, auto median, and timing spread; use `--format actionable-tsv` or `--format actionable-markdown` to show only separated timing regressions worth policy review |
 | `benchmark_closure_materialization.py` | Exercise generic seeded closure and streamed auxiliary accumulation under the closure materialization planner |
