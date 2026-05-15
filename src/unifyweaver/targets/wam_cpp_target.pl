@@ -1724,6 +1724,12 @@ struct WamState {
     // (collect template, force backtrack); goal-exhaustion triggers
     // backtrack()''s aggregate-finalise (build list, bind to result).
     bool    dispatch_findall_call(std::size_t after_pc);
+    // bagof/setof meta-call. Same shape as dispatch_findall_call
+    // but the AggregateFrame''s kind is "bagof" or "setof", so
+    // finalize_aggregate fails on empty acc (bagof) or
+    // sorts + dedup''s + fails on empty (setof).
+    bool    dispatch_aggregate_call(const std::string& kind,
+                                    std::size_t after_pc);
     bool    execute_catch();
     bool    execute_throw();
 
@@ -2983,12 +2989,19 @@ bool WamState::step(const Instruction& instr) {
         case Instruction::Op::Call: {
             if (instr.a == "catch/3") { cp = pc + 1; return execute_catch(); }
             if (instr.a == "throw/1") { cp = pc + 1; return execute_throw(); }
-            // findall/3 meta-call — handles the non-inlined case
-            // (nested findalls, where only the OUTER findall gets
-            // BeginAggregate-inlined; the inner is emitted as a
-            // plain Call to findall/3 which we dispatch here).
-            if (instr.a == "findall/3") {
-                return dispatch_findall_call(pc + 1);
+            // findall/3, bagof/3, setof/3 meta-call — handles the
+            // non-inlined cases (nested aggregates, where only the
+            // OUTER one gets BeginAggregate-inlined; the inner is
+            // emitted as a plain Call to findall/bagof/setof which
+            // we dispatch here).
+            if (instr.a == "findall/3") return dispatch_findall_call(pc + 1);
+            if (instr.a == "bagof/3")   return dispatch_aggregate_call("bagof", pc + 1);
+            if (instr.a == "setof/3")   return dispatch_aggregate_call("setof", pc + 1);
+            // ^/2 — existential quantification. Transparent for our
+            // find-style aggregation: invoke A2 (the goal) with the
+            // standard non-tail after-pc.
+            if (instr.a == "^/2") {
+                return invoke_goal_as_call(get_cell("A2"), pc + 1);
             }
             // call/N meta — needs its own arm so the after_pc is
             // correctly pc + 1 (non-tail) rather than going through
@@ -3011,9 +3024,16 @@ bool WamState::step(const Instruction& instr) {
         case Instruction::Op::Execute: {
             if (instr.a == "catch/3") return execute_catch();
             if (instr.a == "throw/1") return execute_throw();
-            if (instr.a == "findall/3") {
+            if (instr.a == "findall/3" || instr.a == "bagof/3"
+                || instr.a == "setof/3") {
                 std::size_t tail_after = cp;
-                return dispatch_findall_call(tail_after);
+                std::string kind =
+                    (instr.a == "findall/3") ? "collect" :
+                    (instr.a == "bagof/3")   ? "bagof"   : "setof";
+                return dispatch_aggregate_call(kind, tail_after);
+            }
+            if (instr.a == "^/2") {
+                return invoke_goal_as_call(get_cell("A2"), cp);
             }
             // call/N meta in tail position — after_pc is the
             // caller''s saved cp (or halt if cp == 0).
@@ -3279,6 +3299,39 @@ bool WamState::step(const Instruction& instr) {
 
 // Build the finalisation result for an aggregate based on its kind.
 // Falls back to the raw list when the kind isn''t recognised.
+// Standard-order-of-terms comparison for setof''s sort + dedup.
+// Sorts: Var < Number < Atom < Compound, with compounds compared by
+// (functor-string, arity, args lexicographically). The functor
+// string already encodes "Name/Arity" so comparing it covers both
+// name and arity at once when they differ. Args are deref''d so
+// indirect bindings come through correctly.
+static bool term_less(const Value& a, const Value& b) {
+    if (a.tag != b.tag)
+        return static_cast<int>(a.tag) < static_cast<int>(b.tag);
+    switch (a.tag) {
+        case Value::Tag::Atom:
+        case Value::Tag::Unbound:
+            return a.s < b.s;
+        case Value::Tag::Integer:
+            return a.i < b.i;
+        case Value::Tag::Float:
+            return a.f < b.f;
+        case Value::Tag::Compound: {
+            if (a.s != b.s) return a.s < b.s;
+            // Same functor/arity — compare args lexicographically.
+            for (std::size_t i = 0;
+                 i < a.args.size() && i < b.args.size(); ++i) {
+                if (!a.args[i] || !b.args[i]) continue;
+                if (term_less(*a.args[i], *b.args[i])) return true;
+                if (term_less(*b.args[i], *a.args[i])) return false;
+            }
+            return a.args.size() < b.args.size();
+        }
+        default:
+            return false;
+    }
+}
+
 static Value finalize_aggregate(const std::string& kind, const std::vector<Value>& acc) {
     auto as_d = [](const Value& v) { return v.tag == Value::Tag::Float ? v.f : (double)v.i; };
     auto is_num = [](const Value& v) {
@@ -3325,21 +3378,7 @@ static Value finalize_aggregate(const std::string& kind, const std::vector<Value
             if (!dup) uniq.push_back(v);
         }
         items = std::move(uniq);
-        std::sort(items.begin(), items.end(), [](const Value& a, const Value& b) {
-            if (a.tag != b.tag) return static_cast<int>(a.tag) < static_cast<int>(b.tag);
-            switch (a.tag) {
-                case Value::Tag::Atom:
-                case Value::Tag::Unbound:
-                case Value::Tag::Compound:
-                    return a.s < b.s;
-                case Value::Tag::Integer:
-                    return a.i < b.i;
-                case Value::Tag::Float:
-                    return a.f < b.f;
-                default:
-                    return false;
-            }
-        });
+        std::sort(items.begin(), items.end(), term_less);
     }
     Value tail = Value::Atom("[]");
     for (auto it = items.rbegin(); it != items.rend(); ++it) {
@@ -3452,9 +3491,20 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
         }
         // Meta-builtins handled directly by step() arms — go through
         // the same code path so nested catch / re-throw works.
-        if (key == "throw/1")  { cp = after_pc; return execute_throw(); }
-        if (key == "catch/3")  { cp = after_pc; return execute_catch(); }
+        if (key == "throw/1")   { cp = after_pc; return execute_throw(); }
+        if (key == "catch/3")   { cp = after_pc; return execute_catch(); }
         if (key == "findall/3") { cp = after_pc; return dispatch_findall_call(after_pc); }
+        if (key == "bagof/3")   { cp = after_pc; return dispatch_aggregate_call("bagof", after_pc); }
+        if (key == "setof/3")   { cp = after_pc; return dispatch_aggregate_call("setof", after_pc); }
+        // ^/2 — existential quantification. For find-style
+        // aggregation (which is all this runtime currently
+        // supports for bagof/setof) ^/2 is transparent: invoke A2
+        // and ignore the binder. (Full bagof/setof grouping
+        // semantics would treat ^/2 specially during the bagof
+        // body; here we just dispatch the goal.)
+        if (key == "^/2") {
+            return invoke_goal_as_call(g.args[1], after_pc);
+        }
         // User predicate path.
         auto it = labels.find(key);
         if (it != labels.end()) {
@@ -3533,12 +3583,20 @@ bool WamState::dispatch_call_meta(const std::string& op,
 }
 
 bool WamState::dispatch_findall_call(std::size_t after_pc) {
-    // findall(Template, Goal, List). We arrive here via the
-    // Call/Execute special-case for non-inlined findall/3 (the
-    // inner findall in a nested call is NOT inlined by the WAM
-    // compiler — only the outermost findall/bagof/setof gets the
-    // BeginAggregate/EndAggregate inline expansion. Without this
-    // path, nested findalls silently produce empty results.)
+    return dispatch_aggregate_call("collect", after_pc);
+}
+
+bool WamState::dispatch_aggregate_call(const std::string& kind,
+                                       std::size_t after_pc) {
+    // findall/bagof/setof(Template, Goal, List). Reached via the
+    // Call/Execute special-case for non-inlined occurrences (the
+    // WAM compiler only inlines BeginAggregate/EndAggregate for the
+    // OUTERMOST findall/bagof/setof in a body; nested ones are
+    // emitted as plain calls). kind selects finalize_aggregate''s
+    // behaviour:
+    //   "collect" — findall semantics (list, empty on no solutions).
+    //   "bagof"   — list, FAILS on no solutions.
+    //   "setof"   — sorted + dedup''d list, FAILS on no solutions.
     //
     // Snapshot Template''s cell as value_cell and List''s cell as
     // result_cell — A1/A3 will get clobbered when we dispatch the
@@ -3546,7 +3604,7 @@ bool WamState::dispatch_findall_call(std::size_t after_pc) {
     // from the goal''s args). The synthetic FindallCollect op
     // reads the value through these stored CellPtrs.
     AggregateFrame frame;
-    frame.agg_kind          = "collect";
+    frame.agg_kind          = kind;
     frame.value_cell        = get_cell("A1");
     frame.result_cell       = get_cell("A3");
     frame.begin_pc          = pc;
@@ -3560,8 +3618,6 @@ bool WamState::dispatch_findall_call(std::size_t after_pc) {
     frame.saved_mode_stack  = mode_stack;
     frame.saved_env_stack   = env_stack;
     aggregate_frames.push_back(std::move(frame));
-    // Dispatch the goal. cp = findall_collect_pc so goal-success
-    // lands at the FindallCollect synthetic op.
     CellPtr goal = get_cell("A2");
     return invoke_goal_as_call(goal, findall_collect_pc);
 }
@@ -3850,7 +3906,15 @@ bool WamState::backtrack() {
             // dispatch_findall_call); the inlined BeginAggregate
             // path uses the result_reg name.
             Value result = finalize_aggregate(f.agg_kind, f.acc);
-            if (result.tag == Value::Tag::Uninit) return false;
+            if (result.tag == Value::Tag::Uninit) {
+                // bagof/setof with empty acc → the aggregate
+                // FAILS (per ISO). Continue backtracking so any
+                // enclosing if-then-else / catch-frame / outer
+                // choice point gets to react. Returning false here
+                // would short-circuit the WAM''s normal failure
+                // propagation.
+                continue;
+            }
             CellPtr rcell = f.result_cell
                 ? f.result_cell
                 : get_cell(f.result_reg);

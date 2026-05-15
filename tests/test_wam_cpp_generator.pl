@@ -424,6 +424,56 @@ user:wam_cpp_test_findall_meta_no_conjunction :-
     findall(X, member(X, [a, b, c]), L),
     L = [a, b, c].
 
+% bagof/3 + setof/3 — share dispatch_aggregate_call with findall.
+% bagof FAILS on empty acc; setof sorts + dedups via standard term
+% order. Nested forms use the meta-call path (same as nested findall
+% from PR #2099).
+:- dynamic user:wam_cpp_test_bagof_basic/0.
+:- dynamic user:wam_cpp_test_bagof_fails_empty/0.
+:- dynamic user:wam_cpp_test_setof_basic/0.
+:- dynamic user:wam_cpp_test_setof_dedups/0.
+:- dynamic user:wam_cpp_test_setof_sorts_ints/0.
+:- dynamic user:wam_cpp_test_bagof_nested/0.
+:- dynamic user:wam_cpp_test_setof_nested/0.
+
+user:wam_cpp_test_bagof_basic :-
+    bagof(X, member(X, [a, b, c]), L), L = [a, b, c].
+
+% bagof fails on empty acc (per ISO); the if-then-else wraps that
+% so the predicate succeeds via the else branch. Regression guard
+% for the backtrack-continue-on-Uninit fix in aggregate-finalise.
+user:wam_cpp_test_bagof_fails_empty :-
+    (bagof(_X, (member(_X, [a, b]), _X = z), _) -> true ; true).
+
+user:wam_cpp_test_setof_basic :-
+    setof(X, member(X, [c, a, b]), L), L = [a, b, c].
+
+user:wam_cpp_test_setof_dedups :-
+    setof(X, member(X, [c, a, b, a, c]), L), L = [a, b, c].
+
+user:wam_cpp_test_setof_sorts_ints :-
+    setof(X, member(X, [3, 1, 2, 1]), L), L = [1, 2, 3].
+
+% Nested bagof — inner is non-inlined. Existential quantifier
+% (N^Goal) exercises the ^/2 transparency path. Without the
+% ^/2 handler, the body would fall through to builtin() and fail.
+user:wam_cpp_test_bagof_nested :-
+    bagof(L,
+          N^(member(N, [2, 3]),
+             bagof(X, (member(X, [1, 2, 3, 4]), X =< N), L)),
+          Ls),
+    Ls = [[1, 2], [1, 2, 3]].
+
+% Nested setof — also exercises term_less recursion for the outer
+% sort. List terms with the same functor ([|]/2) require
+% args-level comparison to be ordered correctly.
+user:wam_cpp_test_setof_nested :-
+    setof(L,
+          N^(member(N, [3, 2]),
+             setof(X, (member(X, [3, 1, 2, 1]), X =< N), L)),
+          Ls),
+    Ls = [[1, 2], [1, 2, 3]].
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -2055,6 +2105,114 @@ test(cpp_e2e_findall_nested, [condition(cpp_compiler_available)]) :-
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_findall_nested/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% bagof/3 + setof/3 — share dispatch_aggregate_call with findall.
+% bagof fails on empty; setof sorts + dedups via standard term order
+% (term_less in finalize_aggregate, with recursive args comparison
+% so list compounds with the same functor get ordered correctly).
+% Nested forms exercise the meta-call path and the ^/2 transparency
+% handler.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_bagof_basic, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_bagof_basic', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_bagof_basic/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_bagof_basic/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_bagof_fails_empty,
+     [condition(cpp_compiler_available)]) :-
+    % bagof returns failure (per ISO) when the goal has no
+    % solutions. The if-then-else wraps that — predicate succeeds
+    % via the else branch. Regression guard for the
+    % backtrack-continue-on-Uninit fix.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_bagof_empty', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_bagof_fails_empty/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_bagof_fails_empty/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_setof_basic, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_setof_basic', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_setof_basic/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_setof_basic/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_setof_dedups, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_setof_dedups', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_setof_dedups/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_setof_dedups/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_setof_sorts_ints,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_setof_sorts', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_setof_sorts_ints/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_setof_sorts_ints/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_bagof_nested, [condition(cpp_compiler_available)]) :-
+    % Nested bagof with existential quantifier (N^Goal).
+    % Exercises:
+    %   - Outer inlined bagof.
+    %   - Inner non-inlined bagof via dispatch_aggregate_call("bagof").
+    %   - ^/2 transparency in both invoke_goal_as_call AND the
+    %     Call step arm (the WAM emits `call ^/2, 2` for the
+    %     existential quantifier).
+    %   - ConjFrame dispatch for the inner''s ,(member, X =< N) goal.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_bagof_nested', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_bagof_nested/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_bagof_nested/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_setof_nested, [condition(cpp_compiler_available)]) :-
+    % Nested setof. The outer setof''s sort sees list-shaped
+    % compounds [1,2] and [1,2,3] (both functor [|]/2/2). The
+    % term_less helper''s recursive args comparison is what makes
+    % the lexicographic ordering work: regression guard for the
+    % "compound sort by functor only" bug fixed in this PR.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_setof_nested', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_setof_nested/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_setof_nested/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
