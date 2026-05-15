@@ -80,7 +80,7 @@ class CSharpQueryScanCalibrationRefreshWrapperTests(unittest.TestCase):
             [
                 (f"{SCAN_WORKLOAD}:{mode}", scale)
                 for mode in sorted(SCAN_WORKLOAD_MODES)
-                for scale in ("dev", "300", "1k")
+                for scale in ("dev", "300", "1k", "5k", "10k")
             ],
         )
         for row in rows:
