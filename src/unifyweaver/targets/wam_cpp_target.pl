@@ -1654,21 +1654,24 @@ struct DisjFrame {
     std::size_t after_pc = 0;
 };
 
-// Frame for an if-then-else goal (;(->( Cond, Then), Else)) dispatched
-// as a goal-term. invoke_goal_as_call pushes an IfThenFrame and a
+// Frame for an if-then-else goal (;(->( Cond, Then), Else)) or a
+// bare if-then (->(Cond, Then) with no enclosing ;) dispatched as a
+// goal-term. invoke_goal_as_call pushes an IfThenFrame and a
 // ChoicePoint with alt_pc = if_then_else_pc, then dispatches Cond
 // with cp = if_then_commit_pc.
 //
 //   - Cond succeeds  → IfThenCommit fires: cut CPs back to
-//                       cp_count_at_entry (so Cond can''t backtrack-
+//                       base_cp_count (so Cond can''t backtrack-
 //                       retry), pop the frame, dispatch Then with
 //                       the original after_pc.
 //   - Cond fails     → backtrack drains to our CP, lands on
 //                       if_then_else_pc: pop the frame, dispatch
-//                       Else with after_pc.
+//                       Else with after_pc. For bare if-then (no
+//                       Else clause), else_goal is null and the
+//                       op propagates failure.
 struct IfThenFrame {
     CellPtr     then_goal;
-    CellPtr     else_goal;
+    CellPtr     else_goal;            // null for bare (Cond -> Then)
     std::size_t after_pc = 0;
     std::size_t base_cp_count = 0;   // CP-stack depth BEFORE we
                                      // pushed the if-then-else CP
@@ -3222,11 +3225,14 @@ bool WamState::step(const Instruction& instr) {
             // Reached when Cond failed and backtrack landed at our
             // CP''s alt_pc. Pop the CP (trust_me-style — once-only,
             // same as DisjAlt) and the matching IfThenFrame, then
-            // dispatch Else with the original after_pc.
+            // dispatch Else with the original after_pc. For bare
+            // (Cond -> Then) goal-terms (no Else clause), else_goal
+            // is null — propagate failure instead.
             if (!choice_points.empty()) choice_points.pop_back();
             if (if_then_frames.empty()) return false;
             IfThenFrame f = std::move(if_then_frames.back());
             if_then_frames.pop_back();
+            if (!f.else_goal) return false;
             return invoke_goal_as_call(f.else_goal, f.after_pc);
         }
         case Instruction::Op::Proceed: {
@@ -3573,6 +3579,29 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
             f.base_cp_count = choice_points.size();
             conj_frames.push_back(std::move(f));
             return invoke_goal_as_call(g.args[0], conj_return_pc);
+        }
+        // Bare if-then `(Cond -> Then)` as a goal-term (no ;
+        // wrapper, so there''s no Else branch). Same machinery as
+        // if-then-else but with else_goal = nullptr — Cond failure
+        // propagates as failure of the whole construct.
+        if (key == "->/2" && g.args.size() == 2) {
+            IfThenFrame itf;
+            itf.then_goal     = g.args[1];
+            // else_goal stays null — IfThenElse propagates failure
+            // when it sees a null else slot.
+            itf.after_pc      = after_pc;
+            itf.base_cp_count = choice_points.size();
+            if_then_frames.push_back(std::move(itf));
+            ChoicePoint cp_;
+            cp_.alt_pc            = if_then_else_pc;
+            cp_.saved_cp          = cp;
+            cp_.trail_mark        = trail.size();
+            cp_.cut_barrier       = cut_barrier;
+            cp_.saved_regs        = regs;
+            cp_.saved_mode_stack  = mode_stack;
+            cp_.saved_env_stack   = env_stack;
+            choice_points.push_back(std::move(cp_));
+            return invoke_goal_as_call(g.args[0], if_then_commit_pc);
         }
         // Disjunction goal-term — two flavours, both shaped ;/2.
         // First check for the if-then-else special case

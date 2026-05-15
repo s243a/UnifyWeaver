@@ -547,6 +547,41 @@ user:wam_cpp_test_ite_cut_commits_cond :-
     call((member(X, [1, 2, 3]) -> Y = X ; Y = none)),
     Y = 1.
 
+% Bare if-then goal-terms `(Cond -> Then)` — no Else. The WAM
+% compiler builds them as `->/2` at the top level (not wrapped in
+% ;/2). On Cond failure the whole construct fails. On Cond success
+% Cond''s CPs are cut and Then runs.
+:- dynamic user:wam_cpp_test_bif_then_runs/0.
+:- dynamic user:wam_cpp_test_bif_cond_fail_propagates/0.
+:- dynamic user:wam_cpp_test_bif_inside_catch/0.
+:- dynamic user:wam_cpp_test_bif_not_when_cond_fails/0.
+:- dynamic user:wam_cpp_test_bif_cut_commits/0.
+
+% Cond succeeds → Then runs.
+user:wam_cpp_test_bif_then_runs :-
+    call((true -> X = 1)),
+    X = 1.
+
+% Cond fails → bare-if-then fails → outer if-then-else takes Else.
+user:wam_cpp_test_bif_cond_fail_propagates :-
+    (call((fail -> _Y = 1)) -> false ; true).
+
+% Inside catch — Cond=true succeeds, Then binds X=7, catch passes
+% through with no throw.
+user:wam_cpp_test_bif_inside_catch :-
+    catch((true -> X = 7), _, fail),
+    X = 7.
+
+% \+ (Cond fails → bif fails) → \+ succeeds.
+user:wam_cpp_test_bif_not_when_cond_fails :-
+    \+ call((fail -> _Y = 1)).
+
+% Cut: Cond uses member/2 with 3 solutions. After committing to
+% X=1, no backtrack to X=2/X=3.
+user:wam_cpp_test_bif_cut_commits :-
+    call((member(X, [1, 2, 3]) -> Y = X)),
+    Y = 1.
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -2446,6 +2481,86 @@ test(cpp_e2e_ite_cut_commits_cond,
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_ite_cut_commits_cond/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% Bare (Cond -> Then) goal-terms — no Else. The WAM compiler builds
+% these as ->/2 at the top level (not wrapped in ;/2). Reuses the
+% IfThenFrame machinery with else_goal = null; on Cond failure the
+% IfThenElse op propagates failure instead of dispatching Else.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_bif_then_runs, [condition(cpp_compiler_available)]) :-
+    % Cond=true → IfThenCommit → Then runs.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_bif_then', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_bif_then_runs/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_bif_then_runs/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_bif_cond_fail_propagates,
+     [condition(cpp_compiler_available)]) :-
+    % Cond=fail → IfThenElse fires; else_goal is null → propagate
+    % failure. Wrapped in if-then-else so the outer test succeeds
+    % via the else branch.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_bif_fail', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_bif_cond_fail_propagates/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_bif_cond_fail_propagates/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_bif_inside_catch,
+     [condition(cpp_compiler_available)]) :-
+    % Bare (Cond -> Then) inside catch — the catch protected goal
+    % is a ->/2 term, dispatched via invoke_goal_as_call.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_bif_catch', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_bif_inside_catch/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_bif_inside_catch/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_bif_not_when_cond_fails,
+     [condition(cpp_compiler_available)]) :-
+    % \+ (bif with Cond=fail). The bif fails → \+ succeeds.
+    % Tests that bare-if-then''s failure propagates correctly
+    % through the negation layer.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_bif_not', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_bif_not_when_cond_fails/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_bif_not_when_cond_fails/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_bif_cut_commits,
+     [condition(cpp_compiler_available)]) :-
+    % Cut semantics for bare-if-then. member/2 in Cond has 3
+    % solutions; we commit to X=1 and don''t retry. Verifies
+    % IfThenCommit''s CP-trimming applies to the bare form too.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_bif_cut', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_bif_cut_commits/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_bif_cut_commits/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
