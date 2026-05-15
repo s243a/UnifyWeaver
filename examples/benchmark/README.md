@@ -173,14 +173,24 @@ selected explicitly with `--workloads scan-materialization` or
 The scan-materialization source-mode policy has its own artifact,
 `csharp_query_scan_source_mode_calibration.tsv`, so graph calibration refreshes
 do not accidentally rewrite scan rows. The default scan refresh is intentionally
-small and uses `dev` scale:
+small and uses `dev` scale as a fast smoke refresh:
 
 ```bash
 python examples/benchmark/refresh_csharp_query_scan_source_mode_calibration.py
 ```
 
-Pass `--scales 300,1k` or a larger scale list when a broader scan refresh is
-needed.
+The checked-in scan calibration artifact covers `dev`, `300`, `1k`, `5k`, and
+`10k` for each scan-materialization mode. Use an explicit scale list when
+refreshing broader coverage:
+
+```bash
+python examples/benchmark/refresh_csharp_query_scan_source_mode_calibration.py \
+  --scales dev,300,1k,5k,10k
+```
+
+When intentionally adding new workload/scale rows to a calibration artifact,
+also pass `--allow-new-calibration-rows`. Keep that flag off for normal
+refreshes so missing baseline rows still fail as calibration drift.
 
 ### WAM-Rust and WAM-Haskell Benchmark Variants
 
