@@ -79,7 +79,8 @@ parse_lines([Line|Rest], Items) :-
 %  single-quoted regions preserve their content verbatim (with the
 %  surrounding quotes stripped); bare commas are separators except
 %  when immediately followed by ''/'' (so the conjunction functor
-%  ",/N" survives as one token). No escape sequences inside quotes.
+%  ",/N" survives as one token). Inside quotes, backslash escapes the
+%  following character, matching wam_target:quote_wam_constant/2.
 wam_tokenize_line(Line, Tokens) :-
     string_chars(Line, Chars),
     tokenize_chars(Chars, Tokens).
@@ -108,6 +109,8 @@ ws('\t').
 
 read_quoted([], [], []).
 read_quoted(['\''|Rest], [], Rest) :- !.
+read_quoted(['\\', C|Cs], [C|More], Rest) :- !,
+    read_quoted(Cs, More, Rest).
 read_quoted([C|Cs], [C|More], Rest) :-
     read_quoted(Cs, More, Rest).
 

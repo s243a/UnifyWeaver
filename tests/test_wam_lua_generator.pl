@@ -191,6 +191,18 @@ test(registry) :-
     assertion(target_family(wam_lua, lua)),
     assertion(target_module(wam_lua, wam_lua_target)).
 
+test(shared_wam_tokenizer_bridge) :-
+    wam_lua_target:tokenize_wam_line("    put_constant 'Has,comma', A1", T1),
+    assertion(T1 == ["put_constant", "Has,comma", "A1"]),
+    wam_lua_target:tokenize_wam_line("    put_structure ,/2, A1", T2),
+    assertion(T2 == ["put_structure", ",/2", "A1"]).
+
+test(shared_wam_parser_keeps_lua_extensions) :-
+    WamText = "p/0:\n    arg 1, Y1, X3\n    proceed\n",
+    once(wam_lua_target:wam_code_to_lua_data(WamText, [], Instrs, Labels)),
+    assertion(Labels == ["  [\"p/0\"] = 1"]),
+    assertion(Instrs == ["I.ArgInstr(1, 201, 103)", 'I.Proceed()']).
+
 test(lua_parity_guard) :-
     read_file_to_string('templates/targets/lua_wam/runtime.lua.mustache', Runtime, []),
     read_file_to_string('tests/test_wam_lua_generator.pl', Tests, []),
