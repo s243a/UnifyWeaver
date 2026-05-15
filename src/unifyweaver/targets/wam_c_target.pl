@@ -183,6 +183,8 @@ plan_wam_c_lowered_helper(DetectedKeys, AvailableKeys, PredIndicator, Plan) :-
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, fact_only(Rows))
     ;   lowered_body_call_helper(PredIndicator, AvailableKeys, CalleeKey, CalleeArity)
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, body_call(CalleeKey, CalleeArity))
+    ;   lowered_body_call_projected_helper(PredIndicator, AvailableKeys, CalleeKey, CalleeArity, CalleeArgs)
+    ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, body_call_projected(CalleeKey, CalleeArity, CalleeArgs))
     ;   lowered_body_call_rejection_reason(PredIndicator, AvailableKeys, Reason)
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, rejected, Reason)
     ;   lowered_comparison_filtered_fact_helper(PredIndicator, CalleeKey, Rows)
@@ -347,7 +349,12 @@ compile_lowered_helpers_for_project(Plans, LoweredKeys, Code, SetupCode) :-
                 lowered_body_call_helper_for_predicate(PredIndicator, CalleeKey, CalleeArity, Key, CodePart, SetupLine)
             ),
             BodyCallEntries),
-    append(FactEntries, BodyCallEntries, Entries),
+    findall(Key-CodePart-SetupLine,
+            (   member(wam_c_lowered_helper_plan(Key, PredIndicator, lowered, body_call_projected(CalleeKey, CalleeArity, CalleeArgs)), Plans),
+                lowered_body_call_projected_helper_for_predicate(PredIndicator, CalleeKey, CalleeArity, CalleeArgs, Key, CodePart, SetupLine)
+            ),
+            ProjectedBodyCallEntries),
+    append([FactEntries, BodyCallEntries, ProjectedBodyCallEntries], Entries),
     findall(K, member(K-_-_, Entries), LoweredKeys),
     findall(C, member(_-C-_, Entries), Codes),
     findall(S, member(_-_-S, Entries), SetupLines),
@@ -386,6 +393,7 @@ wam_c_lowered_helper_plan_by_action(Plans, Action, Key, ReasonLabel) :-
 
 wam_c_lowered_plan_reason_label(fact_only(_Rows), fact_only) :- !.
 wam_c_lowered_plan_reason_label(body_call(_CalleeKey, _CalleeArity), body_call) :- !.
+wam_c_lowered_plan_reason_label(body_call_projected(_CalleeKey, _CalleeArity, _CalleeArgs), body_call_projected) :- !.
 wam_c_lowered_plan_reason_label(filtered_fact(_CalleeKey, _Rows), filtered_fact) :- !.
 wam_c_lowered_plan_reason_label(comparison_filtered_fact(_CalleeKey, _Rows), comparison_filtered_fact) :- !.
 wam_c_lowered_plan_reason_label(Reason, Reason).
@@ -444,6 +452,14 @@ lowered_body_call_helper(PredIndicator, AvailableKeys, CalleeKey, CalleeArity) :
     format(atom(CalleeKey), '~w/~w', [CalleePred, CalleeArity]),
     memberchk(CalleeKey, AvailableKeys).
 
+lowered_body_call_projected_helper(PredIndicator, AvailableKeys, CalleeKey, CalleeArity, CalleeArgs) :-
+    projected_body_call_context(PredIndicator, HeadArgs, CalleePred, CalleeArity, CalleeKey, CalleeArgs),
+    format(atom(CalleeKey), '~w/~w', [CalleePred, CalleeArity]),
+    memberchk(CalleeKey, AvailableKeys),
+    CalleeIndicator = user:CalleePred/CalleeArity,
+    lowered_fact_helper_rows(CalleeIndicator, _Rows),
+    head_args_project_once(HeadArgs, CalleeArgs).
+
 lowered_body_call_rejection_reason(PredIndicator, AvailableKeys, Reason) :-
     body_call_context(PredIndicator, CalleePred, CalleeArity, CalleeKey),
     callee_has_user_clause(CalleePred, CalleeArity),
@@ -456,6 +472,10 @@ lowered_body_call_rejection_reason(PredIndicator, AvailableKeys, Reason) :-
     !.
 
 body_call_context(PredIndicator, CalleePred, CalleeArity, CalleeKey) :-
+    projected_body_call_context(PredIndicator, HeadArgs, CalleePred, CalleeArity, CalleeKey, CalleeArgs),
+    HeadArgs == CalleeArgs.
+
+projected_body_call_context(PredIndicator, HeadArgs, CalleePred, CalleeArity, CalleeKey, CalleeArgs) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     functor(Head, Pred, Arity),
     findall(Args-Body,
@@ -468,9 +488,24 @@ body_call_context(PredIndicator, CalleePred, CalleeArity, CalleeKey) :-
     Body \= (_, _),
     Body =.. [CalleePred|CalleeArgs],
     length(CalleeArgs, CalleeArity),
-    Args == CalleeArgs,
     (Pred/Arity) \== (CalleePred/CalleeArity),
+    HeadArgs = Args,
+    maplist(var, HeadArgs),
+    maplist(projected_body_call_arg_supported(HeadArgs), CalleeArgs),
     format(atom(CalleeKey), '~w/~w', [CalleePred, CalleeArity]).
+
+projected_body_call_arg_supported(HeadArgs, Arg) :-
+    member(HeadArg, HeadArgs),
+    Arg == HeadArg.
+
+head_args_project_once([], _CalleeArgs).
+head_args_project_once([HeadArg|Rest], CalleeArgs) :-
+    include(same_variable(HeadArg), CalleeArgs, Matches),
+    Matches = [_],
+    head_args_project_once(Rest, CalleeArgs).
+
+same_variable(Left, Right) :-
+    Left == Right.
 
 callee_has_user_clause(Pred, Arity) :-
     functor(Head, Pred, Arity),
@@ -494,6 +529,77 @@ lowered_body_call_helper_for_predicate(PredIndicator, CalleeKey, CalleeArity, Ke
     format(atom(SetupLine),
            '    wam_register_foreign_predicate(state, "~w", ~w, ~w);',
            [Key, Arity, Symbol]).
+
+lowered_body_call_projected_helper_for_predicate(PredIndicator, CalleeKey, CalleeArity, _CalleeArgs, Key, Code, SetupLine) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    format(atom(Key), '~w/~w', [Pred, Arity]),
+    wam_c_symbol_name(Pred, Arity, Symbol),
+    wam_c_symbol_for_key(CalleeKey, CalleeSymbol),
+    projected_body_call_arg_assignments(PredIndicator, ArgAssignments),
+    projected_body_call_result_copies(PredIndicator, ResultCopies),
+    MaxArity is max(Arity, CalleeArity),
+    format(atom(Code),
+'static bool ~w(WamState *state, const char *pred, int arity) {
+    (void)pred;
+    if (arity != ~w) return false;
+    WamValue saved_args[~w];
+    for (int i = 0; i < ~w; i++) saved_args[i] = state->A[i];
+~w
+    bool ok = ~w(state, "~w", ~w);
+    if (ok) {
+        WamValue result_args[~w];
+        for (int i = 0; i < ~w; i++) result_args[i] = state->A[i];
+~w
+    } else {
+        for (int i = 0; i < ~w; i++) state->A[i] = saved_args[i];
+    }
+    for (int i = ~w; i < ~w; i++) state->A[i] = saved_args[i];
+    return ok;
+}',
+           [Symbol, Arity, MaxArity, MaxArity, ArgAssignments, CalleeSymbol, CalleeKey, CalleeArity, CalleeArity, CalleeArity, ResultCopies, Arity, Arity, MaxArity]),
+    format(atom(SetupLine),
+           '    wam_register_foreign_predicate(state, "~w", ~w, ~w);',
+           [Key, Arity, Symbol]).
+
+projected_body_call_arg_assignments(PredIndicator, Code) :-
+    projected_body_call_clause_args(PredIndicator, HeadArgs, CalleeArgs),
+    findall(Line,
+            (   nth0(I, CalleeArgs, Arg),
+                projected_body_call_arg_assignment(I, Arg, HeadArgs, Line)
+            ),
+            Lines),
+    atomic_list_concat(Lines, '\n', Code).
+
+projected_body_call_clause_args(PredIndicator, HeadArgs, CalleeArgs) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    functor(Head, Pred, Arity),
+    user:clause(Head, Body),
+    Body \== true,
+    Head =.. [_|HeadArgs],
+    strip_module_qualification(Body, StrippedBody),
+    StrippedBody =.. [_CalleePred|CalleeArgs].
+
+projected_body_call_arg_assignment(I, Arg, _HeadArgs, Line) :-
+    wam_c_lowered_constant(Arg),
+    !,
+    c_value_literal(Arg, ValLit),
+    format(atom(Line), '    state->A[~w] = ~w;', [I, ValLit]).
+projected_body_call_arg_assignment(I, Arg, HeadArgs, Line) :-
+    nth0(HeadIndex, HeadArgs, HeadArg),
+    Arg == HeadArg,
+    !,
+    format(atom(Line), '    state->A[~w] = saved_args[~w];', [I, HeadIndex]).
+
+projected_body_call_result_copies(PredIndicator, Code) :-
+    projected_body_call_clause_args(PredIndicator, HeadArgs, CalleeArgs),
+    findall(Line,
+            (   nth0(HeadIndex, HeadArgs, HeadArg),
+                nth0(CalleeIndex, CalleeArgs, CalleeArg),
+                HeadArg == CalleeArg,
+                format(atom(Line), '        state->A[~w] = result_args[~w];', [HeadIndex, CalleeIndex])
+            ),
+            Lines),
+    atomic_list_concat(Lines, '\n', Code).
 
 wam_c_symbol_for_key(Key, Symbol) :-
     atomic_list_concat([PredAtom, ArityAtom], '/', Key),
