@@ -262,5 +262,9 @@ need manual override:
 - The first C# LMDB reader uses a C#-owned manifest
   (`unifyweaver.lmdb_relation.v1`) that matches the existing C#/Python ingest
   key/value contract and can later converge with the shared artifact proposal.
-- Which workloads should drive the first LMDB measurement: graph parent lookup,
-  scan-materialization joins, or effective-distance support relations?
+- Effective-distance `category_parent/2` is the first real-workload artifact
+  backend measurement because it exercises the same arity-2 graph support
+  relation used by the established Wikipedia/SimpleWiki benchmark family.
+  Haskell's LMDB cache modes remain a higher-level query-locality policy; this
+  C# query benchmark intentionally isolates backend scan, lookup, and bucket
+  access before adding cache-policy comparisons.
