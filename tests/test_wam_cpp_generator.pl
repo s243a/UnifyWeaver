@@ -351,6 +351,42 @@ user:wam_cpp_test_findall_call :-
     findall(Y, call(wam_cpp_double, 1, Y), L),
     L = [2].
 
+% findall + conjunction with backtracking. The previous PR (#2097)
+% flagged this pattern as "hangs" — but that turned out to be a
+% symptom of the PutStructure aliasing bug fixed in the same PR.
+% Now that aliasing through A-regs is correct, these compose
+% naturally. Tests here lock that in and exercise the higher-order
+% patterns end-to-end.
+:- dynamic user:wam_cpp_test_findall_member_arith/0.
+:- dynamic user:wam_cpp_test_findall_member_user/0.
+:- dynamic user:wam_cpp_test_findall_member_call/0.
+:- dynamic user:wam_cpp_test_findall_filtered/0.
+:- dynamic user:wam_cpp_test_findall_three_goals/0.
+
+user:wam_cpp_test_findall_member_arith :-
+    findall(Y, (member(X, [1, 2, 3]), Y is X * 2), L),
+    L = [2, 4, 6].
+
+user:wam_cpp_test_findall_member_user :-
+    findall(Y, (member(X, [1, 2, 3]), wam_cpp_double(X, Y)), L),
+    L = [2, 4, 6].
+
+user:wam_cpp_test_findall_member_call :-
+    findall(Y,
+            (member(X, [1, 2, 3]), call(wam_cpp_double, X, Y)),
+            L),
+    L = [2, 4, 6].
+
+user:wam_cpp_test_findall_filtered :-
+    findall(X, (member(X, [1, 2, 3, 4, 5]), X > 2), L),
+    L = [3, 4, 5].
+
+user:wam_cpp_test_findall_three_goals :-
+    findall(Z,
+            (member(X, [1, 2, 3]), Y is X * 2, Z is Y + 10),
+            L),
+    L = [12, 14, 16].
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -1814,10 +1850,7 @@ test(cpp_e2e_maplist3_check, [condition(cpp_compiler_available)]) :-
 test(cpp_e2e_findall_call_compose,
      [condition(cpp_compiler_available)]) :-
     % findall with call/N inside its goal. Verifies the aggregate
-    % frame + meta-call composition. (The richer
-    % "findall + member + call/N" form has a separate latent bug
-    % involving aggregate-frame + choice-point interaction with
-    % conjunctions — not addressed in this PR.)
+    % frame + meta-call composition.
     unique_cpp_tmp_dir('tmp_cpp_e2e_findall_call', TmpDir),
     setup_call_cleanup(
         write_wam_cpp_project([user:wam_cpp_test_findall_call/0,
@@ -1826,6 +1859,97 @@ test(cpp_e2e_findall_call_compose,
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_findall_call/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% findall + conjunction with backtracking. PR #2097 flagged these
+% as "hangs" — turned out to be the PutStructure aliasing bug fixed
+% in the same PR. Now that aliasing through A-regs allocates fresh,
+% these compose naturally. The tests here lock that in.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_findall_member_arith,
+     [condition(cpp_compiler_available)]) :-
+    % findall(Y, (member(X, [...]), Y is X * 2), L) — member
+    % backtracks, Y gets computed each time, all Ys collected.
+    % Was the original reproduction in the maplist PR''s "deferred"
+    % list.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_fa_arith', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_findall_member_arith/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_findall_member_arith/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_findall_member_user_pred,
+     [condition(cpp_compiler_available)]) :-
+    % findall(Y, (member(X, [...]), double(X, Y)), L) — same shape
+    % but dispatches a user predicate as the second conjunct.
+    % Exercises the user-label dispatch + aggregate-frame
+    % collection together.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_fa_user', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_findall_member_user/0,
+                               user:wam_cpp_double/2],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_findall_member_user/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_findall_member_call_meta,
+     [condition(cpp_compiler_available)]) :-
+    % The full higher-order pipeline: findall + member + call/N
+    % dispatching to a user predicate. Three meta-machineries
+    % stacked — aggregate frame, member''s choice-point retry, and
+    % call/N''s goal-term dispatch.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_fa_call', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_findall_member_call/0,
+                               user:wam_cpp_double/2],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_findall_member_call/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_findall_filtered, [condition(cpp_compiler_available)]) :-
+    % findall(X, (member(X, [...]), X > 2), L) — backtracking
+    % through a filter condition. Tests that the aggregate frame
+    % correctly handles per-solution success/failure.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_fa_filtered', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_findall_filtered/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_findall_filtered/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_findall_three_goal_conjunction,
+     [condition(cpp_compiler_available)]) :-
+    % Three goals chained: member backtracks, arith computes,
+    % arith computes again. Verifies the aggregate frame handles
+    % an N-goal conjunction (not just 2).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_fa_three', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_findall_three_goals/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_findall_three_goals/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
