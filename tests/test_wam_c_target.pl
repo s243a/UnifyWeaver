@@ -213,7 +213,7 @@ test_predicate_hash_registration :-
         atom_string(PredCode, PredS),
         compile_step_wam_to_c([], StepCode),
         atom_string(StepCode, StepS),
-        sub_string(PredS, _, _, _, 'wam_register_predicate_hash(state, "foo/1", 0)'),
+        sub_string(PredS, _, _, _, 'wam_register_predicate_hash(state, "foo/1", base_pc + 0)'),
         sub_string(StepS, _, _, _, 'resolve_predicate_hash(state, instr->as.pred.pred)')
     ->  pass(Test)
     ;   fail_test(Test, 'predicate hash registration/lookup missing')
@@ -740,7 +740,7 @@ test_list_target_pc_emission :-
     (   compile_predicate_to_wam(user:wam_c_list_case/1, [], WamCode),
         compile_wam_predicate_to_c(user:wam_c_list_case/1, WamCode, [], CCode),
         atom_string(CCode, S),
-        sub_string(S, _, _, _, '.list_target_pc = 1')
+        sub_string(S, _, _, _, '.list_target_pc = base_pc + 1')
     ->  pass(Test)
     ;   fail_test(Test, 'list_target_pc not emitted')
     ),
@@ -762,6 +762,16 @@ test_cross_predicate_executable_smoke :-
     ->  (   run_cross_predicate_executable_smoke
         ->  pass(Test)
         ;   fail_test(Test, 'cross-predicate executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_multi_predicate_setup_executable_smoke :-
+    Test = 'WAM-C: multi-predicate setup executable smoke',
+    (   gcc_available
+    ->  (   run_multi_predicate_setup_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'multi-predicate setup executable failed')
         )
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
@@ -1023,6 +1033,27 @@ run_cross_predicate_executable_smoke :-
     format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
     write_text_file(PredPath, PredTranslationUnit),
     wam_c_cross_exec_smoke_main(MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
+run_multi_predicate_setup_executable_smoke :-
+    FirstWamCode = 'wam_c_multi_first/1:\n    get_constant a, A1\n    proceed',
+    SecondWamCode = 'wam_c_multi_second/1:\n    get_constant b, A1\n    proceed',
+    compile_wam_predicate_to_c(user:wam_c_multi_first/1, FirstWamCode, [], FirstPredCode),
+    compile_wam_predicate_to_c(user:wam_c_multi_second/1, SecondWamCode, [], SecondPredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_multi_setup_smoke', Stamp, TmpBase),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w~n~n~w', [FirstPredCode, SecondPredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    wam_c_multi_setup_smoke_main(MainCode),
     write_text_file(MainPath, MainCode),
     compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
     run_c_smoke_plain(ExePath).
@@ -1662,6 +1693,44 @@ int main(void) {
     if (fail_rc != WAM_HALT) {
         wam_free_state(&state);
         return 20;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_multi_setup_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_multi_first_1(WamState* state);
+void setup_wam_c_multi_second_1(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_multi_first_1(&state);
+    setup_wam_c_multi_second_1(&state);
+
+    WamValue first_args[1] = { val_atom("a") };
+    int first_rc = wam_run_predicate(&state, "wam_c_multi_first/1", first_args, 1);
+    if (first_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue second_args[1] = { val_atom("b") };
+    int second_rc = wam_run_predicate(&state, "wam_c_multi_second/1", second_args, 1);
+    if (second_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue first_fail_args[1] = { val_atom("b") };
+    int first_fail_rc = wam_run_predicate(&state, "wam_c_multi_first/1", first_fail_args, 1);
+    if (first_fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 30;
     }
 
     wam_free_state(&state);
@@ -2779,6 +2848,7 @@ run_tests_once :-
     test_list_target_pc_emission,
     test_generated_runtime_executable_smoke,
     test_cross_predicate_executable_smoke,
+    test_multi_predicate_setup_executable_smoke,
     test_builtin_call_executable_smoke,
     test_call_foreign_executable_smoke,
     test_category_ancestor_kernel_executable_smoke,
