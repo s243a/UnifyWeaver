@@ -23,6 +23,7 @@ from benchmark_csharp_query_source_mode_sweep import load_calibration_artifact  
 SCAN_CALIBRATION_ARTIFACT = ROOT / "examples" / "benchmark" / "csharp_query_scan_source_mode_calibration.tsv"
 SCAN_WORKLOAD_PREFIX = "scan-materialization:"
 SMALL_PREBUILT_ARTIFACT_ROW_THRESHOLD = 7_500
+QUERY_RUNTIME_SOURCE = ROOT / "src" / "unifyweaver" / "targets" / "csharp_query_runtime" / "QueryRuntime.cs"
 
 
 class CSharpQuerySourceModePolicyTests(unittest.TestCase):
@@ -106,9 +107,7 @@ class CSharpQuerySourceModePolicyTests(unittest.TestCase):
         )
 
     def test_runtime_scan_source_mode_policy_matches_documented_cases(self) -> None:
-        runtime_source = (
-            ROOT / "src" / "unifyweaver" / "targets" / "csharp_query_runtime" / "QueryRuntime.cs"
-        ).read_text()
+        runtime_source = QUERY_RUNTIME_SOURCE.read_text()
 
         expected_cases = [
             "private const long SmallPrebuiltArtifactRowThreshold = 7_500L",
@@ -147,9 +146,7 @@ class CSharpQuerySourceModePolicyTests(unittest.TestCase):
                 )
 
     def test_runtime_source_mode_policy_matches_calibration_artifact(self) -> None:
-        runtime_source = (
-            ROOT / "src" / "unifyweaver" / "targets" / "csharp_query_runtime" / "QueryRuntime.cs"
-        ).read_text()
+        runtime_source = QUERY_RUNTIME_SOURCE.read_text()
 
         for row in load_calibration_artifact():
             with self.subTest(workload=row.workload):
@@ -157,6 +154,29 @@ class CSharpQuerySourceModePolicyTests(unittest.TestCase):
                     f'"{row.workload}" => RelationSourceMode.{self._source_mode_member(row.current_auto_resolved_source_mode)}',
                     runtime_source,
                 )
+
+    def test_runtime_has_dependency_free_artifact_provider_factory(self) -> None:
+        runtime_source = QUERY_RUNTIME_SOURCE.read_text()
+
+        expected_contract = [
+            "public sealed record RelationArtifactProviderOpenResult",
+            "public interface IRelationArtifactProviderFactory",
+            "public sealed class DefaultRelationArtifactProviderFactory",
+            "BinaryRelationArtifactManifest.CurrentFormat:",
+            "DelimitedRelationArtifactManifest.CurrentFormat:",
+            "new BinaryRelationArtifactProvider(fallback)",
+            "new DelimitedRelationArtifactProvider(fallback)",
+            'new RelationArtifactProviderOpenResult(binaryProvider, "binary_artifact")',
+            'new RelationArtifactProviderOpenResult(delimitedProvider, "delimited_artifact")',
+            "RelationArtifactManifestFormatReader.ReadFormat(manifestPath)",
+        ]
+
+        for expected in expected_contract:
+            with self.subTest(expected=expected):
+                self.assertIn(expected, runtime_source)
+
+        self.assertNotIn("LightningDB", runtime_source)
+        self.assertNotIn("LmdbRelationProvider", runtime_source)
 
     @staticmethod
     def _source_mode_member(source_mode: str) -> str:
