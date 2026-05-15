@@ -318,6 +318,39 @@ user:wam_cpp_test_call_compound_already :-
 user:wam_cpp_test_call_user_pred :-
     call(wam_cpp_call_helper, hello).
 
+% maplist/2 + maplist/3 (helper-injected, built on call/N):
+:- dynamic user:wam_cpp_double/2.
+:- dynamic user:wam_cpp_positive/1.
+:- dynamic user:wam_cpp_test_maplist2_all/0.
+:- dynamic user:wam_cpp_test_maplist2_empty/0.
+:- dynamic user:wam_cpp_test_maplist3_double/0.
+:- dynamic user:wam_cpp_test_maplist3_check/0.
+:- dynamic user:wam_cpp_test_findall_call/0.
+
+user:wam_cpp_double(X, Y) :- Y is X * 2.
+user:wam_cpp_positive(X) :- X > 0.
+
+% Every element satisfies positive/1.
+user:wam_cpp_test_maplist2_all :- maplist(wam_cpp_positive, [1, 2, 3]).
+% Empty-list base case.
+user:wam_cpp_test_maplist2_empty :- maplist(wam_cpp_positive, []).
+% Higher-order list transformation: build the doubles list from
+% [1,2,3]. Verifies maplist/3 + call/3 + user predicate compose.
+user:wam_cpp_test_maplist3_double :-
+    maplist(wam_cpp_double, [1, 2, 3], L),
+    L = [2, 4, 6].
+% Both lists ground — verifies P holds for each paired (X, Y).
+user:wam_cpp_test_maplist3_check :-
+    maplist(wam_cpp_double, [1, 2], [2, 4]).
+% findall composes with call/N: collect the double of 1 into a
+% single-element list. (Note: findall + member + call/N in
+% conjunction has a separate latent bug unrelated to this PR — it
+% hangs because of how findall''s aggregate frame interacts with
+% member''s choice points; the simpler form here works.)
+user:wam_cpp_test_findall_call :-
+    findall(Y, call(wam_cpp_double, 1, Y), L),
+    L = [2].
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -1698,6 +1731,101 @@ test(cpp_e2e_call_user_pred, [condition(cpp_compiler_available)]) :-
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_call_user_pred/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% maplist/2 + maplist/3 — higher-order list mapping. Helper-injected
+% (per WAM_ITEMS_API §6) on top of call/N. maplist/2 is "predicate
+% holds for every element"; maplist/3 is "P transforms each X to Y".
+% The maplist/3 + call/3 + user-predicate composition is the key
+% demonstration that higher-order programming works end-to-end on
+% the C++ target.
+%
+% Also tests `findall + call/N` composition — a common idiom for
+% "collect transformed values."
+% ------------------------------------------------------------------
+
+test(cpp_e2e_maplist2_all, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ml2_all', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_maplist2_all/0,
+                               user:wam_cpp_positive/1],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_maplist2_all/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_maplist2_empty, [condition(cpp_compiler_available)]) :-
+    % maplist/2 base case — empty list succeeds trivially.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ml2_empty', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_maplist2_empty/0,
+                               user:wam_cpp_positive/1],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_maplist2_empty/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_maplist3_double, [condition(cpp_compiler_available)]) :-
+    % The key test: maplist/3 + call/3 + a USER predicate.
+    % maplist(double, [1,2,3], L) walks the input list, calling
+    % double/2 via call/3 on each element. The bug that broke
+    % this before the PutStructure-fresh-cell fix: when
+    % invoke_goal_as_call set A1 from the goal''s args and the
+    % goal body did PutStructure into A2 (e.g. */2 for Y is X*2),
+    % the existing-cell-bind optimisation in begin_write wrote
+    % into a cell still aliased with A1. Fix: PutStructure and
+    % PutList now always allocate fresh.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ml3_double', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_maplist3_double/0,
+                               user:wam_cpp_double/2],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_maplist3_double/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_maplist3_check, [condition(cpp_compiler_available)]) :-
+    % Both lists ground — maplist/3 in checking mode: verifies
+    % double(X, Y) holds for each paired (X, Y).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ml3_check', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_maplist3_check/0,
+                               user:wam_cpp_double/2],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_maplist3_check/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_findall_call_compose,
+     [condition(cpp_compiler_available)]) :-
+    % findall with call/N inside its goal. Verifies the aggregate
+    % frame + meta-call composition. (The richer
+    % "findall + member + call/N" form has a separate latent bug
+    % involving aggregate-frame + choice-point interaction with
+    % conjunctions — not addressed in this PR.)
+    unique_cpp_tmp_dir('tmp_cpp_e2e_findall_call', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_findall_call/0,
+                               user:wam_cpp_double/2],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_findall_call/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
