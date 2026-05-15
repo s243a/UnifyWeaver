@@ -112,6 +112,12 @@ The first LMDB C# query slice should be exact and narrow:
    - source hash and format version
 2. Add an optional C# query runtime integration project, not a hard dependency
    in `UnifyWeaver.QueryRuntime.Core.csproj`, because LightningDB is external.
+   The default core runtime should not reference LightningDB. Instead,
+   `UnifyWeaver.QueryRuntime.Lmdb` (or an equivalent optional integration
+   project) should own the NuGet dependency and expose the provider/factory.
+   A Prolog `declare_target` or generated-project option can then make that
+   optional project a hard reference for programs that explicitly opt into
+   LMDB-backed relations.
 3. Implement `LmdbRelationProvider` for arity-2 rows with:
    - full scan
    - arg0 lookup
@@ -130,8 +136,8 @@ hot path justifies a scoped zero-copy reader.
 
 ## Memory-Mapped Array Path
 
-Use this when relation values are interned numeric IDs and the desired access
-is scan or binary-search lookup.
+Use this when relation values can be represented as fixed-width IDs and the
+desired access is scan or binary-search lookup.
 
 Candidate format:
 
@@ -147,9 +153,33 @@ Initial access contracts:
 - lookup by exact key on column 0
 - bucket stream by column 0
 
-This is simpler than LMDB and avoids external dependencies, but it requires
-stable interned ID encoding. It is likely the right comparison point for
-effective-distance and graph workloads once preprocessing is explicit.
+This is simpler than LMDB and avoids external dependencies, but the ID strategy
+must be explicit in the manifest. The same physical format should support at
+least these strategies:
+
+- `provided_id`: the input relation already carries stable numeric IDs.
+- `position_id`: the preprocessor assigns IDs from row or intern-table
+  position. This is compact and fast, but local to one artifact build.
+- `hash_id`: the preprocessor derives IDs from a stable string hash. This is
+  slower and needs collision policy metadata, but generalizes better to
+  distributed preprocessing.
+- `sidecar_string_table`: the array stores fixed-width IDs while a sidecar
+  table maps strings to IDs for lookup and diagnostics.
+
+The first implementation can require `provided_id` or `position_id`, but the
+manifest should reserve the field from the start:
+
+```json
+{
+  "physical_backend": "mmap_array",
+  "id_strategy": "provided_id",
+  "id_width": 32,
+  "string_table": null
+}
+```
+
+This is likely the right comparison point for effective-distance and graph
+workloads once preprocessing is explicit.
 
 ## Hash/Block-Sharded File Path
 
@@ -199,7 +229,8 @@ need manual override:
    - Acceptance: current binary/delimited artifact providers can be opened via
      the factory in tests.
 2. `feat/csharp-query-lmdb-provider-smoke`
-   - Optional runtime project using LightningDB.
+   - Optional runtime project using LightningDB; core runtime stays
+     dependency-free.
    - Read an LMDB artifact produced by existing C# ingest or the Rust prototype.
    - Acceptance: arity-2 scan and arg0 lookup match delimited facts.
 3. `bench/csharp-query-lmdb-source-mode-sweep`
@@ -208,8 +239,8 @@ need manual override:
    - Acceptance: report open time, lookup time, scan time, memory retained, and
      artifact size.
 4. `feat/csharp-query-mmap-array-provider-smoke`
-   - Implement a dependency-free fixed-width mmap array provider for interned
-     integer pairs.
+   - Implement a dependency-free fixed-width mmap array provider for one
+     manifest-declared ID strategy.
    - Acceptance: scan and lookup parity with delimited facts, plus benchmark
      comparison against LMDB.
 
@@ -226,9 +257,5 @@ need manual override:
 
 - Should the first C# LMDB reader consume the Rust prototype manifest or define
   a C#-owned manifest that later converges with the shared proposal?
-- Should C# query use LightningDB directly, or should the optional provider be
-  generated into benchmark projects that already opt into dependencies?
 - Which workloads should drive the first LMDB measurement: graph parent lookup,
   scan-materialization joins, or effective-distance support relations?
-- Should memory-mapped arrays require interned integer IDs up front, or should
-  they support a sidecar string table from the beginning?
