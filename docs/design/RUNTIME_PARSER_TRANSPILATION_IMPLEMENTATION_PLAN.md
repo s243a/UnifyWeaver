@@ -9,9 +9,9 @@ R remains the reference target. Its inline parser already supports
 `read/2`, `read_term_from_atom/2,3`, reverse `term_to_atom/2`, runtime `op/3`,
 and CLI argument parsing.
 
-Keep the R inline parser and tests in place while the compiled parser is being
-hardened. The inline parser is useful as an oracle for target behavior, not as
-the long-term source of parser semantics.
+Keep the R inline parser and tests in place. The inline parser is both a
+runtime implementation and an oracle for target behavior; benchmark data shows
+it should remain R's hot path for now.
 
 ## Phase 2: Harden The Portable Parser
 
@@ -19,42 +19,40 @@ Keep `src/unifyweaver/core/prolog_term_parser.pl` in the
 cross-target-compilable subset. Add tests when target runtime consumers expose
 new parser-sensitive behavior.
 
-Maintain structural compile coverage for WAM-R:
+Maintain compile and runtime coverage for WAM-R:
 
 ```text
 tests/test_prolog_term_parser_wam_r_compile.pl
 ```
 
 This test should continue proving that every parser predicate emits a target
-label and wrapper, even before the runtime parser is swapped in.
+label and wrapper and that representative parser drivers run through generated
+WAM-R.
 
-## Phase 3: Fix Runtime Requirements Exposed By The Parser
+## Phase 3: Preserve Runtime Requirements Exposed By The Parser
 
-The current blocker for running the transpiled parser as the R runtime parser
-is WAM-R cut-barrier behavior. The parser uses cuts inside multi-clause helper
-predicates such as tokenizer and identifier readers. The runtime must discard
-choice points created after the active cut barrier, not merely the most recent
-choice point.
+WAM-R cut-barrier behavior is now part of the parser proof surface. The parser
+uses cuts inside multi-clause helper predicates such as tokenizer and
+identifier readers, so the runtime must continue discarding choice points
+created after the active cut barrier, not merely the most recent choice point.
 
-Treat this as a general WAM correctness fix. Other non-trivial library code
-will eventually depend on the same behavior.
+Treat regressions here as general WAM correctness regressions. Other
+non-trivial library code depends on the same behavior.
 
-## Phase 4: Swap R Behind A Guard
+## Phase 4: Keep R Inline, Use The Compiled Parser As A Guard
 
-After cut semantics are correct, wire R so `read/2`,
-`read_term_from_atom/2,3`, reverse `term_to_atom/2`, and CLI parsing can use
-the compiled parser.
-
-During the transition, keep a selectable fallback to the inline parser. Compare
-both paths with:
+Compare the inline parser and compiled parser with:
 
 ```text
 tests/benchmarks/wam_r_parser_bench.pl
 ```
 
-The swap is complete when the compiled parser matches the inline parser on
-runtime tests and has acceptable performance for normal stream and atom parsing
-workloads.
+Current benchmark data shows the compiled parser is much slower than the inline
+R parser, so R should not swap to it by default. A guarded experimental switch
+is still useful for equivalence checks and future runtime-performance work, but
+`read/2`, `read_term_from_atom/2,3`, reverse `term_to_atom/2`, and CLI parsing
+should keep using the inline R parser until the compiled path is both
+equivalent and performance-credible.
 
 ## Phase 5: Generalize The Target Hook
 
@@ -75,8 +73,9 @@ availability alone. Good candidates are targets adding:
 - reverse `term_to_atom/2`;
 - user-facing CLI term arguments.
 
-Python, R, Elixir, and Lua are reasonable candidates, but R should stay the
-semantic reference until the compiled parser fully replaces its inline parser.
+Python, Elixir, Lua, and future R experiments are reasonable candidates, but R
+should stay the semantic reference while keeping its inline parser as the
+production path.
 
 ## Risks
 
