@@ -391,17 +391,22 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     helper_predicate_items(HelperItems),
     flatten_blocks([HelperItems|PerPredItems], AllItems),
     walk_blocks(AllItems, Labels, FlatInstrs0),
-    % Append two trailing synthetic-return instructions:
-    %   catch_return    — CatchReturn (catch/3 success path).
-    %   negation_return — NegationReturn (\+/1 + not/1 success path
-    %                     — fires when the protected goal succeeded,
-    %                     and triggers negation failure).
+    % Append four trailing synthetic-return instructions:
+    %   catch_return     — CatchReturn (catch/3 success path).
+    %   negation_return  — NegationReturn (\+/1 + not/1 success path).
+    %   findall_collect  — FindallCollect (findall/3 meta-call
+    %                      per-solution collect + force-backtrack).
+    %   conj_return      — ConjReturn (,/2 goal-term''s G1 succeeded;
+    %                      pop frame and dispatch G2).
     % Their PCs are emitted as state-register initialisers in the
-    % setup function. Both consume one slot each at the end of the
-    % instruction array.
-    append(FlatInstrs0, [catch_return, negation_return], FlatInstrs),
+    % setup function.
+    append(FlatInstrs0,
+           [catch_return, negation_return, findall_collect, conj_return],
+           FlatInstrs),
     length(FlatInstrs0, CatchReturnPC),
     NegationReturnPC is CatchReturnPC + 1,
+    FindallCollectPC is CatchReturnPC + 2,
+    ConjReturnPC is CatchReturnPC + 3,
     findall(LabelLine, (
         member(NameStr-PC, Labels),
         format(atom(LabelLine),
@@ -421,6 +426,8 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     vm.instrs.reserve(~w);
     vm.catch_return_pc = ~w;
     vm.negation_return_pc = ~w;
+    vm.findall_collect_pc = ~w;
+    vm.conj_return_pc = ~w;
 ~w
 ~w
 }
@@ -428,7 +435,8 @@ static const int _wam_cpp_setup_register = []() {
     Program::register_setup(&wam_cpp_setup);
     return 0;
 }();
-', [Reserve, CatchReturnPC, NegationReturnPC, LabelBody, InstrBody]).
+', [Reserve, CatchReturnPC, NegationReturnPC, FindallCollectPC, ConjReturnPC,
+    LabelBody, InstrBody]).
 
 % ============================================================================
 % ISO error configuration
@@ -1033,6 +1041,10 @@ instr_to_setup_line(catch_return, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::CatchReturn());'.
 instr_to_setup_line(negation_return, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::NegationReturn());'.
+instr_to_setup_line(findall_collect, _Labels, Line) :- !,
+    Line = '    vm.instrs.push_back(Instruction::FindallCollect());'.
+instr_to_setup_line(conj_return, _Labels, Line) :- !,
+    Line = '    vm.instrs.push_back(Instruction::ConjReturn());'.
 instr_to_setup_line(Instr, _Labels, Line) :-
     wam_instruction_to_cpp_literal(Instr, Lit),
     format(atom(Line), '    vm.instrs.push_back(~w);', [Lit]).
@@ -1403,7 +1415,7 @@ struct Instruction {
         TryMeElse, RetryMeElse, TrustMe, Jump, CutIte,
         BeginAggregate, EndAggregate,
         SwitchOnConstant, SwitchOnStructure, SwitchOnTerm,
-        CatchReturn, NegationReturn
+        CatchReturn, NegationReturn, FindallCollect, ConjReturn
     };
     // Sentinel pc values for switch-table entries that should not jump.
     static constexpr std::size_t SWITCH_DEFAULT = static_cast<std::size_t>(-1);
@@ -1498,6 +1510,10 @@ struct Instruction {
         { Instruction i; i.op = Op::CatchReturn; return i; }
     static Instruction NegationReturn()
         { Instruction i; i.op = Op::NegationReturn; return i; }
+    static Instruction FindallCollect()
+        { Instruction i; i.op = Op::FindallCollect; return i; }
+    static Instruction ConjReturn()
+        { Instruction i; i.op = Op::ConjReturn; return i; }
 };
 
 struct TrailEntry {
@@ -1543,6 +1559,14 @@ struct AggregateFrame {
     std::string agg_kind;       // "collect" / "count" / "sum" / "min" / "max" / "set" / "bag"
     std::string value_reg;
     std::string result_reg;
+    // Direct CellPtrs for the meta-call findall/3 path — when set,
+    // EndAggregate / finalise use these instead of looking up by
+    // register name. Needed because the meta-call dispatches the
+    // goal as a tail call that overwrites the original A-registers
+    // before the value can be collected. Set by dispatch_findall_call;
+    // left null by the inlined BeginAggregate path.
+    CellPtr     value_cell;
+    CellPtr     result_cell;
     std::size_t begin_pc = 0;   // pc of the BeginAggregate instruction
     std::size_t return_pc = 0;  // pc after end_aggregate (0 if never fired)
     bool return_pc_set = false;
@@ -1591,6 +1615,19 @@ struct NegationFrame {
     std::vector<EnvFrame> saved_env_stack;
 };
 
+// Frame for a conjunction goal (,(G1, G2)) dispatched as a goal-term.
+// When invoke_goal_as_call sees a ,/2 goal it pushes a ConjFrame
+// remembering G2 and the original after_pc, then dispatches G1 with
+// cp = conj_return_pc. On G1 success, the ConjReturn step arm pops
+// the frame and dispatches G2 with the original after_pc. On G1
+// failure, backtrack() pops the frame at CP-drain time and
+// propagates failure to the caller.
+struct ConjFrame {
+    CellPtr     second_goal;
+    std::size_t after_pc = 0;
+    std::size_t base_cp_count = 0;
+};
+
 struct WamState {
     std::unordered_map<std::string, CellPtr> regs;
     std::unordered_map<std::string, std::size_t> labels;
@@ -1601,6 +1638,9 @@ struct WamState {
     std::vector<CatcherFrame> catcher_frames;
     // \\+/1 + not/1 — symmetric inverse of catcher_frames.
     std::vector<NegationFrame> negation_frames;
+    // Conjunction-goal-term dispatch (,(G1, G2) passed as a meta-call
+    // argument, e.g. inside catch(_, _, _) or findall/3).
+    std::vector<ConjFrame> conj_frames;
     // pc of the auto-injected single CatchReturn instruction. catch/3
     // sets cp to this value before dispatching to the protected goal;
     // when the goal proceeds, control lands here and the catcher frame
@@ -1611,6 +1651,18 @@ struct WamState {
     // when the goal succeeds via proceed, control lands here and the
     // negation frame is popped + the negation FAILS.
     std::size_t negation_return_pc = 0;
+    // pc of the auto-injected single FindallCollect instruction.
+    // Meta-call findall/3 sets cp to this value before dispatching the
+    // goal; on goal success, lands here, collects the template''s
+    // current value into the top aggregate frame''s acc, then forces
+    // backtrack to find the next solution. Standard aggregate-frame
+    // finalise (in backtrack()) wraps things up when CPs drain.
+    std::size_t findall_collect_pc = 0;
+    // pc of the auto-injected single ConjReturn instruction. ,/2
+    // dispatched as a goal-term lands here when G1 succeeds; pops
+    // the top ConjFrame and dispatches its G2 with the original
+    // after_pc.
+    std::size_t conj_return_pc = 0;
     // Mode stack: Get-/Put-Structure / Get-/Put-List PUSH; Unify*/Set*
     // operate on top(); each frame auto-pops once its arity is filled.
     std::vector<ModeFrame> mode_stack;
@@ -1665,6 +1717,13 @@ struct WamState {
     bool    dispatch_call_meta(const std::string& op,
                                std::int64_t total_arity,
                                std::size_t after_pc);
+    // findall(Template, Goal, List) meta-call. Pushes an
+    // AggregateFrame with value_cell/result_cell set to A1/A3''s
+    // current cells, then dispatches A2 as a goal with cp =
+    // findall_collect_pc. Goal-success triggers FindallCollect
+    // (collect template, force backtrack); goal-exhaustion triggers
+    // backtrack()''s aggregate-finalise (build list, bind to result).
+    bool    dispatch_findall_call(std::size_t after_pc);
     bool    execute_catch();
     bool    execute_throw();
 
@@ -2924,6 +2983,13 @@ bool WamState::step(const Instruction& instr) {
         case Instruction::Op::Call: {
             if (instr.a == "catch/3") { cp = pc + 1; return execute_catch(); }
             if (instr.a == "throw/1") { cp = pc + 1; return execute_throw(); }
+            // findall/3 meta-call — handles the non-inlined case
+            // (nested findalls, where only the OUTER findall gets
+            // BeginAggregate-inlined; the inner is emitted as a
+            // plain Call to findall/3 which we dispatch here).
+            if (instr.a == "findall/3") {
+                return dispatch_findall_call(pc + 1);
+            }
             // call/N meta — needs its own arm so the after_pc is
             // correctly pc + 1 (non-tail) rather than going through
             // the Execute fallback''s post-builtin pc=cp override.
@@ -2945,6 +3011,10 @@ bool WamState::step(const Instruction& instr) {
         case Instruction::Op::Execute: {
             if (instr.a == "catch/3") return execute_catch();
             if (instr.a == "throw/1") return execute_throw();
+            if (instr.a == "findall/3") {
+                std::size_t tail_after = cp;
+                return dispatch_findall_call(tail_after);
+            }
             // call/N meta in tail position — after_pc is the
             // caller''s saved cp (or halt if cp == 0).
             if (instr.a.size() > 5
@@ -3010,6 +3080,36 @@ bool WamState::step(const Instruction& instr) {
             cp = f.saved_cp;
             // Negation fails; let backtrack do its thing.
             return false;
+        }
+        case Instruction::Op::FindallCollect: {
+            // Reached when a findall/3 protected goal succeeds via
+            // proceed back to findall_collect_pc. Snapshot the
+            // template''s current value (deep copy so subsequent
+            // trail unwinds don''t corrupt what we collected),
+            // append to the top aggregate''s acc, then return false
+            // to force backtrack for the next solution. The
+            // existing aggregate-finalise in backtrack() takes
+            // over when CPs drain to base_cp_count.
+            if (aggregate_frames.empty()) return false;
+            AggregateFrame& f = aggregate_frames.back();
+            CellPtr value_cell = f.value_cell
+                ? f.value_cell
+                : get_cell(f.value_reg);
+            if (!value_cell) return false;
+            f.acc.push_back(deep_copy(*value_cell));
+            return false;
+        }
+        case Instruction::Op::ConjReturn: {
+            // Reached when a conjunction goal-term''s G1 succeeded.
+            // Dispatch G2 with the original after_pc. Do NOT pop the
+            // frame — G1 may have left choice points that get retried
+            // when G2 fails or when findall/3 forces backtrack for
+            // more solutions; each G1 retry must re-dispatch THE SAME
+            // G2. backtrack() pops the frame when G1''s CPs are
+            // fully drained.
+            if (conj_frames.empty()) return false;
+            const ConjFrame& f = conj_frames.back();
+            return invoke_goal_as_call(f.second_goal, f.after_pc);
         }
         case Instruction::Op::Proceed: {
             if (cp == 0) { halt = true; return true; }
@@ -3324,6 +3424,19 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
     if (g.tag == Value::Tag::Compound) {
         // s is "<name>/<arity>".
         const std::string& key = g.s;
+        // Conjunction goal-term (G1, G2): dispatched as a meta-call
+        // argument (e.g. inside catch(_,_,_), findall/3, \\+/1).
+        // Push a ConjFrame remembering G2 and the original after_pc;
+        // dispatch G1 with cp = conj_return_pc. When G1 succeeds,
+        // ConjReturn pops the frame and dispatches G2 with after_pc.
+        if (key == ",/2" && g.args.size() == 2) {
+            ConjFrame f;
+            f.second_goal   = g.args[1];
+            f.after_pc      = after_pc;
+            f.base_cp_count = choice_points.size();
+            conj_frames.push_back(std::move(f));
+            return invoke_goal_as_call(g.args[0], conj_return_pc);
+        }
         auto slash = key.rfind(''/'');
         if (slash == std::string::npos) return false;
         std::size_t arity = 0;
@@ -3341,6 +3454,7 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
         // the same code path so nested catch / re-throw works.
         if (key == "throw/1")  { cp = after_pc; return execute_throw(); }
         if (key == "catch/3")  { cp = after_pc; return execute_catch(); }
+        if (key == "findall/3") { cp = after_pc; return dispatch_findall_call(after_pc); }
         // User predicate path.
         auto it = labels.find(key);
         if (it != labels.end()) {
@@ -3416,6 +3530,40 @@ bool WamState::dispatch_call_meta(const std::string& op,
     CellPtr combined = std::make_shared<Cell>(
         Value::Compound(new_functor, std::move(all_args)));
     return invoke_goal_as_call(combined, after_pc);
+}
+
+bool WamState::dispatch_findall_call(std::size_t after_pc) {
+    // findall(Template, Goal, List). We arrive here via the
+    // Call/Execute special-case for non-inlined findall/3 (the
+    // inner findall in a nested call is NOT inlined by the WAM
+    // compiler — only the outermost findall/bagof/setof gets the
+    // BeginAggregate/EndAggregate inline expansion. Without this
+    // path, nested findalls silently produce empty results.)
+    //
+    // Snapshot Template''s cell as value_cell and List''s cell as
+    // result_cell — A1/A3 will get clobbered when we dispatch the
+    // goal in A2 via invoke_goal_as_call (it sets A-registers
+    // from the goal''s args). The synthetic FindallCollect op
+    // reads the value through these stored CellPtrs.
+    AggregateFrame frame;
+    frame.agg_kind          = "collect";
+    frame.value_cell        = get_cell("A1");
+    frame.result_cell       = get_cell("A3");
+    frame.begin_pc          = pc;
+    frame.return_pc         = after_pc;
+    frame.return_pc_set     = true;
+    frame.base_cp_count     = choice_points.size();
+    frame.trail_mark        = trail.size();
+    frame.saved_cp          = cp;
+    frame.saved_cut_barrier = cut_barrier;
+    frame.saved_regs        = regs;
+    frame.saved_mode_stack  = mode_stack;
+    frame.saved_env_stack   = env_stack;
+    aggregate_frames.push_back(std::move(frame));
+    // Dispatch the goal. cp = findall_collect_pc so goal-success
+    // lands at the FindallCollect synthetic op.
+    CellPtr goal = get_cell("A2");
+    return invoke_goal_as_call(goal, findall_collect_pc);
 }
 
 // catch(Goal, Catcher, Recovery): push a CatcherFrame snapshotting
@@ -3604,6 +3752,17 @@ bool WamState::backtrack() {
     // into an open aggregate frame''s base — at which point the frame is
     // finalised and execution continues past its EndAggregate.
     for (;;) {
+        // Conjunction frame: G1 failed (CPs drained to G1''s base).
+        // Pop the ConjFrame so the failure propagates to whatever
+        // pushed it (e.g. an outer findall/3''s goal-dispatch path).
+        // The frame just remembers G2 + after_pc; popping it discards
+        // those and lets normal backtracking continue.
+        if (!conj_frames.empty()
+            && choice_points.size() <= conj_frames.back().base_cp_count)
+        {
+            conj_frames.pop_back();
+            continue;
+        }
         // Negation frame: if the \\+ / not protected goal exhausted
         // all its CPs (i.e. the goal FAILED), pop the frame, unwind
         // state, and SUCCEED at saved_cp. Symmetric inverse of the
@@ -3686,10 +3845,16 @@ bool WamState::backtrack() {
             env_stack   = std::move(f.saved_env_stack);
             cp          = f.saved_cp;
             cut_barrier = f.saved_cut_barrier;
-            // Build and bind the result.
+            // Build and bind the result. The meta-call findall/3
+            // path stores the result cell directly (set by
+            // dispatch_findall_call); the inlined BeginAggregate
+            // path uses the result_reg name.
             Value result = finalize_aggregate(f.agg_kind, f.acc);
             if (result.tag == Value::Tag::Uninit) return false;
-            CellPtr rcell = get_cell(f.result_reg);
+            CellPtr rcell = f.result_cell
+                ? f.result_cell
+                : get_cell(f.result_reg);
+            if (!rcell) return false;
             if (rcell->is_unbound()) bind_cell(rcell, result);
             else if (!unify_cells(rcell, std::make_shared<Cell>(result))) return false;
             // Jump past the matching EndAggregate.
