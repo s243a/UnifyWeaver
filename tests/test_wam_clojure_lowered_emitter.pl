@@ -559,6 +559,15 @@ test(simple_builtin_sort_is_direct_lowered_in_prefix) :-
         assertion(\+ has(Code, "runtime/step"))
     )).
 
+test(simple_builtin_msort_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_msort/2:\nbuiltin_call msort/2, 2\nproceed\n",
+        wam_clojure_lowerable(test_msort/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_msort/2, WamCode, [], Code),
+        has(Code, "runtime/apply-msort-solution"),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
 test(simple_builtin_copy_term_is_direct_lowered_in_prefix) :-
     once((
         WamCode = "test_copy_term/2:\nbuiltin_call copy_term/2, 2\nproceed\n",

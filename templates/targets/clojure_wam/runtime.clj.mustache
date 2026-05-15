@@ -757,6 +757,9 @@
           []
           (sort #(term-compare state %1 %2) items)))
 
+(defn sorted-terms [state items]
+  (sort #(term-compare state %1 %2) items))
+
 (defn apply-sort-solution [state]
   (let [list-value (deref-value (:bindings state)
                                 (or (reg-get-raw state "A1") ::unbound))
@@ -765,6 +768,20 @@
     (if-let [items (proper-list-items state list-value)]
       (let [sorted-term (list->term (:intern-context state)
                                     (sorted-unique-terms state items))
+            [ok next-state] (unify-values state out sorted-term)]
+        (if ok
+          (advance next-state)
+          (backtrack state)))
+      (backtrack state))))
+
+(defn apply-msort-solution [state]
+  (let [list-value (deref-value (:bindings state)
+                                (or (reg-get-raw state "A1") ::unbound))
+        out (deref-value (:bindings state)
+                         (or (reg-get-raw state "A2") ::unbound))]
+    (if-let [items (proper-list-items state list-value)]
+      (let [sorted-term (list->term (:intern-context state)
+                                    (sorted-terms state items))
             [ok next-state] (unify-values state out sorted-term)]
         (if ok
           (advance next-state)
@@ -1523,6 +1540,9 @@
 
           "sort/2"
           (apply-sort-solution state)
+
+          "msort/2"
+          (apply-msort-solution state)
 
           "copy_term/2"
           (apply-copy-term-solution state)
