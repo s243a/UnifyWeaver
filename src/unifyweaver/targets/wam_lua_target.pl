@@ -29,6 +29,11 @@
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module('../core/template_system', [render_template/3]).
+:- use_module(wam_text_parser, [
+    wam_tokenize_line/2,
+    wam_recognise_label/2,
+    wam_recognise_instruction/2
+]).
 :- use_module(wam_lua_lowered_emitter, [
     wam_lua_lowerable/3,
     lower_predicate_to_lua/4
@@ -113,41 +118,11 @@ reg_to_int(Reg, Int) :-
     ;   Int = 0
     ).
 
+% Compatibility wrapper retained for the lowered emitter. The actual
+% tokenization rules live in wam_text_parser so Lua stays aligned with
+% C++ and future WAM-target migrations.
 tokenize_wam_line(Line, Tokens) :-
-    string_chars(Line, Chars),
-    tokenize_wam_chars(Chars, [], [], outside, Tokens).
-
-tokenize_wam_chars([], [], Acc, _, Tokens) :- !,
-    reverse(Acc, Tokens).
-tokenize_wam_chars([], CurR, Acc, outside, Tokens) :- !,
-    reverse(CurR, CurC), string_chars(T0, CurC),
-    strip_operand_comma(T0, T),
-    (T == "" -> reverse(Acc, Tokens) ; reverse([T|Acc], Tokens)).
-tokenize_wam_chars([], CurR, Acc, inside, Tokens) :- !,
-    reverse(CurR, CurC), string_chars(T, CurC),
-    reverse([T|Acc], Tokens).
-tokenize_wam_chars([C|Rest], CurR, Acc, outside, Tokens) :-
-    (   (C == ' ' ; C == '\t')
-    ->  (   CurR == []
-        ->  tokenize_wam_chars(Rest, [], Acc, outside, Tokens)
-        ;   reverse(CurR, CurC), string_chars(T0, CurC),
-            strip_operand_comma(T0, T),
-            (T == "" -> NewAcc = Acc ; NewAcc = [T|Acc]),
-            tokenize_wam_chars(Rest, [], NewAcc, outside, Tokens)
-        )
-    ;   C == '\''
-    ->  (CurR == [] -> tokenize_wam_chars(Rest, [], Acc, inside, Tokens)
-        ; tokenize_wam_chars(Rest, [C|CurR], Acc, outside, Tokens))
-    ;   tokenize_wam_chars(Rest, [C|CurR], Acc, outside, Tokens)
-    ).
-tokenize_wam_chars([C|Rest], CurR, Acc, inside, Tokens) :-
-    (   C == '\\', Rest = [Escaped|More]
-    ->  tokenize_wam_chars(More, [Escaped|CurR], Acc, inside, Tokens)
-    ;   C == '\''
-    ->  reverse(CurR, CurC), string_chars(T, CurC),
-        tokenize_wam_chars(Rest, [], [T|Acc], outside, Tokens)
-    ;   tokenize_wam_chars(Rest, [C|CurR], Acc, inside, Tokens)
-    ).
+    wam_tokenize_line(Line, Tokens).
 
 strip_operand_comma(Token0, Token) :-
     sub_string(Token0, _, 1, 0, ","), !,
@@ -385,26 +360,55 @@ text_to_string(Value, Str) :-
 % ============================================================================
 
 wam_code_to_lua_data(WamCode, Options, Instructions, LabelEntries) :-
-    atom_string(WamCode, Str),
-    split_string(Str, "\n", "", Lines),
-    wam_lines_to_data(Lines, Options, 1, Instructions, LabelEntries).
+    wam_code_to_lua_items(WamCode, Items),
+    wam_items_to_data(Items, Options, 1, Instructions, LabelEntries).
 
-wam_lines_to_data([], _, _, [], []).
-wam_lines_to_data([Line|Rest], Options, PC, Instructions, LabelEntries) :-
-    tokenize_wam_line(Line, Parts),
-    (   Parts = [First|_], sub_string(First, _, 1, 0, ":")
-    ->  sub_string(First, 0, _, 1, LabelName),
+wam_code_to_lua_items(WamCode, Items) :-
+    is_list(WamCode), !,
+    Items = WamCode.
+wam_code_to_lua_items(WamCode, Items) :-
+    lua_wam_text_to_items(WamCode, Items).
+
+% C++ is the reference here: accept in-memory items when callers have
+% them, otherwise parse legacy WAM text through the shared recognisers.
+% Lua keeps only its extension recognisers for instructions that are not
+% part of the standard WAM item catalogue.
+lua_wam_text_to_items(WamText, Items) :-
+    atom_string(WamText, S),
+    split_string(S, "\n", "", Lines),
+    lua_wam_lines_to_items(Lines, Items).
+
+lua_wam_lines_to_items([], []).
+lua_wam_lines_to_items([Line|Rest], Items) :-
+    tokenize_wam_line(Line, Tokens),
+    (   Tokens == []
+    ->  lua_wam_lines_to_items(Rest, Items)
+    ;   wam_recognise_label(Tokens, Name)
+    ->  Items = [label(Name)|More],
+        lua_wam_lines_to_items(Rest, More)
+    ;   wam_recognise_instruction(Tokens, Item)
+    ->  Items = [Item|More],
+        lua_wam_lines_to_items(Rest, More)
+    ;   lua_recognise_instruction(Tokens, Item)
+    ->  Items = [Item|More],
+        lua_wam_lines_to_items(Rest, More)
+    ;   lua_wam_lines_to_items(Rest, Items)
+    ).
+
+lua_recognise_instruction(["arg", N, Reg, OutReg], arg(N, Reg, OutReg)).
+lua_recognise_instruction(["call_indexed_atom_fact2", Pred], call_indexed_atom_fact2(Pred)).
+
+wam_items_to_data([], _, _, [], []).
+wam_items_to_data([label(LabelName)|Rest], Options, PC, Instructions, LabelEntries) :- !,
         lua_string_literal(LabelName, L),
         format(string(LEntry), '  [~w] = ~w', [L, PC]),
         LabelEntries = [LEntry|LE2],
-        wam_lines_to_data(Rest, Options, PC, Instructions, LE2)
-    ;   Parts = []
-    ->  wam_lines_to_data(Rest, Options, PC, Instructions, LabelEntries)
-    ;   wam_parts_to_lua(Parts, Options, Lit),
-        PC1 is PC + 1,
-        Instructions = [Lit|I2],
-        wam_lines_to_data(Rest, Options, PC1, I2, LabelEntries)
-    ).
+        wam_items_to_data(Rest, Options, PC, Instructions, LE2).
+wam_items_to_data([Item|Rest], Options, PC, [Lit|I2], LabelEntries) :-
+    wam_item_parts(Item, Parts),
+    wam_parts_to_lua(Parts, Options, Lit),
+    PC1 is PC + 1,
+    wam_items_to_data(Rest, Options, PC1, I2, LabelEntries).
 
 compile_wam_predicate_to_lua(_Pred, _WamCode, _Options, "").
 
@@ -526,9 +530,8 @@ lua_fact_source_entry(Key, file(Path), Entry) :-
     format(string(Entry), '  [~w] = { path = ~w }', [KeyQ, PathQ]).
 
 lua_inline_fact_tuples(WamCode, Tuples) :-
-    atom_string(WamCode, Str),
-    split_string(Str, "\n", "", Lines),
-    lua_wam_segments(Lines, Segments),
+    wam_code_to_lua_items(WamCode, Items),
+    lua_wam_segments(Items, Segments),
     Segments \= [],
     lua_fact_only_segments(Segments),
     findall(A1-A2, (
@@ -538,27 +541,18 @@ lua_inline_fact_tuples(WamCode, Tuples) :-
     ), Tuples).
 
 lua_wam_segments([], []).
-lua_wam_segments([Line|Rest], Segments) :-
-    tokenize_wam_line(Line, Parts),
-    (   Parts == []
-    ->  lua_wam_segments(Rest, Segments)
-    ;   Parts = [First|_], sub_string(First, _, 1, 0, ":")
-    ->  lua_segment_instrs(Rest, Instrs, Remaining),
+lua_wam_segments([label(_)|Rest], Segments) :- !,
+    lua_segment_instrs(Rest, Instrs, Remaining),
         Segments = [Instrs|More],
-        lua_wam_segments(Remaining, More)
-    ;   lua_wam_segments(Rest, Segments)
-    ).
+    lua_wam_segments(Remaining, More).
+lua_wam_segments([_|Rest], Segments) :-
+    lua_wam_segments(Rest, Segments).
 
 lua_segment_instrs([], [], []).
-lua_segment_instrs([Line|Rest], Instrs, Remaining) :-
-    tokenize_wam_line(Line, Parts),
-    (   Parts == []
-    ->  lua_segment_instrs(Rest, Instrs, Remaining)
-    ;   Parts = [First|_], sub_string(First, _, 1, 0, ":")
-    ->  Instrs = [], Remaining = [Line|Rest]
-    ;   Instrs = [Parts|More],
-        lua_segment_instrs(Rest, More, Remaining)
-    ).
+lua_segment_instrs([label(_)|Rest], [], [label(_)|Rest]) :- !.
+lua_segment_instrs([Item|Rest], [Parts|More], Remaining) :-
+    wam_item_parts(Item, Parts),
+    lua_segment_instrs(Rest, More, Remaining).
 
 lua_fact_only_segments(Segments) :-
     forall(member(Instrs, Segments),
@@ -567,6 +561,53 @@ lua_fact_only_segments(Segments) :-
 lua_body_call_instr(["call"|_]).
 lua_body_call_instr(["execute"|_]).
 lua_body_call_instr(["builtin_call"|_]).
+
+wam_item_parts(get_constant(C, Ai), ["get_constant", C, Ai]).
+wam_item_parts(get_variable(Xn, Ai), ["get_variable", Xn, Ai]).
+wam_item_parts(get_value(Xn, Ai), ["get_value", Xn, Ai]).
+wam_item_parts(get_structure(F, Ai), ["get_structure", F, Ai]).
+wam_item_parts(get_list(Ai), ["get_list", Ai]).
+wam_item_parts(get_nil(Ai), ["get_nil", Ai]).
+wam_item_parts(get_integer(N, Ai), ["get_integer", N, Ai]).
+wam_item_parts(unify_variable(Xn), ["unify_variable", Xn]).
+wam_item_parts(unify_value(Xn), ["unify_value", Xn]).
+wam_item_parts(unify_constant(C), ["unify_constant", C]).
+wam_item_parts(put_variable(Xn, Ai), ["put_variable", Xn, Ai]).
+wam_item_parts(put_value(Xn, Ai), ["put_value", Xn, Ai]).
+wam_item_parts(put_constant(C, Ai), ["put_constant", C, Ai]).
+wam_item_parts(put_structure(F, Ai), ["put_structure", F, Ai]).
+wam_item_parts(put_list(Ai), ["put_list", Ai]).
+wam_item_parts(set_variable(Xn), ["set_variable", Xn]).
+wam_item_parts(set_value(Xn), ["set_value", Xn]).
+wam_item_parts(set_constant(C), ["set_constant", C]).
+wam_item_parts(call(P, N), ["call", P, N]).
+wam_item_parts(execute(P), ["execute", P]).
+wam_item_parts(proceed, ["proceed"]).
+wam_item_parts(fail, ["fail"]).
+wam_item_parts(allocate, ["allocate"]).
+wam_item_parts(deallocate, ["deallocate"]).
+wam_item_parts(builtin_call(Op, Ar), ["builtin_call", Op, Ar]).
+wam_item_parts(call_foreign(Pred, Ar), ["call_foreign", Pred, Ar]).
+wam_item_parts(arg(N, Reg, OutReg), ["arg", N, Reg, OutReg]).
+wam_item_parts(call_indexed_atom_fact2(Pred), ["call_indexed_atom_fact2", Pred]).
+wam_item_parts(try_me_else(L), ["try_me_else", L]).
+wam_item_parts(retry_me_else(L), ["retry_me_else", L]).
+wam_item_parts(trust_me, ["trust_me"]).
+wam_item_parts(jump(L), ["jump", L]).
+wam_item_parts(cut_ite, ["cut_ite"]).
+wam_item_parts(begin_aggregate(K, V, R), ["begin_aggregate", K, V, R]).
+wam_item_parts(end_aggregate(R), ["end_aggregate", R]).
+wam_item_parts(switch_on_constant(Es), ["switch_on_constant"|Es]).
+wam_item_parts(switch_on_constant_a2(Es), ["switch_on_constant_a2"|Es]).
+wam_item_parts(switch_on_structure(Es), ["switch_on_structure"|Es]).
+wam_item_parts(Item, Parts) :-
+    Item =.. [Name|Args],
+    atom_string(Name, NameStr),
+    maplist(lua_item_arg_string, Args, ArgStrs),
+    Parts = [NameStr|ArgStrs].
+
+lua_item_arg_string(Value, Str) :-
+    text_to_string(Value, Str).
 
 lua_inline_fact_entry(Key, Tuples, Entry) :-
     lua_string_literal(Key, KeyQ),

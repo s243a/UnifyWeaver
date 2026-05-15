@@ -38,6 +38,14 @@ test(tokenize_quoted_atom_with_internal_commas) :-
     wam_tokenize_line("    put_constant 'a, b, c', A1", T),
     assertion(T == ["put_constant", "a, b, c", "A1"]).
 
+test(tokenize_quoted_atom_with_escaped_quote) :-
+    wam_tokenize_line("    put_constant 'it\\'s', A1", T),
+    assertion(T == ["put_constant", "it's", "A1"]).
+
+test(tokenize_quoted_atom_with_escaped_backslash) :-
+    wam_tokenize_line("    put_constant 'a\\\\b', A1", T),
+    assertion(T == ["put_constant", "a\\b", "A1"]).
+
 test(tokenize_conjunction_functor_preserved) :-
     % PR #2084 regression: ",/2" must be one token; bare comma
     % between arg positions should still split.
