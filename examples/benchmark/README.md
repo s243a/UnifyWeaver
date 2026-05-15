@@ -126,6 +126,19 @@ before running child benchmarks if `MemAvailable` is below
 `--max-competing-cpu-percent` (default `50.0`), preventing known-noisy timing
 rows from being captured accidentally.
 
+`benchmark_csharp_query_lmdb_source_mode_sweep.py` runs a focused arity-2
+provider comparison for preload, binary artifact, delimited artifact, and the
+optional LMDB provider. It reports open time, repeated arg0 lookup time, full
+scan time, retained managed memory, artifact bytes, and output hashes:
+
+```bash
+python examples/benchmark/benchmark_csharp_query_lmdb_source_mode_sweep.py \
+  --rows 1000 \
+  --keys 100 \
+  --lookup-repetitions 10 \
+  --format markdown
+```
+
 Use `--stability-runs <n>` to run the wrapper-level sweep repeatedly and
 summarize stable winners. Values above `1` report majority winners, winner
 counts, stable resolved `auto` modes, and per-mode median timings across the
@@ -613,6 +626,7 @@ Tables:
 | `benchmark_dependency_depth_cross_target.py` | Compare synthetic dependency reach-count across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_dependency_longest_depth_cross_target.py` | Compare true DAG longest dependency-chain depth across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_csharp_query_source_mode_sweep.py` | Run generated C# query source-mode sweeps across selected workloads and emit a compact TSV/Markdown comparison |
+| `benchmark_csharp_query_lmdb_source_mode_sweep.py` | Compare preload, binary artifact, delimited artifact, and LMDB providers on one arity-2 C# query relation workload |
 | `refresh_csharp_query_source_mode_calibration.py` | Refresh the graph source-mode calibration TSV with guarded idle checks |
 | `refresh_csharp_query_scan_source_mode_calibration.py` | Refresh the scan-materialization source-mode calibration TSV with guarded idle checks |
 | `report_csharp_query_source_mode_actions.py` | Report graph and scan calibration rows where the current source-mode policy differs from observed best or `auto` is slow |

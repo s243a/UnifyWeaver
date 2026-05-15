@@ -238,6 +238,8 @@ need manual override:
      artifact, and LMDB on one measured workload.
    - Acceptance: report open time, lookup time, scan time, memory retained, and
      artifact size.
+   - Status: implemented by
+     `examples/benchmark/benchmark_csharp_query_lmdb_source_mode_sweep.py`.
 4. `feat/csharp-query-mmap-array-provider-smoke`
    - Implement a dependency-free fixed-width mmap array provider for one
      manifest-declared ID strategy.
