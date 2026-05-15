@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Diagnostics;
 using System.IO;
+using System.IO.MemoryMappedFiles;
 using System.Numerics;
 using System.Text;
 using System.Text.Json;
@@ -332,6 +333,99 @@ namespace UnifyWeaver.QueryRuntime
         }
     }
 
+    public sealed class MmapArrayRelationArtifactManifest
+    {
+        public const string CurrentFormat = "unifyweaver.mmap_array_relation.v1";
+
+        public string Format { get; set; } = CurrentFormat;
+
+        public int Version { get; set; } = 1;
+
+        public string PhysicalBackend { get; set; } = "mmap_array";
+
+        public string PredicateName { get; set; } = string.Empty;
+
+        public int Arity { get; set; } = 2;
+
+        public string DataPath { get; set; } = string.Empty;
+
+        public long RowCount { get; set; }
+
+        public string IdStrategy { get; set; } = "provided_id";
+
+        public int IdWidth { get; set; } = 32;
+
+        public string ValueEncoding { get; set; } = "int32_le";
+
+        public int SortColumn { get; set; } = 0;
+
+        public string? StringTable { get; set; }
+
+        public string? SourcePath { get; set; }
+
+        public long? SourceLength { get; set; }
+
+        public string? SourceSha256 { get; set; }
+
+        public void Validate(string manifestPath)
+        {
+            if (!string.Equals(Format, CurrentFormat, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"Unsupported mmap array relation artifact format '{Format}': {manifestPath}");
+            }
+
+            if (Version != 1)
+            {
+                throw new InvalidDataException($"Unsupported mmap array relation artifact manifest version {Version}: {manifestPath}");
+            }
+
+            if (!string.Equals(PhysicalBackend, "mmap_array", StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"Mmap array relation artifact has unsupported backend '{PhysicalBackend}': {manifestPath}");
+            }
+
+            if (string.IsNullOrWhiteSpace(PredicateName))
+            {
+                throw new InvalidDataException($"Mmap array relation artifact manifest has no predicate name: {manifestPath}");
+            }
+
+            if (Arity != 2)
+            {
+                throw new InvalidDataException($"Mmap array relation artifact smoke provider only supports arity-2 facts: {manifestPath}");
+            }
+
+            if (string.IsNullOrWhiteSpace(DataPath))
+            {
+                throw new InvalidDataException($"Mmap array relation artifact manifest has no data path: {manifestPath}");
+            }
+
+            if (RowCount < 0)
+            {
+                throw new InvalidDataException($"Mmap array relation artifact row count must be non-negative: {manifestPath}");
+            }
+
+            if (IdStrategy is not ("provided_id" or "position_id"))
+            {
+                throw new InvalidDataException($"Mmap array relation artifact has unsupported id strategy '{IdStrategy}': {manifestPath}");
+            }
+
+            if (IdWidth != 32 || !string.Equals(ValueEncoding, "int32_le", StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"Mmap array relation artifact smoke provider only supports int32_le values: {manifestPath}");
+            }
+
+            if (SortColumn != 0)
+            {
+                throw new InvalidDataException($"Mmap array relation artifact smoke provider only supports sort column 0: {manifestPath}");
+            }
+
+            if (!string.IsNullOrEmpty(StringTable))
+            {
+                throw new InvalidDataException($"Mmap array relation artifact smoke provider does not support sidecar string tables yet: {manifestPath}");
+            }
+        }
+    }
+
     public interface IReplayableRelationSource
     {
         IEnumerable<object[]> Stream();
@@ -419,6 +513,11 @@ namespace UnifyWeaver.QueryRuntime
                     var delimitedProvider = new DelimitedRelationArtifactProvider(fallback);
                     delimitedProvider.RegisterArtifact(predicate, manifestPath);
                     result = new RelationArtifactProviderOpenResult(delimitedProvider, "delimited_artifact");
+                    return true;
+                case MmapArrayRelationArtifactManifest.CurrentFormat:
+                    var mmapProvider = new MmapArrayRelationArtifactProvider(fallback);
+                    mmapProvider.RegisterArtifact(predicate, manifestPath);
+                    result = new RelationArtifactProviderOpenResult(mmapProvider, "mmap_array_artifact");
                     return true;
                 default:
                     result = default!;
@@ -2186,6 +2285,263 @@ namespace UnifyWeaver.QueryRuntime
         }
     }
 
+    public static class MmapArrayRelationArtifactBuilder
+    {
+        public static string BuildFromDelimited(
+            PredicateId predicate,
+            DelimitedRelationSource source,
+            string artifactDirectory,
+            string? artifactName = null,
+            string idStrategy = "provided_id")
+        {
+            if (artifactDirectory is null) throw new ArgumentNullException(nameof(artifactDirectory));
+            Directory.CreateDirectory(artifactDirectory);
+
+            if (predicate.Arity != 2 || source.ExpectedWidth != 2)
+            {
+                throw new InvalidDataException("Mmap array relation artifact builder only supports arity-2 int32 facts.");
+            }
+
+            artifactName ??= SanitizeArtifactName(predicate);
+            var dataPath = Path.Combine(artifactDirectory, artifactName + ".uwa");
+            var manifestPath = Path.Combine(artifactDirectory, artifactName + ".uwa.json");
+
+            var rows = DelimitedRelationReader.ReadRows(source)
+                .Select(row => (First: ParseInt32Cell(row[0]), Second: ParseInt32Cell(row[1])))
+                .OrderBy(row => row.First)
+                .ThenBy(row => row.Second)
+                .ToArray();
+
+            using (var stream = new FileStream(dataPath, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (var writer = new BinaryWriter(stream, Encoding.UTF8))
+            {
+                foreach (var row in rows)
+                {
+                    writer.Write(row.First);
+                    writer.Write(row.Second);
+                }
+            }
+
+            var sourceInfo = File.Exists(source.InputPath)
+                ? new FileInfo(source.InputPath)
+                : null;
+            var manifest = new MmapArrayRelationArtifactManifest
+            {
+                PredicateName = predicate.Name,
+                Arity = predicate.Arity,
+                DataPath = Path.GetFileName(dataPath),
+                RowCount = rows.LongLength,
+                IdStrategy = idStrategy,
+                IdWidth = 32,
+                ValueEncoding = "int32_le",
+                SortColumn = 0,
+                SourcePath = source.InputPath,
+                SourceLength = sourceInfo?.Length,
+                SourceSha256 = sourceInfo is null ? null : ComputeSha256(source.InputPath),
+            };
+
+            var json = JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(manifestPath, json, Encoding.UTF8);
+            return manifestPath;
+        }
+
+        private static int ParseInt32Cell(object value)
+        {
+            if (value is int intValue)
+            {
+                return intValue;
+            }
+
+            if (value is long longValue && longValue >= int.MinValue && longValue <= int.MaxValue)
+            {
+                return (int)longValue;
+            }
+
+            if (int.TryParse(Convert.ToString(value, CultureInfo.InvariantCulture), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+            {
+                return parsed;
+            }
+
+            throw new InvalidDataException($"Mmap array relation artifact value '{value}' is not an int32 ID.");
+        }
+
+        private static string SanitizeArtifactName(PredicateId predicate)
+        {
+            var raw = $"{predicate.Name}_{predicate.Arity}";
+            var builder = new StringBuilder(raw.Length);
+            foreach (var ch in raw)
+            {
+                builder.Append(char.IsLetterOrDigit(ch) || ch == '_' || ch == '-' ? ch : '_');
+            }
+
+            return builder.ToString();
+        }
+
+        private static string ComputeSha256(string path)
+        {
+            using var stream = File.OpenRead(path);
+            var hash = SHA256.HashData(stream);
+            return Convert.ToHexString(hash).ToLowerInvariant();
+        }
+    }
+
+    public static class MmapArrayRelationArtifactReader
+    {
+        private const int RecordSize = sizeof(int) * 2;
+
+        public static MmapArrayRelationArtifactManifest LoadManifest(string manifestPath)
+        {
+            if (manifestPath is null) throw new ArgumentNullException(nameof(manifestPath));
+            var manifest = JsonSerializer.Deserialize<MmapArrayRelationArtifactManifest>(File.ReadAllText(manifestPath, Encoding.UTF8))
+                ?? throw new InvalidDataException($"Mmap array relation artifact manifest is empty: {manifestPath}");
+            manifest.Validate(manifestPath);
+            return manifest;
+        }
+
+        public static IEnumerable<object[]> ReadRows(string manifestPath)
+        {
+            var manifest = LoadManifest(manifestPath);
+            var dataPath = ResolveDataPath(manifest, manifestPath);
+            ValidateDataLength(manifest, dataPath);
+            if (manifest.RowCount == 0)
+            {
+                yield break;
+            }
+
+            using var mappedFile = MemoryMappedFile.CreateFromFile(dataPath, FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
+            using var accessor = mappedFile.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
+            for (var rowIndex = 0L; rowIndex < manifest.RowCount; rowIndex++)
+            {
+                yield return ReadRow(accessor, rowIndex);
+            }
+        }
+
+        public static IEnumerable<object[]> LookupRows(string manifestPath, IEnumerable<object> keys)
+        {
+            var manifest = LoadManifest(manifestPath);
+            var dataPath = ResolveDataPath(manifest, manifestPath);
+            ValidateDataLength(manifest, dataPath);
+            if (manifest.RowCount == 0)
+            {
+                yield break;
+            }
+
+            using var mappedFile = MemoryMappedFile.CreateFromFile(dataPath, FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
+            using var accessor = mappedFile.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
+
+            foreach (var key in keys)
+            {
+                var parsedKey = ParseLookupKey(key);
+                var first = LowerBound(accessor, manifest.RowCount, parsedKey);
+                for (var rowIndex = first; rowIndex < manifest.RowCount && ReadFirst(accessor, rowIndex) == parsedKey; rowIndex++)
+                {
+                    yield return ReadRow(accessor, rowIndex);
+                }
+            }
+        }
+
+        public static IEnumerable<IndexedRelationBucket> ReadBuckets(string manifestPath)
+        {
+            var manifest = LoadManifest(manifestPath);
+            var dataPath = ResolveDataPath(manifest, manifestPath);
+            ValidateDataLength(manifest, dataPath);
+            if (manifest.RowCount == 0)
+            {
+                yield break;
+            }
+
+            using var mappedFile = MemoryMappedFile.CreateFromFile(dataPath, FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
+            using var accessor = mappedFile.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
+
+            var rowIndex = 0L;
+            while (rowIndex < manifest.RowCount)
+            {
+                var key = ReadFirst(accessor, rowIndex);
+                var rows = new List<object[]>();
+                do
+                {
+                    rows.Add(ReadRow(accessor, rowIndex));
+                    rowIndex++;
+                }
+                while (rowIndex < manifest.RowCount && ReadFirst(accessor, rowIndex) == key);
+
+                yield return new IndexedRelationBucket(key, rows);
+            }
+        }
+
+        private static object[] ReadRow(MemoryMappedViewAccessor accessor, long rowIndex)
+        {
+            var offset = checked(rowIndex * RecordSize);
+            return new object[]
+            {
+                accessor.ReadInt32(offset),
+                accessor.ReadInt32(offset + sizeof(int))
+            };
+        }
+
+        private static int ReadFirst(MemoryMappedViewAccessor accessor, long rowIndex)
+        {
+            return accessor.ReadInt32(checked(rowIndex * RecordSize));
+        }
+
+        private static long LowerBound(MemoryMappedViewAccessor accessor, long rowCount, int key)
+        {
+            var low = 0L;
+            var high = rowCount;
+            while (low < high)
+            {
+                var mid = low + ((high - low) / 2);
+                if (ReadFirst(accessor, mid) < key)
+                {
+                    low = mid + 1;
+                }
+                else
+                {
+                    high = mid;
+                }
+            }
+
+            return low;
+        }
+
+        private static int ParseLookupKey(object key)
+        {
+            if (key is int intValue)
+            {
+                return intValue;
+            }
+
+            if (key is long longValue && longValue >= int.MinValue && longValue <= int.MaxValue)
+            {
+                return (int)longValue;
+            }
+
+            if (int.TryParse(Convert.ToString(key, CultureInfo.InvariantCulture), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+            {
+                return parsed;
+            }
+
+            throw new InvalidDataException($"Mmap array relation artifact lookup key '{key}' is not an int32 ID.");
+        }
+
+        private static string ResolveDataPath(MmapArrayRelationArtifactManifest manifest, string manifestPath)
+        {
+            return Path.IsPathRooted(manifest.DataPath)
+                ? manifest.DataPath
+                : Path.Combine(Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? ".", manifest.DataPath);
+        }
+
+        private static void ValidateDataLength(MmapArrayRelationArtifactManifest manifest, string dataPath)
+        {
+            var expectedLength = checked(manifest.RowCount * RecordSize);
+            var actualLength = new FileInfo(dataPath).Length;
+            if (actualLength != expectedLength)
+            {
+                throw new InvalidDataException($"Mmap array relation artifact data length is {actualLength}, expected {expectedLength}: {dataPath}");
+            }
+        }
+    }
+
     public static class BinaryRelationArtifactBuilder
     {
         public static string BuildFromDelimited(
@@ -3751,6 +4107,94 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             reader.BaseStream.Position += length;
+        }
+    }
+
+    public sealed class MmapArrayRelationArtifactProvider : IIndexedRelationProvider, IIndexedRelationBucketProvider, IRelationCardinalityProvider
+    {
+        private readonly IRelationProvider? _fallback;
+        private readonly Dictionary<PredicateId, string> _manifestPaths = new();
+
+        public MmapArrayRelationArtifactProvider(IRelationProvider? fallback = null)
+        {
+            _fallback = fallback;
+        }
+
+        public void RegisterArtifact(PredicateId predicate, string manifestPath)
+        {
+            if (manifestPath is null) throw new ArgumentNullException(nameof(manifestPath));
+            var manifest = MmapArrayRelationArtifactReader.LoadManifest(manifestPath);
+            if (!string.Equals(manifest.PredicateName, predicate.Name, StringComparison.Ordinal) ||
+                manifest.Arity != predicate.Arity)
+            {
+                throw new InvalidDataException($"Mmap array relation artifact manifest describes {manifest.PredicateName}/{manifest.Arity}, not {predicate}.");
+            }
+
+            _manifestPaths[predicate] = manifestPath;
+        }
+
+        public IEnumerable<object[]> GetFacts(PredicateId predicate)
+        {
+            if (_manifestPaths.TryGetValue(predicate, out var manifestPath))
+            {
+                return MmapArrayRelationArtifactReader.ReadRows(manifestPath);
+            }
+
+            return _fallback?.GetFacts(predicate) ?? Array.Empty<object[]>();
+        }
+
+        public bool TryLookupFacts(PredicateId predicate, int columnIndex, IEnumerable<object> keys, out IEnumerable<object[]> facts)
+        {
+            if (columnIndex == 0 && _manifestPaths.TryGetValue(predicate, out var manifestPath))
+            {
+                facts = MmapArrayRelationArtifactReader.LookupRows(manifestPath, keys);
+                return true;
+            }
+
+            if (_fallback is IIndexedRelationProvider indexedFallback &&
+                indexedFallback.TryLookupFacts(predicate, columnIndex, keys, out facts))
+            {
+                return true;
+            }
+
+            facts = default!;
+            return false;
+        }
+
+        public bool TryReadIndexedBuckets(PredicateId predicate, int columnIndex, out IEnumerable<IndexedRelationBucket> buckets)
+        {
+            if (columnIndex == 0 && _manifestPaths.TryGetValue(predicate, out var manifestPath))
+            {
+                buckets = MmapArrayRelationArtifactReader.ReadBuckets(manifestPath);
+                return true;
+            }
+
+            if (_fallback is IIndexedRelationBucketProvider bucketFallback &&
+                bucketFallback.TryReadIndexedBuckets(predicate, columnIndex, out buckets))
+            {
+                return true;
+            }
+
+            buckets = default!;
+            return false;
+        }
+
+        public bool TryGetRelationCardinality(PredicateId predicate, out long rowCount)
+        {
+            if (_manifestPaths.TryGetValue(predicate, out var manifestPath))
+            {
+                rowCount = MmapArrayRelationArtifactReader.LoadManifest(manifestPath).RowCount;
+                return true;
+            }
+
+            if (_fallback is IRelationCardinalityProvider cardinalityFallback &&
+                cardinalityFallback.TryGetRelationCardinality(predicate, out rowCount))
+            {
+                return true;
+            }
+
+            rowCount = 0;
+            return false;
         }
     }
 
