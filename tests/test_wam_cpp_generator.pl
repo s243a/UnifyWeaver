@@ -387,6 +387,43 @@ user:wam_cpp_test_findall_three_goals :-
             L),
     L = [12, 14, 16].
 
+% Nested findalls — the latent bug from PR #2098. The inner findall
+% is NOT inlined by the WAM compiler (only the outermost
+% findall/bagof/setof gets BeginAggregate-inlined); it''s emitted as
+% a plain `call findall/3, 3`. Resolving this needed:
+%   1. A meta-call findall/3 dispatcher (`dispatch_findall_call`)
+%      that pushes an AggregateFrame and invokes the goal with cp =
+%      findall_collect_pc.
+%   2. A ConjFrame mechanism so the inner findall''s conjunction
+%      goal-term (`,(member(...), X =< N)`) gets dispatched as G1
+%      then G2 with proper backtracking through G1''s CPs.
+:- dynamic user:wam_cpp_test_findall_nested/0.
+:- dynamic user:wam_cpp_test_findall_nested_simple/0.
+:- dynamic user:wam_cpp_test_findall_meta_no_conjunction/0.
+
+% The original reproduction from PR #2098''s deferred list.
+user:wam_cpp_test_findall_nested :-
+    findall(L,
+            (member(N, [2, 3]),
+             findall(X, (member(X, [1, 2, 3, 4]), X =< N), L)),
+            Ls),
+    Ls = [[1, 2], [1, 2, 3]].
+
+% Simpler nested case: inner findall without conjunction goal.
+user:wam_cpp_test_findall_nested_simple :-
+    findall(L,
+            (member(N, [1, 2]),
+             findall(N, member(_, [a, b, N]), L)),
+            Ls),
+    Ls = [[1, 1, 1], [2, 2, 2]].
+
+% Meta-call findall/3 directly (no conjunction).
+user:wam_cpp_test_findall_meta_no_conjunction :-
+    % G is a single-goal compound — exercises dispatch_findall_call
+    % WITHOUT the ConjFrame path.
+    findall(X, member(X, [a, b, c]), L),
+    L = [a, b, c].
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -1950,6 +1987,74 @@ test(cpp_e2e_findall_three_goal_conjunction,
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_findall_three_goals/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% Nested findalls — the inner findall isn''t inlined, so a meta-call
+% findall/3 dispatcher + ConjFrame mechanism for ,/2 goal-terms is
+% needed. Resolved the latent bug deferred from PR #2098.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_findall_meta_no_conjunction,
+     [condition(cpp_compiler_available)]) :-
+    % Single-goal meta findall/3 (no conjunction). Exercises
+    % dispatch_findall_call without the ConjFrame path. Simplest
+    % nested-findall case.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_fa_meta_simple', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_findall_meta_no_conjunction/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_findall_meta_no_conjunction/0',
+                    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_findall_nested_simple,
+     [condition(cpp_compiler_available)]) :-
+    % Outer findall, inner findall WITHOUT a conjunction in its goal
+    % (just a single member/2 call). Tests dispatch_findall_call
+    % alone — the ConjFrame path is exercised via the next test.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_fa_nested_simple', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_findall_nested_simple/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_findall_nested_simple/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_findall_nested, [condition(cpp_compiler_available)]) :-
+    % The full original reproduction:
+    %   findall(L,
+    %           (member(N, [2, 3]),
+    %            findall(X, (member(X, [1, 2, 3, 4]), X =< N), L)),
+    %           Ls)
+    %   → Ls = [[1, 2], [1, 2, 3]]
+    %
+    % Exercises:
+    %   - Outer findall (inlined BeginAggregate/EndAggregate).
+    %   - Inner findall (meta-call via dispatch_findall_call).
+    %   - Inner goal is a conjunction (,/2 goal-term) → ConjFrame
+    %     dispatch with G1=member, G2=(X =< N).
+    %   - G1 has multiple solutions; each one re-dispatches G2 via
+    %     the ConjFrame staying on the stack across backtracks.
+    %   - Inner aggregate finalises, binds L, outer''s EndAggregate
+    %     collects.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_fa_nested', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_findall_nested/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_findall_nested/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
