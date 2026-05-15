@@ -128,6 +128,29 @@ test(recognise_switch_on_constant_captures_tail) :-
 test(recognise_unknown_instruction_fails, [fail]) :-
     wam_recognise_instruction(["unknown_op", "X"], _).
 
+test(recognise_begin_aggregate_3_arg, [nondet]) :-
+    % findall/aggregate_all forms — no witness slot.
+    wam_recognise_instruction(["begin_aggregate", "collect", "Y1", "Y2"], I),
+    assertion(I == begin_aggregate("collect", "Y1", "Y2")).
+
+test(recognise_begin_aggregate_4_arg, [nondet]) :-
+    % bagof/setof inlined form — 4th arg carries the free-witness
+    % register names as a semicolon-delimited string (here just "Y3").
+    wam_recognise_instruction(
+        ["begin_aggregate", "bagof", "Y1", "Y2", "Y3"], I),
+    assertion(I == begin_aggregate("bagof", "Y1", "Y2", "Y3")).
+
+test(recognise_begin_aggregate_4_arg_multiple_witnesses, [nondet]) :-
+    wam_recognise_instruction(
+        ["begin_aggregate", "setof", "Y1", "Y2", "Y3;Y4"], I),
+    assertion(I == begin_aggregate("setof", "Y1", "Y2", "Y3;Y4")).
+
+test(recognise_begin_aggregate_4_arg_empty_witnesses, [nondet]) :-
+    % Existentially-quantified bagof — witness arg is empty string.
+    wam_recognise_instruction(
+        ["begin_aggregate", "bagof", "Y1", "Y2", ""], I),
+    assertion(I == begin_aggregate("bagof", "Y1", "Y2", "")).
+
 % ------------------------------------------------------------------
 % wam_text_to_items/2 — end-to-end
 % ------------------------------------------------------------------
