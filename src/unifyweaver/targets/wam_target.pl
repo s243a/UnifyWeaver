@@ -732,6 +732,21 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
         ;   compile_goals(Rest, V1, HasEnv, Vf, RestCode),
             format(string(Code), "~w~n~w", [GoalCode, RestCode])
         )
+    % Bare if-then: (Cond -> Then) without an Else clause. Reuses the
+    % if-then-else compiler with Else=fail — semantically identical
+    % for the success path; Cond-failure just falls through to fail
+    % (which is what bare ->/2 does).
+    ;   Goal = (CondGoal -> ThenGoal)
+    ->  compile_if_then_else(CondGoal, ThenGoal, fail, V0, V1, HasEnv, GoalCode),
+        (   Rest == []
+        ->  Vf = V1,
+            (   HasEnv == yes
+            ->  format(string(Code), "~w~n    deallocate~n    proceed", [GoalCode])
+            ;   format(string(Code), "~w~n    proceed", [GoalCode])
+            )
+        ;   compile_goals(Rest, V1, HasEnv, Vf, RestCode),
+            format(string(Code), "~w~n~w", [GoalCode, RestCode])
+        )
     % Bare disjunction: (A ; B) without ->
     ;   Goal = (LeftGoal ; RightGoal),
         \+ (LeftGoal = (_ -> _))
@@ -745,6 +760,21 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
         ;   compile_goals(Rest, V1, HasEnv, Vf, RestCode),
             format(string(Code), "~w~n~w", [GoalCode, RestCode])
         )
+    % once(G) — succeed once with G''s first solution, fail if G has
+    % none. Desugars to (G -> true): if-then-else with Else=fail
+    % already gives the right semantics (bare ->/2 fails on Cond
+    % failure). Recurse so the rewritten goal flows through the
+    % normal dispatch (including if-then-else inlining).
+    ;   Goal = once(OnceGoal)
+    ->  compile_goals([(OnceGoal -> true) | Rest], V0, HasEnv, Vf, Code)
+    % forall(G, T) — for every solution of G, T must succeed.
+    % Desugars to \+ (G, \+ T): negation-as-failure over the
+    % conjunction of generator + negated test. Recursion routes
+    % through compile_goal_call, which emits `call \+/1, 1` and the
+    % runtime handles negation via the builtin path.
+    ;   Goal = forall(GenGoal, TestGoal)
+    ->  compile_goals([\+ (GenGoal, \+ TestGoal) | Rest],
+                      V0, HasEnv, Vf, Code)
     ;   Rest == []
     ->  % Last goal: execute (Tail Call Optimization)
         (   %% Term-construction builtins (=../2 and functor/3) compose-mode
@@ -1139,19 +1169,34 @@ compile_disjunction(LeftGoal, RightGoal, V0, Vf, _HasEnv, Code) :-
 compile_inner_call_goals([], V, V, "").
 compile_inner_call_goals([Goal|Rest], V0, Vf, Code) :-
     (   Goal = (CondGoal -> ThenGoal ; ElseGoal)
-    ->  compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, V1, no, GoalCode)
+    ->  compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, V1, no, GoalCode),
+        compile_inner_call_goals(Rest, V1, Vf, RestCode),
+        join_goal_codes(GoalCode, RestCode, Code)
     ;   Goal = (CondGoal -> ThenGoal)
-    ->  compile_if_then_else(CondGoal, ThenGoal, fail, V0, V1, no, GoalCode)
+    ->  compile_if_then_else(CondGoal, ThenGoal, fail, V0, V1, no, GoalCode),
+        compile_inner_call_goals(Rest, V1, Vf, RestCode),
+        join_goal_codes(GoalCode, RestCode, Code)
     ;   Goal = (LeftGoal ; RightGoal),
         \+ (LeftGoal = (_ -> _))
-    ->  compile_disjunction(LeftGoal, RightGoal, V0, V1, no, GoalCode)
-    ;   compile_goal_call(Goal, V0, V1, GoalCode)
-    ),
-    compile_inner_call_goals(Rest, V1, Vf, RestCode),
-    (   RestCode == ""
-    ->  Code = GoalCode
-    ;   format(string(Code), "~w~n~w", [GoalCode, RestCode])
+    ->  compile_disjunction(LeftGoal, RightGoal, V0, V1, no, GoalCode),
+        compile_inner_call_goals(Rest, V1, Vf, RestCode),
+        join_goal_codes(GoalCode, RestCode, Code)
+    % once(G) / forall(G, T) — same desugarings as compile_goals.
+    % Recurse with the rewritten goal so the if-then-else / negation
+    % machinery picks it up.
+    ;   Goal = once(OnceGoal)
+    ->  compile_inner_call_goals([(OnceGoal -> true) | Rest], V0, Vf, Code)
+    ;   Goal = forall(GenGoal, TestGoal)
+    ->  compile_inner_call_goals([\+ (GenGoal, \+ TestGoal) | Rest],
+                                 V0, Vf, Code)
+    ;   compile_goal_call(Goal, V0, V1, GoalCode),
+        compile_inner_call_goals(Rest, V1, Vf, RestCode),
+        join_goal_codes(GoalCode, RestCode, Code)
     ).
+
+join_goal_codes(GoalCode, "", GoalCode) :- !.
+join_goal_codes(GoalCode, RestCode, Code) :-
+    format(string(Code), "~w~n~w", [GoalCode, RestCode]).
 
 %% allocate_var(+Var, +VarMapIn, -VarMapOut, -Register)
 %  Allocate a Y-register for a variable if not already allocated.
