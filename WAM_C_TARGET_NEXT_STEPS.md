@@ -5,7 +5,7 @@ Status date: 2026-05-14
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `6e5e8cca` (`Merge pull request #2083 from s243a/feat/wam-c-lowered-helper-empty-result-rejections`)
+- `main` at `dedaeefc` (`Merge pull request #2088 from s243a/feat/wam-cpp-iso-sweep`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
 - `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py`
@@ -14,7 +14,7 @@ Base verified locally:
 
 Active branch:
 
-- `feat/wam-c-lowered-helper-body-call-rejections`
+- `feat/wam-c-lowered-helper-expanded-body-calls`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -52,7 +52,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Lowered helper comparison-filter rejection metadata | Done | Planner reports explicit rejection reasons for unbound comparison guard variables, unsupported expressions, non-integer ordering rows, and no matching rows |
 | Lowered helper repeated-variable filters | Done | Constant and comparison filtered helpers preserve repeated callee-variable row constraints with planner and executable coverage |
 | Lowered helper empty-result rejections | Done | Planner reports `no_matching_filter_rows` for supported constant filtered helpers whose constraints produce no rows, alongside existing comparison no-match metadata |
-| Lowered helper body-call rejection metadata | In progress | Active branch reports explicit unavailable and non-lowerable callee reasons for exact user-predicate body-call shapes |
+| Lowered helper body-call rejection metadata | Done | Planner reports explicit unavailable and non-lowerable callee reasons for exact user-predicate body-call shapes |
+| Lowered helper projected body calls | In progress | Active branch lowers variable-only reordered body-call projections through native fact-helper dispatch with executable coverage |
 
 ## Current C Target Baseline
 
@@ -123,7 +124,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
 | Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup and all-hop collection; add more kernel kinds only after runtime support exists. |
 | Shared kernel detector integration | Partial | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`; broaden as more native C kernels land. |
-| Lowered/native helper functions | Partial/Active | Done | Done | C has constant fact-only native helpers, planner metadata, interpreted-vs-lowered matrix wiring, body-call helpers, filtered-fact helpers, comparison-filter helpers, rejection metadata, repeated-variable filter hardening, and active empty-result rejection metadata. |
+| Lowered/native helper functions | Partial/Active | Done | Done | C has constant fact-only native helpers, planner metadata, interpreted-vs-lowered matrix wiring, body-call helpers, filtered-fact helpers, comparison-filter helpers, rejection metadata, repeated-variable filter hardening, empty-result rejection metadata, and active projected body-call helper expansion. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
 | LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts and generated effective-distance LMDB wiring; larger artifact layout support remains. |
 | Effective-distance benchmark harness | Partial/Done | Done | Done | C is wired into the shared matrix for TSV and LMDB `kernels_on`/`kernels_off`; next gap is larger artifact layouts. |
@@ -133,38 +134,38 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-lowered-helper-body-call-rejections`
-
-Goal: make unsupported body-call lowering failures explicit before expanding
-the body-call helper surface.
-
-Scope:
-
-- Add planner metadata for alias/body-call shapes whose callee is not available
-  for native lowering.
-- Keep the existing direct native fact-helper dispatch unchanged.
-- Prefer planner tests and generated plan comments over runtime changes.
-
-Status: active; exact user-predicate body-call shapes now report
-`body_call_callee_not_available` or `body_call_callee_not_lowerable` when they
-cannot use direct native helper dispatch.
-
-### 2. `feat/wam-c-lowered-helper-expanded-body-calls`
+### 1. `feat/wam-c-lowered-helper-expanded-body-calls`
 
 Goal: expand body-call helper lowering beyond direct alias-to-fact dispatch only
 after unsupported body-call shapes have explicit planner metadata.
 
 Scope:
 
-- Evaluate simple body-call projections that are currently handled as filtered
-  fact helpers.
+- Evaluate simple variable-only body-call projections that were previously
+  handled as materialized filtered fact helpers.
 - Keep explicit rejection metadata for unavailable and non-lowerable callees.
 - Add runtime coverage only for any newly supported body-call shape.
 
+Status: active; variable-only reordered body-call projections now lower through
+native callee helper dispatch. Constant filters remain on the existing
+filtered-fact path.
+
+### 2. `test/wam-c-generated-project-multi-predicate-setup`
+
+Goal: make generated-project smoke coverage less sensitive to setup-function
+ordering.
+
+Scope:
+
+- Cover multiple generated WAM predicate trampolines in one executable without
+  relying on the last `setup_*` call.
+- Preserve existing lowered-helper foreign registration behavior.
+- Prefer a focused runtime/setup smoke before changing generated setup layout.
+
 ## Suggested Immediate Next Step
 
-Continue validating `feat/wam-c-lowered-helper-body-call-rejections`.
+Continue validating `feat/wam-c-lowered-helper-expanded-body-calls`.
 
-The active branch adds explicit planner and generated-comment metadata for
-exact user-predicate body-call shapes whose callee is unavailable or not
-lowerable, while leaving successful direct body-call helper dispatch unchanged.
+The active branch adds native wrapper generation for variable-only reordered
+body-call projections, while leaving direct body-call dispatch, constant
+filtered helpers, and rejection metadata unchanged.
