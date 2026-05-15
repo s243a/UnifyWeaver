@@ -507,7 +507,7 @@ test_lowered_body_call_projection_rejection_metadata :-
         member(wam_c_lowered_helper_plan('wam_c_body_projection_fact2/2', _, lowered, fact_only([[a,a]])), Plans),
         member(wam_c_lowered_helper_plan('wam_c_body_projection_fact3/3', _, lowered, fact_only([[a,b,b]])), Plans),
         member(wam_c_lowered_helper_plan('wam_c_body_projection_omit/2', _, rejected, body_call_projection_omits_head_variable), Plans),
-        member(wam_c_lowered_helper_plan('wam_c_body_projection_repeat/1', _, rejected, body_call_projection_repeats_head_variable), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_body_projection_repeat/1', _, lowered, filtered_fact('wam_c_body_projection_fact2/2', [[a]])), Plans),
         member(wam_c_lowered_helper_plan('wam_c_body_projection_repeated_local/1', _, rejected, body_call_projection_repeats_callee_local_variable), Plans),
         write_wam_c_project([user:wam_c_body_projection_fact1/1,
                              user:wam_c_body_projection_fact2/2,
@@ -519,7 +519,7 @@ test_lowered_body_call_projection_rejection_metadata :-
                             ProjectDir),
         read_file_to_string(LibPath, LibS, []),
         sub_string(LibS, _, _, _, '// - rejected wam_c_body_projection_omit/2: body_call_projection_omits_head_variable'),
-        sub_string(LibS, _, _, _, '// - rejected wam_c_body_projection_repeat/1: body_call_projection_repeats_head_variable'),
+        sub_string(LibS, _, _, _, '// - lowered wam_c_body_projection_repeat/1: filtered_fact'),
         sub_string(LibS, _, _, _, '// - rejected wam_c_body_projection_repeated_local/1: body_call_projection_repeats_callee_local_variable')
     ->  pass(Test)
     ;   fail_test(Test, 'planner did not report explicit projection rejection reasons')
@@ -1446,9 +1446,11 @@ run_lowered_fact_helper_executable_smoke :-
 run_lowered_body_call_helper_executable_smoke :-
     assertz(user:wam_c_body_fact(a, b)),
     assertz(user:wam_c_body_fact(a, c)),
+    assertz(user:wam_c_body_fact(a, a)),
     assertz((user:wam_c_body_alias(X, Y) :- user:wam_c_body_fact(X, Y))),
     assertz((user:wam_c_body_projected(X, Y) :- user:wam_c_body_fact(Y, X))),
     assertz((user:wam_c_body_ignored_output(X) :- user:wam_c_body_fact(X, _Ignored))),
+    assertz((user:wam_c_body_repeated_projection(X) :- user:wam_c_body_fact(X, X))),
     get_time(Now),
     Stamp is round(Now * 1000000),
     wam_c_temp_path('unifyweaver_wam_c_lowered_body_smoke', Stamp, ProjectDir),
@@ -1459,7 +1461,8 @@ run_lowered_body_call_helper_executable_smoke :-
     (   write_wam_c_project([user:wam_c_body_fact/2,
                              user:wam_c_body_alias/2,
                              user:wam_c_body_projected/2,
-                             user:wam_c_body_ignored_output/1],
+                             user:wam_c_body_ignored_output/1,
+                             user:wam_c_body_repeated_projection/1],
                             [lowered_helpers(true)],
                             ProjectDir),
         wam_c_lowered_body_smoke_main(MainCode),
@@ -1469,11 +1472,13 @@ run_lowered_body_call_helper_executable_smoke :-
     ->  retractall(user:wam_c_body_fact(_, _)),
         retractall(user:wam_c_body_alias(_, _)),
         retractall(user:wam_c_body_projected(_, _)),
-        retractall(user:wam_c_body_ignored_output(_))
+        retractall(user:wam_c_body_ignored_output(_)),
+        retractall(user:wam_c_body_repeated_projection(_))
     ;   retractall(user:wam_c_body_fact(_, _)),
         retractall(user:wam_c_body_alias(_, _)),
         retractall(user:wam_c_body_projected(_, _)),
         retractall(user:wam_c_body_ignored_output(_)),
+        retractall(user:wam_c_body_repeated_projection(_)),
         fail
     ).
 
@@ -2374,6 +2379,7 @@ void setup_wam_c_body_fact_2(WamState* state);
 void setup_wam_c_body_alias_2(WamState* state);
 void setup_wam_c_body_projected_2(WamState* state);
 void setup_wam_c_body_ignored_output_1(WamState* state);
+void setup_wam_c_body_repeated_projection_1(WamState* state);
 void setup_lowered_wam_c_helpers(WamState* state);
 
 int main(void) {
@@ -2440,6 +2446,21 @@ int main(void) {
     if (ignored_fail_rc != WAM_HALT) {
         wam_free_state(&state);
         return 80;
+    }
+
+    setup_wam_c_body_repeated_projection_1(&state);
+    WamValue repeated_args[1] = { val_atom("a") };
+    int repeated_rc = wam_run_predicate(&state, "wam_c_body_repeated_projection/1", repeated_args, 1);
+    if (repeated_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 90;
+    }
+
+    WamValue repeated_fail_args[1] = { val_atom("b") };
+    int repeated_fail_rc = wam_run_predicate(&state, "wam_c_body_repeated_projection/1", repeated_fail_args, 1);
+    if (repeated_fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 100;
     }
 
     wam_free_state(&state);
