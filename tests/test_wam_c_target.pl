@@ -357,7 +357,7 @@ test_lowered_helper_planner_metadata :-
                                     Plans),
         member(wam_c_lowered_helper_plan('wam_c_plan_fact/2', _, lowered, fact_only([[a,b]])), Plans),
         member(wam_c_lowered_helper_plan('wam_c_plan_alias/2', _, lowered, body_call('wam_c_plan_fact/2', 2)), Plans),
-        member(wam_c_lowered_helper_plan('wam_c_plan_rule/1', _, rejected, body_call_projection_unbound_callee_variable), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_plan_rule/1', _, lowered, body_call_projected('wam_c_plan_fact/2', 2, _)), Plans),
         member(wam_c_lowered_helper_plan('category_ancestor/4', _, interpreted, detected_kernel), Plans)
     ->  pass(Test)
     ;   fail_test(Test, 'planner did not classify lowered/rejected/interpreted predicates')
@@ -384,7 +384,7 @@ test_lowered_helper_plan_generation :-
         sub_string(LibS, _, _, _, '// WAM-C lowered helper plan'),
         sub_string(LibS, _, _, _, '// - lowered wam_c_plan_emit_fact/2: fact_only'),
         sub_string(LibS, _, _, _, '// - lowered wam_c_plan_emit_alias/2: body_call'),
-        sub_string(LibS, _, _, _, '// - rejected wam_c_plan_emit_rule/1: body_call_projection_unbound_callee_variable'),
+        sub_string(LibS, _, _, _, '// - lowered wam_c_plan_emit_rule/1: body_call_projected'),
         sub_string(LibS, _, _, _, 'INSTR_CALL_FOREIGN'),
         sub_string(LibS, _, _, _, 'static bool wam_c_lowered_wam_c_plan_emit_alias_2'),
         sub_string(LibS, _, _, _, 'setup_wam_c_plan_emit_rule_1')
@@ -400,22 +400,26 @@ test_lowered_body_call_helper_generation :-
     assertz(user:wam_c_body_fact(a, b)),
     assertz((user:wam_c_body_alias(X, Y) :- user:wam_c_body_fact(X, Y))),
     assertz((user:wam_c_body_projected(X, Y) :- user:wam_c_body_fact(Y, X))),
+    assertz((user:wam_c_body_ignored_output(X) :- user:wam_c_body_fact(X, _Ignored))),
     get_time(Now),
     Stamp is round(Now * 1000000),
     wam_c_temp_path('unifyweaver_wam_c_lowered_body_project', Stamp, ProjectDir),
     directory_file_path(ProjectDir, 'lib.c', LibPath),
     (   plan_wam_c_lowered_helpers([user:wam_c_body_fact/2,
                                      user:wam_c_body_alias/2,
-                                     user:wam_c_body_projected/2],
+                                     user:wam_c_body_projected/2,
+                                     user:wam_c_body_ignored_output/1],
                                     [lowered_helpers(true)],
                                     [],
                                     Plans),
         member(wam_c_lowered_helper_plan('wam_c_body_fact/2', _, lowered, fact_only([[a,b]])), Plans),
         member(wam_c_lowered_helper_plan('wam_c_body_alias/2', _, lowered, body_call('wam_c_body_fact/2', 2)), Plans),
         member(wam_c_lowered_helper_plan('wam_c_body_projected/2', _, lowered, body_call_projected('wam_c_body_fact/2', 2, _)), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_body_ignored_output/1', _, lowered, body_call_projected('wam_c_body_fact/2', 2, _)), Plans),
         write_wam_c_project([user:wam_c_body_fact/2,
                              user:wam_c_body_alias/2,
-                             user:wam_c_body_projected/2],
+                             user:wam_c_body_projected/2,
+                             user:wam_c_body_ignored_output/1],
                             [lowered_helpers(true)],
                             ProjectDir),
         read_file_to_string(LibPath, LibS, []),
@@ -423,6 +427,8 @@ test_lowered_body_call_helper_generation :-
         sub_string(LibS, _, _, _, '// - lowered wam_c_body_projected/2: body_call_projected'),
         sub_string(LibS, _, _, _, 'static bool wam_c_lowered_wam_c_body_alias_2'),
         sub_string(LibS, _, _, _, 'static bool wam_c_lowered_wam_c_body_projected_2'),
+        sub_string(LibS, _, _, _, 'static bool wam_c_lowered_wam_c_body_ignored_output_1'),
+        sub_string(LibS, _, _, _, 'state->A[1] = val_unbound("_");'),
         sub_string(LibS, _, _, _, 'return wam_c_lowered_wam_c_body_fact_2(state, "wam_c_body_fact/2", 2);'),
         sub_string(LibS, _, _, _, 'wam_c_lowered_wam_c_body_fact_2(state, "wam_c_body_fact/2", 2);'),
         sub_string(LibS, _, _, _, '.pred = "wam_c_body_alias/2"')
@@ -431,7 +437,8 @@ test_lowered_body_call_helper_generation :-
     ),
     retractall(user:wam_c_body_fact(_, _)),
     retractall(user:wam_c_body_alias(_, _)),
-    retractall(user:wam_c_body_projected(_, _)).
+    retractall(user:wam_c_body_projected(_, _)),
+    retractall(user:wam_c_body_ignored_output(_)).
 
 test_lowered_body_call_rejection_metadata :-
     Test = 'WAM-C: lowered helper planner explains unsupported body-call shapes',
@@ -476,48 +483,53 @@ test_lowered_body_call_projection_rejection_metadata :-
     Test = 'WAM-C: lowered helper planner explains unsupported projection shapes',
     assertz(user:wam_c_body_projection_fact1(a)),
     assertz(user:wam_c_body_projection_fact2(a, a)),
+    assertz(user:wam_c_body_projection_fact3(a, b, b)),
     assertz((user:wam_c_body_projection_omit(X, _Ignored) :-
                  user:wam_c_body_projection_fact1(X))),
     assertz((user:wam_c_body_projection_repeat(X) :-
                  user:wam_c_body_projection_fact2(X, X))),
-    assertz((user:wam_c_body_projection_unbound(X) :-
-                 user:wam_c_body_projection_fact2(X, _Unbound))),
+    assertz((user:wam_c_body_projection_repeated_local(X) :-
+                 user:wam_c_body_projection_fact3(X, Y, Y))),
     get_time(Now),
     Stamp is round(Now * 1000000),
     wam_c_temp_path('unifyweaver_wam_c_lowered_body_projection_reject_project', Stamp, ProjectDir),
     directory_file_path(ProjectDir, 'lib.c', LibPath),
     (   plan_wam_c_lowered_helpers([user:wam_c_body_projection_fact1/1,
                                      user:wam_c_body_projection_fact2/2,
+                                     user:wam_c_body_projection_fact3/3,
                                      user:wam_c_body_projection_omit/2,
                                      user:wam_c_body_projection_repeat/1,
-                                     user:wam_c_body_projection_unbound/1],
+                                     user:wam_c_body_projection_repeated_local/1],
                                     [lowered_helpers(true)],
                                     [],
                                     Plans),
         member(wam_c_lowered_helper_plan('wam_c_body_projection_fact1/1', _, lowered, fact_only([[a]])), Plans),
         member(wam_c_lowered_helper_plan('wam_c_body_projection_fact2/2', _, lowered, fact_only([[a,a]])), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_body_projection_fact3/3', _, lowered, fact_only([[a,b,b]])), Plans),
         member(wam_c_lowered_helper_plan('wam_c_body_projection_omit/2', _, rejected, body_call_projection_omits_head_variable), Plans),
         member(wam_c_lowered_helper_plan('wam_c_body_projection_repeat/1', _, rejected, body_call_projection_repeats_head_variable), Plans),
-        member(wam_c_lowered_helper_plan('wam_c_body_projection_unbound/1', _, rejected, body_call_projection_unbound_callee_variable), Plans),
+        member(wam_c_lowered_helper_plan('wam_c_body_projection_repeated_local/1', _, rejected, body_call_projection_repeats_callee_local_variable), Plans),
         write_wam_c_project([user:wam_c_body_projection_fact1/1,
                              user:wam_c_body_projection_fact2/2,
+                             user:wam_c_body_projection_fact3/3,
                              user:wam_c_body_projection_omit/2,
                              user:wam_c_body_projection_repeat/1,
-                             user:wam_c_body_projection_unbound/1],
+                             user:wam_c_body_projection_repeated_local/1],
                             [lowered_helpers(true)],
                             ProjectDir),
         read_file_to_string(LibPath, LibS, []),
         sub_string(LibS, _, _, _, '// - rejected wam_c_body_projection_omit/2: body_call_projection_omits_head_variable'),
         sub_string(LibS, _, _, _, '// - rejected wam_c_body_projection_repeat/1: body_call_projection_repeats_head_variable'),
-        sub_string(LibS, _, _, _, '// - rejected wam_c_body_projection_unbound/1: body_call_projection_unbound_callee_variable')
+        sub_string(LibS, _, _, _, '// - rejected wam_c_body_projection_repeated_local/1: body_call_projection_repeats_callee_local_variable')
     ->  pass(Test)
     ;   fail_test(Test, 'planner did not report explicit projection rejection reasons')
     ),
     retractall(user:wam_c_body_projection_fact1(_)),
     retractall(user:wam_c_body_projection_fact2(_, _)),
+    retractall(user:wam_c_body_projection_fact3(_, _, _)),
     retractall(user:wam_c_body_projection_omit(_, _)),
     retractall(user:wam_c_body_projection_repeat(_)),
-    retractall(user:wam_c_body_projection_unbound(_)).
+    retractall(user:wam_c_body_projection_repeated_local(_)).
 
 test_lowered_filtered_fact_helper_generation :-
     Test = 'WAM-C: guarded fact predicates can lower to filtered native helper',
@@ -1436,6 +1448,7 @@ run_lowered_body_call_helper_executable_smoke :-
     assertz(user:wam_c_body_fact(a, c)),
     assertz((user:wam_c_body_alias(X, Y) :- user:wam_c_body_fact(X, Y))),
     assertz((user:wam_c_body_projected(X, Y) :- user:wam_c_body_fact(Y, X))),
+    assertz((user:wam_c_body_ignored_output(X) :- user:wam_c_body_fact(X, _Ignored))),
     get_time(Now),
     Stamp is round(Now * 1000000),
     wam_c_temp_path('unifyweaver_wam_c_lowered_body_smoke', Stamp, ProjectDir),
@@ -1445,7 +1458,8 @@ run_lowered_body_call_helper_executable_smoke :-
     directory_file_path(ProjectDir, 'wam_c_lowered_body_smoke', ExePath),
     (   write_wam_c_project([user:wam_c_body_fact/2,
                              user:wam_c_body_alias/2,
-                             user:wam_c_body_projected/2],
+                             user:wam_c_body_projected/2,
+                             user:wam_c_body_ignored_output/1],
                             [lowered_helpers(true)],
                             ProjectDir),
         wam_c_lowered_body_smoke_main(MainCode),
@@ -1454,10 +1468,12 @@ run_lowered_body_call_helper_executable_smoke :-
         run_c_smoke_plain(ExePath)
     ->  retractall(user:wam_c_body_fact(_, _)),
         retractall(user:wam_c_body_alias(_, _)),
-        retractall(user:wam_c_body_projected(_, _))
+        retractall(user:wam_c_body_projected(_, _)),
+        retractall(user:wam_c_body_ignored_output(_))
     ;   retractall(user:wam_c_body_fact(_, _)),
         retractall(user:wam_c_body_alias(_, _)),
         retractall(user:wam_c_body_projected(_, _)),
+        retractall(user:wam_c_body_ignored_output(_)),
         fail
     ).
 
@@ -2357,6 +2373,7 @@ wam_c_lowered_body_smoke_main(
 void setup_wam_c_body_fact_2(WamState* state);
 void setup_wam_c_body_alias_2(WamState* state);
 void setup_wam_c_body_projected_2(WamState* state);
+void setup_wam_c_body_ignored_output_1(WamState* state);
 void setup_lowered_wam_c_helpers(WamState* state);
 
 int main(void) {
@@ -2408,6 +2425,21 @@ int main(void) {
     if (projected_fail_rc != WAM_HALT) {
         wam_free_state(&state);
         return 60;
+    }
+
+    setup_wam_c_body_ignored_output_1(&state);
+    WamValue ignored_args[1] = { val_atom("a") };
+    int ignored_rc = wam_run_predicate(&state, "wam_c_body_ignored_output/1", ignored_args, 1);
+    if (ignored_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 70;
+    }
+
+    WamValue ignored_fail_args[1] = { val_atom("z") };
+    int ignored_fail_rc = wam_run_predicate(&state, "wam_c_body_ignored_output/1", ignored_fail_args, 1);
+    if (ignored_fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 80;
     }
 
     wam_free_state(&state);
