@@ -653,6 +653,10 @@ go_foreign_setup_line(register_foreign_result_layout(Pred/Arity, Layout), Line) 
     format(atom(Line), '    vm.registerForeignResultLayout("~w/~w", "~w")', [Pred, Arity, Layout]).
 go_foreign_setup_line(register_foreign_result_mode(Pred/Arity, Mode), Line) :-
     format(atom(Line), '    vm.registerForeignResultMode("~w/~w", "~w")', [Pred, Arity, Mode]).
+go_foreign_setup_line(register_tsv_atom_fact2(Pred/Arity, Path), Line) :-
+    escape_go_string(Path, EscapedPath),
+    format(atom(Line), '    if err := vm.registerTsvAtomFact2("~w/~w", "~w"); err != nil { panic(err) }',
+        [Pred, Arity, EscapedPath]).
 go_foreign_setup_line(register_foreign_string_config(Pred/Arity, Key, ValuePred/ValueArity), Line) :-
     format(atom(Line), '    vm.registerForeignStringConfig("~w/~w", "~w", "~w/~w")',
         [Pred, Arity, Key, ValuePred, ValueArity]).
@@ -2266,6 +2270,36 @@ func (vm *WamState) registerForeignUsizeConfig(predKey string, key string, value
 
 func (vm *WamState) registerIndexedAtomFact2Pairs(predKey string, pairs []AtomPair) {
     vm.Ctx.IndexedAtomFactPairs[predKey] = pairs
+}
+
+func (vm *WamState) registerTsvAtomFact2(predKey string, path string) error {
+    data, err := os.ReadFile(path)
+    if err != nil {
+        return err
+    }
+    lines := strings.Split(string(data), "\\n")
+    pairs := make([]AtomPair, 0, len(lines))
+    for idx, line := range lines {
+        line = strings.TrimSpace(line)
+        if line == "" {
+            continue
+        }
+        if idx == 0 {
+            continue
+        }
+        cols := strings.Split(line, "\\t")
+        if len(cols) < 2 {
+            continue
+        }
+        left := strings.TrimSpace(cols[0])
+        right := strings.TrimSpace(cols[1])
+        if left == "" || right == "" {
+            continue
+        }
+        pairs = append(pairs, AtomPair{Left: left, Right: right})
+    }
+    vm.registerIndexedAtomFact2Pairs(predKey, pairs)
+    return nil
 }
 
 func (vm *WamState) registerIndexedWeightedEdgeTriples(predKey string, triples []WeightedEdgeTriple) {

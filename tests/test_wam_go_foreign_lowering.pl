@@ -125,6 +125,10 @@ test(call_indexed_atom_fact2_literal) :-
         [], Lit),
     assertion(Lit == '&CallIndexedAtomFact2{Pred: "edge/2"}').
 
+test(tsv_atom_fact2_setup_generation) :-
+    wam_go_target:go_foreign_setup_line(register_tsv_atom_fact2(edge/2, '/tmp/edge.tsv'), Line),
+    assertion(Line == '    if err := vm.registerTsvAtomFact2("edge/2", "/tmp/edge.tsv"); err != nil { panic(err) }').
+
 test(foreign_auto_detect_generation) :-
     compile_wam_predicate_to_go(plunit_wam_go_foreign_lowering:test_reaches/2, "call test_reaches/2, 2",
         [foreign_lowering(true)], ClosureCode),
@@ -255,9 +259,37 @@ test(foreign_execution_graph_kernels) :-
         write_file(TestPath,
 'package wam
 
-import "testing"
+import (
+    "os"
+    "path/filepath"
+    "testing"
+)
 
 func TestForeignGraphKernels(t *testing.T) {
+    tsvPath := filepath.Join(t.TempDir(), "edge.tsv")
+    if err := os.WriteFile(tsvPath, []byte("left\\tright\\nx\\ty\\nx\\tz\\n"), 0644); err != nil {
+        t.Fatalf("write tsv: %v", err)
+    }
+    tsvVM := NewWamState([]Instruction{&CallIndexedAtomFact2{Pred: "tsv_edge/2"}, &Proceed{}}, map[string]int{})
+    if err := tsvVM.registerTsvAtomFact2("tsv_edge/2", tsvPath); err != nil {
+        t.Fatalf("register tsv facts: %v", err)
+    }
+    tsvTarget := &Unbound{Name: "TSV_TARGET", Idx: 1}
+    tsvVM.Regs[0] = internAtom("x")
+    tsvVM.Regs[1] = tsvTarget
+    if !tsvVM.Run() {
+        t.Fatalf("tsv-backed call_indexed_atom_fact2 failed")
+    }
+    if got, ok := tsvVM.deref(tsvTarget).(*Atom); !ok || got.Name != "y" {
+        t.Fatalf("expected first tsv target y, got %#v", tsvVM.deref(tsvTarget))
+    }
+    if !tsvVM.backtrack() {
+        t.Fatalf("expected second tsv fact result")
+    }
+    if got, ok := tsvVM.deref(tsvTarget).(*Atom); !ok || got.Name != "z" {
+        t.Fatalf("expected second tsv target z, got %#v", tsvVM.deref(tsvTarget))
+    }
+
     factVM := NewWamState([]Instruction{&CallIndexedAtomFact2{Pred: "edge/2"}, &Proceed{}}, map[string]int{})
     factVM.registerIndexedAtomFact2Pairs("edge/2", []AtomPair{
         {Left: "a", Right: "b"},
