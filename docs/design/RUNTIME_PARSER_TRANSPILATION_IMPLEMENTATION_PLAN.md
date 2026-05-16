@@ -85,6 +85,8 @@ When R resolves to `runtime_parser(off)`, the project writer rejects requested
 predicates whose statically visible bodies call parser-dependent builtins, so
 the disabled mode does not silently generate a runtime that still accepts
 source-term parsing calls.
+`term_to_atom/2` is treated mode-sensitively: forward rendering remains valid
+with the parser disabled, while statically visible reverse parsing is rejected.
 
 The hook should be independent of the WAM items API. A target can skip WAM text
 generation at build time and still need runtime source-term parsing.

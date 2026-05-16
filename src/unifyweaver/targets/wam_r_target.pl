@@ -1848,18 +1848,25 @@ r_predicate_clause(Name/Arity, Head, Body) :-
 
 r_goal_uses_parser_builtin(Goal, Builtin) :-
     nonvar(Goal),
-    (   r_goal_builtin_pi(Goal, Builtin),
-        parser_dependent_builtin(Builtin)
+    (   r_goal_parser_dependency(Goal, Builtin)
     ->  true
     ;   r_goal_child(Goal, Child),
         r_goal_uses_parser_builtin(Child, Builtin)
     ).
 
-r_goal_builtin_pi(Module:Goal, Builtin) :-
+r_goal_parser_dependency(Module:Goal, Builtin) :-
     atom(Module),
     nonvar(Goal),
     !,
-    r_goal_builtin_pi(Goal, Builtin).
+    r_goal_parser_dependency(Goal, Builtin).
+r_goal_parser_dependency(term_to_atom(_Term, AtomText), term_to_atom/2) :-
+    !,
+    nonvar(AtomText).
+r_goal_parser_dependency(Goal, Builtin) :-
+    r_goal_builtin_pi(Goal, Builtin),
+    parser_dependent_builtin(Builtin),
+    Builtin \= term_to_atom/2.
+
 r_goal_builtin_pi(Goal, Name/Arity) :-
     callable(Goal),
     functor(Goal, Name, Arity).
