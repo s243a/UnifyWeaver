@@ -253,7 +253,7 @@ test_wam_throw_top_level_wrapper :-
     (   compile_wam_predicate_to_elixir(noop/0,
             "noop/0:\n    proceed", [], PredCode),
         atom_string(PredCode, S),
-        sub_string(S, _, _, _, '{:wam_throw, term}'),
+        sub_string(S, _, _, _, '{:wam_throw, term, _heap, _heap_len}'),
         sub_string(S, _, _, _, 'Uncaught Prolog throw')
     ->  pass(Test)
     ;   fail_test(Test,
@@ -386,6 +386,21 @@ test_iso_errors_sweep_runtime_arms :-
         sub_string(S, _, _, _, 'op in [">/2", ">_lax/2"]')
     ->  pass(Test)
     ;   fail_test(Test, 'one or more sweep runtime arms missing')
+    ).
+
+test_unify_compound_clause_present :-
+    Test = 'WAM-Elixir: unify/3 has compound-vs-compound clause + unify_arg_list helper',
+    (   compile_wam_helpers_to_elixir([], Code),
+        atom_string(Code, S),
+        % The compound-unify guard.
+        sub_string(S, _, _, _,
+                   'match?({:ref, _}, v1) and match?({:ref, _}, v2)'),
+        % Same-functor pattern check (variable repeated in both halves of the tuple).
+        sub_string(S, _, _, _, '{{:str, fn_name}, {:str, fn_name}}'),
+        % Recursive arg walker.
+        sub_string(S, _, _, _, 'defp unify_arg_list(state, [a | as], [b | bs])')
+    ->  pass(Test)
+    ;   fail_test(Test, 'compound-unify clause or unify_arg_list missing')
     ).
 
 test_iso_errors_sweep_rewrite_text :-
@@ -3101,6 +3116,7 @@ run_tests :-
     test_iso_errors_is_table_populated,
     test_iso_errors_sweep_table_populated,
     test_iso_errors_sweep_runtime_arms,
+    test_unify_compound_clause_present,
     test_iso_errors_sweep_rewrite_text,
     test_iso_errors_rewrite_text_default_mode,
     test_iso_errors_rewrite_text_iso_mode,

@@ -92,15 +92,12 @@ user:elx_call_extras(R) :- call(append, [a, b], [c, d], R).
 :- dynamic user:elx_catch_fail_propagates/0.
 % Atomic catcher matches atomic thrown term.
 user:elx_catch_match :- catch(throw(foo), foo, true).
-% Compound thrown term, unbound catcher binds to the whole compound.
-% NOTE: structural compound-vs-compound unification (e.g., catcher
-% pattern `error(_, _)`) is a pre-existing runtime limitation —
-% unify/3 only handles `v1 == v2` equality or unbound binding, not
-% recursive compound walk. Filed as a follow-up; not catch-specific.
-% Once compound-unify lands, this test should change to:
-%   catch(throw(error(type_error, ctx)), error(_, _), true).
+% Compound thrown term + STRUCTURED catcher pattern. Now possible
+% post-compound-unify follow-up — verifies that error(_, _) matches
+% the thrown error(type_error, ctx) structurally (functor + arity
+% + recursive arg unify). Wildcards bind to anything.
 user:elx_catch_compound :- catch(throw(error(type_error, ctx)),
-                                 _Caught, true).
+                                 error(_, _), true).
 % Goal proceeds normally; recovery (fail) NOT invoked.
 user:elx_catch_no_throw :- catch(true, _, fail).
 % Throw with no enclosing catch — wrapper converts to :fail + stderr.
@@ -125,12 +122,17 @@ user:elx_catch_fail_propagates :- catch(fail, _, true).
 :- dynamic user:elx_iso_is_zero_divisor/0.
 :- dynamic user:elx_iso_is_succeeds/1.
 :- dynamic user:elx_explicit_lax_fails/0.
-% RHS unbound -> instantiation_error throw -> catch matches.
-user:elx_iso_is_instantiation :- catch(is_iso(_X, _Y), _, true).
-% RHS is non-evaluable atom -> type_error(evaluable, foo/0) throw.
-user:elx_iso_is_type_error :- catch(is_iso(_X, foo), _, true).
-% RHS is 1//0 -> evaluation_error(zero_divisor) throw.
-user:elx_iso_is_zero_divisor :- catch(is_iso(_X, 1//0), _, true).
+% Structured catchers (compound-unify follow-up): each one verifies
+% not just that *something* threw, but that the right ISO error
+% shape was thrown.
+user:elx_iso_is_instantiation :-
+    catch(is_iso(_X, _Y), error(instantiation_error, _), true).
+user:elx_iso_is_type_error :-
+    catch(is_iso(_X, foo), error(type_error(evaluable, _), _), true).
+user:elx_iso_is_zero_divisor :-
+    catch(is_iso(_X, 1//0),
+          error(evaluation_error(zero_divisor), _),
+          true).
 % Happy path: is_iso(X, 1+1) succeeds with X=2 (no throw).
 user:elx_iso_is_succeeds(R) :- is_iso(X, 1 + 1), R = X.
 % Explicit is_lax bypasses rewrite — same lax behaviour as is/2.
@@ -160,12 +162,15 @@ user:elx_explicit_lax_fails :- is_lax(_X, foo).
 :- dynamic user:elx_lax_float_divzero_fails/0.
 
 % --- Arith compare iso/lax/bypass (representative on >, <, >=) ---
-% >: ISO throws instantiation_error for unbound operand.
-user:elx_iso_compare_instantiation :- catch((_X > 5), _, true).
-% <: ISO throws type_error(evaluable, foo/0) for atom operand.
-user:elx_iso_compare_type :- catch((foo < 5), _, true).
-% =:=: ISO throws evaluation_error(zero_divisor) for 1//0 operand.
-user:elx_iso_compare_zero_divide :- catch((1 // 0 =:= 0), _, true).
+% Structured catchers verify the thrown error shape per SPEC.
+user:elx_iso_compare_instantiation :-
+    catch((_X > 5), error(instantiation_error, _), true).
+user:elx_iso_compare_type :-
+    catch((foo < 5), error(type_error(evaluable, _), _), true).
+user:elx_iso_compare_zero_divide :-
+    catch((1 // 0 =:= 0),
+          error(evaluation_error(zero_divisor), _),
+          true).
 % Lax: silent fail (no throw, no crash).
 user:elx_lax_compare_silent :- (_X > 5).
 % Explicit >_lax in iso-mode predicate bypasses rewrite -> silent fail.
@@ -173,9 +178,16 @@ user:elx_lax_compare_silent :- (_X > 5).
 user:elx_explicit_lax_compare_in_iso :- '>_lax'(_X, 5).
 
 % --- succ_iso/2 (three ISO error modes + happy path) ---
-user:elx_iso_succ_unbound  :- catch(succ_iso(_X, _Y), _, true).
-user:elx_iso_succ_negative :- catch(succ_iso(-1, _X), _, true).
-user:elx_iso_succ_y_zero   :- catch(succ_iso(_X, 0),  _, true).
+user:elx_iso_succ_unbound :-
+    catch(succ_iso(_X, _Y), error(instantiation_error, _), true).
+user:elx_iso_succ_negative :-
+    catch(succ_iso(-1, _X),
+          error(type_error(not_less_than_zero, _), _),
+          true).
+user:elx_iso_succ_y_zero :-
+    catch(succ_iso(_X, 0),
+          error(domain_error(not_less_than_zero, _), _),
+          true).
 % Happy path: forward + backward succ via default form (now rewritten
 % to succ_lax/2 in default mode; same body).
 user:elx_succ_happy_forward(R)  :- succ(3, X), R = X.
@@ -187,11 +199,33 @@ user:elx_succ_explicit_lax_in_iso :- succ_lax(-1, _X).
 
 % --- IEEE-754 float divide-by-zero ---
 % ISO: throws evaluation_error(zero_divisor) (caught by iso_term_has_zero_divide
-% before eval_arith).
-user:elx_iso_float_divzero :- catch((_R is 1.0 / 0.0), _, true).
+% before eval_arith). Structured catcher verifies the error shape.
+user:elx_iso_float_divzero :-
+    catch((_R is 1.0 / 0.0),
+          error(evaluation_error(zero_divisor), _),
+          true).
 % Lax: silently fails (BEAM cannot produce IEEE inf/nan from
 % arithmetic without raising — see PR #5 deferred IEEE-754 note).
 user:elx_lax_float_divzero_fails :- _R is 1.0 / 0.0.
+
+% --- Compound unify (follow-up) — focused tests outside the ISO context ---
+% These exercise the new compound-vs-compound clause in unify/3
+% directly via the =/2 body-unification builtin.
+:- dynamic user:elx_compound_eq_ground/0.
+:- dynamic user:elx_compound_eq_binds/1.
+:- dynamic user:elx_compound_eq_nested/1.
+:- dynamic user:elx_compound_eq_mismatch_functor/0.
+:- dynamic user:elx_compound_eq_mismatch_arity/0.
+% Two structurally-equal ground compounds unify.
+user:elx_compound_eq_ground :- foo(1, 2) = foo(1, 2).
+% Compound unify binds a variable inside the pattern.
+user:elx_compound_eq_binds(R) :- foo(X, 2) = foo(7, 2), R = X.
+% Nested compound: outer arg is itself a compound — recurses.
+user:elx_compound_eq_nested(R) :- pair(inner(X, b), c) = pair(inner(a, b), c), R = X.
+% Functor mismatch fails.
+user:elx_compound_eq_mismatch_functor :- foo(1) = bar(1).
+% Arity mismatch fails (same name, different arity = different functor).
+user:elx_compound_eq_mismatch_arity :- foo(1, 2) = foo(1).
 
 % ============================================================
 % elixir_available — same gating pattern as the Scala suite
@@ -514,6 +548,35 @@ test(lax_float_divzero_fails) :-
     % current Elixir behaviour matches the pre-IEEE C++ baseline.
     with_elixir_project([user:elx_lax_float_divzero_fails/0], _Opts, TmpDir,
         verify_elixir_args(TmpDir, 'elx_lax_float_divzero_fails/0',
+                           [], "false")).
+
+% --- Compound unify tests (focused, outside ISO context) ---
+
+test(compound_eq_ground) :-
+    % foo(1, 2) = foo(1, 2) — two ground compounds, structurally equal.
+    with_elixir_project([user:elx_compound_eq_ground/0], _Opts, TmpDir,
+        verify_elixir_args(TmpDir, 'elx_compound_eq_ground/0', [], "true")).
+
+test(compound_eq_binds_variable) :-
+    % foo(X, 2) = foo(7, 2), R = X — X bound to 7 via compound unify.
+    with_elixir_project([user:elx_compound_eq_binds/1], _Opts, TmpDir,
+        verify_elixir_args(TmpDir, 'elx_compound_eq_binds/1', ['7'], "true")).
+
+test(compound_eq_nested) :-
+    % pair(inner(X, b), c) = pair(inner(a, b), c), R = X — recursion.
+    with_elixir_project([user:elx_compound_eq_nested/1], _Opts, TmpDir,
+        verify_elixir_args(TmpDir, 'elx_compound_eq_nested/1', ['a'], "true")).
+
+test(compound_eq_mismatch_functor) :-
+    % foo(1) = bar(1) — different functors, fail.
+    with_elixir_project([user:elx_compound_eq_mismatch_functor/0], _Opts, TmpDir,
+        verify_elixir_args(TmpDir, 'elx_compound_eq_mismatch_functor/0',
+                           [], "false")).
+
+test(compound_eq_mismatch_arity) :-
+    % foo(1, 2) = foo(1) — same name, different arity = different functor.
+    with_elixir_project([user:elx_compound_eq_mismatch_arity/0], _Opts, TmpDir,
+        verify_elixir_args(TmpDir, 'elx_compound_eq_mismatch_arity/0',
                            [], "false")).
 
 :- end_tests(wam_elixir_classic_programs).
