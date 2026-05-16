@@ -260,6 +260,97 @@ test_wam_throw_top_level_wrapper :-
                   'wam_throw catch arm missing from predicate run(args) wrapper')
     ).
 
+%% ISO errors plumbing tests (PR #3)
+
+test_iso_errors_config_loader :-
+    Test = 'WAM-Elixir: ISO errors config loader parses Prolog facts',
+    % Write a sample config to a tempfile, load it, verify mode_for/3
+    % returns the expected modes for several PI shapes.
+    tmp_file_stream(text, Path, Stream),
+    format(Stream,
+        ":- encoding(utf8).~n~c~n",
+        [0'%]),
+    format(Stream, "iso_errors_default(true).~n", []),
+    format(Stream, "iso_errors_override(legacy_lookup/3, false).~n", []),
+    format(Stream, "iso_errors_override(experimental:my_pred/2, true).~n", []),
+    format(Stream, "iso_errors_override(unsafe_div/3, false).~n", []),
+    close(Stream),
+    (   iso_errors_resolve_options([iso_errors_config(Path)], Config),
+        % Default is true (from iso_errors_default fact).
+        iso_errors_mode_for(Config, untouched/2, true),
+        % Bare override matches in any module.
+        iso_errors_mode_for(Config, legacy_lookup/3, false),
+        iso_errors_mode_for(Config, anymod:legacy_lookup/3, false),
+        % Module-qualified override matches only its own module.
+        iso_errors_mode_for(Config, experimental:my_pred/2, true),
+        iso_errors_mode_for(Config, other:my_pred/2, true),
+        % Unrelated PI falls back to default.
+        iso_errors_mode_for(Config, totally:other/0, true)
+    ->  pass(Test)
+    ;   fail_test(Test, 'config loader / mode resolution mismatch')
+    ),
+    catch(delete_file(Path), _, true).
+
+test_iso_errors_inline_wins :-
+    Test = 'WAM-Elixir: ISO errors inline option overrides file config',
+    % File says pred_x is false; inline option says true. Inline wins.
+    tmp_file_stream(text, Path, Stream),
+    format(Stream, "iso_errors_default(false).~n", []),
+    format(Stream, "iso_errors_override(pred_x/2, false).~n", []),
+    close(Stream),
+    Options = [
+        iso_errors_config(Path),
+        iso_errors(true),                 % flips global default
+        iso_errors(pred_x/2, true)        % flips pred_x
+    ],
+    (   iso_errors_resolve_options(Options, Config),
+        iso_errors_mode_for(Config, pred_x/2, true),       % inline won
+        iso_errors_mode_for(Config, untouched_pred/0, true) % global default flipped
+    ->  pass(Test)
+    ;   fail_test(Test, 'inline option did not override file config')
+    ),
+    catch(delete_file(Path), _, true).
+
+test_iso_errors_audit_empty_tables :-
+    Test = 'WAM-Elixir: iso audit returns default-source records (tables empty)',
+    % With empty rewrite tables, every default-form builtin_call site
+    % resolves to source=default, resolved==original, flip-changes=false.
+    setup_call_cleanup(
+        ( assertz((iso_audit_test:foo(X) :- X is 1 + 1)) ),
+        (   wam_elixir_iso_audit([iso_audit_test:foo/1], [], Audit),
+            % Audit should contain one entry for foo/1.
+            Audit = [audit(_, _, Sites)],
+            % Find the is/2 site, verify its classification.
+            ( member(site(_, "is/2", "is/2", default, false), Sites)
+            ->  pass(Test)
+            ;   fail_test(Test,
+                          'audit did not classify is/2 as default with no flip-change')
+            )
+        ),
+        retractall(iso_audit_test:foo(_))
+    ).
+
+test_iso_errors_multi_module_warning :-
+    Test = 'WAM-Elixir: iso config bare-PI multi-module warning fires (smoke)',
+    % Smoke test: warn_multi_module/2 succeeds for both shapes (one
+    % bare-PI matching multiple modules; one bare-PI matching one
+    % module). Stderr text capture is intentionally not gated — that
+    % requires fragile stream redirection. The test verifies the
+    % predicate runs cleanly; manual inspection during development
+    % verifies the warning text. The C++ equivalent test follows the
+    % same pattern (test_iso_errors_multi_module_warning in
+    % tests/test_wam_cpp_generator.pl).
+    Config = iso_config(false, [safe_div/2 - true]),
+    MultiModulePreds = [mod_a:safe_div/2, mod_b:safe_div/2, util:safe_div/2],
+    SingleModulePreds = [mod_a:safe_div/2],
+    EmptyPreds = [],
+    (   iso_errors_warn_multi_module(Config, MultiModulePreds),
+        iso_errors_warn_multi_module(Config, SingleModulePreds),
+        iso_errors_warn_multi_module(Config, EmptyPreds)
+    ->  pass(Test)
+    ;   fail_test(Test, 'warn_multi_module/2 failed on one of the shapes')
+    ).
+
 test_true_zero_builtin :-
     Test = 'WAM-Elixir: true/0 builtin arm exists',
     (   compile_wam_helpers_to_elixir([], Code),
@@ -2893,6 +2984,10 @@ run_tests :-
     test_catch_throw_builtin_arms,
     test_catch_throw_step_arms,
     test_wam_throw_top_level_wrapper,
+    test_iso_errors_config_loader,
+    test_iso_errors_inline_wins,
+    test_iso_errors_audit_empty_tables,
+    test_iso_errors_multi_module_warning,
     test_elixir_idioms,
     test_immutable_state_updates,
     test_functional_run_loop,
