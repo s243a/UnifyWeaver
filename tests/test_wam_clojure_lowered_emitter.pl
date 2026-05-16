@@ -537,6 +537,15 @@ test(simple_builtin_member_is_direct_lowered_in_prefix) :-
         assertion(\+ has(Code, "runtime/step"))
     )).
 
+test(simple_builtin_memberchk_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_memberchk/2:\nbuiltin_call memberchk/2, 2\nproceed\n",
+        wam_clojure_lowerable(test_memberchk/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_memberchk/2, WamCode, [], Code),
+        has(Code, "runtime/apply-memberchk-solution"),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
 test(simple_builtin_append_is_direct_lowered_in_prefix) :-
     once((
         WamCode = "test_append/3:\nbuiltin_call append/3, 3\nproceed\n",
