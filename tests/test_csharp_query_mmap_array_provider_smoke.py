@@ -142,6 +142,11 @@ Assert(manifest.IdStrategy == MmapArrayRelationArtifactManifest.ProvidedIdStrate
 Assert(manifest.IdWidth == 32, $"id width was {manifest.IdWidth}");
 Assert(manifest.ValueEncoding == "int32_le", $"value encoding was {manifest.ValueEncoding}");
 Assert(manifest.SourceIdsPreserved, "provided_id manifest did not preserve source IDs");
+Assert(!string.IsNullOrWhiteSpace(manifest.Column1DataPath), "column 1 data path was not emitted");
+Assert(File.Exists(Path.Combine(Path.GetDirectoryName(manifestPath)!, manifest.Column1DataPath!)), "column 1 data file does not exist");
+var legacyManifestPath = Path.Combine(root, "edge-mmap", "edge_legacy.uwa.json");
+manifest.Column1DataPath = null;
+File.WriteAllText(legacyManifestPath, JsonSerializer.Serialize(manifest));
 
 try
 {
@@ -162,9 +167,22 @@ Assert(provider.TryLookupFacts(predicate, 0, new object[] { "1" }, out var looku
 var lookedUp = lookupRows.Select(RowText).ToArray();
 Assert(lookedUp.SequenceEqual(new[] { "1>2", "1>3" }), "arg0 lookup rows did not match");
 
+Assert(provider.TryLookupFacts(predicate, 1, new object[] { "3" }, out var lookupRowsByColumn1), "arg1 lookup was not served");
+var lookedUpByColumn1 = lookupRowsByColumn1.Select(RowText).ToArray();
+Assert(lookedUpByColumn1.SequenceEqual(new[] { "1>3" }), "arg1 lookup rows did not match");
+
 Assert(provider.TryReadIndexedBuckets(predicate, 0, out var buckets), "arg0 bucket stream was not served");
 var bucketText = buckets.Select(bucket => $"{bucket.Key}:{string.Join(",", bucket.Rows.Select(RowText))}").ToArray();
 Assert(bucketText.SequenceEqual(new[] { "1:1>2,1>3", "2:2>4" }), "bucket rows did not match");
+
+Assert(provider.TryReadIndexedBuckets(predicate, 1, out var bucketsByColumn1), "arg1 bucket stream was not served");
+var bucketTextByColumn1 = bucketsByColumn1.Select(bucket => $"{bucket.Key}:{string.Join(",", bucket.Rows.Select(RowText))}").ToArray();
+Assert(bucketTextByColumn1.SequenceEqual(new[] { "2:1>2", "3:1>3", "4:2>4" }), "arg1 bucket rows did not match");
+
+var legacyProvider = new MmapArrayRelationArtifactProvider();
+legacyProvider.RegisterArtifact(predicate, legacyManifestPath);
+Assert(!legacyProvider.TryLookupFacts(predicate, 1, new object[] { "3" }, out _), "legacy manifest should not serve arg1 lookup without column 1 data");
+Assert(!legacyProvider.TryReadIndexedBuckets(predicate, 1, out _), "legacy manifest should not serve arg1 buckets without column 1 data");
 
 Assert(provider.TryGetRelationCardinality(predicate, out var rowCount), "row count was not served");
 Assert(rowCount == 3, $"row count was {rowCount}, expected 3");

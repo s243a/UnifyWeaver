@@ -351,6 +351,8 @@ namespace UnifyWeaver.QueryRuntime
 
         public string DataPath { get; set; } = string.Empty;
 
+        public string? Column1DataPath { get; set; }
+
         public long RowCount { get; set; }
 
         public string IdStrategy { get; set; } = ProvidedIdStrategy;
@@ -401,6 +403,11 @@ namespace UnifyWeaver.QueryRuntime
             if (string.IsNullOrWhiteSpace(DataPath))
             {
                 throw new InvalidDataException($"Mmap array relation artifact manifest has no data path: {manifestPath}");
+            }
+
+            if (Column1DataPath is not null && string.IsNullOrWhiteSpace(Column1DataPath))
+            {
+                throw new InvalidDataException($"Mmap array relation artifact manifest has an empty column 1 data path: {manifestPath}");
             }
 
             if (RowCount < 0)
@@ -2325,6 +2332,7 @@ namespace UnifyWeaver.QueryRuntime
 
             artifactName ??= SanitizeArtifactName(predicate);
             var dataPath = Path.Combine(artifactDirectory, artifactName + ".uwa");
+            var column1DataPath = Path.Combine(artifactDirectory, artifactName + ".col1.uwa");
             var manifestPath = Path.Combine(artifactDirectory, artifactName + ".uwa.json");
 
             var rows = DelimitedRelationReader.ReadRows(source)
@@ -2333,15 +2341,13 @@ namespace UnifyWeaver.QueryRuntime
                 .ThenBy(row => row.Second)
                 .ToArray();
 
-            using (var stream = new FileStream(dataPath, FileMode.Create, FileAccess.Write, FileShare.None))
-            using (var writer = new BinaryWriter(stream, Encoding.UTF8))
-            {
-                foreach (var row in rows)
-                {
-                    writer.Write(row.First);
-                    writer.Write(row.Second);
-                }
-            }
+            WriteRows(dataPath, rows);
+            WriteRows(
+                column1DataPath,
+                rows
+                    .OrderBy(row => row.Second)
+                    .ThenBy(row => row.First)
+                    .ToArray());
 
             var sourceInfo = File.Exists(source.InputPath)
                 ? new FileInfo(source.InputPath)
@@ -2351,6 +2357,7 @@ namespace UnifyWeaver.QueryRuntime
                 PredicateName = predicate.Name,
                 Arity = predicate.Arity,
                 DataPath = Path.GetFileName(dataPath),
+                Column1DataPath = Path.GetFileName(column1DataPath),
                 RowCount = rows.LongLength,
                 IdStrategy = idStrategy,
                 IdWidth = 32,
@@ -2365,6 +2372,17 @@ namespace UnifyWeaver.QueryRuntime
             var json = JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(manifestPath, json, Encoding.UTF8);
             return manifestPath;
+        }
+
+        private static void WriteRows(string dataPath, IReadOnlyList<(int First, int Second)> rows)
+        {
+            using var stream = new FileStream(dataPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            using var writer = new BinaryWriter(stream, Encoding.UTF8);
+            foreach (var row in rows)
+            {
+                writer.Write(row.First);
+                writer.Write(row.Second);
+            }
         }
 
         private static int ParseInt32Cell(object value)
@@ -2440,8 +2458,13 @@ namespace UnifyWeaver.QueryRuntime
 
         public static IEnumerable<object[]> LookupRows(string manifestPath, IEnumerable<object> keys)
         {
+            return LookupRows(manifestPath, columnIndex: 0, keys);
+        }
+
+        public static IEnumerable<object[]> LookupRows(string manifestPath, int columnIndex, IEnumerable<object> keys)
+        {
             var manifest = LoadManifest(manifestPath);
-            var dataPath = ResolveDataPath(manifest, manifestPath);
+            var dataPath = ResolveDataPath(manifest, manifestPath, columnIndex);
             ValidateDataLength(manifest, dataPath);
             if (manifest.RowCount == 0)
             {
@@ -2454,8 +2477,8 @@ namespace UnifyWeaver.QueryRuntime
             foreach (var key in keys)
             {
                 var parsedKey = ParseLookupKey(key);
-                var first = LowerBound(accessor, manifest.RowCount, parsedKey);
-                for (var rowIndex = first; rowIndex < manifest.RowCount && ReadFirst(accessor, rowIndex) == parsedKey; rowIndex++)
+                var first = LowerBound(accessor, manifest.RowCount, columnIndex, parsedKey);
+                for (var rowIndex = first; rowIndex < manifest.RowCount && ReadColumn(accessor, rowIndex, columnIndex) == parsedKey; rowIndex++)
                 {
                     yield return ReadRow(accessor, rowIndex);
                 }
@@ -2464,8 +2487,13 @@ namespace UnifyWeaver.QueryRuntime
 
         public static IEnumerable<IndexedRelationBucket> ReadBuckets(string manifestPath)
         {
+            return ReadBuckets(manifestPath, columnIndex: 0);
+        }
+
+        public static IEnumerable<IndexedRelationBucket> ReadBuckets(string manifestPath, int columnIndex)
+        {
             var manifest = LoadManifest(manifestPath);
-            var dataPath = ResolveDataPath(manifest, manifestPath);
+            var dataPath = ResolveDataPath(manifest, manifestPath, columnIndex);
             ValidateDataLength(manifest, dataPath);
             if (manifest.RowCount == 0)
             {
@@ -2478,14 +2506,14 @@ namespace UnifyWeaver.QueryRuntime
             var rowIndex = 0L;
             while (rowIndex < manifest.RowCount)
             {
-                var key = ReadFirst(accessor, rowIndex);
+                var key = ReadColumn(accessor, rowIndex, columnIndex);
                 var rows = new List<object[]>();
                 do
                 {
                     rows.Add(ReadRow(accessor, rowIndex));
                     rowIndex++;
                 }
-                while (rowIndex < manifest.RowCount && ReadFirst(accessor, rowIndex) == key);
+                while (rowIndex < manifest.RowCount && ReadColumn(accessor, rowIndex, columnIndex) == key);
 
                 yield return new IndexedRelationBucket(key, rows);
             }
@@ -2501,19 +2529,24 @@ namespace UnifyWeaver.QueryRuntime
             };
         }
 
-        private static int ReadFirst(MemoryMappedViewAccessor accessor, long rowIndex)
+        private static int ReadColumn(MemoryMappedViewAccessor accessor, long rowIndex, int columnIndex)
         {
-            return accessor.ReadInt32(checked(rowIndex * RecordSize));
+            return columnIndex switch
+            {
+                0 => accessor.ReadInt32(checked(rowIndex * RecordSize)),
+                1 => accessor.ReadInt32(checked((rowIndex * RecordSize) + sizeof(int))),
+                _ => throw new ArgumentOutOfRangeException(nameof(columnIndex), columnIndex, "Mmap array relation artifacts support only columns 0 and 1.")
+            };
         }
 
-        private static long LowerBound(MemoryMappedViewAccessor accessor, long rowCount, int key)
+        private static long LowerBound(MemoryMappedViewAccessor accessor, long rowCount, int columnIndex, int key)
         {
             var low = 0L;
             var high = rowCount;
             while (low < high)
             {
                 var mid = low + ((high - low) / 2);
-                if (ReadFirst(accessor, mid) < key)
+                if (ReadColumn(accessor, mid, columnIndex) < key)
                 {
                     low = mid + 1;
                 }
@@ -2548,9 +2581,20 @@ namespace UnifyWeaver.QueryRuntime
 
         private static string ResolveDataPath(MmapArrayRelationArtifactManifest manifest, string manifestPath)
         {
-            return Path.IsPathRooted(manifest.DataPath)
-                ? manifest.DataPath
-                : Path.Combine(Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? ".", manifest.DataPath);
+            return ResolveDataPath(manifest, manifestPath, columnIndex: 0);
+        }
+
+        private static string ResolveDataPath(MmapArrayRelationArtifactManifest manifest, string manifestPath, int columnIndex)
+        {
+            var dataPath = columnIndex switch
+            {
+                0 => manifest.DataPath,
+                1 => manifest.Column1DataPath ?? throw new InvalidDataException($"Mmap array relation artifact has no column 1 data path: {manifestPath}"),
+                _ => throw new ArgumentOutOfRangeException(nameof(columnIndex), columnIndex, "Mmap array relation artifacts support only columns 0 and 1.")
+            };
+            return Path.IsPathRooted(dataPath)
+                ? dataPath
+                : Path.Combine(Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? ".", dataPath);
         }
 
         private static void ValidateDataLength(MmapArrayRelationArtifactManifest manifest, string dataPath)
@@ -4167,9 +4211,9 @@ namespace UnifyWeaver.QueryRuntime
 
         public bool TryLookupFacts(PredicateId predicate, int columnIndex, IEnumerable<object> keys, out IEnumerable<object[]> facts)
         {
-            if (columnIndex == 0 && _manifestPaths.TryGetValue(predicate, out var manifestPath))
+            if (CanServeColumn(predicate, columnIndex, out var manifestPath))
             {
-                facts = MmapArrayRelationArtifactReader.LookupRows(manifestPath, keys);
+                facts = MmapArrayRelationArtifactReader.LookupRows(manifestPath, columnIndex, keys);
                 return true;
             }
 
@@ -4185,9 +4229,9 @@ namespace UnifyWeaver.QueryRuntime
 
         public bool TryReadIndexedBuckets(PredicateId predicate, int columnIndex, out IEnumerable<IndexedRelationBucket> buckets)
         {
-            if (columnIndex == 0 && _manifestPaths.TryGetValue(predicate, out var manifestPath))
+            if (CanServeColumn(predicate, columnIndex, out var manifestPath))
             {
-                buckets = MmapArrayRelationArtifactReader.ReadBuckets(manifestPath);
+                buckets = MmapArrayRelationArtifactReader.ReadBuckets(manifestPath, columnIndex);
                 return true;
             }
 
@@ -4216,6 +4260,27 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             rowCount = 0;
+            return false;
+        }
+
+        private bool CanServeColumn(PredicateId predicate, int columnIndex, out string manifestPath)
+        {
+            if (!_manifestPaths.TryGetValue(predicate, out manifestPath!))
+            {
+                return false;
+            }
+
+            if (columnIndex == 0)
+            {
+                return true;
+            }
+
+            if (columnIndex == 1)
+            {
+                var manifest = MmapArrayRelationArtifactReader.LoadManifest(manifestPath);
+                return !string.IsNullOrWhiteSpace(manifest.Column1DataPath);
+            }
+
             return false;
         }
     }
