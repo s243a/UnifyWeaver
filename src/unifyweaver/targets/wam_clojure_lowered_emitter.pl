@@ -392,6 +392,10 @@ clojure_direct_builtin("reverse/2", "2").
 clojure_direct_builtin("reverse/2", 2).
 clojure_direct_builtin('reverse/2', "2").
 clojure_direct_builtin('reverse/2', 2).
+clojure_direct_builtin("last/2", "2").
+clojure_direct_builtin("last/2", 2).
+clojure_direct_builtin('last/2', "2").
+clojure_direct_builtin('last/2', 2).
 clojure_direct_builtin("sort/2", "2").
 clojure_direct_builtin("sort/2", 2).
 clojure_direct_builtin('sort/2', "2").
@@ -670,6 +674,11 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "reverse/2" ; Op == 'reverse/2'),
     !,
     format(atom(Expr), '(runtime/apply-reverse-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "last/2" ; Op == 'last/2'),
+    !,
+    format(atom(Expr), '(runtime/apply-last-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "sort/2" ; Op == 'sort/2'),

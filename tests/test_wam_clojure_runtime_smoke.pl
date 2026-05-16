@@ -87,6 +87,10 @@
 :- dynamic user:wam_reverse_guard/2.
 :- dynamic user:wam_reverse_bad_list/1.
 :- dynamic user:wam_reverse_unbound_list/1.
+:- dynamic user:wam_last_guard/2.
+:- dynamic user:wam_last_empty/1.
+:- dynamic user:wam_last_bad_list/1.
+:- dynamic user:wam_last_unbound_list/1.
 :- dynamic user:wam_sort_guard/2.
 :- dynamic user:wam_sort_bad_list/1.
 :- dynamic user:wam_sort_unbound_list/1.
@@ -218,6 +222,10 @@ user:wam_append_split(A, B) :- append(A, B, [a,b,c]).
 user:wam_reverse_guard(L, R) :- reverse(L, R).
 user:wam_reverse_bad_list(R) :- reverse([a|b], R).
 user:wam_reverse_unbound_list(R) :- user:wam_unbound_arg(L), reverse(L, R).
+user:wam_last_guard(L, X) :- last(L, X).
+user:wam_last_empty(X) :- last([], X).
+user:wam_last_bad_list(X) :- last([a|b], X).
+user:wam_last_unbound_list(X) :- user:wam_unbound_arg(L), last(L, X).
 user:wam_sort_guard(L, S) :- sort(L, S).
 user:wam_sort_bad_list(S) :- sort([a|b], S).
 user:wam_sort_unbound_list(S) :- user:wam_unbound_arg(L), sort(L, S).
@@ -354,6 +362,10 @@ run_smoke :-
           user:wam_reverse_guard/2,
           user:wam_reverse_bad_list/1,
           user:wam_reverse_unbound_list/1,
+          user:wam_last_guard/2,
+          user:wam_last_empty/1,
+          user:wam_last_bad_list/1,
+          user:wam_last_unbound_list/1,
           user:wam_sort_guard/2,
           user:wam_sort_bad_list/1,
           user:wam_sort_unbound_list/1,
@@ -431,6 +443,7 @@ run_smoke :-
     assert_lowered_member_builtin_emitted(TmpDir),
     assert_lowered_append_builtin_emitted(TmpDir),
     assert_lowered_reverse_builtin_emitted(TmpDir),
+    assert_lowered_last_builtin_emitted(TmpDir),
     assert_lowered_sort_builtin_emitted(TmpDir),
     assert_lowered_msort_builtin_emitted(TmpDir),
     assert_lowered_copy_term_builtin_emitted(TmpDir),
@@ -596,6 +609,12 @@ smoke_cases([
     case('wam_reverse_guard/2', args('[a,b,c]', '[a,b,c]'), "false"),
     case('wam_reverse_bad_list/1', '[b,a]', "false"),
     case('wam_reverse_unbound_list/1', '[b,a]', "false"),
+    case('wam_last_guard/2', args('[a,b,c]', c), "true"),
+    case('wam_last_guard/2', args('[a]', a), "true"),
+    case('wam_last_guard/2', args('[a,b,c]', b), "false"),
+    case('wam_last_empty/1', a, "false"),
+    case('wam_last_bad_list/1', a, "false"),
+    case('wam_last_unbound_list/1', a, "false"),
     case('wam_sort_guard/2', args('[b,a,a,c]', '[a,b,c]'), "true"),
     case('wam_sort_guard/2', args('[b,a,a,c]', '[a,b]'), "false"),
     case('wam_sort_guard/2', args('[f(b),f(a),a]', '[a,f(a),f(b)]'), "true"),
@@ -852,6 +871,15 @@ assert_lowered_reverse_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-reverse-bad-list-1"),
     has(CoreCode, "defn lowered-wam-reverse-unbound-list-1"),
     has(CoreCode, "runtime/apply-reverse-solution").
+
+assert_lowered_last_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-last-guard-2"),
+    has(CoreCode, "defn lowered-wam-last-empty-1"),
+    has(CoreCode, "defn lowered-wam-last-bad-list-1"),
+    has(CoreCode, "defn lowered-wam-last-unbound-list-1"),
+    has(CoreCode, "runtime/apply-last-solution").
 
 assert_lowered_sort_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
