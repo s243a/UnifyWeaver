@@ -42,6 +42,10 @@
 	parse_wam_text_py/2,
 	python_func_name/2
 ]).
+:- use_module(wam_runtime_parser_capability, [
+	parser_dependent_body_goal/2,
+	wam_target_runtime_parser/3
+]).
 
 % ============================================================================
 % TOP-LEVEL ENTRY POINT
@@ -1344,6 +1348,8 @@ compile_wam_runtime_to_python(_Options, PythonCode) :-
 %  Follows the same layout as write_wam_fsharp_project/3 in wam_fsharp_target.pl.
 write_wam_python_project(Predicates, Options, ProjectDir) :-
 	option(module_name(ModuleName), Options, 'wam_generated'),
+	wam_target_runtime_parser(wam_python, Options, RuntimeParserMode),
+	validate_python_runtime_parser_mode(Predicates, RuntimeParserMode),
 
 	% Create directory structure
 	make_directory_path(ProjectDir),
@@ -1356,7 +1362,7 @@ write_wam_python_project(Predicates, Options, ProjectDir) :-
 	write_file(InitPath, ""),
 
 	% Generate predicates.py
-	compile_all_predicates(Predicates, Options, PredicatesCode),
+	compile_all_predicates(Predicates, [runtime_parser_mode(RuntimeParserMode)|Options], PredicatesCode),
 	directory_file_path(ProjectDir, 'predicates.py', PredPath),
 	write_file(PredPath, PredicatesCode),
 
@@ -1402,6 +1408,10 @@ is_ffi_predicate(Functor, Arity, Options) :-
 compile_all_predicates([], _Options, "# No predicates compiled\n").
 compile_all_predicates(Predicates, Options, Code) :-
 	Predicates \= [],
+	option(runtime_parser_mode(RuntimeParserMode), Options, none),
+	python_runtime_parser_mode_literal(RuntimeParserMode, RuntimeParserModeCode),
+	format(string(RuntimeParserLine), 'RUNTIME_PARSER = ~w~n~n',
+	       [RuntimeParserModeCode]),
 	plan_python_predicates(Predicates, Options, Plans),
 	lowered_route_set(Plans, Options, LoweredSet),
 	maplist(compile_planned_predicate(Options, LoweredSet), Plans, PredCodes),
@@ -1416,10 +1426,47 @@ compile_all_predicates(Predicates, Options, Code) :-
 		'X1,X2,X3,X4,X5,X6,X7,X8,X9,X10 = 1,2,3,4,5,6,7,8,9,10\n',
 		'X11,X12,X13,X14,X15,X16,X17,X18,X19,X20 = 11,12,13,14,15,16,17,18,19,20\n',
 		'Y1,Y2,Y3,Y4,Y5,Y6,Y7,Y8,Y9,Y10 = 201,202,203,204,205,206,207,208,209,210\n',
-		'Y11,Y12,Y13,Y14,Y15,Y16,Y17,Y18,Y19,Y20 = 211,212,213,214,215,216,217,218,219,220\n\n'
+		'Y11,Y12,Y13,Y14,Y15,Y16,Y17,Y18,Y19,Y20 = 211,212,213,214,215,216,217,218,219,220\n',
+		RuntimeParserLine
 		| PredCodes
 	], '\n\n', PredSection),
 	atomic_list_concat([PredSection, '\n\n', BuildProgramCode], Code).
+
+python_runtime_parser_mode_literal(none,
+	'{"kind": "none", "entry": None, "source": None}') :- !.
+python_runtime_parser_mode_literal(native(Entry), Code) :-
+	!,
+	format(string(Code),
+	       '{"kind": "native", "entry": "~w", "source": None}',
+	       [Entry]).
+python_runtime_parser_mode_literal(compiled(SourceModule), Code) :-
+	format(string(Code),
+	       '{"kind": "compiled", "entry": None, "source": "~w"}',
+	       [SourceModule]).
+
+validate_python_runtime_parser_mode(Predicates, none) :-
+	!,
+	(   python_predicates_parser_dependency(Predicates, Pred, Builtin)
+	->  throw(error(permission_error(use, runtime_parser, Builtin),
+	                context(write_wam_python_project/3,
+	                        parser_disabled_for_predicate(Pred))))
+	;   true
+	).
+validate_python_runtime_parser_mode(_Predicates, _Mode).
+
+python_predicates_parser_dependency(Predicates, Pred, Builtin) :-
+	member(Pred, Predicates),
+	python_predicate_clause(Pred, _Head, Body),
+	parser_dependent_body_goal(Body, Builtin),
+	!.
+
+python_predicate_clause(Module:Name/Arity, Head, Body) :-
+	!,
+	functor(Head, Name, Arity),
+	clause(Module:Head, Body).
+python_predicate_clause(Name/Arity, Head, Body) :-
+	functor(Head, Name, Arity),
+	clause(user:Head, Body).
 
 plan_python_predicates(Predicates, Options, Plans) :-
 	maplist(plan_python_predicate(Options), Predicates, Plans).

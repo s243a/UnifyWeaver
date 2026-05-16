@@ -23,9 +23,16 @@ test(r_can_opt_into_compiled_parser) :-
 test(unknown_target_defaults_to_none) :-
     wam_target_runtime_parser(wam_lua, [], none).
 
+test(python_defaults_to_none) :-
+    wam_target_runtime_parser(wam_python, [], none).
+
 test(unknown_target_native_request_errors,
      [error(domain_error(runtime_parser_mode(wam_lua), native))]) :-
     wam_target_runtime_parser(wam_lua, [runtime_parser(native)], _).
+
+test(python_native_request_errors,
+     [error(domain_error(runtime_parser_mode(wam_python), native))]) :-
+    wam_target_runtime_parser(wam_python, [runtime_parser(native)], _).
 
 test(unknown_target_compiled_request_errors,
      [error(domain_error(runtime_parser_mode(wam_lua), compiled))]) :-

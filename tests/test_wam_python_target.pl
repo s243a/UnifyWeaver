@@ -377,6 +377,67 @@ test(static_runtime_run_wam_four_args, [nondet]) :-
 :- end_tests(wam_python_phase_b).
 
 % ============================================================================
+% Runtime parser capability metadata and validation
+% ============================================================================
+
+python_parser_tmp_dir(Prefix, TmpDir) :-
+	tmp_file(Prefix, TmpDir),
+	catch(delete_directory_and_contents(TmpDir), _, true),
+	make_directory_path(TmpDir).
+
+python_parser_cleanup_tmp_dir(TmpDir) :-
+	catch(delete_directory_and_contents(TmpDir), _, true).
+
+:- begin_tests(wam_python_runtime_parser_mode).
+
+test(runtime_parser_mode_metadata) :-
+	setup_call_cleanup(
+		user:python_parser_tmp_dir('tmp_wam_python_parser_mode', ProjectDir),
+		(   wam_python_target:write_wam_python_project([user:py_parser_fact/1], [], ProjectDir),
+			directory_file_path(ProjectDir, 'predicates.py', PredicatesPath),
+			read_file_to_string(PredicatesPath, Code, []),
+			assertion(sub_string(Code, _, _, _,
+				'RUNTIME_PARSER = {"kind": "none", "entry": None, "source": None}'))
+		),
+		user:python_parser_cleanup_tmp_dir(ProjectDir)).
+
+test(runtime_parser_native_request_errors,
+     [error(domain_error(runtime_parser_mode(wam_python), native))]) :-
+	setup_call_cleanup(
+		user:python_parser_tmp_dir('tmp_wam_python_parser_native_err', ProjectDir),
+		wam_python_target:write_wam_python_project([user:py_parser_fact/1],
+			[runtime_parser(native)],
+			ProjectDir),
+		user:python_parser_cleanup_tmp_dir(ProjectDir)).
+
+test(runtime_parser_none_rejects_parser_dependent_builtin,
+     [error(permission_error(use, runtime_parser, read_term_from_atom/2))]) :-
+	setup_call_cleanup(
+		(   retractall(user:py_parser_dep),
+			assertz((user:py_parser_dep :-
+				read_term_from_atom('f(a)', _))),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_reject', ProjectDir)
+		),
+		wam_python_target:write_wam_python_project([user:py_parser_dep/0], [], ProjectDir),
+		(   retractall(user:py_parser_dep),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_parser_none_allows_term_to_atom_forward) :-
+	setup_call_cleanup(
+		(   retractall(user:py_t2a_forward),
+			assertz((user:py_t2a_forward :-
+				term_to_atom(f(a), _))),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_t2a_fwd', ProjectDir)
+		),
+		wam_python_target:write_wam_python_project([user:py_t2a_forward/0], [], ProjectDir),
+		(   retractall(user:py_t2a_forward),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+:- end_tests(wam_python_runtime_parser_mode).
+
+% ============================================================================
 % Phase C: Lowered emitter — deterministic detection, func naming, emit
 % ============================================================================
 
