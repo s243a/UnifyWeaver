@@ -1511,6 +1511,56 @@ user:wam_cpp_test_foldl5 :-
     foldl(wam_cpp_join4, [1, 2, 3], [10, 20, 30], 0, Sum),
     Sum = 66.
 
+% keysort/2 + pairs_keys/2 + pairs_values/2 + pairs_keys_values/3 —
+% common idioms for sorting / decomposing Key-Value pair lists.
+% keysort is a direct builtin using standard_order_cmp on the pair''s
+% Key (args[0] of -/2). The pairs_* builtins are helper-injected
+% recursive Prolog defs.
+:- dynamic user:wam_cpp_test_keysort/0.
+:- dynamic user:wam_cpp_test_keysort_stable/0.
+:- dynamic user:wam_cpp_test_keysort_empty/0.
+:- dynamic user:wam_cpp_test_pairs_keys/0.
+:- dynamic user:wam_cpp_test_pairs_keys_empty/0.
+:- dynamic user:wam_cpp_test_pairs_values/0.
+:- dynamic user:wam_cpp_test_pairs_kv/0.
+:- dynamic user:wam_cpp_test_keysort_then_values/0.
+
+user:wam_cpp_test_keysort :-
+    keysort([b-2, a-1, c-3], L),
+    L = [a-1, b-2, c-3].
+
+% Stable: equal keys preserve original Value order.
+user:wam_cpp_test_keysort_stable :-
+    keysort([b-1, a-2, b-3, a-4], L),
+    L = [a-2, a-4, b-1, b-3].
+
+user:wam_cpp_test_keysort_empty :-
+    keysort([], L),
+    L = [].
+
+user:wam_cpp_test_pairs_keys :-
+    pairs_keys([a-1, b-2, c-3], K),
+    K = [a, b, c].
+
+user:wam_cpp_test_pairs_keys_empty :-
+    pairs_keys([], K),
+    K = [].
+
+user:wam_cpp_test_pairs_values :-
+    pairs_values([a-1, b-2, c-3], V),
+    V = [1, 2, 3].
+
+user:wam_cpp_test_pairs_kv :-
+    pairs_keys_values([a-1, b-2, c-3], K, V),
+    K = [a, b, c],
+    V = [1, 2, 3].
+
+% Composition: sort by key, then pull values.
+user:wam_cpp_test_keysort_then_values :-
+    keysort([c-30, a-10, b-20], Sorted),
+    pairs_values(Sorted, Vs),
+    Vs = [10, 20, 30].
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -5284,6 +5334,112 @@ test(cpp_e2e_foldl5, [condition(cpp_compiler_available)]) :-
                               [emit_main(true)], TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath, 'wam_cpp_test_foldl5/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% keysort/2 + pairs_keys/2 + pairs_values/2 + pairs_keys_values/3 —
+% Key-Value pair list utilities.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_keysort, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_keysort', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_keysort/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_keysort/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_keysort_stable,
+     [condition(cpp_compiler_available)]) :-
+    % Stability regression guard — keys b/a appear twice; their
+    % original Value-order must be preserved on key ties.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ks_stable', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_keysort_stable/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_keysort_stable/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_keysort_empty,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ks_empty', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_keysort_empty/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_keysort_empty/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_pairs_keys, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_pairs_keys', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_pairs_keys/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_pairs_keys/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_pairs_keys_empty,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_pk_empty', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_pairs_keys_empty/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_pairs_keys_empty/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_pairs_values, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_pairs_values', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_pairs_values/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_pairs_values/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_pairs_kv, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_pairs_kv', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_pairs_kv/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_pairs_kv/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_keysort_then_values,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ks_then', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_keysort_then_values/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_keysort_then_values/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
