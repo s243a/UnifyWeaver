@@ -1096,6 +1096,58 @@ user:wam_cpp_test_retract_rule :-
     \+ wam_cpp_dyn_r(10),
     wam_cpp_dyn_r(-1).
 
+% Nondet retract/1 — completes the dynamic-db story. retract/1 now
+% routes through the Call/Execute step arms (like findall) so its
+% own CP iterator (RetractIterator) can drive backtracking through
+% subsequent matches. Per ISO, retract is destructive: removal
+% happens at the call (not at success of the whole query), and
+% backtracking finds the next match in the post-removal database.
+:- dynamic user:wam_cpp_test_retract_nondet_all/0.
+:- dynamic user:wam_cpp_test_retract_nondet_pattern/0.
+:- dynamic user:wam_cpp_test_retract_bind_via_pattern/0.
+:- dynamic user:wam_cpp_test_retract_fail_no_match/0.
+:- dynamic user:wam_cpp_test_retract_destructive/0.
+
+% findall over retract surfaces every match in turn. Direct
+% regression guard for the RetractIterator backtrack path.
+user:wam_cpp_test_retract_nondet_all :-
+    assertz(wam_cpp_nd_q(1)),
+    assertz(wam_cpp_nd_q(2)),
+    assertz(wam_cpp_nd_q(3)),
+    findall(X, retract(wam_cpp_nd_q(X)), L),
+    L = [1, 2, 3],
+    findall(Y, wam_cpp_nd_q(Y), L2),
+    L2 = [].
+
+% Body-side filter: every clause matches the retract pattern (X
+% unbound), so all 4 are retracted; findall only COLLECTS the
+% ones whose body filter passes. Remaining db is empty.
+user:wam_cpp_test_retract_nondet_pattern :-
+    assertz(wam_cpp_nd_r(1)),
+    assertz(wam_cpp_nd_r(2)),
+    assertz(wam_cpp_nd_r(3)),
+    assertz(wam_cpp_nd_r(4)),
+    findall(X, (retract(wam_cpp_nd_r(X)), 0 is X mod 2), L),
+    L = [2, 4],
+    findall(Y, wam_cpp_nd_r(Y), Remaining),
+    Remaining = [].
+
+user:wam_cpp_test_retract_bind_via_pattern :-
+    assertz(wam_cpp_nd_s(a, 10)),
+    assertz(wam_cpp_nd_s(b, 20)),
+    findall(K-V, retract(wam_cpp_nd_s(K, V)), L),
+    L = [a-10, b-20].
+
+% retract on never-asserted predicate fails (not throws).
+user:wam_cpp_test_retract_fail_no_match :-
+    \+ retract(wam_cpp_nd_absent(1)).
+
+% Destructive: once retracted, gone — even on backtrack.
+user:wam_cpp_test_retract_destructive :-
+    assertz(wam_cpp_nd_t(1)),
+    retract(wam_cpp_nd_t(1)),
+    \+ wam_cpp_nd_t(1).
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -4058,6 +4110,83 @@ test(cpp_e2e_retract_rule, [condition(cpp_compiler_available)]) :-
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_retract_rule/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% Nondeterministic retract/1 — backtracks through subsequent matches.
+% Each successful retract is destructive per ISO; the database stays
+% modified across backtrack.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_retract_nondet_all,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_retract_nd_all', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_retract_nondet_all/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_retract_nondet_all/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_retract_nondet_pattern,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_retract_nd_pat', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_retract_nondet_pattern/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_retract_nondet_pattern/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_retract_bind_via_pattern,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_retract_bind', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_retract_bind_via_pattern/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_retract_bind_via_pattern/0',
+                    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_retract_fail_no_match,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_retract_no_match', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_retract_fail_no_match/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_retract_fail_no_match/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_retract_destructive,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_retract_dest', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_retract_destructive/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_retract_destructive/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

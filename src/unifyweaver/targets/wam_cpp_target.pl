@@ -398,14 +398,14 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     helper_predicate_items(HelperItems),
     flatten_blocks([HelperItems|PerPredItems], AllItems),
     walk_blocks(AllItems, Labels, FlatInstrs0),
-    % Append eleven trailing synthetic-return instructions for the
+    % Append twelve trailing synthetic-return instructions for the
     % meta-call control-flow surface — see WamState for each pc''s
     % role.
     append(FlatInstrs0,
            [catch_return, negation_return, findall_collect,
             conj_return, disj_alt, if_then_commit, if_then_else,
             aggregate_next_group, dynamic_next_clause, sub_atom_next,
-            body_next],
+            body_next, retract_next],
            FlatInstrs),
     length(FlatInstrs0, CatchReturnPC),
     NegationReturnPC is CatchReturnPC + 1,
@@ -418,6 +418,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     DynamicNextClausePC is CatchReturnPC + 8,
     SubAtomNextPC is CatchReturnPC + 9,
     BodyNextPC is CatchReturnPC + 10,
+    RetractNextPC is CatchReturnPC + 11,
     findall(LabelLine, (
         member(NameStr-PC, Labels),
         format(atom(LabelLine),
@@ -446,6 +447,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     vm.dynamic_next_clause_pc = ~w;
     vm.sub_atom_next_pc = ~w;
     vm.body_next_pc = ~w;
+    vm.retract_next_pc = ~w;
 ~w
 ~w
 }
@@ -456,7 +458,7 @@ static const int _wam_cpp_setup_register = []() {
 ', [Reserve, CatchReturnPC, NegationReturnPC, FindallCollectPC,
     ConjReturnPC, DisjAltPC, IfThenCommitPC, IfThenElsePC,
     AggregateNextGroupPC, DynamicNextClausePC, SubAtomNextPC,
-    BodyNextPC,
+    BodyNextPC, RetractNextPC,
     LabelBody, InstrBody]).
 
 % ============================================================================
@@ -1080,6 +1082,8 @@ instr_to_setup_line(sub_atom_next, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::SubAtomNext());'.
 instr_to_setup_line(body_next, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::BodyNext());'.
+instr_to_setup_line(retract_next, _Labels, Line) :- !,
+    Line = '    vm.instrs.push_back(Instruction::RetractNext());'.
 instr_to_setup_line(Instr, _Labels, Line) :-
     wam_instruction_to_cpp_literal(Instr, Lit),
     format(atom(Line), '    vm.instrs.push_back(~w);', [Lit]).
@@ -1453,7 +1457,7 @@ struct Instruction {
         SwitchOnConstant, SwitchOnStructure, SwitchOnTerm,
         CatchReturn, NegationReturn, FindallCollect, ConjReturn, DisjAlt,
         IfThenCommit, IfThenElse, AggregateNextGroup, DynamicNextClause,
-        SubAtomNext, BodyNext
+        SubAtomNext, BodyNext, RetractNext
     };
     // Sentinel pc values for switch-table entries that should not jump.
     static constexpr std::size_t SWITCH_DEFAULT = static_cast<std::size_t>(-1);
@@ -1575,6 +1579,8 @@ struct Instruction {
         { Instruction i; i.op = Op::SubAtomNext; return i; }
     static Instruction BodyNext()
         { Instruction i; i.op = Op::BodyNext; return i; }
+    static Instruction RetractNext()
+        { Instruction i; i.op = Op::RetractNext; return i; }
 };
 
 struct TrailEntry {
@@ -1851,6 +1857,20 @@ struct WamState {
     };
     std::vector<DynamicIterator> dynamic_iters;
     std::size_t dynamic_next_clause_pc = 0;
+    // Iteration state for retract/1''s nondeterministic behaviour.
+    // Each successful retract removes the matched clause; on
+    // backtrack, retract_try_next continues from where it left off
+    // (in the now-modified clause list) looking for the next match.
+    // Per ISO, retract is destructive — backtracking doesn''t undo
+    // the removal.
+    struct RetractIterator {
+        std::string key;
+        CellPtr pattern;          // the call''s A1 (full match pattern)
+        std::size_t next_idx = 0; // next clause index to test
+        std::size_t after_pc = 0;
+    };
+    std::vector<RetractIterator> retract_iters;
+    std::size_t retract_next_pc = 0;
     // Rule-body sequencing — see BodyFrame doc at namespace scope.
     // Each rule body is flattened into a sequential goal list;
     // body_next dispatches them one at a time with cp=body_next_pc.
@@ -1973,6 +1993,12 @@ struct WamState {
     // after_pc; on no-match, undo trail and recurse (CP-style).
     // On exhausted iterator, pop and return false.
     bool    dynamic_try_next();
+    // Nondet retract/1 — finds the next clause in dynamic_db[key]
+    // (from iter.next_idx onward) that unifies with iter.pattern,
+    // removes it, leaves the unification bindings in place, pushes
+    // a CP if more candidates remain, and proceeds to after_pc.
+    bool    dispatch_retract(std::size_t after_pc);
+    bool    retract_try_next();
     // body_next — dispatch the top BodyFrame''s next goal, or pop
     // and proceed to outer after_pc when goals are exhausted.
     bool    body_next();
@@ -2903,37 +2929,9 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         else                   vec.insert(vec.begin(), stored);
         pc += 1; return true;
     }
-    if (op == "retract/1") {
-        // Deterministic single-match retract: find the FIRST stored
-        // clause that unifies with A1, remove it, leave the bindings
-        // from the unify in place (per ISO). Nondet retract — keep
-        // backtracking to subsequent matches — is deferred.
-        Value t = deref(*get_cell("A1"));
-        if (t.is_unbound()) return false;
-        std::string key;
-        if (!dyn_key_of(t, key)) return false;
-        auto db_it = dynamic_db.find(key);
-        if (db_it == dynamic_db.end() || db_it->second.empty()) return false;
-        CellPtr pattern = get_cell("A1");
-        for (auto cit = db_it->second.begin();
-             cit != db_it->second.end(); ++cit)
-        {
-            std::size_t mark = trail.size();
-            CellPtr fresh = deep_copy_term(*cit);
-            if (unify_cells(pattern, fresh)) {
-                db_it->second.erase(cit);
-                pc += 1; return true;
-            }
-            // No match: undo any trail entries the failed unify
-            // pushed before trying the next candidate.
-            while (trail.size() > mark) {
-                TrailEntry te = std::move(trail.back());
-                trail.pop_back();
-                *te.cell = std::move(te.prev);
-            }
-        }
-        return false;
-    }
+    // Note: retract/1 is nondeterministic — dispatched via
+    // dispatch_retract from the Call/Execute step arms, not here.
+    // See is_builtin_pred for the corresponding compile-side change.
     if (op == "retractall/1") {
         // Remove every clause whose head unifies with the pattern.
         // Always succeeds (even when there are no matches, per ISO).
@@ -3584,6 +3582,8 @@ bool WamState::step(const Instruction& instr) {
             // Needs its own dispatch arm (not via builtin()) so the
             // CP machinery sees the correct continuation pc.
             if (instr.a == "sub_atom/5") return dispatch_sub_atom(pc + 1);
+            // retract/1 — nondeterministic clause removal.
+            if (instr.a == "retract/1") return dispatch_retract(pc + 1);
             // ^/2 — existential quantification. Transparent for our
             // find-style aggregation: invoke A2 (the goal) with the
             // standard non-tail after-pc.
@@ -3627,6 +3627,7 @@ bool WamState::step(const Instruction& instr) {
                 return dispatch_aggregate_call(kind, tail_after);
             }
             if (instr.a == "sub_atom/5") return dispatch_sub_atom(cp);
+            if (instr.a == "retract/1") return dispatch_retract(cp);
             if (instr.a == "^/2") {
                 return invoke_goal_as_call(get_cell("A2"), cp);
             }
@@ -3811,6 +3812,14 @@ bool WamState::step(const Instruction& instr) {
             // sequence, or pops the frame + proceeds to outer
             // after_pc when exhausted.
             return body_next();
+        }
+        case Instruction::Op::RetractNext: {
+            // Reached when retract/1 backtracks for the next match.
+            // Pop the CP and continue scanning from iter.next_idx
+            // (which the previous retract_try_next advanced past
+            // the just-removed clause).
+            if (!choice_points.empty()) choice_points.pop_back();
+            return retract_try_next();
         }
         case Instruction::Op::Proceed: {
             if (cp == 0) { halt = true; return true; }
@@ -4301,6 +4310,102 @@ bool WamState::dynamic_try_next() {
     return body_next();
 }
 
+// retract/1 dispatcher. Reads A1 (the pattern), derives the
+// predicate''s "name/arity" key, pushes a RetractIterator, and
+// delegates to retract_try_next to find the first matching clause.
+bool WamState::dispatch_retract(std::size_t after_pc) {
+    CellPtr pat = get_cell("A1");
+    Value pv = deref(*pat);
+    if (pv.is_unbound()) return false;
+    std::string key;
+    if (pv.tag == Value::Tag::Compound && pv.s == ":-/2"
+        && pv.args.size() == 2)
+    {
+        Value head = deref(*pv.args[0]);
+        if (head.tag == Value::Tag::Atom) key = head.s + "/0";
+        else if (head.tag == Value::Tag::Compound) key = head.s;
+        else return false;
+    } else if (pv.tag == Value::Tag::Atom) {
+        key = pv.s + "/0";
+    } else if (pv.tag == Value::Tag::Compound) {
+        key = pv.s;
+    } else {
+        return false;
+    }
+    RetractIterator it;
+    it.key = std::move(key);
+    it.pattern = pat;
+    it.next_idx = 0;
+    it.after_pc = after_pc;
+    retract_iters.push_back(std::move(it));
+    return retract_try_next();
+}
+
+// Scan dynamic_db[key] from iter.next_idx onward for a clause that
+// unifies with iter.pattern. On match: remove that clause, leave
+// bindings in place (per ISO), push a CP if any clauses remain
+// after the removal, and proceed to after_pc. On exhaustion: pop
+// the iterator and fail.
+bool WamState::retract_try_next() {
+    if (retract_iters.empty()) return false;
+    RetractIterator& it = retract_iters.back();
+    auto db_it = dynamic_db.find(it.key);
+    if (db_it == dynamic_db.end()) {
+        retract_iters.pop_back();
+        return false;
+    }
+    auto& vec = db_it->second;
+    std::size_t i = it.next_idx;
+    while (i < vec.size()) {
+        std::size_t mark = trail.size();
+        CellPtr fresh = deep_copy_term(vec[i]);
+        if (unify_cells(it.pattern, fresh)) {
+            // Match. We need to:
+            // 1) push a CP (if more candidates exist) whose trail
+            //    mark is BEFORE the unification, so backtrack undoes
+            //    the pattern''s bindings and the pattern is reusable;
+            // 2) remove the matched clause from vec;
+            // 3) leave the unification bindings in place (per ISO
+            //    retract) and proceed to after_pc.
+            // The CP''s saved regs/etc are the current values — at
+            // entry to retract_try_next, before any binding — which
+            // match what the caller of dispatch_retract set up.
+            vec.erase(vec.begin() + i);
+            it.next_idx = i;
+            bool has_more = (i < vec.size());
+            std::size_t saved_after_pc = it.after_pc;
+            if (has_more) {
+                ChoicePoint cp_;
+                cp_.alt_pc            = retract_next_pc;
+                cp_.saved_cp          = cp;
+                cp_.trail_mark        = mark; // PRE-unify trail mark
+                cp_.cut_barrier       = cut_barrier;
+                cp_.saved_regs        = regs;
+                cp_.saved_mode_stack  = mode_stack;
+                cp_.saved_env_stack   = env_stack;
+                cp_.saved_body_frames = body_frames;
+                choice_points.push_back(std::move(cp_));
+            } else {
+                retract_iters.pop_back();
+            }
+            if (saved_after_pc == 0) { halt = true; return true; }
+            pc = saved_after_pc;
+            cp = 0;
+            return true;
+        }
+        // No match at i — undo any partial bindings and try i+1.
+        while (trail.size() > mark) {
+            TrailEntry te = std::move(trail.back());
+            trail.pop_back();
+            *te.cell = std::move(te.prev);
+        }
+        ++i;
+    }
+    // Exhausted — drop the iterator and fail.
+    retract_iters.pop_back();
+    return false;
+}
+
 // Dispatch the top BodyFrame''s next goal (with cp=body_next_pc so
 // subsequent BodyNext fires advance through the sequence), or pop
 // the frame and proceed to outer after_pc when exhausted. Forward
@@ -4655,6 +4760,8 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
         if (key == "findall/3") { cp = after_pc; return dispatch_findall_call(after_pc); }
         if (key == "bagof/3")   { cp = after_pc; return dispatch_aggregate_call("bagof", after_pc); }
         if (key == "setof/3")   { cp = after_pc; return dispatch_aggregate_call("setof", after_pc); }
+        if (key == "sub_atom/5") return dispatch_sub_atom(after_pc);
+        if (key == "retract/1") return dispatch_retract(after_pc);
         // ^/2 — existential quantification. For find-style
         // aggregation (which is all this runtime currently
         // supports for bagof/setof) ^/2 is transparent: invoke A2
