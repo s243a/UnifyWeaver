@@ -59,6 +59,32 @@ class CSharpQueryRustLmdbSinkBenchmarkTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "expected one lmdb row"):
             MODULE.lmdb_row_from_tsv("scale\trun\tmode\ns\t1\tpreload\n")
 
+    def test_scale_specs_accept_repeated_and_comma_separated_values(self) -> None:
+        specs = MODULE.parse_scale_specs(["rust_lmdb_100k:100000,rust_lmdb_500k:500000", "rust_lmdb_1m:1000000"])
+        self.assertEqual(
+            [(spec.scale, spec.max_edges) for spec in specs],
+            [
+                ("rust_lmdb_100k", 100_000),
+                ("rust_lmdb_500k", 500_000),
+                ("rust_lmdb_1m", 1_000_000),
+            ],
+        )
+
+    def test_resolve_scale_specs_preserves_single_scale_compatibility(self) -> None:
+        specs = MODULE.resolve_scale_specs(scale_specs=None, scale="rust_lmdb_10k", max_edges=10_000)
+        self.assertEqual([(spec.scale, spec.max_edges) for spec in specs], [("rust_lmdb_10k", 10_000)])
+        with self.assertRaises(SystemExit):
+            MODULE.resolve_scale_specs(scale_specs=["rust_lmdb_10k:10000"], scale="other", max_edges=None)
+
+    def test_render_markdown_includes_multiple_rows(self) -> None:
+        rows = [
+            MODULE.Measurement({column: column for column in MODULE.HEADERS}),
+            MODULE.Measurement({column: f"{column}2" for column in MODULE.HEADERS}),
+        ]
+        output = MODULE.render(rows, "markdown")
+        self.assertIn("| scale | max_edges | prepare_s |", output)
+        self.assertIn("| scale2 | max_edges2 | prepare_s2 |", output)
+
 
 if __name__ == "__main__":
     unittest.main()

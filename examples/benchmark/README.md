@@ -241,8 +241,21 @@ python examples/benchmark/benchmark_csharp_query_rust_lmdb_sink.py \
 ```
 
 The wrapper reports Rust sink preparation time plus the C# query `lmdb-only`
-access row. Starting with smaller caps is useful before moving to `500k_cats`
-or `1m_cats`.
+access row. It also accepts repeated or comma-separated
+`--scale-spec SCALE:MAX_EDGES` entries for progression reports:
+
+```bash
+python examples/benchmark/benchmark_csharp_query_rust_lmdb_sink.py \
+  --scale-spec rust_lmdb_100k:100000,rust_lmdb_500k:500000 \
+  --dump data/enwiki/enwiki-latest-categorylinks.sql.gz \
+  --output-root /tmp/uw-csharp-query-rust-lmdb \
+  --lmdb-map-size 1073741824 \
+  --lookup-keys 64 \
+  --format markdown
+```
+
+Starting with smaller caps is useful before moving to `500k_cats` or
+`1m_cats`.
 
 Pass `--artifact-root <dir>` to keep backend artifacts across benchmark runs.
 Existing binary, delimited, LMDB, and mmap-array manifests are reused by
