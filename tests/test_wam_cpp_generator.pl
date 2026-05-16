@@ -962,6 +962,70 @@ user:wam_cpp_test_dyn_backtrack :-
     findall(X, (wam_cpp_dyn_num(X), X > 1), L),
     L = [2, 3].
 
+% sub_atom/5 — bidirectional substring search / extraction.
+% Nondeterministic in modes where the substring position is not
+% pre-determined; dispatch_sub_atom enumerates candidate (Before,
+% Length) pairs filtered by which args are bound, then iterates
+% via the SubAtomIterator + sub_atom_next_pc CP pattern.
+:- dynamic user:wam_cpp_test_sub_atom_extract/0.
+:- dynamic user:wam_cpp_test_sub_atom_after_computed/0.
+:- dynamic user:wam_cpp_test_sub_atom_find_first/0.
+:- dynamic user:wam_cpp_test_sub_atom_find_all/0.
+:- dynamic user:wam_cpp_test_sub_atom_prefix/0.
+:- dynamic user:wam_cpp_test_sub_atom_suffix/0.
+:- dynamic user:wam_cpp_test_sub_atom_whole/0.
+:- dynamic user:wam_cpp_test_sub_atom_empty/0.
+:- dynamic user:wam_cpp_test_sub_atom_no_match/0.
+:- dynamic user:wam_cpp_test_sub_atom_enum_all/0.
+
+user:wam_cpp_test_sub_atom_extract :-
+    sub_atom(hello, 1, 3, _, S),
+    S = ell.
+
+user:wam_cpp_test_sub_atom_after_computed :-
+    sub_atom(hello, 1, 3, A, _),
+    A = 1.
+
+user:wam_cpp_test_sub_atom_find_first :-
+    sub_atom(abcabc, B, L, _, b),
+    B = 1, L = 1.
+
+% Find all positions of "b" in "abcabc" — verifies that backtracking
+% through the SubAtomIterator surfaces every match, not just the
+% first one.
+user:wam_cpp_test_sub_atom_find_all :-
+    findall(B, sub_atom(abcabc, B, _, _, b), Bs),
+    Bs = [1, 4].
+
+user:wam_cpp_test_sub_atom_prefix :-
+    sub_atom(hello, 0, 3, _, S),
+    S = hel.
+
+% Suffix via After=0.
+user:wam_cpp_test_sub_atom_suffix :-
+    sub_atom(hello, _, 3, 0, S),
+    S = llo.
+
+user:wam_cpp_test_sub_atom_whole :-
+    sub_atom(abc, 0, 3, 0, S),
+    S = abc.
+
+% Empty substring is a valid match at any position; here we pin
+% Before=0, Length=0 so the result is the empty atom.
+user:wam_cpp_test_sub_atom_empty :-
+    sub_atom(abc, 0, 0, 3, S),
+    S = ''.
+
+% No candidate (B, L) yields the requested Sub → fail.
+user:wam_cpp_test_sub_atom_no_match :-
+    \+ sub_atom(abc, _, _, _, xyz).
+
+% Full enumeration of all substrings of "ab" (including empty).
+% Order: row by Before, ascending Length within each row.
+user:wam_cpp_test_sub_atom_enum_all :-
+    findall(S, sub_atom(ab, _, _, _, S), L),
+    L = ['', a, ab, '', b, ''].
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -3682,6 +3746,143 @@ test(cpp_e2e_dyn_backtrack, [condition(cpp_compiler_available)]) :-
                               [emit_main(true)], TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath, 'wam_cpp_test_dyn_backtrack/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% sub_atom/5 — substring search and decomposition. Both deterministic
+% (extraction with known Before/Length) and nondeterministic (find Sub
+% within Atom, or full enumeration) modes are exercised below.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_sub_atom_extract, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_sub_atom_extract', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_sub_atom_extract/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_sub_atom_extract/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_sub_atom_after_computed,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_sub_atom_aft', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_sub_atom_after_computed/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_sub_atom_after_computed/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_sub_atom_find_first,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_sub_atom_fst', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_sub_atom_find_first/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_sub_atom_find_first/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_sub_atom_find_all,
+     [condition(cpp_compiler_available)]) :-
+    % Multi-match enumeration: findall over sub_atom backtracks
+    % through every (Before, Length) where Sub matches. Direct
+    % regression guard for the SubAtomIterator CP pattern.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_sub_atom_all', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_sub_atom_find_all/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_sub_atom_find_all/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_sub_atom_prefix, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_sub_atom_pre', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_sub_atom_prefix/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_sub_atom_prefix/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_sub_atom_suffix, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_sub_atom_suf', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_sub_atom_suffix/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_sub_atom_suffix/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_sub_atom_whole, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_sub_atom_whole', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_sub_atom_whole/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_sub_atom_whole/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_sub_atom_empty, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_sub_atom_empty', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_sub_atom_empty/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_sub_atom_empty/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_sub_atom_no_match,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_sub_atom_nm', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_sub_atom_no_match/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_sub_atom_no_match/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_sub_atom_enum_all,
+     [condition(cpp_compiler_available)]) :-
+    % Full enumeration: all 6 substrings of "ab" (length 0..2 at each
+    % valid position). Verifies the iterator visits every candidate.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_sub_atom_enum', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_sub_atom_enum_all/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_sub_atom_enum_all/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

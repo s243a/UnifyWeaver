@@ -398,13 +398,13 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     helper_predicate_items(HelperItems),
     flatten_blocks([HelperItems|PerPredItems], AllItems),
     walk_blocks(AllItems, Labels, FlatInstrs0),
-    % Append nine trailing synthetic-return instructions for the
+    % Append ten trailing synthetic-return instructions for the
     % meta-call control-flow surface — see WamState for each pc''s
     % role.
     append(FlatInstrs0,
            [catch_return, negation_return, findall_collect,
             conj_return, disj_alt, if_then_commit, if_then_else,
-            aggregate_next_group, dynamic_next_clause],
+            aggregate_next_group, dynamic_next_clause, sub_atom_next],
            FlatInstrs),
     length(FlatInstrs0, CatchReturnPC),
     NegationReturnPC is CatchReturnPC + 1,
@@ -415,6 +415,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     IfThenElsePC is CatchReturnPC + 6,
     AggregateNextGroupPC is CatchReturnPC + 7,
     DynamicNextClausePC is CatchReturnPC + 8,
+    SubAtomNextPC is CatchReturnPC + 9,
     findall(LabelLine, (
         member(NameStr-PC, Labels),
         format(atom(LabelLine),
@@ -441,6 +442,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     vm.if_then_else_pc = ~w;
     vm.aggregate_next_group_pc = ~w;
     vm.dynamic_next_clause_pc = ~w;
+    vm.sub_atom_next_pc = ~w;
 ~w
 ~w
 }
@@ -450,7 +452,7 @@ static const int _wam_cpp_setup_register = []() {
 }();
 ', [Reserve, CatchReturnPC, NegationReturnPC, FindallCollectPC,
     ConjReturnPC, DisjAltPC, IfThenCommitPC, IfThenElsePC,
-    AggregateNextGroupPC, DynamicNextClausePC,
+    AggregateNextGroupPC, DynamicNextClausePC, SubAtomNextPC,
     LabelBody, InstrBody]).
 
 % ============================================================================
@@ -1070,6 +1072,8 @@ instr_to_setup_line(aggregate_next_group, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::AggregateNextGroup());'.
 instr_to_setup_line(dynamic_next_clause, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::DynamicNextClause());'.
+instr_to_setup_line(sub_atom_next, _Labels, Line) :- !,
+    Line = '    vm.instrs.push_back(Instruction::SubAtomNext());'.
 instr_to_setup_line(Instr, _Labels, Line) :-
     wam_instruction_to_cpp_literal(Instr, Lit),
     format(atom(Line), '    vm.instrs.push_back(~w);', [Lit]).
@@ -1442,7 +1446,8 @@ struct Instruction {
         BeginAggregate, EndAggregate,
         SwitchOnConstant, SwitchOnStructure, SwitchOnTerm,
         CatchReturn, NegationReturn, FindallCollect, ConjReturn, DisjAlt,
-        IfThenCommit, IfThenElse, AggregateNextGroup, DynamicNextClause
+        IfThenCommit, IfThenElse, AggregateNextGroup, DynamicNextClause,
+        SubAtomNext
     };
     // Sentinel pc values for switch-table entries that should not jump.
     static constexpr std::size_t SWITCH_DEFAULT = static_cast<std::size_t>(-1);
@@ -1560,6 +1565,8 @@ struct Instruction {
         { Instruction i; i.op = Op::AggregateNextGroup; return i; }
     static Instruction DynamicNextClause()
         { Instruction i; i.op = Op::DynamicNextClause; return i; }
+    static Instruction SubAtomNext()
+        { Instruction i; i.op = Op::SubAtomNext; return i; }
 };
 
 struct TrailEntry {
@@ -1822,6 +1829,27 @@ struct WamState {
     };
     std::vector<DynamicIterator> dynamic_iters;
     std::size_t dynamic_next_clause_pc = 0;
+    // Iteration state for sub_atom/5. Each entry holds the source
+    // atom, the bound cells (Before/Length/After/Sub), the call''s
+    // continuation, and the list of (before, length) pairs still
+    // to try. The pairs are pre-filtered at dispatch time to respect
+    // whichever args were bound, so iteration is just "pop next,
+    // unify, succeed".
+    struct SubAtomIterator {
+        std::string atom_str;
+        CellPtr before_cell;
+        CellPtr length_cell;
+        CellPtr after_cell;
+        CellPtr sub_cell;
+        std::size_t after_pc = 0;
+        // remaining_pairs[k] = (before_k, length_k). We pop from the
+        // front so order matches typical "left-to-right first match"
+        // expectations (e.g. sub_atom(abcabc, B, _, _, b) yields
+        // B=1 first, then B=4).
+        std::vector<std::pair<std::size_t, std::size_t>> remaining_pairs;
+    };
+    std::vector<SubAtomIterator> sub_atom_iters;
+    std::size_t sub_atom_next_pc = 0;
     // Mode stack: Get-/Put-Structure / Get-/Put-List PUSH; Unify*/Set*
     // operate on top(); each frame auto-pops once its arity is filled.
     std::vector<ModeFrame> mode_stack;
@@ -1915,6 +1943,13 @@ struct WamState {
     // after_pc; on no-match, undo trail and recurse (CP-style).
     // On exhausted iterator, pop and return false.
     bool    dynamic_try_next();
+    // sub_atom/5 — enumerate (Before, Length) tuples matching the
+    // bound constraints. Pre-filters the candidate list at entry,
+    // then iterates via the SubAtomIterator + sub_atom_next_pc CP
+    // pattern. Returns true on first successful match (with a CP
+    // pushed for subsequent matches when any remain).
+    bool    dispatch_sub_atom(std::size_t after_pc);
+    bool    sub_atom_try_next();
     bool    execute_catch();
     bool    execute_throw();
 
@@ -3498,6 +3533,10 @@ bool WamState::step(const Instruction& instr) {
             if (instr.a == "findall/3") return dispatch_findall_call(pc + 1);
             if (instr.a == "bagof/3")   return dispatch_aggregate_call("bagof", pc + 1);
             if (instr.a == "setof/3")   return dispatch_aggregate_call("setof", pc + 1);
+            // sub_atom/5 — nondeterministic substring enumeration.
+            // Needs its own dispatch arm (not via builtin()) so the
+            // CP machinery sees the correct continuation pc.
+            if (instr.a == "sub_atom/5") return dispatch_sub_atom(pc + 1);
             // ^/2 — existential quantification. Transparent for our
             // find-style aggregation: invoke A2 (the goal) with the
             // standard non-tail after-pc.
@@ -3540,6 +3579,7 @@ bool WamState::step(const Instruction& instr) {
                     (instr.a == "bagof/3")   ? "bagof"   : "setof";
                 return dispatch_aggregate_call(kind, tail_after);
             }
+            if (instr.a == "sub_atom/5") return dispatch_sub_atom(cp);
             if (instr.a == "^/2") {
                 return invoke_goal_as_call(get_cell("A2"), cp);
             }
@@ -3709,6 +3749,12 @@ bool WamState::step(const Instruction& instr) {
             // pushes another CP if more remain.
             if (!choice_points.empty()) choice_points.pop_back();
             return dynamic_try_next();
+        }
+        case Instruction::Op::SubAtomNext: {
+            // Reached when sub_atom/5 backtracks for more matches.
+            // Pop the CP and try the next (Before, Length) pair.
+            if (!choice_points.empty()) choice_points.pop_back();
+            return sub_atom_try_next();
         }
         case Instruction::Op::Proceed: {
             if (cp == 0) { halt = true; return true; }
@@ -4128,6 +4174,156 @@ bool WamState::dynamic_try_next() {
         return false;
     }
     // Proceed to the call''s continuation.
+    if (saved_after_pc == 0) { halt = true; return true; }
+    pc = saved_after_pc;
+    cp = 0;
+    return true;
+}
+
+// sub_atom/5 dispatcher. Reads A1..A5, decides which dimensions are
+// bound, enumerates valid (Before, Length) tuples that satisfy the
+// constraints, then iterates them via the SubAtomIterator + CP
+// pattern. Atom (A1) MUST be bound. Other args may be unbound — the
+// enumerator restricts the candidate set accordingly.
+bool WamState::dispatch_sub_atom(std::size_t after_pc) {
+    CellPtr a1 = get_cell("A1");
+    CellPtr a2 = get_cell("A2");
+    CellPtr a3 = get_cell("A3");
+    CellPtr a4 = get_cell("A4");
+    CellPtr a5 = get_cell("A5");
+    Value av = deref(*a1);
+    // Atom must be bound. Accept atoms; integers/floats are rendered
+    // so sub_atom(42, B, L, A, S) treats "42" as the source.
+    std::string s;
+    if (av.tag == Value::Tag::Atom) s = av.s;
+    else if (av.tag == Value::Tag::Integer) s = std::to_string(av.i);
+    else if (av.tag == Value::Tag::Float) s = render(av);
+    else return false;
+    const std::size_t N = s.size();
+    // Read bound integer constraints (Before/Length/After).
+    auto read_int = [&](CellPtr c, bool& bound, std::size_t& out) -> bool {
+        Value v = deref(*c);
+        if (v.is_unbound()) { bound = false; return true; }
+        if (v.tag != Value::Tag::Integer || v.i < 0) return false;
+        bound = true;
+        out = static_cast<std::size_t>(v.i);
+        return true;
+    };
+    bool b_bound = false, l_bound = false, a_bound = false;
+    std::size_t b_val = 0, l_val = 0, a_val = 0;
+    if (!read_int(a2, b_bound, b_val)) return false;
+    if (!read_int(a3, l_bound, l_val)) return false;
+    if (!read_int(a4, a_bound, a_val)) return false;
+    // Read Sub if bound. Accept atom; integer rendered like A1.
+    bool sub_bound = false;
+    std::string sub_str;
+    Value sv = deref(*a5);
+    if (!sv.is_unbound()) {
+        if (sv.tag == Value::Tag::Atom) sub_str = sv.s;
+        else if (sv.tag == Value::Tag::Integer) sub_str = std::to_string(sv.i);
+        else if (sv.tag == Value::Tag::Float) sub_str = render(sv);
+        else return false;
+        sub_bound = true;
+    }
+    // Sanity: bound constraints must satisfy B + L + A == N.
+    if (b_bound && l_bound && a_bound) {
+        if (b_val + l_val + a_val != N) return false;
+    }
+    // Sub-bound determines length immediately.
+    if (sub_bound) {
+        if (l_bound && l_val != sub_str.size()) return false;
+        l_bound = true;
+        l_val = sub_str.size();
+    }
+    // Enumerate candidate (B, L) pairs. After is computed; we just
+    // need to satisfy the bound subset of (B, L, A) constraints.
+    std::vector<std::pair<std::size_t, std::size_t>> candidates;
+    auto b_range = [&]() {
+        return b_bound ? std::pair<std::size_t, std::size_t>{b_val, b_val}
+                       : std::pair<std::size_t, std::size_t>{0, N};
+    };
+    auto l_range = [&]() {
+        return l_bound ? std::pair<std::size_t, std::size_t>{l_val, l_val}
+                       : std::pair<std::size_t, std::size_t>{0, N};
+    };
+    auto [b_lo, b_hi] = b_range();
+    auto [l_lo, l_hi] = l_range();
+    for (std::size_t b = b_lo; b <= b_hi; ++b) {
+        if (b > N) break;
+        for (std::size_t l = l_lo; l <= l_hi; ++l) {
+            if (b + l > N) break;
+            std::size_t a = N - b - l;
+            if (a_bound && a != a_val) continue;
+            if (sub_bound) {
+                // Compare s[b..b+l] with sub_str.
+                if (s.compare(b, l, sub_str) != 0) continue;
+            }
+            candidates.emplace_back(b, l);
+        }
+    }
+    if (candidates.empty()) return false;
+    SubAtomIterator it;
+    it.atom_str = std::move(s);
+    it.before_cell = a2;
+    it.length_cell = a3;
+    it.after_cell = a4;
+    it.sub_cell = a5;
+    it.after_pc = after_pc;
+    it.remaining_pairs = std::move(candidates);
+    sub_atom_iters.push_back(std::move(it));
+    return sub_atom_try_next();
+}
+
+// Pop one (Before, Length) candidate from the top SubAtomIterator,
+// unify all four output cells (Before/Length/After/Sub), and push
+// a CP for further matches when any remain.
+bool WamState::sub_atom_try_next() {
+    if (sub_atom_iters.empty()) return false;
+    SubAtomIterator& it = sub_atom_iters.back();
+    if (it.remaining_pairs.empty()) {
+        sub_atom_iters.pop_back();
+        return false;
+    }
+    auto [b, l] = it.remaining_pairs.front();
+    it.remaining_pairs.erase(it.remaining_pairs.begin());
+    bool has_more = !it.remaining_pairs.empty();
+    // Snapshot before pushing CP, since the CP captures regs and
+    // we want the saved regs to reflect pre-binding state.
+    std::size_t saved_after_pc = it.after_pc;
+    CellPtr bc = it.before_cell;
+    CellPtr lc = it.length_cell;
+    CellPtr ac = it.after_cell;
+    CellPtr sc = it.sub_cell;
+    std::size_t N = it.atom_str.size();
+    std::string sub = it.atom_str.substr(b, l);
+    // Pop the iterator before pushing the CP / binding when this is
+    // the last candidate — otherwise the CP would still see a stale
+    // entry on top.
+    if (!has_more) {
+        sub_atom_iters.pop_back();
+    } else {
+        ChoicePoint cp_;
+        cp_.alt_pc            = sub_atom_next_pc;
+        cp_.saved_cp          = cp;
+        cp_.trail_mark        = trail.size();
+        cp_.cut_barrier       = cut_barrier;
+        cp_.saved_regs        = regs;
+        cp_.saved_mode_stack  = mode_stack;
+        cp_.saved_env_stack   = env_stack;
+        choice_points.push_back(std::move(cp_));
+    }
+    // Unify each output cell with its computed value.
+    auto bind_or_unify_int = [&](CellPtr c, std::size_t v) -> bool {
+        Value iv = Value::Integer(static_cast<std::int64_t>(v));
+        if (c->is_unbound()) { bind_cell(c, iv); return true; }
+        return unify_cells(c, std::make_shared<Cell>(iv));
+    };
+    if (!bind_or_unify_int(bc, b)) return false;
+    if (!bind_or_unify_int(lc, l)) return false;
+    if (!bind_or_unify_int(ac, N - b - l)) return false;
+    Value sv = Value::Atom(sub);
+    if (sc->is_unbound()) bind_cell(sc, sv);
+    else if (!unify_cells(sc, std::make_shared<Cell>(sv))) return false;
     if (saved_after_pc == 0) { halt = true; return true; }
     pc = saved_after_pc;
     cp = 0;

@@ -1464,6 +1464,9 @@ is_builtin_pred(assertz, 1).      % dynamic db: append fact.
 is_builtin_pred(asserta, 1).      % dynamic db: prepend fact.
 is_builtin_pred(retract, 1).      % dynamic db: remove first match.
 is_builtin_pred(retractall, 1).   % dynamic db: remove all matches.
+% Note: sub_atom/5 is nondeterministic; like findall/bagof/setof it
+% goes through the Call/Execute dispatch path (not is_builtin_pred)
+% so dispatch_sub_atom can manage its own CP machinery.
 is_builtin_pred(=, 2).       % unification: bind / structurally unify two terms.
 is_builtin_pred(is_list, 1).
                              % Without this entry, X = Y in a body goal
