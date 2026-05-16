@@ -398,13 +398,13 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     helper_predicate_items(HelperItems),
     flatten_blocks([HelperItems|PerPredItems], AllItems),
     walk_blocks(AllItems, Labels, FlatInstrs0),
-    % Append eight trailing synthetic-return instructions for the
+    % Append nine trailing synthetic-return instructions for the
     % meta-call control-flow surface — see WamState for each pc''s
     % role.
     append(FlatInstrs0,
            [catch_return, negation_return, findall_collect,
             conj_return, disj_alt, if_then_commit, if_then_else,
-            aggregate_next_group],
+            aggregate_next_group, dynamic_next_clause],
            FlatInstrs),
     length(FlatInstrs0, CatchReturnPC),
     NegationReturnPC is CatchReturnPC + 1,
@@ -414,6 +414,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     IfThenCommitPC is CatchReturnPC + 5,
     IfThenElsePC is CatchReturnPC + 6,
     AggregateNextGroupPC is CatchReturnPC + 7,
+    DynamicNextClausePC is CatchReturnPC + 8,
     findall(LabelLine, (
         member(NameStr-PC, Labels),
         format(atom(LabelLine),
@@ -439,6 +440,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     vm.if_then_commit_pc = ~w;
     vm.if_then_else_pc = ~w;
     vm.aggregate_next_group_pc = ~w;
+    vm.dynamic_next_clause_pc = ~w;
 ~w
 ~w
 }
@@ -448,7 +450,7 @@ static const int _wam_cpp_setup_register = []() {
 }();
 ', [Reserve, CatchReturnPC, NegationReturnPC, FindallCollectPC,
     ConjReturnPC, DisjAltPC, IfThenCommitPC, IfThenElsePC,
-    AggregateNextGroupPC,
+    AggregateNextGroupPC, DynamicNextClausePC,
     LabelBody, InstrBody]).
 
 % ============================================================================
@@ -1066,6 +1068,8 @@ instr_to_setup_line(if_then_else, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::IfThenElse());'.
 instr_to_setup_line(aggregate_next_group, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::AggregateNextGroup());'.
+instr_to_setup_line(dynamic_next_clause, _Labels, Line) :- !,
+    Line = '    vm.instrs.push_back(Instruction::DynamicNextClause());'.
 instr_to_setup_line(Instr, _Labels, Line) :-
     wam_instruction_to_cpp_literal(Instr, Lit),
     format(atom(Line), '    vm.instrs.push_back(~w);', [Lit]).
@@ -1438,7 +1442,7 @@ struct Instruction {
         BeginAggregate, EndAggregate,
         SwitchOnConstant, SwitchOnStructure, SwitchOnTerm,
         CatchReturn, NegationReturn, FindallCollect, ConjReturn, DisjAlt,
-        IfThenCommit, IfThenElse, AggregateNextGroup
+        IfThenCommit, IfThenElse, AggregateNextGroup, DynamicNextClause
     };
     // Sentinel pc values for switch-table entries that should not jump.
     static constexpr std::size_t SWITCH_DEFAULT = static_cast<std::size_t>(-1);
@@ -1554,6 +1558,8 @@ struct Instruction {
         { Instruction i; i.op = Op::IfThenElse; return i; }
     static Instruction AggregateNextGroup()
         { Instruction i; i.op = Op::AggregateNextGroup; return i; }
+    static Instruction DynamicNextClause()
+        { Instruction i; i.op = Op::DynamicNextClause; return i; }
 };
 
 struct TrailEntry {
@@ -1797,6 +1803,25 @@ struct WamState {
     // pops the next group from the top AggregateGroupIterator and
     // binds it.
     std::size_t aggregate_next_group_pc = 0;
+    // Per-predicate dynamic clause store. Maps "name/arity" → list
+    // of fact terms (Compound or 0-arity Atom cells). Populated by
+    // assertz/asserta builtins; mutated by retract/retractall.
+    // dispatch_dynamic_call iterates these, pushing a CP whose
+    // alt_pc = dynamic_next_clause_pc when more clauses remain.
+    // Rules (Head :- Body) are NOT supported in this PR — only facts.
+    std::unordered_map<std::string, std::vector<CellPtr>> dynamic_db;
+    // Iteration state for dispatch_dynamic_call. Mirrors the
+    // AggregateGroupIterator pattern: one entry per active dynamic
+    // call, popped when clauses are exhausted or the call commits
+    // past its last clause.
+    struct DynamicIterator {
+        std::string key;
+        std::size_t next_idx = 0;
+        std::vector<CellPtr> call_args;
+        std::size_t after_pc = 0;
+    };
+    std::vector<DynamicIterator> dynamic_iters;
+    std::size_t dynamic_next_clause_pc = 0;
     // Mode stack: Get-/Put-Structure / Get-/Put-List PUSH; Unify*/Set*
     // operate on top(); each frame auto-pops once its arity is filled.
     std::vector<ModeFrame> mode_stack;
@@ -1879,6 +1904,17 @@ struct WamState {
     // iterator.return_pc on success. Returns false if no iterator,
     // no remaining groups, or a binding mismatch.
     bool    aggregate_bind_next_group();
+    // Dispatch a Call/Execute to a dynamic predicate. Snapshots
+    // A-registers as call_args, pushes a DynamicIterator, then
+    // delegates to dynamic_try_next which unifies the first
+    // clause (and pushes a CP for the rest if any).
+    bool    dispatch_dynamic_call(const std::string& key,
+                                  std::size_t after_pc);
+    // Try the next clause in the top DynamicIterator. On match,
+    // unify the call_args with the clause''s args and proceed to
+    // after_pc; on no-match, undo trail and recurse (CP-style).
+    // On exhausted iterator, pop and return false.
+    bool    dynamic_try_next();
     bool    execute_catch();
     bool    execute_throw();
 
@@ -2747,6 +2783,105 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         return false;
     }
 
+    // ---- assertz/1, asserta/1, retract/1, retractall/1 -------------
+    // Dynamic database manipulation. This PR supports FACTS only —
+    // rules (Head :- Body) are accepted by the parser but not yet
+    // dispatched by the runtime, so storing them would silently
+    // discard the body. To keep behaviour predictable, the asserts
+    // reject ":- "/2 terms outright.
+    //
+    // Storage: dynamic_db["name/arity"] is a std::vector<CellPtr> of
+    // deep-copied fact terms. Dispatch is via dispatch_dynamic_call
+    // (see Call/Execute step arms).
+    auto dyn_key_of = [&](const Value& v, std::string& out) -> bool {
+        if (v.tag == Value::Tag::Atom) {
+            // ":- "/2 — rule form, deferred (facts only for this PR).
+            if (v.s == ":-/2") return false;
+            out = v.s + "/0";
+            return true;
+        }
+        if (v.tag == Value::Tag::Compound) {
+            if (v.s == ":-/2") return false;
+            out = v.s; // already "name/arity"
+            return true;
+        }
+        return false;
+    };
+    if (op == "assertz/1" || op == "asserta/1") {
+        Value t = deref(*get_cell("A1"));
+        if (t.is_unbound()) return false;
+        std::string key;
+        if (!dyn_key_of(t, key)) return false;
+        // Deep-copy so the stored term has FRESH unbound vars,
+        // independent of the caller''s vars (which will be unwound
+        // on backtrack).
+        CellPtr stored = deep_copy_term(get_cell("A1"));
+        auto& vec = dynamic_db[key];
+        if (op == "assertz/1") vec.push_back(stored);
+        else                   vec.insert(vec.begin(), stored);
+        pc += 1; return true;
+    }
+    if (op == "retract/1") {
+        // Deterministic single-match retract: find the FIRST stored
+        // clause that unifies with A1, remove it, leave the bindings
+        // from the unify in place (per ISO). Nondet retract — keep
+        // backtracking to subsequent matches — is deferred.
+        Value t = deref(*get_cell("A1"));
+        if (t.is_unbound()) return false;
+        std::string key;
+        if (!dyn_key_of(t, key)) return false;
+        auto db_it = dynamic_db.find(key);
+        if (db_it == dynamic_db.end() || db_it->second.empty()) return false;
+        CellPtr pattern = get_cell("A1");
+        for (auto cit = db_it->second.begin();
+             cit != db_it->second.end(); ++cit)
+        {
+            std::size_t mark = trail.size();
+            CellPtr fresh = deep_copy_term(*cit);
+            if (unify_cells(pattern, fresh)) {
+                db_it->second.erase(cit);
+                pc += 1; return true;
+            }
+            // No match: undo any trail entries the failed unify
+            // pushed before trying the next candidate.
+            while (trail.size() > mark) {
+                TrailEntry te = std::move(trail.back());
+                trail.pop_back();
+                *te.cell = std::move(te.prev);
+            }
+        }
+        return false;
+    }
+    if (op == "retractall/1") {
+        // Remove every clause whose head unifies with the pattern.
+        // Always succeeds (even when there are no matches, per ISO).
+        // Pattern bindings are undone after each match attempt so
+        // they don''t leak; only the database changes persist.
+        Value t = deref(*get_cell("A1"));
+        if (t.is_unbound()) return false;
+        std::string key;
+        if (!dyn_key_of(t, key)) return false;
+        auto db_it = dynamic_db.find(key);
+        if (db_it != dynamic_db.end()) {
+            CellPtr pattern = get_cell("A1");
+            auto& vec = db_it->second;
+            vec.erase(std::remove_if(vec.begin(), vec.end(),
+                [&](const CellPtr& clause) {
+                    std::size_t mark = trail.size();
+                    CellPtr fresh = deep_copy_term(clause);
+                    bool ok = unify_cells(pattern, fresh);
+                    // Undo bindings either way.
+                    while (trail.size() > mark) {
+                        TrailEntry te = std::move(trail.back());
+                        trail.pop_back();
+                        *te.cell = std::move(te.prev);
+                    }
+                    return ok;
+                }), vec.end());
+        }
+        pc += 1; return true;
+    }
+
     // ---- functor/3 -------------------------------------------------
     if (op == "functor/3") {
         CellPtr t = get_cell("A1");
@@ -3382,6 +3517,13 @@ bool WamState::step(const Instruction& instr) {
                 pc = it->second;
                 return true;
             }
+            // Dynamic predicate path: assertz/retract have put facts
+            // into dynamic_db. Iterate through them via the iterator
+            // pattern. Tried before the builtin fallback so a user
+            // can assertz over a builtin name (unusual, but allowed).
+            if (dynamic_db.count(instr.a)) {
+                return dispatch_dynamic_call(instr.a, pc + 1);
+            }
             // No user predicate matches: fall back to builtin dispatch.
             // builtin() advances pc itself on success, mirroring the
             // BuiltinCall path.
@@ -3414,6 +3556,11 @@ bool WamState::step(const Instruction& instr) {
             if (it != labels.end()) {
                 pc = it->second;
                 return true;
+            }
+            // Dynamic predicate path — tail-call form. after_pc is cp
+            // (the caller''s saved continuation) for TCO.
+            if (dynamic_db.count(instr.a)) {
+                return dispatch_dynamic_call(instr.a, cp);
             }
             // Fall back to a deterministic builtin, then proceed to cp
             // since execute is a tail call (no in-body continuation).
@@ -3554,6 +3701,14 @@ bool WamState::step(const Instruction& instr) {
             // CP if even MORE groups remain.
             if (!choice_points.empty()) choice_points.pop_back();
             return aggregate_bind_next_group();
+        }
+        case Instruction::Op::DynamicNextClause: {
+            // Reached when a dynamic-predicate call backtracks into
+            // its remaining clauses. Pop the CP and delegate to
+            // dynamic_try_next, which unifies the next clause and
+            // pushes another CP if more remain.
+            if (!choice_points.empty()) choice_points.pop_back();
+            return dynamic_try_next();
         }
         case Instruction::Op::Proceed: {
             if (cp == 0) { halt = true; return true; }
@@ -3883,6 +4038,100 @@ static std::size_t find_matching_end_aggregate(
         }
     }
     return instrs.size();
+}
+
+// Dispatch a Call/Execute to a dynamic predicate (one populated by
+// assertz/asserta and not present in labels). Snapshots the A-args
+// from regs, pushes a DynamicIterator, then delegates to
+// dynamic_try_next which unifies the first clause and pushes a CP
+// for the rest when more than one exists.
+bool WamState::dispatch_dynamic_call(const std::string& key,
+                                     std::size_t after_pc) {
+    auto db_it = dynamic_db.find(key);
+    if (db_it == dynamic_db.end() || db_it->second.empty()) return false;
+    auto sl = key.rfind(''/'');
+    if (sl == std::string::npos) return false;
+    std::size_t arity = 0;
+    try { arity = std::stoul(key.substr(sl + 1)); }
+    catch (...) { return false; }
+    // Snapshot A-registers BEFORE pushing the iterator so backtrack
+    // (which restores regs from the CP) gets the same call_args.
+    DynamicIterator dit;
+    dit.key = key;
+    dit.next_idx = 0;
+    dit.after_pc = after_pc;
+    dit.call_args.reserve(arity);
+    for (std::size_t i = 1; i <= arity; ++i) {
+        dit.call_args.push_back(get_cell("A" + std::to_string(i)));
+    }
+    dynamic_iters.push_back(std::move(dit));
+    return dynamic_try_next();
+}
+
+// Try the next clause in the top DynamicIterator. Unify the call
+// args with a fresh-renamed copy of the clause; if more clauses
+// remain, push a CP whose alt_pc = dynamic_next_clause_pc. Pop the
+// iterator and fail if exhausted.
+bool WamState::dynamic_try_next() {
+    if (dynamic_iters.empty()) return false;
+    DynamicIterator& it = dynamic_iters.back();
+    auto db_it = dynamic_db.find(it.key);
+    // The predicate may have been retract-all''d mid-iteration. Treat
+    // a missing or empty clause list as exhaustion.
+    if (db_it == dynamic_db.end() || it.next_idx >= db_it->second.size()) {
+        dynamic_iters.pop_back();
+        return false;
+    }
+    std::size_t idx = it.next_idx;
+    bool has_more = (idx + 1 < db_it->second.size());
+    std::string saved_key = it.key;
+    std::vector<CellPtr> call_args = it.call_args;
+    std::size_t saved_after_pc = it.after_pc;
+    // Advance the index BEFORE we push the CP — the CP snapshots
+    // dynamic_iters state, so the captured `next_idx` should already
+    // point at the SUBSEQUENT clause to try on backtrack.
+    it.next_idx = idx + 1;
+    // Push the CP (only if more clauses remain after this one).
+    if (has_more) {
+        ChoicePoint cp_;
+        cp_.alt_pc            = dynamic_next_clause_pc;
+        cp_.saved_cp          = cp;
+        cp_.trail_mark        = trail.size();
+        cp_.cut_barrier       = cut_barrier;
+        cp_.saved_regs        = regs;
+        cp_.saved_mode_stack  = mode_stack;
+        cp_.saved_env_stack   = env_stack;
+        choice_points.push_back(std::move(cp_));
+    } else {
+        // Last clause for this call — drop the iterator. It''s no
+        // longer needed; clause exhaustion will fall through to
+        // ordinary backtrack at the OUTER scope.
+        dynamic_iters.pop_back();
+    }
+    // Fresh-rename the clause so vars in different call iterations
+    // (and the stored fact itself, which may share vars across
+    // multiple stored clauses if asserta/assertz ever supports them)
+    // don''t alias.
+    CellPtr fresh = deep_copy_term(db_it->second[idx]);
+    Value fv = deref(*fresh);
+    // Unify the call args with the clause''s args.
+    if (fv.tag == Value::Tag::Atom) {
+        // 0-arity fact. call_args must be empty; key match already
+        // covered the name + arity (so call_args.empty() is implied).
+        if (!call_args.empty()) return false;
+    } else if (fv.tag == Value::Tag::Compound) {
+        if (fv.args.size() != call_args.size()) return false;
+        for (std::size_t i = 0; i < call_args.size(); ++i) {
+            if (!unify_cells(call_args[i], fv.args[i])) return false;
+        }
+    } else {
+        return false;
+    }
+    // Proceed to the call''s continuation.
+    if (saved_after_pc == 0) { halt = true; return true; }
+    pc = saved_after_pc;
+    cp = 0;
+    return true;
 }
 
 // Deep-copy a value tree. Unbound leaves are renamed via a name→cell
