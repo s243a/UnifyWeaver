@@ -2,6 +2,7 @@
     wam_target_runtime_parser/3,
     parser_dependent_builtin/1,
     parser_dependent_goal/2,
+    parser_dependent_body_goal/2,
     target_supports_runtime_parser_mode/2
 ]).
 
@@ -57,6 +58,20 @@ parser_dependent_goal_(Goal, Builtin) :-
     parser_dependent_builtin(Builtin),
     Builtin \= term_to_atom/2.
 
+%% parser_dependent_body_goal(+BodyGoal, -Builtin)
+%
+% True when BodyGoal contains a statically visible parser-dependent
+% goal. Walks the common source-level control forms target writers see
+% before WAM lowering.
+parser_dependent_body_goal(Body0, Builtin) :-
+    nonvar(Body0),
+    strip_module_qualifier(Body0, Body),
+    (   parser_dependent_goal(Body, Builtin)
+    ->  true
+    ;   parser_body_child(Body, Child),
+        parser_dependent_body_goal(Child, Builtin)
+    ).
+
 %% target_supports_runtime_parser_mode(+Target, ?Mode)
 %
 % Capability facts used by the resolver. Keep this conservative:
@@ -106,3 +121,16 @@ strip_module_qualifier(Module:Goal, Stripped) :-
     !,
     strip_module_qualifier(Goal, Stripped).
 strip_module_qualifier(Goal, Goal).
+
+parser_body_child((A, _), A).
+parser_body_child((_, B), B).
+parser_body_child((A ; _), A).
+parser_body_child((_ ; B), B).
+parser_body_child((A -> _), A).
+parser_body_child((_ -> B), B).
+parser_body_child((*->(A, _)), A).
+parser_body_child((*->(_, B)), B).
+parser_body_child(\+(A), A).
+parser_body_child(not(A), A).
+parser_body_child(once(A), A).
+parser_body_child(call(A), A).

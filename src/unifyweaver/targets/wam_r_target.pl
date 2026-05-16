@@ -66,7 +66,7 @@
 :- use_module('../core/recursive_kernel_detection',
              [detect_recursive_kernel/4, kernel_config/2]).
 :- use_module(wam_runtime_parser_capability,
-             [parser_dependent_goal/2,
+             [parser_dependent_body_goal/2,
               wam_target_runtime_parser/3]).
 
 % ============================================================================
@@ -1835,7 +1835,7 @@ validate_r_runtime_parser_mode(_Predicates, _Mode).
 r_predicates_parser_dependency(Predicates, Pred, Builtin) :-
     member(Pred, Predicates),
     r_predicate_clause(Pred, _Head, Body),
-    r_goal_uses_parser_builtin(Body, Builtin),
+    parser_dependent_body_goal(Body, Builtin),
     !.
 
 r_predicate_clause(Module:Name/Arity, Head, Body) :-
@@ -1845,27 +1845,6 @@ r_predicate_clause(Module:Name/Arity, Head, Body) :-
 r_predicate_clause(Name/Arity, Head, Body) :-
     functor(Head, Name, Arity),
     clause(user:Head, Body).
-
-r_goal_uses_parser_builtin(Goal, Builtin) :-
-    nonvar(Goal),
-    (   parser_dependent_goal(Goal, Builtin)
-    ->  true
-    ;   r_goal_child(Goal, Child),
-        r_goal_uses_parser_builtin(Child, Builtin)
-    ).
-
-r_goal_child((A, _), A).
-r_goal_child((_, B), B).
-r_goal_child((A ; _), A).
-r_goal_child((_ ; B), B).
-r_goal_child((A -> _), A).
-r_goal_child((_ -> B), B).
-r_goal_child((*->(A, _)), A).
-r_goal_child((*->(_, B)), B).
-r_goal_child(\+(A), A).
-r_goal_child(not(A), A).
-r_goal_child(once(A), A).
-r_goal_child(call(A), A).
 
 % ============================================================================
 % HELPERS

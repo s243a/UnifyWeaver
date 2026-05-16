@@ -58,4 +58,29 @@ test(parser_dependent_goal_term_to_atom_reverse) :-
 test(parser_dependent_goal_term_to_atom_both_bound) :-
     parser_dependent_goal(term_to_atom(f(a), 'f(a)'), term_to_atom/2).
 
+test(parser_dependent_body_goal_conjunction) :-
+    parser_dependent_body_goal((true, read_term_from_atom('f(a)', _)),
+                               read_term_from_atom/2).
+
+test(parser_dependent_body_goal_disjunction) :-
+    parser_dependent_body_goal((fail ; read(_, _)), read/2).
+
+test(parser_dependent_body_goal_if_then) :-
+    parser_dependent_body_goal((true -> term_to_atom(_, 'f(a)')),
+                               term_to_atom/2).
+
+test(parser_dependent_body_goal_wrappers) :-
+    parser_dependent_body_goal(once(call(read_term_from_atom('f(a)', _))),
+                               read_term_from_atom/2).
+
+test(parser_dependent_body_goal_negation) :-
+    parser_dependent_body_goal(\+(read_term_from_atom('f(a)', _)),
+                               read_term_from_atom/2).
+
+test(parser_dependent_body_goal_forward_term_to_atom_ignored, [fail]) :-
+    parser_dependent_body_goal((true, term_to_atom(f(a), _)), _).
+
+test(parser_dependent_body_goal_module_qualified_body) :-
+    once(parser_dependent_body_goal(user:(true, read(_, _)), read/2)).
+
 :- end_tests(wam_runtime_parser_capability).
