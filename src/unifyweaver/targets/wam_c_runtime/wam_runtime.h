@@ -247,8 +247,11 @@ int wam_run_predicate(WamState *state, const char *pred, WamValue *args, int ari
 bool wam_execute_builtin(WamState *state, const char *op, int arity);
 bool wam_execute_foreign_predicate(WamState *state, const char *pred, int arity);
 void wam_register_category_parent(WamState *state, const char *child, const char *parent);
+void wam_register_transitive_edge(WamState *state, const char *child, const char *parent);
 void wam_register_category_ancestor_kernel(WamState *state, const char *pred, int max_depth);
+void wam_register_transitive_closure_kernel(WamState *state, const char *pred);
 bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity);
+bool wam_transitive_closure_handler(WamState *state, const char *pred, int arity);
 void wam_fact_source_init(WamFactSource *source);
 void wam_fact_source_close(WamFactSource *source);
 bool wam_fact_source_load_tsv(WamState *state, WamFactSource *source, const char *path);

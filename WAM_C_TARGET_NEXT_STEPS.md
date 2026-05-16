@@ -17,7 +17,7 @@ Base verified locally:
 
 Active branch:
 
-- `investigate/wam-c-next-benchmark-demand`
+- `feat/wam-c-transitive-closure-kernel`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -73,6 +73,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | `atom_concat/3` builtin support | Done | Explicit deterministic atom concatenation and split modes have direct executable smoke coverage |
 | Generated Prolog builtin parity smoke | Done | Generated WAM-to-C executable smoke exercises `functor/3`, `arg/3`, and `atom_concat/3` together |
 | Benchmark-demand scan | Done | `dev`/`10x` accumulated TSV+LMDB C targets and `dev`/`10x` lowered-helper targets preserve output parity; accumulated C kernel path shows no meaningful speedup over no-kernels and is much slower than optimized Prolog at `10x` |
+| `transitive_closure2` native kernel | Done | C shared-kernel detector accepts `transitive_closure2`, emits detected setup, registers a native arity-2 foreign handler, and covers direct plus detected-project executable smokes |
 
 ## Current C Target Baseline
 
@@ -97,8 +98,8 @@ The C target is now a credible small WAM backend:
 - Can opt into a prototype lowered-helper path for constant fact-only
   predicates, plus same-arity alias bodies that call those native fact helpers,
   emitted as native C foreign handlers behind `call_foreign` trampolines.
-- Supports a deterministic native `category_ancestor/4` handler over an
-  in-memory category-parent edge table.
+- Supports deterministic native `category_ancestor/4` and `transitive_closure2`
+  handlers over an in-memory edge table.
 - Supports loading category-parent facts from TSV through a small
   `WamFactSource` interface.
 - Supports collecting all integer hop results for native `category_ancestor/4`
@@ -143,8 +144,8 @@ missing important target features; `Missing` = no comparable C path yet.
 | Aggregates (`findall`/`bagof`/`setof`) | Missing | Present in hybrid/lowered paths | Present in interpreter/lowered paths | Add only after C has enough runtime term-copy and list construction coverage. |
 | Negation / control builtins | Partial | Broader | Broader | C likely needs explicit tests for `\+/1`, cut interactions, and if-then-else lowering. |
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
-| Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup and all-hop collection; the next benchmark-demand gap is shared-kernel breadth, starting with `transitive_closure2`. |
-| Shared kernel detector integration | Partial | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`; Haskell and Rust cover a broader shared-kernel registry, so C should add the next kernel one at a time. |
+| Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, and native `transitive_closure2`; continue adding shared kernels one at a time. |
+| Shared kernel detector integration | Partial | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4` and `transitive_closure2`; Haskell and Rust cover a broader shared-kernel registry. |
 | Lowered/native helper functions | Partial/Done | Done | Done | C has constant fact-only native helpers, planner metadata, interpreted-vs-lowered matrix wiring, body-call helpers, filtered-fact helpers, comparison-filter helpers, rejection metadata, repeated-variable filter hardening, empty-result rejection metadata, and projected body-call helper expansion. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
 | LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts and generated effective-distance LMDB wiring; larger artifact layout support remains. |
@@ -155,16 +156,16 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-transitive-closure-kernel`
+### 1. `feat/wam-c-transitive-distance-kernel`
 
 Goal: add the next shared recursive kernel to C from the Haskell/Rust parity
-surface, starting with `transitive_closure2`.
+surface, continuing from `transitive_closure2` to `transitive_distance3`.
 
 Scope:
 
 - Extend the C recursive-kernel registration path beyond `category_ancestor/4`
-  for the shared `transitive_closure2` detector.
-- Add a native C handler and executable smoke for a small binary edge closure.
+  and `transitive_closure2` for the shared `transitive_distance3` detector.
+- Add a native C handler and executable smoke for a small binary edge distance.
 - Keep TSV/LMDB fact loading out of scope unless the small in-memory kernel
   path exposes a need for it.
 
@@ -172,12 +173,13 @@ Status: recommended next.
 
 Reason:
 
-- The benchmark-demand scan did not find an output-parity failure in the current
-  C matrix surfaces.
-- It did find that accumulated C WAM has no useful kernel delta at `10x`, while
-  Haskell and Rust already model multiple shared recursive kernels. The narrow
-  parity move is therefore adding one more shared kernel kind, not expanding the
-  builtin set speculatively.
+- `transitive_closure2` is now covered through direct native registration and
+  detected-project setup.
+- `docs/design/WAM_PERF_OPTIMIZATION_LOG.md` records
+  `transitive_distance3/3` as a measured Haskell multi-output kernel benchmark,
+  so it is a better C parity target than another speculative builtin.
+- Haskell and Rust already cover `transitive_distance3`; it can reuse the edge
+  traversal surface while adding an integer distance output.
 
 ### 2. `investigate/wam-c-accumulated-runtime-cost`
 
@@ -210,6 +212,28 @@ Evidence:
 | Accumulated C dev parity | `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels,c-wam-accumulated-lmdb,c-wam-accumulated-no-kernels-lmdb --repetitions 1 --baseline-target prolog-accumulated` | All outputs match across Prolog, TSV C, and LMDB C targets. |
 | Lowered-helper dev/10x parity | `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev,10x --target-sets c-wam-lowered-helper --repetitions 1 --baseline-target c-wam-lowered-helper-interpreted` | Lowered and interpreted helper outputs match at `dev` and `10x`. |
 | Accumulated C 10x parity and kernel delta | `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 10x --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels,c-wam-accumulated-lmdb,c-wam-accumulated-no-kernels-lmdb --repetitions 1 --baseline-target prolog-accumulated` | All outputs match, but C WAM is about `0.03x` versus optimized Prolog and C kernels are only `1.004x` to `1.014x` versus no-kernels. |
+
+### Completed Shared Kernel Slice: `feat/wam-c-transitive-closure-kernel`
+
+Goal: add the next shared recursive kernel to C from the Haskell/Rust parity
+surface.
+
+Evidence:
+
+| Surface | Coverage |
+|---|---|
+| Kernel support predicate | `wam_c_supported_kernel/1` accepts `recursive_kernel(transitive_closure2, ...)`. |
+| Detected setup emission | `generate_setup_detected_kernels_c/2` emits `wam_register_transitive_closure_kernel`. |
+| Runtime handler | `wam_transitive_closure_handler` supports bound-target reachability and first-solution unbound target mode over registered in-memory edges. |
+| Direct executable smoke | `tc_ancestor/2` succeeds for direct and recursive edges, binds an unbound target, and fails for a reversed edge. |
+| Detected-project smoke | Generated project detection lowers `tc_ancestor/2` to a `call_foreign` trampoline and runs through `setup_detected_wam_c_kernels`. |
+
+Performance note:
+
+- `docs/design/WAM_PERF_OPTIMIZATION_LOG.md` repeatedly points to native kernel
+  dispatch as the meaningful hybrid-WAM speedup lever. For C, the immediate
+  goal should stay on broadening native shared kernels before tuning the general
+  WAM instruction dispatch loop.
 
 ## Completed Atom Concat Builtin
 
@@ -288,8 +312,9 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Proceed with `feat/wam-c-transitive-closure-kernel`.
+Proceed with `feat/wam-c-transitive-distance-kernel`.
 
-Keep it narrow: add the shared `transitive_closure2` kernel path and a small
-executable smoke first. Treat broader fact storage, LMDB loading, and runtime
-profiling as follow-up branches unless this slice exposes a direct blocker.
+Keep it narrow: add `transitive_distance3` over the same in-memory edge surface
+and prove direct plus detected-project executable smokes. Treat broader fact
+storage, LMDB loading, and runtime profiling as follow-up branches unless this
+slice exposes a direct blocker.
