@@ -336,6 +336,8 @@ namespace UnifyWeaver.QueryRuntime
     public sealed class MmapArrayRelationArtifactManifest
     {
         public const string CurrentFormat = "unifyweaver.mmap_array_relation.v1";
+        public const string ProvidedIdStrategy = "provided_id";
+        public const string PositionIdStrategy = "position_id";
 
         public string Format { get; set; } = CurrentFormat;
 
@@ -351,11 +353,13 @@ namespace UnifyWeaver.QueryRuntime
 
         public long RowCount { get; set; }
 
-        public string IdStrategy { get; set; } = "provided_id";
+        public string IdStrategy { get; set; } = ProvidedIdStrategy;
 
         public int IdWidth { get; set; } = 32;
 
         public string ValueEncoding { get; set; } = "int32_le";
+
+        public bool SourceIdsPreserved { get; set; } = true;
 
         public int SortColumn { get; set; } = 0;
 
@@ -404,9 +408,19 @@ namespace UnifyWeaver.QueryRuntime
                 throw new InvalidDataException($"Mmap array relation artifact row count must be non-negative: {manifestPath}");
             }
 
-            if (IdStrategy is not ("provided_id" or "position_id"))
+            if (IdStrategy is not (ProvidedIdStrategy or PositionIdStrategy))
             {
                 throw new InvalidDataException($"Mmap array relation artifact has unsupported id strategy '{IdStrategy}': {manifestPath}");
+            }
+
+            if (IdStrategy == ProvidedIdStrategy && !SourceIdsPreserved)
+            {
+                throw new InvalidDataException($"Mmap array relation artifact provided_id strategy must preserve source IDs: {manifestPath}");
+            }
+
+            if (IdStrategy == PositionIdStrategy && SourceIdsPreserved)
+            {
+                throw new InvalidDataException($"Mmap array relation artifact position_id strategy must not claim source ID preservation: {manifestPath}");
             }
 
             if (IdWidth != 32 || !string.Equals(ValueEncoding, "int32_le", StringComparison.Ordinal))
@@ -2292,10 +2306,17 @@ namespace UnifyWeaver.QueryRuntime
             DelimitedRelationSource source,
             string artifactDirectory,
             string? artifactName = null,
-            string idStrategy = "provided_id")
+            string idStrategy = MmapArrayRelationArtifactManifest.ProvidedIdStrategy)
         {
             if (artifactDirectory is null) throw new ArgumentNullException(nameof(artifactDirectory));
             Directory.CreateDirectory(artifactDirectory);
+
+            if (idStrategy != MmapArrayRelationArtifactManifest.ProvidedIdStrategy)
+            {
+                throw new NotSupportedException(
+                    "Mmap array relation artifact builder currently supports only provided_id; " +
+                    "position_id requires an explicit intern-table mapping step.");
+            }
 
             if (predicate.Arity != 2 || source.ExpectedWidth != 2)
             {
@@ -2334,6 +2355,7 @@ namespace UnifyWeaver.QueryRuntime
                 IdStrategy = idStrategy,
                 IdWidth = 32,
                 ValueEncoding = "int32_le",
+                SourceIdsPreserved = true,
                 SortColumn = 0,
                 SourcePath = source.InputPath,
                 SourceLength = sourceInfo?.Length,

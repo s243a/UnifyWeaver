@@ -178,8 +178,17 @@ manifest should reserve the field from the start:
 }
 ```
 
+The current C# builder only emits `provided_id` artifacts and marks
+`source_ids_preserved` in the manifest. It deliberately rejects `position_id`
+until an explicit intern-table or position-mapping step exists; otherwise the
+manifest would claim remapped IDs while the data still contains source values.
+
 This is likely the right comparison point for effective-distance and graph
-workloads once preprocessing is explicit.
+workloads once preprocessing is explicit. That is workload-specific: LMDB still
+has an important advantage for database-like access patterns because it can
+serve arbitrary B-tree lookups over the stored key space, while the current
+mmap-array provider is intentionally narrow: sorted fixed-width rows, binary
+search on column 0, and bucket streaming in that same order.
 
 ## Hash/Block-Sharded File Path
 

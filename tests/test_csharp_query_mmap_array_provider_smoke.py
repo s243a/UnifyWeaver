@@ -110,6 +110,7 @@ class CSharpQueryMmapArrayProviderSmokeTests(unittest.TestCase):
 
 
 SMOKE_PROGRAM = r"""
+using System.Text.Json;
 using UnifyWeaver.QueryRuntime;
 
 static void Assert(bool condition, string message)
@@ -135,6 +136,21 @@ File.WriteAllLines(sourcePath, new[]
 var predicate = new PredicateId("edge", 2);
 var source = new DelimitedRelationSource(sourcePath, '\t', 1, 2);
 var manifestPath = MmapArrayRelationArtifactBuilder.BuildFromDelimited(predicate, source, Path.Combine(root, "edge-mmap"));
+var manifest = JsonSerializer.Deserialize<MmapArrayRelationArtifactManifest>(File.ReadAllText(manifestPath))
+    ?? throw new InvalidOperationException("manifest did not deserialize");
+Assert(manifest.IdStrategy == MmapArrayRelationArtifactManifest.ProvidedIdStrategy, $"id strategy was {manifest.IdStrategy}");
+Assert(manifest.IdWidth == 32, $"id width was {manifest.IdWidth}");
+Assert(manifest.ValueEncoding == "int32_le", $"value encoding was {manifest.ValueEncoding}");
+Assert(manifest.SourceIdsPreserved, "provided_id manifest did not preserve source IDs");
+
+try
+{
+    MmapArrayRelationArtifactBuilder.BuildFromDelimited(predicate, source, Path.Combine(root, "edge-position-mmap"), idStrategy: MmapArrayRelationArtifactManifest.PositionIdStrategy);
+    throw new InvalidOperationException("position_id builder path should not be implemented without an intern table");
+}
+catch (NotSupportedException)
+{
+}
 
 var provider = new MmapArrayRelationArtifactProvider();
 provider.RegisterArtifact(predicate, manifestPath);
