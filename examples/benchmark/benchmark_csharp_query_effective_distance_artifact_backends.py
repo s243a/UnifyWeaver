@@ -61,6 +61,7 @@ DEFAULT_DB_CANDIDATES = (
 HEADERS = [
     "scale",
     "run",
+    "relation",
     "mode",
     "rows",
     "distinct_categories",
@@ -84,6 +85,7 @@ RAW_HEADERS = [column for column in HEADERS if column != "run"]
 
 SUMMARY_HEADERS = [
     "scale",
+    "relation",
     "rows",
     "distinct_categories",
     "lookup_keys",
@@ -110,6 +112,27 @@ class BenchmarkRow:
 @dataclass(frozen=True)
 class SummaryRow:
     values: dict[str, str]
+
+
+@dataclass(frozen=True)
+class RelationSpec:
+    name: str
+    input_file: str
+    lmdb_manifest_file: str
+
+
+RELATIONS = {
+    "category_parent": RelationSpec(
+        name="category_parent",
+        input_file="category_parent.tsv",
+        lmdb_manifest_file="category_parent.lmdb.manifest.json",
+    ),
+    "article_category": RelationSpec(
+        name="article_category",
+        input_file="article_category.tsv",
+        lmdb_manifest_file="article_category.lmdb.manifest.json",
+    ),
+}
 
 
 def run_checked(command: list[str], *, cwd: Path, timeout: int) -> subprocess.CompletedProcess[str]:
@@ -188,6 +211,7 @@ def parse_rows(output: str, run_index: int) -> list[BenchmarkRow]:
 
 def run_scale(
     scale: str,
+    relation: RelationSpec,
     benchmark_root: Path,
     lookup_keys: int,
     lookup_repetitions: int,
@@ -200,10 +224,12 @@ def run_scale(
     lmdb_only: bool,
 ) -> list[BenchmarkRow]:
     scale_dir = benchmark_root / scale
-    if not lmdb_only and not (scale_dir / "category_parent.tsv").exists():
-        raise RuntimeError(f"scale has no category_parent.tsv: {scale_dir}")
-    if lmdb_only and not (scale_dir / "category_parent.lmdb.manifest.json").exists():
-        raise RuntimeError(f"scale has no category_parent.lmdb.manifest.json: {scale_dir}")
+    input_path = scale_dir / relation.input_file
+    lmdb_manifest_path = scale_dir / relation.lmdb_manifest_file
+    if not lmdb_only and not input_path.exists():
+        raise RuntimeError(f"scale has no {relation.input_file}: {scale_dir}")
+    if lmdb_only and not lmdb_manifest_path.exists():
+        raise RuntimeError(f"scale has no {relation.lmdb_manifest_file}: {scale_dir}")
 
     build_lmdb_runtime()
     temp_path = Path(tempfile.mkdtemp(prefix=f"uw-csharp-effective-distance-artifacts-{scale}-"))
@@ -226,6 +252,12 @@ def run_scale(
                 scale,
                 "--scale-dir",
                 str(scale_dir),
+                "--relation",
+                relation.name,
+                "--input-file",
+                relation.input_file,
+                "--lmdb-manifest-file",
+                relation.lmdb_manifest_file,
                 "--lookup-keys",
                 str(lookup_keys),
                 "--lookup-repetitions",
@@ -260,13 +292,13 @@ def render_tsv(rows: list[BenchmarkRow]) -> str:
 
 def render_markdown(rows: list[BenchmarkRow]) -> str:
     lines = [
-        "| Scale | Run | Mode | Rows | Categories | Lookup keys | Artifact bytes | Open ms | Lookup c0 ms | Lookup c1 ms | Bucket c0 ms | Bucket c1 ms | Scan ms | Retained bytes |",
-        "| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Scale | Run | Relation | Mode | Rows | Distinct values | Lookup keys | Artifact bytes | Open ms | Lookup c0 ms | Lookup c1 ms | Bucket c0 ms | Bucket c1 ms | Scan ms | Retained bytes |",
+        "| --- | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         value = row.values
         lines.append(
-            "| {scale} | {run} | {mode} | {rows} | {distinct_categories} | {lookup_keys} | {artifact_bytes} | {open_ms} | {lookup_ms} | {lookup_col1_ms} | {bucket_ms} | {bucket_col1_ms} | {scan_ms} | {retained_bytes} |".format(
+            "| {scale} | {run} | {relation} | {mode} | {rows} | {distinct_categories} | {lookup_keys} | {artifact_bytes} | {open_ms} | {lookup_ms} | {lookup_col1_ms} | {bucket_ms} | {bucket_col1_ms} | {scan_ms} | {retained_bytes} |".format(
                 **value
             )
         )
@@ -424,13 +456,13 @@ def resource_preflight_failures(
 
 
 def summarize(rows: list[BenchmarkRow]) -> list[SummaryRow]:
-    grouped: dict[str, list[BenchmarkRow]] = {}
+    grouped: dict[tuple[str, str], list[BenchmarkRow]] = {}
     for row in rows:
-        grouped.setdefault(row.values["scale"], []).append(row)
+        grouped.setdefault((row.values["scale"], row.values["relation"]), []).append(row)
 
     summaries: list[SummaryRow] = []
-    for scale in sorted(grouped, key=scale_sort_key):
-        scale_rows = grouped[scale]
+    for scale, relation in sorted(grouped, key=lambda key: (scale_sort_key(key[0]), key[1])):
+        scale_rows = grouped[(scale, relation)]
         modes = sorted({row.values["mode"] for row in scale_rows})
 
         def median_by_mode(column: str) -> dict[str, float]:
@@ -450,6 +482,7 @@ def summarize(rows: list[BenchmarkRow]) -> list[SummaryRow]:
             SummaryRow(
                 {
                     "scale": scale,
+                    "relation": relation,
                     "rows": row0["rows"],
                     "distinct_categories": row0["distinct_categories"],
                     "lookup_keys": row0["lookup_keys"],
@@ -489,13 +522,13 @@ def render_summary_tsv(rows: list[SummaryRow]) -> str:
 
 def render_summary_markdown(rows: list[SummaryRow]) -> str:
     lines = [
-        "| Scale | Rows | Categories | Lookup keys | Best lookup c0 | Best lookup c1 | Best bucket c0 | Best bucket c1 | Best scan | Smallest artifact |",
-        "| --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- |",
+        "| Scale | Relation | Rows | Distinct values | Lookup keys | Best lookup c0 | Best lookup c1 | Best bucket c0 | Best bucket c1 | Best scan | Smallest artifact |",
+        "| --- | --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- |",
     ]
     for row in rows:
         value = row.values
         lines.append(
-            "| {scale} | {rows} | {distinct_categories} | {lookup_keys} | {best_lookup_mode} | {best_lookup_col1_mode} | {best_bucket_mode} | {best_bucket_col1_mode} | {best_scan_mode} | {smallest_artifact_mode} |".format(
+            "| {scale} | {relation} | {rows} | {distinct_categories} | {lookup_keys} | {best_lookup_mode} | {best_lookup_col1_mode} | {best_bucket_mode} | {best_bucket_col1_mode} | {best_scan_mode} | {smallest_artifact_mode} |".format(
                 **value
             )
         )
@@ -506,13 +539,13 @@ def render_summary_markdown(rows: list[SummaryRow]) -> str:
 
 def render_summary_full_markdown(rows: list[SummaryRow]) -> str:
     lines = [
-        "| Scale | Rows | Categories | Lookup keys | Best lookup c0 | Best lookup c1 | Best bucket c0 | Best bucket c1 | Best scan | Smallest artifact | Lookup c0 ms by mode | Lookup c1 ms by mode | Bucket c0 ms by mode | Bucket c1 ms by mode | Scan ms by mode | Artifact bytes by mode |",
-        "| --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Scale | Relation | Rows | Distinct values | Lookup keys | Best lookup c0 | Best lookup c1 | Best bucket c0 | Best bucket c1 | Best scan | Smallest artifact | Lookup c0 ms by mode | Lookup c1 ms by mode | Bucket c0 ms by mode | Bucket c1 ms by mode | Scan ms by mode | Artifact bytes by mode |",
+        "| --- | --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for row in rows:
         value = row.values
         lines.append(
-            "| {scale} | {rows} | {distinct_categories} | {lookup_keys} | {best_lookup_mode} | {best_lookup_col1_mode} | {best_bucket_mode} | {best_bucket_col1_mode} | {best_scan_mode} | {smallest_artifact_mode} | {lookup_ms_by_mode} | {lookup_col1_ms_by_mode} | {bucket_ms_by_mode} | {bucket_col1_ms_by_mode} | {scan_ms_by_mode} | {artifact_bytes_by_mode} |".format(
+            "| {scale} | {relation} | {rows} | {distinct_categories} | {lookup_keys} | {best_lookup_mode} | {best_lookup_col1_mode} | {best_bucket_mode} | {best_bucket_col1_mode} | {best_scan_mode} | {smallest_artifact_mode} | {lookup_ms_by_mode} | {lookup_col1_ms_by_mode} | {bucket_ms_by_mode} | {bucket_col1_ms_by_mode} | {scan_ms_by_mode} | {artifact_bytes_by_mode} |".format(
                 **value
             )
         )
@@ -521,9 +554,15 @@ def render_summary_full_markdown(rows: list[SummaryRow]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Compare C# query artifact backends on the real effective-distance category_parent/2 relation."
+        description="Compare C# query artifact backends on real effective-distance support relations."
     )
     parser.add_argument("--scales", default="300,1k,5k,10k", help="comma-separated scales from data/benchmark")
+    parser.add_argument(
+        "--relation",
+        choices=tuple(RELATIONS),
+        default="category_parent",
+        help="support relation to benchmark",
+    )
     parser.add_argument(
         "--benchmark-root",
         type=Path,
@@ -548,20 +587,20 @@ def main(argv: list[str] | None = None) -> int:
         "--use-scale-lmdb-artifact",
         action="store_true",
         help=(
-            "prefer data/benchmark/<scale>/category_parent.lmdb.manifest.json for the LMDB mode "
+            "prefer data/benchmark/<scale>/<relation>.lmdb.manifest.json for the LMDB mode "
             "when present; falls back to --artifact-root generation"
         ),
     )
     parser.add_argument(
         "--lmdb-only",
         action="store_true",
-        help="benchmark only a scale-local LMDB artifact; does not require category_parent.tsv",
+        help="benchmark only a scale-local LMDB artifact; does not require a TSV sidecar",
     )
     parser.add_argument(
         "--preserve-numeric-ids",
         action="store_true",
         help=(
-            "preserve numeric category_parent.tsv IDs instead of re-interning them densely; "
+            "preserve numeric TSV IDs instead of re-interning them densely; "
             "implied by --use-scale-lmdb-artifact only when a scale-local LMDB manifest exists"
         ),
     )
@@ -573,7 +612,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--skip-missing-scales",
         action="store_true",
-        help="skip requested scales whose data/benchmark/<scale>/category_parent.tsv is not present",
+        help="skip requested scales whose data/benchmark/<scale>/<relation>.tsv is not present",
     )
     parser.add_argument("--db", type=Path, default=None, help="path to simplewiki_categories.db for fixture preparation")
     parser.add_argument(
@@ -620,6 +659,7 @@ def main(argv: list[str] | None = None) -> int:
     scales = [scale.strip() for scale in args.scales.split(",") if scale.strip()]
     if not scales:
         parser.error("--scales must include at least one scale")
+    relation = RELATIONS[args.relation]
     large_scales = [scale for scale in scales if is_large_scale(scale)]
 
     if args.prepare_missing_large_scales:
@@ -632,8 +672,8 @@ def main(argv: list[str] | None = None) -> int:
         scale
         for scale in scales
         if not (
-            (args.benchmark_root / scale / "category_parent.tsv").exists()
-            or (args.lmdb_only and (args.benchmark_root / scale / "category_parent.lmdb.manifest.json").exists())
+            (args.benchmark_root / scale / relation.input_file).exists()
+            or (args.lmdb_only and (args.benchmark_root / scale / relation.lmdb_manifest_file).exists())
         )
     ]
     if missing:
@@ -651,7 +691,7 @@ def main(argv: list[str] | None = None) -> int:
                 hints.append("pass --prepare-missing-large-scales to generate supported SimpleWiki category-only fixtures")
             if prepared_only_missing:
                 hints.append("500k_cats and 1m_cats must be prepared separately from enwiki-scale data before this wrapper can run them")
-            hints.append("or prepare data/benchmark/<scale>/category_parent.tsv before running")
+            hints.append(f"or prepare data/benchmark/<scale>/{relation.input_file} before running")
             parser.error(f"missing benchmark scale(s): {', '.join(missing)}; {'; '.join(hints)}")
 
     if large_scales and not args.skip_resource_check:
@@ -670,6 +710,7 @@ def main(argv: list[str] | None = None) -> int:
             rows.extend(
                 run_scale(
                     scale,
+                    relation,
                     args.benchmark_root,
                     args.lookup_keys,
                     args.lookup_repetitions,
@@ -777,21 +818,21 @@ static int Intern(Dictionary<string, int> ids, string value)
     return id;
 }
 
-static IReadOnlyList<(int Child, int Parent)> ReadEdges(string scaleDir, bool preserveNumericIds, out int distinctCategories)
+static IReadOnlyList<(int Child, int Parent)> ReadEdges(string scaleDir, string inputFile, bool preserveNumericIds, out int distinctCategories)
 {
     if (preserveNumericIds)
     {
-        return ReadNumericEdges(scaleDir, out distinctCategories);
+        return ReadNumericEdges(scaleDir, inputFile, out distinctCategories);
     }
 
-    return ReadAndInternEdges(scaleDir, out distinctCategories);
+    return ReadAndInternEdges(scaleDir, inputFile, out distinctCategories);
 }
 
-static IReadOnlyList<(int Child, int Parent)> ReadNumericEdges(string scaleDir, out int distinctCategories)
+static IReadOnlyList<(int Child, int Parent)> ReadNumericEdges(string scaleDir, string inputFile, out int distinctCategories)
 {
     var ids = new HashSet<int>();
     var rows = new List<(int Child, int Parent)>();
-    foreach (var line in File.ReadLines(Path.Combine(scaleDir, "category_parent.tsv")).Skip(1))
+    foreach (var line in File.ReadLines(Path.Combine(scaleDir, inputFile)).Skip(1))
     {
         if (string.IsNullOrWhiteSpace(line))
         {
@@ -801,7 +842,7 @@ static IReadOnlyList<(int Child, int Parent)> ReadNumericEdges(string scaleDir, 
         var tab = line.IndexOf('\t');
         if (tab < 0)
         {
-            throw new InvalidDataException($"category_parent.tsv row has no tab: {line}");
+            throw new InvalidDataException($"{inputFile} row has no tab: {line}");
         }
 
         var child = int.Parse(line.Substring(0, tab), System.Globalization.CultureInfo.InvariantCulture);
@@ -815,11 +856,11 @@ static IReadOnlyList<(int Child, int Parent)> ReadNumericEdges(string scaleDir, 
     return rows;
 }
 
-static IReadOnlyList<(int Child, int Parent)> ReadAndInternEdges(string scaleDir, out int distinctCategories)
+static IReadOnlyList<(int Child, int Parent)> ReadAndInternEdges(string scaleDir, string inputFile, out int distinctCategories)
 {
     var ids = new Dictionary<string, int>(StringComparer.Ordinal);
     var rows = new List<(int Child, int Parent)>();
-    foreach (var line in File.ReadLines(Path.Combine(scaleDir, "category_parent.tsv")).Skip(1))
+    foreach (var line in File.ReadLines(Path.Combine(scaleDir, inputFile)).Skip(1))
     {
         if (string.IsNullOrWhiteSpace(line))
         {
@@ -829,7 +870,7 @@ static IReadOnlyList<(int Child, int Parent)> ReadAndInternEdges(string scaleDir
         var tab = line.IndexOf('\t');
         if (tab < 0)
         {
-            throw new InvalidDataException($"category_parent.tsv row has no tab: {line}");
+            throw new InvalidDataException($"{inputFile} row has no tab: {line}");
         }
 
         var child = line.Substring(0, tab);
@@ -858,9 +899,10 @@ static string WriteLmdbArtifact(
     string root,
     PredicateId predicate,
     IReadOnlyList<(int Child, int Parent)> rows,
-    string sourcePath)
+    string sourcePath,
+    string lmdbManifestFile)
 {
-    var envPath = Path.Combine(root, "lmdb-category-parent");
+    var envPath = Path.Combine(root, $"lmdb-{predicate.Name}");
     if (Directory.Exists(envPath))
     {
         Directory.Delete(envPath, recursive: true);
@@ -901,7 +943,7 @@ static string WriteLmdbArtifact(
         SourceLength = new FileInfo(sourcePath).Length,
         SourceSha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(sourcePath))).ToLowerInvariant(),
     };
-    var manifestPath = Path.Combine(root, "category_parent.lmdb.manifest.json");
+    var manifestPath = Path.Combine(root, lmdbManifestFile);
     File.WriteAllText(manifestPath, JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true }), Encoding.UTF8);
     return manifestPath;
 }
@@ -923,18 +965,18 @@ static string ResolveManifestEnvironmentPath(LmdbRelationArtifactManifest manife
         : Path.Combine(Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? ".", manifest.EnvironmentPath);
 }
 
-static string? ExistingScaleLmdbManifest(string scaleDir)
+static string? ExistingScaleLmdbManifest(string scaleDir, PredicateId predicate, string lmdbManifestFile)
 {
-    var manifestPath = Path.Combine(scaleDir, "category_parent.lmdb.manifest.json");
+    var manifestPath = Path.Combine(scaleDir, lmdbManifestFile);
     if (!File.Exists(manifestPath))
     {
         return null;
     }
 
     var manifest = LmdbRelationArtifactReader.LoadManifest(manifestPath);
-    if (manifest.PredicateName != "category_parent" || manifest.Arity != 2)
+    if (manifest.PredicateName != predicate.Name || manifest.Arity != predicate.Arity)
     {
-        throw new InvalidDataException($"Scale-local LMDB manifest describes {manifest.PredicateName}/{manifest.Arity}, not category_parent/2: {manifestPath}");
+        throw new InvalidDataException($"Scale-local LMDB manifest describes {manifest.PredicateName}/{manifest.Arity}, not {predicate.Name}/{predicate.Arity}: {manifestPath}");
     }
 
     var environmentPath = ResolveManifestEnvironmentPath(manifest, manifestPath);
@@ -1040,6 +1082,7 @@ static double MeasureBuckets(
 
 static void Emit(
     string scale,
+    string relation,
     string mode,
     int rowCount,
     int distinctCategories,
@@ -1061,6 +1104,7 @@ static void Emit(
     Console.WriteLine(string.Join('\t', new[]
     {
         scale,
+        relation,
         mode,
         rowCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
         distinctCategories.ToString(System.Globalization.CultureInfo.InvariantCulture),
@@ -1083,6 +1127,7 @@ static void Emit(
 
 static void BenchmarkProvider(
     string scale,
+    string relation,
     string mode,
     Func<IRelationProvider> openProvider,
     PredicateId predicate,
@@ -1116,6 +1161,7 @@ static void BenchmarkProvider(
 
     Emit(
         scale,
+        relation,
         mode,
         rowCount,
         distinctCategories,
@@ -1137,6 +1183,9 @@ static void BenchmarkProvider(
 
 var scale = ReadArg(args, "--scale", "dev");
 var scaleDir = ReadArg(args, "--scale-dir", "");
+var relation = ReadArg(args, "--relation", "category_parent");
+var inputFile = ReadArg(args, "--input-file", "category_parent.tsv");
+var lmdbManifestFile = ReadArg(args, "--lmdb-manifest-file", "category_parent.lmdb.manifest.json");
 var lookupKeyCount = Math.Max(1, ReadIntArg(args, "--lookup-keys", 64));
 var lookupRepetitions = Math.Max(1, ReadIntArg(args, "--lookup-repetitions", 5));
 var root = Path.GetFullPath(ReadArg(args, "--artifact-root", Directory.GetCurrentDirectory()));
@@ -1145,11 +1194,11 @@ var useScaleLmdbArtifact = ReadBoolArg(args, "--use-scale-lmdb-artifact", false)
 var requestedPreserveNumericIds = ReadBoolArg(args, "--preserve-numeric-ids", false);
 var lmdbOnly = ReadBoolArg(args, "--lmdb-only", false);
 Directory.CreateDirectory(root);
-var predicate = new PredicateId("category_parent", 2);
-var scaleLmdbManifest = (!refreshArtifacts && (useScaleLmdbArtifact || lmdbOnly)) ? ExistingScaleLmdbManifest(scaleDir) : null;
+var predicate = new PredicateId(relation, 2);
+var scaleLmdbManifest = (!refreshArtifacts && (useScaleLmdbArtifact || lmdbOnly)) ? ExistingScaleLmdbManifest(scaleDir, predicate, lmdbManifestFile) : null;
 if (lmdbOnly && scaleLmdbManifest is null)
 {
-    throw new InvalidOperationException("--lmdb-only requires a scale-local category_parent.lmdb.manifest.json");
+    throw new InvalidOperationException($"--lmdb-only requires a scale-local {lmdbManifestFile}");
 }
 if (lmdbOnly)
 {
@@ -1159,9 +1208,10 @@ if (lmdbOnly)
     var planningRows = ReadLmdbRowsForPlanning(predicate, lmdbOnlyManifest);
     var lookupKeysOnly = LookupKeysFromRows(planningRows, lookupKeyCount);
     var lookupKeysColumn1Only = LookupKeysFromRowsByColumn(planningRows, 1, lookupKeyCount);
-    Console.WriteLine("scale\tmode\trows\tdistinct_categories\tlookup_keys\tartifact_bytes\topen_ms\tlookup_ms\tlookup_col1_ms\tbucket_ms\tbucket_col1_ms\tscan_ms\tretained_bytes\tscan_hash\tlookup_hash\tlookup_col1_hash\tbucket_hash\tbucket_col1_hash");
+    Console.WriteLine("scale\trelation\tmode\trows\tdistinct_categories\tlookup_keys\tartifact_bytes\topen_ms\tlookup_ms\tlookup_col1_ms\tbucket_ms\tbucket_col1_ms\tscan_ms\tretained_bytes\tscan_hash\tlookup_hash\tlookup_col1_hash\tbucket_hash\tbucket_col1_hash");
     BenchmarkProvider(
         scale,
+        relation,
         "lmdb",
         () =>
         {
@@ -1179,7 +1229,7 @@ if (lmdbOnly)
     return;
 }
 var preserveNumericIds = requestedPreserveNumericIds || scaleLmdbManifest is not null;
-var rows = ReadEdges(scaleDir, preserveNumericIds, out var distinctCategories);
+var rows = ReadEdges(scaleDir, inputFile, preserveNumericIds, out var distinctCategories);
 var lookupKeys = rows.Select(row => row.Child)
     .Distinct()
     .OrderBy(value => value)
@@ -1193,7 +1243,7 @@ var lookupKeysColumn1 = rows.Select(row => row.Parent)
     .Select(value => (object)value.ToString(System.Globalization.CultureInfo.InvariantCulture))
     .ToArray();
 
-var inputPath = Path.Combine(root, "category_parent_ids.tsv");
+var inputPath = Path.Combine(root, $"{relation}_ids.tsv");
 if (refreshArtifacts || !File.Exists(inputPath))
 {
     WriteInput(inputPath, rows);
@@ -1201,34 +1251,35 @@ if (refreshArtifacts || !File.Exists(inputPath))
 var source = new DelimitedRelationSource(inputPath, '\t', 1, 2);
 
 var binaryDir = Path.Combine(root, "binary-artifact");
-var binaryManifestPath = Path.Combine(binaryDir, "category_parent_2.uwbr.json");
+var binaryManifestPath = Path.Combine(binaryDir, $"{relation}_2.uwbr.json");
 var binaryManifest = ExistingOrBuild(
     binaryManifestPath,
     refreshArtifacts,
     () => BinaryRelationArtifactBuilder.BuildFromDelimited(predicate, source, binaryDir));
 var delimitedDir = Path.Combine(root, "delimited-artifact");
-var delimitedManifestPath = Path.Combine(delimitedDir, "category_parent_2.uwdr.json");
+var delimitedManifestPath = Path.Combine(delimitedDir, $"{relation}_2.uwdr.json");
 var delimitedManifest = ExistingOrBuild(
     delimitedManifestPath,
     refreshArtifacts,
     () => DelimitedRelationArtifactBuilder.BuildFromDelimited(predicate, source, delimitedDir));
-var lmdbManifestPath = Path.Combine(root, "category_parent.lmdb.manifest.json");
+var lmdbManifestPath = Path.Combine(root, lmdbManifestFile);
 var lmdbManifest = scaleLmdbManifest ?? ExistingOrBuild(
     lmdbManifestPath,
     refreshArtifacts,
-    () => WriteLmdbArtifact(root, predicate, rows, inputPath));
+    () => WriteLmdbArtifact(root, predicate, rows, inputPath, lmdbManifestFile));
 var lmdbMetadata = LmdbRelationArtifactReader.LoadManifest(lmdbManifest);
 var lmdbDir = ResolveManifestEnvironmentPath(lmdbMetadata, lmdbManifest);
 var mmapDir = Path.Combine(root, "mmap-array-artifact");
-var mmapManifestPath = Path.Combine(mmapDir, "category_parent_2.uwa.json");
+var mmapManifestPath = Path.Combine(mmapDir, $"{relation}_2.uwa.json");
 var mmapManifest = ExistingOrBuild(
     mmapManifestPath,
     refreshArtifacts,
     () => MmapArrayRelationArtifactBuilder.BuildFromDelimited(predicate, source, mmapDir));
 
-Console.WriteLine("scale\tmode\trows\tdistinct_categories\tlookup_keys\tartifact_bytes\topen_ms\tlookup_ms\tlookup_col1_ms\tbucket_ms\tbucket_col1_ms\tscan_ms\tretained_bytes\tscan_hash\tlookup_hash\tlookup_col1_hash\tbucket_hash\tbucket_col1_hash");
+Console.WriteLine("scale\trelation\tmode\trows\tdistinct_categories\tlookup_keys\tartifact_bytes\topen_ms\tlookup_ms\tlookup_col1_ms\tbucket_ms\tbucket_col1_ms\tscan_ms\tretained_bytes\tscan_hash\tlookup_hash\tlookup_col1_hash\tbucket_hash\tbucket_col1_hash");
 BenchmarkProvider(
     scale,
+    relation,
     "preload",
     () =>
     {
@@ -1245,6 +1296,7 @@ BenchmarkProvider(
     distinctCategories);
 BenchmarkProvider(
     scale,
+    relation,
     "binary-artifact",
     () =>
     {
@@ -1261,6 +1313,7 @@ BenchmarkProvider(
     distinctCategories);
 BenchmarkProvider(
     scale,
+    relation,
     "delimited-artifact",
     () =>
     {
@@ -1277,6 +1330,7 @@ BenchmarkProvider(
     distinctCategories);
 BenchmarkProvider(
     scale,
+    relation,
     "lmdb",
     () =>
     {
@@ -1293,6 +1347,7 @@ BenchmarkProvider(
     distinctCategories);
 BenchmarkProvider(
     scale,
+    relation,
     "mmap-array",
     () =>
     {

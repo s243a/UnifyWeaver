@@ -30,8 +30,18 @@ class PrepareCSharpQueryEnwikiCategoryFixtureTests(unittest.TestCase):
             "12\t0\tC\t0\tsubcat\t0\t22\n"
             "13\t0\tD\t0\tsubcat\t0\t23\n"
         )
-        rows, scanned = MODULE.edge_rows_from_mysql_stream(stream, 2)
+        rows, scanned = MODULE.edge_rows_from_mysql_stream(stream, relation="category_parent", max_edges=2)
         self.assertEqual(rows, [("10", "20"), ("12", "22")])
+        self.assertEqual(scanned, 3)
+
+    def test_edge_rows_from_mysql_stream_filters_page_rows_for_article_category(self) -> None:
+        stream = StringIO(
+            "10\t0\tA\t0\tsubcat\t0\t20\n"
+            "11\t0\tB\t0\tpage\t0\t21\n"
+            "12\t0\tC\t0\tpage\t0\t22\n"
+        )
+        rows, scanned = MODULE.edge_rows_from_mysql_stream(stream, relation="article_category", max_edges=10)
+        self.assertEqual(rows, [("11", "21"), ("12", "22")])
         self.assertEqual(scanned, 3)
 
     def test_prepare_from_stream_writes_fixture(self) -> None:
@@ -39,6 +49,7 @@ class PrepareCSharpQueryEnwikiCategoryFixtureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = MODULE.prepare_from_stream(
                 scale="500k_cats",
+                relation="category_parent",
                 max_edges=10,
                 output_root=Path(tmp),
                 stream=stream,
@@ -74,6 +85,7 @@ class PrepareCSharpQueryEnwikiCategoryFixtureTests(unittest.TestCase):
         command = MODULE.rust_lmdb_sink_command(
             dump_path=Path("dump.sql.gz"),
             fixture_dir=Path("/tmp/fixture"),
+            relation="category_parent",
             max_edges=500000,
             map_size=1234,
             refresh=True,
@@ -82,9 +94,28 @@ class PrepareCSharpQueryEnwikiCategoryFixtureTests(unittest.TestCase):
         self.assertIn("mysql_stream_lmdb", command)
         self.assertIn("--fixture-tsv", command)
         self.assertIn("/tmp/fixture/category_parent.tsv", command)
+        self.assertIn("--fixture-header", command)
+        self.assertIn("child\\tparent", command)
         self.assertIn("--stats", command)
         self.assertIn("/tmp/fixture/category_parent.lmdb.stats.json", command)
         self.assertIn("--refresh", command)
+
+    def test_rust_lmdb_sink_command_accepts_article_category_relation(self) -> None:
+        command = MODULE.rust_lmdb_sink_command(
+            dump_path=Path("dump.sql.gz"),
+            fixture_dir=Path("/tmp/fixture"),
+            relation="article_category",
+            max_edges=1000000,
+            map_size=1234,
+            refresh=False,
+        )
+        self.assertIn("--predicate-name", command)
+        self.assertIn("article_category", command)
+        self.assertIn("--cl-type", command)
+        self.assertIn("page", command)
+        self.assertIn("article\\tcategory", command)
+        self.assertIn("/tmp/fixture/article_category.tsv", command)
+        self.assertIn("/tmp/fixture/article_category.lmdb.manifest.json", command)
 
     def test_prepare_with_rust_lmdb_sink_writes_metadata_from_stats(self) -> None:
         calls = []
@@ -104,6 +135,7 @@ class PrepareCSharpQueryEnwikiCategoryFixtureTests(unittest.TestCase):
             output_dir = Path(tmp) / "500k_cats"
             result_dir = MODULE.prepare_with_rust_lmdb_sink(
                 scale="500k_cats",
+                relation="category_parent",
                 max_edges=2,
                 output_root=Path(tmp),
                 dump_path=Path("dump.sql.gz"),
@@ -133,6 +165,7 @@ class PrepareCSharpQueryEnwikiCategoryFixtureTests(unittest.TestCase):
 
                 manifest_path = MODULE.write_lmdb_artifact(
                     fixture_dir=fixture_dir,
+                    relation="category_parent",
                     edges=[("10", "20"), ("12", "22")],
                     refresh=False,
                     map_size=4096,
@@ -177,6 +210,7 @@ class PrepareCSharpQueryEnwikiCategoryFixtureTests(unittest.TestCase):
                 self.assertEqual(
                     MODULE.write_lmdb_artifact(
                         fixture_dir=fixture_dir,
+                        relation="category_parent",
                         edges=[("10", "20")],
                         refresh=False,
                         map_size=4096,
@@ -190,3 +224,23 @@ class PrepareCSharpQueryEnwikiCategoryFixtureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+    def test_prepare_from_stream_writes_article_category_fixture(self) -> None:
+        stream = StringIO("11\t0\tB\t0\tpage\t0\t21\n12\t0\tC\t0\tpage\t0\t22\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = MODULE.prepare_from_stream(
+                scale="1m_pages",
+                relation="article_category",
+                max_edges=10,
+                output_root=Path(tmp),
+                stream=stream,
+            )
+            self.assertEqual((output_dir / "article_category.tsv").read_text(encoding="utf-8").splitlines(), [
+                "article\tcategory",
+                "11\t21",
+                "12\t22",
+            ])
+            metadata = json.loads((output_dir / "metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["scale"], "1m_pages")
+            self.assertEqual(metadata["relation"], "article_category")
+            self.assertEqual(metadata["n_article_category_edges"], 2)
+            self.assertEqual(metadata["mysql_rows_scanned"], 2)
