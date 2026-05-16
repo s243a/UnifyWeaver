@@ -5,6 +5,7 @@ import argparse
 import csv
 import os
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -51,6 +52,7 @@ LIGHTNINGDB_DLL = LIGHTNINGDB_PACKAGE / "lib" / "net9.0" / "LightningDB.dll"
 
 HEADERS = [
     "scale",
+    "run",
     "mode",
     "rows",
     "distinct_categories",
@@ -66,9 +68,31 @@ HEADERS = [
     "bucket_hash",
 ]
 
+RAW_HEADERS = [column for column in HEADERS if column != "run"]
+
+SUMMARY_HEADERS = [
+    "scale",
+    "rows",
+    "distinct_categories",
+    "lookup_keys",
+    "best_lookup_mode",
+    "best_bucket_mode",
+    "best_scan_mode",
+    "smallest_artifact_mode",
+    "lookup_ms_by_mode",
+    "bucket_ms_by_mode",
+    "scan_ms_by_mode",
+    "artifact_bytes_by_mode",
+]
+
 
 @dataclass(frozen=True)
 class BenchmarkRow:
+    values: dict[str, str]
+
+
+@dataclass(frozen=True)
+class SummaryRow:
     values: dict[str, str]
 
 
@@ -134,15 +158,25 @@ def write_benchmark_project(project_dir: Path) -> Path:
     return project_path
 
 
-def parse_rows(output: str) -> list[BenchmarkRow]:
+def parse_rows(output: str, run_index: int) -> list[BenchmarkRow]:
     reader = csv.DictReader(output.splitlines(), delimiter="\t")
-    rows = [BenchmarkRow(dict(row)) for row in reader]
-    if reader.fieldnames != HEADERS:
+    if reader.fieldnames != RAW_HEADERS:
         raise RuntimeError(f"unexpected benchmark headers: {reader.fieldnames}")
+    rows = []
+    for row in reader:
+        values = dict(row)
+        values["run"] = str(run_index)
+        rows.append(BenchmarkRow(values))
     return rows
 
 
-def run_scale(scale: str, lookup_keys: int, lookup_repetitions: int, keep_temp: bool) -> list[BenchmarkRow]:
+def run_scale(
+    scale: str,
+    lookup_keys: int,
+    lookup_repetitions: int,
+    run_index: int,
+    keep_temp: bool,
+) -> list[BenchmarkRow]:
     scale_dir = BENCH_DIR / scale
     if not (scale_dir / "category_parent.tsv").exists():
         raise RuntimeError(f"scale has no category_parent.tsv: {scale_dir}")
@@ -176,7 +210,7 @@ def run_scale(scale: str, lookup_keys: int, lookup_repetitions: int, keep_temp: 
             cwd=temp_path,
             timeout=240,
         )
-        return parse_rows(result.stdout)
+        return parse_rows(result.stdout, run_index)
     finally:
         if keep_temp:
             print(f"kept benchmark project: {temp_path}", file=sys.stderr)
@@ -192,16 +226,111 @@ def render_tsv(rows: list[BenchmarkRow]) -> str:
 
 def render_markdown(rows: list[BenchmarkRow]) -> str:
     lines = [
-        "| Scale | Mode | Rows | Categories | Lookup keys | Artifact bytes | Open ms | Lookup ms | Bucket ms | Scan ms | Retained bytes |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Scale | Run | Mode | Rows | Categories | Lookup keys | Artifact bytes | Open ms | Lookup ms | Bucket ms | Scan ms | Retained bytes |",
+        "| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         value = row.values
         lines.append(
-            "| {scale} | {mode} | {rows} | {distinct_categories} | {lookup_keys} | {artifact_bytes} | {open_ms} | {lookup_ms} | {bucket_ms} | {scan_ms} | {retained_bytes} |".format(
+            "| {scale} | {run} | {mode} | {rows} | {distinct_categories} | {lookup_keys} | {artifact_bytes} | {open_ms} | {lookup_ms} | {bucket_ms} | {scan_ms} | {retained_bytes} |".format(
                 **value
             )
         )
+    return "\n".join(lines)
+
+
+def numeric(row: BenchmarkRow, column: str) -> float:
+    return float(row.values[column])
+
+
+def scale_sort_key(scale: str) -> tuple[int, str]:
+    label = scale.strip().lower()
+    multiplier = 1
+    if label.endswith("k"):
+        multiplier = 1_000
+        label = label[:-1]
+    elif label.endswith("m"):
+        multiplier = 1_000_000
+        label = label[:-1]
+
+    try:
+        return (int(float(label) * multiplier), scale)
+    except ValueError:
+        return (sys.maxsize, scale)
+
+
+def summarize(rows: list[BenchmarkRow]) -> list[SummaryRow]:
+    grouped: dict[str, list[BenchmarkRow]] = {}
+    for row in rows:
+        grouped.setdefault(row.values["scale"], []).append(row)
+
+    summaries: list[SummaryRow] = []
+    for scale in sorted(grouped, key=scale_sort_key):
+        scale_rows = grouped[scale]
+        modes = sorted({row.values["mode"] for row in scale_rows})
+
+        def median_by_mode(column: str) -> dict[str, float]:
+            return {
+                mode: statistics.median(numeric(row, column) for row in scale_rows if row.values["mode"] == mode)
+                for mode in modes
+            }
+
+        lookup = median_by_mode("lookup_ms")
+        bucket = median_by_mode("bucket_ms")
+        scan = median_by_mode("scan_ms")
+        artifact = median_by_mode("artifact_bytes")
+        row0 = scale_rows[0].values
+        summaries.append(
+            SummaryRow(
+                {
+                    "scale": scale,
+                    "rows": row0["rows"],
+                    "distinct_categories": row0["distinct_categories"],
+                    "lookup_keys": row0["lookup_keys"],
+                    "best_lookup_mode": min(lookup, key=lookup.get),
+                    "best_bucket_mode": min(bucket, key=bucket.get),
+                    "best_scan_mode": min(scan, key=scan.get),
+                    "smallest_artifact_mode": min(
+                        (mode for mode in artifact if mode != "preload"),
+                        key=artifact.get,
+                    ),
+                    "lookup_ms_by_mode": format_mode_values(lookup),
+                    "bucket_ms_by_mode": format_mode_values(bucket),
+                    "scan_ms_by_mode": format_mode_values(scan),
+                    "artifact_bytes_by_mode": format_mode_values(artifact, digits=0),
+                }
+            )
+        )
+    return summaries
+
+
+def format_mode_values(values: dict[str, float], digits: int = 3) -> str:
+    def format_value(value: float) -> str:
+        return f"{value:.{digits}f}" if digits > 0 else str(int(value))
+
+    return "|".join(f"{mode}:{format_value(values[mode])}" for mode in sorted(values))
+
+
+def render_summary_tsv(rows: list[SummaryRow]) -> str:
+    lines = ["\t".join(SUMMARY_HEADERS)]
+    lines.extend("\t".join(row.values[column] for column in SUMMARY_HEADERS) for row in rows)
+    return "\n".join(lines)
+
+
+def render_summary_markdown(rows: list[SummaryRow]) -> str:
+    lines = [
+        "| Scale | Rows | Categories | Lookup keys | Best lookup | Best bucket | Best scan | Smallest artifact |",
+        "| --- | ---: | ---: | ---: | --- | --- | --- | --- |",
+    ]
+    for row in rows:
+        value = row.values
+        lines.append(
+            "| {scale} | {rows} | {distinct_categories} | {lookup_keys} | {best_lookup_mode} | {best_bucket_mode} | {best_scan_mode} | {smallest_artifact_mode} |".format(
+                **value
+            )
+        )
+    lines.append("")
+    lines.append("Median timing/detail fields are available in `summary-tsv`.")
     return "\n".join(lines)
 
 
@@ -209,10 +338,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Compare C# query artifact backends on the real effective-distance category_parent/2 relation."
     )
-    parser.add_argument("--scales", default="dev", help="comma-separated scales from data/benchmark")
+    parser.add_argument("--scales", default="300,1k,5k,10k", help="comma-separated scales from data/benchmark")
     parser.add_argument("--lookup-keys", type=int, default=64, help="number of category IDs to probe")
     parser.add_argument("--lookup-repetitions", type=int, default=5, help="lookup passes per mode")
-    parser.add_argument("--format", choices=("tsv", "markdown"), default="tsv")
+    parser.add_argument("--repetitions", type=int, default=1, help="independent benchmark runs per scale")
+    parser.add_argument(
+        "--format",
+        choices=("tsv", "markdown", "summary-tsv", "summary-markdown"),
+        default="tsv",
+    )
     parser.add_argument("--keep-temp", action="store_true", help="keep the generated C# benchmark project")
     args = parser.parse_args(argv)
 
@@ -220,6 +354,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--lookup-keys must be positive")
     if args.lookup_repetitions <= 0:
         parser.error("--lookup-repetitions must be positive")
+    if args.repetitions <= 0:
+        parser.error("--repetitions must be positive")
 
     scales = [scale.strip() for scale in args.scales.split(",") if scale.strip()]
     if not scales:
@@ -227,9 +363,14 @@ def main(argv: list[str] | None = None) -> int:
 
     rows: list[BenchmarkRow] = []
     for scale in scales:
-        rows.extend(run_scale(scale, args.lookup_keys, args.lookup_repetitions, args.keep_temp))
+        for run_index in range(1, args.repetitions + 1):
+            rows.extend(run_scale(scale, args.lookup_keys, args.lookup_repetitions, run_index, args.keep_temp))
 
-    if args.format == "markdown":
+    if args.format == "summary-tsv":
+        print(render_summary_tsv(summarize(rows)))
+    elif args.format == "summary-markdown":
+        print(render_summary_markdown(summarize(rows)))
+    elif args.format == "markdown":
         print(render_markdown(rows))
     else:
         print(render_tsv(rows))
