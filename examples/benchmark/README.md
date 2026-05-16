@@ -204,9 +204,28 @@ python examples/benchmark/prepare_csharp_query_enwiki_category_fixture.py \
 ```
 
 This writes a capped `category_parent.tsv` fixture from `subcat` rows using the
-same Rust parser. It intentionally stops at TSV fixture creation; a future
-optimization can write the parser output directly to LMDB and bypass the Python
-orchestrator.
+same Rust parser. Add `--sink-lmdb` to also write a reusable C# query LMDB
+relation artifact beside the TSV fixture:
+
+```bash
+python examples/benchmark/prepare_csharp_query_enwiki_category_fixture.py \
+  --scale 500k_cats \
+  --max-edges 500000 \
+  --dump data/enwiki/enwiki-latest-categorylinks.sql.gz \
+  --sink-lmdb
+```
+
+The LMDB sink reuses the capped row set and the existing C# `lmdb_ingest`
+consumer, so it preserves the helper's row cap and writes a provider-compatible
+`category_parent.lmdb.manifest.json`. The sink preserves the Wikipedia page IDs
+from the parser output; the backend benchmark implies `--preserve-numeric-ids`
+when `--use-scale-lmdb-artifact` is set so all compared backends use the same
+stable ID space. Existing LMDB artifacts are reused by default; pass
+`--refresh-lmdb` to rebuild them. A future Rust-native sink can still bypass the
+Python orchestrator entirely once that path is implemented. Pass
+`--use-scale-lmdb-artifact` to the backend benchmark when you want the `lmdb`
+mode to use this scale-local artifact instead of generating one under
+`--artifact-root`.
 
 Pass `--artifact-root <dir>` to keep backend artifacts across benchmark runs.
 Existing binary, delimited, LMDB, and mmap-array manifests are reused by

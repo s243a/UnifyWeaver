@@ -186,6 +186,8 @@ def run_scale(
     keep_temp: bool,
     artifact_root: Path | None,
     refresh_artifacts: bool,
+    use_scale_lmdb_artifact: bool,
+    preserve_numeric_ids: bool,
 ) -> list[BenchmarkRow]:
     scale_dir = BENCH_DIR / scale
     if not (scale_dir / "category_parent.tsv").exists():
@@ -220,6 +222,10 @@ def run_scale(
                 str((artifact_root / scale) if artifact_root is not None else temp_path),
                 "--refresh-artifacts",
                 "true" if refresh_artifacts else "false",
+                "--use-scale-lmdb-artifact",
+                "true" if use_scale_lmdb_artifact else "false",
+                "--preserve-numeric-ids",
+                "true" if preserve_numeric_ids else "false",
             ],
             cwd=temp_path,
             timeout=240,
@@ -498,6 +504,22 @@ def main(argv: list[str] | None = None) -> int:
         help="rebuild artifacts under --artifact-root instead of reusing existing manifests",
     )
     parser.add_argument(
+        "--use-scale-lmdb-artifact",
+        action="store_true",
+        help=(
+            "prefer data/benchmark/<scale>/category_parent.lmdb.manifest.json for the LMDB mode "
+            "when present; falls back to --artifact-root generation"
+        ),
+    )
+    parser.add_argument(
+        "--preserve-numeric-ids",
+        action="store_true",
+        help=(
+            "preserve numeric category_parent.tsv IDs instead of re-interning them densely; "
+            "implied by --use-scale-lmdb-artifact only when a scale-local LMDB manifest exists"
+        ),
+    )
+    parser.add_argument(
         "--prepare-missing-large-scales",
         action="store_true",
         help="generate supported SimpleWiki category-only fixtures when 50k_cats/100k_cats are requested",
@@ -601,6 +623,8 @@ def main(argv: list[str] | None = None) -> int:
                     args.keep_temp,
                     args.artifact_root,
                     args.refresh_artifacts,
+                    args.use_scale_lmdb_artifact,
+                    args.preserve_numeric_ids,
                 )
             )
 
@@ -694,6 +718,44 @@ static int Intern(Dictionary<string, int> ids, string value)
     id = ids.Count;
     ids[value] = id;
     return id;
+}
+
+static IReadOnlyList<(int Child, int Parent)> ReadEdges(string scaleDir, bool preserveNumericIds, out int distinctCategories)
+{
+    if (preserveNumericIds)
+    {
+        return ReadNumericEdges(scaleDir, out distinctCategories);
+    }
+
+    return ReadAndInternEdges(scaleDir, out distinctCategories);
+}
+
+static IReadOnlyList<(int Child, int Parent)> ReadNumericEdges(string scaleDir, out int distinctCategories)
+{
+    var ids = new HashSet<int>();
+    var rows = new List<(int Child, int Parent)>();
+    foreach (var line in File.ReadLines(Path.Combine(scaleDir, "category_parent.tsv")).Skip(1))
+    {
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            continue;
+        }
+
+        var tab = line.IndexOf('\t');
+        if (tab < 0)
+        {
+            throw new InvalidDataException($"category_parent.tsv row has no tab: {line}");
+        }
+
+        var child = int.Parse(line.Substring(0, tab), System.Globalization.CultureInfo.InvariantCulture);
+        var parent = int.Parse(line.Substring(tab + 1), System.Globalization.CultureInfo.InvariantCulture);
+        rows.Add((child, parent));
+        ids.Add(child);
+        ids.Add(parent);
+    }
+
+    distinctCategories = ids.Count;
+    return rows;
 }
 
 static IReadOnlyList<(int Child, int Parent)> ReadAndInternEdges(string scaleDir, out int distinctCategories)
@@ -795,6 +857,36 @@ static string ExistingOrBuild(string manifestPath, bool refreshArtifacts, Func<s
     }
 
     return build();
+}
+
+static string ResolveManifestEnvironmentPath(LmdbRelationArtifactManifest manifest, string manifestPath)
+{
+    return Path.IsPathRooted(manifest.EnvironmentPath)
+        ? manifest.EnvironmentPath
+        : Path.Combine(Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? ".", manifest.EnvironmentPath);
+}
+
+static string? ExistingScaleLmdbManifest(string scaleDir)
+{
+    var manifestPath = Path.Combine(scaleDir, "category_parent.lmdb.manifest.json");
+    if (!File.Exists(manifestPath))
+    {
+        return null;
+    }
+
+    var manifest = LmdbRelationArtifactReader.LoadManifest(manifestPath);
+    if (manifest.PredicateName != "category_parent" || manifest.Arity != 2)
+    {
+        throw new InvalidDataException($"Scale-local LMDB manifest describes {manifest.PredicateName}/{manifest.Arity}, not category_parent/2: {manifestPath}");
+    }
+
+    var environmentPath = ResolveManifestEnvironmentPath(manifest, manifestPath);
+    if (!Directory.Exists(environmentPath))
+    {
+        throw new DirectoryNotFoundException($"Scale-local LMDB manifest environment does not exist: {environmentPath}");
+    }
+
+    return manifestPath;
 }
 
 static string HashBuckets(IEnumerable<IndexedRelationBucket> buckets)
@@ -923,9 +1015,13 @@ var lookupKeyCount = Math.Max(1, ReadIntArg(args, "--lookup-keys", 64));
 var lookupRepetitions = Math.Max(1, ReadIntArg(args, "--lookup-repetitions", 5));
 var root = Path.GetFullPath(ReadArg(args, "--artifact-root", Directory.GetCurrentDirectory()));
 var refreshArtifacts = ReadBoolArg(args, "--refresh-artifacts", false);
+var useScaleLmdbArtifact = ReadBoolArg(args, "--use-scale-lmdb-artifact", false);
+var requestedPreserveNumericIds = ReadBoolArg(args, "--preserve-numeric-ids", false);
 Directory.CreateDirectory(root);
 var predicate = new PredicateId("category_parent", 2);
-var rows = ReadAndInternEdges(scaleDir, out var distinctCategories);
+var scaleLmdbManifest = (!refreshArtifacts && useScaleLmdbArtifact) ? ExistingScaleLmdbManifest(scaleDir) : null;
+var preserveNumericIds = requestedPreserveNumericIds || scaleLmdbManifest is not null;
+var rows = ReadEdges(scaleDir, preserveNumericIds, out var distinctCategories);
 var lookupKeys = rows.Select(row => row.Child)
     .Distinct()
     .OrderBy(value => value)
@@ -953,11 +1049,12 @@ var delimitedManifest = ExistingOrBuild(
     refreshArtifacts,
     () => DelimitedRelationArtifactBuilder.BuildFromDelimited(predicate, source, delimitedDir));
 var lmdbManifestPath = Path.Combine(root, "category_parent.lmdb.manifest.json");
-var lmdbManifest = ExistingOrBuild(
+var lmdbManifest = scaleLmdbManifest ?? ExistingOrBuild(
     lmdbManifestPath,
     refreshArtifacts,
     () => WriteLmdbArtifact(root, predicate, rows, inputPath));
-var lmdbDir = Path.Combine(root, "lmdb-category-parent");
+var lmdbMetadata = LmdbRelationArtifactReader.LoadManifest(lmdbManifest);
+var lmdbDir = ResolveManifestEnvironmentPath(lmdbMetadata, lmdbManifest);
 var mmapDir = Path.Combine(root, "mmap-array-artifact");
 var mmapManifestPath = Path.Combine(mmapDir, "category_parent_2.uwa.json");
 var mmapManifest = ExistingOrBuild(
