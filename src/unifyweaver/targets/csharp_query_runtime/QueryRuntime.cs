@@ -87,6 +87,16 @@ namespace UnifyWeaver.QueryRuntime
         ArtifactPrebuilt
     }
 
+    public enum RelationArtifactAccessShape
+    {
+        LookupColumn0,
+        LookupColumn1,
+        BucketColumn0,
+        BucketColumn1,
+        Scan,
+        Storage
+    }
+
     public enum ClosureRelationRetentionStrategy
     {
         Auto,
@@ -193,6 +203,63 @@ namespace UnifyWeaver.QueryRuntime
                 "shortest-path" => RelationSourceMode.Preload,
                 "weighted-shortest-path" => RelationSourceMode.Preload,
                 _ => RelationSourceMode.Preload,
+            };
+        }
+    }
+
+    public static class RelationArtifactAccessPolicy
+    {
+        public const string BinaryArtifactStorageKind = "binary_artifact";
+        public const string DelimitedArtifactStorageKind = "delimited_artifact";
+        public const string LmdbArtifactStorageKind = "lmdb_artifact";
+        public const string MmapArrayArtifactStorageKind = "mmap_array_artifact";
+
+        private const long LargePageRelationRowThreshold = 5_000_000L;
+
+        public static string ResolveEffectiveDistanceArtifactStorageKind(
+            string relationName,
+            long rowCount,
+            RelationArtifactAccessShape accessShape)
+        {
+            if (string.Equals(relationName, "article_category", StringComparison.Ordinal)
+                && rowCount >= LargePageRelationRowThreshold)
+            {
+                return accessShape switch
+                {
+                    RelationArtifactAccessShape.LookupColumn0 => LmdbArtifactStorageKind,
+                    RelationArtifactAccessShape.BucketColumn0 => DelimitedArtifactStorageKind,
+                    RelationArtifactAccessShape.LookupColumn1 => MmapArrayArtifactStorageKind,
+                    RelationArtifactAccessShape.BucketColumn1 => MmapArrayArtifactStorageKind,
+                    RelationArtifactAccessShape.Scan => MmapArrayArtifactStorageKind,
+                    RelationArtifactAccessShape.Storage => MmapArrayArtifactStorageKind,
+                    _ => throw new ArgumentOutOfRangeException(nameof(accessShape), accessShape, null)
+                };
+            }
+
+            if (string.Equals(relationName, "article_category", StringComparison.Ordinal)
+                || string.Equals(relationName, "category_parent", StringComparison.Ordinal))
+            {
+                return accessShape switch
+                {
+                    RelationArtifactAccessShape.LookupColumn0 => MmapArrayArtifactStorageKind,
+                    RelationArtifactAccessShape.LookupColumn1 => MmapArrayArtifactStorageKind,
+                    RelationArtifactAccessShape.BucketColumn0 => MmapArrayArtifactStorageKind,
+                    RelationArtifactAccessShape.BucketColumn1 => MmapArrayArtifactStorageKind,
+                    RelationArtifactAccessShape.Scan => MmapArrayArtifactStorageKind,
+                    RelationArtifactAccessShape.Storage => MmapArrayArtifactStorageKind,
+                    _ => throw new ArgumentOutOfRangeException(nameof(accessShape), accessShape, null)
+                };
+            }
+
+            return accessShape switch
+            {
+                RelationArtifactAccessShape.LookupColumn0 => BinaryArtifactStorageKind,
+                RelationArtifactAccessShape.LookupColumn1 => BinaryArtifactStorageKind,
+                RelationArtifactAccessShape.BucketColumn0 => BinaryArtifactStorageKind,
+                RelationArtifactAccessShape.BucketColumn1 => BinaryArtifactStorageKind,
+                RelationArtifactAccessShape.Scan => BinaryArtifactStorageKind,
+                RelationArtifactAccessShape.Storage => BinaryArtifactStorageKind,
+                _ => throw new ArgumentOutOfRangeException(nameof(accessShape), accessShape, null)
             };
         }
     }
