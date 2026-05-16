@@ -184,6 +184,8 @@ def run_scale(
     lookup_repetitions: int,
     run_index: int,
     keep_temp: bool,
+    artifact_root: Path | None,
+    refresh_artifacts: bool,
 ) -> list[BenchmarkRow]:
     scale_dir = BENCH_DIR / scale
     if not (scale_dir / "category_parent.tsv").exists():
@@ -214,6 +216,10 @@ def run_scale(
                 str(lookup_keys),
                 "--lookup-repetitions",
                 str(lookup_repetitions),
+                "--artifact-root",
+                str((artifact_root / scale) if artifact_root is not None else temp_path),
+                "--refresh-artifacts",
+                "true" if refresh_artifacts else "false",
             ],
             cwd=temp_path,
             timeout=240,
@@ -481,6 +487,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lookup-repetitions", type=int, default=5, help="lookup passes per mode")
     parser.add_argument("--repetitions", type=int, default=1, help="independent benchmark runs per scale")
     parser.add_argument(
+        "--artifact-root",
+        type=Path,
+        default=None,
+        help="persistent artifact directory; when set, per-scale artifacts are reused across runs",
+    )
+    parser.add_argument(
+        "--refresh-artifacts",
+        action="store_true",
+        help="rebuild artifacts under --artifact-root instead of reusing existing manifests",
+    )
+    parser.add_argument(
         "--prepare-missing-large-scales",
         action="store_true",
         help="generate supported SimpleWiki category-only fixtures when 50k_cats/100k_cats are requested",
@@ -575,7 +592,17 @@ def main(argv: list[str] | None = None) -> int:
     rows: list[BenchmarkRow] = []
     for scale in scales:
         for run_index in range(1, args.repetitions + 1):
-            rows.extend(run_scale(scale, args.lookup_keys, args.lookup_repetitions, run_index, args.keep_temp))
+            rows.extend(
+                run_scale(
+                    scale,
+                    args.lookup_keys,
+                    args.lookup_repetitions,
+                    run_index,
+                    args.keep_temp,
+                    args.artifact_root,
+                    args.refresh_artifacts,
+                )
+            )
 
     if args.format == "summary-tsv":
         print(render_summary_tsv(summarize(rows)))
@@ -612,6 +639,14 @@ static string ReadArg(string[] args, string name, string defaultValue)
 static int ReadIntArg(string[] args, string name, int defaultValue)
 {
     return int.TryParse(ReadArg(args, name, ""), out var parsed) ? parsed : defaultValue;
+}
+
+static bool ReadBoolArg(string[] args, string name, bool defaultValue)
+{
+    var raw = ReadArg(args, name, defaultValue ? "true" : "false");
+    return raw.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+        raw.Equals("1", StringComparison.OrdinalIgnoreCase) ||
+        raw.Equals("yes", StringComparison.OrdinalIgnoreCase);
 }
 
 static long DirectorySize(string path)
@@ -707,6 +742,10 @@ static string WriteLmdbArtifact(
     string sourcePath)
 {
     var envPath = Path.Combine(root, "lmdb-category-parent");
+    if (Directory.Exists(envPath))
+    {
+        Directory.Delete(envPath, recursive: true);
+    }
     Directory.CreateDirectory(envPath);
     var mapSize = Math.Max(256L * 1024L * 1024L, rows.Count * 256L);
     using (var env = new LightningEnvironment(envPath) { MaxDatabases = 4, MapSize = mapSize })
@@ -746,6 +785,16 @@ static string WriteLmdbArtifact(
     var manifestPath = Path.Combine(root, "category_parent.lmdb.manifest.json");
     File.WriteAllText(manifestPath, JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true }), Encoding.UTF8);
     return manifestPath;
+}
+
+static string ExistingOrBuild(string manifestPath, bool refreshArtifacts, Func<string> build)
+{
+    if (!refreshArtifacts && File.Exists(manifestPath))
+    {
+        return manifestPath;
+    }
+
+    return build();
 }
 
 static string HashBuckets(IEnumerable<IndexedRelationBucket> buckets)
@@ -872,7 +921,9 @@ var scale = ReadArg(args, "--scale", "dev");
 var scaleDir = ReadArg(args, "--scale-dir", "");
 var lookupKeyCount = Math.Max(1, ReadIntArg(args, "--lookup-keys", 64));
 var lookupRepetitions = Math.Max(1, ReadIntArg(args, "--lookup-repetitions", 5));
-var root = Directory.GetCurrentDirectory();
+var root = Path.GetFullPath(ReadArg(args, "--artifact-root", Directory.GetCurrentDirectory()));
+var refreshArtifacts = ReadBoolArg(args, "--refresh-artifacts", false);
+Directory.CreateDirectory(root);
 var predicate = new PredicateId("category_parent", 2);
 var rows = ReadAndInternEdges(scaleDir, out var distinctCategories);
 var lookupKeys = rows.Select(row => row.Child)
@@ -883,17 +934,36 @@ var lookupKeys = rows.Select(row => row.Child)
     .ToArray();
 
 var inputPath = Path.Combine(root, "category_parent_ids.tsv");
-WriteInput(inputPath, rows);
+if (refreshArtifacts || !File.Exists(inputPath))
+{
+    WriteInput(inputPath, rows);
+}
 var source = new DelimitedRelationSource(inputPath, '\t', 1, 2);
 
 var binaryDir = Path.Combine(root, "binary-artifact");
-var binaryManifest = BinaryRelationArtifactBuilder.BuildFromDelimited(predicate, source, binaryDir);
+var binaryManifestPath = Path.Combine(binaryDir, "category_parent_2.uwbr.json");
+var binaryManifest = ExistingOrBuild(
+    binaryManifestPath,
+    refreshArtifacts,
+    () => BinaryRelationArtifactBuilder.BuildFromDelimited(predicate, source, binaryDir));
 var delimitedDir = Path.Combine(root, "delimited-artifact");
-var delimitedManifest = DelimitedRelationArtifactBuilder.BuildFromDelimited(predicate, source, delimitedDir);
-var lmdbManifest = WriteLmdbArtifact(root, predicate, rows, inputPath);
+var delimitedManifestPath = Path.Combine(delimitedDir, "category_parent_2.uwdr.json");
+var delimitedManifest = ExistingOrBuild(
+    delimitedManifestPath,
+    refreshArtifacts,
+    () => DelimitedRelationArtifactBuilder.BuildFromDelimited(predicate, source, delimitedDir));
+var lmdbManifestPath = Path.Combine(root, "category_parent.lmdb.manifest.json");
+var lmdbManifest = ExistingOrBuild(
+    lmdbManifestPath,
+    refreshArtifacts,
+    () => WriteLmdbArtifact(root, predicate, rows, inputPath));
 var lmdbDir = Path.Combine(root, "lmdb-category-parent");
 var mmapDir = Path.Combine(root, "mmap-array-artifact");
-var mmapManifest = MmapArrayRelationArtifactBuilder.BuildFromDelimited(predicate, source, mmapDir);
+var mmapManifestPath = Path.Combine(mmapDir, "category_parent_2.uwa.json");
+var mmapManifest = ExistingOrBuild(
+    mmapManifestPath,
+    refreshArtifacts,
+    () => MmapArrayRelationArtifactBuilder.BuildFromDelimited(predicate, source, mmapDir));
 
 Console.WriteLine("scale\tmode\trows\tdistinct_categories\tlookup_keys\tartifact_bytes\topen_ms\tlookup_ms\tbucket_ms\tscan_ms\tretained_bytes\tscan_hash\tlookup_hash\tbucket_hash");
 BenchmarkProvider(

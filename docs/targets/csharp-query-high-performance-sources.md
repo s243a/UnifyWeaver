@@ -283,7 +283,10 @@ need manual override:
   `examples/benchmark/prepare_csharp_query_enwiki_category_fixture.py`; it
   writes capped TSV fixtures first. Direct Rust-parser-to-LMDB ingestion is a
   valid future optimization, but is intentionally not part of this first C#
-  benchmark fixture path.
+  benchmark fixture path. The C# backend benchmark now accepts a persistent
+  `--artifact-root` and reuses existing backend artifacts by default; use
+  `--refresh-artifacts` to rebuild, matching the Haskell benchmark's explicit
+  LMDB refresh convention.
   Haskell's LMDB cache modes remain a higher-level query-locality policy; this
   C# query benchmark intentionally isolates backend scan, lookup, and bucket
   access before adding cache-policy comparisons.
