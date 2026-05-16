@@ -20,6 +20,11 @@ type AtomPair struct {
 	Right string
 }
 
+type AtomFact2Source interface {
+	Scan() []AtomPair
+	LookupArg1(left string) []AtomPair
+}
+
 type WeightedEdgeTriple struct {
 	Left   string
 	Right  string
@@ -111,6 +116,7 @@ type WamContext struct {
 	ForeignResultModes        map[string]string
 	ForeignStringConfigs      map[string]map[string]string
 	ForeignUsizeConfigs       map[string]map[string]int
+	AtomFact2Sources          map[string]AtomFact2Source
 	IndexedAtomFactPairs      map[string][]AtomPair
 	IndexedWeightedEdgeTriples map[string][]WeightedEdgeTriple
 	AtomIntern                map[string]int
@@ -214,6 +220,7 @@ func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
 		ForeignResultModes:   make(map[string]string),
 		ForeignStringConfigs: make(map[string]map[string]string),
 		ForeignUsizeConfigs:  make(map[string]map[string]int),
+		AtomFact2Sources:     make(map[string]AtomFact2Source),
 		IndexedAtomFactPairs: make(map[string][]AtomPair),
 		IndexedWeightedEdgeTriples: make(map[string][]WeightedEdgeTriple),
 		AtomIntern:           make(map[string]int),

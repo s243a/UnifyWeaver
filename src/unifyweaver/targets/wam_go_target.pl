@@ -2270,6 +2270,15 @@ func (vm *WamState) registerForeignUsizeConfig(predKey string, key string, value
 
 func (vm *WamState) registerIndexedAtomFact2Pairs(predKey string, pairs []AtomPair) {
     vm.Ctx.IndexedAtomFactPairs[predKey] = pairs
+    vm.registerAtomFact2Source(predKey, newStaticAtomFact2Source(pairs))
+}
+
+func (vm *WamState) registerAtomFact2Source(predKey string, source AtomFact2Source) {
+    if source == nil {
+        return
+    }
+    vm.Ctx.AtomFact2Sources[predKey] = source
+    vm.Ctx.IndexedAtomFactPairs[predKey] = source.Scan()
 }
 
 func (vm *WamState) registerTsvAtomFact2(predKey string, path string) error {
@@ -2298,7 +2307,7 @@ func (vm *WamState) registerTsvAtomFact2(predKey string, path string) error {
         }
         pairs = append(pairs, AtomPair{Left: left, Right: right})
     }
-    vm.registerIndexedAtomFact2Pairs(predKey, pairs)
+    vm.registerAtomFact2Source(predKey, newStaticAtomFact2Source(pairs))
     return nil
 }
 
@@ -2336,6 +2345,34 @@ func parseForeignTupleLayout(layout string) int {
         return arity
     }
     return 0
+}
+
+type staticAtomFact2Source struct {
+    pairs []AtomPair
+    byLeft map[string][]AtomPair
+}
+
+func newStaticAtomFact2Source(pairs []AtomPair) *staticAtomFact2Source {
+    copied := append([]AtomPair(nil), pairs...)
+    byLeft := make(map[string][]AtomPair)
+    for _, pair := range copied {
+        byLeft[pair.Left] = append(byLeft[pair.Left], pair)
+    }
+    return &staticAtomFact2Source{pairs: copied, byLeft: byLeft}
+}
+
+func (source *staticAtomFact2Source) Scan() []AtomPair {
+    if source == nil {
+        return nil
+    }
+    return append([]AtomPair(nil), source.pairs...)
+}
+
+func (source *staticAtomFact2Source) LookupArg1(left string) []AtomPair {
+    if source == nil {
+        return nil
+    }
+    return append([]AtomPair(nil), source.byLeft[left]...)
 }
 
 func (vm *WamState) applyForeignResult(predKey string, resultRegs []int, result Value) bool {
@@ -2443,6 +2480,9 @@ func (vm *WamState) executeIndexedAtomFact2(predKey string) bool {
         return false
     }
     pairs := vm.Ctx.IndexedAtomFactPairs[predKey]
+    if source, ok := vm.Ctx.AtomFact2Sources[predKey]; ok {
+        pairs = source.LookupArg1(key)
+    }
     results := make([]Value, 0)
     for _, pair := range pairs {
         if pair.Left == key {
