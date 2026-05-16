@@ -3,6 +3,7 @@ package {{package_name}}
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
 	"sort"
 	"strings"
@@ -12,6 +13,7 @@ import (
 var (
 	_ = fmt.Sprintf
 	_ = os.ReadFile
+	_ = exec.Command
 	_ = runtime.GOMAXPROCS
 	_ = strings.Split
 	_ sync.Locker = (*sync.Mutex)(nil)

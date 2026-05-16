@@ -657,6 +657,10 @@ go_foreign_setup_line(register_tsv_atom_fact2(Pred/Arity, Path), Line) :-
     escape_go_string(Path, EscapedPath),
     format(atom(Line), '    if err := vm.registerTsvAtomFact2("~w/~w", "~w"); err != nil { panic(err) }',
         [Pred, Arity, EscapedPath]).
+go_foreign_setup_line(register_lmdb_atom_fact2(Pred/Arity, ArtifactDir), Line) :-
+    escape_go_string(ArtifactDir, EscapedArtifactDir),
+    format(atom(Line), '    if err := vm.registerLmdbAtomFact2("~w/~w", "~w"); err != nil { panic(err) }',
+        [Pred, Arity, EscapedArtifactDir]).
 go_foreign_setup_line(register_foreign_string_config(Pred/Arity, Key, ValuePred/ValueArity), Line) :-
     format(atom(Line), '    vm.registerForeignStringConfig("~w/~w", "~w", "~w/~w")',
         [Pred, Arity, Key, ValuePred, ValueArity]).
@@ -2311,6 +2315,12 @@ func (vm *WamState) registerTsvAtomFact2(predKey string, path string) error {
     return nil
 }
 
+func (vm *WamState) registerLmdbAtomFact2(predKey string, artifactDir string) error {
+    source := newLmdbAtomFact2Source(predKey, artifactDir)
+    vm.Ctx.AtomFact2Sources[predKey] = source
+    return nil
+}
+
 func (vm *WamState) registerIndexedWeightedEdgeTriples(predKey string, triples []WeightedEdgeTriple) {
     vm.Ctx.IndexedWeightedEdgeTriples[predKey] = triples
 }
@@ -2373,6 +2383,67 @@ func (source *staticAtomFact2Source) LookupArg1(left string) []AtomPair {
         return nil
     }
     return append([]AtomPair(nil), source.byLeft[left]...)
+}
+
+type lmdbAtomFact2Source struct {
+    predKey string
+    artifactDir string
+    helperBin string
+}
+
+func newLmdbAtomFact2Source(predKey string, artifactDir string) *lmdbAtomFact2Source {
+    helperBin := os.Getenv("UW_LMDB_RELATION_ARTIFACT_BIN")
+    if helperBin == "" {
+        helperBin = "lmdb_relation_artifact"
+    }
+    return &lmdbAtomFact2Source{predKey: predKey, artifactDir: artifactDir, helperBin: helperBin}
+}
+
+func (source *lmdbAtomFact2Source) Scan() []AtomPair {
+    if source == nil {
+        return nil
+    }
+    return source.run("scan", source.artifactDir, source.predKey)
+}
+
+func (source *lmdbAtomFact2Source) LookupArg1(left string) []AtomPair {
+    if source == nil {
+        return nil
+    }
+    return source.run("get", source.artifactDir, source.predKey, left)
+}
+
+func (source *lmdbAtomFact2Source) run(args ...string) []AtomPair {
+    if source.helperBin == "" {
+        return nil
+    }
+    output, err := exec.Command(source.helperBin, args...).Output()
+    if err != nil {
+        return nil
+    }
+    return parseAtomFact2Rows(string(output))
+}
+
+func parseAtomFact2Rows(output string) []AtomPair {
+    lines := strings.Split(output, "\\n")
+    pairs := make([]AtomPair, 0, len(lines))
+    for _, line := range lines {
+        line = strings.TrimSpace(line)
+        if line == "" {
+            continue
+        }
+        cols := strings.Split(line, "\\t")
+        if len(cols) < 2 {
+            continue
+        }
+        left := strings.TrimSpace(cols[0])
+        right := strings.TrimSpace(cols[1])
+        if left == "" || right == "" {
+            continue
+        }
+        pairs = append(pairs, AtomPair{Left: left, Right: right})
+    }
+    return pairs
 }
 
 func (vm *WamState) applyForeignResult(predKey string, resultRegs []int, result Value) bool {

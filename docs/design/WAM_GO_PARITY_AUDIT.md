@@ -9,7 +9,7 @@ current cross-target builtin/runtime baseline.
 | Area | Go support | Rust/Haskell baseline | Status |
 | --- | --- | --- | --- |
 | Choice points and backtracking | `try_me_else`, `retry_me_else`, `trust_me`, indexed alternatives, foreign stream retries, `member/2` builtin retries | Choice point stack with normal, builtin, and fact-stream resume states | Partial |
-| Direct fact dispatch | `call_indexed_atom_fact2`, `AtomFact2Source` registry, TSV-backed atom fact loading, foreign/native kernel registration, indexed atom/weighted fact tables | `call_indexed_atom_fact2`, inline/external fact stream paths | Partial: no LMDB FactSource adaptor |
+| Direct fact dispatch | `call_indexed_atom_fact2`, `AtomFact2Source` registry, TSV-backed and LMDB-artifact atom fact loading, foreign/native kernel registration, indexed atom/weighted fact tables | `call_indexed_atom_fact2`, inline/external fact stream paths | Present for current external atom fact-source baseline |
 | Aggregates | `begin_aggregate`, `end_aggregate`; `collect`, `bag`, `bagof`, `count`, `sum`, `min`, `max`, `set`, `setof` | `findall/3`, `aggregate_all/3` count/sum/min/max/set families | Present for current aggregate baseline |
 | Structural builtins | `member/2`, `length/2`, `append/3` | `member/2`, `length/2`; Rust `append/3` is explicitly unimplemented | Present for current baseline structural checks |
 | Type builtins | `var/1`, `nonvar/1`, `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `atomic/1`, `is_list/1` | Includes `is_list/1` in the current baseline | Present for current baseline type checks |
@@ -47,13 +47,18 @@ current cross-target builtin/runtime baseline.
 - Inline and TSV atom fact pairs now register through a Go `AtomFact2Source`
   interface with `Scan` and `LookupArg1`, matching the Haskell FactSource shape
   while preserving the existing indexed pair table used by native kernels.
+- LMDB relation artifacts can now be registered as Go `AtomFact2Source`
+  adapters via the existing `lmdb_relation_artifact` helper command. The helper
+  path defaults to `lmdb_relation_artifact` and can be overridden with
+  `UW_LMDB_RELATION_ARTIFACT_BIN`, so tests and deployments can provide the
+  concrete LMDB reader without adding a generated-project Go dependency.
 
 ## Recommended Follow-Up Order
 
-1. Add a concrete LMDB-backed `AtomFact2Source` implementation if Go should
-   close the remaining direct-fact parity gap.
-2. Continue broadening generated Go WAM E2E coverage for control behavior that
+1. Continue broadening generated Go WAM E2E coverage for control behavior that
    remains marked partial.
+2. If Go should avoid a helper process for LMDB, add an optional native Go
+   LMDB build-tag path once a dependency policy is settled.
 
 ## Verification Commands
 
