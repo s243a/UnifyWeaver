@@ -647,6 +647,26 @@ func rawListHeadTail(list *List) (Value, Value, bool) {
 	return list.Elements[0], &List{Elements: list.Elements[1:]}, true
 }
 
+func (vm *WamState) heapConsAfterUnbound(v *Unbound) (Value, bool) {
+	for i := 0; i < vm.HeapLen; i++ {
+		cell := vm.Heap[i]
+		if cell == v && i+1 < vm.HeapLen {
+			next := vm.deref(vm.Heap[i+1])
+			switch t := next.(type) {
+			case *Compound:
+				if isConsFunctor(t.Functor) && len(t.Args) == 2 {
+					return next, true
+				}
+			case *Structure:
+				if isConsFunctor(t.Functor) && len(t.Args) == 2 {
+					return next, true
+				}
+			}
+		}
+	}
+	return nil, false
+}
+
 func (vm *WamState) listHeadTail(list *List) (Value, Value, bool) {
 	switch len(list.Elements) {
 	case 0:
@@ -660,6 +680,11 @@ func (vm *WamState) listHeadTail(list *List) (Value, Value, bool) {
 		}
 		if isEmptyListValue(tail) {
 			return list.Elements[0], emptyListAtom, true
+		}
+		if u, ok := tail.(*Unbound); ok {
+			if next, ok := vm.heapConsAfterUnbound(u); ok {
+				return list.Elements[0], next, true
+			}
 		}
 		switch t := tail.(type) {
 		case *Compound:
@@ -687,10 +712,22 @@ func (vm *WamState) valueListHeadTail(v Value) (Value, Value, bool) {
 		return vm.listHeadTail(t)
 	case *Compound:
 		if isConsFunctor(t.Functor) && len(t.Args) == 2 {
+			tail := vm.deref(t.Args[1])
+			if u, ok := tail.(*Unbound); ok {
+				if next, ok := vm.heapConsAfterUnbound(u); ok {
+					return t.Args[0], next, true
+				}
+			}
 			return t.Args[0], t.Args[1], true
 		}
 	case *Structure:
 		if isConsFunctor(t.Functor) && len(t.Args) == 2 {
+			tail := vm.deref(t.Args[1])
+			if u, ok := tail.(*Unbound); ok {
+				if next, ok := vm.heapConsAfterUnbound(u); ok {
+					return t.Args[0], next, true
+				}
+			}
 			return t.Args[0], t.Args[1], true
 		}
 	}
@@ -1151,6 +1188,12 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return vm.Unify(arg1, &List{Elements: reversed})
 		}
 		return false
+	case "last/2":
+		items, ok := vm.listToSlice(arg1)
+		if !ok || len(items) == 0 {
+			return false
+		}
+		return vm.Unify(arg2, items[len(items)-1])
 	case "functor/3":
 		t := vm.deref(arg1)
 		if isUnbound(t) {
@@ -1345,6 +1388,15 @@ func (vm *WamState) Unify(v1, v2 Value) bool {
 
 	if valueEquals(v1, v2) {
 		return true
+	}
+
+	if isEmptyListValue(v1) || isEmptyListValue(v2) {
+		return isEmptyListValue(v1) && isEmptyListValue(v2)
+	}
+	h1, t1, ok1 := vm.valueListHeadTail(v1)
+	h2, t2, ok2 := vm.valueListHeadTail(v2)
+	if ok1 || ok2 {
+		return ok1 && ok2 && vm.Unify(h1, h2) && vm.Unify(t1, t2)
 	}
 
 	f1, args1 := decompose(v1)
