@@ -1454,6 +1454,12 @@ is_builtin_pred(nl, 0).
 is_builtin_pred(format, 1).  % I/O — formatted output, ~-directives.
 is_builtin_pred(format, 2).
 is_builtin_pred(format, 3).
+is_builtin_pred(atom_codes, 2).   % atom ↔ list of integer codes.
+is_builtin_pred(atom_chars, 2).   % atom ↔ list of single-char atoms.
+is_builtin_pred(number_codes, 2). % number ↔ list of integer codes.
+is_builtin_pred(atom_concat, 3).  % (+, +, ?) — concatenation.
+is_builtin_pred(atom_length, 2).  % atom → length in chars.
+is_builtin_pred(char_code, 2).    % char-atom ↔ integer code.
 is_builtin_pred(=, 2).       % unification: bind / structurally unify two terms.
 is_builtin_pred(is_list, 1).
                              % Without this entry, X = Y in a body goal

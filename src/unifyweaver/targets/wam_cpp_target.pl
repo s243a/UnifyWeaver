@@ -2597,6 +2597,156 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         pc += 1; return true;
     }
 
+    // ---- atom_codes/2, atom_chars/2, number_codes/2 ----------------
+    // Bidirectional decomposition. Forward (A1 bound): split A1 into
+    // a list of integer codes (codes/) or single-char atoms (chars/),
+    // unify with A2. Reverse (A2 bound): walk A2 list, reassemble
+    // the string, unify with A1. number_codes/2 additionally parses
+    // the reassembled string as an integer or float.
+    if (op == "atom_codes/2" || op == "atom_chars/2"
+        || op == "number_codes/2") {
+        bool is_codes = (op != "atom_chars/2");   // codes vs single-char atoms
+        bool is_number = (op == "number_codes/2");
+        Value a1v = deref(*get_cell("A1"));
+        // Forward path: A1 bound → render to string, build list.
+        if (!a1v.is_unbound()) {
+            std::string buf;
+            if (a1v.tag == Value::Tag::Atom) {
+                if (is_number) return false; // number_codes needs a number
+                buf = a1v.s;
+            } else if (a1v.tag == Value::Tag::Integer) {
+                buf = std::to_string(a1v.i);
+            } else if (a1v.tag == Value::Tag::Float) {
+                buf = render(a1v);
+            } else {
+                return false;
+            }
+            CellPtr list = std::make_shared<Cell>(Value::Atom("[]"));
+            for (auto it = buf.rbegin(); it != buf.rend(); ++it) {
+                CellPtr head;
+                if (is_codes) {
+                    head = std::make_shared<Cell>(Value::Integer(
+                        static_cast<std::int64_t>(
+                            static_cast<unsigned char>(*it))));
+                } else {
+                    head = std::make_shared<Cell>(
+                        Value::Atom(std::string(1, *it)));
+                }
+                std::vector<CellPtr> cons_args;
+                cons_args.push_back(head);
+                cons_args.push_back(list);
+                list = std::make_shared<Cell>(
+                    Value::Compound("[|]/2", std::move(cons_args)));
+            }
+            CellPtr tgt = get_cell("A2");
+            if (tgt->is_unbound()) { bind_cell(tgt, *list); pc += 1; return true; }
+            if (!unify_cells(tgt, list)) return false;
+            pc += 1; return true;
+        }
+        // Reverse path: A2 must be a ground list. Read each cell,
+        // accumulate, then build the atom / number and unify with A1.
+        std::string buf;
+        CellPtr lc = get_cell("A2");
+        for (;;) {
+            Value lv = deref(*lc);
+            if (lv.tag == Value::Tag::Atom && lv.s == "[]") break;
+            if (lv.tag != Value::Tag::Compound || lv.s != "[|]/2"
+                || lv.args.size() != 2) return false;
+            Value hv = deref(*lv.args[0]);
+            if (is_codes) {
+                if (hv.tag != Value::Tag::Integer) return false;
+                buf.push_back(static_cast<char>(
+                    static_cast<unsigned char>(hv.i)));
+            } else {
+                if (hv.tag != Value::Tag::Atom || hv.s.size() != 1)
+                    return false;
+                buf.push_back(hv.s[0]);
+            }
+            lc = lv.args[1];
+        }
+        Value result;
+        if (is_number) {
+            // Try integer first, then float. Empty / malformed → fail.
+            if (buf.empty()) return false;
+            try {
+                std::size_t pos = 0;
+                std::int64_t i = std::stoll(buf, &pos);
+                if (pos == buf.size()) {
+                    result = Value::Integer(i);
+                } else {
+                    double d = std::stod(buf, &pos);
+                    if (pos != buf.size()) return false;
+                    result = Value::Float(d);
+                }
+            } catch (...) { return false; }
+        } else {
+            result = Value::Atom(buf);
+        }
+        CellPtr tgt = get_cell("A1");
+        if (tgt->is_unbound()) { bind_cell(tgt, result); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(result))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- atom_concat/3 ----------------------------------------------
+    // atom_concat(+A1, +A2, ?A3) — concatenate the renderings of A1
+    // and A2 into A3. The (-, -, +) split mode is nondeterministic
+    // and not supported here; for that, use sub_atom (planned).
+    if (op == "atom_concat/3") {
+        Value a1 = deref(*get_cell("A1"));
+        Value a2 = deref(*get_cell("A2"));
+        if (a1.is_unbound() || a2.is_unbound()) return false;
+        std::string s1 = (a1.tag == Value::Tag::Atom) ? a1.s : render(a1);
+        std::string s2 = (a2.tag == Value::Tag::Atom) ? a2.s : render(a2);
+        Value result = Value::Atom(s1 + s2);
+        CellPtr tgt = get_cell("A3");
+        if (tgt->is_unbound()) { bind_cell(tgt, result); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(result))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- atom_length/2 ----------------------------------------------
+    if (op == "atom_length/2") {
+        Value a = deref(*get_cell("A1"));
+        if (a.is_unbound()) return false;
+        std::string s;
+        if (a.tag == Value::Tag::Atom) s = a.s;
+        else if (a.tag == Value::Tag::Integer) s = std::to_string(a.i);
+        else return false;
+        Value result = Value::Integer(static_cast<std::int64_t>(s.size()));
+        CellPtr tgt = get_cell("A2");
+        if (tgt->is_unbound()) { bind_cell(tgt, result); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(result))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- char_code/2 ------------------------------------------------
+    // Bidirectional. (+Char, ?Code) → unify Code with the integer code
+    // of single-char atom Char. (?Char, +Code) → build the single-char
+    // atom for Code and unify with Char.
+    if (op == "char_code/2") {
+        Value cv = deref(*get_cell("A1"));
+        Value iv = deref(*get_cell("A2"));
+        if (cv.tag == Value::Tag::Atom && cv.s.size() == 1) {
+            Value code = Value::Integer(
+                static_cast<std::int64_t>(
+                    static_cast<unsigned char>(cv.s[0])));
+            CellPtr tgt = get_cell("A2");
+            if (tgt->is_unbound()) { bind_cell(tgt, code); pc += 1; return true; }
+            if (!unify_cells(tgt, std::make_shared<Cell>(code))) return false;
+            pc += 1; return true;
+        }
+        if (iv.tag == Value::Tag::Integer && iv.i >= 0 && iv.i <= 255) {
+            Value ch = Value::Atom(std::string(
+                1, static_cast<char>(static_cast<unsigned char>(iv.i))));
+            CellPtr tgt = get_cell("A1");
+            if (tgt->is_unbound()) { bind_cell(tgt, ch); pc += 1; return true; }
+            if (!unify_cells(tgt, std::make_shared<Cell>(ch))) return false;
+            pc += 1; return true;
+        }
+        return false;
+    }
+
     // ---- functor/3 -------------------------------------------------
     if (op == "functor/3") {
         CellPtr t = get_cell("A1");
