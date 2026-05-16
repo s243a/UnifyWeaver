@@ -421,8 +421,7 @@ lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, Code, SetupLine) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     format(atom(Key), '~w/~w', [Pred, Arity]),
     wam_c_symbol_name(Pred, Arity, Symbol),
-    maplist(wam_c_lowered_fact_row(Arity), Rows, RowCodes),
-    atomic_list_concat(RowCodes, '\n', BodyCode),
+    wam_c_lowered_fact_dispatch(Arity, Rows, BodyCode),
     format(atom(Code),
 'static bool ~w(WamState *state, const char *pred, int arity) {
     (void)pred;
@@ -875,37 +874,181 @@ wam_c_symbol_char(Char, Char) :-
 wam_c_symbol_char('_', '_') :- !.
 wam_c_symbol_char(_, '_').
 
+wam_c_lowered_fact_dispatch(0, Rows, Code) :-
+    !,
+    maplist(wam_c_lowered_fact_row(0), Rows, RowCodes),
+    atomic_list_concat(RowCodes, '\n', RowCode),
+    format(atom(Code), '~w', [RowCode]).
+wam_c_lowered_fact_dispatch(Arity, Rows, Code) :-
+    Arity > 0,
+    maplist(wam_c_lowered_fact_row(Arity), Rows, FallbackRowCodes),
+    atomic_list_concat(FallbackRowCodes, '\n', FallbackCode),
+    lowered_fact_first_arg_dispatch(Rows, DispatchCode),
+    format(atom(Code),
+'    WamValue *cells[~w];
+    for (int i = 0; i < ~w; i++) cells[i] = wam_deref_ptr(state, &state->A[i]);
+~w
+~w',
+           [Arity, Arity, DispatchCode, FallbackCode]).
+
+lowered_fact_first_arg_dispatch(Rows, Code) :-
+    findall(First, member([First|_], Rows), FirstValues0),
+    sort(FirstValues0, FirstValues),
+    length(FirstValues, FirstValueCount),
+    lowered_fact_bucket_count(FirstValueCount, BucketCount),
+    findall(CaseCode,
+            (   lowered_fact_bucket_for_values(FirstValues, BucketCount, Bucket),
+                include(first_arg_in_bucket(BucketCount, Bucket), FirstValues, BucketValues),
+                lowered_fact_bucket_case(BucketCount, Bucket, BucketValues, Rows, CaseCode)
+            ),
+            CaseCodes),
+    atomic_list_concat(CaseCodes, '\n', CasesCode),
+    Mask is BucketCount - 1,
+    format(atom(Code),
+'    if (!val_is_unbound(*cells[0])) {
+        unsigned int bucket = 0;
+        if (cells[0]->tag == VAL_ATOM) {
+            bucket = wam_hash_string(cells[0]->data.atom) & ~w;
+        } else if (cells[0]->tag == VAL_INT) {
+            bucket = ((unsigned int)cells[0]->data.integer * 2654435761u) & ~w;
+        } else {
+            return false;
+        }
+        switch (bucket) {
+~w
+        default:
+            return false;
+        }
+    }',
+           [Mask, Mask, CasesCode]).
+
+lowered_fact_bucket_count(FirstValueCount, BucketCount) :-
+    Needed is max(8, FirstValueCount * 2),
+    lowered_fact_bucket_count_(1, Needed, BucketCount).
+
+lowered_fact_bucket_count_(Current, Needed, Current) :-
+    Current >= Needed,
+    !.
+lowered_fact_bucket_count_(Current, Needed, BucketCount) :-
+    Next is Current * 2,
+    lowered_fact_bucket_count_(Next, Needed, BucketCount).
+
+lowered_fact_bucket_for_values(FirstValues, BucketCount, Bucket) :-
+    findall(B, (member(Value, FirstValues), lowered_fact_first_arg_bucket(Value, BucketCount, B)), Buckets0),
+    sort(Buckets0, Buckets),
+    member(Bucket, Buckets).
+
+first_arg_in_bucket(BucketCount, Bucket, Value) :-
+    lowered_fact_first_arg_bucket(Value, BucketCount, Bucket).
+
+lowered_fact_bucket_case(_BucketCount, Bucket, BucketValues, Rows, Code) :-
+    findall(GroupCode,
+            (   member(First, BucketValues),
+                include(row_first_arg_equals(First), Rows, GroupRows),
+                lowered_fact_first_arg_group(First, GroupRows, GroupCode)
+            ),
+            GroupCodes),
+    atomic_list_concat(GroupCodes, '\n', GroupsCode),
+    format(atom(Code),
+'        case ~w:
+~w
+            return false;',
+           [Bucket, GroupsCode]).
+
+lowered_fact_first_arg_bucket(Value, BucketCount, Bucket) :-
+    lowered_fact_first_arg_hash(Value, Hash),
+    Mask is BucketCount - 1,
+    Bucket is Hash /\ Mask.
+
+lowered_fact_first_arg_hash(Value, Hash) :-
+    atom(Value),
+    !,
+    atom_codes(Value, Codes),
+    foldl(wam_c_lowered_hash_code, Codes, 5381, Hash).
+lowered_fact_first_arg_hash(Value, Hash) :-
+    integer(Value),
+    Hash is (Value * 2654435761) /\ 0xffffffff.
+
+wam_c_lowered_hash_code(Code, Acc, Hash) :-
+    Hash is (((Acc << 5) + Acc) xor Code) /\ 0xffffffff.
+
+row_first_arg_equals(First, [First|_]).
+
+lowered_fact_first_arg_group(First, Rows, Code) :-
+    c_value_literal(First, FirstLit),
+    maplist(wam_c_lowered_fact_indexed_row, Rows, RowCodes),
+    atomic_list_concat(RowCodes, '\n', RowCode),
+    format(atom(Code),
+'        if (val_equal(*cells[0], ~w)) {
+~w
+            return false;
+        }',
+           [FirstLit, RowCode]).
+
+wam_c_lowered_fact_indexed_row(Args, Code) :-
+    wam_c_lowered_fact_row_body(Args, BodyCode),
+    format(atom(Code),
+'            {
+~w
+            }',
+           [BodyCode]).
+
 wam_c_lowered_fact_row(Arity, Args, Code) :-
+    Last is Arity - 1,
+    findall(DerefLine,
+            (   between(0, Last, I),
+                format(atom(DerefLine),
+                       '        WamValue *cell_~w = wam_deref_ptr(state, &state->A[~w]);',
+                       [I, I])
+            ),
+            DerefLines),
+    atomic_list_concat(DerefLines, '\n', DerefCode),
+    wam_c_lowered_fact_row_body_with_cell_prefix('cell_', Args, BodyCode),
+    format(atom(Code),
+'    {
+~w
+~w
+    }',
+           [DerefCode, BodyCode]).
+
+wam_c_lowered_fact_row_body(Args, Code) :-
+    wam_c_lowered_fact_row_body_with_cell_prefix('cells', Args, Code).
+
+wam_c_lowered_fact_row_body_with_cell_prefix(CellPrefix, Args, Code) :-
     findall(MatchLine,
             (   nth0(I, Args, Arg),
                 c_value_literal(Arg, ValLit),
+                lowered_fact_cell_expr(CellPrefix, I, CellExpr),
                 format(atom(MatchLine),
-                       '    if (!val_is_unbound(*cells[~w]) && !val_equal(*cells[~w], ~w)) match = false;',
-                       [I, I, ValLit])
+                       '        if (!val_is_unbound(*~w) && !val_equal(*~w, ~w)) match = false;',
+                       [CellExpr, CellExpr, ValLit])
             ),
             MatchLines),
     findall(BindLine,
             (   nth0(I, Args, Arg),
                 c_value_literal(Arg, ValLit),
+                lowered_fact_cell_expr(CellPrefix, I, CellExpr),
                 format(atom(BindLine),
-                       '        if (val_is_unbound(*cells[~w])) { trail_binding(state, cells[~w]); *cells[~w] = ~w; }',
-                       [I, I, I, ValLit])
+                       '            if (val_is_unbound(*~w)) { trail_binding(state, ~w); *~w = ~w; }',
+                       [CellExpr, CellExpr, CellExpr, ValLit])
             ),
             BindLines),
     atomic_list_concat(MatchLines, '\n', MatchCode),
     atomic_list_concat(BindLines, '\n', BindCode),
     format(atom(Code),
-'    {
-        WamValue *cells[~w];
-        for (int i = 0; i < ~w; i++) cells[i] = wam_deref_ptr(state, &state->A[i]);
-        bool match = true;
+'        bool match = true;
 ~w
         if (match) {
 ~w
             return true;
-        }
-    }',
-           [Arity, Arity, MatchCode, BindCode]).
+        }',
+           [MatchCode, BindCode]).
+
+lowered_fact_cell_expr('cell_', I, CellExpr) :-
+    !,
+    format(atom(CellExpr), 'cell_~w', [I]).
+lowered_fact_cell_expr(cells, I, CellExpr) :-
+    format(atom(CellExpr), 'cells[~w]', [I]).
 
 % ============================================================================
 % PHASE 2: WAM instructions -> C Struct Literals
