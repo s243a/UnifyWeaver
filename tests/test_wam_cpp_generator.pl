@@ -1351,6 +1351,70 @@ user:wam_cpp_test_downcase_atom :-
     downcase_atom('WORLD', R),
     R = world.
 
+% numlist/3, sort/2, msort/2, select/3 — common list utilities.
+% numlist/sort/msort are direct builtins (deterministic). select/3
+% is helper-injected (nondet via try_me_else/trust_me) so
+% findall/select enumerates every (Elem, Rest) pair.
+:- dynamic user:wam_cpp_test_numlist/0.
+:- dynamic user:wam_cpp_test_numlist_empty/0.
+:- dynamic user:wam_cpp_test_numlist_single/0.
+:- dynamic user:wam_cpp_test_sort/0.
+:- dynamic user:wam_cpp_test_sort_mixed/0.
+:- dynamic user:wam_cpp_test_sort_empty/0.
+:- dynamic user:wam_cpp_test_msort/0.
+:- dynamic user:wam_cpp_test_select_bound/0.
+:- dynamic user:wam_cpp_test_select_all/0.
+:- dynamic user:wam_cpp_test_select_missing/0.
+:- dynamic user:wam_cpp_test_numlist_then_sort/0.
+
+user:wam_cpp_test_numlist :-
+    numlist(1, 5, L),
+    L = [1, 2, 3, 4, 5].
+
+user:wam_cpp_test_numlist_empty :-
+    numlist(5, 3, L),
+    L = [].
+
+user:wam_cpp_test_numlist_single :-
+    numlist(7, 7, L),
+    L = [7].
+
+user:wam_cpp_test_sort :-
+    sort([3, 1, 2, 1, 3], L),
+    L = [1, 2, 3].
+
+% sort across categories — exercises standard_order_cmp.
+user:wam_cpp_test_sort_mixed :-
+    sort([foo, 1, bar, 2], L),
+    L = [1, 2, bar, foo].
+
+user:wam_cpp_test_sort_empty :-
+    sort([], L),
+    L = [].
+
+% msort keeps duplicates and is stable.
+user:wam_cpp_test_msort :-
+    msort([3, 1, 2, 1, 3], L),
+    L = [1, 1, 2, 3, 3].
+
+user:wam_cpp_test_select_bound :-
+    select(b, [a, b, c], R),
+    R = [a, c].
+
+% select/3 nondet via findall — every (Elem, Rest) pair surfaced.
+user:wam_cpp_test_select_all :-
+    findall(X-R, select(X, [a, b, c], R), L),
+    L = [a-[b,c], b-[a,c], c-[a,b]].
+
+user:wam_cpp_test_select_missing :-
+    \+ select(z, [a, b, c], _).
+
+% Composition guard: numlist builds the list, sort dedups it.
+user:wam_cpp_test_numlist_then_sort :-
+    numlist(1, 4, L),
+    sort([3, 2, 1, 4, 2 | L], S),
+    S = [1, 2, 3, 4].
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -4805,6 +4869,139 @@ test(cpp_e2e_downcase_atom, [condition(cpp_compiler_available)]) :-
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_downcase_atom/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% numlist/3, sort/2, msort/2, select/3 — list utilities.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_numlist, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_numlist', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_numlist/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_numlist/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_numlist_empty, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_numlist_empty', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_numlist_empty/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_numlist_empty/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_numlist_single, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_numlist_single', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_numlist_single/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_numlist_single/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_sort, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_sort', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_sort/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_sort/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_sort_mixed, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_sort_mixed', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_sort_mixed/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_sort_mixed/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_sort_empty, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_sort_empty', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_sort_empty/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_sort_empty/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_msort, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_msort', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_msort/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_msort/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_select_bound, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_select_bound', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_select_bound/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_select_bound/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_select_all, [condition(cpp_compiler_available)]) :-
+    % select/3 nondet — findall enumerates every (Elem, Rest) pair.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_select_all', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_select_all/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_select_all/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_select_missing, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_select_missing', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_select_missing/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_select_missing/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_numlist_then_sort,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_nlsort', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_numlist_then_sort/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_numlist_then_sort/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

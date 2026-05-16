@@ -1479,6 +1479,10 @@ is_builtin_pred(compare, 3).      % standard order: -1 / 0 / +1 as atom.
 is_builtin_pred(char_type, 2).    % char classification + case conv.
 is_builtin_pred(upcase_atom, 2).  % whole-atom case conversion: upper.
 is_builtin_pred(downcase_atom, 2).% whole-atom case conversion: lower.
+is_builtin_pred(numlist, 3).      % integer range generator: [Lo..Hi].
+is_builtin_pred(sort, 2).         % stable sort + dedup (std order).
+is_builtin_pred(msort, 2).        % stable sort, NO dedup (std order).
+is_builtin_pred(select, 3).       % nondet list element selection.
 % Note: sub_atom/5 is nondeterministic; like findall/bagof/setof it
 % goes through the Call/Execute dispatch path (not is_builtin_pred)
 % so dispatch_sub_atom can manage its own CP machinery.

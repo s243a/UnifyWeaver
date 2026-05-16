@@ -793,6 +793,32 @@ helper_predicate_items(Items) :-
         put_value("X3", "A2"),
         deallocate,
         execute("member/2"),
+        % --- select/3 ----------------------------------------------------
+        % select(X, [X|T], T).
+        % select(X, [Y|T], [Y|R]) :- select(X, T, R).
+        label("select/3"),
+        try_me_else("L_cpp_select_3_2"),
+        get_variable("X1", "A1"),
+        get_list("A2"),
+        unify_value("X1"),
+        unify_variable("X2"),
+        get_value("X2", "A3"),
+        proceed,
+        label("L_cpp_select_3_2"),
+        trust_me,
+        allocate,
+        get_variable("Y1", "A1"),
+        get_list("A2"),
+        unify_variable("X3"),
+        unify_variable("Y2"),
+        get_list("A3"),
+        unify_value("X3"),
+        unify_variable("Y3"),
+        put_value("Y1", "A1"),
+        put_value("Y2", "A2"),
+        put_value("Y3", "A3"),
+        deallocate,
+        execute("select/3"),
         % --- length/2 ----------------------------------------------------
         % length([], 0).
         % length([_|T], N) :- length(T, M), N is M + 1.
@@ -3212,6 +3238,76 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         if (!unify_cells(tgt, std::make_shared<Cell>(ov))) return false;
         pc += 1; return true;
     }
+    // ---- numlist/3 --------------------------------------------------
+    // numlist(+Low, +High, -List) — generate [Low, Low+1, ..., High].
+    // Empty list if Low > High. Both bounds must be integers.
+    if (op == "numlist/3") {
+        Value lv = deref(*get_cell("A1"));
+        Value hv = deref(*get_cell("A2"));
+        if (lv.tag != Value::Tag::Integer
+            || hv.tag != Value::Tag::Integer) return false;
+        std::int64_t lo = lv.i, hi = hv.i;
+        // Build the list bottom-up (tail = [], cons each value).
+        CellPtr list = std::make_shared<Cell>(Value::Atom("[]"));
+        for (std::int64_t i = hi; i >= lo; --i) {
+            CellPtr head = std::make_shared<Cell>(Value::Integer(i));
+            std::vector<CellPtr> cons_args;
+            cons_args.push_back(head);
+            cons_args.push_back(list);
+            list = std::make_shared<Cell>(
+                Value::Compound("[|]/2", std::move(cons_args)));
+        }
+        CellPtr tgt = get_cell("A3");
+        if (tgt->is_unbound()) { bind_cell(tgt, *list); pc += 1; return true; }
+        if (!unify_cells(tgt, list)) return false;
+        pc += 1; return true;
+    }
+
+    // ---- sort/2, msort/2 --------------------------------------------
+    // sort(+List, -Sorted) — standard order, dedup.
+    // msort(+List, -Sorted) — standard order, NO dedup (stable).
+    if (op == "sort/2" || op == "msort/2") {
+        // Walk A1 as a list, deep-copying each element so subsequent
+        // unifications can''t mutate the sort key.
+        std::vector<CellPtr> items;
+        CellPtr lc = get_cell("A1");
+        for (;;) {
+            Value lv = deref(*lc);
+            if (lv.tag == Value::Tag::Atom && lv.s == "[]") break;
+            if (lv.tag != Value::Tag::Compound || lv.s != "[|]/2"
+                || lv.args.size() != 2) return false;
+            // Take the cell directly — sort/msort don''t recurse into
+            // user code, so binding mutations can''t race with the
+            // sort''s element comparisons.
+            items.push_back(lv.args[0]);
+            lc = lv.args[1];
+        }
+        std::stable_sort(items.begin(), items.end(),
+            [](const CellPtr& a, const CellPtr& b) {
+                return standard_order_cmp(*a, *b) < 0;
+            });
+        if (op == "sort/2") {
+            // Dedup adjacent equals.
+            items.erase(std::unique(items.begin(), items.end(),
+                [](const CellPtr& a, const CellPtr& b) {
+                    return standard_order_cmp(*a, *b) == 0;
+                }), items.end());
+        }
+        // Build result list.
+        CellPtr result = std::make_shared<Cell>(Value::Atom("[]"));
+        for (auto it = items.rbegin(); it != items.rend(); ++it) {
+            std::vector<CellPtr> cons_args;
+            cons_args.push_back(*it);
+            cons_args.push_back(result);
+            result = std::make_shared<Cell>(
+                Value::Compound("[|]/2", std::move(cons_args)));
+        }
+        CellPtr tgt = get_cell("A2");
+        if (tgt->is_unbound()) { bind_cell(tgt, *result); pc += 1; return true; }
+        if (!unify_cells(tgt, result)) return false;
+        pc += 1; return true;
+    }
+
     // ---- functor/3 -------------------------------------------------
     if (op == "functor/3") {
         CellPtr t = get_cell("A1");
