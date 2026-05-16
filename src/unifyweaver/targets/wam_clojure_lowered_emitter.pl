@@ -384,6 +384,10 @@ clojure_direct_builtin("member/2", "2").
 clojure_direct_builtin("member/2", 2).
 clojure_direct_builtin('member/2', "2").
 clojure_direct_builtin('member/2', 2).
+clojure_direct_builtin("memberchk/2", "2").
+clojure_direct_builtin("memberchk/2", 2).
+clojure_direct_builtin('memberchk/2', "2").
+clojure_direct_builtin('memberchk/2', 2).
 clojure_direct_builtin("append/3", "3").
 clojure_direct_builtin("append/3", 3).
 clojure_direct_builtin('append/3', "3").
@@ -682,6 +686,13 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     format(atom(Expr),
            '(let [elem (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound)) list-value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound))] (runtime/apply-member-solution ~w (inc (:pc ~w)) elem list-value))',
            [S, S, S, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "memberchk/2" ; Op == 'memberchk/2'),
+    !,
+    format(atom(Expr),
+           '(let [elem (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound)) list-value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound))] (runtime/apply-memberchk-solution ~w elem list-value))',
+           [S, S, S, S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "append/3" ; Op == 'append/3'),

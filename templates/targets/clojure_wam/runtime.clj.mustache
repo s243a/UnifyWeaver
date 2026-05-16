@@ -725,6 +725,32 @@
         :else
         (backtrack base-state)))))
 
+(defn apply-memberchk-solution [base-state elem list-value]
+  (let [bindings (:bindings base-state)
+        empty-list (normalize-literal-atom (:intern-context base-state) "[]")
+        list-functor (list-functor-term (:intern-context base-state))]
+    (loop [cur (deref-value bindings list-value)
+           seen #{}]
+      (cond
+        (interned-equal? cur empty-list)
+        (backtrack base-state)
+
+        (or (= cur ::unbound) (logic-var? cur) (contains? seen cur))
+        (backtrack base-state)
+
+        (and (structure-term? cur)
+             (interned-equal? (:functor cur) list-functor)
+             (= 2 (count (:args cur))))
+        (let [head (first (:args cur))
+              tail (second (:args cur))
+              [ok next-state] (unify-values base-state elem head)]
+          (if ok
+            (advance next-state)
+            (recur (deref-value bindings tail) (conj seen cur))))
+
+        :else
+        (backtrack base-state)))))
+
 (defn append-split-results [state items]
   (let [ctx (:intern-context state)]
     (mapv (fn [idx]
@@ -1639,6 +1665,13 @@
                 list-value (deref-value (:bindings state)
                                         (or (reg-get-raw state "A2") ::unbound))]
             (apply-member-solution state (inc (:pc state)) elem list-value))
+
+          "memberchk/2"
+          (let [elem (deref-value (:bindings state)
+                                  (or (reg-get-raw state "A1") ::unbound))
+                list-value (deref-value (:bindings state)
+                                        (or (reg-get-raw state "A2") ::unbound))]
+            (apply-memberchk-solution state elem list-value))
 
           "append/3"
           (let [left (deref-value (:bindings state)

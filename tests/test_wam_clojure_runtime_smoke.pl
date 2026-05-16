@@ -80,6 +80,9 @@
 :- dynamic user:wam_member_guard/2.
 :- dynamic user:wam_member_backtrack_b/0.
 :- dynamic user:wam_member_unbound_list/1.
+:- dynamic user:wam_memberchk_guard/2.
+:- dynamic user:wam_memberchk_first_only_fail/0.
+:- dynamic user:wam_memberchk_unbound_list/1.
 :- dynamic user:wam_append_guard/3.
 :- dynamic user:wam_append_bad_left/1.
 :- dynamic user:wam_append_unbound_left/1.
@@ -238,6 +241,9 @@ user:wam_length_unbound_list(N) :- user:wam_unbound_arg(Y), length(Y, N).
 user:wam_member_guard(X, L) :- member(X, L).
 user:wam_member_backtrack_b :- member(X, [a,b]), X = b.
 user:wam_member_unbound_list(X) :- user:wam_unbound_arg(Y), member(X, Y).
+user:wam_memberchk_guard(X, L) :- memberchk(X, L).
+user:wam_memberchk_first_only_fail :- memberchk(X, [a,b]), X = b.
+user:wam_memberchk_unbound_list(X) :- user:wam_unbound_arg(Y), memberchk(X, Y).
 user:wam_append_guard(A, B, C) :- append(A, B, C).
 user:wam_append_bad_left(C) :- append([a|b], [c], C).
 user:wam_append_unbound_left(C) :- user:wam_unbound_arg(A), append(A, [b], C).
@@ -401,6 +407,9 @@ run_smoke :-
           user:wam_member_guard/2,
           user:wam_member_backtrack_b/0,
           user:wam_member_unbound_list/1,
+          user:wam_memberchk_guard/2,
+          user:wam_memberchk_first_only_fail/0,
+          user:wam_memberchk_unbound_list/1,
           user:wam_append_guard/3,
           user:wam_append_bad_left/1,
           user:wam_append_unbound_left/1,
@@ -510,6 +519,7 @@ run_smoke :-
     assert_lowered_is_list_builtin_emitted(TmpDir),
     assert_lowered_length_builtin_emitted(TmpDir),
     assert_lowered_member_builtin_emitted(TmpDir),
+    assert_lowered_memberchk_builtin_emitted(TmpDir),
     assert_lowered_append_builtin_emitted(TmpDir),
     assert_lowered_reverse_builtin_emitted(TmpDir),
     assert_lowered_last_builtin_emitted(TmpDir),
@@ -667,6 +677,11 @@ smoke_cases([
     case('wam_member_guard/2', args(c, '[a,b]'), "false"),
     case('wam_member_backtrack_b/0', no_args, "true"),
     case('wam_member_unbound_list/1', a, "false"),
+    case('wam_memberchk_guard/2', args(a, '[a,b]'), "true"),
+    case('wam_memberchk_guard/2', args(b, '[a,b]'), "true"),
+    case('wam_memberchk_guard/2', args(c, '[a,b]'), "false"),
+    case('wam_memberchk_first_only_fail/0', no_args, "false"),
+    case('wam_memberchk_unbound_list/1', a, "false"),
     case('wam_append_guard/3', args('[a]', '[b,c]', '[a,b,c]'), "true"),
     case('wam_append_guard/3', args('[]', '[a,b]', '[a,b]'), "true"),
     case('wam_append_guard/3', args('[a,b]', '[]', '[a,b]'), "true"),
@@ -965,6 +980,14 @@ assert_lowered_member_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-member-backtrack-b-0"),
     has(CoreCode, "defn lowered-wam-member-unbound-list-1"),
     has(CoreCode, "runtime/apply-member-solution").
+
+assert_lowered_memberchk_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-memberchk-guard-2"),
+    has(CoreCode, "defn lowered-wam-memberchk-first-only-fail-0"),
+    has(CoreCode, "defn lowered-wam-memberchk-unbound-list-1"),
+    has(CoreCode, "runtime/apply-memberchk-solution").
 
 assert_lowered_append_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
