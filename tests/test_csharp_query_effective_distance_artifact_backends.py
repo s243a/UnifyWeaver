@@ -105,13 +105,15 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
         self.assertEqual({row["run"] for row in rows}, {"1"})
         self.assertEqual({row["scan_hash"] for row in rows}, {rows[0]["scan_hash"]})
         self.assertEqual({row["lookup_hash"] for row in rows}, {rows[0]["lookup_hash"]})
+        self.assertEqual({row["lookup_col1_hash"] for row in rows}, {rows[0]["lookup_col1_hash"]})
         self.assertEqual({row["bucket_hash"] for row in rows}, {rows[0]["bucket_hash"]})
+        self.assertEqual({row["bucket_col1_hash"] for row in rows}, {rows[0]["bucket_col1_hash"]})
 
         for row in rows:
             self.assertGreater(int(row["rows"]), 0)
             self.assertGreater(int(row["distinct_categories"]), 0)
             self.assertEqual(row["lookup_keys"], "4")
-            for column in ("artifact_bytes", "open_ms", "lookup_ms", "bucket_ms", "scan_ms", "retained_bytes"):
+            for column in ("artifact_bytes", "open_ms", "lookup_ms", "lookup_col1_ms", "bucket_ms", "bucket_col1_ms", "scan_ms", "retained_bytes"):
                 float(row[column])
 
     def test_summary_markdown_reports_best_modes(self) -> None:
@@ -142,7 +144,7 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
             timeout=180,
         )
         self.assertEqual(result.returncode, 0, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
-        self.assertIn("| Scale | Rows | Categories | Lookup keys | Best lookup |", result.stdout)
+        self.assertIn("| Scale | Rows | Categories | Lookup keys | Best lookup c0 | Best lookup c1 |", result.stdout)
         self.assertIn("| dev |", result.stdout)
         self.assertIn("Smallest artifact", result.stdout)
 
@@ -154,18 +156,24 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
                 "distinct_categories": "225697",
                 "lookup_keys": "64",
                 "best_lookup_mode": "mmap-array",
+                "best_lookup_col1_mode": "mmap-array",
                 "best_bucket_mode": "mmap-array",
+                "best_bucket_col1_mode": "mmap-array",
                 "best_scan_mode": "preload",
                 "smallest_artifact_mode": "mmap-array",
                 "lookup_ms_by_mode": "lmdb:2.087|mmap-array:1.250",
+                "lookup_col1_ms_by_mode": "lmdb:2.500|mmap-array:1.750",
                 "bucket_ms_by_mode": "lmdb:718.217|mmap-array:250.000",
+                "bucket_col1_ms_by_mode": "lmdb:701.000|mmap-array:240.000",
                 "scan_ms_by_mode": "lmdb:129.326|preload:1.000",
                 "artifact_bytes_by_mode": "lmdb:27971980|mmap-array:4000000",
             }
         )
         output = MODULE.render_summary_full_markdown([row])
-        self.assertIn("Lookup ms by mode", output)
+        self.assertIn("Lookup c0 ms by mode", output)
+        self.assertIn("Lookup c1 ms by mode", output)
         self.assertIn("lmdb:2.087|mmap-array:1.250", output)
+        self.assertIn("lmdb:2.500|mmap-array:1.750", output)
         self.assertIn("Artifact bytes by mode", output)
 
     def test_artifact_root_reuses_existing_manifests(self) -> None:
