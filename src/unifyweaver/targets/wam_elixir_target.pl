@@ -28,6 +28,7 @@
     iso_errors_mode_for/3,               % +Config, +PI, -Mode
     iso_errors_warn_multi_module/2,      % +Config, +Predicates
     iso_errors_rewrite/4,                % +Config, +PI, +Items0, -Items
+    iso_errors_rewrite_text/4,           % +Config, +PI, +WamText, -RewrittenText
     wam_elixir_iso_audit/3,              % +Predicates, +Options, -Audit
     wam_elixir_iso_audit_report/1        % +Audit
 ]).
@@ -815,20 +816,72 @@ compile_utility_helpers_to_elixir(Code) :-
   @doc "Execute a builtin predicate"
   def execute_builtin(state, op, arity) do
     case {op, arity} do
-      {"is/2", 2} ->
+      {op_key, 2} when op_key in ["is/2", "is_lax/2"] ->
+        # is_lax/2 is an alias of is/2 — both fail silently on bad
+        # eval. is_lax/2 exists as a separate dispatch key so user
+        # code can write `is_lax(X, Expr)` to opt out of an
+        # enclosing ISO-mode predicates rewrite (the three-forms
+        # guarantee from WAM_ELIXIR_PARITY_PHILOSOPHY §5).
+        #
+        # eval_arith throws {:eval_error, _} on non-evaluable input.
+        # Catch it here and convert to :fail so lax semantics match
+        # ISO Prolog (silent failure). Without this wrap, bad RHS
+        # would escape to the top-level run(args) wrapper and
+        # surface as a CRASHED diagnostic — wrong for lax mode.
         expr = get_reg(state, 2)
-        result = eval_arith(state, expr)
-        lhs = get_reg(state, 1)
-        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        try do
+          result = eval_arith(state, expr)
+          lhs = get_reg(state, 1)
+          new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+          cond do
+            match?({:unbound, _}, lhs) ->
+              id = case lhs do {:unbound, i} -> i end
+              state
+              |> trail_binding(id)
+              |> put_reg(id, result)
+              |> Map.put(:pc, new_pc)
+            lhs == result -> %{state | pc: new_pc}
+            true -> :fail
+          end
+        catch
+          {:eval_error, _} -> :fail
+        end
+      {"is_iso/2", 2} ->
+        # ISO-strict arithmetic. Three checks BEFORE eval so the
+        # diagnostic captures the actual culprit shape:
+        #   1. RHS contains unbound -> instantiation_error
+        #   2. RHS has /0 or //0     -> evaluation_error(zero_divisor)
+        #   3. eval_arith throws     -> type_error(evaluable, Culprit)
+        # On success: bind/compare same as the lax body above.
+        rhs_raw = get_reg(state, 2)
         cond do
-          match?({:unbound, _}, lhs) ->
-            id = case lhs do {:unbound, i} -> i end
-            state
-            |> trail_binding(id)
-            |> put_reg(id, result)
-            |> Map.put(:pc, new_pc)
-          lhs == result -> %{state | pc: new_pc}
-          true -> :fail
+          iso_term_contains_unbound(state, rhs_raw) ->
+            {state2, err} = make_instantiation_error(state)
+            throw_iso_error(state2, err)
+          iso_term_has_zero_divide(state, rhs_raw) ->
+            {state2, err} = make_evaluation_error(state, "zero_divisor")
+            throw_iso_error(state2, err)
+          true ->
+            try do
+              result = eval_arith(state, rhs_raw)
+              lhs = get_reg(state, 1)
+              new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+              cond do
+                match?({:unbound, _}, lhs) ->
+                  id = case lhs do {:unbound, i} -> i end
+                  state
+                  |> trail_binding(id)
+                  |> put_reg(id, result)
+                  |> Map.put(:pc, new_pc)
+                lhs == result -> %{state | pc: new_pc}
+                true -> :fail
+              end
+            catch
+              {:eval_error, culprit} ->
+                {state2, c} = iso_arith_culprit(state, culprit)
+                {state3, err} = make_type_error(state2, "evaluable", c)
+                throw_iso_error(state3, err)
+            end
         end
       {"=/2", 2} ->
         # Body unification: X = Y. Reuses unify/3 — the same machinery
@@ -1498,6 +1551,90 @@ compile_utility_helpers_to_elixir(Code) :-
   @doc "Build evaluation_error(Kind) inner term. Returns {state, term}."
   def make_evaluation_error(state, kind) when is_binary(kind) do
     {:ok, s, t} = build_compound_term(state, "evaluation_error", [kind])
+    {s, t}
+  end
+
+  # ---- ISO arithmetic classifier helpers (PR #4) ------------------
+  #
+  # Three small walkers used by is_iso/2 (and the future arith-compare
+  # ISO arms in PR #5) to classify the RHS BEFORE eval, so the
+  # diagnostic carries the right culprit. All defp — internal to
+  # the runtime template.
+
+  # Walk a derefed term, return true if any unbound found anywhere
+  # in the tree. Used by is_iso/2 to detect instantiation_error.
+  defp iso_term_contains_unbound(state, val) do
+    case deref_var(state, val) do
+      {:unbound, _} -> true
+      {:ref, addr} ->
+        case Map.get(state.heap, addr) do
+          {:str, fn_name} ->
+            arity = parse_functor_arity(fn_name)
+            args = heap_slice(state, addr + 1, arity)
+            Enum.any?(args, fn a -> iso_term_contains_unbound(state, a) end)
+          _ -> false
+        end
+      _ -> false
+    end
+  end
+
+  # Walk a derefed term, return true if there is a literal /0 or //0
+  # divide anywhere in the tree. WAM functor names: / of arity 2 is
+  # "//2" (two slashes); // of arity 2 is "///2" (three slashes).
+  defp iso_term_has_zero_divide(state, val) do
+    case deref_var(state, val) do
+      {:ref, addr} ->
+        case Map.get(state.heap, addr) do
+          {:str, op} when op in ["//2", "///2"] ->
+            args = heap_slice(state, addr + 1, 2)
+            case args do
+              [_v1, v2] ->
+                v2_d = deref_var(state, v2)
+                v2_d == 0 or v2_d == "0" or
+                  iso_term_has_zero_divide(state, v2_d)
+              _ -> false
+            end
+          {:str, fn_name} ->
+            arity = parse_functor_arity(fn_name)
+            args = heap_slice(state, addr + 1, arity)
+            Enum.any?(args, fn a -> iso_term_has_zero_divide(state, a) end)
+          _ -> false
+        end
+      _ -> false
+    end
+  end
+
+  # Build the Name/Arity culprit term ISO wants in
+  # type_error(evaluable, Culprit). Atomic culprits become Name/0;
+  # compound culprits become Name/Arity (extracted from the {:str,
+  # "name/arity"} heap cell). Returns {state, term}.
+  defp iso_arith_culprit(state, val) when is_binary(val) do
+    {:ok, s, t} = build_compound_term(state, "/", [val, 0])
+    {s, t}
+  end
+  defp iso_arith_culprit(state, val) when is_atom(val) and not is_nil(val) do
+    iso_arith_culprit(state, Atom.to_string(val))
+  end
+  defp iso_arith_culprit(state, {:ref, addr}) do
+    case Map.get(state.heap, addr) do
+      {:str, fn_name} ->
+        case String.split(fn_name, "/") do
+          [name, arity_str] ->
+            case Integer.parse(arity_str) do
+              {arity, ""} ->
+                {:ok, s, t} = build_compound_term(state, "/", [name, arity])
+                {s, t}
+              _ -> iso_arith_culprit_unknown(state)
+            end
+          _ -> iso_arith_culprit_unknown(state)
+        end
+      _ -> iso_arith_culprit_unknown(state)
+    end
+  end
+  defp iso_arith_culprit(state, _val), do: iso_arith_culprit_unknown(state)
+
+  defp iso_arith_culprit_unknown(state) do
+    {:ok, s, t} = build_compound_term(state, "/", ["unknown", 0])
     {s, t}
   end
 
@@ -5309,6 +5446,11 @@ atom_interning_cleanup(Options) :-
 
 do_write_wam_elixir_project(Predicates, Options, ProjectDir,
                              Mode, ModuleName, LibDir) :-
+    % PR #4: resolve ISO config + warn on multi-module bare overrides
+    % BEFORE per-predicate compilation, then thread the per-PI
+    % rewrite into the predicate emit loop below.
+    iso_errors_resolve_options(Options, IsoConfig),
+    iso_errors_warn_multi_module(IsoConfig, Predicates),
     % Generate runtime module
     compile_wam_runtime_to_elixir(Options, RuntimeCode),
     directory_file_path(LibDir, 'wam_runtime.ex', RuntimePath),
@@ -5333,13 +5475,23 @@ do_write_wam_elixir_project(Predicates, Options, ProjectDir,
     % runtime port + an emit_kernel_dispatch_module clause.
     forall(
         member(Pred/Arity-WamCode, Predicates),
-        (   (   option(kernel_dispatch(true), Options),
-                Mode == lowered,
-                detect_kernel_for_predicate(Pred, Arity, Kernel)
-            ->  emit_kernel_dispatch_module(ModuleName, Pred, Arity, Kernel, PredCode)
-            ;   (   Mode == lowered
-                ->  lower_predicate_to_elixir(Pred/Arity, WamCode, Options, PredCode)
-                ;   compile_wam_predicate_to_elixir(Pred/Arity, WamCode, Options, PredCode)
+        (   % PR #4: rewrite default-form ISO-relevant builtin keys
+            % per the predicate's mode (looked up in IsoConfig).
+            % No-op when tables are empty OR predicate is lax-mode
+            % with empty lax table (the common case).
+            iso_errors_rewrite_text(IsoConfig, Pred/Arity,
+                                    WamCode, RewrittenWamCode),
+            (   (   option(kernel_dispatch(true), Options),
+                    Mode == lowered,
+                    detect_kernel_for_predicate(Pred, Arity, Kernel)
+                ->  emit_kernel_dispatch_module(ModuleName, Pred, Arity,
+                                                Kernel, PredCode)
+                ;   (   Mode == lowered
+                    ->  lower_predicate_to_elixir(Pred/Arity,
+                            RewrittenWamCode, Options, PredCode)
+                    ;   compile_wam_predicate_to_elixir(Pred/Arity,
+                            RewrittenWamCode, Options, PredCode)
+                    )
                 )
             ),
             atom_string(Pred, PredStr),
@@ -5434,6 +5586,15 @@ end', [CasesStr]).
 :- dynamic iso_errors_default_to_lax/2.
 :- discontiguous iso_errors_default_to_iso/2.
 :- discontiguous iso_errors_default_to_lax/2.
+
+% PR #4: is/2 — first ISO-aware builtin. ISO-mode predicates get
+% their default is/2 calls rewritten to is_iso/2 (which throws on
+% bad RHS); lax-mode predicates rewrite to is_lax/2 (a no-op rename
+% since is/2 and is_lax/2 share the runtime body). Explicit
+% is_iso/2 or is_lax/2 in user source survives the rewrite — see
+% iso_errors_rewrite_item/3.
+iso_errors_default_to_iso("is/2", "is_iso/2").
+iso_errors_default_to_lax("is/2", "is_lax/2").
 
 %% iso_errors_resolve_options(+Options, -Config)
 %  Merges the (optional) file config with inline options into one
@@ -5694,6 +5855,107 @@ iso_errors_key_has_suffix(Key, Suffix) :-
     split_string(KS, "/", "", Parts),
     Parts = [Name | _],
     string_concat(_, Suffix, Name).
+
+%% iso_errors_rewrite_text(+Config, +PI, +WamText, -RewrittenText)
+%  Token-aware text-level rewrite of WAM text for one predicate.
+%  This is the wiring deferred in PR #3: with PR #4's first table
+%  entry (is/2 -> is_iso/2 / is_lax/2), the rewrite becomes
+%  meaningful and needs to slot into the compilation flow before
+%  the lowered emitter sees the WAM text.
+%
+%  Why text-level rather than items-level: Elixir's lowered emitter
+%  parses WAM text line-by-line internally. Adding an items
+%  intermediate would require a refactor of the emitter (its own
+%  design decision tracked in WAM_ITEMS_API_SPECIFICATION.md). A
+%  bounded text-level pass keeps PR #4 small while still giving
+%  the rewrite the four shapes from PHILOSOPHY §4 (builtin_call,
+%  put_structure, call, execute).
+%
+%  When more ISO builtins land (PR #5), this same predicate handles
+%  them — entries in the iso_errors_default_to_iso/lax tables are
+%  the only thing that needs to change.
+iso_errors_rewrite_text(Config, PI, WamText, RewrittenText) :-
+    iso_errors_mode_for(Config, PI, Mode),
+    (   Mode == false,
+        \+ iso_errors_has_lax_entries
+    ->  % Default-mode and lax table is empty -> no-op fast path.
+        % Avoids splitting + rejoining the text for the common case.
+        RewrittenText = WamText
+    ;   atom_string(WamText, S),
+        split_string(S, "\n", "", Lines),
+        maplist(iso_errors_rewrite_line(Mode), Lines, RewrittenLines),
+        atomic_list_concat(RewrittenLines, '\n', RewrittenText)
+    ).
+
+iso_errors_has_lax_entries :- iso_errors_default_to_lax(_, _), !.
+
+% Rewrite one line. Token-split, classify head, look up key in the
+% mode-appropriate table, splice the new key back in. Lines we
+% don't recognise pass through unchanged.
+iso_errors_rewrite_line(Mode, Line, OutLine) :-
+    split_string(Line, " \t", "", Parts0),
+    exclude(==(""), Parts0, Parts),
+    (   iso_errors_rewrite_parts(Mode, Parts, Line, OutLine)
+    ->  true
+    ;   OutLine = Line
+    ).
+
+% builtin_call <key>, <arity>  (key has trailing comma)
+iso_errors_rewrite_parts(Mode, ["builtin_call", KeyComma | _Rest], Line, OutLine) :-
+    string_concat(Key, ",", KeyComma), !,
+    iso_errors_lookup(Mode, Key, NewKey),
+    Key \== NewKey,
+    iso_errors_splice_line(Line, Key, NewKey, OutLine),
+    !.
+iso_errors_rewrite_parts(_, ["builtin_call", _Key | _], _, _) :- !, fail.
+
+% put_structure <key>, <reg>   (key has trailing comma; key is "name/arity")
+iso_errors_rewrite_parts(Mode, ["put_structure", KeyComma | _], Line, OutLine) :-
+    string_concat(Key, ",", KeyComma), !,
+    iso_errors_lookup(Mode, Key, NewKey),
+    Key \== NewKey,
+    iso_errors_splice_line(Line, Key, NewKey, OutLine),
+    !.
+
+% call <key>, <arity>
+iso_errors_rewrite_parts(Mode, ["call", KeyComma | _], Line, OutLine) :-
+    string_concat(Key, ",", KeyComma), !,
+    iso_errors_lookup(Mode, Key, NewKey),
+    Key \== NewKey,
+    iso_errors_splice_line(Line, Key, NewKey, OutLine),
+    !.
+
+% execute <key>   (no comma — execute carries no arity field)
+iso_errors_rewrite_parts(Mode, ["execute", Key | _], Line, OutLine) :-
+    iso_errors_lookup(Mode, Key, NewKey),
+    Key \== NewKey,
+    iso_errors_splice_line(Line, Key, NewKey, OutLine),
+    !.
+
+iso_errors_rewrite_parts(_, _, _, _) :- fail.
+
+% Look up Key in the mode-appropriate table. Falls through to Key
+% itself when no entry exists (the common case while tables are
+% sparse).
+iso_errors_lookup(true, Key, NewKey) :-
+    iso_errors_default_to_iso(Key, NewKey), !.
+iso_errors_lookup(false, Key, NewKey) :-
+    iso_errors_default_to_lax(Key, NewKey), !.
+iso_errors_lookup(_, Key, Key).
+
+% Replace the FIRST occurrence of Key in Line with NewKey. Both are
+% string. Simple substring replacement — Key is a "name/arity"
+% token surrounded by space or comma in the WAM line, so collisions
+% with other content are essentially impossible at this layer.
+iso_errors_splice_line(Line, Key, NewKey, OutLine) :-
+    sub_string(Line, Before, KLen, _After, Key),
+    string_length(Key, KLen),
+    sub_string(Line, 0, Before, _, Pre),
+    PostStart is Before + KLen,
+    sub_string(Line, PostStart, _, 0, Post),
+    string_concat(Pre, NewKey, T1),
+    string_concat(T1, Post, OutLine),
+    !.
 
 %% wam_elixir_iso_audit_report(+Audit)
 %  Human-readable pretty-print of an audit result.
