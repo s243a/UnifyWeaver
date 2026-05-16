@@ -2033,6 +2033,68 @@ static bool wam_eval_arith(WamState *state, WamValue value, int *out) {
     return false;
 }
 
+static bool wam_term_functor(WamState *state, WamValue term,
+                             WamValue *name_out, int *arity_out) {
+    WamValue *cell = wam_deref_ptr(state, &term);
+    if (cell->tag == VAL_ATOM) {
+        *name_out = *cell;
+        *arity_out = 0;
+        return true;
+    }
+    if (cell->tag == VAL_INT) {
+        *name_out = *cell;
+        *arity_out = 0;
+        return true;
+    }
+    if (cell->tag == VAL_LIST) {
+        *name_out = val_atom(".");
+        *arity_out = 2;
+        return true;
+    }
+    if (cell->tag != VAL_STR) return false;
+
+    WamValue *functor = &state->H_array[cell->data.ref_addr];
+    if (functor->tag != VAL_ATOM) return false;
+    const char *slash = strrchr(functor->data.atom, ''/'');
+    if (!slash) return false;
+    char *end = NULL;
+    long arity = strtol(slash + 1, &end, 10);
+    if (!end || *end != 0 || arity < 0 || arity > 255) return false;
+
+    size_t len = (size_t)(slash - functor->data.atom);
+    char name_buf[256];
+    if (len >= sizeof(name_buf)) return false;
+    memcpy(name_buf, functor->data.atom, len);
+    name_buf[len] = 0;
+    *name_out = val_atom(wam_intern_atom(state, name_buf));
+    *arity_out = (int)arity;
+    return true;
+}
+
+static bool wam_make_structure_from_functor(WamState *state,
+                                            const char *name,
+                                            int arity,
+                                            WamValue *out) {
+    char functor_buf[320];
+    int written = snprintf(functor_buf, sizeof(functor_buf), "%s/%d", name, arity);
+    if (written < 0 || (size_t)written >= sizeof(functor_buf)) return false;
+
+    int required = state->H + 1 + arity;
+    if (required >= state->H_cap) {
+        if (state->H_cap == 0) state->H_cap = WAM_INITIAL_CAP;
+        while (required >= state->H_cap) state->H_cap *= 2;
+        state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+    }
+
+    out->tag = VAL_STR;
+    out->data.ref_addr = state->H;
+    state->H_array[state->H++] = val_atom(wam_intern_atom(state, functor_buf));
+    for (int i = 0; i < arity; i++) {
+        state->H_array[state->H++] = val_unbound("_");
+    }
+    return true;
+}
+
 bool wam_execute_builtin(WamState *state, const char *op, int arity) {
     if (strcmp(op, "true/0") == 0 && arity == 0) return true;
     if ((strcmp(op, "fail/0") == 0 || strcmp(op, "false/0") == 0) && arity == 0) return false;
@@ -2062,6 +2124,30 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
         if (!wam_eval_arith(state, state->A[1], &result)) return false;
         WamValue value = val_int(result);
         return wam_unify(state, &state->A[0], &value);
+    }
+
+    if (strcmp(op, "functor/3") == 0 && arity == 3) {
+        WamValue *term = wam_deref_ptr(state, &state->A[0]);
+        if (!val_is_unbound(*term)) {
+            WamValue name = val_unbound("Name");
+            int term_arity = 0;
+            if (!wam_term_functor(state, state->A[0], &name, &term_arity)) return false;
+            WamValue arity_value = val_int(term_arity);
+            return wam_unify(state, &state->A[1], &name) &&
+                   wam_unify(state, &state->A[2], &arity_value);
+        }
+
+        WamValue *name = wam_deref_ptr(state, &state->A[1]);
+        WamValue *arity_cell = wam_deref_ptr(state, &state->A[2]);
+        if (arity_cell->tag != VAL_INT || arity_cell->data.integer < 0) return false;
+        if (arity_cell->data.integer == 0) {
+            if (name->tag != VAL_ATOM && name->tag != VAL_INT) return false;
+            return wam_unify(state, &state->A[0], name);
+        }
+        if (name->tag != VAL_ATOM) return false;
+        WamValue structure;
+        if (!wam_make_structure_from_functor(state, name->data.atom, arity_cell->data.integer, &structure)) return false;
+        return wam_unify(state, &state->A[0], &structure);
     }
 
     if (arity == 2) {

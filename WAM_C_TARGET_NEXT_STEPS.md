@@ -5,7 +5,7 @@ Status date: 2026-05-16
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `ab60ee06` (`Merge pull request #2163 from s243a/perf/wam-c-lowered-helper-compile-size`)
+- `main` at `662e2b18` (`Merge pull request #2167 from s243a/test/wam-c-lowered-helper-larger-scale-regression`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
 - `python3 tests/test_wam_c_lowered_helper_scale_regression.py`
@@ -15,7 +15,7 @@ Base verified locally:
 
 Active branch:
 
-- `test/wam-c-lowered-helper-larger-scale-regression`
+- `feat/wam-c-lowered-helper-next-shape-selection`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -65,7 +65,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Lowered helper larger-scale calibration | Done | Self-contained lowered-helper scales no longer require matching `data/benchmark/<scale>` directories; `25x`, `100x`, and `1k` preserve output parity |
 | Lowered helper indexed row dispatch | Done | First-argument hash-bucket dispatch preserves unbound-argument fallback and gives `1k` lowered-helper runtime around 5.8x faster than interpreted in local calibration |
 | Lowered helper compile/code-size compaction | Done | Compact static row tables plus bucket row-index arrays reduce `1k` generated `lib.c` from 12.8 MB to 2.6 MB and compile time from 151.75s to 0.98s |
-| Lowered helper larger-scale regression | In progress | Active branch promotes `100x` into the focused local lowered-helper parity regression while leaving `1k` as calibration-only because it costs about 31s end to end |
+| Lowered helper larger-scale regression | Done | `tests/test_wam_c_lowered_helper_scale_regression.py` now promotes `100x` into the focused local lowered-helper parity regression while leaving `1k` as calibration-only because it costs about 31s end to end |
+| Lowered helper next-shape selection | In progress | Active branch selects term-shape builtin parity as the next narrow helper-adjacent surface, starting with C `functor/3` runtime support because Haskell and Rust already cover richer structure inspection paths |
 
 ## Current C Target Baseline
 
@@ -82,8 +83,10 @@ The C target is now a credible small WAM backend:
   second-argument constant dispatch, and direct list dispatch.
 - Uses a tagged `InstructionPayload` union instead of a single wide instruction
   struct.
-- Supports basic `builtin_call` delegation for tested builtins:
-  `atom/1`, `integer/1`, `is_list/1`, `=/2`, and `is/2`.
+- Supports `builtin_call` delegation for tested builtins:
+  `atom/1`, `integer/1`, `number/1`, `var/1`, `nonvar/1`,
+  `compound/1`, `is_list/1`, `=/2`, `is/2`, arithmetic comparisons, and
+  active-branch `functor/3`.
 - Supports deterministic `call_foreign` dispatch through a C handler registry.
 - Can opt into a prototype lowered-helper path for constant fact-only
   predicates, plus same-arity alias bodies that call those native fact helpers,
@@ -130,7 +133,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | First-arg indexing | Done | Done | Done | C has constants, structures, mixed term, and list dispatch. |
 | Second-arg indexing | Partial | Partial/Done | Partial/Done | C has constant A2 dispatch; broaden tests if this becomes hot. |
 | Predicate dispatch map | Done | Done | Done | C now uses open-addressing hash table. |
-| Builtin calls | Partial | Broader | Broader | C has a small builtin set. Add `functor/3`, `arg/3`, `atom_concat/3`, arithmetic comparisons as needed. |
+| Builtin calls | Partial | Broader | Broader | C has a growing builtin set. Active branch adds `functor/3`; next likely term-shape gaps are `arg/3` and `atom_concat/3` if benchmark surfaces need them. |
 | Aggregates (`findall`/`bagof`/`setof`) | Missing | Present in hybrid/lowered paths | Present in interpreter/lowered paths | Add only after C has enough runtime term-copy and list construction coverage. |
 | Negation / control builtins | Partial | Broader | Broader | C likely needs explicit tests for `\+/1`, cut interactions, and if-then-else lowering. |
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
@@ -146,38 +149,50 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `test/wam-c-lowered-helper-larger-scale-regression`
+### 1. `feat/wam-c-lowered-helper-next-shape-selection`
 
-Goal: pin the cheapest useful larger-scale regression point now that runtime
-and compile cost are both acceptable.
-
-Scope:
-
-- Add `100x` to the focused local lowered-helper parity regression.
-- Assert interpreted/lowered hash parity and expected row counts for `dev`,
-  `10x`, and `100x`.
-- Keep `1k` as documented calibration-only for now because it costs about 31s
-  in the normal matrix path.
-
-Status: active.
-
-Routine-scale selection:
-
-| Scale | Normal matrix wall-clock | Rows | Decision |
-|---|---:|---:|---|
-| `100x` | 8.53s | 1600 | Promote to local regression |
-| `1k` | 30.84s | 4000 | Keep as calibration-only |
-
-### 2. `feat/wam-c-lowered-helper-next-shape-selection`
-
-Goal: choose the next lowered-helper feature gap now that scaled row dispatch
-has local regression coverage.
+Goal: choose and pin the next helper-adjacent feature gap now that scaled row
+dispatch has local regression coverage.
 
 Scope:
 
 - Compare remaining C gaps against the Haskell and Rust hybrid WAM examples.
 - Prefer a narrow helper shape or builtin needed by existing benchmark surfaces.
-- Avoid broad CI expansion until the next target surface is stable.
+- Start with `functor/3` because it is a compact term-shape primitive that
+  supports structure introspection/construction without broad CI expansion.
+
+Status: active.
+
+Selected next-shape rationale:
+
+| Candidate | Decision | Reason |
+|---|---:|---|
+| `functor/3` | Active | Small term-shape builtin with Haskell/Rust precedent and direct C runtime coverage potential. |
+| `arg/3` | Next likely branch | Complements `functor/3`, but term argument extraction needs a separate focused smoke. |
+| `atom_concat/3` | Later | Useful, but less directly tied to lowered helper row/structure shape selection. |
+| Aggregates | Defer | Needs broader term-copy/list construction support and would be too large for this branch. |
+
+### 2. `feat/wam-c-arg-builtin`
+
+Goal: add the next narrow term-inspection builtin after `functor/3`.
+
+Scope:
+
+- Implement deterministic `arg/3` read/extraction mode for structures and lists.
+- Add direct executable smoke coverage before using it in generated Prolog.
+- Keep construction and non-deterministic modes out of scope unless an existing
+  benchmark needs them.
+
+Status: recommended after this branch.
+
+## Completed Larger-Scale Selection
+
+Routine-scale selection from the merged larger-scale regression branch:
+
+| Scale | Normal matrix wall-clock | Rows | Decision |
+|---|---:|---:|---|
+| `100x` | 8.53s | 1600 | Promoted to local regression |
+| `1k` | 30.84s | 4000 | Keep as calibration-only |
 
 ## Completed Calibration
 
