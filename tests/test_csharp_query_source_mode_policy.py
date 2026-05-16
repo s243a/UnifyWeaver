@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -24,6 +27,7 @@ SCAN_CALIBRATION_ARTIFACT = ROOT / "examples" / "benchmark" / "csharp_query_scan
 SCAN_WORKLOAD_PREFIX = "scan-materialization:"
 SMALL_PREBUILT_ARTIFACT_ROW_THRESHOLD = 7_500
 QUERY_RUNTIME_SOURCE = ROOT / "src" / "unifyweaver" / "targets" / "csharp_query_runtime" / "QueryRuntime.cs"
+QUERY_RUNTIME_PROJECT = ROOT / "src" / "unifyweaver" / "targets" / "csharp_query_runtime" / "UnifyWeaver.QueryRuntime.Core.csproj"
 
 
 class CSharpQuerySourceModePolicyTests(unittest.TestCase):
@@ -177,6 +181,115 @@ class CSharpQuerySourceModePolicyTests(unittest.TestCase):
 
         self.assertNotIn("LightningDB", runtime_source)
         self.assertNotIn("LmdbRelationProvider", runtime_source)
+
+    def test_runtime_has_dependency_free_access_shape_artifact_policy(self) -> None:
+        runtime_source = QUERY_RUNTIME_SOURCE.read_text()
+
+        expected_contract = [
+            "public enum RelationArtifactAccessShape",
+            "LookupColumn0",
+            "LookupColumn1",
+            "BucketColumn0",
+            "BucketColumn1",
+            "public static class RelationArtifactAccessPolicy",
+            'public const string BinaryArtifactStorageKind = "binary_artifact"',
+            'public const string DelimitedArtifactStorageKind = "delimited_artifact"',
+            'public const string LmdbArtifactStorageKind = "lmdb_artifact"',
+            'public const string MmapArrayArtifactStorageKind = "mmap_array_artifact"',
+            "ResolveEffectiveDistanceArtifactStorageKind(",
+            "private const long LargePageRelationRowThreshold = 5_000_000L",
+            "RelationArtifactAccessShape.LookupColumn0 => LmdbArtifactStorageKind",
+            "RelationArtifactAccessShape.BucketColumn0 => DelimitedArtifactStorageKind",
+            "RelationArtifactAccessShape.LookupColumn1 => MmapArrayArtifactStorageKind",
+            "RelationArtifactAccessShape.BucketColumn1 => MmapArrayArtifactStorageKind",
+            "RelationArtifactAccessShape.Storage => MmapArrayArtifactStorageKind",
+        ]
+
+        for expected in expected_contract:
+            with self.subTest(expected=expected):
+                self.assertIn(expected, runtime_source)
+
+        self.assertIn('string.Equals(relationName, "article_category", StringComparison.Ordinal)', runtime_source)
+        self.assertIn('string.Equals(relationName, "category_parent", StringComparison.Ordinal)', runtime_source)
+
+    def test_runtime_access_shape_artifact_policy_compiled_smoke(self) -> None:
+        if shutil.which("dotnet") is None:
+            self.skipTest("dotnet is not available")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            project_path = tmp_path / "AccessShapePolicySmoke.csproj"
+            program_path = tmp_path / "Program.cs"
+            project_path.write_text(
+                f"""\
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="{QUERY_RUNTIME_PROJECT}" />
+  </ItemGroup>
+</Project>
+""",
+                encoding="utf-8",
+            )
+            program_path.write_text(
+                """\
+using UnifyWeaver.QueryRuntime;
+
+static void AssertEqual(string expected, string actual, string label)
+{
+    if (!string.Equals(expected, actual, StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException($"{label}: expected {expected}, got {actual}");
+    }
+}
+
+AssertEqual(
+    RelationArtifactAccessPolicy.LmdbArtifactStorageKind,
+    RelationArtifactAccessPolicy.ResolveEffectiveDistanceArtifactStorageKind(
+        "article_category",
+        5_000_000,
+        RelationArtifactAccessShape.LookupColumn0),
+    "large page lookup column 0");
+AssertEqual(
+    RelationArtifactAccessPolicy.DelimitedArtifactStorageKind,
+    RelationArtifactAccessPolicy.ResolveEffectiveDistanceArtifactStorageKind(
+        "article_category",
+        5_000_000,
+        RelationArtifactAccessShape.BucketColumn0),
+    "large page bucket column 0");
+AssertEqual(
+    RelationArtifactAccessPolicy.MmapArrayArtifactStorageKind,
+    RelationArtifactAccessPolicy.ResolveEffectiveDistanceArtifactStorageKind(
+        "article_category",
+        1_000_000,
+        RelationArtifactAccessShape.LookupColumn0),
+    "smaller page lookup column 0");
+AssertEqual(
+    RelationArtifactAccessPolicy.BinaryArtifactStorageKind,
+    RelationArtifactAccessPolicy.ResolveEffectiveDistanceArtifactStorageKind(
+        "unknown_relation",
+        5_000_000,
+        RelationArtifactAccessShape.LookupColumn0),
+    "unknown relation fallback");
+""",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                ["dotnet", "run", "--project", str(project_path)],
+                cwd=tmp_path,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=120,
+            )
+            self.assertEqual(result.returncode, 0, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
 
     @staticmethod
     def _source_mode_member(source_mode: str) -> str:

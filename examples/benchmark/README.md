@@ -348,6 +348,12 @@ an access-shape policy instead of choosing one backend for the whole relation:
 | --- | --- | ---: | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: |
 | `enwiki_page_5m` | `article_category` | 5,000,000 | `lmdb` | `preload` | `delimited-artifact` | `mmap-array` | `preload` | 142,443,019 | 80,000,643 | 3.251 / 1,219.110 | 3.288 / 236.382 |
 
+The runtime-side `RelationArtifactAccessPolicy` keeps this as a
+dependency-free storage-kind recommendation layer. It can name optional
+providers such as `lmdb_artifact` without making `UnifyWeaver.QueryRuntime.Core`
+reference LightningDB; actual provider availability is still decided by the
+project that opts into the corresponding artifact integration.
+
 Pass `--artifact-root <dir>` to keep backend artifacts across benchmark runs.
 Existing binary, delimited, LMDB, and mmap-array manifests are reused by
 default, matching the Haskell benchmark convention of not regenerating LMDB
