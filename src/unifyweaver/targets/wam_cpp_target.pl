@@ -412,14 +412,14 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     helper_predicate_items(HelperItems),
     flatten_blocks([HelperItems|PerPredItems], AllItems),
     walk_blocks(AllItems, Labels, FlatInstrs0),
-    % Append twelve trailing synthetic-return instructions for the
+    % Append thirteen trailing synthetic-return instructions for the
     % meta-call control-flow surface — see WamState for each pc''s
     % role.
     append(FlatInstrs0,
            [catch_return, negation_return, findall_collect,
             conj_return, disj_alt, if_then_commit, if_then_else,
             aggregate_next_group, dynamic_next_clause, sub_atom_next,
-            body_next, retract_next],
+            body_next, retract_next, output_capture_return],
            FlatInstrs),
     length(FlatInstrs0, CatchReturnPC),
     NegationReturnPC is CatchReturnPC + 1,
@@ -433,6 +433,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     SubAtomNextPC is CatchReturnPC + 9,
     BodyNextPC is CatchReturnPC + 10,
     RetractNextPC is CatchReturnPC + 11,
+    OutputCaptureReturnPC is CatchReturnPC + 12,
     findall(LabelLine, (
         member(NameStr-PC, Labels),
         format(atom(LabelLine),
@@ -462,6 +463,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     vm.sub_atom_next_pc = ~w;
     vm.body_next_pc = ~w;
     vm.retract_next_pc = ~w;
+    vm.output_capture_return_pc = ~w;
 ~w
 ~w
 }
@@ -472,7 +474,7 @@ static const int _wam_cpp_setup_register = []() {
 ', [Reserve, CatchReturnPC, NegationReturnPC, FindallCollectPC,
     ConjReturnPC, DisjAltPC, IfThenCommitPC, IfThenElsePC,
     AggregateNextGroupPC, DynamicNextClausePC, SubAtomNextPC,
-    BodyNextPC, RetractNextPC,
+    BodyNextPC, RetractNextPC, OutputCaptureReturnPC,
     LabelBody, InstrBody]).
 
 % ============================================================================
@@ -1544,6 +1546,8 @@ instr_to_setup_line(body_next, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::BodyNext());'.
 instr_to_setup_line(retract_next, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::RetractNext());'.
+instr_to_setup_line(output_capture_return, _Labels, Line) :- !,
+    Line = '    vm.instrs.push_back(Instruction::OutputCaptureReturn());'.
 instr_to_setup_line(Instr, _Labels, Line) :-
     wam_instruction_to_cpp_literal(Instr, Lit),
     format(atom(Line), '    vm.instrs.push_back(~w);', [Lit]).
@@ -1917,7 +1921,7 @@ struct Instruction {
         SwitchOnConstant, SwitchOnStructure, SwitchOnTerm,
         CatchReturn, NegationReturn, FindallCollect, ConjReturn, DisjAlt,
         IfThenCommit, IfThenElse, AggregateNextGroup, DynamicNextClause,
-        SubAtomNext, BodyNext, RetractNext
+        SubAtomNext, BodyNext, RetractNext, OutputCaptureReturn
     };
     // Sentinel pc values for switch-table entries that should not jump.
     static constexpr std::size_t SWITCH_DEFAULT = static_cast<std::size_t>(-1);
@@ -2041,6 +2045,8 @@ struct Instruction {
         { Instruction i; i.op = Op::BodyNext; return i; }
     static Instruction RetractNext()
         { Instruction i; i.op = Op::RetractNext; return i; }
+    static Instruction OutputCaptureReturn()
+        { Instruction i; i.op = Op::OutputCaptureReturn; return i; }
 };
 
 struct TrailEntry {
@@ -2326,6 +2332,28 @@ struct WamState {
     // Both setvals deep-copy the input to give the stored term
     // independent vars.
     std::unordered_map<std::string, CellPtr> nb_globals;
+    // Output capture for with_output_to/2. Each frame holds a sink
+    // cell (atom(V) / string(V) / codes(V)) and a growing buffer
+    // that the I/O builtins append to instead of writing stdout
+    // while the frame is on top. The goal''s continuation is
+    // output_capture_return_pc, which pops the frame and unifies
+    // the buffer with the sink. Backtrack drops the frame at the
+    // frame''s base_cp_count (parallel to CatcherFrame).
+    struct OutputCaptureFrame {
+        CellPtr     sink;          // the atom(V) / string(V) / codes(V)
+        std::string buffer;
+        std::size_t saved_cp = 0;
+        std::size_t base_cp_count = 0;
+        std::size_t base_agg_count = 0;
+        std::size_t base_catcher_count = 0;
+        std::size_t trail_mark = 0;
+        std::size_t saved_cut_barrier = 0;
+        std::unordered_map<std::string, CellPtr> saved_regs;
+        std::vector<ModeFrame> saved_mode_stack;
+        std::vector<EnvFrame> saved_env_stack;
+    };
+    std::vector<OutputCaptureFrame> output_capture_frames;
+    std::size_t output_capture_return_pc = 0;
     // Iteration state for retract/1''s nondeterministic behaviour.
     // Each successful retract removes the matched clause; on
     // backtrack, retract_try_next continues from where it left off
@@ -2480,6 +2508,13 @@ struct WamState {
     bool    sub_atom_try_next();
     bool    execute_catch();
     bool    execute_throw();
+    // Output emission helper. When output_capture_frames is non-empty,
+    // appends to the top frame''s buffer. Otherwise writes to stdout.
+    // All I/O builtins (write/nl/writeln/print/display/tab/
+    // write_canonical/format) route through this so with_output_to/2
+    // can intercept their output.
+    void    emit_output(const std::string& s);
+    void    emit_output_char(char c);
 
     // ---- ISO error term helpers --------------------------------------
     // Construct error(ErrTerm, _) with a fresh unbound Context slot,
@@ -3901,40 +3936,42 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
     }
 
     // ---- I/O -------------------------------------------------------
+    // All write paths route through emit_output / emit_output_char so
+    // with_output_to/2 can intercept them into a capture buffer.
     if (op == "write/1") {
-        std::printf("%s", render(*get_cell("A1")).c_str());
+        emit_output(render(*get_cell("A1")));
         std::fflush(stdout);
         pc += 1; return true;
     }
     if (op == "nl/0") {
-        std::printf("\\n");
+        emit_output_char(''\\n'');
         std::fflush(stdout);
         pc += 1; return true;
     }
     if (op == "write_atom/1" || op == "writeln/1") {
-        std::printf("%s\\n", render(*get_cell("A1")).c_str());
+        emit_output(render(*get_cell("A1")));
+        emit_output_char(''\\n'');
         std::fflush(stdout);
         pc += 1; return true;
     }
     // print/1 — alias for write/1 (no portray hook in this runtime).
     if (op == "print/1") {
-        std::printf("%s", render(*get_cell("A1")).c_str());
+        emit_output(render(*get_cell("A1")));
         std::fflush(stdout);
         pc += 1; return true;
     }
     // display/1 — write a term without operator notation. Our render
     // path doesn''t use operator syntax anyway, so display == write.
     if (op == "display/1") {
-        std::printf("%s", render(*get_cell("A1")).c_str());
+        emit_output(render(*get_cell("A1")));
         std::fflush(stdout);
         pc += 1; return true;
     }
-    // tab/1 — write N spaces to stdout. N must be a non-negative
-    // integer; otherwise fail.
+    // tab/1 — write N spaces. N must be a non-negative integer.
     if (op == "tab/1") {
         Value n = deref(*get_cell("A1"));
         if (n.tag != Value::Tag::Integer || n.i < 0) return false;
-        for (std::int64_t i = 0; i < n.i; ++i) std::fputc('' '', stdout);
+        for (std::int64_t i = 0; i < n.i; ++i) emit_output_char('' '');
         std::fflush(stdout);
         pc += 1; return true;
     }
@@ -3973,22 +4010,59 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
                 }
             }
             if (needs_quote) {
-                std::fputc(39, stdout); // opening single quote
+                emit_output_char(static_cast<char>(39)); // opening quote
                 for (unsigned char c : s) {
-                    if (c == 39 || c == 92) std::fputc(92, stdout);
-                    std::fputc(c, stdout);
+                    if (c == 39 || c == 92) emit_output_char(static_cast<char>(92));
+                    emit_output_char(static_cast<char>(c));
                 }
-                std::fputc(39, stdout); // closing single quote
+                emit_output_char(static_cast<char>(39)); // closing quote
             } else {
-                std::printf("%s", s.c_str());
+                emit_output(s);
             }
             std::fflush(stdout);
             pc += 1; return true;
         }
-        std::printf("%s", render(v).c_str());
+        emit_output(render(v));
         std::fflush(stdout);
         pc += 1; return true;
     }
+    // ---- with_output_to/2 -------------------------------------------
+    // with_output_to(+Sink, :Goal): capture Goal''s output into Sink.
+    // Sink is atom(V) / string(V) / codes(V). The I/O builtins write
+    // to the top OutputCaptureFrame''s buffer while it''s active; when
+    // Goal proceeds normally, control lands at output_capture_return_pc
+    // which pops the frame and unifies the buffer with Sink.
+    if (op == "with_output_to/2") {
+        Value sv = deref(*get_cell("A1"));
+        if (sv.tag != Value::Tag::Compound || sv.args.size() != 1
+            || (sv.s != "atom/1" && sv.s != "string/1"
+                && sv.s != "codes/1")) return false;
+        OutputCaptureFrame f;
+        f.sink = get_cell("A1");
+        // saved_cp: for the direct BuiltinCall instr path, pc + 1
+        // is the next instruction. For invoke_goal_as_call goal-term
+        // dispatch, the caller pre-sets cp = after_pc so we use that.
+        f.saved_cp = (cp != 0) ? cp : (pc + 1);
+        f.base_cp_count = choice_points.size();
+        f.base_agg_count = aggregate_frames.size();
+        f.base_catcher_count = catcher_frames.size();
+        f.trail_mark = trail.size();
+        f.saved_cut_barrier = cut_barrier;
+        f.saved_regs = regs;
+        f.saved_mode_stack = mode_stack;
+        f.saved_env_stack = env_stack;
+        std::size_t my_depth = output_capture_frames.size();
+        output_capture_frames.push_back(std::move(f));
+        CellPtr goal = get_cell("A2");
+        if (!invoke_goal_as_call(goal, output_capture_return_pc)) {
+            // Goal failed to dispatch — pop and propagate.
+            if (output_capture_frames.size() > my_depth)
+                output_capture_frames.pop_back();
+            return false;
+        }
+        return true;
+    }
+
     // ---- format/1, format/2, format/3 -------------------------------
     // Walks the format string, expanding ~-directives.
     // Supported: ~w (write), ~p (print, same as ~w), ~a (atom),
@@ -4105,7 +4179,7 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         }
         // Dispatch on destination (format/3) or just print (format/1, /2).
         if (!is_f3) {
-            std::fwrite(buf.data(), 1, buf.size(), stdout);
+            emit_output(buf);
             std::fflush(stdout);
             pc += 1; return true;
         }
@@ -4113,7 +4187,7 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         Value dv = deref(*get_cell("A1"));
         if (dv.tag == Value::Tag::Atom) {
             if (dv.s == "user_output") {
-                std::fwrite(buf.data(), 1, buf.size(), stdout);
+                emit_output(buf);
                 std::fflush(stdout);
                 pc += 1; return true;
             }
@@ -4714,6 +4788,47 @@ bool WamState::step(const Instruction& instr) {
             // the just-removed clause).
             if (!choice_points.empty()) choice_points.pop_back();
             return retract_try_next();
+        }
+        case Instruction::Op::OutputCaptureReturn: {
+            // Reached when a with_output_to/2 goal proceeds normally.
+            // Pop the OutputCaptureFrame, unify the captured buffer
+            // with the sink (atom/string/codes), and continue at the
+            // saved_cp.
+            if (output_capture_frames.empty()) return false;
+            OutputCaptureFrame f = std::move(output_capture_frames.back());
+            output_capture_frames.pop_back();
+            Value sink = deref(*f.sink);
+            if (sink.tag != Value::Tag::Compound
+                || sink.args.size() != 1) return false;
+            CellPtr tgt = sink.args[0];
+            Value out_v;
+            if (sink.s == "atom/1" || sink.s == "string/1") {
+                out_v = Value::Atom(f.buffer);
+            } else if (sink.s == "codes/1") {
+                // Build a list of integer codes from buf bottom-up.
+                CellPtr list = std::make_shared<Cell>(Value::Atom("[]"));
+                for (auto it = f.buffer.rbegin();
+                     it != f.buffer.rend(); ++it) {
+                    CellPtr head = std::make_shared<Cell>(Value::Integer(
+                        static_cast<std::int64_t>(
+                            static_cast<unsigned char>(*it))));
+                    std::vector<CellPtr> ca;
+                    ca.push_back(head);
+                    ca.push_back(list);
+                    list = std::make_shared<Cell>(
+                        Value::Compound("[|]/2", std::move(ca)));
+                }
+                out_v = *list;
+            } else {
+                return false;
+            }
+            if (tgt->is_unbound()) bind_cell(tgt, out_v);
+            else if (!unify_cells(tgt,
+                std::make_shared<Cell>(out_v))) return false;
+            if (f.saved_cp == 0) { halt = true; return true; }
+            pc = f.saved_cp;
+            cp = 0;
+            return true;
         }
         case Instruction::Op::Proceed: {
             if (cp == 0) { halt = true; return true; }
@@ -5725,6 +5840,20 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
         if (key == "setof/3")   { cp = after_pc; return dispatch_aggregate_call("setof", after_pc); }
         if (key == "sub_atom/5") return dispatch_sub_atom(after_pc);
         if (key == "retract/1") return dispatch_retract(after_pc);
+        if (key == "with_output_to/2") {
+            // Set cp = after_pc so the builtin captures the correct
+            // continuation. The builtin saves cp as saved_cp; without
+            // this, it would use pc + 1 (which only makes sense for
+            // the direct BuiltinCall instr — not for goal-term
+            // dispatch where pc points at a synthetic op).
+            cp = after_pc;
+            // Saved_cp inside the builtin will then == after_pc.
+            // We call builtin() directly here so the goal-term path
+            // doesn''t fall through to the generic post-builtin
+            // continuation override below.
+            if (!builtin(key, 2)) return false;
+            return true;
+        }
         // ^/2 — existential quantification. For find-style
         // aggregation (which is all this runtime currently
         // supports for bagof/setof) ^/2 is transparent: invoke A2
@@ -6017,6 +6146,25 @@ bool WamState::aggregate_bind_next_group() {
     return true;
 }
 
+// Output emission router. with_output_to/2 pushes an
+// OutputCaptureFrame; while one is on top, all I/O builtins write
+// here instead of stdout, so the goal''s output gets captured.
+void WamState::emit_output(const std::string& s) {
+    if (!output_capture_frames.empty()) {
+        output_capture_frames.back().buffer += s;
+    } else {
+        std::fwrite(s.data(), 1, s.size(), stdout);
+    }
+}
+
+void WamState::emit_output_char(char c) {
+    if (!output_capture_frames.empty()) {
+        output_capture_frames.back().buffer.push_back(c);
+    } else {
+        std::fputc(static_cast<unsigned char>(c), stdout);
+    }
+}
+
 // catch(Goal, Catcher, Recovery): push a CatcherFrame snapshotting
 // current VM state, then dispatch to Goal as a tail-call whose
 // continuation is the auto-injected CatchReturn instruction.
@@ -6282,6 +6430,32 @@ bool WamState::backtrack() {
             // Restore regs/env/mode/cp/cut so the world looks exactly
             // as it did at catch entry, then continue backtracking
             // outside the catch.
+            regs        = std::move(f.saved_regs);
+            mode_stack  = std::move(f.saved_mode_stack);
+            env_stack   = std::move(f.saved_env_stack);
+            cp          = f.saved_cp;
+            cut_barrier = f.saved_cut_barrier;
+            continue;
+        }
+        // OutputCaptureFrame: with_output_to/2 goal failed. Drop the
+        // frame and the partially-accumulated buffer; propagate the
+        // failure outside.
+        if (!output_capture_frames.empty()
+            && choice_points.size() == output_capture_frames.back().base_cp_count
+            && (aggregate_frames.empty()
+                || aggregate_frames.back().base_cp_count
+                       <= output_capture_frames.back().base_cp_count)
+            && (catcher_frames.empty()
+                || catcher_frames.back().base_cp_count
+                       <= output_capture_frames.back().base_cp_count))
+        {
+            OutputCaptureFrame f = std::move(output_capture_frames.back());
+            output_capture_frames.pop_back();
+            while (trail.size() > f.trail_mark) {
+                TrailEntry t = std::move(trail.back());
+                trail.pop_back();
+                *t.cell = std::move(t.prev);
+            }
             regs        = std::move(f.saved_regs);
             mode_stack  = std::move(f.saved_mode_stack);
             env_stack   = std::move(f.saved_env_stack);

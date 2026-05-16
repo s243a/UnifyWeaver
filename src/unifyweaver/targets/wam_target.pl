@@ -1476,6 +1476,7 @@ is_builtin_pred(writeln, 1).        % I/O — write/1 + nl/0.
 is_builtin_pred(print, 1).          % I/O — alias for write/1.
 is_builtin_pred(tab, 1).            % I/O — N spaces.
 is_builtin_pred(write_canonical, 1).% I/O — quote atoms as needed.
+is_builtin_pred(with_output_to, 2). % I/O — capture goal''s output.
 is_builtin_pred(format, 1).  % I/O — formatted output, ~-directives.
 is_builtin_pred(format, 2).
 is_builtin_pred(format, 3).
