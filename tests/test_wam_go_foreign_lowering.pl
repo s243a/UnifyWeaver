@@ -129,11 +129,19 @@ test(tsv_atom_fact2_setup_generation) :-
     wam_go_target:go_foreign_setup_line(register_tsv_atom_fact2(edge/2, '/tmp/edge.tsv'), Line),
     assertion(Line == '    if err := vm.registerTsvAtomFact2("edge/2", "/tmp/edge.tsv"); err != nil { panic(err) }').
 
+test(lmdb_atom_fact2_setup_generation) :-
+    wam_go_target:go_foreign_setup_line(register_lmdb_atom_fact2(edge/2, '/tmp/edge_artifact'), Line),
+    assertion(Line == '    if err := vm.registerLmdbAtomFact2("edge/2", "/tmp/edge_artifact"); err != nil { panic(err) }').
+
 test(atom_fact2_source_registry_runtime_shape) :-
     wam_go_target:compile_wam_runtime_to_go([], RuntimeCode),
     atom_string(RuntimeCode, Runtime),
     assertion(sub_string(Runtime, _, _, _, 'type staticAtomFact2Source struct')),
     assertion(sub_string(Runtime, _, _, _, 'func newStaticAtomFact2Source(pairs []AtomPair) *staticAtomFact2Source')),
+    assertion(sub_string(Runtime, _, _, _, 'type lmdbAtomFact2Source struct')),
+    assertion(sub_string(Runtime, _, _, _, 'func newLmdbAtomFact2Source(predKey string, artifactDir string) *lmdbAtomFact2Source')),
+    assertion(sub_string(Runtime, _, _, _, 'func (vm *WamState) registerLmdbAtomFact2(predKey string, artifactDir string) error')),
+    assertion(sub_string(Runtime, _, _, _, 'exec.Command(source.helperBin, args...).Output()')),
     assertion(sub_string(Runtime, _, _, _, 'func (vm *WamState) registerAtomFact2Source(predKey string, source AtomFact2Source)')),
     assertion(sub_string(Runtime, _, _, _, 'pairs = source.LookupArg1(key)')),
     read_file_to_string('templates/targets/go_wam/state.go.mustache', State, []),
@@ -302,6 +310,40 @@ func TestForeignGraphKernels(t *testing.T) {
     }
     if got, ok := tsvVM.deref(tsvTarget).(*Atom); !ok || got.Name != "z" {
         t.Fatalf("expected second tsv target z, got %#v", tsvVM.deref(tsvTarget))
+    }
+
+    helperPath := filepath.Join(t.TempDir(), "lmdb_relation_artifact_mock")
+    helperScript := "#!/bin/sh\\n" +
+        "if [ \\"$1\\" = \\"get\\" ]; then\\n" +
+        "  if [ \\"$4\\" = \\"x\\" ]; then printf \\"x\\\\ty\\\\nx\\\\tz\\\\n\\"; fi\\n" +
+        "elif [ \\"$1\\" = \\"scan\\" ]; then\\n" +
+        "  printf \\"x\\\\ty\\\\nx\\\\tz\\\\na\\\\tb\\\\n\\"\\n" +
+        "fi\\n"
+    if err := os.WriteFile(helperPath, []byte(helperScript), 0755); err != nil {
+        t.Fatalf("write lmdb helper mock: %v", err)
+    }
+    t.Setenv("UW_LMDB_RELATION_ARTIFACT_BIN", helperPath)
+    lmdbVM := NewWamState([]Instruction{&CallIndexedAtomFact2{Pred: "lmdb_edge/2"}, &Proceed{}}, map[string]int{})
+    if err := lmdbVM.registerLmdbAtomFact2("lmdb_edge/2", filepath.Join(t.TempDir(), "edge_artifact")); err != nil {
+        t.Fatalf("register lmdb facts: %v", err)
+    }
+    if _, ok := lmdbVM.Ctx.AtomFact2Sources["lmdb_edge/2"]; !ok {
+        t.Fatalf("expected LMDB source to register through AtomFact2Sources")
+    }
+    lmdbTarget := &Unbound{Name: "LMDB_TARGET", Idx: 1}
+    lmdbVM.Regs[0] = internAtom("x")
+    lmdbVM.Regs[1] = lmdbTarget
+    if !lmdbVM.Run() {
+        t.Fatalf("lmdb-backed call_indexed_atom_fact2 failed")
+    }
+    if got, ok := lmdbVM.deref(lmdbTarget).(*Atom); !ok || got.Name != "y" {
+        t.Fatalf("expected first lmdb target y, got %#v", lmdbVM.deref(lmdbTarget))
+    }
+    if !lmdbVM.backtrack() {
+        t.Fatalf("expected second lmdb fact result")
+    }
+    if got, ok := lmdbVM.deref(lmdbTarget).(*Atom); !ok || got.Name != "z" {
+        t.Fatalf("expected second lmdb target z, got %#v", lmdbVM.deref(lmdbTarget))
     }
 
     factVM := NewWamState([]Instruction{&CallIndexedAtomFact2{Pred: "edge/2"}, &Proceed{}}, map[string]int{})
