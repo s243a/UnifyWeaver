@@ -265,6 +265,11 @@ need manual override:
 - Effective-distance `category_parent/2` is the first real-workload artifact
   backend measurement because it exercises the same arity-2 graph support
   relation used by the established Wikipedia/SimpleWiki benchmark family.
+  The benchmark now supports repeated 300/1k/5k/10k runs with summary output
+  for best lookup, bucket, scan, and artifact-size backend.
+  At these scales, mmap-array and preload are expected to beat LMDB; LMDB is
+  still the larger-data comparison point once memory pressure starts to matter
+  around future 50k+ runs.
   Haskell's LMDB cache modes remain a higher-level query-locality policy; this
   C# query benchmark intentionally isolates backend scan, lookup, and bucket
   access before adding cache-policy comparisons.

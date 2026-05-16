@@ -147,11 +147,19 @@ formats, then reports open, lookup, bucket, and scan timings:
 
 ```bash
 python examples/benchmark/benchmark_csharp_query_effective_distance_artifact_backends.py \
-  --scales 300 \
+  --scales 300,1k,5k,10k \
   --lookup-keys 64 \
   --lookup-repetitions 3 \
-  --format markdown
+  --repetitions 3 \
+  --format summary-markdown
 ```
+
+Use `--format tsv` or `--format markdown` for raw per-run rows. Use
+`summary-tsv` or `summary-markdown` to collapse repeated runs to per-scale
+median timings and report the best lookup, bucket, scan, and artifact-size
+backend. At the checked-in 300-10k scales this is expected to favor preload
+or mmap-array; LMDB is primarily retained as the larger-data comparison point
+for future 50k+ style runs where memory pressure matters.
 
 Use `--stability-runs <n>` to run the wrapper-level sweep repeatedly and
 summarize stable winners. Values above `1` report majority winners, winner
