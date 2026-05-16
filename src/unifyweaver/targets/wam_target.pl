@@ -1472,6 +1472,10 @@ is_builtin_pred(copy_term, 2). % term inspection: fresh-variable copy
 is_builtin_pred(write, 1).  % I/O — useful for runtime instrumentation.
 is_builtin_pred(display, 1).
 is_builtin_pred(nl, 0).
+is_builtin_pred(writeln, 1).        % I/O — write/1 + nl/0.
+is_builtin_pred(print, 1).          % I/O — alias for write/1.
+is_builtin_pred(tab, 1).            % I/O — N spaces.
+is_builtin_pred(write_canonical, 1).% I/O — quote atoms as needed.
 is_builtin_pred(format, 1).  % I/O — formatted output, ~-directives.
 is_builtin_pred(format, 2).
 is_builtin_pred(format, 3).

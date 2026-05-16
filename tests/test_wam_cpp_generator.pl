@@ -1615,6 +1615,32 @@ user:wam_cpp_test_negative_atom :-
     \+ integer(X),
     atom_length(X, 2).
 
+% I/O polish — print/1, display/1, tab/1, write_canonical/1.
+% writeln/1 already existed; just adding tests here. write/1 + nl/0
+% are existing.
+:- dynamic user:wam_cpp_test_print/0.
+:- dynamic user:wam_cpp_test_display/0.
+:- dynamic user:wam_cpp_test_tab/0.
+:- dynamic user:wam_cpp_test_tab_zero/0.
+:- dynamic user:wam_cpp_test_tab_neg/0.
+:- dynamic user:wam_cpp_test_wc_simple/0.
+:- dynamic user:wam_cpp_test_wc_quoted/0.
+:- dynamic user:wam_cpp_test_wc_digit_atom/0.
+
+user:wam_cpp_test_print :- print(hello), nl.
+user:wam_cpp_test_display :- display(bar), nl.
+user:wam_cpp_test_tab :- tab(3), write(x), nl.
+user:wam_cpp_test_tab_zero :- tab(0), write(y), nl.
+
+% Negative N → fail.
+user:wam_cpp_test_tab_neg :- \+ tab(-1).
+
+user:wam_cpp_test_wc_simple :- write_canonical(hello), nl.
+user:wam_cpp_test_wc_quoted :- write_canonical('hello world'), nl.
+% Digit-only atom — gets quoted in canonical form, distinguishing
+% it from an integer.
+user:wam_cpp_test_wc_digit_atom :- write_canonical('5'), nl.
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -5599,6 +5625,109 @@ test(cpp_e2e_negative_atom,
                               [emit_main(true)], TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath, 'wam_cpp_test_negative_atom/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% I/O polish — print/1, display/1, tab/1, write_canonical/1.
+% Stdout-printing tests use run_query_stdout to assert exact output.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_print, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_print', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_print/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_stdout(BinPath, 'wam_cpp_test_print/0', [],
+                           true, "hello\n")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_display, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_display', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_display/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_stdout(BinPath, 'wam_cpp_test_display/0', [],
+                           true, "bar\n")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_tab, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_tab', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_tab/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_stdout(BinPath, 'wam_cpp_test_tab/0', [],
+                           true, "   x\n")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_tab_zero, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_tab_zero', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_tab_zero/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_stdout(BinPath, 'wam_cpp_test_tab_zero/0', [],
+                           true, "y\n")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_tab_neg, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_tab_neg', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_tab_neg/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_tab_neg/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_wc_simple, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_wc_simple', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_wc_simple/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_stdout(BinPath, 'wam_cpp_test_wc_simple/0', [],
+                           true, "hello\n")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_wc_quoted, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_wc_quoted', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_wc_quoted/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_stdout(BinPath, 'wam_cpp_test_wc_quoted/0', [],
+                           true, "'hello world'\n")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_wc_digit_atom,
+     [condition(cpp_compiler_available)]) :-
+    % Digit-only atoms get quoted in canonical form, distinguishing
+    % them from the integer with the same textual form.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_wc_digit', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_wc_digit_atom/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_stdout(BinPath, 'wam_cpp_test_wc_digit_atom/0',
+                           [], true, "'5'\n")
         ),
         delete_directory_and_contents(TmpDir)
     ).
