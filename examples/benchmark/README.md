@@ -278,6 +278,17 @@ python examples/benchmark/benchmark_csharp_query_effective_distance_artifact_bac
 fields, which is more useful when deciding whether LMDB is competitive at a
 larger scale.
 
+On this checkout's first 1M enwiki-capped probe, `mmap-array` still won lookup
+and bucket access, while `preload` won full scan. LMDB remained smaller than
+binary and delimited artifacts, but did not beat mmap-array on access time:
+
+| Scale | Best lookup | Best bucket | Best scan | LMDB artifact bytes | Mmap-array artifact bytes | LMDB lookup ms | Mmap-array lookup ms |
+| --- | --- | --- | --- | ---: | ---: | ---: | ---: |
+| `rust_lmdb_1m` | `mmap-array` | `mmap-array` | `preload` | 53,432,717 | 8,000,569 | 5.464 | 2.296 |
+
+That means the measured 1M result is still a benchmark result, not a reason to
+promote LMDB into the default `auto` policy for this arity-2 support relation.
+
 Pass `--artifact-root <dir>` to keep backend artifacts across benchmark runs.
 Existing binary, delimited, LMDB, and mmap-array manifests are reused by
 default, matching the Haskell benchmark convention of not regenerating LMDB
