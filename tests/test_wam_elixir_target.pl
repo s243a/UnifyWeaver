@@ -163,7 +163,7 @@ test_call_n_dispatch_meta_helper :-
     (   compile_wam_helpers_to_elixir([], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _,
-                   'def dispatch_call_meta(state, total_arity, after_pc)')
+                   'defp dispatch_call_meta(state, total_arity, after_pc)')
     ->  pass(Test)
     ;   fail_test(Test, 'dispatch_call_meta missing from runtime helpers')
     ).
@@ -174,13 +174,27 @@ test_call_n_step_arms :-
     (   wam_elixir_case(call, CallCode),
         sub_string(CallCode, _, _, _, '"call/" <> _'),
         sub_string(CallCode, _, _, _,
-                   'dispatch_call_meta(state, n, state.pc + 1)'),
+                   'dispatch_call_meta(state, total_arity, state.pc + 1)'),
         wam_elixir_case(execute, ExecCode),
         sub_string(ExecCode, _, _, _, '"call/" <> arity_str'),
+        sub_string(ExecCode, _, _, _, 'Integer.parse(arity_str)'),
         sub_string(ExecCode, _, _, _,
                    'dispatch_call_meta(state, total_arity, state.cp)')
     ->  pass(Test)
     ;   fail_test(Test, 'call/N dispatch missing from step arms')
+    ).
+
+test_build_call_target_compound_clause :-
+    Test = 'WAM-Elixir: build_call_target has {:ref, addr} compound clause',
+    (   compile_wam_helpers_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _,
+                   'defp build_call_target(state, {:ref, addr}, extras)'),
+        % Heap deref + functor parse should be inline in the clause body.
+        sub_string(S, _, _, _, 'Map.get(state.heap, addr)'),
+        sub_string(S, _, _, _, 'parse_functor_arity(base_pred_arity)')
+    ->  pass(Test)
+    ;   fail_test(Test, '{:ref, addr} compound dispatch clause missing')
     ).
 
 test_true_zero_builtin :-
@@ -2810,6 +2824,7 @@ run_tests :-
     test_call_n_step_arms,
     test_true_zero_builtin,
     test_build_call_target_helpers,
+    test_build_call_target_compound_clause,
     test_elixir_idioms,
     test_immutable_state_updates,
     test_functional_run_loop,
