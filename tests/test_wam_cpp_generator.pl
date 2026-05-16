@@ -808,6 +808,86 @@ user:wam_cpp_test_format3_chained :-
     format(atom(A), "n=~d", [42]),
     A = 'n=42'.
 
+% atom_codes/2, atom_chars/2, number_codes/2, atom_concat/3,
+% atom_length/2, char_code/2 — bidirectional atom/number/string
+% conversions. atom_codes / atom_chars / number_codes split on
+% which side is bound; atom_concat is currently (+, +, ?) only;
+% atom_length is +→-; char_code is bidirectional on single chars.
+:- dynamic user:wam_cpp_test_atom_codes_fwd/0.
+:- dynamic user:wam_cpp_test_atom_codes_rev/0.
+:- dynamic user:wam_cpp_test_atom_chars_fwd/0.
+:- dynamic user:wam_cpp_test_atom_chars_rev/0.
+:- dynamic user:wam_cpp_test_number_codes_fwd/0.
+:- dynamic user:wam_cpp_test_number_codes_rev_int/0.
+:- dynamic user:wam_cpp_test_number_codes_neg/0.
+:- dynamic user:wam_cpp_test_atom_concat/0.
+:- dynamic user:wam_cpp_test_atom_concat_num/0.
+:- dynamic user:wam_cpp_test_atom_length/0.
+:- dynamic user:wam_cpp_test_atom_length_int/0.
+:- dynamic user:wam_cpp_test_char_code_fwd/0.
+:- dynamic user:wam_cpp_test_char_code_rev/0.
+:- dynamic user:wam_cpp_test_format_atom_then_codes/0.
+
+user:wam_cpp_test_atom_codes_fwd :-
+    atom_codes(hi, C),
+    C = [104, 105].
+
+user:wam_cpp_test_atom_codes_rev :-
+    atom_codes(A, [104, 105]),
+    A = hi.
+
+user:wam_cpp_test_atom_chars_fwd :-
+    atom_chars(ab, Cs),
+    Cs = [a, b].
+
+user:wam_cpp_test_atom_chars_rev :-
+    atom_chars(A, [a, b]),
+    A = ab.
+
+user:wam_cpp_test_number_codes_fwd :-
+    number_codes(42, C),
+    C = [52, 50].
+
+user:wam_cpp_test_number_codes_rev_int :-
+    number_codes(N, [52, 50]),
+    N = 42.
+
+user:wam_cpp_test_number_codes_neg :-
+    number_codes(N, [45, 51]),
+    N = -3.
+
+user:wam_cpp_test_atom_concat :-
+    atom_concat(foo, bar, R),
+    R = foobar.
+
+user:wam_cpp_test_atom_concat_num :-
+    atom_concat(x, 42, R),
+    R = 'x42'.
+
+user:wam_cpp_test_atom_length :-
+    atom_length(hello, L),
+    L = 5.
+
+user:wam_cpp_test_atom_length_int :-
+    atom_length(12345, L),
+    L = 5.
+
+user:wam_cpp_test_char_code_fwd :-
+    char_code(a, C),
+    C = 97.
+
+user:wam_cpp_test_char_code_rev :-
+    char_code(Ch, 65),
+    Ch = 'A'.
+
+% Composition: build an atom with format/3 then take its length.
+% Regression guard that format/3-built atoms behave like normal
+% atoms — i.e. the Atom value is structurally identical.
+user:wam_cpp_test_format_atom_then_codes :-
+    format(atom(A), "~w~w", [hello, 42]),
+    atom_length(A, 7),
+    atom_codes(A, [104, 101, 108, 108, 111, 52, 50]).
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -3247,6 +3327,176 @@ test(cpp_e2e_format3_chained, [condition(cpp_compiler_available)]) :-
                               [emit_main(true)], TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath, 'wam_cpp_test_format3_chained/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% atom_codes / atom_chars / number_codes / atom_concat / atom_length
+% / char_code — atom/string/number conversions.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_atom_codes_fwd, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_atom_codes_fwd', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_atom_codes_fwd/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_atom_codes_fwd/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_atom_codes_rev, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_atom_codes_rev', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_atom_codes_rev/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_atom_codes_rev/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_atom_chars_fwd, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_atom_chars_fwd', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_atom_chars_fwd/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_atom_chars_fwd/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_atom_chars_rev, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_atom_chars_rev', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_atom_chars_rev/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_atom_chars_rev/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_number_codes_fwd, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_number_codes_fwd', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_number_codes_fwd/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_number_codes_fwd/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_number_codes_rev_int,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_number_codes_rev_int', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_number_codes_rev_int/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_number_codes_rev_int/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_number_codes_neg, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_number_codes_neg', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_number_codes_neg/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_number_codes_neg/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_atom_concat, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_atom_concat', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_atom_concat/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_atom_concat/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_atom_concat_num, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_atom_concat_num', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_atom_concat_num/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_atom_concat_num/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_atom_length, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_atom_length', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_atom_length/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_atom_length/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_atom_length_int, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_atom_length_int', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_atom_length_int/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_atom_length_int/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_char_code_fwd, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_char_code_fwd', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_char_code_fwd/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_char_code_fwd/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_char_code_rev, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_char_code_rev', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_char_code_rev/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_char_code_rev/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_format_atom_then_codes,
+     [condition(cpp_compiler_available)]) :-
+    % Composition guard: an atom built by format/3 should be
+    % indistinguishable from one written as a literal — same
+    % length, same code list.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_fmt_atom_codes', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_format_atom_then_codes/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_format_atom_then_codes/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
