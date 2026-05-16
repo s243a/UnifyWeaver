@@ -1127,7 +1127,7 @@ run_multi_predicate_setup_executable_smoke :-
     run_c_smoke_plain(ExePath).
 
 run_builtin_call_executable_smoke :-
-    WamCode = 'wam_c_builtin_atom/1:\n    builtin_call atom/1, 1\n    proceed\nwam_c_builtin_is/2:\n    builtin_call is/2, 2\n    proceed\nwam_c_builtin_functor/3:\n    builtin_call functor/3, 3\n    proceed',
+    WamCode = 'wam_c_builtin_atom/1:\n    builtin_call atom/1, 1\n    proceed\nwam_c_builtin_is/2:\n    builtin_call is/2, 2\n    proceed\nwam_c_builtin_functor/3:\n    builtin_call functor/3, 3\n    proceed\nwam_c_builtin_arg/3:\n    builtin_call arg/3, 3\n    proceed',
     compile_wam_predicate_to_c(user:wam_c_builtin_atom/1, WamCode, [], PredCode),
     compile_wam_runtime_to_c([], RuntimeCode),
     get_time(Now),
@@ -1830,6 +1830,15 @@ static WamValue make_binary_struct(WamState *state, const char *functor, WamValu
     return term;
 }
 
+static WamValue make_list_pair(WamState *state, WamValue head, WamValue tail) {
+    WamValue list;
+    list.tag = VAL_LIST;
+    list.data.ref_addr = state->H;
+    state->H_array[state->H++] = head;
+    state->H_array[state->H++] = tail;
+    return list;
+}
+
 int main(void) {
     WamState state;
     wam_state_init(&state);
@@ -1874,6 +1883,30 @@ int main(void) {
         strcmp(state.H_array[state.A[0].data.ref_addr].data.atom, "edge/2") != 0) {
         wam_free_state(&state);
         return 50;
+    }
+
+    WamValue arg_struct_args[3] = { val_int(2), pair_term, val_unbound("Arg") };
+    int arg_struct_rc = wam_run_predicate(&state, "wam_c_builtin_arg/3", arg_struct_args, 3);
+    if (arg_struct_rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_INT || state.A[2].data.integer != 9) {
+        wam_free_state(&state);
+        return 60;
+    }
+
+    WamValue list_term = make_list_pair(&state, val_atom("head"), val_atom("tail"));
+    WamValue arg_list_args[3] = { val_int(1), list_term, val_unbound("Head") };
+    int arg_list_rc = wam_run_predicate(&state, "wam_c_builtin_arg/3", arg_list_args, 3);
+    if (arg_list_rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_ATOM || strcmp(state.A[2].data.atom, "head") != 0) {
+        wam_free_state(&state);
+        return 70;
+    }
+
+    WamValue arg_fail_args[3] = { val_int(3), list_term, val_unbound("Out") };
+    int arg_fail_rc = wam_run_predicate(&state, "wam_c_builtin_arg/3", arg_fail_args, 3);
+    if (arg_fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 80;
     }
 
     wam_free_state(&state);
