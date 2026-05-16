@@ -2095,6 +2095,29 @@ static bool wam_make_structure_from_functor(WamState *state,
     return true;
 }
 
+static bool wam_term_arg(WamState *state, int index, WamValue term, WamValue **out) {
+    if (index <= 0) return false;
+    WamValue *cell = wam_deref_ptr(state, &term);
+    if (cell->tag == VAL_LIST) {
+        if (index > 2) return false;
+        *out = &state->H_array[cell->data.ref_addr + index - 1];
+        return true;
+    }
+    if (cell->tag != VAL_STR) return false;
+
+    WamValue *functor = &state->H_array[cell->data.ref_addr];
+    if (functor->tag != VAL_ATOM) return false;
+    const char *slash = strrchr(functor->data.atom, ''/'');
+    if (!slash) return false;
+    char *end = NULL;
+    long arity = strtol(slash + 1, &end, 10);
+    if (!end || *end != 0 || arity < 0 || arity > 255) return false;
+    if (index > arity) return false;
+
+    *out = &state->H_array[cell->data.ref_addr + index];
+    return true;
+}
+
 bool wam_execute_builtin(WamState *state, const char *op, int arity) {
     if (strcmp(op, "true/0") == 0 && arity == 0) return true;
     if ((strcmp(op, "fail/0") == 0 || strcmp(op, "false/0") == 0) && arity == 0) return false;
@@ -2148,6 +2171,14 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
         WamValue structure;
         if (!wam_make_structure_from_functor(state, name->data.atom, arity_cell->data.integer, &structure)) return false;
         return wam_unify(state, &state->A[0], &structure);
+    }
+
+    if (strcmp(op, "arg/3") == 0 && arity == 3) {
+        WamValue *index = wam_deref_ptr(state, &state->A[0]);
+        if (index->tag != VAL_INT) return false;
+        WamValue *arg = NULL;
+        if (!wam_term_arg(state, index->data.integer, state->A[1], &arg)) return false;
+        return wam_unify(state, &state->A[2], arg);
     }
 
     if (arity == 2) {
