@@ -3916,6 +3916,79 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         std::fflush(stdout);
         pc += 1; return true;
     }
+    // print/1 — alias for write/1 (no portray hook in this runtime).
+    if (op == "print/1") {
+        std::printf("%s", render(*get_cell("A1")).c_str());
+        std::fflush(stdout);
+        pc += 1; return true;
+    }
+    // display/1 — write a term without operator notation. Our render
+    // path doesn''t use operator syntax anyway, so display == write.
+    if (op == "display/1") {
+        std::printf("%s", render(*get_cell("A1")).c_str());
+        std::fflush(stdout);
+        pc += 1; return true;
+    }
+    // tab/1 — write N spaces to stdout. N must be a non-negative
+    // integer; otherwise fail.
+    if (op == "tab/1") {
+        Value n = deref(*get_cell("A1"));
+        if (n.tag != Value::Tag::Integer || n.i < 0) return false;
+        for (std::int64_t i = 0; i < n.i; ++i) std::fputc('' '', stdout);
+        std::fflush(stdout);
+        pc += 1; return true;
+    }
+    // write_canonical/1 — write a term with quotes around atoms that
+    // need them (atoms whose textual form is empty, contains special
+    // chars, or would re-parse as a number). For non-atoms we fall
+    // back to render — close enough for simple cases.
+    if (op == "write_canonical/1") {
+        Value v = deref(*get_cell("A1"));
+        if (v.tag == Value::Tag::Atom) {
+            const std::string& s = v.s;
+            // Quote atoms that are empty, contain control / quote
+            // chars, or whose form would parse as a number.
+            // Char codes: 39 = '', 34 = ", 92 = \\.
+            bool needs_quote = s.empty();
+            if (!needs_quote) {
+                for (unsigned char c : s) {
+                    if (c <= 32 || c == 39 || c == 34 || c == '','') {
+                        needs_quote = true;
+                        break;
+                    }
+                }
+            }
+            if (!needs_quote) {
+                try {
+                    std::size_t pos = 0;
+                    std::stoll(s, &pos);
+                    if (pos == s.size()) needs_quote = true;
+                } catch (...) {}
+                if (!needs_quote) {
+                    try {
+                        std::size_t pos = 0;
+                        std::stod(s, &pos);
+                        if (pos == s.size()) needs_quote = true;
+                    } catch (...) {}
+                }
+            }
+            if (needs_quote) {
+                std::fputc(39, stdout); // opening single quote
+                for (unsigned char c : s) {
+                    if (c == 39 || c == 92) std::fputc(92, stdout);
+                    std::fputc(c, stdout);
+                }
+                std::fputc(39, stdout); // closing single quote
+            } else {
+                std::printf("%s", s.c_str());
+            }
+            std::fflush(stdout);
+            pc += 1; return true;
+        }
+        std::printf("%s", render(v).c_str());
+        std::fflush(stdout);
+        pc += 1; return true;
+    }
     // ---- format/1, format/2, format/3 -------------------------------
     // Walks the format string, expanding ~-directives.
     // Supported: ~w (write), ~p (print, same as ~w), ~a (atom),
