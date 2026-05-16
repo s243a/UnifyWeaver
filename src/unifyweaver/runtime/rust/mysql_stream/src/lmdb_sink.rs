@@ -27,10 +27,13 @@ struct Config {
     dump_path: PathBuf,
     lmdb_path: PathBuf,
     manifest_path: PathBuf,
+    predicate_name: String,
+    cl_type: String,
     max_edges: Option<usize>,
     map_size: usize,
     batch_size: usize,
     fixture_tsv_path: Option<PathBuf>,
+    fixture_header: String,
     stats_path: Option<PathBuf>,
     refresh: bool,
 }
@@ -71,10 +74,13 @@ where
 {
     let mut positional = Vec::new();
     let mut manifest_path = None;
+    let mut predicate_name = "category_parent".to_string();
+    let mut cl_type = "subcat".to_string();
     let mut max_edges = None;
     let mut map_size = DEFAULT_MAP_SIZE;
     let mut batch_size = DEFAULT_BATCH_SIZE;
     let mut fixture_tsv_path = None;
+    let mut fixture_header = "child\tparent".to_string();
     let mut stats_path = None;
     let mut refresh = false;
 
@@ -85,6 +91,20 @@ where
                 manifest_path = Some(PathBuf::from(
                     args.next().ok_or("--manifest requires a path")?,
                 ));
+            }
+            "--predicate-name" => {
+                predicate_name = args
+                    .next()
+                    .ok_or("--predicate-name requires a value")?
+                    .to_string_lossy()
+                    .into_owned();
+            }
+            "--cl-type" => {
+                cl_type = args
+                    .next()
+                    .ok_or("--cl-type requires a value")?
+                    .to_string_lossy()
+                    .into_owned();
             }
             "--max-edges" => {
                 max_edges = Some(parse_positive_usize(
@@ -109,6 +129,13 @@ where
                     args.next().ok_or("--fixture-tsv requires a path")?,
                 ));
             }
+            "--fixture-header" => {
+                fixture_header = args
+                    .next()
+                    .ok_or("--fixture-header requires a value")?
+                    .to_string_lossy()
+                    .replace("\\t", "\t");
+            }
             "--stats" => {
                 stats_path = Some(PathBuf::from(args.next().ok_or("--stats requires a path")?));
             }
@@ -132,10 +159,13 @@ where
         dump_path,
         lmdb_path,
         manifest_path,
+        predicate_name,
+        cl_type,
         max_edges,
         map_size,
         batch_size,
         fixture_tsv_path,
+        fixture_header,
         stats_path,
         refresh,
     })
@@ -150,7 +180,7 @@ fn parse_positive_usize(value: &OsString, flag: &str) -> Result<usize, DynError>
 }
 
 fn usage() -> String {
-    "usage: mysql_stream_lmdb <dump.sql[.gz]> <lmdb-dir> [--manifest <path>] [--max-edges N] [--map-size BYTES] [--batch-size N] [--fixture-tsv <path>] [--stats <path>] [--refresh]".to_string()
+    "usage: mysql_stream_lmdb <dump.sql[.gz]> <lmdb-dir> [--manifest <path>] [--predicate-name NAME] [--cl-type TYPE] [--max-edges N] [--map-size BYTES] [--batch-size N] [--fixture-tsv <path>] [--fixture-header TEXT] [--stats <path>] [--refresh]".to_string()
 }
 
 fn default_manifest_path(lmdb_path: &Path) -> PathBuf {
@@ -201,7 +231,8 @@ fn sink_categorylinks_to_lmdb(config: &Config) -> Result<SinkStats, DynError> {
         .open(&config.lmdb_path)?;
     let db = env.create_db(Some(DB_NAME), DatabaseFlags::DUP_SORT)?;
     let mut txn = env.begin_rw_txn()?;
-    let mut fixture_tsv = open_fixture_tsv(config.fixture_tsv_path.as_deref())?;
+    let mut fixture_tsv =
+        open_fixture_tsv(config.fixture_tsv_path.as_deref(), &config.fixture_header)?;
     let mut rows_scanned = 0usize;
     let mut edges_written = 0usize;
 
@@ -211,7 +242,7 @@ fn sink_categorylinks_to_lmdb(config: &Config) -> Result<SinkStats, DynError> {
         .ok_or("dump path must be valid UTF-8")?;
     for row in iter_mysql_rows(dump_path)? {
         rows_scanned += 1;
-        let Some((child, parent)) = categorylinks_subcat_edge(&row) else {
+        let Some((child, parent)) = categorylinks_edge(&row, &config.cl_type) else {
             continue;
         };
         txn.put(
@@ -250,7 +281,10 @@ fn sink_categorylinks_to_lmdb(config: &Config) -> Result<SinkStats, DynError> {
     Ok(stats)
 }
 
-fn open_fixture_tsv(path: Option<&Path>) -> Result<Option<BufWriter<fs::File>>, DynError> {
+fn open_fixture_tsv(
+    path: Option<&Path>,
+    header: &str,
+) -> Result<Option<BufWriter<fs::File>>, DynError> {
     let Some(path) = path else {
         return Ok(None);
     };
@@ -258,12 +292,12 @@ fn open_fixture_tsv(path: Option<&Path>) -> Result<Option<BufWriter<fs::File>>, 
         fs::create_dir_all(parent)?;
     }
     let mut writer = BufWriter::new(fs::File::create(path)?);
-    writer.write_all(b"child\tparent\n")?;
+    writeln!(writer, "{header}")?;
     Ok(Some(writer))
 }
 
-fn categorylinks_subcat_edge(row: &[Field]) -> Option<(String, String)> {
-    if !matches!(row.get(4).and_then(Field::as_str), Some("subcat")) {
+fn categorylinks_edge(row: &[Field], cl_type: &str) -> Option<(String, String)> {
+    if row.get(4).and_then(Field::as_str) != Some(cl_type) {
         return None;
     }
     let child = field_i64(row.get(0)?)?;
@@ -292,7 +326,7 @@ fn write_csharp_query_manifest(config: &Config, row_count: usize) -> Result<(), 
             "  \"Format\": \"unifyweaver.lmdb_relation.v1\",\n",
             "  \"Version\": 1,\n",
             "  \"Backend\": \"lmdb\",\n",
-            "  \"PredicateName\": \"category_parent\",\n",
+            "  \"PredicateName\": \"{}\",\n",
             "  \"Arity\": 2,\n",
             "  \"EnvironmentPath\": \"{}\",\n",
             "  \"DatabaseName\": \"{}\",\n",
@@ -304,6 +338,7 @@ fn write_csharp_query_manifest(config: &Config, row_count: usize) -> Result<(), 
             "  \"SourceLength\": {}\n",
             "}}\n"
         ),
+        json_escape(&config.predicate_name),
         json_escape(&environment_path),
         DB_NAME,
         row_count,
@@ -391,7 +426,7 @@ mod tests {
             Field::Int(20),
         ];
         assert_eq!(
-            categorylinks_subcat_edge(&row),
+            categorylinks_edge(&row, "subcat"),
             Some(("10".to_string(), "20".to_string()))
         );
     }
@@ -407,7 +442,24 @@ mod tests {
             Field::Null,
             Field::Int(20),
         ];
-        assert_eq!(categorylinks_subcat_edge(&row), None);
+        assert_eq!(categorylinks_edge(&row, "subcat"), None);
+    }
+
+    #[test]
+    fn extracts_categorylinks_page_rows_when_requested() {
+        let row = vec![
+            Field::Int(10),
+            Field::Int(0),
+            Field::Str(b"A".to_vec()),
+            Field::Null,
+            Field::Str(b"page".to_vec()),
+            Field::Null,
+            Field::Int(20),
+        ];
+        assert_eq!(
+            categorylinks_edge(&row, "page"),
+            Some(("10".to_string(), "20".to_string()))
+        );
     }
 
     #[test]
@@ -441,6 +493,12 @@ mod tests {
             OsString::from("category_parent.lmdb"),
             OsString::from("--fixture-tsv"),
             OsString::from("category_parent.tsv"),
+            OsString::from("--fixture-header"),
+            OsString::from("article\\tcategory"),
+            OsString::from("--predicate-name"),
+            OsString::from("article_category"),
+            OsString::from("--cl-type"),
+            OsString::from("page"),
             OsString::from("--stats"),
             OsString::from("stats.json"),
             OsString::from("--max-edges"),
@@ -453,5 +511,8 @@ mod tests {
         );
         assert_eq!(config.stats_path, Some(PathBuf::from("stats.json")));
         assert_eq!(config.max_edges, Some(10));
+        assert_eq!(config.predicate_name, "article_category");
+        assert_eq!(config.cl_type, "page");
+        assert_eq!(config.fixture_header, "article\tcategory");
     }
 }
