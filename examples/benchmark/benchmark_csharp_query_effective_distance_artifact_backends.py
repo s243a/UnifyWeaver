@@ -180,6 +180,7 @@ def parse_rows(output: str, run_index: int) -> list[BenchmarkRow]:
 
 def run_scale(
     scale: str,
+    benchmark_root: Path,
     lookup_keys: int,
     lookup_repetitions: int,
     run_index: int,
@@ -190,7 +191,7 @@ def run_scale(
     preserve_numeric_ids: bool,
     lmdb_only: bool,
 ) -> list[BenchmarkRow]:
-    scale_dir = BENCH_DIR / scale
+    scale_dir = benchmark_root / scale
     if not lmdb_only and not (scale_dir / "category_parent.tsv").exists():
         raise RuntimeError(f"scale has no category_parent.tsv: {scale_dir}")
     if lmdb_only and not (scale_dir / "category_parent.lmdb.manifest.json").exists():
@@ -494,6 +495,12 @@ def main(argv: list[str] | None = None) -> int:
         description="Compare C# query artifact backends on the real effective-distance category_parent/2 relation."
     )
     parser.add_argument("--scales", default="300,1k,5k,10k", help="comma-separated scales from data/benchmark")
+    parser.add_argument(
+        "--benchmark-root",
+        type=Path,
+        default=BENCH_DIR,
+        help="directory containing benchmark scale subdirectories",
+    )
     parser.add_argument("--lookup-keys", type=int, default=64, help="number of category IDs to probe")
     parser.add_argument("--lookup-repetitions", type=int, default=5, help="lookup passes per mode")
     parser.add_argument("--repetitions", type=int, default=1, help="independent benchmark runs per scale")
@@ -596,8 +603,8 @@ def main(argv: list[str] | None = None) -> int:
         scale
         for scale in scales
         if not (
-            (BENCH_DIR / scale / "category_parent.tsv").exists()
-            or (args.lmdb_only and (BENCH_DIR / scale / "category_parent.lmdb.manifest.json").exists())
+            (args.benchmark_root / scale / "category_parent.tsv").exists()
+            or (args.lmdb_only and (args.benchmark_root / scale / "category_parent.lmdb.manifest.json").exists())
         )
     ]
     if missing:
@@ -634,6 +641,7 @@ def main(argv: list[str] | None = None) -> int:
             rows.extend(
                 run_scale(
                     scale,
+                    args.benchmark_root,
                     args.lookup_keys,
                     args.lookup_repetitions,
                     run_index,
