@@ -1462,7 +1462,10 @@ is_builtin_pred(atom_length, 2).  % atom → length in chars.
 is_builtin_pred(char_code, 2).    % char-atom ↔ integer code.
 is_builtin_pred(assertz, 1).      % dynamic db: append fact.
 is_builtin_pred(asserta, 1).      % dynamic db: prepend fact.
-is_builtin_pred(retract, 1).      % dynamic db: remove first match.
+% retract/1 is nondeterministic — dispatched via the Call/Execute
+% step arms (like findall/sub_atom) so the CP iterator can backtrack
+% through subsequent matches. NOT in is_builtin_pred so the compiler
+% emits `call retract/1, 1` rather than `builtin_call`.
 is_builtin_pred(retractall, 1).   % dynamic db: remove all matches.
 % Note: sub_atom/5 is nondeterministic; like findall/bagof/setof it
 % goes through the Call/Execute dispatch path (not is_builtin_pred)
