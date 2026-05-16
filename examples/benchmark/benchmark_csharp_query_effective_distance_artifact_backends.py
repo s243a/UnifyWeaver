@@ -16,6 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BENCH_DIR = ROOT / "data" / "benchmark"
+CATEGORY_ONLY_GENERATOR = ROOT / "examples" / "benchmark" / "generate_category_only_benchmark.py"
 LMDB_PROJECT = (
     ROOT
     / "src"
@@ -48,6 +49,12 @@ LMDB_DLL = (
 )
 LIGHTNINGDB_PACKAGE = Path.home() / ".nuget" / "packages" / "lightningdb" / "0.21.0"
 LIGHTNINGDB_DLL = LIGHTNINGDB_PACKAGE / "lib" / "net9.0" / "LightningDB.dll"
+DEFAULT_LARGE_SCALES = ("50k_cats", "100k_cats")
+DEFAULT_DB_CANDIDATES = (
+    ROOT / "data" / "simplewiki" / "simplewiki_categories.db",
+    ROOT / "context" / "gemini" / "UnifyWeaver" / "data" / "simplewiki" / "simplewiki_categories.db",
+    ROOT.parent.parent / "gemini" / "UnifyWeaver" / "data" / "simplewiki" / "simplewiki_categories.db",
+)
 
 
 HEADERS = [
@@ -243,7 +250,7 @@ def numeric(row: BenchmarkRow, column: str) -> float:
     return float(row.values[column])
 
 
-def scale_sort_key(scale: str) -> tuple[int, str]:
+def scale_numeric_value(scale: str) -> int | None:
     label = scale.strip().lower()
     multiplier = 1
     if label.endswith("k"):
@@ -254,9 +261,139 @@ def scale_sort_key(scale: str) -> tuple[int, str]:
         label = label[:-1]
 
     try:
-        return (int(float(label) * multiplier), scale)
+        return int(float(label) * multiplier)
     except ValueError:
-        return (sys.maxsize, scale)
+        return None
+
+
+def scale_sort_key(scale: str) -> tuple[int, str]:
+    numeric_value = scale_numeric_value(scale)
+    return (numeric_value if numeric_value is not None else sys.maxsize, scale)
+
+
+def is_large_scale(scale: str) -> bool:
+    numeric_value = scale_numeric_value(scale)
+    return (numeric_value is not None and numeric_value >= 50_000) or scale in DEFAULT_LARGE_SCALES
+
+
+def scale_seed_cap(scale: str) -> int | None:
+    if scale == "50k_cats":
+        return 50_000
+    if scale == "100k_cats":
+        return None
+    raise ValueError(
+        f"automatic fixture preparation only supports {', '.join(DEFAULT_LARGE_SCALES)}; "
+        f"prepare data/benchmark/{scale} separately or omit --prepare-missing-large-scales"
+    )
+
+
+def resolve_simplewiki_db(path: Path | None) -> Path:
+    if path is not None:
+        if path.exists():
+            return path
+        raise FileNotFoundError(path)
+    for candidate in DEFAULT_DB_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    searched = "\n".join(f"  - {candidate}" for candidate in DEFAULT_DB_CANDIDATES)
+    raise FileNotFoundError(
+        "simplewiki_categories.db not found. Run examples/benchmark/parse_simplewiki_dump.py "
+        "or pass --db.\nSearched:\n" + searched
+    )
+
+
+def fixture_ready(scale: str) -> bool:
+    scale_dir = BENCH_DIR / scale
+    return (scale_dir / "category_parent.tsv").exists() and (scale_dir / "facts.pl").exists()
+
+
+def prepare_large_fixture(scale: str, db_path: Path) -> None:
+    if fixture_ready(scale):
+        print(f"[fixture] reuse {BENCH_DIR / scale}", file=sys.stderr)
+        return
+    cmd = [
+        sys.executable,
+        str(CATEGORY_ONLY_GENERATOR),
+        "--output",
+        str(BENCH_DIR / scale),
+        "--db",
+        str(db_path),
+    ]
+    cap = scale_seed_cap(scale)
+    if cap is not None:
+        cmd.extend(["--max-seeds", str(cap)])
+    print(f"[fixture] generate {scale}", file=sys.stderr)
+    run_checked(cmd, cwd=ROOT, timeout=600)
+
+
+def parse_mem_available_mib(meminfo_text: str) -> int | None:
+    for line in meminfo_text.splitlines():
+        if not line.startswith("MemAvailable:"):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            return None
+        try:
+            return int(parts[1]) // 1024
+        except ValueError:
+            return None
+    return None
+
+
+def read_mem_available_mib(meminfo_path: Path = Path("/proc/meminfo")) -> int | None:
+    try:
+        return parse_mem_available_mib(meminfo_path.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+
+
+def competing_processes(cpu_threshold: float) -> list[str]:
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pid=,%cpu=,args="],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return []
+
+    processes = []
+    for line in result.stdout.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+            cpu = float(parts[1])
+        except ValueError:
+            continue
+        if pid == os.getpid() or cpu < cpu_threshold:
+            continue
+        processes.append(f"competing process {pid} uses {cpu:.1f}% CPU: {parts[2]}")
+    return processes
+
+
+def resource_preflight_failures(
+    *,
+    min_free_memory_mib: int,
+    require_idle: bool,
+    max_competing_cpu_percent: float,
+) -> list[str]:
+    failures: list[str] = []
+    memory_mib = read_mem_available_mib()
+    if memory_mib is None:
+        failures.append("could not determine available memory from /proc/meminfo")
+    elif memory_mib < min_free_memory_mib:
+        failures.append(
+            f"available memory {memory_mib} MiB is below required {min_free_memory_mib} MiB"
+        )
+
+    if require_idle:
+        failures.extend(competing_processes(max_competing_cpu_percent))
+    return failures
 
 
 def summarize(rows: list[BenchmarkRow]) -> list[SummaryRow]:
@@ -343,6 +480,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lookup-repetitions", type=int, default=5, help="lookup passes per mode")
     parser.add_argument("--repetitions", type=int, default=1, help="independent benchmark runs per scale")
     parser.add_argument(
+        "--prepare-missing-large-scales",
+        action="store_true",
+        help="generate supported SimpleWiki category-only fixtures when 50k_cats/100k_cats are requested",
+    )
+    parser.add_argument("--db", type=Path, default=None, help="path to simplewiki_categories.db for fixture preparation")
+    parser.add_argument(
+        "--min-free-memory-mib",
+        type=int,
+        default=1024,
+        help="minimum MemAvailable MiB required before running large scales",
+    )
+    parser.add_argument(
+        "--skip-resource-check",
+        action="store_true",
+        help="skip the large-scale free-memory preflight check",
+    )
+    parser.add_argument(
+        "--require-idle",
+        action="store_true",
+        help="for large scales, fail if competing CPU-heavy processes are active",
+    )
+    parser.add_argument(
+        "--max-competing-cpu-percent",
+        type=float,
+        default=25.0,
+        help="CPU-percent threshold for --require-idle competing-process detection",
+    )
+    parser.add_argument(
         "--format",
         choices=("tsv", "markdown", "summary-tsv", "summary-markdown"),
         default="tsv",
@@ -356,10 +521,39 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--lookup-repetitions must be positive")
     if args.repetitions <= 0:
         parser.error("--repetitions must be positive")
+    if args.min_free_memory_mib <= 0:
+        parser.error("--min-free-memory-mib must be positive")
+    if args.max_competing_cpu_percent < 0:
+        parser.error("--max-competing-cpu-percent must be non-negative")
 
     scales = [scale.strip() for scale in args.scales.split(",") if scale.strip()]
     if not scales:
         parser.error("--scales must include at least one scale")
+    large_scales = [scale for scale in scales if is_large_scale(scale)]
+
+    if args.prepare_missing_large_scales:
+        db_path = resolve_simplewiki_db(args.db)
+        for scale in large_scales:
+            prepare_large_fixture(scale, db_path)
+
+    missing = [scale for scale in scales if not (BENCH_DIR / scale / "category_parent.tsv").exists()]
+    if missing:
+        hints = []
+        supported_missing = [scale for scale in missing if scale in DEFAULT_LARGE_SCALES]
+        if supported_missing:
+            hints.append("pass --prepare-missing-large-scales to generate supported SimpleWiki category-only fixtures")
+        hints.append("or prepare data/benchmark/<scale>/category_parent.tsv before running")
+        parser.error(f"missing benchmark scale(s): {', '.join(missing)}; {'; '.join(hints)}")
+
+    if large_scales and not args.skip_resource_check:
+        failures = resource_preflight_failures(
+            min_free_memory_mib=args.min_free_memory_mib,
+            require_idle=args.require_idle,
+            max_competing_cpu_percent=args.max_competing_cpu_percent,
+        )
+        if failures:
+            joined = "\n  - ".join(failures)
+            parser.error(f"large-scale resource preflight failed:\n  - {joined}")
 
     rows: list[BenchmarkRow] = []
     for scale in scales:
@@ -497,7 +691,8 @@ static string WriteLmdbArtifact(
 {
     var envPath = Path.Combine(root, "lmdb-category-parent");
     Directory.CreateDirectory(envPath);
-    using (var env = new LightningEnvironment(envPath) { MaxDatabases = 4, MapSize = 256L * 1024L * 1024L })
+    var mapSize = Math.Max(256L * 1024L * 1024L, rows.Count * 256L);
+    using (var env = new LightningEnvironment(envPath) { MaxDatabases = 4, MapSize = mapSize })
     {
         env.Open();
         using var tx = env.BeginTransaction();
