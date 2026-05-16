@@ -1161,6 +1161,84 @@ helper_predicate_items(Items) :-
         put_value("Y5", "A5"),
         deallocate,
         execute("foldl/5"),
+        % --- pairs_keys/2 ------------------------------------------------
+        % pairs_keys([], []).
+        % pairs_keys([K-_|T], [K|KT]) :- pairs_keys(T, KT).
+        label("pairs_keys/2"),
+        try_me_else("L_cpp_pairs_keys_2_2"),
+        get_constant("[]", "A1"),
+        get_constant("[]", "A2"),
+        proceed,
+        label("L_cpp_pairs_keys_2_2"),
+        trust_me,
+        allocate,
+        get_list("A1"),
+        unify_variable("X3"),
+        unify_variable("Y2"),
+        get_structure("-/2", "X3"),
+        unify_variable("X4"),
+        unify_variable("X5"),
+        get_list("A2"),
+        unify_value("X4"),
+        unify_variable("Y3"),
+        put_value("Y2", "A1"),
+        put_value("Y3", "A2"),
+        deallocate,
+        execute("pairs_keys/2"),
+        % --- pairs_values/2 ----------------------------------------------
+        % pairs_values([], []).
+        % pairs_values([_-V|T], [V|VT]) :- pairs_values(T, VT).
+        label("pairs_values/2"),
+        try_me_else("L_cpp_pairs_values_2_2"),
+        get_constant("[]", "A1"),
+        get_constant("[]", "A2"),
+        proceed,
+        label("L_cpp_pairs_values_2_2"),
+        trust_me,
+        allocate,
+        get_list("A1"),
+        unify_variable("X3"),
+        unify_variable("Y2"),
+        get_structure("-/2", "X3"),
+        unify_variable("X4"),
+        unify_variable("X5"),
+        get_list("A2"),
+        unify_value("X5"),
+        unify_variable("Y3"),
+        put_value("Y2", "A1"),
+        put_value("Y3", "A2"),
+        deallocate,
+        execute("pairs_values/2"),
+        % --- pairs_keys_values/3 -----------------------------------------
+        % pairs_keys_values([], [], []).
+        % pairs_keys_values([K-V|T], [K|KT], [V|VT]) :-
+        %     pairs_keys_values(T, KT, VT).
+        label("pairs_keys_values/3"),
+        try_me_else("L_cpp_pairs_kv_3_2"),
+        get_constant("[]", "A1"),
+        get_constant("[]", "A2"),
+        get_constant("[]", "A3"),
+        proceed,
+        label("L_cpp_pairs_kv_3_2"),
+        trust_me,
+        allocate,
+        get_list("A1"),
+        unify_variable("X4"),
+        unify_variable("Y2"),
+        get_structure("-/2", "X4"),
+        unify_variable("X5"),
+        unify_variable("X6"),
+        get_list("A2"),
+        unify_value("X5"),
+        unify_variable("Y3"),
+        get_list("A3"),
+        unify_value("X6"),
+        unify_variable("Y4"),
+        put_value("Y2", "A1"),
+        put_value("Y3", "A2"),
+        put_value("Y4", "A3"),
+        deallocate,
+        execute("pairs_keys_values/3"),
         % --- length/2 ----------------------------------------------------
         % length([], 0).
         % length([_|T], N) :- length(T, M), N is M + 1.
@@ -3636,6 +3714,47 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
                 }), items.end());
         }
         // Build result list.
+        CellPtr result = std::make_shared<Cell>(Value::Atom("[]"));
+        for (auto it = items.rbegin(); it != items.rend(); ++it) {
+            std::vector<CellPtr> cons_args;
+            cons_args.push_back(*it);
+            cons_args.push_back(result);
+            result = std::make_shared<Cell>(
+                Value::Compound("[|]/2", std::move(cons_args)));
+        }
+        CellPtr tgt = get_cell("A2");
+        if (tgt->is_unbound()) { bind_cell(tgt, *result); pc += 1; return true; }
+        if (!unify_cells(tgt, result)) return false;
+        pc += 1; return true;
+    }
+
+    // ---- keysort/2 --------------------------------------------------
+    // keysort(+Pairs, -Sorted) — stable sort of Key-Value pairs by
+    // Key (standard order). Pairs must be ground at the head; the
+    // Value side is opaque (sorted only by Key). Items that aren''t
+    // -/2 pairs cause failure.
+    if (op == "keysort/2") {
+        std::vector<CellPtr> items;
+        CellPtr lc = get_cell("A1");
+        for (;;) {
+            Value lv = deref(*lc);
+            if (lv.tag == Value::Tag::Atom && lv.s == "[]") break;
+            if (lv.tag != Value::Tag::Compound || lv.s != "[|]/2"
+                || lv.args.size() != 2) return false;
+            // Validate that the head is a -/2 pair.
+            Value hv = deref(*lv.args[0]);
+            if (hv.tag != Value::Tag::Compound || hv.s != "-/2"
+                || hv.args.size() != 2) return false;
+            items.push_back(lv.args[0]);
+            lc = lv.args[1];
+        }
+        // Stable sort by the pair''s Key (args[0]) — Values stay in
+        // their original relative order on key ties.
+        std::stable_sort(items.begin(), items.end(),
+            [](const CellPtr& a, const CellPtr& b) {
+                return standard_order_cmp(*(a->args[0]),
+                                          *(b->args[0])) < 0;
+            });
         CellPtr result = std::make_shared<Cell>(Value::Atom("[]"));
         for (auto it = items.rbegin(); it != items.rend(); ++it) {
             std::vector<CellPtr> cons_args;

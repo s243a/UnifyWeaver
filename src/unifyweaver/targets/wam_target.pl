@@ -1492,6 +1492,10 @@ is_builtin_pred(exclude, 3).      % filter: drop elems where Goal succeeds.
 is_builtin_pred(partition, 4).    % split into pass + fail lists.
 is_builtin_pred(foldl, 4).        % left fold over one list.
 is_builtin_pred(foldl, 5).        % left fold over two lists in parallel.
+is_builtin_pred(keysort, 2).      % stable sort of Key-Value pairs by Key.
+is_builtin_pred(pairs_keys, 2).   % extract keys from Key-Value pairs.
+is_builtin_pred(pairs_values, 2). % extract values from Key-Value pairs.
+is_builtin_pred(pairs_keys_values, 3). % split pairs into parallel lists.
 % Note: sub_atom/5 is nondeterministic; like findall/bagof/setof it
 % goes through the Call/Execute dispatch path (not is_builtin_pred)
 % so dispatch_sub_atom can manage its own CP machinery.
