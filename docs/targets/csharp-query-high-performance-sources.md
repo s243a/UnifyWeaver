@@ -145,6 +145,7 @@ Candidate format:
 manifest.json
 rows.uwa          fixed-width sorted pairs or tuples
 index.col0.uwa    optional offsets/ranges by key
+rows.col1.uwa     optional fixed-width rows sorted by column 1
 ```
 
 Initial access contracts:
@@ -152,6 +153,8 @@ Initial access contracts:
 - scan rows in physical order
 - lookup by exact key on column 0
 - bucket stream by column 0
+- optional lookup and bucket stream by column 1 when the manifest declares a
+  column-1 sidecar
 
 This is simpler than LMDB and avoids external dependencies, but the ID strategy
 must be explicit in the manifest. The same physical format should support at
@@ -188,7 +191,8 @@ workloads once preprocessing is explicit. That is workload-specific: LMDB still
 has an important advantage for database-like access patterns because it can
 serve arbitrary B-tree lookups over the stored key space, while the current
 mmap-array provider is intentionally narrow: sorted fixed-width rows, binary
-search on column 0, and bucket streaming in that same order.
+search on manifest-declared sorted columns, and bucket streaming in those same
+orders.
 
 ## Hash/Block-Sharded File Path
 
