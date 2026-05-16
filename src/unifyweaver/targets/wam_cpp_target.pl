@@ -1857,6 +1857,15 @@ struct WamState {
     };
     std::vector<DynamicIterator> dynamic_iters;
     std::size_t dynamic_next_clause_pc = 0;
+    // Mutable globals — nb_setval/2, nb_getval/2, b_setval/2, b_getval/2.
+    // Each key maps to a CellPtr holding the current value. nb_setval
+    // replaces the pointer (non-backtrackable: prior bindings to the
+    // old cell stay trail-tracked but no longer reachable through
+    // the global). b_setval mutates the existing cell via bind_cell,
+    // so a trail entry restores the previous value on backtrack.
+    // Both setvals deep-copy the input to give the stored term
+    // independent vars.
+    std::unordered_map<std::string, CellPtr> nb_globals;
     // Iteration state for retract/1''s nondeterministic behaviour.
     // Each successful retract removes the matched clause; on
     // backtrack, retract_try_next continues from where it left off
@@ -2959,6 +2968,63 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
                     return ok;
                 }), vec.end());
         }
+        pc += 1; return true;
+    }
+
+    // ---- nb_setval/2, nb_getval/2, b_setval/2, b_getval/2 -----------
+    // Mutable globals. Key must be a ground atom. nb_setval REPLACES
+    // the stored value (no undo on backtrack); b_setval MUTATES the
+    // existing cell via bind_cell so the trail records the prior
+    // content, and backtrack restores it. Both deep-copy the value
+    // so the stored term has fresh variables (independent of the
+    // caller''s bindings). getvals deep-copy on retrieval so the
+    // returned term''s vars are fresh too — repeated reads see the
+    // same shape but disjoint vars.
+    auto read_global_key = [&](std::string& out) -> bool {
+        Value k = deref(*get_cell("A1"));
+        if (k.tag != Value::Tag::Atom) return false;
+        out = k.s;
+        return true;
+    };
+    if (op == "nb_setval/2") {
+        std::string key;
+        if (!read_global_key(key)) return false;
+        Value v = deref(*get_cell("A2"));
+        if (v.is_unbound()) return false; // need a concrete value
+        CellPtr fresh = deep_copy_term(get_cell("A2"));
+        nb_globals[key] = std::move(fresh);
+        pc += 1; return true;
+    }
+    if (op == "b_setval/2") {
+        std::string key;
+        if (!read_global_key(key)) return false;
+        Value v = deref(*get_cell("A2"));
+        if (v.is_unbound()) return false;
+        CellPtr fresh = deep_copy_term(get_cell("A2"));
+        auto it = nb_globals.find(key);
+        if (it == nb_globals.end()) {
+            // First binding for this key — no prior cell to mutate,
+            // so just install fresh. Subsequent b_setvals will mutate
+            // this cell in place so the trail can restore them.
+            nb_globals[key] = std::move(fresh);
+        } else {
+            // Mutate the existing cell so the trail entry can undo
+            // it on backtrack.
+            bind_cell(it->second, *fresh);
+        }
+        pc += 1; return true;
+    }
+    if (op == "nb_getval/2" || op == "b_getval/2") {
+        std::string key;
+        if (!read_global_key(key)) return false;
+        auto it = nb_globals.find(key);
+        if (it == nb_globals.end()) return false;
+        // Deep-copy on retrieval so each get returns a fresh-var
+        // copy; repeated reads share structure but not bindings.
+        CellPtr fresh = deep_copy_term(it->second);
+        CellPtr tgt = get_cell("A2");
+        if (tgt->is_unbound()) { bind_cell(tgt, *fresh); pc += 1; return true; }
+        if (!unify_cells(tgt, fresh)) return false;
         pc += 1; return true;
     }
 

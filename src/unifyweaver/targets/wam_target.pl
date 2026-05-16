@@ -1467,6 +1467,10 @@ is_builtin_pred(asserta, 1).      % dynamic db: prepend fact.
 % through subsequent matches. NOT in is_builtin_pred so the compiler
 % emits `call retract/1, 1` rather than `builtin_call`.
 is_builtin_pred(retractall, 1).   % dynamic db: remove all matches.
+is_builtin_pred(nb_setval, 2).    % mutable global: replace value.
+is_builtin_pred(nb_getval, 2).    % mutable global: read value.
+is_builtin_pred(b_setval, 2).     % backtrackable mutable global: bind.
+is_builtin_pred(b_getval, 2).     % backtrackable mutable global: read.
 % Note: sub_atom/5 is nondeterministic; like findall/bagof/setof it
 % goes through the Call/Execute dispatch path (not is_builtin_pred)
 % so dispatch_sub_atom can manage its own CP machinery.
