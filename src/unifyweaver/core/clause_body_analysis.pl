@@ -242,6 +242,7 @@ type_check_pred(is_list).
 type_check_pred(compound).
 type_check_pred(var).
 type_check_pred(nonvar).
+type_check_pred(ground).
 
 % ============================================================================
 % OUTPUT VARIABLE DETECTION
