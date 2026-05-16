@@ -388,6 +388,10 @@ clojure_direct_builtin("append/3", "3").
 clojure_direct_builtin("append/3", 3).
 clojure_direct_builtin('append/3', "3").
 clojure_direct_builtin('append/3', 3).
+clojure_direct_builtin("reverse/2", "2").
+clojure_direct_builtin("reverse/2", 2).
+clojure_direct_builtin('reverse/2', "2").
+clojure_direct_builtin('reverse/2', 2).
 clojure_direct_builtin("sort/2", "2").
 clojure_direct_builtin("sort/2", 2).
 clojure_direct_builtin('sort/2', "2").
@@ -661,6 +665,11 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     format(atom(Expr),
            '(let [left (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound)) out (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A3") ::lowered-unbound))] (runtime/apply-append-solution ~w (inc (:pc ~w)) left right out))',
            [S, S, S, S, S, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "reverse/2" ; Op == 'reverse/2'),
+    !,
+    format(atom(Expr), '(runtime/apply-reverse-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "sort/2" ; Op == 'sort/2'),

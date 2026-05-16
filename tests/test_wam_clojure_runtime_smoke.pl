@@ -84,6 +84,9 @@
 :- dynamic user:wam_append_bad_left/1.
 :- dynamic user:wam_append_unbound_left/1.
 :- dynamic user:wam_append_split/2.
+:- dynamic user:wam_reverse_guard/2.
+:- dynamic user:wam_reverse_bad_list/1.
+:- dynamic user:wam_reverse_unbound_list/1.
 :- dynamic user:wam_sort_guard/2.
 :- dynamic user:wam_sort_bad_list/1.
 :- dynamic user:wam_sort_unbound_list/1.
@@ -212,6 +215,9 @@ user:wam_append_guard(A, B, C) :- append(A, B, C).
 user:wam_append_bad_left(C) :- append([a|b], [c], C).
 user:wam_append_unbound_left(C) :- user:wam_unbound_arg(A), append(A, [b], C).
 user:wam_append_split(A, B) :- append(A, B, [a,b,c]).
+user:wam_reverse_guard(L, R) :- reverse(L, R).
+user:wam_reverse_bad_list(R) :- reverse([a|b], R).
+user:wam_reverse_unbound_list(R) :- user:wam_unbound_arg(L), reverse(L, R).
 user:wam_sort_guard(L, S) :- sort(L, S).
 user:wam_sort_bad_list(S) :- sort([a|b], S).
 user:wam_sort_unbound_list(S) :- user:wam_unbound_arg(L), sort(L, S).
@@ -345,6 +351,9 @@ run_smoke :-
           user:wam_append_bad_left/1,
           user:wam_append_unbound_left/1,
           user:wam_append_split/2,
+          user:wam_reverse_guard/2,
+          user:wam_reverse_bad_list/1,
+          user:wam_reverse_unbound_list/1,
           user:wam_sort_guard/2,
           user:wam_sort_bad_list/1,
           user:wam_sort_unbound_list/1,
@@ -421,6 +430,7 @@ run_smoke :-
     assert_lowered_length_builtin_emitted(TmpDir),
     assert_lowered_member_builtin_emitted(TmpDir),
     assert_lowered_append_builtin_emitted(TmpDir),
+    assert_lowered_reverse_builtin_emitted(TmpDir),
     assert_lowered_sort_builtin_emitted(TmpDir),
     assert_lowered_msort_builtin_emitted(TmpDir),
     assert_lowered_copy_term_builtin_emitted(TmpDir),
@@ -581,6 +591,11 @@ smoke_cases([
     case('wam_append_split/2', args('[a,b]', '[c]'), "true"),
     case('wam_append_split/2', args('[a,b,c]', '[]'), "true"),
     case('wam_append_split/2', args('[a]', '[c]'), "false"),
+    case('wam_reverse_guard/2', args('[a,b,c]', '[c,b,a]'), "true"),
+    case('wam_reverse_guard/2', args('[]', '[]'), "true"),
+    case('wam_reverse_guard/2', args('[a,b,c]', '[a,b,c]'), "false"),
+    case('wam_reverse_bad_list/1', '[b,a]', "false"),
+    case('wam_reverse_unbound_list/1', '[b,a]', "false"),
     case('wam_sort_guard/2', args('[b,a,a,c]', '[a,b,c]'), "true"),
     case('wam_sort_guard/2', args('[b,a,a,c]', '[a,b]'), "false"),
     case('wam_sort_guard/2', args('[f(b),f(a),a]', '[a,f(a),f(b)]'), "true"),
@@ -829,6 +844,14 @@ assert_lowered_append_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-append-unbound-left-1"),
     has(CoreCode, "defn lowered-wam-append-split-2"),
     has(CoreCode, "runtime/apply-append-solution").
+
+assert_lowered_reverse_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-reverse-guard-2"),
+    has(CoreCode, "defn lowered-wam-reverse-bad-list-1"),
+    has(CoreCode, "defn lowered-wam-reverse-unbound-list-1"),
+    has(CoreCode, "runtime/apply-reverse-solution").
 
 assert_lowered_sort_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
@@ -1089,6 +1112,8 @@ prolog_term_string_to_edn('[c]', "{:tag :struct :functor \"[|]/2\" :args [\"c\" 
 prolog_term_string_to_edn('[a,c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[a,b,c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[a,a,b,c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}]}") :- !.
+prolog_term_string_to_edn('[c,b,a]', "{:tag :struct :functor \"[|]/2\" :args [\"c\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn('[b,a]', "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[b,a,a,c]', "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}]}") :- !.
 prolog_term_string_to_edn('[f(b),f(a),a]', "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"b\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"a\"]} {:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[a,f(a),f(b)]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"a\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"b\"]} \"[]\"]}]}]}") :- !.
@@ -1105,6 +1130,8 @@ prolog_term_string_to_edn("[c]", "{:tag :struct :functor \"[|]/2\" :args [\"c\" 
 prolog_term_string_to_edn("[a,c]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn("[a,b,c]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn("[a,a,b,c]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}]}") :- !.
+prolog_term_string_to_edn("[c,b,a]", "{:tag :struct :functor \"[|]/2\" :args [\"c\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn("[b,a]", "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn("[b,a,a,c]", "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}]}") :- !.
 prolog_term_string_to_edn("[f(b),f(a),a]", "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"b\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"a\"]} {:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn("[a,f(a),f(b)]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"a\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"b\"]} \"[]\"]}]}]}") :- !.

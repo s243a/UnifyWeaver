@@ -760,6 +760,20 @@
 (defn sorted-terms [state items]
   (sort #(term-compare state %1 %2) items))
 
+(defn apply-reverse-solution [state]
+  (let [list-value (deref-value (:bindings state)
+                                (or (reg-get-raw state "A1") ::unbound))
+        out (deref-value (:bindings state)
+                         (or (reg-get-raw state "A2") ::unbound))]
+    (if-let [items (proper-list-items state list-value)]
+      (let [reversed-term (list->term (:intern-context state)
+                                      (reverse items))
+            [ok next-state] (unify-values state out reversed-term)]
+        (if ok
+          (advance next-state)
+          (backtrack state)))
+      (backtrack state))))
+
 (defn apply-sort-solution [state]
   (let [list-value (deref-value (:bindings state)
                                 (or (reg-get-raw state "A1") ::unbound))
@@ -1537,6 +1551,9 @@
                 out (deref-value (:bindings state)
                                  (or (reg-get-raw state "A3") ::unbound))]
             (apply-append-solution state (inc (:pc state)) left right out))
+
+          "reverse/2"
+          (apply-reverse-solution state)
 
           "sort/2"
           (apply-sort-solution state)
