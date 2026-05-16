@@ -1641,6 +1641,66 @@ user:wam_cpp_test_wc_quoted :- write_canonical('hello world'), nl.
 % it from an integer.
 user:wam_cpp_test_wc_digit_atom :- write_canonical('5'), nl.
 
+% with_output_to/2 — capture write/format output into an atom,
+% string, or codes list. Pushes an OutputCaptureFrame; while the
+% frame is on top, all I/O builtins route through emit_output()
+% which appends to the frame''s buffer instead of writing stdout.
+% On goal success, OutputCaptureReturn pops the frame and unifies
+% the buffer with the sink (atom/string/codes per the sink shape).
+:- dynamic user:wam_cpp_test_wot_basic/0.
+:- dynamic user:wam_cpp_test_wot_multi/0.
+:- dynamic user:wam_cpp_test_wot_format/0.
+:- dynamic user:wam_cpp_test_wot_string/0.
+:- dynamic user:wam_cpp_test_wot_codes/0.
+:- dynamic user:wam_cpp_test_wot_empty/0.
+:- dynamic user:wam_cpp_test_wot_goal_fails/0.
+:- dynamic user:wam_cpp_test_wot_tab/0.
+:- dynamic user:wam_cpp_test_wot_nested/0.
+
+user:wam_cpp_test_wot_basic :-
+    with_output_to(atom(A), write(hello)),
+    A = hello.
+
+% Multi-write via conjunction.
+user:wam_cpp_test_wot_multi :-
+    with_output_to(atom(A), (write(foo), write(bar))),
+    A = foobar.
+
+user:wam_cpp_test_wot_format :-
+    with_output_to(atom(A), format("X = ~w", [42])),
+    A = 'X = 42'.
+
+user:wam_cpp_test_wot_string :-
+    with_output_to(string(S), write(test)),
+    S = test.
+
+user:wam_cpp_test_wot_codes :-
+    with_output_to(codes(C), write(ab)),
+    C = [97, 98].
+
+user:wam_cpp_test_wot_empty :-
+    with_output_to(atom(A), true),
+    A = ''.
+
+user:wam_cpp_test_wot_goal_fails :-
+    \+ with_output_to(atom(_), fail).
+
+% tab routes through emit_output too.
+user:wam_cpp_test_wot_tab :-
+    with_output_to(atom(A), (write(x), tab(3), write(y))),
+    A = 'x   y'.
+
+% Nested capture: inner frame intercepts only its own goal''s
+% output; outer continues to capture the rest. Regression guard
+% for the saved_cp handling via invoke_goal_as_call dispatch.
+user:wam_cpp_test_wot_nested :-
+    with_output_to(atom(Outer),
+        (write(a),
+         with_output_to(atom(Inner), write(b)),
+         write(c))),
+    Outer = ac,
+    Inner = b.
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -5728,6 +5788,115 @@ test(cpp_e2e_wc_digit_atom,
         ( build_e2e_binary(TmpDir, BinPath),
           run_query_stdout(BinPath, 'wam_cpp_test_wc_digit_atom/0',
                            [], true, "'5'\n")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% with_output_to/2 — capture I/O into an atom/string/codes.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_wot_basic, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_wot_basic', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_wot_basic/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_wot_basic/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_wot_multi, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_wot_multi', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_wot_multi/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_wot_multi/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_wot_format, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_wot_format', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_wot_format/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_wot_format/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_wot_string, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_wot_string', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_wot_string/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_wot_string/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_wot_codes, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_wot_codes', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_wot_codes/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_wot_codes/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_wot_empty, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_wot_empty', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_wot_empty/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_wot_empty/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_wot_goal_fails,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_wot_fails', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_wot_goal_fails/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_wot_goal_fails/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_wot_tab, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_wot_tab', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_wot_tab/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_wot_tab/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_wot_nested, [condition(cpp_compiler_available)]) :-
+    % Nested capture regression guard: ensures the inner frame''s
+    % saved_cp uses after_pc from invoke_goal_as_call (not pc + 1
+    % which is meaningless when the builtin is dispatched as a
+    % goal-term).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_wot_nested', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_wot_nested/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_wot_nested/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
