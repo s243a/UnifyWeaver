@@ -1858,6 +1858,51 @@ user:wam_cpp_test_read_term_atom :-
     read_term(T),
     T = just_an_atom.
 
+% get_char/1, get_code/1, peek_char/1, put_char/1, put_code/1 —
+% single-char I/O. EOF behaviour: get_char/peek_char → atom
+% end_of_file; get_code → -1. put_* routes through emit_output_char
+% so with_output_to/2 captures the bytes.
+:- dynamic user:wam_cpp_test_get_char/0.
+:- dynamic user:wam_cpp_test_get_code/0.
+:- dynamic user:wam_cpp_test_get_char_eof/0.
+:- dynamic user:wam_cpp_test_get_code_eof/0.
+:- dynamic user:wam_cpp_test_peek_char/0.
+:- dynamic user:wam_cpp_test_put_char/0.
+:- dynamic user:wam_cpp_test_put_code/0.
+:- dynamic user:wam_cpp_test_put_in_capture/0.
+
+user:wam_cpp_test_get_char :- get_char(C), C = h.
+
+user:wam_cpp_test_get_code :- get_code(C), C = 104.
+
+user:wam_cpp_test_get_char_eof :-
+    get_char(C),
+    C = end_of_file.
+
+user:wam_cpp_test_get_code_eof :-
+    get_code(C),
+    C = -1.
+
+% peek_char/1 doesn''t consume the byte — the subsequent get_char/1
+% sees the same character.
+user:wam_cpp_test_peek_char :-
+    peek_char(C1),
+    get_char(C2),
+    C1 = a,
+    C2 = a.
+
+user:wam_cpp_test_put_char :-
+    put_char(a), put_char(b), put_char(c), nl.
+
+user:wam_cpp_test_put_code :-
+    put_code(72), put_code(105), nl.  % "Hi\n"
+
+% Capture put_char + put_code via with_output_to/2 — confirms
+% they route through emit_output_char (not direct stdout).
+user:wam_cpp_test_put_in_capture :-
+    with_output_to(atom(A), (put_char(x), put_code(89))),
+    A = 'xY'.
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -6396,6 +6441,117 @@ test(cpp_e2e_read_term_atom,
           run_query_with_stdin(BinPath,
                                'wam_cpp_test_read_term_atom/0',
                                [], "just_an_atom.\n", true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% get_char/1, get_code/1, peek_char/1, put_char/1, put_code/1 —
+% single-char I/O. Input tests pipe one char via stdin; output
+% tests assert exact stdout bytes.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_get_char, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_get_char', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_get_char/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_with_stdin(BinPath, 'wam_cpp_test_get_char/0',
+                               [], "h", true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_get_code, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_get_code', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_get_code/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_with_stdin(BinPath, 'wam_cpp_test_get_code/0',
+                               [], "h", true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_get_char_eof,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_get_char_eof', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_get_char_eof/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_with_stdin(BinPath,
+                               'wam_cpp_test_get_char_eof/0',
+                               [], "", true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_get_code_eof,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_get_code_eof', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_get_code_eof/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_with_stdin(BinPath,
+                               'wam_cpp_test_get_code_eof/0',
+                               [], "", true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_peek_char, [condition(cpp_compiler_available)]) :-
+    % peek_char/1 doesn''t consume — subsequent get_char/1 sees the
+    % same byte. One char of stdin satisfies both reads.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_peek_char', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_peek_char/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_with_stdin(BinPath, 'wam_cpp_test_peek_char/0',
+                               [], "a", true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_put_char, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_put_char', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_put_char/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_stdout(BinPath, 'wam_cpp_test_put_char/0', [],
+                           true, "abc\n")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_put_code, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_put_code', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_put_code/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_stdout(BinPath, 'wam_cpp_test_put_code/0', [],
+                           true, "Hi\n")
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_put_in_capture,
+     [condition(cpp_compiler_available)]) :-
+    % Capture regression guard — put_char/put_code route through
+    % emit_output_char so with_output_to/2 sees them.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_put_capture', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_put_in_capture/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_put_in_capture/0',
+                    [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

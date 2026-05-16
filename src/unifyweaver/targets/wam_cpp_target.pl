@@ -3471,6 +3471,50 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         pc += 1; return true;
     }
 
+    // ---- get_char/1, get_code/1, peek_char/1 ------------------------
+    // Single-char input. On EOF, get_char/peek_char bind A1 to atom
+    // `end_of_file`; get_code binds A1 to -1 (per ISO).
+    if (op == "get_char/1" || op == "peek_char/1") {
+        int ch = std::getc(stdin);
+        if (op == "peek_char/1" && ch != EOF) std::ungetc(ch, stdin);
+        Value v;
+        if (ch == EOF) v = Value::Atom("end_of_file");
+        else v = Value::Atom(std::string(1,
+            static_cast<char>(static_cast<unsigned char>(ch))));
+        CellPtr tgt = get_cell("A1");
+        if (tgt->is_unbound()) { bind_cell(tgt, v); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(v))) return false;
+        pc += 1; return true;
+    }
+    if (op == "get_code/1") {
+        int ch = std::getc(stdin);
+        Value v = Value::Integer(static_cast<std::int64_t>(ch)); // -1 on EOF
+        CellPtr tgt = get_cell("A1");
+        if (tgt->is_unbound()) { bind_cell(tgt, v); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(v))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- put_char/1, put_code/1 -------------------------------------
+    // Single-char output. Routes through emit_output_char so the byte
+    // is captured by an enclosing with_output_to/2.
+    if (op == "put_char/1") {
+        Value v = deref(*get_cell("A1"));
+        if (v.tag != Value::Tag::Atom || v.s.size() != 1) return false;
+        emit_output_char(v.s[0]);
+        std::fflush(stdout);
+        pc += 1; return true;
+    }
+    if (op == "put_code/1") {
+        Value v = deref(*get_cell("A1"));
+        if (v.tag != Value::Tag::Integer || v.i < 0 || v.i > 255)
+            return false;
+        emit_output_char(static_cast<char>(
+            static_cast<unsigned char>(v.i)));
+        std::fflush(stdout);
+        pc += 1; return true;
+    }
+
     if (op == "split_string/4") {
         auto read_str = [&](CellPtr c, std::string& out) -> bool {
             Value v = deref(*c);
