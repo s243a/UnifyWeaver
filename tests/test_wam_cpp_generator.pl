@@ -1824,6 +1824,40 @@ user:wam_cpp_test_tta_roundtrip :-
     term_to_atom(T, A),
     T = foo(a, b, c).
 
+% read/1 + read_term/1 — stdin term reading using the canonical-form
+% parser from #2189. Terminator is `.` followed by whitespace or EOF.
+% Pre-EOF empty input yields atom `end_of_file` (per ISO).
+:- dynamic user:wam_cpp_test_read_atom/0.
+:- dynamic user:wam_cpp_test_read_int/0.
+:- dynamic user:wam_cpp_test_read_compound/0.
+:- dynamic user:wam_cpp_test_read_list/0.
+:- dynamic user:wam_cpp_test_read_eof/0.
+:- dynamic user:wam_cpp_test_read_term_atom/0.
+
+user:wam_cpp_test_read_atom :-
+    read(T),
+    T = hello.
+
+user:wam_cpp_test_read_int :-
+    read(T),
+    T = 42.
+
+user:wam_cpp_test_read_compound :-
+    read(T),
+    T = foo(1, bar).
+
+user:wam_cpp_test_read_list :-
+    read(T),
+    T = [a, b, c].
+
+user:wam_cpp_test_read_eof :-
+    read(T),
+    T = end_of_file.
+
+user:wam_cpp_test_read_term_atom :-
+    read_term(T),
+    T = just_an_atom.
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -6285,6 +6319,88 @@ test(cpp_e2e_tta_roundtrip,
     ).
 
 % ------------------------------------------------------------------
+% read/1 + read_term/1 — stdin term reading. Tests pipe input to
+% the child via run_query_with_stdin, which writes the supplied
+% text + closes the child''s stdin before reading stdout.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_read_atom, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_read_atom', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_read_atom/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_with_stdin(BinPath, 'wam_cpp_test_read_atom/0',
+                               [], "hello.\n", true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_read_int, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_read_int', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_read_int/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_with_stdin(BinPath, 'wam_cpp_test_read_int/0',
+                               [], "42.\n", true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_read_compound, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_read_compound', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_read_compound/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_with_stdin(BinPath,
+                               'wam_cpp_test_read_compound/0',
+                               [], "foo(1, bar).\n", true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_read_list, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_read_list', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_read_list/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_with_stdin(BinPath, 'wam_cpp_test_read_list/0',
+                               [], "[a, b, c].\n", true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_read_eof, [condition(cpp_compiler_available)]) :-
+    % Empty stdin → atom end_of_file.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_read_eof', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_read_eof/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_with_stdin(BinPath, 'wam_cpp_test_read_eof/0',
+                               [], "", true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_read_term_atom,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_read_term_atom', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_read_term_atom/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query_with_stdin(BinPath,
+                               'wam_cpp_test_read_term_atom/0',
+                               [], "just_an_atom.\n", true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
 % Arithmetic builtins: succ/2 (direct bidirectional) and between/3
 % (helper-injected, nondet via the standard two-clause definition).
 % ------------------------------------------------------------------
@@ -6421,6 +6537,24 @@ run_query_stdout(BinPath, PredKey, Args, Status, ExpPrint) :-
     string_concat(ExpPrint, StatusStr, ExpWithStatus),
     string_concat(ExpWithStatus, "\n", Expected),
     assertion(Output == Expected).
+
+% run_query_with_stdin(+BinPath, +PredKey, +Args, +StdinText, +Expected)
+%  Pipes StdinText to the child''s stdin, then runs the same shape
+%  of assertion as run_query (trimmed stdout matches "true"/"false").
+%  Used for read_term/1 etc. tests that consume input.
+run_query_with_stdin(BinPath, PredKey, Args, StdinText, Expected) :-
+    maplist(atom_string, Args, ArgStrs),
+    process_create(BinPath, [PredKey|ArgStrs],
+                   [stdin(pipe(In)), stdout(pipe(Out)),
+                    stderr(null), process(PID)]),
+    write(In, StdinText),
+    close(In),
+    read_string(Out, _, Output),
+    close(Out),
+    process_wait(PID, _),
+    normalize_space(string(Trimmed), Output),
+    expected_str(Expected, ExpStr),
+    assertion(Trimmed == ExpStr).
 
 % ------------------------------------------------------------------
 % ISO error configuration — plumbing PR tests. The key swap tables
