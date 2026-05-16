@@ -129,6 +129,17 @@ test(tsv_atom_fact2_setup_generation) :-
     wam_go_target:go_foreign_setup_line(register_tsv_atom_fact2(edge/2, '/tmp/edge.tsv'), Line),
     assertion(Line == '    if err := vm.registerTsvAtomFact2("edge/2", "/tmp/edge.tsv"); err != nil { panic(err) }').
 
+test(atom_fact2_source_registry_runtime_shape) :-
+    wam_go_target:compile_wam_runtime_to_go([], RuntimeCode),
+    atom_string(RuntimeCode, Runtime),
+    assertion(sub_string(Runtime, _, _, _, 'type staticAtomFact2Source struct')),
+    assertion(sub_string(Runtime, _, _, _, 'func newStaticAtomFact2Source(pairs []AtomPair) *staticAtomFact2Source')),
+    assertion(sub_string(Runtime, _, _, _, 'func (vm *WamState) registerAtomFact2Source(predKey string, source AtomFact2Source)')),
+    assertion(sub_string(Runtime, _, _, _, 'pairs = source.LookupArg1(key)')),
+    read_file_to_string('templates/targets/go_wam/state.go.mustache', State, []),
+    assertion(sub_string(State, _, _, _, 'type AtomFact2Source interface')),
+    assertion(sub_string(State, _, _, _, 'AtomFact2Sources          map[string]AtomFact2Source')).
+
 test(foreign_auto_detect_generation) :-
     compile_wam_predicate_to_go(plunit_wam_go_foreign_lowering:test_reaches/2, "call test_reaches/2, 2",
         [foreign_lowering(true)], ClosureCode),
@@ -274,6 +285,9 @@ func TestForeignGraphKernels(t *testing.T) {
     if err := tsvVM.registerTsvAtomFact2("tsv_edge/2", tsvPath); err != nil {
         t.Fatalf("register tsv facts: %v", err)
     }
+    if _, ok := tsvVM.Ctx.AtomFact2Sources["tsv_edge/2"]; !ok {
+        t.Fatalf("expected TSV source to register through AtomFact2Sources")
+    }
     tsvTarget := &Unbound{Name: "TSV_TARGET", Idx: 1}
     tsvVM.Regs[0] = internAtom("x")
     tsvVM.Regs[1] = tsvTarget
@@ -296,6 +310,9 @@ func TestForeignGraphKernels(t *testing.T) {
         {Left: "a", Right: "c"},
         {Left: "b", Right: "d"},
     })
+    if _, ok := factVM.Ctx.AtomFact2Sources["edge/2"]; !ok {
+        t.Fatalf("expected indexed facts to register through AtomFact2Sources")
+    }
     factTarget := &Unbound{Name: "FACT_TARGET", Idx: 1}
     factVM.Regs[0] = internAtom("a")
     factVM.Regs[1] = factTarget

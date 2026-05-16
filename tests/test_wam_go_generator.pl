@@ -20,7 +20,12 @@ test_caller(X, X).
 wam_only_inner(X, Y) :- Y is X + 1, atom(foo), \+ atom(5).
 wam_only_caller(X, Z) :- wam_only_inner(X, Y), wam_only_inner(Y, Z).
 
+reset_go_atom_literal_fallback :-
+    wam_go_target:retractall(go_atom_intern_id(_, _)),
+    wam_go_target:retractall(go_atom_intern_next(_)).
+
 test(wam_get_constant) :-
+    reset_go_atom_literal_fallback,
     wam_instruction_to_go_literal(get_constant(atom(john), 'A1'), Literal),
     assertion(Literal == '&GetConstant{C: internAtom("john"), Ai: 0}').
 
@@ -34,6 +39,7 @@ test(wam_put_structure) :-
 
 test(wam_switch_on_constant) :-
     once((
+        reset_go_atom_literal_fallback,
         Table = [john-default, jane-'L1'],
         wam_instruction_to_go_literal(switch_on_constant(Table), Literal),
         assertion(sub_string(Literal, _, _, _, '&SwitchOnConstant{Cases: []ConstCase{')),
@@ -47,6 +53,7 @@ test(parse_wam_line_label) :-
     assertion(sub_string(GoCode, _, _, _, '"L_parent_2_2": 0')).
 
 test(parse_wam_line_instruction) :-
+    reset_go_atom_literal_fallback,
     WamCode = "    get_constant john, A1",
     compile_wam_predicate_to_go(test/1, WamCode, [], GoCode),
     assertion(sub_string(GoCode, _, _, _, '&GetConstant{C: internAtom("john"), Ai: 0}')).
