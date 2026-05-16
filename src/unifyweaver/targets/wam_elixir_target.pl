@@ -809,9 +809,48 @@ compile_utility_helpers_to_elixir(Code) :-
         {:unbound, id} = v2
         new_state = state |> trail_binding(id) |> put_reg(id, v1)
         {:ok, new_state}
+      # Structural unification of two compound terms. Both args are
+      # {:ref, addr} pointing to {:str, "name/arity"} heap cells.
+      # If functors + arities match, walk arg lists pairwise. Args
+      # are derefd against the LATEST state inside unify_arg_list so
+      # bindings made by earlier arg unifies are visible to later
+      # ones. Partial-fail leaves bindings in the trail; the callers
+      # choice-point unwinds them via unwind_trail on backtrack —
+      # same contract as every other unify branch.
+      #
+      # Without this clause, error(K, _) = error(type_error, ctx)
+      # falls to the :fail arm even though the two compounds are
+      # structurally compatible. That broke catch-pattern matching
+      # with structured error/2 terms throughout PRs #2-#5; this
+      # closes the gap.
+      match?({:ref, _}, v1) and match?({:ref, _}, v2) ->
+        {:ref, addr1} = v1
+        {:ref, addr2} = v2
+        case {Map.get(state.heap, addr1), Map.get(state.heap, addr2)} do
+          {{:str, fn_name}, {:str, fn_name}} ->
+            arity = parse_functor_arity(fn_name)
+            args1 = heap_slice(state, addr1 + 1, arity)
+            args2 = heap_slice(state, addr2 + 1, arity)
+            unify_arg_list(state, args1, args2)
+          _ -> :fail
+        end
       true -> :fail
     end
   end
+
+  # Walk two arg lists pairwise, threading state. Each arg is derefd
+  # against the LATEST state so bindings made by earlier unifies are
+  # visible. Returns {:ok, state} on success, :fail otherwise.
+  defp unify_arg_list(state, [], []), do: {:ok, state}
+  defp unify_arg_list(state, [a | as], [b | bs]) do
+    a_d = deref_var(state, a)
+    b_d = deref_var(state, b)
+    case unify(state, a_d, b_d) do
+      {:ok, new_state} -> unify_arg_list(new_state, as, bs)
+      :fail -> :fail
+    end
+  end
+  defp unify_arg_list(_, _, _), do: :fail
 
   @doc "Execute a builtin predicate"
   def execute_builtin(state, op, arity) do
@@ -1617,12 +1656,20 @@ compile_utility_helpers_to_elixir(Code) :-
           %{post_state | catcher_frames: tl(post_state.catcher_frames)}
       end
     catch
-      {:wam_throw, thrown_term} ->
+      {:wam_throw, thrown_term, thrown_heap, thrown_heap_len} ->
         # A throw fired somewhere inside the dispatched goal. Try
         # to unify the thrown term against our catcher pattern.
         # First restore state from the snapshot (rolls back any
         # bindings the goal made before throwing).
-        restored = restore_from_catcher_frame(state_with_frame, frame)
+        restored0 = restore_from_catcher_frame(state_with_frame, frame)
+        # Merge the throw-time heap so the thrown terms {:ref, _}
+        # cells resolve. Without this, structured-pattern catchers
+        # against compound thrown terms silently fail because the
+        # heap cells are not visible from the catch-time state. See
+        # execute_throw for the full rationale.
+        restored = %{restored0 |
+                     heap: Map.merge(restored0.heap, thrown_heap),
+                     heap_len: max(restored0.heap_len, thrown_heap_len)}
         # Unify catcher pattern against the thrown term. On match,
         # bindings to pattern vars persist into the recovery goal.
         case unify(restored, frame.catcher_term, thrown_term) do
@@ -1638,7 +1685,7 @@ compile_utility_helpers_to_elixir(Code) :-
           :fail ->
             # No match. Re-throw to outer catcher (BEAM unwinds
             # past us to the next enclosing try/catch).
-            throw({:wam_throw, thrown_term})
+            throw({:wam_throw, thrown_term, thrown_heap, thrown_heap_len})
         end
     end
   end
@@ -1648,8 +1695,18 @@ compile_utility_helpers_to_elixir(Code) :-
     # leaves are independent of the catch boundary — the catcher
     # sees the value as it was at throw time, even if the
     # original vars get rolled back during state restoration.
+    #
+    # Compound-unify follow-up: bundle the post-copy heap + heap_len
+    # with the throw so execute_catch can merge them into its
+    # restored state before unifying. Without this, the thrown
+    # terms {:ref, _} addresses point to cells in state2.heap
+    # that do not exist in the catch-time state (the catch captured
+    # state BEFORE the goal ran, including its heap allocations).
+    # That made structured-pattern catchers like error(K, _) silently
+    # fail to match — they ARE structurally compatible but the
+    # catch could not reach the thrown terms heap cells.
     raw = deref_var(state, get_reg(state, 1))
-    {_state2, thrown_copy, _vmap} = deep_copy_with_fresh_vars(state, raw, %{})
+    {state2, thrown_copy, _vmap} = deep_copy_with_fresh_vars(state, raw, %{})
 
     if state.catcher_frames == [] do
       # No catcher exists anywhere on the BEAM call stack. ISO
@@ -1660,8 +1717,8 @@ compile_utility_helpers_to_elixir(Code) :-
       :fail
     else
       # At least one frame exists. Throw — execute_catch up the
-      # stack will catch and try to match.
-      throw({:wam_throw, thrown_copy})
+      # stack will catch, merge the heap, then unify.
+      throw({:wam_throw, thrown_copy, state2.heap, state2.heap_len})
     end
   end
 
@@ -4398,7 +4455,7 @@ compile_wam_predicate_to_elixir(Pred/Arity, WamCode, _Options, Code) :-
       end
     catch
       # PR #2: uncaught Prolog throw -> :fail + stderr (not crash).
-      {:wam_throw, term} ->
+      {:wam_throw, term, _heap, _heap_len} ->
         IO.puts(:stderr, "Uncaught Prolog throw: #{inspect(term)}")
         :fail
     end

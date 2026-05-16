@@ -173,7 +173,7 @@ render_compiled_module(CamelMod, CamelPred, PredIndicator, PredStr, ShapeComment
       # the BEAM stack matched the thrown term) reaches here. Mirror
       # the empty-catcher_frames case in execute_throw — diagnostic
       # to stderr, return :fail rather than crash.
-      {:wam_throw, term} ->
+      {:wam_throw, term, _heap, _heap_len} ->
         IO.puts(:stderr, "Uncaught Prolog throw: #{inspect(term)}")
         :fail
       error ->
@@ -232,7 +232,7 @@ render_inline_data_module(CamelMod, CamelPred, PredStr, Arity, ShapeComment,
       {:fail, _} -> :fail
       {:return, result} -> result
       # PR #2: uncaught Prolog throw -> :fail + stderr (not crash).
-      {:wam_throw, term} ->
+      {:wam_throw, term, _heap, _heap_len} ->
         IO.puts(:stderr, "Uncaught Prolog throw: #{inspect(term)}")
         :fail
       error ->
@@ -328,7 +328,7 @@ render_external_source_module(CamelMod, CamelPred, PredStr, Arity, ShapeComment,
       {:fail, _} -> :fail
       {:return, result} -> result
       # PR #2: uncaught Prolog throw -> :fail + stderr (not crash).
-      {:wam_throw, term} ->
+      {:wam_throw, term, _heap, _heap_len} ->
         IO.puts(:stderr, "Uncaught Prolog throw: #{inspect(term)}")
         :fail
       error ->
