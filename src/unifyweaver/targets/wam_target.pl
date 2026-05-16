@@ -1460,6 +1460,10 @@ is_builtin_pred(number_codes, 2). % number ↔ list of integer codes.
 is_builtin_pred(atom_concat, 3).  % (+, +, ?) — concatenation.
 is_builtin_pred(atom_length, 2).  % atom → length in chars.
 is_builtin_pred(char_code, 2).    % char-atom ↔ integer code.
+is_builtin_pred(assertz, 1).      % dynamic db: append fact.
+is_builtin_pred(asserta, 1).      % dynamic db: prepend fact.
+is_builtin_pred(retract, 1).      % dynamic db: remove first match.
+is_builtin_pred(retractall, 1).   % dynamic db: remove all matches.
 is_builtin_pred(=, 2).       % unification: bind / structurally unify two terms.
 is_builtin_pred(is_list, 1).
                              % Without this entry, X = Y in a body goal

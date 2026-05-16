@@ -888,6 +888,80 @@ user:wam_cpp_test_format_atom_then_codes :-
     atom_length(A, 7),
     atom_codes(A, [104, 101, 108, 108, 111, 52, 50]).
 
+% assertz/1, asserta/1, retract/1, retractall/1 — dynamic database
+% manipulation. Facts only in this PR (rules deferred). Call/Execute
+% dispatch through dynamic_db when no static label matches; each
+% iteration unifies a fresh-renamed copy of the stored fact and
+% pushes a CP (alt_pc=dynamic_next_clause_pc) when more remain.
+:- dynamic user:wam_cpp_test_assertz_query/0.
+:- dynamic user:wam_cpp_test_assertz_multi/0.
+:- dynamic user:wam_cpp_test_asserta_order/0.
+:- dynamic user:wam_cpp_test_retract/0.
+:- dynamic user:wam_cpp_test_retract_var/0.
+:- dynamic user:wam_cpp_test_retractall/0.
+:- dynamic user:wam_cpp_test_retractall_empty/0.
+:- dynamic user:wam_cpp_test_assertz_pair/0.
+:- dynamic user:wam_cpp_test_dyn_backtrack/0.
+
+user:wam_cpp_test_assertz_query :-
+    assertz(wam_cpp_dyn_fact1(a)),
+    wam_cpp_dyn_fact1(a).
+
+user:wam_cpp_test_assertz_multi :-
+    assertz(wam_cpp_dyn_item(1)),
+    assertz(wam_cpp_dyn_item(2)),
+    assertz(wam_cpp_dyn_item(3)),
+    findall(X, wam_cpp_dyn_item(X), L),
+    L = [1, 2, 3].
+
+user:wam_cpp_test_asserta_order :-
+    assertz(wam_cpp_dyn_thing(b)),
+    asserta(wam_cpp_dyn_thing(a)),
+    findall(X, wam_cpp_dyn_thing(X), L),
+    L = [a, b].
+
+user:wam_cpp_test_retract :-
+    assertz(wam_cpp_dyn_p(1)),
+    assertz(wam_cpp_dyn_p(2)),
+    assertz(wam_cpp_dyn_p(3)),
+    retract(wam_cpp_dyn_p(2)),
+    findall(X, wam_cpp_dyn_p(X), L),
+    L = [1, 3].
+
+user:wam_cpp_test_retract_var :-
+    assertz(wam_cpp_dyn_q(10)),
+    retract(wam_cpp_dyn_q(X)),
+    X = 10.
+
+user:wam_cpp_test_retractall :-
+    assertz(wam_cpp_dyn_r(1)),
+    assertz(wam_cpp_dyn_r(2)),
+    assertz(wam_cpp_dyn_r(3)),
+    retractall(wam_cpp_dyn_r(_)),
+    findall(X, wam_cpp_dyn_r(X), L),
+    L = [].
+
+% retractall always succeeds, even on never-asserted predicates.
+user:wam_cpp_test_retractall_empty :-
+    retractall(wam_cpp_dyn_absent(_)).
+
+user:wam_cpp_test_assertz_pair :-
+    assertz(wam_cpp_dyn_pair(a, 1)),
+    assertz(wam_cpp_dyn_pair(b, 2)),
+    findall(K-V, wam_cpp_dyn_pair(K, V), L),
+    L = [a-1, b-2].
+
+% Backtracking through dynamic clauses — the CP pushed by
+% dynamic_try_next when more clauses remain drives findall''s
+% next-solution loop. Filter via X > 1 to verify the iteration
+% actually reaches subsequent clauses.
+user:wam_cpp_test_dyn_backtrack :-
+    assertz(wam_cpp_dyn_num(1)),
+    assertz(wam_cpp_dyn_num(2)),
+    assertz(wam_cpp_dyn_num(3)),
+    findall(X, (wam_cpp_dyn_num(X), X > 1), L),
+    L = [2, 3].
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -3497,6 +3571,117 @@ test(cpp_e2e_format_atom_then_codes,
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_format_atom_then_codes/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% assertz/asserta/retract/retractall — dynamic database manipulation
+% for FACTS. Rules (Head :- Body) are rejected by the builtin and
+% deferred to a follow-up PR. Each test asserts into a uniquely-
+% named predicate so tests are independent across runs.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_assertz_query, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_assertz_query', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_assertz_query/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_assertz_query/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_assertz_multi, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_assertz_multi', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_assertz_multi/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_assertz_multi/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_asserta_order, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_asserta_order', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_asserta_order/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_asserta_order/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_retract, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_retract', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_retract/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_retract/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_retract_var, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_retract_var', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_retract_var/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_retract_var/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_retractall, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_retractall', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_retractall/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_retractall/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_retractall_empty, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_retractall_empty', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_retractall_empty/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_retractall_empty/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_assertz_pair, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_assertz_pair', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_assertz_pair/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_assertz_pair/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_dyn_backtrack, [condition(cpp_compiler_available)]) :-
+    % Backtracking through dynamic clauses: findall driver explores
+    % all 3 wam_cpp_dyn_num/1 facts via the CP pushed by
+    % dynamic_try_next. Filtering with X > 1 confirms iteration
+    % actually reaches the later clauses, not just the first.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_dyn_bt', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_dyn_backtrack/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_dyn_backtrack/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
