@@ -72,6 +72,11 @@ shared_program <- list(
   dispatch         = dispatch,
   foreign_handlers = foreign_handlers,
   intern_table     = intern_table,
+  # Runtime source-term parser mode resolved by
+  # wam_runtime_parser_capability:wam_target_runtime_parser/3.
+  # The R hot path is native(parse_term); compiled parser metadata is
+  # kept for equivalence experiments and later routing work.
+  runtime_parser   = {{runtime_parser_mode}},
   # Dynamic predicate store for runtime assertz/asserta/retract.
   # Keyed by "pred/arity"; each value is a list of clause records
   # of shape list(head_args, body). An env (rather than a list) so

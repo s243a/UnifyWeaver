@@ -74,9 +74,13 @@ The initial implementation is intentionally small:
 - targets without runtime source-term parsing resolve to `none`;
 - `compiled(prolog_term_parser)` is available only for targets
   with compile and runtime proof tests.
+- the R project writer records the resolved mode in the generated
+  `shared_program$runtime_parser` metadata.
 
 Do not immediately wire every target's `write_wam_*_project/3` through the new
 hook. The hook is a stable contract; target writers can migrate one at a time.
+For R, builtin routing still uses the native inline parser hot path while the
+metadata provides a stable seam for later experiments.
 
 The hook should be independent of the WAM items API. A target can skip WAM text
 generation at build time and still need runtime source-term parsing.

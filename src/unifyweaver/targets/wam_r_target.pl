@@ -65,6 +65,8 @@
 ]).
 :- use_module('../core/recursive_kernel_detection',
              [detect_recursive_kernel/4, kernel_config/2]).
+:- use_module(wam_runtime_parser_capability,
+             [wam_target_runtime_parser/3]).
 
 % ============================================================================
 % EMIT MODE
@@ -1743,6 +1745,8 @@ write_wam_r_project(Predicates, Options, ProjectDir) :-
     directory_file_path(ProjectDir, 'R', RDir),
     make_directory_path(RDir),
     option(module_name(ModName), Options, 'wam.r.generated'),
+    wam_target_runtime_parser(wam_r, Options, RuntimeParserMode),
+    r_runtime_parser_mode_literal(RuntimeParserMode, RuntimeParserModeCode),
     write_description(ProjectDir, ModName),
     compile_predicates_for_project(Predicates, Options,
         AllInstrs, TopLevelLabelEntries, AllLabelEntries,
@@ -1760,7 +1764,8 @@ write_wam_r_project(Predicates, Options, ProjectDir) :-
     write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
                          WrapperCode, IdToStringStr, ForeignHandlersBody,
                          LoweredFunctionsCode, FactShapeComments,
-                         LoweredDispatchCode, OpDeclsBody).
+                         LoweredDispatchCode, OpDeclsBody,
+                         RuntimeParserModeCode).
 
 write_description(ProjectDir, ModName) :-
     find_template('templates/targets/r_wam/DESCRIPTION.mustache', Template),
@@ -1780,7 +1785,8 @@ write_runtime_source(RDir) :-
 write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
                      WrapperCode, IdToStringStr, ForeignHandlersBody,
                      LoweredFunctionsCode, FactShapeComments,
-                     LoweredDispatchCode, OpDeclsBody) :-
+                     LoweredDispatchCode, OpDeclsBody,
+                     RuntimeParserModeCode) :-
     find_template('templates/targets/r_wam/program.R.mustache', Template),
     get_time(T), format_time(string(DateStr), "%Y-%m-%d", T),
     render_template(Template,
@@ -1794,10 +1800,25 @@ write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
           'foreign_handlers'=ForeignHandlersBody,
           'lowered_functions'=LoweredFunctionsCode,
           'fact_shape_comments'=FactShapeComments,
-          'op_decls'=OpDeclsBody
+          'op_decls'=OpDeclsBody,
+          'runtime_parser_mode'=RuntimeParserModeCode
         ], Content),
     directory_file_path(RDir, 'generated_program.R', Path),
     write_file(Path, Content).
+
+r_runtime_parser_mode_literal(none,
+    'list(kind = "none", entry = NULL, source = NULL)') :- !.
+r_runtime_parser_mode_literal(native(Entry), Code) :-
+    !,
+    r_string_literal_atom(Entry, EntryLit),
+    format(string(Code),
+           'list(kind = "native", entry = ~w, source = NULL)',
+           [EntryLit]).
+r_runtime_parser_mode_literal(compiled(SourceModule), Code) :-
+    r_string_literal_atom(SourceModule, SourceLit),
+    format(string(Code),
+           'list(kind = "compiled", entry = NULL, source = ~w)',
+           [SourceLit]).
 
 % ============================================================================
 % HELPERS
