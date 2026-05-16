@@ -229,6 +229,21 @@ Pass `--use-scale-lmdb-artifact` to the backend benchmark when you want the
 `--artifact-root`. If you want to benchmark only the scale-local LMDB artifact,
 pass `--lmdb-only`; that mode does not require `category_parent.tsv`.
 
+For ingestion-plus-access timing, use the Rust sink measurement wrapper:
+
+```bash
+python examples/benchmark/benchmark_csharp_query_rust_lmdb_sink.py \
+  --scale rust_lmdb_50k \
+  --max-edges 50000 \
+  --dump data/enwiki/enwiki-latest-categorylinks.sql.gz \
+  --output-root /tmp/uw-csharp-query-rust-lmdb \
+  --refresh-lmdb
+```
+
+The wrapper reports Rust sink preparation time plus the C# query `lmdb-only`
+access row. Starting with smaller caps is useful before moving to `500k_cats`
+or `1m_cats`.
+
 Pass `--artifact-root <dir>` to keep backend artifacts across benchmark runs.
 Existing binary, delimited, LMDB, and mmap-array manifests are reused by
 default, matching the Haskell benchmark convention of not regenerating LMDB
