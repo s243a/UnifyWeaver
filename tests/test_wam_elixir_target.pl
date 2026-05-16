@@ -154,6 +154,16 @@ elixir_parser_tmp_dir(Prefix, TmpDir) :-
 elixir_parser_cleanup_tmp_dir(TmpDir) :-
     catch(delete_directory_and_contents(TmpDir), _, true).
 
+elixir_test_tmp_dir(Name, TmpDir) :-
+    (   getenv('PREFIX', Prefix)
+    ->  directory_file_path(Prefix, 'tmp', BaseDir),
+        make_directory_path(BaseDir),
+        directory_file_path(BaseDir, Name, TmpDir)
+    ;   tmp_file(Name, TmpDir)
+    ),
+    catch(delete_directory_and_contents(TmpDir), _, true),
+    make_directory_path(TmpDir).
+
 test_instruction_count :-
     Test = 'WAM-Elixir: instruction arm count',
     (   findall(N, wam_elixir_case(N, _), Cases),
@@ -1290,11 +1300,9 @@ test_lmdb_int_ids_mock_e2e :-
 
 run_lmdb_int_ids_mock_e2e(Test) :-
     % Set up a fresh tempdir, emit the runtime, copy the mock + test.
-    TmpDir = '/tmp/test_lmdb_int_ids_mock_e2e',
-    (   exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true ),
-    make_directory(TmpDir),
+    elixir_test_tmp_dir('test_lmdb_int_ids_mock_e2e', TmpDir),
     directory_file_path(TmpDir, 'lib', LibDir),
-    make_directory(LibDir),
+    make_directory_path(LibDir),
     compile_wam_runtime_to_elixir([], RuntimeCode),
     directory_file_path(LibDir, 'wam_runtime.ex', RuntimePath),
     open(RuntimePath, write, RS),
@@ -1357,11 +1365,9 @@ test_lmdb_int_ids_real_lmdb_e2e :-
     ).
 
 run_lmdb_int_ids_real_lmdb_e2e(Test) :-
-    TmpDir = '/tmp/test_lmdb_int_ids_real_lmdb_e2e',
-    (   exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true ),
-    make_directory(TmpDir),
+    elixir_test_tmp_dir('test_lmdb_int_ids_real_lmdb_e2e', TmpDir),
     directory_file_path(TmpDir, 'lib', LibDir),
-    make_directory(LibDir),
+    make_directory_path(LibDir),
     compile_wam_runtime_to_elixir([], RuntimeCode),
     directory_file_path(LibDir, 'wam_runtime.ex', RuntimePath),
     open(RuntimePath, write, RS),
@@ -1551,12 +1557,14 @@ test_kernel_dispatch_emits_tc_module :-
     Test = 'Kernel dispatch: transitive_closure2 kernel emits Probe.Tc dispatch module',
     setup_kernel_fixtures,
     wam_target:compile_predicate_to_wam(user:kdtc/2, [], TcWam),
+    elixir_test_tmp_dir('test_kernel_disp_tc', TmpDir),
     write_wam_elixir_project([kdtc/2-TcWam],
         [module_name(probe), emit_mode(lowered),
          intra_query_parallel(false),
          kernel_dispatch(true), source_module(user)],
-        '/tmp/test_kernel_disp_tc'),
-    read_file_to_string('/tmp/test_kernel_disp_tc/lib/kdtc.ex', S, []),
+        TmpDir),
+    directory_file_path(TmpDir, 'lib/kdtc.ex', PredPath),
+    read_file_to_string(PredPath, S, []),
     (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.TransitiveClosure"),
         sub_string(S, _, _, _, "in_forkable_aggregate_frame?")
     ->  pass(Test)
@@ -1567,12 +1575,14 @@ test_kernel_dispatch_emits_category_ancestor_module :-
     Test = 'Kernel dispatch: category_ancestor kernel emits Probe.Kdca dispatch module',
     setup_kernel_fixtures,
     wam_target:compile_predicate_to_wam(user:kdca/4, [], CaWam),
+    elixir_test_tmp_dir('test_kernel_disp_ca', TmpDir),
     write_wam_elixir_project([kdca/4-CaWam],
         [module_name(probe), emit_mode(lowered),
          intra_query_parallel(false),
          kernel_dispatch(true), source_module(user)],
-        '/tmp/test_kernel_disp_ca'),
-    read_file_to_string('/tmp/test_kernel_disp_ca/lib/kdca.ex', S, []),
+        TmpDir),
+    directory_file_path(TmpDir, 'lib/kdca.ex', PredPath),
+    read_file_to_string(PredPath, S, []),
     (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.CategoryAncestor"),
         sub_string(S, _, _, _, "@max_depth 7"),
         sub_string(S, _, _, _, "collect_hops")
@@ -1584,12 +1594,14 @@ test_kernel_dispatch_uses_fold_form_in_aggregate_frame :-
     Test = 'Kernel dispatch: category_ancestor wrapper uses fold_hops + split_at_aggregate_cp when in aggregate frame',
     setup_kernel_fixtures,
     wam_target:compile_predicate_to_wam(user:kdca/4, [], CaWam),
+    elixir_test_tmp_dir('test_kernel_disp_ca_fold', TmpDir),
     write_wam_elixir_project([kdca/4-CaWam],
         [module_name(probe), emit_mode(lowered),
          intra_query_parallel(false),
          kernel_dispatch(true), source_module(user)],
-        '/tmp/test_kernel_disp_ca_fold'),
-    read_file_to_string('/tmp/test_kernel_disp_ca_fold/lib/kdca.ex', S, []),
+        TmpDir),
+    directory_file_path(TmpDir, 'lib/kdca.ex', PredPath),
+    read_file_to_string(PredPath, S, []),
     (   sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
         sub_string(S, _, _, _, "fold_hops("),
         % Fix for PR #1813's per-hit cp-walk regression: extract the
@@ -1701,12 +1713,14 @@ test_kernel_dispatch_emits_transitive_distance_module :-
     Test = 'Kernel dispatch: transitive_distance3 kernel emits Probe.Kdtd dispatch module',
     setup_kernel_fixtures,
     wam_target:compile_predicate_to_wam(user:kdtd/3, [], TdWam),
+    elixir_test_tmp_dir('test_kernel_disp_td', TmpDir),
     write_wam_elixir_project([kdtd/3-TdWam],
         [module_name(probe), emit_mode(lowered),
          intra_query_parallel(false),
          kernel_dispatch(true), source_module(user)],
-        '/tmp/test_kernel_disp_td'),
-    read_file_to_string('/tmp/test_kernel_disp_td/lib/kdtd.ex', S, []),
+        TmpDir),
+    directory_file_path(TmpDir, 'lib/kdtd.ex', PredPath),
+    read_file_to_string(PredPath, S, []),
     (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.TransitiveDistance"),
         sub_string(S, _, _, _, "collect_pairs("),
         % Aggregate-frame slicing logic: pick targets/distances/pairs
@@ -1788,12 +1802,14 @@ test_kernel_dispatch_emits_transitive_parent_distance_module :-
     Test = 'Kernel dispatch: transitive_parent_distance4 kernel emits Probe.Kdpd dispatch module',
     setup_kernel_fixtures,
     wam_target:compile_predicate_to_wam(user:kdpd/4, [], PdWam),
+    elixir_test_tmp_dir('test_kernel_disp_pd', TmpDir),
     write_wam_elixir_project([kdpd/4-PdWam],
         [module_name(probe), emit_mode(lowered),
          intra_query_parallel(false),
          kernel_dispatch(true), source_module(user)],
-        '/tmp/test_kernel_disp_pd'),
-    read_file_to_string('/tmp/test_kernel_disp_pd/lib/kdpd.ex', S, []),
+        TmpDir),
+    directory_file_path(TmpDir, 'lib/kdpd.ex', PredPath),
+    read_file_to_string(PredPath, S, []),
     (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.TransitiveParentDistance"),
         sub_string(S, _, _, _, "collect_triples("),
         % Aggregate-frame slicing for three registers (2/3/4).
@@ -1867,12 +1883,14 @@ test_kernel_dispatch_emits_transitive_step_parent_distance_module :-
     Test = 'Kernel dispatch: transitive_step_parent_distance5 kernel emits Probe.Kdsp dispatch module',
     setup_kernel_fixtures,
     wam_target:compile_predicate_to_wam(user:kdsp/5, [], SpWam),
+    elixir_test_tmp_dir('test_kernel_disp_sp', TmpDir),
     write_wam_elixir_project([kdsp/5-SpWam],
         [module_name(probe), emit_mode(lowered),
          intra_query_parallel(false),
          kernel_dispatch(true), source_module(user)],
-        '/tmp/test_kernel_disp_sp'),
-    read_file_to_string('/tmp/test_kernel_disp_sp/lib/kdsp.ex', S, []),
+        TmpDir),
+    directory_file_path(TmpDir, 'lib/kdsp.ex', PredPath),
+    read_file_to_string(PredPath, S, []),
     (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.TransitiveStepParentDistance"),
         sub_string(S, _, _, _, "collect_quads("),
         % Aggregate-frame slicing for FOUR registers (2/3/4/5).
@@ -1945,12 +1963,14 @@ test_kernel_dispatch_emits_weighted_shortest_path_module :-
     Test = 'Kernel dispatch: weighted_shortest_path3 kernel emits Probe.Kdwsp dispatch module',
     setup_kernel_fixtures,
     wam_target:compile_predicate_to_wam(user:kdwsp/3, [], WspWam),
+    elixir_test_tmp_dir('test_kernel_disp_wsp', TmpDir),
     write_wam_elixir_project([kdwsp/3-WspWam],
         [module_name(probe), emit_mode(lowered),
          intra_query_parallel(false),
          kernel_dispatch(true), source_module(user)],
-        '/tmp/test_kernel_disp_wsp'),
-    read_file_to_string('/tmp/test_kernel_disp_wsp/lib/kdwsp.ex', S, []),
+        TmpDir),
+    directory_file_path(TmpDir, 'lib/kdwsp.ex', PredPath),
+    read_file_to_string(PredPath, S, []),
     (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.WeightedShortestPath"),
         sub_string(S, _, _, _, "collect_path_costs("),
         % 3-arity edge predicate indicator: weighted_edge/3
@@ -2027,12 +2047,14 @@ test_kernel_dispatch_emits_astar_shortest_path_module :-
     Test = 'Kernel dispatch: astar_shortest_path4 kernel emits Probe.Kdastar dispatch module',
     setup_kernel_fixtures,
     wam_target:compile_predicate_to_wam(user:kdastar/4, [], AstarWam),
+    elixir_test_tmp_dir('test_kernel_disp_astar', TmpDir),
     write_wam_elixir_project([kdastar/4-AstarWam],
         [module_name(probe), emit_mode(lowered),
          intra_query_parallel(false),
          kernel_dispatch(true), source_module(user)],
-        '/tmp/test_kernel_disp_astar'),
-    read_file_to_string('/tmp/test_kernel_disp_astar/lib/kdastar.ex', S, []),
+        TmpDir),
+    directory_file_path(TmpDir, 'lib/kdastar.ex', PredPath),
+    read_file_to_string(PredPath, S, []),
     (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.AstarShortestPath"),
         sub_string(S, _, _, _, "collect_path_costs("),
         % TWO FactSource lookups (forward + heuristic).
