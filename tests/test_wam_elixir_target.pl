@@ -156,6 +156,68 @@ test_builtin_call_delegates :-
     ;   fail_test(Test, 'builtin_call does not delegate to execute_builtin')
     ).
 
+%% call/N meta-call generator gates (PR #1)
+
+test_call_n_dispatch_meta_helper :-
+    Test = 'WAM-Elixir: dispatch_call_meta helper present in runtime',
+    (   compile_wam_helpers_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _,
+                   'defp dispatch_call_meta(state, total_arity, after_pc)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'dispatch_call_meta missing from runtime helpers')
+    ).
+
+test_call_n_step_arms :-
+    Test = 'WAM-Elixir: :call and :execute step arms catch "call/N" \
+                       before label lookup',
+    (   wam_elixir_case(call, CallCode),
+        sub_string(CallCode, _, _, _, '"call/" <> _'),
+        sub_string(CallCode, _, _, _,
+                   'dispatch_call_meta(state, total_arity, state.pc + 1)'),
+        wam_elixir_case(execute, ExecCode),
+        sub_string(ExecCode, _, _, _, '"call/" <> arity_str'),
+        sub_string(ExecCode, _, _, _, 'Integer.parse(arity_str)'),
+        sub_string(ExecCode, _, _, _,
+                   'dispatch_call_meta(state, total_arity, state.cp)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'call/N dispatch missing from step arms')
+    ).
+
+test_build_call_target_compound_clause :-
+    Test = 'WAM-Elixir: build_call_target has {:ref, addr} compound clause',
+    (   compile_wam_helpers_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _,
+                   'defp build_call_target(state, {:ref, addr}, extras)'),
+        % Heap deref + functor parse should be inline in the clause body.
+        sub_string(S, _, _, _, 'Map.get(state.heap, addr)'),
+        sub_string(S, _, _, _, 'parse_functor_arity(base_pred_arity)')
+    ->  pass(Test)
+    ;   fail_test(Test, '{:ref, addr} compound dispatch clause missing')
+    ).
+
+test_true_zero_builtin :-
+    Test = 'WAM-Elixir: true/0 builtin arm exists',
+    (   compile_wam_helpers_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, '{"true/0", 0}')
+    ->  pass(Test)
+    ;   fail_test(Test, 'true/0 builtin missing')
+    ).
+
+test_build_call_target_helpers :-
+    Test = 'WAM-Elixir: build_call_target + load_args_into_regs helpers \
+                       present',
+    (   compile_wam_helpers_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'defp build_call_target('),
+        sub_string(S, _, _, _, 'defp load_args_into_regs(')
+    ->  pass(Test)
+    ;   fail_test(Test,
+                  'build_call_target / load_args_into_regs missing')
+    ).
+
 %% Code style tests
 
 test_elixir_idioms :-
@@ -2758,6 +2820,11 @@ run_tests :-
     test_choice_point_instructions,
     test_choice_point_bytecode,
     test_builtin_call_delegates,
+    test_call_n_dispatch_meta_helper,
+    test_call_n_step_arms,
+    test_true_zero_builtin,
+    test_build_call_target_helpers,
+    test_build_call_target_compound_clause,
     test_elixir_idioms,
     test_immutable_state_updates,
     test_functional_run_loop,

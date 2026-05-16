@@ -230,6 +230,13 @@ wam_elixir_case(call,
 '      # Fast path: label pre-resolved at codegen to integer PC.
       {:call, target_pc, _n} when is_integer(target_pc) ->
         %{state | pc: target_pc, cp: state.pc + 1}
+      # Meta-call call/N — caught BEFORE label lookup so the
+      # "call/N" string is dispatched as the meta-call, not
+      # treated as a missing user predicate. The `n` field IS
+      # the total arity (= 1 base goal + extras), matching the
+      # WAM compiler''s emission convention.
+      {:call, "call/" <> _, total_arity} ->
+        dispatch_call_meta(state, total_arity, state.pc + 1)
       # Fallback: unresolved string label (cross-module/orphan).
       {:call, p, _n} when is_binary(p) ->
         case Map.get(state.labels, p) do
@@ -241,6 +248,16 @@ wam_elixir_case(execute,
 '      # Fast path: label pre-resolved at codegen to integer PC.
       {:execute, target_pc} when is_integer(target_pc) ->
         %{state | pc: target_pc}
+      # Tail-position meta-call call/N. Total arity comes from
+      # the op-name suffix (Execute carries no arity field).
+      # Integer.parse/1 instead of String.to_integer/1 so a
+      # malformed opcode (corrupted instr stream) fails cleanly
+      # rather than raising ArgumentError.
+      {:execute, "call/" <> arity_str} ->
+        case Integer.parse(arity_str) do
+          {total_arity, ""} -> dispatch_call_meta(state, total_arity, state.cp)
+          _ -> :fail
+        end
       # Fallback: unresolved string label.
       {:execute, p} when is_binary(p) ->
         case Map.get(state.labels, p) do
@@ -826,6 +843,11 @@ compile_utility_helpers_to_elixir(Code) :-
         # failure. (Pre-hardening, fail/0 worked accidentally because
         # the default arm returned :fail — same semantic, wrong reason.)
         :fail
+      {"true/0", 0} ->
+        # ISO `true` — succeeds unconditionally. Same default-arm
+        # hardening reasoning as fail/0 above.
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        %{state | pc: new_pc}
       {"</2", 2} ->
         v1 = eval_arith(state, get_reg(state, 1))
         v2 = eval_arith(state, get_reg(state, 2))
@@ -1144,6 +1166,14 @@ compile_utility_helpers_to_elixir(Code) :-
             preserved_aggs ++ state.cut_point
           end
         %{state | choice_points: new_cps, pc: new_pc}
+      {"call/" <> _, n} ->
+        # call/N meta-call. Lowered-mode dispatch arrives here via
+        # WamDispatcher.call("call/N", state) -> execute_builtin/3
+        # falling through. Interpreter mode also reaches the same
+        # helper from the :call / :execute step arms (see
+        # wam_elixir_case(call, ...) and wam_elixir_case(execute, ...)).
+        # See WAM_ELIXIR_GAPS_SPECIFICATION.md PR #1.
+        dispatch_call_meta(state, n, state.cp)
       _ ->
         # Hardening: surface unimplemented builtins instead of silently
         # returning :fail. The pre-hardening default arm masked
@@ -1155,6 +1185,125 @@ compile_utility_helpers_to_elixir(Code) :-
         # be added rather than relying on the silent-:fail accident.
         throw({:unknown_builtin, op, arity})
     end
+  end
+
+  # ---- call/N meta-call dispatch -----------------------------------
+  #
+  # Mirrors the C++ dispatch_call_meta in wam_cpp_target.pl. The
+  # WAM compiler emits call(Goal[, X1..Xk]) usage as
+  #   {:execute, "call/N"}        -- when call/N is the body tail
+  #   {:call,    "call/N", N}     -- otherwise (non-tail)
+  # with the base goal in A1 and any extras in A2..AN. The :call
+  # and :execute step arms catch the "call/" prefix BEFORE doing
+  # label lookup and route here.
+  #
+  # Build the combined goal:
+  #   - A1 atom        (`true`, `fail`, `append`)  -> use as-is, arity = total - 1
+  #   - A1 compound    ({:ref, addr} -> {:str, "name/baseN"}) ->
+  #       gather base args from heap, append extras, total = baseN + (total - 1)
+  # Then load the combined args into A1..A_total, set cp to after_pc,
+  # and route through WamDispatcher.call (which knows about user
+  # predicates and falls through to execute_builtin for builtins).
+  #
+  # `defp`: only invoked from within WamRuntime (execute_builtin
+  # arm + the :call/:execute step arms via the same module). Not
+  # part of the runtime''s external API.
+  defp dispatch_call_meta(state, total_arity, after_pc) do
+    goal = deref_var(state, get_reg(state, 1))
+    # Elixir descending-range trap: `for i <- 2..1` would raise
+    # in Elixir 1.16+ (without an explicit step) and would yield
+    # [2, 1] in older Elixir. The `total_arity > 1` guard
+    # short-circuits the 0-extras case so the comprehension only
+    # runs on a real ascending range.
+    extras =
+      if total_arity > 1 do
+        for i <- 2..total_arity, do: deref_var(state, get_reg(state, i))
+      else
+        []
+      end
+
+    case build_call_target(state, goal, extras) do
+      {:ok, pred_arity, prepared_state} ->
+        call_state = %{prepared_state | cp: after_pc}
+        try do
+          case WamDispatcher.call(pred_arity, call_state) do
+            # Why override pc to after_pc here? WamDispatcher.call
+            # returns the dispatched goal''s post-state, whose
+            # pc is whatever the called goal''s last instruction
+            # left it at (typically state.pc + 1 for builtins, or
+            # the user-pred''s last-instr pc for lowered predicates).
+            # Neither matches the meta-call''s logical resumption
+            # point, which is after_pc (= state.pc + 1 for non-tail
+            # call, state.cp for tail execute). Forcing pc to
+            # after_pc makes the meta-call behave like a single
+            # logical instruction regardless of what the dispatched
+            # goal did internally. PRs #2-5 (catch/throw + ISO)
+            # depend on this invariant.
+            {:ok, post_state} -> %{post_state | pc: after_pc}
+            :fail -> :fail
+          end
+        catch
+          # :fail and {:fail, _} — internal control-flow throws used
+          # for backtrack propagation. Cargoed from the \\+/1 block
+          # (see negation_as_failure handling); same semantics.
+          :fail -> :fail
+          {:fail, _} -> :fail
+          # {:return, _} — same provenance as the catch arms in the
+          # negation block. Some lowered code paths use throw({:return,
+          # state}) to short-circuit out of a body. Re-pin pc the
+          # same way the success path does.
+          {:return, post_state} -> %{post_state | pc: after_pc}
+        end
+      :fail -> :fail
+    end
+  end
+
+  # Build the combined predicate-key + load A-regs from the goal+extras.
+  # Atomic goal: arity is just the count of extras.
+  # Compound {:ref, addr} -> {:str, "name/baseN"}: read base args
+  # from heap, concat extras, total = baseN + length(extras).
+  defp build_call_target(state, goal, extras) when is_binary(goal) do
+    arity = length(extras)
+    pred_arity = "#{goal}/#{arity}"
+    new_state = load_args_into_regs(state, 1, extras)
+    {:ok, pred_arity, new_state}
+  end
+  defp build_call_target(state, goal, extras) when is_atom(goal) and not is_nil(goal) do
+    build_call_target(state, Atom.to_string(goal), extras)
+  end
+  defp build_call_target(state, {:ref, addr}, extras) do
+    case Map.get(state.heap, addr) do
+      {:str, base_pred_arity} ->
+        base_arity = parse_functor_arity(base_pred_arity)
+        name = parse_functor_name(base_pred_arity)
+        base_args = heap_slice(state, addr + 1, base_arity)
+        combined = base_args ++ extras
+        total = base_arity + length(extras)
+        pred_arity = "#{name}/#{total}"
+        new_state = load_args_into_regs(state, 1, combined)
+        {:ok, pred_arity, new_state}
+      _ -> :fail
+    end
+  end
+  # Catch-all: unbound goal, malformed term, or otherwise unrecognised
+  # shape. Returns :fail (lax semantics), matching the rest of the
+  # current Elixir runtime. PR #3 (ISO errors plumbing) will replace
+  # this with `instantiation_error` for the unbound-goal case
+  # specifically; the malformed-shape cases stay :fail.
+  defp build_call_target(_state, _goal, _extras), do: :fail
+
+  # Write a list of arg values into consecutive A-regs starting at
+  # start_reg. Note: callers pass start_reg=1, which means the FIRST
+  # extra (or first base-arg, for compound goals) overwrites A1 — the
+  # register that originally held the base goal-term. That is correct:
+  # after dispatch_call_meta builds the combined name/total_arity,
+  # the dispatched predicate''s arg 1 is the FIRST argument of the
+  # combined call, not the base-goal term. The base-goal value is no
+  # longer needed once pred_arity is built.
+  defp load_args_into_regs(state, start_reg, args) do
+    args
+    |> Enum.with_index(start_reg)
+    |> Enum.reduce(state, fn {arg, i}, s -> %{s | regs: Map.put(s.regs, i, arg)} end)
   end
 
   # Extract the functor-name part from a "name/arity" string.
