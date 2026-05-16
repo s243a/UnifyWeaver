@@ -34,6 +34,8 @@
 :- dynamic user:wam_r_pair/1.
 :- dynamic user:wam_r_list/1.
 :- dynamic user:wam_r_parser_dep/0.
+:- dynamic user:wam_r_t2a_forward/0.
+:- dynamic user:wam_r_t2a_reverse/0.
 
 user:wam_r_fact(a).
 user:wam_r_choice_fact(a).
@@ -134,6 +136,37 @@ test(runtime_parser_off_rejects_parser_dependent_builtin,
             [runtime_parser(off)],
             TmpDir),
         (   retractall(user:wam_r_parser_dep),
+            (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true)
+        )).
+
+test(runtime_parser_off_allows_term_to_atom_forward) :-
+    once((
+        retractall(user:wam_r_t2a_forward),
+        assertz((user:wam_r_t2a_forward :-
+            term_to_atom(f(a), _))),
+        unique_r_tmp_dir('tmp_r_parser_mode_t2a_fwd', TmpDir),
+        call_cleanup(
+            write_wam_r_project(
+                [user:wam_r_t2a_forward/0],
+                [runtime_parser(off)],
+                TmpDir),
+            (   retractall(user:wam_r_t2a_forward),
+                (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true)
+            ))
+    )).
+
+test(runtime_parser_off_rejects_term_to_atom_reverse,
+     [error(permission_error(use, runtime_parser, term_to_atom/2))]) :-
+    retractall(user:wam_r_t2a_reverse),
+    assertz((user:wam_r_t2a_reverse :-
+        term_to_atom(_, 'f(a)'))),
+    unique_r_tmp_dir('tmp_r_parser_mode_t2a_rev', TmpDir),
+    call_cleanup(
+        write_wam_r_project(
+            [user:wam_r_t2a_reverse/0],
+            [runtime_parser(off)],
+            TmpDir),
+        (   retractall(user:wam_r_t2a_reverse),
             (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true)
         )).
 
