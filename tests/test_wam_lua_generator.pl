@@ -62,6 +62,8 @@
 :- dynamic user:wam_lua_naf_member/0.
 :- dynamic user:wam_lua_naf_member_no/0.
 :- dynamic user:wam_lua_write_line/0.
+:- dynamic user:wam_lua_parser_dep/0.
+:- dynamic user:wam_lua_t2a_forward/0.
 
 user:wam_lua_fact(a).
 user:wam_lua_choice(a).
@@ -250,6 +252,52 @@ test(project_layout) :-
         ),
         delete_directory_and_contents(TmpDir)
     ).
+
+test(runtime_parser_mode_metadata) :-
+    unique_lua_tmp_dir('tmp_lua_parser_mode', TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project([user:wam_lua_fact/1], [], TmpDir),
+        ( directory_file_path(TmpDir, 'lua/generated_program.lua', Program),
+          read_file_to_string(Program, Code, []),
+          assertion(sub_string(Code, _, _, _,
+                               'runtime_parser = { kind = "none", entry = nil, source = nil }'))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(runtime_parser_native_request_errors,
+     [error(domain_error(runtime_parser_mode(wam_lua), native))]) :-
+    unique_lua_tmp_dir('tmp_lua_parser_native_err', TmpDir),
+    call_cleanup(
+        write_wam_lua_project([user:wam_lua_fact/1],
+                              [runtime_parser(native)],
+                              TmpDir),
+        (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true)).
+
+test(runtime_parser_none_rejects_parser_dependent_builtin,
+     [error(permission_error(use, runtime_parser, read_term_from_atom/2))]) :-
+    retractall(user:wam_lua_parser_dep),
+    assertz((user:wam_lua_parser_dep :-
+        read_term_from_atom('f(a)', _))),
+    unique_lua_tmp_dir('tmp_lua_parser_mode_reject', TmpDir),
+    call_cleanup(
+        write_wam_lua_project([user:wam_lua_parser_dep/0], [], TmpDir),
+        (   retractall(user:wam_lua_parser_dep),
+            (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true)
+        )).
+
+test(runtime_parser_none_allows_term_to_atom_forward) :-
+    once((
+        retractall(user:wam_lua_t2a_forward),
+        assertz((user:wam_lua_t2a_forward :-
+            term_to_atom(f(a), _))),
+        unique_lua_tmp_dir('tmp_lua_parser_t2a_fwd', TmpDir),
+        call_cleanup(
+            write_wam_lua_project([user:wam_lua_t2a_forward/0], [], TmpDir),
+            (   retractall(user:wam_lua_t2a_forward),
+                (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true)
+            ))
+    )).
 
 test(instructions_and_labels) :-
     unique_lua_tmp_dir('tmp_lua_instrs', TmpDir),

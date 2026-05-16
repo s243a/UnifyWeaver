@@ -38,6 +38,10 @@
     wam_lua_lowerable/3,
     lower_predicate_to_lua/4
 ]).
+:- use_module(wam_runtime_parser_capability, [
+    parser_dependent_body_goal/2,
+    wam_target_runtime_parser/3
+]).
 
 :- multifile user:wam_lua_emit_mode/1.
 
@@ -696,6 +700,9 @@ lua_foreign_handler_entry(handler(Pred/Arity, HandlerCode), Entry) :-
     format(string(Entry), '  [~w] = ~w', [Q, HandlerCode]).
 
 write_wam_lua_project(Predicates, Options, ProjectDir) :-
+    wam_target_runtime_parser(wam_lua, Options, RuntimeParserMode),
+    validate_lua_runtime_parser_mode(Predicates, RuntimeParserMode),
+    lua_runtime_parser_mode_literal(RuntimeParserMode, RuntimeParserModeCode),
     make_directory_path(ProjectDir),
     directory_file_path(ProjectDir, 'lua', LuaDir),
     make_directory_path(LuaDir),
@@ -709,7 +716,8 @@ write_wam_lua_project(Predicates, Options, ProjectDir) :-
     lua_foreign_handlers_code(Options, ForeignHandlers),
     write_runtime_source(LuaDir),
     write_program_source(LuaDir, InstrBody, LabelBody, DispatchBody,
-                         WrapperCode, InternSeed, ForeignHandlers, LoweredCode, InlineFactsCode, FactSourcesCode).
+                         WrapperCode, InternSeed, ForeignHandlers, LoweredCode, InlineFactsCode, FactSourcesCode,
+                         RuntimeParserModeCode).
 
 write_runtime_source(LuaDir) :-
     find_template('templates/targets/lua_wam/runtime.lua.mustache', Template),
@@ -719,7 +727,8 @@ write_runtime_source(LuaDir) :-
     write_file(Path, Content).
 
 write_program_source(LuaDir, InstrBody, LabelBody, DispatchBody,
-                     WrapperCode, InternSeed, ForeignHandlers, LoweredCode, InlineFactsCode, FactSourcesCode) :-
+                     WrapperCode, InternSeed, ForeignHandlers, LoweredCode, InlineFactsCode, FactSourcesCode,
+                     RuntimeParserModeCode) :-
     find_template('templates/targets/lua_wam/program.lua.mustache', Template),
     get_time(T), format_time(string(Date), "%Y-%m-%d", T),
     render_template(Template,
@@ -732,9 +741,48 @@ write_program_source(LuaDir, InstrBody, LabelBody, DispatchBody,
          'foreign_handlers'=ForeignHandlers,
          'lowered_functions'=LoweredCode,
          'inline_facts'=InlineFactsCode,
-         'fact_sources'=FactSourcesCode], Content),
+         'fact_sources'=FactSourcesCode,
+         'runtime_parser_mode'=RuntimeParserModeCode], Content),
     directory_file_path(LuaDir, 'generated_program.lua', Path),
     write_file(Path, Content).
+
+lua_runtime_parser_mode_literal(none,
+    '{ kind = "none", entry = nil, source = nil }') :- !.
+lua_runtime_parser_mode_literal(native(Entry), Code) :-
+    !,
+    lua_string_literal(Entry, EntryLit),
+    format(string(Code),
+           '{ kind = "native", entry = ~w, source = nil }',
+           [EntryLit]).
+lua_runtime_parser_mode_literal(compiled(SourceModule), Code) :-
+    lua_string_literal(SourceModule, SourceLit),
+    format(string(Code),
+           '{ kind = "compiled", entry = nil, source = ~w }',
+           [SourceLit]).
+
+validate_lua_runtime_parser_mode(Predicates, none) :-
+    !,
+    (   lua_predicates_parser_dependency(Predicates, Pred, Builtin)
+    ->  throw(error(permission_error(use, runtime_parser, Builtin),
+                    context(write_wam_lua_project/3,
+                            parser_disabled_for_predicate(Pred))))
+    ;   true
+    ).
+validate_lua_runtime_parser_mode(_Predicates, _Mode).
+
+lua_predicates_parser_dependency(Predicates, Pred, Builtin) :-
+    member(Pred, Predicates),
+    lua_predicate_clause(Pred, _Head, Body),
+    parser_dependent_body_goal(Body, Builtin),
+    !.
+
+lua_predicate_clause(Module:Name/Arity, Head, Body) :-
+    !,
+    functor(Head, Name, Arity),
+    clause(Module:Head, Body).
+lua_predicate_clause(Name/Arity, Head, Body) :-
+    functor(Head, Name, Arity),
+    clause(user:Head, Body).
 
 write_file(Path, Content) :-
     setup_call_cleanup(open(Path, write, Stream), write(Stream, Content), close(Stream)).
