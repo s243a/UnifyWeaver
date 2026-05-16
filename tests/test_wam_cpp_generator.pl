@@ -1755,6 +1755,75 @@ user:wam_cpp_test_split_atom_input :-
     split_string('a,b,c', ",", "", L),
     L = ["a","b","c"].
 
+% term_to_atom/2 — bidirectional canonical-form serialisation.
+% Forward (+Term, ?Atom): render Term and unify Atom. Reverse
+% (-Term, +Atom): parse Atom via the canonical-form reader and
+% unify Term. Variables in the parsed term are fresh.
+:- dynamic user:wam_cpp_test_tta_fwd_atom/0.
+:- dynamic user:wam_cpp_test_tta_fwd_int/0.
+:- dynamic user:wam_cpp_test_tta_fwd_compound/0.
+:- dynamic user:wam_cpp_test_tta_fwd_list/0.
+:- dynamic user:wam_cpp_test_tta_rev_atom/0.
+:- dynamic user:wam_cpp_test_tta_rev_int/0.
+:- dynamic user:wam_cpp_test_tta_rev_neg/0.
+:- dynamic user:wam_cpp_test_tta_rev_float/0.
+:- dynamic user:wam_cpp_test_tta_rev_compound/0.
+:- dynamic user:wam_cpp_test_tta_rev_list/0.
+:- dynamic user:wam_cpp_test_tta_rev_nested/0.
+:- dynamic user:wam_cpp_test_tta_roundtrip/0.
+
+user:wam_cpp_test_tta_fwd_atom :-
+    term_to_atom(hello, A),
+    A = hello.
+
+user:wam_cpp_test_tta_fwd_int :-
+    term_to_atom(42, A),
+    A = '42'.
+
+user:wam_cpp_test_tta_fwd_compound :-
+    term_to_atom(foo(1, bar), A),
+    A = 'foo(1, bar)'.
+
+user:wam_cpp_test_tta_fwd_list :-
+    term_to_atom([a, b, c], A),
+    A = '[a, b, c]'.
+
+user:wam_cpp_test_tta_rev_atom :-
+    term_to_atom(T, hello),
+    T = hello.
+
+user:wam_cpp_test_tta_rev_int :-
+    term_to_atom(T, '42'),
+    T = 42.
+
+user:wam_cpp_test_tta_rev_neg :-
+    term_to_atom(T, '-7'),
+    T = -7.
+
+user:wam_cpp_test_tta_rev_float :-
+    term_to_atom(T, '3.14'),
+    T = 3.14.
+
+user:wam_cpp_test_tta_rev_compound :-
+    term_to_atom(T, 'foo(1, bar)'),
+    T = foo(1, bar).
+
+user:wam_cpp_test_tta_rev_list :-
+    term_to_atom(T, '[a, b, c]'),
+    T = [a, b, c].
+
+% Nested compound containing a list.
+user:wam_cpp_test_tta_rev_nested :-
+    term_to_atom(T, 'p(q(1), [2, 3])'),
+    T = p(q(1), [2, 3]).
+
+% Full round-trip: render then re-parse yields a structurally
+% equivalent term.
+user:wam_cpp_test_tta_roundtrip :-
+    term_to_atom(foo(a, b, c), A),
+    term_to_atom(T, A),
+    T = foo(a, b, c).
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -6065,6 +6134,152 @@ test(cpp_e2e_split_atom_input,
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_split_atom_input/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% term_to_atom/2 — bidirectional canonical-form term ↔ atom.
+% Forward via render(), reverse via the canonical-form term parser.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_tta_fwd_atom, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_tta_fwd_atom', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_tta_fwd_atom/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_tta_fwd_atom/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_tta_fwd_int, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_tta_fwd_int', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_tta_fwd_int/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_tta_fwd_int/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_tta_fwd_compound,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_tta_fwd_compound', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_tta_fwd_compound/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_tta_fwd_compound/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_tta_fwd_list, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_tta_fwd_list', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_tta_fwd_list/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_tta_fwd_list/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_tta_rev_atom, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_tta_rev_atom', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_tta_rev_atom/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_tta_rev_atom/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_tta_rev_int, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_tta_rev_int', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_tta_rev_int/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_tta_rev_int/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_tta_rev_neg, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_tta_rev_neg', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_tta_rev_neg/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_tta_rev_neg/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_tta_rev_float, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_tta_rev_float', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_tta_rev_float/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_tta_rev_float/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_tta_rev_compound,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_tta_rev_compound', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_tta_rev_compound/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_tta_rev_compound/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_tta_rev_list, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_tta_rev_list', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_tta_rev_list/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_tta_rev_list/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_tta_rev_nested,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_tta_rev_nested', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_tta_rev_nested/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_tta_rev_nested/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_tta_roundtrip,
+     [condition(cpp_compiler_available)]) :-
+    % Full render-then-parse round-trip — the parser accepts what
+    % render produces.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_tta_rt', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_tta_roundtrip/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_tta_roundtrip/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

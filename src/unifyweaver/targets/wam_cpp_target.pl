@@ -2499,6 +2499,22 @@ struct WamState {
     // body_next — dispatch the top BodyFrame''s next goal, or pop
     // and proceed to outer after_pc when goals are exhausted.
     bool    body_next();
+    // Term parser for term_to_atom/2''s reverse mode and read_term/1.
+    // Reads canonical-form syntax matching render()''s output:
+    //   integer / float / atom / var / [list] / functor(args).
+    // Returns the parsed Value via `out` and the rest-of-input
+    // position via `pos` (advances past consumed chars). Skips
+    // leading whitespace. Returns false on any parse error.
+    bool    parse_term(const std::string& s, std::size_t& pos,
+                       CellPtr& out);
+    // Internal helpers for parse_term.
+    void    parse_skip_ws(const std::string& s, std::size_t& pos);
+    bool    parse_atom_or_compound(const std::string& s, std::size_t& pos,
+                                   CellPtr& out);
+    bool    parse_list(const std::string& s, std::size_t& pos,
+                       CellPtr& out);
+    bool    parse_number(const std::string& s, std::size_t& pos,
+                         CellPtr& out);
     // sub_atom/5 — enumerate (Before, Length) tuples matching the
     // bound constraints. Pre-filters the candidate list at entry,
     // then iterates via the SubAtomIterator + sub_atom_next_pc CP
@@ -3372,6 +3388,41 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
     // Each resulting substring has any leading/trailing chars in
     // PadChars stripped. Adjacent separators produce empty
     // substrings. Empty SepChars means "no splits, just pad".
+    // ---- term_to_atom/2 ---------------------------------------------
+    // term_to_atom(?Term, ?Atom) — bidirectional canonical-form
+    // serialisation. (+Term, ?Atom): render Term and unify Atom
+    // with the resulting atom. (-Term, +Atom): parse Atom using
+    // the canonical-form reader (parse_term) and unify Term with
+    // the parsed value. (+Term, +Atom): render Term and require
+    // equality with Atom. Variables in a parsed Term are fresh.
+    if (op == "term_to_atom/2") {
+        Value t = deref(*get_cell("A1"));
+        Value a = deref(*get_cell("A2"));
+        if (!t.is_unbound()) {
+            std::string rendered = render(t);
+            Value av = Value::Atom(rendered);
+            CellPtr tgt = get_cell("A2");
+            if (tgt->is_unbound()) { bind_cell(tgt, av); pc += 1; return true; }
+            if (!unify_cells(tgt, std::make_shared<Cell>(av))) return false;
+            pc += 1; return true;
+        }
+        // Reverse mode: A2 must be an atom (or atom-like).
+        std::string src;
+        if (a.tag == Value::Tag::Atom) src = a.s;
+        else if (a.tag == Value::Tag::Integer) src = std::to_string(a.i);
+        else if (a.tag == Value::Tag::Float) src = render(a);
+        else return false;
+        std::size_t pos = 0;
+        CellPtr parsed;
+        if (!parse_term(src, pos, parsed)) return false;
+        parse_skip_ws(src, pos);
+        if (pos != src.size()) return false; // trailing garbage
+        CellPtr tgt = get_cell("A1");
+        if (tgt->is_unbound()) { bind_cell(tgt, *parsed); pc += 1; return true; }
+        if (!unify_cells(tgt, parsed)) return false;
+        pc += 1; return true;
+    }
+
     if (op == "split_string/4") {
         auto read_str = [&](CellPtr c, std::string& out) -> bool {
             Value v = deref(*c);
@@ -5564,6 +5615,201 @@ bool WamState::body_next() {
     }
     CellPtr g = f.goals[f.next_idx++];
     return invoke_goal_as_call(g, body_next_pc);
+}
+
+// ----------------------------------------------------------------------
+// Term parser — reads canonical syntax produced by render().
+// Used by term_to_atom/2 (reverse mode). Doesn''t handle operator
+// syntax; just integer/float/atom/var/list/compound in canonical form.
+// ----------------------------------------------------------------------
+
+void WamState::parse_skip_ws(const std::string& s, std::size_t& pos) {
+    while (pos < s.size() && (s[pos] == '' '' || s[pos] == ''\\t''
+                              || s[pos] == ''\\n'')) ++pos;
+}
+
+bool WamState::parse_number(const std::string& s, std::size_t& pos,
+                            CellPtr& out) {
+    std::size_t start = pos;
+    if (pos < s.size() && s[pos] == ''-'') ++pos;
+    std::size_t digits_start = pos;
+    while (pos < s.size() && std::isdigit(static_cast<unsigned char>(s[pos])))
+        ++pos;
+    if (pos == digits_start) { pos = start; return false; }
+    bool is_float = false;
+    if (pos < s.size() && s[pos] == ''.''
+        && pos + 1 < s.size()
+        && std::isdigit(static_cast<unsigned char>(s[pos + 1])))
+    {
+        is_float = true;
+        ++pos; // consume ''.''
+        while (pos < s.size() && std::isdigit(static_cast<unsigned char>(s[pos])))
+            ++pos;
+    }
+    // Optional exponent: [eE][+-]?digits
+    if (pos < s.size() && (s[pos] == ''e'' || s[pos] == ''E'')) {
+        std::size_t save = pos;
+        ++pos;
+        if (pos < s.size() && (s[pos] == ''+'' || s[pos] == ''-'')) ++pos;
+        std::size_t exp_start = pos;
+        while (pos < s.size() && std::isdigit(static_cast<unsigned char>(s[pos])))
+            ++pos;
+        if (pos == exp_start) { pos = save; }
+        else { is_float = true; }
+    }
+    std::string num_str = s.substr(start, pos - start);
+    try {
+        if (is_float) {
+            double d = std::stod(num_str);
+            out = std::make_shared<Cell>(Value::Float(d));
+        } else {
+            std::int64_t n = std::stoll(num_str);
+            out = std::make_shared<Cell>(Value::Integer(n));
+        }
+    } catch (...) { pos = start; return false; }
+    return true;
+}
+
+bool WamState::parse_list(const std::string& s, std::size_t& pos,
+                          CellPtr& out) {
+    // Caller already at ''[''. Consume it and walk elements.
+    if (pos >= s.size() || s[pos] != ''['') return false;
+    ++pos;
+    parse_skip_ws(s, pos);
+    if (pos < s.size() && s[pos] == '']'') {
+        ++pos;
+        out = std::make_shared<Cell>(Value::Atom("[]"));
+        return true;
+    }
+    // Collect elements.
+    std::vector<CellPtr> elems;
+    CellPtr first;
+    if (!parse_term(s, pos, first)) return false;
+    elems.push_back(first);
+    parse_skip_ws(s, pos);
+    while (pos < s.size() && s[pos] == '','') {
+        ++pos;
+        parse_skip_ws(s, pos);
+        CellPtr e;
+        if (!parse_term(s, pos, e)) return false;
+        elems.push_back(e);
+        parse_skip_ws(s, pos);
+    }
+    CellPtr tail;
+    if (pos < s.size() && s[pos] == ''|'') {
+        ++pos;
+        parse_skip_ws(s, pos);
+        if (!parse_term(s, pos, tail)) return false;
+        parse_skip_ws(s, pos);
+    } else {
+        tail = std::make_shared<Cell>(Value::Atom("[]"));
+    }
+    if (pos >= s.size() || s[pos] != '']'') return false;
+    ++pos;
+    // Build the [|]/2 spine right-to-left.
+    CellPtr result = tail;
+    for (auto it = elems.rbegin(); it != elems.rend(); ++it) {
+        std::vector<CellPtr> args;
+        args.push_back(*it);
+        args.push_back(result);
+        result = std::make_shared<Cell>(
+            Value::Compound("[|]/2", std::move(args)));
+    }
+    out = result;
+    return true;
+}
+
+bool WamState::parse_atom_or_compound(const std::string& s,
+                                      std::size_t& pos,
+                                      CellPtr& out) {
+    std::size_t start = pos;
+    std::string name;
+    // Quoted atom or bareword. Char codes: 39 = '', 92 = \\.
+    if (pos < s.size() && static_cast<unsigned char>(s[pos]) == 39) {
+        ++pos;
+        while (pos < s.size()
+               && static_cast<unsigned char>(s[pos]) != 39) {
+            if (static_cast<unsigned char>(s[pos]) == 92
+                && pos + 1 < s.size()) {
+                ++pos;
+                name.push_back(s[pos]);
+            } else {
+                name.push_back(s[pos]);
+            }
+            ++pos;
+        }
+        if (pos >= s.size()) { pos = start; return false; }
+        ++pos; // consume closing quote
+    } else if (pos < s.size()
+               && std::islower(static_cast<unsigned char>(s[pos]))) {
+        // Bareword: lowercase start, then [a-zA-Z0-9_]*.
+        while (pos < s.size()
+               && (std::isalnum(static_cast<unsigned char>(s[pos]))
+                   || s[pos] == ''_''))
+        {
+            name.push_back(s[pos]);
+            ++pos;
+        }
+    } else {
+        return false;
+    }
+    // Optional compound: name "(" args ")".
+    parse_skip_ws(s, pos);
+    if (pos < s.size() && s[pos] == ''('') {
+        ++pos;
+        parse_skip_ws(s, pos);
+        std::vector<CellPtr> args;
+        CellPtr first;
+        if (!parse_term(s, pos, first)) return false;
+        args.push_back(first);
+        parse_skip_ws(s, pos);
+        while (pos < s.size() && s[pos] == '','') {
+            ++pos;
+            parse_skip_ws(s, pos);
+            CellPtr a;
+            if (!parse_term(s, pos, a)) return false;
+            args.push_back(a);
+            parse_skip_ws(s, pos);
+        }
+        if (pos >= s.size() || s[pos] != '')'') return false;
+        ++pos;
+        std::string functor = name + "/" + std::to_string(args.size());
+        out = std::make_shared<Cell>(
+            Value::Compound(functor, std::move(args)));
+        return true;
+    }
+    // Plain atom.
+    out = std::make_shared<Cell>(Value::Atom(name));
+    return true;
+}
+
+bool WamState::parse_term(const std::string& s, std::size_t& pos,
+                          CellPtr& out) {
+    parse_skip_ws(s, pos);
+    if (pos >= s.size()) return false;
+    char c = s[pos];
+    // Variable: uppercase letter or underscore start (no compound form).
+    if (std::isupper(static_cast<unsigned char>(c)) || c == ''_'') {
+        std::size_t start = pos;
+        while (pos < s.size()
+               && (std::isalnum(static_cast<unsigned char>(s[pos]))
+                   || s[pos] == ''_''))
+            ++pos;
+        std::string name = s.substr(start, pos - start);
+        out = std::make_shared<Cell>(
+            Value::Unbound("_P" + std::to_string(var_counter++)));
+        return true;
+    }
+    // List.
+    if (c == ''['') return parse_list(s, pos, out);
+    // Number (possibly negative).
+    if (c == ''-'' || std::isdigit(static_cast<unsigned char>(c))) {
+        std::size_t save = pos;
+        if (parse_number(s, pos, out)) return true;
+        pos = save;
+    }
+    // Atom or compound.
+    return parse_atom_or_compound(s, pos, out);
 }
 
 // sub_atom/5 dispatcher. Reads A1..A5, decides which dimensions are
