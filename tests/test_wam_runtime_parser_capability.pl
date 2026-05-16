@@ -42,4 +42,20 @@ test(parser_dependent_builtin_catalogue) :-
                       read_term_from_atom/3,
                       term_to_atom/2]).
 
+test(parser_dependent_goal_read) :-
+    parser_dependent_goal(read(_, _), read/2).
+
+test(parser_dependent_goal_module_qualified) :-
+    once(parser_dependent_goal(user:read_term_from_atom('f(a)', _),
+                               read_term_from_atom/2)).
+
+test(parser_dependent_goal_term_to_atom_forward_fails, [fail]) :-
+    parser_dependent_goal(term_to_atom(f(a), _), _).
+
+test(parser_dependent_goal_term_to_atom_reverse) :-
+    parser_dependent_goal(term_to_atom(_, 'f(a)'), term_to_atom/2).
+
+test(parser_dependent_goal_term_to_atom_both_bound) :-
+    parser_dependent_goal(term_to_atom(f(a), 'f(a)'), term_to_atom/2).
+
 :- end_tests(wam_runtime_parser_capability).
