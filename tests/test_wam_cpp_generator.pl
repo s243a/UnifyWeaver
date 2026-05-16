@@ -1415,6 +1415,53 @@ user:wam_cpp_test_numlist_then_sort :-
     sort([3, 2, 1, 4, 2 | L], S),
     S = [1, 2, 3, 4].
 
+% maplist/2..5 — apply a goal to each list element. Helper-injected
+% as the standard recursive 2-clause Prolog definition; the body
+% uses call/N to dispatch the goal with the threaded args. Variadic
+% across 2..5 arities: maplist(G, L1, L2) calls G(Xi, Yi) for each
+% (Xi, Yi) pair, etc.
+:- dynamic user:wam_cpp_dyn_pos/1.
+:- dynamic user:wam_cpp_dyn_pos2/1.
+:- dynamic user:wam_cpp_test_maplist_2_check/0.
+:- dynamic user:wam_cpp_test_maplist_2_fail/0.
+:- dynamic user:wam_cpp_test_maplist_3_map/0.
+:- dynamic user:wam_cpp_test_maplist_3_succ/0.
+:- dynamic user:wam_cpp_test_maplist_3_empty/0.
+:- dynamic user:wam_cpp_test_maplist_4/0.
+:- dynamic user:wam_cpp_test_maplist_5/0.
+
+user:wam_cpp_plus10(X, Y) :- Y is X + 10.
+user:wam_cpp_add(X, Y, Z) :- Z is X + Y.
+user:wam_cpp_add3(X, Y, Z, W) :- W is X + Y + Z.
+
+user:wam_cpp_test_maplist_2_check :-
+    assertz((wam_cpp_dyn_pos(X) :- X > 0)),
+    maplist(wam_cpp_dyn_pos, [1, 2, 3]).
+
+user:wam_cpp_test_maplist_2_fail :-
+    assertz((wam_cpp_dyn_pos2(X) :- X > 0)),
+    \+ maplist(wam_cpp_dyn_pos2, [1, -1, 3]).
+
+user:wam_cpp_test_maplist_3_map :-
+    maplist(wam_cpp_plus10, [1, 2, 3], L),
+    L = [11, 12, 13].
+
+user:wam_cpp_test_maplist_3_succ :-
+    maplist(succ, [1, 2, 3], L),
+    L = [2, 3, 4].
+
+user:wam_cpp_test_maplist_3_empty :-
+    maplist(wam_cpp_plus10, [], L),
+    L = [].
+
+user:wam_cpp_test_maplist_4 :-
+    maplist(wam_cpp_add, [1, 2, 3], [10, 20, 30], L),
+    L = [11, 22, 33].
+
+user:wam_cpp_test_maplist_5 :-
+    maplist(wam_cpp_add3, [1, 2], [10, 20], [100, 200], L),
+    L = [111, 222].
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -5002,6 +5049,102 @@ test(cpp_e2e_numlist_then_sort,
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_numlist_then_sort/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% maplist/2..5 — apply a goal to each list element.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_maplist_2_check,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ml2_chk', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_maplist_2_check/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_maplist_2_check/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_maplist_2_fail,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ml2_fail', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_maplist_2_fail/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_maplist_2_fail/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_maplist_3_map,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ml3_map', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_plus10/2,
+                               user:wam_cpp_test_maplist_3_map/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_maplist_3_map/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_maplist_3_succ,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ml3_succ', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_maplist_3_succ/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_maplist_3_succ/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_maplist_3_empty,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ml3_emp', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_plus10/2,
+                               user:wam_cpp_test_maplist_3_empty/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_maplist_3_empty/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_maplist_4, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ml4', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_add/3,
+                               user:wam_cpp_test_maplist_4/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_maplist_4/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_maplist_5, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ml5', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_add3/4,
+                               user:wam_cpp_test_maplist_5/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_maplist_5/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

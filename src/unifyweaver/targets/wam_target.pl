@@ -1483,6 +1483,10 @@ is_builtin_pred(numlist, 3).      % integer range generator: [Lo..Hi].
 is_builtin_pred(sort, 2).         % stable sort + dedup (std order).
 is_builtin_pred(msort, 2).        % stable sort, NO dedup (std order).
 is_builtin_pred(select, 3).       % nondet list element selection.
+is_builtin_pred(maplist, 2).      % apply goal to each list element.
+is_builtin_pred(maplist, 3).
+is_builtin_pred(maplist, 4).
+is_builtin_pred(maplist, 5).
 % Note: sub_atom/5 is nondeterministic; like findall/bagof/setof it
 % goes through the Call/Execute dispatch path (not is_builtin_pred)
 % so dispatch_sub_atom can manage its own CP machinery.
