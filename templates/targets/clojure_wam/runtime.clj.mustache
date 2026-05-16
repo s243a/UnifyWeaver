@@ -520,6 +520,27 @@
 (defn arithmetic-greater-or-equal? [state left right]
   (arithmetic-compare? state >= left right))
 
+(defn apply-succ-solution [state]
+  (let [pred (deref-value (:bindings state)
+                          (or (reg-get-raw state "A1") ::unbound))
+        succ (deref-value (:bindings state)
+                          (or (reg-get-raw state "A2") ::unbound))]
+    (cond
+      (and (integer? pred) (not (neg? pred)))
+      (let [[ok next-state] (unify-values state succ (inc pred))]
+        (if ok
+          (advance next-state)
+          (backtrack state)))
+
+      (and (integer? succ) (pos? succ))
+      (let [[ok next-state] (unify-values state pred (dec succ))]
+        (if ok
+          (advance next-state)
+          (backtrack state)))
+
+      :else
+      (backtrack state))))
+
 (defn arithmetic-result-term [value]
   (cond
     (integer? value) value
@@ -1520,6 +1541,9 @@
             (if (arithmetic-not-equal? state left right)
               (advance state)
               (backtrack state)))
+
+          "succ/2"
+          (apply-succ-solution state)
 
           "is/2"
           (let [left (deref-value (:bindings state)

@@ -240,6 +240,13 @@ test(simple_builtin_arithmetic_not_equal_is_direct_lowered_in_prefix) :-
         has(Code, "runtime/backtrack")
     )).
 
+test(simple_builtin_succ_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_succ/2, [builtin_call('succ/2', 2), proceed], [], Code),
+        has(Code, "runtime/apply-succ-solution"),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
 test(simple_builtin_is_is_direct_lowered_in_prefix) :-
     once((
         lower_predicate_to_clojure(test_is/2, [builtin_call('is/2', 2), proceed], [], Code),

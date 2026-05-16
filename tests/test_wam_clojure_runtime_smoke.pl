@@ -147,6 +147,9 @@
 :- dynamic user:wam_arith_eq_float/1.
 :- dynamic user:wam_arith_neq_42/1.
 :- dynamic user:wam_arith_eq_unbound/1.
+:- dynamic user:wam_succ_guard/2.
+:- dynamic user:wam_succ_negative/1.
+:- dynamic user:wam_succ_unbound_pair/1.
 :- dynamic user:wam_arith_lt_42/1.
 :- dynamic user:wam_arith_gt_42/1.
 :- dynamic user:wam_arith_le_42/1.
@@ -308,6 +311,9 @@ user:wam_arith_eq_42(X) :- X =:= 42.
 user:wam_arith_eq_float(X) :- X =:= 3.5.
 user:wam_arith_neq_42(X) :- X =\= 42.
 user:wam_arith_eq_unbound(_) :- user:wam_unbound_arg(Y), Y =:= 42.
+user:wam_succ_guard(N, M) :- succ(N, M).
+user:wam_succ_negative(M) :- succ(-1, M).
+user:wam_succ_unbound_pair(_) :- user:wam_unbound_arg(N), user:wam_unbound_arg(M), succ(N, M).
 user:wam_arith_lt_42(X) :- X < 42.
 user:wam_arith_gt_42(X) :- X > 42.
 user:wam_arith_le_42(X) :- X =< 42.
@@ -474,6 +480,9 @@ run_smoke :-
           user:wam_arith_eq_float/1,
           user:wam_arith_neq_42/1,
           user:wam_arith_eq_unbound/1,
+          user:wam_succ_guard/2,
+          user:wam_succ_negative/1,
+          user:wam_succ_unbound_pair/1,
           user:wam_arith_lt_42/1,
           user:wam_arith_gt_42/1,
           user:wam_arith_le_42/1,
@@ -793,6 +802,13 @@ smoke_cases([
     case('wam_arith_neq_42/1', 3.5, "true"),
     case('wam_arith_neq_42/1', 42, "false"),
     case('wam_arith_eq_unbound/1', a, "false"),
+    case('wam_succ_guard/2', args(1, 2), "true"),
+    case('wam_succ_guard/2', args(1, 3), "false"),
+    case('wam_succ_guard/2', args(0, 1), "true"),
+    case('wam_succ_guard/2', args(2, 3), "true"),
+    case('wam_succ_guard/2', args(2, 2), "false"),
+    case('wam_succ_negative/1', 0, "false"),
+    case('wam_succ_unbound_pair/1', a, "false"),
     case('wam_arith_lt_42/1', 3.5, "true"),
     case('wam_arith_lt_42/1', 42, "false"),
     case('wam_arith_gt_42/1', 43, "true"),
@@ -1122,6 +1138,9 @@ assert_lowered_arithmetic_comparison_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-arith-eq-float-1"),
     has(CoreCode, "defn lowered-wam-arith-neq-42-1"),
     has(CoreCode, "defn lowered-wam-arith-eq-unbound-1"),
+    has(CoreCode, "defn lowered-wam-succ-guard-2"),
+    has(CoreCode, "defn lowered-wam-succ-negative-1"),
+    has(CoreCode, "defn lowered-wam-succ-unbound-pair-1"),
     has(CoreCode, "defn lowered-wam-arith-lt-42-1"),
     has(CoreCode, "defn lowered-wam-arith-gt-42-1"),
     has(CoreCode, "defn lowered-wam-arith-le-42-1"),
@@ -1136,6 +1155,7 @@ assert_lowered_arithmetic_comparison_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-arith-is-unbound-1"),
     has(CoreCode, "runtime/arithmetic-equal?"),
     has(CoreCode, "runtime/arithmetic-not-equal?"),
+    has(CoreCode, "runtime/apply-succ-solution"),
     has(CoreCode, "runtime/eval-arithmetic-term"),
     has(CoreCode, "runtime/arithmetic-less?"),
     has(CoreCode, "runtime/arithmetic-greater?"),
