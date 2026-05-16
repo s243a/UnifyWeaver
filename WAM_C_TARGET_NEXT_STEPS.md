@@ -5,7 +5,7 @@ Status date: 2026-05-15
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `cc2d432d` (`Merge pull request #2129 from s243a/feat/wam-c-lowered-helper-projection-row-constraints`)
+- `main` at `e727e49b` (`Merge pull request #2139 from s243a/feat/wam-c-lowered-helper-projection-bench`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
 - `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py`
@@ -14,7 +14,7 @@ Base verified locally:
 
 Active branch:
 
-- `feat/wam-c-lowered-helper-projection-bench`
+- `feat/wam-c-lowered-helper-scale-workload`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -58,7 +58,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Lowered helper non-reordered projection metadata | Done | Planner reports explicit rejection reasons for omitted head variables, repeated head variables, and unbound callee variables |
 | Lowered helper ignored-output projections | Done | Projected body-call helpers pass singleton callee-local variables as fresh unbound arguments and ignore their returned bindings |
 | Lowered helper projection row constraints | Done | Repeated caller-variable projections lower through materialized native fact rows while preserving availability checks |
-| Lowered helper projection benchmark | In progress | Active branch extends the tiny lowered-helper benchmark to cover direct, reordered, ignored-output, and row-constrained projection shapes |
+| Lowered helper projection benchmark | Done | Tiny lowered-helper benchmark covers direct, reordered, ignored-output, and row-constrained projection shapes |
+| Lowered helper scaled benchmark workload | In progress | Active branch parameterizes the lowered-helper generator by scale while preserving interpreted/lowered output matching |
 
 ## Current C Target Baseline
 
@@ -139,24 +140,7 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-lowered-helper-projection-bench`
-
-Goal: add a small benchmark workload for projected lowered helpers that covers
-reordered, ignored-output, and row-constrained projection shapes.
-
-Scope:
-
-- Extend the tiny lowered-helper matrix workload before adding broader C
-  target benchmark slices.
-- Compare interpreted, direct projected, ignored-output, and row-constrained
-  helper variants.
-- Keep constant filters on the existing materialized `filtered_fact` path.
-
-Status: active; the existing `c-wam-lowered-helper` target set now runs direct,
-reordered, ignored-output, and row-constrained projected-helper queries in both
-interpreted and lowered modes.
-
-### 2. `feat/wam-c-lowered-helper-scale-workload`
+### 1. `feat/wam-c-lowered-helper-scale-workload`
 
 Goal: scale the lowered-helper benchmark beyond the tiny dev smoke while keeping
 the output contract stable across interpreted and lowered modes.
@@ -168,10 +152,25 @@ Scope:
 - Preserve projection-shape coverage and output matching across modes.
 - Keep the first pass small enough for routine matrix validation.
 
+Status: active; `dev` now emits 16 normalized rows and `10x` emits 160 rows for
+the same projection-shape workload, with interpreted and lowered output hashes
+matching per scale.
+
+### 2. `feat/wam-c-lowered-helper-scale-ci-smoke`
+
+Goal: add focused regression coverage for the scaled lowered-helper generator
+and matrix output row counts.
+
+Scope:
+
+- Assert that `dev` and `10x` lowered-helper matrix rows differ by scale but
+  match between interpreted and lowered modes.
+- Keep the test narrow so it does not turn the general matrix unit test into a
+  slow compile/run suite.
+
 ## Suggested Immediate Next Step
 
-Continue validating `feat/wam-c-lowered-helper-projection-bench`.
+Continue validating `feat/wam-c-lowered-helper-scale-workload`.
 
-The active branch broadens the existing lowered-helper matrix target from a
-fact-oriented smoke into a projection-shape benchmark, while preserving the same
-interpreted-vs-lowered target set.
+The active branch gives the lowered-helper projection benchmark a real scale
+dimension while keeping the standard three-column benchmark output contract.
