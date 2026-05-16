@@ -1274,6 +1274,83 @@ user:wam_cpp_test_term_order_neg :-
     \+ (2 @< 1),
     \+ (foo @< abc).
 
+% char_type/2 + upcase_atom/2 + downcase_atom/2 — character
+% classification and case conversion. char_type covers a useful
+% subset of SWI''s patterns: alpha, alnum, digit, whitespace, space,
+% punct, ascii, upper, lower (classifications); upper(Lower),
+% lower(Upper), to_upper(U), to_lower(L) (case conversion);
+% digit(Weight), code(Code) (bidirectional).
+%
+% Digit-char atoms like ''5'' are constructed via char_code/2 to
+% side-step a WAM-text roundtrip quirk where digit-only atoms get
+% re-parsed as integers — orthogonal bug, deferred.
+:- dynamic user:wam_cpp_test_char_type_alpha/0.
+:- dynamic user:wam_cpp_test_char_type_digit/0.
+:- dynamic user:wam_cpp_test_char_type_whitespace/0.
+:- dynamic user:wam_cpp_test_char_type_upper_arg/0.
+:- dynamic user:wam_cpp_test_char_type_lower_arg/0.
+:- dynamic user:wam_cpp_test_char_type_to_upper/0.
+:- dynamic user:wam_cpp_test_char_type_to_lower/0.
+:- dynamic user:wam_cpp_test_char_type_digit_weight/0.
+:- dynamic user:wam_cpp_test_char_type_digit_reverse/0.
+:- dynamic user:wam_cpp_test_char_type_code/0.
+:- dynamic user:wam_cpp_test_upcase_atom/0.
+:- dynamic user:wam_cpp_test_downcase_atom/0.
+
+user:wam_cpp_test_char_type_alpha :-
+    char_type(a, alpha),
+    char_code(C, 0'1), \+ char_type(C, alpha).
+
+user:wam_cpp_test_char_type_digit :-
+    char_code(C, 0'5),
+    char_type(C, digit).
+
+user:wam_cpp_test_char_type_whitespace :-
+    char_type(' ', whitespace).
+
+user:wam_cpp_test_char_type_upper_arg :-
+    char_type('A', upper(L)),
+    L = a.
+
+user:wam_cpp_test_char_type_lower_arg :-
+    char_type(a, lower(U)),
+    U = 'A'.
+
+user:wam_cpp_test_char_type_to_upper :-
+    char_type(a, to_upper(U)),
+    U = 'A',
+    char_type('B', to_upper(U2)),
+    U2 = 'B'.
+
+user:wam_cpp_test_char_type_to_lower :-
+    char_type('A', to_lower(L)),
+    L = a.
+
+user:wam_cpp_test_char_type_digit_weight :-
+    char_code(D, 0'7),
+    char_type(D, digit(W)),
+    W = 7.
+
+user:wam_cpp_test_char_type_digit_reverse :-
+    char_type(C, digit(3)),
+    char_code(C, 0'3).
+
+user:wam_cpp_test_char_type_code :-
+    char_type('A', code(C)),
+    C = 65,
+    char_type(C2, code(97)),
+    C2 = a.
+
+user:wam_cpp_test_upcase_atom :-
+    upcase_atom(hello, R),
+    R = 'HELLO',
+    upcase_atom('Already', R2),
+    R2 = 'ALREADY'.
+
+user:wam_cpp_test_downcase_atom :-
+    downcase_atom('WORLD', R),
+    R = world.
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -4565,6 +4642,169 @@ test(cpp_e2e_term_order_neg, [condition(cpp_compiler_available)]) :-
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_term_order_neg/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% char_type/2 + upcase_atom/2 + downcase_atom/2 — character
+% classification and whole-atom case conversion.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_char_type_alpha, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ct_alpha', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_char_type_alpha/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_char_type_alpha/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_char_type_digit, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ct_digit', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_char_type_digit/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_char_type_digit/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_char_type_whitespace,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ct_ws', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_char_type_whitespace/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_char_type_whitespace/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_char_type_upper_arg,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ct_upper', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_char_type_upper_arg/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_char_type_upper_arg/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_char_type_lower_arg,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ct_lower', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_char_type_lower_arg/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_char_type_lower_arg/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_char_type_to_upper,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ct_to_up', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_char_type_to_upper/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_char_type_to_upper/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_char_type_to_lower,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ct_to_lo', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_char_type_to_lower/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_char_type_to_lower/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_char_type_digit_weight,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ct_dw', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_char_type_digit_weight/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_char_type_digit_weight/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_char_type_digit_reverse,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ct_dr', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_char_type_digit_reverse/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_char_type_digit_reverse/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_char_type_code, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ct_code', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_char_type_code/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_char_type_code/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_upcase_atom, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_upcase', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_upcase_atom/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_upcase_atom/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_downcase_atom, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_downcase', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_downcase_atom/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_downcase_atom/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

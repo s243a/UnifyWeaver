@@ -2898,6 +2898,160 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         return false;
     }
 
+    // ---- char_type/2 ------------------------------------------------
+    // ISO-style character classification + bidirectional case
+    // conversion. Supports a useful subset of SWI''s char_type/2:
+    //   alpha, alnum, digit, whitespace, space, punct, ascii,
+    //   upper, lower (simple classifications; deterministic check),
+    //   upper(Lower), lower(Upper) — Char is upper/lower; the arg
+    //                  unifies with the opposite case.
+    //   to_upper(U), to_lower(L) — bidirectional case conversion
+    //                  (Char or U/L may be unbound).
+    //   digit(Weight)  — digit char ↔ integer 0-9.
+    //   code(Code)     — Char''s code ↔ integer (bidirectional;
+    //                    overlaps with char_code/2).
+    if (op == "char_type/2") {
+        Value cv = deref(*get_cell("A1"));
+        Value tv = deref(*get_cell("A2"));
+        // Helper: extract char if A1 is a single-char atom; -1 if not.
+        auto char_or_minus = [&]() -> int {
+            if (cv.tag == Value::Tag::Atom && cv.s.size() == 1)
+                return static_cast<unsigned char>(cv.s[0]);
+            return -1;
+        };
+        // Forward classifications (Char bound, Type bound to an atom).
+        if (tv.tag == Value::Tag::Atom) {
+            int c = char_or_minus();
+            if (c < 0) return false;
+            const std::string& t = tv.s;
+            bool ok = false;
+            if (t == "alpha")      ok = std::isalpha(c) != 0;
+            else if (t == "alnum")  ok = std::isalnum(c) != 0;
+            else if (t == "digit")  ok = std::isdigit(c) != 0;
+            else if (t == "whitespace") ok = std::isspace(c) != 0;
+            else if (t == "space")  ok = std::isspace(c) != 0;
+            else if (t == "punct")  ok = std::ispunct(c) != 0;
+            else if (t == "ascii")  ok = (c >= 0 && c <= 127);
+            else if (t == "upper")  ok = std::isupper(c) != 0;
+            else if (t == "lower")  ok = std::islower(c) != 0;
+            else return false;
+            if (!ok) return false;
+            pc += 1; return true;
+        }
+        // Compound Type — case conversion or digit(W) / code(N).
+        if (tv.tag == Value::Tag::Compound && tv.args.size() == 1) {
+            const std::string& tname = tv.s;
+            CellPtr arg = tv.args[0];
+            Value av = deref(*arg);
+            // upper(Lower): Char must be uppercase; bind Lower to lowercase form.
+            // lower(Upper): Char must be lowercase; bind Upper to uppercase form.
+            if (tname == "upper/1") {
+                int c = char_or_minus();
+                if (c < 0 || !std::isupper(c)) return false;
+                Value lo = Value::Atom(std::string(
+                    1, static_cast<char>(std::tolower(c))));
+                if (av.is_unbound()) { bind_cell(arg, lo); pc += 1; return true; }
+                if (!unify_cells(arg, std::make_shared<Cell>(lo))) return false;
+                pc += 1; return true;
+            }
+            if (tname == "lower/1") {
+                int c = char_or_minus();
+                if (c < 0 || !std::islower(c)) return false;
+                Value up = Value::Atom(std::string(
+                    1, static_cast<char>(std::toupper(c))));
+                if (av.is_unbound()) { bind_cell(arg, up); pc += 1; return true; }
+                if (!unify_cells(arg, std::make_shared<Cell>(up))) return false;
+                pc += 1; return true;
+            }
+            // to_lower(L) / to_upper(U): bidirectional case conversion.
+            // Either A1 or the inner arg may drive.
+            if (tname == "to_lower/1" || tname == "to_upper/1") {
+                bool to_lower = (tname == "to_lower/1");
+                int c = char_or_minus();
+                if (c >= 0) {
+                    char r = to_lower ? static_cast<char>(std::tolower(c))
+                                       : static_cast<char>(std::toupper(c));
+                    Value cv2 = Value::Atom(std::string(1, r));
+                    if (av.is_unbound()) { bind_cell(arg, cv2); pc += 1; return true; }
+                    if (!unify_cells(arg, std::make_shared<Cell>(cv2))) return false;
+                    pc += 1; return true;
+                }
+                // Char is unbound — derive from arg.
+                if (av.tag == Value::Tag::Atom && av.s.size() == 1) {
+                    int ac = static_cast<unsigned char>(av.s[0]);
+                    char r = to_lower ? static_cast<char>(std::toupper(ac))
+                                       : static_cast<char>(std::tolower(ac));
+                    Value out = Value::Atom(std::string(1, r));
+                    CellPtr tgt = get_cell("A1");
+                    if (tgt->is_unbound()) { bind_cell(tgt, out); pc += 1; return true; }
+                    if (!unify_cells(tgt, std::make_shared<Cell>(out))) return false;
+                    pc += 1; return true;
+                }
+                return false;
+            }
+            // digit(Weight): forward (char→0-9), reverse (0-9→char).
+            if (tname == "digit/1") {
+                int c = char_or_minus();
+                if (c >= 0) {
+                    if (!std::isdigit(c)) return false;
+                    Value w = Value::Integer(c - ''0'');
+                    if (av.is_unbound()) { bind_cell(arg, w); pc += 1; return true; }
+                    if (!unify_cells(arg, std::make_shared<Cell>(w))) return false;
+                    pc += 1; return true;
+                }
+                if (av.tag == Value::Tag::Integer && av.i >= 0 && av.i <= 9) {
+                    Value ch = Value::Atom(std::string(
+                        1, static_cast<char>(''0'' + av.i)));
+                    CellPtr tgt = get_cell("A1");
+                    if (tgt->is_unbound()) { bind_cell(tgt, ch); pc += 1; return true; }
+                    if (!unify_cells(tgt, std::make_shared<Cell>(ch))) return false;
+                    pc += 1; return true;
+                }
+                return false;
+            }
+            // code(Code): same shape as char_code/2.
+            if (tname == "code/1") {
+                int c = char_or_minus();
+                if (c >= 0) {
+                    Value w = Value::Integer(c);
+                    if (av.is_unbound()) { bind_cell(arg, w); pc += 1; return true; }
+                    if (!unify_cells(arg, std::make_shared<Cell>(w))) return false;
+                    pc += 1; return true;
+                }
+                if (av.tag == Value::Tag::Integer && av.i >= 0 && av.i <= 255) {
+                    Value ch = Value::Atom(std::string(
+                        1, static_cast<char>(av.i)));
+                    CellPtr tgt = get_cell("A1");
+                    if (tgt->is_unbound()) { bind_cell(tgt, ch); pc += 1; return true; }
+                    if (!unify_cells(tgt, std::make_shared<Cell>(ch))) return false;
+                    pc += 1; return true;
+                }
+                return false;
+            }
+        }
+        return false;
+    }
+
+    // ---- upcase_atom/2, downcase_atom/2 -----------------------------
+    // Whole-atom case conversion. (+Atom, ?Result).
+    if (op == "upcase_atom/2" || op == "downcase_atom/2") {
+        Value av = deref(*get_cell("A1"));
+        if (av.tag != Value::Tag::Atom) return false;
+        std::string out = av.s;
+        if (op == "upcase_atom/2") {
+            for (auto& ch : out) ch = static_cast<char>(std::toupper(
+                static_cast<unsigned char>(ch)));
+        } else {
+            for (auto& ch : out) ch = static_cast<char>(std::tolower(
+                static_cast<unsigned char>(ch)));
+        }
+        Value rv = Value::Atom(out);
+        CellPtr tgt = get_cell("A2");
+        if (tgt->is_unbound()) { bind_cell(tgt, rv); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(rv))) return false;
+        pc += 1; return true;
+    }
+
     // ---- assertz/1, asserta/1, retract/1, retractall/1 -------------
     // Dynamic database manipulation. Both FACTS and RULES are
     // supported — a rule is stored as a ":-/2"(Head, Body) compound,
