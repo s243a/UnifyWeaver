@@ -1194,6 +1194,25 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return false
 		}
 		return vm.Unify(arg2, items[len(items)-1])
+	case "nth0/3", "nth1/3":
+		idxVal := vm.deref(arg1)
+		idxInt, ok := idxVal.(*Integer)
+		if !ok {
+			return false
+		}
+		items, ok := vm.listToSlice(arg2)
+		if !ok {
+			return false
+		}
+		base := int64(0)
+		if op == "nth1/3" {
+			base = 1
+		}
+		idx := idxInt.Val - base
+		if idx < 0 || idx >= int64(len(items)) {
+			return false
+		}
+		return vm.Unify(arg3, items[int(idx)])
 	case "functor/3":
 		t := vm.deref(arg1)
 		if isUnbound(t) {
