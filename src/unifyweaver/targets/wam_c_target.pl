@@ -2118,6 +2118,57 @@ static bool wam_term_arg(WamState *state, int index, WamValue term, WamValue **o
     return true;
 }
 
+static bool wam_unify_atom_from_cstr(WamState *state, WamValue *target, const char *value) {
+    WamValue atom = val_atom(wam_intern_atom(state, value));
+    return wam_unify(state, target, &atom);
+}
+
+static bool wam_execute_atom_concat(WamState *state) {
+    WamValue *left = wam_deref_ptr(state, &state->A[0]);
+    WamValue *right = wam_deref_ptr(state, &state->A[1]);
+    WamValue *whole = wam_deref_ptr(state, &state->A[2]);
+    bool left_bound = left->tag == VAL_ATOM;
+    bool right_bound = right->tag == VAL_ATOM;
+    bool whole_bound = whole->tag == VAL_ATOM;
+
+    if (left_bound && right_bound) {
+        size_t left_len = strlen(left->data.atom);
+        size_t right_len = strlen(right->data.atom);
+        char *joined = malloc(left_len + right_len + 1);
+        if (!joined) return false;
+        memcpy(joined, left->data.atom, left_len);
+        memcpy(joined + left_len, right->data.atom, right_len + 1);
+        bool ok = wam_unify_atom_from_cstr(state, &state->A[2], joined);
+        free(joined);
+        return ok;
+    }
+
+    if (right_bound && whole_bound && val_is_unbound(*left)) {
+        size_t right_len = strlen(right->data.atom);
+        size_t whole_len = strlen(whole->data.atom);
+        if (right_len > whole_len) return false;
+        size_t prefix_len = whole_len - right_len;
+        if (strcmp(whole->data.atom + prefix_len, right->data.atom) != 0) return false;
+        char *prefix = malloc(prefix_len + 1);
+        if (!prefix) return false;
+        memcpy(prefix, whole->data.atom, prefix_len);
+        prefix[prefix_len] = 0;
+        bool ok = wam_unify_atom_from_cstr(state, &state->A[0], prefix);
+        free(prefix);
+        return ok;
+    }
+
+    if (left_bound && whole_bound && val_is_unbound(*right)) {
+        size_t left_len = strlen(left->data.atom);
+        size_t whole_len = strlen(whole->data.atom);
+        if (left_len > whole_len) return false;
+        if (strncmp(whole->data.atom, left->data.atom, left_len) != 0) return false;
+        return wam_unify_atom_from_cstr(state, &state->A[1], whole->data.atom + left_len);
+    }
+
+    return false;
+}
+
 bool wam_execute_builtin(WamState *state, const char *op, int arity) {
     if (strcmp(op, "true/0") == 0 && arity == 0) return true;
     if ((strcmp(op, "fail/0") == 0 || strcmp(op, "false/0") == 0) && arity == 0) return false;
@@ -2179,6 +2230,10 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
         WamValue *arg = NULL;
         if (!wam_term_arg(state, index->data.integer, state->A[1], &arg)) return false;
         return wam_unify(state, &state->A[2], arg);
+    }
+
+    if (strcmp(op, "atom_concat/3") == 0 && arity == 3) {
+        return wam_execute_atom_concat(state);
     }
 
     if (arity == 2) {
