@@ -27,6 +27,8 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
         self.assertFalse(MODULE.is_large_scale("10k"))
         self.assertTrue(MODULE.is_large_scale("50k_cats"))
         self.assertTrue(MODULE.is_large_scale("100k_cats"))
+        self.assertTrue(MODULE.is_large_scale("500k_cats"))
+        self.assertTrue(MODULE.is_large_scale("1m_cats"))
         self.assertTrue(MODULE.is_large_scale("1m"))
         self.assertEqual(MODULE.scale_seed_cap("50k_cats"), 50_000)
         self.assertIsNone(MODULE.scale_seed_cap("100k_cats"))
@@ -41,6 +43,24 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
     def test_unsupported_auto_preparation_scale_has_actionable_error(self) -> None:
         with self.assertRaisesRegex(ValueError, "automatic fixture preparation only supports"):
             MODULE.scale_seed_cap("1m_cats")
+
+    def test_skip_missing_scale_errors_when_nothing_remains(self) -> None:
+        result = subprocess.run(
+            [
+                "python3",
+                str(SCRIPT),
+                "--scales",
+                "__definitely_missing_scale__",
+                "--skip-missing-scales",
+            ],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("all requested scales were missing", result.stderr)
 
     def test_dev_scale_reports_all_backends_with_matching_hashes(self) -> None:
         if shutil.which("dotnet") is None:
