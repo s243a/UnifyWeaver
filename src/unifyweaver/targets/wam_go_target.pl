@@ -416,6 +416,13 @@ write_file(Path, Content) :-
 %% wam_instruction_to_go_literal(+WamInstr, -GoLiteral)
 %  Converts a WAM instruction term to a Go struct literal string.
 
+wam_go_direct_builtin(Pred, Arity) :-
+    wam_go_direct_builtin(Pred, Arity, _Op).
+
+wam_go_direct_builtin(memberchk/2, 2, 'memberchk/2').
+wam_go_direct_builtin('memberchk/2', 2, 'memberchk/2').
+wam_go_direct_builtin("memberchk/2", 2, 'memberchk/2').
+
 wam_instruction_to_go_literal(get_constant(C, Ai), GoLiteral) :-
     go_value_literal(C, GoVal),
     go_reg_index(Ai, AiIdx),
@@ -471,10 +478,20 @@ wam_instruction_to_go_literal(set_constant(C), GoLiteral) :-
 wam_instruction_to_go_literal(allocate, '&Allocate{}').
 wam_instruction_to_go_literal(deallocate, '&Deallocate{}').
 wam_instruction_to_go_literal(call(P, N), GoLiteral) :-
+    wam_go_direct_builtin(P, N, Op),
+    !,
+    escape_go_string(Op, EscapedPred),
+    format(atom(GoLiteral), '&BuiltinCall{Op: "~w", Arity: ~w}', [EscapedPred, N]).
+wam_instruction_to_go_literal(call(P, N), GoLiteral) :-
     format(atom(GoLiteral), '&Call{Pred: "~w", Arity: ~w}', [P, N]).
 wam_instruction_to_go_literal(call_indexed_atom_fact2(Pred), GoLiteral) :-
     escape_go_string(Pred, EscapedPred),
     format(atom(GoLiteral), '&CallIndexedAtomFact2{Pred: "~w"}', [EscapedPred]).
+wam_instruction_to_go_literal(execute(P), GoLiteral) :-
+    wam_go_direct_builtin(P, N, Op),
+    !,
+    escape_go_string(Op, EscapedPred),
+    format(atom(GoLiteral), '&BuiltinCall{Op: "~w", Arity: ~w}', [EscapedPred, N]).
 wam_instruction_to_go_literal(execute(P), GoLiteral) :-
     format(atom(GoLiteral), '&Execute{Pred: "~w"}', [P]).
 wam_instruction_to_go_literal(proceed, '&Proceed{}').
@@ -1001,6 +1018,9 @@ wam_line_to_go_literal(["call", P, N], PredIndicator, Options, GoLit) :-
     (   number_string(Num, CN) -> true ; Num = 0 ),
     (   go_foreign_rewrite_call(Options, PredIndicator, CP, Num, ForeignPred, ForeignArity)
     ->  format(atom(GoLit), '&CallForeign{Pred: "~w", Arity: ~w}', [ForeignPred, ForeignArity])
+    ;   wam_go_direct_builtin(CP, Num, Op)
+    ->  escape_go_string(Op, EscapedPred),
+        format(atom(GoLit), '&BuiltinCall{Op: "~w", Arity: ~w}', [EscapedPred, CN])
     ;   format(atom(GoLit), '&Call{Pred: "~w", Arity: ~w}', [CP, CN])
     ).
 wam_line_to_go_literal(["call_indexed_atom_fact2", Pred], _PredIndicator, _Options, GoLit) :-
@@ -1010,6 +1030,9 @@ wam_line_to_go_literal(["execute", P], PredIndicator, Options, GoLit) :-
     clean_comma(P, CP),
     (   go_foreign_rewrite_execute(Options, PredIndicator, CP, ForeignPred, ForeignArity)
     ->  format(atom(GoLit), '&CallForeign{Pred: "~w", Arity: ~w}', [ForeignPred, ForeignArity])
+    ;   wam_go_direct_builtin(CP, Num, Op)
+    ->  escape_go_string(Op, EscapedPred),
+        format(atom(GoLit), '&BuiltinCall{Op: "~w", Arity: ~w}', [EscapedPred, Num])
     ;   format(atom(GoLit), '&Execute{Pred: "~w"}', [CP])
     ).
 wam_line_to_go_literal(["jump", L], GoLit) :-

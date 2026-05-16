@@ -1102,6 +1102,23 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			vm.unwindTrailTo(mark)
 			v = vm.deref(tail)
 		}
+	case "memberchk/2":
+		v := vm.deref(arg2)
+		for {
+			if isEmptyListValue(v) {
+				return false
+			}
+			head, tail, ok := vm.valueListHeadTail(v)
+			if !ok {
+				return false
+			}
+			mark := vm.TrailLen
+			if vm.Unify(arg1, head) {
+				return true
+			}
+			vm.unwindTrailTo(mark)
+			v = vm.deref(tail)
+		}
 	case "append/3":
 		l1, ok1 := vm.listToSlice(arg1)
 		l2, ok2 := vm.listToSlice(arg2)
