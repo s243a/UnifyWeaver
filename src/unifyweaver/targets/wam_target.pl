@@ -1471,6 +1471,11 @@ is_builtin_pred(nb_setval, 2).    % mutable global: replace value.
 is_builtin_pred(nb_getval, 2).    % mutable global: read value.
 is_builtin_pred(b_setval, 2).     % backtrackable mutable global: bind.
 is_builtin_pred(b_getval, 2).     % backtrackable mutable global: read.
+is_builtin_pred(@<, 2).           % standard order: less than.
+is_builtin_pred(@=<, 2).          % standard order: less or equal.
+is_builtin_pred(@>, 2).           % standard order: greater than.
+is_builtin_pred(@>=, 2).          % standard order: greater or equal.
+is_builtin_pred(compare, 3).      % standard order: -1 / 0 / +1 as atom.
 % Note: sub_atom/5 is nondeterministic; like findall/bagof/setof it
 % goes through the Call/Execute dispatch path (not is_builtin_pred)
 % so dispatch_sub_atom can manage its own CP machinery.
