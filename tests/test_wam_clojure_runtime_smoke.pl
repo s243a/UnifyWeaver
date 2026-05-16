@@ -97,6 +97,13 @@
 :- dynamic user:wam_nth0_bad_list/1.
 :- dynamic user:wam_nth0_unbound_index/1.
 :- dynamic user:wam_nth0_unbound_list/1.
+:- dynamic user:wam_nth1_guard/3.
+:- dynamic user:wam_nth1_zero/1.
+:- dynamic user:wam_nth1_negative/1.
+:- dynamic user:wam_nth1_out_of_range/1.
+:- dynamic user:wam_nth1_bad_list/1.
+:- dynamic user:wam_nth1_unbound_index/1.
+:- dynamic user:wam_nth1_unbound_list/1.
 :- dynamic user:wam_sort_guard/2.
 :- dynamic user:wam_sort_bad_list/1.
 :- dynamic user:wam_sort_unbound_list/1.
@@ -238,6 +245,13 @@ user:wam_nth0_out_of_range(X) :- nth0(3, [a,b,c], X).
 user:wam_nth0_bad_list(X) :- nth0(1, [a|b], X).
 user:wam_nth0_unbound_index(X) :- user:wam_unbound_arg(N), nth0(N, [a,b,c], X).
 user:wam_nth0_unbound_list(X) :- user:wam_unbound_arg(L), nth0(0, L, X).
+user:wam_nth1_guard(N, L, X) :- nth1(N, L, X).
+user:wam_nth1_zero(X) :- nth1(0, [a,b,c], X).
+user:wam_nth1_negative(X) :- nth1(-1, [a,b,c], X).
+user:wam_nth1_out_of_range(X) :- nth1(4, [a,b,c], X).
+user:wam_nth1_bad_list(X) :- nth1(2, [a|b], X).
+user:wam_nth1_unbound_index(X) :- user:wam_unbound_arg(N), nth1(N, [a,b,c], X).
+user:wam_nth1_unbound_list(X) :- user:wam_unbound_arg(L), nth1(1, L, X).
 user:wam_sort_guard(L, S) :- sort(L, S).
 user:wam_sort_bad_list(S) :- sort([a|b], S).
 user:wam_sort_unbound_list(S) :- user:wam_unbound_arg(L), sort(L, S).
@@ -384,6 +398,13 @@ run_smoke :-
           user:wam_nth0_bad_list/1,
           user:wam_nth0_unbound_index/1,
           user:wam_nth0_unbound_list/1,
+          user:wam_nth1_guard/3,
+          user:wam_nth1_zero/1,
+          user:wam_nth1_negative/1,
+          user:wam_nth1_out_of_range/1,
+          user:wam_nth1_bad_list/1,
+          user:wam_nth1_unbound_index/1,
+          user:wam_nth1_unbound_list/1,
           user:wam_sort_guard/2,
           user:wam_sort_bad_list/1,
           user:wam_sort_unbound_list/1,
@@ -463,6 +484,7 @@ run_smoke :-
     assert_lowered_reverse_builtin_emitted(TmpDir),
     assert_lowered_last_builtin_emitted(TmpDir),
     assert_lowered_nth0_builtin_emitted(TmpDir),
+    assert_lowered_nth1_builtin_emitted(TmpDir),
     assert_lowered_sort_builtin_emitted(TmpDir),
     assert_lowered_msort_builtin_emitted(TmpDir),
     assert_lowered_copy_term_builtin_emitted(TmpDir),
@@ -643,6 +665,16 @@ smoke_cases([
     case('wam_nth0_bad_list/1', a, "false"),
     case('wam_nth0_unbound_index/1', a, "false"),
     case('wam_nth0_unbound_list/1', a, "false"),
+    case('wam_nth1_guard/3', args(1, '[a,b,c]', a), "true"),
+    case('wam_nth1_guard/3', args(2, '[a,b,c]', b), "true"),
+    case('wam_nth1_guard/3', args(3, '[a,b,c]', c), "true"),
+    case('wam_nth1_guard/3', args(2, '[a,b,c]', c), "false"),
+    case('wam_nth1_zero/1', a, "false"),
+    case('wam_nth1_negative/1', a, "false"),
+    case('wam_nth1_out_of_range/1', a, "false"),
+    case('wam_nth1_bad_list/1', a, "false"),
+    case('wam_nth1_unbound_index/1', a, "false"),
+    case('wam_nth1_unbound_list/1', a, "false"),
     case('wam_sort_guard/2', args('[b,a,a,c]', '[a,b,c]'), "true"),
     case('wam_sort_guard/2', args('[b,a,a,c]', '[a,b]'), "false"),
     case('wam_sort_guard/2', args('[f(b),f(a),a]', '[a,f(a),f(b)]'), "true"),
@@ -919,6 +951,18 @@ assert_lowered_nth0_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-nth0-unbound-index-1"),
     has(CoreCode, "defn lowered-wam-nth0-unbound-list-1"),
     has(CoreCode, "runtime/apply-nth0-solution").
+
+assert_lowered_nth1_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-nth1-guard-3"),
+    has(CoreCode, "defn lowered-wam-nth1-zero-1"),
+    has(CoreCode, "defn lowered-wam-nth1-negative-1"),
+    has(CoreCode, "defn lowered-wam-nth1-out-of-range-1"),
+    has(CoreCode, "defn lowered-wam-nth1-bad-list-1"),
+    has(CoreCode, "defn lowered-wam-nth1-unbound-index-1"),
+    has(CoreCode, "defn lowered-wam-nth1-unbound-list-1"),
+    has(CoreCode, "runtime/apply-nth1-solution").
 
 assert_lowered_sort_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
