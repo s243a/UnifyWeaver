@@ -34,6 +34,29 @@ Writes every INSERT row as TAB-separated TSV to stdout.
   escape as two-byte sequences; non-ASCII bytes as `\xNN`
 - `NULL`: `\N`
 
+## Direct LMDB sink
+
+```
+mysql_stream_lmdb <path-to-dump.sql[.gz]> <lmdb-dir> \
+  --manifest <manifest.json> \
+  --max-edges 1000000 \
+  --refresh
+```
+
+`mysql_stream_lmdb` is a MediaWiki `categorylinks` sink for `subcat` rows. It
+preserves the Wikipedia page IDs (`cl_from` -> `cl_target_id`) and writes a
+C# query-runtime compatible `category_parent/2` LMDB artifact:
+
+- named database: `main`
+- duplicate-sorted values: enabled
+- key/value encoding: UTF-8 decimal page IDs
+- manifest format: `unifyweaver.lmdb_relation.v1`
+
+The sink writes LMDB directly through the Rust `lmdb` crate. It does not use TSV
+as its transport interface. `--fixture-tsv <path>` is optional and exists only
+for benchmark packages that still need a `category_parent.tsv` sidecar for
+non-LMDB backend comparisons.
+
 ## Validation
 
 End-to-end tested against `simplewiki-latest-categorylinks.sql.gz`

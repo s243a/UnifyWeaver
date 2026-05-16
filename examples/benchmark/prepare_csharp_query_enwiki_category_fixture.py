@@ -39,6 +39,41 @@ def parser_command(dump_path: Path) -> list[str]:
     ]
 
 
+def rust_lmdb_sink_command(
+    *,
+    dump_path: Path,
+    fixture_dir: Path,
+    max_edges: int,
+    map_size: int,
+    refresh: bool,
+) -> list[str]:
+    command = [
+        "cargo",
+        "run",
+        "--release",
+        "--manifest-path",
+        str(MYSQL_STREAM_MANIFEST),
+        "--bin",
+        "mysql_stream_lmdb",
+        "--",
+        str(dump_path),
+        str(fixture_dir / "category_parent.lmdb"),
+        "--manifest",
+        str(fixture_dir / "category_parent.lmdb.manifest.json"),
+        "--max-edges",
+        str(max_edges),
+        "--map-size",
+        str(map_size),
+        "--fixture-tsv",
+        str(fixture_dir / "category_parent.tsv"),
+        "--stats",
+        str(fixture_dir / "category_parent.lmdb.stats.json"),
+    ]
+    if refresh:
+        command.append("--refresh")
+    return command
+
+
 def edge_rows_from_mysql_stream(lines: Iterable[str], max_edges: int) -> tuple[list[tuple[str, str]], int]:
     rows: list[tuple[str, str]] = []
     scanned = 0
@@ -60,15 +95,24 @@ def write_fixture(scale: str, edges: list[tuple[str, str]], scanned_rows: int, o
         handle.write("child\tparent\n")
         for child, parent in edges:
             handle.write(f"{child}\t{parent}\n")
+    write_metadata(output_dir, scale=scale, edge_count=len(edges), scanned_rows=scanned_rows)
+    return output_dir
+
+
+def write_metadata(output_dir: Path, *, scale: str, edge_count: int, scanned_rows: int) -> None:
     metadata = {
         "source": "English Wikipedia categorylinks dump via rust mysql_stream parser",
         "shape": "category_parent/2 backend fixture; child=cl_from page id, parent=cl_target_id",
         "scale": scale,
-        "n_hierarchy_edges": len(edges),
+        "n_hierarchy_edges": edge_count,
         "mysql_rows_scanned": scanned_rows,
     }
     (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-    return output_dir
+
+
+def read_rust_lmdb_stats(fixture_dir: Path) -> tuple[int, int]:
+    stats = json.loads((fixture_dir / "category_parent.lmdb.stats.json").read_text(encoding="utf-8"))
+    return int(stats["edges_written"]), int(stats["rows_scanned"])
 
 
 def file_sha256(path: Path) -> str:
@@ -210,6 +254,45 @@ def prepare_from_stream(
     return output_dir
 
 
+def prepare_with_rust_lmdb_sink(
+    *,
+    scale: str,
+    max_edges: int,
+    output_root: Path,
+    dump_path: Path,
+    refresh_lmdb: bool,
+    lmdb_map_size: int,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> Path:
+    output_dir = output_root / scale
+    output_dir.mkdir(parents=True, exist_ok=True)
+    command = rust_lmdb_sink_command(
+        dump_path=dump_path,
+        fixture_dir=output_dir,
+        max_edges=max_edges,
+        map_size=lmdb_map_size,
+        refresh=refresh_lmdb,
+    )
+    result = run(
+        command,
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=3600,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Rust mysql_stream_lmdb sink failed with status "
+            f"{result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+    edge_count, scanned_rows = read_rust_lmdb_stats(output_dir)
+    if edge_count <= 0:
+        raise RuntimeError("Rust mysql_stream_lmdb sink produced no subcat edges")
+    write_metadata(output_dir, scale=scale, edge_count=edge_count, scanned_rows=scanned_rows)
+    return output_dir
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -232,6 +315,12 @@ def main(argv: list[str] | None = None) -> int:
         help="also sink the capped fixture rows into a reusable C# LMDB relation artifact under the scale directory",
     )
     parser.add_argument(
+        "--lmdb-sink-target",
+        choices=("csharp", "rust"),
+        default="csharp",
+        help="implementation used by --sink-lmdb; rust writes TSV and LMDB in one parser pass when reading from --dump",
+    )
+    parser.add_argument(
         "--refresh-lmdb",
         action="store_true",
         help="rebuild the LMDB artifact even when category_parent.lmdb.manifest.json already exists",
@@ -244,6 +333,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if args.from_stdin and args.sink_lmdb and args.lmdb_sink_target == "rust":
+        parser.error("--lmdb-sink-target rust requires --dump input, not --from-stdin")
+
     if args.from_stdin:
         output_dir = prepare_from_stream(
             scale=args.scale,
@@ -251,6 +343,17 @@ def main(argv: list[str] | None = None) -> int:
             output_root=args.output_root,
             stream=sys.stdin,
             sink_lmdb=args.sink_lmdb,
+            refresh_lmdb=args.refresh_lmdb,
+            lmdb_map_size=args.lmdb_map_size,
+        )
+    elif args.sink_lmdb and args.lmdb_sink_target == "rust":
+        if not args.dump.exists():
+            raise FileNotFoundError(args.dump)
+        output_dir = prepare_with_rust_lmdb_sink(
+            scale=args.scale,
+            max_edges=args.max_edges,
+            output_root=args.output_root,
+            dump_path=args.dump,
             refresh_lmdb=args.refresh_lmdb,
             lmdb_map_size=args.lmdb_map_size,
         )

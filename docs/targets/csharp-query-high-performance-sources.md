@@ -282,13 +282,14 @@ need manual override:
   dump tokenizer. For the C# backend benchmark, the fixture-prep helper is
   `examples/benchmark/prepare_csharp_query_enwiki_category_fixture.py`; it
   writes capped TSV fixtures first and can optionally add a provider-compatible
-  LMDB relation artifact with `--sink-lmdb`. That sink still reuses the capped
-  Python helper row set and the existing C# `lmdb_ingest` consumer, preserving
-  the Wikipedia page IDs from the parser output. Direct Rust-parser-to-LMDB
-  ingestion remains the follow-up once a native sink is implemented. The C#
-  backend benchmark can use those scale-local artifacts via
-  `--use-scale-lmdb-artifact`, which implies `--preserve-numeric-ids`; otherwise
-  it accepts a persistent
+  LMDB relation artifact with `--sink-lmdb`. The default sink reuses the capped
+  Python helper row set and the existing C# `lmdb_ingest` consumer; the
+  `--lmdb-sink-target rust` path uses `mysql_stream_lmdb` to write LMDB directly
+  from the Rust parser while preserving Wikipedia page IDs. The C# backend
+  benchmark can use those scale-local artifacts via `--use-scale-lmdb-artifact`,
+  which implies `--preserve-numeric-ids` when a scale-local artifact exists. Use
+  `--lmdb-only` to measure a scale-local LMDB artifact without requiring a TSV
+  fixture sidecar. Otherwise the benchmark accepts a persistent
   `--artifact-root` and reuses existing backend artifacts by default; use
   `--refresh-artifacts` to rebuild, matching the Haskell benchmark's explicit
   LMDB refresh convention.

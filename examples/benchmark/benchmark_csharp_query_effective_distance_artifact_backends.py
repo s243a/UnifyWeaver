@@ -188,10 +188,13 @@ def run_scale(
     refresh_artifacts: bool,
     use_scale_lmdb_artifact: bool,
     preserve_numeric_ids: bool,
+    lmdb_only: bool,
 ) -> list[BenchmarkRow]:
     scale_dir = BENCH_DIR / scale
-    if not (scale_dir / "category_parent.tsv").exists():
+    if not lmdb_only and not (scale_dir / "category_parent.tsv").exists():
         raise RuntimeError(f"scale has no category_parent.tsv: {scale_dir}")
+    if lmdb_only and not (scale_dir / "category_parent.lmdb.manifest.json").exists():
+        raise RuntimeError(f"scale has no category_parent.lmdb.manifest.json: {scale_dir}")
 
     build_lmdb_runtime()
     temp_path = Path(tempfile.mkdtemp(prefix=f"uw-csharp-effective-distance-artifacts-{scale}-"))
@@ -226,6 +229,8 @@ def run_scale(
                 "true" if use_scale_lmdb_artifact else "false",
                 "--preserve-numeric-ids",
                 "true" if preserve_numeric_ids else "false",
+                "--lmdb-only",
+                "true" if lmdb_only else "false",
             ],
             cwd=temp_path,
             timeout=240,
@@ -512,6 +517,11 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--lmdb-only",
+        action="store_true",
+        help="benchmark only a scale-local LMDB artifact; does not require category_parent.tsv",
+    )
+    parser.add_argument(
         "--preserve-numeric-ids",
         action="store_true",
         help=(
@@ -582,7 +592,14 @@ def main(argv: list[str] | None = None) -> int:
             if scale in AUTO_PREPARED_LARGE_SCALES:
                 prepare_large_fixture(scale, db_path)
 
-    missing = [scale for scale in scales if not (BENCH_DIR / scale / "category_parent.tsv").exists()]
+    missing = [
+        scale
+        for scale in scales
+        if not (
+            (BENCH_DIR / scale / "category_parent.tsv").exists()
+            or (args.lmdb_only and (BENCH_DIR / scale / "category_parent.lmdb.manifest.json").exists())
+        )
+    ]
     if missing:
         if args.skip_missing_scales:
             print(f"skipping missing benchmark scale(s): {', '.join(missing)}", file=sys.stderr)
@@ -625,6 +642,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.refresh_artifacts,
                     args.use_scale_lmdb_artifact,
                     args.preserve_numeric_ids,
+                    args.lmdb_only,
                 )
             )
 
@@ -889,6 +907,30 @@ static string? ExistingScaleLmdbManifest(string scaleDir)
     return manifestPath;
 }
 
+static object[][] ReadLmdbRowsForPlanning(PredicateId predicate, string manifestPath)
+{
+    var provider = new LmdbRelationProvider();
+    provider.RegisterArtifact(predicate, manifestPath);
+    return provider.GetFacts(predicate).ToArray();
+}
+
+static IReadOnlyList<object> LookupKeysFromRows(object[][] rows, int lookupKeyCount)
+{
+    return rows.Select(row => row[0])
+        .Distinct()
+        .OrderBy(value => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture), StringComparer.Ordinal)
+        .Take(Math.Min(lookupKeyCount, rows.Length))
+        .ToArray();
+}
+
+static int DistinctCategoryCount(object[][] rows)
+{
+    return rows.SelectMany(row => row.Take(2))
+        .Select(value => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "")
+        .Distinct(StringComparer.Ordinal)
+        .Count();
+}
+
 static string HashBuckets(IEnumerable<IndexedRelationBucket> buckets)
 {
     return HashRows(buckets.Select(bucket => new object[]
@@ -1017,9 +1059,39 @@ var root = Path.GetFullPath(ReadArg(args, "--artifact-root", Directory.GetCurren
 var refreshArtifacts = ReadBoolArg(args, "--refresh-artifacts", false);
 var useScaleLmdbArtifact = ReadBoolArg(args, "--use-scale-lmdb-artifact", false);
 var requestedPreserveNumericIds = ReadBoolArg(args, "--preserve-numeric-ids", false);
+var lmdbOnly = ReadBoolArg(args, "--lmdb-only", false);
 Directory.CreateDirectory(root);
 var predicate = new PredicateId("category_parent", 2);
-var scaleLmdbManifest = (!refreshArtifacts && useScaleLmdbArtifact) ? ExistingScaleLmdbManifest(scaleDir) : null;
+var scaleLmdbManifest = (!refreshArtifacts && (useScaleLmdbArtifact || lmdbOnly)) ? ExistingScaleLmdbManifest(scaleDir) : null;
+if (lmdbOnly && scaleLmdbManifest is null)
+{
+    throw new InvalidOperationException("--lmdb-only requires a scale-local category_parent.lmdb.manifest.json");
+}
+if (lmdbOnly)
+{
+    var lmdbOnlyManifest = scaleLmdbManifest!;
+    var lmdbOnlyMetadata = LmdbRelationArtifactReader.LoadManifest(lmdbOnlyManifest);
+    var lmdbOnlyDir = ResolveManifestEnvironmentPath(lmdbOnlyMetadata, lmdbOnlyManifest);
+    var planningRows = ReadLmdbRowsForPlanning(predicate, lmdbOnlyManifest);
+    var lookupKeysOnly = LookupKeysFromRows(planningRows, lookupKeyCount);
+    Console.WriteLine("scale\tmode\trows\tdistinct_categories\tlookup_keys\tartifact_bytes\topen_ms\tlookup_ms\tbucket_ms\tscan_ms\tretained_bytes\tscan_hash\tlookup_hash\tbucket_hash");
+    BenchmarkProvider(
+        scale,
+        "lmdb",
+        () =>
+        {
+            var provider = new LmdbRelationProvider();
+            provider.RegisterArtifact(predicate, lmdbOnlyManifest);
+            return provider;
+        },
+        predicate,
+        lookupKeysOnly,
+        lookupRepetitions,
+        DirectorySize(lmdbOnlyDir) + new FileInfo(lmdbOnlyManifest).Length,
+        planningRows.Length,
+        DistinctCategoryCount(planningRows));
+    return;
+}
 var preserveNumericIds = requestedPreserveNumericIds || scaleLmdbManifest is not null;
 var rows = ReadEdges(scaleDir, preserveNumericIds, out var distinctCategories);
 var lookupKeys = rows.Select(row => row.Child)
