@@ -1127,7 +1127,7 @@ run_multi_predicate_setup_executable_smoke :-
     run_c_smoke_plain(ExePath).
 
 run_builtin_call_executable_smoke :-
-    WamCode = 'wam_c_builtin_atom/1:\n    builtin_call atom/1, 1\n    proceed\nwam_c_builtin_is/2:\n    builtin_call is/2, 2\n    proceed\nwam_c_builtin_functor/3:\n    builtin_call functor/3, 3\n    proceed\nwam_c_builtin_arg/3:\n    builtin_call arg/3, 3\n    proceed',
+    WamCode = 'wam_c_builtin_atom/1:\n    builtin_call atom/1, 1\n    proceed\nwam_c_builtin_is/2:\n    builtin_call is/2, 2\n    proceed\nwam_c_builtin_functor/3:\n    builtin_call functor/3, 3\n    proceed\nwam_c_builtin_arg/3:\n    builtin_call arg/3, 3\n    proceed\nwam_c_builtin_atom_concat/3:\n    builtin_call atom_concat/3, 3\n    proceed',
     compile_wam_predicate_to_c(user:wam_c_builtin_atom/1, WamCode, [], PredCode),
     compile_wam_runtime_to_c([], RuntimeCode),
     get_time(Now),
@@ -1907,6 +1907,37 @@ int main(void) {
     if (arg_fail_rc != WAM_HALT) {
         wam_free_state(&state);
         return 80;
+    }
+
+    WamValue concat_make_args[3] = { val_atom("left"), val_atom("_right"), val_unbound("Whole") };
+    int concat_make_rc = wam_run_predicate(&state, "wam_c_builtin_atom_concat/3", concat_make_args, 3);
+    if (concat_make_rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_ATOM || strcmp(state.A[2].data.atom, "left_right") != 0) {
+        wam_free_state(&state);
+        return 90;
+    }
+
+    WamValue concat_prefix_args[3] = { val_unbound("Prefix"), val_atom("_right"), val_atom("left_right") };
+    int concat_prefix_rc = wam_run_predicate(&state, "wam_c_builtin_atom_concat/3", concat_prefix_args, 3);
+    if (concat_prefix_rc != 0 || state.P != WAM_HALT ||
+        state.A[0].tag != VAL_ATOM || strcmp(state.A[0].data.atom, "left") != 0) {
+        wam_free_state(&state);
+        return 100;
+    }
+
+    WamValue concat_suffix_args[3] = { val_atom("left_"), val_unbound("Suffix"), val_atom("left_right") };
+    int concat_suffix_rc = wam_run_predicate(&state, "wam_c_builtin_atom_concat/3", concat_suffix_args, 3);
+    if (concat_suffix_rc != 0 || state.P != WAM_HALT ||
+        state.A[1].tag != VAL_ATOM || strcmp(state.A[1].data.atom, "right") != 0) {
+        wam_free_state(&state);
+        return 110;
+    }
+
+    WamValue concat_fail_args[3] = { val_atom("left"), val_atom("_right"), val_atom("left_wrong") };
+    int concat_fail_rc = wam_run_predicate(&state, "wam_c_builtin_atom_concat/3", concat_fail_args, 3);
+    if (concat_fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 120;
     }
 
     wam_free_state(&state);

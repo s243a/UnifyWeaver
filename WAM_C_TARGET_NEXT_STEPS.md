@@ -5,7 +5,7 @@ Status date: 2026-05-16
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `5f2db069` (`Merge pull request #2185 from s243a/feat/wam-c-lowered-helper-next-shape-selection`)
+- `main` at `953caaf6` (`Merge pull request #2187 from s243a/feat/wam-c-arg-builtin`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
 - `python3 tests/test_wam_c_lowered_helper_scale_regression.py`
@@ -15,7 +15,7 @@ Base verified locally:
 
 Active branch:
 
-- `feat/wam-c-arg-builtin`
+- `feat/wam-c-atom-concat-builtin`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -67,7 +67,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Lowered helper compile/code-size compaction | Done | Compact static row tables plus bucket row-index arrays reduce `1k` generated `lib.c` from 12.8 MB to 2.6 MB and compile time from 151.75s to 0.98s |
 | Lowered helper larger-scale regression | Done | `tests/test_wam_c_lowered_helper_scale_regression.py` now promotes `100x` into the focused local lowered-helper parity regression while leaving `1k` as calibration-only because it costs about 31s end to end |
 | Lowered helper next-shape selection | Done | Selected term-shape builtin parity as the next narrow helper-adjacent surface and added C `functor/3` runtime support because Haskell and Rust already cover richer structure inspection paths |
-| `arg/3` builtin support | In progress | Active branch adds deterministic positive-index argument extraction for structures and lists, with direct executable smoke coverage |
+| `arg/3` builtin support | Done | Deterministic positive-index argument extraction for structures and lists has direct executable smoke coverage |
+| `atom_concat/3` builtin support | In progress | Active branch adds explicit deterministic atom concatenation and split modes with direct executable smoke coverage |
 
 ## Current C Target Baseline
 
@@ -87,7 +88,7 @@ The C target is now a credible small WAM backend:
 - Supports `builtin_call` delegation for tested builtins:
   `atom/1`, `integer/1`, `number/1`, `var/1`, `nonvar/1`,
   `compound/1`, `is_list/1`, `=/2`, `is/2`, arithmetic comparisons,
-  `functor/3`, and active-branch `arg/3`.
+  `functor/3`, `arg/3`, and active-branch `atom_concat/3`.
 - Supports deterministic `call_foreign` dispatch through a C handler registry.
 - Can opt into a prototype lowered-helper path for constant fact-only
   predicates, plus same-arity alias bodies that call those native fact helpers,
@@ -134,7 +135,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | First-arg indexing | Done | Done | Done | C has constants, structures, mixed term, and list dispatch. |
 | Second-arg indexing | Partial | Partial/Done | Partial/Done | C has constant A2 dispatch; broaden tests if this becomes hot. |
 | Predicate dispatch map | Done | Done | Done | C now uses open-addressing hash table. |
-| Builtin calls | Partial | Broader | Broader | C has a growing builtin set. Active branch adds `arg/3`; next likely term/string gap is `atom_concat/3` if benchmark surfaces need it. |
+| Builtin calls | Partial | Broader | Broader | C has a growing builtin set. Active branch adds `atom_concat/3`; next builtin gaps should be chosen from concrete benchmark demand. |
 | Aggregates (`findall`/`bagof`/`setof`) | Missing | Present in hybrid/lowered paths | Present in interpreter/lowered paths | Add only after C has enough runtime term-copy and list construction coverage. |
 | Negation / control builtins | Partial | Broader | Broader | C likely needs explicit tests for `\+/1`, cut interactions, and if-then-else lowering. |
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
@@ -150,16 +151,18 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-arg-builtin`
+### 1. `feat/wam-c-atom-concat-builtin`
 
-Goal: add the next narrow term-inspection builtin after `functor/3`.
+Goal: add a narrow string/atom builtin after term-inspection coverage lands.
 
 Scope:
 
-- Implement deterministic `arg/3` read/extraction mode for structures and lists.
+- Implement deterministic `atom_concat/3` modes:
+  bound left plus bound right produces/checks whole,
+  bound suffix plus bound whole extracts prefix, and
+  bound prefix plus bound whole extracts suffix.
+- Keep unsupported ambiguous split modes failing predictably.
 - Add direct executable smoke coverage before using it in generated Prolog.
-- Keep construction and non-deterministic modes out of scope unless an existing
-  benchmark needs them.
 
 Status: active.
 
@@ -167,23 +170,29 @@ Selected scope:
 
 | Candidate | Decision | Reason |
 |---|---:|---|
-| Structure `arg/3` extraction | Active | Complements `functor/3` and uses the existing `name/arity` heap layout. |
-| List `arg/3` extraction | Active | Keeps C list pairs aligned with term-inspection semantics. |
-| `arg/3` construction modes | Defer | Broader behavior is not needed by current benchmark surfaces. |
-| `atom_concat/3` | Later | Useful, but less directly tied to lowered helper row/structure shape selection. |
+| `atom_concat(A, B, C)` with `A` and `B` bound | Active | Deterministic construction/check mode needed for simple generated atom composition. |
+| `atom_concat(A, Suffix, Whole)` with suffix and whole bound | Active | Deterministic prefix extraction without enumerating splits. |
+| `atom_concat(Prefix, B, Whole)` with prefix and whole bound | Active | Deterministic suffix extraction without enumerating splits. |
+| Ambiguous split enumeration | Defer | Would require nondeterministic result generation and choicepoint integration. |
 | Aggregates | Defer | Needs broader term-copy/list construction support and would be too large for this branch. |
 
-### 2. `feat/wam-c-atom-concat-builtin`
+### 2. `test/wam-c-builtins-real-prolog-smoke`
 
-Goal: add a narrow string/atom builtin only after term-inspection coverage lands.
+Goal: exercise the accumulated builtin parity surface through generated Prolog,
+not just hand-authored WAM snippets.
 
 Scope:
 
-- Implement the common deterministic `atom_concat/3` modes needed by generated
-  benchmark surfaces.
-- Keep mode coverage explicit in tests so unsupported modes fail predictably.
+- Add a generated Prolog executable smoke that uses `functor/3`, `arg/3`, and
+  `atom_concat/3` together.
+- Keep it small and deterministic so the normal WAM-C test suite remains cheap.
 
 Status: recommended after this branch.
+
+## Completed Arg Builtin
+
+The merged `feat/wam-c-arg-builtin` branch added deterministic `arg/3`
+extraction for structures and lists before this `atom_concat/3` branch.
 
 ## Completed Next-Shape Selection
 
