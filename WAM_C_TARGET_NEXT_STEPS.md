@@ -5,7 +5,7 @@ Status date: 2026-05-15
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `87bfe424` (`Merge pull request #2126 from s243a/feat/wam-c-lowered-helper-ignored-output-contract`)
+- `main` at `cc2d432d` (`Merge pull request #2129 from s243a/feat/wam-c-lowered-helper-projection-row-constraints`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
 - `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py`
@@ -14,7 +14,7 @@ Base verified locally:
 
 Active branch:
 
-- `feat/wam-c-lowered-helper-projection-row-constraints`
+- `feat/wam-c-lowered-helper-projection-bench`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -57,7 +57,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Generated multi-predicate setup | Done | Generated setup appends predicate code at per-setup base PCs and covers multiple setup functions in one executable |
 | Lowered helper non-reordered projection metadata | Done | Planner reports explicit rejection reasons for omitted head variables, repeated head variables, and unbound callee variables |
 | Lowered helper ignored-output projections | Done | Projected body-call helpers pass singleton callee-local variables as fresh unbound arguments and ignore their returned bindings |
-| Lowered helper projection row constraints | In progress | Active branch lowers repeated caller-variable projections through materialized native fact rows while preserving availability checks |
+| Lowered helper projection row constraints | Done | Repeated caller-variable projections lower through materialized native fact rows while preserving availability checks |
+| Lowered helper projection benchmark | In progress | Active branch extends the tiny lowered-helper benchmark to cover direct, reordered, ignored-output, and row-constrained projection shapes |
 
 ## Current C Target Baseline
 
@@ -138,23 +139,7 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-lowered-helper-projection-row-constraints`
-
-Goal: decide whether repeated caller variables in projected body calls should
-lower through native row constraints instead of staying rejected.
-
-Scope:
-
-- Preserve the current rejection for omitted caller-visible head variables.
-- Consider lowering repeated caller variables only by materializing matching
-  fact rows, similar to repeated-variable filtered helpers.
-- Keep constant filters on the existing materialized `filtered_fact` path.
-
-Status: active; repeated caller-variable projections now lower through
-availability-checked materialized native fact rows, while omitted caller-visible
-outputs and repeated callee-local variables remain explicit planner rejections.
-
-### 2. `feat/wam-c-lowered-helper-projection-bench`
+### 1. `feat/wam-c-lowered-helper-projection-bench`
 
 Goal: add a small benchmark workload for projected lowered helpers that covers
 reordered, ignored-output, and row-constrained projection shapes.
@@ -167,10 +152,26 @@ Scope:
   helper variants.
 - Keep constant filters on the existing materialized `filtered_fact` path.
 
+Status: active; the existing `c-wam-lowered-helper` target set now runs direct,
+reordered, ignored-output, and row-constrained projected-helper queries in both
+interpreted and lowered modes.
+
+### 2. `feat/wam-c-lowered-helper-scale-workload`
+
+Goal: scale the lowered-helper benchmark beyond the tiny dev smoke while keeping
+the output contract stable across interpreted and lowered modes.
+
+Scope:
+
+- Parameterize the lowered-helper generator by scale instead of hard-coding a
+  handful of facts.
+- Preserve projection-shape coverage and output matching across modes.
+- Keep the first pass small enough for routine matrix validation.
+
 ## Suggested Immediate Next Step
 
-Continue validating `feat/wam-c-lowered-helper-projection-row-constraints`.
+Continue validating `feat/wam-c-lowered-helper-projection-bench`.
 
-The active branch turns repeated caller-variable projections into a
-materialized-row helper path without weakening callee availability or omitted
-caller-output rejection semantics.
+The active branch broadens the existing lowered-helper matrix target from a
+fact-oriented smoke into a projection-shape benchmark, while preserving the same
+interpreted-vs-lowered target set.

@@ -105,12 +105,12 @@ TARGETS: dict[str, TargetInfo] = {
     "c-wam-lowered-helper": TargetInfo(
         "c-wam-lowered-helper",
         "hybrid-wam-lowered-helper",
-        "Hybrid WAM C fact-helper smoke benchmark with lowered helpers enabled",
+        "Hybrid WAM C projected-helper benchmark with lowered helpers enabled",
     ),
     "c-wam-lowered-helper-interpreted": TargetInfo(
         "c-wam-lowered-helper-interpreted",
         "hybrid-wam-lowered-helper",
-        "Hybrid WAM C fact-helper smoke benchmark through interpreted WAM facts",
+        "Hybrid WAM C projected-helper benchmark through interpreted WAM predicates",
     ),
     "scala-wam-seeded": TargetInfo(
         "scala-wam-seeded",
