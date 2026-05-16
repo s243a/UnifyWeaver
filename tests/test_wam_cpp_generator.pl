@@ -1561,6 +1561,60 @@ user:wam_cpp_test_keysort_then_values :-
     pairs_values(Sorted, Vs),
     Vs = [10, 20, 30].
 
+% WAM-text quote roundtrip for digit-only atoms — `''5''`, `''42''`,
+% `''-3''` etc. Previously these were emitted unquoted in WAM text
+% and the C++ value emitter''s cpp_value_literal re-parsed them as
+% integers, so the runtime saw Integer where the source had Atom.
+% Now quote_wam_constant prefixes a \\x01 atom-marker (inside the
+% quotes) and cpp_value_literal recognises the marker, stripping it
+% and emitting Value::Atom regardless of whether the content
+% re-parses as a number.
+:- dynamic user:wam_cpp_test_digit_atom_is_atom/0.
+:- dynamic user:wam_cpp_test_digit_atom_not_integer/0.
+:- dynamic user:wam_cpp_test_digit_atom_codes/0.
+:- dynamic user:wam_cpp_test_digit_atom_length/0.
+:- dynamic user:wam_cpp_test_digit_integer_unchanged/0.
+:- dynamic user:wam_cpp_test_char_type_digit_direct/0.
+:- dynamic user:wam_cpp_test_negative_atom/0.
+
+user:wam_cpp_test_digit_atom_is_atom :-
+    X = '5',
+    atom(X).
+
+user:wam_cpp_test_digit_atom_not_integer :-
+    X = '5',
+    \+ integer(X).
+
+user:wam_cpp_test_digit_atom_codes :-
+    % The atom ''5'' has codes [53] (ASCII ''5''). Pre-fix, it was
+    % the integer 5 and atom_codes failed (or coerced).
+    atom_codes('5', C),
+    C = [53].
+
+user:wam_cpp_test_digit_atom_length :-
+    atom_length('5', L),
+    L = 1.
+
+% Integers (without quotes) stay as integers.
+user:wam_cpp_test_digit_integer_unchanged :-
+    X = 5,
+    integer(X),
+    \+ atom(X).
+
+% Now that digit-atoms round-trip correctly, char_type accepts
+% them directly (no char_code/2 workaround needed).
+user:wam_cpp_test_char_type_digit_direct :-
+    char_type('5', digit),
+    char_type('7', digit(W)),
+    W = 7.
+
+% Negative-number-looking atoms.
+user:wam_cpp_test_negative_atom :-
+    X = '-3',
+    atom(X),
+    \+ integer(X),
+    atom_length(X, 2).
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -5440,6 +5494,111 @@ test(cpp_e2e_keysort_then_values,
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_keysort_then_values/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% WAM-text quote roundtrip for digit-only atoms — regression guard
+% for the atom-marker convention added by quote_wam_constant +
+% cpp_value_literal.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_digit_atom_is_atom,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_da_atom', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_digit_atom_is_atom/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_digit_atom_is_atom/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_digit_atom_not_integer,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_da_nint', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_digit_atom_not_integer/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_digit_atom_not_integer/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_digit_atom_codes,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_da_codes', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_digit_atom_codes/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_digit_atom_codes/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_digit_atom_length,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_da_len', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_digit_atom_length/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_digit_atom_length/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_digit_integer_unchanged,
+     [condition(cpp_compiler_available)]) :-
+    % Sanity: unquoted integer 5 stays integer, doesn''t become atom.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_di_int', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_digit_integer_unchanged/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_digit_integer_unchanged/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_char_type_digit_direct,
+     [condition(cpp_compiler_available)]) :-
+    % char_type with literal digit-atom now works directly (no
+    % char_code/2 workaround needed).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_ctd', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_char_type_digit_direct/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_char_type_digit_direct/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_negative_atom,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_neg_atom', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_negative_atom/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_negative_atom/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
