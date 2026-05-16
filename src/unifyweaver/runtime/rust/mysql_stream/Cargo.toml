@@ -7,10 +7,15 @@ description = "Streaming parser for MySQL INSERT dumps — leaf primitive for Un
 
 [dependencies]
 flate2 = "1.0"
+lmdb = "0.8.0"
 
 [[bin]]
 name = "mysql_stream"
 path = "src/main.rs"
+
+[[bin]]
+name = "mysql_stream_lmdb"
+path = "src/lmdb_sink.rs"
 
 [lib]
 name = "mysql_stream"

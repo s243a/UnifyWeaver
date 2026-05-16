@@ -9,8 +9,8 @@
 //
 // See docs/design/cross-target-glue/streaming-pipelines/ for the design.
 
-use std::io::{self, BufRead, BufReader, Read};
 use std::fs::File;
+use std::io::{self, BufRead, BufReader, Read};
 
 use flate2::read::GzDecoder;
 
@@ -103,9 +103,7 @@ impl<R: BufRead> MysqlInsertIter<R> {
                 if line.starts_with(b"INSERT INTO") {
                     self.in_insert = true;
                     if let Some(idx) = find_subsequence(&line, b" VALUES ") {
-                        self.buf.extend_from_slice(
-                            &line[idx + b" VALUES ".len()..]
-                        );
+                        self.buf.extend_from_slice(&line[idx + b" VALUES ".len()..]);
                     } else {
                         self.buf.extend_from_slice(&line);
                     }
@@ -144,14 +142,12 @@ impl<R: BufRead> MysqlInsertIter<R> {
         if self.buf[self.pos] != b'(' {
             return None;
         }
-        self.pos += 1;  // consume '('
+        self.pos += 1; // consume '('
 
         let mut row = Vec::with_capacity(8);
         loop {
             // Skip whitespace before a field.
-            while self.pos < self.buf.len()
-                && matches!(self.buf[self.pos], b' ' | b'\t')
-            {
+            while self.pos < self.buf.len() && matches!(self.buf[self.pos], b' ' | b'\t') {
                 self.pos += 1;
             }
 
@@ -164,9 +160,7 @@ impl<R: BufRead> MysqlInsertIter<R> {
             row.push(field);
 
             // Skip whitespace before separator.
-            while self.pos < self.buf.len()
-                && matches!(self.buf[self.pos], b' ' | b'\t')
-            {
+            while self.pos < self.buf.len() && matches!(self.buf[self.pos], b' ' | b'\t') {
                 self.pos += 1;
             }
 
@@ -232,7 +226,7 @@ impl<R: BufRead> MysqlInsertIter<R> {
     ///
     /// Returns `Field::Str(Vec<u8>)` — raw bytes, not UTF-8-validated.
     fn parse_string(&mut self) -> Option<Field> {
-        self.pos += 1;  // consume opening '
+        self.pos += 1; // consume opening '
         let mut out = Vec::with_capacity(32);
         loop {
             let c = *self.buf.get(self.pos)?;
@@ -281,7 +275,9 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// True if `line`, after trimming trailing whitespace/newline, ends
 /// with byte `c`.
 fn line_trimmed_ends_with(line: &[u8], c: u8) -> bool {
-    let end = line.iter().rposition(|&b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r'));
+    let end = line
+        .iter()
+        .rposition(|&b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r'));
     match end {
         Some(i) => line[i] == c,
         None => false,
@@ -311,9 +307,7 @@ impl<R: BufRead> Iterator for MysqlInsertIter<R> {
 
 /// Open a file (optionally gzipped based on extension) and return an
 /// iterator over INSERT rows. Path ending in `.gz` is auto-decompressed.
-pub fn iter_mysql_rows(
-    path: &str,
-) -> io::Result<MysqlInsertIter<BufReader<Box<dyn Read + Send>>>> {
+pub fn iter_mysql_rows(path: &str) -> io::Result<MysqlInsertIter<BufReader<Box<dyn Read + Send>>>> {
     let file = File::open(path)?;
     let reader: Box<dyn Read + Send> = if path.ends_with(".gz") {
         Box::new(GzDecoder::new(file))
@@ -350,10 +344,7 @@ mod tests {
     #[test]
     fn simple_string_row() {
         let input = "INSERT INTO `t` VALUES ('foo','bar');\n";
-        assert_eq!(
-            parse(input),
-            vec![vec![s(b"foo"), s(b"bar")]]
-        );
+        assert_eq!(parse(input), vec![vec![s(b"foo"), s(b"bar")]]);
     }
 
     #[test]
@@ -373,19 +364,13 @@ mod tests {
     #[test]
     fn escaped_quote_in_string() {
         let input = "INSERT INTO `t` VALUES ('it\\'s','a \\\"test\\\"');\n";
-        assert_eq!(
-            parse(input),
-            vec![vec![s(b"it's"), s(b"a \"test\"")]]
-        );
+        assert_eq!(parse(input), vec![vec![s(b"it's"), s(b"a \"test\"")]]);
     }
 
     #[test]
     fn backslash_and_null_byte() {
         let input = "INSERT INTO `t` VALUES ('a\\\\b','c\\0d');\n";
-        assert_eq!(
-            parse(input),
-            vec![vec![s(b"a\\b"), s(b"c\0d")]]
-        );
+        assert_eq!(parse(input), vec![vec![s(b"a\\b"), s(b"c\0d")]]);
     }
 
     #[test]

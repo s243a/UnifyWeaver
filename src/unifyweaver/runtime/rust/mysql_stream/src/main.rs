@@ -22,7 +22,7 @@ fn tsv_escape_bytes(bytes: &[u8], out: &mut Vec<u8>) {
             b'\t' => out.extend_from_slice(b"\\t"),
             b'\n' => out.extend_from_slice(b"\\n"),
             b'\r' => out.extend_from_slice(b"\\r"),
-            0x20..=0x7E => out.push(b),  // printable ASCII
+            0x20..=0x7E => out.push(b), // printable ASCII
             _ => {
                 // Non-ASCII or non-printable — emit \xNN.
                 // Note: this over-escapes valid multi-byte UTF-8. The
@@ -82,15 +82,21 @@ fn main() -> ExitCode {
         for (i, field) in row.iter().enumerate() {
             if i > 0 {
                 if let Err(e) = out.write_all(b"\t") {
-                    if let Some(code) = handle_err(&e) { return code; }
+                    if let Some(code) = handle_err(&e) {
+                        return code;
+                    }
                 }
             }
             if let Err(e) = write_field(&mut out, field) {
-                if let Some(code) = handle_err(&e) { return code; }
+                if let Some(code) = handle_err(&e) {
+                    return code;
+                }
             }
         }
         if let Err(e) = out.write_all(b"\n") {
-            if let Some(code) = handle_err(&e) { return code; }
+            if let Some(code) = handle_err(&e) {
+                return code;
+            }
         }
     }
 

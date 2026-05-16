@@ -70,6 +70,53 @@ class PrepareCSharpQueryEnwikiCategoryFixtureTests(unittest.TestCase):
         self.assertEqual(env["UW_KEY_ENCODING"], "utf8")
         self.assertEqual(env["UW_VAL_ENCODING"], "utf8")
 
+    def test_rust_lmdb_sink_command_writes_fixture_and_artifact_in_one_pass(self) -> None:
+        command = MODULE.rust_lmdb_sink_command(
+            dump_path=Path("dump.sql.gz"),
+            fixture_dir=Path("/tmp/fixture"),
+            max_edges=500000,
+            map_size=1234,
+            refresh=True,
+        )
+        self.assertEqual(command[:6], ["cargo", "run", "--release", "--manifest-path", str(MODULE.MYSQL_STREAM_MANIFEST), "--bin"])
+        self.assertIn("mysql_stream_lmdb", command)
+        self.assertIn("--fixture-tsv", command)
+        self.assertIn("/tmp/fixture/category_parent.tsv", command)
+        self.assertIn("--stats", command)
+        self.assertIn("/tmp/fixture/category_parent.lmdb.stats.json", command)
+        self.assertIn("--refresh", command)
+
+    def test_prepare_with_rust_lmdb_sink_writes_metadata_from_stats(self) -> None:
+        calls = []
+
+        def fake_run(*args, **kwargs):
+            calls.append((args, kwargs))
+            (output_dir / "category_parent.tsv").write_text("child\tparent\n10\t20\n12\t22\n", encoding="utf-8")
+            (output_dir / "category_parent.lmdb").mkdir()
+            (output_dir / "category_parent.lmdb.manifest.json").write_text('{"RowCount": 2}\n', encoding="utf-8")
+            (output_dir / "category_parent.lmdb.stats.json").write_text(
+                '{"rows_scanned": 3, "edges_written": 2}\n',
+                encoding="utf-8",
+            )
+            return SimpleNamespace(returncode=0, stdout="", stderr="mysql_stream_lmdb: scanned=3 written=2")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "500k_cats"
+            result_dir = MODULE.prepare_with_rust_lmdb_sink(
+                scale="500k_cats",
+                max_edges=2,
+                output_root=Path(tmp),
+                dump_path=Path("dump.sql.gz"),
+                refresh_lmdb=True,
+                lmdb_map_size=4096,
+                run=fake_run,
+            )
+            self.assertEqual(result_dir, output_dir)
+            self.assertEqual(len(calls), 1)
+            metadata = json.loads((output_dir / "metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["n_hierarchy_edges"], 2)
+            self.assertEqual(metadata["mysql_rows_scanned"], 3)
+
     def test_write_lmdb_artifact_invokes_csharp_consumer_and_writes_manifest(self) -> None:
         calls = []
 
