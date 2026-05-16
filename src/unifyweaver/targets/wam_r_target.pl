@@ -66,7 +66,8 @@
 :- use_module('../core/recursive_kernel_detection',
              [detect_recursive_kernel/4, kernel_config/2]).
 :- use_module(wam_runtime_parser_capability,
-             [wam_target_runtime_parser/3]).
+             [parser_dependent_builtin/1,
+              wam_target_runtime_parser/3]).
 
 % ============================================================================
 % EMIT MODE
@@ -1741,12 +1742,13 @@ r_escape_chars([C    | T], [C | RestEsc]) :-
 %    R/wam_runtime.R            WAM runtime
 %    R/generated_program.R      compiled program (instr array, labels, wrappers)
 write_wam_r_project(Predicates, Options, ProjectDir) :-
+    option(module_name(ModName), Options, 'wam.r.generated'),
+    wam_target_runtime_parser(wam_r, Options, RuntimeParserMode),
+    validate_r_runtime_parser_mode(Predicates, RuntimeParserMode),
+    r_runtime_parser_mode_literal(RuntimeParserMode, RuntimeParserModeCode),
     make_directory_path(ProjectDir),
     directory_file_path(ProjectDir, 'R', RDir),
     make_directory_path(RDir),
-    option(module_name(ModName), Options, 'wam.r.generated'),
-    wam_target_runtime_parser(wam_r, Options, RuntimeParserMode),
-    r_runtime_parser_mode_literal(RuntimeParserMode, RuntimeParserModeCode),
     write_description(ProjectDir, ModName),
     compile_predicates_for_project(Predicates, Options,
         AllInstrs, TopLevelLabelEntries, AllLabelEntries,
@@ -1819,6 +1821,61 @@ r_runtime_parser_mode_literal(compiled(SourceModule), Code) :-
     format(string(Code),
            'list(kind = "compiled", entry = NULL, source = ~w)',
            [SourceLit]).
+
+validate_r_runtime_parser_mode(Predicates, none) :-
+    !,
+    (   r_predicates_parser_dependency(Predicates, Pred, Builtin)
+    ->  throw(error(permission_error(use, runtime_parser, Builtin),
+                    context(write_wam_r_project/3,
+                            parser_disabled_for_predicate(Pred))))
+    ;   true
+    ).
+validate_r_runtime_parser_mode(_Predicates, _Mode).
+
+r_predicates_parser_dependency(Predicates, Pred, Builtin) :-
+    member(Pred, Predicates),
+    r_predicate_clause(Pred, _Head, Body),
+    r_goal_uses_parser_builtin(Body, Builtin),
+    !.
+
+r_predicate_clause(Module:Name/Arity, Head, Body) :-
+    !,
+    functor(Head, Name, Arity),
+    clause(Module:Head, Body).
+r_predicate_clause(Name/Arity, Head, Body) :-
+    functor(Head, Name, Arity),
+    clause(user:Head, Body).
+
+r_goal_uses_parser_builtin(Goal, Builtin) :-
+    nonvar(Goal),
+    (   r_goal_builtin_pi(Goal, Builtin),
+        parser_dependent_builtin(Builtin)
+    ->  true
+    ;   r_goal_child(Goal, Child),
+        r_goal_uses_parser_builtin(Child, Builtin)
+    ).
+
+r_goal_builtin_pi(Module:Goal, Builtin) :-
+    atom(Module),
+    nonvar(Goal),
+    !,
+    r_goal_builtin_pi(Goal, Builtin).
+r_goal_builtin_pi(Goal, Name/Arity) :-
+    callable(Goal),
+    functor(Goal, Name, Arity).
+
+r_goal_child((A, _), A).
+r_goal_child((_, B), B).
+r_goal_child((A ; _), A).
+r_goal_child((_ ; B), B).
+r_goal_child((A -> _), A).
+r_goal_child((_ -> B), B).
+r_goal_child((*->(A, _)), A).
+r_goal_child((*->(_, B)), B).
+r_goal_child(\+(A), A).
+r_goal_child(not(A), A).
+r_goal_child(once(A), A).
+r_goal_child(call(A), A).
 
 % ============================================================================
 % HELPERS
