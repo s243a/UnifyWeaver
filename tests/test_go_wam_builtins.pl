@@ -11,6 +11,7 @@
 :- dynamic user:test_memberchk_builtin/0.
 :- dynamic user:test_reverse_builtin/0.
 :- dynamic user:test_last_builtin/0.
+:- dynamic user:test_nth_builtin/0.
 :- dynamic user:test_set_aggregate/0.
 :- dynamic user:test_unify_builtin/0.
 :- dynamic user:test_neg_fact/1.
@@ -72,6 +73,20 @@ test(builtins_execution) :-
                 Y == only,
                 \+ last([], _)
             )),
+          assertz(user:test_nth_builtin :-
+            (   nth0(0, [a,b,c], A),
+                A == a,
+                nth0(1, [a,b,c], B),
+                B == b,
+                nth1(1, [a,b,c], C),
+                C == a,
+                nth1(3, [a,b,c], D),
+                D == c,
+                \+ nth0(-1, [a,b,c], _),
+                \+ nth0(3, [a,b,c], _),
+                \+ nth1(0, [a,b,c], _),
+                \+ nth1(4, [a,b,c], _)
+            )),
           assertz(user:test_set_aggregate :-
             (   aggregate_all(set(X), member(X, [a,b,a]), S),
                 length(S, 2),
@@ -99,6 +114,7 @@ test(builtins_execution) :-
           retractall(user:test_memberchk_builtin),
           retractall(user:test_reverse_builtin),
           retractall(user:test_last_builtin),
+          retractall(user:test_nth_builtin),
           retractall(user:test_set_aggregate),
           retractall(user:test_unify_builtin),
           retractall(user:test_neg_fact(_)),
@@ -108,7 +124,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -142,6 +158,8 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "memberchk/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "reverse/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "last/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "nth0/3"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "nth1/3"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "\\\\+/1"')),
     assertion(sub_string(LibCode, _, _, _, 'AggType: "set"')),
 
@@ -211,6 +229,14 @@ func main() {
 		fmt.Println("LAST_FAILURE")
 	}
 
+	nthVM := wam.NewWamState(wam.Test_nth_builtinCode, wam.Test_nth_builtinLabels)
+	nthVM.PC = wam.Test_nth_builtinStartPC
+	if nthVM.Run() {
+		fmt.Println("NTH_SUCCESS")
+	} else {
+		fmt.Println("NTH_FAILURE")
+	}
+
 	setVM := wam.NewWamState(wam.Test_set_aggregateCode, wam.Test_set_aggregateLabels)
 	setVM.PC = wam.Test_set_aggregateStartPC
 	if setVM.Run() {
@@ -266,6 +292,7 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "MEMBERCHK_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "REVERSE_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "LAST_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "NTH_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SET_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "UNIFY_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "NEG_SUCCESS")),
