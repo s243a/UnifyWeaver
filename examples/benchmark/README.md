@@ -257,6 +257,27 @@ python examples/benchmark/benchmark_csharp_query_rust_lmdb_sink.py \
 Starting with smaller caps is useful before moving to `500k_cats` or
 `1m_cats`.
 
+After preparing scale-local Rust LMDB artifacts, run the full backend
+comparison against the same scale roots to compare `preload`,
+`binary-artifact`, `delimited-artifact`, `lmdb`, and `mmap-array`:
+
+```bash
+python examples/benchmark/benchmark_csharp_query_effective_distance_artifact_backends.py \
+  --scales rust_lmdb_100k,rust_lmdb_500k \
+  --benchmark-root /tmp/uw-csharp-query-rust-lmdb \
+  --artifact-root /tmp/uw-csharp-query-rust-lmdb-artifacts \
+  --use-scale-lmdb-artifact \
+  --lookup-keys 64 \
+  --lookup-repetitions 1 \
+  --repetitions 1 \
+  --format summary-full-markdown
+```
+
+`summary-full-markdown` includes the same best-mode columns as
+`summary-markdown` plus per-mode median lookup, bucket, scan, and artifact-size
+fields, which is more useful when deciding whether LMDB is competitive at a
+larger scale.
+
 Pass `--artifact-root <dir>` to keep backend artifacts across benchmark runs.
 Existing binary, delimited, LMDB, and mmap-array manifests are reused by
 default, matching the Haskell benchmark convention of not regenerating LMDB

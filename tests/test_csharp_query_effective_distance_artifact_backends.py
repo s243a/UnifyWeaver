@@ -146,6 +146,28 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
         self.assertIn("| dev |", result.stdout)
         self.assertIn("Smallest artifact", result.stdout)
 
+    def test_summary_full_markdown_reports_timing_details(self) -> None:
+        row = MODULE.SummaryRow(
+            {
+                "scale": "rust_lmdb_500k",
+                "rows": "500000",
+                "distinct_categories": "225697",
+                "lookup_keys": "64",
+                "best_lookup_mode": "mmap-array",
+                "best_bucket_mode": "mmap-array",
+                "best_scan_mode": "preload",
+                "smallest_artifact_mode": "mmap-array",
+                "lookup_ms_by_mode": "lmdb:2.087|mmap-array:1.250",
+                "bucket_ms_by_mode": "lmdb:718.217|mmap-array:250.000",
+                "scan_ms_by_mode": "lmdb:129.326|preload:1.000",
+                "artifact_bytes_by_mode": "lmdb:27971980|mmap-array:4000000",
+            }
+        )
+        output = MODULE.render_summary_full_markdown([row])
+        self.assertIn("Lookup ms by mode", output)
+        self.assertIn("lmdb:2.087|mmap-array:1.250", output)
+        self.assertIn("Artifact bytes by mode", output)
+
     def test_artifact_root_reuses_existing_manifests(self) -> None:
         if shutil.which("dotnet") is None:
             self.skipTest("dotnet is not available")

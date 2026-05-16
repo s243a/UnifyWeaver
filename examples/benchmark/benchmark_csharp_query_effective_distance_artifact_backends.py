@@ -490,6 +490,21 @@ def render_summary_markdown(rows: list[SummaryRow]) -> str:
     return "\n".join(lines)
 
 
+def render_summary_full_markdown(rows: list[SummaryRow]) -> str:
+    lines = [
+        "| Scale | Rows | Categories | Lookup keys | Best lookup | Best bucket | Best scan | Smallest artifact | Lookup ms by mode | Bucket ms by mode | Scan ms by mode | Artifact bytes by mode |",
+        "| --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for row in rows:
+        value = row.values
+        lines.append(
+            "| {scale} | {rows} | {distinct_categories} | {lookup_keys} | {best_lookup_mode} | {best_bucket_mode} | {best_scan_mode} | {smallest_artifact_mode} | {lookup_ms_by_mode} | {bucket_ms_by_mode} | {scan_ms_by_mode} | {artifact_bytes_by_mode} |".format(
+                **value
+            )
+        )
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Compare C# query artifact backends on the real effective-distance category_parent/2 relation."
@@ -571,7 +586,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--format",
-        choices=("tsv", "markdown", "summary-tsv", "summary-markdown"),
+        choices=("tsv", "markdown", "summary-tsv", "summary-markdown", "summary-full-markdown"),
         default="tsv",
     )
     parser.add_argument("--keep-temp", action="store_true", help="keep the generated C# benchmark project")
@@ -656,6 +671,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.format == "summary-tsv":
         print(render_summary_tsv(summarize(rows)))
+    elif args.format == "summary-full-markdown":
+        print(render_summary_full_markdown(summarize(rows)))
     elif args.format == "summary-markdown":
         print(render_summary_markdown(summarize(rows)))
     elif args.format == "markdown":
