@@ -1,20 +1,20 @@
 # WAM C Target - Status And Next Steps
 
-Status date: 2026-05-15
+Status date: 2026-05-16
 
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `e727e49b` (`Merge pull request #2139 from s243a/feat/wam-c-lowered-helper-projection-bench`)
+- `main` at `ee3a7f9a` (`Merge pull request #2141 from s243a/feat/wam-c-lowered-helper-scale-workload`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
 - `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py`
-- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --target-sets c-wam-lowered-helper --repetitions 1 --baseline-target c-wam-lowered-helper-interpreted`
+- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev,10x --target-sets c-wam-lowered-helper --repetitions 1 --baseline-target c-wam-lowered-helper-interpreted`
 - `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels --repetitions 1`
 
 Active branch:
 
-- `feat/wam-c-lowered-helper-scale-workload`
+- `test/wam-c-lowered-helper-scale-regression`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -59,7 +59,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Lowered helper ignored-output projections | Done | Projected body-call helpers pass singleton callee-local variables as fresh unbound arguments and ignore their returned bindings |
 | Lowered helper projection row constraints | Done | Repeated caller-variable projections lower through materialized native fact rows while preserving availability checks |
 | Lowered helper projection benchmark | Done | Tiny lowered-helper benchmark covers direct, reordered, ignored-output, and row-constrained projection shapes |
-| Lowered helper scaled benchmark workload | In progress | Active branch parameterizes the lowered-helper generator by scale while preserving interpreted/lowered output matching |
+| Lowered helper scaled benchmark workload | Done | `dev` emits 16 normalized rows and `10x` emits 160 rows for the same projection-shape workload, with interpreted and lowered output hashes matching per scale |
+| Lowered helper scale regression coverage | In progress | Active branch adds explicit local regression coverage for `dev`/`10x` row counts and interpreted/lowered hash parity |
 
 ## Current C Target Baseline
 
@@ -140,37 +141,38 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-lowered-helper-scale-workload`
+### 1. `test/wam-c-lowered-helper-scale-regression`
 
-Goal: scale the lowered-helper benchmark beyond the tiny dev smoke while keeping
-the output contract stable across interpreted and lowered modes.
-
-Scope:
-
-- Parameterize the lowered-helper generator by scale instead of hard-coding a
-  handful of facts.
-- Preserve projection-shape coverage and output matching across modes.
-- Keep the first pass small enough for routine matrix validation.
-
-Status: active; `dev` now emits 16 normalized rows and `10x` emits 160 rows for
-the same projection-shape workload, with interpreted and lowered output hashes
-matching per scale.
-
-### 2. `feat/wam-c-lowered-helper-scale-ci-smoke`
-
-Goal: add focused regression coverage for the scaled lowered-helper generator
-and matrix output row counts.
+Goal: pin the scaled lowered-helper workload with focused local regression
+coverage instead of adding a broad CI action for an unstable target family.
 
 Scope:
 
 - Assert that `dev` and `10x` lowered-helper matrix rows differ by scale but
   match between interpreted and lowered modes.
+- Verify the expected `dev` and `10x` row counts from the scaled projection
+  workload.
 - Keep the test narrow so it does not turn the general matrix unit test into a
   slow compile/run suite.
 
+Status: active.
+
+### 2. `feat/wam-c-lowered-helper-larger-scale-calibration`
+
+Goal: decide whether the lowered-helper workload needs a larger routine
+calibration point after the local `dev`/`10x` regression is pinned.
+
+Scope:
+
+- Run a small manual sweep above `10x` and compare lowered/interpreted output
+  parity plus runtime shape.
+- Promote only a cheap, stable scale into routine validation.
+- Defer GitHub Actions coverage until the target surface is stable enough that
+  CI failures are likely to be actionable.
+
 ## Suggested Immediate Next Step
 
-Continue validating `feat/wam-c-lowered-helper-scale-workload`.
+Continue validating `test/wam-c-lowered-helper-scale-regression`.
 
-The active branch gives the lowered-helper projection benchmark a real scale
-dimension while keeping the standard three-column benchmark output contract.
+The active branch should add a focused regression test for `dev`/`10x` scaled
+lowered-helper matrix parity and keep CI workflow changes out of scope for now.
