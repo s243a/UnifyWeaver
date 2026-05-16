@@ -1,6 +1,7 @@
 :- module(wam_runtime_parser_capability, [
     wam_target_runtime_parser/3,
     parser_dependent_builtin/1,
+    parser_dependent_goal/2,
     target_supports_runtime_parser_mode/2
 ]).
 
@@ -34,6 +35,27 @@ parser_dependent_builtin(read/2).
 parser_dependent_builtin(read_term_from_atom/2).
 parser_dependent_builtin(read_term_from_atom/3).
 parser_dependent_builtin(term_to_atom/2).
+
+%% parser_dependent_goal(+Goal, -Builtin)
+%
+% True when Goal is a statically visible call shape that needs a
+% runtime source-term parser. `term_to_atom/2` is mode-sensitive:
+% forward rendering does not parse, but a visible nonvar atom/text
+% argument means reverse parsing is possible and requires a parser.
+parser_dependent_goal(Goal0, Builtin) :-
+    nonvar(Goal0),
+    strip_module_qualifier(Goal0, Goal),
+    parser_dependent_goal_(Goal, Builtin).
+
+parser_dependent_goal_(term_to_atom(_Term, AtomText), term_to_atom/2) :-
+    !,
+    nonvar(AtomText).
+parser_dependent_goal_(Goal, Builtin) :-
+    callable(Goal),
+    functor(Goal, Name, Arity),
+    Builtin = Name/Arity,
+    parser_dependent_builtin(Builtin),
+    Builtin \= term_to_atom/2.
 
 %% target_supports_runtime_parser_mode(+Target, ?Mode)
 %
@@ -77,3 +99,10 @@ target_runtime_parser_mode_(wam_r, compiled(prolog_term_parser)).
 normalize_runtime_parser_target(r, wam_r) :- !.
 normalize_runtime_parser_target(wam_r, wam_r) :- !.
 normalize_runtime_parser_target(Target, Target).
+
+strip_module_qualifier(Module:Goal, Stripped) :-
+    atom(Module),
+    nonvar(Goal),
+    !,
+    strip_module_qualifier(Goal, Stripped).
+strip_module_qualifier(Goal, Goal).

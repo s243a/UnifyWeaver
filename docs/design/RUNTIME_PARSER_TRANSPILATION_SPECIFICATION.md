@@ -69,8 +69,11 @@ writers decide whether to include parser library predicates, whether parser
 builtins should dispatch to a native parser, and whether a target should reject
 parser-dependent builtins at generation time.
 
-The same module also defines `parser_dependent_builtin/1`, the catalogue of
-builtins that require runtime source-term parsing.
+The same module also defines `parser_dependent_builtin/1`, the broad catalogue
+of builtins that may require runtime source-term parsing, and
+`parser_dependent_goal/2`, the shape-aware classifier used by target writers.
+For example, `term_to_atom/2` only needs a parser when the source-text argument
+is statically visible.
 
 Target defaults should be conservative:
 
