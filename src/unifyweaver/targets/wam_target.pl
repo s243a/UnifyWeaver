@@ -1485,6 +1485,7 @@ is_builtin_pred(atom_chars, 2).   % atom ↔ list of single-char atoms.
 is_builtin_pred(number_codes, 2). % number ↔ list of integer codes.
 is_builtin_pred(atom_concat, 3).  % (+, +, ?) — concatenation.
 is_builtin_pred(atom_length, 2).  % atom → length in chars.
+is_builtin_pred(split_string, 4). % split string by separator chars.
 is_builtin_pred(char_code, 2).    % char-atom ↔ integer code.
 is_builtin_pred(assertz, 1).      % dynamic db: append fact.
 is_builtin_pred(asserta, 1).      % dynamic db: prepend fact.
