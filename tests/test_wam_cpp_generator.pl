@@ -1026,6 +1026,76 @@ user:wam_cpp_test_sub_atom_enum_all :-
     findall(S, sub_atom(ab, _, _, _, S), L),
     L = ['', a, ab, '', b, ''].
 
+% Rules in assertz/retract — extends #2136 (facts only). A rule is
+% stored as a ":-/2"(Head, Body) compound; dynamic_try_next decomposes
+% it on dispatch, unifies the head args with call args, and runs the
+% body through a BodyFrame (flattened conjunction sequence). The
+% BodyFrame mechanism replaces ConjFrame for rule bodies — ConjFrame
+% nests on a shared conj_return_pc that fires the wrong frame for
+% recursive predicates. ChoicePoints snapshot body_frames at push
+% time so backtrack-into-a-goal''s-CP restores the surrounding
+% rule body context.
+:- dynamic user:wam_cpp_test_rule_simple/0.
+:- dynamic user:wam_cpp_test_rule_conj/0.
+:- dynamic user:wam_cpp_test_rule_mixed_facts_and_rule/0.
+:- dynamic user:wam_cpp_test_rule_body_fails/0.
+:- dynamic user:wam_cpp_test_rule_recursive/0.
+:- dynamic user:wam_cpp_test_rule_backtrack_in_body/0.
+:- dynamic user:wam_cpp_test_retract_rule/0.
+
+user:wam_cpp_test_rule_simple :-
+    assertz((wam_cpp_dyn_pos(X) :- X > 5)),
+    wam_cpp_dyn_pos(10).
+
+user:wam_cpp_test_rule_conj :-
+    assertz((wam_cpp_dyn_dbl(X, Y) :- X > 0, Y is X * 2)),
+    wam_cpp_dyn_dbl(3, Y),
+    Y = 6.
+
+% Mixed: 2 facts + 1 (non-recursive) rule, findall via the head.
+% Note rule body is `true` to avoid infinite recursion through the
+% predicate''s own clauses.
+user:wam_cpp_test_rule_mixed_facts_and_rule :-
+    assertz(wam_cpp_dyn_t(a, 1)),
+    assertz(wam_cpp_dyn_t(b, 2)),
+    assertz((wam_cpp_dyn_t(c, 99) :- true)),
+    findall(K-V, wam_cpp_dyn_t(K, V), L),
+    L = [a-1, b-2, c-99].
+
+% Rule body fails on the call argument — the whole call fails.
+user:wam_cpp_test_rule_body_fails :-
+    assertz((wam_cpp_dyn_only_pos(X) :- X > 0)),
+    \+ wam_cpp_dyn_only_pos(-3).
+
+% Classic list-length recursion. Exercises BodyFrame chaining with
+% nested recursive calls, and ChoicePoint''s saved_body_frames
+% (since the recursive call''s outer body_frame must be restored
+% when backtrack fires a CP from inside the recursion).
+user:wam_cpp_test_rule_recursive :-
+    assertz(wam_cpp_dyn_len([], 0)),
+    assertz((wam_cpp_dyn_len([_|T], N) :- wam_cpp_dyn_len(T, M),
+                                          N is M + 1)),
+    wam_cpp_dyn_len([a, b, c], N),
+    N = 3.
+
+% Backtrack inside a rule body. A single clause whose body is
+% nondeterministic (member/2 enumerates 3 solutions); findall over
+% the rule collects all 3 — the body''s CPs must propagate up so
+% findall''s force-backtrack re-enters them.
+user:wam_cpp_test_rule_backtrack_in_body :-
+    assertz((wam_cpp_dyn_pick(X) :- member(X, [1, 2, 3]))),
+    findall(X, wam_cpp_dyn_pick(X), L),
+    L = [1, 2, 3].
+
+% retract a rule by its full ":-/2"(Head, Body) form — only the
+% pattern-matching clause is removed; remaining clauses are intact.
+user:wam_cpp_test_retract_rule :-
+    assertz((wam_cpp_dyn_r(X) :- X > 5)),
+    assertz((wam_cpp_dyn_r(X) :- X < 0)),
+    retract((wam_cpp_dyn_r(X) :- X > 5)),
+    \+ wam_cpp_dyn_r(10),
+    wam_cpp_dyn_r(-1).
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -3883,6 +3953,111 @@ test(cpp_e2e_sub_atom_enum_all,
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_sub_atom_enum_all/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% Rules in assertz/retract — completes the dynamic-database story
+% from #2136. Rules are stored as ":-/2"(Head, Body) compounds and
+% dispatched by flattening Body into a sequential goal list (a
+% BodyFrame), with ChoicePoints snapshotting body_frames so that
+% backtrack into any goal''s CP restores the correct rule context.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_rule_simple, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_rule_simple', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_rule_simple/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_rule_simple/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_rule_conj, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_rule_conj', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_rule_conj/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_rule_conj/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_rule_mixed_facts_and_rule,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_rule_mixed', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_rule_mixed_facts_and_rule/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_rule_mixed_facts_and_rule/0',
+                    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_rule_body_fails, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_rule_body_fails', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_rule_body_fails/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_rule_body_fails/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_rule_recursive, [condition(cpp_compiler_available)]) :-
+    % Recursion regression guard: 3-deep list-length needs both
+    % BodyFrame (so nested rule-body conjunctions don''t loop on
+    % shared conj_return_pc) and ChoicePoint::saved_body_frames
+    % (so backtrack from a deeper level''s body CP restores the
+    % outer rule''s body_frame context).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_rule_recursive', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_rule_recursive/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_rule_recursive/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_rule_backtrack_in_body,
+     [condition(cpp_compiler_available)]) :-
+    % Body of an asserted rule is itself nondet (member/2).
+    % findall must re-enter the body''s member CP after the first
+    % solution; that''s the path that exercises body_frames
+    % restoration via the CP.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_rule_bt', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_rule_backtrack_in_body/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_rule_backtrack_in_body/0',
+                    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_retract_rule, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_retract_rule', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_retract_rule/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_retract_rule/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

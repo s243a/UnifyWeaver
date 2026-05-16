@@ -398,13 +398,14 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     helper_predicate_items(HelperItems),
     flatten_blocks([HelperItems|PerPredItems], AllItems),
     walk_blocks(AllItems, Labels, FlatInstrs0),
-    % Append ten trailing synthetic-return instructions for the
+    % Append eleven trailing synthetic-return instructions for the
     % meta-call control-flow surface — see WamState for each pc''s
     % role.
     append(FlatInstrs0,
            [catch_return, negation_return, findall_collect,
             conj_return, disj_alt, if_then_commit, if_then_else,
-            aggregate_next_group, dynamic_next_clause, sub_atom_next],
+            aggregate_next_group, dynamic_next_clause, sub_atom_next,
+            body_next],
            FlatInstrs),
     length(FlatInstrs0, CatchReturnPC),
     NegationReturnPC is CatchReturnPC + 1,
@@ -416,6 +417,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     AggregateNextGroupPC is CatchReturnPC + 7,
     DynamicNextClausePC is CatchReturnPC + 8,
     SubAtomNextPC is CatchReturnPC + 9,
+    BodyNextPC is CatchReturnPC + 10,
     findall(LabelLine, (
         member(NameStr-PC, Labels),
         format(atom(LabelLine),
@@ -443,6 +445,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     vm.aggregate_next_group_pc = ~w;
     vm.dynamic_next_clause_pc = ~w;
     vm.sub_atom_next_pc = ~w;
+    vm.body_next_pc = ~w;
 ~w
 ~w
 }
@@ -453,6 +456,7 @@ static const int _wam_cpp_setup_register = []() {
 ', [Reserve, CatchReturnPC, NegationReturnPC, FindallCollectPC,
     ConjReturnPC, DisjAltPC, IfThenCommitPC, IfThenElsePC,
     AggregateNextGroupPC, DynamicNextClausePC, SubAtomNextPC,
+    BodyNextPC,
     LabelBody, InstrBody]).
 
 % ============================================================================
@@ -1074,6 +1078,8 @@ instr_to_setup_line(dynamic_next_clause, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::DynamicNextClause());'.
 instr_to_setup_line(sub_atom_next, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::SubAtomNext());'.
+instr_to_setup_line(body_next, _Labels, Line) :- !,
+    Line = '    vm.instrs.push_back(Instruction::BodyNext());'.
 instr_to_setup_line(Instr, _Labels, Line) :-
     wam_instruction_to_cpp_literal(Instr, Lit),
     format(atom(Line), '    vm.instrs.push_back(~w);', [Lit]).
@@ -1447,7 +1453,7 @@ struct Instruction {
         SwitchOnConstant, SwitchOnStructure, SwitchOnTerm,
         CatchReturn, NegationReturn, FindallCollect, ConjReturn, DisjAlt,
         IfThenCommit, IfThenElse, AggregateNextGroup, DynamicNextClause,
-        SubAtomNext
+        SubAtomNext, BodyNext
     };
     // Sentinel pc values for switch-table entries that should not jump.
     static constexpr std::size_t SWITCH_DEFAULT = static_cast<std::size_t>(-1);
@@ -1567,6 +1573,8 @@ struct Instruction {
         { Instruction i; i.op = Op::DynamicNextClause; return i; }
     static Instruction SubAtomNext()
         { Instruction i; i.op = Op::SubAtomNext; return i; }
+    static Instruction BodyNext()
+        { Instruction i; i.op = Op::BodyNext; return i; }
 };
 
 struct TrailEntry {
@@ -1595,6 +1603,19 @@ struct ModeFrame {
     std::size_t expected_arity = 0; // Write: stop when args.size() reaches this
 };
 
+// Rule-body sequencing frame for the dynamic-database dispatcher.
+// Declared at namespace scope so ChoicePoint can snapshot a stack of
+// these for backtrack-into-body correctness — without that snapshot,
+// popping the frame forward (when the last goal succeeds) would
+// leave subsequent backtrack-into-goal-CPs unable to find their
+// frame, so the next-goal dispatch chain would unravel.
+struct BodyFrame {
+    std::vector<CellPtr> goals;
+    std::size_t next_idx = 0;
+    std::size_t after_pc = 0;
+    std::size_t base_cp_count = 0;
+};
+
 struct ChoicePoint {
     std::size_t alt_pc;
     std::size_t saved_cp;
@@ -1603,6 +1624,7 @@ struct ChoicePoint {
     std::unordered_map<std::string, CellPtr> saved_regs;
     std::vector<ModeFrame> saved_mode_stack;
     std::vector<EnvFrame> saved_env_stack;
+    std::vector<BodyFrame> saved_body_frames;
 };
 
 // Aggregate scope opened by BeginAggregate. Backtrack() finalises the
@@ -1829,6 +1851,14 @@ struct WamState {
     };
     std::vector<DynamicIterator> dynamic_iters;
     std::size_t dynamic_next_clause_pc = 0;
+    // Rule-body sequencing — see BodyFrame doc at namespace scope.
+    // Each rule body is flattened into a sequential goal list;
+    // body_next dispatches them one at a time with cp=body_next_pc.
+    // Frames are popped FORWARD when goals are exhausted; backtrack
+    // restores body_frames from the CP that fires (since CPs
+    // snapshot body_frames at push time).
+    std::vector<BodyFrame> body_frames;
+    std::size_t body_next_pc = 0;
     // Iteration state for sub_atom/5. Each entry holds the source
     // atom, the bound cells (Before/Length/After/Sub), the call''s
     // continuation, and the list of (before, length) pairs still
@@ -1943,6 +1973,9 @@ struct WamState {
     // after_pc; on no-match, undo trail and recurse (CP-style).
     // On exhausted iterator, pop and return false.
     bool    dynamic_try_next();
+    // body_next — dispatch the top BodyFrame''s next goal, or pop
+    // and proceed to outer after_pc when goals are exhausted.
+    bool    body_next();
     // sub_atom/5 — enumerate (Before, Length) tuples matching the
     // bound constraints. Pre-filters the candidate list at entry,
     // then iterates via the SubAtomIterator + sub_atom_next_pc CP
@@ -1988,6 +2021,15 @@ struct WamState {
     // same fresh cell). Used by throw/1 to snapshot the thrown term
     // before unwinding state.
     CellPtr deep_copy_term(CellPtr src);
+    // Same as above but with a pre-seeded var-name → cell rename map.
+    // Pre-seeded entries are NOT overwritten; deep_copy_term reuses
+    // them whenever it encounters an unbound var with that name. Used
+    // by dynamic_try_next to make head args share the caller''s cells
+    // (essential so unbound-unbound unification works correctly —
+    // our cell model doesn''t alias-via-ref).
+    CellPtr deep_copy_term_seeded(
+        CellPtr src,
+        std::unordered_map<std::string, CellPtr> seed);
 
     // ---- Builtin helpers ---------------------------------------------
     // Arithmetic: returns Integer or Float; sets ok=false on failure
@@ -2819,24 +2861,29 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
     }
 
     // ---- assertz/1, asserta/1, retract/1, retractall/1 -------------
-    // Dynamic database manipulation. This PR supports FACTS only —
-    // rules (Head :- Body) are accepted by the parser but not yet
-    // dispatched by the runtime, so storing them would silently
-    // discard the body. To keep behaviour predictable, the asserts
-    // reject ":- "/2 terms outright.
+    // Dynamic database manipulation. Both FACTS and RULES are
+    // supported — a rule is stored as a ":-/2"(Head, Body) compound,
+    // and dynamic_try_next decomposes it on dispatch (binding head
+    // args, then invoking body as a goal-term).
     //
     // Storage: dynamic_db["name/arity"] is a std::vector<CellPtr> of
-    // deep-copied fact terms. Dispatch is via dispatch_dynamic_call
-    // (see Call/Execute step arms).
+    // deep-copied clause terms. The key is derived from the head''s
+    // functor (or, for rules, from the head inside ":-/2").
     auto dyn_key_of = [&](const Value& v, std::string& out) -> bool {
+        // Rule form ":-/2"(Head, Body): index by Head''s functor.
+        if (v.tag == Value::Tag::Compound && v.s == ":-/2"
+            && v.args.size() == 2) {
+            Value head = deref(*v.args[0]);
+            if (head.tag == Value::Tag::Atom) { out = head.s + "/0"; return true; }
+            if (head.tag == Value::Tag::Compound) { out = head.s; return true; }
+            return false;
+        }
+        // Fact form: the term itself is the head.
         if (v.tag == Value::Tag::Atom) {
-            // ":- "/2 — rule form, deferred (facts only for this PR).
-            if (v.s == ":-/2") return false;
             out = v.s + "/0";
             return true;
         }
         if (v.tag == Value::Tag::Compound) {
-            if (v.s == ":-/2") return false;
             out = v.s; // already "name/arity"
             return true;
         }
@@ -3756,6 +3803,15 @@ bool WamState::step(const Instruction& instr) {
             if (!choice_points.empty()) choice_points.pop_back();
             return sub_atom_try_next();
         }
+        case Instruction::Op::BodyNext: {
+            // Reached after a dynamic-rule body goal succeeded
+            // (either forward via cp=body_next_pc, or via backtrack
+            // into a CP that landed at one of the body''s goals).
+            // body_next dispatches the next goal in the BodyFrame''s
+            // sequence, or pops the frame + proceeds to outer
+            // after_pc when exhausted.
+            return body_next();
+        }
         case Instruction::Op::Proceed: {
             if (cp == 0) { halt = true; return true; }
             pc = cp;
@@ -3778,6 +3834,7 @@ bool WamState::step(const Instruction& instr) {
             cp_.saved_regs = regs;
             cp_.saved_mode_stack = mode_stack;
             cp_.saved_env_stack = env_stack;
+            cp_.saved_body_frames = body_frames;
             choice_points.push_back(std::move(cp_));
             pc += 1; return true;
         }
@@ -4147,6 +4204,7 @@ bool WamState::dynamic_try_next() {
         cp_.saved_regs        = regs;
         cp_.saved_mode_stack  = mode_stack;
         cp_.saved_env_stack   = env_stack;
+        cp_.saved_body_frames = body_frames;
         choice_points.push_back(std::move(cp_));
     } else {
         // Last clause for this call — drop the iterator. It''s no
@@ -4154,30 +4212,114 @@ bool WamState::dynamic_try_next() {
         // ordinary backtrack at the OUTER scope.
         dynamic_iters.pop_back();
     }
-    // Fresh-rename the clause so vars in different call iterations
-    // (and the stored fact itself, which may share vars across
-    // multiple stored clauses if asserta/assertz ever supports them)
-    // don''t alias.
-    CellPtr fresh = deep_copy_term(db_it->second[idx]);
-    Value fv = deref(*fresh);
-    // Unify the call args with the clause''s args.
-    if (fv.tag == Value::Tag::Atom) {
-        // 0-arity fact. call_args must be empty; key match already
-        // covered the name + arity (so call_args.empty() is implied).
-        if (!call_args.empty()) return false;
-    } else if (fv.tag == Value::Tag::Compound) {
-        if (fv.args.size() != call_args.size()) return false;
+    // Build a rename seed for fresh-copy: when a top-level head var is
+    // unbound AND the matching call arg is also unbound, map the
+    // stored var''s name to the caller''s cell. This makes the head
+    // arg (and any body occurrences of the same var) SHARE the
+    // caller''s cell — essential because our cell model lacks a ref-
+    // chain for unbound-unbound unification, so a plain unify_cells
+    // would leave the two unbound cells unaliased.
+    CellPtr stored = db_it->second[idx];
+    Value stored_v = deref(*stored);
+    CellPtr stored_head = stored;
+    if (stored_v.tag == Value::Tag::Compound && stored_v.s == ":-/2"
+        && stored_v.args.size() == 2) {
+        stored_head = stored_v.args[0];
+    }
+    std::unordered_map<std::string, CellPtr> seed;
+    Value sh = deref(*stored_head);
+    if (sh.tag == Value::Tag::Compound
+        && sh.args.size() == call_args.size())
+    {
         for (std::size_t i = 0; i < call_args.size(); ++i) {
-            if (!unify_cells(call_args[i], fv.args[i])) return false;
+            Value harg = deref(*sh.args[i]);
+            Value carg = deref(*call_args[i]);
+            if (harg.is_unbound() && carg.is_unbound()) {
+                seed.emplace(harg.s, call_args[i]);
+            }
+        }
+    }
+    CellPtr fresh = deep_copy_term_seeded(stored, std::move(seed));
+    Value fv = deref(*fresh);
+    // Decompose: clauses are either bare heads (facts) or
+    // ":-/2"(Head, Body) compounds (rules). Body defaults to a "true"
+    // atom for facts so the common dispatch path is the same.
+    CellPtr head_cell;
+    CellPtr body_cell;
+    if (fv.tag == Value::Tag::Compound && fv.s == ":-/2"
+        && fv.args.size() == 2) {
+        head_cell = fv.args[0];
+        body_cell = fv.args[1];
+    } else {
+        head_cell = fresh;
+        body_cell = std::make_shared<Cell>(Value::Atom("true"));
+    }
+    Value hv = deref(*head_cell);
+    // Unify the call args with the head''s args.
+    if (hv.tag == Value::Tag::Atom) {
+        // 0-arity head — no args to bind. call_args must be empty;
+        // the key-match already covered name + arity.
+        if (!call_args.empty()) return false;
+    } else if (hv.tag == Value::Tag::Compound) {
+        if (hv.args.size() != call_args.size()) return false;
+        for (std::size_t i = 0; i < call_args.size(); ++i) {
+            if (!unify_cells(call_args[i], hv.args[i])) return false;
         }
     } else {
         return false;
     }
-    // Proceed to the call''s continuation.
-    if (saved_after_pc == 0) { halt = true; return true; }
-    pc = saved_after_pc;
-    cp = 0;
-    return true;
+    // Body == "true" → fact match completes; jump to continuation.
+    Value bv = deref(*body_cell);
+    if (bv.tag == Value::Tag::Atom && bv.s == "true") {
+        if (saved_after_pc == 0) { halt = true; return true; }
+        pc = saved_after_pc;
+        cp = 0;
+        return true;
+    }
+    // Otherwise build a BodyFrame from the flattened conjunction body
+    // and dispatch sequentially. The flattening avoids ConjFrame
+    // nesting on the shared conj_return_pc — see BodyFrame doc.
+    std::vector<CellPtr> goals;
+    std::function<void(CellPtr)> flatten = [&](CellPtr g) {
+        Value gv = deref(*g);
+        if (gv.tag == Value::Tag::Compound && gv.s == ",/2"
+            && gv.args.size() == 2)
+        {
+            flatten(gv.args[0]);
+            flatten(gv.args[1]);
+        } else {
+            goals.push_back(g);
+        }
+    };
+    flatten(body_cell);
+    BodyFrame bf;
+    bf.goals = std::move(goals);
+    bf.next_idx = 0;
+    bf.after_pc = saved_after_pc;
+    bf.base_cp_count = choice_points.size();
+    body_frames.push_back(std::move(bf));
+    return body_next();
+}
+
+// Dispatch the top BodyFrame''s next goal (with cp=body_next_pc so
+// subsequent BodyNext fires advance through the sequence), or pop
+// the frame and proceed to outer after_pc when exhausted. Forward
+// pop is safe because ChoicePoints snapshot body_frames at push
+// time; if a CP from inside this body fires later, it restores
+// body_frames including this frame, and dispatch resumes correctly.
+bool WamState::body_next() {
+    if (body_frames.empty()) return false;
+    BodyFrame& f = body_frames.back();
+    if (f.next_idx >= f.goals.size()) {
+        std::size_t after = f.after_pc;
+        body_frames.pop_back();
+        if (after == 0) { halt = true; return true; }
+        pc = after;
+        cp = 0;
+        return true;
+    }
+    CellPtr g = f.goals[f.next_idx++];
+    return invoke_goal_as_call(g, body_next_pc);
 }
 
 // sub_atom/5 dispatcher. Reads A1..A5, decides which dimensions are
@@ -4310,6 +4452,7 @@ bool WamState::sub_atom_try_next() {
         cp_.saved_regs        = regs;
         cp_.saved_mode_stack  = mode_stack;
         cp_.saved_env_stack   = env_stack;
+        cp_.saved_body_frames = body_frames;
         choice_points.push_back(std::move(cp_));
     }
     // Unify each output cell with its computed value.
@@ -4335,7 +4478,14 @@ bool WamState::sub_atom_try_next() {
 // in the copy. Used by throw/1 to snapshot the thrown term before
 // state-unwind tears down the goal''s bindings.
 CellPtr WamState::deep_copy_term(CellPtr src) {
-    std::unordered_map<std::string, CellPtr> rename;
+    return deep_copy_term_seeded(src, {});
+}
+
+CellPtr WamState::deep_copy_term_seeded(
+    CellPtr src,
+    std::unordered_map<std::string, CellPtr> seed)
+{
+    std::unordered_map<std::string, CellPtr> rename = std::move(seed);
     std::function<CellPtr(CellPtr)> rec = [&](CellPtr c) -> CellPtr {
         Value v = deref(*c);
         if (v.tag == Value::Tag::Unbound || v.tag == Value::Tag::Uninit) {
@@ -4380,10 +4530,16 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
         }
         std::string key = g.s + "/0";
         auto it = labels.find(key);
-        if (it == labels.end()) return false;
-        cp = after_pc;
-        pc = it->second;
-        return true;
+        if (it != labels.end()) {
+            cp = after_pc;
+            pc = it->second;
+            return true;
+        }
+        // 0-arity dynamic predicate fallback.
+        if (dynamic_db.count(key)) {
+            return dispatch_dynamic_call(key, after_pc);
+        }
+        return false;
     }
     if (g.tag == Value::Tag::Compound) {
         // s is "<name>/<arity>".
@@ -4421,6 +4577,7 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
             cp_.saved_regs        = regs;
             cp_.saved_mode_stack  = mode_stack;
             cp_.saved_env_stack   = env_stack;
+            cp_.saved_body_frames = body_frames;
             choice_points.push_back(std::move(cp_));
             return invoke_goal_as_call(g.args[0], if_then_commit_pc);
         }
@@ -4452,6 +4609,7 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
                 cp_.saved_regs        = regs;
                 cp_.saved_mode_stack  = mode_stack;
                 cp_.saved_env_stack   = env_stack;
+                cp_.saved_body_frames = body_frames;
                 choice_points.push_back(std::move(cp_));
                 // Dispatch Cond with cp = if_then_commit_pc so
                 // success lands at the commit op.
@@ -4469,6 +4627,7 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
             cp_.saved_regs        = regs;
             cp_.saved_mode_stack  = mode_stack;
             cp_.saved_env_stack   = env_stack;
+            cp_.saved_body_frames = body_frames;
             choice_points.push_back(std::move(cp_));
             DisjFrame df;
             df.second_goal = g.args[1];
@@ -4526,6 +4685,7 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
             cp_.saved_regs        = regs;
             cp_.saved_mode_stack  = mode_stack;
             cp_.saved_env_stack   = env_stack;
+            cp_.saved_body_frames = body_frames;
             choice_points.push_back(std::move(cp_));
             return invoke_goal_as_call(g.args[0], if_then_commit_pc);
         }
@@ -4556,6 +4716,13 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
             cp = after_pc;
             pc = it->second;
             return true;
+        }
+        // Dynamic predicate path: when a rule''s body invokes a
+        // dynamic predicate (or a goal-term arg to catch/findall/etc.
+        // names one), we route through dispatch_dynamic_call so the
+        // clause-iteration CP machinery handles backtracking.
+        if (dynamic_db.count(key)) {
+            return dispatch_dynamic_call(key, after_pc);
         }
         // Builtin path: run the builtin inline. On success, jump to
         // the catch continuation (overriding the pc advance builtin()
@@ -4754,6 +4921,7 @@ bool WamState::aggregate_bind_next_group() {
         cp_.saved_regs        = regs;
         cp_.saved_mode_stack  = mode_stack;
         cp_.saved_env_stack   = env_stack;
+        cp_.saved_body_frames = body_frames;
         choice_points.push_back(std::move(cp_));
     }
     // Bind witness cells to this group''s witness values.
@@ -4976,6 +5144,16 @@ bool WamState::backtrack() {
             conj_frames.pop_back();
             continue;
         }
+        // BodyFrame: a dynamic rule''s body sequence ran out of CPs
+        // for one of its goals. Drop the frame so failure propagates
+        // out of the rule and the outer dynamic_try_next (if any)
+        // can try the next clause.
+        if (!body_frames.empty()
+            && choice_points.size() <= body_frames.back().base_cp_count)
+        {
+            body_frames.pop_back();
+            continue;
+        }
         // Negation frame: if the \\+ / not protected goal exhausted
         // all its CPs (i.e. the goal FAILED), pop the frame, unwind
         // state, and SUCCEED at saved_cp. Symmetric inverse of the
@@ -5161,6 +5339,7 @@ bool WamState::backtrack() {
         regs        = cp_.saved_regs;
         mode_stack  = cp_.saved_mode_stack;
         env_stack   = cp_.saved_env_stack;
+        body_frames = std::move(cp_.saved_body_frames);
         cp          = cp_.saved_cp;
         cut_barrier = cp_.cut_barrier;
         pc          = cp_.alt_pc;
