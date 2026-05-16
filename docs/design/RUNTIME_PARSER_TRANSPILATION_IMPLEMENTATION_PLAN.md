@@ -56,9 +56,31 @@ equivalent and performance-credible.
 
 ## Phase 5: Generalize The Target Hook
 
-Add a target capability hook for runtime parser inclusion. The hook should
-answer whether a generated runtime needs the parser library and how the target
-should expose parser entry points to builtins.
+The target capability hook for runtime parser inclusion lives in
+`src/unifyweaver/targets/wam_runtime_parser_capability.pl`:
+
+```prolog
+wam_target_runtime_parser(+Target, +Options, -Mode)
+```
+
+`Mode` is `none`, `native(Entry)`, or `compiled(prolog_term_parser)`.
+`Options` accepts
+`runtime_parser(auto|off|native|compiled)`.
+
+The initial implementation is intentionally small:
+
+- the shared predicate and tests cover option resolution;
+- R is registered as `native(parse_term)` by default;
+- targets without runtime source-term parsing resolve to `none`;
+- `compiled(prolog_term_parser)` is available only for targets
+  with compile and runtime proof tests.
+- the R project writer records the resolved mode in the generated
+  `shared_program$runtime_parser` metadata.
+
+Do not immediately wire every target's `write_wam_*_project/3` through the new
+hook. The hook is a stable contract; target writers can migrate one at a time.
+For R, builtin routing still uses the native inline parser hot path while the
+metadata provides a stable seam for later experiments.
 
 The hook should be independent of the WAM items API. A target can skip WAM text
 generation at build time and still need runtime source-term parsing.

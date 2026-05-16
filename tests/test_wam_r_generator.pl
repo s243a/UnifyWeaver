@@ -93,6 +93,34 @@ test(intern_and_instructions) :-
         delete_directory_and_contents(TmpDir)
     )).
 
+test(runtime_parser_mode_metadata) :-
+    once((
+        unique_r_tmp_dir('tmp_r_parser_mode', TmpDir),
+        write_wam_r_project(
+            [user:wam_r_fact/1],
+            [],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        assertion(sub_string(Code, _, _, _,
+                             'runtime_parser   = list(kind = "native", entry = "parse_term", source = NULL)')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(runtime_parser_mode_option_off) :-
+    once((
+        unique_r_tmp_dir('tmp_r_parser_mode_off', TmpDir),
+        write_wam_r_project(
+            [user:wam_r_fact/1],
+            [runtime_parser(off)],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        assertion(sub_string(Code, _, _, _,
+                             'runtime_parser   = list(kind = "none", entry = NULL, source = NULL)')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
 % ------------------------------------------------------------------
 % Test 4: label map carries the predicate entry
 % ------------------------------------------------------------------

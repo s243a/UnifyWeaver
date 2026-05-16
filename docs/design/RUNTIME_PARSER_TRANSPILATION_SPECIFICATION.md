@@ -40,7 +40,52 @@ The parser must not own mutable operator state. Runtime predicates such as
 `op/3` and `current_op/3` belong to the target runtime. Before a parse, the
 runtime passes the parser a snapshot derived from its current table.
 
-## Required Consumers
+## Target Capability Hook
+
+Each WAM target exposes its runtime parser posture through the shared
+generator-side hook in `src/unifyweaver/targets/wam_runtime_parser_capability.pl`:
+
+```prolog
+%% wam_target_runtime_parser(+Target, +Options, -Mode)
+%
+%  Mode is one of:
+%    none
+%      The generated runtime has no source-term parser.
+%    native(Entry)
+%      The target has a hand-written parser entry point named by Entry.
+%    compiled(SourceModule)
+%      The target should include the portable Prolog parser module and call
+%      the generated wrapper predicates.
+%
+%  Options may override the target default:
+%    runtime_parser(off)       -> none
+%    runtime_parser(native)    -> native(...) if the target supports one
+%    runtime_parser(compiled)  -> compiled(prolog_term_parser)
+%    runtime_parser(auto)      -> target default
+```
+
+The hook is a generator contract, not a runtime predicate. It lets project
+writers decide whether to include parser library predicates, whether parser
+builtins should dispatch to a native parser, and whether a target should reject
+parser-dependent builtins at generation time.
+
+The same module also defines `parser_dependent_builtin/1`, the catalogue of
+builtins that require runtime source-term parsing.
+
+Target defaults should be conservative:
+
+- targets with a fast existing runtime parser, such as R, default to
+  `native(...)`;
+- targets without a parser default to `none`;
+- targets may opt into `compiled(prolog_term_parser)` only after they can run
+  the portable parser's compile and runtime tests.
+
+The generated runtime should expose only one builtin-facing parser entry point
+per target. A target may keep both native and compiled parsers for testing, but
+`read/2`, `read_term_from_atom/2,3`, reverse `term_to_atom/2`, and CLI parsing
+should route through the selected mode consistently.
+
+## Required Consumers And Inclusion
 
 Targets that expose the corresponding predicates should route these operations
 through the runtime parser:
@@ -52,6 +97,18 @@ through the runtime parser:
 
 Targets may also use the same parser for CLI argument decoding, REPL input, or
 runtime data-file ingestion.
+
+When `wam_target_runtime_parser/3` returns `compiled(prolog_term_parser)`, the
+project writer must add `src/unifyweaver/core/prolog_term_parser.pl` predicates
+to the generated project before compiling parser-dependent drivers. Inclusion
+should be demand-driven by default: if no emitted builtin or target feature
+needs runtime source-term parsing, the parser library should not be included.
+
+When the selected mode is `none`, parser-dependent builtins must either be
+omitted from the target's advertised capability set or fail with a clear
+generation-time diagnostic. Silent runtime stubs are not acceptable for new
+targets because parser failure is otherwise hard to distinguish from ordinary
+predicate failure.
 
 ## Stream Read Semantics
 
