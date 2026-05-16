@@ -614,6 +614,91 @@ namespace UnifyWeaver.QueryRuntime
         }
     }
 
+    public static class RelationArtifactProviderOpenPolicy
+    {
+        public static bool TryOpenPreferred(
+            PredicateId predicate,
+            IEnumerable<string> manifestPaths,
+            string preferredStorageKind,
+            IRelationProvider? fallback,
+            IEnumerable<IRelationArtifactProviderFactory>? factories,
+            out RelationArtifactProviderOpenResult result)
+        {
+            if (manifestPaths is null) throw new ArgumentNullException(nameof(manifestPaths));
+            if (preferredStorageKind is null) throw new ArgumentNullException(nameof(preferredStorageKind));
+
+            var effectiveFactories = (factories ?? new[] { new DefaultRelationArtifactProviderFactory() }).ToArray();
+            RelationArtifactProviderOpenResult? firstOpenable = null;
+
+            foreach (var manifestPath in manifestPaths)
+            {
+                if (string.IsNullOrWhiteSpace(manifestPath))
+                {
+                    continue;
+                }
+
+                foreach (var factory in effectiveFactories)
+                {
+                    RelationArtifactProviderOpenResult opened;
+                    try
+                    {
+                        if (!factory.TryOpen(predicate, manifestPath, fallback, out opened))
+                        {
+                            continue;
+                        }
+                    }
+                    catch (InvalidDataException)
+                    {
+                        continue;
+                    }
+                    catch (JsonException)
+                    {
+                        continue;
+                    }
+
+                    firstOpenable ??= opened;
+                    if (string.Equals(opened.StorageKind, preferredStorageKind, StringComparison.Ordinal))
+                    {
+                        result = opened;
+                        return true;
+                    }
+                }
+            }
+
+            if (firstOpenable is { } fallbackResult)
+            {
+                result = fallbackResult;
+                return true;
+            }
+
+            result = default!;
+            return false;
+        }
+
+        public static bool TryOpenEffectiveDistanceArtifact(
+            PredicateId predicate,
+            string relationName,
+            long rowCount,
+            RelationArtifactAccessShape accessShape,
+            IEnumerable<string> manifestPaths,
+            IRelationProvider? fallback,
+            IEnumerable<IRelationArtifactProviderFactory>? factories,
+            out RelationArtifactProviderOpenResult result)
+        {
+            var preferredStorageKind = RelationArtifactAccessPolicy.ResolveEffectiveDistanceArtifactStorageKind(
+                relationName,
+                rowCount,
+                accessShape);
+            return TryOpenPreferred(
+                predicate,
+                manifestPaths,
+                preferredStorageKind,
+                fallback,
+                factories,
+                out result);
+        }
+    }
+
     internal static class RelationArtifactManifestFormatReader
     {
         public static string ReadFormat(string manifestPath)

@@ -166,6 +166,10 @@ class CSharpQuerySourceModePolicyTests(unittest.TestCase):
             "public sealed record RelationArtifactProviderOpenResult",
             "public interface IRelationArtifactProviderFactory",
             "public sealed class DefaultRelationArtifactProviderFactory",
+            "public static class RelationArtifactProviderOpenPolicy",
+            "TryOpenPreferred(",
+            "TryOpenEffectiveDistanceArtifact(",
+            "new[] { new DefaultRelationArtifactProviderFactory() }",
             "BinaryRelationArtifactManifest.CurrentFormat:",
             "DelimitedRelationArtifactManifest.CurrentFormat:",
             "new BinaryRelationArtifactProvider(fallback)",
@@ -277,6 +281,125 @@ AssertEqual(
         5_000_000,
         RelationArtifactAccessShape.LookupColumn0),
     "unknown relation fallback");
+""",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                ["dotnet", "run", "--project", str(project_path)],
+                cwd=tmp_path,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=120,
+            )
+            self.assertEqual(result.returncode, 0, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+
+    def test_runtime_policy_guided_artifact_open_compiled_smoke(self) -> None:
+        if shutil.which("dotnet") is None:
+            self.skipTest("dotnet is not available")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            project_path = tmp_path / "PolicyGuidedOpenSmoke.csproj"
+            program_path = tmp_path / "Program.cs"
+            project_path.write_text(
+                f"""\
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="{QUERY_RUNTIME_PROJECT}" />
+  </ItemGroup>
+</Project>
+""",
+                encoding="utf-8",
+            )
+            program_path.write_text(
+                """\
+using UnifyWeaver.QueryRuntime;
+
+static void Assert(bool condition, string message)
+{
+    if (!condition)
+    {
+        throw new InvalidOperationException(message);
+    }
+}
+
+var root = Path.Combine(Path.GetTempPath(), "uw-policy-guided-open-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(root);
+var inputPath = Path.Combine(root, "edges.tsv");
+File.WriteAllText(inputPath, "child\\tparent\\n1\\t2\\n1\\t3\\n2\\t4\\n");
+var predicate = new PredicateId("edge", 2);
+var source = new DelimitedRelationSource(inputPath, '\t', 1, 2);
+var binaryManifest = BinaryRelationArtifactBuilder.BuildFromDelimited(predicate, source, Path.Combine(root, "binary"));
+var mmapManifest = MmapArrayRelationArtifactBuilder.BuildFromDelimited(predicate, source, Path.Combine(root, "mmap"));
+var manifests = new[] { binaryManifest, mmapManifest };
+
+Assert(
+    RelationArtifactProviderOpenPolicy.TryOpenPreferred(
+        predicate,
+        manifests,
+        RelationArtifactAccessPolicy.MmapArrayArtifactStorageKind,
+        fallback: null,
+        factories: null,
+        out var mmapOpened),
+    "preferred mmap open failed");
+Assert(mmapOpened.StorageKind == RelationArtifactAccessPolicy.MmapArrayArtifactStorageKind, $"storage kind was {mmapOpened.StorageKind}");
+
+Assert(
+    RelationArtifactProviderOpenPolicy.TryOpenPreferred(
+        predicate,
+        manifests,
+        RelationArtifactAccessPolicy.LmdbArtifactStorageKind,
+        fallback: null,
+        factories: null,
+        out var fallbackOpened),
+    "fallback open failed");
+Assert(fallbackOpened.StorageKind == RelationArtifactAccessPolicy.BinaryArtifactStorageKind, $"fallback storage kind was {fallbackOpened.StorageKind}");
+
+Assert(
+    RelationArtifactProviderOpenPolicy.TryOpenPreferred(
+        predicate,
+        manifests,
+        RelationArtifactAccessPolicy.MmapArrayArtifactStorageKind,
+        fallback: null,
+        factories: new IRelationArtifactProviderFactory[] { new ThrowingRelationArtifactProviderFactory(), new DefaultRelationArtifactProviderFactory() },
+        out var skippedThrowingOpened),
+    "throwing factory should be skipped");
+Assert(skippedThrowingOpened.StorageKind == RelationArtifactAccessPolicy.MmapArrayArtifactStorageKind, $"skipped factory storage kind was {skippedThrowingOpened.StorageKind}");
+
+Assert(
+    RelationArtifactProviderOpenPolicy.TryOpenEffectiveDistanceArtifact(
+        predicate,
+        "article_category",
+        1_000_000,
+        RelationArtifactAccessShape.LookupColumn0,
+        manifests,
+        fallback: null,
+        factories: null,
+        out var policyOpened),
+    "effective-distance policy open failed");
+Assert(policyOpened.StorageKind == RelationArtifactAccessPolicy.MmapArrayArtifactStorageKind, $"policy storage kind was {policyOpened.StorageKind}");
+
+sealed class ThrowingRelationArtifactProviderFactory : IRelationArtifactProviderFactory
+{
+    public bool TryOpen(
+        PredicateId predicate,
+        string manifestPath,
+        IRelationProvider? fallback,
+        out RelationArtifactProviderOpenResult result)
+    {
+        result = default!;
+        throw new InvalidDataException("wrong manifest format for this provider");
+    }
+}
 """,
                 encoding="utf-8",
             )
