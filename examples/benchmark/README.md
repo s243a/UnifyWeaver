@@ -170,6 +170,7 @@ timing-sensitive runs:
 python examples/benchmark/benchmark_csharp_query_effective_distance_artifact_backends.py \
   --scales 50k_cats,100k_cats \
   --prepare-missing-large-scales \
+  --artifact-root output/csharp-query-effective-distance-artifacts \
   --lookup-keys 256 \
   --lookup-repetitions 3 \
   --repetitions 3 \
@@ -206,6 +207,12 @@ This writes a capped `category_parent.tsv` fixture from `subcat` rows using the
 same Rust parser. It intentionally stops at TSV fixture creation; a future
 optimization can write the parser output directly to LMDB and bypass the Python
 orchestrator.
+
+Pass `--artifact-root <dir>` to keep backend artifacts across benchmark runs.
+Existing binary, delimited, LMDB, and mmap-array manifests are reused by
+default, matching the Haskell benchmark convention of not regenerating LMDB
+when it already exists. Add `--refresh-artifacts` when the fixture input or
+artifact format has changed and the artifacts should be rebuilt.
 
 Use `--stability-runs <n>` to run the wrapper-level sweep repeatedly and
 summarize stable winners. Values above `1` report majority winners, winner

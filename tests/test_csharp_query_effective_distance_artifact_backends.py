@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import tempfile
 import unittest
 import importlib.util
 import sys
@@ -144,6 +145,54 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
         self.assertIn("| Scale | Rows | Categories | Lookup keys | Best lookup |", result.stdout)
         self.assertIn("| dev |", result.stdout)
         self.assertIn("Smallest artifact", result.stdout)
+
+    def test_artifact_root_reuses_existing_manifests(self) -> None:
+        if shutil.which("dotnet") is None:
+            self.skipTest("dotnet is not available")
+        if not LIGHTNINGDB_PACKAGE.exists():
+            self.skipTest("LightningDB 0.21.0 package is not available in the local NuGet cache")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_root = Path(tmp) / "artifacts"
+            command = [
+                "python3",
+                str(SCRIPT),
+                "--scales",
+                "dev",
+                "--lookup-keys",
+                "4",
+                "--lookup-repetitions",
+                "1",
+                "--repetitions",
+                "1",
+                "--artifact-root",
+                str(artifact_root),
+                "--format",
+                "summary-markdown",
+            ]
+            first = subprocess.run(
+                command + ["--refresh-artifacts"],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=180,
+            )
+            self.assertEqual(first.returncode, 0, msg=f"stdout:\n{first.stdout}\nstderr:\n{first.stderr}")
+            manifest = artifact_root / "dev" / "category_parent.lmdb.manifest.json"
+            self.assertTrue(manifest.exists())
+            first_mtime = manifest.stat().st_mtime_ns
+
+            second = subprocess.run(
+                command,
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=180,
+            )
+            self.assertEqual(second.returncode, 0, msg=f"stdout:\n{second.stdout}\nstderr:\n{second.stderr}")
+            self.assertEqual(manifest.stat().st_mtime_ns, first_mtime)
 
 
 if __name__ == "__main__":
