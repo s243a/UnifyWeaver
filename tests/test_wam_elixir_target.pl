@@ -359,6 +359,47 @@ test_iso_errors_is_table_populated :-
     ;   fail_test(Test, 'is/2 table entries missing')
     ).
 
+test_iso_errors_sweep_table_populated :-
+    Test = 'WAM-Elixir: PR #5 populates 6 compares + succ/2 in iso/lax tables',
+    Compares = [">/2", "</2", ">=/2", "=</2", "=:=/2", "=\\=/2"],
+    (   forall(member(K, Compares),
+               (   wam_elixir_target:iso_errors_default_to_iso(K, _),
+                   wam_elixir_target:iso_errors_default_to_lax(K, _)
+               )),
+        wam_elixir_target:iso_errors_default_to_iso("succ/2", "succ_iso/2"),
+        wam_elixir_target:iso_errors_default_to_lax("succ/2", "succ_lax/2")
+    ->  pass(Test)
+    ;   fail_test(Test, 'one or more PR #5 table entries missing')
+    ).
+
+test_iso_errors_sweep_runtime_arms :-
+    Test = 'WAM-Elixir: PR #5 runtime arms for compares + succ present',
+    (   compile_wam_helpers_to_elixir([], Code),
+        atom_string(Code, S),
+        % Combined ISO compare arm.
+        sub_string(S, _, _, _, '">_iso/2", "<_iso/2", ">=_iso/2"'),
+        % succ_iso/2 arm.
+        sub_string(S, _, _, _, '{"succ_iso/2", 2}'),
+        % succ/2 + succ_lax/2 combined arm.
+        sub_string(S, _, _, _, 'op in ["succ/2", "succ_lax/2"]'),
+        % >/2 + >_lax/2 combined arm.
+        sub_string(S, _, _, _, 'op in [">/2", ">_lax/2"]')
+    ->  pass(Test)
+    ;   fail_test(Test, 'one or more sweep runtime arms missing')
+    ).
+
+test_iso_errors_sweep_rewrite_text :-
+    Test = 'WAM-Elixir: iso_errors_rewrite_text handles all sweep ops',
+    Config = iso_config(true, []),
+    WamText = "foo/2:\n    builtin_call >/2, 2\n    builtin_call </2, 2\n    builtin_call succ/2, 2",
+    iso_errors_rewrite_text(Config, foo/2, WamText, Rewritten),
+    (   sub_string(Rewritten, _, _, _, "builtin_call >_iso/2,"),
+        sub_string(Rewritten, _, _, _, "builtin_call <_iso/2,"),
+        sub_string(Rewritten, _, _, _, "builtin_call succ_iso/2,")
+    ->  pass(Test)
+    ;   fail_test(Test, 'sweep rewrite did not produce all expected iso keys')
+    ).
+
 test_iso_errors_rewrite_text_default_mode :-
     Test = 'WAM-Elixir: iso_errors_rewrite_text rewrites is/2 -> is_lax/2 in default mode',
     % Default-mode predicate -> rewrite via lax table -> is_lax/2.
@@ -2468,12 +2509,15 @@ test_runtime_emits_full_comparison_family :-
     Test = 'Runtime: execute_builtin covers full arithmetic-comparison family',
     wam_elixir_target:compile_wam_runtime_to_elixir([], Code),
     atom_string(Code, S),
-    (   sub_string(S, _, _, _, '{"</2", 2}'),
-        sub_string(S, _, _, _, '{">/2", 2}'),
-        sub_string(S, _, _, _, '{">=/2", 2}'),
-        sub_string(S, _, _, _, '{"=</2", 2}'),
-        sub_string(S, _, _, _, '{"=:=/2", 2}'),
-        sub_string(S, _, _, _, '{"=\\\\=/2", 2}')
+    % PR #5 refactored each compare arm to accept both the default
+    % key AND the _lax alias via `op in [...]` guard. Grep for the
+    % guard list rather than the bare `{"op/2", 2}` pattern.
+    (   sub_string(S, _, _, _, 'op in ["</2", "<_lax/2"]'),
+        sub_string(S, _, _, _, 'op in [">/2", ">_lax/2"]'),
+        sub_string(S, _, _, _, 'op in [">=/2", ">=_lax/2"]'),
+        sub_string(S, _, _, _, 'op in ["=</2", "=<_lax/2"]'),
+        sub_string(S, _, _, _, 'op in ["=:=/2", "=:=_lax/2"]'),
+        sub_string(S, _, _, _, 'op in ["=\\\\=/2", "=\\\\=_lax/2"]')
     ->  pass(Test)
     ;   fail_test(Test, 'one or more comparison ops missing from execute_builtin')
     ).
@@ -3055,6 +3099,9 @@ run_tests :-
     test_iso_errors_audit_unrewritten_builtin,
     test_iso_errors_audit_is_resolves_to_lax,
     test_iso_errors_is_table_populated,
+    test_iso_errors_sweep_table_populated,
+    test_iso_errors_sweep_runtime_arms,
+    test_iso_errors_sweep_rewrite_text,
     test_iso_errors_rewrite_text_default_mode,
     test_iso_errors_rewrite_text_iso_mode,
     test_iso_errors_rewrite_text_explicit_unchanged,
