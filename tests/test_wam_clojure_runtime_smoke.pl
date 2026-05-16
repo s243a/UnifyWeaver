@@ -104,6 +104,9 @@
 :- dynamic user:wam_nth1_bad_list/1.
 :- dynamic user:wam_nth1_unbound_index/1.
 :- dynamic user:wam_nth1_unbound_list/1.
+:- dynamic user:wam_delete_guard/3.
+:- dynamic user:wam_delete_bad_list/1.
+:- dynamic user:wam_delete_unbound_list/1.
 :- dynamic user:wam_sort_guard/2.
 :- dynamic user:wam_sort_bad_list/1.
 :- dynamic user:wam_sort_unbound_list/1.
@@ -252,6 +255,9 @@ user:wam_nth1_out_of_range(X) :- nth1(4, [a,b,c], X).
 user:wam_nth1_bad_list(X) :- nth1(2, [a|b], X).
 user:wam_nth1_unbound_index(X) :- user:wam_unbound_arg(N), nth1(N, [a,b,c], X).
 user:wam_nth1_unbound_list(X) :- user:wam_unbound_arg(L), nth1(1, L, X).
+user:wam_delete_guard(L, Elem, Rest) :- delete(L, Elem, Rest).
+user:wam_delete_bad_list(Rest) :- delete([a|b], a, Rest).
+user:wam_delete_unbound_list(Rest) :- user:wam_unbound_arg(L), delete(L, a, Rest).
 user:wam_sort_guard(L, S) :- sort(L, S).
 user:wam_sort_bad_list(S) :- sort([a|b], S).
 user:wam_sort_unbound_list(S) :- user:wam_unbound_arg(L), sort(L, S).
@@ -405,6 +411,9 @@ run_smoke :-
           user:wam_nth1_bad_list/1,
           user:wam_nth1_unbound_index/1,
           user:wam_nth1_unbound_list/1,
+          user:wam_delete_guard/3,
+          user:wam_delete_bad_list/1,
+          user:wam_delete_unbound_list/1,
           user:wam_sort_guard/2,
           user:wam_sort_bad_list/1,
           user:wam_sort_unbound_list/1,
@@ -485,6 +494,7 @@ run_smoke :-
     assert_lowered_last_builtin_emitted(TmpDir),
     assert_lowered_nth0_builtin_emitted(TmpDir),
     assert_lowered_nth1_builtin_emitted(TmpDir),
+    assert_lowered_delete_builtin_emitted(TmpDir),
     assert_lowered_sort_builtin_emitted(TmpDir),
     assert_lowered_msort_builtin_emitted(TmpDir),
     assert_lowered_copy_term_builtin_emitted(TmpDir),
@@ -675,6 +685,12 @@ smoke_cases([
     case('wam_nth1_bad_list/1', a, "false"),
     case('wam_nth1_unbound_index/1', a, "false"),
     case('wam_nth1_unbound_list/1', a, "false"),
+    case('wam_delete_guard/3', args('[a,b,a,c]', a, '[b,c]'), "true"),
+    case('wam_delete_guard/3', args('[a,b,a,c]', z, '[a,b,a,c]'), "true"),
+    case('wam_delete_guard/3', args('[f(a),f(b),f(a)]', 'f(a)', '[f(b)]'), "true"),
+    case('wam_delete_guard/3', args('[a,b,a,c]', a, '[a,b,c]'), "false"),
+    case('wam_delete_bad_list/1', '[]', "false"),
+    case('wam_delete_unbound_list/1', '[]', "false"),
     case('wam_sort_guard/2', args('[b,a,a,c]', '[a,b,c]'), "true"),
     case('wam_sort_guard/2', args('[b,a,a,c]', '[a,b]'), "false"),
     case('wam_sort_guard/2', args('[f(b),f(a),a]', '[a,f(a),f(b)]'), "true"),
@@ -964,6 +980,14 @@ assert_lowered_nth1_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-nth1-unbound-list-1"),
     has(CoreCode, "runtime/apply-nth1-solution").
 
+assert_lowered_delete_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-delete-guard-3"),
+    has(CoreCode, "defn lowered-wam-delete-bad-list-1"),
+    has(CoreCode, "defn lowered-wam-delete-unbound-list-1"),
+    has(CoreCode, "runtime/apply-delete-solution").
+
 assert_lowered_sort_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
     read_file_to_string(CorePath, CoreCode, []),
@@ -1222,12 +1246,15 @@ prolog_term_string_to_edn('[b,c]', "{:tag :struct :functor \"[|]/2\" :args [\"b\
 prolog_term_string_to_edn('[c]', "{:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}") :- !.
 prolog_term_string_to_edn('[a,c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[a,b,c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn('[a,b,a,c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}]}") :- !.
 prolog_term_string_to_edn('[a,a,b,c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}]}") :- !.
 prolog_term_string_to_edn('[c,b,a]', "{:tag :struct :functor \"[|]/2\" :args [\"c\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[b,a]', "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[b,a,a,c]', "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}]}") :- !.
 prolog_term_string_to_edn('[f(b),f(a),a]', "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"b\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"a\"]} {:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[a,f(a),f(b)]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"a\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"b\"]} \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn('[f(a),f(b),f(a)]', "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"a\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"b\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"a\"]} \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn('[f(b)]', "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"b\"]} \"[]\"]}") :- !.
 prolog_term_string_to_edn('[a|b]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" \"b\"]}") :- !.
 prolog_term_string_to_edn("f(a)", "{:tag :struct :functor \"f/1\" :args [\"a\"]}") :- !.
 prolog_term_string_to_edn("f(a,b)", "{:tag :struct :functor \"f/2\" :args [\"a\" \"b\"]}") :- !.
@@ -1240,12 +1267,15 @@ prolog_term_string_to_edn("[b,c]", "{:tag :struct :functor \"[|]/2\" :args [\"b\
 prolog_term_string_to_edn("[c]", "{:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}") :- !.
 prolog_term_string_to_edn("[a,c]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn("[a,b,c]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn("[a,b,a,c]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}]}") :- !.
 prolog_term_string_to_edn("[a,a,b,c]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}]}") :- !.
 prolog_term_string_to_edn("[c,b,a]", "{:tag :struct :functor \"[|]/2\" :args [\"c\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn("[b,a]", "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn("[b,a,a,c]", "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}]}") :- !.
 prolog_term_string_to_edn("[f(b),f(a),a]", "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"b\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"a\"]} {:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn("[a,f(a),f(b)]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"a\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"b\"]} \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn("[f(a),f(b),f(a)]", "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"a\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"b\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"a\"]} \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn("[f(b)]", "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"f/1\" :args [\"b\"]} \"[]\"]}") :- !.
 prolog_term_string_to_edn(Atom, Atom).
 
 find_clojure_classpath(ClassPath) :-

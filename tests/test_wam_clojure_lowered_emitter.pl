@@ -586,6 +586,15 @@ test(simple_builtin_nth1_is_direct_lowered_in_prefix) :-
         assertion(\+ has(Code, "runtime/step"))
     )).
 
+test(simple_builtin_delete_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_delete/3:\nbuiltin_call delete/3, 3\nproceed\n",
+        wam_clojure_lowerable(test_delete/3, WamCode, deterministic),
+        lower_predicate_to_clojure(test_delete/3, WamCode, [], Code),
+        has(Code, "runtime/apply-delete-solution"),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
 test(simple_builtin_sort_is_direct_lowered_in_prefix) :-
     once((
         WamCode = "test_sort/2:\nbuiltin_call sort/2, 2\nproceed\n",
