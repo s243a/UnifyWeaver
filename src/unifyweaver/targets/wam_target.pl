@@ -1487,6 +1487,8 @@ is_builtin_pred(atom_concat, 3).  % (+, +, ?) — concatenation.
 is_builtin_pred(atom_length, 2).  % atom → length in chars.
 is_builtin_pred(split_string, 4). % split string by separator chars.
 is_builtin_pred(term_to_atom, 2). % bidirectional canonical-form term ↔ atom.
+is_builtin_pred(read, 1).         % stdin: read a term terminated by `.`.
+is_builtin_pred(read_term, 1).    % alias for read/1.
 is_builtin_pred(char_code, 2).    % char-atom ↔ integer code.
 is_builtin_pred(assertz, 1).      % dynamic db: append fact.
 is_builtin_pred(asserta, 1).      % dynamic db: prepend fact.

@@ -3423,6 +3423,54 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         pc += 1; return true;
     }
 
+    // ---- read/1, read_term/1 ----------------------------------------
+    // Read a term from stdin, terminated by `.` (followed by EOF or
+    // whitespace). Bind A1 to the parsed term. On EOF before any
+    // input, bind A1 to the atom `end_of_file` (per ISO). Uses
+    // parse_term (added in #2189) so the syntax matches what
+    // term_to_atom/2 produces.
+    if (op == "read/1" || op == "read_term/1") {
+        std::string buf;
+        bool got_period = false;
+        while (true) {
+            int ch = std::getc(stdin);
+            if (ch == EOF) break;
+            buf.push_back(static_cast<char>(ch));
+            // Terminator: a `.` followed by whitespace or EOF.
+            if (ch == ''.'') {
+                int peek = std::getc(stdin);
+                if (peek == EOF) {
+                    buf.pop_back(); // drop the period
+                    got_period = true;
+                    break;
+                }
+                if (peek == '' '' || peek == ''\\t'' || peek == ''\\n'') {
+                    buf.pop_back();
+                    got_period = true;
+                    break;
+                }
+                // Not a real terminator (e.g. floating-point digit). Push back.
+                std::ungetc(peek, stdin);
+            }
+        }
+        CellPtr tgt = get_cell("A1");
+        if (buf.empty() && !got_period) {
+            // EOF before any input → end_of_file.
+            Value eof = Value::Atom("end_of_file");
+            if (tgt->is_unbound()) { bind_cell(tgt, eof); pc += 1; return true; }
+            if (!unify_cells(tgt, std::make_shared<Cell>(eof))) return false;
+            pc += 1; return true;
+        }
+        std::size_t pos = 0;
+        CellPtr parsed;
+        if (!parse_term(buf, pos, parsed)) return false;
+        parse_skip_ws(buf, pos);
+        if (pos != buf.size()) return false; // trailing non-ws garbage
+        if (tgt->is_unbound()) { bind_cell(tgt, *parsed); pc += 1; return true; }
+        if (!unify_cells(tgt, parsed)) return false;
+        pc += 1; return true;
+    }
+
     if (op == "split_string/4") {
         auto read_str = [&](CellPtr c, std::string& out) -> bool {
             Value v = deref(*c);
