@@ -217,6 +217,69 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
         self.assertIn("lmdb:2.500|mmap-array:1.750", output)
         self.assertIn("Artifact bytes by mode", output)
 
+    def test_policy_rows_report_best_overall_and_artifact_modes(self) -> None:
+        row = MODULE.SummaryRow(
+            {
+                "scale": "enwiki_page_5m",
+                "relation": "article_category",
+                "rows": "5000000",
+                "distinct_categories": "1918305",
+                "lookup_keys": "128",
+                "best_lookup_mode": "lmdb",
+                "best_lookup_col1_mode": "preload",
+                "best_bucket_mode": "delimited-artifact",
+                "best_bucket_col1_mode": "mmap-array",
+                "best_scan_mode": "preload",
+                "smallest_artifact_mode": "mmap-array",
+                "lookup_ms_by_mode": "lmdb:3.251|mmap-array:3.288|preload:4.000",
+                "lookup_col1_ms_by_mode": "lmdb:1219.110|mmap-array:236.382|preload:20.000",
+                "bucket_ms_by_mode": "delimited-artifact:400.000|lmdb:500.000|mmap-array:450.000|preload:600.000",
+                "bucket_col1_ms_by_mode": "delimited-artifact:600.000|lmdb:700.000|mmap-array:350.000|preload:500.000",
+                "scan_ms_by_mode": "lmdb:900.000|mmap-array:850.000|preload:50.000",
+                "artifact_bytes_by_mode": "lmdb:142443019|mmap-array:80000643|preload:0",
+            }
+        )
+        rows = MODULE.policy_rows_from_summaries([row])
+        by_shape = {policy.values["access_shape"]: policy.values for policy in rows}
+
+        self.assertEqual(by_shape["lookup_c0"]["best_mode"], "lmdb")
+        self.assertEqual(by_shape["lookup_c0"]["best_artifact_mode"], "lmdb")
+        self.assertEqual(by_shape["lookup_c1"]["best_mode"], "preload")
+        self.assertEqual(by_shape["lookup_c1"]["best_artifact_mode"], "mmap-array")
+        self.assertEqual(by_shape["scan"]["best_mode"], "preload")
+        self.assertEqual(by_shape["scan"]["best_artifact_mode"], "mmap-array")
+        self.assertEqual(by_shape["storage"]["best_mode"], "mmap-array")
+        self.assertEqual(by_shape["storage"]["best_value"], "80000643")
+        self.assertNotIn("preload:0", by_shape["storage"]["values_by_mode"])
+
+    def test_policy_renderers_include_access_shape_rows(self) -> None:
+        rows = [
+            MODULE.PolicyRow(
+                {
+                    "scale": "dev",
+                    "relation": "category_parent",
+                    "rows": "6",
+                    "distinct_categories": "4",
+                    "lookup_keys": "2",
+                    "access_shape": "lookup_c0",
+                    "metric": "ms",
+                    "best_mode": "mmap-array",
+                    "best_value": "1.250",
+                    "best_artifact_mode": "mmap-array",
+                    "best_artifact_value": "1.250",
+                    "values_by_mode": "lmdb:2.000|mmap-array:1.250|preload:1.500",
+                }
+            )
+        ]
+
+        tsv = MODULE.render_policy_tsv(rows)
+        markdown = MODULE.render_policy_markdown(rows)
+        self.assertTrue(tsv.startswith("scale\trelation\trows\tdistinct_categories\tlookup_keys\taccess_shape"))
+        self.assertIn("\tlookup_c0\tms\tmmap-array\t1.250\tmmap-array\t1.250\t", tsv)
+        self.assertIn("| Access shape | Metric | Best mode |", markdown)
+        self.assertIn("| dev | category_parent | 6 | lookup_c0 | ms | mmap-array | 1.250 |", markdown)
+        self.assertIn("lmdb:2.000<br>mmap-array:1.250<br>preload:1.500", markdown)
+
     def test_artifact_root_reuses_existing_manifests(self) -> None:
         if shutil.which("dotnet") is None:
             self.skipTest("dotnet is not available")

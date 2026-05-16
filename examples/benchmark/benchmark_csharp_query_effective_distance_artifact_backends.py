@@ -103,6 +103,29 @@ SUMMARY_HEADERS = [
     "artifact_bytes_by_mode",
 ]
 
+POLICY_HEADERS = [
+    "scale",
+    "relation",
+    "rows",
+    "distinct_categories",
+    "lookup_keys",
+    "access_shape",
+    "metric",
+    "best_mode",
+    "best_value",
+    "best_artifact_mode",
+    "best_artifact_value",
+    "values_by_mode",
+]
+
+ACCESS_SHAPE_METRICS = (
+    ("lookup_c0", "lookup_ms_by_mode"),
+    ("lookup_c1", "lookup_col1_ms_by_mode"),
+    ("bucket_c0", "bucket_ms_by_mode"),
+    ("bucket_c1", "bucket_col1_ms_by_mode"),
+    ("scan", "scan_ms_by_mode"),
+)
+
 
 @dataclass(frozen=True)
 class BenchmarkRow:
@@ -111,6 +134,11 @@ class BenchmarkRow:
 
 @dataclass(frozen=True)
 class SummaryRow:
+    values: dict[str, str]
+
+
+@dataclass(frozen=True)
+class PolicyRow:
     values: dict[str, str]
 
 
@@ -514,6 +542,88 @@ def format_mode_values(values: dict[str, float], digits: int = 3) -> str:
     return "|".join(f"{mode}:{format_value(values[mode])}" for mode in sorted(values))
 
 
+def parse_mode_values(value: str) -> dict[str, float]:
+    parsed: dict[str, float] = {}
+    if not value:
+        return parsed
+    for item in value.split("|"):
+        mode, raw = item.rsplit(":", 1)
+        parsed[mode] = float(raw)
+    return parsed
+
+
+def format_policy_value(value: float, metric: str) -> str:
+    if metric == "artifact_bytes":
+        return str(int(value))
+    return f"{value:.3f}"
+
+
+def select_best(values: dict[str, float], *, include_preload: bool) -> tuple[str, float]:
+    candidates = {
+        mode: value
+        for mode, value in values.items()
+        if include_preload or mode != "preload"
+    }
+    if not candidates:
+        return "", 0.0
+    mode = min(candidates, key=candidates.get)
+    return mode, candidates[mode]
+
+
+def policy_rows_from_summaries(rows: list[SummaryRow]) -> list[PolicyRow]:
+    policy_rows: list[PolicyRow] = []
+    for row in rows:
+        base = row.values
+        for access_shape, column in ACCESS_SHAPE_METRICS:
+            values = parse_mode_values(base[column])
+            best_mode, best_value = select_best(values, include_preload=True)
+            best_artifact_mode, best_artifact_value = select_best(values, include_preload=False)
+            policy_rows.append(
+                PolicyRow(
+                    {
+                        "scale": base["scale"],
+                        "relation": base["relation"],
+                        "rows": base["rows"],
+                        "distinct_categories": base["distinct_categories"],
+                        "lookup_keys": base["lookup_keys"],
+                        "access_shape": access_shape,
+                        "metric": "ms",
+                        "best_mode": best_mode,
+                        "best_value": format_policy_value(best_value, "ms"),
+                        "best_artifact_mode": best_artifact_mode,
+                        "best_artifact_value": format_policy_value(best_artifact_value, "ms"),
+                        "values_by_mode": base[column],
+                    }
+                )
+            )
+
+        artifact_values = {
+            mode: value
+            for mode, value in parse_mode_values(base["artifact_bytes_by_mode"]).items()
+            if mode != "preload"
+        }
+        best_artifact_mode, best_artifact_value = select_best(artifact_values, include_preload=True)
+        policy_rows.append(
+            PolicyRow(
+                {
+                    "scale": base["scale"],
+                    "relation": base["relation"],
+                    "rows": base["rows"],
+                    "distinct_categories": base["distinct_categories"],
+                    "lookup_keys": base["lookup_keys"],
+                    "access_shape": "storage",
+                    "metric": "artifact_bytes",
+                    "best_mode": best_artifact_mode,
+                    "best_value": format_policy_value(best_artifact_value, "artifact_bytes"),
+                    "best_artifact_mode": best_artifact_mode,
+                    "best_artifact_value": format_policy_value(best_artifact_value, "artifact_bytes"),
+                    "values_by_mode": format_mode_values(artifact_values, digits=0),
+                }
+            )
+        )
+    return policy_rows
+
+
 def render_summary_tsv(rows: list[SummaryRow]) -> str:
     lines = ["\t".join(SUMMARY_HEADERS)]
     lines.extend("\t".join(row.values[column] for column in SUMMARY_HEADERS) for row in rows)
@@ -546,6 +656,30 @@ def render_summary_full_markdown(rows: list[SummaryRow]) -> str:
         value = row.values
         lines.append(
             "| {scale} | {relation} | {rows} | {distinct_categories} | {lookup_keys} | {best_lookup_mode} | {best_lookup_col1_mode} | {best_bucket_mode} | {best_bucket_col1_mode} | {best_scan_mode} | {smallest_artifact_mode} | {lookup_ms_by_mode} | {lookup_col1_ms_by_mode} | {bucket_ms_by_mode} | {bucket_col1_ms_by_mode} | {scan_ms_by_mode} | {artifact_bytes_by_mode} |".format(
+                **value
+            )
+        )
+    return "\n".join(lines)
+
+
+def render_policy_tsv(rows: list[PolicyRow]) -> str:
+    lines = ["\t".join(POLICY_HEADERS)]
+    lines.extend("\t".join(row.values[column] for column in POLICY_HEADERS) for row in rows)
+    return "\n".join(lines)
+
+
+def render_policy_markdown(rows: list[PolicyRow]) -> str:
+    def markdown_cell(value: str) -> str:
+        return value.replace("|", "<br>")
+
+    lines = [
+        "| Scale | Relation | Rows | Access shape | Metric | Best mode | Best value | Best artifact mode | Best artifact value | Values by mode |",
+        "| --- | --- | ---: | --- | --- | --- | ---: | --- | ---: | --- |",
+    ]
+    for row in rows:
+        value = {column: markdown_cell(cell) for column, cell in row.values.items()}
+        lines.append(
+            "| {scale} | {relation} | {rows} | {access_shape} | {metric} | {best_mode} | {best_value} | {best_artifact_mode} | {best_artifact_value} | {values_by_mode} |".format(
                 **value
             )
         )
@@ -639,7 +773,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--format",
-        choices=("tsv", "markdown", "summary-tsv", "summary-markdown", "summary-full-markdown"),
+        choices=(
+            "tsv",
+            "markdown",
+            "summary-tsv",
+            "summary-markdown",
+            "summary-full-markdown",
+            "policy-tsv",
+            "policy-markdown",
+        ),
         default="tsv",
     )
     parser.add_argument("--keep-temp", action="store_true", help="keep the generated C# benchmark project")
@@ -724,12 +866,17 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
 
+    summaries = summarize(rows) if args.format.startswith(("summary-", "policy-")) else []
     if args.format == "summary-tsv":
-        print(render_summary_tsv(summarize(rows)))
+        print(render_summary_tsv(summaries))
     elif args.format == "summary-full-markdown":
-        print(render_summary_full_markdown(summarize(rows)))
+        print(render_summary_full_markdown(summaries))
     elif args.format == "summary-markdown":
-        print(render_summary_markdown(summarize(rows)))
+        print(render_summary_markdown(summaries))
+    elif args.format == "policy-tsv":
+        print(render_policy_tsv(policy_rows_from_summaries(summaries)))
+    elif args.format == "policy-markdown":
+        print(render_policy_markdown(policy_rows_from_summaries(summaries)))
     elif args.format == "markdown":
         print(render_markdown(rows))
     else:

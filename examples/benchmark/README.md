@@ -161,6 +161,11 @@ Use `--format tsv` or `--format markdown` for raw per-run rows. Use
 median timings and report the best lookup, bucket, scan, and artifact-size
 backend. Summary output includes the relation name because `category_parent/2`
 and `article_category/2` have different cardinalities and access distributions.
+Use `policy-tsv` or `policy-markdown` when the consumer needs one row per
+access shape. Policy output reports the best overall mode and the best
+artifact-backed mode separately, so an in-memory `preload` scan win does not
+hide the best external artifact for column-0 lookup, column-1 lookup, bucket
+streaming, or storage.
 At the checked-in 300-10k scales this is expected to favor preload or
 mmap-array; LMDB is primarily retained as the larger-data comparison point for
 future 50k+ style runs where memory pressure matters.
@@ -335,7 +340,9 @@ high-level policy conclusion held:
 At 5M English page-category rows, the result stops being a simple
 `mmap-array` sweep. LMDB narrowly wins column-0 point lookup, `mmap-array`
 keeps the much faster column-1 lookup and smallest artifact, delimited edges
-out column-0 bucket streaming, and preload still wins full scan:
+out column-0 bucket streaming, and preload still wins full scan. Use
+`--format policy-markdown` for this scale when translating the measurement into
+an access-shape policy instead of choosing one backend for the whole relation:
 
 | Scale | Relation | Rows | Best lookup c0 | Best lookup c1 | Best bucket c0 | Best bucket c1 | Best scan | LMDB artifact bytes | Mmap-array artifact bytes | LMDB lookup c0/c1 ms | Mmap-array lookup c0/c1 ms |
 | --- | --- | ---: | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: |
