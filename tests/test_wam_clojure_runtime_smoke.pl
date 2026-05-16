@@ -108,6 +108,9 @@
 :- dynamic user:wam_select_backtrack/2.
 :- dynamic user:wam_select_bad_list/1.
 :- dynamic user:wam_select_unbound_list/1.
+:- dynamic user:wam_numlist_guard/3.
+:- dynamic user:wam_numlist_high_before_low/1.
+:- dynamic user:wam_numlist_unbound_low/1.
 :- dynamic user:wam_delete_guard/3.
 :- dynamic user:wam_delete_bad_list/1.
 :- dynamic user:wam_delete_unbound_list/1.
@@ -263,6 +266,9 @@ user:wam_select_guard(Elem, List, Rest) :- select(Elem, List, Rest).
 user:wam_select_backtrack(Elem, Rest) :- select(Elem, [a,b,c], Rest), Elem = b.
 user:wam_select_bad_list(Rest) :- select(a, [a|b], Rest).
 user:wam_select_unbound_list(Rest) :- user:wam_unbound_arg(L), select(a, L, Rest).
+user:wam_numlist_guard(Low, High, List) :- numlist(Low, High, List).
+user:wam_numlist_high_before_low(List) :- numlist(3, 1, List).
+user:wam_numlist_unbound_low(List) :- user:wam_unbound_arg(Low), numlist(Low, 3, List).
 user:wam_delete_guard(L, Elem, Rest) :- delete(L, Elem, Rest).
 user:wam_delete_bad_list(Rest) :- delete([a|b], a, Rest).
 user:wam_delete_unbound_list(Rest) :- user:wam_unbound_arg(L), delete(L, a, Rest).
@@ -423,6 +429,9 @@ run_smoke :-
           user:wam_select_backtrack/2,
           user:wam_select_bad_list/1,
           user:wam_select_unbound_list/1,
+          user:wam_numlist_guard/3,
+          user:wam_numlist_high_before_low/1,
+          user:wam_numlist_unbound_low/1,
           user:wam_delete_guard/3,
           user:wam_delete_bad_list/1,
           user:wam_delete_unbound_list/1,
@@ -507,6 +516,7 @@ run_smoke :-
     assert_lowered_nth0_builtin_emitted(TmpDir),
     assert_lowered_nth1_builtin_emitted(TmpDir),
     assert_lowered_select_builtin_emitted(TmpDir),
+    assert_lowered_numlist_builtin_emitted(TmpDir),
     assert_lowered_delete_builtin_emitted(TmpDir),
     assert_lowered_sort_builtin_emitted(TmpDir),
     assert_lowered_msort_builtin_emitted(TmpDir),
@@ -705,6 +715,11 @@ smoke_cases([
     case('wam_select_backtrack/2', args(b, '[a,c]'), "true"),
     case('wam_select_bad_list/1', '[b,c]', "false"),
     case('wam_select_unbound_list/1', '[b,c]', "false"),
+    case('wam_numlist_guard/3', args(1, 3, '[1,2,3]'), "true"),
+    case('wam_numlist_guard/3', args(2, 2, '[2]'), "true"),
+    case('wam_numlist_guard/3', args(1, 3, '[1,3]'), "false"),
+    case('wam_numlist_high_before_low/1', '[]', "false"),
+    case('wam_numlist_unbound_low/1', '[1,2,3]', "false"),
     case('wam_delete_guard/3', args('[a,b,a,c]', a, '[b,c]'), "true"),
     case('wam_delete_guard/3', args('[a,b,a,c]', z, '[a,b,a,c]'), "true"),
     case('wam_delete_guard/3', args('[f(a),f(b),f(a)]', 'f(a)', '[f(b)]'), "true"),
@@ -1009,6 +1024,14 @@ assert_lowered_select_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-select-unbound-list-1"),
     has(CoreCode, "runtime/apply-select-solution").
 
+assert_lowered_numlist_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-numlist-guard-3"),
+    has(CoreCode, "defn lowered-wam-numlist-high-before-low-1"),
+    has(CoreCode, "defn lowered-wam-numlist-unbound-low-1"),
+    has(CoreCode, "runtime/apply-numlist-solution").
+
 assert_lowered_delete_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
     read_file_to_string(CorePath, CoreCode, []),
@@ -1269,6 +1292,9 @@ prolog_term_string_to_edn('f(a,b)', "{:tag :struct :functor \"f/2\" :args [\"a\"
 prolog_term_string_to_edn('f(b)', "{:tag :struct :functor \"f/1\" :args [\"b\"]}") :- !.
 prolog_term_string_to_edn('[a]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}") :- !.
 prolog_term_string_to_edn('[42]', "{:tag :struct :functor \"[|]/2\" :args [42 \"[]\"]}") :- !.
+prolog_term_string_to_edn('[1,2,3]', "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [2 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn('[1,3]', "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}") :- !.
+prolog_term_string_to_edn('[2]', "{:tag :struct :functor \"[|]/2\" :args [2 \"[]\"]}") :- !.
 prolog_term_string_to_edn('[f,a,b]', "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[a,b]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[b,c]', "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
@@ -1290,6 +1316,9 @@ prolog_term_string_to_edn("f(a,b)", "{:tag :struct :functor \"f/2\" :args [\"a\"
 prolog_term_string_to_edn("f(b)", "{:tag :struct :functor \"f/1\" :args [\"b\"]}") :- !.
 prolog_term_string_to_edn("[a]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}") :- !.
 prolog_term_string_to_edn("[42]", "{:tag :struct :functor \"[|]/2\" :args [42 \"[]\"]}") :- !.
+prolog_term_string_to_edn("[1,2,3]", "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [2 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn("[1,3]", "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}") :- !.
+prolog_term_string_to_edn("[2]", "{:tag :struct :functor \"[|]/2\" :args [2 \"[]\"]}") :- !.
 prolog_term_string_to_edn("[f,a,b]", "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn("[a,b]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn("[b,c]", "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
