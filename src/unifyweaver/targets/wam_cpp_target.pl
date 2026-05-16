@@ -3366,6 +3366,67 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         pc += 1; return true;
     }
 
+    // ---- split_string/4 ---------------------------------------------
+    // split_string(+String, +SepChars, +PadChars, -SubStrings).
+    // Walks String left-to-right, splitting on any char in SepChars.
+    // Each resulting substring has any leading/trailing chars in
+    // PadChars stripped. Adjacent separators produce empty
+    // substrings. Empty SepChars means "no splits, just pad".
+    if (op == "split_string/4") {
+        auto read_str = [&](CellPtr c, std::string& out) -> bool {
+            Value v = deref(*c);
+            if (v.tag == Value::Tag::Atom) { out = v.s; return true; }
+            if (v.tag == Value::Tag::Integer) {
+                out = std::to_string(v.i); return true;
+            }
+            if (v.tag == Value::Tag::Float) {
+                out = render(v); return true;
+            }
+            return false;
+        };
+        std::string str, seps, pads;
+        if (!read_str(get_cell("A1"), str)) return false;
+        if (!read_str(get_cell("A2"), seps)) return false;
+        if (!read_str(get_cell("A3"), pads)) return false;
+        auto in_chars = [](char c, const std::string& set) -> bool {
+            return set.find(c) != std::string::npos;
+        };
+        // Split.
+        std::vector<std::string> parts;
+        std::string current;
+        for (char c : str) {
+            if (in_chars(c, seps)) {
+                parts.push_back(std::move(current));
+                current.clear();
+            } else {
+                current.push_back(c);
+            }
+        }
+        parts.push_back(std::move(current));
+        // Strip pad chars from each part''s ends.
+        for (auto& p : parts) {
+            std::size_t start = 0;
+            while (start < p.size() && in_chars(p[start], pads)) ++start;
+            std::size_t end = p.size();
+            while (end > start && in_chars(p[end - 1], pads)) --end;
+            p = p.substr(start, end - start);
+        }
+        // Build the result list.
+        CellPtr result = std::make_shared<Cell>(Value::Atom("[]"));
+        for (auto it = parts.rbegin(); it != parts.rend(); ++it) {
+            CellPtr head = std::make_shared<Cell>(Value::Atom(*it));
+            std::vector<CellPtr> cons_args;
+            cons_args.push_back(head);
+            cons_args.push_back(result);
+            result = std::make_shared<Cell>(
+                Value::Compound("[|]/2", std::move(cons_args)));
+        }
+        CellPtr tgt = get_cell("A4");
+        if (tgt->is_unbound()) { bind_cell(tgt, *result); pc += 1; return true; }
+        if (!unify_cells(tgt, result)) return false;
+        pc += 1; return true;
+    }
+
     // ---- char_code/2 ------------------------------------------------
     // Bidirectional. (+Char, ?Code) → unify Code with the integer code
     // of single-char atom Char. (?Char, +Code) → build the single-char

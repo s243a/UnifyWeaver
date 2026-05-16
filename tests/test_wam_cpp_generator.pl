@@ -1701,6 +1701,60 @@ user:wam_cpp_test_wot_nested :-
     Outer = ac,
     Inner = b.
 
+% split_string/4 — separator-based splitting with optional pad-char
+% stripping. Walks the input left-to-right, splitting on any char in
+% SepChars; adjacent separators produce empty substrings. After
+% splitting, each substring has leading/trailing chars in PadChars
+% stripped. Empty SepChars = "no splits, just pad the whole input".
+:- dynamic user:wam_cpp_test_split_simple/0.
+:- dynamic user:wam_cpp_test_split_empty/0.
+:- dynamic user:wam_cpp_test_split_single/0.
+:- dynamic user:wam_cpp_test_split_double_sep/0.
+:- dynamic user:wam_cpp_test_split_pad/0.
+:- dynamic user:wam_cpp_test_split_sep_and_pad/0.
+:- dynamic user:wam_cpp_test_split_multi_sep/0.
+:- dynamic user:wam_cpp_test_split_pad_trailing/0.
+:- dynamic user:wam_cpp_test_split_atom_input/0.
+
+user:wam_cpp_test_split_simple :-
+    split_string("a,b,c", ",", "", L),
+    L = ["a","b","c"].
+
+user:wam_cpp_test_split_empty :-
+    split_string("", ",", "", L),
+    L = [""].
+
+user:wam_cpp_test_split_single :-
+    split_string("hello", ",", "", L),
+    L = ["hello"].
+
+user:wam_cpp_test_split_double_sep :-
+    split_string("a,,b", ",", "", L),
+    L = ["a","","b"].
+
+% No separators — just pad the whole input.
+user:wam_cpp_test_split_pad :-
+    split_string(" hello ", "", " ", L),
+    L = ["hello"].
+
+user:wam_cpp_test_split_sep_and_pad :-
+    split_string("a , b , c", ",", " ", L),
+    L = ["a","b","c"].
+
+% Multiple separator chars in the set.
+user:wam_cpp_test_split_multi_sep :-
+    split_string("a,b;c,d", ",;", "", L),
+    L = ["a","b","c","d"].
+
+user:wam_cpp_test_split_pad_trailing :-
+    split_string("abc   ", "", " ", L),
+    L = ["abc"].
+
+% Atom input works too (atom ≡ string in this runtime).
+user:wam_cpp_test_split_atom_input :-
+    split_string('a,b,c', ",", "", L),
+    L = ["a","b","c"].
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -5897,6 +5951,120 @@ test(cpp_e2e_wot_nested, [condition(cpp_compiler_available)]) :-
                               [emit_main(true)], TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath, 'wam_cpp_test_wot_nested/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% split_string/4 — separator + pad string splitting.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_split_simple, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_split_simple', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_split_simple/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_split_simple/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_split_empty, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_split_empty', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_split_empty/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_split_empty/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_split_single, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_split_single', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_split_single/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_split_single/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_split_double_sep,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_split_dsep', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_split_double_sep/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_split_double_sep/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_split_pad, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_split_pad', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_split_pad/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_split_pad/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_split_sep_and_pad,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_split_sp', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_split_sep_and_pad/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_split_sep_and_pad/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_split_multi_sep,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_split_msep', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_split_multi_sep/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_split_multi_sep/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_split_pad_trailing,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_split_padt', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_split_pad_trailing/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_split_pad_trailing/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_split_atom_input,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_split_atom', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_split_atom_input/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_split_atom_input/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
