@@ -421,18 +421,144 @@ lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, Code, SetupLine) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     format(atom(Key), '~w/~w', [Pred, Arity]),
     wam_c_symbol_name(Pred, Arity, Symbol),
-    wam_c_lowered_fact_dispatch(Arity, Rows, BodyCode),
-    format(atom(Code),
-'static bool ~w(WamState *state, const char *pred, int arity) {
-    (void)pred;
-    if (arity != ~w) return false;
-~w
-    return false;
-}',
-           [Symbol, Arity, BodyCode]),
+    wam_c_lowered_fact_helper_code(Symbol, Arity, Rows, Code),
     format(atom(SetupLine),
            '    wam_register_foreign_predicate(state, "~w", ~w, ~w);',
            [Key, Arity, Symbol]).
+
+wam_c_lowered_fact_helper_code(Symbol, 0, Rows, Code) :-
+    !,
+    wam_c_lowered_fact_dispatch(0, Rows, BodyCode),
+    format(atom(Code),
+'static bool ~w(WamState *state, const char *pred, int arity) {
+    (void)pred;
+    if (arity != 0) return false;
+~w
+    return false;
+}',
+           [Symbol, BodyCode]).
+wam_c_lowered_fact_helper_code(Symbol, Arity, Rows, Code) :-
+    Arity > 0,
+    length(Rows, RowCount),
+    format(atom(RowTableSymbol), '~w_rows', [Symbol]),
+    format(atom(ScanSymbol), '~w_scan_rows', [Symbol]),
+    wam_c_lowered_static_row_table(RowTableSymbol, Arity, Rows, RowTableCode),
+    lowered_fact_bucket_arrays(Symbol, Rows, BucketArraysCode, DispatchCasesCode, BucketCount),
+    Mask is BucketCount - 1,
+    format(atom(Code),
+'~w
+
+static bool ~w(WamState *state, WamValue **cells, const int *row_indices, int row_count) {
+    for (int row_pos = 0; row_pos < row_count; row_pos++) {
+        int row_index = row_indices ? row_indices[row_pos] : row_pos;
+        bool match = true;
+        for (int col = 0; col < ~w; col++) {
+            if (!val_is_unbound(*cells[col]) && !val_equal(*cells[col], ~w[row_index][col])) {
+                match = false;
+                break;
+            }
+        }
+        if (match) {
+            for (int col = 0; col < ~w; col++) {
+                if (val_is_unbound(*cells[col])) {
+                    trail_binding(state, cells[col]);
+                    *cells[col] = ~w[row_index][col];
+                }
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+~w
+
+static bool ~w(WamState *state, const char *pred, int arity) {
+    (void)pred;
+    if (arity != ~w) return false;
+    WamValue *cells[~w];
+    for (int i = 0; i < ~w; i++) cells[i] = wam_deref_ptr(state, &state->A[i]);
+    if (!val_is_unbound(*cells[0])) {
+        unsigned int bucket = 0;
+        if (cells[0]->tag == VAL_ATOM) {
+            bucket = wam_hash_string(cells[0]->data.atom) & ~w;
+        } else if (cells[0]->tag == VAL_INT) {
+            bucket = ((unsigned int)cells[0]->data.integer * 2654435761u) & ~w;
+        } else {
+            return false;
+        }
+        switch (bucket) {
+~w
+        default:
+            return false;
+        }
+    }
+    return ~w(state, cells, NULL, ~w);
+}',
+           [RowTableCode, ScanSymbol, Arity, RowTableSymbol, Arity, RowTableSymbol,
+            BucketArraysCode, Symbol, Arity, Arity, Arity, Mask, Mask, DispatchCasesCode,
+            ScanSymbol, RowCount]).
+
+wam_c_lowered_static_row_table(RowTableSymbol, Arity, Rows, Code) :-
+    maplist(wam_c_lowered_static_row, Rows, RowCodes),
+    atomic_list_concat(RowCodes, ',\n', RowInitCode),
+    format(atom(Code),
+'static const WamValue ~w[][~w] = {
+~w
+};',
+           [RowTableSymbol, Arity, RowInitCode]).
+
+wam_c_lowered_static_row(Args, Code) :-
+    maplist(c_static_value_literal, Args, ValueCodes),
+    atomic_list_concat(ValueCodes, ', ', ValuesCode),
+    format(atom(Code), '    { ~w }', [ValuesCode]).
+
+c_static_value_literal(Atom, Lit) :-
+    atom(Atom),
+    !,
+    format(atom(Lit), '{ .tag = VAL_ATOM, .data.atom = "~w" }', [Atom]).
+c_static_value_literal(Int, Lit) :-
+    integer(Int),
+    format(atom(Lit), '{ .tag = VAL_INT, .data.integer = ~w }', [Int]).
+
+lowered_fact_bucket_arrays(Symbol, Rows, ArraysCode, CasesCode, BucketCount) :-
+    findall(First, member([First|_], Rows), FirstValues0),
+    sort(FirstValues0, FirstValues),
+    length(FirstValues, FirstValueCount),
+    lowered_fact_bucket_count(FirstValueCount, BucketCount),
+    findall(Bucket,
+            lowered_fact_bucket_for_values(FirstValues, BucketCount, Bucket),
+            Buckets),
+    findall(ArrayCode-CaseCode,
+            (   member(Bucket, Buckets),
+                lowered_fact_bucket_row_indices(Rows, BucketCount, Bucket, RowIndices),
+                lowered_fact_bucket_symbols(Symbol, Bucket, ArraySymbol),
+                lowered_fact_bucket_array(ArraySymbol, RowIndices, ArrayCode),
+                length(RowIndices, RowIndexCount),
+                format(atom(CaseCode),
+'        case ~w:
+            return ~w_scan_rows(state, cells, ~w, ~w);',
+                       [Bucket, Symbol, ArraySymbol, RowIndexCount])
+            ),
+            Pairs),
+    findall(Array, member(Array-_, Pairs), Arrays),
+    findall(Case, member(_-Case, Pairs), Cases),
+    atomic_list_concat(Arrays, '\n', ArraysCode),
+    atomic_list_concat(Cases, '\n', CasesCode).
+
+lowered_fact_bucket_row_indices(Rows, BucketCount, Bucket, RowIndices) :-
+    findall(Index,
+            (   nth0(Index, Rows, [First|_]),
+                lowered_fact_first_arg_bucket(First, BucketCount, Bucket)
+            ),
+            RowIndices).
+
+lowered_fact_bucket_symbols(Symbol, Bucket, ArraySymbol) :-
+    format(atom(ArraySymbol), '~w_bucket_~w_rows', [Symbol, Bucket]).
+
+lowered_fact_bucket_array(ArraySymbol, RowIndices, Code) :-
+    atomic_list_concat(RowIndices, ', ', RowIndexCode),
+    format(atom(Code), 'static const int ~w[] = { ~w };', [ArraySymbol, RowIndexCode]).
 
 lowered_body_call_helper(PredIndicator, AvailableKeys, CalleeKey, CalleeArity) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),

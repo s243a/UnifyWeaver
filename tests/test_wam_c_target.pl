@@ -338,7 +338,9 @@ test_lowered_fact_helper_generation :-
         sub_string(LibS, _, _, _, 'if (!val_is_unbound(*cells[0]))'),
         sub_string(LibS, _, _, _, 'bucket = wam_hash_string(cells[0]->data.atom)'),
         sub_string(LibS, _, _, _, 'switch (bucket)'),
-        sub_string(LibS, _, _, _, 'if (val_equal(*cells[0], val_atom("a")))'),
+        sub_string(LibS, _, _, _, 'static const WamValue wam_c_lowered_wam_c_lowered_pair_2_rows[][2]'),
+        sub_string(LibS, _, _, _, 'wam_c_lowered_wam_c_lowered_pair_2_scan_rows'),
+        sub_string(LibS, _, _, _, '.data.atom = "a"'),
         sub_string(LibS, _, _, _, 'void setup_lowered_wam_c_helpers'),
         sub_string(LibS, _, _, _, 'wam_register_foreign_predicate(state, "wam_c_lowered_pair/2", 2'),
         sub_string(LibS, _, _, _, 'INSTR_CALL_FOREIGN'),
@@ -561,9 +563,9 @@ test_lowered_filtered_fact_helper_generation :-
         sub_string(LibS, _, _, _, '// - lowered wam_c_filter_keep/1: filtered_fact'),
         sub_string(LibS, _, _, _, 'static bool wam_c_lowered_wam_c_filter_keep_1'),
         sub_string(LibS, _, _, _, 'if (!val_is_unbound(*cells[0]))'),
-        sub_string(LibS, _, _, _, 'if (val_equal(*cells[0], val_atom("a")))'),
-        sub_string(LibS, _, _, _, 'val_atom("a")'),
-        sub_string(LibS, _, _, _, 'val_atom("c")'),
+        sub_string(LibS, _, _, _, 'wam_c_lowered_wam_c_filter_keep_1_scan_rows'),
+        sub_string(LibS, _, _, _, '.data.atom = "a"'),
+        sub_string(LibS, _, _, _, '.data.atom = "c"'),
         sub_string(LibS, _, _, _, '.pred = "wam_c_filter_keep/1"')
     ->  pass(Test)
     ;   fail_test(Test, 'lowered filtered fact helper was not emitted')
@@ -597,8 +599,8 @@ test_lowered_comparison_filter_helper_generation :-
         read_file_to_string(LibPath, LibS, []),
         sub_string(LibS, _, _, _, '// - lowered wam_c_filter_small/1: comparison_filtered_fact'),
         sub_string(LibS, _, _, _, 'static bool wam_c_lowered_wam_c_filter_small_1'),
-        sub_string(LibS, _, _, _, 'val_atom("a")'),
-        sub_string(LibS, _, _, _, 'val_atom("b")'),
+        sub_string(LibS, _, _, _, '.data.atom = "a"'),
+        sub_string(LibS, _, _, _, '.data.atom = "b"'),
         sub_string(LibS, _, _, _, '.pred = "wam_c_filter_small/1"')
     ->  pass(Test)
     ;   fail_test(Test, 'lowered comparison-filter helper was not emitted')
@@ -644,7 +646,7 @@ test_lowered_repeated_variable_filter_generation :-
         sub_string(LibS, _, _, _, '// - lowered wam_c_repeat_small/1: comparison_filtered_fact'),
         sub_string(LibS, _, _, _, 'static bool wam_c_lowered_wam_c_repeat_keep_1'),
         sub_string(LibS, _, _, _, 'static bool wam_c_lowered_wam_c_repeat_small_1'),
-        sub_string(LibS, _, _, _, 'val_atom("a")')
+        sub_string(LibS, _, _, _, '.data.atom = "a"')
     ->  pass(Test)
     ;   fail_test(Test, 'repeated-variable filter helpers did not preserve row constraints')
     ),

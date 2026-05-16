@@ -5,7 +5,7 @@ Status date: 2026-05-16
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `736d0b02` (`Merge pull request #2152 from s243a/feat/wam-c-lowered-helper-larger-scale-calibration`)
+- `main` at `db35f30c` (`Merge pull request #2159 from s243a/perf/wam-c-lowered-helper-indexed-rows`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
 - `python3 tests/test_wam_c_lowered_helper_scale_regression.py`
@@ -15,7 +15,7 @@ Base verified locally:
 
 Active branch:
 
-- `perf/wam-c-lowered-helper-indexed-rows`
+- `perf/wam-c-lowered-helper-compile-size`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -63,7 +63,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Lowered helper scaled benchmark workload | Done | `dev` emits 16 normalized rows and `10x` emits 160 rows for the same projection-shape workload, with interpreted and lowered output hashes matching per scale |
 | Lowered helper scale regression coverage | Done | `tests/test_wam_c_lowered_helper_scale_regression.py` pins `dev`/`10x` row counts and interpreted/lowered hash parity |
 | Lowered helper larger-scale calibration | Done | Self-contained lowered-helper scales no longer require matching `data/benchmark/<scale>` directories; `25x`, `100x`, and `1k` preserve output parity |
-| Lowered helper indexed row dispatch | In progress | Active branch adds first-argument hash-bucket dispatch for lowered fact/filter helper rows while preserving the unbound-argument fallback |
+| Lowered helper indexed row dispatch | Done | First-argument hash-bucket dispatch preserves unbound-argument fallback and gives `1k` lowered-helper runtime around 5.8x faster than interpreted in local calibration |
+| Lowered helper compile/code-size compaction | In progress | Active branch emits compact static row tables plus bucket row-index arrays instead of duplicating full row-check code per generated row |
 
 ## Current C Target Baseline
 
@@ -144,23 +145,65 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `perf/wam-c-lowered-helper-indexed-rows`
+### 1. `perf/wam-c-lowered-helper-compile-size`
 
-Goal: make native lowered-helper row lookup fast enough at larger scales before
-expanding routine validation.
+Goal: reduce generated lowered-helper C size and compile cost before promoting
+larger scales into routine validation.
 
 Scope:
 
-- Generate a first-argument hash-bucket dispatch path for lowered fact,
-  filtered-fact, and comparison-filter helper rows.
-- Preserve the existing full row scan for unbound first arguments so generator
-  semantics do not change.
-- Re-run the `25x`, `100x`, and `1k` calibration before promoting any larger
-  routine scale.
+- Emit compact static row tables for lowered fact, filtered-fact, and
+  comparison-filter helpers.
+- Keep the first-argument hash-bucket runtime dispatch by storing compact
+  bucket row-index arrays.
+- Measure generated `lib.c` size and compile time for `100x` and `1k` lowered
+  helper projects.
 
 Status: active.
 
-Baseline calibration before indexed row dispatch:
+Compile/code-size baseline after indexed row dispatch but before compaction:
+
+| Scale | `lib.c` size | Compile real time |
+|---|---:|---:|
+| `100x` | 5,120,321 bytes | 33.77s |
+| `1k` | 12,750,113 bytes | 151.75s |
+
+Current active-branch compile/code-size result with compact row tables:
+
+| Scale | `lib.c` size | Compile real time |
+|---|---:|---:|
+| `100x` | 1,123,743 bytes | 0.51s |
+| `1k` | 2,601,727 bytes | 0.98s |
+
+Runtime calibration after compaction:
+
+`python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 25x,100x,1k --target-sets c-wam-lowered-helper --repetitions 3 --baseline-target c-wam-lowered-helper-interpreted`
+
+| Scale | Rows | Output parity | Lowered median | Interpreted median | Lowered speedup vs interpreted |
+|---|---:|---:|---:|---:|---:|
+| `25x` | 400 | match | 0.002s | 0.003s | 1.25x |
+| `100x` | 1600 | match | 0.003s | 0.007s | 2.46x |
+| `1k` | 4000 | match | 0.005s | 0.030s | 5.89x |
+
+The compact representation preserves the indexed runtime win while making `1k`
+compilation routine-scale again.
+
+### 2. `test/wam-c-lowered-helper-larger-scale-regression`
+
+Goal: decide and pin the cheapest larger-scale regression point now that
+runtime and compile cost are both acceptable.
+
+Scope:
+
+- Compare `100x` and `1k` wall-clock cost in the normal matrix path.
+- Add a focused local regression for the selected scale if it is cheap enough
+  for routine validation.
+- Keep GitHub Actions out of scope unless the target surface becomes stable
+  enough that CI failures are likely actionable.
+
+## Historical Calibration
+
+Before indexed row dispatch:
 
 `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 25x,100x,1k --target-sets c-wam-lowered-helper --repetitions 3 --baseline-target c-wam-lowered-helper-interpreted`
 
@@ -170,14 +213,7 @@ Baseline calibration before indexed row dispatch:
 | `100x` | 1600 | match | 0.026s | 0.008s | 0.30x |
 | `1k` | 4000 | match | 0.179s | 0.030s | 0.17x |
 
-The useful result is correctness, not speed. The current lowered helper emits
-native row checks that preserve output parity, but it is slower than the
-interpreted path at larger scales, so there is no strong reason to promote
-`1k` into routine regression coverage yet.
-
-Current active-branch calibration with hash-bucket row dispatch:
-
-`python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 25x,100x,1k --target-sets c-wam-lowered-helper --repetitions 3 --baseline-target c-wam-lowered-helper-interpreted`
+After hash-bucket row dispatch but before compact row tables:
 
 | Scale | Rows | Output parity | Lowered median | Interpreted median | Lowered speedup vs interpreted |
 |---|---:|---:|---:|---:|---:|
@@ -185,27 +221,9 @@ Current active-branch calibration with hash-bucket row dispatch:
 | `100x` | 1600 | match | 0.004s | 0.008s | 1.81x |
 | `1k` | 4000 | match | 0.005s | 0.031s | 5.79x |
 
-The runtime result is now strong enough to justify the native row dispatch path.
-The remaining concern is generated C compile/code-size cost at larger scales,
-which was noticeable during the full calibration sweep.
-
-### 2. `perf/wam-c-lowered-helper-compile-size`
-
-Goal: reduce generated lowered-helper C size and compile cost before promoting
-larger scales into routine validation.
-
-Scope:
-
-- Measure generated `lib.c` size and compile time for `100x` and `1k` lowered
-  helper projects.
-- Look for compact static row-table emission or shared row-check helpers that
-  preserve the hash-bucket runtime win.
-- Only then decide whether `1k` belongs in routine local regression coverage.
-
 ## Suggested Immediate Next Step
 
-Continue validating `perf/wam-c-lowered-helper-indexed-rows`.
+Continue validating `perf/wam-c-lowered-helper-compile-size`.
 
-The active branch now has a clear runtime win at `1k`; validate the generated
-code shape, then keep compile/code-size work separate unless a small obvious
-cleanup appears.
+The active branch now has both runtime and compile-time evidence. If the final
+focused gates stay green, it should be ready for PR.
