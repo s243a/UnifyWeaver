@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import sys
+import subprocess
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +15,7 @@ sys.path.insert(0, str(ROOT / "examples" / "benchmark"))
 
 from benchmark_effective_distance_matrix import (  # noqa: E402
     RunResult,
+    benchmark_target,
     kernel_pair_delta_rows,
     parse_args,
     print_kernel_pair_deltas,
@@ -189,6 +192,27 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
             self.assertEqual(resolve_requested_targets(args), ["clojure-wam-seeded", "prolog-accumulated"])
         finally:
             sys.argv = original_argv
+
+    def test_lowered_helper_benchmark_target_does_not_require_scale_data_dir(self) -> None:
+        with patch("benchmark_effective_distance_matrix.run_command") as run_command_mock:
+            run_command_mock.return_value = subprocess.CompletedProcess(
+                args=["lowered-helper-benchmark"],
+                returncode=0,
+                stdout="left\tright\tscore\nrow\tvalue\t1.000000\n",
+                stderr="",
+            )
+
+            result = benchmark_target(
+                ["lowered-helper-benchmark"],
+                "25x",
+                1,
+                "c-wam-lowered-helper",
+            )
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.row_count, 1)
+        run_command_mock.assert_called_once()
+        self.assertEqual(run_command_mock.call_args.args[0], ["lowered-helper-benchmark"])
 
     def test_kernel_pair_registry_covers_registered_wam_pairs(self) -> None:
         pairs = {(pair.family, pair.mode): pair for pair in KERNEL_TARGET_PAIRS}

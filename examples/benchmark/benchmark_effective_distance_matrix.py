@@ -869,7 +869,12 @@ def benchmark_target(
     for _ in range(repetitions):
         started = time.perf_counter()
         try:
-            if target.startswith("prolog-") or target.startswith("wam-") or target.startswith("clojure-wam-"):
+            if (
+                target.startswith("prolog-")
+                or target.startswith("wam-")
+                or target.startswith("clojure-wam-")
+                or target.startswith("c-wam-lowered-helper")
+            ):
                 result = run_command(command, cwd=ROOT, timeout=timeout)
             elif target.startswith("haskell-"):
                 scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent

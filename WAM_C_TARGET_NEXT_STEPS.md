@@ -5,16 +5,17 @@ Status date: 2026-05-16
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `ee3a7f9a` (`Merge pull request #2141 from s243a/feat/wam-c-lowered-helper-scale-workload`)
+- `main` at `bbf67fbb` (`Merge pull request #2142 from s243a/test/wam-c-lowered-helper-scale-regression`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
+- `python3 tests/test_wam_c_lowered_helper_scale_regression.py`
 - `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py`
 - `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev,10x --target-sets c-wam-lowered-helper --repetitions 1 --baseline-target c-wam-lowered-helper-interpreted`
 - `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels --repetitions 1`
 
 Active branch:
 
-- `test/wam-c-lowered-helper-scale-regression`
+- `feat/wam-c-lowered-helper-larger-scale-calibration`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -60,7 +61,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Lowered helper projection row constraints | Done | Repeated caller-variable projections lower through materialized native fact rows while preserving availability checks |
 | Lowered helper projection benchmark | Done | Tiny lowered-helper benchmark covers direct, reordered, ignored-output, and row-constrained projection shapes |
 | Lowered helper scaled benchmark workload | Done | `dev` emits 16 normalized rows and `10x` emits 160 rows for the same projection-shape workload, with interpreted and lowered output hashes matching per scale |
-| Lowered helper scale regression coverage | In progress | Active branch adds explicit local regression coverage for `dev`/`10x` row counts and interpreted/lowered hash parity |
+| Lowered helper scale regression coverage | Done | `tests/test_wam_c_lowered_helper_scale_regression.py` pins `dev`/`10x` row counts and interpreted/lowered hash parity |
+| Lowered helper larger-scale calibration | In progress | Active branch removes the benchmark-data-directory requirement for self-contained lowered-helper scales and measures `25x`, `100x`, and `1k` parity/perf shape |
 
 ## Current C Target Baseline
 
@@ -141,38 +143,57 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `test/wam-c-lowered-helper-scale-regression`
-
-Goal: pin the scaled lowered-helper workload with focused local regression
-coverage instead of adding a broad CI action for an unstable target family.
-
-Scope:
-
-- Assert that `dev` and `10x` lowered-helper matrix rows differ by scale but
-  match between interpreted and lowered modes.
-- Verify the expected `dev` and `10x` row counts from the scaled projection
-  workload.
-- Keep the test narrow so it does not turn the general matrix unit test into a
-  slow compile/run suite.
-
-Status: active.
-
-### 2. `feat/wam-c-lowered-helper-larger-scale-calibration`
+### 1. `feat/wam-c-lowered-helper-larger-scale-calibration`
 
 Goal: decide whether the lowered-helper workload needs a larger routine
 calibration point after the local `dev`/`10x` regression is pinned.
 
 Scope:
 
+- Allow the self-contained lowered-helper benchmark to run generator scales
+  such as `25x`, `100x`, and `1k` without requiring matching
+  `data/benchmark/<scale>` directories.
 - Run a small manual sweep above `10x` and compare lowered/interpreted output
   parity plus runtime shape.
 - Promote only a cheap, stable scale into routine validation.
 - Defer GitHub Actions coverage until the target surface is stable enough that
   CI failures are likely to be actionable.
 
+Status: active.
+
+Initial calibration result:
+
+`python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 25x,100x,1k --target-sets c-wam-lowered-helper --repetitions 3 --baseline-target c-wam-lowered-helper-interpreted`
+
+| Scale | Rows | Output parity | Lowered median | Interpreted median | Lowered speedup vs interpreted |
+|---|---:|---:|---:|---:|---:|
+| `25x` | 400 | match | 0.003s | 0.002s | 0.72x |
+| `100x` | 1600 | match | 0.026s | 0.008s | 0.30x |
+| `1k` | 4000 | match | 0.179s | 0.030s | 0.17x |
+
+The useful result is correctness, not speed. The current lowered helper emits
+native row checks that preserve output parity, but it is slower than the
+interpreted path at larger scales, so there is no strong reason to promote
+`1k` into routine regression coverage yet.
+
+### 2. `perf/wam-c-lowered-helper-indexed-rows`
+
+Goal: investigate native lowered-helper row lookup/indexing before expanding
+routine larger-scale validation.
+
+Scope:
+
+- Inspect generated lowered fact/filter helper loops for linear scans over
+  materialized rows.
+- Add a narrow indexed lookup path for fact-only or constant-filtered helper
+  rows if it fits the existing runtime style.
+- Re-run the `25x`, `100x`, and `1k` calibration before promoting any larger
+  routine scale.
+
 ## Suggested Immediate Next Step
 
-Continue validating `test/wam-c-lowered-helper-scale-regression`.
+Continue validating `feat/wam-c-lowered-helper-larger-scale-calibration`.
 
-The active branch should add a focused regression test for `dev`/`10x` scaled
-lowered-helper matrix parity and keep CI workflow changes out of scope for now.
+The active branch has enough evidence to keep routine validation at `dev`/`10x`
+for now while documenting that larger scales preserve output parity but expose a
+native lowered-helper performance gap.
