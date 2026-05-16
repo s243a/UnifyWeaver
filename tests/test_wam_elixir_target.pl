@@ -65,6 +65,95 @@ test_runtime_assembly :-
     ;   fail_test(Test, 'runtime assembly missing expected content')
     ).
 
+test_runtime_parser_mode_metadata :-
+    Test = 'Runtime parser mode: generated runtime records parser disabled',
+    WamCode = 'parser_meta/0:\n  proceed',
+    setup_call_cleanup(
+        elixir_parser_tmp_dir('tmp_wam_elixir_parser_mode', TmpDir),
+        (   write_wam_elixir_project([parser_meta/0-WamCode], [], TmpDir),
+            directory_file_path(TmpDir, 'lib', LibDir),
+            directory_file_path(LibDir, 'wam_runtime.ex', RuntimePath),
+            read_file_to_string(RuntimePath, Code, []),
+            (   sub_string(Code, _, _, _,
+                           'def runtime_parser, do: %{kind: :none, entry: nil, source: nil}')
+            ->  pass(Test)
+            ;   fail_test(Test, 'runtime parser metadata missing')
+            )
+        ),
+        elixir_parser_cleanup_tmp_dir(TmpDir)
+    ).
+
+test_runtime_parser_native_request_errors :-
+    Test = 'Runtime parser mode: native request is rejected for WAM-Elixir',
+    WamCode = 'parser_native/0:\n  proceed',
+    setup_call_cleanup(
+        elixir_parser_tmp_dir('tmp_wam_elixir_parser_native_err', TmpDir),
+        (   catch((write_wam_elixir_project([parser_native/0-WamCode],
+                                            [runtime_parser(native)],
+                                            TmpDir),
+                   Caught = false),
+                  error(domain_error(runtime_parser_mode(wam_elixir), native), _),
+                  Caught = true),
+            Caught == true
+        ->  pass(Test)
+        ;   fail_test(Test, 'expected native runtime parser mode domain_error')
+        ),
+        elixir_parser_cleanup_tmp_dir(TmpDir)
+    ).
+
+test_runtime_parser_none_rejects_parser_dependent_builtin :-
+    Test = 'Runtime parser mode: disabled parser rejects read_term_from_atom/2',
+    WamCode = 'elixir_parser_dep/0:\n  proceed',
+    setup_call_cleanup(
+        (   retractall(user:elixir_parser_dep),
+            assertz((user:elixir_parser_dep :-
+                read_term_from_atom('f(a)', _))),
+            elixir_parser_tmp_dir('tmp_wam_elixir_parser_reject', TmpDir)
+        ),
+        (   catch((write_wam_elixir_project([elixir_parser_dep/0-WamCode], [], TmpDir),
+                   Caught = false),
+                  error(permission_error(use, runtime_parser, read_term_from_atom/2), _),
+                  Caught = true),
+            Caught == true
+        ->  pass(Test)
+        ;   fail_test(Test, 'expected parser-dependent builtin rejection')
+        ),
+        (   retractall(user:elixir_parser_dep),
+            elixir_parser_cleanup_tmp_dir(TmpDir)
+        )
+    ).
+
+test_runtime_parser_none_allows_term_to_atom_forward :-
+    Test = 'Runtime parser mode: disabled parser allows forward term_to_atom/2',
+    WamCode = 'elixir_t2a_forward/0:\n  proceed',
+    setup_call_cleanup(
+        (   retractall(user:elixir_t2a_forward),
+            assertz((user:elixir_t2a_forward :-
+                term_to_atom(f(a), _))),
+            elixir_parser_tmp_dir('tmp_wam_elixir_parser_t2a_fwd', TmpDir)
+        ),
+        (   catch(write_wam_elixir_project([elixir_t2a_forward/0-WamCode], [], TmpDir),
+                  Error,
+                  Error = caught(_))
+        ->  (   var(Error)
+            ->  pass(Test)
+            ;   fail_test(Test, Error)
+            )
+        ;   fail_test(Test, 'write_wam_elixir_project/3 failed')
+        ),
+        (   retractall(user:elixir_t2a_forward),
+            elixir_parser_cleanup_tmp_dir(TmpDir)
+        )
+    ).
+
+elixir_parser_tmp_dir(Prefix, TmpDir) :-
+    tmp_file(Prefix, TmpDir),
+    catch(delete_directory_and_contents(TmpDir), _, true),
+    make_directory_path(TmpDir).
+
+elixir_parser_cleanup_tmp_dir(TmpDir) :-
+    catch(delete_directory_and_contents(TmpDir), _, true).
+
 test_instruction_count :-
     Test = 'WAM-Elixir: instruction arm count',
     (   findall(N, wam_elixir_case(N, _), Cases),
@@ -3076,6 +3165,10 @@ run_tests :-
     test_step_generation,
     test_helpers_generation,
     test_runtime_assembly,
+    test_runtime_parser_mode_metadata,
+    test_runtime_parser_native_request_errors,
+    test_runtime_parser_none_rejects_parser_dependent_builtin,
+    test_runtime_parser_none_allows_term_to_atom_forward,
     test_instruction_count,
     test_head_unification_instructions,
     test_body_construction_instructions,
