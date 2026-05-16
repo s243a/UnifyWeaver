@@ -825,6 +825,21 @@
         (backtrack state))
       (backtrack state))))
 
+(defn select-solution-results [state items]
+  (let [ctx (:intern-context state)
+        indexed-items (vec items)]
+    (mapv (fn [idx]
+            {:bindings {1 (nth indexed-items idx)
+                        3 (list->term ctx (concat (subvec indexed-items 0 idx)
+                                                  (subvec indexed-items (inc idx))))}})
+          (range (count indexed-items)))))
+
+(defn apply-select-solution [base-state resume-pc list-value]
+  (if-let [items (proper-list-items base-state list-value)]
+    (apply-first-foreign-solution base-state resume-pc
+                                  (select-solution-results base-state items))
+    (backtrack base-state)))
+
 (defn apply-delete-solution [state]
   (let [list-value (deref-value (:bindings state)
                                 (or (reg-get-raw state "A1") ::unbound))
@@ -1630,6 +1645,11 @@
 
           "nth1/3"
           (apply-nth1-solution state)
+
+          "select/3"
+          (let [list-value (deref-value (:bindings state)
+                                        (or (reg-get-raw state "A2") ::unbound))]
+            (apply-select-solution state (inc (:pc state)) list-value))
 
           "delete/3"
           (apply-delete-solution state)

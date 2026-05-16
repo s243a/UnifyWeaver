@@ -404,6 +404,10 @@ clojure_direct_builtin("nth1/3", "3").
 clojure_direct_builtin("nth1/3", 3).
 clojure_direct_builtin('nth1/3', "3").
 clojure_direct_builtin('nth1/3', 3).
+clojure_direct_builtin("select/3", "3").
+clojure_direct_builtin("select/3", 3).
+clojure_direct_builtin('select/3', "3").
+clojure_direct_builtin('select/3', 3).
 clojure_direct_builtin("delete/3", "3").
 clojure_direct_builtin("delete/3", 3).
 clojure_direct_builtin('delete/3', "3").
@@ -701,6 +705,13 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "nth1/3" ; Op == 'nth1/3'),
     !,
     format(atom(Expr), '(runtime/apply-nth1-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "select/3" ; Op == 'select/3'),
+    !,
+    format(atom(Expr),
+           '(let [list-value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound))] (runtime/apply-select-solution ~w (inc (:pc ~w)) list-value))',
+           [S, S, S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "delete/3" ; Op == 'delete/3'),

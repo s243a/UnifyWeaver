@@ -104,6 +104,10 @@
 :- dynamic user:wam_nth1_bad_list/1.
 :- dynamic user:wam_nth1_unbound_index/1.
 :- dynamic user:wam_nth1_unbound_list/1.
+:- dynamic user:wam_select_guard/3.
+:- dynamic user:wam_select_backtrack/2.
+:- dynamic user:wam_select_bad_list/1.
+:- dynamic user:wam_select_unbound_list/1.
 :- dynamic user:wam_delete_guard/3.
 :- dynamic user:wam_delete_bad_list/1.
 :- dynamic user:wam_delete_unbound_list/1.
@@ -255,6 +259,10 @@ user:wam_nth1_out_of_range(X) :- nth1(4, [a,b,c], X).
 user:wam_nth1_bad_list(X) :- nth1(2, [a|b], X).
 user:wam_nth1_unbound_index(X) :- user:wam_unbound_arg(N), nth1(N, [a,b,c], X).
 user:wam_nth1_unbound_list(X) :- user:wam_unbound_arg(L), nth1(1, L, X).
+user:wam_select_guard(Elem, List, Rest) :- select(Elem, List, Rest).
+user:wam_select_backtrack(Elem, Rest) :- select(Elem, [a,b,c], Rest), Elem = b.
+user:wam_select_bad_list(Rest) :- select(a, [a|b], Rest).
+user:wam_select_unbound_list(Rest) :- user:wam_unbound_arg(L), select(a, L, Rest).
 user:wam_delete_guard(L, Elem, Rest) :- delete(L, Elem, Rest).
 user:wam_delete_bad_list(Rest) :- delete([a|b], a, Rest).
 user:wam_delete_unbound_list(Rest) :- user:wam_unbound_arg(L), delete(L, a, Rest).
@@ -411,6 +419,10 @@ run_smoke :-
           user:wam_nth1_bad_list/1,
           user:wam_nth1_unbound_index/1,
           user:wam_nth1_unbound_list/1,
+          user:wam_select_guard/3,
+          user:wam_select_backtrack/2,
+          user:wam_select_bad_list/1,
+          user:wam_select_unbound_list/1,
           user:wam_delete_guard/3,
           user:wam_delete_bad_list/1,
           user:wam_delete_unbound_list/1,
@@ -494,6 +506,7 @@ run_smoke :-
     assert_lowered_last_builtin_emitted(TmpDir),
     assert_lowered_nth0_builtin_emitted(TmpDir),
     assert_lowered_nth1_builtin_emitted(TmpDir),
+    assert_lowered_select_builtin_emitted(TmpDir),
     assert_lowered_delete_builtin_emitted(TmpDir),
     assert_lowered_sort_builtin_emitted(TmpDir),
     assert_lowered_msort_builtin_emitted(TmpDir),
@@ -685,6 +698,13 @@ smoke_cases([
     case('wam_nth1_bad_list/1', a, "false"),
     case('wam_nth1_unbound_index/1', a, "false"),
     case('wam_nth1_unbound_list/1', a, "false"),
+    case('wam_select_guard/3', args(a, '[a,b,c]', '[b,c]'), "true"),
+    case('wam_select_guard/3', args(b, '[a,b,c]', '[a,c]'), "true"),
+    case('wam_select_guard/3', args(z, '[a,b,c]', '[a,b,c]'), "false"),
+    case('wam_select_guard/3', args(a, '[a,b,c]', '[a,c]'), "false"),
+    case('wam_select_backtrack/2', args(b, '[a,c]'), "true"),
+    case('wam_select_bad_list/1', '[b,c]', "false"),
+    case('wam_select_unbound_list/1', '[b,c]', "false"),
     case('wam_delete_guard/3', args('[a,b,a,c]', a, '[b,c]'), "true"),
     case('wam_delete_guard/3', args('[a,b,a,c]', z, '[a,b,a,c]'), "true"),
     case('wam_delete_guard/3', args('[f(a),f(b),f(a)]', 'f(a)', '[f(b)]'), "true"),
@@ -979,6 +999,15 @@ assert_lowered_nth1_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-nth1-unbound-index-1"),
     has(CoreCode, "defn lowered-wam-nth1-unbound-list-1"),
     has(CoreCode, "runtime/apply-nth1-solution").
+
+assert_lowered_select_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-select-guard-3"),
+    has(CoreCode, "defn lowered-wam-select-backtrack-2"),
+    has(CoreCode, "defn lowered-wam-select-bad-list-1"),
+    has(CoreCode, "defn lowered-wam-select-unbound-list-1"),
+    has(CoreCode, "runtime/apply-select-solution").
 
 assert_lowered_delete_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
