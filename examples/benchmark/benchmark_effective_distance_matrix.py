@@ -356,6 +356,7 @@ def build_wam_c_lowered_helper_benchmark(root: Path, scale: str, mode: str) -> l
             "--",
             str(project_dir),
             mode,
+            scale,
         ],
         cwd=ROOT,
     )
