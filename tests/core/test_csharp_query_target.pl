@@ -1750,7 +1750,9 @@ verify_single_plan_codegen_avoids_duplicate_fact_population :-
     count_substring(Source, 'memoryProvider.AddFact(new PredicateId("test_fact", 2), "alice", "bob");', 1),
     count_substring(Source, 'memoryProvider.AddFact(new PredicateId("test_fact", 2), "bob", "charlie");', 1),
     count_substring(Source, 'var configuredProvider = BuildProvider();', 1),
-    count_substring(Source, 'return (configuredProvider.Provider, CachedPlan.Value);', 1).
+    count_substring(Source, 'return (configuredProvider.Provider, CachedPlan.Value);', 1),
+    sub_string(Source, _, _, _, 'RelationSourceModePolicy.ResolveGraphBenchmarkMode(configuredSourceMode, "generated-query")'),
+    \+ sub_string(Source, _, _, _, 'configuredSourceMode == RelationSourceMode.Auto').
 
 verify_ground_relation_arg_plan :-
     csharp_query_target:build_query_plan(test_sale_amount_for_alice/1, [target(csharp_query)], Plan),
