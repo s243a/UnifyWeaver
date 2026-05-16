@@ -13,7 +13,7 @@ MATRIX_SCRIPT = ROOT / "examples" / "benchmark" / "benchmark_effective_distance_
 
 
 class WamCLoweredHelperScaleRegressionTests(unittest.TestCase):
-    def test_dev_and_10x_scales_preserve_lowered_helper_output_parity(self) -> None:
+    def test_dev_10x_and_100x_scales_preserve_lowered_helper_output_parity(self) -> None:
         if shutil.which("swipl") is None:
             self.skipTest("swipl is not available")
         if shutil.which("gcc") is None:
@@ -24,7 +24,7 @@ class WamCLoweredHelperScaleRegressionTests(unittest.TestCase):
                 sys.executable,
                 str(MATRIX_SCRIPT),
                 "--scales",
-                "dev,10x",
+                "dev,10x,100x",
                 "--target-sets",
                 "c-wam-lowered-helper",
                 "--repetitions",
@@ -52,7 +52,7 @@ class WamCLoweredHelperScaleRegressionTests(unittest.TestCase):
             "c-wam-lowered-helper-interpreted",
         }
 
-        for scale, expected_rows in {"dev": 16, "10x": 160}.items():
+        for scale, expected_rows in {"dev": 16, "10x": 160, "100x": 1600}.items():
             rows_for_scale = {
                 row["target"]: row
                 for row in target_rows
@@ -82,10 +82,24 @@ class WamCLoweredHelperScaleRegressionTests(unittest.TestCase):
                 if row["scale"] == "10x" and row["target"] in targets
             },
         )
+        self.assertNotEqual(
+            {
+                row["stdout_sha256"]
+                for row in target_rows
+                if row["scale"] == "10x" and row["target"] in targets
+            },
+            {
+                row["stdout_sha256"]
+                for row in target_rows
+                if row["scale"] == "100x" and row["target"] in targets
+            },
+        )
         self.assertIn("dev\tall_outputs\tmatch", result.stdout)
         self.assertIn("10x\tall_outputs\tmatch", result.stdout)
+        self.assertIn("100x\tall_outputs\tmatch", result.stdout)
         self.assertIn("dev\thybrid-wam-lowered-helper_outputs\tmatch", result.stdout)
         self.assertIn("10x\thybrid-wam-lowered-helper_outputs\tmatch", result.stdout)
+        self.assertIn("100x\thybrid-wam-lowered-helper_outputs\tmatch", result.stdout)
 
     def _parse_target_rows(self, stdout: str) -> list[dict[str, str]]:
         lines = [line for line in stdout.splitlines() if line]
