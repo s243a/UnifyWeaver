@@ -11,7 +11,7 @@ current cross-target builtin/runtime baseline.
 | Choice points and backtracking | `try_me_else`, `retry_me_else`, `trust_me`, indexed alternatives, foreign stream retries, indexed atom fact streams, `member/2` builtin retries | Choice point stack with normal, builtin, and fact-stream resume states | Present for current resume-state baseline |
 | Direct fact dispatch | `call_indexed_atom_fact2`, `AtomFact2Source` registry, TSV-backed and LMDB-artifact atom fact loading, foreign/native kernel registration, indexed atom/weighted fact tables | `call_indexed_atom_fact2`, inline/external fact stream paths | Present for current external atom fact-source baseline |
 | Aggregates | `begin_aggregate`, `end_aggregate`; `collect`, `bag`, `bagof`, `count`, `sum`, `min`, `max`, `set`, `setof` | `findall/3`, `aggregate_all/3` count/sum/min/max/set families | Present for current aggregate baseline |
-| Structural builtins | `member/2`, `memberchk/2`, `length/2`, `append/3` | `member/2`, `memberchk/2`, `length/2`; Rust `append/3` is explicitly unimplemented | Present for current baseline structural checks |
+| Structural builtins | `member/2`, `memberchk/2`, `length/2`, `append/3`, `reverse/2` | `member/2`, `memberchk/2`, `length/2`; Rust `append/3` is explicitly unimplemented. Clojure/R/C++ also cover richer list builtins including `reverse/2` | Present for current baseline structural checks, with one expanded cross-target list builtin |
 | Type builtins | `var/1`, `nonvar/1`, `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `atomic/1`, `is_list/1` | Includes `is_list/1` in the current baseline | Present for current baseline type checks |
 | Comparison builtins | `==/2`, `\==/2`, `\=/2`, `=:=/2`, `=\=/2`, `</2`, `>/2`, `=</2`, `>=/2` | Includes `=</2` | Present for current baseline comparisons |
 | Unification builtin | `=/2`, `\=/2` | `=/2`, `\=/2` | Present |
@@ -34,6 +34,9 @@ current cross-target builtin/runtime baseline.
 - Deterministic `memberchk/2` is now covered by the generated Go WAM builtin
   E2E test, committing to the first unifiable list element without adding
   builtin choice points.
+- Deterministic `reverse/2` is now covered by the generated Go WAM builtin E2E
+  test for both forward and reverse-list binding modes, closing one richer
+  Clojure/R/C++ list-builtin parity gap.
 - Go WAM choice points now have explicit generated-runtime coverage for normal
   clause retries, indexed alternatives, foreign stream retries, indexed atom
   fact streams, and `member/2` builtin retries.

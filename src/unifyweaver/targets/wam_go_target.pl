@@ -422,6 +422,9 @@ wam_go_direct_builtin(Pred, Arity) :-
 wam_go_direct_builtin(memberchk/2, 2, 'memberchk/2').
 wam_go_direct_builtin('memberchk/2', 2, 'memberchk/2').
 wam_go_direct_builtin("memberchk/2", 2, 'memberchk/2').
+wam_go_direct_builtin(reverse/2, 2, 'reverse/2').
+wam_go_direct_builtin('reverse/2', 2, 'reverse/2').
+wam_go_direct_builtin("reverse/2", 2, 'reverse/2').
 
 wam_instruction_to_go_literal(get_constant(C, Ai), GoLiteral) :-
     go_value_literal(C, GoVal),
