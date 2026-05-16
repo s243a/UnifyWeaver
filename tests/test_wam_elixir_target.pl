@@ -311,23 +311,89 @@ test_iso_errors_inline_wins :-
     ),
     catch(delete_file(Path), _, true).
 
-test_iso_errors_audit_empty_tables :-
-    Test = 'WAM-Elixir: iso audit returns default-source records (tables empty)',
-    % With empty rewrite tables, every default-form builtin_call site
-    % resolves to source=default, resolved==original, flip-changes=false.
+test_iso_errors_audit_unrewritten_builtin :-
+    Test = 'WAM-Elixir: iso audit classifies non-ISO builtin as default with no flip-change',
+    % Use write/1 which emits builtin_call but has no entries in the
+    % iso/lax tables (PR #4 only adds is/2). A default-form
+    % builtin_call site for an un-tabled key should resolve to itself
+    % with flip-changes=false. Note: =/2 doesn't work here because
+    % `X = 1` compiles to `get_constant 1, A1` rather than a
+    % builtin_call instruction.
     setup_call_cleanup(
-        ( assertz((iso_audit_test:foo(X) :- X is 1 + 1)) ),
+        ( assertz((iso_audit_test:foo(X) :- write(X))) ),
         (   wam_elixir_iso_audit([iso_audit_test:foo/1], [], Audit),
-            % Audit should contain one entry for foo/1.
             Audit = [audit(_, _, Sites)],
-            % Find the is/2 site, verify its classification.
-            ( member(site(_, "is/2", "is/2", default, false), Sites)
+            ( member(site(_, "write/1", "write/1", default, false), Sites)
             ->  pass(Test)
             ;   fail_test(Test,
-                          'audit did not classify is/2 as default with no flip-change')
+                          'audit did not classify write/1 as default with no flip-change')
             )
         ),
         retractall(iso_audit_test:foo(_))
+    ).
+
+test_iso_errors_audit_is_resolves_to_lax :-
+    Test = 'WAM-Elixir: iso audit classifies is/2 as default with flip-change (PR #4)',
+    % With PR #4's table entries (is/2 -> is_iso/2 / is_lax/2),
+    % a default-form is/2 site under default-mode resolves to
+    % is_lax/2 and the iso-mode resolution would differ (is_iso/2),
+    % so flip-changes=true.
+    setup_call_cleanup(
+        ( assertz((iso_audit_test:bar(X) :- X is 1 + 1)) ),
+        (   wam_elixir_iso_audit([iso_audit_test:bar/1], [], Audit),
+            Audit = [audit(_, false, Sites)],
+            ( member(site(_, "is/2", "is_lax/2", default, true), Sites)
+            ->  pass(Test)
+            ;   fail_test(Test,
+                          'audit did not show is/2 -> is_lax/2 with flip-changes=true')
+            )
+        ),
+        retractall(iso_audit_test:bar(_))
+    ).
+
+test_iso_errors_is_table_populated :-
+    Test = 'WAM-Elixir: PR #4 populates is/2 entries in iso/lax tables',
+    (   wam_elixir_target:iso_errors_default_to_iso("is/2", "is_iso/2"),
+        wam_elixir_target:iso_errors_default_to_lax("is/2", "is_lax/2")
+    ->  pass(Test)
+    ;   fail_test(Test, 'is/2 table entries missing')
+    ).
+
+test_iso_errors_rewrite_text_default_mode :-
+    Test = 'WAM-Elixir: iso_errors_rewrite_text rewrites is/2 -> is_lax/2 in default mode',
+    % Default-mode predicate -> rewrite via lax table -> is_lax/2.
+    Config = iso_config(false, []),
+    WamText = "foo/1:\n    builtin_call is/2, 2\n    proceed",
+    iso_errors_rewrite_text(Config, foo/1, WamText, Rewritten),
+    (   sub_string(Rewritten, _, _, _, "builtin_call is_lax/2, 2"),
+        % Original is/2 should be gone from the line.
+        \+ sub_string(Rewritten, _, _, _, "builtin_call is/2,")
+    ->  pass(Test)
+    ;   fail_test(Test, 'rewrite did not produce is_lax/2')
+    ).
+
+test_iso_errors_rewrite_text_iso_mode :-
+    Test = 'WAM-Elixir: iso_errors_rewrite_text rewrites is/2 -> is_iso/2 in ISO mode',
+    Config = iso_config(true, []),
+    WamText = "foo/1:\n    builtin_call is/2, 2\n    proceed",
+    iso_errors_rewrite_text(Config, foo/1, WamText, Rewritten),
+    (   sub_string(Rewritten, _, _, _, "builtin_call is_iso/2, 2"),
+        \+ sub_string(Rewritten, _, _, _, "builtin_call is/2,")
+    ->  pass(Test)
+    ;   fail_test(Test, 'rewrite did not produce is_iso/2')
+    ).
+
+test_iso_errors_rewrite_text_explicit_unchanged :-
+    Test = 'WAM-Elixir: iso_errors_rewrite_text leaves explicit is_iso/2 + is_lax/2 untouched',
+    % An explicit is_iso/2 call site should NOT be rewritten even in
+    % lax mode (and vice versa). This is the three-forms guarantee.
+    Config = iso_config(false, []),
+    WamText = "foo/1:\n    builtin_call is_iso/2, 2\n    builtin_call is_lax/2, 2",
+    iso_errors_rewrite_text(Config, foo/1, WamText, Rewritten),
+    (   sub_string(Rewritten, _, _, _, "builtin_call is_iso/2, 2"),
+        sub_string(Rewritten, _, _, _, "builtin_call is_lax/2, 2")
+    ->  pass(Test)
+    ;   fail_test(Test, 'explicit forms got rewritten (regression)')
     ).
 
 test_iso_errors_multi_module_warning :-
@@ -2986,7 +3052,12 @@ run_tests :-
     test_wam_throw_top_level_wrapper,
     test_iso_errors_config_loader,
     test_iso_errors_inline_wins,
-    test_iso_errors_audit_empty_tables,
+    test_iso_errors_audit_unrewritten_builtin,
+    test_iso_errors_audit_is_resolves_to_lax,
+    test_iso_errors_is_table_populated,
+    test_iso_errors_rewrite_text_default_mode,
+    test_iso_errors_rewrite_text_iso_mode,
+    test_iso_errors_rewrite_text_explicit_unchanged,
     test_iso_errors_multi_module_warning,
     test_elixir_idioms,
     test_immutable_state_updates,

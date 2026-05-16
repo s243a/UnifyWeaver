@@ -114,6 +114,30 @@ user:elx_catch_nested :-
 % Goal fails (not throws); catch propagates failure; recovery NOT invoked.
 user:elx_catch_fail_propagates :- catch(fail, _, true).
 
+% --- is_iso/2 + is_lax/2 acceptance cases (PR #4) ---
+% Spec: docs/design/WAM_ELIXIR_GAPS_SPECIFICATION.md §3 PR #4.
+% All five wrap is_iso/2 in catch(... , _, true) so the test can
+% verify "throw fired" by predicate success without depending on
+% compound-pattern unification (which is the runtime limitation
+% documented in PR #2's catch_match_compound test).
+:- dynamic user:elx_iso_is_instantiation/0.
+:- dynamic user:elx_iso_is_type_error/0.
+:- dynamic user:elx_iso_is_zero_divisor/0.
+:- dynamic user:elx_iso_is_succeeds/1.
+:- dynamic user:elx_explicit_lax_fails/0.
+% RHS unbound -> instantiation_error throw -> catch matches.
+user:elx_iso_is_instantiation :- catch(is_iso(_X, _Y), _, true).
+% RHS is non-evaluable atom -> type_error(evaluable, foo/0) throw.
+user:elx_iso_is_type_error :- catch(is_iso(_X, foo), _, true).
+% RHS is 1//0 -> evaluation_error(zero_divisor) throw.
+user:elx_iso_is_zero_divisor :- catch(is_iso(_X, 1//0), _, true).
+% Happy path: is_iso(X, 1+1) succeeds with X=2 (no throw).
+user:elx_iso_is_succeeds(R) :- is_iso(X, 1 + 1), R = X.
+% Explicit is_lax bypasses rewrite — same lax behaviour as is/2.
+% RHS is foo (non-evaluable) -> eval_arith throws {:eval_error, _}
+% -> top-level wrapper converts to :fail. Predicate fails.
+user:elx_explicit_lax_fails :- is_lax(_X, foo).
+
 % ============================================================
 % elixir_available — same gating pattern as the Scala suite
 % ============================================================
@@ -286,6 +310,67 @@ test(catch_fail_propagates) :-
         _Opts,
         TmpDir,
         verify_elixir_args(TmpDir, 'elx_catch_fail_propagates/0',
+                           [], "false")
+    ).
+
+% --- is_iso/2 + is_lax/2 tests (PR #4 acceptance) ---
+
+test(iso_is_instantiation) :-
+    % is_iso(X, _Y) -> error(instantiation_error, _) thrown -> catch matches.
+    with_elixir_project(
+        [user:elx_iso_is_instantiation/0],
+        _Opts,
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_iso_is_instantiation/0',
+                           [], "true")
+    ).
+
+test(iso_is_type_error) :-
+    % is_iso(X, foo) -> error(type_error(evaluable, foo/0), _) thrown.
+    with_elixir_project(
+        [user:elx_iso_is_type_error/0],
+        _Opts,
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_iso_is_type_error/0',
+                           [], "true")
+    ).
+
+test(iso_is_zero_divisor) :-
+    % is_iso(X, 1//0) -> error(evaluation_error(zero_divisor), _) thrown.
+    with_elixir_project(
+        [user:elx_iso_is_zero_divisor/0],
+        _Opts,
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_iso_is_zero_divisor/0',
+                           [], "true")
+    ).
+
+test(iso_is_succeeds_on_valid) :-
+    % is_iso(X, 1+1) -> no throw, X bound to 2. Happy-path coverage —
+    % verifies the is_iso arm correctly delegates to the lax body on
+    % valid input. Tests the bind/compare branches of the ISO arm.
+    with_elixir_project(
+        [user:elx_iso_is_succeeds/1],
+        _Opts,
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_iso_is_succeeds/1',
+                           ['2'], "true")
+    ).
+
+test(explicit_lax_bypasses_iso_rewrite) :-
+    % Predicate annotated ISO via inline option. The body uses
+    % EXPLICIT is_lax/2 — the rewrite only touches default-form is/2,
+    % so the call remains is_lax. is_lax with foo as RHS throws an
+    % internal {:eval_error, _} which is NOT a wam_throw, so the
+    % top-level wrapper's `error -> CRASHED` arm converts to :fail.
+    % Predicate fails -> "false". Demonstrates that explicit *_lax
+    % forms survive the rewrite (three-forms guarantee from
+    % WAM_ELIXIR_PARITY_PHILOSOPHY §5).
+    with_elixir_project(
+        [user:elx_explicit_lax_fails/0],
+        [iso_errors(elx_explicit_lax_fails/0, true)],
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_explicit_lax_fails/0',
                            [], "false")
     ).
 
