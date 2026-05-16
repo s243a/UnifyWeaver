@@ -68,12 +68,16 @@ HEADERS = [
     "artifact_bytes",
     "open_ms",
     "lookup_ms",
+    "lookup_col1_ms",
     "bucket_ms",
+    "bucket_col1_ms",
     "scan_ms",
     "retained_bytes",
     "scan_hash",
     "lookup_hash",
+    "lookup_col1_hash",
     "bucket_hash",
+    "bucket_col1_hash",
 ]
 
 RAW_HEADERS = [column for column in HEADERS if column != "run"]
@@ -84,11 +88,15 @@ SUMMARY_HEADERS = [
     "distinct_categories",
     "lookup_keys",
     "best_lookup_mode",
+    "best_lookup_col1_mode",
     "best_bucket_mode",
+    "best_bucket_col1_mode",
     "best_scan_mode",
     "smallest_artifact_mode",
     "lookup_ms_by_mode",
+    "lookup_col1_ms_by_mode",
     "bucket_ms_by_mode",
+    "bucket_col1_ms_by_mode",
     "scan_ms_by_mode",
     "artifact_bytes_by_mode",
 ]
@@ -252,13 +260,13 @@ def render_tsv(rows: list[BenchmarkRow]) -> str:
 
 def render_markdown(rows: list[BenchmarkRow]) -> str:
     lines = [
-        "| Scale | Run | Mode | Rows | Categories | Lookup keys | Artifact bytes | Open ms | Lookup ms | Bucket ms | Scan ms | Retained bytes |",
-        "| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Scale | Run | Mode | Rows | Categories | Lookup keys | Artifact bytes | Open ms | Lookup c0 ms | Lookup c1 ms | Bucket c0 ms | Bucket c1 ms | Scan ms | Retained bytes |",
+        "| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         value = row.values
         lines.append(
-            "| {scale} | {run} | {mode} | {rows} | {distinct_categories} | {lookup_keys} | {artifact_bytes} | {open_ms} | {lookup_ms} | {bucket_ms} | {scan_ms} | {retained_bytes} |".format(
+            "| {scale} | {run} | {mode} | {rows} | {distinct_categories} | {lookup_keys} | {artifact_bytes} | {open_ms} | {lookup_ms} | {lookup_col1_ms} | {bucket_ms} | {bucket_col1_ms} | {scan_ms} | {retained_bytes} |".format(
                 **value
             )
         )
@@ -432,7 +440,9 @@ def summarize(rows: list[BenchmarkRow]) -> list[SummaryRow]:
             }
 
         lookup = median_by_mode("lookup_ms")
+        lookup_col1 = median_by_mode("lookup_col1_ms")
         bucket = median_by_mode("bucket_ms")
+        bucket_col1 = median_by_mode("bucket_col1_ms")
         scan = median_by_mode("scan_ms")
         artifact = median_by_mode("artifact_bytes")
         row0 = scale_rows[0].values
@@ -444,14 +454,18 @@ def summarize(rows: list[BenchmarkRow]) -> list[SummaryRow]:
                     "distinct_categories": row0["distinct_categories"],
                     "lookup_keys": row0["lookup_keys"],
                     "best_lookup_mode": min(lookup, key=lookup.get),
+                    "best_lookup_col1_mode": min(lookup_col1, key=lookup_col1.get),
                     "best_bucket_mode": min(bucket, key=bucket.get),
+                    "best_bucket_col1_mode": min(bucket_col1, key=bucket_col1.get),
                     "best_scan_mode": min(scan, key=scan.get),
                     "smallest_artifact_mode": min(
                         (mode for mode in artifact if mode != "preload"),
                         key=artifact.get,
                     ),
                     "lookup_ms_by_mode": format_mode_values(lookup),
+                    "lookup_col1_ms_by_mode": format_mode_values(lookup_col1),
                     "bucket_ms_by_mode": format_mode_values(bucket),
+                    "bucket_col1_ms_by_mode": format_mode_values(bucket_col1),
                     "scan_ms_by_mode": format_mode_values(scan),
                     "artifact_bytes_by_mode": format_mode_values(artifact, digits=0),
                 }
@@ -475,13 +489,13 @@ def render_summary_tsv(rows: list[SummaryRow]) -> str:
 
 def render_summary_markdown(rows: list[SummaryRow]) -> str:
     lines = [
-        "| Scale | Rows | Categories | Lookup keys | Best lookup | Best bucket | Best scan | Smallest artifact |",
-        "| --- | ---: | ---: | ---: | --- | --- | --- | --- |",
+        "| Scale | Rows | Categories | Lookup keys | Best lookup c0 | Best lookup c1 | Best bucket c0 | Best bucket c1 | Best scan | Smallest artifact |",
+        "| --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- |",
     ]
     for row in rows:
         value = row.values
         lines.append(
-            "| {scale} | {rows} | {distinct_categories} | {lookup_keys} | {best_lookup_mode} | {best_bucket_mode} | {best_scan_mode} | {smallest_artifact_mode} |".format(
+            "| {scale} | {rows} | {distinct_categories} | {lookup_keys} | {best_lookup_mode} | {best_lookup_col1_mode} | {best_bucket_mode} | {best_bucket_col1_mode} | {best_scan_mode} | {smallest_artifact_mode} |".format(
                 **value
             )
         )
@@ -492,13 +506,13 @@ def render_summary_markdown(rows: list[SummaryRow]) -> str:
 
 def render_summary_full_markdown(rows: list[SummaryRow]) -> str:
     lines = [
-        "| Scale | Rows | Categories | Lookup keys | Best lookup | Best bucket | Best scan | Smallest artifact | Lookup ms by mode | Bucket ms by mode | Scan ms by mode | Artifact bytes by mode |",
-        "| --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Scale | Rows | Categories | Lookup keys | Best lookup c0 | Best lookup c1 | Best bucket c0 | Best bucket c1 | Best scan | Smallest artifact | Lookup c0 ms by mode | Lookup c1 ms by mode | Bucket c0 ms by mode | Bucket c1 ms by mode | Scan ms by mode | Artifact bytes by mode |",
+        "| --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for row in rows:
         value = row.values
         lines.append(
-            "| {scale} | {rows} | {distinct_categories} | {lookup_keys} | {best_lookup_mode} | {best_bucket_mode} | {best_scan_mode} | {smallest_artifact_mode} | {lookup_ms_by_mode} | {bucket_ms_by_mode} | {scan_ms_by_mode} | {artifact_bytes_by_mode} |".format(
+            "| {scale} | {rows} | {distinct_categories} | {lookup_keys} | {best_lookup_mode} | {best_lookup_col1_mode} | {best_bucket_mode} | {best_bucket_col1_mode} | {best_scan_mode} | {smallest_artifact_mode} | {lookup_ms_by_mode} | {lookup_col1_ms_by_mode} | {bucket_ms_by_mode} | {bucket_col1_ms_by_mode} | {scan_ms_by_mode} | {artifact_bytes_by_mode} |".format(
                 **value
             )
         )
@@ -941,7 +955,12 @@ static object[][] ReadLmdbRowsForPlanning(PredicateId predicate, string manifest
 
 static IReadOnlyList<object> LookupKeysFromRows(object[][] rows, int lookupKeyCount)
 {
-    return rows.Select(row => row[0])
+    return LookupKeysFromRowsByColumn(rows, 0, lookupKeyCount);
+}
+
+static IReadOnlyList<object> LookupKeysFromRowsByColumn(object[][] rows, int columnIndex, int lookupKeyCount)
+{
+    return rows.Select(row => row[columnIndex])
         .Distinct()
         .OrderBy(value => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture), StringComparer.Ordinal)
         .Take(Math.Min(lookupKeyCount, rows.Length))
@@ -956,14 +975,67 @@ static int DistinctCategoryCount(object[][] rows)
         .Count();
 }
 
-static string HashBuckets(IEnumerable<IndexedRelationBucket> buckets)
+static string HashBuckets(IEnumerable<IndexedRelationBucket> buckets, int valueColumnIndex)
 {
     return HashRows(buckets.Select(bucket => new object[]
     {
         bucket.Key,
         bucket.Rows.Count,
-        string.Join(",", bucket.Rows.Select(row => Convert.ToString(row[1], System.Globalization.CultureInfo.InvariantCulture)).OrderBy(value => value, StringComparer.Ordinal))
+        string.Join(",", bucket.Rows.Select(row => Convert.ToString(row[valueColumnIndex], System.Globalization.CultureInfo.InvariantCulture)).OrderBy(value => value, StringComparer.Ordinal))
     }));
+}
+
+static double MeasureLookup(
+    IRelationProvider provider,
+    PredicateId predicate,
+    int columnIndex,
+    IReadOnlyList<object> lookupKeys,
+    int lookupRepetitions,
+    List<object[]> lookupRows)
+{
+    return Measure(() =>
+    {
+        for (var iteration = 0; iteration < lookupRepetitions; iteration++)
+        {
+            if (provider is IIndexedRelationProvider indexed &&
+                indexed.TryLookupFacts(predicate, columnIndex, lookupKeys, out var indexedRows))
+            {
+                lookupRows.AddRange(indexedRows);
+            }
+            else
+            {
+                var keySet = lookupKeys.Select(Convert.ToString).ToHashSet(StringComparer.Ordinal);
+                lookupRows.AddRange(provider.GetFacts(predicate).Where(row => keySet.Contains(Convert.ToString(row[columnIndex]))));
+            }
+        }
+    });
+}
+
+static double MeasureBuckets(
+    IRelationProvider provider,
+    PredicateId predicate,
+    int columnIndex,
+    int valueColumnIndex,
+    out string bucketHash)
+{
+    var measuredBucketHash = "";
+    var elapsedMs = Measure(() =>
+    {
+        if (provider is IIndexedRelationBucketProvider bucketProvider &&
+            bucketProvider.TryReadIndexedBuckets(predicate, columnIndex, out var buckets))
+        {
+            measuredBucketHash = HashBuckets(buckets, valueColumnIndex);
+        }
+        else
+        {
+            measuredBucketHash = HashBuckets(provider.GetFacts(predicate)
+                .GroupBy(row => row[columnIndex])
+                .OrderBy(group => Convert.ToString(group.Key, System.Globalization.CultureInfo.InvariantCulture), StringComparer.Ordinal)
+                .Select(group => new IndexedRelationBucket(group.Key, group.ToArray())), valueColumnIndex);
+        }
+    });
+    bucketHash = measuredBucketHash;
+    return elapsedMs;
 }
 
 static void Emit(
@@ -975,12 +1047,16 @@ static void Emit(
     long artifactBytes,
     double openMs,
     double lookupMs,
+    double lookupCol1Ms,
     double bucketMs,
+    double bucketCol1Ms,
     double scanMs,
     long retainedBytes,
     string scanHash,
     string lookupHash,
-    string bucketHash)
+    string lookupCol1Hash,
+    string bucketHash,
+    string bucketCol1Hash)
 {
     Console.WriteLine(string.Join('\t', new[]
     {
@@ -992,12 +1068,16 @@ static void Emit(
         artifactBytes.ToString(System.Globalization.CultureInfo.InvariantCulture),
         openMs.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
         lookupMs.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
+        lookupCol1Ms.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
         bucketMs.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
+        bucketCol1Ms.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
         scanMs.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
         retainedBytes.ToString(System.Globalization.CultureInfo.InvariantCulture),
         scanHash,
         lookupHash,
+        lookupCol1Hash,
         bucketHash,
+        bucketCol1Hash,
     }));
 }
 
@@ -1007,6 +1087,7 @@ static void BenchmarkProvider(
     Func<IRelationProvider> openProvider,
     PredicateId predicate,
     IReadOnlyList<object> lookupKeys,
+    IReadOnlyList<object> lookupKeysColumn1,
     int lookupRepetitions,
     long artifactBytes,
     int rowCount,
@@ -1022,39 +1103,13 @@ static void BenchmarkProvider(
     var retainedBytes = Math.Max(0L, after - before);
 
     var lookupRows = new List<object[]>();
-    var lookupMs = Measure(() =>
-    {
-        for (var iteration = 0; iteration < lookupRepetitions; iteration++)
-        {
-            if (provider is IIndexedRelationProvider indexed &&
-                indexed.TryLookupFacts(predicate, 0, lookupKeys, out var indexedRows))
-            {
-                lookupRows.AddRange(indexedRows);
-            }
-            else
-            {
-                var keySet = lookupKeys.Select(Convert.ToString).ToHashSet(StringComparer.Ordinal);
-                lookupRows.AddRange(provider!.GetFacts(predicate).Where(row => keySet.Contains(Convert.ToString(row[0]))));
-            }
-        }
-    });
+    var lookupMs = MeasureLookup(provider!, predicate, 0, lookupKeys, lookupRepetitions, lookupRows);
 
-    string bucketHash = "";
-    var bucketMs = Measure(() =>
-    {
-        if (provider is IIndexedRelationBucketProvider bucketProvider &&
-            bucketProvider.TryReadIndexedBuckets(predicate, 0, out var buckets))
-        {
-            bucketHash = HashBuckets(buckets);
-        }
-        else
-        {
-            bucketHash = HashBuckets(provider!.GetFacts(predicate)
-                .GroupBy(row => row[0])
-                .OrderBy(group => Convert.ToString(group.Key, System.Globalization.CultureInfo.InvariantCulture), StringComparer.Ordinal)
-                .Select(group => new IndexedRelationBucket(group.Key, group.ToArray())));
-        }
-    });
+    var lookupRowsColumn1 = new List<object[]>();
+    var lookupCol1Ms = MeasureLookup(provider!, predicate, 1, lookupKeysColumn1, lookupRepetitions, lookupRowsColumn1);
+
+    var bucketMs = MeasureBuckets(provider!, predicate, 0, 1, out var bucketHash);
+    var bucketCol1Ms = MeasureBuckets(provider!, predicate, 1, 0, out var bucketCol1Hash);
 
     object[][] scanRows = Array.Empty<object[]>();
     var scanMs = Measure(() => scanRows = provider!.GetFacts(predicate).ToArray());
@@ -1068,12 +1123,16 @@ static void BenchmarkProvider(
         artifactBytes,
         openMs,
         lookupMs,
+        lookupCol1Ms,
         bucketMs,
+        bucketCol1Ms,
         scanMs,
         retainedBytes,
         HashRows(scanRows),
         HashRows(lookupRows),
-        bucketHash);
+        HashRows(lookupRowsColumn1),
+        bucketHash,
+        bucketCol1Hash);
 }
 
 var scale = ReadArg(args, "--scale", "dev");
@@ -1099,7 +1158,8 @@ if (lmdbOnly)
     var lmdbOnlyDir = ResolveManifestEnvironmentPath(lmdbOnlyMetadata, lmdbOnlyManifest);
     var planningRows = ReadLmdbRowsForPlanning(predicate, lmdbOnlyManifest);
     var lookupKeysOnly = LookupKeysFromRows(planningRows, lookupKeyCount);
-    Console.WriteLine("scale\tmode\trows\tdistinct_categories\tlookup_keys\tartifact_bytes\topen_ms\tlookup_ms\tbucket_ms\tscan_ms\tretained_bytes\tscan_hash\tlookup_hash\tbucket_hash");
+    var lookupKeysColumn1Only = LookupKeysFromRowsByColumn(planningRows, 1, lookupKeyCount);
+    Console.WriteLine("scale\tmode\trows\tdistinct_categories\tlookup_keys\tartifact_bytes\topen_ms\tlookup_ms\tlookup_col1_ms\tbucket_ms\tbucket_col1_ms\tscan_ms\tretained_bytes\tscan_hash\tlookup_hash\tlookup_col1_hash\tbucket_hash\tbucket_col1_hash");
     BenchmarkProvider(
         scale,
         "lmdb",
@@ -1111,6 +1171,7 @@ if (lmdbOnly)
         },
         predicate,
         lookupKeysOnly,
+        lookupKeysColumn1Only,
         lookupRepetitions,
         DirectorySize(lmdbOnlyDir) + new FileInfo(lmdbOnlyManifest).Length,
         planningRows.Length,
@@ -1120,6 +1181,12 @@ if (lmdbOnly)
 var preserveNumericIds = requestedPreserveNumericIds || scaleLmdbManifest is not null;
 var rows = ReadEdges(scaleDir, preserveNumericIds, out var distinctCategories);
 var lookupKeys = rows.Select(row => row.Child)
+    .Distinct()
+    .OrderBy(value => value)
+    .Take(Math.Min(lookupKeyCount, rows.Count))
+    .Select(value => (object)value.ToString(System.Globalization.CultureInfo.InvariantCulture))
+    .ToArray();
+var lookupKeysColumn1 = rows.Select(row => row.Parent)
     .Distinct()
     .OrderBy(value => value)
     .Take(Math.Min(lookupKeyCount, rows.Count))
@@ -1159,7 +1226,7 @@ var mmapManifest = ExistingOrBuild(
     refreshArtifacts,
     () => MmapArrayRelationArtifactBuilder.BuildFromDelimited(predicate, source, mmapDir));
 
-Console.WriteLine("scale\tmode\trows\tdistinct_categories\tlookup_keys\tartifact_bytes\topen_ms\tlookup_ms\tbucket_ms\tscan_ms\tretained_bytes\tscan_hash\tlookup_hash\tbucket_hash");
+Console.WriteLine("scale\tmode\trows\tdistinct_categories\tlookup_keys\tartifact_bytes\topen_ms\tlookup_ms\tlookup_col1_ms\tbucket_ms\tbucket_col1_ms\tscan_ms\tretained_bytes\tscan_hash\tlookup_hash\tlookup_col1_hash\tbucket_hash\tbucket_col1_hash");
 BenchmarkProvider(
     scale,
     "preload",
@@ -1171,6 +1238,7 @@ BenchmarkProvider(
     },
     predicate,
     lookupKeys,
+    lookupKeysColumn1,
     lookupRepetitions,
     0,
     rows.Count,
@@ -1186,6 +1254,7 @@ BenchmarkProvider(
     },
     predicate,
     lookupKeys,
+    lookupKeysColumn1,
     lookupRepetitions,
     DirectorySize(binaryDir),
     rows.Count,
@@ -1201,6 +1270,7 @@ BenchmarkProvider(
     },
     predicate,
     lookupKeys,
+    lookupKeysColumn1,
     lookupRepetitions,
     DirectorySize(delimitedDir),
     rows.Count,
@@ -1216,6 +1286,7 @@ BenchmarkProvider(
     },
     predicate,
     lookupKeys,
+    lookupKeysColumn1,
     lookupRepetitions,
     DirectorySize(lmdbDir) + new FileInfo(lmdbManifest).Length,
     rows.Count,
@@ -1231,6 +1302,7 @@ BenchmarkProvider(
     },
     predicate,
     lookupKeys,
+    lookupKeysColumn1,
     lookupRepetitions,
     DirectorySize(mmapDir),
     rows.Count,

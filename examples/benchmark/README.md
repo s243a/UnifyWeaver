@@ -275,8 +275,9 @@ python examples/benchmark/benchmark_csharp_query_effective_distance_artifact_bac
 
 `summary-full-markdown` includes the same best-mode columns as
 `summary-markdown` plus per-mode median lookup, bucket, scan, and artifact-size
-fields, which is more useful when deciding whether LMDB is competitive at a
-larger scale.
+fields. Lookup and bucket fields are split into column-0 and column-1 variants
+so two-direction artifacts such as mmap-array sidecars can be measured
+explicitly.
 
 On this checkout's first 1M enwiki-capped probe, `mmap-array` still won lookup
 and bucket access, while `preload` won full scan. LMDB remained smaller than
