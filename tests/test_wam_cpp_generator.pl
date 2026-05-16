@@ -43,6 +43,26 @@
 :- dynamic user:wam_cpp_test_arg_bad/0.
 :- dynamic user:wam_cpp_test_univ_decompose/0.
 :- dynamic user:wam_cpp_test_univ_compose/0.
+:- dynamic user:wam_cpp_test_functor_atom/0.
+:- dynamic user:wam_cpp_test_functor_int/0.
+:- dynamic user:wam_cpp_test_functor_build/0.
+:- dynamic user:wam_cpp_test_functor_build_atom/0.
+:- dynamic user:wam_cpp_test_functor_build_int/0.
+:- dynamic user:wam_cpp_test_arg_second/0.
+:- dynamic user:wam_cpp_test_arg_outof/0.
+:- dynamic user:wam_cpp_test_arg_zero_idx/0.
+:- dynamic user:wam_cpp_test_arg_compound_val/0.
+:- dynamic user:wam_cpp_test_univ_atom/0.
+:- dynamic user:wam_cpp_test_univ_int/0.
+:- dynamic user:wam_cpp_test_univ_compose_solo/0.
+:- dynamic user:wam_cpp_test_copy_int/0.
+:- dynamic user:wam_cpp_test_copy_nested/0.
+:- dynamic user:wam_cpp_test_ground_compound/0.
+:- dynamic user:wam_cpp_test_ground_unbound/0.
+:- dynamic user:wam_cpp_test_ground_partial/0.
+:- dynamic user:wam_cpp_test_ground_atom/0.
+:- dynamic user:wam_cpp_test_ground_guard/0.
+:- dynamic user:wam_cpp_test_ground_guard_not/0.
 :- dynamic user:wam_cpp_test_unify/0.
 :- dynamic user:wam_cpp_test_unify_fail/0.
 :- dynamic user:wam_cpp_test_write/0.
@@ -2086,6 +2106,27 @@ user:wam_cpp_test_arg1         :- arg(1, box(a, b), a).
 user:wam_cpp_test_arg_bad      :- arg(1, box(a, b), z).
 user:wam_cpp_test_univ_decompose :- box(1, 2) =.. [box, 1, 2].
 user:wam_cpp_test_univ_compose   :- T =.. [foo, a, b], T = foo(a, b).
+% Term inspection -- expanded coverage for #1 (functor/arg/univ) + #2 (copy_term/ground).
+user:wam_cpp_test_functor_atom       :- functor(hello, N, A), N == hello, A == 0.
+user:wam_cpp_test_functor_int        :- functor(7, N, A), N == 7, A == 0.
+user:wam_cpp_test_functor_build      :- functor(T, p, 3), T =.. [p, _, _, _].
+user:wam_cpp_test_functor_build_atom :- functor(T, lone, 0), T == lone.
+user:wam_cpp_test_functor_build_int  :- functor(T, 9, 0), T == 9.
+user:wam_cpp_test_arg_second         :- arg(2, point(10, 20, 30), V), V == 20.
+user:wam_cpp_test_arg_outof          :- \+ arg(5, point(10, 20), _).
+user:wam_cpp_test_arg_zero_idx       :- \+ arg(0, point(10, 20), _).
+user:wam_cpp_test_arg_compound_val   :- arg(1, wrap(inner(1, 2)), W), W = inner(1, 2).
+user:wam_cpp_test_univ_atom          :- hello =.. [hello].
+user:wam_cpp_test_univ_int           :- 42 =.. [42].
+user:wam_cpp_test_univ_compose_solo  :- T =.. [lone], T == lone.
+user:wam_cpp_test_copy_int           :- copy_term(42, T), T == 42.
+user:wam_cpp_test_copy_nested        :- copy_term(f(g(X), X), f(g(A), A)).
+user:wam_cpp_test_ground_compound    :- ground(foo(1, [2, 3], bar)).
+user:wam_cpp_test_ground_unbound     :- \+ ground(_).
+user:wam_cpp_test_ground_partial     :- \+ ground(foo(1, _, 3)).
+user:wam_cpp_test_ground_atom        :- ground(hello).
+user:wam_cpp_test_ground_guard       :- ( ground(foo(1, 2)) -> true ; fail ).
+user:wam_cpp_test_ground_guard_not   :- ( ground(foo(_, 2)) -> fail ; true ).
 % =/2 / \\=/2
 user:wam_cpp_test_unify        :- X = foo, X = foo.
 user:wam_cpp_test_unify_fail   :- foo \= foo.
@@ -2466,6 +2507,59 @@ test(cpp_e2e_builtin_term_inspection, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_arg_bad/0',         [], false),
           run_query(BinPath, 'wam_cpp_test_univ_decompose/0',  [], true),
           run_query(BinPath, 'wam_cpp_test_univ_compose/0',    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_term_inspection_extended, [condition(cpp_compiler_available)]) :-
+    % Expanded coverage for functor/3, arg/3, =../2, copy_term/2, ground/1
+    % including edge cases (atom + integer + float Names, out-of-range
+    % arg, atomic univ, deep-shared copy_term) and ground/1 used as an
+    % if-then-else guard.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_term_ext', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_functor_atom/0,
+                               user:wam_cpp_test_functor_int/0,
+                               user:wam_cpp_test_functor_build/0,
+                               user:wam_cpp_test_functor_build_atom/0,
+                               user:wam_cpp_test_functor_build_int/0,
+                               user:wam_cpp_test_arg_second/0,
+                               user:wam_cpp_test_arg_outof/0,
+                               user:wam_cpp_test_arg_zero_idx/0,
+                               user:wam_cpp_test_arg_compound_val/0,
+                               user:wam_cpp_test_univ_atom/0,
+                               user:wam_cpp_test_univ_int/0,
+                               user:wam_cpp_test_univ_compose_solo/0,
+                               user:wam_cpp_test_copy_int/0,
+                               user:wam_cpp_test_copy_nested/0,
+                               user:wam_cpp_test_ground_compound/0,
+                               user:wam_cpp_test_ground_unbound/0,
+                               user:wam_cpp_test_ground_partial/0,
+                               user:wam_cpp_test_ground_atom/0,
+                               user:wam_cpp_test_ground_guard/0,
+                               user:wam_cpp_test_ground_guard_not/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_functor_atom/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_functor_int/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_functor_build/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_functor_build_atom/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_functor_build_int/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_arg_second/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_arg_outof/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_arg_zero_idx/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_arg_compound_val/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_univ_atom/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_univ_int/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_univ_compose_solo/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_copy_int/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_copy_nested/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_ground_compound/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_ground_unbound/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_ground_partial/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_ground_atom/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_ground_guard/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_ground_guard_not/0',   [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

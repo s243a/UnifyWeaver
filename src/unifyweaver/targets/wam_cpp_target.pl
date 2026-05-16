@@ -4264,8 +4264,11 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
                 arity = (std::int64_t)v.args.size();
             } else if (v.tag == Value::Tag::Atom) {
                 name = v.s; arity = 0;
-            } else if (v.tag == Value::Tag::Integer) {
-                // Numbers are their own functor with arity 0.
+            } else if (v.tag == Value::Tag::Integer
+                       || v.tag == Value::Tag::Float) {
+                // Numbers are their own functor with arity 0. Distinct
+                // from the atom case because Name unifies as the number
+                // itself, not Value::Atom(render(v)).
                 CellPtr fc = get_cell("A2");
                 CellPtr ac = get_cell("A3");
                 if (fc->is_unbound()) bind_cell(fc, v);
@@ -4286,10 +4289,18 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
             pc += 1; return true;
         }
         // Build mode: A2 = functor name, A3 = arity.
+        // With Arity == 0, Name may be any atomic (atom or number);
+        // T is bound directly to Name. With Arity > 0, Name must be
+        // an atom (compound terms can''t have numeric functors).
         Value name_v = *get_cell("A2");
         Value ar_v   = *get_cell("A3");
-        if (name_v.tag != Value::Tag::Atom || ar_v.tag != Value::Tag::Integer) return false;
-        if (ar_v.i == 0) { bind_cell(t, name_v); pc += 1; return true; }
+        if (ar_v.tag != Value::Tag::Integer) return false;
+        if (ar_v.i == 0) {
+            if (name_v.is_unbound()) return false;
+            if (name_v.tag == Value::Tag::Compound) return false;
+            bind_cell(t, name_v); pc += 1; return true;
+        }
+        if (name_v.tag != Value::Tag::Atom) return false;
         std::vector<CellPtr> args;
         for (std::int64_t k = 0; k < ar_v.i; ++k) {
             args.push_back(std::make_shared<Value>(Value::Unbound("_FA" + std::to_string(k))));
