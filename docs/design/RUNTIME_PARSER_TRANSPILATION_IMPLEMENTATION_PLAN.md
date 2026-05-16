@@ -81,6 +81,10 @@ Do not immediately wire every target's `write_wam_*_project/3` through the new
 hook. The hook is a stable contract; target writers can migrate one at a time.
 For R, builtin routing still uses the native inline parser hot path while the
 metadata provides a stable seam for later experiments.
+When R resolves to `runtime_parser(off)`, the project writer rejects requested
+predicates whose statically visible bodies call parser-dependent builtins, so
+the disabled mode does not silently generate a runtime that still accepts
+source-term parsing calls.
 
 The hook should be independent of the WAM items API. A target can skip WAM text
 generation at build time and still need runtime source-term parsing.

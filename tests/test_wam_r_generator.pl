@@ -33,6 +33,7 @@
 :- dynamic user:wam_r_caller/1.
 :- dynamic user:wam_r_pair/1.
 :- dynamic user:wam_r_list/1.
+:- dynamic user:wam_r_parser_dep/0.
 
 user:wam_r_fact(a).
 user:wam_r_choice_fact(a).
@@ -120,6 +121,21 @@ test(runtime_parser_mode_option_off) :-
                              'runtime_parser   = list(kind = "none", entry = NULL, source = NULL)')),
         delete_directory_and_contents(TmpDir)
     )).
+
+test(runtime_parser_off_rejects_parser_dependent_builtin,
+     [error(permission_error(use, runtime_parser, read_term_from_atom/2))]) :-
+    retractall(user:wam_r_parser_dep),
+    assertz((user:wam_r_parser_dep :-
+        read_term_from_atom('f(a)', _))),
+    unique_r_tmp_dir('tmp_r_parser_mode_reject', TmpDir),
+    call_cleanup(
+        write_wam_r_project(
+            [user:wam_r_parser_dep/0],
+            [runtime_parser(off)],
+            TmpDir),
+        (   retractall(user:wam_r_parser_dep),
+            (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true)
+        )).
 
 % ------------------------------------------------------------------
 % Test 4: label map carries the predicate entry
