@@ -1127,7 +1127,7 @@ run_multi_predicate_setup_executable_smoke :-
     run_c_smoke_plain(ExePath).
 
 run_builtin_call_executable_smoke :-
-    WamCode = 'wam_c_builtin_atom/1:\n    builtin_call atom/1, 1\n    proceed\nwam_c_builtin_is/2:\n    builtin_call is/2, 2\n    proceed',
+    WamCode = 'wam_c_builtin_atom/1:\n    builtin_call atom/1, 1\n    proceed\nwam_c_builtin_is/2:\n    builtin_call is/2, 2\n    proceed\nwam_c_builtin_functor/3:\n    builtin_call functor/3, 3\n    proceed',
     compile_wam_predicate_to_c(user:wam_c_builtin_atom/1, WamCode, [], PredCode),
     compile_wam_runtime_to_c([], RuntimeCode),
     get_time(Now),
@@ -1820,6 +1820,16 @@ wam_c_builtin_smoke_main(
 
 void setup_wam_c_builtin_atom_1(WamState* state);
 
+static WamValue make_binary_struct(WamState *state, const char *functor, WamValue left, WamValue right) {
+    WamValue term;
+    term.tag = VAL_STR;
+    term.data.ref_addr = state->H;
+    state->H_array[state->H++] = val_atom(functor);
+    state->H_array[state->H++] = left;
+    state->H_array[state->H++] = right;
+    return term;
+}
+
 int main(void) {
     WamState state;
     wam_state_init(&state);
@@ -1844,6 +1854,26 @@ int main(void) {
     if (is_rc != 0 || state.A[0].tag != VAL_INT || state.A[0].data.integer != 7) {
         wam_free_state(&state);
         return 30;
+    }
+
+    WamValue pair_term = make_binary_struct(&state, "pair/2", val_atom("left"), val_int(9));
+    WamValue functor_read_args[3] = { pair_term, val_unbound("Name"), val_unbound("Arity") };
+    int functor_read_rc = wam_run_predicate(&state, "wam_c_builtin_functor/3", functor_read_args, 3);
+    if (functor_read_rc != 0 || state.P != WAM_HALT ||
+        state.A[1].tag != VAL_ATOM || strcmp(state.A[1].data.atom, "pair") != 0 ||
+        state.A[2].tag != VAL_INT || state.A[2].data.integer != 2) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    WamValue functor_make_args[3] = { val_unbound("Term"), val_atom("edge"), val_int(2) };
+    int functor_make_rc = wam_run_predicate(&state, "wam_c_builtin_functor/3", functor_make_args, 3);
+    if (functor_make_rc != 0 || state.P != WAM_HALT ||
+        state.A[0].tag != VAL_STR ||
+        state.H_array[state.A[0].data.ref_addr].tag != VAL_ATOM ||
+        strcmp(state.H_array[state.A[0].data.ref_addr].data.atom, "edge/2") != 0) {
+        wam_free_state(&state);
+        return 50;
     }
 
     wam_free_state(&state);
