@@ -1208,6 +1208,72 @@ user:wam_cpp_test_nb_counter :-
     nb_getval(wam_cpp_nb_c6, Final),
     Final = 2.
 
+% @</2, @=</2, @>/2, @>=/2, compare/3 — ISO §7.2 standard order of
+% terms. Order: Variable @< Number @< Atom @< Compound. Numbers
+% compare by value (equal-value int @< float tie-break). Atoms by
+% codepoint. Compounds by arity, then name, then args lex.
+:- dynamic user:wam_cpp_test_term_order_categories/0.
+:- dynamic user:wam_cpp_test_term_order_numbers/0.
+:- dynamic user:wam_cpp_test_term_order_atoms/0.
+:- dynamic user:wam_cpp_test_term_order_arity/0.
+:- dynamic user:wam_cpp_test_term_order_compound_name/0.
+:- dynamic user:wam_cpp_test_term_order_compound_args/0.
+:- dynamic user:wam_cpp_test_compare_lt/0.
+:- dynamic user:wam_cpp_test_compare_eq/0.
+:- dynamic user:wam_cpp_test_compare_gt/0.
+:- dynamic user:wam_cpp_test_term_order_lte_eq/0.
+:- dynamic user:wam_cpp_test_term_order_gte_eq/0.
+:- dynamic user:wam_cpp_test_term_order_neg/0.
+
+user:wam_cpp_test_term_order_categories :-
+    X @< 1,
+    1 @< foo,
+    foo @< foo(1).
+
+user:wam_cpp_test_term_order_numbers :-
+    1 @< 2,
+    1.5 @< 2.5,
+    3 @< 3.5.
+
+user:wam_cpp_test_term_order_atoms :-
+    a @< b,
+    abc @< abd,
+    abc @< abcd.
+
+% Standard order puts foo/1 @< foo/2 @< foo/3 — by arity first.
+% String compare would put "foo/10" @< "foo/2" lexicographically,
+% which is wrong; the ISO impl correctly orders by arity number.
+user:wam_cpp_test_term_order_arity :-
+    foo(1) @< foo(1, 2),
+    foo(1, 2) @< foo(1, 2, 3).
+
+user:wam_cpp_test_term_order_compound_name :-
+    a(1) @< b(1),
+    aa(1) @< ab(1).
+
+user:wam_cpp_test_term_order_compound_args :-
+    foo(1) @< foo(2),
+    foo(a, 1) @< foo(a, 2).
+
+user:wam_cpp_test_compare_lt :-
+    compare(C, 1, 2), C = (<).
+
+user:wam_cpp_test_compare_eq :-
+    compare(C, foo, foo), C = (=).
+
+user:wam_cpp_test_compare_gt :-
+    compare(C, 5, 3), C = (>).
+
+user:wam_cpp_test_term_order_lte_eq :-
+    1 @=< 1.
+
+user:wam_cpp_test_term_order_gte_eq :-
+    foo @>= foo.
+
+user:wam_cpp_test_term_order_neg :-
+    \+ (2 @< 1),
+    \+ (foo @< abc).
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -4337,6 +4403,168 @@ test(cpp_e2e_nb_counter, [condition(cpp_compiler_available)]) :-
                               [emit_main(true)], TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath, 'wam_cpp_test_nb_counter/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% @</2, @=</2, @>/2, @>=/2, compare/3 — standard order of terms.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_term_order_categories,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_to_cat', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_term_order_categories/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_term_order_categories/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_term_order_numbers,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_to_num', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_term_order_numbers/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_term_order_numbers/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_term_order_atoms,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_to_atoms', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_term_order_atoms/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_term_order_atoms/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_term_order_arity,
+     [condition(cpp_compiler_available)]) :-
+    % Regression guard: arity-first comparison (not "Name/Arity"
+    % string lex). foo/2 @< foo/10 even though "foo/10" @< "foo/2"
+    % alphabetically.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_to_arity', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_term_order_arity/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_term_order_arity/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_term_order_compound_name,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_to_cname', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_term_order_compound_name/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_term_order_compound_name/0',
+                    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_term_order_compound_args,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_to_cargs', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_term_order_compound_args/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_term_order_compound_args/0',
+                    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_compare_lt, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_compare_lt', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_compare_lt/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_compare_lt/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_compare_eq, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_compare_eq', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_compare_eq/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_compare_eq/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_compare_gt, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_compare_gt', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_compare_gt/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_compare_gt/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_term_order_lte_eq,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_to_lte', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_term_order_lte_eq/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_term_order_lte_eq/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_term_order_gte_eq,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_to_gte', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_term_order_gte_eq/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_term_order_gte_eq/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_term_order_neg, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_to_neg', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_term_order_neg/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_term_order_neg/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

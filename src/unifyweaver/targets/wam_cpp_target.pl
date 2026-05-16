@@ -2115,6 +2115,9 @@ compile_wam_runtime_to_cpp(_Options,
 
 namespace wam_cpp {
 
+// Forward declarations for free functions defined later in this TU.
+static int standard_order_cmp(const Value& a, const Value& b);
+
 // ----------------------------------------------------------------------
 // Cell helpers
 // ----------------------------------------------------------------------
@@ -3028,6 +3031,33 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         pc += 1; return true;
     }
 
+    // ---- @</2, @=</2, @>/2, @>=/2, compare/3 -----------------------
+    // ISO §7.2 standard order of terms (delegated to
+    // standard_order_cmp). These don''t unify their arguments; they
+    // just compare the current term values.
+    if (op == "@</2" || op == "@=</2" || op == "@>/2" || op == "@>=/2") {
+        int c = standard_order_cmp(deref(*get_cell("A1")),
+                                   deref(*get_cell("A2")));
+        bool ok = false;
+        if (op == "@</2")  ok = (c < 0);
+        else if (op == "@=</2") ok = (c <= 0);
+        else if (op == "@>/2")  ok = (c > 0);
+        else                    ok = (c >= 0); // "@>="
+        if (!ok) return false;
+        pc += 1; return true;
+    }
+    if (op == "compare/3") {
+        // compare(?Order, @A, @B) — Order unifies with one of <, =, >.
+        // If Order is bound to a different atom, fail.
+        int c = standard_order_cmp(deref(*get_cell("A2")),
+                                   deref(*get_cell("A3")));
+        const char* sym = (c < 0) ? "<" : (c > 0 ? ">" : "=");
+        Value ov = Value::Atom(sym);
+        CellPtr tgt = get_cell("A1");
+        if (tgt->is_unbound()) { bind_cell(tgt, ov); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(ov))) return false;
+        pc += 1; return true;
+    }
     // ---- functor/3 -------------------------------------------------
     if (op == "functor/3") {
         CellPtr t = get_cell("A1");
@@ -4118,6 +4148,75 @@ bool WamState::step(const Instruction& instr) {
 // string already encodes "Name/Arity" so comparing it covers both
 // name and arity at once when they differ. Args are deref''d so
 // indirect bindings come through correctly.
+// ISO §7.2 standard order of terms — returns -1 / 0 / +1.
+//   Variable @< Number @< Atom @< Compound
+//   Variables: by internal cell-name lex order (stable but
+//              implementation-defined per ISO).
+//   Numbers: by value. Equal-value integer @< float (ISO tie-break).
+//   Atoms: lex (codepoint).
+//   Compounds: arity first, then functor name lex, then args lex.
+//
+// Used by @</2, @=</2, @>/2, @>=/2, compare/3. Distinct from
+// term_less below, which compares the "Name/Arity" string as a
+// whole (good enough for setof''s internal sort, but not strictly
+// ISO since "foo/10" comes BEFORE "foo/2" lexicographically).
+static int standard_order_cmp(const Value& a, const Value& b) {
+    auto category = [](const Value& v) -> int {
+        if (v.is_unbound()) return 0;       // variable
+        switch (v.tag) {
+            case Value::Tag::Integer:
+            case Value::Tag::Float:    return 1; // number
+            case Value::Tag::Atom:     return 2; // atom
+            case Value::Tag::Compound: return 3; // compound
+            default:                   return 4;
+        }
+    };
+    int ca = category(a), cb = category(b);
+    if (ca != cb) return ca < cb ? -1 : 1;
+    if (ca == 0) {
+        // Both variables.
+        if (a.s < b.s) return -1;
+        if (a.s > b.s) return 1;
+        return 0;
+    }
+    if (ca == 1) {
+        double av = (a.tag == Value::Tag::Integer)
+                    ? static_cast<double>(a.i) : a.f;
+        double bv = (b.tag == Value::Tag::Integer)
+                    ? static_cast<double>(b.i) : b.f;
+        if (av < bv) return -1;
+        if (av > bv) return 1;
+        // Equal value — int @< float per ISO tie-break.
+        if (a.tag == Value::Tag::Integer && b.tag == Value::Tag::Float)
+            return -1;
+        if (a.tag == Value::Tag::Float && b.tag == Value::Tag::Integer)
+            return 1;
+        return 0;
+    }
+    if (ca == 2) {
+        if (a.s < b.s) return -1;
+        if (a.s > b.s) return 1;
+        return 0;
+    }
+    // Compound: arity, then name, then args.
+    if (a.args.size() != b.args.size())
+        return a.args.size() < b.args.size() ? -1 : 1;
+    auto name_of = [](const std::string& s) -> std::string {
+        auto slash = s.rfind(''/'');
+        return slash == std::string::npos ? s : s.substr(0, slash);
+    };
+    std::string an = name_of(a.s);
+    std::string bn = name_of(b.s);
+    if (an < bn) return -1;
+    if (an > bn) return 1;
+    for (std::size_t i = 0; i < a.args.size(); ++i) {
+        if (!a.args[i] || !b.args[i]) continue;
+        int c = standard_order_cmp(*a.args[i], *b.args[i]);
+        if (c != 0) return c;
+    }
+    return 0;
+}
+
 static bool term_less(const Value& a, const Value& b) {
     if (a.tag != b.tag)
         return static_cast<int>(a.tag) < static_cast<int>(b.tag);
