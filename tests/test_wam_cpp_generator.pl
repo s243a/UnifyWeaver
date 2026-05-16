@@ -1148,6 +1148,66 @@ user:wam_cpp_test_retract_destructive :-
     retract(wam_cpp_nd_t(1)),
     \+ wam_cpp_nd_t(1).
 
+% nb_setval/2, nb_getval/2, b_setval/2, b_getval/2 — mutable globals.
+% Stored in WamState''s nb_globals map. nb_setval REPLACES the
+% CellPtr (non-backtrackable); b_setval mutates the existing cell
+% via bind_cell so the trail can restore it on backtrack. Both
+% setvals deep-copy the value so the stored term has fresh vars;
+% getvals deep-copy on retrieval so repeated reads share structure
+% but not bindings.
+:- dynamic user:wam_cpp_test_nb_basic/0.
+:- dynamic user:wam_cpp_test_nb_replace/0.
+:- dynamic user:wam_cpp_test_nb_survives_backtrack/0.
+:- dynamic user:wam_cpp_test_b_undone_on_backtrack/0.
+:- dynamic user:wam_cpp_test_nb_unset_fails/0.
+:- dynamic user:wam_cpp_test_nb_compound/0.
+:- dynamic user:wam_cpp_test_nb_counter/0.
+
+user:wam_cpp_test_nb_basic :-
+    nb_setval(wam_cpp_nb_c1, 0),
+    nb_getval(wam_cpp_nb_c1, V),
+    V = 0.
+
+user:wam_cpp_test_nb_replace :-
+    nb_setval(wam_cpp_nb_c2, 1),
+    nb_setval(wam_cpp_nb_c2, 2),
+    nb_getval(wam_cpp_nb_c2, V),
+    V = 2.
+
+% nb_setval survives backtrack — the mutation inside the failing
+% disjunct branch persists past the ;true continuation.
+user:wam_cpp_test_nb_survives_backtrack :-
+    nb_setval(wam_cpp_nb_c3, 10),
+    (nb_setval(wam_cpp_nb_c3, 20), fail ; true),
+    nb_getval(wam_cpp_nb_c3, V),
+    V = 20.
+
+% b_setval is undone on backtrack — same shape as above, but the
+% inner b_setval gets rolled back when the disjunct fails.
+user:wam_cpp_test_b_undone_on_backtrack :-
+    nb_setval(wam_cpp_nb_c4, 10),
+    (b_setval(wam_cpp_nb_c4, 20), fail ; true),
+    nb_getval(wam_cpp_nb_c4, V),
+    V = 10.
+
+user:wam_cpp_test_nb_unset_fails :-
+    \+ nb_getval(wam_cpp_nb_never_set, _).
+
+user:wam_cpp_test_nb_compound :-
+    nb_setval(wam_cpp_nb_c5, point(3, 4)),
+    nb_getval(wam_cpp_nb_c5, V),
+    V = point(3, 4).
+
+% Counter pattern: increment-via-get-then-set. Confirms that
+% repeated reads see the latest stored value (deep-copy-on-read
+% doesn''t break the round-trip).
+user:wam_cpp_test_nb_counter :-
+    nb_setval(wam_cpp_nb_c6, 0),
+    nb_getval(wam_cpp_nb_c6, V1), V2 is V1 + 1, nb_setval(wam_cpp_nb_c6, V2),
+    nb_getval(wam_cpp_nb_c6, V3), V4 is V3 + 1, nb_setval(wam_cpp_nb_c6, V4),
+    nb_getval(wam_cpp_nb_c6, Final),
+    Final = 2.
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -4187,6 +4247,96 @@ test(cpp_e2e_retract_destructive,
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_retract_destructive/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% Mutable globals — nb_setval/getval (non-backtrackable) and
+% b_setval/getval (trail-tracked). Stored in WamState::nb_globals.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_nb_basic, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_nb_basic', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_nb_basic/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_nb_basic/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_nb_replace, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_nb_replace', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_nb_replace/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_nb_replace/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_nb_survives_backtrack,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_nb_bt', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_nb_survives_backtrack/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_nb_survives_backtrack/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_b_undone_on_backtrack,
+     [condition(cpp_compiler_available)]) :-
+    % Direct regression guard for b_setval''s trail integration.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_b_bt', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_b_undone_on_backtrack/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_b_undone_on_backtrack/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_nb_unset_fails, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_nb_unset', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_nb_unset_fails/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_nb_unset_fails/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_nb_compound, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_nb_compound', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_nb_compound/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_nb_compound/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_nb_counter, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_nb_counter', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_nb_counter/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_nb_counter/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
