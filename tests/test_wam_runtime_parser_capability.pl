@@ -26,6 +26,9 @@ test(unknown_target_defaults_to_none) :-
 test(python_defaults_to_none) :-
     wam_target_runtime_parser(wam_python, [], none).
 
+test(elixir_defaults_to_none) :-
+    wam_target_runtime_parser(wam_elixir, [], none).
+
 test(unknown_target_native_request_errors,
      [error(domain_error(runtime_parser_mode(wam_lua), native))]) :-
     wam_target_runtime_parser(wam_lua, [runtime_parser(native)], _).
@@ -33,6 +36,10 @@ test(unknown_target_native_request_errors,
 test(python_native_request_errors,
      [error(domain_error(runtime_parser_mode(wam_python), native))]) :-
     wam_target_runtime_parser(wam_python, [runtime_parser(native)], _).
+
+test(elixir_native_request_errors,
+     [error(domain_error(runtime_parser_mode(wam_elixir), native))]) :-
+    wam_target_runtime_parser(wam_elixir, [runtime_parser(native)], _).
 
 test(unknown_target_compiled_request_errors,
      [error(domain_error(runtime_parser_mode(wam_lua), compiled))]) :-
