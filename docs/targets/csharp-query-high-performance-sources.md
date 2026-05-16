@@ -293,6 +293,12 @@ need manual override:
   `--artifact-root` and reuses existing backend artifacts by default; use
   `--refresh-artifacts` to rebuild, matching the Haskell benchmark's explicit
   LMDB refresh convention.
+  The first local 1M enwiki-capped probe kept the same policy conclusion:
+  `mmap-array` won lookup and bucket access, `preload` won full scan, and LMDB
+  was smaller than binary/delimited artifacts but larger and slower than the
+  fixed-width mmap array for this arity-2 support relation. Treat LMDB as a
+  large-data comparison point or dependency-backed alternative here, not a
+  default `auto` policy winner yet.
   Haskell's LMDB cache modes remain a higher-level query-locality policy; this
   C# query benchmark intentionally isolates backend scan, lookup, and bucket
   access before adding cache-policy comparisons.
