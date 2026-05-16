@@ -169,6 +169,13 @@ render_compiled_module(CamelMod, CamelPred, PredIndicator, PredStr, ShapeComment
     catch
       {:fail, _} -> :fail
       {:return, result} -> result
+      # PR #2: an uncaught Prolog throw (no enclosing catch/3 on
+      # the BEAM stack matched the thrown term) reaches here. Mirror
+      # the empty-catcher_frames case in execute_throw — diagnostic
+      # to stderr, return :fail rather than crash.
+      {:wam_throw, term} ->
+        IO.puts(:stderr, "Uncaught Prolog throw: #{inspect(term)}")
+        :fail
       error ->
         IO.puts("Predicate ~w CRASHED: #{inspect(error)}")
         :fail
@@ -224,6 +231,10 @@ render_inline_data_module(CamelMod, CamelPred, PredStr, Arity, ShapeComment,
     catch
       {:fail, _} -> :fail
       {:return, result} -> result
+      # PR #2: uncaught Prolog throw -> :fail + stderr (not crash).
+      {:wam_throw, term} ->
+        IO.puts(:stderr, "Uncaught Prolog throw: #{inspect(term)}")
+        :fail
       error ->
         IO.puts("Predicate ~w CRASHED: #{inspect(error)}")
         :fail
@@ -316,6 +327,10 @@ render_external_source_module(CamelMod, CamelPred, PredStr, Arity, ShapeComment,
     catch
       {:fail, _} -> :fail
       {:return, result} -> result
+      # PR #2: uncaught Prolog throw -> :fail + stderr (not crash).
+      {:wam_throw, term} ->
+        IO.puts(:stderr, "Uncaught Prolog throw: #{inspect(term)}")
+        :fail
       error ->
         IO.puts("Predicate ~w CRASHED: #{inspect(error)}")
         :fail

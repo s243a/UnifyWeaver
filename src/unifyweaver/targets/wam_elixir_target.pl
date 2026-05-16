@@ -237,6 +237,14 @@ wam_elixir_case(call,
       # WAM compiler''s emission convention.
       {:call, "call/" <> _, total_arity} ->
         dispatch_call_meta(state, total_arity, state.pc + 1)
+      # catch/3 + throw/1 (PR #2). Same caught-before-label-lookup
+      # pattern as call/N — the dispatched goal is handled by
+      # execute_catch / execute_throw runtime helpers (see
+      # WAM_ELIXIR_GAPS_SPECIFICATION.md PR #2).
+      {:call, "catch/3", 3} ->
+        execute_catch(%{state | cp: state.pc + 1})
+      {:call, "throw/1", 1} ->
+        execute_throw(state)
       # Fallback: unresolved string label (cross-module/orphan).
       {:call, p, _n} when is_binary(p) ->
         case Map.get(state.labels, p) do
@@ -258,6 +266,11 @@ wam_elixir_case(execute,
           {total_arity, ""} -> dispatch_call_meta(state, total_arity, state.cp)
           _ -> :fail
         end
+      # Tail-position catch/3 + throw/1 (PR #2).
+      {:execute, "catch/3"} ->
+        execute_catch(state)
+      {:execute, "throw/1"} ->
+        execute_throw(state)
       # Fallback: unresolved string label.
       {:execute, p} when is_binary(p) ->
         case Map.get(state.labels, p) do
@@ -1174,6 +1187,21 @@ compile_utility_helpers_to_elixir(Code) :-
         # wam_elixir_case(call, ...) and wam_elixir_case(execute, ...)).
         # See WAM_ELIXIR_GAPS_SPECIFICATION.md PR #1.
         dispatch_call_meta(state, n, state.cp)
+      {"catch/3", 3} ->
+        # catch(Goal, Catcher, Recovery). Side-stack a CatcherFrame,
+        # dispatch Goal under a try/catch that intercepts {:wam_throw, _}
+        # raised by execute_throw. See WAM_ELIXIR_GAPS_SPECIFICATION.md
+        # PR #2 §4.
+        execute_catch(state)
+      {"throw/1", 1} ->
+        # throw(Term). Deep-copy the term (independent of catch
+        # boundary), then BEAM-throw {:wam_throw, copy} so the
+        # nearest enclosing execute_catch unwinds the BEAM stack
+        # back to itself. If catcher_frames is empty, no enclosing
+        # catch exists at the WAM level — convert to :fail + stderr
+        # diagnostic so the lowered run(args) wrapper sees a clean
+        # failure rather than a crash.
+        execute_throw(state)
       _ ->
         # Hardening: surface unimplemented builtins instead of silently
         # returning :fail. The pre-hardening default arm masked
@@ -1304,6 +1332,143 @@ compile_utility_helpers_to_elixir(Code) :-
     args
     |> Enum.with_index(start_reg)
     |> Enum.reduce(state, fn {arg, i}, s -> %{s | regs: Map.put(s.regs, i, arg)} end)
+  end
+
+  # ---- catch/3 + throw/1 (PR #2) -----------------------------------
+  #
+  # Mirrors the C++ catch/throw infrastructure (commit 151c0178). The
+  # WAM compiler emits catch/3 and throw/1 as ordinary control
+  # instructions whose op-name is dispatched here through the same
+  # builtin-call path that PR #1''s call/N uses.
+  #
+  # Architecture (Option A from WAM_ELIXIR_PARITY_PHILOSOPHY.md §5):
+  # side-stack CatcherFrame held in state.catcher_frames. throw/1
+  # raises {:wam_throw, term} as a BEAM throw — execute_catch wraps
+  # the dispatched goal in try/catch to intercept it. State
+  # restoration is manual (trail unwind + reg/stack snapshot).
+  #
+  # Why BEAM throw rather than purely manual stack walking: lowered
+  # mode runs each instruction as plain Elixir function calls — there
+  # is no PC-driven dispatch loop to hijack. BEAM''s throw semantics
+  # are how we unwind across nested predicate calls back to the
+  # nearest enclosing catch. Side-stack catcher_frames carries the
+  # WAM-level state; BEAM throw carries the unwinding mechanism.
+  # Option B (further simplifying via process-level exit() etc.) is
+  # deferred per PHILOSOPHY §5.
+
+  defp execute_catch(state) do
+    # A1 = goal-term, A2 = catcher pattern, A3 = recovery goal.
+    # Snapshot a deref''d copy of catcher / recovery so subsequent
+    # reg overwriting (when dispatch_call_meta loads A1 with the
+    # goals first arg) doesn''t lose them.
+    catcher = deref_var(state, get_reg(state, 2))
+    recovery = deref_var(state, get_reg(state, 3))
+    saved_cp = state.cp
+
+    # Build the frame. base_cp_count and trail_mark let us truncate
+    # / unwind state on a matching throw. Reg / stack snapshots are
+    # full copies — Elixir maps and lists are persistent so the
+    # snapshot cost is structural-share, not deep-copy.
+    frame = %{
+      catcher_term: catcher,
+      recovery_term: recovery,
+      saved_cp: saved_cp,
+      trail_mark: state.trail_len,
+      base_cp_count: length(state.choice_points),
+      saved_regs: state.regs,
+      saved_stack: state.stack
+    }
+    state_with_frame = %{state | catcher_frames: [frame | state.catcher_frames]}
+
+    try do
+      # Dispatch A1 as a goal-term tail call with cp = saved_cp so
+      # the goal''s normal proceed lands at the meta-calls return
+      # point. We reuse dispatch_call_meta with total_arity=1 (A1
+      # only, no extras) — same machinery PR #1 already verified.
+      case dispatch_call_meta(state_with_frame, 1, saved_cp) do
+        :fail ->
+          # Goal failed without throwing. Catch propagates failure;
+          # recovery is NOT invoked. The catcher_frame disappears
+          # because state_with_frame doesnt escape this function.
+          :fail
+        post_state when is_map(post_state) ->
+          # Goal succeeded. Pop our frame from catcher_frames before
+          # returning (the post-state inherits the frame from
+          # state_with_frame; we remove it now that the catch scope
+          # has ended).
+          %{post_state | catcher_frames: tl(post_state.catcher_frames)}
+      end
+    catch
+      {:wam_throw, thrown_term} ->
+        # A throw fired somewhere inside the dispatched goal. Try
+        # to unify the thrown term against our catcher pattern.
+        # First restore state from the snapshot (rolls back any
+        # bindings the goal made before throwing).
+        restored = restore_from_catcher_frame(state_with_frame, frame)
+        # Unify catcher pattern against the thrown term. On match,
+        # bindings to pattern vars persist into the recovery goal.
+        case unify(restored, frame.catcher_term, thrown_term) do
+          {:ok, bound_state} ->
+            # Match. Pop our frame, load A1 with the recovery goal,
+            # dispatch via the same call/N path. cp = saved_cp so
+            # the recovery goals proceed lands at the meta-calls
+            # return point.
+            popped = %{bound_state |
+                       catcher_frames: tl(bound_state.catcher_frames),
+                       regs: Map.put(bound_state.regs, 1, frame.recovery_term)}
+            dispatch_call_meta(popped, 1, saved_cp)
+          :fail ->
+            # No match. Re-throw to outer catcher (BEAM unwinds
+            # past us to the next enclosing try/catch).
+            throw({:wam_throw, thrown_term})
+        end
+    end
+  end
+
+  defp execute_throw(state) do
+    # A1 = thrown term. Deep-copy with fresh vars so any unbound
+    # leaves are independent of the catch boundary — the catcher
+    # sees the value as it was at throw time, even if the
+    # original vars get rolled back during state restoration.
+    raw = deref_var(state, get_reg(state, 1))
+    {_state2, thrown_copy, _vmap} = deep_copy_with_fresh_vars(state, raw, %{})
+
+    if state.catcher_frames == [] do
+      # No catcher exists anywhere on the BEAM call stack. ISO
+      # says this is an uncaught error that terminates the program;
+      # we soften to :fail + stderr diagnostic so the lowered
+      # run(args) wrapper returns cleanly rather than crashing.
+      IO.puts(:stderr, "Uncaught Prolog throw: #{inspect(thrown_copy)}")
+      :fail
+    else
+      # At least one frame exists. Throw — execute_catch up the
+      # stack will catch and try to match.
+      throw({:wam_throw, thrown_copy})
+    end
+  end
+
+  # Restore state from a CatcherFrame snapshot:
+  #   - Trail rolled back to the mark (undoes variable bindings).
+  #   - Choice-point stack truncated to the base count (drops any
+  #     CPs the dispatched goal pushed).
+  #   - Regs and env stack restored from snapshot.
+  # Heap is intentionally NOT rolled back — new cells become
+  # unreachable garbage but cause no correctness issue. Trail
+  # rollback un-binds heap vars that were bound during the goal.
+  defp restore_from_catcher_frame(state, frame) do
+    unwound = unwind_trail(state, frame.trail_mark)
+    current_cp_count = length(unwound.choice_points)
+    new_cps =
+      if current_cp_count > frame.base_cp_count do
+        Enum.drop(unwound.choice_points,
+                  current_cp_count - frame.base_cp_count)
+      else
+        unwound.choice_points
+      end
+    %{unwound |
+      choice_points: new_cps,
+      regs: frame.saved_regs,
+      stack: frame.saved_stack}
   end
 
   # Extract the functor-name part from a "name/arity" string.
@@ -2088,7 +2253,15 @@ compile_wam_runtime_to_elixir(Options, Code) :-
               # forking; preserved across the branchs internal
               # enumeration. See WAM_ELIXIR_TIER2_FINDALL_PHASE4.md
               # section 4 for the protocol.
-              branch_mode: false
+              branch_mode: false,
+              # Side-stack of catch/3 frames (PR #2). Each frame holds the
+              # catcher pattern, the recovery goal, and enough state
+              # snapshot to restore on a matching throw. Walked from the
+              # top in execute_throw. Pushed in execute_catch; popped on
+              # the protected goals normal proceed (or after a matching
+              # recovery dispatches). See WAM_ELIXIR_GAPS_SPECIFICATION.md
+              # PR #2 §4.1.
+              catcher_frames: []
   end
 
 ~w
@@ -3808,9 +3981,16 @@ compile_wam_predicate_to_elixir(Pred/Arity, WamCode, _Options, Code) :-
       end
     end)
     state = %{state | arg_vars: arg_vars}
-    case WamRuntime.run(state) do
-      {:ok, final} -> {:ok, WamRuntime.materialise_args(final)}
-      other -> other
+    try do
+      case WamRuntime.run(state) do
+        {:ok, final} -> {:ok, WamRuntime.materialise_args(final)}
+        other -> other
+      end
+    catch
+      # PR #2: uncaught Prolog throw -> :fail + stderr (not crash).
+      {:wam_throw, term} ->
+        IO.puts(:stderr, "Uncaught Prolog throw: #{inspect(term)}")
+        :fail
     end
   end
 end', [PredStr, PredStr, Arity, InstrLiterals, LabelLiterals]).

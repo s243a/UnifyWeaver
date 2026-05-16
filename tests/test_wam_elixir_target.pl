@@ -197,6 +197,69 @@ test_build_call_target_compound_clause :-
     ;   fail_test(Test, '{:ref, addr} compound dispatch clause missing')
     ).
 
+%% catch/3 + throw/1 generator gates (PR #2)
+
+test_catcher_frames_in_state :-
+    Test = 'WAM-Elixir: WamState defstruct has catcher_frames field',
+    (   compile_wam_runtime_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'catcher_frames: []')
+    ->  pass(Test)
+    ;   fail_test(Test, 'catcher_frames missing from WamState defstruct')
+    ).
+
+test_execute_catch_throw_helpers :-
+    Test = 'WAM-Elixir: execute_catch / execute_throw / restore_from_catcher_frame helpers present',
+    (   compile_wam_helpers_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'defp execute_catch(state)'),
+        sub_string(S, _, _, _, 'defp execute_throw(state)'),
+        sub_string(S, _, _, _, 'defp restore_from_catcher_frame(state, frame)')
+    ->  pass(Test)
+    ;   fail_test(Test,
+                  'execute_catch / execute_throw / restore_from_catcher_frame missing')
+    ).
+
+test_catch_throw_builtin_arms :-
+    Test = 'WAM-Elixir: execute_builtin has {"catch/3", 3} and {"throw/1", 1} arms',
+    (   compile_wam_helpers_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, '{"catch/3", 3}'),
+        sub_string(S, _, _, _, '{"throw/1", 1}'),
+        % Both arms route to the runtime helpers.
+        sub_string(S, _, _, _, 'execute_catch(state)'),
+        sub_string(S, _, _, _, 'execute_throw(state)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'catch/3 or throw/1 builtin arm missing')
+    ).
+
+test_catch_throw_step_arms :-
+    Test = 'WAM-Elixir: :call and :execute step arms catch "catch/3" + "throw/1"',
+    (   wam_elixir_case(call, CallCode),
+        sub_string(CallCode, _, _, _, '{:call, "catch/3", 3}'),
+        sub_string(CallCode, _, _, _, '{:call, "throw/1", 1}'),
+        wam_elixir_case(execute, ExecCode),
+        sub_string(ExecCode, _, _, _, '{:execute, "catch/3"}'),
+        sub_string(ExecCode, _, _, _, '{:execute, "throw/1"}')
+    ->  pass(Test)
+    ;   fail_test(Test, 'catch/3 or throw/1 missing from step arms')
+    ).
+
+test_wam_throw_top_level_wrapper :-
+    Test = 'WAM-Elixir: predicate run(args) wrapper catches uncaught {:wam_throw, _}',
+    % This tests the wrapper inside compile_wam_predicate_to_elixir
+    % (the interpreter-mode entrypoint). The lowered emitter has its
+    % own three wrappers that are tested separately.
+    (   compile_wam_predicate_to_elixir(noop/0,
+            "noop/0:\n    proceed", [], PredCode),
+        atom_string(PredCode, S),
+        sub_string(S, _, _, _, '{:wam_throw, term}'),
+        sub_string(S, _, _, _, 'Uncaught Prolog throw')
+    ->  pass(Test)
+    ;   fail_test(Test,
+                  'wam_throw catch arm missing from predicate run(args) wrapper')
+    ).
+
 test_true_zero_builtin :-
     Test = 'WAM-Elixir: true/0 builtin arm exists',
     (   compile_wam_helpers_to_elixir([], Code),
@@ -2825,6 +2888,11 @@ run_tests :-
     test_true_zero_builtin,
     test_build_call_target_helpers,
     test_build_call_target_compound_clause,
+    test_catcher_frames_in_state,
+    test_execute_catch_throw_helpers,
+    test_catch_throw_builtin_arms,
+    test_catch_throw_step_arms,
+    test_wam_throw_top_level_wrapper,
     test_elixir_idioms,
     test_immutable_state_updates,
     test_functional_run_loop,
