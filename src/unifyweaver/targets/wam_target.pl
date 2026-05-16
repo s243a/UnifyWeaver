@@ -1487,6 +1487,11 @@ is_builtin_pred(maplist, 2).      % apply goal to each list element.
 is_builtin_pred(maplist, 3).
 is_builtin_pred(maplist, 4).
 is_builtin_pred(maplist, 5).
+is_builtin_pred(include, 3).      % filter: keep elems where Goal succeeds.
+is_builtin_pred(exclude, 3).      % filter: drop elems where Goal succeeds.
+is_builtin_pred(partition, 4).    % split into pass + fail lists.
+is_builtin_pred(foldl, 4).        % left fold over one list.
+is_builtin_pred(foldl, 5).        % left fold over two lists in parallel.
 % Note: sub_atom/5 is nondeterministic; like findall/bagof/setof it
 % goes through the Call/Execute dispatch path (not is_builtin_pred)
 % so dispatch_sub_atom can manage its own CP machinery.
