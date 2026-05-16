@@ -5,7 +5,7 @@ Status date: 2026-05-16
 Base verified locally:
 
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `db35f30c` (`Merge pull request #2159 from s243a/perf/wam-c-lowered-helper-indexed-rows`)
+- `main` at `ab60ee06` (`Merge pull request #2163 from s243a/perf/wam-c-lowered-helper-compile-size`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
 - `python3 tests/test_wam_c_lowered_helper_scale_regression.py`
@@ -15,7 +15,7 @@ Base verified locally:
 
 Active branch:
 
-- `perf/wam-c-lowered-helper-compile-size`
+- `test/wam-c-lowered-helper-larger-scale-regression`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -64,7 +64,8 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Lowered helper scale regression coverage | Done | `tests/test_wam_c_lowered_helper_scale_regression.py` pins `dev`/`10x` row counts and interpreted/lowered hash parity |
 | Lowered helper larger-scale calibration | Done | Self-contained lowered-helper scales no longer require matching `data/benchmark/<scale>` directories; `25x`, `100x`, and `1k` preserve output parity |
 | Lowered helper indexed row dispatch | Done | First-argument hash-bucket dispatch preserves unbound-argument fallback and gives `1k` lowered-helper runtime around 5.8x faster than interpreted in local calibration |
-| Lowered helper compile/code-size compaction | In progress | Active branch emits compact static row tables plus bucket row-index arrays instead of duplicating full row-check code per generated row |
+| Lowered helper compile/code-size compaction | Done | Compact static row tables plus bucket row-index arrays reduce `1k` generated `lib.c` from 12.8 MB to 2.6 MB and compile time from 151.75s to 0.98s |
+| Lowered helper larger-scale regression | In progress | Active branch promotes `100x` into the focused local lowered-helper parity regression while leaving `1k` as calibration-only because it costs about 31s end to end |
 
 ## Current C Target Baseline
 
@@ -145,21 +146,40 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `perf/wam-c-lowered-helper-compile-size`
+### 1. `test/wam-c-lowered-helper-larger-scale-regression`
 
-Goal: reduce generated lowered-helper C size and compile cost before promoting
-larger scales into routine validation.
+Goal: pin the cheapest useful larger-scale regression point now that runtime
+and compile cost are both acceptable.
 
 Scope:
 
-- Emit compact static row tables for lowered fact, filtered-fact, and
-  comparison-filter helpers.
-- Keep the first-argument hash-bucket runtime dispatch by storing compact
-  bucket row-index arrays.
-- Measure generated `lib.c` size and compile time for `100x` and `1k` lowered
-  helper projects.
+- Add `100x` to the focused local lowered-helper parity regression.
+- Assert interpreted/lowered hash parity and expected row counts for `dev`,
+  `10x`, and `100x`.
+- Keep `1k` as documented calibration-only for now because it costs about 31s
+  in the normal matrix path.
 
 Status: active.
+
+Routine-scale selection:
+
+| Scale | Normal matrix wall-clock | Rows | Decision |
+|---|---:|---:|---|
+| `100x` | 8.53s | 1600 | Promote to local regression |
+| `1k` | 30.84s | 4000 | Keep as calibration-only |
+
+### 2. `feat/wam-c-lowered-helper-next-shape-selection`
+
+Goal: choose the next lowered-helper feature gap now that scaled row dispatch
+has local regression coverage.
+
+Scope:
+
+- Compare remaining C gaps against the Haskell and Rust hybrid WAM examples.
+- Prefer a narrow helper shape or builtin needed by existing benchmark surfaces.
+- Avoid broad CI expansion until the next target surface is stable.
+
+## Completed Calibration
 
 Compile/code-size baseline after indexed row dispatch but before compaction:
 
@@ -168,7 +188,7 @@ Compile/code-size baseline after indexed row dispatch but before compaction:
 | `100x` | 5,120,321 bytes | 33.77s |
 | `1k` | 12,750,113 bytes | 151.75s |
 
-Current active-branch compile/code-size result with compact row tables:
+Compile/code-size result with compact row tables:
 
 | Scale | `lib.c` size | Compile real time |
 |---|---:|---:|
@@ -187,19 +207,6 @@ Runtime calibration after compaction:
 
 The compact representation preserves the indexed runtime win while making `1k`
 compilation routine-scale again.
-
-### 2. `test/wam-c-lowered-helper-larger-scale-regression`
-
-Goal: decide and pin the cheapest larger-scale regression point now that
-runtime and compile cost are both acceptable.
-
-Scope:
-
-- Compare `100x` and `1k` wall-clock cost in the normal matrix path.
-- Add a focused local regression for the selected scale if it is cheap enough
-  for routine validation.
-- Keep GitHub Actions out of scope unless the target surface becomes stable
-  enough that CI failures are likely actionable.
 
 ## Historical Calibration
 
@@ -223,7 +230,8 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Continue validating `perf/wam-c-lowered-helper-compile-size`.
+Continue validating `test/wam-c-lowered-helper-larger-scale-regression`.
 
-The active branch now has both runtime and compile-time evidence. If the final
-focused gates stay green, it should be ready for PR.
+The active branch should keep the local regression focused on `100x`; `1k`
+remains useful for occasional calibration but is too slow for routine local
+validation.
