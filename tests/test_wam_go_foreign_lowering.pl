@@ -144,6 +144,7 @@ test(atom_fact2_source_registry_runtime_shape) :-
     assertion(sub_string(Runtime, _, _, _, 'exec.Command(source.helperBin, args...).Output()')),
     assertion(sub_string(Runtime, _, _, _, 'func (vm *WamState) registerAtomFact2Source(predKey string, source AtomFact2Source)')),
     assertion(sub_string(Runtime, _, _, _, 'pairs = source.LookupArg1(key)')),
+    assertion(sub_string(Runtime, _, _, _, 'return vm.finishStreamResults(predKey, []int{1}, results)')),
     read_file_to_string('templates/targets/go_wam/state.go.mustache', State, []),
     assertion(sub_string(State, _, _, _, 'type AtomFact2Source interface')),
     assertion(sub_string(State, _, _, _, 'AtomFact2Sources          map[string]AtomFact2Source')).

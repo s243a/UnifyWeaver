@@ -8,7 +8,7 @@ current cross-target builtin/runtime baseline.
 
 | Area | Go support | Rust/Haskell baseline | Status |
 | --- | --- | --- | --- |
-| Choice points and backtracking | `try_me_else`, `retry_me_else`, `trust_me`, indexed alternatives, foreign stream retries, `member/2` builtin retries | Choice point stack with normal, builtin, and fact-stream resume states | Partial |
+| Choice points and backtracking | `try_me_else`, `retry_me_else`, `trust_me`, indexed alternatives, foreign stream retries, indexed atom fact streams, `member/2` builtin retries | Choice point stack with normal, builtin, and fact-stream resume states | Present for current resume-state baseline |
 | Direct fact dispatch | `call_indexed_atom_fact2`, `AtomFact2Source` registry, TSV-backed and LMDB-artifact atom fact loading, foreign/native kernel registration, indexed atom/weighted fact tables | `call_indexed_atom_fact2`, inline/external fact stream paths | Present for current external atom fact-source baseline |
 | Aggregates | `begin_aggregate`, `end_aggregate`; `collect`, `bag`, `bagof`, `count`, `sum`, `min`, `max`, `set`, `setof` | `findall/3`, `aggregate_all/3` count/sum/min/max/set families | Present for current aggregate baseline |
 | Structural builtins | `member/2`, `length/2`, `append/3` | `member/2`, `length/2`; Rust `append/3` is explicitly unimplemented | Present for current baseline structural checks |
@@ -31,6 +31,9 @@ current cross-target builtin/runtime baseline.
   are now deduplicated like Haskell's `nub` behavior.
 - `member/2` now pushes builtin choice points for later list members, so
   `findall/3` can collect every unifiable element.
+- Go WAM choice points now have explicit generated-runtime coverage for normal
+  clause retries, indexed alternatives, foreign stream retries, indexed atom
+  fact streams, and `member/2` builtin retries.
 - `=</2`, `is_list/1`, and `display/1` are now covered by the generated Go
   WAM builtin E2E test.
 - `=/2` and `\=/2` are now covered by the generated Go WAM builtin E2E test.
