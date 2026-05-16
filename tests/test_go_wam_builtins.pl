@@ -8,6 +8,7 @@
 :- dynamic user:test_builtins/1.
 :- dynamic user:test_term_builtins/0.
 :- dynamic user:test_member_collect/0.
+:- dynamic user:test_memberchk_builtin/0.
 :- dynamic user:test_set_aggregate/0.
 :- dynamic user:test_unify_builtin/0.
 :- dynamic user:test_neg_fact/1.
@@ -51,6 +52,11 @@ test(builtins_execution) :-
                 member(a, L),
                 member(b, L)
             )),
+          assertz(user:test_memberchk_builtin :-
+            (   memberchk(X, [a,b,c]),
+                X == a,
+                \+ memberchk(z, [a,b,c])
+            )),
           assertz(user:test_set_aggregate :-
             (   aggregate_all(set(X), member(X, [a,b,a]), S),
                 length(S, 2),
@@ -75,6 +81,7 @@ test(builtins_execution) :-
         ( retractall(user:test_builtins(_)),
           retractall(user:test_term_builtins),
           retractall(user:test_member_collect),
+          retractall(user:test_memberchk_builtin),
           retractall(user:test_set_aggregate),
           retractall(user:test_unify_builtin),
           retractall(user:test_neg_fact(_)),
@@ -84,7 +91,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -115,6 +122,7 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "=../2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "copy_term/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "=/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "memberchk/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "\\\\+/1"')),
     assertion(sub_string(LibCode, _, _, _, 'AggType: "set"')),
 
@@ -158,6 +166,14 @@ func main() {
 		fmt.Println("MEMBER_SUCCESS")
 	} else {
 		fmt.Println("MEMBER_FAILURE")
+	}
+
+	memberchkVM := wam.NewWamState(wam.Test_memberchk_builtinCode, wam.Test_memberchk_builtinLabels)
+	memberchkVM.PC = wam.Test_memberchk_builtinStartPC
+	if memberchkVM.Run() {
+		fmt.Println("MEMBERCHK_SUCCESS")
+	} else {
+		fmt.Println("MEMBERCHK_FAILURE")
 	}
 
 	setVM := wam.NewWamState(wam.Test_set_aggregateCode, wam.Test_set_aggregateLabels)
@@ -212,6 +228,7 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "SUCCESS: X=3")),
         assertion(sub_string(FullOutput, _, _, _, "TERM_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "MEMBER_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "MEMBERCHK_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SET_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "UNIFY_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "NEG_SUCCESS")),
