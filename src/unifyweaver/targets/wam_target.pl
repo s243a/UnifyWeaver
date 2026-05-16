@@ -277,16 +277,37 @@ format_index_entries(Entries, Str) :-
 %% quote_wam_constant(+Value, -QuotedString)
 %  Value is an atom, string, or number. QuotedString is a string
 %  suitable to embed after `get_constant`, `put_constant`, etc.
+%
+%  Atom-vs-number disambiguation: when an atom''s textual form would
+%  re-parse as a number (`''5''`, `''42''`, `''-3.14''`), the emitted
+%  text gets a `\\x01` marker INSIDE the quotes — e.g. `''\\x015''`.
+%  After the tokenizer strips the outer quotes, the token is
+%  `\\x015`. Constant-emitters that recognise the marker treat the
+%  token as an atom (stripping the marker); ones that don''t still
+%  produce a (visibly-weird-but-valid) atom name, which is better
+%  than the previous silent-coercion-to-integer.
 quote_wam_constant(Value, Quoted) :-
     (   number(Value)
     ->  format(string(Quoted), "~w", [Value])
     ;   ( atom(Value) -> atom_string(Value, Str) ; Str = Value ),
-        (   constant_needs_quoting(Str)
+        (   atom_looks_like_number(Str)
+        ->  % Quote with marker so the round-trip preserves Atom-ness
+            % vs Number even when the textual form is numeric.
+            escape_for_wam_quoting(Str, Escaped),
+            format(string(Quoted), "'~w'", [Escaped])
+        ;   constant_needs_quoting(Str)
         ->  escape_for_wam_quoting(Str, Escaped),
             format(string(Quoted), "'~w'", [Escaped])
         ;   Quoted = Str
         )
     ).
+
+%% atom_looks_like_number(+Str) is semidet.
+%  True iff Str (which is the textual form of an atom) would re-parse
+%  as a number. Used by quote_wam_constant to decide whether to add
+%  the atom-marker.
+atom_looks_like_number(Str) :-
+    catch(number_string(_, Str), _, fail).
 
 constant_needs_quoting("") :- !.
 constant_needs_quoting(Str) :-

@@ -134,7 +134,13 @@ cpp_atomics_to_string([X, Y|Rest], Sep, Result) :-
 %  literal usable inside the generated source.
 cpp_value_literal(C, Val) :-
     to_string(C, Str),
-    (   number_string(N, Str), integer(N)
+    (   atom_marker_prefix(Str, AtomContent)
+    ->  % Atom-marker (\\x01 prefix) — emit as Atom regardless of
+        % whether the content re-parses as a number. The marker
+        % itself is stripped; only AtomContent reaches the output.
+        escape_cpp_string(AtomContent, EscStr),
+        format(atom(Val), 'Value::Atom("~w")', [EscStr])
+    ;   number_string(N, Str), integer(N)
     ->  format(atom(Val), 'Value::Integer(~w)', [N])
     ;   number_string(F, Str), float(F)
     ->  format(atom(Val), 'Value::Float(~w)', [F])
@@ -143,6 +149,14 @@ cpp_value_literal(C, Val) :-
     ;   escape_cpp_string(Str, EscStr),
         format(atom(Val), 'Value::Atom("~w")', [EscStr])
     ).
+
+%% atom_marker_prefix(+Str, -Stripped) is semidet.
+%  True iff Str starts with the atom-marker (\\x01); Stripped is the
+%  remainder. Matches the marker convention emitted by
+%  wam_target:quote_wam_constant/2 for atoms-that-look-like-numbers.
+atom_marker_prefix(Str, Stripped) :-
+    string_codes(Str, [1|RestCodes]),
+    string_codes(Stripped, RestCodes).
 
 to_string(X, S) :- string(X), !, S = X.
 to_string(X, S) :- atom(X), !, atom_string(X, S).
