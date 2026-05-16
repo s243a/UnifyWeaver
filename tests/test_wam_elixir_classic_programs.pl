@@ -138,6 +138,61 @@ user:elx_iso_is_succeeds(R) :- is_iso(X, 1 + 1), R = X.
 % -> top-level wrapper converts to :fail. Predicate fails.
 user:elx_explicit_lax_fails :- is_lax(_X, foo).
 
+% --- ISO sweep acceptance cases (PR #5) ---
+% Spec: docs/design/WAM_ELIXIR_GAPS_SPECIFICATION.md §3 PR #5.
+% Mirror C++ commit 0dda9d1b. Test ops are representative — once
+% one >_iso works, the parallel <_iso / >=_iso / =<_iso /
+% =:=_iso / =\\=_iso work via the same combined runtime arm.
+
+:- dynamic user:elx_iso_compare_instantiation/0.
+:- dynamic user:elx_iso_compare_type/0.
+:- dynamic user:elx_iso_compare_zero_divide/0.
+:- dynamic user:elx_lax_compare_silent/0.
+:- dynamic user:elx_explicit_lax_compare_in_iso/0.
+:- dynamic user:elx_iso_succ_unbound/0.
+:- dynamic user:elx_iso_succ_negative/0.
+:- dynamic user:elx_iso_succ_y_zero/0.
+:- dynamic user:elx_succ_happy_forward/1.
+:- dynamic user:elx_succ_happy_backward/1.
+:- dynamic user:elx_lax_succ_negative_fails/0.
+:- dynamic user:elx_succ_explicit_lax_in_iso/0.
+:- dynamic user:elx_iso_float_divzero/0.
+:- dynamic user:elx_lax_float_divzero_fails/0.
+
+% --- Arith compare iso/lax/bypass (representative on >, <, >=) ---
+% >: ISO throws instantiation_error for unbound operand.
+user:elx_iso_compare_instantiation :- catch((_X > 5), _, true).
+% <: ISO throws type_error(evaluable, foo/0) for atom operand.
+user:elx_iso_compare_type :- catch((foo < 5), _, true).
+% =:=: ISO throws evaluation_error(zero_divisor) for 1//0 operand.
+user:elx_iso_compare_zero_divide :- catch((1 // 0 =:= 0), _, true).
+% Lax: silent fail (no throw, no crash).
+user:elx_lax_compare_silent :- (_X > 5).
+% Explicit >_lax in iso-mode predicate bypasses rewrite -> silent fail.
+% '>_lax' must be quoted because `>` makes it look like an operator.
+user:elx_explicit_lax_compare_in_iso :- '>_lax'(_X, 5).
+
+% --- succ_iso/2 (three ISO error modes + happy path) ---
+user:elx_iso_succ_unbound  :- catch(succ_iso(_X, _Y), _, true).
+user:elx_iso_succ_negative :- catch(succ_iso(-1, _X), _, true).
+user:elx_iso_succ_y_zero   :- catch(succ_iso(_X, 0),  _, true).
+% Happy path: forward + backward succ via default form (now rewritten
+% to succ_lax/2 in default mode; same body).
+user:elx_succ_happy_forward(R)  :- succ(3, X), R = X.
+user:elx_succ_happy_backward(R) :- succ(X, 5), R = X.
+% Lax silent fail on negative input.
+user:elx_lax_succ_negative_fails :- succ(-1, _X).
+% Explicit succ_lax in iso-mode predicate -> silent fail (bypass).
+user:elx_succ_explicit_lax_in_iso :- succ_lax(-1, _X).
+
+% --- IEEE-754 float divide-by-zero ---
+% ISO: throws evaluation_error(zero_divisor) (caught by iso_term_has_zero_divide
+% before eval_arith).
+user:elx_iso_float_divzero :- catch((_R is 1.0 / 0.0), _, true).
+% Lax: silently fails (BEAM cannot produce IEEE inf/nan from
+% arithmetic without raising — see PR #5 deferred IEEE-754 note).
+user:elx_lax_float_divzero_fails :- _R is 1.0 / 0.0.
+
 % ============================================================
 % elixir_available — same gating pattern as the Scala suite
 % ============================================================
@@ -373,6 +428,93 @@ test(explicit_lax_bypasses_iso_rewrite) :-
         verify_elixir_args(TmpDir, 'elx_explicit_lax_fails/0',
                            [], "false")
     ).
+
+% --- ISO sweep tests (PR #5 acceptance) ---
+
+test(iso_compare_instantiation) :-
+    % Mark predicate ISO so the rewrite picks the iso table
+    % (>/2 -> >_iso/2). The body's `_X > 5` triggers instantiation_error.
+    with_elixir_project([user:elx_iso_compare_instantiation/0],
+        [iso_errors(elx_iso_compare_instantiation/0, true)],
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_iso_compare_instantiation/0', [], "true")).
+
+test(iso_compare_type_error) :-
+    with_elixir_project([user:elx_iso_compare_type/0],
+        [iso_errors(elx_iso_compare_type/0, true)],
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_iso_compare_type/0', [], "true")).
+
+test(iso_compare_zero_divide) :-
+    with_elixir_project([user:elx_iso_compare_zero_divide/0],
+        [iso_errors(elx_iso_compare_zero_divide/0, true)],
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_iso_compare_zero_divide/0', [], "true")).
+
+test(lax_compare_silent_fail) :-
+    with_elixir_project([user:elx_lax_compare_silent/0], _Opts, TmpDir,
+        verify_elixir_args(TmpDir, 'elx_lax_compare_silent/0', [], "false")).
+
+test(explicit_lax_compare_in_iso_mode) :-
+    % Predicate annotated ISO; body uses explicit >_lax — rewrite
+    % skips it; silent fail.
+    with_elixir_project([user:elx_explicit_lax_compare_in_iso/0],
+        [iso_errors(elx_explicit_lax_compare_in_iso/0, true)],
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_explicit_lax_compare_in_iso/0',
+                           [], "false")).
+
+test(iso_succ_unbound_throws) :-
+    with_elixir_project([user:elx_iso_succ_unbound/0], _Opts, TmpDir,
+        verify_elixir_args(TmpDir, 'elx_iso_succ_unbound/0', [], "true")).
+
+test(iso_succ_negative_throws) :-
+    with_elixir_project([user:elx_iso_succ_negative/0], _Opts, TmpDir,
+        verify_elixir_args(TmpDir, 'elx_iso_succ_negative/0', [], "true")).
+
+test(iso_succ_y_zero_domain_throws) :-
+    with_elixir_project([user:elx_iso_succ_y_zero/0], _Opts, TmpDir,
+        verify_elixir_args(TmpDir, 'elx_iso_succ_y_zero/0', [], "true")).
+
+test(succ_happy_forward) :-
+    % succ(3, X) -> X = 4.
+    with_elixir_project([user:elx_succ_happy_forward/1], _Opts, TmpDir,
+        verify_elixir_args(TmpDir, 'elx_succ_happy_forward/1', ['4'], "true")).
+
+test(succ_happy_backward) :-
+    % succ(X, 5) -> X = 4.
+    with_elixir_project([user:elx_succ_happy_backward/1], _Opts, TmpDir,
+        verify_elixir_args(TmpDir, 'elx_succ_happy_backward/1', ['4'], "true")).
+
+test(lax_succ_negative_fails) :-
+    with_elixir_project([user:elx_lax_succ_negative_fails/0], _Opts, TmpDir,
+        verify_elixir_args(TmpDir, 'elx_lax_succ_negative_fails/0', [], "false")).
+
+test(succ_explicit_lax_in_iso_mode) :-
+    % Predicate annotated ISO; explicit succ_lax — bypasses rewrite -> silent fail.
+    with_elixir_project([user:elx_succ_explicit_lax_in_iso/0],
+        [iso_errors(elx_succ_explicit_lax_in_iso/0, true)],
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_succ_explicit_lax_in_iso/0',
+                           [], "false")).
+
+test(iso_float_divzero_throws) :-
+    % `_R is 1.0 / 0.0` -> evaluation_error(zero_divisor) (caught
+    % by iso_term_has_zero_divide pre-eval check from PR #4). Needs
+    % ISO mode on the predicate so is/2 rewrites to is_iso/2.
+    with_elixir_project([user:elx_iso_float_divzero/0],
+        [iso_errors(elx_iso_float_divzero/0, true)],
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_iso_float_divzero/0', [], "true")).
+
+test(lax_float_divzero_fails) :-
+    % Lax mode: silent fail. BEAM limitation — cannot produce IEEE
+    % inf/nan from BEAM arithmetic (raises ArithmeticError). The
+    % spec's IEEE-754 lax behaviour (inf / -inf / nan) is deferred;
+    % current Elixir behaviour matches the pre-IEEE C++ baseline.
+    with_elixir_project([user:elx_lax_float_divzero_fails/0], _Opts, TmpDir,
+        verify_elixir_args(TmpDir, 'elx_lax_float_divzero_fails/0',
+                           [], "false")).
 
 :- end_tests(wam_elixir_classic_programs).
 

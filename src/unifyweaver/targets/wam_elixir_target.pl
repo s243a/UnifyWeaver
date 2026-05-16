@@ -924,36 +924,191 @@ compile_utility_helpers_to_elixir(Code) :-
         # hardening reasoning as fail/0 above.
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
         %{state | pc: new_pc}
-      {"</2", 2} ->
-        v1 = eval_arith(state, get_reg(state, 1))
-        v2 = eval_arith(state, get_reg(state, 2))
+      # PR #5: arith compares — default form + _lax alias share one
+      # arm per operator. eval_arith wrapped in try/catch so bad
+      # input silently fails per ISO lax semantics (matches the
+      # is/2 fix from PR #4).
+      {op, 2} when op in ["</2", "<_lax/2"] ->
+        try do
+          v1 = eval_arith(state, get_reg(state, 1))
+          v2 = eval_arith(state, get_reg(state, 2))
+          new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+          if v1 < v2, do: %{state | pc: new_pc}, else: :fail
+        catch
+          {:eval_error, _} -> :fail
+        end
+      {op, 2} when op in [">/2", ">_lax/2"] ->
+        try do
+          v1 = eval_arith(state, get_reg(state, 1))
+          v2 = eval_arith(state, get_reg(state, 2))
+          new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+          if v1 > v2, do: %{state | pc: new_pc}, else: :fail
+        catch
+          {:eval_error, _} -> :fail
+        end
+      {op, 2} when op in ["=</2", "=<_lax/2"] ->
+        try do
+          v1 = eval_arith(state, get_reg(state, 1))
+          v2 = eval_arith(state, get_reg(state, 2))
+          new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+          if v1 <= v2, do: %{state | pc: new_pc}, else: :fail
+        catch
+          {:eval_error, _} -> :fail
+        end
+      {op, 2} when op in [">=/2", ">=_lax/2"] ->
+        try do
+          v1 = eval_arith(state, get_reg(state, 1))
+          v2 = eval_arith(state, get_reg(state, 2))
+          new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+          if v1 >= v2, do: %{state | pc: new_pc}, else: :fail
+        catch
+          {:eval_error, _} -> :fail
+        end
+      {op, 2} when op in ["=:=/2", "=:=_lax/2"] ->
+        try do
+          v1 = eval_arith(state, get_reg(state, 1))
+          v2 = eval_arith(state, get_reg(state, 2))
+          new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+          if v1 == v2, do: %{state | pc: new_pc}, else: :fail
+        catch
+          {:eval_error, _} -> :fail
+        end
+      {op, 2} when op in ["=\\\\=/2", "=\\\\=_lax/2"] ->
+        try do
+          v1 = eval_arith(state, get_reg(state, 1))
+          v2 = eval_arith(state, get_reg(state, 2))
+          new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+          if v1 != v2, do: %{state | pc: new_pc}, else: :fail
+        catch
+          {:eval_error, _} -> :fail
+        end
+      # PR #5: ISO arith compares — one combined arm. Same
+      # three-way classification as is_iso/2: instantiation_error
+      # for unbound, evaluation_error(zero_divisor) for /0 in
+      # either operand subtree, type_error(evaluable, _) for
+      # non-evaluable atoms. Strips "_iso" from the op string
+      # to derive the comparison operator (binds via cond).
+      {op_key, 2}
+        when op_key in [">_iso/2", "<_iso/2", ">=_iso/2",
+                        "=<_iso/2", "=:=_iso/2", "=\\\\=_iso/2"] ->
+        a_raw = get_reg(state, 1)
+        b_raw = get_reg(state, 2)
+        cond do
+          iso_term_contains_unbound(state, a_raw) or
+            iso_term_contains_unbound(state, b_raw) ->
+            {s2, err} = make_instantiation_error(state)
+            throw_iso_error(s2, err)
+          iso_term_has_zero_divide(state, a_raw) or
+            iso_term_has_zero_divide(state, b_raw) ->
+            {s2, err} = make_evaluation_error(state, "zero_divisor")
+            throw_iso_error(s2, err)
+          true ->
+            try do
+              a = eval_arith(state, a_raw)
+              b = eval_arith(state, b_raw)
+              new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+              ok =
+                cond do
+                  op_key == ">_iso/2"  -> a > b
+                  op_key == "<_iso/2"  -> a < b
+                  op_key == ">=_iso/2" -> a >= b
+                  op_key == "=<_iso/2" -> a <= b
+                  op_key == "=:=_iso/2" -> a == b
+                  op_key == "=\\\\=_iso/2" -> a != b
+                end
+              if ok, do: %{state | pc: new_pc}, else: :fail
+            catch
+              {:eval_error, culprit} ->
+                {s2, c} = iso_arith_culprit(state, culprit)
+                {s3, err} = make_type_error(s2, "evaluable", c)
+                throw_iso_error(s3, err)
+            end
+        end
+      # PR #5: succ/2 (default + lax alias) — bidirectional
+      # successor predicate. succ(X, Y) means Y = X + 1 with X >= 0.
+      # Lax: silently fail on bad args. ISO: throw per SPEC §6.
+      {op, 2} when op in ["succ/2", "succ_lax/2"] ->
+        a = deref_var(state, get_reg(state, 1))
+        b = deref_var(state, get_reg(state, 2))
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
-        if v1 < v2, do: %{state | pc: new_pc}, else: :fail
-      {">/2", 2} ->
-        v1 = eval_arith(state, get_reg(state, 1))
-        v2 = eval_arith(state, get_reg(state, 2))
+        cond do
+          # Both unbound -> fail (lax) / instantiation_error (iso).
+          match?({:unbound, _}, a) and match?({:unbound, _}, b) -> :fail
+          # X bound, non-integer -> fail.
+          not match?({:unbound, _}, a) and not is_integer(a) -> :fail
+          # Y bound, non-integer -> fail.
+          not match?({:unbound, _}, b) and not is_integer(b) -> :fail
+          # X negative -> fail.
+          is_integer(a) and a < 0 -> :fail
+          # X bound: compute Y = X + 1 and unify (or compare).
+          is_integer(a) ->
+            next = a + 1
+            cond do
+              is_integer(b) ->
+                if b == next, do: %{state | pc: new_pc}, else: :fail
+              match?({:unbound, _}, b) ->
+                {:unbound, id} = b
+                state
+                |> trail_binding(id)
+                |> put_reg(id, next)
+                |> Map.put(:pc, new_pc)
+            end
+          # X unbound, Y bound: compute X = Y - 1 (Y must be > 0).
+          is_integer(b) and b > 0 ->
+            {:unbound, id} = a
+            state
+            |> trail_binding(id)
+            |> put_reg(id, b - 1)
+            |> Map.put(:pc, new_pc)
+          # Y zero or negative -> fail (lax) / domain_error (iso).
+          true -> :fail
+        end
+      # PR #5: succ_iso/2 — ISO-strict successor. Throws per SPEC §6:
+      #   both unbound          -> instantiation_error
+      #   X non-integer (bound) -> type_error(integer, X)
+      #   Y non-integer (bound) -> type_error(integer, Y)
+      #   X negative            -> type_error(not_less_than_zero, X)
+      #   Y <= 0                -> domain_error(not_less_than_zero, Y)
+      {"succ_iso/2", 2} ->
+        a = deref_var(state, get_reg(state, 1))
+        b = deref_var(state, get_reg(state, 2))
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
-        if v1 > v2, do: %{state | pc: new_pc}, else: :fail
-      {"=</2", 2} ->
-        v1 = eval_arith(state, get_reg(state, 1))
-        v2 = eval_arith(state, get_reg(state, 2))
-        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
-        if v1 <= v2, do: %{state | pc: new_pc}, else: :fail
-      {">=/2", 2} ->
-        v1 = eval_arith(state, get_reg(state, 1))
-        v2 = eval_arith(state, get_reg(state, 2))
-        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
-        if v1 >= v2, do: %{state | pc: new_pc}, else: :fail
-      {"=:=/2", 2} ->
-        v1 = eval_arith(state, get_reg(state, 1))
-        v2 = eval_arith(state, get_reg(state, 2))
-        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
-        if v1 == v2, do: %{state | pc: new_pc}, else: :fail
-      {"=\\\\=/2", 2} ->
-        v1 = eval_arith(state, get_reg(state, 1))
-        v2 = eval_arith(state, get_reg(state, 2))
-        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
-        if v1 != v2, do: %{state | pc: new_pc}, else: :fail
+        cond do
+          match?({:unbound, _}, a) and match?({:unbound, _}, b) ->
+            {s2, err} = make_instantiation_error(state)
+            throw_iso_error(s2, err)
+          not match?({:unbound, _}, a) and not is_integer(a) ->
+            {s2, err} = make_type_error(state, "integer", a)
+            throw_iso_error(s2, err)
+          not match?({:unbound, _}, b) and not is_integer(b) ->
+            {s2, err} = make_type_error(state, "integer", b)
+            throw_iso_error(s2, err)
+          is_integer(a) and a < 0 ->
+            {s2, err} = make_type_error(state, "not_less_than_zero", a)
+            throw_iso_error(s2, err)
+          is_integer(a) ->
+            next = a + 1
+            cond do
+              is_integer(b) ->
+                if b == next, do: %{state | pc: new_pc}, else: :fail
+              match?({:unbound, _}, b) ->
+                {:unbound, id} = b
+                state
+                |> trail_binding(id)
+                |> put_reg(id, next)
+                |> Map.put(:pc, new_pc)
+            end
+          # a unbound, b integer.
+          is_integer(b) and b <= 0 ->
+            {s2, err} = make_domain_error(state, "not_less_than_zero", b)
+            throw_iso_error(s2, err)
+          is_integer(b) ->
+            {:unbound, id} = a
+            state
+            |> trail_binding(id)
+            |> put_reg(id, b - 1)
+            |> Map.put(:pc, new_pc)
+        end
       {"length/2", 2} ->
         # length walks the list. The list may be either a native Elixir
         # list (driver-supplied, e.g. ["Classical_mechanics"]) or a
@@ -1579,18 +1734,19 @@ compile_utility_helpers_to_elixir(Code) :-
   end
 
   # Walk a derefed term, return true if there is a literal /0 or //0
-  # divide anywhere in the tree. WAM functor names: / of arity 2 is
-  # "//2" (two slashes); // of arity 2 is "///2" (three slashes).
+  # divide (or mod/rem by zero) anywhere in the tree. WAM functor
+  # names: / of arity 2 is "//2" (two slashes); // of arity 2 is
+  # "///2" (three slashes). mod/2 and rem/2 use their literal names.
   defp iso_term_has_zero_divide(state, val) do
     case deref_var(state, val) do
       {:ref, addr} ->
         case Map.get(state.heap, addr) do
-          {:str, op} when op in ["//2", "///2"] ->
+          {:str, op} when op in ["//2", "///2", "mod/2", "rem/2"] ->
             args = heap_slice(state, addr + 1, 2)
             case args do
               [_v1, v2] ->
                 v2_d = deref_var(state, v2)
-                v2_d == 0 or v2_d == "0" or
+                v2_d == 0 or v2_d == "0" or v2_d == 0.0 or
                   iso_term_has_zero_divide(state, v2_d)
               _ -> false
             end
@@ -1896,6 +2052,13 @@ compile_utility_helpers_to_elixir(Code) :-
   defp wam_list_member?(_state, _item, _), do: false
 
   defp eval_arith(_state, n) when is_number(n), do: n
+  # PR #5: unbound input -> {:eval_error, _} throw. Without this
+  # clause eval_arith would infinite-loop (`val -> eval_arith(state,
+  # deref_var(state, val))` re-derefs to the same unbound). The lax
+  # compare / is arms catch {:eval_error, _} and convert to :fail;
+  # the ISO variants catch unbound BEFORE this via
+  # iso_term_contains_unbound and throw instantiation_error instead.
+  defp eval_arith(_state, {:unbound, _}), do: throw({:eval_error, "unbound"})
   defp eval_arith(_state, n) when is_binary(n) do
     # Try integer first and only accept a full-match parse — otherwise
     # `Integer.parse("1.5")` would swallow the `1` and drop the `.5`.
@@ -1924,6 +2087,39 @@ compile_utility_helpers_to_elixir(Code) :-
       {:str, "*/2"} ->
         [v1, v2] = heap_slice(state, addr + 1, 2)
         eval_arith(state, v1) * eval_arith(state, v2)
+      # PR #5: integer divide //2 and general divide /. Both follow
+      # uniform-fail on divide-by-zero in lax mode (Elixir limitation:
+      # BEAM arithmetic raises ArithmeticError on float divide by
+      # zero rather than producing IEEE inf/nan; we cannot return
+      # inf/nan from pure BEAM arithmetic. See PR #5 description for
+      # the deferred IEEE-754 lax behavior). ISO mode catches divide-
+      # by-zero BEFORE this via iso_term_has_zero_divide -> throws
+      # evaluation_error(zero_divisor) before eval_arith is called.
+      {:str, "///2"} ->
+        # // is integer division (truncating).
+        a = eval_arith(state, hd(heap_slice(state, addr + 1, 1)))
+        b = eval_arith(state, hd(heap_slice(state, addr + 2, 1)))
+        if b == 0, do: throw({:eval_error, "zero_divisor"}), else: div(a, b)
+      {:str, "//2"} ->
+        # / is general division — float result when either operand is
+        # a float, integer truncate otherwise. Divide by zero fails.
+        a = eval_arith(state, hd(heap_slice(state, addr + 1, 1)))
+        b = eval_arith(state, hd(heap_slice(state, addr + 2, 1)))
+        cond do
+          b == 0 -> throw({:eval_error, "zero_divisor"})
+          b == 0.0 -> throw({:eval_error, "zero_divisor"})
+          is_float(a) or is_float(b) -> a / b
+          true -> div(a, b)
+        end
+      {:str, "mod/2"} ->
+        a = eval_arith(state, hd(heap_slice(state, addr + 1, 1)))
+        b = eval_arith(state, hd(heap_slice(state, addr + 2, 1)))
+        if b == 0, do: throw({:eval_error, "zero_divisor"}),
+                   else: Integer.mod(a, b)
+      {:str, "rem/2"} ->
+        a = eval_arith(state, hd(heap_slice(state, addr + 1, 1)))
+        b = eval_arith(state, hd(heap_slice(state, addr + 2, 1)))
+        if b == 0, do: throw({:eval_error, "zero_divisor"}), else: rem(a, b)
       val -> eval_arith(state, val)
     end
   end
@@ -5595,6 +5791,25 @@ end', [CasesStr]).
 % iso_errors_rewrite_item/3.
 iso_errors_default_to_iso("is/2", "is_iso/2").
 iso_errors_default_to_lax("is/2", "is_lax/2").
+
+% PR #5: arithmetic comparisons — six ops, each with iso/lax
+% variants. ISO body classifies args + throws via the same
+% machinery is_iso/2 uses; lax body shares with default.
+iso_errors_default_to_iso(">/2",   ">_iso/2").
+iso_errors_default_to_lax(">/2",   ">_lax/2").
+iso_errors_default_to_iso("</2",   "<_iso/2").
+iso_errors_default_to_lax("</2",   "<_lax/2").
+iso_errors_default_to_iso(">=/2",  ">=_iso/2").
+iso_errors_default_to_lax(">=/2",  ">=_lax/2").
+iso_errors_default_to_iso("=</2",  "=<_iso/2").
+iso_errors_default_to_lax("=</2",  "=<_lax/2").
+iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
+iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
+iso_errors_default_to_iso("=\\=/2", "=\\=_iso/2").
+iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
+% PR #5: succ/2 — bidirectional successor with proper ISO error throws.
+iso_errors_default_to_iso("succ/2", "succ_iso/2").
+iso_errors_default_to_lax("succ/2", "succ_lax/2").
 
 %% iso_errors_resolve_options(+Options, -Config)
 %  Merges the (optional) file config with inline options into one
