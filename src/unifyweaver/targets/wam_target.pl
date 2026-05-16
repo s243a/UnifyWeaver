@@ -1494,6 +1494,13 @@ is_builtin_pred(get_code, 1).     % stdin: read one char as int code.
 is_builtin_pred(peek_char, 1).    % stdin: peek one char (un-consumed).
 is_builtin_pred(put_char, 1).     % stdout: write one single-char atom.
 is_builtin_pred(put_code, 1).     % stdout: write one int code as char.
+is_builtin_pred(atomic_list_concat, 2). % concatenate list of atomics.
+is_builtin_pred(atomic_list_concat, 3). % concat with separator (or split).
+is_builtin_pred(atom_string, 2).        % atom ↔ string (interchangeable).
+is_builtin_pred(string_concat, 3).      % alias for atom_concat/3.
+is_builtin_pred(string_length, 2).      % alias for atom_length/2.
+is_builtin_pred(number_chars, 2).       % number ↔ list of single-char atoms.
+is_builtin_pred(atom_to_term, 3).       % parse atom + return [] bindings.
 is_builtin_pred(char_code, 2).    % char-atom ↔ integer code.
 is_builtin_pred(assertz, 1).      % dynamic db: append fact.
 is_builtin_pred(asserta, 1).      % dynamic db: prepend fact.

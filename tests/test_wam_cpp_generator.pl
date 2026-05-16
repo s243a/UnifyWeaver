@@ -1903,6 +1903,87 @@ user:wam_cpp_test_put_in_capture :-
     with_output_to(atom(A), (put_char(x), put_code(89))),
     A = 'xY'.
 
+% atomic_list_concat/2, /3 — common join/split idiom.
+% atom_string/2, string_concat/3, string_length/2 — atom ≡ string
+% in this runtime; the string_* names are aliases.
+% number_chars/2 — parallel to number_codes/2 with single-char atoms.
+% atom_to_term/3 — atom_to_term(+Atom, -Term, -Bindings); Bindings is
+% always [] since the parser doesn''t track source variable names.
+:- dynamic user:wam_cpp_test_alc2/0.
+:- dynamic user:wam_cpp_test_alc2_mixed/0.
+:- dynamic user:wam_cpp_test_alc2_empty/0.
+:- dynamic user:wam_cpp_test_alc3_join/0.
+:- dynamic user:wam_cpp_test_alc3_split/0.
+:- dynamic user:wam_cpp_test_alc3_split_multi/0.
+:- dynamic user:wam_cpp_test_alc3_split_nosep/0.
+:- dynamic user:wam_cpp_test_atom_string_fwd/0.
+:- dynamic user:wam_cpp_test_atom_string_rev/0.
+:- dynamic user:wam_cpp_test_string_length_alias/0.
+:- dynamic user:wam_cpp_test_string_concat_alias/0.
+:- dynamic user:wam_cpp_test_number_chars_fwd/0.
+:- dynamic user:wam_cpp_test_number_chars_rev/0.
+:- dynamic user:wam_cpp_test_atom_to_term/0.
+
+user:wam_cpp_test_alc2 :-
+    atomic_list_concat([a, b, c], R),
+    R = abc.
+
+user:wam_cpp_test_alc2_mixed :-
+    atomic_list_concat([foo, 1, bar], R),
+    R = 'foo1bar'.
+
+user:wam_cpp_test_alc2_empty :-
+    atomic_list_concat([], R),
+    R = ''.
+
+user:wam_cpp_test_alc3_join :-
+    atomic_list_concat([a, b, c], '-', R),
+    R = 'a-b-c'.
+
+% /3 reverse mode: split.
+user:wam_cpp_test_alc3_split :-
+    atomic_list_concat(L, '-', 'a-b-c'),
+    L = [a, b, c].
+
+% Multi-char separator.
+user:wam_cpp_test_alc3_split_multi :-
+    atomic_list_concat(L, '::', 'foo::bar::baz'),
+    L = [foo, bar, baz].
+
+% No separator in input → single-element list.
+user:wam_cpp_test_alc3_split_nosep :-
+    atomic_list_concat(L, '-', 'nosep'),
+    L = [nosep].
+
+user:wam_cpp_test_atom_string_fwd :-
+    atom_string(hello, S),
+    S = hello.
+
+user:wam_cpp_test_atom_string_rev :-
+    atom_string(A, world),
+    A = world.
+
+user:wam_cpp_test_string_length_alias :-
+    string_length(hello, N),
+    N = 5.
+
+user:wam_cpp_test_string_concat_alias :-
+    string_concat(foo, bar, R),
+    R = foobar.
+
+user:wam_cpp_test_number_chars_fwd :-
+    number_chars(42, C),
+    C = ['4', '2'].
+
+user:wam_cpp_test_number_chars_rev :-
+    number_chars(N, ['4', '2']),
+    N = 42.
+
+user:wam_cpp_test_atom_to_term :-
+    atom_to_term('foo(1, bar)', T, B),
+    T = foo(1, bar),
+    B = [].
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -6552,6 +6633,186 @@ test(cpp_e2e_put_in_capture,
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath, 'wam_cpp_test_put_in_capture/0',
                     [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% atomic_list_concat/2-3 + small atom/string/number conversions:
+% atom_string/2, string_concat/3, string_length/2, number_chars/2,
+% atom_to_term/3.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_alc2, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_alc2', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_alc2/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_alc2/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_alc2_mixed, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_alc2_mixed', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_alc2_mixed/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_alc2_mixed/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_alc2_empty, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_alc2_empty', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_alc2_empty/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_alc2_empty/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_alc3_join, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_alc3_join', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_alc3_join/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_alc3_join/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_alc3_split, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_alc3_split', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_alc3_split/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_alc3_split/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_alc3_split_multi,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_alc3_split_multi', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_alc3_split_multi/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_alc3_split_multi/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_alc3_split_nosep,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_alc3_split_nosep', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_alc3_split_nosep/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_alc3_split_nosep/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_atom_string_fwd,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_atom_string_fwd', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_atom_string_fwd/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_atom_string_fwd/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_atom_string_rev,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_atom_string_rev', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_atom_string_rev/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_atom_string_rev/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_string_length_alias,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_string_length', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_string_length_alias/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_string_length_alias/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_string_concat_alias,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_string_concat', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_string_concat_alias/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_string_concat_alias/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_number_chars_fwd,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_number_chars_fwd', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_number_chars_fwd/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_number_chars_fwd/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_number_chars_rev,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_number_chars_rev', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_number_chars_rev/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_number_chars_rev/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_atom_to_term, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_atom_to_term', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_atom_to_term/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_atom_to_term/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

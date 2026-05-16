@@ -3368,7 +3368,7 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
     }
 
     // ---- atom_length/2 ----------------------------------------------
-    if (op == "atom_length/2") {
+    if (op == "atom_length/2" || op == "string_length/2") {
         Value a = deref(*get_cell("A1"));
         if (a.is_unbound()) return false;
         std::string s;
@@ -3379,6 +3379,233 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         CellPtr tgt = get_cell("A2");
         if (tgt->is_unbound()) { bind_cell(tgt, result); pc += 1; return true; }
         if (!unify_cells(tgt, std::make_shared<Cell>(result))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- atom_string/2 ----------------------------------------------
+    // Bidirectional. In our runtime atoms and strings are
+    // interchangeable, so this is effectively a unify-or-coerce
+    // helper: (+Atom, -String) renders A1 and unifies; (-Atom,
+    // +String) parses A2 as an atom and unifies A1.
+    if (op == "atom_string/2") {
+        Value a = deref(*get_cell("A1"));
+        Value b = deref(*get_cell("A2"));
+        if (!a.is_unbound()) {
+            std::string s;
+            if (a.tag == Value::Tag::Atom) s = a.s;
+            else if (a.tag == Value::Tag::Integer) s = std::to_string(a.i);
+            else if (a.tag == Value::Tag::Float) s = render(a);
+            else return false;
+            Value sv = Value::Atom(s);
+            CellPtr tgt = get_cell("A2");
+            if (tgt->is_unbound()) { bind_cell(tgt, sv); pc += 1; return true; }
+            if (!unify_cells(tgt, std::make_shared<Cell>(sv))) return false;
+            pc += 1; return true;
+        }
+        if (b.is_unbound()) return false;
+        std::string s;
+        if (b.tag == Value::Tag::Atom) s = b.s;
+        else if (b.tag == Value::Tag::Integer) s = std::to_string(b.i);
+        else if (b.tag == Value::Tag::Float) s = render(b);
+        else return false;
+        Value av = Value::Atom(s);
+        CellPtr tgt = get_cell("A1");
+        if (tgt->is_unbound()) { bind_cell(tgt, av); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(av))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- string_concat/3 -- alias for atom_concat/3 -----------------
+    if (op == "string_concat/3") {
+        Value a1 = deref(*get_cell("A1"));
+        Value a2 = deref(*get_cell("A2"));
+        if (a1.is_unbound() || a2.is_unbound()) return false;
+        std::string s1 = (a1.tag == Value::Tag::Atom) ? a1.s : render(a1);
+        std::string s2 = (a2.tag == Value::Tag::Atom) ? a2.s : render(a2);
+        Value result = Value::Atom(s1 + s2);
+        CellPtr tgt = get_cell("A3");
+        if (tgt->is_unbound()) { bind_cell(tgt, result); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(result))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- number_chars/2 ---------------------------------------------
+    // Bidirectional. Forward (A1 bound to a number): render A1 and
+    // build a list of single-char atoms. Reverse (A2 bound to a
+    // chars list): join the chars and parse as int/float.
+    if (op == "number_chars/2") {
+        Value a1 = deref(*get_cell("A1"));
+        if (!a1.is_unbound()) {
+            std::string buf;
+            if (a1.tag == Value::Tag::Integer) buf = std::to_string(a1.i);
+            else if (a1.tag == Value::Tag::Float) buf = render(a1);
+            else return false;
+            CellPtr list = std::make_shared<Cell>(Value::Atom("[]"));
+            for (auto it = buf.rbegin(); it != buf.rend(); ++it) {
+                CellPtr head = std::make_shared<Cell>(
+                    Value::Atom(std::string(1, *it)));
+                std::vector<CellPtr> ca;
+                ca.push_back(head);
+                ca.push_back(list);
+                list = std::make_shared<Cell>(
+                    Value::Compound("[|]/2", std::move(ca)));
+            }
+            CellPtr tgt = get_cell("A2");
+            if (tgt->is_unbound()) { bind_cell(tgt, *list); pc += 1; return true; }
+            if (!unify_cells(tgt, list)) return false;
+            pc += 1; return true;
+        }
+        std::string buf;
+        CellPtr lc = get_cell("A2");
+        for (;;) {
+            Value lv = deref(*lc);
+            if (lv.tag == Value::Tag::Atom && lv.s == "[]") break;
+            if (lv.tag != Value::Tag::Compound || lv.s != "[|]/2"
+                || lv.args.size() != 2) return false;
+            Value hv = deref(*lv.args[0]);
+            if (hv.tag != Value::Tag::Atom || hv.s.size() != 1) return false;
+            buf.push_back(hv.s[0]);
+            lc = lv.args[1];
+        }
+        if (buf.empty()) return false;
+        Value result;
+        try {
+            std::size_t pos = 0;
+            std::int64_t i = std::stoll(buf, &pos);
+            if (pos == buf.size()) {
+                result = Value::Integer(i);
+            } else {
+                double d = std::stod(buf, &pos);
+                if (pos != buf.size()) return false;
+                result = Value::Float(d);
+            }
+        } catch (...) { return false; }
+        CellPtr tgt = get_cell("A1");
+        if (tgt->is_unbound()) { bind_cell(tgt, result); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(result))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- atomic_list_concat/2, /3 -----------------------------------
+    // atomic_list_concat(+List, ?Atom)              concat with no sep
+    // atomic_list_concat(?List, +Separator, ?Atom)  with separator
+    //   (+, +, ?)  join List with Separator into Atom
+    //   (-, +, +)  split Atom by Separator into List
+    if (op == "atomic_list_concat/2") {
+        // Walk A1 as a list of atomics; render each; concatenate.
+        std::string buf;
+        CellPtr lc = get_cell("A1");
+        for (;;) {
+            Value lv = deref(*lc);
+            if (lv.tag == Value::Tag::Atom && lv.s == "[]") break;
+            if (lv.tag != Value::Tag::Compound || lv.s != "[|]/2"
+                || lv.args.size() != 2) return false;
+            Value hv = deref(*lv.args[0]);
+            if (hv.tag == Value::Tag::Atom) buf += hv.s;
+            else if (hv.tag == Value::Tag::Integer) buf += std::to_string(hv.i);
+            else if (hv.tag == Value::Tag::Float) buf += render(hv);
+            else return false;
+            lc = lv.args[1];
+        }
+        Value result = Value::Atom(buf);
+        CellPtr tgt = get_cell("A2");
+        if (tgt->is_unbound()) { bind_cell(tgt, result); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(result))) return false;
+        pc += 1; return true;
+    }
+    if (op == "atomic_list_concat/3") {
+        Value a1 = deref(*get_cell("A1"));
+        Value a2 = deref(*get_cell("A2"));
+        Value a3 = deref(*get_cell("A3"));
+        if (a2.is_unbound()) return false;
+        std::string sep;
+        if (a2.tag == Value::Tag::Atom) sep = a2.s;
+        else if (a2.tag == Value::Tag::Integer) sep = std::to_string(a2.i);
+        else return false;
+        if (!a1.is_unbound()) {
+            // Join mode: render each element + separator.
+            std::string buf;
+            CellPtr lc = get_cell("A1");
+            bool first = true;
+            for (;;) {
+                Value lv = deref(*lc);
+                if (lv.tag == Value::Tag::Atom && lv.s == "[]") break;
+                if (lv.tag != Value::Tag::Compound || lv.s != "[|]/2"
+                    || lv.args.size() != 2) return false;
+                if (!first) buf += sep;
+                first = false;
+                Value hv = deref(*lv.args[0]);
+                if (hv.tag == Value::Tag::Atom) buf += hv.s;
+                else if (hv.tag == Value::Tag::Integer) buf += std::to_string(hv.i);
+                else if (hv.tag == Value::Tag::Float) buf += render(hv);
+                else return false;
+                lc = lv.args[1];
+            }
+            Value result = Value::Atom(buf);
+            CellPtr tgt = get_cell("A3");
+            if (tgt->is_unbound()) { bind_cell(tgt, result); pc += 1; return true; }
+            if (!unify_cells(tgt, std::make_shared<Cell>(result))) return false;
+            pc += 1; return true;
+        }
+        // Split mode: A1 unbound, A3 bound. Walk A3 splitting on `sep`.
+        if (a3.is_unbound()) return false;
+        std::string src;
+        if (a3.tag == Value::Tag::Atom) src = a3.s;
+        else if (a3.tag == Value::Tag::Integer) src = std::to_string(a3.i);
+        else return false;
+        if (sep.empty()) return false; // can''t split on empty sep
+        std::vector<std::string> parts;
+        std::size_t start = 0;
+        while (start <= src.size()) {
+            std::size_t hit = src.find(sep, start);
+            if (hit == std::string::npos) {
+                parts.push_back(src.substr(start));
+                break;
+            }
+            parts.push_back(src.substr(start, hit - start));
+            start = hit + sep.size();
+        }
+        // Build list of atoms.
+        CellPtr list = std::make_shared<Cell>(Value::Atom("[]"));
+        for (auto it = parts.rbegin(); it != parts.rend(); ++it) {
+            CellPtr head = std::make_shared<Cell>(Value::Atom(*it));
+            std::vector<CellPtr> ca;
+            ca.push_back(head);
+            ca.push_back(list);
+            list = std::make_shared<Cell>(
+                Value::Compound("[|]/2", std::move(ca)));
+        }
+        CellPtr tgt = get_cell("A1");
+        if (tgt->is_unbound()) { bind_cell(tgt, *list); pc += 1; return true; }
+        if (!unify_cells(tgt, list)) return false;
+        pc += 1; return true;
+    }
+
+    // ---- atom_to_term/3 ---------------------------------------------
+    // atom_to_term(+Atom, -Term, -Bindings). Parse Atom as a term;
+    // Bindings is a list of ''Name''=Var pairs. Our parser doesn''t
+    // track source variable names (each var becomes a fresh unbound
+    // cell), so Bindings is unified with [] -- adequate for the
+    // common pattern of round-tripping ground terms.
+    if (op == "atom_to_term/3") {
+        Value a = deref(*get_cell("A1"));
+        if (a.is_unbound()) return false;
+        std::string src;
+        if (a.tag == Value::Tag::Atom) src = a.s;
+        else if (a.tag == Value::Tag::Integer) src = std::to_string(a.i);
+        else return false;
+        std::size_t pos = 0;
+        CellPtr parsed;
+        if (!parse_term(src, pos, parsed)) return false;
+        parse_skip_ws(src, pos);
+        if (pos != src.size()) return false;
+        CellPtr term_tgt = get_cell("A2");
+        if (term_tgt->is_unbound()) { bind_cell(term_tgt, *parsed); }
+        else if (!unify_cells(term_tgt, parsed)) return false;
+        Value nil = Value::Atom("[]");
+        CellPtr bind_tgt = get_cell("A3");
+        if (bind_tgt->is_unbound()) bind_cell(bind_tgt, nil);
+        else if (!unify_cells(bind_tgt, std::make_shared<Cell>(nil))) return false;
         pc += 1; return true;
     }
 
