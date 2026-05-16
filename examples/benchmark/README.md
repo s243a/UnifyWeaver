@@ -179,10 +179,33 @@ python examples/benchmark/benchmark_csharp_query_effective_distance_artifact_bac
 ```
 
 `50k_cats` caps the SimpleWiki category seeds to 50k; `100k_cats` uses the full
-filtered SimpleWiki category-only fixture. Million-scale effective-distance
-runs remain possible when an appropriate `data/benchmark/<scale>/` fixture has
-already been prepared, but this wrapper only auto-generates the SimpleWiki
-category-only scales above.
+filtered SimpleWiki category-only fixture. For this relation-backend benchmark,
+both labels usually expose the same `category_parent/2` edge table; the seed
+cap matters to the full effective-distance workload, not to raw backend access.
+`500k_cats` is a useful intermediate label between `100k_cats` and `1m_cats`,
+but it must come from a prepared `data/benchmark/500k_cats/` fixture derived
+from full English Wikipedia category data. The same is true for `1m_cats`;
+it is an enwiki-scale fixture, not a SimpleWiki scale. Use
+`--skip-missing-scales` when scripting mixed available/future sweeps.
+Million-scale effective-distance runs work the same way: prepare an
+appropriate `data/benchmark/<scale>/` fixture first, then pass that scale label
+to the wrapper. The existing full-English-Wikipedia ingest path starts with the
+Rust MySQL dump parser at `src/unifyweaver/runtime/rust/mysql_stream/`, wired by
+`examples/streaming/enwiki_category_ingest.pl`; a future fixture-preparation
+step should reuse that parser rather than introducing a separate SQL tokenizer.
+For the C# backend fixture shape, use:
+
+```bash
+python examples/benchmark/prepare_csharp_query_enwiki_category_fixture.py \
+  --scale 500k_cats \
+  --max-edges 500000 \
+  --dump data/enwiki/enwiki-latest-categorylinks.sql.gz
+```
+
+This writes a capped `category_parent.tsv` fixture from `subcat` rows using the
+same Rust parser. It intentionally stops at TSV fixture creation; a future
+optimization can write the parser output directly to LMDB and bypass the Python
+orchestrator.
 
 Use `--stability-runs <n>` to run the wrapper-level sweep repeatedly and
 summarize stable winners. Values above `1` report majority winners, winner

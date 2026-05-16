@@ -24,6 +24,8 @@ tests/output/
 test_output/
 data/benchmark/50k_cats/
 data/benchmark/100k_cats/
+data/benchmark/500k_cats/
+data/benchmark/1m_cats/
 test_input/
 output_*/
 

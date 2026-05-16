@@ -49,7 +49,8 @@ LMDB_DLL = (
 )
 LIGHTNINGDB_PACKAGE = Path.home() / ".nuget" / "packages" / "lightningdb" / "0.21.0"
 LIGHTNINGDB_DLL = LIGHTNINGDB_PACKAGE / "lib" / "net9.0" / "LightningDB.dll"
-DEFAULT_LARGE_SCALES = ("50k_cats", "100k_cats")
+AUTO_PREPARED_LARGE_SCALES = ("50k_cats", "100k_cats")
+PREPARED_LARGE_SCALE_LABELS = AUTO_PREPARED_LARGE_SCALES + ("500k_cats", "1m_cats")
 DEFAULT_DB_CANDIDATES = (
     ROOT / "data" / "simplewiki" / "simplewiki_categories.db",
     ROOT / "context" / "gemini" / "UnifyWeaver" / "data" / "simplewiki" / "simplewiki_categories.db",
@@ -273,7 +274,7 @@ def scale_sort_key(scale: str) -> tuple[int, str]:
 
 def is_large_scale(scale: str) -> bool:
     numeric_value = scale_numeric_value(scale)
-    return (numeric_value is not None and numeric_value >= 50_000) or scale in DEFAULT_LARGE_SCALES
+    return (numeric_value is not None and numeric_value >= 50_000) or scale in PREPARED_LARGE_SCALE_LABELS
 
 
 def scale_seed_cap(scale: str) -> int | None:
@@ -282,7 +283,7 @@ def scale_seed_cap(scale: str) -> int | None:
     if scale == "100k_cats":
         return None
     raise ValueError(
-        f"automatic fixture preparation only supports {', '.join(DEFAULT_LARGE_SCALES)}; "
+        f"automatic fixture preparation only supports {', '.join(AUTO_PREPARED_LARGE_SCALES)}; "
         f"prepare data/benchmark/{scale} separately or omit --prepare-missing-large-scales"
     )
 
@@ -484,6 +485,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="generate supported SimpleWiki category-only fixtures when 50k_cats/100k_cats are requested",
     )
+    parser.add_argument(
+        "--skip-missing-scales",
+        action="store_true",
+        help="skip requested scales whose data/benchmark/<scale>/category_parent.tsv is not present",
+    )
     parser.add_argument("--db", type=Path, default=None, help="path to simplewiki_categories.db for fixture preparation")
     parser.add_argument(
         "--min-free-memory-mib",
@@ -534,16 +540,27 @@ def main(argv: list[str] | None = None) -> int:
     if args.prepare_missing_large_scales:
         db_path = resolve_simplewiki_db(args.db)
         for scale in large_scales:
-            prepare_large_fixture(scale, db_path)
+            if scale in AUTO_PREPARED_LARGE_SCALES:
+                prepare_large_fixture(scale, db_path)
 
     missing = [scale for scale in scales if not (BENCH_DIR / scale / "category_parent.tsv").exists()]
     if missing:
-        hints = []
-        supported_missing = [scale for scale in missing if scale in DEFAULT_LARGE_SCALES]
-        if supported_missing:
-            hints.append("pass --prepare-missing-large-scales to generate supported SimpleWiki category-only fixtures")
-        hints.append("or prepare data/benchmark/<scale>/category_parent.tsv before running")
-        parser.error(f"missing benchmark scale(s): {', '.join(missing)}; {'; '.join(hints)}")
+        if args.skip_missing_scales:
+            print(f"skipping missing benchmark scale(s): {', '.join(missing)}", file=sys.stderr)
+            scales = [scale for scale in scales if scale not in missing]
+            large_scales = [scale for scale in scales if is_large_scale(scale)]
+            if not scales:
+                parser.error("all requested scales were missing after --skip-missing-scales")
+        else:
+            hints = []
+            supported_missing = [scale for scale in missing if scale in AUTO_PREPARED_LARGE_SCALES]
+            prepared_only_missing = [scale for scale in missing if scale in PREPARED_LARGE_SCALE_LABELS]
+            if supported_missing:
+                hints.append("pass --prepare-missing-large-scales to generate supported SimpleWiki category-only fixtures")
+            if prepared_only_missing:
+                hints.append("500k_cats and 1m_cats must be prepared separately from enwiki-scale data before this wrapper can run them")
+            hints.append("or prepare data/benchmark/<scale>/category_parent.tsv before running")
+            parser.error(f"missing benchmark scale(s): {', '.join(missing)}; {'; '.join(hints)}")
 
     if large_scales and not args.skip_resource_check:
         failures = resource_preflight_failures(
