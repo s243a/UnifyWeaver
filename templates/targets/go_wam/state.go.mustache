@@ -1125,6 +1125,32 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		if !ok1 || !ok2 { return false }
 		combined := &List{Elements: append(append([]Value{}, l1...), l2...)}
 		return vm.Unify(arg3, combined)
+	case "reverse/2":
+		d1 := vm.deref(arg1)
+		d2 := vm.deref(arg2)
+		if !isUnbound(d1) {
+			items, ok := vm.listToSlice(d1)
+			if !ok {
+				return false
+			}
+			reversed := append([]Value{}, items...)
+			for i, j := 0, len(reversed)-1; i < j; i, j = i+1, j-1 {
+				reversed[i], reversed[j] = reversed[j], reversed[i]
+			}
+			return vm.Unify(arg2, &List{Elements: reversed})
+		}
+		if !isUnbound(d2) {
+			items, ok := vm.listToSlice(d2)
+			if !ok {
+				return false
+			}
+			reversed := append([]Value{}, items...)
+			for i, j := 0, len(reversed)-1; i < j; i, j = i+1, j-1 {
+				reversed[i], reversed[j] = reversed[j], reversed[i]
+			}
+			return vm.Unify(arg1, &List{Elements: reversed})
+		}
+		return false
 	case "functor/3":
 		t := vm.deref(arg1)
 		if isUnbound(t) {
