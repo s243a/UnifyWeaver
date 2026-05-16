@@ -332,6 +332,15 @@ high-level policy conclusion held:
 | --- | --- | ---: | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: |
 | `enwiki_page_1m` | `article_category` | 1,000,000 | `mmap-array` | `mmap-array` | `mmap-array` | `mmap-array` | `preload` | 27,128,331 | 16,000,643 | 3.128 / 239.428 | 2.249 / 22.158 |
 
+At 5M English page-category rows, the result stops being a simple
+`mmap-array` sweep. LMDB narrowly wins column-0 point lookup, `mmap-array`
+keeps the much faster column-1 lookup and smallest artifact, delimited edges
+out column-0 bucket streaming, and preload still wins full scan:
+
+| Scale | Relation | Rows | Best lookup c0 | Best lookup c1 | Best bucket c0 | Best bucket c1 | Best scan | LMDB artifact bytes | Mmap-array artifact bytes | LMDB lookup c0/c1 ms | Mmap-array lookup c0/c1 ms |
+| --- | --- | ---: | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: |
+| `enwiki_page_5m` | `article_category` | 5,000,000 | `lmdb` | `preload` | `delimited-artifact` | `mmap-array` | `preload` | 142,443,019 | 80,000,643 | 3.251 / 1,219.110 | 3.288 / 236.382 |
+
 Pass `--artifact-root <dir>` to keep backend artifacts across benchmark runs.
 Existing binary, delimited, LMDB, and mmap-array manifests are reused by
 default, matching the Haskell benchmark convention of not regenerating LMDB
