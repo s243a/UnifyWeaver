@@ -18,7 +18,7 @@ current cross-target builtin/runtime baseline.
 | Term inspection | `functor/3`, `arg/3` | `functor/3`, `arg/3` | Present |
 | Univ | `=../2` compose/decompose | `=../2` compose/decompose | Present |
 | Copying | `copy_term/2` with fresh variables and preserved sharing | `copy_term/2` with fresh variables and preserved sharing | Present |
-| Control | `true/0`, `fail/0`, `!/0`, `\+/1`, `CutIte` | Same baseline, with broader isolated-goal NAF in Haskell/Python | Partial: `\+/1` handles builtin-shaped and sequential user goals; no parallel race path |
+| Control | `true/0`, `fail/0`, `!/0`, `\+/1`, `CutIte` | Same baseline, with broader isolated-goal NAF in Haskell/Python | Present for current baseline, including isolated user-goal NAF and race-to-true over multi-clause WAM targets |
 | IO | `write/1`, `display/1`, `nl/0` | `write/1`, `display/1`, `nl/0` | Present |
 
 ## Immediate Findings
@@ -40,6 +40,9 @@ current cross-target builtin/runtime baseline.
   builtin E2E test.
 - `\+/1` over user predicates is now covered by the generated Go WAM builtin
   E2E test for both failing and succeeding inner goals.
+- `\+/1` now dispatches multi-clause WAM targets through a `runNegationParallel`
+  helper that races isolated clause bodies and fails fast when any branch
+  succeeds, matching the Haskell race-to-true control shape.
 - `call_indexed_atom_fact2` is now parsed and executed by the Go WAM runtime,
   including backtracking over multiple indexed atom facts.
 - Headered two-column TSV files can now be loaded into Go WAM indexed atom
@@ -55,8 +58,8 @@ current cross-target builtin/runtime baseline.
 
 ## Recommended Follow-Up Order
 
-1. Continue broadening generated Go WAM E2E coverage for control behavior that
-   remains marked partial.
+1. Continue broadening generated Go WAM E2E coverage for any remaining
+   cross-target builtin edge cases.
 2. If Go should avoid a helper process for LMDB, add an optional native Go
    LMDB build-tag path once a dependency policy is settled.
 

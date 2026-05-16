@@ -1041,6 +1041,9 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 				return false
 			}
 			if pc, ok := vm.Ctx.Labels[opName]; ok {
+				if vm.hasParallelNegationChoices(pc) {
+					return !vm.runNegationParallel(pc, args)
+				}
 				return !vm.runIsolatedGoal(pc, args)
 			}
 			return true
@@ -1191,6 +1194,93 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "copy_term/2":
 		copy := vm.copyTermValue(arg1, make(map[int]*Unbound))
 		return vm.Unify(arg2, copy)
+	}
+	return false
+}
+
+func (vm *WamState) hasParallelNegationChoices(targetPC int) bool {
+	return len(vm.negationChoiceTargets(targetPC)) > 1
+}
+
+func (vm *WamState) negationChoiceTargets(targetPC int) []int {
+	if targetPC < 0 || targetPC >= len(vm.Ctx.Code) {
+		return nil
+	}
+	targets := make([]int, 0, 2)
+	seen := make(map[int]bool)
+	pc := targetPC
+	for pc >= 0 && pc < len(vm.Ctx.Code) {
+		if seen[pc] {
+			break
+		}
+		seen[pc] = true
+		targets = append(targets, vm.indexedClauseBodyStart(pc))
+		switch instr := vm.Ctx.Code[pc].(type) {
+		case *TryMeElsePc:
+			pc = instr.NextPC
+		case *TryMeElse:
+			next, ok := vm.Ctx.Labels[instr.Label]
+			if !ok {
+				return targets
+			}
+			pc = next
+		case *RetryMeElsePc:
+			pc = instr.NextPC
+		case *RetryMeElse:
+			next, ok := vm.Ctx.Labels[instr.Label]
+			if !ok {
+				return targets
+			}
+			pc = next
+		case *TrustMe:
+			return targets
+		default:
+			return targets
+		}
+	}
+	return targets
+}
+
+func (vm *WamState) runNegationParallel(targetPC int, args []Value) bool {
+	targets := vm.negationChoiceTargets(targetPC)
+	if len(targets) == 0 {
+		return false
+	}
+	if len(targets) == 1 {
+		return vm.runIsolatedGoal(targets[0], args)
+	}
+	tasks := make([]func() bool, 0, len(targets))
+	for _, target := range targets {
+		targetPC := target
+		tasks = append(tasks, func() bool {
+			return vm.runIsolatedGoal(targetPC, args)
+		})
+	}
+	return raceToTrue(tasks)
+}
+
+func raceToTrue(tasks []func() bool) bool {
+	if len(tasks) == 0 {
+		return false
+	}
+	done := make(chan bool, len(tasks))
+	var wg sync.WaitGroup
+	wg.Add(len(tasks))
+	for _, task := range tasks {
+		task := task
+		go func() {
+			defer wg.Done()
+			done <- task()
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	for ok := range done {
+		if ok {
+			return true
+		}
 	}
 	return false
 }
