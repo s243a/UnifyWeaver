@@ -1462,6 +1462,55 @@ user:wam_cpp_test_maplist_5 :-
     maplist(wam_cpp_add3, [1, 2], [10, 20], [100, 200], L),
     L = [111, 222].
 
+% include/3, exclude/3, partition/4, foldl/4, foldl/5 — filter
+% and fold meta-predicates. Helper-injected as 3-clause Prolog
+% definitions (try_me_else/retry_me_else/trust_me); clause 2
+% includes when the goal succeeds, clause 3 includes when \+ goal
+% succeeds. Mutually exclusive — the extra try_me_else CP is
+% harmless. foldl/4 and foldl/5 are 2-clause (base case + recursive).
+:- dynamic user:wam_cpp_test_include/0.
+:- dynamic user:wam_cpp_test_include_empty/0.
+:- dynamic user:wam_cpp_test_exclude/0.
+:- dynamic user:wam_cpp_test_partition/0.
+:- dynamic user:wam_cpp_test_foldl4_sum/0.
+:- dynamic user:wam_cpp_test_foldl4_empty/0.
+:- dynamic user:wam_cpp_test_foldl5/0.
+
+user:wam_cpp_gt0(X) :- X > 0.
+user:wam_cpp_addc(X, Acc, Sum) :- Sum is Acc + X.
+user:wam_cpp_join4(X, Y, Acc, Out) :- Out is Acc + X + Y.
+
+user:wam_cpp_test_include :-
+    include(wam_cpp_gt0, [1, -2, 3, -4, 5], L),
+    L = [1, 3, 5].
+
+user:wam_cpp_test_include_empty :-
+    include(wam_cpp_gt0, [], L),
+    L = [].
+
+user:wam_cpp_test_exclude :-
+    exclude(wam_cpp_gt0, [1, -2, 3, -4, 5], L),
+    L = [-2, -4].
+
+user:wam_cpp_test_partition :-
+    partition(wam_cpp_gt0, [1, -2, 3, -4, 5], In, Ex),
+    In = [1, 3, 5],
+    Ex = [-2, -4].
+
+% foldl/4 left fold: sum a list with accumulator.
+user:wam_cpp_test_foldl4_sum :-
+    foldl(wam_cpp_addc, [1, 2, 3, 4, 5], 0, Sum),
+    Sum = 15.
+
+user:wam_cpp_test_foldl4_empty :-
+    foldl(wam_cpp_addc, [], 100, V),
+    V = 100.
+
+% foldl/5: parallel-list fold (X + Y added each step).
+user:wam_cpp_test_foldl5 :-
+    foldl(wam_cpp_join4, [1, 2, 3], [10, 20, 30], 0, Sum),
+    Sum = 66.
+
 % succ/2 + between/3 fixtures. succ is a direct bidirectional builtin;
 % between is helper-injected and exercises the nondet path via findall.
 :- dynamic user:wam_cpp_test_succ_fwd/0.
@@ -5145,6 +5194,96 @@ test(cpp_e2e_maplist_5, [condition(cpp_compiler_available)]) :-
                               [emit_main(true)], TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath, 'wam_cpp_test_maplist_5/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% ------------------------------------------------------------------
+% include/3, exclude/3, partition/4, foldl/4, foldl/5 — filter +
+% fold meta-predicates.
+% ------------------------------------------------------------------
+
+test(cpp_e2e_include, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_include', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_gt0/1,
+                               user:wam_cpp_test_include/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_include/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_include_empty, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_inc_empty', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_gt0/1,
+                               user:wam_cpp_test_include_empty/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_include_empty/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_exclude, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_exclude', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_gt0/1,
+                               user:wam_cpp_test_exclude/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_exclude/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_partition, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_partition', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_gt0/1,
+                               user:wam_cpp_test_partition/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_partition/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_foldl4_sum, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_foldl4_sum', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_addc/3,
+                               user:wam_cpp_test_foldl4_sum/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_foldl4_sum/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_foldl4_empty, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_foldl4_empty', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_addc/3,
+                               user:wam_cpp_test_foldl4_empty/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_foldl4_empty/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_foldl5, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_foldl5', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_join4/4,
+                               user:wam_cpp_test_foldl5/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_foldl5/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
