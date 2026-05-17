@@ -151,6 +151,10 @@
 :- dynamic user:wam_number_codes_reverse/0.
 :- dynamic user:wam_number_chars_guard/2.
 :- dynamic user:wam_text_conversion_unbound_pair/1.
+:- dynamic user:wam_atom_concat_guard/3.
+:- dynamic user:wam_atom_concat_new_atom/0.
+:- dynamic user:wam_atom_concat_unbound_left/1.
+:- dynamic user:wam_string_concat_guard/3.
 :- dynamic user:wam_arith_eq_42/1.
 :- dynamic user:wam_arith_eq_float/1.
 :- dynamic user:wam_arith_neq_42/1.
@@ -323,6 +327,10 @@ user:wam_number_codes_guard(N, C) :- number_codes(N, C).
 user:wam_number_codes_reverse :- number_codes(N, [52,50]), N =:= 42.
 user:wam_number_chars_guard(N, C) :- number_chars(N, C).
 user:wam_text_conversion_unbound_pair(_) :- user:wam_unbound_arg(A), user:wam_unbound_arg(C), atom_codes(A, C).
+user:wam_atom_concat_guard(A, B, C) :- atom_concat(A, B, C).
+user:wam_atom_concat_new_atom :- atom_concat(fo, o, X), X = foo.
+user:wam_atom_concat_unbound_left(C) :- user:wam_unbound_arg(A), atom_concat(A, o, C).
+user:wam_string_concat_guard(A, B, C) :- string_concat(A, B, C).
 user:wam_arith_eq_42(X) :- X =:= 42.
 user:wam_arith_eq_float(X) :- X =:= 3.5.
 user:wam_arith_neq_42(X) :- X =\= 42.
@@ -500,6 +508,10 @@ run_smoke :-
           user:wam_number_codes_reverse/0,
           user:wam_number_chars_guard/2,
           user:wam_text_conversion_unbound_pair/1,
+          user:wam_atom_concat_guard/3,
+          user:wam_atom_concat_new_atom/0,
+          user:wam_atom_concat_unbound_left/1,
+          user:wam_string_concat_guard/3,
           user:wam_arith_eq_42/1,
           user:wam_arith_eq_float/1,
           user:wam_arith_neq_42/1,
@@ -832,6 +844,11 @@ smoke_cases([
     case('wam_number_chars_guard/2', args(42, '[''4'',''2'']'), "true"),
     case('wam_number_chars_guard/2', args(42, '[''4'']'), "false"),
     case('wam_text_conversion_unbound_pair/1', a, "false"),
+    case('wam_atom_concat_guard/3', args(fo, o, foo), "true"),
+    case('wam_atom_concat_guard/3', args(fo, o, bar), "false"),
+    case('wam_atom_concat_new_atom/0', no_args, "true"),
+    case('wam_atom_concat_unbound_left/1', foo, "false"),
+    case('wam_string_concat_guard/3', args(fo, o, foo), "true"),
     case('wam_arith_eq_42/1', 42, "true"),
     case('wam_arith_eq_42/1', 3.5, "false"),
     case('wam_arith_eq_float/1', 3.5, "true"),
@@ -1169,8 +1186,10 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-atom-chars-guard-2"),
     has(CoreCode, "defn lowered-wam-number-codes-guard-2"),
     has(CoreCode, "defn lowered-wam-number-chars-guard-2"),
+    has(CoreCode, "defn lowered-wam-atom-concat-guard-3"),
     has(CoreCode, "runtime/ground-term?"),
-    has(CoreCode, "runtime/apply-text-conversion-solution").
+    has(CoreCode, "runtime/apply-text-conversion-solution"),
+    has(CoreCode, "runtime/apply-atom-concat-solution").
 
 assert_lowered_arithmetic_comparison_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
@@ -1370,8 +1389,14 @@ prolog_term_string_to_edn("c", "\"c\"") :- !.
 prolog_term_string_to_edn("d", "\"d\"") :- !.
 prolog_term_string_to_edn(f, "\"f\"") :- !.
 prolog_term_string_to_edn("f", "\"f\"") :- !.
+prolog_term_string_to_edn(fo, "\"fo\"") :- !.
+prolog_term_string_to_edn("fo", "\"fo\"") :- !.
 prolog_term_string_to_edn(foo, "\"foo\"") :- !.
 prolog_term_string_to_edn("foo", "\"foo\"") :- !.
+prolog_term_string_to_edn(o, "\"o\"") :- !.
+prolog_term_string_to_edn("o", "\"o\"") :- !.
+prolog_term_string_to_edn(bar, "\"bar\"") :- !.
+prolog_term_string_to_edn("bar", "\"bar\"") :- !.
 prolog_term_string_to_edn("z", "\"z\"") :- !.
 prolog_term_string_to_edn('f(a)', "{:tag :struct :functor \"f/1\" :args [\"a\"]}") :- !.
 prolog_term_string_to_edn('f(a,b)', "{:tag :struct :functor \"f/2\" :args [\"a\" \"b\"]}") :- !.
