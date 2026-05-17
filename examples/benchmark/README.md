@@ -166,6 +166,21 @@ access shape. Policy output reports the best overall mode and the best
 artifact-backed mode separately, so an in-memory `preload` scan win does not
 hide the best external artifact for column-0 lookup, column-1 lookup, bucket
 streaming, or storage.
+Use `policy-compare-tsv` or `policy-compare-markdown` to compare the current
+effective-distance source policy against the measured best artifact-backed
+mode. Use `policy-actionable-tsv` or `policy-actionable-markdown` to suppress
+matching rows and show only policy differences or missing policy modes, with
+the policy-selected value and policy-vs-best ratio included for triage:
+
+```bash
+python examples/benchmark/benchmark_csharp_query_effective_distance_artifact_backends.py \
+  --scales dev \
+  --lookup-keys 4 \
+  --lookup-repetitions 1 \
+  --repetitions 1 \
+  --format policy-actionable-markdown
+```
+
 At the checked-in 300-10k scales this is expected to favor preload or
 mmap-array; LMDB is primarily retained as the larger-data comparison point for
 future 50k+ style runs where memory pressure matters.

@@ -161,6 +161,38 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
         self.assertIn("| dev |", result.stdout)
         self.assertIn("Smallest artifact", result.stdout)
 
+    def test_policy_actionable_markdown_cli_reports_policy_diffs(self) -> None:
+        if shutil.which("dotnet") is None:
+            self.skipTest("dotnet is not available")
+        if not LIGHTNINGDB_PACKAGE.exists():
+            self.skipTest("LightningDB 0.21.0 package is not available in the local NuGet cache")
+
+        result = subprocess.run(
+            [
+                "python3",
+                str(SCRIPT),
+                "--scales",
+                "dev",
+                "--lookup-keys",
+                "4",
+                "--lookup-repetitions",
+                "1",
+                "--repetitions",
+                "1",
+                "--format",
+                "policy-actionable-markdown",
+            ],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=180,
+        )
+        self.assertEqual(result.returncode, 0, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+        self.assertIn("| Policy mode | Policy artifact value | Policy vs best |", result.stdout)
+        self.assertIn("| diff |", result.stdout)
+        self.assertNotIn("| match |", result.stdout)
+
     def test_dev_article_category_relation_reports_all_backends(self) -> None:
         if shutil.which("dotnet") is None:
             self.skipTest("dotnet is not available")
