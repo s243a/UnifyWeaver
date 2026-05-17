@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"math"
 	"runtime"
-	"strings"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -1224,6 +1225,26 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			items = append(items, &Integer{Val: n})
 		}
 		return vm.Unify(arg3, &List{Elements: items})
+	case "sort/2", "msort/2":
+		items, ok := vm.listToSlice(arg1)
+		if !ok {
+			return false
+		}
+		sorted := append([]Value(nil), items...)
+		sort.SliceStable(sorted, func(i, j int) bool {
+			return compareValues(vm.deref(sorted[i]), vm.deref(sorted[j])) < 0
+		})
+		if op == "sort/2" {
+			deduped := make([]Value, 0, len(sorted))
+			for _, item := range sorted {
+				item = vm.deref(item)
+				if len(deduped) == 0 || compareValues(vm.deref(deduped[len(deduped)-1]), item) != 0 {
+					deduped = append(deduped, item)
+				}
+			}
+			sorted = deduped
+		}
+		return vm.Unify(arg2, &List{Elements: sorted})
 	case "functor/3":
 		t := vm.deref(arg1)
 		if isUnbound(t) {

@@ -437,6 +437,12 @@ wam_go_direct_builtin("nth1/3", 3, 'nth1/3').
 wam_go_direct_builtin(numlist/3, 3, 'numlist/3').
 wam_go_direct_builtin('numlist/3', 3, 'numlist/3').
 wam_go_direct_builtin("numlist/3", 3, 'numlist/3').
+wam_go_direct_builtin(sort/2, 2, 'sort/2').
+wam_go_direct_builtin('sort/2', 2, 'sort/2').
+wam_go_direct_builtin("sort/2", 2, 'sort/2').
+wam_go_direct_builtin(msort/2, 2, 'msort/2').
+wam_go_direct_builtin('msort/2', 2, 'msort/2').
+wam_go_direct_builtin("msort/2", 2, 'msort/2').
 
 wam_instruction_to_go_literal(get_constant(C, Ai), GoLiteral) :-
     go_value_literal(C, GoVal),
