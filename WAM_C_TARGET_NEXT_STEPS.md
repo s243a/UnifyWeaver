@@ -4,7 +4,7 @@ Status date: 2026-05-17
 
 Base verified locally:
 
-- `main` at `991062ba` (`Merge pull request #2227 from s243a/feat/wam-c-transitive-step-parent-distance-kernel`)
+- `main` at `dba9ab10` (`Merge pull request #2232 from s243a/feat/wam-c-weighted-shortest-path-kernel`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
@@ -17,7 +17,7 @@ Base verified locally:
 
 Active branch:
 
-- `feat/wam-c-weighted-shortest-path-kernel`
+- `feat/wam-c-astar-shortest-path-kernel`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -78,6 +78,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | `transitive_parent_distance4` native kernel | Done | C shared-kernel detector accepts `transitive_parent_distance4`, emits detected setup, registers a native arity-4 foreign handler, and covers direct plus detected-project executable smokes |
 | `transitive_step_parent_distance5` native kernel | Done | C shared-kernel detector accepts `transitive_step_parent_distance5`, emits detected setup, registers a native arity-5 foreign handler, and covers direct plus detected-project executable smokes |
 | `weighted_shortest_path3` native kernel | Done | C shared-kernel detector accepts `weighted_shortest_path3`, emits detected setup, registers a native arity-3 foreign handler, and covers direct plus detected-project executable smokes over integer weighted edges |
+| `astar_shortest_path4` native kernel | Done | C shared-kernel detector accepts `astar_shortest_path4`, emits detected setup, registers a native arity-4 foreign handler, and covers direct plus detected-project executable smokes over integer weighted and direct-distance edges |
 
 ## Current C Target Baseline
 
@@ -105,7 +106,8 @@ The C target is now a credible small WAM backend:
 - Supports deterministic native `category_ancestor/4`, `transitive_closure2`,
   `transitive_distance3`, `transitive_parent_distance4`, and
   `transitive_step_parent_distance5` handlers over an in-memory edge table,
-  plus `weighted_shortest_path3` over in-memory integer weighted edges.
+  plus `weighted_shortest_path3` and `astar_shortest_path4` over in-memory
+  integer weighted edges.
 - Supports loading category-parent facts from TSV through a small
   `WamFactSource` interface.
 - Supports collecting all integer hop results for native `category_ancestor/4`
@@ -150,8 +152,8 @@ missing important target features; `Missing` = no comparable C path yet.
 | Aggregates (`findall`/`bagof`/`setof`) | Missing | Present in hybrid/lowered paths | Present in interpreter/lowered paths | Add only after C has enough runtime term-copy and list construction coverage. |
 | Negation / control builtins | Partial | Broader | Broader | C likely needs explicit tests for `\+/1`, cut interactions, and if-then-else lowering. |
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
-| Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, native transitive closure/distance/parent-distance/step-parent-distance handlers, and integer-weighted shortest path; continue adding shared kernels one at a time. |
-| Shared kernel detector integration | Partial | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`, `transitive_closure2`, `transitive_distance3`, `transitive_parent_distance4`, `transitive_step_parent_distance5`, and `weighted_shortest_path3`; Haskell and Rust cover a broader shared-kernel registry. |
+| Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, native transitive closure/distance/parent-distance/step-parent-distance handlers, integer-weighted shortest path, and integer A* shortest path; remaining parity gaps are broader integration details. |
+| Shared kernel detector integration | Partial/Done | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`, `transitive_closure2`, `transitive_distance3`, `transitive_parent_distance4`, `transitive_step_parent_distance5`, `weighted_shortest_path3`, and `astar_shortest_path4`; Haskell and Rust still have broader wrapper/fact-layout integration. |
 | Lowered/native helper functions | Partial/Done | Done | Done | C has constant fact-only native helpers, planner metadata, interpreted-vs-lowered matrix wiring, body-call helpers, filtered-fact helpers, comparison-filter helpers, rejection metadata, repeated-variable filter hardening, empty-result rejection metadata, and projected body-call helper expansion. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
 | LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts and generated effective-distance LMDB wiring; larger artifact layout support remains. |
@@ -162,34 +164,7 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-astar-shortest-path-kernel`
-
-Goal: add the next shared recursive kernel to C from the Haskell/Rust parity
-surface, continuing from Dijkstra-style weighted shortest paths to
-`astar_shortest_path4`.
-
-Scope:
-
-- Extend the C recursive-kernel registration path beyond the existing
-  transitive and weighted shortest-path kernels for the shared
-  `astar_shortest_path4` detector.
-- Add a native C handler and executable smoke for a small weighted edge result
-  with an admissible direct-distance heuristic.
-- Keep TSV/LMDB fact loading and floating-point result support out of scope
-  unless the small in-memory kernel path exposes a direct need for it.
-
-Status: recommended next.
-
-Reason:
-
-- `weighted_shortest_path3` is now covered through direct native registration
-  and detected-project setup over integer weighted edges.
-- `docs/design/WAM_PERF_OPTIMIZATION_LOG.md` records
-  `weighted_shortest_path3/3` before the broader A* family.
-- Haskell and Rust already cover `astar_shortest_path4`; it is the next
-  shared-kernel parity move after weighted shortest path.
-
-### 2. `investigate/wam-c-accumulated-runtime-cost`
+### 1. `investigate/wam-c-accumulated-runtime-cost`
 
 Goal: explain why the accumulated C WAM effective-distance target is much
 slower than optimized Prolog at `10x`.
@@ -205,6 +180,32 @@ Scope:
 
 Status: recommended after the next shared-kernel slice, or sooner if runtime
 performance becomes the blocking question.
+
+Reason:
+
+- The measured shared-kernel family is now covered in C through
+  `astar_shortest_path4` at the small in-memory integer-weight level.
+- Previous benchmark-demand evidence showed accumulated C WAM is still about
+  `0.03x` versus optimized Prolog at `10x`, and native kernels barely move the
+  accumulated target relative to no-kernels.
+- Before adding broader fact-storage or wrapper integration, the next useful
+  question is where that runtime cost is coming from.
+
+### 2. `feat/wam-c-native-kernel-float-output`
+
+Goal: close the output-type parity gap for weighted/A* native kernels by adding
+a C runtime representation for floating-point results.
+
+Scope:
+
+- Add a `VAL_FLOAT` or equivalent runtime value representation.
+- Extend foreign-handler unification and smoke assertions for weighted/A*
+  results that are not exact integers.
+- Keep benchmark integration separate unless the value representation itself
+  proves stable.
+
+Status: recommended after the runtime-cost investigation, or sooner if a
+concrete generated benchmark requires float output.
 
 ### Completed Investigation: `investigate/wam-c-next-benchmark-demand`
 
@@ -303,6 +304,21 @@ Evidence:
 | Direct executable smoke | `weighted_path/3` chooses the lower-cost two-hop route over a higher-cost direct-looking alternative, accepts a bound weight, binds an unbound target/weight, and fails for a reversed edge. |
 | Detected-project smoke | Generated project detection lowers `weighted_path/3` to a `call_foreign` trampoline and runs through `setup_detected_wam_c_kernels`. |
 
+### Completed Shared Kernel Slice: `feat/wam-c-astar-shortest-path-kernel`
+
+Goal: add the goal-directed weighted shared recursive kernel to C from the
+Haskell/Rust parity surface.
+
+Evidence:
+
+| Surface | Coverage |
+|---|---|
+| Kernel support predicate | `wam_c_supported_kernel/1` accepts `recursive_kernel(astar_shortest_path4, ...)`. |
+| Detected setup emission | `generate_setup_detected_kernels_c/2` emits `wam_register_astar_shortest_path_kernel`. |
+| Runtime handler | `wam_astar_shortest_path_handler` requires bound source, target, and integer dimensionality, then binds an integer shortest weight using registered weighted edges and optional direct-distance heuristic edges. |
+| Direct executable smoke | `astar_path/4` chooses the lower-cost two-hop route, accepts a bound weight, rejects an unbound dimensionality argument, and fails for a reversed edge. |
+| Detected-project smoke | Generated project detection lowers `astar_path/4` to a `call_foreign` trampoline and runs through `setup_detected_wam_c_kernels`. |
+
 ## Completed Atom Concat Builtin
 
 The merged `feat/wam-c-atom-concat-builtin` branch added deterministic
@@ -380,10 +396,9 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Proceed with `feat/wam-c-astar-shortest-path-kernel`.
+Proceed with `investigate/wam-c-accumulated-runtime-cost`.
 
-Keep it narrow: add `astar_shortest_path4` over small in-memory weighted and
-direct-distance edge surfaces and prove direct plus detected-project executable
-smokes. Treat broader fact storage, LMDB loading, floating-point output, and
-runtime profiling as follow-up branches unless this slice exposes a direct
-blocker.
+Keep it narrow: profile the existing accumulated C WAM effective-distance
+targets at `10x`, identify whether the dominant cost is WAM dispatch, fact
+lookup, repeated setup, generated query shape, or native-kernel integration
+overhead, and document a concrete next implementation branch from that evidence.
