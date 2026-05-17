@@ -434,6 +434,9 @@ wam_go_direct_builtin("nth0/3", 3, 'nth0/3').
 wam_go_direct_builtin(nth1/3, 3, 'nth1/3').
 wam_go_direct_builtin('nth1/3', 3, 'nth1/3').
 wam_go_direct_builtin("nth1/3", 3, 'nth1/3').
+wam_go_direct_builtin(numlist/3, 3, 'numlist/3').
+wam_go_direct_builtin('numlist/3', 3, 'numlist/3').
+wam_go_direct_builtin("numlist/3", 3, 'numlist/3').
 
 wam_instruction_to_go_literal(get_constant(C, Ai), GoLiteral) :-
     go_value_literal(C, GoVal),

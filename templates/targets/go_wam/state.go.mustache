@@ -1213,6 +1213,17 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return false
 		}
 		return vm.Unify(arg3, items[int(idx)])
+	case "numlist/3":
+		lo, ok1 := vm.deref(arg1).(*Integer)
+		hi, ok2 := vm.deref(arg2).(*Integer)
+		if !ok1 || !ok2 || lo.Val > hi.Val {
+			return false
+		}
+		items := make([]Value, 0, hi.Val-lo.Val+1)
+		for n := lo.Val; n <= hi.Val; n++ {
+			items = append(items, &Integer{Val: n})
+		}
+		return vm.Unify(arg3, &List{Elements: items})
 	case "functor/3":
 		t := vm.deref(arg1)
 		if isUnbound(t) {
