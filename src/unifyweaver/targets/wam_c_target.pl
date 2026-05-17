@@ -2712,6 +2712,7 @@ bool wam_transitive_closure_handler(WamState *state, const char *pred, int arity
 static bool wam_transitive_distance_bfs(WamState *state,
                                         const char *start,
                                         const char *target,
+                                        int *distance_filter,
                                         const char **target_out,
                                         int *distance_out) {
     const char *queue_nodes[256];
@@ -2733,7 +2734,9 @@ static bool wam_transitive_distance_bfs(WamState *state,
             if (strcmp(edge->child, node) != 0) continue;
             if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
             int next_distance = distance + 1;
-            if (!target || strcmp(edge->parent, target) == 0) {
+            bool target_ok = !target || strcmp(edge->parent, target) == 0;
+            bool distance_ok = !distance_filter || next_distance == *distance_filter;
+            if (target_ok && distance_ok) {
                 *target_out = edge->parent;
                 *distance_out = next_distance;
                 return true;
@@ -2762,9 +2765,20 @@ bool wam_transitive_distance_handler(WamState *state, const char *pred, int arit
         return false;
     }
 
+    WamValue *distance_cell = wam_deref_ptr(state, &state->A[2]);
+    int distance_filter_value = 0;
+    int *distance_filter = NULL;
+    if (distance_cell->tag == VAL_INT) {
+        distance_filter_value = distance_cell->data.integer;
+        distance_filter = &distance_filter_value;
+    } else if (!val_is_unbound(*distance_cell)) {
+        return false;
+    }
+
     const char *result_target = NULL;
     int result_distance = 0;
-    if (!wam_transitive_distance_bfs(state, start, target, &result_target, &result_distance)) {
+    if (!wam_transitive_distance_bfs(state, start, target, distance_filter,
+                                     &result_target, &result_distance)) {
         return false;
     }
 

@@ -2811,6 +2811,18 @@ int main(void) {
         return 30;
     }
 
+    WamValue distance_filter_args[3] = {
+        val_atom("tom"),
+        val_unbound("Target"),
+        val_int(2)
+    };
+    int distance_filter_rc = wam_run_predicate(&state, "tc_distance/3", distance_filter_args, 3);
+    if (distance_filter_rc != 0 || state.P != WAM_HALT ||
+        state.A[1].tag != VAL_ATOM || strcmp(state.A[1].data.atom, "ann") != 0) {
+        wam_free_state(&state);
+        return 40;
+    }
+
     WamValue fail_args[3] = {
         val_atom("ann"),
         val_atom("tom"),
@@ -2819,7 +2831,7 @@ int main(void) {
     int fail_rc = wam_run_predicate(&state, "tc_distance/3", fail_args, 3);
     if (fail_rc != WAM_HALT) {
         wam_free_state(&state);
-        return 40;
+        return 50;
     }
 
     wam_free_state(&state);
