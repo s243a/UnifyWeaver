@@ -1328,6 +1328,24 @@ static void BenchmarkProvider(
         bucketCol1Hash);
 }
 
+static long ArtifactBytesForStorageKind(
+    string storageKind,
+    string binaryDir,
+    string delimitedDir,
+    string lmdbDir,
+    string lmdbManifest,
+    string mmapDir)
+{
+    return storageKind switch
+    {
+        RelationArtifactAccessPolicy.BinaryArtifactStorageKind => DirectorySize(binaryDir),
+        RelationArtifactAccessPolicy.DelimitedArtifactStorageKind => DirectorySize(delimitedDir),
+        RelationArtifactAccessPolicy.LmdbArtifactStorageKind => DirectorySize(lmdbDir) + new FileInfo(lmdbManifest).Length,
+        RelationArtifactAccessPolicy.MmapArrayArtifactStorageKind => DirectorySize(mmapDir),
+        _ => 0L,
+    };
+}
+
 var scale = ReadArg(args, "--scale", "dev");
 var scaleDir = ReadArg(args, "--scale-dir", "");
 var relation = ReadArg(args, "--relation", "category_parent");
@@ -1507,6 +1525,41 @@ BenchmarkProvider(
     lookupKeysColumn1,
     lookupRepetitions,
     DirectorySize(mmapDir),
+    rows.Count,
+    distinctCategories);
+var policyStorageKind = RelationArtifactAccessPolicy.ResolveEffectiveDistanceArtifactStorageKind(
+    relation,
+    rows.Count,
+    RelationArtifactAccessShape.LookupColumn0);
+BenchmarkProvider(
+    scale,
+    relation,
+    "policy-configured",
+    () =>
+    {
+        var provider = new ConfiguredDelimitedRelationProvider(RelationSourceMode.ArtifactPrebuilt);
+        if (!provider.RegisterEffectiveDistancePrebuiltArtifacts(
+            predicate,
+            relation,
+            rows.Count,
+            RelationArtifactAccessShape.LookupColumn0,
+            new[] { binaryManifest, delimitedManifest, lmdbManifest, mmapManifest },
+            new IRelationArtifactProviderFactory[]
+            {
+                new LmdbRelationArtifactProviderFactory(),
+                new DefaultRelationArtifactProviderFactory(),
+            }))
+        {
+            throw new InvalidOperationException("policy-configured provider could not open any prebuilt artifact");
+        }
+
+        return provider.Provider;
+    },
+    predicate,
+    lookupKeys,
+    lookupKeysColumn1,
+    lookupRepetitions,
+    ArtifactBytesForStorageKind(policyStorageKind, binaryDir, delimitedDir, lmdbDir, lmdbManifest, mmapDir),
     rows.Count,
     distinctCategories);
 """
