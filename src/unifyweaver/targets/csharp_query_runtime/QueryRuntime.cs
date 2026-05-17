@@ -4785,6 +4785,130 @@ namespace UnifyWeaver.QueryRuntime
         }
     }
 
+    public sealed class PredicateRoutingRelationProvider : IRetentionAwareRelationProvider, IIndexedRelationProvider, IIndexedRelationBucketProvider, IIndexedRelationBucketJoinProvider, IRelationCardinalityProvider
+    {
+        private readonly IRelationProvider _fallback;
+        private readonly Dictionary<PredicateId, IRelationProvider> _providers = new();
+
+        public PredicateRoutingRelationProvider(IRelationProvider fallback)
+        {
+            _fallback = fallback ?? throw new ArgumentNullException(nameof(fallback));
+        }
+
+        public void Register(PredicateId predicate, IRelationProvider provider)
+        {
+            _providers[predicate] = provider ?? throw new ArgumentNullException(nameof(provider));
+        }
+
+        public IEnumerable<object[]> GetFacts(PredicateId predicate)
+        {
+            return Resolve(predicate).GetFacts(predicate);
+        }
+
+        public bool TryBindRelation(PredicateId predicate, RelationRetentionMode preferredMode, out RelationBinding binding)
+        {
+            if (Resolve(predicate) is IRetentionAwareRelationProvider provider &&
+                provider.TryBindRelation(predicate, preferredMode, out binding))
+            {
+                return true;
+            }
+
+            binding = default;
+            return false;
+        }
+
+        public bool TryLookupFacts(PredicateId predicate, int columnIndex, IEnumerable<object> keys, out IEnumerable<object[]> facts)
+        {
+            if (Resolve(predicate) is IIndexedRelationProvider provider &&
+                provider.TryLookupFacts(predicate, columnIndex, keys, out facts))
+            {
+                return true;
+            }
+
+            facts = default!;
+            return false;
+        }
+
+        public bool TryReadIndexedBuckets(PredicateId predicate, int columnIndex, out IEnumerable<IndexedRelationBucket> buckets)
+        {
+            if (Resolve(predicate) is IIndexedRelationBucketProvider provider &&
+                provider.TryReadIndexedBuckets(predicate, columnIndex, out buckets))
+            {
+                return true;
+            }
+
+            buckets = default!;
+            return false;
+        }
+
+        public bool TryReadBucketJoinRows(
+            PredicateId leftPredicate,
+            int leftColumnIndex,
+            object[]? leftPattern,
+            Func<object[], bool>? leftFilter,
+            PredicateId rightPredicate,
+            int rightColumnIndex,
+            object[]? rightPattern,
+            Func<object[], bool>? rightFilter,
+            KeyJoinNode join,
+            out IEnumerable<object[]> rows)
+        {
+            if (_providers.TryGetValue(leftPredicate, out var leftProvider) &&
+                ReferenceEquals(leftProvider, Resolve(rightPredicate)) &&
+                leftProvider is IIndexedRelationBucketJoinProvider bucketJoinProvider &&
+                bucketJoinProvider.TryReadBucketJoinRows(
+                    leftPredicate,
+                    leftColumnIndex,
+                    leftPattern,
+                    leftFilter,
+                    rightPredicate,
+                    rightColumnIndex,
+                    rightPattern,
+                    rightFilter,
+                    join,
+                    out rows))
+            {
+                return true;
+            }
+
+            if (_fallback is IIndexedRelationBucketJoinProvider bucketJoinFallback &&
+                bucketJoinFallback.TryReadBucketJoinRows(
+                    leftPredicate,
+                    leftColumnIndex,
+                    leftPattern,
+                    leftFilter,
+                    rightPredicate,
+                    rightColumnIndex,
+                    rightPattern,
+                    rightFilter,
+                    join,
+                    out rows))
+            {
+                return true;
+            }
+
+            rows = default!;
+            return false;
+        }
+
+        public bool TryGetRelationCardinality(PredicateId predicate, out long rowCount)
+        {
+            if (Resolve(predicate) is IRelationCardinalityProvider provider &&
+                provider.TryGetRelationCardinality(predicate, out rowCount))
+            {
+                return true;
+            }
+
+            rowCount = 0;
+            return false;
+        }
+
+        private IRelationProvider Resolve(PredicateId predicate)
+        {
+            return _providers.TryGetValue(predicate, out var provider) ? provider : _fallback;
+        }
+    }
+
     internal sealed class CachedResultRows
     {
         private readonly IReadOnlyList<object[]>? _objectRows;
@@ -5266,6 +5390,7 @@ namespace UnifyWeaver.QueryRuntime
     public sealed class ConfiguredDelimitedRelationProvider
     {
         private readonly List<RelationSourceRegistrationTrace> _registrations = new();
+        private PredicateRoutingRelationProvider? _policyArtifactProvider;
 
         public RelationSourceMode SourceMode { get; }
 
@@ -5275,7 +5400,7 @@ namespace UnifyWeaver.QueryRuntime
 
         public DelimitedRelationArtifactProvider? DelimitedArtifactProvider { get; }
 
-        public IRelationProvider Provider => (IRelationProvider?)ArtifactProvider ?? (IRelationProvider?)DelimitedArtifactProvider ?? MemoryProvider;
+        public IRelationProvider Provider => _policyArtifactProvider ?? (IRelationProvider?)ArtifactProvider ?? (IRelationProvider?)DelimitedArtifactProvider ?? MemoryProvider;
 
         public string? ArtifactDirectory { get; }
 
@@ -5368,6 +5493,57 @@ namespace UnifyWeaver.QueryRuntime
             }
         }
 
+        public bool RegisterPolicyGuidedPrebuiltArtifacts(
+            PredicateId predicate,
+            string preferredStorageKind,
+            IEnumerable<string> manifestPaths,
+            IEnumerable<IRelationArtifactProviderFactory>? factories = null)
+        {
+            if (preferredStorageKind is null) throw new ArgumentNullException(nameof(preferredStorageKind));
+            EnsurePrebuiltArtifactMode();
+
+            if (!RelationArtifactProviderOpenPolicy.TryOpenPreferred(
+                predicate,
+                manifestPaths,
+                preferredStorageKind,
+                MemoryProvider,
+                factories,
+                out var opened))
+            {
+                return false;
+            }
+
+            RegisterPolicyArtifactProvider(predicate, opened);
+            return true;
+        }
+
+        public bool RegisterEffectiveDistancePrebuiltArtifacts(
+            PredicateId predicate,
+            string relationName,
+            long rowCount,
+            RelationArtifactAccessShape accessShape,
+            IEnumerable<string> manifestPaths,
+            IEnumerable<IRelationArtifactProviderFactory>? factories = null)
+        {
+            EnsurePrebuiltArtifactMode();
+
+            if (!RelationArtifactProviderOpenPolicy.TryOpenEffectiveDistanceArtifact(
+                predicate,
+                relationName,
+                rowCount,
+                accessShape,
+                manifestPaths,
+                MemoryProvider,
+                factories,
+                out var opened))
+            {
+                return false;
+            }
+
+            RegisterPolicyArtifactProvider(predicate, opened);
+            return true;
+        }
+
         private void RecordRegistration(PredicateId predicate, string storageKind)
         {
             _registrations.Add(new RelationSourceRegistrationTrace(
@@ -5375,6 +5551,22 @@ namespace UnifyWeaver.QueryRuntime
                 SourceMode,
                 storageKind,
                 predicate.Arity));
+        }
+
+        private void EnsurePrebuiltArtifactMode()
+        {
+            if (SourceMode != RelationSourceMode.ArtifactPrebuilt)
+            {
+                throw new InvalidOperationException("Policy-guided prebuilt artifact registration requires ArtifactPrebuilt source mode.");
+            }
+        }
+
+        private void RegisterPolicyArtifactProvider(PredicateId predicate, RelationArtifactProviderOpenResult opened)
+        {
+            _policyArtifactProvider ??= new PredicateRoutingRelationProvider(
+                (IRelationProvider?)ArtifactProvider ?? (IRelationProvider?)DelimitedArtifactProvider ?? MemoryProvider);
+            _policyArtifactProvider.Register(predicate, opened.Provider);
+            RecordRegistration(predicate, opened.StorageKind);
         }
     }
 
