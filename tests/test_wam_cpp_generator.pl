@@ -58,6 +58,20 @@
 :- dynamic user:wam_cpp_test_shr/0.
 :- dynamic user:wam_cpp_test_arith_compose1/0.
 :- dynamic user:wam_cpp_test_arith_compose2/0.
+:- dynamic user:wam_cpp_test_pi/0.
+:- dynamic user:wam_cpp_test_e/0.
+:- dynamic user:wam_cpp_test_nan/0.
+:- dynamic user:wam_cpp_test_sin_zero/0.
+:- dynamic user:wam_cpp_test_cos_pi/0.
+:- dynamic user:wam_cpp_test_tan_zero/0.
+:- dynamic user:wam_cpp_test_asin_one/0.
+:- dynamic user:wam_cpp_test_atan2_diag/0.
+:- dynamic user:wam_cpp_test_cosh_zero/0.
+:- dynamic user:wam_cpp_test_exp_zero/0.
+:- dynamic user:wam_cpp_test_log_e/0.
+:- dynamic user:wam_cpp_test_log_base/0.
+:- dynamic user:wam_cpp_test_exp_log/0.
+:- dynamic user:wam_cpp_test_pythag_one/0.
 :- dynamic user:wam_cpp_is_atom/1.
 :- dynamic user:wam_cpp_is_int/1.
 :- dynamic user:wam_cpp_is_num/1.
@@ -2147,6 +2161,23 @@ user:wam_cpp_test_shl          :- X is 1 << 5, X = 32.
 user:wam_cpp_test_shr          :- X is 64 >> 3, X = 8.
 user:wam_cpp_test_arith_compose1 :- X is max(abs(-5), abs(-3)), X = 5.
 user:wam_cpp_test_arith_compose2 :- X is floor(sqrt(50)), X = 7.
+% Transcendentals: trig (sin/cos/tan + inverses), hyperbolic, log/exp,
+% constants (pi/e/inf/nan). All return Float.
+user:wam_cpp_test_pi          :- X is pi, X > 3.14, X < 3.15.
+user:wam_cpp_test_e           :- X is e, X > 2.71, X < 2.72.
+user:wam_cpp_test_nan         :- X is nan, \+ (X =:= X).
+user:wam_cpp_test_sin_zero    :- X is sin(0), X =:= 0.0.
+user:wam_cpp_test_cos_pi      :- X is cos(pi), X > -1.001, X < -0.999.
+user:wam_cpp_test_tan_zero    :- X is tan(0), X =:= 0.0.
+user:wam_cpp_test_asin_one    :- X is asin(1), Y is pi/2, X > Y - 0.001, X < Y + 0.001.
+user:wam_cpp_test_atan2_diag  :- X is atan2(1, 1), Y is pi/4, X > Y - 0.001, X < Y + 0.001.
+user:wam_cpp_test_cosh_zero   :- X is cosh(0), X =:= 1.0.
+user:wam_cpp_test_exp_zero    :- X is exp(0), X =:= 1.0.
+user:wam_cpp_test_log_e       :- X is log(e), X > 0.999, X < 1.001.
+user:wam_cpp_test_log_base    :- X is log(10, 1000), X > 2.999, X < 3.001.
+user:wam_cpp_test_exp_log     :- X is exp(log(5)), X > 4.999, X < 5.001.
+user:wam_cpp_test_pythag_one  :- X is sin(pi/4) ** 2 + cos(pi/4) ** 2,
+                                 X > 0.999, X < 1.001.
 % Type checks
 user:wam_cpp_is_atom(X)        :- atom(X).
 user:wam_cpp_is_int(X)         :- integer(X).
@@ -2569,6 +2600,46 @@ test(cpp_e2e_arith_expansion, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_shr/0',             [], true),
           run_query(BinPath, 'wam_cpp_test_arith_compose1/0',  [], true),
           run_query(BinPath, 'wam_cpp_test_arith_compose2/0',  [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_arith_transcendentals, [condition(cpp_compiler_available)]) :-
+    % Transcendentals: trig (sin/cos/tan + inverses), hyperbolic
+    % (sinh/cosh/tanh), log/exp with base, constants pi/e/nan, plus a
+    % Pythagorean identity check using `**`.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_trig', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_pi/0,
+                               user:wam_cpp_test_e/0,
+                               user:wam_cpp_test_nan/0,
+                               user:wam_cpp_test_sin_zero/0,
+                               user:wam_cpp_test_cos_pi/0,
+                               user:wam_cpp_test_tan_zero/0,
+                               user:wam_cpp_test_asin_one/0,
+                               user:wam_cpp_test_atan2_diag/0,
+                               user:wam_cpp_test_cosh_zero/0,
+                               user:wam_cpp_test_exp_zero/0,
+                               user:wam_cpp_test_log_e/0,
+                               user:wam_cpp_test_log_base/0,
+                               user:wam_cpp_test_exp_log/0,
+                               user:wam_cpp_test_pythag_one/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_pi/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_e/0',            [], true),
+          run_query(BinPath, 'wam_cpp_test_nan/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_sin_zero/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_cos_pi/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_tan_zero/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_asin_one/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_atan2_diag/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_cosh_zero/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_exp_zero/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_log_e/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_log_base/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_exp_log/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_pythag_one/0',   [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
