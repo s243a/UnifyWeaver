@@ -13,7 +13,7 @@ current cross-target builtin/runtime baseline.
 | Aggregates | `begin_aggregate`, `end_aggregate`; `collect`, `bag`, `bagof`, `count`, `sum`, `min`, `max`, `set`, `setof` | `findall/3`, `aggregate_all/3` count/sum/min/max/set families | Present for current aggregate baseline |
 | Structural builtins | `member/2`, `memberchk/2`, `length/2`, `append/3`, `reverse/2`, `last/2`, `nth0/3`, `nth1/3`, `numlist/3`, `sort/2`, `msort/2` | `member/2`, `memberchk/2`, `length/2`; Rust `append/3` is explicitly unimplemented. Clojure/R/C++ also cover richer list builtins including `reverse/2`, `last/2`, `nth0/3`, `nth1/3`, `numlist/3`, `sort/2`, and `msort/2` | Present for current baseline structural checks, with expanded cross-target list builtins |
 | Type builtins | `var/1`, `nonvar/1`, `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `atomic/1`, `is_list/1` | Includes `is_list/1` in the current baseline | Present for current baseline type checks |
-| Comparison builtins | `==/2`, `\==/2`, `\=/2`, `=:=/2`, `=\=/2`, `</2`, `>/2`, `=</2`, `>=/2` | Includes `=</2` | Present for current baseline comparisons |
+| Comparison builtins | `==/2`, `\==/2`, `\=/2`, `=:=/2`, `=\=/2`, `</2`, `>/2`, `=</2`, `>=/2`, `@</2`, `@=</2`, `@>/2`, `@>=/2`, `compare/3` | Includes `=</2`; Haskell mode analysis and Clojure lowering also cover term-order comparisons | Present for current baseline comparisons, with expanded term-order coverage |
 | Unification builtin | `=/2`, `\=/2` | `=/2`, `\=/2` | Present |
 | Term inspection | `functor/3`, `arg/3` | `functor/3`, `arg/3` | Present |
 | Univ | `=../2` compose/decompose | `=../2` compose/decompose | Present |
@@ -50,6 +50,11 @@ current cross-target builtin/runtime baseline.
   builtin E2E test for standard ordered sorting, duplicate removal in
   `sort/2`, duplicate preservation in `msort/2`, mixed atom/integer ordering,
   and malformed-list failure, matching the Clojure/R ordered-list surface.
+- Term-order comparisons `@</2`, `@=</2`, `@>/2`, `@>=/2`, and `compare/3`
+  are now covered by the generated Go WAM builtin E2E test over the same
+  atom/integer ordering used by Go WAM sort and indexed-switch ordering,
+  matching the Clojure term-order lowering surface and the Haskell mode
+  analysis baseline.
 - Go WAM choice points now have explicit generated-runtime coverage for normal
   clause retries, indexed alternatives, foreign stream retries, indexed atom
   fact streams, and `member/2` builtin retries.
