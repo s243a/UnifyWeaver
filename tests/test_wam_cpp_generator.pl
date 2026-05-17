@@ -32,6 +32,32 @@
 :- dynamic user:wam_cpp_test_arith/0.
 :- dynamic user:wam_cpp_test_eq/0.
 :- dynamic user:wam_cpp_test_neq/0.
+:- dynamic user:wam_cpp_test_abs_neg/0.
+:- dynamic user:wam_cpp_test_abs_float/0.
+:- dynamic user:wam_cpp_test_sign_neg/0.
+:- dynamic user:wam_cpp_test_sign_zero/0.
+:- dynamic user:wam_cpp_test_sqrt/0.
+:- dynamic user:wam_cpp_test_floor_neg/0.
+:- dynamic user:wam_cpp_test_ceiling_neg/0.
+:- dynamic user:wam_cpp_test_round/0.
+:- dynamic user:wam_cpp_test_truncate_neg/0.
+:- dynamic user:wam_cpp_test_unary_plus/0.
+:- dynamic user:wam_cpp_test_bitnot/0.
+:- dynamic user:wam_cpp_test_min_int/0.
+:- dynamic user:wam_cpp_test_max_float/0.
+:- dynamic user:wam_cpp_test_pow_star/0.
+:- dynamic user:wam_cpp_test_pow_caret/0.
+:- dynamic user:wam_cpp_test_pow_zero/0.
+:- dynamic user:wam_cpp_test_gcd/0.
+:- dynamic user:wam_cpp_test_gcd_neg/0.
+:- dynamic user:wam_cpp_test_rem_neg/0.
+:- dynamic user:wam_cpp_test_bitand/0.
+:- dynamic user:wam_cpp_test_bitor/0.
+:- dynamic user:wam_cpp_test_bitxor/0.
+:- dynamic user:wam_cpp_test_shl/0.
+:- dynamic user:wam_cpp_test_shr/0.
+:- dynamic user:wam_cpp_test_arith_compose1/0.
+:- dynamic user:wam_cpp_test_arith_compose2/0.
 :- dynamic user:wam_cpp_is_atom/1.
 :- dynamic user:wam_cpp_is_int/1.
 :- dynamic user:wam_cpp_is_num/1.
@@ -2093,6 +2119,34 @@ user:wam_cpp_gt(X, Y)          :- X > Y.
 user:wam_cpp_test_arith        :- 6 is 2 + 4, 12 is 3 * 4, 5 is 10 / 2.
 user:wam_cpp_test_eq           :- 5 =:= 2 + 3.
 user:wam_cpp_test_neq          :- 5 =\= 6.
+% Arithmetic function expansion -- abs/sign/sqrt/floor/ceiling/round/
+% truncate/min/max/gcd/rem/** /^ -- and bit ops /\, \/, xor, >>, <<, \\.
+user:wam_cpp_test_abs_neg      :- X is abs(-7), X = 7.
+user:wam_cpp_test_abs_float    :- X is abs(-3.5), X = 3.5.
+user:wam_cpp_test_sign_neg     :- X is sign(-9), X = -1.
+user:wam_cpp_test_sign_zero    :- X is sign(0), X = 0.
+user:wam_cpp_test_sqrt         :- X is sqrt(9), X = 3.0.
+user:wam_cpp_test_floor_neg    :- X is floor(-3.2), X = -4.
+user:wam_cpp_test_ceiling_neg  :- X is ceiling(-3.7), X = -3.
+user:wam_cpp_test_round        :- X is round(2.5), X = 3.
+user:wam_cpp_test_truncate_neg :- X is truncate(-3.7), X = -3.
+user:wam_cpp_test_unary_plus   :- X is +(7), X = 7.
+user:wam_cpp_test_bitnot       :- X is \(5), X = -6.
+user:wam_cpp_test_min_int      :- X is min(3, 7), X = 3.
+user:wam_cpp_test_max_float    :- X is max(2.5, 3.0), X = 3.0.
+user:wam_cpp_test_pow_star     :- X is 2 ** 10, X = 1024.0.
+user:wam_cpp_test_pow_caret    :- X is 2 ^ 10, X = 1024.
+user:wam_cpp_test_pow_zero     :- X is 5 ^ 0, X = 1.
+user:wam_cpp_test_gcd          :- X is gcd(12, 18), X = 6.
+user:wam_cpp_test_gcd_neg      :- X is gcd(-12, 18), X = 6.
+user:wam_cpp_test_rem_neg      :- X is rem(-7, 3), X = -1.
+user:wam_cpp_test_bitand       :- X is 12 /\ 10, X = 8.
+user:wam_cpp_test_bitor        :- X is 12 \/ 10, X = 14.
+user:wam_cpp_test_bitxor       :- X is xor(12, 10), X = 6.
+user:wam_cpp_test_shl          :- X is 1 << 5, X = 32.
+user:wam_cpp_test_shr          :- X is 64 >> 3, X = 8.
+user:wam_cpp_test_arith_compose1 :- X is max(abs(-5), abs(-3)), X = 5.
+user:wam_cpp_test_arith_compose2 :- X is floor(sqrt(50)), X = 7.
 % Type checks
 user:wam_cpp_is_atom(X)        :- atom(X).
 user:wam_cpp_is_int(X)         :- integer(X).
@@ -2451,6 +2505,70 @@ test(cpp_e2e_builtin_arithmetic, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_add1/2',     [5, 6], true),
           run_query(BinPath, 'wam_cpp_add1/2',     [5, 7], false),
           run_query(BinPath, 'wam_cpp_test_arith/0', [],  true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_arith_expansion, [condition(cpp_compiler_available)]) :-
+    % Arithmetic function expansion: abs/sign/sqrt + flavors of int
+    % rounding (truncate/floor/ceiling/round) + min/max/** /^/gcd/rem
+    % + bitwise ops (/\, \/, xor, >>, <<, \\).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_arith_x', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_abs_neg/0,
+                               user:wam_cpp_test_abs_float/0,
+                               user:wam_cpp_test_sign_neg/0,
+                               user:wam_cpp_test_sign_zero/0,
+                               user:wam_cpp_test_sqrt/0,
+                               user:wam_cpp_test_floor_neg/0,
+                               user:wam_cpp_test_ceiling_neg/0,
+                               user:wam_cpp_test_round/0,
+                               user:wam_cpp_test_truncate_neg/0,
+                               user:wam_cpp_test_unary_plus/0,
+                               user:wam_cpp_test_bitnot/0,
+                               user:wam_cpp_test_min_int/0,
+                               user:wam_cpp_test_max_float/0,
+                               user:wam_cpp_test_pow_star/0,
+                               user:wam_cpp_test_pow_caret/0,
+                               user:wam_cpp_test_pow_zero/0,
+                               user:wam_cpp_test_gcd/0,
+                               user:wam_cpp_test_gcd_neg/0,
+                               user:wam_cpp_test_rem_neg/0,
+                               user:wam_cpp_test_bitand/0,
+                               user:wam_cpp_test_bitor/0,
+                               user:wam_cpp_test_bitxor/0,
+                               user:wam_cpp_test_shl/0,
+                               user:wam_cpp_test_shr/0,
+                               user:wam_cpp_test_arith_compose1/0,
+                               user:wam_cpp_test_arith_compose2/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_abs_neg/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_abs_float/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_sign_neg/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_sign_zero/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_sqrt/0',            [], true),
+          run_query(BinPath, 'wam_cpp_test_floor_neg/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_ceiling_neg/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_round/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_truncate_neg/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_unary_plus/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_bitnot/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_min_int/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_max_float/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_pow_star/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_pow_caret/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_pow_zero/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_gcd/0',             [], true),
+          run_query(BinPath, 'wam_cpp_test_gcd_neg/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_rem_neg/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_bitand/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_bitor/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_bitxor/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_shl/0',             [], true),
+          run_query(BinPath, 'wam_cpp_test_shr/0',             [], true),
+          run_query(BinPath, 'wam_cpp_test_arith_compose1/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_arith_compose2/0',  [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

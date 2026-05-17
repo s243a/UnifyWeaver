@@ -2774,12 +2774,48 @@ Value WamState::eval_arith(CellPtr c, bool& ok) const {
             } catch (...) {}
             ok = false; return Value{};
         case Value::Tag::Compound: {
-            // Unary minus
-            if (v.s == "-/1" && v.args.size() == 1) {
+            // Unary functions. -/1 is the historical entry; the rest
+            // (abs, sign, sqrt, trunc/floor/ceil/round, bitnot \\/1)
+            // follow SWI semantics with one wrinkle: trunc/floor/ceil/round
+            // always return Integer (matches SWI even when fed a
+            // float). +/1 is identity, useful for term-level
+            // arithmetic where you parse "(+ X)" as a positive.
+            if (v.args.size() == 1) {
                 Value a = eval_arith(v.args[0], ok);
                 if (!ok) return Value{};
-                if (a.tag == Value::Tag::Integer) return Value::Integer(-a.i);
-                return Value::Float(-a.f);
+                auto as_d1 = [](const Value& w){
+                    return w.tag == Value::Tag::Float ? w.f : (double)w.i;
+                };
+                if (v.s == "-/1") {
+                    if (a.tag == Value::Tag::Integer) return Value::Integer(-a.i);
+                    return Value::Float(-a.f);
+                }
+                if (v.s == "+/1") return a;
+                if (v.s == "abs/1") {
+                    if (a.tag == Value::Tag::Integer)
+                        return Value::Integer(a.i < 0 ? -a.i : a.i);
+                    return Value::Float(std::fabs(a.f));
+                }
+                if (v.s == "sign/1") {
+                    if (a.tag == Value::Tag::Integer)
+                        return Value::Integer(a.i > 0 ? 1 : (a.i < 0 ? -1 : 0));
+                    return Value::Float(a.f > 0 ? 1.0
+                                       : (a.f < 0 ? -1.0 : 0.0));
+                }
+                if (v.s == "sqrt/1") return Value::Float(std::sqrt(as_d1(a)));
+                if (v.s == "truncate/1")
+                    return Value::Integer((std::int64_t)std::trunc(as_d1(a)));
+                if (v.s == "floor/1")
+                    return Value::Integer((std::int64_t)std::floor(as_d1(a)));
+                if (v.s == "ceiling/1")
+                    return Value::Integer((std::int64_t)std::ceil(as_d1(a)));
+                if (v.s == "round/1")
+                    return Value::Integer((std::int64_t)std::round(as_d1(a)));
+                if (v.s == "\\\\/1") { // bitwise NOT
+                    if (a.tag != Value::Tag::Integer) { ok = false; return Value{}; }
+                    return Value::Integer(~a.i);
+                }
+                ok = false; return Value{};
             }
             if (v.args.size() != 2) { ok = false; return Value{}; }
             Value a = eval_arith(v.args[0], ok);
@@ -2831,6 +2867,67 @@ Value WamState::eval_arith(CellPtr c, bool& ok) const {
             if (v.s == "mod/2") {
                 if (b.i == 0) { ok = false; return Value{}; }
                 return Value::Integer(a.i % b.i);
+            }
+            // Min / max preserve the wider numeric type.
+            if (v.s == "min/2") {
+                if (either_float) return Value::Float(std::fmin(as_d(a), as_d(b)));
+                return Value::Integer(std::min(a.i, b.i));
+            }
+            if (v.s == "max/2") {
+                if (either_float) return Value::Float(std::fmax(as_d(a), as_d(b)));
+                return Value::Integer(std::max(a.i, b.i));
+            }
+            // **/2 always returns float (SWI); ^/2 stays integer when
+            // both args are int and the exponent is non-negative.
+            if (v.s == "**/2") {
+                return Value::Float(std::pow(as_d(a), as_d(b)));
+            }
+            if (v.s == "^/2") {
+                if (either_float || b.i < 0) {
+                    return Value::Float(std::pow(as_d(a), as_d(b)));
+                }
+                std::int64_t result = 1, base = a.i, exp = b.i;
+                while (exp > 0) {
+                    if (exp & 1) result *= base;
+                    base *= base;
+                    exp >>= 1;
+                }
+                return Value::Integer(result);
+            }
+            // Integer-only functions below. Reject floats outright.
+            if (v.s == "gcd/2") {
+                if (either_float) { ok = false; return Value{}; }
+                std::int64_t x = a.i < 0 ? -a.i : a.i;
+                std::int64_t y = b.i < 0 ? -b.i : b.i;
+                while (y) { std::int64_t t = y; y = x % y; x = t; }
+                return Value::Integer(x);
+            }
+            if (v.s == "rem/2") {
+                // C99/C++11 ``%'' follows dividend''s sign; matches
+                // ISO rem. (mod follows divisor''s sign -- different.)
+                if (either_float) { ok = false; return Value{}; }
+                if (b.i == 0) { ok = false; return Value{}; }
+                return Value::Integer(a.i % b.i);
+            }
+            if (v.s == "/\\\\/2") { // bitwise AND
+                if (either_float) { ok = false; return Value{}; }
+                return Value::Integer(a.i & b.i);
+            }
+            if (v.s == "\\\\//2") { // bitwise OR
+                if (either_float) { ok = false; return Value{}; }
+                return Value::Integer(a.i | b.i);
+            }
+            if (v.s == "xor/2") {
+                if (either_float) { ok = false; return Value{}; }
+                return Value::Integer(a.i ^ b.i);
+            }
+            if (v.s == ">>/2") {
+                if (either_float) { ok = false; return Value{}; }
+                return Value::Integer(a.i >> b.i);
+            }
+            if (v.s == "<</2") {
+                if (either_float) { ok = false; return Value{}; }
+                return Value::Integer(a.i << b.i);
             }
             ok = false; return Value{};
         }
