@@ -132,6 +132,7 @@ detect_kernels([PI|Rest], Kernels) :-
     detect_kernels(Rest, RestKernels).
 
 wam_c_supported_kernel(recursive_kernel(category_ancestor, _Pred, _ConfigOps)).
+wam_c_supported_kernel(recursive_kernel(transitive_closure2, _Pred, _ConfigOps)).
 
 %% generate_setup_detected_kernels_c(+DetectedKernels, -CCode)
 %  Emit C startup wiring for detected kernels. This function registers only
@@ -150,6 +151,10 @@ wam_c_kernel_registration_line(Key-recursive_kernel(category_ancestor, _Pred, Co
     format(atom(Line),
            '    wam_register_category_ancestor_kernel(state, "~w", ~w);',
            [Key, MaxDepth]).
+wam_c_kernel_registration_line(Key-recursive_kernel(transitive_closure2, _Pred, _ConfigOps), Line) :-
+    format(atom(Line),
+           '    wam_register_transitive_closure_kernel(state, "~w");',
+           [Key]).
 
 wam_c_kernel_max_depth(ConfigOps, MaxDepth) :-
     (   member(max_depth(MaxDepth0), ConfigOps),
@@ -2269,6 +2274,10 @@ void wam_register_category_parent(WamState *state, const char *child, const char
     state->category_edge_count++;
 }
 
+void wam_register_transitive_edge(WamState *state, const char *child, const char *parent) {
+    wam_register_category_parent(state, child, parent);
+}
+
 void wam_fact_source_init(WamFactSource *source) {
     memset(source, 0, sizeof(WamFactSource));
 }
@@ -2437,6 +2446,10 @@ void wam_register_category_ancestor_kernel(WamState *state, const char *pred, in
     wam_register_foreign_predicate(state, pred, 4, wam_category_ancestor_handler);
 }
 
+void wam_register_transitive_closure_kernel(WamState *state, const char *pred) {
+    wam_register_foreign_predicate(state, pred, 2, wam_transitive_closure_handler);
+}
+
 static bool wam_value_as_atom(WamState *state, WamValue value, const char **out) {
     WamValue *cell = wam_deref_ptr(state, &value);
     if (cell->tag != VAL_ATOM) return false;
@@ -2565,6 +2578,66 @@ bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity)
     bool ok = wam_unify(state, &state->A[2], &result);
     wam_int_results_close(&results);
     return ok;
+}
+
+static bool wam_transitive_closure_dfs(WamState *state,
+                                       const char *start,
+                                       const char *target,
+                                       int depth,
+                                       const char **visited,
+                                       int visited_len,
+                                       const char **result_out) {
+    for (int i = 0; i < state->category_edge_count; i++) {
+        CategoryEdge *edge = &state->category_edges[i];
+        if (strcmp(edge->child, start) != 0) continue;
+        if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
+        if (!target || strcmp(edge->parent, target) == 0) {
+            *result_out = edge->parent;
+            return true;
+        }
+    }
+
+    if (depth >= 64 || visited_len >= 64) return false;
+
+    for (int i = 0; i < state->category_edge_count; i++) {
+        CategoryEdge *edge = &state->category_edges[i];
+        if (strcmp(edge->child, start) != 0) continue;
+        if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
+        visited[visited_len] = edge->parent;
+        if (wam_transitive_closure_dfs(state, edge->parent, target, depth + 1,
+                                       visited, visited_len + 1, result_out)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool wam_transitive_closure_handler(WamState *state, const char *pred, int arity) {
+    (void)pred;
+    if (arity != 2) return false;
+
+    const char *start = NULL;
+    if (!wam_value_as_atom(state, state->A[0], &start)) return false;
+
+    WamValue *target_cell = wam_deref_ptr(state, &state->A[1]);
+    const char *target = NULL;
+    if (target_cell->tag == VAL_ATOM) {
+        target = target_cell->data.atom;
+    } else if (!val_is_unbound(*target_cell)) {
+        return false;
+    }
+
+    const char *visited[64];
+    int visited_len = 0;
+    visited[visited_len++] = start;
+    const char *result = NULL;
+    if (!wam_transitive_closure_dfs(state, start, target, 0, visited, visited_len, &result)) {
+        return false;
+    }
+    if (target) return true;
+
+    WamValue result_value = val_atom(result);
+    return wam_unify(state, &state->A[1], &result_value);
 }
 '.
 

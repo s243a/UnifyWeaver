@@ -4,18 +4,20 @@ Status date: 2026-05-16
 
 Base verified locally:
 
+- `main` at `a20d6d75` (`Merge pull request #2202 from s243a/test/wam-c-builtins-real-prolog-smoke`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `main` at `c0085bce` (`Merge pull request #2198 from s243a/bench/csharp-query-page-relation-backends`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
 - `python3 tests/test_wam_c_lowered_helper_scale_regression.py`
-- `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py`
+- `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py tests/test_benchmark_target_matrix.py tests/test_wam_c_lowered_helper_scale_regression.py`
 - `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev,10x --target-sets c-wam-lowered-helper --repetitions 1 --baseline-target c-wam-lowered-helper-interpreted`
-- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels --repetitions 1`
+- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels,c-wam-accumulated-lmdb,c-wam-accumulated-no-kernels-lmdb --repetitions 1 --baseline-target prolog-accumulated`
+- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 10x --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels,c-wam-accumulated-lmdb,c-wam-accumulated-no-kernels-lmdb --repetitions 1 --baseline-target prolog-accumulated`
+- `git diff --check`
 
 Active branch:
 
-- `test/wam-c-builtins-real-prolog-smoke`
+- `feat/wam-c-transitive-closure-kernel`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -69,7 +71,9 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Lowered helper next-shape selection | Done | Selected term-shape builtin parity as the next narrow helper-adjacent surface and added C `functor/3` runtime support because Haskell and Rust already cover richer structure inspection paths |
 | `arg/3` builtin support | Done | Deterministic positive-index argument extraction for structures and lists has direct executable smoke coverage |
 | `atom_concat/3` builtin support | Done | Explicit deterministic atom concatenation and split modes have direct executable smoke coverage |
-| Generated Prolog builtin parity smoke | In progress | Active branch exercises `functor/3`, `arg/3`, and `atom_concat/3` together through generated WAM-to-C code |
+| Generated Prolog builtin parity smoke | Done | Generated WAM-to-C executable smoke exercises `functor/3`, `arg/3`, and `atom_concat/3` together |
+| Benchmark-demand scan | Done | `dev`/`10x` accumulated TSV+LMDB C targets and `dev`/`10x` lowered-helper targets preserve output parity; accumulated C kernel path shows no meaningful speedup over no-kernels and is much slower than optimized Prolog at `10x` |
+| `transitive_closure2` native kernel | Done | C shared-kernel detector accepts `transitive_closure2`, emits detected setup, registers a native arity-2 foreign handler, and covers direct plus detected-project executable smokes |
 
 ## Current C Target Baseline
 
@@ -94,8 +98,8 @@ The C target is now a credible small WAM backend:
 - Can opt into a prototype lowered-helper path for constant fact-only
   predicates, plus same-arity alias bodies that call those native fact helpers,
   emitted as native C foreign handlers behind `call_foreign` trampolines.
-- Supports a deterministic native `category_ancestor/4` handler over an
-  in-memory category-parent edge table.
+- Supports deterministic native `category_ancestor/4` and `transitive_closure2`
+  handlers over an in-memory edge table.
 - Supports loading category-parent facts from TSV through a small
   `WamFactSource` interface.
 - Supports collecting all integer hop results for native `category_ancestor/4`
@@ -140,8 +144,8 @@ missing important target features; `Missing` = no comparable C path yet.
 | Aggregates (`findall`/`bagof`/`setof`) | Missing | Present in hybrid/lowered paths | Present in interpreter/lowered paths | Add only after C has enough runtime term-copy and list construction coverage. |
 | Negation / control builtins | Partial | Broader | Broader | C likely needs explicit tests for `\+/1`, cut interactions, and if-then-else lowering. |
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
-| Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup and all-hop collection; add more kernel kinds only after runtime support exists. |
-| Shared kernel detector integration | Partial | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`; broaden as more native C kernels land. |
+| Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, and native `transitive_closure2`; continue adding shared kernels one at a time. |
+| Shared kernel detector integration | Partial | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4` and `transitive_closure2`; Haskell and Rust cover a broader shared-kernel registry. |
 | Lowered/native helper functions | Partial/Done | Done | Done | C has constant fact-only native helpers, planner metadata, interpreted-vs-lowered matrix wiring, body-call helpers, filtered-fact helpers, comparison-filter helpers, rejection metadata, repeated-variable filter hardening, empty-result rejection metadata, and projected body-call helper expansion. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
 | LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts and generated effective-distance LMDB wiring; larger artifact layout support remains. |
@@ -152,39 +156,84 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `test/wam-c-builtins-real-prolog-smoke`
+### 1. `feat/wam-c-transitive-distance-kernel`
 
-Goal: exercise the accumulated builtin parity surface through generated Prolog,
-not just hand-authored WAM snippets.
+Goal: add the next shared recursive kernel to C from the Haskell/Rust parity
+surface, continuing from `transitive_closure2` to `transitive_distance3`.
 
 Scope:
 
-- Add a generated Prolog executable smoke that uses `functor/3`, `arg/3`, and
-  `atom_concat/3` together.
-- Keep it small and deterministic so the normal WAM-C test suite remains cheap.
+- Extend the C recursive-kernel registration path beyond `category_ancestor/4`
+  and `transitive_closure2` for the shared `transitive_distance3` detector.
+- Add a native C handler and executable smoke for a small binary edge distance.
+- Keep TSV/LMDB fact loading out of scope unless the small in-memory kernel
+  path exposes a need for it.
 
-Status: active.
+Status: recommended next.
 
-Selected scope:
+Reason:
 
-| Candidate | Decision | Reason |
-|---|---:|---|
-| Combined generated-Prolog success path | Active | Confirms the compiler emits builtin calls that the C runtime can execute together. |
-| Bound-output failure path | Active | Confirms generated code rejects a wrong composed label deterministically. |
-| Broad builtin matrix | Defer | The full builtin surface should be demand-driven rather than expanded preemptively. |
+- `transitive_closure2` is now covered through direct native registration and
+  detected-project setup.
+- `docs/design/WAM_PERF_OPTIMIZATION_LOG.md` records
+  `transitive_distance3/3` as a measured Haskell multi-output kernel benchmark,
+  so it is a better C parity target than another speculative builtin.
+- Haskell and Rust already cover `transitive_distance3`; it can reuse the edge
+  traversal surface while adding an integer distance output.
 
-### 2. `investigate/wam-c-next-benchmark-demand`
+### 2. `investigate/wam-c-accumulated-runtime-cost`
+
+Goal: explain why the accumulated C WAM effective-distance target is much
+slower than optimized Prolog at `10x`.
+
+Scope:
+
+- Profile generated `c-wam-accumulated` and `c-wam-accumulated-no-kernels` runs
+  at `10x`.
+- Identify whether the cost is WAM dispatch, fact lookup, repeated setup,
+  generated query shape, or native-kernel integration overhead.
+- Keep this separate from `transitive_closure2` unless the same root cause
+  blocks the new kernel.
+
+Status: recommended after the next shared-kernel slice, or sooner if runtime
+performance becomes the blocking question.
+
+### Completed Investigation: `investigate/wam-c-next-benchmark-demand`
 
 Goal: choose the next C parity gap from an actual benchmark or generated-program
 failure instead of adding builtins speculatively.
 
-Scope:
+Evidence:
 
-- Run the existing WAM-C benchmark/generator surfaces and identify the next
-  unsupported runtime or compiler feature from real failures.
-- Prefer one narrow branch per missing feature.
+| Surface | Command | Outcome |
+|---|---|---|
+| Target registry | `python3 examples/benchmark/benchmark_effective_distance_matrix.py --list-targets` | C exposes accumulated TSV, accumulated LMDB, and lowered-helper target sets. |
+| Kernel-pair registry | `python3 examples/benchmark/benchmark_effective_distance_matrix.py --list-kernel-pairs` | C exposes accumulated TSV and LMDB kernels-on/no-kernels pairs. |
+| Accumulated C dev parity | `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels,c-wam-accumulated-lmdb,c-wam-accumulated-no-kernels-lmdb --repetitions 1 --baseline-target prolog-accumulated` | All outputs match across Prolog, TSV C, and LMDB C targets. |
+| Lowered-helper dev/10x parity | `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev,10x --target-sets c-wam-lowered-helper --repetitions 1 --baseline-target c-wam-lowered-helper-interpreted` | Lowered and interpreted helper outputs match at `dev` and `10x`. |
+| Accumulated C 10x parity and kernel delta | `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 10x --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels,c-wam-accumulated-lmdb,c-wam-accumulated-no-kernels-lmdb --repetitions 1 --baseline-target prolog-accumulated` | All outputs match, but C WAM is about `0.03x` versus optimized Prolog and C kernels are only `1.004x` to `1.014x` versus no-kernels. |
 
-Status: recommended after this branch.
+### Completed Shared Kernel Slice: `feat/wam-c-transitive-closure-kernel`
+
+Goal: add the next shared recursive kernel to C from the Haskell/Rust parity
+surface.
+
+Evidence:
+
+| Surface | Coverage |
+|---|---|
+| Kernel support predicate | `wam_c_supported_kernel/1` accepts `recursive_kernel(transitive_closure2, ...)`. |
+| Detected setup emission | `generate_setup_detected_kernels_c/2` emits `wam_register_transitive_closure_kernel`. |
+| Runtime handler | `wam_transitive_closure_handler` supports bound-target reachability and first-solution unbound target mode over registered in-memory edges. |
+| Direct executable smoke | `tc_ancestor/2` succeeds for direct and recursive edges, binds an unbound target, and fails for a reversed edge. |
+| Detected-project smoke | Generated project detection lowers `tc_ancestor/2` to a `call_foreign` trampoline and runs through `setup_detected_wam_c_kernels`. |
+
+Performance note:
+
+- `docs/design/WAM_PERF_OPTIMIZATION_LOG.md` repeatedly points to native kernel
+  dispatch as the meaningful hybrid-WAM speedup lever. For C, the immediate
+  goal should stay on broadening native shared kernels before tuning the general
+  WAM instruction dispatch loop.
 
 ## Completed Atom Concat Builtin
 
@@ -263,8 +312,9 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Continue validating `test/wam-c-lowered-helper-larger-scale-regression`.
+Proceed with `feat/wam-c-transitive-distance-kernel`.
 
-The active branch should keep the local regression focused on `100x`; `1k`
-remains useful for occasional calibration but is too slow for routine local
-validation.
+Keep it narrow: add `transitive_distance3` over the same in-memory edge surface
+and prove direct plus detected-project executable smokes. Treat broader fact
+storage, LMDB loading, and runtime profiling as follow-up branches unless this
+slice exposes a direct blocker.
