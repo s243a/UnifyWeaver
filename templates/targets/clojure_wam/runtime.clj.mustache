@@ -946,6 +946,100 @@
           (backtrack state)))
       (backtrack state))))
 
+(defn atom-text [state value]
+  (cond
+    (atom-term? value) (deintern-atom (:intern-context state) (:id value))
+    (string? value) value
+    :else nil))
+
+(defn number-text [value]
+  (when (number? value)
+    (str value)))
+
+(defn intern-text-atom [state text]
+  (let [[ctx id] (intern-atom (:intern-context state) text)]
+    [(assoc state :intern-context ctx) (atom-term id)]))
+
+(defn intern-char-terms [state chars]
+  (loop [s state
+         remaining chars
+         out []]
+    (if-let [ch (first remaining)]
+      (let [[next-state atom] (intern-text-atom s (str ch))]
+        (recur next-state (rest remaining) (conj out atom)))
+      [s out])))
+
+(defn code-list-term [state text]
+  [state (list->term (:intern-context state) (map int text))])
+
+(defn char-list-term [state text]
+  (let [[next-state chars] (intern-char-terms state text)]
+    [next-state (list->term (:intern-context next-state) chars)]))
+
+(declare parse-number-text)
+
+(defn code-point-value [state value]
+  (cond
+    (integer? value) value
+    (atom-term? value) (parse-number-text (deintern-atom (:intern-context state) (:id value)))
+    (string? value) (parse-number-text value)
+    :else nil))
+
+(defn code-list-text [state list-value]
+  (when-let [items (proper-list-items state list-value)]
+    (let [codes (map #(code-point-value state %) items)]
+      (when (every? #(and (integer? %) (not (neg? %)) (<= % 65535)) codes)
+        (apply str (map char codes))))))
+
+(defn char-list-text [state list-value]
+  (when-let [items (proper-list-items state list-value)]
+    (let [chars (map #(atom-text state %) items)]
+      (when (every? #(and (string? %) (= 1 (count %))) chars)
+        (apply str chars)))))
+
+(defn parse-number-text [text]
+  (try
+    (if (str/includes? text ".")
+      (Double/parseDouble text)
+      (Long/parseLong text))
+    (catch Exception _ nil)))
+
+(defn apply-text-conversion-solution [state pred]
+  (let [left (deref-value (:bindings state)
+                          (or (reg-get-raw state "A1") ::unbound))
+        right (deref-value (:bindings state)
+                           (or (reg-get-raw state "A2") ::unbound))
+        codes? (or (= pred "atom_codes/2") (= pred "number_codes/2"))
+        atom? (or (= pred "atom_codes/2") (= pred "atom_chars/2"))
+        value-text (if atom? (atom-text state left) (number-text left))
+        list-text (if codes? (code-list-text state right) (char-list-text state right))]
+    (cond
+      (some? value-text)
+      (let [[next-state list-term] (if codes?
+                                     (code-list-term state value-text)
+                                     (char-list-term state value-text))
+            [ok unified-state] (unify-values next-state right list-term)]
+        (if ok
+          (advance unified-state)
+          (backtrack state)))
+
+      (some? list-text)
+      (if atom?
+        (let [[next-state atom-term] (intern-text-atom state list-text)
+              [ok unified-state] (unify-values next-state left atom-term)]
+          (if ok
+            (advance unified-state)
+            (backtrack state)))
+        (if-let [number-value (parse-number-text list-text)]
+          (let [[ok unified-state] (unify-values state left number-value)]
+            (if ok
+              (advance unified-state)
+              (backtrack state)))
+          (backtrack state)))
+
+      :else
+      (backtrack state))))
+
 (defn ground-term? [state value]
   (let [bindings (:bindings state)]
     (letfn [(ground* [term seen]
@@ -1753,6 +1847,18 @@
             (if (ground-term? state value)
               (advance state)
               (backtrack state)))
+
+          "atom_codes/2"
+          (apply-text-conversion-solution state (:pred instr))
+
+          "atom_chars/2"
+          (apply-text-conversion-solution state (:pred instr))
+
+          "number_codes/2"
+          (apply-text-conversion-solution state (:pred instr))
+
+          "number_chars/2"
+          (apply-text-conversion-solution state (:pred instr))
 
           "!/0"
           (-> state
