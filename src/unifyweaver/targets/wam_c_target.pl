@@ -133,6 +133,7 @@ detect_kernels([PI|Rest], Kernels) :-
 
 wam_c_supported_kernel(recursive_kernel(category_ancestor, _Pred, _ConfigOps)).
 wam_c_supported_kernel(recursive_kernel(transitive_closure2, _Pred, _ConfigOps)).
+wam_c_supported_kernel(recursive_kernel(transitive_distance3, _Pred, _ConfigOps)).
 
 %% generate_setup_detected_kernels_c(+DetectedKernels, -CCode)
 %  Emit C startup wiring for detected kernels. This function registers only
@@ -154,6 +155,10 @@ wam_c_kernel_registration_line(Key-recursive_kernel(category_ancestor, _Pred, Co
 wam_c_kernel_registration_line(Key-recursive_kernel(transitive_closure2, _Pred, _ConfigOps), Line) :-
     format(atom(Line),
            '    wam_register_transitive_closure_kernel(state, "~w");',
+           [Key]).
+wam_c_kernel_registration_line(Key-recursive_kernel(transitive_distance3, _Pred, _ConfigOps), Line) :-
+    format(atom(Line),
+           '    wam_register_transitive_distance_kernel(state, "~w");',
            [Key]).
 
 wam_c_kernel_max_depth(ConfigOps, MaxDepth) :-
@@ -2450,6 +2455,10 @@ void wam_register_transitive_closure_kernel(WamState *state, const char *pred) {
     wam_register_foreign_predicate(state, pred, 2, wam_transitive_closure_handler);
 }
 
+void wam_register_transitive_distance_kernel(WamState *state, const char *pred) {
+    wam_register_foreign_predicate(state, pred, 3, wam_transitive_distance_handler);
+}
+
 static bool wam_value_as_atom(WamState *state, WamValue value, const char **out) {
     WamValue *cell = wam_deref_ptr(state, &value);
     if (cell->tag != VAL_ATOM) return false;
@@ -2638,6 +2647,71 @@ bool wam_transitive_closure_handler(WamState *state, const char *pred, int arity
 
     WamValue result_value = val_atom(result);
     return wam_unify(state, &state->A[1], &result_value);
+}
+
+static bool wam_transitive_distance_bfs(WamState *state,
+                                        const char *start,
+                                        const char *target,
+                                        const char **target_out,
+                                        int *distance_out) {
+    const char *queue_nodes[256];
+    int queue_distances[256];
+    const char *visited[256];
+    int head = 0;
+    int tail = 0;
+    int visited_len = 0;
+
+    queue_nodes[tail] = start;
+    queue_distances[tail++] = 0;
+    visited[visited_len++] = start;
+
+    while (head < tail) {
+        const char *node = queue_nodes[head];
+        int distance = queue_distances[head++];
+        for (int i = 0; i < state->category_edge_count; i++) {
+            CategoryEdge *edge = &state->category_edges[i];
+            if (strcmp(edge->child, node) != 0) continue;
+            if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
+            int next_distance = distance + 1;
+            if (!target || strcmp(edge->parent, target) == 0) {
+                *target_out = edge->parent;
+                *distance_out = next_distance;
+                return true;
+            }
+            if (tail >= 256 || visited_len >= 256) return false;
+            visited[visited_len++] = edge->parent;
+            queue_nodes[tail] = edge->parent;
+            queue_distances[tail++] = next_distance;
+        }
+    }
+    return false;
+}
+
+bool wam_transitive_distance_handler(WamState *state, const char *pred, int arity) {
+    (void)pred;
+    if (arity != 3) return false;
+
+    const char *start = NULL;
+    if (!wam_value_as_atom(state, state->A[0], &start)) return false;
+
+    WamValue *target_cell = wam_deref_ptr(state, &state->A[1]);
+    const char *target = NULL;
+    if (target_cell->tag == VAL_ATOM) {
+        target = target_cell->data.atom;
+    } else if (!val_is_unbound(*target_cell)) {
+        return false;
+    }
+
+    const char *result_target = NULL;
+    int result_distance = 0;
+    if (!wam_transitive_distance_bfs(state, start, target, &result_target, &result_distance)) {
+        return false;
+    }
+
+    WamValue target_value = val_atom(result_target);
+    WamValue distance_value = val_int(result_distance);
+    return wam_unify(state, &state->A[1], &target_value) &&
+           wam_unify(state, &state->A[2], &distance_value);
 }
 '.
 

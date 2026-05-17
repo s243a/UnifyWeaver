@@ -277,6 +277,17 @@ test_transitive_closure_kernel_generation :-
     ;   fail_test(Test, 'transitive_closure2 native kernel helpers missing')
     ).
 
+test_transitive_distance_kernel_generation :-
+    Test = 'WAM-C: transitive_distance3 native kernel helpers generated',
+    (   compile_wam_runtime_to_c([], RuntimeCode),
+        atom_string(RuntimeCode, S),
+        sub_string(S, _, _, _, 'void wam_register_transitive_distance_kernel'),
+        sub_string(S, _, _, _, 'bool wam_transitive_distance_handler'),
+        sub_string(S, _, _, _, 'wam_transitive_distance_bfs')
+    ->  pass(Test)
+    ;   fail_test(Test, 'transitive_distance3 native kernel helpers missing')
+    ).
+
 test_fact_source_generation :-
     Test = 'WAM-C: file FactSource helpers generated',
     (   compile_wam_runtime_to_c([], RuntimeCode),
@@ -328,6 +339,20 @@ test_transitive_closure_detector_setup_generation :-
         pass(Test)
     ;   cleanup_wam_c_detector_transitive_closure,
         fail_test(Test, 'detected transitive_closure2 setup missing')
+    ).
+
+test_transitive_distance_detector_setup_generation :-
+    Test = 'WAM-C: shared kernel detector emits transitive_distance3 setup',
+    setup_wam_c_detector_transitive_distance,
+    (   detect_kernels([user:tc_distance/3], Detected),
+        Detected = ['tc_distance/3'-_Kernel],
+        generate_setup_detected_kernels_c(Detected, SetupCode),
+        sub_atom(SetupCode, _, _, _, 'setup_detected_wam_c_kernels'),
+        sub_atom(SetupCode, _, _, _, 'wam_register_transitive_distance_kernel(state, "tc_distance/3")')
+    ->  cleanup_wam_c_detector_transitive_distance,
+        pass(Test)
+    ;   cleanup_wam_c_detector_transitive_distance,
+        fail_test(Test, 'detected transitive_distance3 setup missing')
     ).
 
 test_kernel_detector_project_generation :-
@@ -910,6 +935,16 @@ test_transitive_closure_kernel_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_transitive_distance_kernel_executable_smoke :-
+    Test = 'WAM-C: transitive_distance3 native kernel executable smoke',
+    (   gcc_available
+    ->  (   run_transitive_distance_kernel_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'transitive_distance3 native kernel executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_fact_source_executable_smoke :-
     Test = 'WAM-C: file FactSource executable smoke',
     (   gcc_available
@@ -957,6 +992,16 @@ test_transitive_closure_detector_executable_smoke :-
     ->  (   run_transitive_closure_detector_executable_smoke
         ->  pass(Test)
         ;   fail_test(Test, 'detected transitive_closure2 executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_transitive_distance_detector_executable_smoke :-
+    Test = 'WAM-C: detected transitive_distance3 executable smoke',
+    (   gcc_available
+    ->  (   run_transitive_distance_detector_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'detected transitive_distance3 executable failed')
         )
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
@@ -1258,6 +1303,25 @@ run_transitive_closure_kernel_executable_smoke :-
     compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
     run_c_smoke_plain(ExePath).
 
+run_transitive_distance_kernel_executable_smoke :-
+    WamCode = 'tc_distance/3:\n    call_foreign tc_distance/3, 3\n    proceed',
+    compile_wam_predicate_to_c(user:tc_distance/3, WamCode, [], PredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_transitive_distance_smoke', Stamp, TmpBase),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    wam_c_transitive_distance_smoke_main(MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
 run_fact_source_executable_smoke :-
     WamCode = 'category_ancestor/4:\n    call_foreign category_ancestor/4, 4\n    proceed',
     compile_wam_predicate_to_c(user:category_ancestor/4, WamCode, [], PredCode),
@@ -1334,6 +1398,25 @@ run_transitive_closure_detector_executable_smoke :-
         run_c_smoke_plain(ExePath)
     ->  cleanup_wam_c_detector_transitive_closure
     ;   cleanup_wam_c_detector_transitive_closure,
+        fail
+    ).
+
+run_transitive_distance_detector_executable_smoke :-
+    setup_wam_c_detector_transitive_distance,
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_distance_detector_smoke', Stamp, ProjectDir),
+    directory_file_path(ProjectDir, 'wam_runtime.c', RuntimePath),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    directory_file_path(ProjectDir, 'main.c', MainPath),
+    directory_file_path(ProjectDir, 'wam_c_distance_detector_smoke', ExePath),
+    (   write_wam_c_project([user:tc_distance/3], [], ProjectDir),
+        wam_c_transitive_distance_detector_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, LibPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_detector_transitive_distance
+    ;   cleanup_wam_c_detector_transitive_distance,
         fail
     ).
 
@@ -1821,6 +1904,22 @@ cleanup_wam_c_detector_transitive_closure :-
     retractall(user:tc_parent(_, _)),
     retractall(user:tc_ancestor(_, _)).
 
+setup_wam_c_detector_transitive_distance :-
+    cleanup_wam_c_detector_transitive_distance,
+    assertz((user:td_parent(tom, bob))),
+    assertz((user:td_parent(bob, ann))),
+    assertz((user:td_parent(bob, pat))),
+    assertz((user:tc_distance(X, Y, 1) :-
+        td_parent(X, Y))),
+    assertz((user:tc_distance(X, Y, D) :-
+        td_parent(X, Z),
+        tc_distance(Z, Y, D0),
+        D is D0 + 1)).
+
+cleanup_wam_c_detector_transitive_distance :-
+    retractall(user:td_parent(_, _)),
+    retractall(user:tc_distance(_, _, _)).
+
 run_c_smoke(ExePath) :-
     format(atom(LogPath), '~w.asan.log', [ExePath]),
     run_c_smoke_once(ExePath, LogPath, Status),
@@ -2254,6 +2353,72 @@ int main(void) {
 }
 ').
 
+wam_c_transitive_distance_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_tc_distance_3(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_tc_distance_3(&state);
+    wam_register_transitive_edge(&state, "tom", "bob");
+    wam_register_transitive_edge(&state, "bob", "ann");
+    wam_register_transitive_edge(&state, "bob", "pat");
+    wam_register_transitive_distance_kernel(&state, "tc_distance/3");
+
+    WamValue recursive_args[3] = {
+        val_atom("tom"),
+        val_atom("ann"),
+        val_unbound("Distance")
+    };
+    int recursive_rc = wam_run_predicate(&state, "tc_distance/3", recursive_args, 3);
+    if (recursive_rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_INT || state.A[2].data.integer != 2) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue direct_args[3] = {
+        val_atom("tom"),
+        val_atom("bob"),
+        val_int(1)
+    };
+    int direct_rc = wam_run_predicate(&state, "tc_distance/3", direct_args, 3);
+    if (direct_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue output_args[3] = {
+        val_atom("bob"),
+        val_unbound("Target"),
+        val_unbound("Distance")
+    };
+    int output_rc = wam_run_predicate(&state, "tc_distance/3", output_args, 3);
+    if (output_rc != 0 || state.P != WAM_HALT ||
+        state.A[1].tag != VAL_ATOM || strcmp(state.A[1].data.atom, "ann") != 0 ||
+        state.A[2].tag != VAL_INT || state.A[2].data.integer != 1) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue fail_args[3] = {
+        val_atom("ann"),
+        val_atom("tom"),
+        val_unbound("Distance")
+    };
+    int fail_rc = wam_run_predicate(&state, "tc_distance/3", fail_args, 3);
+    if (fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 wam_c_kernel_detector_smoke_main(
 '#include "wam_runtime.h"
 
@@ -2317,6 +2482,38 @@ int main(void) {
     };
     int rc = wam_run_predicate(&state, "tc_ancestor/2", args, 2);
     if (rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_transitive_distance_detector_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_tc_distance_3(WamState* state);
+void setup_detected_wam_c_kernels(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_tc_distance_3(&state);
+    setup_detected_wam_c_kernels(&state);
+
+    wam_register_transitive_edge(&state, "tom", "bob");
+    wam_register_transitive_edge(&state, "bob", "ann");
+
+    WamValue args[3] = {
+        val_atom("tom"),
+        val_atom("ann"),
+        val_unbound("Distance")
+    };
+    int rc = wam_run_predicate(&state, "tc_distance/3", args, 3);
+    if (rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_INT || state.A[2].data.integer != 2) {
         wam_free_state(&state);
         return 10;
     }
@@ -3305,10 +3502,12 @@ run_tests_once :-
     test_call_foreign_generation,
     test_category_ancestor_kernel_generation,
     test_transitive_closure_kernel_generation,
+    test_transitive_distance_kernel_generation,
     test_fact_source_generation,
     test_streaming_foreign_results_generation,
     test_kernel_detector_setup_generation,
     test_transitive_closure_detector_setup_generation,
+    test_transitive_distance_detector_setup_generation,
     test_kernel_detector_project_generation,
     test_lowered_fact_helper_generation,
     test_lowered_helper_planner_metadata,
@@ -3331,10 +3530,12 @@ run_tests_once :-
     test_call_foreign_executable_smoke,
     test_category_ancestor_kernel_executable_smoke,
     test_transitive_closure_kernel_executable_smoke,
+    test_transitive_distance_kernel_executable_smoke,
     test_fact_source_executable_smoke,
     test_lmdb_fact_source_executable_smoke,
     test_kernel_detector_executable_smoke,
     test_transitive_closure_detector_executable_smoke,
+    test_transitive_distance_detector_executable_smoke,
     test_streaming_foreign_results_executable_smoke,
     test_real_prolog_builtin_executable_smoke,
     test_real_prolog_term_builtin_executable_smoke,
