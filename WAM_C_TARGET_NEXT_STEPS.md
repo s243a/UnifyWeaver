@@ -144,8 +144,8 @@ missing important target features; `Missing` = no comparable C path yet.
 | Aggregates (`findall`/`bagof`/`setof`) | Missing | Present in hybrid/lowered paths | Present in interpreter/lowered paths | Add only after C has enough runtime term-copy and list construction coverage. |
 | Negation / control builtins | Partial | Broader | Broader | C likely needs explicit tests for `\+/1`, cut interactions, and if-then-else lowering. |
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
-| Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, and native `transitive_closure2`; continue adding shared kernels one at a time. |
-| Shared kernel detector integration | Partial | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4` and `transitive_closure2`; Haskell and Rust cover a broader shared-kernel registry. |
+| Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, and native `transitive_closure2` plus `transitive_distance3`; continue adding shared kernels one at a time. |
+| Shared kernel detector integration | Partial | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`, `transitive_closure2`, and `transitive_distance3`; Haskell and Rust cover a broader shared-kernel registry. |
 | Lowered/native helper functions | Partial/Done | Done | Done | C has constant fact-only native helpers, planner metadata, interpreted-vs-lowered matrix wiring, body-call helpers, filtered-fact helpers, comparison-filter helpers, rejection metadata, repeated-variable filter hardening, empty-result rejection metadata, and projected body-call helper expansion. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
 | LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts and generated effective-distance LMDB wiring; larger artifact layout support remains. |
@@ -156,16 +156,16 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-transitive-distance-kernel`
+### 1. `audit/wam-c-remaining-shared-kernels`
 
-Goal: add the next shared recursive kernel to C from the Haskell/Rust parity
-surface, continuing from `transitive_closure2` to `transitive_distance3`.
+Goal: audit the shared recursive-kernel registry after `transitive_distance3`
+and choose the next C parity slice from Haskell/Rust coverage.
 
 Scope:
 
-- Extend the C recursive-kernel registration path beyond `category_ancestor/4`
-  and `transitive_closure2` for the shared `transitive_distance3` detector.
-- Add a native C handler and executable smoke for a small binary edge distance.
+- Compare the remaining shared detector kinds against C native handler support.
+- Pick one narrow kernel or document why the next useful step is a runtime
+  execution feature instead of another detector.
 - Keep TSV/LMDB fact loading out of scope unless the small in-memory kernel
   path exposes a need for it.
 
@@ -173,13 +173,10 @@ Status: recommended next.
 
 Reason:
 
-- `transitive_closure2` is now covered through direct native registration and
-  detected-project setup.
-- `docs/design/WAM_PERF_OPTIMIZATION_LOG.md` records
-  `transitive_distance3/3` as a measured Haskell multi-output kernel benchmark,
-  so it is a better C parity target than another speculative builtin.
-- Haskell and Rust already cover `transitive_distance3`; it can reuse the edge
-  traversal surface while adding an integer distance output.
+- `transitive_closure2` and `transitive_distance3` are now covered through
+  direct native registration and detected-project setup.
+- The remaining value is deciding whether another shared detector closes a real
+  benchmark gap or whether C needs deeper runtime/choicepoint support first.
 
 ### 2. `investigate/wam-c-accumulated-runtime-cost`
 

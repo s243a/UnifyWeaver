@@ -250,8 +250,10 @@ void wam_register_category_parent(WamState *state, const char *child, const char
 void wam_register_transitive_edge(WamState *state, const char *child, const char *parent);
 void wam_register_category_ancestor_kernel(WamState *state, const char *pred, int max_depth);
 void wam_register_transitive_closure_kernel(WamState *state, const char *pred);
+void wam_register_transitive_distance_kernel(WamState *state, const char *pred);
 bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity);
 bool wam_transitive_closure_handler(WamState *state, const char *pred, int arity);
+bool wam_transitive_distance_handler(WamState *state, const char *pred, int arity);
 void wam_fact_source_init(WamFactSource *source);
 void wam_fact_source_close(WamFactSource *source);
 bool wam_fact_source_load_tsv(WamState *state, WamFactSource *source, const char *path);
