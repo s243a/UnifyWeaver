@@ -4,3 +4,6 @@
 [submodule "tools/agent-loop/prototype"]
 	path = tools/agent-loop/prototype
 	url = git@github.com:s243a/uwsal.git
+[submodule "examples/more"]
+	path = examples/more
+	url = git@github.com:s243a/UnifyWeaver_Examples.git
