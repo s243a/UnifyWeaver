@@ -322,6 +322,18 @@ test_weighted_shortest_path_kernel_generation :-
     ;   fail_test(Test, 'weighted_shortest_path3 native kernel helpers missing')
     ).
 
+test_astar_shortest_path_kernel_generation :-
+    Test = 'WAM-C: astar_shortest_path4 native kernel helpers generated',
+    (   compile_wam_runtime_to_c([], RuntimeCode),
+        atom_string(RuntimeCode, S),
+        sub_string(S, _, _, _, 'void wam_register_direct_distance_edge'),
+        sub_string(S, _, _, _, 'void wam_register_astar_shortest_path_kernel'),
+        sub_string(S, _, _, _, 'bool wam_astar_shortest_path_handler'),
+        sub_string(S, _, _, _, 'wam_astar_shortest_path_search')
+    ->  pass(Test)
+    ;   fail_test(Test, 'astar_shortest_path4 native kernel helpers missing')
+    ).
+
 test_fact_source_generation :-
     Test = 'WAM-C: file FactSource helpers generated',
     (   compile_wam_runtime_to_c([], RuntimeCode),
@@ -429,6 +441,20 @@ test_weighted_shortest_path_detector_setup_generation :-
         pass(Test)
     ;   cleanup_wam_c_detector_weighted_shortest_path,
         fail_test(Test, 'detected weighted_shortest_path3 setup missing')
+    ).
+
+test_astar_shortest_path_detector_setup_generation :-
+    Test = 'WAM-C: shared kernel detector emits astar_shortest_path4 setup',
+    setup_wam_c_detector_astar_shortest_path,
+    (   detect_kernels([user:astar_path/4], Detected),
+        Detected = ['astar_path/4'-_Kernel],
+        generate_setup_detected_kernels_c(Detected, SetupCode),
+        sub_atom(SetupCode, _, _, _, 'setup_detected_wam_c_kernels'),
+        sub_atom(SetupCode, _, _, _, 'wam_register_astar_shortest_path_kernel(state, "astar_path/4")')
+    ->  cleanup_wam_c_detector_astar_shortest_path,
+        pass(Test)
+    ;   cleanup_wam_c_detector_astar_shortest_path,
+        fail_test(Test, 'detected astar_shortest_path4 setup missing')
     ).
 
 test_kernel_detector_project_generation :-
@@ -1051,6 +1077,16 @@ test_weighted_shortest_path_kernel_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_astar_shortest_path_kernel_executable_smoke :-
+    Test = 'WAM-C: astar_shortest_path4 native kernel executable smoke',
+    (   gcc_available
+    ->  (   run_astar_shortest_path_kernel_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'astar_shortest_path4 native kernel executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_fact_source_executable_smoke :-
     Test = 'WAM-C: file FactSource executable smoke',
     (   gcc_available
@@ -1138,6 +1174,16 @@ test_weighted_shortest_path_detector_executable_smoke :-
     ->  (   run_weighted_shortest_path_detector_executable_smoke
         ->  pass(Test)
         ;   fail_test(Test, 'detected weighted_shortest_path3 executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_astar_shortest_path_detector_executable_smoke :-
+    Test = 'WAM-C: detected astar_shortest_path4 executable smoke',
+    (   gcc_available
+    ->  (   run_astar_shortest_path_detector_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'detected astar_shortest_path4 executable failed')
         )
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
@@ -1515,6 +1561,25 @@ run_weighted_shortest_path_kernel_executable_smoke :-
     compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
     run_c_smoke_plain(ExePath).
 
+run_astar_shortest_path_kernel_executable_smoke :-
+    WamCode = 'astar_path/4:\n    call_foreign astar_path/4, 4\n    proceed',
+    compile_wam_predicate_to_c(user:astar_path/4, WamCode, [], PredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_astar_shortest_path_smoke', Stamp, TmpBase),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    wam_c_astar_shortest_path_smoke_main(MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
 run_fact_source_executable_smoke :-
     WamCode = 'category_ancestor/4:\n    call_foreign category_ancestor/4, 4\n    proceed',
     compile_wam_predicate_to_c(user:category_ancestor/4, WamCode, [], PredCode),
@@ -1667,6 +1732,25 @@ run_weighted_shortest_path_detector_executable_smoke :-
         run_c_smoke_plain(ExePath)
     ->  cleanup_wam_c_detector_weighted_shortest_path
     ;   cleanup_wam_c_detector_weighted_shortest_path,
+        fail
+    ).
+
+run_astar_shortest_path_detector_executable_smoke :-
+    setup_wam_c_detector_astar_shortest_path,
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_astar_shortest_path_detector_smoke', Stamp, ProjectDir),
+    directory_file_path(ProjectDir, 'wam_runtime.c', RuntimePath),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    directory_file_path(ProjectDir, 'main.c', MainPath),
+    directory_file_path(ProjectDir, 'wam_c_astar_shortest_path_detector_smoke', ExePath),
+    (   write_wam_c_project([user:astar_path/4], [], ProjectDir),
+        wam_c_astar_shortest_path_detector_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, LibPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_detector_astar_shortest_path
+    ;   cleanup_wam_c_detector_astar_shortest_path,
         fail
     ).
 
@@ -2218,6 +2302,31 @@ setup_wam_c_detector_weighted_shortest_path :-
 cleanup_wam_c_detector_weighted_shortest_path :-
     retractall(user:test_weighted_edge(_, _, _)),
     retractall(user:weighted_path(_, _, _)).
+
+setup_wam_c_detector_astar_shortest_path :-
+    cleanup_wam_c_detector_astar_shortest_path,
+    assertz((user:direct_dist_pred(test_direct_distance/3))),
+    assertz((user:dimensionality(5))),
+    assertz((user:test_astar_edge(tom, bob, 5))),
+    assertz((user:test_astar_edge(tom, eve, 1))),
+    assertz((user:test_astar_edge(eve, ann, 1))),
+    assertz((user:test_astar_edge(bob, ann, 1))),
+    assertz((user:test_direct_distance(tom, ann, 2))),
+    assertz((user:test_direct_distance(eve, ann, 1))),
+    assertz((user:test_direct_distance(bob, ann, 1))),
+    assertz((user:astar_path(X, Y, _Dim, W) :-
+        test_astar_edge(X, Y, W))),
+    assertz((user:astar_path(X, Y, Dim, W) :-
+        test_astar_edge(X, Z, W0),
+        astar_path(Z, Y, Dim, W1),
+        W is W0 + W1)).
+
+cleanup_wam_c_detector_astar_shortest_path :-
+    retractall(user:direct_dist_pred(_)),
+    retractall(user:dimensionality(_)),
+    retractall(user:test_astar_edge(_, _, _)),
+    retractall(user:test_direct_distance(_, _, _)),
+    retractall(user:astar_path(_, _, _, _)).
 
 run_c_smoke(ExePath) :-
     format(atom(LogPath), '~w.asan.log', [ExePath]),
@@ -2935,6 +3044,82 @@ int main(void) {
 }
 ').
 
+wam_c_astar_shortest_path_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_astar_path_4(WamState* state);
+
+static void register_astar_edges(WamState *state) {
+    wam_register_weighted_edge(state, "tom", "bob", 5);
+    wam_register_weighted_edge(state, "tom", "eve", 1);
+    wam_register_weighted_edge(state, "eve", "ann", 1);
+    wam_register_weighted_edge(state, "bob", "ann", 1);
+    wam_register_direct_distance_edge(state, "tom", "ann", 2);
+    wam_register_direct_distance_edge(state, "eve", "ann", 1);
+    wam_register_direct_distance_edge(state, "bob", "ann", 1);
+}
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_astar_path_4(&state);
+    register_astar_edges(&state);
+    wam_register_astar_shortest_path_kernel(&state, "astar_path/4");
+
+    WamValue shortest_args[4] = {
+        val_atom("tom"),
+        val_atom("ann"),
+        val_int(5),
+        val_unbound("Weight")
+    };
+    int shortest_rc = wam_run_predicate(&state, "astar_path/4", shortest_args, 4);
+    if (shortest_rc != 0 || state.P != WAM_HALT ||
+        state.A[3].tag != VAL_INT || state.A[3].data.integer != 2) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue direct_args[4] = {
+        val_atom("bob"),
+        val_atom("ann"),
+        val_int(5),
+        val_int(1)
+    };
+    int direct_rc = wam_run_predicate(&state, "astar_path/4", direct_args, 4);
+    if (direct_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue bad_dim_args[4] = {
+        val_atom("tom"),
+        val_atom("ann"),
+        val_unbound("Dim"),
+        val_unbound("Weight")
+    };
+    int bad_dim_rc = wam_run_predicate(&state, "astar_path/4", bad_dim_args, 4);
+    if (bad_dim_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue fail_args[4] = {
+        val_atom("ann"),
+        val_atom("tom"),
+        val_int(5),
+        val_unbound("Weight")
+    };
+    int fail_rc = wam_run_predicate(&state, "astar_path/4", fail_args, 4);
+    if (fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 wam_c_kernel_detector_smoke_main(
 '#include "wam_runtime.h"
 
@@ -3134,6 +3319,44 @@ int main(void) {
     int rc = wam_run_predicate(&state, "weighted_path/3", args, 3);
     if (rc != 0 || state.P != WAM_HALT ||
         state.A[2].tag != VAL_INT || state.A[2].data.integer != 2) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_astar_shortest_path_detector_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_astar_path_4(WamState* state);
+void setup_detected_wam_c_kernels(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_astar_path_4(&state);
+    setup_detected_wam_c_kernels(&state);
+
+    wam_register_weighted_edge(&state, "tom", "bob", 5);
+    wam_register_weighted_edge(&state, "tom", "eve", 1);
+    wam_register_weighted_edge(&state, "eve", "ann", 1);
+    wam_register_weighted_edge(&state, "bob", "ann", 1);
+    wam_register_direct_distance_edge(&state, "tom", "ann", 2);
+    wam_register_direct_distance_edge(&state, "eve", "ann", 1);
+    wam_register_direct_distance_edge(&state, "bob", "ann", 1);
+
+    WamValue args[4] = {
+        val_atom("tom"),
+        val_atom("ann"),
+        val_int(5),
+        val_unbound("Weight")
+    };
+    int rc = wam_run_predicate(&state, "astar_path/4", args, 4);
+    if (rc != 0 || state.P != WAM_HALT ||
+        state.A[3].tag != VAL_INT || state.A[3].data.integer != 2) {
         wam_free_state(&state);
         return 10;
     }
@@ -4126,6 +4349,7 @@ run_tests_once :-
     test_transitive_parent_distance_kernel_generation,
     test_transitive_step_parent_distance_kernel_generation,
     test_weighted_shortest_path_kernel_generation,
+    test_astar_shortest_path_kernel_generation,
     test_fact_source_generation,
     test_streaming_foreign_results_generation,
     test_kernel_detector_setup_generation,
@@ -4134,6 +4358,7 @@ run_tests_once :-
     test_transitive_parent_distance_detector_setup_generation,
     test_transitive_step_parent_distance_detector_setup_generation,
     test_weighted_shortest_path_detector_setup_generation,
+    test_astar_shortest_path_detector_setup_generation,
     test_kernel_detector_project_generation,
     test_lowered_fact_helper_generation,
     test_lowered_helper_planner_metadata,
@@ -4160,6 +4385,7 @@ run_tests_once :-
     test_transitive_parent_distance_kernel_executable_smoke,
     test_transitive_step_parent_distance_kernel_executable_smoke,
     test_weighted_shortest_path_kernel_executable_smoke,
+    test_astar_shortest_path_kernel_executable_smoke,
     test_fact_source_executable_smoke,
     test_lmdb_fact_source_executable_smoke,
     test_kernel_detector_executable_smoke,
@@ -4168,6 +4394,7 @@ run_tests_once :-
     test_transitive_parent_distance_detector_executable_smoke,
     test_transitive_step_parent_distance_detector_executable_smoke,
     test_weighted_shortest_path_detector_executable_smoke,
+    test_astar_shortest_path_detector_executable_smoke,
     test_streaming_foreign_results_executable_smoke,
     test_real_prolog_builtin_executable_smoke,
     test_real_prolog_term_builtin_executable_smoke,
