@@ -1469,6 +1469,11 @@ is_builtin_pred(functor, 3). % term inspection: name/arity read or construct
 is_builtin_pred(arg, 3).     % term inspection: Nth argument access
 is_builtin_pred((=..), 2).   % term inspection: univ (decompose/compose)
 is_builtin_pred(copy_term, 2). % term inspection: fresh-variable copy
+is_builtin_pred(term_variables, 2). % collect unbound vars in left-to-right order
+is_builtin_pred(numbervars, 3).     % bind free vars to $VAR(N) in sequence
+is_builtin_pred((=@=), 2).          % variant equivalence (modulo var renaming)
+is_builtin_pred((\=@=), 2).         % not variant
+is_builtin_pred(unifiable, 3).      % non-binding unification + bindings list
 is_builtin_pred(write, 1).  % I/O — useful for runtime instrumentation.
 is_builtin_pred(display, 1).
 is_builtin_pred(nl, 0).

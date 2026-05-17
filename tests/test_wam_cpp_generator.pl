@@ -139,6 +139,23 @@
 :- dynamic user:wam_cpp_test_length_bad/0.
 :- dynamic user:wam_cpp_test_copy_basic/0.
 :- dynamic user:wam_cpp_test_copy_atom/0.
+:- dynamic user:wam_cpp_test_tv_ground/0.
+:- dynamic user:wam_cpp_test_tv_one/0.
+:- dynamic user:wam_cpp_test_tv_shared/0.
+:- dynamic user:wam_cpp_test_tv_nested/0.
+:- dynamic user:wam_cpp_test_nv_shared/0.
+:- dynamic user:wam_cpp_test_nv_start10/0.
+:- dynamic user:wam_cpp_test_nv_ground/0.
+:- dynamic user:wam_cpp_test_variant_yes/0.
+:- dynamic user:wam_cpp_test_variant_share/0.
+:- dynamic user:wam_cpp_test_variant_shape/0.
+:- dynamic user:wam_cpp_test_variant_atom/0.
+:- dynamic user:wam_cpp_test_variant_bind/0.
+:- dynamic user:wam_cpp_test_variant_neq/0.
+:- dynamic user:wam_cpp_test_uni_simple/0.
+:- dynamic user:wam_cpp_test_uni_fail/0.
+:- dynamic user:wam_cpp_test_uni_two/0.
+:- dynamic user:wam_cpp_test_uni_ground/0.
 :- dynamic user:wam_cpp_test_enum_member/0.
 
 user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
@@ -149,6 +166,44 @@ user:wam_cpp_test_length_zero  :- length([], 0).
 user:wam_cpp_test_length_bad   :- length([a, b, c], 5).
 user:wam_cpp_test_copy_basic   :- copy_term(foo(X, X, _Y), T), T = foo(A, A, _B).
 user:wam_cpp_test_copy_atom    :- copy_term(hello, T), T = hello.
+% term_variables/2: collect free vars in left-to-right first-occurrence
+% order. Each shared variable appears once.
+user:wam_cpp_test_tv_ground    :- term_variables(foo(1, 2, 3), L), L = [].
+user:wam_cpp_test_tv_one       :- term_variables(foo(_X, 1), L), L = [_].
+user:wam_cpp_test_tv_shared    :- term_variables(foo(X, _Y, X), L),
+                                  L = [X, _], var(X).
+user:wam_cpp_test_tv_nested    :- term_variables(p(q(_X, _Y), r(_Y, _Z)), L),
+                                  length(L, 3).
+% numbervars/3: bind free vars to $VAR(N) starting at Start.
+user:wam_cpp_test_nv_shared    :-
+    T = foo(X, Y, X),
+    numbervars(T, 0, End),
+    End = 2,
+    T = foo('$VAR'(0), '$VAR'(1), '$VAR'(0)).
+user:wam_cpp_test_nv_start10   :-
+    T = pair(_, _),
+    numbervars(T, 10, End),
+    End = 12,
+    T = pair('$VAR'(10), '$VAR'(11)).
+user:wam_cpp_test_nv_ground    :- numbervars(hello, 0, 0).
+% =@=/2 and \=@=/2: variant equivalence.
+user:wam_cpp_test_variant_yes  :- foo(_, _, _) =@= foo(_, _, _).
+user:wam_cpp_test_variant_share :- foo(X, _, X) =@= foo(A, _, A).
+user:wam_cpp_test_variant_shape :- \+ (foo(_, _) =@= foo(_, _, _)).
+user:wam_cpp_test_variant_atom :- \+ (foo(_) =@= bar(_)).
+user:wam_cpp_test_variant_bind :- \+ (foo(a, X) =@= foo(X, a)).
+user:wam_cpp_test_variant_neq  :- foo(_, _) \=@= foo(X, X).
+% unifiable/3: non-binding unification + bindings list.
+user:wam_cpp_test_uni_simple   :-
+    unifiable(X, foo(a), B),
+    B = [X = foo(a)],
+    var(X).
+user:wam_cpp_test_uni_fail     :- \+ unifiable(foo(a), foo(b), _).
+user:wam_cpp_test_uni_two      :-
+    unifiable(p(X, Y), p(1, 2), B),
+    B = [X=1, Y=2],
+    var(X), var(Y).
+user:wam_cpp_test_uni_ground   :- unifiable(hello, hello, []).
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
 
@@ -2749,6 +2804,53 @@ test(cpp_e2e_term_inspection_extended, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_ground_atom/0',        [], true),
           run_query(BinPath, 'wam_cpp_test_ground_guard/0',       [], true),
           run_query(BinPath, 'wam_cpp_test_ground_guard_not/0',   [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_term_variables, [condition(cpp_compiler_available)]) :-
+    % term_variables/2, numbervars/3, =@=/2, \=@=/2, unifiable/3.
+    % All operate by walking the term and using cell-pointer identity
+    % to track which variables are which. unifiable/3 also relies on
+    % the trail to capture-and-undo the unification result.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_tvars', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_tv_ground/0,
+                               user:wam_cpp_test_tv_one/0,
+                               user:wam_cpp_test_tv_shared/0,
+                               user:wam_cpp_test_tv_nested/0,
+                               user:wam_cpp_test_nv_shared/0,
+                               user:wam_cpp_test_nv_start10/0,
+                               user:wam_cpp_test_nv_ground/0,
+                               user:wam_cpp_test_variant_yes/0,
+                               user:wam_cpp_test_variant_share/0,
+                               user:wam_cpp_test_variant_shape/0,
+                               user:wam_cpp_test_variant_atom/0,
+                               user:wam_cpp_test_variant_bind/0,
+                               user:wam_cpp_test_variant_neq/0,
+                               user:wam_cpp_test_uni_simple/0,
+                               user:wam_cpp_test_uni_fail/0,
+                               user:wam_cpp_test_uni_two/0,
+                               user:wam_cpp_test_uni_ground/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_tv_ground/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_tv_one/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_tv_shared/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_tv_nested/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_nv_shared/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_nv_start10/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_nv_ground/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_variant_yes/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_variant_share/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_variant_shape/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_variant_atom/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_variant_bind/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_variant_neq/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_uni_simple/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_uni_fail/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_uni_two/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_uni_ground/0',    [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
