@@ -93,13 +93,13 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
 
         lines = result.stdout.strip().splitlines()
-        self.assertEqual(len(lines), 6)
+        self.assertEqual(len(lines), 7)
         headers = lines[0].split("\t")
         rows = [dict(zip(headers, line.split("\t"))) for line in lines[1:]]
 
         self.assertEqual(
             [row["mode"] for row in rows],
-            ["preload", "binary-artifact", "delimited-artifact", "lmdb", "mmap-array"],
+            ["preload", "binary-artifact", "delimited-artifact", "lmdb", "mmap-array", "policy-configured"],
         )
         self.assertEqual({row["scale"] for row in rows}, {"dev"})
         self.assertEqual({row["run"] for row in rows}, {"1"})
@@ -109,6 +109,7 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
         self.assertEqual({row["lookup_col1_hash"] for row in rows}, {rows[0]["lookup_col1_hash"]})
         self.assertEqual({row["bucket_hash"] for row in rows}, {rows[0]["bucket_hash"]})
         self.assertEqual({row["bucket_col1_hash"] for row in rows}, {rows[0]["bucket_col1_hash"]})
+        self.assertEqual(rows[-1]["mode"], "policy-configured")
 
         for row in rows:
             self.assertGreater(int(row["rows"]), 0)
@@ -182,8 +183,9 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
         lines = result.stdout.strip().splitlines()
         headers = lines[0].split("\t")
         rows = [dict(zip(headers, line.split("\t"))) for line in lines[1:]]
-        self.assertEqual(len(rows), 5)
+        self.assertEqual(len(rows), 6)
         self.assertEqual({row["relation"] for row in rows}, {"article_category"})
+        self.assertIn("policy-configured", {row["mode"] for row in rows})
         self.assertEqual({row["scan_hash"] for row in rows}, {rows[0]["scan_hash"]})
         self.assertEqual({row["lookup_hash"] for row in rows}, {rows[0]["lookup_hash"]})
         self.assertEqual({row["lookup_col1_hash"] for row in rows}, {rows[0]["lookup_col1_hash"]})
