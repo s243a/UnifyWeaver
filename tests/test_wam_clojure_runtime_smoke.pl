@@ -143,6 +143,14 @@
 :- dynamic user:wam_ground_guard/1.
 :- dynamic user:wam_ground_unbound/1.
 :- dynamic user:wam_ground_nested_unbound/1.
+:- dynamic user:wam_atom_codes_guard/2.
+:- dynamic user:wam_atom_codes_reverse/0.
+:- dynamic user:wam_atom_chars_guard/2.
+:- dynamic user:wam_atom_chars_reverse/0.
+:- dynamic user:wam_number_codes_guard/2.
+:- dynamic user:wam_number_codes_reverse/0.
+:- dynamic user:wam_number_chars_guard/2.
+:- dynamic user:wam_text_conversion_unbound_pair/1.
 :- dynamic user:wam_arith_eq_42/1.
 :- dynamic user:wam_arith_eq_float/1.
 :- dynamic user:wam_arith_neq_42/1.
@@ -307,6 +315,14 @@ user:wam_univ_compose_bad_functor :- user:wam_unbound_arg(F), _T =.. [F, a].
 user:wam_ground_guard(X) :- ground(X).
 user:wam_ground_unbound(_) :- user:wam_unbound_arg(Y), ground(Y).
 user:wam_ground_nested_unbound(_) :- user:wam_unbound_arg(Y), ground(f(Y)).
+user:wam_atom_codes_guard(A, C) :- atom_codes(A, C).
+user:wam_atom_codes_reverse :- atom_codes(A, [102,111,111]), A = foo.
+user:wam_atom_chars_guard(A, C) :- atom_chars(A, C).
+user:wam_atom_chars_reverse :- atom_chars(A, [f,o,o]), A = foo.
+user:wam_number_codes_guard(N, C) :- number_codes(N, C).
+user:wam_number_codes_reverse :- number_codes(N, [52,50]), N =:= 42.
+user:wam_number_chars_guard(N, C) :- number_chars(N, C).
+user:wam_text_conversion_unbound_pair(_) :- user:wam_unbound_arg(A), user:wam_unbound_arg(C), atom_codes(A, C).
 user:wam_arith_eq_42(X) :- X =:= 42.
 user:wam_arith_eq_float(X) :- X =:= 3.5.
 user:wam_arith_neq_42(X) :- X =\= 42.
@@ -476,6 +492,14 @@ run_smoke :-
           user:wam_ground_guard/1,
           user:wam_ground_unbound/1,
           user:wam_ground_nested_unbound/1,
+          user:wam_atom_codes_guard/2,
+          user:wam_atom_codes_reverse/0,
+          user:wam_atom_chars_guard/2,
+          user:wam_atom_chars_reverse/0,
+          user:wam_number_codes_guard/2,
+          user:wam_number_codes_reverse/0,
+          user:wam_number_chars_guard/2,
+          user:wam_text_conversion_unbound_pair/1,
           user:wam_arith_eq_42/1,
           user:wam_arith_eq_float/1,
           user:wam_arith_neq_42/1,
@@ -796,6 +820,18 @@ smoke_cases([
     case('wam_ground_guard/1', '[a,b]', "true"),
     case('wam_ground_unbound/1', a, "false"),
     case('wam_ground_nested_unbound/1', a, "false"),
+    case('wam_atom_codes_guard/2', args(foo, '[102,111,111]'), "true"),
+    case('wam_atom_codes_guard/2', args(foo, '[102,111]'), "false"),
+    case('wam_atom_codes_reverse/0', no_args, "true"),
+    case('wam_atom_chars_guard/2', args(foo, '[f,o,o]'), "true"),
+    case('wam_atom_chars_guard/2', args(foo, '[f,o]'), "false"),
+    case('wam_atom_chars_reverse/0', no_args, "true"),
+    case('wam_number_codes_guard/2', args(42, '[52,50]'), "true"),
+    case('wam_number_codes_guard/2', args(42, '[52]'), "false"),
+    case('wam_number_codes_reverse/0', no_args, "true"),
+    case('wam_number_chars_guard/2', args(42, '[''4'',''2'']'), "true"),
+    case('wam_number_chars_guard/2', args(42, '[''4'']'), "false"),
+    case('wam_text_conversion_unbound_pair/1', a, "false"),
     case('wam_arith_eq_42/1', 42, "true"),
     case('wam_arith_eq_42/1', 3.5, "false"),
     case('wam_arith_eq_float/1', 3.5, "true"),
@@ -1129,7 +1165,12 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-ground-guard-1"),
     has(CoreCode, "defn lowered-wam-ground-unbound-1"),
     has(CoreCode, "defn lowered-wam-ground-nested-unbound-1"),
-    has(CoreCode, "runtime/ground-term?").
+    has(CoreCode, "defn lowered-wam-atom-codes-guard-2"),
+    has(CoreCode, "defn lowered-wam-atom-chars-guard-2"),
+    has(CoreCode, "defn lowered-wam-number-codes-guard-2"),
+    has(CoreCode, "defn lowered-wam-number-chars-guard-2"),
+    has(CoreCode, "runtime/ground-term?"),
+    has(CoreCode, "runtime/apply-text-conversion-solution").
 
 assert_lowered_arithmetic_comparison_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
@@ -1329,15 +1370,25 @@ prolog_term_string_to_edn("c", "\"c\"") :- !.
 prolog_term_string_to_edn("d", "\"d\"") :- !.
 prolog_term_string_to_edn(f, "\"f\"") :- !.
 prolog_term_string_to_edn("f", "\"f\"") :- !.
+prolog_term_string_to_edn(foo, "\"foo\"") :- !.
+prolog_term_string_to_edn("foo", "\"foo\"") :- !.
 prolog_term_string_to_edn("z", "\"z\"") :- !.
 prolog_term_string_to_edn('f(a)', "{:tag :struct :functor \"f/1\" :args [\"a\"]}") :- !.
 prolog_term_string_to_edn('f(a,b)', "{:tag :struct :functor \"f/2\" :args [\"a\" \"b\"]}") :- !.
 prolog_term_string_to_edn('f(b)', "{:tag :struct :functor \"f/1\" :args [\"b\"]}") :- !.
 prolog_term_string_to_edn('[a]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}") :- !.
 prolog_term_string_to_edn('[42]', "{:tag :struct :functor \"[|]/2\" :args [42 \"[]\"]}") :- !.
+prolog_term_string_to_edn('[52]', "{:tag :struct :functor \"[|]/2\" :args [52 \"[]\"]}") :- !.
+prolog_term_string_to_edn('[52,50]', "{:tag :struct :functor \"[|]/2\" :args [52 {:tag :struct :functor \"[|]/2\" :args [50 \"[]\"]}]}") :- !.
+prolog_term_string_to_edn('[102,111]', "{:tag :struct :functor \"[|]/2\" :args [102 {:tag :struct :functor \"[|]/2\" :args [111 \"[]\"]}]}") :- !.
+prolog_term_string_to_edn('[102,111,111]', "{:tag :struct :functor \"[|]/2\" :args [102 {:tag :struct :functor \"[|]/2\" :args [111 {:tag :struct :functor \"[|]/2\" :args [111 \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[1,2,3]', "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [2 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[1,3]', "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[2]', "{:tag :struct :functor \"[|]/2\" :args [2 \"[]\"]}") :- !.
+prolog_term_string_to_edn('[f,o]', "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"o\" \"[]\"]}]}") :- !.
+prolog_term_string_to_edn('[f,o,o]', "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"o\" {:tag :struct :functor \"[|]/2\" :args [\"o\" \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn('[''4'']', "{:tag :struct :functor \"[|]/2\" :args [\"4\" \"[]\"]}") :- !.
+prolog_term_string_to_edn('[''4'',''2'']', "{:tag :struct :functor \"[|]/2\" :args [\"4\" {:tag :struct :functor \"[|]/2\" :args [\"2\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[f,a,b]', "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[a,b]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[b,c]', "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
@@ -1359,9 +1410,17 @@ prolog_term_string_to_edn("f(a,b)", "{:tag :struct :functor \"f/2\" :args [\"a\"
 prolog_term_string_to_edn("f(b)", "{:tag :struct :functor \"f/1\" :args [\"b\"]}") :- !.
 prolog_term_string_to_edn("[a]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}") :- !.
 prolog_term_string_to_edn("[42]", "{:tag :struct :functor \"[|]/2\" :args [42 \"[]\"]}") :- !.
+prolog_term_string_to_edn("[52]", "{:tag :struct :functor \"[|]/2\" :args [52 \"[]\"]}") :- !.
+prolog_term_string_to_edn("[52,50]", "{:tag :struct :functor \"[|]/2\" :args [52 {:tag :struct :functor \"[|]/2\" :args [50 \"[]\"]}]}") :- !.
+prolog_term_string_to_edn("[102,111]", "{:tag :struct :functor \"[|]/2\" :args [102 {:tag :struct :functor \"[|]/2\" :args [111 \"[]\"]}]}") :- !.
+prolog_term_string_to_edn("[102,111,111]", "{:tag :struct :functor \"[|]/2\" :args [102 {:tag :struct :functor \"[|]/2\" :args [111 {:tag :struct :functor \"[|]/2\" :args [111 \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn("[1,2,3]", "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [2 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn("[1,3]", "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}") :- !.
 prolog_term_string_to_edn("[2]", "{:tag :struct :functor \"[|]/2\" :args [2 \"[]\"]}") :- !.
+prolog_term_string_to_edn("[f,o]", "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"o\" \"[]\"]}]}") :- !.
+prolog_term_string_to_edn("[f,o,o]", "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"o\" {:tag :struct :functor \"[|]/2\" :args [\"o\" \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn("['4']", "{:tag :struct :functor \"[|]/2\" :args [\"4\" \"[]\"]}") :- !.
+prolog_term_string_to_edn("['4','2']", "{:tag :struct :functor \"[|]/2\" :args [\"4\" {:tag :struct :functor \"[|]/2\" :args [\"2\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn("[f,a,b]", "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn("[a,b]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn("[b,c]", "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.

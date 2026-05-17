@@ -452,6 +452,22 @@ clojure_direct_builtin("ground/1", "1").
 clojure_direct_builtin("ground/1", 1).
 clojure_direct_builtin('ground/1', "1").
 clojure_direct_builtin('ground/1', 1).
+clojure_direct_builtin("atom_codes/2", "2").
+clojure_direct_builtin("atom_codes/2", 2).
+clojure_direct_builtin('atom_codes/2', "2").
+clojure_direct_builtin('atom_codes/2', 2).
+clojure_direct_builtin("atom_chars/2", "2").
+clojure_direct_builtin("atom_chars/2", 2).
+clojure_direct_builtin('atom_chars/2', "2").
+clojure_direct_builtin('atom_chars/2', 2).
+clojure_direct_builtin("number_codes/2", "2").
+clojure_direct_builtin("number_codes/2", 2).
+clojure_direct_builtin('number_codes/2', "2").
+clojure_direct_builtin('number_codes/2', 2).
+clojure_direct_builtin("number_chars/2", "2").
+clojure_direct_builtin("number_chars/2", 2).
+clojure_direct_builtin('number_chars/2', "2").
+clojure_direct_builtin('number_chars/2', 2).
 clojure_direct_builtin("!/0", "0").
 clojure_direct_builtin("!/0", 0).
 clojure_direct_builtin('!/0', "0").
@@ -783,6 +799,15 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     format(atom(Expr),
            '(let [value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound))] (if (runtime/ground-term? ~w value) (runtime/advance ~w) (runtime/backtrack ~w)))',
            [S, S, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (   Op == "atom_codes/2" ; Op == 'atom_codes/2'
+    ;   Op == "atom_chars/2" ; Op == 'atom_chars/2'
+    ;   Op == "number_codes/2" ; Op == 'number_codes/2'
+    ;   Op == "number_chars/2" ; Op == 'number_chars/2'
+    ),
+    !,
+    format(atom(Expr), '(runtime/apply-text-conversion-solution ~w "~w")', [S, Op]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     clojure_unary_guard_test(Op, TestExpr),

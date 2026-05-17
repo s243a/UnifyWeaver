@@ -694,6 +694,26 @@ test(simple_builtin_ground_is_direct_lowered_in_prefix) :-
         has(Code, "runtime/backtrack")
     )).
 
+test(simple_builtin_atom_codes_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_atom_codes/2:\nbuiltin_call atom_codes/2, 2\nproceed\n",
+        wam_clojure_lowerable(test_atom_codes/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_atom_codes/2, WamCode, [], Code),
+        has(Code, "runtime/apply-text-conversion-solution"),
+        has(Code, "atom_codes/2"),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
+test(simple_builtin_number_chars_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_number_chars/2:\nbuiltin_call number_chars/2, 2\nproceed\n",
+        wam_clojure_lowerable(test_number_chars/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_number_chars/2, WamCode, [], Code),
+        has(Code, "runtime/apply-text-conversion-solution"),
+        has(Code, "number_chars/2"),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
 test(terminal_execute_ground_is_direct_lowered_as_succeeding_builtin) :-
     once((
         WamCode = "test_execute_ground/1:\nallocate\ndeallocate\nexecute ground/1\n",
