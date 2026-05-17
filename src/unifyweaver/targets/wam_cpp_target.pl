@@ -1391,6 +1391,38 @@ helper_predicate_items(Items) :-
         put_value("Y4", "A3"),
         deallocate,
         execute("nth0/3"),
+        % --- nth1/3 ------------------------------------------------------
+        % nth1(1, [X|_], X).
+        % nth1(N, [_|T], X) :- N > 1, M is N - 1, nth1(M, T, X).
+        label("nth1/3"),
+        try_me_else("L_cpp_nth1_3_2"),
+        get_constant("1", "A1"),
+        get_list("A2"),
+        unify_variable("X1"),
+        unify_variable("X2"),
+        get_value("X1", "A3"),
+        proceed,
+        label("L_cpp_nth1_3_2"),
+        trust_me,
+        allocate,
+        get_variable("Y1", "A1"),
+        get_list("A2"),
+        unify_variable("X5"),
+        unify_variable("Y3"),
+        get_variable("Y4", "A3"),
+        put_value("Y1", "A1"),
+        put_constant("1", "A2"),
+        builtin_call(">/2", "2"),
+        put_variable("Y2", "A1"),
+        put_structure("+/2", "A2"),
+        set_value("Y1"),
+        set_constant("-1"),
+        builtin_call("is/2", "2"),
+        put_value("Y2", "A1"),
+        put_value("Y3", "A2"),
+        put_value("Y4", "A3"),
+        deallocate,
+        execute("nth1/3"),
         % --- between/3 ---------------------------------------------------
         % between(L, H, L) :- L =< H.
         % between(L, H, X) :- L < H, L1 is L + 1, between(L1, H, X).
@@ -4653,6 +4685,178 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
                 Value::Compound("[|]/2", std::move(ca)));
         }
         if (!unify_cells(get_cell("A3"), list)) return false;
+        pc += 1; return true;
+    }
+
+    // ---- plus/3 ----------------------------------------------------
+    // plus(?X, ?Y, ?Z) -- integer addition with any two bound.
+    // Modes: (+,+,?) Z = X+Y;  (+,?,+) Y = Z-X;  (?,+,+) X = Z-Y.
+    // All-bound checks X+Y == Z. Two or three unbound throws an
+    // instantiation_error per SWI/ISO.
+    if (op == "plus/3") {
+        Value x = *get_cell("A1");
+        Value y = *get_cell("A2");
+        Value z = *get_cell("A3");
+        auto is_int = [](const Value& v){ return v.tag == Value::Tag::Integer; };
+        auto type_err_int = [&](const Value& v) {
+            return throw_iso_error(make_type_error("integer", v));
+        };
+        if (!x.is_unbound() && !is_int(x)) return type_err_int(x);
+        if (!y.is_unbound() && !is_int(y)) return type_err_int(y);
+        if (!z.is_unbound() && !is_int(z)) return type_err_int(z);
+        if (!x.is_unbound() && !y.is_unbound()) {
+            Value r = Value::Integer(x.i + y.i);
+            CellPtr tgt = get_cell("A3");
+            if (tgt->is_unbound()) { bind_cell(tgt, r); pc += 1; return true; }
+            if (!unify_cells(tgt, std::make_shared<Value>(r))) return false;
+            pc += 1; return true;
+        }
+        if (!x.is_unbound() && !z.is_unbound()) {
+            Value r = Value::Integer(z.i - x.i);
+            CellPtr tgt = get_cell("A2");
+            if (tgt->is_unbound()) { bind_cell(tgt, r); pc += 1; return true; }
+            if (!unify_cells(tgt, std::make_shared<Value>(r))) return false;
+            pc += 1; return true;
+        }
+        if (!y.is_unbound() && !z.is_unbound()) {
+            Value r = Value::Integer(z.i - y.i);
+            CellPtr tgt = get_cell("A1");
+            if (tgt->is_unbound()) { bind_cell(tgt, r); pc += 1; return true; }
+            if (!unify_cells(tgt, std::make_shared<Value>(r))) return false;
+            pc += 1; return true;
+        }
+        return throw_iso_error(make_instantiation_error());
+    }
+
+    // ---- delete/3 --------------------------------------------------
+    // delete(+List, +Elem, -Result) -- remove all elements of List
+    // that match Elem under == (structural equality, no binding).
+    if (op == "delete/3") {
+        Value elem = *get_cell("A2");
+        std::vector<CellPtr> kept;
+        CellPtr lc = get_cell("A1");
+        for (;;) {
+            Value lv = *lc;
+            if (lv.tag == Value::Tag::Atom && lv.s == "[]") break;
+            if (lv.tag != Value::Tag::Compound || lv.s != "[|]/2"
+                || lv.args.size() != 2) return false;
+            CellPtr head = lv.args[0];
+            if (!(*head == elem)) kept.push_back(head);
+            lc = lv.args[1];
+        }
+        CellPtr list = std::make_shared<Value>(Value::Atom("[]"));
+        for (auto it = kept.rbegin(); it != kept.rend(); ++it) {
+            std::vector<CellPtr> ca;
+            ca.push_back(*it);
+            ca.push_back(list);
+            list = std::make_shared<Value>(
+                Value::Compound("[|]/2", std::move(ca)));
+        }
+        if (!unify_cells(get_cell("A3"), list)) return false;
+        pc += 1; return true;
+    }
+
+    // ---- subtract/3 ------------------------------------------------
+    // subtract(+List1, +List2, -Result) -- set difference: Result
+    // is List1 with all elements that appear in List2 removed.
+    // Matching uses == (no binding).
+    if (op == "subtract/3") {
+        std::vector<Value> excl;
+        CellPtr ec = get_cell("A2");
+        for (;;) {
+            Value ev = *ec;
+            if (ev.tag == Value::Tag::Atom && ev.s == "[]") break;
+            if (ev.tag != Value::Tag::Compound || ev.s != "[|]/2"
+                || ev.args.size() != 2) return false;
+            excl.push_back(*ev.args[0]);
+            ec = ev.args[1];
+        }
+        std::vector<CellPtr> kept;
+        CellPtr lc = get_cell("A1");
+        for (;;) {
+            Value lv = *lc;
+            if (lv.tag == Value::Tag::Atom && lv.s == "[]") break;
+            if (lv.tag != Value::Tag::Compound || lv.s != "[|]/2"
+                || lv.args.size() != 2) return false;
+            CellPtr head = lv.args[0];
+            bool found = false;
+            for (auto& e : excl) {
+                if (*head == e) { found = true; break; }
+            }
+            if (!found) kept.push_back(head);
+            lc = lv.args[1];
+        }
+        CellPtr list = std::make_shared<Value>(Value::Atom("[]"));
+        for (auto it = kept.rbegin(); it != kept.rend(); ++it) {
+            std::vector<CellPtr> ca;
+            ca.push_back(*it);
+            ca.push_back(list);
+            list = std::make_shared<Value>(
+                Value::Compound("[|]/2", std::move(ca)));
+        }
+        if (!unify_cells(get_cell("A3"), list)) return false;
+        pc += 1; return true;
+    }
+
+    // ---- must_be/2 -------------------------------------------------
+    // must_be(+Type, @Value). Throws type_error(Type, Value) when
+    // Value isn''t of Type, or instantiation_error if Type is an
+    // instantiation-requiring type and Value is unbound. The
+    // recognized types follow SWI conventions; unknown types throw
+    // domain_error(type, Type).
+    if (op == "must_be/2") {
+        Value type_v = *get_cell("A1");
+        if (type_v.is_unbound())
+            return throw_iso_error(make_instantiation_error());
+        if (type_v.tag != Value::Tag::Atom)
+            return throw_iso_error(make_type_error("atom", type_v));
+        const std::string& t = type_v.s;
+        Value val = *get_cell("A2");
+        bool ok_pred = false;
+        bool need_inst = (t != "var" && t != "nonvar");
+        if (need_inst && val.is_unbound())
+            return throw_iso_error(make_instantiation_error());
+        if (t == "atom")     ok_pred = (val.tag == Value::Tag::Atom);
+        else if (t == "integer") ok_pred = (val.tag == Value::Tag::Integer);
+        else if (t == "float")   ok_pred = (val.tag == Value::Tag::Float);
+        else if (t == "number")  ok_pred = (val.tag == Value::Tag::Integer
+                                            || val.tag == Value::Tag::Float);
+        else if (t == "compound") ok_pred = (val.tag == Value::Tag::Compound);
+        else if (t == "atomic")  ok_pred = (!val.is_unbound()
+                                            && val.tag != Value::Tag::Compound);
+        else if (t == "callable") ok_pred = (val.tag == Value::Tag::Atom
+                                             || val.tag == Value::Tag::Compound);
+        else if (t == "boolean") ok_pred = (val.tag == Value::Tag::Atom
+                                            && (val.s == "true" || val.s == "false"));
+        else if (t == "var")     ok_pred = val.is_unbound();
+        else if (t == "nonvar")  ok_pred = !val.is_unbound();
+        else if (t == "ground") {
+            // ground failure is always due to an unbound subterm,
+            // which SWI reports as instantiation_error -- not type_error.
+            std::function<bool(const Value&)> g = [&](const Value& w) -> bool {
+                if (w.is_unbound()) return false;
+                if (w.tag == Value::Tag::Compound)
+                    for (auto& c : w.args) if (!g(*c)) return false;
+                return true;
+            };
+            if (!g(val))
+                return throw_iso_error(make_instantiation_error());
+            ok_pred = true;
+        }
+        else if (t == "is_list" || t == "list") {
+            const Value* cur = &val;
+            ok_pred = true;
+            while (cur && cur->tag == Value::Tag::Compound
+                   && cur->s == "[|]/2" && cur->args.size() == 2) {
+                cur = cur->args[1].get();
+            }
+            if (!(cur && cur->tag == Value::Tag::Atom && cur->s == "[]"))
+                ok_pred = false;
+        }
+        else {
+            return throw_iso_error(make_domain_error("type", type_v));
+        }
+        if (!ok_pred) return throw_iso_error(make_type_error(t, val));
         pc += 1; return true;
     }
 

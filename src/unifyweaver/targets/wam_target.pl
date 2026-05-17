@@ -1474,6 +1474,10 @@ is_builtin_pred(numbervars, 3).     % bind free vars to $VAR(N) in sequence
 is_builtin_pred((=@=), 2).          % variant equivalence (modulo var renaming)
 is_builtin_pred((\=@=), 2).         % not variant
 is_builtin_pred(unifiable, 3).      % non-binding unification + bindings list
+is_builtin_pred(plus, 3).           % bidirectional integer addition
+is_builtin_pred(delete, 3).         % remove all matching elements
+is_builtin_pred(subtract, 3).       % set difference: List1 minus List2
+is_builtin_pred(must_be, 2).        % type check with type_error throw
 is_builtin_pred(write, 1).  % I/O — useful for runtime instrumentation.
 is_builtin_pred(display, 1).
 is_builtin_pred(nl, 0).
