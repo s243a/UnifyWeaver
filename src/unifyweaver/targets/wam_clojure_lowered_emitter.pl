@@ -484,6 +484,10 @@ clojure_direct_builtin("string_length/2", "2").
 clojure_direct_builtin("string_length/2", 2).
 clojure_direct_builtin('string_length/2', "2").
 clojure_direct_builtin('string_length/2', 2).
+clojure_direct_builtin("sub_atom/5", "5").
+clojure_direct_builtin("sub_atom/5", 5).
+clojure_direct_builtin('sub_atom/5', "5").
+clojure_direct_builtin('sub_atom/5', 5).
 clojure_direct_builtin("!/0", "0").
 clojure_direct_builtin("!/0", 0).
 clojure_direct_builtin('!/0', "0").
@@ -838,6 +842,11 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     ),
     !,
     format(atom(Expr), '(runtime/apply-atom-length-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "sub_atom/5" ; Op == 'sub_atom/5'),
+    !,
+    format(atom(Expr), '(runtime/apply-sub-atom-solution ~w (inc (:pc ~w)))', [S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     clojure_unary_guard_test(Op, TestExpr),
