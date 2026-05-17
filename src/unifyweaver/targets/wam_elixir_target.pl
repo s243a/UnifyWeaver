@@ -708,14 +708,29 @@ compile_utility_helpers_to_elixir(Code) :-
 
   def step_get_structure_ref(state, fn_name, arity, addr) do
     entry = Map.get(state.heap, addr)
-    cond do
-      entry == {:str, fn_name} ->
-        args = heap_slice(state, addr + 1, arity)
-        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
-        %{state | stack: [{:unify_ctx, args} | state.stack], pc: new_pc}
-      true -> :fail
+    if step_get_structure_matches?(entry, fn_name) do
+      args = heap_slice(state, addr + 1, arity)
+      new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+      %{state | stack: [{:unify_ctx, args} | state.stack], pc: new_pc}
+    else
+      :fail
     end
   end
+
+  # Functor match with cons-cell aliasing.
+  #
+  # ISO list functor aliases: "./2" and "[|]/2" are the same
+  # cons-cell functor. put_list emits "./2"; put_structure [|]/2
+  # emits "[|]/2". Without treating these as equivalent, a list
+  # built piecewise (put_list head, put_structure [|]/2 for the
+  # next cons) cannot be walked end-to-end by get_list — it
+  # succeeds on the FIRST cell (./2) but fails on subsequent
+  # cells ([|]/2). Surfaced by em/2 recursion through bagof/setof
+  # in the member-enumerator follow-up.
+  defp step_get_structure_matches?({:str, fn_name}, fn_name), do: true
+  defp step_get_structure_matches?({:str, "./2"}, "[|]/2"), do: true
+  defp step_get_structure_matches?({:str, "[|]/2"}, "./2"), do: true
+  defp step_get_structure_matches?(_, _), do: false
 
   def step_unify_variable(state, xn) do
     case state.stack do
@@ -1208,6 +1223,21 @@ compile_utility_helpers_to_elixir(Code) :-
       {"member/2", 2} ->
         # member walks the list. Like length/2, handles both native
         # Elixir lists and heap-built `./2` chains produced by put_list.
+        #
+        # Note: this is a DETERMINISTIC boolean check — true if item
+        # is in list, false otherwise. It does NOT enumerate (push
+        # choice points). For backtracking enumeration (the canonical
+        # ISO member/2 used by bagof/setof), define member/2 as a
+        # user predicate with two clauses; the WAM compiler emits
+        # try_me_else / retry_me_else / trust_me which IS the proper
+        # enumeration. See tests/test_wam_elixir_classic_programs.pl
+        # for the user-defined member/2 used in bagof/setof tests.
+        #
+        # An earlier attempt at making this arm an enumerator failed
+        # because mid-body backtracking through a builtin requires
+        # the lowered emitter to split bodies into sub-segments
+        # around the builtin call (which it does not). Switching to
+        # user-defined member/2 sidesteps that.
         item = deref_var(state, get_reg(state, 1))
         list = deref_var(state, get_reg(state, 2))
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
