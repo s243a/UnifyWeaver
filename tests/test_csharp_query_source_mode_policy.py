@@ -166,9 +166,12 @@ class CSharpQuerySourceModePolicyTests(unittest.TestCase):
             "public sealed record RelationArtifactProviderOpenResult",
             "public interface IRelationArtifactProviderFactory",
             "public sealed class DefaultRelationArtifactProviderFactory",
+            "public sealed class PredicateRoutingRelationProvider",
             "public static class RelationArtifactProviderOpenPolicy",
             "TryOpenPreferred(",
             "TryOpenEffectiveDistanceArtifact(",
+            "RegisterPolicyGuidedPrebuiltArtifacts(",
+            "RegisterEffectiveDistancePrebuiltArtifacts(",
             "new[] { new DefaultRelationArtifactProviderFactory() }",
             "BinaryRelationArtifactManifest.CurrentFormat:",
             "DelimitedRelationArtifactManifest.CurrentFormat:",
@@ -399,6 +402,102 @@ sealed class ThrowingRelationArtifactProviderFactory : IRelationArtifactProvider
         result = default!;
         throw new InvalidDataException("wrong manifest format for this provider");
     }
+}
+""",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                ["dotnet", "run", "--project", str(project_path)],
+                cwd=tmp_path,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=120,
+            )
+            self.assertEqual(result.returncode, 0, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+
+    def test_configured_provider_policy_guided_prebuilt_artifact_smoke(self) -> None:
+        if shutil.which("dotnet") is None:
+            self.skipTest("dotnet is not available")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            project_path = tmp_path / "ConfiguredPolicyArtifactSmoke.csproj"
+            program_path = tmp_path / "Program.cs"
+            project_path.write_text(
+                f"""\
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="{QUERY_RUNTIME_PROJECT}" />
+  </ItemGroup>
+</Project>
+""",
+                encoding="utf-8",
+            )
+            program_path.write_text(
+                """\
+using UnifyWeaver.QueryRuntime;
+
+static void Assert(bool condition, string message)
+{
+    if (!condition)
+    {
+        throw new InvalidOperationException(message);
+    }
+}
+
+var root = Path.Combine(Path.GetTempPath(), "uw-configured-policy-artifact-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(root);
+var inputPath = Path.Combine(root, "article_category.tsv");
+File.WriteAllText(inputPath, "article\\tcategory\\n1\\t10\\n1\\t11\\n2\\t11\\n");
+
+var predicate = new PredicateId("article_category", 2);
+var source = new DelimitedRelationSource(inputPath, '\t', 1, 2);
+var binaryManifest = BinaryRelationArtifactBuilder.BuildFromDelimited(predicate, source, Path.Combine(root, "binary"));
+var mmapManifest = MmapArrayRelationArtifactBuilder.BuildFromDelimited(predicate, source, Path.Combine(root, "mmap"));
+
+var fallbackPredicate = new PredicateId("fallback_relation", 1);
+var configuredProvider = new ConfiguredDelimitedRelationProvider(RelationSourceMode.ArtifactPrebuilt);
+configuredProvider.MemoryProvider.AddFact(fallbackPredicate, "fallback");
+
+Assert(
+    configuredProvider.RegisterEffectiveDistancePrebuiltArtifacts(
+        predicate,
+        "article_category",
+        1_000_000,
+        RelationArtifactAccessShape.LookupColumn0,
+        new[] { binaryManifest, mmapManifest }),
+    "policy-guided configured registration failed");
+
+var registration = configuredProvider.SnapshotRegistrations().Single();
+Assert(registration.StorageKind == RelationArtifactAccessPolicy.MmapArrayArtifactStorageKind, $"storage kind was {registration.StorageKind}");
+Assert(configuredProvider.Provider.GetFacts(predicate).Count() == 3, "configured provider did not read prebuilt rows");
+Assert(configuredProvider.Provider.GetFacts(fallbackPredicate).Single()[0].Equals("fallback"), "configured provider did not preserve fallback memory rows");
+
+Assert(configuredProvider.Provider is IIndexedRelationProvider, "configured provider should expose indexed provider interface");
+var indexedProvider = (IIndexedRelationProvider)configuredProvider.Provider;
+Assert(indexedProvider.TryLookupFacts(predicate, 0, new object[] { 1 }, out var lookupRows), "indexed lookup failed");
+Assert(lookupRows.Count() == 2, "indexed lookup returned wrong row count");
+
+try
+{
+    var preloadProvider = new ConfiguredDelimitedRelationProvider(RelationSourceMode.Preload);
+    preloadProvider.RegisterPolicyGuidedPrebuiltArtifacts(
+        predicate,
+        RelationArtifactAccessPolicy.MmapArrayArtifactStorageKind,
+        new[] { mmapManifest });
+    throw new InvalidOperationException("preload source mode should reject prebuilt artifact registration");
+}
+catch (InvalidOperationException)
+{
 }
 """,
                 encoding="utf-8",

@@ -2761,6 +2761,18 @@ Value WamState::eval_arith(CellPtr c, bool& ok) const {
         case Value::Tag::Float:
             return v;
         case Value::Tag::Atom:
+            // SWI-style arithmetic constants. pi/e are doubles;
+            // inf/nan come from <cmath> + <limits>.
+            if (v.s == "pi") return Value::Float(3.14159265358979323846);
+            if (v.s == "e")  return Value::Float(2.71828182845904523536);
+            if (v.s == "inf" || v.s == "infinite")
+                return Value::Float(std::numeric_limits<double>::infinity());
+            if (v.s == "nan")
+                return Value::Float(std::nan(""));
+            if (v.s == "max_tagged_integer")
+                return Value::Integer(std::numeric_limits<std::int64_t>::max());
+            if (v.s == "min_tagged_integer")
+                return Value::Integer(std::numeric_limits<std::int64_t>::min());
             // Numeric atoms ("5", "-3.14") are tolerated for robustness.
             try {
                 std::size_t pos;
@@ -2803,6 +2815,19 @@ Value WamState::eval_arith(CellPtr c, bool& ok) const {
                                        : (a.f < 0 ? -1.0 : 0.0));
                 }
                 if (v.s == "sqrt/1") return Value::Float(std::sqrt(as_d1(a)));
+                // Trig + transcendentals: all promote Integer to
+                // double and always return Float.
+                if (v.s == "sin/1") return Value::Float(std::sin(as_d1(a)));
+                if (v.s == "cos/1") return Value::Float(std::cos(as_d1(a)));
+                if (v.s == "tan/1") return Value::Float(std::tan(as_d1(a)));
+                if (v.s == "asin/1") return Value::Float(std::asin(as_d1(a)));
+                if (v.s == "acos/1") return Value::Float(std::acos(as_d1(a)));
+                if (v.s == "atan/1") return Value::Float(std::atan(as_d1(a)));
+                if (v.s == "sinh/1") return Value::Float(std::sinh(as_d1(a)));
+                if (v.s == "cosh/1") return Value::Float(std::cosh(as_d1(a)));
+                if (v.s == "tanh/1") return Value::Float(std::tanh(as_d1(a)));
+                if (v.s == "log/1") return Value::Float(std::log(as_d1(a)));
+                if (v.s == "exp/1") return Value::Float(std::exp(as_d1(a)));
                 if (v.s == "truncate/1")
                     return Value::Integer((std::int64_t)std::trunc(as_d1(a)));
                 if (v.s == "floor/1")
@@ -2881,6 +2906,17 @@ Value WamState::eval_arith(CellPtr c, bool& ok) const {
             // both args are int and the exponent is non-negative.
             if (v.s == "**/2") {
                 return Value::Float(std::pow(as_d(a), as_d(b)));
+            }
+            // atan2(Y, X) -- standard library order.
+            if (v.s == "atan2/2") {
+                return Value::Float(std::atan2(as_d(a), as_d(b)));
+            }
+            // log(Base, X) -- log of X to base Base. Standard
+            // identity: log(X) / log(Base).
+            if (v.s == "log/2") {
+                double base = as_d(a);
+                double x = as_d(b);
+                return Value::Float(std::log(x) / std::log(base));
             }
             if (v.s == "^/2") {
                 if (either_float || b.i < 0) {

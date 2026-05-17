@@ -283,9 +283,43 @@ test_transitive_distance_kernel_generation :-
         atom_string(RuntimeCode, S),
         sub_string(S, _, _, _, 'void wam_register_transitive_distance_kernel'),
         sub_string(S, _, _, _, 'bool wam_transitive_distance_handler'),
-        sub_string(S, _, _, _, 'wam_transitive_distance_dfs')
+        sub_string(S, _, _, _, 'wam_transitive_distance_bfs')
     ->  pass(Test)
     ;   fail_test(Test, 'transitive_distance3 native kernel helpers missing')
+    ).
+
+test_transitive_parent_distance_kernel_generation :-
+    Test = 'WAM-C: transitive_parent_distance4 native kernel helpers generated',
+    (   compile_wam_runtime_to_c([], RuntimeCode),
+        atom_string(RuntimeCode, S),
+        sub_string(S, _, _, _, 'void wam_register_transitive_parent_distance_kernel'),
+        sub_string(S, _, _, _, 'bool wam_transitive_parent_distance_handler'),
+        sub_string(S, _, _, _, 'wam_transitive_parent_distance_bfs')
+    ->  pass(Test)
+    ;   fail_test(Test, 'transitive_parent_distance4 native kernel helpers missing')
+    ).
+
+test_transitive_step_parent_distance_kernel_generation :-
+    Test = 'WAM-C: transitive_step_parent_distance5 native kernel helpers generated',
+    (   compile_wam_runtime_to_c([], RuntimeCode),
+        atom_string(RuntimeCode, S),
+        sub_string(S, _, _, _, 'void wam_register_transitive_step_parent_distance_kernel'),
+        sub_string(S, _, _, _, 'bool wam_transitive_step_parent_distance_handler'),
+        sub_string(S, _, _, _, 'wam_transitive_step_parent_distance_bfs')
+    ->  pass(Test)
+    ;   fail_test(Test, 'transitive_step_parent_distance5 native kernel helpers missing')
+    ).
+
+test_weighted_shortest_path_kernel_generation :-
+    Test = 'WAM-C: weighted_shortest_path3 native kernel helpers generated',
+    (   compile_wam_runtime_to_c([], RuntimeCode),
+        atom_string(RuntimeCode, S),
+        sub_string(S, _, _, _, 'void wam_register_weighted_edge'),
+        sub_string(S, _, _, _, 'void wam_register_weighted_shortest_path_kernel'),
+        sub_string(S, _, _, _, 'bool wam_weighted_shortest_path_handler'),
+        sub_string(S, _, _, _, 'wam_weighted_shortest_path_dijkstra')
+    ->  pass(Test)
+    ;   fail_test(Test, 'weighted_shortest_path3 native kernel helpers missing')
     ).
 
 test_fact_source_generation :-
@@ -344,15 +378,57 @@ test_transitive_closure_detector_setup_generation :-
 test_transitive_distance_detector_setup_generation :-
     Test = 'WAM-C: shared kernel detector emits transitive_distance3 setup',
     setup_wam_c_detector_transitive_distance,
-    (   detect_kernels([user:td_ancestor/3], Detected),
-        Detected = ['td_ancestor/3'-_Kernel],
+    (   detect_kernels([user:tc_distance/3], Detected),
+        Detected = ['tc_distance/3'-_Kernel],
         generate_setup_detected_kernels_c(Detected, SetupCode),
         sub_atom(SetupCode, _, _, _, 'setup_detected_wam_c_kernels'),
-        sub_atom(SetupCode, _, _, _, 'wam_register_transitive_distance_kernel(state, "td_ancestor/3")')
+        sub_atom(SetupCode, _, _, _, 'wam_register_transitive_distance_kernel(state, "tc_distance/3")')
     ->  cleanup_wam_c_detector_transitive_distance,
         pass(Test)
     ;   cleanup_wam_c_detector_transitive_distance,
         fail_test(Test, 'detected transitive_distance3 setup missing')
+    ).
+
+test_transitive_parent_distance_detector_setup_generation :-
+    Test = 'WAM-C: shared kernel detector emits transitive_parent_distance4 setup',
+    setup_wam_c_detector_transitive_parent_distance,
+    (   detect_kernels([user:tc_parent_distance/4], Detected),
+        Detected = ['tc_parent_distance/4'-_Kernel],
+        generate_setup_detected_kernels_c(Detected, SetupCode),
+        sub_atom(SetupCode, _, _, _, 'setup_detected_wam_c_kernels'),
+        sub_atom(SetupCode, _, _, _, 'wam_register_transitive_parent_distance_kernel(state, "tc_parent_distance/4")')
+    ->  cleanup_wam_c_detector_transitive_parent_distance,
+        pass(Test)
+    ;   cleanup_wam_c_detector_transitive_parent_distance,
+        fail_test(Test, 'detected transitive_parent_distance4 setup missing')
+    ).
+
+test_transitive_step_parent_distance_detector_setup_generation :-
+    Test = 'WAM-C: shared kernel detector emits transitive_step_parent_distance5 setup',
+    setup_wam_c_detector_transitive_step_parent_distance,
+    (   detect_kernels([user:tc_step_parent_distance/5], Detected),
+        Detected = ['tc_step_parent_distance/5'-_Kernel],
+        generate_setup_detected_kernels_c(Detected, SetupCode),
+        sub_atom(SetupCode, _, _, _, 'setup_detected_wam_c_kernels'),
+        sub_atom(SetupCode, _, _, _, 'wam_register_transitive_step_parent_distance_kernel(state, "tc_step_parent_distance/5")')
+    ->  cleanup_wam_c_detector_transitive_step_parent_distance,
+        pass(Test)
+    ;   cleanup_wam_c_detector_transitive_step_parent_distance,
+        fail_test(Test, 'detected transitive_step_parent_distance5 setup missing')
+    ).
+
+test_weighted_shortest_path_detector_setup_generation :-
+    Test = 'WAM-C: shared kernel detector emits weighted_shortest_path3 setup',
+    setup_wam_c_detector_weighted_shortest_path,
+    (   detect_kernels([user:weighted_path/3], Detected),
+        Detected = ['weighted_path/3'-_Kernel],
+        generate_setup_detected_kernels_c(Detected, SetupCode),
+        sub_atom(SetupCode, _, _, _, 'setup_detected_wam_c_kernels'),
+        sub_atom(SetupCode, _, _, _, 'wam_register_weighted_shortest_path_kernel(state, "weighted_path/3")')
+    ->  cleanup_wam_c_detector_weighted_shortest_path,
+        pass(Test)
+    ;   cleanup_wam_c_detector_weighted_shortest_path,
+        fail_test(Test, 'detected weighted_shortest_path3 setup missing')
     ).
 
 test_kernel_detector_project_generation :-
@@ -945,6 +1021,36 @@ test_transitive_distance_kernel_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_transitive_parent_distance_kernel_executable_smoke :-
+    Test = 'WAM-C: transitive_parent_distance4 native kernel executable smoke',
+    (   gcc_available
+    ->  (   run_transitive_parent_distance_kernel_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'transitive_parent_distance4 native kernel executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_transitive_step_parent_distance_kernel_executable_smoke :-
+    Test = 'WAM-C: transitive_step_parent_distance5 native kernel executable smoke',
+    (   gcc_available
+    ->  (   run_transitive_step_parent_distance_kernel_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'transitive_step_parent_distance5 native kernel executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_weighted_shortest_path_kernel_executable_smoke :-
+    Test = 'WAM-C: weighted_shortest_path3 native kernel executable smoke',
+    (   gcc_available
+    ->  (   run_weighted_shortest_path_kernel_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'weighted_shortest_path3 native kernel executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_fact_source_executable_smoke :-
     Test = 'WAM-C: file FactSource executable smoke',
     (   gcc_available
@@ -1002,6 +1108,36 @@ test_transitive_distance_detector_executable_smoke :-
     ->  (   run_transitive_distance_detector_executable_smoke
         ->  pass(Test)
         ;   fail_test(Test, 'detected transitive_distance3 executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_transitive_parent_distance_detector_executable_smoke :-
+    Test = 'WAM-C: detected transitive_parent_distance4 executable smoke',
+    (   gcc_available
+    ->  (   run_transitive_parent_distance_detector_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'detected transitive_parent_distance4 executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_transitive_step_parent_distance_detector_executable_smoke :-
+    Test = 'WAM-C: detected transitive_step_parent_distance5 executable smoke',
+    (   gcc_available
+    ->  (   run_transitive_step_parent_distance_detector_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'detected transitive_step_parent_distance5 executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_weighted_shortest_path_detector_executable_smoke :-
+    Test = 'WAM-C: detected weighted_shortest_path3 executable smoke',
+    (   gcc_available
+    ->  (   run_weighted_shortest_path_detector_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'detected weighted_shortest_path3 executable failed')
         )
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
@@ -1304,8 +1440,8 @@ run_transitive_closure_kernel_executable_smoke :-
     run_c_smoke_plain(ExePath).
 
 run_transitive_distance_kernel_executable_smoke :-
-    WamCode = 'td_ancestor/3:\n    call_foreign td_ancestor/3, 3\n    proceed',
-    compile_wam_predicate_to_c(user:td_ancestor/3, WamCode, [], PredCode),
+    WamCode = 'tc_distance/3:\n    call_foreign tc_distance/3, 3\n    proceed',
+    compile_wam_predicate_to_c(user:tc_distance/3, WamCode, [], PredCode),
     compile_wam_runtime_to_c([], RuntimeCode),
     get_time(Now),
     Stamp is round(Now * 1000000),
@@ -1318,6 +1454,63 @@ run_transitive_distance_kernel_executable_smoke :-
     format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
     write_text_file(PredPath, PredTranslationUnit),
     wam_c_transitive_distance_smoke_main(MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
+run_transitive_parent_distance_kernel_executable_smoke :-
+    WamCode = 'tc_parent_distance/4:\n    call_foreign tc_parent_distance/4, 4\n    proceed',
+    compile_wam_predicate_to_c(user:tc_parent_distance/4, WamCode, [], PredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_parent_distance_smoke', Stamp, TmpBase),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    wam_c_transitive_parent_distance_smoke_main(MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
+run_transitive_step_parent_distance_kernel_executable_smoke :-
+    WamCode = 'tc_step_parent_distance/5:\n    call_foreign tc_step_parent_distance/5, 5\n    proceed',
+    compile_wam_predicate_to_c(user:tc_step_parent_distance/5, WamCode, [], PredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_step_parent_distance_smoke', Stamp, TmpBase),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    wam_c_transitive_step_parent_distance_smoke_main(MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
+run_weighted_shortest_path_kernel_executable_smoke :-
+    WamCode = 'weighted_path/3:\n    call_foreign weighted_path/3, 3\n    proceed',
+    compile_wam_predicate_to_c(user:weighted_path/3, WamCode, [], PredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_weighted_shortest_path_smoke', Stamp, TmpBase),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    wam_c_weighted_shortest_path_smoke_main(MainCode),
     write_text_file(MainPath, MainCode),
     compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
     run_c_smoke_plain(ExePath).
@@ -1405,18 +1598,75 @@ run_transitive_distance_detector_executable_smoke :-
     setup_wam_c_detector_transitive_distance,
     get_time(Now),
     Stamp is round(Now * 1000000),
-    wam_c_temp_path('unifyweaver_wam_c_transitive_distance_detector_smoke', Stamp, ProjectDir),
+    wam_c_temp_path('unifyweaver_wam_c_distance_detector_smoke', Stamp, ProjectDir),
     directory_file_path(ProjectDir, 'wam_runtime.c', RuntimePath),
     directory_file_path(ProjectDir, 'lib.c', LibPath),
     directory_file_path(ProjectDir, 'main.c', MainPath),
-    directory_file_path(ProjectDir, 'wam_c_transitive_distance_detector_smoke', ExePath),
-    (   write_wam_c_project([user:td_ancestor/3], [], ProjectDir),
+    directory_file_path(ProjectDir, 'wam_c_distance_detector_smoke', ExePath),
+    (   write_wam_c_project([user:tc_distance/3], [], ProjectDir),
         wam_c_transitive_distance_detector_smoke_main(MainCode),
         write_text_file(MainPath, MainCode),
         compile_c_smoke_plain(RuntimePath, LibPath, MainPath, ExePath),
         run_c_smoke_plain(ExePath)
     ->  cleanup_wam_c_detector_transitive_distance
     ;   cleanup_wam_c_detector_transitive_distance,
+        fail
+    ).
+
+run_transitive_parent_distance_detector_executable_smoke :-
+    setup_wam_c_detector_transitive_parent_distance,
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_parent_distance_detector_smoke', Stamp, ProjectDir),
+    directory_file_path(ProjectDir, 'wam_runtime.c', RuntimePath),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    directory_file_path(ProjectDir, 'main.c', MainPath),
+    directory_file_path(ProjectDir, 'wam_c_parent_distance_detector_smoke', ExePath),
+    (   write_wam_c_project([user:tc_parent_distance/4], [], ProjectDir),
+        wam_c_transitive_parent_distance_detector_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, LibPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_detector_transitive_parent_distance
+    ;   cleanup_wam_c_detector_transitive_parent_distance,
+        fail
+    ).
+
+run_transitive_step_parent_distance_detector_executable_smoke :-
+    setup_wam_c_detector_transitive_step_parent_distance,
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_step_parent_distance_detector_smoke', Stamp, ProjectDir),
+    directory_file_path(ProjectDir, 'wam_runtime.c', RuntimePath),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    directory_file_path(ProjectDir, 'main.c', MainPath),
+    directory_file_path(ProjectDir, 'wam_c_step_parent_distance_detector_smoke', ExePath),
+    (   write_wam_c_project([user:tc_step_parent_distance/5], [], ProjectDir),
+        wam_c_transitive_step_parent_distance_detector_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, LibPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_detector_transitive_step_parent_distance
+    ;   cleanup_wam_c_detector_transitive_step_parent_distance,
+        fail
+    ).
+
+run_weighted_shortest_path_detector_executable_smoke :-
+    setup_wam_c_detector_weighted_shortest_path,
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_weighted_shortest_path_detector_smoke', Stamp, ProjectDir),
+    directory_file_path(ProjectDir, 'wam_runtime.c', RuntimePath),
+    directory_file_path(ProjectDir, 'lib.c', LibPath),
+    directory_file_path(ProjectDir, 'main.c', MainPath),
+    directory_file_path(ProjectDir, 'wam_c_weighted_shortest_path_detector_smoke', ExePath),
+    (   write_wam_c_project([user:weighted_path/3], [], ProjectDir),
+        wam_c_weighted_shortest_path_detector_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, LibPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_detector_weighted_shortest_path
+    ;   cleanup_wam_c_detector_weighted_shortest_path,
         fail
     ).
 
@@ -1908,16 +2158,66 @@ setup_wam_c_detector_transitive_distance :-
     cleanup_wam_c_detector_transitive_distance,
     assertz((user:td_parent(tom, bob))),
     assertz((user:td_parent(bob, ann))),
-    assertz((user:td_ancestor(X, Y, 1) :-
+    assertz((user:td_parent(bob, pat))),
+    assertz((user:tc_distance(X, Y, 1) :-
         td_parent(X, Y))),
-    assertz((user:td_ancestor(X, Y, D) :-
+    assertz((user:tc_distance(X, Y, D) :-
         td_parent(X, Z),
-        td_ancestor(Z, Y, D1),
-        D is D1 + 1)).
+        tc_distance(Z, Y, D0),
+        D is D0 + 1)).
 
 cleanup_wam_c_detector_transitive_distance :-
     retractall(user:td_parent(_, _)),
-    retractall(user:td_ancestor(_, _, _)).
+    retractall(user:tc_distance(_, _, _)).
+
+setup_wam_c_detector_transitive_parent_distance :-
+    cleanup_wam_c_detector_transitive_parent_distance,
+    assertz((user:tpd_parent(tom, bob))),
+    assertz((user:tpd_parent(bob, ann))),
+    assertz((user:tpd_parent(bob, pat))),
+    assertz((user:tc_parent_distance(X, Y, X, 1) :-
+        tpd_parent(X, Y))),
+    assertz((user:tc_parent_distance(X, Y, P, D) :-
+        tpd_parent(X, Z),
+        tc_parent_distance(Z, Y, P, D0),
+        D is D0 + 1)).
+
+cleanup_wam_c_detector_transitive_parent_distance :-
+    retractall(user:tpd_parent(_, _)),
+    retractall(user:tc_parent_distance(_, _, _, _)).
+
+setup_wam_c_detector_transitive_step_parent_distance :-
+    cleanup_wam_c_detector_transitive_step_parent_distance,
+    assertz((user:tspd_parent(tom, bob))),
+    assertz((user:tspd_parent(bob, ann))),
+    assertz((user:tspd_parent(bob, pat))),
+    assertz((user:tc_step_parent_distance(X, Y, Y, X, 1) :-
+        tspd_parent(X, Y))),
+    assertz((user:tc_step_parent_distance(X, Y, Step, Parent, D) :-
+        tspd_parent(X, Step),
+        tc_step_parent_distance(Step, Y, _Inner, Parent, D0),
+        D is D0 + 1)).
+
+cleanup_wam_c_detector_transitive_step_parent_distance :-
+    retractall(user:tspd_parent(_, _)),
+    retractall(user:tc_step_parent_distance(_, _, _, _, _)).
+
+setup_wam_c_detector_weighted_shortest_path :-
+    cleanup_wam_c_detector_weighted_shortest_path,
+    assertz((user:test_weighted_edge(tom, bob, 5))),
+    assertz((user:test_weighted_edge(tom, eve, 1))),
+    assertz((user:test_weighted_edge(eve, ann, 1))),
+    assertz((user:test_weighted_edge(bob, ann, 1))),
+    assertz((user:weighted_path(X, Y, W) :-
+        test_weighted_edge(X, Y, W))),
+    assertz((user:weighted_path(X, Y, W) :-
+        test_weighted_edge(X, Z, W0),
+        weighted_path(Z, Y, W1),
+        W is W0 + W1)).
+
+cleanup_wam_c_detector_weighted_shortest_path :-
+    retractall(user:test_weighted_edge(_, _, _)),
+    retractall(user:weighted_path(_, _, _)).
 
 run_c_smoke(ExePath) :-
     format(atom(LogPath), '~w.asan.log', [ExePath]),
@@ -2355,23 +2655,23 @@ int main(void) {
 wam_c_transitive_distance_smoke_main(
 '#include "wam_runtime.h"
 
-void setup_td_ancestor_3(WamState* state);
+void setup_tc_distance_3(WamState* state);
 
 int main(void) {
     WamState state;
     wam_state_init(&state);
-    setup_td_ancestor_3(&state);
+    setup_tc_distance_3(&state);
     wam_register_transitive_edge(&state, "tom", "bob");
     wam_register_transitive_edge(&state, "bob", "ann");
     wam_register_transitive_edge(&state, "bob", "pat");
-    wam_register_transitive_distance_kernel(&state, "td_ancestor/3");
+    wam_register_transitive_distance_kernel(&state, "tc_distance/3");
 
     WamValue recursive_args[3] = {
         val_atom("tom"),
         val_atom("ann"),
         val_unbound("Distance")
     };
-    int recursive_rc = wam_run_predicate(&state, "td_ancestor/3", recursive_args, 3);
+    int recursive_rc = wam_run_predicate(&state, "tc_distance/3", recursive_args, 3);
     if (recursive_rc != 0 || state.P != WAM_HALT ||
         state.A[2].tag != VAL_INT || state.A[2].data.integer != 2) {
         wam_free_state(&state);
@@ -2383,7 +2683,7 @@ int main(void) {
         val_atom("bob"),
         val_int(1)
     };
-    int direct_rc = wam_run_predicate(&state, "td_ancestor/3", direct_args, 3);
+    int direct_rc = wam_run_predicate(&state, "tc_distance/3", direct_args, 3);
     if (direct_rc != 0 || state.P != WAM_HALT) {
         wam_free_state(&state);
         return 20;
@@ -2394,7 +2694,7 @@ int main(void) {
         val_unbound("Target"),
         val_unbound("Distance")
     };
-    int output_rc = wam_run_predicate(&state, "td_ancestor/3", output_args, 3);
+    int output_rc = wam_run_predicate(&state, "tc_distance/3", output_args, 3);
     if (output_rc != 0 || state.P != WAM_HALT ||
         state.A[1].tag != VAL_ATOM || strcmp(state.A[1].data.atom, "ann") != 0 ||
         state.A[2].tag != VAL_INT || state.A[2].data.integer != 1) {
@@ -2407,7 +2707,7 @@ int main(void) {
         val_unbound("Target"),
         val_int(2)
     };
-    int distance_filter_rc = wam_run_predicate(&state, "td_ancestor/3", distance_filter_args, 3);
+    int distance_filter_rc = wam_run_predicate(&state, "tc_distance/3", distance_filter_args, 3);
     if (distance_filter_rc != 0 || state.P != WAM_HALT ||
         state.A[1].tag != VAL_ATOM || strcmp(state.A[1].data.atom, "ann") != 0) {
         wam_free_state(&state);
@@ -2419,10 +2719,227 @@ int main(void) {
         val_atom("tom"),
         val_unbound("Distance")
     };
-    int fail_rc = wam_run_predicate(&state, "td_ancestor/3", fail_args, 3);
+    int fail_rc = wam_run_predicate(&state, "tc_distance/3", fail_args, 3);
     if (fail_rc != WAM_HALT) {
         wam_free_state(&state);
         return 50;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_transitive_parent_distance_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_tc_parent_distance_4(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_tc_parent_distance_4(&state);
+    wam_register_transitive_edge(&state, "tom", "bob");
+    wam_register_transitive_edge(&state, "bob", "ann");
+    wam_register_transitive_edge(&state, "bob", "pat");
+    wam_register_transitive_parent_distance_kernel(&state, "tc_parent_distance/4");
+
+    WamValue recursive_args[4] = {
+        val_atom("tom"),
+        val_atom("ann"),
+        val_unbound("Parent"),
+        val_unbound("Distance")
+    };
+    int recursive_rc = wam_run_predicate(&state, "tc_parent_distance/4", recursive_args, 4);
+    if (recursive_rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_ATOM || strcmp(state.A[2].data.atom, "bob") != 0 ||
+        state.A[3].tag != VAL_INT || state.A[3].data.integer != 2) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue direct_args[4] = {
+        val_atom("tom"),
+        val_atom("bob"),
+        val_atom("tom"),
+        val_int(1)
+    };
+    int direct_rc = wam_run_predicate(&state, "tc_parent_distance/4", direct_args, 4);
+    if (direct_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue output_args[4] = {
+        val_atom("bob"),
+        val_unbound("Target"),
+        val_unbound("Parent"),
+        val_unbound("Distance")
+    };
+    int output_rc = wam_run_predicate(&state, "tc_parent_distance/4", output_args, 4);
+    if (output_rc != 0 || state.P != WAM_HALT ||
+        state.A[1].tag != VAL_ATOM || strcmp(state.A[1].data.atom, "ann") != 0 ||
+        state.A[2].tag != VAL_ATOM || strcmp(state.A[2].data.atom, "bob") != 0 ||
+        state.A[3].tag != VAL_INT || state.A[3].data.integer != 1) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue fail_args[4] = {
+        val_atom("ann"),
+        val_atom("tom"),
+        val_unbound("Parent"),
+        val_unbound("Distance")
+    };
+    int fail_rc = wam_run_predicate(&state, "tc_parent_distance/4", fail_args, 4);
+    if (fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_transitive_step_parent_distance_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_tc_step_parent_distance_5(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_tc_step_parent_distance_5(&state);
+    wam_register_transitive_edge(&state, "tom", "bob");
+    wam_register_transitive_edge(&state, "bob", "ann");
+    wam_register_transitive_edge(&state, "bob", "pat");
+    wam_register_transitive_step_parent_distance_kernel(&state, "tc_step_parent_distance/5");
+
+    WamValue recursive_args[5] = {
+        val_atom("tom"),
+        val_atom("ann"),
+        val_unbound("Step"),
+        val_unbound("Parent"),
+        val_unbound("Distance")
+    };
+    int recursive_rc = wam_run_predicate(&state, "tc_step_parent_distance/5", recursive_args, 5);
+    if (recursive_rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_ATOM || strcmp(state.A[2].data.atom, "bob") != 0 ||
+        state.A[3].tag != VAL_ATOM || strcmp(state.A[3].data.atom, "bob") != 0 ||
+        state.A[4].tag != VAL_INT || state.A[4].data.integer != 2) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue direct_args[5] = {
+        val_atom("tom"),
+        val_atom("bob"),
+        val_atom("bob"),
+        val_atom("tom"),
+        val_int(1)
+    };
+    int direct_rc = wam_run_predicate(&state, "tc_step_parent_distance/5", direct_args, 5);
+    if (direct_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue output_args[5] = {
+        val_atom("bob"),
+        val_unbound("Target"),
+        val_unbound("Step"),
+        val_unbound("Parent"),
+        val_unbound("Distance")
+    };
+    int output_rc = wam_run_predicate(&state, "tc_step_parent_distance/5", output_args, 5);
+    if (output_rc != 0 || state.P != WAM_HALT ||
+        state.A[1].tag != VAL_ATOM || strcmp(state.A[1].data.atom, "ann") != 0 ||
+        state.A[2].tag != VAL_ATOM || strcmp(state.A[2].data.atom, "ann") != 0 ||
+        state.A[3].tag != VAL_ATOM || strcmp(state.A[3].data.atom, "bob") != 0 ||
+        state.A[4].tag != VAL_INT || state.A[4].data.integer != 1) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue fail_args[5] = {
+        val_atom("ann"),
+        val_atom("tom"),
+        val_unbound("Step"),
+        val_unbound("Parent"),
+        val_unbound("Distance")
+    };
+    int fail_rc = wam_run_predicate(&state, "tc_step_parent_distance/5", fail_args, 5);
+    if (fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_weighted_shortest_path_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_weighted_path_3(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_weighted_path_3(&state);
+    wam_register_weighted_edge(&state, "tom", "bob", 5);
+    wam_register_weighted_edge(&state, "tom", "eve", 1);
+    wam_register_weighted_edge(&state, "eve", "ann", 1);
+    wam_register_weighted_edge(&state, "bob", "ann", 1);
+    wam_register_weighted_shortest_path_kernel(&state, "weighted_path/3");
+
+    WamValue shortest_args[3] = {
+        val_atom("tom"),
+        val_atom("ann"),
+        val_unbound("Weight")
+    };
+    int shortest_rc = wam_run_predicate(&state, "weighted_path/3", shortest_args, 3);
+    if (shortest_rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_INT || state.A[2].data.integer != 2) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue direct_args[3] = {
+        val_atom("bob"),
+        val_atom("ann"),
+        val_int(1)
+    };
+    int direct_rc = wam_run_predicate(&state, "weighted_path/3", direct_args, 3);
+    if (direct_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue output_args[3] = {
+        val_atom("tom"),
+        val_unbound("Target"),
+        val_unbound("Weight")
+    };
+    int output_rc = wam_run_predicate(&state, "weighted_path/3", output_args, 3);
+    if (output_rc != 0 || state.P != WAM_HALT ||
+        state.A[1].tag != VAL_ATOM || strcmp(state.A[1].data.atom, "eve") != 0 ||
+        state.A[2].tag != VAL_INT || state.A[2].data.integer != 1) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue fail_args[3] = {
+        val_atom("ann"),
+        val_atom("tom"),
+        val_unbound("Weight")
+    };
+    int fail_rc = wam_run_predicate(&state, "weighted_path/3", fail_args, 3);
+    if (fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 40;
     }
 
     wam_free_state(&state);
@@ -2505,13 +3022,13 @@ int main(void) {
 wam_c_transitive_distance_detector_smoke_main(
 '#include "wam_runtime.h"
 
-void setup_td_ancestor_3(WamState* state);
+void setup_tc_distance_3(WamState* state);
 void setup_detected_wam_c_kernels(WamState* state);
 
 int main(void) {
     WamState state;
     wam_state_init(&state);
-    setup_td_ancestor_3(&state);
+    setup_tc_distance_3(&state);
     setup_detected_wam_c_kernels(&state);
 
     wam_register_transitive_edge(&state, "tom", "bob");
@@ -2522,7 +3039,111 @@ int main(void) {
         val_atom("ann"),
         val_unbound("Distance")
     };
-    int rc = wam_run_predicate(&state, "td_ancestor/3", args, 3);
+    int rc = wam_run_predicate(&state, "tc_distance/3", args, 3);
+    if (rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_INT || state.A[2].data.integer != 2) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_transitive_parent_distance_detector_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_tc_parent_distance_4(WamState* state);
+void setup_detected_wam_c_kernels(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_tc_parent_distance_4(&state);
+    setup_detected_wam_c_kernels(&state);
+
+    wam_register_transitive_edge(&state, "tom", "bob");
+    wam_register_transitive_edge(&state, "bob", "ann");
+
+    WamValue args[4] = {
+        val_atom("tom"),
+        val_atom("ann"),
+        val_unbound("Parent"),
+        val_unbound("Distance")
+    };
+    int rc = wam_run_predicate(&state, "tc_parent_distance/4", args, 4);
+    if (rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_ATOM || strcmp(state.A[2].data.atom, "bob") != 0 ||
+        state.A[3].tag != VAL_INT || state.A[3].data.integer != 2) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_transitive_step_parent_distance_detector_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_tc_step_parent_distance_5(WamState* state);
+void setup_detected_wam_c_kernels(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_tc_step_parent_distance_5(&state);
+    setup_detected_wam_c_kernels(&state);
+
+    wam_register_transitive_edge(&state, "tom", "bob");
+    wam_register_transitive_edge(&state, "bob", "ann");
+
+    WamValue args[5] = {
+        val_atom("tom"),
+        val_atom("ann"),
+        val_unbound("Step"),
+        val_unbound("Parent"),
+        val_unbound("Distance")
+    };
+    int rc = wam_run_predicate(&state, "tc_step_parent_distance/5", args, 5);
+    if (rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_ATOM || strcmp(state.A[2].data.atom, "bob") != 0 ||
+        state.A[3].tag != VAL_ATOM || strcmp(state.A[3].data.atom, "bob") != 0 ||
+        state.A[4].tag != VAL_INT || state.A[4].data.integer != 2) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_weighted_shortest_path_detector_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_weighted_path_3(WamState* state);
+void setup_detected_wam_c_kernels(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_weighted_path_3(&state);
+    setup_detected_wam_c_kernels(&state);
+
+    wam_register_weighted_edge(&state, "tom", "bob", 5);
+    wam_register_weighted_edge(&state, "tom", "eve", 1);
+    wam_register_weighted_edge(&state, "eve", "ann", 1);
+    wam_register_weighted_edge(&state, "bob", "ann", 1);
+
+    WamValue args[3] = {
+        val_atom("tom"),
+        val_atom("ann"),
+        val_unbound("Weight")
+    };
+    int rc = wam_run_predicate(&state, "weighted_path/3", args, 3);
     if (rc != 0 || state.P != WAM_HALT ||
         state.A[2].tag != VAL_INT || state.A[2].data.integer != 2) {
         wam_free_state(&state);
@@ -3514,11 +4135,17 @@ run_tests_once :-
     test_category_ancestor_kernel_generation,
     test_transitive_closure_kernel_generation,
     test_transitive_distance_kernel_generation,
+    test_transitive_parent_distance_kernel_generation,
+    test_transitive_step_parent_distance_kernel_generation,
+    test_weighted_shortest_path_kernel_generation,
     test_fact_source_generation,
     test_streaming_foreign_results_generation,
     test_kernel_detector_setup_generation,
     test_transitive_closure_detector_setup_generation,
     test_transitive_distance_detector_setup_generation,
+    test_transitive_parent_distance_detector_setup_generation,
+    test_transitive_step_parent_distance_detector_setup_generation,
+    test_weighted_shortest_path_detector_setup_generation,
     test_kernel_detector_project_generation,
     test_lowered_fact_helper_generation,
     test_lowered_helper_planner_metadata,
@@ -3542,11 +4169,17 @@ run_tests_once :-
     test_category_ancestor_kernel_executable_smoke,
     test_transitive_closure_kernel_executable_smoke,
     test_transitive_distance_kernel_executable_smoke,
+    test_transitive_parent_distance_kernel_executable_smoke,
+    test_transitive_step_parent_distance_kernel_executable_smoke,
+    test_weighted_shortest_path_kernel_executable_smoke,
     test_fact_source_executable_smoke,
     test_lmdb_fact_source_executable_smoke,
     test_kernel_detector_executable_smoke,
     test_transitive_closure_detector_executable_smoke,
     test_transitive_distance_detector_executable_smoke,
+    test_transitive_parent_distance_detector_executable_smoke,
+    test_transitive_step_parent_distance_detector_executable_smoke,
+    test_weighted_shortest_path_detector_executable_smoke,
     test_streaming_foreign_results_executable_smoke,
     test_real_prolog_builtin_executable_smoke,
     test_real_prolog_term_builtin_executable_smoke,
