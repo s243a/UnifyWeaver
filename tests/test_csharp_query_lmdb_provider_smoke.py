@@ -157,6 +157,8 @@ static string RowText(object[] row) => string.Join(">", row.Select(Convert.ToStr
 var root = Directory.GetCurrentDirectory();
 var envPath = Path.Combine(root, "edges.lmdb");
 Directory.CreateDirectory(envPath);
+var inputPath = Path.Combine(root, "edges.tsv");
+File.WriteAllText(inputPath, "source\ttarget\nalice\tbob\nalice\tcarol\nbob\tdave\n");
 
 using (var env = new LightningEnvironment(envPath) { MaxDatabases = 4 })
 {
@@ -206,6 +208,50 @@ Assert(factory.TryOpen(predicate, manifestPath, fallback: null, out var opened),
 Assert(opened.StorageKind == "lmdb_artifact", $"storage kind was {opened.StorageKind}");
 var factoryRows = opened.Provider.GetFacts(predicate).Select(RowText).OrderBy(value => value).ToArray();
 Assert(factoryRows.SequenceEqual(scanned), "factory provider scan rows did not match");
+
+var binaryManifestPath = BinaryRelationArtifactBuilder.BuildFromDelimited(
+    predicate,
+    new DelimitedRelationSource(inputPath, '\t', 1, 2),
+    Path.Combine(root, "binary"));
+var manifestPaths = new[] { binaryManifestPath, manifestPath };
+Assert(
+    RelationArtifactProviderOpenPolicy.TryOpenPreferred(
+        predicate,
+        manifestPaths,
+        RelationArtifactAccessPolicy.LmdbArtifactStorageKind,
+        fallback: null,
+        factories: new IRelationArtifactProviderFactory[]
+        {
+            new LmdbRelationArtifactProviderFactory(),
+            new DefaultRelationArtifactProviderFactory(),
+        },
+        out var policyOpened),
+    "policy-guided open did not find LMDB manifest");
+Assert(policyOpened.StorageKind == RelationArtifactAccessPolicy.LmdbArtifactStorageKind, $"policy storage kind was {policyOpened.StorageKind}");
+
+var fallbackPredicate = new PredicateId("fallback_relation", 1);
+var configuredProvider = new ConfiguredDelimitedRelationProvider(RelationSourceMode.ArtifactPrebuilt);
+configuredProvider.MemoryProvider.AddFact(fallbackPredicate, "fallback");
+Assert(
+    configuredProvider.RegisterEffectiveDistancePrebuiltArtifacts(
+        predicate,
+        "article_category",
+        5_000_000,
+        RelationArtifactAccessShape.LookupColumn0,
+        manifestPaths,
+        new IRelationArtifactProviderFactory[]
+        {
+            new LmdbRelationArtifactProviderFactory(),
+            new DefaultRelationArtifactProviderFactory(),
+        }),
+    "configured provider did not register policy-guided LMDB artifact");
+var registration = configuredProvider.SnapshotRegistrations().Single();
+Assert(registration.StorageKind == RelationArtifactAccessPolicy.LmdbArtifactStorageKind, $"configured storage kind was {registration.StorageKind}");
+Assert(configuredProvider.Provider.GetFacts(predicate).Select(RowText).OrderBy(value => value).SequenceEqual(scanned), "configured provider LMDB rows did not match");
+Assert(configuredProvider.Provider.GetFacts(fallbackPredicate).Single()[0].Equals("fallback"), "configured provider fallback row did not survive");
+Assert(configuredProvider.Provider is IIndexedRelationProvider, "configured provider did not expose indexed relation interface");
+Assert(((IIndexedRelationProvider)configuredProvider.Provider).TryLookupFacts(predicate, 0, new object[] { "alice" }, out var configuredLookupRows), "configured provider did not serve LMDB lookup");
+Assert(configuredLookupRows.Select(RowText).OrderBy(value => value).SequenceEqual(lookedUp), "configured provider LMDB lookup rows did not match");
 
 Console.WriteLine("LMDB_PROVIDER_SMOKE_OK");
 """
