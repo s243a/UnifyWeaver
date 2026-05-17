@@ -1454,6 +1454,18 @@ compile_utility_helpers_to_elixir(Code) :-
         # raised by execute_throw. See WAM_ELIXIR_GAPS_SPECIFICATION.md
         # PR #2 §4.
         execute_catch(state)
+      {"^/2", 2} ->
+        # Existential quantifier transparency. Var^Goal means
+        # "existentially quantify Var inside Goal" — for bagof/setof
+        # WITHOUT witness-group backtracking (PR 1 scope), this is
+        # just dispatch the Goal (A2) and ignore the binder (A1).
+        # Once witness grouping lands, the binder will be used to
+        # skip Var when computing free-variables-of-Goal.
+        #
+        # Load A2 into A1 and dispatch as a 1-arity meta-call.
+        goal_term = deref_var(state, get_reg(state, 2))
+        prepared = %{state | regs: Map.put(state.regs, 1, goal_term)}
+        dispatch_call_meta(prepared, 1, state.cp)
       {"throw/1", 1} ->
         # throw(Term). Deep-copy the term (independent of catch
         # boundary), then BEAM-throw {:wam_throw, copy} so the
@@ -2607,12 +2619,79 @@ compile_aggregate_helpers_to_elixir(Code) :-
                 is the canonical Prolog semantics for max/min over
                 an empty bag.
   """
+  # Standard order of terms (ISO §7.2): Var < Number < Atom <
+  # String < Compound. Within each class, natural ordering. Compound
+  # terms compare by arity then functor name then args (recursive).
+  # Used by :setof to produce sorted, dedup-ready output. Bag values
+  # are atomic (strings/numbers/atoms) or {:struct, "name/arity",
+  # [args]} from deep_copy_value/2 — the captured-value shape is
+  # what we sort.
+  def standard_term_compare(a, b) do
+    standard_term_compare_lt(a, b)
+  end
+
+  defp term_class({:unbound, _}), do: 0
+  defp term_class(v) when is_number(v), do: 1
+  defp term_class(v) when is_atom(v), do: 2
+  defp term_class(v) when is_binary(v), do: 3
+  defp term_class({:struct, _, _}), do: 4
+  defp term_class({:str, _}), do: 4
+  defp term_class({:ref, _}), do: 4
+  defp term_class(_), do: 5
+
+  defp standard_term_compare_lt(a, b) do
+    ca = term_class(a)
+    cb = term_class(b)
+    cond do
+      ca != cb -> ca <= cb
+      ca == 1 -> a <= b   # numbers
+      ca == 2 -> Atom.to_string(a) <= Atom.to_string(b)
+      ca == 3 -> a <= b   # binaries (atoms-as-strings + actual strings)
+      ca == 4 -> compound_lt(a, b)
+      true -> true        # fallback for unknowns; deterministic order
+    end
+  end
+
+  defp compound_lt({:struct, name_a, args_a}, {:struct, name_b, args_b}) do
+    arity_a = length(args_a)
+    arity_b = length(args_b)
+    cond do
+      arity_a != arity_b -> arity_a <= arity_b
+      name_a != name_b -> name_a <= name_b
+      true -> args_list_lt(args_a, args_b)
+    end
+  end
+  defp compound_lt(a, b), do: inspect(a) <= inspect(b)
+
+  defp args_list_lt([], []), do: true
+  defp args_list_lt([a | as], [b | bs]) do
+    cond do
+      a == b -> args_list_lt(as, bs)
+      true -> standard_term_compare_lt(a, b)
+    end
+  end
+  defp args_list_lt(_, _), do: true
+
   def finalise_aggregate(state, agg_cp, rest_cps, agg_type) do
     accum_rev = Enum.reverse(agg_cp.agg_accum)
     result =
       case agg_type do
         t when t in [:collect, :findall, :aggregate_all, :bag] -> accum_rev
         :set -> Enum.uniq(accum_rev)
+        # bagof/setof differ from bag/set in that they FAIL when no
+        # solutions exist (ISO semantics). bagof returns the list as-is;
+        # setof additionally sorts in standard term order + dedups.
+        :bagof ->
+          if accum_rev == [],
+            do: throw({:fail, state}),
+            else: accum_rev
+        :setof ->
+          if accum_rev == [],
+            do: throw({:fail, state}),
+            else:
+              accum_rev
+              |> Enum.sort(&standard_term_compare/2)
+              |> Enum.uniq()
         :sum -> Enum.sum(accum_rev)
         :count -> length(accum_rev)
         :max ->
