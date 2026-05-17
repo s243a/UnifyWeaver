@@ -227,6 +227,66 @@ user:elx_compound_eq_mismatch_functor :- foo(1) = bar(1).
 % Arity mismatch fails (same name, different arity = different functor).
 user:elx_compound_eq_mismatch_arity :- foo(1, 2) = foo(1).
 
+% --- bagof/setof basics (follow-up) ---
+% Requires inline_bagof_setof(true) option on WAM-compile so the
+% compiler emits begin_aggregate bagof/setof inline rather than a
+% meta-call (which the Elixir runtime doesn't dispatch).
+%
+% Tests use multi-clause user facts rather than member/2 because
+% Elixir's member/2 builtin is a deterministic boolean check, not
+% an enumerator with choice points. Multi-clause facts give the
+% WAM compiler try_me_else / retry_me_else / trust_me dispatch
+% which IS the backtracking enumeration we need.
+:- dynamic user:bs_int/1.
+user:bs_int(1).
+user:bs_int(2).
+user:bs_int(3).
+:- dynamic user:bs_atom/1.
+user:bs_atom(c).
+user:bs_atom(a).
+user:bs_atom(b).
+:- dynamic user:bs_dup/1.
+user:bs_dup(a).
+user:bs_dup(b).
+user:bs_dup(a).
+user:bs_dup(c).
+user:bs_dup(b).
+:- dynamic user:bs_int_unsorted/1.
+user:bs_int_unsorted(3).
+user:bs_int_unsorted(1).
+user:bs_int_unsorted(2).
+:- dynamic user:bs_pair/2.
+user:bs_pair(a, 1).
+user:bs_pair(b, 2).
+user:bs_pair(c, 3).
+% bs_none/1 has one clause that always fails. Needs at least one
+% clause so the WAM compiler emits a predicate module (zero-clause
+% predicates fail to compile). The body's fail/0 makes enumeration
+% produce no solutions, which is what bagof_fails_empty needs.
+:- dynamic user:bs_none/1.
+user:bs_none(_) :- fail.
+
+:- dynamic user:elx_bagof_basic/1.
+:- dynamic user:elx_bagof_fails_empty/0.
+:- dynamic user:elx_setof_basic/1.
+:- dynamic user:elx_setof_dedups/1.
+:- dynamic user:elx_setof_sorts_ints/1.
+:- dynamic user:elx_bagof_with_quantifier/1.
+% bagof collects all solutions, returns the list.
+user:elx_bagof_basic(R) :- bagof(X, bs_int(X), R).
+% bagof fails when no solutions.
+user:elx_bagof_fails_empty :- bagof(_X, bs_none(_X), _R).
+% setof sorts atoms.
+user:elx_setof_basic(R) :- setof(X, bs_atom(X), R).
+% setof dedups.
+user:elx_setof_dedups(R) :- setof(X, bs_dup(X), R).
+% setof sorts integers in standard order.
+user:elx_setof_sorts_ints(R) :- setof(X, bs_int_unsorted(X), R).
+% ^/2 transparency: Y^bs_pair(X, Y) — Y existentially quantified.
+% The thrown ^/2 functor is dispatched transparently to its A2.
+user:elx_bagof_with_quantifier(R) :-
+    bagof(X, Y^bs_pair(X, Y), R).
+
 % ============================================================
 % elixir_available — same gating pattern as the Scala suite
 % ============================================================
@@ -579,6 +639,62 @@ test(compound_eq_mismatch_arity) :-
         verify_elixir_args(TmpDir, 'elx_compound_eq_mismatch_arity/0',
                            [], "false")).
 
+% --- bagof/setof tests ---
+% All pass inline_bagof_setof(true) so the WAM compiler inlines
+% bagof/setof into begin_aggregate / end_aggregate (which the Elixir
+% runtime already supports). Without this option the compiler emits
+% `execute bagof/3` which the Elixir runtime cannot dispatch (no
+% meta-call findall/bagof/setof; deferred to a separate PR).
+
+test(bagof_basic) :-
+    with_elixir_project(
+        [user:elx_bagof_basic/1, user:bs_int/1],
+        [inline_bagof_setof(true)],
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_bagof_basic/1',
+                           ['[1,2,3]'], "true")).
+
+test(bagof_fails_empty) :-
+    with_elixir_project(
+        [user:elx_bagof_fails_empty/0, user:bs_none/1],
+        [inline_bagof_setof(true)],
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_bagof_fails_empty/0',
+                           [], "false")).
+
+test(setof_basic) :-
+    with_elixir_project(
+        [user:elx_setof_basic/1, user:bs_atom/1],
+        [inline_bagof_setof(true)],
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_setof_basic/1',
+                           ['[a,b,c]'], "true")).
+
+test(setof_dedups) :-
+    with_elixir_project(
+        [user:elx_setof_dedups/1, user:bs_dup/1],
+        [inline_bagof_setof(true)],
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_setof_dedups/1',
+                           ['[a,b,c]'], "true")).
+
+test(setof_sorts_ints) :-
+    with_elixir_project(
+        [user:elx_setof_sorts_ints/1, user:bs_int_unsorted/1],
+        [inline_bagof_setof(true)],
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_setof_sorts_ints/1',
+                           ['[1,2,3]'], "true")).
+
+test(bagof_with_quantifier) :-
+    % Tests ^/2 transparency through the inlined dispatch path.
+    with_elixir_project(
+        [user:elx_bagof_with_quantifier/1, user:bs_pair/2],
+        [inline_bagof_setof(true)],
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_bagof_with_quantifier/1',
+                           ['[a,b,c]'], "true")).
+
 :- end_tests(wam_elixir_classic_programs).
 
 % ============================================================
@@ -594,7 +710,10 @@ with_elixir_project(Preds, ExtraOpts0, TmpDir, Goal) :-
     append(ExtraOpts, BaseOpts, AllOpts),
     % Compile each predicate to WAM, then write the project. This is
     % the same shape examples/debug_wam_elixir_ancestor.pl uses.
-    compile_predicates_to_wam(Preds, PredWamPairs),
+    % WAM-compile options forwarded from ExtraOpts include
+    % inline_bagof_setof(true) so bagof/setof tests inline correctly.
+    wam_compile_opts(ExtraOpts, WamOpts),
+    compile_predicates_to_wam(Preds, WamOpts, PredWamPairs),
     write_wam_elixir_project(PredWamPairs, AllOpts, TmpDir),
     % Copy the shared driver script into the project root. Resolved
     % at consult time via prolog_load_context so the path stays
@@ -621,13 +740,29 @@ classic_driver_path(P) :- classic_driver_path_fact(P).
 %  Module=user). Compiles each to WAM bytecode and packages as
 %  `Name/Arity-WamCode` pairs, the format `write_wam_elixir_project/3`
 %  expects.
-compile_predicates_to_wam([], []).
-compile_predicates_to_wam([Mod:Name/Arity | Rest], [Name/Arity-WamCode | RestPairs]) :-
-    (   wam_target:compile_predicate_to_wam(Name/Arity, [], WamCode) -> true
-    ;   wam_target:compile_predicate_to_wam(Mod:Name/Arity, [], WamCode) -> true
+compile_predicates_to_wam(Preds, Pairs) :-
+    compile_predicates_to_wam(Preds, [], Pairs).
+
+compile_predicates_to_wam([], _Opts, []).
+compile_predicates_to_wam([Mod:Name/Arity | Rest], Opts,
+                          [Name/Arity-WamCode | RestPairs]) :-
+    (   wam_target:compile_predicate_to_wam(Name/Arity, Opts, WamCode) -> true
+    ;   wam_target:compile_predicate_to_wam(Mod:Name/Arity, Opts, WamCode) -> true
     ;   throw(error(wam_compile_failed(Mod:Name/Arity), _))
     ),
-    compile_predicates_to_wam(Rest, RestPairs).
+    compile_predicates_to_wam(Rest, Opts, RestPairs).
+
+%% wam_compile_opts(+ExtraOpts, -WamOpts)
+%  Filter the project-level ExtraOpts to just the ones
+%  compile_predicate_to_wam understands. Currently:
+%    - inline_bagof_setof/1 (so bagof/setof tests inline rather than
+%      hitting the missing meta-call dispatch)
+wam_compile_opts(ExtraOpts, WamOpts) :-
+    findall(O, ( member(O, ExtraOpts),
+                 forwardable_wam_opt(O)
+               ), WamOpts).
+
+forwardable_wam_opt(inline_bagof_setof(_)).
 
 %% verify_elixir_args(+ProjectDir, +PredKey, +Args, +Expected)
 %

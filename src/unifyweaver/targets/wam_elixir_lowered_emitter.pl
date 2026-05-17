@@ -1533,6 +1533,12 @@ instr_from_parts(["switch_on_constant"|Entries], switch_on_constant(Entries)).
 instr_from_parts(["switch_on_constant_a2"|Entries], switch_on_constant_a2(Entries)).
 instr_from_parts(["proceed"], proceed).
 instr_from_parts(["begin_aggregate", Type, ValReg, ResReg], begin_aggregate(Type, ValReg, ResReg)).
+% bagof/setof inlining (inline_bagof_setof(true)) emits a 4th token —
+% the witness/quantifier list — that the WAM compiler uses for group
+% backtracking. PR 1 ignores the witness (no grouping yet); future
+% witness-group PR can read it.
+instr_from_parts(["begin_aggregate", Type, ValReg, ResReg, _Witness],
+                 begin_aggregate(Type, ValReg, ResReg)).
 instr_from_parts(["end_aggregate", ValReg], end_aggregate(ValReg)).
 instr_from_parts(Parts, raw(Combined)) :-
     atomic_list_concat(Parts, ' ', Combined).
