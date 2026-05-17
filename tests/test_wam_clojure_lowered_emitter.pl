@@ -723,6 +723,15 @@ test(simple_builtin_atom_concat_is_direct_lowered_in_prefix) :-
         assertion(\+ has(Code, "runtime/step"))
     )).
 
+test(simple_builtin_atom_length_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_atom_length/2:\nbuiltin_call atom_length/2, 2\nproceed\n",
+        wam_clojure_lowerable(test_atom_length/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_atom_length/2, WamCode, [], Code),
+        has(Code, "runtime/apply-atom-length-solution"),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
 test(terminal_execute_ground_is_direct_lowered_as_succeeding_builtin) :-
     once((
         WamCode = "test_execute_ground/1:\nallocate\ndeallocate\nexecute ground/1\n",
