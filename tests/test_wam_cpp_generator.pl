@@ -204,6 +204,18 @@
 :- dynamic user:wam_cpp_test_dcg_loop_empty/0.
 :- dynamic user:wam_cpp_test_dcg_loop_three/0.
 :- dynamic user:wam_cpp_test_dcg_phrase3/0.
+:- dynamic user:wam_cpp_test_phrase_mq/0.
+:- dynamic user:wam_cpp_test_call_mq/0.
+:- dynamic user:wam_cpp_test_random_range/0.
+:- dynamic user:wam_cpp_test_rb_in_range/0.
+:- dynamic user:wam_cpp_test_rb_seeded_eq/0.
+:- dynamic user:wam_cpp_test_rb_low_eq_high/0.
+:- dynamic user:wam_cpp_test_rb_low_gt_high/0.
+:- dynamic user:wam_cpp_test_rm_in_list/0.
+:- dynamic user:wam_cpp_test_rm_empty/0.
+:- dynamic user:wam_cpp_test_rp_length/0.
+:- dynamic user:wam_cpp_test_rp_invariant/0.
+:- dynamic user:wam_cpp_test_rp_empty/0.
 :- dynamic user:wam_cpp_test_enum_member/0.
 
 user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
@@ -330,6 +342,43 @@ user:wam_cpp_test_dcg_loop_three  :- phrase(dcg_loop(L), [a, b, c]),
 user:wam_cpp_test_dcg_phrase3     :- phrase(dcg_greeting,
                                            [hello, world, extra], R),
                                      R = [extra].
+% Module-qualified meta-call: phrase(user:Goal, ...) and call(user:Goal, ...).
+% The dispatcher strips a leading Module: from the goal cell.
+user:wam_cpp_test_phrase_mq       :- phrase(user:dcg_greeting, [hello, world]).
+user:wam_cpp_test_call_mq         :-
+    G = user:atom_concat(a, b),
+    call(G, R),
+    R = ab.
+% Random library: random/1, random_between/3, random_member/2,
+% random_permutation/2, set_random/1. Tests use set_random(seed(N)) for
+% repeatability where reproducibility matters; others just check
+% constraints (range, membership, length, permutation invariant).
+user:wam_cpp_test_random_range    :- random(X), X >= 0.0, X < 1.0.
+user:wam_cpp_test_rb_in_range     :-
+    set_random(seed(42)),
+    random_between(1, 10, X),
+    X >= 1, X =< 10.
+user:wam_cpp_test_rb_seeded_eq    :-
+    set_random(seed(42)),
+    random_between(1, 1000000, X),
+    set_random(seed(42)),
+    random_between(1, 1000000, Y),
+    X = Y.
+user:wam_cpp_test_rb_low_eq_high  :- random_between(5, 5, X), X = 5.
+user:wam_cpp_test_rb_low_gt_high  :- \+ random_between(10, 5, _).
+user:wam_cpp_test_rm_in_list      :-
+    random_member(X, [a, b, c, d]),
+    member(X, [a, b, c, d]).
+user:wam_cpp_test_rm_empty        :- \+ random_member(_, []).
+user:wam_cpp_test_rp_length       :-
+    set_random(seed(1)),
+    random_permutation([1, 2, 3, 4, 5], P),
+    length(P, 5).
+user:wam_cpp_test_rp_invariant    :-
+    set_random(seed(1)),
+    random_permutation([a, b, c], P),
+    msort(P, [a, b, c]).
+user:wam_cpp_test_rp_empty        :- random_permutation([], []).
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
 
@@ -3121,6 +3170,49 @@ test(cpp_e2e_dcg, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_dcg_loop_empty/0',      [], true),
           run_query(BinPath, 'wam_cpp_test_dcg_loop_three/0',      [], true),
           run_query(BinPath, 'wam_cpp_test_dcg_phrase3/0',         [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_meta_call_and_random, [condition(cpp_compiler_available)]) :-
+    % Module-qualified meta-call polish (phrase(user:G, L) +
+    % call(user:G, X)) plus the random library: random/1,
+    % random_between/3, random_member/2, random_permutation/2,
+    % set_random/1. Reproducibility tests use set_random(seed(N))
+    % before twin calls and check the results match.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_mr', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_phrase_mq/0,
+                               user:wam_cpp_test_call_mq/0,
+                               user:wam_cpp_test_random_range/0,
+                               user:wam_cpp_test_rb_in_range/0,
+                               user:wam_cpp_test_rb_seeded_eq/0,
+                               user:wam_cpp_test_rb_low_eq_high/0,
+                               user:wam_cpp_test_rb_low_gt_high/0,
+                               user:wam_cpp_test_rm_in_list/0,
+                               user:wam_cpp_test_rm_empty/0,
+                               user:wam_cpp_test_rp_length/0,
+                               user:wam_cpp_test_rp_invariant/0,
+                               user:wam_cpp_test_rp_empty/0,
+                               % DCG-expanded predicate dcg_greeting/2 is
+                               % already in user from the cpp_e2e_dcg
+                               % bundle's defining clauses; we re-include
+                               % it here for this bundle's link.
+                               user:dcg_greeting/2],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_phrase_mq/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_call_mq/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_random_range/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_rb_in_range/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_rb_seeded_eq/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_rb_low_eq_high/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_rb_low_gt_high/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_rm_in_list/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_rm_empty/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_rp_length/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_rp_invariant/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_rp_empty/0',        [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
