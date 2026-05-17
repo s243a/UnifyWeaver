@@ -1048,6 +1048,24 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 
 	case "==/2": return valueEquals(vm.deref(arg1), vm.deref(arg2))
 	case "\\==/2": return !valueEquals(vm.deref(arg1), vm.deref(arg2))
+	case "@</2":
+		return compareValues(vm.deref(arg1), vm.deref(arg2)) < 0
+	case "@=</2":
+		return compareValues(vm.deref(arg1), vm.deref(arg2)) <= 0
+	case "@>/2":
+		return compareValues(vm.deref(arg1), vm.deref(arg2)) > 0
+	case "@>=/2":
+		return compareValues(vm.deref(arg1), vm.deref(arg2)) >= 0
+	case "compare/3":
+		cmp := compareValues(vm.deref(arg2), vm.deref(arg3))
+		switch {
+		case cmp < 0:
+			return vm.Unify(arg1, internAtom("<"))
+		case cmp > 0:
+			return vm.Unify(arg1, internAtom(">"))
+		default:
+			return vm.Unify(arg1, internAtom("="))
+		}
 	case "=/2": return vm.Unify(arg1, arg2)
 	case "\\=/2":
 		clone := vm.Clone()
