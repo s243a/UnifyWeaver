@@ -2859,8 +2859,31 @@ Value WamState::eval_arith(CellPtr c, bool& ok) const {
                 if (v.s == "sinh/1") return Value::Float(std::sinh(as_d1(a)));
                 if (v.s == "cosh/1") return Value::Float(std::cosh(as_d1(a)));
                 if (v.s == "tanh/1") return Value::Float(std::tanh(as_d1(a)));
+                if (v.s == "asinh/1") return Value::Float(std::asinh(as_d1(a)));
+                if (v.s == "acosh/1") return Value::Float(std::acosh(as_d1(a)));
+                if (v.s == "atanh/1") return Value::Float(std::atanh(as_d1(a)));
                 if (v.s == "log/1") return Value::Float(std::log(as_d1(a)));
                 if (v.s == "exp/1") return Value::Float(std::exp(as_d1(a)));
+                // Integer bit-count functions. lsb/msb of 0 throw a
+                // domain error per SWI (no defined bit position).
+                if (v.s == "popcount/1") {
+                    if (a.tag != Value::Tag::Integer)
+                        { ok = false; return Value{}; }
+                    std::uint64_t u = (std::uint64_t)a.i;
+                    return Value::Integer(__builtin_popcountll(u));
+                }
+                if (v.s == "lsb/1") {
+                    if (a.tag != Value::Tag::Integer || a.i == 0)
+                        { ok = false; return Value{}; }
+                    std::uint64_t u = (std::uint64_t)a.i;
+                    return Value::Integer(__builtin_ctzll(u));
+                }
+                if (v.s == "msb/1") {
+                    if (a.tag != Value::Tag::Integer || a.i == 0)
+                        { ok = false; return Value{}; }
+                    std::uint64_t u = (std::uint64_t)a.i;
+                    return Value::Integer(63 - __builtin_clzll(u));
+                }
                 if (v.s == "truncate/1")
                     return Value::Integer((std::int64_t)std::trunc(as_d1(a)));
                 if (v.s == "floor/1")
@@ -2950,6 +2973,10 @@ Value WamState::eval_arith(CellPtr c, bool& ok) const {
                 double base = as_d(a);
                 double x = as_d(b);
                 return Value::Float(std::log(x) / std::log(base));
+            }
+            // copysign(X, Y) returns |X| with the sign of Y; always Float.
+            if (v.s == "copysign/2") {
+                return Value::Float(std::copysign(as_d(a), as_d(b)));
             }
             if (v.s == "^/2") {
                 if (either_float || b.i < 0) {
@@ -3432,8 +3459,9 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
     // the string, unify with A1. number_codes/2 additionally parses
     // the reassembled string as an integer or float.
     if (op == "atom_codes/2" || op == "atom_chars/2"
+        || op == "string_codes/2" || op == "string_chars/2"
         || op == "number_codes/2") {
-        bool is_codes = (op != "atom_chars/2");   // codes vs single-char atoms
+        bool is_codes = (op != "atom_chars/2" && op != "string_chars/2");
         bool is_number = (op == "number_codes/2");
         Value a1v = deref(*get_cell("A1"));
         // Forward path: A1 bound → render to string, build list.
@@ -3988,6 +4016,25 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
             pc += 1; return true;
         }
         return false;
+    }
+
+    // ---- string_code/3 ----------------------------------------------
+    // string_code(+Index, +String, -Code) -- get the Code (integer)
+    // at 1-based Index in String. Out-of-range fails. Index 1 returns
+    // the first char''s code; SWI uses 1-based indexing here.
+    if (op == "string_code/3") {
+        Value iv = deref(*get_cell("A1"));
+        Value sv = deref(*get_cell("A2"));
+        if (iv.tag != Value::Tag::Integer) return false;
+        if (sv.tag != Value::Tag::Atom) return false;
+        if (iv.i < 1 || (std::size_t)iv.i > sv.s.size()) return false;
+        Value code = Value::Integer(
+            static_cast<std::int64_t>(
+                static_cast<unsigned char>(sv.s[iv.i - 1])));
+        CellPtr tgt = get_cell("A3");
+        if (tgt->is_unbound()) { bind_cell(tgt, code); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(code))) return false;
+        pc += 1; return true;
     }
 
     // ---- char_type/2 ------------------------------------------------

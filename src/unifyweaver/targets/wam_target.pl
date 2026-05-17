@@ -1478,6 +1478,9 @@ is_builtin_pred(plus, 3).           % bidirectional integer addition
 is_builtin_pred(delete, 3).         % remove all matching elements
 is_builtin_pred(subtract, 3).       % set difference: List1 minus List2
 is_builtin_pred(must_be, 2).        % type check with type_error throw
+is_builtin_pred(string_chars, 2).   % alias for atom_chars/2 (atoms = strings).
+is_builtin_pred(string_codes, 2).   % alias for atom_codes/2.
+is_builtin_pred(string_code, 3).    % string_code(+Index, +String, -Code), 1-based.
 is_builtin_pred(write, 1).  % I/O — useful for runtime instrumentation.
 is_builtin_pred(display, 1).
 is_builtin_pred(nl, 0).
