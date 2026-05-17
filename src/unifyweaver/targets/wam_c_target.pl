@@ -136,6 +136,7 @@ wam_c_supported_kernel(recursive_kernel(transitive_closure2, _Pred, _ConfigOps))
 wam_c_supported_kernel(recursive_kernel(transitive_distance3, _Pred, _ConfigOps)).
 wam_c_supported_kernel(recursive_kernel(transitive_parent_distance4, _Pred, _ConfigOps)).
 wam_c_supported_kernel(recursive_kernel(transitive_step_parent_distance5, _Pred, _ConfigOps)).
+wam_c_supported_kernel(recursive_kernel(weighted_shortest_path3, _Pred, _ConfigOps)).
 
 %% generate_setup_detected_kernels_c(+DetectedKernels, -CCode)
 %  Emit C startup wiring for detected kernels. This function registers only
@@ -169,6 +170,10 @@ wam_c_kernel_registration_line(Key-recursive_kernel(transitive_parent_distance4,
 wam_c_kernel_registration_line(Key-recursive_kernel(transitive_step_parent_distance5, _Pred, _ConfigOps), Line) :-
     format(atom(Line),
            '    wam_register_transitive_step_parent_distance_kernel(state, "~w");',
+           [Key]).
+wam_c_kernel_registration_line(Key-recursive_kernel(weighted_shortest_path3, _Pred, _ConfigOps), Line) :-
+    format(atom(Line),
+           '    wam_register_weighted_shortest_path_kernel(state, "~w");',
            [Key]).
 
 wam_c_kernel_max_depth(ConfigOps, MaxDepth) :-
@@ -1998,6 +2003,7 @@ void wam_free_state(WamState *state) {
     free(state->B_array);
     free(state->E_array);
     free(state->category_edges);
+    free(state->weighted_edges);
     memset(state, 0, sizeof(WamState));
 }
 
@@ -2293,6 +2299,17 @@ void wam_register_transitive_edge(WamState *state, const char *child, const char
     wam_register_category_parent(state, child, parent);
 }
 
+void wam_register_weighted_edge(WamState *state, const char *source, const char *target, int weight) {
+    if (state->weighted_edge_count >= state->weighted_edge_cap) {
+        state->weighted_edge_cap = state->weighted_edge_cap ? state->weighted_edge_cap * 2 : WAM_INITIAL_CAP;
+        state->weighted_edges = realloc(state->weighted_edges, sizeof(WeightedEdge) * state->weighted_edge_cap);
+    }
+    state->weighted_edges[state->weighted_edge_count].source = wam_intern_atom(state, source);
+    state->weighted_edges[state->weighted_edge_count].target = wam_intern_atom(state, target);
+    state->weighted_edges[state->weighted_edge_count].weight = weight;
+    state->weighted_edge_count++;
+}
+
 void wam_fact_source_init(WamFactSource *source) {
     memset(source, 0, sizeof(WamFactSource));
 }
@@ -2475,6 +2492,10 @@ void wam_register_transitive_parent_distance_kernel(WamState *state, const char 
 
 void wam_register_transitive_step_parent_distance_kernel(WamState *state, const char *pred) {
     wam_register_foreign_predicate(state, pred, 5, wam_transitive_step_parent_distance_handler);
+}
+
+void wam_register_weighted_shortest_path_kernel(WamState *state, const char *pred) {
+    wam_register_foreign_predicate(state, pred, 3, wam_weighted_shortest_path_handler);
 }
 
 static bool wam_value_as_atom(WamState *state, WamValue value, const char **out) {
@@ -2885,6 +2906,113 @@ bool wam_transitive_step_parent_distance_handler(WamState *state, const char *pr
            wam_unify(state, &state->A[2], &step_value) &&
            wam_unify(state, &state->A[3], &parent_value) &&
            wam_unify(state, &state->A[4], &distance_value);
+}
+
+static bool wam_weighted_shortest_path_dijkstra(WamState *state,
+                                                const char *start,
+                                                const char *target,
+                                                const char **target_out,
+                                                int *weight_out) {
+    const char *nodes[256];
+    int distances[256];
+    bool done[256];
+    int node_count = 0;
+    const int inf = 1073741823;
+
+    nodes[node_count] = start;
+    distances[node_count] = 0;
+    done[node_count] = false;
+    node_count++;
+
+    while (true) {
+        int best_idx = -1;
+        int best_distance = inf;
+        for (int i = 0; i < node_count; i++) {
+            if (!done[i] && distances[i] < best_distance) {
+                best_idx = i;
+                best_distance = distances[i];
+            }
+        }
+        if (best_idx < 0) break;
+
+        done[best_idx] = true;
+        const char *node = nodes[best_idx];
+        if (target && strcmp(node, target) == 0 && best_distance > 0) {
+            *target_out = node;
+            *weight_out = best_distance;
+            return true;
+        }
+
+        for (int i = 0; i < state->weighted_edge_count; i++) {
+            WeightedEdge *edge = &state->weighted_edges[i];
+            if (edge->weight < 0) continue;
+            if (strcmp(edge->source, node) != 0) continue;
+            int next_idx = -1;
+            for (int j = 0; j < node_count; j++) {
+                if (strcmp(nodes[j], edge->target) == 0) {
+                    next_idx = j;
+                    break;
+                }
+            }
+            if (next_idx < 0) {
+                if (node_count >= 256) return false;
+                next_idx = node_count;
+                nodes[next_idx] = edge->target;
+                distances[next_idx] = inf;
+                done[next_idx] = false;
+                node_count++;
+            }
+            if (best_distance <= inf - edge->weight &&
+                best_distance + edge->weight < distances[next_idx]) {
+                distances[next_idx] = best_distance + edge->weight;
+            }
+        }
+    }
+
+    if (!target) {
+        int best_idx = -1;
+        int best_distance = inf;
+        for (int i = 0; i < node_count; i++) {
+            if (strcmp(nodes[i], start) != 0 && distances[i] < best_distance) {
+                best_idx = i;
+                best_distance = distances[i];
+            }
+        }
+        if (best_idx >= 0) {
+            *target_out = nodes[best_idx];
+            *weight_out = best_distance;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool wam_weighted_shortest_path_handler(WamState *state, const char *pred, int arity) {
+    (void)pred;
+    if (arity != 3) return false;
+
+    const char *start = NULL;
+    if (!wam_value_as_atom(state, state->A[0], &start)) return false;
+
+    WamValue *target_cell = wam_deref_ptr(state, &state->A[1]);
+    const char *target = NULL;
+    if (target_cell->tag == VAL_ATOM) {
+        target = target_cell->data.atom;
+    } else if (!val_is_unbound(*target_cell)) {
+        return false;
+    }
+
+    const char *result_target = NULL;
+    int result_weight = 0;
+    if (!wam_weighted_shortest_path_dijkstra(state, start, target,
+                                             &result_target, &result_weight)) {
+        return false;
+    }
+
+    WamValue target_value = val_atom(result_target);
+    WamValue weight_value = val_int(result_weight);
+    return wam_unify(state, &state->A[1], &target_value) &&
+           wam_unify(state, &state->A[2], &weight_value);
 }
 '.
 
