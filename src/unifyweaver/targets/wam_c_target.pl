@@ -135,6 +135,7 @@ wam_c_supported_kernel(recursive_kernel(category_ancestor, _Pred, _ConfigOps)).
 wam_c_supported_kernel(recursive_kernel(transitive_closure2, _Pred, _ConfigOps)).
 wam_c_supported_kernel(recursive_kernel(transitive_distance3, _Pred, _ConfigOps)).
 wam_c_supported_kernel(recursive_kernel(transitive_parent_distance4, _Pred, _ConfigOps)).
+wam_c_supported_kernel(recursive_kernel(transitive_step_parent_distance5, _Pred, _ConfigOps)).
 
 %% generate_setup_detected_kernels_c(+DetectedKernels, -CCode)
 %  Emit C startup wiring for detected kernels. This function registers only
@@ -164,6 +165,10 @@ wam_c_kernel_registration_line(Key-recursive_kernel(transitive_distance3, _Pred,
 wam_c_kernel_registration_line(Key-recursive_kernel(transitive_parent_distance4, _Pred, _ConfigOps), Line) :-
     format(atom(Line),
            '    wam_register_transitive_parent_distance_kernel(state, "~w");',
+           [Key]).
+wam_c_kernel_registration_line(Key-recursive_kernel(transitive_step_parent_distance5, _Pred, _ConfigOps), Line) :-
+    format(atom(Line),
+           '    wam_register_transitive_step_parent_distance_kernel(state, "~w");',
            [Key]).
 
 wam_c_kernel_max_depth(ConfigOps, MaxDepth) :-
@@ -2468,6 +2473,10 @@ void wam_register_transitive_parent_distance_kernel(WamState *state, const char 
     wam_register_foreign_predicate(state, pred, 4, wam_transitive_parent_distance_handler);
 }
 
+void wam_register_transitive_step_parent_distance_kernel(WamState *state, const char *pred) {
+    wam_register_foreign_predicate(state, pred, 5, wam_transitive_step_parent_distance_handler);
+}
+
 static bool wam_value_as_atom(WamState *state, WamValue value, const char **out) {
     WamValue *cell = wam_deref_ptr(state, &value);
     if (cell->tag != VAL_ATOM) return false;
@@ -2793,6 +2802,89 @@ bool wam_transitive_parent_distance_handler(WamState *state, const char *pred, i
     return wam_unify(state, &state->A[1], &target_value) &&
            wam_unify(state, &state->A[2], &parent_value) &&
            wam_unify(state, &state->A[3], &distance_value);
+}
+
+static bool wam_transitive_step_parent_distance_bfs(WamState *state,
+                                                    const char *start,
+                                                    const char *target,
+                                                    const char **target_out,
+                                                    const char **step_out,
+                                                    const char **parent_out,
+                                                    int *distance_out) {
+    const char *queue_nodes[256];
+    const char *queue_steps[256];
+    int queue_distances[256];
+    const char *visited[256];
+    int head = 0;
+    int tail = 0;
+    int visited_len = 0;
+
+    queue_nodes[tail] = start;
+    queue_steps[tail] = start;
+    queue_distances[tail++] = 0;
+    visited[visited_len++] = start;
+
+    while (head < tail) {
+        const char *node = queue_nodes[head];
+        const char *first_step = queue_steps[head];
+        int distance = queue_distances[head++];
+        for (int i = 0; i < state->category_edge_count; i++) {
+            CategoryEdge *edge = &state->category_edges[i];
+            if (strcmp(edge->child, node) != 0) continue;
+            if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
+            int next_distance = distance + 1;
+            const char *next_step = (distance == 0) ? edge->parent : first_step;
+            if (!target || strcmp(edge->parent, target) == 0) {
+                *target_out = edge->parent;
+                *step_out = next_step;
+                *parent_out = node;
+                *distance_out = next_distance;
+                return true;
+            }
+            if (tail >= 256 || visited_len >= 256) return false;
+            visited[visited_len++] = edge->parent;
+            queue_nodes[tail] = edge->parent;
+            queue_steps[tail] = next_step;
+            queue_distances[tail++] = next_distance;
+        }
+    }
+    return false;
+}
+
+bool wam_transitive_step_parent_distance_handler(WamState *state, const char *pred, int arity) {
+    (void)pred;
+    if (arity != 5) return false;
+
+    const char *start = NULL;
+    if (!wam_value_as_atom(state, state->A[0], &start)) return false;
+
+    WamValue *target_cell = wam_deref_ptr(state, &state->A[1]);
+    const char *target = NULL;
+    if (target_cell->tag == VAL_ATOM) {
+        target = target_cell->data.atom;
+    } else if (!val_is_unbound(*target_cell)) {
+        return false;
+    }
+
+    const char *result_target = NULL;
+    const char *result_step = NULL;
+    const char *result_parent = NULL;
+    int result_distance = 0;
+    if (!wam_transitive_step_parent_distance_bfs(state, start, target,
+                                                 &result_target, &result_step,
+                                                 &result_parent,
+                                                 &result_distance)) {
+        return false;
+    }
+
+    WamValue target_value = val_atom(result_target);
+    WamValue step_value = val_atom(result_step);
+    WamValue parent_value = val_atom(result_parent);
+    WamValue distance_value = val_int(result_distance);
+    return wam_unify(state, &state->A[1], &target_value) &&
+           wam_unify(state, &state->A[2], &step_value) &&
+           wam_unify(state, &state->A[3], &parent_value) &&
+           wam_unify(state, &state->A[4], &distance_value);
 }
 '.
 

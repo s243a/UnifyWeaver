@@ -4,7 +4,7 @@ Status date: 2026-05-17
 
 Base verified locally:
 
-- `main` at `3abf6366` (`Merge pull request #2220 from s243a/feat/csharp-query-lmdb-policy-factory-smoke`)
+- `main` at `07e04153` (`Merge pull request #2225 from s243a/feat/csharp-query-effective-distance-policy-provider-benchmark`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
@@ -17,7 +17,7 @@ Base verified locally:
 
 Active branch:
 
-- `feat/wam-c-transitive-parent-distance-kernel`
+- `feat/wam-c-transitive-step-parent-distance-kernel`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -76,6 +76,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | `transitive_closure2` native kernel | Done | C shared-kernel detector accepts `transitive_closure2`, emits detected setup, registers a native arity-2 foreign handler, and covers direct plus detected-project executable smokes |
 | `transitive_distance3` native kernel | Done | C shared-kernel detector accepts `transitive_distance3`, emits detected setup, registers a native arity-3 foreign handler, and covers direct plus detected-project executable smokes |
 | `transitive_parent_distance4` native kernel | Done | C shared-kernel detector accepts `transitive_parent_distance4`, emits detected setup, registers a native arity-4 foreign handler, and covers direct plus detected-project executable smokes |
+| `transitive_step_parent_distance5` native kernel | Done | C shared-kernel detector accepts `transitive_step_parent_distance5`, emits detected setup, registers a native arity-5 foreign handler, and covers direct plus detected-project executable smokes |
 
 ## Current C Target Baseline
 
@@ -101,8 +102,8 @@ The C target is now a credible small WAM backend:
   predicates, plus same-arity alias bodies that call those native fact helpers,
   emitted as native C foreign handlers behind `call_foreign` trampolines.
 - Supports deterministic native `category_ancestor/4`, `transitive_closure2`,
-  `transitive_distance3`, and `transitive_parent_distance4` handlers over an
-  in-memory edge table.
+  `transitive_distance3`, `transitive_parent_distance4`, and
+  `transitive_step_parent_distance5` handlers over an in-memory edge table.
 - Supports loading category-parent facts from TSV through a small
   `WamFactSource` interface.
 - Supports collecting all integer hop results for native `category_ancestor/4`
@@ -147,8 +148,8 @@ missing important target features; `Missing` = no comparable C path yet.
 | Aggregates (`findall`/`bagof`/`setof`) | Missing | Present in hybrid/lowered paths | Present in interpreter/lowered paths | Add only after C has enough runtime term-copy and list construction coverage. |
 | Negation / control builtins | Partial | Broader | Broader | C likely needs explicit tests for `\+/1`, cut interactions, and if-then-else lowering. |
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
-| Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, native `transitive_closure2`, native `transitive_distance3`, and native `transitive_parent_distance4`; continue adding shared kernels one at a time. |
-| Shared kernel detector integration | Partial | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`, `transitive_closure2`, `transitive_distance3`, and `transitive_parent_distance4`; Haskell and Rust cover a broader shared-kernel registry. |
+| Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, and native transitive closure/distance/parent-distance/step-parent-distance handlers; continue adding shared kernels one at a time. |
+| Shared kernel detector integration | Partial | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`, `transitive_closure2`, `transitive_distance3`, `transitive_parent_distance4`, and `transitive_step_parent_distance5`; Haskell and Rust cover a broader shared-kernel registry. |
 | Lowered/native helper functions | Partial/Done | Done | Done | C has constant fact-only native helpers, planner metadata, interpreted-vs-lowered matrix wiring, body-call helpers, filtered-fact helpers, comparison-filter helpers, rejection metadata, repeated-variable filter hardening, empty-result rejection metadata, and projected body-call helper expansion. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
 | LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts and generated effective-distance LMDB wiring; larger artifact layout support remains. |
@@ -159,19 +160,18 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-transitive-step-parent-distance-kernel`
+### 1. `feat/wam-c-weighted-shortest-path-kernel`
 
 Goal: add the next shared recursive kernel to C from the Haskell/Rust parity
-surface, continuing from `transitive_parent_distance4` to
-`transitive_step_parent_distance5`.
+surface, continuing from unweighted BFS-style kernels to
+`weighted_shortest_path3`.
 
 Scope:
 
 - Extend the C recursive-kernel registration path beyond `category_ancestor/4`
   and the existing transitive kernels for the shared
-  `transitive_step_parent_distance5` detector.
-- Add a native C handler and executable smoke for a small binary edge
-  step-parent-distance result.
+  `weighted_shortest_path3` detector.
+- Add a native C handler and executable smoke for a small weighted edge result.
 - Keep TSV/LMDB fact loading out of scope unless the small in-memory kernel
   path exposes a need for it.
 
@@ -179,13 +179,13 @@ Status: recommended next.
 
 Reason:
 
-- `transitive_parent_distance4` is now covered through direct native
+- `transitive_step_parent_distance5` is now covered through direct native
   registration and detected-project setup.
 - `docs/design/WAM_PERF_OPTIMIZATION_LOG.md` records
-  `transitive_step_parent_distance5` alongside `transitive_parent_distance4`
-  as part of the measured wide-output BFS kernel set.
-- Haskell and Rust already cover `transitive_step_parent_distance5`; it can
-  reuse the edge traversal surface while adding a first-step output.
+  `weighted_shortest_path3/3` as the next measured native kernel after the
+  unweighted BFS family.
+- Haskell and Rust already cover `weighted_shortest_path3`; it is the next
+  shared-kernel parity move before A*.
 
 ### 2. `investigate/wam-c-accumulated-runtime-cost`
 
@@ -271,6 +271,21 @@ Evidence:
 | Direct executable smoke | `tc_parent_distance/4` succeeds for direct and recursive edges, binds unbound target/parent/distance, accepts bound parent/distance, and fails for a reversed edge. |
 | Detected-project smoke | Generated project detection lowers `tc_parent_distance/4` to a `call_foreign` trampoline and runs through `setup_detected_wam_c_kernels`. |
 
+### Completed Shared Kernel Slice: `feat/wam-c-transitive-step-parent-distance-kernel`
+
+Goal: add the final measured unweighted wide-output shared recursive kernel to
+C from the Haskell/Rust parity surface.
+
+Evidence:
+
+| Surface | Coverage |
+|---|---|
+| Kernel support predicate | `wam_c_supported_kernel/1` accepts `recursive_kernel(transitive_step_parent_distance5, ...)`. |
+| Detected setup emission | `generate_setup_detected_kernels_c/2` emits `wam_register_transitive_step_parent_distance_kernel`. |
+| Runtime handler | `wam_transitive_step_parent_distance_handler` supports bound-target reachability, first-solution unbound target mode, first-step binding, parent binding, and integer distance binding over registered in-memory edges. |
+| Direct executable smoke | `tc_step_parent_distance/5` succeeds for direct and recursive edges, binds unbound target/step/parent/distance, accepts bound step/parent/distance, and fails for a reversed edge. |
+| Detected-project smoke | Generated project detection lowers `tc_step_parent_distance/5` to a `call_foreign` trampoline and runs through `setup_detected_wam_c_kernels`. |
+
 ## Completed Atom Concat Builtin
 
 The merged `feat/wam-c-atom-concat-builtin` branch added deterministic
@@ -348,9 +363,9 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Proceed with `feat/wam-c-transitive-step-parent-distance-kernel`.
+Proceed with `feat/wam-c-weighted-shortest-path-kernel`.
 
-Keep it narrow: add `transitive_step_parent_distance5` over the same in-memory
+Keep it narrow: add `weighted_shortest_path3` over a small in-memory weighted
 edge surface and prove direct plus detected-project executable smokes. Treat
 broader fact storage, LMDB loading, and runtime profiling as follow-up branches
 unless this slice exposes a direct blocker.
