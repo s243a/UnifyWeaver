@@ -1070,6 +1070,67 @@
           (backtrack state)))
       (backtrack state))))
 
+(declare apply-first-foreign-solution)
+
+(defn sub-atom-int-value [state value]
+  (cond
+    (integer? value) value
+    (atom-term? value) (parse-number-text (atom-text state value))
+    (string? value) (parse-number-text value)
+    :else nil))
+
+(defn sub-atom-solution-results [state text before length after sub]
+  (let [n (count text)
+        before-spec (if-let [n* (sub-atom-int-value state before)]
+                      (when (and (integer? n*) (not (neg? n*)) (<= n* n)) n*)
+                      (when (or (= before ::unbound) (logic-var? before)) ::var))
+        length-spec (if-let [n* (sub-atom-int-value state length)]
+                      (when (and (integer? n*) (not (neg? n*)) (<= n* n)) n*)
+                      (when (or (= length ::unbound) (logic-var? length)) ::var))
+        after-spec (if-let [n* (sub-atom-int-value state after)]
+                     (when (and (integer? n*) (not (neg? n*)) (<= n* n)) n*)
+                     (when (or (= after ::unbound) (logic-var? after)) ::var))
+        sub-text (cond
+                   (atom-term? sub) (atom-text state sub)
+                   (or (= sub ::unbound) (logic-var? sub)) ::var
+                   :else nil)]
+    (when (and (some? before-spec)
+               (some? length-spec)
+               (some? after-spec)
+               (some? sub-text))
+      (let [before-range (if (= before-spec ::var) (range (inc n)) [before-spec])]
+        (vec
+         (for [b before-range
+               l (if (= length-spec ::var) (range (inc (- n b))) [length-spec])
+               :when (<= (+ b l) n)
+               :let [a (- n b l)
+                     piece (subs text b (+ b l))
+                     bindings (cond-> {}
+                                (= before-spec ::var) (assoc 2 b)
+                                (= length-spec ::var) (assoc 3 l)
+                                (= after-spec ::var) (assoc 4 a)
+                                (= sub-text ::var) (assoc 5 piece))]
+               :when (and (or (= after-spec ::var) (= after-spec a))
+                          (or (= sub-text ::var) (= sub-text piece)))]
+           {:bindings bindings}))))))
+
+(defn apply-sub-atom-solution [base-state resume-pc]
+  (let [source (deref-value (:bindings base-state)
+                            (or (reg-get-raw base-state "A1") ::unbound))
+        before (deref-value (:bindings base-state)
+                            (or (reg-get-raw base-state "A2") ::unbound))
+        length (deref-value (:bindings base-state)
+                            (or (reg-get-raw base-state "A3") ::unbound))
+        after (deref-value (:bindings base-state)
+                           (or (reg-get-raw base-state "A4") ::unbound))
+        sub (deref-value (:bindings base-state)
+                         (or (reg-get-raw base-state "A5") ::unbound))
+        text (atom-text base-state source)]
+    (if-let [results (and (some? text)
+                          (sub-atom-solution-results base-state text before length after sub))]
+      (apply-first-foreign-solution base-state resume-pc results)
+      (backtrack base-state))))
+
 (defn ground-term? [state value]
   (let [bindings (:bindings state)]
     (letfn [(ground* [term seen]
@@ -1901,6 +1962,9 @@
 
           "string_length/2"
           (apply-atom-length-solution state)
+
+          "sub_atom/5"
+          (apply-sub-atom-solution state (inc (:pc state)))
 
           "!/0"
           (-> state

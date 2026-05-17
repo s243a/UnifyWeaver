@@ -158,6 +158,13 @@
 :- dynamic user:wam_atom_length_guard/2.
 :- dynamic user:wam_atom_length_unbound/1.
 :- dynamic user:wam_string_length_guard/2.
+:- dynamic user:wam_sub_atom_extract/0.
+:- dynamic user:wam_sub_atom_prefix/0.
+:- dynamic user:wam_sub_atom_suffix/0.
+:- dynamic user:wam_sub_atom_backtrack_later_before/0.
+:- dynamic user:wam_sub_atom_length_bound_later_before/0.
+:- dynamic user:wam_sub_atom_no_match/0.
+:- dynamic user:wam_sub_atom_unbound_source/1.
 :- dynamic user:wam_arith_eq_42/1.
 :- dynamic user:wam_arith_eq_float/1.
 :- dynamic user:wam_arith_neq_42/1.
@@ -337,6 +344,13 @@ user:wam_string_concat_guard(A, B, C) :- string_concat(A, B, C).
 user:wam_atom_length_guard(A, N) :- atom_length(A, N).
 user:wam_atom_length_unbound(N) :- user:wam_unbound_arg(A), atom_length(A, N).
 user:wam_string_length_guard(A, N) :- string_length(A, N).
+user:wam_sub_atom_extract :- sub_atom(hello, 1, 3, A, S), A =:= 1, S = ell.
+user:wam_sub_atom_prefix :- sub_atom(hello, 0, 3, _, hel).
+user:wam_sub_atom_suffix :- sub_atom(hello, _, 3, 0, llo).
+user:wam_sub_atom_backtrack_later_before :- sub_atom(abcabc, B, _, _, b), B =:= 4.
+user:wam_sub_atom_length_bound_later_before :- sub_atom(abcabc, B, 1, _, b), B =:= 4.
+user:wam_sub_atom_no_match :- sub_atom(abc, _, _, _, xyz).
+user:wam_sub_atom_unbound_source(_) :- user:wam_unbound_arg(A), sub_atom(A, 0, 1, _, _).
 user:wam_arith_eq_42(X) :- X =:= 42.
 user:wam_arith_eq_float(X) :- X =:= 3.5.
 user:wam_arith_neq_42(X) :- X =\= 42.
@@ -521,6 +535,13 @@ run_smoke :-
           user:wam_atom_length_guard/2,
           user:wam_atom_length_unbound/1,
           user:wam_string_length_guard/2,
+          user:wam_sub_atom_extract/0,
+          user:wam_sub_atom_prefix/0,
+          user:wam_sub_atom_suffix/0,
+          user:wam_sub_atom_backtrack_later_before/0,
+          user:wam_sub_atom_length_bound_later_before/0,
+          user:wam_sub_atom_no_match/0,
+          user:wam_sub_atom_unbound_source/1,
           user:wam_arith_eq_42/1,
           user:wam_arith_eq_float/1,
           user:wam_arith_neq_42/1,
@@ -862,6 +883,13 @@ smoke_cases([
     case('wam_atom_length_guard/2', args(foo, 2), "false"),
     case('wam_atom_length_unbound/1', 0, "false"),
     case('wam_string_length_guard/2', args(foo, 3), "true"),
+    case('wam_sub_atom_extract/0', no_args, "true"),
+    case('wam_sub_atom_prefix/0', no_args, "true"),
+    case('wam_sub_atom_suffix/0', no_args, "true"),
+    case('wam_sub_atom_backtrack_later_before/0', no_args, "true"),
+    case('wam_sub_atom_length_bound_later_before/0', no_args, "true"),
+    case('wam_sub_atom_no_match/0', no_args, "false"),
+    case('wam_sub_atom_unbound_source/1', a, "false"),
     case('wam_arith_eq_42/1', 42, "true"),
     case('wam_arith_eq_42/1', 3.5, "false"),
     case('wam_arith_eq_float/1', 3.5, "true"),
@@ -1201,10 +1229,12 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-number-chars-guard-2"),
     has(CoreCode, "defn lowered-wam-atom-concat-guard-3"),
     has(CoreCode, "defn lowered-wam-atom-length-guard-2"),
+    has(CoreCode, "defn lowered-wam-sub-atom-extract-0"),
     has(CoreCode, "runtime/ground-term?"),
     has(CoreCode, "runtime/apply-text-conversion-solution"),
     has(CoreCode, "runtime/apply-atom-concat-solution"),
-    has(CoreCode, "runtime/apply-atom-length-solution").
+    has(CoreCode, "runtime/apply-atom-length-solution"),
+    has(CoreCode, "runtime/apply-sub-atom-solution").
 
 assert_lowered_arithmetic_comparison_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
