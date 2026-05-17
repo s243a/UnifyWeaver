@@ -1346,6 +1346,63 @@ static long ArtifactBytesForStorageKind(
     };
 }
 
+static void BenchmarkPolicyConfiguredProvider(
+    string scale,
+    string relation,
+    string modeSuffix,
+    RelationArtifactAccessShape accessShape,
+    PredicateId predicate,
+    IReadOnlyList<object> lookupKeys,
+    IReadOnlyList<object> lookupKeysColumn1,
+    int lookupRepetitions,
+    string binaryManifest,
+    string delimitedManifest,
+    string lmdbManifest,
+    string mmapManifest,
+    string binaryDir,
+    string delimitedDir,
+    string lmdbDir,
+    string mmapDir,
+    int rowCount,
+    int distinctCategories)
+{
+    var policyStorageKind = RelationArtifactAccessPolicy.ResolveEffectiveDistanceArtifactStorageKind(
+        relation,
+        rowCount,
+        accessShape);
+    BenchmarkProvider(
+        scale,
+        relation,
+        $"policy-configured-{modeSuffix}",
+        () =>
+        {
+            var provider = new ConfiguredDelimitedRelationProvider(RelationSourceMode.ArtifactPrebuilt);
+            if (!provider.RegisterEffectiveDistancePrebuiltArtifacts(
+                predicate,
+                relation,
+                rowCount,
+                accessShape,
+                new[] { binaryManifest, delimitedManifest, lmdbManifest, mmapManifest },
+                new IRelationArtifactProviderFactory[]
+                {
+                    new LmdbRelationArtifactProviderFactory(),
+                    new DefaultRelationArtifactProviderFactory(),
+                }))
+            {
+                throw new InvalidOperationException($"policy-configured-{modeSuffix} provider could not open any prebuilt artifact");
+            }
+
+            return provider.Provider;
+        },
+        predicate,
+        lookupKeys,
+        lookupKeysColumn1,
+        lookupRepetitions,
+        ArtifactBytesForStorageKind(policyStorageKind, binaryDir, delimitedDir, lmdbDir, lmdbManifest, mmapDir),
+        rowCount,
+        distinctCategories);
+}
+
 var scale = ReadArg(args, "--scale", "dev");
 var scaleDir = ReadArg(args, "--scale-dir", "");
 var relation = ReadArg(args, "--relation", "category_parent");
@@ -1527,39 +1584,99 @@ BenchmarkProvider(
     DirectorySize(mmapDir),
     rows.Count,
     distinctCategories);
-var policyStorageKind = RelationArtifactAccessPolicy.ResolveEffectiveDistanceArtifactStorageKind(
-    relation,
-    rows.Count,
-    RelationArtifactAccessShape.LookupColumn0);
-BenchmarkProvider(
+BenchmarkPolicyConfiguredProvider(
     scale,
     relation,
-    "policy-configured",
-    () =>
-    {
-        var provider = new ConfiguredDelimitedRelationProvider(RelationSourceMode.ArtifactPrebuilt);
-        if (!provider.RegisterEffectiveDistancePrebuiltArtifacts(
-            predicate,
-            relation,
-            rows.Count,
-            RelationArtifactAccessShape.LookupColumn0,
-            new[] { binaryManifest, delimitedManifest, lmdbManifest, mmapManifest },
-            new IRelationArtifactProviderFactory[]
-            {
-                new LmdbRelationArtifactProviderFactory(),
-                new DefaultRelationArtifactProviderFactory(),
-            }))
-        {
-            throw new InvalidOperationException("policy-configured provider could not open any prebuilt artifact");
-        }
-
-        return provider.Provider;
-    },
+    "lookup-c0",
+    RelationArtifactAccessShape.LookupColumn0,
     predicate,
     lookupKeys,
     lookupKeysColumn1,
     lookupRepetitions,
-    ArtifactBytesForStorageKind(policyStorageKind, binaryDir, delimitedDir, lmdbDir, lmdbManifest, mmapDir),
+    binaryManifest,
+    delimitedManifest,
+    lmdbManifest,
+    mmapManifest,
+    binaryDir,
+    delimitedDir,
+    lmdbDir,
+    mmapDir,
+    rows.Count,
+    distinctCategories);
+BenchmarkPolicyConfiguredProvider(
+    scale,
+    relation,
+    "lookup-c1",
+    RelationArtifactAccessShape.LookupColumn1,
+    predicate,
+    lookupKeys,
+    lookupKeysColumn1,
+    lookupRepetitions,
+    binaryManifest,
+    delimitedManifest,
+    lmdbManifest,
+    mmapManifest,
+    binaryDir,
+    delimitedDir,
+    lmdbDir,
+    mmapDir,
+    rows.Count,
+    distinctCategories);
+BenchmarkPolicyConfiguredProvider(
+    scale,
+    relation,
+    "bucket-c0",
+    RelationArtifactAccessShape.BucketColumn0,
+    predicate,
+    lookupKeys,
+    lookupKeysColumn1,
+    lookupRepetitions,
+    binaryManifest,
+    delimitedManifest,
+    lmdbManifest,
+    mmapManifest,
+    binaryDir,
+    delimitedDir,
+    lmdbDir,
+    mmapDir,
+    rows.Count,
+    distinctCategories);
+BenchmarkPolicyConfiguredProvider(
+    scale,
+    relation,
+    "bucket-c1",
+    RelationArtifactAccessShape.BucketColumn1,
+    predicate,
+    lookupKeys,
+    lookupKeysColumn1,
+    lookupRepetitions,
+    binaryManifest,
+    delimitedManifest,
+    lmdbManifest,
+    mmapManifest,
+    binaryDir,
+    delimitedDir,
+    lmdbDir,
+    mmapDir,
+    rows.Count,
+    distinctCategories);
+BenchmarkPolicyConfiguredProvider(
+    scale,
+    relation,
+    "scan",
+    RelationArtifactAccessShape.Scan,
+    predicate,
+    lookupKeys,
+    lookupKeysColumn1,
+    lookupRepetitions,
+    binaryManifest,
+    delimitedManifest,
+    lmdbManifest,
+    mmapManifest,
+    binaryDir,
+    delimitedDir,
+    lmdbDir,
+    mmapDir,
     rows.Count,
     distinctCategories);
 """
