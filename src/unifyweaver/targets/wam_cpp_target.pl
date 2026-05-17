@@ -1862,6 +1862,7 @@ compile_wam_runtime_header_to_cpp(_Options,
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace wam_cpp {
@@ -4507,6 +4508,151 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         }
         std::string functor = items[0].s + "/" + std::to_string(items.size() - 1);
         bind_cell(t, Value::Compound(functor, std::move(args)));
+        pc += 1; return true;
+    }
+
+    // ---- term_variables/2 ------------------------------------------
+    // Walk +Term and collect a list of the unique unbound cells in
+    // left-to-right order of first occurrence. Each shared variable
+    // appears once. Identity is by CellPtr (shared_ptr address).
+    if (op == "term_variables/2") {
+        std::vector<CellPtr> vars;
+        std::unordered_set<Value*> seen;
+        std::function<void(CellPtr)> walk = [&](CellPtr c) {
+            if (!c) return;
+            if (c->is_unbound()) {
+                if (seen.insert(c.get()).second) vars.push_back(c);
+                return;
+            }
+            if (c->tag == Value::Tag::Compound) {
+                for (auto& a : c->args) walk(a);
+            }
+        };
+        walk(get_cell("A1"));
+        CellPtr list = std::make_shared<Value>(Value::Atom("[]"));
+        for (auto it = vars.rbegin(); it != vars.rend(); ++it) {
+            std::vector<CellPtr> ca;
+            ca.push_back(*it);
+            ca.push_back(list);
+            list = std::make_shared<Value>(
+                Value::Compound("[|]/2", std::move(ca)));
+        }
+        if (!unify_cells(get_cell("A2"), list)) return false;
+        pc += 1; return true;
+    }
+
+    // ---- numbervars/3 ----------------------------------------------
+    // numbervars(+Term, +Start, -End). For each free variable in Term
+    // (left-to-right first occurrence), bind it to ''$VAR''(N) where N
+    // starts at Start and increments. End is one past the last N.
+    if (op == "numbervars/3") {
+        Value sv = *get_cell("A2");
+        if (sv.tag != Value::Tag::Integer) return false;
+        std::int64_t n = sv.i;
+        std::unordered_set<Value*> seen;
+        std::function<void(CellPtr)> walk = [&](CellPtr c) {
+            if (!c) return;
+            if (c->is_unbound()) {
+                if (seen.insert(c.get()).second) {
+                    std::vector<CellPtr> ca;
+                    ca.push_back(std::make_shared<Value>(Value::Integer(n++)));
+                    bind_cell(c, Value::Compound("$VAR/1", std::move(ca)));
+                }
+                return;
+            }
+            if (c->tag == Value::Tag::Compound) {
+                for (auto& a : c->args) walk(a);
+            }
+        };
+        walk(get_cell("A1"));
+        Value end_v = Value::Integer(n);
+        CellPtr tgt = get_cell("A3");
+        if (tgt->is_unbound()) { bind_cell(tgt, end_v); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Value>(end_v))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- =@=/2 and \\=@=/2 (variant equivalence) -------------------
+    // Two terms are variant if they''re structurally identical
+    // modulo a bijective variable renaming. Walk both in parallel
+    // maintaining two maps (A->B and B->A) so each unbound cell on
+    // one side maps to exactly one on the other.
+    if (op == "=@=/2" || op == "\\\\=@=/2") {
+        std::unordered_map<Value*, Value*> ab, ba;
+        std::function<bool(CellPtr,CellPtr)> variant = [&](CellPtr a, CellPtr b) -> bool {
+            if (!a || !b) return false;
+            bool au = a->is_unbound(), bu = b->is_unbound();
+            if (au && bu) {
+                Value* ap = a.get(); Value* bp = b.get();
+                auto it1 = ab.find(ap);
+                auto it2 = ba.find(bp);
+                if (it1 == ab.end() && it2 == ba.end()) {
+                    ab[ap] = bp; ba[bp] = ap; return true;
+                }
+                if (it1 != ab.end() && it2 != ba.end()
+                    && it1->second == bp && it2->second == ap) return true;
+                return false;
+            }
+            if (au != bu) return false;
+            if (a->tag != b->tag) return false;
+            switch (a->tag) {
+                case Value::Tag::Atom:    return a->s == b->s;
+                case Value::Tag::Integer: return a->i == b->i;
+                case Value::Tag::Float:   return a->f == b->f;
+                case Value::Tag::Compound:
+                    if (a->s != b->s || a->args.size() != b->args.size())
+                        return false;
+                    for (std::size_t k = 0; k < a->args.size(); ++k)
+                        if (!variant(a->args[k], b->args[k])) return false;
+                    return true;
+                default: return false;
+            }
+        };
+        bool eq = variant(get_cell("A1"), get_cell("A2"));
+        bool want = (op == "=@=/2");
+        if (eq != want) return false;
+        pc += 1; return true;
+    }
+
+    // ---- unifiable/3 -----------------------------------------------
+    // unifiable(?Term1, ?Term2, -Bindings). Succeeds iff Term1 and
+    // Term2 unify, and unifies A3 with the resulting bindings as a
+    // list of ''=''(Var, Value) pairs. Does NOT leave the actual
+    // bindings in place -- we undo via the trail after recording.
+    if (op == "unifiable/3") {
+        std::size_t mark = trail.size();
+        if (!unify_cells(get_cell("A1"), get_cell("A2"))) {
+            // unify_cells may have pushed partial bindings before failing.
+            while (trail.size() > mark) {
+                *trail.back().cell = trail.back().prev;
+                trail.pop_back();
+            }
+            return false;
+        }
+        // Collect bindings list while bindings are still in effect.
+        std::vector<CellPtr> pairs;
+        for (std::size_t k = mark; k < trail.size(); ++k) {
+            std::vector<CellPtr> ca;
+            ca.push_back(trail[k].cell); // the variable
+            // Snapshot the bound value (post-binding) into a fresh cell.
+            ca.push_back(std::make_shared<Value>(*trail[k].cell));
+            pairs.push_back(std::make_shared<Value>(
+                Value::Compound("=/2", std::move(ca))));
+        }
+        // Undo so the original variables become unbound again.
+        while (trail.size() > mark) {
+            *trail.back().cell = trail.back().prev;
+            trail.pop_back();
+        }
+        CellPtr list = std::make_shared<Value>(Value::Atom("[]"));
+        for (auto it = pairs.rbegin(); it != pairs.rend(); ++it) {
+            std::vector<CellPtr> ca;
+            ca.push_back(*it);
+            ca.push_back(list);
+            list = std::make_shared<Value>(
+                Value::Compound("[|]/2", std::move(ca)));
+        }
+        if (!unify_cells(get_cell("A3"), list)) return false;
         pc += 1; return true;
     }
 
