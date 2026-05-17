@@ -156,6 +156,26 @@
 :- dynamic user:wam_cpp_test_uni_fail/0.
 :- dynamic user:wam_cpp_test_uni_two/0.
 :- dynamic user:wam_cpp_test_uni_ground/0.
+:- dynamic user:wam_cpp_test_nth1_third/0.
+:- dynamic user:wam_cpp_test_nth1_zero/0.
+:- dynamic user:wam_cpp_test_nth1_outof/0.
+:- dynamic user:wam_cpp_test_plus_xy/0.
+:- dynamic user:wam_cpp_test_plus_xz/0.
+:- dynamic user:wam_cpp_test_plus_yz/0.
+:- dynamic user:wam_cpp_test_plus_check_no/0.
+:- dynamic user:wam_cpp_test_del_one/0.
+:- dynamic user:wam_cpp_test_del_none/0.
+:- dynamic user:wam_cpp_test_del_all/0.
+:- dynamic user:wam_cpp_test_sub_basic/0.
+:- dynamic user:wam_cpp_test_sub_empty/0.
+:- dynamic user:wam_cpp_test_sub_all/0.
+:- dynamic user:wam_cpp_test_mb_atom_ok/0.
+:- dynamic user:wam_cpp_test_mb_int_ok/0.
+:- dynamic user:wam_cpp_test_mb_ground_ok/0.
+:- dynamic user:wam_cpp_test_mb_callable_ok/0.
+:- dynamic user:wam_cpp_test_mb_atom_throw/0.
+:- dynamic user:wam_cpp_test_mb_int_throw/0.
+:- dynamic user:wam_cpp_test_mb_ground_throw/0.
 :- dynamic user:wam_cpp_test_enum_member/0.
 
 user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
@@ -204,6 +224,38 @@ user:wam_cpp_test_uni_two      :-
     B = [X=1, Y=2],
     var(X), var(Y).
 user:wam_cpp_test_uni_ground   :- unifiable(hello, hello, []).
+% nth1/3 (1-indexed list access), plus/3 (bidirectional integer add),
+% delete/3 (remove all == matches), subtract/3 (set difference),
+% must_be/2 (type check that throws).
+user:wam_cpp_test_nth1_third   :- nth1(3, [a, b, c], X), X = c.
+user:wam_cpp_test_nth1_zero    :- \+ nth1(0, [a, b, c], _).
+user:wam_cpp_test_nth1_outof   :- \+ nth1(5, [a, b, c], _).
+user:wam_cpp_test_plus_xy      :- plus(2, 3, Z), Z = 5.
+user:wam_cpp_test_plus_xz      :- plus(2, Y, 5), Y = 3.
+user:wam_cpp_test_plus_yz      :- plus(X, 3, 5), X = 2.
+user:wam_cpp_test_plus_check_no :- \+ plus(2, 3, 6).
+user:wam_cpp_test_del_one      :- delete([a, b, c, b], b, R), R = [a, c].
+user:wam_cpp_test_del_none     :- delete([a, b, c], z, R), R = [a, b, c].
+user:wam_cpp_test_del_all      :- delete([a, a, a], a, R), R = [].
+user:wam_cpp_test_sub_basic    :- subtract([1, 2, 3, 4], [2, 4], R), R = [1, 3].
+user:wam_cpp_test_sub_empty    :- subtract([], [a, b], R), R = [].
+user:wam_cpp_test_sub_all      :- subtract([1, 2, 3], [1, 2, 3], R), R = [].
+user:wam_cpp_test_mb_atom_ok   :- must_be(atom, hello).
+user:wam_cpp_test_mb_int_ok    :- must_be(integer, 42).
+user:wam_cpp_test_mb_ground_ok :- must_be(ground, foo(1, 2)).
+user:wam_cpp_test_mb_callable_ok :- must_be(callable, foo(1)).
+user:wam_cpp_test_mb_atom_throw :-
+    catch(must_be(atom, 5),
+          error(type_error(atom, 5), _),
+          true).
+user:wam_cpp_test_mb_int_throw :-
+    catch(must_be(integer, hello),
+          error(type_error(integer, hello), _),
+          true).
+user:wam_cpp_test_mb_ground_throw :-
+    catch(must_be(ground, foo(_, 2)),
+          error(instantiation_error, _),
+          true).
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
 
@@ -2851,6 +2903,58 @@ test(cpp_e2e_term_variables, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_uni_fail/0',      [], true),
           run_query(BinPath, 'wam_cpp_test_uni_two/0',       [], true),
           run_query(BinPath, 'wam_cpp_test_uni_ground/0',    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_list_ops_and_guards, [condition(cpp_compiler_available)]) :-
+    % nth1/3 (preloaded bytecode), plus/3 (bidirectional integer add),
+    % delete/3 + subtract/3 (set-like ops using ==), must_be/2 (type
+    % check with ISO error throws).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lg', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_nth1_third/0,
+                               user:wam_cpp_test_nth1_zero/0,
+                               user:wam_cpp_test_nth1_outof/0,
+                               user:wam_cpp_test_plus_xy/0,
+                               user:wam_cpp_test_plus_xz/0,
+                               user:wam_cpp_test_plus_yz/0,
+                               user:wam_cpp_test_plus_check_no/0,
+                               user:wam_cpp_test_del_one/0,
+                               user:wam_cpp_test_del_none/0,
+                               user:wam_cpp_test_del_all/0,
+                               user:wam_cpp_test_sub_basic/0,
+                               user:wam_cpp_test_sub_empty/0,
+                               user:wam_cpp_test_sub_all/0,
+                               user:wam_cpp_test_mb_atom_ok/0,
+                               user:wam_cpp_test_mb_int_ok/0,
+                               user:wam_cpp_test_mb_ground_ok/0,
+                               user:wam_cpp_test_mb_callable_ok/0,
+                               user:wam_cpp_test_mb_atom_throw/0,
+                               user:wam_cpp_test_mb_int_throw/0,
+                               user:wam_cpp_test_mb_ground_throw/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_nth1_third/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_nth1_zero/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_nth1_outof/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_plus_xy/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_plus_xz/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_plus_yz/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_plus_check_no/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_del_one/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_del_none/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_del_all/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_sub_basic/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_sub_empty/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_sub_all/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_mb_atom_ok/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_mb_int_ok/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_mb_ground_ok/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_mb_callable_ok/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_mb_atom_throw/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_mb_int_throw/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_mb_ground_throw/0',[], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
