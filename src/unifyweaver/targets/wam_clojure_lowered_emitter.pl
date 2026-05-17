@@ -468,6 +468,14 @@ clojure_direct_builtin("number_chars/2", "2").
 clojure_direct_builtin("number_chars/2", 2).
 clojure_direct_builtin('number_chars/2', "2").
 clojure_direct_builtin('number_chars/2', 2).
+clojure_direct_builtin("atom_concat/3", "3").
+clojure_direct_builtin("atom_concat/3", 3).
+clojure_direct_builtin('atom_concat/3', "3").
+clojure_direct_builtin('atom_concat/3', 3).
+clojure_direct_builtin("string_concat/3", "3").
+clojure_direct_builtin("string_concat/3", 3).
+clojure_direct_builtin('string_concat/3', "3").
+clojure_direct_builtin('string_concat/3', 3).
 clojure_direct_builtin("!/0", "0").
 clojure_direct_builtin("!/0", 0).
 clojure_direct_builtin('!/0', "0").
@@ -808,6 +816,13 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     ),
     !,
     format(atom(Expr), '(runtime/apply-text-conversion-solution ~w "~w")', [S, Op]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (   Op == "atom_concat/3" ; Op == 'atom_concat/3'
+    ;   Op == "string_concat/3" ; Op == 'string_concat/3'
+    ),
+    !,
+    format(atom(Expr), '(runtime/apply-atom-concat-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     clojure_unary_guard_test(Op, TestExpr),
