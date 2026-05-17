@@ -1057,6 +1057,19 @@
           (backtrack state)))
       (backtrack state))))
 
+(defn apply-atom-length-solution [state]
+  (let [value (deref-value (:bindings state)
+                           (or (reg-get-raw state "A1") ::unbound))
+        out (deref-value (:bindings state)
+                         (or (reg-get-raw state "A2") ::unbound))
+        text (atom-text state value)]
+    (if (some? text)
+      (let [[ok next-state] (unify-values state out (count text))]
+        (if ok
+          (advance next-state)
+          (backtrack state)))
+      (backtrack state))))
+
 (defn ground-term? [state value]
   (let [bindings (:bindings state)]
     (letfn [(ground* [term seen]
@@ -1882,6 +1895,12 @@
 
           "string_concat/3"
           (apply-atom-concat-solution state)
+
+          "atom_length/2"
+          (apply-atom-length-solution state)
+
+          "string_length/2"
+          (apply-atom-length-solution state)
 
           "!/0"
           (-> state

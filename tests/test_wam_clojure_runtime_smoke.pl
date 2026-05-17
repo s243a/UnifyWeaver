@@ -155,6 +155,9 @@
 :- dynamic user:wam_atom_concat_new_atom/0.
 :- dynamic user:wam_atom_concat_unbound_left/1.
 :- dynamic user:wam_string_concat_guard/3.
+:- dynamic user:wam_atom_length_guard/2.
+:- dynamic user:wam_atom_length_unbound/1.
+:- dynamic user:wam_string_length_guard/2.
 :- dynamic user:wam_arith_eq_42/1.
 :- dynamic user:wam_arith_eq_float/1.
 :- dynamic user:wam_arith_neq_42/1.
@@ -331,6 +334,9 @@ user:wam_atom_concat_guard(A, B, C) :- atom_concat(A, B, C).
 user:wam_atom_concat_new_atom :- atom_concat(fo, o, X), X = foo.
 user:wam_atom_concat_unbound_left(C) :- user:wam_unbound_arg(A), atom_concat(A, o, C).
 user:wam_string_concat_guard(A, B, C) :- string_concat(A, B, C).
+user:wam_atom_length_guard(A, N) :- atom_length(A, N).
+user:wam_atom_length_unbound(N) :- user:wam_unbound_arg(A), atom_length(A, N).
+user:wam_string_length_guard(A, N) :- string_length(A, N).
 user:wam_arith_eq_42(X) :- X =:= 42.
 user:wam_arith_eq_float(X) :- X =:= 3.5.
 user:wam_arith_neq_42(X) :- X =\= 42.
@@ -512,6 +518,9 @@ run_smoke :-
           user:wam_atom_concat_new_atom/0,
           user:wam_atom_concat_unbound_left/1,
           user:wam_string_concat_guard/3,
+          user:wam_atom_length_guard/2,
+          user:wam_atom_length_unbound/1,
+          user:wam_string_length_guard/2,
           user:wam_arith_eq_42/1,
           user:wam_arith_eq_float/1,
           user:wam_arith_neq_42/1,
@@ -849,6 +858,10 @@ smoke_cases([
     case('wam_atom_concat_new_atom/0', no_args, "true"),
     case('wam_atom_concat_unbound_left/1', foo, "false"),
     case('wam_string_concat_guard/3', args(fo, o, foo), "true"),
+    case('wam_atom_length_guard/2', args(foo, 3), "true"),
+    case('wam_atom_length_guard/2', args(foo, 2), "false"),
+    case('wam_atom_length_unbound/1', 0, "false"),
+    case('wam_string_length_guard/2', args(foo, 3), "true"),
     case('wam_arith_eq_42/1', 42, "true"),
     case('wam_arith_eq_42/1', 3.5, "false"),
     case('wam_arith_eq_float/1', 3.5, "true"),
@@ -1187,9 +1200,11 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-number-codes-guard-2"),
     has(CoreCode, "defn lowered-wam-number-chars-guard-2"),
     has(CoreCode, "defn lowered-wam-atom-concat-guard-3"),
+    has(CoreCode, "defn lowered-wam-atom-length-guard-2"),
     has(CoreCode, "runtime/ground-term?"),
     has(CoreCode, "runtime/apply-text-conversion-solution"),
-    has(CoreCode, "runtime/apply-atom-concat-solution").
+    has(CoreCode, "runtime/apply-atom-concat-solution"),
+    has(CoreCode, "runtime/apply-atom-length-solution").
 
 assert_lowered_arithmetic_comparison_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
