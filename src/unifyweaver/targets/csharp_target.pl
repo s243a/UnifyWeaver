@@ -3652,9 +3652,7 @@ build_provider_method(ProviderSection, Method) :-
                 throw new ArgumentException($"Unknown UNIFYWEAVER_RELATION_SOURCE_MODE: {Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_SOURCE_MODE")}");
             }
 
-            var sourceMode = configuredSourceMode == RelationSourceMode.Auto
-                ? RelationSourceMode.Preload
-                : configuredSourceMode;
+            var sourceMode = RelationSourceModePolicy.ResolveGraphBenchmarkMode(configuredSourceMode, "generated-query");
             var configuredProvider = new ConfiguredDelimitedRelationProvider(
                 sourceMode,
                 Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_ARTIFACT_DIR"));
