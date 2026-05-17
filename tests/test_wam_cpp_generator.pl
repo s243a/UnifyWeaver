@@ -176,6 +176,26 @@
 :- dynamic user:wam_cpp_test_mb_atom_throw/0.
 :- dynamic user:wam_cpp_test_mb_int_throw/0.
 :- dynamic user:wam_cpp_test_mb_ground_throw/0.
+:- dynamic user:wam_cpp_test_string_chars_fwd/0.
+:- dynamic user:wam_cpp_test_string_chars_rev/0.
+:- dynamic user:wam_cpp_test_string_codes_fwd/0.
+:- dynamic user:wam_cpp_test_string_code_first/0.
+:- dynamic user:wam_cpp_test_string_code_last/0.
+:- dynamic user:wam_cpp_test_string_code_oob/0.
+:- dynamic user:wam_cpp_test_asinh_zero/0.
+:- dynamic user:wam_cpp_test_acosh_one/0.
+:- dynamic user:wam_cpp_test_atanh_zero/0.
+:- dynamic user:wam_cpp_test_asinh_roundtrip/0.
+:- dynamic user:wam_cpp_test_copysign_pos/0.
+:- dynamic user:wam_cpp_test_copysign_neg/0.
+:- dynamic user:wam_cpp_test_copysign_flip/0.
+:- dynamic user:wam_cpp_test_popcount_zero/0.
+:- dynamic user:wam_cpp_test_popcount_seven/0.
+:- dynamic user:wam_cpp_test_popcount_ff/0.
+:- dynamic user:wam_cpp_test_lsb_eight/0.
+:- dynamic user:wam_cpp_test_lsb_36/0.
+:- dynamic user:wam_cpp_test_msb_eight/0.
+:- dynamic user:wam_cpp_test_msb_ff/0.
 :- dynamic user:wam_cpp_test_enum_member/0.
 
 user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
@@ -256,6 +276,31 @@ user:wam_cpp_test_mb_ground_throw :-
     catch(must_be(ground, foo(_, 2)),
           error(instantiation_error, _),
           true).
+% String variant aliases: string_chars/string_codes route through the
+% atom_chars/atom_codes path. string_code/3 is 1-based char-code access.
+user:wam_cpp_test_string_chars_fwd  :- string_chars(hello, [h, e, l, l, o]).
+user:wam_cpp_test_string_chars_rev  :- string_chars(A, [h, i]), A = hi.
+user:wam_cpp_test_string_codes_fwd  :- string_codes(abc, [0'a, 0'b, 0'c]).
+user:wam_cpp_test_string_code_first :- string_code(1, hello, 0'h).
+user:wam_cpp_test_string_code_last  :- string_code(5, hello, 0'o).
+user:wam_cpp_test_string_code_oob   :- \+ string_code(6, hello, _).
+% Hyperbolic inverses + round-trip identities.
+user:wam_cpp_test_asinh_zero        :- X is asinh(0), X =:= 0.0.
+user:wam_cpp_test_acosh_one         :- X is acosh(1), X =:= 0.0.
+user:wam_cpp_test_atanh_zero        :- X is atanh(0), X =:= 0.0.
+user:wam_cpp_test_asinh_roundtrip   :- X is asinh(sinh(2)), X > 1.999, X < 2.001.
+% copysign/2: magnitude of X with sign of Y; always Float.
+user:wam_cpp_test_copysign_pos      :- X is copysign(5, 1), X = 5.0.
+user:wam_cpp_test_copysign_neg      :- X is copysign(5, -3), X = -5.0.
+user:wam_cpp_test_copysign_flip     :- X is copysign(-5, 3), X = 5.0.
+% Integer bit counts: popcount, lsb, msb.
+user:wam_cpp_test_popcount_zero     :- X is popcount(0), X = 0.
+user:wam_cpp_test_popcount_seven    :- X is popcount(7), X = 3.
+user:wam_cpp_test_popcount_ff       :- X is popcount(255), X = 8.
+user:wam_cpp_test_lsb_eight         :- X is lsb(8), X = 3.
+user:wam_cpp_test_lsb_36            :- X is lsb(36), X = 2.
+user:wam_cpp_test_msb_eight         :- X is msb(8), X = 3.
+user:wam_cpp_test_msb_ff            :- X is msb(255), X = 7.
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
 
@@ -2955,6 +3000,59 @@ test(cpp_e2e_list_ops_and_guards, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_mb_atom_throw/0',  [], true),
           run_query(BinPath, 'wam_cpp_test_mb_int_throw/0',   [], true),
           run_query(BinPath, 'wam_cpp_test_mb_ground_throw/0',[], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_string_aliases_and_math, [condition(cpp_compiler_available)]) :-
+    % string_chars/2 + string_codes/2 alias atom_chars/atom_codes;
+    % string_code/3 is 1-based char-code access. Hyperbolic inverses
+    % (asinh/acosh/atanh), copysign/2, and integer bit-count
+    % functions (popcount/lsb/msb) round out the math tower.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_strm', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_string_chars_fwd/0,
+                               user:wam_cpp_test_string_chars_rev/0,
+                               user:wam_cpp_test_string_codes_fwd/0,
+                               user:wam_cpp_test_string_code_first/0,
+                               user:wam_cpp_test_string_code_last/0,
+                               user:wam_cpp_test_string_code_oob/0,
+                               user:wam_cpp_test_asinh_zero/0,
+                               user:wam_cpp_test_acosh_one/0,
+                               user:wam_cpp_test_atanh_zero/0,
+                               user:wam_cpp_test_asinh_roundtrip/0,
+                               user:wam_cpp_test_copysign_pos/0,
+                               user:wam_cpp_test_copysign_neg/0,
+                               user:wam_cpp_test_copysign_flip/0,
+                               user:wam_cpp_test_popcount_zero/0,
+                               user:wam_cpp_test_popcount_seven/0,
+                               user:wam_cpp_test_popcount_ff/0,
+                               user:wam_cpp_test_lsb_eight/0,
+                               user:wam_cpp_test_lsb_36/0,
+                               user:wam_cpp_test_msb_eight/0,
+                               user:wam_cpp_test_msb_ff/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_string_chars_fwd/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_string_chars_rev/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_string_codes_fwd/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_string_code_first/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_string_code_last/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_string_code_oob/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_asinh_zero/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_acosh_one/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_atanh_zero/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_asinh_roundtrip/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_copysign_pos/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_copysign_neg/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_copysign_flip/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_popcount_zero/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_popcount_seven/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_popcount_ff/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_lsb_eight/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_lsb_36/0',            [], true),
+          run_query(BinPath, 'wam_cpp_test_msb_eight/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_msb_ff/0',            [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
