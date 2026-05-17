@@ -127,6 +127,8 @@ POLICY_COMPARE_HEADERS = [
     "access_shape",
     "metric",
     "policy_mode",
+    "policy_artifact_value",
+    "policy_vs_best",
     "best_artifact_mode",
     "best_artifact_value",
     "status",
@@ -675,6 +677,20 @@ def policy_compare_rows_from_summaries(rows: list[SummaryRow]) -> list[PolicyCom
         row_count = int(base["rows"])
         policy_mode = effective_distance_policy_mode(base["relation"], row_count, base["access_shape"])
         best_artifact_mode = base["best_artifact_mode"]
+        values_by_mode = parse_mode_values(base["values_by_mode"])
+        policy_value = values_by_mode.get(policy_mode)
+        best_artifact_value = float(base["best_artifact_value"])
+        policy_value_text = "" if policy_value is None else format_policy_value(policy_value, base["metric"])
+        if policy_value is None or best_artifact_value <= 0:
+            policy_vs_best = ""
+        else:
+            policy_vs_best = f"{policy_value / best_artifact_value:.3f}x"
+        if policy_value is None:
+            status = "missing-policy-mode"
+        elif policy_mode == best_artifact_mode:
+            status = "match"
+        else:
+            status = "diff"
         compare_rows.append(
             PolicyCompareRow(
                 {
@@ -686,14 +702,20 @@ def policy_compare_rows_from_summaries(rows: list[SummaryRow]) -> list[PolicyCom
                     "access_shape": base["access_shape"],
                     "metric": base["metric"],
                     "policy_mode": policy_mode,
+                    "policy_artifact_value": policy_value_text,
+                    "policy_vs_best": policy_vs_best,
                     "best_artifact_mode": best_artifact_mode,
                     "best_artifact_value": base["best_artifact_value"],
-                    "status": "match" if policy_mode == best_artifact_mode else "diff",
+                    "status": status,
                     "values_by_mode": base["values_by_mode"],
                 }
             )
         )
     return compare_rows
+
+
+def policy_actionable_rows(rows: list[PolicyCompareRow]) -> list[PolicyCompareRow]:
+    return [row for row in rows if row.values["status"] != "match"]
 
 
 def render_summary_tsv(rows: list[SummaryRow]) -> str:
@@ -769,17 +791,25 @@ def render_policy_compare_markdown(rows: list[PolicyCompareRow]) -> str:
         return value.replace("|", "<br>")
 
     lines = [
-        "| Scale | Relation | Rows | Access shape | Metric | Policy mode | Best artifact mode | Best artifact value | Status | Values by mode |",
-        "| --- | --- | ---: | --- | --- | --- | --- | ---: | --- | --- |",
+        "| Scale | Relation | Rows | Access shape | Metric | Policy mode | Policy artifact value | Policy vs best | Best artifact mode | Best artifact value | Status | Values by mode |",
+        "| --- | --- | ---: | --- | --- | --- | ---: | ---: | --- | ---: | --- | --- |",
     ]
     for row in rows:
         value = {column: markdown_cell(cell) for column, cell in row.values.items()}
         lines.append(
-            "| {scale} | {relation} | {rows} | {access_shape} | {metric} | {policy_mode} | {best_artifact_mode} | {best_artifact_value} | {status} | {values_by_mode} |".format(
+            "| {scale} | {relation} | {rows} | {access_shape} | {metric} | {policy_mode} | {policy_artifact_value} | {policy_vs_best} | {best_artifact_mode} | {best_artifact_value} | {status} | {values_by_mode} |".format(
                 **value
             )
         )
     return "\n".join(lines)
+
+
+def render_policy_actionable_tsv(rows: list[PolicyCompareRow]) -> str:
+    return render_policy_compare_tsv(policy_actionable_rows(rows))
+
+
+def render_policy_actionable_markdown(rows: list[PolicyCompareRow]) -> str:
+    return render_policy_compare_markdown(policy_actionable_rows(rows))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -879,6 +909,8 @@ def main(argv: list[str] | None = None) -> int:
             "policy-markdown",
             "policy-compare-tsv",
             "policy-compare-markdown",
+            "policy-actionable-tsv",
+            "policy-actionable-markdown",
         ),
         default="tsv",
     )
@@ -979,6 +1011,10 @@ def main(argv: list[str] | None = None) -> int:
         print(render_policy_compare_tsv(policy_compare_rows_from_summaries(summaries)))
     elif args.format == "policy-compare-markdown":
         print(render_policy_compare_markdown(policy_compare_rows_from_summaries(summaries)))
+    elif args.format == "policy-actionable-tsv":
+        print(render_policy_actionable_tsv(policy_compare_rows_from_summaries(summaries)))
+    elif args.format == "policy-actionable-markdown":
+        print(render_policy_actionable_markdown(policy_compare_rows_from_summaries(summaries)))
     elif args.format == "markdown":
         print(render_markdown(rows))
     else:

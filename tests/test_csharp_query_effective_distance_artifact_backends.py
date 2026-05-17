@@ -329,11 +329,17 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
 
         self.assertEqual(by_shape["lookup_c0"]["policy_mode"], "lmdb")
         self.assertEqual(by_shape["lookup_c0"]["best_artifact_mode"], "lmdb")
+        self.assertEqual(by_shape["lookup_c0"]["policy_artifact_value"], "3.251")
+        self.assertEqual(by_shape["lookup_c0"]["policy_vs_best"], "1.000x")
         self.assertEqual(by_shape["lookup_c0"]["status"], "match")
         self.assertEqual(by_shape["bucket_c0"]["policy_mode"], "delimited-artifact")
         self.assertEqual(by_shape["bucket_c0"]["best_artifact_mode"], "mmap-array")
+        self.assertEqual(by_shape["bucket_c0"]["policy_artifact_value"], "400.000")
+        self.assertEqual(by_shape["bucket_c0"]["policy_vs_best"], "1.143x")
         self.assertEqual(by_shape["bucket_c0"]["status"], "diff")
         self.assertEqual(by_shape["storage"]["policy_mode"], "mmap-array")
+        self.assertEqual(by_shape["storage"]["policy_artifact_value"], "80000643")
+        self.assertEqual(by_shape["storage"]["policy_vs_best"], "1.000x")
         self.assertEqual(by_shape["storage"]["status"], "match")
 
     def test_policy_compare_renderers_include_status(self) -> None:
@@ -348,6 +354,8 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
                     "access_shape": "lookup_c0",
                     "metric": "ms",
                     "policy_mode": "mmap-array",
+                    "policy_artifact_value": "2.000",
+                    "policy_vs_best": "1.600x",
                     "best_artifact_mode": "lmdb",
                     "best_artifact_value": "1.250",
                     "status": "diff",
@@ -359,10 +367,86 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
         tsv = MODULE.render_policy_compare_tsv(rows)
         markdown = MODULE.render_policy_compare_markdown(rows)
         self.assertTrue(tsv.startswith("scale\trelation\trows\tdistinct_categories\tlookup_keys\taccess_shape"))
-        self.assertIn("\tlookup_c0\tms\tmmap-array\tlmdb\t1.250\tdiff\t", tsv)
-        self.assertIn("| Access shape | Metric | Policy mode | Best artifact mode |", markdown)
-        self.assertIn("| dev | category_parent | 6 | lookup_c0 | ms | mmap-array | lmdb | 1.250 | diff |", markdown)
+        self.assertIn("\tlookup_c0\tms\tmmap-array\t2.000\t1.600x\tlmdb\t1.250\tdiff\t", tsv)
+        self.assertIn("| Access shape | Metric | Policy mode | Policy artifact value |", markdown)
+        self.assertIn("| dev | category_parent | 6 | lookup_c0 | ms | mmap-array | 2.000 | 1.600x | lmdb | 1.250 | diff |", markdown)
         self.assertIn("lmdb:1.250<br>mmap-array:2.000", markdown)
+
+    def test_policy_compare_reports_missing_policy_mode(self) -> None:
+        row = MODULE.SummaryRow(
+            {
+                "scale": "dev",
+                "relation": "category_parent",
+                "rows": "6",
+                "distinct_categories": "4",
+                "lookup_keys": "2",
+                "best_lookup_mode": "lmdb",
+                "best_lookup_col1_mode": "lmdb",
+                "best_bucket_mode": "lmdb",
+                "best_bucket_col1_mode": "lmdb",
+                "best_scan_mode": "lmdb",
+                "smallest_artifact_mode": "lmdb",
+                "lookup_ms_by_mode": "lmdb:1.250",
+                "lookup_col1_ms_by_mode": "lmdb:1.250",
+                "bucket_ms_by_mode": "lmdb:1.250",
+                "bucket_col1_ms_by_mode": "lmdb:1.250",
+                "scan_ms_by_mode": "lmdb:1.250",
+                "artifact_bytes_by_mode": "lmdb:1024",
+            }
+        )
+
+        rows = MODULE.policy_compare_rows_from_summaries([row])
+        by_shape = {policy.values["access_shape"]: policy.values for policy in rows}
+
+        self.assertEqual(by_shape["lookup_c0"]["policy_mode"], "mmap-array")
+        self.assertEqual(by_shape["lookup_c0"]["policy_artifact_value"], "")
+        self.assertEqual(by_shape["lookup_c0"]["policy_vs_best"], "")
+        self.assertEqual(by_shape["lookup_c0"]["status"], "missing-policy-mode")
+
+    def test_policy_actionable_rows_filter_matches(self) -> None:
+        rows = [
+            MODULE.PolicyCompareRow(
+                {
+                    "scale": "dev",
+                    "relation": "category_parent",
+                    "rows": "6",
+                    "distinct_categories": "4",
+                    "lookup_keys": "2",
+                    "access_shape": "lookup_c0",
+                    "metric": "ms",
+                    "policy_mode": "mmap-array",
+                    "policy_artifact_value": "1.250",
+                    "policy_vs_best": "1.000x",
+                    "best_artifact_mode": "mmap-array",
+                    "best_artifact_value": "1.250",
+                    "status": "match",
+                    "values_by_mode": "mmap-array:1.250",
+                }
+            ),
+            MODULE.PolicyCompareRow(
+                {
+                    "scale": "dev",
+                    "relation": "category_parent",
+                    "rows": "6",
+                    "distinct_categories": "4",
+                    "lookup_keys": "2",
+                    "access_shape": "bucket_c0",
+                    "metric": "ms",
+                    "policy_mode": "mmap-array",
+                    "policy_artifact_value": "2.000",
+                    "policy_vs_best": "1.600x",
+                    "best_artifact_mode": "lmdb",
+                    "best_artifact_value": "1.250",
+                    "status": "diff",
+                    "values_by_mode": "lmdb:1.250|mmap-array:2.000",
+                }
+            ),
+        ]
+
+        actionable = MODULE.policy_actionable_rows(rows)
+        self.assertEqual([row.values["access_shape"] for row in actionable], ["bucket_c0"])
+        self.assertNotIn("lookup_c0", MODULE.render_policy_actionable_tsv(rows))
+        self.assertIn("bucket_c0", MODULE.render_policy_actionable_markdown(rows))
 
     def test_artifact_root_reuses_existing_manifests(self) -> None:
         if shutil.which("dotnet") is None:
