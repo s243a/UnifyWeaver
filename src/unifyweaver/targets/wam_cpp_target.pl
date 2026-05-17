@@ -2657,6 +2657,7 @@ compile_wam_runtime_to_cpp(_Options,
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <random>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -2665,6 +2666,15 @@ namespace wam_cpp {
 
 // Forward declarations for free functions defined later in this TU.
 static int standard_order_cmp(const Value& a, const Value& b);
+
+// Process-wide PRNG for the random/* family. Mersenne Twister 64-bit
+// with the standard default seed (5489) so unseeded runs are
+// reproducible; set_random(seed(N)) replaces it, set_random(seed(random))
+// re-seeds from std::random_device.
+static std::mt19937_64& cpp_global_rng() {
+    static std::mt19937_64 rng(5489);
+    return rng;
+}
 
 // ----------------------------------------------------------------------
 // Cell helpers
@@ -4911,6 +4921,106 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         pc += 1; return true;
     }
 
+    // ---- random/1 --------------------------------------------------
+    // random(-X) -- X is a Float in [0, 1).
+    if (op == "random/1") {
+        std::uniform_real_distribution<double> dist(0.0, 1.0);
+        Value r = Value::Float(dist(cpp_global_rng()));
+        CellPtr tgt = get_cell("A1");
+        if (tgt->is_unbound()) { bind_cell(tgt, r); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(r))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- random_between/3 ------------------------------------------
+    // random_between(+L, +H, -X) -- X is an Integer in [L, H] inclusive.
+    // Throws type_error on non-integer bounds; fails if L > H.
+    if (op == "random_between/3") {
+        Value lv = *get_cell("A1");
+        Value hv = *get_cell("A2");
+        if (lv.is_unbound() || hv.is_unbound())
+            return throw_iso_error(make_instantiation_error());
+        if (lv.tag != Value::Tag::Integer)
+            return throw_iso_error(make_type_error("integer", lv));
+        if (hv.tag != Value::Tag::Integer)
+            return throw_iso_error(make_type_error("integer", hv));
+        if (lv.i > hv.i) return false;
+        std::uniform_int_distribution<std::int64_t> dist(lv.i, hv.i);
+        Value r = Value::Integer(dist(cpp_global_rng()));
+        CellPtr tgt = get_cell("A3");
+        if (tgt->is_unbound()) { bind_cell(tgt, r); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(r))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- random_member/2 -------------------------------------------
+    // random_member(-X, +List) -- X is a uniformly random element of List.
+    // Empty List fails; same shape as member but picks one item.
+    if (op == "random_member/2") {
+        std::vector<CellPtr> items;
+        CellPtr lc = get_cell("A2");
+        for (;;) {
+            Value lv = *lc;
+            if (lv.tag == Value::Tag::Atom && lv.s == "[]") break;
+            if (lv.tag != Value::Tag::Compound || lv.s != "[|]/2"
+                || lv.args.size() != 2) return false;
+            items.push_back(lv.args[0]);
+            lc = lv.args[1];
+        }
+        if (items.empty()) return false;
+        std::uniform_int_distribution<std::size_t> dist(0, items.size() - 1);
+        std::size_t idx = dist(cpp_global_rng());
+        if (!unify_cells(get_cell("A1"), items[idx])) return false;
+        pc += 1; return true;
+    }
+
+    // ---- random_permutation/2 --------------------------------------
+    // random_permutation(+List, -PermList) -- Fisher-Yates shuffle of List
+    // via std::shuffle on a copy of the cell pointers.
+    if (op == "random_permutation/2") {
+        std::vector<CellPtr> items;
+        CellPtr lc = get_cell("A1");
+        for (;;) {
+            Value lv = *lc;
+            if (lv.tag == Value::Tag::Atom && lv.s == "[]") break;
+            if (lv.tag != Value::Tag::Compound || lv.s != "[|]/2"
+                || lv.args.size() != 2) return false;
+            items.push_back(lv.args[0]);
+            lc = lv.args[1];
+        }
+        std::shuffle(items.begin(), items.end(), cpp_global_rng());
+        CellPtr list = std::make_shared<Cell>(Value::Atom("[]"));
+        for (auto it = items.rbegin(); it != items.rend(); ++it) {
+            std::vector<CellPtr> ca;
+            ca.push_back(*it);
+            ca.push_back(list);
+            list = std::make_shared<Cell>(
+                Value::Compound("[|]/2", std::move(ca)));
+        }
+        if (!unify_cells(get_cell("A2"), list)) return false;
+        pc += 1; return true;
+    }
+
+    // ---- set_random/1 ----------------------------------------------
+    // set_random(seed(Seed))    -- seed with integer Seed.
+    // set_random(seed(random))  -- seed from std::random_device.
+    if (op == "set_random/1") {
+        Value a = *get_cell("A1");
+        if (a.tag != Value::Tag::Compound || a.s != "seed/1"
+            || a.args.size() != 1)
+            return throw_iso_error(make_domain_error("random_option", a));
+        Value sv = *a.args[0];
+        if (sv.tag == Value::Tag::Integer) {
+            cpp_global_rng().seed((std::uint64_t)sv.i);
+        } else if (sv.tag == Value::Tag::Atom && sv.s == "random") {
+            std::random_device rd;
+            cpp_global_rng().seed(rd());
+        } else {
+            return throw_iso_error(make_domain_error("seed_value", sv));
+        }
+        pc += 1; return true;
+    }
+
     // ---- I/O -------------------------------------------------------
     // All write paths route through emit_output / emit_output_char so
     // with_output_to/2 can intercept them into a capture buffer.
@@ -7153,6 +7263,12 @@ bool WamState::dispatch_call_meta(const std::string& op,
     }
     // Resolve the goal''s base name and existing args.
     Value goal = deref(*goal_cell);
+    // Strip Module:Goal wrapping (compound ":/2" -- treat as transparent
+    // for our single-module runtime; the module qualifier becomes a no-op).
+    while (goal.tag == Value::Tag::Compound
+           && goal.s == ":/2" && goal.args.size() == 2) {
+        goal = deref(*goal.args[1]);
+    }
     std::string base_name;
     std::size_t base_arity = 0;
     std::vector<CellPtr> all_args;
@@ -7188,6 +7304,11 @@ bool WamState::dispatch_phrase_call(bool has_rest, std::size_t after_pc) {
         ? get_cell("A3")
         : std::make_shared<Cell>(Value::Atom("[]"));
     Value goal = deref(*goal_cell);
+    // Strip Module:Goal wrapping so phrase(user:greeting, L) works.
+    while (goal.tag == Value::Tag::Compound
+           && goal.s == ":/2" && goal.args.size() == 2) {
+        goal = deref(*goal.args[1]);
+    }
     std::string base_name;
     std::size_t base_arity = 0;
     std::vector<CellPtr> all_args;
