@@ -268,8 +268,7 @@ test_call_n_dispatch_meta_helper :-
     ).
 
 test_call_n_step_arms :-
-    Test = 'WAM-Elixir: :call and :execute step arms catch "call/N" \
-                       before label lookup',
+    Test = 'WAM-Elixir: :call and :execute step arms catch "call/N" before label lookup',
     (   wam_elixir_case(call, CallCode),
         sub_string(CallCode, _, _, _, '"call/" <> _'),
         sub_string(CallCode, _, _, _,
@@ -582,8 +581,7 @@ test_true_zero_builtin :-
     ).
 
 test_build_call_target_helpers :-
-    Test = 'WAM-Elixir: build_call_target + load_args_into_regs helpers \
-                       present',
+    Test = 'WAM-Elixir: build_call_target + load_args_into_regs helpers present',
     (   compile_wam_helpers_to_elixir([], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'defp build_call_target('),

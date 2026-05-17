@@ -1693,27 +1693,6 @@ wam_elixir_lower_instr(builtin_call(Op, Ar), _PC, _Labels, _FuncName, _Suffix, C
       s -> s
     end', [OpEsc, Ar]).
 
-%% escape_backslashes_for_elixir(+Token, -Escaped)
-%  Double backslashes when emitting `Token` into an Elixir double-
-%  quoted string literal. Without this, an op name like `=\=/2`
-%  becomes Elixir source `"=\=/2"` — and Elixir 1.14+ silently
-%  DROPS the unrecognised `\=` escape, producing the runtime string
-%  `==/2` instead of `=\=/2`. The execute_builtin pattern then
-%  never matches and the call falls through to the default :fail
-%  arm. Doubling the backslash gives Elixir source `"=\\=/2"`
-%  which parses as runtime `=\=/2` (5 chars including backslash).
-escape_backslashes_for_elixir(Token, Escaped) :-
-    (   atom(Token) -> atom_string(Token, S) ; S = Token ),
-    string_chars(S, Chars),
-    backslash_double(Chars, DoubledChars),
-    string_chars(Escaped, DoubledChars).
-
-backslash_double([], []).
-backslash_double(['\\' | Rest], ['\\', '\\' | More]) :- !,
-    backslash_double(Rest, More).
-backslash_double([C | Rest], [C | More]) :-
-    backslash_double(Rest, More).
-
 wam_elixir_lower_instr(put_constant(C, AiName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(AiName, Ai),
     elixir_constant_literal(C, CLit),
@@ -1869,6 +1848,30 @@ wam_elixir_lower_instr(end_aggregate(ValueReg), _PC, _Labels, _FuncName, _Suffix
 '    state = WamRuntime.aggregate_collect(state, ~w)
     throw({:fail, state})', [ValReg]).
 
+wam_elixir_lower_instr(raw(Combined), _PC, _Labels, _FuncName, _Suffix, Code) :-
+    format(string(Code), '    # raw: ~w\n    raise "TODO: ~w"', [Combined, Combined]).
+
+%% escape_backslashes_for_elixir(+Token, -Escaped)
+%  Double backslashes when emitting `Token` into an Elixir double-
+%  quoted string literal. Without this, an op name like `=\=/2`
+%  becomes Elixir source `"=\=/2"` — and Elixir 1.14+ silently
+%  DROPS the unrecognised `\=` escape, producing the runtime string
+%  `==/2` instead of `=\=/2`. The execute_builtin pattern then
+%  never matches and the call falls through to the default :fail
+%  arm. Doubling the backslash gives Elixir source `"=\\=/2"`
+%  which parses as runtime `=\=/2` (5 chars including backslash).
+escape_backslashes_for_elixir(Token, Escaped) :-
+    (   atom(Token) -> atom_string(Token, S) ; S = Token ),
+    string_chars(S, Chars),
+    backslash_double(Chars, DoubledChars),
+    string_chars(Escaped, DoubledChars).
+
+backslash_double([], []).
+backslash_double(['\\' | Rest], ['\\', '\\' | More]) :- !,
+    backslash_double(Rest, More).
+backslash_double([C | Rest], [C | More]) :-
+    backslash_double(Rest, More).
+
 %% agg_type_atom(+Str, -Atom)
 %  Translates the WAM-text aggregator name to the Elixir runtime atom.
 %
@@ -1884,9 +1887,6 @@ wam_elixir_lower_instr(end_aggregate(ValueReg), _PC, _Labels, _FuncName, _Suffix
 %  full alphabet.
 agg_type_atom("collect", findall) :- !.
 agg_type_atom(Str, Atom) :- atom_string(Atom, Str).
-
-wam_elixir_lower_instr(raw(Combined), _PC, _Labels, _FuncName, _Suffix, Code) :-
-    format(string(Code), '    # raw: ~w\n    raise "TODO: ~w"', [Combined, Combined]).
 
 %% pred_to_module(+PredStr, -ModuleName)
 pred_to_module(PredStr, ModName) :-
