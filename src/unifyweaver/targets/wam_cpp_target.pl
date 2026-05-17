@@ -2484,6 +2484,10 @@ struct WamState {
     bool    dispatch_call_meta(const std::string& op,
                                std::int64_t total_arity,
                                std::size_t after_pc);
+    // phrase/2 + phrase/3 meta-call: append [List, Rest] to the
+    // goal''s args before dispatching. phrase/2 supplies [] for
+    // Rest. Mirrors dispatch_call_meta''s extras-append shape.
+    bool    dispatch_phrase_call(bool has_rest, std::size_t after_pc);
     // findall(Template, Goal, List) meta-call. Pushes an
     // AggregateFrame with value_cell/result_cell set to A1/A3''s
     // current cells, then dispatches A2 as a goal with cp =
@@ -5530,6 +5534,14 @@ bool WamState::step(const Instruction& instr) {
             if (instr.a == "^/2") {
                 return invoke_goal_as_call(get_cell("A2"), pc + 1);
             }
+            // phrase/2, phrase/3 — DCG entry. Add [List, Rest] to the
+            // body goal''s args then dispatch as a regular call.
+            if (instr.a == "phrase/2") {
+                return dispatch_phrase_call(false, pc + 1);
+            }
+            if (instr.a == "phrase/3") {
+                return dispatch_phrase_call(true, pc + 1);
+            }
             // call/N meta — needs its own arm so the after_pc is
             // correctly pc + 1 (non-tail) rather than going through
             // the Execute fallback''s post-builtin pc=cp override.
@@ -5570,6 +5582,13 @@ bool WamState::step(const Instruction& instr) {
             if (instr.a == "retract/1") return dispatch_retract(cp);
             if (instr.a == "^/2") {
                 return invoke_goal_as_call(get_cell("A2"), cp);
+            }
+            // phrase/2, phrase/3 in tail position.
+            if (instr.a == "phrase/2") {
+                return dispatch_phrase_call(false, cp);
+            }
+            if (instr.a == "phrase/3") {
+                return dispatch_phrase_call(true, cp);
             }
             // call/N meta in tail position — after_pc is the
             // caller''s saved cp (or halt if cp == 0).
@@ -7154,6 +7173,40 @@ bool WamState::dispatch_call_meta(const std::string& op,
     }
     for (auto& e : extras) all_args.push_back(e);
     std::size_t new_arity = base_arity + extras.size();
+    std::string new_functor = base_name + "/" + std::to_string(new_arity);
+    CellPtr combined = std::make_shared<Cell>(
+        Value::Compound(new_functor, std::move(all_args)));
+    return invoke_goal_as_call(combined, after_pc);
+}
+
+bool WamState::dispatch_phrase_call(bool has_rest, std::size_t after_pc) {
+    // phrase(Body, List)        : extras = [List, []]
+    // phrase(Body, List, Rest)  : extras = [List, Rest]
+    CellPtr goal_cell = get_cell("A1");
+    CellPtr list_cell = get_cell("A2");
+    CellPtr rest_cell = has_rest
+        ? get_cell("A3")
+        : std::make_shared<Cell>(Value::Atom("[]"));
+    Value goal = deref(*goal_cell);
+    std::string base_name;
+    std::size_t base_arity = 0;
+    std::vector<CellPtr> all_args;
+    if (goal.tag == Value::Tag::Atom) {
+        base_name = goal.s;
+    } else if (goal.tag == Value::Tag::Compound) {
+        auto slash = goal.s.rfind(\'/\');
+        if (slash == std::string::npos) return false;
+        base_name = goal.s.substr(0, slash);
+        try { base_arity = std::stoul(goal.s.substr(slash + 1)); }
+        catch (...) { return false; }
+        if (base_arity != goal.args.size()) return false;
+        all_args = goal.args;
+    } else {
+        return throw_iso_error(make_type_error("callable", goal));
+    }
+    all_args.push_back(list_cell);
+    all_args.push_back(rest_cell);
+    std::size_t new_arity = base_arity + 2;
     std::string new_functor = base_name + "/" + std::to_string(new_arity);
     CellPtr combined = std::make_shared<Cell>(
         Value::Compound(new_functor, std::move(all_args)));

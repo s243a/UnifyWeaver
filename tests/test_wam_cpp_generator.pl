@@ -196,6 +196,14 @@
 :- dynamic user:wam_cpp_test_lsb_36/0.
 :- dynamic user:wam_cpp_test_msb_eight/0.
 :- dynamic user:wam_cpp_test_msb_ff/0.
+:- dynamic user:wam_cpp_test_dcg_greeting/0.
+:- dynamic user:wam_cpp_test_dcg_greeting_no/0.
+:- dynamic user:wam_cpp_test_dcg_yelp/0.
+:- dynamic user:wam_cpp_test_dcg_optional_empty/0.
+:- dynamic user:wam_cpp_test_dcg_optional_maybe/0.
+:- dynamic user:wam_cpp_test_dcg_loop_empty/0.
+:- dynamic user:wam_cpp_test_dcg_loop_three/0.
+:- dynamic user:wam_cpp_test_dcg_phrase3/0.
 :- dynamic user:wam_cpp_test_enum_member/0.
 
 user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
@@ -301,6 +309,27 @@ user:wam_cpp_test_lsb_eight         :- X is lsb(8), X = 3.
 user:wam_cpp_test_lsb_36            :- X is lsb(36), X = 2.
 user:wam_cpp_test_msb_eight         :- X is msb(8), X = 3.
 user:wam_cpp_test_msb_ff            :- X is msb(255), X = 7.
+% DCG support. SWI's term_expansion at load time rewrites these `-->`
+% rules into normal Prolog clauses with two extra difference-list args
+% (e.g. dcg_greeting/2). The phrase/2 and phrase/3 builtins then
+% dispatch by appending [List, Rest] to the goal's args.
+user:dcg_greeting --> [hello], [world].
+user:dcg_yelp(X)  --> [shout, X].
+user:dcg_optional --> [].
+user:dcg_optional --> [maybe].
+user:dcg_loop([])    --> [].
+user:dcg_loop([X|T]) --> [X], dcg_loop(T).
+user:wam_cpp_test_dcg_greeting    :- phrase(dcg_greeting, [hello, world]).
+user:wam_cpp_test_dcg_greeting_no :- \+ phrase(dcg_greeting, [hello]).
+user:wam_cpp_test_dcg_yelp        :- phrase(dcg_yelp(loud), [shout, loud]).
+user:wam_cpp_test_dcg_optional_empty :- phrase(dcg_optional, []).
+user:wam_cpp_test_dcg_optional_maybe :- phrase(dcg_optional, [maybe]).
+user:wam_cpp_test_dcg_loop_empty  :- phrase(dcg_loop(L), []), L = [].
+user:wam_cpp_test_dcg_loop_three  :- phrase(dcg_loop(L), [a, b, c]),
+                                     L = [a, b, c].
+user:wam_cpp_test_dcg_phrase3     :- phrase(dcg_greeting,
+                                           [hello, world, extra], R),
+                                     R = [extra].
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
 
@@ -3053,6 +3082,45 @@ test(cpp_e2e_string_aliases_and_math, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_lsb_36/0',            [], true),
           run_query(BinPath, 'wam_cpp_test_msb_eight/0',         [], true),
           run_query(BinPath, 'wam_cpp_test_msb_ff/0',            [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_dcg, [condition(cpp_compiler_available)]) :-
+    % DCG via phrase/2 + phrase/3. SWI's term_expansion handles the
+    % --> rewrite at load time, so by the time we reach compile the
+    % rules are already plain Prolog with two extra difference-list
+    % args. The phrase/2 and phrase/3 dispatchers append [List, Rest]
+    % onto the goal's args before invoking via invoke_goal_as_call.
+    % Includes ground match, fail-on-shorter-input, parametric DCG
+    % (yelp/1), composition (sentence calls greeting), nondet
+    % (optional with two clauses), recursive DCG (loop), and the
+    % phrase/3 form with non-empty leftover Rest.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_dcg', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_dcg_greeting/0,
+                               user:wam_cpp_test_dcg_greeting_no/0,
+                               user:wam_cpp_test_dcg_yelp/0,
+                               user:wam_cpp_test_dcg_optional_empty/0,
+                               user:wam_cpp_test_dcg_optional_maybe/0,
+                               user:wam_cpp_test_dcg_loop_empty/0,
+                               user:wam_cpp_test_dcg_loop_three/0,
+                               user:wam_cpp_test_dcg_phrase3/0,
+                               % DCG-expanded predicates the test calls.
+                               user:dcg_greeting/2,
+                               user:dcg_yelp/3,
+                               user:dcg_optional/2,
+                               user:dcg_loop/3],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_dcg_greeting/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_dcg_greeting_no/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_dcg_yelp/0',            [], true),
+          run_query(BinPath, 'wam_cpp_test_dcg_optional_empty/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_dcg_optional_maybe/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_dcg_loop_empty/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_dcg_loop_three/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_dcg_phrase3/0',         [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
