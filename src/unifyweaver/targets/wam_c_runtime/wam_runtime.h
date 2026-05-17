@@ -113,6 +113,12 @@ typedef struct {
 } CategoryEdge;
 
 typedef struct {
+    const char *source;
+    const char *target;
+    int weight;
+} WeightedEdge;
+
+typedef struct {
     CategoryEdge *edges;
     int edge_count;
     int edge_cap;
@@ -237,6 +243,11 @@ struct WamState {
     int category_edge_count;
     int category_edge_cap;
     int category_max_depth;
+
+    /* Native weighted_shortest_path3 kernel data */
+    WeightedEdge *weighted_edges;
+    int weighted_edge_count;
+    int weighted_edge_cap;
 };
 
 bool step_wam(WamState* state, Instruction* instr);
@@ -248,16 +259,19 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity);
 bool wam_execute_foreign_predicate(WamState *state, const char *pred, int arity);
 void wam_register_category_parent(WamState *state, const char *child, const char *parent);
 void wam_register_transitive_edge(WamState *state, const char *child, const char *parent);
+void wam_register_weighted_edge(WamState *state, const char *source, const char *target, int weight);
 void wam_register_category_ancestor_kernel(WamState *state, const char *pred, int max_depth);
 void wam_register_transitive_closure_kernel(WamState *state, const char *pred);
 void wam_register_transitive_distance_kernel(WamState *state, const char *pred);
 void wam_register_transitive_parent_distance_kernel(WamState *state, const char *pred);
 void wam_register_transitive_step_parent_distance_kernel(WamState *state, const char *pred);
+void wam_register_weighted_shortest_path_kernel(WamState *state, const char *pred);
 bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity);
 bool wam_transitive_closure_handler(WamState *state, const char *pred, int arity);
 bool wam_transitive_distance_handler(WamState *state, const char *pred, int arity);
 bool wam_transitive_parent_distance_handler(WamState *state, const char *pred, int arity);
 bool wam_transitive_step_parent_distance_handler(WamState *state, const char *pred, int arity);
+bool wam_weighted_shortest_path_handler(WamState *state, const char *pred, int arity);
 void wam_fact_source_init(WamFactSource *source);
 void wam_fact_source_close(WamFactSource *source);
 bool wam_fact_source_load_tsv(WamState *state, WamFactSource *source, const char *path);
