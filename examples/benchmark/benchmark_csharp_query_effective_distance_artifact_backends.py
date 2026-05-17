@@ -118,6 +118,21 @@ POLICY_HEADERS = [
     "values_by_mode",
 ]
 
+POLICY_COMPARE_HEADERS = [
+    "scale",
+    "relation",
+    "rows",
+    "distinct_categories",
+    "lookup_keys",
+    "access_shape",
+    "metric",
+    "policy_mode",
+    "best_artifact_mode",
+    "best_artifact_value",
+    "status",
+    "values_by_mode",
+]
+
 ACCESS_SHAPE_METRICS = (
     ("lookup_c0", "lookup_ms_by_mode"),
     ("lookup_c1", "lookup_col1_ms_by_mode"),
@@ -139,6 +154,11 @@ class SummaryRow:
 
 @dataclass(frozen=True)
 class PolicyRow:
+    values: dict[str, str]
+
+
+@dataclass(frozen=True)
+class PolicyCompareRow:
     values: dict[str, str]
 
 
@@ -624,6 +644,58 @@ def policy_rows_from_summaries(rows: list[SummaryRow]) -> list[PolicyRow]:
     return policy_rows
 
 
+def effective_distance_policy_mode(relation: str, row_count: int, access_shape: str) -> str:
+    if relation == "article_category" and row_count >= 5_000_000:
+        return {
+            "lookup_c0": "lmdb",
+            "lookup_c1": "mmap-array",
+            "bucket_c0": "delimited-artifact",
+            "bucket_c1": "mmap-array",
+            "scan": "mmap-array",
+            "storage": "mmap-array",
+        }.get(access_shape, "binary-artifact")
+
+    if relation in {"article_category", "category_parent"}:
+        return {
+            "lookup_c0": "mmap-array",
+            "lookup_c1": "mmap-array",
+            "bucket_c0": "mmap-array",
+            "bucket_c1": "mmap-array",
+            "scan": "mmap-array",
+            "storage": "mmap-array",
+        }.get(access_shape, "binary-artifact")
+
+    return "binary-artifact"
+
+
+def policy_compare_rows_from_summaries(rows: list[SummaryRow]) -> list[PolicyCompareRow]:
+    compare_rows: list[PolicyCompareRow] = []
+    for policy_row in policy_rows_from_summaries(rows):
+        base = policy_row.values
+        row_count = int(base["rows"])
+        policy_mode = effective_distance_policy_mode(base["relation"], row_count, base["access_shape"])
+        best_artifact_mode = base["best_artifact_mode"]
+        compare_rows.append(
+            PolicyCompareRow(
+                {
+                    "scale": base["scale"],
+                    "relation": base["relation"],
+                    "rows": base["rows"],
+                    "distinct_categories": base["distinct_categories"],
+                    "lookup_keys": base["lookup_keys"],
+                    "access_shape": base["access_shape"],
+                    "metric": base["metric"],
+                    "policy_mode": policy_mode,
+                    "best_artifact_mode": best_artifact_mode,
+                    "best_artifact_value": base["best_artifact_value"],
+                    "status": "match" if policy_mode == best_artifact_mode else "diff",
+                    "values_by_mode": base["values_by_mode"],
+                }
+            )
+        )
+    return compare_rows
+
+
 def render_summary_tsv(rows: list[SummaryRow]) -> str:
     lines = ["\t".join(SUMMARY_HEADERS)]
     lines.extend("\t".join(row.values[column] for column in SUMMARY_HEADERS) for row in rows)
@@ -680,6 +752,30 @@ def render_policy_markdown(rows: list[PolicyRow]) -> str:
         value = {column: markdown_cell(cell) for column, cell in row.values.items()}
         lines.append(
             "| {scale} | {relation} | {rows} | {access_shape} | {metric} | {best_mode} | {best_value} | {best_artifact_mode} | {best_artifact_value} | {values_by_mode} |".format(
+                **value
+            )
+        )
+    return "\n".join(lines)
+
+
+def render_policy_compare_tsv(rows: list[PolicyCompareRow]) -> str:
+    lines = ["\t".join(POLICY_COMPARE_HEADERS)]
+    lines.extend("\t".join(row.values[column] for column in POLICY_COMPARE_HEADERS) for row in rows)
+    return "\n".join(lines)
+
+
+def render_policy_compare_markdown(rows: list[PolicyCompareRow]) -> str:
+    def markdown_cell(value: str) -> str:
+        return value.replace("|", "<br>")
+
+    lines = [
+        "| Scale | Relation | Rows | Access shape | Metric | Policy mode | Best artifact mode | Best artifact value | Status | Values by mode |",
+        "| --- | --- | ---: | --- | --- | --- | --- | ---: | --- | --- |",
+    ]
+    for row in rows:
+        value = {column: markdown_cell(cell) for column, cell in row.values.items()}
+        lines.append(
+            "| {scale} | {relation} | {rows} | {access_shape} | {metric} | {policy_mode} | {best_artifact_mode} | {best_artifact_value} | {status} | {values_by_mode} |".format(
                 **value
             )
         )
@@ -781,6 +877,8 @@ def main(argv: list[str] | None = None) -> int:
             "summary-full-markdown",
             "policy-tsv",
             "policy-markdown",
+            "policy-compare-tsv",
+            "policy-compare-markdown",
         ),
         default="tsv",
     )
@@ -877,6 +975,10 @@ def main(argv: list[str] | None = None) -> int:
         print(render_policy_tsv(policy_rows_from_summaries(summaries)))
     elif args.format == "policy-markdown":
         print(render_policy_markdown(policy_rows_from_summaries(summaries)))
+    elif args.format == "policy-compare-tsv":
+        print(render_policy_compare_tsv(policy_compare_rows_from_summaries(summaries)))
+    elif args.format == "policy-compare-markdown":
+        print(render_policy_compare_markdown(policy_compare_rows_from_summaries(summaries)))
     elif args.format == "markdown":
         print(render_markdown(rows))
     else:
