@@ -170,7 +170,9 @@ Use `policy-compare-tsv` or `policy-compare-markdown` to compare the current
 effective-distance source policy against the measured best artifact-backed
 mode. Use `policy-actionable-tsv` or `policy-actionable-markdown` to suppress
 matching rows and show only policy differences or missing policy modes, with
-the policy-selected value and policy-vs-best ratio included for triage:
+the policy-selected value and policy-vs-best ratio included for triage. Add
+`--policy-action-threshold` to ignore small measured diffs while still always
+showing missing policy modes:
 
 ```bash
 python examples/benchmark/benchmark_csharp_query_effective_distance_artifact_backends.py \
@@ -179,6 +181,7 @@ python examples/benchmark/benchmark_csharp_query_effective_distance_artifact_bac
   --lookup-repetitions 1 \
   --repetitions 1 \
   --summary-output output/csharp-query-effective-distance-summary.tsv \
+  --policy-action-threshold 1.10 \
   --format policy-actionable-markdown
 ```
 
