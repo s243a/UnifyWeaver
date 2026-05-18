@@ -19,6 +19,7 @@
 :- dynamic user:test_term_order_builtin/0.
 :- dynamic user:test_succ_builtin/0.
 :- dynamic user:test_atom_number_builtin/0.
+:- dynamic user:test_atom_case_builtin/0.
 :- dynamic user:test_set_aggregate/0.
 :- dynamic user:test_unify_builtin/0.
 :- dynamic user:test_neg_fact/1.
@@ -175,6 +176,18 @@ test(builtins_execution) :-
                 \+ atom_number(foo, _),
                 \+ atom_number(_, _)
             )),
+          assertz(user:test_atom_case_builtin :-
+            (   upcase_atom(hello, U),
+                U == 'HELLO',
+                upcase_atom(hello, 'HELLO'),
+                \+ upcase_atom(hello, hello),
+                downcase_atom('HELLO', D),
+                D == hello,
+                downcase_atom('HELLO', hello),
+                \+ downcase_atom('HELLO', 'HELLO'),
+                \+ upcase_atom(_, _),
+                \+ upcase_atom(42, _)
+            )),
           assertz(user:test_set_aggregate :-
             (   aggregate_all(set(X), member(X, [a,b,a]), S),
                 length(S, 2),
@@ -210,6 +223,7 @@ test(builtins_execution) :-
           retractall(user:test_term_order_builtin),
           retractall(user:test_succ_builtin),
           retractall(user:test_atom_number_builtin),
+          retractall(user:test_atom_case_builtin),
           retractall(user:test_set_aggregate),
           retractall(user:test_unify_builtin),
           retractall(user:test_neg_fact(_)),
@@ -219,7 +233,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -268,6 +282,8 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "compare/3"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "succ/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "atom_number/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "upcase_atom/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "downcase_atom/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "\\\\+/1"')),
     assertion(sub_string(LibCode, _, _, _, 'AggType: "set"')),
 
@@ -401,6 +417,14 @@ func main() {
 		fmt.Println("ATOM_NUMBER_FAILURE")
 	}
 
+	atomCaseVM := wam.NewWamState(wam.Test_atom_case_builtinCode, wam.Test_atom_case_builtinLabels)
+	atomCaseVM.PC = wam.Test_atom_case_builtinStartPC
+	if atomCaseVM.Run() {
+		fmt.Println("ATOM_CASE_SUCCESS")
+	} else {
+		fmt.Println("ATOM_CASE_FAILURE")
+	}
+
 	setVM := wam.NewWamState(wam.Test_set_aggregateCode, wam.Test_set_aggregateLabels)
 	setVM.PC = wam.Test_set_aggregateStartPC
 	if setVM.Run() {
@@ -464,6 +488,7 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "TERM_ORDER_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SUCC_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_NUMBER_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "ATOM_CASE_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SET_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "UNIFY_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "NEG_SUCCESS")),

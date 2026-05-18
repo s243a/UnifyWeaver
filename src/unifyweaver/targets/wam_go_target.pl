@@ -466,6 +466,12 @@ wam_go_direct_builtin("succ/2", 2, 'succ/2').
 wam_go_direct_builtin(atom_number/2, 2, 'atom_number/2').
 wam_go_direct_builtin('atom_number/2', 2, 'atom_number/2').
 wam_go_direct_builtin("atom_number/2", 2, 'atom_number/2').
+wam_go_direct_builtin(upcase_atom/2, 2, 'upcase_atom/2').
+wam_go_direct_builtin('upcase_atom/2', 2, 'upcase_atom/2').
+wam_go_direct_builtin("upcase_atom/2", 2, 'upcase_atom/2').
+wam_go_direct_builtin(downcase_atom/2, 2, 'downcase_atom/2').
+wam_go_direct_builtin('downcase_atom/2', 2, 'downcase_atom/2').
+wam_go_direct_builtin("downcase_atom/2", 2, 'downcase_atom/2').
 
 wam_instruction_to_go_literal(get_constant(C, Ai), GoLiteral) :-
     go_value_literal(C, GoVal),
