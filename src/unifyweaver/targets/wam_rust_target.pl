@@ -2977,25 +2977,47 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     directory_file_path(ProjectDir, 'src', SrcDir),
     make_directory_path(SrcDir),
 
-    % LMDB option: lmdb_mode(none | cursor).  Cursor mode emits the
-    % lmdb_fact_source module and adds lmdb-zero to Cargo.toml; none
-    % keeps the TSV-only path.  R1 of the Rust-LMDB arc (mirrors B1
-    % on the Haskell side; see context/wam_rust_lmdb_handoff.md).
+    % LMDB options:
+    %   lmdb_mode(none | cursor)            - whether LMDB is used at all
+    %   lmdb_crate(lmdb_zero | heed | auto) - which Rust binding (when mode != none)
+    %
+    % auto currently resolves to lmdb_zero (the default).  See
+    % docs/design/WAM_RUST_LMDB_CRATE_DECISION.md for why both are supported
+    % and why lmdb-zero is the default.
     option(lmdb_mode(LmdbMode), Options, none),
+    option(lmdb_crate(LmdbCrateOpt), Options, auto),
+    resolve_lmdb_crate(LmdbCrateOpt, LmdbCrate),
     (   LmdbMode == cursor
-    ->  UseLmdb = true
-    ;   UseLmdb = false
+    ->  (   LmdbCrate == lmdb_zero
+        ->  UseLmdbZero = true,  UseHeed = false
+        ;   LmdbCrate == heed
+        ->  UseLmdbZero = false, UseHeed = true
+        ;   format(user_error,
+                '[WAM-Rust] ERROR: unknown lmdb_crate ~w, falling back to lmdb_zero~n',
+                [LmdbCrate]),
+            UseLmdbZero = true,  UseHeed = false
+        )
+    ;   UseLmdbZero = false, UseHeed = false
     ),
 
-    % Generate Cargo.toml (conditionally adds lmdb-zero dep)
+    % Generate Cargo.toml (conditionally adds exactly one of lmdb-zero or heed)
     render_named_template(rust_wam_cargo,
-        [module_name=ModuleName, use_lmdb=UseLmdb], CargoContent),
+        [module_name=ModuleName,
+         use_lmdb_zero=UseLmdbZero,
+         use_heed=UseHeed],
+        CargoContent),
     directory_file_path(ProjectDir, 'Cargo.toml', CargoPath),
     write_file(CargoPath, CargoContent),
 
-    % Generate src/lmdb_fact_source.rs when lmdb_mode(cursor)
-    (   UseLmdb == true
-    ->  read_template_file('templates/targets/rust_wam/lmdb_fact_source.rs.mustache',
+    % Generate src/lmdb_fact_source.rs from the chosen crate's template
+    (   UseLmdbZero == true
+    ->  read_template_file('templates/targets/rust_wam/lmdb_fact_source_lmdb_zero.rs.mustache',
+                           LmdbTemplate),
+        render_template(LmdbTemplate, [date=Date], LmdbCode),
+        directory_file_path(SrcDir, 'lmdb_fact_source.rs', LmdbPath),
+        write_file(LmdbPath, LmdbCode)
+    ;   UseHeed == true
+    ->  read_template_file('templates/targets/rust_wam/lmdb_fact_source_heed.rs.mustache',
                            LmdbTemplate),
         render_template(LmdbTemplate, [date=Date], LmdbCode),
         directory_file_path(SrcDir, 'lmdb_fact_source.rs', LmdbPath),
@@ -3036,7 +3058,8 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     format(string(FullPredicatesCode), "~w\n\n~w", [SetupForeignCode, PredicatesCode]),
     render_named_template(rust_wam_lib,
         [module_name=ModuleName, date=Date, predicates_code=FullPredicatesCode,
-         use_lmdb=UseLmdb],
+         use_lmdb_zero=UseLmdbZero,
+         use_heed=UseHeed],
         LibContent),
     directory_file_path(SrcDir, 'lib.rs', LibPath),
     write_file(LibPath, LibContent),
@@ -3282,3 +3305,23 @@ cargo_check_project(ProjectDir, Result) :-
     ;   Result = not_available,
         format(user_error, 'cargo not found on PATH~n', [])
     ).
+
+%% resolve_lmdb_crate(+Spec, -Crate)
+%
+%  Resolve the lmdb_crate codegen option to a concrete crate name.
+%  Spec is one of: lmdb_zero | heed | auto.
+%  When auto, defaults to lmdb_zero (current empirical preference; see
+%  docs/design/WAM_RUST_LMDB_CRATE_DECISION.md).
+%
+%  Future heuristics (target core count, fixture write-permissions,
+%  measured throughput) would slot in here, following the pattern from
+%  resolve_auto_cache_strategy/2 and resolve_auto_lmdb_cache_mode/2 in
+%  src/unifyweaver/core/cost_model.pl.
+
+resolve_lmdb_crate(lmdb_zero, lmdb_zero) :- !.
+resolve_lmdb_crate(heed, heed) :- !.
+resolve_lmdb_crate(auto, lmdb_zero) :- !.
+resolve_lmdb_crate(Other, lmdb_zero) :-
+    format(user_error,
+        '[WAM-Rust] WARNING: unknown lmdb_crate ~w, defaulting to lmdb_zero~n',
+        [Other]).

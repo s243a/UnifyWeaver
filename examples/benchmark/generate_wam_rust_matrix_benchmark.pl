@@ -20,23 +20,25 @@ benchmark_workload_path(Path) :-
 
 main :-
     current_prolog_flag(argv, Argv),
-    (   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom]
+    (   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom]
     ->  true
+    ;   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom]
+    ->  LmdbCrateAtom = auto
     ;   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom]
-    ->  LmdbModeAtom = none
+    ->  LmdbModeAtom = none, LmdbCrateAtom = auto
     ;   format(user_error,
-            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off> [<none|cursor>]~n',
+            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off> [<none|cursor>] [<lmdb_zero|heed|auto>]~n',
             []),
         halt(1)
     ),
-    generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, OutputDir),
+    generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, OutputDir),
     halt(0).
 
 main :-
     format(user_error, 'Error: generation failed~n', []),
     halt(1).
 
-generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, OutputDir) :-
+generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, OutputDir) :-
     benchmark_workload_path(WorkloadPath),
     load_files(WorkloadPath, [silent(true)]),
     retractall(user:mode(category_ancestor(_, _, _, _))),
@@ -45,6 +47,7 @@ generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, OutputDir) :-
     parse_emit_mode(EmitModeAtom, EmitMode),
     parse_kernel_mode(KernelModeAtom, KernelOptions),
     parse_lmdb_mode(LmdbModeAtom, LmdbOptions),
+    parse_lmdb_crate(LmdbCrateAtom, LmdbCrateOptions),
     BasePreds = [dimension_n/1, max_depth/1, category_ancestor/4],
     prolog_target:generate_prolog_script(BasePreds, OptimizationOptions, ScriptCode),
     tmp_file_stream(text, TmpPath, TmpStream),
@@ -54,15 +57,19 @@ generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, OutputDir) :-
     delete_file(TmpPath),
     collect_wam_predicates(VariantAtom, Predicates),
     append([[module_name(wam_rust_matrix_bench), wam_fallback(true), emit_mode(EmitMode), parallel(true)],
-            KernelOptions, LmdbOptions], Options),
+            KernelOptions, LmdbOptions, LmdbCrateOptions], Options),
     write_wam_rust_project(Predicates, Options, OutputDir),
     write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom),
     format(user_error,
-           '[WAM-Rust-Matrix] variant=~w emit_mode=~w kernels=~w lmdb=~w output=~w~n',
-           [VariantAtom, EmitMode, KernelModeAtom, LmdbModeAtom, OutputDir]).
+           '[WAM-Rust-Matrix] variant=~w emit_mode=~w kernels=~w lmdb=~w lmdb_crate=~w output=~w~n',
+           [VariantAtom, EmitMode, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, OutputDir]).
 
 parse_lmdb_mode(none, []).
 parse_lmdb_mode(cursor, [lmdb_mode(cursor)]).
+
+parse_lmdb_crate(auto, [lmdb_crate(auto)]).
+parse_lmdb_crate(lmdb_zero, [lmdb_crate(lmdb_zero)]).
+parse_lmdb_crate(heed, [lmdb_crate(heed)]).
 
 parse_variant(seeded, [
     dialect(swi),

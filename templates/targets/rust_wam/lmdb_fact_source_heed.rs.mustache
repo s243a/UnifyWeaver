@@ -1,0 +1,146 @@
+// LMDB-backed edge lookup for the wam-rust runtime — heed implementation.
+//
+// Pair to `lmdb_fact_source_lmdb_zero.rs.mustache`. Same public API
+// (LmdbFactSource::open, load_s2i, load_i2s, lookup_parents,
+// lookup_children) so callers in R2/R4 don't see which crate backs it.
+//
+// Selected via codegen option `lmdb_crate(heed)`. See
+// docs/design/WAM_RUST_LMDB_CRATE_DECISION.md for why both are supported.
+//
+// heed-specific constraints addressed here:
+//
+// - **WriteTxn bootstrap**: heed's `RoTxn::drop` aborts the txn, which
+//   invalidates dbi handles opened in it.  A committed `WriteTxn`
+//   persists dbi handles across all subsequent read txns.  At startup
+//   we open a brief WriteTxn purely to register the four sub-dbs, commit
+//   it, and never write again.  Sub-dbs already exist in the fixture so
+//   `env.create_database` is effectively open-or-create.
+//
+// - **Env not opened with EnvFlags::READ_ONLY**: the WriteTxn bootstrap
+//   requires write access to the env (touches the lock file).  Read-only
+//   filesystems require lmdb-zero instead.
+//
+// - **Per-thread RoTxn**: each lookup opens its own short-lived RoTxn.
+//   Heed's `Env` is Send+Sync and clones cheaply (internally an Arc).
+//   `Database<K,V>` is Copy.  No Arc<Database> dance needed.
+//
+// Validated empirically against 1k_cats: 4 worker threads each see 5933
+// entries in category_parent (matching the lmdb-zero implementation).
+//
+// Phase 1 layout sub-dbs:
+//   s2i              (string  -> int32)   non-dupsort
+//   i2s              (int32   -> string)  non-dupsort
+//   category_parent  (int32 child  -> int32 parent)  DUP_SORT
+//   category_child   (int32 parent -> int32 child)   DUP_SORT
+
+use std::collections::HashMap;
+
+use heed::{Database, DatabaseFlags, EnvOpenOptions};
+use heed::types::Bytes;
+
+/// LMDB env + cached sub-db handles.  Cheap to clone (heed Env is Arc'd).
+#[derive(Clone)]
+pub struct LmdbFactSource {
+    pub env: heed::Env,
+    pub s2i: Database<Bytes, Bytes>,
+    pub i2s: Database<Bytes, Bytes>,
+    pub category_parent: Database<Bytes, Bytes>,
+    pub category_child: Database<Bytes, Bytes>,
+}
+
+impl LmdbFactSource {
+    /// Open the Phase 1 LMDB layout at `lmdb_path`.  Sub-db handles are
+    /// registered via a committed WriteTxn so they persist across
+    /// per-thread RoTxns.
+    pub fn open(lmdb_path: &str) -> Result<Self, heed::Error> {
+        let env = unsafe {
+            EnvOpenOptions::new()
+                .max_dbs(16)
+                .map_size(2 * 1024 * 1024 * 1024)
+                .open(lmdb_path)?
+        };
+
+        // Bootstrap: register all sub-dbs in a committed WriteTxn.
+        let mut wtxn = env.write_txn()?;
+        let s2i: Database<Bytes, Bytes> = env
+            .create_database(&mut wtxn, Some("s2i"))?;
+        let i2s: Database<Bytes, Bytes> = env
+            .create_database(&mut wtxn, Some("i2s"))?;
+        let category_parent: Database<Bytes, Bytes> = env
+            .database_options()
+            .types::<Bytes, Bytes>()
+            .flags(DatabaseFlags::DUP_SORT)
+            .name("category_parent")
+            .create(&mut wtxn)?;
+        let category_child: Database<Bytes, Bytes> = env
+            .database_options()
+            .types::<Bytes, Bytes>()
+            .flags(DatabaseFlags::DUP_SORT)
+            .name("category_child")
+            .create(&mut wtxn)?;
+        wtxn.commit()?;
+
+        Ok(LmdbFactSource { env, s2i, i2s, category_parent, category_child })
+    }
+
+    /// Read the s2i intern table into a HashMap.
+    pub fn load_s2i(&self) -> Result<HashMap<String, i32>, heed::Error> {
+        let rtxn = self.env.read_txn()?;
+        let mut out = HashMap::new();
+        for entry in self.s2i.iter(&rtxn)? {
+            let (k, v) = entry?;
+            out.insert(decode_string(k), decode_i32(v));
+        }
+        Ok(out)
+    }
+
+    /// Read the i2s reverse intern table.
+    pub fn load_i2s(&self) -> Result<HashMap<i32, String>, heed::Error> {
+        let rtxn = self.env.read_txn()?;
+        let mut out = HashMap::new();
+        for entry in self.i2s.iter(&rtxn)? {
+            let (k, v) = entry?;
+            out.insert(decode_i32(k), decode_string(v));
+        }
+        Ok(out)
+    }
+
+    /// All parents of `child_id` (forward edge sub-db, DUP_SORT).
+    pub fn lookup_parents(&self, child_id: i32) -> Result<Vec<i32>, heed::Error> {
+        self.lookup_via_dupsort(self.category_parent, child_id)
+    }
+
+    /// All children of `parent_id` (reverse edge sub-db, DUP_SORT).
+    pub fn lookup_children(&self, parent_id: i32) -> Result<Vec<i32>, heed::Error> {
+        self.lookup_via_dupsort(self.category_child, parent_id)
+    }
+
+    fn lookup_via_dupsort(
+        &self,
+        db: Database<Bytes, Bytes>,
+        key_id: i32,
+    ) -> Result<Vec<i32>, heed::Error> {
+        let rtxn = self.env.read_txn()?;
+        let key_bytes = key_id.to_le_bytes();
+        let mut out = Vec::new();
+        // heed's get_duplicates returns Option<RoRange> over all dups for the key.
+        if let Some(iter) = db.get_duplicates(&rtxn, &key_bytes)? {
+            for entry in iter {
+                let (_, v) = entry?;
+                out.push(decode_i32(v));
+            }
+        }
+        Ok(out)
+    }
+}
+
+fn decode_i32(bytes: &[u8]) -> i32 {
+    let mut buf = [0u8; 4];
+    let len = bytes.len().min(4);
+    buf[..len].copy_from_slice(&bytes[..len]);
+    i32::from_le_bytes(buf)
+}
+
+fn decode_string(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
