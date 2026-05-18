@@ -254,6 +254,20 @@
 :- dynamic user:wam_cpp_test_dcgcall_rep3/0.
 :- dynamic user:wam_cpp_test_dcgcall_rep0/0.
 :- dynamic user:wam_cpp_test_dcgcall_rep_no/0.
+:- dynamic user:wam_cpp_test_pairs_keys/0.
+:- dynamic user:wam_cpp_test_pairs_values/0.
+:- dynamic user:wam_cpp_test_pairs_kv/0.
+:- dynamic user:wam_cpp_test_take_some/0.
+:- dynamic user:wam_cpp_test_take_overlong/0.
+:- dynamic user:wam_cpp_test_take_zero/0.
+:- dynamic user:wam_cpp_test_drop_some/0.
+:- dynamic user:wam_cpp_test_drop_overlong/0.
+:- dynamic user:wam_cpp_test_drop_zero/0.
+:- dynamic user:wam_cpp_test_intersection/0.
+:- dynamic user:wam_cpp_test_intersection_empty/0.
+:- dynamic user:wam_cpp_test_union/0.
+:- dynamic user:wam_cpp_test_permutation_check/0.
+:- dynamic user:wam_cpp_test_permutation_no/0.
 :- dynamic user:wam_cpp_test_enum_member/0.
 
 user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
@@ -549,6 +563,25 @@ user:wam_cpp_test_dcgcall_rep0    :-
     phrase(dcg_rep0(dcg_emit_a, 0), []).
 user:wam_cpp_test_dcgcall_rep_no  :-
     \+ phrase(dcg_rep0(dcg_emit_a, 3), [a, a]).
+% lists_extra stdlib feature: pairs_keys/values/keys_values, take/3,
+% drop/3, intersection/3, union/3, permutation/2. All implemented as
+% user-module Prolog asserted at wam_cpp_target.pl load and pulled
+% in via include_stdlib(lists_extra) or include_stdlib(true).
+user:wam_cpp_test_pairs_keys     :- pairs_keys([a-1, b-2, c-3], [a, b, c]).
+user:wam_cpp_test_pairs_values   :- pairs_values([a-1, b-2, c-3], [1, 2, 3]).
+user:wam_cpp_test_pairs_kv       :-
+    pairs_keys_values([a-1, b-2], K, V), K = [a, b], V = [1, 2].
+user:wam_cpp_test_take_some      :- take(3, [a, b, c, d, e], [a, b, c]).
+user:wam_cpp_test_take_overlong  :- take(10, [a, b, c], [a, b, c]).
+user:wam_cpp_test_take_zero      :- take(0, [a, b, c], []).
+user:wam_cpp_test_drop_some      :- drop(2, [a, b, c, d, e], [c, d, e]).
+user:wam_cpp_test_drop_overlong  :- drop(10, [a, b, c], []).
+user:wam_cpp_test_drop_zero      :- drop(0, [a, b, c], [a, b, c]).
+user:wam_cpp_test_intersection   :- intersection([1, 2, 3, 4], [3, 4, 5, 6], [3, 4]).
+user:wam_cpp_test_intersection_empty :- intersection([1, 2], [3, 4], []).
+user:wam_cpp_test_union          :- union([1, 2, 3], [3, 4, 5], [1, 2, 3, 4, 5]).
+user:wam_cpp_test_permutation_check :- permutation([a, b, c], [c, a, b]).
+user:wam_cpp_test_permutation_no    :- \+ permutation([a, b, c], [a, b, d]).
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
 
@@ -3566,6 +3599,50 @@ test(cpp_e2e_dcg_call, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_dcgcall_rep3/0',       [], true),
           run_query(BinPath, 'wam_cpp_test_dcgcall_rep0/0',       [], true),
           run_query(BinPath, 'wam_cpp_test_dcgcall_rep_no/0',     [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lists_extra, [condition(cpp_compiler_available)]) :-
+    % lists_extra stdlib: pairs_keys/2, pairs_values/2,
+    % pairs_keys_values/3, take/3, drop/3, intersection/3, union/3,
+    % permutation/2. All implemented as user-module Prolog asserted
+    % at wam_cpp_target.pl load and auto-prepended via
+    % include_stdlib(lists_extra).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_le', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_pairs_keys/0,
+                               user:wam_cpp_test_pairs_values/0,
+                               user:wam_cpp_test_pairs_kv/0,
+                               user:wam_cpp_test_take_some/0,
+                               user:wam_cpp_test_take_overlong/0,
+                               user:wam_cpp_test_take_zero/0,
+                               user:wam_cpp_test_drop_some/0,
+                               user:wam_cpp_test_drop_overlong/0,
+                               user:wam_cpp_test_drop_zero/0,
+                               user:wam_cpp_test_intersection/0,
+                               user:wam_cpp_test_intersection_empty/0,
+                               user:wam_cpp_test_union/0,
+                               user:wam_cpp_test_permutation_check/0,
+                               user:wam_cpp_test_permutation_no/0],
+                              [emit_main(true),
+                               include_stdlib(lists_extra)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_pairs_keys/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_pairs_values/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_pairs_kv/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_take_some/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_take_overlong/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_take_zero/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_drop_some/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_drop_overlong/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_drop_zero/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_intersection/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_intersection_empty/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_union/0',              [], true),
+          run_query(BinPath, 'wam_cpp_test_permutation_check/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_permutation_no/0',     [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
