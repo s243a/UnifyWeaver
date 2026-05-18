@@ -178,6 +178,7 @@ python examples/benchmark/benchmark_csharp_query_effective_distance_artifact_bac
   --lookup-keys 4 \
   --lookup-repetitions 1 \
   --repetitions 1 \
+  --summary-output output/csharp-query-effective-distance-summary.tsv \
   --format policy-actionable-markdown
 ```
 

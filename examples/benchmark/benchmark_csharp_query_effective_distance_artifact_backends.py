@@ -586,6 +586,11 @@ def load_summary_tsv(path: Path) -> list[SummaryRow]:
         ]
 
 
+def write_summary_tsv(path: Path, rows: list[SummaryRow]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_summary_tsv(rows) + "\n")
+
+
 def format_mode_values(values: dict[str, float], digits: int = 3) -> str:
     def format_value(value: float) -> str:
         return f"{value:.{digits}f}" if digits > 0 else str(int(value))
@@ -971,6 +976,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="read an existing summary-tsv artifact and render summary/policy reports without rerunning benchmarks",
     )
+    parser.add_argument(
+        "--summary-output",
+        type=Path,
+        default=None,
+        help="write the computed summary-tsv artifact while still printing the requested report",
+    )
     parser.add_argument("--keep-temp", action="store_true", help="keep the generated C# benchmark project")
     args = parser.parse_args(argv)
 
@@ -986,6 +997,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--max-competing-cpu-percent must be non-negative")
 
     if args.summary_input is not None:
+        if args.summary_output is not None:
+            parser.error("--summary-output cannot be used with --summary-input")
         if args.format not in SUMMARY_INPUT_FORMATS:
             parser.error("--summary-input requires a summary-* or policy-* --format")
         try:
@@ -1065,8 +1078,18 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
 
+    if args.format in SUMMARY_INPUT_FORMATS or args.summary_output is not None:
+        summaries = summarize(rows)
+        if args.summary_output is not None:
+            try:
+                write_summary_tsv(args.summary_output, summaries)
+            except OSError as error:
+                parser.error(str(error))
+    else:
+        summaries = []
+
     if args.format in SUMMARY_INPUT_FORMATS:
-        print(render_summary_based_format(args.format, summarize(rows)))
+        print(render_summary_based_format(args.format, summaries))
     elif args.format == "markdown":
         print(render_markdown(rows))
     else:
