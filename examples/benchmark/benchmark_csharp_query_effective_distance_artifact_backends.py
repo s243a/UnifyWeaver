@@ -135,6 +135,18 @@ POLICY_COMPARE_HEADERS = [
     "values_by_mode",
 ]
 
+SUMMARY_INPUT_FORMATS = {
+    "summary-tsv",
+    "summary-markdown",
+    "summary-full-markdown",
+    "policy-tsv",
+    "policy-markdown",
+    "policy-compare-tsv",
+    "policy-compare-markdown",
+    "policy-actionable-tsv",
+    "policy-actionable-markdown",
+}
+
 ACCESS_SHAPE_METRICS = (
     ("lookup_c0", "lookup_ms_by_mode"),
     ("lookup_c1", "lookup_col1_ms_by_mode"),
@@ -557,6 +569,23 @@ def summarize(rows: list[BenchmarkRow]) -> list[SummaryRow]:
     return summaries
 
 
+def load_summary_tsv(path: Path) -> list[SummaryRow]:
+    with path.open(newline="") as stream:
+        reader = csv.DictReader(stream, delimiter="\t")
+        if reader.fieldnames is None:
+            raise ValueError(f"{path} is empty")
+        missing = [column for column in SUMMARY_HEADERS if column not in reader.fieldnames]
+        if missing:
+            raise ValueError(f"{path} is missing summary column(s): {', '.join(missing)}")
+        extra = [column for column in reader.fieldnames if column not in SUMMARY_HEADERS]
+        if extra:
+            raise ValueError(f"{path} has unexpected summary column(s): {', '.join(extra)}")
+        return [
+            SummaryRow({column: row[column] for column in SUMMARY_HEADERS})
+            for row in reader
+        ]
+
+
 def format_mode_values(values: dict[str, float], digits: int = 3) -> str:
     def format_value(value: float) -> str:
         return f"{value:.{digits}f}" if digits > 0 else str(int(value))
@@ -812,6 +841,28 @@ def render_policy_actionable_markdown(rows: list[PolicyCompareRow]) -> str:
     return render_policy_compare_markdown(policy_actionable_rows(rows))
 
 
+def render_summary_based_format(format_name: str, summaries: list[SummaryRow]) -> str:
+    if format_name == "summary-tsv":
+        return render_summary_tsv(summaries)
+    if format_name == "summary-full-markdown":
+        return render_summary_full_markdown(summaries)
+    if format_name == "summary-markdown":
+        return render_summary_markdown(summaries)
+    if format_name == "policy-tsv":
+        return render_policy_tsv(policy_rows_from_summaries(summaries))
+    if format_name == "policy-markdown":
+        return render_policy_markdown(policy_rows_from_summaries(summaries))
+    if format_name == "policy-compare-tsv":
+        return render_policy_compare_tsv(policy_compare_rows_from_summaries(summaries))
+    if format_name == "policy-compare-markdown":
+        return render_policy_compare_markdown(policy_compare_rows_from_summaries(summaries))
+    if format_name == "policy-actionable-tsv":
+        return render_policy_actionable_tsv(policy_compare_rows_from_summaries(summaries))
+    if format_name == "policy-actionable-markdown":
+        return render_policy_actionable_markdown(policy_compare_rows_from_summaries(summaries))
+    raise ValueError(f"{format_name} is not a summary-based format")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Compare C# query artifact backends on real effective-distance support relations."
@@ -914,6 +965,12 @@ def main(argv: list[str] | None = None) -> int:
         ),
         default="tsv",
     )
+    parser.add_argument(
+        "--summary-input",
+        type=Path,
+        default=None,
+        help="read an existing summary-tsv artifact and render summary/policy reports without rerunning benchmarks",
+    )
     parser.add_argument("--keep-temp", action="store_true", help="keep the generated C# benchmark project")
     args = parser.parse_args(argv)
 
@@ -927,6 +984,18 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--min-free-memory-mib must be positive")
     if args.max_competing_cpu_percent < 0:
         parser.error("--max-competing-cpu-percent must be non-negative")
+
+    if args.summary_input is not None:
+        if args.format not in SUMMARY_INPUT_FORMATS:
+            parser.error("--summary-input requires a summary-* or policy-* --format")
+        try:
+            summaries = load_summary_tsv(args.summary_input)
+        except OSError as error:
+            parser.error(str(error))
+        except ValueError as error:
+            parser.error(str(error))
+        print(render_summary_based_format(args.format, summaries))
+        return 0
 
     scales = [scale.strip() for scale in args.scales.split(",") if scale.strip()]
     if not scales:
@@ -996,25 +1065,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
 
-    summaries = summarize(rows) if args.format.startswith(("summary-", "policy-")) else []
-    if args.format == "summary-tsv":
-        print(render_summary_tsv(summaries))
-    elif args.format == "summary-full-markdown":
-        print(render_summary_full_markdown(summaries))
-    elif args.format == "summary-markdown":
-        print(render_summary_markdown(summaries))
-    elif args.format == "policy-tsv":
-        print(render_policy_tsv(policy_rows_from_summaries(summaries)))
-    elif args.format == "policy-markdown":
-        print(render_policy_markdown(policy_rows_from_summaries(summaries)))
-    elif args.format == "policy-compare-tsv":
-        print(render_policy_compare_tsv(policy_compare_rows_from_summaries(summaries)))
-    elif args.format == "policy-compare-markdown":
-        print(render_policy_compare_markdown(policy_compare_rows_from_summaries(summaries)))
-    elif args.format == "policy-actionable-tsv":
-        print(render_policy_actionable_tsv(policy_compare_rows_from_summaries(summaries)))
-    elif args.format == "policy-actionable-markdown":
-        print(render_policy_actionable_markdown(policy_compare_rows_from_summaries(summaries)))
+    if args.format in SUMMARY_INPUT_FORMATS:
+        print(render_summary_based_format(args.format, summarize(rows)))
     elif args.format == "markdown":
         print(render_markdown(rows))
     else:
