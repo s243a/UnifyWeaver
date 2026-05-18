@@ -53,6 +53,36 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing summary column"):
                 MODULE.load_summary_tsv(path)
 
+    def test_write_summary_tsv_creates_parent_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "nested" / "summary.tsv"
+            row = MODULE.SummaryRow(
+                {
+                    "scale": "dev",
+                    "relation": "category_parent",
+                    "rows": "6",
+                    "distinct_categories": "4",
+                    "lookup_keys": "2",
+                    "best_lookup_mode": "mmap-array",
+                    "best_lookup_col1_mode": "mmap-array",
+                    "best_bucket_mode": "mmap-array",
+                    "best_bucket_col1_mode": "mmap-array",
+                    "best_scan_mode": "preload",
+                    "smallest_artifact_mode": "mmap-array",
+                    "lookup_ms_by_mode": "mmap-array:1.250",
+                    "lookup_col1_ms_by_mode": "mmap-array:1.500",
+                    "bucket_ms_by_mode": "mmap-array:2.000",
+                    "bucket_col1_ms_by_mode": "mmap-array:2.500",
+                    "scan_ms_by_mode": "preload:1.000",
+                    "artifact_bytes_by_mode": "mmap-array:4096|preload:0",
+                }
+            )
+
+            MODULE.write_summary_tsv(path, [row])
+            loaded = MODULE.load_summary_tsv(path)
+
+        self.assertEqual([summary.values for summary in loaded], [row.values])
+
     def test_summary_input_policy_actionable_markdown_uses_existing_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "summary.tsv"
@@ -126,6 +156,32 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("--summary-input requires a summary-* or policy-* --format", result.stderr)
+
+    def test_summary_input_rejects_summary_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / "summary.tsv"
+            output_path = Path(tmp) / "copy.tsv"
+            input_path.write_text("\t".join(MODULE.SUMMARY_HEADERS) + "\n")
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "--summary-input",
+                    str(input_path),
+                    "--summary-output",
+                    str(output_path),
+                    "--format",
+                    "summary-tsv",
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=60,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--summary-output cannot be used with --summary-input", result.stderr)
 
     def test_skip_missing_scale_errors_when_nothing_remains(self) -> None:
         result = subprocess.run(
@@ -242,6 +298,62 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
         self.assertIn("| Scale | Relation | Rows | Distinct values | Lookup keys | Best lookup c0 | Best lookup c1 |", result.stdout)
         self.assertIn("| dev |", result.stdout)
         self.assertIn("Smallest artifact", result.stdout)
+
+    def test_summary_output_writes_reusable_summary_artifact(self) -> None:
+        if shutil.which("dotnet") is None:
+            self.skipTest("dotnet is not available")
+        if not LIGHTNINGDB_PACKAGE.exists():
+            self.skipTest("LightningDB 0.21.0 package is not available in the local NuGet cache")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            summary_path = Path(tmp) / "summary" / "effective-distance.tsv"
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "--scales",
+                    "dev",
+                    "--lookup-keys",
+                    "4",
+                    "--lookup-repetitions",
+                    "1",
+                    "--repetitions",
+                    "1",
+                    "--format",
+                    "summary-markdown",
+                    "--summary-output",
+                    str(summary_path),
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=180,
+            )
+            self.assertEqual(result.returncode, 0, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+            self.assertTrue(summary_path.exists())
+            summaries = MODULE.load_summary_tsv(summary_path)
+
+            offline = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "--summary-input",
+                    str(summary_path),
+                    "--format",
+                    "policy-actionable-markdown",
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=60,
+            )
+
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0].values["scale"], "dev")
+        self.assertEqual(offline.returncode, 0, msg=f"stdout:\n{offline.stdout}\nstderr:\n{offline.stderr}")
+        self.assertIn("| Policy mode | Policy artifact value | Policy vs best |", offline.stdout)
 
     def test_policy_actionable_markdown_cli_reports_policy_diffs(self) -> None:
         if shutil.which("dotnet") is None:
