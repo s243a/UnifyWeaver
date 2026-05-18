@@ -10,6 +10,15 @@ UnifyWeaver has two parser problems that should stay separate:
 PR #2086 addresses the first problem. Runtime parser transpilation addresses
 the second one.
 
+Related status docs:
+
+- `RUNTIME_PARSER_TRANSPILATION_SPECIFICATION.md` — the target-runtime
+  contract and current R status.
+- `RUNTIME_PARSER_TRANSPILATION_IMPLEMENTATION_PLAN.md` — phased rollout.
+- `WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md` — a separate cross-target runtime
+  feature effort that uses a similar "reference target first, then generalize"
+  documentation pattern.
+
 The R target already demonstrates why the runtime parser matters. Its
 `read/2`, `read_term_from_atom/2,3`, reverse `term_to_atom/2`, and CLI argument
 parsing all need an operator-aware Prolog term parser in the generated runtime.

@@ -1,8 +1,11 @@
 # WAM C++: ISO Error Terms — Specification
 
-Concrete shape of the ISO-error dispatch we're implementing in
+Concrete shape of the ISO-error dispatch implemented in
 `wam_cpp_target.pl`. For *why* each decision, see
 `WAM_CPP_ISO_ERRORS_PHILOSOPHY.md`.
+
+This is now the shipped C++ reference shape. For cross-target adoption status,
+see `WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md`.
 
 ## 1. Config schema
 
@@ -414,8 +417,8 @@ test_iso_errors_audit                — given a sample config +
                                         fields.
 ```
 
-Once the first ISO builtin lands (PR #2 in §10), one more
-correctness test gates the catch-with-unbound-context path:
+The first ISO builtin also added a correctness test for the
+catch-with-unbound-context path:
 
 ```
 cpp_e2e_iso_unbound_context — Goal that throws an ISO error;
@@ -451,19 +454,15 @@ shape.
 
 ## 10. Implementation phasing
 
-This is sized for **three small PRs** so each is reviewable:
+This originally landed as **three small PR-sized phases** so each part stayed
+reviewable. All three phases are now represented in the C++ target:
 
-1. **Plumbing PR**: config loader, `iso_errors_rewrite/4` machinery,
-   default→iso and default→lax key tables (initially empty),
-   `throw_iso_error` runtime helper, audit predicate + pretty
-   printer. No behavior change yet — tables are empty so nothing
-   gets rewritten. Smoke-tested by config-loader + audit unit tests.
-2. **First builtin PR**: add `is_iso/2` and `is_lax/2` registrations
-   and the matching entries to both key tables. Tests cover
-   lax-still-works + ISO-throws + explicit-lax-bypass-of-rewrite.
-3. **Sweep PR**: add the remaining arith compares + `succ_iso/2` /
-   `succ_lax/2` and their table entries. Tests for each. Also
-   ships the lax IEEE-754 float-divide behavior change documented
-   in §6.1.
+1. **Plumbing**: config loader, `iso_errors_rewrite/4` machinery,
+   `throw_iso_error` runtime helper, audit predicate + pretty printer.
+2. **First builtin**: `is_iso/2` and `is_lax/2` registrations and
+   matching entries in both key tables.
+3. **Sweep**: arithmetic compare variants plus `succ_iso/2` /
+   `succ_lax/2`, including the lax IEEE-754 float-divide behavior
+   documented in §6.1.
 
 Future builtins follow the §7 pattern incrementally.

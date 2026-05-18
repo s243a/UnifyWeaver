@@ -35,34 +35,35 @@ Related Elixir-specific docs (different scope):
   internally for `:fail` propagation across choice-point retry
   (see `wam_elixir_target.pl:423-426`).
 
-What it lacks, vs the C++ reference:
+What remains incomplete, vs the C++ reference:
 
-- `catch/3` and `throw/1` — Prolog-level exception handling.
-- ISO error machinery: `is_iso/2` / `is_lax/2`, the iso/lax
-  variants of arithmetic compares, `succ_iso/2`, the per-predicate
-  rewrite hook, the config loader, the audit predicate.
 - A full meta-call surface: `call/N`, goal-term dispatch (`,/2`,
   `;/2`, `->/2` as data passed to `catch` / `findall`),
   `bagof/3`, `setof/3`.
 - Items API consumption — Elixir is one of 11 targets that still
   parses WAM text.
 
-The Rust and Haskell targets sit roughly where Elixir does on
-these axes. C++ pulled ahead through the recent ISO + meta-call
-PR series (#2079 → #2088 → #2106 → #2112). Closing the Elixir gap
-puts it level with C++ and ahead of Rust/Haskell on exception
-semantics.
+The original version of this doc listed `catch/3`, `throw/1`, and the ISO
+error machinery as missing. Those pieces have now landed: Elixir has the
+three-form ISO tables, config loader, per-predicate rewrite, audit predicate,
+`is_iso/2` / `is_lax/2`, arithmetic compare variants, and `succ_iso/2` /
+`succ_lax/2`. The remaining parity work is therefore more about meta-call
+completeness, aggregate builtins, and Items API migration than the ISO-error
+stack itself.
+
+The Rust and Haskell targets now sit behind C++ and Elixir on exception
+semantics. C++ was the first implementation; Elixir is the second adopter and
+proves the three-form ISO design generalizes beyond C++.
 
 ## 2. Why now, and why Elixir
 
 Three forces converging:
 
-- **The ISO error stack landed cleanly for C++.** That work
+- **The ISO error stack landed cleanly for C++ and then Elixir.** That work
   established a reusable shape — three-form keys (default / iso /
-  lax), per-predicate config-driven rewrite, audit predicate. The
-  next target to adopt this pattern proves it generalises and gives
-  the design a second consumer that informs whether anything in the
-  C++ shape was accidentally C++-specific.
+  lax), per-predicate config-driven rewrite, audit predicate. Elixir's adoption
+  proves it generalises and gives the design a second consumer that informs
+  whether anything in the C++ shape was accidentally C++-specific.
 - **Elixir is the natural second adopter.** Rust and Haskell
   haven't received recent feature investment; their generators are
   smaller and could fall further behind without surfacing pressure

@@ -153,6 +153,13 @@ The R target currently has an inline parser in `runtime.R.mustache`, while
 `prolog_term_parser.pl` compiles to WAM-R and runs representative parser
 drivers end to end.
 
+The shared generator-side capability hook has also landed in
+`src/unifyweaver/targets/wam_runtime_parser_capability.pl`. R defaults to
+`native(...)`; Lua records `none` and rejects statically visible
+parser-dependent bodies instead of emitting silent stubs. Other targets should
+opt in only after they have compile and runtime proof tests for the selected
+mode.
+
 The compile and runtime guard is:
 
 ```text

@@ -467,8 +467,7 @@ Why phase 1 alone before any target migration:
 - The items pipeline + text printer are the **load-bearing
   refactor**. Text round-trip tests prove it works.
 - Once landed, target migrations are independent and small. They
-  can stack with other PRs (e.g. resume the ISO sweep on the C++
-  target after Phase 2 PR #3 migrates wam_cpp_target).
+  can stack with other PRs that need structured instruction rewrites.
 - Each migration PR is small enough that bisecting any regression
   is trivial.
 
@@ -481,15 +480,13 @@ Why migrate small targets first:
   edge cases. Better to handle those after the pattern is proven
   on three or four lighter targets.
 
-## 9. ISO-sweep interaction
+## 9. ISO-Sweep Interaction
 
-PR #3 of the ISO sweep (arith compares + `succ_iso/2`) is on hold
-behind this refactor in the C++ target. After Phase 1 + Phase 2 PR
-for wam_cpp_target lands, the ISO sweep ships against the items
-API, with a single rewrite rule per ISO-aware key (instead of four
-shape-specific rules per key). Net: the ISO sweep gets ~70 LOC
-smaller.
+The C++ ISO sweep (arith compares + `succ_iso/2`) did not stay blocked on this
+refactor; it shipped against the existing text/items compatibility path. That
+means the C++ and Elixir ISO implementations still carry multi-shape rewrite
+logic for `builtin_call`, `put_structure`, `call`, and `execute`.
 
-If items-API migration takes too long, the ISO sweep can land
-against text-parsing as designed. Doc updated to reflect whichever
-order ships first.
+The interaction remains important for future target migrations. Once a target
+consumes structured WAM items directly, ISO rewrites become a single
+`swap_key_in_item/3`-style pass instead of several text-shape rules per key.

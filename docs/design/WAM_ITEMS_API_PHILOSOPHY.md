@@ -147,15 +147,15 @@ a one-line `swap_key_in_item/3` walk over a typed list. With text,
 each new shape is "what does the WAM printer write here? hope I
 didn't miss a case."
 
-PR #3 of the ISO sweep (arith compares + `succ_iso/2`) needs the
-same multi-shape rewrite for `>/2`, `</2`, `>=/2`, `=</2`,
-`=:=/2`, `=\=/2`, `succ/2`. That's seven more keys × four shapes
-= 28 rewrite rules to write defensively in text-land, vs 14 table
-entries in items-land.
+The later ISO sweep (arith compares + `succ_iso/2`) needed the same
+multi-shape rewrite for `>/2`, `</2`, `>=/2`, `=</2`, `=:=/2`, `=\=/2`,
+`succ/2`. That was seven more keys × four shapes = 28 rewrite rules to write
+defensively in text-land, vs 14 table entries in items-land.
 
-The items API isn't a prerequisite for shipping the ISO sweep, but
-**doing the items refactor first** would make the sweep half the
-size and its rewrite rules trivially auditable.
+The items API was not a prerequisite for shipping the ISO sweep; the C++ and
+Elixir sweeps landed against the text/items compatibility layer. The lesson
+still holds for future targets: doing the items refactor first makes
+per-key rewrites smaller and easier to audit.
 
 ## 5. Migration scope
 

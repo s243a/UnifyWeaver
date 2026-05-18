@@ -8,6 +8,8 @@ configuring Prolog predicates."
 
 Companion docs:
 - `WAM_CPP_ISO_ERRORS_SPECIFICATION.md` — the concrete shape we ship.
+- `WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md` — how the C++ design generalizes
+  across targets, and which targets have adopted it.
 
 ## 1. What ISO errors are
 
@@ -246,10 +248,11 @@ context-switch.
 
 - **Runtime mode switching.** The mode is fixed at compile time. No
   `set_prolog_flag(iso, true)` equivalent.
-- **Wildcard / module-level rules.** Overrides are per
-  predicate-indicator. If a module wants all its predicates ISO, it
-  lists them. We can add wildcards (`module:*` or `*/*`) later
-  without breaking the per-predicate form.
+- **Wildcard rules.** Overrides are per predicate-indicator. Module-qualified
+  predicate indicators (`module:name/arity`) are now supported by the C++ spec
+  and implementation. If a module wants all its predicates ISO, it still lists
+  them one by one. We can add wildcards (`module:*` or `*/*`) later without
+  breaking the per-predicate form.
 - **Builtins not currently shipped.** `atom_length/2`, `functor/3`,
   `arg/3`, etc. would need their own audit when added — see the
   perf discussion in §2.
@@ -310,11 +313,12 @@ with the implementation, not the docs.
 ## 9. Audit tooling
 
 User feedback called this out as a good idea; moving it from
-"probably not" into the plan.
+"probably not" into the plan. This has now shipped for C++ as
+`wam_cpp_iso_audit/3`; Elixir mirrors the same idea with
+`wam_elixir_iso_audit/3`.
 
-Ship a `wam_cpp_iso_audit/3` predicate alongside the rewrite. Given
-a predicate list and a config, it walks each predicate's compiled
-WAM and reports:
+The C++ audit predicate takes a predicate list and a config, walks each
+predicate's compiled WAM, and reports:
 
 - Which `builtin_call` sites would resolve to ISO vs lax under the
   current config.
