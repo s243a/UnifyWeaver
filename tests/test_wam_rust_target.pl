@@ -1376,6 +1376,156 @@ test_project_cargo_content :-
     ;   fail_test(Test, 'Cargo.toml template rendering failed')
     ).
 
+%% LMDB codegen tests (R1 + R1.5 of the Rust-LMDB arc).
+%% Verify conditional emission of LmdbFactSource module + Cargo.toml deps
+%% across lmdb_mode(none|cursor) x lmdb_crate(lmdb_zero|heed|auto).
+
+test_resolve_lmdb_crate_auto_defaults_lmdb_zero :-
+    Test = 'WAM-Rust: resolve_lmdb_crate(auto) -> lmdb_zero',
+    (   resolve_lmdb_crate(auto, lmdb_zero)
+    ->  pass(Test)
+    ;   fail_test(Test, 'auto should resolve to lmdb_zero (current default)')
+    ).
+
+test_resolve_lmdb_crate_explicit_lmdb_zero :-
+    Test = 'WAM-Rust: resolve_lmdb_crate(lmdb_zero) -> lmdb_zero',
+    (   resolve_lmdb_crate(lmdb_zero, lmdb_zero)
+    ->  pass(Test)
+    ;   fail_test(Test, 'explicit lmdb_zero should resolve to lmdb_zero')
+    ).
+
+test_resolve_lmdb_crate_explicit_heed :-
+    Test = 'WAM-Rust: resolve_lmdb_crate(heed) -> heed',
+    (   resolve_lmdb_crate(heed, heed)
+    ->  pass(Test)
+    ;   fail_test(Test, 'explicit heed should resolve to heed')
+    ).
+
+test_lmdb_mode_none_omits_module :-
+    Test = 'WAM-Rust: lmdb_mode(none) emits no lmdb_fact_source.rs and no lmdb deps',
+    TmpDir = 'output/test_wam_rust_lmdb_none',
+    (   (   exists_directory(TmpDir)
+        ->  catch(delete_directory_and_contents(TmpDir), _, true)
+        ;   true
+        ),
+        write_wam_rust_project(
+            [user:test_simple_fact/2],
+            [module_name('lmdb_none_test'), lmdb_mode(none)],
+            TmpDir),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lmdb_fact_source.rs', LmdbPath),
+        \+ exists_file(LmdbPath),
+        directory_file_path(TmpDir, 'Cargo.toml', CargoPath),
+        read_file_to_string(CargoPath, CargoStr, []),
+        \+ sub_string(CargoStr, _, _, _, 'lmdb-zero'),
+        \+ sub_string(CargoStr, _, _, _, 'heed ='),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        \+ sub_string(LibStr, _, _, _, 'pub mod lmdb_fact_source'),
+        catch(delete_directory_and_contents(TmpDir), _, true)
+    ->  pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'lmdb_mode(none) regression: file or deps unexpectedly present')
+    ).
+
+test_lmdb_mode_cursor_auto_uses_lmdb_zero :-
+    Test = 'WAM-Rust: lmdb_mode(cursor) + lmdb_crate(auto) -> lmdb-zero',
+    TmpDir = 'output/test_wam_rust_lmdb_auto',
+    (   (   exists_directory(TmpDir)
+        ->  catch(delete_directory_and_contents(TmpDir), _, true)
+        ;   true
+        ),
+        write_wam_rust_project(
+            [user:test_simple_fact/2],
+            [module_name('lmdb_auto_test'),
+             lmdb_mode(cursor), lmdb_crate(auto)],
+            TmpDir),
+        directory_file_path(TmpDir, 'Cargo.toml', CargoPath),
+        read_file_to_string(CargoPath, CargoStr, []),
+        sub_string(CargoStr, _, _, _, 'lmdb-zero = "0.4"'),
+        \+ sub_string(CargoStr, _, _, _, 'heed ='),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lmdb_fact_source.rs', LmdbPath),
+        exists_file(LmdbPath),
+        read_file_to_string(LmdbPath, LmdbStr, []),
+        sub_string(LmdbStr, _, _, _, 'lmdb_zero'),
+        sub_string(LmdbStr, _, _, _, 'pub struct LmdbFactSource'),
+        sub_string(LmdbStr, _, _, _, 'pub fn reachable_to_root'),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        sub_string(LibStr, _, _, _, 'pub mod lmdb_fact_source'),
+        catch(delete_directory_and_contents(TmpDir), _, true)
+    ->  pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'lmdb_mode(cursor) + auto failed to emit lmdb-zero variant')
+    ).
+
+test_lmdb_mode_cursor_heed :-
+    Test = 'WAM-Rust: lmdb_mode(cursor) + lmdb_crate(heed) -> heed',
+    TmpDir = 'output/test_wam_rust_lmdb_heed',
+    (   (   exists_directory(TmpDir)
+        ->  catch(delete_directory_and_contents(TmpDir), _, true)
+        ;   true
+        ),
+        write_wam_rust_project(
+            [user:test_simple_fact/2],
+            [module_name('lmdb_heed_test'),
+             lmdb_mode(cursor), lmdb_crate(heed)],
+            TmpDir),
+        directory_file_path(TmpDir, 'Cargo.toml', CargoPath),
+        read_file_to_string(CargoPath, CargoStr, []),
+        sub_string(CargoStr, _, _, _, 'heed = "0.20"'),
+        \+ sub_string(CargoStr, _, _, _, 'lmdb-zero'),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lmdb_fact_source.rs', LmdbPath),
+        exists_file(LmdbPath),
+        read_file_to_string(LmdbPath, LmdbStr, []),
+        sub_string(LmdbStr, _, _, _, 'use heed::'),
+        sub_string(LmdbStr, _, _, _, 'pub struct LmdbFactSource'),
+        sub_string(LmdbStr, _, _, _, 'pub fn reachable_to_root'),
+        sub_string(LmdbStr, _, _, _, 'env.write_txn'),  % bootstrap requirement
+        catch(delete_directory_and_contents(TmpDir), _, true)
+    ->  pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'lmdb_mode(cursor) + heed failed to emit heed variant')
+    ).
+
+test_lmdb_crate_mutual_exclusion :-
+    Test = 'WAM-Rust: Cargo.toml never lists both lmdb-zero and heed',
+    TmpDirA = 'output/test_wam_rust_lmdb_mut_a',
+    TmpDirB = 'output/test_wam_rust_lmdb_mut_b',
+    (   (   exists_directory(TmpDirA)
+        ->  catch(delete_directory_and_contents(TmpDirA), _, true)
+        ;   true
+        ),
+        (   exists_directory(TmpDirB)
+        ->  catch(delete_directory_and_contents(TmpDirB), _, true)
+        ;   true
+        ),
+        write_wam_rust_project([user:test_simple_fact/2],
+            [module_name('mut_a'), lmdb_mode(cursor), lmdb_crate(lmdb_zero)],
+            TmpDirA),
+        write_wam_rust_project([user:test_simple_fact/2],
+            [module_name('mut_b'), lmdb_mode(cursor), lmdb_crate(heed)],
+            TmpDirB),
+        directory_file_path(TmpDirA, 'Cargo.toml', CargoA),
+        directory_file_path(TmpDirB, 'Cargo.toml', CargoB),
+        read_file_to_string(CargoA, StrA, []),
+        read_file_to_string(CargoB, StrB, []),
+        % A contains lmdb-zero and NOT heed
+        sub_string(StrA, _, _, _, 'lmdb-zero'),
+        \+ sub_string(StrA, _, _, _, 'heed ='),
+        % B contains heed and NOT lmdb-zero
+        sub_string(StrB, _, _, _, 'heed = "0.20"'),
+        \+ sub_string(StrB, _, _, _, 'lmdb-zero'),
+        catch(delete_directory_and_contents(TmpDirA), _, true),
+        catch(delete_directory_and_contents(TmpDirB), _, true)
+    ->  pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDirA), _, true),
+        catch(delete_directory_and_contents(TmpDirB), _, true),
+        fail_test(Test, 'Cargo.toml leaked both lmdb crates or wrong one')
+    ).
+
 test_project_with_wam_fallback :-
     Test = 'WAM-Rust: project includes WAM-compiled predicates',
     TmpDir = 'output/test_wam_rust_fallback',
@@ -1772,6 +1922,13 @@ run_tests :-
     test_compile_wam_runtime_output,
     test_write_wam_rust_project,
     test_project_cargo_content,
+    test_resolve_lmdb_crate_auto_defaults_lmdb_zero,
+    test_resolve_lmdb_crate_explicit_lmdb_zero,
+    test_resolve_lmdb_crate_explicit_heed,
+    test_lmdb_mode_none_omits_module,
+    test_lmdb_mode_cursor_auto_uses_lmdb_zero,
+    test_lmdb_mode_cursor_heed,
+    test_lmdb_crate_mutual_exclusion,
     test_project_with_wam_fallback,
     test_instruction_parser,
     test_instruction_parser_labels,

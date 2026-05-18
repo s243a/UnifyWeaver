@@ -132,6 +132,36 @@ impl LmdbFactSource {
         }
         Ok(out)
     }
+
+    /// Cursor-based demand-set BFS — R2 of the Rust-LMDB arc.
+    /// Same semantics as the lmdb-zero implementation: walk down from
+    /// `root_id` through `category_child` edges up to `max_depth` hops,
+    /// returning every reachable int ID (including the root itself).
+    ///
+    /// Sequential; parallel frontier-split is deferred to a future phase.
+    /// Each `lookup_children` call opens its own short-lived RoTxn.
+    pub fn reachable_to_root(
+        &self,
+        root_id: i32,
+        max_depth: usize,
+    ) -> Result<std::collections::HashSet<i32>, heed::Error> {
+        use std::collections::{HashSet, VecDeque};
+        let mut reachable: HashSet<i32> = HashSet::new();
+        reachable.insert(root_id);
+        let mut queue: VecDeque<(i32, usize)> = VecDeque::from([(root_id, 0)]);
+        while let Some((current, depth)) = queue.pop_front() {
+            if depth >= max_depth {
+                continue;
+            }
+            let children = self.lookup_children(current)?;
+            for child in children {
+                if reachable.insert(child) {
+                    queue.push_back((child, depth + 1));
+                }
+            }
+        }
+        Ok(reachable)
+    }
 }
 
 fn decode_i32(bytes: &[u8]) -> i32 {
