@@ -57,11 +57,11 @@ Survey columns: shipped means code and tests exist in the target today.
 
 | Component | C++ | Elixir | Other WAM targets |
 |---|---|---|---|
-| Prolog config loader (`iso_errors_config/1`, inline overrides) | shipped | shipped | not adopted |
-| Bare-PI multi-module warning | shipped | shipped | not adopted |
-| Per-predicate default rewrite | shipped | shipped | not adopted |
+| Prolog config loader (`iso_errors_config/1`, inline overrides) | shipped | shipped | Python plumbing shipped; other targets not adopted |
+| Bare-PI multi-module warning | shipped | shipped | Python plumbing shipped; other targets not adopted |
+| Per-predicate default rewrite | shipped | shipped | Python plumbing shipped; other targets not adopted |
 | Text-path rewrite coverage (`builtin_call`, `put_structure`, `call`, `execute`) | shipped | shipped | target-specific |
-| Audit predicate and report | `wam_cpp_iso_audit/3` | `wam_elixir_iso_audit/3` | not adopted |
+| Audit predicate and report | `wam_cpp_iso_audit/3` | `wam_elixir_iso_audit/3` | `wam_python_iso_audit/3`; others not adopted |
 | `catch/3` + `throw/1` substrate | shipped | shipped | Python shipped; others mostly missing/partial |
 | Error constructors and `throw_iso_error` helper | shipped | shipped | Python shipped; others not adopted |
 | `is_iso/2` / `is_lax/2` | shipped | shipped | not adopted |
@@ -71,9 +71,10 @@ Survey columns: shipped means code and tests exist in the target today.
 
 The C++ and Elixir targets are therefore the current reference consumers. C++
 was the first implementation; Elixir proves the design is not C++-specific.
-Python has now adopted the catch/throw substrate plus the ISO error constructors
-and `throw_iso_error`, but it should not be described as ISO-error compatible
-until it also adopts three-form builtin keys and per-predicate rewrite. R, Lua,
+Python has now adopted the catch/throw substrate, ISO error constructors,
+`throw_iso_error`, and per-predicate config/rewrite/audit plumbing, but it
+should not be described as ISO-error compatible until it also adopts three-form
+builtin keys for concrete builtins. R, Lua,
 Haskell, Rust, and the remaining targets are still mostly missing or partial on
 this stack.
 

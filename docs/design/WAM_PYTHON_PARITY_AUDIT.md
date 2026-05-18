@@ -46,9 +46,9 @@ Current state:
 | `is_iso/2` / `is_lax/2` | Missing | Existing `is/2` catches `WAMError` and fails silently. |
 | ISO/lax arithmetic compares | Missing | Existing compares catch `WAMError` and fail silently. |
 | `succ/2` and ISO/lax variants | Missing | `succ/2` is not part of the current Python builtin baseline. |
-| Per-predicate ISO config loader | Missing | No `iso_errors_config/1` or inline `iso_errors(PI, Mode)` handling. |
-| Per-predicate default rewrite | Missing | No Python analogue of C++/Elixir `iso_errors_rewrite/4`. |
-| ISO audit predicate | Missing | No `wam_python_iso_audit/3`. |
+| Per-predicate ISO config loader | Present | Supports `iso_errors_config(File)`, `iso_errors(Default)`, and `iso_errors(PI, Mode)` options. |
+| Per-predicate default rewrite | Present | `iso_errors_rewrite/4` plus text-level rewrite are wired before interpreter and lowered emission; key tables remain empty until ISO/lax builtin variants land. |
+| ISO audit predicate | Present | `wam_python_iso_audit/3` reports builtin call sites using the shared audit shape. |
 
 The packaged runtime is the main implementation surface to update:
 
@@ -79,8 +79,9 @@ sequence is:
 3. Sweep arithmetic comparisons and add `succ/2` / `succ_iso/2` /
    `succ_lax/2`.
 
-The next PR should therefore be the generator-side ISO config/rewrite/audit
-plumbing, followed by `is_iso/2` / `is_lax/2`. The C++ and Elixir ISO tests
+The next PR should therefore add `is_iso/2` / `is_lax/2`, populate
+the Python ISO/lax rewrite key table for `is/2`, and keep explicit-lax bypass
+tests. The C++ and Elixir ISO tests
 provide a direct template for Python E2E coverage.
 
 ## Runtime Source Of Truth
