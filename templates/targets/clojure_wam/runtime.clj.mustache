@@ -950,6 +950,7 @@
   (cond
     (atom-term? value) (deintern-atom (:intern-context state) (:id value))
     (string? value) value
+    (symbol? value) (name value)
     :else nil))
 
 (defn number-text [value]
@@ -1036,6 +1037,37 @@
             (if ok
               (advance unified-state)
               (backtrack state)))
+          (backtrack state)))
+
+      :else
+      (backtrack state))))
+
+(defn unify-text-atom-value [state value text]
+  (if (or (string? value) (symbol? value))
+    [(= (str value) text) state]
+    (let [[next-state out-term] (intern-text-atom state text)]
+      (unify-values next-state value out-term))))
+
+(defn apply-atom-string-solution [state pred]
+  (let [atom-reg (if (= pred "string_to_atom/2") "A2" "A1")
+        string-reg (if (= pred "string_to_atom/2") "A1" "A2")
+        atom-value (deref-value (:bindings state)
+                                (or (reg-get-raw state atom-reg) ::unbound))
+        string-value (deref-value (:bindings state)
+                                  (or (reg-get-raw state string-reg) ::unbound))
+        atom-text-value (atom-text state atom-value)
+        string-text-value (atom-text state string-value)]
+    (cond
+      (some? atom-text-value)
+      (let [[ok unified-state] (unify-text-atom-value state string-value atom-text-value)]
+        (if ok
+          (advance unified-state)
+          (backtrack state)))
+
+      (some? string-text-value)
+      (let [[ok unified-state] (unify-text-atom-value state atom-value string-text-value)]
+        (if ok
+          (advance unified-state)
           (backtrack state)))
 
       :else
@@ -1977,6 +2009,9 @@
 
           "atom_chars/2"
           (apply-text-conversion-solution state (:pred instr))
+
+          "atom_string/2"
+          (apply-atom-string-solution state (:pred instr))
 
           "string_codes/2"
           (apply-text-conversion-solution state (:pred instr))
