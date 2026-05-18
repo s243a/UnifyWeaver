@@ -91,6 +91,11 @@ Lua also consumes the shared hook as a no-parser target: it records
 `runtime_parser = none` metadata and rejects parser-dependent bodies rather
 than emitting parser stubs.
 
+Status: this hook is implemented and covered by
+`tests/test_wam_runtime_parser_capability.pl`, with R and Lua as the initial
+consumers. The remaining work is target-by-target adoption, not inventing the
+contract.
+
 The hook should be independent of the WAM items API. A target can skip WAM text
 generation at build time and still need runtime source-term parsing.
 

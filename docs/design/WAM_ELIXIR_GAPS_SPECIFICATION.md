@@ -5,6 +5,11 @@ closing `wam_elixir_target.pl`'s feature gap with the C++ WAM
 target. For *why* each decision, see
 `WAM_ELIXIR_PARITY_PHILOSOPHY.md`.
 
+Status note: the original catch/throw and ISO-error roadmap has largely landed.
+The tables below now distinguish shipped work from remaining parity gaps. For
+the generalized ISO-error contract, see
+`WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md`.
+
 Scope boundary vs other Elixir docs:
 - This doc: **feature parity** (catch/throw, ISO errors, meta-call).
 - `WAM_ELIXIR_CORRECTNESS_GAPS.md`: bug fixes in existing features.
@@ -21,15 +26,15 @@ Survey columns: ✅ shipped · ⚠️ partial · ❌ missing.
 |---|---|---|---|---|---|
 | `is/2` | ✅ | ✅ | ✅ | ✅ | All four. |
 | Arith compares (`>/2`, `</2`, `>=/2`, `=</2`, `=:=/2`) | ✅ | ✅ | ✅ | ⚠️ | Haskell partial — needs audit. |
-| `=\=/2` | ❌ | ✅ | ❌ | ❌ | Trivial gap; bundle with sweep. |
+| `=\=/2` | ✅ | ✅ | ❌ | ❌ | Shipped with Elixir ISO compare sweep. |
 | `\+/1` (negation as failure) | ✅ | ✅ | ⚠️ | ⚠️ | |
 | `not/1` | ✅ | ✅ | ⚠️ | ⚠️ | Alias for `\+/1`. |
 | `findall/3` | ⚠️ | ✅ | ⚠️ | ⚠️ | Elixir has partial — needs gap-closing audit. |
 | `call/N` (meta-call) | ⚠️ | ✅ | ⚠️ | ⚠️ | Required by `catch/3`. |
-| `catch/3` | ❌ | ✅ | ❌ | ❌ | **Foundation for ISO error stack.** |
-| `throw/1` | ❌ | ✅ | ❌ | ❌ | |
+| `catch/3` | ✅ | ✅ | ❌ | ❌ | Foundation for ISO error stack. |
+| `throw/1` | ✅ | ✅ | ❌ | ❌ | |
 | `bagof/3`, `setof/3` | ❌ | ✅ | ❌ | ❌ | Out of initial scope. |
-| `succ/2` | ❌ | ✅ | ❌ | ❌ | |
+| `succ/2` | ✅ | ✅ | ❌ | ❌ | |
 | `between/3` | ❌ | ❌ | ❌ | ❌ | All targets missing. |
 | `format/1`, `format/2` | ✅ | ✅ | ✅ | ✅ | |
 
@@ -37,17 +42,17 @@ Survey columns: ✅ shipped · ⚠️ partial · ❌ missing.
 
 | Component | Elixir | C++ | Notes |
 |---|---|---|---|
-| `iso_errors_default_to_iso/2` table | ❌ | ✅ | 8 entries in C++. |
-| `iso_errors_default_to_lax/2` table | ❌ | ✅ | |
-| `iso_errors_resolve_options/2` config loader | ❌ | ✅ | |
-| `iso_errors_rewrite/4` per-pred dispatch | ❌ | ✅ | |
-| Audit predicate (`wam_*_iso_audit/3`) | ❌ | ✅ | |
-| Runtime: `make_type_error` / `make_*_error` | ❌ | ✅ | |
-| Runtime: `throw_iso_error` helper | ❌ | ✅ | Depends on `throw/1` runtime. |
-| `is_iso/2` + `is_lax/2` | ❌ | ✅ | First ISO-aware builtin. |
-| `succ_iso/2` + `succ_lax/2` | ❌ | ✅ | |
-| Iso/lax variants of arith compares | ❌ | ✅ | |
-| Lax IEEE-754 float divide (inf/nan) | ❌ | ✅ | Small breaking change vs current Elixir. |
+| `iso_errors_default_to_iso/2` table | ✅ | ✅ | 8 entries in both. |
+| `iso_errors_default_to_lax/2` table | ✅ | ✅ | |
+| `iso_errors_resolve_options/2` config loader | ✅ | ✅ | |
+| `iso_errors_rewrite/4` per-pred dispatch | ✅ | ✅ | Elixir also has text-path rewrite helpers. |
+| Audit predicate (`wam_*_iso_audit/3`) | ✅ | ✅ | |
+| Runtime: `make_type_error` / `make_*_error` | ✅ | ✅ | |
+| Runtime: `throw_iso_error` helper | ✅ | ✅ | Depends on `throw/1` runtime. |
+| `is_iso/2` + `is_lax/2` | ✅ | ✅ | First ISO-aware builtin. |
+| `succ_iso/2` + `succ_lax/2` | ✅ | ✅ | |
+| Iso/lax variants of arith compares | ✅ | ✅ | |
+| Lax IEEE-754 float divide (inf/nan) | ✅ | ✅ | Small breaking change vs original Elixir behavior. |
 
 ### 1.3 Meta-call and synthetic ops
 
@@ -85,7 +90,7 @@ required.
                                   ▼
                        [ISO errors plumbing]
                        (config loader, rewrite,
-                        audit, key tables empty)
+                        audit, key tables)
                                   │
                                   ├──────────────────────┐
                                   ▼                      ▼
@@ -109,9 +114,11 @@ as a tail call regardless of Goal's shape — including
 current meta-call is partial; the audit in PR #1 below
 determines whether it's enough.
 
-## 3. Per-PR phasing
+## 3. Original Per-PR Phasing
 
-Five PRs in the initial roadmap. Sized small for review.
+Five PRs were planned in the initial roadmap and sized small for review. The
+catch/throw and ISO-error portions have since landed; the remaining value of
+this section is historical context plus guidance for future target ports.
 
 ### PR #1 — `call/N` meta-call audit + completion
 
