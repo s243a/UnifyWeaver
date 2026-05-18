@@ -719,13 +719,12 @@ test(bagof_with_quantifier) :-
     % Tests ^/2 transparency through the inlined dispatch path
     % combined with nested compound args. Previously blocked because
     % the WAM compiler's interleaved nested-put_structure emission
-    % broke heap-contiguity of em/2's args (see the args_first_emission
-    % flag in wam_target.pl). With that flag on, em(-(X,Y), [...])
-    % has its args at addr+1, addr+2 contiguous; dispatch_call_meta
-    % reads them correctly; the goal enumerates over [a-1, b-2, c-3].
+    % broke heap-contiguity of em/2's args. Now passes by default
+    % because args-first emission is the WAM compiler's default
+    % (see args_first_emission in wam_target.pl).
     with_elixir_project(
         [user:elx_bagof_with_quantifier/1, user:em/2],
-        [inline_bagof_setof(true), args_first_emission(true)],
+        [inline_bagof_setof(true)],
         TmpDir,
         verify_elixir_args(TmpDir, 'elx_bagof_with_quantifier/1',
                            ['[a,b,c]'], "true")).

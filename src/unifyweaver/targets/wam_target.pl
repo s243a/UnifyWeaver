@@ -95,25 +95,32 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
     ->  b_setval(wam_inline_bagof_setof, true)
     ;   b_setval(wam_inline_bagof_setof, false)
     ),
-    % args_first_emission: opt-in flag that reorders nested-compound
-    % construction. By default, compile_set_arguments emits each
-    % nested compound INLINE — `set_variable Xn ; put_structure F/N,
-    % Xn ; <nested args>` — which interleaves nested struct bodies
-    % with the outer compound's arg slots. On a flat-heap runtime
-    % (Elixir's lowered model), this puts the outer's later arg slots
-    % AT addresses already occupied by the nested struct's tag,
-    % breaking the addr+1..addr+arity contiguity assumption.
+    % args_first_emission: emit set_variable for ALL outer-compound
+    % args BEFORE any nested put_structure. The legacy emit
+    % interleaved `set_variable Xn ; put_structure F/N, Xn ;
+    % <nested args>` — fine for runtimes that store compound args
+    % in a Value-internal vector (C++), wrong for flat-heap runtimes
+    % (Elixir, and likely Rust/Haskell when they hit the same case)
+    % because nested put_structure grows heap_len past the outer's
+    % later arg slots.
     %
-    % With this flag, all set_variable's for the outer's args are
-    % emitted FIRST (reserving contiguous heap slots), then all
-    % nested put_structures emit AFTER. Same instruction count, same
-    % per-instruction semantics — pure reordering. Opt-in so targets
-    % that don't rely on heap-contiguous args (e.g., C++ which stores
-    % args in a Value-internal vector) are unaffected. Elixir target
-    % opts in; Rust/Haskell can opt in if they hit the same issue.
-    (   option(args_first_emission(true), Options)
-    ->  b_setval(wam_args_first_emission, true)
-    ;   b_setval(wam_args_first_emission, false)
+    % New emit: same instruction count, same per-instruction semantics
+    % — pure reordering. Tested ON via the audit-against-baseline
+    % methodology in PR-2278 (test_wam_target, test_wam_c_target,
+    % test_wam_clojure_generator, test_wam_cpp_generator, test_wam_e2e,
+    % test_wam_go_generator, test_wam_haskell_target,
+    % test_wam_ilasm_target, test_wam_jvm_target, test_wam_lua_generator,
+    % test_wam_python_target, test_wam_r_generator, test_wam_rust_target,
+    % test_wam_cross_target_consistency, test_wam_dict,
+    % test_wam_fact_table, test_wam_rule_index): zero new failures
+    % attributable to the flip; pre-existing main-branch failures
+    % preserved.
+    %
+    % Now the DEFAULT. Opt out via args_first_emission(false) if you
+    % need byte-identical bytecode against a legacy snapshot.
+    (   option(args_first_emission(false), Options)
+    ->  b_setval(wam_args_first_emission, false)
+    ;   b_setval(wam_args_first_emission, true)
     ),
     (   length(Clauses, 1)
     ->  Clauses = [Clause],
@@ -1647,22 +1654,26 @@ compile_put_argument(Arg, I, V0, V1, Code) :-
 %% compile_set_arguments(+Args, +VIn, -VOut, -Code)
 %  Emits set_value/set_variable instructions for put_structure sub-arguments.
 %
-%  When the `wam_args_first_emission` flag is set (via
-%  compile_clauses_to_wam reading args_first_emission(true) from
-%  options), nested compound emissions are DEFERRED until after all
-%  immediate set_*'s for the current compound — see
-%  compile_set_arguments_split/5 below. This preserves heap
-%  contiguity of addr+1..addr+arity, required by flat-heap targets.
+%  Default behaviour (args-first): defers nested put_structure emit
+%  until after all immediate set_*'s for the current compound — see
+%  compile_set_arguments_split/5. This preserves heap contiguity of
+%  addr+1..addr+arity, which flat-heap target runtimes assume.
+%
+%  Legacy interleaved behaviour preserved as
+%  compile_set_arguments_inline/4 for the
+%  args_first_emission(false) opt-out — used when callers need
+%  byte-identical bytecode against a pre-flip snapshot.
 compile_set_arguments(Args, V0, Vf, Code) :-
-    ( catch(b_getval(wam_args_first_emission, true), _, fail)
-    -> compile_set_arguments_split(Args, V0, Vf, ImmCode, DeferredCode),
+    catch(b_getval(wam_args_first_emission, FlagVal), _, FlagVal = true),
+    ( FlagVal == false
+    -> compile_set_arguments_inline(Args, V0, Vf, Code)
+    ;  compile_set_arguments_split(Args, V0, Vf, ImmCode, DeferredCode),
        ( DeferredCode == ""
        -> Code = ImmCode
        ;  ImmCode == ""
        -> Code = DeferredCode
        ;  format(string(Code), "~w~n~w", [ImmCode, DeferredCode])
        )
-    ;  compile_set_arguments_inline(Args, V0, Vf, Code)
     ).
 
 % Original interleaved emission — preserved for targets that don't
