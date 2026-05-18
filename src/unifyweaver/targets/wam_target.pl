@@ -1520,6 +1520,11 @@ is_builtin_pred(write_to_stream, 2).    % write_to_stream(+S, +Term).
 is_builtin_pred(nl_to_stream, 1).       % nl_to_stream(+S).
 is_builtin_pred(current_predicate, 1).  % current_predicate(?Name/Arity).
 is_builtin_pred(predicate_property, 2). % predicate_property(+Head, +Prop).
+is_builtin_pred(exists_file, 1).        % exists_file(+Path).
+is_builtin_pred(exists_directory, 1).   % exists_directory(+Path).
+is_builtin_pred(directory_files, 2).    % directory_files(+Dir, -Files).
+is_builtin_pred(make_directory, 1).     % make_directory(+Path).
+is_builtin_pred(delete_file, 1).        % delete_file(+Path).
 is_builtin_pred(write, 1).  % I/O — useful for runtime instrumentation.
 is_builtin_pred(display, 1).
 is_builtin_pred(nl, 0).

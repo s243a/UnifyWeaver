@@ -290,6 +290,16 @@
 :- dynamic user:wam_cpp_test_intro_prop_count/0.
 :- dynamic user:wam_cpp_test_intro_inst_throw/0.
 :- dynamic user:wam_cpp_test_intro_indicator_throw/0.
+:- dynamic user:wam_cpp_test_fs_exists_file_yes/0.
+:- dynamic user:wam_cpp_test_fs_exists_file_no/0.
+:- dynamic user:wam_cpp_test_fs_exists_dir_yes/0.
+:- dynamic user:wam_cpp_test_fs_exists_dir_no/0.
+:- dynamic user:wam_cpp_test_fs_make_check/0.
+:- dynamic user:wam_cpp_test_fs_dir_files/0.
+:- dynamic user:wam_cpp_test_fs_delete/0.
+:- dynamic user:wam_cpp_test_fs_delete_missing/0.
+:- dynamic user:wam_cpp_test_wos_stream/0.
+:- dynamic user:wam_cpp_test_wos_format/0.
 :- dynamic user:wam_cpp_test_enum_member/0.
 
 user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
@@ -712,6 +722,52 @@ user:wam_cpp_test_intro_indicator_throw :-
     catch(current_predicate(foo),
           error(type_error(predicate_indicator, _), _),
           true).
+% Filesystem helpers + with_output_to(stream(_), G). Each test
+% sets up its own temp file/dir in /tmp. Tests are sequenced so
+% they don't collide on shared paths.
+user:wam_cpp_test_fs_exists_file_yes :- exists_file('/etc/hostname').
+user:wam_cpp_test_fs_exists_file_no  :- \+ exists_file('/no/such/x.zzz').
+user:wam_cpp_test_fs_exists_dir_yes  :- exists_directory('/tmp').
+user:wam_cpp_test_fs_exists_dir_no   :- \+ exists_directory('/no/such/dir').
+user:wam_cpp_test_fs_make_check :-
+    catch(delete_file('/tmp/wam_e2e_makedir/.keep'), _, true),
+    catch(delete_file('/tmp/wam_e2e_makedir'), _, true),
+    make_directory('/tmp/wam_e2e_makedir'),
+    exists_directory('/tmp/wam_e2e_makedir').
+user:wam_cpp_test_fs_dir_files :-
+    catch(make_directory('/tmp/wam_e2e_dir'), _, true),
+    open('/tmp/wam_e2e_dir/file_a.txt', write, W1), close(W1),
+    open('/tmp/wam_e2e_dir/file_b.txt', write, W2), close(W2),
+    directory_files('/tmp/wam_e2e_dir', Files),
+    member('file_a.txt', Files),
+    member('file_b.txt', Files),
+    member('.', Files),
+    member('..', Files).
+user:wam_cpp_test_fs_delete :-
+    open('/tmp/wam_e2e_to_delete.txt', write, W), close(W),
+    exists_file('/tmp/wam_e2e_to_delete.txt'),
+    delete_file('/tmp/wam_e2e_to_delete.txt'),
+    \+ exists_file('/tmp/wam_e2e_to_delete.txt').
+user:wam_cpp_test_fs_delete_missing :-
+    catch(delete_file('/no/such/file.zzz'),
+          error(existence_error(source_sink, _), _),
+          true).
+user:wam_cpp_test_wos_stream :-
+    open('/tmp/wam_e2e_wos.txt', write, S),
+    with_output_to(stream(S), (write(hello), write(' '), write(world))),
+    close(S),
+    open('/tmp/wam_e2e_wos.txt', read, R),
+    read_line_to_string(R, Line),
+    close(R),
+    Line = 'hello world'.
+user:wam_cpp_test_wos_format :-
+    open('/tmp/wam_e2e_wos2.txt', write, S),
+    with_output_to(stream(S), format("~w-~w", [42, ok])),
+    close(S),
+    open('/tmp/wam_e2e_wos2.txt', read, R),
+    read_line_to_string(R, Line),
+    close(R),
+    Line = '42-ok'.
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
 
@@ -3861,6 +3917,39 @@ test(cpp_e2e_introspection, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_intro_prop_count/0',           [], true),
           run_query(BinPath, 'wam_cpp_test_intro_inst_throw/0',           [], true),
           run_query(BinPath, 'wam_cpp_test_intro_indicator_throw/0',      [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_fs_and_wos, [condition(cpp_compiler_available)]) :-
+    % Filesystem helpers (exists_file/1, exists_directory/1,
+    % directory_files/2, make_directory/1, delete_file/1) plus
+    % with_output_to(stream(_), Goal) which completes the stream PR
+    % by routing the existing output-capture frame to a stream sink.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_fsws', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_fs_exists_file_yes/0,
+                               user:wam_cpp_test_fs_exists_file_no/0,
+                               user:wam_cpp_test_fs_exists_dir_yes/0,
+                               user:wam_cpp_test_fs_exists_dir_no/0,
+                               user:wam_cpp_test_fs_make_check/0,
+                               user:wam_cpp_test_fs_dir_files/0,
+                               user:wam_cpp_test_fs_delete/0,
+                               user:wam_cpp_test_fs_delete_missing/0,
+                               user:wam_cpp_test_wos_stream/0,
+                               user:wam_cpp_test_wos_format/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_fs_exists_file_yes/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_fs_exists_file_no/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_fs_exists_dir_yes/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_fs_exists_dir_no/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_fs_make_check/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_fs_dir_files/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_fs_delete/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_fs_delete_missing/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_wos_stream/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_wos_format/0',         [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
