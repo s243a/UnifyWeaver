@@ -476,6 +476,14 @@ clojure_direct_builtin("downcase_atom/2", "2").
 clojure_direct_builtin("downcase_atom/2", 2).
 clojure_direct_builtin('downcase_atom/2', "2").
 clojure_direct_builtin('downcase_atom/2', 2).
+clojure_direct_builtin("atomic_list_concat/2", "2").
+clojure_direct_builtin("atomic_list_concat/2", 2).
+clojure_direct_builtin('atomic_list_concat/2', "2").
+clojure_direct_builtin('atomic_list_concat/2', 2).
+clojure_direct_builtin("atomic_list_concat/3", "3").
+clojure_direct_builtin("atomic_list_concat/3", 3).
+clojure_direct_builtin('atomic_list_concat/3', "3").
+clojure_direct_builtin('atomic_list_concat/3', 3).
 clojure_direct_builtin("string_to_atom/2", "2").
 clojure_direct_builtin("string_to_atom/2", 2).
 clojure_direct_builtin('string_to_atom/2', "2").
@@ -881,6 +889,13 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     ),
     !,
     format(atom(Expr), '(runtime/apply-atom-case-solution ~w "~w")', [S, Op]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (   Op == "atomic_list_concat/2" ; Op == 'atomic_list_concat/2'
+    ;   Op == "atomic_list_concat/3" ; Op == 'atomic_list_concat/3'
+    ),
+    !,
+    format(atom(Expr), '(runtime/apply-atomic-list-concat-solution ~w "~w")', [S, Op]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "char_code/2" ; Op == 'char_code/2'),

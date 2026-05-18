@@ -157,6 +157,11 @@
 :- dynamic user:wam_upcase_atom_guard/2.
 :- dynamic user:wam_downcase_atom_guard/2.
 :- dynamic user:wam_upcase_atom_unbound_source/1.
+:- dynamic user:wam_atomic_list_concat_2_guard/1.
+:- dynamic user:wam_atomic_list_concat_3_guard/1.
+:- dynamic user:wam_atomic_list_concat_mismatch/0.
+:- dynamic user:wam_atomic_list_concat_bad_list/0.
+:- dynamic user:wam_atomic_list_concat_unbound_list/1.
 :- dynamic user:wam_string_to_atom_guard/2.
 :- dynamic user:wam_string_to_atom_reverse/0.
 :- dynamic user:wam_string_to_atom_unbound_pair/1.
@@ -364,6 +369,11 @@ user:wam_atom_number_unbound_pair(_) :- user:wam_unbound_arg(A), user:wam_unboun
 user:wam_upcase_atom_guard(A, U) :- upcase_atom(A, U).
 user:wam_downcase_atom_guard(A, L) :- downcase_atom(A, L).
 user:wam_upcase_atom_unbound_source(_) :- user:wam_unbound_arg(A), upcase_atom(A, _).
+user:wam_atomic_list_concat_2_guard(A) :- atomic_list_concat([f,o,o], A).
+user:wam_atomic_list_concat_3_guard(A) :- atomic_list_concat([f,o], o, A).
+user:wam_atomic_list_concat_mismatch :- atomic_list_concat([f,o], a, foo).
+user:wam_atomic_list_concat_bad_list :- atomic_list_concat([a|b], _).
+user:wam_atomic_list_concat_unbound_list(_) :- user:wam_unbound_arg(L), atomic_list_concat(L, _).
 user:wam_string_to_atom_guard(S, A) :- string_to_atom(S, A).
 user:wam_string_to_atom_reverse :- string_to_atom(world, A), A = world.
 user:wam_string_to_atom_unbound_pair(_) :- user:wam_unbound_arg(S), user:wam_unbound_arg(A), string_to_atom(S, A).
@@ -576,6 +586,11 @@ run_smoke :-
           user:wam_upcase_atom_guard/2,
           user:wam_downcase_atom_guard/2,
           user:wam_upcase_atom_unbound_source/1,
+          user:wam_atomic_list_concat_2_guard/1,
+          user:wam_atomic_list_concat_3_guard/1,
+          user:wam_atomic_list_concat_mismatch/0,
+          user:wam_atomic_list_concat_bad_list/0,
+          user:wam_atomic_list_concat_unbound_list/1,
           user:wam_string_to_atom_guard/2,
           user:wam_string_to_atom_reverse/0,
           user:wam_string_to_atom_unbound_pair/1,
@@ -945,6 +960,11 @@ smoke_cases([
     case('wam_downcase_atom_guard/2', args('HELLO', hello), "true"),
     case('wam_downcase_atom_guard/2', args('HELLO', 'HELLO'), "false"),
     case('wam_upcase_atom_unbound_source/1', a, "false"),
+    case('wam_atomic_list_concat_2_guard/1', foo, "true"),
+    case('wam_atomic_list_concat_3_guard/1', foo, "true"),
+    case('wam_atomic_list_concat_mismatch/0', no_args, "false"),
+    case('wam_atomic_list_concat_bad_list/0', no_args, "false"),
+    case('wam_atomic_list_concat_unbound_list/1', a, "false"),
     case('wam_string_to_atom_guard/2', args(hello, hello), "true"),
     case('wam_string_to_atom_guard/2', args(hello, world), "false"),
     case('wam_string_to_atom_reverse/0', no_args, "true"),
@@ -1321,6 +1341,8 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-atom-number-guard-2"),
     has(CoreCode, "defn lowered-wam-upcase-atom-guard-2"),
     has(CoreCode, "defn lowered-wam-downcase-atom-guard-2"),
+    has(CoreCode, "defn lowered-wam-atomic-list-concat-2-guard-1"),
+    has(CoreCode, "defn lowered-wam-atomic-list-concat-3-guard-1"),
     has(CoreCode, "defn lowered-wam-string-to-atom-guard-2"),
     has(CoreCode, "defn lowered-wam-string-codes-guard-2"),
     has(CoreCode, "defn lowered-wam-string-chars-guard-2"),
@@ -1335,6 +1357,7 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "runtime/apply-atom-string-solution"),
     has(CoreCode, "runtime/apply-atom-number-solution"),
     has(CoreCode, "runtime/apply-atom-case-solution"),
+    has(CoreCode, "runtime/apply-atomic-list-concat-solution"),
     has(CoreCode, "runtime/apply-char-code-solution"),
     has(CoreCode, "runtime/apply-atom-concat-solution"),
     has(CoreCode, "runtime/apply-atom-length-solution"),

@@ -744,6 +744,26 @@ test(simple_builtin_downcase_atom_is_direct_lowered_in_prefix) :-
         assertion(\+ has(Code, "runtime/step"))
     )).
 
+test(simple_builtin_atomic_list_concat_2_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_atomic_list_concat_2/2:\nbuiltin_call atomic_list_concat/2, 2\nproceed\n",
+        wam_clojure_lowerable(test_atomic_list_concat_2/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_atomic_list_concat_2/2, WamCode, [], Code),
+        has(Code, "runtime/apply-atomic-list-concat-solution"),
+        has(Code, "atomic_list_concat/2"),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
+test(simple_builtin_atomic_list_concat_3_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_atomic_list_concat_3/3:\nbuiltin_call atomic_list_concat/3, 3\nproceed\n",
+        wam_clojure_lowerable(test_atomic_list_concat_3/3, WamCode, deterministic),
+        lower_predicate_to_clojure(test_atomic_list_concat_3/3, WamCode, [], Code),
+        has(Code, "runtime/apply-atomic-list-concat-solution"),
+        has(Code, "atomic_list_concat/3"),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
 test(simple_builtin_string_to_atom_is_direct_lowered_in_prefix) :-
     once((
         WamCode = "test_string_to_atom/2:\nbuiltin_call string_to_atom/2, 2\nproceed\n",
