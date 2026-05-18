@@ -1035,6 +1035,32 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		v1, ok1 := vm.evalArithmetic(arg1)
 		v2, ok2 := vm.evalArithmetic(arg2)
 		return ok1 && ok2 && v1 >= v2
+	case "succ/2":
+		a := vm.deref(arg1)
+		b := vm.deref(arg2)
+		aInt, aIsInt := a.(*Integer)
+		bInt, bIsInt := b.(*Integer)
+		aUnbound := isUnbound(a)
+		bUnbound := isUnbound(b)
+		if aUnbound && bUnbound {
+			return false
+		}
+		if !aUnbound && !aIsInt {
+			return false
+		}
+		if !bUnbound && !bIsInt {
+			return false
+		}
+		if aIsInt {
+			if aInt.Val < 0 {
+				return false
+			}
+			return vm.Unify(arg2, &Integer{Val: aInt.Val + 1})
+		}
+		if bIsInt && bInt.Val > 0 {
+			return vm.Unify(arg1, &Integer{Val: bInt.Val - 1})
+		}
+		return false
 
 	case "var/1": return isUnbound(vm.deref(arg1))
 	case "nonvar/1": return !isUnbound(vm.deref(arg1))

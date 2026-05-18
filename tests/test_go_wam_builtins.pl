@@ -15,6 +15,7 @@
 :- dynamic user:test_numlist_builtin/0.
 :- dynamic user:test_sort_builtin/0.
 :- dynamic user:test_term_order_builtin/0.
+:- dynamic user:test_succ_builtin/0.
 :- dynamic user:test_set_aggregate/0.
 :- dynamic user:test_unify_builtin/0.
 :- dynamic user:test_neg_fact/1.
@@ -118,6 +119,17 @@ test(builtins_execution) :-
                 compare(=, foo, foo),
                 compare(>, 2, 1)
             )),
+          assertz(user:test_succ_builtin :-
+            (   succ(0, 1),
+                succ(2, X),
+                X =:= 3,
+                succ(Y, 4),
+                Y =:= 3,
+                \+ succ(1, 1),
+                \+ succ(-1, _),
+                \+ succ(_, 0),
+                \+ succ(_, _)
+            )),
           assertz(user:test_set_aggregate :-
             (   aggregate_all(set(X), member(X, [a,b,a]), S),
                 length(S, 2),
@@ -149,6 +161,7 @@ test(builtins_execution) :-
           retractall(user:test_numlist_builtin),
           retractall(user:test_sort_builtin),
           retractall(user:test_term_order_builtin),
+          retractall(user:test_succ_builtin),
           retractall(user:test_set_aggregate),
           retractall(user:test_unify_builtin),
           retractall(user:test_neg_fact(_)),
@@ -158,7 +171,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_succ_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -202,6 +215,7 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "@>/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "@>=/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "compare/3"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "succ/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "\\\\+/1"')),
     assertion(sub_string(LibCode, _, _, _, 'AggType: "set"')),
 
@@ -303,6 +317,14 @@ func main() {
 		fmt.Println("TERM_ORDER_FAILURE")
 	}
 
+	succVM := wam.NewWamState(wam.Test_succ_builtinCode, wam.Test_succ_builtinLabels)
+	succVM.PC = wam.Test_succ_builtinStartPC
+	if succVM.Run() {
+		fmt.Println("SUCC_SUCCESS")
+	} else {
+		fmt.Println("SUCC_FAILURE")
+	}
+
 	setVM := wam.NewWamState(wam.Test_set_aggregateCode, wam.Test_set_aggregateLabels)
 	setVM.PC = wam.Test_set_aggregateStartPC
 	if setVM.Run() {
@@ -362,6 +384,7 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "NUMLIST_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SORT_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "TERM_ORDER_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "SUCC_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SET_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "UNIFY_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "NEG_SUCCESS")),
