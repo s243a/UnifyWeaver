@@ -95,6 +95,26 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
     ->  b_setval(wam_inline_bagof_setof, true)
     ;   b_setval(wam_inline_bagof_setof, false)
     ),
+    % args_first_emission: opt-in flag that reorders nested-compound
+    % construction. By default, compile_set_arguments emits each
+    % nested compound INLINE — `set_variable Xn ; put_structure F/N,
+    % Xn ; <nested args>` — which interleaves nested struct bodies
+    % with the outer compound's arg slots. On a flat-heap runtime
+    % (Elixir's lowered model), this puts the outer's later arg slots
+    % AT addresses already occupied by the nested struct's tag,
+    % breaking the addr+1..addr+arity contiguity assumption.
+    %
+    % With this flag, all set_variable's for the outer's args are
+    % emitted FIRST (reserving contiguous heap slots), then all
+    % nested put_structures emit AFTER. Same instruction count, same
+    % per-instruction semantics — pure reordering. Opt-in so targets
+    % that don't rely on heap-contiguous args (e.g., C++ which stores
+    % args in a Value-internal vector) are unaffected. Elixir target
+    % opts in; Rust/Haskell can opt in if they hit the same issue.
+    (   option(args_first_emission(true), Options)
+    ->  b_setval(wam_args_first_emission, true)
+    ;   b_setval(wam_args_first_emission, false)
+    ),
     (   length(Clauses, 1)
     ->  Clauses = [Clause],
         compile_single_clause_wam(Clause, Options, ClausesCode0)
@@ -1604,8 +1624,30 @@ compile_put_argument(Arg, I, V0, V1, Code) :-
 
 %% compile_set_arguments(+Args, +VIn, -VOut, -Code)
 %  Emits set_value/set_variable instructions for put_structure sub-arguments.
-compile_set_arguments([], V, V, "").
-compile_set_arguments([Arg|Rest], V0, Vf, Code) :-
+%
+%  When the `wam_args_first_emission` flag is set (via
+%  compile_clauses_to_wam reading args_first_emission(true) from
+%  options), nested compound emissions are DEFERRED until after all
+%  immediate set_*'s for the current compound — see
+%  compile_set_arguments_split/5 below. This preserves heap
+%  contiguity of addr+1..addr+arity, required by flat-heap targets.
+compile_set_arguments(Args, V0, Vf, Code) :-
+    ( catch(b_getval(wam_args_first_emission, true), _, fail)
+    -> compile_set_arguments_split(Args, V0, Vf, ImmCode, DeferredCode),
+       ( DeferredCode == ""
+       -> Code = ImmCode
+       ;  ImmCode == ""
+       -> Code = DeferredCode
+       ;  format(string(Code), "~w~n~w", [ImmCode, DeferredCode])
+       )
+    ;  compile_set_arguments_inline(Args, V0, Vf, Code)
+    ).
+
+% Original interleaved emission — preserved for targets that don't
+% opt in to args_first_emission. Behaviour unchanged from pre-flag
+% baseline.
+compile_set_arguments_inline([], V, V, "").
+compile_set_arguments_inline([Arg|Rest], V0, Vf, Code) :-
     (   var(Arg)
     ->  (   get_var_reg(Arg, V0, Reg)
         ->  format(string(ArgCode), "    set_value ~w", [Reg]),
@@ -1629,7 +1671,7 @@ compile_set_arguments([Arg|Rest], V0, Vf, Code) :-
         bind_var(Arg, XReg, V_temp, V1a),
         format(string(SetCode), "    set_variable ~w", [XReg]),
         format(string(PutCode), "    put_structure ~w/~w, ~w", [F, NArity, XReg]),
-        compile_set_arguments(NestedArgs, V1a, V1, NestedCode),
+        compile_set_arguments_inline(NestedArgs, V1a, V1, NestedCode),
         (   NestedCode == ""
         ->  format(string(ArgCode), "~w~n~w", [SetCode, PutCode])
         ;   format(string(ArgCode), "~w~n~w~n~w", [SetCode, PutCode, NestedCode])
@@ -1639,11 +1681,73 @@ compile_set_arguments([Arg|Rest], V0, Vf, Code) :-
         bind_var(Arg, XReg, V_temp, V1),
         format(string(ArgCode), "    set_variable ~w", [XReg])
     ),
-    compile_set_arguments(Rest, V1, Vf, RestCode),
+    compile_set_arguments_inline(Rest, V1, Vf, RestCode),
     (   RestCode == ""
     ->  Code = ArgCode
     ;   format(string(Code), "~w~n~w", [ArgCode, RestCode])
     ).
+
+% Args-first emission: returns Immediate (set_value/set_variable
+% /set_constant for each outer arg) AND Deferred (put_structure +
+% nested args bodies, recursively args-first). All immediate
+% emissions complete BEFORE any deferred — that way the outer
+% compound's args are at contiguous heap slots before any nested
+% structure body grows the heap.
+compile_set_arguments_split([], V, V, "", "").
+compile_set_arguments_split([Arg|Rest], V0, Vf, Code, Deferred) :-
+    arg_split(Arg, V0, V1, ImmArg, DefArg),
+    compile_set_arguments_split(Rest, V1, Vf, ImmRest, DefRest),
+    join_lines(ImmArg, ImmRest, Code),
+    join_lines(DefArg, DefRest, Deferred).
+
+% Per-arg classification. Returns the immediate emit (Imm) and any
+% deferred emit (Def, possibly empty). For nested compounds, the
+% deferred emit is the put_structure for the compound + its
+% (recursively-split) args.
+arg_split(Arg, V0, V1, Imm, "") :-
+    var(Arg),
+    !,
+    (   get_var_reg(Arg, V0, Reg)
+    ->  format(string(Imm), "    set_value ~w", [Reg]),
+        V1 = V0
+    ;   get_yi_alloc(Arg, V0, YReg, V1)
+    ->  format(string(Imm), "    set_variable ~w", [YReg])
+    ;   next_x_reg(V0, XReg, V_temp),
+        bind_var(Arg, XReg, V_temp, V1),
+        format(string(Imm), "    set_variable ~w", [XReg])
+    ).
+arg_split(Arg, V0, V0, Imm, "") :-
+    atomic(Arg),
+    !,
+    quote_wam_constant(Arg, ArgStr),
+    format(string(Imm), "    set_constant ~w", [ArgStr]).
+arg_split(Arg, V0, V1, Imm, Def) :-
+    compound(Arg),
+    !,
+    Arg =.. [F|NestedArgs],
+    length(NestedArgs, NArity),
+    next_x_reg(V0, XReg, V_temp),
+    bind_var(Arg, XReg, V_temp, V1a),
+    format(string(Imm), "    set_variable ~w", [XReg]),
+    % Recurse into nested args using the same args-first scheme.
+    compile_set_arguments_split(NestedArgs, V1a, V1,
+                                 NestedImm, NestedDef),
+    format(string(StructLine),
+           "    put_structure ~w/~w, ~w", [F, NArity, XReg]),
+    % Build the deferred chunk: put_structure for THIS compound,
+    % then its immediate args, then any further deferreds.
+    join_lines(StructLine, NestedImm, ThisStructWithImm),
+    join_lines(ThisStructWithImm, NestedDef, Def).
+arg_split(Arg, V0, V1, Imm, "") :-
+    % Fallback (rarely reached — covers unknown shapes).
+    next_x_reg(V0, XReg, V_temp),
+    bind_var(Arg, XReg, V_temp, V1),
+    format(string(Imm), "    set_variable ~w", [XReg]).
+
+% Join two code strings with a newline, handling empty-string cases.
+join_lines("", B, B) :- !.
+join_lines(A, "", A) :- !.
+join_lines(A, B, Out) :- format(string(Out), "~w~n~w", [A, B]).
 
 %% Variable Mapping Helpers
 %  Bindings use b(Var, Reg) for seen variables, and
