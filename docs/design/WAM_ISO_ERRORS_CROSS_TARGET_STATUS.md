@@ -63,7 +63,7 @@ Survey columns: shipped means code and tests exist in the target today.
 | Text-path rewrite coverage (`builtin_call`, `put_structure`, `call`, `execute`) | shipped | shipped | target-specific |
 | Audit predicate and report | `wam_cpp_iso_audit/3` | `wam_elixir_iso_audit/3` | not adopted |
 | `catch/3` + `throw/1` substrate | shipped | shipped | Python shipped; others mostly missing/partial |
-| Error constructors and `throw_iso_error` helper | shipped | shipped | not adopted |
+| Error constructors and `throw_iso_error` helper | shipped | shipped | Python shipped; others not adopted |
 | `is_iso/2` / `is_lax/2` | shipped | shipped | not adopted |
 | ISO/lax arithmetic compares | shipped | shipped | not adopted |
 | `succ_iso/2` / `succ_lax/2` | shipped | shipped | not adopted |
@@ -71,10 +71,11 @@ Survey columns: shipped means code and tests exist in the target today.
 
 The C++ and Elixir targets are therefore the current reference consumers. C++
 was the first implementation; Elixir proves the design is not C++-specific.
-Python has now adopted the catch/throw substrate, but it should not be described
-as ISO-error compatible until it also adopts error constructors, three-form
-builtin keys, and per-predicate rewrite. R, Lua, Haskell, Rust, and the
-remaining targets are still mostly missing or partial on this stack.
+Python has now adopted the catch/throw substrate plus the ISO error constructors
+and `throw_iso_error`, but it should not be described as ISO-error compatible
+until it also adopts three-form builtin keys and per-predicate rewrite. R, Lua,
+Haskell, Rust, and the remaining targets are still mostly missing or partial on
+this stack.
 
 ## What Counts As Adoption
 

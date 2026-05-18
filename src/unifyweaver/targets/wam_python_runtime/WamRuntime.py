@@ -815,6 +815,32 @@ def _execute_throw(state: WamState) -> bool:
     raise WAMThrow(thrown)
 
 
+def make_instantiation_error(state: WamState) -> Term:
+    """Build the inner ISO instantiation_error term."""
+    return make_atom('instantiation_error')
+
+
+def make_type_error(state: WamState, expected: str, culprit: Term) -> Term:
+    """Build the inner ISO type_error(Expected, Culprit) term."""
+    return Compound('type_error/2', [make_atom(expected), deref(culprit, state)])
+
+
+def make_domain_error(state: WamState, domain: str, culprit: Term) -> Term:
+    """Build the inner ISO domain_error(Domain, Culprit) term."""
+    return Compound('domain_error/2', [make_atom(domain), deref(culprit, state)])
+
+
+def make_evaluation_error(state: WamState, kind: str) -> Term:
+    """Build the inner ISO evaluation_error(Kind) term."""
+    return Compound('evaluation_error/1', [make_atom(kind)])
+
+
+def throw_iso_error(state: WamState, err_term: Term) -> bool:
+    """Wrap an ISO error term as error(ErrorTerm, Context) and throw it."""
+    set_reg(state, 1, Compound('error/2', [err_term, state.fresh_var()]))
+    return _execute_throw(state)
+
+
 def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int = -1) -> bool:
     """Execute a WAM builtin_call instruction."""
     if builtin in ('catch/3', 'catch') and arity == 3:

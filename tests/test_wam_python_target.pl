@@ -374,6 +374,17 @@ test(static_runtime_run_wam_four_args, [nondet]) :-
 	read_file_to_string(SrcPath, Content, []),
 	sub_string(Content, _, _, _, "def run_wam(code").
 
+test(static_runtime_has_iso_error_helpers, [nondet]) :-
+	source_file(wam_python_target:compile_step_wam_to_python(_,_), ThisFile),
+	file_directory_name(ThisFile, ThisDir),
+	directory_file_path(ThisDir, 'wam_python_runtime/WamRuntime.py', SrcPath),
+	read_file_to_string(SrcPath, Content, []),
+	sub_string(Content, _, _, _, "def make_instantiation_error(state: WamState)"),
+	sub_string(Content, _, _, _, "def make_type_error(state: WamState, expected: str, culprit: Term)"),
+	sub_string(Content, _, _, _, "def make_domain_error(state: WamState, domain: str, culprit: Term)"),
+	sub_string(Content, _, _, _, "def make_evaluation_error(state: WamState, kind: str)"),
+	sub_string(Content, _, _, _, "def throw_iso_error(state: WamState, err_term: Term)").
+
 :- end_tests(wam_python_phase_b).
 
 % ============================================================================
@@ -902,6 +913,17 @@ test(generated_project_runs_catch_throw_builtins) :-
 		),
 		cleanup_tmp_dir(ProjectDir)).
 
+test(generated_runtime_catches_iso_helper_error_terms) :-
+	setup_call_cleanup(
+		unique_tmp_dir('tmp_wam_python_builtin_e2e', ProjectDir),
+		(   write_builtin_project(ProjectDir),
+			iso_helper_catch_script(Script),
+			run_python_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "foo")),
+			once(sub_string(Output, _, _, _, "zero_divisor"))
+		),
+		cleanup_tmp_dir(ProjectDir)).
+
 write_builtin_project(ProjectDir) :-
 	term_builtin_wam(TermWam),
 	copy_naf_io_wam(CopyNafIoWam),
@@ -1037,6 +1059,41 @@ catch_no_throw_wam(
   deallocate
   execute catch/3').
 
+iso_helper_catch_script(Script) :-
+	atomic_list_concat([
+		"import wam_runtime as wr",
+		"",
+		"def run_type_error():",
+		"    s = wr.WamState()",
+		"    wr.set_reg(s, 1, wr.Compound('throw_iso_type', []))",
+		"    wr.set_reg(s, 2, wr.Compound('error/2', [wr.Compound('type_error/2', [wr.make_atom('evaluable'), s.fresh_var()]), s.fresh_var()]))",
+		"    wr.set_reg(s, 3, wr.Compound('write/1', [wr.get_reg(s, 2).args[0].args[1]]))",
+		"    def builtin(name, arity, state, resume_ip=-1):",
+		"        if name in ('throw_iso_type', 'throw_iso_type/0'):",
+		"            return wr.throw_iso_error(state, wr.make_type_error(state, 'evaluable', wr.make_atom('foo')))",
+		"        return old_builtin(name, arity, state, resume_ip)",
+		"    wr._execute_builtin = builtin",
+		"    wr._execute_catch(s)",
+		"",
+		"def run_eval_error():",
+		"    s = wr.WamState()",
+		"    wr.set_reg(s, 1, wr.Compound('throw_iso_eval', []))",
+		"    wr.set_reg(s, 2, wr.Compound('error/2', [wr.Compound('evaluation_error/1', [s.fresh_var()]), s.fresh_var()]))",
+		"    wr.set_reg(s, 3, wr.Compound('write/1', [wr.get_reg(s, 2).args[0].args[0]]))",
+		"    def builtin(name, arity, state, resume_ip=-1):",
+		"        if name in ('throw_iso_eval', 'throw_iso_eval/0'):",
+		"            return wr.throw_iso_error(state, wr.make_evaluation_error(state, 'zero_divisor'))",
+		"        return old_builtin(name, arity, state, resume_ip)",
+		"    wr._execute_builtin = builtin",
+		"    wr._execute_catch(s)",
+		"",
+		"old_builtin = wr._execute_builtin",
+		"run_type_error()",
+		"print()",
+		"run_eval_error()",
+		""
+	], '\n', Script).
+
 run_generated_query(ProjectDir, Query, Output) :-
 	process_create(path(python), ['main.py', Query],
 		[cwd(ProjectDir), stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]),
@@ -1048,6 +1105,20 @@ run_generated_query(ProjectDir, Query, Output) :-
 	(   Status = exit(0)
 	->  true
 	;   format(user_error, 'generated WAM Python query ~w failed: ~w~n', [Query, ErrText]),
+		fail
+	).
+
+run_python_snippet(ProjectDir, Script, Output) :-
+	process_create(path(python), ['-c', Script],
+		[cwd(ProjectDir), stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]),
+	read_string(Out, _, Output),
+	read_string(Err, _, ErrText),
+	close(Out),
+	close(Err),
+	process_wait(Pid, Status),
+	(   Status = exit(0)
+	->  true
+	;   format(user_error, 'generated WAM Python snippet failed: ~w~n', [ErrText]),
 		fail
 	).
 

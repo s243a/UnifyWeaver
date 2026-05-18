@@ -30,18 +30,19 @@ matters for parity.
 ## ISO Error Readiness
 
 Python is **not yet an ISO-error adopter**. It now has the Prolog-level
-`catch/3` and `throw/1` substrate plus the arithmetic and comparison builtin
-surface that would eventually receive `_iso` and `_lax` forms. It is still
-missing the ISO-specific error constructors, config/rewrite/audit plumbing, and
-ISO/lax builtin variants that the C++ and Elixir targets use.
+`catch/3` and `throw/1` substrate, ISO error-term constructors,
+`throw_iso_error`, and the arithmetic/comparison builtin surface that would
+eventually receive `_iso` and `_lax` forms. It is still missing the
+config/rewrite/audit plumbing and ISO/lax builtin variants that the C++ and
+Elixir targets use.
 
 Current state:
 
 | Component | Python status | Notes |
 | --- | --- | --- |
 | Prolog `catch/3` / `throw/1` | Present | Packaged runtime has side-stack catcher frames and generated-project E2E coverage. |
-| ISO error constructors | Missing | No runtime builders for `error(type_error(...), _)`, `error(instantiation_error, _)`, etc. |
-| `throw_iso_error` helper | Missing | Now unblocked by `catch/3` / `throw/1`. |
+| ISO error constructors | Present | Runtime builders exist for `instantiation_error`, `type_error/2`, `domain_error/2`, and `evaluation_error/1`. |
+| `throw_iso_error` helper | Present | Wraps `error(ErrorTerm, Context)` and routes through `throw/1`. |
 | `is_iso/2` / `is_lax/2` | Missing | Existing `is/2` catches `WAMError` and fails silently. |
 | ISO/lax arithmetic compares | Missing | Existing compares catch `WAMError` and fail silently. |
 | `succ/2` and ISO/lax variants | Missing | `succ/2` is not part of the current Python builtin baseline. |
@@ -69,22 +70,18 @@ instead of throwing a structured Prolog error. That is a good starting point for
 ## Recommended ISO Port Sequence
 
 Porting `is_iso/2` first was premature before `catch/3` / `throw/1` existed.
-That substrate is now present, so the remaining sequence is:
+That substrate and the ISO error helpers are now present, so the remaining
+sequence is:
 
-1. Add `error/2` constructors plus `make_type_error`,
-   `make_instantiation_error`, `make_domain_error`, and
-   `make_evaluation_error`.
-2. Add `throw_iso_error` and prove `catch(Goal, error(Pattern, _), Recovery)`
-   matches the constructed terms.
-3. Add shared-shape ISO config loading, per-predicate rewrite, and
+1. Add shared-shape ISO config loading, per-predicate rewrite, and
    `wam_python_iso_audit/3`.
-4. Add `is_iso/2` / `is_lax/2`, with explicit-lax bypass tests.
-5. Sweep arithmetic comparisons and add `succ/2` / `succ_iso/2` /
+2. Add `is_iso/2` / `is_lax/2`, with explicit-lax bypass tests.
+3. Sweep arithmetic comparisons and add `succ/2` / `succ_iso/2` /
    `succ_lax/2`.
 
-The next PR should therefore be an ISO error-constructor and `throw_iso_error`
-PR, not an arithmetic PR. The C++ and Elixir ISO tests provide a direct template
-for Python E2E coverage.
+The next PR should therefore be the generator-side ISO config/rewrite/audit
+plumbing, followed by `is_iso/2` / `is_lax/2`. The C++ and Elixir ISO tests
+provide a direct template for Python E2E coverage.
 
 ## Runtime Source Of Truth
 
