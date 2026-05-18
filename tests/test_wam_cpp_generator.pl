@@ -230,6 +230,14 @@
 :- dynamic user:wam_cpp_test_assertion_ok/0.
 :- dynamic user:wam_cpp_test_assertion_fail/0.
 :- dynamic user:wam_cpp_test_assertion_expr/0.
+:- dynamic user:wam_cpp_test_assoc_empty/0.
+:- dynamic user:wam_cpp_test_assoc_put_get/0.
+:- dynamic user:wam_cpp_test_assoc_missing/0.
+:- dynamic user:wam_cpp_test_assoc_overwrite/0.
+:- dynamic user:wam_cpp_test_assoc_list_sorted/0.
+:- dynamic user:wam_cpp_test_assoc_keys/0.
+:- dynamic user:wam_cpp_test_assoc_values/0.
+:- dynamic user:wam_cpp_test_assoc_compound_keys/0.
 :- dynamic user:wam_cpp_test_enum_member/0.
 
 user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
@@ -439,6 +447,39 @@ user:wam_cpp_test_assertion_expr    :-
     catch(assertion(1 =:= 2),
           error(assertion_failed, _),
           true).
+% assoc library (BST keyed by standard order, asserted as user-module
+% Prolog and exposed via the stdlib `assoc` feature):
+user:wam_cpp_test_assoc_empty         :- empty_assoc(t).
+user:wam_cpp_test_assoc_put_get       :-
+    empty_assoc(A0),
+    put_assoc(name, A0, alice, A1),
+    put_assoc(age, A1, 30, A2),
+    get_assoc(name, A2, alice),
+    get_assoc(age, A2, 30).
+user:wam_cpp_test_assoc_missing       :-
+    empty_assoc(A0),
+    put_assoc(x, A0, 1, A1),
+    \+ get_assoc(missing, A1, _).
+user:wam_cpp_test_assoc_overwrite     :-
+    empty_assoc(A0),
+    put_assoc(k, A0, 1, A1),
+    put_assoc(k, A1, 2, A2),
+    get_assoc(k, A2, 2).
+user:wam_cpp_test_assoc_list_sorted   :-
+    list_to_assoc([c-3, a-1, b-2], A),
+    assoc_to_list(A, [a-1, b-2, c-3]).
+user:wam_cpp_test_assoc_keys          :-
+    list_to_assoc([c-3, a-1, b-2], A),
+    assoc_to_keys(A, [a, b, c]).
+user:wam_cpp_test_assoc_values        :-
+    list_to_assoc([c-3, a-1, b-2], A),
+    assoc_to_values(A, [1, 2, 3]).
+user:wam_cpp_test_assoc_compound_keys :-
+    empty_assoc(A0),
+    put_assoc(pt(1, 2), A0, north, A1),
+    put_assoc(pt(3, 4), A1, south, A2),
+    get_assoc(pt(1, 2), A2, north),
+    get_assoc(pt(3, 4), A2, south).
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
 
@@ -3348,6 +3389,40 @@ test(cpp_e2e_stdlib_autoinclude_and_assertion,
           run_query(BinPath, 'wam_cpp_test_assertion_ok/0',   [], true),
           run_query(BinPath, 'wam_cpp_test_assertion_fail/0', [], true),
           run_query(BinPath, 'wam_cpp_test_assertion_expr/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_assoc_library, [condition(cpp_compiler_available)]) :-
+    % assoc library: empty_assoc/1, put_assoc/4, get_assoc/3,
+    % list_to_assoc/2, assoc_to_list/2, assoc_to_keys/2,
+    % assoc_to_values/2. Backing rep is an unbalanced BST keyed by
+    % standard order (compare/3). All clauses + helpers asserted in
+    % the user module at wam_cpp_target.pl load time; pulled in by
+    % include_stdlib(assoc). Tests cover empty + insert + lookup +
+    % missing-key fail + overwrite + list round-trip (which
+    % implicitly checks sorted in-order traversal) + compound keys.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_assoc', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_assoc_empty/0,
+                               user:wam_cpp_test_assoc_put_get/0,
+                               user:wam_cpp_test_assoc_missing/0,
+                               user:wam_cpp_test_assoc_overwrite/0,
+                               user:wam_cpp_test_assoc_list_sorted/0,
+                               user:wam_cpp_test_assoc_keys/0,
+                               user:wam_cpp_test_assoc_values/0,
+                               user:wam_cpp_test_assoc_compound_keys/0],
+                              [emit_main(true), include_stdlib(assoc)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_assoc_empty/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_put_get/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_missing/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_overwrite/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_list_sorted/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_keys/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_values/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_compound_keys/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
