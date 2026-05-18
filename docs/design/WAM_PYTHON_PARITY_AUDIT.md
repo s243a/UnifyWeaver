@@ -44,7 +44,7 @@ Current state:
 | ISO error constructors | Present | Runtime builders exist for `instantiation_error`, `type_error/2`, `domain_error/2`, and `evaluation_error/1`. |
 | `throw_iso_error` helper | Present | Wraps `error(ErrorTerm, Context)` and routes through `throw/1`. |
 | `is_iso/2` / `is_lax/2` | Present | ISO mode throws structured errors; `is/2` and `is_lax/2` preserve lax failure. |
-| ISO/lax arithmetic compares | Missing | Existing compares catch `WAMError` and fail silently. |
+| ISO/lax arithmetic compares | Present | Six comparison variants now follow ISO/lax three-form dispatch. |
 | `succ/2` and ISO/lax variants | Missing | `succ/2` is not part of the current Python builtin baseline. |
 | Per-predicate ISO config loader | Present | Supports `iso_errors_config(File)`, `iso_errors(Default)`, and `iso_errors(PI, Mode)` options. |
 | Per-predicate default rewrite | Present | `is/2` now rewrites to `is_iso/2` or `is_lax/2`; text-level rewrite feeds interpreter and lowered emission. |
@@ -73,13 +73,12 @@ Porting `is_iso/2` first was premature before `catch/3` / `throw/1` existed.
 That substrate and the ISO error helpers are now present, so the remaining
 sequence is:
 
-1. Sweep arithmetic comparisons into ISO/lax variants using the same
-   classification helpers as `is_iso/2`.
-2. Add `succ/2` / `succ_iso/2` / `succ_lax/2`.
+1. Add `succ/2` / `succ_iso/2` / `succ_lax/2`.
+2. Sweep any remaining arithmetic builtins that need ISO/lax behavior.
 
-The next PR should therefore port the arithmetic comparison variants and add
-explicit-lax bypass coverage for those operators. The C++ and Elixir ISO tests
-provide a direct template for Python E2E coverage.
+The next PR should therefore port the successor variants and add explicit-lax
+bypass coverage for that operator. The C++ and Elixir ISO tests provide a direct
+template for Python E2E coverage.
 
 ## Runtime Source Of Truth
 

@@ -554,18 +554,63 @@ def _execute_is_lax(state: WamState) -> bool:
 def _execute_is_iso(state: WamState) -> bool:
     dst = deref(get_reg(state, 1), state)
     expr = get_reg(state, 2)
+    result = _eval_arith_iso(state, expr)
+    if isinstance(result, bool):
+        return result
+    r = Int(result) if isinstance(result, int) else Float(result)
+    return unify(dst, r, state)
+
+
+def _eval_arith_iso(state: WamState, expr: Term):
     if iso_term_contains_unbound(state, expr):
         return throw_iso_error(state, make_instantiation_error(state))
     if iso_term_has_zero_divide(state, expr):
         return throw_iso_error(state, make_evaluation_error(state, 'zero_divisor'))
     try:
-        result = eval_arith(expr, state)
+        return eval_arith(expr, state)
     except WAMThrow:
         raise
     except Exception:
         return throw_iso_error(state, make_type_error(state, 'evaluable', iso_arith_culprit(state, expr)))
-    r = Int(result) if isinstance(result, int) else Float(result)
-    return unify(dst, r, state)
+
+
+def _compare_arith(op: str, a, b) -> bool:
+    if op == '<':
+        return a < b
+    if op == '>':
+        return a > b
+    if op == '=<':
+        return a <= b
+    if op == '>=':
+        return a >= b
+    if op == '=:=':
+        return a == b
+    if op == '=\\=':
+        return a != b
+    return False
+
+
+def _execute_compare_lax(state: WamState, op: str) -> bool:
+    a = deref(get_reg(state, 1), state)
+    b = deref(get_reg(state, 2), state)
+    try:
+        return _compare_arith(op, eval_arith(a, state), eval_arith(b, state))
+    except WAMError:
+        return False
+    except (ZeroDivisionError, ValueError, TypeError, OverflowError):
+        return False
+
+
+def _execute_compare_iso(state: WamState, op: str) -> bool:
+    a_expr = get_reg(state, 1)
+    b_expr = get_reg(state, 2)
+    a = _eval_arith_iso(state, a_expr)
+    if isinstance(a, bool):
+        return a
+    b = _eval_arith_iso(state, b_expr)
+    if isinstance(b, bool):
+        return b
+    return _compare_arith(op, a, b)
 
 
 class WAMThrow(Exception):
@@ -941,48 +986,28 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         return _execute_is_lax(state)
     if builtin in ('is_iso/2', 'is_iso') and arity == 2:
         return _execute_is_iso(state)
-    if builtin in ('<//2', '</2', '<'):
-        a = deref(get_reg(state, 1), state)
-        b = deref(get_reg(state, 2), state)
-        try:
-            return eval_arith(a, state) < eval_arith(b, state)
-        except WAMError:
-            return False
-    if builtin in ('>/2', '>'):
-        a = deref(get_reg(state, 1), state)
-        b = deref(get_reg(state, 2), state)
-        try:
-            return eval_arith(a, state) > eval_arith(b, state)
-        except WAMError:
-            return False
-    if builtin in ('=</2', '=<'):
-        a = deref(get_reg(state, 1), state)
-        b = deref(get_reg(state, 2), state)
-        try:
-            return eval_arith(a, state) <= eval_arith(b, state)
-        except WAMError:
-            return False
-    if builtin in ('>=/2', '>='):
-        a = deref(get_reg(state, 1), state)
-        b = deref(get_reg(state, 2), state)
-        try:
-            return eval_arith(a, state) >= eval_arith(b, state)
-        except WAMError:
-            return False
-    if builtin in ('=:=/2', '=:='):
-        a = deref(get_reg(state, 1), state)
-        b = deref(get_reg(state, 2), state)
-        try:
-            return eval_arith(a, state) == eval_arith(b, state)
-        except WAMError:
-            return False
-    if builtin in ('=\\=/2', '=\\='):
-        a = deref(get_reg(state, 1), state)
-        b = deref(get_reg(state, 2), state)
-        try:
-            return eval_arith(a, state) != eval_arith(b, state)
-        except WAMError:
-            return False
+    compare_lax = {
+        '<': ('<//2', '</2', '<_lax/2', '<_lax'),
+        '>': ('>/2', '>_lax/2', '>', '>_lax'),
+        '=<': ('=</2', '=<_lax/2', '=<', '=<_lax'),
+        '>=': ('>=/2', '>=_lax/2', '>=', '>=_lax'),
+        '=:=': ('=:=/2', '=:=_lax/2', '=:=', '=:=_lax'),
+        '=\\=': ('=\\=/2', '=\\=_lax/2', '=\\=', '=\\=_lax'),
+    }
+    for op, keys in compare_lax.items():
+        if builtin in keys and arity == 2:
+            return _execute_compare_lax(state, op)
+    compare_iso = {
+        '<': ('<_iso/2', '<_iso'),
+        '>': ('>_iso/2', '>_iso'),
+        '=<': ('=<_iso/2', '=<_iso'),
+        '>=': ('>=_iso/2', '>=_iso'),
+        '=:=': ('=:=_iso/2', '=:=_iso'),
+        '=\\=': ('=\\=_iso/2', '=\\=_iso'),
+    }
+    for op, keys in compare_iso.items():
+        if builtin in keys and arity == 2:
+            return _execute_compare_iso(state, op)
     if builtin in ('\\+/1', '\\+'):  # negation as failure
         goal = deref(get_reg(state, 1), state)
         return not _goal_succeeds_once(goal, state)

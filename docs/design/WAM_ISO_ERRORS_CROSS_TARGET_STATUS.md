@@ -65,17 +65,17 @@ Survey columns: shipped means code and tests exist in the target today.
 | `catch/3` + `throw/1` substrate | shipped | shipped | Python shipped; others mostly missing/partial |
 | Error constructors and `throw_iso_error` helper | shipped | shipped | Python shipped; others not adopted |
 | `is_iso/2` / `is_lax/2` | shipped | shipped | Python shipped; others not adopted |
-| ISO/lax arithmetic compares | shipped | shipped | not adopted |
+| ISO/lax arithmetic compares | shipped | shipped | Python shipped; others not adopted |
 | `succ_iso/2` / `succ_lax/2` | shipped | shipped | not adopted |
 | Lax IEEE-754 float divide behavior | shipped | shipped | not adopted |
 
 The C++ and Elixir targets are therefore the current reference consumers. C++
 was the first implementation; Elixir proves the design is not C++-specific.
 Python has now adopted the catch/throw substrate, ISO error constructors,
-`throw_iso_error`, per-predicate config/rewrite/audit plumbing, and the
-`is_iso/2` / `is_lax/2` arithmetic assignment variants. It should not be
-described as fully ISO-error compatible until comparisons and remaining concrete
-builtins also adopt three-form keys. R, Lua,
+`throw_iso_error`, per-predicate config/rewrite/audit plumbing, arithmetic
+assignment variants, and arithmetic comparison variants. It should not be
+described as fully ISO-error compatible until remaining concrete builtins also
+adopt three-form keys. R, Lua,
 Haskell, Rust, and the remaining targets are still mostly missing or partial on
 this stack.
 

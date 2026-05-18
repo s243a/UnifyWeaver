@@ -443,7 +443,14 @@ test(iso_errors_text_rewrite_uses_is_key_tables) :-
 	assertion(sub_string(IsoWam, _, _, _, "call is_iso/2, 2")),
 	assertion(sub_string(IsoWam, _, _, _, "execute is_iso/2")),
 	wam_python_target:iso_errors_rewrite_text(iso_config(false, []), demo/0, Wam0, LaxWam),
-	assertion(sub_string(LaxWam, _, _, _, "builtin_call is_lax/2 2")).
+	assertion(sub_string(LaxWam, _, _, _, "builtin_call is_lax/2 2")),
+	Cmp0 = 'cmp/0:\n  builtin_call >/2 2\n  builtin_call =:=/2 2',
+	wam_python_target:iso_errors_rewrite_text(iso_config(true, []), cmp/0, Cmp0, CmpIso),
+	assertion(sub_string(CmpIso, _, _, _, "builtin_call >_iso/2 2")),
+	assertion(sub_string(CmpIso, _, _, _, "builtin_call =:=_iso/2 2")),
+	wam_python_target:iso_errors_rewrite_text(iso_config(false, []), cmp/0, Cmp0, CmpLax),
+	assertion(sub_string(CmpLax, _, _, _, "builtin_call >_lax/2 2")),
+	assertion(sub_string(CmpLax, _, _, _, "builtin_call =:=_lax/2 2")).
 
 test(iso_errors_project_generation_rewrites_wam_text) :-
 	setup_call_cleanup(
@@ -1022,7 +1029,11 @@ test(generated_runtime_runs_is_iso_and_lax_variants) :-
 			once(sub_string(Output, _, _, _, "type")),
 			once(sub_string(Output, _, _, _, "inst")),
 			once(sub_string(Output, _, _, _, "zero")),
-			once(sub_string(Output, _, _, _, "lax_false"))
+			once(sub_string(Output, _, _, _, "cmp_inst")),
+			once(sub_string(Output, _, _, _, "cmp_type")),
+			once(sub_string(Output, _, _, _, "cmp_zero")),
+			once(sub_string(Output, _, _, _, "lax_false")),
+			once(sub_string(Output, _, _, _, "cmp_lax_false"))
 		),
 		cleanup_tmp_dir(ProjectDir)).
 
@@ -1218,10 +1229,21 @@ is_iso_lax_script(Script) :-
 		"expr = wr.Compound('//2', [wr.Int(1), wr.Int(0)])",
 		"catch_is(wr.Compound('is_iso/2', [v, expr]), wr.Compound('error/2', [wr.Compound('evaluation_error/1', [wr.make_atom('zero_divisor')]), wr.Var([None], 301)]), wr.Compound('write/1', [wr.make_atom('zero')]))",
 		"print()",
+		"catch_is(wr.Compound('>_iso/2', [wr.Var([None], 500), wr.Int(5)]), wr.Compound('error/2', [wr.make_atom('instantiation_error'), wr.Var([None], 501)]), wr.Compound('write/1', [wr.make_atom('cmp_inst')]))",
+		"print()",
+		"catch_is(wr.Compound('<_iso/2', [wr.make_atom('foo'), wr.Int(5)]), wr.Compound('error/2', [wr.Compound('type_error/2', [wr.make_atom('evaluable'), wr.Var([None], 502)]), wr.Var([None], 503)]), wr.Compound('write/1', [wr.make_atom('cmp_type')]))",
+		"print()",
+		"expr = wr.Compound('//2', [wr.Int(1), wr.Int(0)])",
+		"catch_is(wr.Compound('=:=_iso/2', [expr, wr.Int(0)]), wr.Compound('error/2', [wr.Compound('evaluation_error/1', [wr.make_atom('zero_divisor')]), wr.Var([None], 504)]), wr.Compound('write/1', [wr.make_atom('cmp_zero')]))",
+		"print()",
 		"s = wr.WamState()",
 		"wr.set_reg(s, 1, wr.Var([None], 400))",
 		"wr.set_reg(s, 2, wr.make_atom('foo'))",
 		"print('lax_false' if not wr._execute_builtin('is_lax/2', 2, s) else 'bad')",
+		"s = wr.WamState()",
+		"wr.set_reg(s, 1, wr.Var([None], 600))",
+		"wr.set_reg(s, 2, wr.Int(5))",
+		"print('cmp_lax_false' if not wr._execute_builtin('>_lax/2', 2, s) else 'bad')",
 		""
 	], '\n', Script).
 
