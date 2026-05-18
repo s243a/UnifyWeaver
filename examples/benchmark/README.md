@@ -172,7 +172,8 @@ mode. Use `policy-actionable-tsv` or `policy-actionable-markdown` to suppress
 matching rows and show only policy differences or missing policy modes, with
 the policy-selected value and policy-vs-best ratio included for triage. Add
 `--policy-action-threshold` to ignore small measured diffs while still always
-showing missing policy modes:
+showing missing policy modes. Add `--fail-on-policy-actions` when scripted
+calibration should exit non-zero if thresholded actionable rows remain:
 
 ```bash
 python examples/benchmark/benchmark_csharp_query_effective_distance_artifact_backends.py \
@@ -182,6 +183,7 @@ python examples/benchmark/benchmark_csharp_query_effective_distance_artifact_bac
   --repetitions 1 \
   --summary-output output/csharp-query-effective-distance-summary.tsv \
   --policy-action-threshold 1.10 \
+  --fail-on-policy-actions \
   --format policy-actionable-markdown
 ```
 
