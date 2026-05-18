@@ -246,6 +246,14 @@
 :- dynamic user:wam_cpp_test_format_basic/0.
 :- dynamic user:wam_cpp_test_format_year/0.
 :- dynamic user:wam_cpp_test_format_from_date9/0.
+:- dynamic user:wam_cpp_test_dcgcall_n0/0.
+:- dynamic user:wam_cpp_test_dcgcall_n0_no/0.
+:- dynamic user:wam_cpp_test_dcgcall_full/0.
+:- dynamic user:wam_cpp_test_dcgcall_partial/0.
+:- dynamic user:wam_cpp_test_dcgcall_partial_no/0.
+:- dynamic user:wam_cpp_test_dcgcall_rep3/0.
+:- dynamic user:wam_cpp_test_dcgcall_rep0/0.
+:- dynamic user:wam_cpp_test_dcgcall_rep_no/0.
 :- dynamic user:wam_cpp_test_enum_member/0.
 
 user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
@@ -514,6 +522,33 @@ user:wam_cpp_test_format_year       :-
 user:wam_cpp_test_format_from_date9 :-
     stamp_date_time(1704067200, DT, 'UTC'),
     format_time(A, '%Y-%m-%d', DT), A = '2024-01-01'.
+% DCG call//N (DCG-body meta-call) -- works via composition of SWI's
+% --> term_expansion (which rewrites call(P) inside a DCG body to
+% call(P, S0, S)) and the existing dispatch_call_meta. No new runtime
+% code needed; this section documents and locks in the behavior.
+user:dcg_emit_b --> [b].
+user:dcg_emit_two(X, Y) --> [X], [Y].
+user:dcg_emit_a --> [a].
+user:dcg_with_call0 --> [a], call(user:dcg_emit_b), [c].
+user:dcg_with_call_full --> [start], call(user:dcg_emit_two(x, y)), [end].
+user:dcg_with_call_partial --> [start], call(user:dcg_emit_two(x), y), [end].
+user:dcg_rep0(_, 0) --> [].
+user:dcg_rep0(P, N) -->
+    { N > 0, N1 is N - 1 }, call(P), user:dcg_rep0(P, N1).
+user:wam_cpp_test_dcgcall_n0      :- phrase(dcg_with_call0, [a, b, c]).
+user:wam_cpp_test_dcgcall_n0_no   :- \+ phrase(dcg_with_call0, [a, b, d]).
+user:wam_cpp_test_dcgcall_full    :-
+    phrase(dcg_with_call_full, [start, x, y, end]).
+user:wam_cpp_test_dcgcall_partial :-
+    phrase(dcg_with_call_partial, [start, x, y, end]).
+user:wam_cpp_test_dcgcall_partial_no :-
+    \+ phrase(dcg_with_call_partial, [start, x, z, end]).
+user:wam_cpp_test_dcgcall_rep3    :-
+    phrase(dcg_rep0(dcg_emit_a, 3), [a, a, a]).
+user:wam_cpp_test_dcgcall_rep0    :-
+    phrase(dcg_rep0(dcg_emit_a, 0), []).
+user:wam_cpp_test_dcgcall_rep_no  :-
+    \+ phrase(dcg_rep0(dcg_emit_a, 3), [a, a]).
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
 
@@ -3488,6 +3523,49 @@ test(cpp_e2e_date_time, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_format_basic/0',      [], true),
           run_query(BinPath, 'wam_cpp_test_format_year/0',       [], true),
           run_query(BinPath, 'wam_cpp_test_format_from_date9/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_dcg_call, [condition(cpp_compiler_available)]) :-
+    % DCG call//N (DCG-body meta-call). Works via composition of
+    % SWI's --> term_expansion (which rewrites call(P) inside a DCG
+    % body to call(P, S0, S)) and our existing dispatch_call_meta.
+    % No new runtime code; these tests document and lock in the
+    % behavior. Covers:
+    %   call//1: nullary DCG via call(P).
+    %   call//1 with full partial application: call(P(x, y)).
+    %   call//2: call(P(x), y) -- one extra arg threaded through.
+    %   Module-qualified DCG meta-call (via user: prefix already
+    %     present on the rules, exercised by phrase indirection).
+    %   Recursive higher-order DCG via call(P) inside rep0/2.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_dcgcall', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_dcgcall_n0/0,
+                               user:wam_cpp_test_dcgcall_n0_no/0,
+                               user:wam_cpp_test_dcgcall_full/0,
+                               user:wam_cpp_test_dcgcall_partial/0,
+                               user:wam_cpp_test_dcgcall_partial_no/0,
+                               user:wam_cpp_test_dcgcall_rep3/0,
+                               user:wam_cpp_test_dcgcall_rep0/0,
+                               user:wam_cpp_test_dcgcall_rep_no/0,
+                               user:dcg_emit_b/2,
+                               user:dcg_emit_two/4,
+                               user:dcg_emit_a/2,
+                               user:dcg_with_call0/2,
+                               user:dcg_with_call_full/2,
+                               user:dcg_with_call_partial/2,
+                               user:dcg_rep0/4],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_dcgcall_n0/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_dcgcall_n0_no/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_dcgcall_full/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_dcgcall_partial/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_dcgcall_partial_no/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_dcgcall_rep3/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_dcgcall_rep0/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_dcgcall_rep_no/0',     [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
