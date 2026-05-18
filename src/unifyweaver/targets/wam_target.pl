@@ -1486,6 +1486,7 @@ is_builtin_pred(random_between, 3).     % random_between(+L, +H, -X), Integer.
 is_builtin_pred(random_member, 2).      % random_member(-X, +List).
 is_builtin_pred(random_permutation, 2). % random_permutation(+List, -Perm).
 is_builtin_pred(set_random, 1).         % set_random(seed(N|random)).
+is_builtin_pred(sort, 4).               % sort(+Key, +Order, +List, -Sorted).
 is_builtin_pred(write, 1).  % I/O — useful for runtime instrumentation.
 is_builtin_pred(display, 1).
 is_builtin_pred(nl, 0).

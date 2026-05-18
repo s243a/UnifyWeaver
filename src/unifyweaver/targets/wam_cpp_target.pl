@@ -510,6 +510,43 @@ static const int _wam_cpp_setup_register = []() {
 :- discontiguous iso_errors_default_to_iso/2.
 :- discontiguous iso_errors_default_to_lax/2.
 
+% predsort/3 stdlib: defined as ordinary user-module Prolog clauses
+% asserted at module load. The compile path picks them up via
+% clause/2 like any other user predicate. Users opt in by including
+% user:predsort/3 plus the four helper predicates in their
+% write_wam_cpp_project predicate list. Doing it this way (rather
+% than as a C++ builtin or runtime-preload bytecode) re-uses the
+% just-polished module-qualified meta-call dispatcher for the
+% call(P, Order, A, B) comparator invocation.
+:- (   current_predicate(user:wam_cpp_predsort_/5)
+   ->  true
+   ;   assertz((user:predsort(P, L, S) :-
+           length(L, N), wam_cpp_predsort_(N, P, L, _, S))),
+       assertz((user:wam_cpp_predsort_(2, P, [X1, X2|T], T, R) :- !,
+           call(P, O, X1, X2), wam_cpp_sort2(O, X1, X2, R))),
+       assertz((user:wam_cpp_predsort_(1, _, [X|T], T, [X]) :- !)),
+       assertz((user:wam_cpp_predsort_(0, _, T, T, []) :- !)),
+       assertz((user:wam_cpp_predsort_(N, P, L1, L3, R) :-
+           N1 is N // 2, N2 is N - N1,
+           wam_cpp_predsort_(N1, P, L1, L2, R1),
+           wam_cpp_predsort_(N2, P, L2, L3, R2),
+           wam_cpp_predmerge(P, R1, R2, R))),
+       assertz((user:wam_cpp_sort2(<, A, B, [A, B]))),
+       assertz((user:wam_cpp_sort2(=, A, _, [A]))),
+       assertz((user:wam_cpp_sort2(>, A, B, [B, A]))),
+       assertz((user:wam_cpp_predmerge(_, [], R, R) :- !)),
+       assertz((user:wam_cpp_predmerge(_, R, [], R) :- !)),
+       assertz((user:wam_cpp_predmerge(P, [H1|T1], [H2|T2], R) :-
+           call(P, O, H1, H2),
+           wam_cpp_predmerge_(O, P, H1, H2, T1, T2, R))),
+       assertz((user:wam_cpp_predmerge_(<, P, H1, H2, T1, T2, [H1|R]) :-
+           wam_cpp_predmerge(P, T1, [H2|T2], R))),
+       assertz((user:wam_cpp_predmerge_(=, P, H1, _, T1, T2, [H1|R]) :-
+           wam_cpp_predmerge(P, T1, T2, R))),
+       assertz((user:wam_cpp_predmerge_(>, P, H1, H2, T1, T2, [H2|R]) :-
+           wam_cpp_predmerge(P, [H1|T1], T2, R)))
+   ).
+
 % is/2 — first ISO-aware builtin. ISO-mode predicates get their
 % default is/2 calls rewritten to is_iso/2 (which throws on bad
 % RHS); lax-mode predicates rewrite to is_lax/2 (a no-op rename
@@ -4430,6 +4467,72 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
                 Value::Compound("[|]/2", std::move(cons_args)));
         }
         CellPtr tgt = get_cell("A2");
+        if (tgt->is_unbound()) { bind_cell(tgt, *result); pc += 1; return true; }
+        if (!unify_cells(tgt, result)) return false;
+        pc += 1; return true;
+    }
+
+    // ---- sort/4 -----------------------------------------------------
+    // sort(+Key, +Order, +List, -Sorted)
+    //   Key:   0 for whole-term, N>0 for the Nth arg of a compound.
+    //   Order: @<  ascending,  dup keys removed.
+    //          @=< ascending,  dup keys kept (stable).
+    //          @>  descending, dup keys removed.
+    //          @>= descending, dup keys kept (stable).
+    if (op == "sort/4") {
+        Value kv = *get_cell("A1");
+        Value ov = *get_cell("A2");
+        if (kv.tag != Value::Tag::Integer)
+            return throw_iso_error(make_type_error("integer", kv));
+        if (ov.tag != Value::Tag::Atom)
+            return throw_iso_error(make_type_error("atom", ov));
+        std::int64_t key_pos = kv.i;
+        if (key_pos < 0)
+            return throw_iso_error(make_domain_error("not_less_than_zero", kv));
+        bool ascending, dedup;
+        if      (ov.s == "@<")  { ascending = true;  dedup = true;  }
+        else if (ov.s == "@=<") { ascending = true;  dedup = false; }
+        else if (ov.s == "@>")  { ascending = false; dedup = true;  }
+        else if (ov.s == "@>=") { ascending = false; dedup = false; }
+        else return throw_iso_error(make_domain_error("order", ov));
+        std::vector<CellPtr> items;
+        CellPtr lc = get_cell("A3");
+        for (;;) {
+            Value lv = deref(*lc);
+            if (lv.tag == Value::Tag::Atom && lv.s == "[]") break;
+            if (lv.tag != Value::Tag::Compound || lv.s != "[|]/2"
+                || lv.args.size() != 2) return false;
+            items.push_back(lv.args[0]);
+            lc = lv.args[1];
+        }
+        auto extract_key = [key_pos](const CellPtr& c) -> CellPtr {
+            if (key_pos == 0) return c;
+            if (c->tag == Value::Tag::Compound
+                && (std::size_t)key_pos <= c->args.size())
+                return c->args[key_pos - 1];
+            return c; // fall back to whole-term comparison
+        };
+        std::stable_sort(items.begin(), items.end(),
+            [&](const CellPtr& a, const CellPtr& b) {
+                int cmp = standard_order_cmp(*extract_key(a), *extract_key(b));
+                return ascending ? (cmp < 0) : (cmp > 0);
+            });
+        if (dedup) {
+            items.erase(std::unique(items.begin(), items.end(),
+                [&](const CellPtr& a, const CellPtr& b) {
+                    return standard_order_cmp(*extract_key(a),
+                                              *extract_key(b)) == 0;
+                }), items.end());
+        }
+        CellPtr result = std::make_shared<Cell>(Value::Atom("[]"));
+        for (auto it = items.rbegin(); it != items.rend(); ++it) {
+            std::vector<CellPtr> cons_args;
+            cons_args.push_back(*it);
+            cons_args.push_back(result);
+            result = std::make_shared<Cell>(
+                Value::Compound("[|]/2", std::move(cons_args)));
+        }
+        CellPtr tgt = get_cell("A4");
         if (tgt->is_unbound()) { bind_cell(tgt, *result); pc += 1; return true; }
         if (!unify_cells(tgt, result)) return false;
         pc += 1; return true;
