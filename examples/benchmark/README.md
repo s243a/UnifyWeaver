@@ -181,6 +181,16 @@ python examples/benchmark/benchmark_csharp_query_effective_distance_artifact_bac
   --format policy-actionable-markdown
 ```
 
+If you already have a `summary-tsv` artifact from a larger run, use
+`--summary-input` to render the policy reports offline without repeating the
+benchmark:
+
+```bash
+python examples/benchmark/benchmark_csharp_query_effective_distance_artifact_backends.py \
+  --summary-input output/csharp-query-effective-distance-summary.tsv \
+  --format policy-actionable-markdown
+```
+
 At the checked-in 300-10k scales this is expected to favor preload or
 mmap-array; LMDB is primarily retained as the larger-data comparison point for
 future 50k+ style runs where memory pressure matters.

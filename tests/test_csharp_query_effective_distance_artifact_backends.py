@@ -45,6 +45,88 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "automatic fixture preparation only supports"):
             MODULE.scale_seed_cap("1m_cats")
 
+    def test_load_summary_tsv_validates_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "summary.tsv"
+            path.write_text("scale\trelation\nexample\tcategory_parent\n")
+
+            with self.assertRaisesRegex(ValueError, "missing summary column"):
+                MODULE.load_summary_tsv(path)
+
+    def test_summary_input_policy_actionable_markdown_uses_existing_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "summary.tsv"
+            path.write_text(
+                "\t".join(MODULE.SUMMARY_HEADERS)
+                + "\n"
+                + "\t".join(
+                    [
+                        "enwiki_page_5m",
+                        "article_category",
+                        "5000000",
+                        "1918305",
+                        "128",
+                        "lmdb",
+                        "mmap-array",
+                        "mmap-array",
+                        "mmap-array",
+                        "mmap-array",
+                        "mmap-array",
+                        "lmdb:3.251|mmap-array:3.288",
+                        "lmdb:1219.110|mmap-array:236.382",
+                        "delimited-artifact:400.000|mmap-array:350.000",
+                        "mmap-array:350.000",
+                        "mmap-array:850.000",
+                        "lmdb:142443019|mmap-array:80000643",
+                    ]
+                )
+                + "\n"
+            )
+
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "--summary-input",
+                    str(path),
+                    "--format",
+                    "policy-actionable-markdown",
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=60,
+            )
+
+        self.assertEqual(result.returncode, 0, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+        self.assertIn("| Policy mode | Policy artifact value | Policy vs best |", result.stdout)
+        self.assertIn("| bucket_c0 | ms | delimited-artifact | 400.000 | 1.143x | mmap-array | 350.000 | diff |", result.stdout)
+        self.assertNotIn("| lookup_c0 | ms | lmdb | 3.251 | 1.000x | lmdb | 3.251 | match |", result.stdout)
+
+    def test_summary_input_rejects_raw_formats(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "summary.tsv"
+            path.write_text("\t".join(MODULE.SUMMARY_HEADERS) + "\n")
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "--summary-input",
+                    str(path),
+                    "--format",
+                    "tsv",
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=60,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--summary-input requires a summary-* or policy-* --format", result.stderr)
+
     def test_skip_missing_scale_errors_when_nothing_remains(self) -> None:
         result = subprocess.run(
             [
