@@ -29,18 +29,19 @@ matters for parity.
 
 ## ISO Error Readiness
 
-Python is **not yet an ISO-error adopter**. It has the arithmetic and
-comparison builtin surface that would eventually receive `_iso` and `_lax`
-forms, but it is missing the exception substrate and generator plumbing that
-the C++ and Elixir targets use.
+Python is **not yet an ISO-error adopter**. It now has the Prolog-level
+`catch/3` and `throw/1` substrate plus the arithmetic and comparison builtin
+surface that would eventually receive `_iso` and `_lax` forms. It is still
+missing the ISO-specific error constructors, config/rewrite/audit plumbing, and
+ISO/lax builtin variants that the C++ and Elixir targets use.
 
 Current state:
 
 | Component | Python status | Notes |
 | --- | --- | --- |
-| Prolog `catch/3` / `throw/1` | Missing | No side-stack catcher frames or user-level throw unwinding in the packaged runtime. |
+| Prolog `catch/3` / `throw/1` | Present | Packaged runtime has side-stack catcher frames and generated-project E2E coverage. |
 | ISO error constructors | Missing | No runtime builders for `error(type_error(...), _)`, `error(instantiation_error, _)`, etc. |
-| `throw_iso_error` helper | Missing | Depends on `catch/3` / `throw/1` first. |
+| `throw_iso_error` helper | Missing | Now unblocked by `catch/3` / `throw/1`. |
 | `is_iso/2` / `is_lax/2` | Missing | Existing `is/2` catches `WAMError` and fails silently. |
 | ISO/lax arithmetic compares | Missing | Existing compares catch `WAMError` and fail silently. |
 | `succ/2` and ISO/lax variants | Missing | `succ/2` is not part of the current Python builtin baseline. |
@@ -67,25 +68,23 @@ instead of throwing a structured Prolog error. That is a good starting point for
 
 ## Recommended ISO Port Sequence
 
-Porting `is_iso/2` first would be premature because Python currently has
-nowhere for a structured ISO error to go. The safer sequence is:
+Porting `is_iso/2` first was premature before `catch/3` / `throw/1` existed.
+That substrate is now present, so the remaining sequence is:
 
-1. Add Prolog-level `catch/3` and `throw/1` to the packaged runtime, mirroring
-   the C++/Elixir side-stack design.
-2. Add `error/2` constructors plus `make_type_error`,
+1. Add `error/2` constructors plus `make_type_error`,
    `make_instantiation_error`, `make_domain_error`, and
    `make_evaluation_error`.
-3. Add `throw_iso_error` and prove `catch(Goal, error(Pattern, _), Recovery)`
+2. Add `throw_iso_error` and prove `catch(Goal, error(Pattern, _), Recovery)`
    matches the constructed terms.
-4. Add shared-shape ISO config loading, per-predicate rewrite, and
+3. Add shared-shape ISO config loading, per-predicate rewrite, and
    `wam_python_iso_audit/3`.
-5. Add `is_iso/2` / `is_lax/2`, with explicit-lax bypass tests.
-6. Sweep arithmetic comparisons and add `succ/2` / `succ_iso/2` /
+4. Add `is_iso/2` / `is_lax/2`, with explicit-lax bypass tests.
+5. Sweep arithmetic comparisons and add `succ/2` / `succ_iso/2` /
    `succ_lax/2`.
 
-The first PR should therefore be a catch/throw runtime PR, not an arithmetic
-PR. Once that substrate exists, the C++ and Elixir ISO tests provide a direct
-template for Python E2E coverage.
+The next PR should therefore be an ISO error-constructor and `throw_iso_error`
+PR, not an arithmetic PR. The C++ and Elixir ISO tests provide a direct template
+for Python E2E coverage.
 
 ## Runtime Source Of Truth
 

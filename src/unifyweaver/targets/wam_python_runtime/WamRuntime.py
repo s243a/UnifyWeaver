@@ -84,6 +84,15 @@ class Environment:
     perm_vars: List        # Y registers
 
 
+@dataclass
+class CatcherFrame:
+    """Side-stack frame for Prolog catch/3."""
+    catcher_term: Term
+    recovery_term: Term
+    saved_cp: Any
+    snapshot: Any
+
+
 class WamState:
     def __init__(self):
         self.regs: List = [None] * 512   # A1->1, X1->101, Y1->201 (1-indexed, same as all targets)
@@ -109,6 +118,9 @@ class WamState:
         self.indexed_atom_fact2: Dict[str, Dict[str, List[str]]] = {}
         # indexed_weighted_edge: pred_key -> { key_atom -> [(value_atom, weight), ...] }
         self.indexed_weighted_edge: Dict[str, Dict[str, List[Tuple[str, float]]]] = {}
+        # Side stack for Prolog catch/3 frames. Python exceptions provide the
+        # unwind mechanism; these frames carry WAM-level state snapshots.
+        self.catcher_frames: List[CatcherFrame] = []
 
     def fresh_var(self) -> Var:
         v = Var(ref=[None], id=self._var_counter)
@@ -476,6 +488,13 @@ def eval_arith(term: Term, state: WamState):
             return ops[fn](*args)
     raise WAMError(f"Cannot evaluate: {term}")
 
+class WAMThrow(Exception):
+    """Internal carrier for Prolog throw/1 terms."""
+    def __init__(self, term: Term):
+        super().__init__("Prolog throw/1")
+        self.term = term
+
+
 class WAMError(Exception):
     pass
 
@@ -735,8 +754,73 @@ def _goal_succeeds_once(goal: 'Term', state: WamState) -> bool:
     return False
 
 
+def _restore_state_from_snapshot(state: WamState, snapshot: WamState) -> None:
+    """Restore a WamState object in place from a catch/3 snapshot."""
+    state.__dict__.clear()
+    state.__dict__.update(snapshot.__dict__)
+
+
+def _execute_goal_in_state(goal: 'Term', state: WamState) -> bool:
+    """Execute a callable Prolog goal term against the current WAM state."""
+    goal = deref(goal, state)
+    if isinstance(goal, Atom):
+        return _execute_builtin(goal.name, 0, state)
+    if not isinstance(goal, Compound):
+        return False
+    functor = goal.functor
+    arity = len(goal.args)
+    pred_key = functor if '/' in functor else f"{functor}/{arity}"
+    for i, arg in enumerate(goal.args, start=1):
+        set_reg(state, i, deref(arg, state))
+    if _execute_builtin(pred_key, arity, state):
+        return True
+    code = getattr(state, '_code', None)
+    labels = getattr(state, '_labels', None)
+    if code is not None and labels is not None and pred_key in labels:
+        return run_wam(code, labels, pred_key, state)
+    return False
+
+
+def _execute_catch(state: WamState) -> bool:
+    """Execute catch(Goal, Catcher, Recovery)."""
+    goal = deref(get_reg(state, 1), state)
+    snapshot = copy.deepcopy(state)
+    frame = CatcherFrame(
+        catcher_term=deref(get_reg(snapshot, 2), snapshot),
+        recovery_term=deref(get_reg(snapshot, 3), snapshot),
+        saved_cp=snapshot.cp,
+        snapshot=snapshot,
+    )
+    state.catcher_frames.append(frame)
+    try:
+        ok = _execute_goal_in_state(goal, state)
+        if state.catcher_frames and state.catcher_frames[-1] is frame:
+            state.catcher_frames.pop()
+        return ok
+    except WAMThrow as thrown:
+        if state.catcher_frames and state.catcher_frames[-1] is frame:
+            state.catcher_frames.pop()
+        _restore_state_from_snapshot(state, frame.snapshot)
+        if unify(frame.catcher_term, thrown.term, state):
+            return _execute_goal_in_state(frame.recovery_term, state)
+        raise
+
+
+def _execute_throw(state: WamState) -> bool:
+    """Execute throw(Term), unwinding to the nearest active catch/3."""
+    thrown = _deep_copy_term(get_reg(state, 1), {}, state)
+    if not state.catcher_frames:
+        print(f"Uncaught Prolog throw: {_format_value(thrown, state)}", file=__import__('sys').stderr)
+        return False
+    raise WAMThrow(thrown)
+
+
 def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int = -1) -> bool:
     """Execute a WAM builtin_call instruction."""
+    if builtin in ('catch/3', 'catch') and arity == 3:
+        return _execute_catch(state)
+    if builtin in ('throw/1', 'throw') and arity == 1:
+        return _execute_throw(state)
     if builtin == '!/0' or builtin == '!':  # cut
         state.cut_b = state.b
         return True
@@ -1240,6 +1324,20 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
 
         elif op == 'call_pc':
             _, target_ip, _arity, _label = instr
+            if _label == 'catch/3':
+                state.cp = ip
+                if not _execute_catch(state):
+                    if not fail(): return False
+                    continue
+                arg_snapshot = list(state.regs)
+                continue
+            if _label == 'throw/1':
+                state.cp = ip
+                if not _execute_throw(state):
+                    if not fail(): return False
+                    continue
+                arg_snapshot = list(state.regs)
+                continue
             state.cp = ip   # save continuation (current ip = next instr)
             if target_ip >= 0:
                 ip = target_ip
@@ -1250,6 +1348,18 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
 
         elif op == 'execute_pc':
             _, target_ip, _label = instr
+            if _label == 'catch/3':
+                if not _execute_catch(state):
+                    if not fail(): return False
+                    continue
+                arg_snapshot = list(state.regs)
+                continue
+            if _label == 'throw/1':
+                if not _execute_throw(state):
+                    if not fail(): return False
+                    continue
+                arg_snapshot = list(state.regs)
+                continue
             if target_ip >= 0:
                 ip = target_ip
                 arg_snapshot = list(state.regs)  # snapshot at callee entry
@@ -1260,6 +1370,20 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
         elif op == 'call':
             # Legacy unresolved call (fallback)
             _, label, _arity = instr
+            if label == 'catch/3':
+                state.cp = ip
+                if not _execute_catch(state):
+                    if not fail(): return False
+                    continue
+                arg_snapshot = list(state.regs)
+                continue
+            if label == 'throw/1':
+                state.cp = ip
+                if not _execute_throw(state):
+                    if not fail(): return False
+                    continue
+                arg_snapshot = list(state.regs)
+                continue
             state.cp = ip
             target = labels.get(label, -1)
             if target >= 0:
@@ -1272,6 +1396,18 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
         elif op == 'execute':
             # Legacy unresolved execute (fallback)
             _, label = instr
+            if label == 'catch/3':
+                if not _execute_catch(state):
+                    if not fail(): return False
+                    continue
+                arg_snapshot = list(state.regs)
+                continue
+            if label == 'throw/1':
+                if not _execute_throw(state):
+                    if not fail(): return False
+                    continue
+                arg_snapshot = list(state.regs)
+                continue
             target = labels.get(label, -1)
             if target >= 0:
                 ip = target
