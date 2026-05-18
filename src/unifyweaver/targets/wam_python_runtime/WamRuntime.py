@@ -613,6 +613,42 @@ def _execute_compare_iso(state: WamState, op: str) -> bool:
     return _compare_arith(op, a, b)
 
 
+def _execute_succ_lax(state: WamState) -> bool:
+    a = deref(get_reg(state, 1), state)
+    b = deref(get_reg(state, 2), state)
+    if isinstance(a, Int):
+        if a.n < 0:
+            return False
+        return unify(get_reg(state, 2), Int(a.n + 1), state)
+    if isinstance(b, Int):
+        if b.n <= 0:
+            return False
+        return unify(get_reg(state, 1), Int(b.n - 1), state)
+    return False
+
+
+def _execute_succ_iso(state: WamState) -> bool:
+    a = deref(get_reg(state, 1), state)
+    b = deref(get_reg(state, 2), state)
+    a_unbound = isinstance(a, Var)
+    b_unbound = isinstance(b, Var)
+    if a_unbound and b_unbound:
+        return throw_iso_error(state, make_instantiation_error(state))
+    if not a_unbound and not isinstance(a, Int):
+        return throw_iso_error(state, make_type_error(state, 'integer', a))
+    if not b_unbound and not isinstance(b, Int):
+        return throw_iso_error(state, make_type_error(state, 'integer', b))
+    if isinstance(a, Int):
+        if a.n < 0:
+            return throw_iso_error(state, make_type_error(state, 'not_less_than_zero', a))
+        return unify(get_reg(state, 2), Int(a.n + 1), state)
+    if isinstance(b, Int):
+        if b.n <= 0:
+            return throw_iso_error(state, make_domain_error(state, 'not_less_than_zero', b))
+        return unify(get_reg(state, 1), Int(b.n - 1), state)
+    return False
+
+
 class WAMThrow(Exception):
     """Internal carrier for Prolog throw/1 terms."""
     def __init__(self, term: Term):
@@ -1008,6 +1044,10 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
     for op, keys in compare_iso.items():
         if builtin in keys and arity == 2:
             return _execute_compare_iso(state, op)
+    if builtin in ('succ/2', 'succ_lax/2', 'succ', 'succ_lax') and arity == 2:
+        return _execute_succ_lax(state)
+    if builtin in ('succ_iso/2', 'succ_iso') and arity == 2:
+        return _execute_succ_iso(state)
     if builtin in ('\\+/1', '\\+'):  # negation as failure
         goal = deref(get_reg(state, 1), state)
         return not _goal_succeeds_once(goal, state)
