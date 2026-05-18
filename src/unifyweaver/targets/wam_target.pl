@@ -1539,6 +1539,7 @@ is_builtin_pred(put_code, 1).     % stdout: write one int code as char.
 is_builtin_pred(atomic_list_concat, 2). % concatenate list of atomics.
 is_builtin_pred(atomic_list_concat, 3). % concat with separator (or split).
 is_builtin_pred(atom_string, 2).        % atom ↔ string (interchangeable).
+is_builtin_pred(string_to_atom, 2).     % string ↔ atom (atom_string/2 argument order).
 is_builtin_pred(string_concat, 3).      % alias for atom_concat/3.
 is_builtin_pred(string_length, 2).      % alias for atom_length/2.
 is_builtin_pred(number_chars, 2).       % number ↔ list of single-char atoms.
