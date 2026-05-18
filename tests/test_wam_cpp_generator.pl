@@ -227,6 +227,9 @@
 :- dynamic user:wam_cpp_test_predsort_by_key/0.
 :- dynamic user:wam_cpp_test_predsort_empty/0.
 :- dynamic user:wam_cpp_test_predsort_single/0.
+:- dynamic user:wam_cpp_test_assertion_ok/0.
+:- dynamic user:wam_cpp_test_assertion_fail/0.
+:- dynamic user:wam_cpp_test_assertion_expr/0.
 :- dynamic user:wam_cpp_test_enum_member/0.
 
 user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
@@ -423,6 +426,19 @@ user:wam_cpp_test_predsort_by_key  :-
     L = [a-1, b-2, c-3].
 user:wam_cpp_test_predsort_empty   :- predsort(dcg_cmp_int, [], []).
 user:wam_cpp_test_predsort_single  :- predsort(dcg_cmp_int, [42], [42]).
+% assertion/1 (wam_cpp_target auto-asserts the user-module clause):
+%   assertion(true) succeeds silently; assertion(false) / fail throws
+%   error(assertion_failed, Goal). The include_stdlib option (also new)
+%   makes write_wam_cpp_project auto-prepend the helpers.
+user:wam_cpp_test_assertion_ok      :- assertion(true), assertion(1 =:= 1).
+user:wam_cpp_test_assertion_fail    :-
+    catch(assertion(fail),
+          error(assertion_failed, fail),
+          true).
+user:wam_cpp_test_assertion_expr    :-
+    catch(assertion(1 =:= 2),
+          error(assertion_failed, _),
+          true).
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
 
@@ -3306,6 +3322,32 @@ test(cpp_e2e_sort_customization, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_predsort_by_key/0',  [], true),
           run_query(BinPath, 'wam_cpp_test_predsort_empty/0',   [], true),
           run_query(BinPath, 'wam_cpp_test_predsort_single/0',  [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_stdlib_autoinclude_and_assertion,
+     [condition(cpp_compiler_available)]) :-
+    % include_stdlib(true) auto-prepends every registered stdlib
+    % feature's helpers, so the caller's predicate list doesn't need
+    % to spell out predsort/3's 4 helpers. assertion/1 is the new
+    % stdlib feature delivered in this PR -- asserts (call(G) -> true
+    % ; throw(error(assertion_failed, G))) and so a failed assertion
+    % is observable via catch/3.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_stdlib', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_predsort_asc/0,
+                               user:wam_cpp_test_assertion_ok/0,
+                               user:wam_cpp_test_assertion_fail/0,
+                               user:wam_cpp_test_assertion_expr/0,
+                               user:dcg_cmp_int/3],
+                              [emit_main(true), include_stdlib(true)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_predsort_asc/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_assertion_ok/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_assertion_fail/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_assertion_expr/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
