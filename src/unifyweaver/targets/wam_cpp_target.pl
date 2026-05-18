@@ -604,6 +604,45 @@ static const int _wam_cpp_setup_register = []() {
        assertz((user:wam_cpp_pairs_values([_-V|T], [V|VT]) :-
            wam_cpp_pairs_values(T, VT)))
    ).
+% lists_extra stdlib: small grab-bag of common helpers not yet
+% covered as runtime builtins. Asserted in the user module same way
+% as predsort/assoc; pulled in by include_stdlib(lists_extra) or
+% include_stdlib(true).
+:- (   current_predicate(user:pairs_keys/2)
+   ->  true
+   ;   assertz((user:pairs_keys([], []))),
+       assertz((user:pairs_keys([K-_|T], [K|KT]) :- pairs_keys(T, KT))),
+       assertz((user:pairs_values([], []))),
+       assertz((user:pairs_values([_-V|T], [V|VT]) :- pairs_values(T, VT))),
+       assertz((user:pairs_keys_values([], [], []))),
+       assertz((user:pairs_keys_values([K-V|T], [K|KT], [V|VT]) :-
+           pairs_keys_values(T, KT, VT))),
+       assertz((user:take(0, _, []) :- !)),
+       assertz((user:take(_, [], []) :- !)),
+       assertz((user:take(N, [H|T], [H|R]) :-
+           N > 0, N1 is N - 1, take(N1, T, R))),
+       assertz((user:drop(0, L, L) :- !)),
+       assertz((user:drop(_, [], []) :- !)),
+       assertz((user:drop(N, [_|T], R) :-
+           N > 0, N1 is N - 1, drop(N1, T, R))),
+       % intersection/union written as two-clause if-then-else to
+       % side-step a pre-existing indexing limitation: when three
+       % clauses share a [H|T] first arg, the SwitchOnTerm short-
+       % circuits past the initial TryMeElse and the third clause
+       % never gets a choice point. The if-then-else form has only
+       % one [H|T] clause, so backtracking isn't needed.
+       assertz((user:intersection([], _, []))),
+       assertz((user:intersection([H|T], L, R) :-
+           ( member(H, L) -> R = [H|R1] ; R = R1 ),
+           intersection(T, L, R1))),
+       assertz((user:union([], L, L))),
+       assertz((user:union([H|T], L, R) :-
+           ( member(H, L) -> R = R1 ; R = [H|R1] ),
+           union(T, L, R1))),
+       assertz((user:permutation([], []))),
+       assertz((user:permutation(L, [H|T]) :-
+           select(H, L, Rest), permutation(Rest, T)))
+   ).
 
 %% stdlib_feature_predicates(+Feature, -Predicates)
 %  Registry mapping a stdlib feature name to its predicate
@@ -634,11 +673,21 @@ stdlib_feature_predicates(assoc, [
     user:wam_cpp_pairs_keys/2,
     user:wam_cpp_pairs_values/2
 ]).
+stdlib_feature_predicates(lists_extra, [
+    user:pairs_keys/2,
+    user:pairs_values/2,
+    user:pairs_keys_values/3,
+    user:take/3,
+    user:drop/3,
+    user:intersection/3,
+    user:union/3,
+    user:permutation/2
+]).
 
 %% all_stdlib_features(-Features)
 %  List of every known stdlib feature, in a stable order. Used when
 %  the caller passes include_stdlib(true).
-all_stdlib_features([predsort, assertion, assoc]).
+all_stdlib_features([predsort, assertion, assoc, lists_extra]).
 
 % is/2 — first ISO-aware builtin. ISO-mode predicates get their
 % default is/2 calls rewritten to is_iso/2 (which throws on bad
