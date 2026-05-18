@@ -383,7 +383,9 @@ test(static_runtime_has_iso_error_helpers, [nondet]) :-
 	sub_string(Content, _, _, _, "def make_type_error(state: WamState, expected: str, culprit: Term)"),
 	sub_string(Content, _, _, _, "def make_domain_error(state: WamState, domain: str, culprit: Term)"),
 	sub_string(Content, _, _, _, "def make_evaluation_error(state: WamState, kind: str)"),
-	sub_string(Content, _, _, _, "def throw_iso_error(state: WamState, err_term: Term)").
+	sub_string(Content, _, _, _, "def throw_iso_error(state: WamState, err_term: Term)"),
+	sub_string(Content, _, _, _, "def _execute_is_lax(state: WamState)"),
+	sub_string(Content, _, _, _, "def _execute_is_iso(state: WamState)").
 
 
 :- end_tests(wam_python_phase_b).
@@ -433,28 +435,19 @@ test(iso_errors_inline_wins_over_file) :-
 		),
 		delete_file(Path)).
 
-test(iso_errors_text_rewrite_uses_dynamic_key_tables) :-
-	setup_call_cleanup(
-		(   assertz(wam_python_target:iso_errors_default_to_iso("is/2", "is_iso/2"), IsoRef),
-			assertz(wam_python_target:iso_errors_default_to_lax("is/2", "is_lax/2"), LaxRef)
-		),
-		(   Config = iso_config(true, []),
-			Wam0 = 'demo/0:\n  put_structure is/2, 1\n  builtin_call is/2 2\n  call is/2, 2\n  execute is/2',
-			wam_python_target:iso_errors_rewrite_text(Config, demo/0, Wam0, Wam),
-			assertion(sub_string(Wam, _, _, _, "put_structure is_iso/2, 1")),
-			assertion(sub_string(Wam, _, _, _, "builtin_call is_iso/2 2")),
-			assertion(sub_string(Wam, _, _, _, "call is_iso/2, 2")),
-			assertion(sub_string(Wam, _, _, _, "execute is_iso/2"))
-		),
-		(   erase(IsoRef),
-			erase(LaxRef)
-		)).
+test(iso_errors_text_rewrite_uses_is_key_tables) :-
+	Wam0 = 'demo/0:\n  put_structure is/2, 1\n  builtin_call is/2 2\n  call is/2, 2\n  execute is/2',
+	wam_python_target:iso_errors_rewrite_text(iso_config(true, []), demo/0, Wam0, IsoWam),
+	assertion(sub_string(IsoWam, _, _, _, "put_structure is_iso/2, 1")),
+	assertion(sub_string(IsoWam, _, _, _, "builtin_call is_iso/2 2")),
+	assertion(sub_string(IsoWam, _, _, _, "call is_iso/2, 2")),
+	assertion(sub_string(IsoWam, _, _, _, "execute is_iso/2")),
+	wam_python_target:iso_errors_rewrite_text(iso_config(false, []), demo/0, Wam0, LaxWam),
+	assertion(sub_string(LaxWam, _, _, _, "builtin_call is_lax/2 2")).
 
 test(iso_errors_project_generation_rewrites_wam_text) :-
 	setup_call_cleanup(
-		(   assertz(wam_python_target:iso_errors_default_to_iso("is/2", "is_iso/2"), IsoRef),
-			user:python_parser_tmp_dir('tmp_wam_python_iso_rewrite', ProjectDir)
-		),
+		user:python_parser_tmp_dir('tmp_wam_python_iso_rewrite', ProjectDir),
 		(   Wam = 'iso_rewrite_demo/0:\n  put_variable 4, 1\n  put_integer 1, 2\n  builtin_call is/2 2\n  proceed',
 			wam_python_target:write_wam_python_project([iso_rewrite_demo/0-Wam], [iso_errors(true)], ProjectDir),
 			directory_file_path(ProjectDir, 'predicates.py', PredicatesPath),
@@ -462,9 +455,7 @@ test(iso_errors_project_generation_rewrites_wam_text) :-
 			assertion(sub_string(Code, _, _, _, '"is_iso/2", 2')),
 			\+ sub_string(Code, _, _, _, '"is/2", 2')
 		),
-		(   erase(IsoRef),
-			user:python_parser_cleanup_tmp_dir(ProjectDir)
-		)).
+		user:python_parser_cleanup_tmp_dir(ProjectDir)).
 
 test(iso_errors_audit_structure) :-
 	wam_python_target:wam_python_iso_audit(
@@ -1022,6 +1013,19 @@ test(generated_runtime_catches_iso_helper_error_terms) :-
 		),
 		cleanup_tmp_dir(ProjectDir)).
 
+test(generated_runtime_runs_is_iso_and_lax_variants) :-
+	setup_call_cleanup(
+		unique_tmp_dir('tmp_wam_python_builtin_e2e', ProjectDir),
+		(   write_builtin_project(ProjectDir),
+			is_iso_lax_script(Script),
+			run_python_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "type")),
+			once(sub_string(Output, _, _, _, "inst")),
+			once(sub_string(Output, _, _, _, "zero")),
+			once(sub_string(Output, _, _, _, "lax_false"))
+		),
+		cleanup_tmp_dir(ProjectDir)).
+
 write_builtin_project(ProjectDir) :-
 	term_builtin_wam(TermWam),
 	copy_naf_io_wam(CopyNafIoWam),
@@ -1189,6 +1193,35 @@ iso_helper_catch_script(Script) :-
 		"run_type_error()",
 		"print()",
 		"run_eval_error()",
+		""
+	], '\n', Script).
+
+is_iso_lax_script(Script) :-
+	atomic_list_concat([
+		"import wam_runtime as wr",
+		"",
+		"def catch_is(goal, catcher, recovery):",
+		"    s = wr.WamState()",
+		"    wr.set_reg(s, 1, goal)",
+		"    wr.set_reg(s, 2, catcher)",
+		"    wr.set_reg(s, 3, recovery)",
+		"    return wr._execute_catch(s)",
+		"",
+		"v = wr.Var([None], 100)",
+		"catch_is(wr.Compound('is_iso/2', [v, wr.make_atom('foo')]), wr.Compound('error/2', [wr.Compound('type_error/2', [wr.make_atom('evaluable'), wr.Var([None], 101)]), wr.Var([None], 102)]), wr.Compound('write/1', [wr.make_atom('type')]))",
+		"print()",
+		"v = wr.Var([None], 200)",
+		"expr = wr.Compound('+/2', [wr.Var([None], 201), wr.Int(1)])",
+		"catch_is(wr.Compound('is_iso/2', [v, expr]), wr.Compound('error/2', [wr.make_atom('instantiation_error'), wr.Var([None], 202)]), wr.Compound('write/1', [wr.make_atom('inst')]))",
+		"print()",
+		"v = wr.Var([None], 300)",
+		"expr = wr.Compound('//2', [wr.Int(1), wr.Int(0)])",
+		"catch_is(wr.Compound('is_iso/2', [v, expr]), wr.Compound('error/2', [wr.Compound('evaluation_error/1', [wr.make_atom('zero_divisor')]), wr.Var([None], 301)]), wr.Compound('write/1', [wr.make_atom('zero')]))",
+		"print()",
+		"s = wr.WamState()",
+		"wr.set_reg(s, 1, wr.Var([None], 400))",
+		"wr.set_reg(s, 2, wr.make_atom('foo'))",
+		"print('lax_false' if not wr._execute_builtin('is_lax/2', 2, s) else 'bad')",
 		""
 	], '\n', Script).
 

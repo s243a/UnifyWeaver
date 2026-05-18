@@ -43,11 +43,11 @@ Current state:
 | Prolog `catch/3` / `throw/1` | Present | Packaged runtime has side-stack catcher frames and generated-project E2E coverage. |
 | ISO error constructors | Present | Runtime builders exist for `instantiation_error`, `type_error/2`, `domain_error/2`, and `evaluation_error/1`. |
 | `throw_iso_error` helper | Present | Wraps `error(ErrorTerm, Context)` and routes through `throw/1`. |
-| `is_iso/2` / `is_lax/2` | Missing | Existing `is/2` catches `WAMError` and fails silently. |
+| `is_iso/2` / `is_lax/2` | Present | ISO mode throws structured errors; `is/2` and `is_lax/2` preserve lax failure. |
 | ISO/lax arithmetic compares | Missing | Existing compares catch `WAMError` and fail silently. |
 | `succ/2` and ISO/lax variants | Missing | `succ/2` is not part of the current Python builtin baseline. |
 | Per-predicate ISO config loader | Present | Supports `iso_errors_config(File)`, `iso_errors(Default)`, and `iso_errors(PI, Mode)` options. |
-| Per-predicate default rewrite | Present | `iso_errors_rewrite/4` plus text-level rewrite are wired before interpreter and lowered emission; key tables remain empty until ISO/lax builtin variants land. |
+| Per-predicate default rewrite | Present | `is/2` now rewrites to `is_iso/2` or `is_lax/2`; text-level rewrite feeds interpreter and lowered emission. |
 | ISO audit predicate | Present | `wam_python_iso_audit/3` reports builtin call sites using the shared audit shape. |
 
 The packaged runtime is the main implementation surface to update:
@@ -73,15 +73,12 @@ Porting `is_iso/2` first was premature before `catch/3` / `throw/1` existed.
 That substrate and the ISO error helpers are now present, so the remaining
 sequence is:
 
-1. Add shared-shape ISO config loading, per-predicate rewrite, and
-   `wam_python_iso_audit/3`.
-2. Add `is_iso/2` / `is_lax/2`, with explicit-lax bypass tests.
-3. Sweep arithmetic comparisons and add `succ/2` / `succ_iso/2` /
-   `succ_lax/2`.
+1. Sweep arithmetic comparisons into ISO/lax variants using the same
+   classification helpers as `is_iso/2`.
+2. Add `succ/2` / `succ_iso/2` / `succ_lax/2`.
 
-The next PR should therefore add `is_iso/2` / `is_lax/2`, populate
-the Python ISO/lax rewrite key table for `is/2`, and keep explicit-lax bypass
-tests. The C++ and Elixir ISO tests
+The next PR should therefore port the arithmetic comparison variants and add
+explicit-lax bypass coverage for those operators. The C++ and Elixir ISO tests
 provide a direct template for Python E2E coverage.
 
 ## Runtime Source Of Truth

@@ -1344,6 +1344,9 @@ compile_wam_runtime_to_python(_Options, PythonCode) :-
 :- dynamic iso_errors_default_to_iso/2.
 :- dynamic iso_errors_default_to_lax/2.
 
+iso_errors_default_to_iso("is/2", "is_iso/2").
+iso_errors_default_to_lax("is/2", "is_lax/2").
+
 %% iso_errors_resolve_options(+Options, -Config)
 %  Merges optional file config with inline options into iso_config(Default,
 %  Overrides). Inline options override file entries for the same PI.
