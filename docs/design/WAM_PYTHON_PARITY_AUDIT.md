@@ -2,7 +2,9 @@
 
 This note compares the Python hybrid WAM target against the Lua parity
 baseline, using Rust and Haskell as the reference targets for builtin and
-runtime behavior.
+runtime behavior. It also records the Python target's readiness for the
+cross-target ISO-error design described in
+`WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md`.
 
 ## Packaged Runtime Surface
 
@@ -24,6 +26,66 @@ matters for parity.
 | Copying | `copy_term/2` with fresh variables and preserved sharing | `copy_term/2` with fresh variables and preserved sharing | Present |
 | Control | `true/0`, `fail/0`, `!/0`, `\+/1`, `cut_ite` opcode | `true/0`, `fail/0`, `!/0`, `\+/1`, `CutIte` | Present |
 | IO | `write/1`, `display/1`, `nl/0` output behavior | `write/1`, `display/1`, `nl/0` output behavior | Present |
+
+## ISO Error Readiness
+
+Python is **not yet an ISO-error adopter**. It has the arithmetic and
+comparison builtin surface that would eventually receive `_iso` and `_lax`
+forms, but it is missing the exception substrate and generator plumbing that
+the C++ and Elixir targets use.
+
+Current state:
+
+| Component | Python status | Notes |
+| --- | --- | --- |
+| Prolog `catch/3` / `throw/1` | Missing | No side-stack catcher frames or user-level throw unwinding in the packaged runtime. |
+| ISO error constructors | Missing | No runtime builders for `error(type_error(...), _)`, `error(instantiation_error, _)`, etc. |
+| `throw_iso_error` helper | Missing | Depends on `catch/3` / `throw/1` first. |
+| `is_iso/2` / `is_lax/2` | Missing | Existing `is/2` catches `WAMError` and fails silently. |
+| ISO/lax arithmetic compares | Missing | Existing compares catch `WAMError` and fail silently. |
+| `succ/2` and ISO/lax variants | Missing | `succ/2` is not part of the current Python builtin baseline. |
+| Per-predicate ISO config loader | Missing | No `iso_errors_config/1` or inline `iso_errors(PI, Mode)` handling. |
+| Per-predicate default rewrite | Missing | No Python analogue of C++/Elixir `iso_errors_rewrite/4`. |
+| ISO audit predicate | Missing | No `wam_python_iso_audit/3`. |
+
+The packaged runtime is the main implementation surface to update:
+
+```text
+src/unifyweaver/targets/wam_python_runtime/WamRuntime.py
+```
+
+The older string-assembled helper path in `wam_python_target.pl` still contains
+a smaller builtin dispatcher, but generated projects copy the packaged runtime.
+ISO work should avoid growing the legacy helper path unless a test proves it is
+still load-bearing for a supported emit mode.
+
+The existing arithmetic behavior is lax by construction. For example,
+`_execute_builtin/4` wraps `eval_arith/2` in `try/except WAMError` for `is/2`
+and the arithmetic comparisons, returning `False` on malformed arithmetic
+instead of throwing a structured Prolog error. That is a good starting point for
+`*_lax` aliases, but not enough for ISO mode.
+
+## Recommended ISO Port Sequence
+
+Porting `is_iso/2` first would be premature because Python currently has
+nowhere for a structured ISO error to go. The safer sequence is:
+
+1. Add Prolog-level `catch/3` and `throw/1` to the packaged runtime, mirroring
+   the C++/Elixir side-stack design.
+2. Add `error/2` constructors plus `make_type_error`,
+   `make_instantiation_error`, `make_domain_error`, and
+   `make_evaluation_error`.
+3. Add `throw_iso_error` and prove `catch(Goal, error(Pattern, _), Recovery)`
+   matches the constructed terms.
+4. Add shared-shape ISO config loading, per-predicate rewrite, and
+   `wam_python_iso_audit/3`.
+5. Add `is_iso/2` / `is_lax/2`, with explicit-lax bypass tests.
+6. Sweep arithmetic comparisons and add `succ/2` / `succ_iso/2` /
+   `succ_lax/2`.
+
+The first PR should therefore be a catch/throw runtime PR, not an arithmetic
+PR. Once that substrate exists, the C++ and Elixir ISO tests provide a direct
+template for Python E2E coverage.
 
 ## Runtime Source Of Truth
 
