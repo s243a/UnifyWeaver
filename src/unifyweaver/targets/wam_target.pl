@@ -1518,6 +1518,8 @@ is_builtin_pred(read_string, 5).        % read_string(+S, +L, ?L, _, -String).
 is_builtin_pred(at_end_of_stream, 1).   % at_end_of_stream(+Stream).
 is_builtin_pred(write_to_stream, 2).    % write_to_stream(+S, +Term).
 is_builtin_pred(nl_to_stream, 1).       % nl_to_stream(+S).
+is_builtin_pred(current_predicate, 1).  % current_predicate(?Name/Arity).
+is_builtin_pred(predicate_property, 2). % predicate_property(+Head, +Prop).
 is_builtin_pred(write, 1).  % I/O — useful for runtime instrumentation.
 is_builtin_pred(display, 1).
 is_builtin_pred(nl, 0).
