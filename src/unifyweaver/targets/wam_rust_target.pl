@@ -2977,11 +2977,31 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     directory_file_path(ProjectDir, 'src', SrcDir),
     make_directory_path(SrcDir),
 
-    % Generate Cargo.toml
+    % LMDB option: lmdb_mode(none | cursor).  Cursor mode emits the
+    % lmdb_fact_source module and adds lmdb-zero to Cargo.toml; none
+    % keeps the TSV-only path.  R1 of the Rust-LMDB arc (mirrors B1
+    % on the Haskell side; see context/wam_rust_lmdb_handoff.md).
+    option(lmdb_mode(LmdbMode), Options, none),
+    (   LmdbMode == cursor
+    ->  UseLmdb = true
+    ;   UseLmdb = false
+    ),
+
+    % Generate Cargo.toml (conditionally adds lmdb-zero dep)
     render_named_template(rust_wam_cargo,
-        [module_name=ModuleName], CargoContent),
+        [module_name=ModuleName, use_lmdb=UseLmdb], CargoContent),
     directory_file_path(ProjectDir, 'Cargo.toml', CargoPath),
     write_file(CargoPath, CargoContent),
+
+    % Generate src/lmdb_fact_source.rs when lmdb_mode(cursor)
+    (   UseLmdb == true
+    ->  read_template_file('templates/targets/rust_wam/lmdb_fact_source.rs.mustache',
+                           LmdbTemplate),
+        render_template(LmdbTemplate, [date=Date], LmdbCode),
+        directory_file_path(SrcDir, 'lmdb_fact_source.rs', LmdbPath),
+        write_file(LmdbPath, LmdbCode)
+    ;   true
+    ),
 
     % Write value.rs from template file
     read_template_file('templates/targets/rust_wam/value.rs.mustache', ValueTemplate),
@@ -3015,7 +3035,8 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     compile_predicates_for_project(Predicates, [foreign_pred_keys(DetectedKeys)|Options], PredicatesCode),
     format(string(FullPredicatesCode), "~w\n\n~w", [SetupForeignCode, PredicatesCode]),
     render_named_template(rust_wam_lib,
-        [module_name=ModuleName, date=Date, predicates_code=FullPredicatesCode],
+        [module_name=ModuleName, date=Date, predicates_code=FullPredicatesCode,
+         use_lmdb=UseLmdb],
         LibContent),
     directory_file_path(SrcDir, 'lib.rs', LibPath),
     write_file(LibPath, LibContent),
