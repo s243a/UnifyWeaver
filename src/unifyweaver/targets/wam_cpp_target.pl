@@ -552,6 +552,58 @@ static const int _wam_cpp_setup_register = []() {
            ;  throw(error(assertion_failed, G))
            )))
    ).
+% assoc/2 stdlib: unbalanced BST keyed by standard order. The empty
+% tree is the atom `t`; non-empty nodes are t(Key, Value, Left, Right).
+% Unbalanced keeps the asserted source tiny; can be upgraded to AVL
+% in a follow-up. Re-uses compare/3 (already in the runtime) for
+% standard-order key comparison.
+:- (   current_predicate(user:put_assoc/4)
+   ->  true
+   ;   assertz((user:empty_assoc(t))),
+       assertz((user:get_assoc(Key, t(K, V, L, R), Value) :-
+           compare(Order, Key, K),
+           wam_cpp_get_assoc_(Order, Key, V, L, R, Value))),
+       assertz((user:wam_cpp_get_assoc_(=, _, Value, _, _, Value))),
+       assertz((user:wam_cpp_get_assoc_(<, Key, _, L, _, Value) :-
+           get_assoc(Key, L, Value))),
+       assertz((user:wam_cpp_get_assoc_(>, Key, _, _, R, Value) :-
+           get_assoc(Key, R, Value))),
+       assertz((user:put_assoc(Key, t, Val, t(Key, Val, t, t)) :- !)),
+       assertz((user:put_assoc(Key, t(K, V, L, R), Val, NewTree) :-
+           compare(Order, Key, K),
+           wam_cpp_put_assoc_(Order, Key, K, V, L, R, Val, NewTree))),
+       assertz((user:wam_cpp_put_assoc_(=, Key, _, _, L, R, Val,
+                                       t(Key, Val, L, R)))),
+       assertz((user:wam_cpp_put_assoc_(<, Key, K, V, L, R, Val,
+                                       t(K, V, NewL, R)) :-
+           put_assoc(Key, L, Val, NewL))),
+       assertz((user:wam_cpp_put_assoc_(>, Key, K, V, L, R, Val,
+                                       t(K, V, L, NewR)) :-
+           put_assoc(Key, R, Val, NewR))),
+       assertz((user:list_to_assoc(List, Assoc) :-
+           wam_cpp_list_to_assoc_(List, t, Assoc))),
+       assertz((user:wam_cpp_list_to_assoc_([], A, A))),
+       assertz((user:wam_cpp_list_to_assoc_([K-V|T], A0, A) :-
+           put_assoc(K, A0, V, A1),
+           wam_cpp_list_to_assoc_(T, A1, A))),
+       assertz((user:assoc_to_list(t, []))),
+       assertz((user:assoc_to_list(t(K, V, L, R), Pairs) :-
+           assoc_to_list(L, LP),
+           assoc_to_list(R, RP),
+           append(LP, [K-V|RP], Pairs))),
+       assertz((user:assoc_to_keys(Assoc, Keys) :-
+           assoc_to_list(Assoc, Pairs),
+           wam_cpp_pairs_keys(Pairs, Keys))),
+       assertz((user:assoc_to_values(Assoc, Values) :-
+           assoc_to_list(Assoc, Pairs),
+           wam_cpp_pairs_values(Pairs, Values))),
+       assertz((user:wam_cpp_pairs_keys([], []))),
+       assertz((user:wam_cpp_pairs_keys([K-_|T], [K|KT]) :-
+           wam_cpp_pairs_keys(T, KT))),
+       assertz((user:wam_cpp_pairs_values([], []))),
+       assertz((user:wam_cpp_pairs_values([_-V|T], [V|VT]) :-
+           wam_cpp_pairs_values(T, VT)))
+   ).
 
 %% stdlib_feature_predicates(+Feature, -Predicates)
 %  Registry mapping a stdlib feature name to its predicate
@@ -568,11 +620,25 @@ stdlib_feature_predicates(predsort, [
 stdlib_feature_predicates(assertion, [
     user:assertion/1
 ]).
+stdlib_feature_predicates(assoc, [
+    user:empty_assoc/1,
+    user:get_assoc/3,
+    user:wam_cpp_get_assoc_/6,
+    user:put_assoc/4,
+    user:wam_cpp_put_assoc_/8,
+    user:list_to_assoc/2,
+    user:wam_cpp_list_to_assoc_/3,
+    user:assoc_to_list/2,
+    user:assoc_to_keys/2,
+    user:assoc_to_values/2,
+    user:wam_cpp_pairs_keys/2,
+    user:wam_cpp_pairs_values/2
+]).
 
 %% all_stdlib_features(-Features)
 %  List of every known stdlib feature, in a stable order. Used when
 %  the caller passes include_stdlib(true).
-all_stdlib_features([predsort, assertion]).
+all_stdlib_features([predsort, assertion, assoc]).
 
 % is/2 — first ISO-aware builtin. ISO-mode predicates get their
 % default is/2 calls rewritten to is_iso/2 (which throws on bad
