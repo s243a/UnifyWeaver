@@ -1113,6 +1113,22 @@
       :else
       (backtrack state))))
 
+(defn apply-atom-case-solution [state pred]
+  (let [source (deref-value (:bindings state)
+                            (or (reg-get-raw state "A1") ::unbound))
+        out (deref-value (:bindings state)
+                         (or (reg-get-raw state "A2") ::unbound))
+        source-text (atom-text state source)]
+    (if (some? source-text)
+      (let [converted (if (= pred "upcase_atom/2")
+                        (str/upper-case source-text)
+                        (str/lower-case source-text))
+            [ok unified-state] (unify-text-atom-value state out converted)]
+        (if ok
+          (advance unified-state)
+          (backtrack state)))
+      (backtrack state))))
+
 (defn char-code-text [state value]
   (let [text (atom-text state value)]
     (when (and (string? text) (= 1 (count text)))
@@ -2055,6 +2071,12 @@
 
           "atom_number/2"
           (apply-atom-number-solution state)
+
+          "upcase_atom/2"
+          (apply-atom-case-solution state (:pred instr))
+
+          "downcase_atom/2"
+          (apply-atom-case-solution state (:pred instr))
 
           "string_to_atom/2"
           (apply-atom-string-solution state (:pred instr))
