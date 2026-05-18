@@ -1009,8 +1009,9 @@
                           (or (reg-get-raw state "A1") ::unbound))
         right (deref-value (:bindings state)
                            (or (reg-get-raw state "A2") ::unbound))
-        codes? (or (= pred "atom_codes/2") (= pred "number_codes/2"))
-        atom? (or (= pred "atom_codes/2") (= pred "atom_chars/2"))
+        codes? (or (= pred "atom_codes/2") (= pred "string_codes/2") (= pred "number_codes/2"))
+        atom? (or (= pred "atom_codes/2") (= pred "atom_chars/2")
+                  (= pred "string_codes/2") (= pred "string_chars/2"))
         value-text (if atom? (atom-text state left) (number-text left))
         list-text (if codes? (code-list-text state right) (char-list-text state right))]
     (cond
@@ -1943,6 +1944,12 @@
           (apply-text-conversion-solution state (:pred instr))
 
           "atom_chars/2"
+          (apply-text-conversion-solution state (:pred instr))
+
+          "string_codes/2"
+          (apply-text-conversion-solution state (:pred instr))
+
+          "string_chars/2"
           (apply-text-conversion-solution state (:pred instr))
 
           "number_codes/2"
