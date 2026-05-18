@@ -2824,8 +2824,10 @@ compile_wam_runtime_to_cpp(_Options,
 #include "wam_runtime.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <limits>
 #include <random>
 #include <sstream>
@@ -5254,6 +5256,202 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         } else {
             return throw_iso_error(make_domain_error("seed_value", sv));
         }
+        pc += 1; return true;
+    }
+
+    // ---- get_time/1 ------------------------------------------------
+    // get_time(-Stamp) -- Float seconds since the Unix epoch with
+    // sub-second precision via std::chrono::system_clock.
+    if (op == "get_time/1") {
+        auto now = std::chrono::system_clock::now();
+        auto dur = now.time_since_epoch();
+        double sec = std::chrono::duration_cast<
+            std::chrono::duration<double>>(dur).count();
+        Value r = Value::Float(sec);
+        CellPtr tgt = get_cell("A1");
+        if (tgt->is_unbound()) { bind_cell(tgt, r); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(r))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- stamp_date_time/3 -----------------------------------------
+    // stamp_date_time(+Stamp, -DateTime, +TZ)
+    //   Stamp:    Integer or Float seconds since the Unix epoch.
+    //   TZ:       atom -- ''local'' or ''UTC''.
+    //   DateTime: date(Y, Mo, D, H, Mi, S, Off, TZ, DST).
+    //     Off is the seconds offset from UTC (0 for UTC; for local
+    //     we fill it in from tm_gmtoff when the platform provides
+    //     it, else 0).
+    //     S is Float (whole second + sub-second remainder of Stamp).
+    //     DST is the integer flag from tm_isdst (-1, 0, or 1).
+    if (op == "stamp_date_time/3") {
+        Value sv = *get_cell("A1");
+        Value tzv = *get_cell("A3");
+        if (sv.is_unbound() || tzv.is_unbound())
+            return throw_iso_error(make_instantiation_error());
+        double stamp;
+        if (sv.tag == Value::Tag::Integer)      stamp = (double)sv.i;
+        else if (sv.tag == Value::Tag::Float)   stamp = sv.f;
+        else return throw_iso_error(make_type_error("number", sv));
+        if (tzv.tag != Value::Tag::Atom)
+            return throw_iso_error(make_type_error("atom", tzv));
+        std::time_t whole = (std::time_t)stamp;
+        double frac = stamp - (double)whole;
+        std::tm tm{};
+        if (tzv.s == "UTC") {
+#if defined(_WIN32)
+            gmtime_s(&tm, &whole);
+#else
+            gmtime_r(&whole, &tm);
+#endif
+        } else if (tzv.s == "local") {
+#if defined(_WIN32)
+            localtime_s(&tm, &whole);
+#else
+            localtime_r(&whole, &tm);
+#endif
+        } else {
+            return throw_iso_error(make_domain_error("timezone", tzv));
+        }
+        std::int64_t off = 0;
+#if !defined(_WIN32)
+        off = (std::int64_t)tm.tm_gmtoff;
+#endif
+        std::vector<CellPtr> dargs;
+        dargs.push_back(std::make_shared<Cell>(Value::Integer(tm.tm_year + 1900)));
+        dargs.push_back(std::make_shared<Cell>(Value::Integer(tm.tm_mon + 1)));
+        dargs.push_back(std::make_shared<Cell>(Value::Integer(tm.tm_mday)));
+        dargs.push_back(std::make_shared<Cell>(Value::Integer(tm.tm_hour)));
+        dargs.push_back(std::make_shared<Cell>(Value::Integer(tm.tm_min)));
+        dargs.push_back(std::make_shared<Cell>(Value::Float((double)tm.tm_sec + frac)));
+        dargs.push_back(std::make_shared<Cell>(Value::Integer(off)));
+        dargs.push_back(std::make_shared<Cell>(Value::Atom(tzv.s)));
+        dargs.push_back(std::make_shared<Cell>(Value::Integer(tm.tm_isdst)));
+        Value dt = Value::Compound("date/9", std::move(dargs));
+        CellPtr tgt = get_cell("A2");
+        if (tgt->is_unbound()) { bind_cell(tgt, dt); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(dt))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- date_time_stamp/2 -----------------------------------------
+    // date_time_stamp(+DateTime, -Stamp). Inverse of stamp_date_time/3.
+    // Accepts date/9 (full form) or date/6 (Y,Mo,D,H,Mi,S -- assumes
+    // local time, ignores DST/off). Returns Float seconds since epoch.
+    if (op == "date_time_stamp/2") {
+        Value dt = *get_cell("A1");
+        if (dt.tag != Value::Tag::Compound)
+            return throw_iso_error(make_type_error("compound", dt));
+        std::tm tm{};
+        double frac = 0.0;
+        bool is_utc = false;
+        if (dt.s == "date/9" && dt.args.size() == 9) {
+            Value y  = *dt.args[0];
+            Value mo = *dt.args[1];
+            Value d  = *dt.args[2];
+            Value h  = *dt.args[3];
+            Value mi = *dt.args[4];
+            Value s  = *dt.args[5];
+            Value tz = *dt.args[7];
+            if (y.tag != Value::Tag::Integer || mo.tag != Value::Tag::Integer
+                || d.tag != Value::Tag::Integer || h.tag != Value::Tag::Integer
+                || mi.tag != Value::Tag::Integer)
+                return throw_iso_error(make_type_error("integer", y));
+            tm.tm_year = (int)y.i - 1900;
+            tm.tm_mon  = (int)mo.i - 1;
+            tm.tm_mday = (int)d.i;
+            tm.tm_hour = (int)h.i;
+            tm.tm_min  = (int)mi.i;
+            if (s.tag == Value::Tag::Integer) { tm.tm_sec = (int)s.i; }
+            else if (s.tag == Value::Tag::Float) {
+                tm.tm_sec = (int)s.f;
+                frac = s.f - (double)tm.tm_sec;
+            } else return throw_iso_error(make_type_error("number", s));
+            tm.tm_isdst = -1;
+            if (tz.tag == Value::Tag::Atom && tz.s == "UTC") is_utc = true;
+        } else if (dt.s == "date/6" && dt.args.size() == 6) {
+            Value y  = *dt.args[0];
+            Value mo = *dt.args[1];
+            Value d  = *dt.args[2];
+            Value h  = *dt.args[3];
+            Value mi = *dt.args[4];
+            Value s  = *dt.args[5];
+            tm.tm_year = (int)y.i - 1900;
+            tm.tm_mon  = (int)mo.i - 1;
+            tm.tm_mday = (int)d.i;
+            tm.tm_hour = (int)h.i;
+            tm.tm_min  = (int)mi.i;
+            if (s.tag == Value::Tag::Integer) tm.tm_sec = (int)s.i;
+            else if (s.tag == Value::Tag::Float) {
+                tm.tm_sec = (int)s.f;
+                frac = s.f - (double)tm.tm_sec;
+            } else return throw_iso_error(make_type_error("number", s));
+            tm.tm_isdst = -1;
+        } else {
+            return throw_iso_error(make_type_error("date", dt));
+        }
+        std::time_t stamp;
+        if (is_utc) {
+#if defined(_WIN32)
+            stamp = _mkgmtime(&tm);
+#else
+            stamp = timegm(&tm);
+#endif
+        } else {
+            stamp = std::mktime(&tm);
+        }
+        if (stamp == (std::time_t)-1)
+            return throw_iso_error(make_domain_error("date", dt));
+        Value r = Value::Float((double)stamp + frac);
+        CellPtr tgt = get_cell("A2");
+        if (tgt->is_unbound()) { bind_cell(tgt, r); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(r))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- format_time/3 ---------------------------------------------
+    // format_time(-Out, +Format, +Stamp). strftime(3)-style format.
+    // Out unifies with the formatted atom. (Variant taking a stream
+    // destination is deferred -- string sinks (atom/string/codes)
+    // are the common case.) Stamp is Float seconds since epoch (UTC
+    // interpretation); pre-decomposed date/9 terms are also accepted.
+    if (op == "format_time/3") {
+        Value fmt = *get_cell("A2");
+        Value sv = *get_cell("A3");
+        if (fmt.tag != Value::Tag::Atom)
+            return throw_iso_error(make_type_error("atom", fmt));
+        std::tm tm{};
+        if (sv.tag == Value::Tag::Integer || sv.tag == Value::Tag::Float) {
+            double d = (sv.tag == Value::Tag::Float) ? sv.f : (double)sv.i;
+            std::time_t whole = (std::time_t)d;
+#if defined(_WIN32)
+            gmtime_s(&tm, &whole);
+#else
+            gmtime_r(&whole, &tm);
+#endif
+        } else if (sv.tag == Value::Tag::Compound
+                   && sv.s == "date/9" && sv.args.size() == 9) {
+            Value y = *sv.args[0]; Value mo = *sv.args[1];
+            Value d = *sv.args[2]; Value h = *sv.args[3];
+            Value mi = *sv.args[4]; Value s = *sv.args[5];
+            tm.tm_year = (int)y.i - 1900;
+            tm.tm_mon  = (int)mo.i - 1;
+            tm.tm_mday = (int)d.i;
+            tm.tm_hour = (int)h.i;
+            tm.tm_min  = (int)mi.i;
+            tm.tm_sec  = (s.tag == Value::Tag::Float)
+                         ? (int)s.f : (int)s.i;
+        } else {
+            return throw_iso_error(make_type_error("date_or_stamp", sv));
+        }
+        char buf[256];
+        std::size_t n = std::strftime(buf, sizeof(buf), fmt.s.c_str(), &tm);
+        if (n == 0 && !fmt.s.empty())
+            return throw_iso_error(make_domain_error("format_time", fmt));
+        Value out = Value::Atom(std::string(buf, n));
+        CellPtr tgt = get_cell("A1");
+        if (tgt->is_unbound()) { bind_cell(tgt, out); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(out))) return false;
         pc += 1; return true;
     }
 

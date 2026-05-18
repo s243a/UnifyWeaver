@@ -238,6 +238,14 @@
 :- dynamic user:wam_cpp_test_assoc_keys/0.
 :- dynamic user:wam_cpp_test_assoc_values/0.
 :- dynamic user:wam_cpp_test_assoc_compound_keys/0.
+:- dynamic user:wam_cpp_test_get_time_positive/0.
+:- dynamic user:wam_cpp_test_stamp_utc/0.
+:- dynamic user:wam_cpp_test_stamp_subsec/0.
+:- dynamic user:wam_cpp_test_dt_roundtrip/0.
+:- dynamic user:wam_cpp_test_date6_to_stamp/0.
+:- dynamic user:wam_cpp_test_format_basic/0.
+:- dynamic user:wam_cpp_test_format_year/0.
+:- dynamic user:wam_cpp_test_format_from_date9/0.
 :- dynamic user:wam_cpp_test_enum_member/0.
 
 user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
@@ -480,6 +488,32 @@ user:wam_cpp_test_assoc_compound_keys :-
     put_assoc(pt(3, 4), A1, south, A2),
     get_assoc(pt(1, 2), A2, north),
     get_assoc(pt(3, 4), A2, south).
+% Date/time: get_time/1 (Float seconds since epoch),
+% stamp_date_time/3 (decompose + TZ), date_time_stamp/2 (compose),
+% format_time/3 (strftime-style atom output). Tests use the canonical
+% 2024-01-01 00:00:00 UTC stamp = 1704067200 as a reference point.
+user:wam_cpp_test_get_time_positive :- get_time(T), T > 1700000000.0.
+user:wam_cpp_test_stamp_utc         :-
+    stamp_date_time(1704067200,
+                    date(Y, Mo, D, H, Mi, S, _, TZ, _), 'UTC'),
+    Y = 2024, Mo = 1, D = 1, H = 0, Mi = 0, S =:= 0.0, TZ = 'UTC'.
+user:wam_cpp_test_stamp_subsec      :-
+    stamp_date_time(1704067200.25, date(_, _, _, _, _, S, _, _, _), 'UTC'),
+    S > 0.24, S < 0.26.
+user:wam_cpp_test_dt_roundtrip      :-
+    stamp_date_time(1704067200, DT, 'UTC'),
+    date_time_stamp(DT, S),
+    S =:= 1704067200.0.
+user:wam_cpp_test_date6_to_stamp    :-
+    date_time_stamp(date(2024, 1, 1, 12, 30, 45), S),
+    S > 1700000000.0.
+user:wam_cpp_test_format_basic      :-
+    format_time(A, '%Y-%m-%d', 1704067200), A = '2024-01-01'.
+user:wam_cpp_test_format_year       :-
+    format_time(A, '%Y', 1704067200), A = '2024'.
+user:wam_cpp_test_format_from_date9 :-
+    stamp_date_time(1704067200, DT, 'UTC'),
+    format_time(A, '%Y-%m-%d', DT), A = '2024-01-01'.
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
 
@@ -3423,6 +3457,37 @@ test(cpp_e2e_assoc_library, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_assoc_keys/0',          [], true),
           run_query(BinPath, 'wam_cpp_test_assoc_values/0',        [], true),
           run_query(BinPath, 'wam_cpp_test_assoc_compound_keys/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_date_time, [condition(cpp_compiler_available)]) :-
+    % get_time/1 -> Float seconds since epoch (via chrono).
+    % stamp_date_time/3 -> decompose to date/9 in UTC or local.
+    % date_time_stamp/2 -> compose back (accepts date/9 or date/6).
+    % format_time/3 -> strftime-style atom output (also accepts
+    % pre-decomposed date/9 terms in the time arg).
+    % Reference stamp: 1704067200 = 2024-01-01 00:00:00 UTC.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_dt', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_get_time_positive/0,
+                               user:wam_cpp_test_stamp_utc/0,
+                               user:wam_cpp_test_stamp_subsec/0,
+                               user:wam_cpp_test_dt_roundtrip/0,
+                               user:wam_cpp_test_date6_to_stamp/0,
+                               user:wam_cpp_test_format_basic/0,
+                               user:wam_cpp_test_format_year/0,
+                               user:wam_cpp_test_format_from_date9/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_get_time_positive/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_stamp_utc/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_stamp_subsec/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_dt_roundtrip/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_date6_to_stamp/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_format_basic/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_format_year/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_format_from_date9/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
