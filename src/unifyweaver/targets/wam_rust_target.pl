@@ -19,7 +19,8 @@
     cargo_check_project/2,               % +ProjectDir, -Result
     detect_kernels/2,                    % +Predicates, -DetectedKernels
     generate_setup_foreign_predicates_rust/2, % +DetectedKernels, -RustCode
-    escape_rust_string/2
+    escape_rust_string/2,
+    resolve_lmdb_crate/2                 % +Spec, -Crate  (lmdb_zero|heed|auto -> concrete)
 ]).
 
 :- use_module(library(lists)).
