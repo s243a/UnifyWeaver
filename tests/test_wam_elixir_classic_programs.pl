@@ -715,18 +715,17 @@ test(setof_sorts_ints) :-
         verify_elixir_args(TmpDir, 'elx_setof_sorts_ints/1',
                            ['[1,2,3]'], "true")).
 
-test(bagof_with_quantifier,
-     [blocked('^/2 transparency through inlined bagof body interacts with heap layout of nested compounds — separate fix; not introduced by member-enumerator follow-up')]) :-
-    % Tests ^/2 transparency through the inlined dispatch path.
-    % Currently FAILS: the goal Y^em(X-Y, [a-1,...]) doesn't enumerate
-    % because the em compound on the heap has its first arg (the -/2)
-    % laid out in a way my dispatch_call_meta picks up as a {:str, ...}
-    % instead of a {:ref, ...}. Reproducible with the bagof_setof PR's
-    % version too — pre-existing, not caused by this PR. Filed as
-    % follow-up alongside witness-group backtracking.
+test(bagof_with_quantifier) :-
+    % Tests ^/2 transparency through the inlined dispatch path
+    % combined with nested compound args. Previously blocked because
+    % the WAM compiler's interleaved nested-put_structure emission
+    % broke heap-contiguity of em/2's args (see the args_first_emission
+    % flag in wam_target.pl). With that flag on, em(-(X,Y), [...])
+    % has its args at addr+1, addr+2 contiguous; dispatch_call_meta
+    % reads them correctly; the goal enumerates over [a-1, b-2, c-3].
     with_elixir_project(
         [user:elx_bagof_with_quantifier/1, user:em/2],
-        [inline_bagof_setof(true)],
+        [inline_bagof_setof(true), args_first_emission(true)],
         TmpDir,
         verify_elixir_args(TmpDir, 'elx_bagof_with_quantifier/1',
                            ['[a,b,c]'], "true")).
@@ -826,6 +825,7 @@ wam_compile_opts(ExtraOpts, WamOpts) :-
                ), WamOpts).
 
 forwardable_wam_opt(inline_bagof_setof(_)).
+forwardable_wam_opt(args_first_emission(_)).
 
 %% verify_elixir_args(+ProjectDir, +PredKey, +Args, +Expected)
 %
