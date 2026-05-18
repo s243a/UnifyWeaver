@@ -385,7 +385,105 @@ test(static_runtime_has_iso_error_helpers, [nondet]) :-
 	sub_string(Content, _, _, _, "def make_evaluation_error(state: WamState, kind: str)"),
 	sub_string(Content, _, _, _, "def throw_iso_error(state: WamState, err_term: Term)").
 
+
 :- end_tests(wam_python_phase_b).
+
+% ============================================================================
+% ISO error config/rewrite plumbing
+% ============================================================================
+
+:- begin_tests(wam_python_iso_errors_config).
+
+test(iso_errors_config_loader_basic) :-
+	iso_errors_temp_config_file(Path, [
+		'iso_errors_default(true).',
+		'iso_errors_override(legacy_lookup/3, false).',
+		'iso_errors_override(experimental:my_pred/2, true).',
+		'ignored_fact(ok).'
+	]),
+	setup_call_cleanup(
+		true,
+		(   wam_python_target:iso_errors_load_config(Path, Config),
+			assertion(Config == iso_config(true,
+				[legacy_lookup/3-false,
+				 (experimental:my_pred/2)-true])),
+			wam_python_target:iso_errors_mode_for(Config, user:legacy_lookup/3, M1),
+			assertion(M1 == false),
+			wam_python_target:iso_errors_mode_for(Config, user:never_listed/2, M2),
+			assertion(M2 == true),
+			wam_python_target:iso_errors_mode_for(Config, experimental:my_pred/2, M3),
+			assertion(M3 == true)
+		),
+		delete_file(Path)).
+
+test(iso_errors_inline_wins_over_file) :-
+	iso_errors_temp_config_file(Path, [
+		'iso_errors_default(false).',
+		'iso_errors_override(legacy_lookup/3, false).'
+	]),
+	setup_call_cleanup(
+		true,
+		(   wam_python_target:iso_errors_resolve_options(
+				[iso_errors_config(Path), iso_errors(true), iso_errors(legacy_lookup/3, true)],
+				Config),
+			wam_python_target:iso_errors_mode_for(Config, user:legacy_lookup/3, M1),
+			assertion(M1 == true),
+			wam_python_target:iso_errors_mode_for(Config, user:never_listed/2, M2),
+			assertion(M2 == true)
+		),
+		delete_file(Path)).
+
+test(iso_errors_text_rewrite_uses_dynamic_key_tables) :-
+	setup_call_cleanup(
+		(   assertz(wam_python_target:iso_errors_default_to_iso("is/2", "is_iso/2"), IsoRef),
+			assertz(wam_python_target:iso_errors_default_to_lax("is/2", "is_lax/2"), LaxRef)
+		),
+		(   Config = iso_config(true, []),
+			Wam0 = 'demo/0:\n  put_structure is/2, 1\n  builtin_call is/2 2\n  call is/2, 2\n  execute is/2',
+			wam_python_target:iso_errors_rewrite_text(Config, demo/0, Wam0, Wam),
+			assertion(sub_string(Wam, _, _, _, "put_structure is_iso/2, 1")),
+			assertion(sub_string(Wam, _, _, _, "builtin_call is_iso/2 2")),
+			assertion(sub_string(Wam, _, _, _, "call is_iso/2, 2")),
+			assertion(sub_string(Wam, _, _, _, "execute is_iso/2"))
+		),
+		(   erase(IsoRef),
+			erase(LaxRef)
+		)).
+
+test(iso_errors_project_generation_rewrites_wam_text) :-
+	setup_call_cleanup(
+		(   assertz(wam_python_target:iso_errors_default_to_iso("is/2", "is_iso/2"), IsoRef),
+			user:python_parser_tmp_dir('tmp_wam_python_iso_rewrite', ProjectDir)
+		),
+		(   Wam = 'iso_rewrite_demo/0:\n  put_variable 4, 1\n  put_integer 1, 2\n  builtin_call is/2 2\n  proceed',
+			wam_python_target:write_wam_python_project([iso_rewrite_demo/0-Wam], [iso_errors(true)], ProjectDir),
+			directory_file_path(ProjectDir, 'predicates.py', PredicatesPath),
+			read_file_to_string(PredicatesPath, Code, []),
+			assertion(sub_string(Code, _, _, _, '"is_iso/2", 2')),
+			\+ sub_string(Code, _, _, _, '"is/2", 2')
+		),
+		(   erase(IsoRef),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(iso_errors_audit_structure) :-
+	wam_python_target:wam_python_iso_audit(
+		[user:py_iso_audit_pred/0],
+		[iso_errors(py_iso_audit_pred/0, true)],
+		Audit),
+	assertion(Audit = [audit(user:py_iso_audit_pred/0, true, _Sites)]).
+
+:- dynamic user:py_iso_audit_pred/0.
+user:py_iso_audit_pred :- X is 1 + 2, X = 3.
+
+iso_errors_temp_config_file(Path, Lines) :-
+	tmp_file('tmp_wam_python_iso_cfg', Path),
+	setup_call_cleanup(
+		open(Path, write, Out),
+		forall(member(L, Lines), format(Out, '~w~n', [L])),
+		close(Out)).
+
+:- end_tests(wam_python_iso_errors_config).
 
 % ============================================================================
 % Runtime parser capability metadata and validation
