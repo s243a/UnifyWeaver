@@ -72,8 +72,10 @@ process_dump(DumpPath, LmdbPath, Options) :-
     make_directory_if_missing(LmdbPath),
     % cl_from is column 0 (numeric in MediaWiki, but we read its TSV
     % representation as a string and intern it — see SPECIFICATION §7.1
-    % regime "Text-keyed").  cl_to (column 2) is the parent category
-    % name as a string.  cl_type (column 4) filters to subcat rows.
+    % regime "Text-keyed").  cl_target_id (column 6) is the parent
+    % category reference (newer MediaWiki schema replaces the legacy
+    % cl_to varchar at column 2 with a linktarget id).  cl_type
+    % (column 4) filters to subcat rows.
     BaseEnv = [
         'UW_LMDB_PATH'      = LmdbPath,
         'UW_LMDB_DBNAME'    = 'category_parent',
@@ -81,7 +83,7 @@ process_dump(DumpPath, LmdbPath, Options) :-
         'UW_FILTER_COL'     = 4,
         'UW_FILTER_VAL'     = subcat,
         'UW_KEY_COL'        = 0,
-        'UW_VAL_COL'        = 2,
+        'UW_VAL_COL'        = 6,
         'UW_INTERN_KEY'     = 1,
         'UW_INTERN_VAL'     = 1,
         'UW_LMDB_S2I_DB'    = s2i,
