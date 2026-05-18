@@ -510,14 +510,12 @@ static const int _wam_cpp_setup_register = []() {
 :- discontiguous iso_errors_default_to_iso/2.
 :- discontiguous iso_errors_default_to_lax/2.
 
-% predsort/3 stdlib: defined as ordinary user-module Prolog clauses
-% asserted at module load. The compile path picks them up via
-% clause/2 like any other user predicate. Users opt in by including
-% user:predsort/3 plus the four helper predicates in their
-% write_wam_cpp_project predicate list. Doing it this way (rather
-% than as a C++ builtin or runtime-preload bytecode) re-uses the
-% just-polished module-qualified meta-call dispatcher for the
-% call(P, Order, A, B) comparator invocation.
+% predsort/3 stdlib + assertion/1: defined as ordinary user-module
+% Prolog clauses asserted at module load. The compile path picks
+% them up via clause/2 like any other user predicate. Users opt in
+% either by including the specific helpers in their predicate list,
+% or via the include_stdlib(true|List) option to
+% write_wam_cpp_project, which auto-prepends the registered helpers.
 :- (   current_predicate(user:wam_cpp_predsort_/5)
    ->  true
    ;   assertz((user:predsort(P, L, S) :-
@@ -546,6 +544,35 @@ static const int _wam_cpp_setup_register = []() {
        assertz((user:wam_cpp_predmerge_(>, P, H1, H2, T1, T2, [H2|R]) :-
            wam_cpp_predmerge(P, [H1|T1], T2, R)))
    ).
+:- (   current_predicate(user:assertion/1)
+   ->  true
+   ;   assertz((user:assertion(G) :-
+           ( call(G)
+           -> true
+           ;  throw(error(assertion_failed, G))
+           )))
+   ).
+
+%% stdlib_feature_predicates(+Feature, -Predicates)
+%  Registry mapping a stdlib feature name to its predicate
+%  indicators (in compile order — main first, helpers after). Used
+%  by write_wam_cpp_project's include_stdlib option to auto-prepend
+%  the right helpers without callers having to spell them out.
+stdlib_feature_predicates(predsort, [
+    user:predsort/3,
+    user:wam_cpp_predsort_/5,
+    user:wam_cpp_sort2/4,
+    user:wam_cpp_predmerge/4,
+    user:wam_cpp_predmerge_/7
+]).
+stdlib_feature_predicates(assertion, [
+    user:assertion/1
+]).
+
+%% all_stdlib_features(-Features)
+%  List of every known stdlib feature, in a stable order. Used when
+%  the caller passes include_stdlib(true).
+all_stdlib_features([predsort, assertion]).
 
 % is/2 — first ISO-aware builtin. ISO-mode predicates get their
 % default is/2 calls rewritten to is_iso/2 (which throws on bad
@@ -1719,7 +1746,8 @@ parse_switch_term(Tokens, Labels, ConstsCpp, StructsCpp, ListPC) :-
 %    cpp/wam_runtime.h
 %    cpp/wam_runtime.cpp
 %    cpp/generated_program.cpp
-write_wam_cpp_project(Predicates, Options, ProjectDir) :-
+write_wam_cpp_project(Predicates0, Options, ProjectDir) :-
+    expand_stdlib_predicates(Predicates0, Options, Predicates),
     make_directory_path(ProjectDir),
     directory_file_path(ProjectDir, 'cpp', CppDir),
     make_directory_path(CppDir),
@@ -1893,6 +1921,45 @@ foreign_pred_keys_from_options(Options, Keys) :-
     ->  Keys = Keys0
     ;   Keys = []
     ).
+
+%% expand_stdlib_predicates(+Predicates0, +Options, -Predicates)
+%  Honours the include_stdlib option: prepends helper predicate
+%  indicators for each requested feature. Duplicates (when the user
+%  already listed a helper explicitly) are removed.
+%
+%  Option shapes:
+%    include_stdlib(true)            -- include every known feature
+%    include_stdlib(false)           -- no expansion (the default)
+%    include_stdlib([F1, F2, ...])   -- include only listed features
+%    include_stdlib(F)               -- single-feature shorthand
+expand_stdlib_predicates(Predicates0, Options, Predicates) :-
+    (   member(include_stdlib(Spec), Options)
+    ->  resolve_stdlib_features(Spec, Features),
+        findall(Extras,
+                ( member(F, Features),
+                  stdlib_feature_predicates(F, Extras)
+                ),
+                NestedExtras),
+        flatten_once(NestedExtras, AllExtras),
+        % Append user-supplied entries last so we don't shadow their
+        % explicit ordering; then dedupe keeping first occurrence.
+        append(AllExtras, Predicates0, Combined),
+        dedupe_keep_first(Combined, Predicates)
+    ;   Predicates = Predicates0
+    ).
+
+resolve_stdlib_features(true, Features) :- !, all_stdlib_features(Features).
+resolve_stdlib_features(false, []) :- !.
+resolve_stdlib_features(List, List) :- is_list(List), !.
+resolve_stdlib_features(F, [F]).
+
+flatten_once([], []).
+flatten_once([L|Ls], Out) :- append(L, Rest, Out), flatten_once(Ls, Rest).
+
+dedupe_keep_first([], []).
+dedupe_keep_first([H|T], [H|Out]) :-
+    exclude(==(H), T, T1),
+    dedupe_keep_first(T1, Out).
 
 write_text_file(Path, Content) :-
     setup_call_cleanup(
