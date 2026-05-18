@@ -9,6 +9,7 @@
 :- dynamic user:test_term_builtins/0.
 :- dynamic user:test_member_collect/0.
 :- dynamic user:test_memberchk_builtin/0.
+:- dynamic user:test_select_builtin/0.
 :- dynamic user:test_reverse_builtin/0.
 :- dynamic user:test_last_builtin/0.
 :- dynamic user:test_nth_builtin/0.
@@ -63,6 +64,24 @@ test(builtins_execution) :-
             (   memberchk(X, [a,b,c]),
                 X == a,
                 \+ memberchk(z, [a,b,c])
+            )),
+          assertz(user:test_select_builtin :-
+            (   select(b, [a,b,c], R),
+                R = [a,c],
+                select(X, [a,b], [b]),
+                X == a,
+                select(a, [a,b,c], RA),
+                RA = [b,c],
+                select(c, [a,b,c], RC),
+                RC = [a,b],
+                findall(Y, select(Y, [a,b,c], _), Ys),
+                Ys = [a,b,c],
+                findall(Rest, select(_, [a,b,c], Rest), Rests),
+                member([b,c], Rests),
+                member([a,c], Rests),
+                \+ select(z, [a,b,c], _),
+                \+ select(_, [], _),
+                \+ select(_, [a|b], _)
             )),
           assertz(user:test_reverse_builtin :-
             (   reverse([a,b,c], R),
@@ -155,6 +174,7 @@ test(builtins_execution) :-
           retractall(user:test_term_builtins),
           retractall(user:test_member_collect),
           retractall(user:test_memberchk_builtin),
+          retractall(user:test_select_builtin),
           retractall(user:test_reverse_builtin),
           retractall(user:test_last_builtin),
           retractall(user:test_nth_builtin),
@@ -171,7 +191,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_succ_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_succ_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -188,6 +208,7 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(StateCode, _, _, _, 'func (vm *WamState) backtrack() bool')),
     assertion(sub_string(StateCode, _, _, _, 'if len(cp.IndexedClausePCs) > 0')),
     assertion(sub_string(StateCode, _, _, _, 'if cp.MemberTail != nil')),
+    assertion(sub_string(StateCode, _, _, _, 'if len(cp.SelectResults) > 0')),
     assertion(sub_string(StateCode, _, _, _, 'if len(cp.ForeignResults) > 0')),
     assertion(sub_string(StateCode, _, _, _, 'func (vm *WamState) runNegationParallel(targetPC int, args []Value) bool')),
     assertion(sub_string(StateCode, _, _, _, 'func raceToTrue(tasks []func() bool) bool')),
@@ -203,6 +224,7 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "copy_term/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "=/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "memberchk/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "select/3"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "reverse/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "last/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "nth0/3"')),
@@ -267,6 +289,14 @@ func main() {
 		fmt.Println("MEMBERCHK_SUCCESS")
 	} else {
 		fmt.Println("MEMBERCHK_FAILURE")
+	}
+
+	selectVM := wam.NewWamState(wam.Test_select_builtinCode, wam.Test_select_builtinLabels)
+	selectVM.PC = wam.Test_select_builtinStartPC
+	if selectVM.Run() {
+		fmt.Println("SELECT_SUCCESS")
+	} else {
+		fmt.Println("SELECT_FAILURE")
 	}
 
 	reverseVM := wam.NewWamState(wam.Test_reverse_builtinCode, wam.Test_reverse_builtinLabels)
@@ -378,6 +408,7 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "TERM_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "MEMBER_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "MEMBERCHK_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "SELECT_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "REVERSE_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "LAST_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "NTH_SUCCESS")),

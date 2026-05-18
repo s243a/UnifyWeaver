@@ -32,6 +32,11 @@ type WeightedEdgeTriple struct {
 	Weight float64
 }
 
+type SelectSolution struct {
+	Elem Value
+	Rest Value
+}
+
 type ChoicePoint struct {
 	NextPC    int
 	ResumePC  int
@@ -59,6 +64,7 @@ type ChoicePoint struct {
 	ForeignResultRegs []int
 	ForeignResults   []Value
 	MemberTail       Value
+	SelectResults    []SelectSolution
 }
 
 type EnvFrame struct {
@@ -764,6 +770,33 @@ func (vm *WamState) listToSlice(v Value) ([]Value, bool) {
 	}
 }
 
+func (vm *WamState) selectSolutions(items []Value) []SelectSolution {
+	solutions := make([]SelectSolution, 0, len(items))
+	for idx, item := range items {
+		rest := make([]Value, 0, len(items)-1)
+		rest = append(rest, items[:idx]...)
+		rest = append(rest, items[idx+1:]...)
+		solutions = append(solutions, SelectSolution{
+			Elem: item,
+			Rest: &List{Elements: rest},
+		})
+	}
+	return solutions
+}
+
+func (vm *WamState) applySelectSolution(solution SelectSolution) bool {
+	mark := vm.TrailLen
+	if !vm.Unify(vm.getReg(0), solution.Elem) {
+		vm.unwindTrailTo(mark)
+		return false
+	}
+	if !vm.Unify(vm.getReg(2), solution.Rest) {
+		vm.unwindTrailTo(mark)
+		return false
+	}
+	return true
+}
+
 func decompose(v Value) (string, []Value) {
 	switch t := v.(type) {
 	case *Atom:
@@ -1201,6 +1234,47 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			vm.unwindTrailTo(mark)
 			v = vm.deref(tail)
 		}
+	case "select/3":
+		items, ok := vm.listToSlice(arg2)
+		if !ok {
+			return false
+		}
+		solutions := vm.selectSolutions(items)
+		if len(solutions) == 0 {
+			return false
+		}
+		resumePC := vm.PC + 1
+		trailMark := vm.TrailLen
+		savedRegs := vm.snapshotAllRegs()
+		stackLen := len(vm.Stack)
+		heapTop := vm.HeapLen
+		for idx, solution := range solutions {
+			vm.unwindTrailTo(trailMark)
+			vm.restoreSavedRegs(savedRegs)
+			if stackLen <= len(vm.Stack) {
+				vm.Stack = vm.Stack[:stackLen]
+			}
+			if heapTop <= vm.HeapLen {
+				vm.heapTrimTo(heapTop)
+			}
+			if !vm.applySelectSolution(solution) {
+				continue
+			}
+			if idx+1 < len(solutions) {
+				vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+					ResumePC:      resumePC,
+					CP:            vm.CP,
+					E:             vm.E,
+					StackLen:      stackLen,
+					SavedRegs:     savedRegs,
+					HeapTop:       heapTop,
+					TrailMark:     trailMark,
+					SelectResults: append([]SelectSolution(nil), solutions[idx+1:]...),
+				})
+			}
+			return true
+		}
+		return false
 	case "append/3":
 		l1, ok1 := vm.listToSlice(arg1)
 		l2, ok2 := vm.listToSlice(arg2)
@@ -1577,6 +1651,36 @@ func (vm *WamState) backtrack() bool {
             }
             if !vm.Unify(vm.getReg(0), item) {
                 vm.unwindTrailTo(cp.TrailMark)
+                continue
+            }
+            vm.PC = resumePC
+            return true
+        }
+        return vm.backtrack()
+    }
+    if len(cp.SelectResults) > 0 {
+        for len(cp.SelectResults) > 0 {
+            vm.unwindTrailTo(cp.TrailMark)
+            vm.restoreSavedRegs(cp.SavedRegs)
+            if cp.StackLen <= len(vm.Stack) {
+                vm.Stack = vm.Stack[:cp.StackLen]
+            }
+            if cp.HeapTop <= vm.HeapLen {
+                vm.heapTrimTo(cp.HeapTop)
+            }
+            vm.PC = cp.ResumePC
+            vm.CP = cp.CP
+            vm.E = cp.E
+            vm.Halted = false
+            vm.CurrentStruct = nil
+            vm.CurrentList = nil
+            solution := cp.SelectResults[0]
+            cp.SelectResults = cp.SelectResults[1:]
+            resumePC := cp.ResumePC
+            if len(cp.SelectResults) == 0 {
+                vm.ChoicePoints = vm.ChoicePoints[:topIdx]
+            }
+            if !vm.applySelectSolution(solution) {
                 continue
             }
             vm.PC = resumePC
