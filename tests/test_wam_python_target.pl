@@ -888,16 +888,36 @@ test(generated_project_enumerates_member_builtin) :-
 		),
 		cleanup_tmp_dir(ProjectDir)).
 
+test(generated_project_runs_catch_throw_builtins) :-
+	setup_call_cleanup(
+		unique_tmp_dir('tmp_wam_python_builtin_e2e', ProjectDir),
+		(   write_builtin_project(ProjectDir),
+			run_generated_query(ProjectDir, 'catch_match_demo/0', MatchOutput),
+			once(sub_string(MatchOutput, _, _, _, "caught")),
+			run_generated_query(ProjectDir, 'catch_compound_demo/0', CompoundOutput),
+			once(sub_string(CompoundOutput, _, _, _, "type_error")),
+			run_generated_query(ProjectDir, 'catch_no_throw_demo/0', NoThrowOutput),
+			once(sub_string(NoThrowOutput, _, _, _, "ok")),
+			\+ sub_string(NoThrowOutput, _, _, _, "bad")
+		),
+		cleanup_tmp_dir(ProjectDir)).
+
 write_builtin_project(ProjectDir) :-
 	term_builtin_wam(TermWam),
 	copy_naf_io_wam(CopyNafIoWam),
 	type_compare_wam(TypeCompareWam),
 	member_collect_wam(MemberCollectWam),
+	catch_match_wam(CatchMatchWam),
+	catch_compound_wam(CatchCompoundWam),
+	catch_no_throw_wam(CatchNoThrowWam),
 	wam_python_target:write_wam_python_project(
 		[term_demo/0-TermWam,
 		 copy_naf_io_demo/0-CopyNafIoWam,
 		 type_compare_demo/0-TypeCompareWam,
-		 member_collect_demo/0-MemberCollectWam],
+		 member_collect_demo/0-MemberCollectWam,
+		 catch_match_demo/0-CatchMatchWam,
+		 catch_compound_demo/0-CatchCompoundWam,
+		 catch_no_throw_demo/0-CatchNoThrowWam],
 		[],
 		ProjectDir).
 
@@ -978,6 +998,44 @@ member_collect_wam(
   builtin_call member/2 2
   end_aggregate 1
   proceed').
+
+catch_match_wam(
+'catch_match_demo/0:
+  allocate
+  put_structure throw/1, 1
+  set_constant foo
+  put_constant foo, 2
+  put_structure write/1, 3
+  set_constant caught
+  deallocate
+  execute catch/3').
+
+catch_compound_wam(
+'catch_compound_demo/0:
+  allocate
+  put_structure error/2, 4
+  set_constant type_error
+  set_constant ctx
+  put_structure throw/1, 1
+  set_value 4
+  put_structure error/2, 2
+  set_variable 104
+  set_variable 105
+  put_structure write/1, 3
+  set_value 104
+  deallocate
+  execute catch/3').
+
+catch_no_throw_wam(
+'catch_no_throw_demo/0:
+  allocate
+  put_structure write/1, 1
+  set_constant ok
+  put_constant foo, 2
+  put_structure write/1, 3
+  set_constant bad
+  deallocate
+  execute catch/3').
 
 run_generated_query(ProjectDir, Query, Output) :-
 	process_create(path(python), ['main.py', Query],
