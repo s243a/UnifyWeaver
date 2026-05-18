@@ -216,6 +216,17 @@
 :- dynamic user:wam_cpp_test_rp_length/0.
 :- dynamic user:wam_cpp_test_rp_invariant/0.
 :- dynamic user:wam_cpp_test_rp_empty/0.
+:- dynamic user:wam_cpp_test_sort4_asc_dedup/0.
+:- dynamic user:wam_cpp_test_sort4_asc_keep/0.
+:- dynamic user:wam_cpp_test_sort4_desc_dedup/0.
+:- dynamic user:wam_cpp_test_sort4_desc_keep/0.
+:- dynamic user:wam_cpp_test_sort4_by_first/0.
+:- dynamic user:wam_cpp_test_sort4_empty/0.
+:- dynamic user:wam_cpp_test_predsort_asc/0.
+:- dynamic user:wam_cpp_test_predsort_desc/0.
+:- dynamic user:wam_cpp_test_predsort_by_key/0.
+:- dynamic user:wam_cpp_test_predsort_empty/0.
+:- dynamic user:wam_cpp_test_predsort_single/0.
 :- dynamic user:wam_cpp_test_enum_member/0.
 
 user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
@@ -379,6 +390,39 @@ user:wam_cpp_test_rp_invariant    :-
     random_permutation([a, b, c], P),
     msort(P, [a, b, c]).
 user:wam_cpp_test_rp_empty        :- random_permutation([], []).
+% sort/4 (key + order options) and predsort/3 (custom comparator).
+% sort/4 is a C++ builtin; predsort/3 lives as user-module Prolog
+% asserted at module load (with wam_cpp_predsort_/5, wam_cpp_sort2/4,
+% wam_cpp_predmerge/4, wam_cpp_predmerge_/7 helpers).
+user:dcg_cmp_int(O, A, B) :- compare(O, A, B).
+user:dcg_cmp_int_desc(O1, A, B) :-
+    compare(O0, A, B),
+    ( O0 == < -> O1 = >
+    ; O0 == > -> O1 = <
+    ; O1 = O0
+    ).
+user:dcg_cmp_by_first(O, A-_, B-_) :- compare(O, A, B).
+user:wam_cpp_test_sort4_asc_dedup  :- sort(0, @<, [3, 1, 2, 1, 3], L),
+                                      L = [1, 2, 3].
+user:wam_cpp_test_sort4_asc_keep   :- sort(0, @=<, [3, 1, 2, 1, 3], L),
+                                      L = [1, 1, 2, 3, 3].
+user:wam_cpp_test_sort4_desc_dedup :- sort(0, @>, [3, 1, 2, 1, 3], L),
+                                      L = [3, 2, 1].
+user:wam_cpp_test_sort4_desc_keep  :- sort(0, @>=, [3, 1, 2, 1, 3], L),
+                                      L = [3, 3, 2, 1, 1].
+user:wam_cpp_test_sort4_by_first   :-
+    sort(1, @<, [pair(b, 2), pair(a, 1), pair(c, 3), pair(a, 9)], L),
+    L = [pair(a, 1), pair(b, 2), pair(c, 3)].
+user:wam_cpp_test_sort4_empty      :- sort(0, @<, [], []).
+user:wam_cpp_test_predsort_asc     :-
+    predsort(dcg_cmp_int, [3, 1, 2, 1, 3], L), L = [1, 2, 3].
+user:wam_cpp_test_predsort_desc    :-
+    predsort(dcg_cmp_int_desc, [1, 3, 2, 5, 4], L), L = [5, 4, 3, 2, 1].
+user:wam_cpp_test_predsort_by_key  :-
+    predsort(dcg_cmp_by_first, [b-2, a-1, c-3, a-9], L),
+    L = [a-1, b-2, c-3].
+user:wam_cpp_test_predsort_empty   :- predsort(dcg_cmp_int, [], []).
+user:wam_cpp_test_predsort_single  :- predsort(dcg_cmp_int, [42], [42]).
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
 
@@ -3213,6 +3257,55 @@ test(cpp_e2e_meta_call_and_random, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_rp_length/0',       [], true),
           run_query(BinPath, 'wam_cpp_test_rp_invariant/0',    [], true),
           run_query(BinPath, 'wam_cpp_test_rp_empty/0',        [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_sort_customization, [condition(cpp_compiler_available)]) :-
+    % sort/4: Key (0 for whole-term, N for Nth compound arg) +
+    % Order (@< / @=< / @> / @>=). @< and @> remove duplicate keys;
+    % @=< and @>= keep them.
+    % predsort/3: stdlib mergesort with user comparator that returns
+    % <, =, or >. Equal pairs are deduped. Implemented as ordinary
+    % user-module Prolog asserted at wam_cpp_target.pl load time so
+    % the existing compile path handles it -- caller must include
+    % the four helper predicates in addition to predsort/3 itself.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_sortp', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_sort4_asc_dedup/0,
+                               user:wam_cpp_test_sort4_asc_keep/0,
+                               user:wam_cpp_test_sort4_desc_dedup/0,
+                               user:wam_cpp_test_sort4_desc_keep/0,
+                               user:wam_cpp_test_sort4_by_first/0,
+                               user:wam_cpp_test_sort4_empty/0,
+                               user:wam_cpp_test_predsort_asc/0,
+                               user:wam_cpp_test_predsort_desc/0,
+                               user:wam_cpp_test_predsort_by_key/0,
+                               user:wam_cpp_test_predsort_empty/0,
+                               user:wam_cpp_test_predsort_single/0,
+                               user:dcg_cmp_int/3,
+                               user:dcg_cmp_int_desc/3,
+                               user:dcg_cmp_by_first/3,
+                               % predsort/3 stdlib helpers asserted by
+                               % wam_cpp_target.pl at module load.
+                               user:predsort/3,
+                               user:wam_cpp_predsort_/5,
+                               user:wam_cpp_sort2/4,
+                               user:wam_cpp_predmerge/4,
+                               user:wam_cpp_predmerge_/7],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_sort4_asc_dedup/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_sort4_asc_keep/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_sort4_desc_dedup/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_sort4_desc_keep/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_sort4_by_first/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_sort4_empty/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_predsort_asc/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_predsort_desc/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_predsort_by_key/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_predsort_empty/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_predsort_single/0',  [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
