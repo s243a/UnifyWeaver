@@ -268,6 +268,11 @@
 :- dynamic user:wam_cpp_test_union/0.
 :- dynamic user:wam_cpp_test_permutation_check/0.
 :- dynamic user:wam_cpp_test_permutation_no/0.
+:- dynamic user:wam_cpp_test_idx_flat/0.
+:- dynamic user:wam_cpp_test_idx_keep/0.
+:- dynamic user:wam_cpp_test_idx_drop_first/0.
+:- dynamic user:wam_cpp_test_idx_keep_first/0.
+:- dynamic user:wam_cpp_test_idx_mixed/0.
 :- dynamic user:wam_cpp_test_enum_member/0.
 
 user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
@@ -582,6 +587,19 @@ user:wam_cpp_test_intersection_empty :- intersection([1, 2], [3, 4], []).
 user:wam_cpp_test_union          :- union([1, 2, 3], [3, 4, 5], [1, 2, 3, 4, 5]).
 user:wam_cpp_test_permutation_check :- permutation([a, b, c], [c, a, b]).
 user:wam_cpp_test_permutation_no    :- \+ permutation([a, b, c], [a, b, d]).
+% Indexing-bug regression tests. Three-clause predicate with first
+% arg [] / [H|T] / [H|T] used to lose backtracking when SwitchOnTerm
+% jumped past the chain's entry TryMeElse. Both flat and recursive
+% backtracking are exercised.
+user:wam_cpp_idx_bar([], []).
+user:wam_cpp_idx_bar([H|T], [H|R]) :- H > 10, wam_cpp_idx_bar(T, R).
+user:wam_cpp_idx_bar([_|T], R) :- wam_cpp_idx_bar(T, R).
+user:wam_cpp_test_idx_flat        :- wam_cpp_idx_bar([5], R), R = [].
+user:wam_cpp_test_idx_keep        :- wam_cpp_idx_bar([15], R), R = [15].
+user:wam_cpp_test_idx_drop_first  :- wam_cpp_idx_bar([5, 15], R), R = [15].
+user:wam_cpp_test_idx_keep_first  :- wam_cpp_idx_bar([15, 5], R), R = [15].
+user:wam_cpp_test_idx_mixed       :- wam_cpp_idx_bar([5, 15, 7, 20], R),
+                                     R = [15, 20].
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
 
@@ -3643,6 +3661,33 @@ test(cpp_e2e_lists_extra, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_union/0',              [], true),
           run_query(BinPath, 'wam_cpp_test_permutation_check/0',  [], true),
           run_query(BinPath, 'wam_cpp_test_permutation_no/0',     [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_indexing_backtrack, [condition(cpp_compiler_available)]) :-
+    % Regression for the SwitchOnTerm-vs-CP-sub-chain bug uncovered
+    % by PR #2264. Three-clause predicate with []/[H|T]/[H|T] first
+    % args used to lose backtracking when the indexed jump for the
+    % compound case skipped the chain's entry TryMeElse. The runtime
+    % now flags indexed entries (SwitchOn{Term,Constant,Structure}
+    % direct jumps) and the next RetryMeElse synthesizes a fresh CP
+    % so the predicate level has its own backtrack handle.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_idx', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_idx_flat/0,
+                               user:wam_cpp_test_idx_keep/0,
+                               user:wam_cpp_test_idx_drop_first/0,
+                               user:wam_cpp_test_idx_keep_first/0,
+                               user:wam_cpp_test_idx_mixed/0,
+                               user:wam_cpp_idx_bar/2],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_idx_flat/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_idx_keep/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_idx_drop_first/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_idx_keep_first/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_idx_mixed/0',      [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

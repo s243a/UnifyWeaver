@@ -625,20 +625,20 @@ static const int _wam_cpp_setup_register = []() {
        assertz((user:drop(_, [], []) :- !)),
        assertz((user:drop(N, [_|T], R) :-
            N > 0, N1 is N - 1, drop(N1, T, R))),
-       % intersection/union written as two-clause if-then-else to
-       % side-step a pre-existing indexing limitation: when three
-       % clauses share a [H|T] first arg, the SwitchOnTerm short-
-       % circuits past the initial TryMeElse and the third clause
-       % never gets a choice point. The if-then-else form has only
-       % one [H|T] clause, so backtracking isn't needed.
+       % Standard three-clause intersection/union. Earlier the
+       % runtime couldn''t synthesize a CP at an indexed sub-chain
+       % entry, so 3+-clause predicates with overlapping compound
+       % heads lost choices. With the SwitchOnTerm + RetryMeElse
+       % CP-synthesis path in place (this PR''s runtime change),
+       % three clauses backtrack normally.
        assertz((user:intersection([], _, []))),
-       assertz((user:intersection([H|T], L, R) :-
-           ( member(H, L) -> R = [H|R1] ; R = R1 ),
-           intersection(T, L, R1))),
+       assertz((user:intersection([H|T], L, [H|R]) :-
+           member(H, L), !, intersection(T, L, R))),
+       assertz((user:intersection([_|T], L, R) :- intersection(T, L, R))),
        assertz((user:union([], L, L))),
        assertz((user:union([H|T], L, R) :-
-           ( member(H, L) -> R = R1 ; R = [H|R1] ),
-           union(T, L, R1))),
+           member(H, L), !, union(T, L, R))),
+       assertz((user:union([H|T], L, [H|R]) :- union(T, L, R))),
        assertz((user:permutation([], []))),
        assertz((user:permutation(L, [H|T]) :-
            select(H, L, Rest), permutation(Rest, T)))
@@ -2660,6 +2660,12 @@ struct WamState {
     std::size_t cut_barrier = 0;
     std::uint64_t var_counter = 0;
     bool halt = false;
+    // True iff SwitchOnTerm just jumped directly into the middle/end
+    // of a clause chain, bypassing the chain''s entry TryMeElse. The
+    // subsequent RetryMeElse / TrustMe consults this flag to decide
+    // whether to synthesize a fresh CP (RetryMeElse) or skip the pop
+    // (TrustMe), then clears it. Reset on query entry.
+    bool indexed_entry = false;
 
     // Cell-aware accessors. get_reg/put_reg keep their Value-shaped API
     // so existing lowered code keeps compiling; get_cell exposes the cell
@@ -6428,6 +6434,12 @@ bool WamState::step(const Instruction& instr) {
 
         // ---- Choice points -----------------------------------------
         case Instruction::Op::TryMeElse: {
+            // A normal entry to a clause chain. Clear any
+            // indexed_entry flag in case SwitchOnTerm pointed here
+            // (defensive -- our current compiler points indexed
+            // jumps at RetryMeElse / TrustMe rather than TryMeElse,
+            // but the flag should be local to a single dispatch).
+            indexed_entry = false;
             ChoicePoint cp_;
             cp_.alt_pc = instr.target;
             cp_.saved_cp = cp;
@@ -6441,17 +6453,39 @@ bool WamState::step(const Instruction& instr) {
             pc += 1; return true;
         }
         case Instruction::Op::RetryMeElse: {
-            // No-op if no CP exists (e.g. when an indexing instruction
-            // jumped past the originating try_me_else). Classic WAM:
-            // retry_me_else updates the top CP''s alt; if there is no
-            // top CP we simply continue with no alt to manage.
-            if (!choice_points.empty()) {
+            // Normal failure-driven retry path: update top CP''s alt.
+            // Indexed-entry path (set by SwitchOnTerm bypassing the
+            // chain''s entry TryMeElse): synthesize a fresh CP so this
+            // predicate level has its own backtrack handle, even if
+            // an outer level''s CP is already on the stack.
+            if (!choice_points.empty() && !indexed_entry) {
                 choice_points.back().alt_pc = instr.target;
+            } else {
+                indexed_entry = false;
+                ChoicePoint cp_;
+                cp_.alt_pc = instr.target;
+                cp_.saved_cp = cp;
+                cp_.trail_mark = trail.size();
+                cp_.cut_barrier = cut_barrier;
+                cp_.saved_regs = regs;
+                cp_.saved_mode_stack = mode_stack;
+                cp_.saved_env_stack = env_stack;
+                cp_.saved_body_frames = body_frames;
+                choice_points.push_back(std::move(cp_));
             }
             pc += 1; return true;
         }
         case Instruction::Op::TrustMe: {
-            if (!choice_points.empty()) choice_points.pop_back();
+            // Normally pops the top CP (the one TryMeElse/RetryMeElse
+            // installed for this chain). When SwitchOnTerm jumped
+            // directly to a TrustMe (last clause), no CP was installed
+            // and indexed_entry flags this -- nothing to pop, just
+            // clear the flag and continue.
+            if (indexed_entry) {
+                indexed_entry = false;
+            } else if (!choice_points.empty()) {
+                choice_points.pop_back();
+            }
             pc += 1; return true;
         }
         case Instruction::Op::CutIte: {
@@ -6598,32 +6632,39 @@ bool WamState::step(const Instruction& instr) {
             return false;
         }
         case Instruction::Op::SwitchOnTerm: {
+            // Direct-jump branches (pc = target) bypass the entry
+            // TryMeElse of the clause chain, so we flag them via
+            // indexed_entry. The receiving RetryMeElse/TrustMe sees
+            // the flag and synthesizes a CP (or skips a pop) so the
+            // current predicate level gets its own backtrack handle
+            // even when an outer level''s CP is on the stack.
             CellPtr ac = get_cell("A1");
             const Value& a = *ac;
             if (a.is_unbound()) { pc += 1; return true; }
-            // Atom / integer / float → const_table.
             if (a.tag == Value::Tag::Atom || a.tag == Value::Tag::Integer
                 || a.tag == Value::Tag::Float) {
                 for (auto& kv : instr.const_table) {
                     if (kv.first == a) {
                         if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
                         if (kv.second == Instruction::SWITCH_NONE)    return false;
+                        indexed_entry = true;
                         pc = kv.second; return true;
                     }
                 }
                 return false;
             }
-            // Compound → list_pc for cons cells, otherwise struct_table.
             if (a.tag == Value::Tag::Compound) {
                 if (a.s == "[|]/2") {
                     if (instr.target == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
                     if (instr.target == Instruction::SWITCH_NONE)    return false;
+                    indexed_entry = true;
                     pc = instr.target; return true;
                 }
                 for (auto& kv : instr.struct_table) {
                     if (kv.first == a.s) {
                         if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
                         if (kv.second == Instruction::SWITCH_NONE)    return false;
+                        indexed_entry = true;
                         pc = kv.second; return true;
                     }
                 }
@@ -8441,6 +8482,7 @@ bool WamState::query(const std::string& pred_key, const std::vector<Value>& args
     pc = it->second;
     cp = 0;
     cut_barrier = 0;
+    indexed_entry = false;
     halt = false;
     return run();
 }
