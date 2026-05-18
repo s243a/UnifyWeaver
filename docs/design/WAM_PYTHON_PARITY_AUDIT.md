@@ -29,12 +29,12 @@ matters for parity.
 
 ## ISO Error Readiness
 
-Python is **not yet an ISO-error adopter**. It now has the Prolog-level
+Python is now a partial ISO-error adopter. It has the Prolog-level
 `catch/3` and `throw/1` substrate, ISO error-term constructors,
-`throw_iso_error`, and the arithmetic/comparison builtin surface that would
-eventually receive `_iso` and `_lax` forms. It is still missing the
-config/rewrite/audit plumbing and ISO/lax builtin variants that the C++ and
-Elixir targets use.
+`throw_iso_error`, the config/rewrite/audit plumbing, and ISO/lax variants for
+arithmetic assignment, arithmetic comparison, and successor builtins. It should
+not yet be described as fully ISO-error compatible until any remaining concrete
+builtins with ISO/lax behavior are swept.
 
 Current state:
 
@@ -45,7 +45,7 @@ Current state:
 | `throw_iso_error` helper | Present | Wraps `error(ErrorTerm, Context)` and routes through `throw/1`. |
 | `is_iso/2` / `is_lax/2` | Present | ISO mode throws structured errors; `is/2` and `is_lax/2` preserve lax failure. |
 | ISO/lax arithmetic compares | Present | Six comparison variants now follow ISO/lax three-form dispatch. |
-| `succ/2` and ISO/lax variants | Missing | `succ/2` is not part of the current Python builtin baseline. |
+| `succ/2` and ISO/lax variants | Present | Lax `succ/2`/`succ_lax/2` fail silently; `succ_iso/2` throws structured instantiation, type, and domain errors. |
 | Per-predicate ISO config loader | Present | Supports `iso_errors_config(File)`, `iso_errors(Default)`, and `iso_errors(PI, Mode)` options. |
 | Per-predicate default rewrite | Present | `is/2` now rewrites to `is_iso/2` or `is_lax/2`; text-level rewrite feeds interpreter and lowered emission. |
 | ISO audit predicate | Present | `wam_python_iso_audit/3` reports builtin call sites using the shared audit shape. |
@@ -73,12 +73,12 @@ Porting `is_iso/2` first was premature before `catch/3` / `throw/1` existed.
 That substrate and the ISO error helpers are now present, so the remaining
 sequence is:
 
-1. Add `succ/2` / `succ_iso/2` / `succ_lax/2`.
-2. Sweep any remaining arithmetic builtins that need ISO/lax behavior.
+1. Sweep any remaining arithmetic builtins that need ISO/lax behavior.
+2. Extend the same three-form pattern to the next concrete builtin family that
+   needs ISO-mode errors.
 
-The next PR should therefore port the successor variants and add explicit-lax
-bypass coverage for that operator. The C++ and Elixir ISO tests provide a direct
-template for Python E2E coverage.
+The successor variants now have explicit-lax bypass coverage. The C++ and
+Elixir ISO tests remain the direct template for any next Python E2E coverage.
 
 ## Runtime Source Of Truth
 

@@ -450,7 +450,12 @@ test(iso_errors_text_rewrite_uses_is_key_tables) :-
 	assertion(sub_string(CmpIso, _, _, _, "builtin_call =:=_iso/2 2")),
 	wam_python_target:iso_errors_rewrite_text(iso_config(false, []), cmp/0, Cmp0, CmpLax),
 	assertion(sub_string(CmpLax, _, _, _, "builtin_call >_lax/2 2")),
-	assertion(sub_string(CmpLax, _, _, _, "builtin_call =:=_lax/2 2")).
+	assertion(sub_string(CmpLax, _, _, _, "builtin_call =:=_lax/2 2")),
+	Succ0 = 'succ_demo/0:\n  builtin_call succ/2 2',
+	wam_python_target:iso_errors_rewrite_text(iso_config(true, []), succ_demo/0, Succ0, SuccIso),
+	assertion(sub_string(SuccIso, _, _, _, "builtin_call succ_iso/2 2")),
+	wam_python_target:iso_errors_rewrite_text(iso_config(false, []), succ_demo/0, Succ0, SuccLax),
+	assertion(sub_string(SuccLax, _, _, _, "builtin_call succ_lax/2 2")).
 
 test(iso_errors_project_generation_rewrites_wam_text) :-
 	setup_call_cleanup(
@@ -1032,8 +1037,14 @@ test(generated_runtime_runs_is_iso_and_lax_variants) :-
 			once(sub_string(Output, _, _, _, "cmp_inst")),
 			once(sub_string(Output, _, _, _, "cmp_type")),
 			once(sub_string(Output, _, _, _, "cmp_zero")),
+			once(sub_string(Output, _, _, _, "succ_inst")),
+			once(sub_string(Output, _, _, _, "succ_type")),
+			once(sub_string(Output, _, _, _, "succ_domain")),
+			once(sub_string(Output, _, _, _, "succ_forward")),
+			once(sub_string(Output, _, _, _, "succ_backward")),
 			once(sub_string(Output, _, _, _, "lax_false")),
-			once(sub_string(Output, _, _, _, "cmp_lax_false"))
+			once(sub_string(Output, _, _, _, "cmp_lax_false")),
+			once(sub_string(Output, _, _, _, "succ_lax_false"))
 		),
 		cleanup_tmp_dir(ProjectDir)).
 
@@ -1236,6 +1247,24 @@ is_iso_lax_script(Script) :-
 		"expr = wr.Compound('//2', [wr.Int(1), wr.Int(0)])",
 		"catch_is(wr.Compound('=:=_iso/2', [expr, wr.Int(0)]), wr.Compound('error/2', [wr.Compound('evaluation_error/1', [wr.make_atom('zero_divisor')]), wr.Var([None], 504)]), wr.Compound('write/1', [wr.make_atom('cmp_zero')]))",
 		"print()",
+		"catch_is(wr.Compound('succ_iso/2', [wr.Var([None], 700), wr.Var([None], 701)]), wr.Compound('error/2', [wr.make_atom('instantiation_error'), wr.Var([None], 702)]), wr.Compound('write/1', [wr.make_atom('succ_inst')]))",
+		"print()",
+		"catch_is(wr.Compound('succ_iso/2', [wr.make_atom('foo'), wr.Var([None], 703)]), wr.Compound('error/2', [wr.Compound('type_error/2', [wr.make_atom('integer'), wr.Var([None], 704)]), wr.Var([None], 705)]), wr.Compound('write/1', [wr.make_atom('succ_type')]))",
+		"print()",
+		"catch_is(wr.Compound('succ_iso/2', [wr.Var([None], 706), wr.Int(0)]), wr.Compound('error/2', [wr.Compound('domain_error/2', [wr.make_atom('not_less_than_zero'), wr.Var([None], 707)]), wr.Var([None], 708)]), wr.Compound('write/1', [wr.make_atom('succ_domain')]))",
+		"print()",
+		"s = wr.WamState()",
+		"v = wr.Var([None], 710)",
+		"wr.set_reg(s, 1, wr.Int(2))",
+		"wr.set_reg(s, 2, v)",
+		"ok = wr._execute_builtin('succ/2', 2, s) and isinstance(wr.deref(v, s), wr.Int) and wr.deref(v, s).n == 3",
+		"print('succ_forward' if ok else 'bad')",
+		"s = wr.WamState()",
+		"v = wr.Var([None], 711)",
+		"wr.set_reg(s, 1, v)",
+		"wr.set_reg(s, 2, wr.Int(3))",
+		"ok = wr._execute_builtin('succ/2', 2, s) and isinstance(wr.deref(v, s), wr.Int) and wr.deref(v, s).n == 2",
+		"print('succ_backward' if ok else 'bad')",
 		"s = wr.WamState()",
 		"wr.set_reg(s, 1, wr.Var([None], 400))",
 		"wr.set_reg(s, 2, wr.make_atom('foo'))",
@@ -1244,6 +1273,10 @@ is_iso_lax_script(Script) :-
 		"wr.set_reg(s, 1, wr.Var([None], 600))",
 		"wr.set_reg(s, 2, wr.Int(5))",
 		"print('cmp_lax_false' if not wr._execute_builtin('>_lax/2', 2, s) else 'bad')",
+		"s = wr.WamState()",
+		"wr.set_reg(s, 1, wr.Int(-1))",
+		"wr.set_reg(s, 2, wr.Var([None], 800))",
+		"print('succ_lax_false' if not wr._execute_builtin('succ_lax/2', 2, s) else 'bad')",
 		""
 	], '\n', Script).
 
