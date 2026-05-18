@@ -2896,6 +2896,7 @@ compile_wam_runtime_to_cpp(_Options,
 #include <cmath>
 #include <cstdio>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <random>
@@ -5706,6 +5707,95 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         pc += 1; return true;
     }
 
+    // ---- Filesystem helpers ----------------------------------------
+    // Thin wrappers over std::filesystem. Path arguments must be
+    // bound atoms; non-atom paths throw type_error(atom, _).
+    if (op == "exists_file/1") {
+        Value p = *get_cell("A1");
+        if (p.is_unbound())
+            return throw_iso_error(make_instantiation_error());
+        if (p.tag != Value::Tag::Atom)
+            return throw_iso_error(make_type_error("atom", p));
+        std::error_code ec;
+        bool ok = std::filesystem::is_regular_file(p.s, ec);
+        if (!ok) return false;
+        pc += 1; return true;
+    }
+    if (op == "exists_directory/1") {
+        Value p = *get_cell("A1");
+        if (p.is_unbound())
+            return throw_iso_error(make_instantiation_error());
+        if (p.tag != Value::Tag::Atom)
+            return throw_iso_error(make_type_error("atom", p));
+        std::error_code ec;
+        bool ok = std::filesystem::is_directory(p.s, ec);
+        if (!ok) return false;
+        pc += 1; return true;
+    }
+    if (op == "directory_files/2") {
+        Value p = *get_cell("A1");
+        if (p.is_unbound())
+            return throw_iso_error(make_instantiation_error());
+        if (p.tag != Value::Tag::Atom)
+            return throw_iso_error(make_type_error("atom", p));
+        std::error_code ec;
+        if (!std::filesystem::is_directory(p.s, ec))
+            return throw_iso_error(Value::Compound("existence_error/2", {
+                std::make_shared<Cell>(Value::Atom("directory")),
+                std::make_shared<Cell>(p)
+            }));
+        std::vector<std::string> names;
+        names.push_back(".");
+        names.push_back("..");
+        for (auto& entry : std::filesystem::directory_iterator(p.s, ec)) {
+            names.push_back(entry.path().filename().string());
+        }
+        // Standard ordering: SWI returns names in unspecified order;
+        // we sort lexically for deterministic test output.
+        std::sort(names.begin() + 2, names.end());
+        CellPtr list = std::make_shared<Cell>(Value::Atom("[]"));
+        for (auto it = names.rbegin(); it != names.rend(); ++it) {
+            std::vector<CellPtr> ca;
+            ca.push_back(std::make_shared<Cell>(Value::Atom(*it)));
+            ca.push_back(list);
+            list = std::make_shared<Cell>(
+                Value::Compound("[|]/2", std::move(ca)));
+        }
+        if (!unify_cells(get_cell("A2"), list)) return false;
+        pc += 1; return true;
+    }
+    if (op == "make_directory/1") {
+        Value p = *get_cell("A1");
+        if (p.is_unbound())
+            return throw_iso_error(make_instantiation_error());
+        if (p.tag != Value::Tag::Atom)
+            return throw_iso_error(make_type_error("atom", p));
+        std::error_code ec;
+        std::filesystem::create_directory(p.s, ec);
+        if (ec)
+            return throw_iso_error(Value::Compound("permission_error/3", {
+                std::make_shared<Cell>(Value::Atom("create")),
+                std::make_shared<Cell>(Value::Atom("directory")),
+                std::make_shared<Cell>(p)
+            }));
+        pc += 1; return true;
+    }
+    if (op == "delete_file/1") {
+        Value p = *get_cell("A1");
+        if (p.is_unbound())
+            return throw_iso_error(make_instantiation_error());
+        if (p.tag != Value::Tag::Atom)
+            return throw_iso_error(make_type_error("atom", p));
+        std::error_code ec;
+        bool ok = std::filesystem::remove(p.s, ec);
+        if (!ok || ec)
+            return throw_iso_error(Value::Compound("existence_error/2", {
+                std::make_shared<Cell>(Value::Atom("source_sink")),
+                std::make_shared<Cell>(p)
+            }));
+        pc += 1; return true;
+    }
+
     // ---- current_predicate/1 ---------------------------------------
     // current_predicate(?PredSpec). PredSpec is Name/Arity. Check
     // mode: both Name and Arity bound -- succeeds iff the predicate
@@ -5890,15 +5980,17 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
     }
     // ---- with_output_to/2 -------------------------------------------
     // with_output_to(+Sink, :Goal): capture Goal''s output into Sink.
-    // Sink is atom(V) / string(V) / codes(V). The I/O builtins write
-    // to the top OutputCaptureFrame''s buffer while it''s active; when
-    // Goal proceeds normally, control lands at output_capture_return_pc
-    // which pops the frame and unifies the buffer with Sink.
+    // Sink is atom(V) / string(V) / codes(V) / stream(Handle).
+    // The I/O builtins write to the top OutputCaptureFrame''s buffer
+    // while it''s active; when Goal proceeds normally, control lands
+    // at output_capture_return_pc which pops the frame and either
+    // unifies the buffer with the sink''s arg (atom/string/codes) or
+    // writes the buffer to the stream (stream(Handle)).
     if (op == "with_output_to/2") {
         Value sv = deref(*get_cell("A1"));
         if (sv.tag != Value::Tag::Compound || sv.args.size() != 1
             || (sv.s != "atom/1" && sv.s != "string/1"
-                && sv.s != "codes/1")) return false;
+                && sv.s != "codes/1" && sv.s != "stream/1")) return false;
         OutputCaptureFrame f;
         f.sink = get_cell("A1");
         // saved_cp: for the direct BuiltinCall instr path, pc + 1
@@ -6677,6 +6769,21 @@ bool WamState::step(const Instruction& instr) {
             Value sink = deref(*f.sink);
             if (sink.tag != Value::Tag::Compound
                 || sink.args.size() != 1) return false;
+            // stream/1 sink: write the buffer to the stream and skip
+            // unification entirely. Stream must already be open in
+            // write or append mode.
+            if (sink.s == "stream/1") {
+                Value sh = *sink.args[0];
+                if (sh.tag != Value::Tag::Atom) return false;
+                auto sit = streams.find(sh.s);
+                if (sit == streams.end()) return false;
+                if (sit->second.is_read) return false;
+                *sit->second.file << f.buffer;
+                if (f.saved_cp == 0) { halt = true; return true; }
+                pc = f.saved_cp;
+                cp = 0;
+                return true;
+            }
             CellPtr tgt = sink.args[0];
             Value out_v;
             if (sink.s == "atom/1" || sink.s == "string/1") {
