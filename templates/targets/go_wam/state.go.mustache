@@ -1275,6 +1275,19 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return true
 		}
 		return false
+	case "delete/3":
+		items, ok := vm.listToSlice(arg1)
+		if !ok {
+			return false
+		}
+		target := vm.deref(arg2)
+		kept := make([]Value, 0, len(items))
+		for _, item := range items {
+			if !valueEquals(vm.deref(item), target) {
+				kept = append(kept, item)
+			}
+		}
+		return vm.Unify(arg3, &List{Elements: kept})
 	case "append/3":
 		l1, ok1 := vm.listToSlice(arg1)
 		l2, ok2 := vm.listToSlice(arg2)

@@ -11,7 +11,7 @@ current cross-target builtin/runtime baseline.
 | Choice points and backtracking | `try_me_else`, `retry_me_else`, `trust_me`, indexed alternatives, foreign stream retries, indexed atom fact streams, `member/2` builtin retries | Choice point stack with normal, builtin, and fact-stream resume states | Present for current resume-state baseline |
 | Direct fact dispatch | `call_indexed_atom_fact2`, `AtomFact2Source` registry, TSV-backed and LMDB-artifact atom fact loading, foreign/native kernel registration, indexed atom/weighted fact tables | `call_indexed_atom_fact2`, inline/external fact stream paths | Present for current external atom fact-source baseline |
 | Aggregates | `begin_aggregate`, `end_aggregate`; `collect`, `bag`, `bagof`, `count`, `sum`, `min`, `max`, `set`, `setof` | `findall/3`, `aggregate_all/3` count/sum/min/max/set families | Present for current aggregate baseline |
-| Structural builtins | `member/2`, `memberchk/2`, `select/3`, `length/2`, `append/3`, `reverse/2`, `last/2`, `nth0/3`, `nth1/3`, `numlist/3`, `sort/2`, `msort/2` | `member/2`, `memberchk/2`, `length/2`; Rust `append/3` is explicitly unimplemented. Clojure/R/C++ also cover richer list builtins including `select/3`, `reverse/2`, `last/2`, `nth0/3`, `nth1/3`, `numlist/3`, `sort/2`, and `msort/2` | Present for current baseline structural checks, with expanded cross-target list builtins |
+| Structural builtins | `member/2`, `memberchk/2`, `select/3`, `delete/3`, `length/2`, `append/3`, `reverse/2`, `last/2`, `nth0/3`, `nth1/3`, `numlist/3`, `sort/2`, `msort/2` | `member/2`, `memberchk/2`, `length/2`; Rust `append/3` is explicitly unimplemented. Clojure/R/C++ also cover richer list builtins including `select/3`, `delete/3`, `reverse/2`, `last/2`, `nth0/3`, `nth1/3`, `numlist/3`, `sort/2`, and `msort/2` | Present for current baseline structural checks, with expanded cross-target list builtins |
 | Type builtins | `var/1`, `nonvar/1`, `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `atomic/1`, `is_list/1` | Includes `is_list/1` in the current baseline | Present for current baseline type checks |
 | Arithmetic builtins | `is/2`, `succ/2` | Arithmetic evaluation plus sibling-target `succ/2` coverage in Clojure and Elixir | Present for current baseline arithmetic checks, with expanded successor coverage |
 | Comparison builtins | `==/2`, `\==/2`, `\=/2`, `=:=/2`, `=\=/2`, `</2`, `>/2`, `=</2`, `>=/2`, `@</2`, `@=</2`, `@>/2`, `@>=/2`, `compare/3` | Includes `=</2`; Haskell mode analysis and Clojure lowering also cover term-order comparisons | Present for current baseline comparisons, with expanded term-order coverage |
@@ -39,6 +39,9 @@ current cross-target builtin/runtime baseline.
   E2E test for first-match selection, missing/empty/malformed-list failure,
   and `findall/3` enumeration of every selected element/rest pair, matching
   the Clojure/C++ structural-list surface.
+- Deterministic `delete/3` is now covered by the generated Go WAM builtin E2E
+  test for removing one, none, or all matching atom elements and malformed-list
+  failure, matching the Clojure/C++ structural-list surface for proper lists.
 - Deterministic `reverse/2` is now covered by the generated Go WAM builtin E2E
   test for both forward and reverse-list binding modes, closing one richer
   Clojure/R/C++ list-builtin parity gap.
