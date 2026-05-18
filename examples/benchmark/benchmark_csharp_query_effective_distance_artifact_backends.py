@@ -748,8 +748,25 @@ def policy_compare_rows_from_summaries(rows: list[SummaryRow]) -> list[PolicyCom
     return compare_rows
 
 
-def policy_actionable_rows(rows: list[PolicyCompareRow]) -> list[PolicyCompareRow]:
-    return [row for row in rows if row.values["status"] != "match"]
+def parse_policy_vs_best_ratio(value: str) -> float | None:
+    if not value:
+        return None
+    return float(value[:-1] if value.endswith("x") else value)
+
+
+def policy_actionable_rows(rows: list[PolicyCompareRow], threshold: float = 1.0) -> list[PolicyCompareRow]:
+    actionable: list[PolicyCompareRow] = []
+    for row in rows:
+        status = row.values["status"]
+        if status == "match":
+            continue
+        if status == "missing-policy-mode":
+            actionable.append(row)
+            continue
+        ratio = parse_policy_vs_best_ratio(row.values["policy_vs_best"])
+        if ratio is None or ratio >= threshold:
+            actionable.append(row)
+    return actionable
 
 
 def render_summary_tsv(rows: list[SummaryRow]) -> str:
@@ -838,15 +855,15 @@ def render_policy_compare_markdown(rows: list[PolicyCompareRow]) -> str:
     return "\n".join(lines)
 
 
-def render_policy_actionable_tsv(rows: list[PolicyCompareRow]) -> str:
-    return render_policy_compare_tsv(policy_actionable_rows(rows))
+def render_policy_actionable_tsv(rows: list[PolicyCompareRow], threshold: float = 1.0) -> str:
+    return render_policy_compare_tsv(policy_actionable_rows(rows, threshold=threshold))
 
 
-def render_policy_actionable_markdown(rows: list[PolicyCompareRow]) -> str:
-    return render_policy_compare_markdown(policy_actionable_rows(rows))
+def render_policy_actionable_markdown(rows: list[PolicyCompareRow], threshold: float = 1.0) -> str:
+    return render_policy_compare_markdown(policy_actionable_rows(rows, threshold=threshold))
 
 
-def render_summary_based_format(format_name: str, summaries: list[SummaryRow]) -> str:
+def render_summary_based_format(format_name: str, summaries: list[SummaryRow], policy_action_threshold: float = 1.0) -> str:
     if format_name == "summary-tsv":
         return render_summary_tsv(summaries)
     if format_name == "summary-full-markdown":
@@ -862,9 +879,15 @@ def render_summary_based_format(format_name: str, summaries: list[SummaryRow]) -
     if format_name == "policy-compare-markdown":
         return render_policy_compare_markdown(policy_compare_rows_from_summaries(summaries))
     if format_name == "policy-actionable-tsv":
-        return render_policy_actionable_tsv(policy_compare_rows_from_summaries(summaries))
+        return render_policy_actionable_tsv(
+            policy_compare_rows_from_summaries(summaries),
+            threshold=policy_action_threshold,
+        )
     if format_name == "policy-actionable-markdown":
-        return render_policy_actionable_markdown(policy_compare_rows_from_summaries(summaries))
+        return render_policy_actionable_markdown(
+            policy_compare_rows_from_summaries(summaries),
+            threshold=policy_action_threshold,
+        )
     raise ValueError(f"{format_name} is not a summary-based format")
 
 
@@ -982,6 +1005,15 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="write the computed summary-tsv artifact while still printing the requested report",
     )
+    parser.add_argument(
+        "--policy-action-threshold",
+        type=float,
+        default=1.0,
+        help=(
+            "minimum policy-vs-best ratio included by policy-actionable formats; "
+            "missing policy modes are always included"
+        ),
+    )
     parser.add_argument("--keep-temp", action="store_true", help="keep the generated C# benchmark project")
     args = parser.parse_args(argv)
 
@@ -995,6 +1027,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--min-free-memory-mib must be positive")
     if args.max_competing_cpu_percent < 0:
         parser.error("--max-competing-cpu-percent must be non-negative")
+    if args.policy_action_threshold < 1.0:
+        parser.error("--policy-action-threshold must be at least 1.0")
 
     if args.summary_input is not None:
         if args.summary_output is not None:
@@ -1007,7 +1041,13 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(error))
         except ValueError as error:
             parser.error(str(error))
-        print(render_summary_based_format(args.format, summaries))
+        print(
+            render_summary_based_format(
+                args.format,
+                summaries,
+                policy_action_threshold=args.policy_action_threshold,
+            )
+        )
         return 0
 
     scales = [scale.strip() for scale in args.scales.split(",") if scale.strip()]
@@ -1089,7 +1129,13 @@ def main(argv: list[str] | None = None) -> int:
         summaries = []
 
     if args.format in SUMMARY_INPUT_FORMATS:
-        print(render_summary_based_format(args.format, summaries))
+        print(
+            render_summary_based_format(
+                args.format,
+                summaries,
+                policy_action_threshold=args.policy_action_threshold,
+            )
+        )
     elif args.format == "markdown":
         print(render_markdown(rows))
     else:

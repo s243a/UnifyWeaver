@@ -128,11 +128,30 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
                 stderr=subprocess.PIPE,
                 timeout=60,
             )
+            thresholded = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "--summary-input",
+                    str(path),
+                    "--format",
+                    "policy-actionable-markdown",
+                    "--policy-action-threshold",
+                    "1.20",
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=60,
+            )
 
         self.assertEqual(result.returncode, 0, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
         self.assertIn("| Policy mode | Policy artifact value | Policy vs best |", result.stdout)
         self.assertIn("| bucket_c0 | ms | delimited-artifact | 400.000 | 1.143x | mmap-array | 350.000 | diff |", result.stdout)
         self.assertNotIn("| lookup_c0 | ms | lmdb | 3.251 | 1.000x | lmdb | 3.251 | match |", result.stdout)
+        self.assertEqual(thresholded.returncode, 0, msg=f"stdout:\n{thresholded.stdout}\nstderr:\n{thresholded.stderr}")
+        self.assertNotIn("| bucket_c0 | ms | delimited-artifact | 400.000 | 1.143x | mmap-array | 350.000 | diff |", thresholded.stdout)
 
     def test_summary_input_rejects_raw_formats(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -156,6 +175,24 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("--summary-input requires a summary-* or policy-* --format", result.stderr)
+
+    def test_policy_action_threshold_must_be_at_least_one(self) -> None:
+        result = subprocess.run(
+            [
+                "python3",
+                str(SCRIPT),
+                "--policy-action-threshold",
+                "0.99",
+            ],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--policy-action-threshold must be at least 1.0", result.stderr)
 
     def test_summary_input_rejects_summary_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -629,7 +666,7 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
         self.assertEqual(by_shape["lookup_c0"]["policy_vs_best"], "")
         self.assertEqual(by_shape["lookup_c0"]["status"], "missing-policy-mode")
 
-    def test_policy_actionable_rows_filter_matches(self) -> None:
+    def test_policy_actionable_rows_filter_matches_and_small_diffs(self) -> None:
         rows = [
             MODULE.PolicyCompareRow(
                 {
@@ -659,6 +696,24 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
                     "access_shape": "bucket_c0",
                     "metric": "ms",
                     "policy_mode": "mmap-array",
+                    "policy_artifact_value": "1.300",
+                    "policy_vs_best": "1.040x",
+                    "best_artifact_mode": "lmdb",
+                    "best_artifact_value": "1.250",
+                    "status": "diff",
+                    "values_by_mode": "lmdb:1.250|mmap-array:1.300",
+                }
+            ),
+            MODULE.PolicyCompareRow(
+                {
+                    "scale": "dev",
+                    "relation": "category_parent",
+                    "rows": "6",
+                    "distinct_categories": "4",
+                    "lookup_keys": "2",
+                    "access_shape": "bucket_c1",
+                    "metric": "ms",
+                    "policy_mode": "mmap-array",
                     "policy_artifact_value": "2.000",
                     "policy_vs_best": "1.600x",
                     "best_artifact_mode": "lmdb",
@@ -667,12 +722,33 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
                     "values_by_mode": "lmdb:1.250|mmap-array:2.000",
                 }
             ),
+            MODULE.PolicyCompareRow(
+                {
+                    "scale": "dev",
+                    "relation": "category_parent",
+                    "rows": "6",
+                    "distinct_categories": "4",
+                    "lookup_keys": "2",
+                    "access_shape": "scan",
+                    "metric": "ms",
+                    "policy_mode": "mmap-array",
+                    "policy_artifact_value": "",
+                    "policy_vs_best": "",
+                    "best_artifact_mode": "lmdb",
+                    "best_artifact_value": "1.250",
+                    "status": "missing-policy-mode",
+                    "values_by_mode": "lmdb:1.250",
+                }
+            ),
         ]
 
-        actionable = MODULE.policy_actionable_rows(rows)
-        self.assertEqual([row.values["access_shape"] for row in actionable], ["bucket_c0"])
+        actionable = MODULE.policy_actionable_rows(rows, threshold=1.10)
+        self.assertEqual([row.values["access_shape"] for row in actionable], ["bucket_c1", "scan"])
         self.assertNotIn("lookup_c0", MODULE.render_policy_actionable_tsv(rows))
-        self.assertIn("bucket_c0", MODULE.render_policy_actionable_markdown(rows))
+        thresholded = MODULE.render_policy_actionable_markdown(rows, threshold=1.10)
+        self.assertNotIn("bucket_c0", thresholded)
+        self.assertIn("bucket_c1", thresholded)
+        self.assertIn("scan", thresholded)
 
     def test_artifact_root_reuses_existing_manifests(self) -> None:
         if shutil.which("dotnet") is None:
