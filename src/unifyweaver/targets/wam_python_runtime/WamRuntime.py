@@ -432,7 +432,10 @@ def pop_environment(state: WamState) -> None:
 # -- Arithmetic -------------------------------------------------------------
 
 def _strip_arity(functor: str) -> str:
-    """Strip arity suffix from functor name: '+/2' -> '+', 'mod/2' -> 'mod'."""
+    """Strip WAM arity suffix while preserving slash-named arithmetic ops."""
+    slash_ops = {'//2': '/', '///2': '//', '\\//2': '\\/'}
+    if functor in slash_ops:
+        return slash_ops[functor]
     if '/' in functor:
         return functor.rsplit('/', 1)[0]
     return functor
@@ -487,6 +490,83 @@ def eval_arith(term: Term, state: WamState):
         if fn in ops:
             return ops[fn](*args)
     raise WAMError(f"Cannot evaluate: {term}")
+
+
+def iso_term_contains_unbound(state: WamState, term: Term) -> bool:
+    """Return True when an arithmetic expression tree contains an unbound var."""
+    t = deref(term, state)
+    if isinstance(t, Var):
+        return True
+    if isinstance(t, Ref):
+        cell = state.heap.get(t.addr)
+        return cell is not None and iso_term_contains_unbound(state, cell)
+    if isinstance(t, Compound):
+        return any(iso_term_contains_unbound(state, arg) for arg in t.args)
+    return False
+
+
+def iso_term_has_zero_divide(state: WamState, term: Term) -> bool:
+    """Return True for literal /, //, mod, or rem by zero in an expression tree."""
+    t = deref(term, state)
+    if isinstance(t, Ref):
+        cell = state.heap.get(t.addr)
+        return cell is not None and iso_term_has_zero_divide(state, cell)
+    if not isinstance(t, Compound):
+        return False
+    fn = _strip_arity(t.functor)
+    if fn in ('/', '//', 'mod', 'rem') and len(t.args) == 2:
+        rhs = deref(t.args[1], state)
+        if isinstance(rhs, Ref):
+            rhs = state.heap.get(rhs.addr, rhs)
+        if (isinstance(rhs, Int) and rhs.n == 0) or (isinstance(rhs, Float) and rhs.f == 0.0):
+            return True
+    return any(iso_term_has_zero_divide(state, arg) for arg in t.args)
+
+
+def iso_arith_culprit(state: WamState, term: Term) -> Term:
+    """Build the Name/Arity culprit term used by type_error(evaluable, Culprit)."""
+    t = deref(term, state)
+    if isinstance(t, Ref):
+        cell = state.heap.get(t.addr)
+        if cell is not None:
+            t = deref(cell, state)
+    if isinstance(t, Atom):
+        return Compound('//2', [t, Int(0)])
+    if isinstance(t, Compound):
+        name = _strip_arity(t.functor)
+        return Compound('//2', [make_atom(name), Int(len(t.args))])
+    return Compound('//2', [make_atom('unknown'), Int(0)])
+
+
+def _execute_is_lax(state: WamState) -> bool:
+    dst = deref(get_reg(state, 1), state)
+    expr = deref(get_reg(state, 2), state)
+    try:
+        result = eval_arith(expr, state)
+    except WAMError:
+        return False
+    except (ZeroDivisionError, ValueError, TypeError, OverflowError):
+        return False
+    r = Int(result) if isinstance(result, int) else Float(result)
+    return unify(dst, r, state)
+
+
+def _execute_is_iso(state: WamState) -> bool:
+    dst = deref(get_reg(state, 1), state)
+    expr = get_reg(state, 2)
+    if iso_term_contains_unbound(state, expr):
+        return throw_iso_error(state, make_instantiation_error(state))
+    if iso_term_has_zero_divide(state, expr):
+        return throw_iso_error(state, make_evaluation_error(state, 'zero_divisor'))
+    try:
+        result = eval_arith(expr, state)
+    except WAMThrow:
+        raise
+    except Exception:
+        return throw_iso_error(state, make_type_error(state, 'evaluable', iso_arith_culprit(state, expr)))
+    r = Int(result) if isinstance(result, int) else Float(result)
+    return unify(dst, r, state)
+
 
 class WAMThrow(Exception):
     """Internal carrier for Prolog throw/1 terms."""
@@ -857,15 +937,10 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         return not unify(get_reg(sub, 1), get_reg(sub, 2), sub)
     if builtin in ('==/2', '==') and arity == 2:
         return _term_identical(get_reg(state, 1), get_reg(state, 2), state)
-    if builtin in ('is/2', 'is'):
-        dst = deref(get_reg(state, 1), state)
-        expr = deref(get_reg(state, 2), state)
-        try:
-            result = eval_arith(expr, state)
-        except WAMError:
-            return False
-        r = Int(result) if isinstance(result, int) else Float(result)
-        return unify(dst, r, state)
+    if builtin in ('is/2', 'is_lax/2', 'is', 'is_lax') and arity == 2:
+        return _execute_is_lax(state)
+    if builtin in ('is_iso/2', 'is_iso') and arity == 2:
+        return _execute_is_iso(state)
     if builtin in ('<//2', '</2', '<'):
         a = deref(get_reg(state, 1), state)
         b = deref(get_reg(state, 2), state)
