@@ -422,6 +422,9 @@ wam_go_direct_builtin(Pred, Arity) :-
 wam_go_direct_builtin(memberchk/2, 2, 'memberchk/2').
 wam_go_direct_builtin('memberchk/2', 2, 'memberchk/2').
 wam_go_direct_builtin("memberchk/2", 2, 'memberchk/2').
+wam_go_direct_builtin(select/3, 3, 'select/3').
+wam_go_direct_builtin('select/3', 3, 'select/3').
+wam_go_direct_builtin("select/3", 3, 'select/3').
 wam_go_direct_builtin(reverse/2, 2, 'reverse/2').
 wam_go_direct_builtin('reverse/2', 2, 'reverse/2').
 wam_go_direct_builtin("reverse/2", 2, 'reverse/2').
