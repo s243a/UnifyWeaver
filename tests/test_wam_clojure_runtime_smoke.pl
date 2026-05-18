@@ -151,6 +151,10 @@
 :- dynamic user:wam_string_codes_reverse/0.
 :- dynamic user:wam_string_chars_guard/2.
 :- dynamic user:wam_string_chars_reverse/0.
+:- dynamic user:wam_char_code_guard/2.
+:- dynamic user:wam_char_code_reverse/0.
+:- dynamic user:wam_char_code_bad_char/0.
+:- dynamic user:wam_char_code_unbound_pair/1.
 :- dynamic user:wam_number_codes_guard/2.
 :- dynamic user:wam_number_codes_reverse/0.
 :- dynamic user:wam_number_chars_guard/2.
@@ -341,6 +345,10 @@ user:wam_string_codes_guard(A, C) :- string_codes(A, C).
 user:wam_string_codes_reverse :- string_codes(A, [102,111,111]), A = foo.
 user:wam_string_chars_guard(A, C) :- string_chars(A, C).
 user:wam_string_chars_reverse :- string_chars(A, [f,o,o]), A = foo.
+user:wam_char_code_guard(C, N) :- char_code(C, N).
+user:wam_char_code_reverse :- char_code(C, 65), C = 'A'.
+user:wam_char_code_bad_char :- char_code(ab, _).
+user:wam_char_code_unbound_pair(_) :- user:wam_unbound_arg(C), user:wam_unbound_arg(N), char_code(C, N).
 user:wam_number_codes_guard(N, C) :- number_codes(N, C).
 user:wam_number_codes_reverse :- number_codes(N, [52,50]), N =:= 42.
 user:wam_number_chars_guard(N, C) :- number_chars(N, C).
@@ -536,6 +544,10 @@ run_smoke :-
           user:wam_string_codes_reverse/0,
           user:wam_string_chars_guard/2,
           user:wam_string_chars_reverse/0,
+          user:wam_char_code_guard/2,
+          user:wam_char_code_reverse/0,
+          user:wam_char_code_bad_char/0,
+          user:wam_char_code_unbound_pair/1,
           user:wam_number_codes_guard/2,
           user:wam_number_codes_reverse/0,
           user:wam_number_chars_guard/2,
@@ -886,6 +898,11 @@ smoke_cases([
     case('wam_string_chars_guard/2', args(foo, '[f,o,o]'), "true"),
     case('wam_string_chars_guard/2', args(foo, '[f,o]'), "false"),
     case('wam_string_chars_reverse/0', no_args, "true"),
+    case('wam_char_code_guard/2', args(a, 97), "true"),
+    case('wam_char_code_guard/2', args(a, 98), "false"),
+    case('wam_char_code_reverse/0', no_args, "true"),
+    case('wam_char_code_bad_char/0', no_args, "false"),
+    case('wam_char_code_unbound_pair/1', a, "false"),
     case('wam_number_codes_guard/2', args(42, '[52,50]'), "true"),
     case('wam_number_codes_guard/2', args(42, '[52]'), "false"),
     case('wam_number_codes_reverse/0', no_args, "true"),
@@ -1245,6 +1262,7 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-atom-chars-guard-2"),
     has(CoreCode, "defn lowered-wam-string-codes-guard-2"),
     has(CoreCode, "defn lowered-wam-string-chars-guard-2"),
+    has(CoreCode, "defn lowered-wam-char-code-guard-2"),
     has(CoreCode, "defn lowered-wam-number-codes-guard-2"),
     has(CoreCode, "defn lowered-wam-number-chars-guard-2"),
     has(CoreCode, "defn lowered-wam-atom-concat-guard-3"),
@@ -1252,6 +1270,7 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-sub-atom-extract-0"),
     has(CoreCode, "runtime/ground-term?"),
     has(CoreCode, "runtime/apply-text-conversion-solution"),
+    has(CoreCode, "runtime/apply-char-code-solution"),
     has(CoreCode, "runtime/apply-atom-concat-solution"),
     has(CoreCode, "runtime/apply-atom-length-solution"),
     has(CoreCode, "runtime/apply-sub-atom-solution").

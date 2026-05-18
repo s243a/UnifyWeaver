@@ -1041,6 +1041,38 @@
       :else
       (backtrack state))))
 
+(defn char-code-text [state value]
+  (let [text (atom-text state value)]
+    (when (and (string? text) (= 1 (count text)))
+      text)))
+
+(defn valid-char-code? [value]
+  (and (integer? value) (not (neg? value)) (<= value 65535)))
+
+(defn apply-char-code-solution [state]
+  (let [char-value (deref-value (:bindings state)
+                                (or (reg-get-raw state "A1") ::unbound))
+        code-value (deref-value (:bindings state)
+                                (or (reg-get-raw state "A2") ::unbound))
+        char-text (char-code-text state char-value)
+        code (code-point-value state code-value)]
+    (cond
+      (some? char-text)
+      (let [[ok unified-state] (unify-values state code-value (int (first char-text)))]
+        (if ok
+          (advance unified-state)
+          (backtrack state)))
+
+      (valid-char-code? code)
+      (let [[next-state atom-term] (intern-text-atom state (str (char code)))
+            [ok unified-state] (unify-values next-state char-value atom-term)]
+        (if ok
+          (advance unified-state)
+          (backtrack state)))
+
+      :else
+      (backtrack state))))
+
 (defn apply-atom-concat-solution [state]
   (let [left (deref-value (:bindings state)
                           (or (reg-get-raw state "A1") ::unbound))
@@ -1957,6 +1989,9 @@
 
           "number_chars/2"
           (apply-text-conversion-solution state (:pred instr))
+
+          "char_code/2"
+          (apply-char-code-solution state)
 
           "atom_concat/3"
           (apply-atom-concat-solution state)
