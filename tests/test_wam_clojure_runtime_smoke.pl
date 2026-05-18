@@ -150,6 +150,10 @@
 :- dynamic user:wam_atom_string_guard/2.
 :- dynamic user:wam_atom_string_reverse/0.
 :- dynamic user:wam_atom_string_unbound_pair/1.
+:- dynamic user:wam_atom_number_guard/2.
+:- dynamic user:wam_atom_number_reverse/0.
+:- dynamic user:wam_atom_number_bad_atom/0.
+:- dynamic user:wam_atom_number_unbound_pair/1.
 :- dynamic user:wam_string_to_atom_guard/2.
 :- dynamic user:wam_string_to_atom_reverse/0.
 :- dynamic user:wam_string_to_atom_unbound_pair/1.
@@ -350,6 +354,10 @@ user:wam_atom_chars_reverse :- atom_chars(A, [f,o,o]), A = foo.
 user:wam_atom_string_guard(A, S) :- atom_string(A, S).
 user:wam_atom_string_reverse :- atom_string(A, world), A = world.
 user:wam_atom_string_unbound_pair(_) :- user:wam_unbound_arg(A), user:wam_unbound_arg(S), atom_string(A, S).
+user:wam_atom_number_guard(A, N) :- atom_number(A, N).
+user:wam_atom_number_reverse :- atom_number(A, 42), atom_codes(A, [52,50]).
+user:wam_atom_number_bad_atom :- atom_number(foo, _).
+user:wam_atom_number_unbound_pair(_) :- user:wam_unbound_arg(A), user:wam_unbound_arg(N), atom_number(A, N).
 user:wam_string_to_atom_guard(S, A) :- string_to_atom(S, A).
 user:wam_string_to_atom_reverse :- string_to_atom(world, A), A = world.
 user:wam_string_to_atom_unbound_pair(_) :- user:wam_unbound_arg(S), user:wam_unbound_arg(A), string_to_atom(S, A).
@@ -555,6 +563,10 @@ run_smoke :-
           user:wam_atom_string_guard/2,
           user:wam_atom_string_reverse/0,
           user:wam_atom_string_unbound_pair/1,
+          user:wam_atom_number_guard/2,
+          user:wam_atom_number_reverse/0,
+          user:wam_atom_number_bad_atom/0,
+          user:wam_atom_number_unbound_pair/1,
           user:wam_string_to_atom_guard/2,
           user:wam_string_to_atom_reverse/0,
           user:wam_string_to_atom_unbound_pair/1,
@@ -914,6 +926,11 @@ smoke_cases([
     case('wam_atom_string_guard/2', args(hello, world), "false"),
     case('wam_atom_string_reverse/0', no_args, "true"),
     case('wam_atom_string_unbound_pair/1', a, "false"),
+    case('wam_atom_number_guard/2', args(42, 42), "true"),
+    case('wam_atom_number_guard/2', args(42, 43), "false"),
+    case('wam_atom_number_reverse/0', no_args, "true"),
+    case('wam_atom_number_bad_atom/0', no_args, "false"),
+    case('wam_atom_number_unbound_pair/1', a, "false"),
     case('wam_string_to_atom_guard/2', args(hello, hello), "true"),
     case('wam_string_to_atom_guard/2', args(hello, world), "false"),
     case('wam_string_to_atom_reverse/0', no_args, "true"),
@@ -1287,6 +1304,7 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-atom-codes-guard-2"),
     has(CoreCode, "defn lowered-wam-atom-chars-guard-2"),
     has(CoreCode, "defn lowered-wam-atom-string-guard-2"),
+    has(CoreCode, "defn lowered-wam-atom-number-guard-2"),
     has(CoreCode, "defn lowered-wam-string-to-atom-guard-2"),
     has(CoreCode, "defn lowered-wam-string-codes-guard-2"),
     has(CoreCode, "defn lowered-wam-string-chars-guard-2"),
@@ -1299,6 +1317,7 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "runtime/ground-term?"),
     has(CoreCode, "runtime/apply-text-conversion-solution"),
     has(CoreCode, "runtime/apply-atom-string-solution"),
+    has(CoreCode, "runtime/apply-atom-number-solution"),
     has(CoreCode, "runtime/apply-char-code-solution"),
     has(CoreCode, "runtime/apply-atom-concat-solution"),
     has(CoreCode, "runtime/apply-atom-length-solution"),
