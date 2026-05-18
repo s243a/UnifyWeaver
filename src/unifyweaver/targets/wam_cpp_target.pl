@@ -5706,6 +5706,97 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         pc += 1; return true;
     }
 
+    // ---- current_predicate/1 ---------------------------------------
+    // current_predicate(?PredSpec). PredSpec is Name/Arity. Check
+    // mode: both Name and Arity bound -- succeeds iff the predicate
+    // exists in the WAM (either as a static label or in the dynamic
+    // database). Enum mode (partial spec) is deferred -- callers can
+    // use findall + a known-name list for now.
+    if (op == "current_predicate/1") {
+        Value spec = *get_cell("A1");
+        if (spec.is_unbound())
+            return throw_iso_error(make_instantiation_error());
+        if (spec.tag != Value::Tag::Compound || spec.s != "//2"
+            || spec.args.size() != 2)
+            return throw_iso_error(make_type_error("predicate_indicator", spec));
+        Value name = *spec.args[0];
+        Value arity = *spec.args[1];
+        if (name.is_unbound() || arity.is_unbound())
+            return throw_iso_error(make_instantiation_error());
+        if (name.tag != Value::Tag::Atom)
+            return throw_iso_error(make_type_error("atom", name));
+        if (arity.tag != Value::Tag::Integer)
+            return throw_iso_error(make_type_error("integer", arity));
+        std::string key = name.s + "/" + std::to_string(arity.i);
+        if (labels.find(key) != labels.end()) { pc += 1; return true; }
+        if (dynamic_db.find(key) != dynamic_db.end()) { pc += 1; return true; }
+        return false;
+    }
+
+    // ---- predicate_property/2 --------------------------------------
+    // predicate_property(+Head, +Property). Property is checked
+    // against the predicate''s status:
+    //   defined        -- in labels OR dynamic_db.
+    //   dynamic        -- in dynamic_db (asserted at runtime).
+    //   static         -- in labels but not dynamic_db.
+    //   number_of_clauses(?N) -- N is the number of clauses (for
+    //                    dynamic preds; for static preds we report
+    //                    1 since we can''t introspect the clause list).
+    // Head must be bound to an atom or compound term. Multi-clause
+    // ranking of properties (per ISO) is not supported in this
+    // minimal impl -- just check-mode against the current property.
+    if (op == "predicate_property/2") {
+        Value head = *get_cell("A1");
+        if (head.is_unbound())
+            return throw_iso_error(make_instantiation_error());
+        std::string key;
+        if (head.tag == Value::Tag::Atom) {
+            key = head.s + "/0";
+        } else if (head.tag == Value::Tag::Compound) {
+            // head.s is "name/arity" already.
+            key = head.s;
+        } else {
+            return throw_iso_error(make_type_error("callable", head));
+        }
+        bool in_labels = (labels.find(key) != labels.end());
+        bool in_dynamic = (dynamic_db.find(key) != dynamic_db.end());
+        Value prop = *get_cell("A2");
+        if (prop.is_unbound())
+            return throw_iso_error(make_instantiation_error());
+        if (prop.tag == Value::Tag::Atom) {
+            if (prop.s == "defined") {
+                if (in_labels || in_dynamic) { pc += 1; return true; }
+                return false;
+            }
+            if (prop.s == "dynamic") {
+                if (in_dynamic) { pc += 1; return true; }
+                return false;
+            }
+            if (prop.s == "static") {
+                if (in_labels && !in_dynamic) { pc += 1; return true; }
+                return false;
+            }
+            return throw_iso_error(make_domain_error("predicate_property", prop));
+        }
+        if (prop.tag == Value::Tag::Compound
+            && prop.s == "number_of_clauses/1" && prop.args.size() == 1) {
+            std::int64_t n;
+            if (in_dynamic) {
+                n = (std::int64_t)dynamic_db[key].size();
+            } else if (in_labels) {
+                n = 1; // best-effort: can''t introspect static clause list.
+            } else {
+                return false;
+            }
+            Value nv = Value::Integer(n);
+            CellPtr tgt = prop.args[0];
+            if (tgt->is_unbound()) { bind_cell(tgt, nv); pc += 1; return true; }
+            if (!unify_cells(tgt, std::make_shared<Cell>(nv))) return false;
+            pc += 1; return true;
+        }
+        return throw_iso_error(make_domain_error("predicate_property", prop));
+    }
+
     // ---- I/O -------------------------------------------------------
     // All write paths route through emit_output / emit_output_char so
     // with_output_to/2 can intercept them into a capture buffer.

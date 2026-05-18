@@ -279,6 +279,17 @@
 :- dynamic user:wam_cpp_test_stream_at_end/0.
 :- dynamic user:wam_cpp_test_stream_missing_file/0.
 :- dynamic user:wam_cpp_test_stream_close_unknown/0.
+:- dynamic user:wam_cpp_test_intro_static_yes/0.
+:- dynamic user:wam_cpp_test_intro_static_no/0.
+:- dynamic user:wam_cpp_test_intro_arity_no/0.
+:- dynamic user:wam_cpp_test_intro_builtin_yes/0.
+:- dynamic user:wam_cpp_test_intro_prop_defined/0.
+:- dynamic user:wam_cpp_test_intro_prop_static/0.
+:- dynamic user:wam_cpp_test_intro_prop_dynamic/0.
+:- dynamic user:wam_cpp_test_intro_prop_static_not_dynamic/0.
+:- dynamic user:wam_cpp_test_intro_prop_count/0.
+:- dynamic user:wam_cpp_test_intro_inst_throw/0.
+:- dynamic user:wam_cpp_test_intro_indicator_throw/0.
 :- dynamic user:wam_cpp_test_enum_member/0.
 
 user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
@@ -659,6 +670,47 @@ user:wam_cpp_test_stream_missing_file :-
 user:wam_cpp_test_stream_close_unknown :-
     catch(close(no_such_handle),
           error(existence_error(stream, _), _),
+          true).
+% Introspection: current_predicate/1 (check mode) and
+% predicate_property/2. Cover static lookups, dynamic-db lookups,
+% preloaded-bytecode (e.g. append/3), property atoms (defined,
+% static, dynamic), number_of_clauses/1, and the type/instantiation
+% error paths.
+:- dynamic user:wam_cpp_intro_dyn/1.
+user:wam_cpp_intro_dyn(initial).
+user:wam_cpp_intro_static(a).
+user:wam_cpp_intro_static(b).
+user:wam_cpp_test_intro_static_yes :-
+    current_predicate(wam_cpp_intro_static/1).
+user:wam_cpp_test_intro_static_no :-
+    \+ current_predicate(wam_cpp_no_such_pred/3).
+user:wam_cpp_test_intro_arity_no :-
+    \+ current_predicate(wam_cpp_intro_static/2).
+user:wam_cpp_test_intro_builtin_yes :-
+    current_predicate(append/3).
+user:wam_cpp_test_intro_prop_defined :-
+    predicate_property(wam_cpp_intro_static(_), defined).
+user:wam_cpp_test_intro_prop_static :-
+    predicate_property(wam_cpp_intro_static(_), static).
+user:wam_cpp_test_intro_prop_dynamic :-
+    assertz(wam_cpp_intro_dyn(more)),
+    predicate_property(wam_cpp_intro_dyn(_), dynamic).
+user:wam_cpp_test_intro_prop_static_not_dynamic :-
+    \+ predicate_property(wam_cpp_intro_static(_), dynamic).
+user:wam_cpp_test_intro_prop_count :-
+    retractall(wam_cpp_intro_dyn(_)),
+    assertz(wam_cpp_intro_dyn(a)),
+    assertz(wam_cpp_intro_dyn(b)),
+    assertz(wam_cpp_intro_dyn(c)),
+    predicate_property(wam_cpp_intro_dyn(_), number_of_clauses(N)),
+    N = 3.
+user:wam_cpp_test_intro_inst_throw :-
+    catch(current_predicate(_),
+          error(instantiation_error, _),
+          true).
+user:wam_cpp_test_intro_indicator_throw :-
+    catch(current_predicate(foo),
+          error(type_error(predicate_indicator, _), _),
           true).
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
@@ -3773,6 +3825,42 @@ test(cpp_e2e_stream_io, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_stream_at_end/0',        [], true),
           run_query(BinPath, 'wam_cpp_test_stream_missing_file/0',  [], true),
           run_query(BinPath, 'wam_cpp_test_stream_close_unknown/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_introspection, [condition(cpp_compiler_available)]) :-
+    % current_predicate/1 (check mode) + predicate_property/2:
+    % static / dynamic / defined / number_of_clauses(N), plus the
+    % expected throws on missing instantiation and bad-shape PI.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_intro', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_intro_static_yes/0,
+                               user:wam_cpp_test_intro_static_no/0,
+                               user:wam_cpp_test_intro_arity_no/0,
+                               user:wam_cpp_test_intro_builtin_yes/0,
+                               user:wam_cpp_test_intro_prop_defined/0,
+                               user:wam_cpp_test_intro_prop_static/0,
+                               user:wam_cpp_test_intro_prop_dynamic/0,
+                               user:wam_cpp_test_intro_prop_static_not_dynamic/0,
+                               user:wam_cpp_test_intro_prop_count/0,
+                               user:wam_cpp_test_intro_inst_throw/0,
+                               user:wam_cpp_test_intro_indicator_throw/0,
+                               user:wam_cpp_intro_static/1,
+                               user:wam_cpp_intro_dyn/1],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_intro_static_yes/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_intro_static_no/0',            [], true),
+          run_query(BinPath, 'wam_cpp_test_intro_arity_no/0',             [], true),
+          run_query(BinPath, 'wam_cpp_test_intro_builtin_yes/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_intro_prop_defined/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_intro_prop_static/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_intro_prop_dynamic/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_intro_prop_static_not_dynamic/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_intro_prop_count/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_intro_inst_throw/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_intro_indicator_throw/0',      [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
