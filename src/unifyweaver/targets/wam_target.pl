@@ -1511,6 +1511,13 @@ is_builtin_pred(get_time, 1).           % get_time(-Stamp), Float since epoch.
 is_builtin_pred(stamp_date_time, 3).    % stamp_date_time(+Stamp, -DT, +TZ).
 is_builtin_pred(date_time_stamp, 2).    % date_time_stamp(+DT, -Stamp).
 is_builtin_pred(format_time, 3).        % format_time(-Atom, +Fmt, +Stamp).
+is_builtin_pred(open, 3).               % open(+File, +Mode, -Stream).
+is_builtin_pred(close, 1).              % close(+Stream).
+is_builtin_pred(read_line_to_string, 2). % read_line_to_string(+Stream, -Line).
+is_builtin_pred(read_string, 5).        % read_string(+S, +L, ?L, _, -String).
+is_builtin_pred(at_end_of_stream, 1).   % at_end_of_stream(+Stream).
+is_builtin_pred(write_to_stream, 2).    % write_to_stream(+S, +Term).
+is_builtin_pred(nl_to_stream, 1).       % nl_to_stream(+S).
 is_builtin_pred(write, 1).  % I/O — useful for runtime instrumentation.
 is_builtin_pred(display, 1).
 is_builtin_pred(nl, 0).

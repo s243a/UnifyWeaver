@@ -273,6 +273,12 @@
 :- dynamic user:wam_cpp_test_idx_drop_first/0.
 :- dynamic user:wam_cpp_test_idx_keep_first/0.
 :- dynamic user:wam_cpp_test_idx_mixed/0.
+:- dynamic user:wam_cpp_test_stream_roundtrip/0.
+:- dynamic user:wam_cpp_test_stream_read_string/0.
+:- dynamic user:wam_cpp_test_stream_append/0.
+:- dynamic user:wam_cpp_test_stream_at_end/0.
+:- dynamic user:wam_cpp_test_stream_missing_file/0.
+:- dynamic user:wam_cpp_test_stream_close_unknown/0.
 :- dynamic user:wam_cpp_test_enum_member/0.
 
 user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
@@ -600,6 +606,60 @@ user:wam_cpp_test_idx_drop_first  :- wam_cpp_idx_bar([5, 15], R), R = [15].
 user:wam_cpp_test_idx_keep_first  :- wam_cpp_idx_bar([15, 5], R), R = [15].
 user:wam_cpp_test_idx_mixed       :- wam_cpp_idx_bar([5, 15, 7, 20], R),
                                      R = [15, 20].
+% Stream I/O: open/close + read_line_to_string + read_string +
+% at_end_of_stream + write_to_stream/nl_to_stream. Each test
+% creates a temp file in /tmp, exercises the path, then cleans up
+% (we just leave the file -- /tmp is ephemeral).
+user:wam_cpp_test_stream_roundtrip :-
+    open('/tmp/wam_stream_t1.txt', write, W),
+    write_to_stream(W, 'line one'), nl_to_stream(W),
+    write_to_stream(W, 'line two'), nl_to_stream(W),
+    close(W),
+    open('/tmp/wam_stream_t1.txt', read, R),
+    read_line_to_string(R, L1),
+    read_line_to_string(R, L2),
+    read_line_to_string(R, EOF),
+    close(R),
+    L1 = 'line one', L2 = 'line two', EOF = end_of_file.
+user:wam_cpp_test_stream_read_string :-
+    open('/tmp/wam_stream_t2.txt', write, W),
+    write_to_stream(W, 'hello world'),
+    close(W),
+    open('/tmp/wam_stream_t2.txt', read, R),
+    read_string(R, 5, N1, _, S1),
+    read_string(R, 100, N2, _, S2),
+    close(R),
+    S1 = 'hello', N1 = 5,
+    S2 = ' world', N2 = 6.
+user:wam_cpp_test_stream_append :-
+    open('/tmp/wam_stream_t3.txt', write, W1),
+    write_to_stream(W1, 'first'), nl_to_stream(W1),
+    close(W1),
+    open('/tmp/wam_stream_t3.txt', append, W2),
+    write_to_stream(W2, 'second'), nl_to_stream(W2),
+    close(W2),
+    open('/tmp/wam_stream_t3.txt', read, R),
+    read_line_to_string(R, L1),
+    read_line_to_string(R, L2),
+    close(R),
+    L1 = 'first', L2 = 'second'.
+user:wam_cpp_test_stream_at_end :-
+    open('/tmp/wam_stream_t4.txt', write, W),
+    write_to_stream(W, 'one'), nl_to_stream(W),
+    close(W),
+    open('/tmp/wam_stream_t4.txt', read, R),
+    \+ at_end_of_stream(R),
+    read_line_to_string(R, _),
+    at_end_of_stream(R),
+    close(R).
+user:wam_cpp_test_stream_missing_file :-
+    catch(open('/tmp/wam_stream_does_not_exist.xyz', read, _),
+          error(existence_error(source_sink, _), _),
+          true).
+user:wam_cpp_test_stream_close_unknown :-
+    catch(close(no_such_handle),
+          error(existence_error(stream, _), _),
+          true).
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
 
@@ -3688,6 +3748,31 @@ test(cpp_e2e_indexing_backtrack, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_idx_drop_first/0', [], true),
           run_query(BinPath, 'wam_cpp_test_idx_keep_first/0', [], true),
           run_query(BinPath, 'wam_cpp_test_idx_mixed/0',      [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_stream_io, [condition(cpp_compiler_available)]) :-
+    % Stream I/O foundation: open/3, close/1, read_line_to_string/2,
+    % read_string/5, at_end_of_stream/1, write_to_stream/2,
+    % nl_to_stream/1. Each test creates a temp file in /tmp and
+    % exercises one path. Files are left in place; /tmp is ephemeral.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_stream', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_stream_roundtrip/0,
+                               user:wam_cpp_test_stream_read_string/0,
+                               user:wam_cpp_test_stream_append/0,
+                               user:wam_cpp_test_stream_at_end/0,
+                               user:wam_cpp_test_stream_missing_file/0,
+                               user:wam_cpp_test_stream_close_unknown/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_stream_roundtrip/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_stream_read_string/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_stream_append/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_stream_at_end/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_stream_missing_file/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_stream_close_unknown/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
