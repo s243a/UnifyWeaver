@@ -704,6 +704,16 @@ test(simple_builtin_atom_codes_is_direct_lowered_in_prefix) :-
         assertion(\+ has(Code, "runtime/step"))
     )).
 
+test(simple_builtin_atom_string_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_atom_string/2:\nbuiltin_call atom_string/2, 2\nproceed\n",
+        wam_clojure_lowerable(test_atom_string/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_atom_string/2, WamCode, [], Code),
+        has(Code, "runtime/apply-atom-string-solution"),
+        has(Code, "atom_string/2"),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
 test(simple_builtin_number_chars_is_direct_lowered_in_prefix) :-
     once((
         WamCode = "test_number_chars/2:\nbuiltin_call number_chars/2, 2\nproceed\n",

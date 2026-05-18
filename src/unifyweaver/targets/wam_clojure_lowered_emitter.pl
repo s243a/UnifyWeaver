@@ -460,6 +460,10 @@ clojure_direct_builtin("atom_chars/2", "2").
 clojure_direct_builtin("atom_chars/2", 2).
 clojure_direct_builtin('atom_chars/2', "2").
 clojure_direct_builtin('atom_chars/2', 2).
+clojure_direct_builtin("atom_string/2", "2").
+clojure_direct_builtin("atom_string/2", 2).
+clojure_direct_builtin('atom_string/2', "2").
+clojure_direct_builtin('atom_string/2', 2).
 clojure_direct_builtin("string_codes/2", "2").
 clojure_direct_builtin("string_codes/2", 2).
 clojure_direct_builtin('string_codes/2', "2").
@@ -842,6 +846,11 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     ),
     !,
     format(atom(Expr), '(runtime/apply-text-conversion-solution ~w "~w")', [S, Op]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "atom_string/2" ; Op == 'atom_string/2'),
+    !,
+    format(atom(Expr), '(runtime/apply-atom-string-solution ~w "~w")', [S, Op]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "char_code/2" ; Op == 'char_code/2'),
