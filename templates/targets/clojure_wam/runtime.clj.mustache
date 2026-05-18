@@ -957,6 +957,18 @@
   (when (number? value)
     (str value)))
 
+(declare parse-number-text)
+
+(defn atom-number-text [state value]
+  (or (atom-text state value)
+      (number-text value)))
+
+(defn atom-number-value [state value]
+  (cond
+    (number? value) value
+    :else (when-let [text (atom-text state value)]
+            (parse-number-text text))))
+
 (defn intern-text-atom [state text]
   (let [[ctx id] (intern-atom (:intern-context state) text)]
     [(assoc state :intern-context ctx) (atom-term id)]))
@@ -976,8 +988,6 @@
 (defn char-list-term [state text]
   (let [[next-state chars] (intern-char-terms state text)]
     [next-state (list->term (:intern-context next-state) chars)]))
-
-(declare parse-number-text)
 
 (defn code-point-value [state value]
   (cond
@@ -1016,6 +1026,11 @@
         value-text (if atom? (atom-text state left) (number-text left))
         list-text (if codes? (code-list-text state right) (char-list-text state right))]
     (cond
+      (and (some? value-text) (some? list-text))
+      (if (= value-text list-text)
+        (advance state)
+        (backtrack state))
+
       (some? value-text)
       (let [[next-state list-term] (if codes?
                                      (code-list-term state value-text)
@@ -1066,6 +1081,31 @@
 
       (some? string-text-value)
       (let [[ok unified-state] (unify-text-atom-value state atom-value string-text-value)]
+        (if ok
+          (advance unified-state)
+          (backtrack state)))
+
+      :else
+      (backtrack state))))
+
+(defn apply-atom-number-solution [state]
+  (let [atom-value (deref-value (:bindings state)
+                                (or (reg-get-raw state "A1") ::unbound))
+        number-value (deref-value (:bindings state)
+                                  (or (reg-get-raw state "A2") ::unbound))
+        atom-text-value (atom-number-text state atom-value)
+        parsed-number-value (atom-number-value state number-value)]
+    (cond
+      (some? atom-text-value)
+      (if-let [parsed-number (parse-number-text atom-text-value)]
+        (let [[ok unified-state] (unify-values state number-value parsed-number)]
+          (if ok
+            (advance unified-state)
+            (backtrack state)))
+        (backtrack state))
+
+      (some? parsed-number-value)
+      (let [[ok unified-state] (unify-text-atom-value state atom-value (str parsed-number-value))]
         (if ok
           (advance unified-state)
           (backtrack state)))
@@ -2012,6 +2052,9 @@
 
           "atom_string/2"
           (apply-atom-string-solution state (:pred instr))
+
+          "atom_number/2"
+          (apply-atom-number-solution state)
 
           "string_to_atom/2"
           (apply-atom-string-solution state (:pred instr))
