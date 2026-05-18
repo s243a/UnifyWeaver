@@ -907,6 +907,47 @@ func (vm *WamState) copyTermValue(v Value, seen map[int]*Unbound) Value {
 	}
 }
 
+const quotedNumericAtomPrefix = "\x01"
+
+func atomNumberText(v Value) (string, bool) {
+	switch t := v.(type) {
+	case *Atom:
+		return strings.TrimPrefix(t.Name, quotedNumericAtomPrefix), true
+	case *Integer:
+		return strconv.FormatInt(t.Val, 10), true
+	case *Float:
+		return strconv.FormatFloat(t.Val, 'g', -1, 64), true
+	default:
+		return "", false
+	}
+}
+
+func parseAtomNumberText(text string) (Value, bool) {
+	if strings.Contains(text, ".") {
+		val, err := strconv.ParseFloat(text, 64)
+		if err != nil {
+			return nil, false
+		}
+		return &Float{Val: val}, true
+	}
+	val, err := strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		return nil, false
+	}
+	return &Integer{Val: val}, true
+}
+
+func atomNumberValue(v Value) (Value, bool) {
+	switch t := v.(type) {
+	case *Integer, *Float:
+		return t, true
+	case *Atom:
+		return parseAtomNumberText(strings.TrimPrefix(t.Name, quotedNumericAtomPrefix))
+	default:
+		return nil, false
+	}
+}
+
 func (vm *WamState) Deref(v Value) Value {
 	return vm.deref(v)
 }
@@ -1092,6 +1133,24 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		}
 		if bIsInt && bInt.Val > 0 {
 			return vm.Unify(arg1, &Integer{Val: bInt.Val - 1})
+		}
+		return false
+	case "atom_number/2":
+		atomVal := vm.deref(arg1)
+		numberVal := vm.deref(arg2)
+		if text, ok := atomNumberText(atomVal); ok {
+			parsed, ok := parseAtomNumberText(text)
+			if !ok {
+				return false
+			}
+			return vm.Unify(arg2, parsed)
+		}
+		if parsed, ok := atomNumberValue(numberVal); ok {
+			text, ok := atomNumberText(parsed)
+			if !ok {
+				return false
+			}
+			return vm.Unify(arg1, internAtom(quotedNumericAtomPrefix+text))
 		}
 		return false
 
