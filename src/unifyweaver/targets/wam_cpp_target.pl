@@ -2108,6 +2108,7 @@ compile_wam_runtime_header_to_cpp(_Options,
 
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <set>
@@ -2667,6 +2668,18 @@ struct WamState {
     // (TrustMe), then clears it. Reset on query entry.
     bool indexed_entry = false;
 
+    // File-stream registry. open/3 inserts; close/1 erases; the read
+    // / write builtins look up by atom handle. Each entry owns its
+    // underlying fstream so RAII closes it if the user forgets. The
+    // handle atom is "$stream_N" with a per-WamState monotonically
+    // increasing counter.
+    struct StreamEntry {
+        std::unique_ptr<std::fstream> file;
+        bool is_read = false;
+    };
+    std::unordered_map<std::string, StreamEntry> streams;
+    std::uint64_t stream_counter = 0;
+
     // Cell-aware accessors. get_reg/put_reg keep their Value-shaped API
     // so existing lowered code keeps compiling; get_cell exposes the cell
     // for instructions that need sharing semantics.
@@ -2883,6 +2896,7 @@ compile_wam_runtime_to_cpp(_Options,
 #include <cmath>
 #include <cstdio>
 #include <ctime>
+#include <fstream>
 #include <limits>
 #include <random>
 #include <sstream>
@@ -5507,6 +5521,188 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         CellPtr tgt = get_cell("A1");
         if (tgt->is_unbound()) { bind_cell(tgt, out); pc += 1; return true; }
         if (!unify_cells(tgt, std::make_shared<Cell>(out))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- open/3 ----------------------------------------------------
+    // open(+File, +Mode, -Stream). Mode: read | write | append.
+    // Stream unifies with a freshly minted atom handle "$stream_N"
+    // that the read/write builtins look up in the streams registry.
+    // Throws existence_error(source_sink, File) if the file can''t
+    // be opened (mostly for read mode where the file must exist).
+    if (op == "open/3") {
+        Value fv = *get_cell("A1");
+        Value mv = *get_cell("A2");
+        if (fv.is_unbound() || mv.is_unbound())
+            return throw_iso_error(make_instantiation_error());
+        if (fv.tag != Value::Tag::Atom)
+            return throw_iso_error(make_type_error("atom", fv));
+        if (mv.tag != Value::Tag::Atom)
+            return throw_iso_error(make_type_error("atom", mv));
+        std::ios_base::openmode m;
+        bool is_read = false;
+        if      (mv.s == "read")   { m = std::ios::in;  is_read = true; }
+        else if (mv.s == "write")  { m = std::ios::out | std::ios::trunc; }
+        else if (mv.s == "append") { m = std::ios::out | std::ios::app; }
+        else return throw_iso_error(make_domain_error("io_mode", mv));
+        auto fs = std::make_unique<std::fstream>(fv.s, m);
+        if (!fs->is_open())
+            return throw_iso_error(Value::Compound("existence_error/2", {
+                std::make_shared<Cell>(Value::Atom("source_sink")),
+                std::make_shared<Cell>(fv)
+            }));
+        std::string handle = "$stream_" + std::to_string(stream_counter++);
+        StreamEntry entry;
+        entry.file = std::move(fs);
+        entry.is_read = is_read;
+        streams.emplace(handle, std::move(entry));
+        Value sv = Value::Atom(handle);
+        CellPtr tgt = get_cell("A3");
+        if (tgt->is_unbound()) { bind_cell(tgt, sv); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(sv))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- close/1 ---------------------------------------------------
+    // close(+Stream). Closes and erases the handle. Throws
+    // existence_error(stream, Stream) if the handle isn''t known.
+    if (op == "close/1") {
+        Value sv = *get_cell("A1");
+        if (sv.is_unbound())
+            return throw_iso_error(make_instantiation_error());
+        if (sv.tag != Value::Tag::Atom)
+            return throw_iso_error(make_type_error("atom", sv));
+        auto it = streams.find(sv.s);
+        if (it == streams.end())
+            return throw_iso_error(Value::Compound("existence_error/2", {
+                std::make_shared<Cell>(Value::Atom("stream")),
+                std::make_shared<Cell>(sv)
+            }));
+        it->second.file->close();
+        streams.erase(it);
+        pc += 1; return true;
+    }
+
+    // ---- read_line_to_string/2 -------------------------------------
+    // read_line_to_string(+Stream, -Line). Reads up to but not
+    // including the next newline. On EOF, Line unifies with the atom
+    // end_of_file. Trailing CR (Windows CRLF) is stripped.
+    if (op == "read_line_to_string/2") {
+        Value sv = *get_cell("A1");
+        if (sv.tag != Value::Tag::Atom)
+            return throw_iso_error(make_type_error("atom", sv));
+        auto it = streams.find(sv.s);
+        if (it == streams.end())
+            return throw_iso_error(Value::Compound("existence_error/2", {
+                std::make_shared<Cell>(Value::Atom("stream")),
+                std::make_shared<Cell>(sv)
+            }));
+        if (!it->second.is_read) return false;
+        std::string line;
+        if (!std::getline(*it->second.file, line)) {
+            Value eof = Value::Atom("end_of_file");
+            CellPtr tgt = get_cell("A2");
+            if (tgt->is_unbound()) { bind_cell(tgt, eof); pc += 1; return true; }
+            if (!unify_cells(tgt, std::make_shared<Cell>(eof))) return false;
+            pc += 1; return true;
+        }
+        if (!line.empty() && line.back() == ''\\r'') line.pop_back();
+        Value lv = Value::Atom(line);
+        CellPtr tgt = get_cell("A2");
+        if (tgt->is_unbound()) { bind_cell(tgt, lv); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(lv))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- read_string/5 ---------------------------------------------
+    // read_string(+Stream, +Length, ?Length, -String) -- a subset
+    // of SWI''s 5-arg form. With +Length, reads up to Length chars
+    // (less if EOF reached); the third arg unifies with the actual
+    // count read. The fourth arg (PadEnd in SWI; sometimes used as
+    // a sentinel) is accepted but ignored in our minimal impl.
+    if (op == "read_string/5") {
+        Value sv = *get_cell("A1");
+        Value lv = *get_cell("A2");
+        if (sv.tag != Value::Tag::Atom)
+            return throw_iso_error(make_type_error("atom", sv));
+        if (lv.tag != Value::Tag::Integer)
+            return throw_iso_error(make_type_error("integer", lv));
+        auto it = streams.find(sv.s);
+        if (it == streams.end())
+            return throw_iso_error(Value::Compound("existence_error/2", {
+                std::make_shared<Cell>(Value::Atom("stream")),
+                std::make_shared<Cell>(sv)
+            }));
+        if (!it->second.is_read) return false;
+        std::string buf;
+        buf.resize((std::size_t)lv.i);
+        it->second.file->read(&buf[0], lv.i);
+        std::streamsize got = it->second.file->gcount();
+        buf.resize((std::size_t)got);
+        Value count_v = Value::Integer((std::int64_t)got);
+        Value str_v = Value::Atom(buf);
+        CellPtr tgt3 = get_cell("A3");
+        if (tgt3->is_unbound()) bind_cell(tgt3, count_v);
+        else if (!unify_cells(tgt3, std::make_shared<Cell>(count_v))) return false;
+        CellPtr tgt5 = get_cell("A5");
+        if (tgt5->is_unbound()) bind_cell(tgt5, str_v);
+        else if (!unify_cells(tgt5, std::make_shared<Cell>(str_v))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- at_end_of_stream/1 ----------------------------------------
+    // at_end_of_stream(+Stream). Succeeds when the next read on
+    // Stream would yield EOF.
+    if (op == "at_end_of_stream/1") {
+        Value sv = *get_cell("A1");
+        if (sv.tag != Value::Tag::Atom)
+            return throw_iso_error(make_type_error("atom", sv));
+        auto it = streams.find(sv.s);
+        if (it == streams.end())
+            return throw_iso_error(Value::Compound("existence_error/2", {
+                std::make_shared<Cell>(Value::Atom("stream")),
+                std::make_shared<Cell>(sv)
+            }));
+        if (!it->second.is_read) return false;
+        std::fstream& f = *it->second.file;
+        if (f.eof()) { pc += 1; return true; }
+        int c = f.peek();
+        if (c == EOF) { pc += 1; return true; }
+        return false;
+    }
+
+    // ---- write_to_stream/2 -----------------------------------------
+    // write_to_stream(+Stream, +Term). Renders Term and writes it
+    // (no newline). Companion: nl_to_stream/1 writes one newline.
+    // Not standard SWI; convenient before with_output_to(stream(_),...)
+    // lands.
+    if (op == "write_to_stream/2") {
+        Value sv = *get_cell("A1");
+        if (sv.tag != Value::Tag::Atom)
+            return throw_iso_error(make_type_error("atom", sv));
+        auto it = streams.find(sv.s);
+        if (it == streams.end())
+            return throw_iso_error(Value::Compound("existence_error/2", {
+                std::make_shared<Cell>(Value::Atom("stream")),
+                std::make_shared<Cell>(sv)
+            }));
+        if (it->second.is_read) return false;
+        Value v = *get_cell("A2");
+        *it->second.file << render(v);
+        pc += 1; return true;
+    }
+    if (op == "nl_to_stream/1") {
+        Value sv = *get_cell("A1");
+        if (sv.tag != Value::Tag::Atom)
+            return throw_iso_error(make_type_error("atom", sv));
+        auto it = streams.find(sv.s);
+        if (it == streams.end())
+            return throw_iso_error(Value::Compound("existence_error/2", {
+                std::make_shared<Cell>(Value::Atom("stream")),
+                std::make_shared<Cell>(sv)
+            }));
+        if (it->second.is_read) return false;
+        *it->second.file << ''\\n'';
         pc += 1; return true;
     }
 
