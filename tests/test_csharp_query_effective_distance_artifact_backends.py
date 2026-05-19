@@ -145,6 +145,40 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
                 stderr=subprocess.PIPE,
                 timeout=60,
             )
+            gated = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "--summary-input",
+                    str(path),
+                    "--format",
+                    "policy-actionable-markdown",
+                    "--fail-on-policy-actions",
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=60,
+            )
+            gated_thresholded = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "--summary-input",
+                    str(path),
+                    "--format",
+                    "policy-actionable-markdown",
+                    "--policy-action-threshold",
+                    "1.20",
+                    "--fail-on-policy-actions",
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=60,
+            )
 
         self.assertEqual(result.returncode, 0, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
         self.assertIn("| Policy mode | Policy artifact value | Policy vs best |", result.stdout)
@@ -152,6 +186,13 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
         self.assertNotIn("| lookup_c0 | ms | lmdb | 3.251 | 1.000x | lmdb | 3.251 | match |", result.stdout)
         self.assertEqual(thresholded.returncode, 0, msg=f"stdout:\n{thresholded.stdout}\nstderr:\n{thresholded.stderr}")
         self.assertNotIn("| bucket_c0 | ms | delimited-artifact | 400.000 | 1.143x | mmap-array | 350.000 | diff |", thresholded.stdout)
+        self.assertEqual(gated.returncode, 2, msg=f"stdout:\n{gated.stdout}\nstderr:\n{gated.stderr}")
+        self.assertIn("| bucket_c0 | ms | delimited-artifact | 400.000 | 1.143x | mmap-array | 350.000 | diff |", gated.stdout)
+        self.assertEqual(
+            gated_thresholded.returncode,
+            0,
+            msg=f"stdout:\n{gated_thresholded.stdout}\nstderr:\n{gated_thresholded.stderr}",
+        )
 
     def test_summary_input_rejects_raw_formats(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -193,6 +234,38 @@ class CSharpQueryEffectiveDistanceArtifactBackendTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("--policy-action-threshold must be at least 1.0", result.stderr)
+
+    def test_fail_on_policy_actions_live_benchmark_exits_nonzero(self) -> None:
+        if shutil.which("dotnet") is None:
+            self.skipTest("dotnet is not available")
+        if not LIGHTNINGDB_PACKAGE.exists():
+            self.skipTest("LightningDB 0.21.0 package is not available in the local NuGet cache")
+
+        result = subprocess.run(
+            [
+                "python3",
+                str(SCRIPT),
+                "--scales",
+                "dev",
+                "--lookup-keys",
+                "4",
+                "--lookup-repetitions",
+                "1",
+                "--repetitions",
+                "1",
+                "--format",
+                "policy-actionable-markdown",
+                "--fail-on-policy-actions",
+            ],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=180,
+        )
+
+        self.assertEqual(result.returncode, 2, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+        self.assertIn("| Policy mode | Policy artifact value | Policy vs best |", result.stdout)
 
     def test_summary_input_rejects_summary_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

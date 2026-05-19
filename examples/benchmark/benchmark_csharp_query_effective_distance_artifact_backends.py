@@ -891,6 +891,16 @@ def render_summary_based_format(format_name: str, summaries: list[SummaryRow], p
     raise ValueError(f"{format_name} is not a summary-based format")
 
 
+def actionable_policy_rows_from_summaries(
+    summaries: list[SummaryRow],
+    policy_action_threshold: float = 1.0,
+) -> list[PolicyCompareRow]:
+    return policy_actionable_rows(
+        policy_compare_rows_from_summaries(summaries),
+        threshold=policy_action_threshold,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Compare C# query artifact backends on real effective-distance support relations."
@@ -1014,6 +1024,11 @@ def main(argv: list[str] | None = None) -> int:
             "missing policy modes are always included"
         ),
     )
+    parser.add_argument(
+        "--fail-on-policy-actions",
+        action="store_true",
+        help="exit non-zero when thresholded actionable policy rows remain",
+    )
     parser.add_argument("--keep-temp", action="store_true", help="keep the generated C# benchmark project")
     args = parser.parse_args(argv)
 
@@ -1048,6 +1063,11 @@ def main(argv: list[str] | None = None) -> int:
                 policy_action_threshold=args.policy_action_threshold,
             )
         )
+        if args.fail_on_policy_actions and actionable_policy_rows_from_summaries(
+            summaries,
+            policy_action_threshold=args.policy_action_threshold,
+        ):
+            return 2
         return 0
 
     scales = [scale.strip() for scale in args.scales.split(",") if scale.strip()]
@@ -1140,6 +1160,14 @@ def main(argv: list[str] | None = None) -> int:
         print(render_markdown(rows))
     else:
         print(render_tsv(rows))
+    if args.fail_on_policy_actions:
+        if not summaries:
+            summaries = summarize(rows)
+        if actionable_policy_rows_from_summaries(
+            summaries,
+            policy_action_threshold=args.policy_action_threshold,
+        ):
+            return 2
     return 0
 
 
