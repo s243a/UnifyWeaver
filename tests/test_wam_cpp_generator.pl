@@ -3476,6 +3476,36 @@ user:wam_cpp_test_bagof           :- bagof(X, user:wam_cpp_item(X), L), L = [a, 
 user:wam_cpp_test_bagof_empty     :- bagof(_, fail, _).
 user:wam_cpp_test_setof           :- setof(X, user:wam_cpp_num(X), L), L = [1, 2, 3].
 user:wam_cpp_test_setof_empty     :- setof(_, fail, _).
+% sub_string/5 fixtures — mirror the SWI sub_string semantics.
+:- dynamic user:wam_cpp_test_ss_extract/0.
+:- dynamic user:wam_cpp_test_ss_extract_pre/0.
+:- dynamic user:wam_cpp_test_ss_extract_suf/0.
+:- dynamic user:wam_cpp_test_ss_extract_full/0.
+:- dynamic user:wam_cpp_test_ss_no_after/0.
+:- dynamic user:wam_cpp_test_ss_no_length/0.
+:- dynamic user:wam_cpp_test_ss_no_before/0.
+:- dynamic user:wam_cpp_test_ss_sub_only/0.
+:- dynamic user:wam_cpp_test_ss_check_ok/0.
+:- dynamic user:wam_cpp_test_ss_check_bad/0.
+:- dynamic user:wam_cpp_test_ss_enum_find/0.
+
+user:wam_cpp_test_ss_extract      :- sub_string(hello, 1, 3, 1, S), S == ell.
+user:wam_cpp_test_ss_extract_pre  :- sub_string(hello, 0, 3, 2, S), S == hel.
+user:wam_cpp_test_ss_extract_suf  :- sub_string(hello, 2, 3, 0, S), S == llo.
+user:wam_cpp_test_ss_extract_full :- sub_string(hello, 0, 5, 0, S), S == hello.
+user:wam_cpp_test_ss_no_after     :- sub_string(hello, 1, 3, A, S), A == 1, S == ell.
+user:wam_cpp_test_ss_no_length    :- sub_string(hello, 1, L, 1, S), L == 3, S == ell.
+user:wam_cpp_test_ss_no_before    :- sub_string(hello, B, 3, 1, S), B == 1, S == ell.
+% Sub bound, one positional bound -- Length is implied by Sub,
+% the remaining positional comes from the sum constraint.
+user:wam_cpp_test_ss_sub_only     :- sub_string(hello, 1, L, A, ell), L == 3, A == 1.
+user:wam_cpp_test_ss_check_ok     :- sub_string(hello, 1, 3, 1, ell).
+user:wam_cpp_test_ss_check_bad    :- \+ sub_string(hello, 1, 3, 1, foo).
+% Enumeration backtracking: find all occurrences of single-char
+% substring b in abcabc -- positions 1 and 4.
+user:wam_cpp_test_ss_enum_find :-
+    findall(B, sub_string(abcabc, B, 1, _, b), Bs), Bs == [1, 4].
+
 % atom_number/2 fixtures. Cover forward (parse), reverse (render),
 % check (both bound), failure-on-bad-input, and the unbound case.
 :- dynamic user:wam_cpp_test_an_int_fwd/0.
@@ -4928,6 +4958,43 @@ test(cpp_e2e_bagof_setof, [condition(cpp_compiler_available)]) :-
 % atom_number/2 — bidirectional atom <-> number conversion. The
 % key behavior that distinguishes it from number_codes/2 is that
 % it FAILS (does not throw) on unparseable input.
+% sub_string/5 — SWI alias of sub_atom/5 that operates on strings.
+% On this runtime atoms and strings are unified as Atom-tagged
+% values, so we route both to the same dispatch_sub_atom. Covers
+% extraction, computed positional args, check mode, and the
+% enumeration backtracking path (via findall).
+test(cpp_e2e_sub_string,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_sub_string', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_ss_extract/0,
+                               user:wam_cpp_test_ss_extract_pre/0,
+                               user:wam_cpp_test_ss_extract_suf/0,
+                               user:wam_cpp_test_ss_extract_full/0,
+                               user:wam_cpp_test_ss_no_after/0,
+                               user:wam_cpp_test_ss_no_length/0,
+                               user:wam_cpp_test_ss_no_before/0,
+                               user:wam_cpp_test_ss_sub_only/0,
+                               user:wam_cpp_test_ss_check_ok/0,
+                               user:wam_cpp_test_ss_check_bad/0,
+                               user:wam_cpp_test_ss_enum_find/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_ss_extract/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_extract_pre/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_extract_suf/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_extract_full/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_no_after/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_no_length/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_no_before/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_sub_only/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_check_ok/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_check_bad/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_enum_find/0',    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
 test(cpp_e2e_atom_number,
      [condition(cpp_compiler_available)]) :-
     unique_cpp_tmp_dir('tmp_cpp_e2e_atom_number', TmpDir),
