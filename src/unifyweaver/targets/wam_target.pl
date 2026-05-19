@@ -244,15 +244,32 @@ format_switch_on_term(ConstEntries, StructEntries, ListLabel, IndexCode) :-
 
 %% build_second_arg_index(+Pred, +Arity, +Clauses, -IndexCode)
 %  When first-arg indexing fails (e.g., all variable first args),
-%  try indexing on the second argument instead.
+%  try indexing on the second argument instead. Mirrors the A1
+%  decision: all atomic → switch_on_constant_a2; all compound →
+%  switch_on_structure_a2; mixed atomic/compound → switch_on_term_a2.
+%  Any variable A2 disqualifies indexing entirely.
 build_second_arg_index(Pred, Arity, Clauses, IndexCode) :-
     classify_second_args(Clauses, Types),
     \+ member(variable, Types),
-    forall(member(T, Types), T = constant),
-    build_constant_index_on(Clauses, 2, 1, Pred, Arity, Entries),
-    Entries \= [],
-    format_index_entries(Entries, EntriesStr),
-    format(string(IndexCode), "    switch_on_constant_a2 ~w", [EntriesStr]).
+    (   forall(member(T, Types), T = constant)
+    ->  build_constant_index_on(Clauses, 2, 1, Pred, Arity, Entries),
+        Entries \= [],
+        format_index_entries(Entries, EntriesStr),
+        format(string(IndexCode), "    switch_on_constant_a2 ~w", [EntriesStr])
+    ;   forall(member(T, Types), T = structure),
+        \+ second_args_contain_list(Clauses)
+    ->  build_structure_index_on(Clauses, 2, 1, Pred, Arity, Entries),
+        Entries \= [],
+        format_index_entries(Entries, EntriesStr),
+        format(string(IndexCode), "    switch_on_structure_a2 ~w", [EntriesStr])
+    ;   % Mixed atomic/compound (possibly including lists) — emit
+        % switch_on_term_a2 with type-based dispatch, same shape as
+        % the A1 switch_on_term.
+        build_term_index_on(Clauses, 2, 1, Pred, Arity, Types,
+                            ConstEntries, StructEntries, ListLabel),
+        format_switch_on_term_a2(ConstEntries, StructEntries, ListLabel,
+                                 IndexCode)
+    ).
 
 classify_second_args([], []).
 classify_second_args([Head-_|Rest], [Type|RestTypes]) :-
@@ -260,11 +277,76 @@ classify_second_args([Head-_|Rest], [Type|RestTypes]) :-
     (   length(Args, L), L >= 2, nth1(2, Args, SecondArg)
     ->  (   var(SecondArg) -> Type = variable
         ;   atomic(SecondArg) -> Type = constant
+        ;   is_list_term(SecondArg) -> Type = structure
+        ;   compound(SecondArg) -> Type = structure
         ;   Type = variable
         )
     ;   Type = variable
     ),
     classify_second_args(Rest, RestTypes).
+
+second_args_contain_list([Head-_|_]) :-
+    Head =.. [_|Args],
+    nth1(2, Args, SecondArg),
+    is_list_term(SecondArg), !.
+second_args_contain_list([_|Rest]) :-
+    second_args_contain_list(Rest).
+
+build_structure_index_on([], _, _, _, _, []).
+build_structure_index_on([Head-_|Rest], ArgPos, I, Pred, Arity,
+                         [FN-Label|RestEntries]) :-
+    Head =.. [_|Args],
+    nth1(ArgPos, Args, ArgVal),
+    ArgVal =.. [F|SubArgs],
+    length(SubArgs, SArity),
+    format(atom(FN), "~w/~w", [F, SArity]),
+    (   I == 1 -> Label = default
+    ;   format(atom(Label), "L_~w_~w_~w", [Pred, Arity, I])
+    ),
+    NextI is I + 1,
+    build_structure_index_on(Rest, ArgPos, NextI, Pred, Arity, RestEntries).
+
+build_term_index_on([], _, _, _, _, _, [], [], none).
+build_term_index_on([Head-_|Rest], ArgPos, I, Pred, Arity,
+                    [Type|RestTypes],
+                    ConstEntries, StructEntries, ListLabel) :-
+    Head =.. [_|Args],
+    nth1(ArgPos, Args, ArgVal),
+    (   I == 1 -> Label = default
+    ;   format(atom(Label), "L_~w_~w_~w", [Pred, Arity, I])
+    ),
+    NextI is I + 1,
+    build_term_index_on(Rest, ArgPos, NextI, Pred, Arity, RestTypes,
+                        RestConst, RestStruct, RestListLabel),
+    (   Type = constant
+    ->  ConstEntries = [ArgVal-Label|RestConst],
+        StructEntries = RestStruct,
+        ListLabel = RestListLabel
+    ;   Type = structure,
+        is_list_term(ArgVal)
+    ->  ConstEntries = RestConst,
+        StructEntries = RestStruct,
+        ListLabel = Label
+    ;   Type = structure
+    ->  ArgVal =.. [F|SubArgs],
+        length(SubArgs, SArity),
+        format(atom(FN), "~w/~w", [F, SArity]),
+        ConstEntries = RestConst,
+        StructEntries = [FN-Label|RestStruct],
+        ListLabel = RestListLabel
+    ;   ConstEntries = RestConst,
+        StructEntries = RestStruct,
+        ListLabel = RestListLabel
+    ).
+
+format_switch_on_term_a2(ConstEntries, StructEntries, ListLabel, IndexCode) :-
+    length(ConstEntries, CLen),
+    length(StructEntries, SLen),
+    format_index_entries(ConstEntries, CStr),
+    format_index_entries(StructEntries, SStr),
+    format(string(IndexCode),
+           "    switch_on_term_a2 ~w ~w ~w ~w ~w",
+           [CLen, CStr, SLen, SStr, ListLabel]).
 
 build_constant_index_on([], _, _, _, _, []).
 build_constant_index_on([Head-_|Rest], ArgPos, I, Pred, Arity, [Val-Label|RestEntries]) :-

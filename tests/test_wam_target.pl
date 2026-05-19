@@ -187,6 +187,41 @@ aggsubs_count(S, Sub, N) :-
     findall(_, sub_string(S, _, _, _, Sub), Occurrences),
     length(Occurrences, N).
 
+%% A2 indexing: when A1 is variable in every clause, the compiler
+%% falls back to A2-based indexing. Three flavours, mirroring A1:
+%%   all constants  → switch_on_constant_a2
+%%   all compounds  → switch_on_structure_a2 (no lists)
+%%   mixed types    → switch_on_term_a2
+:- dynamic test_a2_const/2, test_a2_struct/2, test_a2_term/2.
+test_a2_const(_, alpha).
+test_a2_const(_, beta).
+test_a2_const(_, gamma).
+
+test_a2_struct(_, foo(_)).
+test_a2_struct(_, bar(_, _)).
+test_a2_struct(_, baz(_, _, _)).
+
+test_a2_term(_, t).
+test_a2_term(_, t(_, _)).
+test_a2_term(_, []).
+test_a2_term(_, [_|_]).
+
+test_wam_a2_indexing :-
+    Test = 'WAM: A2-arg indexing emits constant/structure/term variants',
+    (   wam_target:compile_predicate_to_wam(user:test_a2_const/2, [], C1),
+        wam_target:compile_predicate_to_wam(user:test_a2_struct/2, [], C2),
+        wam_target:compile_predicate_to_wam(user:test_a2_term/2, [], C3),
+        atom_string(C1, S1), atom_string(C2, S2), atom_string(C3, S3),
+        sub_string(S1, _, _, _, 'switch_on_constant_a2'),
+        sub_string(S2, _, _, _, 'switch_on_structure_a2'),
+        sub_string(S3, _, _, _, 'switch_on_term_a2'),
+        % Term-form should not be a degenerate structure/constant emit.
+        \+ sub_string(S3, _, _, _, 'switch_on_structure_a2'),
+        \+ sub_string(S3, _, _, _, 'switch_on_constant_a2 ')
+    ->  pass(Test)
+    ;   fail_test(Test, 'A2 indexing did not emit the expected pseudo-instruction')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -201,7 +236,8 @@ run_tests :-
     test_wam_compound_head,
     test_wam_module,
     test_wam_multi_clause_findall_emits_allocate,
-    
+    test_wam_a2_indexing,
+
     format('~n========================================~n'),
     (   test_failed
     ->  format('Some tests FAILED~n'),

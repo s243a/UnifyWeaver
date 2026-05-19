@@ -2969,6 +2969,57 @@ user:wam_cpp_test_a2_shared_key_backtracks :-
     findall(T, wam_cpp_a2tag(_, T, red), L),
     L = [error, fatal].
 
+% A2 = all-compound (different functors). Exercises switch_on_structure_a2.
+% A1 is variable in every clause, so first-arg indexing is skipped.
+:- dynamic user:wam_cpp_a2struct/2.
+:- dynamic user:wam_cpp_test_a2_structure_direct/0.
+:- dynamic user:wam_cpp_test_a2_structure_miss/0.
+:- dynamic user:wam_cpp_test_a2_structure_unbound/0.
+
+user:wam_cpp_a2struct(_, foo(red)).
+user:wam_cpp_a2struct(_, bar(green, leaf)).
+user:wam_cpp_a2struct(_, baz(blue, 1, ok)).
+
+user:wam_cpp_test_a2_structure_direct :-
+    wam_cpp_a2struct(any, foo(red)),
+    wam_cpp_a2struct(any, bar(green, leaf)),
+    wam_cpp_a2struct(any, baz(blue, 1, ok)).
+user:wam_cpp_test_a2_structure_miss :-
+    % qux/1 is not in the table; bound A2 with no functor match
+    % fails fast at the switch.
+    \+ wam_cpp_a2struct(any, qux(1)),
+    % Wrong arity for foo also fails (foo/2 doesn't exist).
+    \+ wam_cpp_a2struct(any, foo(1, 2)).
+user:wam_cpp_test_a2_structure_unbound :-
+    % Unbound A2 → switch falls through to chain; findall sees all.
+    findall(F, ( wam_cpp_a2struct(_, S), functor(S, F, _) ), L),
+    L = [foo, bar, baz].
+
+% A2 = mixed atom + compound. Exercises switch_on_term_a2 — the most
+% common shape (atom for "empty" plus compound for non-empty). Mirrors
+% the assoc tree-recur predicate that's now indexed by this opcode.
+:- dynamic user:wam_cpp_a2term/3.
+:- dynamic user:wam_cpp_test_a2_term_atom_clause/0.
+:- dynamic user:wam_cpp_test_a2_term_compound_clause/0.
+:- dynamic user:wam_cpp_test_a2_term_list_clauses/0.
+:- dynamic user:wam_cpp_test_a2_term_unbound/0.
+
+user:wam_cpp_a2term(_, empty,     leaf).
+user:wam_cpp_a2term(_, node(_, _), branch).
+user:wam_cpp_a2term(_, [],        nil_list).
+user:wam_cpp_a2term(_, [_|_],     cons_list).
+
+user:wam_cpp_test_a2_term_atom_clause :-
+    wam_cpp_a2term(any, empty, R), R = leaf.
+user:wam_cpp_test_a2_term_compound_clause :-
+    wam_cpp_a2term(any, node(1, 2), R), R = branch.
+user:wam_cpp_test_a2_term_list_clauses :-
+    wam_cpp_a2term(any, [],         R1), R1 = nil_list,
+    wam_cpp_a2term(any, [a, b, c],  R2), R2 = cons_list.
+user:wam_cpp_test_a2_term_unbound :-
+    findall(R, wam_cpp_a2term(_, _, R), L),
+    L = [leaf, branch, nil_list, cons_list].
+
 user:wam_cpp_test_write :- write(hello), nl.
 % Y-reg isolation: both helpers use Y1/Y2 internally. Caller relies on
 % preserved Y1 across the two calls.
@@ -8785,6 +8836,38 @@ test(cpp_e2e_switch_on_constant_a2, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_a2_no_match_fails/0',        [], true),
           run_query(BinPath, 'wam_cpp_test_a2_unbound_enumerates/0',    [], true),
           run_query(BinPath, 'wam_cpp_test_a2_shared_key_backtracks/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% A2 structure + term indexing. Predicates whose A1 is variable in
+% every clause currently get NO A1 indexing (correct: a variable
+% head matches anything). Previously they also got no A2 indexing
+% unless A2 was all atomic constants. With switch_on_structure_a2
+% and switch_on_term_a2, multi-clause predicates with compound or
+% mixed A2 also get O(1) dispatch.
+test(cpp_e2e_switch_on_structure_and_term_a2,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_sta2', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_a2struct/2,
+                               user:wam_cpp_test_a2_structure_direct/0,
+                               user:wam_cpp_test_a2_structure_miss/0,
+                               user:wam_cpp_test_a2_structure_unbound/0,
+                               user:wam_cpp_a2term/3,
+                               user:wam_cpp_test_a2_term_atom_clause/0,
+                               user:wam_cpp_test_a2_term_compound_clause/0,
+                               user:wam_cpp_test_a2_term_list_clauses/0,
+                               user:wam_cpp_test_a2_term_unbound/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_a2_structure_direct/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_structure_miss/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_structure_unbound/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_term_atom_clause/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_term_compound_clause/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_term_list_clauses/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_term_unbound/0',         [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
