@@ -1178,6 +1178,23 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return false
 		}
 		return vm.Unify(arg2, &Integer{Val: int64(len([]rune(atom.Name)))})
+	case "char_code/2":
+		charVal := vm.deref(arg1)
+		codeVal := vm.deref(arg2)
+		if atom, ok := charVal.(*Atom); ok {
+			runes := []rune(atom.Name)
+			if len(runes) != 1 {
+				return false
+			}
+			return vm.Unify(arg2, &Integer{Val: int64(runes[0])})
+		}
+		if code, ok := codeVal.(*Integer); ok {
+			if code.Val < 0 || code.Val > 65535 {
+				return false
+			}
+			return vm.Unify(arg1, internAtom(string(rune(code.Val))))
+		}
+		return false
 
 	case "var/1": return isUnbound(vm.deref(arg1))
 	case "nonvar/1": return !isUnbound(vm.deref(arg1))
