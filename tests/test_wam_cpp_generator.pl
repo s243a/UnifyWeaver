@@ -2637,6 +2637,47 @@ user:wam_cpp_test_keysort_then_values :-
     pairs_values(Sorted, Vs),
     Vs = [10, 20, 30].
 
+% library(lists) cleanup — same_length, proper_length,
+% list_to_set, flatten.
+:- dynamic user:wam_cpp_test_same_length_eq/0.
+:- dynamic user:wam_cpp_test_same_length_neq/0.
+:- dynamic user:wam_cpp_test_same_length_gen/0.
+:- dynamic user:wam_cpp_test_proper_length_3/0.
+:- dynamic user:wam_cpp_test_proper_length_0/0.
+:- dynamic user:wam_cpp_test_proper_length_partial/0.
+:- dynamic user:wam_cpp_test_proper_length_atom/0.
+:- dynamic user:wam_cpp_test_list_to_set_dup/0.
+:- dynamic user:wam_cpp_test_list_to_set_empty/0.
+:- dynamic user:wam_cpp_test_list_to_set_one/0.
+:- dynamic user:wam_cpp_test_flatten_nested/0.
+:- dynamic user:wam_cpp_test_flatten_empty/0.
+:- dynamic user:wam_cpp_test_flatten_atom/0.
+:- dynamic user:wam_cpp_test_flatten_empties/0.
+:- dynamic user:wam_cpp_test_flatten_mixed/0.
+
+user:wam_cpp_test_same_length_eq  :- same_length([a,b,c], [1,2,3]).
+user:wam_cpp_test_same_length_neq :- \+ same_length([a,b], [1,2,3]).
+% Mode (+, ?) — generate a fresh list of the right length.
+user:wam_cpp_test_same_length_gen :- same_length([a,b,c], L), L = [_,_,_].
+user:wam_cpp_test_proper_length_3 :- proper_length([a,b,c], 3).
+user:wam_cpp_test_proper_length_0 :- proper_length([], 0).
+% Partial list with unbound tail must FAIL — this is the whole
+% point of proper_length vs length.
+user:wam_cpp_test_proper_length_partial :- \+ proper_length([a,b|_], _).
+% Non-list atom must FAIL.
+user:wam_cpp_test_proper_length_atom :- \+ proper_length(foo, _).
+% Duplicates preserve first-occurrence order: a comes before b.
+user:wam_cpp_test_list_to_set_dup :- list_to_set([a,b,c,a,b,d,a], [a,b,c,d]).
+user:wam_cpp_test_list_to_set_empty :- list_to_set([], []).
+user:wam_cpp_test_list_to_set_one   :- list_to_set([x], [x]).
+user:wam_cpp_test_flatten_nested :- flatten([1,[2,[3,4]],[5]], [1,2,3,4,5]).
+user:wam_cpp_test_flatten_empty  :- flatten([], []).
+% Non-list value gets wrapped as a singleton.
+user:wam_cpp_test_flatten_atom   :- flatten(foo, [foo]).
+% Nested empties collapse to one empty.
+user:wam_cpp_test_flatten_empties :- flatten([[],[]], []).
+user:wam_cpp_test_flatten_mixed   :- flatten([a,[b],c], [a,b,c]).
+
 % library(lists) reductions — memberchk + 5 numeric/term
 % reductions. All asserted under the lists_extra feature.
 :- dynamic user:wam_cpp_test_memberchk_hit/0.
@@ -8191,6 +8232,50 @@ test(cpp_e2e_keysort_then_values,
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_keysort_then_values/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% library(lists) cleanup — same_length/2, proper_length/2,
+% list_to_set/2, flatten/2. The remaining commonly-used
+% library(lists) helpers after the reductions batch.
+test(cpp_e2e_lists_cleanup,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lists_cl', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_same_length_eq/0,
+                               user:wam_cpp_test_same_length_neq/0,
+                               user:wam_cpp_test_same_length_gen/0,
+                               user:wam_cpp_test_proper_length_3/0,
+                               user:wam_cpp_test_proper_length_0/0,
+                               user:wam_cpp_test_proper_length_partial/0,
+                               user:wam_cpp_test_proper_length_atom/0,
+                               user:wam_cpp_test_list_to_set_dup/0,
+                               user:wam_cpp_test_list_to_set_empty/0,
+                               user:wam_cpp_test_list_to_set_one/0,
+                               user:wam_cpp_test_flatten_nested/0,
+                               user:wam_cpp_test_flatten_empty/0,
+                               user:wam_cpp_test_flatten_atom/0,
+                               user:wam_cpp_test_flatten_empties/0,
+                               user:wam_cpp_test_flatten_mixed/0],
+                              [emit_main(true), include_stdlib(lists_extra)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_same_length_eq/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_same_length_neq/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_same_length_gen/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_proper_length_3/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_proper_length_0/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_proper_length_partial/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_proper_length_atom/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_list_to_set_dup/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_list_to_set_empty/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_list_to_set_one/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_flatten_nested/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_flatten_empty/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_flatten_atom/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_flatten_empties/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_flatten_mixed/0',          [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
