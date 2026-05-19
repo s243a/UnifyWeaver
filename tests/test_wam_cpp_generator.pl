@@ -242,6 +242,15 @@
 :- dynamic user:wam_cpp_test_assoc_avl_balance_sorted/0.
 :- dynamic user:wam_cpp_test_assoc_avl_balance_descending/0.
 :- dynamic user:wam_cpp_test_assoc_avl_balance_zigzag/0.
+:- dynamic user:wam_cpp_test_assoc_min/0.
+:- dynamic user:wam_cpp_test_assoc_max/0.
+:- dynamic user:wam_cpp_test_assoc_min_after_inserts/0.
+:- dynamic user:wam_cpp_test_assoc_del_leaf/0.
+:- dynamic user:wam_cpp_test_assoc_del_root/0.
+:- dynamic user:wam_cpp_test_assoc_del_missing_fails/0.
+:- dynamic user:wam_cpp_test_assoc_del_all_back_to_empty/0.
+:- dynamic user:wam_cpp_test_assoc_del_rebalance_sorted/0.
+:- dynamic user:wam_cpp_test_assoc_del_returns_value/0.
 :- dynamic user:wam_cpp_test_get_time_positive/0.
 :- dynamic user:wam_cpp_test_stamp_utc/0.
 :- dynamic user:wam_cpp_test_stamp_subsec/0.
@@ -644,6 +653,102 @@ user:wam_cpp_test_assoc_avl_balance_zigzag :-
     get_assoc(7,  A15, v7),
     get_assoc(15, A15, v15),
     assoc_to_keys(A15, [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]).
+
+% min_assoc / max_assoc / del_assoc — round out the assoc API.
+user:wam_cpp_test_assoc_min :-
+    empty_assoc(A0),
+    put_assoc(5, A0, v5, A1),
+    put_assoc(1, A1, v1, A2),
+    put_assoc(9, A2, v9, A3),
+    min_assoc(A3, 1, v1).
+user:wam_cpp_test_assoc_max :-
+    empty_assoc(A0),
+    put_assoc(5, A0, v5, A1),
+    put_assoc(1, A1, v1, A2),
+    put_assoc(9, A2, v9, A3),
+    max_assoc(A3, 9, v9).
+user:wam_cpp_test_assoc_min_after_inserts :-
+    % Inserting in zigzag order — min stays the leftmost regardless
+    % of rotations.
+    empty_assoc(A0),
+    put_assoc(8,  A0, v8,  A1),
+    put_assoc(4,  A1, v4,  A2),
+    put_assoc(12, A2, v12, A3),
+    put_assoc(2,  A3, v2,  A4),
+    put_assoc(10, A4, v10, A5),
+    put_assoc(1,  A5, v1,  A6),
+    min_assoc(A6, 1, v1),
+    max_assoc(A6, 12, v12).
+user:wam_cpp_test_assoc_del_leaf :-
+    % Build a tree with a leaf, delete it.
+    empty_assoc(A0),
+    put_assoc(2, A0, v2, A1),
+    put_assoc(1, A1, v1, A2),
+    put_assoc(3, A2, v3, A3),
+    del_assoc(1, A3, v1, A4),
+    \+ get_assoc(1, A4, _),
+    get_assoc(2, A4, v2),
+    get_assoc(3, A4, v3).
+user:wam_cpp_test_assoc_del_root :-
+    % Delete the root — exercises the "both children non-empty" path
+    % that pulls the in-order successor.
+    empty_assoc(A0),
+    put_assoc(2, A0, v2, A1),
+    put_assoc(1, A1, v1, A2),
+    put_assoc(3, A2, v3, A3),
+    del_assoc(2, A3, v2, A4),
+    \+ get_assoc(2, A4, _),
+    get_assoc(1, A4, v1),
+    get_assoc(3, A4, v3).
+user:wam_cpp_test_assoc_del_missing_fails :-
+    empty_assoc(A0),
+    put_assoc(a, A0, 1, A1),
+    \+ del_assoc(z, A1, _, _).
+user:wam_cpp_test_assoc_del_all_back_to_empty :-
+    empty_assoc(A0),
+    put_assoc(1, A0, v1, A1),
+    put_assoc(2, A1, v2, A2),
+    put_assoc(3, A2, v3, A3),
+    put_assoc(4, A3, v4, A4),
+    put_assoc(5, A4, v5, A5),
+    del_assoc(3, A5, _, B1),
+    del_assoc(1, B1, _, B2),
+    del_assoc(5, B2, _, B3),
+    del_assoc(2, B3, _, B4),
+    del_assoc(4, B4, _, B5),
+    B5 == t.
+user:wam_cpp_test_assoc_del_rebalance_sorted :-
+    % Insert 16 keys ascending (max-imbalance shape), then delete
+    % the first half. Tree must stay balanced (depth bounded) and
+    % retain the remaining keys.
+    empty_assoc(A0),
+    put_assoc(1,  A0,  _, A1),  put_assoc(2,  A1,  _, A2),
+    put_assoc(3,  A2,  _, A3),  put_assoc(4,  A3,  _, A4),
+    put_assoc(5,  A4,  _, A5),  put_assoc(6,  A5,  _, A6),
+    put_assoc(7,  A6,  _, A7),  put_assoc(8,  A7,  _, A8),
+    put_assoc(9,  A8,  _, A9),  put_assoc(10, A9,  _, A10),
+    put_assoc(11, A10, _, A11), put_assoc(12, A11, _, A12),
+    put_assoc(13, A12, _, A13), put_assoc(14, A13, _, A14),
+    put_assoc(15, A14, _, A15), put_assoc(16, A15, _, A16),
+    del_assoc(1, A16, _, B1),
+    del_assoc(2, B1,  _, B2),
+    del_assoc(3, B2,  _, B3),
+    del_assoc(4, B3,  _, B4),
+    del_assoc(5, B4,  _, B5),
+    del_assoc(6, B5,  _, B6),
+    del_assoc(7, B6,  _, B7),
+    del_assoc(8, B7,  _, B8),
+    wam_cpp_assoc_depth(B8, D),
+    D =< 4,
+    assoc_to_keys(B8, [9, 10, 11, 12, 13, 14, 15, 16]).
+user:wam_cpp_test_assoc_del_returns_value :-
+    % del_assoc/4 returns the deleted value as its 3rd arg.
+    empty_assoc(A0),
+    put_assoc(name,   A0, alice,  A1),
+    put_assoc(age,    A1, 30,     A2),
+    put_assoc(role,   A2, admin,  A3),
+    del_assoc(age, A3, V, _),
+    V = 30.
 % Date/time: get_time/1 (Float seconds since epoch),
 % stamp_date_time/3 (decompose + TZ), date_time_stamp/2 (compose),
 % format_time/3 (strftime-style atom output). Tests use the canonical
@@ -4020,7 +4125,16 @@ test(cpp_e2e_assoc_library, [condition(cpp_compiler_available)]) :-
                                user:wam_cpp_assoc_depth/2,
                                user:wam_cpp_test_assoc_avl_balance_sorted/0,
                                user:wam_cpp_test_assoc_avl_balance_descending/0,
-                               user:wam_cpp_test_assoc_avl_balance_zigzag/0],
+                               user:wam_cpp_test_assoc_avl_balance_zigzag/0,
+                               user:wam_cpp_test_assoc_min/0,
+                               user:wam_cpp_test_assoc_max/0,
+                               user:wam_cpp_test_assoc_min_after_inserts/0,
+                               user:wam_cpp_test_assoc_del_leaf/0,
+                               user:wam_cpp_test_assoc_del_root/0,
+                               user:wam_cpp_test_assoc_del_missing_fails/0,
+                               user:wam_cpp_test_assoc_del_all_back_to_empty/0,
+                               user:wam_cpp_test_assoc_del_rebalance_sorted/0,
+                               user:wam_cpp_test_assoc_del_returns_value/0],
                               [emit_main(true), include_stdlib(assoc)],
                               TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
@@ -4034,7 +4148,16 @@ test(cpp_e2e_assoc_library, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_assoc_compound_keys/0',          [], true),
           run_query(BinPath, 'wam_cpp_test_assoc_avl_balance_sorted/0',     [], true),
           run_query(BinPath, 'wam_cpp_test_assoc_avl_balance_descending/0', [], true),
-          run_query(BinPath, 'wam_cpp_test_assoc_avl_balance_zigzag/0',     [], true)
+          run_query(BinPath, 'wam_cpp_test_assoc_avl_balance_zigzag/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_min/0',                    [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_max/0',                    [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_min_after_inserts/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_leaf/0',               [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_root/0',               [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_missing_fails/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_all_back_to_empty/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_rebalance_sorted/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_returns_value/0',      [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
