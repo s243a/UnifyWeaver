@@ -21,6 +21,7 @@
 :- dynamic user:test_atom_number_builtin/0.
 :- dynamic user:test_atom_case_builtin/0.
 :- dynamic user:test_atom_concat_builtin/0.
+:- dynamic user:test_atom_string_length_builtin/0.
 :- dynamic user:test_set_aggregate/0.
 :- dynamic user:test_unify_builtin/0.
 :- dynamic user:test_neg_fact/1.
@@ -199,6 +200,20 @@ test(builtins_execution) :-
                 \+ atom_concat(42, o, _),
                 \+ atom_concat(fo, 42, _)
             )),
+          assertz(user:test_atom_string_length_builtin :-
+            (   atom_length(foo, AL),
+                AL =:= 3,
+                atom_length(foo, 3),
+                \+ atom_length(foo, 2),
+                string_length(bar, SL),
+                SL =:= 3,
+                string_length(bar, 3),
+                \+ string_length(bar, 2),
+                \+ atom_length(_, _),
+                \+ string_length(_, _),
+                \+ atom_length(42, _),
+                \+ string_length(42, _)
+            )),
           assertz(user:test_set_aggregate :-
             (   aggregate_all(set(X), member(X, [a,b,a]), S),
                 length(S, 2),
@@ -236,6 +251,7 @@ test(builtins_execution) :-
           retractall(user:test_atom_number_builtin),
           retractall(user:test_atom_case_builtin),
           retractall(user:test_atom_concat_builtin),
+          retractall(user:test_atom_string_length_builtin),
           retractall(user:test_set_aggregate),
           retractall(user:test_unify_builtin),
           retractall(user:test_neg_fact(_)),
@@ -245,7 +261,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -297,6 +313,8 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "upcase_atom/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "downcase_atom/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "atom_concat/3"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "atom_length/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "string_length/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "\\\\+/1"')),
     assertion(sub_string(LibCode, _, _, _, 'AggType: "set"')),
 
@@ -446,6 +464,14 @@ func main() {
 		fmt.Println("ATOM_CONCAT_FAILURE")
 	}
 
+	atomStringLengthVM := wam.NewWamState(wam.Test_atom_string_length_builtinCode, wam.Test_atom_string_length_builtinLabels)
+	atomStringLengthVM.PC = wam.Test_atom_string_length_builtinStartPC
+	if atomStringLengthVM.Run() {
+		fmt.Println("ATOM_STRING_LENGTH_SUCCESS")
+	} else {
+		fmt.Println("ATOM_STRING_LENGTH_FAILURE")
+	}
+
 	setVM := wam.NewWamState(wam.Test_set_aggregateCode, wam.Test_set_aggregateLabels)
 	setVM.PC = wam.Test_set_aggregateStartPC
 	if setVM.Run() {
@@ -511,6 +537,7 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "ATOM_NUMBER_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_CASE_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_CONCAT_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "ATOM_STRING_LENGTH_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SET_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "UNIFY_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "NEG_SUCCESS")),

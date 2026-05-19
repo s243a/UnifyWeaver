@@ -14,7 +14,7 @@ current cross-target builtin/runtime baseline.
 | Structural builtins | `member/2`, `memberchk/2`, `select/3`, `delete/3`, `length/2`, `append/3`, `reverse/2`, `last/2`, `nth0/3`, `nth1/3`, `numlist/3`, `sort/2`, `msort/2` | `member/2`, `memberchk/2`, `length/2`; Rust `append/3` is explicitly unimplemented. Clojure/R/C++ also cover richer list builtins including `select/3`, `delete/3`, `reverse/2`, `last/2`, `nth0/3`, `nth1/3`, `numlist/3`, `sort/2`, and `msort/2` | Present for current baseline structural checks, with expanded cross-target list builtins |
 | Type builtins | `var/1`, `nonvar/1`, `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `atomic/1`, `is_list/1` | Includes `is_list/1` in the current baseline | Present for current baseline type checks |
 | Arithmetic builtins | `is/2`, `succ/2` | Arithmetic evaluation plus sibling-target `succ/2` coverage in Clojure and Elixir | Present for current baseline arithmetic checks, with expanded successor coverage |
-| Atom/text conversion | `atom_number/2`, `upcase_atom/2`, `downcase_atom/2`, `atom_concat/3` | Clojure direct builtin surface includes bidirectional `atom_number/2`, atom case conversion, and deterministic atom concatenation | Present for current atom-number, atom-case, and atom-concat checks |
+| Atom/text conversion | `atom_number/2`, `upcase_atom/2`, `downcase_atom/2`, `atom_concat/3`, `atom_length/2`, `string_length/2` | Clojure direct builtin surface includes bidirectional `atom_number/2`, atom case conversion, deterministic atom concatenation, and text length checks | Present for current atom-number, atom-case, atom-concat, and text-length checks |
 | Comparison builtins | `==/2`, `\==/2`, `\=/2`, `=:=/2`, `=\=/2`, `</2`, `>/2`, `=</2`, `>=/2`, `@</2`, `@=</2`, `@>/2`, `@>=/2`, `compare/3` | Includes `=</2`; Haskell mode analysis and Clojure lowering also cover term-order comparisons | Present for current baseline comparisons, with expanded term-order coverage |
 | Unification builtin | `=/2`, `\=/2` | `=/2`, `\=/2` | Present |
 | Term inspection | `functor/3`, `arg/3` | `functor/3`, `arg/3` | Present |
@@ -80,6 +80,10 @@ current cross-target builtin/runtime baseline.
   E2E test for output binding, bound-output success, mismatch failure, unbound
   input failure, and non-atom input failure, matching the current Clojure
   atom-concat surface.
+- Deterministic `atom_length/2` and `string_length/2` are now covered by the
+  generated Go WAM builtin E2E test for length binding, bound-length success,
+  mismatch failure, unbound-source failure, and non-atom source failure,
+  matching the current Clojure text-length surface.
 - Go WAM choice points now have explicit generated-runtime coverage for normal
   clause retries, indexed alternatives, foreign stream retries, indexed atom
   fact streams, and `member/2` builtin retries.
