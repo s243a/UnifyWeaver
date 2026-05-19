@@ -269,22 +269,127 @@ a ceiling:
 
 Each step is independently shippable.
 
-## Open questions
+## Resolved decisions (from PR #2319 review)
 
-1. **Empty-DB semantics.** If the LMDB file exists but contains no
-   rows for the configured predicate, should that succeed silently or
-   surface a warning? C target: silent. Proposing: silent for v1,
-   parity with C.
-2. **Multiple predicates, one env.** `db_name` lets one env hold
-   multiple named sub-DBs. v1 should support this (it's a one-liner)
-   but I want to confirm the test fixture story before committing.
-3. **Reload on re-call.** If `init_runtime` is called twice in the
-   same process, do we re-open the LMDB env and reload? Or
-   short-circuit on already-loaded? Proposing: idempotent — second
-   call is a no-op. Document explicitly.
-4. **liblmdb version floor.** LMDB has been stable since 0.9.x
-   (~2011). v1 targets any 0.9.16+ (the version in Ubuntu 18.04).
-   Reasonable?
+These were "open questions" in the initial design; the responses
+below capture the resolution and the rationale.
+
+### Schema must be encoded in the DB
+
+LMDB itself has no schema — keys and values are bag-of-bytes. The
+v1 design needs to encode column names somewhere so the file is
+self-describing. Without that, an arity-2 LMDB file looks identical
+to any other and there's no way to ask "what predicate is this for,
+and what does each column mean?"
+
+**v1 convention:** a `__meta__` sub-DB (one per env, named exactly)
+with reserved ASCII keys. Required entries:
+
+| Key | Value | Purpose |
+|---|---|---|
+| `schema_version` | `1` (ASCII) | Bumped on incompatible layout change |
+| `predicate` | `edge/2` (ASCII) | Functor/arity this DB backs |
+| `columns` | `child,parent` (ASCII) | Comma-separated column names matching the arity |
+
+A v1 reader validates `schema_version == 1`, that `predicate`
+matches what the codegen registered, and that `columns` parses
+into exactly `arity` comma-separated names. Mismatch is a
+load-time error, not a silent skip — the LMDB file is the source
+of truth and a wrong schema is a user mistake worth surfacing.
+
+For `db_name(Atom)` configs, each named sub-DB carries its own
+`__meta__` keys (we use prefix `<db_name>:` on the meta keys, e.g.
+`items:predicate`, since LMDB doesn't support a sub-DB-of-a-sub-DB).
+
+### Duplicate-row ordering needs explicit semantics
+
+Graph applications (the current motivation) have unique nodes, so
+duplicate keys aren't an issue and any iteration order works. But
+once LMDB backs general predicates with non-unique first args, the
+order in which clauses are tried matters — Prolog programs depend
+on it for cut behavior and "first-solution" patterns.
+
+**v1 position:** for graph use cases we accept LMDB's natural sort
+order (keys sorted lexicographically; values in insertion order
+when `MDB_APPEND` was used during ingest). Document that this
+**is** the contract and that users requiring strict insertion order
+across re-ingests should either (a) include an explicit order
+column in the schema or (b) wait for v2.
+
+**v2 sketch:** support an explicit `order_by(Column)` sub-option:
+
+```prolog
+source(rule/3, lmdb('rules.mdb', [columns([id, lhs, rhs]),
+                                    order_by(id)]))
+```
+
+The codegen would emit a load-time sort by the named column before
+populating the dynamic_db, giving deterministic clause order
+independent of ingestion path. Strictly v2 — out of scope for v1.
+
+### Idempotent re-call
+
+If `init_runtime` runs twice in the same process, the second call
+short-circuits for any already-loaded LMDB source. Tracked via a
+`loaded_lmdb_sources` set keyed on `(env_path, db_name)`.
+
+Why idempotent rather than reload: in practice the only reason
+`init_runtime` runs twice is test harness re-entry, where reload
+would double-populate the dynamic_db and break unification. A
+real "reload from disk" use case would want an explicit
+`cpp_reload_lmdb_fact_source(state, key)` primitive, not silent
+re-firing of init.
+
+### liblmdb version floor
+
+v1 targets liblmdb **0.9.16+**. Released 2014; ships in Ubuntu
+18.04, Debian Buster, RHEL 8, macOS Homebrew. No known API breaks
+since. The CMake feature detection accepts any 0.9.x library that
+exposes `mdb_env_create`, `mdb_env_set_maxdbs`, `mdb_dbi_open`,
+`mdb_cursor_get` — the four functions v1 actually calls.
+
+## Future work: memory-mapped arrays as a parallel backend
+
+For the eager-load v1 path, an LMDB file and a memory-mapped flat
+array end up in roughly the same place: every row gets read into
+the in-memory `dynamic_db` at startup. LMDB pays B-tree overhead
+for ordered key lookups we don't use in eager mode; a flat
+memory-mapped array is likely faster for that case.
+
+**C# already does this.** `csharp_query_runtime/QueryRuntime.cs`
+defines `MmapArrayRelationArtifactManifest` (line 403) and
+`MmapArrayRelationArtifactProvider` (line 606), with format ID
+`unifyweaver.mmap_array_relation.v1` (line 405) and physical
+backend label `mmap_array` (line 413). It's the only target with
+production MMA support today, so it sets the precedent.
+
+**v3 proposal for C++:** add `mmap_array(Path)` as an alternative
+spec under `cpp_fact_sources`, sibling to `lmdb(Path)`:
+
+```prolog
+cpp_fact_sources([
+    source(edge/2,  lmdb('graph.mdb')),
+    source(other/2, mmap_array('other.bin'))
+])
+```
+
+Same FactSource abstraction (`stream_all` + future `lookup_by_arg1`),
+different concrete implementation. For arity-2 atom data the MMA
+file format is just `[uint32 key_len][key bytes][uint32 val_len][val
+bytes]` records back-to-back, mmap'd with `MAP_PRIVATE`.
+
+Long-term both backends coexist:
+
+- **MMA** wins for eager-load, sequential-scan, write-once
+  workloads — the dominant pattern today.
+- **LMDB** wins when v1.5's lazy cursor probing lands and partial
+  loads start mattering, when multiple processes need to share the
+  file, or when interop with Rust/Haskell-built LMDB files matters
+  (v2).
+
+The C# design should be the C++ design's reference for the MMA
+format, so any future MMA work cross-pollinates between targets
+(and possibly lets one target consume another's artifacts).
 
 ## Cross-references
 
@@ -299,3 +404,5 @@ Each step is independently shippable.
 - Roadmap context: `docs/WAM_TARGET_ROADMAP.md:106-114`
 - R target encoding spec (TAB-encoded `tag:payload`, for v2
   reference): `docs/WAM_R_TARGET.md:340-426`
+- C# memory-mapped array precedent (v3 reference):
+  `src/unifyweaver/targets/csharp_query_runtime/QueryRuntime.cs:403, 606`
