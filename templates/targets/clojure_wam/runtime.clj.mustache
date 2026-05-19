@@ -1133,6 +1133,15 @@
   (or (atom-text state value)
       (number-text value)))
 
+(defn atomic-concat-list-term [state texts]
+  (loop [s state
+         remaining texts
+         out []]
+    (if-let [text (first remaining)]
+      (let [[next-state atom] (intern-text-atom s text)]
+        (recur next-state (rest remaining) (conj out atom)))
+      [s (list->term (:intern-context s) out)])))
+
 (defn apply-atomic-list-concat-solution [state pred]
   (let [list-value (deref-value (:bindings state)
                                 (or (reg-get-raw state "A1") ::unbound))
@@ -1144,8 +1153,10 @@
         items (proper-list-items state list-value)
         separator-text (if (= pred "atomic_list_concat/3")
                          (atomic-concat-text state separator-value)
-                         "")]
-    (if (and (some? items) (some? separator-text))
+                         "")
+        out-text (atomic-concat-text state out)]
+    (cond
+      (and (some? items) (some? separator-text))
       (let [texts (map #(atomic-concat-text state %) items)]
         (if (every? some? texts)
           (let [joined (str/join separator-text texts)
@@ -1154,6 +1165,22 @@
               (advance unified-state)
               (backtrack state)))
           (backtrack state)))
+
+      (and (= pred "atomic_list_concat/3")
+           (or (= list-value ::unbound) (logic-var? list-value))
+           (some? separator-text)
+           (not= "" separator-text)
+           (some? out-text))
+      (let [segments (str/split out-text
+                                (re-pattern (java.util.regex.Pattern/quote separator-text))
+                                -1)
+            [next-state list-term] (atomic-concat-list-term state segments)
+            [ok unified-state] (unify-values next-state list-value list-term)]
+        (if ok
+          (advance unified-state)
+          (backtrack state)))
+
+      :else
       (backtrack state))))
 
 (defn char-code-text [state value]
