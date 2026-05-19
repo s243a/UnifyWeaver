@@ -91,6 +91,37 @@ Scaling matches expectations:
 | 10   | 2972          |  9578           |  3.2×   |
 | 100  | 3287          | 64840           | 19.7×   |
 
+## Hash-based const_table
+
+The first version of the runtime used a linear scan of the
+`const_table` vector. At N=100 that was already fast (~3 μs/call
+is mostly the recursive Prolog loop overhead, not the switch
+itself), but at N=500 the scan cost became visible: `idx_last`
+rose to ~4.7 μs vs ~3.4 μs for `idx_first` — a clear ~1.3 μs of
+"scanning 500 entries to find the matching one" cost.
+
+The follow-up replaced the scan with a parallel
+`std::unordered_map<Value, std::size_t>` built once in the
+factory. `try_emplace` gives first-insert-wins semantics, matching
+the previous behaviour when the WAM compiler emits duplicate keys.
+
+Before / after at N=500 (20,000 iters per cell):
+
+| metric         | linear scan | hash map | change           |
+| -------------- | ----------- | -------- | ---------------- |
+| idx_first (ns) |  3370       | 3821     | within noise     |
+| idx_last  (ns) |  4652       | 2494     | **1.87× faster** |
+| idx_miss  (ns) |  3396       | 2409     | **1.41× faster** |
+
+The hash flattens the curve: `idx_last` is now indistinguishable
+from `idx_first`. The speedup vs the no-index chain baseline grew
+from 47.9× to **88.4×** (last-hit) and 65.4× to **93.1×** (miss).
+
+At N=100 the change is within noise (~3 μs total dispatch is
+already dominated by loop overhead, not table scan), so this is a
+"no regression at small N, growing wins at large N" change rather
+than a uniform speedup.
+
 `idx_last` is essentially flat — the switch table is a linear scan
 in the runtime (`for (auto& kv : instr.const_table)`), but the
 per-key work is just a `Value::operator==`, much cheaper than full
