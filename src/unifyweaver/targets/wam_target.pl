@@ -1058,8 +1058,8 @@ witness_var_regs([_|Vs], Varmap, Rest) :-
 
 %% compile_compound_template(+Template, +V0, -Vf, -InitCode, -ConstructionCode)
 %  For findall(Functor(Arg1, Arg2, ...), Goal, L) with compound Template:
-%  - Each Arg is either a variable or a constant
-%  - Variables get Y-regs allocated (via allocate_var) and initialized
+%  - Each Arg is a variable, an atomic, or a NESTED compound. Variable
+%    leaves get Y-regs allocated (via allocate_var) and initialized
 %    directly so they have stable slots across the inner-goal call.
 %    Do not initialize through A-registers: those are scratch argument
 %    registers for the inner goal, and aliasing a template variable
@@ -1067,49 +1067,102 @@ witness_var_regs([_|Vs], Varmap, Rest) :-
 %    (for example findall(Y-L, bagof(X, p(X,Y), L), Groups)).
 %  - ConstructionCode emits put_structure + set_value/set_constant
 %    after the inner goal returns; A1 holds the heap ref to the
-%    constructed Template
-%  - Compound args within the Template (e.g., `findall(p(f(X)), ...)`)
-%    are not yet supported — would need recursive heap construction.
+%    constructed Template.
+%  - Nested compound args (e.g. findall(K-V-B, ...) where the template
+%    is -/2(-/2(K,V), B)) use the WAM set_variable trick: the outer
+%    put_structure starts in A1, set_variable X_subN allocates a
+%    fresh cell into the parent''s arg slot, then put_structure on
+%    X_subN mutates the same cell to the sub-compound — visible
+%    through the parent because cells are shared by pointer.
 compile_compound_template(Template, V0, Vf, InitCode, ConstructionCode) :-
-    Template =.. [Functor | Args],
-    length(Args, Arity),
-    compile_template_arg_init(Args, 1, V0, V1, InitLines),
+    init_template_leaf_vars(Template, V0, V1, InitLines),
     (   InitLines == []
     ->  InitCode = ""
     ;   atomic_list_concat(InitLines, '\n', InitCode)
     ),
-    format(string(PutStrucCode), "    put_structure ~w/~w, A1", [Functor, Arity]),
-    compile_template_arg_set(Args, V1, Vf, SetLines),
-    atomic_list_concat([PutStrucCode | SetLines], '\n', ConstructionCode).
+    % Construct the structure top-down, root first into A1; sub-
+    % compounds get fresh X-regs (named "_XT<N>") that the outer
+    % parent''s set_variable allocates and the inner put_structure
+    % mutates in place.
+    construct_template(Template, 'A1', 0, _, V1, Vf, Lines),
+    atomic_list_concat(Lines, '\n', ConstructionCode).
 
-compile_template_arg_init([], _, V, V, []).
-compile_template_arg_init([Arg | Rest], I, V0, Vf, Lines) :-
-    (   var(Arg)
-    ->  allocate_var(Arg, V0, V1, Reg),
+%% init_template_leaf_vars(+Template, +V0, -Vf, -Lines)
+%  Walks Template recursively and allocates a Y-register per variable
+%  leaf, emitting put_variable lines so each Y-reg starts as a fresh
+%  unbound cell on every aggregate iteration.
+init_template_leaf_vars(T, V0, Vf, Lines) :-
+    (   var(T)
+    ->  allocate_var(T, V0, Vf, Reg),
         format(string(Line), "    put_variable ~w, ~w", [Reg, Reg]),
-        Lines = [Line | RestLines]
-    ;   atomic(Arg)
-    ->  V1 = V0,
-        Lines = RestLines
-    ;   % Compound or other — not yet supported
-        throw(error(unsupported_template_arg(Arg), compile_compound_template/5))
-    ),
-    NI is I + 1,
-    compile_template_arg_init(Rest, NI, V1, Vf, RestLines).
+        Lines = [Line]
+    ;   atomic(T)
+    ->  Vf = V0,
+        Lines = []
+    ;   T =.. [_|Args],
+        init_template_leaf_vars_list(Args, V0, Vf, Lines)
+    ).
+init_template_leaf_vars_list([], V, V, []).
+init_template_leaf_vars_list([H|T], V0, Vf, Lines) :-
+    init_template_leaf_vars(H, V0, V1, HLines),
+    init_template_leaf_vars_list(T, V1, Vf, TLines),
+    append(HLines, TLines, Lines).
 
-compile_template_arg_set([], V, V, []).
-compile_template_arg_set([Arg | Rest], V0, Vf, [Line | Lines]) :-
-    (   var(Arg)
-    ->  get_var_reg(Arg, V0, Reg),
-        format(string(Line), "    set_value ~w", [Reg]),
-        V1 = V0
-    ;   atomic(Arg)
-    ->  V1 = V0,
-        quote_wam_constant(Arg, ArgStr),
-        format(string(Line), "    set_constant ~w", [ArgStr])
-    ;   throw(error(unsupported_template_arg(Arg), compile_compound_template/5))
+%% construct_template(+Template, +TargetReg, +T0, -Tf, +V0, -Vf, -Lines)
+%  Emits WAM instructions that build Template into TargetReg. T0/Tf
+%  is a counter for naming fresh "_XT<N>" sub-compound registers so
+%  nested compounds each get their own scratch slot. Lines is a flat
+%  list in correct emission order.
+construct_template(T, TargetReg, T0, Tf, V0, Vf, Lines) :-
+    T =.. [Functor|Args],
+    length(Args, Arity),
+    format(string(HeadLine), "    put_structure ~w/~w, ~w",
+           [Functor, Arity, TargetReg]),
+    % Pass over the args: for each, emit a fill line (set_value /
+    % set_constant / set_variable + record a pending sub-compound)
+    % and collect any pending sub-compound construction tasks.
+    construct_template_args(Args, T0, T1, V0, V1, FillLines, Pending),
+    % Sub-compounds are constructed AFTER the outer put_structure +
+    % its fill lines, in left-to-right order.
+    construct_pending(Pending, T1, Tf, V1, Vf, PendingLines),
+    append([HeadLine | FillLines], PendingLines, Lines).
+
+% Wrapper: emit fill lines for the outer compound''s args, and
+% collect (SubReg, SubTemplate) tasks for sub-compounds.
+construct_template_args([], T, T, V, V, [], []).
+construct_template_args([A|Rest], T0, Tf, V0, Vf,
+                       [FillLine|FillTail], Pending) :-
+    (   var(A)
+    ->  get_var_reg(A, V0, Reg),
+        format(string(FillLine), "    set_value ~w", [Reg]),
+        T1 = T0, V1 = V0, ThisPending = []
+    ;   atomic(A)
+    ->  quote_wam_constant(A, AStr),
+        format(string(FillLine), "    set_constant ~w", [AStr]),
+        T1 = T0, V1 = V0, ThisPending = []
+    ;   % Compound — allocate a fresh sub-reg, emit set_variable
+        % which attaches a fresh cell to the parent''s arg slot AND
+        % binds the X-reg to it. The pending entry holds the X-reg
+        % and the sub-template for later put_structure-based
+        % mutation of that same cell.
+        format(atom(SubReg), "_XT~w", [T0]),
+        T1 is T0 + 1,
+        format(string(FillLine), "    set_variable ~w", [SubReg]),
+        V1 = V0,
+        ThisPending = [SubReg-A]
     ),
-    compile_template_arg_set(Rest, V1, Vf, Lines).
+    construct_template_args(Rest, T1, Tf, V1, Vf, FillTail, RestPending),
+    append(ThisPending, RestPending, Pending).
+
+% Construct each pending sub-compound into its allocated reg.
+construct_pending([], T, T, V, V, []).
+construct_pending([Reg-Sub|Rest], T0, Tf, V0, Vf, Lines) :-
+    construct_template(Sub, Reg, T0, T1, V0, V1, SubLines),
+    construct_pending(Rest, T1, Tf, V1, Vf, RestLines),
+    append(SubLines, RestLines, Lines).
+
+flatten_once([], []).
+flatten_once([L|Ls], Out) :- append(L, Rest, Out), flatten_once(Ls, Rest).
 
 %% compile_findall(+Template, +InnerGoal, +Result, +V0, -Vf, -Code)
 compile_findall(Template, InnerGoal, Result, V0, Vf, Code) :-
