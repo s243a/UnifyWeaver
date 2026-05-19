@@ -796,6 +796,54 @@ static const int _wam_cpp_setup_register = []() {
                      t(K,  V,  NRB, LRR, R)),
                    shrunk) :-
            wam_cpp_lr_balance(LRB, NLB, NRB))),
+       % del_min_assoc/4 — delete the smallest key, return its
+       % (K, V) and the rebalanced tree. Fails on empty.
+       assertz((user:del_min_assoc(Assoc, K, V, NewAssoc) :-
+           Assoc \= t,
+           wam_cpp_del_min_extract(Assoc, K, V, NewAssoc, _))),
+       % del_max_assoc/4 — mirror, plus a max-extract helper that
+       % wam_cpp_del_min_extract didn''t need.
+       assertz((user:del_max_assoc(Assoc, K, V, NewAssoc) :-
+           Assoc \= t,
+           wam_cpp_del_max_extract(Assoc, K, V, NewAssoc, _))),
+       assertz((user:wam_cpp_del_max_extract(t(K, V, _, L, t), K, V, L,
+                                            shrunk))),
+       assertz((user:wam_cpp_del_max_extract(t(K0, V0, B, L, R),
+                                            K, V, T, Change) :-
+           R \= t,
+           wam_cpp_del_max_extract(R, K, V, R1, RC),
+           wam_cpp_del_rebalance_right(RC, B, K0, V0, L, R1, T, Change))),
+       % get_assoc/5 — atomic test-and-set. Returns the current value
+       % (fails if absent) AND builds a tree with that slot replaced
+       % by NewVal. Tree structure / balance is preserved (the value
+       % swap can''t change heights), so no rebalance is needed.
+       assertz((user:get_assoc(Key, Assoc0, OldVal, Assoc, NewVal) :-
+           wam_cpp_get_replace_assoc(Key, Assoc0, OldVal, NewVal, Assoc))),
+       assertz((user:wam_cpp_get_replace_assoc(Key, t(K0, V0, B, L, R),
+                                              OldVal, NewVal, NewTree) :-
+           compare(Order, Key, K0),
+           wam_cpp_get_replace_dispatch(Order, Key, K0, V0, B, L, R,
+                                        OldVal, NewVal, NewTree))),
+       assertz((user:wam_cpp_get_replace_dispatch(=, _, K0, V0, B, L, R,
+                                                 V0, NewVal,
+                                                 t(K0, NewVal, B, L, R)))),
+       assertz((user:wam_cpp_get_replace_dispatch(<, Key, K0, V0, B, L, R,
+                                                 OldVal, NewVal,
+                                                 t(K0, V0, B, L1, R)) :-
+           wam_cpp_get_replace_assoc(Key, L, OldVal, NewVal, L1))),
+       assertz((user:wam_cpp_get_replace_dispatch(>, Key, K0, V0, B, L, R,
+                                                 OldVal, NewVal,
+                                                 t(K0, V0, B, L, R1)) :-
+           wam_cpp_get_replace_assoc(Key, R, OldVal, NewVal, R1))),
+       % map_assoc/3 — call(Goal, OldVal, NewVal) on every value;
+       % build a tree with the same structure / balance but the
+       % transformed values.
+       assertz((user:map_assoc(_, t, t))),
+       assertz((user:map_assoc(Goal, t(K, V, B, L, R),
+                                     t(K, V1, B, L1, R1)) :-
+           map_assoc(Goal, L, L1),
+           call(Goal, V, V1),
+           map_assoc(Goal, R, R1))),
        assertz((user:list_to_assoc(List, Assoc) :-
            wam_cpp_list_to_assoc_(List, t, Assoc))),
        assertz((user:wam_cpp_list_to_assoc_([], A, A))),
@@ -899,6 +947,13 @@ stdlib_feature_predicates(assoc, [
     user:wam_cpp_del_rebalance_right/8,
     user:wam_cpp_del_rotate_right/6,
     user:wam_cpp_del_rotate_left/6,
+    user:del_min_assoc/4,
+    user:del_max_assoc/4,
+    user:wam_cpp_del_max_extract/5,
+    user:get_assoc/5,
+    user:wam_cpp_get_replace_assoc/5,
+    user:wam_cpp_get_replace_dispatch/10,
+    user:map_assoc/3,
     user:list_to_assoc/2,
     user:wam_cpp_list_to_assoc_/3,
     user:assoc_to_list/2,
