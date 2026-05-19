@@ -179,13 +179,36 @@ build_first_arg_index_homogeneous(Pred, Arity, Clauses, Types, IndexCode) :-
 build_first_arg_index_with_fallthrough(Pred, Arity, Clauses, Types, IndexCode) :-
     indexed_prefix(Types, Clauses, PrefixTypes, PrefixClauses),
     PrefixClauses \= [],
-    % v1: only handle constant prefix.
-    forall(member(T, PrefixTypes), T = constant),
-    build_constant_index(PrefixClauses, 1, Pred, Arity, Entries),
-    Entries \= [],
-    format_index_entries(Entries, EntriesStr),
+    (   forall(member(T, PrefixTypes), T = constant)
+    ->  build_constant_index(PrefixClauses, 1, Pred, Arity, Entries),
+        Entries \= [],
+        format_index_entries(Entries, EntriesStr),
+        format(string(IndexCode),
+               "    switch_on_constant_fallthrough ~w", [EntriesStr])
+    ;   forall(member(T, PrefixTypes), T = structure),
+        \+ first_args_contain_list(PrefixClauses)
+    ->  build_structure_index(PrefixClauses, 1, Pred, Arity, Entries),
+        Entries \= [],
+        format_index_entries(Entries, EntriesStr),
+        format(string(IndexCode),
+               "    switch_on_structure_fallthrough ~w", [EntriesStr])
+    ;   % Mixed atomic/compound (including lists) — switch_on_term
+        % with fallthrough semantics on every miss path.
+        build_term_index(PrefixClauses, 1, Pred, Arity, PrefixTypes,
+                         ConstEntries, StructEntries, ListLabel),
+        format_switch_on_term_fallthrough(ConstEntries, StructEntries,
+                                          ListLabel, IndexCode)
+    ).
+
+format_switch_on_term_fallthrough(ConstEntries, StructEntries, ListLabel,
+                                  IndexCode) :-
+    length(ConstEntries, CLen),
+    length(StructEntries, SLen),
+    format_index_entries(ConstEntries, CStr),
+    format_index_entries(StructEntries, SStr),
     format(string(IndexCode),
-           "    switch_on_constant_fallthrough ~w", [EntriesStr]).
+           "    switch_on_term_fallthrough ~w ~w ~w ~w ~w",
+           [CLen, CStr, SLen, SStr, ListLabel]).
 
 %% indexed_prefix(+Types, +Clauses, -PrefixTypes, -PrefixClauses)
 %  Take clauses up to (but not including) the first one whose A1 is
@@ -316,13 +339,34 @@ build_second_arg_index_with_fallthrough(Pred, Arity, Clauses, Types,
                                         IndexCode) :-
     indexed_prefix(Types, Clauses, PrefixTypes, PrefixClauses),
     PrefixClauses \= [],
-    % v1: only handle constant prefix, matching the A1 scope.
-    forall(member(T, PrefixTypes), T = constant),
-    build_constant_index_on(PrefixClauses, 2, 1, Pred, Arity, Entries),
-    Entries \= [],
-    format_index_entries(Entries, EntriesStr),
+    (   forall(member(T, PrefixTypes), T = constant)
+    ->  build_constant_index_on(PrefixClauses, 2, 1, Pred, Arity, Entries),
+        Entries \= [],
+        format_index_entries(Entries, EntriesStr),
+        format(string(IndexCode),
+               "    switch_on_constant_a2_fallthrough ~w", [EntriesStr])
+    ;   forall(member(T, PrefixTypes), T = structure),
+        \+ second_args_contain_list(PrefixClauses)
+    ->  build_structure_index_on(PrefixClauses, 2, 1, Pred, Arity, Entries),
+        Entries \= [],
+        format_index_entries(Entries, EntriesStr),
+        format(string(IndexCode),
+               "    switch_on_structure_a2_fallthrough ~w", [EntriesStr])
+    ;   build_term_index_on(PrefixClauses, 2, 1, Pred, Arity, PrefixTypes,
+                            ConstEntries, StructEntries, ListLabel),
+        format_switch_on_term_a2_fallthrough(ConstEntries, StructEntries,
+                                             ListLabel, IndexCode)
+    ).
+
+format_switch_on_term_a2_fallthrough(ConstEntries, StructEntries, ListLabel,
+                                     IndexCode) :-
+    length(ConstEntries, CLen),
+    length(StructEntries, SLen),
+    format_index_entries(ConstEntries, CStr),
+    format_index_entries(StructEntries, SStr),
     format(string(IndexCode),
-           "    switch_on_constant_a2_fallthrough ~w", [EntriesStr]).
+           "    switch_on_term_a2_fallthrough ~w ~w ~w ~w ~w",
+           [CLen, CStr, SLen, SStr, ListLabel]).
 
 classify_second_args([], []).
 classify_second_args([Head-_|Rest], [Type|RestTypes]) :-

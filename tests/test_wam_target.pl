@@ -267,6 +267,42 @@ test_mma2_none(_, a, 1).
 test_mma2_none(_, b, 2).
 test_mma2_none(_, c, 3).
 
+%% Mixed-mode A1 indexing for structure-only and mixed (term)
+%% prefixes — the v1 limits from #2301 / #2303.
+:- dynamic test_mma_struct/2, test_mma_term/2,
+           test_mma_struct_a2/3, test_mma_term_a2/3.
+test_mma_struct(circle(_), 1).
+test_mma_struct(square(_), 2).
+test_mma_struct(_,         0).
+
+test_mma_term(zero,        1).
+test_mma_term(succ(_),     2).
+test_mma_term(_,           0).
+
+test_mma_struct_a2(_, circle(_), 1).
+test_mma_struct_a2(_, square(_), 2).
+test_mma_struct_a2(_, _,         0).
+
+test_mma_term_a2(_, zero,    1).
+test_mma_term_a2(_, succ(_), 2).
+test_mma_term_a2(_, _,       0).
+
+test_wam_mixed_mode_struct_term_indexing :-
+    Test = 'WAM: mixed-mode struct/term indexing emits new fallthrough opcodes',
+    (   wam_target:compile_predicate_to_wam(user:test_mma_struct/2, [], C1),
+        wam_target:compile_predicate_to_wam(user:test_mma_term/2, [], C2),
+        wam_target:compile_predicate_to_wam(user:test_mma_struct_a2/3, [], C3),
+        wam_target:compile_predicate_to_wam(user:test_mma_term_a2/3, [], C4),
+        atom_string(C1, S1), atom_string(C2, S2),
+        atom_string(C3, S3), atom_string(C4, S4),
+        sub_string(S1, _, _, _, 'switch_on_structure_fallthrough'),
+        sub_string(S2, _, _, _, 'switch_on_term_fallthrough'),
+        sub_string(S3, _, _, _, 'switch_on_structure_a2_fallthrough'),
+        sub_string(S4, _, _, _, 'switch_on_term_a2_fallthrough')
+    ->  pass(Test)
+    ;   fail_test(Test, 'struct/term mixed-mode did not emit the expected pseudo-instruction')
+    ).
+
 test_wam_mixed_mode_a2_indexing :-
     Test = 'WAM: mixed-mode A2 indexing emits switch_on_constant_a2_fallthrough',
     (   wam_target:compile_predicate_to_wam(user:test_mma2_trailing/3, [], C1),
@@ -328,6 +364,7 @@ run_tests :-
     test_wam_a2_indexing,
     test_wam_mixed_mode_a1_indexing,
     test_wam_mixed_mode_a2_indexing,
+    test_wam_mixed_mode_struct_term_indexing,
 
     format('~n========================================~n'),
     (   test_failed

@@ -2041,20 +2041,47 @@ instr_to_setup_line(switch_on_structure(Entries), Labels, Line) :- !,
     format(atom(Line),
            '    vm.instrs.push_back(Instruction::SwitchOnStructure({~w}));',
            [EntriesCpp]).
+instr_to_setup_line(switch_on_structure_fallthrough(Entries), Labels, Line) :- !,
+    % Mixed-mode A1 indexing for compound prefixes — see
+    % switch_on_constant_fallthrough for the rationale. Bound A1
+    % whose functor isn''t in the table falls through to the chain
+    % so the trailing variable-A1 clauses still match.
+    parse_switch_struct_entries(Entries, Labels, EntriesCpp),
+    format(atom(Line),
+           '    vm.instrs.push_back(Instruction::SwitchOnStructure({~w}, true));',
+           [EntriesCpp]).
 instr_to_setup_line(switch_on_structure_a2(Entries), Labels, Line) :- !,
     parse_switch_struct_entries(Entries, Labels, EntriesCpp),
     format(atom(Line),
            '    vm.instrs.push_back(Instruction::SwitchOnStructureA2({~w}));',
+           [EntriesCpp]).
+instr_to_setup_line(switch_on_structure_a2_fallthrough(Entries), Labels, Line) :- !,
+    parse_switch_struct_entries(Entries, Labels, EntriesCpp),
+    format(atom(Line),
+           '    vm.instrs.push_back(Instruction::SwitchOnStructureA2({~w}, true));',
            [EntriesCpp]).
 instr_to_setup_line(switch_on_term(Tokens), Labels, Line) :- !,
     parse_switch_term(Tokens, Labels, ConstsCpp, StructsCpp, ListPC),
     format(atom(Line),
            '    vm.instrs.push_back(Instruction::SwitchOnTerm({~w}, {~w}, ~w));',
            [ConstsCpp, StructsCpp, ListPC]).
+instr_to_setup_line(switch_on_term_fallthrough(Tokens), Labels, Line) :- !,
+    % Mixed-mode for prefixes that mix constants and structures
+    % (including lists). Reads/writes both const_table and
+    % struct_table; bound A1 with no match in either falls through.
+    parse_switch_term(Tokens, Labels, ConstsCpp, StructsCpp, ListPC),
+    format(atom(Line),
+           '    vm.instrs.push_back(Instruction::SwitchOnTerm({~w}, {~w}, ~w, true));',
+           [ConstsCpp, StructsCpp, ListPC]).
 instr_to_setup_line(switch_on_term_a2(Tokens), Labels, Line) :- !,
     parse_switch_term(Tokens, Labels, ConstsCpp, StructsCpp, ListPC),
     format(atom(Line),
            '    vm.instrs.push_back(Instruction::SwitchOnTermA2({~w}, {~w}, ~w));',
+           [ConstsCpp, StructsCpp, ListPC]).
+instr_to_setup_line(switch_on_term_a2_fallthrough(Tokens), Labels, Line) :- !,
+    parse_switch_term(Tokens, Labels, ConstsCpp, StructsCpp, ListPC),
+    format(atom(Line),
+           '    vm.instrs.push_back(Instruction::SwitchOnTermA2({~w}, {~w}, ~w, true));',
            [ConstsCpp, StructsCpp, ListPC]).
 instr_to_setup_line(catch_return, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::CatchReturn());'.
@@ -2683,25 +2710,37 @@ private:
         for (auto& kv : i.const_table) i.const_map.try_emplace(kv.first, kv.second);
     }
 public:
-    static Instruction SwitchOnStructure(std::vector<std::pair<std::string, std::size_t>> table)
-        { Instruction i; i.op = Op::SwitchOnStructure; i.struct_table = std::move(table); return i; }
-    static Instruction SwitchOnStructureA2(std::vector<std::pair<std::string, std::size_t>> table)
-        { Instruction i; i.op = Op::SwitchOnStructureA2; i.struct_table = std::move(table); return i; }
+    static Instruction SwitchOnStructure(std::vector<std::pair<std::string, std::size_t>> table,
+                                         bool fall_on_miss = false)
+        { Instruction i; i.op = Op::SwitchOnStructure;
+          i.struct_table = std::move(table);
+          i.no_match_fallthrough = fall_on_miss;
+          return i; }
+    static Instruction SwitchOnStructureA2(std::vector<std::pair<std::string, std::size_t>> table,
+                                           bool fall_on_miss = false)
+        { Instruction i; i.op = Op::SwitchOnStructureA2;
+          i.struct_table = std::move(table);
+          i.no_match_fallthrough = fall_on_miss;
+          return i; }
     static Instruction SwitchOnTerm(std::vector<std::pair<Value, std::size_t>> consts,
                                     std::vector<std::pair<std::string, std::size_t>> structs,
-                                    std::size_t list_pc)
+                                    std::size_t list_pc,
+                                    bool fall_on_miss = false)
         { Instruction i; i.op = Op::SwitchOnTerm;
           i.const_table = std::move(consts);
           i.struct_table = std::move(structs);
           i.target = list_pc;
+          i.no_match_fallthrough = fall_on_miss;
           return i; }
     static Instruction SwitchOnTermA2(std::vector<std::pair<Value, std::size_t>> consts,
                                       std::vector<std::pair<std::string, std::size_t>> structs,
-                                      std::size_t list_pc)
+                                      std::size_t list_pc,
+                                      bool fall_on_miss = false)
         { Instruction i; i.op = Op::SwitchOnTermA2;
           i.const_table = std::move(consts);
           i.struct_table = std::move(structs);
           i.target = list_pc;
+          i.no_match_fallthrough = fall_on_miss;
           return i; }
     static Instruction CatchReturn()
         { Instruction i; i.op = Op::CatchReturn; return i; }
@@ -7542,11 +7581,18 @@ bool WamState::step(const Instruction& instr) {
             for (auto& kv : instr.struct_table) {
                 if (kv.first == a.s) {
                     if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
-                    if (kv.second == Instruction::SWITCH_NONE)    return false;
+                    if (kv.second == Instruction::SWITCH_NONE) {
+                        if (instr.no_match_fallthrough) { pc += 1; return true; }
+                        return false;
+                    }
                     indexed_entry = true;
                     pc = kv.second; return true;
                 }
             }
+            // Bound compound with no matching functor entry. Mixed-mode
+            // mirror of SwitchOnConstant: fall through to the chain if
+            // the predicate has variable-headed clauses.
+            if (instr.no_match_fallthrough) { pc += 1; return true; }
             return false;
         }
         case Instruction::Op::SwitchOnStructureA2: {
@@ -7558,11 +7604,15 @@ bool WamState::step(const Instruction& instr) {
             for (auto& kv : instr.struct_table) {
                 if (kv.first == a.s) {
                     if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
-                    if (kv.second == Instruction::SWITCH_NONE)    return false;
+                    if (kv.second == Instruction::SWITCH_NONE) {
+                        if (instr.no_match_fallthrough) { pc += 1; return true; }
+                        return false;
+                    }
                     indexed_entry = true;
                     pc = kv.second; return true;
                 }
             }
+            if (instr.no_match_fallthrough) { pc += 1; return true; }
             return false;
         }
         case Instruction::Op::SwitchOnTerm: {
@@ -7580,28 +7630,39 @@ bool WamState::step(const Instruction& instr) {
                 for (auto& kv : instr.const_table) {
                     if (kv.first == a) {
                         if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
-                        if (kv.second == Instruction::SWITCH_NONE)    return false;
+                        if (kv.second == Instruction::SWITCH_NONE) {
+                            if (instr.no_match_fallthrough) { pc += 1; return true; }
+                            return false;
+                        }
                         indexed_entry = true;
                         pc = kv.second; return true;
                     }
                 }
+                if (instr.no_match_fallthrough) { pc += 1; return true; }
                 return false;
             }
             if (a.tag == Value::Tag::Compound) {
                 if (a.s == "[|]/2") {
                     if (instr.target == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
-                    if (instr.target == Instruction::SWITCH_NONE)    return false;
+                    if (instr.target == Instruction::SWITCH_NONE) {
+                        if (instr.no_match_fallthrough) { pc += 1; return true; }
+                        return false;
+                    }
                     indexed_entry = true;
                     pc = instr.target; return true;
                 }
                 for (auto& kv : instr.struct_table) {
                     if (kv.first == a.s) {
                         if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
-                        if (kv.second == Instruction::SWITCH_NONE)    return false;
+                        if (kv.second == Instruction::SWITCH_NONE) {
+                            if (instr.no_match_fallthrough) { pc += 1; return true; }
+                            return false;
+                        }
                         indexed_entry = true;
                         pc = kv.second; return true;
                     }
                 }
+                if (instr.no_match_fallthrough) { pc += 1; return true; }
                 return false;
             }
             pc += 1; return true;
@@ -7616,28 +7677,39 @@ bool WamState::step(const Instruction& instr) {
                 for (auto& kv : instr.const_table) {
                     if (kv.first == a) {
                         if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
-                        if (kv.second == Instruction::SWITCH_NONE)    return false;
+                        if (kv.second == Instruction::SWITCH_NONE) {
+                            if (instr.no_match_fallthrough) { pc += 1; return true; }
+                            return false;
+                        }
                         indexed_entry = true;
                         pc = kv.second; return true;
                     }
                 }
+                if (instr.no_match_fallthrough) { pc += 1; return true; }
                 return false;
             }
             if (a.tag == Value::Tag::Compound) {
                 if (a.s == "[|]/2") {
                     if (instr.target == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
-                    if (instr.target == Instruction::SWITCH_NONE)    return false;
+                    if (instr.target == Instruction::SWITCH_NONE) {
+                        if (instr.no_match_fallthrough) { pc += 1; return true; }
+                        return false;
+                    }
                     indexed_entry = true;
                     pc = instr.target; return true;
                 }
                 for (auto& kv : instr.struct_table) {
                     if (kv.first == a.s) {
                         if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
-                        if (kv.second == Instruction::SWITCH_NONE)    return false;
+                        if (kv.second == Instruction::SWITCH_NONE) {
+                            if (instr.no_match_fallthrough) { pc += 1; return true; }
+                            return false;
+                        }
                         indexed_entry = true;
                         pc = kv.second; return true;
                     }
                 }
+                if (instr.no_match_fallthrough) { pc += 1; return true; }
                 return false;
             }
             pc += 1; return true;
