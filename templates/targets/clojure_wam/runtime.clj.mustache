@@ -1215,6 +1215,34 @@
       :else
       (backtrack state))))
 
+(defn char-type-class? [ch class-name]
+  (case class-name
+    "alpha" (Character/isLetter ch)
+    "alnum" (Character/isLetterOrDigit ch)
+    "digit" (Character/isDigit ch)
+    "upper" (Character/isUpperCase ch)
+    "lower" (Character/isLowerCase ch)
+    "whitespace" (Character/isWhitespace ch)
+    "space" (Character/isWhitespace ch)
+    "ascii" (<= (int ch) 127)
+    "punct" (and (<= (int ch) 127)
+                 (not (Character/isLetterOrDigit ch))
+                 (not (Character/isWhitespace ch)))
+    false))
+
+(defn apply-char-type-solution [state]
+  (let [char-value (deref-value (:bindings state)
+                                (or (reg-get-raw state "A1") ::unbound))
+        type-value (deref-value (:bindings state)
+                                (or (reg-get-raw state "A2") ::unbound))
+        char-text (char-code-text state char-value)
+        type-text (atom-text state type-value)]
+    (if (and (some? char-text)
+             (some? type-text)
+             (char-type-class? (first char-text) type-text))
+      (advance state)
+      (backtrack state))))
+
 (defn apply-atom-concat-solution [state]
   (let [left (deref-value (:bindings state)
                           (or (reg-get-raw state "A1") ::unbound))
@@ -2174,6 +2202,9 @@
 
           "char_code/2"
           (apply-char-code-solution state)
+
+          "char_type/2"
+          (apply-char-type-solution state)
 
           "atom_concat/3"
           (apply-atom-concat-solution state)
