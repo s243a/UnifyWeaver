@@ -198,6 +198,8 @@
 :- dynamic user:wam_sub_atom_backtrack_later_before/0.
 :- dynamic user:wam_sub_atom_length_bound_later_before/0.
 :- dynamic user:wam_sub_atom_no_match/0.
+:- dynamic user:wam_sub_atom_numeric_source_arg/1.
+:- dynamic user:wam_sub_atom_numeric_sub_arg/1.
 :- dynamic user:wam_sub_atom_unbound_source/1.
 :- dynamic user:wam_arith_eq_42/1.
 :- dynamic user:wam_arith_eq_float/1.
@@ -418,6 +420,8 @@ user:wam_sub_atom_suffix :- sub_atom(hello, _, 3, 0, llo).
 user:wam_sub_atom_backtrack_later_before :- sub_atom(abcabc, B, _, _, b), B =:= 4.
 user:wam_sub_atom_length_bound_later_before :- sub_atom(abcabc, B, 1, _, b), B =:= 4.
 user:wam_sub_atom_no_match :- sub_atom(abc, _, _, _, xyz).
+user:wam_sub_atom_numeric_source_arg(A) :- sub_atom(A, 1, 3, 1, 234).
+user:wam_sub_atom_numeric_sub_arg(S) :- sub_atom(12345, 1, 2, _, S).
 user:wam_sub_atom_unbound_source(_) :- user:wam_unbound_arg(A), sub_atom(A, 0, 1, _, _).
 user:wam_arith_eq_42(X) :- X =:= 42.
 user:wam_arith_eq_float(X) :- X =:= 3.5.
@@ -643,6 +647,8 @@ run_smoke :-
           user:wam_sub_atom_backtrack_later_before/0,
           user:wam_sub_atom_length_bound_later_before/0,
           user:wam_sub_atom_no_match/0,
+          user:wam_sub_atom_numeric_source_arg/1,
+          user:wam_sub_atom_numeric_sub_arg/1,
           user:wam_sub_atom_unbound_source/1,
           user:wam_arith_eq_42/1,
           user:wam_arith_eq_float/1,
@@ -1035,6 +1041,8 @@ smoke_cases([
     case('wam_sub_atom_backtrack_later_before/0', no_args, "true"),
     case('wam_sub_atom_length_bound_later_before/0', no_args, "true"),
     case('wam_sub_atom_no_match/0', no_args, "false"),
+    case('wam_sub_atom_numeric_source_arg/1', 12345, "true"),
+    case('wam_sub_atom_numeric_sub_arg/1', 23, "true"),
     case('wam_sub_atom_unbound_source/1', a, "false"),
     case('wam_arith_eq_42/1', 42, "true"),
     case('wam_arith_eq_42/1', 3.5, "false"),
