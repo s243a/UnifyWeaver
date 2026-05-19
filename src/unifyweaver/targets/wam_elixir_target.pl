@@ -301,18 +301,17 @@ wam_elixir_case(allocate,
 '      {:allocate, _n} ->
         # Save caller\'s Y-regs in the new env so the callee can freely
         # use Y-reg slots (ids 201-299) without clobbering the caller.
-        {y_regs_saved, base_regs} = WamRuntime.split_y_regs(state.regs)
-        new_env = %{cp: state.cp, y_regs_saved: y_regs_saved}
-        %{state | stack: [new_env | state.stack], regs: base_regs, pc: state.pc + 1}').
+        # Y-regs live in their own state field, so swap is O(1).
+        new_env = %{cp: state.cp, y_regs_saved: state.y_regs}
+        %{state | stack: [new_env | state.stack], y_regs: %{}, pc: state.pc + 1}').
 
 wam_elixir_case(deallocate,
 '      :deallocate ->
         case state.stack do
           [env | rest] ->
             # Discard current frame\'s Y-regs and restore the caller\'s.
-            {_callee_ys, base_regs} = WamRuntime.split_y_regs(state.regs)
-            merged = Map.merge(base_regs, Map.get(env, :y_regs_saved, %{}))
-            %{state | cp: env.cp, stack: rest, regs: merged, pc: state.pc + 1}
+            %{state | cp: env.cp, stack: rest,
+              y_regs: Map.get(env, :y_regs_saved, %{}), pc: state.pc + 1}
           _ -> %{state | pc: state.pc + 1}
         end').
 
@@ -321,13 +320,15 @@ wam_elixir_case(deallocate,
 wam_elixir_case(try_me_else,
 '      # Fast path: label pre-resolved at codegen to integer PC.
       {:try_me_else, target} when is_integer(target) ->
-        cp = %{pc: target, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
+        cp = %{pc: target, regs: state.regs, y_regs: state.y_regs,
+               heap: state.heap, heap_len: state.heap_len,
                cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
         %{state | choice_points: [cp | state.choice_points], pc: state.pc + 1}
       # Fallback: unresolved string label.
       {:try_me_else, label} when is_binary(label) ->
         target = resolve_label(state, label)
-        cp = %{pc: target, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
+        cp = %{pc: target, regs: state.regs, y_regs: state.y_regs,
+               heap: state.heap, heap_len: state.heap_len,
                cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
         %{state | choice_points: [cp | state.choice_points], pc: state.pc + 1}').
 
@@ -336,7 +337,8 @@ wam_elixir_case(retry_me_else,
       {:retry_me_else, target} when is_integer(target) ->
         case state.choice_points do
           [_old | rest] ->
-            cp = %{pc: target, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
+            cp = %{pc: target, regs: state.regs, y_regs: state.y_regs,
+                   heap: state.heap, heap_len: state.heap_len,
                    cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
             %{state | choice_points: [cp | rest], pc: state.pc + 1}
           _ -> %{state | pc: state.pc + 1}
@@ -346,7 +348,8 @@ wam_elixir_case(retry_me_else,
         target = resolve_label(state, label)
         case state.choice_points do
           [_old | rest] ->
-            cp = %{pc: target, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
+            cp = %{pc: target, regs: state.regs, y_regs: state.y_regs,
+                   heap: state.heap, heap_len: state.heap_len,
                    cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
             %{state | choice_points: [cp | rest], pc: state.pc + 1}
           _ -> %{state | pc: state.pc + 1}
@@ -450,6 +453,7 @@ compile_backtrack_to_elixir(Code) :-
     |> unwind_trail(cp.trail_len)
     |> Map.put(:pc, cp.pc)
     |> Map.put(:regs, cp.regs)
+    |> Map.put(:y_regs, Map.get(cp, :y_regs, %{}))
     |> Map.put(:heap, cp.heap)
     |> Map.put(:heap_len, cp.heap_len)
     |> Map.put(:cp, cp.cp)
@@ -510,8 +514,13 @@ compile_unwind_trail_to_elixir(Code) :-
              val = if old_val == :not_set, do: {:unbound, {:heap_ref, addr}}, else: old_val
              %{s | heap: Map.put(s.heap, addr, val)}
           _ ->
-             new_regs = if old_val == :not_set, do: Map.delete(s.regs, key), else: Map.put(s.regs, key, old_val)
-             %{s | regs: new_regs}
+             if is_integer(key) and key >= 201 and key < 300 do
+               new_yr = if old_val == :not_set, do: Map.delete(s.y_regs, key), else: Map.put(s.y_regs, key, old_val)
+               %{s | y_regs: new_yr}
+             else
+               new_regs = if old_val == :not_set, do: Map.delete(s.regs, key), else: Map.put(s.regs, key, old_val)
+               %{s | regs: new_regs}
+             end
         end
       end)
     end
@@ -525,16 +534,41 @@ compile_utility_helpers_to_elixir(Code) :-
   end
 
   def trail_binding(state, key) do
-    old = Map.get(state.regs, key, :not_set)
+    old =
+      if is_integer(key) and key >= 201 and key < 300 do
+        Map.get(state.y_regs, key, :not_set)
+      else
+        Map.get(state.regs, key, :not_set)
+      end
     %{state | trail: [{key, old} | state.trail], trail_len: state.trail_len + 1}
   end
 
   def put_reg(state, reg, val) do
-    %{state | regs: Map.put(state.regs, reg, val)}
+    if is_integer(reg) and reg >= 201 and reg < 300 do
+      %{state | y_regs: Map.put(state.y_regs, reg, val)}
+    else
+      %{state | regs: Map.put(state.regs, reg, val)}
+    end
+  end
+
+  # Raw reg lookup without deref. Use when you need the literal slot
+  # value (for instance to pattern-match {:unbound, id} and trail-bind
+  # through id). Routes Y-reg keys to state.y_regs.
+  def get_reg_raw(state, reg) do
+    if is_integer(reg) and reg >= 201 and reg < 300 do
+      Map.get(state.y_regs, reg)
+    else
+      Map.get(state.regs, reg)
+    end
   end
 
   def get_reg(state, reg) do
-    val = Map.get(state.regs, reg, {:unbound, reg})
+    val =
+      if is_integer(reg) and reg >= 201 and reg < 300 do
+        Map.get(state.y_regs, reg, {:unbound, reg})
+      else
+        Map.get(state.regs, reg, {:unbound, reg})
+      end
     deref_var(state, val)
   end
 
@@ -630,6 +664,7 @@ compile_utility_helpers_to_elixir(Code) :-
         cp = %{
           pc: {:fact_stream, rest, arity},
           regs: state.regs,
+          y_regs: state.y_regs,
           heap: state.heap,
           heap_len: state.heap_len,
           cp: state.cp,
@@ -698,7 +733,13 @@ compile_utility_helpers_to_elixir(Code) :-
   end
 
   def deref_var(state, {:unbound, id}) do
-    case Map.get(state.regs, id) do
+    lookup =
+      if is_integer(id) and id >= 201 and id < 300 do
+        Map.get(state.y_regs, id)
+      else
+        Map.get(state.regs, id)
+      end
+    case lookup do
       nil -> {:unbound, id}
       {:unbound, ^id} -> {:unbound, id}
       val -> deref_var(state, val)
@@ -1679,6 +1720,7 @@ compile_utility_helpers_to_elixir(Code) :-
       trail_mark: state.trail_len,
       base_cp_count: length(state.choice_points),
       saved_regs: state.regs,
+      saved_y_regs: state.y_regs,
       saved_stack: state.stack
     }
     state_with_frame = %{state | catcher_frames: [frame | state.catcher_frames]}
@@ -1941,6 +1983,7 @@ compile_utility_helpers_to_elixir(Code) :-
     %{unwound |
       choice_points: new_cps,
       regs: frame.saved_regs,
+      y_regs: Map.get(frame, :saved_y_regs, %{}),
       stack: frame.saved_stack}
   end
 
@@ -2528,6 +2571,7 @@ compile_aggregate_helpers_to_elixir(Code) :-
     cp = %{
       pc: nil,
       regs: state.regs,
+      y_regs: state.y_regs,
       heap: state.heap,
       heap_len: state.heap_len,
       cp: state.cp,
@@ -2567,7 +2611,7 @@ compile_aggregate_helpers_to_elixir(Code) :-
   dominates, separate optimisations can address them.
   """
   def aggregate_collect(state, value_reg) do
-    raw = Map.get(state.regs, value_reg)
+    raw = get_reg_raw(state, value_reg)
     val = deep_copy_value(state, raw)
     {updated_cps, _collected} =
       Enum.map_reduce(state.choice_points, false, fn cp, collected ->
@@ -2807,7 +2851,8 @@ compile_wam_runtime_to_elixir(Options, Code) :-
     # trail_len caches list length to avoid O(n) re-measure on unwind.
     # code is a tuple so fetch is O(1) via elem/2 instead of O(pc) via Enum.at.
     # Phase A perf: O(1) append/read/replace instead of list O(n) operations.
-    defstruct pc: 1, cp: :halt, regs: %{}, heap: %{}, heap_len: 0,
+    defstruct pc: 1, cp: :halt, regs: %{}, y_regs: %{},
+              heap: %{}, heap_len: 0,
               trail: [], trail_len: 0,
               choice_points: [], stack: [], code: {}, labels: %{},
               # arg_vars is the list of {reg_id, unbound_tuple} for each
@@ -4971,7 +5016,7 @@ compile_tc_kernel_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
   end
 
   defp bind_result_reg(state, reg_idx, value) do
-    case Map.get(state.regs, reg_idx) do
+    case WamRuntime.get_reg_raw(state, reg_idx) do
       {:unbound, id} ->
         state |> WamRuntime.trail_binding(id) |> WamRuntime.put_reg(id, value)
       ^value -> state
@@ -5101,7 +5146,7 @@ compile_category_ancestor_dispatch_module(ModuleName, Pred, EdgePred, MaxDepth, 
   end
 
   defp bind_hops_reg(state, reg_idx, value) do
-    case Map.get(state.regs, reg_idx) do
+    case WamRuntime.get_reg_raw(state, reg_idx) do
       {:unbound, id} ->
         state |> WamRuntime.trail_binding(id) |> WamRuntime.put_reg(id, value)
       ^value -> state
@@ -5234,7 +5279,7 @@ compile_transitive_distance_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
   end
 
   defp bind_one(state, reg_idx, value) do
-    case Map.get(state.regs, reg_idx) do
+    case WamRuntime.get_reg_raw(state, reg_idx) do
       {:unbound, id} ->
         {:ok,
          state
@@ -5376,7 +5421,7 @@ compile_transitive_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, C
   end
 
   defp bind_one(state, reg_idx, value) do
-    case Map.get(state.regs, reg_idx) do
+    case WamRuntime.get_reg_raw(state, reg_idx) do
       {:unbound, id} ->
         {:ok,
          state
@@ -5519,7 +5564,7 @@ compile_transitive_step_parent_distance_dispatch_module(ModuleName, Pred, EdgePr
   end
 
   defp bind_one(state, reg_idx, value) do
-    case Map.get(state.regs, reg_idx) do
+    case WamRuntime.get_reg_raw(state, reg_idx) do
       {:unbound, id} ->
         {:ok,
          state
@@ -5657,7 +5702,7 @@ compile_weighted_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, Code)
   end
 
   defp bind_one(state, reg_idx, value) do
-    case Map.get(state.regs, reg_idx) do
+    case WamRuntime.get_reg_raw(state, reg_idx) do
       {:unbound, id} ->
         {:ok,
          state
@@ -5833,7 +5878,7 @@ compile_astar_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, DirectPr
   end
 
   defp bind_one(state, reg_idx, value) do
-    case Map.get(state.regs, reg_idx) do
+    case WamRuntime.get_reg_raw(state, reg_idx) do
       {:unbound, id} ->
         {:ok,
          state

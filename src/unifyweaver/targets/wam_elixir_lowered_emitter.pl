@@ -1091,7 +1091,8 @@ wrap_segment(FuncName, try_me_else(L), BodyCode, Suffix, Code) :-
     segment_func_name(L, Suffix, FallbackFunc),
     format(string(Code),
 '  defp ~w(state) do
-    cp = %{pc: &~w/1, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
+    cp = %{pc: &~w/1, regs: state.regs, y_regs: state.y_regs,
+           heap: state.heap, heap_len: state.heap_len,
            cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
     state = %{state | choice_points: [cp | state.choice_points]}
     try do
@@ -1109,7 +1110,8 @@ wrap_segment(FuncName, retry_me_else(L), BodyCode, Suffix, Code) :-
     segment_func_name(L, Suffix, FallbackFunc),
     format(string(Code),
 '  defp ~w(state) do
-    cp = %{pc: &~w/1, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
+    cp = %{pc: &~w/1, regs: state.regs, y_regs: state.y_regs,
+           heap: state.heap, heap_len: state.heap_len,
            cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
     state = %{state | choice_points: [cp | state.choice_points]}
     try do
@@ -1659,22 +1661,21 @@ wam_elixir_lower_instr(trust_me, _PC, _Labels, _FuncName, _Suffix, Code) :-
     Code = '    :ok # Handled by wrap_segment'.
 
 wam_elixir_lower_instr(allocate, _PC, _Labels, _FuncName, _Suffix, Code) :-
-    Code = '    # Save caller\'s Y-regs so the callee can freely overwrite
+    Code = '    # Save caller Y-regs so the callee can freely overwrite
     # slots 201-299 without corrupting the outer frame. Also snapshot
     # the current choice_points as the new cut barrier so `!` inside
     # this predicate truncates only CPs pushed during its own body,
-    # not the caller\'s. Env popped by deallocate restores both.
-    {y_regs_saved, base_regs} = WamRuntime.split_y_regs(state.regs)
-    new_env = %{cp: state.cp, y_regs_saved: y_regs_saved, cut_point: state.cut_point}
-    state = %{state | stack: [new_env | state.stack], regs: base_regs,
+    # not the caller CPs. Env popped by deallocate restores both.
+    # Y-regs live in their own state field so swap is O(1).
+    new_env = %{cp: state.cp, y_regs_saved: state.y_regs, cut_point: state.cut_point}
+    state = %{state | stack: [new_env | state.stack], y_regs: %{},
                       cut_point: state.choice_points}'.
 
 wam_elixir_lower_instr(deallocate, _PC, _Labels, _FuncName, _Suffix, Code) :-
     Code = '    state = case state.stack do
       [env | rest] ->
-        {_callee_ys, base_regs} = WamRuntime.split_y_regs(state.regs)
-        merged = Map.merge(base_regs, Map.get(env, :y_regs_saved, %{}))
-        %{state | cp: env.cp, stack: rest, regs: merged,
+        %{state | cp: env.cp, stack: rest,
+                  y_regs: Map.get(env, :y_regs_saved, %{}),
                   cut_point: Map.get(env, :cut_point, state.cut_point)}
       _ -> state
     end'.
