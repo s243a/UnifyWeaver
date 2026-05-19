@@ -1223,13 +1223,33 @@
         out (deref-value (:bindings state)
                          (or (reg-get-raw state "A3") ::unbound))
         left-text (atom-text state left)
-        right-text (atom-text state right)]
-    (if (and (some? left-text) (some? right-text))
+        right-text (atom-text state right)
+        out-text (atom-text state out)]
+    (cond
+      (and (some? left-text) (some? right-text))
       (let [[next-state atom] (intern-text-atom state (str left-text right-text))
             [ok unified-state] (unify-values next-state out atom)]
         (if ok
           (advance unified-state)
           (backtrack state)))
+
+      (and (nil? left-text) (some? right-text) (some? out-text)
+           (str/ends-with? out-text right-text))
+      (let [prefix (subs out-text 0 (- (count out-text) (count right-text)))
+            [ok unified-state] (unify-text-atom-value state left prefix)]
+        (if ok
+          (advance unified-state)
+          (backtrack state)))
+
+      (and (some? left-text) (nil? right-text) (some? out-text)
+           (str/starts-with? out-text left-text))
+      (let [suffix (subs out-text (count left-text))
+            [ok unified-state] (unify-text-atom-value state right suffix)]
+        (if ok
+          (advance unified-state)
+          (backtrack state)))
+
+      :else
       (backtrack state))))
 
 (defn apply-atom-length-solution [state]

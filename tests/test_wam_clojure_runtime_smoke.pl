@@ -184,7 +184,11 @@
 :- dynamic user:wam_atom_concat_guard/3.
 :- dynamic user:wam_atom_concat_new_atom/0.
 :- dynamic user:wam_atom_concat_unbound_left/1.
+:- dynamic user:wam_atom_concat_unbound_right/1.
+:- dynamic user:wam_atom_concat_unbound_both/1.
 :- dynamic user:wam_string_concat_guard/3.
+:- dynamic user:wam_string_concat_unbound_left/1.
+:- dynamic user:wam_string_concat_unbound_right/1.
 :- dynamic user:wam_atom_length_guard/2.
 :- dynamic user:wam_atom_length_unbound/1.
 :- dynamic user:wam_string_length_guard/2.
@@ -399,8 +403,12 @@ user:wam_number_chars_guard(N, C) :- number_chars(N, C).
 user:wam_text_conversion_unbound_pair(_) :- user:wam_unbound_arg(A), user:wam_unbound_arg(C), atom_codes(A, C).
 user:wam_atom_concat_guard(A, B, C) :- atom_concat(A, B, C).
 user:wam_atom_concat_new_atom :- atom_concat(fo, o, X), X = foo.
-user:wam_atom_concat_unbound_left(C) :- user:wam_unbound_arg(A), atom_concat(A, o, C).
+user:wam_atom_concat_unbound_left(C) :- user:wam_unbound_arg(A), atom_concat(A, o, C), A = fo.
+user:wam_atom_concat_unbound_right(C) :- user:wam_unbound_arg(B), atom_concat(fo, B, C), B = o.
+user:wam_atom_concat_unbound_both(C) :- user:wam_unbound_arg(A), user:wam_unbound_arg(B), atom_concat(A, B, C).
 user:wam_string_concat_guard(A, B, C) :- string_concat(A, B, C).
+user:wam_string_concat_unbound_left(C) :- user:wam_unbound_arg(A), string_concat(A, o, C), A = fo.
+user:wam_string_concat_unbound_right(C) :- user:wam_unbound_arg(B), string_concat(fo, B, C), B = o.
 user:wam_atom_length_guard(A, N) :- atom_length(A, N).
 user:wam_atom_length_unbound(N) :- user:wam_unbound_arg(A), atom_length(A, N).
 user:wam_string_length_guard(A, N) :- string_length(A, N).
@@ -621,7 +629,11 @@ run_smoke :-
           user:wam_atom_concat_guard/3,
           user:wam_atom_concat_new_atom/0,
           user:wam_atom_concat_unbound_left/1,
+          user:wam_atom_concat_unbound_right/1,
+          user:wam_atom_concat_unbound_both/1,
           user:wam_string_concat_guard/3,
+          user:wam_string_concat_unbound_left/1,
+          user:wam_string_concat_unbound_right/1,
           user:wam_atom_length_guard/2,
           user:wam_atom_length_unbound/1,
           user:wam_string_length_guard/2,
@@ -1005,8 +1017,14 @@ smoke_cases([
     case('wam_atom_concat_guard/3', args(fo, o, foo), "true"),
     case('wam_atom_concat_guard/3', args(fo, o, bar), "false"),
     case('wam_atom_concat_new_atom/0', no_args, "true"),
-    case('wam_atom_concat_unbound_left/1', foo, "false"),
+    case('wam_atom_concat_unbound_left/1', foo, "true"),
+    case('wam_atom_concat_unbound_left/1', bar, "false"),
+    case('wam_atom_concat_unbound_right/1', foo, "true"),
+    case('wam_atom_concat_unbound_right/1', bar, "false"),
+    case('wam_atom_concat_unbound_both/1', foo, "false"),
     case('wam_string_concat_guard/3', args(fo, o, foo), "true"),
+    case('wam_string_concat_unbound_left/1', foo, "true"),
+    case('wam_string_concat_unbound_right/1', foo, "true"),
     case('wam_atom_length_guard/2', args(foo, 3), "true"),
     case('wam_atom_length_guard/2', args(foo, 2), "false"),
     case('wam_atom_length_unbound/1', 0, "false"),
@@ -1369,6 +1387,10 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-number-codes-guard-2"),
     has(CoreCode, "defn lowered-wam-number-chars-guard-2"),
     has(CoreCode, "defn lowered-wam-atom-concat-guard-3"),
+    has(CoreCode, "defn lowered-wam-atom-concat-unbound-left-1"),
+    has(CoreCode, "defn lowered-wam-atom-concat-unbound-right-1"),
+    has(CoreCode, "defn lowered-wam-string-concat-unbound-left-1"),
+    has(CoreCode, "defn lowered-wam-string-concat-unbound-right-1"),
     has(CoreCode, "defn lowered-wam-atom-length-guard-2"),
     has(CoreCode, "defn lowered-wam-sub-atom-extract-0"),
     has(CoreCode, "runtime/ground-term?"),
