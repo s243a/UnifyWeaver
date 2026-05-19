@@ -556,15 +556,21 @@ static const int _wam_cpp_setup_register = []() {
            ;  throw(error(assertion_failed, G))
            )))
    ).
-% assoc/2 stdlib: unbalanced BST keyed by standard order. The empty
-% tree is the atom `t`; non-empty nodes are t(Key, Value, Left, Right).
-% Unbalanced keeps the asserted source tiny; can be upgraded to AVL
-% in a follow-up. Re-uses compare/3 (already in the runtime) for
+% assoc/2 stdlib: AVL tree keyed by standard order. The empty
+% tree is the atom `t`; non-empty nodes are
+% t(Key, Value, Balance, Left, Right) where Balance is one of:
+%   <   left subtree is one taller
+%   =   subtrees are equal height
+%   >   right subtree is one taller
+% This is the standard SWI library(assoc) AVL representation. Insert
+% tracks a height-change flag (same / grew) up the spine; once a
+% node would tip to imbalance, a single or double rotation restores
+% the invariant. Re-uses compare/3 (already in the runtime) for
 % standard-order key comparison.
 :- (   current_predicate(user:put_assoc/4)
    ->  true
    ;   assertz((user:empty_assoc(t))),
-       assertz((user:get_assoc(Key, t(K, V, L, R), Value) :-
+       assertz((user:get_assoc(Key, t(K, V, _, L, R), Value) :-
            compare(Order, Key, K),
            wam_cpp_get_assoc_(Order, Key, V, L, R, Value))),
        assertz((user:wam_cpp_get_assoc_(=, _, Value, _, _, Value))),
@@ -572,18 +578,100 @@ static const int _wam_cpp_setup_register = []() {
            get_assoc(Key, L, Value))),
        assertz((user:wam_cpp_get_assoc_(>, Key, _, _, R, Value) :-
            get_assoc(Key, R, Value))),
-       assertz((user:put_assoc(Key, t, Val, t(Key, Val, t, t)) :- !)),
-       assertz((user:put_assoc(Key, t(K, V, L, R), Val, NewTree) :-
+       % put_assoc/4: drop the height-change flag from the worker.
+       assertz((user:put_assoc(Key, Tree, Val, NewTree) :-
+           wam_cpp_put_assoc_recur(Key, Tree, Val, NewTree, _))),
+       % Insert into empty subtree — the new node grew the tree.
+       assertz((user:wam_cpp_put_assoc_recur(Key, t, Val,
+                                            t(Key, Val, =, t, t), grew))),
+       % Insert into a non-empty node — compare + dispatch.
+       assertz((user:wam_cpp_put_assoc_recur(Key, t(K, V, B, L, R), Val,
+                                            NewTree, Change) :-
            compare(Order, Key, K),
-           wam_cpp_put_assoc_(Order, Key, K, V, L, R, Val, NewTree))),
-       assertz((user:wam_cpp_put_assoc_(=, Key, _, _, L, R, Val,
-                                       t(Key, Val, L, R)))),
-       assertz((user:wam_cpp_put_assoc_(<, Key, K, V, L, R, Val,
-                                       t(K, V, NewL, R)) :-
-           put_assoc(Key, L, Val, NewL))),
-       assertz((user:wam_cpp_put_assoc_(>, Key, K, V, L, R, Val,
-                                       t(K, V, L, NewR)) :-
-           put_assoc(Key, R, Val, NewR))),
+           wam_cpp_put_assoc_dispatch(Order, Key, Val, K, V, B,
+                                      L, R, NewTree, Change))),
+       % =: replace value, balance preserved.
+       assertz((user:wam_cpp_put_assoc_dispatch(=, Key, Val, _, _, B,
+                                               L, R,
+                                               t(Key, Val, B, L, R),
+                                               same))),
+       % <: recurse into L, then ask wam_cpp_rebalance_left to decide
+       % whether the subtree got taller and whether to rotate.
+       assertz((user:wam_cpp_put_assoc_dispatch(<, Key, Val, K, V, B,
+                                               L, R, NewTree, Change) :-
+           wam_cpp_put_assoc_recur(Key, L, Val, L1, LChange),
+           wam_cpp_rebalance_left(LChange, B, K, V, L1, R,
+                                  NewTree, Change))),
+       % >: symmetric — recurse into R, then rebalance from the right.
+       assertz((user:wam_cpp_put_assoc_dispatch(>, Key, Val, K, V, B,
+                                               L, R, NewTree, Change) :-
+           wam_cpp_put_assoc_recur(Key, R, Val, R1, RChange),
+           wam_cpp_rebalance_right(RChange, B, K, V, L, R1,
+                                   NewTree, Change))),
+       % wam_cpp_rebalance_left(LChange, B, K, V, L, R, NewTree,
+       %                       Change)
+       % LChange=same — copy through.
+       assertz((user:wam_cpp_rebalance_left(same, B, K, V, L, R,
+                                           t(K, V, B, L, R), same))),
+       % LChange=grew, was right-heavy — now balanced, height same.
+       assertz((user:wam_cpp_rebalance_left(grew, >, K, V, L, R,
+                                           t(K, V, =, L, R), same))),
+       % LChange=grew, was balanced — now left-heavy, height grew.
+       assertz((user:wam_cpp_rebalance_left(grew, =, K, V, L, R,
+                                           t(K, V, <, L, R), grew))),
+       % LChange=grew, was left-heavy — rotate. Look at L''s balance.
+       assertz((user:wam_cpp_rebalance_left(grew, <, K, V, L, R,
+                                           NewTree, same) :-
+           wam_cpp_rotate_left_heavy(L, K, V, R, NewTree))),
+       % LL case — single right rotation. L''s left grew.
+       assertz((user:wam_cpp_rotate_left_heavy(t(LK, LV, <, LL, LR),
+                                              K, V, R,
+                                              t(LK, LV, =, LL,
+                                                t(K, V, =, LR, R))))),
+       % LR case — double rotation. L''s right grew. New balances
+       % depend on the inner node''s balance.
+       assertz((user:wam_cpp_rotate_left_heavy(
+                   t(LK, LV, >, LL, t(LRK, LRV, LRB, LRL, LRR)),
+                   K, V, R,
+                   t(LRK, LRV, =,
+                     t(LK, LV, NLB, LL, LRL),
+                     t(K,  V,  NRB, LRR, R))) :-
+           wam_cpp_lr_balance(LRB, NLB, NRB))),
+       % wam_cpp_rebalance_right(RChange, B, K, V, L, R, NewTree,
+       %                        Change) — mirror of left.
+       assertz((user:wam_cpp_rebalance_right(same, B, K, V, L, R,
+                                            t(K, V, B, L, R), same))),
+       assertz((user:wam_cpp_rebalance_right(grew, <, K, V, L, R,
+                                            t(K, V, =, L, R), same))),
+       assertz((user:wam_cpp_rebalance_right(grew, =, K, V, L, R,
+                                            t(K, V, >, L, R), grew))),
+       assertz((user:wam_cpp_rebalance_right(grew, >, K, V, L, R,
+                                            NewTree, same) :-
+           wam_cpp_rotate_right_heavy(L, K, V, R, NewTree))),
+       % RR case — single left rotation.
+       assertz((user:wam_cpp_rotate_right_heavy(L, K, V,
+                                               t(RK, RV, >, RL, RR),
+                                               t(RK, RV, =,
+                                                 t(K, V, =, L, RL),
+                                                 RR)))),
+       % RL case — double rotation. New balances depend on inner.
+       assertz((user:wam_cpp_rotate_right_heavy(
+                   L, K, V,
+                   t(RK, RV, <, t(RLK, RLV, RLB, RLL, RLR), RR),
+                   t(RLK, RLV, =,
+                     t(K,  V,  NLB, L,   RLL),
+                     t(RK, RV, NRB, RLR, RR))) :-
+           wam_cpp_rl_balance(RLB, NLB, NRB))),
+       % Balance-factor tables for the double-rotation cases:
+       %   LR rotation: the inner node (LR) had balance LRB; afterwards
+       %   the new left child gets NLB and the new right child gets NRB.
+       assertz((user:wam_cpp_lr_balance(<, =, >))),
+       assertz((user:wam_cpp_lr_balance(=, =, =))),
+       assertz((user:wam_cpp_lr_balance(>, <, =))),
+       %   RL rotation (mirror image):
+       assertz((user:wam_cpp_rl_balance(<, =, >))),
+       assertz((user:wam_cpp_rl_balance(=, =, =))),
+       assertz((user:wam_cpp_rl_balance(>, <, =))),
        assertz((user:list_to_assoc(List, Assoc) :-
            wam_cpp_list_to_assoc_(List, t, Assoc))),
        assertz((user:wam_cpp_list_to_assoc_([], A, A))),
@@ -591,7 +679,7 @@ static const int _wam_cpp_setup_register = []() {
            put_assoc(K, A0, V, A1),
            wam_cpp_list_to_assoc_(T, A1, A))),
        assertz((user:assoc_to_list(t, []))),
-       assertz((user:assoc_to_list(t(K, V, L, R), Pairs) :-
+       assertz((user:assoc_to_list(t(K, V, _, L, R), Pairs) :-
            assoc_to_list(L, LP),
            assoc_to_list(R, RP),
            append(LP, [K-V|RP], Pairs))),
@@ -668,7 +756,14 @@ stdlib_feature_predicates(assoc, [
     user:get_assoc/3,
     user:wam_cpp_get_assoc_/6,
     user:put_assoc/4,
-    user:wam_cpp_put_assoc_/8,
+    user:wam_cpp_put_assoc_recur/5,
+    user:wam_cpp_put_assoc_dispatch/10,
+    user:wam_cpp_rebalance_left/8,
+    user:wam_cpp_rebalance_right/8,
+    user:wam_cpp_rotate_left_heavy/5,
+    user:wam_cpp_rotate_right_heavy/5,
+    user:wam_cpp_lr_balance/3,
+    user:wam_cpp_rl_balance/3,
     user:list_to_assoc/2,
     user:wam_cpp_list_to_assoc_/3,
     user:assoc_to_list/2,
@@ -1722,11 +1817,14 @@ instr_to_setup_line(switch_on_constant(Entries), Labels, Line) :- !,
            '    vm.instrs.push_back(Instruction::SwitchOnConstant({~w}));',
            [EntriesCpp]).
 instr_to_setup_line(switch_on_constant_a2(Entries), Labels, Line) :- !,
-    % Treated as a no-op for now (interpreter falls through to the
-    % try_me_else chain on A2 dispatch). Emit as a comment.
+    % Treated as a runtime no-op for now (interpreter falls through to
+    % the try_me_else chain on A2 dispatch). Emit a real Nop push_back
+    % so vm.instrs.size() matches the PC count used for label resolution
+    % — otherwise every label after this point would be off-by-one.
     parse_switch_entries(Entries, Labels, _EntriesCpp),
     format(atom(Line),
-           '    // switch_on_constant_a2 ~w (no-op; falls through)', [Entries]).
+           '    vm.instrs.push_back(Instruction::Nop()); // switch_on_constant_a2 ~w',
+           [Entries]).
 instr_to_setup_line(switch_on_structure(Entries), Labels, Line) :- !,
     parse_switch_struct_entries(Entries, Labels, EntriesCpp),
     format(atom(Line),
@@ -2208,7 +2306,8 @@ struct Instruction {
         CatchReturn, NegationReturn, FindallCollect, ConjReturn, DisjAlt,
         IfThenCommit, IfThenElse, AggregateNextGroup, DynamicNextClause,
         SubAtomNext, BodyNext, RetractNext, OutputCaptureReturn,
-        CurrentPredNext
+        CurrentPredNext,
+        Nop
     };
     // Sentinel pc values for switch-table entries that should not jump.
     static constexpr std::size_t SWITCH_DEFAULT = static_cast<std::size_t>(-1);
@@ -2336,6 +2435,8 @@ struct Instruction {
         { Instruction i; i.op = Op::OutputCaptureReturn; return i; }
     static Instruction CurrentPredNext()
         { Instruction i; i.op = Op::CurrentPredNext; return i; }
+    static Instruction Nop()
+        { Instruction i; i.op = Op::Nop; return i; }
 };
 
 struct TrailEntry {
@@ -6907,6 +7008,13 @@ bool WamState::step(const Instruction& instr) {
         case Instruction::Op::Jump:
             pc = instr.target;
             return true;
+        case Instruction::Op::Nop:
+            // Placeholder emitted for WAM-asm pseudo-instructions that
+            // currently have no runtime semantics (e.g.
+            // switch_on_constant_a2). Counted in PC accounting so labels
+            // resolve correctly; behaves as a fall-through.
+            pc += 1;
+            return true;
 
         // ---- Choice points -----------------------------------------
         case Instruction::Op::TryMeElse: {
@@ -7076,7 +7184,14 @@ bool WamState::step(const Instruction& instr) {
 
         // ---- Indexing ----------------------------------------------
         case Instruction::Op::SwitchOnConstant: {
-            // Dispatch on A1''s atom/integer value.
+            // Dispatch on A1''s atom/integer value. When the table has
+            // multiple entries for the same key (e.g. several clauses
+            // sharing A1=grew), only the first is the jump target; the
+            // rest are reached via the RetryMeElse chain at that label.
+            // Setting indexed_entry tells the receiving RetryMeElse to
+            // synthesize a fresh CP at this predicate level (otherwise
+            // it would mutate an outer level''s CP). Symmetric to
+            // SwitchOnTerm.
             CellPtr ac = get_cell("A1");
             const Value& a = *ac;
             if (a.is_unbound()) { pc += 1; return true; }
@@ -7088,6 +7203,7 @@ bool WamState::step(const Instruction& instr) {
                 if (kv.first == a) {
                     if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
                     if (kv.second == Instruction::SWITCH_NONE)    return false;
+                    indexed_entry = true;
                     pc = kv.second; return true;
                 }
             }
@@ -7102,6 +7218,7 @@ bool WamState::step(const Instruction& instr) {
                 if (kv.first == a.s) {
                     if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
                     if (kv.second == Instruction::SWITCH_NONE)    return false;
+                    indexed_entry = true;
                     pc = kv.second; return true;
                 }
             }

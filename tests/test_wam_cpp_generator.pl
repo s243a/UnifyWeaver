@@ -238,6 +238,10 @@
 :- dynamic user:wam_cpp_test_assoc_keys/0.
 :- dynamic user:wam_cpp_test_assoc_values/0.
 :- dynamic user:wam_cpp_test_assoc_compound_keys/0.
+:- dynamic user:wam_cpp_assoc_depth/2.
+:- dynamic user:wam_cpp_test_assoc_avl_balance_sorted/0.
+:- dynamic user:wam_cpp_test_assoc_avl_balance_descending/0.
+:- dynamic user:wam_cpp_test_assoc_avl_balance_zigzag/0.
 :- dynamic user:wam_cpp_test_get_time_positive/0.
 :- dynamic user:wam_cpp_test_stamp_utc/0.
 :- dynamic user:wam_cpp_test_stamp_subsec/0.
@@ -561,6 +565,85 @@ user:wam_cpp_test_assoc_compound_keys :-
     put_assoc(pt(3, 4), A1, south, A2),
     get_assoc(pt(1, 2), A2, north),
     get_assoc(pt(3, 4), A2, south).
+% AVL balance: insert keys in ascending order — a plain BST would be
+% a 16-deep chain, but the AVL must stay roughly log2(16) ≈ 4-5 deep.
+% Tree-depth probe uses the t(K,V,B,L,R) node shape.
+user:wam_cpp_assoc_depth(t, 0).
+user:wam_cpp_assoc_depth(t(_, _, _, L, R), D) :-
+    wam_cpp_assoc_depth(L, DL),
+    wam_cpp_assoc_depth(R, DR),
+    ( DL >= DR -> D is DL + 1 ; D is DR + 1 ).
+user:wam_cpp_test_assoc_avl_balance_sorted :-
+    empty_assoc(A0),
+    put_assoc(1,  A0,  v1,  A1),
+    put_assoc(2,  A1,  v2,  A2),
+    put_assoc(3,  A2,  v3,  A3),
+    put_assoc(4,  A3,  v4,  A4),
+    put_assoc(5,  A4,  v5,  A5),
+    put_assoc(6,  A5,  v6,  A6),
+    put_assoc(7,  A6,  v7,  A7),
+    put_assoc(8,  A7,  v8,  A8),
+    put_assoc(9,  A8,  v9,  A9),
+    put_assoc(10, A9,  v10, A10),
+    put_assoc(11, A10, v11, A11),
+    put_assoc(12, A11, v12, A12),
+    put_assoc(13, A12, v13, A13),
+    put_assoc(14, A13, v14, A14),
+    put_assoc(15, A14, v15, A15),
+    put_assoc(16, A15, v16, A16),
+    wam_cpp_assoc_depth(A16, D),
+    D =< 6,
+    get_assoc(1,  A16, v1),
+    get_assoc(8,  A16, v8),
+    get_assoc(16, A16, v16),
+    \+ get_assoc(0,  A16, _),
+    \+ get_assoc(17, A16, _).
+user:wam_cpp_test_assoc_avl_balance_descending :-
+    % Mirror case — keys descending forces left-side rotations.
+    empty_assoc(A0),
+    put_assoc(16, A0,  v16, A1),
+    put_assoc(15, A1,  v15, A2),
+    put_assoc(14, A2,  v14, A3),
+    put_assoc(13, A3,  v13, A4),
+    put_assoc(12, A4,  v12, A5),
+    put_assoc(11, A5,  v11, A6),
+    put_assoc(10, A6,  v10, A7),
+    put_assoc(9,  A7,  v9,  A8),
+    put_assoc(8,  A8,  v8,  A9),
+    put_assoc(7,  A9,  v7,  A10),
+    put_assoc(6,  A10, v6,  A11),
+    put_assoc(5,  A11, v5,  A12),
+    put_assoc(4,  A12, v4,  A13),
+    put_assoc(3,  A13, v3,  A14),
+    put_assoc(2,  A14, v2,  A15),
+    put_assoc(1,  A15, v1,  A16),
+    wam_cpp_assoc_depth(A16, D),
+    D =< 6,
+    get_assoc(1,  A16, v1),
+    get_assoc(16, A16, v16).
+user:wam_cpp_test_assoc_avl_balance_zigzag :-
+    % Insert in zigzag order — exercises both LR and RL rotations.
+    empty_assoc(A0),
+    put_assoc(8,  A0,  v8,  A1),
+    put_assoc(4,  A1,  v4,  A2),
+    put_assoc(12, A2,  v12, A3),
+    put_assoc(6,  A3,  v6,  A4),
+    put_assoc(10, A4,  v10, A5),
+    put_assoc(2,  A5,  v2,  A6),
+    put_assoc(14, A6,  v14, A7),
+    put_assoc(5,  A7,  v5,  A8),
+    put_assoc(7,  A8,  v7,  A9),
+    put_assoc(9,  A9,  v9,  A10),
+    put_assoc(11, A10, v11, A11),
+    put_assoc(1,  A11, v1,  A12),
+    put_assoc(3,  A12, v3,  A13),
+    put_assoc(13, A13, v13, A14),
+    put_assoc(15, A14, v15, A15),
+    wam_cpp_assoc_depth(A15, D),
+    D =< 5,
+    get_assoc(7,  A15, v7),
+    get_assoc(15, A15, v15),
+    assoc_to_keys(A15, [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]).
 % Date/time: get_time/1 (Float seconds since epoch),
 % stamp_date_time/3 (decompose + TZ), date_time_stamp/2 (compose),
 % format_time/3 (strftime-style atom output). Tests use the canonical
@@ -2824,6 +2907,35 @@ user:wam_cpp_mixed(foo(x)).
 user:wam_cpp_listy([]).
 user:wam_cpp_listy([_|_]).
 
+% A2-dispatch fixture — multi-clause predicate where the dispatch
+% constant lives in A2, not A1. The compiler emits
+% switch_on_constant_a2 (a runtime no-op that historically was
+% emitted as a C++ comment instead of a real push_back, leaving
+% downstream labels off-by-one). The downstream predicate
+% wam_cpp_after_a2/0 catches that regression: if its label PC is
+% off, calling it crashes or jumps mid-predicate.
+:- dynamic user:wam_cpp_a2dispatch/4.
+:- dynamic user:wam_cpp_after_a2/0.
+:- dynamic user:wam_cpp_test_a2_all_clauses/0.
+:- dynamic user:wam_cpp_test_a2_downstream_label/0.
+
+user:wam_cpp_a2dispatch(B, same, K, t(same, B, K)).
+user:wam_cpp_a2dispatch(=, grew, K, t(grew_eq, K)).
+user:wam_cpp_a2dispatch(<, grew, K, t(grew_lt, K)).
+user:wam_cpp_a2dispatch(>, grew, K, t(grew_gt, K)).
+
+user:wam_cpp_after_a2 :- true.
+
+user:wam_cpp_test_a2_all_clauses :-
+    user:wam_cpp_a2dispatch(=, same, k1, T1), T1 = t(same, =, k1),
+    user:wam_cpp_a2dispatch(=, grew, k2, T2), T2 = t(grew_eq, k2),
+    user:wam_cpp_a2dispatch(<, grew, k3, T3), T3 = t(grew_lt, k3),
+    user:wam_cpp_a2dispatch(>, grew, k4, T4), T4 = t(grew_gt, k4).
+
+user:wam_cpp_test_a2_downstream_label :-
+    user:wam_cpp_a2dispatch(=, same, k, _),
+    user:wam_cpp_after_a2.
+
 user:wam_cpp_test_write :- write(hello), nl.
 % Y-reg isolation: both helpers use Y1/Y2 internally. Caller relies on
 % preserved Y1 across the two calls.
@@ -3820,18 +3932,25 @@ test(cpp_e2e_assoc_library, [condition(cpp_compiler_available)]) :-
                                user:wam_cpp_test_assoc_list_sorted/0,
                                user:wam_cpp_test_assoc_keys/0,
                                user:wam_cpp_test_assoc_values/0,
-                               user:wam_cpp_test_assoc_compound_keys/0],
+                               user:wam_cpp_test_assoc_compound_keys/0,
+                               user:wam_cpp_assoc_depth/2,
+                               user:wam_cpp_test_assoc_avl_balance_sorted/0,
+                               user:wam_cpp_test_assoc_avl_balance_descending/0,
+                               user:wam_cpp_test_assoc_avl_balance_zigzag/0],
                               [emit_main(true), include_stdlib(assoc)],
                               TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
-          run_query(BinPath, 'wam_cpp_test_assoc_empty/0',         [], true),
-          run_query(BinPath, 'wam_cpp_test_assoc_put_get/0',       [], true),
-          run_query(BinPath, 'wam_cpp_test_assoc_missing/0',       [], true),
-          run_query(BinPath, 'wam_cpp_test_assoc_overwrite/0',     [], true),
-          run_query(BinPath, 'wam_cpp_test_assoc_list_sorted/0',   [], true),
-          run_query(BinPath, 'wam_cpp_test_assoc_keys/0',          [], true),
-          run_query(BinPath, 'wam_cpp_test_assoc_values/0',        [], true),
-          run_query(BinPath, 'wam_cpp_test_assoc_compound_keys/0', [], true)
+          run_query(BinPath, 'wam_cpp_test_assoc_empty/0',                  [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_put_get/0',                [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_missing/0',                [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_overwrite/0',              [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_list_sorted/0',            [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_keys/0',                   [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_values/0',                 [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_compound_keys/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_avl_balance_sorted/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_avl_balance_descending/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_avl_balance_zigzag/0',     [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
@@ -8600,6 +8719,30 @@ test(cpp_e2e_switch_on_term, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_listy/1', ['[]'],       true),
           run_query(BinPath, 'wam_cpp_listy/1', ['[a,b]'],    true),
           run_query(BinPath, 'wam_cpp_listy/1', [foo],        false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% Regression for the switch_on_constant_a2 off-by-one bug. The WAM-asm
+% layer emits switch_on_constant_a2 at the head of any multi-clause
+% predicate that dispatches on A2 (rather than A1). Before the fix the
+% C++ emitter rendered it as a /comment/, but the PC-counter still
+% advanced — so every label after the first such predicate pointed
+% one instruction past its real entry. The downstream check
+% (wam_cpp_test_a2_downstream_label) catches that: if
+% wam_cpp_after_a2's label is wrong, the call lands inside the prior
+% predicate's frame and either crashes or returns false.
+test(cpp_e2e_switch_on_constant_a2, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_swa2', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_a2dispatch/4,
+                               user:wam_cpp_after_a2/0,
+                               user:wam_cpp_test_a2_all_clauses/0,
+                               user:wam_cpp_test_a2_downstream_label/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_a2_all_clauses/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_downstream_label/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
