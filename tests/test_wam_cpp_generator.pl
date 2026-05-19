@@ -2637,6 +2637,43 @@ user:wam_cpp_test_keysort_then_values :-
     pairs_values(Sorted, Vs),
     Vs = [10, 20, 30].
 
+% library(lists) reductions — memberchk + 5 numeric/term
+% reductions. All asserted under the lists_extra feature.
+:- dynamic user:wam_cpp_test_memberchk_hit/0.
+:- dynamic user:wam_cpp_test_memberchk_miss/0.
+:- dynamic user:wam_cpp_test_sum_list_basic/0.
+:- dynamic user:wam_cpp_test_sum_list_empty/0.
+:- dynamic user:wam_cpp_test_max_list_basic/0.
+:- dynamic user:wam_cpp_test_min_list_basic/0.
+:- dynamic user:wam_cpp_test_max_list_one/0.
+:- dynamic user:wam_cpp_test_min_list_one/0.
+:- dynamic user:wam_cpp_test_max_list_empty/0.
+:- dynamic user:wam_cpp_test_min_list_empty/0.
+:- dynamic user:wam_cpp_test_max_member_atoms/0.
+:- dynamic user:wam_cpp_test_min_member_atoms/0.
+:- dynamic user:wam_cpp_test_max_member_nums/0.
+:- dynamic user:wam_cpp_test_min_member_nums/0.
+
+user:wam_cpp_test_memberchk_hit  :- memberchk(b, [a,b,c]).
+user:wam_cpp_test_memberchk_miss :- \+ memberchk(d, [a,b,c]).
+user:wam_cpp_test_sum_list_basic :- sum_list([1,2,3,4], 10).
+user:wam_cpp_test_sum_list_empty :- sum_list([], 0).
+user:wam_cpp_test_max_list_basic :- max_list([3,1,4,1,5,9,2,6], 9).
+user:wam_cpp_test_min_list_basic :- min_list([3,1,4,1,5,9,2,6], 1).
+user:wam_cpp_test_max_list_one   :- max_list([7], 7).
+user:wam_cpp_test_min_list_one   :- min_list([7], 7).
+% Empty-list max/min should FAIL (matches SWI: needs at least
+% one element to compare). \+ confirms failure.
+user:wam_cpp_test_max_list_empty :- \+ max_list([], _).
+user:wam_cpp_test_min_list_empty :- \+ min_list([], _).
+% max_member/min_member use standard order of terms, not numeric
+% comparison — so foo @> baz @> bar.
+user:wam_cpp_test_max_member_atoms :- max_member(M, [foo, bar, baz]), M == foo.
+user:wam_cpp_test_min_member_atoms :- min_member(M, [foo, bar, baz]), M == bar.
+% On numeric lists, standard order coincides with numeric order.
+user:wam_cpp_test_max_member_nums :- max_member(M, [3,1,4,1,5,9,2,6]), M == 9.
+user:wam_cpp_test_min_member_nums :- min_member(M, [3,1,4,1,5,9,2,6]), M == 1.
+
 % library(pairs) — transpose_pairs/2 swaps each K-V to V-K and
 % keysorts on the new key. map_list_to_pairs/3 calls a closure on
 % each element to attach a key (Schwartzian style).
@@ -8154,6 +8191,48 @@ test(cpp_e2e_keysort_then_values,
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_keysort_then_values/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% library(lists) reductions — memberchk/2, sum_list/2,
+% max_list/2, min_list/2, max_member/2, min_member/2. All
+% asserted under the lists_extra feature.
+test(cpp_e2e_lists_reductions,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lists_red', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_memberchk_hit/0,
+                               user:wam_cpp_test_memberchk_miss/0,
+                               user:wam_cpp_test_sum_list_basic/0,
+                               user:wam_cpp_test_sum_list_empty/0,
+                               user:wam_cpp_test_max_list_basic/0,
+                               user:wam_cpp_test_min_list_basic/0,
+                               user:wam_cpp_test_max_list_one/0,
+                               user:wam_cpp_test_min_list_one/0,
+                               user:wam_cpp_test_max_list_empty/0,
+                               user:wam_cpp_test_min_list_empty/0,
+                               user:wam_cpp_test_max_member_atoms/0,
+                               user:wam_cpp_test_min_member_atoms/0,
+                               user:wam_cpp_test_max_member_nums/0,
+                               user:wam_cpp_test_min_member_nums/0],
+                              [emit_main(true), include_stdlib(lists_extra)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_memberchk_hit/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_memberchk_miss/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_sum_list_basic/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_sum_list_empty/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_max_list_basic/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_min_list_basic/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_max_list_one/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_min_list_one/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_max_list_empty/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_min_list_empty/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_max_member_atoms/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_min_member_atoms/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_max_member_nums/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_min_member_nums/0',  [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

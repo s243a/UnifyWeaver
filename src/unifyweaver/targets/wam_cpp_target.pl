@@ -920,7 +920,45 @@ static const int _wam_cpp_setup_register = []() {
        assertz((user:union([H|T], L, [H|R]) :- union(T, L, R))),
        assertz((user:permutation([], []))),
        assertz((user:permutation(L, [H|T]) :-
-           select(H, L, Rest), permutation(Rest, T)))
+           select(H, L, Rest), permutation(Rest, T))),
+       % memberchk/2 — deterministic member: commits on the first
+       % match. Same semantics as SWI library(lists).
+       assertz((user:memberchk(X, [X|_]) :- !)),
+       assertz((user:memberchk(X, [_|T]) :- memberchk(X, T))),
+       % sum_list/2 — sum of numeric elements via tail-recursive
+       % accumulator. Empty list sums to 0 (matches SWI).
+       assertz((user:sum_list(L, S) :- wam_cpp_sum_list_acc(L, 0, S))),
+       assertz((user:wam_cpp_sum_list_acc([], A, A))),
+       assertz((user:wam_cpp_sum_list_acc([H|T], A, S) :-
+           A1 is A + H, wam_cpp_sum_list_acc(T, A1, S))),
+       % max_list/2, min_list/2 — numeric max/min. Fail on empty
+       % list (matches SWI: needs at least one element to compare).
+       assertz((user:max_list([H|T], M) :- wam_cpp_max_list_acc(T, H, M))),
+       assertz((user:wam_cpp_max_list_acc([], M, M))),
+       assertz((user:wam_cpp_max_list_acc([H|T], A, M) :-
+           H > A, !, wam_cpp_max_list_acc(T, H, M))),
+       assertz((user:wam_cpp_max_list_acc([_|T], A, M) :-
+           wam_cpp_max_list_acc(T, A, M))),
+       assertz((user:min_list([H|T], M) :- wam_cpp_min_list_acc(T, H, M))),
+       assertz((user:wam_cpp_min_list_acc([], M, M))),
+       assertz((user:wam_cpp_min_list_acc([H|T], A, M) :-
+           H < A, !, wam_cpp_min_list_acc(T, H, M))),
+       assertz((user:wam_cpp_min_list_acc([_|T], A, M) :-
+           wam_cpp_min_list_acc(T, A, M))),
+       % max_member/2, min_member/2 — standard order of terms (not
+       % just numbers). Note arg order: (-Max, +List), matching SWI.
+       assertz((user:max_member(M, [H|T]) :- wam_cpp_max_member_acc(T, H, M))),
+       assertz((user:wam_cpp_max_member_acc([], M, M))),
+       assertz((user:wam_cpp_max_member_acc([H|T], A, M) :-
+           H @> A, !, wam_cpp_max_member_acc(T, H, M))),
+       assertz((user:wam_cpp_max_member_acc([_|T], A, M) :-
+           wam_cpp_max_member_acc(T, A, M))),
+       assertz((user:min_member(M, [H|T]) :- wam_cpp_min_member_acc(T, H, M))),
+       assertz((user:wam_cpp_min_member_acc([], M, M))),
+       assertz((user:wam_cpp_min_member_acc([H|T], A, M) :-
+           H @< A, !, wam_cpp_min_member_acc(T, H, M))),
+       assertz((user:wam_cpp_min_member_acc([_|T], A, M) :-
+           wam_cpp_min_member_acc(T, A, M)))
    ).
 
 %% stdlib_feature_predicates(+Feature, -Predicates)
@@ -988,7 +1026,18 @@ stdlib_feature_predicates(lists_extra, [
     user:drop/3,
     user:intersection/3,
     user:union/3,
-    user:permutation/2
+    user:permutation/2,
+    user:memberchk/2,
+    user:sum_list/2,
+    user:wam_cpp_sum_list_acc/3,
+    user:max_list/2,
+    user:wam_cpp_max_list_acc/3,
+    user:min_list/2,
+    user:wam_cpp_min_list_acc/3,
+    user:max_member/2,
+    user:wam_cpp_max_member_acc/3,
+    user:min_member/2,
+    user:wam_cpp_min_member_acc/3
 ]).
 
 %% all_stdlib_features(-Features)
