@@ -300,6 +300,13 @@
 :- dynamic user:wam_cpp_test_fs_delete_missing/0.
 :- dynamic user:wam_cpp_test_wos_stream/0.
 :- dynamic user:wam_cpp_test_wos_format/0.
+:- dynamic user:wam_cpp_test_clause_fact/0.
+:- dynamic user:wam_cpp_test_clause_var/0.
+:- dynamic user:wam_cpp_test_clause_enum/0.
+:- dynamic user:wam_cpp_test_clause_rule_body/0.
+:- dynamic user:wam_cpp_test_clause_missing/0.
+:- dynamic user:wam_cpp_test_clause_unknown/0.
+:- dynamic user:wam_cpp_test_clause_after_assertz/0.
 :- dynamic user:wam_cpp_test_enum_member/0.
 
 user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
@@ -768,6 +775,48 @@ user:wam_cpp_test_wos_format :-
     read_line_to_string(R, Line),
     close(R),
     Line = '42-ok'.
+% Runtime clause/2 over dynamic predicates. Iterates dynamic_db
+% with backtracking via the shared RetractIterator + is_clause_only
+% flag (no removal, unifies both Head and Body). Body is `true` for
+% bare facts; `Body` from a `:-/2` stored term otherwise.
+:- dynamic user:wam_cpp_clause_p/1.
+:- dynamic user:wam_cpp_clause_q/2.
+user:wam_cpp_clause_setup_p :-
+    retractall(wam_cpp_clause_p(_)),
+    assertz(wam_cpp_clause_p(1)),
+    assertz(wam_cpp_clause_p(2)),
+    assertz(wam_cpp_clause_p(3)).
+user:wam_cpp_clause_setup_q :-
+    retractall(wam_cpp_clause_q(_, _)),
+    assertz(wam_cpp_clause_q(a, 10)),
+    assertz((wam_cpp_clause_q(b, 20) :- write(side_b), nl)),
+    assertz(wam_cpp_clause_q(c, 30)).
+user:wam_cpp_test_clause_fact :-
+    wam_cpp_clause_setup_p,
+    clause(wam_cpp_clause_p(1), B), B = true.
+user:wam_cpp_test_clause_var :-
+    wam_cpp_clause_setup_p,
+    clause(wam_cpp_clause_p(X), B), X = 1, B = true.
+user:wam_cpp_test_clause_enum :-
+    wam_cpp_clause_setup_p,
+    findall(X, clause(wam_cpp_clause_p(X), true), L),
+    L = [1, 2, 3].
+user:wam_cpp_test_clause_rule_body :-
+    wam_cpp_clause_setup_q,
+    findall(triple(K, V, B), clause(wam_cpp_clause_q(K, V), B), L),
+    L = [triple(a, 10, true),
+         triple(b, 20, (write(side_b), nl)),
+         triple(c, 30, true)].
+user:wam_cpp_test_clause_missing :-
+    wam_cpp_clause_setup_p,
+    \+ clause(wam_cpp_clause_p(99), _).
+user:wam_cpp_test_clause_unknown :-
+    \+ clause(wam_cpp_no_such_dyn(_), _).
+user:wam_cpp_test_clause_after_assertz :-
+    wam_cpp_clause_setup_p,
+    assertz(wam_cpp_clause_p(4)),
+    findall(X, clause(wam_cpp_clause_p(X), _), L),
+    L = [1, 2, 3, 4].
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
 
@@ -3950,6 +3999,39 @@ test(cpp_e2e_fs_and_wos, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_fs_delete_missing/0',  [], true),
           run_query(BinPath, 'wam_cpp_test_wos_stream/0',         [], true),
           run_query(BinPath, 'wam_cpp_test_wos_format/0',         [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_clause_runtime, [condition(cpp_compiler_available)]) :-
+    % Runtime clause/2 for dynamic predicates. Each test seeds the
+    % dynamic database with assertz at startup (clause/2 only sees
+    % runtime-asserted clauses, not the statically compiled ones)
+    % then enumerates / matches. Covers facts, bound + var heads,
+    % findall over the enumeration, rule clauses with bodies, miss,
+    % unknown predicate, and assertz-then-enumerate.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_clause', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_clause_fact/0,
+                               user:wam_cpp_test_clause_var/0,
+                               user:wam_cpp_test_clause_enum/0,
+                               user:wam_cpp_test_clause_rule_body/0,
+                               user:wam_cpp_test_clause_missing/0,
+                               user:wam_cpp_test_clause_unknown/0,
+                               user:wam_cpp_test_clause_after_assertz/0,
+                               user:wam_cpp_clause_setup_p/0,
+                               user:wam_cpp_clause_setup_q/0,
+                               user:wam_cpp_clause_p/1,
+                               user:wam_cpp_clause_q/2],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_clause_fact/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_clause_var/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_clause_enum/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_clause_rule_body/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_clause_missing/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_clause_unknown/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_clause_after_assertz/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
