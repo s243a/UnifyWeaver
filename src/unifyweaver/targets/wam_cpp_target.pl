@@ -2513,6 +2513,35 @@ struct Value {
     }
 };
 
+} // namespace wam_cpp
+
+namespace std {
+// Hash specialization so Instruction::const_map can use Value as a
+// key. Only Atom / Integer / Float ever appear in indexing tables
+// (the dispatch handler filters out unbound and compounds before
+// looking up); other tags hash to zero, which is fine since they
+// never reach a switch table. Must be visible at the point where
+// Instruction declares its unordered_map<Value, ...> field.
+template <> struct hash<wam_cpp::Value> {
+    std::size_t operator()(const wam_cpp::Value& v) const noexcept {
+        using T = wam_cpp::Value::Tag;
+        std::size_t h = static_cast<std::size_t>(v.tag);
+        std::size_t k = 0;
+        switch (v.tag) {
+            case T::Atom:    k = std::hash<std::string>()(v.s); break;
+            case T::Integer: k = std::hash<std::int64_t>()(v.i); break;
+            case T::Float:   k = std::hash<double>()(v.f); break;
+            default:         k = 0; break;
+        }
+        // Mix tag in so atoms and integers with same numeric/string
+        // form hash differently.
+        return h ^ (k + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2));
+    }
+};
+} // namespace std
+
+namespace wam_cpp {
+
 struct Instruction {
     enum class Op {
         GetConstant, GetVariable, GetValue, GetStructure, GetList, GetNil, GetInteger,
@@ -2549,7 +2578,14 @@ struct Instruction {
     // Indexing dispatch tables. const_table holds Value→pc for atom/int
     // dispatch; struct_table holds "functor/arity"→pc for compound
     // dispatch; target doubles as the list-pc for SwitchOnTerm.
+    //
+    // const_map is built once in the factory from const_table and used
+    // by SwitchOnConstant{,A2} at runtime — O(1) hash lookup instead
+    // of O(N) linear scan. The vector is retained for emission /
+    // debugging; iteration order does not matter once we have the map
+    // since the WAM compiler emits each constant exactly once.
     std::vector<std::pair<Value, std::size_t>> const_table;
+    std::unordered_map<Value, std::size_t> const_map;
     std::vector<std::pair<std::string, std::size_t>> struct_table;
     // Mixed-mode indexing flag: when a bound A1/A2 misses every
     // entry in the switch table, fall through (pc += 1) instead of
@@ -2628,13 +2664,25 @@ struct Instruction {
         { Instruction i; i.op = Op::SwitchOnConstant;
           i.const_table = std::move(table);
           i.no_match_fallthrough = fall_on_miss;
+          build_const_map(i);
           return i; }
     static Instruction SwitchOnConstantA2(std::vector<std::pair<Value, std::size_t>> table,
                                           bool fall_on_miss = false)
         { Instruction i; i.op = Op::SwitchOnConstantA2;
           i.const_table = std::move(table);
           i.no_match_fallthrough = fall_on_miss;
+          build_const_map(i);
           return i; }
+
+private:
+    // try_emplace gives first-insert-wins semantics, matching the
+    // pre-hash linear-scan behaviour: if the WAM compiler emits two
+    // entries with the same key (rare), the first is the target.
+    static void build_const_map(Instruction& i) {
+        i.const_map.reserve(i.const_table.size());
+        for (auto& kv : i.const_table) i.const_map.try_emplace(kv.first, kv.second);
+    }
+public:
     static Instruction SwitchOnStructure(std::vector<std::pair<std::string, std::size_t>> table)
         { Instruction i; i.op = Op::SwitchOnStructure; i.struct_table = std::move(table); return i; }
     static Instruction SwitchOnStructureA2(std::vector<std::pair<std::string, std::size_t>> table)
@@ -7447,13 +7495,12 @@ bool WamState::step(const Instruction& instr) {
                 && a.tag != Value::Tag::Float) {
                 pc += 1; return true; // not a constant we index on
             }
-            for (auto& kv : instr.const_table) {
-                if (kv.first == a) {
-                    if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
-                    if (kv.second == Instruction::SWITCH_NONE)    return false;
-                    indexed_entry = true;
-                    pc = kv.second; return true;
-                }
+            auto it = instr.const_map.find(a);
+            if (it != instr.const_map.end()) {
+                if (it->second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                if (it->second == Instruction::SWITCH_NONE)    return false;
+                indexed_entry = true;
+                pc = it->second; return true;
             }
             // Bound constant with no matching indexed clause. If the
             // predicate has variable-headed clauses (mixed-mode
@@ -7474,13 +7521,12 @@ bool WamState::step(const Instruction& instr) {
                 && a.tag != Value::Tag::Float) {
                 pc += 1; return true;
             }
-            for (auto& kv : instr.const_table) {
-                if (kv.first == a) {
-                    if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
-                    if (kv.second == Instruction::SWITCH_NONE)    return false;
-                    indexed_entry = true;
-                    pc = kv.second; return true;
-                }
+            auto it = instr.const_map.find(a);
+            if (it != instr.const_map.end()) {
+                if (it->second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                if (it->second == Instruction::SWITCH_NONE)    return false;
+                indexed_entry = true;
+                pc = it->second; return true;
             }
             // See SwitchOnConstant: bound A2 with no entry in the
             // table falls through to the try_me_else chain when the
