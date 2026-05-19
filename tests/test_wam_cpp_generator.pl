@@ -307,6 +307,10 @@
 :- dynamic user:wam_cpp_test_clause_missing/0.
 :- dynamic user:wam_cpp_test_clause_unknown/0.
 :- dynamic user:wam_cpp_test_clause_after_assertz/0.
+:- dynamic user:wam_cpp_test_nested_dash/0.
+:- dynamic user:wam_cpp_test_nested_f_g/0.
+:- dynamic user:wam_cpp_test_nested_right/0.
+:- dynamic user:wam_cpp_test_nested_constant/0.
 :- dynamic user:wam_cpp_test_enum_member/0.
 
 user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
@@ -817,6 +821,34 @@ user:wam_cpp_test_clause_after_assertz :-
     assertz(wam_cpp_clause_p(4)),
     findall(X, clause(wam_cpp_clause_p(X), _), L),
     L = [1, 2, 3, 4].
+% findall with nested compound templates. Previously compile_compound_template
+% threw on any compound arg, which got caught + swallowed by the per-
+% predicate try-catch in compile_predicates_for_project, silently
+% dropping the affected predicate from the output. The fix recurses
+% into nested compounds using set_variable + put_structure on the
+% sub-reg so the parent''s arg slot sees the sub-compound. Each test
+% asserts ground facts and findalls them through a nested template.
+:- dynamic user:wam_cpp_nest_emit/3.
+user:wam_cpp_nest_setup :-
+    retractall(wam_cpp_nest_emit(_, _, _)),
+    assertz(wam_cpp_nest_emit(a, 10, true)),
+    assertz(wam_cpp_nest_emit(b, 20, false)).
+user:wam_cpp_test_nested_dash :-
+    wam_cpp_nest_setup,
+    findall(K-V-B, wam_cpp_nest_emit(K, V, B), L),
+    L = [a-10-true, b-20-false].
+user:wam_cpp_test_nested_f_g :-
+    wam_cpp_nest_setup,
+    findall(f(g(K, V), B), wam_cpp_nest_emit(K, V, B), L),
+    L = [f(g(a, 10), true), f(g(b, 20), false)].
+user:wam_cpp_test_nested_right :-
+    wam_cpp_nest_setup,
+    findall(g(K, f(V, B)), wam_cpp_nest_emit(K, V, B), L),
+    L = [g(a, f(10, true)), g(b, f(20, false))].
+user:wam_cpp_test_nested_constant :-
+    wam_cpp_nest_setup,
+    findall(g(K, f(V, marker)), wam_cpp_nest_emit(K, V, _), L),
+    L = [g(a, f(10, marker)), g(b, f(20, marker))].
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
 
@@ -4032,6 +4064,35 @@ test(cpp_e2e_clause_runtime, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_clause_missing/0',       [], true),
           run_query(BinPath, 'wam_cpp_test_clause_unknown/0',       [], true),
           run_query(BinPath, 'wam_cpp_test_clause_after_assertz/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_findall_nested_template, [condition(cpp_compiler_available)]) :-
+    % Regression for the findall nested compound template bug
+    % uncovered during PR #2286 development. The compile path used
+    % to throw unsupported_template_arg on any compound arg of a
+    % findall template, and the surrounding catch silently dropped
+    % the predicate from the output. The fix in compile_compound_
+    % template recurses into nested compounds using set_variable
+    % at the parent level + put_structure on the sub-reg. Tests
+    % cover left-nested (-/2-2x), right-nested, mixed-functor
+    % nests, and templates containing a literal atom inside the
+    % nested compound.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_nest', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_nested_dash/0,
+                               user:wam_cpp_test_nested_f_g/0,
+                               user:wam_cpp_test_nested_right/0,
+                               user:wam_cpp_test_nested_constant/0,
+                               user:wam_cpp_nest_setup/0,
+                               user:wam_cpp_nest_emit/3],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_nested_dash/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_nested_f_g/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_nested_right/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_nested_constant/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
