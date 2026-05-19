@@ -983,6 +983,8 @@ emit_lowered_expr(_Instr, S, Expr) :-
 clj_lowered_literal(Value, Literal) :-
     (   number(Value)
     ->  format(atom(Literal), '~w', [Value])
+    ;   Value == ''
+    ->  Literal = '""'
     ;   format(atom(Literal), '~q', [Value])
     ).
 

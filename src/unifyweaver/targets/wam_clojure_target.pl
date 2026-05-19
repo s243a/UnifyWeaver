@@ -497,17 +497,25 @@ wam_lines_intern_seeds([Line|Rest], AtomSeeds, FunctorSeeds) :-
 
 switch_case_atom_values(CasesText, AtomSeeds) :-
     split_string(CasesText, " ", " ", RawCases),
-    findall(Const,
+    findall(AtomText,
             ( member(RawCase, RawCases),
               normalize_space(string(Case), RawCase),
-              split_string(Case, ":", "", [Const|_])
+              split_string(Case, ":", "", [Const|_]),
+              wam_atom_token_text(Const, AtomText)
             ),
             AtomSeeds).
 
-wam_op_intern_seeds("get_constant", [Const, _], [Const], []).
-wam_op_intern_seeds("put_constant", [Const, _], [Const], []).
-wam_op_intern_seeds("set_constant", [Const], [Const], []).
-wam_op_intern_seeds("unify_constant", [Const], [Const], []).
+wam_atom_token_text("''", "") :- !.
+wam_atom_token_text(Token, Token).
+
+wam_atom_token_literal(Token, Literal) :-
+    wam_atom_token_text(Token, AtomText),
+    clj_string_literal(AtomText, Literal).
+
+wam_op_intern_seeds("get_constant", [Const, _], [AtomText], []) :- wam_atom_token_text(Const, AtomText).
+wam_op_intern_seeds("put_constant", [Const, _], [AtomText], []) :- wam_atom_token_text(Const, AtomText).
+wam_op_intern_seeds("set_constant", [Const], [AtomText], []) :- wam_atom_token_text(Const, AtomText).
+wam_op_intern_seeds("unify_constant", [Const], [AtomText], []) :- wam_atom_token_text(Const, AtomText).
 wam_op_intern_seeds("put_structure", [Functor, _], [Functor], [Functor]).
 wam_op_intern_seeds("get_structure", [Functor, _], [Functor], [Functor]).
 wam_op_intern_seeds("put_list", [_], ["[|]/2"], ["[|]/2"]).
@@ -573,11 +581,11 @@ wam_op_to_clojure_literal("proceed", [], _, '{:op :proceed}').
 wam_op_to_clojure_literal("allocate", [], _, '{:op :allocate}').
 wam_op_to_clojure_literal("deallocate", [], _, '{:op :deallocate}').
 wam_op_to_clojure_literal("get_constant", [Const, Reg], _, Literal) :-
-    clj_string_literal(Const, ConstLit),
+    wam_atom_token_literal(Const, ConstLit),
     clj_string_literal(Reg, RegLit),
     format(atom(Literal), '{:op :get-constant :constant ~w :reg ~w}', [ConstLit, RegLit]).
 wam_op_to_clojure_literal("put_constant", [Const, Reg], _, Literal) :-
-    clj_string_literal(Const, ConstLit),
+    wam_atom_token_literal(Const, ConstLit),
     clj_string_literal(Reg, RegLit),
     format(atom(Literal), '{:op :put-constant :constant ~w :reg ~w}', [ConstLit, RegLit]).
 wam_op_to_clojure_literal("get_variable", [Var, Reg], _, Literal) :-
@@ -618,7 +626,7 @@ wam_op_to_clojure_literal("set_value", [Var], _, Literal) :-
     clj_string_literal(Var, VarLit),
     format(atom(Literal), '{:op :set-value :var ~w}', [VarLit]).
 wam_op_to_clojure_literal("set_constant", [Const], _, Literal) :-
-    clj_string_literal(Const, ConstLit),
+    wam_atom_token_literal(Const, ConstLit),
     format(atom(Literal), '{:op :set-constant :constant ~w}', [ConstLit]).
 wam_op_to_clojure_literal("unify_variable", [Var], _, Literal) :-
     clj_string_literal(Var, VarLit),
@@ -627,7 +635,7 @@ wam_op_to_clojure_literal("unify_value", [Var], _, Literal) :-
     clj_string_literal(Var, VarLit),
     format(atom(Literal), '{:op :unify-value :var ~w}', [VarLit]).
 wam_op_to_clojure_literal("unify_constant", [Const], _, Literal) :-
-    clj_string_literal(Const, ConstLit),
+    wam_atom_token_literal(Const, ConstLit),
     format(atom(Literal), '{:op :unify-constant :constant ~w}', [ConstLit]).
 wam_op_to_clojure_literal("switch_on_constant", [CasesText], _, Literal) :-
     parse_switch_cases(CasesText, CaseEntries),
@@ -649,7 +657,7 @@ parse_switch_cases(CasesText, CaseEntries) :-
 parse_switch_case(RawCase, Entry) :-
     normalize_space(string(Case), RawCase),
     (   split_string(Case, ":", "", [Const, Label])
-    ->  clj_string_literal(Const, ConstLit),
+    ->  wam_atom_token_literal(Const, ConstLit),
         clj_string_literal(Label, LabelLit),
         format(atom(Entry), '{:value ~w :label ~w}', [ConstLit, LabelLit])
     ;   clj_string_literal("malformed", ConstLit),
