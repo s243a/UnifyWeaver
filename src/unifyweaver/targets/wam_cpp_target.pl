@@ -2618,6 +2618,12 @@ struct WamState {
         CellPtr pattern;          // the call''s A1 (full match pattern)
         std::size_t next_idx = 0; // next clause index to test
         std::size_t after_pc = 0;
+        // clause/2 reuses this iterator with these set: instead of
+        // removing the matched clause, we keep it; and we unify the
+        // clause''s body half with body_pattern (treating fact-only
+        // entries as having body = true).
+        bool is_clause_only = false;
+        CellPtr body_pattern;     // A2 of clause/2 (when is_clause_only).
     };
     std::vector<RetractIterator> retract_iters;
     std::size_t retract_next_pc = 0;
@@ -2770,6 +2776,10 @@ struct WamState {
     // removes it, leaves the unification bindings in place, pushes
     // a CP if more candidates remain, and proceeds to after_pc.
     bool    dispatch_retract(std::size_t after_pc);
+    // clause/2: dynamic-db iteration without removal, unifying both
+    // Head and Body. Shares the RetractIterator infrastructure via
+    // the is_clause_only flag.
+    bool    dispatch_clause(std::size_t after_pc);
     bool    retract_try_next();
     // body_next — dispatch the top BodyFrame''s next goal, or pop
     // and proceed to outer after_pc when goals are exhausted.
@@ -6506,6 +6516,8 @@ bool WamState::step(const Instruction& instr) {
             if (instr.a == "sub_atom/5") return dispatch_sub_atom(pc + 1);
             // retract/1 — nondeterministic clause removal.
             if (instr.a == "retract/1") return dispatch_retract(pc + 1);
+            // clause/2 — nondet enumeration of dynamic-db clauses.
+            if (instr.a == "clause/2") return dispatch_clause(pc + 1);
             // ^/2 — existential quantification. Transparent for our
             // find-style aggregation: invoke A2 (the goal) with the
             // standard non-tail after-pc.
@@ -6558,6 +6570,7 @@ bool WamState::step(const Instruction& instr) {
             }
             if (instr.a == "sub_atom/5") return dispatch_sub_atom(cp);
             if (instr.a == "retract/1") return dispatch_retract(cp);
+            if (instr.a == "clause/2") return dispatch_clause(cp);
             if (instr.a == "^/2") {
                 return invoke_goal_as_call(get_cell("A2"), cp);
             }
@@ -7438,6 +7451,33 @@ bool WamState::dispatch_retract(std::size_t after_pc) {
     return retract_try_next();
 }
 
+// clause/2 dispatch. Reuses the RetractIterator infrastructure but
+// with is_clause_only=true so retract_try_next unifies both head
+// and body and DOESN''T remove the matched clause.
+bool WamState::dispatch_clause(std::size_t after_pc) {
+    CellPtr head_pat = get_cell("A1");
+    CellPtr body_pat = get_cell("A2");
+    Value hv = deref(*head_pat);
+    if (hv.is_unbound())
+        return throw_iso_error(make_instantiation_error());
+    std::string key;
+    if (hv.tag == Value::Tag::Atom) key = hv.s + "/0";
+    else if (hv.tag == Value::Tag::Compound) key = hv.s;
+    else return throw_iso_error(make_type_error("callable", hv));
+    // clause/2 in our runtime only sees dynamic-db clauses; static
+    // predicates compiled to bytecode aren''t introspectable here.
+    if (dynamic_db.find(key) == dynamic_db.end()) return false;
+    RetractIterator it;
+    it.key = std::move(key);
+    it.pattern = head_pat;
+    it.body_pattern = body_pat;
+    it.is_clause_only = true;
+    it.next_idx = 0;
+    it.after_pc = after_pc;
+    retract_iters.push_back(std::move(it));
+    return retract_try_next();
+}
+
 // Scan dynamic_db[key] from iter.next_idx onward for a clause that
 // unifies with iter.pattern. On match: remove that clause, leave
 // bindings in place (per ISO), push a CP if any clauses remain
@@ -7456,20 +7496,48 @@ bool WamState::retract_try_next() {
     while (i < vec.size()) {
         std::size_t mark = trail.size();
         CellPtr fresh = deep_copy_term(vec[i]);
-        if (unify_cells(it.pattern, fresh)) {
+        // For clause/2: split the stored term into Head / Body. A
+        // bare-fact entry has Body = true; a :-/2 entry uses its
+        // args. We then unify pattern with Head and body_pattern
+        // with Body. retract/1 just unifies the full term with
+        // pattern (no body slot).
+        bool matched = false;
+        if (it.is_clause_only) {
+            CellPtr head_part, body_part;
+            if (fresh->tag == Value::Tag::Compound
+                && fresh->s == ":-/2" && fresh->args.size() == 2) {
+                head_part = fresh->args[0];
+                body_part = fresh->args[1];
+            } else {
+                head_part = fresh;
+                body_part = std::make_shared<Cell>(Value::Atom("true"));
+            }
+            matched = unify_cells(it.pattern, head_part)
+                   && unify_cells(it.body_pattern, body_part);
+        } else {
+            matched = unify_cells(it.pattern, fresh);
+        }
+        if (matched) {
             // Match. We need to:
             // 1) push a CP (if more candidates exist) whose trail
             //    mark is BEFORE the unification, so backtrack undoes
             //    the pattern''s bindings and the pattern is reusable;
-            // 2) remove the matched clause from vec;
+            // 2) for retract: remove the matched clause from vec.
+            //    for clause/2: leave it in place.
             // 3) leave the unification bindings in place (per ISO
-            //    retract) and proceed to after_pc.
+            //    retract / clause-success semantics) and proceed.
             // The CP''s saved regs/etc are the current values — at
             // entry to retract_try_next, before any binding — which
             // match what the caller of dispatch_retract set up.
-            vec.erase(vec.begin() + i);
-            it.next_idx = i;
-            bool has_more = (i < vec.size());
+            if (it.is_clause_only) {
+                // Don''t remove; advance past this index for the
+                // next backtrack iteration.
+                it.next_idx = i + 1;
+            } else {
+                vec.erase(vec.begin() + i);
+                it.next_idx = i;
+            }
+            bool has_more = (it.next_idx < vec.size());
             std::size_t saved_after_pc = it.after_pc;
             if (has_more) {
                 ChoicePoint cp_;
