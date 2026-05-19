@@ -3476,6 +3476,34 @@ user:wam_cpp_test_bagof           :- bagof(X, user:wam_cpp_item(X), L), L = [a, 
 user:wam_cpp_test_bagof_empty     :- bagof(_, fail, _).
 user:wam_cpp_test_setof           :- setof(X, user:wam_cpp_num(X), L), L = [1, 2, 3].
 user:wam_cpp_test_setof_empty     :- setof(_, fail, _).
+% atom_number/2 fixtures. Cover forward (parse), reverse (render),
+% check (both bound), failure-on-bad-input, and the unbound case.
+:- dynamic user:wam_cpp_test_an_int_fwd/0.
+:- dynamic user:wam_cpp_test_an_int_neg/0.
+:- dynamic user:wam_cpp_test_an_float_fwd/0.
+:- dynamic user:wam_cpp_test_an_int_rev/0.
+:- dynamic user:wam_cpp_test_an_float_rev/0.
+:- dynamic user:wam_cpp_test_an_check/0.
+:- dynamic user:wam_cpp_test_an_check_mismatch/0.
+:- dynamic user:wam_cpp_test_an_bad_atom/0.
+:- dynamic user:wam_cpp_test_an_bad_partial/0.
+:- dynamic user:wam_cpp_test_an_empty/0.
+:- dynamic user:wam_cpp_test_an_unbound/0.
+
+user:wam_cpp_test_an_int_fwd   :- atom_number('42', 42).
+user:wam_cpp_test_an_int_neg   :- atom_number('-7', -7).
+user:wam_cpp_test_an_float_fwd :- atom_number('3.14', X), X > 3.13, X < 3.15.
+user:wam_cpp_test_an_int_rev   :- atom_number(A, 42),   A == '42'.
+user:wam_cpp_test_an_float_rev :- atom_number(A, 3.14), A == '3.14'.
+user:wam_cpp_test_an_check     :- atom_number('100', 100).
+user:wam_cpp_test_an_check_mismatch :- \+ atom_number('42', 43).
+% The crucial fail-not-throw cases. number_codes/2 would throw on
+% these; atom_number/2 must just fail.
+user:wam_cpp_test_an_bad_atom    :- \+ atom_number(hello, _).
+user:wam_cpp_test_an_bad_partial :- \+ atom_number('12abc', _).
+user:wam_cpp_test_an_empty       :- \+ atom_number('', _).
+user:wam_cpp_test_an_unbound     :- \+ atom_number(_, _).
+
 user:wam_cpp_test_count :- aggregate_all(count, user:wam_cpp_item(_), N), N = 3.
 user:wam_cpp_test_sum   :- aggregate_all(sum(X),  user:wam_cpp_num(X), S), S = 8.
 user:wam_cpp_test_min   :- aggregate_all(min(X),  user:wam_cpp_num(X), M), M = 1.
@@ -4893,6 +4921,41 @@ test(cpp_e2e_bagof_setof, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_bagof_empty/0', [], false),
           run_query(BinPath, 'wam_cpp_test_setof/0',       [], true),
           run_query(BinPath, 'wam_cpp_test_setof_empty/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% atom_number/2 — bidirectional atom <-> number conversion. The
+% key behavior that distinguishes it from number_codes/2 is that
+% it FAILS (does not throw) on unparseable input.
+test(cpp_e2e_atom_number,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_atom_number', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_an_int_fwd/0,
+                               user:wam_cpp_test_an_int_neg/0,
+                               user:wam_cpp_test_an_float_fwd/0,
+                               user:wam_cpp_test_an_int_rev/0,
+                               user:wam_cpp_test_an_float_rev/0,
+                               user:wam_cpp_test_an_check/0,
+                               user:wam_cpp_test_an_check_mismatch/0,
+                               user:wam_cpp_test_an_bad_atom/0,
+                               user:wam_cpp_test_an_bad_partial/0,
+                               user:wam_cpp_test_an_empty/0,
+                               user:wam_cpp_test_an_unbound/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_an_int_fwd/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_an_int_neg/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_an_float_fwd/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_an_int_rev/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_an_float_rev/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_an_check/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_an_check_mismatch/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_an_bad_atom/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_an_bad_partial/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_an_empty/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_an_unbound/0',        [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
