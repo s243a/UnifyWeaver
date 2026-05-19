@@ -672,6 +672,130 @@ static const int _wam_cpp_setup_register = []() {
        assertz((user:wam_cpp_rl_balance(<, =, >))),
        assertz((user:wam_cpp_rl_balance(=, =, =))),
        assertz((user:wam_cpp_rl_balance(>, <, =))),
+       % min_assoc/3 — leftmost (smallest-key) node.
+       assertz((user:min_assoc(t(K, V, _, t, _), K, V) :- !)),
+       assertz((user:min_assoc(t(_, _, _, L, _), K, V) :- min_assoc(L, K, V))),
+       % max_assoc/3 — rightmost (largest-key) node.
+       assertz((user:max_assoc(t(K, V, _, _, t), K, V) :- !)),
+       assertz((user:max_assoc(t(_, _, _, _, R), K, V) :- max_assoc(R, K, V))),
+       % del_assoc/4 — fails if Key not in Tree0. Returns the removed
+       % value and a rebalanced tree. Cross-checked against
+       % library(assoc) on ascending/descending bulk deletes.
+       assertz((user:del_assoc(K, T0, V, T) :-
+           wam_cpp_del_assoc_recur(K, T0, V, T, _))),
+       % wam_cpp_del_assoc_recur(+Key, +Tree, -Val, -NewTree, -Change)
+       %   Change ∈ {same, shrunk}.
+       assertz((user:wam_cpp_del_assoc_recur(K, t(K0, V0, B, L, R),
+                                            V, T, Change) :-
+           compare(Order, K, K0),
+           wam_cpp_del_assoc_dispatch(Order, K, K0, V0, B, L, R,
+                                      V, T, Change))),
+       % Found it — replace this node.
+       assertz((user:wam_cpp_del_assoc_dispatch(=, _, _, V, B, L, R,
+                                               V, T, Change) :-
+           wam_cpp_del_assoc_replace(B, L, R, T, Change))),
+       % Recurse left, then rebalance from the left.
+       assertz((user:wam_cpp_del_assoc_dispatch(<, K, K0, V0, B, L, R,
+                                               V, T, Change) :-
+           wam_cpp_del_assoc_recur(K, L, V, L1, LC),
+           wam_cpp_del_rebalance_left(LC, B, K0, V0, L1, R, T, Change))),
+       % Recurse right, then rebalance from the right.
+       assertz((user:wam_cpp_del_assoc_dispatch(>, K, K0, V0, B, L, R,
+                                               V, T, Change) :-
+           wam_cpp_del_assoc_recur(K, R, V, R1, RC),
+           wam_cpp_del_rebalance_right(RC, B, K0, V0, L, R1, T, Change))),
+       % wam_cpp_del_assoc_replace(B, L, R, NewTree, Change)
+       %   Build the replacement tree when the target node is found.
+       % Empty left — collapse to right.
+       assertz((user:wam_cpp_del_assoc_replace(_, t, R, R, shrunk))),
+       % Empty right (and non-empty left) — collapse to left.
+       assertz((user:wam_cpp_del_assoc_replace(_, L, t, L, shrunk) :-
+           L \= t)),
+       % Both sides non-empty — pull the in-order successor from the
+       % right subtree and use its (K, V) as the new root.
+       assertz((user:wam_cpp_del_assoc_replace(B, L, R, T, Change) :-
+           L \= t, R \= t,
+           wam_cpp_del_min_extract(R, SK, SV, R1, RC),
+           wam_cpp_del_rebalance_right(RC, B, SK, SV, L, R1, T, Change))),
+       % wam_cpp_del_min_extract(+Tree, -K, -V, -NewTree, -Change)
+       %   Extract the minimum key/value, returning the rest of the
+       %   tree and a height-change flag.
+       assertz((user:wam_cpp_del_min_extract(t(K, V, _, t, R), K, V, R,
+                                            shrunk))),
+       assertz((user:wam_cpp_del_min_extract(t(K0, V0, B, L, R),
+                                            K, V, T, Change) :-
+           L \= t,
+           wam_cpp_del_min_extract(L, K, V, L1, LC),
+           wam_cpp_del_rebalance_left(LC, B, K0, V0, L1, R, T, Change))),
+       % wam_cpp_del_rebalance_left(LChange, B, K, V, L, R, NewTree,
+       %                           Change)
+       %   Rebalance after the LEFT subtree shrunk by 0 or 1.
+       assertz((user:wam_cpp_del_rebalance_left(same, B, K, V, L, R,
+                                               t(K, V, B, L, R), same))),
+       % Was left-heavy, lost the extra → balanced, height shrunk.
+       assertz((user:wam_cpp_del_rebalance_left(shrunk, <, K, V, L, R,
+                                               t(K, V, =, L, R), shrunk))),
+       % Was balanced → right-heavy, height stayed.
+       assertz((user:wam_cpp_del_rebalance_left(shrunk, =, K, V, L, R,
+                                               t(K, V, >, L, R), same))),
+       % Was right-heavy → now over-tipped right; rotate based on R''s
+       % balance.
+       assertz((user:wam_cpp_del_rebalance_left(shrunk, >, K, V, L, R,
+                                               T, Change) :-
+           wam_cpp_del_rotate_right(L, K, V, R, T, Change))),
+       % Single left rotation (R right-heavy or balanced) + double
+       % rotation via R''s left subtree (R left-heavy). Three RB cases;
+       % only the RB=> case matches the structure of put''s
+       % rotate_right_heavy, the other two are delete-specific.
+       % RB=>: single left rotation, height shrunk.
+       assertz((user:wam_cpp_del_rotate_right(L, K, V,
+                   t(RK, RV, >, RL, RR),
+                   t(RK, RV, =, t(K, V, =, L, RL), RR),
+                   shrunk))),
+       % RB==: single left rotation, height stays (rotation tilts the
+       % outer node to <, inner to >).
+       assertz((user:wam_cpp_del_rotate_right(L, K, V,
+                   t(RK, RV, =, RL, RR),
+                   t(RK, RV, <, t(K, V, >, L, RL), RR),
+                   same))),
+       % RB=<: double rotation via RL — same shape as put''s RL case,
+       % height shrunk.
+       assertz((user:wam_cpp_del_rotate_right(L, K, V,
+                   t(RK, RV, <, t(RLK, RLV, RLB, RLL, RLR), RR),
+                   t(RLK, RLV, =,
+                     t(K,  V,  NLB, L,   RLL),
+                     t(RK, RV, NRB, RLR, RR)),
+                   shrunk) :-
+           wam_cpp_rl_balance(RLB, NLB, NRB))),
+       % wam_cpp_del_rebalance_right(RChange, B, K, V, L, R, NewTree,
+       %                            Change) — mirror of left.
+       assertz((user:wam_cpp_del_rebalance_right(same, B, K, V, L, R,
+                                                t(K, V, B, L, R), same))),
+       assertz((user:wam_cpp_del_rebalance_right(shrunk, >, K, V, L, R,
+                                                t(K, V, =, L, R), shrunk))),
+       assertz((user:wam_cpp_del_rebalance_right(shrunk, =, K, V, L, R,
+                                                t(K, V, <, L, R), same))),
+       assertz((user:wam_cpp_del_rebalance_right(shrunk, <, K, V, L, R,
+                                                T, Change) :-
+           wam_cpp_del_rotate_left(L, K, V, R, T, Change))),
+       % LB=<: single right rotation, height shrunk.
+       assertz((user:wam_cpp_del_rotate_left(
+                   t(LK, LV, <, LL, LR), K, V, R,
+                   t(LK, LV, =, LL, t(K, V, =, LR, R)),
+                   shrunk))),
+       % LB==: single right rotation, height stays.
+       assertz((user:wam_cpp_del_rotate_left(
+                   t(LK, LV, =, LL, LR), K, V, R,
+                   t(LK, LV, >, LL, t(K, V, <, LR, R)),
+                   same))),
+       % LB=>: double rotation via LR — same shape as put''s LR case.
+       assertz((user:wam_cpp_del_rotate_left(
+                   t(LK, LV, >, LL, t(LRK, LRV, LRB, LRL, LRR)), K, V, R,
+                   t(LRK, LRV, =,
+                     t(LK, LV, NLB, LL,  LRL),
+                     t(K,  V,  NRB, LRR, R)),
+                   shrunk) :-
+           wam_cpp_lr_balance(LRB, NLB, NRB))),
        assertz((user:list_to_assoc(List, Assoc) :-
            wam_cpp_list_to_assoc_(List, t, Assoc))),
        assertz((user:wam_cpp_list_to_assoc_([], A, A))),
@@ -764,6 +888,17 @@ stdlib_feature_predicates(assoc, [
     user:wam_cpp_rotate_right_heavy/5,
     user:wam_cpp_lr_balance/3,
     user:wam_cpp_rl_balance/3,
+    user:min_assoc/3,
+    user:max_assoc/3,
+    user:del_assoc/4,
+    user:wam_cpp_del_assoc_recur/5,
+    user:wam_cpp_del_assoc_dispatch/10,
+    user:wam_cpp_del_assoc_replace/5,
+    user:wam_cpp_del_min_extract/5,
+    user:wam_cpp_del_rebalance_left/8,
+    user:wam_cpp_del_rebalance_right/8,
+    user:wam_cpp_del_rotate_right/6,
+    user:wam_cpp_del_rotate_left/6,
     user:list_to_assoc/2,
     user:wam_cpp_list_to_assoc_/3,
     user:assoc_to_list/2,
