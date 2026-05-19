@@ -3334,6 +3334,105 @@ user:wam_cpp_test_mma2_mid_after_var :-
     findall(V, wam_cpp_mma2_mid(any, b, V), L),
     L = [99, 2].
 
+% Mixed-mode for STRUCTURE-only A1 prefix — closes the v1 limit
+% from #2301. Predicates like the canonical tree-recursive shape
+% (all-compound clauses + a trailing catch-all) now get
+% switch_on_structure_fallthrough instead of dropping A1 indexing.
+:- dynamic user:wam_cpp_mma_struct/2.
+:- dynamic user:wam_cpp_test_mma_struct_hit/0.
+:- dynamic user:wam_cpp_test_mma_struct_unknown_functor/0.
+:- dynamic user:wam_cpp_test_mma_struct_backtracks_to_default/0.
+:- dynamic user:wam_cpp_test_mma_struct_unknown_only_default/0.
+
+user:wam_cpp_mma_struct(circle(_),       round).
+user:wam_cpp_mma_struct(square(_),       angular).
+user:wam_cpp_mma_struct(triangle(_,_,_), pointy).
+user:wam_cpp_mma_struct(_,               unknown).
+
+user:wam_cpp_test_mma_struct_hit :-
+    wam_cpp_mma_struct(circle(1),         round),
+    wam_cpp_mma_struct(square(2),         angular),
+    wam_cpp_mma_struct(triangle(1, 2, 3), pointy).
+user:wam_cpp_test_mma_struct_unknown_functor :-
+    % A1 functor isn''t in the table — must fall through to the chain.
+    wam_cpp_mma_struct(rhombus(4), unknown).
+user:wam_cpp_test_mma_struct_backtracks_to_default :-
+    findall(R, wam_cpp_mma_struct(circle(1), R), L),
+    L = [round, unknown].
+user:wam_cpp_test_mma_struct_unknown_only_default :-
+    findall(R, wam_cpp_mma_struct(hexagon(_), R), L),
+    L = [unknown].
+
+% Mixed-mode for MIXED A1 prefix (atoms + structures) — closes the
+% other v1 limit. Pattern: arithmetic-style head with `zero` atom
+% plus `succ(_)` / `plus(_,_)` structures and a catch-all.
+:- dynamic user:wam_cpp_mma_term/2.
+:- dynamic user:wam_cpp_test_mma_term_hit_atom/0.
+:- dynamic user:wam_cpp_test_mma_term_hit_struct/0.
+:- dynamic user:wam_cpp_test_mma_term_unknown_atom/0.
+:- dynamic user:wam_cpp_test_mma_term_unknown_struct/0.
+:- dynamic user:wam_cpp_test_mma_term_backtracks/0.
+
+user:wam_cpp_mma_term(zero,         leaf).
+user:wam_cpp_mma_term(succ(_),      unary).
+user:wam_cpp_mma_term(plus(_, _),   binary).
+user:wam_cpp_mma_term(_,            other).
+
+user:wam_cpp_test_mma_term_hit_atom :-
+    wam_cpp_mma_term(zero, leaf).
+user:wam_cpp_test_mma_term_hit_struct :-
+    wam_cpp_mma_term(succ(7), unary),
+    wam_cpp_mma_term(plus(1, 2), binary).
+user:wam_cpp_test_mma_term_unknown_atom :-
+    % Bound atom NOT in the table — fall through.
+    wam_cpp_mma_term(unknown_atom, other).
+user:wam_cpp_test_mma_term_unknown_struct :-
+    % Bound compound whose functor isn''t in the table — fall through.
+    wam_cpp_mma_term(times(1, 2), other).
+user:wam_cpp_test_mma_term_backtracks :-
+    findall(R, wam_cpp_mma_term(zero, R), L),
+    L = [leaf, other].
+
+% Same lift on A2: structure-only prefix when A1 is variable.
+:- dynamic user:wam_cpp_mma_struct_a2/3.
+:- dynamic user:wam_cpp_test_mma_struct_a2_hit/0.
+:- dynamic user:wam_cpp_test_mma_struct_a2_unknown/0.
+:- dynamic user:wam_cpp_test_mma_struct_a2_backtracks/0.
+
+user:wam_cpp_mma_struct_a2(_, circle(_),       round).
+user:wam_cpp_mma_struct_a2(_, square(_),       angular).
+user:wam_cpp_mma_struct_a2(_, triangle(_,_,_), pointy).
+user:wam_cpp_mma_struct_a2(_, _,               unknown).
+
+user:wam_cpp_test_mma_struct_a2_hit :-
+    wam_cpp_mma_struct_a2(any, circle(1), round),
+    wam_cpp_mma_struct_a2(any, square(2), angular).
+user:wam_cpp_test_mma_struct_a2_unknown :-
+    wam_cpp_mma_struct_a2(any, hexagon(6), unknown).
+user:wam_cpp_test_mma_struct_a2_backtracks :-
+    findall(R, wam_cpp_mma_struct_a2(any, circle(1), R), L),
+    L = [round, unknown].
+
+% Same lift on A2: mixed prefix when A1 is variable.
+:- dynamic user:wam_cpp_mma_term_a2/3.
+:- dynamic user:wam_cpp_test_mma_term_a2_hit_atom/0.
+:- dynamic user:wam_cpp_test_mma_term_a2_hit_struct/0.
+:- dynamic user:wam_cpp_test_mma_term_a2_unknown/0.
+
+user:wam_cpp_mma_term_a2(_, zero,       leaf).
+user:wam_cpp_mma_term_a2(_, succ(_),    unary).
+user:wam_cpp_mma_term_a2(_, plus(_, _), binary).
+user:wam_cpp_mma_term_a2(_, _,          other).
+
+user:wam_cpp_test_mma_term_a2_hit_atom :-
+    wam_cpp_mma_term_a2(any, zero, leaf).
+user:wam_cpp_test_mma_term_a2_hit_struct :-
+    wam_cpp_mma_term_a2(any, succ(1), unary),
+    wam_cpp_mma_term_a2(any, plus(2, 3), binary).
+user:wam_cpp_test_mma_term_a2_unknown :-
+    wam_cpp_mma_term_a2(any, times(1, 2), other),
+    wam_cpp_mma_term_a2(any, unknown_atom, other).
+
 user:wam_cpp_test_write :- write(hello), nl.
 % Y-reg isolation: both helpers use Y1/Y2 internally. Caller relies on
 % preserved Y1 across the two calls.
@@ -9223,6 +9322,56 @@ test(cpp_e2e_mixed_mode_a1_indexing,
           run_query(BinPath, 'wam_cpp_test_mma_mid_indexed/0',                     [], true),
           run_query(BinPath, 'wam_cpp_test_mma_mid_after_var/0',                   [], true),
           run_query(BinPath, 'wam_cpp_test_mma_mid_unbound/0',                     [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% Mixed-mode for structure / mixed (term) A1 prefixes — closes the
+% v1 limits from #2301 and #2303. The "indexed prefix" lift now
+% extends past constant-only: pure-structure prefix (tree-recursive
+% pattern) gets switch_on_structure_fallthrough, and mixed atom +
+% structure prefix (arithmetic-style with `zero` + `succ`/`plus`)
+% gets switch_on_term_fallthrough.
+test(cpp_e2e_mixed_mode_struct_term_indexing,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_mma_st', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_mma_struct/2,
+                               user:wam_cpp_test_mma_struct_hit/0,
+                               user:wam_cpp_test_mma_struct_unknown_functor/0,
+                               user:wam_cpp_test_mma_struct_backtracks_to_default/0,
+                               user:wam_cpp_test_mma_struct_unknown_only_default/0,
+                               user:wam_cpp_mma_term/2,
+                               user:wam_cpp_test_mma_term_hit_atom/0,
+                               user:wam_cpp_test_mma_term_hit_struct/0,
+                               user:wam_cpp_test_mma_term_unknown_atom/0,
+                               user:wam_cpp_test_mma_term_unknown_struct/0,
+                               user:wam_cpp_test_mma_term_backtracks/0,
+                               user:wam_cpp_mma_struct_a2/3,
+                               user:wam_cpp_test_mma_struct_a2_hit/0,
+                               user:wam_cpp_test_mma_struct_a2_unknown/0,
+                               user:wam_cpp_test_mma_struct_a2_backtracks/0,
+                               user:wam_cpp_mma_term_a2/3,
+                               user:wam_cpp_test_mma_term_a2_hit_atom/0,
+                               user:wam_cpp_test_mma_term_a2_hit_struct/0,
+                               user:wam_cpp_test_mma_term_a2_unknown/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_mma_struct_hit/0',                    [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_struct_unknown_functor/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_struct_backtracks_to_default/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_struct_unknown_only_default/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_term_hit_atom/0',                 [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_term_hit_struct/0',               [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_term_unknown_atom/0',             [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_term_unknown_struct/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_term_backtracks/0',               [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_struct_a2_hit/0',                 [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_struct_a2_unknown/0',             [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_struct_a2_backtracks/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_term_a2_hit_atom/0',              [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_term_a2_hit_struct/0',            [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_term_a2_unknown/0',               [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
