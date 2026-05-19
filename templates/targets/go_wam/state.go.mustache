@@ -1165,6 +1165,13 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return false
 		}
 		return vm.Unify(arg2, internAtom(strings.ToLower(atom.Name)))
+	case "atom_concat/3":
+		left, okLeft := vm.deref(arg1).(*Atom)
+		right, okRight := vm.deref(arg2).(*Atom)
+		if !okLeft || !okRight {
+			return false
+		}
+		return vm.Unify(arg3, internAtom(left.Name+right.Name))
 
 	case "var/1": return isUnbound(vm.deref(arg1))
 	case "nonvar/1": return !isUnbound(vm.deref(arg1))
