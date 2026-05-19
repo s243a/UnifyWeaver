@@ -32,9 +32,10 @@ matters for parity.
 Python is now a partial ISO-error adopter. It has the Prolog-level
 `catch/3` and `throw/1` substrate, ISO error-term constructors,
 `throw_iso_error`, the config/rewrite/audit plumbing, and ISO/lax variants for
-arithmetic assignment, arithmetic comparison, and successor builtins. It should
-not yet be described as fully ISO-error compatible until any remaining concrete
-builtins with ISO/lax behavior are swept.
+arithmetic assignment, arithmetic comparison, successor builtins, and lax
+IEEE-754 float zero division. It should not yet be described as fully ISO-error
+compatible until any remaining concrete builtins with ISO/lax behavior are
+swept.
 
 Current state:
 
@@ -46,6 +47,7 @@ Current state:
 | `is_iso/2` / `is_lax/2` | Present | ISO mode throws structured errors; `is/2` and `is_lax/2` preserve lax failure. |
 | ISO/lax arithmetic compares | Present | Six comparison variants now follow ISO/lax three-form dispatch. |
 | `succ/2` and ISO/lax variants | Present | Lax `succ/2`/`succ_lax/2` fail silently; `succ_iso/2` throws structured instantiation, type, and domain errors. |
+| Lax IEEE-754 float divide behavior | Present | `is_lax/2` and default-lax `is/2` return `inf`, `nan`, or `-inf` for float zero division; integer zero division still fails silently. |
 | Per-predicate ISO config loader | Present | Supports `iso_errors_config(File)`, `iso_errors(Default)`, and `iso_errors(PI, Mode)` options. |
 | Per-predicate default rewrite | Present | `is/2` now rewrites to `is_iso/2` or `is_lax/2`; text-level rewrite feeds interpreter and lowered emission. |
 | ISO audit predicate | Present | `wam_python_iso_audit/3` reports builtin call sites using the shared audit shape. |

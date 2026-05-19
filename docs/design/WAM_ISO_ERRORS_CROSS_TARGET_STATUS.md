@@ -67,7 +67,7 @@ Survey columns: shipped means code and tests exist in the target today.
 | `is_iso/2` / `is_lax/2` | shipped | shipped | Python shipped; others not adopted |
 | ISO/lax arithmetic compares | shipped | shipped | Python shipped; others not adopted |
 | `succ_iso/2` / `succ_lax/2` | shipped | shipped | Python shipped; others not adopted |
-| Lax IEEE-754 float divide behavior | shipped | shipped | not adopted |
+| Lax IEEE-754 float divide behavior | shipped | shipped | Python shipped; others not adopted |
 
 The C++ and Elixir targets are therefore the current reference consumers. C++
 was the first implementation; Elixir proves the design is not C++-specific.

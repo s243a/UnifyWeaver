@@ -440,6 +440,14 @@ def _strip_arity(functor: str) -> str:
         return functor.rsplit('/', 1)[0]
     return functor
 
+def _float_divide_lax(a, b):
+    if b == 0 and (isinstance(a, float) or isinstance(b, float)):
+        if a == 0:
+            return float('nan')
+        return float('inf') if a > 0 else float('-inf')
+    return a / b
+
+
 def eval_arith(term: Term, state: WamState):
     """Evaluate an arithmetic expression, return int or float."""
     t = deref(term, state)
@@ -457,7 +465,7 @@ def eval_arith(term: Term, state: WamState):
             '+': lambda a, b: a + b,
             '-': lambda a, b: a - b,
             '*': lambda a, b: a * b,
-            '/': lambda a, b: a / b,
+            '/': _float_divide_lax,
             # Integer division and modulo
             '//': lambda a, b: int(a) // int(b),
             'mod': lambda a, b: int(a) % int(b),
