@@ -2020,16 +2020,43 @@ compile_predicates_for_project(Predicates, Options, PredicatesCode) :-
     ->  Options1 = Options
     ;   Options1 = [foreign_pred_keys(ForeignKeys)|Options]
     ),
+    % on_compile_error policy: warn (default) | throw | skip.
+    %   warn  -- print "WAM C++: ... <Err>" to stderr and drop pred
+    %   throw -- re-throw, surfacing the error at the caller
+    %   skip  -- old silent-skip behavior (pre-#2293)
+    (   member(on_compile_error(Policy0), Options)
+    ->  Policy = Policy0
+    ;   Policy = warn
+    ),
     findall(Code, (
         member(PI, Predicates),
         catch(
             ( compile_predicate_to_wam(PI, [inline_bagof_setof(true)], WamCode),
               compile_wam_predicate_to_cpp(PI, WamCode, Options1, Code)
             ),
-            _Err,
-            fail)
+            Err,
+            handle_compile_error(Policy, PI, Err)
+        )
     ), Codes),
     atomic_list_concat(Codes, '\n\n', PredicatesCode).
+
+%% handle_compile_error(+Policy, +PI, +Err)
+%  Per-predicate compile failure handler. Logs / re-throws / drops
+%  based on Policy. Always fails after warn/skip so findall just
+%  omits the predicate''s Code entry; throw policy propagates the
+%  original exception so the caller can react.
+handle_compile_error(throw, PI, Err) :- !,
+    format(user_error,
+           "WAM C++: re-throwing compile error for ~w: ~w~n",
+           [PI, Err]),
+    throw(Err).
+handle_compile_error(skip, _PI, _Err) :- !, fail.
+handle_compile_error(_, PI, Err) :-
+    % default + explicit "warn"
+    format(user_error,
+           "WAM C++: failed to compile ~w: ~w~n",
+           [PI, Err]),
+    fail.
 
 foreign_pred_keys_from_options(Options, Keys) :-
     (   member(foreign_pred_keys(Keys0), Options)
