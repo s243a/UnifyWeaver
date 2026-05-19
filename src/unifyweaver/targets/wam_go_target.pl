@@ -475,6 +475,12 @@ wam_go_direct_builtin("downcase_atom/2", 2, 'downcase_atom/2').
 wam_go_direct_builtin(atom_concat/3, 3, 'atom_concat/3').
 wam_go_direct_builtin('atom_concat/3', 3, 'atom_concat/3').
 wam_go_direct_builtin("atom_concat/3", 3, 'atom_concat/3').
+wam_go_direct_builtin(atom_length/2, 2, 'atom_length/2').
+wam_go_direct_builtin('atom_length/2', 2, 'atom_length/2').
+wam_go_direct_builtin("atom_length/2", 2, 'atom_length/2').
+wam_go_direct_builtin(string_length/2, 2, 'string_length/2').
+wam_go_direct_builtin('string_length/2', 2, 'string_length/2').
+wam_go_direct_builtin("string_length/2", 2, 'string_length/2').
 
 wam_instruction_to_go_literal(get_constant(C, Ai), GoLiteral) :-
     go_value_literal(C, GoVal),

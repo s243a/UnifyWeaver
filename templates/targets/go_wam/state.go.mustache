@@ -1172,6 +1172,12 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return false
 		}
 		return vm.Unify(arg3, internAtom(left.Name+right.Name))
+	case "atom_length/2", "string_length/2":
+		atom, ok := vm.deref(arg1).(*Atom)
+		if !ok {
+			return false
+		}
+		return vm.Unify(arg2, &Integer{Val: int64(len([]rune(atom.Name)))})
 
 	case "var/1": return isUnbound(vm.deref(arg1))
 	case "nonvar/1": return !isUnbound(vm.deref(arg1))
