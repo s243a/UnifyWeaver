@@ -419,7 +419,8 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
            [catch_return, negation_return, findall_collect,
             conj_return, disj_alt, if_then_commit, if_then_else,
             aggregate_next_group, dynamic_next_clause, sub_atom_next,
-            body_next, retract_next, output_capture_return],
+            body_next, retract_next, output_capture_return,
+            current_pred_next],
            FlatInstrs),
     length(FlatInstrs0, CatchReturnPC),
     NegationReturnPC is CatchReturnPC + 1,
@@ -434,6 +435,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     BodyNextPC is CatchReturnPC + 10,
     RetractNextPC is CatchReturnPC + 11,
     OutputCaptureReturnPC is CatchReturnPC + 12,
+    CurrentPredNextPC is CatchReturnPC + 13,
     findall(LabelLine, (
         member(NameStr-PC, Labels),
         format(atom(LabelLine),
@@ -464,6 +466,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     vm.body_next_pc = ~w;
     vm.retract_next_pc = ~w;
     vm.output_capture_return_pc = ~w;
+    vm.current_pred_next_pc = ~w;
 ~w
 ~w
 }
@@ -475,6 +478,7 @@ static const int _wam_cpp_setup_register = []() {
     ConjReturnPC, DisjAltPC, IfThenCommitPC, IfThenElsePC,
     AggregateNextGroupPC, DynamicNextClausePC, SubAtomNextPC,
     BodyNextPC, RetractNextPC, OutputCaptureReturnPC,
+    CurrentPredNextPC,
     LabelBody, InstrBody]).
 
 % ============================================================================
@@ -1759,6 +1763,8 @@ instr_to_setup_line(retract_next, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::RetractNext());'.
 instr_to_setup_line(output_capture_return, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::OutputCaptureReturn());'.
+instr_to_setup_line(current_pred_next, _Labels, Line) :- !,
+    Line = '    vm.instrs.push_back(Instruction::CurrentPredNext());'.
 instr_to_setup_line(Instr, _Labels, Line) :-
     wam_instruction_to_cpp_literal(Instr, Lit),
     format(atom(Line), '    vm.instrs.push_back(~w);', [Lit]).
@@ -2201,7 +2207,8 @@ struct Instruction {
         SwitchOnConstant, SwitchOnStructure, SwitchOnTerm,
         CatchReturn, NegationReturn, FindallCollect, ConjReturn, DisjAlt,
         IfThenCommit, IfThenElse, AggregateNextGroup, DynamicNextClause,
-        SubAtomNext, BodyNext, RetractNext, OutputCaptureReturn
+        SubAtomNext, BodyNext, RetractNext, OutputCaptureReturn,
+        CurrentPredNext
     };
     // Sentinel pc values for switch-table entries that should not jump.
     static constexpr std::size_t SWITCH_DEFAULT = static_cast<std::size_t>(-1);
@@ -2327,6 +2334,8 @@ struct Instruction {
         { Instruction i; i.op = Op::RetractNext; return i; }
     static Instruction OutputCaptureReturn()
         { Instruction i; i.op = Op::OutputCaptureReturn; return i; }
+    static Instruction CurrentPredNext()
+        { Instruction i; i.op = Op::CurrentPredNext; return i; }
 };
 
 struct TrailEntry {
@@ -2654,6 +2663,21 @@ struct WamState {
     };
     std::vector<RetractIterator> retract_iters;
     std::size_t retract_next_pc = 0;
+    // current_predicate/1 nondet enumeration. Each iterator holds
+    // a pre-filtered list of matching "name/arity" keys (drawn from
+    // labels + dynamic_db), the spec''s Name + Arity cells, and an
+    // after_pc to return to on each success. On backtrack the alt
+    // PC runs CurrentPredNext which pops the just-used CP and
+    // re-enters current_pred_try_next.
+    struct CurrentPredIterator {
+        std::vector<std::string> keys;
+        std::size_t next_idx = 0;
+        CellPtr name_cell;
+        CellPtr arity_cell;
+        std::size_t after_pc = 0;
+    };
+    std::vector<CurrentPredIterator> current_pred_iters;
+    std::size_t current_pred_next_pc = 0;
     // Rule-body sequencing — see BodyFrame doc at namespace scope.
     // Each rule body is flattened into a sequential goal list;
     // body_next dispatches them one at a time with cp=body_next_pc.
@@ -2807,6 +2831,13 @@ struct WamState {
     // Head and Body. Shares the RetractIterator infrastructure via
     // the is_clause_only flag.
     bool    dispatch_clause(std::size_t after_pc);
+    // current_predicate/1: nondet enumeration over labels +
+    // dynamic_db keys, filtered by the (possibly partial) Name/Arity
+    // spec in A1. Same dispatch + iterator pattern as retract /
+    // clause but with its own iterator type and next-PC slot since
+    // the iteration target is strings, not stored cells.
+    bool    dispatch_current_predicate(std::size_t after_pc);
+    bool    current_pred_try_next();
     bool    retract_try_next();
     // body_next — dispatch the top BodyFrame''s next goal, or pop
     // and proceed to outer after_pc when goals are exhausted.
@@ -6545,6 +6576,8 @@ bool WamState::step(const Instruction& instr) {
             if (instr.a == "retract/1") return dispatch_retract(pc + 1);
             // clause/2 — nondet enumeration of dynamic-db clauses.
             if (instr.a == "clause/2") return dispatch_clause(pc + 1);
+            if (instr.a == "current_predicate/1")
+                return dispatch_current_predicate(pc + 1);
             // ^/2 — existential quantification. Transparent for our
             // find-style aggregation: invoke A2 (the goal) with the
             // standard non-tail after-pc.
@@ -6598,6 +6631,8 @@ bool WamState::step(const Instruction& instr) {
             if (instr.a == "sub_atom/5") return dispatch_sub_atom(cp);
             if (instr.a == "retract/1") return dispatch_retract(cp);
             if (instr.a == "clause/2") return dispatch_clause(cp);
+            if (instr.a == "current_predicate/1")
+                return dispatch_current_predicate(cp);
             if (instr.a == "^/2") {
                 return invoke_goal_as_call(get_cell("A2"), cp);
             }
@@ -6797,6 +6832,13 @@ bool WamState::step(const Instruction& instr) {
             // the just-removed clause).
             if (!choice_points.empty()) choice_points.pop_back();
             return retract_try_next();
+        }
+        case Instruction::Op::CurrentPredNext: {
+            // Reached when current_predicate/1 backtracks for the
+            // next match. Pop the CP and let current_pred_try_next
+            // resume from iter.next_idx.
+            if (!choice_points.empty()) choice_points.pop_back();
+            return current_pred_try_next();
         }
         case Instruction::Op::OutputCaptureReturn: {
             // Reached when a with_output_to/2 goal proceeds normally.
@@ -7503,6 +7545,108 @@ bool WamState::dispatch_clause(std::size_t after_pc) {
     it.after_pc = after_pc;
     retract_iters.push_back(std::move(it));
     return retract_try_next();
+}
+
+// dispatch_current_predicate: prebuild the candidate-key list at
+// entry (drawing from labels + dynamic_db, deduped + sorted for
+// deterministic enumeration), filter by any ground portion of the
+// Name/Arity spec, and delegate the per-match unification +
+// CP-push to current_pred_try_next.
+bool WamState::dispatch_current_predicate(std::size_t after_pc) {
+    Value spec = *get_cell("A1");
+    if (spec.is_unbound())
+        return throw_iso_error(make_instantiation_error());
+    if (spec.tag != Value::Tag::Compound || spec.s != "//2"
+        || spec.args.size() != 2)
+        return throw_iso_error(make_type_error("predicate_indicator", spec));
+    CellPtr name_cell = spec.args[0];
+    CellPtr arity_cell = spec.args[1];
+    Value name_v = *name_cell;
+    Value arity_v = *arity_cell;
+    if (!name_v.is_unbound() && name_v.tag != Value::Tag::Atom)
+        return throw_iso_error(make_type_error("atom", name_v));
+    if (!arity_v.is_unbound() && arity_v.tag != Value::Tag::Integer)
+        return throw_iso_error(make_type_error("integer", arity_v));
+    std::set<std::string> all_keys;
+    for (auto& p : labels) all_keys.insert(p.first);
+    for (auto& p : dynamic_db) all_keys.insert(p.first);
+    std::vector<std::string> matched;
+    matched.reserve(all_keys.size());
+    for (auto& k : all_keys) {
+        auto slash = k.rfind(\'/\');
+        if (slash == std::string::npos) continue;
+        std::string n = k.substr(0, slash);
+        std::int64_t a;
+        try { a = std::stoll(k.substr(slash + 1)); }
+        catch (...) { continue; }
+        if (!name_v.is_unbound() && name_v.s != n) continue;
+        if (!arity_v.is_unbound() && arity_v.i != a) continue;
+        matched.push_back(k);
+    }
+    if (matched.empty()) return false;
+    CurrentPredIterator it;
+    it.keys = std::move(matched);
+    it.next_idx = 0;
+    it.name_cell = name_cell;
+    it.arity_cell = arity_cell;
+    it.after_pc = after_pc;
+    current_pred_iters.push_back(std::move(it));
+    return current_pred_try_next();
+}
+
+bool WamState::current_pred_try_next() {
+    if (current_pred_iters.empty()) return false;
+    CurrentPredIterator& it = current_pred_iters.back();
+    while (it.next_idx < it.keys.size()) {
+        std::size_t i = it.next_idx;
+        std::size_t mark = trail.size();
+        const std::string& key = it.keys[i];
+        auto slash = key.rfind(\'/\');
+        std::string n = key.substr(0, slash);
+        std::int64_t a;
+        try { a = std::stoll(key.substr(slash + 1)); }
+        catch (...) { ++it.next_idx; continue; }
+        Value n_v = Value::Atom(n);
+        Value a_v = Value::Integer(a);
+        bool ok = true;
+        if (it.name_cell->is_unbound()) bind_cell(it.name_cell, n_v);
+        else if (!(*it.name_cell == n_v)) ok = false;
+        if (ok) {
+            if (it.arity_cell->is_unbound()) bind_cell(it.arity_cell, a_v);
+            else if (!(*it.arity_cell == a_v)) ok = false;
+        }
+        if (ok) {
+            it.next_idx = i + 1;
+            bool has_more = (it.next_idx < it.keys.size());
+            std::size_t saved_after_pc = it.after_pc;
+            if (has_more) {
+                ChoicePoint cp_;
+                cp_.alt_pc            = current_pred_next_pc;
+                cp_.saved_cp          = cp;
+                cp_.trail_mark        = mark;
+                cp_.cut_barrier       = cut_barrier;
+                cp_.saved_regs        = regs;
+                cp_.saved_mode_stack  = mode_stack;
+                cp_.saved_env_stack   = env_stack;
+                cp_.saved_body_frames = body_frames;
+                choice_points.push_back(std::move(cp_));
+            } else {
+                current_pred_iters.pop_back();
+            }
+            if (saved_after_pc == 0) { halt = true; return true; }
+            pc = saved_after_pc;
+            cp = 0;
+            return true;
+        }
+        while (trail.size() > mark) {
+            TrailEntry te = std::move(trail.back());
+            trail.pop_back();
+            *te.cell = std::move(te.prev);
+        }
+        ++it.next_idx;
+    }
+    current_pred_iters.pop_back();
+    return false;
 }
 
 // Scan dynamic_db[key] from iter.next_idx onward for a clause that
@@ -8968,6 +9112,8 @@ bool WamState::query(const std::string& pred_key, const std::vector<Value>& args
     aggregate_frames.clear();
     mode_stack.clear();
     env_stack.clear();
+    retract_iters.clear();
+    current_pred_iters.clear();
     pc = it->second;
     cp = 0;
     cut_barrier = 0;

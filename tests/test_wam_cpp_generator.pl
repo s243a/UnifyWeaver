@@ -311,6 +311,14 @@
 :- dynamic user:wam_cpp_test_nested_f_g/0.
 :- dynamic user:wam_cpp_test_nested_right/0.
 :- dynamic user:wam_cpp_test_nested_constant/0.
+:- dynamic user:wam_cpp_test_cp_check_static/0.
+:- dynamic user:wam_cpp_test_cp_check_missing/0.
+:- dynamic user:wam_cpp_test_cp_enum_arity/0.
+:- dynamic user:wam_cpp_test_cp_enum_name_by_arity/0.
+:- dynamic user:wam_cpp_test_cp_enum_all/0.
+:- dynamic user:wam_cpp_test_cp_enum_none/0.
+:- dynamic user:wam_cpp_test_cp_inst_throw/0.
+:- dynamic user:wam_cpp_test_cp_indicator_throw/0.
 :- dynamic user:wam_cpp_test_enum_member/0.
 
 user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
@@ -849,6 +857,38 @@ user:wam_cpp_test_nested_constant :-
     wam_cpp_nest_setup,
     findall(g(K, f(V, marker)), wam_cpp_nest_emit(K, V, _), L),
     L = [g(a, f(10, marker)), g(b, f(20, marker))].
+% Nondet current_predicate/1: enumeration via the CP-iterator path.
+% PR #2277 added check-mode only; this PR moves the builtin from
+% builtin() to the Call/Execute dispatch arms so partial-spec
+% queries (Name/_, _/Arity, _) can iterate over labels + dynamic_db
+% keys.
+user:wam_cpp_cp_static_a(_).
+user:wam_cpp_cp_static_b(_, _).
+user:wam_cpp_test_cp_check_static :-
+    current_predicate(wam_cpp_cp_static_a/1).
+user:wam_cpp_test_cp_check_missing :-
+    \+ current_predicate(wam_cpp_cp_no_such_pred/3).
+user:wam_cpp_test_cp_enum_arity :-
+    findall(A, current_predicate(wam_cpp_cp_static_a/A), L),
+    L = [1].
+user:wam_cpp_test_cp_enum_name_by_arity :-
+    findall(N, current_predicate(N/0), L),
+    member(wam_cpp_test_cp_enum_name_by_arity, L),
+    member(wam_cpp_test_cp_check_static, L).
+user:wam_cpp_test_cp_enum_all :-
+    findall(N/A, current_predicate(N/A), L),
+    member(append/3, L).
+user:wam_cpp_test_cp_enum_none :-
+    findall(N, current_predicate(N/999), L),
+    L = [].
+user:wam_cpp_test_cp_inst_throw :-
+    catch(current_predicate(_),
+          error(instantiation_error, _),
+          true).
+user:wam_cpp_test_cp_indicator_throw :-
+    catch(current_predicate(foo),
+          error(type_error(predicate_indicator, _), _),
+          true).
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
 
@@ -4093,6 +4133,38 @@ test(cpp_e2e_findall_nested_template, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_nested_f_g/0',      [], true),
           run_query(BinPath, 'wam_cpp_test_nested_right/0',    [], true),
           run_query(BinPath, 'wam_cpp_test_nested_constant/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_current_predicate_nondet, [condition(cpp_compiler_available)]) :-
+    % current_predicate/1 nondet enum via the CP-iterator path.
+    % Re-uses the dispatch_current_predicate + current_pred_try_next
+    % infrastructure introduced in this PR. Tests cover check mode
+    % (parity with PR #2277), enum by partial spec (Name/_, _/Arity,
+    % _/_), the empty-match case, and the two throw paths.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_cpnondet', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_cp_check_static/0,
+                               user:wam_cpp_test_cp_check_missing/0,
+                               user:wam_cpp_test_cp_enum_arity/0,
+                               user:wam_cpp_test_cp_enum_name_by_arity/0,
+                               user:wam_cpp_test_cp_enum_all/0,
+                               user:wam_cpp_test_cp_enum_none/0,
+                               user:wam_cpp_test_cp_inst_throw/0,
+                               user:wam_cpp_test_cp_indicator_throw/0,
+                               user:wam_cpp_cp_static_a/1,
+                               user:wam_cpp_cp_static_b/2],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_cp_check_static/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_cp_check_missing/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_cp_enum_arity/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_cp_enum_name_by_arity/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_cp_enum_all/0',            [], true),
+          run_query(BinPath, 'wam_cpp_test_cp_enum_none/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_cp_inst_throw/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_cp_indicator_throw/0',     [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

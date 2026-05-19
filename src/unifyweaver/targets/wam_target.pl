@@ -1578,7 +1578,11 @@ is_builtin_pred(read_string, 5).        % read_string(+S, +L, ?L, _, -String).
 is_builtin_pred(at_end_of_stream, 1).   % at_end_of_stream(+Stream).
 is_builtin_pred(write_to_stream, 2).    % write_to_stream(+S, +Term).
 is_builtin_pred(nl_to_stream, 1).       % nl_to_stream(+S).
-is_builtin_pred(current_predicate, 1).  % current_predicate(?Name/Arity).
+% current_predicate/1 is intentionally NOT registered: the runtime
+% intercepts it in the Call/Execute opcode arms so it can push a
+% choice-point iterator for nondet enumeration over labels +
+% dynamic_db. Emitting BuiltinCall would route to builtin()
+% directly, bypassing the iterator and losing the enum semantics.
 is_builtin_pred(predicate_property, 2). % predicate_property(+Head, +Prop).
 is_builtin_pred(exists_file, 1).        % exists_file(+Path).
 is_builtin_pred(exists_directory, 1).   % exists_directory(+Path).
