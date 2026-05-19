@@ -251,6 +251,17 @@
 :- dynamic user:wam_cpp_test_assoc_del_all_back_to_empty/0.
 :- dynamic user:wam_cpp_test_assoc_del_rebalance_sorted/0.
 :- dynamic user:wam_cpp_test_assoc_del_returns_value/0.
+:- dynamic user:wam_cpp_test_assoc_del_min/0.
+:- dynamic user:wam_cpp_test_assoc_del_max/0.
+:- dynamic user:wam_cpp_test_assoc_del_min_empty_fails/0.
+:- dynamic user:wam_cpp_test_assoc_del_max_empty_fails/0.
+:- dynamic user:wam_cpp_test_assoc_pq_extract_min/0.
+:- dynamic user:wam_cpp_test_assoc_get5_replace/0.
+:- dynamic user:wam_cpp_test_assoc_get5_missing/0.
+:- dynamic user:wam_cpp_test_assoc_get5_threads_old_value/0.
+:- dynamic user:wam_cpp_assoc_double/2.
+:- dynamic user:wam_cpp_test_assoc_map/0.
+:- dynamic user:wam_cpp_test_assoc_map_empty/0.
 :- dynamic user:wam_cpp_test_get_time_positive/0.
 :- dynamic user:wam_cpp_test_stamp_utc/0.
 :- dynamic user:wam_cpp_test_stamp_subsec/0.
@@ -749,6 +760,83 @@ user:wam_cpp_test_assoc_del_returns_value :-
     put_assoc(role,   A2, admin,  A3),
     del_assoc(age, A3, V, _),
     V = 30.
+
+% del_min_assoc / del_max_assoc — extract the leftmost / rightmost
+% (K, V) pair atomically and return the rebalanced tree.
+user:wam_cpp_test_assoc_del_min :-
+    empty_assoc(A0),
+    put_assoc(3, A0, c, A1), put_assoc(1, A1, a, A2),
+    put_assoc(5, A2, e, A3), put_assoc(2, A3, b, A4),
+    del_min_assoc(A4, MK, MV, A5),
+    MK = 1, MV = a,
+    assoc_to_keys(A5, [2, 3, 5]).
+user:wam_cpp_test_assoc_del_max :-
+    empty_assoc(A0),
+    put_assoc(3, A0, c, A1), put_assoc(1, A1, a, A2),
+    put_assoc(5, A2, e, A3), put_assoc(2, A3, b, A4),
+    del_max_assoc(A4, MK, MV, A5),
+    MK = 5, MV = e,
+    assoc_to_keys(A5, [1, 2, 3]).
+user:wam_cpp_test_assoc_del_min_empty_fails :-
+    empty_assoc(E), \+ del_min_assoc(E, _, _, _).
+user:wam_cpp_test_assoc_del_max_empty_fails :-
+    empty_assoc(E), \+ del_max_assoc(E, _, _, _).
+user:wam_cpp_test_assoc_pq_extract_min :-
+    % Priority-queue use: repeatedly extract the min. Ends in
+    % the empty atom `t`.
+    empty_assoc(A0),
+    put_assoc(5, A0, e, A1), put_assoc(1, A1, a, A2),
+    put_assoc(3, A2, c, A3), put_assoc(2, A3, b, A4),
+    put_assoc(4, A4, d, A5),
+    del_min_assoc(A5, 1, a, B1),
+    del_min_assoc(B1, 2, b, B2),
+    del_min_assoc(B2, 3, c, B3),
+    del_min_assoc(B3, 4, d, B4),
+    del_min_assoc(B4, 5, e, B5),
+    B5 == t.
+
+% get_assoc/5 — atomic test-and-set. Walks the tree once, binding
+% the current value and producing a tree with the slot replaced.
+user:wam_cpp_test_assoc_get5_replace :-
+    empty_assoc(A0),
+    put_assoc(a, A0, 1, A1),
+    put_assoc(b, A1, 2, A2),
+    put_assoc(c, A2, 3, A3),
+    get_assoc(b, A3, 2, A4, 99),
+    get_assoc(b, A4, 99),
+    get_assoc(a, A4, 1),
+    get_assoc(c, A4, 3).
+user:wam_cpp_test_assoc_get5_missing :-
+    empty_assoc(A0),
+    put_assoc(a, A0, 1, A1),
+    \+ get_assoc(z, A1, _, _, _).
+user:wam_cpp_test_assoc_get5_threads_old_value :-
+    % The 3rd-arg binding lets callers compute NewVal from OldVal in
+    % a single pass.
+    empty_assoc(A0),
+    put_assoc(counter, A0, 5, A1),
+    get_assoc(counter, A1, Old, A2, New),
+    New is Old + 1,
+    get_assoc(counter, A2, 6).
+
+% map_assoc/3 — apply call(Goal, OldVal, NewVal) to every value.
+user:wam_cpp_assoc_double(X, Y) :- Y is X * 2.
+user:wam_cpp_test_assoc_map :-
+    empty_assoc(A0),
+    put_assoc(a, A0, 1, A1),
+    put_assoc(b, A1, 2, A2),
+    put_assoc(c, A2, 3, A3),
+    put_assoc(d, A3, 4, A4),
+    map_assoc(wam_cpp_assoc_double, A4, A5),
+    get_assoc(a, A5, 2),
+    get_assoc(b, A5, 4),
+    get_assoc(c, A5, 6),
+    get_assoc(d, A5, 8),
+    assoc_to_keys(A5, [a, b, c, d]).
+user:wam_cpp_test_assoc_map_empty :-
+    empty_assoc(E),
+    map_assoc(wam_cpp_assoc_double, E, R),
+    R == t.
 % Date/time: get_time/1 (Float seconds since epoch),
 % stamp_date_time/3 (decompose + TZ), date_time_stamp/2 (compose),
 % format_time/3 (strftime-style atom output). Tests use the canonical
@@ -4134,7 +4222,18 @@ test(cpp_e2e_assoc_library, [condition(cpp_compiler_available)]) :-
                                user:wam_cpp_test_assoc_del_missing_fails/0,
                                user:wam_cpp_test_assoc_del_all_back_to_empty/0,
                                user:wam_cpp_test_assoc_del_rebalance_sorted/0,
-                               user:wam_cpp_test_assoc_del_returns_value/0],
+                               user:wam_cpp_test_assoc_del_returns_value/0,
+                               user:wam_cpp_test_assoc_del_min/0,
+                               user:wam_cpp_test_assoc_del_max/0,
+                               user:wam_cpp_test_assoc_del_min_empty_fails/0,
+                               user:wam_cpp_test_assoc_del_max_empty_fails/0,
+                               user:wam_cpp_test_assoc_pq_extract_min/0,
+                               user:wam_cpp_test_assoc_get5_replace/0,
+                               user:wam_cpp_test_assoc_get5_missing/0,
+                               user:wam_cpp_test_assoc_get5_threads_old_value/0,
+                               user:wam_cpp_assoc_double/2,
+                               user:wam_cpp_test_assoc_map/0,
+                               user:wam_cpp_test_assoc_map_empty/0],
                               [emit_main(true), include_stdlib(assoc)],
                               TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
@@ -4157,7 +4256,17 @@ test(cpp_e2e_assoc_library, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_assoc_del_missing_fails/0',      [], true),
           run_query(BinPath, 'wam_cpp_test_assoc_del_all_back_to_empty/0',  [], true),
           run_query(BinPath, 'wam_cpp_test_assoc_del_rebalance_sorted/0',   [], true),
-          run_query(BinPath, 'wam_cpp_test_assoc_del_returns_value/0',      [], true)
+          run_query(BinPath, 'wam_cpp_test_assoc_del_returns_value/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_min/0',                [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_max/0',                [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_min_empty_fails/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_max_empty_fails/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_pq_extract_min/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_get5_replace/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_get5_missing/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_get5_threads_old_value/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_map/0',                    [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_map_empty/0',              [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
