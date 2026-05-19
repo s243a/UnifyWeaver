@@ -508,6 +508,10 @@ clojure_direct_builtin("char_code/2", "2").
 clojure_direct_builtin("char_code/2", 2).
 clojure_direct_builtin('char_code/2', "2").
 clojure_direct_builtin('char_code/2', 2).
+clojure_direct_builtin("char_type/2", "2").
+clojure_direct_builtin("char_type/2", 2).
+clojure_direct_builtin('char_type/2', "2").
+clojure_direct_builtin('char_type/2', 2).
 clojure_direct_builtin("atom_concat/3", "3").
 clojure_direct_builtin("atom_concat/3", 3).
 clojure_direct_builtin('atom_concat/3', "3").
@@ -901,6 +905,11 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "char_code/2" ; Op == 'char_code/2'),
     !,
     format(atom(Expr), '(runtime/apply-char-code-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "char_type/2" ; Op == 'char_type/2'),
+    !,
+    format(atom(Expr), '(runtime/apply-char-type-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (   Op == "atom_concat/3" ; Op == 'atom_concat/3'
