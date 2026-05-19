@@ -4512,6 +4512,48 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         pc += 1; return true;
     }
 
+    // ---- atom_number/2 ----------------------------------------------
+    // atom_number(?Atom, ?Number) bidirectional atom/number conversion.
+    // Forward (A1 bound): parse atom text as int first, then float.
+    // Fail (NOT throw) on unparseable input -- thats the difference
+    // between atom_number/2 and number_codes/2 (which throws).
+    // Reverse (A2 bound): render the number as an atom.
+    if (op == "atom_number/2") {
+        Value a1 = deref(*get_cell("A1"));
+        Value a2 = deref(*get_cell("A2"));
+        if (!a1.is_unbound()) {
+            if (a1.tag != Value::Tag::Atom) return false;
+            const std::string& buf = a1.s;
+            if (buf.empty()) return false;
+            Value result;
+            try {
+                std::size_t pos = 0;
+                std::int64_t i = std::stoll(buf, &pos);
+                if (pos == buf.size()) {
+                    result = Value::Integer(i);
+                } else {
+                    double d = std::stod(buf, &pos);
+                    if (pos != buf.size()) return false;
+                    result = Value::Float(d);
+                }
+            } catch (...) { return false; }
+            CellPtr tgt = get_cell("A2");
+            if (tgt->is_unbound()) { bind_cell(tgt, result); pc += 1; return true; }
+            if (!unify_cells(tgt, std::make_shared<Cell>(result))) return false;
+            pc += 1; return true;
+        }
+        if (a2.is_unbound()) return false;
+        std::string s;
+        if (a2.tag == Value::Tag::Integer) s = std::to_string(a2.i);
+        else if (a2.tag == Value::Tag::Float) s = render(a2);
+        else return false;
+        Value av = Value::Atom(s);
+        CellPtr tgt = get_cell("A1");
+        if (tgt->is_unbound()) { bind_cell(tgt, av); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(av))) return false;
+        pc += 1; return true;
+    }
+
     // ---- atomic_list_concat/2, /3 -----------------------------------
     // atomic_list_concat(+List, ?Atom)              concat with no sep
     // atomic_list_concat(?List, +Separator, ?Atom)  with separator
