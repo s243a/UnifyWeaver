@@ -180,6 +180,9 @@
 :- dynamic user:wam_char_type_alpha/0.
 :- dynamic user:wam_char_type_digit/0.
 :- dynamic user:wam_char_type_space/0.
+:- dynamic user:wam_char_type_code_forward/0.
+:- dynamic user:wam_char_type_code_reverse/0.
+:- dynamic user:wam_char_type_code_mismatch/0.
 :- dynamic user:wam_char_type_lower_fail/0.
 :- dynamic user:wam_number_codes_guard/2.
 :- dynamic user:wam_number_codes_reverse/0.
@@ -406,6 +409,9 @@ user:wam_char_code_unbound_pair(_) :- user:wam_unbound_arg(C), user:wam_unbound_
 user:wam_char_type_alpha :- char_type(a, alpha).
 user:wam_char_type_digit :- char_code(C, 0'5), char_type(C, digit), char_type(C, alnum).
 user:wam_char_type_space :- char_code(C, 32), char_type(C, space), char_type(C, whitespace).
+user:wam_char_type_code_forward :- char_type('A', code(C)), C =:= 65.
+user:wam_char_type_code_reverse :- char_type(C, code(97)), C = a.
+user:wam_char_type_code_mismatch :- char_type('A', code(66)).
 user:wam_char_type_lower_fail :- char_type('A', lower).
 user:wam_number_codes_guard(N, C) :- number_codes(N, C).
 user:wam_number_codes_reverse :- number_codes(N, [52,50]), N =:= 42.
@@ -637,6 +643,9 @@ run_smoke :-
           user:wam_char_type_alpha/0,
           user:wam_char_type_digit/0,
           user:wam_char_type_space/0,
+          user:wam_char_type_code_forward/0,
+          user:wam_char_type_code_reverse/0,
+          user:wam_char_type_code_mismatch/0,
           user:wam_char_type_lower_fail/0,
           user:wam_number_codes_guard/2,
           user:wam_number_codes_reverse/0,
@@ -1029,6 +1038,9 @@ smoke_cases([
     case('wam_char_type_alpha/0', no_args, "true"),
     case('wam_char_type_digit/0', no_args, "true"),
     case('wam_char_type_space/0', no_args, "true"),
+    case('wam_char_type_code_forward/0', no_args, "true"),
+    case('wam_char_type_code_reverse/0', no_args, "true"),
+    case('wam_char_type_code_mismatch/0', no_args, "false"),
     case('wam_char_type_lower_fail/0', no_args, "false"),
     case('wam_number_codes_guard/2', args(42, '[52,50]'), "true"),
     case('wam_number_codes_guard/2', args(42, '[52]'), "false"),
@@ -1409,6 +1421,7 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-string-chars-guard-2"),
     has(CoreCode, "defn lowered-wam-char-code-guard-2"),
     has(CoreCode, "defn lowered-wam-char-type-alpha-0"),
+    has(CoreCode, "defn lowered-wam-char-type-code-forward-0"),
     has(CoreCode, "defn lowered-wam-number-codes-guard-2"),
     has(CoreCode, "defn lowered-wam-number-chars-guard-2"),
     has(CoreCode, "defn lowered-wam-atom-concat-guard-3"),
