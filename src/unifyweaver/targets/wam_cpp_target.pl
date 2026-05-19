@@ -881,6 +881,21 @@ static const int _wam_cpp_setup_register = []() {
        assertz((user:pairs_keys_values([], [], []))),
        assertz((user:pairs_keys_values([K-V|T], [K|KT], [V|VT]) :-
            pairs_keys_values(T, KT, VT))),
+       % transpose_pairs/2 — swap K-V in each pair, then keysort on
+       % the new keys. Matches SWI library(pairs) semantics.
+       assertz((user:transpose_pairs(Pairs, Transposed) :-
+           wam_cpp_flip_pairs(Pairs, Flipped),
+           keysort(Flipped, Transposed))),
+       assertz((user:wam_cpp_flip_pairs([], []))),
+       assertz((user:wam_cpp_flip_pairs([K-V|T0], [V-K|T]) :-
+           wam_cpp_flip_pairs(T0, T))),
+       % map_list_to_pairs(:Function, +List, -Pairs) — for each E in
+       % List, build Function(E)-E. Used to attach a sort key to
+       % each element before keysort/2 (Schwartzian-style).
+       assertz((user:map_list_to_pairs(_, [], []))),
+       assertz((user:map_list_to_pairs(F, [V|T0], [K-V|T]) :-
+           call(F, V, K),
+           map_list_to_pairs(F, T0, T))),
        assertz((user:take(0, _, []) :- !)),
        assertz((user:take(_, [], []) :- !)),
        assertz((user:take(N, [H|T], [H|R]) :-
@@ -966,6 +981,9 @@ stdlib_feature_predicates(lists_extra, [
     user:pairs_keys/2,
     user:pairs_values/2,
     user:pairs_keys_values/3,
+    user:transpose_pairs/2,
+    user:wam_cpp_flip_pairs/2,
+    user:map_list_to_pairs/3,
     user:take/3,
     user:drop/3,
     user:intersection/3,

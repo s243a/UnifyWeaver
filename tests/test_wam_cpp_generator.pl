@@ -2637,6 +2637,42 @@ user:wam_cpp_test_keysort_then_values :-
     pairs_values(Sorted, Vs),
     Vs = [10, 20, 30].
 
+% library(pairs) — transpose_pairs/2 swaps each K-V to V-K and
+% keysorts on the new key. map_list_to_pairs/3 calls a closure on
+% each element to attach a key (Schwartzian style).
+:- dynamic user:wam_cpp_pairs_atom_len/2.
+:- dynamic user:wam_cpp_test_transpose_pairs/0.
+:- dynamic user:wam_cpp_test_transpose_pairs_stable/0.
+:- dynamic user:wam_cpp_test_transpose_pairs_empty/0.
+:- dynamic user:wam_cpp_test_map_list_to_pairs/0.
+:- dynamic user:wam_cpp_test_map_list_to_pairs_empty/0.
+:- dynamic user:wam_cpp_test_pairs_schwartzian/0.
+
+user:wam_cpp_pairs_atom_len(A, L) :- atom_length(A, L).
+
+user:wam_cpp_test_transpose_pairs :-
+    transpose_pairs([3-a, 1-b, 2-c], R),
+    R = [a-3, b-1, c-2].
+user:wam_cpp_test_transpose_pairs_stable :-
+    % keysort is stable — duplicate keys keep their input order.
+    transpose_pairs([1-x, 2-y, 1-z], R),
+    R = [x-1, y-2, z-1].
+user:wam_cpp_test_transpose_pairs_empty :-
+    transpose_pairs([], []).
+user:wam_cpp_test_map_list_to_pairs :-
+    map_list_to_pairs(wam_cpp_pairs_atom_len,
+                      [hello, hi, foo], R),
+    R = [5-hello, 2-hi, 3-foo].
+user:wam_cpp_test_map_list_to_pairs_empty :-
+    map_list_to_pairs(wam_cpp_pairs_atom_len, [], []).
+user:wam_cpp_test_pairs_schwartzian :-
+    % Sort atoms by length: attach length key, keysort, drop keys.
+    map_list_to_pairs(wam_cpp_pairs_atom_len,
+                      [hello, hi, foo, abcde, x], Tagged),
+    keysort(Tagged, Sorted),
+    pairs_values(Sorted, Out),
+    Out = [x, hi, foo, hello, abcde].
+
 % WAM-text quote roundtrip for digit-only atoms — `''5''`, `''42''`,
 % `''-3''` etc. Previously these were emitted unquoted in WAM text
 % and the C++ value emitter''s cpp_value_literal re-parsed them as
@@ -8118,6 +8154,34 @@ test(cpp_e2e_keysort_then_values,
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_keysort_then_values/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% library(pairs) — transpose_pairs/2 and map_list_to_pairs/3
+% (Schwartzian-style key attachment). Both round out the pairs
+% surface that already had pairs_keys/2, pairs_values/2, and
+% pairs_keys_values/3 from earlier work.
+test(cpp_e2e_pairs_transpose_and_map_list,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_pairs_tm', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_pairs_atom_len/2,
+                               user:wam_cpp_test_transpose_pairs/0,
+                               user:wam_cpp_test_transpose_pairs_stable/0,
+                               user:wam_cpp_test_transpose_pairs_empty/0,
+                               user:wam_cpp_test_map_list_to_pairs/0,
+                               user:wam_cpp_test_map_list_to_pairs_empty/0,
+                               user:wam_cpp_test_pairs_schwartzian/0],
+                              [emit_main(true), include_stdlib(lists_extra)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_transpose_pairs/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_transpose_pairs_stable/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_transpose_pairs_empty/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_map_list_to_pairs/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_map_list_to_pairs_empty/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_pairs_schwartzian/0',       [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
