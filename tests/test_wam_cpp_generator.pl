@@ -8706,6 +8706,34 @@ iso_errors_temp_config_file(Path, Lines) :-
         forall(member(L, Lines), format(Out, '~w~n', [L])),
         close(Out)).
 
+% Unit tests for compile_predicates_for_project''s on_compile_error
+% diagnostic policy. The handler logs / re-throws / drops based on
+% Policy. Verified by calling handle_compile_error/3 directly and
+% inspecting the failure / exception path.
+
+test(compile_error_throw_policy_rethrows) :-
+    catch(
+        wam_cpp_target:handle_compile_error(throw, foo/1,
+                                            error(test_marker, _)),
+        Caught,
+        Caught = error(test_marker, _)
+    ),
+    assertion(nonvar(Caught)).
+
+test(compile_error_warn_policy_fails) :-
+    \+ wam_cpp_target:handle_compile_error(warn, foo/1,
+                                          error(test_marker, _)).
+
+test(compile_error_skip_policy_fails) :-
+    \+ wam_cpp_target:handle_compile_error(skip, foo/1,
+                                          error(test_marker, _)).
+
+test(compile_error_default_is_warn) :-
+    % Anything that isn''t throw/skip falls through to the warn
+    % handler. Using `unknown_policy` here exercises that branch.
+    \+ wam_cpp_target:handle_compile_error(unknown_policy, foo/1,
+                                          error(test_marker, _)).
+
 :- end_tests(wam_cpp_generator).
 
 % --------------------------------------------------------------------
