@@ -125,6 +125,11 @@ packages-microsoft-prod.deb
 
 # Temporary directories
 tmp/
+# Test scratch dirs created by the WAM C++ e2e suite (setup_call_cleanup
+# normally removes them, but a long-running suite can leave one
+# visible mid-run).
+tests/tmp_cpp_*/
+tests/tmp_*/
 
 
 # Downloaded libraries (use setup scripts to install)
