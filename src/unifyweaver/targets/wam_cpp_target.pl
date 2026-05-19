@@ -7121,7 +7121,11 @@ bool WamState::step(const Instruction& instr) {
             // sub_atom/5 — nondeterministic substring enumeration.
             // Needs its own dispatch arm (not via builtin()) so the
             // CP machinery sees the correct continuation pc.
-            if (instr.a == "sub_atom/5") return dispatch_sub_atom(pc + 1);
+            // sub_string/5 is the SWI string-typed alias and shares
+            // the same semantics on this runtime (atoms and strings
+            // are unified as Atom-tagged values).
+            if (instr.a == "sub_atom/5" || instr.a == "sub_string/5")
+                return dispatch_sub_atom(pc + 1);
             // retract/1 — nondeterministic clause removal.
             if (instr.a == "retract/1") return dispatch_retract(pc + 1);
             // clause/2 — nondet enumeration of dynamic-db clauses.
@@ -7178,7 +7182,8 @@ bool WamState::step(const Instruction& instr) {
                     (instr.a == "bagof/3")   ? "bagof"   : "setof";
                 return dispatch_aggregate_call(kind, tail_after);
             }
-            if (instr.a == "sub_atom/5") return dispatch_sub_atom(cp);
+            if (instr.a == "sub_atom/5" || instr.a == "sub_string/5")
+                return dispatch_sub_atom(cp);
             if (instr.a == "retract/1") return dispatch_retract(cp);
             if (instr.a == "clause/2") return dispatch_clause(cp);
             if (instr.a == "current_predicate/1")
@@ -8938,7 +8943,8 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
         if (key == "findall/3") { cp = after_pc; return dispatch_findall_call(after_pc); }
         if (key == "bagof/3")   { cp = after_pc; return dispatch_aggregate_call("bagof", after_pc); }
         if (key == "setof/3")   { cp = after_pc; return dispatch_aggregate_call("setof", after_pc); }
-        if (key == "sub_atom/5") return dispatch_sub_atom(after_pc);
+        if (key == "sub_atom/5" || key == "sub_string/5")
+            return dispatch_sub_atom(after_pc);
         if (key == "retract/1") return dispatch_retract(after_pc);
         if (key == "with_output_to/2") {
             // Set cp = after_pc so the builtin captures the correct
