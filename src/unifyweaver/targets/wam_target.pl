@@ -144,10 +144,22 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
 %  - All atomic first args → switch_on_constant
 %  - All compound first args → switch_on_structure
 %  - Mixed types → switch_on_term (type-based dispatch)
-%  - Any variable first args → no indexing (variable matches anything)
+%  - Mixed with variable A1 clauses: the prefix up to (but not
+%    including) the first variable clause is the "indexed prefix";
+%    if it's all-constant, emit switch_on_constant_fallthrough — the
+%    runtime jumps to a matching indexed entry, otherwise falls
+%    through to the try_me_else chain (which catches the variable
+%    clauses). v1 limits the prefix to constant-only; structure /
+%    mixed prefixes with a trailing variable clause skip indexing.
 build_first_arg_index(Pred, Arity, Clauses, IndexCode) :-
     classify_first_args(Clauses, Types),
-    \+ member(variable, Types),  % can't index if any clause has a variable first arg
+    (   \+ member(variable, Types)
+    ->  build_first_arg_index_homogeneous(Pred, Arity, Clauses, Types, IndexCode)
+    ;   build_first_arg_index_with_fallthrough(Pred, Arity, Clauses, Types,
+                                               IndexCode)
+    ).
+
+build_first_arg_index_homogeneous(Pred, Arity, Clauses, Types, IndexCode) :-
     (   forall(member(T, Types), T = constant)
     ->  build_constant_index(Clauses, 1, Pred, Arity, Entries),
         Entries \= [],
@@ -163,6 +175,25 @@ build_first_arg_index(Pred, Arity, Clauses, IndexCode) :-
         build_term_index(Clauses, 1, Pred, Arity, Types, ConstEntries, StructEntries, ListLabel),
         format_switch_on_term(ConstEntries, StructEntries, ListLabel, IndexCode)
     ).
+
+build_first_arg_index_with_fallthrough(Pred, Arity, Clauses, Types, IndexCode) :-
+    indexed_prefix(Types, Clauses, PrefixTypes, PrefixClauses),
+    PrefixClauses \= [],
+    % v1: only handle constant prefix.
+    forall(member(T, PrefixTypes), T = constant),
+    build_constant_index(PrefixClauses, 1, Pred, Arity, Entries),
+    Entries \= [],
+    format_index_entries(Entries, EntriesStr),
+    format(string(IndexCode),
+           "    switch_on_constant_fallthrough ~w", [EntriesStr]).
+
+%% indexed_prefix(+Types, +Clauses, -PrefixTypes, -PrefixClauses)
+%  Take clauses up to (but not including) the first one whose A1 is
+%  a variable. Used for mixed-mode A1 indexing.
+indexed_prefix([], [], [], []).
+indexed_prefix([variable|_], _, [], []) :- !.
+indexed_prefix([T|Ts], [C|Cs], [T|PT], [C|PC]) :-
+    indexed_prefix(Ts, Cs, PT, PC).
 
 classify_first_args([], []).
 classify_first_args([Head-_|Rest], [Type|RestTypes]) :-
