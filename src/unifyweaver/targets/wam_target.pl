@@ -278,10 +278,20 @@ format_switch_on_term(ConstEntries, StructEntries, ListLabel, IndexCode) :-
 %  try indexing on the second argument instead. Mirrors the A1
 %  decision: all atomic → switch_on_constant_a2; all compound →
 %  switch_on_structure_a2; mixed atomic/compound → switch_on_term_a2.
-%  Any variable A2 disqualifies indexing entirely.
+%  When the predicate has variable A2 clauses, the constant prefix
+%  (up to the first variable A2) is still dispatched via
+%  switch_on_constant_a2_fallthrough — symmetric with A1''s
+%  switch_on_constant_fallthrough.
 build_second_arg_index(Pred, Arity, Clauses, IndexCode) :-
     classify_second_args(Clauses, Types),
-    \+ member(variable, Types),
+    (   \+ member(variable, Types)
+    ->  build_second_arg_index_homogeneous(Pred, Arity, Clauses, Types,
+                                           IndexCode)
+    ;   build_second_arg_index_with_fallthrough(Pred, Arity, Clauses, Types,
+                                                IndexCode)
+    ).
+
+build_second_arg_index_homogeneous(Pred, Arity, Clauses, Types, IndexCode) :-
     (   forall(member(T, Types), T = constant)
     ->  build_constant_index_on(Clauses, 2, 1, Pred, Arity, Entries),
         Entries \= [],
@@ -301,6 +311,18 @@ build_second_arg_index(Pred, Arity, Clauses, IndexCode) :-
         format_switch_on_term_a2(ConstEntries, StructEntries, ListLabel,
                                  IndexCode)
     ).
+
+build_second_arg_index_with_fallthrough(Pred, Arity, Clauses, Types,
+                                        IndexCode) :-
+    indexed_prefix(Types, Clauses, PrefixTypes, PrefixClauses),
+    PrefixClauses \= [],
+    % v1: only handle constant prefix, matching the A1 scope.
+    forall(member(T, PrefixTypes), T = constant),
+    build_constant_index_on(PrefixClauses, 2, 1, Pred, Arity, Entries),
+    Entries \= [],
+    format_index_entries(Entries, EntriesStr),
+    format(string(IndexCode),
+           "    switch_on_constant_a2_fallthrough ~w", [EntriesStr]).
 
 classify_second_args([], []).
 classify_second_args([Head-_|Rest], [Type|RestTypes]) :-

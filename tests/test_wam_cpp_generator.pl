@@ -3281,6 +3281,59 @@ user:wam_cpp_test_mma_mid_unbound :-
     findall(K-V, wam_cpp_mma_mid(K, V), L),
     L = [a-1, _-99, b-2, c-3].
 
+% Mixed-mode A2 indexing — mirror of the A1 case for predicates
+% whose A1 is variable in every clause but whose A2 has a trailing
+% variable catch-all. Previously the variable A2 disabled A2
+% indexing entirely; now the prefix is dispatched via
+% switch_on_constant_a2_fallthrough.
+:- dynamic user:wam_cpp_mma2_tag/3.
+:- dynamic user:wam_cpp_test_mma2_specific_hit/0.
+:- dynamic user:wam_cpp_test_mma2_unknown_falls_through/0.
+:- dynamic user:wam_cpp_test_mma2_specific_backtracks_to_default/0.
+:- dynamic user:wam_cpp_test_mma2_unknown_only_default/0.
+:- dynamic user:wam_cpp_test_mma2_all_unbound_enumerates/0.
+
+user:wam_cpp_mma2_tag(_, error, red).
+user:wam_cpp_mma2_tag(_, warn,  yellow).
+user:wam_cpp_mma2_tag(_, ok,    green).
+user:wam_cpp_mma2_tag(_, _,     gray).
+
+user:wam_cpp_test_mma2_specific_hit :-
+    wam_cpp_mma2_tag(any, error, red),
+    wam_cpp_mma2_tag(any, warn,  yellow),
+    wam_cpp_mma2_tag(any, ok,    green).
+user:wam_cpp_test_mma2_unknown_falls_through :-
+    % A2 = something NOT in the table — must fall through to the
+    % chain so the variable-A2 clause matches.
+    wam_cpp_mma2_tag(any, other, gray).
+user:wam_cpp_test_mma2_specific_backtracks_to_default :-
+    findall(C, wam_cpp_mma2_tag(any, error, C), L),
+    L = [red, gray].
+user:wam_cpp_test_mma2_unknown_only_default :-
+    findall(C, wam_cpp_mma2_tag(any, unknown, C), L),
+    L = [gray].
+user:wam_cpp_test_mma2_all_unbound_enumerates :-
+    findall(T-C, wam_cpp_mma2_tag(_, T, C), L),
+    L = [error-red, warn-yellow, ok-green, _-gray].
+
+% Variable A2 in the middle — indexed prefix is just `a`. After-var
+% clauses are reachable only via fall-through.
+:- dynamic user:wam_cpp_mma2_mid/3.
+:- dynamic user:wam_cpp_test_mma2_mid_indexed/0.
+:- dynamic user:wam_cpp_test_mma2_mid_after_var/0.
+
+user:wam_cpp_mma2_mid(_, a, 1).
+user:wam_cpp_mma2_mid(_, _, 99).
+user:wam_cpp_mma2_mid(_, b, 2).
+user:wam_cpp_mma2_mid(_, c, 3).
+
+user:wam_cpp_test_mma2_mid_indexed :-
+    findall(V, wam_cpp_mma2_mid(any, a, V), L),
+    L = [1, 99].
+user:wam_cpp_test_mma2_mid_after_var :-
+    findall(V, wam_cpp_mma2_mid(any, b, V), L),
+    L = [99, 2].
+
 user:wam_cpp_test_write :- write(hello), nl.
 % Y-reg isolation: both helpers use Y1/Y2 internally. Caller relies on
 % preserved Y1 across the two calls.
@@ -9170,6 +9223,38 @@ test(cpp_e2e_mixed_mode_a1_indexing,
           run_query(BinPath, 'wam_cpp_test_mma_mid_indexed/0',                     [], true),
           run_query(BinPath, 'wam_cpp_test_mma_mid_after_var/0',                   [], true),
           run_query(BinPath, 'wam_cpp_test_mma_mid_unbound/0',                     [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% Mixed-mode A2 indexing — same lift as the A1 case, but applied
+% to A2 when A1 is variable in every clause. The indexed A2 prefix
+% (clauses before the first variable-A2 clause) gets
+% switch_on_constant_a2_fallthrough; bound-but-unmatched A2 falls
+% through to the try_me_else chain so trailing variable clauses
+% still match.
+test(cpp_e2e_mixed_mode_a2_indexing,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_mma2', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_mma2_tag/3,
+                               user:wam_cpp_test_mma2_specific_hit/0,
+                               user:wam_cpp_test_mma2_unknown_falls_through/0,
+                               user:wam_cpp_test_mma2_specific_backtracks_to_default/0,
+                               user:wam_cpp_test_mma2_unknown_only_default/0,
+                               user:wam_cpp_test_mma2_all_unbound_enumerates/0,
+                               user:wam_cpp_mma2_mid/3,
+                               user:wam_cpp_test_mma2_mid_indexed/0,
+                               user:wam_cpp_test_mma2_mid_after_var/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_mma2_specific_hit/0',                    [], true),
+          run_query(BinPath, 'wam_cpp_test_mma2_unknown_falls_through/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_mma2_specific_backtracks_to_default/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_mma2_unknown_only_default/0',            [], true),
+          run_query(BinPath, 'wam_cpp_test_mma2_all_unbound_enumerates/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_mma2_mid_indexed/0',                     [], true),
+          run_query(BinPath, 'wam_cpp_test_mma2_mid_after_var/0',                   [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
