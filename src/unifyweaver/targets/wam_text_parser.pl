@@ -182,4 +182,6 @@ wam_recognise_instruction(["end_aggregate", R],        end_aggregate(R)).
 wam_recognise_instruction(["switch_on_constant"     | Es], switch_on_constant(Es)).
 wam_recognise_instruction(["switch_on_constant_a2"  | Es], switch_on_constant_a2(Es)).
 wam_recognise_instruction(["switch_on_structure"    | Es], switch_on_structure(Es)).
+wam_recognise_instruction(["switch_on_structure_a2" | Es], switch_on_structure_a2(Es)).
 wam_recognise_instruction(["switch_on_term"         | Ts], switch_on_term(Ts)).
+wam_recognise_instruction(["switch_on_term_a2"      | Ts], switch_on_term_a2(Ts)).
