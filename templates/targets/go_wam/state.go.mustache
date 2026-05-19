@@ -1195,6 +1195,22 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return vm.Unify(arg1, internAtom(string(rune(code.Val))))
 		}
 		return false
+	case "atom_string/2", "string_to_atom/2":
+		atomArg := arg1
+		stringArg := arg2
+		if op == "string_to_atom/2" {
+			atomArg = arg2
+			stringArg = arg1
+		}
+		atomVal := vm.deref(atomArg)
+		stringVal := vm.deref(stringArg)
+		if atom, ok := atomVal.(*Atom); ok {
+			return vm.Unify(stringArg, internAtom(atom.Name))
+		}
+		if text, ok := stringVal.(*Atom); ok {
+			return vm.Unify(atomArg, internAtom(text.Name))
+		}
+		return false
 
 	case "var/1": return isUnbound(vm.deref(arg1))
 	case "nonvar/1": return !isUnbound(vm.deref(arg1))
