@@ -958,7 +958,45 @@ static const int _wam_cpp_setup_register = []() {
        assertz((user:wam_cpp_min_member_acc([H|T], A, M) :-
            H @< A, !, wam_cpp_min_member_acc(T, H, M))),
        assertz((user:wam_cpp_min_member_acc([_|T], A, M) :-
-           wam_cpp_min_member_acc(T, A, M)))
+           wam_cpp_min_member_acc(T, A, M))),
+       % same_length(?L1, ?L2) — true if L1 and L2 have the same
+       % length. Bidirectional: works in any mode pattern.
+       assertz((user:same_length([], []))),
+       assertz((user:same_length([_|T1], [_|T2]) :-
+           same_length(T1, T2))),
+       % proper_length(@List, ?Length) — length of a proper list.
+       % Fails on partial lists (unbound tail) and non-lists. The
+       % explicit var/1 check is what distinguishes this from
+       % length/2 on a partially-instantiated list.
+       assertz((user:proper_length(L, N) :-
+           wam_cpp_proper_length_acc(L, 0, N))),
+       assertz((user:wam_cpp_proper_length_acc(L, _, _) :-
+           var(L), !, fail)),
+       assertz((user:wam_cpp_proper_length_acc([], N, N) :- !)),
+       assertz((user:wam_cpp_proper_length_acc([_|T], A, N) :-
+           A1 is A + 1, wam_cpp_proper_length_acc(T, A1, N))),
+       % list_to_set(+List, -Set) — dedup, preserving first
+       % occurrence. Uses memberchk against an accumulator of
+       % already-seen elements (O(n^2) worst case, like SWI's
+       % naive path; SWI also has a sort-based shortcut we don't
+       % bother with).
+       assertz((user:list_to_set(L, S) :- wam_cpp_l2s(L, [], S))),
+       assertz((user:wam_cpp_l2s([], _, []))),
+       assertz((user:wam_cpp_l2s([H|T], Seen, R) :-
+           memberchk(H, Seen), !, wam_cpp_l2s(T, Seen, R))),
+       assertz((user:wam_cpp_l2s([H|T], Seen, [H|R]) :-
+           wam_cpp_l2s(T, [H|Seen], R))),
+       % flatten(+NestedList, -FlatList) — flatten nested list
+       % structure into a single proper list. Unbound terms and
+       % non-list atoms are treated as leaves (matches SWI).
+       % Clause order matters: var-check first, then [] for the
+       % empty-list fast path, then [_|_] for descent, finally a
+       % catch-all that wraps non-list values as singletons.
+       assertz((user:flatten(X, [X]) :- var(X), !)),
+       assertz((user:flatten([], []) :- !)),
+       assertz((user:flatten([H|T], Flat) :- !,
+           flatten(H, FH), flatten(T, FT), append(FH, FT, Flat))),
+       assertz((user:flatten(X, [X])))
    ).
 
 %% stdlib_feature_predicates(+Feature, -Predicates)
@@ -1037,7 +1075,13 @@ stdlib_feature_predicates(lists_extra, [
     user:max_member/2,
     user:wam_cpp_max_member_acc/3,
     user:min_member/2,
-    user:wam_cpp_min_member_acc/3
+    user:wam_cpp_min_member_acc/3,
+    user:same_length/2,
+    user:proper_length/2,
+    user:wam_cpp_proper_length_acc/3,
+    user:list_to_set/2,
+    user:wam_cpp_l2s/3,
+    user:flatten/2
 ]).
 
 %% all_stdlib_features(-Features)
