@@ -2025,6 +2025,17 @@ instr_to_setup_line(switch_on_constant_a2(Entries), Labels, Line) :- !,
     format(atom(Line),
            '    vm.instrs.push_back(Instruction::SwitchOnConstantA2({~w}));',
            [EntriesCpp]).
+instr_to_setup_line(switch_on_constant_a2_fallthrough(Entries), Labels, Line) :- !,
+    % Mixed-mode A2 indexing — A1 is variable in every clause, AND
+    % the predicate has a variable-A2 clause somewhere. The indexed
+    % prefix (clauses before the first variable A2) gets switch
+    % entries; bound A2 with no match falls through to the chain so
+    % the variable-A2 clauses still match. Mirror of A1''s
+    % switch_on_constant_fallthrough.
+    parse_switch_entries(Entries, Labels, EntriesCpp),
+    format(atom(Line),
+           '    vm.instrs.push_back(Instruction::SwitchOnConstantA2({~w}, true));',
+           [EntriesCpp]).
 instr_to_setup_line(switch_on_structure(Entries), Labels, Line) :- !,
     parse_switch_struct_entries(Entries, Labels, EntriesCpp),
     format(atom(Line),
@@ -2618,8 +2629,12 @@ struct Instruction {
           i.const_table = std::move(table);
           i.no_match_fallthrough = fall_on_miss;
           return i; }
-    static Instruction SwitchOnConstantA2(std::vector<std::pair<Value, std::size_t>> table)
-        { Instruction i; i.op = Op::SwitchOnConstantA2; i.const_table = std::move(table); return i; }
+    static Instruction SwitchOnConstantA2(std::vector<std::pair<Value, std::size_t>> table,
+                                          bool fall_on_miss = false)
+        { Instruction i; i.op = Op::SwitchOnConstantA2;
+          i.const_table = std::move(table);
+          i.no_match_fallthrough = fall_on_miss;
+          return i; }
     static Instruction SwitchOnStructure(std::vector<std::pair<std::string, std::size_t>> table)
         { Instruction i; i.op = Op::SwitchOnStructure; i.struct_table = std::move(table); return i; }
     static Instruction SwitchOnStructureA2(std::vector<std::pair<std::string, std::size_t>> table)
@@ -7467,6 +7482,10 @@ bool WamState::step(const Instruction& instr) {
                     pc = kv.second; return true;
                 }
             }
+            // See SwitchOnConstant: bound A2 with no entry in the
+            // table falls through to the try_me_else chain when the
+            // predicate has variable-A2 clauses (mixed-mode A2).
+            if (instr.no_match_fallthrough) { pc += 1; return true; }
             return false;
         }
         case Instruction::Op::SwitchOnStructure: {

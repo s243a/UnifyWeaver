@@ -244,6 +244,51 @@ test_mma_none(a, 1).
 test_mma_none(b, 2).
 test_mma_none(c, 3).
 
+%% Mixed-mode A2 indexing — mirror of the A1 case. Predicates whose
+%% A1 is variable in every clause should now get
+%% switch_on_constant_a2_fallthrough for their indexed A2 prefix
+%% instead of dropping A2 indexing entirely.
+:- dynamic test_mma2_trailing/3, test_mma2_middle/3, test_mma2_first/3,
+           test_mma2_none/3.
+test_mma2_trailing(_, error, red).
+test_mma2_trailing(_, warn,  yellow).
+test_mma2_trailing(_, ok,    green).
+test_mma2_trailing(_, _,     gray).
+
+test_mma2_middle(_, a, 1).
+test_mma2_middle(_, _, 99).
+test_mma2_middle(_, b, 2).
+
+test_mma2_first(_, _, 0).
+test_mma2_first(_, a, 1).
+test_mma2_first(_, b, 2).
+
+test_mma2_none(_, a, 1).
+test_mma2_none(_, b, 2).
+test_mma2_none(_, c, 3).
+
+test_wam_mixed_mode_a2_indexing :-
+    Test = 'WAM: mixed-mode A2 indexing emits switch_on_constant_a2_fallthrough',
+    (   wam_target:compile_predicate_to_wam(user:test_mma2_trailing/3, [], C1),
+        wam_target:compile_predicate_to_wam(user:test_mma2_middle/3, [], C2),
+        wam_target:compile_predicate_to_wam(user:test_mma2_first/3, [], C3),
+        wam_target:compile_predicate_to_wam(user:test_mma2_none/3, [], C4),
+        atom_string(C1, S1), atom_string(C2, S2),
+        atom_string(C3, S3), atom_string(C4, S4),
+        % Trailing var A2: indexed prefix = error,warn,ok.
+        sub_string(S1, _, _, _, 'switch_on_constant_a2_fallthrough'),
+        % Middle var A2: indexed prefix = just `a`.
+        sub_string(S2, _, _, _, 'switch_on_constant_a2_fallthrough'),
+        % Var A2 first: no A2 indexing.
+        \+ sub_string(S3, _, _, _, 'switch_on_constant_a2_fallthrough'),
+        % No var A2: plain switch_on_constant_a2 (NOT fallthrough).
+        sub_string(S4, _, _, _, 'switch_on_constant_a2 '),
+        \+ sub_string(S4, _, _, _, 'switch_on_constant_a2_fallthrough')
+    ->  pass(Test)
+    ;   fail_test(Test,
+                  'Mixed-mode A2 indexing did not emit the expected pseudo-instruction')
+    ).
+
 test_wam_mixed_mode_a1_indexing :-
     Test = 'WAM: mixed-mode A1 indexing emits switch_on_constant_fallthrough',
     (   wam_target:compile_predicate_to_wam(user:test_mma_trailing/2, [], C1),
@@ -282,6 +327,7 @@ run_tests :-
     test_wam_multi_clause_findall_emits_allocate,
     test_wam_a2_indexing,
     test_wam_mixed_mode_a1_indexing,
+    test_wam_mixed_mode_a2_indexing,
 
     format('~n========================================~n'),
     (   test_failed

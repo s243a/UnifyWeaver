@@ -179,10 +179,11 @@ wam_recognise_instruction(["begin_aggregate", K, V, R, W],
 wam_recognise_instruction(["end_aggregate", R],        end_aggregate(R)).
 % Indexing instructions: variable-arity tail tokens captured as a list,
 % target-side decoders parse them per the dispatch-table convention.
-wam_recognise_instruction(["switch_on_constant"             | Es], switch_on_constant(Es)).
-wam_recognise_instruction(["switch_on_constant_fallthrough" | Es], switch_on_constant_fallthrough(Es)).
-wam_recognise_instruction(["switch_on_constant_a2"          | Es], switch_on_constant_a2(Es)).
-wam_recognise_instruction(["switch_on_structure"            | Es], switch_on_structure(Es)).
-wam_recognise_instruction(["switch_on_structure_a2"         | Es], switch_on_structure_a2(Es)).
-wam_recognise_instruction(["switch_on_term"                 | Ts], switch_on_term(Ts)).
-wam_recognise_instruction(["switch_on_term_a2"              | Ts], switch_on_term_a2(Ts)).
+wam_recognise_instruction(["switch_on_constant"                | Es], switch_on_constant(Es)).
+wam_recognise_instruction(["switch_on_constant_fallthrough"    | Es], switch_on_constant_fallthrough(Es)).
+wam_recognise_instruction(["switch_on_constant_a2"             | Es], switch_on_constant_a2(Es)).
+wam_recognise_instruction(["switch_on_constant_a2_fallthrough" | Es], switch_on_constant_a2_fallthrough(Es)).
+wam_recognise_instruction(["switch_on_structure"               | Es], switch_on_structure(Es)).
+wam_recognise_instruction(["switch_on_structure_a2"            | Es], switch_on_structure_a2(Es)).
+wam_recognise_instruction(["switch_on_term"                    | Ts], switch_on_term(Ts)).
+wam_recognise_instruction(["switch_on_term_a2"                 | Ts], switch_on_term_a2(Ts)).
