@@ -2006,6 +2006,15 @@ instr_to_setup_line(switch_on_constant(Entries), Labels, Line) :- !,
     format(atom(Line),
            '    vm.instrs.push_back(Instruction::SwitchOnConstant({~w}));',
            [EntriesCpp]).
+instr_to_setup_line(switch_on_constant_fallthrough(Entries), Labels, Line) :- !,
+    % Mixed-mode A1 indexing: bound A1 with no entry in the table
+    % must NOT fail — fall through to the try_me_else chain so the
+    % variable-A1 clauses get a chance to match. Same opcode as
+    % SwitchOnConstant, just with the no_match_fallthrough flag set.
+    parse_switch_entries(Entries, Labels, EntriesCpp),
+    format(atom(Line),
+           '    vm.instrs.push_back(Instruction::SwitchOnConstant({~w}, true));',
+           [EntriesCpp]).
 instr_to_setup_line(switch_on_constant_a2(Entries), Labels, Line) :- !,
     % Real A2 dispatch — emitted when the WAM compiler decides A1 is
     % too variable to index on but A2 is all constants. Same dispatch
@@ -2531,6 +2540,11 @@ struct Instruction {
     // dispatch; target doubles as the list-pc for SwitchOnTerm.
     std::vector<std::pair<Value, std::size_t>> const_table;
     std::vector<std::pair<std::string, std::size_t>> struct_table;
+    // Mixed-mode indexing flag: when a bound A1/A2 misses every
+    // entry in the switch table, fall through (pc += 1) instead of
+    // failing. Set when the predicate has variable-headed clauses
+    // that act as a default after the indexed prefix.
+    bool no_match_fallthrough = false;
 
     static Instruction GetConstant(Value v, std::string ai)
         { Instruction i; i.op = Op::GetConstant; i.val = std::move(v); i.a = std::move(ai); return i; }
@@ -2598,8 +2612,12 @@ struct Instruction {
           i.c = std::move(wregs); return i; }
     static Instruction EndAggregate(std::string vreg)
         { Instruction i; i.op = Op::EndAggregate; i.a = std::move(vreg); return i; }
-    static Instruction SwitchOnConstant(std::vector<std::pair<Value, std::size_t>> table)
-        { Instruction i; i.op = Op::SwitchOnConstant; i.const_table = std::move(table); return i; }
+    static Instruction SwitchOnConstant(std::vector<std::pair<Value, std::size_t>> table,
+                                        bool fall_on_miss = false)
+        { Instruction i; i.op = Op::SwitchOnConstant;
+          i.const_table = std::move(table);
+          i.no_match_fallthrough = fall_on_miss;
+          return i; }
     static Instruction SwitchOnConstantA2(std::vector<std::pair<Value, std::size_t>> table)
         { Instruction i; i.op = Op::SwitchOnConstantA2; i.const_table = std::move(table); return i; }
     static Instruction SwitchOnStructure(std::vector<std::pair<std::string, std::size_t>> table)
@@ -7422,7 +7440,12 @@ bool WamState::step(const Instruction& instr) {
                     pc = kv.second; return true;
                 }
             }
-            return false; // bound constant with no matching clause
+            // Bound constant with no matching indexed clause. If the
+            // predicate has variable-headed clauses (mixed-mode
+            // indexing), fall through to the try_me_else chain so
+            // those clauses still get a chance. Otherwise fail fast.
+            if (instr.no_match_fallthrough) { pc += 1; return true; }
+            return false;
         }
         case Instruction::Op::SwitchOnConstantA2: {
             // Dispatch on A2''s atom/integer value. Emitted when A1 is

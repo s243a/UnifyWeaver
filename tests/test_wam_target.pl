@@ -222,6 +222,50 @@ test_wam_a2_indexing :-
     ;   fail_test(Test, 'A2 indexing did not emit the expected pseudo-instruction')
     ).
 
+%% Mixed-mode A1 indexing: predicates with a variable A1 clause
+%% should now get a switch_on_constant_fallthrough for their indexed
+%% prefix, instead of no A1 indexing.
+:- dynamic test_mma_trailing/2, test_mma_middle/2, test_mma_first/2,
+           test_mma_none/2.
+test_mma_trailing(a, 1).
+test_mma_trailing(b, 2).
+test_mma_trailing(c, 3).
+test_mma_trailing(_, 0).
+
+test_mma_middle(a, 1).
+test_mma_middle(_, 99).
+test_mma_middle(b, 2).
+
+test_mma_first(_, 0).
+test_mma_first(a, 1).
+test_mma_first(b, 2).
+
+test_mma_none(a, 1).
+test_mma_none(b, 2).
+test_mma_none(c, 3).
+
+test_wam_mixed_mode_a1_indexing :-
+    Test = 'WAM: mixed-mode A1 indexing emits switch_on_constant_fallthrough',
+    (   wam_target:compile_predicate_to_wam(user:test_mma_trailing/2, [], C1),
+        wam_target:compile_predicate_to_wam(user:test_mma_middle/2, [], C2),
+        wam_target:compile_predicate_to_wam(user:test_mma_first/2, [], C3),
+        wam_target:compile_predicate_to_wam(user:test_mma_none/2, [], C4),
+        atom_string(C1, S1), atom_string(C2, S2),
+        atom_string(C3, S3), atom_string(C4, S4),
+        % Trailing var: indexed prefix is a,b,c → fallthrough form.
+        sub_string(S1, _, _, _, 'switch_on_constant_fallthrough'),
+        % Middle var: indexed prefix is just `a` → fallthrough form.
+        sub_string(S2, _, _, _, 'switch_on_constant_fallthrough'),
+        % Var first: no A1 indexing (falls back to A2).
+        \+ sub_string(S3, _, _, _, 'switch_on_constant_fallthrough'),
+        % No var clause: plain switch_on_constant (NOT the fallthrough form).
+        sub_string(S4, _, _, _, 'switch_on_constant '),
+        \+ sub_string(S4, _, _, _, 'switch_on_constant_fallthrough')
+    ->  pass(Test)
+    ;   fail_test(Test,
+                  'Mixed-mode A1 indexing did not emit the expected pseudo-instruction')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -237,6 +281,7 @@ run_tests :-
     test_wam_module,
     test_wam_multi_clause_findall_emits_allocate,
     test_wam_a2_indexing,
+    test_wam_mixed_mode_a1_indexing,
 
     format('~n========================================~n'),
     (   test_failed
