@@ -2918,6 +2918,11 @@ user:wam_cpp_listy([_|_]).
 :- dynamic user:wam_cpp_after_a2/0.
 :- dynamic user:wam_cpp_test_a2_all_clauses/0.
 :- dynamic user:wam_cpp_test_a2_downstream_label/0.
+:- dynamic user:wam_cpp_a2tag/3.
+:- dynamic user:wam_cpp_test_a2_direct_jump/0.
+:- dynamic user:wam_cpp_test_a2_no_match_fails/0.
+:- dynamic user:wam_cpp_test_a2_unbound_enumerates/0.
+:- dynamic user:wam_cpp_test_a2_shared_key_backtracks/0.
 
 user:wam_cpp_a2dispatch(B, same, K, t(same, B, K)).
 user:wam_cpp_a2dispatch(=, grew, K, t(grew_eq, K)).
@@ -2935,6 +2940,34 @@ user:wam_cpp_test_a2_all_clauses :-
 user:wam_cpp_test_a2_downstream_label :-
     user:wam_cpp_a2dispatch(=, same, k, _),
     user:wam_cpp_after_a2.
+
+% Tag-style predicate where A1 is a free name and A2 is the constant
+% the runtime indexes on. Distinct A2 values per clause exercise the
+% O(1) direct-jump path of the new SwitchOnConstantA2 opcode; shared
+% keys exercise the indexed_entry + retry chain.
+user:wam_cpp_a2tag(_, ok,    info).
+user:wam_cpp_a2tag(_, warn,  yellow).
+user:wam_cpp_a2tag(_, error, red).
+user:wam_cpp_a2tag(_, fatal, red).
+
+user:wam_cpp_test_a2_direct_jump :-
+    wam_cpp_a2tag(_, warn, yellow),
+    wam_cpp_a2tag(any, error, red),
+    wam_cpp_a2tag(thing, ok, info).
+user:wam_cpp_test_a2_no_match_fails :-
+    % Bound A2 with no matching clause must fail without enumerating.
+    \+ wam_cpp_a2tag(_, no_such_tag, _).
+user:wam_cpp_test_a2_unbound_enumerates :-
+    % Unbound A2 → fall through to try_me_else chain; findall sees
+    % all clauses.
+    findall(T-C, wam_cpp_a2tag(_, T, C), L),
+    L = [ok-info, warn-yellow, error-red, fatal-red].
+user:wam_cpp_test_a2_shared_key_backtracks :-
+    % A2=red appears in two clauses (error + fatal). Direct jump
+    % lands on error; backtracking through the synthesized CP must
+    % reach fatal.
+    findall(T, wam_cpp_a2tag(_, T, red), L),
+    L = [error, fatal].
 
 user:wam_cpp_test_write :- write(hello), nl.
 % Y-reg isolation: both helpers use Y1/Y2 internally. Caller relies on
@@ -8738,11 +8771,20 @@ test(cpp_e2e_switch_on_constant_a2, [condition(cpp_compiler_available)]) :-
         write_wam_cpp_project([user:wam_cpp_a2dispatch/4,
                                user:wam_cpp_after_a2/0,
                                user:wam_cpp_test_a2_all_clauses/0,
-                               user:wam_cpp_test_a2_downstream_label/0],
+                               user:wam_cpp_test_a2_downstream_label/0,
+                               user:wam_cpp_a2tag/3,
+                               user:wam_cpp_test_a2_direct_jump/0,
+                               user:wam_cpp_test_a2_no_match_fails/0,
+                               user:wam_cpp_test_a2_unbound_enumerates/0,
+                               user:wam_cpp_test_a2_shared_key_backtracks/0],
                               [emit_main(true)], TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
-          run_query(BinPath, 'wam_cpp_test_a2_all_clauses/0', [], true),
-          run_query(BinPath, 'wam_cpp_test_a2_downstream_label/0', [], true)
+          run_query(BinPath, 'wam_cpp_test_a2_all_clauses/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_downstream_label/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_direct_jump/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_no_match_fails/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_unbound_enumerates/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_shared_key_backtracks/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

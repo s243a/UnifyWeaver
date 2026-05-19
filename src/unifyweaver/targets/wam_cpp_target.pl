@@ -1817,14 +1817,15 @@ instr_to_setup_line(switch_on_constant(Entries), Labels, Line) :- !,
            '    vm.instrs.push_back(Instruction::SwitchOnConstant({~w}));',
            [EntriesCpp]).
 instr_to_setup_line(switch_on_constant_a2(Entries), Labels, Line) :- !,
-    % Treated as a runtime no-op for now (interpreter falls through to
-    % the try_me_else chain on A2 dispatch). Emit a real Nop push_back
-    % so vm.instrs.size() matches the PC count used for label resolution
-    % — otherwise every label after this point would be off-by-one.
-    parse_switch_entries(Entries, Labels, _EntriesCpp),
+    % Real A2 dispatch — emitted when the WAM compiler decides A1 is
+    % too variable to index on but A2 is all constants. Same dispatch
+    % shape as SwitchOnConstant (jump to first matching entry, set
+    % indexed_entry so RetryMeElse synthesizes a CP), just reads A2
+    % instead of A1.
+    parse_switch_entries(Entries, Labels, EntriesCpp),
     format(atom(Line),
-           '    vm.instrs.push_back(Instruction::Nop()); // switch_on_constant_a2 ~w',
-           [Entries]).
+           '    vm.instrs.push_back(Instruction::SwitchOnConstantA2({~w}));',
+           [EntriesCpp]).
 instr_to_setup_line(switch_on_structure(Entries), Labels, Line) :- !,
     parse_switch_struct_entries(Entries, Labels, EntriesCpp),
     format(atom(Line),
@@ -2302,7 +2303,7 @@ struct Instruction {
         BuiltinCall, CallForeign,
         TryMeElse, RetryMeElse, TrustMe, Jump, CutIte,
         BeginAggregate, EndAggregate,
-        SwitchOnConstant, SwitchOnStructure, SwitchOnTerm,
+        SwitchOnConstant, SwitchOnConstantA2, SwitchOnStructure, SwitchOnTerm,
         CatchReturn, NegationReturn, FindallCollect, ConjReturn, DisjAlt,
         IfThenCommit, IfThenElse, AggregateNextGroup, DynamicNextClause,
         SubAtomNext, BodyNext, RetractNext, OutputCaptureReturn,
@@ -2397,6 +2398,8 @@ struct Instruction {
         { Instruction i; i.op = Op::EndAggregate; i.a = std::move(vreg); return i; }
     static Instruction SwitchOnConstant(std::vector<std::pair<Value, std::size_t>> table)
         { Instruction i; i.op = Op::SwitchOnConstant; i.const_table = std::move(table); return i; }
+    static Instruction SwitchOnConstantA2(std::vector<std::pair<Value, std::size_t>> table)
+        { Instruction i; i.op = Op::SwitchOnConstantA2; i.const_table = std::move(table); return i; }
     static Instruction SwitchOnStructure(std::vector<std::pair<std::string, std::size_t>> table)
         { Instruction i; i.op = Op::SwitchOnStructure; i.struct_table = std::move(table); return i; }
     static Instruction SwitchOnTerm(std::vector<std::pair<Value, std::size_t>> consts,
@@ -7208,6 +7211,28 @@ bool WamState::step(const Instruction& instr) {
                 }
             }
             return false; // bound constant with no matching clause
+        }
+        case Instruction::Op::SwitchOnConstantA2: {
+            // Dispatch on A2''s atom/integer value. Emitted when A1 is
+            // too variable to index on but A2 has all constants (e.g.
+            // a tag-style second argument). Identical shape to
+            // SwitchOnConstant — see comments there.
+            CellPtr ac = get_cell("A2");
+            const Value& a = *ac;
+            if (a.is_unbound()) { pc += 1; return true; }
+            if (a.tag != Value::Tag::Atom && a.tag != Value::Tag::Integer
+                && a.tag != Value::Tag::Float) {
+                pc += 1; return true;
+            }
+            for (auto& kv : instr.const_table) {
+                if (kv.first == a) {
+                    if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                    if (kv.second == Instruction::SWITCH_NONE)    return false;
+                    indexed_entry = true;
+                    pc = kv.second; return true;
+                }
+            }
+            return false;
         }
         case Instruction::Op::SwitchOnStructure: {
             CellPtr ac = get_cell("A1");
