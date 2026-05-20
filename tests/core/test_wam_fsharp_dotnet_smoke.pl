@@ -2,28 +2,35 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2025 John William Creighton (@s243a)
 %
-% test_wam_fsharp_dotnet_smoke.pl — Real `dotnet build` smoke for the
-% WAM-to-F# transpilation target.
+% test_wam_fsharp_dotnet_smoke.pl — Real `dotnet build` + `dotnet run` smokes
+% for the WAM-to-F# transpilation target.
 %
 % Why this exists
 % ---------------
 % The companion file tests/test_wam_fsharp_target.pl is entirely
 % codegen-pattern-based: it asserts string fragments are present in
 % the emitted F# source but never invokes the F# compiler. That
-% caught zero of the two latent bugs fixed in the parent commit
-% (multi-line record-update syntax in GetList; fs_wam_value/2
-% crashing on atom input from fs_parse_switch_entries).
+% caught zero of the two latent bugs fixed in PR #2340 (multi-line
+% record-update syntax in GetList; fs_wam_value/2 crashing on atom
+% input from fs_parse_switch_entries).
 %
-% This smoke test closes that gap by:
-%   1. Generating a real F# project via write_wam_fsharp_project/3
-%      for two representative shapes:
-%        a. An empty-predicates project (covers WamTypes.fs +
-%           WamRuntime.fs + Predicates.fs + Lowered.fs scaffolding
-%           and the Program.fs benchmark driver).
-%        b. A two-fact predicate (covers the multi-clause /
-%           switch-on-constant codegen path that triggered bug #2).
-%   2. Running `dotnet build` on each and asserting "Build succeeded."
-%      with no errors.
+% This smoke test closes that gap with two layers:
+%
+%   1. Build smokes (test_dotnet_build_*):
+%      - empty-predicates project: scaffolding compiles
+%      - multi-fact predicate: switch-on-constant path compiles
+%
+%   2. Run smoke (test_dotnet_run_smoke):
+%      - generate a project, OVERWRITE Program.fs with the fixture
+%        at tests/fixtures/wam_fsharp_smoke/Smoke.fs
+%      - build, then `dotnet run`
+%      - parse stdout for `RESULT N/M`, assert N == M and N > 0
+%
+% The fixture drives the runtime through a few representative
+% scenarios that exercise step semantics, backtracking, compareValue,
+% derefVar, unifyVal, and the enumerateParBranches helper without
+% depending on the codegen pipeline (Instructions are constructed
+% inline).
 %
 % Skip behaviour
 % --------------
@@ -201,6 +208,106 @@ format_atom(Format, Args, Atom) :-
 format_atom(Format, Args) :-
     format_atom(Format, Args, _).
 
+%% ------------------------------------------------------------------------
+%% Run smoke: overwrite Program.fs with the fixture and exercise the
+%% runtime via `dotnet run`.  The fixture (tests/fixtures/wam_fsharp_smoke
+%% /Smoke.fs) is independent of which predicates were generated — it
+%% constructs Instruction arrays inline — so we can use the empty-
+%% predicates project as the build base.
+%% ------------------------------------------------------------------------
+
+run_dotnet_run(Dir, ExitCode, Output) :-
+    setup_dotnet_env,
+    setup_call_cleanup(
+        process_create(path(dotnet),
+            ['run', '--nologo', '-v', 'quiet', '--no-build'],
+            [cwd(Dir),
+             stdout(pipe(Out)), stderr(pipe(Err)),
+             process(Pid)]),
+        (   read_string(Out, _, OutText),
+            read_string(Err, _, ErrText),
+            process_wait(Pid, exit(ExitCode)),
+            atomic_list_concat([OutText, '\n', ErrText], Output)
+        ),
+        (   catch(close(Out), _, true),
+            catch(close(Err), _, true)
+        )
+    ).
+
+repo_root_for_smoke(Root) :-
+    source_file(repo_root_for_smoke(_), This),
+    file_directory_name(This, CoreDir),
+    file_directory_name(CoreDir, TestsDir),
+    file_directory_name(TestsDir, Root).
+
+smoke_fixture_path(Path) :-
+    repo_root_for_smoke(Root),
+    directory_file_path(Root,
+        'tests/fixtures/wam_fsharp_smoke/Smoke.fs', Path).
+
+copy_file_overwrite(Src, Dst) :-
+    setup_call_cleanup(
+        open(Src, read, In, [type(binary)]),
+        setup_call_cleanup(
+            open(Dst, write, Out, [type(binary)]),
+            copy_stream_data(In, Out),
+            close(Out)
+        ),
+        close(In)
+    ).
+
+%% Parse `RESULT N/M` from the smoke output.  Returns N, M.
+parse_smoke_result(Output, Passes, Total) :-
+    split_string(Output, "\n", "", Lines),
+    member(Line, Lines),
+    string_concat("RESULT ", Rest, Line),
+    split_string(Rest, "/", "", [PStr, TStr|_]),
+    number_string(Passes, PStr),
+    number_string(Total, TStr), !.
+
+test_dotnet_run_smoke :-
+    Test = 'WAM-FSharp dotnet: runtime smoke (build + run + assert RESULT N/N)',
+    smoke_root(Root),
+    directory_file_path(Root, runsmoke, Dir),
+    clean_dir(Dir),
+    make_directory_path(Dir),
+    %% Generate the project (use the empty-predicates shape — the fixture
+    %% doesn't depend on Predicates.fs content).
+    write_wam_fsharp_project([],
+        [no_kernels(true), module_name('uw_fsharp_runsmoke')],
+        Dir),
+    %% Overwrite Program.fs with the fixture.
+    smoke_fixture_path(FixturePath),
+    (   exists_file(FixturePath)
+    ->  true
+    ;   fail_test(Test,
+            format_atom('Fixture not found: ~w', [FixturePath])), !, fail
+    ),
+    directory_file_path(Dir, 'Program.fs', ProgPath),
+    copy_file_overwrite(FixturePath, ProgPath),
+    %% Build + run.
+    run_dotnet_build(Dir, BuildExit, BuildOutput),
+    (   BuildExit == 0
+    ->  true
+    ;   format('---- dotnet build output ----~n~w~n----~n', [BuildOutput]),
+        fail_test(Test, 'fixture build failed'), !, fail
+    ),
+    run_dotnet_run(Dir, RunExit, RunOutput),
+    (   parse_smoke_result(RunOutput, Passes, Total)
+    ->  (   RunExit == 0,
+            Passes =:= Total,
+            Passes > 0
+        ->  format('  RESULT ~w/~w~n', [Passes, Total]),
+            pass(Test),
+            maybe_clean(Dir)
+        ;   format('---- dotnet run output ----~n~w~n----~n', [RunOutput]),
+            fail_test(Test,
+                format_atom('runtime smoke failed: ~w/~w pass, exit ~w', [Passes, Total, RunExit]))
+        )
+    ;   format('---- dotnet run output ----~n~w~n----~n', [RunOutput]),
+        fail_test(Test, 'no RESULT line in smoke stdout')
+    ).
+
 %% ========================================================================
 %% Runner
 %% ========================================================================
@@ -211,7 +318,8 @@ run_tests :-
     format('========================================~n~n'),
     (   dotnet_available
     ->  test_dotnet_build_empty_project,
-        test_dotnet_build_multi_fact_project
+        test_dotnet_build_multi_fact_project,
+        test_dotnet_run_smoke
     ;   skip('WAM-FSharp dotnet smoke', 'dotnet not on PATH — install .NET SDK to run')
     ),
     format('~n========================================~n'),
