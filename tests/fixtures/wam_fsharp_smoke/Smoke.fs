@@ -255,6 +255,320 @@ let scenario_unify_val () =
     | None ->
         assertTrue "unifyVal (Atom x, Atom y): returns None" true
 
+// -- Scenario 9: PutStructureDyn (Phase-I specialized instruction) ---------
+
+let scenario_put_structure_dyn () =
+    // PutStructureDyn nameReg=1 arityReg=2 targetReg=3
+    // A1 = Atom "foo", A2 = Integer 2  =>  WsBuilder = BuildStruct ("foo", 3, 2, [])
+    let code = [| PutStructureDyn (1, 2, 3) |]
+    let ctx = mkContext code Map.empty
+    let regs = Array.create MaxRegs (Unbound -1)
+    regs.[1] <- Atom "foo"
+    regs.[2] <- Integer 2
+    let s0 = { mkEmptyState () with WsRegs = regs }
+    match step ctx s0 code.[0] with
+    | Some s ->
+        assertTrue "PutStructureDyn: PC advanced" (s.WsPC = 1)
+        match s.WsBuilder with
+        | Some (BuildStruct (fn, reg, arity, args)) ->
+            assertTrue "PutStructureDyn: builder functor = \"foo\"" (fn = "foo")
+            assertTrue "PutStructureDyn: builder target reg = 3" (reg = 3)
+            assertTrue "PutStructureDyn: builder arity = 2" (arity = 2)
+            assertTrue "PutStructureDyn: builder args = []" (args = [])
+        | _ ->
+            assertTrue "PutStructureDyn: builder should be BuildStruct" false
+    | None ->
+        assertTrue "PutStructureDyn should succeed with Atom + non-neg Integer" false
+
+    // Negative arity: should fail.
+    let regs2 = Array.create MaxRegs (Unbound -1)
+    regs2.[1] <- Atom "foo"
+    regs2.[2] <- Integer -1
+    let s0b = { mkEmptyState () with WsRegs = regs2 }
+    match step ctx s0b code.[0] with
+    | Some _ ->
+        assertTrue "PutStructureDyn: negative arity should fail" false
+    | None ->
+        assertTrue "PutStructureDyn: negative arity returns None" true
+
+    // Non-Atom name: should fail.
+    let regs3 = Array.create MaxRegs (Unbound -1)
+    regs3.[1] <- Integer 42
+    regs3.[2] <- Integer 0
+    let s0c = { mkEmptyState () with WsRegs = regs3 }
+    match step ctx s0c code.[0] with
+    | Some _ ->
+        assertTrue "PutStructureDyn: non-Atom name should fail" false
+    | None ->
+        assertTrue "PutStructureDyn: non-Atom name returns None" true
+
+// -- Scenario 10: Arg (specialized arg/3) ----------------------------------
+
+let scenario_arg_specialized () =
+    // Arg 2 tReg=1 aReg=2 on a Str ("foo", [Atom "a"; Atom "b"; Atom "c"])
+    // should extract Atom "b" into register 2.
+    let code = [| Arg (2, 1, 2) |]
+    let ctx = mkContext code Map.empty
+    let regs = Array.create MaxRegs (Unbound -1)
+    regs.[1] <- Str ("foo", [Atom "a"; Atom "b"; Atom "c"])
+    let s0 = { mkEmptyState () with WsRegs = regs }
+    match step ctx s0 code.[0] with
+    | Some s ->
+        assertTrue "Arg: PC advanced" (s.WsPC = 1)
+        assertTrue "Arg: aReg = 2nd subterm (Atom \"b\")"
+                   (s.WsRegs.[2] = Atom "b")
+    | None ->
+        assertTrue "Arg should succeed on Str + valid N" false
+
+    // VList head-or-tail virtualization: N=1 head, N=2 tail
+    let codeHead = [| Arg (1, 1, 2) |]
+    let regsH = Array.create MaxRegs (Unbound -1)
+    regsH.[1] <- VList [Atom "h"; Atom "t1"; Atom "t2"]
+    let s0H = { mkEmptyState () with WsRegs = regsH }
+    let ctxH = mkContext codeHead Map.empty
+    match step ctxH s0H codeHead.[0] with
+    | Some s ->
+        assertTrue "Arg: VList N=1 head"
+                   (s.WsRegs.[2] = Atom "h")
+    | None ->
+        assertTrue "Arg should succeed for VList N=1" false
+
+    let codeTail = [| Arg (2, 1, 2) |]
+    let regsT = Array.create MaxRegs (Unbound -1)
+    regsT.[1] <- VList [Atom "h"; Atom "t1"; Atom "t2"]
+    let s0T = { mkEmptyState () with WsRegs = regsT }
+    let ctxT = mkContext codeTail Map.empty
+    match step ctxT s0T codeTail.[0] with
+    | Some s ->
+        assertTrue "Arg: VList N=2 tail (VList [t1; t2])"
+                   (s.WsRegs.[2] = VList [Atom "t1"; Atom "t2"])
+    | None ->
+        assertTrue "Arg should succeed for VList N=2" false
+
+    // Out-of-range N: should fail.
+    let codeOOR = [| Arg (5, 1, 2) |]
+    let regsOOR = Array.create MaxRegs (Unbound -1)
+    regsOOR.[1] <- Str ("foo", [Atom "a"; Atom "b"])
+    let s0OOR = { mkEmptyState () with WsRegs = regsOOR }
+    let ctxOOR = mkContext codeOOR Map.empty
+    match step ctxOOR s0OOR codeOOR.[0] with
+    | Some _ ->
+        assertTrue "Arg: out-of-range N should fail" false
+    | None ->
+        assertTrue "Arg: out-of-range N returns None" true
+
+// -- Scenario 11: NotMemberList (Phase-I) ----------------------------------
+
+let scenario_not_member_list () =
+    // NotMemberList xReg=1 lReg=2 with X = Atom "z", L = [a, b, c]
+    // -> succeed (z not in list).
+    let code = [| NotMemberList (1, 2) |]
+    let ctx = mkContext code Map.empty
+    let regsOK = Array.create MaxRegs (Unbound -1)
+    regsOK.[1] <- Atom "z"
+    regsOK.[2] <- VList [Atom "a"; Atom "b"; Atom "c"]
+    let s0OK = { mkEmptyState () with WsRegs = regsOK }
+    match step ctx s0OK code.[0] with
+    | Some s ->
+        assertTrue "NotMemberList: X not in list -> success"
+                   (s.WsPC = 1)
+    | None ->
+        assertTrue "NotMemberList: X not in list should succeed" false
+
+    // X = Atom "b" is in [a, b, c] -> fail.
+    let regsBad = Array.create MaxRegs (Unbound -1)
+    regsBad.[1] <- Atom "b"
+    regsBad.[2] <- VList [Atom "a"; Atom "b"; Atom "c"]
+    let s0Bad = { mkEmptyState () with WsRegs = regsBad }
+    match step ctx s0Bad code.[0] with
+    | Some _ ->
+        assertTrue "NotMemberList: X in list should fail" false
+    | None ->
+        assertTrue "NotMemberList: X in list returns None" true
+
+// -- Scenario 12: NotMemberConstAtoms (Phase-I) -----------------------------
+
+let scenario_not_member_const_atoms () =
+    // X = Atom "z" not in [a; b; c] -> succeed.
+    let code = [| NotMemberConstAtoms (1, ["a"; "b"; "c"]) |]
+    let ctx = mkContext code Map.empty
+    let regs1 = Array.create MaxRegs (Unbound -1)
+    regs1.[1] <- Atom "z"
+    let s1 = { mkEmptyState () with WsRegs = regs1 }
+    match step ctx s1 code.[0] with
+    | Some _ ->
+        assertTrue "NotMemberConstAtoms: Atom \"z\" notin [a;b;c]" true
+    | None ->
+        assertTrue "NotMemberConstAtoms (z): should succeed" false
+
+    // X = Atom "b" is in the list -> fail.
+    let regs2 = Array.create MaxRegs (Unbound -1)
+    regs2.[1] <- Atom "b"
+    let s2 = { mkEmptyState () with WsRegs = regs2 }
+    match step ctx s2 code.[0] with
+    | Some _ ->
+        assertTrue "NotMemberConstAtoms: Atom \"b\" in list should fail" false
+    | None ->
+        assertTrue "NotMemberConstAtoms (b): returns None" true
+
+    // Non-atom ground (Integer): cannot unify with atoms -> succeed.
+    let regs3 = Array.create MaxRegs (Unbound -1)
+    regs3.[1] <- Integer 42
+    let s3 = { mkEmptyState () with WsRegs = regs3 }
+    match step ctx s3 code.[0] with
+    | Some _ ->
+        assertTrue "NotMemberConstAtoms: Integer can't unify with atoms" true
+    | None ->
+        assertTrue "NotMemberConstAtoms (Integer): should succeed" false
+
+    // Unbound: could-unify -> fail (matches Prolog \+ member(X, [a,b,c])
+    // when X is unbound).  Use a non-sentinel register slot first.
+    let regs4 = Array.create MaxRegs (Unbound -1)
+    regs4.[1] <- Unbound 100  // not the -1 sentinel
+    let s4 = { mkEmptyState () with WsRegs = regs4 }
+    match step ctx s4 code.[0] with
+    | Some _ ->
+        assertTrue "NotMemberConstAtoms: Unbound should fail (could-unify)" false
+    | None ->
+        assertTrue "NotMemberConstAtoms (Unbound): returns None" true
+
+// -- Scenario 13: VSet family (BuildEmptySet / SetInsert / NotMemberSet) ---
+
+let scenario_vset_family () =
+    // BuildEmptySet 1 -> WsRegs.[1] = VSet (empty Set<string>)
+    let code1 = [| BuildEmptySet 1 |]
+    let ctx1 = mkContext code1 Map.empty
+    let s0 = mkEmptyState ()
+    match step ctx1 s0 code1.[0] with
+    | Some s ->
+        assertTrue "BuildEmptySet: WsRegs[1] = VSet Set.empty"
+                   (s.WsRegs.[1] = VSet Set.empty)
+    | None ->
+        assertTrue "BuildEmptySet should succeed" false
+
+    // SetInsert elem=2, in=1, out=3 on (VSet {}) -> VSet {"x"}
+    let code2 = [| SetInsert (2, 1, 3) |]
+    let ctx2 = mkContext code2 Map.empty
+    let regs2 = Array.create MaxRegs (Unbound -1)
+    regs2.[1] <- VSet Set.empty
+    regs2.[2] <- Atom "x"
+    let s2 = { mkEmptyState () with WsRegs = regs2 }
+    match step ctx2 s2 code2.[0] with
+    | Some s ->
+        assertTrue "SetInsert: outReg = VSet {\"x\"}"
+                   (s.WsRegs.[3] = VSet (Set.ofList ["x"]))
+    | None ->
+        assertTrue "SetInsert should succeed on Atom + VSet" false
+
+    // NotMemberSet: elem=1, set=2 with set = {"a"; "b"} and elem = "z"
+    // -> succeed (z not in set).
+    let code3 = [| NotMemberSet (1, 2) |]
+    let ctx3 = mkContext code3 Map.empty
+    let regs3 = Array.create MaxRegs (Unbound -1)
+    regs3.[1] <- Atom "z"
+    regs3.[2] <- VSet (Set.ofList ["a"; "b"])
+    let s3 = { mkEmptyState () with WsRegs = regs3 }
+    match step ctx3 s3 code3.[0] with
+    | Some _ ->
+        assertTrue "NotMemberSet: \"z\" notin {\"a\";\"b\"} -> success" true
+    | None ->
+        assertTrue "NotMemberSet (z): should succeed" false
+
+    // elem = "a" IS in the set -> fail.
+    let regs4 = Array.create MaxRegs (Unbound -1)
+    regs4.[1] <- Atom "a"
+    regs4.[2] <- VSet (Set.ofList ["a"; "b"])
+    let s4 = { mkEmptyState () with WsRegs = regs4 }
+    match step ctx3 s4 code3.[0] with
+    | Some _ ->
+        assertTrue "NotMemberSet: \"a\" in set should fail" false
+    | None ->
+        assertTrue "NotMemberSet (a): returns None" true
+
+// -- Scenario 14: runNegationParallel end-to-end ---------------------------
+//
+// Builds a Par* chain inside a context with labels so \+/1 routes through
+// runNegationParallel.  The "goal" is a 3-branch chain where every branch
+// dead-ends via Fail; expected: negation succeeds (no branch goal succeeded).
+
+let scenario_run_negation_parallel_all_fail () =
+    // Labels: "g/0" -> PC 0 (the ParTryMeElsePc).
+    // PC 0: ParTryMeElsePc 3
+    // PC 1: Fail
+    // PC 2: Proceed  (unreachable past Fail)
+    // PC 3: ParRetryMeElsePc 5
+    // PC 4: Fail
+    // PC 5: ParTrustMe
+    // PC 6: Fail
+    let code = [|
+        ParTryMeElsePc 3         // 0
+        Fail                      // 1
+        Proceed                   // 2
+        ParRetryMeElsePc 5       // 3
+        Fail                      // 4
+        ParTrustMe                // 5
+        Fail                      // 6
+    |]
+    let labels = Map.ofList [ ("g/0", 0) ]
+    let ctx = mkContext code labels
+    let s0 = mkEmptyState ()
+    // runNegationParallel directly: all branches Fail -> false (no goal
+    // succeeded -> \+ would succeed).
+    let anySucceeded = runNegationParallel ctx s0 0 3
+    assertTrue "runNegationParallel: all-Fail chain => false (negation succeeds)"
+               (anySucceeded = false)
+
+let scenario_run_negation_parallel_one_succeeds () =
+    // Same shape but the second branch reaches Proceed.
+    // PC 0: ParTryMeElsePc 3
+    // PC 1: Fail
+    // PC 2: (filler)
+    // PC 3: ParRetryMeElsePc 5
+    // PC 4: Proceed              // <-- this branch succeeds
+    // PC 5: ParTrustMe
+    // PC 6: Fail
+    let code = [|
+        ParTryMeElsePc 3
+        Fail
+        Proceed
+        ParRetryMeElsePc 5
+        Proceed
+        ParTrustMe
+        Fail
+    |]
+    let labels = Map.ofList [ ("g/0", 0) ]
+    let ctx = mkContext code labels
+    let s0 = mkEmptyState ()
+    let anySucceeded = runNegationParallel ctx s0 0 3
+    assertTrue "runNegationParallel: one-Proceed branch => true (negation fails)"
+               (anySucceeded = true)
+
+// -- Scenario 15: Par* step arms still alias to sequential ----------------
+//
+// PR #2340 deliberately kept the ParTryMeElse step arms as sequential
+// aliases (the fork path lights up only via \+/1's goal-entry peek for
+// runNegationParallel).  This scenario locks in that contract: a
+// ParTryMeElsePc still pushes a choice point exactly as TryMeElsePc would.
+
+let scenario_par_step_aliases_to_sequential () =
+    let code = [| ParTryMeElsePc 99 |]
+    let ctx = mkContext code Map.empty
+    let s0 = mkEmptyState ()
+    match step ctx s0 code.[0] with
+    | Some s ->
+        assertTrue "ParTryMeElsePc: PC advanced past the instruction"
+                   (s.WsPC = 1)
+        assertTrue "ParTryMeElsePc: one choice point pushed"
+                   (s.WsCPsLen = 1)
+        match s.WsCPs with
+        | cp :: _ ->
+            assertTrue "ParTryMeElsePc: CP next PC = else target"
+                       (cp.CpNextPC = 99)
+        | [] ->
+            assertTrue "ParTryMeElsePc: CP list should be non-empty" false
+    | None ->
+        assertTrue "ParTryMeElsePc should succeed" false
+
 [<EntryPoint>]
 let main _argv =
     scenario_put_constant ()
@@ -266,6 +580,14 @@ let main _argv =
     scenario_enumerate_par_branches ()
     scenario_backtrack_run ()
     scenario_unify_val ()
+    scenario_put_structure_dyn ()
+    scenario_arg_specialized ()
+    scenario_not_member_list ()
+    scenario_not_member_const_atoms ()
+    scenario_vset_family ()
+    scenario_run_negation_parallel_all_fail ()
+    scenario_run_negation_parallel_one_succeeds ()
+    scenario_par_step_aliases_to_sequential ()
     let total = passes + fails
     printfn "RESULT %d/%d" passes total
     if fails > 0 then 1 else 0
