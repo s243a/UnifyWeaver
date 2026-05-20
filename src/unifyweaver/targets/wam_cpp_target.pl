@@ -455,9 +455,10 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     % any query runs. Idempotency is enforced runtime-side.
     lmdb_sources_from_options(Options, LmdbSources),
     findall(LoadLine, (
-        member(lmdb_source(Key, Path, DbName, Unique, OnDup),
+        member(lmdb_source(Key, Path, DbName, Unique, OnDup, Order),
                LmdbSources),
-        emit_lmdb_load_call(Key, Path, DbName, Unique, OnDup, LoadLine)
+        emit_lmdb_load_call(Key, Path, DbName, Unique, OnDup,
+                            Order, LoadLine)
     ), LoadLines),
     atomic_list_concat(LoadLines, '\n', LmdbLoadBody),
     length(FlatInstrs, Reserve),
@@ -499,16 +500,19 @@ static const int _wam_cpp_setup_register = []() {
 % atom (named sub-DB) or [] (default unnamed DB -> nullptr).
 % Unique is a boolean controlling value-uniqueness enforcement at
 % load time; OnDup is one of {throw,warn,overwrite,first_wins,
-% keep_all,fallback(P)} from the relation_policy directive.
-emit_lmdb_load_call(Key, Path, DbName, Unique, OnDup, Line) :-
+% keep_all,fallback(P)} from the relation_policy directive; Order
+% is the declared order spec (translated to a SortKey list, empty
+% when LMDB's natural iteration order satisfies it).
+emit_lmdb_load_call(Key, Path, DbName, Unique, OnDup, Order, Line) :-
     escape_cpp_string(Key, EKey),
     escape_cpp_string(Path, EPath),
     db_name_arg(DbName, DbArg),
     on_dup_cpp_enum(OnDup, DupEnum),
     cpp_bool(Unique, UniqueLit),
+    order_cpp_sort_keys(Order, SortKeysLit),
     format(atom(Line),
-        '    cpp_load_lmdb_fact_source(vm, "~w", "~w", ~w, LmdbLoadOptions{~w, LmdbLoadOptions::OnDup::~w});',
-        [EKey, EPath, DbArg, UniqueLit, DupEnum]).
+        '    cpp_load_lmdb_fact_source(vm, "~w", "~w", ~w, LmdbLoadOptions{~w, LmdbLoadOptions::OnDup::~w, ~w});',
+        [EKey, EPath, DbArg, UniqueLit, DupEnum, SortKeysLit]).
 
 db_name_arg([], 'nullptr') :- !.
 db_name_arg(DbName, Arg) :-
@@ -527,6 +531,52 @@ on_dup_cpp_enum(overwrite,  'overwrite').
 on_dup_cpp_enum(first_wins, 'first_wins').
 on_dup_cpp_enum(keep_all,   'keep_all').
 on_dup_cpp_enum(fallback(P), Tag) :- on_dup_cpp_enum(P, Tag).
+
+%% order_cpp_sort_keys(+OrderSpec, -SortKeysLiteral) is det.
+%
+% Translate the relation_policy order(...) spec into a C++
+% initializer-list literal for LmdbLoadOptions::sort_keys.
+% Emits "{}" (empty) when the declared order is trivially
+% satisfied by LMDB's natural key-ascending iteration -- this is
+% the cheap path. Emits "{ {N, asc}, ... }" otherwise.
+%
+% LMDB key uniqueness means a leading `arg(1)` / `asc(arg(1))`
+% guarantees a total order on its own, so any trailing sort
+% keys after such a leader are redundant and we drop them too.
+%
+% v1: arity 2; column indices are 1 or 2.
+order_cpp_sort_keys(OrderSpec, '{}') :-
+    trivial_order(OrderSpec), !.
+order_cpp_sort_keys(OrderSpec, Literal) :-
+    order_to_sort_keys(OrderSpec, Keys),
+    findall(KeyLit, (
+        member(key(Col, Asc), Keys),
+        cpp_bool(Asc, AscLit),
+        format(atom(KeyLit),
+               'LmdbLoadOptions::SortKey{~w, ~w}', [Col, AscLit])
+    ), KeyLits),
+    atomic_list_concat(KeyLits, ', ', Inner),
+    format(atom(Literal), '{ ~w }', [Inner]).
+
+% True for order specs that LMDB satisfies without a sort pass.
+trivial_order(natural)   :- !.
+trivial_order(insertion) :- !.
+trivial_order([])        :- !.
+trivial_order([First|_]) :-
+    % A leading asc(arg(1)) (or bare arg(1)) totally orders by
+    % unique key, so the rest of the chain is redundant.
+    sort_term_to_key(First, key(1, true)).
+
+% Convert an order term to a (Col, Asc) pair.
+sort_term_to_key(arg(N),       key(N, true)) :- integer(N).
+sort_term_to_key(asc(arg(N)),  key(N, true)) :- integer(N).
+sort_term_to_key(desc(arg(N)), key(N, false)) :- integer(N).
+
+% Translate a non-trivial order spec into a list of key(Col, Asc).
+order_to_sort_keys([], []).
+order_to_sort_keys([H|T], [K|KT]) :-
+    sort_term_to_key(H, K),
+    order_to_sort_keys(T, KT).
 
 % ============================================================================
 % ISO error configuration
@@ -2564,7 +2614,7 @@ foreign_pred_keys_from_options(Options, Keys) :-
 %  sources are accepted; other shapes will be added in follow-ups.
 lmdb_sources_from_options(Options, Sources) :-
     (   member(cpp_fact_sources(Specs), Options)
-    ->  findall(lmdb_source(Key, Path, DbName, Unique, OnDup), (
+    ->  findall(lmdb_source(Key, Path, DbName, Unique, OnDup, Order), (
             member(source(Functor/Arity, SourceSpec), Specs),
             validate_lmdb_v1_arity(Functor, Arity),
             lmdb_source_spec(SourceSpec, Path, DbName, SrcOpts),
@@ -2572,7 +2622,9 @@ lmdb_sources_from_options(Options, Sources) :-
             get_effective_policy(Functor/Arity, SrcOpts,
                                  unique, Unique),
             get_effective_policy(Functor/Arity, SrcOpts,
-                                 on_duplicate, OnDup)
+                                 on_duplicate, OnDup),
+            get_effective_policy(Functor/Arity, SrcOpts,
+                                 order, Order)
         ), Sources)
     ;   Sources = []
     ).
@@ -3642,6 +3694,20 @@ struct LmdbLoadOptions {
         overwrite  = 3,
         first_wins = 4
     } on_duplicate = OnDup::keep_all;
+
+    // Sort keys applied to the staged rows AFTER stream_all and
+    // BEFORE commit to dynamic_db. Lexicographic over the listed
+    // keys; empty vector means "no sort" (LMDB natural iteration
+    // order wins). column is 1-based; v1 only supports arity 2 so
+    // values are 1 or 2. The codegen omits trivially-satisfied
+    // order specs (e.g. asc by arg1, which LMDB gives for free)
+    // so sort_keys is non-empty only when actual reordering is
+    // needed.
+    struct SortKey {
+        int column;        // 1-based column index
+        bool ascending;
+    };
+    std::vector<SortKey> sort_keys;
 };
 
 // Always declared; the implementation no-ops when LMDB is not
@@ -10241,6 +10307,12 @@ bool cpp_load_lmdb_fact_source(WamState& vm,
         std::vector<CellPtr> staged;
         std::unordered_map<std::string, std::size_t> seen_value_to_row;
         src.stream_all([&](std::string_view ks, std::string_view vs) {
+            // LMDB stores named sub-DBs as pointer records in the
+            // parent DB. When the data DB IS the default unnamed
+            // one, iterating it surfaces "__meta__" as a phantom
+            // row whose value is an internal sub-DB pointer.
+            // Skip it -- it is never user data.
+            if (ks == "__meta__") return;
             std::string vstr(vs);
             if (opts.unique_check) {
                 auto it = seen_value_to_row.find(vstr);
@@ -10299,6 +10371,26 @@ bool cpp_load_lmdb_fact_source(WamState& vm,
         // Commit the staged rows only after stream_all completes
         // without throwing.
         auto& bucket = vm.dynamic_db[functor_arity_key];
+        // Apply order(...) policy. sort_keys is empty when the
+        // declared order is trivially satisfied by LMDB natural
+        // iteration (default, or [arg(1)] asc). std::sort is stable
+        // when applied to already-sorted input -- worst case here
+        // when sort_keys=[arg(2)] is O(n log n) but only fires
+        // when the user actually asked for a non-trivial sort.
+        if (!opts.sort_keys.empty()) {
+            std::sort(staged.begin(), staged.end(),
+                [&](const CellPtr& a, const CellPtr& b) {
+                    for (const auto& sk : opts.sort_keys) {
+                        const auto& av = a->args[sk.column - 1]->s;
+                        const auto& bv = b->args[sk.column - 1]->s;
+                        if (av != bv) {
+                            return sk.ascending ? (av < bv)
+                                                : (av > bv);
+                        }
+                    }
+                    return false;
+                });
+        }
         bucket.insert(bucket.end(),
                       std::make_move_iterator(staged.begin()),
                       std::make_move_iterator(staged.end()));
