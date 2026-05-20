@@ -66,7 +66,22 @@ init_fsharp_wam_bindings.
 
 fsharp_wam_value_type :-
     writeln(
-"[<CustomEquality; CustomComparison>]
+"/// Discriminated union for runtime Prolog values.
+///
+/// F# auto-generates structural equality and structural comparison for
+/// DUs, so we deliberately do NOT use [<CustomEquality; CustomComparison>]
+/// here.  An earlier version did, with `Equals(obj) = match ... -> this = other`
+/// and `IComparable.CompareTo = compare this other` overrides — both
+/// recurse through the very operator they''re trying to define, which
+/// would stack-overflow if ever exercised on the hot path.  The runtime
+/// hot path matches Value variants pattern-by-pattern anyway, so the
+/// override was unreachable; removing it is a pure cleanup.
+///
+/// For Prolog-standard term order (Var < Number < Atom < Compound) — as
+/// required by compare/3, @</2 and friends, sort/2, msort/2 — call the
+/// runtime helper compareValue (defined below) directly.  F#''s default
+/// structural comparison is NOT Prolog-standard order: it follows the
+/// DU constructor declaration order (Atom < Integer < Float < VList < ...).
 type Value =
     | Atom    of string
     | Integer of int
@@ -74,17 +89,7 @@ type Value =
     | VList   of Value list
     | Str     of string * Value list   // functor name, args
     | Unbound of int                   // variable id
-    | Ref     of int                   // heap reference
-    interface System.IComparable with
-        member this.CompareTo(obj) =
-            match obj with
-            | :? Value as other -> compare this other
-            | _ -> -1
-    override this.Equals(obj) =
-        match obj with
-        | :? Value as other -> this = other
-        | _ -> false
-    override this.GetHashCode() = hash this").
+    | Ref     of int                   // heap reference").
 
 % ============================================================================
 % TrailEntry — mirrors Haskell `data TrailEntry`
@@ -480,11 +485,12 @@ and copyTermArgs (c: int) (m: Map<int, int>) (xs: Value list)
 /// name, then element-wise.  VList behaves like a compound with functor
 /// '.' and arity matching the list length.
 ///
-/// This helper is independent of the Value type's CustomComparison
-/// override — that override's `compare this other` recurses through
-/// `IComparable.CompareTo` and is not used by the runtime hot path.
-/// Built-ins that need standard order (compare/3, @</2, @=</2, @>/2,
-/// @>=/2, sort/2, msort/2) call compareValue directly.
+/// F#''s auto-generated structural comparison for the Value DU follows
+/// the constructor declaration order (Atom < Integer < Float < VList <
+/// Str < Unbound < Ref) — which is NOT Prolog standard order. So
+/// builtins that need standard order (compare/3, @</2, @=</2, @>/2,
+/// @>=/2, sort/2, msort/2) call compareValue directly rather than
+/// relying on the F# `compare` operator on Value.
 let rec compareValue (a: Value) (b: Value) : int =
     let rankOf v =
         match v with

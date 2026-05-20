@@ -388,8 +388,9 @@ test_fsharp_succ_builtin :-
 test_fsharp_compare_value_helper_present :-
     %% compareValue + compareValueList live in WamTypes.fs (the type
     %% header preamble), invoked by compare/3, the @ comparisons, and
-    %% sort/2 / msort/2. The helper avoids the Value type''s recursive
-    %% CustomComparison override.
+    %% sort/2 / msort/2. The helper implements Prolog-standard term
+    %% ordering, which is NOT the same as F#''s default structural
+    %% comparison (F# orders DU variants by declaration position).
     Test = 'WAM-FSharp: compareValue helper present in type header',
     (   fsharp_wam_type_header(Code),
         atom_string(Code, S),
@@ -402,6 +403,32 @@ test_fsharp_compare_value_helper_present :-
         sub_string(S, _, _, _, "| Integer x, Float y   -> compare (float x) y")
     ->  pass(Test)
     ;   fail_test(Test, 'Missing compareValue / compareValueList helpers')
+    ).
+
+test_fsharp_value_du_no_buggy_overrides :-
+    %% Regression guard for the Value DU cleanup. The earlier definition
+    %% carried [<CustomEquality; CustomComparison>] plus an Equals /
+    %% CompareTo override that recursed through `this = other` /
+    %% `compare this other` — both would stack-overflow if exercised on
+    %% the hot path. Removing them lets F# auto-generate proper
+    %% structural equality + comparison for the DU.
+    %%
+    %% Checks for the actual F# syntax that would re-introduce the bug,
+    %% not just keyword mentions (the cleanup commentary in compareValue''s
+    %% docstring intentionally references the removed pattern by name).
+    Test = 'WAM-FSharp: Value DU has no recursive equality / comparison override',
+    (   fsharp_wam_type_header(Code),
+        atom_string(Code, S),
+        %% The interface block opener is gone.
+        \+ sub_string(S, _, _, _, "interface System.IComparable with"),
+        %% The CompareTo / Equals member declarations are gone.
+        \+ sub_string(S, _, _, _, "member this.CompareTo(obj)"),
+        \+ sub_string(S, _, _, _, "override this.Equals(obj)"),
+        \+ sub_string(S, _, _, _, "override this.GetHashCode()"),
+        %% Value DU itself still emitted.
+        sub_string(S, _, _, _, "type Value =")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Buggy override or attribute still present on Value DU')
     ).
 
 test_fsharp_append_builtin :-
@@ -720,6 +747,7 @@ run_tests :-
     test_fsharp_succ_builtin,
     %% Phase H — list / sort / order / unification (Go parity)
     test_fsharp_compare_value_helper_present,
+    test_fsharp_value_du_no_buggy_overrides,
     test_fsharp_append_builtin,
     test_fsharp_reverse_builtin,
     test_fsharp_last_builtin,
