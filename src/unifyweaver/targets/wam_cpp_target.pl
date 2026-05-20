@@ -59,6 +59,7 @@
 % runtime cost (the predicates only enter the generated output
 % when the expansion explicitly references them).
 :- use_module('../core/prolog_term_parser', []).
+:- use_module('../core/cpp_runtime_parser_wrappers', []).
 :- use_module(wam_cpp_lowered_emitter, [
     wam_cpp_lowerable/3,
     lower_predicate_to_cpp/4,
@@ -2752,7 +2753,13 @@ cpp_predicate_clause(Name/Arity, Head, Body) :-
 expand_cpp_runtime_parser_predicates(P0, compiled(prolog_term_parser),
                                      P) :-
     !,
-    cpp_runtime_parser_module_predicates(Extras),
+    cpp_runtime_parser_module_predicates(ParserPreds),
+    cpp_runtime_parser_wrapper_predicates(WrapperPreds),
+    % Wrappers go before the parser predicates so user-facing
+    % entry points (read_term_from_atom/2,3) are at the top of
+    % the resolved list, and the parser predicates they call
+    % follow.
+    append(WrapperPreds, ParserPreds, Extras),
     append(Extras, P0, Combined),
     dedupe_keep_first(Combined, P).
 expand_cpp_runtime_parser_predicates(P, _Mode, P).
@@ -2766,6 +2773,21 @@ cpp_runtime_parser_module_predicates(Preds) :-
                 % -- the WAM-cpp runtime already provides member/2,
                 % append/3, reverse/2 via include_stdlib(lists_extra).
                 \+ predicate_property(prolog_term_parser:H,
+                                       imported_from(_))
+            ),
+            Raw),
+    sort(Raw, Preds).
+
+% Enumerate the target-agnostic wrapper predicates that surface
+% SWI-style parser builtin names on top of the portable parser.
+% Currently: read_term_from_atom/2,3. See
+% src/unifyweaver/core/cpp_runtime_parser_wrappers.pl.
+cpp_runtime_parser_wrapper_predicates(Preds) :-
+    findall(cpp_runtime_parser_wrappers:N/A,
+            (   current_predicate(cpp_runtime_parser_wrappers:N/A),
+                functor(H, N, A),
+                once(clause(cpp_runtime_parser_wrappers:H, _)),
+                \+ predicate_property(cpp_runtime_parser_wrappers:H,
                                        imported_from(_))
             ),
             Raw),
