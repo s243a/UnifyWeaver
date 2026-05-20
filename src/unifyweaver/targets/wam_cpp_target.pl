@@ -48,6 +48,17 @@
 :- use_module('../core/relation_policy', [
        get_effective_policy/4
    ]).
+:- use_module(wam_runtime_parser_capability, [
+       wam_target_runtime_parser/3,
+       parser_dependent_body_goal/2
+   ]).
+% Load the portable Prolog term parser so its predicates are
+% visible to current_predicate/1 when runtime_parser(compiled) is
+% requested. The module is small (~445 lines, ~40 predicates) and
+% load-once; non-compiled-mode callers pay the load cost but no
+% runtime cost (the predicates only enter the generated output
+% when the expansion explicitly references them).
+:- use_module('../core/prolog_term_parser', []).
 :- use_module(wam_cpp_lowered_emitter, [
     wam_cpp_lowerable/3,
     lower_predicate_to_cpp/4,
@@ -2396,7 +2407,23 @@ parse_switch_term(Tokens, Labels, ConstsCpp, StructsCpp, ListPC) :-
 %    cpp/wam_runtime.cpp
 %    cpp/generated_program.cpp
 write_wam_cpp_project(Predicates0, Options, ProjectDir) :-
-    expand_stdlib_predicates(Predicates0, Options, Predicates),
+    expand_stdlib_predicates(Predicates0, Options, Predicates1),
+    % Resolve and act on the runtime-parser capability mode. The
+    % hook (PR #2329) registered C++ as native(parse_term) by
+    % default; this consults that registration plus the caller''s
+    % runtime_parser(...) option, then:
+    %   - none: rejects predicates whose statically visible body
+    %           uses a parser-dependent builtin (read/2, etc).
+    %   - native(_): no expansion (C++''s hand-written canonical
+    %           parser is in the runtime already).
+    %   - compiled(prolog_term_parser): auto-includes the portable
+    %           parser predicates so 1+2-style operator notation
+    %           works at runtime.
+    wam_target_runtime_parser(cpp, Options, RuntimeParserMode),
+    validate_cpp_runtime_parser_mode(Predicates1, RuntimeParserMode),
+    expand_cpp_runtime_parser_predicates(Predicates1,
+                                         RuntimeParserMode,
+                                         Predicates),
     make_directory_path(ProjectDir),
     directory_file_path(ProjectDir, 'cpp', CppDir),
     make_directory_path(CppDir),
@@ -2679,6 +2706,71 @@ lmdb_source_spec(lmdb(Path, Opts), Path, DbName, SrcOpts) :-
 %    include_stdlib(false)           -- no expansion (the default)
 %    include_stdlib([F1, F2, ...])   -- include only listed features
 %    include_stdlib(F)               -- single-feature shorthand
+%% validate_cpp_runtime_parser_mode(+Predicates, +Mode) is det.
+%
+% When the resolved mode is `none`, reject any input predicate
+% whose statically visible body uses a parser-dependent builtin
+% (read/2, read_term_from_atom/2,3, term_to_atom/2 in reverse
+% mode). Mirrors R''s validate_r_runtime_parser_mode/2. Other
+% modes are accepted without inspection.
+validate_cpp_runtime_parser_mode(Predicates, none) :-
+    !,
+    (   cpp_predicates_parser_dependency(Predicates, Pred, Builtin)
+    ->  throw(error(permission_error(use, runtime_parser, Builtin),
+                    context(write_wam_cpp_project/3,
+                            parser_disabled_for_predicate(Pred))))
+    ;   true
+    ).
+validate_cpp_runtime_parser_mode(_Predicates, _Mode).
+
+cpp_predicates_parser_dependency(Predicates, Pred, Builtin) :-
+    member(Pred, Predicates),
+    cpp_predicate_clause(Pred, _Head, Body),
+    parser_dependent_body_goal(Body, Builtin),
+    !.
+
+cpp_predicate_clause(Module:Name/Arity, Head, Body) :-
+    !,
+    functor(Head, Name, Arity),
+    clause(Module:Head, Body).
+cpp_predicate_clause(Name/Arity, Head, Body) :-
+    functor(Head, Name, Arity),
+    clause(user:Head, Body).
+
+%% expand_cpp_runtime_parser_predicates(+P0, +Mode, -P) is det.
+%
+% For compiled(prolog_term_parser): prepend every predicate of
+% src/unifyweaver/core/prolog_term_parser.pl to the input list
+% (skipping imported helpers like member/2 which the WAM-cpp
+% runtime supplies separately). This makes operator notation
+% (1+2 etc.) parsable at runtime via parse_term_from_atom/3 -- the
+% C++ native parser only handles canonical form (+(1, 2)).
+%
+% Other modes leave the list unchanged. The compiled mode is
+% opt-in via the runtime_parser(compiled) option since the parser
+% is ~40 predicates and adds significant compile time.
+expand_cpp_runtime_parser_predicates(P0, compiled(prolog_term_parser),
+                                     P) :-
+    !,
+    cpp_runtime_parser_module_predicates(Extras),
+    append(Extras, P0, Combined),
+    dedupe_keep_first(Combined, P).
+expand_cpp_runtime_parser_predicates(P, _Mode, P).
+
+cpp_runtime_parser_module_predicates(Preds) :-
+    findall(prolog_term_parser:N/A,
+            (   current_predicate(prolog_term_parser:N/A),
+                functor(H, N, A),
+                once(clause(prolog_term_parser:H, _)),
+                % Skip predicates imported from library(lists) etc.
+                % -- the WAM-cpp runtime already provides member/2,
+                % append/3, reverse/2 via include_stdlib(lists_extra).
+                \+ predicate_property(prolog_term_parser:H,
+                                       imported_from(_))
+            ),
+            Raw),
+    sort(Raw, Preds).
+
 expand_stdlib_predicates(Predicates0, Options, Predicates) :-
     (   member(include_stdlib(Spec), Options)
     ->  resolve_stdlib_features(Spec, Features),
