@@ -620,6 +620,50 @@ and resumeBuiltin (bs: BuiltinState) (cp: ChoicePoint) (rest: ChoicePoint list) 
                  WsCutBar   = cp.CpCutBar
                  WsCPs      = newCPs
                  WsCPsLen   = List.length newCPs }
+    | SelectRetry (_, _, [], _) ->
+        backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
+    | SelectRetry (elemReg, outReg, candidates, retPC) ->
+        // Restore from snapshot ONCE up front, then walk candidates with
+        // unifyVal until one succeeds (or all fail).  unifyVal returns
+        // None on failure without committing trail entries, so iterating
+        // candidates against the restored state is safe.
+        let diff = s.WsTrailLen - cp.CpTrailLen
+        let restoredS = { s with
+                             WsRegs     = Array.copy cp.CpRegs
+                             WsStack    = cp.CpStack
+                             WsCP       = cp.CpCP
+                             WsTrail    = List.skip diff s.WsTrail
+                             WsTrailLen = cp.CpTrailLen
+                             WsHeap     = List.take cp.CpHeapLen s.WsHeap
+                             WsHeapLen  = cp.CpHeapLen
+                             WsBindings = cp.CpBindings
+                             WsCutBar   = cp.CpCutBar
+                             WsPC       = retPC }
+        let rec tryNext pairs =
+            match pairs with
+            | [] -> backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
+            | (sel, restList) :: more ->
+                match getReg elemReg restoredS with
+                | None -> backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
+                | Some elem_ ->
+                    match unifyVal elem_ sel restoredS with
+                    | None    -> tryNext more
+                    | Some s2 ->
+                        match bindOutput outReg (VList restList) s2 with
+                        | None    -> tryNext more
+                        | Some s3 ->
+                            let newCPs =
+                                match more with
+                                | [] -> rest
+                                | _  -> { cp with CpBuiltin = Some (SelectRetry (elemReg, outReg, more, retPC)) } :: rest
+                            Some { s3 with
+                                     WsPC       = retPC
+                                     WsStack    = cp.CpStack
+                                     WsCP       = cp.CpCP
+                                     WsCutBar   = cp.CpCutBar
+                                     WsCPs      = newCPs
+                                     WsCPsLen   = List.length newCPs }
+        tryNext candidates
     | FFIStreamRetry (_, _, [], _) ->
         backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
     | FFIStreamRetry (outRegs, outVars, tuple :: restTuples, retPC) ->
@@ -1410,27 +1454,54 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
             | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
         | _ -> None
 
-    // select/3 — choose one element to remove. Deterministic first-
-    // solution semantics: returns the first selection that unifies with
-    // A1, with the remaining list in A3.  Full backtracking via choice
-    // points is left for a follow-up (parity with the Go select/3 that
-    // does enumerate all solutions via ChoicePoint records).
+    // select/3 — choose one element to remove with full backtracking
+    // semantics (parity with the Go target''s SelectResults ChoicePoint
+    // enumeration).  Computes all (selected, rest) splits upfront, then
+    // attempts unifyVal on each in turn.  The first successful split
+    // commits; if more remain, a SelectRetry CP is pushed so backtrack
+    // resumes through resumeBuiltin (SelectRetry arm above) and tries
+    // the next candidate.
     | BuiltinCall ("select/3", _) ->
         match getReg 1 s, getReg 2 s with
         | Some elem_, Some (VList items) ->
-            let rec findSplit prefix rest =
+            let rec splits prefix rest =
                 match rest with
-                | [] -> None
+                | [] -> []
                 | x :: xs ->
-                    let dx = derefVar s.WsBindings x
-                    if dx = elem_ then Some (List.rev prefix @ xs)
-                    else findSplit (x :: prefix) xs
-            match findSplit [] items with
-            | None      -> None
-            | Some rest ->
-                match bindOutput 3 (VList rest) s with
-                | None    -> None
-                | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+                    (derefVar s.WsBindings x, List.rev prefix @ xs)
+                    :: splits (x :: prefix) xs
+            let allSplits = splits [] items
+            let retPC = s.WsPC + 1
+            let rec tryNext pairs =
+                match pairs with
+                | [] -> None
+                | (sel, restList) :: more ->
+                    match unifyVal elem_ sel s with
+                    | None    -> tryNext more
+                    | Some s2 ->
+                        match bindOutput 3 (VList restList) s2 with
+                        | None    -> tryNext more
+                        | Some s3 ->
+                            let newCPs, newCPsLen =
+                                if List.isEmpty more then
+                                    s.WsCPs, s.WsCPsLen
+                                else
+                                    let cp = { CpNextPC   = retPC
+                                               CpRegs     = Array.copy s.WsRegs
+                                               CpStack    = s.WsStack
+                                               CpCP       = s.WsCP
+                                               CpTrailLen = s.WsTrailLen
+                                               CpHeapLen  = s.WsHeapLen
+                                               CpBindings = s.WsBindings
+                                               CpCutBar   = s.WsCutBar
+                                               CpAggFrame = None
+                                               CpBuiltin  = Some (SelectRetry (1, 3, more, retPC)) }
+                                    cp :: s.WsCPs, s.WsCPsLen + 1
+                            Some { s3 with
+                                     WsPC      = retPC
+                                     WsCPs     = newCPs
+                                     WsCPsLen  = newCPsLen }
+            tryNext allSplits
         | _ -> None
 
     // numlist/3 — generate the inclusive integer range [Lo..Hi] into A3.

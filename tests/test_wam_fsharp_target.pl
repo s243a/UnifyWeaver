@@ -388,8 +388,9 @@ test_fsharp_succ_builtin :-
 test_fsharp_compare_value_helper_present :-
     %% compareValue + compareValueList live in WamTypes.fs (the type
     %% header preamble), invoked by compare/3, the @ comparisons, and
-    %% sort/2 / msort/2. The helper avoids the Value type''s recursive
-    %% CustomComparison override.
+    %% sort/2 / msort/2. The helper implements Prolog-standard term
+    %% ordering, which is NOT the same as F#''s default structural
+    %% comparison (F# orders DU variants by declaration position).
     Test = 'WAM-FSharp: compareValue helper present in type header',
     (   fsharp_wam_type_header(Code),
         atom_string(Code, S),
@@ -402,6 +403,32 @@ test_fsharp_compare_value_helper_present :-
         sub_string(S, _, _, _, "| Integer x, Float y   -> compare (float x) y")
     ->  pass(Test)
     ;   fail_test(Test, 'Missing compareValue / compareValueList helpers')
+    ).
+
+test_fsharp_value_du_no_buggy_overrides :-
+    %% Regression guard for the Value DU cleanup. The earlier definition
+    %% carried [<CustomEquality; CustomComparison>] plus an Equals /
+    %% CompareTo override that recursed through `this = other` /
+    %% `compare this other` — both would stack-overflow if exercised on
+    %% the hot path. Removing them lets F# auto-generate proper
+    %% structural equality + comparison for the DU.
+    %%
+    %% Checks for the actual F# syntax that would re-introduce the bug,
+    %% not just keyword mentions (the cleanup commentary in compareValue''s
+    %% docstring intentionally references the removed pattern by name).
+    Test = 'WAM-FSharp: Value DU has no recursive equality / comparison override',
+    (   fsharp_wam_type_header(Code),
+        atom_string(Code, S),
+        %% The interface block opener is gone.
+        \+ sub_string(S, _, _, _, "interface System.IComparable with"),
+        %% The CompareTo / Equals member declarations are gone.
+        \+ sub_string(S, _, _, _, "member this.CompareTo(obj)"),
+        \+ sub_string(S, _, _, _, "override this.Equals(obj)"),
+        \+ sub_string(S, _, _, _, "override this.GetHashCode()"),
+        %% Value DU itself still emitted.
+        sub_string(S, _, _, _, "type Value =")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Buggy override or attribute still present on Value DU')
     ).
 
 test_fsharp_append_builtin :-
@@ -473,14 +500,48 @@ test_fsharp_delete_builtin :-
     ).
 
 test_fsharp_select_builtin :-
-    Test = 'WAM-FSharp: select/3 (deterministic first-solution)',
+    %% select/3 now enumerates all solutions via SelectRetry choice
+    %% points (parity with the Go target's SelectResults).
+    Test = 'WAM-FSharp: select/3 (full backtracking)',
     (   compile_wam_runtime_to_fsharp([], [], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, "BuiltinCall (\"select/3\""),
-        %% Linear split-by-element implementation.
-        sub_string(S, _, _, _, "findSplit")
+        %% Computes all (selected, rest) splits upfront.
+        sub_string(S, _, _, _, "let rec splits prefix rest ="),
+        %% Pushes SelectRetry CP with the remaining candidates.
+        sub_string(S, _, _, _, "Some (SelectRetry (1, 3, more, retPC))")
     ->  pass(Test)
-    ;   fail_test(Test, 'Missing select/3 step case')
+    ;   fail_test(Test, 'Missing select/3 backtracking patterns')
+    ).
+
+test_fsharp_select_retry_builtin_state :-
+    %% SelectRetry must be declared in the BuiltinState DU alongside
+    %% FactRetry / HopsRetry / FFIStreamRetry.
+    Test = 'WAM-FSharp: SelectRetry arm in BuiltinState DU',
+    (   fsharp_wam_type_header(Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "| SelectRetry"),
+        %% Carries elemReg, outReg, remaining (Value, Value list) pairs,
+        %% and retPC.
+        sub_string(S, _, _, _, "elemReg: int * outReg: int * remaining: (Value * Value list) list * retPC: int")
+    ->  pass(Test)
+    ;   fail_test(Test, 'SelectRetry arm missing from BuiltinState')
+    ).
+
+test_fsharp_select_retry_resume_handler :-
+    %% resumeBuiltin must dispatch on SelectRetry and restore the CP
+    %% snapshot before trying the next candidate.
+    Test = 'WAM-FSharp: resumeBuiltin handles SelectRetry',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "| SelectRetry (_, _, [], _) ->"),
+        sub_string(S, _, _, _, "| SelectRetry (elemReg, outReg, candidates, retPC) ->"),
+        %% Snapshot restoration before unification.
+        sub_string(S, _, _, _, "WsBindings = cp.CpBindings"),
+        %% Iterates candidates and chains via tryNext.
+        sub_string(S, _, _, _, "let rec tryNext pairs =")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing SelectRetry resume handler patterns')
     ).
 
 test_fsharp_numlist_builtin :-
@@ -720,6 +781,7 @@ run_tests :-
     test_fsharp_succ_builtin,
     %% Phase H — list / sort / order / unification (Go parity)
     test_fsharp_compare_value_helper_present,
+    test_fsharp_value_du_no_buggy_overrides,
     test_fsharp_append_builtin,
     test_fsharp_reverse_builtin,
     test_fsharp_last_builtin,
@@ -727,6 +789,8 @@ run_tests :-
     test_fsharp_memberchk_builtin,
     test_fsharp_delete_builtin,
     test_fsharp_select_builtin,
+    test_fsharp_select_retry_builtin_state,
+    test_fsharp_select_retry_resume_handler,
     test_fsharp_numlist_builtin,
     test_fsharp_sort_msort_builtins,
     test_fsharp_compare_builtin,
