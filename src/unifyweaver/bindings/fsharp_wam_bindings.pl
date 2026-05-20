@@ -466,7 +466,65 @@ and copyTermArgs (c: int) (m: Map<int, int>) (xs: Value list)
     | x :: rest ->
         let x1, c1, m1 = copyTermWalk c m x
         let rest1, c2, m2 = copyTermArgs c1 m1 rest
-        x1 :: rest1, c2, m2").
+        x1 :: rest1, c2, m2
+
+/// Standard-order comparison on Value terms.  Mirrors the Go target's
+/// compareValues helper (templates/targets/go_wam/state.go.mustache) and
+/// the Prolog/ISO standard ordering of terms:
+///
+///   Var < Number < Atom < String < Compound (incl. VList)
+///
+/// Numbers (Integer / Float) are compared by numeric value, bridging int
+/// and float via float-promotion.  Atoms compare by ordinal string order.
+/// Compound terms (Str / VList) compare first by arity, then by functor
+/// name, then element-wise.  VList behaves like a compound with functor
+/// '.' and arity matching the list length.
+///
+/// This helper is independent of the Value type's CustomComparison
+/// override — that override's `compare this other` recurses through
+/// `IComparable.CompareTo` and is not used by the runtime hot path.
+/// Built-ins that need standard order (compare/3, @</2, @=</2, @>/2,
+/// @>=/2, sort/2, msort/2) call compareValue directly.
+let rec compareValue (a: Value) (b: Value) : int =
+    let rankOf v =
+        match v with
+        | Unbound _           -> 0
+        | Integer _ | Float _ -> 1
+        | Atom _              -> 2
+        | Str _ | VList _     -> 3
+        | Ref _               -> 4
+    match a, b with
+    | Unbound x, Unbound y -> compare x y
+    | Integer x, Integer y -> compare x y
+    | Float x,   Float y   -> compare x y
+    | Integer x, Float y   -> compare (float x) y
+    | Float x,   Integer y -> compare x (float y)
+    | Atom x,    Atom y    -> System.String.Compare(x, y, System.StringComparison.Ordinal)
+    | Ref x,     Ref y     -> compare x y
+    | Str (fx, ax), Str (fy, ay) ->
+        let ca = compare (List.length ax) (List.length ay)
+        if ca <> 0 then ca
+        else
+            let cf = System.String.Compare(fx, fy, System.StringComparison.Ordinal)
+            if cf <> 0 then cf
+            else compareValueList ax ay
+    | VList xs, VList ys -> compareValueList xs ys
+    | Str (_, ax), VList ys ->
+        let ca = compare (List.length ax) (List.length ys)
+        if ca <> 0 then ca else compareValueList ax ys
+    | VList xs, Str (_, ay) ->
+        let ca = compare (List.length xs) (List.length ay)
+        if ca <> 0 then ca else compareValueList xs ay
+    | _ -> compare (rankOf a) (rankOf b)
+
+and compareValueList (xs: Value list) (ys: Value list) : int =
+    match xs, ys with
+    | [], []           -> 0
+    | [], _            -> -1
+    | _, []            -> 1
+    | x :: xt, y :: yt ->
+        let c = compareValue x y
+        if c <> 0 then c else compareValueList xt yt").
 
 % ============================================================================
 % Combined preamble emitter
