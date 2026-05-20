@@ -3476,6 +3476,12 @@ user:wam_cpp_test_bagof           :- bagof(X, user:wam_cpp_item(X), L), L = [a, 
 user:wam_cpp_test_bagof_empty     :- bagof(_, fail, _).
 user:wam_cpp_test_setof           :- setof(X, user:wam_cpp_num(X), L), L = [1, 2, 3].
 user:wam_cpp_test_setof_empty     :- setof(_, fail, _).
+% Dummy predicate -- the LMDB runtime test only needs the project
+% scaffolding (wam_runtime.cpp + .h). Real content comes from the
+% overridden main.cpp.
+:- dynamic user:wam_cpp_lmdb_dummy/0.
+user:wam_cpp_lmdb_dummy :- true.
+
 % sub_string/5 fixtures — mirror the SWI sub_string semantics.
 :- dynamic user:wam_cpp_test_ss_extract/0.
 :- dynamic user:wam_cpp_test_ss_extract_pre/0.
@@ -4963,6 +4969,45 @@ test(cpp_e2e_bagof_setof, [condition(cpp_compiler_available)]) :-
 % values, so we route both to the same dispatch_sub_atom. Covers
 % extraction, computed positional args, check mode, and the
 % enumeration backtracking path (via findall).
+% LMDB FactSource v1 -- runtime-level test. Verifies that
+% cpp_load_lmdb_fact_source opens an LMDB env, streams every
+% (key, value) pair into dynamic_db as edge/2 compound terms, and
+% short-circuits on idempotent re-call. Codegen integration
+% (cpp_fact_sources option) lands in a follow-up PR; this test
+% exercises just the runtime ABI by overriding main.cpp with a
+% hand-written driver that seeds + loads + asserts. Per
+% docs/design/WAM_CPP_LMDB_FACT_SOURCE_DESIGN.md v1.
+test(cpp_e2e_lmdb_runtime,
+     [condition(cpp_lmdb_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_rt', TmpDir),
+    setup_call_cleanup(
+        % Generate a minimal cpp project so we have wam_runtime.cpp
+        % and wam_runtime.h in place; we will overwrite main.cpp
+        % with our LMDB driver.
+        write_wam_cpp_project([user:wam_cpp_lmdb_dummy/0],
+                              [emit_main(true)], TmpDir),
+        ( directory_file_path(TmpDir, 'cpp', CppDir),
+          directory_file_path(CppDir, 'main.cpp', MainPath),
+          lmdb_runtime_test_main(CppDir, MainCpp),
+          setup_call_cleanup(
+              open(MainPath, write, MainS),
+              write(MainS, MainCpp),
+              close(MainS)),
+          build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          % run_query expects "true" / "false" but our driver
+          % prints "OK" on success and exits non-zero on failure.
+          % Use the bare process API instead.
+          process_create(BinPath, [],
+                         [stdout(pipe(Out)), stderr(null),
+                          process(PID)]),
+          read_string(Out, _, _Output),
+          close(Out),
+          process_wait(PID, Status),
+          assertion(Status == exit(0))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
 test(cpp_e2e_sub_string,
      [condition(cpp_compiler_available)]) :-
     unique_cpp_tmp_dir('tmp_cpp_e2e_sub_string', TmpDir),
@@ -9860,6 +9905,137 @@ test(compile_error_default_is_warn) :-
 unique_cpp_tmp_dir(Prefix, Dir) :-
     get_time(T), N is round(T * 1000),
     format(atom(Dir), 'tests/~w_~w', [Prefix, N]).
+
+% True if liblmdb headers + library are available at compile time.
+% Probes by trying to compile and link a trivial program that calls
+% mdb_env_create + mdb_env_close. Used to gate cpp_e2e_lmdb_*
+% tests so they skip on dev boxes without liblmdb installed.
+cpp_lmdb_available :-
+    catch(
+        ( tmp_file(lmdb_probe, ProbeC),
+          atom_concat(ProbeC, '.cpp', ProbeCpp),
+          atom_concat(ProbeC, '.out', ProbeBin),
+          setup_call_cleanup(
+              open(ProbeCpp, write, S),
+              format(S, '#include <lmdb.h>~nint main(){ MDB_env* e; mdb_env_create(&e); mdb_env_close(e); return 0; }~n', []),
+              close(S)),
+          process_create(path('g++'),
+              ['-std=c++17', '-o', ProbeBin, ProbeCpp, '-llmdb'],
+              [stdout(null), stderr(null), process(PID)]),
+          process_wait(PID, Status),
+          catch(delete_file(ProbeCpp), _, true),
+          catch(delete_file(ProbeBin), _, true),
+          Status == exit(0)
+        ),
+        _,
+        fail).
+
+% Hand-written main.cpp for the LMDB runtime test. Seeds an LMDB
+% file with three (key, value) pairs, calls cpp_load_lmdb_fact_source
+% to load them into dynamic_db, asserts shape + count, then calls
+% the loader a second time and asserts the idempotency contract.
+% Returns 0 on success, non-zero on any assertion failure.
+lmdb_runtime_test_main(CppDir, MainCpp) :-
+    directory_file_path(CppDir, 'lmdb_test_env', EnvPath),
+    format(string(MainCpp),
+'// SPDX-License-Identifier: MIT OR Apache-2.0
+// Hand-written test driver for cpp_load_lmdb_fact_source.
+#define WAM_CPP_ENABLE_LMDB 1
+#include "wam_runtime.h"
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <string>
+
+using namespace wam_cpp;
+
+static void seed(const std::string& env_path) {
+    std::filesystem::remove_all(env_path);
+    std::filesystem::create_directories(env_path);
+    MDB_env* env;
+    mdb_env_create(&env);
+    mdb_env_set_maxdbs(env, 4);
+    if (mdb_env_open(env, env_path.c_str(), 0, 0664) != MDB_SUCCESS) {
+        std::fprintf(stderr, "seed env_open failed\\n");
+        std::exit(2);
+    }
+    MDB_txn* txn;
+    mdb_txn_begin(env, nullptr, 0, &txn);
+    MDB_dbi dbi;
+    mdb_dbi_open(txn, nullptr, 0, &dbi);
+    auto put = [&](const char* k, const char* v) {
+        MDB_val K{std::strlen(k), const_cast<char*>(k)};
+        MDB_val V{std::strlen(v), const_cast<char*>(v)};
+        if (mdb_put(txn, dbi, &K, &V, 0) != MDB_SUCCESS) {
+            std::fprintf(stderr, "seed put failed\\n");
+            std::exit(2);
+        }
+    };
+    put("alice", "bob");
+    put("bob",   "carol");
+    put("carol", "dave");
+    mdb_txn_commit(txn);
+    mdb_env_close(env);
+}
+
+int main() {
+    std::string env_path = "~w";
+    seed(env_path);
+
+    WamState vm;
+    if (!cpp_load_lmdb_fact_source(vm, "edge/2", env_path, nullptr)) {
+        std::fprintf(stderr, "load failed\\n"); return 1;
+    }
+    auto it = vm.dynamic_db.find("edge/2");
+    if (it == vm.dynamic_db.end()) {
+        std::fprintf(stderr, "no edge/2 bucket\\n"); return 1;
+    }
+    if (it->second.size() != 3) {
+        std::fprintf(stderr, "expected 3 rows, got %zu\\n",
+                     it->second.size());
+        return 1;
+    }
+    for (const auto& cell : it->second) {
+        const Value& v = *cell;
+        if (v.tag != Value::Tag::Compound
+            || v.s != "edge/2"
+            || v.args.size() != 2
+            || v.args[0]->tag != Value::Tag::Atom
+            || v.args[1]->tag != Value::Tag::Atom) {
+            std::fprintf(stderr, "bad row shape\\n"); return 1;
+        }
+    }
+    // Idempotency: second load must not duplicate rows.
+    if (!cpp_load_lmdb_fact_source(vm, "edge/2", env_path, nullptr)) {
+        std::fprintf(stderr, "second load failed\\n"); return 1;
+    }
+    if (vm.dynamic_db["edge/2"].size() != 3) {
+        std::fprintf(stderr, "idempotency broken: %zu\\n",
+                     vm.dynamic_db["edge/2"].size());
+        return 1;
+    }
+    std::filesystem::remove_all(env_path);
+    std::printf("OK\\n");
+    return 0;
+}
+',                  [EnvPath]).
+
+% Build the C++ project at TmpDir with -DWAM_CPP_ENABLE_LMDB and
+% -llmdb. Used by LMDB end-to-end tests; otherwise identical to
+% build_e2e_binary/2.
+build_e2e_binary_with_lmdb(TmpDir, BinPath) :-
+    directory_file_path(TmpDir, 'cpp', CppDir),
+    directory_file_path(CppDir, 'wam_runtime.cpp', Rt),
+    directory_file_path(CppDir, 'generated_program.cpp', Prog),
+    directory_file_path(CppDir, 'main.cpp', Main),
+    directory_file_path(CppDir, 'cpp_test', BinPath),
+    process_create(path('g++'),
+                   ['-std=c++17', '-O0',
+                    '-DWAM_CPP_ENABLE_LMDB',
+                    '-o', BinPath, Rt, Prog, Main, '-llmdb'],
+                   [stderr(null), process(PID)]),
+    process_wait(PID, Status),
+    assertion(Status == exit(0)).
 
 cpp_compiler_available :-
     catch(
