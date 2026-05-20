@@ -1329,6 +1329,201 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
             | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
         | _ -> None
 
+    // ========================================================================
+    // Phase H — list / sort / order / unification builtins (Go parity)
+    // ========================================================================
+    // Reference: templates/targets/go_wam/state.go.mustache.  These all
+    // operate on F#''s VList shape (a flat Value list).  Standard-order
+    // comparisons use the runtime compareValue helper (defined in
+    // WamTypes.fs alongside copyTermWalk and friends) rather than the
+    // Value type''s CustomComparison override, which has a recursive
+    // CompareTo implementation that is not safe for the hot path.
+
+    // append/3 — concat two ground lists. Reverse / partial modes are
+    // intentionally not supported here (parity with Go''s listToSlice +
+    // slice concat: both A1 and A2 must be VList).
+    | BuiltinCall ("append/3", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (VList xs), Some (VList ys) ->
+            match bindOutput 3 (VList (xs @ ys)) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // reverse/2 — list reverse. Bidirectional: whichever side is bound
+    // becomes the source, the other becomes the output.
+    | BuiltinCall ("reverse/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (VList items), _ ->
+            match bindOutput 2 (VList (List.rev items)) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _, Some (VList items) ->
+            match bindOutput 1 (VList (List.rev items)) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // last/2 — extract the last element of a non-empty list.
+    | BuiltinCall ("last/2", _) ->
+        match getReg 1 s with
+        | Some (VList items) when not (List.isEmpty items) ->
+            match bindOutput 2 (List.last items) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // nth0/3, nth1/3 — index access. nth0 is 0-based, nth1 is 1-based.
+    | BuiltinCall ("nth0/3", _) | BuiltinCall ("nth1/3", _) ->
+        let base_ =
+            match instr with
+            | BuiltinCall ("nth1/3", _) -> 1
+            | _ -> 0
+        match getReg 1 s, getReg 2 s with
+        | Some (Integer i), Some (VList items) ->
+            let idx = i - base_
+            if idx >= 0 && idx < List.length items then
+                match bindOutput 3 (List.item idx items) s with
+                | None    -> None
+                | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+            else None
+        | _ -> None
+
+    // memberchk/2 — deterministic membership check: succeed once on the
+    // first match, no choice points. Mirrors the Go memberchk/2 fast
+    // path that just walks the list and returns true on first Unify.
+    | BuiltinCall ("memberchk/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some elem_, Some (VList items) ->
+            if items |> List.exists (fun v -> derefVar s.WsBindings v = elem_) then
+                Some { s with WsPC = s.WsPC + 1 }
+            else None
+        | _ -> None
+
+    // delete/3 — remove ALL occurrences of A2 from list A1, produce A3.
+    | BuiltinCall ("delete/3", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (VList items), Some target ->
+            let kept = items |> List.filter (fun v -> derefVar s.WsBindings v <> target)
+            match bindOutput 3 (VList kept) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // select/3 — choose one element to remove. Deterministic first-
+    // solution semantics: returns the first selection that unifies with
+    // A1, with the remaining list in A3.  Full backtracking via choice
+    // points is left for a follow-up (parity with the Go select/3 that
+    // does enumerate all solutions via ChoicePoint records).
+    | BuiltinCall ("select/3", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some elem_, Some (VList items) ->
+            let rec findSplit prefix rest =
+                match rest with
+                | [] -> None
+                | x :: xs ->
+                    let dx = derefVar s.WsBindings x
+                    if dx = elem_ then Some (List.rev prefix @ xs)
+                    else findSplit (x :: prefix) xs
+            match findSplit [] items with
+            | None      -> None
+            | Some rest ->
+                match bindOutput 3 (VList rest) s with
+                | None    -> None
+                | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // numlist/3 — generate the inclusive integer range [Lo..Hi] into A3.
+    | BuiltinCall ("numlist/3", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (Integer lo), Some (Integer hi) when lo <= hi ->
+            let items = [ for n in lo .. hi -> Integer n ]
+            match bindOutput 3 (VList items) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // sort/2 — standard-order sort with dedup. msort/2 — same sort
+    // without dedup. Both use compareValue (the runtime helper) for the
+    // sort key.
+    | BuiltinCall ("sort/2", _) ->
+        match getReg 1 s with
+        | Some (VList items) ->
+            let deref_ = items |> List.map (derefVar s.WsBindings)
+            let sorted = deref_ |> List.sortWith compareValue
+            let rec dedup xs =
+                match xs with
+                | []                              -> []
+                | [x]                             -> [x]
+                | x :: y :: rest when compareValue x y = 0 -> dedup (x :: rest)
+                | x :: rest                       -> x :: dedup rest
+            match bindOutput 2 (VList (dedup sorted)) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("msort/2", _) ->
+        match getReg 1 s with
+        | Some (VList items) ->
+            let sorted = items |> List.map (derefVar s.WsBindings) |> List.sortWith compareValue
+            match bindOutput 2 (VList sorted) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // compare/3 — three-way compare: bind A1 to ''<'', ''='', or ''>'' based
+    // on the standard-order comparison of A2 vs A3.
+    | BuiltinCall ("compare/3", _) ->
+        match getReg 2 s, getReg 3 s with
+        | Some a, Some b ->
+            let c = compareValue a b
+            let order = if c < 0 then Atom "<" elif c > 0 then Atom ">" else Atom "="
+            match bindOutput 1 order s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // @</2, @=</2, @>/2, @>=/2 — standard-order comparison predicates.
+    | BuiltinCall ("@</2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some a, Some b when compareValue a b < 0 -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("@=</2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some a, Some b when compareValue a b <= 0 -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("@>/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some a, Some b when compareValue a b > 0 -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("@>=/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some a, Some b when compareValue a b >= 0 -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    // =/2 — explicit unification. Delegates to the local unifyVal helper
+    // that lives at the end of the step function (binding-trail aware).
+    | BuiltinCall ("=/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some a, Some b -> unifyVal a b s
+        | _ -> None
+
+    // \\=/2 — non-unifiable check. Succeeds when A1 and A2 cannot unify
+    // under the current binding state.  Implemented by attempting
+    // unification on a copy of the state and inverting the result; if
+    // the trial unifies, \\=/2 fails (bindings are discarded since we
+    // never thread the trial state out).
+    | BuiltinCall ("\\\\=/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some a, Some b ->
+            match unifyVal a b s with
+            | Some _ -> None
+            | None   -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
     | BuiltinCall ("member/2", _) ->
         let elem_ = s.WsRegs.[1] |> derefVar s.WsBindings
         let list_ = s.WsRegs.[2] |> derefVar s.WsBindings

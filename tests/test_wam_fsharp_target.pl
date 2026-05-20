@@ -378,6 +378,190 @@ test_fsharp_succ_builtin :-
     ).
 
 %% ----------------------------------------------------------------------
+%% Phase H parity: list / sort / order / unification builtins.  Brings
+%% the F# target to the remaining Go-target builtin coverage (append/3,
+%% reverse/2, last/2, nth0/3, nth1/3, memberchk/2, delete/3, select/3,
+%% numlist/3, sort/2, msort/2, compare/3, @</2 family, =/2, \\=/2).
+%% Reference: templates/targets/go_wam/state.go.mustache.
+%% ----------------------------------------------------------------------
+
+test_fsharp_compare_value_helper_present :-
+    %% compareValue + compareValueList live in WamTypes.fs (the type
+    %% header preamble), invoked by compare/3, the @ comparisons, and
+    %% sort/2 / msort/2. The helper avoids the Value type''s recursive
+    %% CustomComparison override.
+    Test = 'WAM-FSharp: compareValue helper present in type header',
+    (   fsharp_wam_type_header(Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "let rec compareValue"),
+        sub_string(S, _, _, _, "compareValueList"),
+        %% Standard ordering: Var < Number < Atom < Compound.
+        sub_string(S, _, _, _, "| Unbound _           -> 0"),
+        sub_string(S, _, _, _, "| Atom _              -> 2"),
+        %% Numeric mixing via float-promotion.
+        sub_string(S, _, _, _, "| Integer x, Float y   -> compare (float x) y")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing compareValue / compareValueList helpers')
+    ).
+
+test_fsharp_append_builtin :-
+    Test = 'WAM-FSharp: append/3',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"append/3\""),
+        %% F# list concatenation operator on the two VList contents.
+        sub_string(S, _, _, _, "VList (xs @ ys)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing append/3 step case')
+    ).
+
+test_fsharp_reverse_builtin :-
+    Test = 'WAM-FSharp: reverse/2 (bidirectional)',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"reverse/2\""),
+        sub_string(S, _, _, _, "List.rev items")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing reverse/2 step case')
+    ).
+
+test_fsharp_last_builtin :-
+    Test = 'WAM-FSharp: last/2',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"last/2\""),
+        %% Non-empty list guard.
+        sub_string(S, _, _, _, "not (List.isEmpty items)"),
+        sub_string(S, _, _, _, "List.last items")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing last/2 step case')
+    ).
+
+test_fsharp_nth_builtins :-
+    Test = 'WAM-FSharp: nth0/3 + nth1/3',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"nth0/3\""),
+        sub_string(S, _, _, _, "BuiltinCall (\"nth1/3\""),
+        %% Shared dispatch with a base offset derived from the op name.
+        sub_string(S, _, _, _, "List.item idx items")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing nth0/3 / nth1/3 step case')
+    ).
+
+test_fsharp_memberchk_builtin :-
+    Test = 'WAM-FSharp: memberchk/2',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"memberchk/2\""),
+        %% Deterministic: no choice point, just List.exists.
+        sub_string(S, _, _, _, "items |> List.exists"),
+        sub_string(S, _, _, _, "derefVar s.WsBindings v = elem_")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing memberchk/2 step case')
+    ).
+
+test_fsharp_delete_builtin :-
+    Test = 'WAM-FSharp: delete/3',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"delete/3\""),
+        %% Removes ALL occurrences via List.filter.
+        sub_string(S, _, _, _, "List.filter")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing delete/3 step case')
+    ).
+
+test_fsharp_select_builtin :-
+    Test = 'WAM-FSharp: select/3 (deterministic first-solution)',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"select/3\""),
+        %% Linear split-by-element implementation.
+        sub_string(S, _, _, _, "findSplit")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing select/3 step case')
+    ).
+
+test_fsharp_numlist_builtin :-
+    Test = 'WAM-FSharp: numlist/3',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"numlist/3\""),
+        %% Range comprehension generates the Integer list.
+        sub_string(S, _, _, _, "for n in lo .. hi -> Integer n")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing numlist/3 step case')
+    ).
+
+test_fsharp_sort_msort_builtins :-
+    Test = 'WAM-FSharp: sort/2 + msort/2',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"sort/2\""),
+        sub_string(S, _, _, _, "BuiltinCall (\"msort/2\""),
+        %% Both call List.sortWith compareValue.
+        sub_string(S, _, _, _, "List.sortWith compareValue"),
+        %% sort/2 has a dedup pass; msort/2 does not.
+        sub_string(S, _, _, _, "let rec dedup")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing sort/2 / msort/2 step cases')
+    ).
+
+test_fsharp_compare_builtin :-
+    Test = 'WAM-FSharp: compare/3',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"compare/3\""),
+        %% Result is an Atom dispatching on the sign of compareValue.
+        sub_string(S, _, _, _, "if c < 0 then Atom \"<\" elif c > 0 then Atom \">\" else Atom \"=\"")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing compare/3 step case')
+    ).
+
+test_fsharp_standard_order_comparison :-
+    Test = 'WAM-FSharp: @</2, @=</2, @>/2, @>=/2',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"@</2\""),
+        sub_string(S, _, _, _, "BuiltinCall (\"@=</2\""),
+        sub_string(S, _, _, _, "BuiltinCall (\"@>/2\""),
+        sub_string(S, _, _, _, "BuiltinCall (\"@>=/2\""),
+        %% All four call compareValue.
+        sub_string(S, _, _, _, "compareValue a b < 0"),
+        sub_string(S, _, _, _, "compareValue a b <= 0"),
+        sub_string(S, _, _, _, "compareValue a b > 0"),
+        sub_string(S, _, _, _, "compareValue a b >= 0")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing @ comparison step cases')
+    ).
+
+test_fsharp_unify_builtin :-
+    Test = 'WAM-FSharp: =/2 (explicit unification)',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"=/2\""),
+        %% Delegates to the local unifyVal helper that lives at the
+        %% end of the step function (binding-trail aware).
+        sub_string(S, _, _, _, "unifyVal a b s")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing =/2 step case')
+    ).
+
+test_fsharp_not_unifiable_builtin :-
+    Test = 'WAM-FSharp: \\=/2 (non-unifiable)',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        %% F# pattern emits "\\=/2" (one backslash at runtime),
+        %% matching the WAM op name.
+        sub_string(S, _, _, _, "BuiltinCall (\"\\\\=/2\""),
+        %% Inverted-unify pattern: Some _ (unified) => None (fail).
+        sub_string(S, _, _, _, "| Some _ -> None")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing \\=/2 step case')
+    ).
+
+%% ----------------------------------------------------------------------
 %% Phase F parity smoke: fact-shape classification helpers exposed by
 %% the F# target (parity infra used by Haskell / Elixir hybrid targets).
 %% ----------------------------------------------------------------------
@@ -534,6 +718,21 @@ run_tests :-
     test_fsharp_case_conversion_builtins,
     test_fsharp_atom_number_builtin,
     test_fsharp_succ_builtin,
+    %% Phase H — list / sort / order / unification (Go parity)
+    test_fsharp_compare_value_helper_present,
+    test_fsharp_append_builtin,
+    test_fsharp_reverse_builtin,
+    test_fsharp_last_builtin,
+    test_fsharp_nth_builtins,
+    test_fsharp_memberchk_builtin,
+    test_fsharp_delete_builtin,
+    test_fsharp_select_builtin,
+    test_fsharp_numlist_builtin,
+    test_fsharp_sort_msort_builtins,
+    test_fsharp_compare_builtin,
+    test_fsharp_standard_order_comparison,
+    test_fsharp_unify_builtin,
+    test_fsharp_not_unifiable_builtin,
     test_fsharp_fact_shape_helpers_exported,
     test_fsharp_emit_mode_resolution,
     test_fsharp_lowerable_single_clause_proceed,
