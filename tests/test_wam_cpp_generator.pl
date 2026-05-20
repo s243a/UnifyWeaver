@@ -5139,6 +5139,55 @@ test(cpp_e2e_runtime_parser_native_excludes_wrappers) :-
         delete_directory_and_contents(TmpDir)
     ).
 
+% Operator-aware wrappers under explicit names (option C from
+% the PR #2334 design discussion). parse_atom_to_term/2 and
+% parse_term_to_atom/2 give compiled-mode users an operator-aware
+% parse path without colliding with the existing C++ builtins for
+% atom_to_term/3 and term_to_atom/2 (which are emitted as
+% builtin_call and bypass label dispatch).
+test(cpp_e2e_runtime_parser_explicit_name_wrappers) :-
+    unique_cpp_tmp_dir('tmp_cpp_runparser_xw', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [ runtime_parser(compiled),
+              runtime_parser_subset([parse_atom_to_term/2,
+                                     parse_term_to_atom/2]) ],
+            TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          read_file_to_string(GenPath, Code, [encoding(octet)]),
+          assertion(sub_string(Code, _, _, _,
+                               "parse_atom_to_term/2")),
+          assertion(sub_string(Code, _, _, _,
+                               "parse_term_to_atom/2")),
+          % And the supporting parser predicates the wrappers call.
+          assertion(sub_string(Code, _, _, _,
+                               "parse_term_from_atom/3")),
+          assertion(sub_string(Code, _, _, _,
+                               "canonical_op_table/1"))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_runtime_parser_explicit_name_wrappers_absent_native) :-
+    % Default native mode excludes the wrappers entirely.
+    unique_cpp_tmp_dir('tmp_cpp_runparser_xw_native', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [], TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          read_file_to_string(GenPath, Code, [encoding(octet)]),
+          assertion(\+ sub_string(Code, _, _, _,
+                                  "parse_atom_to_term/2")),
+          assertion(\+ sub_string(Code, _, _, _,
+                                  "parse_term_to_atom/2"))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
 % Subset generation -- runtime_parser_subset([Names]) pulls in
 % only the transitive closure of the listed entry points instead
 % of the full ~40-predicate parser. Per the implementation plan

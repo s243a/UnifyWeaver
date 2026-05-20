@@ -24,7 +24,9 @@
 
 :- module(cpp_runtime_parser_wrappers, [
     read_term_from_atom/2,
-    read_term_from_atom/3
+    read_term_from_atom/3,
+    parse_atom_to_term/2,
+    parse_term_to_atom/2
 ]).
 
 :- use_module(prolog_term_parser, [
@@ -49,3 +51,43 @@ read_term_from_atom(Atom, Term) :-
 % the option-handling work has an obvious home for a follow-up.
 read_term_from_atom(Atom, Term, _Options) :-
     read_term_from_atom(Atom, Term).
+
+%% parse_atom_to_term(+Atom, -Term) is semidet.
+%
+% Operator-aware atom-to-term conversion. Equivalent in shape to
+% SWI's atom_to_term/3 but drops the bindings argument -- the
+% portable parser does not return a separate bindings list; it
+% preserves variable identity within one parse internally.
+%
+% Available only in compiled mode. Uses a different name from
+% the SWI standard atom_to_term/3 because that name is registered
+% as a WAM-cpp builtin (is_builtin_pred(atom_to_term, 3)) and the
+% compiler emits builtin_call for it, which bypasses the label
+% dispatch where a wrapper would live. See the PR #2334 commit
+% discussion for the three ways one could route the standard
+% name through (option C -- explicit names -- chosen here).
+parse_atom_to_term(Atom, Term) :-
+    canonical_op_table(Ops),
+    parse_term_from_atom(Atom, Ops, Term).
+
+%% parse_term_to_atom(?Term, ?Atom) is semidet.
+%
+% Bidirectional term/atom conversion with operator support on the
+% parse side. Mirrors SWI's term_to_atom/2:
+%
+%   - (+Term, ?Atom): render Term to an atom; unify with Atom.
+%   - (-Term, +Atom): parse Atom into Term using the canonical op
+%     table (operator notation supported -- this is what you cannot
+%     get from the native term_to_atom/2 builtin).
+%   - (+Term, +Atom): render and check via unification.
+%
+% Forward mode delegates to the WAM-cpp native term_to_atom/2
+% builtin (rendering does not need operator support and the
+% native path is faster). Reverse mode goes through
+% parse_term_from_atom/3.
+parse_term_to_atom(Term, Atom) :-
+    (   nonvar(Term)
+    ->  term_to_atom(Term, Atom)
+    ;   canonical_op_table(Ops),
+        parse_term_from_atom(Atom, Ops, Term)
+    ).
