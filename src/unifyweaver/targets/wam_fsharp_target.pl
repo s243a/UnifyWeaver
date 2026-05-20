@@ -2036,11 +2036,19 @@ and enumerateParBranches (ctx: WamContext) (parPC: int) (elsePC: int) : int list
 ///     sequential for genuine fork-eligible chains; race-to-cancel can
 ///     be a future optimization.
 and runNegationParallel (ctx: WamContext) (s: WamState) (entryPC: int) (elsePC: int) : bool =
+    // enumerateParBranches returns the BRANCH BODY entry PCs (per its own
+    // contract: "Each branch''s body begins at chainOpPC + 1"), so the
+    // snapshot here just sets WsPC = pc directly.  An earlier port (and
+    // the Haskell baseline) used `pc + 1`, which double-stepped past the
+    // first instruction of each branch and could land out of bounds for
+    // a chain whose last branch is short — the F# runtime smoke caught
+    // this when a 3-branch all-Fail fixture crashed in `run` with
+    // IndexOutOfRangeException reading WcCode.[ pc + 1 ] on the tail.
     let branchPCs = enumerateParBranches ctx entryPC elsePC
     if List.length branchPCs >= forkMinBranches then
         let branchAction pc =
             async {
-                let snapshot = { s with WsPC = pc + 1; WsCP = 0; WsCutBar = 0 }
+                let snapshot = { s with WsPC = pc; WsCP = 0; WsCutBar = 0 }
                 return (run ctx snapshot).IsSome
             }
         branchPCs
