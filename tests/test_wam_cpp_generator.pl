@@ -3483,6 +3483,23 @@ user:wam_cpp_test_setof_empty     :- setof(_, fail, _).
 :- dynamic user:wam_cpp_lmdb_dummy/0.
 user:wam_cpp_lmdb_dummy :- true.
 
+% Runtime-parser capability test fixtures. Three shapes:
+%   _safe          : body uses no parser-dependent builtins
+%                    -- all modes accept it.
+%   _uses_read     : body calls read/2, which is parser-dependent
+%                    -- runtime_parser(off) must reject it.
+%   _uses_t2a_reverse : body calls term_to_atom/2 with an unbound
+%                       first arg (reverse mode = parsing) which is
+%                       also parser-dependent under the hook's
+%                       mode-sensitive recognition.
+:- dynamic user:wam_cpp_pd_safe/0.
+:- dynamic user:wam_cpp_pd_uses_read/1.
+:- dynamic user:wam_cpp_pd_uses_t2a_reverse/1.
+
+user:wam_cpp_pd_safe :- true.
+user:wam_cpp_pd_uses_read(T) :- read(user_input, T).
+user:wam_cpp_pd_uses_t2a_reverse(T) :- term_to_atom(T, 'foo(bar)').
+
 % LMDB codegen test fixtures. edge/2 is declared :- dynamic so
 % the compiler accepts calls without source clauses; the runtime
 % LMDB load populates dynamic_db before queries run.
@@ -5024,6 +5041,80 @@ test(cpp_e2e_bagof_setof, [condition(cpp_compiler_available)]) :-
 % exercises just the runtime ABI by overriding main.cpp with a
 % hand-written driver that seeds + loads + asserts. Per
 % docs/design/WAM_CPP_LMDB_FACT_SOURCE_DESIGN.md v1.
+% Runtime-parser capability wiring (PR after #2329). Verify that
+% write_wam_cpp_project consults wam_target_runtime_parser/3 and
+% acts on the resolved mode:
+%   - runtime_parser(off): rejects parser-dependent predicate bodies
+%   - runtime_parser(compiled): expands the predicate list with the
+%     portable prolog_term_parser predicates
+%   - runtime_parser(native) / default: no expansion (the existing
+%     C++ canonical parser handles atom_to_term/3 etc.)
+
+test(cpp_e2e_runtime_parser_off_rejects_read,
+     [error(permission_error(use, runtime_parser, _), _)]) :-
+    write_wam_cpp_project(
+        [user:wam_cpp_pd_uses_read/1],
+        [runtime_parser(off)],
+        'tests/tmp_cpp_runparser_off_read').
+
+test(cpp_e2e_runtime_parser_off_rejects_term_to_atom_reverse,
+     [error(permission_error(use, runtime_parser, _), _)]) :-
+    write_wam_cpp_project(
+        [user:wam_cpp_pd_uses_t2a_reverse/1],
+        [runtime_parser(off)],
+        'tests/tmp_cpp_runparser_off_t2a').
+
+test(cpp_e2e_runtime_parser_off_allows_safe_body) :-
+    unique_cpp_tmp_dir('tmp_cpp_runparser_off_ok', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [runtime_parser(off)], TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          assertion(exists_file(GenPath))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_runtime_parser_compiled_includes_parser_preds) :-
+    unique_cpp_tmp_dir('tmp_cpp_runparser_cmp', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [runtime_parser(compiled)], TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          read_file_to_string(GenPath, Code, [encoding(octet)]),
+          % Parser predicates should appear as labels in the
+          % setup-function output. Pick a few representative ones.
+          forall(member(Label, ["parse_term_from_atom/3",
+                                "parse_term_from_codes/3",
+                                "canonical_op_table/1",
+                                "tokenize/2"]), (
+              assertion(sub_string(Code, _, _, _, Label))
+          ))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_runtime_parser_default_native_no_expansion) :-
+    unique_cpp_tmp_dir('tmp_cpp_runparser_def', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [], TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          read_file_to_string(GenPath, Code, [encoding(octet)]),
+          % Default mode does NOT include the parser predicates --
+          % parse_term_from_atom should not appear as a label.
+          assertion(\+ sub_string(Code, _, _, _,
+                                  "parse_term_from_atom/3"))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
 test(cpp_e2e_lmdb_runtime,
      [condition(cpp_lmdb_available)]) :-
     unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_rt', TmpDir),
