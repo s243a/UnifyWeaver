@@ -5064,6 +5064,35 @@ test(cpp_e2e_lmdb_codegen,
         delete_directory_and_contents(TmpDir)
     ).
 
+% LMDB FactSource v1 -- __meta__ schema validation. Negative test:
+% an LMDB file whose __meta__ sub-DB declares predicate=other/2
+% should hard-error the load when registered as edge/2. dynamic_db
+% stays empty, so the query that depends on the LMDB-backed
+% predicate returns false (the user sees the issue immediately
+% rather than getting wrong query results from the wrong file).
+test(cpp_e2e_lmdb_meta_mismatch,
+     [condition(cpp_lmdb_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_meta', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          make_directory_path(TmpDir),
+          % Seed with the WRONG predicate in __meta__.
+          lmdb_seed_three_edges(TmpDir, EnvPath, 'other/2', _SeedBin),
+          write_wam_cpp_project([user:wam_cpp_lmdb_desc/2,
+                                 user:wam_cpp_lmdb_t_direct/0],
+                                [emit_main(true),
+                                 cpp_fact_sources([
+                                     source(edge/2, lmdb(EnvPath))])],
+                                TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          % The query should return false: load hard-errors,
+          % dynamic_db["edge/2"] stays empty, descendant fails.
+          run_query(BinPath, 'wam_cpp_lmdb_t_direct/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
 test(cpp_e2e_sub_string,
      [condition(cpp_compiler_available)]) :-
     unique_cpp_tmp_dir('tmp_cpp_e2e_sub_string', TmpDir),
@@ -10077,17 +10106,20 @@ int main() {
 ',                  [EnvPath]).
 
 % Build and run a tiny seeder binary that creates an LMDB file
-% at EnvPath populated with three edges (alice->bob, bob->carol,
-% carol->dave). Used by the codegen test to populate LMDB before
-% the actual binary runs. Built into TmpDir so cleanup is simple.
+% at EnvPath populated with three edges plus a __meta__ sub-DB
+% declaring the predicate. Used by codegen tests. The PredKey
+% argument lets negative tests inject a mismatching predicate.
 lmdb_seed_three_edges(TmpDir, EnvPath, SeedBin) :-
+    lmdb_seed_three_edges(TmpDir, EnvPath, 'edge/2', SeedBin).
+
+lmdb_seed_three_edges(TmpDir, EnvPath, MetaPred, SeedBin) :-
     directory_file_path(TmpDir, 'seed.cpp', SeedSrc),
     directory_file_path(TmpDir, 'seed', SeedBin),
     setup_call_cleanup(
         open(SeedSrc, write, S),
         format(S,
-'#include <lmdb.h>~n#include <cstring>~n#include <filesystem>~nint main(){~n  const char* p = "~w";~n  std::filesystem::remove_all(p);~n  std::filesystem::create_directories(p);~n  MDB_env* env; mdb_env_create(&env);~n  mdb_env_open(env, p, 0, 0664);~n  MDB_txn* txn; mdb_txn_begin(env, nullptr, 0, &txn);~n  MDB_dbi dbi; mdb_dbi_open(txn, nullptr, 0, &dbi);~n  auto put=[&](const char*k,const char*v){MDB_val K{std::strlen(k),(void*)k},V{std::strlen(v),(void*)v};mdb_put(txn,dbi,&K,&V,0);};~n  put("alice","bob"); put("bob","carol"); put("carol","dave");~n  mdb_txn_commit(txn); mdb_env_close(env); return 0;~n}~n',
-            [EnvPath]),
+'#include <lmdb.h>~n#include <cstring>~n#include <filesystem>~nint main(){~n  const char* p = "~w";~n  std::filesystem::remove_all(p);~n  std::filesystem::create_directories(p);~n  MDB_env* env; mdb_env_create(&env);~n  mdb_env_set_maxdbs(env, 4);~n  mdb_env_open(env, p, 0, 0664);~n  MDB_txn* txn; mdb_txn_begin(env, nullptr, 0, &txn);~n  MDB_dbi dbi; mdb_dbi_open(txn, nullptr, 0, &dbi);~n  MDB_dbi meta; mdb_dbi_open(txn, "__meta__", MDB_CREATE, &meta);~n  auto put=[&](MDB_dbi d,const char*k,const char*v){MDB_val K{std::strlen(k),(void*)k},V{std::strlen(v),(void*)v};mdb_put(txn,d,&K,&V,0);};~n  put(dbi,"alice","bob"); put(dbi,"bob","carol"); put(dbi,"carol","dave");~n  put(meta,"schema_version","1"); put(meta,"predicate","~w"); put(meta,"columns","child,parent");~n  mdb_txn_commit(txn); mdb_env_close(env); return 0;~n}~n',
+            [EnvPath, MetaPred]),
         close(S)),
     process_create(path('g++'),
         ['-std=c++17', '-o', SeedBin, SeedSrc, '-llmdb'],

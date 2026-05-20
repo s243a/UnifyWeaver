@@ -3564,6 +3564,23 @@ public:
         const std::function<void(std::string_view,
                                  std::string_view)>& sink);
 
+    // Read the optional __meta__ sub-DB. Per
+    // WAM_CPP_LMDB_FACT_SOURCE_DESIGN.md v1, schema info lives in
+    // a named __meta__ sub-DB (unprefixed keys when the data DB
+    // is the default unnamed one; prefixed "<db_name>:" when the
+    // data DB is named). LmdbMeta::present is false when the
+    // __meta__ sub-DB is absent entirely -- that case is treated
+    // as a warning by the loader, not a hard error, for
+    // transitional accommodation of LMDB files built before this
+    // PR.
+    struct Meta {
+        bool present = false;
+        int schema_version = 0;
+        std::string predicate;            // e.g. "edge/2"
+        std::vector<std::string> columns; // e.g. ["child", "parent"]
+    };
+    Meta read_meta(const char* db_name);
+
 private:
     MDB_env* env_ = nullptr;
     MDB_dbi  dbi_ = 0;
@@ -10031,6 +10048,76 @@ void LmdbFactSource::stream_all(
     }
 }
 
+LmdbFactSource::Meta LmdbFactSource::read_meta(const char* db_name) {
+    Meta meta;
+    MDB_txn* txn = nullptr;
+    int rc = mdb_txn_begin(env_, nullptr, MDB_RDONLY, &txn);
+    if (rc != MDB_SUCCESS) {
+        throw std::runtime_error(
+            std::string("read_meta/txn_begin: ")
+            + mdb_strerror(rc));
+    }
+    MDB_dbi meta_dbi;
+    rc = mdb_dbi_open(txn, "__meta__", 0, &meta_dbi);
+    if (rc == MDB_NOTFOUND) {
+        // __meta__ sub-DB absent -- transitional accommodation.
+        mdb_txn_abort(txn);
+        return meta;  // present == false
+    }
+    if (rc != MDB_SUCCESS) {
+        mdb_txn_abort(txn);
+        throw std::runtime_error(
+            std::string("read_meta/dbi_open(__meta__): ")
+            + mdb_strerror(rc));
+    }
+    // Key prefix per design doc: empty when data DB is the default
+    // unnamed DB, "<db_name>:" when a named sub-DB is in use.
+    std::string prefix = (db_name && *db_name)
+        ? (std::string(db_name) + ":") : std::string();
+    auto get_key = [&](const std::string& name) -> std::string {
+        std::string full = prefix + name;
+        MDB_val K{full.size(), const_cast<char*>(full.data())};
+        MDB_val V{};
+        int gr = mdb_get(txn, meta_dbi, &K, &V);
+        if (gr == MDB_NOTFOUND) return std::string();
+        if (gr != MDB_SUCCESS) {
+            throw std::runtime_error(
+                std::string("read_meta/get ") + full + ": "
+                + mdb_strerror(gr));
+        }
+        return std::string(static_cast<const char*>(V.mv_data),
+                           V.mv_size);
+    };
+    std::string sv = get_key("schema_version");
+    std::string pr = get_key("predicate");
+    std::string cs = get_key("columns");
+    mdb_txn_abort(txn);
+    if (sv.empty() && pr.empty() && cs.empty()) {
+        // __meta__ sub-DB exists but holds no entries for this DB.
+        // Treat as absent so the loader emits a warning.
+        return meta;
+    }
+    meta.present = true;
+    try { meta.schema_version = std::stoi(sv); }
+    catch (...) { meta.schema_version = 0; }
+    meta.predicate = pr;
+    // Split columns by comma. Trailing/leading whitespace is not
+    // tolerated -- the design doc specifies ASCII exact match.
+    std::string cur;
+    for (char c : cs) {
+        if (c == \',\') {
+            meta.columns.push_back(std::move(cur));
+            cur.clear();
+        } else {
+            cur.push_back(c);
+        }
+    }
+    if (!cur.empty() || !cs.empty()) {
+        meta.columns.push_back(std::move(cur));
+    }
+    return meta;
+}
+
 bool cpp_load_lmdb_fact_source(WamState& vm,
                                const std::string& functor_arity_key,
                                const std::string& env_path,
@@ -10042,6 +10129,35 @@ bool cpp_load_lmdb_fact_source(WamState& vm,
     }
     try {
         LmdbFactSource src(env_path, db_name);
+        // Validate the __meta__ sub-DB before loading. Per design
+        // doc resolved-question 1: meta is REQUIRED to match the
+        // registered predicate; absent meta is a warning, mismatch
+        // is a hard error.
+        LmdbFactSource::Meta meta = src.read_meta(db_name);
+        if (meta.present) {
+            if (meta.schema_version != 1) {
+                throw std::runtime_error(
+                    "schema_version mismatch: expected 1, got "
+                    + std::to_string(meta.schema_version));
+            }
+            if (meta.predicate != functor_arity_key) {
+                throw std::runtime_error(
+                    "predicate mismatch: file is for "
+                    + meta.predicate + ", registered as "
+                    + functor_arity_key);
+            }
+            // v1: arity 2, so exactly 2 columns expected.
+            if (meta.columns.size() != 2) {
+                throw std::runtime_error(
+                    "columns count mismatch: expected 2, got "
+                    + std::to_string(meta.columns.size()));
+            }
+        } else {
+            std::fprintf(stderr,
+                "[wam-cpp] warning: %s (%s) has no __meta__ "
+                "sub-DB; loading without schema validation\\n",
+                env_path.c_str(), functor_arity_key.c_str());
+        }
         auto& bucket = vm.dynamic_db[functor_arity_key];
         // Recover functor name from the key "name/arity" for the
         // synthesised compound. v1 only supports arity 2; the key
