@@ -93,8 +93,15 @@ than emitting parser stubs.
 
 Status: this hook is implemented and covered by
 `tests/test_wam_runtime_parser_capability.pl`, with R and Lua as the initial
-consumers. The remaining work is target-by-target adoption, not inventing the
-contract.
+consumers. C++ is now also registered (default
+`native(parse_term)`; `compiled(prolog_term_parser)` available
+opt-in) -- it ships a hand-written canonical-form parser used by
+`atom_to_term/3`, `term_to_atom/2`'s reverse mode, and
+`read_term/1`. The C++ native parser does not yet support
+operator notation, so callers requiring `1+2`-style input would
+need `runtime_parser(compiled)` once the project writer is wired
+through the hook (Phase 6+ work). The remaining work is
+target-by-target adoption, not inventing the contract.
 
 The hook should be independent of the WAM items API. A target can skip WAM text
 generation at build time and still need runtime source-term parsing.
