@@ -951,6 +951,111 @@ test_fsharp_lowered_emitter_phase_i_pc_offsets :-
     ).
 
 %% ----------------------------------------------------------------------
+%% Phase J-β — forkParBranches + MergeStrategy machinery.  Mirrors the
+%% Haskell baseline''s forkable-aggregate fork path.  Per-branch
+%% aggregation is computed normally (via finalizeAggregate in each
+%% branch), then the per-branch results are merged by
+%% combineParBranchResults at the cross-branch level.  Sum / count /
+%% bag / set / findall are forkable; anything else falls back to
+%% sequential TryMeElse semantics.
+%% ----------------------------------------------------------------------
+
+test_fsharp_merge_strategy_du :-
+    Test = 'WAM-FSharp: MergeStrategy DU + AggFrame.AggMergeStrategy',
+    (   fsharp_wam_type_header(Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "type MergeStrategy ="),
+        sub_string(S, _, _, _, "| MergeSum"),
+        sub_string(S, _, _, _, "| MergeCount"),
+        sub_string(S, _, _, _, "| MergeBag"),
+        sub_string(S, _, _, _, "| MergeSet"),
+        sub_string(S, _, _, _, "| MergeFindall"),
+        sub_string(S, _, _, _, "| MergeSequential"),
+        sub_string(S, _, _, _, "AggMergeStrategy:  MergeStrategy")
+    ->  pass(Test)
+    ;   fail_test(Test, 'MergeStrategy DU or AggFrame field missing')
+    ).
+
+test_fsharp_infer_merge_strategy :-
+    Test = 'WAM-FSharp: inferMergeStrategy helper',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "and inferMergeStrategy (aggType: string) : MergeStrategy ="),
+        sub_string(S, _, _, _, "| \"sum\"     -> MergeSum"),
+        sub_string(S, _, _, _, "| \"count\"   -> MergeCount"),
+        sub_string(S, _, _, _, "| \"bag\"     -> MergeBag"),
+        sub_string(S, _, _, _, "| \"set\"     -> MergeSet"),
+        sub_string(S, _, _, _, "| \"findall\" -> MergeFindall"),
+        sub_string(S, _, _, _, "| \"collect\" -> MergeFindall"),
+        sub_string(S, _, _, _, "| _         -> MergeSequential")
+    ->  pass(Test)
+    ;   fail_test(Test, 'inferMergeStrategy patterns missing')
+    ).
+
+test_fsharp_begin_aggregate_records_strategy :-
+    %% BeginAggregate must thread inferMergeStrategy(aggType) into the
+    %% new AggMergeStrategy field on the pushed AggFrame.
+    Test = 'WAM-FSharp: BeginAggregate stores AggMergeStrategy',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "AggMergeStrategy = inferMergeStrategy aggType")
+    ->  pass(Test)
+    ;   fail_test(Test, 'BeginAggregate does not record AggMergeStrategy')
+    ).
+
+test_fsharp_forkable_strategy_helpers :-
+    Test = 'WAM-FSharp: isForkableStrategy / currentAggMergeStrategy / currentAggFrame helpers',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "and isForkableStrategy (ms: MergeStrategy) : bool ="),
+        sub_string(S, _, _, _, "| MergeSum | MergeCount | MergeBag | MergeSet | MergeFindall -> true"),
+        sub_string(S, _, _, _, "| MergeSequential -> false"),
+        sub_string(S, _, _, _, "and currentAggMergeStrategy (s: WamState) : MergeStrategy option ="),
+        sub_string(S, _, _, _, "and currentAggFrame (s: WamState) : AggFrame option =")
+    ->  pass(Test)
+    ;   fail_test(Test, 'forkable-strategy helpers missing')
+    ).
+
+test_fsharp_fork_par_branches_helpers :-
+    Test = 'WAM-FSharp: removeNearestAggFrame / findOuterEndAggregate / combineParBranchResults / forkParBranches',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "and removeNearestAggFrame (cps: ChoicePoint list) : ChoicePoint list ="),
+        sub_string(S, _, _, _, "and findOuterEndAggregate (ctx: WamContext) (startPC: int) : int ="),
+        sub_string(S, _, _, _, "| EndAggregate _ -> pc + 1"),
+        sub_string(S, _, _, _, "and combineParBranchResults (ms: MergeStrategy) (results: Value list) : Value ="),
+        %% Per-strategy combiners.
+        sub_string(S, _, _, _, "| MergeSum ->"),
+        sub_string(S, _, _, _, "| MergeCount ->"),
+        sub_string(S, _, _, _, "| MergeBag | MergeFindall ->"),
+        sub_string(S, _, _, _, "| MergeSet ->"),
+        sub_string(S, _, _, _, "List.distinct allItems"),
+        sub_string(S, _, _, _, "and forkParBranches (ctx: WamContext) (s: WamState) (af: AggFrame)"),
+        sub_string(S, _, _, _, "|> Async.Parallel"),
+        sub_string(S, _, _, _, "combineParBranchResults af.AggMergeStrategy perBranchValues")
+    ->  pass(Test)
+    ;   fail_test(Test, 'forkParBranches helpers missing or incomplete')
+    ).
+
+test_fsharp_fork_or_sequential_dispatcher :-
+    Test = 'WAM-FSharp: forkOrSequential dispatcher + Par*MeElse routing',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "and forkOrSequential (ctx: WamContext) (s: WamState)"),
+        %% Forkable + enough branches => fork.
+        sub_string(S, _, _, _, "isForkableStrategy af.AggMergeStrategy"),
+        sub_string(S, _, _, _, "forkParBranches ctx s af s.WsPC elsePC"),
+        %% Otherwise fall back to sequential TryMeElse semantics.
+        sub_string(S, _, _, _, "step ctx s (TryMeElse lbl)"),
+        sub_string(S, _, _, _, "step ctx s (TryMeElsePc pc)"),
+        %% Par*MeElse step arms dispatch through forkOrSequential.
+        sub_string(S, _, _, _, "| ParTryMeElse label    -> forkOrSequential ctx s (Choice1Of2 label)"),
+        sub_string(S, _, _, _, "| ParTryMeElsePc pc     -> forkOrSequential ctx s (Choice2Of2 pc)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'forkOrSequential dispatcher or ParTryMeElse routing missing')
+    ).
+
+%% ----------------------------------------------------------------------
 %% Project generation smoke: exercise write_wam_fsharp_project/3 in a
 %% throwaway directory with no kernels and assert the expected files
 %% are produced. Does not invoke `dotnet build`.
@@ -1073,6 +1178,13 @@ run_tests :-
     test_fsharp_lowered_emitter_phase_i_accepted,
     test_fsharp_lowered_emitter_phase_i_emits_step_delegation,
     test_fsharp_lowered_emitter_phase_i_pc_offsets,
+    %% Phase J-β — forkParBranches + MergeStrategy
+    test_fsharp_merge_strategy_du,
+    test_fsharp_infer_merge_strategy,
+    test_fsharp_begin_aggregate_records_strategy,
+    test_fsharp_forkable_strategy_helpers,
+    test_fsharp_fork_par_branches_helpers,
+    test_fsharp_fork_or_sequential_dispatcher,
     test_fsharp_project_generation_smoke,
     format('~n========================================~n'),
     (   test_failed

@@ -976,11 +976,17 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | cp :: rest -> Some { s with WsPC = s.WsPC + 1; WsCPs = { cp with CpNextPC = nextPC } :: rest }
         | []         -> None
 
-    // Phase 4.1 parallel stubs — alias to sequential counterparts
-    | ParTryMeElse label    -> step ctx s (TryMeElse label)
+    // Phase 4.1 / Phase J — parallel WAM. ParTryMeElse dispatches through
+    // forkOrSequential, which forks all branches in parallel when inside a
+    // forkable aggregate frame (sum/count/bag/set/findall with enough
+    // branches), otherwise falls back to the sequential TryMeElse step.
+    // The Retry/Trust variants always alias to sequential since they
+    // appear inside the chain that the fork enumerates wholesale — only
+    // the leading ParTryMeElse triggers the fork decision.
+    | ParTryMeElse label    -> forkOrSequential ctx s (Choice1Of2 label)
+    | ParTryMeElsePc pc     -> forkOrSequential ctx s (Choice2Of2 pc)
     | ParRetryMeElse label  -> step ctx s (RetryMeElse label)
     | ParTrustMe            -> step ctx s TrustMe
-    | ParTryMeElsePc pc     -> step ctx s (TryMeElsePc pc)
     | ParRetryMeElsePc pc   -> step ctx s (RetryMeElsePc pc)
 
     | SwitchOnConstantPc table ->
@@ -1610,8 +1616,11 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                    CpHeapLen  = s.WsHeapLen
                    CpBindings = s.WsBindings
                    CpCutBar   = s.WsCutBar
-                   CpAggFrame = Some { AggType = aggType; AggValReg = valReg
-                                       AggResReg = resReg; AggReturnPC = 0 }
+                   CpAggFrame = Some { AggType          = aggType
+                                       AggValReg        = valReg
+                                       AggResReg        = resReg
+                                       AggReturnPC      = 0
+                                       AggMergeStrategy = inferMergeStrategy aggType }
                    CpBuiltin  = None }
         Some { s with
                  WsPC       = s.WsPC + 1
@@ -2061,6 +2070,205 @@ and runNegationParallel (ctx: WamContext) (s: WamState) (entryPC: int) (elsePC: 
         match run ctx { s with WsPC = entryPC; WsCP = 0; WsCutBar = 0 } with
         | Some _ -> true
         | None   -> false
+
+/// Classify an aggregate type string as a MergeStrategy.  Sum / count /
+/// bag / set / findall are forkable — their per-branch results combine
+/// associatively, so parallel evaluation is safe.  Everything else falls
+/// back to sequential.  Mirrors wam_haskell_target.pl inferMergeStrategy.
+and inferMergeStrategy (aggType: string) : MergeStrategy =
+    match aggType with
+    | "sum"     -> MergeSum
+    | "count"   -> MergeCount
+    | "bag"     -> MergeBag
+    | "set"     -> MergeSet
+    | "findall" -> MergeFindall
+    | "collect" -> MergeFindall   // alias
+    | _         -> MergeSequential
+
+/// True iff the strategy can be evaluated by forking branches in parallel.
+and isForkableStrategy (ms: MergeStrategy) : bool =
+    match ms with
+    | MergeSum | MergeCount | MergeBag | MergeSet | MergeFindall -> true
+    | MergeSequential -> false
+
+/// Walk WsCPs to find the nearest aggregate frame''s merge strategy, if any.
+and currentAggMergeStrategy (s: WamState) : MergeStrategy option =
+    let rec go cps =
+        match cps with
+        | [] -> None
+        | cp :: rest ->
+            match cp.CpAggFrame with
+            | Some af -> Some af.AggMergeStrategy
+            | None    -> go rest
+    go s.WsCPs
+
+/// Walk WsCPs to find the nearest aggregate frame, returning the whole frame.
+and currentAggFrame (s: WamState) : AggFrame option =
+    let rec go cps =
+        match cps with
+        | [] -> None
+        | cp :: rest ->
+            match cp.CpAggFrame with
+            | Some af -> Some af
+            | None    -> go rest
+    go s.WsCPs
+
+/// Remove the nearest aggregate-frame CP from a CP list.  Used after
+/// forkParBranches consumes the aggregate to drop the frame so subsequent
+/// backtracking doesn''t try to re-finalize it.
+and removeNearestAggFrame (cps: ChoicePoint list) : ChoicePoint list =
+    let rec go cps =
+        match cps with
+        | [] -> []
+        | cp :: rest ->
+            match cp.CpAggFrame with
+            | Some _ -> rest                   // drop it
+            | None   -> cp :: go rest
+    go cps
+
+/// Scan WcCode forward from a Par* instruction to find the matching
+/// EndAggregate''s return PC (one past the EndAggregate).  Returns 0
+/// (treated as halt by run) on overrun so a malformed chain fails gracefully
+/// rather than indexing out of bounds.  Mirrors wam_haskell_target.pl
+/// findOuterEndAggregate.
+and findOuterEndAggregate (ctx: WamContext) (startPC: int) : int =
+    let lo, hi = 0, ctx.WcCode.Length - 1
+    let rec go pc =
+        if pc < lo || pc > hi then 0
+        else
+            match ctx.WcCode.[pc] with
+            | EndAggregate _ -> pc + 1
+            | _              -> go (pc + 1)
+    go (startPC + 1)
+
+/// Combine per-branch aggregate results from forkParBranches into a single
+/// final Value, applying the merge strategy at the cross-branch level.
+/// Each input is one branch''s already-aggregated value (computed by its
+/// own finalizeAggregate from a single-element WsAggAccum), so we are
+/// folding aggregates of aggregates here.  Semantics chosen to keep the
+/// fork equivalent to the sequential version:
+///   sum     : numeric sum of per-branch sums
+///   count   : sum of per-branch counts (each branch counts its hits)
+///   bag     : concat of per-branch VLists
+///   set     : Set.ofList over the flattened bag, back to VList (dedup)
+///   findall : same as bag — findall preserves duplicates and order
+///   other   : fallback to VList of the raw per-branch results
+and combineParBranchResults (ms: MergeStrategy) (results: Value list) : Value =
+    match ms with
+    | MergeSum ->
+        let toNum v =
+            match v with
+            | Integer n -> float n
+            | Float f   -> f
+            | _         -> 0.0
+        let total = results |> List.sumBy toNum
+        if float (int total) = total then Integer (int total) else Float total
+    | MergeCount ->
+        let toInt v = match v with Integer n -> n | _ -> 0
+        Integer (results |> List.sumBy toInt)
+    | MergeBag | MergeFindall ->
+        let extract v = match v with VList items -> items | _ -> [v]
+        VList (results |> List.collect extract)
+    | MergeSet ->
+        let extract v = match v with VList items -> items | _ -> [v]
+        let allItems = results |> List.collect extract
+        VList (List.distinct allItems)
+    | MergeSequential ->
+        VList results
+
+/// Fork all branches of a Par*-chain inside a forkable aggregate frame.
+/// Each branch runs to completion (including its own EndAggregate +
+/// finalizeAggregate) in parallel via Async.Parallel; we then read the
+/// per-branch result from the response register and merge them.
+///
+/// After fork: returns a state with WsPC = retPC (one past the outer
+/// EndAggregate), WsRegs[ResReg] bound to the merged value, and the
+/// aggregate frame removed from WsCPs.  Mirrors wam_haskell_target.pl
+/// forkParBranches.
+and forkParBranches (ctx: WamContext) (s: WamState) (af: AggFrame)
+                    (parPC: int) (elsePC: int) : WamState option =
+    let branchPCs = enumerateParBranches ctx parPC elsePC
+    let runBranch pc =
+        async {
+            // Each branch inherits the aggregate frame in WsCPs so its own
+            // EndAggregate can finalize via the standard path, binding the
+            // per-branch aggregate to AggResReg.  WsCP = 0 makes proceed
+            // halt the branch.  WsAggAccum starts empty so the branch only
+            // accumulates its own contribution.
+            let snapshot = { s with
+                               WsPC       = pc
+                               WsCP       = 0
+                               WsCutBar   = 0
+                               WsAggAccum = [] }
+            return run ctx snapshot
+        }
+    let results =
+        branchPCs
+        |> List.map runBranch
+        |> Async.Parallel
+        |> Async.RunSynchronously
+    // Extract per-branch aggregate result from AggResReg of each successful branch.
+    let perBranchValues =
+        results
+        |> Array.choose (fun rOpt ->
+            rOpt |> Option.bind (fun final ->
+                if af.AggResReg >= 0 && af.AggResReg < final.WsRegs.Length then
+                    let raw = final.WsRegs.[af.AggResReg]
+                    match raw with
+                    | Unbound -1 -> None   // sentinel: branch didn''t finalize
+                    | v -> Some (derefVar final.WsBindings v)
+                else None))
+        |> Array.toList
+    let combined = combineParBranchResults af.AggMergeStrategy perBranchValues
+    let retPC = findOuterEndAggregate ctx parPC
+    // Drop the consumed aggregate frame from WsCPs and bind combined to AggResReg.
+    let outerCPs = removeNearestAggFrame s.WsCPs
+    let regs = Array.copy s.WsRegs
+    if af.AggResReg >= 0 && af.AggResReg < regs.Length then
+        regs.[af.AggResReg] <- combined
+    // Thread through bindings + trail if the outer register slot was Unbound.
+    let preBindings, preTrail, preTrailLen =
+        if af.AggResReg >= 0 && af.AggResReg < s.WsRegs.Length then
+            match derefVar s.WsBindings s.WsRegs.[af.AggResReg] with
+            | Unbound vid ->
+                (Map.add vid combined s.WsBindings,
+                 { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail,
+                 s.WsTrailLen + 1)
+            | _ -> (s.WsBindings, s.WsTrail, s.WsTrailLen)
+        else (s.WsBindings, s.WsTrail, s.WsTrailLen)
+    Some { s with
+             WsPC       = retPC
+             WsRegs     = regs
+             WsBindings = preBindings
+             WsTrail    = preTrail
+             WsTrailLen = preTrailLen
+             WsCPs      = outerCPs
+             WsCPsLen   = List.length outerCPs
+             WsAggAccum = [] }
+
+/// Dispatcher for ParTryMeElse / ParTryMeElsePc.  Checks if we''re inside
+/// a forkable aggregate frame with enough branches; if so, fork.  Otherwise
+/// fall back to the sequential TryMeElse step semantics (a choice point
+/// is pushed, the first branch runs, backtracking will explore the rest).
+and forkOrSequential (ctx: WamContext) (s: WamState)
+                     (elseTarget: Choice<string, int>) : WamState option =
+    let fallback () =
+        match elseTarget with
+        | Choice1Of2 lbl -> step ctx s (TryMeElse lbl)
+        | Choice2Of2 pc  -> step ctx s (TryMeElsePc pc)
+    match currentAggFrame s with
+    | Some af when isForkableStrategy af.AggMergeStrategy ->
+        let elsePC =
+            match elseTarget with
+            | Choice2Of2 pc  -> pc
+            | Choice1Of2 lbl -> Map.tryFind lbl ctx.WcLabels |> Option.defaultValue -1
+        if elsePC <= 0 then fallback ()
+        else
+            let branches = enumerateParBranches ctx s.WsPC elsePC
+            if List.length branches >= forkMinBranches then
+                forkParBranches ctx s af s.WsPC elsePC
+            else fallback ()
+    | _ -> fallback ()
 
 /// Indexed fact dispatch for 2-arg facts via BuiltinState CP.
 /// O(1) Map lookup; first match returned, FactRetry CP for the rest.

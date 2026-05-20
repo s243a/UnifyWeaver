@@ -103,12 +103,32 @@ fsharp_wam_trail_entry_type :-
 "type TrailEntry = { TrailVarId: int; TrailOldVal: Value option }").
 
 % ============================================================================
-% AggregateFrame — mirrors Haskell `AggFrame`
+% MergeStrategy + AggregateFrame — mirrors Haskell `MergeStrategy` + `AggFrame`
 % ============================================================================
+%
+% AggMergeStrategy classifies an aggregate's combine semantics so the WAM
+% runtime can decide whether to evaluate branches in parallel (forkable
+% strategies: sum/count/bag/set/findall) or fall back to sequential
+% choice-point backtracking (everything else).  Computed at BeginAggregate
+% time from the aggType string via inferMergeStrategy (defined in
+% WamRuntime).
 
 fsharp_wam_agg_frame_type :-
     writeln(
-"type AggFrame = { AggType: string; AggValReg: int; AggResReg: int; AggReturnPC: int }").
+"type MergeStrategy =
+    | MergeSum
+    | MergeCount
+    | MergeBag
+    | MergeSet
+    | MergeFindall
+    | MergeSequential   // not forkable: fall back to sequential backtrack
+
+type AggFrame =
+    { AggType:           string
+      AggValReg:         int
+      AggResReg:         int
+      AggReturnPC:       int
+      AggMergeStrategy:  MergeStrategy }").
 
 % ============================================================================
 % BuiltinState — mirrors Haskell `BuiltinState`
