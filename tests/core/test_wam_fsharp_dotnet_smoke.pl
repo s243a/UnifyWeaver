@@ -366,6 +366,100 @@ let loweredPredicates : Map<string, WamContext -> WamState -> WamState option> =
             format_atom('dotnet build failed (exit ~w) for Phase-I lowered', [ExitCode]))
     ).
 
+%% ------------------------------------------------------------------------
+%% Phase-I lowered emitter RUNTIME smoke.  Extends the build smoke above
+%% with an actual `dotnet run` step that drives each lowered function
+%% with crafted register inputs and asserts on the resulting WamState.
+%% Closes the loop on PR #2343 (which only verified the lowered code
+%% compiles, not that it runs correctly).
+%%
+%% Predicate naming convention (matches lower_predicate_to_fsharp''s
+%% sanitizer): phase_i_arg/3 -> lowered_phase_i_arg_3, etc.  The fixture
+%% Driver.fs (tests/fixtures/wam_fsharp_phase_i_lowered_smoke/) calls
+%% these functions by their predictable names.
+%% ------------------------------------------------------------------------
+
+phase_i_lowered_scenarios([
+    phase_i_arg/3   - 'phase_i_arg/3:\n  arg 2 A1 X1\n  proceed',
+    phase_i_nml/2   - 'phase_i_nml/2:\n  not_member_list A1 A2\n  proceed',
+    phase_i_vset/2  - 'phase_i_vset/2:\n  build_empty_set X1\n  set_insert A1 X1 X2\n  not_member_set A2 X2\n  proceed',
+    phase_i_nmca/1  - 'phase_i_nmca/1:\n  not_member_const_atoms A1 foo bar baz\n  proceed',
+    phase_i_psd/3   - 'phase_i_psd/3:\n  put_structure_dyn A1 A2 A3\n  proceed'
+]).
+
+phase_i_driver_fixture(Path) :-
+    repo_root_for_smoke(Root),
+    directory_file_path(Root,
+        'tests/fixtures/wam_fsharp_phase_i_lowered_smoke/Driver.fs', Path).
+
+test_dotnet_run_phase_i_lowered :-
+    Test = 'WAM-FSharp dotnet: Phase-I lowered runtime smoke (build + run + assert)',
+    smoke_root(Root),
+    directory_file_path(Root, phase_i_run, Dir),
+    clean_dir(Dir),
+    make_directory_path(Dir),
+    write_wam_fsharp_project([],
+        [no_kernels(true), module_name('uw_fsharp_phase_i_run')],
+        Dir),
+    %% Lower each scenario and concatenate the emitted F# functions.
+    phase_i_lowered_scenarios(Scenarios),
+    findall(Code,
+            (   member(PI - Wam, Scenarios),
+                wam_fsharp_target:lower_predicate_to_fsharp(PI, Wam,
+                    [base_pc(1), foreign_preds([])],
+                    lowered(_, _, Code))
+            ),
+            Codes),
+    atomic_list_concat(Codes, '\n\n', AllCode),
+    format(atom(LoweredContent),
+'module Lowered
+
+open WamTypes
+open WamRuntime
+
+~w
+
+let loweredPredicates : Map<string, WamContext -> WamState -> WamState option> =
+    Map.empty
+', [AllCode]),
+    directory_file_path(Dir, 'Lowered.fs', LoweredPath),
+    setup_call_cleanup(
+        open(LoweredPath, write, S, [encoding(utf8)]),
+        write(S, LoweredContent),
+        close(S)
+    ),
+    %% Overwrite Program.fs with the runtime driver fixture.
+    phase_i_driver_fixture(FixturePath),
+    (   exists_file(FixturePath)
+    ->  true
+    ;   fail_test(Test,
+            format_atom('Driver fixture not found: ~w', [FixturePath])), !, fail
+    ),
+    directory_file_path(Dir, 'Program.fs', ProgPath),
+    copy_file_overwrite(FixturePath, ProgPath),
+    %% Build + run.
+    run_dotnet_build(Dir, BuildExit, BuildOutput),
+    (   BuildExit == 0
+    ->  true
+    ;   format('---- dotnet build output ----~n~w~n----~n', [BuildOutput]),
+        fail_test(Test, 'Phase-I lowered runtime build failed'), !, fail
+    ),
+    run_dotnet_run(Dir, RunExit, RunOutput),
+    (   parse_smoke_result(RunOutput, Passes, Total)
+    ->  (   RunExit == 0,
+            Passes =:= Total,
+            Passes > 0
+        ->  format('  RESULT ~w/~w~n', [Passes, Total]),
+            pass(Test),
+            maybe_clean(Dir)
+        ;   format('---- dotnet run output ----~n~w~n----~n', [RunOutput]),
+            fail_test(Test,
+                format_atom('Phase-I lowered runtime failed: ~w/~w pass, exit ~w', [Passes, Total, RunExit]))
+        )
+    ;   format('---- dotnet run output ----~n~w~n----~n', [RunOutput]),
+        fail_test(Test, 'no RESULT line in Phase-I lowered run output')
+    ).
+
 %% ========================================================================
 %% Runner
 %% ========================================================================
@@ -378,7 +472,8 @@ run_tests :-
     ->  test_dotnet_build_empty_project,
         test_dotnet_build_multi_fact_project,
         test_dotnet_run_smoke,
-        test_dotnet_build_phase_i_lowered
+        test_dotnet_build_phase_i_lowered,
+        test_dotnet_run_phase_i_lowered
     ;   skip('WAM-FSharp dotnet smoke', 'dotnet not on PATH — install .NET SDK to run')
     ),
     format('~n========================================~n'),

@@ -376,11 +376,13 @@ emit_instrs_lm_fs([pc(PC, Instr)|Rest], SV, Ind, FP, LM) :-
     atom_concat(Ind, "    ", IndInner),
     (   Rest = []
     ->  (   is_match_instr_fs(Instr)
-        ->  format("~wSome ~w~n", [IndInner, SVout])
+        ->  format("~wSome ~w~n", [IndInner, SVout]),
+            format("~w| None -> None~n", [Ind])
         ;   true
         )
     ;   (   is_match_instr_fs(Instr)
-        ->  emit_instrs_lm_fs(Rest, SVout, IndInner, FP, LM)
+        ->  emit_instrs_lm_fs(Rest, SVout, IndInner, FP, LM),
+            format("~w| None -> None~n", [Ind])
         ;   emit_instrs_lm_fs(Rest, SVout, Ind, FP, LM)
         )
     ).
@@ -430,19 +432,24 @@ emit_instrs_fs([pc(PC, Instr)|Rest], SV, Ind, FP) :-
     (   Rest = []
     ->  % Last instruction.
         %   - match-emitting instructions leave an open "| Some SVout ->" arm;
-        %     we must emit "Some SVout" indented one level deeper as its body.
+        %     we must emit "Some SVout" indented one level deeper as its body,
+        %     and close the match with "| None -> None" at Ind level so the
+        %     resulting F# pattern match is exhaustive (FS0025 closure).
         %   - let-binding instructions (allocate, put_*, get_variable, proceed)
         %     already closed their output, so nothing more is needed.
         (   is_match_instr_fs(Instr)
-        ->  format("~wSome ~w~n", [IndInner, SVout])
+        ->  format("~wSome ~w~n", [IndInner, SVout]),
+            format("~w| None -> None~n", [Ind])
         ;   true
         )
     ;   % Intermediate instruction: continue chain.
         %   match-emitting instructions opened a "| Some SVout ->" arm;
         %   remaining instructions become its body at IndInner.
+        %   After the body, close the match with "| None -> None" at Ind level.
         %   let-binding instructions stay at the same indent level.
         (   is_match_instr_fs(Instr)
-        ->  emit_instrs_fs(Rest, SVout, IndInner, FP)
+        ->  emit_instrs_fs(Rest, SVout, IndInner, FP),
+            format("~w| None -> None~n", [Ind])
         ;   emit_instrs_fs(Rest, SVout, Ind, FP)
         )
     ).
@@ -477,9 +484,12 @@ emit_ite_block_fs([pc(PC, Instr)|Rest], SV, Ind, FP) :-
     emit_one_fs(Instr, PC, SV, SVout, Ind, FP),
     % Mirror emit_instrs_lm_fs: match-emitting instructions open a
     % '| Some SVout ->' arm, so remaining code becomes its body at IndInner.
+    % After the body, close the match with '| None -> None' at Ind level so
+    % the F# pattern match is exhaustive (FS0025 closure).
     atom_concat(Ind, "    ", IndInner),
     (   is_match_instr_fs(Instr)
-    ->  emit_ite_block_fs(Rest, SVout, IndInner, FP)
+    ->  emit_ite_block_fs(Rest, SVout, IndInner, FP),
+        format("~w| None -> None~n", [Ind])
     ;   emit_ite_block_fs(Rest, SVout, Ind, FP)
     ).
 
