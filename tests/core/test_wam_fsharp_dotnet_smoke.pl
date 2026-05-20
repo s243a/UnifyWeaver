@@ -308,6 +308,64 @@ test_dotnet_run_smoke :-
         fail_test(Test, 'no RESULT line in smoke stdout')
     ).
 
+%% ------------------------------------------------------------------------
+%% Phase-I lowered emitter build smoke: hand-roll a WAM body containing
+%% every Phase-I instruction, drive lower_predicate_to_fsharp/4 to emit
+%% an F# function, splice it into Lowered.fs, and confirm the project
+%% builds.  Without lowered-emitter coverage these instructions would
+%% silently fall back to interpreter; with coverage they emit step-
+%% delegation chains that must compile clean F#.
+%% ------------------------------------------------------------------------
+
+test_dotnet_build_phase_i_lowered :-
+    Test = 'WAM-FSharp dotnet: Phase-I lowered emitter compiles',
+    smoke_root(Root),
+    directory_file_path(Root, phase_i, Dir),
+    clean_dir(Dir),
+    make_directory_path(Dir),
+    %% Generate the empty-predicates project as a base.
+    write_wam_fsharp_project([],
+        [no_kernels(true), module_name('uw_fsharp_phase_i_lowered')],
+        Dir),
+    %% Drive the lowered emitter on a body exercising every Phase-I op.
+    Wam = 'p_phase_i/3:\n  build_empty_set A1\n  put_structure_dyn A1 A2 A3\n  arg 2 A1 A3\n  not_member_list A1 A2\n  set_insert A1 A2 A3\n  not_member_set A1 A2\n  not_member_const_atoms A1 foo bar baz\n  proceed',
+    catch(
+        wam_fsharp_target:lower_predicate_to_fsharp(p_phase_i/3, Wam,
+            [base_pc(1), foreign_preds([])],
+            lowered(_, FuncName, Code)),
+        LowerErr,
+        (   format('  lower_predicate_to_fsharp error: ~q~n', [LowerErr]),
+            fail_test(Test, 'lower_predicate_to_fsharp failed'), !, fail
+        )
+    ),
+    %% Splice into Lowered.fs (overwrites the auto-generated empty stub).
+    format(atom(LoweredContent),
+'module Lowered
+
+open WamTypes
+open WamRuntime
+
+~w
+
+let loweredPredicates : Map<string, WamContext -> WamState -> WamState option> =
+    Map.ofList [ ("p_phase_i/3", ~w) ]
+', [Code, FuncName]),
+    directory_file_path(Dir, 'Lowered.fs', LoweredPath),
+    setup_call_cleanup(
+        open(LoweredPath, write, S, [encoding(utf8)]),
+        write(S, LoweredContent),
+        close(S)
+    ),
+    run_dotnet_build(Dir, ExitCode, Output),
+    (   ExitCode == 0,
+        sub_string(Output, _, _, _, "Build succeeded")
+    ->  pass(Test),
+        maybe_clean(Dir)
+    ;   format('---- dotnet build output ----~n~w~n----~n', [Output]),
+        fail_test(Test,
+            format_atom('dotnet build failed (exit ~w) for Phase-I lowered', [ExitCode]))
+    ).
+
 %% ========================================================================
 %% Runner
 %% ========================================================================
@@ -319,7 +377,8 @@ run_tests :-
     (   dotnet_available
     ->  test_dotnet_build_empty_project,
         test_dotnet_build_multi_fact_project,
-        test_dotnet_run_smoke
+        test_dotnet_run_smoke,
+        test_dotnet_build_phase_i_lowered
     ;   skip('WAM-FSharp dotnet smoke', 'dotnet not on PATH — install .NET SDK to run')
     ),
     format('~n========================================~n'),
