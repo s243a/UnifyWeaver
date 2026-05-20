@@ -1149,6 +1149,121 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
             | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
         | None -> None
 
+    // arg/3: A1 = N (integer, 1-based), A2 = T (compound/list),
+    // A3 = output unified with the selected argument. Mirrors the
+    // Haskell/Rust/C++ baseline (see wam_haskell_target.pl arg/3 step case).
+    | BuiltinCall ("arg/3", _) ->
+        let n = getReg 1 s
+        let t = getReg 2 s
+        match n, t with
+        | Some (Integer idx), Some tVal when idx >= 1 ->
+            let mArg =
+                match tVal with
+                | Str (_, args) when idx <= List.length args -> Some (List.item (idx - 1) args)
+                | VList (x :: _) when idx = 1 -> Some x
+                | VList (_ :: xs) when idx = 2 -> Some (VList xs)
+                | _ -> None
+            match mArg with
+            | None -> None
+            | Some a ->
+                match bindOutput 3 a s with
+                | None    -> None
+                | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // =../2 (univ): A1 = T, A2 = L. Decompose (instantiated A1) or
+    // compose (unbound A1, list in A2). Mirrors the Haskell/Rust/C++
+    // baseline (see wam_haskell_target.pl =../2 step case).
+    | BuiltinCall ("=../2", _) ->
+        let t = getReg 1 s
+        match t with
+        | Some (Unbound vid) ->
+            // Compose mode: read proper list from A2.
+            let l = getReg 2 s
+            match l with
+            | Some (VList items) ->
+                let mBuilt =
+                    match items with
+                    | []                   -> None
+                    | [x]                  -> Some x
+                    | (Atom fname) :: rest -> Some (Str (fname, rest))
+                    | _                    -> None
+                match mBuilt with
+                | None       -> None
+                | Some built ->
+                    let regs = Array.copy s.WsRegs
+                    regs.[1] <- built
+                    Some { s with
+                             WsPC       = s.WsPC + 1
+                             WsRegs     = regs
+                             WsBindings = Map.add vid built s.WsBindings
+                             WsTrail    = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
+                             WsTrailLen = s.WsTrailLen + 1 }
+            | _ -> None
+        | Some tVal ->
+            // Decompose mode: build list from T.
+            let mList =
+                match tVal with
+                | Str (fn, args)  -> Some (VList ((Atom fn) :: args))
+                | Atom _          -> Some (VList [tVal])
+                | Integer _       -> Some (VList [tVal])
+                | Float _         -> Some (VList [tVal])
+                | VList []        -> Some (VList [Atom "[]"])
+                | VList (x :: xs) -> Some (VList [Atom "."; x; VList xs])
+                | _               -> None
+            match mList with
+            | None    -> None
+            | Some lv ->
+                match bindOutput 2 lv s with
+                | None    -> None
+                | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | None -> None
+
+    // \\+/1 (negation as failure): A1 = Goal. Resolves the goal label and
+    // runs the snapshot; success of the inner run => NAF fails, failure of
+    // the inner run => NAF succeeds. Mirrors the Haskell baseline
+    // (wam_haskell_target.pl \\+/1 step case, sans the interned-atom table —
+    // F# Atom is string-based, so no lookupAtom indirection is needed).
+    | BuiltinCall ("\\\\+/1", _) ->
+        let goalOpt = getReg 1 s
+        match goalOpt with
+        // Fast path: \\+ member(X, L) — walk the list inline.
+        | Some (Str ("member", [needle; haystack])) ->
+            let n = derefVar s.WsBindings needle
+            let h = derefVar s.WsBindings haystack
+            let found =
+                match h with
+                | VList items -> items |> List.exists (fun item -> derefVar s.WsBindings item = n)
+                | _ -> false
+            if found then None else Some { s with WsPC = s.WsPC + 1 }
+        // Fast path: \\+ true always fails, \\+ fail always succeeds.
+        | Some (Atom "true") -> None
+        | Some (Atom "fail") -> Some { s with WsPC = s.WsPC + 1 }
+        // General path: resolve the goal label, snapshot-and-run.
+        | Some (Str (fname, args)) ->
+            let goalKey = sprintf "%s/%d" fname (List.length args)
+            match Map.tryFind goalKey ctx.WcLabels with
+            | Some pc ->
+                let dArgs = args |> List.map (derefVar s.WsBindings)
+                let regsSnap = Array.create MaxRegs (Unbound -1)
+                dArgs |> List.iteri (fun i v -> regsSnap.[i + 1] <- v)
+                let snapshot = { s with WsPC = pc; WsRegs = regsSnap; WsCP = 0; WsCutBar = 0 }
+                match run ctx snapshot with
+                | Some _ -> None
+                | None   -> Some { s with WsPC = s.WsPC + 1 }
+            | None -> Some { s with WsPC = s.WsPC + 1 }  // unknown pred: treat as failing goal
+        // Atom as 0-arity goal (e.g. \\+ some_pred)
+        | Some (Atom fname) ->
+            let goalKey = sprintf "%s/0" fname
+            match Map.tryFind goalKey ctx.WcLabels with
+            | Some pc ->
+                let snapshot = { s with WsPC = pc; WsCP = 0; WsCutBar = 0 }
+                match run ctx snapshot with
+                | Some _ -> None
+                | None   -> Some { s with WsPC = s.WsPC + 1 }
+            | None -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
     | _ -> None   // fallback for unhandled instructions
 
 and updateNearestAggFrame (rpc: int) (cps: ChoicePoint list) : ChoicePoint list =
