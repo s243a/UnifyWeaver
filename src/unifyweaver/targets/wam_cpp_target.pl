@@ -2576,6 +2576,7 @@ compile_wam_runtime_header_to_cpp(_Options,
 #include <memory>
 #include <set>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -3108,6 +3109,11 @@ struct WamState {
     // alt_pc = dynamic_next_clause_pc when more clauses remain.
     // Rules (Head :- Body) are NOT supported in this PR — only facts.
     std::unordered_map<std::string, std::vector<CellPtr>> dynamic_db;
+    // Set of (env_path, db_name) pairs already loaded via
+    // cpp_load_lmdb_fact_source. Used to make the loader idempotent
+    // -- a second call for the same pair short-circuits without
+    // re-streaming. Per WAM_CPP_LMDB_FACT_SOURCE_DESIGN.md.
+    std::set<std::pair<std::string, std::string>> loaded_lmdb_sources;
     // Iteration state for dispatch_dynamic_call. Mirrors the
     // AggregateGroupIterator pattern: one entry per active dynamic
     // call, popped when clauses are exhausted or the call commits
@@ -3446,6 +3452,58 @@ struct Program {
     static void register_setup(Setup s);
     static void apply_setup(WamState& vm);
 };
+
+// ----------------------------------------------------------------------
+// LMDB FactSource (v1) -- gated by WAM_CPP_ENABLE_LMDB at build time.
+//
+// v1 mirrors the C target: eager load of the entire DB into the
+// existing dynamic_db at startup, UTF-8 atom-only encoding, arity
+// fixed at 2. Per WAM_CPP_LMDB_FACT_SOURCE_DESIGN.md.
+//
+// When WAM_CPP_ENABLE_LMDB is not defined, cpp_load_lmdb_fact_source
+// is still declared (matching the C target stub pattern) but the
+// definition returns false without touching the dynamic_db -- the
+// generated program compiles fine, the LMDB load just no-ops.
+// ----------------------------------------------------------------------
+
+#ifdef WAM_CPP_ENABLE_LMDB
+#include <lmdb.h>
+
+class LmdbFactSource {
+public:
+    // Open env at env_path. db_name == nullptr uses the unnamed
+    // default DB. Throws std::runtime_error on open failure --
+    // load-time errors are surfaced to the caller, not silenced.
+    LmdbFactSource(const std::string& env_path, const char* db_name);
+    ~LmdbFactSource();
+
+    LmdbFactSource(const LmdbFactSource&) = delete;
+    LmdbFactSource& operator=(const LmdbFactSource&) = delete;
+
+    // Iterate every (key, value) pair once. Caller-supplied sink
+    // sees borrowed string_views valid only for that callback.
+    void stream_all(
+        const std::function<void(std::string_view,
+                                 std::string_view)>& sink);
+
+private:
+    MDB_env* env_ = nullptr;
+    MDB_dbi  dbi_ = 0;
+    bool dbi_open_ = false;
+};
+#endif // WAM_CPP_ENABLE_LMDB
+
+// Always declared; the implementation no-ops when LMDB is not
+// compiled in. Returns true on successful load (or already loaded);
+// false on error or when LMDB support is absent.
+//
+// Idempotent: a second call for the same (env_path, db_name) pair
+// is a no-op, matching the design doc resolution.
+bool cpp_load_lmdb_fact_source(
+    WamState& vm,
+    const std::string& functor_arity_key,
+    const std::string& env_path,
+    const char* db_name);
 
 } // namespace wam_cpp
 
@@ -9782,6 +9840,172 @@ Program::Setup& Program::setup_hook() {
 
 void Program::register_setup(Setup s) { setup_hook() = s; }
 void Program::apply_setup(WamState& vm) { if (setup_hook()) setup_hook()(vm); }
+
+// ----------------------------------------------------------------------
+// LMDB FactSource implementation (v1).
+// Gated by WAM_CPP_ENABLE_LMDB. When the flag is absent, only the
+// stub cpp_load_lmdb_fact_source below is compiled -- it returns
+// false and leaves dynamic_db untouched.
+// ----------------------------------------------------------------------
+
+#ifdef WAM_CPP_ENABLE_LMDB
+#include <filesystem>
+#include <stdexcept>
+
+LmdbFactSource::LmdbFactSource(const std::string& env_path,
+                               const char* db_name) {
+    int rc = mdb_env_create(&env_);
+    if (rc != MDB_SUCCESS) {
+        throw std::runtime_error(
+            std::string("mdb_env_create: ") + mdb_strerror(rc));
+    }
+    // Allow named sub-DBs; v1 only opens one per LmdbFactSource but
+    // reserves the headroom so users can keep multiple predicates
+    // in one env via repeated load calls with different db_name.
+    mdb_env_set_maxdbs(env_, 16);
+    // LMDB envs come in two flavours: a directory containing
+    // data.mdb + lock.mdb (no MDB_NOSUBDIR), or a single file path
+    // where the file is data.mdb and lock.mdb sits alongside
+    // (MDB_NOSUBDIR). Pick the right flag by probing the path --
+    // retrying mdb_env_open on the same env after failure is not
+    // safe per the LMDB docs.
+    unsigned int flags = MDB_RDONLY;
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(env_path, ec)) {
+        flags |= MDB_NOSUBDIR;
+    }
+    rc = mdb_env_open(env_, env_path.c_str(), flags, 0664);
+    if (rc != MDB_SUCCESS) {
+        mdb_env_close(env_);
+        env_ = nullptr;
+        throw std::runtime_error(
+            std::string("mdb_env_open ") + env_path + ": "
+            + mdb_strerror(rc));
+    }
+    MDB_txn* txn = nullptr;
+    rc = mdb_txn_begin(env_, nullptr, MDB_RDONLY, &txn);
+    if (rc != MDB_SUCCESS) {
+        mdb_env_close(env_);
+        env_ = nullptr;
+        throw std::runtime_error(
+            std::string("mdb_txn_begin: ") + mdb_strerror(rc));
+    }
+    MDB_dbi dbi;
+    rc = mdb_dbi_open(txn, db_name, 0, &dbi);
+    if (rc != MDB_SUCCESS) {
+        mdb_txn_abort(txn);
+        mdb_env_close(env_);
+        env_ = nullptr;
+        throw std::runtime_error(
+            std::string("mdb_dbi_open ")
+            + (db_name ? db_name : "<default>") + ": "
+            + mdb_strerror(rc));
+    }
+    mdb_txn_commit(txn);
+    dbi_ = dbi;
+    dbi_open_ = true;
+}
+
+LmdbFactSource::~LmdbFactSource() {
+    if (env_) {
+        if (dbi_open_) {
+            mdb_dbi_close(env_, dbi_);
+        }
+        mdb_env_close(env_);
+        env_ = nullptr;
+    }
+}
+
+void LmdbFactSource::stream_all(
+    const std::function<void(std::string_view,
+                             std::string_view)>& sink) {
+    MDB_txn* txn = nullptr;
+    int rc = mdb_txn_begin(env_, nullptr, MDB_RDONLY, &txn);
+    if (rc != MDB_SUCCESS) {
+        throw std::runtime_error(
+            std::string("stream_all/txn_begin: ")
+            + mdb_strerror(rc));
+    }
+    MDB_cursor* cur = nullptr;
+    rc = mdb_cursor_open(txn, dbi_, &cur);
+    if (rc != MDB_SUCCESS) {
+        mdb_txn_abort(txn);
+        throw std::runtime_error(
+            std::string("stream_all/cursor_open: ")
+            + mdb_strerror(rc));
+    }
+    MDB_val k{}, v{};
+    rc = mdb_cursor_get(cur, &k, &v, MDB_FIRST);
+    while (rc == MDB_SUCCESS) {
+        std::string_view ksv(static_cast<const char*>(k.mv_data),
+                             k.mv_size);
+        std::string_view vsv(static_cast<const char*>(v.mv_data),
+                             v.mv_size);
+        sink(ksv, vsv);
+        rc = mdb_cursor_get(cur, &k, &v, MDB_NEXT);
+    }
+    mdb_cursor_close(cur);
+    mdb_txn_abort(txn);
+    if (rc != MDB_NOTFOUND) {
+        throw std::runtime_error(
+            std::string("stream_all/cursor_get: ")
+            + mdb_strerror(rc));
+    }
+}
+
+bool cpp_load_lmdb_fact_source(WamState& vm,
+                               const std::string& functor_arity_key,
+                               const std::string& env_path,
+                               const char* db_name) {
+    std::string dbn = db_name ? db_name : "";
+    auto key = std::make_pair(env_path, dbn);
+    if (vm.loaded_lmdb_sources.count(key)) {
+        return true;  // idempotent
+    }
+    try {
+        LmdbFactSource src(env_path, db_name);
+        auto& bucket = vm.dynamic_db[functor_arity_key];
+        // Recover functor name from the key "name/arity" for the
+        // synthesised compound. v1 only supports arity 2; the key
+        // is assumed well-formed (caller is the codegen).
+        auto slash = functor_arity_key.find(\'/\');
+        std::string functor = (slash == std::string::npos)
+            ? functor_arity_key
+            : functor_arity_key.substr(0, slash);
+        src.stream_all([&](std::string_view ks, std::string_view vs) {
+            auto k_cell = std::make_shared<Cell>(
+                Value::Atom(std::string(ks)));
+            auto v_cell = std::make_shared<Cell>(
+                Value::Atom(std::string(vs)));
+            std::vector<CellPtr> args;
+            args.push_back(k_cell);
+            args.push_back(v_cell);
+            auto compound = std::make_shared<Cell>(
+                Value::Compound(functor + "/2", std::move(args)));
+            bucket.push_back(compound);
+        });
+        vm.loaded_lmdb_sources.insert(key);
+        return true;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr,
+                     "cpp_load_lmdb_fact_source(%s, %s): %s\\n",
+                     functor_arity_key.c_str(),
+                     env_path.c_str(),
+                     e.what());
+        return false;
+    }
+}
+#else
+// Stub when WAM_CPP_ENABLE_LMDB is not defined. Matches the C
+// target''s stub (wam_c_target.pl:2392-2398): returns false and
+// touches nothing, so generated code that calls this still links.
+bool cpp_load_lmdb_fact_source(WamState&,
+                               const std::string&,
+                               const std::string&,
+                               const char*) {
+    return false;
+}
+#endif // WAM_CPP_ENABLE_LMDB
 
 } // namespace wam_cpp
 ').
