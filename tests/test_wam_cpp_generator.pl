@@ -3507,6 +3507,28 @@ user:wam_cpp_lmdb_t_no_path   :- \+ wam_cpp_lmdb_desc(dave, alice).
 :- dynamic user:wam_cpp_lmdb_t_charlie_bob/0.
 user:wam_cpp_lmdb_t_charlie_bob :- wam_cpp_lmdb_desc(charlie, bob).
 
+% Phase 2 order(...) enforcement fixtures. The seeder
+% lmdb_seed_alpha_value_reverse writes three rows where keys are
+% sorted ascending but values are NOT (alice->zebra, bob->apple,
+% carol->mango). LMDB iterates by key, so the first-iterated
+% value column is "zebra". With order([arg(2)]) the runtime
+% sorts post-load and the first-iterated value column becomes
+% "apple".
+:- dynamic user:edge/2.
+:- dynamic user:wam_cpp_lmdb_get_first_key/1.
+:- dynamic user:wam_cpp_lmdb_first_key_is_alice/0.
+:- dynamic user:wam_cpp_lmdb_first_key_is_bob/0.
+
+% Capture the key of the first-iterated edge row. edge(K, _) with
+% K and value unbound binds K to the first row's key column; the
+% cut commits before any further alternatives. The wrapper goal
+% then tests whether that captured K matches the expected value.
+user:wam_cpp_lmdb_get_first_key(K) :- edge(K, _), !.
+user:wam_cpp_lmdb_first_key_is_alice :-
+    wam_cpp_lmdb_get_first_key(K), K == alice.
+user:wam_cpp_lmdb_first_key_is_bob   :-
+    wam_cpp_lmdb_get_first_key(K), K == bob.
+
 % sub_string/5 fixtures — mirror the SWI sub_string semantics.
 :- dynamic user:wam_cpp_test_ss_extract/0.
 :- dynamic user:wam_cpp_test_ss_extract_pre/0.
@@ -5158,6 +5180,117 @@ test(cpp_e2e_lmdb_policy_unique_overwrite,
           % Last write wins: alice->bob is replaced by charlie->bob.
           run_query(BinPath, 'wam_cpp_lmdb_t_direct/0',      [], false),
           run_query(BinPath, 'wam_cpp_lmdb_t_charlie_bob/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lmdb_policy_order_natural,
+     [ condition(cpp_lmdb_available),
+       setup(clear_policies_for_test) ]) :-
+    % No policy declared -> LMDB natural order (alice first by key).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_ord_n', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          make_directory_path(TmpDir),
+          lmdb_seed_alpha_value_reverse(TmpDir, EnvPath, _SeedBin),
+          write_wam_cpp_project(
+              [user:wam_cpp_lmdb_get_first_key/1,
+               user:wam_cpp_lmdb_first_key_is_alice/0,
+               user:wam_cpp_lmdb_first_key_is_bob/0],
+              [emit_main(true),
+               cpp_fact_sources([source(edge/2, lmdb(EnvPath))])],
+              TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          % LMDB natural: keys sorted ascending; alice is first.
+          run_query(BinPath,
+                    'wam_cpp_lmdb_first_key_is_alice/0', [], true),
+          run_query(BinPath,
+                    'wam_cpp_lmdb_first_key_is_bob/0',   [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lmdb_policy_order_by_arg2_asc,
+     [ condition(cpp_lmdb_available),
+       setup(clear_policies_for_test) ]) :-
+    relation_policy:relation_policy(edge/2, [order([arg(2)])]),
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_ord_a2', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          make_directory_path(TmpDir),
+          lmdb_seed_alpha_value_reverse(TmpDir, EnvPath, _SeedBin),
+          write_wam_cpp_project(
+              [user:wam_cpp_lmdb_get_first_key/1,
+               user:wam_cpp_lmdb_first_key_is_alice/0,
+               user:wam_cpp_lmdb_first_key_is_bob/0],
+              [emit_main(true),
+               cpp_fact_sources([source(edge/2, lmdb(EnvPath))])],
+              TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          % Sorted by arg2 ascending: bob->apple is first.
+          run_query(BinPath,
+                    'wam_cpp_lmdb_first_key_is_bob/0',   [], true),
+          run_query(BinPath,
+                    'wam_cpp_lmdb_first_key_is_alice/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lmdb_policy_order_by_arg2_desc,
+     [ condition(cpp_lmdb_available),
+       setup(clear_policies_for_test) ]) :-
+    relation_policy:relation_policy(edge/2, [order([desc(arg(2))])]),
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_ord_a2d', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          make_directory_path(TmpDir),
+          lmdb_seed_alpha_value_reverse(TmpDir, EnvPath, _SeedBin),
+          write_wam_cpp_project(
+              [user:wam_cpp_lmdb_get_first_key/1,
+               user:wam_cpp_lmdb_first_key_is_alice/0,
+               user:wam_cpp_lmdb_first_key_is_bob/0],
+              [emit_main(true),
+               cpp_fact_sources([source(edge/2, lmdb(EnvPath))])],
+              TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          % Sorted by arg2 descending: zebra is largest, so
+          % alice->zebra is first.
+          run_query(BinPath,
+                    'wam_cpp_lmdb_first_key_is_alice/0', [], true),
+          run_query(BinPath,
+                    'wam_cpp_lmdb_first_key_is_bob/0',   [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lmdb_policy_order_arg1_is_noop,
+     [ condition(cpp_lmdb_available),
+       setup(clear_policies_for_test) ]) :-
+    % order([arg(1)]) matches LMDB natural iteration so should
+    % not change anything -- alice still first. The point is to
+    % confirm the codegen's trivial-order detection actually
+    % skips emitting sort_keys (no runtime sort cost on the
+    % common case).
+    relation_policy:relation_policy(edge/2, [order([arg(1)])]),
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_ord_noop', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          make_directory_path(TmpDir),
+          lmdb_seed_alpha_value_reverse(TmpDir, EnvPath, _SeedBin),
+          write_wam_cpp_project(
+              [user:wam_cpp_lmdb_get_first_key/1,
+               user:wam_cpp_lmdb_first_key_is_alice/0,
+               user:wam_cpp_lmdb_first_key_is_bob/0],
+              [emit_main(true),
+               cpp_fact_sources([source(edge/2, lmdb(EnvPath))])],
+              TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_lmdb_first_key_is_alice/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
@@ -10241,6 +10374,27 @@ lmdb_seed_duplicate_value(TmpDir, EnvPath, SeedBin) :-
         open(SeedSrc, write, S),
         format(S,
 '#include <lmdb.h>~n#include <cstring>~n#include <filesystem>~nint main(){~n  const char* p = "~w";~n  std::filesystem::remove_all(p);~n  std::filesystem::create_directories(p);~n  MDB_env* env; mdb_env_create(&env);~n  mdb_env_set_maxdbs(env, 4);~n  mdb_env_open(env, p, 0, 0664);~n  MDB_txn* txn; mdb_txn_begin(env, nullptr, 0, &txn);~n  MDB_dbi dbi; mdb_dbi_open(txn, nullptr, 0, &dbi);~n  MDB_dbi meta; mdb_dbi_open(txn, "__meta__", MDB_CREATE, &meta);~n  auto put=[&](MDB_dbi d,const char*k,const char*v){MDB_val K{std::strlen(k),(void*)k},V{std::strlen(v),(void*)v};mdb_put(txn,d,&K,&V,0);};~n  put(dbi,"alice","bob"); put(dbi,"charlie","bob");~n  put(meta,"schema_version","1"); put(meta,"predicate","edge/2"); put(meta,"columns","child,parent");~n  mdb_txn_commit(txn); mdb_env_close(env); return 0;~n}~n',
+            [EnvPath]),
+        close(S)),
+    process_create(path('g++'),
+        ['-std=c++17', '-o', SeedBin, SeedSrc, '-llmdb'],
+        [stderr(null), process(PID)]),
+    process_wait(PID, exit(0)),
+    process_create(SeedBin, [], [process(PID2)]),
+    process_wait(PID2, exit(0)).
+
+% Seed an LMDB file with three rows whose keys are alphabetical
+% (LMDB natural sort order) but whose values are deliberately
+% out of alphabetical order: alice->zebra, bob->apple,
+% carol->mango. Used by order(...) policy tests so sort-by-value
+% produces a different first-row from LMDB's natural iteration.
+lmdb_seed_alpha_value_reverse(TmpDir, EnvPath, SeedBin) :-
+    directory_file_path(TmpDir, 'seed.cpp', SeedSrc),
+    directory_file_path(TmpDir, 'seed', SeedBin),
+    setup_call_cleanup(
+        open(SeedSrc, write, S),
+        format(S,
+'#include <lmdb.h>~n#include <cstring>~n#include <filesystem>~nint main(){~n  const char* p = "~w";~n  std::filesystem::remove_all(p);~n  std::filesystem::create_directories(p);~n  MDB_env* env; mdb_env_create(&env);~n  mdb_env_set_maxdbs(env, 4);~n  mdb_env_open(env, p, 0, 0664);~n  MDB_txn* txn; mdb_txn_begin(env, nullptr, 0, &txn);~n  MDB_dbi dbi; mdb_dbi_open(txn, nullptr, 0, &dbi);~n  MDB_dbi meta; mdb_dbi_open(txn, "__meta__", MDB_CREATE, &meta);~n  auto put=[&](MDB_dbi d,const char*k,const char*v){MDB_val K{std::strlen(k),(void*)k},V{std::strlen(v),(void*)v};mdb_put(txn,d,&K,&V,0);};~n  put(dbi,"alice","zebra"); put(dbi,"bob","apple"); put(dbi,"carol","mango");~n  put(meta,"schema_version","1"); put(meta,"predicate","edge/2"); put(meta,"columns","child,parent");~n  mdb_txn_commit(txn); mdb_env_close(env); return 0;~n}~n',
             [EnvPath]),
         close(S)),
     process_create(path('g++'),
