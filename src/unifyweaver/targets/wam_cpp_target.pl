@@ -45,6 +45,9 @@
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../core/relation_policy', [
+       get_effective_policy/4
+   ]).
 :- use_module(wam_cpp_lowered_emitter, [
     wam_cpp_lowerable/3,
     lower_predicate_to_cpp/4,
@@ -452,8 +455,9 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     % any query runs. Idempotency is enforced runtime-side.
     lmdb_sources_from_options(Options, LmdbSources),
     findall(LoadLine, (
-        member(lmdb_source(Key, Path, DbName), LmdbSources),
-        emit_lmdb_load_call(Key, Path, DbName, LoadLine)
+        member(lmdb_source(Key, Path, DbName, Unique, OnDup),
+               LmdbSources),
+        emit_lmdb_load_call(Key, Path, DbName, Unique, OnDup, LoadLine)
     ), LoadLines),
     atomic_list_concat(LoadLines, '\n', LmdbLoadBody),
     length(FlatInstrs, Reserve),
@@ -493,20 +497,36 @@ static const int _wam_cpp_setup_register = []() {
 
 % Render one cpp_load_lmdb_fact_source call. DbName is either an
 % atom (named sub-DB) or [] (default unnamed DB -> nullptr).
-emit_lmdb_load_call(Key, Path, [], Line) :-
-    !,
+% Unique is a boolean controlling value-uniqueness enforcement at
+% load time; OnDup is one of {throw,warn,overwrite,first_wins,
+% keep_all,fallback(P)} from the relation_policy directive.
+emit_lmdb_load_call(Key, Path, DbName, Unique, OnDup, Line) :-
     escape_cpp_string(Key, EKey),
     escape_cpp_string(Path, EPath),
+    db_name_arg(DbName, DbArg),
+    on_dup_cpp_enum(OnDup, DupEnum),
+    cpp_bool(Unique, UniqueLit),
     format(atom(Line),
-        '    cpp_load_lmdb_fact_source(vm, "~w", "~w", nullptr);',
-        [EKey, EPath]).
-emit_lmdb_load_call(Key, Path, DbName, Line) :-
-    escape_cpp_string(Key, EKey),
-    escape_cpp_string(Path, EPath),
+        '    cpp_load_lmdb_fact_source(vm, "~w", "~w", ~w, LmdbLoadOptions{~w, LmdbLoadOptions::OnDup::~w});',
+        [EKey, EPath, DbArg, UniqueLit, DupEnum]).
+
+db_name_arg([], 'nullptr') :- !.
+db_name_arg(DbName, Arg) :-
     escape_cpp_string(DbName, EDb),
-    format(atom(Line),
-        '    cpp_load_lmdb_fact_source(vm, "~w", "~w", "~w");',
-        [EKey, EPath, EDb]).
+    format(atom(Arg), '"~w"', [EDb]).
+
+cpp_bool(true, 'true') :- !.
+cpp_bool(false, 'false').
+
+% Map the Prolog on_duplicate policy atom to the C++ enum tag.
+% fallback(Policy) collapses to the inner policy for v1 (Phase 2
+% does not yet chain).
+on_dup_cpp_enum(throw,      'throw_').
+on_dup_cpp_enum(warn,       'warn').
+on_dup_cpp_enum(overwrite,  'overwrite').
+on_dup_cpp_enum(first_wins, 'first_wins').
+on_dup_cpp_enum(keep_all,   'keep_all').
+on_dup_cpp_enum(fallback(P), Tag) :- on_dup_cpp_enum(P, Tag).
 
 % ============================================================================
 % ISO error configuration
@@ -2529,18 +2549,30 @@ foreign_pred_keys_from_options(Options, Keys) :-
 
 %% lmdb_sources_from_options(+Options, -Sources)
 %  Extract the LMDB fact-source entries from the cpp_fact_sources
-%  option. Returns a list of lmdb_source(Key, Path, DbName) terms
-%  where Key is "Pred/Arity" string, Path is the env path atom,
-%  DbName is an atom or [] (empty list = unnamed default DB).
+%  option. Returns a list of
+%    lmdb_source(Key, Path, DbName, Unique, OnDup)
+%  terms where Key is "Pred/Arity" string, Path is the env path
+%  atom, DbName is an atom or [] (default DB), Unique is a boolean,
+%  and OnDup is the on_duplicate policy (atom).
+%
+%  Unique + OnDup come from relation_policy/2 declarations and
+%  per-source spec overrides via get_effective_policy/4. Phase 2
+%  enforcement happens at load time in the runtime (PR follow-up
+%  to PR #2325).
+%
 %  Per WAM_CPP_LMDB_FACT_SOURCE_DESIGN.md v1: only arity-2 lmdb()
 %  sources are accepted; other shapes will be added in follow-ups.
 lmdb_sources_from_options(Options, Sources) :-
     (   member(cpp_fact_sources(Specs), Options)
-    ->  findall(lmdb_source(Key, Path, DbName), (
+    ->  findall(lmdb_source(Key, Path, DbName, Unique, OnDup), (
             member(source(Functor/Arity, SourceSpec), Specs),
             validate_lmdb_v1_arity(Functor, Arity),
-            lmdb_source_spec(SourceSpec, Path, DbName),
-            format(atom(Key), '~w/~w', [Functor, Arity])
+            lmdb_source_spec(SourceSpec, Path, DbName, SrcOpts),
+            format(atom(Key), '~w/~w', [Functor, Arity]),
+            get_effective_policy(Functor/Arity, SrcOpts,
+                                 unique, Unique),
+            get_effective_policy(Functor/Arity, SrcOpts,
+                                 on_duplicate, OnDup)
         ), Sources)
     ;   Sources = []
     ).
@@ -2553,9 +2585,12 @@ validate_lmdb_v1_arity(Functor, Arity) :-
     throw(error(domain_error(lmdb_v1_arity_2, Functor/Arity), _)).
 
 % Recognise the spec shapes lmdb(Path) and lmdb(Path, Opts).
-lmdb_source_spec(lmdb(Path), Path, []).
-lmdb_source_spec(lmdb(Path, Opts), Path, DbName) :-
-    ( member(db_name(DbName0), Opts) -> DbName = DbName0 ; DbName = [] ).
+% Returns the raw SrcOpts list (or []) so the caller can also
+% consult per-source policy overrides (unique, on_duplicate, ...).
+lmdb_source_spec(lmdb(Path), Path, [], []).
+lmdb_source_spec(lmdb(Path, Opts), Path, DbName, SrcOpts) :-
+    ( member(db_name(DbName0), Opts) -> DbName = DbName0 ; DbName = [] ),
+    SrcOpts = Opts.
 
 %% expand_stdlib_predicates(+Predicates0, +Options, -Predicates)
 %  Honours the include_stdlib option: prepends helper predicate
@@ -3588,6 +3623,27 @@ private:
 };
 #endif // WAM_CPP_ENABLE_LMDB
 
+// Policy options driving load-time enforcement. Populated by the
+// codegen from relation_policy/2 declarations and per-source
+// overrides via get_effective_policy/4 (PR #2325). v1 enforcement
+// is value-uniqueness only -- LMDB keys are already unique by
+// construction without DUPSORT, so the meaningful uniqueness
+// check is on the value column.
+//
+// Defined outside the WAM_CPP_ENABLE_LMDB gate so generated code
+// can build an instance regardless of build flags. The stub
+// cpp_load_lmdb_fact_source ignores it.
+struct LmdbLoadOptions {
+    bool unique_check = false;
+    enum class OnDup {
+        keep_all   = 0,
+        throw_     = 1,
+        warn       = 2,
+        overwrite  = 3,
+        first_wins = 4
+    } on_duplicate = OnDup::keep_all;
+};
+
 // Always declared; the implementation no-ops when LMDB is not
 // compiled in. Returns true on successful load (or already loaded);
 // false on error or when LMDB support is absent.
@@ -3598,7 +3654,8 @@ bool cpp_load_lmdb_fact_source(
     WamState& vm,
     const std::string& functor_arity_key,
     const std::string& env_path,
-    const char* db_name);
+    const char* db_name,
+    const LmdbLoadOptions& opts = {});
 
 } // namespace wam_cpp
 
@@ -3606,6 +3663,8 @@ using wam_cpp::Value;
 using wam_cpp::Instruction;
 using wam_cpp::WamState;
 using wam_cpp::Program;
+using wam_cpp::LmdbLoadOptions;
+using wam_cpp::cpp_load_lmdb_fact_source;
 
 #endif // UNIFYWEAVER_WAM_CPP_RUNTIME_H
 ').
@@ -10121,7 +10180,8 @@ LmdbFactSource::Meta LmdbFactSource::read_meta(const char* db_name) {
 bool cpp_load_lmdb_fact_source(WamState& vm,
                                const std::string& functor_arity_key,
                                const std::string& env_path,
-                               const char* db_name) {
+                               const char* db_name,
+                               const LmdbLoadOptions& opts) {
     std::string dbn = db_name ? db_name : "";
     auto key = std::make_pair(env_path, dbn);
     if (vm.loaded_lmdb_sources.count(key)) {
@@ -10158,7 +10218,6 @@ bool cpp_load_lmdb_fact_source(WamState& vm,
                 "sub-DB; loading without schema validation\\n",
                 env_path.c_str(), functor_arity_key.c_str());
         }
-        auto& bucket = vm.dynamic_db[functor_arity_key];
         // Recover functor name from the key "name/arity" for the
         // synthesised compound. v1 only supports arity 2; the key
         // is assumed well-formed (caller is the codegen).
@@ -10166,18 +10225,83 @@ bool cpp_load_lmdb_fact_source(WamState& vm,
         std::string functor = (slash == std::string::npos)
             ? functor_arity_key
             : functor_arity_key.substr(0, slash);
+        // Phase 2 enforcement: when opts.unique_check is set, the
+        // value column (arg2) is asserted unique across all rows.
+        // LMDB keys (arg1) are unique by construction without
+        // DUPSORT so we do not need to check them here; the
+        // meaningful check is on the value column. Per
+        // RELATION_POLICY_DECLARATIONS.md the on_duplicate policy
+        // decides what to do when the contract is violated.
+        //
+        // Build into a local vector and only commit to dynamic_db
+        // after stream_all returns without throwing -- otherwise a
+        // partial load would leave dynamic_db in a half-populated
+        // state and queries against the predicate would return
+        // wrong answers even after the loader reported failure.
+        std::vector<CellPtr> staged;
+        std::unordered_map<std::string, std::size_t> seen_value_to_row;
         src.stream_all([&](std::string_view ks, std::string_view vs) {
+            std::string vstr(vs);
+            if (opts.unique_check) {
+                auto it = seen_value_to_row.find(vstr);
+                if (it != seen_value_to_row.end()) {
+                    switch (opts.on_duplicate) {
+                    case LmdbLoadOptions::OnDup::throw_:
+                        throw std::runtime_error(
+                            "duplicate value \\"" + vstr
+                            + "\\" with unique(true) and "
+                              "on_duplicate(throw)");
+                    case LmdbLoadOptions::OnDup::warn:
+                        std::fprintf(stderr,
+                            "[wam-cpp] warning: duplicate value "
+                            "in %s: %s\\n",
+                            functor_arity_key.c_str(),
+                            vstr.c_str());
+                        break;
+                    case LmdbLoadOptions::OnDup::overwrite:
+                        // Replace the earlier row with this one.
+                        // staged[it->second] holds the prior cell.
+                        {
+                            auto k_cell = std::make_shared<Cell>(
+                                Value::Atom(std::string(ks)));
+                            auto v_cell = std::make_shared<Cell>(
+                                Value::Atom(vstr));
+                            std::vector<CellPtr> args;
+                            args.push_back(k_cell);
+                            args.push_back(v_cell);
+                            staged[it->second] = std::make_shared<Cell>(
+                                Value::Compound(
+                                    functor + "/2",
+                                    std::move(args)));
+                        }
+                        return;
+                    case LmdbLoadOptions::OnDup::first_wins:
+                        return;  // skip the duplicate
+                    case LmdbLoadOptions::OnDup::keep_all:
+                        break;   // fall through and append
+                    }
+                }
+            }
             auto k_cell = std::make_shared<Cell>(
                 Value::Atom(std::string(ks)));
             auto v_cell = std::make_shared<Cell>(
-                Value::Atom(std::string(vs)));
+                Value::Atom(vstr));
             std::vector<CellPtr> args;
             args.push_back(k_cell);
             args.push_back(v_cell);
-            auto compound = std::make_shared<Cell>(
-                Value::Compound(functor + "/2", std::move(args)));
-            bucket.push_back(compound);
+            std::size_t pos = staged.size();
+            staged.push_back(std::make_shared<Cell>(
+                Value::Compound(functor + "/2", std::move(args))));
+            if (opts.unique_check) {
+                seen_value_to_row[vstr] = pos;
+            }
         });
+        // Commit the staged rows only after stream_all completes
+        // without throwing.
+        auto& bucket = vm.dynamic_db[functor_arity_key];
+        bucket.insert(bucket.end(),
+                      std::make_move_iterator(staged.begin()),
+                      std::make_move_iterator(staged.end()));
         vm.loaded_lmdb_sources.insert(key);
         return true;
     } catch (const std::exception& e) {
@@ -10196,7 +10320,8 @@ bool cpp_load_lmdb_fact_source(WamState& vm,
 bool cpp_load_lmdb_fact_source(WamState&,
                                const std::string&,
                                const std::string&,
-                               const char*) {
+                               const char*,
+                               const LmdbLoadOptions&) {
     return false;
 }
 #endif // WAM_CPP_ENABLE_LMDB

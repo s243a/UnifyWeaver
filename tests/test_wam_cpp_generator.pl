@@ -14,6 +14,7 @@
 :- use_module(library(process)).
 :- use_module(library(readutil)).
 :- use_module('../src/unifyweaver/targets/wam_cpp_target').
+:- use_module('../src/unifyweaver/core/relation_policy', []).
 :- use_module('../src/unifyweaver/targets/wam_cpp_lowered_emitter').
 :- use_module('../src/unifyweaver/core/target_registry').
 
@@ -3501,6 +3502,11 @@ user:wam_cpp_lmdb_t_two_hop   :- wam_cpp_lmdb_desc(alice, carol).
 user:wam_cpp_lmdb_t_three_hop :- wam_cpp_lmdb_desc(alice, dave).
 user:wam_cpp_lmdb_t_no_path   :- \+ wam_cpp_lmdb_desc(dave, alice).
 
+% Used by the Phase 2 policy tests against the duplicate-value
+% fixture: alice->bob and charlie->bob.
+:- dynamic user:wam_cpp_lmdb_t_charlie_bob/0.
+user:wam_cpp_lmdb_t_charlie_bob :- wam_cpp_lmdb_desc(charlie, bob).
+
 % sub_string/5 fixtures — mirror the SWI sub_string semantics.
 :- dynamic user:wam_cpp_test_ss_extract/0.
 :- dynamic user:wam_cpp_test_ss_extract_pre/0.
@@ -5070,6 +5076,118 @@ test(cpp_e2e_lmdb_codegen,
 % stays empty, so the query that depends on the LMDB-backed
 % predicate returns false (the user sees the issue immediately
 % rather than getting wrong query results from the wrong file).
+% relation_policy/2 Phase 2 -- LMDB enforcement. Four variations
+% on the same fixture (two LMDB rows with the same value column).
+% Each test declares a different on_duplicate policy and verifies
+% the runtime applies it correctly. Each test clears the registry
+% in setup so they're order-independent.
+
+clear_policies_for_test :-
+    relation_policy:clear_relation_policies.
+
+test(cpp_e2e_lmdb_policy_unique_throw,
+     [ condition(cpp_lmdb_available),
+       setup(clear_policies_for_test) ]) :-
+    relation_policy:relation_policy(edge/2,
+        [unique(true), on_duplicate(throw)]),
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_pol_t', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          make_directory_path(TmpDir),
+          lmdb_seed_duplicate_value(TmpDir, EnvPath, _SeedBin),
+          write_wam_cpp_project([user:wam_cpp_lmdb_desc/2,
+                                 user:wam_cpp_lmdb_t_direct/0],
+                                [emit_main(true),
+                                 cpp_fact_sources([
+                                     source(edge/2, lmdb(EnvPath))])],
+                                TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          % Load throws on duplicate value; dynamic_db stays empty;
+          % query fails.
+          run_query(BinPath, 'wam_cpp_lmdb_t_direct/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lmdb_policy_unique_warn,
+     [ condition(cpp_lmdb_available),
+       setup(clear_policies_for_test) ]) :-
+    relation_policy:relation_policy(edge/2,
+        [unique(true), on_duplicate(warn)]),
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_pol_w', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          make_directory_path(TmpDir),
+          lmdb_seed_duplicate_value(TmpDir, EnvPath, _SeedBin),
+          write_wam_cpp_project([user:wam_cpp_lmdb_desc/2,
+                                 user:wam_cpp_lmdb_t_direct/0,
+                                 user:wam_cpp_lmdb_t_charlie_bob/0],
+                                [emit_main(true),
+                                 cpp_fact_sources([
+                                     source(edge/2, lmdb(EnvPath))])],
+                                TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          % Warn keeps both rows; both edge facts present.
+          run_query(BinPath, 'wam_cpp_lmdb_t_direct/0',      [], true),
+          run_query(BinPath, 'wam_cpp_lmdb_t_charlie_bob/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lmdb_policy_unique_overwrite,
+     [ condition(cpp_lmdb_available),
+       setup(clear_policies_for_test) ]) :-
+    relation_policy:relation_policy(edge/2,
+        [unique(true), on_duplicate(overwrite)]),
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_pol_o', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          make_directory_path(TmpDir),
+          lmdb_seed_duplicate_value(TmpDir, EnvPath, _SeedBin),
+          write_wam_cpp_project([user:wam_cpp_lmdb_desc/2,
+                                 user:wam_cpp_lmdb_t_direct/0,
+                                 user:wam_cpp_lmdb_t_charlie_bob/0],
+                                [emit_main(true),
+                                 cpp_fact_sources([
+                                     source(edge/2, lmdb(EnvPath))])],
+                                TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          % Last write wins: alice->bob is replaced by charlie->bob.
+          run_query(BinPath, 'wam_cpp_lmdb_t_direct/0',      [], false),
+          run_query(BinPath, 'wam_cpp_lmdb_t_charlie_bob/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lmdb_policy_unique_first_wins,
+     [ condition(cpp_lmdb_available),
+       setup(clear_policies_for_test) ]) :-
+    relation_policy:relation_policy(edge/2,
+        [unique(true), on_duplicate(first_wins)]),
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_pol_f', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          make_directory_path(TmpDir),
+          lmdb_seed_duplicate_value(TmpDir, EnvPath, _SeedBin),
+          write_wam_cpp_project([user:wam_cpp_lmdb_desc/2,
+                                 user:wam_cpp_lmdb_t_direct/0,
+                                 user:wam_cpp_lmdb_t_charlie_bob/0],
+                                [emit_main(true),
+                                 cpp_fact_sources([
+                                     source(edge/2, lmdb(EnvPath))])],
+                                TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          % First write wins: alice->bob survives, charlie->bob dropped.
+          run_query(BinPath, 'wam_cpp_lmdb_t_direct/0',      [], true),
+          run_query(BinPath, 'wam_cpp_lmdb_t_charlie_bob/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
 test(cpp_e2e_lmdb_meta_mismatch,
      [condition(cpp_lmdb_available)]) :-
     unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_meta', TmpDir),
@@ -10111,6 +10229,26 @@ int main() {
 % argument lets negative tests inject a mismatching predicate.
 lmdb_seed_three_edges(TmpDir, EnvPath, SeedBin) :-
     lmdb_seed_three_edges(TmpDir, EnvPath, 'edge/2', SeedBin).
+
+% Seed an LMDB file with two entries mapping different keys to
+% the SAME value, so a unique(true) policy on the value column
+% has a duplicate to react to. Used by relation_policy Phase 2
+% tests for the throw / warn / overwrite / first_wins cases.
+lmdb_seed_duplicate_value(TmpDir, EnvPath, SeedBin) :-
+    directory_file_path(TmpDir, 'seed.cpp', SeedSrc),
+    directory_file_path(TmpDir, 'seed', SeedBin),
+    setup_call_cleanup(
+        open(SeedSrc, write, S),
+        format(S,
+'#include <lmdb.h>~n#include <cstring>~n#include <filesystem>~nint main(){~n  const char* p = "~w";~n  std::filesystem::remove_all(p);~n  std::filesystem::create_directories(p);~n  MDB_env* env; mdb_env_create(&env);~n  mdb_env_set_maxdbs(env, 4);~n  mdb_env_open(env, p, 0, 0664);~n  MDB_txn* txn; mdb_txn_begin(env, nullptr, 0, &txn);~n  MDB_dbi dbi; mdb_dbi_open(txn, nullptr, 0, &dbi);~n  MDB_dbi meta; mdb_dbi_open(txn, "__meta__", MDB_CREATE, &meta);~n  auto put=[&](MDB_dbi d,const char*k,const char*v){MDB_val K{std::strlen(k),(void*)k},V{std::strlen(v),(void*)v};mdb_put(txn,d,&K,&V,0);};~n  put(dbi,"alice","bob"); put(dbi,"charlie","bob");~n  put(meta,"schema_version","1"); put(meta,"predicate","edge/2"); put(meta,"columns","child,parent");~n  mdb_txn_commit(txn); mdb_env_close(env); return 0;~n}~n',
+            [EnvPath]),
+        close(S)),
+    process_create(path('g++'),
+        ['-std=c++17', '-o', SeedBin, SeedSrc, '-llmdb'],
+        [stderr(null), process(PID)]),
+    process_wait(PID, exit(0)),
+    process_create(SeedBin, [], [process(PID2)]),
+    process_wait(PID2, exit(0)).
 
 lmdb_seed_three_edges(TmpDir, EnvPath, MetaPred, SeedBin) :-
     directory_file_path(TmpDir, 'seed.cpp', SeedSrc),
