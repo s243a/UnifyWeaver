@@ -623,6 +623,147 @@ test_fsharp_not_unifiable_builtin :-
     ).
 
 %% ----------------------------------------------------------------------
+%% Phase I parity: Haskell-only specialized instructions ported to F#.
+%% These are performance optimizations emitted by the WAM compiler''s
+%% binding-analysis pass; their semantics live in step (parity with
+%% src/unifyweaver/targets/wam_haskell_target.pl).
+%% ----------------------------------------------------------------------
+
+test_fsharp_vset_value_variant :-
+    %% F# Value DU gains a VSet of Set<string> variant. Haskell uses
+    %% IS.IntSet of interned atom IDs; F# uses Set<string> directly
+    %% because F# atoms are string-based at the runtime level.
+    Test = 'WAM-FSharp: VSet variant on Value DU',
+    (   fsharp_wam_type_header(Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "| VSet    of Set<string>"),
+        %% compareValue treats VSet at compound rank.
+        sub_string(S, _, _, _, "| VSet _              -> 3"),
+        sub_string(S, _, _, _, "| VSet x,    VSet y    -> compare x y")
+    ->  pass(Test)
+    ;   fail_test(Test, 'VSet variant missing or compareValue not extended')
+    ).
+
+test_fsharp_specialized_instructions_declared :-
+    %% The 7 new Phase-I instructions must be declared in the
+    %% Instruction DU.
+    Test = 'WAM-FSharp: Phase-I instructions in Instruction DU',
+    (   fsharp_wam_type_header(Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "| PutStructureDyn       of nameReg: int * arityReg: int * targetReg: int"),
+        sub_string(S, _, _, _, "| Arg                   of n: int * tReg: int * aReg: int"),
+        sub_string(S, _, _, _, "| NotMemberList         of xReg: int * lReg: int"),
+        sub_string(S, _, _, _, "| NotMemberConstAtoms   of xReg: int * atoms: string list"),
+        sub_string(S, _, _, _, "| BuildEmptySet         of reg: int"),
+        sub_string(S, _, _, _, "| SetInsert             of elemReg: int * inReg: int * outReg: int"),
+        sub_string(S, _, _, _, "| NotMemberSet          of elemReg: int * setReg: int")
+    ->  pass(Test)
+    ;   fail_test(Test, 'One or more Phase-I instructions missing from DU')
+    ).
+
+test_fsharp_put_structure_dyn_step :-
+    Test = 'WAM-FSharp: PutStructureDyn step case',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "| PutStructureDyn (nameReg, arityReg, targetReg) ->"),
+        %% Functor name must dereference to Atom; arity to non-neg Integer.
+        sub_string(S, _, _, _, "Some (Atom fname), Some (Integer arity) when arity >= 0"),
+        %% Pushes a BuildStruct into the WamBuilder slot at targetReg.
+        sub_string(S, _, _, _, "BuildStruct (fname, targetReg, arity, [])")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing PutStructureDyn step case')
+    ).
+
+test_fsharp_arg_specialized_step :-
+    Test = 'WAM-FSharp: Arg (specialized arg/3) step case',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "| Arg (n, tReg, aReg) when n >= 1 ->"),
+        %% Pattern-matches Str / VList for the subterm.
+        sub_string(S, _, _, _, "Str (_, args) when n <= List.length args -> Some (List.item (n - 1) args)"),
+        sub_string(S, _, _, _, "VList (x :: _)  when n = 1 -> Some x"),
+        sub_string(S, _, _, _, "VList (_ :: xs) when n = 2 -> Some (VList xs)"),
+        %% Fall-through guard for n < 1 / non-compound T.
+        sub_string(S, _, _, _, "| Arg (_, _, _) -> None")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing Arg specialized step case')
+    ).
+
+test_fsharp_not_member_list_step :-
+    Test = 'WAM-FSharp: NotMemberList step case',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "| NotMemberList (xReg, lReg) ->"),
+        %% Inline list walk via List.exists + derefVar.
+        sub_string(S, _, _, _, "items |> List.exists (fun item -> derefVar s.WsBindings item = x)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing NotMemberList step case')
+    ).
+
+test_fsharp_not_member_const_atoms_step :-
+    Test = 'WAM-FSharp: NotMemberConstAtoms step case',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "| NotMemberConstAtoms (xReg, atoms) ->"),
+        %% Atom case: List.contains on the baked-in atom strings.
+        sub_string(S, _, _, _, "if List.contains name atoms then None"),
+        %% Could-unify cases (Unbound, Ref) fail.
+        sub_string(S, _, _, _, "| Some (Unbound _) -> None"),
+        sub_string(S, _, _, _, "| Some (Ref _)     -> None"),
+        %% Non-atom ground succeeds.
+        sub_string(S, _, _, _, "| Some _           -> Some { s with WsPC = s.WsPC + 1 }")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing NotMemberConstAtoms step case')
+    ).
+
+test_fsharp_vset_step_cases :-
+    Test = 'WAM-FSharp: BuildEmptySet / SetInsert / NotMemberSet step cases',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        %% BuildEmptySet writes VSet Set.empty into the target register.
+        sub_string(S, _, _, _, "| BuildEmptySet reg ->"),
+        sub_string(S, _, _, _, "r.[reg] <- VSet Set.empty"),
+        %% SetInsert reads Atom + VSet, writes VSet with Set.add.
+        sub_string(S, _, _, _, "| SetInsert (elemReg, inReg, outReg) ->"),
+        sub_string(S, _, _, _, "Some (Atom name), Some (VSet s0)"),
+        sub_string(S, _, _, _, "VSet (Set.add name s0)"),
+        %% NotMemberSet uses Set.contains for the O(log N) check.
+        sub_string(S, _, _, _, "| NotMemberSet (elemReg, setReg) ->"),
+        sub_string(S, _, _, _, "Set.contains name s0")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing VSet step case patterns')
+    ).
+
+test_fsharp_specialized_instructions_wam_parse :-
+    %% Round-trip the WAM-text mnemonics through wam_instr_to_fsharp/2
+    %% to make sure they map to the right Instruction constructors.
+    Test = 'WAM-FSharp: WAM-text parse rules for Phase-I instructions',
+    (   wam_fsharp_target:wam_instr_to_fsharp(
+            ["put_structure_dyn", "A1", "A2", "A3"], F1),
+        wam_fsharp_target:wam_instr_to_fsharp(
+            ["arg", "2", "A1", "A3"], F2),
+        wam_fsharp_target:wam_instr_to_fsharp(
+            ["not_member_list", "A1", "A2"], F3),
+        wam_fsharp_target:wam_instr_to_fsharp(
+            ["not_member_const_atoms", "A1", "foo", "bar"], F4),
+        wam_fsharp_target:wam_instr_to_fsharp(
+            ["build_empty_set", "A1"], F5),
+        wam_fsharp_target:wam_instr_to_fsharp(
+            ["set_insert", "A1", "A2", "A3"], F6),
+        wam_fsharp_target:wam_instr_to_fsharp(
+            ["not_member_set", "A1", "A2"], F7),
+        F1 == "PutStructureDyn (1, 2, 3)",
+        F2 == "Arg (2, 1, 3)",
+        F3 == "NotMemberList (1, 2)",
+        F4 == "NotMemberConstAtoms (1, [\"foo\"; \"bar\"])",
+        F5 == "BuildEmptySet 1",
+        F6 == "SetInsert (1, 2, 3)",
+        F7 == "NotMemberSet (1, 2)"
+    ->  pass(Test)
+    ;   fail_test(Test, 'WAM-text parse rules produced unexpected output')
+    ).
+
+%% ----------------------------------------------------------------------
 %% Phase F parity smoke: fact-shape classification helpers exposed by
 %% the F# target (parity infra used by Haskell / Elixir hybrid targets).
 %% ----------------------------------------------------------------------
@@ -797,6 +938,15 @@ run_tests :-
     test_fsharp_standard_order_comparison,
     test_fsharp_unify_builtin,
     test_fsharp_not_unifiable_builtin,
+    %% Phase I — Haskell-only specialized instructions
+    test_fsharp_vset_value_variant,
+    test_fsharp_specialized_instructions_declared,
+    test_fsharp_put_structure_dyn_step,
+    test_fsharp_arg_specialized_step,
+    test_fsharp_not_member_list_step,
+    test_fsharp_not_member_const_atoms_step,
+    test_fsharp_vset_step_cases,
+    test_fsharp_specialized_instructions_wam_parse,
     test_fsharp_fact_shape_helpers_exported,
     test_fsharp_emit_mode_resolution,
     test_fsharp_lowerable_single_clause_proceed,
