@@ -152,6 +152,45 @@ Implemented in PR #2332 with four regression tests covering
 leaf-closure, tokenizer-chain, bare-indicator resolution, and
 unknown-entry rejection.
 
+### Explicit-name wrappers vs shadowing standard SWI names
+
+PR #2334 added two explicit-name wrappers (`parse_atom_to_term/2`,
+`parse_term_to_atom/2`) for operator-aware parsing in compiled
+mode. The natural question was: *why not shadow the standard
+`atom_to_term/3` and `term_to_atom/2` names directly?* Because
+those names are registered in `is_builtin_pred/2` (in
+`wam_target.pl`), the compiler emits `builtin_call` for them,
+which bypasses the label-dispatch chain entirely and lands in
+the C++ `builtin()` function. A same-name wrapper would sit in
+the labels table but **never be reached** at runtime.
+
+Three options were considered:
+
+| Option | Approach | Scope | Tradeoff |
+|---|---|---|---|
+| A | Drop `is_builtin_pred/2` registrations globally | Shared codegen (all targets) | Native users still work via the Call → builtin() fallback; affects every target |
+| B | Per-target builtin-override hook in `compile_predicate_to_wam/3` | Cross-target plumbing | C++-only behavior, but requires shared-codegen API |
+| C | Add new explicit-name wrappers | C++-only, purely additive | Standard names still go to native builtin; users opt into operator parsing by calling explicit names |
+
+C was chosen because it's purely additive and ships in one PR
+without touching cross-target codegen. A and B remain real
+follow-up options if a use case for shadowing the standard names
+emerges (e.g. an existing library that calls `atom_to_term/3`
+and now needs operator support without a code change). Such a
+follow-up should land its own design pass since both options
+span more than just C++.
+
+`parse_term_to_atom/2` is mode-sensitive: forward mode delegates
+to the native `term_to_atom/2` builtin (rendering doesn't need
+operator support and the native path is faster); reverse mode
+goes through `parse_term_from_atom/3` with `canonical_op_table/1`.
+
+The subset machinery cooperates cleanly with these wrappers --
+`runtime_parser_subset([parse_atom_to_term/2, parse_term_to_atom/2])`
+pulls in the wrappers and their transitive closure (which
+includes `parse_term_from_atom/3` and the full operator-parser
+machinery; this is unavoidable for operator support).
+
 The hook should be independent of the WAM items API. A target can skip WAM text
 generation at build time and still need runtime source-term parsing.
 
