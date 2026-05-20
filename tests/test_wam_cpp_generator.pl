@@ -5266,6 +5266,68 @@ test(cpp_e2e_lmdb_policy_order_by_arg2_desc,
         delete_directory_and_contents(TmpDir)
     ).
 
+% relation_policy/2 Phase 2 -- codegen-time warning when the
+% declared order requires a runtime sort. Per #2327's commit
+% discussion: ideally the user designs the LMDB schema so the
+% data is already in the desired order (e.g. compound keys), so
+% we nudge them with a one-line note when sorting actually fires.
+% Suppressible via per-source quiet_sort(true).
+%
+% Tests run the codegen in a subprocess so user_error can be
+% captured cleanly; checking the in-process user_error stream is
+% awkward because plunit owns it.
+test(cpp_e2e_lmdb_sort_warning_emitted,
+     [condition(cpp_lmdb_available)]) :-
+    run_codegen_subprocess(
+        "
+        :- use_module('/home/user/UnifyWeaver/src/unifyweaver/targets/wam_cpp_target').
+        :- use_module('/home/user/UnifyWeaver/src/unifyweaver/core/relation_policy').
+        :- relation_policy(edge/2, [order([arg(2)])]).
+        :- dynamic user:edge/2.
+        user:dummy :- edge(_, _).
+        :- write_wam_cpp_project([user:dummy/0],
+              [cpp_fact_sources([source(edge/2, lmdb('/tmp/x'))])],
+              '/tmp/sw_warn_emit'), halt.
+        ",
+        Stderr),
+    assertion(sub_string(Stderr, _, _, _,
+                         "requires a runtime sort")).
+
+test(cpp_e2e_lmdb_sort_warning_suppressed,
+     [condition(cpp_lmdb_available)]) :-
+    run_codegen_subprocess(
+        "
+        :- use_module('/home/user/UnifyWeaver/src/unifyweaver/targets/wam_cpp_target').
+        :- use_module('/home/user/UnifyWeaver/src/unifyweaver/core/relation_policy').
+        :- relation_policy(edge/2, [order([arg(2)])]).
+        :- dynamic user:edge/2.
+        user:dummy :- edge(_, _).
+        :- write_wam_cpp_project([user:dummy/0],
+              [cpp_fact_sources([source(edge/2,
+                                  lmdb('/tmp/x', [quiet_sort(true)]))])],
+              '/tmp/sw_warn_supp'), halt.
+        ",
+        Stderr),
+    assertion(\+ sub_string(Stderr, _, _, _,
+                            "requires a runtime sort")).
+
+test(cpp_e2e_lmdb_sort_warning_trivial_no_warn,
+     [condition(cpp_lmdb_available)]) :-
+    run_codegen_subprocess(
+        "
+        :- use_module('/home/user/UnifyWeaver/src/unifyweaver/targets/wam_cpp_target').
+        :- use_module('/home/user/UnifyWeaver/src/unifyweaver/core/relation_policy').
+        :- relation_policy(edge/2, [order([arg(1)])]).
+        :- dynamic user:edge/2.
+        user:dummy :- edge(_, _).
+        :- write_wam_cpp_project([user:dummy/0],
+              [cpp_fact_sources([source(edge/2, lmdb('/tmp/x'))])],
+              '/tmp/sw_warn_triv'), halt.
+        ",
+        Stderr),
+    assertion(\+ sub_string(Stderr, _, _, _,
+                            "requires a runtime sort")).
+
 test(cpp_e2e_lmdb_policy_order_arg1_is_noop,
      [ condition(cpp_lmdb_available),
        setup(clear_policies_for_test) ]) :-
@@ -10419,6 +10481,26 @@ lmdb_seed_three_edges(TmpDir, EnvPath, MetaPred, SeedBin) :-
     process_wait(PID, exit(0)),
     process_create(SeedBin, [], [process(PID2)]),
     process_wait(PID2, exit(0)).
+
+% Run a Prolog script in a fresh swipl subprocess and capture
+% its stderr. Used by the sort-warning tests to verify codegen-
+% time messages without interfering with plunit's own
+% user_error.
+run_codegen_subprocess(Source, Stderr) :-
+    tmp_file(codegen_script, ScriptBase),
+    atom_concat(ScriptBase, '.pl', ScriptPath),
+    setup_call_cleanup(
+        open(ScriptPath, write, S),
+        write(S, Source),
+        close(S)),
+    process_create(path('swipl'),
+                   ['-q', '-f', 'none', ScriptPath],
+                   [stdout(null), stderr(pipe(ErrStream)),
+                    process(PID)]),
+    read_string(ErrStream, _, Stderr),
+    close(ErrStream),
+    process_wait(PID, _Status),
+    catch(delete_file(ScriptPath), _, true).
 
 % Build the C++ project at TmpDir with -DWAM_CPP_ENABLE_LMDB and
 % -llmdb. Used by LMDB end-to-end tests; otherwise identical to

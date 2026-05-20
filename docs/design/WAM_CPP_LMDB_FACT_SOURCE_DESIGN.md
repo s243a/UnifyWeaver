@@ -391,6 +391,52 @@ The C# design should be the C++ design's reference for the MMA
 format, so any future MMA work cross-pollinates between targets
 (and possibly lets one target consume another's artifacts).
 
+## Future work: pre-sorted compound-key schema
+
+When a user declares `order([arg(2)])` (or any non-trivial order),
+the v2 runtime sorts the loaded bucket with `std::sort` — O(n log
+n) at load time. The Phase 2 implementation (PR #2327) emits a
+codegen-time warning advising the user that this cost exists and
+can usually be avoided by designing the LMDB schema so the data
+is already in the desired order.
+
+The technique: encode the sort column directly into the LMDB key.
+Instead of storing `arg1 -> arg2` (sorted by arg1, the LMDB
+default), store `<arg2>-<unique-id> -> arg1`. LMDB then iterates
+in arg2-sorted order natively. The `<unique-id>` discriminator
+avoids LMDB key collisions when multiple rows share the same
+sort-column value.
+
+Tradeoff:
+
+- **Wins**: zero sort cost at load; B-tree locality matches the
+  query pattern; future `lookup_by_arg1` (v1.5) probes the
+  intended column directly.
+- **Costs**: keys are longer (one full atom + delimiter + id) so
+  the LMDB on-disk size grows; intern tables that key on the LMDB
+  key wouldn't deduplicate the prefix portion.
+
+The intern-table cost is mitigated by interning only the
+**discriminator** portion (the unique id), since the sort-column
+prefix repeats across rows that share a sort value and is
+typically a small set of distinct values. The
+`<sort_column>-<id>` shape lets a separate `id -> long_value`
+intern table reuse identifiers across the data DB and the intern
+sub-DB without duplicating the long values.
+
+This is strictly v2 work — it needs:
+
+1. A new `cpp_fact_sources` source spec option (e.g.
+   `lmdb(Path, [compound_key([sort_column, unique_id_column])])`)
+   telling the codegen which delimiter to split on.
+2. Runtime decode of the compound key into the real row columns
+   before pushing to `dynamic_db`.
+3. A migration story for users who already have flat-key LMDB
+   files (probably an explicit reseed step).
+
+The Phase 2 warning is the in-band hint that nudges users toward
+this design before they get there.
+
 ## Cross-references
 
 - C target reference impl: `src/unifyweaver/targets/wam_c_target.pl:2390-2461`

@@ -454,8 +454,9 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     % at the end of wam_cpp_setup so dynamic_db is populated before
     % any query runs. Idempotency is enforced runtime-side.
     lmdb_sources_from_options(Options, LmdbSources),
+    warn_runtime_sorts(LmdbSources),
     findall(LoadLine, (
-        member(lmdb_source(Key, Path, DbName, Unique, OnDup, Order),
+        member(lmdb_source(Key, Path, DbName, Unique, OnDup, Order, _),
                LmdbSources),
         emit_lmdb_load_call(Key, Path, DbName, Unique, OnDup,
                             Order, LoadLine)
@@ -2614,7 +2615,7 @@ foreign_pred_keys_from_options(Options, Keys) :-
 %  sources are accepted; other shapes will be added in follow-ups.
 lmdb_sources_from_options(Options, Sources) :-
     (   member(cpp_fact_sources(Specs), Options)
-    ->  findall(lmdb_source(Key, Path, DbName, Unique, OnDup, Order), (
+    ->  findall(lmdb_source(Key, Path, DbName, Unique, OnDup, Order, SrcOpts), (
             member(source(Functor/Arity, SourceSpec), Specs),
             validate_lmdb_v1_arity(Functor, Arity),
             lmdb_source_spec(SourceSpec, Path, DbName, SrcOpts),
@@ -2628,6 +2629,30 @@ lmdb_sources_from_options(Options, Sources) :-
         ), Sources)
     ;   Sources = []
     ).
+
+%% warn_runtime_sorts(+LmdbSources) is det.
+%
+% Walk the resolved sources and emit one user_error warning per
+% source whose declared order requires a runtime sort. Called
+% from emit_setup_function only -- not from the header-generation
+% call site of lmdb_sources_from_options, otherwise the warning
+% would fire twice per project.
+warn_runtime_sorts(Sources) :-
+    forall(member(lmdb_source(_, _, _, _, _, Order, SrcOpts), Sources),
+           maybe_warn_runtime_sort_one(Order, SrcOpts, Sources)).
+
+maybe_warn_runtime_sort_one(_, SrcOpts, _) :-
+    member(quiet_sort(true), SrcOpts), !.
+maybe_warn_runtime_sort_one(Order, _, Sources) :-
+    order_cpp_sort_keys(Order, SortKeysLit),
+    SortKeysLit \== '{}', !,
+    % Recover the PredArity for the message via a reverse-lookup
+    % in Sources; cheap since list is small.
+    member(lmdb_source(Key, _, _, _, _, Order, _), Sources),
+    format(user_error,
+        "[wam-cpp] note: ~w order(~w) requires a runtime sort. LMDB iterates ascending by key; consider a compound-key schema (e.g. <sort_column>-<id>) so the data is already in the desired order at load time. Suppress with quiet_sort(true) in the source options.~n",
+        [Key, Order]).
+maybe_warn_runtime_sort_one(_, _, _).
 
 % v1 supports arity 2 only; loudly reject anything else so the
 % user sees a real codegen-time error rather than a confusing
