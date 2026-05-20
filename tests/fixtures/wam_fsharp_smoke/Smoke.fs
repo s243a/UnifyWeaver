@@ -693,6 +693,217 @@ let scenario_par_step_inside_sequential_aggregate () =
     | None ->
         assertTrue "ParTryMeElsePc inside agg should succeed" false
 
+// -- Scenarios 21-23: end-to-end forkParBranches via run ------------------
+//
+// Drive the full BeginAggregate -> ParTryMeElsePc -> branch chain ->
+// EndAggregate cycle through `run`, asserting on the aggregated result.
+// This is the first test that exercises forkOrSequential's fork path
+// from start to finish — earlier scenarios only unit-tested the helpers.
+//
+// IMPORTANT: AggResReg must be initialized to `Unbound vid` (a real
+// var ID, not the -1 sentinel) BEFORE BeginAggregate fires, otherwise
+// finalizeAggregate's `match resVal with | Some (Unbound vid) -> ...`
+// arm doesn't bind anything (the sentinel branch via getReg returns
+// None, falling through to the no-op `| _ ->` case).  In real Prolog
+// codegen, the caller does this via a PutVariable that precedes the
+// aggregate's BeginAggregate.
+//
+// Layout (PCs are positions in the WcCode array):
+//   PC 0: BeginAggregate "sum" 2 1
+//   PC 1: ParTryMeElsePc 5       -- forkable point; 3 branches
+//   PC 2: PutConstant (Integer 10) 2   -- branch 1 body
+//   PC 3: EndAggregate 2          -- finalize per-branch (AggReturnPC = 4)
+//   PC 4: Proceed                 -- fork's post-EndAgg continuation
+//   PC 5: ParRetryMeElsePc 9      -- branch 2 entry = 6
+//   PC 6: PutConstant (Integer 20) 2
+//   PC 7: EndAggregate 2
+//   PC 8: Proceed
+//   PC 9: ParTrustMe              -- branch 3 entry = 10
+//   PC 10: PutConstant (Integer 30) 2
+//   PC 11: EndAggregate 2
+//   PC 12: Proceed
+//
+// Expected: WsRegs.[1] = Integer 60 (10 + 20 + 30) after run halts.
+
+// mkResRegState returns a state with the result register at `resReg`
+// initialized to Unbound 100 (a real var id) and WsPC = 1.  PC 0 is
+// `run`'s halt sentinel, so all WAM layouts must start their first
+// real instruction at PC 1 (or higher).
+let mkResRegState (resReg: int) =
+    let r = Array.create MaxRegs (Unbound -1)
+    r.[resReg] <- Unbound 100   // valid Unbound vid for finalizeAggregate
+    { mkEmptyState () with WsRegs = r; WsVarCounter = 101; WsPC = 1 }
+
+let scenario_fork_sum_via_run () =
+    let code = [|
+        Proceed                         // PC 0 — unused (halt sentinel)
+        BeginAggregate ("sum", 2, 1)   // PC 1
+        ParTryMeElsePc 6                // PC 2 — elsePC = 6
+        PutConstant (Integer 10, 2)    // PC 3 — branch 1 body
+        EndAggregate 2                  // PC 4
+        Proceed                         // PC 5 — branch 1 halts (AggReturnPC = 5)
+        ParRetryMeElsePc 10             // PC 6 — branch 2 entry = 7
+        PutConstant (Integer 20, 2)    // PC 7
+        EndAggregate 2                  // PC 8
+        Proceed                         // PC 9
+        ParTrustMe                      // PC 10 — branch 3 entry = 11
+        PutConstant (Integer 30, 2)    // PC 11
+        EndAggregate 2                  // PC 12
+        Proceed                         // PC 13
+    |]
+    let ctx = mkContext code Map.empty
+    let s0 = mkResRegState 1
+    match run ctx s0 with
+    | Some sf ->
+        let actual = derefVar sf.WsBindings sf.WsRegs.[1]
+        assertTrue "fork sum via run: AggResReg (deref'd) = Integer 60 (10+20+30)"
+                   (actual = Integer 60)
+    | None ->
+        assertTrue "fork sum via run should succeed" false
+
+let scenario_fork_count_via_run () =
+    // aggType = "count".  Each branch's EndAggregate finalizes a count
+    // of 1 (one value pushed); fork combines via MergeCount which sums
+    // per-branch counts => Integer 3.
+    let code = [|
+        Proceed                              // PC 0 — halt sentinel
+        BeginAggregate ("count", 2, 1)      // PC 1
+        ParTryMeElsePc 6                     // PC 2
+        PutConstant (Integer 10, 2)         // PC 3
+        EndAggregate 2                       // PC 4
+        Proceed                              // PC 5
+        ParRetryMeElsePc 10                  // PC 6
+        PutConstant (Integer 20, 2)         // PC 7
+        EndAggregate 2                       // PC 8
+        Proceed                              // PC 9
+        ParTrustMe                           // PC 10
+        PutConstant (Integer 30, 2)         // PC 11
+        EndAggregate 2                       // PC 12
+        Proceed                              // PC 13
+    |]
+    let ctx = mkContext code Map.empty
+    let s0 = mkResRegState 1
+    match run ctx s0 with
+    | Some sf ->
+        let actual = derefVar sf.WsBindings sf.WsRegs.[1]
+        assertTrue "fork count via run: AggResReg = Integer 3 (3 branches)"
+                   (actual = Integer 3)
+    | None ->
+        assertTrue "fork count via run should succeed" false
+
+let scenario_fork_bag_via_run () =
+    // aggType = "bag".  Each branch's EndAggregate finalizes a one-
+    // element VList [Integer X]; fork concats them.
+    let code = [|
+        Proceed                              // PC 0
+        BeginAggregate ("bag", 2, 1)
+        ParTryMeElsePc 6
+        PutConstant (Integer 10, 2)
+        EndAggregate 2
+        Proceed
+        ParRetryMeElsePc 10
+        PutConstant (Integer 20, 2)
+        EndAggregate 2
+        Proceed
+        ParTrustMe
+        PutConstant (Integer 30, 2)
+        EndAggregate 2
+        Proceed
+    |]
+    let ctx = mkContext code Map.empty
+    let s0 = mkResRegState 1
+    let expected = VList [Integer 10; Integer 20; Integer 30]
+    match run ctx s0 with
+    | Some sf ->
+        let actual = derefVar sf.WsBindings sf.WsRegs.[1]
+        assertTrue "fork bag via run: AggResReg = VList [10; 20; 30]"
+                   (actual = expected)
+    | None ->
+        assertTrue "fork bag via run should succeed" false
+
+// -- Scenario 24: forkOrSequential dispatch for non-forkable strategy -----
+//
+// aggType = "unknown" → MergeSequential → not forkable.  We don't
+// drive full run here because the multi-branch SEQUENTIAL dispatch
+// path via Par* aliasing has a deeper issue (RetryMeElse modifies the
+// top CP, but backtrack already popped it — leaving the agg frame as
+// the modified target).  That's a pre-existing bug outside this PR's
+// scope.  Instead we verify the DISPATCH DECISION: after the ParTryMeElsePc
+// step in an "unknown" aggregate, the agg frame should still be on
+// WsCPs (fork didn't consume it) AND a new TryMeElsePc CP should be on
+// top (the sequential fallback pushed one).
+
+let scenario_fork_sequential_fallback_dispatch () =
+    // aggType = "unknown" → MergeSequential → not forkable.  We verify
+    // the DISPATCH DECISION: after the ParTryMeElsePc step in an
+    // "unknown" aggregate, the agg frame should still be on WsCPs (fork
+    // didn't consume it) AND a new TryMeElsePc CP should be on top
+    // (the sequential fallback pushed one).
+    //
+    // (Driving the full multi-branch sequential WAM via `run` exposes a
+    // pre-existing bug — RetryMeElse modifies the top CP, but backtrack
+    // already popped it — leaving the agg frame as the modified target.
+    // Out of scope for this PR; tested at the dispatch level instead.)
+    let code = [|
+        Proceed                             // PC 0 — halt sentinel
+        BeginAggregate ("unknown", 2, 1)   // PC 1
+        ParTryMeElsePc 4                    // PC 2 — elsePC = 4
+        Proceed                             // PC 3 — branch 1 placeholder
+    |]
+    let ctx = mkContext code Map.empty
+    let s0 = mkResRegState 1
+    // Step BeginAggregate (PC 1), then ParTryMeElsePc (PC 2).
+    match step ctx s0 code.[1] with
+    | Some s1 ->
+        // After BeginAggregate: WsCPs = [aggCP], WsCPsLen = 1.
+        assertTrue "BeginAggregate (unknown): pushes aggCP"
+                   (s1.WsCPsLen = 1)
+        match step ctx s1 code.[2] with
+        | Some s2 ->
+            // After ParTryMeElsePc on non-forkable agg: fallback pushed
+            // a TryMeElsePc CP => 2 CPs total.
+            assertTrue "ParTryMeElsePc (MergeSequential agg): fallback pushes a 2nd CP"
+                       (s2.WsCPsLen = 2)
+            assertTrue "ParTryMeElsePc (MergeSequential agg): top CP is non-agg (TryMeElse fallback)"
+                       (s2.WsCPs.Head.CpAggFrame.IsNone)
+            assertTrue "ParTryMeElsePc (MergeSequential agg): agg frame still present below"
+                       (s2.WsCPs |> List.exists (fun cp -> cp.CpAggFrame.IsSome))
+        | None ->
+            assertTrue "ParTryMeElsePc should not fail" false
+    | None ->
+        assertTrue "BeginAggregate should not fail" false
+
+// -- Scenario 25: forkOrSequential dispatch below forkMinBranches ---------
+//
+// 2 branches: forkable strategy but |branches| = 2 < forkMinBranches (3),
+// so falls back to sequential.  Same dispatch-level assertion as scenario 24.
+
+let scenario_fork_below_min_branches_dispatch () =
+    let code = [|
+        Proceed                             // PC 0
+        BeginAggregate ("sum", 2, 1)       // PC 1
+        ParTryMeElsePc 5                    // PC 2 — only 2 branches (entry 3 + entry 6)
+        Proceed                             // PC 3
+        Proceed                             // PC 4
+        ParTrustMe                          // PC 5
+        Proceed                             // PC 6
+    |]
+    let ctx = mkContext code Map.empty
+    let s0 = mkResRegState 1
+    match step ctx s0 code.[1] with
+    | Some s1 ->
+        match step ctx s1 code.[2] with
+        | Some s2 ->
+            // enumerateParBranches returns [3; 6] (length 2 < 3 threshold).
+            assertTrue "ParTryMeElsePc (below threshold): fallback pushes TryMeElsePc CP"
+                       (s2.WsCPsLen = 2)
+            assertTrue "ParTryMeElsePc (below threshold): top CP is non-agg"
+                       (s2.WsCPs.Head.CpAggFrame.IsNone)
+        | None ->
+            assertTrue "ParTryMeElsePc should not fail (below threshold)" false
+    | None ->
+        assertTrue "BeginAggregate should not fail" false
+
 [<EntryPoint>]
 let main _argv =
     scenario_put_constant ()
@@ -717,6 +928,11 @@ let main _argv =
     scenario_find_outer_end_aggregate ()
     scenario_remove_nearest_agg_frame ()
     scenario_par_step_inside_sequential_aggregate ()
+    scenario_fork_sum_via_run ()
+    scenario_fork_count_via_run ()
+    scenario_fork_bag_via_run ()
+    scenario_fork_sequential_fallback_dispatch ()
+    scenario_fork_below_min_branches_dispatch ()
     let total = passes + fails
     printfn "RESULT %d/%d" passes total
     if fails > 0 then 1 else 0
