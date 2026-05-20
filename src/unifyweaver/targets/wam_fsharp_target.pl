@@ -1803,6 +1803,128 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
             | None -> Some { s with WsPC = s.WsPC + 1 }
         | _ -> None
 
+    // ========================================================================
+    // Phase I — Haskell-only specialized instructions (perf optimizations).
+    // ========================================================================
+    // Reference: src/unifyweaver/targets/wam_haskell_target.pl. These are
+    // emitted by the WAM compiler''s binding-analysis pass when it can
+    // prove the operand shapes statically.
+
+    // PutStructureDyn — like PutStructure but the functor name and arity
+    // come from registers at runtime. Used after =../2 / functor/3 with
+    // variable-shaped output.
+    | PutStructureDyn (nameReg, arityReg, targetReg) ->
+        let mName  = getReg nameReg s
+        let mArity = getReg arityReg s
+        match mName, mArity with
+        | Some (Atom fname), Some (Integer arity) when arity >= 0 ->
+            Some { s with
+                     WsPC      = s.WsPC + 1
+                     WsBuilder = Some (BuildStruct (fname, targetReg, arity, [])) }
+        | _ -> None  // name must be Atom, arity a non-negative Integer
+
+    // Arg — specialized arg/3 with literal N (positive integer). Reads T
+    // from tReg, extracts the Nth subterm, unifies with aReg.
+    | Arg (n, tReg, aReg) when n >= 1 ->
+        match getReg tReg s with
+        | Some tVal ->
+            let mElem =
+                match tVal with
+                | Str (_, args) when n <= List.length args -> Some (List.item (n - 1) args)
+                | VList (x :: _)  when n = 1 -> Some x
+                | VList (_ :: xs) when n = 2 -> Some (VList xs)
+                | _ -> None
+            match mElem with
+            | None -> None
+            | Some elem_ ->
+                // Mirror Haskell semantics: if aReg is uninitialized (the
+                // -1 sentinel via getReg = None), insert directly; if it
+                // dereferences to Unbound, also unify by binding; otherwise
+                // require structural equality.
+                if aReg < 0 || aReg >= s.WsRegs.Length then None
+                else
+                    let regSlot = s.WsRegs.[aReg]
+                    match regSlot with
+                    | Unbound -1 ->
+                        // Sentinel = uninitialized — just write the value.
+                        let r = Array.copy s.WsRegs
+                        r.[aReg] <- elem_
+                        Some { s with WsPC = s.WsPC + 1; WsRegs = r }
+                    | _ ->
+                        let dv = derefVar s.WsBindings regSlot
+                        match dv with
+                        | Unbound vid ->
+                            let r = Array.copy s.WsRegs
+                            r.[aReg] <- elem_
+                            Some { s with
+                                     WsPC       = s.WsPC + 1
+                                     WsRegs     = r
+                                     WsBindings = Map.add vid elem_ s.WsBindings
+                                     WsTrail    = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
+                                     WsTrailLen = s.WsTrailLen + 1 }
+                        | existing when existing = elem_ ->
+                            Some { s with WsPC = s.WsPC + 1 }
+                        | _ -> None
+        | None -> None
+    | Arg (_, _, _) -> None
+
+    // NotMemberList — specialized \\+ member(X, L) on a bound VList L.
+    // Walks L inline, succeeds when X cannot unify with any item.
+    | NotMemberList (xReg, lReg) ->
+        match getReg xReg s, getReg lReg s with
+        | Some x, Some (VList items) ->
+            let found =
+                items |> List.exists (fun item -> derefVar s.WsBindings item = x)
+            if found then None else Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    // NotMemberConstAtoms — \\+ member(X, [a, b, c, ...]) with the atoms
+    // baked into the instruction. Single-dispatch fast path:
+    //   - X is an Atom: succeed iff X.name is not in the atom set.
+    //   - X is an Unbound or Ref (could-unify): fail (matches Prolog).
+    //   - X is any other ground value: succeed (cannot unify with atoms).
+    | NotMemberConstAtoms (xReg, atoms) ->
+        match getReg xReg s with
+        | Some (Atom name) ->
+            if List.contains name atoms then None
+            else Some { s with WsPC = s.WsPC + 1 }
+        | Some (Unbound _) -> None
+        | Some (Ref _)     -> None
+        | Some _           -> Some { s with WsPC = s.WsPC + 1 }
+        | None             -> None
+
+    // BuildEmptySet — write VSet Set.empty into the target register.
+    // Bootstraps the visited-set argument for category-ancestor-style
+    // recursive predicates.
+    | BuildEmptySet reg ->
+        if reg < 0 || reg >= s.WsRegs.Length then None
+        else
+            let r = Array.copy s.WsRegs
+            r.[reg] <- VSet Set.empty
+            Some { s with WsPC = s.WsPC + 1; WsRegs = r }
+
+    // SetInsert — read Atom from elemReg + VSet from inReg, write the
+    // inserted VSet to outReg. Fails if either register has the wrong shape.
+    | SetInsert (elemReg, inReg, outReg) ->
+        match getReg elemReg s, getReg inReg s with
+        | Some (Atom name), Some (VSet s0) ->
+            if outReg < 0 || outReg >= s.WsRegs.Length then None
+            else
+                let r = Array.copy s.WsRegs
+                r.[outReg] <- VSet (Set.add name s0)
+                Some { s with WsPC = s.WsPC + 1; WsRegs = r }
+        | _ -> None
+
+    // NotMemberSet — O(log N) membership check via Set.contains. Succeeds
+    // when the Atom is NOT in the VSet. Replaces the O(N) NotMemberList
+    // walk on the visited-set hot path.
+    | NotMemberSet (elemReg, setReg) ->
+        match getReg elemReg s, getReg setReg s with
+        | Some (Atom name), Some (VSet s0) ->
+            if Set.contains name s0 then None
+            else Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
     | _ -> None   // fallback for unhandled instructions
 
 and updateNearestAggFrame (rpc: int) (cps: ChoicePoint list) : ChoicePoint list =
@@ -2547,6 +2669,60 @@ wam_instr_to_fsharp(["end_aggregate", ValReg], Fs) :-
     fs_clean_comma(ValReg, CV),
     fs_reg_name_to_int(CV, VI),
     format(string(Fs), 'EndAggregate ~w', [VI]).
+
+% ----------------------------------------------------------------------
+% Phase I — Haskell-only specialized instructions (text parse rules).
+% Match the WAM-text mnemonics emitted by the WAM compiler''s
+% optimization pass, mirroring the Haskell parser rules in
+% wam_haskell_target.pl wam_instr_to_haskell.
+% ----------------------------------------------------------------------
+
+wam_instr_to_fsharp(["put_structure_dyn", NameReg, ArityReg, TargetReg], Fs) :-
+    fs_clean_comma(NameReg, CN), fs_clean_comma(ArityReg, CA), fs_clean_comma(TargetReg, CT),
+    fs_reg_name_to_int(CN, NI), fs_reg_name_to_int(CA, AI), fs_reg_name_to_int(CT, TI),
+    format(string(Fs), 'PutStructureDyn (~w, ~w, ~w)', [NI, AI, TI]).
+
+wam_instr_to_fsharp(["arg", N, TReg, AReg], Fs) :-
+    fs_clean_comma(N, CN), fs_clean_comma(TReg, CT), fs_clean_comma(AReg, CA),
+    (   number_string(NI, CN)
+    ->  true
+    ;   throw(error(domain_error(arg_specialization_n, CN), wam_instr_to_fsharp/2))
+    ),
+    fs_reg_name_to_int(CT, TI), fs_reg_name_to_int(CA, AI),
+    format(string(Fs), 'Arg (~w, ~w, ~w)', [NI, TI, AI]).
+
+wam_instr_to_fsharp(["not_member_list", XReg, LReg], Fs) :-
+    fs_clean_comma(XReg, CX), fs_clean_comma(LReg, CL),
+    fs_reg_name_to_int(CX, XI), fs_reg_name_to_int(CL, LI),
+    format(string(Fs), 'NotMemberList (~w, ~w)', [XI, LI]).
+
+%% Variable-arity: not_member_const_atoms XReg Atom1 Atom2 ... AtomN
+%% Emits an F# list literal of atom strings.
+wam_instr_to_fsharp(["not_member_const_atoms", XReg | AtomTokens], Fs) :-
+    AtomTokens \= [],
+    fs_clean_comma(XReg, CX), fs_reg_name_to_int(CX, XI),
+    maplist([Tok, Quoted]>>(
+        fs_clean_comma(Tok, CTok),
+        fs_escape_string(CTok, EscTok),
+        format(atom(Quoted), '"~w"', [EscTok])
+    ), AtomTokens, QuotedAtoms),
+    atomic_list_concat(QuotedAtoms, '; ', AtomsList),
+    format(string(Fs), 'NotMemberConstAtoms (~w, [~w])', [XI, AtomsList]).
+
+wam_instr_to_fsharp(["build_empty_set", Reg], Fs) :-
+    fs_clean_comma(Reg, CR), fs_reg_name_to_int(CR, RI),
+    format(string(Fs), 'BuildEmptySet ~w', [RI]).
+
+wam_instr_to_fsharp(["set_insert", EReg, InReg, OutReg], Fs) :-
+    fs_clean_comma(EReg, CE), fs_clean_comma(InReg, CI), fs_clean_comma(OutReg, CO),
+    fs_reg_name_to_int(CE, EI), fs_reg_name_to_int(CI, II), fs_reg_name_to_int(CO, OI),
+    format(string(Fs), 'SetInsert (~w, ~w, ~w)', [EI, II, OI]).
+
+wam_instr_to_fsharp(["not_member_set", EReg, SReg], Fs) :-
+    fs_clean_comma(EReg, CE), fs_clean_comma(SReg, CS),
+    fs_reg_name_to_int(CE, EI), fs_reg_name_to_int(CS, SI),
+    format(string(Fs), 'NotMemberSet (~w, ~w)', [EI, SI]).
+
 % Fallback for unknown instructions
 wam_instr_to_fsharp(Parts, Fs) :-
     atomic_list_concat(Parts, ' ', Joined),

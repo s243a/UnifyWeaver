@@ -89,7 +89,10 @@ type Value =
     | VList   of Value list
     | Str     of string * Value list   // functor name, args
     | Unbound of int                   // variable id
-    | Ref     of int                   // heap reference").
+    | Ref     of int                   // heap reference
+    | VSet    of Set<string>           // visited-set: Set of atom strings
+                                        // (F# atoms are string-based; Haskell
+                                        //  uses IS.IntSet of interned int IDs)").
 
 % ============================================================================
 % TrailEntry — mirrors Haskell `data TrailEntry`
@@ -275,7 +278,25 @@ fsharp_wam_instruction_type :-
     | CutIte
     // Aggregation
     | BeginAggregate of aggType: string * valReg: int * resReg: int
-    | EndAggregate   of valReg: int").
+    | EndAggregate   of valReg: int
+    // ----------------------------------------------------------------------
+    // Phase I — Haskell-only specialized instructions ported to F#.
+    // These are performance optimizations emitted by the WAM compiler's
+    // analysis passes; their semantics live in step (see wam_fsharp_target.pl).
+    //   PutStructureDyn: runtime-parsed functor (name and arity from registers).
+    //   Arg: specialized arg/3 with literal N.
+    //   NotMemberList: specialized \\+ member(X, L) with L a VList.
+    //   NotMemberConstAtoms: specialized \\+ member(X, [a, b, c]) with the
+    //     atoms baked into the instruction at compile time.
+    //   BuildEmptySet / SetInsert / NotMemberSet: VSet visited-set support
+    //     (uses Set<string>; Haskell uses IS.IntSet of interned atom IDs).
+    | PutStructureDyn       of nameReg: int * arityReg: int * targetReg: int
+    | Arg                   of n: int * tReg: int * aReg: int
+    | NotMemberList         of xReg: int * lReg: int
+    | NotMemberConstAtoms   of xReg: int * atoms: string list
+    | BuildEmptySet         of reg: int
+    | SetInsert             of elemReg: int * inReg: int * outReg: int
+    | NotMemberSet          of elemReg: int * setReg: int").
 
 % ============================================================================
 % Helper functions — derefVar, getReg, putReg, addToBuilder, evalArith
@@ -504,6 +525,7 @@ let rec compareValue (a: Value) (b: Value) : int =
         | Integer _ | Float _ -> 1
         | Atom _              -> 2
         | Str _ | VList _     -> 3
+        | VSet _              -> 3  // VSet is a compound-ish visited set
         | Ref _               -> 4
     match a, b with
     | Unbound x, Unbound y -> compare x y
@@ -513,6 +535,7 @@ let rec compareValue (a: Value) (b: Value) : int =
     | Float x,   Integer y -> compare x (float y)
     | Atom x,    Atom y    -> System.String.Compare(x, y, System.StringComparison.Ordinal)
     | Ref x,     Ref y     -> compare x y
+    | VSet x,    VSet y    -> compare x y  // F# Set has structural comparison
     | Str (fx, ax), Str (fy, ay) ->
         let ca = compare (List.length ax) (List.length ay)
         if ca <> 0 then ca
