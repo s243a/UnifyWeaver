@@ -1056,6 +1056,99 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | Some a, Some b when a > b -> Some { s with WsPC = s.WsPC + 1 }
         | _ -> None
 
+    // >=/2, =</2, =:=/2, =\\=/2 — arithmetic comparisons (parity with Rust /
+    // C++ comparison builtins). Each evaluates both sides via evalArith and
+    // dispatches on the operator. =:=/2 and =\\=/2 use EPSILON tolerance to
+    // bridge integer / float comparisons (mirrors the Rust implementation).
+    | BuiltinCall (">=/2", _) ->
+        let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
+        let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
+        match v1, v2 with
+        | Some a, Some b when a >= b -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("=</2", _) ->
+        let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
+        let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
+        match v1, v2 with
+        | Some a, Some b when a <= b -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("=:=/2", _) ->
+        let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
+        let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
+        match v1, v2 with
+        | Some a, Some b when abs (a - b) < System.Double.Epsilon ->
+            Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("=\\\\=/2", _) ->
+        let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
+        let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
+        match v1, v2 with
+        | Some a, Some b when abs (a - b) >= System.Double.Epsilon ->
+            Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    // ==/2, \\==/2 — structural term equality (no unification, no binding).
+    // Both sides are dereferenced through the binding chain, then compared
+    // by F# structural equality on the Value DU. Mirrors the Rust ==/2 +
+    // C++ ==/2 / \\==/2 step cases.
+    | BuiltinCall ("==/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some a, Some b when a = b -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("\\\\==/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some a, Some b when a <> b -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    // true/0 / fail/0 — trivial control. Mirrors the Rust execute_control
+    // dispatch (true succeeds and advances, fail short-circuits).
+    | BuiltinCall ("true/0", _) -> Some { s with WsPC = s.WsPC + 1 }
+    | BuiltinCall ("fail/0", _) -> None
+
+    // compound/1 — type check matching Str (any) and non-empty VList.
+    // F# VList is a flat list (not cons-cells), so a non-empty VList is
+    // exactly the compound case.
+    | BuiltinCall ("compound/1", _) ->
+        match getReg 1 s with
+        | Some (Str _)        -> Some { s with WsPC = s.WsPC + 1 }
+        | Some (VList (_::_)) -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    // float/1 — type check for Float values.
+    | BuiltinCall ("float/1", _) ->
+        match getReg 1 s with
+        | Some (Float _) -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    // is_list/1 — type check for proper lists. Since F# VList is a flat
+    // Value list (head/tail items, not cons cells), VList _ already means
+    // a proper list (empty or non-empty). Atom "[]" also counts as the
+    // empty list per Prolog convention.
+    | BuiltinCall ("is_list/1", _) ->
+        match getReg 1 s with
+        | Some (VList _)      -> Some { s with WsPC = s.WsPC + 1 }
+        | Some (Atom "[]")    -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    // write/1 / display/1 — print the dereferenced value to stdout.
+    // Mirrors the Rust write/1 + display/1 fast-path (both use Display
+    // for now; standard Prolog differentiates quoting between them).
+    | BuiltinCall ("write/1", _) | BuiltinCall ("display/1", _) ->
+        match getReg 1 s with
+        | Some v ->
+            printf "%s" (sprintf "%A" v)
+            Some { s with WsPC = s.WsPC + 1 }
+        | None -> None
+
+    // nl/0 — newline to stdout.
+    | BuiltinCall ("nl/0", _) ->
+        printfn ""
+        Some { s with WsPC = s.WsPC + 1 }
+
     | BuiltinCall ("member/2", _) ->
         let elem_ = s.WsRegs.[1] |> derefVar s.WsBindings
         let list_ = s.WsRegs.[2] |> derefVar s.WsBindings

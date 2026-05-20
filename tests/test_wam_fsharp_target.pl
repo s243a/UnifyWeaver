@@ -162,6 +162,100 @@ test_fsharp_no_regressions :-
     ).
 
 %% ----------------------------------------------------------------------
+%% Phase B parity: arithmetic comparison operators (>=, =<, =:=, =\=)
+%% present in the Rust target. The Haskell baseline currently has only
+%% < and >, so this brings the F# target one step further toward the
+%% Rust/C++ comparison-builtin coverage.
+%% ----------------------------------------------------------------------
+
+test_fsharp_arith_comparison_builtins :-
+    Test = 'WAM-FSharp: arithmetic comparisons (>=, =<, =:=, =\\=)',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\">=/2\""),
+        sub_string(S, _, _, _, "BuiltinCall (\"=</2\""),
+        sub_string(S, _, _, _, "BuiltinCall (\"=:=/2\""),
+        %% =\=/2 emits as F# pattern "=\\=/2" (one backslash at F# runtime).
+        sub_string(S, _, _, _, "BuiltinCall (\"=\\\\=/2\""),
+        %% EPSILON tolerance bridges integer/float comparisons.
+        sub_string(S, _, _, _, "System.Double.Epsilon")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing arithmetic comparison step cases')
+    ).
+
+%% ----------------------------------------------------------------------
+%% Term equality (==, \\==): structural equality on the dereferenced
+%% value, no unification or binding. Mirrors the Rust execute_arith ==/2
+%% case and the C++ ==/2 / \\==/2 fused case.
+%% ----------------------------------------------------------------------
+
+test_fsharp_term_equality_builtins :-
+    Test = 'WAM-FSharp: term equality (==/2, \\==/2)',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"==/2\""),
+        sub_string(S, _, _, _, "BuiltinCall (\"\\\\==/2\"")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing term equality / inequality step cases')
+    ).
+
+%% ----------------------------------------------------------------------
+%% Trivial control: true/0 (succeed + advance) and fail/0 (always fail).
+%% These show up in source Prolog programs as call(true) / call(fail)
+%% and via aggregate-clause guards.  Rust has them as the first arms of
+%% execute_control.
+%% ----------------------------------------------------------------------
+
+test_fsharp_trivial_control_builtins :-
+    Test = 'WAM-FSharp: trivial control (true/0, fail/0)',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"true/0\""),
+        sub_string(S, _, _, _, "BuiltinCall (\"fail/0\"")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing trivial control step cases')
+    ).
+
+%% ----------------------------------------------------------------------
+%% Type checks: compound/1, float/1, is_list/1. Brings the F# type-check
+%% set to parity with the Rust execute_type_builtin coverage. atom/1,
+%% integer/1, number/1, var/1, nonvar/1 were already present.
+%% ----------------------------------------------------------------------
+
+test_fsharp_type_check_builtins :-
+    Test = 'WAM-FSharp: type checks (compound/1, float/1, is_list/1)',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"compound/1\""),
+        %% compound matches Str OR non-empty VList.
+        sub_string(S, _, _, _, "Some (Str _)"),
+        sub_string(S, _, _, _, "Some (VList (_::_))"),
+        sub_string(S, _, _, _, "BuiltinCall (\"float/1\""),
+        sub_string(S, _, _, _, "BuiltinCall (\"is_list/1\""),
+        %% is_list accepts the empty-list atom convention too.
+        sub_string(S, _, _, _, "Some (Atom \"[]\")")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing type check step cases')
+    ).
+
+%% ----------------------------------------------------------------------
+%% I/O builtins: write/1, display/1, nl/0. F# uses sprintf / printfn for
+%% Display output. Mirrors the Rust execute_io_builtin set.
+%% ----------------------------------------------------------------------
+
+test_fsharp_io_builtins :-
+    Test = 'WAM-FSharp: I/O (write/1, display/1, nl/0)',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"write/1\""),
+        sub_string(S, _, _, _, "BuiltinCall (\"display/1\""),
+        sub_string(S, _, _, _, "BuiltinCall (\"nl/0\""),
+        sub_string(S, _, _, _, "printfn \"\"")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing I/O step cases')
+    ).
+
+%% ----------------------------------------------------------------------
 %% Phase F parity smoke: fact-shape classification helpers exposed by
 %% the F# target (parity infra used by Haskell / Elixir hybrid targets).
 %% ----------------------------------------------------------------------
@@ -304,6 +398,11 @@ run_tests :-
     test_fsharp_copy_term_builtin_present,
     test_fsharp_negation_step_handler_present,
     test_fsharp_no_regressions,
+    test_fsharp_arith_comparison_builtins,
+    test_fsharp_term_equality_builtins,
+    test_fsharp_trivial_control_builtins,
+    test_fsharp_type_check_builtins,
+    test_fsharp_io_builtins,
     test_fsharp_fact_shape_helpers_exported,
     test_fsharp_emit_mode_resolution,
     test_fsharp_lowerable_single_clause_proceed,
