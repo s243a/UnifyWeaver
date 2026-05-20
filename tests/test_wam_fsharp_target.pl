@@ -500,14 +500,48 @@ test_fsharp_delete_builtin :-
     ).
 
 test_fsharp_select_builtin :-
-    Test = 'WAM-FSharp: select/3 (deterministic first-solution)',
+    %% select/3 now enumerates all solutions via SelectRetry choice
+    %% points (parity with the Go target's SelectResults).
+    Test = 'WAM-FSharp: select/3 (full backtracking)',
     (   compile_wam_runtime_to_fsharp([], [], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, "BuiltinCall (\"select/3\""),
-        %% Linear split-by-element implementation.
-        sub_string(S, _, _, _, "findSplit")
+        %% Computes all (selected, rest) splits upfront.
+        sub_string(S, _, _, _, "let rec splits prefix rest ="),
+        %% Pushes SelectRetry CP with the remaining candidates.
+        sub_string(S, _, _, _, "Some (SelectRetry (1, 3, more, retPC))")
     ->  pass(Test)
-    ;   fail_test(Test, 'Missing select/3 step case')
+    ;   fail_test(Test, 'Missing select/3 backtracking patterns')
+    ).
+
+test_fsharp_select_retry_builtin_state :-
+    %% SelectRetry must be declared in the BuiltinState DU alongside
+    %% FactRetry / HopsRetry / FFIStreamRetry.
+    Test = 'WAM-FSharp: SelectRetry arm in BuiltinState DU',
+    (   fsharp_wam_type_header(Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "| SelectRetry"),
+        %% Carries elemReg, outReg, remaining (Value, Value list) pairs,
+        %% and retPC.
+        sub_string(S, _, _, _, "elemReg: int * outReg: int * remaining: (Value * Value list) list * retPC: int")
+    ->  pass(Test)
+    ;   fail_test(Test, 'SelectRetry arm missing from BuiltinState')
+    ).
+
+test_fsharp_select_retry_resume_handler :-
+    %% resumeBuiltin must dispatch on SelectRetry and restore the CP
+    %% snapshot before trying the next candidate.
+    Test = 'WAM-FSharp: resumeBuiltin handles SelectRetry',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "| SelectRetry (_, _, [], _) ->"),
+        sub_string(S, _, _, _, "| SelectRetry (elemReg, outReg, candidates, retPC) ->"),
+        %% Snapshot restoration before unification.
+        sub_string(S, _, _, _, "WsBindings = cp.CpBindings"),
+        %% Iterates candidates and chains via tryNext.
+        sub_string(S, _, _, _, "let rec tryNext pairs =")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing SelectRetry resume handler patterns')
     ).
 
 test_fsharp_numlist_builtin :-
@@ -755,6 +789,8 @@ run_tests :-
     test_fsharp_memberchk_builtin,
     test_fsharp_delete_builtin,
     test_fsharp_select_builtin,
+    test_fsharp_select_retry_builtin_state,
+    test_fsharp_select_retry_resume_handler,
     test_fsharp_numlist_builtin,
     test_fsharp_sort_msort_builtins,
     test_fsharp_compare_builtin,

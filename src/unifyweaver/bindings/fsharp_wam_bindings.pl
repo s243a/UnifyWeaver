@@ -116,7 +116,13 @@ fsharp_wam_builtin_state_type :-
 "type BuiltinState =
     | FactRetry      of varId: int * remaining: string list * retPC: int
     | HopsRetry      of varId: int * remaining: int list   * retPC: int
-    | FFIStreamRetry of outRegs: int list * outVars: int list * remaining: Value list list * retPC: int").
+    | FFIStreamRetry of outRegs: int list * outVars: int list * remaining: Value list list * retPC: int
+    /// select/3 enumeration choice point.  Each remaining candidate is
+    /// a pair (selected, rest_items): on backtrack the runtime restores
+    /// the CP snapshot, unifies elemReg with `selected`, and binds
+    /// outReg to VList rest_items.  Mirrors the Go target's
+    /// SelectResults field (templates/targets/go_wam/state.go.mustache).
+    | SelectRetry    of elemReg: int * outReg: int * remaining: (Value * Value list) list * retPC: int").
 
 % ============================================================================
 % EnvFrame — mirrors Haskell `EnvFrame`
