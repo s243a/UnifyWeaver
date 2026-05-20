@@ -812,8 +812,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
     | GetList ai ->
         match getReg ai s with
         | Some (VList (h :: t)) ->
-            Some { s with WsPC = s.WsPC + 1
-                           WsBuilder = Some (ReadArgs [h; VList t]) }
+            Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (ReadArgs [h; VList t]) }
         | Some (Unbound _) ->
             Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (BuildList (ai, [])) }
         | _ -> None
@@ -1779,6 +1778,9 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | Some (Atom "true") -> None
         | Some (Atom "fail") -> Some { s with WsPC = s.WsPC + 1 }
         // General path: resolve the goal label, snapshot-and-run.
+        // If the goal''s entry instruction is a ParTryMeElse(Pc), dispatch
+        // through runNegationParallel for fork-eligible chains; otherwise
+        // fall back to the sequential snapshot-and-run.
         | Some (Str (fname, args)) ->
             let goalKey = sprintf "%s/%d" fname (List.length args)
             match Map.tryFind goalKey ctx.WcLabels with
@@ -1786,10 +1788,22 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                 let dArgs = args |> List.map (derefVar s.WsBindings)
                 let regsSnap = Array.create MaxRegs (Unbound -1)
                 dArgs |> List.iteri (fun i v -> regsSnap.[i + 1] <- v)
-                let snapshot = { s with WsPC = pc; WsRegs = regsSnap; WsCP = 0; WsCutBar = 0 }
-                match run ctx snapshot with
-                | Some _ -> None
-                | None   -> Some { s with WsPC = s.WsPC + 1 }
+                let snap = { s with WsRegs = regsSnap }
+                if pc >= 0 && pc < ctx.WcCode.Length then
+                    match ctx.WcCode.[pc] with
+                    | ParTryMeElse elseLabel ->
+                        let elsePC = Map.tryFind elseLabel ctx.WcLabels |> Option.defaultValue -1
+                        if runNegationParallel ctx snap pc elsePC then None
+                        else Some { s with WsPC = s.WsPC + 1 }
+                    | ParTryMeElsePc elsePC ->
+                        if runNegationParallel ctx snap pc elsePC then None
+                        else Some { s with WsPC = s.WsPC + 1 }
+                    | _ ->
+                        let snapshot = { snap with WsPC = pc; WsCP = 0; WsCutBar = 0 }
+                        match run ctx snapshot with
+                        | Some _ -> None
+                        | None   -> Some { s with WsPC = s.WsPC + 1 }
+                else Some { s with WsPC = s.WsPC + 1 }
             | None -> Some { s with WsPC = s.WsPC + 1 }  // unknown pred: treat as failing goal
         // Atom as 0-arity goal (e.g. \\+ some_pred)
         | Some (Atom fname) ->
@@ -1978,6 +1992,67 @@ and runParallel (ctx: WamContext) (seeds: WamState list) : WamState option list 
     |> List.toArray
     |> Array.Parallel.map (fun seed -> run ctx seed)
     |> Array.toList
+
+/// Minimum branch count below which forking is overhead-only.  Matches the
+/// Haskell baseline (wam_haskell_target.pl forkMinBranches = 3).
+and forkMinBranches : int = 3
+
+/// Walk a Par*-chain starting at parPC, following the else-label of each
+/// non-terminal ParRetryMeElse / ParRetryMeElsePc until ParTrustMe.  Returns
+/// the entry PC of every branch (one past the corresponding Par* instr) in
+/// chain order.  Pre-Par variants (RetryMeElse / RetryMeElsePc / TrustMe)
+/// terminate the chain — the fork still covers everything up to that point.
+/// Mirrors wam_haskell_target.pl enumerateParBranches.
+and enumerateParBranches (ctx: WamContext) (parPC: int) (elsePC: int) : int list =
+    let rec collectRest pc acc =
+        if pc < 0 || pc >= ctx.WcCode.Length then List.rev acc
+        else
+            match ctx.WcCode.[pc] with
+            | ParRetryMeElse label ->
+                let nextPC = Map.tryFind label ctx.WcLabels |> Option.defaultValue -1
+                collectRest nextPC ((pc + 1) :: acc)
+            | ParRetryMeElsePc nextPC ->
+                collectRest nextPC ((pc + 1) :: acc)
+            | ParTrustMe ->
+                List.rev ((pc + 1) :: acc)
+            | RetryMeElse _ | RetryMeElsePc _ | TrustMe ->
+                List.rev acc  // mixed sequential/parallel chain — stop here
+            | _ -> List.rev acc
+    (parPC + 1) :: collectRest elsePC []
+
+/// Fork all branches of a Par*-chain and check whether ANY succeeds.
+/// Used by \\+/1 to evaluate negation of a goal with parallel alternative
+/// clauses: success of any branch => the goal succeeds => negation fails.
+///
+/// F#-specific notes vs Haskell baseline:
+///   - Haskell uses Control.Concurrent.Async with waitAny + cancel for
+///     race-to-cancel semantics.  F# branches run `run ctx snapshot`,
+///     which is a tight tail-recursive loop without cancellation checks,
+///     so cooperative cancellation would need a CancellationToken
+///     threaded through every step — out of scope for this round.
+///   - This implementation uses Async.Parallel: all branches finish,
+///     but they run in parallel via the .NET ThreadPool.  The result
+///     is the disjunction of per-branch success.  Still faster than
+///     sequential for genuine fork-eligible chains; race-to-cancel can
+///     be a future optimization.
+and runNegationParallel (ctx: WamContext) (s: WamState) (entryPC: int) (elsePC: int) : bool =
+    let branchPCs = enumerateParBranches ctx entryPC elsePC
+    if List.length branchPCs >= forkMinBranches then
+        let branchAction pc =
+            async {
+                let snapshot = { s with WsPC = pc + 1; WsCP = 0; WsCutBar = 0 }
+                return (run ctx snapshot).IsSome
+            }
+        branchPCs
+        |> List.map branchAction
+        |> Async.Parallel
+        |> Async.RunSynchronously
+        |> Array.exists id
+    else
+        // Too few branches for fork overhead to pay off — run sequentially.
+        match run ctx { s with WsPC = entryPC; WsCP = 0; WsCutBar = 0 } with
+        | Some _ -> true
+        | None   -> false
 
 /// Indexed fact dispatch for 2-arg facts via BuiltinState CP.
 /// O(1) Map lookup; first match returned, FactRetry CP for the rest.
@@ -2530,7 +2605,16 @@ fs_clean_comma(Str, Clean) :-
     ).
 
 %% fs_wam_value(+WamVal, -FsExpr)
-fs_wam_value(Val, Fs) :-
+%  WamVal may arrive as a string (typical) or an atom (e.g., from
+%  sub_atom/5 inside fs_parse_switch_entries).  Normalize to a string
+%  before calling number_string/2, which throws type_error(list, _)
+%  when given an atom.
+fs_wam_value(Val0, Fs) :-
+    (   string(Val0) -> Val = Val0
+    ;   atom(Val0)   -> atom_string(Val0, Val)
+    ;   number(Val0) -> number_string(Val0, Val)
+    ;   Val = Val0
+    ),
     (   number_string(N, Val), integer(N)
     ->  format(string(Fs), 'Integer ~w', [N])
     ;   number_string(F, Val), float(F)
