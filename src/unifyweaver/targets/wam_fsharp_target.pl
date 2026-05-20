@@ -812,8 +812,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
     | GetList ai ->
         match getReg ai s with
         | Some (VList (h :: t)) ->
-            Some { s with WsPC = s.WsPC + 1
-                           WsBuilder = Some (ReadArgs [h; VList t]) }
+            Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (ReadArgs [h; VList t]) }
         | Some (Unbound _) ->
             Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (BuildList (ai, [])) }
         | _ -> None
@@ -2530,7 +2529,16 @@ fs_clean_comma(Str, Clean) :-
     ).
 
 %% fs_wam_value(+WamVal, -FsExpr)
-fs_wam_value(Val, Fs) :-
+%  WamVal may arrive as a string (typical) or an atom (e.g., from
+%  sub_atom/5 inside fs_parse_switch_entries).  Normalize to a string
+%  before calling number_string/2, which throws type_error(list, _)
+%  when given an atom.
+fs_wam_value(Val0, Fs) :-
+    (   string(Val0) -> Val = Val0
+    ;   atom(Val0)   -> atom_string(Val0, Val)
+    ;   number(Val0) -> number_string(Val0, Val)
+    ;   Val = Val0
+    ),
     (   number_string(N, Val), integer(N)
     ->  format(string(Fs), 'Integer ~w', [N])
     ;   number_string(F, Val), float(F)
