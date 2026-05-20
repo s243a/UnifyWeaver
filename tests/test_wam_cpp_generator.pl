@@ -5139,6 +5139,90 @@ test(cpp_e2e_runtime_parser_native_excludes_wrappers) :-
         delete_directory_and_contents(TmpDir)
     ).
 
+% Subset generation -- runtime_parser_subset([Names]) pulls in
+% only the transitive closure of the listed entry points instead
+% of the full ~40-predicate parser. Per the implementation plan
+% doc's "Subset generation" section (drafted in PR #2331 and
+% landed here).
+
+% A trivial entry point (canonical_op_table/1 is a leaf fact) should
+% produce a closure of exactly one predicate -- itself.
+test(cpp_e2e_runtime_parser_subset_leaf_closure) :-
+    unique_cpp_tmp_dir('tmp_cpp_runparser_sub_leaf', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [ runtime_parser(compiled),
+              runtime_parser_subset([canonical_op_table/1]) ],
+            TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          read_file_to_string(GenPath, Code, [encoding(octet)]),
+          % Entry point present
+          assertion(sub_string(Code, _, _, _,
+                               "canonical_op_table/1")),
+          % Expression-parser machinery NOT pulled in
+          assertion(\+ sub_string(Code, _, _, _, "parse_expr/8")),
+          assertion(\+ sub_string(Code, _, _, _, "parse_primary/8"))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% Tokenize subset pulls in the tokenizer chain but stays away
+% from expression parsing. Verified via output size: tokenize
+% closure should be substantially smaller than the full parser.
+test(cpp_e2e_runtime_parser_subset_tokenize_chain) :-
+    unique_cpp_tmp_dir('tmp_cpp_runparser_sub_tok', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [ runtime_parser(compiled),
+              runtime_parser_subset([tokenize/2]) ],
+            TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          read_file_to_string(GenPath, Code, [encoding(octet)]),
+          % Tokenizer chain present
+          assertion(sub_string(Code, _, _, _, "tokenize/2")),
+          assertion(sub_string(Code, _, _, _, "tokenize_one/4")),
+          assertion(sub_string(Code, _, _, _, "take_ident/3")),
+          % Expression parsing NOT pulled in
+          assertion(\+ sub_string(Code, _, _, _, "parse_expr/8")),
+          assertion(\+ sub_string(Code, _, _, _, "parse_op_loop/10"))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% Subset entry can be specified as bare Name/Arity; the resolver
+% canonicalises it against the parser+wrapper universe.
+test(cpp_e2e_runtime_parser_subset_bare_indicator) :-
+    unique_cpp_tmp_dir('tmp_cpp_runparser_sub_bare', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [ runtime_parser(compiled),
+              runtime_parser_subset([canonical_op_table/1]) ],
+            TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          read_file_to_string(GenPath, Code, [encoding(octet)]),
+          assertion(sub_string(Code, _, _, _,
+                               "canonical_op_table/1"))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% Unknown entry point should hard-error -- typos surface
+% immediately rather than silently producing an empty closure.
+test(cpp_e2e_runtime_parser_subset_rejects_unknown_entry,
+     [error(domain_error(parser_subset_entry_point,
+                         no_such_predicate/9), _)]) :-
+    write_wam_cpp_project(
+        [user:wam_cpp_pd_safe/0],
+        [ runtime_parser(compiled),
+          runtime_parser_subset([no_such_predicate/9]) ],
+        'tests/tmp_cpp_runparser_sub_bad').
+
 test(cpp_e2e_runtime_parser_default_native_no_expansion) :-
     unique_cpp_tmp_dir('tmp_cpp_runparser_def', TmpDir),
     setup_call_cleanup(

@@ -2424,6 +2424,7 @@ write_wam_cpp_project(Predicates0, Options, ProjectDir) :-
     validate_cpp_runtime_parser_mode(Predicates1, RuntimeParserMode),
     expand_cpp_runtime_parser_predicates(Predicates1,
                                          RuntimeParserMode,
+                                         Options,
                                          Predicates),
     make_directory_path(ProjectDir),
     directory_file_path(ProjectDir, 'cpp', CppDir),
@@ -2738,31 +2739,130 @@ cpp_predicate_clause(Name/Arity, Head, Body) :-
     functor(Head, Name, Arity),
     clause(user:Head, Body).
 
-%% expand_cpp_runtime_parser_predicates(+P0, +Mode, -P) is det.
+%% expand_cpp_runtime_parser_predicates(+P0, +Mode, +Options, -P)
 %
 % For compiled(prolog_term_parser): prepend every predicate of
-% src/unifyweaver/core/prolog_term_parser.pl to the input list
-% (skipping imported helpers like member/2 which the WAM-cpp
-% runtime supplies separately). This makes operator notation
-% (1+2 etc.) parsable at runtime via parse_term_from_atom/3 -- the
-% C++ native parser only handles canonical form (+(1, 2)).
+% src/unifyweaver/core/prolog_term_parser.pl + the wrappers to
+% the input list, skipping imported helpers like member/2 which
+% the WAM-cpp runtime supplies separately. This makes operator
+% notation (1+2 etc.) parsable at runtime via
+% parse_term_from_atom/3 -- the C++ native parser only handles
+% canonical form (+(1, 2)).
 %
-% Other modes leave the list unchanged. The compiled mode is
-% opt-in via the runtime_parser(compiled) option since the parser
-% is ~40 predicates and adds significant compile time.
+% When the caller passes runtime_parser_subset([PI, ...]) in
+% Options, only the transitive closure of those entry points is
+% pulled in (reachable-from analysis over the parser source).
+% Without subset, the full ~40-predicate parser is included.
+% See docs/design/RUNTIME_PARSER_TRANSPILATION_IMPLEMENTATION_PLAN.md
+% "Subset generation".
+%
+% Other modes leave the list unchanged.
 expand_cpp_runtime_parser_predicates(P0, compiled(prolog_term_parser),
-                                     P) :-
+                                     Options, P) :-
     !,
     cpp_runtime_parser_module_predicates(ParserPreds),
     cpp_runtime_parser_wrapper_predicates(WrapperPreds),
-    % Wrappers go before the parser predicates so user-facing
-    % entry points (read_term_from_atom/2,3) are at the top of
-    % the resolved list, and the parser predicates they call
-    % follow.
-    append(WrapperPreds, ParserPreds, Extras),
+    append(WrapperPreds, ParserPreds, AllParserPreds),
+    cpp_runtime_parser_apply_subset(AllParserPreds, Options, Extras),
+    % Wrappers / entry points already go before the rest in
+    % AllParserPreds because we appended WrapperPreds first;
+    % the subset preserves first-occurrence order via
+    % dedupe_keep_first below.
     append(Extras, P0, Combined),
     dedupe_keep_first(Combined, P).
-expand_cpp_runtime_parser_predicates(P, _Mode, P).
+expand_cpp_runtime_parser_predicates(P, _Mode, _Options, P).
+
+% Apply runtime_parser_subset(EntryPIs) from Options. Without the
+% option, returns the full predicate universe unchanged. With it,
+% computes the transitive closure of called parser predicates
+% starting from each EntryPI and returns only the reachable set.
+cpp_runtime_parser_apply_subset(AllParserPreds, Options, Subset) :-
+    (   member(runtime_parser_subset(EntryPIs), Options)
+    ->  must_be(list, EntryPIs),
+        cpp_runtime_parser_resolve_entries(EntryPIs,
+                                           AllParserPreds,
+                                           ResolvedEntries),
+        cpp_runtime_parser_closure(ResolvedEntries,
+                                   AllParserPreds,
+                                   Closure),
+        % Preserve order of AllParserPreds in the output (so the
+        % wrappers / entry points still come first).
+        include({Closure}/[PI]>>memberchk(PI, Closure),
+                AllParserPreds, Subset)
+    ;   Subset = AllParserPreds
+    ).
+
+% Resolve user-supplied entry-point indicators (which may be bare
+% Name/Arity) against the universe so we end up with the
+% canonical Module:Name/Arity form used in AllParserPreds.
+cpp_runtime_parser_resolve_entries([], _, []).
+cpp_runtime_parser_resolve_entries([PI|Rest], Universe, [Canonical|Out]) :-
+    cpp_runtime_parser_canonicalize_entry(PI, Universe, Canonical),
+    cpp_runtime_parser_resolve_entries(Rest, Universe, Out).
+
+cpp_runtime_parser_canonicalize_entry(Mod:N/A, Universe, Mod:N/A) :-
+    memberchk(Mod:N/A, Universe), !.
+cpp_runtime_parser_canonicalize_entry(N/A, Universe, Mod:N/A) :-
+    member(Mod:N/A, Universe), !.
+cpp_runtime_parser_canonicalize_entry(PI, _Universe, _) :-
+    throw(error(domain_error(parser_subset_entry_point, PI), _)).
+
+% Worklist closure: start with Entries, walk each clause body to
+% find called predicates that are in the parser/wrapper universe,
+% add them to the worklist if not already visited.
+cpp_runtime_parser_closure(Entries, Universe, Closure) :-
+    cpp_runtime_parser_closure_loop(Entries, Universe, [], Closure).
+
+cpp_runtime_parser_closure_loop([], _, Acc, Acc).
+cpp_runtime_parser_closure_loop([PI|Rest], Universe, Acc, Final) :-
+    (   memberchk(PI, Acc)
+    ->  cpp_runtime_parser_closure_loop(Rest, Universe, Acc, Final)
+    ;   cpp_runtime_parser_called_preds(PI, Universe, Called),
+        append(Rest, Called, NewQueue),
+        cpp_runtime_parser_closure_loop(NewQueue, Universe,
+                                        [PI|Acc], Final)
+    ).
+
+% Enumerate the universe-internal predicates called from PI's
+% clause bodies. Body goals not in the universe (member/2,
+% append/3, character-code arithmetic, etc.) are silently
+% ignored -- they are either WAM-cpp builtins or stdlib helpers
+% that come in via include_stdlib(lists_extra).
+cpp_runtime_parser_called_preds(Mod:Name/Arity, Universe, Called) :-
+    functor(Head, Name, Arity),
+    findall(InUniverse,
+            (   clause(Mod:Head, Body),
+                body_goal(Body, Goal),
+                callable(Goal),
+                \+ control_construct(Goal),
+                functor(Goal, GN, GA),
+                ( memberchk(Mod:GN/GA, Universe)
+                -> InUniverse = Mod:GN/GA
+                ; member(M:GN/GA, Universe), InUniverse = M:GN/GA
+                )
+            ),
+            CalledRaw),
+    sort(CalledRaw, Called).
+
+% Walk control constructs to extract leaf goals.
+body_goal((A, _), G) :- body_goal(A, G).
+body_goal((_, B), G) :- body_goal(B, G).
+body_goal((A ; _), G) :- body_goal(A, G).
+body_goal((_ ; B), G) :- body_goal(B, G).
+body_goal((A -> _), G) :- body_goal(A, G).
+body_goal((_ -> B), G) :- body_goal(B, G).
+body_goal(\+ A, G)    :- body_goal(A, G).
+body_goal(once(A), G) :- body_goal(A, G).
+body_goal(G, G)       :- \+ control_construct(G).
+
+control_construct((_,_)).
+control_construct((_;_)).
+control_construct((_->_)).
+control_construct(\+_).
+control_construct(once(_)).
+control_construct(!).
+control_construct(true).
+control_construct(fail).
 
 cpp_runtime_parser_module_predicates(Preds) :-
     findall(prolog_term_parser:N/A,

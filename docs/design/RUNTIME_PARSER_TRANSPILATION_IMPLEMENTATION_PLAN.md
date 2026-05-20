@@ -106,27 +106,51 @@ get the standard SWI builtin surface on top of the portable
 parser. The remaining work is target-by-target adoption, not
 inventing the contract.
 
-### Subset generation (future)
+### Subset generation
 
 Compiling the full portable parser pulls ~40 predicates into the
-target output. For programs that only need a small slice (e.g.
-just `read_term_from_atom/2` and the dotted-term-completion
-machinery for `read/2`), this is wasteful -- a 43k-line C++
-output for a feature the user might use once.
+target output. For programs that only need a slice (e.g. just
+the tokenizer, or `canonical_op_table/1` for a downstream tool),
+the full include is wasteful.
 
-A future option would be an opt-in subset mode:
-`runtime_parser(compiled, [subset(Names)])` where Names is a list
-of entry-point predicates. The codegen does a reachable-from
-analysis over the parser source and pulls in only the transitive
-closure of the listed entry points. Tokenizer + number-parsing
-might cover most read_term_from_atom callers without dragging in
-the operator-resolution machinery; `parse_term_from_atom/3` plus
-operator support pulls in everything.
+WAM-cpp supports an opt-in subset mode via:
 
-This is not a blocker for current consumers (R uses its native
-inline parser; C++ uses native by default) but worth keeping on
-the roadmap so the "compiled" mode stays practical as more
-targets adopt it.
+```prolog
+write_wam_cpp_project([...], [
+    runtime_parser(compiled),
+    runtime_parser_subset([tokenize/2, canonical_op_table/1])
+], OutDir).
+```
+
+The codegen does reachable-from analysis: starting from each
+listed entry point, walks clause bodies, follows callable goals
+that resolve into the parser+wrapper universe, repeats until
+the visited set is stable. Predicates outside the closure are
+omitted from the output entirely.
+
+Empirical sizes for a trivial driver predicate (one `:- true.`
+clause, the rest is the parser surface):
+
+| Subset | `generated_program.cpp` size |
+|---|---:|
+| Full (no subset) | ~2.8 MB |
+| `[read_term_from_atom/2]` | ~2.8 MB (nearly full -- pulls in `parse_term_from_atom` -> `parse_expr` -> everything) |
+| `[tokenize/2]` | ~87 KB (~30x smaller) |
+| `[canonical_op_table/1]` | ~2.7 MB (one fact, but the 43-element op-table list expands to a lot of put_structure WAM) |
+
+Takeaway: subset works well for tokenizer-only or op-table-only
+consumers; for users who need full operator parsing via
+`read_term_from_atom/2`, there's nothing to trim (and that's an
+inherent property of operator-aware parsing, not a codegen
+inefficiency). Entry points may be specified as either
+`Name/Arity` or `Module:Name/Arity`; the resolver canonicalises
+them against the parser+wrapper universe. Unknown names throw
+`domain_error(parser_subset_entry_point, ...)` so typos surface
+at codegen time rather than silently producing an empty closure.
+
+Implemented in PR #2332 with four regression tests covering
+leaf-closure, tokenizer-chain, bare-indicator resolution, and
+unknown-entry rejection.
 
 The hook should be independent of the WAM items API. A target can skip WAM text
 generation at build time and still need runtime source-term parsing.
