@@ -5098,6 +5098,47 @@ test(cpp_e2e_runtime_parser_compiled_includes_parser_preds) :-
         delete_directory_and_contents(TmpDir)
     ).
 
+% Wrapper predicates auto-included alongside the portable parser:
+% read_term_from_atom/2 and /3 give callers the standard SWI
+% builtin surface on top of parse_term_from_atom/3, so generated
+% C++ programs can use the familiar name without learning the
+% portable-parser API.
+test(cpp_e2e_runtime_parser_compiled_includes_wrappers) :-
+    unique_cpp_tmp_dir('tmp_cpp_runparser_wrap', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [runtime_parser(compiled)], TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          read_file_to_string(GenPath, Code, [encoding(octet)]),
+          assertion(sub_string(Code, _, _, _,
+                               "read_term_from_atom/2")),
+          assertion(sub_string(Code, _, _, _,
+                               "read_term_from_atom/3"))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_runtime_parser_native_excludes_wrappers) :-
+    % Default native mode should NOT pull in the wrappers --
+    % users on the native canonical-form parser keep the C++
+    % runtime's atom_to_term/3 surface and don't need the
+    % read_term_from_atom shims.
+    unique_cpp_tmp_dir('tmp_cpp_runparser_no_wrap', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [], TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          read_file_to_string(GenPath, Code, [encoding(octet)]),
+          assertion(\+ sub_string(Code, _, _, _,
+                                  "read_term_from_atom/2"))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
 test(cpp_e2e_runtime_parser_default_native_no_expansion) :-
     unique_cpp_tmp_dir('tmp_cpp_runparser_def', TmpDir),
     setup_call_cleanup(

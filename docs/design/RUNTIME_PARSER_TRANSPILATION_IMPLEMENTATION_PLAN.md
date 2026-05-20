@@ -97,11 +97,36 @@ consumers. C++ is now also registered (default
 `native(parse_term)`; `compiled(prolog_term_parser)` available
 opt-in) -- it ships a hand-written canonical-form parser used by
 `atom_to_term/3`, `term_to_atom/2`'s reverse mode, and
-`read_term/1`. The C++ native parser does not yet support
-operator notation, so callers requiring `1+2`-style input would
-need `runtime_parser(compiled)` once the project writer is wired
-through the hook (Phase 6+ work). The remaining work is
-target-by-target adoption, not inventing the contract.
+`read_term/1`. The C++ project writer is wired through the hook
+as of PR #2330; in compiled mode it auto-prepends the portable
+parser predicates. A follow-up PR adds wrapper predicates
+(`read_term_from_atom/2,3`, in
+`src/unifyweaver/core/cpp_runtime_parser_wrappers.pl`) so callers
+get the standard SWI builtin surface on top of the portable
+parser. The remaining work is target-by-target adoption, not
+inventing the contract.
+
+### Subset generation (future)
+
+Compiling the full portable parser pulls ~40 predicates into the
+target output. For programs that only need a small slice (e.g.
+just `read_term_from_atom/2` and the dotted-term-completion
+machinery for `read/2`), this is wasteful -- a 43k-line C++
+output for a feature the user might use once.
+
+A future option would be an opt-in subset mode:
+`runtime_parser(compiled, [subset(Names)])` where Names is a list
+of entry-point predicates. The codegen does a reachable-from
+analysis over the parser source and pulls in only the transitive
+closure of the listed entry points. Tokenizer + number-parsing
+might cover most read_term_from_atom callers without dragging in
+the operator-resolution machinery; `parse_term_from_atom/3` plus
+operator support pulls in everything.
+
+This is not a blocker for current consumers (R uses its native
+inline parser; C++ uses native by default) but worth keeping on
+the roadmap so the "compiled" mode stays practical as more
+targets adopt it.
 
 The hook should be independent of the WAM items API. A target can skip WAM text
 generation at build time and still need runtime source-term parsing.
