@@ -256,6 +256,128 @@ test_fsharp_io_builtins :-
     ).
 
 %% ----------------------------------------------------------------------
+%% Phase G parity: atom / string builtins (parity with the Go target).
+%% Brings the F# step function to coverage parity with the Go target''s
+%% atom_*, char_code, upcase_atom, downcase_atom, atom_string,
+%% string_to_atom, atom_number, and succ builtins.
+%% Reference: templates/targets/go_wam/state.go.mustache.
+%% ----------------------------------------------------------------------
+
+test_fsharp_atom_concat_builtin :-
+    Test = 'WAM-FSharp: atom_concat/3',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"atom_concat/3\""),
+        %% .NET string concatenation, both A1 and A2 must be Atoms.
+        sub_string(S, _, _, _, "Atom (a + b)"),
+        sub_string(S, _, _, _, "bindOutput 3 (Atom (a + b))")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing atom_concat/3 step case')
+    ).
+
+test_fsharp_atom_length_builtin :-
+    Test = 'WAM-FSharp: atom_length/2 + string_length/2',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        %% Both names alias to the same OR-pattern arm in the step case.
+        sub_string(S, _, _, _, "BuiltinCall (\"atom_length/2\""),
+        sub_string(S, _, _, _, "BuiltinCall (\"string_length/2\""),
+        sub_string(S, _, _, _, "Integer a.Length")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing atom_length/2 / string_length/2 step case')
+    ).
+
+test_fsharp_char_code_builtin :-
+    Test = 'WAM-FSharp: char_code/2',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"char_code/2\""),
+        %% Forward: single-char Atom -> Integer code via int a.[0].
+        sub_string(S, _, _, _, "Integer (int a.[0])"),
+        %% Reverse: Integer code -> single-char Atom via string (char c).
+        sub_string(S, _, _, _, "Atom (string (char c))"),
+        %% BMP guard to keep parity with the Go target''s 0..65535 range.
+        sub_string(S, _, _, _, "c >= 0 && c <= 65535")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing char_code/2 step case patterns')
+    ).
+
+test_fsharp_atom_codes_builtin :-
+    Test = 'WAM-FSharp: atom_codes/2',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"atom_codes/2\""),
+        %% Forward: Atom -> VList of Integer code points.
+        sub_string(S, _, _, _, "Integer (int c)"),
+        sub_string(S, _, _, _, "VList codes"),
+        %% Reverse: VList of Integer -> Atom via StringBuilder fold.
+        sub_string(S, _, _, _, "System.Text.StringBuilder")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing atom_codes/2 step case patterns')
+    ).
+
+test_fsharp_atom_chars_builtin :-
+    Test = 'WAM-FSharp: atom_chars/2',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"atom_chars/2\""),
+        %% Forward: Atom -> VList of single-char Atom values.
+        sub_string(S, _, _, _, "Atom (string c)"),
+        sub_string(S, _, _, _, "VList chars")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing atom_chars/2 step case patterns')
+    ).
+
+test_fsharp_atom_string_aliases :-
+    Test = 'WAM-FSharp: atom_string/2 + string_to_atom/2',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"atom_string/2\""),
+        sub_string(S, _, _, _, "BuiltinCall (\"string_to_atom/2\"")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing atom_string/2 / string_to_atom/2 step cases')
+    ).
+
+test_fsharp_case_conversion_builtins :-
+    Test = 'WAM-FSharp: upcase_atom/2 + downcase_atom/2',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"upcase_atom/2\""),
+        sub_string(S, _, _, _, "BuiltinCall (\"downcase_atom/2\""),
+        %% .NET invariant-culture transforms (Unicode-safe).
+        sub_string(S, _, _, _, "a.ToUpperInvariant()"),
+        sub_string(S, _, _, _, "a.ToLowerInvariant()")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing upcase / downcase step cases')
+    ).
+
+test_fsharp_atom_number_builtin :-
+    Test = 'WAM-FSharp: atom_number/2',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"atom_number/2\""),
+        %% Integer parse first, then Float fallback (invariant culture).
+        sub_string(S, _, _, _, "System.Int64.TryParse"),
+        sub_string(S, _, _, _, "System.Double.TryParse"),
+        sub_string(S, _, _, _, "System.Globalization.CultureInfo.InvariantCulture")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing atom_number/2 step case patterns')
+    ).
+
+test_fsharp_succ_builtin :-
+    Test = 'WAM-FSharp: succ/2',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "BuiltinCall (\"succ/2\""),
+        %% Forward: Integer x (x >= 0) -> Integer (x + 1).
+        sub_string(S, _, _, _, "Integer (x + 1)"),
+        %% Reverse: Integer y (y > 0) -> Integer (y - 1).
+        sub_string(S, _, _, _, "Integer (y - 1)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing succ/2 step case patterns')
+    ).
+
+%% ----------------------------------------------------------------------
 %% Phase F parity smoke: fact-shape classification helpers exposed by
 %% the F# target (parity infra used by Haskell / Elixir hybrid targets).
 %% ----------------------------------------------------------------------
@@ -403,6 +525,15 @@ run_tests :-
     test_fsharp_trivial_control_builtins,
     test_fsharp_type_check_builtins,
     test_fsharp_io_builtins,
+    test_fsharp_atom_concat_builtin,
+    test_fsharp_atom_length_builtin,
+    test_fsharp_char_code_builtin,
+    test_fsharp_atom_codes_builtin,
+    test_fsharp_atom_chars_builtin,
+    test_fsharp_atom_string_aliases,
+    test_fsharp_case_conversion_builtins,
+    test_fsharp_atom_number_builtin,
+    test_fsharp_succ_builtin,
     test_fsharp_fact_shape_helpers_exported,
     test_fsharp_emit_mode_resolution,
     test_fsharp_lowerable_single_clause_proceed,

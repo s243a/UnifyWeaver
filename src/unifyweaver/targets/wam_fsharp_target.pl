@@ -1149,6 +1149,186 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         printfn ""
         Some { s with WsPC = s.WsPC + 1 }
 
+    // ========================================================================
+    // Phase G — atom / string builtins (parity with Go target)
+    // ========================================================================
+    // F# Atom is string-based, so most of these collapse to direct .NET
+    // string operations. The list-of-codes / list-of-chars conversions
+    // use the F# Value DU shape: VList of Value list (a flat list).
+    //
+    // Reference: templates/targets/go_wam/state.go.mustache case arms
+    // for atom_concat/3, atom_length/2, char_code/2, atom_codes/2,
+    // atom_string/2, upcase_atom/2, downcase_atom/2, atom_number/2,
+    // succ/2.
+
+    | BuiltinCall ("atom_concat/3", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (Atom a), Some (Atom b) ->
+            match bindOutput 3 (Atom (a + b)) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("atom_length/2", _) | BuiltinCall ("string_length/2", _) ->
+        match getReg 1 s with
+        | Some (Atom a) ->
+            match bindOutput 2 (Integer a.Length) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // char_code/2 — single-char atom <-> Unicode code point. Bidirectional.
+    | BuiltinCall ("char_code/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (Atom a), _ when a.Length = 1 ->
+            match bindOutput 2 (Integer (int a.[0])) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | Some (Unbound _), Some (Integer c) when c >= 0 && c <= 65535 ->
+            match bindOutput 1 (Atom (string (char c))) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // atom_codes/2 — atom <-> list of Integer code points. Bidirectional.
+    | BuiltinCall ("atom_codes/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (Atom a), _ ->
+            let codes = a |> Seq.map (fun c -> Integer (int c)) |> List.ofSeq
+            match bindOutput 2 (VList codes) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | Some (Unbound _), Some (VList items) ->
+            let folder acc v =
+                match acc, derefVar s.WsBindings v with
+                | Some (sb: System.Text.StringBuilder), Integer c when c >= 0 && c <= 65535 ->
+                    Some (sb.Append(char c))
+                | _ -> None
+            match List.fold folder (Some (System.Text.StringBuilder())) items with
+            | Some sb ->
+                match bindOutput 1 (Atom (sb.ToString())) s with
+                | None    -> None
+                | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+            | None -> None
+        | _ -> None
+
+    // atom_chars/2 — atom <-> list of single-char atoms. Bidirectional.
+    | BuiltinCall ("atom_chars/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (Atom a), _ ->
+            let chars = a |> Seq.map (fun c -> Atom (string c)) |> List.ofSeq
+            match bindOutput 2 (VList chars) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | Some (Unbound _), Some (VList items) ->
+            let folder acc v =
+                match acc, derefVar s.WsBindings v with
+                | Some (sb: System.Text.StringBuilder), Atom c when c.Length = 1 ->
+                    Some (sb.Append(c))
+                | _ -> None
+            match List.fold folder (Some (System.Text.StringBuilder())) items with
+            | Some sb ->
+                match bindOutput 1 (Atom (sb.ToString())) s with
+                | None    -> None
+                | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+            | None -> None
+        | _ -> None
+
+    // atom_string/2 — atom <-> "string". F# Atom is already string-based,
+    // so this is essentially an identity reinterpretation. Mirrors the
+    // Go target''s atom_string/2 + string_to_atom/2 unified case (where
+    // both directions succeed when either side is an Atom).
+    | BuiltinCall ("atom_string/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (Atom a), _ ->
+            match bindOutput 2 (Atom a) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _, Some (Atom a) ->
+            match bindOutput 1 (Atom a) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // string_to_atom/2 — String in A1, Atom in A2 (reversed arg order
+    // relative to atom_string/2 per SWI convention).
+    | BuiltinCall ("string_to_atom/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (Atom a), _ ->
+            match bindOutput 2 (Atom a) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _, Some (Atom a) ->
+            match bindOutput 1 (Atom a) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // upcase_atom/2, downcase_atom/2 — Unicode-aware ASCII-safe case
+    // conversion using .NET''s invariant-culture transforms.
+    | BuiltinCall ("upcase_atom/2", _) ->
+        match getReg 1 s with
+        | Some (Atom a) ->
+            match bindOutput 2 (Atom (a.ToUpperInvariant())) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("downcase_atom/2", _) ->
+        match getReg 1 s with
+        | Some (Atom a) ->
+            match bindOutput 2 (Atom (a.ToLowerInvariant())) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // atom_number/2 — atom <-> Integer / Float. Tries integer parse first,
+    // then float parse (invariant culture for the float form). Reverse
+    // direction emits the canonical %d (Integer) or %g (Float) format.
+    | BuiltinCall ("atom_number/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (Atom a), _ ->
+            let asInt = System.Int64.TryParse(a)
+            match asInt with
+            | true, n ->
+                match bindOutput 2 (Integer (int n)) s with
+                | None    -> None
+                | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+            | _ ->
+                let asFloat = System.Double.TryParse(a,
+                                System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture)
+                match asFloat with
+                | true, f ->
+                    match bindOutput 2 (Float f) s with
+                    | None    -> None
+                    | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+                | _ -> None
+        | _, Some (Integer n) ->
+            match bindOutput 1 (Atom (string n)) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _, Some (Float f) ->
+            let txt = f.ToString("G", System.Globalization.CultureInfo.InvariantCulture)
+            match bindOutput 1 (Atom txt) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // succ/2 — Integer successor. succ(X, Y) iff Y = X + 1 and both are
+    // non-negative. Bidirectional. Mirrors the Go target''s succ/2.
+    | BuiltinCall ("succ/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (Integer x), _ when x >= 0 ->
+            match bindOutput 2 (Integer (x + 1)) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _, Some (Integer y) when y > 0 ->
+            match bindOutput 1 (Integer (y - 1)) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
     | BuiltinCall ("member/2", _) ->
         let elem_ = s.WsRegs.[1] |> derefVar s.WsBindings
         let list_ = s.WsRegs.[2] |> derefVar s.WsBindings
