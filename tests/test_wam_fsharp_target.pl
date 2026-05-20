@@ -734,6 +734,62 @@ test_fsharp_vset_step_cases :-
     ;   fail_test(Test, 'Missing VSet step case patterns')
     ).
 
+%% ----------------------------------------------------------------------
+%% Phase J parity: parallel WAM TPL wiring.  Mirrors the Haskell baseline''s
+%% enumerateParBranches + runNegationParallel helpers.  The forkable-
+%% aggregate path (forkParBranches + MergeStrategy) is deliberately out
+%% of scope for this round — it requires the MergeStrategy / ForkContext
+%% machinery the Haskell target has but F# does not yet.
+%% ----------------------------------------------------------------------
+
+test_fsharp_enumerate_par_branches_present :-
+    Test = 'WAM-FSharp: enumerateParBranches helper emitted',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "and enumerateParBranches (ctx: WamContext) (parPC: int) (elsePC: int) : int list ="),
+        %% Walks the Par* chain via ParRetryMeElse / ParRetryMeElsePc, stops at ParTrustMe.
+        sub_string(S, _, _, _, "| ParRetryMeElse label ->"),
+        sub_string(S, _, _, _, "| ParRetryMeElsePc nextPC ->"),
+        sub_string(S, _, _, _, "| ParTrustMe ->"),
+        %% Pre-Par variants terminate the chain (mixed sequential/parallel).
+        sub_string(S, _, _, _, "| RetryMeElse _ | RetryMeElsePc _ | TrustMe ->")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing enumerateParBranches helper or chain handling')
+    ).
+
+test_fsharp_run_negation_parallel_present :-
+    Test = 'WAM-FSharp: runNegationParallel helper emitted',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "and runNegationParallel (ctx: WamContext) (s: WamState) (entryPC: int) (elsePC: int) : bool ="),
+        %% forkMinBranches threshold for forking overhead.
+        sub_string(S, _, _, _, "and forkMinBranches : int = 3"),
+        sub_string(S, _, _, _, "List.length branchPCs >= forkMinBranches"),
+        %% Async.Parallel for the actual TPL wiring.
+        sub_string(S, _, _, _, "|> Async.Parallel"),
+        sub_string(S, _, _, _, "|> Async.RunSynchronously"),
+        %% Disjunction-of-success via Array.exists.
+        sub_string(S, _, _, _, "|> Array.exists id"),
+        %% Fallback to sequential when too few branches.
+        sub_string(S, _, _, _, "// Too few branches for fork overhead to pay off")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing runNegationParallel helper patterns')
+    ).
+
+test_fsharp_negation_dispatches_through_parallel :-
+    %% \+/1 must dispatch through runNegationParallel when the goal''s
+    %% entry instruction is ParTryMeElse / ParTryMeElsePc.  Sequential
+    %% fallback for other entry shapes.
+    Test = 'WAM-FSharp: \\+/1 dispatches through runNegationParallel for Par* goals',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "| ParTryMeElse elseLabel ->"),
+        sub_string(S, _, _, _, "| ParTryMeElsePc elsePC ->"),
+        sub_string(S, _, _, _, "if runNegationParallel ctx snap pc elsePC then None")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing \\+/1 parallel dispatch patterns')
+    ).
+
 test_fsharp_specialized_instructions_wam_parse :-
     %% Round-trip the WAM-text mnemonics through wam_instr_to_fsharp/2
     %% to make sure they map to the right Instruction constructors.
@@ -946,6 +1002,10 @@ run_tests :-
     test_fsharp_not_member_list_step,
     test_fsharp_not_member_const_atoms_step,
     test_fsharp_vset_step_cases,
+    %% Phase J — parallel WAM TPL wiring
+    test_fsharp_enumerate_par_branches_present,
+    test_fsharp_run_negation_parallel_present,
+    test_fsharp_negation_dispatches_through_parallel,
     test_fsharp_specialized_instructions_wam_parse,
     test_fsharp_fact_shape_helpers_exported,
     test_fsharp_emit_mode_resolution,
