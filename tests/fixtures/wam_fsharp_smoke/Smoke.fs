@@ -543,12 +543,11 @@ let scenario_run_negation_parallel_one_succeeds () =
     assertTrue "runNegationParallel: one-Proceed branch => true (negation fails)"
                (anySucceeded = true)
 
-// -- Scenario 15: Par* step arms still alias to sequential ----------------
+// -- Scenario 15: ParTryMeElsePc OUTSIDE an aggregate aliases to sequential
 //
-// PR #2340 deliberately kept the ParTryMeElse step arms as sequential
-// aliases (the fork path lights up only via \+/1's goal-entry peek for
-// runNegationParallel).  This scenario locks in that contract: a
-// ParTryMeElsePc still pushes a choice point exactly as TryMeElsePc would.
+// forkOrSequential checks for a forkable aggregate frame in WsCPs; absent
+// one, it falls back to the sequential TryMeElse step.  This scenario
+// locks in that contract.
 
 let scenario_par_step_aliases_to_sequential () =
     let code = [| ParTryMeElsePc 99 |]
@@ -556,18 +555,143 @@ let scenario_par_step_aliases_to_sequential () =
     let s0 = mkEmptyState ()
     match step ctx s0 code.[0] with
     | Some s ->
-        assertTrue "ParTryMeElsePc: PC advanced past the instruction"
+        assertTrue "ParTryMeElsePc (no agg frame): PC advanced"
                    (s.WsPC = 1)
-        assertTrue "ParTryMeElsePc: one choice point pushed"
+        assertTrue "ParTryMeElsePc (no agg frame): one CP pushed"
                    (s.WsCPsLen = 1)
         match s.WsCPs with
         | cp :: _ ->
-            assertTrue "ParTryMeElsePc: CP next PC = else target"
+            assertTrue "ParTryMeElsePc (no agg frame): CP next PC = else target"
                        (cp.CpNextPC = 99)
         | [] ->
             assertTrue "ParTryMeElsePc: CP list should be non-empty" false
     | None ->
         assertTrue "ParTryMeElsePc should succeed" false
+
+// -- Scenario 16: inferMergeStrategy + isForkableStrategy ------------------
+
+let scenario_merge_strategy_helpers () =
+    assertTrue "inferMergeStrategy: \"sum\" -> MergeSum"
+               (inferMergeStrategy "sum" = MergeSum)
+    assertTrue "inferMergeStrategy: \"count\" -> MergeCount"
+               (inferMergeStrategy "count" = MergeCount)
+    assertTrue "inferMergeStrategy: \"bag\" -> MergeBag"
+               (inferMergeStrategy "bag" = MergeBag)
+    assertTrue "inferMergeStrategy: \"set\" -> MergeSet"
+               (inferMergeStrategy "set" = MergeSet)
+    assertTrue "inferMergeStrategy: \"findall\" -> MergeFindall"
+               (inferMergeStrategy "findall" = MergeFindall)
+    assertTrue "inferMergeStrategy: \"collect\" -> MergeFindall (alias)"
+               (inferMergeStrategy "collect" = MergeFindall)
+    assertTrue "inferMergeStrategy: unknown -> MergeSequential"
+               (inferMergeStrategy "unknown_strategy" = MergeSequential)
+    assertTrue "isForkableStrategy: MergeSum"     (isForkableStrategy MergeSum)
+    assertTrue "isForkableStrategy: MergeCount"   (isForkableStrategy MergeCount)
+    assertTrue "isForkableStrategy: MergeBag"     (isForkableStrategy MergeBag)
+    assertTrue "isForkableStrategy: MergeSet"     (isForkableStrategy MergeSet)
+    assertTrue "isForkableStrategy: MergeFindall" (isForkableStrategy MergeFindall)
+    assertTrue "isForkableStrategy: MergeSequential -> false"
+               (not (isForkableStrategy MergeSequential))
+
+// -- Scenario 17: combineParBranchResults per-strategy semantics ----------
+
+let scenario_combine_par_branch_results () =
+    // Sum: numeric sum, demotes to Integer when whole.
+    let sumResult = combineParBranchResults MergeSum [Integer 1; Integer 2; Integer 3]
+    assertTrue "combineParBranchResults sum [1; 2; 3] = Integer 6"
+               (sumResult = Integer 6)
+    // Count: sum of per-branch counts.
+    let countResult = combineParBranchResults MergeCount [Integer 1; Integer 1; Integer 1]
+    assertTrue "combineParBranchResults count [1; 1; 1] = Integer 3"
+               (countResult = Integer 3)
+    // Bag: concat of per-branch VLists.
+    let bagResult =
+        combineParBranchResults MergeBag
+            [VList [Atom "a"; Atom "b"]; VList [Atom "c"]]
+    let bagExpected = VList [Atom "a"; Atom "b"; Atom "c"]
+    assertTrue "combineParBranchResults bag [[a;b]; [c]] = VList [a;b;c]"
+               (bagResult = bagExpected)
+    // Set: dedup'd concat.
+    let setResult =
+        combineParBranchResults MergeSet
+            [VList [Atom "a"; Atom "b"]; VList [Atom "b"; Atom "c"]]
+    let setExpected = VList [Atom "a"; Atom "b"; Atom "c"]
+    assertTrue "combineParBranchResults set [[a;b]; [b;c]] = VList [a;b;c] (dedup)"
+               (setResult = setExpected)
+    // Findall: same as bag (preserves order + duplicates).
+    let findallResult =
+        combineParBranchResults MergeFindall
+            [VList [Atom "a"]; VList [Atom "a"]; VList [Atom "b"]]
+    let findallExpected = VList [Atom "a"; Atom "a"; Atom "b"]
+    assertTrue "combineParBranchResults findall [[a]; [a]; [b]] = VList [a;a;b]"
+               (findallResult = findallExpected)
+
+// -- Scenario 18: findOuterEndAggregate scans forward to EndAggregate -----
+
+let scenario_find_outer_end_aggregate () =
+    let code = [|
+        BeginAggregate ("sum", 2, 1)   // PC 0
+        ParTryMeElsePc 3               // PC 1
+        Proceed                         // PC 2
+        ParTrustMe                      // PC 3
+        Proceed                         // PC 4
+        EndAggregate 2                  // PC 5
+        Proceed                         // PC 6 — retPC
+    |]
+    let ctx = mkContext code Map.empty
+    let retPC = findOuterEndAggregate ctx 1   // scan from ParTryMeElsePc
+    assertTrue "findOuterEndAggregate: scans forward to EndAggregate's next PC"
+               (retPC = 6)
+    // Overrun: scan from past-the-end => 0 (halt).
+    let retOverrun = findOuterEndAggregate ctx 100
+    assertTrue "findOuterEndAggregate: overrun returns 0"
+               (retOverrun = 0)
+
+// -- Scenario 19: removeNearestAggFrame drops the nearest agg-frame CP ----
+
+let scenario_remove_nearest_agg_frame () =
+    let plainCP : ChoicePoint = {
+        CpNextPC = 10; CpRegs = Array.empty; CpStack = []
+        CpCP = 0; CpTrailLen = 0; CpHeapLen = 0
+        CpBindings = Map.empty; CpCutBar = 0
+        CpAggFrame = None; CpBuiltin = None }
+    let aggCP : ChoicePoint = {
+        plainCP with CpAggFrame = Some { AggType = "sum"; AggValReg = 2
+                                         AggResReg = 1; AggReturnPC = 0
+                                         AggMergeStrategy = MergeSum } }
+    let cps = [plainCP; aggCP; plainCP]
+    let trimmed = removeNearestAggFrame cps
+    assertTrue "removeNearestAggFrame: drops the aggregate-frame CP"
+               (List.length trimmed = 2)
+    assertTrue "removeNearestAggFrame: neither remaining CP has an AggFrame"
+               (trimmed |> List.forall (fun cp -> cp.CpAggFrame.IsNone))
+
+// -- Scenario 20: forkOrSequential dispatches forkable vs sequential -----
+//
+// Inside a non-forkable (MergeSequential) aggregate frame, ParTryMeElsePc
+// must still fall back to sequential TryMeElse semantics (a CP gets pushed,
+// PC advances past the Par* instruction).  No aggregate frame at all =>
+// same fallback.  Inside a forkable aggregate, the fallback only kicks in
+// if branch count < forkMinBranches (= 3).
+
+let scenario_par_step_inside_sequential_aggregate () =
+    let code = [| ParTryMeElsePc 99 |]
+    let ctx = mkContext code Map.empty
+    let aggCP : ChoicePoint = {
+        CpNextPC = 0; CpRegs = Array.empty; CpStack = []
+        CpCP = 0; CpTrailLen = 0; CpHeapLen = 0
+        CpBindings = Map.empty; CpCutBar = 0
+        CpAggFrame = Some { AggType = "unknown"; AggValReg = 2
+                            AggResReg = 1; AggReturnPC = 0
+                            AggMergeStrategy = MergeSequential }
+        CpBuiltin = None }
+    let s0 = { mkEmptyState () with WsCPs = [aggCP]; WsCPsLen = 1 }
+    match step ctx s0 code.[0] with
+    | Some s ->
+        assertTrue "ParTryMeElsePc (MergeSequential agg): fallback adds 1 CP"
+                   (s.WsCPsLen = 2)
+    | None ->
+        assertTrue "ParTryMeElsePc inside agg should succeed" false
 
 [<EntryPoint>]
 let main _argv =
@@ -588,6 +712,11 @@ let main _argv =
     scenario_run_negation_parallel_all_fail ()
     scenario_run_negation_parallel_one_succeeds ()
     scenario_par_step_aliases_to_sequential ()
+    scenario_merge_strategy_helpers ()
+    scenario_combine_par_branch_results ()
+    scenario_find_outer_end_aggregate ()
+    scenario_remove_nearest_agg_frame ()
+    scenario_par_step_inside_sequential_aggregate ()
     let total = passes + fails
     printfn "RESULT %d/%d" passes total
     if fails > 0 then 1 else 0
