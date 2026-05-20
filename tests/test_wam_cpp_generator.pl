@@ -3482,6 +3482,25 @@ user:wam_cpp_test_setof_empty     :- setof(_, fail, _).
 :- dynamic user:wam_cpp_lmdb_dummy/0.
 user:wam_cpp_lmdb_dummy :- true.
 
+% LMDB codegen test fixtures. edge/2 is declared :- dynamic so
+% the compiler accepts calls without source clauses; the runtime
+% LMDB load populates dynamic_db before queries run.
+:- dynamic user:edge/2.
+:- dynamic user:wam_cpp_lmdb_desc/2.
+:- dynamic user:wam_cpp_lmdb_t_direct/0.
+:- dynamic user:wam_cpp_lmdb_t_two_hop/0.
+:- dynamic user:wam_cpp_lmdb_t_three_hop/0.
+:- dynamic user:wam_cpp_lmdb_t_no_path/0.
+
+user:wam_cpp_lmdb_desc(X, Z) :- edge(X, Z).
+user:wam_cpp_lmdb_desc(X, Z) :- edge(X, Y), wam_cpp_lmdb_desc(Y, Z).
+
+% Seeded LMDB: alice -> bob -> carol -> dave.
+user:wam_cpp_lmdb_t_direct    :- wam_cpp_lmdb_desc(alice, bob).
+user:wam_cpp_lmdb_t_two_hop   :- wam_cpp_lmdb_desc(alice, carol).
+user:wam_cpp_lmdb_t_three_hop :- wam_cpp_lmdb_desc(alice, dave).
+user:wam_cpp_lmdb_t_no_path   :- \+ wam_cpp_lmdb_desc(dave, alice).
+
 % sub_string/5 fixtures — mirror the SWI sub_string semantics.
 :- dynamic user:wam_cpp_test_ss_extract/0.
 :- dynamic user:wam_cpp_test_ss_extract_pre/0.
@@ -5004,6 +5023,43 @@ test(cpp_e2e_lmdb_runtime,
           close(Out),
           process_wait(PID, Status),
           assertion(Status == exit(0))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% LMDB FactSource v1 -- codegen integration test. Exercises the
+% full cpp_fact_sources(...) option: codegen registers edge/2 as
+% an LMDB-backed predicate, emits #define WAM_CPP_ENABLE_LMDB in
+% the header and a cpp_load_lmdb_fact_source call in the setup,
+% then a user-defined descendant/2 (compiled normally) queries
+% edge/2 via the populated dynamic_db. Uses a tiny seeder binary
+% to populate the LMDB file at test time so we are testing the
+% codegen path, not the seeding.
+test(cpp_e2e_lmdb_codegen,
+     [condition(cpp_lmdb_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_cg', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          % Seed the LMDB file via a tiny standalone seeder binary
+          % so the test isolates codegen + load from the seeding.
+          make_directory_path(TmpDir),
+          lmdb_seed_three_edges(TmpDir, EnvPath, _SeedBin),
+          % Codegen with edge/2 registered as an LMDB fact source.
+          write_wam_cpp_project([user:wam_cpp_lmdb_desc/2,
+                                 user:wam_cpp_lmdb_t_direct/0,
+                                 user:wam_cpp_lmdb_t_two_hop/0,
+                                 user:wam_cpp_lmdb_t_three_hop/0,
+                                 user:wam_cpp_lmdb_t_no_path/0],
+                                [emit_main(true),
+                                 cpp_fact_sources([
+                                     source(edge/2, lmdb(EnvPath))])],
+                                TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_lmdb_t_direct/0',    [], true),
+          run_query(BinPath, 'wam_cpp_lmdb_t_two_hop/0',   [], true),
+          run_query(BinPath, 'wam_cpp_lmdb_t_three_hop/0', [], true),
+          run_query(BinPath, 'wam_cpp_lmdb_t_no_path/0',   [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
@@ -10019,6 +10075,26 @@ int main() {
     return 0;
 }
 ',                  [EnvPath]).
+
+% Build and run a tiny seeder binary that creates an LMDB file
+% at EnvPath populated with three edges (alice->bob, bob->carol,
+% carol->dave). Used by the codegen test to populate LMDB before
+% the actual binary runs. Built into TmpDir so cleanup is simple.
+lmdb_seed_three_edges(TmpDir, EnvPath, SeedBin) :-
+    directory_file_path(TmpDir, 'seed.cpp', SeedSrc),
+    directory_file_path(TmpDir, 'seed', SeedBin),
+    setup_call_cleanup(
+        open(SeedSrc, write, S),
+        format(S,
+'#include <lmdb.h>~n#include <cstring>~n#include <filesystem>~nint main(){~n  const char* p = "~w";~n  std::filesystem::remove_all(p);~n  std::filesystem::create_directories(p);~n  MDB_env* env; mdb_env_create(&env);~n  mdb_env_open(env, p, 0, 0664);~n  MDB_txn* txn; mdb_txn_begin(env, nullptr, 0, &txn);~n  MDB_dbi dbi; mdb_dbi_open(txn, nullptr, 0, &dbi);~n  auto put=[&](const char*k,const char*v){MDB_val K{std::strlen(k),(void*)k},V{std::strlen(v),(void*)v};mdb_put(txn,dbi,&K,&V,0);};~n  put("alice","bob"); put("bob","carol"); put("carol","dave");~n  mdb_txn_commit(txn); mdb_env_close(env); return 0;~n}~n',
+            [EnvPath]),
+        close(S)),
+    process_create(path('g++'),
+        ['-std=c++17', '-o', SeedBin, SeedSrc, '-llmdb'],
+        [stderr(null), process(PID)]),
+    process_wait(PID, exit(0)),
+    process_create(SeedBin, [], [process(PID2)]),
+    process_wait(PID2, exit(0)).
 
 % Build the C++ project at TmpDir with -DWAM_CPP_ENABLE_LMDB and
 % -llmdb. Used by LMDB end-to-end tests; otherwise identical to
