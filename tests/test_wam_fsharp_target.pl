@@ -894,6 +894,63 @@ test_fsharp_lowerable_multi_clause :-
     ).
 
 %% ----------------------------------------------------------------------
+%% Phase I — lowered-emitter coverage for the Haskell-only specialized
+%% instructions.  Before this round these instructions were missing from
+%% supported_fs/1 / is_match_instr_fs/1 / emit_one_fs/6, so any
+%% predicate whose WAM-text body contained PutStructureDyn / Arg /
+%% NotMember* / VSet-family ops silently fell back to the interpreter.
+%% These tests assert (a) the lowered emitter now accepts them, and
+%% (b) the emitted F# code matches the expected step-delegation shape.
+%% ----------------------------------------------------------------------
+
+test_fsharp_lowered_emitter_phase_i_accepted :-
+    Test = 'WAM-FSharp lowered: Phase-I body is lowerable',
+    Wam = 'p_phase_i/3:\n  build_empty_set A1\n  put_structure_dyn A1 A2 A3\n  arg 2 A1 A3\n  not_member_list A1 A2\n  set_insert A1 A2 A3\n  not_member_set A1 A2\n  not_member_const_atoms A1 foo bar baz\n  proceed',
+    (   wam_fsharp_lowerable(p_phase_i/3, Wam, _Reason)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Phase-I body should be lowerable')
+    ).
+
+test_fsharp_lowered_emitter_phase_i_emits_step_delegation :-
+    Test = 'WAM-FSharp lowered: Phase-I instructions delegate to step',
+    Wam = 'p_phase_i/3:\n  build_empty_set A1\n  put_structure_dyn A1 A2 A3\n  arg 2 A1 A3\n  not_member_list A1 A2\n  set_insert A1 A2 A3\n  not_member_set A1 A2\n  not_member_const_atoms A1 foo bar baz\n  proceed',
+    (   wam_fsharp_target:lower_predicate_to_fsharp(p_phase_i/3, Wam,
+            [base_pc(1), foreign_preds([])],
+            lowered(_, _FuncName, Code)),
+        %% Every Phase-I instruction must delegate to `step` with the
+        %% correct constructor; the |> Some sv -> continuation chain
+        %% must be present.
+        sub_string(Code, _, _, _, "(BuildEmptySet 1)"),
+        sub_string(Code, _, _, _, "(PutStructureDyn (1, 2, 3))"),
+        sub_string(Code, _, _, _, "(Arg (2, 1, 3))"),
+        sub_string(Code, _, _, _, "(NotMemberList (1, 2))"),
+        sub_string(Code, _, _, _, "(SetInsert (1, 2, 3))"),
+        sub_string(Code, _, _, _, "(NotMemberSet (1, 2))"),
+        sub_string(Code, _, _, _, "(NotMemberConstAtoms (1, [\"foo\"; \"bar\"; \"baz\"]))"),
+        %% Step-delegation chain shape: match step ctx { ... } (Instr) with | Some _ ->
+        sub_string(Code, _, _, _, "match step ctx { s_init with WsPC = 1 } (BuildEmptySet 1) with")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing Phase-I step-delegation patterns')
+    ).
+
+test_fsharp_lowered_emitter_phase_i_pc_offsets :-
+    %% base_pc(N) offsets the local PCs so they match the global merged
+    %% instruction array.  With base_pc(10), the first instruction''s
+    %% WsPC should be 10 (not 1).
+    Test = 'WAM-FSharp lowered: Phase-I respects base_pc offset',
+    Wam = 'p_phase_i_off/2:\n  build_empty_set A1\n  not_member_set A1 A2\n  proceed',
+    (   wam_fsharp_target:lower_predicate_to_fsharp(p_phase_i_off/2, Wam,
+            [base_pc(10), foreign_preds([])],
+            lowered(_, _, Code)),
+        %% First instruction at offset 10.
+        sub_string(Code, _, _, _, "WsPC = 10 } (BuildEmptySet 1)"),
+        %% Second at 11.
+        sub_string(Code, _, _, _, "WsPC = 11 } (NotMemberSet (1, 2))")
+    ->  pass(Test)
+    ;   fail_test(Test, 'base_pc offset not threaded through Phase-I emitters')
+    ).
+
+%% ----------------------------------------------------------------------
 %% Project generation smoke: exercise write_wam_fsharp_project/3 in a
 %% throwaway directory with no kernels and assert the expected files
 %% are produced. Does not invoke `dotnet build`.
@@ -1012,6 +1069,10 @@ run_tests :-
     test_fsharp_lowerable_single_clause_proceed,
     test_fsharp_lowerable_rejects_aggregate,
     test_fsharp_lowerable_multi_clause,
+    %% Phase I — lowered emitter
+    test_fsharp_lowered_emitter_phase_i_accepted,
+    test_fsharp_lowered_emitter_phase_i_emits_step_delegation,
+    test_fsharp_lowered_emitter_phase_i_pc_offsets,
     test_fsharp_project_generation_smoke,
     format('~n========================================~n'),
     (   test_failed
