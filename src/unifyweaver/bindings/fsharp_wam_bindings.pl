@@ -477,9 +477,24 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
             let head = List.item 0 items'
             let tail = List.item 1 items'
             let listVal =
-                match tail with
-                | VList t -> VList (head :: t)
-                | _       -> VList [head; tail]
+                // Cons cell with tail.  Atom \"[]\" is the empty-list
+                // atom and must collapse to VList []; otherwise
+                // `[53|[]]` materializes as VList [Integer 53; Atom \"[]\"]
+                // which is a two-element list, not a singleton.  The
+                // parser library''s tokenize / take_digits / etc. build
+                // single-element accumulators via `[H|[]]` SetConstant
+                // pairs, so this case is hit constantly.
+                //
+                // When the tail is anything else (Unbound, Str, ...),
+                // use Str(\"[|]\", [h; t]) -- the proper Prolog cons-cell
+                // representation -- so the tail can stay symbolic.
+                // GetList recognizes both shapes.  Without this,
+                // building `[H|T]` with T unbound produced a flat
+                // VList [H; T] which represents the WRONG list.
+                match derefVar s.WsBindings tail with
+                | VList t      -> VList (head :: t)
+                | Atom \"[]\"    -> VList [head]
+                | derefdTail   -> Str (\"[|]\", [head; derefdTail])
             let r = Array.copy s.WsRegs
             let regVal = if reg >= 0 && reg < s.WsRegs.Length then s.WsRegs.[reg] else Unbound -1
             r.[reg] <- listVal
