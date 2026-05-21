@@ -628,6 +628,18 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
             else
                 let push = pushBuilderIfActive s
                 Some { push with WsPC = s.WsPC + 1; WsBuilder = Some (ReadArgs args) }
+        // The WAM compiler emits `GetStructure (\"[|]\", 2, ai)` to walk
+        // the spine of a partial list (e.g. matching `[H|T]` when `H`
+        // is itself the head of a destructured nested list).  When
+        // `ai` holds a VList that was built via PutList / GetList, we
+        // need to read it as a cons cell.  Without this case, every
+        // list-iterating parser predicate (`take_digits`, `take_ident`,
+        // `tokenize_loop`, `parse_args`, ...) fails on its first
+        // cons-cell match.
+        | Some (VList (h :: t)) when fn = \"[|]\" && arity = 2 ->
+            let tailVal = if List.isEmpty t then Atom \"[]\" else VList t
+            let push = pushBuilderIfActive s
+            Some { push with WsPC = s.WsPC + 1; WsBuilder = Some (ReadArgs [h; tailVal]) }
         | Some (Unbound vid) when arity = 0 ->
             // Atom-arity struct write: bind reg to Str(fn, []).  Outer
             // builder''s arg slot, if any, already holds the Unbound var
@@ -651,7 +663,13 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         let push = pushBuilderIfActive s
         match getReg ai s with
         | Some (VList (h :: t)) ->
-            Some { push with WsPC = s.WsPC + 1; WsBuilder = Some (ReadArgs [h; VList t]) }
+            let tailVal = if List.isEmpty t then Atom \"[]\" else VList t
+            Some { push with WsPC = s.WsPC + 1; WsBuilder = Some (ReadArgs [h; tailVal]) }
+        // Cons cell built with a non-ground tail (e.g. `[H | T]` where T
+        // is an unbound var) materializes as Str(\"[|]\", [h; t]) so the
+        // tail can stay symbolic.  GetList must match that shape too.
+        | Some (Str (\"[|]\", [h; t])) ->
+            Some { push with WsPC = s.WsPC + 1; WsBuilder = Some (ReadArgs [h; t]) }
         | Some (Unbound _) ->
             Some { push with WsPC = s.WsPC + 1; WsBuilder = Some (BuildList (ai, [])) }
         | _ -> None
