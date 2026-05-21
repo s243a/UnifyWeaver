@@ -1127,6 +1127,31 @@ def _variable_names_from_env(env_term: 'Term', source: WamState, target: WamStat
     return _list_from_terms(list(reversed(pairs)))
 
 
+def _variables_from_term(term: 'Term', state: WamState) -> 'Term':
+    seen: set[int] = set()
+    variables: List[Term] = []
+
+    def walk(value: 'Term') -> None:
+        value = deref(value, state)
+        if isinstance(value, Var):
+            key = id(value.ref)
+            if key not in seen:
+                seen.add(key)
+                variables.append(value)
+            return
+        if isinstance(value, Ref):
+            heap_value = state.heap.get(value.addr)
+            if heap_value is not None:
+                walk(heap_value)
+            return
+        if isinstance(value, Compound):
+            for arg in value.args:
+                walk(arg)
+
+    walk(term)
+    return _list_from_terms(variables)
+
+
 def _execute_compiled_parse_atom(state: WamState, atom_text: str, target: 'Term',
                                  options: Optional['Term'] = None) -> bool:
     atom_text = _runtime_atom_text(atom_text)
@@ -1138,11 +1163,13 @@ def _execute_compiled_parse_atom(state: WamState, atom_text: str, target: 'Term'
         return False
 
     want_var_names = None
+    want_variables = None
     if options is not None:
         want_var_names = _read_option_arg(options, 'variable_names', state)
+        want_variables = _read_option_arg(options, 'variables', state)
 
     parser_entry = 'parse_term_from_atom/3'
-    if want_var_names is not None and 'parse_term_from_atom/4' in labels:
+    if (want_var_names is not None or want_variables is not None) and 'parse_term_from_atom/4' in labels:
         parser_entry = 'parse_term_from_atom/4'
     elif parser_entry not in labels:
         return False
@@ -1170,6 +1197,10 @@ def _execute_compiled_parse_atom(state: WamState, atom_text: str, target: 'Term'
     if want_var_names is not None:
         names = _variable_names_from_env(var_env, parser_state, state, var_map)
         if not unify(want_var_names, names, state):
+            return False
+    if want_variables is not None:
+        variables = _variables_from_term(copied, state)
+        if not unify(want_variables, variables, state):
             return False
     return True
 
