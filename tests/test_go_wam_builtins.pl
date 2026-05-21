@@ -25,6 +25,7 @@
 :- dynamic user:test_char_code_builtin/0.
 :- dynamic user:test_atom_codes_builtin/0.
 :- dynamic user:test_atom_chars_builtin/0.
+:- dynamic user:test_string_list_builtin/0.
 :- dynamic user:test_atom_string_builtin/0.
 :- dynamic user:test_set_aggregate/0.
 :- dynamic user:test_unify_builtin/0.
@@ -258,6 +259,30 @@ test(builtins_execution) :-
                 \+ atom_chars(_, [ab]),
                 \+ atom_chars(_, [1])
             )),
+          assertz(user:test_string_list_builtin :-
+            (   string_codes(foo, Codes),
+                Codes = [102,111,111],
+                string_codes(foo, [102,111,111]),
+                \+ string_codes(foo, [102,111]),
+                string_codes(A2, [98,97,114]),
+                A2 == bar,
+                string_codes('', EmptyCodes),
+                EmptyCodes = [],
+                \+ string_codes(_, _),
+                \+ string_codes(_, [-1]),
+                \+ string_codes(_, [foo]),
+                string_chars(baz, Chars),
+                Chars = [b,a,z],
+                string_chars(baz, [b,a,z]),
+                \+ string_chars(baz, [b,a]),
+                string_chars(A3, [q,u,x]),
+                A3 == qux,
+                string_chars('', EmptyChars),
+                EmptyChars = [],
+                \+ string_chars(_, _),
+                \+ string_chars(_, [ab]),
+                \+ string_chars(_, [1])
+            )),
           assertz(user:test_atom_string_builtin :-
             (   atom_string(hello, S),
                 S == hello,
@@ -313,6 +338,7 @@ test(builtins_execution) :-
           retractall(user:test_char_code_builtin),
           retractall(user:test_atom_codes_builtin),
           retractall(user:test_atom_chars_builtin),
+          retractall(user:test_string_list_builtin),
           retractall(user:test_atom_string_builtin),
           retractall(user:test_set_aggregate),
           retractall(user:test_unify_builtin),
@@ -323,7 +349,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -380,6 +406,8 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "char_code/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "atom_codes/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "atom_chars/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "string_codes/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "string_chars/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "atom_string/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "string_to_atom/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "\\\\+/1"')),
@@ -563,6 +591,14 @@ func main() {
 		fmt.Println("ATOM_CHARS_FAILURE")
 	}
 
+	stringListVM := wam.NewWamState(wam.Test_string_list_builtinCode, wam.Test_string_list_builtinLabels)
+	stringListVM.PC = wam.Test_string_list_builtinStartPC
+	if stringListVM.Run() {
+		fmt.Println("STRING_LIST_SUCCESS")
+	} else {
+		fmt.Println("STRING_LIST_FAILURE")
+	}
+
 	atomStringVM := wam.NewWamState(wam.Test_atom_string_builtinCode, wam.Test_atom_string_builtinLabels)
 	atomStringVM.PC = wam.Test_atom_string_builtinStartPC
 	if atomStringVM.Run() {
@@ -640,6 +676,7 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "CHAR_CODE_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_CODES_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_CHARS_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "STRING_LIST_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_STRING_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SET_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "UNIFY_SUCCESS")),

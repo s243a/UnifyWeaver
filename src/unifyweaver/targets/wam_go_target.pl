@@ -490,6 +490,12 @@ wam_go_direct_builtin("atom_codes/2", 2, 'atom_codes/2').
 wam_go_direct_builtin(atom_chars/2, 2, 'atom_chars/2').
 wam_go_direct_builtin('atom_chars/2', 2, 'atom_chars/2').
 wam_go_direct_builtin("atom_chars/2", 2, 'atom_chars/2').
+wam_go_direct_builtin(string_codes/2, 2, 'string_codes/2').
+wam_go_direct_builtin('string_codes/2', 2, 'string_codes/2').
+wam_go_direct_builtin("string_codes/2", 2, 'string_codes/2').
+wam_go_direct_builtin(string_chars/2, 2, 'string_chars/2').
+wam_go_direct_builtin('string_chars/2', 2, 'string_chars/2').
+wam_go_direct_builtin("string_chars/2", 2, 'string_chars/2').
 wam_go_direct_builtin(atom_string/2, 2, 'atom_string/2').
 wam_go_direct_builtin('atom_string/2', 2, 'atom_string/2').
 wam_go_direct_builtin("atom_string/2", 2, 'atom_string/2').
