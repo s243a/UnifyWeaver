@@ -4388,11 +4388,11 @@ verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed
     csharp_query_target:build_query_plan(test_group_probe_dir_mixed_reach/4, [target(csharp_query)], Plan),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
     Params = [[a, z, red, cat1], [p, q, red, cat1]],
-    harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, 'GroupedTransitiveClosurePairsBatchedSingleProbeMixed', HarnessSource),
+    harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, 'GroupedTransitiveClosurePairsMixedDirection', HarnessSource),
     maybe_run_query_runtime_with_harness(Plan,
         ['a,z,red,cat1',
          'p,q,red,cat1',
-         'STRATEGY_USED:GroupedTransitiveClosurePairsBatchedSingleProbeMixed=true'],
+         'STRATEGY_USED:GroupedTransitiveClosurePairsMixedDirection=true'],
         Params,
         HarnessSource).
 
@@ -4527,11 +4527,11 @@ verify_parameterized_reachability_pairs_batched_single_probe_mixed_strategy_runt
     csharp_query_target:build_query_plan(test_probe_dir_mixed_reach/2, [target(csharp_query)], Plan),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
     Params = [[a, z], [p, q]],
-    harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, 'TransitiveClosurePairsBatchedSingleProbeMixed', HarnessSource),
+    harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, 'TransitiveClosurePairsMixedDirection', HarnessSource),
     maybe_run_query_runtime_with_harness(Plan,
         ['a,z',
          'p,q',
-         'STRATEGY_USED:TransitiveClosurePairsBatchedSingleProbeMixed=true'],
+         'STRATEGY_USED:TransitiveClosurePairsMixedDirection=true'],
         Params,
         HarnessSource).
 
