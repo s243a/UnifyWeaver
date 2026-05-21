@@ -3240,9 +3240,25 @@ let main argv =
         for cat in seedCats do
             let varId = 1000000
             let regs = Array.create MaxRegs (Unbound -1)
-            regs.[1] <- Atom cat
-            regs.[2] <- Atom root
-            regs.[3] <- Unbound varId
+            // Register layout depends on which queryPred resolved.  The /3
+            // candidates are lowered aggregate variants whose semantics fold
+            // a target root into the call shape, so A2 is the root and A3
+            // accumulates the result.  The /4 variant is the raw
+            // category_ancestor(+Cat, -Ancestor, -Hops, +Visited) — A2 and
+            // A3 are outputs (Unbound), and A4 must be a list-valued input
+            // seeded with [Cat] so that the cycle-detection guard (negation
+            // over member/2) sees a real list rather than an unbound
+            // variable.  Without the seeded A4 the predicate fails
+            // unconditionally and the benchmark reports solutions=0.
+            if queryPred.EndsWith "/4" then
+                regs.[1] <- Atom cat
+                regs.[2] <- Unbound varId
+                regs.[3] <- Unbound (varId + 1)
+                regs.[4] <- VList [ Atom cat ]
+            else
+                regs.[1] <- Atom cat
+                regs.[2] <- Atom root
+                regs.[3] <- Unbound varId
             let s0 = { emptyState with WsPC = 0; WsRegs = regs; WsCP = 0 }
             match dispatchCall ctx queryPred s0 with
             | Some s1 ->
