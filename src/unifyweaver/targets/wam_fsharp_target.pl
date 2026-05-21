@@ -558,6 +558,18 @@ and backtrack (s: WamState) : WamState option =
         let diff      = s.WsTrailLen - trailLen
         let newEntries= s.WsTrail |> List.take diff |> List.rev
         let restoredBindings = List.fold undoBinding cp.CpBindings newEntries
+        // Bug B fix from PR #2350: keep the CP on the stack.  Standard
+        // WAM convention is that backtrack RESTORES from the top CP
+        // without popping it; only TrustMe pops.  Between successive
+        // backtracks, RetryMeElse modifies the top CP''s CpNextPC to
+        // point to the next clause''s entry — so the CP MUST remain on
+        // the stack for the next-clause logic to work.  Previously
+        // WsCPs was set to `rest` here, popping the CP; that
+        // accidentally worked for chains of length ≤ 2 (the only CP
+        // was needed once) but failed for 3+ when RetryMeElse arrived
+        // at an empty stack.  See PR #2350''s query smoke
+        // `query_X_parent_eve_BUG` for the regression test that
+        // surfaced this.
         Some { s with
                  WsPC       = cp.CpNextPC
                  WsRegs     = cp.CpRegs
@@ -569,8 +581,9 @@ and backtrack (s: WamState) : WamState option =
                  WsHeapLen  = cp.CpHeapLen
                  WsBindings = restoredBindings
                  WsCutBar   = cp.CpCutBar
-                 WsCPs      = rest
-                 WsCPsLen   = s.WsCPsLen - 1 }
+                 // WsCPs intentionally unchanged: keep CP on stack so
+                 // RetryMeElse can modify it (or TrustMe can pop it later).
+               }
 
 and resumeBuiltin (bs: BuiltinState) (cp: ChoicePoint) (rest: ChoicePoint list) (s: WamState) : WamState option =
     match bs with
