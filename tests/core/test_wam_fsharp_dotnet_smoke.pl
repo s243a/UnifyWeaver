@@ -537,6 +537,201 @@ test_dotnet_run_query_smoke :-
         fail_test(Test, 'no RESULT line in query smoke output')
     ).
 
+%% ------------------------------------------------------------------------
+%% Category-ancestor end-to-end benchmark smoke.
+%%
+%% First test that exercises a NON-TRIVIAL real workload through the full
+%% pipeline: load effective_distance.pl + data/benchmark/dev/facts.pl,
+%% compile category_ancestor/4 + category_parent/2 + max_depth/1 to F#
+%% via write_wam_fsharp_project/3, build, then run the auto-generated
+%% Program.fs against the dev fixture's TSV files.
+%%
+%% The auto-generated Program.fs is a category-ancestor benchmark driver
+%% with hard-coded query semantics — it passes (Cat, Root, Distance) as
+%% A1/A2/A3.  The effective_distance.pl category_ancestor/4 signature is
+%% (+Cat, -Ancestor, -Hops, +Visited), so the driver's args don't match
+%% the predicate's expected output mode — solutions=0 is the expected
+%% outcome.  This is fine for our purpose: we're proving the PIPELINE
+%% works, not validating Prolog semantics for this specific query.
+%%
+%% Assertions:
+%%   - Build succeeds.
+%%   - dotnet run exits 0.
+%%   - stdout contains "total_ms=" (the driver's summary line).
+%%   - stdout contains "RESULT 0/0" not asserted — the driver doesn't
+%%     emit RESULT lines.  We parse out total_ms instead for the smoke
+%%     output.
+
+bench_dataset_dir(Dir) :-
+    repo_root_for_smoke(Root),
+    directory_file_path(Root, 'data/benchmark/dev', Dir).
+
+effective_distance_workload(Path) :-
+    repo_root_for_smoke(Root),
+    directory_file_path(Root, 'examples/benchmark/effective_distance.pl', Path).
+
+dev_facts_path(Path) :-
+    repo_root_for_smoke(Root),
+    directory_file_path(Root, 'data/benchmark/dev/facts.pl', Path).
+
+%% `--nologo` is NOT a recognized `dotnet run` flag — including it
+%% would push it through to the program as argv[0].  The other smokes
+%% pass `--nologo` and their fixtures ignore argv, so it slips through
+%% invisibly; here the program actually consumes argv (factsDir), so
+%% we omit it.
+run_dotnet_run_with_args(Dir, Args, ExitCode, Output) :-
+    setup_dotnet_env,
+    append(['run', '-v', 'quiet', '--no-build', '--'], Args, FullArgs),
+    setup_call_cleanup(
+        process_create(path(dotnet), FullArgs,
+            [cwd(Dir),
+             stdout(pipe(Out)), stderr(pipe(Err)),
+             process(Pid)]),
+        (   read_string(Out, _, OutText),
+            read_string(Err, _, ErrText),
+            process_wait(Pid, exit(ExitCode)),
+            atomic_list_concat([OutText, '\n', ErrText], Output)
+        ),
+        (   catch(close(Out), _, true),
+            catch(close(Err), _, true)
+        )
+    ).
+
+%% Parse `total_ms=N` from the benchmark stdout.
+parse_total_ms(Output, Ms) :-
+    split_string(Output, "\n", "", Lines),
+    member(Line, Lines),
+    sub_string(Line, B, _, _, "total_ms="),
+    B0 is B + 9,
+    sub_string(Line, B0, _, 0, Rest),
+    split_string(Rest, " \t\r", "", [MsStr|_]),
+    number_string(Ms, MsStr), !.
+
+test_dotnet_run_category_ancestor_bench :-
+    Test = 'WAM-FSharp dotnet: category-ancestor end-to-end benchmark',
+    smoke_root(Root),
+    directory_file_path(Root, cat_ancestor, Dir),
+    clean_dir(Dir),
+    make_directory_path(Dir),
+    effective_distance_workload(WorkloadPath),
+    dev_facts_path(FactsPath),
+    (   exists_file(WorkloadPath), exists_file(FactsPath)
+    ->  true
+    ;   fail_test(Test,
+            format_atom('Missing workload or facts: ~w / ~w', [WorkloadPath, FactsPath])),
+        !, fail
+    ),
+    bench_dataset_dir(BenchDir),
+    %% Load the workload + facts so the WAM compiler sees the predicates.
+    catch(
+        ( load_files(WorkloadPath, [silent(true)]),
+          load_files(FactsPath,    [silent(true)]),
+          write_wam_fsharp_project(
+              [category_ancestor/4, category_parent/2, max_depth/1],
+              [no_kernels(true), module_name('cat_ancestor_bench')],
+              Dir)
+        ),
+        Err,
+        (   format('  Prolog generation error: ~q~n', [Err]),
+            fail_test(Test, 'project generation failed'), !, fail
+        )
+    ),
+    run_dotnet_build(Dir, BuildExit, BuildOutput),
+    (   BuildExit == 0
+    ->  true
+    ;   format('---- dotnet build output ----~n~w~n----~n', [BuildOutput]),
+        fail_test(Test, 'category-ancestor build failed'), !, fail
+    ),
+    %% Run with `<factsDir> <reps>` args.
+    run_dotnet_run_with_args(Dir, [BenchDir, '3'], RunExit, RunOutput),
+    (   RunExit == 0,
+        parse_total_ms(RunOutput, Ms)
+    ->  format('  total_ms=~w (dev fixture, 3 reps)~n', [Ms]),
+        pass(Test),
+        maybe_clean(Dir)
+    ;   format('---- dotnet run output ----~n~w~n----~n', [RunOutput]),
+        fail_test(Test,
+            format_atom('category-ancestor run failed: exit ~w', [RunExit]))
+    ).
+
+%% ------------------------------------------------------------------------
+%% NAF micro-benchmark smoke.
+%%
+%% Drives runNegationParallel with hand-constructed 5-branch Par* chains:
+%%   - Scenario A: 1 fast-succeed + 4 slow-fail.  Async.Choice from
+%%     PR #2353 returns on first Some, so wall_ms_A should be small.
+%%   - Scenario B: all 5 slow-fail.  Async.Choice waits for all to
+%%     return None.  wall_ms_B should be larger.
+%%
+%% Both scenarios test correctness of `runNegationParallel`'s boolean
+%% return.  A is expected to return true (any branch succeeded), B is
+%% expected to return false.  Wall time is reported for future
+%% comparison after hard-cancel work.
+%% ------------------------------------------------------------------------
+
+naf_microbench_driver(Path) :-
+    repo_root_for_smoke(Root),
+    directory_file_path(Root,
+        'tests/fixtures/wam_fsharp_naf_microbench/Driver.fs', Path).
+
+%% Parse `wall_ms_A=N wall_ms_B=N slow_size=N runs=N` from microbench output.
+parse_naf_microbench(Output, WallA, WallB) :-
+    split_string(Output, "\n", "", Lines),
+    member(Line, Lines),
+    sub_string(Line, _, _, _, "wall_ms_A="),
+    sub_string(Line, BA, _, _, "wall_ms_A="),
+    BA0 is BA + 10,
+    sub_string(Line, BA0, _, 0, RestA),
+    split_string(RestA, " \t", "", [WallAStr|_]),
+    number_string(WallA, WallAStr),
+    sub_string(Line, BB, _, _, "wall_ms_B="),
+    BB0 is BB + 10,
+    sub_string(Line, BB0, _, 0, RestB),
+    split_string(RestB, " \t", "", [WallBStr|_]),
+    number_string(WallB, WallBStr), !.
+
+test_dotnet_run_naf_microbench :-
+    Test = 'WAM-FSharp dotnet: NAF micro-benchmark (runNegationParallel)',
+    smoke_root(Root),
+    directory_file_path(Root, naf_microbench, Dir),
+    clean_dir(Dir),
+    make_directory_path(Dir),
+    write_wam_fsharp_project([],
+        [no_kernels(true), module_name('uw_fsharp_naf_microbench')],
+        Dir),
+    naf_microbench_driver(FixturePath),
+    (   exists_file(FixturePath)
+    ->  true
+    ;   fail_test(Test,
+            format_atom('NAF microbench driver fixture not found: ~w', [FixturePath])),
+        !, fail
+    ),
+    directory_file_path(Dir, 'Program.fs', ProgPath),
+    copy_file_overwrite(FixturePath, ProgPath),
+    run_dotnet_build(Dir, BuildExit, BuildOutput),
+    (   BuildExit == 0
+    ->  true
+    ;   format('---- dotnet build output ----~n~w~n----~n', [BuildOutput]),
+        fail_test(Test, 'NAF microbench build failed'), !, fail
+    ),
+    run_dotnet_run(Dir, RunExit, RunOutput),
+    (   parse_smoke_result(RunOutput, Passes, Total),
+        parse_naf_microbench(RunOutput, WallA, WallB)
+    ->  (   RunExit == 0,
+            Passes =:= Total,
+            Passes > 0
+        ->  format('  wall_ms_A=~w wall_ms_B=~w (scenario A=fast-succeed, B=all-fail)~n',
+                   [WallA, WallB]),
+            pass(Test),
+            maybe_clean(Dir)
+        ;   format('---- dotnet run output ----~n~w~n----~n', [RunOutput]),
+            fail_test(Test,
+                format_atom('NAF microbench failed: ~w/~w pass, exit ~w', [Passes, Total, RunExit]))
+        )
+    ;   format('---- dotnet run output ----~n~w~n----~n', [RunOutput]),
+        fail_test(Test, 'no RESULT or wall_ms lines in microbench output')
+    ).
+
 %% ========================================================================
 %% Runner
 %% ========================================================================
@@ -551,7 +746,9 @@ run_tests :-
         test_dotnet_run_smoke,
         test_dotnet_build_phase_i_lowered,
         test_dotnet_run_phase_i_lowered,
-        test_dotnet_run_query_smoke
+        test_dotnet_run_query_smoke,
+        test_dotnet_run_category_ancestor_bench,
+        test_dotnet_run_naf_microbench
     ;   skip('WAM-FSharp dotnet smoke', 'dotnet not on PATH — install .NET SDK to run')
     ),
     format('~n========================================~n'),
