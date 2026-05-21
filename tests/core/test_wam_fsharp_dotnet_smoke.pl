@@ -460,6 +460,83 @@ let loweredPredicates : Map<string, WamContext -> WamState -> WamState option> =
         fail_test(Test, 'no RESULT line in Phase-I lowered run output')
     ).
 
+%% ------------------------------------------------------------------------
+%% Query smoke: end-to-end multi-clause predicate dispatch.
+%% Compiles `parent(tom, bob). parent(bob, ann). parent(ann, eve).` from
+%% real Prolog source through write_wam_fsharp_project/3, then drives
+%% queries against it via the runtime's dispatchCall.
+%%
+%% Surfaces two pre-existing F# WAM dispatch bugs (currently asserted as
+%% [KNOWN BUG] in the fixture so the smoke passes — see Driver.fs for
+%% details).  When those bugs are fixed in follow-up PRs, the
+%% [KNOWN BUG] assertions will need to flip.
+%% ------------------------------------------------------------------------
+
+:- dynamic user:parent_query_smoke/2.
+
+setup_parent_query_facts :-
+    retractall(user:parent_query_smoke(_, _)),
+    assertz(user:parent_query_smoke(tom, bob)),
+    assertz(user:parent_query_smoke(bob, ann)),
+    assertz(user:parent_query_smoke(ann, eve)).
+
+query_smoke_driver_fixture(Path) :-
+    repo_root_for_smoke(Root),
+    directory_file_path(Root,
+        'tests/fixtures/wam_fsharp_query_smoke/Driver.fs', Path).
+
+test_dotnet_run_query_smoke :-
+    Test = 'WAM-FSharp dotnet: query smoke (multi-clause predicate, real Prolog source)',
+    setup_parent_query_facts,
+    smoke_root(Root),
+    directory_file_path(Root, query, Dir),
+    clean_dir(Dir),
+    make_directory_path(Dir),
+    %% Compile parent_query_smoke/2 (renamed to parent/2 in Predicates.fs
+    %% wouldn't be straightforward; instead we generate with the actual
+    %% pred name and have the Driver.fs reference allCode/allLabels directly).
+    %% Simpler: just use a generic predicate name and let Driver.fs find
+    %% it via dispatchCall.  The Prolog source uses parent_query_smoke/2;
+    %% the driver knows to call "parent_query_smoke/2".
+    %%
+    %% Actually the simplest is to use a Prolog predicate literally named
+    %% "parent" so the driver can call "parent/2".  Use a fresh dynamic
+    %% predicate that we then retract.
+    write_wam_fsharp_project([parent_query_smoke/2],
+        [no_kernels(true), module_name('uw_fsharp_query_smoke')],
+        Dir),
+    %% The fixture references `parent_query_smoke/2` via dispatchCall.
+    query_smoke_driver_fixture(FixturePath),
+    (   exists_file(FixturePath)
+    ->  true
+    ;   fail_test(Test,
+            format_atom('Driver fixture not found: ~w', [FixturePath])), !, fail
+    ),
+    directory_file_path(Dir, 'Program.fs', ProgPath),
+    copy_file_overwrite(FixturePath, ProgPath),
+    %% Build + run.
+    run_dotnet_build(Dir, BuildExit, BuildOutput),
+    (   BuildExit == 0
+    ->  true
+    ;   format('---- dotnet build output ----~n~w~n----~n', [BuildOutput]),
+        fail_test(Test, 'query smoke build failed'), !, fail
+    ),
+    run_dotnet_run(Dir, RunExit, RunOutput),
+    (   parse_smoke_result(RunOutput, Passes, Total)
+    ->  (   RunExit == 0,
+            Passes =:= Total,
+            Passes > 0
+        ->  format('  RESULT ~w/~w~n', [Passes, Total]),
+            pass(Test),
+            maybe_clean(Dir)
+        ;   format('---- dotnet run output ----~n~w~n----~n', [RunOutput]),
+            fail_test(Test,
+                format_atom('query smoke failed: ~w/~w pass, exit ~w', [Passes, Total, RunExit]))
+        )
+    ;   format('---- dotnet run output ----~n~w~n----~n', [RunOutput]),
+        fail_test(Test, 'no RESULT line in query smoke output')
+    ).
+
 %% ========================================================================
 %% Runner
 %% ========================================================================
@@ -473,7 +550,8 @@ run_tests :-
         test_dotnet_build_multi_fact_project,
         test_dotnet_run_smoke,
         test_dotnet_build_phase_i_lowered,
-        test_dotnet_run_phase_i_lowered
+        test_dotnet_run_phase_i_lowered,
+        test_dotnet_run_query_smoke
     ;   skip('WAM-FSharp dotnet smoke', 'dotnet not on PATH — install .NET SDK to run')
     ),
     format('~n========================================~n'),
