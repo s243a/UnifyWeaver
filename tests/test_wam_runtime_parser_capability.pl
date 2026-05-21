@@ -43,6 +43,10 @@ test(unknown_target_defaults_to_none) :-
 test(python_defaults_to_none) :-
     wam_target_runtime_parser(wam_python, [], none).
 
+test(python_can_opt_into_compiled_parser) :-
+    wam_target_runtime_parser(wam_python, [runtime_parser(compiled)],
+                              compiled(prolog_term_parser)).
+
 test(elixir_defaults_to_none) :-
     wam_target_runtime_parser(wam_elixir, [], none).
 
@@ -61,6 +65,10 @@ test(elixir_native_request_errors,
 test(unknown_target_compiled_request_errors,
      [error(domain_error(runtime_parser_mode(wam_lua), compiled))]) :-
     wam_target_runtime_parser(wam_lua, [runtime_parser(compiled)], _).
+
+test(elixir_compiled_request_errors,
+     [error(domain_error(runtime_parser_mode(wam_elixir), compiled))]) :-
+    wam_target_runtime_parser(wam_elixir, [runtime_parser(compiled)], _).
 
 test(invalid_request_errors,
      [error(domain_error(runtime_parser_request, bogus))]) :-

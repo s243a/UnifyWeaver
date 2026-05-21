@@ -120,6 +120,7 @@ target_runtime_parser_mode_(wam_r, native(parse_term)).
 target_runtime_parser_mode_(wam_r, compiled(prolog_term_parser)).
 target_runtime_parser_mode_(wam_cpp, native(parse_term)).
 target_runtime_parser_mode_(wam_cpp, compiled(prolog_term_parser)).
+target_runtime_parser_mode_(wam_python, compiled(prolog_term_parser)).
 
 normalize_runtime_parser_target(r, wam_r) :- !.
 normalize_runtime_parser_target(wam_r, wam_r) :- !.
