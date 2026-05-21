@@ -1804,10 +1804,20 @@ and unifyVal (a: Value) (b: Value) (s: WamState) : WamState option =
 % ============================================================================
 
 run_loop_fsharp(Code) :-
-    Code = '/// Main execution loop. Runs until halt (pc=0) or failure.
-/// WamContext is read-only. Tail-recursive via use of trampolining.
+    Code = '/// Main execution loop. Runs until halt (pc=0), failure, or
+/// cancellation.  WamContext is read-only. Tail-recursive via use of
+/// trampolining.
+///
+/// Hard-cancel: when ctx.WcCancellationToken is set and reports
+/// IsCancellationRequested, the loop returns None immediately.  Wired
+/// by runNegationParallel so a successful branch can halt its siblings''
+/// wasted work.  The check is one Map.tryFind + IsCancellationRequested
+/// per iteration when a token is set, zero overhead when not.
 and run (ctx: WamContext) (s: WamState) : WamState option =
     if s.WsPC = 0 then Some s
+    elif (match ctx.WcCancellationToken with
+          | Some t when t.IsCancellationRequested -> true
+          | _ -> false) then None
     else
         let instr = ctx.WcCode.[s.WsPC]
         match step ctx s instr with
@@ -1885,8 +1895,17 @@ and runNegationParallel (ctx: WamContext) (s: WamState) (entryPC: int) (elsePC: 
     if List.length branchPCs >= forkMinBranches then
         let branchAction pc =
             async {
+                // Async.CancellationToken pulls the token that Async.Choice
+                // wires into each child workflow.  When Async.Choice gets
+                // its first Some, it cancels the token, and `run`''s loop
+                // check (run_loop_fsharp) returns None on the next iter,
+                // halting sibling branches'' work.  Hard-cancel: real CPU
+                // / thread savings on the wasted siblings beyond the
+                // wall-time win that Async.Choice alone provides.
+                let! token = Async.CancellationToken
+                let ctxC = { ctx with WcCancellationToken = Some token }
                 let snapshot = { s with WsPC = pc; WsCP = 0; WsCutBar = 0 }
-                if (run ctx snapshot).IsSome then return Some ()
+                if (run ctxC snapshot).IsSome then return Some ()
                 else return None
             }
         // Async.Choice: returns the first Some.  Wall time bounded by
@@ -3174,7 +3193,8 @@ let main argv =
           WcAtomIntern        = atomIntern
           WcAtomDeintern      = atomDeintern
           WcForeignConfig     = Map.ofList [ ("max_depth", 10) ]
-          WcLoweredPredicates = loweredPredicates }
+          WcLoweredPredicates = loweredPredicates
+          WcCancellationToken = None }
 
     let emptyState =
         { WsPC         = 0

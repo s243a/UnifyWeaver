@@ -87,7 +87,8 @@ let mkContext (branch1Body: Instruction list) (slowSize: int) =
         WcAtomIntern        = Map.empty
         WcAtomDeintern      = Map.empty
         WcForeignConfig     = Map.empty
-        WcLoweredPredicates = Map.empty }
+        WcLoweredPredicates = Map.empty
+        WcCancellationToken = None }
     ctx, pcParTry, pcParRetry2
 
 let mkState () =
@@ -110,25 +111,34 @@ let mkState () =
       WsBuilder    = None
       WsAggAccum   = [] }
 
-let runScenario (name: string) (branch1: Instruction list) (expectTrue: bool) (slowSize: int) : int64 * bool =
+let runScenario (name: string) (branch1: Instruction list) (expectTrue: bool) (slowSize: int) : int64 * int64 * bool =
     let ctx, parPC, elsePC = mkContext branch1 slowSize
     let s0 = mkState ()
     // Warm-up to amortize JIT.
     let _ = runNegationParallel ctx s0 parPC elsePC
-    // Timed runs.
+    // Timed runs.  Capture both wall time and CPU time across all
+    // threads.  After hard-cancel landing, scenario A (fast-succeed
+    // + slow-fail siblings) should show CPU time drop sharply —
+    // siblings get cancelled instead of running to completion in the
+    // background.  Scenario B (all-fail) should be roughly unchanged
+    // since every branch needs to fail before negation succeeds.
     let runs = 3
+    let proc = System.Diagnostics.Process.GetCurrentProcess()
+    let cpuBefore = proc.TotalProcessorTime
     let sw = System.Diagnostics.Stopwatch.StartNew()
     let mutable allMatch = true
     for _ in 1 .. runs do
         let result = runNegationParallel ctx s0 parPC elsePC
         if result <> expectTrue then allMatch <- false
     sw.Stop()
+    let cpuAfter = proc.TotalProcessorTime
     let wallMs = sw.ElapsedMilliseconds
+    let cpuMs = int64 (cpuAfter - cpuBefore).TotalMilliseconds
     if allMatch then
         printfn "[PASS] %s: runNegationParallel returns %b" name expectTrue
     else
         printfn "[FAIL] %s: runNegationParallel returned wrong value (expected %b)" name expectTrue
-    wallMs, allMatch
+    wallMs, cpuMs, allMatch
 
 [<EntryPoint>]
 let main _argv =
@@ -136,11 +146,11 @@ let main _argv =
     // hardware.  Smaller = noisier numbers; larger = longer CI runs.
     let slowSize = 5000
     // Scenario A: 1 fast-succeed + 4 slow-fail.
-    let wallA, okA =
+    let wallA, cpuA, okA =
         runScenario "scenario A (fast-succeed + 4 slow-fail)"
                     [ Proceed ] true slowSize
     // Scenario B: all 5 slow-fail.
-    let wallB, okB =
+    let wallB, cpuB, okB =
         runScenario "scenario B (all 5 slow-fail)"
                     (mkSlowFailBody slowSize) false slowSize
     // Sanity timing.
@@ -150,7 +160,8 @@ let main _argv =
         printfn "[PASS] both scenarios complete under %dms sanity bound" sanityBound
     else
         printfn "[FAIL] scenario(s) exceeded sanity bound (A=%dms B=%dms)" wallA wallB
-    printfn "wall_ms_A=%d wall_ms_B=%d slow_size=%d runs=3" wallA wallB slowSize
+    printfn "wall_ms_A=%d wall_ms_B=%d cpu_ms_A=%d cpu_ms_B=%d slow_size=%d runs=3"
+            wallA wallB cpuA cpuB slowSize
     let passes =
         (if okA then 1 else 0)
       + (if okB then 1 else 0)

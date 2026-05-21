@@ -674,21 +674,25 @@ naf_microbench_driver(Path) :-
     directory_file_path(Root,
         'tests/fixtures/wam_fsharp_naf_microbench/Driver.fs', Path).
 
-%% Parse `wall_ms_A=N wall_ms_B=N slow_size=N runs=N` from microbench output.
-parse_naf_microbench(Output, WallA, WallB) :-
+%% Parse a single metric like `wall_ms_A=N` from the output.  Returns
+%% the integer value of the field, or fails if not present.
+parse_naf_metric(Output, Key, N) :-
     split_string(Output, "\n", "", Lines),
     member(Line, Lines),
-    sub_string(Line, _, _, _, "wall_ms_A="),
-    sub_string(Line, BA, _, _, "wall_ms_A="),
-    BA0 is BA + 10,
-    sub_string(Line, BA0, _, 0, RestA),
-    split_string(RestA, " \t", "", [WallAStr|_]),
-    number_string(WallA, WallAStr),
-    sub_string(Line, BB, _, _, "wall_ms_B="),
-    BB0 is BB + 10,
-    sub_string(Line, BB0, _, 0, RestB),
-    split_string(RestB, " \t", "", [WallBStr|_]),
-    number_string(WallB, WallBStr), !.
+    atom_string(Key, KeyStr),
+    string_concat(KeyStr, "=", Marker),
+    sub_string(Line, B, _, _, Marker),
+    string_length(Marker, MLen),
+    B0 is B + MLen,
+    sub_string(Line, B0, _, 0, Rest),
+    split_string(Rest, " \t", "", [NStr|_]),
+    number_string(N, NStr), !.
+
+parse_naf_microbench(Output, WallA, WallB, CpuA, CpuB) :-
+    parse_naf_metric(Output, wall_ms_A, WallA),
+    parse_naf_metric(Output, wall_ms_B, WallB),
+    parse_naf_metric(Output, cpu_ms_A,  CpuA),
+    parse_naf_metric(Output, cpu_ms_B,  CpuB).
 
 test_dotnet_run_naf_microbench :-
     Test = 'WAM-FSharp dotnet: NAF micro-benchmark (runNegationParallel)',
@@ -716,12 +720,12 @@ test_dotnet_run_naf_microbench :-
     ),
     run_dotnet_run(Dir, RunExit, RunOutput),
     (   parse_smoke_result(RunOutput, Passes, Total),
-        parse_naf_microbench(RunOutput, WallA, WallB)
+        parse_naf_microbench(RunOutput, WallA, WallB, CpuA, CpuB)
     ->  (   RunExit == 0,
             Passes =:= Total,
             Passes > 0
-        ->  format('  wall_ms_A=~w wall_ms_B=~w (scenario A=fast-succeed, B=all-fail)~n',
-                   [WallA, WallB]),
+        ->  format('  wall_ms_A=~w cpu_ms_A=~w  wall_ms_B=~w cpu_ms_B=~w (A=fast-succeed, B=all-fail)~n',
+                   [WallA, CpuA, WallB, CpuB]),
             pass(Test),
             maybe_clean(Dir)
         ;   format('---- dotnet run output ----~n~w~n----~n', [RunOutput]),
@@ -729,7 +733,7 @@ test_dotnet_run_naf_microbench :-
                 format_atom('NAF microbench failed: ~w/~w pass, exit ~w', [Passes, Total, RunExit]))
         )
     ;   format('---- dotnet run output ----~n~w~n----~n', [RunOutput]),
-        fail_test(Test, 'no RESULT or wall_ms lines in microbench output')
+        fail_test(Test, 'no RESULT, wall_ms, or cpu_ms lines in microbench output')
     ).
 
 %% ========================================================================
