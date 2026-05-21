@@ -418,7 +418,7 @@ user:wam_char_type_lower_fail :- char_type('A', lower).
 user:wam_number_codes_guard(N, C) :- number_codes(N, C).
 user:wam_number_codes_reverse :- number_codes(N, [52,50]), N =:= 42.
 user:wam_number_chars_guard(N, C) :- number_chars(N, C).
-user:wam_number_chars_reverse :- char_code(C4, 52), char_code(C2, 50), number_chars(N, [C4,C2]), N =:= 42.
+user:wam_number_chars_reverse :- number_chars(N, ['4','2']), N =:= 42.
 user:wam_number_chars_bad_chars :- number_chars(_, [f,o,o]).
 user:wam_text_conversion_unbound_pair(_) :- user:wam_unbound_arg(A), user:wam_unbound_arg(C), atom_codes(A, C).
 user:wam_atom_concat_guard(A, B, C) :- atom_concat(A, B, C).
