@@ -61,6 +61,12 @@
 :- use_module('../core/template_system', [render_template/3]).
 :- use_module('../core/purity_certificate', [analyze_predicate_purity/2]).
 :- use_module('../bindings/fsharp_wam_bindings').
+:- use_module('../core/prolog_term_parser').
+:- use_module('../core/cpp_runtime_parser_wrappers').
+:- use_module(wam_runtime_parser_capability, [
+    parser_dependent_body_goal/2,
+    wam_target_runtime_parser/3
+]).
 
 % Phase 3 lowered emitter lives in wam_fsharp_lowered_emitter.
 :- reexport('wam_fsharp_lowered_emitter',
@@ -149,8 +155,19 @@ wam_fsharp_indicator_in_list(_Mod:Pred/Arity, HotPreds) :-
     member(Pred/Arity, HotPreds), !.
 
 wam_fsharp_predicate_wamcode(PI, WamCode) :-
-    (   PI = _Module:Pred/Arity -> true ; PI = Pred/Arity ),
-    wam_target:compile_predicate_to_wam(Pred/Arity, [], WamCode).
+    %% Module-qualified indicators (e.g. prolog_term_parser:foo/2 from
+    %% the compiled runtime parser library) are passed through to the
+    %% WAM compiler verbatim so it looks clauses up in the right
+    %% module.  Stripping to the bare Name/Arity, the previous
+    %% behaviour, defaulted lookup to `user:` and produced
+    %% "WAM target: no clauses for user:foo/2" for library
+    %% predicates.
+    (   PI = user:Pred/Arity
+    ->  wam_target:compile_predicate_to_wam(Pred/Arity, [], WamCode)
+    ;   PI = _Module:_Pred/_Arity
+    ->  wam_target:compile_predicate_to_wam(PI, [], WamCode)
+    ;   wam_target:compile_predicate_to_wam(PI, [], WamCode)
+    ).
 
 % ============================================================================
 % FFI-owned fact detection (Phase D: skip WAM-compilation for pure FFI facts)
@@ -2874,9 +2891,40 @@ wam_instr_to_fsharp(["not_member_set", EReg, SReg], Fs) :-
     fs_reg_name_to_int(CE, EI), fs_reg_name_to_int(CS, SI),
     format(string(Fs), 'NotMemberSet (~w, ~w)', [EI, SI]).
 
-% Fallback for unknown instructions
+% Fallback for unknown instructions.
+%
+% The F# WAM emitter doesn't recognize every WAM instruction the
+% shared compiler can produce -- specifically `get_structure`,
+% certain `unify_constant`/`get_constant` forms, and the
+% `switch_on_term` / `switch_on_constant_fallthrough` variants
+% used by indexed dispatch -- and silently replaced them with
+% `Proceed`, which lets the predicate "compile" but breaks runtime
+% semantics (predicate returns immediately without doing the
+% work).  This was found while wiring the compiled portable Prolog
+% parser through F# (`runtime_parser(compiled)`): the parser's WAM
+% has ~120 lines emitted as `Proceed` stubs across `get_structure`
+% (op/3, [|]/2, tk_atom/1, tk_num/1, tk_sym/1, tk_var/1, -/2),
+% `get_constant ' '`, `unify_constant ' '`, and four
+% `switch_on_*` variants.
+%
+% Until the emitter learns these instructions, surface the gap on
+% stderr at codegen time rather than letting it pretend to compile
+% cleanly.  Deduplicated per (head-token, arity) so a noisy
+% predicate doesn't drown the output.
+:- dynamic wam_fsharp_unknown_seen/2.
+
 wam_instr_to_fsharp(Parts, Fs) :-
     atomic_list_concat(Parts, ' ', Joined),
+    (   Parts = [Head|_], length(Parts, Len)
+    ->  (   wam_fsharp_unknown_seen(Head, Len)
+        ->  true
+        ;   assertz(wam_fsharp_unknown_seen(Head, Len)),
+            format(user_error,
+                   '[WAM-FSharp] WARNING: instruction not supported by emitter -> emitting Proceed stub: ~w~n',
+                   [Joined])
+        )
+    ;   true
+    ),
     format(string(Fs), '(* UNKNOWN: ~w *) Proceed', [Joined]).
 
 %% fs_parse_switch_entries(+Entries, -FSharpPairs)
@@ -2897,6 +2945,92 @@ fs_parse_switch_entries([Entry|Rest], [FsPair|FsRest]) :-
 % write_wam_fsharp_project/3 — Project Generation
 % ============================================================================
 
+%% Runtime parser integration helpers ---------------------------------------
+%
+% F# adopts the `compiled(prolog_term_parser)` runtime-parser mode
+% from `wam_runtime_parser_capability.pl`, mirroring Python's
+% approach.  When that mode is selected, the portable parser
+% predicates (defined in `src/unifyweaver/core/prolog_term_parser.pl`)
+% and the target-agnostic wrappers (`read_term_from_atom/2,3` etc.,
+% from `src/unifyweaver/core/cpp_runtime_parser_wrappers.pl`) are
+% appended to the user's predicate list so they're compiled to WAM
+% and emitted into `Predicates.fs`.  When `none` is selected, any
+% predicate whose body has a statically visible parser-dependent
+% call is rejected here rather than silently producing a runtime
+% that lacks the underlying parsing capability.
+
+%% fsharp_project_predicates(+UserPreds, +Mode, -ProjectPreds)
+%
+%  In `compiled` mode, append the portable parser + wrapper
+%  predicate indicators.  In other modes, leave the list untouched.
+fsharp_project_predicates(Predicates, compiled(prolog_term_parser), ProjectPredicates) :-
+    !,
+    fsharp_runtime_parser_predicates(ParserPreds),
+    fsharp_runtime_parser_wrapper_predicates(WrapperPreds),
+    append([Predicates, ParserPreds, WrapperPreds], Combined),
+    sort(Combined, ProjectPredicates).
+fsharp_project_predicates(Predicates, _RuntimeParserMode, Predicates).
+
+%% fsharp_runtime_parser_predicates(-Predicates)
+%
+%  Enumerate non-imported predicates of `prolog_term_parser` as
+%  `prolog_term_parser:Name/Arity` indicators.  Matches Python's
+%  approach in `python_runtime_parser_predicates/1`.
+fsharp_runtime_parser_predicates(Predicates) :-
+    findall(prolog_term_parser:Name/Arity,
+            ( current_predicate(prolog_term_parser:Name/Arity),
+              functor(Head, Name, Arity),
+              once(clause(prolog_term_parser:Head, _)),
+              \+ predicate_property(prolog_term_parser:Head, imported_from(_))
+            ),
+            Raw),
+    sort(Raw, Predicates).
+
+%% fsharp_runtime_parser_wrapper_predicates(-Predicates)
+%
+%  Enumerate non-imported predicates of `cpp_runtime_parser_wrappers`
+%  (the module name is C++-historical but the wrappers themselves are
+%  target-agnostic per the module-header comment).
+fsharp_runtime_parser_wrapper_predicates(Predicates) :-
+    findall(cpp_runtime_parser_wrappers:Name/Arity,
+            ( current_predicate(cpp_runtime_parser_wrappers:Name/Arity),
+              functor(Head, Name, Arity),
+              once(clause(cpp_runtime_parser_wrappers:Head, _)),
+              \+ predicate_property(cpp_runtime_parser_wrappers:Head,
+                                    imported_from(_))
+            ),
+            Raw),
+    sort(Raw, Predicates).
+
+%% fsharp_validate_runtime_parser_mode(+Predicates, +Mode)
+%
+%  When the mode is `none`, reject any user predicate whose body
+%  statically calls a parser-dependent builtin.  Mirrors
+%  `validate_python_runtime_parser_mode/2`.
+fsharp_validate_runtime_parser_mode(Predicates, none) :-
+    !,
+    (   fsharp_predicates_parser_dependency(Predicates, Pred, Builtin)
+    ->  throw(error(permission_error(use, runtime_parser, Builtin),
+                    context(write_wam_fsharp_project/3,
+                            parser_disabled_for_predicate(Pred))))
+    ;   true
+    ).
+fsharp_validate_runtime_parser_mode(_Predicates, _Mode).
+
+fsharp_predicates_parser_dependency(Predicates, Pred, Builtin) :-
+    member(Pred, Predicates),
+    fsharp_predicate_clause(Pred, _Head, Body),
+    parser_dependent_body_goal(Body, Builtin),
+    !.
+
+fsharp_predicate_clause(Module:Name/Arity, Head, Body) :-
+    !,
+    functor(Head, Name, Arity),
+    clause(Module:Head, Body).
+fsharp_predicate_clause(Name/Arity, Head, Body) :-
+    functor(Head, Name, Arity),
+    clause(user:Head, Body).
+
 %% write_wam_fsharp_project(+Predicates, +Options, +ProjectDir)
 %  Generates a complete F# project with:
 %  - WamTypes.fs:   Value DU, WamState, WamContext, helpers
@@ -2908,11 +3042,29 @@ fs_parse_switch_entries([Entry|Rest], [FsPair|FsRest]) :-
 write_wam_fsharp_project(Predicates, Options, ProjectDir) :-
     make_directory_path(ProjectDir),
 
-    % Kernel detection (skip with no_kernels(true))
+    % Resolve runtime parser mode (capability hook).  When `compiled`
+    % is selected, the portable parser predicates + the target-agnostic
+    % `read_term_from_atom`/`parse_*` wrappers are appended to the
+    % user's predicate list so the F# WAM compiler emits them too.
+    % When `none`, statically visible parser-dependent bodies are
+    % rejected at codegen time (Lua-style) rather than silently
+    % producing a stubbed runtime.
+    wam_target_runtime_parser(wam_fsharp, Options, RuntimeParserMode),
+    fsharp_validate_runtime_parser_mode(Predicates, RuntimeParserMode),
+    fsharp_project_predicates(Predicates, RuntimeParserMode, ProjectPredicates),
+    length(Predicates, NUserPreds),
+    length(ProjectPredicates, NAllPreds),
+    format(user_error,
+           '[WAM-FSharp] runtime_parser=~w (user=~w total=~w)~n',
+           [RuntimeParserMode, NUserPreds, NAllPreds]),
+
+    % Kernel detection (skip with no_kernels(true)).  Kernel detection
+    % runs on ProjectPredicates so portable-parser predicates can also
+    % be considered, but in practice they're not recursive kernels.
     (   option(no_kernels(true), Options)
     ->  DetectedKernels = [],
         format(user_error, '[WAM-FSharp] kernel detection suppressed~n', [])
-    ;   detect_kernels_fs(Predicates, DetectedKernels),
+    ;   detect_kernels_fs(ProjectPredicates, DetectedKernels),
         (   DetectedKernels \= []
         ->  pairs_keys(DetectedKernels, DetectedKeys),
             format(user_error, '[WAM-FSharp] detected kernels: ~w~n', [DetectedKeys])
@@ -2922,7 +3074,7 @@ write_wam_fsharp_project(Predicates, Options, ProjectDir) :-
 
     % Resolve emit mode and partition
     wam_fsharp_resolve_emit_mode(Options, EmitMode),
-    wam_fsharp_partition_predicates(EmitMode, Predicates, DetectedKernels, InterpList, LoweredList),
+    wam_fsharp_partition_predicates(EmitMode, ProjectPredicates, DetectedKernels, InterpList, LoweredList),
     length(InterpList, NInterp),
     length(LoweredList, NLower),
     format(user_error, '[WAM-FSharp] emit_mode=~w  interpreted=~w  lowered=~w~n',
@@ -2939,10 +3091,10 @@ write_wam_fsharp_project(Predicates, Options, ProjectDir) :-
     write_fs_file(RuntimePath, RuntimeCode),
 
     % Compute base PCs for all predicates (shared between Predicates.fs and Lowered.fs)
-    compute_base_pcs_fs(Predicates, BasePCMap),
+    compute_base_pcs_fs(ProjectPredicates, BasePCMap),
 
     % Generate Predicates.fs (skip FFI-owned facts — Phase D: -70%)
-    compile_predicates_to_fsharp(Predicates, Options, DetectedKernels, BasePCMap, PredsCode),
+    compile_predicates_to_fsharp(ProjectPredicates, Options, DetectedKernels, BasePCMap, PredsCode),
     directory_file_path(ProjectDir, 'Predicates.fs', PredsPath),
     write_fs_file(PredsPath, PredsCode),
 
@@ -2952,7 +3104,9 @@ write_wam_fsharp_project(Predicates, Options, ProjectDir) :-
     directory_file_path(ProjectDir, 'Lowered.fs', LoweredPath),
     write_fs_file(LoweredPath, LoweredCode),
 
-    % Generate Program.fs (benchmark driver)
+    % Generate Program.fs (benchmark driver).  The driver calls into
+    % USER predicates only -- portable-parser predicates are library
+    % code, not entry points -- so this stays on the original list.
     option(module_name(ModName), Options, 'wam-fsharp-bench'),
     generate_program_fs(Predicates, DetectedKernels, Options, ProgramCode),
     directory_file_path(ProjectDir, 'Program.fs', ProgramPath),
