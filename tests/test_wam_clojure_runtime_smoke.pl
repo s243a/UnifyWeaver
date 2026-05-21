@@ -147,6 +147,8 @@
 :- dynamic user:wam_atom_codes_reverse/0.
 :- dynamic user:wam_atom_chars_guard/2.
 :- dynamic user:wam_atom_chars_reverse/0.
+:- dynamic user:wam_quoted_atom_quote/0.
+:- dynamic user:wam_quoted_atom_backslash/0.
 :- dynamic user:wam_atom_string_guard/2.
 :- dynamic user:wam_atom_string_reverse/0.
 :- dynamic user:wam_atom_string_unbound_pair/1.
@@ -378,6 +380,8 @@ user:wam_atom_codes_guard(A, C) :- atom_codes(A, C).
 user:wam_atom_codes_reverse :- atom_codes(A, [102,111,111]), A = foo.
 user:wam_atom_chars_guard(A, C) :- atom_chars(A, C).
 user:wam_atom_chars_reverse :- atom_chars(A, [f,o,o]), A = foo.
+user:wam_quoted_atom_quote :- atom_codes('a''b', [97,39,98]).
+user:wam_quoted_atom_backslash :- atom_codes('a\\b', [97,92,98]).
 user:wam_atom_string_guard(A, S) :- atom_string(A, S).
 user:wam_atom_string_reverse :- atom_string(A, world), A = world.
 user:wam_atom_string_unbound_pair(_) :- user:wam_unbound_arg(A), user:wam_unbound_arg(S), atom_string(A, S).
@@ -614,6 +618,8 @@ run_smoke :-
           user:wam_atom_codes_reverse/0,
           user:wam_atom_chars_guard/2,
           user:wam_atom_chars_reverse/0,
+          user:wam_quoted_atom_quote/0,
+          user:wam_quoted_atom_backslash/0,
           user:wam_atom_string_guard/2,
           user:wam_atom_string_reverse/0,
           user:wam_atom_string_unbound_pair/1,
@@ -1003,6 +1009,8 @@ smoke_cases([
     case('wam_atom_chars_guard/2', args(foo, '[f,o,o]'), "true"),
     case('wam_atom_chars_guard/2', args(foo, '[f,o]'), "false"),
     case('wam_atom_chars_reverse/0', no_args, "true"),
+    case('wam_quoted_atom_quote/0', no_args, "true"),
+    case('wam_quoted_atom_backslash/0', no_args, "true"),
     case('wam_atom_string_guard/2', args(hello, hello), "true"),
     case('wam_atom_string_guard/2', args(hello, world), "false"),
     case('wam_atom_string_reverse/0', no_args, "true"),
@@ -1415,6 +1423,8 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-ground-nested-unbound-1"),
     has(CoreCode, "defn lowered-wam-atom-codes-guard-2"),
     has(CoreCode, "defn lowered-wam-atom-chars-guard-2"),
+    has(CoreCode, "defn lowered-wam-quoted-atom-quote-0"),
+    has(CoreCode, "defn lowered-wam-quoted-atom-backslash-0"),
     has(CoreCode, "defn lowered-wam-atom-string-guard-2"),
     has(CoreCode, "defn lowered-wam-atom-number-guard-2"),
     has(CoreCode, "defn lowered-wam-upcase-atom-guard-2"),
