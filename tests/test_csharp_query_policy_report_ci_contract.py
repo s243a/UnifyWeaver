@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "examples" / "benchmark" / "benchmark_csharp_query_effective_distance_artifact_backends.py"
+WRAPPER_SCRIPT = ROOT / "examples" / "benchmark" / "review_csharp_query_effective_distance_policy.py"
 SUMMARY_HEADERS = [
     "scale",
     "relation",
@@ -48,6 +49,36 @@ class CSharpQueryPolicyReportCiContractTests(unittest.TestCase):
             "--policy-action-threshold",
             "--fail-on-policy-actions",
             "policy-actionable-markdown",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, result.stdout)
+
+    def test_policy_review_wrapper_is_in_ci_contract(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "test.yml").read_text()
+
+        self.assertIn("python3 -m unittest tests/test_csharp_query_policy_review_wrapper.py", workflow)
+        self.assertIn(
+            "python3 examples/benchmark/review_csharp_query_effective_distance_policy.py --dry-run",
+            workflow,
+        )
+
+    def test_policy_review_wrapper_help_exposes_safe_contract(self) -> None:
+        result = subprocess.run(
+            ["python3", str(WRAPPER_SCRIPT), "--help"],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+        for expected in (
+            "--summary-input",
+            "--summary-output",
+            "--policy-action-threshold",
+            "--no-fail-on-policy-actions",
+            "--dry-run",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, result.stdout)
