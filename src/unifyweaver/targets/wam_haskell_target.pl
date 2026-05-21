@@ -2020,17 +2020,26 @@ step !ctx s (TryMeElse label) =
         }
   in Just (s { wsPC = wsPC s + 1, wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })
 
+-- TrustMe / RetryMeElse: when an indexed SwitchOnConstantPc jumps
+-- directly to a clause that begins with one of these (the WAM
+-- emitter places labels just before Retry/Trust), there''s no
+-- choice point to pop or modify — we''re committing deterministically
+-- to that clause via indexed dispatch.  Treat the empty-CP case as
+-- a no-op advance instead of failing, matching the F# fix from the
+-- query-smoke surfaced Bug A (PR #2351 in the F# parity track).
+-- Without this, `parent(ann, X)` (clause 3 reachable only via
+-- indexed dispatch) returns Nothing instead of binding X = eve.
 step !ctx s TrustMe =
   case wsCPs s of
     (_ : rest) -> Just (s { wsPC = wsPC s + 1, wsCPs = rest, wsCPsLen = wsCPsLen s - 1 })
-    [] -> Nothing
+    [] -> Just (s { wsPC = wsPC s + 1 })
 
 step !ctx s (RetryMeElse label) =
   case wsCPs s of
     (cp : rest) ->
       let nextPC = fromMaybe 0 $ Map.lookup label (wcLabels ctx)
       in Just (s { wsPC = wsPC s + 1, wsCPs = cp { cpNextPC = nextPC } : rest })
-    [] -> Nothing
+    [] -> Just (s { wsPC = wsPC s + 1 })
 
 -- Pre-resolved variants: direct PC, no label lookup
 step !ctx s (TryMeElsePc nextPC) =
@@ -2047,10 +2056,11 @@ step !ctx s (TryMeElsePc nextPC) =
         }
   in Just (s { wsPC = wsPC s + 1, wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })
 
+-- See TrustMe above for the rationale for the empty-CP no-op-advance.
 step !ctx s (RetryMeElsePc nextPC) =
   case wsCPs s of
     (cp : rest) -> Just (s { wsPC = wsPC s + 1, wsCPs = cp { cpNextPC = nextPC } : rest })
-    [] -> Nothing
+    [] -> Just (s { wsPC = wsPC s + 1 })
 
 -- Phase 4.1 parallel-forkable variants. For now they alias their
 -- sequential counterparts — the instructions mark the predicate as
@@ -2078,17 +2088,26 @@ step !ctx s ParTrustMe              = step ctx s TrustMe
 step !ctx s (ParTryMeElsePc pc)     = forkOrSequential ctx s (Right pc)
 step !ctx s (ParRetryMeElsePc pc)   = step ctx s (RetryMeElsePc pc)
 
+-- SwitchOnConstantPc: indexed dispatch on A1.  Hits jump to the
+-- matching clause; misses fall through to the next instruction
+-- (typically TryMeElse) which then runs the linear chain.  Falling
+-- through on miss (rather than returning Nothing) mirrors the WAM
+-- compiler''s `tom:default` semantics — `default` labels get dropped
+-- by resolveCallInstrs, so the table just lacks an entry, and falling
+-- through is the right behavior.  Without this, indexed dispatch
+-- fails outright on any A1 not explicitly listed in the table.
+-- Matches F# Bug A fix from PR #2351 in the F# parity track.
 step !ctx s (SwitchOnConstantPc table) =
   let val = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
   in case val of
     Just (Unbound _) -> Just (s { wsPC = wsPC s + 1 })
     Just (Atom aid) -> case IM.lookup aid table of
       Just pc -> Just (s { wsPC = pc })
-      Nothing -> Nothing
+      Nothing -> Just (s { wsPC = wsPC s + 1 })
     Just (Integer n) -> case IM.lookup n table of
       Just pc -> Just (s { wsPC = pc })
-      Nothing -> Nothing
-    _ -> Nothing
+      Nothing -> Just (s { wsPC = wsPC s + 1 })
+    _ -> Just (s { wsPC = wsPC s + 1 })
 
 step !ctx s (BuiltinCall "!/0" _) =
   -- Cut: truncate wsCPs to the barrier depth saved at clause Allocate.
@@ -2232,6 +2251,7 @@ step !ctx s (BuiltinCall "\\\\+/1" _) =
     _ -> Nothing
 
 -- SwitchOnConstant: dispatch on A1 value via O(log n) Map lookup
+-- See SwitchOnConstantPc above for the fall-through-on-miss rationale.
 step !ctx s (SwitchOnConstant table) =
   let val = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
   in case val of
@@ -2239,9 +2259,9 @@ step !ctx s (SwitchOnConstant table) =
     Just v -> case Map.lookup v table of
       Just label -> case Map.lookup label (wcLabels ctx) of
         Just pc -> Just (s { wsPC = pc })
-        Nothing -> Nothing
-      Nothing -> Nothing  -- no match: fail
-    Nothing -> Nothing
+        Nothing -> Just (s { wsPC = wsPC s + 1 })
+      Nothing -> Just (s { wsPC = wsPC s + 1 })  -- no match: fall through
+    Nothing -> Just (s { wsPC = wsPC s + 1 })
 
 step !ctx s (BuiltinCall ">/2" _) =
   let v1 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
