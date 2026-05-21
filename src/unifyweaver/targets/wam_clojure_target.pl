@@ -506,7 +506,9 @@ switch_case_atom_values(CasesText, AtomSeeds) :-
             AtomSeeds).
 
 wam_atom_token_text("''", "") :- !.
-wam_atom_token_text(Token, Token).
+wam_atom_token_text(Token, AtomText) :-
+    clj_unquote_wam_atom_token(Token, Unquoted),
+    clj_strip_quoted_numeric_marker(Unquoted, AtomText).
 
 wam_atom_token_literal(Token, Literal) :-
     wam_atom_token_text(Token, AtomText),
@@ -761,13 +763,47 @@ run_shell_command_or_throw(Cwd, Command, ErrorFunctor) :-
     ).
 
 clj_string_literal(In, Literal) :-
-    atom_string(InAtom, In),
-    atom_string(InAtom, InStr0),
+    (   string(In) -> InStr0 = In ; atom_string(In, InStr0) ),
     escape_clj_string(InStr0, Escaped),
     format(atom(Literal), '"~w"', [Escaped]).
 
 escape_clj_string(In, Out) :-
-    split_string(In, "\\", "", Parts1),
-    atomic_list_concat(Parts1, "\\\\", Tmp1),
-    split_string(Tmp1, "\"", "", Parts2),
-    atomic_list_concat(Parts2, "\\\"", Out).
+    string_codes(In, Codes),
+    maplist(escape_clj_code, Codes, Parts),
+    atomics_to_string(Parts, "", Out).
+
+escape_clj_code(92, "\\\\") :- !.
+escape_clj_code(34, "\\\"") :- !.
+escape_clj_code(10, "\\n") :- !.
+escape_clj_code(13, "\\r") :- !.
+escape_clj_code(9, "\\t") :- !.
+escape_clj_code(Code, Escaped) :-
+    (   Code < 32
+    ->  format(string(Escaped), '\\u~|~`0t~16r~4+', [Code])
+    ;   char_code(Char, Code),
+        string_chars(Escaped, [Char])
+    ).
+
+clj_unquote_wam_atom_token(Token, S) :-
+    (   string(Token) -> S0 = Token ; atom_string(Token, S0) ),
+    sub_string(S0, 0, 1, _, "'"),
+    sub_string(S0, _, 1, 0, "'"),
+    !,
+    sub_string(S0, 1, _, 1, Inner),
+    string_codes(Inner, Codes0),
+    clj_unescape_wam_codes(Codes0, Codes),
+    string_codes(S, Codes).
+clj_unquote_wam_atom_token(Token, S) :-
+    (   string(Token) -> S = Token ; atom_string(Token, S) ).
+
+clj_unescape_wam_codes([], []).
+clj_unescape_wam_codes([92, C|Rest], [C|More]) :- !,
+    clj_unescape_wam_codes(Rest, More).
+clj_unescape_wam_codes([C|Rest], [C|More]) :-
+    clj_unescape_wam_codes(Rest, More).
+
+clj_strip_quoted_numeric_marker(S0, S) :-
+    string_codes(S0, [1|Rest]),
+    !,
+    string_codes(S, Rest).
+clj_strip_quoted_numeric_marker(S, S).

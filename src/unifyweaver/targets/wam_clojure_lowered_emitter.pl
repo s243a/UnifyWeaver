@@ -992,18 +992,59 @@ emit_lowered_expr(_Instr, S, Expr) :-
 clj_lowered_literal(Value, Literal) :-
     (   number(Value)
     ->  format(atom(Literal), '~w', [Value])
-    ;   Value == ''
-    ->  Literal = '""'
-    ;   format(atom(Literal), '~q', [Value])
+    ;   clj_lowered_atom_text(Value, Text),
+        clj_lowered_string_literal(Text, Literal)
     ).
+
+clj_lowered_atom_text(Value, Text) :-
+    (   string(Value) -> S0 = Value ; atom_string(Value, S0) ),
+    clj_unquote_wam_atom_token(S0, S1),
+    clj_strip_quoted_numeric_marker(S1, Text).
+
+clj_unquote_wam_atom_token("''", "") :- !.
+clj_unquote_wam_atom_token(S0, S) :-
+    sub_string(S0, 0, 1, _, "'"),
+    sub_string(S0, _, 1, 0, "'"),
+    !,
+    sub_string(S0, 1, _, 1, Inner),
+    string_codes(Inner, Codes0),
+    clj_unescape_wam_codes(Codes0, Codes),
+    string_codes(S, Codes).
+clj_unquote_wam_atom_token(S, S).
+
+clj_unescape_wam_codes([], []).
+clj_unescape_wam_codes([92, C|Rest], [C|More]) :- !,
+    clj_unescape_wam_codes(Rest, More).
+clj_unescape_wam_codes([C|Rest], [C|More]) :-
+    clj_unescape_wam_codes(Rest, More).
+
+clj_strip_quoted_numeric_marker(S0, S) :-
+    string_codes(S0, [1|Rest]),
+    !,
+    string_codes(S, Rest).
+clj_strip_quoted_numeric_marker(S, S).
 
 clj_lowered_string_literal(Value, Literal) :-
     (   string(Value) -> S0 = Value ; atom_string(Value, S0) ),
-    split_string(S0, "\\", "", BackslashParts),
-    atomics_to_string(BackslashParts, "\\\\", S1),
-    split_string(S1, "\"", "", QuoteParts),
-    atomics_to_string(QuoteParts, "\\\"", Escaped),
+    clj_escape_string(S0, Escaped),
     format(atom(Literal), '"~w"', [Escaped]).
+
+clj_escape_string(S0, Escaped) :-
+    string_codes(S0, Codes),
+    maplist(clj_escape_code, Codes, Parts),
+    atomics_to_string(Parts, "", Escaped).
+
+clj_escape_code(92, "\\\\") :- !.
+clj_escape_code(34, "\\\"") :- !.
+clj_escape_code(10, "\\n") :- !.
+clj_escape_code(13, "\\r") :- !.
+clj_escape_code(9, "\\t") :- !.
+clj_escape_code(Code, Escaped) :-
+    (   Code < 32
+    ->  format(string(Escaped), '\\u~|~`0t~16r~4+', [Code])
+    ;   char_code(Char, Code),
+        string_chars(Escaped, [Char])
+    ).
 
 instr_comment(proceed, "proceed").
 instr_comment(fail, "fail").
