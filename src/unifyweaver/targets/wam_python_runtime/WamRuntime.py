@@ -1127,17 +1127,13 @@ def _variable_names_from_env(env_term: 'Term', source: WamState, target: WamStat
     return _list_from_terms(list(reversed(pairs)))
 
 
-def _variables_from_term(term: 'Term', state: WamState) -> 'Term':
-    seen: set[int] = set()
-    variables: List[Term] = []
+def _walk_term_vars(term: 'Term', state: WamState) -> List[Var]:
+    variables: List[Var] = []
 
     def walk(value: 'Term') -> None:
         value = deref(value, state)
         if isinstance(value, Var):
-            key = id(value.ref)
-            if key not in seen:
-                seen.add(key)
-                variables.append(value)
+            variables.append(value)
             return
         if isinstance(value, Ref):
             heap_value = state.heap.get(value.addr)
@@ -1149,7 +1145,57 @@ def _variables_from_term(term: 'Term', state: WamState) -> 'Term':
                 walk(arg)
 
     walk(term)
+    return variables
+
+
+def _variables_from_term(term: 'Term', state: WamState) -> 'Term':
+    seen: set[int] = set()
+    variables: List[Term] = []
+    for var in _walk_term_vars(term, state):
+        key = id(var.ref)
+        if key not in seen:
+            seen.add(key)
+            variables.append(var)
     return _list_from_terms(variables)
+
+
+def _variable_name_map_from_env(env_term: 'Term', source: WamState, target: WamState,
+                                var_map: Dict[int, Var]) -> Dict[int, str]:
+    names: Dict[int, str] = {}
+    for pair in _term_to_list(env_term, source) or []:
+        pair = deref(pair, source)
+        if not isinstance(pair, Compound) or len(pair.args) != 2:
+            continue
+        name = deref(pair.args[0], source)
+        if not isinstance(name, Atom):
+            continue
+        var = _copy_term_between_states(pair.args[1], source, target, var_map)
+        if isinstance(var, Var):
+            names[id(var.ref)] = name.name
+    return names
+
+
+def _singletons_from_term(term: 'Term', env_term: 'Term', source: WamState,
+                          target: WamState, var_map: Dict[int, Var]) -> 'Term':
+    occurrences = _walk_term_vars(term, target)
+    counts: Dict[int, int] = {}
+    for var in occurrences:
+        key = id(var.ref)
+        counts[key] = counts.get(key, 0) + 1
+
+    names = _variable_name_map_from_env(env_term, source, target, var_map)
+    emitted: set[int] = set()
+    pairs: List[Term] = []
+    for var in occurrences:
+        key = id(var.ref)
+        if key in emitted or counts.get(key) != 1:
+            continue
+        name = names.get(key, '_')
+        if name != '_' and name.startswith('_'):
+            continue
+        emitted.add(key)
+        pairs.append(Compound('=/2', [make_atom(name), var]))
+    return _list_from_terms(pairs)
 
 
 def _execute_compiled_parse_atom(state: WamState, atom_text: str, target: 'Term',
@@ -1164,12 +1210,16 @@ def _execute_compiled_parse_atom(state: WamState, atom_text: str, target: 'Term'
 
     want_var_names = None
     want_variables = None
+    want_singletons = None
     if options is not None:
         want_var_names = _read_option_arg(options, 'variable_names', state)
         want_variables = _read_option_arg(options, 'variables', state)
+        want_singletons = _read_option_arg(options, 'singletons', state)
 
     parser_entry = 'parse_term_from_atom/3'
-    if (want_var_names is not None or want_variables is not None) and 'parse_term_from_atom/4' in labels:
+    wants_env = (want_var_names is not None or want_variables is not None or
+                 want_singletons is not None)
+    if wants_env and 'parse_term_from_atom/4' in labels:
         parser_entry = 'parse_term_from_atom/4'
     elif parser_entry not in labels:
         return False
@@ -1201,6 +1251,10 @@ def _execute_compiled_parse_atom(state: WamState, atom_text: str, target: 'Term'
     if want_variables is not None:
         variables = _variables_from_term(copied, state)
         if not unify(want_variables, variables, state):
+            return False
+    if want_singletons is not None:
+        singletons = _singletons_from_term(copied, var_env, parser_state, state, var_map)
+        if not unify(want_singletons, singletons, state):
             return False
     return True
 
