@@ -151,6 +151,29 @@ supported_fs(proceed).
 supported_fs(fail).
 supported_fs(execute(_)).
 
+% ----------------------------------------------------------------------
+% Phase I — Haskell-only specialized instructions.  Emitted by the WAM
+% compiler's binding-analysis pass; previously the lowered emitter
+% silently fell back to interpreter mode when it saw any of these.
+% Each clause below mirrors the matching wam_instr_to_fsharp text parse
+% rule (src/unifyweaver/targets/wam_fsharp_target.pl Phase I block) so
+% the lowered F# function emits the same Instruction constructor the
+% interpreter codegen does.
+% ----------------------------------------------------------------------
+supported_fs(put_structure_dyn(_, _, _)).
+supported_fs(arg(_, _, _)).
+supported_fs(not_member_list(_, _)).
+supported_fs(build_empty_set(_)).
+supported_fs(set_insert(_, _, _)).
+supported_fs(not_member_set(_, _)).
+%% not_member_const_atoms is variable-arity:
+%%   not_member_const_atoms(XReg, Atom1, Atom2, ..., AtomN)  (N >= 1)
+%% The compound term arity is therefore >= 2 (one XReg + one or more atoms).
+supported_fs(T) :-
+    compound(T),
+    functor(T, not_member_const_atoms, N),
+    N >= 2.
+
 % ============================================================================
 % Emission
 % ============================================================================
@@ -272,6 +295,19 @@ is_match_instr_fs(retry_me_else(_)).
 is_match_instr_fs(trust_me).
 is_match_instr_fs(begin_aggregate(_, _, _)).
 is_match_instr_fs(end_aggregate(_)).
+%% Phase I — all delegate to `step` via a match arm, so they need the
+%% `| Some SVout ->` continuation indent like every other match-emitting
+%% instruction.
+is_match_instr_fs(put_structure_dyn(_, _, _)).
+is_match_instr_fs(arg(_, _, _)).
+is_match_instr_fs(not_member_list(_, _)).
+is_match_instr_fs(build_empty_set(_)).
+is_match_instr_fs(set_insert(_, _, _)).
+is_match_instr_fs(not_member_set(_, _)).
+is_match_instr_fs(T) :-
+    compound(T),
+    functor(T, not_member_const_atoms, N),
+    N >= 2.
 
 %% emit_instrs_lm_fs(+PCInstrs, +SV, +Indent, +FP, +LabelMap)
 %  LabelMap-aware entry point called from emit_func_fs.
@@ -340,11 +376,13 @@ emit_instrs_lm_fs([pc(PC, Instr)|Rest], SV, Ind, FP, LM) :-
     atom_concat(Ind, "    ", IndInner),
     (   Rest = []
     ->  (   is_match_instr_fs(Instr)
-        ->  format("~wSome ~w~n", [IndInner, SVout])
+        ->  format("~wSome ~w~n", [IndInner, SVout]),
+            format("~w| None -> None~n", [Ind])
         ;   true
         )
     ;   (   is_match_instr_fs(Instr)
-        ->  emit_instrs_lm_fs(Rest, SVout, IndInner, FP, LM)
+        ->  emit_instrs_lm_fs(Rest, SVout, IndInner, FP, LM),
+            format("~w| None -> None~n", [Ind])
         ;   emit_instrs_lm_fs(Rest, SVout, Ind, FP, LM)
         )
     ).
@@ -394,19 +432,24 @@ emit_instrs_fs([pc(PC, Instr)|Rest], SV, Ind, FP) :-
     (   Rest = []
     ->  % Last instruction.
         %   - match-emitting instructions leave an open "| Some SVout ->" arm;
-        %     we must emit "Some SVout" indented one level deeper as its body.
+        %     we must emit "Some SVout" indented one level deeper as its body,
+        %     and close the match with "| None -> None" at Ind level so the
+        %     resulting F# pattern match is exhaustive (FS0025 closure).
         %   - let-binding instructions (allocate, put_*, get_variable, proceed)
         %     already closed their output, so nothing more is needed.
         (   is_match_instr_fs(Instr)
-        ->  format("~wSome ~w~n", [IndInner, SVout])
+        ->  format("~wSome ~w~n", [IndInner, SVout]),
+            format("~w| None -> None~n", [Ind])
         ;   true
         )
     ;   % Intermediate instruction: continue chain.
         %   match-emitting instructions opened a "| Some SVout ->" arm;
         %   remaining instructions become its body at IndInner.
+        %   After the body, close the match with "| None -> None" at Ind level.
         %   let-binding instructions stay at the same indent level.
         (   is_match_instr_fs(Instr)
-        ->  emit_instrs_fs(Rest, SVout, IndInner, FP)
+        ->  emit_instrs_fs(Rest, SVout, IndInner, FP),
+            format("~w| None -> None~n", [Ind])
         ;   emit_instrs_fs(Rest, SVout, Ind, FP)
         )
     ).
@@ -441,9 +484,12 @@ emit_ite_block_fs([pc(PC, Instr)|Rest], SV, Ind, FP) :-
     emit_one_fs(Instr, PC, SV, SVout, Ind, FP),
     % Mirror emit_instrs_lm_fs: match-emitting instructions open a
     % '| Some SVout ->' arm, so remaining code becomes its body at IndInner.
+    % After the body, close the match with '| None -> None' at Ind level so
+    % the F# pattern match is exhaustive (FS0025 closure).
     atom_concat(Ind, "    ", IndInner),
     (   is_match_instr_fs(Instr)
-    ->  emit_ite_block_fs(Rest, SVout, IndInner, FP)
+    ->  emit_ite_block_fs(Rest, SVout, IndInner, FP),
+        format("~w| None -> None~n", [Ind])
     ;   emit_ite_block_fs(Rest, SVout, Ind, FP)
     ).
 
@@ -763,6 +809,96 @@ emit_one_fs(execute(PredStr), _PC, SV, SV, I, FP) :-
     ->  format("~wcallForeign ctx \"~w\" ~w~n", [I, EscPred, SV])
     ;   format("~wdispatchCall ctx \"~w\" ~w~n", [I, EscPred, SV])
     ).
+
+% ============================================================================
+% Phase I — Haskell-only specialized instructions: delegate to step.
+%
+% Each clause emits exactly the same shape as the BuiltinCall delegation
+% above: open a `match step ctx { s with WsPC = PC } (Constructor ...) with`
+% block with a `| Some SVout ->` arm that the next instruction continues
+% into.  The matching is_match_instr_fs/1 entries above make sure the
+% emit_instrs_lm_fs chain places the continuation at the right indent.
+% ============================================================================
+
+% PutStructureDyn — runtime-parsed functor (name+arity from registers).
+emit_one_fs(put_structure_dyn(NameRegStr, ArityRegStr, TargetRegStr),
+            PC, SV, SVout, I, _FP) :-
+    reg_to_int_fs(NameRegStr, NameReg),
+    reg_to_int_fs(ArityRegStr, ArityReg),
+    reg_to_int_fs(TargetRegStr, TargetReg),
+    fresh_sv_fs(SV, SVout),
+    format("~wmatch step ctx { ~w with WsPC = ~w } (PutStructureDyn (~w, ~w, ~w)) with~n",
+           [I, SV, PC, NameReg, ArityReg, TargetReg]),
+    format("~w| Some ~w ->~n", [I, SVout]).
+
+% Arg — specialized arg/3 with compile-time N.
+emit_one_fs(arg(NStr, TRegStr, ARegStr), PC, SV, SVout, I, _FP) :-
+    (   number_string(N, NStr) -> true
+    ;   atom_number(NStr, N) -> true
+    ;   throw(error(domain_error(arg_specialization_n, NStr), emit_one_fs/6))
+    ),
+    reg_to_int_fs(TRegStr, TReg),
+    reg_to_int_fs(ARegStr, AReg),
+    fresh_sv_fs(SV, SVout),
+    format("~wmatch step ctx { ~w with WsPC = ~w } (Arg (~w, ~w, ~w)) with~n",
+           [I, SV, PC, N, TReg, AReg]),
+    format("~w| Some ~w ->~n", [I, SVout]).
+
+% NotMemberList — \\+ member(X, L) on a bound VList L.
+emit_one_fs(not_member_list(XRegStr, LRegStr), PC, SV, SVout, I, _FP) :-
+    reg_to_int_fs(XRegStr, XReg),
+    reg_to_int_fs(LRegStr, LReg),
+    fresh_sv_fs(SV, SVout),
+    format("~wmatch step ctx { ~w with WsPC = ~w } (NotMemberList (~w, ~w)) with~n",
+           [I, SV, PC, XReg, LReg]),
+    format("~w| Some ~w ->~n", [I, SVout]).
+
+% NotMemberConstAtoms — variable-arity: not_member_const_atoms(XReg, A1, ..., An).
+emit_one_fs(NotMemConstAtoms, PC, SV, SVout, I, _FP) :-
+    compound(NotMemConstAtoms),
+    functor(NotMemConstAtoms, not_member_const_atoms, N),
+    N >= 2,
+    arg(1, NotMemConstAtoms, XRegStr),
+    reg_to_int_fs(XRegStr, XReg),
+    findall(AtomTok,
+            (between(2, N, K), arg(K, NotMemConstAtoms, AtomTok)),
+            AtomTokens),
+    maplist([Tok, Quoted]>>(
+        escape_dq_fs(Tok, EscTok),
+        format(atom(Quoted), '"~w"', [EscTok])
+    ), AtomTokens, QuotedAtoms),
+    atomic_list_concat(QuotedAtoms, '; ', AtomsList),
+    fresh_sv_fs(SV, SVout),
+    format("~wmatch step ctx { ~w with WsPC = ~w } (NotMemberConstAtoms (~w, [~w])) with~n",
+           [I, SV, PC, XReg, AtomsList]),
+    format("~w| Some ~w ->~n", [I, SVout]).
+
+% BuildEmptySet — write VSet Set.empty into the target register.
+emit_one_fs(build_empty_set(RegStr), PC, SV, SVout, I, _FP) :-
+    reg_to_int_fs(RegStr, Reg),
+    fresh_sv_fs(SV, SVout),
+    format("~wmatch step ctx { ~w with WsPC = ~w } (BuildEmptySet ~w) with~n",
+           [I, SV, PC, Reg]),
+    format("~w| Some ~w ->~n", [I, SVout]).
+
+% SetInsert — Atom + VSet -> VSet (with Set.add).
+emit_one_fs(set_insert(ERegStr, InRegStr, OutRegStr), PC, SV, SVout, I, _FP) :-
+    reg_to_int_fs(ERegStr, EReg),
+    reg_to_int_fs(InRegStr, InReg),
+    reg_to_int_fs(OutRegStr, OutReg),
+    fresh_sv_fs(SV, SVout),
+    format("~wmatch step ctx { ~w with WsPC = ~w } (SetInsert (~w, ~w, ~w)) with~n",
+           [I, SV, PC, EReg, InReg, OutReg]),
+    format("~w| Some ~w ->~n", [I, SVout]).
+
+% NotMemberSet — O(log N) visited-set membership check.
+emit_one_fs(not_member_set(ERegStr, SRegStr), PC, SV, SVout, I, _FP) :-
+    reg_to_int_fs(ERegStr, EReg),
+    reg_to_int_fs(SRegStr, SReg),
+    fresh_sv_fs(SV, SVout),
+    format("~wmatch step ctx { ~w with WsPC = ~w } (NotMemberSet (~w, ~w)) with~n",
+           [I, SV, PC, EReg, SReg]),
+    format("~w| Some ~w ->~n", [I, SVout]).
 
 % BeginAggregate — delegate to step
 emit_one_fs(begin_aggregate(TypeStr, ValRegStr, ResRegStr), PC, SV, SVout, I, _FP) :-

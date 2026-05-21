@@ -948,6 +948,52 @@ func atomNumberValue(v Value) (Value, bool) {
 	}
 }
 
+func atomCodeList(text string) *List {
+	items := make([]Value, 0, len([]rune(text)))
+	for _, r := range text {
+		items = append(items, &Integer{Val: int64(r)})
+	}
+	return &List{Elements: items}
+}
+
+func codePointValue(v Value) (rune, bool) {
+	switch t := v.(type) {
+	case *Integer:
+		if t.Val < 0 || t.Val > 65535 {
+			return 0, false
+		}
+		return rune(t.Val), true
+	case *Atom:
+		parsed, ok := parseAtomNumberText(strings.TrimPrefix(t.Name, quotedNumericAtomPrefix))
+		if !ok {
+			return 0, false
+		}
+		integer, ok := parsed.(*Integer)
+		if !ok || integer.Val < 0 || integer.Val > 65535 {
+			return 0, false
+		}
+		return rune(integer.Val), true
+	default:
+		return 0, false
+	}
+}
+
+func (vm *WamState) codeListText(v Value) (string, bool) {
+	items, ok := vm.listToSlice(v)
+	if !ok {
+		return "", false
+	}
+	runes := make([]rune, 0, len(items))
+	for _, item := range items {
+		code, ok := codePointValue(vm.deref(item))
+		if !ok {
+			return "", false
+		}
+		runes = append(runes, code)
+	}
+	return string(runes), true
+}
+
 func (vm *WamState) Deref(v Value) Value {
 	return vm.deref(v)
 }
@@ -1172,6 +1218,64 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return false
 		}
 		return vm.Unify(arg3, internAtom(left.Name+right.Name))
+	case "atom_length/2", "string_length/2":
+		atom, ok := vm.deref(arg1).(*Atom)
+		if !ok {
+			return false
+		}
+		return vm.Unify(arg2, &Integer{Val: int64(len([]rune(atom.Name)))})
+	case "char_code/2":
+		charVal := vm.deref(arg1)
+		codeVal := vm.deref(arg2)
+		if atom, ok := charVal.(*Atom); ok {
+			runes := []rune(atom.Name)
+			if len(runes) != 1 {
+				return false
+			}
+			return vm.Unify(arg2, &Integer{Val: int64(runes[0])})
+		}
+		if code, ok := codeVal.(*Integer); ok {
+			if code.Val < 0 || code.Val > 65535 {
+				return false
+			}
+			return vm.Unify(arg1, internAtom(string(rune(code.Val))))
+		}
+		return false
+	case "atom_codes/2":
+		atomVal := vm.deref(arg1)
+		codeListVal := vm.deref(arg2)
+		if u, ok := codeListVal.(*Unbound); ok {
+			if next, ok := vm.heapConsAfterUnbound(u); ok {
+				codeListVal = vm.deref(next)
+			}
+		}
+		if atom, ok := atomVal.(*Atom); ok {
+			if _, unbound := codeListVal.(*Unbound); unbound {
+				return vm.Unify(arg2, atomCodeList(atom.Name))
+			}
+			text, ok := vm.codeListText(codeListVal)
+			return ok && atom.Name == text
+		}
+		if text, ok := vm.codeListText(codeListVal); ok {
+			return vm.Unify(arg1, internAtom(text))
+		}
+		return false
+	case "atom_string/2", "string_to_atom/2":
+		atomArg := arg1
+		stringArg := arg2
+		if op == "string_to_atom/2" {
+			atomArg = arg2
+			stringArg = arg1
+		}
+		atomVal := vm.deref(atomArg)
+		stringVal := vm.deref(stringArg)
+		if atom, ok := atomVal.(*Atom); ok {
+			return vm.Unify(stringArg, internAtom(atom.Name))
+		}
+		if text, ok := stringVal.(*Atom); ok {
+			return vm.Unify(atomArg, internAtom(text.Name))
+		}
+		return false
 
 	case "var/1": return isUnbound(vm.deref(arg1))
 	case "nonvar/1": return !isUnbound(vm.deref(arg1))

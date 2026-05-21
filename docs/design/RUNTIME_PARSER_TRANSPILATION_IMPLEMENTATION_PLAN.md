@@ -93,8 +93,103 @@ than emitting parser stubs.
 
 Status: this hook is implemented and covered by
 `tests/test_wam_runtime_parser_capability.pl`, with R and Lua as the initial
-consumers. The remaining work is target-by-target adoption, not inventing the
-contract.
+consumers. C++ is now also registered (default
+`native(parse_term)`; `compiled(prolog_term_parser)` available
+opt-in) -- it ships a hand-written canonical-form parser used by
+`atom_to_term/3`, `term_to_atom/2`'s reverse mode, and
+`read_term/1`. The C++ project writer is wired through the hook
+as of PR #2330; in compiled mode it auto-prepends the portable
+parser predicates. A follow-up PR adds wrapper predicates
+(`read_term_from_atom/2,3`, in
+`src/unifyweaver/core/cpp_runtime_parser_wrappers.pl`) so callers
+get the standard SWI builtin surface on top of the portable
+parser. The remaining work is target-by-target adoption, not
+inventing the contract.
+
+### Subset generation
+
+Compiling the full portable parser pulls ~40 predicates into the
+target output. For programs that only need a slice (e.g. just
+the tokenizer, or `canonical_op_table/1` for a downstream tool),
+the full include is wasteful.
+
+WAM-cpp supports an opt-in subset mode via:
+
+```prolog
+write_wam_cpp_project([...], [
+    runtime_parser(compiled),
+    runtime_parser_subset([tokenize/2, canonical_op_table/1])
+], OutDir).
+```
+
+The codegen does reachable-from analysis: starting from each
+listed entry point, walks clause bodies, follows callable goals
+that resolve into the parser+wrapper universe, repeats until
+the visited set is stable. Predicates outside the closure are
+omitted from the output entirely.
+
+Empirical sizes for a trivial driver predicate (one `:- true.`
+clause, the rest is the parser surface):
+
+| Subset | `generated_program.cpp` size |
+|---|---:|
+| Full (no subset) | ~2.8 MB |
+| `[read_term_from_atom/2]` | ~2.8 MB (nearly full -- pulls in `parse_term_from_atom` -> `parse_expr` -> everything) |
+| `[tokenize/2]` | ~87 KB (~30x smaller) |
+| `[canonical_op_table/1]` | ~2.7 MB (one fact, but the 43-element op-table list expands to a lot of put_structure WAM) |
+
+Takeaway: subset works well for tokenizer-only or op-table-only
+consumers; for users who need full operator parsing via
+`read_term_from_atom/2`, there's nothing to trim (and that's an
+inherent property of operator-aware parsing, not a codegen
+inefficiency). Entry points may be specified as either
+`Name/Arity` or `Module:Name/Arity`; the resolver canonicalises
+them against the parser+wrapper universe. Unknown names throw
+`domain_error(parser_subset_entry_point, ...)` so typos surface
+at codegen time rather than silently producing an empty closure.
+
+Implemented in PR #2332 with four regression tests covering
+leaf-closure, tokenizer-chain, bare-indicator resolution, and
+unknown-entry rejection.
+
+### Explicit-name wrappers vs shadowing standard SWI names
+
+PR #2334 added two explicit-name wrappers (`parse_atom_to_term/2`,
+`parse_term_to_atom/2`) for operator-aware parsing in compiled
+mode. The natural question was: *why not shadow the standard
+`atom_to_term/3` and `term_to_atom/2` names directly?* Because
+those names are registered in `is_builtin_pred/2` (in
+`wam_target.pl`), the compiler emits `builtin_call` for them,
+which bypasses the label-dispatch chain entirely and lands in
+the C++ `builtin()` function. A same-name wrapper would sit in
+the labels table but **never be reached** at runtime.
+
+Three options were considered:
+
+| Option | Approach | Scope | Tradeoff |
+|---|---|---|---|
+| A | Drop `is_builtin_pred/2` registrations globally | Shared codegen (all targets) | Native users still work via the Call → builtin() fallback; affects every target |
+| B | Per-target builtin-override hook in `compile_predicate_to_wam/3` | Cross-target plumbing | C++-only behavior, but requires shared-codegen API |
+| C | Add new explicit-name wrappers | C++-only, purely additive | Standard names still go to native builtin; users opt into operator parsing by calling explicit names |
+
+C was chosen because it's purely additive and ships in one PR
+without touching cross-target codegen. A and B remain real
+follow-up options if a use case for shadowing the standard names
+emerges (e.g. an existing library that calls `atom_to_term/3`
+and now needs operator support without a code change). Such a
+follow-up should land its own design pass since both options
+span more than just C++.
+
+`parse_term_to_atom/2` is mode-sensitive: forward mode delegates
+to the native `term_to_atom/2` builtin (rendering doesn't need
+operator support and the native path is faster); reverse mode
+goes through `parse_term_from_atom/3` with `canonical_op_table/1`.
+
+The subset machinery cooperates cleanly with these wrappers --
+`runtime_parser_subset([parse_atom_to_term/2, parse_term_to_atom/2])`
+pulls in the wrappers and their transitive closure (which
+includes `parse_term_from_atom/3` and the full operator-parser
+machinery; this is unavoidable for operator support).
 
 The hook should be independent of the WAM items API. A target can skip WAM text
 generation at build time and still need runtime source-term parsing.

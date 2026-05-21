@@ -66,7 +66,22 @@ init_fsharp_wam_bindings.
 
 fsharp_wam_value_type :-
     writeln(
-"[<CustomEquality; CustomComparison>]
+"/// Discriminated union for runtime Prolog values.
+///
+/// F# auto-generates structural equality and structural comparison for
+/// DUs, so we deliberately do NOT use [<CustomEquality; CustomComparison>]
+/// here.  An earlier version did, with `Equals(obj) = match ... -> this = other`
+/// and `IComparable.CompareTo = compare this other` overrides — both
+/// recurse through the very operator they''re trying to define, which
+/// would stack-overflow if ever exercised on the hot path.  The runtime
+/// hot path matches Value variants pattern-by-pattern anyway, so the
+/// override was unreachable; removing it is a pure cleanup.
+///
+/// For Prolog-standard term order (Var < Number < Atom < Compound) — as
+/// required by compare/3, @</2 and friends, sort/2, msort/2 — call the
+/// runtime helper compareValue (defined below) directly.  F#''s default
+/// structural comparison is NOT Prolog-standard order: it follows the
+/// DU constructor declaration order (Atom < Integer < Float < VList < ...).
 type Value =
     | Atom    of string
     | Integer of int
@@ -75,16 +90,9 @@ type Value =
     | Str     of string * Value list   // functor name, args
     | Unbound of int                   // variable id
     | Ref     of int                   // heap reference
-    interface System.IComparable with
-        member this.CompareTo(obj) =
-            match obj with
-            | :? Value as other -> compare this other
-            | _ -> -1
-    override this.Equals(obj) =
-        match obj with
-        | :? Value as other -> this = other
-        | _ -> false
-    override this.GetHashCode() = hash this").
+    | VSet    of Set<string>           // visited-set: Set of atom strings
+                                        // (F# atoms are string-based; Haskell
+                                        //  uses IS.IntSet of interned int IDs)").
 
 % ============================================================================
 % TrailEntry — mirrors Haskell `data TrailEntry`
@@ -95,12 +103,32 @@ fsharp_wam_trail_entry_type :-
 "type TrailEntry = { TrailVarId: int; TrailOldVal: Value option }").
 
 % ============================================================================
-% AggregateFrame — mirrors Haskell `AggFrame`
+% MergeStrategy + AggregateFrame — mirrors Haskell `MergeStrategy` + `AggFrame`
 % ============================================================================
+%
+% AggMergeStrategy classifies an aggregate's combine semantics so the WAM
+% runtime can decide whether to evaluate branches in parallel (forkable
+% strategies: sum/count/bag/set/findall) or fall back to sequential
+% choice-point backtracking (everything else).  Computed at BeginAggregate
+% time from the aggType string via inferMergeStrategy (defined in
+% WamRuntime).
 
 fsharp_wam_agg_frame_type :-
     writeln(
-"type AggFrame = { AggType: string; AggValReg: int; AggResReg: int; AggReturnPC: int }").
+"type MergeStrategy =
+    | MergeSum
+    | MergeCount
+    | MergeBag
+    | MergeSet
+    | MergeFindall
+    | MergeSequential   // not forkable: fall back to sequential backtrack
+
+type AggFrame =
+    { AggType:           string
+      AggValReg:         int
+      AggResReg:         int
+      AggReturnPC:       int
+      AggMergeStrategy:  MergeStrategy }").
 
 % ============================================================================
 % BuiltinState — mirrors Haskell `BuiltinState`
@@ -111,7 +139,13 @@ fsharp_wam_builtin_state_type :-
 "type BuiltinState =
     | FactRetry      of varId: int * remaining: string list * retPC: int
     | HopsRetry      of varId: int * remaining: int list   * retPC: int
-    | FFIStreamRetry of outRegs: int list * outVars: int list * remaining: Value list list * retPC: int").
+    | FFIStreamRetry of outRegs: int list * outVars: int list * remaining: Value list list * retPC: int
+    /// select/3 enumeration choice point.  Each remaining candidate is
+    /// a pair (selected, rest_items): on backtrack the runtime restores
+    /// the CP snapshot, unifies elemReg with `selected`, and binds
+    /// outReg to VList rest_items.  Mirrors the Go target's
+    /// SelectResults field (templates/targets/go_wam/state.go.mustache).
+    | SelectRetry    of elemReg: int * outReg: int * remaining: (Value * Value list) list * retPC: int").
 
 % ============================================================================
 % EnvFrame — mirrors Haskell `EnvFrame`
@@ -205,6 +239,17 @@ fsharp_wam_context_type :-
       WcForeignConfig   : Map<string, int>     // config_int values
       WcLoweredPredicates: Map<string, WamContext -> WamState -> WamState option>
                                                // predicate name → lowered fn
+      WcCancellationToken: System.Threading.CancellationToken option
+                                               // optional hard-cancel signal.
+                                               // `run` checks this each loop
+                                               // iteration and returns None when
+                                               // cancellation is requested.  Wired
+                                               // by runNegationParallel via
+                                               // Async.CancellationToken so the
+                                               // first successful branch can
+                                               // halt sibling branches'' work
+                                               // (CPU/thread savings beyond the
+                                               // wall-time win from Async.Choice).
     }").
 
 % ============================================================================
@@ -264,7 +309,25 @@ fsharp_wam_instruction_type :-
     | CutIte
     // Aggregation
     | BeginAggregate of aggType: string * valReg: int * resReg: int
-    | EndAggregate   of valReg: int").
+    | EndAggregate   of valReg: int
+    // ----------------------------------------------------------------------
+    // Phase I — Haskell-only specialized instructions ported to F#.
+    // These are performance optimizations emitted by the WAM compiler's
+    // analysis passes; their semantics live in step (see wam_fsharp_target.pl).
+    //   PutStructureDyn: runtime-parsed functor (name and arity from registers).
+    //   Arg: specialized arg/3 with literal N.
+    //   NotMemberList: specialized \\+ member(X, L) with L a VList.
+    //   NotMemberConstAtoms: specialized \\+ member(X, [a, b, c]) with the
+    //     atoms baked into the instruction at compile time.
+    //   BuildEmptySet / SetInsert / NotMemberSet: VSet visited-set support
+    //     (uses Set<string>; Haskell uses IS.IntSet of interned atom IDs).
+    | PutStructureDyn       of nameReg: int * arityReg: int * targetReg: int
+    | Arg                   of n: int * tReg: int * aReg: int
+    | NotMemberList         of xReg: int * lReg: int
+    | NotMemberConstAtoms   of xReg: int * atoms: string list
+    | BuildEmptySet         of reg: int
+    | SetInsert             of elemReg: int * inReg: int * outReg: int
+    | NotMemberSet          of elemReg: int * setReg: int").
 
 % ============================================================================
 % Helper functions — derefVar, getReg, putReg, addToBuilder, evalArith
@@ -466,7 +529,68 @@ and copyTermArgs (c: int) (m: Map<int, int>) (xs: Value list)
     | x :: rest ->
         let x1, c1, m1 = copyTermWalk c m x
         let rest1, c2, m2 = copyTermArgs c1 m1 rest
-        x1 :: rest1, c2, m2").
+        x1 :: rest1, c2, m2
+
+/// Standard-order comparison on Value terms.  Mirrors the Go target's
+/// compareValues helper (templates/targets/go_wam/state.go.mustache) and
+/// the Prolog/ISO standard ordering of terms:
+///
+///   Var < Number < Atom < String < Compound (incl. VList)
+///
+/// Numbers (Integer / Float) are compared by numeric value, bridging int
+/// and float via float-promotion.  Atoms compare by ordinal string order.
+/// Compound terms (Str / VList) compare first by arity, then by functor
+/// name, then element-wise.  VList behaves like a compound with functor
+/// '.' and arity matching the list length.
+///
+/// F#''s auto-generated structural comparison for the Value DU follows
+/// the constructor declaration order (Atom < Integer < Float < VList <
+/// Str < Unbound < Ref) — which is NOT Prolog standard order. So
+/// builtins that need standard order (compare/3, @</2, @=</2, @>/2,
+/// @>=/2, sort/2, msort/2) call compareValue directly rather than
+/// relying on the F# `compare` operator on Value.
+let rec compareValue (a: Value) (b: Value) : int =
+    let rankOf v =
+        match v with
+        | Unbound _           -> 0
+        | Integer _ | Float _ -> 1
+        | Atom _              -> 2
+        | Str _ | VList _     -> 3
+        | VSet _              -> 3  // VSet is a compound-ish visited set
+        | Ref _               -> 4
+    match a, b with
+    | Unbound x, Unbound y -> compare x y
+    | Integer x, Integer y -> compare x y
+    | Float x,   Float y   -> compare x y
+    | Integer x, Float y   -> compare (float x) y
+    | Float x,   Integer y -> compare x (float y)
+    | Atom x,    Atom y    -> System.String.Compare(x, y, System.StringComparison.Ordinal)
+    | Ref x,     Ref y     -> compare x y
+    | VSet x,    VSet y    -> compare x y  // F# Set has structural comparison
+    | Str (fx, ax), Str (fy, ay) ->
+        let ca = compare (List.length ax) (List.length ay)
+        if ca <> 0 then ca
+        else
+            let cf = System.String.Compare(fx, fy, System.StringComparison.Ordinal)
+            if cf <> 0 then cf
+            else compareValueList ax ay
+    | VList xs, VList ys -> compareValueList xs ys
+    | Str (_, ax), VList ys ->
+        let ca = compare (List.length ax) (List.length ys)
+        if ca <> 0 then ca else compareValueList ax ys
+    | VList xs, Str (_, ay) ->
+        let ca = compare (List.length xs) (List.length ay)
+        if ca <> 0 then ca else compareValueList xs ay
+    | _ -> compare (rankOf a) (rankOf b)
+
+and compareValueList (xs: Value list) (ys: Value list) : int =
+    match xs, ys with
+    | [], []           -> 0
+    | [], _            -> -1
+    | _, []            -> 1
+    | x :: xt, y :: yt ->
+        let c = compareValue x y
+        if c <> 0 then c else compareValueList xt yt").
 
 % ============================================================================
 % Combined preamble emitter

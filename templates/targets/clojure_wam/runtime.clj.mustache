@@ -1215,6 +1215,64 @@
       :else
       (backtrack state))))
 
+(defn char-type-class? [ch class-name]
+  (case class-name
+    "alpha" (Character/isLetter ch)
+    "alnum" (Character/isLetterOrDigit ch)
+    "digit" (Character/isDigit ch)
+    "upper" (Character/isUpperCase ch)
+    "lower" (Character/isLowerCase ch)
+    "whitespace" (Character/isWhitespace ch)
+    "space" (Character/isWhitespace ch)
+    "ascii" (<= (int ch) 127)
+    "punct" (and (<= (int ch) 127)
+                 (not (Character/isLetterOrDigit ch))
+                 (not (Character/isWhitespace ch)))
+    false))
+
+(defn char-type-code-arg [state type-value]
+  (when (and (structure-term? type-value)
+             (= "code/1" (functor-key (:intern-context state) (:functor type-value)))
+             (= 1 (count (:args type-value))))
+    (first (:args type-value))))
+
+(defn apply-char-type-solution [state]
+  (let [char-value (deref-value (:bindings state)
+                                (or (reg-get-raw state "A1") ::unbound))
+        type-value (deref-value (:bindings state)
+                                (or (reg-get-raw state "A2") ::unbound))
+        char-text (char-code-text state char-value)
+        type-text (atom-text state type-value)
+        code-arg (char-type-code-arg state type-value)]
+    (cond
+      (and (some? char-text)
+           (some? type-text)
+           (char-type-class? (first char-text) type-text))
+      (advance state)
+
+      (some? code-arg)
+      (let [code-value (deref-value (:bindings state) code-arg)
+            code (code-point-value state code-value)]
+        (cond
+          (some? char-text)
+          (let [[ok unified-state] (unify-values state code-value (int (first char-text)))]
+            (if ok
+              (advance unified-state)
+              (backtrack state)))
+
+          (valid-char-code? code)
+          (let [[next-state atom-term] (intern-text-atom state (str (char code)))
+                [ok unified-state] (unify-values next-state char-value atom-term)]
+            (if ok
+              (advance unified-state)
+              (backtrack state)))
+
+          :else
+          (backtrack state)))
+
+      :else
+      (backtrack state))))
+
 (defn apply-atom-concat-solution [state]
   (let [left (deref-value (:bindings state)
                           (or (reg-get-raw state "A1") ::unbound))
@@ -1223,13 +1281,33 @@
         out (deref-value (:bindings state)
                          (or (reg-get-raw state "A3") ::unbound))
         left-text (atom-text state left)
-        right-text (atom-text state right)]
-    (if (and (some? left-text) (some? right-text))
+        right-text (atom-text state right)
+        out-text (atom-text state out)]
+    (cond
+      (and (some? left-text) (some? right-text))
       (let [[next-state atom] (intern-text-atom state (str left-text right-text))
             [ok unified-state] (unify-values next-state out atom)]
         (if ok
           (advance unified-state)
           (backtrack state)))
+
+      (and (nil? left-text) (some? right-text) (some? out-text)
+           (str/ends-with? out-text right-text))
+      (let [prefix (subs out-text 0 (- (count out-text) (count right-text)))
+            [ok unified-state] (unify-text-atom-value state left prefix)]
+        (if ok
+          (advance unified-state)
+          (backtrack state)))
+
+      (and (some? left-text) (nil? right-text) (some? out-text)
+           (str/starts-with? out-text left-text))
+      (let [suffix (subs out-text (count left-text))
+            [ok unified-state] (unify-text-atom-value state right suffix)]
+        (if ok
+          (advance unified-state)
+          (backtrack state)))
+
+      :else
       (backtrack state))))
 
 (defn apply-atom-length-solution [state]
@@ -1266,9 +1344,8 @@
                      (when (and (integer? n*) (not (neg? n*)) (<= n* n)) n*)
                      (when (or (= after ::unbound) (logic-var? after)) ::var))
         sub-text (cond
-                   (atom-term? sub) (atom-text state sub)
                    (or (= sub ::unbound) (logic-var? sub)) ::var
-                   :else nil)]
+                   :else (atom-number-text state sub))]
     (when (and (some? before-spec)
                (some? length-spec)
                (some? after-spec)
@@ -1300,7 +1377,7 @@
                            (or (reg-get-raw base-state "A4") ::unbound))
         sub (deref-value (:bindings base-state)
                          (or (reg-get-raw base-state "A5") ::unbound))
-        text (atom-text base-state source)]
+        text (atom-number-text base-state source)]
     (if-let [results (and (some? text)
                           (sub-atom-solution-results base-state text before length after sub))]
       (apply-first-foreign-solution base-state resume-pc results)
@@ -2155,6 +2232,9 @@
 
           "char_code/2"
           (apply-char-code-solution state)
+
+          "char_type/2"
+          (apply-char-type-solution state)
 
           "atom_concat/3"
           (apply-atom-concat-solution state)

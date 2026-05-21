@@ -107,13 +107,25 @@ resolve_runtime_parser_request(Request, _Target, _Mode) :-
     domain_error(runtime_parser_request, Request).
 
 target_runtime_parser_default(wam_r, native(parse_term)).
+% C++ has a hand-written canonical-form parser in the runtime
+% (LmdbFactSource lives next to it). It powers atom_to_term/3,
+% term_to_atom/2's reverse mode, and read_term/1. It does NOT
+% currently support operator notation -- 1+2 must be written
+% as +(1, 2). Compiling the portable parser in would lift that
+% restriction; we register both modes here and leave native as
+% the default since it ships today.
+target_runtime_parser_default(wam_cpp, native(parse_term)).
 
 target_runtime_parser_mode_(wam_r, native(parse_term)).
 target_runtime_parser_mode_(wam_r, compiled(prolog_term_parser)).
+target_runtime_parser_mode_(wam_cpp, native(parse_term)).
+target_runtime_parser_mode_(wam_cpp, compiled(prolog_term_parser)).
 target_runtime_parser_mode_(wam_python, compiled(prolog_term_parser)).
 
 normalize_runtime_parser_target(r, wam_r) :- !.
 normalize_runtime_parser_target(wam_r, wam_r) :- !.
+normalize_runtime_parser_target(cpp, wam_cpp) :- !.
+normalize_runtime_parser_target(wam_cpp, wam_cpp) :- !.
 normalize_runtime_parser_target(Target, Target).
 
 strip_module_qualifier(Module:Goal, Stripped) :-

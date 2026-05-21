@@ -125,13 +125,19 @@ compile_dispatch(Pred/Arity, FinalOptions, Target, GeneratedCode) :-
     ),
     format('Classification: ~w~n', [Classification]),
 
-    (   Classification = non_recursive ->
-        compile_non_recursive(Target, Pred/Arity, FinalOptions, GeneratedCode)
-    ;   Target == csharp ->
+    (   Target == csharp ->
+        % Unified csharp dispatch: query-plan backend by default,
+        % procedural opt-in via mode(procedural).  Hoisted above the
+        % non_recursive branch so simple fact predicates still get
+        % the query-plan form (RelationScanNode etc.) instead of
+        % falling through to procedural — matching the dispatch the
+        % test_recursive_csharp_target tests assume.
         (   option(mode(procedural), FinalOptions) ->
             csharp_native_target:compile_predicate_to_csharp(Pred/Arity, FinalOptions, GeneratedCode)
         ;   compile_recursive_csharp_query(Pred/Arity, FinalOptions, GeneratedCode)
         )
+    ;   Classification = non_recursive ->
+        compile_non_recursive(Target, Pred/Arity, FinalOptions, GeneratedCode)
     ;   Classification = transitive_closure(BasePred) ->
         format('Detected transitive closure over ~w~n', [BasePred]),
         compile_transitive_closure(Target, Pred, Arity, BasePred, FinalOptions, GeneratedCode)
@@ -345,9 +351,24 @@ is_recursive_clause(Pred, Body) :-
     functor(Goal, Pred, _).
 
 %% Check for transitive closure pattern
-% Two patterns supported:
-% 1. Forward: pred(X,Z) :- base(X,Y), pred(Y,Z).  [e.g., ancestor]
-% 2. Reverse: pred(X,Z) :- base(Y,X), pred(Y,Z).  [e.g., descendant]
+% Four patterns supported, distinguished by goal order in the body
+% (right- vs left-recursive) and by the direction the linkage variable
+% flows between the base and recursive calls.
+%
+% Right-recursive (base goal first, recursive second):
+%   1. Forward:  pred(X,Z) :- base(X,Y), pred(Y,Z).   [e.g. ancestor]
+%   2. Reverse:  pred(X,Z) :- base(Y,X), pred(Y,Z).   [e.g. descendant]
+%
+% Left-recursive (recursive goal first, base second) — semantically
+% equivalent for transitive closure, and the bash BFS compiler
+% doesn''t care about goal order:
+%   3. Forward:  pred(X,Z) :- pred(X,Y), base(Y,Z).
+%   4. Reverse:  pred(X,Z) :- pred(X,Y), base(Z,Y).
+%
+% Without patterns 3-4 the classifier fell through to linear_recursion
+% (which has no bash backend) on naturally-phrased predicates like
+% tests/core/test_recursive_constraints.pl''s test_rec_default/2 —
+% halting run_all_tests.pl mid-suite.
 is_transitive_closure(Pred, 2, BaseClauses, RecClauses, BasePred) :-
     % Check base case is a single predicate call
     member(BaseBody, BaseClauses),
@@ -357,21 +378,36 @@ is_transitive_closure(Pred, 2, BaseClauses, RecClauses, BasePred) :-
 
     % Check recursive case matches pattern
     member(RecBody, RecClauses),
-    RecBody = (BaseCall, RecCall),
-    functor(BaseCall, BasePred, 2),
-    functor(RecCall, Pred, 2),
+    RecBody = (G1, G2),
 
-    % Try both forward and reverse patterns
-    (   % Pattern 1: Forward transitive closure
-        % base(X,Y), recursive(Y,Z) - Y flows from base to recursive
-        BaseCall =.. [BasePred, _X, Y],
-        RecCall =.. [Pred, Y2, _Z],
-        Y == Y2
-    ;   % Pattern 2: Reverse transitive closure
-        % base(Y,X), recursive(Y,Z) - Y flows from base to recursive (reversed args)
-        BaseCall =.. [BasePred, Y, _X],
-        RecCall =.. [Pred, Y2, _Z],
-        Y == Y2
+    % Identify ordering: which body goal is the base call and which is
+    % the recursive call.  Both orderings are accepted.
+    (   functor(G1, BasePred, 2),
+        functor(G2, Pred, 2)
+    ->  % Right-recursive ordering: BaseCall, RecCall
+        BaseCall = G1, RecCall = G2,
+        (   % Pattern 1: Forward — base(X,Y), rec(Y,Z)
+            BaseCall =.. [BasePred, _X, Y],
+            RecCall =.. [Pred, Y2, _Z],
+            Y == Y2
+        ;   % Pattern 2: Reverse — base(Y,X), rec(Y,Z)
+            BaseCall =.. [BasePred, Y, _X],
+            RecCall =.. [Pred, Y2, _Z],
+            Y == Y2
+        )
+    ;   functor(G1, Pred, 2),
+        functor(G2, BasePred, 2)
+    ->  % Left-recursive ordering: RecCall, BaseCall
+        RecCall = G1, BaseCall = G2,
+        (   % Pattern 3: Forward — rec(X,Y), base(Y,Z)
+            RecCall =.. [Pred, _X, Y],
+            BaseCall =.. [BasePred, Y2, _Z],
+            Y == Y2
+        ;   % Pattern 4: Reverse — rec(X,Y), base(Z,Y)
+            RecCall =.. [Pred, _X, Y],
+            BaseCall =.. [BasePred, _Z, Y2],
+            Y == Y2
+        )
     ).
 
 is_transitive_closure(_, _, _, _, _) :- fail.

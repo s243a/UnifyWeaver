@@ -20,6 +20,23 @@ test(r_can_opt_into_compiled_parser) :-
     wam_target_runtime_parser(wam_r, [runtime_parser(compiled)],
                               compiled(prolog_term_parser)).
 
+test(cpp_defaults_to_native_parser) :-
+    wam_target_runtime_parser(wam_cpp, [], native(parse_term)).
+
+test(cpp_alias_defaults_to_native_parser) :-
+    wam_target_runtime_parser(cpp, [], native(parse_term)).
+
+test(cpp_off_disables_parser) :-
+    wam_target_runtime_parser(wam_cpp, [runtime_parser(off)], none).
+
+test(cpp_can_require_native_parser) :-
+    wam_target_runtime_parser(wam_cpp, [runtime_parser(native)],
+                              native(parse_term)).
+
+test(cpp_can_opt_into_compiled_parser) :-
+    wam_target_runtime_parser(wam_cpp, [runtime_parser(compiled)],
+                              compiled(prolog_term_parser)).
+
 test(unknown_target_defaults_to_none) :-
     wam_target_runtime_parser(wam_lua, [], none).
 

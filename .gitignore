@@ -22,6 +22,10 @@ templates/legacy/
 output/
 tests/output/
 test_output/
+
+# Cabal build artifacts (created on first cabal invocation in repo root,
+# e.g. by `cabal update` while developing the Haskell-target smoke tests)
+dist-newstyle/
 data/benchmark/50k_cats/
 data/benchmark/100k_cats/
 data/benchmark/500k_cats/
@@ -125,6 +129,11 @@ packages-microsoft-prod.deb
 
 # Temporary directories
 tmp/
+# Test scratch dirs created by the WAM C++ e2e suite (setup_call_cleanup
+# normally removes them, but a long-running suite can leave one
+# visible mid-run).
+tests/tmp_cpp_*/
+tests/tmp_*/
 
 
 # Downloaded libraries (use setup scripts to install)

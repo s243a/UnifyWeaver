@@ -29,19 +29,31 @@ cleanup_test_data :-
 
 test_non_recursive_facts_to_csharp :-
     compile_recursive(test_cf_fact/2, [target(csharp)], Code),
+    % Non-recursive csharp now routes through the query-plan backend
+    % (same path as recursive csharp); facts compile to a QueryPlan
+    % wrapping a RelationScanNode.  Distinct() only appears in
+    % aggregation/set-recursion contexts — not for plain fact lookup —
+    % so check for the distinctive query-plan markers instead.
     (   sub_string(Code, _, _, _, "namespace UnifyWeaver.Generated"),
-        sub_string(Code, _, _, _, "Distinct()") ->
-        format('  ✓ Non-recursive predicate compiled to C# stream~n')
-    ;   format('  ✗ FAILED: Expected C# stream output~n'),
+        sub_string(Code, _, _, _, "RelationScanNode"),
+        sub_string(Code, _, _, _, "QueryPlan") ->
+        format('  ✓ Non-recursive predicate compiled to C# query plan~n')
+    ;   format('  ✗ FAILED: Expected C# query-plan output~n'),
         fail
     ).
 
 test_recursive_tail_to_csharp :-
     compile_recursive(test_cf_rec/2, [target(csharp)], Code),
-    (   sub_string(Code, _, _, _, "FixpointNode"),
-        sub_string(Code, _, _, _, "RecursiveRefNode"),
-        sub_string(Code, _, _, _, "RecursiveRefKind.Delta") ->
-        format('  ✓ Tail recursion compiled to C# query plan~n')
-    ;   format('  ✗ FAILED: Expected C# fixpoint plan output~n'),
+    % test_cf_rec/2 is classified as transitive_closure(test_cf_fact),
+    % so it lowers to the specialized TransitiveClosureNode rather
+    % than the general FixpointNode + RecursiveRefNode + Delta form
+    % (which the classifier only picks for predicates that aren't
+    % shape-matched to transitive closure).  Check the markers the
+    % renderer actually emits for this shape.
+    (   sub_string(Code, _, _, _, "namespace UnifyWeaver.Generated"),
+        sub_string(Code, _, _, _, "TransitiveClosureNode"),
+        sub_string(Code, _, _, _, "QueryPlan") ->
+        format('  ✓ Recursive predicate compiled to C# query plan~n')
+    ;   format('  ✗ FAILED: Expected C# transitive-closure plan output~n'),
         fail
     ).

@@ -334,210 +334,6 @@ fsharp_pick_layout(_PredIndicator, NClauses, FactOnly, Options, Layout) :-
     ).
 
 % ============================================================================
-% PHASE 1: WAM Instruction → F# Expression
-%
-% Each clause maps one WAM instruction to an F# state transformation
-% of type: WamState -> WamState option
-% None = failure (backtrack), Some s = success with updated state.
-%
-% F# idioms applied throughout:
-%   - Map.tryFind instead of Map.lookup
-%   - Map.add instead of Map.insert
-%   - { s with ... } record update
-%   - match ... with | Pat -> ... instead of case
-%   - Option.defaultValue instead of fromMaybe
-% ============================================================================
-
-%% wam_to_fsharp(+Instruction, -FSharpExpr)
-
-wam_to_fsharp(get_constant(C, Ai), Code) :-
-    format(string(Code),
-'    let valOpt = getReg ~w s
-    match valOpt with
-    | Some v when v = ~w -> Some { s with WsPC = s.WsPC + 1 }
-    | Some (Unbound vid) ->
-        let r = Array.copy s.WsRegs
-        r.[~w] <- ~w
-        Some { s with
-                 WsPC      = s.WsPC + 1
-                 WsRegs    = r
-                 WsBindings= Map.add vid ~w s.WsBindings
-                 WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
-                 WsTrailLen= s.WsTrailLen + 1 }
-    | _ -> None', [Ai, C, Ai, C, C]).
-
-wam_to_fsharp(get_variable(Xn, Ai), Code) :-
-    format(string(Code),
-'    match getReg ~w s with
-    | Some dv -> Some (putReg ~w dv { s with WsPC = s.WsPC + 1 })
-    | None    -> None', [Ai, Xn]).
-
-wam_to_fsharp(get_value(Xn, Ai), Code) :-
-    format(string(Code),
-'    let va = getReg ~w s
-    let vx = getReg ~w s
-    match va, vx with
-    | Some a, Some x when a = x -> Some { s with WsPC = s.WsPC + 1 }
-    | Some (Unbound vid), Some x ->
-        let r = Array.copy s.WsRegs
-        r.[~w] <- x
-        Some { s with
-                 WsPC      = s.WsPC + 1
-                 WsRegs    = r
-                 WsBindings= Map.add vid x s.WsBindings
-                 WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
-                 WsTrailLen= s.WsTrailLen + 1 }
-    | _ -> None', [Ai, Xn, Ai]).
-
-wam_to_fsharp(put_constant(C, Ai), Code) :-
-    format(string(Code),
-'    let r = Array.copy s.WsRegs
-    r.[~w] <- ~w
-    Some { s with WsPC = s.WsPC + 1; WsRegs = r }', [Ai, C]).
-
-wam_to_fsharp(put_variable(Xn, Ai), Code) :-
-    format(string(Code),
-'    let vid = s.WsVarCounter
-    let var = Unbound vid
-    let s1  = putReg ~w var s
-    let r   = Array.copy s1.WsRegs
-    r.[~w] <- var
-    Some { s1 with
-             WsPC       = s.WsPC + 1
-             WsRegs     = r
-             WsVarCounter= s.WsVarCounter + 1 }', [Xn, Ai]).
-
-wam_to_fsharp(put_value(Xn, Ai), Code) :-
-    format(string(Code),
-'    match getReg ~w s with
-    | Some v ->
-        let r = Array.copy s.WsRegs
-        r.[~w] <- v
-        Some { s with WsPC = s.WsPC + 1; WsRegs = r }
-    | None   -> None', [Xn, Ai]).
-
-wam_to_fsharp(call(Pred, _Arity), Code) :-
-    format(string(Code),
-'    Some { s with WsPC = lookupLabel "~w" ctx; WsCP = s.WsPC + 1 }', [Pred]).
-
-wam_to_fsharp(proceed, Code) :-
-    Code = '    let ret = s.WsCP
-    if ret = 0 then Some { s with WsPC = 0 }
-    else Some { s with WsPC = ret; WsCP = 0 }'.
-
-wam_to_fsharp(allocate, Code) :-
-    Code = '    let frame = { EfSavedCP = s.WsCP; EfYRegs = Map.empty }
-    Some { s with
-             WsPC    = s.WsPC + 1
-             WsStack = frame :: s.WsStack
-             WsCutBar= s.WsCPsLen }'.
-
-wam_to_fsharp(deallocate, Code) :-
-    Code = '    match s.WsStack with
-    | ef :: rest -> Some { s with WsPC = s.WsPC + 1; WsStack = rest; WsCP = ef.EfSavedCP }
-    | []         -> None'.
-
-wam_to_fsharp(try_me_else(Label), Code) :-
-    format(string(Code),
-'    let nextPC = lookupLabel "~w" ctx
-    let cp = { CpNextPC   = nextPC
-               CpRegs     = Array.copy s.WsRegs
-               CpStack    = s.WsStack
-               CpCP       = s.WsCP
-               CpTrailLen = s.WsTrailLen
-               CpHeapLen  = s.WsHeapLen
-               CpBindings = s.WsBindings
-               CpCutBar   = s.WsCutBar
-               CpAggFrame = None
-               CpBuiltin  = None }
-    Some { s with WsPC = s.WsPC + 1; WsCPs = cp :: s.WsCPs; WsCPsLen = s.WsCPsLen + 1 }',
-    [Label]).
-
-wam_to_fsharp(trust_me, Code) :-
-    Code = '    match s.WsCPs with
-    | _ :: rest -> Some { s with WsPC = s.WsPC + 1; WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
-    | []        -> None'.
-
-wam_to_fsharp(retry_me_else(Label), Code) :-
-    format(string(Code),
-'    match s.WsCPs with
-    | cp :: rest ->
-        let nextPC = lookupLabel "~w" ctx
-        Some { s with WsPC = s.WsPC + 1; WsCPs = { cp with CpNextPC = nextPC } :: rest }
-    | [] -> None', [Label]).
-
-wam_to_fsharp(builtin_call('!/0', 0), Code) :-
-    Code = '    Some { s with WsPC = s.WsPC + 1
-                         WsCPs    = List.take s.WsCutBar s.WsCPs
-                         WsCPsLen = s.WsCutBar }'.
-
-wam_to_fsharp(builtin_call('is/2', 2), Code) :-
-    Code = '    let expr   = s.WsRegs.[2] |> derefVar s.WsBindings
-    let result = evalArith s.WsBindings expr
-    let lhs    = getReg 1 s
-    match lhs, result with
-    | Some (Unbound vid), Some r ->
-        let v = if float (int r) = r then Integer (int r) else Float r
-        let regs = Array.copy s.WsRegs
-        regs.[1] <- v
-        Some { s with
-                 WsPC      = s.WsPC + 1
-                 WsRegs    = regs
-                 WsBindings= Map.add vid v s.WsBindings
-                 WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
-                 WsTrailLen= s.WsTrailLen + 1 }
-    | Some (Integer n), Some r when float n = r -> Some { s with WsPC = s.WsPC + 1 }
-    | Some (Float f),   Some r when f = r       -> Some { s with WsPC = s.WsPC + 1 }
-    | _ -> None'.
-
-wam_to_fsharp(builtin_call('</2', 2), Code) :-
-    Code = '    let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
-    let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
-    match v1, v2 with
-    | Some a, Some b when a < b -> Some { s with WsPC = s.WsPC + 1 }
-    | _ -> None'.
-
-wam_to_fsharp(builtin_call('>/2', 2), Code) :-
-    Code = '    let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
-    let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
-    match v1, v2 with
-    | Some a, Some b when a > b -> Some { s with WsPC = s.WsPC + 1 }
-    | _ -> None'.
-
-wam_to_fsharp(builtin_call('\\+/1', 1), Code) :-
-    Code = '    let goal = Some s.WsRegs.[1] |> Option.bind (derefHeap s.WsHeap)
-    match goal with
-    | Some (Str ("member", [needle; haystack])) ->
-        let n = derefVar s.WsBindings needle
-        let h = derefVar s.WsBindings haystack
-        let found = match h with
-                    | VList items -> List.exists (fun item -> derefVar s.WsBindings item = n) items
-                    | _ -> false
-        if found then None else Some { s with WsPC = s.WsPC + 1 }
-    | _ -> None'.
-
-wam_to_fsharp(builtin_call('length/2', 2), Code) :-
-    Code = '    let listVal = s.WsRegs.[1] |> derefVar s.WsBindings
-    match listVal with
-    | VList items ->
-        let len = List.length items
-        let lhs = getReg 2 s
-        match lhs with
-        | Some (Unbound vid) ->
-            let v = Integer len
-            let regs = Array.copy s.WsRegs
-            regs.[2] <- v
-            Some { s with
-                     WsPC      = s.WsPC + 1
-                     WsRegs    = regs
-                     WsBindings= Map.add vid v s.WsBindings
-                     WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
-                     WsTrailLen= s.WsTrailLen + 1 }
-        | Some (Integer n) when n = len -> Some { s with WsPC = s.WsPC + 1 }
-        | _ -> None
-    | _ -> None'.
-
-% ============================================================================
 % PHASE 2: Backtrack Function
 % ============================================================================
 
@@ -558,6 +354,18 @@ and backtrack (s: WamState) : WamState option =
         let diff      = s.WsTrailLen - trailLen
         let newEntries= s.WsTrail |> List.take diff |> List.rev
         let restoredBindings = List.fold undoBinding cp.CpBindings newEntries
+        // Bug B fix from PR #2350: keep the CP on the stack.  Standard
+        // WAM convention is that backtrack RESTORES from the top CP
+        // without popping it; only TrustMe pops.  Between successive
+        // backtracks, RetryMeElse modifies the top CP''s CpNextPC to
+        // point to the next clause''s entry — so the CP MUST remain on
+        // the stack for the next-clause logic to work.  Previously
+        // WsCPs was set to `rest` here, popping the CP; that
+        // accidentally worked for chains of length ≤ 2 (the only CP
+        // was needed once) but failed for 3+ when RetryMeElse arrived
+        // at an empty stack.  See PR #2350''s query smoke
+        // `query_X_parent_eve_BUG` for the regression test that
+        // surfaced this.
         Some { s with
                  WsPC       = cp.CpNextPC
                  WsRegs     = cp.CpRegs
@@ -569,8 +377,9 @@ and backtrack (s: WamState) : WamState option =
                  WsHeapLen  = cp.CpHeapLen
                  WsBindings = restoredBindings
                  WsCutBar   = cp.CpCutBar
-                 WsCPs      = rest
-                 WsCPsLen   = s.WsCPsLen - 1 }
+                 // WsCPs intentionally unchanged: keep CP on stack so
+                 // RetryMeElse can modify it (or TrustMe can pop it later).
+               }
 
 and resumeBuiltin (bs: BuiltinState) (cp: ChoicePoint) (rest: ChoicePoint list) (s: WamState) : WamState option =
     match bs with
@@ -620,6 +429,50 @@ and resumeBuiltin (bs: BuiltinState) (cp: ChoicePoint) (rest: ChoicePoint list) 
                  WsCutBar   = cp.CpCutBar
                  WsCPs      = newCPs
                  WsCPsLen   = List.length newCPs }
+    | SelectRetry (_, _, [], _) ->
+        backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
+    | SelectRetry (elemReg, outReg, candidates, retPC) ->
+        // Restore from snapshot ONCE up front, then walk candidates with
+        // unifyVal until one succeeds (or all fail).  unifyVal returns
+        // None on failure without committing trail entries, so iterating
+        // candidates against the restored state is safe.
+        let diff = s.WsTrailLen - cp.CpTrailLen
+        let restoredS = { s with
+                             WsRegs     = Array.copy cp.CpRegs
+                             WsStack    = cp.CpStack
+                             WsCP       = cp.CpCP
+                             WsTrail    = List.skip diff s.WsTrail
+                             WsTrailLen = cp.CpTrailLen
+                             WsHeap     = List.take cp.CpHeapLen s.WsHeap
+                             WsHeapLen  = cp.CpHeapLen
+                             WsBindings = cp.CpBindings
+                             WsCutBar   = cp.CpCutBar
+                             WsPC       = retPC }
+        let rec tryNext pairs =
+            match pairs with
+            | [] -> backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
+            | (sel, restList) :: more ->
+                match getReg elemReg restoredS with
+                | None -> backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
+                | Some elem_ ->
+                    match unifyVal elem_ sel restoredS with
+                    | None    -> tryNext more
+                    | Some s2 ->
+                        match bindOutput outReg (VList restList) s2 with
+                        | None    -> tryNext more
+                        | Some s3 ->
+                            let newCPs =
+                                match more with
+                                | [] -> rest
+                                | _  -> { cp with CpBuiltin = Some (SelectRetry (elemReg, outReg, more, retPC)) } :: rest
+                            Some { s3 with
+                                     WsPC       = retPC
+                                     WsStack    = cp.CpStack
+                                     WsCP       = cp.CpCP
+                                     WsCutBar   = cp.CpCutBar
+                                     WsCPs      = newCPs
+                                     WsCPsLen   = List.length newCPs }
+        tryNext candidates
     | FFIStreamRetry (_, _, [], _) ->
         backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
     | FFIStreamRetry (outRegs, outVars, tuple :: restTuples, retPC) ->
@@ -768,8 +621,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
     | GetList ai ->
         match getReg ai s with
         | Some (VList (h :: t)) ->
-            Some { s with WsPC = s.WsPC + 1
-                           WsBuilder = Some (ReadArgs [h; VList t]) }
+            Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (ReadArgs [h; VList t]) }
         | Some (Unbound _) ->
             Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (BuildList (ai, [])) }
         | _ -> None
@@ -916,30 +768,51 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                    CpBuiltin  = None }
         Some { s with WsPC = s.WsPC + 1; WsCPs = cp :: s.WsCPs; WsCPsLen = s.WsCPsLen + 1 }
 
+    // TrustMe / RetryMeElse: when an indexed SwitchOnConstantPc jumps
+    // directly to a clause that begins with one of these (the WAM
+    // emitter places labels just before Retry/Trust), there''s no
+    // choice point to pop or modify — we''re committing deterministically
+    // to that clause.  Treat the empty-CP case as a no-op advance
+    // instead of failing, so indexed dispatch works (Bug A from PR #2350).
     | TrustMe ->
         match s.WsCPs with
         | _ :: rest -> Some { s with WsPC = s.WsPC + 1; WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
-        | []        -> None
+        | []        -> Some { s with WsPC = s.WsPC + 1 }
 
     | RetryMeElse label ->
         match s.WsCPs with
         | cp :: rest ->
             let nextPC = Map.tryFind label ctx.WcLabels |> Option.defaultValue 0
             Some { s with WsPC = s.WsPC + 1; WsCPs = { cp with CpNextPC = nextPC } :: rest }
-        | [] -> None
+        | [] -> Some { s with WsPC = s.WsPC + 1 }
 
     | RetryMeElsePc nextPC ->
         match s.WsCPs with
         | cp :: rest -> Some { s with WsPC = s.WsPC + 1; WsCPs = { cp with CpNextPC = nextPC } :: rest }
-        | []         -> None
+        | []         -> Some { s with WsPC = s.WsPC + 1 }
 
-    // Phase 4.1 parallel stubs — alias to sequential counterparts
-    | ParTryMeElse label    -> step ctx s (TryMeElse label)
+    // Phase 4.1 / Phase J — parallel WAM. ParTryMeElse dispatches through
+    // forkOrSequential, which forks all branches in parallel when inside a
+    // forkable aggregate frame (sum/count/bag/set/findall with enough
+    // branches), otherwise falls back to the sequential TryMeElse step.
+    // The Retry/Trust variants always alias to sequential since they
+    // appear inside the chain that the fork enumerates wholesale — only
+    // the leading ParTryMeElse triggers the fork decision.
+    | ParTryMeElse label    -> forkOrSequential ctx s (Choice1Of2 label)
+    | ParTryMeElsePc pc     -> forkOrSequential ctx s (Choice2Of2 pc)
     | ParRetryMeElse label  -> step ctx s (RetryMeElse label)
     | ParTrustMe            -> step ctx s TrustMe
-    | ParTryMeElsePc pc     -> step ctx s (TryMeElsePc pc)
     | ParRetryMeElsePc pc   -> step ctx s (RetryMeElsePc pc)
 
+    // SwitchOnConstantPc / SwitchOnConstant: indexed dispatch on A1.
+    // Hits jump to the matching clause; misses fall through to the
+    // next instruction (typically TryMeElse) which then runs the linear
+    // chain.  Falling through on miss (rather than returning None)
+    // mirrors the WAM compiler''s `tom:default` semantics — `default`
+    // labels get dropped by resolveCallInstrs, so the table just lacks
+    // an entry, and falling through is the right behavior.  Without
+    // this, indexed dispatch fails outright on any A1 not explicitly
+    // listed in the table.
     | SwitchOnConstantPc table ->
         let valOpt = getReg 1 s
         match valOpt with
@@ -947,12 +820,12 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | Some (Atom key) ->
             match binarySearchStr table key with
             | Some pc -> Some { s with WsPC = pc }
-            | None    -> None
+            | None    -> Some { s with WsPC = s.WsPC + 1 }
         | Some (Integer n) ->
             match binarySearchStr table (string n) with
             | Some pc -> Some { s with WsPC = pc }
-            | None    -> None
-        | _ -> None
+            | None    -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> Some { s with WsPC = s.WsPC + 1 }
 
     | SwitchOnConstant table ->
         let valOpt = getReg 1 s
@@ -963,9 +836,9 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
             | Some label ->
                 match Map.tryFind label ctx.WcLabels with
                 | Some pc -> Some { s with WsPC = pc }
-                | None    -> None
-            | None -> None
-        | None -> None
+                | None    -> Some { s with WsPC = s.WsPC + 1 }
+            | None -> Some { s with WsPC = s.WsPC + 1 }
+        | None -> Some { s with WsPC = s.WsPC + 1 }
 
     | BuiltinCall ("!/0", _) ->
         Some { s with
@@ -1056,6 +929,501 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | Some a, Some b when a > b -> Some { s with WsPC = s.WsPC + 1 }
         | _ -> None
 
+    // >=/2, =</2, =:=/2, =\\=/2 — arithmetic comparisons (parity with Rust /
+    // C++ comparison builtins). Each evaluates both sides via evalArith and
+    // dispatches on the operator. =:=/2 and =\\=/2 use EPSILON tolerance to
+    // bridge integer / float comparisons (mirrors the Rust implementation).
+    | BuiltinCall (">=/2", _) ->
+        let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
+        let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
+        match v1, v2 with
+        | Some a, Some b when a >= b -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("=</2", _) ->
+        let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
+        let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
+        match v1, v2 with
+        | Some a, Some b when a <= b -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("=:=/2", _) ->
+        let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
+        let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
+        match v1, v2 with
+        | Some a, Some b when abs (a - b) < System.Double.Epsilon ->
+            Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("=\\\\=/2", _) ->
+        let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
+        let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
+        match v1, v2 with
+        | Some a, Some b when abs (a - b) >= System.Double.Epsilon ->
+            Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    // ==/2, \\==/2 — structural term equality (no unification, no binding).
+    // Both sides are dereferenced through the binding chain, then compared
+    // by F# structural equality on the Value DU. Mirrors the Rust ==/2 +
+    // C++ ==/2 / \\==/2 step cases.
+    | BuiltinCall ("==/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some a, Some b when a = b -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("\\\\==/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some a, Some b when a <> b -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    // true/0 / fail/0 — trivial control. Mirrors the Rust execute_control
+    // dispatch (true succeeds and advances, fail short-circuits).
+    | BuiltinCall ("true/0", _) -> Some { s with WsPC = s.WsPC + 1 }
+    | BuiltinCall ("fail/0", _) -> None
+
+    // compound/1 — type check matching Str (any) and non-empty VList.
+    // F# VList is a flat list (not cons-cells), so a non-empty VList is
+    // exactly the compound case.
+    | BuiltinCall ("compound/1", _) ->
+        match getReg 1 s with
+        | Some (Str _)        -> Some { s with WsPC = s.WsPC + 1 }
+        | Some (VList (_::_)) -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    // float/1 — type check for Float values.
+    | BuiltinCall ("float/1", _) ->
+        match getReg 1 s with
+        | Some (Float _) -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    // is_list/1 — type check for proper lists. Since F# VList is a flat
+    // Value list (head/tail items, not cons cells), VList _ already means
+    // a proper list (empty or non-empty). Atom "[]" also counts as the
+    // empty list per Prolog convention.
+    | BuiltinCall ("is_list/1", _) ->
+        match getReg 1 s with
+        | Some (VList _)      -> Some { s with WsPC = s.WsPC + 1 }
+        | Some (Atom "[]")    -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    // write/1 / display/1 — print the dereferenced value to stdout.
+    // Mirrors the Rust write/1 + display/1 fast-path (both use Display
+    // for now; standard Prolog differentiates quoting between them).
+    | BuiltinCall ("write/1", _) | BuiltinCall ("display/1", _) ->
+        match getReg 1 s with
+        | Some v ->
+            printf "%s" (sprintf "%A" v)
+            Some { s with WsPC = s.WsPC + 1 }
+        | None -> None
+
+    // nl/0 — newline to stdout.
+    | BuiltinCall ("nl/0", _) ->
+        printfn ""
+        Some { s with WsPC = s.WsPC + 1 }
+
+    // ========================================================================
+    // Phase G — atom / string builtins (parity with Go target)
+    // ========================================================================
+    // F# Atom is string-based, so most of these collapse to direct .NET
+    // string operations. The list-of-codes / list-of-chars conversions
+    // use the F# Value DU shape: VList of Value list (a flat list).
+    //
+    // Reference: templates/targets/go_wam/state.go.mustache case arms
+    // for atom_concat/3, atom_length/2, char_code/2, atom_codes/2,
+    // atom_string/2, upcase_atom/2, downcase_atom/2, atom_number/2,
+    // succ/2.
+
+    | BuiltinCall ("atom_concat/3", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (Atom a), Some (Atom b) ->
+            match bindOutput 3 (Atom (a + b)) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("atom_length/2", _) | BuiltinCall ("string_length/2", _) ->
+        match getReg 1 s with
+        | Some (Atom a) ->
+            match bindOutput 2 (Integer a.Length) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // char_code/2 — single-char atom <-> Unicode code point. Bidirectional.
+    | BuiltinCall ("char_code/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (Atom a), _ when a.Length = 1 ->
+            match bindOutput 2 (Integer (int a.[0])) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | Some (Unbound _), Some (Integer c) when c >= 0 && c <= 65535 ->
+            match bindOutput 1 (Atom (string (char c))) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // atom_codes/2 — atom <-> list of Integer code points. Bidirectional.
+    | BuiltinCall ("atom_codes/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (Atom a), _ ->
+            let codes = a |> Seq.map (fun c -> Integer (int c)) |> List.ofSeq
+            match bindOutput 2 (VList codes) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | Some (Unbound _), Some (VList items) ->
+            let folder acc v =
+                match acc, derefVar s.WsBindings v with
+                | Some (sb: System.Text.StringBuilder), Integer c when c >= 0 && c <= 65535 ->
+                    Some (sb.Append(char c))
+                | _ -> None
+            match List.fold folder (Some (System.Text.StringBuilder())) items with
+            | Some sb ->
+                match bindOutput 1 (Atom (sb.ToString())) s with
+                | None    -> None
+                | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+            | None -> None
+        | _ -> None
+
+    // atom_chars/2 — atom <-> list of single-char atoms. Bidirectional.
+    | BuiltinCall ("atom_chars/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (Atom a), _ ->
+            let chars = a |> Seq.map (fun c -> Atom (string c)) |> List.ofSeq
+            match bindOutput 2 (VList chars) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | Some (Unbound _), Some (VList items) ->
+            let folder acc v =
+                match acc, derefVar s.WsBindings v with
+                | Some (sb: System.Text.StringBuilder), Atom c when c.Length = 1 ->
+                    Some (sb.Append(c))
+                | _ -> None
+            match List.fold folder (Some (System.Text.StringBuilder())) items with
+            | Some sb ->
+                match bindOutput 1 (Atom (sb.ToString())) s with
+                | None    -> None
+                | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+            | None -> None
+        | _ -> None
+
+    // atom_string/2 — atom <-> "string". F# Atom is already string-based,
+    // so this is essentially an identity reinterpretation. Mirrors the
+    // Go target''s atom_string/2 + string_to_atom/2 unified case (where
+    // both directions succeed when either side is an Atom).
+    | BuiltinCall ("atom_string/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (Atom a), _ ->
+            match bindOutput 2 (Atom a) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _, Some (Atom a) ->
+            match bindOutput 1 (Atom a) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // string_to_atom/2 — String in A1, Atom in A2 (reversed arg order
+    // relative to atom_string/2 per SWI convention).
+    | BuiltinCall ("string_to_atom/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (Atom a), _ ->
+            match bindOutput 2 (Atom a) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _, Some (Atom a) ->
+            match bindOutput 1 (Atom a) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // upcase_atom/2, downcase_atom/2 — Unicode-aware ASCII-safe case
+    // conversion using .NET''s invariant-culture transforms.
+    | BuiltinCall ("upcase_atom/2", _) ->
+        match getReg 1 s with
+        | Some (Atom a) ->
+            match bindOutput 2 (Atom (a.ToUpperInvariant())) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("downcase_atom/2", _) ->
+        match getReg 1 s with
+        | Some (Atom a) ->
+            match bindOutput 2 (Atom (a.ToLowerInvariant())) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // atom_number/2 — atom <-> Integer / Float. Tries integer parse first,
+    // then float parse (invariant culture for the float form). Reverse
+    // direction emits the canonical %d (Integer) or %g (Float) format.
+    | BuiltinCall ("atom_number/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (Atom a), _ ->
+            let asInt = System.Int64.TryParse(a)
+            match asInt with
+            | true, n ->
+                match bindOutput 2 (Integer (int n)) s with
+                | None    -> None
+                | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+            | _ ->
+                let asFloat = System.Double.TryParse(a,
+                                System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture)
+                match asFloat with
+                | true, f ->
+                    match bindOutput 2 (Float f) s with
+                    | None    -> None
+                    | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+                | _ -> None
+        | _, Some (Integer n) ->
+            match bindOutput 1 (Atom (string n)) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _, Some (Float f) ->
+            let txt = f.ToString("G", System.Globalization.CultureInfo.InvariantCulture)
+            match bindOutput 1 (Atom txt) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // succ/2 — Integer successor. succ(X, Y) iff Y = X + 1 and both are
+    // non-negative. Bidirectional. Mirrors the Go target''s succ/2.
+    | BuiltinCall ("succ/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (Integer x), _ when x >= 0 ->
+            match bindOutput 2 (Integer (x + 1)) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _, Some (Integer y) when y > 0 ->
+            match bindOutput 1 (Integer (y - 1)) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // ========================================================================
+    // Phase H — list / sort / order / unification builtins (Go parity)
+    // ========================================================================
+    // Reference: templates/targets/go_wam/state.go.mustache.  These all
+    // operate on F#''s VList shape (a flat Value list).  Standard-order
+    // comparisons use the runtime compareValue helper (defined in
+    // WamTypes.fs alongside copyTermWalk and friends) rather than the
+    // Value type''s CustomComparison override, which has a recursive
+    // CompareTo implementation that is not safe for the hot path.
+
+    // append/3 — concat two ground lists. Reverse / partial modes are
+    // intentionally not supported here (parity with Go''s listToSlice +
+    // slice concat: both A1 and A2 must be VList).
+    | BuiltinCall ("append/3", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (VList xs), Some (VList ys) ->
+            match bindOutput 3 (VList (xs @ ys)) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // reverse/2 — list reverse. Bidirectional: whichever side is bound
+    // becomes the source, the other becomes the output.
+    | BuiltinCall ("reverse/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (VList items), _ ->
+            match bindOutput 2 (VList (List.rev items)) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _, Some (VList items) ->
+            match bindOutput 1 (VList (List.rev items)) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // last/2 — extract the last element of a non-empty list.
+    | BuiltinCall ("last/2", _) ->
+        match getReg 1 s with
+        | Some (VList items) when not (List.isEmpty items) ->
+            match bindOutput 2 (List.last items) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // nth0/3, nth1/3 — index access. nth0 is 0-based, nth1 is 1-based.
+    | BuiltinCall ("nth0/3", _) | BuiltinCall ("nth1/3", _) ->
+        let base_ =
+            match instr with
+            | BuiltinCall ("nth1/3", _) -> 1
+            | _ -> 0
+        match getReg 1 s, getReg 2 s with
+        | Some (Integer i), Some (VList items) ->
+            let idx = i - base_
+            if idx >= 0 && idx < List.length items then
+                match bindOutput 3 (List.item idx items) s with
+                | None    -> None
+                | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+            else None
+        | _ -> None
+
+    // memberchk/2 — deterministic membership check: succeed once on the
+    // first match, no choice points. Mirrors the Go memberchk/2 fast
+    // path that just walks the list and returns true on first Unify.
+    | BuiltinCall ("memberchk/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some elem_, Some (VList items) ->
+            if items |> List.exists (fun v -> derefVar s.WsBindings v = elem_) then
+                Some { s with WsPC = s.WsPC + 1 }
+            else None
+        | _ -> None
+
+    // delete/3 — remove ALL occurrences of A2 from list A1, produce A3.
+    | BuiltinCall ("delete/3", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (VList items), Some target ->
+            let kept = items |> List.filter (fun v -> derefVar s.WsBindings v <> target)
+            match bindOutput 3 (VList kept) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // select/3 — choose one element to remove with full backtracking
+    // semantics (parity with the Go target''s SelectResults ChoicePoint
+    // enumeration).  Computes all (selected, rest) splits upfront, then
+    // attempts unifyVal on each in turn.  The first successful split
+    // commits; if more remain, a SelectRetry CP is pushed so backtrack
+    // resumes through resumeBuiltin (SelectRetry arm above) and tries
+    // the next candidate.
+    | BuiltinCall ("select/3", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some elem_, Some (VList items) ->
+            let rec splits prefix rest =
+                match rest with
+                | [] -> []
+                | x :: xs ->
+                    (derefVar s.WsBindings x, List.rev prefix @ xs)
+                    :: splits (x :: prefix) xs
+            let allSplits = splits [] items
+            let retPC = s.WsPC + 1
+            let rec tryNext pairs =
+                match pairs with
+                | [] -> None
+                | (sel, restList) :: more ->
+                    match unifyVal elem_ sel s with
+                    | None    -> tryNext more
+                    | Some s2 ->
+                        match bindOutput 3 (VList restList) s2 with
+                        | None    -> tryNext more
+                        | Some s3 ->
+                            let newCPs, newCPsLen =
+                                if List.isEmpty more then
+                                    s.WsCPs, s.WsCPsLen
+                                else
+                                    let cp = { CpNextPC   = retPC
+                                               CpRegs     = Array.copy s.WsRegs
+                                               CpStack    = s.WsStack
+                                               CpCP       = s.WsCP
+                                               CpTrailLen = s.WsTrailLen
+                                               CpHeapLen  = s.WsHeapLen
+                                               CpBindings = s.WsBindings
+                                               CpCutBar   = s.WsCutBar
+                                               CpAggFrame = None
+                                               CpBuiltin  = Some (SelectRetry (1, 3, more, retPC)) }
+                                    cp :: s.WsCPs, s.WsCPsLen + 1
+                            Some { s3 with
+                                     WsPC      = retPC
+                                     WsCPs     = newCPs
+                                     WsCPsLen  = newCPsLen }
+            tryNext allSplits
+        | _ -> None
+
+    // numlist/3 — generate the inclusive integer range [Lo..Hi] into A3.
+    | BuiltinCall ("numlist/3", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (Integer lo), Some (Integer hi) when lo <= hi ->
+            let items = [ for n in lo .. hi -> Integer n ]
+            match bindOutput 3 (VList items) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // sort/2 — standard-order sort with dedup. msort/2 — same sort
+    // without dedup. Both use compareValue (the runtime helper) for the
+    // sort key.
+    | BuiltinCall ("sort/2", _) ->
+        match getReg 1 s with
+        | Some (VList items) ->
+            let deref_ = items |> List.map (derefVar s.WsBindings)
+            let sorted = deref_ |> List.sortWith compareValue
+            let rec dedup xs =
+                match xs with
+                | []                              -> []
+                | [x]                             -> [x]
+                | x :: y :: rest when compareValue x y = 0 -> dedup (x :: rest)
+                | x :: rest                       -> x :: dedup rest
+            match bindOutput 2 (VList (dedup sorted)) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("msort/2", _) ->
+        match getReg 1 s with
+        | Some (VList items) ->
+            let sorted = items |> List.map (derefVar s.WsBindings) |> List.sortWith compareValue
+            match bindOutput 2 (VList sorted) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // compare/3 — three-way compare: bind A1 to ''<'', ''='', or ''>'' based
+    // on the standard-order comparison of A2 vs A3.
+    | BuiltinCall ("compare/3", _) ->
+        match getReg 2 s, getReg 3 s with
+        | Some a, Some b ->
+            let c = compareValue a b
+            let order = if c < 0 then Atom "<" elif c > 0 then Atom ">" else Atom "="
+            match bindOutput 1 order s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // @</2, @=</2, @>/2, @>=/2 — standard-order comparison predicates.
+    | BuiltinCall ("@</2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some a, Some b when compareValue a b < 0 -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("@=</2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some a, Some b when compareValue a b <= 0 -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("@>/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some a, Some b when compareValue a b > 0 -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    | BuiltinCall ("@>=/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some a, Some b when compareValue a b >= 0 -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    // =/2 — explicit unification. Delegates to the local unifyVal helper
+    // that lives at the end of the step function (binding-trail aware).
+    | BuiltinCall ("=/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some a, Some b -> unifyVal a b s
+        | _ -> None
+
+    // \\=/2 — non-unifiable check. Succeeds when A1 and A2 cannot unify
+    // under the current binding state.  Implemented by attempting
+    // unification on a copy of the state and inverting the result; if
+    // the trial unifies, \\=/2 fails (bindings are discarded since we
+    // never thread the trial state out).
+    | BuiltinCall ("\\\\=/2", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some a, Some b ->
+            match unifyVal a b s with
+            | Some _ -> None
+            | None   -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
     | BuiltinCall ("member/2", _) ->
         let elem_ = s.WsRegs.[1] |> derefVar s.WsBindings
         let list_ = s.WsRegs.[2] |> derefVar s.WsBindings
@@ -1072,8 +1440,11 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                    CpHeapLen  = s.WsHeapLen
                    CpBindings = s.WsBindings
                    CpCutBar   = s.WsCutBar
-                   CpAggFrame = Some { AggType = aggType; AggValReg = valReg
-                                       AggResReg = resReg; AggReturnPC = 0 }
+                   CpAggFrame = Some { AggType          = aggType
+                                       AggValReg        = valReg
+                                       AggResReg        = resReg
+                                       AggReturnPC      = 0
+                                       AggMergeStrategy = inferMergeStrategy aggType }
                    CpBuiltin  = None }
         Some { s with
                  WsPC       = s.WsPC + 1
@@ -1149,6 +1520,258 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
             | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
         | None -> None
 
+    // arg/3: A1 = N (integer, 1-based), A2 = T (compound/list),
+    // A3 = output unified with the selected argument. Mirrors the
+    // Haskell/Rust/C++ baseline (see wam_haskell_target.pl arg/3 step case).
+    | BuiltinCall ("arg/3", _) ->
+        let n = getReg 1 s
+        let t = getReg 2 s
+        match n, t with
+        | Some (Integer idx), Some tVal when idx >= 1 ->
+            let mArg =
+                match tVal with
+                | Str (_, args) when idx <= List.length args -> Some (List.item (idx - 1) args)
+                | VList (x :: _) when idx = 1 -> Some x
+                | VList (_ :: xs) when idx = 2 -> Some (VList xs)
+                | _ -> None
+            match mArg with
+            | None -> None
+            | Some a ->
+                match bindOutput 3 a s with
+                | None    -> None
+                | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | _ -> None
+
+    // =../2 (univ): A1 = T, A2 = L. Decompose (instantiated A1) or
+    // compose (unbound A1, list in A2). Mirrors the Haskell/Rust/C++
+    // baseline (see wam_haskell_target.pl =../2 step case).
+    | BuiltinCall ("=../2", _) ->
+        let t = getReg 1 s
+        match t with
+        | Some (Unbound vid) ->
+            // Compose mode: read proper list from A2.
+            let l = getReg 2 s
+            match l with
+            | Some (VList items) ->
+                let mBuilt =
+                    match items with
+                    | []                   -> None
+                    | [x]                  -> Some x
+                    | (Atom fname) :: rest -> Some (Str (fname, rest))
+                    | _                    -> None
+                match mBuilt with
+                | None       -> None
+                | Some built ->
+                    let regs = Array.copy s.WsRegs
+                    regs.[1] <- built
+                    Some { s with
+                             WsPC       = s.WsPC + 1
+                             WsRegs     = regs
+                             WsBindings = Map.add vid built s.WsBindings
+                             WsTrail    = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
+                             WsTrailLen = s.WsTrailLen + 1 }
+            | _ -> None
+        | Some tVal ->
+            // Decompose mode: build list from T.
+            let mList =
+                match tVal with
+                | Str (fn, args)  -> Some (VList ((Atom fn) :: args))
+                | Atom _          -> Some (VList [tVal])
+                | Integer _       -> Some (VList [tVal])
+                | Float _         -> Some (VList [tVal])
+                | VList []        -> Some (VList [Atom "[]"])
+                | VList (x :: xs) -> Some (VList [Atom "."; x; VList xs])
+                | _               -> None
+            match mList with
+            | None    -> None
+            | Some lv ->
+                match bindOutput 2 lv s with
+                | None    -> None
+                | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | None -> None
+
+    // \\+/1 (negation as failure): A1 = Goal. Resolves the goal label and
+    // runs the snapshot; success of the inner run => NAF fails, failure of
+    // the inner run => NAF succeeds. Mirrors the Haskell baseline
+    // (wam_haskell_target.pl \\+/1 step case, sans the interned-atom table —
+    // F# Atom is string-based, so no lookupAtom indirection is needed).
+    | BuiltinCall ("\\\\+/1", _) ->
+        let goalOpt = getReg 1 s
+        match goalOpt with
+        // Fast path: \\+ member(X, L) — walk the list inline.
+        | Some (Str ("member", [needle; haystack])) ->
+            let n = derefVar s.WsBindings needle
+            let h = derefVar s.WsBindings haystack
+            let found =
+                match h with
+                | VList items -> items |> List.exists (fun item -> derefVar s.WsBindings item = n)
+                | _ -> false
+            if found then None else Some { s with WsPC = s.WsPC + 1 }
+        // Fast path: \\+ true always fails, \\+ fail always succeeds.
+        | Some (Atom "true") -> None
+        | Some (Atom "fail") -> Some { s with WsPC = s.WsPC + 1 }
+        // General path: resolve the goal label, snapshot-and-run.
+        // If the goal''s entry instruction is a ParTryMeElse(Pc), dispatch
+        // through runNegationParallel for fork-eligible chains; otherwise
+        // fall back to the sequential snapshot-and-run.
+        | Some (Str (fname, args)) ->
+            let goalKey = sprintf "%s/%d" fname (List.length args)
+            match Map.tryFind goalKey ctx.WcLabels with
+            | Some pc ->
+                let dArgs = args |> List.map (derefVar s.WsBindings)
+                let regsSnap = Array.create MaxRegs (Unbound -1)
+                dArgs |> List.iteri (fun i v -> regsSnap.[i + 1] <- v)
+                let snap = { s with WsRegs = regsSnap }
+                if pc >= 0 && pc < ctx.WcCode.Length then
+                    match ctx.WcCode.[pc] with
+                    | ParTryMeElse elseLabel ->
+                        let elsePC = Map.tryFind elseLabel ctx.WcLabels |> Option.defaultValue -1
+                        if runNegationParallel ctx snap pc elsePC then None
+                        else Some { s with WsPC = s.WsPC + 1 }
+                    | ParTryMeElsePc elsePC ->
+                        if runNegationParallel ctx snap pc elsePC then None
+                        else Some { s with WsPC = s.WsPC + 1 }
+                    | _ ->
+                        let snapshot = { snap with WsPC = pc; WsCP = 0; WsCutBar = 0 }
+                        match run ctx snapshot with
+                        | Some _ -> None
+                        | None   -> Some { s with WsPC = s.WsPC + 1 }
+                else Some { s with WsPC = s.WsPC + 1 }
+            | None -> Some { s with WsPC = s.WsPC + 1 }  // unknown pred: treat as failing goal
+        // Atom as 0-arity goal (e.g. \\+ some_pred)
+        | Some (Atom fname) ->
+            let goalKey = sprintf "%s/0" fname
+            match Map.tryFind goalKey ctx.WcLabels with
+            | Some pc ->
+                let snapshot = { s with WsPC = pc; WsCP = 0; WsCutBar = 0 }
+                match run ctx snapshot with
+                | Some _ -> None
+                | None   -> Some { s with WsPC = s.WsPC + 1 }
+            | None -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    // ========================================================================
+    // Phase I — Haskell-only specialized instructions (perf optimizations).
+    // ========================================================================
+    // Reference: src/unifyweaver/targets/wam_haskell_target.pl. These are
+    // emitted by the WAM compiler''s binding-analysis pass when it can
+    // prove the operand shapes statically.
+
+    // PutStructureDyn — like PutStructure but the functor name and arity
+    // come from registers at runtime. Used after =../2 / functor/3 with
+    // variable-shaped output.
+    | PutStructureDyn (nameReg, arityReg, targetReg) ->
+        let mName  = getReg nameReg s
+        let mArity = getReg arityReg s
+        match mName, mArity with
+        | Some (Atom fname), Some (Integer arity) when arity >= 0 ->
+            Some { s with
+                     WsPC      = s.WsPC + 1
+                     WsBuilder = Some (BuildStruct (fname, targetReg, arity, [])) }
+        | _ -> None  // name must be Atom, arity a non-negative Integer
+
+    // Arg — specialized arg/3 with literal N (positive integer). Reads T
+    // from tReg, extracts the Nth subterm, unifies with aReg.
+    | Arg (n, tReg, aReg) when n >= 1 ->
+        match getReg tReg s with
+        | Some tVal ->
+            let mElem =
+                match tVal with
+                | Str (_, args) when n <= List.length args -> Some (List.item (n - 1) args)
+                | VList (x :: _)  when n = 1 -> Some x
+                | VList (_ :: xs) when n = 2 -> Some (VList xs)
+                | _ -> None
+            match mElem with
+            | None -> None
+            | Some elem_ ->
+                // Mirror Haskell semantics: if aReg is uninitialized (the
+                // -1 sentinel via getReg = None), insert directly; if it
+                // dereferences to Unbound, also unify by binding; otherwise
+                // require structural equality.
+                if aReg < 0 || aReg >= s.WsRegs.Length then None
+                else
+                    let regSlot = s.WsRegs.[aReg]
+                    match regSlot with
+                    | Unbound -1 ->
+                        // Sentinel = uninitialized — just write the value.
+                        let r = Array.copy s.WsRegs
+                        r.[aReg] <- elem_
+                        Some { s with WsPC = s.WsPC + 1; WsRegs = r }
+                    | _ ->
+                        let dv = derefVar s.WsBindings regSlot
+                        match dv with
+                        | Unbound vid ->
+                            let r = Array.copy s.WsRegs
+                            r.[aReg] <- elem_
+                            Some { s with
+                                     WsPC       = s.WsPC + 1
+                                     WsRegs     = r
+                                     WsBindings = Map.add vid elem_ s.WsBindings
+                                     WsTrail    = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
+                                     WsTrailLen = s.WsTrailLen + 1 }
+                        | existing when existing = elem_ ->
+                            Some { s with WsPC = s.WsPC + 1 }
+                        | _ -> None
+        | None -> None
+    | Arg (_, _, _) -> None
+
+    // NotMemberList — specialized \\+ member(X, L) on a bound VList L.
+    // Walks L inline, succeeds when X cannot unify with any item.
+    | NotMemberList (xReg, lReg) ->
+        match getReg xReg s, getReg lReg s with
+        | Some x, Some (VList items) ->
+            let found =
+                items |> List.exists (fun item -> derefVar s.WsBindings item = x)
+            if found then None else Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    // NotMemberConstAtoms — \\+ member(X, [a, b, c, ...]) with the atoms
+    // baked into the instruction. Single-dispatch fast path:
+    //   - X is an Atom: succeed iff X.name is not in the atom set.
+    //   - X is an Unbound or Ref (could-unify): fail (matches Prolog).
+    //   - X is any other ground value: succeed (cannot unify with atoms).
+    | NotMemberConstAtoms (xReg, atoms) ->
+        match getReg xReg s with
+        | Some (Atom name) ->
+            if List.contains name atoms then None
+            else Some { s with WsPC = s.WsPC + 1 }
+        | Some (Unbound _) -> None
+        | Some (Ref _)     -> None
+        | Some _           -> Some { s with WsPC = s.WsPC + 1 }
+        | None             -> None
+
+    // BuildEmptySet — write VSet Set.empty into the target register.
+    // Bootstraps the visited-set argument for category-ancestor-style
+    // recursive predicates.
+    | BuildEmptySet reg ->
+        if reg < 0 || reg >= s.WsRegs.Length then None
+        else
+            let r = Array.copy s.WsRegs
+            r.[reg] <- VSet Set.empty
+            Some { s with WsPC = s.WsPC + 1; WsRegs = r }
+
+    // SetInsert — read Atom from elemReg + VSet from inReg, write the
+    // inserted VSet to outReg. Fails if either register has the wrong shape.
+    | SetInsert (elemReg, inReg, outReg) ->
+        match getReg elemReg s, getReg inReg s with
+        | Some (Atom name), Some (VSet s0) ->
+            if outReg < 0 || outReg >= s.WsRegs.Length then None
+            else
+                let r = Array.copy s.WsRegs
+                r.[outReg] <- VSet (Set.add name s0)
+                Some { s with WsPC = s.WsPC + 1; WsRegs = r }
+        | _ -> None
+
+    // NotMemberSet — O(log N) membership check via Set.contains. Succeeds
+    // when the Atom is NOT in the VSet. Replaces the O(N) NotMemberList
+    // walk on the visited-set hot path.
+    | NotMemberSet (elemReg, setReg) ->
+        match getReg elemReg s, getReg setReg s with
+        | Some (Atom name), Some (VSet s0) ->
+            if Set.contains name s0 then None
+            else Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
     | _ -> None   // fallback for unhandled instructions
 
 and updateNearestAggFrame (rpc: int) (cps: ChoicePoint list) : ChoicePoint list =
@@ -1181,10 +1804,20 @@ and unifyVal (a: Value) (b: Value) (s: WamState) : WamState option =
 % ============================================================================
 
 run_loop_fsharp(Code) :-
-    Code = '/// Main execution loop. Runs until halt (pc=0) or failure.
-/// WamContext is read-only. Tail-recursive via use of trampolining.
+    Code = '/// Main execution loop. Runs until halt (pc=0), failure, or
+/// cancellation.  WamContext is read-only. Tail-recursive via use of
+/// trampolining.
+///
+/// Hard-cancel: when ctx.WcCancellationToken is set and reports
+/// IsCancellationRequested, the loop returns None immediately.  Wired
+/// by runNegationParallel so a successful branch can halt its siblings''
+/// wasted work.  The check is one Map.tryFind + IsCancellationRequested
+/// per iteration when a token is set, zero overhead when not.
 and run (ctx: WamContext) (s: WamState) : WamState option =
     if s.WsPC = 0 then Some s
+    elif (match ctx.WcCancellationToken with
+          | Some t when t.IsCancellationRequested -> true
+          | _ -> false) then None
     else
         let instr = ctx.WcCode.[s.WsPC]
         match step ctx s instr with
@@ -1202,6 +1835,291 @@ and runParallel (ctx: WamContext) (seeds: WamState list) : WamState option list 
     |> List.toArray
     |> Array.Parallel.map (fun seed -> run ctx seed)
     |> Array.toList
+
+/// Minimum branch count below which forking is overhead-only.  Matches the
+/// Haskell baseline (wam_haskell_target.pl forkMinBranches = 3).
+and forkMinBranches : int = 3
+
+/// Walk a Par*-chain starting at parPC, following the else-label of each
+/// non-terminal ParRetryMeElse / ParRetryMeElsePc until ParTrustMe.  Returns
+/// the entry PC of every branch (one past the corresponding Par* instr) in
+/// chain order.  Pre-Par variants (RetryMeElse / RetryMeElsePc / TrustMe)
+/// terminate the chain — the fork still covers everything up to that point.
+/// Mirrors wam_haskell_target.pl enumerateParBranches.
+and enumerateParBranches (ctx: WamContext) (parPC: int) (elsePC: int) : int list =
+    let rec collectRest pc acc =
+        if pc < 0 || pc >= ctx.WcCode.Length then List.rev acc
+        else
+            match ctx.WcCode.[pc] with
+            | ParRetryMeElse label ->
+                let nextPC = Map.tryFind label ctx.WcLabels |> Option.defaultValue -1
+                collectRest nextPC ((pc + 1) :: acc)
+            | ParRetryMeElsePc nextPC ->
+                collectRest nextPC ((pc + 1) :: acc)
+            | ParTrustMe ->
+                List.rev ((pc + 1) :: acc)
+            | RetryMeElse _ | RetryMeElsePc _ | TrustMe ->
+                List.rev acc  // mixed sequential/parallel chain — stop here
+            | _ -> List.rev acc
+    (parPC + 1) :: collectRest elsePC []
+
+/// Fork all branches of a Par*-chain and check whether ANY succeeds.
+/// Used by \\+/1 to evaluate negation of a goal with parallel alternative
+/// clauses: success of any branch => the goal succeeds => negation fails.
+///
+/// F#-specific notes vs Haskell baseline:
+///   - Haskell uses Control.Concurrent.Async with waitAny + cancel for
+///     race-to-cancel semantics.  F# branches run `run ctx snapshot`,
+///     which is a tight tail-recursive loop without cancellation checks,
+///     so a true "hard cancel" of in-progress branches would need a
+///     CancellationToken threaded through every step — out of scope.
+///   - This implementation uses Async.Choice for "soft race-to-cancel":
+///     each branch is wrapped as Async<unit option> returning Some () on
+///     success, None on failure.  Async.Choice returns as soon as the
+///     first Some arrives and signals cancellation to the others.  The
+///     others'' `run` loops don''t honor cancellation tokens, so they
+///     continue running in the background until they naturally finish —
+///     but `runNegationParallel` returns immediately on the first
+///     success, so wall time is bounded by the FIRST successful branch
+///     rather than the SLOWEST branch (the Async.Parallel behavior).
+and runNegationParallel (ctx: WamContext) (s: WamState) (entryPC: int) (elsePC: int) : bool =
+    // enumerateParBranches returns the BRANCH BODY entry PCs (per its own
+    // contract: "Each branch''s body begins at chainOpPC + 1"), so the
+    // snapshot here just sets WsPC = pc directly.  An earlier port (and
+    // the Haskell baseline) used `pc + 1`, which double-stepped past the
+    // first instruction of each branch and could land out of bounds for
+    // a chain whose last branch is short — the F# runtime smoke caught
+    // this when a 3-branch all-Fail fixture crashed in `run` with
+    // IndexOutOfRangeException reading WcCode.[ pc + 1 ] on the tail.
+    let branchPCs = enumerateParBranches ctx entryPC elsePC
+    if List.length branchPCs >= forkMinBranches then
+        let branchAction pc =
+            async {
+                // Async.CancellationToken pulls the token that Async.Choice
+                // wires into each child workflow.  When Async.Choice gets
+                // its first Some, it cancels the token, and `run`''s loop
+                // check (run_loop_fsharp) returns None on the next iter,
+                // halting sibling branches'' work.  Hard-cancel: real CPU
+                // / thread savings on the wasted siblings beyond the
+                // wall-time win that Async.Choice alone provides.
+                let! token = Async.CancellationToken
+                let ctxC = { ctx with WcCancellationToken = Some token }
+                let snapshot = { s with WsPC = pc; WsCP = 0; WsCutBar = 0 }
+                if (run ctxC snapshot).IsSome then return Some ()
+                else return None
+            }
+        // Async.Choice: returns the first Some.  Wall time bounded by
+        // the FIRST successful branch rather than the SLOWEST one.
+        let result =
+            branchPCs
+            |> List.map branchAction
+            |> Async.Choice
+            |> Async.RunSynchronously
+        result.IsSome
+    else
+        // Too few branches for fork overhead to pay off — run sequentially.
+        match run ctx { s with WsPC = entryPC; WsCP = 0; WsCutBar = 0 } with
+        | Some _ -> true
+        | None   -> false
+
+/// Classify an aggregate type string as a MergeStrategy.  Sum / count /
+/// bag / set / findall are forkable — their per-branch results combine
+/// associatively, so parallel evaluation is safe.  Everything else falls
+/// back to sequential.  Mirrors wam_haskell_target.pl inferMergeStrategy.
+and inferMergeStrategy (aggType: string) : MergeStrategy =
+    match aggType with
+    | "sum"     -> MergeSum
+    | "count"   -> MergeCount
+    | "bag"     -> MergeBag
+    | "set"     -> MergeSet
+    | "findall" -> MergeFindall
+    | "collect" -> MergeFindall   // alias
+    | _         -> MergeSequential
+
+/// True iff the strategy can be evaluated by forking branches in parallel.
+and isForkableStrategy (ms: MergeStrategy) : bool =
+    match ms with
+    | MergeSum | MergeCount | MergeBag | MergeSet | MergeFindall -> true
+    | MergeSequential -> false
+
+/// Walk WsCPs to find the nearest aggregate frame''s merge strategy, if any.
+and currentAggMergeStrategy (s: WamState) : MergeStrategy option =
+    let rec go cps =
+        match cps with
+        | [] -> None
+        | cp :: rest ->
+            match cp.CpAggFrame with
+            | Some af -> Some af.AggMergeStrategy
+            | None    -> go rest
+    go s.WsCPs
+
+/// Walk WsCPs to find the nearest aggregate frame, returning the whole frame.
+and currentAggFrame (s: WamState) : AggFrame option =
+    let rec go cps =
+        match cps with
+        | [] -> None
+        | cp :: rest ->
+            match cp.CpAggFrame with
+            | Some af -> Some af
+            | None    -> go rest
+    go s.WsCPs
+
+/// Remove the nearest aggregate-frame CP from a CP list.  Used after
+/// forkParBranches consumes the aggregate to drop the frame so subsequent
+/// backtracking doesn''t try to re-finalize it.
+and removeNearestAggFrame (cps: ChoicePoint list) : ChoicePoint list =
+    let rec go cps =
+        match cps with
+        | [] -> []
+        | cp :: rest ->
+            match cp.CpAggFrame with
+            | Some _ -> rest                   // drop it
+            | None   -> cp :: go rest
+    go cps
+
+/// Scan WcCode forward from a Par* instruction to find the matching
+/// EndAggregate''s return PC (one past the EndAggregate).  Returns 0
+/// (treated as halt by run) on overrun so a malformed chain fails gracefully
+/// rather than indexing out of bounds.  Mirrors wam_haskell_target.pl
+/// findOuterEndAggregate.
+and findOuterEndAggregate (ctx: WamContext) (startPC: int) : int =
+    let lo, hi = 0, ctx.WcCode.Length - 1
+    let rec go pc =
+        if pc < lo || pc > hi then 0
+        else
+            match ctx.WcCode.[pc] with
+            | EndAggregate _ -> pc + 1
+            | _              -> go (pc + 1)
+    go (startPC + 1)
+
+/// Combine per-branch aggregate results from forkParBranches into a single
+/// final Value, applying the merge strategy at the cross-branch level.
+/// Each input is one branch''s already-aggregated value (computed by its
+/// own finalizeAggregate from a single-element WsAggAccum), so we are
+/// folding aggregates of aggregates here.  Semantics chosen to keep the
+/// fork equivalent to the sequential version:
+///   sum     : numeric sum of per-branch sums
+///   count   : sum of per-branch counts (each branch counts its hits)
+///   bag     : concat of per-branch VLists
+///   set     : Set.ofList over the flattened bag, back to VList (dedup)
+///   findall : same as bag — findall preserves duplicates and order
+///   other   : fallback to VList of the raw per-branch results
+and combineParBranchResults (ms: MergeStrategy) (results: Value list) : Value =
+    match ms with
+    | MergeSum ->
+        let toNum v =
+            match v with
+            | Integer n -> float n
+            | Float f   -> f
+            | _         -> 0.0
+        let total = results |> List.sumBy toNum
+        if float (int total) = total then Integer (int total) else Float total
+    | MergeCount ->
+        let toInt v = match v with Integer n -> n | _ -> 0
+        Integer (results |> List.sumBy toInt)
+    | MergeBag | MergeFindall ->
+        let extract v = match v with VList items -> items | _ -> [v]
+        VList (results |> List.collect extract)
+    | MergeSet ->
+        let extract v = match v with VList items -> items | _ -> [v]
+        let allItems = results |> List.collect extract
+        VList (List.distinct allItems)
+    | MergeSequential ->
+        VList results
+
+/// Fork all branches of a Par*-chain inside a forkable aggregate frame.
+/// Each branch runs to completion (including its own EndAggregate +
+/// finalizeAggregate) in parallel via Async.Parallel; we then read the
+/// per-branch result from the response register and merge them.
+///
+/// After fork: returns a state with WsPC = retPC (one past the outer
+/// EndAggregate), WsRegs[ResReg] bound to the merged value, and the
+/// aggregate frame removed from WsCPs.  Mirrors wam_haskell_target.pl
+/// forkParBranches.
+and forkParBranches (ctx: WamContext) (s: WamState) (af: AggFrame)
+                    (parPC: int) (elsePC: int) : WamState option =
+    let branchPCs = enumerateParBranches ctx parPC elsePC
+    let runBranch pc =
+        async {
+            // Each branch inherits the aggregate frame in WsCPs so its own
+            // EndAggregate can finalize via the standard path, binding the
+            // per-branch aggregate to AggResReg.  WsCP = 0 makes proceed
+            // halt the branch.  WsAggAccum starts empty so the branch only
+            // accumulates its own contribution.
+            let snapshot = { s with
+                               WsPC       = pc
+                               WsCP       = 0
+                               WsCutBar   = 0
+                               WsAggAccum = [] }
+            return run ctx snapshot
+        }
+    let results =
+        branchPCs
+        |> List.map runBranch
+        |> Async.Parallel
+        |> Async.RunSynchronously
+    // Extract per-branch aggregate result from AggResReg of each successful branch.
+    let perBranchValues =
+        results
+        |> Array.choose (fun rOpt ->
+            rOpt |> Option.bind (fun final ->
+                if af.AggResReg >= 0 && af.AggResReg < final.WsRegs.Length then
+                    let raw = final.WsRegs.[af.AggResReg]
+                    match raw with
+                    | Unbound -1 -> None   // sentinel: branch didn''t finalize
+                    | v -> Some (derefVar final.WsBindings v)
+                else None))
+        |> Array.toList
+    let combined = combineParBranchResults af.AggMergeStrategy perBranchValues
+    let retPC = findOuterEndAggregate ctx parPC
+    // Drop the consumed aggregate frame from WsCPs and bind combined to AggResReg.
+    let outerCPs = removeNearestAggFrame s.WsCPs
+    let regs = Array.copy s.WsRegs
+    if af.AggResReg >= 0 && af.AggResReg < regs.Length then
+        regs.[af.AggResReg] <- combined
+    // Thread through bindings + trail if the outer register slot was Unbound.
+    let preBindings, preTrail, preTrailLen =
+        if af.AggResReg >= 0 && af.AggResReg < s.WsRegs.Length then
+            match derefVar s.WsBindings s.WsRegs.[af.AggResReg] with
+            | Unbound vid ->
+                (Map.add vid combined s.WsBindings,
+                 { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail,
+                 s.WsTrailLen + 1)
+            | _ -> (s.WsBindings, s.WsTrail, s.WsTrailLen)
+        else (s.WsBindings, s.WsTrail, s.WsTrailLen)
+    Some { s with
+             WsPC       = retPC
+             WsRegs     = regs
+             WsBindings = preBindings
+             WsTrail    = preTrail
+             WsTrailLen = preTrailLen
+             WsCPs      = outerCPs
+             WsCPsLen   = List.length outerCPs
+             WsAggAccum = [] }
+
+/// Dispatcher for ParTryMeElse / ParTryMeElsePc.  Checks if we''re inside
+/// a forkable aggregate frame with enough branches; if so, fork.  Otherwise
+/// fall back to the sequential TryMeElse step semantics (a choice point
+/// is pushed, the first branch runs, backtracking will explore the rest).
+and forkOrSequential (ctx: WamContext) (s: WamState)
+                     (elseTarget: Choice<string, int>) : WamState option =
+    let fallback () =
+        match elseTarget with
+        | Choice1Of2 lbl -> step ctx s (TryMeElse lbl)
+        | Choice2Of2 pc  -> step ctx s (TryMeElsePc pc)
+    match currentAggFrame s with
+    | Some af when isForkableStrategy af.AggMergeStrategy ->
+        let elsePC =
+            match elseTarget with
+            | Choice2Of2 pc  -> pc
+            | Choice1Of2 lbl -> Map.tryFind lbl ctx.WcLabels |> Option.defaultValue -1
+        if elsePC <= 0 then fallback ()
+        else
+            let branches = enumerateParBranches ctx s.WsPC elsePC
+            if List.length branches >= forkMinBranches then
+                forkParBranches ctx s af s.WsPC elsePC
+            else fallback ()
+    | _ -> fallback ()
 
 /// Indexed fact dispatch for 2-arg facts via BuiltinState CP.
 /// O(1) Map lookup; first match returned, FactRetry CP for the rest.
@@ -1754,7 +2672,16 @@ fs_clean_comma(Str, Clean) :-
     ).
 
 %% fs_wam_value(+WamVal, -FsExpr)
-fs_wam_value(Val, Fs) :-
+%  WamVal may arrive as a string (typical) or an atom (e.g., from
+%  sub_atom/5 inside fs_parse_switch_entries).  Normalize to a string
+%  before calling number_string/2, which throws type_error(list, _)
+%  when given an atom.
+fs_wam_value(Val0, Fs) :-
+    (   string(Val0) -> Val = Val0
+    ;   atom(Val0)   -> atom_string(Val0, Val)
+    ;   number(Val0) -> number_string(Val0, Val)
+    ;   Val = Val0
+    ),
     (   number_string(N, Val), integer(N)
     ->  format(string(Fs), 'Integer ~w', [N])
     ;   number_string(F, Val), float(F)
@@ -1893,6 +2820,60 @@ wam_instr_to_fsharp(["end_aggregate", ValReg], Fs) :-
     fs_clean_comma(ValReg, CV),
     fs_reg_name_to_int(CV, VI),
     format(string(Fs), 'EndAggregate ~w', [VI]).
+
+% ----------------------------------------------------------------------
+% Phase I — Haskell-only specialized instructions (text parse rules).
+% Match the WAM-text mnemonics emitted by the WAM compiler''s
+% optimization pass, mirroring the Haskell parser rules in
+% wam_haskell_target.pl wam_instr_to_haskell.
+% ----------------------------------------------------------------------
+
+wam_instr_to_fsharp(["put_structure_dyn", NameReg, ArityReg, TargetReg], Fs) :-
+    fs_clean_comma(NameReg, CN), fs_clean_comma(ArityReg, CA), fs_clean_comma(TargetReg, CT),
+    fs_reg_name_to_int(CN, NI), fs_reg_name_to_int(CA, AI), fs_reg_name_to_int(CT, TI),
+    format(string(Fs), 'PutStructureDyn (~w, ~w, ~w)', [NI, AI, TI]).
+
+wam_instr_to_fsharp(["arg", N, TReg, AReg], Fs) :-
+    fs_clean_comma(N, CN), fs_clean_comma(TReg, CT), fs_clean_comma(AReg, CA),
+    (   number_string(NI, CN)
+    ->  true
+    ;   throw(error(domain_error(arg_specialization_n, CN), wam_instr_to_fsharp/2))
+    ),
+    fs_reg_name_to_int(CT, TI), fs_reg_name_to_int(CA, AI),
+    format(string(Fs), 'Arg (~w, ~w, ~w)', [NI, TI, AI]).
+
+wam_instr_to_fsharp(["not_member_list", XReg, LReg], Fs) :-
+    fs_clean_comma(XReg, CX), fs_clean_comma(LReg, CL),
+    fs_reg_name_to_int(CX, XI), fs_reg_name_to_int(CL, LI),
+    format(string(Fs), 'NotMemberList (~w, ~w)', [XI, LI]).
+
+%% Variable-arity: not_member_const_atoms XReg Atom1 Atom2 ... AtomN
+%% Emits an F# list literal of atom strings.
+wam_instr_to_fsharp(["not_member_const_atoms", XReg | AtomTokens], Fs) :-
+    AtomTokens \= [],
+    fs_clean_comma(XReg, CX), fs_reg_name_to_int(CX, XI),
+    maplist([Tok, Quoted]>>(
+        fs_clean_comma(Tok, CTok),
+        fs_escape_string(CTok, EscTok),
+        format(atom(Quoted), '"~w"', [EscTok])
+    ), AtomTokens, QuotedAtoms),
+    atomic_list_concat(QuotedAtoms, '; ', AtomsList),
+    format(string(Fs), 'NotMemberConstAtoms (~w, [~w])', [XI, AtomsList]).
+
+wam_instr_to_fsharp(["build_empty_set", Reg], Fs) :-
+    fs_clean_comma(Reg, CR), fs_reg_name_to_int(CR, RI),
+    format(string(Fs), 'BuildEmptySet ~w', [RI]).
+
+wam_instr_to_fsharp(["set_insert", EReg, InReg, OutReg], Fs) :-
+    fs_clean_comma(EReg, CE), fs_clean_comma(InReg, CI), fs_clean_comma(OutReg, CO),
+    fs_reg_name_to_int(CE, EI), fs_reg_name_to_int(CI, II), fs_reg_name_to_int(CO, OI),
+    format(string(Fs), 'SetInsert (~w, ~w, ~w)', [EI, II, OI]).
+
+wam_instr_to_fsharp(["not_member_set", EReg, SReg], Fs) :-
+    fs_clean_comma(EReg, CE), fs_clean_comma(SReg, CS),
+    fs_reg_name_to_int(CE, EI), fs_reg_name_to_int(CS, SI),
+    format(string(Fs), 'NotMemberSet (~w, ~w)', [EI, SI]).
+
 % Fallback for unknown instructions
 wam_instr_to_fsharp(Parts, Fs) :-
     atomic_list_concat(Parts, ' ', Joined),
@@ -2030,15 +3011,30 @@ pred_func_name_fs(PI, FN) :-
     format(atom(FN), '~w_~w', [PSafe, A]).
 
 emit_merged_code_build_fs([], Code) :-
-    Code = 'let allCode : Instruction array = [||]\nlet allLabels : Map<string, int> = Map.empty'.
+    %% Even the empty case must reserve index 0 as a halt sentinel:
+    %% `run`'s loop short-circuits on `s.WsPC = 0` before fetching from
+    %% WcCode, so we never actually execute index 0.  Having it present
+    %% means PC numbering (1-based per the WAM compiler / labels) aligns
+    %% with array indexing.  Without the sentinel, the first real
+    %% instruction lands at index 0 (unreachable) and label "pred/N" → 1
+    %% points to the SECOND emitted instruction — the cause of Bug A in
+    %% PR #2350's query smoke.
+    Code = 'let allCode : Instruction array = [| Fail |]\nlet allLabels : Map<string, int> = Map.empty'.
 emit_merged_code_build_fs(FuncNames, Code) :-
     FuncNames \= [],
     maplist([FN, Expr]>>(format(atom(Expr), '~w_code', [FN])), FuncNames, CodeExprs),
     atomic_list_concat(CodeExprs, ' @ ', CodeConcat),
     maplist([FN, Expr]>>(format(atom(Expr), '~w_labels', [FN])), FuncNames, LabelExprs),
     atomic_list_concat(LabelExprs, ' |> mapUnion ', LabelUnion),
+    %% Prepend a Fail sentinel at index 0 so WAM-PC 1 (the first real
+    %% instruction emitted by the WAM compiler) maps to array index 1.
+    %% Closes the off-by-one (Bug A from PR #2350): without the
+    %% sentinel, SwitchOnConstantPc — emitted as the first instruction
+    %% by the WAM compiler — lands at array index 0 where `run`'s halt
+    %% sentinel `if s.WsPC = 0 then Some s` short-circuits before
+    %% fetching, making indexed dispatch unreachable.
     format(string(Code),
-'let allCode : Instruction array = (~w) |> List.toArray
+'let allCode : Instruction array = (Fail :: (~w)) |> List.toArray
 let allLabels : Map<string, int> = ~w', [CodeConcat, LabelUnion]).
 
 %% generate_lowered_fs(+LoweredEntries, -Code)
@@ -2197,7 +3193,8 @@ let main argv =
           WcAtomIntern        = atomIntern
           WcAtomDeintern      = atomDeintern
           WcForeignConfig     = Map.ofList [ ("max_depth", 10) ]
-          WcLoweredPredicates = loweredPredicates }
+          WcLoweredPredicates = loweredPredicates
+          WcCancellationToken = None }
 
     let emptyState =
         { WsPC         = 0
@@ -2243,9 +3240,25 @@ let main argv =
         for cat in seedCats do
             let varId = 1000000
             let regs = Array.create MaxRegs (Unbound -1)
-            regs.[1] <- Atom cat
-            regs.[2] <- Atom root
-            regs.[3] <- Unbound varId
+            // Register layout depends on which queryPred resolved.  The /3
+            // candidates are lowered aggregate variants whose semantics fold
+            // a target root into the call shape, so A2 is the root and A3
+            // accumulates the result.  The /4 variant is the raw
+            // category_ancestor(+Cat, -Ancestor, -Hops, +Visited) — A2 and
+            // A3 are outputs (Unbound), and A4 must be a list-valued input
+            // seeded with [Cat] so that the cycle-detection guard (negation
+            // over member/2) sees a real list rather than an unbound
+            // variable.  Without the seeded A4 the predicate fails
+            // unconditionally and the benchmark reports solutions=0.
+            if queryPred.EndsWith "/4" then
+                regs.[1] <- Atom cat
+                regs.[2] <- Unbound varId
+                regs.[3] <- Unbound (varId + 1)
+                regs.[4] <- VList [ Atom cat ]
+            else
+                regs.[1] <- Atom cat
+                regs.[2] <- Atom root
+                regs.[3] <- Unbound varId
             let s0 = { emptyState with WsPC = 0; WsRegs = regs; WsCP = 0 }
             match dispatchCall ctx queryPred s0 with
             | Some s1 ->

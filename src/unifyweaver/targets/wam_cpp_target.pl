@@ -45,6 +45,21 @@
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../core/relation_policy', [
+       get_effective_policy/4
+   ]).
+:- use_module(wam_runtime_parser_capability, [
+       wam_target_runtime_parser/3,
+       parser_dependent_body_goal/2
+   ]).
+% Load the portable Prolog term parser so its predicates are
+% visible to current_predicate/1 when runtime_parser(compiled) is
+% requested. The module is small (~445 lines, ~40 predicates) and
+% load-once; non-compiled-mode callers pay the load cost but no
+% runtime cost (the predicates only enter the generated output
+% when the expansion explicitly references them).
+:- use_module('../core/prolog_term_parser', []).
+:- use_module('../core/cpp_runtime_parser_wrappers', []).
 :- use_module(wam_cpp_lowered_emitter, [
     wam_cpp_lowerable/3,
     lower_predicate_to_cpp/4,
@@ -419,7 +434,8 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
            [catch_return, negation_return, findall_collect,
             conj_return, disj_alt, if_then_commit, if_then_else,
             aggregate_next_group, dynamic_next_clause, sub_atom_next,
-            body_next, retract_next, output_capture_return],
+            body_next, retract_next, output_capture_return,
+            current_pred_next],
            FlatInstrs),
     length(FlatInstrs0, CatchReturnPC),
     NegationReturnPC is CatchReturnPC + 1,
@@ -434,6 +450,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     BodyNextPC is CatchReturnPC + 10,
     RetractNextPC is CatchReturnPC + 11,
     OutputCaptureReturnPC is CatchReturnPC + 12,
+    CurrentPredNextPC is CatchReturnPC + 13,
     findall(LabelLine, (
         member(NameStr-PC, Labels),
         format(atom(LabelLine),
@@ -445,6 +462,18 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
         instr_to_setup_line(I, Labels, InstrLine)
     ), InstrLines),
     atomic_list_concat(InstrLines, '\n', InstrBody),
+    % cpp_fact_sources LMDB load calls -- one per source, appended
+    % at the end of wam_cpp_setup so dynamic_db is populated before
+    % any query runs. Idempotency is enforced runtime-side.
+    lmdb_sources_from_options(Options, LmdbSources),
+    warn_runtime_sorts(LmdbSources),
+    findall(LoadLine, (
+        member(lmdb_source(Key, Path, DbName, Unique, OnDup, Order, _),
+               LmdbSources),
+        emit_lmdb_load_call(Key, Path, DbName, Unique, OnDup,
+                            Order, LoadLine)
+    ), LoadLines),
+    atomic_list_concat(LoadLines, '\n', LmdbLoadBody),
     length(FlatInstrs, Reserve),
     format(string(SetupCpp),
 'void wam_cpp_setup(WamState& vm) {
@@ -464,6 +493,8 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     vm.body_next_pc = ~w;
     vm.retract_next_pc = ~w;
     vm.output_capture_return_pc = ~w;
+    vm.current_pred_next_pc = ~w;
+~w
 ~w
 ~w
 }
@@ -475,7 +506,90 @@ static const int _wam_cpp_setup_register = []() {
     ConjReturnPC, DisjAltPC, IfThenCommitPC, IfThenElsePC,
     AggregateNextGroupPC, DynamicNextClausePC, SubAtomNextPC,
     BodyNextPC, RetractNextPC, OutputCaptureReturnPC,
-    LabelBody, InstrBody]).
+    CurrentPredNextPC,
+    LabelBody, InstrBody, LmdbLoadBody]).
+
+% Render one cpp_load_lmdb_fact_source call. DbName is either an
+% atom (named sub-DB) or [] (default unnamed DB -> nullptr).
+% Unique is a boolean controlling value-uniqueness enforcement at
+% load time; OnDup is one of {throw,warn,overwrite,first_wins,
+% keep_all,fallback(P)} from the relation_policy directive; Order
+% is the declared order spec (translated to a SortKey list, empty
+% when LMDB's natural iteration order satisfies it).
+emit_lmdb_load_call(Key, Path, DbName, Unique, OnDup, Order, Line) :-
+    escape_cpp_string(Key, EKey),
+    escape_cpp_string(Path, EPath),
+    db_name_arg(DbName, DbArg),
+    on_dup_cpp_enum(OnDup, DupEnum),
+    cpp_bool(Unique, UniqueLit),
+    order_cpp_sort_keys(Order, SortKeysLit),
+    format(atom(Line),
+        '    cpp_load_lmdb_fact_source(vm, "~w", "~w", ~w, LmdbLoadOptions{~w, LmdbLoadOptions::OnDup::~w, ~w});',
+        [EKey, EPath, DbArg, UniqueLit, DupEnum, SortKeysLit]).
+
+db_name_arg([], 'nullptr') :- !.
+db_name_arg(DbName, Arg) :-
+    escape_cpp_string(DbName, EDb),
+    format(atom(Arg), '"~w"', [EDb]).
+
+cpp_bool(true, 'true') :- !.
+cpp_bool(false, 'false').
+
+% Map the Prolog on_duplicate policy atom to the C++ enum tag.
+% fallback(Policy) collapses to the inner policy for v1 (Phase 2
+% does not yet chain).
+on_dup_cpp_enum(throw,      'throw_').
+on_dup_cpp_enum(warn,       'warn').
+on_dup_cpp_enum(overwrite,  'overwrite').
+on_dup_cpp_enum(first_wins, 'first_wins').
+on_dup_cpp_enum(keep_all,   'keep_all').
+on_dup_cpp_enum(fallback(P), Tag) :- on_dup_cpp_enum(P, Tag).
+
+%% order_cpp_sort_keys(+OrderSpec, -SortKeysLiteral) is det.
+%
+% Translate the relation_policy order(...) spec into a C++
+% initializer-list literal for LmdbLoadOptions::sort_keys.
+% Emits "{}" (empty) when the declared order is trivially
+% satisfied by LMDB's natural key-ascending iteration -- this is
+% the cheap path. Emits "{ {N, asc}, ... }" otherwise.
+%
+% LMDB key uniqueness means a leading `arg(1)` / `asc(arg(1))`
+% guarantees a total order on its own, so any trailing sort
+% keys after such a leader are redundant and we drop them too.
+%
+% v1: arity 2; column indices are 1 or 2.
+order_cpp_sort_keys(OrderSpec, '{}') :-
+    trivial_order(OrderSpec), !.
+order_cpp_sort_keys(OrderSpec, Literal) :-
+    order_to_sort_keys(OrderSpec, Keys),
+    findall(KeyLit, (
+        member(key(Col, Asc), Keys),
+        cpp_bool(Asc, AscLit),
+        format(atom(KeyLit),
+               'LmdbLoadOptions::SortKey{~w, ~w}', [Col, AscLit])
+    ), KeyLits),
+    atomic_list_concat(KeyLits, ', ', Inner),
+    format(atom(Literal), '{ ~w }', [Inner]).
+
+% True for order specs that LMDB satisfies without a sort pass.
+trivial_order(natural)   :- !.
+trivial_order(insertion) :- !.
+trivial_order([])        :- !.
+trivial_order([First|_]) :-
+    % A leading asc(arg(1)) (or bare arg(1)) totally orders by
+    % unique key, so the rest of the chain is redundant.
+    sort_term_to_key(First, key(1, true)).
+
+% Convert an order term to a (Col, Asc) pair.
+sort_term_to_key(arg(N),       key(N, true)) :- integer(N).
+sort_term_to_key(asc(arg(N)),  key(N, true)) :- integer(N).
+sort_term_to_key(desc(arg(N)), key(N, false)) :- integer(N).
+
+% Translate a non-trivial order spec into a list of key(Col, Asc).
+order_to_sort_keys([], []).
+order_to_sort_keys([H|T], [K|KT]) :-
+    sort_term_to_key(H, K),
+    order_to_sort_keys(T, KT).
 
 % ============================================================================
 % ISO error configuration
@@ -552,15 +666,21 @@ static const int _wam_cpp_setup_register = []() {
            ;  throw(error(assertion_failed, G))
            )))
    ).
-% assoc/2 stdlib: unbalanced BST keyed by standard order. The empty
-% tree is the atom `t`; non-empty nodes are t(Key, Value, Left, Right).
-% Unbalanced keeps the asserted source tiny; can be upgraded to AVL
-% in a follow-up. Re-uses compare/3 (already in the runtime) for
+% assoc/2 stdlib: AVL tree keyed by standard order. The empty
+% tree is the atom `t`; non-empty nodes are
+% t(Key, Value, Balance, Left, Right) where Balance is one of:
+%   <   left subtree is one taller
+%   =   subtrees are equal height
+%   >   right subtree is one taller
+% This is the standard SWI library(assoc) AVL representation. Insert
+% tracks a height-change flag (same / grew) up the spine; once a
+% node would tip to imbalance, a single or double rotation restores
+% the invariant. Re-uses compare/3 (already in the runtime) for
 % standard-order key comparison.
 :- (   current_predicate(user:put_assoc/4)
    ->  true
    ;   assertz((user:empty_assoc(t))),
-       assertz((user:get_assoc(Key, t(K, V, L, R), Value) :-
+       assertz((user:get_assoc(Key, t(K, V, _, L, R), Value) :-
            compare(Order, Key, K),
            wam_cpp_get_assoc_(Order, Key, V, L, R, Value))),
        assertz((user:wam_cpp_get_assoc_(=, _, Value, _, _, Value))),
@@ -568,18 +688,272 @@ static const int _wam_cpp_setup_register = []() {
            get_assoc(Key, L, Value))),
        assertz((user:wam_cpp_get_assoc_(>, Key, _, _, R, Value) :-
            get_assoc(Key, R, Value))),
-       assertz((user:put_assoc(Key, t, Val, t(Key, Val, t, t)) :- !)),
-       assertz((user:put_assoc(Key, t(K, V, L, R), Val, NewTree) :-
+       % put_assoc/4: drop the height-change flag from the worker.
+       assertz((user:put_assoc(Key, Tree, Val, NewTree) :-
+           wam_cpp_put_assoc_recur(Key, Tree, Val, NewTree, _))),
+       % Insert into empty subtree — the new node grew the tree.
+       assertz((user:wam_cpp_put_assoc_recur(Key, t, Val,
+                                            t(Key, Val, =, t, t), grew))),
+       % Insert into a non-empty node — compare + dispatch.
+       assertz((user:wam_cpp_put_assoc_recur(Key, t(K, V, B, L, R), Val,
+                                            NewTree, Change) :-
            compare(Order, Key, K),
-           wam_cpp_put_assoc_(Order, Key, K, V, L, R, Val, NewTree))),
-       assertz((user:wam_cpp_put_assoc_(=, Key, _, _, L, R, Val,
-                                       t(Key, Val, L, R)))),
-       assertz((user:wam_cpp_put_assoc_(<, Key, K, V, L, R, Val,
-                                       t(K, V, NewL, R)) :-
-           put_assoc(Key, L, Val, NewL))),
-       assertz((user:wam_cpp_put_assoc_(>, Key, K, V, L, R, Val,
-                                       t(K, V, L, NewR)) :-
-           put_assoc(Key, R, Val, NewR))),
+           wam_cpp_put_assoc_dispatch(Order, Key, Val, K, V, B,
+                                      L, R, NewTree, Change))),
+       % =: replace value, balance preserved.
+       assertz((user:wam_cpp_put_assoc_dispatch(=, Key, Val, _, _, B,
+                                               L, R,
+                                               t(Key, Val, B, L, R),
+                                               same))),
+       % <: recurse into L, then ask wam_cpp_rebalance_left to decide
+       % whether the subtree got taller and whether to rotate.
+       assertz((user:wam_cpp_put_assoc_dispatch(<, Key, Val, K, V, B,
+                                               L, R, NewTree, Change) :-
+           wam_cpp_put_assoc_recur(Key, L, Val, L1, LChange),
+           wam_cpp_rebalance_left(LChange, B, K, V, L1, R,
+                                  NewTree, Change))),
+       % >: symmetric — recurse into R, then rebalance from the right.
+       assertz((user:wam_cpp_put_assoc_dispatch(>, Key, Val, K, V, B,
+                                               L, R, NewTree, Change) :-
+           wam_cpp_put_assoc_recur(Key, R, Val, R1, RChange),
+           wam_cpp_rebalance_right(RChange, B, K, V, L, R1,
+                                   NewTree, Change))),
+       % wam_cpp_rebalance_left(LChange, B, K, V, L, R, NewTree,
+       %                       Change)
+       % LChange=same — copy through.
+       assertz((user:wam_cpp_rebalance_left(same, B, K, V, L, R,
+                                           t(K, V, B, L, R), same))),
+       % LChange=grew, was right-heavy — now balanced, height same.
+       assertz((user:wam_cpp_rebalance_left(grew, >, K, V, L, R,
+                                           t(K, V, =, L, R), same))),
+       % LChange=grew, was balanced — now left-heavy, height grew.
+       assertz((user:wam_cpp_rebalance_left(grew, =, K, V, L, R,
+                                           t(K, V, <, L, R), grew))),
+       % LChange=grew, was left-heavy — rotate. Look at L''s balance.
+       assertz((user:wam_cpp_rebalance_left(grew, <, K, V, L, R,
+                                           NewTree, same) :-
+           wam_cpp_rotate_left_heavy(L, K, V, R, NewTree))),
+       % LL case — single right rotation. L''s left grew.
+       assertz((user:wam_cpp_rotate_left_heavy(t(LK, LV, <, LL, LR),
+                                              K, V, R,
+                                              t(LK, LV, =, LL,
+                                                t(K, V, =, LR, R))))),
+       % LR case — double rotation. L''s right grew. New balances
+       % depend on the inner node''s balance.
+       assertz((user:wam_cpp_rotate_left_heavy(
+                   t(LK, LV, >, LL, t(LRK, LRV, LRB, LRL, LRR)),
+                   K, V, R,
+                   t(LRK, LRV, =,
+                     t(LK, LV, NLB, LL, LRL),
+                     t(K,  V,  NRB, LRR, R))) :-
+           wam_cpp_lr_balance(LRB, NLB, NRB))),
+       % wam_cpp_rebalance_right(RChange, B, K, V, L, R, NewTree,
+       %                        Change) — mirror of left.
+       assertz((user:wam_cpp_rebalance_right(same, B, K, V, L, R,
+                                            t(K, V, B, L, R), same))),
+       assertz((user:wam_cpp_rebalance_right(grew, <, K, V, L, R,
+                                            t(K, V, =, L, R), same))),
+       assertz((user:wam_cpp_rebalance_right(grew, =, K, V, L, R,
+                                            t(K, V, >, L, R), grew))),
+       assertz((user:wam_cpp_rebalance_right(grew, >, K, V, L, R,
+                                            NewTree, same) :-
+           wam_cpp_rotate_right_heavy(L, K, V, R, NewTree))),
+       % RR case — single left rotation.
+       assertz((user:wam_cpp_rotate_right_heavy(L, K, V,
+                                               t(RK, RV, >, RL, RR),
+                                               t(RK, RV, =,
+                                                 t(K, V, =, L, RL),
+                                                 RR)))),
+       % RL case — double rotation. New balances depend on inner.
+       assertz((user:wam_cpp_rotate_right_heavy(
+                   L, K, V,
+                   t(RK, RV, <, t(RLK, RLV, RLB, RLL, RLR), RR),
+                   t(RLK, RLV, =,
+                     t(K,  V,  NLB, L,   RLL),
+                     t(RK, RV, NRB, RLR, RR))) :-
+           wam_cpp_rl_balance(RLB, NLB, NRB))),
+       % Balance-factor tables for the double-rotation cases:
+       %   LR rotation: the inner node (LR) had balance LRB; afterwards
+       %   the new left child gets NLB and the new right child gets NRB.
+       assertz((user:wam_cpp_lr_balance(<, =, >))),
+       assertz((user:wam_cpp_lr_balance(=, =, =))),
+       assertz((user:wam_cpp_lr_balance(>, <, =))),
+       %   RL rotation (mirror image):
+       assertz((user:wam_cpp_rl_balance(<, =, >))),
+       assertz((user:wam_cpp_rl_balance(=, =, =))),
+       assertz((user:wam_cpp_rl_balance(>, <, =))),
+       % min_assoc/3 — leftmost (smallest-key) node.
+       assertz((user:min_assoc(t(K, V, _, t, _), K, V) :- !)),
+       assertz((user:min_assoc(t(_, _, _, L, _), K, V) :- min_assoc(L, K, V))),
+       % max_assoc/3 — rightmost (largest-key) node.
+       assertz((user:max_assoc(t(K, V, _, _, t), K, V) :- !)),
+       assertz((user:max_assoc(t(_, _, _, _, R), K, V) :- max_assoc(R, K, V))),
+       % del_assoc/4 — fails if Key not in Tree0. Returns the removed
+       % value and a rebalanced tree. Cross-checked against
+       % library(assoc) on ascending/descending bulk deletes.
+       assertz((user:del_assoc(K, T0, V, T) :-
+           wam_cpp_del_assoc_recur(K, T0, V, T, _))),
+       % wam_cpp_del_assoc_recur(+Key, +Tree, -Val, -NewTree, -Change)
+       %   Change ∈ {same, shrunk}.
+       assertz((user:wam_cpp_del_assoc_recur(K, t(K0, V0, B, L, R),
+                                            V, T, Change) :-
+           compare(Order, K, K0),
+           wam_cpp_del_assoc_dispatch(Order, K, K0, V0, B, L, R,
+                                      V, T, Change))),
+       % Found it — replace this node.
+       assertz((user:wam_cpp_del_assoc_dispatch(=, _, _, V, B, L, R,
+                                               V, T, Change) :-
+           wam_cpp_del_assoc_replace(B, L, R, T, Change))),
+       % Recurse left, then rebalance from the left.
+       assertz((user:wam_cpp_del_assoc_dispatch(<, K, K0, V0, B, L, R,
+                                               V, T, Change) :-
+           wam_cpp_del_assoc_recur(K, L, V, L1, LC),
+           wam_cpp_del_rebalance_left(LC, B, K0, V0, L1, R, T, Change))),
+       % Recurse right, then rebalance from the right.
+       assertz((user:wam_cpp_del_assoc_dispatch(>, K, K0, V0, B, L, R,
+                                               V, T, Change) :-
+           wam_cpp_del_assoc_recur(K, R, V, R1, RC),
+           wam_cpp_del_rebalance_right(RC, B, K0, V0, L, R1, T, Change))),
+       % wam_cpp_del_assoc_replace(B, L, R, NewTree, Change)
+       %   Build the replacement tree when the target node is found.
+       % Empty left — collapse to right.
+       assertz((user:wam_cpp_del_assoc_replace(_, t, R, R, shrunk))),
+       % Empty right (and non-empty left) — collapse to left.
+       assertz((user:wam_cpp_del_assoc_replace(_, L, t, L, shrunk) :-
+           L \= t)),
+       % Both sides non-empty — pull the in-order successor from the
+       % right subtree and use its (K, V) as the new root.
+       assertz((user:wam_cpp_del_assoc_replace(B, L, R, T, Change) :-
+           L \= t, R \= t,
+           wam_cpp_del_min_extract(R, SK, SV, R1, RC),
+           wam_cpp_del_rebalance_right(RC, B, SK, SV, L, R1, T, Change))),
+       % wam_cpp_del_min_extract(+Tree, -K, -V, -NewTree, -Change)
+       %   Extract the minimum key/value, returning the rest of the
+       %   tree and a height-change flag.
+       assertz((user:wam_cpp_del_min_extract(t(K, V, _, t, R), K, V, R,
+                                            shrunk))),
+       assertz((user:wam_cpp_del_min_extract(t(K0, V0, B, L, R),
+                                            K, V, T, Change) :-
+           L \= t,
+           wam_cpp_del_min_extract(L, K, V, L1, LC),
+           wam_cpp_del_rebalance_left(LC, B, K0, V0, L1, R, T, Change))),
+       % wam_cpp_del_rebalance_left(LChange, B, K, V, L, R, NewTree,
+       %                           Change)
+       %   Rebalance after the LEFT subtree shrunk by 0 or 1.
+       assertz((user:wam_cpp_del_rebalance_left(same, B, K, V, L, R,
+                                               t(K, V, B, L, R), same))),
+       % Was left-heavy, lost the extra → balanced, height shrunk.
+       assertz((user:wam_cpp_del_rebalance_left(shrunk, <, K, V, L, R,
+                                               t(K, V, =, L, R), shrunk))),
+       % Was balanced → right-heavy, height stayed.
+       assertz((user:wam_cpp_del_rebalance_left(shrunk, =, K, V, L, R,
+                                               t(K, V, >, L, R), same))),
+       % Was right-heavy → now over-tipped right; rotate based on R''s
+       % balance.
+       assertz((user:wam_cpp_del_rebalance_left(shrunk, >, K, V, L, R,
+                                               T, Change) :-
+           wam_cpp_del_rotate_right(L, K, V, R, T, Change))),
+       % Single left rotation (R right-heavy or balanced) + double
+       % rotation via R''s left subtree (R left-heavy). Three RB cases;
+       % only the RB=> case matches the structure of put''s
+       % rotate_right_heavy, the other two are delete-specific.
+       % RB=>: single left rotation, height shrunk.
+       assertz((user:wam_cpp_del_rotate_right(L, K, V,
+                   t(RK, RV, >, RL, RR),
+                   t(RK, RV, =, t(K, V, =, L, RL), RR),
+                   shrunk))),
+       % RB==: single left rotation, height stays (rotation tilts the
+       % outer node to <, inner to >).
+       assertz((user:wam_cpp_del_rotate_right(L, K, V,
+                   t(RK, RV, =, RL, RR),
+                   t(RK, RV, <, t(K, V, >, L, RL), RR),
+                   same))),
+       % RB=<: double rotation via RL — same shape as put''s RL case,
+       % height shrunk.
+       assertz((user:wam_cpp_del_rotate_right(L, K, V,
+                   t(RK, RV, <, t(RLK, RLV, RLB, RLL, RLR), RR),
+                   t(RLK, RLV, =,
+                     t(K,  V,  NLB, L,   RLL),
+                     t(RK, RV, NRB, RLR, RR)),
+                   shrunk) :-
+           wam_cpp_rl_balance(RLB, NLB, NRB))),
+       % wam_cpp_del_rebalance_right(RChange, B, K, V, L, R, NewTree,
+       %                            Change) — mirror of left.
+       assertz((user:wam_cpp_del_rebalance_right(same, B, K, V, L, R,
+                                                t(K, V, B, L, R), same))),
+       assertz((user:wam_cpp_del_rebalance_right(shrunk, >, K, V, L, R,
+                                                t(K, V, =, L, R), shrunk))),
+       assertz((user:wam_cpp_del_rebalance_right(shrunk, =, K, V, L, R,
+                                                t(K, V, <, L, R), same))),
+       assertz((user:wam_cpp_del_rebalance_right(shrunk, <, K, V, L, R,
+                                                T, Change) :-
+           wam_cpp_del_rotate_left(L, K, V, R, T, Change))),
+       % LB=<: single right rotation, height shrunk.
+       assertz((user:wam_cpp_del_rotate_left(
+                   t(LK, LV, <, LL, LR), K, V, R,
+                   t(LK, LV, =, LL, t(K, V, =, LR, R)),
+                   shrunk))),
+       % LB==: single right rotation, height stays.
+       assertz((user:wam_cpp_del_rotate_left(
+                   t(LK, LV, =, LL, LR), K, V, R,
+                   t(LK, LV, >, LL, t(K, V, <, LR, R)),
+                   same))),
+       % LB=>: double rotation via LR — same shape as put''s LR case.
+       assertz((user:wam_cpp_del_rotate_left(
+                   t(LK, LV, >, LL, t(LRK, LRV, LRB, LRL, LRR)), K, V, R,
+                   t(LRK, LRV, =,
+                     t(LK, LV, NLB, LL,  LRL),
+                     t(K,  V,  NRB, LRR, R)),
+                   shrunk) :-
+           wam_cpp_lr_balance(LRB, NLB, NRB))),
+       % del_min_assoc/4 — delete the smallest key, return its
+       % (K, V) and the rebalanced tree. Fails on empty.
+       assertz((user:del_min_assoc(Assoc, K, V, NewAssoc) :-
+           Assoc \= t,
+           wam_cpp_del_min_extract(Assoc, K, V, NewAssoc, _))),
+       % del_max_assoc/4 — mirror, plus a max-extract helper that
+       % wam_cpp_del_min_extract didn''t need.
+       assertz((user:del_max_assoc(Assoc, K, V, NewAssoc) :-
+           Assoc \= t,
+           wam_cpp_del_max_extract(Assoc, K, V, NewAssoc, _))),
+       assertz((user:wam_cpp_del_max_extract(t(K, V, _, L, t), K, V, L,
+                                            shrunk))),
+       assertz((user:wam_cpp_del_max_extract(t(K0, V0, B, L, R),
+                                            K, V, T, Change) :-
+           R \= t,
+           wam_cpp_del_max_extract(R, K, V, R1, RC),
+           wam_cpp_del_rebalance_right(RC, B, K0, V0, L, R1, T, Change))),
+       % get_assoc/5 — atomic test-and-set. Returns the current value
+       % (fails if absent) AND builds a tree with that slot replaced
+       % by NewVal. Tree structure / balance is preserved (the value
+       % swap can''t change heights), so no rebalance is needed.
+       assertz((user:get_assoc(Key, Assoc0, OldVal, Assoc, NewVal) :-
+           wam_cpp_get_replace_assoc(Key, Assoc0, OldVal, NewVal, Assoc))),
+       assertz((user:wam_cpp_get_replace_assoc(Key, t(K0, V0, B, L, R),
+                                              OldVal, NewVal, NewTree) :-
+           compare(Order, Key, K0),
+           wam_cpp_get_replace_dispatch(Order, Key, K0, V0, B, L, R,
+                                        OldVal, NewVal, NewTree))),
+       assertz((user:wam_cpp_get_replace_dispatch(=, _, K0, V0, B, L, R,
+                                                 V0, NewVal,
+                                                 t(K0, NewVal, B, L, R)))),
+       assertz((user:wam_cpp_get_replace_dispatch(<, Key, K0, V0, B, L, R,
+                                                 OldVal, NewVal,
+                                                 t(K0, V0, B, L1, R)) :-
+           wam_cpp_get_replace_assoc(Key, L, OldVal, NewVal, L1))),
+       assertz((user:wam_cpp_get_replace_dispatch(>, Key, K0, V0, B, L, R,
+                                                 OldVal, NewVal,
+                                                 t(K0, V0, B, L, R1)) :-
+           wam_cpp_get_replace_assoc(Key, R, OldVal, NewVal, R1))),
+       % map_assoc/3 — call(Goal, OldVal, NewVal) on every value;
+       % build a tree with the same structure / balance but the
+       % transformed values.
+       assertz((user:map_assoc(_, t, t))),
+       assertz((user:map_assoc(Goal, t(K, V, B, L, R),
+                                     t(K, V1, B, L1, R1)) :-
+           map_assoc(Goal, L, L1),
+           call(Goal, V, V1),
+           map_assoc(Goal, R, R1))),
        assertz((user:list_to_assoc(List, Assoc) :-
            wam_cpp_list_to_assoc_(List, t, Assoc))),
        assertz((user:wam_cpp_list_to_assoc_([], A, A))),
@@ -587,7 +961,7 @@ static const int _wam_cpp_setup_register = []() {
            put_assoc(K, A0, V, A1),
            wam_cpp_list_to_assoc_(T, A1, A))),
        assertz((user:assoc_to_list(t, []))),
-       assertz((user:assoc_to_list(t(K, V, L, R), Pairs) :-
+       assertz((user:assoc_to_list(t(K, V, _, L, R), Pairs) :-
            assoc_to_list(L, LP),
            assoc_to_list(R, RP),
            append(LP, [K-V|RP], Pairs))),
@@ -617,6 +991,21 @@ static const int _wam_cpp_setup_register = []() {
        assertz((user:pairs_keys_values([], [], []))),
        assertz((user:pairs_keys_values([K-V|T], [K|KT], [V|VT]) :-
            pairs_keys_values(T, KT, VT))),
+       % transpose_pairs/2 — swap K-V in each pair, then keysort on
+       % the new keys. Matches SWI library(pairs) semantics.
+       assertz((user:transpose_pairs(Pairs, Transposed) :-
+           wam_cpp_flip_pairs(Pairs, Flipped),
+           keysort(Flipped, Transposed))),
+       assertz((user:wam_cpp_flip_pairs([], []))),
+       assertz((user:wam_cpp_flip_pairs([K-V|T0], [V-K|T]) :-
+           wam_cpp_flip_pairs(T0, T))),
+       % map_list_to_pairs(:Function, +List, -Pairs) — for each E in
+       % List, build Function(E)-E. Used to attach a sort key to
+       % each element before keysort/2 (Schwartzian-style).
+       assertz((user:map_list_to_pairs(_, [], []))),
+       assertz((user:map_list_to_pairs(F, [V|T0], [K-V|T]) :-
+           call(F, V, K),
+           map_list_to_pairs(F, T0, T))),
        assertz((user:take(0, _, []) :- !)),
        assertz((user:take(_, [], []) :- !)),
        assertz((user:take(N, [H|T], [H|R]) :-
@@ -641,7 +1030,83 @@ static const int _wam_cpp_setup_register = []() {
        assertz((user:union([H|T], L, [H|R]) :- union(T, L, R))),
        assertz((user:permutation([], []))),
        assertz((user:permutation(L, [H|T]) :-
-           select(H, L, Rest), permutation(Rest, T)))
+           select(H, L, Rest), permutation(Rest, T))),
+       % memberchk/2 — deterministic member: commits on the first
+       % match. Same semantics as SWI library(lists).
+       assertz((user:memberchk(X, [X|_]) :- !)),
+       assertz((user:memberchk(X, [_|T]) :- memberchk(X, T))),
+       % sum_list/2 — sum of numeric elements via tail-recursive
+       % accumulator. Empty list sums to 0 (matches SWI).
+       assertz((user:sum_list(L, S) :- wam_cpp_sum_list_acc(L, 0, S))),
+       assertz((user:wam_cpp_sum_list_acc([], A, A))),
+       assertz((user:wam_cpp_sum_list_acc([H|T], A, S) :-
+           A1 is A + H, wam_cpp_sum_list_acc(T, A1, S))),
+       % max_list/2, min_list/2 — numeric max/min. Fail on empty
+       % list (matches SWI: needs at least one element to compare).
+       assertz((user:max_list([H|T], M) :- wam_cpp_max_list_acc(T, H, M))),
+       assertz((user:wam_cpp_max_list_acc([], M, M))),
+       assertz((user:wam_cpp_max_list_acc([H|T], A, M) :-
+           H > A, !, wam_cpp_max_list_acc(T, H, M))),
+       assertz((user:wam_cpp_max_list_acc([_|T], A, M) :-
+           wam_cpp_max_list_acc(T, A, M))),
+       assertz((user:min_list([H|T], M) :- wam_cpp_min_list_acc(T, H, M))),
+       assertz((user:wam_cpp_min_list_acc([], M, M))),
+       assertz((user:wam_cpp_min_list_acc([H|T], A, M) :-
+           H < A, !, wam_cpp_min_list_acc(T, H, M))),
+       assertz((user:wam_cpp_min_list_acc([_|T], A, M) :-
+           wam_cpp_min_list_acc(T, A, M))),
+       % max_member/2, min_member/2 — standard order of terms (not
+       % just numbers). Note arg order: (-Max, +List), matching SWI.
+       assertz((user:max_member(M, [H|T]) :- wam_cpp_max_member_acc(T, H, M))),
+       assertz((user:wam_cpp_max_member_acc([], M, M))),
+       assertz((user:wam_cpp_max_member_acc([H|T], A, M) :-
+           H @> A, !, wam_cpp_max_member_acc(T, H, M))),
+       assertz((user:wam_cpp_max_member_acc([_|T], A, M) :-
+           wam_cpp_max_member_acc(T, A, M))),
+       assertz((user:min_member(M, [H|T]) :- wam_cpp_min_member_acc(T, H, M))),
+       assertz((user:wam_cpp_min_member_acc([], M, M))),
+       assertz((user:wam_cpp_min_member_acc([H|T], A, M) :-
+           H @< A, !, wam_cpp_min_member_acc(T, H, M))),
+       assertz((user:wam_cpp_min_member_acc([_|T], A, M) :-
+           wam_cpp_min_member_acc(T, A, M))),
+       % same_length(?L1, ?L2) — true if L1 and L2 have the same
+       % length. Bidirectional: works in any mode pattern.
+       assertz((user:same_length([], []))),
+       assertz((user:same_length([_|T1], [_|T2]) :-
+           same_length(T1, T2))),
+       % proper_length(@List, ?Length) — length of a proper list.
+       % Fails on partial lists (unbound tail) and non-lists. The
+       % explicit var/1 check is what distinguishes this from
+       % length/2 on a partially-instantiated list.
+       assertz((user:proper_length(L, N) :-
+           wam_cpp_proper_length_acc(L, 0, N))),
+       assertz((user:wam_cpp_proper_length_acc(L, _, _) :-
+           var(L), !, fail)),
+       assertz((user:wam_cpp_proper_length_acc([], N, N) :- !)),
+       assertz((user:wam_cpp_proper_length_acc([_|T], A, N) :-
+           A1 is A + 1, wam_cpp_proper_length_acc(T, A1, N))),
+       % list_to_set(+List, -Set) — dedup, preserving first
+       % occurrence. Uses memberchk against an accumulator of
+       % already-seen elements (O(n^2) worst case, like SWI's
+       % naive path; SWI also has a sort-based shortcut we don't
+       % bother with).
+       assertz((user:list_to_set(L, S) :- wam_cpp_l2s(L, [], S))),
+       assertz((user:wam_cpp_l2s([], _, []))),
+       assertz((user:wam_cpp_l2s([H|T], Seen, R) :-
+           memberchk(H, Seen), !, wam_cpp_l2s(T, Seen, R))),
+       assertz((user:wam_cpp_l2s([H|T], Seen, [H|R]) :-
+           wam_cpp_l2s(T, [H|Seen], R))),
+       % flatten(+NestedList, -FlatList) — flatten nested list
+       % structure into a single proper list. Unbound terms and
+       % non-list atoms are treated as leaves (matches SWI).
+       % Clause order matters: var-check first, then [] for the
+       % empty-list fast path, then [_|_] for descent, finally a
+       % catch-all that wraps non-list values as singletons.
+       assertz((user:flatten(X, [X]) :- var(X), !)),
+       assertz((user:flatten([], []) :- !)),
+       assertz((user:flatten([H|T], Flat) :- !,
+           flatten(H, FH), flatten(T, FT), append(FH, FT, Flat))),
+       assertz((user:flatten(X, [X])))
    ).
 
 %% stdlib_feature_predicates(+Feature, -Predicates)
@@ -664,7 +1129,32 @@ stdlib_feature_predicates(assoc, [
     user:get_assoc/3,
     user:wam_cpp_get_assoc_/6,
     user:put_assoc/4,
-    user:wam_cpp_put_assoc_/8,
+    user:wam_cpp_put_assoc_recur/5,
+    user:wam_cpp_put_assoc_dispatch/10,
+    user:wam_cpp_rebalance_left/8,
+    user:wam_cpp_rebalance_right/8,
+    user:wam_cpp_rotate_left_heavy/5,
+    user:wam_cpp_rotate_right_heavy/5,
+    user:wam_cpp_lr_balance/3,
+    user:wam_cpp_rl_balance/3,
+    user:min_assoc/3,
+    user:max_assoc/3,
+    user:del_assoc/4,
+    user:wam_cpp_del_assoc_recur/5,
+    user:wam_cpp_del_assoc_dispatch/10,
+    user:wam_cpp_del_assoc_replace/5,
+    user:wam_cpp_del_min_extract/5,
+    user:wam_cpp_del_rebalance_left/8,
+    user:wam_cpp_del_rebalance_right/8,
+    user:wam_cpp_del_rotate_right/6,
+    user:wam_cpp_del_rotate_left/6,
+    user:del_min_assoc/4,
+    user:del_max_assoc/4,
+    user:wam_cpp_del_max_extract/5,
+    user:get_assoc/5,
+    user:wam_cpp_get_replace_assoc/5,
+    user:wam_cpp_get_replace_dispatch/10,
+    user:map_assoc/3,
     user:list_to_assoc/2,
     user:wam_cpp_list_to_assoc_/3,
     user:assoc_to_list/2,
@@ -677,11 +1167,31 @@ stdlib_feature_predicates(lists_extra, [
     user:pairs_keys/2,
     user:pairs_values/2,
     user:pairs_keys_values/3,
+    user:transpose_pairs/2,
+    user:wam_cpp_flip_pairs/2,
+    user:map_list_to_pairs/3,
     user:take/3,
     user:drop/3,
     user:intersection/3,
     user:union/3,
-    user:permutation/2
+    user:permutation/2,
+    user:memberchk/2,
+    user:sum_list/2,
+    user:wam_cpp_sum_list_acc/3,
+    user:max_list/2,
+    user:wam_cpp_max_list_acc/3,
+    user:min_list/2,
+    user:wam_cpp_min_list_acc/3,
+    user:max_member/2,
+    user:wam_cpp_max_member_acc/3,
+    user:min_member/2,
+    user:wam_cpp_min_member_acc/3,
+    user:same_length/2,
+    user:proper_length/2,
+    user:wam_cpp_proper_length_acc/3,
+    user:list_to_set/2,
+    user:wam_cpp_l2s/3,
+    user:flatten/2
 ]).
 
 %% all_stdlib_features(-Features)
@@ -1717,21 +2227,55 @@ instr_to_setup_line(switch_on_constant(Entries), Labels, Line) :- !,
     format(atom(Line),
            '    vm.instrs.push_back(Instruction::SwitchOnConstant({~w}));',
            [EntriesCpp]).
-instr_to_setup_line(switch_on_constant_a2(Entries), Labels, Line) :- !,
-    % Treated as a no-op for now (interpreter falls through to the
-    % try_me_else chain on A2 dispatch). Emit as a comment.
-    parse_switch_entries(Entries, Labels, _EntriesCpp),
+instr_to_setup_line(switch_on_constant_fallthrough(Entries), Labels, Line) :- !,
+    % Mixed-mode A1 indexing: bound A1 with no entry in the table
+    % must NOT fail — fall through to the try_me_else chain so the
+    % variable-A1 clauses get a chance to match. Same opcode as
+    % SwitchOnConstant, just with the no_match_fallthrough flag set.
+    parse_switch_entries(Entries, Labels, EntriesCpp),
     format(atom(Line),
-           '    // switch_on_constant_a2 ~w (no-op; falls through)', [Entries]).
+           '    vm.instrs.push_back(Instruction::SwitchOnConstant({~w}, true));',
+           [EntriesCpp]).
+instr_to_setup_line(switch_on_constant_a2(Entries), Labels, Line) :- !,
+    % Real A2 dispatch — emitted when the WAM compiler decides A1 is
+    % too variable to index on but A2 is all constants. Same dispatch
+    % shape as SwitchOnConstant (jump to first matching entry, set
+    % indexed_entry so RetryMeElse synthesizes a CP), just reads A2
+    % instead of A1.
+    parse_switch_entries(Entries, Labels, EntriesCpp),
+    format(atom(Line),
+           '    vm.instrs.push_back(Instruction::SwitchOnConstantA2({~w}));',
+           [EntriesCpp]).
+instr_to_setup_line(switch_on_constant_a2_fallthrough(Entries), Labels, Line) :- !,
+    % Mixed-mode A2 indexing — A1 is variable in every clause, AND
+    % the predicate has a variable-A2 clause somewhere. The indexed
+    % prefix (clauses before the first variable A2) gets switch
+    % entries; bound A2 with no match falls through to the chain so
+    % the variable-A2 clauses still match. Mirror of A1''s
+    % switch_on_constant_fallthrough.
+    parse_switch_entries(Entries, Labels, EntriesCpp),
+    format(atom(Line),
+           '    vm.instrs.push_back(Instruction::SwitchOnConstantA2({~w}, true));',
+           [EntriesCpp]).
 instr_to_setup_line(switch_on_structure(Entries), Labels, Line) :- !,
     parse_switch_struct_entries(Entries, Labels, EntriesCpp),
     format(atom(Line),
            '    vm.instrs.push_back(Instruction::SwitchOnStructure({~w}));',
            [EntriesCpp]).
+instr_to_setup_line(switch_on_structure_a2(Entries), Labels, Line) :- !,
+    parse_switch_struct_entries(Entries, Labels, EntriesCpp),
+    format(atom(Line),
+           '    vm.instrs.push_back(Instruction::SwitchOnStructureA2({~w}));',
+           [EntriesCpp]).
 instr_to_setup_line(switch_on_term(Tokens), Labels, Line) :- !,
     parse_switch_term(Tokens, Labels, ConstsCpp, StructsCpp, ListPC),
     format(atom(Line),
            '    vm.instrs.push_back(Instruction::SwitchOnTerm({~w}, {~w}, ~w));',
+           [ConstsCpp, StructsCpp, ListPC]).
+instr_to_setup_line(switch_on_term_a2(Tokens), Labels, Line) :- !,
+    parse_switch_term(Tokens, Labels, ConstsCpp, StructsCpp, ListPC),
+    format(atom(Line),
+           '    vm.instrs.push_back(Instruction::SwitchOnTermA2({~w}, {~w}, ~w));',
            [ConstsCpp, StructsCpp, ListPC]).
 instr_to_setup_line(catch_return, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::CatchReturn());'.
@@ -1759,6 +2303,8 @@ instr_to_setup_line(retract_next, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::RetractNext());'.
 instr_to_setup_line(output_capture_return, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::OutputCaptureReturn());'.
+instr_to_setup_line(current_pred_next, _Labels, Line) :- !,
+    Line = '    vm.instrs.push_back(Instruction::CurrentPredNext());'.
 instr_to_setup_line(Instr, _Labels, Line) :-
     wam_instruction_to_cpp_literal(Instr, Lit),
     format(atom(Line), '    vm.instrs.push_back(~w);', [Lit]).
@@ -1862,7 +2408,24 @@ parse_switch_term(Tokens, Labels, ConstsCpp, StructsCpp, ListPC) :-
 %    cpp/wam_runtime.cpp
 %    cpp/generated_program.cpp
 write_wam_cpp_project(Predicates0, Options, ProjectDir) :-
-    expand_stdlib_predicates(Predicates0, Options, Predicates),
+    expand_stdlib_predicates(Predicates0, Options, Predicates1),
+    % Resolve and act on the runtime-parser capability mode. The
+    % hook (PR #2329) registered C++ as native(parse_term) by
+    % default; this consults that registration plus the caller''s
+    % runtime_parser(...) option, then:
+    %   - none: rejects predicates whose statically visible body
+    %           uses a parser-dependent builtin (read/2, etc).
+    %   - native(_): no expansion (C++''s hand-written canonical
+    %           parser is in the runtime already).
+    %   - compiled(prolog_term_parser): auto-includes the portable
+    %           parser predicates so 1+2-style operator notation
+    %           works at runtime.
+    wam_target_runtime_parser(cpp, Options, RuntimeParserMode),
+    validate_cpp_runtime_parser_mode(Predicates1, RuntimeParserMode),
+    expand_cpp_runtime_parser_predicates(Predicates1,
+                                         RuntimeParserMode,
+                                         Options,
+                                         Predicates),
     make_directory_path(ProjectDir),
     directory_file_path(ProjectDir, 'cpp', CppDir),
     make_directory_path(CppDir),
@@ -2020,22 +2583,120 @@ compile_predicates_for_project(Predicates, Options, PredicatesCode) :-
     ->  Options1 = Options
     ;   Options1 = [foreign_pred_keys(ForeignKeys)|Options]
     ),
+    % on_compile_error policy: warn (default) | throw | skip.
+    %   warn  -- print "WAM C++: ... <Err>" to stderr and drop pred
+    %   throw -- re-throw, surfacing the error at the caller
+    %   skip  -- old silent-skip behavior (pre-#2293)
+    (   member(on_compile_error(Policy0), Options)
+    ->  Policy = Policy0
+    ;   Policy = warn
+    ),
     findall(Code, (
         member(PI, Predicates),
         catch(
             ( compile_predicate_to_wam(PI, [inline_bagof_setof(true)], WamCode),
               compile_wam_predicate_to_cpp(PI, WamCode, Options1, Code)
             ),
-            _Err,
-            fail)
+            Err,
+            handle_compile_error(Policy, PI, Err)
+        )
     ), Codes),
     atomic_list_concat(Codes, '\n\n', PredicatesCode).
+
+%% handle_compile_error(+Policy, +PI, +Err)
+%  Per-predicate compile failure handler. Logs / re-throws / drops
+%  based on Policy. Always fails after warn/skip so findall just
+%  omits the predicate''s Code entry; throw policy propagates the
+%  original exception so the caller can react.
+handle_compile_error(throw, PI, Err) :- !,
+    format(user_error,
+           "WAM C++: re-throwing compile error for ~w: ~w~n",
+           [PI, Err]),
+    throw(Err).
+handle_compile_error(skip, _PI, _Err) :- !, fail.
+handle_compile_error(_, PI, Err) :-
+    % default + explicit "warn"
+    format(user_error,
+           "WAM C++: failed to compile ~w: ~w~n",
+           [PI, Err]),
+    fail.
 
 foreign_pred_keys_from_options(Options, Keys) :-
     (   member(foreign_pred_keys(Keys0), Options)
     ->  Keys = Keys0
     ;   Keys = []
     ).
+
+%% lmdb_sources_from_options(+Options, -Sources)
+%  Extract the LMDB fact-source entries from the cpp_fact_sources
+%  option. Returns a list of
+%    lmdb_source(Key, Path, DbName, Unique, OnDup)
+%  terms where Key is "Pred/Arity" string, Path is the env path
+%  atom, DbName is an atom or [] (default DB), Unique is a boolean,
+%  and OnDup is the on_duplicate policy (atom).
+%
+%  Unique + OnDup come from relation_policy/2 declarations and
+%  per-source spec overrides via get_effective_policy/4. Phase 2
+%  enforcement happens at load time in the runtime (PR follow-up
+%  to PR #2325).
+%
+%  Per WAM_CPP_LMDB_FACT_SOURCE_DESIGN.md v1: only arity-2 lmdb()
+%  sources are accepted; other shapes will be added in follow-ups.
+lmdb_sources_from_options(Options, Sources) :-
+    (   member(cpp_fact_sources(Specs), Options)
+    ->  findall(lmdb_source(Key, Path, DbName, Unique, OnDup, Order, SrcOpts), (
+            member(source(Functor/Arity, SourceSpec), Specs),
+            validate_lmdb_v1_arity(Functor, Arity),
+            lmdb_source_spec(SourceSpec, Path, DbName, SrcOpts),
+            format(atom(Key), '~w/~w', [Functor, Arity]),
+            get_effective_policy(Functor/Arity, SrcOpts,
+                                 unique, Unique),
+            get_effective_policy(Functor/Arity, SrcOpts,
+                                 on_duplicate, OnDup),
+            get_effective_policy(Functor/Arity, SrcOpts,
+                                 order, Order)
+        ), Sources)
+    ;   Sources = []
+    ).
+
+%% warn_runtime_sorts(+LmdbSources) is det.
+%
+% Walk the resolved sources and emit one user_error warning per
+% source whose declared order requires a runtime sort. Called
+% from emit_setup_function only -- not from the header-generation
+% call site of lmdb_sources_from_options, otherwise the warning
+% would fire twice per project.
+warn_runtime_sorts(Sources) :-
+    forall(member(lmdb_source(_, _, _, _, _, Order, SrcOpts), Sources),
+           maybe_warn_runtime_sort_one(Order, SrcOpts, Sources)).
+
+maybe_warn_runtime_sort_one(_, SrcOpts, _) :-
+    member(quiet_sort(true), SrcOpts), !.
+maybe_warn_runtime_sort_one(Order, _, Sources) :-
+    order_cpp_sort_keys(Order, SortKeysLit),
+    SortKeysLit \== '{}', !,
+    % Recover the PredArity for the message via a reverse-lookup
+    % in Sources; cheap since list is small.
+    member(lmdb_source(Key, _, _, _, _, Order, _), Sources),
+    format(user_error,
+        "[wam-cpp] note: ~w order(~w) requires a runtime sort. LMDB iterates ascending by key; consider a compound-key schema (e.g. <sort_column>-<id>) so the data is already in the desired order at load time. Suppress with quiet_sort(true) in the source options.~n",
+        [Key, Order]).
+maybe_warn_runtime_sort_one(_, _, _).
+
+% v1 supports arity 2 only; loudly reject anything else so the
+% user sees a real codegen-time error rather than a confusing
+% runtime mismatch.
+validate_lmdb_v1_arity(_, 2) :- !.
+validate_lmdb_v1_arity(Functor, Arity) :-
+    throw(error(domain_error(lmdb_v1_arity_2, Functor/Arity), _)).
+
+% Recognise the spec shapes lmdb(Path) and lmdb(Path, Opts).
+% Returns the raw SrcOpts list (or []) so the caller can also
+% consult per-source policy overrides (unique, on_duplicate, ...).
+lmdb_source_spec(lmdb(Path), Path, [], []).
+lmdb_source_spec(lmdb(Path, Opts), Path, DbName, SrcOpts) :-
+    ( member(db_name(DbName0), Opts) -> DbName = DbName0 ; DbName = [] ),
+    SrcOpts = Opts.
 
 %% expand_stdlib_predicates(+Predicates0, +Options, -Predicates)
 %  Honours the include_stdlib option: prepends helper predicate
@@ -2047,6 +2708,191 @@ foreign_pred_keys_from_options(Options, Keys) :-
 %    include_stdlib(false)           -- no expansion (the default)
 %    include_stdlib([F1, F2, ...])   -- include only listed features
 %    include_stdlib(F)               -- single-feature shorthand
+%% validate_cpp_runtime_parser_mode(+Predicates, +Mode) is det.
+%
+% When the resolved mode is `none`, reject any input predicate
+% whose statically visible body uses a parser-dependent builtin
+% (read/2, read_term_from_atom/2,3, term_to_atom/2 in reverse
+% mode). Mirrors R''s validate_r_runtime_parser_mode/2. Other
+% modes are accepted without inspection.
+validate_cpp_runtime_parser_mode(Predicates, none) :-
+    !,
+    (   cpp_predicates_parser_dependency(Predicates, Pred, Builtin)
+    ->  throw(error(permission_error(use, runtime_parser, Builtin),
+                    context(write_wam_cpp_project/3,
+                            parser_disabled_for_predicate(Pred))))
+    ;   true
+    ).
+validate_cpp_runtime_parser_mode(_Predicates, _Mode).
+
+cpp_predicates_parser_dependency(Predicates, Pred, Builtin) :-
+    member(Pred, Predicates),
+    cpp_predicate_clause(Pred, _Head, Body),
+    parser_dependent_body_goal(Body, Builtin),
+    !.
+
+cpp_predicate_clause(Module:Name/Arity, Head, Body) :-
+    !,
+    functor(Head, Name, Arity),
+    clause(Module:Head, Body).
+cpp_predicate_clause(Name/Arity, Head, Body) :-
+    functor(Head, Name, Arity),
+    clause(user:Head, Body).
+
+%% expand_cpp_runtime_parser_predicates(+P0, +Mode, +Options, -P)
+%
+% For compiled(prolog_term_parser): prepend every predicate of
+% src/unifyweaver/core/prolog_term_parser.pl + the wrappers to
+% the input list, skipping imported helpers like member/2 which
+% the WAM-cpp runtime supplies separately. This makes operator
+% notation (1+2 etc.) parsable at runtime via
+% parse_term_from_atom/3 -- the C++ native parser only handles
+% canonical form (+(1, 2)).
+%
+% When the caller passes runtime_parser_subset([PI, ...]) in
+% Options, only the transitive closure of those entry points is
+% pulled in (reachable-from analysis over the parser source).
+% Without subset, the full ~40-predicate parser is included.
+% See docs/design/RUNTIME_PARSER_TRANSPILATION_IMPLEMENTATION_PLAN.md
+% "Subset generation".
+%
+% Other modes leave the list unchanged.
+expand_cpp_runtime_parser_predicates(P0, compiled(prolog_term_parser),
+                                     Options, P) :-
+    !,
+    cpp_runtime_parser_module_predicates(ParserPreds),
+    cpp_runtime_parser_wrapper_predicates(WrapperPreds),
+    append(WrapperPreds, ParserPreds, AllParserPreds),
+    cpp_runtime_parser_apply_subset(AllParserPreds, Options, Extras),
+    % Wrappers / entry points already go before the rest in
+    % AllParserPreds because we appended WrapperPreds first;
+    % the subset preserves first-occurrence order via
+    % dedupe_keep_first below.
+    append(Extras, P0, Combined),
+    dedupe_keep_first(Combined, P).
+expand_cpp_runtime_parser_predicates(P, _Mode, _Options, P).
+
+% Apply runtime_parser_subset(EntryPIs) from Options. Without the
+% option, returns the full predicate universe unchanged. With it,
+% computes the transitive closure of called parser predicates
+% starting from each EntryPI and returns only the reachable set.
+cpp_runtime_parser_apply_subset(AllParserPreds, Options, Subset) :-
+    (   member(runtime_parser_subset(EntryPIs), Options)
+    ->  must_be(list, EntryPIs),
+        cpp_runtime_parser_resolve_entries(EntryPIs,
+                                           AllParserPreds,
+                                           ResolvedEntries),
+        cpp_runtime_parser_closure(ResolvedEntries,
+                                   AllParserPreds,
+                                   Closure),
+        % Preserve order of AllParserPreds in the output (so the
+        % wrappers / entry points still come first).
+        include({Closure}/[PI]>>memberchk(PI, Closure),
+                AllParserPreds, Subset)
+    ;   Subset = AllParserPreds
+    ).
+
+% Resolve user-supplied entry-point indicators (which may be bare
+% Name/Arity) against the universe so we end up with the
+% canonical Module:Name/Arity form used in AllParserPreds.
+cpp_runtime_parser_resolve_entries([], _, []).
+cpp_runtime_parser_resolve_entries([PI|Rest], Universe, [Canonical|Out]) :-
+    cpp_runtime_parser_canonicalize_entry(PI, Universe, Canonical),
+    cpp_runtime_parser_resolve_entries(Rest, Universe, Out).
+
+cpp_runtime_parser_canonicalize_entry(Mod:N/A, Universe, Mod:N/A) :-
+    memberchk(Mod:N/A, Universe), !.
+cpp_runtime_parser_canonicalize_entry(N/A, Universe, Mod:N/A) :-
+    member(Mod:N/A, Universe), !.
+cpp_runtime_parser_canonicalize_entry(PI, _Universe, _) :-
+    throw(error(domain_error(parser_subset_entry_point, PI), _)).
+
+% Worklist closure: start with Entries, walk each clause body to
+% find called predicates that are in the parser/wrapper universe,
+% add them to the worklist if not already visited.
+cpp_runtime_parser_closure(Entries, Universe, Closure) :-
+    cpp_runtime_parser_closure_loop(Entries, Universe, [], Closure).
+
+cpp_runtime_parser_closure_loop([], _, Acc, Acc).
+cpp_runtime_parser_closure_loop([PI|Rest], Universe, Acc, Final) :-
+    (   memberchk(PI, Acc)
+    ->  cpp_runtime_parser_closure_loop(Rest, Universe, Acc, Final)
+    ;   cpp_runtime_parser_called_preds(PI, Universe, Called),
+        append(Rest, Called, NewQueue),
+        cpp_runtime_parser_closure_loop(NewQueue, Universe,
+                                        [PI|Acc], Final)
+    ).
+
+% Enumerate the universe-internal predicates called from PI's
+% clause bodies. Body goals not in the universe (member/2,
+% append/3, character-code arithmetic, etc.) are silently
+% ignored -- they are either WAM-cpp builtins or stdlib helpers
+% that come in via include_stdlib(lists_extra).
+cpp_runtime_parser_called_preds(Mod:Name/Arity, Universe, Called) :-
+    functor(Head, Name, Arity),
+    findall(InUniverse,
+            (   clause(Mod:Head, Body),
+                body_goal(Body, Goal),
+                callable(Goal),
+                \+ control_construct(Goal),
+                functor(Goal, GN, GA),
+                ( memberchk(Mod:GN/GA, Universe)
+                -> InUniverse = Mod:GN/GA
+                ; member(M:GN/GA, Universe), InUniverse = M:GN/GA
+                )
+            ),
+            CalledRaw),
+    sort(CalledRaw, Called).
+
+% Walk control constructs to extract leaf goals.
+body_goal((A, _), G) :- body_goal(A, G).
+body_goal((_, B), G) :- body_goal(B, G).
+body_goal((A ; _), G) :- body_goal(A, G).
+body_goal((_ ; B), G) :- body_goal(B, G).
+body_goal((A -> _), G) :- body_goal(A, G).
+body_goal((_ -> B), G) :- body_goal(B, G).
+body_goal(\+ A, G)    :- body_goal(A, G).
+body_goal(once(A), G) :- body_goal(A, G).
+body_goal(G, G)       :- \+ control_construct(G).
+
+control_construct((_,_)).
+control_construct((_;_)).
+control_construct((_->_)).
+control_construct(\+_).
+control_construct(once(_)).
+control_construct(!).
+control_construct(true).
+control_construct(fail).
+
+cpp_runtime_parser_module_predicates(Preds) :-
+    findall(prolog_term_parser:N/A,
+            (   current_predicate(prolog_term_parser:N/A),
+                functor(H, N, A),
+                once(clause(prolog_term_parser:H, _)),
+                % Skip predicates imported from library(lists) etc.
+                % -- the WAM-cpp runtime already provides member/2,
+                % append/3, reverse/2 via include_stdlib(lists_extra).
+                \+ predicate_property(prolog_term_parser:H,
+                                       imported_from(_))
+            ),
+            Raw),
+    sort(Raw, Preds).
+
+% Enumerate the target-agnostic wrapper predicates that surface
+% SWI-style parser builtin names on top of the portable parser.
+% Currently: read_term_from_atom/2,3. See
+% src/unifyweaver/core/cpp_runtime_parser_wrappers.pl.
+cpp_runtime_parser_wrapper_predicates(Preds) :-
+    findall(cpp_runtime_parser_wrappers:N/A,
+            (   current_predicate(cpp_runtime_parser_wrappers:N/A),
+                functor(H, N, A),
+                once(clause(cpp_runtime_parser_wrappers:H, _)),
+                \+ predicate_property(cpp_runtime_parser_wrappers:H,
+                                       imported_from(_))
+            ),
+            Raw),
+    sort(Raw, Preds).
+
 expand_stdlib_predicates(Predicates0, Options, Predicates) :-
     (   member(include_stdlib(Spec), Options)
     ->  resolve_stdlib_features(Spec, Features),
@@ -2090,7 +2936,28 @@ write_text_file(Path, Content) :-
 % the lowered emitter and a minimal step() interpreter loop.
 % ============================================================================
 
-compile_wam_runtime_header_to_cpp(_Options,
+compile_wam_runtime_header_to_cpp(Options, Code) :-
+    compile_wam_runtime_header_body_to_cpp(Options, Body),
+    lmdb_sources_from_options(Options, LmdbSources),
+    (   LmdbSources == []
+    ->  Code = Body
+    ;   % Auto-enable LMDB when the codegen has fact sources. The
+        % flag has to live in the header so every translation unit
+        % (wam_runtime.cpp, generated_program.cpp, main.cpp) sees
+        % it -- otherwise the LmdbFactSource class is invisible in
+        % one TU and we get link errors. User still needs -llmdb.
+        format(string(Code),
+'// SPDX-License-Identifier: MIT OR Apache-2.0
+// Auto-generated by wam_cpp_target.pl. Do not edit by hand.
+//
+// LMDB FactSource enabled by cpp_fact_sources codegen option.
+// Link with -llmdb at compile time.
+#define WAM_CPP_ENABLE_LMDB 1
+
+~w', [Body])
+    ).
+
+compile_wam_runtime_header_body_to_cpp(_Options,
 '// SPDX-License-Identifier: MIT OR Apache-2.0
 // Auto-generated by wam_cpp_target.pl. Do not edit by hand.
 //
@@ -2113,6 +2980,7 @@ compile_wam_runtime_header_to_cpp(_Options,
 #include <memory>
 #include <set>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -2161,6 +3029,35 @@ struct Value {
     }
 };
 
+} // namespace wam_cpp
+
+namespace std {
+// Hash specialization so Instruction::const_map can use Value as a
+// key. Only Atom / Integer / Float ever appear in indexing tables
+// (the dispatch handler filters out unbound and compounds before
+// looking up); other tags hash to zero, which is fine since they
+// never reach a switch table. Must be visible at the point where
+// Instruction declares its unordered_map<Value, ...> field.
+template <> struct hash<wam_cpp::Value> {
+    std::size_t operator()(const wam_cpp::Value& v) const noexcept {
+        using T = wam_cpp::Value::Tag;
+        std::size_t h = static_cast<std::size_t>(v.tag);
+        std::size_t k = 0;
+        switch (v.tag) {
+            case T::Atom:    k = std::hash<std::string>()(v.s); break;
+            case T::Integer: k = std::hash<std::int64_t>()(v.i); break;
+            case T::Float:   k = std::hash<double>()(v.f); break;
+            default:         k = 0; break;
+        }
+        // Mix tag in so atoms and integers with same numeric/string
+        // form hash differently.
+        return h ^ (k + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2));
+    }
+};
+} // namespace std
+
+namespace wam_cpp {
+
 struct Instruction {
     enum class Op {
         GetConstant, GetVariable, GetValue, GetStructure, GetList, GetNil, GetInteger,
@@ -2171,10 +3068,14 @@ struct Instruction {
         BuiltinCall, CallForeign,
         TryMeElse, RetryMeElse, TrustMe, Jump, CutIte,
         BeginAggregate, EndAggregate,
-        SwitchOnConstant, SwitchOnStructure, SwitchOnTerm,
+        SwitchOnConstant, SwitchOnConstantA2,
+        SwitchOnStructure, SwitchOnStructureA2,
+        SwitchOnTerm, SwitchOnTermA2,
         CatchReturn, NegationReturn, FindallCollect, ConjReturn, DisjAlt,
         IfThenCommit, IfThenElse, AggregateNextGroup, DynamicNextClause,
-        SubAtomNext, BodyNext, RetractNext, OutputCaptureReturn
+        SubAtomNext, BodyNext, RetractNext, OutputCaptureReturn,
+        CurrentPredNext,
+        Nop
     };
     // Sentinel pc values for switch-table entries that should not jump.
     static constexpr std::size_t SWITCH_DEFAULT = static_cast<std::size_t>(-1);
@@ -2193,8 +3094,20 @@ struct Instruction {
     // Indexing dispatch tables. const_table holds Value→pc for atom/int
     // dispatch; struct_table holds "functor/arity"→pc for compound
     // dispatch; target doubles as the list-pc for SwitchOnTerm.
+    //
+    // const_map is built once in the factory from const_table and used
+    // by SwitchOnConstant{,A2} at runtime — O(1) hash lookup instead
+    // of O(N) linear scan. The vector is retained for emission /
+    // debugging; iteration order does not matter once we have the map
+    // since the WAM compiler emits each constant exactly once.
     std::vector<std::pair<Value, std::size_t>> const_table;
+    std::unordered_map<Value, std::size_t> const_map;
     std::vector<std::pair<std::string, std::size_t>> struct_table;
+    // Mixed-mode indexing flag: when a bound A1/A2 misses every
+    // entry in the switch table, fall through (pc += 1) instead of
+    // failing. Set when the predicate has variable-headed clauses
+    // that act as a default after the indexed prefix.
+    bool no_match_fallthrough = false;
 
     static Instruction GetConstant(Value v, std::string ai)
         { Instruction i; i.op = Op::GetConstant; i.val = std::move(v); i.a = std::move(ai); return i; }
@@ -2262,14 +3175,46 @@ struct Instruction {
           i.c = std::move(wregs); return i; }
     static Instruction EndAggregate(std::string vreg)
         { Instruction i; i.op = Op::EndAggregate; i.a = std::move(vreg); return i; }
-    static Instruction SwitchOnConstant(std::vector<std::pair<Value, std::size_t>> table)
-        { Instruction i; i.op = Op::SwitchOnConstant; i.const_table = std::move(table); return i; }
+    static Instruction SwitchOnConstant(std::vector<std::pair<Value, std::size_t>> table,
+                                        bool fall_on_miss = false)
+        { Instruction i; i.op = Op::SwitchOnConstant;
+          i.const_table = std::move(table);
+          i.no_match_fallthrough = fall_on_miss;
+          build_const_map(i);
+          return i; }
+    static Instruction SwitchOnConstantA2(std::vector<std::pair<Value, std::size_t>> table,
+                                          bool fall_on_miss = false)
+        { Instruction i; i.op = Op::SwitchOnConstantA2;
+          i.const_table = std::move(table);
+          i.no_match_fallthrough = fall_on_miss;
+          build_const_map(i);
+          return i; }
+
+private:
+    // try_emplace gives first-insert-wins semantics, matching the
+    // pre-hash linear-scan behaviour: if the WAM compiler emits two
+    // entries with the same key (rare), the first is the target.
+    static void build_const_map(Instruction& i) {
+        i.const_map.reserve(i.const_table.size());
+        for (auto& kv : i.const_table) i.const_map.try_emplace(kv.first, kv.second);
+    }
+public:
     static Instruction SwitchOnStructure(std::vector<std::pair<std::string, std::size_t>> table)
         { Instruction i; i.op = Op::SwitchOnStructure; i.struct_table = std::move(table); return i; }
+    static Instruction SwitchOnStructureA2(std::vector<std::pair<std::string, std::size_t>> table)
+        { Instruction i; i.op = Op::SwitchOnStructureA2; i.struct_table = std::move(table); return i; }
     static Instruction SwitchOnTerm(std::vector<std::pair<Value, std::size_t>> consts,
                                     std::vector<std::pair<std::string, std::size_t>> structs,
                                     std::size_t list_pc)
         { Instruction i; i.op = Op::SwitchOnTerm;
+          i.const_table = std::move(consts);
+          i.struct_table = std::move(structs);
+          i.target = list_pc;
+          return i; }
+    static Instruction SwitchOnTermA2(std::vector<std::pair<Value, std::size_t>> consts,
+                                      std::vector<std::pair<std::string, std::size_t>> structs,
+                                      std::size_t list_pc)
+        { Instruction i; i.op = Op::SwitchOnTermA2;
           i.const_table = std::move(consts);
           i.struct_table = std::move(structs);
           i.target = list_pc;
@@ -2300,6 +3245,10 @@ struct Instruction {
         { Instruction i; i.op = Op::RetractNext; return i; }
     static Instruction OutputCaptureReturn()
         { Instruction i; i.op = Op::OutputCaptureReturn; return i; }
+    static Instruction CurrentPredNext()
+        { Instruction i; i.op = Op::CurrentPredNext; return i; }
+    static Instruction Nop()
+        { Instruction i; i.op = Op::Nop; return i; }
 };
 
 struct TrailEntry {
@@ -2564,6 +3513,11 @@ struct WamState {
     // alt_pc = dynamic_next_clause_pc when more clauses remain.
     // Rules (Head :- Body) are NOT supported in this PR — only facts.
     std::unordered_map<std::string, std::vector<CellPtr>> dynamic_db;
+    // Set of (env_path, db_name) pairs already loaded via
+    // cpp_load_lmdb_fact_source. Used to make the loader idempotent
+    // -- a second call for the same pair short-circuits without
+    // re-streaming. Per WAM_CPP_LMDB_FACT_SOURCE_DESIGN.md.
+    std::set<std::pair<std::string, std::string>> loaded_lmdb_sources;
     // Iteration state for dispatch_dynamic_call. Mirrors the
     // AggregateGroupIterator pattern: one entry per active dynamic
     // call, popped when clauses are exhausted or the call commits
@@ -2627,6 +3581,21 @@ struct WamState {
     };
     std::vector<RetractIterator> retract_iters;
     std::size_t retract_next_pc = 0;
+    // current_predicate/1 nondet enumeration. Each iterator holds
+    // a pre-filtered list of matching "name/arity" keys (drawn from
+    // labels + dynamic_db), the spec''s Name + Arity cells, and an
+    // after_pc to return to on each success. On backtrack the alt
+    // PC runs CurrentPredNext which pops the just-used CP and
+    // re-enters current_pred_try_next.
+    struct CurrentPredIterator {
+        std::vector<std::string> keys;
+        std::size_t next_idx = 0;
+        CellPtr name_cell;
+        CellPtr arity_cell;
+        std::size_t after_pc = 0;
+    };
+    std::vector<CurrentPredIterator> current_pred_iters;
+    std::size_t current_pred_next_pc = 0;
     // Rule-body sequencing — see BodyFrame doc at namespace scope.
     // Each rule body is flattened into a sequential goal list;
     // body_next dispatches them one at a time with cp=body_next_pc.
@@ -2780,6 +3749,13 @@ struct WamState {
     // Head and Body. Shares the RetractIterator infrastructure via
     // the is_clause_only flag.
     bool    dispatch_clause(std::size_t after_pc);
+    // current_predicate/1: nondet enumeration over labels +
+    // dynamic_db keys, filtered by the (possibly partial) Name/Arity
+    // spec in A1. Same dispatch + iterator pattern as retract /
+    // clause but with its own iterator type and next-PC slot since
+    // the iteration target is strings, not stored cells.
+    bool    dispatch_current_predicate(std::size_t after_pc);
+    bool    current_pred_try_next();
     bool    retract_try_next();
     // body_next — dispatch the top BodyFrame''s next goal, or pop
     // and proceed to outer after_pc when goals are exhausted.
@@ -2881,12 +3857,119 @@ struct Program {
     static void apply_setup(WamState& vm);
 };
 
+// ----------------------------------------------------------------------
+// LMDB FactSource (v1) -- gated by WAM_CPP_ENABLE_LMDB at build time.
+//
+// v1 mirrors the C target: eager load of the entire DB into the
+// existing dynamic_db at startup, UTF-8 atom-only encoding, arity
+// fixed at 2. Per WAM_CPP_LMDB_FACT_SOURCE_DESIGN.md.
+//
+// When WAM_CPP_ENABLE_LMDB is not defined, cpp_load_lmdb_fact_source
+// is still declared (matching the C target stub pattern) but the
+// definition returns false without touching the dynamic_db -- the
+// generated program compiles fine, the LMDB load just no-ops.
+// ----------------------------------------------------------------------
+
+#ifdef WAM_CPP_ENABLE_LMDB
+#include <lmdb.h>
+
+class LmdbFactSource {
+public:
+    // Open env at env_path. db_name == nullptr uses the unnamed
+    // default DB. Throws std::runtime_error on open failure --
+    // load-time errors are surfaced to the caller, not silenced.
+    LmdbFactSource(const std::string& env_path, const char* db_name);
+    ~LmdbFactSource();
+
+    LmdbFactSource(const LmdbFactSource&) = delete;
+    LmdbFactSource& operator=(const LmdbFactSource&) = delete;
+
+    // Iterate every (key, value) pair once. Caller-supplied sink
+    // sees borrowed string_views valid only for that callback.
+    void stream_all(
+        const std::function<void(std::string_view,
+                                 std::string_view)>& sink);
+
+    // Read the optional __meta__ sub-DB. Per
+    // WAM_CPP_LMDB_FACT_SOURCE_DESIGN.md v1, schema info lives in
+    // a named __meta__ sub-DB (unprefixed keys when the data DB
+    // is the default unnamed one; prefixed "<db_name>:" when the
+    // data DB is named). LmdbMeta::present is false when the
+    // __meta__ sub-DB is absent entirely -- that case is treated
+    // as a warning by the loader, not a hard error, for
+    // transitional accommodation of LMDB files built before this
+    // PR.
+    struct Meta {
+        bool present = false;
+        int schema_version = 0;
+        std::string predicate;            // e.g. "edge/2"
+        std::vector<std::string> columns; // e.g. ["child", "parent"]
+    };
+    Meta read_meta(const char* db_name);
+
+private:
+    MDB_env* env_ = nullptr;
+    MDB_dbi  dbi_ = 0;
+    bool dbi_open_ = false;
+};
+#endif // WAM_CPP_ENABLE_LMDB
+
+// Policy options driving load-time enforcement. Populated by the
+// codegen from relation_policy/2 declarations and per-source
+// overrides via get_effective_policy/4 (PR #2325). v1 enforcement
+// is value-uniqueness only -- LMDB keys are already unique by
+// construction without DUPSORT, so the meaningful uniqueness
+// check is on the value column.
+//
+// Defined outside the WAM_CPP_ENABLE_LMDB gate so generated code
+// can build an instance regardless of build flags. The stub
+// cpp_load_lmdb_fact_source ignores it.
+struct LmdbLoadOptions {
+    bool unique_check = false;
+    enum class OnDup {
+        keep_all   = 0,
+        throw_     = 1,
+        warn       = 2,
+        overwrite  = 3,
+        first_wins = 4
+    } on_duplicate = OnDup::keep_all;
+
+    // Sort keys applied to the staged rows AFTER stream_all and
+    // BEFORE commit to dynamic_db. Lexicographic over the listed
+    // keys; empty vector means "no sort" (LMDB natural iteration
+    // order wins). column is 1-based; v1 only supports arity 2 so
+    // values are 1 or 2. The codegen omits trivially-satisfied
+    // order specs (e.g. asc by arg1, which LMDB gives for free)
+    // so sort_keys is non-empty only when actual reordering is
+    // needed.
+    struct SortKey {
+        int column;        // 1-based column index
+        bool ascending;
+    };
+    std::vector<SortKey> sort_keys;
+};
+
+// Always declared; the implementation no-ops when LMDB is not
+// compiled in. Returns true on successful load (or already loaded);
+// false on error or when LMDB support is absent.
+//
+// Idempotent: a second call for the same (env_path, db_name) pair
+// is a no-op, matching the design doc resolution.
+bool cpp_load_lmdb_fact_source(
+    WamState& vm,
+    const std::string& functor_arity_key,
+    const std::string& env_path,
+    const char* db_name,
+    const LmdbLoadOptions& opts = {});
+
 } // namespace wam_cpp
 
 using wam_cpp::Value;
 using wam_cpp::Instruction;
 using wam_cpp::WamState;
 using wam_cpp::Program;
+using wam_cpp::LmdbLoadOptions;
+using wam_cpp::cpp_load_lmdb_fact_source;
 
 #endif // UNIFYWEAVER_WAM_CPP_RUNTIME_H
 ').
@@ -3943,6 +5026,48 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         CellPtr tgt = get_cell("A1");
         if (tgt->is_unbound()) { bind_cell(tgt, result); pc += 1; return true; }
         if (!unify_cells(tgt, std::make_shared<Cell>(result))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- atom_number/2 ----------------------------------------------
+    // atom_number(?Atom, ?Number) bidirectional atom/number conversion.
+    // Forward (A1 bound): parse atom text as int first, then float.
+    // Fail (NOT throw) on unparseable input -- thats the difference
+    // between atom_number/2 and number_codes/2 (which throws).
+    // Reverse (A2 bound): render the number as an atom.
+    if (op == "atom_number/2") {
+        Value a1 = deref(*get_cell("A1"));
+        Value a2 = deref(*get_cell("A2"));
+        if (!a1.is_unbound()) {
+            if (a1.tag != Value::Tag::Atom) return false;
+            const std::string& buf = a1.s;
+            if (buf.empty()) return false;
+            Value result;
+            try {
+                std::size_t pos = 0;
+                std::int64_t i = std::stoll(buf, &pos);
+                if (pos == buf.size()) {
+                    result = Value::Integer(i);
+                } else {
+                    double d = std::stod(buf, &pos);
+                    if (pos != buf.size()) return false;
+                    result = Value::Float(d);
+                }
+            } catch (...) { return false; }
+            CellPtr tgt = get_cell("A2");
+            if (tgt->is_unbound()) { bind_cell(tgt, result); pc += 1; return true; }
+            if (!unify_cells(tgt, std::make_shared<Cell>(result))) return false;
+            pc += 1; return true;
+        }
+        if (a2.is_unbound()) return false;
+        std::string s;
+        if (a2.tag == Value::Tag::Integer) s = std::to_string(a2.i);
+        else if (a2.tag == Value::Tag::Float) s = render(a2);
+        else return false;
+        Value av = Value::Atom(s);
+        CellPtr tgt = get_cell("A1");
+        if (tgt->is_unbound()) { bind_cell(tgt, av); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(av))) return false;
         pc += 1; return true;
     }
 
@@ -6513,11 +7638,17 @@ bool WamState::step(const Instruction& instr) {
             // sub_atom/5 — nondeterministic substring enumeration.
             // Needs its own dispatch arm (not via builtin()) so the
             // CP machinery sees the correct continuation pc.
-            if (instr.a == "sub_atom/5") return dispatch_sub_atom(pc + 1);
+            // sub_string/5 is the SWI string-typed alias and shares
+            // the same semantics on this runtime (atoms and strings
+            // are unified as Atom-tagged values).
+            if (instr.a == "sub_atom/5" || instr.a == "sub_string/5")
+                return dispatch_sub_atom(pc + 1);
             // retract/1 — nondeterministic clause removal.
             if (instr.a == "retract/1") return dispatch_retract(pc + 1);
             // clause/2 — nondet enumeration of dynamic-db clauses.
             if (instr.a == "clause/2") return dispatch_clause(pc + 1);
+            if (instr.a == "current_predicate/1")
+                return dispatch_current_predicate(pc + 1);
             // ^/2 — existential quantification. Transparent for our
             // find-style aggregation: invoke A2 (the goal) with the
             // standard non-tail after-pc.
@@ -6568,9 +7699,12 @@ bool WamState::step(const Instruction& instr) {
                     (instr.a == "bagof/3")   ? "bagof"   : "setof";
                 return dispatch_aggregate_call(kind, tail_after);
             }
-            if (instr.a == "sub_atom/5") return dispatch_sub_atom(cp);
+            if (instr.a == "sub_atom/5" || instr.a == "sub_string/5")
+                return dispatch_sub_atom(cp);
             if (instr.a == "retract/1") return dispatch_retract(cp);
             if (instr.a == "clause/2") return dispatch_clause(cp);
+            if (instr.a == "current_predicate/1")
+                return dispatch_current_predicate(cp);
             if (instr.a == "^/2") {
                 return invoke_goal_as_call(get_cell("A2"), cp);
             }
@@ -6771,6 +7905,13 @@ bool WamState::step(const Instruction& instr) {
             if (!choice_points.empty()) choice_points.pop_back();
             return retract_try_next();
         }
+        case Instruction::Op::CurrentPredNext: {
+            // Reached when current_predicate/1 backtracks for the
+            // next match. Pop the CP and let current_pred_try_next
+            // resume from iter.next_idx.
+            if (!choice_points.empty()) choice_points.pop_back();
+            return current_pred_try_next();
+        }
         case Instruction::Op::OutputCaptureReturn: {
             // Reached when a with_output_to/2 goal proceeds normally.
             // Pop the OutputCaptureFrame, unify the captured buffer
@@ -6837,6 +7978,13 @@ bool WamState::step(const Instruction& instr) {
             return false;
         case Instruction::Op::Jump:
             pc = instr.target;
+            return true;
+        case Instruction::Op::Nop:
+            // Placeholder emitted for WAM-asm pseudo-instructions that
+            // currently have no runtime semantics (e.g.
+            // switch_on_constant_a2). Counted in PC accounting so labels
+            // resolve correctly; behaves as a fall-through.
+            pc += 1;
             return true;
 
         // ---- Choice points -----------------------------------------
@@ -7007,7 +8155,14 @@ bool WamState::step(const Instruction& instr) {
 
         // ---- Indexing ----------------------------------------------
         case Instruction::Op::SwitchOnConstant: {
-            // Dispatch on A1''s atom/integer value.
+            // Dispatch on A1''s atom/integer value. When the table has
+            // multiple entries for the same key (e.g. several clauses
+            // sharing A1=grew), only the first is the jump target; the
+            // rest are reached via the RetryMeElse chain at that label.
+            // Setting indexed_entry tells the receiving RetryMeElse to
+            // synthesize a fresh CP at this predicate level (otherwise
+            // it would mutate an outer level''s CP). Symmetric to
+            // SwitchOnTerm.
             CellPtr ac = get_cell("A1");
             const Value& a = *ac;
             if (a.is_unbound()) { pc += 1; return true; }
@@ -7015,14 +8170,44 @@ bool WamState::step(const Instruction& instr) {
                 && a.tag != Value::Tag::Float) {
                 pc += 1; return true; // not a constant we index on
             }
-            for (auto& kv : instr.const_table) {
-                if (kv.first == a) {
-                    if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
-                    if (kv.second == Instruction::SWITCH_NONE)    return false;
-                    pc = kv.second; return true;
-                }
+            auto it = instr.const_map.find(a);
+            if (it != instr.const_map.end()) {
+                if (it->second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                if (it->second == Instruction::SWITCH_NONE)    return false;
+                indexed_entry = true;
+                pc = it->second; return true;
             }
-            return false; // bound constant with no matching clause
+            // Bound constant with no matching indexed clause. If the
+            // predicate has variable-headed clauses (mixed-mode
+            // indexing), fall through to the try_me_else chain so
+            // those clauses still get a chance. Otherwise fail fast.
+            if (instr.no_match_fallthrough) { pc += 1; return true; }
+            return false;
+        }
+        case Instruction::Op::SwitchOnConstantA2: {
+            // Dispatch on A2''s atom/integer value. Emitted when A1 is
+            // too variable to index on but A2 has all constants (e.g.
+            // a tag-style second argument). Identical shape to
+            // SwitchOnConstant — see comments there.
+            CellPtr ac = get_cell("A2");
+            const Value& a = *ac;
+            if (a.is_unbound()) { pc += 1; return true; }
+            if (a.tag != Value::Tag::Atom && a.tag != Value::Tag::Integer
+                && a.tag != Value::Tag::Float) {
+                pc += 1; return true;
+            }
+            auto it = instr.const_map.find(a);
+            if (it != instr.const_map.end()) {
+                if (it->second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                if (it->second == Instruction::SWITCH_NONE)    return false;
+                indexed_entry = true;
+                pc = it->second; return true;
+            }
+            // See SwitchOnConstant: bound A2 with no entry in the
+            // table falls through to the try_me_else chain when the
+            // predicate has variable-A2 clauses (mixed-mode A2).
+            if (instr.no_match_fallthrough) { pc += 1; return true; }
+            return false;
         }
         case Instruction::Op::SwitchOnStructure: {
             CellPtr ac = get_cell("A1");
@@ -7033,6 +8218,23 @@ bool WamState::step(const Instruction& instr) {
                 if (kv.first == a.s) {
                     if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
                     if (kv.second == Instruction::SWITCH_NONE)    return false;
+                    indexed_entry = true;
+                    pc = kv.second; return true;
+                }
+            }
+            return false;
+        }
+        case Instruction::Op::SwitchOnStructureA2: {
+            // A2 mirror of SwitchOnStructure.
+            CellPtr ac = get_cell("A2");
+            const Value& a = *ac;
+            if (a.is_unbound()) { pc += 1; return true; }
+            if (a.tag != Value::Tag::Compound) { pc += 1; return true; }
+            for (auto& kv : instr.struct_table) {
+                if (kv.first == a.s) {
+                    if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                    if (kv.second == Instruction::SWITCH_NONE)    return false;
+                    indexed_entry = true;
                     pc = kv.second; return true;
                 }
             }
@@ -7046,6 +8248,42 @@ bool WamState::step(const Instruction& instr) {
             // current predicate level gets its own backtrack handle
             // even when an outer level''s CP is on the stack.
             CellPtr ac = get_cell("A1");
+            const Value& a = *ac;
+            if (a.is_unbound()) { pc += 1; return true; }
+            if (a.tag == Value::Tag::Atom || a.tag == Value::Tag::Integer
+                || a.tag == Value::Tag::Float) {
+                for (auto& kv : instr.const_table) {
+                    if (kv.first == a) {
+                        if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                        if (kv.second == Instruction::SWITCH_NONE)    return false;
+                        indexed_entry = true;
+                        pc = kv.second; return true;
+                    }
+                }
+                return false;
+            }
+            if (a.tag == Value::Tag::Compound) {
+                if (a.s == "[|]/2") {
+                    if (instr.target == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                    if (instr.target == Instruction::SWITCH_NONE)    return false;
+                    indexed_entry = true;
+                    pc = instr.target; return true;
+                }
+                for (auto& kv : instr.struct_table) {
+                    if (kv.first == a.s) {
+                        if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                        if (kv.second == Instruction::SWITCH_NONE)    return false;
+                        indexed_entry = true;
+                        pc = kv.second; return true;
+                    }
+                }
+                return false;
+            }
+            pc += 1; return true;
+        }
+        case Instruction::Op::SwitchOnTermA2: {
+            // A2 mirror of SwitchOnTerm.
+            CellPtr ac = get_cell("A2");
             const Value& a = *ac;
             if (a.is_unbound()) { pc += 1; return true; }
             if (a.tag == Value::Tag::Atom || a.tag == Value::Tag::Integer
@@ -7476,6 +8714,108 @@ bool WamState::dispatch_clause(std::size_t after_pc) {
     it.after_pc = after_pc;
     retract_iters.push_back(std::move(it));
     return retract_try_next();
+}
+
+// dispatch_current_predicate: prebuild the candidate-key list at
+// entry (drawing from labels + dynamic_db, deduped + sorted for
+// deterministic enumeration), filter by any ground portion of the
+// Name/Arity spec, and delegate the per-match unification +
+// CP-push to current_pred_try_next.
+bool WamState::dispatch_current_predicate(std::size_t after_pc) {
+    Value spec = *get_cell("A1");
+    if (spec.is_unbound())
+        return throw_iso_error(make_instantiation_error());
+    if (spec.tag != Value::Tag::Compound || spec.s != "//2"
+        || spec.args.size() != 2)
+        return throw_iso_error(make_type_error("predicate_indicator", spec));
+    CellPtr name_cell = spec.args[0];
+    CellPtr arity_cell = spec.args[1];
+    Value name_v = *name_cell;
+    Value arity_v = *arity_cell;
+    if (!name_v.is_unbound() && name_v.tag != Value::Tag::Atom)
+        return throw_iso_error(make_type_error("atom", name_v));
+    if (!arity_v.is_unbound() && arity_v.tag != Value::Tag::Integer)
+        return throw_iso_error(make_type_error("integer", arity_v));
+    std::set<std::string> all_keys;
+    for (auto& p : labels) all_keys.insert(p.first);
+    for (auto& p : dynamic_db) all_keys.insert(p.first);
+    std::vector<std::string> matched;
+    matched.reserve(all_keys.size());
+    for (auto& k : all_keys) {
+        auto slash = k.rfind(\'/\');
+        if (slash == std::string::npos) continue;
+        std::string n = k.substr(0, slash);
+        std::int64_t a;
+        try { a = std::stoll(k.substr(slash + 1)); }
+        catch (...) { continue; }
+        if (!name_v.is_unbound() && name_v.s != n) continue;
+        if (!arity_v.is_unbound() && arity_v.i != a) continue;
+        matched.push_back(k);
+    }
+    if (matched.empty()) return false;
+    CurrentPredIterator it;
+    it.keys = std::move(matched);
+    it.next_idx = 0;
+    it.name_cell = name_cell;
+    it.arity_cell = arity_cell;
+    it.after_pc = after_pc;
+    current_pred_iters.push_back(std::move(it));
+    return current_pred_try_next();
+}
+
+bool WamState::current_pred_try_next() {
+    if (current_pred_iters.empty()) return false;
+    CurrentPredIterator& it = current_pred_iters.back();
+    while (it.next_idx < it.keys.size()) {
+        std::size_t i = it.next_idx;
+        std::size_t mark = trail.size();
+        const std::string& key = it.keys[i];
+        auto slash = key.rfind(\'/\');
+        std::string n = key.substr(0, slash);
+        std::int64_t a;
+        try { a = std::stoll(key.substr(slash + 1)); }
+        catch (...) { ++it.next_idx; continue; }
+        Value n_v = Value::Atom(n);
+        Value a_v = Value::Integer(a);
+        bool ok = true;
+        if (it.name_cell->is_unbound()) bind_cell(it.name_cell, n_v);
+        else if (!(*it.name_cell == n_v)) ok = false;
+        if (ok) {
+            if (it.arity_cell->is_unbound()) bind_cell(it.arity_cell, a_v);
+            else if (!(*it.arity_cell == a_v)) ok = false;
+        }
+        if (ok) {
+            it.next_idx = i + 1;
+            bool has_more = (it.next_idx < it.keys.size());
+            std::size_t saved_after_pc = it.after_pc;
+            if (has_more) {
+                ChoicePoint cp_;
+                cp_.alt_pc            = current_pred_next_pc;
+                cp_.saved_cp          = cp;
+                cp_.trail_mark        = mark;
+                cp_.cut_barrier       = cut_barrier;
+                cp_.saved_regs        = regs;
+                cp_.saved_mode_stack  = mode_stack;
+                cp_.saved_env_stack   = env_stack;
+                cp_.saved_body_frames = body_frames;
+                choice_points.push_back(std::move(cp_));
+            } else {
+                current_pred_iters.pop_back();
+            }
+            if (saved_after_pc == 0) { halt = true; return true; }
+            pc = saved_after_pc;
+            cp = 0;
+            return true;
+        }
+        while (trail.size() > mark) {
+            TrailEntry te = std::move(trail.back());
+            trail.pop_back();
+            *te.cell = std::move(te.prev);
+        }
+        ++it.next_idx;
+    }
+    current_pred_iters.pop_back();
+    return false;
 }
 
 // Scan dynamic_db[key] from iter.next_idx onward for a clause that
@@ -8120,7 +9460,8 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
         if (key == "findall/3") { cp = after_pc; return dispatch_findall_call(after_pc); }
         if (key == "bagof/3")   { cp = after_pc; return dispatch_aggregate_call("bagof", after_pc); }
         if (key == "setof/3")   { cp = after_pc; return dispatch_aggregate_call("setof", after_pc); }
-        if (key == "sub_atom/5") return dispatch_sub_atom(after_pc);
+        if (key == "sub_atom/5" || key == "sub_string/5")
+            return dispatch_sub_atom(after_pc);
         if (key == "retract/1") return dispatch_retract(after_pc);
         if (key == "with_output_to/2") {
             // Set cp = after_pc so the builtin captures the correct
@@ -8941,6 +10282,8 @@ bool WamState::query(const std::string& pred_key, const std::vector<Value>& args
     aggregate_frames.clear();
     mode_stack.clear();
     env_stack.clear();
+    retract_iters.clear();
+    current_pred_iters.clear();
     pc = it->second;
     cp = 0;
     cut_barrier = 0;
@@ -8956,6 +10299,363 @@ Program::Setup& Program::setup_hook() {
 
 void Program::register_setup(Setup s) { setup_hook() = s; }
 void Program::apply_setup(WamState& vm) { if (setup_hook()) setup_hook()(vm); }
+
+// ----------------------------------------------------------------------
+// LMDB FactSource implementation (v1).
+// Gated by WAM_CPP_ENABLE_LMDB. When the flag is absent, only the
+// stub cpp_load_lmdb_fact_source below is compiled -- it returns
+// false and leaves dynamic_db untouched.
+// ----------------------------------------------------------------------
+
+#ifdef WAM_CPP_ENABLE_LMDB
+#include <filesystem>
+#include <stdexcept>
+
+LmdbFactSource::LmdbFactSource(const std::string& env_path,
+                               const char* db_name) {
+    int rc = mdb_env_create(&env_);
+    if (rc != MDB_SUCCESS) {
+        throw std::runtime_error(
+            std::string("mdb_env_create: ") + mdb_strerror(rc));
+    }
+    // Allow named sub-DBs; v1 only opens one per LmdbFactSource but
+    // reserves the headroom so users can keep multiple predicates
+    // in one env via repeated load calls with different db_name.
+    mdb_env_set_maxdbs(env_, 16);
+    // LMDB envs come in two flavours: a directory containing
+    // data.mdb + lock.mdb (no MDB_NOSUBDIR), or a single file path
+    // where the file is data.mdb and lock.mdb sits alongside
+    // (MDB_NOSUBDIR). Pick the right flag by probing the path --
+    // retrying mdb_env_open on the same env after failure is not
+    // safe per the LMDB docs.
+    unsigned int flags = MDB_RDONLY;
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(env_path, ec)) {
+        flags |= MDB_NOSUBDIR;
+    }
+    rc = mdb_env_open(env_, env_path.c_str(), flags, 0664);
+    if (rc != MDB_SUCCESS) {
+        mdb_env_close(env_);
+        env_ = nullptr;
+        throw std::runtime_error(
+            std::string("mdb_env_open ") + env_path + ": "
+            + mdb_strerror(rc));
+    }
+    MDB_txn* txn = nullptr;
+    rc = mdb_txn_begin(env_, nullptr, MDB_RDONLY, &txn);
+    if (rc != MDB_SUCCESS) {
+        mdb_env_close(env_);
+        env_ = nullptr;
+        throw std::runtime_error(
+            std::string("mdb_txn_begin: ") + mdb_strerror(rc));
+    }
+    MDB_dbi dbi;
+    rc = mdb_dbi_open(txn, db_name, 0, &dbi);
+    if (rc != MDB_SUCCESS) {
+        mdb_txn_abort(txn);
+        mdb_env_close(env_);
+        env_ = nullptr;
+        throw std::runtime_error(
+            std::string("mdb_dbi_open ")
+            + (db_name ? db_name : "<default>") + ": "
+            + mdb_strerror(rc));
+    }
+    mdb_txn_commit(txn);
+    dbi_ = dbi;
+    dbi_open_ = true;
+}
+
+LmdbFactSource::~LmdbFactSource() {
+    if (env_) {
+        if (dbi_open_) {
+            mdb_dbi_close(env_, dbi_);
+        }
+        mdb_env_close(env_);
+        env_ = nullptr;
+    }
+}
+
+void LmdbFactSource::stream_all(
+    const std::function<void(std::string_view,
+                             std::string_view)>& sink) {
+    MDB_txn* txn = nullptr;
+    int rc = mdb_txn_begin(env_, nullptr, MDB_RDONLY, &txn);
+    if (rc != MDB_SUCCESS) {
+        throw std::runtime_error(
+            std::string("stream_all/txn_begin: ")
+            + mdb_strerror(rc));
+    }
+    MDB_cursor* cur = nullptr;
+    rc = mdb_cursor_open(txn, dbi_, &cur);
+    if (rc != MDB_SUCCESS) {
+        mdb_txn_abort(txn);
+        throw std::runtime_error(
+            std::string("stream_all/cursor_open: ")
+            + mdb_strerror(rc));
+    }
+    MDB_val k{}, v{};
+    rc = mdb_cursor_get(cur, &k, &v, MDB_FIRST);
+    while (rc == MDB_SUCCESS) {
+        std::string_view ksv(static_cast<const char*>(k.mv_data),
+                             k.mv_size);
+        std::string_view vsv(static_cast<const char*>(v.mv_data),
+                             v.mv_size);
+        sink(ksv, vsv);
+        rc = mdb_cursor_get(cur, &k, &v, MDB_NEXT);
+    }
+    mdb_cursor_close(cur);
+    mdb_txn_abort(txn);
+    if (rc != MDB_NOTFOUND) {
+        throw std::runtime_error(
+            std::string("stream_all/cursor_get: ")
+            + mdb_strerror(rc));
+    }
+}
+
+LmdbFactSource::Meta LmdbFactSource::read_meta(const char* db_name) {
+    Meta meta;
+    MDB_txn* txn = nullptr;
+    int rc = mdb_txn_begin(env_, nullptr, MDB_RDONLY, &txn);
+    if (rc != MDB_SUCCESS) {
+        throw std::runtime_error(
+            std::string("read_meta/txn_begin: ")
+            + mdb_strerror(rc));
+    }
+    MDB_dbi meta_dbi;
+    rc = mdb_dbi_open(txn, "__meta__", 0, &meta_dbi);
+    if (rc == MDB_NOTFOUND) {
+        // __meta__ sub-DB absent -- transitional accommodation.
+        mdb_txn_abort(txn);
+        return meta;  // present == false
+    }
+    if (rc != MDB_SUCCESS) {
+        mdb_txn_abort(txn);
+        throw std::runtime_error(
+            std::string("read_meta/dbi_open(__meta__): ")
+            + mdb_strerror(rc));
+    }
+    // Key prefix per design doc: empty when data DB is the default
+    // unnamed DB, "<db_name>:" when a named sub-DB is in use.
+    std::string prefix = (db_name && *db_name)
+        ? (std::string(db_name) + ":") : std::string();
+    auto get_key = [&](const std::string& name) -> std::string {
+        std::string full = prefix + name;
+        MDB_val K{full.size(), const_cast<char*>(full.data())};
+        MDB_val V{};
+        int gr = mdb_get(txn, meta_dbi, &K, &V);
+        if (gr == MDB_NOTFOUND) return std::string();
+        if (gr != MDB_SUCCESS) {
+            throw std::runtime_error(
+                std::string("read_meta/get ") + full + ": "
+                + mdb_strerror(gr));
+        }
+        return std::string(static_cast<const char*>(V.mv_data),
+                           V.mv_size);
+    };
+    std::string sv = get_key("schema_version");
+    std::string pr = get_key("predicate");
+    std::string cs = get_key("columns");
+    mdb_txn_abort(txn);
+    if (sv.empty() && pr.empty() && cs.empty()) {
+        // __meta__ sub-DB exists but holds no entries for this DB.
+        // Treat as absent so the loader emits a warning.
+        return meta;
+    }
+    meta.present = true;
+    try { meta.schema_version = std::stoi(sv); }
+    catch (...) { meta.schema_version = 0; }
+    meta.predicate = pr;
+    // Split columns by comma. Trailing/leading whitespace is not
+    // tolerated -- the design doc specifies ASCII exact match.
+    std::string cur;
+    for (char c : cs) {
+        if (c == \',\') {
+            meta.columns.push_back(std::move(cur));
+            cur.clear();
+        } else {
+            cur.push_back(c);
+        }
+    }
+    if (!cur.empty() || !cs.empty()) {
+        meta.columns.push_back(std::move(cur));
+    }
+    return meta;
+}
+
+bool cpp_load_lmdb_fact_source(WamState& vm,
+                               const std::string& functor_arity_key,
+                               const std::string& env_path,
+                               const char* db_name,
+                               const LmdbLoadOptions& opts) {
+    std::string dbn = db_name ? db_name : "";
+    auto key = std::make_pair(env_path, dbn);
+    if (vm.loaded_lmdb_sources.count(key)) {
+        return true;  // idempotent
+    }
+    try {
+        LmdbFactSource src(env_path, db_name);
+        // Validate the __meta__ sub-DB before loading. Per design
+        // doc resolved-question 1: meta is REQUIRED to match the
+        // registered predicate; absent meta is a warning, mismatch
+        // is a hard error.
+        LmdbFactSource::Meta meta = src.read_meta(db_name);
+        if (meta.present) {
+            if (meta.schema_version != 1) {
+                throw std::runtime_error(
+                    "schema_version mismatch: expected 1, got "
+                    + std::to_string(meta.schema_version));
+            }
+            if (meta.predicate != functor_arity_key) {
+                throw std::runtime_error(
+                    "predicate mismatch: file is for "
+                    + meta.predicate + ", registered as "
+                    + functor_arity_key);
+            }
+            // v1: arity 2, so exactly 2 columns expected.
+            if (meta.columns.size() != 2) {
+                throw std::runtime_error(
+                    "columns count mismatch: expected 2, got "
+                    + std::to_string(meta.columns.size()));
+            }
+        } else {
+            std::fprintf(stderr,
+                "[wam-cpp] warning: %s (%s) has no __meta__ "
+                "sub-DB; loading without schema validation\\n",
+                env_path.c_str(), functor_arity_key.c_str());
+        }
+        // Recover functor name from the key "name/arity" for the
+        // synthesised compound. v1 only supports arity 2; the key
+        // is assumed well-formed (caller is the codegen).
+        auto slash = functor_arity_key.find(\'/\');
+        std::string functor = (slash == std::string::npos)
+            ? functor_arity_key
+            : functor_arity_key.substr(0, slash);
+        // Phase 2 enforcement: when opts.unique_check is set, the
+        // value column (arg2) is asserted unique across all rows.
+        // LMDB keys (arg1) are unique by construction without
+        // DUPSORT so we do not need to check them here; the
+        // meaningful check is on the value column. Per
+        // RELATION_POLICY_DECLARATIONS.md the on_duplicate policy
+        // decides what to do when the contract is violated.
+        //
+        // Build into a local vector and only commit to dynamic_db
+        // after stream_all returns without throwing -- otherwise a
+        // partial load would leave dynamic_db in a half-populated
+        // state and queries against the predicate would return
+        // wrong answers even after the loader reported failure.
+        std::vector<CellPtr> staged;
+        std::unordered_map<std::string, std::size_t> seen_value_to_row;
+        src.stream_all([&](std::string_view ks, std::string_view vs) {
+            // LMDB stores named sub-DBs as pointer records in the
+            // parent DB. When the data DB IS the default unnamed
+            // one, iterating it surfaces "__meta__" as a phantom
+            // row whose value is an internal sub-DB pointer.
+            // Skip it -- it is never user data.
+            if (ks == "__meta__") return;
+            std::string vstr(vs);
+            if (opts.unique_check) {
+                auto it = seen_value_to_row.find(vstr);
+                if (it != seen_value_to_row.end()) {
+                    switch (opts.on_duplicate) {
+                    case LmdbLoadOptions::OnDup::throw_:
+                        throw std::runtime_error(
+                            "duplicate value \\"" + vstr
+                            + "\\" with unique(true) and "
+                              "on_duplicate(throw)");
+                    case LmdbLoadOptions::OnDup::warn:
+                        std::fprintf(stderr,
+                            "[wam-cpp] warning: duplicate value "
+                            "in %s: %s\\n",
+                            functor_arity_key.c_str(),
+                            vstr.c_str());
+                        break;
+                    case LmdbLoadOptions::OnDup::overwrite:
+                        // Replace the earlier row with this one.
+                        // staged[it->second] holds the prior cell.
+                        {
+                            auto k_cell = std::make_shared<Cell>(
+                                Value::Atom(std::string(ks)));
+                            auto v_cell = std::make_shared<Cell>(
+                                Value::Atom(vstr));
+                            std::vector<CellPtr> args;
+                            args.push_back(k_cell);
+                            args.push_back(v_cell);
+                            staged[it->second] = std::make_shared<Cell>(
+                                Value::Compound(
+                                    functor + "/2",
+                                    std::move(args)));
+                        }
+                        return;
+                    case LmdbLoadOptions::OnDup::first_wins:
+                        return;  // skip the duplicate
+                    case LmdbLoadOptions::OnDup::keep_all:
+                        break;   // fall through and append
+                    }
+                }
+            }
+            auto k_cell = std::make_shared<Cell>(
+                Value::Atom(std::string(ks)));
+            auto v_cell = std::make_shared<Cell>(
+                Value::Atom(vstr));
+            std::vector<CellPtr> args;
+            args.push_back(k_cell);
+            args.push_back(v_cell);
+            std::size_t pos = staged.size();
+            staged.push_back(std::make_shared<Cell>(
+                Value::Compound(functor + "/2", std::move(args))));
+            if (opts.unique_check) {
+                seen_value_to_row[vstr] = pos;
+            }
+        });
+        // Commit the staged rows only after stream_all completes
+        // without throwing.
+        auto& bucket = vm.dynamic_db[functor_arity_key];
+        // Apply order(...) policy. sort_keys is empty when the
+        // declared order is trivially satisfied by LMDB natural
+        // iteration (default, or [arg(1)] asc). std::sort is stable
+        // when applied to already-sorted input -- worst case here
+        // when sort_keys=[arg(2)] is O(n log n) but only fires
+        // when the user actually asked for a non-trivial sort.
+        if (!opts.sort_keys.empty()) {
+            std::sort(staged.begin(), staged.end(),
+                [&](const CellPtr& a, const CellPtr& b) {
+                    for (const auto& sk : opts.sort_keys) {
+                        const auto& av = a->args[sk.column - 1]->s;
+                        const auto& bv = b->args[sk.column - 1]->s;
+                        if (av != bv) {
+                            return sk.ascending ? (av < bv)
+                                                : (av > bv);
+                        }
+                    }
+                    return false;
+                });
+        }
+        bucket.insert(bucket.end(),
+                      std::make_move_iterator(staged.begin()),
+                      std::make_move_iterator(staged.end()));
+        vm.loaded_lmdb_sources.insert(key);
+        return true;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr,
+                     "cpp_load_lmdb_fact_source(%s, %s): %s\\n",
+                     functor_arity_key.c_str(),
+                     env_path.c_str(),
+                     e.what());
+        return false;
+    }
+}
+#else
+// Stub when WAM_CPP_ENABLE_LMDB is not defined. Matches the C
+// target''s stub (wam_c_target.pl:2392-2398): returns false and
+// touches nothing, so generated code that calls this still links.
+bool cpp_load_lmdb_fact_source(WamState&,
+                               const std::string&,
+                               const std::string&,
+                               const char*,
+                               const LmdbLoadOptions&) {
+    return false;
+}
+#endif // WAM_CPP_ENABLE_LMDB
 
 } // namespace wam_cpp
 ').

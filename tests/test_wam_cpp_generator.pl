@@ -14,6 +14,7 @@
 :- use_module(library(process)).
 :- use_module(library(readutil)).
 :- use_module('../src/unifyweaver/targets/wam_cpp_target').
+:- use_module('../src/unifyweaver/core/relation_policy', []).
 :- use_module('../src/unifyweaver/targets/wam_cpp_lowered_emitter').
 :- use_module('../src/unifyweaver/core/target_registry').
 
@@ -238,6 +239,30 @@
 :- dynamic user:wam_cpp_test_assoc_keys/0.
 :- dynamic user:wam_cpp_test_assoc_values/0.
 :- dynamic user:wam_cpp_test_assoc_compound_keys/0.
+:- dynamic user:wam_cpp_assoc_depth/2.
+:- dynamic user:wam_cpp_test_assoc_avl_balance_sorted/0.
+:- dynamic user:wam_cpp_test_assoc_avl_balance_descending/0.
+:- dynamic user:wam_cpp_test_assoc_avl_balance_zigzag/0.
+:- dynamic user:wam_cpp_test_assoc_min/0.
+:- dynamic user:wam_cpp_test_assoc_max/0.
+:- dynamic user:wam_cpp_test_assoc_min_after_inserts/0.
+:- dynamic user:wam_cpp_test_assoc_del_leaf/0.
+:- dynamic user:wam_cpp_test_assoc_del_root/0.
+:- dynamic user:wam_cpp_test_assoc_del_missing_fails/0.
+:- dynamic user:wam_cpp_test_assoc_del_all_back_to_empty/0.
+:- dynamic user:wam_cpp_test_assoc_del_rebalance_sorted/0.
+:- dynamic user:wam_cpp_test_assoc_del_returns_value/0.
+:- dynamic user:wam_cpp_test_assoc_del_min/0.
+:- dynamic user:wam_cpp_test_assoc_del_max/0.
+:- dynamic user:wam_cpp_test_assoc_del_min_empty_fails/0.
+:- dynamic user:wam_cpp_test_assoc_del_max_empty_fails/0.
+:- dynamic user:wam_cpp_test_assoc_pq_extract_min/0.
+:- dynamic user:wam_cpp_test_assoc_get5_replace/0.
+:- dynamic user:wam_cpp_test_assoc_get5_missing/0.
+:- dynamic user:wam_cpp_test_assoc_get5_threads_old_value/0.
+:- dynamic user:wam_cpp_assoc_double/2.
+:- dynamic user:wam_cpp_test_assoc_map/0.
+:- dynamic user:wam_cpp_test_assoc_map_empty/0.
 :- dynamic user:wam_cpp_test_get_time_positive/0.
 :- dynamic user:wam_cpp_test_stamp_utc/0.
 :- dynamic user:wam_cpp_test_stamp_subsec/0.
@@ -311,6 +336,14 @@
 :- dynamic user:wam_cpp_test_nested_f_g/0.
 :- dynamic user:wam_cpp_test_nested_right/0.
 :- dynamic user:wam_cpp_test_nested_constant/0.
+:- dynamic user:wam_cpp_test_cp_check_static/0.
+:- dynamic user:wam_cpp_test_cp_check_missing/0.
+:- dynamic user:wam_cpp_test_cp_enum_arity/0.
+:- dynamic user:wam_cpp_test_cp_enum_name_by_arity/0.
+:- dynamic user:wam_cpp_test_cp_enum_all/0.
+:- dynamic user:wam_cpp_test_cp_enum_none/0.
+:- dynamic user:wam_cpp_test_cp_inst_throw/0.
+:- dynamic user:wam_cpp_test_cp_indicator_throw/0.
 :- dynamic user:wam_cpp_test_enum_member/0.
 
 user:wam_cpp_test_member_yes   :- member(b, [a, b, c]).
@@ -553,6 +586,258 @@ user:wam_cpp_test_assoc_compound_keys :-
     put_assoc(pt(3, 4), A1, south, A2),
     get_assoc(pt(1, 2), A2, north),
     get_assoc(pt(3, 4), A2, south).
+% AVL balance: insert keys in ascending order — a plain BST would be
+% a 16-deep chain, but the AVL must stay roughly log2(16) ≈ 4-5 deep.
+% Tree-depth probe uses the t(K,V,B,L,R) node shape.
+user:wam_cpp_assoc_depth(t, 0).
+user:wam_cpp_assoc_depth(t(_, _, _, L, R), D) :-
+    wam_cpp_assoc_depth(L, DL),
+    wam_cpp_assoc_depth(R, DR),
+    ( DL >= DR -> D is DL + 1 ; D is DR + 1 ).
+user:wam_cpp_test_assoc_avl_balance_sorted :-
+    empty_assoc(A0),
+    put_assoc(1,  A0,  v1,  A1),
+    put_assoc(2,  A1,  v2,  A2),
+    put_assoc(3,  A2,  v3,  A3),
+    put_assoc(4,  A3,  v4,  A4),
+    put_assoc(5,  A4,  v5,  A5),
+    put_assoc(6,  A5,  v6,  A6),
+    put_assoc(7,  A6,  v7,  A7),
+    put_assoc(8,  A7,  v8,  A8),
+    put_assoc(9,  A8,  v9,  A9),
+    put_assoc(10, A9,  v10, A10),
+    put_assoc(11, A10, v11, A11),
+    put_assoc(12, A11, v12, A12),
+    put_assoc(13, A12, v13, A13),
+    put_assoc(14, A13, v14, A14),
+    put_assoc(15, A14, v15, A15),
+    put_assoc(16, A15, v16, A16),
+    wam_cpp_assoc_depth(A16, D),
+    D =< 6,
+    get_assoc(1,  A16, v1),
+    get_assoc(8,  A16, v8),
+    get_assoc(16, A16, v16),
+    \+ get_assoc(0,  A16, _),
+    \+ get_assoc(17, A16, _).
+user:wam_cpp_test_assoc_avl_balance_descending :-
+    % Mirror case — keys descending forces left-side rotations.
+    empty_assoc(A0),
+    put_assoc(16, A0,  v16, A1),
+    put_assoc(15, A1,  v15, A2),
+    put_assoc(14, A2,  v14, A3),
+    put_assoc(13, A3,  v13, A4),
+    put_assoc(12, A4,  v12, A5),
+    put_assoc(11, A5,  v11, A6),
+    put_assoc(10, A6,  v10, A7),
+    put_assoc(9,  A7,  v9,  A8),
+    put_assoc(8,  A8,  v8,  A9),
+    put_assoc(7,  A9,  v7,  A10),
+    put_assoc(6,  A10, v6,  A11),
+    put_assoc(5,  A11, v5,  A12),
+    put_assoc(4,  A12, v4,  A13),
+    put_assoc(3,  A13, v3,  A14),
+    put_assoc(2,  A14, v2,  A15),
+    put_assoc(1,  A15, v1,  A16),
+    wam_cpp_assoc_depth(A16, D),
+    D =< 6,
+    get_assoc(1,  A16, v1),
+    get_assoc(16, A16, v16).
+user:wam_cpp_test_assoc_avl_balance_zigzag :-
+    % Insert in zigzag order — exercises both LR and RL rotations.
+    empty_assoc(A0),
+    put_assoc(8,  A0,  v8,  A1),
+    put_assoc(4,  A1,  v4,  A2),
+    put_assoc(12, A2,  v12, A3),
+    put_assoc(6,  A3,  v6,  A4),
+    put_assoc(10, A4,  v10, A5),
+    put_assoc(2,  A5,  v2,  A6),
+    put_assoc(14, A6,  v14, A7),
+    put_assoc(5,  A7,  v5,  A8),
+    put_assoc(7,  A8,  v7,  A9),
+    put_assoc(9,  A9,  v9,  A10),
+    put_assoc(11, A10, v11, A11),
+    put_assoc(1,  A11, v1,  A12),
+    put_assoc(3,  A12, v3,  A13),
+    put_assoc(13, A13, v13, A14),
+    put_assoc(15, A14, v15, A15),
+    wam_cpp_assoc_depth(A15, D),
+    D =< 5,
+    get_assoc(7,  A15, v7),
+    get_assoc(15, A15, v15),
+    assoc_to_keys(A15, [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]).
+
+% min_assoc / max_assoc / del_assoc — round out the assoc API.
+user:wam_cpp_test_assoc_min :-
+    empty_assoc(A0),
+    put_assoc(5, A0, v5, A1),
+    put_assoc(1, A1, v1, A2),
+    put_assoc(9, A2, v9, A3),
+    min_assoc(A3, 1, v1).
+user:wam_cpp_test_assoc_max :-
+    empty_assoc(A0),
+    put_assoc(5, A0, v5, A1),
+    put_assoc(1, A1, v1, A2),
+    put_assoc(9, A2, v9, A3),
+    max_assoc(A3, 9, v9).
+user:wam_cpp_test_assoc_min_after_inserts :-
+    % Inserting in zigzag order — min stays the leftmost regardless
+    % of rotations.
+    empty_assoc(A0),
+    put_assoc(8,  A0, v8,  A1),
+    put_assoc(4,  A1, v4,  A2),
+    put_assoc(12, A2, v12, A3),
+    put_assoc(2,  A3, v2,  A4),
+    put_assoc(10, A4, v10, A5),
+    put_assoc(1,  A5, v1,  A6),
+    min_assoc(A6, 1, v1),
+    max_assoc(A6, 12, v12).
+user:wam_cpp_test_assoc_del_leaf :-
+    % Build a tree with a leaf, delete it.
+    empty_assoc(A0),
+    put_assoc(2, A0, v2, A1),
+    put_assoc(1, A1, v1, A2),
+    put_assoc(3, A2, v3, A3),
+    del_assoc(1, A3, v1, A4),
+    \+ get_assoc(1, A4, _),
+    get_assoc(2, A4, v2),
+    get_assoc(3, A4, v3).
+user:wam_cpp_test_assoc_del_root :-
+    % Delete the root — exercises the "both children non-empty" path
+    % that pulls the in-order successor.
+    empty_assoc(A0),
+    put_assoc(2, A0, v2, A1),
+    put_assoc(1, A1, v1, A2),
+    put_assoc(3, A2, v3, A3),
+    del_assoc(2, A3, v2, A4),
+    \+ get_assoc(2, A4, _),
+    get_assoc(1, A4, v1),
+    get_assoc(3, A4, v3).
+user:wam_cpp_test_assoc_del_missing_fails :-
+    empty_assoc(A0),
+    put_assoc(a, A0, 1, A1),
+    \+ del_assoc(z, A1, _, _).
+user:wam_cpp_test_assoc_del_all_back_to_empty :-
+    empty_assoc(A0),
+    put_assoc(1, A0, v1, A1),
+    put_assoc(2, A1, v2, A2),
+    put_assoc(3, A2, v3, A3),
+    put_assoc(4, A3, v4, A4),
+    put_assoc(5, A4, v5, A5),
+    del_assoc(3, A5, _, B1),
+    del_assoc(1, B1, _, B2),
+    del_assoc(5, B2, _, B3),
+    del_assoc(2, B3, _, B4),
+    del_assoc(4, B4, _, B5),
+    B5 == t.
+user:wam_cpp_test_assoc_del_rebalance_sorted :-
+    % Insert 16 keys ascending (max-imbalance shape), then delete
+    % the first half. Tree must stay balanced (depth bounded) and
+    % retain the remaining keys.
+    empty_assoc(A0),
+    put_assoc(1,  A0,  _, A1),  put_assoc(2,  A1,  _, A2),
+    put_assoc(3,  A2,  _, A3),  put_assoc(4,  A3,  _, A4),
+    put_assoc(5,  A4,  _, A5),  put_assoc(6,  A5,  _, A6),
+    put_assoc(7,  A6,  _, A7),  put_assoc(8,  A7,  _, A8),
+    put_assoc(9,  A8,  _, A9),  put_assoc(10, A9,  _, A10),
+    put_assoc(11, A10, _, A11), put_assoc(12, A11, _, A12),
+    put_assoc(13, A12, _, A13), put_assoc(14, A13, _, A14),
+    put_assoc(15, A14, _, A15), put_assoc(16, A15, _, A16),
+    del_assoc(1, A16, _, B1),
+    del_assoc(2, B1,  _, B2),
+    del_assoc(3, B2,  _, B3),
+    del_assoc(4, B3,  _, B4),
+    del_assoc(5, B4,  _, B5),
+    del_assoc(6, B5,  _, B6),
+    del_assoc(7, B6,  _, B7),
+    del_assoc(8, B7,  _, B8),
+    wam_cpp_assoc_depth(B8, D),
+    D =< 4,
+    assoc_to_keys(B8, [9, 10, 11, 12, 13, 14, 15, 16]).
+user:wam_cpp_test_assoc_del_returns_value :-
+    % del_assoc/4 returns the deleted value as its 3rd arg.
+    empty_assoc(A0),
+    put_assoc(name,   A0, alice,  A1),
+    put_assoc(age,    A1, 30,     A2),
+    put_assoc(role,   A2, admin,  A3),
+    del_assoc(age, A3, V, _),
+    V = 30.
+
+% del_min_assoc / del_max_assoc — extract the leftmost / rightmost
+% (K, V) pair atomically and return the rebalanced tree.
+user:wam_cpp_test_assoc_del_min :-
+    empty_assoc(A0),
+    put_assoc(3, A0, c, A1), put_assoc(1, A1, a, A2),
+    put_assoc(5, A2, e, A3), put_assoc(2, A3, b, A4),
+    del_min_assoc(A4, MK, MV, A5),
+    MK = 1, MV = a,
+    assoc_to_keys(A5, [2, 3, 5]).
+user:wam_cpp_test_assoc_del_max :-
+    empty_assoc(A0),
+    put_assoc(3, A0, c, A1), put_assoc(1, A1, a, A2),
+    put_assoc(5, A2, e, A3), put_assoc(2, A3, b, A4),
+    del_max_assoc(A4, MK, MV, A5),
+    MK = 5, MV = e,
+    assoc_to_keys(A5, [1, 2, 3]).
+user:wam_cpp_test_assoc_del_min_empty_fails :-
+    empty_assoc(E), \+ del_min_assoc(E, _, _, _).
+user:wam_cpp_test_assoc_del_max_empty_fails :-
+    empty_assoc(E), \+ del_max_assoc(E, _, _, _).
+user:wam_cpp_test_assoc_pq_extract_min :-
+    % Priority-queue use: repeatedly extract the min. Ends in
+    % the empty atom `t`.
+    empty_assoc(A0),
+    put_assoc(5, A0, e, A1), put_assoc(1, A1, a, A2),
+    put_assoc(3, A2, c, A3), put_assoc(2, A3, b, A4),
+    put_assoc(4, A4, d, A5),
+    del_min_assoc(A5, 1, a, B1),
+    del_min_assoc(B1, 2, b, B2),
+    del_min_assoc(B2, 3, c, B3),
+    del_min_assoc(B3, 4, d, B4),
+    del_min_assoc(B4, 5, e, B5),
+    B5 == t.
+
+% get_assoc/5 — atomic test-and-set. Walks the tree once, binding
+% the current value and producing a tree with the slot replaced.
+user:wam_cpp_test_assoc_get5_replace :-
+    empty_assoc(A0),
+    put_assoc(a, A0, 1, A1),
+    put_assoc(b, A1, 2, A2),
+    put_assoc(c, A2, 3, A3),
+    get_assoc(b, A3, 2, A4, 99),
+    get_assoc(b, A4, 99),
+    get_assoc(a, A4, 1),
+    get_assoc(c, A4, 3).
+user:wam_cpp_test_assoc_get5_missing :-
+    empty_assoc(A0),
+    put_assoc(a, A0, 1, A1),
+    \+ get_assoc(z, A1, _, _, _).
+user:wam_cpp_test_assoc_get5_threads_old_value :-
+    % The 3rd-arg binding lets callers compute NewVal from OldVal in
+    % a single pass.
+    empty_assoc(A0),
+    put_assoc(counter, A0, 5, A1),
+    get_assoc(counter, A1, Old, A2, New),
+    New is Old + 1,
+    get_assoc(counter, A2, 6).
+
+% map_assoc/3 — apply call(Goal, OldVal, NewVal) to every value.
+user:wam_cpp_assoc_double(X, Y) :- Y is X * 2.
+user:wam_cpp_test_assoc_map :-
+    empty_assoc(A0),
+    put_assoc(a, A0, 1, A1),
+    put_assoc(b, A1, 2, A2),
+    put_assoc(c, A2, 3, A3),
+    put_assoc(d, A3, 4, A4),
+    map_assoc(wam_cpp_assoc_double, A4, A5),
+    get_assoc(a, A5, 2),
+    get_assoc(b, A5, 4),
+    get_assoc(c, A5, 6),
+    get_assoc(d, A5, 8),
+    assoc_to_keys(A5, [a, b, c, d]).
+user:wam_cpp_test_assoc_map_empty :-
+    empty_assoc(E),
+    map_assoc(wam_cpp_assoc_double, E, R),
+    R == t.
 % Date/time: get_time/1 (Float seconds since epoch),
 % stamp_date_time/3 (decompose + TZ), date_time_stamp/2 (compose),
 % format_time/3 (strftime-style atom output). Tests use the canonical
@@ -849,6 +1134,38 @@ user:wam_cpp_test_nested_constant :-
     wam_cpp_nest_setup,
     findall(g(K, f(V, marker)), wam_cpp_nest_emit(K, V, _), L),
     L = [g(a, f(10, marker)), g(b, f(20, marker))].
+% Nondet current_predicate/1: enumeration via the CP-iterator path.
+% PR #2277 added check-mode only; this PR moves the builtin from
+% builtin() to the Call/Execute dispatch arms so partial-spec
+% queries (Name/_, _/Arity, _) can iterate over labels + dynamic_db
+% keys.
+user:wam_cpp_cp_static_a(_).
+user:wam_cpp_cp_static_b(_, _).
+user:wam_cpp_test_cp_check_static :-
+    current_predicate(wam_cpp_cp_static_a/1).
+user:wam_cpp_test_cp_check_missing :-
+    \+ current_predicate(wam_cpp_cp_no_such_pred/3).
+user:wam_cpp_test_cp_enum_arity :-
+    findall(A, current_predicate(wam_cpp_cp_static_a/A), L),
+    L = [1].
+user:wam_cpp_test_cp_enum_name_by_arity :-
+    findall(N, current_predicate(N/0), L),
+    member(wam_cpp_test_cp_enum_name_by_arity, L),
+    member(wam_cpp_test_cp_check_static, L).
+user:wam_cpp_test_cp_enum_all :-
+    findall(N/A, current_predicate(N/A), L),
+    member(append/3, L).
+user:wam_cpp_test_cp_enum_none :-
+    findall(N, current_predicate(N/999), L),
+    L = [].
+user:wam_cpp_test_cp_inst_throw :-
+    catch(current_predicate(_),
+          error(instantiation_error, _),
+          true).
+user:wam_cpp_test_cp_indicator_throw :-
+    catch(current_predicate(foo),
+          error(type_error(predicate_indicator, _), _),
+          true).
 user:wam_cpp_test_enum_member  :- findall(X, member(X, [a, b, c]), L),
                                   L = [a, b, c].
 
@@ -2321,6 +2638,120 @@ user:wam_cpp_test_keysort_then_values :-
     pairs_values(Sorted, Vs),
     Vs = [10, 20, 30].
 
+% library(lists) cleanup — same_length, proper_length,
+% list_to_set, flatten.
+:- dynamic user:wam_cpp_test_same_length_eq/0.
+:- dynamic user:wam_cpp_test_same_length_neq/0.
+:- dynamic user:wam_cpp_test_same_length_gen/0.
+:- dynamic user:wam_cpp_test_proper_length_3/0.
+:- dynamic user:wam_cpp_test_proper_length_0/0.
+:- dynamic user:wam_cpp_test_proper_length_partial/0.
+:- dynamic user:wam_cpp_test_proper_length_atom/0.
+:- dynamic user:wam_cpp_test_list_to_set_dup/0.
+:- dynamic user:wam_cpp_test_list_to_set_empty/0.
+:- dynamic user:wam_cpp_test_list_to_set_one/0.
+:- dynamic user:wam_cpp_test_flatten_nested/0.
+:- dynamic user:wam_cpp_test_flatten_empty/0.
+:- dynamic user:wam_cpp_test_flatten_atom/0.
+:- dynamic user:wam_cpp_test_flatten_empties/0.
+:- dynamic user:wam_cpp_test_flatten_mixed/0.
+
+user:wam_cpp_test_same_length_eq  :- same_length([a,b,c], [1,2,3]).
+user:wam_cpp_test_same_length_neq :- \+ same_length([a,b], [1,2,3]).
+% Mode (+, ?) — generate a fresh list of the right length.
+user:wam_cpp_test_same_length_gen :- same_length([a,b,c], L), L = [_,_,_].
+user:wam_cpp_test_proper_length_3 :- proper_length([a,b,c], 3).
+user:wam_cpp_test_proper_length_0 :- proper_length([], 0).
+% Partial list with unbound tail must FAIL — this is the whole
+% point of proper_length vs length.
+user:wam_cpp_test_proper_length_partial :- \+ proper_length([a,b|_], _).
+% Non-list atom must FAIL.
+user:wam_cpp_test_proper_length_atom :- \+ proper_length(foo, _).
+% Duplicates preserve first-occurrence order: a comes before b.
+user:wam_cpp_test_list_to_set_dup :- list_to_set([a,b,c,a,b,d,a], [a,b,c,d]).
+user:wam_cpp_test_list_to_set_empty :- list_to_set([], []).
+user:wam_cpp_test_list_to_set_one   :- list_to_set([x], [x]).
+user:wam_cpp_test_flatten_nested :- flatten([1,[2,[3,4]],[5]], [1,2,3,4,5]).
+user:wam_cpp_test_flatten_empty  :- flatten([], []).
+% Non-list value gets wrapped as a singleton.
+user:wam_cpp_test_flatten_atom   :- flatten(foo, [foo]).
+% Nested empties collapse to one empty.
+user:wam_cpp_test_flatten_empties :- flatten([[],[]], []).
+user:wam_cpp_test_flatten_mixed   :- flatten([a,[b],c], [a,b,c]).
+
+% library(lists) reductions — memberchk + 5 numeric/term
+% reductions. All asserted under the lists_extra feature.
+:- dynamic user:wam_cpp_test_memberchk_hit/0.
+:- dynamic user:wam_cpp_test_memberchk_miss/0.
+:- dynamic user:wam_cpp_test_sum_list_basic/0.
+:- dynamic user:wam_cpp_test_sum_list_empty/0.
+:- dynamic user:wam_cpp_test_max_list_basic/0.
+:- dynamic user:wam_cpp_test_min_list_basic/0.
+:- dynamic user:wam_cpp_test_max_list_one/0.
+:- dynamic user:wam_cpp_test_min_list_one/0.
+:- dynamic user:wam_cpp_test_max_list_empty/0.
+:- dynamic user:wam_cpp_test_min_list_empty/0.
+:- dynamic user:wam_cpp_test_max_member_atoms/0.
+:- dynamic user:wam_cpp_test_min_member_atoms/0.
+:- dynamic user:wam_cpp_test_max_member_nums/0.
+:- dynamic user:wam_cpp_test_min_member_nums/0.
+
+user:wam_cpp_test_memberchk_hit  :- memberchk(b, [a,b,c]).
+user:wam_cpp_test_memberchk_miss :- \+ memberchk(d, [a,b,c]).
+user:wam_cpp_test_sum_list_basic :- sum_list([1,2,3,4], 10).
+user:wam_cpp_test_sum_list_empty :- sum_list([], 0).
+user:wam_cpp_test_max_list_basic :- max_list([3,1,4,1,5,9,2,6], 9).
+user:wam_cpp_test_min_list_basic :- min_list([3,1,4,1,5,9,2,6], 1).
+user:wam_cpp_test_max_list_one   :- max_list([7], 7).
+user:wam_cpp_test_min_list_one   :- min_list([7], 7).
+% Empty-list max/min should FAIL (matches SWI: needs at least
+% one element to compare). \+ confirms failure.
+user:wam_cpp_test_max_list_empty :- \+ max_list([], _).
+user:wam_cpp_test_min_list_empty :- \+ min_list([], _).
+% max_member/min_member use standard order of terms, not numeric
+% comparison — so foo @> baz @> bar.
+user:wam_cpp_test_max_member_atoms :- max_member(M, [foo, bar, baz]), M == foo.
+user:wam_cpp_test_min_member_atoms :- min_member(M, [foo, bar, baz]), M == bar.
+% On numeric lists, standard order coincides with numeric order.
+user:wam_cpp_test_max_member_nums :- max_member(M, [3,1,4,1,5,9,2,6]), M == 9.
+user:wam_cpp_test_min_member_nums :- min_member(M, [3,1,4,1,5,9,2,6]), M == 1.
+
+% library(pairs) — transpose_pairs/2 swaps each K-V to V-K and
+% keysorts on the new key. map_list_to_pairs/3 calls a closure on
+% each element to attach a key (Schwartzian style).
+:- dynamic user:wam_cpp_pairs_atom_len/2.
+:- dynamic user:wam_cpp_test_transpose_pairs/0.
+:- dynamic user:wam_cpp_test_transpose_pairs_stable/0.
+:- dynamic user:wam_cpp_test_transpose_pairs_empty/0.
+:- dynamic user:wam_cpp_test_map_list_to_pairs/0.
+:- dynamic user:wam_cpp_test_map_list_to_pairs_empty/0.
+:- dynamic user:wam_cpp_test_pairs_schwartzian/0.
+
+user:wam_cpp_pairs_atom_len(A, L) :- atom_length(A, L).
+
+user:wam_cpp_test_transpose_pairs :-
+    transpose_pairs([3-a, 1-b, 2-c], R),
+    R = [a-3, b-1, c-2].
+user:wam_cpp_test_transpose_pairs_stable :-
+    % keysort is stable — duplicate keys keep their input order.
+    transpose_pairs([1-x, 2-y, 1-z], R),
+    R = [x-1, y-2, z-1].
+user:wam_cpp_test_transpose_pairs_empty :-
+    transpose_pairs([], []).
+user:wam_cpp_test_map_list_to_pairs :-
+    map_list_to_pairs(wam_cpp_pairs_atom_len,
+                      [hello, hi, foo], R),
+    R = [5-hello, 2-hi, 3-foo].
+user:wam_cpp_test_map_list_to_pairs_empty :-
+    map_list_to_pairs(wam_cpp_pairs_atom_len, [], []).
+user:wam_cpp_test_pairs_schwartzian :-
+    % Sort atoms by length: attach length key, keysort, drop keys.
+    map_list_to_pairs(wam_cpp_pairs_atom_len,
+                      [hello, hi, foo, abcde, x], Tagged),
+    keysort(Tagged, Sorted),
+    pairs_values(Sorted, Out),
+    Out = [x, hi, foo, hello, abcde].
+
 % WAM-text quote roundtrip for digit-only atoms — `''5''`, `''42''`,
 % `''-3''` etc. Previously these were emitted unquoted in WAM text
 % and the C++ value emitter''s cpp_value_literal re-parsed them as
@@ -2784,6 +3215,240 @@ user:wam_cpp_mixed(foo(x)).
 user:wam_cpp_listy([]).
 user:wam_cpp_listy([_|_]).
 
+% A2-dispatch fixture — multi-clause predicate where the dispatch
+% constant lives in A2, not A1. The compiler emits
+% switch_on_constant_a2 (a runtime no-op that historically was
+% emitted as a C++ comment instead of a real push_back, leaving
+% downstream labels off-by-one). The downstream predicate
+% wam_cpp_after_a2/0 catches that regression: if its label PC is
+% off, calling it crashes or jumps mid-predicate.
+:- dynamic user:wam_cpp_a2dispatch/4.
+:- dynamic user:wam_cpp_after_a2/0.
+:- dynamic user:wam_cpp_test_a2_all_clauses/0.
+:- dynamic user:wam_cpp_test_a2_downstream_label/0.
+:- dynamic user:wam_cpp_a2tag/3.
+:- dynamic user:wam_cpp_test_a2_direct_jump/0.
+:- dynamic user:wam_cpp_test_a2_no_match_fails/0.
+:- dynamic user:wam_cpp_test_a2_unbound_enumerates/0.
+:- dynamic user:wam_cpp_test_a2_shared_key_backtracks/0.
+
+user:wam_cpp_a2dispatch(B, same, K, t(same, B, K)).
+user:wam_cpp_a2dispatch(=, grew, K, t(grew_eq, K)).
+user:wam_cpp_a2dispatch(<, grew, K, t(grew_lt, K)).
+user:wam_cpp_a2dispatch(>, grew, K, t(grew_gt, K)).
+
+user:wam_cpp_after_a2 :- true.
+
+user:wam_cpp_test_a2_all_clauses :-
+    user:wam_cpp_a2dispatch(=, same, k1, T1), T1 = t(same, =, k1),
+    user:wam_cpp_a2dispatch(=, grew, k2, T2), T2 = t(grew_eq, k2),
+    user:wam_cpp_a2dispatch(<, grew, k3, T3), T3 = t(grew_lt, k3),
+    user:wam_cpp_a2dispatch(>, grew, k4, T4), T4 = t(grew_gt, k4).
+
+user:wam_cpp_test_a2_downstream_label :-
+    user:wam_cpp_a2dispatch(=, same, k, _),
+    user:wam_cpp_after_a2.
+
+% Tag-style predicate where A1 is a free name and A2 is the constant
+% the runtime indexes on. Distinct A2 values per clause exercise the
+% O(1) direct-jump path of the new SwitchOnConstantA2 opcode; shared
+% keys exercise the indexed_entry + retry chain.
+user:wam_cpp_a2tag(_, ok,    info).
+user:wam_cpp_a2tag(_, warn,  yellow).
+user:wam_cpp_a2tag(_, error, red).
+user:wam_cpp_a2tag(_, fatal, red).
+
+user:wam_cpp_test_a2_direct_jump :-
+    wam_cpp_a2tag(_, warn, yellow),
+    wam_cpp_a2tag(any, error, red),
+    wam_cpp_a2tag(thing, ok, info).
+user:wam_cpp_test_a2_no_match_fails :-
+    % Bound A2 with no matching clause must fail without enumerating.
+    \+ wam_cpp_a2tag(_, no_such_tag, _).
+user:wam_cpp_test_a2_unbound_enumerates :-
+    % Unbound A2 → fall through to try_me_else chain; findall sees
+    % all clauses.
+    findall(T-C, wam_cpp_a2tag(_, T, C), L),
+    L = [ok-info, warn-yellow, error-red, fatal-red].
+user:wam_cpp_test_a2_shared_key_backtracks :-
+    % A2=red appears in two clauses (error + fatal). Direct jump
+    % lands on error; backtracking through the synthesized CP must
+    % reach fatal.
+    findall(T, wam_cpp_a2tag(_, T, red), L),
+    L = [error, fatal].
+
+% A2 = all-compound (different functors). Exercises switch_on_structure_a2.
+% A1 is variable in every clause, so first-arg indexing is skipped.
+:- dynamic user:wam_cpp_a2struct/2.
+:- dynamic user:wam_cpp_test_a2_structure_direct/0.
+:- dynamic user:wam_cpp_test_a2_structure_miss/0.
+:- dynamic user:wam_cpp_test_a2_structure_unbound/0.
+
+user:wam_cpp_a2struct(_, foo(red)).
+user:wam_cpp_a2struct(_, bar(green, leaf)).
+user:wam_cpp_a2struct(_, baz(blue, 1, ok)).
+
+user:wam_cpp_test_a2_structure_direct :-
+    wam_cpp_a2struct(any, foo(red)),
+    wam_cpp_a2struct(any, bar(green, leaf)),
+    wam_cpp_a2struct(any, baz(blue, 1, ok)).
+user:wam_cpp_test_a2_structure_miss :-
+    % qux/1 is not in the table; bound A2 with no functor match
+    % fails fast at the switch.
+    \+ wam_cpp_a2struct(any, qux(1)),
+    % Wrong arity for foo also fails (foo/2 doesn't exist).
+    \+ wam_cpp_a2struct(any, foo(1, 2)).
+user:wam_cpp_test_a2_structure_unbound :-
+    % Unbound A2 → switch falls through to chain; findall sees all.
+    findall(F, ( wam_cpp_a2struct(_, S), functor(S, F, _) ), L),
+    L = [foo, bar, baz].
+
+% A2 = mixed atom + compound. Exercises switch_on_term_a2 — the most
+% common shape (atom for "empty" plus compound for non-empty). Mirrors
+% the assoc tree-recur predicate that's now indexed by this opcode.
+:- dynamic user:wam_cpp_a2term/3.
+:- dynamic user:wam_cpp_test_a2_term_atom_clause/0.
+:- dynamic user:wam_cpp_test_a2_term_compound_clause/0.
+:- dynamic user:wam_cpp_test_a2_term_list_clauses/0.
+:- dynamic user:wam_cpp_test_a2_term_unbound/0.
+
+user:wam_cpp_a2term(_, empty,     leaf).
+user:wam_cpp_a2term(_, node(_, _), branch).
+user:wam_cpp_a2term(_, [],        nil_list).
+user:wam_cpp_a2term(_, [_|_],     cons_list).
+
+user:wam_cpp_test_a2_term_atom_clause :-
+    wam_cpp_a2term(any, empty, R), R = leaf.
+user:wam_cpp_test_a2_term_compound_clause :-
+    wam_cpp_a2term(any, node(1, 2), R), R = branch.
+user:wam_cpp_test_a2_term_list_clauses :-
+    wam_cpp_a2term(any, [],         R1), R1 = nil_list,
+    wam_cpp_a2term(any, [a, b, c],  R2), R2 = cons_list.
+user:wam_cpp_test_a2_term_unbound :-
+    findall(R, wam_cpp_a2term(_, _, R), L),
+    L = [leaf, branch, nil_list, cons_list].
+
+% Mixed-mode A1 indexing — predicates with a trailing variable-A1
+% clause acting as the catch-all default. Previously such predicates
+% got NO A1 indexing (the var clause disabled the whole table). Now
+% the indexed prefix (clauses before any variable-A1 clause) gets a
+% switch_on_constant_fallthrough that jumps directly on a hit and
+% falls through to the try_me_else chain on miss.
+:- dynamic user:wam_cpp_mma_tag/2.
+:- dynamic user:wam_cpp_test_mma_specific_hit/0.
+:- dynamic user:wam_cpp_test_mma_unknown_falls_through/0.
+:- dynamic user:wam_cpp_test_mma_specific_backtracks_to_default/0.
+:- dynamic user:wam_cpp_test_mma_unknown_only_default/0.
+:- dynamic user:wam_cpp_test_mma_all_unbound_enumerates/0.
+
+user:wam_cpp_mma_tag(error, red).
+user:wam_cpp_mma_tag(warn,  yellow).
+user:wam_cpp_mma_tag(ok,    green).
+user:wam_cpp_mma_tag(_,     gray).
+
+user:wam_cpp_test_mma_specific_hit :-
+    % Direct switch hit on each indexed clause.
+    wam_cpp_mma_tag(error, red),
+    wam_cpp_mma_tag(warn,  yellow),
+    wam_cpp_mma_tag(ok,    green).
+user:wam_cpp_test_mma_unknown_falls_through :-
+    % A1 = something NOT in the switch table — must fall through
+    % to the chain so the variable-A1 clause matches.
+    wam_cpp_mma_tag(other, gray).
+user:wam_cpp_test_mma_specific_backtracks_to_default :-
+    % A1 = error matches clause 1 (red) AND the trailing var clause
+    % (gray) on backtrack.
+    findall(C, wam_cpp_mma_tag(error, C), L),
+    L = [red, gray].
+user:wam_cpp_test_mma_unknown_only_default :-
+    % A1 = unknown matches ONLY the var clause.
+    findall(C, wam_cpp_mma_tag(unknown, C), L),
+    L = [gray].
+user:wam_cpp_test_mma_all_unbound_enumerates :-
+    % Unbound A1 enumerates every clause in source order.
+    findall(T-C, wam_cpp_mma_tag(T, C), L),
+    L = [error-red, warn-yellow, ok-green, _-gray].
+
+% Same predicate shape with a variable clause in the MIDDLE — the
+% indexed prefix is just the first clause (`a`). Everything after
+% the var clause sits in the try_me_else chain and is only reached
+% via fall-through.
+:- dynamic user:wam_cpp_mma_mid/2.
+:- dynamic user:wam_cpp_test_mma_mid_indexed/0.
+:- dynamic user:wam_cpp_test_mma_mid_after_var/0.
+:- dynamic user:wam_cpp_test_mma_mid_unbound/0.
+
+user:wam_cpp_mma_mid(a, 1).
+user:wam_cpp_mma_mid(_, 99).
+user:wam_cpp_mma_mid(b, 2).
+user:wam_cpp_mma_mid(c, 3).
+
+user:wam_cpp_test_mma_mid_indexed :-
+    % A1=a hits the indexed clause first, then the var clause on retry.
+    findall(V, wam_cpp_mma_mid(a, V), L),
+    L = [1, 99].
+user:wam_cpp_test_mma_mid_after_var :-
+    % A1=b falls through (no entry for b in the indexed prefix),
+    % the chain walks all clauses and clauses 2+3 both match.
+    findall(V, wam_cpp_mma_mid(b, V), L),
+    L = [99, 2].
+user:wam_cpp_test_mma_mid_unbound :-
+    findall(K-V, wam_cpp_mma_mid(K, V), L),
+    L = [a-1, _-99, b-2, c-3].
+
+% Mixed-mode A2 indexing — mirror of the A1 case for predicates
+% whose A1 is variable in every clause but whose A2 has a trailing
+% variable catch-all. Previously the variable A2 disabled A2
+% indexing entirely; now the prefix is dispatched via
+% switch_on_constant_a2_fallthrough.
+:- dynamic user:wam_cpp_mma2_tag/3.
+:- dynamic user:wam_cpp_test_mma2_specific_hit/0.
+:- dynamic user:wam_cpp_test_mma2_unknown_falls_through/0.
+:- dynamic user:wam_cpp_test_mma2_specific_backtracks_to_default/0.
+:- dynamic user:wam_cpp_test_mma2_unknown_only_default/0.
+:- dynamic user:wam_cpp_test_mma2_all_unbound_enumerates/0.
+
+user:wam_cpp_mma2_tag(_, error, red).
+user:wam_cpp_mma2_tag(_, warn,  yellow).
+user:wam_cpp_mma2_tag(_, ok,    green).
+user:wam_cpp_mma2_tag(_, _,     gray).
+
+user:wam_cpp_test_mma2_specific_hit :-
+    wam_cpp_mma2_tag(any, error, red),
+    wam_cpp_mma2_tag(any, warn,  yellow),
+    wam_cpp_mma2_tag(any, ok,    green).
+user:wam_cpp_test_mma2_unknown_falls_through :-
+    % A2 = something NOT in the table — must fall through to the
+    % chain so the variable-A2 clause matches.
+    wam_cpp_mma2_tag(any, other, gray).
+user:wam_cpp_test_mma2_specific_backtracks_to_default :-
+    findall(C, wam_cpp_mma2_tag(any, error, C), L),
+    L = [red, gray].
+user:wam_cpp_test_mma2_unknown_only_default :-
+    findall(C, wam_cpp_mma2_tag(any, unknown, C), L),
+    L = [gray].
+user:wam_cpp_test_mma2_all_unbound_enumerates :-
+    findall(T-C, wam_cpp_mma2_tag(_, T, C), L),
+    L = [error-red, warn-yellow, ok-green, _-gray].
+
+% Variable A2 in the middle — indexed prefix is just `a`. After-var
+% clauses are reachable only via fall-through.
+:- dynamic user:wam_cpp_mma2_mid/3.
+:- dynamic user:wam_cpp_test_mma2_mid_indexed/0.
+:- dynamic user:wam_cpp_test_mma2_mid_after_var/0.
+
+user:wam_cpp_mma2_mid(_, a, 1).
+user:wam_cpp_mma2_mid(_, _, 99).
+user:wam_cpp_mma2_mid(_, b, 2).
+user:wam_cpp_mma2_mid(_, c, 3).
+
+user:wam_cpp_test_mma2_mid_indexed :-
+    findall(V, wam_cpp_mma2_mid(any, a, V), L),
+    L = [1, 99].
+user:wam_cpp_test_mma2_mid_after_var :-
+    findall(V, wam_cpp_mma2_mid(any, b, V), L),
+    L = [99, 2].
+
 user:wam_cpp_test_write :- write(hello), nl.
 % Y-reg isolation: both helpers use Y1/Y2 internally. Caller relies on
 % preserved Y1 across the two calls.
@@ -2812,6 +3477,133 @@ user:wam_cpp_test_bagof           :- bagof(X, user:wam_cpp_item(X), L), L = [a, 
 user:wam_cpp_test_bagof_empty     :- bagof(_, fail, _).
 user:wam_cpp_test_setof           :- setof(X, user:wam_cpp_num(X), L), L = [1, 2, 3].
 user:wam_cpp_test_setof_empty     :- setof(_, fail, _).
+% Dummy predicate -- the LMDB runtime test only needs the project
+% scaffolding (wam_runtime.cpp + .h). Real content comes from the
+% overridden main.cpp.
+:- dynamic user:wam_cpp_lmdb_dummy/0.
+user:wam_cpp_lmdb_dummy :- true.
+
+% Runtime-parser capability test fixtures. Three shapes:
+%   _safe          : body uses no parser-dependent builtins
+%                    -- all modes accept it.
+%   _uses_read     : body calls read/2, which is parser-dependent
+%                    -- runtime_parser(off) must reject it.
+%   _uses_t2a_reverse : body calls term_to_atom/2 with an unbound
+%                       first arg (reverse mode = parsing) which is
+%                       also parser-dependent under the hook's
+%                       mode-sensitive recognition.
+:- dynamic user:wam_cpp_pd_safe/0.
+:- dynamic user:wam_cpp_pd_uses_read/1.
+:- dynamic user:wam_cpp_pd_uses_t2a_reverse/1.
+
+user:wam_cpp_pd_safe :- true.
+user:wam_cpp_pd_uses_read(T) :- read(user_input, T).
+user:wam_cpp_pd_uses_t2a_reverse(T) :- term_to_atom(T, 'foo(bar)').
+
+% LMDB codegen test fixtures. edge/2 is declared :- dynamic so
+% the compiler accepts calls without source clauses; the runtime
+% LMDB load populates dynamic_db before queries run.
+:- dynamic user:edge/2.
+:- dynamic user:wam_cpp_lmdb_desc/2.
+:- dynamic user:wam_cpp_lmdb_t_direct/0.
+:- dynamic user:wam_cpp_lmdb_t_two_hop/0.
+:- dynamic user:wam_cpp_lmdb_t_three_hop/0.
+:- dynamic user:wam_cpp_lmdb_t_no_path/0.
+
+user:wam_cpp_lmdb_desc(X, Z) :- edge(X, Z).
+user:wam_cpp_lmdb_desc(X, Z) :- edge(X, Y), wam_cpp_lmdb_desc(Y, Z).
+
+% Seeded LMDB: alice -> bob -> carol -> dave.
+user:wam_cpp_lmdb_t_direct    :- wam_cpp_lmdb_desc(alice, bob).
+user:wam_cpp_lmdb_t_two_hop   :- wam_cpp_lmdb_desc(alice, carol).
+user:wam_cpp_lmdb_t_three_hop :- wam_cpp_lmdb_desc(alice, dave).
+user:wam_cpp_lmdb_t_no_path   :- \+ wam_cpp_lmdb_desc(dave, alice).
+
+% Used by the Phase 2 policy tests against the duplicate-value
+% fixture: alice->bob and charlie->bob.
+:- dynamic user:wam_cpp_lmdb_t_charlie_bob/0.
+user:wam_cpp_lmdb_t_charlie_bob :- wam_cpp_lmdb_desc(charlie, bob).
+
+% Phase 2 order(...) enforcement fixtures. The seeder
+% lmdb_seed_alpha_value_reverse writes three rows where keys are
+% sorted ascending but values are NOT (alice->zebra, bob->apple,
+% carol->mango). LMDB iterates by key, so the first-iterated
+% value column is "zebra". With order([arg(2)]) the runtime
+% sorts post-load and the first-iterated value column becomes
+% "apple".
+:- dynamic user:edge/2.
+:- dynamic user:wam_cpp_lmdb_get_first_key/1.
+:- dynamic user:wam_cpp_lmdb_first_key_is_alice/0.
+:- dynamic user:wam_cpp_lmdb_first_key_is_bob/0.
+
+% Capture the key of the first-iterated edge row. edge(K, _) with
+% K and value unbound binds K to the first row's key column; the
+% cut commits before any further alternatives. The wrapper goal
+% then tests whether that captured K matches the expected value.
+user:wam_cpp_lmdb_get_first_key(K) :- edge(K, _), !.
+user:wam_cpp_lmdb_first_key_is_alice :-
+    wam_cpp_lmdb_get_first_key(K), K == alice.
+user:wam_cpp_lmdb_first_key_is_bob   :-
+    wam_cpp_lmdb_get_first_key(K), K == bob.
+
+% sub_string/5 fixtures — mirror the SWI sub_string semantics.
+:- dynamic user:wam_cpp_test_ss_extract/0.
+:- dynamic user:wam_cpp_test_ss_extract_pre/0.
+:- dynamic user:wam_cpp_test_ss_extract_suf/0.
+:- dynamic user:wam_cpp_test_ss_extract_full/0.
+:- dynamic user:wam_cpp_test_ss_no_after/0.
+:- dynamic user:wam_cpp_test_ss_no_length/0.
+:- dynamic user:wam_cpp_test_ss_no_before/0.
+:- dynamic user:wam_cpp_test_ss_sub_only/0.
+:- dynamic user:wam_cpp_test_ss_check_ok/0.
+:- dynamic user:wam_cpp_test_ss_check_bad/0.
+:- dynamic user:wam_cpp_test_ss_enum_find/0.
+
+user:wam_cpp_test_ss_extract      :- sub_string(hello, 1, 3, 1, S), S == ell.
+user:wam_cpp_test_ss_extract_pre  :- sub_string(hello, 0, 3, 2, S), S == hel.
+user:wam_cpp_test_ss_extract_suf  :- sub_string(hello, 2, 3, 0, S), S == llo.
+user:wam_cpp_test_ss_extract_full :- sub_string(hello, 0, 5, 0, S), S == hello.
+user:wam_cpp_test_ss_no_after     :- sub_string(hello, 1, 3, A, S), A == 1, S == ell.
+user:wam_cpp_test_ss_no_length    :- sub_string(hello, 1, L, 1, S), L == 3, S == ell.
+user:wam_cpp_test_ss_no_before    :- sub_string(hello, B, 3, 1, S), B == 1, S == ell.
+% Sub bound, one positional bound -- Length is implied by Sub,
+% the remaining positional comes from the sum constraint.
+user:wam_cpp_test_ss_sub_only     :- sub_string(hello, 1, L, A, ell), L == 3, A == 1.
+user:wam_cpp_test_ss_check_ok     :- sub_string(hello, 1, 3, 1, ell).
+user:wam_cpp_test_ss_check_bad    :- \+ sub_string(hello, 1, 3, 1, foo).
+% Enumeration backtracking: find all occurrences of single-char
+% substring b in abcabc -- positions 1 and 4.
+user:wam_cpp_test_ss_enum_find :-
+    findall(B, sub_string(abcabc, B, 1, _, b), Bs), Bs == [1, 4].
+
+% atom_number/2 fixtures. Cover forward (parse), reverse (render),
+% check (both bound), failure-on-bad-input, and the unbound case.
+:- dynamic user:wam_cpp_test_an_int_fwd/0.
+:- dynamic user:wam_cpp_test_an_int_neg/0.
+:- dynamic user:wam_cpp_test_an_float_fwd/0.
+:- dynamic user:wam_cpp_test_an_int_rev/0.
+:- dynamic user:wam_cpp_test_an_float_rev/0.
+:- dynamic user:wam_cpp_test_an_check/0.
+:- dynamic user:wam_cpp_test_an_check_mismatch/0.
+:- dynamic user:wam_cpp_test_an_bad_atom/0.
+:- dynamic user:wam_cpp_test_an_bad_partial/0.
+:- dynamic user:wam_cpp_test_an_empty/0.
+:- dynamic user:wam_cpp_test_an_unbound/0.
+
+user:wam_cpp_test_an_int_fwd   :- atom_number('42', 42).
+user:wam_cpp_test_an_int_neg   :- atom_number('-7', -7).
+user:wam_cpp_test_an_float_fwd :- atom_number('3.14', X), X > 3.13, X < 3.15.
+user:wam_cpp_test_an_int_rev   :- atom_number(A, 42),   A == '42'.
+user:wam_cpp_test_an_float_rev :- atom_number(A, 3.14), A == '3.14'.
+user:wam_cpp_test_an_check     :- atom_number('100', 100).
+user:wam_cpp_test_an_check_mismatch :- \+ atom_number('42', 43).
+% The crucial fail-not-throw cases. number_codes/2 would throw on
+% these; atom_number/2 must just fail.
+user:wam_cpp_test_an_bad_atom    :- \+ atom_number(hello, _).
+user:wam_cpp_test_an_bad_partial :- \+ atom_number('12abc', _).
+user:wam_cpp_test_an_empty       :- \+ atom_number('', _).
+user:wam_cpp_test_an_unbound     :- \+ atom_number(_, _).
+
 user:wam_cpp_test_count :- aggregate_all(count, user:wam_cpp_item(_), N), N = 3.
 user:wam_cpp_test_sum   :- aggregate_all(sum(X),  user:wam_cpp_num(X), S), S = 8.
 user:wam_cpp_test_min   :- aggregate_all(min(X),  user:wam_cpp_num(X), M), M = 1.
@@ -3780,18 +4572,64 @@ test(cpp_e2e_assoc_library, [condition(cpp_compiler_available)]) :-
                                user:wam_cpp_test_assoc_list_sorted/0,
                                user:wam_cpp_test_assoc_keys/0,
                                user:wam_cpp_test_assoc_values/0,
-                               user:wam_cpp_test_assoc_compound_keys/0],
+                               user:wam_cpp_test_assoc_compound_keys/0,
+                               user:wam_cpp_assoc_depth/2,
+                               user:wam_cpp_test_assoc_avl_balance_sorted/0,
+                               user:wam_cpp_test_assoc_avl_balance_descending/0,
+                               user:wam_cpp_test_assoc_avl_balance_zigzag/0,
+                               user:wam_cpp_test_assoc_min/0,
+                               user:wam_cpp_test_assoc_max/0,
+                               user:wam_cpp_test_assoc_min_after_inserts/0,
+                               user:wam_cpp_test_assoc_del_leaf/0,
+                               user:wam_cpp_test_assoc_del_root/0,
+                               user:wam_cpp_test_assoc_del_missing_fails/0,
+                               user:wam_cpp_test_assoc_del_all_back_to_empty/0,
+                               user:wam_cpp_test_assoc_del_rebalance_sorted/0,
+                               user:wam_cpp_test_assoc_del_returns_value/0,
+                               user:wam_cpp_test_assoc_del_min/0,
+                               user:wam_cpp_test_assoc_del_max/0,
+                               user:wam_cpp_test_assoc_del_min_empty_fails/0,
+                               user:wam_cpp_test_assoc_del_max_empty_fails/0,
+                               user:wam_cpp_test_assoc_pq_extract_min/0,
+                               user:wam_cpp_test_assoc_get5_replace/0,
+                               user:wam_cpp_test_assoc_get5_missing/0,
+                               user:wam_cpp_test_assoc_get5_threads_old_value/0,
+                               user:wam_cpp_assoc_double/2,
+                               user:wam_cpp_test_assoc_map/0,
+                               user:wam_cpp_test_assoc_map_empty/0],
                               [emit_main(true), include_stdlib(assoc)],
                               TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
-          run_query(BinPath, 'wam_cpp_test_assoc_empty/0',         [], true),
-          run_query(BinPath, 'wam_cpp_test_assoc_put_get/0',       [], true),
-          run_query(BinPath, 'wam_cpp_test_assoc_missing/0',       [], true),
-          run_query(BinPath, 'wam_cpp_test_assoc_overwrite/0',     [], true),
-          run_query(BinPath, 'wam_cpp_test_assoc_list_sorted/0',   [], true),
-          run_query(BinPath, 'wam_cpp_test_assoc_keys/0',          [], true),
-          run_query(BinPath, 'wam_cpp_test_assoc_values/0',        [], true),
-          run_query(BinPath, 'wam_cpp_test_assoc_compound_keys/0', [], true)
+          run_query(BinPath, 'wam_cpp_test_assoc_empty/0',                  [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_put_get/0',                [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_missing/0',                [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_overwrite/0',              [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_list_sorted/0',            [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_keys/0',                   [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_values/0',                 [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_compound_keys/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_avl_balance_sorted/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_avl_balance_descending/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_avl_balance_zigzag/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_min/0',                    [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_max/0',                    [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_min_after_inserts/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_leaf/0',               [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_root/0',               [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_missing_fails/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_all_back_to_empty/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_rebalance_sorted/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_returns_value/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_min/0',                [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_max/0',                [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_min_empty_fails/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_del_max_empty_fails/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_pq_extract_min/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_get5_replace/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_get5_missing/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_get5_threads_old_value/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_map/0',                    [], true),
+          run_query(BinPath, 'wam_cpp_test_assoc_map_empty/0',              [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
@@ -4097,6 +4935,38 @@ test(cpp_e2e_findall_nested_template, [condition(cpp_compiler_available)]) :-
         delete_directory_and_contents(TmpDir)
     ).
 
+test(cpp_e2e_current_predicate_nondet, [condition(cpp_compiler_available)]) :-
+    % current_predicate/1 nondet enum via the CP-iterator path.
+    % Re-uses the dispatch_current_predicate + current_pred_try_next
+    % infrastructure introduced in this PR. Tests cover check mode
+    % (parity with PR #2277), enum by partial spec (Name/_, _/Arity,
+    % _/_), the empty-match case, and the two throw paths.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_cpnondet', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_cp_check_static/0,
+                               user:wam_cpp_test_cp_check_missing/0,
+                               user:wam_cpp_test_cp_enum_arity/0,
+                               user:wam_cpp_test_cp_enum_name_by_arity/0,
+                               user:wam_cpp_test_cp_enum_all/0,
+                               user:wam_cpp_test_cp_enum_none/0,
+                               user:wam_cpp_test_cp_inst_throw/0,
+                               user:wam_cpp_test_cp_indicator_throw/0,
+                               user:wam_cpp_cp_static_a/1,
+                               user:wam_cpp_cp_static_b/2],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_cp_check_static/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_cp_check_missing/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_cp_enum_arity/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_cp_enum_name_by_arity/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_cp_enum_all/0',            [], true),
+          run_query(BinPath, 'wam_cpp_test_cp_enum_none/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_cp_inst_throw/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_cp_indicator_throw/0',     [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
 test(cpp_e2e_builtin_io, [condition(cpp_compiler_available)]) :-
     % write/1 + nl/0 should print "hello\n" before the driver prints
     % "true". Captures full stdout (not just the last line).
@@ -4151,6 +5021,716 @@ test(cpp_e2e_bagof_setof, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_test_bagof_empty/0', [], false),
           run_query(BinPath, 'wam_cpp_test_setof/0',       [], true),
           run_query(BinPath, 'wam_cpp_test_setof_empty/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% atom_number/2 — bidirectional atom <-> number conversion. The
+% key behavior that distinguishes it from number_codes/2 is that
+% it FAILS (does not throw) on unparseable input.
+% sub_string/5 — SWI alias of sub_atom/5 that operates on strings.
+% On this runtime atoms and strings are unified as Atom-tagged
+% values, so we route both to the same dispatch_sub_atom. Covers
+% extraction, computed positional args, check mode, and the
+% enumeration backtracking path (via findall).
+% LMDB FactSource v1 -- runtime-level test. Verifies that
+% cpp_load_lmdb_fact_source opens an LMDB env, streams every
+% (key, value) pair into dynamic_db as edge/2 compound terms, and
+% short-circuits on idempotent re-call. Codegen integration
+% (cpp_fact_sources option) lands in a follow-up PR; this test
+% exercises just the runtime ABI by overriding main.cpp with a
+% hand-written driver that seeds + loads + asserts. Per
+% docs/design/WAM_CPP_LMDB_FACT_SOURCE_DESIGN.md v1.
+% Runtime-parser capability wiring (PR after #2329). Verify that
+% write_wam_cpp_project consults wam_target_runtime_parser/3 and
+% acts on the resolved mode:
+%   - runtime_parser(off): rejects parser-dependent predicate bodies
+%   - runtime_parser(compiled): expands the predicate list with the
+%     portable prolog_term_parser predicates
+%   - runtime_parser(native) / default: no expansion (the existing
+%     C++ canonical parser handles atom_to_term/3 etc.)
+
+test(cpp_e2e_runtime_parser_off_rejects_read,
+     [error(permission_error(use, runtime_parser, _), _)]) :-
+    write_wam_cpp_project(
+        [user:wam_cpp_pd_uses_read/1],
+        [runtime_parser(off)],
+        'tests/tmp_cpp_runparser_off_read').
+
+test(cpp_e2e_runtime_parser_off_rejects_term_to_atom_reverse,
+     [error(permission_error(use, runtime_parser, _), _)]) :-
+    write_wam_cpp_project(
+        [user:wam_cpp_pd_uses_t2a_reverse/1],
+        [runtime_parser(off)],
+        'tests/tmp_cpp_runparser_off_t2a').
+
+test(cpp_e2e_runtime_parser_off_allows_safe_body) :-
+    unique_cpp_tmp_dir('tmp_cpp_runparser_off_ok', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [runtime_parser(off)], TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          assertion(exists_file(GenPath))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_runtime_parser_compiled_includes_parser_preds) :-
+    unique_cpp_tmp_dir('tmp_cpp_runparser_cmp', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [runtime_parser(compiled)], TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          read_file_to_string(GenPath, Code, [encoding(octet)]),
+          % Parser predicates should appear as labels in the
+          % setup-function output. Pick a few representative ones.
+          forall(member(Label, ["parse_term_from_atom/3",
+                                "parse_term_from_codes/3",
+                                "canonical_op_table/1",
+                                "tokenize/2"]), (
+              assertion(sub_string(Code, _, _, _, Label))
+          ))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% Wrapper predicates auto-included alongside the portable parser:
+% read_term_from_atom/2 and /3 give callers the standard SWI
+% builtin surface on top of parse_term_from_atom/3, so generated
+% C++ programs can use the familiar name without learning the
+% portable-parser API.
+test(cpp_e2e_runtime_parser_compiled_includes_wrappers) :-
+    unique_cpp_tmp_dir('tmp_cpp_runparser_wrap', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [runtime_parser(compiled)], TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          read_file_to_string(GenPath, Code, [encoding(octet)]),
+          assertion(sub_string(Code, _, _, _,
+                               "read_term_from_atom/2")),
+          assertion(sub_string(Code, _, _, _,
+                               "read_term_from_atom/3"))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_runtime_parser_native_excludes_wrappers) :-
+    % Default native mode should NOT pull in the wrappers --
+    % users on the native canonical-form parser keep the C++
+    % runtime's atom_to_term/3 surface and don't need the
+    % read_term_from_atom shims.
+    unique_cpp_tmp_dir('tmp_cpp_runparser_no_wrap', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [], TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          read_file_to_string(GenPath, Code, [encoding(octet)]),
+          assertion(\+ sub_string(Code, _, _, _,
+                                  "read_term_from_atom/2"))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% Operator-aware wrappers under explicit names (option C from
+% the PR #2334 design discussion). parse_atom_to_term/2 and
+% parse_term_to_atom/2 give compiled-mode users an operator-aware
+% parse path without colliding with the existing C++ builtins for
+% atom_to_term/3 and term_to_atom/2 (which are emitted as
+% builtin_call and bypass label dispatch).
+test(cpp_e2e_runtime_parser_explicit_name_wrappers) :-
+    unique_cpp_tmp_dir('tmp_cpp_runparser_xw', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [ runtime_parser(compiled),
+              runtime_parser_subset([parse_atom_to_term/2,
+                                     parse_term_to_atom/2]) ],
+            TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          read_file_to_string(GenPath, Code, [encoding(octet)]),
+          assertion(sub_string(Code, _, _, _,
+                               "parse_atom_to_term/2")),
+          assertion(sub_string(Code, _, _, _,
+                               "parse_term_to_atom/2")),
+          % And the supporting parser predicates the wrappers call.
+          assertion(sub_string(Code, _, _, _,
+                               "parse_term_from_atom/3")),
+          assertion(sub_string(Code, _, _, _,
+                               "canonical_op_table/1"))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_runtime_parser_explicit_name_wrappers_absent_native) :-
+    % Default native mode excludes the wrappers entirely.
+    unique_cpp_tmp_dir('tmp_cpp_runparser_xw_native', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [], TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          read_file_to_string(GenPath, Code, [encoding(octet)]),
+          assertion(\+ sub_string(Code, _, _, _,
+                                  "parse_atom_to_term/2")),
+          assertion(\+ sub_string(Code, _, _, _,
+                                  "parse_term_to_atom/2"))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% Subset generation -- runtime_parser_subset([Names]) pulls in
+% only the transitive closure of the listed entry points instead
+% of the full ~40-predicate parser. Per the implementation plan
+% doc's "Subset generation" section (drafted in PR #2331 and
+% landed here).
+
+% A trivial entry point (canonical_op_table/1 is a leaf fact) should
+% produce a closure of exactly one predicate -- itself.
+test(cpp_e2e_runtime_parser_subset_leaf_closure) :-
+    unique_cpp_tmp_dir('tmp_cpp_runparser_sub_leaf', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [ runtime_parser(compiled),
+              runtime_parser_subset([canonical_op_table/1]) ],
+            TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          read_file_to_string(GenPath, Code, [encoding(octet)]),
+          % Entry point present
+          assertion(sub_string(Code, _, _, _,
+                               "canonical_op_table/1")),
+          % Expression-parser machinery NOT pulled in
+          assertion(\+ sub_string(Code, _, _, _, "parse_expr/8")),
+          assertion(\+ sub_string(Code, _, _, _, "parse_primary/8"))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% Tokenize subset pulls in the tokenizer chain but stays away
+% from expression parsing. Verified via output size: tokenize
+% closure should be substantially smaller than the full parser.
+test(cpp_e2e_runtime_parser_subset_tokenize_chain) :-
+    unique_cpp_tmp_dir('tmp_cpp_runparser_sub_tok', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [ runtime_parser(compiled),
+              runtime_parser_subset([tokenize/2]) ],
+            TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          read_file_to_string(GenPath, Code, [encoding(octet)]),
+          % Tokenizer chain present
+          assertion(sub_string(Code, _, _, _, "tokenize/2")),
+          assertion(sub_string(Code, _, _, _, "tokenize_one/4")),
+          assertion(sub_string(Code, _, _, _, "take_ident/3")),
+          % Expression parsing NOT pulled in
+          assertion(\+ sub_string(Code, _, _, _, "parse_expr/8")),
+          assertion(\+ sub_string(Code, _, _, _, "parse_op_loop/10"))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% Subset entry can be specified as bare Name/Arity; the resolver
+% canonicalises it against the parser+wrapper universe.
+test(cpp_e2e_runtime_parser_subset_bare_indicator) :-
+    unique_cpp_tmp_dir('tmp_cpp_runparser_sub_bare', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [ runtime_parser(compiled),
+              runtime_parser_subset([canonical_op_table/1]) ],
+            TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          read_file_to_string(GenPath, Code, [encoding(octet)]),
+          assertion(sub_string(Code, _, _, _,
+                               "canonical_op_table/1"))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% Unknown entry point should hard-error -- typos surface
+% immediately rather than silently producing an empty closure.
+test(cpp_e2e_runtime_parser_subset_rejects_unknown_entry,
+     [error(domain_error(parser_subset_entry_point,
+                         no_such_predicate/9), _)]) :-
+    write_wam_cpp_project(
+        [user:wam_cpp_pd_safe/0],
+        [ runtime_parser(compiled),
+          runtime_parser_subset([no_such_predicate/9]) ],
+        'tests/tmp_cpp_runparser_sub_bad').
+
+test(cpp_e2e_runtime_parser_default_native_no_expansion) :-
+    unique_cpp_tmp_dir('tmp_cpp_runparser_def', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_pd_safe/0],
+            [], TmpDir),
+        ( directory_file_path(TmpDir, 'cpp/generated_program.cpp',
+                              GenPath),
+          read_file_to_string(GenPath, Code, [encoding(octet)]),
+          % Default mode does NOT include the parser predicates --
+          % parse_term_from_atom should not appear as a label.
+          assertion(\+ sub_string(Code, _, _, _,
+                                  "parse_term_from_atom/3"))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lmdb_runtime,
+     [condition(cpp_lmdb_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_rt', TmpDir),
+    setup_call_cleanup(
+        % Generate a minimal cpp project so we have wam_runtime.cpp
+        % and wam_runtime.h in place; we will overwrite main.cpp
+        % with our LMDB driver.
+        write_wam_cpp_project([user:wam_cpp_lmdb_dummy/0],
+                              [emit_main(true)], TmpDir),
+        ( directory_file_path(TmpDir, 'cpp', CppDir),
+          directory_file_path(CppDir, 'main.cpp', MainPath),
+          lmdb_runtime_test_main(CppDir, MainCpp),
+          setup_call_cleanup(
+              open(MainPath, write, MainS),
+              write(MainS, MainCpp),
+              close(MainS)),
+          build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          % run_query expects "true" / "false" but our driver
+          % prints "OK" on success and exits non-zero on failure.
+          % Use the bare process API instead.
+          process_create(BinPath, [],
+                         [stdout(pipe(Out)), stderr(null),
+                          process(PID)]),
+          read_string(Out, _, _Output),
+          close(Out),
+          process_wait(PID, Status),
+          assertion(Status == exit(0))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% LMDB FactSource v1 -- codegen integration test. Exercises the
+% full cpp_fact_sources(...) option: codegen registers edge/2 as
+% an LMDB-backed predicate, emits #define WAM_CPP_ENABLE_LMDB in
+% the header and a cpp_load_lmdb_fact_source call in the setup,
+% then a user-defined descendant/2 (compiled normally) queries
+% edge/2 via the populated dynamic_db. Uses a tiny seeder binary
+% to populate the LMDB file at test time so we are testing the
+% codegen path, not the seeding.
+test(cpp_e2e_lmdb_codegen,
+     [condition(cpp_lmdb_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_cg', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          % Seed the LMDB file via a tiny standalone seeder binary
+          % so the test isolates codegen + load from the seeding.
+          make_directory_path(TmpDir),
+          lmdb_seed_three_edges(TmpDir, EnvPath, _SeedBin),
+          % Codegen with edge/2 registered as an LMDB fact source.
+          write_wam_cpp_project([user:wam_cpp_lmdb_desc/2,
+                                 user:wam_cpp_lmdb_t_direct/0,
+                                 user:wam_cpp_lmdb_t_two_hop/0,
+                                 user:wam_cpp_lmdb_t_three_hop/0,
+                                 user:wam_cpp_lmdb_t_no_path/0],
+                                [emit_main(true),
+                                 cpp_fact_sources([
+                                     source(edge/2, lmdb(EnvPath))])],
+                                TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_lmdb_t_direct/0',    [], true),
+          run_query(BinPath, 'wam_cpp_lmdb_t_two_hop/0',   [], true),
+          run_query(BinPath, 'wam_cpp_lmdb_t_three_hop/0', [], true),
+          run_query(BinPath, 'wam_cpp_lmdb_t_no_path/0',   [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% LMDB FactSource v1 -- __meta__ schema validation. Negative test:
+% an LMDB file whose __meta__ sub-DB declares predicate=other/2
+% should hard-error the load when registered as edge/2. dynamic_db
+% stays empty, so the query that depends on the LMDB-backed
+% predicate returns false (the user sees the issue immediately
+% rather than getting wrong query results from the wrong file).
+% relation_policy/2 Phase 2 -- LMDB enforcement. Four variations
+% on the same fixture (two LMDB rows with the same value column).
+% Each test declares a different on_duplicate policy and verifies
+% the runtime applies it correctly. Each test clears the registry
+% in setup so they're order-independent.
+
+clear_policies_for_test :-
+    relation_policy:clear_relation_policies.
+
+test(cpp_e2e_lmdb_policy_unique_throw,
+     [ condition(cpp_lmdb_available),
+       setup(clear_policies_for_test) ]) :-
+    relation_policy:relation_policy(edge/2,
+        [unique(true), on_duplicate(throw)]),
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_pol_t', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          make_directory_path(TmpDir),
+          lmdb_seed_duplicate_value(TmpDir, EnvPath, _SeedBin),
+          write_wam_cpp_project([user:wam_cpp_lmdb_desc/2,
+                                 user:wam_cpp_lmdb_t_direct/0],
+                                [emit_main(true),
+                                 cpp_fact_sources([
+                                     source(edge/2, lmdb(EnvPath))])],
+                                TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          % Load throws on duplicate value; dynamic_db stays empty;
+          % query fails.
+          run_query(BinPath, 'wam_cpp_lmdb_t_direct/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lmdb_policy_unique_warn,
+     [ condition(cpp_lmdb_available),
+       setup(clear_policies_for_test) ]) :-
+    relation_policy:relation_policy(edge/2,
+        [unique(true), on_duplicate(warn)]),
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_pol_w', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          make_directory_path(TmpDir),
+          lmdb_seed_duplicate_value(TmpDir, EnvPath, _SeedBin),
+          write_wam_cpp_project([user:wam_cpp_lmdb_desc/2,
+                                 user:wam_cpp_lmdb_t_direct/0,
+                                 user:wam_cpp_lmdb_t_charlie_bob/0],
+                                [emit_main(true),
+                                 cpp_fact_sources([
+                                     source(edge/2, lmdb(EnvPath))])],
+                                TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          % Warn keeps both rows; both edge facts present.
+          run_query(BinPath, 'wam_cpp_lmdb_t_direct/0',      [], true),
+          run_query(BinPath, 'wam_cpp_lmdb_t_charlie_bob/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lmdb_policy_unique_overwrite,
+     [ condition(cpp_lmdb_available),
+       setup(clear_policies_for_test) ]) :-
+    relation_policy:relation_policy(edge/2,
+        [unique(true), on_duplicate(overwrite)]),
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_pol_o', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          make_directory_path(TmpDir),
+          lmdb_seed_duplicate_value(TmpDir, EnvPath, _SeedBin),
+          write_wam_cpp_project([user:wam_cpp_lmdb_desc/2,
+                                 user:wam_cpp_lmdb_t_direct/0,
+                                 user:wam_cpp_lmdb_t_charlie_bob/0],
+                                [emit_main(true),
+                                 cpp_fact_sources([
+                                     source(edge/2, lmdb(EnvPath))])],
+                                TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          % Last write wins: alice->bob is replaced by charlie->bob.
+          run_query(BinPath, 'wam_cpp_lmdb_t_direct/0',      [], false),
+          run_query(BinPath, 'wam_cpp_lmdb_t_charlie_bob/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lmdb_policy_order_natural,
+     [ condition(cpp_lmdb_available),
+       setup(clear_policies_for_test) ]) :-
+    % No policy declared -> LMDB natural order (alice first by key).
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_ord_n', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          make_directory_path(TmpDir),
+          lmdb_seed_alpha_value_reverse(TmpDir, EnvPath, _SeedBin),
+          write_wam_cpp_project(
+              [user:wam_cpp_lmdb_get_first_key/1,
+               user:wam_cpp_lmdb_first_key_is_alice/0,
+               user:wam_cpp_lmdb_first_key_is_bob/0],
+              [emit_main(true),
+               cpp_fact_sources([source(edge/2, lmdb(EnvPath))])],
+              TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          % LMDB natural: keys sorted ascending; alice is first.
+          run_query(BinPath,
+                    'wam_cpp_lmdb_first_key_is_alice/0', [], true),
+          run_query(BinPath,
+                    'wam_cpp_lmdb_first_key_is_bob/0',   [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lmdb_policy_order_by_arg2_asc,
+     [ condition(cpp_lmdb_available),
+       setup(clear_policies_for_test) ]) :-
+    relation_policy:relation_policy(edge/2, [order([arg(2)])]),
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_ord_a2', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          make_directory_path(TmpDir),
+          lmdb_seed_alpha_value_reverse(TmpDir, EnvPath, _SeedBin),
+          write_wam_cpp_project(
+              [user:wam_cpp_lmdb_get_first_key/1,
+               user:wam_cpp_lmdb_first_key_is_alice/0,
+               user:wam_cpp_lmdb_first_key_is_bob/0],
+              [emit_main(true),
+               cpp_fact_sources([source(edge/2, lmdb(EnvPath))])],
+              TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          % Sorted by arg2 ascending: bob->apple is first.
+          run_query(BinPath,
+                    'wam_cpp_lmdb_first_key_is_bob/0',   [], true),
+          run_query(BinPath,
+                    'wam_cpp_lmdb_first_key_is_alice/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lmdb_policy_order_by_arg2_desc,
+     [ condition(cpp_lmdb_available),
+       setup(clear_policies_for_test) ]) :-
+    relation_policy:relation_policy(edge/2, [order([desc(arg(2))])]),
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_ord_a2d', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          make_directory_path(TmpDir),
+          lmdb_seed_alpha_value_reverse(TmpDir, EnvPath, _SeedBin),
+          write_wam_cpp_project(
+              [user:wam_cpp_lmdb_get_first_key/1,
+               user:wam_cpp_lmdb_first_key_is_alice/0,
+               user:wam_cpp_lmdb_first_key_is_bob/0],
+              [emit_main(true),
+               cpp_fact_sources([source(edge/2, lmdb(EnvPath))])],
+              TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          % Sorted by arg2 descending: zebra is largest, so
+          % alice->zebra is first.
+          run_query(BinPath,
+                    'wam_cpp_lmdb_first_key_is_alice/0', [], true),
+          run_query(BinPath,
+                    'wam_cpp_lmdb_first_key_is_bob/0',   [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% relation_policy/2 Phase 2 -- codegen-time warning when the
+% declared order requires a runtime sort. Per #2327's commit
+% discussion: ideally the user designs the LMDB schema so the
+% data is already in the desired order (e.g. compound keys), so
+% we nudge them with a one-line note when sorting actually fires.
+% Suppressible via per-source quiet_sort(true).
+%
+% Tests run the codegen in a subprocess so user_error can be
+% captured cleanly; checking the in-process user_error stream is
+% awkward because plunit owns it.
+test(cpp_e2e_lmdb_sort_warning_emitted,
+     [condition(cpp_lmdb_available)]) :-
+    run_codegen_subprocess(
+        "
+        :- use_module('/home/user/UnifyWeaver/src/unifyweaver/targets/wam_cpp_target').
+        :- use_module('/home/user/UnifyWeaver/src/unifyweaver/core/relation_policy').
+        :- relation_policy(edge/2, [order([arg(2)])]).
+        :- dynamic user:edge/2.
+        user:dummy :- edge(_, _).
+        :- write_wam_cpp_project([user:dummy/0],
+              [cpp_fact_sources([source(edge/2, lmdb('/tmp/x'))])],
+              '/tmp/sw_warn_emit'), halt.
+        ",
+        Stderr),
+    assertion(sub_string(Stderr, _, _, _,
+                         "requires a runtime sort")).
+
+test(cpp_e2e_lmdb_sort_warning_suppressed,
+     [condition(cpp_lmdb_available)]) :-
+    run_codegen_subprocess(
+        "
+        :- use_module('/home/user/UnifyWeaver/src/unifyweaver/targets/wam_cpp_target').
+        :- use_module('/home/user/UnifyWeaver/src/unifyweaver/core/relation_policy').
+        :- relation_policy(edge/2, [order([arg(2)])]).
+        :- dynamic user:edge/2.
+        user:dummy :- edge(_, _).
+        :- write_wam_cpp_project([user:dummy/0],
+              [cpp_fact_sources([source(edge/2,
+                                  lmdb('/tmp/x', [quiet_sort(true)]))])],
+              '/tmp/sw_warn_supp'), halt.
+        ",
+        Stderr),
+    assertion(\+ sub_string(Stderr, _, _, _,
+                            "requires a runtime sort")).
+
+test(cpp_e2e_lmdb_sort_warning_trivial_no_warn,
+     [condition(cpp_lmdb_available)]) :-
+    run_codegen_subprocess(
+        "
+        :- use_module('/home/user/UnifyWeaver/src/unifyweaver/targets/wam_cpp_target').
+        :- use_module('/home/user/UnifyWeaver/src/unifyweaver/core/relation_policy').
+        :- relation_policy(edge/2, [order([arg(1)])]).
+        :- dynamic user:edge/2.
+        user:dummy :- edge(_, _).
+        :- write_wam_cpp_project([user:dummy/0],
+              [cpp_fact_sources([source(edge/2, lmdb('/tmp/x'))])],
+              '/tmp/sw_warn_triv'), halt.
+        ",
+        Stderr),
+    assertion(\+ sub_string(Stderr, _, _, _,
+                            "requires a runtime sort")).
+
+test(cpp_e2e_lmdb_policy_order_arg1_is_noop,
+     [ condition(cpp_lmdb_available),
+       setup(clear_policies_for_test) ]) :-
+    % order([arg(1)]) matches LMDB natural iteration so should
+    % not change anything -- alice still first. The point is to
+    % confirm the codegen's trivial-order detection actually
+    % skips emitting sort_keys (no runtime sort cost on the
+    % common case).
+    relation_policy:relation_policy(edge/2, [order([arg(1)])]),
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_ord_noop', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          make_directory_path(TmpDir),
+          lmdb_seed_alpha_value_reverse(TmpDir, EnvPath, _SeedBin),
+          write_wam_cpp_project(
+              [user:wam_cpp_lmdb_get_first_key/1,
+               user:wam_cpp_lmdb_first_key_is_alice/0,
+               user:wam_cpp_lmdb_first_key_is_bob/0],
+              [emit_main(true),
+               cpp_fact_sources([source(edge/2, lmdb(EnvPath))])],
+              TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_lmdb_first_key_is_alice/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lmdb_policy_unique_first_wins,
+     [ condition(cpp_lmdb_available),
+       setup(clear_policies_for_test) ]) :-
+    relation_policy:relation_policy(edge/2,
+        [unique(true), on_duplicate(first_wins)]),
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_pol_f', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          make_directory_path(TmpDir),
+          lmdb_seed_duplicate_value(TmpDir, EnvPath, _SeedBin),
+          write_wam_cpp_project([user:wam_cpp_lmdb_desc/2,
+                                 user:wam_cpp_lmdb_t_direct/0,
+                                 user:wam_cpp_lmdb_t_charlie_bob/0],
+                                [emit_main(true),
+                                 cpp_fact_sources([
+                                     source(edge/2, lmdb(EnvPath))])],
+                                TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          % First write wins: alice->bob survives, charlie->bob dropped.
+          run_query(BinPath, 'wam_cpp_lmdb_t_direct/0',      [], true),
+          run_query(BinPath, 'wam_cpp_lmdb_t_charlie_bob/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_lmdb_meta_mismatch,
+     [condition(cpp_lmdb_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lmdb_meta', TmpDir),
+    setup_call_cleanup(
+        ( directory_file_path(TmpDir, 'env.mdb', EnvPath),
+          make_directory_path(TmpDir),
+          % Seed with the WRONG predicate in __meta__.
+          lmdb_seed_three_edges(TmpDir, EnvPath, 'other/2', _SeedBin),
+          write_wam_cpp_project([user:wam_cpp_lmdb_desc/2,
+                                 user:wam_cpp_lmdb_t_direct/0],
+                                [emit_main(true),
+                                 cpp_fact_sources([
+                                     source(edge/2, lmdb(EnvPath))])],
+                                TmpDir)
+        ),
+        ( build_e2e_binary_with_lmdb(TmpDir, BinPath),
+          % The query should return false: load hard-errors,
+          % dynamic_db["edge/2"] stays empty, descendant fails.
+          run_query(BinPath, 'wam_cpp_lmdb_t_direct/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_sub_string,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_sub_string', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_ss_extract/0,
+                               user:wam_cpp_test_ss_extract_pre/0,
+                               user:wam_cpp_test_ss_extract_suf/0,
+                               user:wam_cpp_test_ss_extract_full/0,
+                               user:wam_cpp_test_ss_no_after/0,
+                               user:wam_cpp_test_ss_no_length/0,
+                               user:wam_cpp_test_ss_no_before/0,
+                               user:wam_cpp_test_ss_sub_only/0,
+                               user:wam_cpp_test_ss_check_ok/0,
+                               user:wam_cpp_test_ss_check_bad/0,
+                               user:wam_cpp_test_ss_enum_find/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_ss_extract/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_extract_pre/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_extract_suf/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_extract_full/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_no_after/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_no_length/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_no_before/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_sub_only/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_check_ok/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_check_bad/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_ss_enum_find/0',    [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_atom_number,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_atom_number', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_an_int_fwd/0,
+                               user:wam_cpp_test_an_int_neg/0,
+                               user:wam_cpp_test_an_float_fwd/0,
+                               user:wam_cpp_test_an_int_rev/0,
+                               user:wam_cpp_test_an_float_rev/0,
+                               user:wam_cpp_test_an_check/0,
+                               user:wam_cpp_test_an_check_mismatch/0,
+                               user:wam_cpp_test_an_bad_atom/0,
+                               user:wam_cpp_test_an_bad_partial/0,
+                               user:wam_cpp_test_an_empty/0,
+                               user:wam_cpp_test_an_unbound/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_an_int_fwd/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_an_int_neg/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_an_float_fwd/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_an_int_rev/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_an_float_rev/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_an_check/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_an_check_mismatch/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_an_bad_atom/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_an_bad_partial/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_an_empty/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_an_unbound/0',        [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
@@ -7494,6 +9074,120 @@ test(cpp_e2e_keysort_then_values,
         delete_directory_and_contents(TmpDir)
     ).
 
+% library(lists) cleanup — same_length/2, proper_length/2,
+% list_to_set/2, flatten/2. The remaining commonly-used
+% library(lists) helpers after the reductions batch.
+test(cpp_e2e_lists_cleanup,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lists_cl', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_same_length_eq/0,
+                               user:wam_cpp_test_same_length_neq/0,
+                               user:wam_cpp_test_same_length_gen/0,
+                               user:wam_cpp_test_proper_length_3/0,
+                               user:wam_cpp_test_proper_length_0/0,
+                               user:wam_cpp_test_proper_length_partial/0,
+                               user:wam_cpp_test_proper_length_atom/0,
+                               user:wam_cpp_test_list_to_set_dup/0,
+                               user:wam_cpp_test_list_to_set_empty/0,
+                               user:wam_cpp_test_list_to_set_one/0,
+                               user:wam_cpp_test_flatten_nested/0,
+                               user:wam_cpp_test_flatten_empty/0,
+                               user:wam_cpp_test_flatten_atom/0,
+                               user:wam_cpp_test_flatten_empties/0,
+                               user:wam_cpp_test_flatten_mixed/0],
+                              [emit_main(true), include_stdlib(lists_extra)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_same_length_eq/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_same_length_neq/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_same_length_gen/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_proper_length_3/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_proper_length_0/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_proper_length_partial/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_proper_length_atom/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_list_to_set_dup/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_list_to_set_empty/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_list_to_set_one/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_flatten_nested/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_flatten_empty/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_flatten_atom/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_flatten_empties/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_flatten_mixed/0',          [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% library(lists) reductions — memberchk/2, sum_list/2,
+% max_list/2, min_list/2, max_member/2, min_member/2. All
+% asserted under the lists_extra feature.
+test(cpp_e2e_lists_reductions,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_lists_red', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_memberchk_hit/0,
+                               user:wam_cpp_test_memberchk_miss/0,
+                               user:wam_cpp_test_sum_list_basic/0,
+                               user:wam_cpp_test_sum_list_empty/0,
+                               user:wam_cpp_test_max_list_basic/0,
+                               user:wam_cpp_test_min_list_basic/0,
+                               user:wam_cpp_test_max_list_one/0,
+                               user:wam_cpp_test_min_list_one/0,
+                               user:wam_cpp_test_max_list_empty/0,
+                               user:wam_cpp_test_min_list_empty/0,
+                               user:wam_cpp_test_max_member_atoms/0,
+                               user:wam_cpp_test_min_member_atoms/0,
+                               user:wam_cpp_test_max_member_nums/0,
+                               user:wam_cpp_test_min_member_nums/0],
+                              [emit_main(true), include_stdlib(lists_extra)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_memberchk_hit/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_memberchk_miss/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_sum_list_basic/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_sum_list_empty/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_max_list_basic/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_min_list_basic/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_max_list_one/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_min_list_one/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_max_list_empty/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_min_list_empty/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_max_member_atoms/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_min_member_atoms/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_max_member_nums/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_min_member_nums/0',  [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% library(pairs) — transpose_pairs/2 and map_list_to_pairs/3
+% (Schwartzian-style key attachment). Both round out the pairs
+% surface that already had pairs_keys/2, pairs_values/2, and
+% pairs_keys_values/3 from earlier work.
+test(cpp_e2e_pairs_transpose_and_map_list,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_pairs_tm', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_pairs_atom_len/2,
+                               user:wam_cpp_test_transpose_pairs/0,
+                               user:wam_cpp_test_transpose_pairs_stable/0,
+                               user:wam_cpp_test_transpose_pairs_empty/0,
+                               user:wam_cpp_test_map_list_to_pairs/0,
+                               user:wam_cpp_test_map_list_to_pairs_empty/0,
+                               user:wam_cpp_test_pairs_schwartzian/0],
+                              [emit_main(true), include_stdlib(lists_extra)],
+                              TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_transpose_pairs/0',         [], true),
+          run_query(BinPath, 'wam_cpp_test_transpose_pairs_stable/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_transpose_pairs_empty/0',   [], true),
+          run_query(BinPath, 'wam_cpp_test_map_list_to_pairs/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_map_list_to_pairs_empty/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_pairs_schwartzian/0',       [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
 % ------------------------------------------------------------------
 % WAM-text quote roundtrip for digit-only atoms — regression guard
 % for the atom-marker convention added by quote_wam_constant +
@@ -8532,6 +10226,137 @@ test(cpp_e2e_switch_on_term, [condition(cpp_compiler_available)]) :-
         delete_directory_and_contents(TmpDir)
     ).
 
+% Regression for the switch_on_constant_a2 off-by-one bug. The WAM-asm
+% layer emits switch_on_constant_a2 at the head of any multi-clause
+% predicate that dispatches on A2 (rather than A1). Before the fix the
+% C++ emitter rendered it as a /comment/, but the PC-counter still
+% advanced — so every label after the first such predicate pointed
+% one instruction past its real entry. The downstream check
+% (wam_cpp_test_a2_downstream_label) catches that: if
+% wam_cpp_after_a2's label is wrong, the call lands inside the prior
+% predicate's frame and either crashes or returns false.
+test(cpp_e2e_switch_on_constant_a2, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_swa2', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_a2dispatch/4,
+                               user:wam_cpp_after_a2/0,
+                               user:wam_cpp_test_a2_all_clauses/0,
+                               user:wam_cpp_test_a2_downstream_label/0,
+                               user:wam_cpp_a2tag/3,
+                               user:wam_cpp_test_a2_direct_jump/0,
+                               user:wam_cpp_test_a2_no_match_fails/0,
+                               user:wam_cpp_test_a2_unbound_enumerates/0,
+                               user:wam_cpp_test_a2_shared_key_backtracks/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_a2_all_clauses/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_downstream_label/0',      [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_direct_jump/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_no_match_fails/0',        [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_unbound_enumerates/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_shared_key_backtracks/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% Mixed-mode A1 indexing — predicates with variable-A1 clauses no
+% longer disable A1 indexing entirely. Clauses up to (but not
+% including) the first variable-A1 clause get a
+% switch_on_constant_fallthrough table; the bound-but-unmatched
+% case falls through to the try_me_else chain so trailing variable
+% clauses still match.
+test(cpp_e2e_mixed_mode_a1_indexing,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_mma', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_mma_tag/2,
+                               user:wam_cpp_test_mma_specific_hit/0,
+                               user:wam_cpp_test_mma_unknown_falls_through/0,
+                               user:wam_cpp_test_mma_specific_backtracks_to_default/0,
+                               user:wam_cpp_test_mma_unknown_only_default/0,
+                               user:wam_cpp_test_mma_all_unbound_enumerates/0,
+                               user:wam_cpp_mma_mid/2,
+                               user:wam_cpp_test_mma_mid_indexed/0,
+                               user:wam_cpp_test_mma_mid_after_var/0,
+                               user:wam_cpp_test_mma_mid_unbound/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_mma_specific_hit/0',                    [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_unknown_falls_through/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_specific_backtracks_to_default/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_unknown_only_default/0',            [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_all_unbound_enumerates/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_mid_indexed/0',                     [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_mid_after_var/0',                   [], true),
+          run_query(BinPath, 'wam_cpp_test_mma_mid_unbound/0',                     [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% Mixed-mode A2 indexing — same lift as the A1 case, but applied
+% to A2 when A1 is variable in every clause. The indexed A2 prefix
+% (clauses before the first variable-A2 clause) gets
+% switch_on_constant_a2_fallthrough; bound-but-unmatched A2 falls
+% through to the try_me_else chain so trailing variable clauses
+% still match.
+test(cpp_e2e_mixed_mode_a2_indexing,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_mma2', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_mma2_tag/3,
+                               user:wam_cpp_test_mma2_specific_hit/0,
+                               user:wam_cpp_test_mma2_unknown_falls_through/0,
+                               user:wam_cpp_test_mma2_specific_backtracks_to_default/0,
+                               user:wam_cpp_test_mma2_unknown_only_default/0,
+                               user:wam_cpp_test_mma2_all_unbound_enumerates/0,
+                               user:wam_cpp_mma2_mid/3,
+                               user:wam_cpp_test_mma2_mid_indexed/0,
+                               user:wam_cpp_test_mma2_mid_after_var/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_mma2_specific_hit/0',                    [], true),
+          run_query(BinPath, 'wam_cpp_test_mma2_unknown_falls_through/0',           [], true),
+          run_query(BinPath, 'wam_cpp_test_mma2_specific_backtracks_to_default/0',  [], true),
+          run_query(BinPath, 'wam_cpp_test_mma2_unknown_only_default/0',            [], true),
+          run_query(BinPath, 'wam_cpp_test_mma2_all_unbound_enumerates/0',          [], true),
+          run_query(BinPath, 'wam_cpp_test_mma2_mid_indexed/0',                     [], true),
+          run_query(BinPath, 'wam_cpp_test_mma2_mid_after_var/0',                   [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% A2 structure + term indexing. Predicates whose A1 is variable in
+% every clause currently get NO A1 indexing (correct: a variable
+% head matches anything). Previously they also got no A2 indexing
+% unless A2 was all atomic constants. With switch_on_structure_a2
+% and switch_on_term_a2, multi-clause predicates with compound or
+% mixed A2 also get O(1) dispatch.
+test(cpp_e2e_switch_on_structure_and_term_a2,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_sta2', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_a2struct/2,
+                               user:wam_cpp_test_a2_structure_direct/0,
+                               user:wam_cpp_test_a2_structure_miss/0,
+                               user:wam_cpp_test_a2_structure_unbound/0,
+                               user:wam_cpp_a2term/3,
+                               user:wam_cpp_test_a2_term_atom_clause/0,
+                               user:wam_cpp_test_a2_term_compound_clause/0,
+                               user:wam_cpp_test_a2_term_list_clauses/0,
+                               user:wam_cpp_test_a2_term_unbound/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_a2_structure_direct/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_structure_miss/0',       [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_structure_unbound/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_term_atom_clause/0',     [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_term_compound_clause/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_term_list_clauses/0',    [], true),
+          run_query(BinPath, 'wam_cpp_test_a2_term_unbound/0',         [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
 compile_one(CppDir, Src, Obj, Status) :-
     directory_file_path(CppDir, Src, SrcPath),
     directory_file_path(CppDir, Obj, ObjPath),
@@ -8706,6 +10531,34 @@ iso_errors_temp_config_file(Path, Lines) :-
         forall(member(L, Lines), format(Out, '~w~n', [L])),
         close(Out)).
 
+% Unit tests for compile_predicates_for_project''s on_compile_error
+% diagnostic policy. The handler logs / re-throws / drops based on
+% Policy. Verified by calling handle_compile_error/3 directly and
+% inspecting the failure / exception path.
+
+test(compile_error_throw_policy_rethrows) :-
+    catch(
+        wam_cpp_target:handle_compile_error(throw, foo/1,
+                                            error(test_marker, _)),
+        Caught,
+        Caught = error(test_marker, _)
+    ),
+    assertion(nonvar(Caught)).
+
+test(compile_error_warn_policy_fails) :-
+    \+ wam_cpp_target:handle_compile_error(warn, foo/1,
+                                          error(test_marker, _)).
+
+test(compile_error_skip_policy_fails) :-
+    \+ wam_cpp_target:handle_compile_error(skip, foo/1,
+                                          error(test_marker, _)).
+
+test(compile_error_default_is_warn) :-
+    % Anything that isn''t throw/skip falls through to the warn
+    % handler. Using `unknown_policy` here exercises that branch.
+    \+ wam_cpp_target:handle_compile_error(unknown_policy, foo/1,
+                                          error(test_marker, _)).
+
 :- end_tests(wam_cpp_generator).
 
 % --------------------------------------------------------------------
@@ -8715,6 +10568,221 @@ iso_errors_temp_config_file(Path, Lines) :-
 unique_cpp_tmp_dir(Prefix, Dir) :-
     get_time(T), N is round(T * 1000),
     format(atom(Dir), 'tests/~w_~w', [Prefix, N]).
+
+% True if liblmdb headers + library are available at compile time.
+% Probes by trying to compile and link a trivial program that calls
+% mdb_env_create + mdb_env_close. Used to gate cpp_e2e_lmdb_*
+% tests so they skip on dev boxes without liblmdb installed.
+cpp_lmdb_available :-
+    catch(
+        ( tmp_file(lmdb_probe, ProbeC),
+          atom_concat(ProbeC, '.cpp', ProbeCpp),
+          atom_concat(ProbeC, '.out', ProbeBin),
+          setup_call_cleanup(
+              open(ProbeCpp, write, S),
+              format(S, '#include <lmdb.h>~nint main(){ MDB_env* e; mdb_env_create(&e); mdb_env_close(e); return 0; }~n', []),
+              close(S)),
+          process_create(path('g++'),
+              ['-std=c++17', '-o', ProbeBin, ProbeCpp, '-llmdb'],
+              [stdout(null), stderr(null), process(PID)]),
+          process_wait(PID, Status),
+          catch(delete_file(ProbeCpp), _, true),
+          catch(delete_file(ProbeBin), _, true),
+          Status == exit(0)
+        ),
+        _,
+        fail).
+
+% Hand-written main.cpp for the LMDB runtime test. Seeds an LMDB
+% file with three (key, value) pairs, calls cpp_load_lmdb_fact_source
+% to load them into dynamic_db, asserts shape + count, then calls
+% the loader a second time and asserts the idempotency contract.
+% Returns 0 on success, non-zero on any assertion failure.
+lmdb_runtime_test_main(CppDir, MainCpp) :-
+    directory_file_path(CppDir, 'lmdb_test_env', EnvPath),
+    format(string(MainCpp),
+'// SPDX-License-Identifier: MIT OR Apache-2.0
+// Hand-written test driver for cpp_load_lmdb_fact_source.
+#define WAM_CPP_ENABLE_LMDB 1
+#include "wam_runtime.h"
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <string>
+
+using namespace wam_cpp;
+
+static void seed(const std::string& env_path) {
+    std::filesystem::remove_all(env_path);
+    std::filesystem::create_directories(env_path);
+    MDB_env* env;
+    mdb_env_create(&env);
+    mdb_env_set_maxdbs(env, 4);
+    if (mdb_env_open(env, env_path.c_str(), 0, 0664) != MDB_SUCCESS) {
+        std::fprintf(stderr, "seed env_open failed\\n");
+        std::exit(2);
+    }
+    MDB_txn* txn;
+    mdb_txn_begin(env, nullptr, 0, &txn);
+    MDB_dbi dbi;
+    mdb_dbi_open(txn, nullptr, 0, &dbi);
+    auto put = [&](const char* k, const char* v) {
+        MDB_val K{std::strlen(k), const_cast<char*>(k)};
+        MDB_val V{std::strlen(v), const_cast<char*>(v)};
+        if (mdb_put(txn, dbi, &K, &V, 0) != MDB_SUCCESS) {
+            std::fprintf(stderr, "seed put failed\\n");
+            std::exit(2);
+        }
+    };
+    put("alice", "bob");
+    put("bob",   "carol");
+    put("carol", "dave");
+    mdb_txn_commit(txn);
+    mdb_env_close(env);
+}
+
+int main() {
+    std::string env_path = "~w";
+    seed(env_path);
+
+    WamState vm;
+    if (!cpp_load_lmdb_fact_source(vm, "edge/2", env_path, nullptr)) {
+        std::fprintf(stderr, "load failed\\n"); return 1;
+    }
+    auto it = vm.dynamic_db.find("edge/2");
+    if (it == vm.dynamic_db.end()) {
+        std::fprintf(stderr, "no edge/2 bucket\\n"); return 1;
+    }
+    if (it->second.size() != 3) {
+        std::fprintf(stderr, "expected 3 rows, got %zu\\n",
+                     it->second.size());
+        return 1;
+    }
+    for (const auto& cell : it->second) {
+        const Value& v = *cell;
+        if (v.tag != Value::Tag::Compound
+            || v.s != "edge/2"
+            || v.args.size() != 2
+            || v.args[0]->tag != Value::Tag::Atom
+            || v.args[1]->tag != Value::Tag::Atom) {
+            std::fprintf(stderr, "bad row shape\\n"); return 1;
+        }
+    }
+    // Idempotency: second load must not duplicate rows.
+    if (!cpp_load_lmdb_fact_source(vm, "edge/2", env_path, nullptr)) {
+        std::fprintf(stderr, "second load failed\\n"); return 1;
+    }
+    if (vm.dynamic_db["edge/2"].size() != 3) {
+        std::fprintf(stderr, "idempotency broken: %zu\\n",
+                     vm.dynamic_db["edge/2"].size());
+        return 1;
+    }
+    std::filesystem::remove_all(env_path);
+    std::printf("OK\\n");
+    return 0;
+}
+',                  [EnvPath]).
+
+% Build and run a tiny seeder binary that creates an LMDB file
+% at EnvPath populated with three edges plus a __meta__ sub-DB
+% declaring the predicate. Used by codegen tests. The PredKey
+% argument lets negative tests inject a mismatching predicate.
+lmdb_seed_three_edges(TmpDir, EnvPath, SeedBin) :-
+    lmdb_seed_three_edges(TmpDir, EnvPath, 'edge/2', SeedBin).
+
+% Seed an LMDB file with two entries mapping different keys to
+% the SAME value, so a unique(true) policy on the value column
+% has a duplicate to react to. Used by relation_policy Phase 2
+% tests for the throw / warn / overwrite / first_wins cases.
+lmdb_seed_duplicate_value(TmpDir, EnvPath, SeedBin) :-
+    directory_file_path(TmpDir, 'seed.cpp', SeedSrc),
+    directory_file_path(TmpDir, 'seed', SeedBin),
+    setup_call_cleanup(
+        open(SeedSrc, write, S),
+        format(S,
+'#include <lmdb.h>~n#include <cstring>~n#include <filesystem>~nint main(){~n  const char* p = "~w";~n  std::filesystem::remove_all(p);~n  std::filesystem::create_directories(p);~n  MDB_env* env; mdb_env_create(&env);~n  mdb_env_set_maxdbs(env, 4);~n  mdb_env_open(env, p, 0, 0664);~n  MDB_txn* txn; mdb_txn_begin(env, nullptr, 0, &txn);~n  MDB_dbi dbi; mdb_dbi_open(txn, nullptr, 0, &dbi);~n  MDB_dbi meta; mdb_dbi_open(txn, "__meta__", MDB_CREATE, &meta);~n  auto put=[&](MDB_dbi d,const char*k,const char*v){MDB_val K{std::strlen(k),(void*)k},V{std::strlen(v),(void*)v};mdb_put(txn,d,&K,&V,0);};~n  put(dbi,"alice","bob"); put(dbi,"charlie","bob");~n  put(meta,"schema_version","1"); put(meta,"predicate","edge/2"); put(meta,"columns","child,parent");~n  mdb_txn_commit(txn); mdb_env_close(env); return 0;~n}~n',
+            [EnvPath]),
+        close(S)),
+    process_create(path('g++'),
+        ['-std=c++17', '-o', SeedBin, SeedSrc, '-llmdb'],
+        [stderr(null), process(PID)]),
+    process_wait(PID, exit(0)),
+    process_create(SeedBin, [], [process(PID2)]),
+    process_wait(PID2, exit(0)).
+
+% Seed an LMDB file with three rows whose keys are alphabetical
+% (LMDB natural sort order) but whose values are deliberately
+% out of alphabetical order: alice->zebra, bob->apple,
+% carol->mango. Used by order(...) policy tests so sort-by-value
+% produces a different first-row from LMDB's natural iteration.
+lmdb_seed_alpha_value_reverse(TmpDir, EnvPath, SeedBin) :-
+    directory_file_path(TmpDir, 'seed.cpp', SeedSrc),
+    directory_file_path(TmpDir, 'seed', SeedBin),
+    setup_call_cleanup(
+        open(SeedSrc, write, S),
+        format(S,
+'#include <lmdb.h>~n#include <cstring>~n#include <filesystem>~nint main(){~n  const char* p = "~w";~n  std::filesystem::remove_all(p);~n  std::filesystem::create_directories(p);~n  MDB_env* env; mdb_env_create(&env);~n  mdb_env_set_maxdbs(env, 4);~n  mdb_env_open(env, p, 0, 0664);~n  MDB_txn* txn; mdb_txn_begin(env, nullptr, 0, &txn);~n  MDB_dbi dbi; mdb_dbi_open(txn, nullptr, 0, &dbi);~n  MDB_dbi meta; mdb_dbi_open(txn, "__meta__", MDB_CREATE, &meta);~n  auto put=[&](MDB_dbi d,const char*k,const char*v){MDB_val K{std::strlen(k),(void*)k},V{std::strlen(v),(void*)v};mdb_put(txn,d,&K,&V,0);};~n  put(dbi,"alice","zebra"); put(dbi,"bob","apple"); put(dbi,"carol","mango");~n  put(meta,"schema_version","1"); put(meta,"predicate","edge/2"); put(meta,"columns","child,parent");~n  mdb_txn_commit(txn); mdb_env_close(env); return 0;~n}~n',
+            [EnvPath]),
+        close(S)),
+    process_create(path('g++'),
+        ['-std=c++17', '-o', SeedBin, SeedSrc, '-llmdb'],
+        [stderr(null), process(PID)]),
+    process_wait(PID, exit(0)),
+    process_create(SeedBin, [], [process(PID2)]),
+    process_wait(PID2, exit(0)).
+
+lmdb_seed_three_edges(TmpDir, EnvPath, MetaPred, SeedBin) :-
+    directory_file_path(TmpDir, 'seed.cpp', SeedSrc),
+    directory_file_path(TmpDir, 'seed', SeedBin),
+    setup_call_cleanup(
+        open(SeedSrc, write, S),
+        format(S,
+'#include <lmdb.h>~n#include <cstring>~n#include <filesystem>~nint main(){~n  const char* p = "~w";~n  std::filesystem::remove_all(p);~n  std::filesystem::create_directories(p);~n  MDB_env* env; mdb_env_create(&env);~n  mdb_env_set_maxdbs(env, 4);~n  mdb_env_open(env, p, 0, 0664);~n  MDB_txn* txn; mdb_txn_begin(env, nullptr, 0, &txn);~n  MDB_dbi dbi; mdb_dbi_open(txn, nullptr, 0, &dbi);~n  MDB_dbi meta; mdb_dbi_open(txn, "__meta__", MDB_CREATE, &meta);~n  auto put=[&](MDB_dbi d,const char*k,const char*v){MDB_val K{std::strlen(k),(void*)k},V{std::strlen(v),(void*)v};mdb_put(txn,d,&K,&V,0);};~n  put(dbi,"alice","bob"); put(dbi,"bob","carol"); put(dbi,"carol","dave");~n  put(meta,"schema_version","1"); put(meta,"predicate","~w"); put(meta,"columns","child,parent");~n  mdb_txn_commit(txn); mdb_env_close(env); return 0;~n}~n',
+            [EnvPath, MetaPred]),
+        close(S)),
+    process_create(path('g++'),
+        ['-std=c++17', '-o', SeedBin, SeedSrc, '-llmdb'],
+        [stderr(null), process(PID)]),
+    process_wait(PID, exit(0)),
+    process_create(SeedBin, [], [process(PID2)]),
+    process_wait(PID2, exit(0)).
+
+% Run a Prolog script in a fresh swipl subprocess and capture
+% its stderr. Used by the sort-warning tests to verify codegen-
+% time messages without interfering with plunit's own
+% user_error.
+run_codegen_subprocess(Source, Stderr) :-
+    tmp_file(codegen_script, ScriptBase),
+    atom_concat(ScriptBase, '.pl', ScriptPath),
+    setup_call_cleanup(
+        open(ScriptPath, write, S),
+        write(S, Source),
+        close(S)),
+    process_create(path('swipl'),
+                   ['-q', '-f', 'none', ScriptPath],
+                   [stdout(null), stderr(pipe(ErrStream)),
+                    process(PID)]),
+    read_string(ErrStream, _, Stderr),
+    close(ErrStream),
+    process_wait(PID, _Status),
+    catch(delete_file(ScriptPath), _, true).
+
+% Build the C++ project at TmpDir with -DWAM_CPP_ENABLE_LMDB and
+% -llmdb. Used by LMDB end-to-end tests; otherwise identical to
+% build_e2e_binary/2.
+build_e2e_binary_with_lmdb(TmpDir, BinPath) :-
+    directory_file_path(TmpDir, 'cpp', CppDir),
+    directory_file_path(CppDir, 'wam_runtime.cpp', Rt),
+    directory_file_path(CppDir, 'generated_program.cpp', Prog),
+    directory_file_path(CppDir, 'main.cpp', Main),
+    directory_file_path(CppDir, 'cpp_test', BinPath),
+    process_create(path('g++'),
+                   ['-std=c++17', '-O0',
+                    '-DWAM_CPP_ENABLE_LMDB',
+                    '-o', BinPath, Rt, Prog, Main, '-llmdb'],
+                   [stderr(null), process(PID)]),
+    process_wait(PID, Status),
+    assertion(Status == exit(0)).
 
 cpp_compiler_available :-
     catch(

@@ -197,6 +197,19 @@ python examples/benchmark/benchmark_csharp_query_effective_distance_artifact_bac
   --format policy-actionable-markdown
 ```
 
+For scripted policy review, use the wrapper so the summary artifact,
+threshold, fail gate, artifact reuse, and report format stay consistent:
+
+```bash
+python examples/benchmark/review_csharp_query_effective_distance_policy.py \
+  --scales dev \
+  --dry-run
+```
+
+Pass `--summary-input output/csharp-query-effective-distance-policy-summary.tsv`
+to re-render a saved summary without rerunning the benchmark, or
+`--no-fail-on-policy-actions` when you want a report-only invocation.
+
 At the checked-in 300-10k scales this is expected to favor preload or
 mmap-array; LMDB is primarily retained as the larger-data comparison point for
 future 50k+ style runs where memory pressure matters.

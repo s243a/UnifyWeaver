@@ -187,6 +187,130 @@ aggsubs_count(S, Sub, N) :-
     findall(_, sub_string(S, _, _, _, Sub), Occurrences),
     length(Occurrences, N).
 
+%% A2 indexing: when A1 is variable in every clause, the compiler
+%% falls back to A2-based indexing. Three flavours, mirroring A1:
+%%   all constants  → switch_on_constant_a2
+%%   all compounds  → switch_on_structure_a2 (no lists)
+%%   mixed types    → switch_on_term_a2
+:- dynamic test_a2_const/2, test_a2_struct/2, test_a2_term/2.
+test_a2_const(_, alpha).
+test_a2_const(_, beta).
+test_a2_const(_, gamma).
+
+test_a2_struct(_, foo(_)).
+test_a2_struct(_, bar(_, _)).
+test_a2_struct(_, baz(_, _, _)).
+
+test_a2_term(_, t).
+test_a2_term(_, t(_, _)).
+test_a2_term(_, []).
+test_a2_term(_, [_|_]).
+
+test_wam_a2_indexing :-
+    Test = 'WAM: A2-arg indexing emits constant/structure/term variants',
+    (   wam_target:compile_predicate_to_wam(user:test_a2_const/2, [], C1),
+        wam_target:compile_predicate_to_wam(user:test_a2_struct/2, [], C2),
+        wam_target:compile_predicate_to_wam(user:test_a2_term/2, [], C3),
+        atom_string(C1, S1), atom_string(C2, S2), atom_string(C3, S3),
+        sub_string(S1, _, _, _, 'switch_on_constant_a2'),
+        sub_string(S2, _, _, _, 'switch_on_structure_a2'),
+        sub_string(S3, _, _, _, 'switch_on_term_a2'),
+        % Term-form should not be a degenerate structure/constant emit.
+        \+ sub_string(S3, _, _, _, 'switch_on_structure_a2'),
+        \+ sub_string(S3, _, _, _, 'switch_on_constant_a2 ')
+    ->  pass(Test)
+    ;   fail_test(Test, 'A2 indexing did not emit the expected pseudo-instruction')
+    ).
+
+%% Mixed-mode A1 indexing: predicates with a variable A1 clause
+%% should now get a switch_on_constant_fallthrough for their indexed
+%% prefix, instead of no A1 indexing.
+:- dynamic test_mma_trailing/2, test_mma_middle/2, test_mma_first/2,
+           test_mma_none/2.
+test_mma_trailing(a, 1).
+test_mma_trailing(b, 2).
+test_mma_trailing(c, 3).
+test_mma_trailing(_, 0).
+
+test_mma_middle(a, 1).
+test_mma_middle(_, 99).
+test_mma_middle(b, 2).
+
+test_mma_first(_, 0).
+test_mma_first(a, 1).
+test_mma_first(b, 2).
+
+test_mma_none(a, 1).
+test_mma_none(b, 2).
+test_mma_none(c, 3).
+
+%% Mixed-mode A2 indexing — mirror of the A1 case. Predicates whose
+%% A1 is variable in every clause should now get
+%% switch_on_constant_a2_fallthrough for their indexed A2 prefix
+%% instead of dropping A2 indexing entirely.
+:- dynamic test_mma2_trailing/3, test_mma2_middle/3, test_mma2_first/3,
+           test_mma2_none/3.
+test_mma2_trailing(_, error, red).
+test_mma2_trailing(_, warn,  yellow).
+test_mma2_trailing(_, ok,    green).
+test_mma2_trailing(_, _,     gray).
+
+test_mma2_middle(_, a, 1).
+test_mma2_middle(_, _, 99).
+test_mma2_middle(_, b, 2).
+
+test_mma2_first(_, _, 0).
+test_mma2_first(_, a, 1).
+test_mma2_first(_, b, 2).
+
+test_mma2_none(_, a, 1).
+test_mma2_none(_, b, 2).
+test_mma2_none(_, c, 3).
+
+test_wam_mixed_mode_a2_indexing :-
+    Test = 'WAM: mixed-mode A2 indexing emits switch_on_constant_a2_fallthrough',
+    (   wam_target:compile_predicate_to_wam(user:test_mma2_trailing/3, [], C1),
+        wam_target:compile_predicate_to_wam(user:test_mma2_middle/3, [], C2),
+        wam_target:compile_predicate_to_wam(user:test_mma2_first/3, [], C3),
+        wam_target:compile_predicate_to_wam(user:test_mma2_none/3, [], C4),
+        atom_string(C1, S1), atom_string(C2, S2),
+        atom_string(C3, S3), atom_string(C4, S4),
+        % Trailing var A2: indexed prefix = error,warn,ok.
+        sub_string(S1, _, _, _, 'switch_on_constant_a2_fallthrough'),
+        % Middle var A2: indexed prefix = just `a`.
+        sub_string(S2, _, _, _, 'switch_on_constant_a2_fallthrough'),
+        % Var A2 first: no A2 indexing.
+        \+ sub_string(S3, _, _, _, 'switch_on_constant_a2_fallthrough'),
+        % No var A2: plain switch_on_constant_a2 (NOT fallthrough).
+        sub_string(S4, _, _, _, 'switch_on_constant_a2 '),
+        \+ sub_string(S4, _, _, _, 'switch_on_constant_a2_fallthrough')
+    ->  pass(Test)
+    ;   fail_test(Test,
+                  'Mixed-mode A2 indexing did not emit the expected pseudo-instruction')
+    ).
+
+test_wam_mixed_mode_a1_indexing :-
+    Test = 'WAM: mixed-mode A1 indexing emits switch_on_constant_fallthrough',
+    (   wam_target:compile_predicate_to_wam(user:test_mma_trailing/2, [], C1),
+        wam_target:compile_predicate_to_wam(user:test_mma_middle/2, [], C2),
+        wam_target:compile_predicate_to_wam(user:test_mma_first/2, [], C3),
+        wam_target:compile_predicate_to_wam(user:test_mma_none/2, [], C4),
+        atom_string(C1, S1), atom_string(C2, S2),
+        atom_string(C3, S3), atom_string(C4, S4),
+        % Trailing var: indexed prefix is a,b,c → fallthrough form.
+        sub_string(S1, _, _, _, 'switch_on_constant_fallthrough'),
+        % Middle var: indexed prefix is just `a` → fallthrough form.
+        sub_string(S2, _, _, _, 'switch_on_constant_fallthrough'),
+        % Var first: no A1 indexing (falls back to A2).
+        \+ sub_string(S3, _, _, _, 'switch_on_constant_fallthrough'),
+        % No var clause: plain switch_on_constant (NOT the fallthrough form).
+        sub_string(S4, _, _, _, 'switch_on_constant '),
+        \+ sub_string(S4, _, _, _, 'switch_on_constant_fallthrough')
+    ->  pass(Test)
+    ;   fail_test(Test,
+                  'Mixed-mode A1 indexing did not emit the expected pseudo-instruction')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -201,7 +325,10 @@ run_tests :-
     test_wam_compound_head,
     test_wam_module,
     test_wam_multi_clause_findall_emits_allocate,
-    
+    test_wam_a2_indexing,
+    test_wam_mixed_mode_a1_indexing,
+    test_wam_mixed_mode_a2_indexing,
+
     format('~n========================================~n'),
     (   test_failed
     ->  format('Some tests FAILED~n'),
