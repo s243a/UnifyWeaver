@@ -857,6 +857,37 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
             | None -> Some { s with WsPC = s.WsPC + 1 }
         | None -> Some { s with WsPC = s.WsPC + 1 }
 
+    // SwitchOnTerm: type-based dispatch on A1.  Emitted by the WAM
+    // compiler for predicates with mixed first-arg shapes (atoms,
+    // compounds, lists, variables).  Falls through on miss so the
+    // linear try_me_else chain still runs.  The label form is
+    // rewritten to SwitchOnTermPc by resolveCallInstrs at load time.
+    | SwitchOnTermPc (constTable, structTable, listPc) ->
+        let valOpt = getReg 1 s
+        match valOpt with
+        | Some (Unbound _) -> Some { s with WsPC = s.WsPC + 1 }
+        | Some (Atom a) ->
+            match binarySearchStr constTable a with
+            | Some pc -> Some { s with WsPC = pc }
+            | None    -> Some { s with WsPC = s.WsPC + 1 }
+        | Some (Integer n) ->
+            match binarySearchStr constTable (string n) with
+            | Some pc -> Some { s with WsPC = pc }
+            | None    -> Some { s with WsPC = s.WsPC + 1 }
+        | Some (Str (fn, args)) ->
+            let key = sprintf "%s/%d" fn (List.length args)
+            match binarySearchStr structTable key with
+            | Some pc -> Some { s with WsPC = pc }
+            | None    -> Some { s with WsPC = s.WsPC + 1 }
+        | Some (VList _) when listPc > 0 ->
+            Some { s with WsPC = listPc }
+        | _ -> Some { s with WsPC = s.WsPC + 1 }
+
+    | SwitchOnTerm _ ->
+        // Should have been rewritten to SwitchOnTermPc by resolveCallInstrs.
+        // If we hit this, fall through deterministically rather than fail.
+        Some { s with WsPC = s.WsPC + 1 }
+
     | BuiltinCall ("!/0", _) ->
         Some { s with
                  WsPC    = s.WsPC + 1
@@ -2256,6 +2287,18 @@ let resolveCallInstrs (labels: Map<string, int>) (foreignPreds: string list) (in
                       |> List.sortBy fst
                       |> List.toArray
             SwitchOnConstantPc pcTable
+        | SwitchOnTerm (constTable, structTable, listLabel) ->
+            // Resolve labels to PCs; entries whose label is unknown
+            // (e.g. ` default`, which is dropped above) drop out of
+            // the table -- the step handler falls through on miss.
+            let resolveTable (t: (string * string) array) : (string * int) array =
+                t |> Array.choose (fun (k, lbl) ->
+                        Map.tryFind lbl labels |> Option.map (fun pc -> (k, pc)))
+                  |> Array.sortBy fst
+            let listPc =
+                if listLabel = "none" then 0
+                else Map.tryFind listLabel labels |> Option.defaultValue 0
+            SwitchOnTermPc (resolveTable constTable, resolveTable structTable, listPc)
         | i -> i)'.
 
 % ============================================================================
@@ -2648,10 +2691,66 @@ let ~w_labels : Map<string, int> =
     Map.ofList [ ~w ]
 ', [Pred, Arity, FuncName, InstrCode, FuncName, LabelCode]).
 
+%% fs_split_wam_line(+Line, -Tokens)
+%
+% Split a WAM-text line into tokens, treating single-quoted atoms
+% (`' '`, `'foo bar'`, etc.) as one token even when their contents
+% include whitespace or commas.  The previous splitter
+% (`split_string(Line, " \\t,", ...)`) chopped through quoted
+% atoms — `get_constant ' ', A2` came out as
+% `["get_constant", "'", "'", "A2"]` and missed every emitter
+% clause, falling into the UNKNOWN `Proceed` stub.  The portable
+% Prolog parser uses `' '` and similar literally in its whitespace
+% / character-class tables, so the parser predicates were all
+% silently no-op'd.
+fs_split_wam_line(Line, Tokens) :-
+    atom_string(LineA, Line),
+    atom_chars(LineA, Chars),
+    fs_tokenize_chars(Chars, [], [], Toks0),
+    reverse(Toks0, Toks1),
+    maplist([Cs, S]>>(atom_chars(A, Cs), atom_string(A, S)), Toks1, Tokens).
+
+% fs_tokenize_chars(+Chars, +CurrentTokenAcc, +TokenListAcc, -Result)
+% CurrentTokenAcc is a reversed list of chars.  When a separator
+% is seen outside a quote, flush the current token.
+fs_tokenize_chars([], [], Toks, Toks) :- !.
+fs_tokenize_chars([], Cur, Toks, [Tok|Toks]) :-
+    reverse(Cur, Tok).
+fs_tokenize_chars([C|Rest], Cur, Toks, Out) :-
+    (   fs_wam_separator_char(C)
+    ->  (   Cur == []
+        ->  fs_tokenize_chars(Rest, [], Toks, Out)
+        ;   reverse(Cur, Tok),
+            fs_tokenize_chars(Rest, [], [Tok|Toks], Out)
+        )
+    ;   C == ''''
+    ->  fs_tokenize_quoted(Rest, [''''|Cur], QCur, QRest),
+        fs_tokenize_chars(QRest, QCur, Toks, Out)
+    ;   fs_tokenize_chars(Rest, [C|Cur], Toks, Out)
+    ).
+
+% Inside a single-quoted atom — keep every char (including the
+% closing quote) attached to the current token, treat doubled
+% quotes `''` as an escaped quote inside the atom (ISO).
+fs_tokenize_quoted([], Cur, Cur, []).
+fs_tokenize_quoted([''''|Rest], Cur, OutCur, OutRest) :-
+    (   Rest = [''''|Rest1]
+    ->  fs_tokenize_quoted(Rest1, [''''|[''''|Cur]], OutCur, OutRest)
+    ;   OutCur = [''''|Cur],
+        OutRest = Rest
+    ).
+fs_tokenize_quoted([C|Rest], Cur, OutCur, OutRest) :-
+    C \== '''',
+    fs_tokenize_quoted(Rest, [C|Cur], OutCur, OutRest).
+
+fs_wam_separator_char(' ').
+fs_wam_separator_char('\t').
+fs_wam_separator_char(',').
+
 %% wam_lines_to_fsharp(+Lines, +PC, -InstrExprs, -LabelExprs)
 wam_lines_to_fsharp([], _, [], []).
 wam_lines_to_fsharp([Line|Rest], PC, Instrs, Labels) :-
-    split_string(Line, " \t,", " \t,", Parts),
+    fs_split_wam_line(Line, Parts),
     delete(Parts, "", CleanParts),
     (   CleanParts == []
     ->  wam_lines_to_fsharp(Rest, PC, Instrs, Labels)
@@ -2694,19 +2793,57 @@ fs_clean_comma(Str, Clean) :-
 %  before calling number_string/2, which throws type_error(list, _)
 %  when given an atom.
 fs_wam_value(Val0, Fs) :-
-    (   string(Val0) -> Val = Val0
-    ;   atom(Val0)   -> atom_string(Val0, Val)
-    ;   number(Val0) -> number_string(Val0, Val)
-    ;   Val = Val0
+    (   string(Val0) -> Val1 = Val0
+    ;   atom(Val0)   -> atom_string(Val0, Val1)
+    ;   number(Val0) -> number_string(Val0, Val1)
+    ;   Val1 = Val0
     ),
+    %% Strip surrounding single quotes for quoted atoms
+    %% (`'foo bar'` -> `foo bar`).  Doubled quotes `''` inside
+    %% collapse to one.  fs_split_wam_line preserves the outer
+    %% quotes so we can distinguish `'+'` (atom) from `+`
+    %% (unquoted symbol) downstream; here we drop them.
+    fs_strip_quoted_atom(Val1, Val),
     (   number_string(N, Val), integer(N)
     ->  format(string(Fs), 'Integer ~w', [N])
     ;   number_string(F, Val), float(F)
     ->  format(string(Fs), 'Float ~w', [F])
     ;   Val == "[]"
     ->  Fs = "Atom \"[]\""
-    ;   format(string(Fs), 'Atom "~w"', [Val])
+    ;   fs_escape_string_for_fsharp(Val, Escaped),
+        format(string(Fs), 'Atom "~w"', [Escaped])
     ).
+
+fs_strip_quoted_atom(S0, S) :-
+    string_chars(S0, Chars0),
+    (   Chars0 = [''''|Rest], append(Inner, [''''], Rest)
+    ->  fs_unescape_quoted(Inner, InnerU),
+        string_chars(S, InnerU)
+    ;   S = S0
+    ).
+
+fs_unescape_quoted([], []).
+fs_unescape_quoted([''''|[''''|Rest]], [''''|Out]) :-
+    !,
+    fs_unescape_quoted(Rest, Out).
+fs_unescape_quoted([C|Rest], [C|Out]) :-
+    fs_unescape_quoted(Rest, Out).
+
+%% Escape special F#-string chars inside an atom name so
+%% `Atom "foo\"bar"` parses correctly.  Backslash and double-quote
+%% are the two that matter for F# `"..."` literals.
+fs_escape_string_for_fsharp(S0, S) :-
+    string_chars(S0, Chars0),
+    fs_escape_fs_chars(Chars0, Chars1),
+    string_chars(S, Chars1).
+
+fs_escape_fs_chars([], []).
+fs_escape_fs_chars(['\\'|Rest], ['\\','\\'|Out]) :-
+    !, fs_escape_fs_chars(Rest, Out).
+fs_escape_fs_chars(['"'|Rest], ['\\','"'|Out]) :-
+    !, fs_escape_fs_chars(Rest, Out).
+fs_escape_fs_chars([C|Rest], [C|Out]) :-
+    fs_escape_fs_chars(Rest, Out).
 
 %% fs_parse_functor(+FunctorString, -Name, -Arity)
 %  Extract name and arity from "name/N" format.  E.g. "-/1" → ("-", 1).
@@ -2740,11 +2877,19 @@ wam_instr_to_fsharp(["get_value", Xn, Ai], Fs) :-
     fs_clean_comma(Xn, CXn), fs_clean_comma(Ai, CAi),
     fs_reg_name_to_int(CXn, XnI), fs_reg_name_to_int(CAi, AiI),
     format(string(Fs), 'GetValue (~w, ~w)', [XnI, AiI]).
-wam_instr_to_fsharp(["get_structure", FN, Arity, Ai], Fs) :-
-    fs_clean_comma(FN, CFN), fs_clean_comma(Arity, CA), fs_clean_comma(Ai, CAi),
-    (   number_string(ANum, CA) -> true ; throw(error(domain_error(wam_integer, CA), wam_instr_to_fsharp/2)) ),
+wam_instr_to_fsharp(["get_structure", FN, Ai], Fs) :-
+    %% Three-token form emitted by wam_target.pl: `get_structure F/N, Ai`.
+    %% Functor and arity are joined with `/`; parse them out the same
+    %% way `put_structure` does (the WAM compiler emits both in the
+    %% same shape).  The previous 4-token clause never matched any
+    %% real WAM output and silently fell through to the UNKNOWN
+    %% stub, so any predicate doing compound-term matching in its
+    %% head (the portable parser's `op/3` tables, list cells, etc.)
+    %% executed as a no-op.
+    fs_clean_comma(FN, CFN), fs_clean_comma(Ai, CAi),
+    fs_parse_functor(CFN, FuncName, FsArity),
     fs_reg_name_to_int(CAi, AiI),
-    format(string(Fs), 'GetStructure ("~w", ~w, ~w)', [CFN, ANum, AiI]).
+    format(string(Fs), 'GetStructure ("~w", ~w, ~w)', [FuncName, FsArity, AiI]).
 wam_instr_to_fsharp(["get_list", Ai], Fs) :-
     fs_clean_comma(Ai, CAi), fs_reg_name_to_int(CAi, AiI),
     format(string(Fs), 'GetList ~w', [AiI]).
@@ -2829,6 +2974,101 @@ wam_instr_to_fsharp(["switch_on_constant_a2"|Entries], Fs) :-
     fs_parse_switch_entries(Entries, FsPairs),
     atomic_list_concat(FsPairs, '; ', PairsStr),
     format(string(Fs), 'SwitchOnConstant (Map.ofList [~w])', [PairsStr]).
+%% switch_on_constant_fallthrough is shape-compatible with
+%% switch_on_constant -- both are "match A1 against constants, jump
+%% to label on hit".  The runtime difference (fall through vs fail
+%% on miss) is already the SwitchOnConstantPc semantics in the
+%% generated step function, so re-using SwitchOnConstant here is
+%% the right thing.  Emitted when the WAM compiler has a constant
+%% prefix followed by a variable clause; the variable clauses are
+%% reached via the try_me_else chain past PC+1.
+wam_instr_to_fsharp(["switch_on_constant_fallthrough"|Entries], Fs) :-
+    fs_parse_switch_entries(Entries, FsPairs),
+    atomic_list_concat(FsPairs, '; ', PairsStr),
+    format(string(Fs), 'SwitchOnConstant (Map.ofList [~w])', [PairsStr]).
+%% Symmetric A2 variant -- same handling.
+wam_instr_to_fsharp(["switch_on_constant_a2_fallthrough"|Entries], Fs) :-
+    fs_parse_switch_entries(Entries, FsPairs),
+    atomic_list_concat(FsPairs, '; ', PairsStr),
+    format(string(Fs), 'SwitchOnConstant (Map.ofList [~w])', [PairsStr]).
+%% switch_on_term: type-based dispatch on A1.
+%% Format: switch_on_term CLen ConstEntries... SLen StructEntries... ListLabel
+%% emitted by format_switch_on_term/4 in wam_target.pl.  Entries are
+%% `key:label` strings; "default" entries refer to the first
+%% clause and are stripped by resolveCallInstrs at load time.
+wam_instr_to_fsharp(["switch_on_term", CLenS | Rest], Fs) :-
+    fs_clean_comma(CLenS, CLenT),
+    (   number_string(CLen, CLenT)
+    ->  true
+    ;   throw(error(domain_error(wam_integer, CLenT), wam_instr_to_fsharp/2))
+    ),
+    length(Const, CLen),
+    append(Const, [SLenS|Rest2], Rest),
+    fs_clean_comma(SLenS, SLenT),
+    (   number_string(SLen, SLenT)
+    ->  true
+    ;   throw(error(domain_error(wam_integer, SLenT), wam_instr_to_fsharp/2))
+    ),
+    length(Struct, SLen),
+    append(Struct, [ListLabel0], Rest2),
+    fs_clean_comma(ListLabel0, ListLabel),
+    fs_parse_switch_term_entries(Const, ConstPairs),
+    fs_parse_switch_term_entries(Struct, StructPairs),
+    fs_term_entries_to_array_literal(ConstPairs, ConstArr),
+    fs_term_entries_to_array_literal(StructPairs, StructArr),
+    format(string(Fs), 'SwitchOnTerm (~w, ~w, "~w")',
+           [ConstArr, StructArr, ListLabel]).
+%% A2 variant -- same shape, dispatches on A2 rather than A1.  The
+%% runtime currently treats A1 and A2 identically (the step handler
+%% inspects register 1); a proper A2 variant is future work.
+wam_instr_to_fsharp(["switch_on_term_a2", CLenS | Rest], Fs) :-
+    fs_clean_comma(CLenS, CLenT),
+    (   number_string(CLen, CLenT)
+    ->  true
+    ;   throw(error(domain_error(wam_integer, CLenT), wam_instr_to_fsharp/2))
+    ),
+    length(Const, CLen),
+    append(Const, [SLenS|Rest2], Rest),
+    fs_clean_comma(SLenS, SLenT),
+    (   number_string(SLen, SLenT)
+    ->  true
+    ;   throw(error(domain_error(wam_integer, SLenT), wam_instr_to_fsharp/2))
+    ),
+    length(Struct, SLen),
+    append(Struct, [ListLabel0], Rest2),
+    fs_clean_comma(ListLabel0, ListLabel),
+    fs_parse_switch_term_entries(Const, ConstPairs),
+    fs_parse_switch_term_entries(Struct, StructPairs),
+    fs_term_entries_to_array_literal(ConstPairs, ConstArr),
+    fs_term_entries_to_array_literal(StructPairs, StructArr),
+    format(string(Fs), 'SwitchOnTerm (~w, ~w, "~w")',
+           [ConstArr, StructArr, ListLabel]).
+
+%% fs_parse_switch_term_entries(+Entries, -Pairs)
+%
+% Parse "key:label" string entries into (Key, Label) pairs.  Mirrors
+% fs_parse_switch_entries but returns string keys (no value-typing)
+% because SwitchOnTerm always keys by atom-name or "F/N" string.
+fs_parse_switch_term_entries([], []).
+fs_parse_switch_term_entries([E|Rest], [(K, L)|Pairs]) :-
+    fs_clean_comma(E, ECl),
+    atom_string(EA, ECl),
+    (   sub_atom(EA, Before, 1, _, ':')
+    ->  sub_atom(EA, 0, Before, _, KA),
+        After is Before + 1,
+        sub_atom(EA, After, _, 0, LA),
+        atom_string(KA, K),
+        atom_string(LA, L)
+    ;   K = ECl,
+        L = "default"
+    ),
+    fs_parse_switch_term_entries(Rest, Pairs).
+
+fs_term_entries_to_array_literal([], "[||]") :- !.
+fs_term_entries_to_array_literal(Pairs, Literal) :-
+    maplist([(K, L), S]>>format(string(S), '("~w", "~w")', [K, L]), Pairs, Strs),
+    atomic_list_concat(Strs, '; ', Joined),
+    format(string(Literal), '[| ~w |]', [Joined]).
 wam_instr_to_fsharp(["begin_aggregate", Type, ValReg, ResReg], Fs) :-
     fs_clean_comma(Type, CT), fs_clean_comma(ValReg, CV), fs_clean_comma(ResReg, CR),
     fs_reg_name_to_int(CV, VI), fs_reg_name_to_int(CR, RI),

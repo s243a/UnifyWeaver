@@ -304,6 +304,18 @@ fsharp_wam_instruction_type :-
     // Indexing
     | SwitchOnConstant   of table: Map<Value, string>
     | SwitchOnConstantPc of table: (string * int) array  // sorted by key, binary search
+    // Type-based indexing: dispatch on A1''s type.  Atomic A1 hits
+    // constTable; Str (F, args) builds the F-slash-N key and hits
+    // structTable; list-shaped A1 jumps to listLabel/listPc.  Every
+    // miss falls through to PC+1 (the linear try_me_else chain).
+    // Label form is emitted by the WAM text translator; resolveCallInstrs
+    // rewrites to the PC form at load time.
+    | SwitchOnTerm   of constTable: (string * string) array
+                       * structTable: (string * string) array
+                       * listLabel: string
+    | SwitchOnTermPc of constTable: (string * int) array
+                       * structTable: (string * int) array
+                       * listPc: int
     // Builtins
     | BuiltinCall    of name: string * arity: int
     | CutIte
