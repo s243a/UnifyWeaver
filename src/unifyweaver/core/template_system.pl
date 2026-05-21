@@ -694,13 +694,24 @@ generate_transitive_closure(PredName, BaseName, Options, Code) :-
     fi
 }',
 
+    % NOTE on key order: `check_body` is a string built above that
+    % itself contains `{{pred}}` and `{{tmp_suffix}}` placeholders.
+    % render_template_string/3 is a single-pass iterator over this
+    % dict — once a key is substituted, its inserted content is not
+    % re-scanned for later keys.  Keeping `check_body` FIRST means the
+    % inner placeholders it introduces are still present when `pred`
+    % and `tmp_suffix` come around in the same pass.  Without this
+    % ordering the generated `_check()` body literally calls
+    % `{{pred}}_all` and creates `/tmp/{{pred}}_found_{{tmp_suffix}}`,
+    % causing tests/core/test_compiler_driver.pl to fail because the
+    % generated bash script bombs out at `{{pred}}_all`.
     render_template(Template, [
+        check_body = CheckBody,
         pred = PredStr,
         base = BaseStr,
         strategy = Strategy,
         tmp_suffix = TempSuffixStr,
-        trap_signals = TrapSignalsStr,
-        check_body = CheckBody
+        trap_signals = TrapSignalsStr
     ], Code).
 
 %% Deduplication wrapper template
