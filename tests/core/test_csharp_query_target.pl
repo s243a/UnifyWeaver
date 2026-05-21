@@ -6994,6 +6994,62 @@ cqt_temp_root(Base) :-
 cqt_temp_root(Base) :-
     cqt_option(output_dir, Base).
 
+%% cqt_target_framework(-Framework)
+%
+% Returns the .NET TFM to use when scaffolding console projects for
+% runtime-execution tests (e.g. 'net8.0' or 'net9.0').  Resolution
+% order:
+%   1. UNIFYWEAVER_DOTNET_FRAMEWORK env var if set (user override).
+%   2. Cached probe result.
+%   3. Probe via `dotnet --list-sdks` and pick the highest major
+%      version installed (e.g. SDK 8.x → 'net8.0').
+%   4. Fallback 'net9.0'.
+%
+% This unblocks the runtime-execution subtests when the only
+% installed SDK is older than 9.0 (e.g. dotnet 8.0.x in a sandbox).
+% Without this, `dotnet new console --framework net9.0` errors with
+% "Invalid option(s)" and the suite degrades to plan-structure-only
+% verification.
+:- dynamic cqt_cached_framework/1.
+
+cqt_target_framework(Framework) :-
+    (   getenv('UNIFYWEAVER_DOTNET_FRAMEWORK', EnvVal),
+        EnvVal \== ''
+    ->  atom_string(Framework, EnvVal)
+    ;   cqt_cached_framework(Cached)
+    ->  Framework = Cached
+    ;   cqt_probe_framework(Probed)
+    ->  assertz(cqt_cached_framework(Probed)),
+        Framework = Probed
+    ;   Framework = 'net9.0',
+        assertz(cqt_cached_framework('net9.0'))
+    ).
+
+cqt_probe_framework(Framework) :-
+    catch(
+        setup_call_cleanup(
+            process_create(path(dotnet), ['--list-sdks'],
+                           [stdout(pipe(Out)), stderr(null),
+                            process(PID)]),
+            read_string(Out, _, Output),
+            (close(Out), process_wait(PID, _))
+        ),
+        _, fail
+    ),
+    split_string(Output, "\n", "\r \t", Lines),
+    findall(Major,
+            ( member(Line, Lines),
+              Line \== "",
+              % Lines look like "8.0.126 [/usr/lib/dotnet/sdk]".
+              % Pull the first dotted segment.
+              split_string(Line, ".", "", [MajorStr|_]),
+              number_string(Major, MajorStr)
+            ),
+            Majors),
+    Majors \= [],
+    max_list(Majors, Highest),
+    format(atom(Framework), 'net~w.0', [Highest]).
+
 run_dotnet_plan_verbose(Dotnet, Plan, ExpectedRows, Dir) :-
     run_dotnet_plan(Dotnet, Plan, ExpectedRows, Dir),
     (   cqt_option(keep_artifacts, true)
@@ -7092,7 +7148,8 @@ run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Dir) :-
 
 run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Params, Dir) :-
     % Step 1: Create project and write source files
-    dotnet_command(Dotnet, ['new','console','--force','--framework','net9.0'], Dir, StatusNew, _),
+    cqt_target_framework(Fwk),
+    dotnet_command(Dotnet, ['new','console','--force','--framework',Fwk], Dir, StatusNew, _),
     (   StatusNew =:= 0
     ->  true
     ;   writeln('  (dotnet new console failed; skipping runtime execution test)'), fail
@@ -7145,7 +7202,8 @@ run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Params, Dir) :-
 
 run_dotnet_plan_build_first_with_harness(Dotnet, Plan, ExpectedRows, _Params, Dir, HarnessSource) :-
     % Step 1: Create project and write source files
-    dotnet_command(Dotnet, ['new','console','--force','--framework','net9.0'], Dir, StatusNew, _),
+    cqt_target_framework(Fwk),
+    dotnet_command(Dotnet, ['new','console','--force','--framework',Fwk], Dir, StatusNew, _),
     (   StatusNew =:= 0
     ->  true
     ;   writeln('  (dotnet new console failed; skipping runtime execution test)'), fail
@@ -7196,7 +7254,8 @@ run_dotnet_plan_build_first_with_harness(Dotnet, Plan, ExpectedRows, _Params, Di
     ).
 
 run_dotnet_multi_mode_dispatch_build_first(Dotnet, ModuleClass, ModuleSource, HarnessSource, ExpectedRows, Dir) :-
-    dotnet_command(Dotnet, ['new','console','--force','--framework','net9.0'], Dir, StatusNew, _),
+    cqt_target_framework(Fwk),
+    dotnet_command(Dotnet, ['new','console','--force','--framework',Fwk], Dir, StatusNew, _),
     (   StatusNew =:= 0
     ->  true
     ;   writeln('  (dotnet new console failed; skipping runtime execution test)'), fail
@@ -7297,20 +7356,23 @@ generate_csharp_multi_mode_dispatch_code_only(ModuleClass, ModuleSource, Harness
 create_minimal_csproj(Dir, ProjectName) :-
     atom_concat(ProjectName, '.csproj', CsprojFile),
     directory_file_path(Dir, CsprojFile, CsprojPath),
-    CsprojContent = '<Project Sdk="Microsoft.NET.Sdk">
+    cqt_target_framework(Fwk),
+    format(string(CsprojContent),
+'<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>~w</TargetFramework>
     <Nullable>enable</Nullable>
   </PropertyGroup>
-</Project>',
+</Project>', [Fwk]),
     open(CsprojPath, write, Stream),
     write(Stream, CsprojContent),
     close(Stream).
 
 % Original run_dotnet_plan (kept for reference, but not used)
 run_dotnet_plan(Dotnet, Plan, ExpectedRows, Dir) :-
-    dotnet_command(Dotnet, ['new','console','--force','--framework','net9.0'], Dir, StatusNew, _),
+    cqt_target_framework(Fwk),
+    dotnet_command(Dotnet, ['new','console','--force','--framework',Fwk], Dir, StatusNew, _),
     (   StatusNew =:= 0
     ->  true
     ;   writeln('  (dotnet new console failed; skipping runtime execution test)'), fail
@@ -7339,9 +7401,11 @@ run_dotnet_plan(Dotnet, Plan, ExpectedRows, Dir) :-
     ;   format('  (dotnet run failed: ~s)~n', [Output]), fail
     ).
 
-% Find the compiled executable in bin/Debug/net9.0/
+% Find the compiled executable in bin/Debug/<framework>/
 find_compiled_executable(Dir, ExePath) :-
-    directory_file_path(Dir, 'bin/Debug/net9.0', DebugDir),
+    cqt_target_framework(Fwk),
+    atomic_list_concat(['bin/Debug/', Fwk], DebugRel),
+    directory_file_path(Dir, DebugRel, DebugDir),
     (   exists_directory(DebugDir)
     ->  directory_files(DebugDir, Files),
         member(File, Files),
@@ -8628,24 +8692,80 @@ dotnet_command(Dotnet, Args, Dir, Status, Output) :-
     ->  prolog_to_os_filename(AbsDir, CwdDir)
     ;   CwdDir = AbsDir
     ),
-    process_create(Dotnet, Args,
-                   [ cwd(CwdDir),
-                     env(Env),
-                     stdout(pipe(Out)),
-                     stderr(pipe(Err)),
-                     process(PID)
-                   ]),
-    read_string(Out, _, Stdout),
-    read_string(Err, _, Stderr),
-    close(Out),
-    close(Err),
-    process_wait(PID, exit(Status)),
+    % Capture both stdout and stderr by redirecting them to files
+    % rather than pipes.  Sequential `read_string` on two pipes
+    % deadlocks when the child produces enough output to fill
+    % either pipe buffer (~64KB on Linux): the child blocks writing
+    % to stderr while we are still draining stdout, and process_wait
+    % blocks forever.  `dotnet build` especially emits MSBuild
+    % chatter well past 64KB, so this manifests as a hard hang once
+    % the framework-detection fix unblocks `dotnet new --framework
+    % <fwk>` from failing fast on the unavailable net9.0.  Files
+    % avoid the buffer-fill scenario without needing concurrent
+    % readers.
+    dotnet_capture_files(Dir, OutFile, ErrFile),
+    setup_call_cleanup(
+        ( open(OutFile, write, OutSink),
+          open(ErrFile, write, ErrSink)
+        ),
+        ( process_create(Dotnet, Args,
+                         [ cwd(CwdDir),
+                           env(Env),
+                           stdout(stream(OutSink)),
+                           stderr(stream(ErrSink)),
+                           process(PID)
+                         ]),
+          process_wait(PID, exit(Status))
+        ),
+        ( close(OutSink),
+          close(ErrSink)
+        )
+    ),
+    read_file_to_string(OutFile, Stdout, []),
+    read_file_to_string(ErrFile, Stderr, []),
+    catch(delete_file(OutFile), _, true),
+    catch(delete_file(ErrFile), _, true),
     string_concat(Stdout, Stderr, Output).
+
+%% dotnet_capture_files(+Dir, -OutFile, -ErrFile)
+%
+% Build a pair of unique paths under Dir for stdout/stderr capture.
+% Uses the PID and a counter so concurrent invocations within the
+% same directory don't trample each other.
+:- dynamic dotnet_capture_seq/1.
+dotnet_capture_seq(0).
+
+dotnet_capture_files(Dir, OutFile, ErrFile) :-
+    with_mutex(dotnet_capture_seq, (
+        retract(dotnet_capture_seq(N)),
+        N1 is N + 1,
+        assertz(dotnet_capture_seq(N1))
+    )),
+    format(atom(OutFile), '~w/.dotnet_stdout_~w.log', [Dir, N1]),
+    format(atom(ErrFile), '~w/.dotnet_stderr_~w.log', [Dir, N1]).
 
 dotnet_env(Dir, Env) :-
     environ(RawEnv),
     exclude(is_dotnet_env, RawEnv, BaseEnv),
-    Env = ['DOTNET_CLI_HOME'=Dir,
+    % Pin DOTNET_CLI_HOME to a session-shared location instead of the
+    % per-test temp dir.  The per-test default forces a cold first-run
+    % setup (template engine init, NuGet cache, sdk-advertising
+    % packages) for every test — typically several minutes each — so
+    % the runtime-execution subtests would time out before doing any
+    % real work.  Using a single shared home for the whole run, falling
+    % back to the per-test Dir if no run root has been initialized,
+    % keeps test isolation for build artifacts while letting the
+    % expensive dotnet first-run state amortize across all tests.
+    % Override via UNIFYWEAVER_DOTNET_CLI_HOME if you really want
+    % per-test isolation back.
+    (   getenv('UNIFYWEAVER_DOTNET_CLI_HOME', UserHome),
+        UserHome \== ''
+    ->  CliHome = UserHome
+    ;   cqt_run_root(RunRoot)
+    ->  CliHome = RunRoot
+    ;   CliHome = Dir
+    ),
+    Env = ['DOTNET_CLI_HOME'=CliHome,
            'DOTNET_CLI_TELEMETRY_OPTOUT'='1',
            'DOTNET_NOLOGO'='1'
            | BaseEnv].
