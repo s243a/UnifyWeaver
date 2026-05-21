@@ -14633,6 +14633,7 @@ namespace UnifyWeaver.QueryRuntime
         {
             trace?.RecordStrategy(node, $"{nodeStrategyPrefix}MaterializationPlanSelection{selection.DecisionMode}");
             trace?.RecordStrategy(node, $"{nodeStrategyPrefix}MaterializationPlanPairs{selection.Strategy}");
+            trace?.RecordStrategy(node, $"{nodeStrategyPrefix}{selection.Strategy}");
         }
 
         private static int CountClosurePairRequests(IEnumerable<HashSet<object?>> requestSets) =>
