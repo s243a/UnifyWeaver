@@ -169,58 +169,57 @@ let query_X_parent_ann () =
     | None ->
         assertTrue "parent(X, ann) should succeed" false
 
-// -- Currently-broken queries: clause 3 unreachable ------------------------
+// -- Clause-3 queries: now reachable via indexed dispatch for ground A1
+//                       (Bug A fixed in this PR), still broken for unbound
+//                       A1 because of Bug B (chain pop bug).
 //
-// These assert the CURRENT (buggy) behavior — `None` — so the smoke
-// passes.  When the dispatch bugs are fixed in a follow-up PR, the
-// expected results below will flip to actual matches and these
-// assertions will fail, prompting test updates.
+// Bug A (sentinel + Retry/Trust no-op-on-empty + SwitchOnConstantPc
+// fall-through-on-miss) lets ground A1 reach any clause via the indexed
+// dispatch table.  parent(ann, X) and parent(ann, eve) now succeed.
+//
+// Bug B (backtrack pops CP, RetryMeElse expects to modify it) still bites
+// when A1 is Unbound and we need to walk past clause 2 — there's no
+// indexed path available, the chain runs out after the first backtrack.
+// parent(X, eve) still asserts [KNOWN BUG].
 
-let query_parent_ann_X_BUG () =
-    // Bug A (SwitchOnConstantPc unreachable) + Bug B (chain breaks):
-    // ground A1 = ann should land in clause 3 either via indexed
-    // dispatch (Bug A blocks) or via 2 backtracks through the chain
-    // (Bug B blocks).  Currently returns None.
-    //
-    // Expected after fixes: Some result with A2 = Atom "eve".
+let query_parent_ann_X () =
+    // Ground A1 = ann: indexed dispatch via SwitchOnConstantPc jumps
+    // directly to clause 3.  Should now succeed with X = eve.
     let ctx = mkContext ()
     let s = mkQueryState (Atom "ann") (Unbound 800) 801
     match dispatchCall ctx "parent_query_smoke/2" s with
-    | None ->
-        assertTrue "[KNOWN BUG] parent(ann, X): currently None (clause 3 unreachable)"
-                   true
     | Some result ->
         let answer = derefVar result.WsBindings result.WsRegs.[2]
-        // If the bug gets fixed, surface that clearly:
-        assertTrue (sprintf "[BUG FIXED?] parent(ann, X): now returns A2 = %A (was None — update smoke)" answer)
-                   false
+        assertTrue "parent(ann, X): X = Atom \"eve\" (clause 3 via indexed dispatch)"
+                   (answer = Atom "eve")
+    | None ->
+        assertTrue "parent(ann, X) should succeed (clause 3 indexed)" false
 
-let query_parent_ann_eve_BUG () =
-    // Same bug class: clause-3 match unreachable.  Currently None.
+let query_parent_ann_eve () =
+    // Both ground, clause 3 exact match via indexed dispatch.
     let ctx = mkContext ()
     let s = mkQueryState (Atom "ann") (Atom "eve") 900
     match dispatchCall ctx "parent_query_smoke/2" s with
-    | None ->
-        assertTrue "[KNOWN BUG] parent(ann, eve): currently None (clause 3 unreachable)"
-                   true
     | Some _ ->
-        assertTrue "[BUG FIXED?] parent(ann, eve): now succeeds (was None — update smoke)"
-                   false
+        assertTrue "parent(ann, eve) succeeds (clause 3 exact match via indexed dispatch)"
+                   true
+    | None ->
+        assertTrue "parent(ann, eve) should succeed" false
 
 let query_X_parent_eve_BUG () =
-    // A1 Unbound, A2 ground.  Match is in clause 3 (X = ann), but
-    // reaching clause 3 needs 2 backtracks through the chain — Bug B
-    // means the second backtrack finds an empty CP stack.  Currently
-    // None.
+    // A1 Unbound, A2 ground.  No indexed dispatch (A1 unbound → falls
+    // through), so we walk the chain.  Match is in clause 3 (X = ann),
+    // but reaching clause 3 needs 2 backtracks — Bug B means the
+    // second backtrack finds an empty CP stack.  Still [KNOWN BUG].
     let ctx = mkContext ()
     let s = mkQueryState (Unbound 1000) (Atom "eve") 1001
     match dispatchCall ctx "parent_query_smoke/2" s with
     | None ->
-        assertTrue "[KNOWN BUG] parent(X, eve): currently None (clause 3 via 2 backtracks)"
+        assertTrue "[KNOWN BUG] parent(X, eve): currently None (Bug B — chain pop after 2 backtracks)"
                    true
     | Some result ->
         let answer = derefVar result.WsBindings result.WsRegs.[1]
-        assertTrue (sprintf "[BUG FIXED?] parent(X, eve): now returns A1 = %A (was None — update smoke)" answer)
+        assertTrue (sprintf "[BUG B FIXED?] parent(X, eve): now returns A1 = %A (was None — update smoke)" answer)
                    false
 
 [<EntryPoint>]
@@ -234,8 +233,8 @@ let main _argv =
     query_X_parent_bob ()
     query_X_parent_ann ()
     // Currently-broken scenarios (clause 3 unreachable):
-    query_parent_ann_X_BUG ()
-    query_parent_ann_eve_BUG ()
+    query_parent_ann_X ()
+    query_parent_ann_eve ()
     query_X_parent_eve_BUG ()
     let total = passes + fails
     printfn "RESULT %d/%d" passes total
