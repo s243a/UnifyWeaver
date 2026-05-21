@@ -13,6 +13,7 @@
 :- use_module(library(process)).
 :- use_module('../src/unifyweaver/targets/wam_python_target').
 :- use_module('../src/unifyweaver/core/target_registry').
+:- use_module('../src/unifyweaver/core/prolog_term_parser').
 
 % ============================================================================
 % Registry smoke tests
@@ -500,6 +501,30 @@ python_parser_tmp_dir(Prefix, TmpDir) :-
 python_parser_cleanup_tmp_dir(TmpDir) :-
 	catch(delete_directory_and_contents(TmpDir), _, true).
 
+python_parser_predicates(Predicates) :-
+	findall(prolog_term_parser:Name/Arity,
+		(   current_predicate(prolog_term_parser:Name/Arity),
+			functor(Head, Name, Arity),
+			once(clause(prolog_term_parser:Head, _)),
+			\+ predicate_property(prolog_term_parser:Head, imported_from(_))
+		),
+		Raw),
+	sort(Raw, Predicates).
+
+python_parser_run_snippet(ProjectDir, Script, Output) :-
+	process_create(path(python), ['-c', Script],
+		[cwd(ProjectDir), stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]),
+	read_string(Out, _, Output),
+	read_string(Err, _, ErrText),
+	close(Out),
+	close(Err),
+	process_wait(Pid, Status),
+	(   Status = exit(0)
+	->  true
+	;   format(user_error, 'generated WAM Python parser snippet failed: ~w~n', [ErrText]),
+		fail
+	).
+
 :- begin_tests(wam_python_runtime_parser_mode).
 
 test(runtime_parser_mode_metadata) :-
@@ -521,6 +546,66 @@ test(runtime_parser_native_request_errors,
 			[runtime_parser(native)],
 			ProjectDir),
 		user:python_parser_cleanup_tmp_dir(ProjectDir)).
+
+test(runtime_parser_compiled_includes_portable_parser) :-
+	setup_call_cleanup(
+		user:python_parser_tmp_dir('tmp_wam_python_parser_compiled_meta', ProjectDir),
+		(   wam_python_target:write_wam_python_project([user:py_parser_fact/1],
+				[runtime_parser(compiled)],
+				ProjectDir),
+			directory_file_path(ProjectDir, 'predicates.py', PredicatesPath),
+			read_file_to_string(PredicatesPath, Code, []),
+			assertion(sub_string(Code, _, _, _,
+				'RUNTIME_PARSER = {"kind": "compiled", "entry": None, "source": "prolog_term_parser"}')),
+			assertion(sub_string(Code, _, _, _, 'parse_term_from_atom/3'))
+		),
+		user:python_parser_cleanup_tmp_dir(ProjectDir)).
+
+test(runtime_parser_compiled_runs_read_term_from_atom) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read_term_demo),
+			assertz((user:py_read_term_demo :-
+				read_term_from_atom('p(a)', T),
+				T = p(a))),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_read_term', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_read_term_demo/0],
+				[runtime_parser(compiled)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_read_term_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read_term_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_parser_compiled_runs_reverse_term_to_atom) :-
+	setup_call_cleanup(
+		(   retractall(user:py_term_to_atom_demo),
+			assertz((user:py_term_to_atom_demo :-
+				term_to_atom(T, 'p(a)'),
+				T = p(a))),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_term_to_atom', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_term_to_atom_demo/0],
+				[runtime_parser(compiled)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_term_to_atom_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_term_to_atom_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
 
 test(runtime_parser_none_rejects_parser_dependent_builtin,
      [error(permission_error(use, runtime_parser, read_term_from_atom/2))]) :-
@@ -546,6 +631,70 @@ test(runtime_parser_none_allows_term_to_atom_forward) :-
 		(   retractall(user:py_t2a_forward),
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
+
+test(portable_parser_predicates_compile_to_python_project) :-
+	setup_call_cleanup(
+		user:python_parser_tmp_dir('tmp_wam_python_parser_compile', ProjectDir),
+		(   user:python_parser_predicates(Predicates),
+			wam_python_target:write_wam_python_project(Predicates, [runtime_parser(off)], ProjectDir),
+			user:python_parser_run_snippet(ProjectDir,
+				"import py_compile; py_compile.compile('wam_runtime.py', doraise=True); py_compile.compile('predicates.py', doraise=True); print('ok')",
+				Output),
+			once(sub_string(Output, _, _, _, "ok"))
+		),
+		user:python_parser_cleanup_tmp_dir(ProjectDir)).
+
+test(portable_parser_tokenize_runs_under_python_wam) :-
+	setup_call_cleanup(
+		user:python_parser_tmp_dir('tmp_wam_python_parser_tokenize', ProjectDir),
+		(   user:python_parser_predicates(Predicates),
+			wam_python_target:write_wam_python_project(Predicates, [runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"for text in ('foo', 'A = 1'):",
+				"    state = wr.WamState()",
+				"    out = wr.Var([None], 1)",
+				"    wr.set_reg(state, 1, wr._list_from_codes([ord(ch) for ch in text]))",
+				"    wr.set_reg(state, 2, out)",
+				"    ok = wr.run_wam(code, labels, 'tokenize/2', state)",
+				"    print(text, ok, wr._format_value(wr.deref(out, state), state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "foo True [tk_atom(foo)]")),
+			once(sub_string(Output, _, _, _, "A = 1 True [tk_var(A), tk_sym(=), tk_num(1)]"))
+		),
+		user:python_parser_cleanup_tmp_dir(ProjectDir)).
+
+test(portable_parser_parse_atom_and_compound_under_python_wam) :-
+	setup_call_cleanup(
+		user:python_parser_tmp_dir('tmp_wam_python_parser_parse', ProjectDir),
+		(   user:python_parser_predicates(Predicates),
+			wam_python_target:write_wam_python_project(Predicates, [runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"for text in ('foo', 'p(a, 1)', '[a,1]', 'A = 1', '1+2*3'):",
+				"    state = wr.WamState()",
+				"    ops = wr.Var([None], 1)",
+				"    wr.set_reg(state, 1, ops)",
+				"    assert wr.run_wam(code, labels, 'canonical_op_table/1', state)",
+				"    ops_value = wr.deref(ops, state)",
+				"    out = wr.Var([None], 3)",
+				"    wr.set_reg(state, 1, wr.make_atom(text))",
+				"    wr.set_reg(state, 2, ops_value)",
+				"    wr.set_reg(state, 3, out)",
+				"    ok = wr.run_wam(code, labels, 'parse_term_from_atom/3', state)",
+				"    print(text, ok, wr._format_value(wr.deref(out, state), state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "foo True foo")),
+			once(sub_string(Output, _, _, _, "p(a, 1) True p(a, 1)")),
+			once(sub_string(Output, _, _, _, "[a,1] True [a, 1]")),
+			once(sub_string(Output, _, _, _, "A = 1 True =(")),
+			once(sub_string(Output, _, _, _, "1+2*3 True +(1, *(2, 3))"))
+		),
+		user:python_parser_cleanup_tmp_dir(ProjectDir)).
 
 :- end_tests(wam_python_runtime_parser_mode).
 

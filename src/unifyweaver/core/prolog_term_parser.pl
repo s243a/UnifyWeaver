@@ -57,6 +57,7 @@ parse_term_from_atom(Atom, OpTable, Term) :-
 
 parse_term_from_codes(Codes, OpTable, Term) :-
     tokenize(Codes, Tokens),
+    !,
     parse_expr(Tokens, OpTable, 1200, Term, _Prec, [], _Env, Rest),
     Rest == [].
 
@@ -281,27 +282,35 @@ parse_expr(Tokens0, OpTable, MaxPrec, Term, TermPrec, Env0, Env, Rest) :-
 parse_op_loop([], _, _, Left, LeftPrec, Left, LeftPrec, Env, Env, []).
 parse_op_loop([T|Toks], OpTable, MaxPrec, Left, LeftPrec,
               Term, TermPrec, Env0, Env, Rest) :-
-    (   token_op_name(T, Name)
-    ->  (   resolve_infix(Name, OpTable, Prec, Type),
-            Prec =< MaxPrec,
-            infix_lhs_ok(Type, LeftPrec, Prec)
-        ->  rhs_max_prec(Type, Prec, RhsMax),
-            parse_expr(Toks, OpTable, RhsMax, Right, _, Env0, Env1, Toks1),
-            T2 =.. [Name, Left, Right],
-            parse_op_loop(Toks1, OpTable, MaxPrec, T2, Prec,
-                          Term, TermPrec, Env1, Env, Rest)
-        ;   resolve_postfix(Name, OpTable, Prec, PType),
-            Prec =< MaxPrec,
-            postfix_lhs_ok(PType, LeftPrec, Prec)
-        ->  T2 =.. [Name, Left],
-            parse_op_loop(Toks, OpTable, MaxPrec, T2, Prec,
-                          Term, TermPrec, Env0, Env, Rest)
-        ;   Term = Left, TermPrec = LeftPrec,
-            Env = Env0, Rest = [T|Toks]
-        )
-    ;   Term = Left, TermPrec = LeftPrec,
-        Env = Env0, Rest = [T|Toks]
-    ).
+    token_op_name(T, Name),
+    resolve_infix(Name, OpTable, Prec, Type),
+    Prec =< MaxPrec,
+    infix_lhs_ok(Type, LeftPrec, Prec),
+    !,
+    rhs_max_prec(Type, Prec, RhsMax),
+    parse_expr(Toks, OpTable, RhsMax, Right, _, Env0, Env1, Toks1),
+    T2 =.. [Name, Left, Right],
+    parse_op_loop_continue(Toks1, OpTable, MaxPrec, T2, Prec,
+                           Term, TermPrec, Env1, Env, Rest).
+parse_op_loop([T|Toks], OpTable, MaxPrec, Left, LeftPrec,
+              Term, TermPrec, Env0, Env, Rest) :-
+    token_op_name(T, Name),
+    resolve_postfix(Name, OpTable, Prec, PType),
+    Prec =< MaxPrec,
+    postfix_lhs_ok(PType, LeftPrec, Prec),
+    !,
+    T2 =.. [Name, Left],
+    parse_op_loop_continue(Toks, OpTable, MaxPrec, T2, Prec,
+                           Term, TermPrec, Env0, Env, Rest).
+parse_op_loop([T|Toks], _, _, Left, LeftPrec,
+              Left, LeftPrec, Env, Env, [T|Toks]).
+
+parse_op_loop_continue([], _, _, Term, TermPrec,
+                       Term, TermPrec, Env, Env, []) :- !.
+parse_op_loop_continue(Toks, OpTable, MaxPrec, Left, LeftPrec,
+                       Term, TermPrec, Env0, Env, Rest) :-
+    parse_op_loop(Toks, OpTable, MaxPrec, Left, LeftPrec,
+                  Term, TermPrec, Env0, Env, Rest).
 
 % infix_lhs_ok / postfix_lhs_ok: enforce strict (xfx/xfy/xf) vs
 % non-strict (yfx/yf) lhs precedence.

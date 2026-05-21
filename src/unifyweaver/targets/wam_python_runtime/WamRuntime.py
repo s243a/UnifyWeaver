@@ -81,6 +81,7 @@ class ChoicePoint:
 class Environment:
     saved_e: int
     saved_cp: Any
+    cut_b: int
     perm_vars: List        # Y registers
 
 
@@ -95,7 +96,7 @@ class CatcherFrame:
 
 class WamState:
     def __init__(self):
-        self.regs: List = [None] * 512   # A1->1, X1->101, Y1->201 (1-indexed, same as all targets)
+        self.regs: List = [None] * 512   # A1->1, X1->129, Y1->301 (1-indexed, same as all targets)
         self.heap: Dict[int, Term] = {}  # O(1) put/get/trim via dict keyed by int addr
         self.heap_len: int = 0           # cached length — avoids len() on hot path
         self.stack: List = []            # environments + choice points (typed)
@@ -111,8 +112,10 @@ class WamState:
         self._var_counter: int = 0
         # Structure write context: (compound_ref, next_arg_idx) or None
         self.write_ctx: Any = None
+        self.write_stack: List = []
         # Structure read context: (compound_ref, next_arg_idx) or None
         self.read_ctx: Any = None
+        self.read_stack: List = []
         # Indexed fact tables — Rust-parity O(1) fact lookups keyed by predicate.
         # indexed_atom_fact2: pred_key -> { key_atom -> [value_atom, ...] }
         self.indexed_atom_fact2: Dict[str, Dict[str, List[str]]] = {}
@@ -121,6 +124,7 @@ class WamState:
         # Side stack for Prolog catch/3 frames. Python exceptions provide the
         # unwind mechanism; these frames carry WAM-level state snapshots.
         self.catcher_frames: List[CatcherFrame] = []
+        self.temp_y_regs: Optional[List] = None
 
     def fresh_var(self) -> Var:
         v = Var(ref=[None], id=self._var_counter)
@@ -148,14 +152,17 @@ class WamState:
 
 # -- Register helpers -------------------------------------------------------
 
-_Y_BASE = 201  # Y1 = 201, Y2 = 202, ...
+_A_MAX = 128
+_Y_BASE = 301  # Y1 = 301, Y2 = 302, ...
 
 def get_reg(state: WamState, n: int) -> Term:
-    if n >= _Y_BASE and state.e >= 0:
-        env = state.stack[state.e]
-        if isinstance(env, Environment):
-            yi = n - _Y_BASE  # 0-based index into perm_vars
-            if yi < len(env.perm_vars):
+    if n >= _Y_BASE:
+        yi = n - _Y_BASE  # 0-based index into perm_vars
+        if state.temp_y_regs is not None and 0 <= yi < len(state.temp_y_regs):
+            return state.temp_y_regs[yi]
+        if state.e >= 0:
+            env = state.stack[state.e]
+            if isinstance(env, Environment) and 0 <= yi < len(env.perm_vars):
                 return env.perm_vars[yi]
     return state.regs[n]
 
@@ -413,9 +420,15 @@ def pop_choice_point(state: WamState) -> None:
 
 def push_environment(state: WamState, n_perm: int) -> None:
     """Allocate an environment frame for permanent variables."""
+    cut_b = state.b
+    if cut_b >= 0:
+        cp = state.stack[cut_b]
+        if isinstance(cp, ChoicePoint):
+            cut_b = cp.saved_b
     env = Environment(
         saved_e=state.e,
         saved_cp=state.cp,
+        cut_b=cut_b,
         perm_vars=[None] * n_perm,
     )
     state.stack.append(env)
@@ -425,8 +438,17 @@ def pop_environment(state: WamState) -> None:
     """Deallocate current environment."""
     env = state.stack[state.e]
     assert isinstance(env, Environment)
+    state.temp_y_regs = env.perm_vars.copy()
     state.cp = env.saved_cp
     state.e = env.saved_e
+
+
+def _cut_to(state: WamState, target_b: int) -> None:
+    # Choice point and environment indices are stored as stack offsets.
+    # Do not delete frames here: pruning by B is enough, and compacting the
+    # stack can make saved environment offsets point at the wrong frame.
+    state.b = target_b
+    state.cut_b = target_b
 
 
 # -- Arithmetic -------------------------------------------------------------
@@ -657,6 +679,80 @@ def _execute_succ_iso(state: WamState) -> bool:
     return False
 
 
+def _codes_from_list(term: 'Term', state: WamState) -> Optional[List[int]]:
+    items = _term_to_list(term, state)
+    if items is None:
+        return None
+    codes: List[int] = []
+    for item in items:
+        value = deref(item, state)
+        if not isinstance(value, Int):
+            return None
+        codes.append(value.n)
+    return codes
+
+
+def _list_from_codes(codes: List[int]) -> 'Term':
+    return _list_from_terms([Int(code) for code in codes])
+
+
+def _execute_atom_codes(state: WamState) -> bool:
+    atom_term = deref(get_reg(state, 1), state)
+    codes_term = deref(get_reg(state, 2), state)
+    if isinstance(atom_term, Atom):
+        return unify(get_reg(state, 2), _list_from_codes([ord(ch) for ch in atom_term.name]), state)
+    codes = _codes_from_list(codes_term, state)
+    if codes is None:
+        return False
+    try:
+        atom = ''.join(chr(code) for code in codes)
+    except (OverflowError, ValueError):
+        return False
+    return unify(get_reg(state, 1), make_atom(atom), state)
+
+
+def _execute_number_codes(state: WamState) -> bool:
+    number_term = deref(get_reg(state, 1), state)
+    codes_term = deref(get_reg(state, 2), state)
+    if isinstance(number_term, Int):
+        return unify(get_reg(state, 2), _list_from_codes([ord(ch) for ch in str(number_term.n)]), state)
+    if isinstance(number_term, Float):
+        return unify(get_reg(state, 2), _list_from_codes([ord(ch) for ch in repr(number_term.f)]), state)
+    codes = _codes_from_list(codes_term, state)
+    if codes is None:
+        return False
+    try:
+        text = ''.join(chr(code) for code in codes)
+        if any(ch in text for ch in '.eE'):
+            return unify(get_reg(state, 1), Float(float(text)), state)
+        return unify(get_reg(state, 1), Int(int(text)), state)
+    except (OverflowError, ValueError):
+        return False
+
+
+def _execute_append(state: WamState) -> bool:
+    left = _term_to_list(get_reg(state, 1), state)
+    right = _term_to_list(get_reg(state, 2), state)
+    if left is not None and right is not None:
+        return unify(get_reg(state, 3), _list_from_terms(left + right), state)
+    left = _term_to_list(get_reg(state, 1), state)
+    whole = _term_to_list(get_reg(state, 3), state)
+    if left is not None and whole is not None and len(whole) >= len(left):
+        if all(_term_identical(left[i], whole[i], state) for i in range(len(left))):
+            return unify(get_reg(state, 2), _list_from_terms(whole[len(left):]), state)
+    return False
+
+
+def _execute_reverse(state: WamState) -> bool:
+    left = _term_to_list(get_reg(state, 1), state)
+    if left is not None:
+        return unify(get_reg(state, 2), _list_from_terms(list(reversed(left))), state)
+    right = _term_to_list(get_reg(state, 2), state)
+    if right is not None:
+        return unify(get_reg(state, 1), _list_from_terms(list(reversed(right))), state)
+    return False
+
+
 class WAMThrow(Exception):
     """Internal carrier for Prolog throw/1 terms."""
     def __init__(self, term: Term):
@@ -792,30 +888,90 @@ def _parse_constant(name: str) -> 'Term':
     return make_atom(name)
 
 
-def _constant_matches(val: 'Term', name: str) -> bool:
-    """Check if a term matches a constant specified by name string.
-    Handles integer, float, and atom constants.
-    """
-    if isinstance(val, Atom):
-        return val.name == name
-    if isinstance(val, Int):
-        try:
-            return val.n == int(name)
-        except (ValueError, TypeError):
-            return False
-    if isinstance(val, Float):
-        try:
-            return val.f == float(name)
-        except (ValueError, TypeError):
-            return False
-    return False
+def _constant_term(atom_arg: 'Term') -> 'Term':
+    if isinstance(atom_arg, (Int, Float)):
+        return atom_arg
+    if isinstance(atom_arg, Atom):
+        return _parse_constant(atom_arg.name)
+    return _parse_constant(str(atom_arg))
+
+
+def _constant_matches(val: 'Term', constant: 'Term') -> bool:
+    """Check if a term matches a constant term literal."""
+    return _term_identical(val, constant, WamState())
+
+
+def _predicate_arity(label: str) -> int:
+    try:
+        return int(label.rsplit('/', 1)[1])
+    except (IndexError, ValueError):
+        return 0
+
+
+def _begin_write_ctx(state: WamState, compound: 'Compound') -> None:
+    if state.mode == 'write' and state.write_ctx is not None:
+        state.write_stack.append(state.write_ctx)
+    state.mode = 'write'
+    state.write_ctx = [compound, 0]
+
+
+def _finish_write_ctx(state: WamState) -> None:
+    while state.write_ctx is not None and state.write_ctx[1] >= len(state.write_ctx[0].args):
+        state.write_ctx = state.write_stack.pop() if state.write_stack else None
+
+
+def _write_ctx_put(state: WamState, value: 'Term') -> None:
+    wc = state.write_ctx
+    if wc and wc[1] < len(wc[0].args):
+        wc[0].args[wc[1]] = value
+        wc[1] += 1
+        _finish_write_ctx(state)
+
+
+def _begin_read_ctx(state: WamState, compound: 'Compound') -> None:
+    if state.mode == 'read' and state.read_ctx is not None:
+        state.read_stack.append(state.read_ctx)
+    state.mode = 'read'
+    state.read_ctx = [compound, 0]
+
+
+def _finish_read_ctx(state: WamState) -> None:
+    while state.read_ctx is not None and state.read_ctx[1] >= len(state.read_ctx[0].args):
+        state.read_ctx = state.read_stack.pop() if state.read_stack else None
+
+
+def _read_ctx_get(state: WamState) -> 'Term':
+    rc = state.read_ctx
+    if rc is not None and rc[1] < len(rc[0].args):
+        value = rc[0].args[rc[1]]
+        rc[1] += 1
+        _finish_read_ctx(state)
+        return value if value is not None else state.fresh_var()
+    return state.fresh_var()
+
+
+def _read_ctx_skip(state: WamState, n: int) -> None:
+    for _ in range(n):
+        _read_ctx_get(state)
+
+
+def _clear_structure_context(state: WamState) -> None:
+    state.mode = 'write'
+    state.write_ctx = None
+    state.write_stack = []
+    state.read_ctx = None
+    state.read_stack = []
+
+
+def _is_cons_functor(functor: str) -> bool:
+    return functor in ('.', './2', '[|]/2')
 
 
 def _term_to_list(term: 'Term', state: WamState) -> Optional[List['Term']]:
     """Convert a proper Prolog list to a Python list of terms."""
     items = []
     cur = deref(term, state)
-    while isinstance(cur, Compound) and cur.functor == '.' and len(cur.args) == 2:
+    while isinstance(cur, Compound) and _is_cons_functor(cur.functor) and len(cur.args) == 2:
         items.append(deref(cur.args[0], state))
         cur = deref(cur.args[1], state)
     if isinstance(cur, Atom) and cur.name == '[]':
@@ -865,6 +1021,21 @@ def _list_from_terms(items: List['Term']) -> 'Term':
     return result
 
 
+def _runtime_functor_name(functor: str, arity: int) -> str:
+    if functor in ('.', './2', '[|]/2'):
+        return functor
+    if '/' in functor:
+        return functor
+    return f"{functor}/{arity}"
+
+
+def _display_functor_name(functor: str, arity: int) -> str:
+    suffix = f"/{arity}"
+    if functor.endswith(suffix) and len(functor) > len(suffix):
+        return _strip_arity(functor)
+    return functor
+
+
 def _format_value(val: 'Term', state: WamState) -> str:
     """Format a WAM term using compact Prolog-style syntax."""
     val = deref(val, state)
@@ -877,11 +1048,12 @@ def _format_value(val: 'Term', state: WamState) -> str:
     if isinstance(val, Var):
         return f"_V{val.id}"
     if isinstance(val, Compound):
-        if val.functor == '.' and len(val.args) == 2:
+        if _is_cons_functor(val.functor) and len(val.args) == 2:
             items = _term_to_list(val, state)
             if items is not None:
                 return '[' + ', '.join(_format_value(item, state) for item in items) + ']'
-        return f"{val.functor}(" + ', '.join(_format_value(arg, state) for arg in val.args) + ')'
+        functor = _display_functor_name(val.functor, len(val.args))
+        return f"{functor}(" + ', '.join(_format_value(arg, state) for arg in val.args) + ')'
     if isinstance(val, Ref):
         return _format_value(deref(val, state), state)
     return str(val)
@@ -898,6 +1070,68 @@ def _deep_copy_term(val: 'Term', var_map: Dict[int, Var], state: WamState) -> 'T
     if isinstance(val, Compound):
         return Compound(val.functor, [_deep_copy_term(arg, var_map, state) for arg in val.args])
     return val
+
+
+def _copy_term_between_states(val: 'Term', source: WamState, target: WamState,
+                              var_map: Dict[int, Var]) -> 'Term':
+    """Copy a dereferenceable term from one WamState heap into another."""
+    val = deref(val, source)
+    if isinstance(val, Var):
+        key = id(val.ref)
+        if key not in var_map:
+            var_map[key] = target.fresh_var()
+        return var_map[key]
+    if isinstance(val, Ref):
+        return _copy_term_between_states(deref(val, source), source, target, var_map)
+    if isinstance(val, Compound):
+        args = [
+            _copy_term_between_states(arg, source, target, var_map)
+            for arg in val.args
+        ]
+        return Compound(_runtime_functor_name(val.functor, len(args)), args)
+    return val
+
+
+def _execute_compiled_parse_atom(state: WamState, atom_text: str, target: 'Term') -> bool:
+    code = getattr(state, '_code', None)
+    labels = getattr(state, '_labels', None)
+    if not code or not labels:
+        return False
+    if 'canonical_op_table/1' not in labels or 'parse_term_from_atom/3' not in labels:
+        return False
+
+    parser_state = WamState()
+    ops = parser_state.fresh_var()
+    set_reg(parser_state, 1, ops)
+    if not run_wam(code, labels, 'canonical_op_table/1', parser_state):
+        return False
+
+    parsed = parser_state.fresh_var()
+    set_reg(parser_state, 1, make_atom(atom_text))
+    set_reg(parser_state, 2, deref(ops, parser_state))
+    set_reg(parser_state, 3, parsed)
+    if not run_wam(code, labels, 'parse_term_from_atom/3', parser_state):
+        return False
+
+    copied = _copy_term_between_states(parsed, parser_state, state, {})
+    return unify(target, copied, state)
+
+
+def _execute_read_term_from_atom(state: WamState) -> bool:
+    atom_term = deref(get_reg(state, 1), state)
+    if not isinstance(atom_term, Atom):
+        return False
+    return _execute_compiled_parse_atom(state, atom_term.name, get_reg(state, 2))
+
+
+def _execute_term_to_atom(state: WamState) -> bool:
+    term = deref(get_reg(state, 1), state)
+    atom_term = deref(get_reg(state, 2), state)
+    if isinstance(term, Var):
+        if not isinstance(atom_term, Atom):
+            return False
+        return _execute_compiled_parse_atom(state, atom_term.name, get_reg(state, 1))
+    return unify(get_reg(state, 2), make_atom(_format_value(term, state)), state)
 
 
 def _goal_succeeds_once(goal: 'Term', state: WamState) -> bool:
@@ -1017,7 +1251,12 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
     if builtin in ('throw/1', 'throw') and arity == 1:
         return _execute_throw(state)
     if builtin == '!/0' or builtin == '!':  # cut
-        state.cut_b = state.b
+        target_b = state.cut_b
+        if state.e >= 0:
+            env = state.stack[state.e]
+            if isinstance(env, Environment):
+                target_b = env.cut_b
+        _cut_to(state, target_b)
         return True
     if builtin in ('=/2', '=') and arity == 2:
         return unify(get_reg(state, 1), get_reg(state, 2), state)
@@ -1059,20 +1298,27 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
     if builtin in ('\\+/1', '\\+'):  # negation as failure
         goal = deref(get_reg(state, 1), state)
         return not _goal_succeeds_once(goal, state)
+    if builtin in ('atom_codes/2', 'atom_codes', 'string_codes/2', 'string_codes') and arity == 2:
+        return _execute_atom_codes(state)
+    if builtin in ('number_codes/2', 'number_codes') and arity == 2:
+        return _execute_number_codes(state)
+    if builtin in ('read_term_from_atom/2', 'read_term_from_atom') and arity == 2:
+        return _execute_read_term_from_atom(state)
+    if builtin in ('read_term_from_atom/3',) and arity == 3:
+        return _execute_read_term_from_atom(state)
+    if builtin in ('term_to_atom/2', 'term_to_atom') and arity == 2:
+        return _execute_term_to_atom(state)
+    if builtin in ('append/3', 'append') and arity == 3:
+        return _execute_append(state)
+    if builtin in ('reverse/2', 'reverse') and arity == 2:
+        return _execute_reverse(state)
     if builtin in ('length/2', 'length'):
-        lst = deref(get_reg(state, 1), state)
+        items = _term_to_list(get_reg(state, 1), state)
+        if items is not None:
+            return unify(get_reg(state, 2), Int(len(items)), state)
         n_reg = deref(get_reg(state, 2), state)
-        length = 0
-        cur = lst
-        while isinstance(cur, Ref):
-            cur = deref(cur, state)
-        while isinstance(cur, Compound) and cur.functor == '.':
-            length += 1
-            cur = deref(cur.args[1], state) if cur.args[1] is not None else make_atom('[]')
-        if isinstance(cur, Atom) and cur.name == '[]':
-            return unify(n_reg, Int(length), state)
         if isinstance(n_reg, Var):
-            return unify(n_reg, Int(length), state)
+            return unify(get_reg(state, 2), Int(0), state)
         return False
     if builtin in ('nonvar/1', 'nonvar'):
         val = deref(get_reg(state, 1), state)
@@ -1233,8 +1479,7 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
 
         elif op == 'put_constant':
             _, atom_arg, reg = instr
-            atom_name = atom_arg.name if isinstance(atom_arg, Atom) else str(atom_arg)
-            set_reg(state, reg, _parse_constant(atom_name))
+            set_reg(state, reg, _constant_term(atom_arg))
 
         elif op == 'put_nil':
             _, reg = instr
@@ -1250,52 +1495,58 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
 
         elif op == 'put_structure':
             _, functor, arity, reg = instr
+            old = deref(get_reg(state, reg), state)
             c = Compound(functor, [None]*arity)
             addr = heap_put(state, c)
-            set_reg(state, reg, Ref(addr))
-            state.mode = 'write'
+            ref = Ref(addr)
+            if isinstance(old, Var):
+                bind(old, ref, state)
+            set_reg(state, reg, ref)
             state.s = addr
-            state.write_ctx = [c, 0]  # [compound, next_arg_idx]
+            _begin_write_ctx(state, c)
 
         elif op == 'put_list':
             _, reg = instr
+            old = deref(get_reg(state, reg), state)
             c = Compound('.', [None, None])
             addr = heap_put(state, c)
-            set_reg(state, reg, Ref(addr))
-            state.mode = 'write'
+            ref = Ref(addr)
+            if isinstance(old, Var):
+                bind(old, ref, state)
+            set_reg(state, reg, ref)
             state.s = addr
-            state.write_ctx = [c, 0]
+            _begin_write_ctx(state, c)
 
         elif op == 'get_variable':
             # get_variable Xn, Ai: copy Ai (argument register) into Xn (variable register)
             # Instruction format: ('get_variable', Xn, Ai) — dest=Xn, src=Ai
             # Read Ai from arg_snapshot to avoid aliasing clobber (e.g. X3=A3).
             _, xn, ai = instr
-            src = arg_snapshot[ai] if (ai < len(arg_snapshot) and ai < _Y_BASE) else get_reg(state, ai)
+            src = arg_snapshot[ai] if (ai < len(arg_snapshot) and ai <= _A_MAX) else get_reg(state, ai)
             set_reg(state, xn, src)
 
         elif op == 'get_value':
             _, reg1, reg2 = instr
             # reg2 is an argument register — read from snapshot
-            snap_val = arg_snapshot[reg2] if (reg2 < len(arg_snapshot) and reg2 < _Y_BASE) else get_reg(state, reg2)
+            snap_val = arg_snapshot[reg2] if (reg2 < len(arg_snapshot) and reg2 <= _A_MAX) else get_reg(state, reg2)
             if not unify(get_reg(state, reg1), snap_val, state):
                 if not fail(): return False
                 continue
 
         elif op == 'get_constant':
             _, atom_arg, reg = instr
-            atom_name = atom_arg.name if isinstance(atom_arg, Atom) else str(atom_arg)
-            snap_val = arg_snapshot[reg] if (reg < len(arg_snapshot) and reg < _Y_BASE) else get_reg(state, reg)
+            constant = _constant_term(atom_arg)
+            snap_val = arg_snapshot[reg] if (reg < len(arg_snapshot) and reg <= _A_MAX) else get_reg(state, reg)
             val = deref(snap_val, state)
             if isinstance(val, Var):
-                bind(val, _parse_constant(atom_name), state)
-            elif not _constant_matches(val, atom_name):
+                bind(val, constant, state)
+            elif not _constant_matches(val, constant):
                 if not fail(): return False
                 continue
 
         elif op == 'get_nil':
             _, reg = instr
-            snap_val = arg_snapshot[reg] if (reg < len(arg_snapshot) and reg < _Y_BASE) else get_reg(state, reg)
+            snap_val = arg_snapshot[reg] if (reg < len(arg_snapshot) and reg <= _A_MAX) else get_reg(state, reg)
             val = deref(snap_val, state)
             if isinstance(val, Var):
                 bind(val, make_atom('[]'), state)
@@ -1305,7 +1556,7 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
 
         elif op == 'get_integer':
             _, n, reg = instr
-            snap_val = arg_snapshot[reg] if (reg < len(arg_snapshot) and reg < _Y_BASE) else get_reg(state, reg)
+            snap_val = arg_snapshot[reg] if (reg < len(arg_snapshot) and reg <= _A_MAX) else get_reg(state, reg)
             val = deref(snap_val, state)
             if isinstance(val, Var):
                 bind(val, Int(n), state)
@@ -1315,51 +1566,48 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
 
         elif op == 'get_structure':
             _, functor, arity, reg = instr
-            snap_val = arg_snapshot[reg] if (reg < len(arg_snapshot) and reg < _Y_BASE) else get_reg(state, reg)
+            snap_val = arg_snapshot[reg] if (reg < len(arg_snapshot) and reg <= _A_MAX) else get_reg(state, reg)
             val = deref(snap_val, state)
             if isinstance(val, Var):
                 c = Compound(functor, [None]*arity)
                 addr = heap_put(state, c)
                 bind(val, Ref(addr), state)
-                state.mode = 'write'
                 state.s = addr
-                state.write_ctx = [c, 0]
+                _begin_write_ctx(state, c)
             elif isinstance(val, Ref):
                 h = state.heap[val.addr]
                 if isinstance(h, Compound) and h.functor == functor and len(h.args) == arity:
-                    state.mode = 'read'
                     state.s = val.addr
-                    state.read_ctx = [h, 0]
+                    _begin_read_ctx(state, h)
                 else:
                     if not fail(): return False
                     continue
             elif isinstance(val, Compound) and val.functor == functor and len(val.args) == arity:
-                state.mode = 'read'
-                state.read_ctx = [val, 0]
+                _begin_read_ctx(state, val)
             else:
                 if not fail(): return False
                 continue
 
         elif op == 'get_list':
             _, reg = instr
-            snap_val = arg_snapshot[reg] if (reg < len(arg_snapshot) and reg < _Y_BASE) else get_reg(state, reg)
+            snap_val = arg_snapshot[reg] if (reg < len(arg_snapshot) and reg <= _A_MAX) else get_reg(state, reg)
             val = deref(snap_val, state)
             if isinstance(val, Var):
                 c = Compound('.', [None, None])
                 addr = heap_put(state, c)
                 bind(val, Ref(addr), state)
-                state.mode = 'write'
                 state.s = addr
-                state.write_ctx = [c, 0]
+                _begin_write_ctx(state, c)
             elif isinstance(val, Ref):
                 h = state.heap[val.addr]
-                if isinstance(h, Compound) and h.functor == '.' and len(h.args) == 2:
-                    state.mode = 'read'
+                if isinstance(h, Compound) and _is_cons_functor(h.functor) and len(h.args) == 2:
                     state.s = val.addr
-                    state.read_ctx = [h, 0]
+                    _begin_read_ctx(state, h)
                 else:
                     if not fail(): return False
                     continue
+            elif isinstance(val, Compound) and _is_cons_functor(val.functor) and len(val.args) == 2:
+                _begin_read_ctx(state, val)
             else:
                 if not fail(): return False
                 continue
@@ -1367,134 +1615,94 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
         elif op == 'unify_variable':
             _, reg = instr
             if state.mode == 'read':
-                rc = state.read_ctx
-                if rc is not None and rc[1] < len(rc[0].args):
-                    arg_val = rc[0].args[rc[1]]
-                    rc[1] += 1
-                    set_reg(state, reg, arg_val if arg_val is not None else state.fresh_var())
-                else:
-                    set_reg(state, reg, state.fresh_var())
+                set_reg(state, reg, _read_ctx_get(state))
             else:
                 v = state.fresh_var()
                 addr = heap_put(state, v)
                 set_reg(state, reg, v)
+                _write_ctx_put(state, v)
 
         elif op == 'unify_value':
             _, reg = instr
             if state.mode == 'read':
-                rc = state.read_ctx
-                h = rc[0].args[rc[1]] if rc and rc[1] < len(rc[0].args) else None
-                if rc: rc[1] += 1
-                if h is None: h = state.fresh_var()
+                h = _read_ctx_get(state)
                 if not unify(get_reg(state, reg), deref(h, state), state):
                     if not fail(): return False
                     continue
             else:
-                wc = state.write_ctx
                 v = get_reg(state, reg)
-                if wc and wc[1] < len(wc[0].args):
-                    wc[0].args[wc[1]] = v; wc[1] += 1
+                _write_ctx_put(state, v)
 
         elif op == 'unify_constant':
             _, atom_arg = instr
-            atom_name = atom_arg.name if isinstance(atom_arg, Atom) else str(atom_arg)
+            constant = _constant_term(atom_arg)
             if state.mode == 'read':
-                rc = state.read_ctx
-                h = rc[0].args[rc[1]] if rc and rc[1] < len(rc[0].args) else None
-                if rc: rc[1] += 1
-                h = deref(h, state) if h is not None else state.fresh_var()
+                h = deref(_read_ctx_get(state), state)
                 if isinstance(h, Var):
-                    bind(h, _parse_constant(atom_name), state)
-                elif not _constant_matches(h, atom_name):
+                    bind(h, constant, state)
+                elif not _constant_matches(h, constant):
                     if not fail(): return False
                     continue
             else:
-                wc = state.write_ctx
-                v = _parse_constant(atom_name)
-                if wc and wc[1] < len(wc[0].args):
-                    wc[0].args[wc[1]] = v; wc[1] += 1
+                v = constant
+                _write_ctx_put(state, v)
 
         elif op == 'unify_nil':
             if state.mode == 'read':
-                rc = state.read_ctx
-                h = rc[0].args[rc[1]] if rc and rc[1] < len(rc[0].args) else None
-                if rc: rc[1] += 1
-                h = deref(h, state) if h is not None else state.fresh_var()
+                h = deref(_read_ctx_get(state), state)
                 if isinstance(h, Var):
                     bind(h, make_atom('[]'), state)
                 elif not (isinstance(h, Atom) and h.name == '[]'):
                     if not fail(): return False
                     continue
             else:
-                wc = state.write_ctx
                 v = make_atom('[]')
-                if wc and wc[1] < len(wc[0].args):
-                    wc[0].args[wc[1]] = v; wc[1] += 1
+                _write_ctx_put(state, v)
 
         elif op == 'unify_void':
             _, n = instr
             if state.mode == 'read':
-                rc = state.read_ctx
-                if rc: rc[1] += n
+                _read_ctx_skip(state, n)
             else:
-                wc = state.write_ctx
-                if wc:
-                    for _ in range(n):
-                        if wc[1] < len(wc[0].args):
-                            wc[0].args[wc[1]] = state.fresh_var(); wc[1] += 1
+                for _ in range(n):
+                    _write_ctx_put(state, state.fresh_var())
 
         # --- set_* instructions: always WRITE mode, used after put_structure/put_list ---
 
         elif op == 'set_variable':
             _, xn = instr
             v = state.fresh_var()
-            wc = state.write_ctx
-            if wc and wc[1] < len(wc[0].args):
-                wc[0].args[wc[1]] = v; wc[1] += 1
+            _write_ctx_put(state, v)
             set_reg(state, xn, v)
 
         elif op == 'set_value':
             _, xn = instr
             v = get_reg(state, xn)
-            wc = state.write_ctx
-            if wc and wc[1] < len(wc[0].args):
-                wc[0].args[wc[1]] = v; wc[1] += 1
+            _write_ctx_put(state, v)
 
         elif op == 'set_local_value':
             _, xn = instr
             v = deref(get_reg(state, xn), state)
-            wc = state.write_ctx
-            if wc and wc[1] < len(wc[0].args):
-                wc[0].args[wc[1]] = v; wc[1] += 1
+            _write_ctx_put(state, v)
 
         elif op == 'set_constant':
             _, atom_arg = instr
-            atom_name = atom_arg.name if isinstance(atom_arg, Atom) else str(atom_arg)
-            v = _parse_constant(atom_name)
-            wc = state.write_ctx
-            if wc and wc[1] < len(wc[0].args):
-                wc[0].args[wc[1]] = v; wc[1] += 1
+            v = _constant_term(atom_arg)
+            _write_ctx_put(state, v)
 
         elif op == 'set_nil':
-            wc = state.write_ctx
             v = make_atom('[]')
-            if wc and wc[1] < len(wc[0].args):
-                wc[0].args[wc[1]] = v; wc[1] += 1
+            _write_ctx_put(state, v)
 
         elif op == 'set_integer':
             _, n = instr
-            wc = state.write_ctx
             v = Int(n)
-            if wc and wc[1] < len(wc[0].args):
-                wc[0].args[wc[1]] = v; wc[1] += 1
+            _write_ctx_put(state, v)
 
         elif op == 'set_void':
             _, n = instr
-            wc = state.write_ctx
-            if wc:
-                for _ in range(n):
-                    if wc[1] < len(wc[0].args):
-                        wc[0].args[wc[1]] = state.fresh_var(); wc[1] += 1
+            for _ in range(n):
+                _write_ctx_put(state, state.fresh_var())
 
         elif op == 'call_pc':
             _, target_ip, _arity, _label = instr
@@ -1516,8 +1724,13 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             if target_ip >= 0:
                 ip = target_ip
                 arg_snapshot = list(state.regs)  # snapshot at callee entry
+                state.temp_y_regs = None
+                _clear_structure_context(state)
             else:
-                if not fail(): return False
+                if not _execute_builtin(_label, _arity, state, resume_ip=ip):
+                    if not fail(): return False
+                    continue
+                arg_snapshot = list(state.regs)
                 continue
 
         elif op == 'execute_pc':
@@ -1537,9 +1750,20 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             if target_ip >= 0:
                 ip = target_ip
                 arg_snapshot = list(state.regs)  # snapshot at callee entry
+                state.temp_y_regs = None
+                _clear_structure_context(state)
             else:
-                if not fail(): return False
-                continue
+                if not _execute_builtin(_label, _predicate_arity(_label), state):
+                    if not fail(): return False
+                    continue
+                if isinstance(state.cp, int):
+                    ip = state.cp
+                    state.cp = None
+                    state.temp_y_regs = None
+                    _clear_structure_context(state)
+                    arg_snapshot = list(state.regs)
+                    continue
+                return True
 
         elif op == 'call':
             # Legacy unresolved call (fallback)
@@ -1563,8 +1787,13 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             if target >= 0:
                 ip = target
                 arg_snapshot = list(state.regs)  # snapshot at callee entry
+                state.temp_y_regs = None
+                _clear_structure_context(state)
             else:
-                if not fail(): return False
+                if not _execute_builtin(label, _arity, state, resume_ip=ip):
+                    if not fail(): return False
+                    continue
+                arg_snapshot = list(state.regs)
                 continue
 
         elif op == 'execute':
@@ -1586,9 +1815,20 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             if target >= 0:
                 ip = target
                 arg_snapshot = list(state.regs)  # snapshot at callee entry
+                state.temp_y_regs = None
+                _clear_structure_context(state)
             else:
-                if not fail(): return False
-                continue
+                if not _execute_builtin(label, _predicate_arity(label), state):
+                    if not fail(): return False
+                    continue
+                if isinstance(state.cp, int):
+                    ip = state.cp
+                    state.cp = None
+                    state.temp_y_regs = None
+                    _clear_structure_context(state)
+                    arg_snapshot = list(state.regs)
+                    continue
+                return True
 
         elif op == 'call_lowered':
             _, fn, _arity = instr
@@ -1607,6 +1847,8 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             if isinstance(state.cp, int):
                 ip = state.cp
                 state.cp = None
+                state.temp_y_regs = None
+                _clear_structure_context(state)
                 # Returning to caller: snapshot is now stale; it will be
                 # refreshed at the next call_pc/execute_pc if needed.
                 # Set to None so accidental reads fall back to live regs.
@@ -1649,7 +1891,7 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             arg_snapshot = list(state.regs)  # snapshot at last clause entry
 
         elif op == 'neck_cut':
-            state.b = state.cut_b
+            _cut_to(state, state.cut_b)
 
         elif op == 'get_level':
             _, reg = instr
@@ -1658,7 +1900,7 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
         elif op == 'cut':
             _, reg = instr
             level = get_reg(state, reg)
-            state.b = level
+            _cut_to(state, level)
 
         elif op == 'allocate':
             n_perm = instr[1] if len(instr) > 1 else 16  # default perm vars
@@ -1900,7 +2142,7 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
                 target = lc_pc
             elif isinstance(val, Int) or isinstance(val, Float):
                 target = lc_pc
-            elif isinstance(val, Compound) and val.functor == '.':
+            elif isinstance(val, Compound) and _is_cons_functor(val.functor):
                 target = ll_pc
             else:
                 target = ls_pc
@@ -1919,7 +2161,7 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
                 label = lc
             elif isinstance(val, Int) or isinstance(val, Float):
                 label = lc
-            elif isinstance(val, Compound) and val.functor == '.':
+            elif isinstance(val, Compound) and _is_cons_functor(val.functor):
                 label = ll
             else:
                 label = ls
@@ -2134,8 +2376,7 @@ def _run_aggregate_body(code: list, labels: dict, body_start: int, end_pc: int,
             set_reg(sub, dst, get_reg(sub, src))
         elif op == 'put_constant':
             _, atom_arg, reg = instr
-            atom_name = atom_arg.name if isinstance(atom_arg, Atom) else str(atom_arg)
-            set_reg(sub, reg, _parse_constant(atom_name))
+            set_reg(sub, reg, _constant_term(atom_arg))
         elif op == 'put_nil':
             _, reg = instr
             set_reg(sub, reg, make_atom('[]'))
@@ -2147,43 +2388,51 @@ def _run_aggregate_body(code: list, labels: dict, body_start: int, end_pc: int,
             set_reg(sub, reg, Float(f))
         elif op == 'put_structure':
             _, functor, arity, reg = instr
+            old = deref(get_reg(sub, reg), sub)
             c = Compound(functor, [None]*arity)
             addr = heap_put(sub, c)
-            set_reg(sub, reg, Ref(addr))
-            sub.mode = 'write'; sub.s = addr
-            sub.write_ctx = [c, 0]
+            ref = Ref(addr)
+            if isinstance(old, Var):
+                bind(old, ref, sub)
+            set_reg(sub, reg, ref)
+            sub.s = addr
+            _begin_write_ctx(sub, c)
         elif op == 'put_list':
             _, reg = instr
+            old = deref(get_reg(sub, reg), sub)
             c = Compound('.', [None, None])
             addr = heap_put(sub, c)
-            set_reg(sub, reg, Ref(addr))
-            sub.mode = 'write'; sub.s = addr
-            sub.write_ctx = [c, 0]
+            ref = Ref(addr)
+            if isinstance(old, Var):
+                bind(old, ref, sub)
+            set_reg(sub, reg, ref)
+            sub.s = addr
+            _begin_write_ctx(sub, c)
         elif op == 'get_variable':
             _, xn, ai = instr
-            src = sub_arg_snap[ai] if (ai < len(sub_arg_snap) and ai < _Y_BASE) else get_reg(sub, ai)
+            src = sub_arg_snap[ai] if (ai < len(sub_arg_snap) and ai <= _A_MAX) else get_reg(sub, ai)
             set_reg(sub, xn, src)
         elif op == 'get_value':
             _, reg1, reg2 = instr
-            snap_val = sub_arg_snap[reg2] if (reg2 < len(sub_arg_snap) and reg2 < _Y_BASE) else get_reg(sub, reg2)
+            snap_val = sub_arg_snap[reg2] if (reg2 < len(sub_arg_snap) and reg2 <= _A_MAX) else get_reg(sub, reg2)
             if not unify(get_reg(sub, reg1), snap_val, sub):
                 if not sub_fail(): break
                 sub_arg_snap = list(sub.regs)
                 continue
         elif op == 'get_constant':
             _, atom_arg, reg = instr
-            atom_name = atom_arg.name if isinstance(atom_arg, Atom) else str(atom_arg)
-            snap_val = sub_arg_snap[reg] if (reg < len(sub_arg_snap) and reg < _Y_BASE) else get_reg(sub, reg)
+            constant = _constant_term(atom_arg)
+            snap_val = sub_arg_snap[reg] if (reg < len(sub_arg_snap) and reg <= _A_MAX) else get_reg(sub, reg)
             val = deref(snap_val, sub)
             if isinstance(val, Var):
-                bind(val, _parse_constant(atom_name), sub)
-            elif not _constant_matches(val, atom_name):
+                bind(val, constant, sub)
+            elif not _constant_matches(val, constant):
                 if not sub_fail(): break
                 sub_arg_snap = list(sub.regs)
                 continue
         elif op == 'get_nil':
             _, reg = instr
-            snap_val = sub_arg_snap[reg] if (reg < len(sub_arg_snap) and reg < _Y_BASE) else get_reg(sub, reg)
+            snap_val = sub_arg_snap[reg] if (reg < len(sub_arg_snap) and reg <= _A_MAX) else get_reg(sub, reg)
             val = deref(snap_val, sub)
             if isinstance(val, Var):
                 bind(val, make_atom('[]'), sub)
@@ -2193,7 +2442,7 @@ def _run_aggregate_body(code: list, labels: dict, body_start: int, end_pc: int,
                 continue
         elif op == 'get_integer':
             _, n, reg = instr
-            snap_val = sub_arg_snap[reg] if (reg < len(sub_arg_snap) and reg < _Y_BASE) else get_reg(sub, reg)
+            snap_val = sub_arg_snap[reg] if (reg < len(sub_arg_snap) and reg <= _A_MAX) else get_reg(sub, reg)
             val = deref(snap_val, sub)
             if isinstance(val, Var):
                 bind(val, Int(n), sub)
@@ -2203,149 +2452,145 @@ def _run_aggregate_body(code: list, labels: dict, body_start: int, end_pc: int,
                 continue
         elif op == 'get_structure':
             _, functor, arity, reg = instr
-            snap_val = sub_arg_snap[reg] if (reg < len(sub_arg_snap) and reg < _Y_BASE) else get_reg(sub, reg)
+            snap_val = sub_arg_snap[reg] if (reg < len(sub_arg_snap) and reg <= _A_MAX) else get_reg(sub, reg)
             val = deref(snap_val, sub)
             if isinstance(val, Var):
                 c = Compound(functor, [None]*arity)
                 addr = heap_put(sub, c)
                 bind(val, Ref(addr), sub)
-                sub.mode = 'write'; sub.s = addr; sub.write_ctx = [c, 0]
+                sub.s = addr
+                _begin_write_ctx(sub, c)
             elif isinstance(val, Ref):
                 h = sub.heap.get(val.addr)
                 if isinstance(h, Compound) and h.functor == functor and len(h.args) == arity:
-                    sub.mode = 'read'; sub.s = val.addr; sub.read_ctx = [h, 0]
+                    sub.s = val.addr
+                    _begin_read_ctx(sub, h)
                 else:
                     if not sub_fail(): break
                     sub_arg_snap = list(sub.regs); continue
             elif isinstance(val, Compound) and val.functor == functor and len(val.args) == arity:
-                sub.mode = 'read'; sub.read_ctx = [val, 0]
+                _begin_read_ctx(sub, val)
             else:
                 if not sub_fail(): break
                 sub_arg_snap = list(sub.regs); continue
         elif op == 'get_list':
             _, reg = instr
-            snap_val = sub_arg_snap[reg] if (reg < len(sub_arg_snap) and reg < _Y_BASE) else get_reg(sub, reg)
+            snap_val = sub_arg_snap[reg] if (reg < len(sub_arg_snap) and reg <= _A_MAX) else get_reg(sub, reg)
             val = deref(snap_val, sub)
             if isinstance(val, Var):
                 c = Compound('.', [None, None])
                 addr = heap_put(sub, c)
                 bind(val, Ref(addr), sub)
-                sub.mode = 'write'; sub.s = addr; sub.write_ctx = [c, 0]
+                sub.s = addr
+                _begin_write_ctx(sub, c)
             elif isinstance(val, Ref):
                 h = sub.heap.get(val.addr)
-                if isinstance(h, Compound) and h.functor == '.' and len(h.args) == 2:
-                    sub.mode = 'read'; sub.s = val.addr; sub.read_ctx = [h, 0]
+                if isinstance(h, Compound) and _is_cons_functor(h.functor) and len(h.args) == 2:
+                    sub.s = val.addr
+                    _begin_read_ctx(sub, h)
                 else:
                     if not sub_fail(): break
                     sub_arg_snap = list(sub.regs); continue
+            elif isinstance(val, Compound) and _is_cons_functor(val.functor) and len(val.args) == 2:
+                _begin_read_ctx(sub, val)
             else:
                 if not sub_fail(): break
                 sub_arg_snap = list(sub.regs); continue
         elif op == 'set_variable':
             _, xn = instr
             v = sub.fresh_var()
-            wc = sub.write_ctx
-            if wc and wc[1] < len(wc[0].args): wc[0].args[wc[1]] = v; wc[1] += 1
+            _write_ctx_put(sub, v)
             set_reg(sub, xn, v)
         elif op == 'unify_variable':
             _, xn = instr
             if sub.mode == 'read':
-                rc = sub.read_ctx
-                arg_val = rc[0].args[rc[1]] if rc and rc[1] < len(rc[0].args) else None
-                if rc: rc[1] += 1
-                set_reg(sub, xn, arg_val if arg_val is not None else sub.fresh_var())
+                set_reg(sub, xn, _read_ctx_get(sub))
             else:
                 v = sub.fresh_var()
-                wc = sub.write_ctx
-                if wc and wc[1] < len(wc[0].args): wc[0].args[wc[1]] = v; wc[1] += 1
+                _write_ctx_put(sub, v)
                 set_reg(sub, xn, v)
         elif op == 'set_value':
             _, xn = instr
             v = get_reg(sub, xn)
-            wc = sub.write_ctx
-            if wc and wc[1] < len(wc[0].args): wc[0].args[wc[1]] = v; wc[1] += 1
+            _write_ctx_put(sub, v)
         elif op == 'unify_value':
             _, reg = instr
             if sub.mode == 'read':
-                rc = sub.read_ctx
-                h = rc[0].args[rc[1]] if rc and rc[1] < len(rc[0].args) else None
-                if rc: rc[1] += 1
-                if h is None: h = sub.fresh_var()
+                h = _read_ctx_get(sub)
                 if not unify(get_reg(sub, reg), deref(h, sub), sub):
                     if not sub_fail(): break
                     sub_arg_snap = list(sub.regs); continue
             else:
                 v = get_reg(sub, reg)
-                wc = sub.write_ctx
-                if wc and wc[1] < len(wc[0].args): wc[0].args[wc[1]] = v; wc[1] += 1
+                _write_ctx_put(sub, v)
         elif op == 'set_constant':
             _, atom_arg = instr
-            v = _parse_constant(atom_arg.name if isinstance(atom_arg, Atom) else str(atom_arg))
-            wc = sub.write_ctx
-            if wc and wc[1] < len(wc[0].args): wc[0].args[wc[1]] = v; wc[1] += 1
+            v = _constant_term(atom_arg)
+            _write_ctx_put(sub, v)
         elif op == 'unify_constant':
             _, atom_arg = instr
-            atom_name = atom_arg.name if isinstance(atom_arg, Atom) else str(atom_arg)
+            constant = _constant_term(atom_arg)
             if sub.mode == 'read':
-                rc = sub.read_ctx
-                h = rc[0].args[rc[1]] if rc and rc[1] < len(rc[0].args) else None
-                if rc: rc[1] += 1
-                h = deref(h, sub) if h is not None else sub.fresh_var()
-                if isinstance(h, Var): bind(h, _parse_constant(atom_name), sub)
-                elif not _constant_matches(h, atom_name):
+                h = deref(_read_ctx_get(sub), sub)
+                if isinstance(h, Var): bind(h, constant, sub)
+                elif not _constant_matches(h, constant):
                     if not sub_fail(): break
                     sub_arg_snap = list(sub.regs); continue
             else:
-                v = _parse_constant(atom_name)
-                wc = sub.write_ctx
-                if wc and wc[1] < len(wc[0].args): wc[0].args[wc[1]] = v; wc[1] += 1
+                v = constant
+                _write_ctx_put(sub, v)
         elif op in ('set_nil', 'unify_nil'):
             v = make_atom('[]')
             if op == 'unify_nil' and sub.mode == 'read':
-                rc = sub.read_ctx
-                h = rc[0].args[rc[1]] if rc and rc[1] < len(rc[0].args) else None
-                if rc: rc[1] += 1
-                h = deref(h, sub) if h is not None else sub.fresh_var()
+                h = deref(_read_ctx_get(sub), sub)
                 if isinstance(h, Var): bind(h, v, sub)
                 elif not (isinstance(h, Atom) and h.name == '[]'):
                     if not sub_fail(): break
                     sub_arg_snap = list(sub.regs); continue
             else:
-                wc = sub.write_ctx
-                if wc and wc[1] < len(wc[0].args): wc[0].args[wc[1]] = v; wc[1] += 1
+                _write_ctx_put(sub, v)
         elif op == 'set_integer':
             _, n = instr
-            wc = sub.write_ctx
-            if wc and wc[1] < len(wc[0].args): wc[0].args[wc[1]] = Int(n); wc[1] += 1
+            _write_ctx_put(sub, Int(n))
         elif op == 'unify_void':
             _, n = instr
             if sub.mode == 'read':
-                rc = sub.read_ctx
-                if rc: rc[1] += n
+                _read_ctx_skip(sub, n)
             else:
-                wc = sub.write_ctx
-                if wc:
-                    for _ in range(n):
-                        if wc[1] < len(wc[0].args): wc[0].args[wc[1]] = Atom('_'); wc[1] += 1
+                for _ in range(n):
+                    _write_ctx_put(sub, Atom('_'))
         elif op == 'call_pc':
             _, target_ip, _arity, _label = instr
             sub.cp = sub_ip
             if target_ip >= 0:
                 sub_ip = target_ip
                 sub_arg_snap = list(sub.regs)
+                sub.temp_y_regs = None
+                _clear_structure_context(sub)
             else:
-                if not sub_fail(): break
+                if not _execute_builtin(_label, _arity, sub, resume_ip=sub_ip):
+                    if not sub_fail(): break
+                    sub_arg_snap = list(sub.regs)
+                    continue
                 sub_arg_snap = list(sub.regs)
-                continue
         elif op == 'execute_pc':
             _, target_ip, _label = instr
             if target_ip >= 0:
                 sub_ip = target_ip
                 sub_arg_snap = list(sub.regs)
+                sub.temp_y_regs = None
+                _clear_structure_context(sub)
             else:
-                if not sub_fail(): break
-                sub_arg_snap = list(sub.regs)
-                continue
+                if not _execute_builtin(_label, _predicate_arity(_label), sub):
+                    if not sub_fail(): break
+                    sub_arg_snap = list(sub.regs)
+                    continue
+                if isinstance(sub.cp, int):
+                    sub_ip = sub.cp
+                    sub.cp = None
+                    sub_arg_snap = list(sub.regs)
+                    continue
+                break
         elif op == 'call':
             _, label, _arity = instr
             sub.cp = sub_ip
@@ -2353,20 +2598,33 @@ def _run_aggregate_body(code: list, labels: dict, body_start: int, end_pc: int,
             if target >= 0:
                 sub_ip = target
                 sub_arg_snap = list(sub.regs)
+                sub.temp_y_regs = None
+                _clear_structure_context(sub)
             else:
-                if not sub_fail(): break
+                if not _execute_builtin(label, _arity, sub, resume_ip=sub_ip):
+                    if not sub_fail(): break
+                    sub_arg_snap = list(sub.regs)
+                    continue
                 sub_arg_snap = list(sub.regs)
-                continue
         elif op == 'execute':
             _, label = instr
             target = labels.get(label, -1)
             if target >= 0:
                 sub_ip = target
                 sub_arg_snap = list(sub.regs)
+                sub.temp_y_regs = None
+                _clear_structure_context(sub)
             else:
-                if not sub_fail(): break
-                sub_arg_snap = list(sub.regs)
-                continue
+                if not _execute_builtin(label, _predicate_arity(label), sub):
+                    if not sub_fail(): break
+                    sub_arg_snap = list(sub.regs)
+                    continue
+                if isinstance(sub.cp, int):
+                    sub_ip = sub.cp
+                    sub.cp = None
+                    sub_arg_snap = list(sub.regs)
+                    continue
+                break
         elif op == 'call_lowered':
             _, fn, _arity = instr
             try:
@@ -2384,6 +2642,8 @@ def _run_aggregate_body(code: list, labels: dict, body_start: int, end_pc: int,
             if isinstance(sub.cp, int):
                 sub_ip = sub.cp
                 sub.cp = None
+                sub.temp_y_regs = None
+                _clear_structure_context(sub)
                 sub_arg_snap = list(sub.regs)
             else:
                 break
@@ -2412,16 +2672,17 @@ def _run_aggregate_body(code: list, labels: dict, body_start: int, end_pc: int,
         elif op == 'trust_me':
             pop_choice_point(sub)
             sub_arg_snap = list(sub.regs)
-        elif op in ('neck_cut', 'cut_ite'):
-            sub.b = sub.cut_b if op == 'neck_cut' else (
-                sub.stack[sub.b].saved_b if sub.b >= 0 and isinstance(sub.stack[sub.b], ChoicePoint) else sub.b
-            )
+        elif op == 'neck_cut':
+            _cut_to(sub, sub.cut_b)
+        elif op == 'cut_ite':
+            target_b = sub.stack[sub.b].saved_b if sub.b >= 0 and isinstance(sub.stack[sub.b], ChoicePoint) else sub.b
+            _cut_to(sub, target_b)
         elif op == 'get_level':
             _, reg = instr
             set_reg(sub, reg, sub.b)
         elif op == 'cut':
             _, reg = instr
-            sub.b = get_reg(sub, reg)
+            _cut_to(sub, get_reg(sub, reg))
         elif op == 'allocate':
             n_perm = instr[1] if len(instr) > 1 else 16
             push_environment(sub, n_perm)
@@ -2464,16 +2725,20 @@ def _run_aggregate_body(code: list, labels: dict, body_start: int, end_pc: int,
             val = deref(get_reg(sub, 1), sub)
             if isinstance(val, Var):
                 tgt = lv_pc
+            elif isinstance(val, Atom) and val.name == '[]':
+                tgt = ll_pc
             elif isinstance(val, Atom):
                 tgt = lc_pc
             elif isinstance(val, (Int, Float)):
                 tgt = lc_pc
             elif isinstance(val, Ref):
                 h = sub.heap.get(val.addr)
-                if isinstance(h, Compound) and h.functor == '.' and len(h.args) == 2:
+                if isinstance(h, Compound) and _is_cons_functor(h.functor) and len(h.args) == 2:
                     tgt = ll_pc
                 else:
                     tgt = ls_pc
+            elif isinstance(val, Compound) and _is_cons_functor(val.functor):
+                tgt = ll_pc
             elif isinstance(val, Compound):
                 tgt = ls_pc
             else:
