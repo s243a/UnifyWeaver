@@ -584,6 +584,30 @@ test(runtime_parser_compiled_runs_read_term_from_atom) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+test(runtime_parser_compiled_read_term_variable_names) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read_term_vars_demo),
+			assertz((user:py_read_term_vars_demo :-
+				read_term_from_atom('p(A,B,A)', T, [variable_names(Vs)]),
+				T = p(X, Y, X),
+				Vs = ['A'=X, 'B'=Y])),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_read_vars', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_read_term_vars_demo/0],
+				[runtime_parser(compiled)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_read_term_vars_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read_term_vars_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_parser_compiled_runs_reverse_term_to_atom) :-
 	setup_call_cleanup(
 		(   retractall(user:py_term_to_atom_demo),

@@ -15,7 +15,9 @@
 %
 % API
 %   parse_term_from_codes(+Codes, +OpTable, -Term).
+%   parse_term_from_codes(+Codes, +OpTable, -Term, -VarEnv).
 %   parse_term_from_atom (+Atom,  +OpTable, -Term).
+%   parse_term_from_atom (+Atom,  +OpTable, -Term, -VarEnv).
 %   canonical_op_table(-OpTable).
 %
 % OpTable is a list of op(Name, Prec, Type) facts; Type is one of
@@ -43,7 +45,9 @@
 
 :- module(prolog_term_parser, [
     parse_term_from_codes/3,
+    parse_term_from_codes/4,
     parse_term_from_atom/3,
+    parse_term_from_atom/4,
     canonical_op_table/1
 ]).
 
@@ -55,10 +59,17 @@ parse_term_from_atom(Atom, OpTable, Term) :-
     atom_codes(Atom, Codes),
     parse_term_from_codes(Codes, OpTable, Term).
 
+parse_term_from_atom(Atom, OpTable, Term, VarEnv) :-
+    atom_codes(Atom, Codes),
+    parse_term_from_codes(Codes, OpTable, Term, VarEnv).
+
 parse_term_from_codes(Codes, OpTable, Term) :-
+    parse_term_from_codes(Codes, OpTable, Term, _VarEnv).
+
+parse_term_from_codes(Codes, OpTable, Term, VarEnv) :-
     tokenize(Codes, Tokens),
     !,
-    parse_expr(Tokens, OpTable, 1200, Term, _Prec, [], _Env, Rest),
+    parse_expr(Tokens, OpTable, 1200, Term, _Prec, [], VarEnv, Rest),
     Rest == [].
 
 % -----------------------------------------------------------------------------

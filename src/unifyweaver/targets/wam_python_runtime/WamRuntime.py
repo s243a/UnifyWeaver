@@ -1023,7 +1023,7 @@ def _list_from_terms(items: List['Term']) -> 'Term':
 
 def _runtime_functor_name(functor: str, arity: int) -> str:
     if functor in ('.', './2', '[|]/2'):
-        return functor
+        return '.'
     if '/' in functor:
         return functor
     return f"{functor}/{arity}"
@@ -1092,12 +1092,59 @@ def _copy_term_between_states(val: 'Term', source: WamState, target: WamState,
     return val
 
 
-def _execute_compiled_parse_atom(state: WamState, atom_text: str, target: 'Term') -> bool:
+def _runtime_atom_text(atom_text: str) -> str:
+    if len(atom_text) >= 2 and atom_text[0] == "'" and atom_text[-1] == "'":
+        inner = atom_text[1:-1]
+        return inner.replace("\\'", "'").replace("\\\\", "\\")
+    return atom_text
+
+
+def _read_option_arg(options: 'Term', name: str, state: WamState) -> Optional['Term']:
+    items = _term_to_list(options, state)
+    if items is None:
+        return None
+    wanted = f"{name}/1"
+    for item in items:
+        item = deref(item, state)
+        if isinstance(item, Compound) and len(item.args) == 1:
+            if item.functor == wanted or item.functor == name:
+                return item.args[0]
+    return None
+
+
+def _variable_names_from_env(env_term: 'Term', source: WamState, target: WamState,
+                             var_map: Dict[int, Var]) -> 'Term':
+    pairs: List[Term] = []
+    for pair in _term_to_list(env_term, source) or []:
+        pair = deref(pair, source)
+        if not isinstance(pair, Compound) or len(pair.args) != 2:
+            continue
+        name = deref(pair.args[0], source)
+        if not isinstance(name, Atom) or name.name == '_':
+            continue
+        var = _copy_term_between_states(pair.args[1], source, target, var_map)
+        pairs.append(Compound('=/2', [make_atom(name.name), var]))
+    return _list_from_terms(list(reversed(pairs)))
+
+
+def _execute_compiled_parse_atom(state: WamState, atom_text: str, target: 'Term',
+                                 options: Optional['Term'] = None) -> bool:
+    atom_text = _runtime_atom_text(atom_text)
     code = getattr(state, '_code', None)
     labels = getattr(state, '_labels', None)
     if not code or not labels:
         return False
-    if 'canonical_op_table/1' not in labels or 'parse_term_from_atom/3' not in labels:
+    if 'canonical_op_table/1' not in labels:
+        return False
+
+    want_var_names = None
+    if options is not None:
+        want_var_names = _read_option_arg(options, 'variable_names', state)
+
+    parser_entry = 'parse_term_from_atom/3'
+    if want_var_names is not None and 'parse_term_from_atom/4' in labels:
+        parser_entry = 'parse_term_from_atom/4'
+    elif parser_entry not in labels:
         return False
 
     parser_state = WamState()
@@ -1107,21 +1154,32 @@ def _execute_compiled_parse_atom(state: WamState, atom_text: str, target: 'Term'
         return False
 
     parsed = parser_state.fresh_var()
+    var_env = parser_state.fresh_var()
     set_reg(parser_state, 1, make_atom(atom_text))
     set_reg(parser_state, 2, deref(ops, parser_state))
     set_reg(parser_state, 3, parsed)
-    if not run_wam(code, labels, 'parse_term_from_atom/3', parser_state):
+    if parser_entry == 'parse_term_from_atom/4':
+        set_reg(parser_state, 4, var_env)
+    if not run_wam(code, labels, parser_entry, parser_state):
         return False
 
-    copied = _copy_term_between_states(parsed, parser_state, state, {})
-    return unify(target, copied, state)
+    var_map: Dict[int, Var] = {}
+    copied = _copy_term_between_states(parsed, parser_state, state, var_map)
+    if not unify(target, copied, state):
+        return False
+    if want_var_names is not None:
+        names = _variable_names_from_env(var_env, parser_state, state, var_map)
+        if not unify(want_var_names, names, state):
+            return False
+    return True
 
 
-def _execute_read_term_from_atom(state: WamState) -> bool:
+def _execute_read_term_from_atom(state: WamState, arity: int = 2) -> bool:
     atom_term = deref(get_reg(state, 1), state)
     if not isinstance(atom_term, Atom):
         return False
-    return _execute_compiled_parse_atom(state, atom_term.name, get_reg(state, 2))
+    options = get_reg(state, 3) if arity == 3 else None
+    return _execute_compiled_parse_atom(state, atom_term.name, get_reg(state, 2), options)
 
 
 def _execute_term_to_atom(state: WamState) -> bool:
@@ -1303,9 +1361,9 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
     if builtin in ('number_codes/2', 'number_codes') and arity == 2:
         return _execute_number_codes(state)
     if builtin in ('read_term_from_atom/2', 'read_term_from_atom') and arity == 2:
-        return _execute_read_term_from_atom(state)
+        return _execute_read_term_from_atom(state, 2)
     if builtin in ('read_term_from_atom/3',) and arity == 3:
-        return _execute_read_term_from_atom(state)
+        return _execute_read_term_from_atom(state, 3)
     if builtin in ('term_to_atom/2', 'term_to_atom') and arity == 2:
         return _execute_term_to_atom(state)
     if builtin in ('append/3', 'append') and arity == 3:
@@ -1495,6 +1553,7 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
 
         elif op == 'put_structure':
             _, functor, arity, reg = instr
+            functor = _runtime_functor_name(functor, arity)
             old = deref(get_reg(state, reg), state)
             c = Compound(functor, [None]*arity)
             addr = heap_put(state, c)
@@ -1566,6 +1625,7 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
 
         elif op == 'get_structure':
             _, functor, arity, reg = instr
+            functor = _runtime_functor_name(functor, arity)
             snap_val = arg_snapshot[reg] if (reg < len(arg_snapshot) and reg <= _A_MAX) else get_reg(state, reg)
             val = deref(snap_val, state)
             if isinstance(val, Var):
