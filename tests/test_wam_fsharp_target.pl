@@ -765,11 +765,12 @@ test_fsharp_run_negation_parallel_present :-
         %% forkMinBranches threshold for forking overhead.
         sub_string(S, _, _, _, "and forkMinBranches : int = 3"),
         sub_string(S, _, _, _, "List.length branchPCs >= forkMinBranches"),
-        %% Async.Parallel for the actual TPL wiring.
-        sub_string(S, _, _, _, "|> Async.Parallel"),
+        %% Async.Choice gives soft race-to-cancel: returns first Some,
+        %% wall time bounded by the first successful branch (rather
+        %% than the slowest, which Async.Parallel + Array.exists would).
+        sub_string(S, _, _, _, "|> Async.Choice"),
         sub_string(S, _, _, _, "|> Async.RunSynchronously"),
-        %% Disjunction-of-success via Array.exists.
-        sub_string(S, _, _, _, "|> Array.exists id"),
+        sub_string(S, _, _, _, "result.IsSome"),
         %% Fallback to sequential when too few branches.
         sub_string(S, _, _, _, "// Too few branches for fork overhead to pay off")
     ->  pass(Test)

@@ -334,210 +334,6 @@ fsharp_pick_layout(_PredIndicator, NClauses, FactOnly, Options, Layout) :-
     ).
 
 % ============================================================================
-% PHASE 1: WAM Instruction → F# Expression
-%
-% Each clause maps one WAM instruction to an F# state transformation
-% of type: WamState -> WamState option
-% None = failure (backtrack), Some s = success with updated state.
-%
-% F# idioms applied throughout:
-%   - Map.tryFind instead of Map.lookup
-%   - Map.add instead of Map.insert
-%   - { s with ... } record update
-%   - match ... with | Pat -> ... instead of case
-%   - Option.defaultValue instead of fromMaybe
-% ============================================================================
-
-%% wam_to_fsharp(+Instruction, -FSharpExpr)
-
-wam_to_fsharp(get_constant(C, Ai), Code) :-
-    format(string(Code),
-'    let valOpt = getReg ~w s
-    match valOpt with
-    | Some v when v = ~w -> Some { s with WsPC = s.WsPC + 1 }
-    | Some (Unbound vid) ->
-        let r = Array.copy s.WsRegs
-        r.[~w] <- ~w
-        Some { s with
-                 WsPC      = s.WsPC + 1
-                 WsRegs    = r
-                 WsBindings= Map.add vid ~w s.WsBindings
-                 WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
-                 WsTrailLen= s.WsTrailLen + 1 }
-    | _ -> None', [Ai, C, Ai, C, C]).
-
-wam_to_fsharp(get_variable(Xn, Ai), Code) :-
-    format(string(Code),
-'    match getReg ~w s with
-    | Some dv -> Some (putReg ~w dv { s with WsPC = s.WsPC + 1 })
-    | None    -> None', [Ai, Xn]).
-
-wam_to_fsharp(get_value(Xn, Ai), Code) :-
-    format(string(Code),
-'    let va = getReg ~w s
-    let vx = getReg ~w s
-    match va, vx with
-    | Some a, Some x when a = x -> Some { s with WsPC = s.WsPC + 1 }
-    | Some (Unbound vid), Some x ->
-        let r = Array.copy s.WsRegs
-        r.[~w] <- x
-        Some { s with
-                 WsPC      = s.WsPC + 1
-                 WsRegs    = r
-                 WsBindings= Map.add vid x s.WsBindings
-                 WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
-                 WsTrailLen= s.WsTrailLen + 1 }
-    | _ -> None', [Ai, Xn, Ai]).
-
-wam_to_fsharp(put_constant(C, Ai), Code) :-
-    format(string(Code),
-'    let r = Array.copy s.WsRegs
-    r.[~w] <- ~w
-    Some { s with WsPC = s.WsPC + 1; WsRegs = r }', [Ai, C]).
-
-wam_to_fsharp(put_variable(Xn, Ai), Code) :-
-    format(string(Code),
-'    let vid = s.WsVarCounter
-    let var = Unbound vid
-    let s1  = putReg ~w var s
-    let r   = Array.copy s1.WsRegs
-    r.[~w] <- var
-    Some { s1 with
-             WsPC       = s.WsPC + 1
-             WsRegs     = r
-             WsVarCounter= s.WsVarCounter + 1 }', [Xn, Ai]).
-
-wam_to_fsharp(put_value(Xn, Ai), Code) :-
-    format(string(Code),
-'    match getReg ~w s with
-    | Some v ->
-        let r = Array.copy s.WsRegs
-        r.[~w] <- v
-        Some { s with WsPC = s.WsPC + 1; WsRegs = r }
-    | None   -> None', [Xn, Ai]).
-
-wam_to_fsharp(call(Pred, _Arity), Code) :-
-    format(string(Code),
-'    Some { s with WsPC = lookupLabel "~w" ctx; WsCP = s.WsPC + 1 }', [Pred]).
-
-wam_to_fsharp(proceed, Code) :-
-    Code = '    let ret = s.WsCP
-    if ret = 0 then Some { s with WsPC = 0 }
-    else Some { s with WsPC = ret; WsCP = 0 }'.
-
-wam_to_fsharp(allocate, Code) :-
-    Code = '    let frame = { EfSavedCP = s.WsCP; EfYRegs = Map.empty }
-    Some { s with
-             WsPC    = s.WsPC + 1
-             WsStack = frame :: s.WsStack
-             WsCutBar= s.WsCPsLen }'.
-
-wam_to_fsharp(deallocate, Code) :-
-    Code = '    match s.WsStack with
-    | ef :: rest -> Some { s with WsPC = s.WsPC + 1; WsStack = rest; WsCP = ef.EfSavedCP }
-    | []         -> None'.
-
-wam_to_fsharp(try_me_else(Label), Code) :-
-    format(string(Code),
-'    let nextPC = lookupLabel "~w" ctx
-    let cp = { CpNextPC   = nextPC
-               CpRegs     = Array.copy s.WsRegs
-               CpStack    = s.WsStack
-               CpCP       = s.WsCP
-               CpTrailLen = s.WsTrailLen
-               CpHeapLen  = s.WsHeapLen
-               CpBindings = s.WsBindings
-               CpCutBar   = s.WsCutBar
-               CpAggFrame = None
-               CpBuiltin  = None }
-    Some { s with WsPC = s.WsPC + 1; WsCPs = cp :: s.WsCPs; WsCPsLen = s.WsCPsLen + 1 }',
-    [Label]).
-
-wam_to_fsharp(trust_me, Code) :-
-    Code = '    match s.WsCPs with
-    | _ :: rest -> Some { s with WsPC = s.WsPC + 1; WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
-    | []        -> None'.
-
-wam_to_fsharp(retry_me_else(Label), Code) :-
-    format(string(Code),
-'    match s.WsCPs with
-    | cp :: rest ->
-        let nextPC = lookupLabel "~w" ctx
-        Some { s with WsPC = s.WsPC + 1; WsCPs = { cp with CpNextPC = nextPC } :: rest }
-    | [] -> None', [Label]).
-
-wam_to_fsharp(builtin_call('!/0', 0), Code) :-
-    Code = '    Some { s with WsPC = s.WsPC + 1
-                         WsCPs    = List.take s.WsCutBar s.WsCPs
-                         WsCPsLen = s.WsCutBar }'.
-
-wam_to_fsharp(builtin_call('is/2', 2), Code) :-
-    Code = '    let expr   = s.WsRegs.[2] |> derefVar s.WsBindings
-    let result = evalArith s.WsBindings expr
-    let lhs    = getReg 1 s
-    match lhs, result with
-    | Some (Unbound vid), Some r ->
-        let v = if float (int r) = r then Integer (int r) else Float r
-        let regs = Array.copy s.WsRegs
-        regs.[1] <- v
-        Some { s with
-                 WsPC      = s.WsPC + 1
-                 WsRegs    = regs
-                 WsBindings= Map.add vid v s.WsBindings
-                 WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
-                 WsTrailLen= s.WsTrailLen + 1 }
-    | Some (Integer n), Some r when float n = r -> Some { s with WsPC = s.WsPC + 1 }
-    | Some (Float f),   Some r when f = r       -> Some { s with WsPC = s.WsPC + 1 }
-    | _ -> None'.
-
-wam_to_fsharp(builtin_call('</2', 2), Code) :-
-    Code = '    let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
-    let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
-    match v1, v2 with
-    | Some a, Some b when a < b -> Some { s with WsPC = s.WsPC + 1 }
-    | _ -> None'.
-
-wam_to_fsharp(builtin_call('>/2', 2), Code) :-
-    Code = '    let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
-    let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
-    match v1, v2 with
-    | Some a, Some b when a > b -> Some { s with WsPC = s.WsPC + 1 }
-    | _ -> None'.
-
-wam_to_fsharp(builtin_call('\\+/1', 1), Code) :-
-    Code = '    let goal = Some s.WsRegs.[1] |> Option.bind (derefHeap s.WsHeap)
-    match goal with
-    | Some (Str ("member", [needle; haystack])) ->
-        let n = derefVar s.WsBindings needle
-        let h = derefVar s.WsBindings haystack
-        let found = match h with
-                    | VList items -> List.exists (fun item -> derefVar s.WsBindings item = n) items
-                    | _ -> false
-        if found then None else Some { s with WsPC = s.WsPC + 1 }
-    | _ -> None'.
-
-wam_to_fsharp(builtin_call('length/2', 2), Code) :-
-    Code = '    let listVal = s.WsRegs.[1] |> derefVar s.WsBindings
-    match listVal with
-    | VList items ->
-        let len = List.length items
-        let lhs = getReg 2 s
-        match lhs with
-        | Some (Unbound vid) ->
-            let v = Integer len
-            let regs = Array.copy s.WsRegs
-            regs.[2] <- v
-            Some { s with
-                     WsPC      = s.WsPC + 1
-                     WsRegs    = regs
-                     WsBindings= Map.add vid v s.WsBindings
-                     WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
-                     WsTrailLen= s.WsTrailLen + 1 }
-        | Some (Integer n) when n = len -> Some { s with WsPC = s.WsPC + 1 }
-        | _ -> None
-    | _ -> None'.
-
-% ============================================================================
 % PHASE 2: Backtrack Function
 % ============================================================================
 
@@ -2065,13 +1861,17 @@ and enumerateParBranches (ctx: WamContext) (parPC: int) (elsePC: int) : int list
 ///   - Haskell uses Control.Concurrent.Async with waitAny + cancel for
 ///     race-to-cancel semantics.  F# branches run `run ctx snapshot`,
 ///     which is a tight tail-recursive loop without cancellation checks,
-///     so cooperative cancellation would need a CancellationToken
-///     threaded through every step — out of scope for this round.
-///   - This implementation uses Async.Parallel: all branches finish,
-///     but they run in parallel via the .NET ThreadPool.  The result
-///     is the disjunction of per-branch success.  Still faster than
-///     sequential for genuine fork-eligible chains; race-to-cancel can
-///     be a future optimization.
+///     so a true "hard cancel" of in-progress branches would need a
+///     CancellationToken threaded through every step — out of scope.
+///   - This implementation uses Async.Choice for "soft race-to-cancel":
+///     each branch is wrapped as Async<unit option> returning Some () on
+///     success, None on failure.  Async.Choice returns as soon as the
+///     first Some arrives and signals cancellation to the others.  The
+///     others'' `run` loops don''t honor cancellation tokens, so they
+///     continue running in the background until they naturally finish —
+///     but `runNegationParallel` returns immediately on the first
+///     success, so wall time is bounded by the FIRST successful branch
+///     rather than the SLOWEST branch (the Async.Parallel behavior).
 and runNegationParallel (ctx: WamContext) (s: WamState) (entryPC: int) (elsePC: int) : bool =
     // enumerateParBranches returns the BRANCH BODY entry PCs (per its own
     // contract: "Each branch''s body begins at chainOpPC + 1"), so the
@@ -2086,13 +1886,17 @@ and runNegationParallel (ctx: WamContext) (s: WamState) (entryPC: int) (elsePC: 
         let branchAction pc =
             async {
                 let snapshot = { s with WsPC = pc; WsCP = 0; WsCutBar = 0 }
-                return (run ctx snapshot).IsSome
+                if (run ctx snapshot).IsSome then return Some ()
+                else return None
             }
-        branchPCs
-        |> List.map branchAction
-        |> Async.Parallel
-        |> Async.RunSynchronously
-        |> Array.exists id
+        // Async.Choice: returns the first Some.  Wall time bounded by
+        // the FIRST successful branch rather than the SLOWEST one.
+        let result =
+            branchPCs
+            |> List.map branchAction
+            |> Async.Choice
+            |> Async.RunSynchronously
+        result.IsSome
     else
         // Too few branches for fork overhead to pay off — run sequentially.
         match run ctx { s with WsPC = entryPC; WsCP = 0; WsCutBar = 0 } with
