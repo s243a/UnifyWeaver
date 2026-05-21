@@ -20,6 +20,7 @@ class CSharpQueryCalibrationCiContractTests(unittest.TestCase):
             "python3 -m unittest tests/test_csharp_query_scan_calibration_refresh_wrapper.py",
             "python3 examples/benchmark/refresh_csharp_query_scan_source_mode_calibration.py --dry-run",
             "python3 -m unittest tests/test_csharp_query_calibration_ci_contract.py",
+            "python3 -m unittest tests/test_csharp_query_policy_report_ci_contract.py",
         ]
 
         for command in required_commands:
