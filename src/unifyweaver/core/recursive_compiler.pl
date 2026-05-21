@@ -125,13 +125,19 @@ compile_dispatch(Pred/Arity, FinalOptions, Target, GeneratedCode) :-
     ),
     format('Classification: ~w~n', [Classification]),
 
-    (   Classification = non_recursive ->
-        compile_non_recursive(Target, Pred/Arity, FinalOptions, GeneratedCode)
-    ;   Target == csharp ->
+    (   Target == csharp ->
+        % Unified csharp dispatch: query-plan backend by default,
+        % procedural opt-in via mode(procedural).  Hoisted above the
+        % non_recursive branch so simple fact predicates still get
+        % the query-plan form (RelationScanNode etc.) instead of
+        % falling through to procedural — matching the dispatch the
+        % test_recursive_csharp_target tests assume.
         (   option(mode(procedural), FinalOptions) ->
             csharp_native_target:compile_predicate_to_csharp(Pred/Arity, FinalOptions, GeneratedCode)
         ;   compile_recursive_csharp_query(Pred/Arity, FinalOptions, GeneratedCode)
         )
+    ;   Classification = non_recursive ->
+        compile_non_recursive(Target, Pred/Arity, FinalOptions, GeneratedCode)
     ;   Classification = transitive_closure(BasePred) ->
         format('Detected transitive closure over ~w~n', [BasePred]),
         compile_transitive_closure(Target, Pred, Arity, BasePred, FinalOptions, GeneratedCode)
