@@ -180,7 +180,10 @@ compile_facts_no_dedup(_Pred, Arity, Facts, PredStr, BashCode) :-
             '~s_stream'
         ],
         atomic_list_concat(Template, '\n', TemplateStr),
-        format(string(BashCode), TemplateStr, [PredStr, PredStr, EntriesStr, PredStr, PredStr, PredStr, PredStr])
+        % 8 ~s placeholders: comment, data-array decl, entries, fn name,
+        % array-ref in lookup loop, stream-fn name, array-ref in stream
+        % loop, and the trailing direct invocation of <pred>_stream.
+        format(string(BashCode), TemplateStr, [PredStr, PredStr, EntriesStr, PredStr, PredStr, PredStr, PredStr, PredStr])
     ;   Arity = 2 ->
         Template = [
             '#!/bin/bash',
@@ -217,7 +220,12 @@ compile_facts_no_dedup(_Pred, Arity, Facts, PredStr, BashCode) :-
             '~s_stream'
         ],
         atomic_list_concat(Template, '\n', TemplateStr),
-        format(string(BashCode), TemplateStr, [PredStr, PredStr, EntriesStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr])
+        % 11 ~s placeholders: comment, data-array decl, entries, fn name,
+        % array-ref in $2-branch, array-ref in else-branch, stream-fn
+        % name, array-ref in stream-fn, reverse-stream-fn name,
+        % array-ref in reverse-stream-fn, and the trailing direct
+        % invocation of <pred>_stream.
+        format(string(BashCode), TemplateStr, [PredStr, PredStr, EntriesStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr])
     ;   % For higher arities, use a generic approach
         Template = [
             '#!/bin/bash',
