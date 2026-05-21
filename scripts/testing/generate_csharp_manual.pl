@@ -27,9 +27,13 @@ main :-
     (exists_directory(Dir) -> delete_directory_and_contents(Dir) ; true),
     make_directory(Dir),
 
-    % Create dotnet project
+    % Create dotnet project.  Probe `dotnet --list-sdks` for the highest
+    % installed major so this works on hosts without net9.0 (e.g. an SDK 8
+    % container).  Override with UNIFYWEAVER_DOTNET_FRAMEWORK if needed.
     writeln('Creating dotnet console project...'),
-    process_create(path(dotnet), ['new', 'console', '--force', '--framework', 'net9.0'],
+    detect_target_framework(Framework),
+    format('Using target framework: ~w~n', [Framework]),
+    process_create(path(dotnet), ['new', 'console', '--force', '--framework', Framework],
                    [cwd(Dir), stdout(null), stderr(null)]),
 
     % Copy QueryRuntime.cs
@@ -73,3 +77,31 @@ class Program {
     format('  dotnet run~n'),
     format('~nExpected output: 0, 2, 4~n~n'),
     halt(0).
+
+detect_target_framework(Framework) :-
+    (   getenv('UNIFYWEAVER_DOTNET_FRAMEWORK', Env), Env \== ''
+    ->  atom_string(Framework, Env)
+    ;   probe_target_framework(Framework)
+    ->  true
+    ;   Framework = 'net9.0'
+    ).
+
+probe_target_framework(Framework) :-
+    catch(
+        setup_call_cleanup(
+            process_create(path(dotnet), ['--list-sdks'],
+                           [stdout(pipe(Out)), stderr(null), process(PID)]),
+            read_string(Out, _, Output),
+            (close(Out), process_wait(PID, _))
+        ),
+        _, fail
+    ),
+    split_string(Output, "\n", "\r \t", Lines),
+    findall(Major,
+            ( member(Line, Lines), Line \== "",
+              split_string(Line, ".", "", [MajorStr|_]),
+              number_string(Major, MajorStr)
+            ), Majors),
+    Majors \= [],
+    max_list(Majors, Highest),
+    format(atom(Framework), 'net~w.0', [Highest]).

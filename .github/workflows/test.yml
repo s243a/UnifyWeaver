@@ -114,6 +114,13 @@ jobs:
       CSHARP_QUERY_SMOKE_JSON_SUMMARY_PATH: tmp/csharp_query_smoke_ci/cache_smoke_sequence_summary.json
       CSHARP_QUERY_SMOKE_FAILURE_ARTIFACT_NAME: csharp-query-smoke-artifacts
       CSHARP_QUERY_SMOKE_JSON_ARTIFACT_NAME: csharp-query-smoke-summary-json
+      # Pin the Prolog harness's TargetFramework probe to the SDK installed
+      # by the setup-dotnet step below, so generated .csproj's land their
+      # build output in a predictable bin/Debug/<framework>/ directory.
+      # The PS smoke runner now discovers the framework dir at runtime
+      # too, but pinning makes it deterministic regardless of which
+      # SDKs the runner has pre-installed.
+      UNIFYWEAVER_DOTNET_FRAMEWORK: net9.0
 
     steps:
       - name: Checkout code

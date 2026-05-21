@@ -12,7 +12,10 @@
 #   pwsh -File .\scripts\testing\run_csharp_query_runtime_smoke.ps1 -CacheSlice lru
 #
 # Notes:
-# - Requires SWI-Prolog and dotnet (net9.0 SDK) on PATH (or in common SWI locations).
+# - Requires SWI-Prolog and dotnet on PATH (or in common SWI locations).  The
+#   target framework is detected from the generated .csproj's TargetFramework
+#   element, so net8.0 / net9.0 / etc. all work as long as the installed SDK
+#   matches what the Prolog harness picks at codegen time.
 # - Generated bin/obj artifacts should be git-ignored.
 
 [CmdletBinding()]
@@ -273,9 +276,21 @@ foreach ($project in $projects) {
         continue
     }
 
-    $binDir = Join-PathMany -Base $dir -Parts @("bin", "Debug", "net9.0")
-    if (-not (Test-Path $binDir)) {
-        throw "Build output dir not found: $binDir"
+    # Locate bin/Debug/<framework>/ without hardcoding the framework — the
+    # Prolog harness picks the TargetFramework dynamically from the host's
+    # installed SDKs (UNIFYWEAVER_DOTNET_FRAMEWORK > `dotnet --list-sdks`
+    # highest > 'net9.0' fallback), so the directory name varies by runner.
+    $debugDir = Join-PathMany -Base $dir -Parts @("bin", "Debug")
+    if (-not (Test-Path $debugDir)) {
+        throw "Build output dir not found: $debugDir (no bin/Debug)"
+    }
+    $binDir = Get-ChildItem -Path $debugDir -Directory -Filter "net*" -ErrorAction SilentlyContinue |
+        Select-Object -First 1 |
+        ForEach-Object FullName
+    if (-not $binDir) {
+        $candidates = (Get-ChildItem -Path $debugDir -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object Name) -join ", "
+        throw "Build output dir not found: $debugDir/net* (found subdirs: $candidates)"
     }
 
     $dll = Get-ChildItem -Path $binDir -File -Filter "*.dll" | Where-Object { $_.Name -notlike "*.deps.dll" } | Select-Object -First 1
