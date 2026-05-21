@@ -114,6 +114,32 @@ generation-time diagnostic. Silent runtime stubs are not acceptable for new
 targets because parser failure is otherwise hard to distinguish from ordinary
 predicate failure.
 
+## Syntax Error Policy
+
+The parser entry point itself reports invalid source text as ordinary predicate
+failure. Builtin-facing consumers decide whether that failure remains quiet or
+becomes an ISO-style syntax error. This keeps the portable parser pure and lets
+each target integrate with its existing ISO-error dispatch.
+
+For `read_term_from_atom/2,3`, the default behavior is selected by the enclosing
+predicate's ISO mode when the target has adopted the three-form ISO/lax builtin
+contract:
+
+- lax/default-lax call sites fail quietly on invalid syntax;
+- ISO-mode default call sites throw `error(syntax_error(_), _)`;
+- explicit ISO and explicit lax builtin keys keep their meaning regardless of
+  the enclosing predicate's mode.
+
+The `syntax_errors/1` option is an explicit local override and takes precedence
+over the enclosing predicate mode:
+
+- `syntax_errors(error)` throws on invalid syntax even from a lax call site;
+- `syntax_errors(fail)` and `syntax_errors(quiet)` fail quietly even from an
+  ISO call site.
+
+Targets that have not adopted ISO-error dispatch may keep invalid syntax as
+failure, but should document that `syntax_errors(error)` is not yet supported.
+
 ## Stream Read Semantics
 
 `read/2` must read from a target stream until it can parse one complete dotted

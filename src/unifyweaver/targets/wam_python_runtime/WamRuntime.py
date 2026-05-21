@@ -1198,14 +1198,34 @@ def _singletons_from_term(term: 'Term', env_term: 'Term', source: WamState,
     return _list_from_terms(pairs)
 
 
+def _syntax_errors_mode(options: Optional['Term'], state: WamState, default: str) -> str:
+    if options is None:
+        return default
+    opt = _read_option_arg(options, 'syntax_errors', state)
+    opt = deref(opt, state) if opt is not None else None
+    if isinstance(opt, Atom) and opt.name in ('error', 'fail', 'quiet'):
+        return opt.name
+    return default
+
+
+def make_syntax_error(state: WamState, kind: str = 'end_of_clause') -> Term:
+    return Compound('syntax_error/1', [make_atom(kind)])
+
+
 def _execute_compiled_parse_atom(state: WamState, atom_text: str, target: 'Term',
-                                 options: Optional['Term'] = None) -> bool:
+                                 options: Optional['Term'] = None,
+                                 syntax_default: str = 'fail') -> bool:
     atom_text = _runtime_atom_text(atom_text)
     code = getattr(state, '_code', None)
     labels = getattr(state, '_labels', None)
+    syntax_mode = _syntax_errors_mode(options, state, syntax_default)
     if not code or not labels:
+        if syntax_mode == 'error':
+            return throw_iso_error(state, make_syntax_error(state))
         return False
     if 'canonical_op_table/1' not in labels:
+        if syntax_mode == 'error':
+            return throw_iso_error(state, make_syntax_error(state))
         return False
 
     want_var_names = None
@@ -1238,6 +1258,8 @@ def _execute_compiled_parse_atom(state: WamState, atom_text: str, target: 'Term'
     if parser_entry == 'parse_term_from_atom/4':
         set_reg(parser_state, 4, var_env)
     if not run_wam(code, labels, parser_entry, parser_state):
+        if syntax_mode == 'error':
+            return throw_iso_error(state, make_syntax_error(state))
         return False
 
     var_map: Dict[int, Var] = {}
@@ -1259,12 +1281,14 @@ def _execute_compiled_parse_atom(state: WamState, atom_text: str, target: 'Term'
     return True
 
 
-def _execute_read_term_from_atom(state: WamState, arity: int = 2) -> bool:
+def _execute_read_term_from_atom(state: WamState, arity: int = 2,
+                                 syntax_default: str = 'fail') -> bool:
     atom_term = deref(get_reg(state, 1), state)
     if not isinstance(atom_term, Atom):
         return False
     options = get_reg(state, 3) if arity == 3 else None
-    return _execute_compiled_parse_atom(state, atom_term.name, get_reg(state, 2), options)
+    return _execute_compiled_parse_atom(state, atom_term.name, get_reg(state, 2),
+                                        options, syntax_default)
 
 
 def _execute_term_to_atom(state: WamState) -> bool:
@@ -1445,10 +1469,15 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         return _execute_atom_codes(state)
     if builtin in ('number_codes/2', 'number_codes') and arity == 2:
         return _execute_number_codes(state)
-    if builtin in ('read_term_from_atom/2', 'read_term_from_atom') and arity == 2:
-        return _execute_read_term_from_atom(state, 2)
-    if builtin in ('read_term_from_atom/3',) and arity == 3:
-        return _execute_read_term_from_atom(state, 3)
+    if builtin in ('read_term_from_atom/2', 'read_term_from_atom_lax/2',
+                   'read_term_from_atom', 'read_term_from_atom_lax') and arity == 2:
+        return _execute_read_term_from_atom(state, 2, 'fail')
+    if builtin in ('read_term_from_atom_iso/2', 'read_term_from_atom_iso') and arity == 2:
+        return _execute_read_term_from_atom(state, 2, 'error')
+    if builtin in ('read_term_from_atom/3', 'read_term_from_atom_lax/3') and arity == 3:
+        return _execute_read_term_from_atom(state, 3, 'fail')
+    if builtin in ('read_term_from_atom_iso/3',) and arity == 3:
+        return _execute_read_term_from_atom(state, 3, 'error')
     if builtin in ('term_to_atom/2', 'term_to_atom') and arity == 2:
         return _execute_term_to_atom(state)
     if builtin in ('append/3', 'append') and arity == 3:
