@@ -833,7 +833,8 @@ def _deep_copy_term(val, var_map, state):
 %% python_value_literal(+PrologTerm, -PyLiteral)
 %  Convert a Prolog term to a Python value literal.
 python_value_literal(atom(A), PyVal) :- !,
-	format(atom(PyVal), 'Atom("~w")', [A]).
+	escape_python_string(A, Esc),
+	format(atom(PyVal), 'Atom("~w")', [Esc]).
 python_value_literal(integer(I), PyVal) :- !,
 	format(atom(PyVal), 'Int(~w)', [I]).
 python_value_literal(N, PyVal) :- integer(N), !,
@@ -841,9 +842,11 @@ python_value_literal(N, PyVal) :- integer(N), !,
 python_value_literal(N, PyVal) :- float(N), !,
 	format(atom(PyVal), 'Float(~w)', [N]).
 python_value_literal(A, PyVal) :- atom(A), !,
-	format(atom(PyVal), 'Atom("~w")', [A]).
+	escape_python_string(A, Esc),
+	format(atom(PyVal), 'Atom("~w")', [Esc]).
 python_value_literal(S, PyVal) :- string(S), !,
-	format(atom(PyVal), 'Atom("~w")', [S]).
+	escape_python_string(S, Esc),
+	format(atom(PyVal), 'Atom("~w")', [Esc]).
 
 %% wam_instruction_to_python_literal(+WamInstr, -PyLiteral)
 %  Convert WAM instruction term to Python tuple literal.
@@ -985,7 +988,12 @@ clean_comma(S, Clean) :-
 %% escape_python_string(+In, -Out)
 %  Escape a string for Python string literal.
 escape_python_string(In, Out) :-
-	atom_string(In, S),
+	(   atom(In)
+	->  atom_string(In, S)
+	;   string(In)
+	->  S = In
+	;   term_string(In, S)
+	),
 	split_string(S, "\\", "", Parts),
 	atomic_list_concat(Parts, "\\\\", S1),
 	split_string(S1, "\"", "", Parts2),
