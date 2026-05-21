@@ -956,6 +956,14 @@ func atomCodeList(text string) *List {
 	return &List{Elements: items}
 }
 
+func atomCharList(text string) *List {
+	items := make([]Value, 0, len([]rune(text)))
+	for _, r := range text {
+		items = append(items, internAtom(string(r)))
+	}
+	return &List{Elements: items}
+}
+
 func codePointValue(v Value) (rune, bool) {
 	switch t := v.(type) {
 	case *Integer:
@@ -990,6 +998,26 @@ func (vm *WamState) codeListText(v Value) (string, bool) {
 			return "", false
 		}
 		runes = append(runes, code)
+	}
+	return string(runes), true
+}
+
+func (vm *WamState) charListText(v Value) (string, bool) {
+	items, ok := vm.listToSlice(v)
+	if !ok {
+		return "", false
+	}
+	runes := make([]rune, 0, len(items))
+	for _, item := range items {
+		atom, ok := vm.deref(item).(*Atom)
+		if !ok {
+			return "", false
+		}
+		chars := []rune(atom.Name)
+		if len(chars) != 1 {
+			return "", false
+		}
+		runes = append(runes, chars[0])
 	}
 	return string(runes), true
 }
@@ -1241,22 +1269,28 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return vm.Unify(arg1, internAtom(string(rune(code.Val))))
 		}
 		return false
-	case "atom_codes/2":
+	case "atom_codes/2", "atom_chars/2":
 		atomVal := vm.deref(arg1)
-		codeListVal := vm.deref(arg2)
-		if u, ok := codeListVal.(*Unbound); ok {
+		listVal := vm.deref(arg2)
+		if u, ok := listVal.(*Unbound); ok {
 			if next, ok := vm.heapConsAfterUnbound(u); ok {
-				codeListVal = vm.deref(next)
+				listVal = vm.deref(next)
 			}
+		}
+		textFromList := vm.codeListText
+		listFromText := func(text string) *List { return atomCodeList(text) }
+		if op == "atom_chars/2" {
+			textFromList = vm.charListText
+			listFromText = func(text string) *List { return atomCharList(text) }
 		}
 		if atom, ok := atomVal.(*Atom); ok {
-			if _, unbound := codeListVal.(*Unbound); unbound {
-				return vm.Unify(arg2, atomCodeList(atom.Name))
+			if _, unbound := listVal.(*Unbound); unbound {
+				return vm.Unify(arg2, listFromText(atom.Name))
 			}
-			text, ok := vm.codeListText(codeListVal)
+			text, ok := textFromList(listVal)
 			return ok && atom.Name == text
 		}
-		if text, ok := vm.codeListText(codeListVal); ok {
+		if text, ok := textFromList(listVal); ok {
 			return vm.Unify(arg1, internAtom(text))
 		}
 		return false

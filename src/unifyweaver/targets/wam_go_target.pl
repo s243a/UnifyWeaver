@@ -487,6 +487,9 @@ wam_go_direct_builtin("char_code/2", 2, 'char_code/2').
 wam_go_direct_builtin(atom_codes/2, 2, 'atom_codes/2').
 wam_go_direct_builtin('atom_codes/2', 2, 'atom_codes/2').
 wam_go_direct_builtin("atom_codes/2", 2, 'atom_codes/2').
+wam_go_direct_builtin(atom_chars/2, 2, 'atom_chars/2').
+wam_go_direct_builtin('atom_chars/2', 2, 'atom_chars/2').
+wam_go_direct_builtin("atom_chars/2", 2, 'atom_chars/2').
 wam_go_direct_builtin(atom_string/2, 2, 'atom_string/2').
 wam_go_direct_builtin('atom_string/2', 2, 'atom_string/2').
 wam_go_direct_builtin("atom_string/2", 2, 'atom_string/2').
