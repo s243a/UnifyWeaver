@@ -634,6 +634,33 @@ test(runtime_parser_compiled_read_term_variables) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+test(runtime_parser_compiled_read_term_singletons) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read_term_singletons_demo),
+			assertz((user:py_read_term_singletons_demo :-
+				read_term_from_atom('p(A,B,A,_,_C,_C,D)', T,
+					[variables(Vars), variable_names(Vs), singletons(Ss)]),
+				T = p(X, Y, X, Anon, Z, Z, W),
+				Vars = [X, Y, Anon, Z, W],
+				Vs = ['A'=X, 'B'=Y, '_C'=Z, 'D'=W],
+				Ss = ['B'=Y, '_'=Anon, 'D'=W])),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_read_singletons', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_read_term_singletons_demo/0],
+				[runtime_parser(compiled)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_read_term_singletons_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read_term_singletons_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_parser_compiled_runs_reverse_term_to_atom) :-
 	setup_call_cleanup(
 		(   retractall(user:py_term_to_atom_demo),
