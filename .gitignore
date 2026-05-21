@@ -22,6 +22,10 @@ templates/legacy/
 output/
 tests/output/
 test_output/
+
+# Cabal build artifacts (created on first cabal invocation in repo root,
+# e.g. by `cabal update` while developing the Haskell-target smoke tests)
+dist-newstyle/
 data/benchmark/50k_cats/
 data/benchmark/100k_cats/
 data/benchmark/500k_cats/
