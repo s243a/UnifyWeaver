@@ -206,21 +206,23 @@ let query_parent_ann_eve () =
     | None ->
         assertTrue "parent(ann, eve) should succeed" false
 
-let query_X_parent_eve_BUG () =
+let query_X_parent_eve () =
     // A1 Unbound, A2 ground.  No indexed dispatch (A1 unbound → falls
-    // through), so we walk the chain.  Match is in clause 3 (X = ann),
-    // but reaching clause 3 needs 2 backtracks — Bug B means the
-    // second backtrack finds an empty CP stack.  Still [KNOWN BUG].
+    // through to the linear chain).  Match is in clause 3 (X = ann),
+    // reached via 2 backtracks: clause 1 (tom, bob) fails on A2,
+    // clause 2 (bob, ann) fails on A2, clause 3 (ann, eve) matches.
+    // Now works after Bug B fix (PR follow-up to #2351): backtrack
+    // keeps the CP on the stack, so RetryMeElse can modify and
+    // TrustMe can pop normally.
     let ctx = mkContext ()
     let s = mkQueryState (Unbound 1000) (Atom "eve") 1001
     match dispatchCall ctx "parent_query_smoke/2" s with
-    | None ->
-        assertTrue "[KNOWN BUG] parent(X, eve): currently None (Bug B — chain pop after 2 backtracks)"
-                   true
     | Some result ->
         let answer = derefVar result.WsBindings result.WsRegs.[1]
-        assertTrue (sprintf "[BUG B FIXED?] parent(X, eve): now returns A1 = %A (was None — update smoke)" answer)
-                   false
+        assertTrue "parent(X, eve): X = Atom \"ann\" (clause 3 via 2 backtracks)"
+                   (answer = Atom "ann")
+    | None ->
+        assertTrue "parent(X, eve) should succeed via clause-3 chain walk" false
 
 [<EntryPoint>]
 let main _argv =
@@ -235,7 +237,7 @@ let main _argv =
     // Currently-broken scenarios (clause 3 unreachable):
     query_parent_ann_X ()
     query_parent_ann_eve ()
-    query_X_parent_eve_BUG ()
+    query_X_parent_eve ()
     let total = passes + fails
     printfn "RESULT %d/%d" passes total
     if fails > 0 then 1 else 0
