@@ -546,21 +546,23 @@ test_dotnet_run_query_smoke :-
 %% via write_wam_fsharp_project/3, build, then run the auto-generated
 %% Program.fs against the dev fixture's TSV files.
 %%
-%% The auto-generated Program.fs is a category-ancestor benchmark driver
-%% with hard-coded query semantics — it passes (Cat, Root, Distance) as
-%% A1/A2/A3.  The effective_distance.pl category_ancestor/4 signature is
-%% (+Cat, -Ancestor, -Hops, +Visited), so the driver's args don't match
-%% the predicate's expected output mode — solutions=0 is the expected
-%% outcome.  This is fine for our purpose: we're proving the PIPELINE
-%% works, not validating Prolog semantics for this specific query.
+%% The auto-generated Program.fs sets up registers based on the
+%% resolved queryPred''s arity — /4 (the raw category_ancestor) uses
+%% A1=Cat, A2=Unbound, A3=Unbound, A4=VList [Atom cat] (seeded visited
+%% list for the cycle-detection guard); /3 (the lowered aggregate
+%% variants) uses A1=Cat, A2=Atom root, A3=Unbound.  Without the
+%% arity-aware register layout the /4 path produced solutions=0 because
+%% the cycle-detection guard never matched against an unbound A4.
 %%
 %% Assertions:
 %%   - Build succeeds.
 %%   - dotnet run exits 0.
-%%   - stdout contains "total_ms=" (the driver's summary line).
-%%   - stdout contains "RESULT 0/0" not asserted — the driver doesn't
-%%     emit RESULT lines.  We parse out total_ms instead for the smoke
-%%     output.
+%%   - stdout contains "total_ms=" (the driver''s summary line).
+%%   - stderr "rep=N ... solutions=N" reports solutions > 0 — the dev
+%%     fixture has 21 seed categories and every one of them has at
+%%     least one ancestor in the dev category-parent table, so
+%%     solutions = seeds.  We require solutions >= 1 (not exact) so
+%%     the assertion survives minor fixture changes.
 
 bench_dataset_dir(Dir) :-
     repo_root_for_smoke(Root),
@@ -607,6 +609,23 @@ parse_total_ms(Output, Ms) :-
     split_string(Rest, " \t\r", "", [MsStr|_]),
     number_string(Ms, MsStr), !.
 
+%% Parse the last `solutions=N` field from the benchmark output (the
+%% summary line on stdout — `rep=N ... solutions=N` per-rep lines go to
+%% stderr, but our `run_dotnet_run_with_args` concatenates both).
+parse_solutions(Output, N) :-
+    split_string(Output, "\n", "", Lines),
+    findall(K,
+        ( member(Line, Lines),
+          sub_string(Line, B, _, _, "solutions="),
+          B0 is B + 10,
+          sub_string(Line, B0, _, 0, Rest),
+          split_string(Rest, " \t\r", "", [NStr|_]),
+          number_string(K, NStr)
+        ),
+        All),
+    All \== [],
+    last(All, N).
+
 test_dotnet_run_category_ancestor_bench :-
     Test = 'WAM-FSharp dotnet: category-ancestor end-to-end benchmark',
     smoke_root(Root),
@@ -646,9 +665,15 @@ test_dotnet_run_category_ancestor_bench :-
     run_dotnet_run_with_args(Dir, [BenchDir, '3'], RunExit, RunOutput),
     (   RunExit == 0,
         parse_total_ms(RunOutput, Ms)
-    ->  format('  total_ms=~w (dev fixture, 3 reps)~n', [Ms]),
-        pass(Test),
-        maybe_clean(Dir)
+    ->  (   parse_solutions(RunOutput, Solutions), Solutions >= 1
+        ->  format('  total_ms=~w solutions=~w (dev fixture, 3 reps)~n',
+                   [Ms, Solutions]),
+            pass(Test),
+            maybe_clean(Dir)
+        ;   format('---- dotnet run output ----~n~w~n----~n', [RunOutput]),
+            fail_test(Test,
+                'category-ancestor run produced solutions=0 (expected >= 1; register layout regression?)')
+        )
     ;   format('---- dotnet run output ----~n~w~n----~n', [RunOutput]),
         fail_test(Test,
             format_atom('category-ancestor run failed: exit ~w', [RunExit]))
