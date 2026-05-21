@@ -187,6 +187,8 @@
 :- dynamic user:wam_number_codes_guard/2.
 :- dynamic user:wam_number_codes_reverse/0.
 :- dynamic user:wam_number_chars_guard/2.
+:- dynamic user:wam_number_chars_reverse/0.
+:- dynamic user:wam_number_chars_bad_chars/0.
 :- dynamic user:wam_text_conversion_unbound_pair/1.
 :- dynamic user:wam_atom_concat_guard/3.
 :- dynamic user:wam_atom_concat_new_atom/0.
@@ -416,6 +418,8 @@ user:wam_char_type_lower_fail :- char_type('A', lower).
 user:wam_number_codes_guard(N, C) :- number_codes(N, C).
 user:wam_number_codes_reverse :- number_codes(N, [52,50]), N =:= 42.
 user:wam_number_chars_guard(N, C) :- number_chars(N, C).
+user:wam_number_chars_reverse :- char_code(C4, 52), char_code(C2, 50), number_chars(N, [C4,C2]), N =:= 42.
+user:wam_number_chars_bad_chars :- number_chars(_, [f,o,o]).
 user:wam_text_conversion_unbound_pair(_) :- user:wam_unbound_arg(A), user:wam_unbound_arg(C), atom_codes(A, C).
 user:wam_atom_concat_guard(A, B, C) :- atom_concat(A, B, C).
 user:wam_atom_concat_new_atom :- atom_concat(fo, o, X), X = foo.
@@ -650,6 +654,8 @@ run_smoke :-
           user:wam_number_codes_guard/2,
           user:wam_number_codes_reverse/0,
           user:wam_number_chars_guard/2,
+          user:wam_number_chars_reverse/0,
+          user:wam_number_chars_bad_chars/0,
           user:wam_text_conversion_unbound_pair/1,
           user:wam_atom_concat_guard/3,
           user:wam_atom_concat_new_atom/0,
@@ -1047,6 +1053,8 @@ smoke_cases([
     case('wam_number_codes_reverse/0', no_args, "true"),
     case('wam_number_chars_guard/2', args(42, '[''4'',''2'']'), "true"),
     case('wam_number_chars_guard/2', args(42, '[''4'']'), "false"),
+    case('wam_number_chars_reverse/0', no_args, "true"),
+    case('wam_number_chars_bad_chars/0', no_args, "false"),
     case('wam_text_conversion_unbound_pair/1', a, "false"),
     case('wam_atom_concat_guard/3', args(fo, o, foo), "true"),
     case('wam_atom_concat_guard/3', args(fo, o, bar), "false"),
@@ -1424,6 +1432,7 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-char-type-code-forward-0"),
     has(CoreCode, "defn lowered-wam-number-codes-guard-2"),
     has(CoreCode, "defn lowered-wam-number-chars-guard-2"),
+    has(CoreCode, "defn lowered-wam-number-chars-reverse-0"),
     has(CoreCode, "defn lowered-wam-atom-concat-guard-3"),
     has(CoreCode, "defn lowered-wam-atom-concat-unbound-left-1"),
     has(CoreCode, "defn lowered-wam-atom-concat-unbound-right-1"),
