@@ -115,17 +115,33 @@ target_runtime_parser_default(wam_r, native(parse_term)).
 % restriction; we register both modes here and leave native as
 % the default since it ships today.
 target_runtime_parser_default(wam_cpp, native(parse_term)).
+% F# has no native runtime parser today; the F# target compiles
+% Prolog through WAM and can host the portable parser like Python
+% does, but several WAM instructions the parser needs are not yet
+% supported by the F# emitter (`get_structure`, certain
+% `unify_constant`/`get_constant` forms, the `switch_on_term` /
+% `switch_on_constant_fallthrough` variants) and are emitted as
+% `Proceed` stubs.  As a result, parser predicates COMPILE but
+% don't EXECUTE correctly today.  Default is therefore `none` so
+% existing F# projects don't silently pull the parser library in;
+% `runtime_parser(compiled)` is opt-in and primarily useful for
+% stress-testing the emitter while the missing instructions are
+% being filled in.
+target_runtime_parser_default(wam_fsharp, none).
 
 target_runtime_parser_mode_(wam_r, native(parse_term)).
 target_runtime_parser_mode_(wam_r, compiled(prolog_term_parser)).
 target_runtime_parser_mode_(wam_cpp, native(parse_term)).
 target_runtime_parser_mode_(wam_cpp, compiled(prolog_term_parser)).
 target_runtime_parser_mode_(wam_python, compiled(prolog_term_parser)).
+target_runtime_parser_mode_(wam_fsharp, compiled(prolog_term_parser)).
 
 normalize_runtime_parser_target(r, wam_r) :- !.
 normalize_runtime_parser_target(wam_r, wam_r) :- !.
 normalize_runtime_parser_target(cpp, wam_cpp) :- !.
 normalize_runtime_parser_target(wam_cpp, wam_cpp) :- !.
+normalize_runtime_parser_target(fsharp, wam_fsharp) :- !.
+normalize_runtime_parser_target(wam_fsharp, wam_fsharp) :- !.
 normalize_runtime_parser_target(Target, Target).
 
 strip_module_qualifier(Module:Goal, Stripped) :-

@@ -122,4 +122,31 @@ test(parser_dependent_body_goal_forward_term_to_atom_ignored, [fail]) :-
 test(parser_dependent_body_goal_module_qualified_body) :-
     once(parser_dependent_body_goal(user:(true, read(_, _)), read/2)).
 
+% --- F# WAM target (compiled mode opt-in only) ----------------------------
+%
+% Default is `none` because the F# WAM instruction emitter is
+% missing several instructions the portable parser needs
+% (`get_structure`, certain `unify_constant`/`get_constant` forms,
+% `switch_on_term`, `switch_on_constant_fallthrough`).  They're
+% emitted as `Proceed` stubs today, so parser predicates compile
+% but don't execute correctly.  `runtime_parser(compiled)` makes
+% the wiring exercise itself a stress test for the F# emitter.
+
+test(fsharp_defaults_to_none) :-
+    wam_target_runtime_parser(wam_fsharp, [], none).
+
+test(fsharp_alias_defaults_to_none) :-
+    wam_target_runtime_parser(fsharp, [], none).
+
+test(fsharp_can_opt_into_compiled_parser) :-
+    wam_target_runtime_parser(wam_fsharp, [runtime_parser(compiled)],
+                              compiled(prolog_term_parser)).
+
+test(fsharp_cannot_require_native_parser_yet,
+     [throws(error(domain_error(runtime_parser_mode(wam_fsharp), native), _))]) :-
+    wam_target_runtime_parser(wam_fsharp, [runtime_parser(native)], _).
+
+test(fsharp_off_explicit_none) :-
+    wam_target_runtime_parser(wam_fsharp, [runtime_parser(off)], none).
+
 :- end_tests(wam_runtime_parser_capability).
