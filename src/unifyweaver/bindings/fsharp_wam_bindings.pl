@@ -239,6 +239,17 @@ fsharp_wam_context_type :-
       WcForeignConfig   : Map<string, int>     // config_int values
       WcLoweredPredicates: Map<string, WamContext -> WamState -> WamState option>
                                                // predicate name → lowered fn
+      WcCancellationToken: System.Threading.CancellationToken option
+                                               // optional hard-cancel signal.
+                                               // `run` checks this each loop
+                                               // iteration and returns None when
+                                               // cancellation is requested.  Wired
+                                               // by runNegationParallel via
+                                               // Async.CancellationToken so the
+                                               // first successful branch can
+                                               // halt sibling branches'' work
+                                               // (CPU/thread savings beyond the
+                                               // wall-time win from Async.Choice).
     }").
 
 % ============================================================================

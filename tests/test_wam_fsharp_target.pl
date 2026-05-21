@@ -771,10 +771,41 @@ test_fsharp_run_negation_parallel_present :-
         sub_string(S, _, _, _, "|> Async.Choice"),
         sub_string(S, _, _, _, "|> Async.RunSynchronously"),
         sub_string(S, _, _, _, "result.IsSome"),
+        %% Hard-cancel: each branch pulls its CancellationToken via
+        %% Async.CancellationToken and wires it into a per-branch ctx
+        %% so the inner `run` loop can short-circuit.
+        sub_string(S, _, _, _, "let! token = Async.CancellationToken"),
+        sub_string(S, _, _, _, "let ctxC = { ctx with WcCancellationToken = Some token }"),
         %% Fallback to sequential when too few branches.
         sub_string(S, _, _, _, "// Too few branches for fork overhead to pay off")
     ->  pass(Test)
     ;   fail_test(Test, 'Missing runNegationParallel helper patterns')
+    ).
+
+test_fsharp_wam_context_has_cancellation_token :-
+    %% Phase K: hard-cancel for runNegationParallel.  WamContext gains
+    %% an optional CancellationToken field that the runtime checks at
+    %% each iteration of the `run` loop.
+    Test = 'WAM-FSharp: WamContext.WcCancellationToken field emitted',
+    (   fsharp_wam_type_header(Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "WcCancellationToken: System.Threading.CancellationToken option")
+    ->  pass(Test)
+    ;   fail_test(Test, 'WcCancellationToken field missing from WamContext')
+    ).
+
+test_fsharp_run_loop_checks_cancellation_token :-
+    %% The `run` loop must consult the token each iteration and return
+    %% None on cancellation request.
+    Test = 'WAM-FSharp: run loop checks WcCancellationToken',
+    (   compile_wam_runtime_to_fsharp([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "and run (ctx: WamContext) (s: WamState) : WamState option ="),
+        %% Per-iteration token check.
+        sub_string(S, _, _, _, "| Some t when t.IsCancellationRequested -> true"),
+        sub_string(S, _, _, _, "elif (match ctx.WcCancellationToken with")
+    ->  pass(Test)
+    ;   fail_test(Test, 'run loop missing cancellation-token check')
     ).
 
 test_fsharp_negation_dispatches_through_parallel :-
@@ -1168,6 +1199,8 @@ run_tests :-
     %% Phase J — parallel WAM TPL wiring
     test_fsharp_enumerate_par_branches_present,
     test_fsharp_run_negation_parallel_present,
+    test_fsharp_wam_context_has_cancellation_token,
+    test_fsharp_run_loop_checks_cancellation_token,
     test_fsharp_negation_dispatches_through_parallel,
     test_fsharp_specialized_instructions_wam_parse,
     test_fsharp_fact_shape_helpers_exported,

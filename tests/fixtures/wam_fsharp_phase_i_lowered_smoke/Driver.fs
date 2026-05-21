@@ -44,7 +44,8 @@ let mkContext () =
       WcAtomIntern        = Map.empty
       WcAtomDeintern      = Map.empty
       WcForeignConfig     = Map.empty
-      WcLoweredPredicates = Map.empty }
+      WcLoweredPredicates = Map.empty
+      WcCancellationToken = None }
 
 let mkState (regs: (int * Value) list) =
     let r = Array.create MaxRegs (Unbound -1)

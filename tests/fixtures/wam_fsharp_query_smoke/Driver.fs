@@ -66,7 +66,8 @@ let mkContext () =
       WcAtomIntern        = Map.empty
       WcAtomDeintern      = Map.empty
       WcForeignConfig     = Map.empty
-      WcLoweredPredicates = Map.empty }
+      WcLoweredPredicates = Map.empty
+      WcCancellationToken = None }
 
 let mkQueryState (a1: Value) (a2: Value) (vidStart: int) =
     let r = Array.create MaxRegs (Unbound -1)
