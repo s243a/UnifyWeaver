@@ -54,6 +54,7 @@ let mkEmptyState () =
       WsCutBar     = 0
       WsVarCounter = 0
       WsBuilder    = None
+      WsBuilderStack = []
       WsAggAccum   = [] }
 
 let mkContext (code: Instruction array) (labels: Map<string, int>) =

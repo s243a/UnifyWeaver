@@ -207,6 +207,14 @@ type WamState =
       WsCutBar    : int                  // cut barrier depth
       WsVarCounter: int                  // fresh variable id counter
       WsBuilder   : BuilderState option  // PutStructure / PutList accumulator
+      // Stack of outer build / read contexts saved when a GetStructure
+      // or GetList nests into the active context (e.g. `[op(:-,1200,xfx)|T]`
+      // needs the outer BuildList active while the inner BuildStruct
+      // fills, then restores on inner materialization).  Both R
+      // (templates/targets/r_wam/runtime.R.mustache build_stack) and
+      // Python (src/unifyweaver/targets/wam_python_runtime/WamRuntime.py
+      // write_stack/read_stack) maintain the same stack discipline.
+      WsBuilderStack : BuilderState list
       WsAggAccum  : Value list           // aggregate accumulator
     }
 
@@ -414,6 +422,31 @@ let bindOutput (reg: int) (value: Value) (s: WamState) : WamState option =
         | _ -> None
 
 /// Append a value to the current builder (PutStructure / PutList).
+// popBuilderStack: when an inner builder is finished (BuildStruct/List
+// arity filled, or ReadArgs exhausted), restore the outer builder
+// from WsBuilderStack so the parent structure can keep filling.
+// Both R (build_stack pop in append_build_arg) and Python (write_stack
+// pop in _finish_write_ctx) do this on every fill completion -- not
+// just the final one -- in case the parent is also at its limit.
+// We don''t cascade-fill here (the parent already holds an Unbound
+// var bound to the inner struct via its register, so derefVar
+// resolves it transparently); we just unwind the saved contexts.
+let popBuilderStack (s: WamState) : WamState =
+    match s.WsBuilderStack with
+    | outer :: rest -> { s with WsBuilder = Some outer; WsBuilderStack = rest }
+    | []            -> { s with WsBuilder = None }
+
+// pushBuilderIfActive: when starting a new inner build/read context
+// (GetStructure / GetList on a register that produces nesting), save
+// the current builder onto the stack so the inner can use WsBuilder
+// without clobbering the outer.  No-op when there''s no active
+// builder.  Returns the modified state; callers then set the new
+// WsBuilder on the returned state.
+let pushBuilderIfActive (s: WamState) : WamState =
+    match s.WsBuilder with
+    | Some b -> { s with WsBuilderStack = b :: s.WsBuilderStack }
+    | None   -> s
+
 let addToBuilder (value: Value) (s: WamState) : WamState option =
     match s.WsBuilder with
     | None -> None
@@ -424,20 +457,18 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
             let r = Array.copy s.WsRegs
             let regVal = if reg >= 0 && reg < s.WsRegs.Length then s.WsRegs.[reg] else Unbound -1
             r.[reg] <- str
-            match derefVar s.WsBindings regVal with
-            | Unbound vid ->
-                Some { s with
-                         WsPC      = s.WsPC + 1
+            let s0 =
+                match derefVar s.WsBindings regVal with
+                | Unbound vid ->
+                    { s with
                          WsRegs    = r
                          WsBindings= Map.add vid str s.WsBindings
                          WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
-                         WsTrailLen= s.WsTrailLen + 1
-                         WsBuilder = None }
-            | _ ->
-                Some { s with
-                         WsPC      = s.WsPC + 1
-                         WsRegs    = r
-                         WsBuilder = None }
+                         WsTrailLen= s.WsTrailLen + 1 }
+                | _ ->
+                    { s with WsRegs = r }
+            let s1 = popBuilderStack s0
+            Some { s1 with WsPC = s.WsPC + 1 }
         else
             Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (BuildStruct (fn, reg, arity, args')) }
     | Some (BuildList (reg, items)) ->
@@ -452,20 +483,18 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
             let r = Array.copy s.WsRegs
             let regVal = if reg >= 0 && reg < s.WsRegs.Length then s.WsRegs.[reg] else Unbound -1
             r.[reg] <- listVal
-            match derefVar s.WsBindings regVal with
-            | Unbound vid ->
-                Some { s with
-                         WsPC      = s.WsPC + 1
+            let s0 =
+                match derefVar s.WsBindings regVal with
+                | Unbound vid ->
+                    { s with
                          WsRegs    = r
                          WsBindings= Map.add vid listVal s.WsBindings
                          WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
-                         WsTrailLen= s.WsTrailLen + 1
-                         WsBuilder = None }
-            | _ ->
-                Some { s with
-                         WsPC      = s.WsPC + 1
-                         WsRegs    = r
-                         WsBuilder = None }
+                         WsTrailLen= s.WsTrailLen + 1 }
+                | _ ->
+                    { s with WsRegs = r }
+            let s1 = popBuilderStack s0
+            Some { s1 with WsPC = s.WsPC + 1 }
         else
             Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (BuildList (reg, items')) }
     | Some (ReadArgs _) -> None
@@ -473,8 +502,10 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
 let readNextArg (s: WamState) : (Value * WamState) option =
     match s.WsBuilder with
     | Some (ReadArgs (v :: rest)) ->
-        let nextBuilder = match rest with [] -> None | _ -> Some (ReadArgs rest)
-        Some (derefVar s.WsBindings v, { s with WsBuilder = nextBuilder })
+        let s' =
+            if List.isEmpty rest then popBuilderStack s
+            else { s with WsBuilder = Some (ReadArgs rest) }
+        Some (derefVar s.WsBindings v, s')
     | _ -> None
 
 /// Arithmetic evaluator over Value terms.
