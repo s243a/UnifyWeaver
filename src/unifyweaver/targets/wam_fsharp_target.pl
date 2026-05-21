@@ -959,22 +959,28 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                    CpBuiltin  = None }
         Some { s with WsPC = s.WsPC + 1; WsCPs = cp :: s.WsCPs; WsCPsLen = s.WsCPsLen + 1 }
 
+    // TrustMe / RetryMeElse: when an indexed SwitchOnConstantPc jumps
+    // directly to a clause that begins with one of these (the WAM
+    // emitter places labels just before Retry/Trust), there''s no
+    // choice point to pop or modify — we''re committing deterministically
+    // to that clause.  Treat the empty-CP case as a no-op advance
+    // instead of failing, so indexed dispatch works (Bug A from PR #2350).
     | TrustMe ->
         match s.WsCPs with
         | _ :: rest -> Some { s with WsPC = s.WsPC + 1; WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
-        | []        -> None
+        | []        -> Some { s with WsPC = s.WsPC + 1 }
 
     | RetryMeElse label ->
         match s.WsCPs with
         | cp :: rest ->
             let nextPC = Map.tryFind label ctx.WcLabels |> Option.defaultValue 0
             Some { s with WsPC = s.WsPC + 1; WsCPs = { cp with CpNextPC = nextPC } :: rest }
-        | [] -> None
+        | [] -> Some { s with WsPC = s.WsPC + 1 }
 
     | RetryMeElsePc nextPC ->
         match s.WsCPs with
         | cp :: rest -> Some { s with WsPC = s.WsPC + 1; WsCPs = { cp with CpNextPC = nextPC } :: rest }
-        | []         -> None
+        | []         -> Some { s with WsPC = s.WsPC + 1 }
 
     // Phase 4.1 / Phase J — parallel WAM. ParTryMeElse dispatches through
     // forkOrSequential, which forks all branches in parallel when inside a
@@ -989,6 +995,15 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
     | ParTrustMe            -> step ctx s TrustMe
     | ParRetryMeElsePc pc   -> step ctx s (RetryMeElsePc pc)
 
+    // SwitchOnConstantPc / SwitchOnConstant: indexed dispatch on A1.
+    // Hits jump to the matching clause; misses fall through to the
+    // next instruction (typically TryMeElse) which then runs the linear
+    // chain.  Falling through on miss (rather than returning None)
+    // mirrors the WAM compiler''s `tom:default` semantics — `default`
+    // labels get dropped by resolveCallInstrs, so the table just lacks
+    // an entry, and falling through is the right behavior.  Without
+    // this, indexed dispatch fails outright on any A1 not explicitly
+    // listed in the table.
     | SwitchOnConstantPc table ->
         let valOpt = getReg 1 s
         match valOpt with
@@ -996,12 +1011,12 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | Some (Atom key) ->
             match binarySearchStr table key with
             | Some pc -> Some { s with WsPC = pc }
-            | None    -> None
+            | None    -> Some { s with WsPC = s.WsPC + 1 }
         | Some (Integer n) ->
             match binarySearchStr table (string n) with
             | Some pc -> Some { s with WsPC = pc }
-            | None    -> None
-        | _ -> None
+            | None    -> Some { s with WsPC = s.WsPC + 1 }
+        | _ -> Some { s with WsPC = s.WsPC + 1 }
 
     | SwitchOnConstant table ->
         let valOpt = getReg 1 s
@@ -1012,9 +1027,9 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
             | Some label ->
                 match Map.tryFind label ctx.WcLabels with
                 | Some pc -> Some { s with WsPC = pc }
-                | None    -> None
-            | None -> None
-        | None -> None
+                | None    -> Some { s with WsPC = s.WsPC + 1 }
+            | None -> Some { s with WsPC = s.WsPC + 1 }
+        | None -> Some { s with WsPC = s.WsPC + 1 }
 
     | BuiltinCall ("!/0", _) ->
         Some { s with
@@ -3160,15 +3175,30 @@ pred_func_name_fs(PI, FN) :-
     format(atom(FN), '~w_~w', [PSafe, A]).
 
 emit_merged_code_build_fs([], Code) :-
-    Code = 'let allCode : Instruction array = [||]\nlet allLabels : Map<string, int> = Map.empty'.
+    %% Even the empty case must reserve index 0 as a halt sentinel:
+    %% `run`'s loop short-circuits on `s.WsPC = 0` before fetching from
+    %% WcCode, so we never actually execute index 0.  Having it present
+    %% means PC numbering (1-based per the WAM compiler / labels) aligns
+    %% with array indexing.  Without the sentinel, the first real
+    %% instruction lands at index 0 (unreachable) and label "pred/N" → 1
+    %% points to the SECOND emitted instruction — the cause of Bug A in
+    %% PR #2350's query smoke.
+    Code = 'let allCode : Instruction array = [| Fail |]\nlet allLabels : Map<string, int> = Map.empty'.
 emit_merged_code_build_fs(FuncNames, Code) :-
     FuncNames \= [],
     maplist([FN, Expr]>>(format(atom(Expr), '~w_code', [FN])), FuncNames, CodeExprs),
     atomic_list_concat(CodeExprs, ' @ ', CodeConcat),
     maplist([FN, Expr]>>(format(atom(Expr), '~w_labels', [FN])), FuncNames, LabelExprs),
     atomic_list_concat(LabelExprs, ' |> mapUnion ', LabelUnion),
+    %% Prepend a Fail sentinel at index 0 so WAM-PC 1 (the first real
+    %% instruction emitted by the WAM compiler) maps to array index 1.
+    %% Closes the off-by-one (Bug A from PR #2350): without the
+    %% sentinel, SwitchOnConstantPc — emitted as the first instruction
+    %% by the WAM compiler — lands at array index 0 where `run`'s halt
+    %% sentinel `if s.WsPC = 0 then Some s` short-circuits before
+    %% fetching, making indexed dispatch unreachable.
     format(string(Code),
-'let allCode : Instruction array = (~w) |> List.toArray
+'let allCode : Instruction array = (Fail :: (~w)) |> List.toArray
 let allLabels : Map<string, int> = ~w', [CodeConcat, LabelUnion]).
 
 %% generate_lowered_fs(+LoweredEntries, -Code)
