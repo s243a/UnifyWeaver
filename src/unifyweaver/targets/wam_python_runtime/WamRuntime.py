@@ -1582,27 +1582,38 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
     arg_snapshot: list = list(state.regs)  # snapshot at initial entry
 
     def fail():
+        # An exhausted FFI continuation (result < 0) means the builtin
+        # whose CP this is has no more solutions — but the WAM might still
+        # have OLDER choice points stacked behind it that we need to try
+        # before reporting "no more". The continuation has typically
+        # already shrunk state.b to the next fallback CP; loop and retry
+        # so we don't drop those by returning False outright.
         nonlocal ip
-        if state.b < 0:
-            return False
-        cp = state.stack[state.b]
-        restore_choice_point(state)
-        # next_clause is now a pre-resolved PC int, string label, or callable
-        next_ip = cp.next_clause
-        if callable(next_ip):
-            # Callable: FFI continuation — call with state, returns new IP
-            result = next_ip(state)
-            if result < 0:
+        while True:
+            if state.b < 0:
                 return False
-            ip = result
-        elif isinstance(next_ip, int) and next_ip >= 0:
-            ip = next_ip
-        else:
-            # Fallback: try string label resolution
-            ip = labels.get(cp.next_clause, -1)
-            if ip < 0:
-                return False
-        return True
+            cp = state.stack[state.b]
+            restore_choice_point(state)
+            next_ip = cp.next_clause
+            if callable(next_ip):
+                # Callable: FFI continuation — call with state, returns new IP.
+                result = next_ip(state)
+                if result < 0:
+                    # Exhausted; the continuation updated state.b. Try again.
+                    continue
+                ip = result
+                return True
+            elif isinstance(next_ip, int) and next_ip >= 0:
+                ip = next_ip
+                return True
+            else:
+                # Fallback: try string label resolution.
+                resolved = labels.get(cp.next_clause, -1)
+                if resolved < 0:
+                    # Unresolved label; pop this CP and try the next one.
+                    continue
+                ip = resolved
+                return True
 
     while ip < code_len:
         instr = code[ip]
