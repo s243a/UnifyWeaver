@@ -51,7 +51,8 @@ class BenchmarkReverseCsrLookupTest(unittest.TestCase):
                 self.assertEqual(row["iterations"], "2")
                 self.assertEqual(row["total_children"], "4")
                 self.assertGreater(float(row["median_ms"]), 0.0)
-                self.assertGreater(int(row["artifact_bytes"]), 0)
+                self.assertGreater(int(row["csr_artifact_bytes"]), 0)
+                self.assertGreater(int(row["phase1_lmdb_env_bytes"]), 0)
 
     def test_benchmark_detects_missing_phase1_lmdb(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

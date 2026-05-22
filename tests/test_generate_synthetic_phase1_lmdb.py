@@ -101,6 +101,7 @@ class GenerateSyntheticPhase1LmdbTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("backend\tsample_parents\titerations", result.stdout)
+            self.assertIn("csr_artifact_bytes\tphase1_lmdb_env_bytes", result.stdout)
             self.assertIn("csr\t5\t2\t20\t", result.stdout)
             self.assertIn("lmdb\t5\t2\t20\t", result.stdout)
 
