@@ -23,6 +23,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(wam_text_parser, [wam_classify_constant_token/2]).
 :- use_module(wam_go_target, [
     escape_go_string/2,
     intern_atom_go/2
@@ -553,16 +554,25 @@ go_reg_idx(RegStr, Idx) :-
 %  Convert a WAM constant to a Go value literal. Atom literals are
 %  routed through intern_atom_go/2 so identical atoms share a single
 %  package-level *Atom value rather than allocating per call.
+%
+%  Atom-vs-number disambiguation goes through
+%  wam_text_parser:wam_classify_constant_token/2: a bare token `5`
+%  is the integer 5, a quoted token `'5'` is the atom whose name
+%  is "5". Without the classifier, `intern_atom_go` would intern
+%  the atom with the outer quotes attached (`internAtom("'5'")`).
 go_val_literal(Str, GoVal) :-
-    (   number_string(N, Str), integer(N)
+    wam_classify_constant_token(Str, Class),
+    (   Class = integer(N)
     ->  format(atom(GoVal), '&Integer{Val: ~w}', [N])
-    ;   number_string(F, Str), float(F)
+    ;   Class = float(F)
     ->  format(atom(GoVal), '&Float{Val: ~w}', [F])
-    ;   intern_atom_go(Str, AtomVar)
-    ->  GoVal = AtomVar
-    ;   % Defensive fallback if interning is somehow unavailable.
-        escape_go_string(Str, Escaped),
-        format(atom(GoVal), '&Atom{Name: "~w"}', [Escaped])
+    ;   Class = atom(Name),
+        (   intern_atom_go(Name, AtomVar)
+        ->  GoVal = AtomVar
+        ;   % Defensive fallback if interning is somehow unavailable.
+            escape_go_string(Name, Escaped),
+            format(atom(GoVal), '&Atom{Name: "~w"}', [Escaped])
+        )
     ).
 
 %% pred_to_go_call(+PredStr, -CallExpr)
