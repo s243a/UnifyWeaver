@@ -1250,6 +1250,65 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                 | None -> None
         | _ -> None
 
+    // number_codes/2 — number <-> list of decimal code points.
+    // Bidirectional like atom_codes/2.  Without this, the parser
+    // library''s `codes_to_number(Cs, N) :- number_codes(N, Cs).`
+    // failed silently, so tokenize/2 on \"42\" never produced a
+    // tk_num token and every numeric / compound / list input
+    // bottomed out as None.  Accept both VList and Str(\"[|]\",_)
+    // shapes for the code list (the parser builds the latter
+    // via take_digits accumulators).
+    | BuiltinCall (\"number_codes/2\", _) ->
+        match getReg 1 s, getReg 2 s with
+        | Some (Integer n), _ ->
+            let codes =
+                (string n) |> Seq.map (fun c -> Integer (int c)) |> List.ofSeq
+            match bindOutput 2 (VList codes) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | Some (Float f), _ ->
+            let codes =
+                (sprintf \"%g\" f) |> Seq.map (fun c -> Integer (int c)) |> List.ofSeq
+            match bindOutput 2 (VList codes) s with
+            | None    -> None
+            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | Some (Unbound _), Some listVal ->
+            match valueToProperList s.WsBindings listVal with
+            | None       -> None
+            | Some items ->
+                let folder acc v =
+                    match acc, derefVar s.WsBindings v with
+                    | Some (sb: System.Text.StringBuilder), Integer c when c >= 0 && c <= 65535 ->
+                        Some (sb.Append(char c))
+                    | _ -> None
+                match List.fold folder (Some (System.Text.StringBuilder())) items with
+                | Some sb ->
+                    let str = sb.ToString()
+                    // Prefer Integer (matches Prolog''s number_codes
+                    // forward semantics for integral input); fall back
+                    // to Float when there''s a decimal point or
+                    // scientific notation.  Bail out on garbage so
+                    // number_codes(N, \"abc\") fails rather than
+                    // binding N to NaN.
+                    let parsed =
+                        match System.Int64.TryParse(str) with
+                        | true, n -> Some (Integer (int n))
+                        | false, _ ->
+                            match System.Double.TryParse(
+                                    str,
+                                    System.Globalization.NumberStyles.Float,
+                                    System.Globalization.CultureInfo.InvariantCulture) with
+                            | true, f -> Some (Float f)
+                            | false, _ -> None
+                    match parsed with
+                    | Some numVal ->
+                        match bindOutput 1 numVal s with
+                        | None    -> None
+                        | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+                    | None -> None
+                | None -> None
+        | _ -> None
+
     // atom_chars/2 — atom <-> list of single-char atoms. Bidirectional.
     | BuiltinCall ("atom_chars/2", _) ->
         match getReg 1 s, getReg 2 s with
@@ -2921,8 +2980,19 @@ fs_wam_value(Val0, Fs) :-
     %% collapse to one.  fs_split_wam_line preserves the outer
     %% quotes so we can distinguish `'+'` (atom) from `+`
     %% (unquoted symbol) downstream; here we drop them.
-    fs_strip_quoted_atom(Val1, Val),
-    (   number_string(N, Val), integer(N)
+    %%
+    %% ForceAtom = true when the quoted form carried the
+    %% wam_target:quote_wam_constant SOH marker (`'5'`,
+    %% `'42'`), which means the source had a quoted-atom
+    %% whose textual form re-parses as a number.  Without this
+    %% flag we''d collapse `'42'` to "42" and the number_string
+    %% check below would emit `Integer 42` -- exactly the
+    %% atom-vs-number confusion the marker is there to prevent.
+    fs_strip_quoted_atom(Val1, Val, ForceAtom),
+    (   ForceAtom == true
+    ->  fs_escape_string_for_fsharp(Val, Escaped),
+        format(string(Fs), 'Atom "~w"', [Escaped])
+    ;   number_string(N, Val), integer(N)
     ->  format(string(Fs), 'Integer ~w', [N])
     ;   number_string(F, Val), float(F)
     ->  format(string(Fs), 'Float ~w', [F])
@@ -2932,13 +3002,30 @@ fs_wam_value(Val0, Fs) :-
         format(string(Fs), 'Atom "~w"', [Escaped])
     ).
 
-fs_strip_quoted_atom(S0, S) :-
+%% fs_strip_quoted_atom(+S0, -S, -ForceAtom)
+%
+%  Strip surrounding single quotes, returning the inner atom name.
+%  ForceAtom = true when the inner content begins with the SOH (\1)
+%  marker -- wam_target:quote_wam_constant/2 prefixes atoms whose
+%  textual form re-parses as a number (, , )
+%  with this marker so the WAM TEXT layer round-trips atom-vs-number
+%  unambiguously.  The marker is stripped from the returned name.
+%  Without this flag the F# emitter would collapse  to "42",
+%  match number_string, and emit  -- exactly the
+%  atom-vs-number confusion the marker exists to prevent.
+fs_strip_quoted_atom(S0, S, ForceAtom) :-
     string_chars(S0, Chars0),
     (   Chars0 = [''''|Rest], append(Inner, [''''], Rest)
     ->  fs_unescape_quoted(Inner, InnerU),
-        string_chars(S, InnerU)
-    ;   S = S0
+        fs_strip_number_atom_marker(InnerU, InnerStripped, ForceAtom),
+        string_chars(S, InnerStripped)
+    ;   ForceAtom = false,
+        S = S0
     ).
+
+fs_strip_number_atom_marker([C|Rest], Rest, true) :-
+    char_code(C, 1), !.
+fs_strip_number_atom_marker(Chars, Chars, false).
 
 fs_unescape_quoted([], []).
 fs_unescape_quoted([''''|[''''|Rest]], [''''|Out]) :-
