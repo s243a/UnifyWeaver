@@ -507,8 +507,7 @@ switch_case_atom_values(CasesText, AtomSeeds) :-
 
 wam_atom_token_text("''", "") :- !.
 wam_atom_token_text(Token, AtomText) :-
-    clj_unquote_wam_atom_token(Token, Unquoted),
-    clj_strip_quoted_numeric_marker(Unquoted, AtomText).
+    clj_unquote_wam_atom_token(Token, AtomText).
 
 wam_atom_token_literal(Token, Literal) :-
     wam_atom_token_text(Token, AtomText),
@@ -801,9 +800,3 @@ clj_unescape_wam_codes([92, C|Rest], [C|More]) :- !,
     clj_unescape_wam_codes(Rest, More).
 clj_unescape_wam_codes([C|Rest], [C|More]) :-
     clj_unescape_wam_codes(Rest, More).
-
-clj_strip_quoted_numeric_marker(S0, S) :-
-    string_codes(S0, [1|Rest]),
-    !,
-    string_codes(S, Rest).
-clj_strip_quoted_numeric_marker(S, S).
