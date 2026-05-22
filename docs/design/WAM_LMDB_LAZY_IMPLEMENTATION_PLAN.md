@@ -3,7 +3,8 @@
 **Status**: Phased rollout. Companion to
 [`WAM_LMDB_LAZY_PHILOSOPHY.md`](WAM_LMDB_LAZY_PHILOSOPHY.md) (the
 "why") and [`WAM_LMDB_LAZY_SPECIFICATION.md`](WAM_LMDB_LAZY_SPECIFICATION.md)
-(the "what").
+(the "what"). Reverse-child artifact choices are tracked separately in
+[`WAM_REVERSE_INDEX_ARTIFACTS.md`](WAM_REVERSE_INDEX_ARTIFACTS.md).
 
 **Snapshot date**: 2026-05-20.
 
@@ -221,7 +222,12 @@ R9 (segregation) ─────────────────────
   C# already has substantial planner-level coverage; others are
   speculative. File separate implementation plans when motivated
   by a workload.
-- **MST-sort ingest pre-processor**: see philosophy doc §4.2.
+- **Reverse-child artifact selection and CSR preprocessing**: see
+  `WAM_REVERSE_INDEX_ARTIFACTS.md`. The R7-R10 plan keeps the hot
+  parent-edge lazy/eager tier separate from reverse child-index
+  planning.
+- **MST-sort ingest pre-processor**: see philosophy doc §4.2 and
+  `WAM_REVERSE_INDEX_ARTIFACTS.md`.
 - **Multi-process shared cache**: see spec §11.
 - **Adaptive tier switching mid-run**: see spec §11.
 
@@ -256,6 +262,7 @@ completes.
 
 - `docs/design/WAM_LMDB_LAZY_PHILOSOPHY.md`
 - `docs/design/WAM_LMDB_LAZY_SPECIFICATION.md`
+- `docs/design/WAM_REVERSE_INDEX_ARTIFACTS.md`
 - `docs/design/CACHE_COST_MODEL_PHILOSOPHY.md`
 - `docs/design/QUERY_PLAN_RUNTIME_PHILOSOPHY.md`
 - `docs/design/WAM_LMDB_RESIDENT_INTERNING_*.md` (existing LMDB layout)
