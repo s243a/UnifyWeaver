@@ -153,7 +153,7 @@ fsharp_wam_builtin_state_type :-
 
 fsharp_wam_env_frame_type :-
     writeln(
-"type EnvFrame = { EfSavedCP: int; EfYRegs: Map<int, Value> }").
+"type EnvFrame = { EfSavedCP: int; EfYRegs: Map<int, Value>; EfSavedCutBar: int }").
 
 % ============================================================================
 % ChoicePoint — mirrors Haskell `ChoicePoint`
@@ -372,9 +372,47 @@ let rec derefVar (bindings: Map<int, Value>) (v: Value) : Value =
         | None       -> v
     | _ -> v
 
+/// Walk a list-shaped value into a flat F# list of derefd elements.
+/// Lists may be stored as VList (proper, ground-tail) OR as a chain of
+/// Str(\"[|]\", [h; t]) cons cells (when materialized with a non-ground
+/// tail in addToBuilder).  Builtins that consume lists -- atom_codes/2,
+/// length/2, member/2, etc. -- only matched VList before this helper,
+/// so anything built via the cons-cell shape (everything coming out of
+/// take_digits / take_ident / parser accumulators) was opaque.  Returns
+/// None for improper / partial lists.
+let rec valueToProperList (bindings: Map<int, Value>) (v: Value) : Value list option =
+    match derefVar bindings v with
+    | Atom \"[]\"                  -> Some []
+    | VList items                ->
+        // Items may themselves contain Unbound vars or cons-cell tails;
+        // surface them as-is for the caller to deref.
+        Some items
+    | Str (\"[|]\", [h; t])        ->
+        match valueToProperList bindings t with
+        | Some rest -> Some (h :: rest)
+        | None      -> None
+    | _ -> None
+
 /// Look up a register (A/X register), dereference through bindings.
 let getReg (n: int) (s: WamState) : Value option =
-    if n >= 0 && n < s.WsRegs.Length then
+    // Y registers (n >= 201, encoded by fs_reg_name_to_int as Yk -> 200+k)
+    // are mirrored in the current env frame -- prefer the frame copy
+    // since the WsRegs entry may have been clobbered by a called
+    // predicate using the same numeric index for its own temporaries.
+    // R (env$perm_vars) and Python (_Y_BASE = 301) use the same
+    // discipline.
+    if n >= 201 then
+        match s.WsStack with
+        | frame :: _ when Map.containsKey (n - 200) frame.EfYRegs ->
+            Some (derefVar s.WsBindings (Map.find (n - 200) frame.EfYRegs))
+        | _ ->
+            // No frame entry yet -- fall through to WsRegs.
+            if n < s.WsRegs.Length then
+                match s.WsRegs.[n] with
+                | Unbound -1 -> None
+                | v          -> Some (derefVar s.WsBindings v)
+            else None
+    elif n >= 0 && n < s.WsRegs.Length then
         match s.WsRegs.[n] with
         | Unbound -1 -> None   // sentinel = uninitialized
         | v -> Some (derefVar s.WsBindings v)
@@ -382,9 +420,24 @@ let getReg (n: int) (s: WamState) : Value option =
 
 /// Set a register value (copy-on-write for snapshot semantics).
 let putReg (n: int) (v: Value) (s: WamState) : WamState =
-    let r = Array.copy s.WsRegs
-    r.[n] <- v
-    { s with WsRegs = r }
+    // Y register write -- update BOTH the env frame''s EfYRegs (so
+    // values survive being clobbered by a called predicate writing
+    // to the same numeric slot) AND WsRegs (so direct-array reads
+    // in code that hasn''t been audited still see the value).  Read
+    // path prefers the frame, then falls back to WsRegs.
+    if n >= 201 then
+        let r = Array.copy s.WsRegs
+        if n < r.Length then r.[n] <- v
+        match s.WsStack with
+        | frame :: rest ->
+            let newFrame = { frame with EfYRegs = Map.add (n - 200) v frame.EfYRegs }
+            { s with WsRegs = r; WsStack = newFrame :: rest }
+        | [] ->
+            { s with WsRegs = r }
+    else
+        let r = Array.copy s.WsRegs
+        r.[n] <- v
+        { s with WsRegs = r }
 
 /// Set a register value in-place (use only when no snapshot is needed).
 let setReg (n: int) (v: Value) (regs: Value array) : Value array =
@@ -454,20 +507,23 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
         let args' = args @ [value]
         if List.length args' = arity then
             let str = Str (fn, args')
-            let r = Array.copy s.WsRegs
-            let regVal = if reg >= 0 && reg < s.WsRegs.Length then s.WsRegs.[reg] else Unbound -1
-            r.[reg] <- str
-            let s0 =
+            // Route the destination write through putReg so Y registers
+            // (n >= 201) land in the env frame rather than WsRegs.
+            // Snapshot the previous value first for binding trail.
+            let regVal =
+                match getReg reg s with
+                | Some v -> v
+                | None   -> Unbound -1
+            let s0 = putReg reg str s
+            let s0' =
                 match derefVar s.WsBindings regVal with
                 | Unbound vid ->
-                    { s with
-                         WsRegs    = r
+                    { s0 with
                          WsBindings= Map.add vid str s.WsBindings
                          WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
                          WsTrailLen= s.WsTrailLen + 1 }
-                | _ ->
-                    { s with WsRegs = r }
-            let s1 = popBuilderStack s0
+                | _ -> s0
+            let s1 = popBuilderStack s0'
             Some { s1 with WsPC = s.WsPC + 1 }
         else
             Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (BuildStruct (fn, reg, arity, args')) }
@@ -495,20 +551,21 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
                 | VList t      -> VList (head :: t)
                 | Atom \"[]\"    -> VList [head]
                 | derefdTail   -> Str (\"[|]\", [head; derefdTail])
-            let r = Array.copy s.WsRegs
-            let regVal = if reg >= 0 && reg < s.WsRegs.Length then s.WsRegs.[reg] else Unbound -1
-            r.[reg] <- listVal
-            let s0 =
+            // Y-aware write of materialized list value to destination reg.
+            let regVal =
+                match getReg reg s with
+                | Some v -> v
+                | None   -> Unbound -1
+            let s0 = putReg reg listVal s
+            let s0' =
                 match derefVar s.WsBindings regVal with
                 | Unbound vid ->
-                    { s with
-                         WsRegs    = r
+                    { s0 with
                          WsBindings= Map.add vid listVal s.WsBindings
                          WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
                          WsTrailLen= s.WsTrailLen + 1 }
-                | _ ->
-                    { s with WsRegs = r }
-            let s1 = popBuilderStack s0
+                | _ -> s0
+            let s1 = popBuilderStack s0'
             Some { s1 with WsPC = s.WsPC + 1 }
         else
             Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (BuildList (reg, items')) }
