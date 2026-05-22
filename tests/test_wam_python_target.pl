@@ -584,6 +584,46 @@ test(runtime_parser_compiled_runs_read_term_from_atom) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+% Regression for the run_wam fail() FFI-continuation-exhaustion bug:
+% `read_term_from_atom` failed to parse any term whose grammar required
+% backtracking through a builtin's choice-point continuation (e.g. the
+% member/2 driving resolve_infix/4 inside parse_op_loop/10). Symptom:
+% `'p(a)'` worked, but `'p(a,b)'`, `'[1,2,3]'`, `'1+2'` all returned
+% None — the wrapper goal `read_term_from_atom(_, T), T = ...` failed.
+%
+% Root cause: when an FFI continuation returned -1 (no more solutions),
+% fail() in WamRuntime.py returned False outright instead of letting
+% older choice-points on the stack run. The continuation had already
+% updated state.b to its fallback; fail() just dropped that fallback.
+% Fix: wrap the body of fail() in a `while True:` loop so an
+% exhausted-continuation result restarts the loop, picking up whatever
+% CP state.b now points at.
+test(runtime_parser_compiled_runs_read_term_multi_arg) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read_term_multi_arg_demo),
+			assertz((user:py_read_term_multi_arg_demo :-
+				read_term_from_atom('p(a,b)', T1), T1 = p(a, b),
+				read_term_from_atom('foo(bar,baz)', T2), T2 = foo(bar, baz),
+				read_term_from_atom('[1,2,3]', T3), T3 = [1, 2, 3],
+				read_term_from_atom('1+2', T4), T4 = 1 + 2,
+				read_term_from_atom('2*3+4', T5), T5 = 2 * 3 + 4)),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_multi_arg', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_read_term_multi_arg_demo/0],
+				[runtime_parser(compiled)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_read_term_multi_arg_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read_term_multi_arg_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_parser_compiled_read_term_variable_names) :-
 	setup_call_cleanup(
 		(   retractall(user:py_read_term_vars_demo),
