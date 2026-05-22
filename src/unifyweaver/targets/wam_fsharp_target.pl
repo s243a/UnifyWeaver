@@ -2975,19 +2975,14 @@ fs_wam_value(Val0, Fs) :-
     ;   number(Val0) -> number_string(Val0, Val1)
     ;   Val1 = Val0
     ),
-    %% Strip surrounding single quotes for quoted atoms
-    %% (`'foo bar'` -> `foo bar`).  Doubled quotes `''` inside
-    %% collapse to one.  fs_split_wam_line preserves the outer
-    %% quotes so we can distinguish `'+'` (atom) from `+`
-    %% (unquoted symbol) downstream; here we drop them.
-    %%
-    %% ForceAtom = true when the quoted form carried the
-    %% wam_target:quote_wam_constant SOH marker (`'5'`,
-    %% `'42'`), which means the source had a quoted-atom
-    %% whose textual form re-parses as a number.  Without this
-    %% flag we''d collapse `'42'` to "42" and the number_string
-    %% check below would emit `Integer 42` -- exactly the
-    %% atom-vs-number confusion the marker is there to prevent.
+    %% Atom-vs-number disambiguation: fs_split_wam_line
+    %% preserves the outer single quotes attached to the token
+    %% (so `'+'` stays distinct from the unquoted `+`, and
+    %% `'5'` stays distinct from the integer 5).
+    %% fs_strip_quoted_atom/3 returns ForceAtom=true iff the
+    %% token had outer quotes; when set, emit an Atom
+    %% regardless of whether the inner content reparses as a
+    %% number.
     fs_strip_quoted_atom(Val1, Val, ForceAtom),
     (   ForceAtom == true
     ->  fs_escape_string_for_fsharp(Val, Escaped),
@@ -3004,28 +2999,22 @@ fs_wam_value(Val0, Fs) :-
 
 %% fs_strip_quoted_atom(+S0, -S, -ForceAtom)
 %
-%  Strip surrounding single quotes, returning the inner atom name.
-%  ForceAtom = true when the inner content begins with the SOH (\1)
-%  marker -- wam_target:quote_wam_constant/2 prefixes atoms whose
-%  textual form re-parses as a number (, , )
-%  with this marker so the WAM TEXT layer round-trips atom-vs-number
-%  unambiguously.  The marker is stripped from the returned name.
-%  Without this flag the F# emitter would collapse  to "42",
-%  match number_string, and emit  -- exactly the
-%  atom-vs-number confusion the marker exists to prevent.
+%  Strip surrounding single quotes, returning the inner atom
+%  name in S. ForceAtom = true iff the token had outer single
+%  quotes -- the quote-state-preserving convention from
+%  wam_target:quote_wam_constant/2 (and mirrored by
+%  fs_split_wam_line / wam_text_parser:wam_tokenize_line/2) is
+%  the source of atom-vs-number truth: bare `5` is the integer;
+%  quoted `'5'` is the atom.
 fs_strip_quoted_atom(S0, S, ForceAtom) :-
     string_chars(S0, Chars0),
     (   Chars0 = [''''|Rest], append(Inner, [''''], Rest)
     ->  fs_unescape_quoted(Inner, InnerU),
-        fs_strip_number_atom_marker(InnerU, InnerStripped, ForceAtom),
-        string_chars(S, InnerStripped)
+        string_chars(S, InnerU),
+        ForceAtom = true
     ;   ForceAtom = false,
         S = S0
     ).
-
-fs_strip_number_atom_marker([C|Rest], Rest, true) :-
-    char_code(C, 1), !.
-fs_strip_number_atom_marker(Chars, Chars, false).
 
 fs_unescape_quoted([], []).
 fs_unescape_quoted([''''|[''''|Rest]], [''''|Out]) :-
