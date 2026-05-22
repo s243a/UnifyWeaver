@@ -141,7 +141,8 @@ def print_tsv(rows: list[dict[str, str]]) -> None:
         "median_ms",
         "min_ms",
         "max_ms",
-        "artifact_bytes",
+        "csr_artifact_bytes",
+        "phase1_lmdb_env_bytes",
     ]
     print("\t".join(headers))
     for row in rows:
@@ -198,7 +199,8 @@ def main(argv: list[str] | None = None) -> int:
                     "median_ms": f"{statistics.median(times_ms):.6f}",
                     "min_ms": f"{min(times_ms):.6f}",
                     "max_ms": f"{max(times_ms):.6f}",
-                    "artifact_bytes": str(artifact_bytes(csr_dir) if backend == "csr" else (phase1_lmdb_dir / "data.mdb").stat().st_size),
+                    "csr_artifact_bytes": str(artifact_bytes(csr_dir)),
+                    "phase1_lmdb_env_bytes": str((phase1_lmdb_dir / "data.mdb").stat().st_size),
                 })
             print_tsv(rows)
             return 0
