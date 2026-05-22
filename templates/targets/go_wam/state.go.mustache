@@ -1269,7 +1269,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return vm.Unify(arg1, internAtom(string(rune(code.Val))))
 		}
 		return false
-	case "atom_codes/2", "atom_chars/2":
+	case "atom_codes/2", "atom_chars/2", "string_codes/2", "string_chars/2":
 		atomVal := vm.deref(arg1)
 		listVal := vm.deref(arg2)
 		if u, ok := listVal.(*Unbound); ok {
@@ -1279,7 +1279,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		}
 		textFromList := vm.codeListText
 		listFromText := func(text string) *List { return atomCodeList(text) }
-		if op == "atom_chars/2" {
+		if op == "atom_chars/2" || op == "string_chars/2" {
 			textFromList = vm.charListText
 			listFromText = func(text string) *List { return atomCharList(text) }
 		}
