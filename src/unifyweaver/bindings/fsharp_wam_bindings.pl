@@ -303,6 +303,19 @@ fsharp_wam_instruction_type :-
     | RetryMeElse    of label: string
     | RetryMeElsePc  of nextPC: int
     | TrustMe
+    // Indexed-dispatch chain ops.  Standard-WAM `try` / `retry` /
+    // `trust` (no `_me_else`).  Emitted into the synthesized
+    // try/retry/trust chains that switch_on_term / switch_on_constant /
+    // switch_on_structure target when a dispatch group has >1
+    // matching clause (issue #2400).  Unlike the linear chain''s
+    // _me_else variants, these CARRY the target body label and
+    // store the in-chain fall-through PC in the CP.
+    | Try            of label: string
+    | TryPc          of targetPC: int
+    | Retry          of label: string
+    | RetryPc        of targetPC: int
+    | Trust          of label: string
+    | TrustPc        of targetPC: int
     // Parallel variants (Phase 4.1 stubs — alias to sequential at runtime)
     | ParTryMeElse     of label: string
     | ParTryMeElsePc   of nextPC: int

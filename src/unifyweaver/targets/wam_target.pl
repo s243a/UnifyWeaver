@@ -129,15 +129,25 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
     ),
     % Apply peephole optimization
     peephole_optimize(ClausesCode0, ClausesCode),
-    % Generate argument index (try first arg, fall back to second arg)
+    % Generate argument index (try first arg, fall back to second arg).
+    % Index is (HeaderLine, DispatchChainsCode) — the header is the
+    % switch_on_* instruction; chains are dedicated try/retry/trust
+    % sequences for groups with >1 matching clause, placed AFTER the
+    % linear chain so switch_on_term's "default" / fall-through path
+    % reaches the linear chain's try_me_else, not a chain.
     (   length(Clauses, NC), NC > 1,
-        (   build_first_arg_index(Pred, Arity, Clauses, IndexCode)
+        (   build_first_arg_index(Pred, Arity, Clauses, IndexHeader, DispatchChains)
         ;   Arity >= 2,
-            build_second_arg_index(Pred, Arity, Clauses, IndexCode)
+            build_second_arg_index(Pred, Arity, Clauses, IndexHeader, DispatchChains)
         )
-    ->  format(string(Code), "~w~n~w~n~w", [Label, IndexCode, ClausesCode])
+    ->  combine_clauses_and_chains(ClausesCode, DispatchChains, ChainedClauses),
+        format(string(Code), "~w~n~w~n~w", [Label, IndexHeader, ChainedClauses])
     ;   format(string(Code), "~w~n~w", [Label, ClausesCode])
     ).
+
+combine_clauses_and_chains(ClausesCode, "", ClausesCode) :- !.
+combine_clauses_and_chains(ClausesCode, Chains, Combined) :-
+    format(string(Combined), "~w~n~w", [ClausesCode, Chains]).
 
 %% build_first_arg_index(+Pred, +Arity, +Clauses, -IndexCode)
 %  Analyzes first arguments of all clauses and emits indexing instructions.
@@ -151,29 +161,37 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
 %    through to the try_me_else chain (which catches the variable
 %    clauses). v1 limits the prefix to constant-only; structure /
 %    mixed prefixes with a trailing variable clause skip indexing.
-build_first_arg_index(Pred, Arity, Clauses, IndexCode) :-
+build_first_arg_index(Pred, Arity, Clauses, IndexHeader, DispatchChains) :-
     classify_first_args(Clauses, Types),
     (   \+ member(variable, Types)
-    ->  build_first_arg_index_homogeneous(Pred, Arity, Clauses, Types, IndexCode)
+    ->  build_first_arg_index_homogeneous(Pred, Arity, Clauses, Types,
+                                          IndexHeader, DispatchChains)
     ;   build_first_arg_index_with_fallthrough(Pred, Arity, Clauses, Types,
-                                               IndexCode)
+                                               IndexHeader),
+        DispatchChains = ""
     ).
 
-build_first_arg_index_homogeneous(Pred, Arity, Clauses, Types, IndexCode) :-
+build_first_arg_index_homogeneous(Pred, Arity, Clauses, Types,
+                                  IndexHeader, DispatchChains) :-
     (   forall(member(T, Types), T = constant)
-    ->  build_constant_index(Clauses, 1, Pred, Arity, Entries),
+    ->  collect_const_groups(Clauses, 1, ConstGroups),
+        groups_to_entries_and_chains(ConstGroups, Pred, Arity, const,
+                                     Entries, DispatchChains),
         Entries \= [],
         format_index_entries(Entries, EntriesStr),
-        format(string(IndexCode), "    switch_on_constant ~w", [EntriesStr])
+        format(string(IndexHeader), "    switch_on_constant ~w", [EntriesStr])
     ;   forall(member(T, Types), T = structure),
         \+ first_args_contain_list(Clauses)
-    ->  build_structure_index(Clauses, 1, Pred, Arity, Entries),
+    ->  collect_struct_groups(Clauses, 1, StructGroups),
+        groups_to_entries_and_chains(StructGroups, Pred, Arity, struct,
+                                     Entries, DispatchChains),
         Entries \= [],
         format_index_entries(Entries, EntriesStr),
-        format(string(IndexCode), "    switch_on_structure ~w", [EntriesStr])
+        format(string(IndexHeader), "    switch_on_structure ~w", [EntriesStr])
     ;   % Mixed — emit switch_on_term with type-based dispatch
-        build_term_index(Clauses, 1, Pred, Arity, Types, ConstEntries, StructEntries, ListLabel),
-        format_switch_on_term(ConstEntries, StructEntries, ListLabel, IndexCode)
+        build_term_index_with_chains(Clauses, Pred, Arity,
+            ConstEntries, StructEntries, ListLabel, DispatchChains),
+        format_switch_on_term(ConstEntries, StructEntries, ListLabel, IndexHeader)
     ).
 
 build_first_arg_index_with_fallthrough(Pred, Arity, Clauses, Types, IndexCode) :-
@@ -273,6 +291,202 @@ format_switch_on_term(ConstEntries, StructEntries, ListLabel, IndexCode) :-
            "    switch_on_term ~w ~w ~w ~w ~w",
            [CLen, CStr, SLen, SStr, ListLabel]).
 
+%% ========================================================================
+%% Indexed-dispatch group collection + chain emission
+%%
+%% Standard-WAM indexed dispatch (switch_on_term / switch_on_constant /
+%% switch_on_structure) needs to jump into a clause body WITHOUT
+%% reusing the linear chain's `try_me_else / retry_me_else / trust_me`
+%% protocol — those instructions assume the top CP is "ours" (pushed
+%% by the predicate's leading try_me_else), but an indexed jump
+%% bypasses that push.  Reusing them corrupts the outer caller's CP
+%% (see issue #2400).
+%%
+%% Fix: for each dispatch group with >1 matching clauses (and not
+%% including clause 1, which is reached by fall-through), synthesize
+%% a dedicated `try / retry … / trust` chain pointing at the
+%% `L_<Pred>_<Arity>_<I>_body` labels emitted by
+%% compile_clauses_fragments/7.  The chain pushes/modifies/pops a CP
+%% owned by THIS predicate, leaving outer CPs untouched.
+%% ========================================================================
+
+%% collect_const_groups(+Clauses, +I, -Groups)
+%  Groups: list of GroupKey-IndexList pairs (clause indices in order).
+collect_const_groups(Clauses, StartI, Groups) :-
+    collect_const_groups_aux(Clauses, StartI, Pairs0),
+    pairs_group_keys(Pairs0, Groups).
+
+collect_const_groups_aux([], _, []).
+collect_const_groups_aux([Head-_|Rest], I, [FirstArg-I|RestPairs]) :-
+    Head =.. [_|[FirstArg|_]],
+    NextI is I + 1,
+    collect_const_groups_aux(Rest, NextI, RestPairs).
+
+%% collect_struct_groups(+Clauses, +I, -Groups)
+collect_struct_groups(Clauses, StartI, Groups) :-
+    collect_struct_groups_aux(Clauses, StartI, Pairs0),
+    pairs_group_keys(Pairs0, Groups).
+
+collect_struct_groups_aux([], _, []).
+collect_struct_groups_aux([Head-_|Rest], I, [FN-I|RestPairs]) :-
+    Head =.. [_|[FirstArg|_]],
+    FirstArg =.. [F|SubArgs],
+    length(SubArgs, SArity),
+    format(atom(FN), "~w/~w", [F, SArity]),
+    NextI is I + 1,
+    collect_struct_groups_aux(Rest, NextI, RestPairs).
+
+%% pairs_group_keys(+KVPairs, -Groups)
+%  Preserves first-occurrence order of keys; values for the same key
+%  accumulate in encounter order.
+pairs_group_keys([], []).
+pairs_group_keys([K-V|Rest], [K-[V|Vs]|GroupedRest]) :-
+    partition_by_key(K, Rest, Vs, NonMatching),
+    pairs_group_keys(NonMatching, GroupedRest).
+
+partition_by_key(_, [], [], []).
+partition_by_key(K, [K-V|Rest], [V|Match], NonMatch) :-
+    !,
+    partition_by_key(K, Rest, Match, NonMatch).
+partition_by_key(K, [Other|Rest], Match, [Other|NonMatch]) :-
+    partition_by_key(K, Rest, Match, NonMatch).
+
+%% groups_to_entries_and_chains(+Groups, +Pred, +Arity, +Kind,
+%%                              -Entries, -DispatchCode)
+%  Each group becomes a `Key-Label` index entry.  Label is:
+%    - "default" if the first matching clause is clause 1;
+%    - L_<Pred>_<Arity>_<I>_body if exactly one clause matches and
+%      it is not clause 1;
+%    - L_<Pred>_<Arity>_<kind>_<sanitized_key>_dispatch when >1
+%      clauses match (none of which is clause 1) — a chain is
+%      emitted in DispatchCode targeting the body labels.
+groups_to_entries_and_chains([], _, _, _, [], "").
+groups_to_entries_and_chains([Key-Indices|Rest], Pred, Arity, Kind,
+                             [Key-Label|RestEntries], DispatchCode) :-
+    group_label_and_chain(Key, Indices, Pred, Arity, Kind,
+                          Label, ChainCode),
+    groups_to_entries_and_chains(Rest, Pred, Arity, Kind,
+                                 RestEntries, RestDispatchCode),
+    (   ChainCode == ""
+    ->  DispatchCode = RestDispatchCode
+    ;   RestDispatchCode == ""
+    ->  DispatchCode = ChainCode
+    ;   format(string(DispatchCode), "~w~n~w", [ChainCode, RestDispatchCode])
+    ).
+
+%% group_label_and_chain(+Key, +Indices, +Pred, +Arity, +Kind,
+%%                       -Label, -ChainCode)
+group_label_and_chain(_, [1|_], _, _, _, default, "") :- !.
+group_label_and_chain(_, [I], Pred, Arity, _, Label, "") :-
+    !,
+    format(atom(Label), "L_~w_~w_~w_body", [Pred, Arity, I]).
+group_label_and_chain(Key, Indices, Pred, Arity, Kind, Label, ChainCode) :-
+    sanitize_dispatch_key(Key, Kind, KeyAtom),
+    format(atom(Label), "L_~w_~w_~w_~w_dispatch",
+           [Pred, Arity, Kind, KeyAtom]),
+    format_dispatch_chain(Label, Indices, Pred, Arity, ChainCode).
+
+%% sanitize_dispatch_key(+Key, +Kind, -Atom)
+%  Map a dispatch key (atom / integer / float / "name/arity" /
+%  list-bucket sentinel) to a label-safe atom.
+sanitize_dispatch_key(Key, _, Atom) :-
+    (   atom(Key)
+    ->  atom_chars(Key, Chars),
+        maplist(safe_label_char, Chars, SafeChars),
+        atom_chars(Atom, SafeChars)
+    ;   format(atom(Atom), "~w", [Key])
+    ).
+
+safe_label_char(Ch, '_') :-
+    \+ char_type(Ch, alnum),
+    Ch \== '_', !.
+safe_label_char(Ch, Ch).
+
+%% format_dispatch_chain(+Label, +Indices, +Pred, +Arity, -Code)
+%  Synthesizes a try/retry/trust chain pointing at the body labels
+%  of the matching clauses.  Format:
+%    Label:
+%        try L_<Pred>_<Arity>_<I1>_body
+%        retry L_<Pred>_<Arity>_<I2>_body
+%        ...
+%        trust L_<Pred>_<Arity>_<IN>_body
+format_dispatch_chain(Label, Indices, Pred, Arity, Code) :-
+    length(Indices, N),
+    chain_lines(Indices, 1, N, Pred, Arity, Lines),
+    atomic_list_concat([Label, ":\n" | Lines], "", Code).
+
+chain_lines([], _, _, _, _, []).
+chain_lines([I|Rest], Pos, N, Pred, Arity, [Line|RestLines]) :-
+    (   Pos == 1, N > 1
+    ->  Op = try
+    ;   Pos == N
+    ->  Op = trust
+    ;   Op = retry
+    ),
+    format(atom(BodyLabel), "L_~w_~w_~w_body", [Pred, Arity, I]),
+    format(string(Line), "    ~w ~w~n", [Op, BodyLabel]),
+    NextPos is Pos + 1,
+    chain_lines(Rest, NextPos, N, Pred, Arity, RestLines).
+
+%% build_term_index_with_chains(+Clauses, +Pred, +Arity,
+%%                              -ConstEntries, -StructEntries,
+%%                              -ListLabel, -DispatchCode)
+%  Like build_term_index but groups multi-clause matches and
+%  synthesizes try/retry/trust dispatch chains for them.
+build_term_index_with_chains(Clauses, Pred, Arity,
+        ConstEntries, StructEntries, ListLabel, DispatchCode) :-
+    collect_term_groups(Clauses, 1, ConstGroupsRaw, StructGroupsRaw,
+                        ListIndicesRaw),
+    pairs_group_keys(ConstGroupsRaw, ConstGroups),
+    pairs_group_keys(StructGroupsRaw, StructGroups),
+    sort(ListIndicesRaw, ListIndices),
+    groups_to_entries_and_chains(ConstGroups, Pred, Arity, const,
+                                 ConstEntries, CConstDC),
+    groups_to_entries_and_chains(StructGroups, Pred, Arity, struct,
+                                 StructEntries, CStructDC),
+    list_indices_to_label(ListIndices, Pred, Arity, ListLabel, CListDC),
+    concat_nonempty([CConstDC, CStructDC, CListDC], DispatchCode).
+
+list_indices_to_label([], _, _, none, "") :- !.
+list_indices_to_label([1|_], _, _, default, "") :- !.
+list_indices_to_label([I], Pred, Arity, Label, "") :-
+    !,
+    format(atom(Label), "L_~w_~w_~w_body", [Pred, Arity, I]).
+list_indices_to_label(Indices, Pred, Arity, Label, ChainCode) :-
+    format(atom(Label), "L_~w_~w_list_dispatch", [Pred, Arity]),
+    format_dispatch_chain(Label, Indices, Pred, Arity, ChainCode).
+
+concat_nonempty(Parts, Result) :-
+    include([P]>>(P \== ""), Parts, NonEmpty),
+    atomic_list_concat(NonEmpty, "\n", Result).
+
+%% collect_term_groups(+Clauses, +I, -ConstPairs, -StructPairs, -ListIdxs)
+collect_term_groups([], _, [], [], []).
+collect_term_groups([Head-_|Rest], I, ConstPairs, StructPairs, ListIdxs) :-
+    Head =.. [_|[FirstArg|_]],
+    NextI is I + 1,
+    collect_term_groups(Rest, NextI, RestConst, RestStruct, RestList),
+    (   atomic(FirstArg)
+    ->  ConstPairs = [FirstArg-I|RestConst],
+        StructPairs = RestStruct,
+        ListIdxs = RestList
+    ;   is_list_term(FirstArg)
+    ->  ConstPairs = RestConst,
+        StructPairs = RestStruct,
+        ListIdxs = [I|RestList]
+    ;   compound(FirstArg)
+    ->  FirstArg =.. [F|SubArgs],
+        length(SubArgs, SArity),
+        format(atom(FN), "~w/~w", [F, SArity]),
+        ConstPairs = RestConst,
+        StructPairs = [FN-I|RestStruct],
+        ListIdxs = RestList
+    ;   % Variable / other — not indexable here.
+        ConstPairs = RestConst,
+        StructPairs = RestStruct,
+        ListIdxs = RestList
+    ).
+
 %% build_second_arg_index(+Pred, +Arity, +Clauses, -IndexCode)
 %  When first-arg indexing fails (e.g., all variable first args),
 %  try indexing on the second argument instead. Mirrors the A1
@@ -290,6 +504,15 @@ build_second_arg_index(Pred, Arity, Clauses, IndexCode) :-
     ;   build_second_arg_index_with_fallthrough(Pred, Arity, Clauses, Types,
                                                 IndexCode)
     ).
+
+%% Compat wrapper: build_first_arg_index/5 above expects
+%% (IndexHeader, DispatchChains).  Second-arg indexing still uses the
+%% legacy single-output shape — TODO: extend with dispatch chains too,
+%% but the SwitchOnTerm-via-A2 path is rarer and the same fix applies
+%% mechanically.  For now wrap so the calling site type-checks.
+build_second_arg_index(Pred, Arity, Clauses, IndexHeader, DispatchChains) :-
+    build_second_arg_index(Pred, Arity, Clauses, IndexHeader),
+    DispatchChains = "".
 
 build_second_arg_index_homogeneous(Pred, Arity, Clauses, Types, IndexCode) :-
     (   forall(member(T, Types), T = constant)
@@ -632,12 +855,24 @@ compile_multi_clause_wam(Pred, Arity, Clauses, Options, Code) :-
 compile_clauses_fragments([], _, _, _, _, _, []).
 compile_clauses_fragments([Head-Body|Rest], I, N, Pred, Arity, Options,
                          [Choice, HeadCode, BodyCode | RestFragments]) :-
+    %% Clauses 2..N also get an `L_<Pred>_<Arity>_<I>_body:` label
+    %% emitted immediately AFTER the retry_me_else / trust_me line.
+    %% Indexed dispatch (try/retry/trust chains synthesized by
+    %% build_first_arg_index) jumps to this body label so the
+    %% clause body runs without re-entering the linear chain's CP
+    %% protocol.  Clause 1 has no separate body label because
+    %% indexed dispatch never targets it (groups containing clause 1
+    %% use "default" → fall through to the leading try_me_else).
     (   I == 1
     ->  format(string(Choice), "    try_me_else L_~w_~w_~w", [Pred, Arity, 2])
     ;   I == N
-    ->  format(string(Choice), "L_~w_~w_~w:~n    trust_me", [Pred, Arity, I])
+    ->  format(string(Choice),
+               "L_~w_~w_~w:~n    trust_me~nL_~w_~w_~w_body:",
+               [Pred, Arity, I, Pred, Arity, I])
     ;   Next is I + 1,
-        format(string(Choice), "L_~w_~w_~w:~n    retry_me_else L_~w_~w_~w", [Pred, Arity, I, Pred, Arity, Next])
+        format(string(Choice),
+               "L_~w_~w_~w:~n    retry_me_else L_~w_~w_~w~nL_~w_~w_~w_body:",
+               [Pred, Arity, I, Pred, Arity, Next, Pred, Arity, I])
     ),
     % Compile clause body — pre-assign Yi for permanent vars before head
     set_clause_binding_context(Head, Body),
