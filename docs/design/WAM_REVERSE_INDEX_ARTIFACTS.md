@@ -586,7 +586,8 @@ Phase C - CSR prototype:
   `examples/benchmark/build_reverse_csr_artifact.py`.
 - Add a small Rust reader, co-located with the Rust LMDB sink/build path,
   with direct-index or binary-search lookup. C# binding can follow once
-  the format and policy are stable.
+  the format and policy are stable. Prototype probe:
+  `examples/benchmark/read_reverse_csr_artifact.py`.
 - Implement `io_policy(buffered_pread)` and
   `io_policy(buffered_pread_drop)` first.
 - Prototype `io_policy(direct_io)` only after block alignment and
