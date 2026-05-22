@@ -32,6 +32,7 @@
 
 :- use_module(library(lists)).
 :- use_module(library(option)).
+:- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
 
 % ============================================================================
 % Deterministic predicate detection
@@ -92,29 +93,39 @@ constant_atom_py(C, Atom) :-
 	    atom_string(Atom, S)
 	).
 
+%% constant_number_py(+C, -Number) is semidet.
+%
+%  Succeeds only when C is a *bare* numeric token (no surrounding
+%  single quotes) — quoted atoms whose textual form parses as a
+%  number (`'5'`, `'-3.14'`) are atoms, not numbers. Discriminator
+%  is the same one used by wam_text_parser:wam_classify_constant_token/2.
 constant_number_py(C, Number) :-
-	constant_atom_py(C, Atom),
-	catch(atom_number(Atom, Number), _, fail).
+	wam_classify_constant_token(C, Class),
+	(   Class = integer(Number)
+	;   Class = float(Number)
+	).
 
 constant_term_py(C, Term) :-
-	(   constant_number_py(C, Number)
-	->  (   integer(Number)
-	    ->  format(string(Term), "Int(~w)", [Number])
-	    ;   format(string(Term), "Float(~w)", [Number])
-	    )
-	;   escape_py(C, EC),
+	wam_classify_constant_token(C, Class),
+	(   Class = integer(N)
+	->  format(string(Term), "Int(~w)", [N])
+	;   Class = float(F)
+	->  format(string(Term), "Float(~w)", [F])
+	;   Class = atom(Name),
+	    escape_py(Name, EC),
 	    format(string(Term), "Atom(\"~w\")", [EC])
 	).
 
 constant_match_condition_py(C, VarExpr, Cond) :-
-	(   constant_number_py(C, Number)
-	->  (   integer(Number)
-	    ->  format(string(Cond), 'isinstance(~w, Int) and ~w.n == ~w',
-	            [VarExpr, VarExpr, Number])
-	    ;   format(string(Cond), 'isinstance(~w, Float) and ~w.f == ~w',
-	            [VarExpr, VarExpr, Number])
-	    )
-	;   escape_py(C, EC),
+	wam_classify_constant_token(C, Class),
+	(   Class = integer(N)
+	->  format(string(Cond), 'isinstance(~w, Int) and ~w.n == ~w',
+	        [VarExpr, VarExpr, N])
+	;   Class = float(F)
+	->  format(string(Cond), 'isinstance(~w, Float) and ~w.f == ~w',
+	        [VarExpr, VarExpr, F])
+	;   Class = atom(Name),
+	    escape_py(Name, EC),
 	    format(string(Cond), 'isinstance(~w, Atom) and ~w.name == "~w"',
 	        [VarExpr, VarExpr, EC])
 	).

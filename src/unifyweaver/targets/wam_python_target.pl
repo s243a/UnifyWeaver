@@ -51,6 +51,7 @@
 	parse_wam_text_py/2,
 	python_func_name/2
 ]).
+:- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
 :- use_module(wam_runtime_parser_capability, [
 	parser_dependent_body_goal/2,
 	wam_target_runtime_parser/3
@@ -1000,6 +1001,10 @@ escape_python_string(In, Out) :-
 	atomic_list_concat(Parts2, "\\\"", Out).
 
 clean_wam_constant_token(Token, Clean) :-
+	% Kept for legacy callers — strips outer quotes if present, drops
+	% trailing comma otherwise. Constant emission should use
+	% python_text_constant_literal/2 below, which preserves the
+	% atom-vs-number distinction via wam_classify_constant_token/2.
 	atom_string(Token, S),
 	string_length(S, Len),
 	Len >= 2,
@@ -1012,14 +1017,24 @@ clean_wam_constant_token(Token, Clean) :-
 clean_wam_constant_token(Token, Clean) :-
 	clean_comma(Token, Clean).
 
+%% python_text_constant_literal(+Token, -PyVal) is det.
+%
+%  Convert a WAM constant token to a Python Value literal.
+%  Atom-vs-number disambiguation goes through
+%  wam_text_parser:wam_classify_constant_token/2: tokens with outer
+%  single quotes are atoms regardless of inner shape (so `'5'` is
+%  the atom `'5'`, distinct from the integer 5). Strips a trailing
+%  comma left attached by the split-based tokenizer before
+%  classifying.
 python_text_constant_literal(Token, PyVal) :-
-	clean_wam_constant_token(Token, Clean),
-	atom_string(Clean, S),
-	(   number_string(N, S), integer(N)
+	clean_comma(Token, Token1),
+	wam_classify_constant_token(Token1, Class),
+	(   Class = integer(N)
 	->  format(atom(PyVal), 'Int(~w)', [N])
-	;   number_string(F, S), float(F)
+	;   Class = float(F)
 	->  format(atom(PyVal), 'Float(~w)', [F])
-	;   escape_python_string(Clean, Esc),
+	;   Class = atom(Name),
+	    escape_python_string(Name, Esc),
 	    format(atom(PyVal), 'Atom("~w")', [Esc])
 	).
 
