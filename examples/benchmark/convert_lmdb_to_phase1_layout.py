@@ -31,8 +31,10 @@ has a populated meta sub-db.
 """
 
 import os
+import json
 import struct
 import sys
+import time
 from pathlib import Path
 
 try:
@@ -43,6 +45,7 @@ except ImportError:
 
 
 def main() -> int:
+    started_at = time.time()
     if len(sys.argv) != 3:
         sys.stderr.write(
             "Usage: convert_lmdb_to_phase1_layout.py <src_lmdb_dir> <dst_lmdb_dir>\n"
@@ -121,17 +124,86 @@ def main() -> int:
                 dst_txn.put(b"compile_time_atoms_count", struct.pack("<i", 0), db=meta_db)
                 dst_txn.put(b"cli_args", " ".join(sys.argv).encode("utf-8"), db=meta_db)
                 dst_txn.put(b"converted_from", str(src_dir).encode("utf-8"), db=meta_db)
+                dst_txn.put(b"id_encoding", b"int32_le", db=meta_db)
+                dst_txn.put(b"category_parent_edge_count", str(cp_count).encode("ascii"), db=meta_db)
+                dst_txn.put(b"category_child_edge_count", str(cp_count).encode("ascii"), db=meta_db)
+                dst_txn.put(b"reverse_index_relation", b"category_child/2", db=meta_db)
+                dst_txn.put(b"reverse_index_storage_kind", b"phase1_lmdb_subdb", db=meta_db)
 
     finally:
         src_env.close()
         dst_env.sync()
         dst_env.close()
 
+    elapsed_seconds = time.time() - started_at
+    write_phase1_manifest(
+        dst_dir,
+        src_dir,
+        cp_count,
+        max_id,
+        elapsed_seconds,
+    )
+
     sys.stderr.write(
         f"convert_lmdb_to_phase1_layout: cp_edges={cp_count} "
         f"cc_edges={cp_count} max_id={max_id} -> {dst_dir}\n"
     )
     return 0
+
+
+def write_phase1_manifest(
+    dst_dir: Path,
+    src_dir: Path,
+    edge_count: int,
+    max_id: int,
+    elapsed_seconds: float,
+) -> None:
+    manifest = {
+        "format": "unifyweaver.phase1_lmdb_manifest.v1",
+        "schema_version": 1,
+        "environment_path": str(dst_dir),
+        "source_environment_path": str(src_dir),
+        "id_encoding": "int32_le",
+        "max_id": max_id,
+        "relations": {
+            "category_parent/2": {
+                "database": "category_parent",
+                "dupsort": True,
+                "edge_count": edge_count,
+                "key": "child",
+                "value": "parent",
+            },
+            "category_child/2": {
+                "database": "category_child",
+                "dupsort": True,
+                "edge_count": edge_count,
+                "key": "parent",
+                "value": "child",
+                "derived_from": "category_parent/2",
+                "storage_kind": "phase1_lmdb_subdb",
+            },
+            "article_category/2": {
+                "database": "article_category",
+                "dupsort": True,
+                "edge_count": 0,
+            },
+        },
+        "reverse_indexes": [
+            {
+                "relation": "category_child/2",
+                "source_relation": "category_parent/2",
+                "storage_kind": "phase1_lmdb_subdb",
+                "id_encoding": "int32_le",
+                "edge_count": edge_count,
+            }
+        ],
+        "build": {
+            "tool": "convert_lmdb_to_phase1_layout.py",
+            "elapsed_seconds": round(elapsed_seconds, 6),
+        },
+    }
+    manifest_path = dst_dir / "phase1_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

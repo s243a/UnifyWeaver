@@ -24,8 +24,8 @@ The short version:
   backing stores compete for the OS page cache, even if they are in
   separate files.
 - A CSR-style reverse artifact can keep child lookup out of the
-  memory-mapped path by using explicit `pread` slices and a bounded
-  user-space cache.
+  memory-mapped path by using explicit read policy, bounded user-space
+  cache, and optional OS-cache bypass when the platform supports it.
 
 This is not a fourth lazy/eager mode. It is an artifact and lifecycle
 choice that composes with the L0/L1/L2 parent-edge tier.
@@ -73,6 +73,20 @@ framework?" The current question is:
 2. when should the planner allow that artifact to be touched;
 3. whether we need a new non-mmap CSR storage kind for reverse lookup
    when page-cache competition matters.
+
+Every reverse artifact MUST declare the ID convention it stores. A
+target reader may translate between conventions before opening the
+artifact, but it must not silently interpret one encoding as another.
+
+```prolog
+id_encoding(int32_le).       % Phase 1 resident IDs
+id_encoding(decimal_utf8).   % C# query LMDB artifact IDs today
+```
+
+For CSR, the preferred implementation encoding is `int32_le`, because
+CSR is an integer layout. A C# query workload that still uses decimal
+UTF-8 IDs needs either a companion mapping table or a build step that
+emits an artifact in the reader's declared convention.
 
 ## 1. Problem
 
@@ -164,6 +178,7 @@ resolved option should include a storage kind:
 reverse_index(artifact([
     relation(category_child/2),
     storage_kind(mmap_array_artifact),
+    id_encoding(int32_le),
     ordering(parent_sort),
     phase(cache_warmup)
 ])).
@@ -171,8 +186,10 @@ reverse_index(artifact([
 reverse_index(artifact([
     relation(category_child/2),
     storage_kind(csr_pread_artifact),
+    id_encoding(int32_le),
     ordering(root_bfs),
     phase(runtime_available),
+    io_policy(auto),
     cache_bytes(67108864)
 ])).
 ```
@@ -181,6 +198,9 @@ reverse_index(artifact([
 names the important distinction from `mmap_array_artifact`: reverse
 child rows are fetched by explicit reads with bounded user-space cache,
 not by mapping another large relation into the process address space.
+
+`io_policy(auto)` is the default for CSR. See §3.4.1 for how it
+resolves.
 
 ### 2.1 Reverse-index phases
 
@@ -282,18 +302,62 @@ small in-memory key index.
 Lookup is:
 
 1. find the parent's `(offset, count)` record;
-2. `pread` exactly `count * sizeof(child_id)` bytes from `.val`;
+2. read exactly `count * sizeof(child_id)` bytes from `.val` using the
+   configured `io_policy`;
 3. optionally cache that slice in a bounded user-space cache.
 
 The important property is that the CSR files do not have to be
-memory-mapped. The runtime can use ordinary reads or `pread`, keeping
-reverse-edge caching explicit and bounded instead of letting the OS page
-cache make the trade-off implicitly.
+memory-mapped. Avoiding mmap removes a second reverse-edge virtual
+address mapping from the hot path. It does not, by itself, eliminate OS
+page-cache pressure: ordinary `read` and `pread` still populate the
+kernel page cache. True page-cache bypass requires platform-specific
+direct I/O, and that comes with alignment and portability costs.
 
 This proposed artifact should be treated as a new storage kind in the
 same conceptual family as `binary_artifact`, `lmdb_artifact`, and
 `mmap_array_artifact`, rather than as a replacement for the existing C#
 artifact framework.
+
+### 3.4.1 CSR I/O policy
+
+CSR access should expose an explicit I/O policy:
+
+```prolog
+io_policy(auto).
+io_policy(buffered_pread).
+io_policy(buffered_pread_drop).
+io_policy(direct_io).
+```
+
+| Policy | Meaning | Default use |
+| --- | --- | --- |
+| `buffered_pread` | Use `pread` or equivalent positional reads. No mmap, but OS page cache is allowed. | Safe portable baseline. |
+| `buffered_pread_drop` | Use `pread`, then ask the OS to drop consumed reverse blocks where supported, e.g. `posix_fadvise(..., DONTNEED)`. | Planning/warmup phases that should not leave reverse pages resident. |
+| `direct_io` | Use direct I/O, e.g. Linux `O_DIRECT`, when the filesystem, alignment, block size, and runtime bindings support it. | Large aligned runtime reads where page-cache isolation beats direct-I/O overhead. |
+| `auto` | Choose from phase, platform support, block size, and measurements. | Default. |
+
+`direct_io` should not be the unconditional default. It can avoid page
+cache competition, but it requires aligned buffers, aligned offsets and
+sizes, platform-specific open flags, and careful handling of short or
+small reads. It may also defeat useful kernel readahead. The initial
+resolver should be conservative:
+
+```prolog
+resolve_csr_io_policy(Options, buffered_pread_drop) :-
+    option(phase(Phase), Options),
+    memberchk(Phase, [planning_only, cache_warmup]).
+resolve_csr_io_policy(Options, direct_io) :-
+    option(phase(runtime_available), Options),
+    option(block_size_edges(B), Options),
+    B >= 65536,
+    option(platform_supports_direct_io(true), Options),
+    option(alignment_verified(true), Options),
+    option(measured_direct_io_win(true), Options).
+resolve_csr_io_policy(_Options, buffered_pread).
+```
+
+This is pseudocode using `option/3` in the `library(option)` style. The
+actual resolver should live beside the other cost-model predicates.
 
 ### 3.5 `reverse_index(csr([block_size_edges(N), ...]))`
 
@@ -307,7 +371,7 @@ category_child.blocks.00001
 ...
 ```
 
-or kept as one `.val` file with block metadata:
+The default should be one `.val` file with block metadata:
 
 ```
 block_id, file_offset, edge_count, parent_min, parent_max, checksum
@@ -316,6 +380,10 @@ block_id, file_offset, edge_count, parent_min, parent_max, checksum
 Block CSR lets the builder group parents whose child lists are likely to
 be queried together. It also gives the runtime a natural cache unit:
 cache or drop one block at a time, rather than caching arbitrary slices.
+Separate block files are a future option for platforms where operational
+constraints make a single large file awkward. They should not be the
+first implementation because they increase file-descriptor management
+and manifest complexity.
 
 ## 4. Ordering strategies
 
@@ -333,7 +401,7 @@ free, and it only pays when the same dataset sees enough queries.
 | `graph_partition` | near-linear practical cost, high constants | blocks with low cross-block traffic | METIS-style partitioning; valuable only for large reusable corpora. |
 | `spectral` | expensive eigensolver iterations | global bandwidth reduction | Mostly completeness; likely too costly for ordinary benchmarks. |
 | `bandwidth_heuristic` | NP-hard exact problem; heuristic cost varies | block diagonal shape | Use only when query volume is massive. |
-| `embedding_cluster` | expensive unless embeddings already exist | semantic locality | Useful if topic embeddings are already part of the corpus. |
+| `embedding_cluster` | expensive unless embeddings already exist | semantic locality | Out of scope unless a separate embedding pipeline is integrated. |
 
 The cheap and moderate options are close enough to linear that they are
 reasonable for corpora that will be queried repeatedly. The high-cost
@@ -362,6 +430,10 @@ If the caller expects only a few queries, parent-only LMDB usually wins
 because `reverse_preprocess_wall_seconds` is not amortised. If the same
 dataset will support thousands or millions of queries, even a linear
 preprocessing pass can become cheap.
+
+If `per_query_savings <= 0`, the artifact is contraindicated regardless
+of expected query count. Benchmark reports should flag that case
+explicitly instead of producing a negative break-even query count.
 
 The cost model needs these inputs:
 
@@ -392,6 +464,7 @@ otherwise:
 
 ```prolog
 resolve_reverse_index(Options, none) :-
+    % option/3 is SWI-Prolog library(option) style pseudocode.
     option(expected_query_count_per_artifact(Q), Options, 1),
     Q < 100,
     \+ option(needs_descendant_lookup(true), Options).
@@ -425,6 +498,9 @@ reverse_index_phase(cache_warmup).
 reverse_index_runtime_access(disabled).
 ```
 
+These predicates are design stubs. Phase D planner integration defines
+where they live and how target runtimes enforce them.
+
 If a workload genuinely needs both directions during runtime, the target
 should prefer CSR with explicit cache sizing over a second mmap source:
 
@@ -444,6 +520,16 @@ Correctness:
 - Verify identical descendant sets for sampled parents.
 - Verify identical demand sets and effective-distance outputs when a
   reverse artifact is used only for planning or warmup.
+- Verify artifact readers reject mismatched `id_encoding` declarations
+  instead of silently interpreting decimal UTF-8 IDs as int32 or the
+  reverse.
+
+Phase enforcement:
+
+- Verify `planning_only` and `cache_warmup` reverse artifacts are closed
+  or flagged inaccessible before the hot kernel's first WAM instruction.
+- Verify the "reverse artifact touched during hot kernel" telemetry is
+  zero for every phase except `runtime_available`.
 
 Performance:
 
@@ -453,6 +539,9 @@ Performance:
 - Record minor and major page faults where the platform exposes them.
 - Compare parent-only LMDB, reverse LMDB, `parent_sort` CSR, and
   `root_bfs` CSR.
+- Compare `buffered_pread`, `buffered_pread_drop`, and `direct_io`
+  where the platform supports direct I/O and the block layout can meet
+  alignment requirements.
 - Compute break-even query counts from observed preprocessing cost and
   per-query savings.
 
@@ -460,6 +549,8 @@ Regression guard:
 
 - Add a telemetry field for "reverse artifact touched during hot
   kernel". It should be zero for `planning_only` and `cache_warmup`.
+- Add telemetry for resolved CSR `io_policy`, direct-I/O support,
+  alignment fallback, and any `DONTNEED` advisory calls.
 
 ## 9. Implementation plan
 
@@ -468,10 +559,14 @@ Phase A - design and option validation:
 - Land this design doc.
 - Add Prolog option parsing tests for
   `reverse_index(none|lmdb|mmap_array|csr|artifact|auto)`.
+- Add option parsing for `id_encoding(...)` and
+  `io_policy(auto|buffered_pread|buffered_pread_drop|direct_io)`.
 - Reject `phase(runtime_available)` when no runtime reverse lookup API
   exists for the target.
 - Map `reverse_index(artifact(...))` onto the existing storage-kind
   vocabulary where a target already supports relation artifacts.
+- Define the minimum benchmark criteria before `reverse_index(auto)` can
+  choose anything other than `none` or an existing target artifact.
 
 Phase B - baseline builder:
 
@@ -485,9 +580,15 @@ Phase B - baseline builder:
 
 Phase C - CSR prototype:
 
-- Build `parent_sort` CSR from `category_parent/2`.
-- Add a small reader with direct-index or binary-search lookup.
-- Use `pread` instead of mmap by default.
+- Build `parent_sort` CSR from `category_parent/2` with
+  `id_encoding(int32_le)`.
+- Add a small Rust reader, co-located with the Rust LMDB sink/build path,
+  with direct-index or binary-search lookup. C# binding can follow once
+  the format and policy are stable.
+- Implement `io_policy(buffered_pread)` and
+  `io_policy(buffered_pread_drop)` first.
+- Prototype `io_policy(direct_io)` only after block alignment and
+  platform support are verified.
 - Add bounded slice/block cache.
 
 Phase D - planner integration:
