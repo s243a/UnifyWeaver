@@ -26,7 +26,7 @@
 ]).
 
 :- use_module(library(lists)).
-:- use_module(wam_text_parser, [wam_text_to_items/2]).
+:- use_module(wam_text_parser, [wam_text_to_items/2, wam_classify_constant_token/2]).
 % Inlined escape helper to avoid a circular import with wam_cpp_target.
 % Keeps this module standalone-loadable.
 
@@ -448,13 +448,16 @@ local_join([X, Y|Rest], Sep, Result) :-
     string_concat(XSep, Tail, Result).
 
 %% cpp_val_literal(+Str, -CppLiteral)
-%  Convert a WAM constant token to a C++ Value literal.
+%  Convert a WAM constant token to a C++ Value literal. Atom-vs-number
+%  disambiguation goes through wam_classify_constant_token/2 — a
+%  bare token `5` is the integer 5; a quoted token `'5'` (with outer
+%  apostrophes preserved by the WAM-text tokenizer) is the atom `'5'`.
 cpp_val_literal(Str, CppVal) :-
-    (   number_string(N, Str), integer(N)
+    wam_classify_constant_token(Str, Class),
+    (   Class = integer(N)
     ->  format(atom(CppVal), 'Value::Integer(~w)', [N])
-    ;   number_string(F, Str), float(F)
+    ;   Class = float(F)
     ->  format(atom(CppVal), 'Value::Float(~w)', [F])
-    ;   Str == "[]"
-    ->  CppVal = 'Value::Atom("[]")'
-    ;   format(atom(CppVal), 'Value::Atom("~w")', [Str])
+    ;   Class = atom(Name),
+        format(atom(CppVal), 'Value::Atom("~w")', [Name])
     ).

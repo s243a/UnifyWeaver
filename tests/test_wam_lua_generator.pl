@@ -194,8 +194,12 @@ test(registry) :-
     assertion(target_module(wam_lua, wam_lua_target)).
 
 test(shared_wam_tokenizer_bridge) :-
+    % Quoted-atom tokens preserve their outer single quotes so
+    % downstream consumers can distinguish atom-vs-number — bare `5`
+    % is the integer, `'5'` is the atom. See
+    % wam_text_parser:wam_classify_constant_token/2.
     wam_lua_target:tokenize_wam_line("    put_constant 'Has,comma', A1", T1),
-    assertion(T1 == ["put_constant", "Has,comma", "A1"]),
+    assertion(T1 == ["put_constant", "'Has,comma'", "A1"]),
     wam_lua_target:tokenize_wam_line("    put_structure ,/2, A1", T2),
     assertion(T2 == ["put_structure", ",/2", "A1"]).
 

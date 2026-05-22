@@ -71,7 +71,8 @@
 % wrapper parse_pred_blocks/2 below is kept as a thin alias since
 % existing call sites still use that name.
 :- use_module(wam_text_parser, [
-    wam_text_to_items/2
+    wam_text_to_items/2,
+    wam_classify_constant_token/2
 ]).
 
 :- multifile user:wam_cpp_emit_mode/1.
@@ -147,31 +148,23 @@ cpp_atomics_to_string([X, Y|Rest], Sep, Result) :-
 %% cpp_value_literal(+ConstantToken, -CppLiteral)
 %  Convert a WAM constant (atom, integer, float, []) into a C++ Value
 %  literal usable inside the generated source.
+%
+%  Atom-vs-number disambiguation: tokens that arrived with outer
+%  single quotes preserved (per wam_text_parser:wam_tokenize_line/2)
+%  are atoms regardless of whether the inner text reparses as a
+%  number. wam_classify_constant_token/2 implements the convention;
+%  this emitter just maps the classification to a C++ Value literal.
 cpp_value_literal(C, Val) :-
     to_string(C, Str),
-    (   atom_marker_prefix(Str, AtomContent)
-    ->  % Atom-marker (\\x01 prefix) — emit as Atom regardless of
-        % whether the content re-parses as a number. The marker
-        % itself is stripped; only AtomContent reaches the output.
-        escape_cpp_string(AtomContent, EscStr),
-        format(atom(Val), 'Value::Atom("~w")', [EscStr])
-    ;   number_string(N, Str), integer(N)
+    wam_classify_constant_token(Str, Class),
+    (   Class = integer(N)
     ->  format(atom(Val), 'Value::Integer(~w)', [N])
-    ;   number_string(F, Str), float(F)
+    ;   Class = float(F)
     ->  format(atom(Val), 'Value::Float(~w)', [F])
-    ;   Str == "[]"
-    ->  Val = 'Value::Atom("[]")'
-    ;   escape_cpp_string(Str, EscStr),
+    ;   Class = atom(Name),
+        escape_cpp_string(Name, EscStr),
         format(atom(Val), 'Value::Atom("~w")', [EscStr])
     ).
-
-%% atom_marker_prefix(+Str, -Stripped) is semidet.
-%  True iff Str starts with the atom-marker (\\x01); Stripped is the
-%  remainder. Matches the marker convention emitted by
-%  wam_target:quote_wam_constant/2 for atoms-that-look-like-numbers.
-atom_marker_prefix(Str, Stripped) :-
-    string_codes(Str, [1|RestCodes]),
-    string_codes(Stripped, RestCodes).
 
 to_string(X, S) :- string(X), !, S = X.
 to_string(X, S) :- atom(X), !, atom_string(X, S).
@@ -2348,13 +2341,19 @@ last_colon_index([_|T], I, Acc, Out) :-
     I1 is I + 1, last_colon_index(T, I1, Acc, Out).
 
 %% key_to_cpp_value(+KeyStr, -CppLiteral)
-%  Atom / Integer / Float literal for a switch key.
+%  Atom / Integer / Float literal for a switch key. KeyStr comes
+%  from wam_target:quote_wam_constant/2 (via the switch_on_constant
+%  entry serialiser), so atom-vs-number disambiguation goes through
+%  wam_classify_constant_token/2 — same convention as
+%  cpp_value_literal/2.
 key_to_cpp_value(KeyStr, Lit) :-
-    (   number_string(N, KeyStr), integer(N)
+    wam_classify_constant_token(KeyStr, Class),
+    (   Class = integer(N)
     ->  format(atom(Lit), 'Value::Integer(~w)', [N])
-    ;   number_string(F, KeyStr), float(F)
+    ;   Class = float(F)
     ->  format(atom(Lit), 'Value::Float(~w)', [F])
-    ;   escape_cpp_string(KeyStr, Esc),
+    ;   Class = atom(Name),
+        escape_cpp_string(Name, Esc),
         format(atom(Lit), 'Value::Atom("~w")', [Esc])
     ).
 
