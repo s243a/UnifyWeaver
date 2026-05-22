@@ -173,8 +173,10 @@
 :- dynamic user:wam_string_to_atom_unbound_pair/1.
 :- dynamic user:wam_string_codes_guard/2.
 :- dynamic user:wam_string_codes_reverse/0.
+:- dynamic user:wam_string_codes_reverse_mismatch/0.
 :- dynamic user:wam_string_chars_guard/2.
 :- dynamic user:wam_string_chars_reverse/0.
+:- dynamic user:wam_string_chars_reverse_mismatch/0.
 :- dynamic user:wam_char_code_guard/2.
 :- dynamic user:wam_char_code_reverse/0.
 :- dynamic user:wam_char_code_bad_char/0.
@@ -408,8 +410,10 @@ user:wam_string_to_atom_reverse :- string_to_atom(world, A), A = world.
 user:wam_string_to_atom_unbound_pair(_) :- user:wam_unbound_arg(S), user:wam_unbound_arg(A), string_to_atom(S, A).
 user:wam_string_codes_guard(A, C) :- string_codes(A, C).
 user:wam_string_codes_reverse :- string_codes(A, [102,111,111]), A = foo.
+user:wam_string_codes_reverse_mismatch :- string_codes(A, [102,111]), A = foo.
 user:wam_string_chars_guard(A, C) :- string_chars(A, C).
 user:wam_string_chars_reverse :- string_chars(A, [f,o,o]), A = foo.
+user:wam_string_chars_reverse_mismatch :- string_chars(A, [f,o]), A = foo.
 user:wam_char_code_guard(C, N) :- char_code(C, N).
 user:wam_char_code_reverse :- char_code(C, 65), C = 'A'.
 user:wam_char_code_bad_char :- char_code(ab, _).
@@ -648,8 +652,10 @@ run_smoke :-
           user:wam_string_to_atom_unbound_pair/1,
           user:wam_string_codes_guard/2,
           user:wam_string_codes_reverse/0,
+          user:wam_string_codes_reverse_mismatch/0,
           user:wam_string_chars_guard/2,
           user:wam_string_chars_reverse/0,
+          user:wam_string_chars_reverse_mismatch/0,
           user:wam_char_code_guard/2,
           user:wam_char_code_reverse/0,
           user:wam_char_code_bad_char/0,
@@ -1047,9 +1053,11 @@ smoke_cases([
     case('wam_string_codes_guard/2', args(foo, '[102,111,111]'), "true"),
     case('wam_string_codes_guard/2', args(foo, '[102,111]'), "false"),
     case('wam_string_codes_reverse/0', no_args, "true"),
+    case('wam_string_codes_reverse_mismatch/0', no_args, "false"),
     case('wam_string_chars_guard/2', args(foo, '[f,o,o]'), "true"),
     case('wam_string_chars_guard/2', args(foo, '[f,o]'), "false"),
     case('wam_string_chars_reverse/0', no_args, "true"),
+    case('wam_string_chars_reverse_mismatch/0', no_args, "false"),
     case('wam_char_code_guard/2', args(a, 97), "true"),
     case('wam_char_code_guard/2', args(a, 98), "false"),
     case('wam_char_code_reverse/0', no_args, "true"),
@@ -1444,7 +1452,9 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-atomic-list-concat-3-split-mismatch-0"),
     has(CoreCode, "defn lowered-wam-string-to-atom-guard-2"),
     has(CoreCode, "defn lowered-wam-string-codes-guard-2"),
+    has(CoreCode, "defn lowered-wam-string-codes-reverse-mismatch-0"),
     has(CoreCode, "defn lowered-wam-string-chars-guard-2"),
+    has(CoreCode, "defn lowered-wam-string-chars-reverse-mismatch-0"),
     has(CoreCode, "defn lowered-wam-char-code-guard-2"),
     has(CoreCode, "defn lowered-wam-char-type-alpha-0"),
     has(CoreCode, "defn lowered-wam-char-type-code-forward-0"),
