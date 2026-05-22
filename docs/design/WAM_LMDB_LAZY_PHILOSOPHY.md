@@ -4,20 +4,45 @@
 lazy LMDB access patterns in the WAM targets and how they relate to
 workload-segregation and physical-layout strategies.
 
-**Snapshot date**: 2026-05-20.
+**Snapshot date**: 2026-05-21.
 
 **Companions**:
 - [`WAM_LMDB_LAZY_SPECIFICATION.md`](WAM_LMDB_LAZY_SPECIFICATION.md) —
   cross-target interface specification.
 - [`WAM_LMDB_LAZY_IMPLEMENTATION_PLAN.md`](WAM_LMDB_LAZY_IMPLEMENTATION_PLAN.md) —
   phased rollout for Rust (and reference catalogue for Haskell, which
-  already implements much of L2).
+  already implements much of `cached` mode).
 
 This doc sits inside the broader framing of
 [`QUERY_PLAN_RUNTIME_PHILOSOPHY.md`](QUERY_PLAN_RUNTIME_PHILOSOPHY.md)
 (precursor for the runtime planner pattern) and
 [`SCAN_STRATEGY_PHILOSOPHY.md`](SCAN_STRATEGY_PHILOSOPHY.md) (which
 informs how plans get chosen).
+
+## Vocabulary
+
+This triad uses three distinct sets of identifiers — keep them separate:
+
+- **Modes** (runtime materialisation behaviour): `eager`, `lazy`, `cached`.
+  These name *what the runtime does on each lookup*. They are the
+  three runtime behaviours described in §2. Selectable per kernel
+  via the codegen option `lmdb_materialisation(auto|eager|lazy|cached)`.
+- **Phases** (project sequencing labels): R7, R8, R9, R10, H1, X.
+  These appear in
+  [`WAM_LMDB_LAZY_IMPLEMENTATION_PLAN.md`](WAM_LMDB_LAZY_IMPLEMENTATION_PLAN.md);
+  each implements some subset of the modes for some target.
+- **Cache tiers** (Haskell-internal, *within* `cached` mode):
+  per-HEC L1 cache + sharded L2 cache. These are the existing
+  `lmdb_cache_mode(per_hec|sharded|two_level)` configurations and
+  are *internal* to the `cached` mode — not to be confused with the
+  modes above.
+
+Earlier drafts of this triad named the modes `L0`/`L1`/`L2`, which
+collided with the Haskell internal cache-tier names. The rename to
+`eager`/`lazy`/`cached` removes the collision. If you find any
+lingering `L0`/`L1`/`L2` references to *modes* (rather than to
+Haskell's internal cache tiers), they are stale and should be
+updated.
 
 ## 1. Context — where this came from
 
@@ -44,85 +69,90 @@ the same trade-off can be discussed consistently across targets, and
 so future cost-model resolvers can pick between modes from workload
 metadata rather than hand-tuning.
 
-## 2. The lazy/eager spectrum (and the three tiers)
+## 2. The lazy/eager spectrum (and the three modes)
 
-Three modes show up in measurements so far. Naming them up front:
+Three runtime modes show up in measurements so far. Naming them up
+front:
 
-- **L0 — eager materialisation.** Build an in-memory index of every
-  demand-set edge before any kernel iteration runs. The kernel walks
-  the index without touching LMDB after startup.
-- **L1 — pure lazy.** No materialisation. Each kernel walk step does
-  an LMDB cursor lookup on demand. No cache layer above the LMDB.
-- **L2 — lazy with cache.** Each kernel walk step queries a cache
-  first; on miss, does an LMDB cursor lookup and populates the cache.
-  Subsequent lookups for the same key hit the cache.
+- **`eager`** — eager materialisation. Build an in-memory index of
+  every demand-set edge before any kernel iteration runs. The kernel
+  walks the index without touching LMDB after startup.
+- **`lazy`** — pure lazy. No materialisation. Each kernel walk step
+  does an LMDB cursor lookup on demand. No cache layer above the
+  LMDB.
+- **`cached`** — lazy with cache. Each kernel walk step queries a
+  cache first; on miss, does an LMDB cursor lookup and populates
+  the cache. Subsequent lookups for the same key hit the cache.
 
-The Haskell `resident_cursor` mode is **L2** — it's lazy by default
-but the runtime maintains per-HEC L1 + sharded L2 cache tiers above
-the LMDB cursor reads. The Haskell `resident` (IntMap) mode is
-**L0** — eager in-process materialisation, with the same memory wall
-the Rust bench has.
+The Haskell `resident_cursor` runtime is **`cached` mode** — it's
+lazy by default but the runtime maintains per-HEC L1 + sharded L2
+cache tiers above the LMDB cursor reads. (Those cache tiers are
+internal to `cached`; see Vocabulary above.) The Haskell `resident`
+(IntMap) runtime is **`eager` mode** — eager in-process
+materialisation, with the same memory wall the Rust bench has.
 
-The Rust bench today is **L0**. We have no L1 or L2 variant yet, and
-the cross-target story this doc motivates is to add both.
+The Rust bench today is **`eager`**. We have no `lazy` or `cached`
+variant yet, and the cross-target story this doc motivates is to add
+both.
 
 ### 2.1 Where each mode wins
 
 The naive cost model for one process invocation:
 
 ```
-L0 wall ≈ M + N × ε         (M = materialisation cost, ε = per-seed kernel)
-L1 wall ≈ N × p             (p = lazy per-seed cost, larger than ε)
-L2 wall ≈ N × q + θ × p     (q = cache-hit cost, θ = cache-miss rate)
+eager  wall ≈ M + N × ε     (M = materialisation cost, ε = per-seed kernel)
+lazy   wall ≈ N × p         (p = lazy per-seed cost, larger than ε)
+cached wall ≈ N × q + θ × p (q = cache-hit cost, θ = cache-miss rate)
 ```
 
-`L1 wall ≤ L2 wall` only when `θ × p ≤ N × (p − q)`, which simplifies
-to `θ ≤ N(p−q)/Np` — i.e., when **the cache miss rate is low enough
-that the cache machinery itself isn't worth its overhead**. In a
-single isolated query that's almost always the case (θ ≈ 100%, but
-N ≈ 1 — the cache never gets to amortise). Across many seeds with
-graph locality, θ drops quickly and L2 wins.
+`lazy wall ≤ cached wall` only when `θ × p ≤ N × (p − q)`, which
+simplifies to `θ ≤ N(p−q)/Np` — i.e., when **the cache miss rate is
+low enough that the cache machinery itself isn't worth its
+overhead**. In a single isolated query that's almost always the case
+(θ ≈ 100%, but N ≈ 1 — the cache never gets to amortise). Across
+many seeds with graph locality, θ drops quickly and `cached` wins.
 
-The non-obvious result is that **L1 only beats L2 under specific
-workload conditions**: high cache-miss rate due to no locality between
-queries, OR a workload-segregation guarantee that means cache hits
-won't happen anyway. Most real workloads have *some* locality, so L2
-is the right default.
+The non-obvious result is that **`lazy` only beats `cached` under
+specific workload conditions**: high cache-miss rate due to no
+locality between queries, OR a workload-segregation guarantee that
+means cache hits won't happen anyway. Most real workloads have
+*some* locality, so `cached` is the right default.
 
 ### 2.2 The picture in one table
 
 | Mode | Wins for | Why |
 | --- | --- | --- |
-| **L0** | Batched workloads, demand-set fits in RAM | Pays `M` once, amortises across many seeds |
-| **L1** | Pure one-shot queries, OR segregated batches with provably-disjoint subgraphs | No `M` overhead, no cache machinery overhead |
-| **L2** | Default for everything else | Bounded per-seed cost, locality benefits, scales past the memory wall |
+| **`eager`** | Batched workloads, demand-set fits in RAM | Pays `M` once, amortises across many seeds |
+| **`lazy`** | Pure one-shot queries, OR segregated batches with provably-disjoint subgraphs | No `M` overhead, no cache machinery overhead |
+| **`cached`** | Default for everything else | Bounded per-seed cost, locality benefits, scales past the memory wall |
 
-The cost-model resolver should pick **L2 by default**, **L0 when
-demand set is small enough and seed count is high enough** (the
-crossover in [`QUERY_PLAN_RUNTIME_PHILOSOPHY.md`](QUERY_PLAN_RUNTIME_PHILOSOPHY.md)
-§2), and **L1 only when the caller explicitly signals workload
+The cost-model resolver should pick **`cached` by default**,
+**`eager` when demand set is small enough and seed count is high
+enough** (the crossover in
+[`QUERY_PLAN_RUNTIME_PHILOSOPHY.md`](QUERY_PLAN_RUNTIME_PHILOSOPHY.md)
+§2), and **`lazy` only when the caller explicitly signals workload
 segregation** (see §3).
 
-## 3. Workload segregation: the enabling condition for L1
+## 3. Workload segregation: the enabling condition for `lazy`
 
-L1 has a real niche, but only when the bench harness can guarantee
+`lazy` has a real niche, but only when the bench harness can guarantee
 that **no two queries in the same process share an LMDB key**. Then
-the cache that L2 would maintain has zero hits, and L1's no-cache
-shape is pure win.
+the cache that `cached` would maintain has zero hits, and `lazy`'s
+no-cache shape is pure win.
 
 The natural model for this is **node clusters** — group seeds whose
 upward walks touch disjoint subgraphs. The category graph of
 Wikipedia has multiple top-level roots; if a workload is "compute
 effective distances against root R₁ for batch A, then against root
-R₂ for batch B," and R₁ / R₂ have non-overlapping descendant subtrees,
-then within each batch L1 is correct, and across batches the cache
-would never have warmed for the new keys anyway.
+R₂ for batch B," and R₁ / R₂ have non-overlapping descendant
+subtrees, then within each batch `lazy` is correct, and across
+batches the cache would never have warmed for the new keys anyway.
 
 Two ways to surface this to the cost model:
 
 1. **User-declared segregation**: caller passes a `cluster_id` or
    `workload_segregated(true)` flag. The simplest contract. Risk:
-   user lies, L1 burns cycles on uncached repeats.
+   user lies, `lazy` burns cycles on uncached repeats.
 2. **Compiler-inferred segregation**: shape analysis proves that the
    query stream cannot revisit nodes (e.g., the seed set is bounded
    by the demand set, and `max_depth` limits the walk such that
@@ -130,7 +160,7 @@ Two ways to surface this to the cost model:
    verifiable.
 
 For initial implementation, option 1 is fine — the cost-model
-default is L2, and L1 is opt-in via an explicit annotation.
+default is `cached`, and `lazy` is opt-in via an explicit annotation.
 
 ### 3.1 Where segregation comes from in practice
 
@@ -197,11 +227,11 @@ Three physical-layout strategies, ordered by cost:
 | **MST sort** | O(E log V) | Provably good | Compute a minimum spanning tree, then DFS-order the nodes. Optimal in the sense that adjacent IDs minimise tree-edge weight; expensive enough that it only pays off for static benchmarks. |
 
 The scan-friendliness story is **orthogonal** to the lazy/eager
-choice. L1 + scan combines workload segregation with physical
+choice. `lazy` + scan combines workload segregation with physical
 locality — the strongest configuration for one-shot, no-cache
-workloads. L2 + scan still benefits from physical locality on
-cache misses. L0 doesn't care because it pays for materialisation
-once anyway.
+workloads. `cached` + scan still benefits from physical locality on
+cache misses. `eager` doesn't care because it pays for
+materialisation once anyway.
 
 ## 5. How the modes compose
 
@@ -213,31 +243,38 @@ The full space of mode choices:
                             │
                   poor      │      good
                  ─────────────────────────
-  L0 (eager) │   indifferent (M pays once)
-  L1 (lazy)  │   bad         │  great (workload-seg + scan)
-  L2 (cache) │   ok          │  great (cache hits + scan misses)
+  eager          │   indifferent (M pays once)
+  lazy           │   bad        │  great (workload-seg + scan)
+  cached         │   ok         │  great (cache hits + scan misses)
 ```
 
 The decision tree for the cost-model resolver becomes:
 
-1. *Is demand_set_size × edge_size > available_memory_budget?* → must use lazy (L1 or L2).
-2. *Does the user declare workload_segregated?* → L1.
-3. *Otherwise?* → L2.
-4. *Is physical layout known to be scan-friendly?* → enable scan-mode within the chosen tier.
+1. *Is demand_set_size × edge_size > available_memory_budget?* → must use lazy form (`lazy` or `cached`).
+2. *Does the user declare `workload_segregated`?* → `lazy`.
+3. *Otherwise?* → `cached`.
+4. *Is physical layout known to be scan-friendly?* → enable scan-mode within the chosen mode.
 
 The existing cost-model resolvers (`cache_strategy(auto)`,
-`lmdb_cache_mode(auto)`, `resident_auto`) already cover parts of this.
-The L1/L2 distinction is what's new here; scan-mode is a related
-axis that would be added per-target.
+`lmdb_cache_mode(auto)`, `resident_auto`) already cover parts of
+this. The `lazy` / `cached` distinction is what's new here; scan-mode
+is a related axis that would be added per-target. See
+[`CACHE_COST_MODEL_PHILOSOPHY.md`](CACHE_COST_MODEL_PHILOSOPHY.md)
+and [`COST_FUNCTION_PHILOSOPHY.md`](COST_FUNCTION_PHILOSOPHY.md)
+for the cost-resolver pattern these new resolvers slot into. (That
+pattern is the one we sometimes call "the C# cost analysis", since
+the C# planner already does similar runtime mode selection — but
+the pattern itself is target-agnostic and lives in
+`src/unifyweaver/core/cost_model.pl`.)
 
 ## 6. Cross-language patterns this maps to
 
-L1 and L2 are general patterns. The iterator-based lookup interface
-maps cleanly across targets:
+`lazy` and `cached` are general patterns. The iterator-based lookup
+interface maps cleanly across targets:
 
 | Target | Idiomatic lazy lookup return type | Cache layer notes |
 | --- | --- | --- |
-| Haskell | `[Int]` (lazy list) or `ConduitT () Int IO ()` | Already implemented (L2); per-HEC L1 + sharded L2 in `lmdb_cache_mode` |
+| Haskell | `[Int]` (lazy list) or `ConduitT () Int IO ()` | Already implemented (`cached`); per-HEC L1 + sharded L2 in `lmdb_cache_mode` |
 | Rust | `impl Iterator<Item=i32> + 'a` | Closure-based foreign predicate; cache via `dashmap` or sharded `HashMap` |
 | Go | `<-chan int` (channel) | Pipeline-chaining already has channel mode; same pattern |
 | C# | `IEnumerable<int>` (LINQ) | Existing C# planner already does this for relations |
@@ -246,21 +283,23 @@ maps cleanly across targets:
 
 So the *interface* is the same shape everywhere; the implementation
 just chooses each language's native iterator equivalent. The cache
-tier layers on top via a Decorator pattern: an L2 cache wraps an L1
-source via the same interface.
+layer composes on top via a Decorator pattern: a `cached`
+implementation wraps a `lazy` implementation via the same interface.
 
 ## 7. What this rules out
 
 - **Picking lazy vs eager at the language level.** The mode is
   workload-dependent, not language-dependent. Any target can
-  implement any tier.
-- **A single "best" mode that wins everywhere.** Each tier has a
+  implement any mode.
+- **A single "best" mode that wins everywhere.** Each mode has a
   niche; the cost model has to choose.
 - **Hand-tuning per benchmark.** The auto-resolvers exist precisely
-  so that "which tier?" is determined by workload metadata, not
-  by which mode the experimenter happened to remember to set.
-- **Treating scan-mode as a tier of laziness.** It's a separate
-  axis. Any tier can use seeks or scans; the choice is determined
+  so that "which mode?" is determined by workload metadata, not
+  by which mode the experimenter happened to remember to set. The
+  `lmdb_materialisation(auto)` value triggers the resolver; explicit
+  values (`eager`/`lazy`/`cached`) override it.
+- **Treating scan-mode as a degree of laziness.** It's a separate
+  axis. Any mode can use seeks or scans; the choice is determined
   by physical layout quality.
 
 ## 8. Open questions
@@ -274,20 +313,21 @@ source via the same interface.
    layout-quality question more accurately.
 3. **How does this compose with the runtime planner pattern
    ([`QUERY_PLAN_RUNTIME_PHILOSOPHY.md`](QUERY_PLAN_RUNTIME_PHILOSOPHY.md))?**
-   The planner is the right place to decide L0/L1/L2 + seek/scan
-   per query rather than per process. Question: is the decision
-   cheap enough to do per query, or does it need to be amortised?
+   The planner is the right place to decide `eager`/`lazy`/`cached`
+   + seek/scan per query rather than per process. Question: is the
+   decision cheap enough to do per query, or does it need to be
+   amortised?
 4. **MST sort + LMDB rewrite for very large graphs**: is the
    pre-processing cost ever worth it for a one-off benchmark? Or
    only for production query workloads that hit the same DB
    thousands of times?
 5. **Cache invalidation under graph mutation**: the current Haskell
-   L2 cache assumes a static LMDB. Mutating workloads need a
+   `cached` mode assumes a static LMDB. Mutating workloads need a
    versioning story.
-6. **Cross-target benchmark methodology**: when we measure L1/L2/
-   scan-mode against L0, we need a workload spec that exercises
-   each mode's niche. The existing matrix-bench is L0-shaped;
-   it'd over-amortise.
+6. **Cross-target benchmark methodology**: when we measure
+   `lazy`/`cached`/scan-mode against `eager`, we need a workload
+   spec that exercises each mode's niche. The existing matrix-bench
+   is `eager`-shaped; it'd over-amortise.
 
 ## 9. References
 
@@ -298,12 +338,12 @@ source via the same interface.
   cost-function-driven plan selection).
 - `docs/design/CACHE_COST_MODEL_PHILOSOPHY.md` — cost-model framework
   this work feeds into.
-- `docs/design/WAM_LMDB_RESIDENT_INTERNING_PHILOSOPHY.md` — LMDB
-  layout this lazy work reads from.
 - `docs/design/COST_FUNCTION_PHILOSOPHY.md` — Green's-function and
   flux cost-functions; the lazy-vs-eager decision is one of the
   inputs.
-- `docs/design/WAM_PERF_OPTIMIZATION_LOG.md` Phase L#7–9 — Haskell L2
-  measurements at simplewiki and enwiki.
+- `docs/design/WAM_LMDB_RESIDENT_INTERNING_PHILOSOPHY.md` — LMDB
+  layout this lazy work reads from.
+- `docs/design/WAM_PERF_OPTIMIZATION_LOG.md` Phase L#7–9 — Haskell
+  `cached`-mode measurements at simplewiki and enwiki.
 - `examples/more/graph/effect_dist/haskell/gen/reports/effective_distance_haskell_vs_rust.md` —
   Haskell-vs-Rust report that motivated this design.

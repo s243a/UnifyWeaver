@@ -27,8 +27,9 @@ The short version:
   memory-mapped path by using explicit read policy, bounded user-space
   cache, and optional OS-cache bypass when the platform supports it.
 
-This is not a fourth lazy/eager mode. It is an artifact and lifecycle
-choice that composes with the L0/L1/L2 parent-edge tier.
+This is not a fourth materialisation mode. It is an artifact and
+lifecycle choice that composes with the `eager`/`lazy`/`cached`
+parent-edge modes defined in `WAM_LMDB_LAZY_PHILOSOPHY.md`.
 
 ## 0. Current artifact surface on `main`
 
