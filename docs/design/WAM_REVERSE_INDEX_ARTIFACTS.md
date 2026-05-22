@@ -581,7 +581,8 @@ Phase B - baseline builder:
 Phase C - CSR prototype:
 
 - Build `parent_sort` CSR from `category_parent/2` with
-  `id_encoding(int32_le)`.
+  `id_encoding(int32_le)`. Prototype script:
+  `examples/benchmark/build_reverse_csr_artifact.py`.
 - Add a small Rust reader, co-located with the Rust LMDB sink/build path,
   with direct-index or binary-search lookup. C# binding can follow once
   the format and policy are stable.
