@@ -1291,6 +1291,39 @@ def _execute_read_term_from_atom(state: WamState, arity: int = 2,
                                         options, syntax_default)
 
 
+def _read_stream_char(stream: Any) -> str:
+    if hasattr(stream, 'read'):
+        chunk = stream.read(1)
+        return chunk or ''
+    return ''
+
+
+def _execute_read(state: WamState, syntax_default: str = 'fail') -> bool:
+    stream = deref(get_reg(state, 1), state)
+    target = get_reg(state, 2)
+    if stream is None or isinstance(stream, (Atom, Compound, Var, Int, Float, Ref)):
+        return False
+
+    buffer = ''
+    while True:
+        ch = _read_stream_char(stream)
+        if ch == '':
+            if not buffer.strip():
+                return unify(target, make_atom('end_of_file'), state)
+            return _execute_compiled_parse_atom(state, buffer.strip(), target, None, syntax_default)
+
+        buffer += ch
+        stripped = buffer.strip()
+        if not stripped.endswith('.'):
+            continue
+
+        candidate = stripped[:-1].strip()
+        if not candidate:
+            continue
+        if _execute_compiled_parse_atom(state, candidate, target, None, 'fail'):
+            return True
+
+
 def _execute_term_to_atom(state: WamState) -> bool:
     term = deref(get_reg(state, 1), state)
     atom_term = deref(get_reg(state, 2), state)
@@ -1478,6 +1511,10 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         return _execute_read_term_from_atom(state, 3, 'fail')
     if builtin in ('read_term_from_atom_iso/3',) and arity == 3:
         return _execute_read_term_from_atom(state, 3, 'error')
+    if builtin in ('read/2', 'read_lax/2', 'read', 'read_lax') and arity == 2:
+        return _execute_read(state, 'fail')
+    if builtin in ('read_iso/2', 'read_iso') and arity == 2:
+        return _execute_read(state, 'error')
     if builtin in ('term_to_atom/2', 'term_to_atom') and arity == 2:
         return _execute_term_to_atom(state)
     if builtin in ('append/3', 'append') and arity == 3:
