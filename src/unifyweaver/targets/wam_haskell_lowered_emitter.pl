@@ -21,6 +21,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(wam_text_parser, [wam_classify_constant_token/2]).
 
 %% =====================================================================
 %% Parsing
@@ -435,11 +436,13 @@ fresh_sv(Cur, Next) :-
 
 val_hs(Str, Hs) :-
     atom_string(Str, StrS),
-    (   number_string(N, StrS), integer(N)
+    wam_classify_constant_token(StrS, Class),
+    (   Class = integer(N)
     ->  format(atom(Hs), 'Integer ~w', [N])
-    ;   number_string(F, StrS), float(F)
+    ;   Class = float(F)
     ->  format(atom(Hs), 'Float ~w', [F])
-    ;   wam_haskell_target:intern_atom(Str, AtomId),
+    ;   Class = atom(Name),
+        wam_haskell_target:intern_atom(Name, AtomId),
         format(atom(Hs), 'Atom ~w', [AtomId])
     ).
 

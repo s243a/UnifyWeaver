@@ -63,6 +63,7 @@
              [recommend_access_pattern/5, read_mem_available_bytes/1]).
 :- use_module('../core/algorithm_manifest',
              [load_algorithm_manifest/2]).
+:- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
 :- use_module('../core/cost_function',
              [validate_cost_function/1, cost_function_with_defaults/2]).
 
@@ -4914,21 +4915,29 @@ parse_functor_arity(FN, Arity) :-
 
 %% wam_value_to_haskell(+WamVal, -HaskellExpr)
 %  Converts a WAM constant to a Haskell Value constructor.
+%
+%  Atom-vs-number disambiguation goes through
+%  wam_text_parser:wam_classify_constant_token/2: a bare token `5`
+%  is the integer 5, a quoted token `'5'` is the atom whose name
+%  is "5". Without the classifier, intern_atom would intern the
+%  atom with the outer quotes attached.
 wam_value_to_haskell(Val, Hs) :-
     atom_string(Val, ValStr),
-    (   number_string(N, ValStr), integer(N)
+    wam_classify_constant_token(ValStr, Class),
+    (   Class = integer(N)
     ->  % Wrap negative integers in parens so Haskell parses correctly:
         % Integer (-5) not Integer -5
         (   N < 0
         ->  format(string(Hs), 'Integer (~w)', [N])
         ;   format(string(Hs), 'Integer ~w', [N])
         )
-    ;   number_string(F, ValStr), float(F)
+    ;   Class = float(F)
     ->  (   F < 0
         ->  format(string(Hs), 'Float (~w)', [F])
         ;   format(string(Hs), 'Float ~w', [F])
         )
-    ;   intern_atom(Val, AtomId),
+    ;   Class = atom(Name),
+        intern_atom(Name, AtomId),
         format(string(Hs), 'Atom ~w', [AtomId])
     ).
 
