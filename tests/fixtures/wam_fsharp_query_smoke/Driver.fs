@@ -87,6 +87,7 @@ let mkQueryState (a1: Value) (a2: Value) (vidStart: int) =
       WsCutBar     = 0
       WsVarCounter = vidStart
       WsBuilder    = None
+      WsBuilderStack = []
       WsAggAccum   = [] }
 
 // -- Working queries: clauses 1-2 reachable --------------------------------

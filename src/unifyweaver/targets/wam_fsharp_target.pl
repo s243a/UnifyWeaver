@@ -616,47 +616,100 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | _ -> None
 
     | GetStructure (fn, arity, ai) ->
+        // If we''re already inside a build/read context, push it so the
+        // parent structure can resume filling once this inner one
+        // materializes / is exhausted.  Without this push, nested
+        // patterns like `[op(:-,1200,xfx) | Rest]` overwrite the outer
+        // BuildList and lose track of where to return.
         match getReg ai s with
         | Some (Str (fn0, args)) when fn0 = fn && List.length args = arity ->
-            if arity = 0 then Some { s with WsPC = s.WsPC + 1; WsBuilder = None }
-            else Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (ReadArgs args) }
+            // arity = 0: no args to read, outer builder (if any) keeps running.
+            if arity = 0 then Some { s with WsPC = s.WsPC + 1 }
+            else
+                let push = pushBuilderIfActive s
+                Some { push with WsPC = s.WsPC + 1; WsBuilder = Some (ReadArgs args) }
+        // The WAM compiler emits `GetStructure (\"[|]\", 2, ai)` to walk
+        // the spine of a partial list (e.g. matching `[H|T]` when `H`
+        // is itself the head of a destructured nested list).  When
+        // `ai` holds a VList that was built via PutList / GetList, we
+        // need to read it as a cons cell.  Without this case, every
+        // list-iterating parser predicate (`take_digits`, `take_ident`,
+        // `tokenize_loop`, `parse_args`, ...) fails on its first
+        // cons-cell match.
+        | Some (VList (h :: t)) when fn = \"[|]\" && arity = 2 ->
+            let tailVal = if List.isEmpty t then Atom \"[]\" else VList t
+            let push = pushBuilderIfActive s
+            Some { push with WsPC = s.WsPC + 1; WsBuilder = Some (ReadArgs [h; tailVal]) }
         | Some (Unbound vid) when arity = 0 ->
+            // Atom-arity struct write: bind reg to Str(fn, []).  Outer
+            // builder''s arg slot, if any, already holds the Unbound var
+            // we just bound to the atom -- no append needed, outer
+            // continues.
+            // Y-aware write via putReg so Yk registers land in the
+            // env frame rather than the X-register array.
             let str = Str (fn, [])
-            let r = Array.copy s.WsRegs
-            r.[ai] <- str
-            Some { s with
+            let s0 = putReg ai str s
+            Some { s0 with
                      WsPC      = s.WsPC + 1
-                     WsRegs    = r
                      WsBindings= Map.add vid str s.WsBindings
                      WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
-                     WsTrailLen= s.WsTrailLen + 1
-                     WsBuilder = None }
+                     WsTrailLen= s.WsTrailLen + 1 }
         | Some (Unbound _) ->
-            Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (BuildStruct (fn, ai, arity, [])) }
+            let push = pushBuilderIfActive s
+            Some { push with WsPC = s.WsPC + 1; WsBuilder = Some (BuildStruct (fn, ai, arity, [])) }
         | _ -> None
 
     | GetList ai ->
+        let push = pushBuilderIfActive s
         match getReg ai s with
         | Some (VList (h :: t)) ->
-            Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (ReadArgs [h; VList t]) }
+            let tailVal = if List.isEmpty t then Atom \"[]\" else VList t
+            Some { push with WsPC = s.WsPC + 1; WsBuilder = Some (ReadArgs [h; tailVal]) }
+        // Cons cell built with a non-ground tail (e.g. `[H | T]` where T
+        // is an unbound var) materializes as Str(\"[|]\", [h; t]) so the
+        // tail can stay symbolic.  GetList must match that shape too.
+        | Some (Str (\"[|]\", [h; t])) ->
+            Some { push with WsPC = s.WsPC + 1; WsBuilder = Some (ReadArgs [h; t]) }
         | Some (Unbound _) ->
-            Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (BuildList (ai, [])) }
+            Some { push with WsPC = s.WsPC + 1; WsBuilder = Some (BuildList (ai, [])) }
         | _ -> None
 
     | UnifyVariable xn ->
         match readNextArg s with
         | Some (v, s1) -> Some (putReg xn v { s1 with WsPC = s.WsPC + 1 })
-        | None         -> None
+        | None ->
+            // Write mode: GetList / GetStructure on an unbound register
+            // sets WsBuilder = Some (BuildList _) | Some (BuildStruct _),
+            // and the following Unify* instructions must APPEND a fresh
+            // var to the structure being constructed.  The R and Python
+            // runtimes both do the same (templates/targets/r_wam/runtime.R.mustache
+            // around UnifyVariable, src/unifyweaver/targets/wam_python_runtime
+            // /WamRuntime.py:1760).  addToBuilder advances PC and
+            // materializes the struct/list once arity is reached, so
+            // PC is NOT advanced here directly.
+            let vid = s.WsVarCounter
+            let var = Unbound vid
+            let s1 = putReg xn var { s with WsVarCounter = s.WsVarCounter + 1 }
+            addToBuilder var s1
 
     | UnifyValue xn ->
-        match readNextArg s, getReg xn s with
-        | Some (v, s1), Some x -> unifyVal v x s1
-        | _                    -> None
+        match readNextArg s with
+        | Some (v, s1) ->
+            match getReg xn s with
+            | Some x -> unifyVal v x s1
+            | None   -> None
+        | None ->
+            // Write mode: append value-of-xn to builder.
+            match getReg xn s with
+            | Some v -> addToBuilder v s
+            | None   -> None
 
     | UnifyConstant c ->
         match readNextArg s with
         | Some (v, s1) -> unifyVal v c s1
-        | None         -> None
+        | None ->
+            // Write mode: append constant to builder.
+            addToBuilder c s
 
     | PutConstant (c, ai) ->
         let r = Array.copy s.WsRegs
@@ -683,10 +736,15 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | None   -> None
 
     | PutStructure (fn, ai, arity) ->
-        Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (BuildStruct (fn, ai, arity, [])) }
+        // PutStructure starts a fresh build context.  If we''re already
+        // inside one (nested PutStructure for compound subterms in a
+        // body call), push the outer so it can resume.
+        let push = pushBuilderIfActive s
+        Some { push with WsPC = s.WsPC + 1; WsBuilder = Some (BuildStruct (fn, ai, arity, [])) }
 
     | PutList ai ->
-        Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (BuildList (ai, [])) }
+        let push = pushBuilderIfActive s
+        Some { push with WsPC = s.WsPC + 1; WsBuilder = Some (BuildList (ai, [])) }
 
     | SetValue xn ->
         match getReg xn s with
@@ -747,7 +805,15 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
     | Fail -> None
 
     | Allocate ->
-        let frame = { EfSavedCP = s.WsCP; EfYRegs = Map.empty }
+        // Save the previous cut barrier in the frame so Deallocate can
+        // restore it.  Without this, a cut inside a nested clause body
+        // (e.g. `take_digits` calling `digit_code/1`) used the wrong
+        // barrier and the cut became a no-op -- exposing every
+        // ancestor''s CPs to backtrack.  The frame already carries
+        // EfSavedCP for the same reason.
+        let frame = { EfSavedCP    = s.WsCP
+                      EfYRegs      = Map.empty
+                      EfSavedCutBar= s.WsCutBar }
         Some { s with
                  WsPC    = s.WsPC + 1
                  WsStack = frame :: s.WsStack
@@ -755,7 +821,12 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
 
     | Deallocate ->
         match s.WsStack with
-        | ef :: rest -> Some { s with WsPC = s.WsPC + 1; WsStack = rest; WsCP = ef.EfSavedCP }
+        | ef :: rest ->
+            Some { s with
+                     WsPC     = s.WsPC + 1
+                     WsStack  = rest
+                     WsCP     = ef.EfSavedCP
+                     WsCutBar = ef.EfSavedCutBar }
         | []         -> None
 
     | TryMeElse label ->
@@ -797,16 +868,45 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | []        -> Some { s with WsPC = s.WsPC + 1 }
 
     | RetryMeElse label ->
+        let nextPC = Map.tryFind label ctx.WcLabels |> Option.defaultValue 0
         match s.WsCPs with
         | cp :: rest ->
-            let nextPC = Map.tryFind label ctx.WcLabels |> Option.defaultValue 0
             Some { s with WsPC = s.WsPC + 1; WsCPs = { cp with CpNextPC = nextPC } :: rest }
-        | [] -> Some { s with WsPC = s.WsPC + 1 }
+        | [] ->
+            // Indexing-bypass synthesis: an instruction like
+            // SwitchOnTerm jumped directly to this clause without
+            // running clause 1''s TryMeElse, so no CP exists yet.
+            // Without synthesis the clause becomes deterministic --
+            // its failure can''t fall back to the next clause.
+            // Symmetric with TrustMe''s "empty CP = no-op advance".
+            let cp = { CpNextPC   = nextPC
+                       CpRegs     = Array.copy s.WsRegs
+                       CpStack    = s.WsStack
+                       CpCP       = s.WsCP
+                       CpTrailLen = s.WsTrailLen
+                       CpHeapLen  = s.WsHeapLen
+                       CpBindings = s.WsBindings
+                       CpCutBar   = s.WsCutBar
+                       CpAggFrame = None
+                       CpBuiltin  = None }
+            Some { s with WsPC = s.WsPC + 1; WsCPs = cp :: s.WsCPs; WsCPsLen = s.WsCPsLen + 1 }
 
     | RetryMeElsePc nextPC ->
         match s.WsCPs with
-        | cp :: rest -> Some { s with WsPC = s.WsPC + 1; WsCPs = { cp with CpNextPC = nextPC } :: rest }
-        | []         -> Some { s with WsPC = s.WsPC + 1 }
+        | cp :: rest ->
+            Some { s with WsPC = s.WsPC + 1; WsCPs = { cp with CpNextPC = nextPC } :: rest }
+        | [] ->
+            let cp = { CpNextPC   = nextPC
+                       CpRegs     = Array.copy s.WsRegs
+                       CpStack    = s.WsStack
+                       CpCP       = s.WsCP
+                       CpTrailLen = s.WsTrailLen
+                       CpHeapLen  = s.WsHeapLen
+                       CpBindings = s.WsBindings
+                       CpCutBar   = s.WsCutBar
+                       CpAggFrame = None
+                       CpBuiltin  = None }
+            Some { s with WsPC = s.WsPC + 1; WsCPs = cp :: s.WsCPs; WsCPsLen = s.WsCPsLen + 1 }
 
     // Phase 4.1 / Phase J — parallel WAM. ParTryMeElse dispatches through
     // forkOrSequential, which forks all branches in parallel when inside a
@@ -889,9 +989,20 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         Some { s with WsPC = s.WsPC + 1 }
 
     | BuiltinCall ("!/0", _) ->
+        // Cut: discard CPs created since clause entry.  WsCPs is
+        // stack-with-head-newest, so we DROP the newest
+        // (WsCPsLen - WsCutBar) entries to keep the OLDEST WsCutBar
+        // (the CPs that existed when Allocate set WsCutBar).  The
+        // prior `List.take WsCutBar` kept the NEWEST WsCutBar -- the
+        // exact opposite -- but every previously-tested predicate had
+        // either cut_bar = 0 (top level) or kept fewer CPs by
+        // happenstance, so the bug stayed hidden until the parser
+        // library''s in-clause cuts (every `tokenize_one` arm has
+        // `:- !.`) drove it.
+        let drop = max 0 (s.WsCPsLen - s.WsCutBar)
         Some { s with
                  WsPC    = s.WsPC + 1
-                 WsCPs   = List.take s.WsCutBar s.WsCPs
+                 WsCPs   = List.skip drop s.WsCPs
                  WsCPsLen= s.WsCutBar }
 
     | CutIte ->
@@ -1119,18 +1230,24 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
             match bindOutput 2 (VList codes) s with
             | None    -> None
             | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
-        | Some (Unbound _), Some (VList items) ->
-            let folder acc v =
-                match acc, derefVar s.WsBindings v with
-                | Some (sb: System.Text.StringBuilder), Integer c when c >= 0 && c <= 65535 ->
-                    Some (sb.Append(char c))
-                | _ -> None
-            match List.fold folder (Some (System.Text.StringBuilder())) items with
-            | Some sb ->
-                match bindOutput 1 (Atom (sb.ToString())) s with
-                | None    -> None
-                | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
-            | None -> None
+        | Some (Unbound _), Some listVal ->
+            // Accept both VList (proper-list shape) and Str(\"[|]\",_)
+            // cons-cell chains; the parser library produces the latter
+            // via take_ident / take_digits / take_syms accumulators.
+            match valueToProperList s.WsBindings listVal with
+            | None       -> None
+            | Some items ->
+                let folder acc v =
+                    match acc, derefVar s.WsBindings v with
+                    | Some (sb: System.Text.StringBuilder), Integer c when c >= 0 && c <= 65535 ->
+                        Some (sb.Append(char c))
+                    | _ -> None
+                match List.fold folder (Some (System.Text.StringBuilder())) items with
+                | Some sb ->
+                    match bindOutput 1 (Atom (sb.ToString())) s with
+                    | None    -> None
+                    | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+                | None -> None
         | _ -> None
 
     // atom_chars/2 — atom <-> list of single-char atoms. Bidirectional.
@@ -1713,7 +1830,8 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         let mArity = getReg arityReg s
         match mName, mArity with
         | Some (Atom fname), Some (Integer arity) when arity >= 0 ->
-            Some { s with
+            let push = pushBuilderIfActive s
+            Some { push with
                      WsPC      = s.WsPC + 1
                      WsBuilder = Some (BuildStruct (fname, targetReg, arity, [])) }
         | _ -> None  // name must be Atom, arity a non-negative Integer
@@ -3605,6 +3723,7 @@ let main argv =
           WsCutBar     = 0
           WsVarCounter = 0
           WsBuilder    = None
+          WsBuilderStack = []
           WsAggAccum   = [] }
 
     // Find entry point: prefer lowered predicates, fall back to code array

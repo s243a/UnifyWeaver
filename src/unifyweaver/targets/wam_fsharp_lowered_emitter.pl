@@ -582,7 +582,7 @@ emit_one_fs(fail, _, _SV, _SVout, I, _FP) :-
 emit_one_fs(allocate, _, SV, SVout, I, _FP) :-
     fresh_sv_fs(SV, SVout),
     format("~wlet ~w = { ~w with~n", [I, SVout, SV]),
-    format("~w               WsStack = { EfSavedCP = ~w.WsCP; EfYRegs = Map.empty } :: ~w.WsStack~n", [I, SV, SV]),
+    format("~w               WsStack = { EfSavedCP = ~w.WsCP; EfYRegs = Map.empty; EfSavedCutBar = ~w.WsCutBar } :: ~w.WsStack~n", [I, SV, SV, SV]),
     format("~w               WsCutBar = ~w.WsCPsLen }~n", [I, SV]).
 
 % Deallocate — can fail on empty stack, delegate to step

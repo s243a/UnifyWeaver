@@ -1679,6 +1679,12 @@ is_builtin_pred('!', 0).     % cut
 is_builtin_pred(\+, 1).      % negation-as-failure
 is_builtin_pred(member, 2).  % list operations
 is_builtin_pred(append, 3).
+is_builtin_pred(reverse, 2).  % list reverse -- F#, Python, R, Clojure, Go,
+                              % Rust, C++ all dispatch this as a builtin
+                              % call.  Haskell / Lua targets that
+                              % previously relied on `execute reverse/2`
+                              % finding a labeled clause may need a
+                              % builtin_call handler.
 is_builtin_pred(length, 2).
 is_builtin_pred(functor, 3). % term inspection: name/arity read or construct
 is_builtin_pred(arg, 3).     % term inspection: Nth argument access

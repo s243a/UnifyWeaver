@@ -3,7 +3,8 @@
 **Status**: Design specification. Companion to
 [`WAM_LMDB_LAZY_PHILOSOPHY.md`](WAM_LMDB_LAZY_PHILOSOPHY.md) (the
 "why") and [`WAM_LMDB_LAZY_IMPLEMENTATION_PLAN.md`](WAM_LMDB_LAZY_IMPLEMENTATION_PLAN.md)
-(the "when").
+(the "when"). Reverse-child artifact policy is covered separately in
+[`WAM_REVERSE_INDEX_ARTIFACTS.md`](WAM_REVERSE_INDEX_ARTIFACTS.md).
 
 **Snapshot date**: 2026-05-21.
 
@@ -410,14 +411,21 @@ without breaking existing benchmarks.
   process. Switching modes mid-run is more invasive and not
   motivated by any current measurement.
 - **Compiler-inferred segregation**: see §6.3. Deferred.
-- **MST-sort ingest pre-processor**: see philosophy doc §4.2.
-  Deferred to its own design doc when motivated by a workload.
+- **Reverse-child artifact selection**: see
+  `WAM_REVERSE_INDEX_ARTIFACTS.md`. This spec defines the hot
+  parent-edge lookup tier; reverse `category_child/2` artifacts are an
+  orthogonal planning/warmup/runtime availability axis.
+- **MST-sort ingest pre-processor**: see philosophy doc §4.2 and
+  `WAM_REVERSE_INDEX_ARTIFACTS.md`. Deferred until motivated by a
+  workload.
 
 ## 12. References
 
 - `WAM_LMDB_LAZY_PHILOSOPHY.md` — the "why" doc.
 - `WAM_LMDB_LAZY_IMPLEMENTATION_PLAN.md` — the "when" doc with
   phased rollout.
+- `WAM_REVERSE_INDEX_ARTIFACTS.md` — reverse-child artifacts, CSR
+  layout, and phase policy.
 - `WAM_LMDB_RESIDENT_INTERNING_SPECIFICATION.md` — LMDB layout this
   spec reads from.
 - `QUERY_PLAN_RUNTIME_PHILOSOPHY.md` — the broader runtime-planner

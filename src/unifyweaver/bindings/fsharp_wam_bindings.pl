@@ -153,7 +153,7 @@ fsharp_wam_builtin_state_type :-
 
 fsharp_wam_env_frame_type :-
     writeln(
-"type EnvFrame = { EfSavedCP: int; EfYRegs: Map<int, Value> }").
+"type EnvFrame = { EfSavedCP: int; EfYRegs: Map<int, Value>; EfSavedCutBar: int }").
 
 % ============================================================================
 % ChoicePoint — mirrors Haskell `ChoicePoint`
@@ -207,6 +207,14 @@ type WamState =
       WsCutBar    : int                  // cut barrier depth
       WsVarCounter: int                  // fresh variable id counter
       WsBuilder   : BuilderState option  // PutStructure / PutList accumulator
+      // Stack of outer build / read contexts saved when a GetStructure
+      // or GetList nests into the active context (e.g. `[op(:-,1200,xfx)|T]`
+      // needs the outer BuildList active while the inner BuildStruct
+      // fills, then restores on inner materialization).  Both R
+      // (templates/targets/r_wam/runtime.R.mustache build_stack) and
+      // Python (src/unifyweaver/targets/wam_python_runtime/WamRuntime.py
+      // write_stack/read_stack) maintain the same stack discipline.
+      WsBuilderStack : BuilderState list
       WsAggAccum  : Value list           // aggregate accumulator
     }
 
@@ -364,9 +372,47 @@ let rec derefVar (bindings: Map<int, Value>) (v: Value) : Value =
         | None       -> v
     | _ -> v
 
+/// Walk a list-shaped value into a flat F# list of derefd elements.
+/// Lists may be stored as VList (proper, ground-tail) OR as a chain of
+/// Str(\"[|]\", [h; t]) cons cells (when materialized with a non-ground
+/// tail in addToBuilder).  Builtins that consume lists -- atom_codes/2,
+/// length/2, member/2, etc. -- only matched VList before this helper,
+/// so anything built via the cons-cell shape (everything coming out of
+/// take_digits / take_ident / parser accumulators) was opaque.  Returns
+/// None for improper / partial lists.
+let rec valueToProperList (bindings: Map<int, Value>) (v: Value) : Value list option =
+    match derefVar bindings v with
+    | Atom \"[]\"                  -> Some []
+    | VList items                ->
+        // Items may themselves contain Unbound vars or cons-cell tails;
+        // surface them as-is for the caller to deref.
+        Some items
+    | Str (\"[|]\", [h; t])        ->
+        match valueToProperList bindings t with
+        | Some rest -> Some (h :: rest)
+        | None      -> None
+    | _ -> None
+
 /// Look up a register (A/X register), dereference through bindings.
 let getReg (n: int) (s: WamState) : Value option =
-    if n >= 0 && n < s.WsRegs.Length then
+    // Y registers (n >= 201, encoded by fs_reg_name_to_int as Yk -> 200+k)
+    // are mirrored in the current env frame -- prefer the frame copy
+    // since the WsRegs entry may have been clobbered by a called
+    // predicate using the same numeric index for its own temporaries.
+    // R (env$perm_vars) and Python (_Y_BASE = 301) use the same
+    // discipline.
+    if n >= 201 then
+        match s.WsStack with
+        | frame :: _ when Map.containsKey (n - 200) frame.EfYRegs ->
+            Some (derefVar s.WsBindings (Map.find (n - 200) frame.EfYRegs))
+        | _ ->
+            // No frame entry yet -- fall through to WsRegs.
+            if n < s.WsRegs.Length then
+                match s.WsRegs.[n] with
+                | Unbound -1 -> None
+                | v          -> Some (derefVar s.WsBindings v)
+            else None
+    elif n >= 0 && n < s.WsRegs.Length then
         match s.WsRegs.[n] with
         | Unbound -1 -> None   // sentinel = uninitialized
         | v -> Some (derefVar s.WsBindings v)
@@ -374,9 +420,24 @@ let getReg (n: int) (s: WamState) : Value option =
 
 /// Set a register value (copy-on-write for snapshot semantics).
 let putReg (n: int) (v: Value) (s: WamState) : WamState =
-    let r = Array.copy s.WsRegs
-    r.[n] <- v
-    { s with WsRegs = r }
+    // Y register write -- update BOTH the env frame''s EfYRegs (so
+    // values survive being clobbered by a called predicate writing
+    // to the same numeric slot) AND WsRegs (so direct-array reads
+    // in code that hasn''t been audited still see the value).  Read
+    // path prefers the frame, then falls back to WsRegs.
+    if n >= 201 then
+        let r = Array.copy s.WsRegs
+        if n < r.Length then r.[n] <- v
+        match s.WsStack with
+        | frame :: rest ->
+            let newFrame = { frame with EfYRegs = Map.add (n - 200) v frame.EfYRegs }
+            { s with WsRegs = r; WsStack = newFrame :: rest }
+        | [] ->
+            { s with WsRegs = r }
+    else
+        let r = Array.copy s.WsRegs
+        r.[n] <- v
+        { s with WsRegs = r }
 
 /// Set a register value in-place (use only when no snapshot is needed).
 let setReg (n: int) (v: Value) (regs: Value array) : Value array =
@@ -414,6 +475,31 @@ let bindOutput (reg: int) (value: Value) (s: WamState) : WamState option =
         | _ -> None
 
 /// Append a value to the current builder (PutStructure / PutList).
+// popBuilderStack: when an inner builder is finished (BuildStruct/List
+// arity filled, or ReadArgs exhausted), restore the outer builder
+// from WsBuilderStack so the parent structure can keep filling.
+// Both R (build_stack pop in append_build_arg) and Python (write_stack
+// pop in _finish_write_ctx) do this on every fill completion -- not
+// just the final one -- in case the parent is also at its limit.
+// We don''t cascade-fill here (the parent already holds an Unbound
+// var bound to the inner struct via its register, so derefVar
+// resolves it transparently); we just unwind the saved contexts.
+let popBuilderStack (s: WamState) : WamState =
+    match s.WsBuilderStack with
+    | outer :: rest -> { s with WsBuilder = Some outer; WsBuilderStack = rest }
+    | []            -> { s with WsBuilder = None }
+
+// pushBuilderIfActive: when starting a new inner build/read context
+// (GetStructure / GetList on a register that produces nesting), save
+// the current builder onto the stack so the inner can use WsBuilder
+// without clobbering the outer.  No-op when there''s no active
+// builder.  Returns the modified state; callers then set the new
+// WsBuilder on the returned state.
+let pushBuilderIfActive (s: WamState) : WamState =
+    match s.WsBuilder with
+    | Some b -> { s with WsBuilderStack = b :: s.WsBuilderStack }
+    | None   -> s
+
 let addToBuilder (value: Value) (s: WamState) : WamState option =
     match s.WsBuilder with
     | None -> None
@@ -421,23 +507,24 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
         let args' = args @ [value]
         if List.length args' = arity then
             let str = Str (fn, args')
-            let r = Array.copy s.WsRegs
-            let regVal = if reg >= 0 && reg < s.WsRegs.Length then s.WsRegs.[reg] else Unbound -1
-            r.[reg] <- str
-            match derefVar s.WsBindings regVal with
-            | Unbound vid ->
-                Some { s with
-                         WsPC      = s.WsPC + 1
-                         WsRegs    = r
+            // Route the destination write through putReg so Y registers
+            // (n >= 201) land in the env frame rather than WsRegs.
+            // Snapshot the previous value first for binding trail.
+            let regVal =
+                match getReg reg s with
+                | Some v -> v
+                | None   -> Unbound -1
+            let s0 = putReg reg str s
+            let s0' =
+                match derefVar s.WsBindings regVal with
+                | Unbound vid ->
+                    { s0 with
                          WsBindings= Map.add vid str s.WsBindings
                          WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
-                         WsTrailLen= s.WsTrailLen + 1
-                         WsBuilder = None }
-            | _ ->
-                Some { s with
-                         WsPC      = s.WsPC + 1
-                         WsRegs    = r
-                         WsBuilder = None }
+                         WsTrailLen= s.WsTrailLen + 1 }
+                | _ -> s0
+            let s1 = popBuilderStack s0'
+            Some { s1 with WsPC = s.WsPC + 1 }
         else
             Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (BuildStruct (fn, reg, arity, args')) }
     | Some (BuildList (reg, items)) ->
@@ -446,26 +533,40 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
             let head = List.item 0 items'
             let tail = List.item 1 items'
             let listVal =
-                match tail with
-                | VList t -> VList (head :: t)
-                | _       -> VList [head; tail]
-            let r = Array.copy s.WsRegs
-            let regVal = if reg >= 0 && reg < s.WsRegs.Length then s.WsRegs.[reg] else Unbound -1
-            r.[reg] <- listVal
-            match derefVar s.WsBindings regVal with
-            | Unbound vid ->
-                Some { s with
-                         WsPC      = s.WsPC + 1
-                         WsRegs    = r
+                // Cons cell with tail.  Atom \"[]\" is the empty-list
+                // atom and must collapse to VList []; otherwise
+                // `[53|[]]` materializes as VList [Integer 53; Atom \"[]\"]
+                // which is a two-element list, not a singleton.  The
+                // parser library''s tokenize / take_digits / etc. build
+                // single-element accumulators via `[H|[]]` SetConstant
+                // pairs, so this case is hit constantly.
+                //
+                // When the tail is anything else (Unbound, Str, ...),
+                // use Str(\"[|]\", [h; t]) -- the proper Prolog cons-cell
+                // representation -- so the tail can stay symbolic.
+                // GetList recognizes both shapes.  Without this,
+                // building `[H|T]` with T unbound produced a flat
+                // VList [H; T] which represents the WRONG list.
+                match derefVar s.WsBindings tail with
+                | VList t      -> VList (head :: t)
+                | Atom \"[]\"    -> VList [head]
+                | derefdTail   -> Str (\"[|]\", [head; derefdTail])
+            // Y-aware write of materialized list value to destination reg.
+            let regVal =
+                match getReg reg s with
+                | Some v -> v
+                | None   -> Unbound -1
+            let s0 = putReg reg listVal s
+            let s0' =
+                match derefVar s.WsBindings regVal with
+                | Unbound vid ->
+                    { s0 with
                          WsBindings= Map.add vid listVal s.WsBindings
                          WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
-                         WsTrailLen= s.WsTrailLen + 1
-                         WsBuilder = None }
-            | _ ->
-                Some { s with
-                         WsPC      = s.WsPC + 1
-                         WsRegs    = r
-                         WsBuilder = None }
+                         WsTrailLen= s.WsTrailLen + 1 }
+                | _ -> s0
+            let s1 = popBuilderStack s0'
+            Some { s1 with WsPC = s.WsPC + 1 }
         else
             Some { s with WsPC = s.WsPC + 1; WsBuilder = Some (BuildList (reg, items')) }
     | Some (ReadArgs _) -> None
@@ -473,8 +574,10 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
 let readNextArg (s: WamState) : (Value * WamState) option =
     match s.WsBuilder with
     | Some (ReadArgs (v :: rest)) ->
-        let nextBuilder = match rest with [] -> None | _ -> Some (ReadArgs rest)
-        Some (derefVar s.WsBindings v, { s with WsBuilder = nextBuilder })
+        let s' =
+            if List.isEmpty rest then popBuilderStack s
+            else { s with WsBuilder = Some (ReadArgs rest) }
+        Some (derefVar s.WsBindings v, s')
     | _ -> None
 
 /// Arithmetic evaluator over Value terms.

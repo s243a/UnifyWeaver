@@ -109,6 +109,7 @@ let mkState () =
       WsCutBar     = 0
       WsVarCounter = 1000
       WsBuilder    = None
+      WsBuilderStack = []
       WsAggAccum   = [] }
 
 let runScenario (name: string) (branch1: Instruction list) (expectTrue: bool) (slowSize: int) : int64 * int64 * bool =
