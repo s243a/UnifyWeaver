@@ -82,6 +82,16 @@ test(test_warming_pays_off_when_all_cold).
 test(test_recommend_sort_at_low_k).
 test(test_recommend_scan_at_high_k).
 
+test(test_reverse_index_auto_defaults_none).
+test(test_reverse_index_auto_descendant_uses_existing_artifact).
+test(test_reverse_index_csr_normalizes_defaults).
+test(test_reverse_index_csr_runtime_auto_direct_io_when_supported).
+test(test_reverse_index_csr_runtime_auto_buffered_when_direct_io_not_verified).
+test(test_reverse_index_rejects_bad_id_encoding).
+test(test_reverse_index_rejects_unknown_io_policy).
+test(test_reverse_index_rejects_io_policy_for_mmap_artifact).
+test(test_reverse_index_artifact_normalizes_storage_kind).
+
 test(test_read_mem_available_returns_positive).
 
 %% ========================================================================
@@ -300,6 +310,139 @@ test_recommend_scan_at_high_k :-
     (   Pattern = scan
     ->  pass(Test)
     ;   fail_test(Test, format_atom("got pattern=~w (expected scan)", [Pattern]))
+    ).
+
+%% ========================================================================
+%% Reverse-index artifact policy
+%% ========================================================================
+
+test_reverse_index_auto_defaults_none :-
+    Test = 'resolve_reverse_index auto defaults to none for low-query no-descendant workloads',
+    resolve_reverse_index([], ReverseIndex),
+    (   ReverseIndex = none
+    ->  pass(Test)
+    ;   fail_test(Test, format_atom("got reverse_index=~w (expected none)", [ReverseIndex]))
+    ).
+
+test_reverse_index_auto_descendant_uses_existing_artifact :-
+    Test = 'resolve_reverse_index auto uses existing artifact when descendants are required',
+    resolve_reverse_index([needs_descendant_lookup(true)], ReverseIndex),
+    Expected = artifact([
+        relation(category_child/2),
+        storage_kind(mmap_array_artifact),
+        phase(planning_only),
+        id_encoding(int32_le)
+    ]),
+    (   ReverseIndex = Expected
+    ->  pass(Test)
+    ;   fail_test(Test, format_atom("got reverse_index=~w", [ReverseIndex]))
+    ).
+
+test_reverse_index_csr_normalizes_defaults :-
+    Test = 'validate_reverse_index_option csr normalizes defaults',
+    validate_reverse_index_option(csr([]), ReverseIndex),
+    Expected = csr([
+        phase(planning_only),
+        id_encoding(int32_le),
+        ordering(parent_sort),
+        io_policy(buffered_pread_drop),
+        cache_bytes(0),
+        block_size_edges(0)
+    ]),
+    (   ReverseIndex = Expected
+    ->  pass(Test)
+    ;   fail_test(Test, format_atom("got reverse_index=~w", [ReverseIndex]))
+    ).
+
+test_reverse_index_csr_runtime_auto_direct_io_when_supported :-
+    Test = 'resolve_csr_io_policy auto selects direct_io only when runtime support is verified',
+    Options = [
+        phase(runtime_available),
+        block_size_edges(65536),
+        platform_supports_direct_io(true),
+        alignment_verified(true),
+        measured_direct_io_win(true)
+    ],
+    resolve_csr_io_policy(Options, Policy),
+    (   Policy = direct_io
+    ->  pass(Test)
+    ;   fail_test(Test, format_atom("got policy=~w (expected direct_io)", [Policy]))
+    ).
+
+test_reverse_index_csr_runtime_auto_buffered_when_direct_io_not_verified :-
+    Test = 'resolve_csr_io_policy auto falls back to buffered_pread without direct_io proof',
+    Options = [
+        phase(runtime_available),
+        block_size_edges(65536),
+        platform_supports_direct_io(true),
+        alignment_verified(false),
+        measured_direct_io_win(true)
+    ],
+    resolve_csr_io_policy(Options, Policy),
+    (   Policy = buffered_pread
+    ->  pass(Test)
+    ;   fail_test(Test, format_atom("got policy=~w (expected buffered_pread)", [Policy]))
+    ).
+
+test_reverse_index_rejects_bad_id_encoding :-
+    Test = 'validate_reverse_index_option rejects unsupported id_encoding',
+    (   catch((validate_reverse_index_option(csr([id_encoding(bytes)]), _), fail),
+              error(domain_error(reverse_index_id_encoding, bytes), _),
+              true)
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected domain_error(reverse_index_id_encoding, bytes)')
+    ).
+
+test_reverse_index_rejects_unknown_io_policy :-
+    Test = 'validate_reverse_index_option rejects unsupported io_policy',
+    (   catch((validate_reverse_index_option(csr([io_policy(magic)]), _), fail),
+              error(domain_error(csr_io_policy, magic), _),
+              true)
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected domain_error(csr_io_policy, magic)')
+    ).
+
+test_reverse_index_rejects_io_policy_for_mmap_artifact :-
+    Test = 'validate_reverse_index_option rejects io_policy for mmap_array artifact',
+    (   catch((validate_reverse_index_option(
+                  artifact([
+                      storage_kind(mmap_array_artifact),
+                      io_policy(direct_io)
+                  ]),
+                  _),
+                fail),
+              error(permission_error(use, io_policy, mmap_array_artifact), _),
+              true)
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected permission_error(use, io_policy, mmap_array_artifact)')
+    ).
+
+test_reverse_index_artifact_normalizes_storage_kind :-
+    Test = 'validate_reverse_index_option artifact normalizes storage_kind and relation',
+    validate_reverse_index_option(
+        artifact([
+            relation(category_child/2),
+            storage_kind(csr_pread_artifact),
+            phase(runtime_available),
+            id_encoding(int32_le),
+            ordering(root_bfs),
+            io_policy(buffered_pread),
+            cache_bytes(1024)
+        ]),
+        ReverseIndex
+    ),
+    Expected = artifact([
+        phase(runtime_available),
+        id_encoding(int32_le),
+        relation(category_child/2),
+        storage_kind(csr_pread_artifact),
+        ordering(root_bfs),
+        cache_bytes(1024),
+        io_policy(buffered_pread)
+    ]),
+    (   ReverseIndex = Expected
+    ->  pass(Test)
+    ;   fail_test(Test, format_atom("got reverse_index=~w", [ReverseIndex]))
     ).
 
 %% ========================================================================

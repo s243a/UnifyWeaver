@@ -35,6 +35,9 @@
     crossover_k/4,              % +WBytes, +FHot, +Constants, -KCross
     warming_payoff_m/5,         % +WWarmBytes, +KPerQuery, +FHot, +Constants, -MMin
     recommend_access_pattern/5, % +KKeys, +WBytes, +RFreeBytes, +Constants, -Pattern
+    resolve_reverse_index/2,    % +Options, -ReverseIndex
+    validate_reverse_index_option/2, % +Spec, -Normalized
+    resolve_csr_io_policy/2,    % +Options, -Policy
 
     %% Hardware constants
     default_constants/1,        % -Constants
@@ -43,6 +46,8 @@
     %% System probes (impure)
     read_mem_available_bytes/1  % -Bytes
 ]).
+
+:- use_module(library(option)).
 
 %% =====================================================================
 %% Hardware constants
@@ -209,6 +214,220 @@ recommend_access_pattern(KKeys, WBytes, RFreeBytes, Constants, Pattern) :-
     ->  Pattern = sort
     ;   Pattern = scan
     ).
+
+%% =====================================================================
+%% Reverse-index artifact policy
+%% =====================================================================
+
+%! resolve_reverse_index(+Options, -ReverseIndex) is det.
+%
+%  Resolve the reverse-index artifact request from workload metadata.
+%  The current `auto` policy is deliberately conservative: it returns
+%  `none` unless descendant lookup is semantically required. Explicit
+%  reverse_index(...) terms are normalized and validated.
+resolve_reverse_index(Options, ReverseIndex) :-
+    option(reverse_index(Spec0), Options, auto),
+    resolve_reverse_index_spec(Spec0, Options, ReverseIndex).
+
+resolve_reverse_index_spec(auto, Options, ReverseIndex) :-
+    !,
+    option(needs_descendant_lookup(NeedsDesc), Options, false),
+    option(expected_query_count_per_artifact(QueryCount), Options, 1),
+    (   NeedsDesc == true
+    ->  ReverseIndex = artifact([
+            relation(category_child/2),
+            storage_kind(mmap_array_artifact),
+            phase(planning_only),
+            id_encoding(int32_le)
+        ])
+    ;   QueryCount < 100
+    ->  ReverseIndex = none
+    ;   ReverseIndex = none
+    ).
+resolve_reverse_index_spec(Spec, _Options, ReverseIndex) :-
+    validate_reverse_index_option(Spec, ReverseIndex).
+
+%! validate_reverse_index_option(+Spec, -Normalized) is det.
+%
+%  Validate the user-facing reverse_index(...) spec and fill in
+%  conservative defaults. Throws domain_error/2 for unsupported
+%  values.
+validate_reverse_index_option(none, none) :- !.
+validate_reverse_index_option(auto, auto) :- !.
+validate_reverse_index_option(lmdb(Opts0), lmdb(Opts)) :-
+    !,
+    normalize_reverse_options(lmdb, Opts0, Opts).
+validate_reverse_index_option(mmap_array(Opts0), mmap_array(Opts)) :-
+    !,
+    normalize_reverse_options(mmap_array, Opts0, Opts).
+validate_reverse_index_option(csr(Opts0), csr(Opts)) :-
+    !,
+    normalize_reverse_options(csr, Opts0, Opts).
+validate_reverse_index_option(artifact(Opts0), artifact(Opts)) :-
+    !,
+    normalize_reverse_options(artifact, Opts0, Opts).
+validate_reverse_index_option(Spec, _) :-
+    throw(error(domain_error(reverse_index_option, Spec), _)).
+
+normalize_reverse_options(Kind, Opts0, Opts) :-
+    must_be(list, Opts0),
+    validate_known_reverse_options(Opts0),
+    option(phase(Phase), Opts0, planning_only),
+    validate_reverse_phase(Phase),
+    option(id_encoding(IdEncoding), Opts0, int32_le),
+    validate_id_encoding(IdEncoding),
+    normalize_kind_options(Kind, Opts0, KindOpts),
+    append([phase(Phase), id_encoding(IdEncoding)], KindOpts, Opts).
+
+normalize_kind_options(lmdb, _Opts0, []).
+normalize_kind_options(mmap_array, _Opts0, []).
+normalize_kind_options(csr, Opts0, Opts) :-
+    option(ordering(Ordering), Opts0, parent_sort),
+    validate_reverse_ordering(Ordering),
+    option(cache_bytes(CacheBytes), Opts0, 0),
+    validate_nonnegative_integer(cache_bytes, CacheBytes),
+    option(block_size_edges(BlockSizeEdges), Opts0, 0),
+    validate_nonnegative_integer(block_size_edges, BlockSizeEdges),
+    resolve_csr_io_policy(Opts0, IoPolicy),
+    Opts = [
+        ordering(Ordering),
+        io_policy(IoPolicy),
+        cache_bytes(CacheBytes),
+        block_size_edges(BlockSizeEdges)
+    ].
+normalize_kind_options(artifact, Opts0, Opts) :-
+    option(relation(Relation), Opts0, category_child/2),
+    validate_predicate_indicator(Relation),
+    option(storage_kind(StorageKind), Opts0, mmap_array_artifact),
+    validate_storage_kind(StorageKind),
+    option(ordering(Ordering), Opts0, parent_sort),
+    validate_reverse_ordering(Ordering),
+    option(cache_bytes(CacheBytes), Opts0, 0),
+    validate_nonnegative_integer(cache_bytes, CacheBytes),
+    artifact_io_options(StorageKind, Opts0, IoOpt),
+    append([
+        relation(Relation),
+        storage_kind(StorageKind),
+        ordering(Ordering),
+        cache_bytes(CacheBytes)
+    ], IoOpt, Opts).
+
+artifact_io_options(csr_pread_artifact, Opts0, [io_policy(IoPolicy)]) :-
+    !,
+    resolve_csr_io_policy(Opts0, IoPolicy).
+artifact_io_options(_StorageKind, Opts0, []) :-
+    \+ option(io_policy(_), Opts0),
+    !.
+artifact_io_options(StorageKind, _Opts0, _) :-
+    throw(error(permission_error(use, io_policy, StorageKind), _)).
+
+%! resolve_csr_io_policy(+Options, -Policy) is det.
+%
+%  Resolve CSR I/O policy. Explicit non-auto values are validated and
+%  preserved. `auto` picks buffered_pread_drop for planning/warmup,
+%  direct_io only when all direct-I/O preconditions are declared and
+%  measured to win, and buffered_pread otherwise.
+resolve_csr_io_policy(Options, Policy) :-
+    option(io_policy(Policy0), Options, auto),
+    resolve_csr_io_policy_value(Policy0, Options, Policy).
+
+resolve_csr_io_policy_value(auto, Options, buffered_pread_drop) :-
+    option(phase(Phase), Options, planning_only),
+    memberchk(Phase, [planning_only, cache_warmup]),
+    !.
+resolve_csr_io_policy_value(auto, Options, direct_io) :-
+    option(phase(runtime_available), Options),
+    option(block_size_edges(BlockSizeEdges), Options),
+    BlockSizeEdges >= 65536,
+    option(platform_supports_direct_io(true), Options),
+    option(alignment_verified(true), Options),
+    option(measured_direct_io_win(true), Options),
+    !.
+resolve_csr_io_policy_value(auto, _Options, buffered_pread) :- !.
+resolve_csr_io_policy_value(Policy, _Options, Policy) :-
+    validate_csr_io_policy(Policy),
+    !.
+
+validate_known_reverse_options([]).
+validate_known_reverse_options([Opt|Rest]) :-
+    functor(Opt, Name, 1),
+    reverse_option_key(Name),
+    !,
+    validate_known_reverse_options(Rest).
+validate_known_reverse_options([Opt|_]) :-
+    throw(error(domain_error(reverse_index_option_key, Opt), _)).
+
+reverse_option_key(phase).
+reverse_option_key(id_encoding).
+reverse_option_key(ordering).
+reverse_option_key(cache_bytes).
+reverse_option_key(block_size_edges).
+reverse_option_key(io_policy).
+reverse_option_key(platform_supports_direct_io).
+reverse_option_key(alignment_verified).
+reverse_option_key(measured_direct_io_win).
+reverse_option_key(relation).
+reverse_option_key(storage_kind).
+
+validate_reverse_phase(Phase) :-
+    memberchk(Phase, [planning_only, cache_warmup, runtime_available]),
+    !.
+validate_reverse_phase(Phase) :-
+    throw(error(domain_error(reverse_index_phase, Phase), _)).
+
+validate_id_encoding(Encoding) :-
+    memberchk(Encoding, [int32_le, decimal_utf8]),
+    !.
+validate_id_encoding(Encoding) :-
+    throw(error(domain_error(reverse_index_id_encoding, Encoding), _)).
+
+validate_csr_io_policy(Policy) :-
+    memberchk(Policy, [auto, buffered_pread, buffered_pread_drop, direct_io]),
+    !.
+validate_csr_io_policy(Policy) :-
+    throw(error(domain_error(csr_io_policy, Policy), _)).
+
+validate_reverse_ordering(Ordering) :-
+    memberchk(Ordering, [
+        parent_sort,
+        root_bfs,
+        component_degree,
+        multi_root_bfs,
+        graph_partition,
+        spectral,
+        bandwidth_heuristic,
+        embedding_cluster
+    ]),
+    !.
+validate_reverse_ordering(Ordering) :-
+    throw(error(domain_error(reverse_index_ordering, Ordering), _)).
+
+validate_storage_kind(StorageKind) :-
+    memberchk(StorageKind, [
+        binary_artifact,
+        delimited_artifact,
+        lmdb_artifact,
+        mmap_array_artifact,
+        csr_pread_artifact
+    ]),
+    !.
+validate_storage_kind(StorageKind) :-
+    throw(error(domain_error(reverse_index_storage_kind, StorageKind), _)).
+
+validate_predicate_indicator(Name/Arity) :-
+    atom(Name),
+    integer(Arity),
+    Arity >= 0,
+    !.
+validate_predicate_indicator(PI) :-
+    throw(error(domain_error(predicate_indicator, PI), _)).
+
+validate_nonnegative_integer(_Name, Value) :-
+    integer(Value),
+    Value >= 0,
+    !.
+validate_nonnegative_integer(Name, Value) :-
+    throw(error(domain_error(nonnegative_integer(Name), Value), _)).
 
 %% =====================================================================
 %% System probe
