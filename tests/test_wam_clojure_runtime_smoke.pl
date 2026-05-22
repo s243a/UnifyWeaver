@@ -204,6 +204,7 @@
 :- dynamic user:wam_atom_length_guard/2.
 :- dynamic user:wam_atom_length_unbound/1.
 :- dynamic user:wam_string_length_guard/2.
+:- dynamic user:wam_string_length_unbound/1.
 :- dynamic user:wam_sub_atom_extract/0.
 :- dynamic user:wam_sub_atom_prefix/0.
 :- dynamic user:wam_sub_atom_suffix/0.
@@ -438,6 +439,7 @@ user:wam_string_concat_unbound_right(C) :- user:wam_unbound_arg(B), string_conca
 user:wam_atom_length_guard(A, N) :- atom_length(A, N).
 user:wam_atom_length_unbound(N) :- user:wam_unbound_arg(A), atom_length(A, N).
 user:wam_string_length_guard(A, N) :- string_length(A, N).
+user:wam_string_length_unbound(N) :- user:wam_unbound_arg(A), string_length(A, N).
 user:wam_sub_atom_extract :- sub_atom(hello, 1, 3, A, S), A =:= 1, S = ell.
 user:wam_sub_atom_prefix :- sub_atom(hello, 0, 3, _, hel).
 user:wam_sub_atom_suffix :- sub_atom(hello, _, 3, 0, llo).
@@ -677,6 +679,7 @@ run_smoke :-
           user:wam_atom_length_guard/2,
           user:wam_atom_length_unbound/1,
           user:wam_string_length_guard/2,
+          user:wam_string_length_unbound/1,
           user:wam_sub_atom_extract/0,
           user:wam_sub_atom_prefix/0,
           user:wam_sub_atom_suffix/0,
@@ -1083,6 +1086,7 @@ smoke_cases([
     case('wam_atom_length_guard/2', args(foo, 2), "false"),
     case('wam_atom_length_unbound/1', 0, "false"),
     case('wam_string_length_guard/2', args(foo, 3), "true"),
+    case('wam_string_length_unbound/1', 0, "false"),
     case('wam_sub_atom_extract/0', no_args, "true"),
     case('wam_sub_atom_prefix/0', no_args, "true"),
     case('wam_sub_atom_suffix/0', no_args, "true"),
@@ -1454,6 +1458,7 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-string-concat-unbound-left-1"),
     has(CoreCode, "defn lowered-wam-string-concat-unbound-right-1"),
     has(CoreCode, "defn lowered-wam-atom-length-guard-2"),
+    has(CoreCode, "defn lowered-wam-string-length-unbound-1"),
     has(CoreCode, "defn lowered-wam-sub-atom-extract-0"),
     has(CoreCode, "runtime/ground-term?"),
     has(CoreCode, "runtime/apply-text-conversion-solution"),
