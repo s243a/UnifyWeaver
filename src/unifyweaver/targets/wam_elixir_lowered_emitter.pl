@@ -36,6 +36,7 @@
 :- use_module(library(option)).
 :- use_module(library(pairs), [group_pairs_by_key/2]).
 :- use_module('wam_elixir_utils', [reg_id/2, is_label_part/1, camel_case/2, parse_arity/2]).
+:- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
 :- use_module('../core/purity_certificate', [analyze_predicate_purity/2]).
 :- use_module('../core/predicate_preprocessing',
               [declared_preprocess_metadata/4]).
@@ -711,12 +712,21 @@ render_index_entry(Key-Tuples, Entry) :-
 %  default ~1M atom table limit. See the experiment writeup for
 %  measurements.
 elixir_constant_literal(TokenStr, ElixirLiteral) :-
-    (   number_string(_, TokenStr)
-    ->  ElixirLiteral = TokenStr
-    ;   intern_atoms_enabled,
-        valid_elixir_atom_name(TokenStr)
-    ->  format(string(ElixirLiteral), ':~w', [TokenStr])
-    ;   format(string(ElixirLiteral), '"~w"', [TokenStr])
+    %% Atom-vs-number disambiguation via wam_text_parser. A bare
+    %% token `5` is the integer 5 (emit as bare); a quoted token
+    %% `'5'` is the atom whose name is "5" (emit as :5 or "5" per
+    %% the intern_atoms_enabled toggle).
+    wam_classify_constant_token(TokenStr, Class),
+    (   Class = integer(N)
+    ->  format(string(ElixirLiteral), "~w", [N])
+    ;   Class = float(F)
+    ->  format(string(ElixirLiteral), "~w", [F])
+    ;   Class = atom(Name),
+        intern_atoms_enabled,
+        valid_elixir_atom_name(Name)
+    ->  format(string(ElixirLiteral), ':~w', [Name])
+    ;   Class = atom(Name),
+        format(string(ElixirLiteral), '"~w"', [Name])
     ).
 
 %% intern_atoms_enabled is asserted by write_wam_elixir_project/3
@@ -758,7 +768,11 @@ tokenize_chars([C | Rest], Tokens) :-
     ->  tokenize_chars(Rest, Tokens)
     ;   C == '\''
     ->  read_quoted_chars(Rest, TokenChars, Remainder),
-        string_chars(Token, TokenChars),
+        % Preserve the outer single quotes attached to the token so
+        % atom-vs-number is recoverable downstream via
+        % wam_text_parser:wam_classify_constant_token/2 (bare `5`
+        % is the integer 5; quoted `'5'` is the atom whose name is "5").
+        string_chars(Token, ['\''|TokenChars]),
         Tokens = [Token | RestTokens],
         tokenize_chars(Remainder, RestTokens)
     ;   read_unquoted_chars([C | Rest], TokenChars, Remainder),
@@ -771,8 +785,11 @@ wam_separator_char(' ').
 wam_separator_char('\t').
 wam_separator_char(',').
 
+% read_quoted_chars/3: returns the inner unescaped chars WITH the
+% trailing closing quote appended. The caller prepends the opening
+% quote so the produced token has both outer quotes preserved.
 read_quoted_chars([], [], []).             % unterminated quote — yield what we have
-read_quoted_chars(['\'' | Rest], [], Rest).
+read_quoted_chars(['\'' | Rest], ['\''], Rest).
 read_quoted_chars(['\\', Escaped | Rest], [Real | More], Remainder) :-
     !,
     unescape_wam_char(Escaped, Real),

@@ -55,6 +55,7 @@
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
 :- use_module('../core/template_system', [render_template/3]).
 % Lowered emitter: real Phase-2 implementation lives there. We keep the
 % module load lazy via catch/3 so the file remains usable even if the
@@ -219,7 +220,11 @@ tokenize_wam_chars([C|Rest], CurR, Acc, outside, Tokens) :-
         )
     ;   C == '\''
     ->  (   CurR == []
-        ->  tokenize_wam_chars(Rest, [], Acc, inside, Tokens)
+        ->  % Enter quoted region — keep the opening quote attached
+            % to the token so atom-vs-number is recoverable
+            % downstream via wam_text_parser:wam_classify_constant_token/2.
+            % A bare `5` is the integer 5; a quoted `'5'` is the atom.
+            tokenize_wam_chars(Rest, ['\''], Acc, inside, Tokens)
         ;   tokenize_wam_chars(Rest, [C|CurR], Acc, outside, Tokens)
         )
     ;   tokenize_wam_chars(Rest, [C|CurR], Acc, outside, Tokens)
@@ -229,7 +234,9 @@ tokenize_wam_chars([C|Rest], CurR, Acc, inside, Tokens) :-
         Rest = [Escaped|More]
     ->  tokenize_wam_chars(More, [Escaped|CurR], Acc, inside, Tokens)
     ;   C == '\''
-    ->  reverse(CurR, CurC), string_chars(T, CurC),
+    ->  % Closing quote — keep it attached to the token so the
+        % outer quotes survive to the constant classifier.
+        reverse(['\''|CurR], CurC), string_chars(T, CurC),
         tokenize_wam_chars(Rest, [], [T|Acc], outside, Tokens)
     ;   tokenize_wam_chars(Rest, [C|CurR], Acc, inside, Tokens)
     ).
@@ -466,15 +473,22 @@ strip_arity_suffix(Pred, Name) :-
     ).
 
 %% constant_to_r_term(+ConstStr, -RTermLit)
-%  Numbers become Integer(N) / FloatTerm(N); everything else interns as Atom.
+%  Numbers become IntTerm(N) / FloatTerm(N); everything else interns as Atom.
+%
+%  Atom-vs-number disambiguation goes through
+%  wam_text_parser:wam_classify_constant_token/2: a bare token `5`
+%  is the integer 5, a quoted token `'5'` is the atom whose name
+%  is "5". tokenize_wam_chars/5 above preserves outer quotes
+%  attached to the token; this is what makes the discriminator
+%  reach this predicate.
 constant_to_r_term(C, Lit) :-
-    (   number_string(N, C),
-        integer(N)
+    wam_classify_constant_token(C, Class),
+    (   Class = integer(N)
     ->  format(string(Lit), 'IntTerm(~w)', [N])
-    ;   number_string(F, C),
-        float(F)
+    ;   Class = float(F)
     ->  format(string(Lit), 'FloatTerm(~w)', [F])
-    ;   intern_r_atom(C, AtomId),
+    ;   Class = atom(Name),
+        intern_r_atom(Name, AtomId),
         format(string(Lit), 'Atom(~w)', [AtomId])
     ).
 

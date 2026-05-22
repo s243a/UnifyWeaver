@@ -848,7 +848,10 @@ test_tokenize_unquoted :-
 test_tokenize_quoted_atom_with_comma :-
     Test = 'Tokenizer: quoted atom containing comma stays one token',
     wam_elixir_lowered_emitter:tokenize_wam_line("    get_constant 'Has,comma', A1", Tokens),
-    (   Tokens == ["get_constant", "Has,comma", "A1"]
+    %% Quote-preserving convention (post SOH-removal): outer quotes
+    %% stay attached so atom-vs-number is recoverable via
+    %% wam_text_parser:wam_classify_constant_token/2.
+    (   Tokens == ["get_constant", "'Has,comma'", "A1"]
     ->  pass(Test)
     ;   fail_test(Test, Tokens)
     ).
@@ -856,7 +859,9 @@ test_tokenize_quoted_atom_with_comma :-
 test_tokenize_quoted_atom_with_escape :-
     Test = 'Tokenizer: quoted atom with \\\' escape unquotes to literal',
     wam_elixir_lowered_emitter:tokenize_wam_line("    get_constant 'it\\'s', A1", Tokens),
-    (   Tokens == ["get_constant", "it's", "A1"]
+    %% Inner backslash-escape is still resolved (\\' -> '); outer
+    %% quotes are preserved so the token round-trips as a quoted atom.
+    (   Tokens == ["get_constant", "'it's'", "A1"]
     ->  pass(Test)
     ;   fail_test(Test, Tokens)
     ).
