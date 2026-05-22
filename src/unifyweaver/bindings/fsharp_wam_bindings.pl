@@ -530,7 +530,15 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
             let s0 = putReg reg str s
             let s0' =
                 match derefVar s.WsBindings regVal with
-                | Unbound vid ->
+                | Unbound vid when vid >= 0 ->
+                    // Bind the caller-supplied output variable to the
+                    // newly built struct.  This is the GetStructure-in-
+                    // write-mode path (when GetStructure encountered an
+                    // unbound A_i, it left vid>=0 in the register so we
+                    // could bind it here).  PutStructure clears `ai` to
+                    // Unbound -1 first so the sentinel (vid=-1) filters
+                    // through to the wildcard arm below — overwriting
+                    // rather than binding the caller''s var (#2400).
                     { s0 with
                          WsBindings= Map.add vid str s.WsBindings
                          WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
@@ -572,7 +580,8 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
             let s0 = putReg reg listVal s
             let s0' =
                 match derefVar s.WsBindings regVal with
-                | Unbound vid ->
+                | Unbound vid when vid >= 0 ->
+                    // See BuildStruct note above (#2400 cycle fix).
                     { s0 with
                          WsBindings= Map.add vid listVal s.WsBindings
                          WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail

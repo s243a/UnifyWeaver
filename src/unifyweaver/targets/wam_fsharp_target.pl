@@ -739,12 +739,37 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         // PutStructure starts a fresh build context.  If we''re already
         // inside one (nested PutStructure for compound subterms in a
         // body call), push the outer so it can resume.
+        //
+        // Reset the destination register to the sentinel `Unbound -1`
+        // first.  Without this, when addToBuilder materializes the
+        // structure it inspects the OLD value of `ai` (which is what
+        // the caller had passed in — usually an unbound variable
+        // representing an output slot) and binds that variable to the
+        // newly-built struct.  PutStructure semantics is *overwrite*,
+        // not unify, so this binding is wrong.  In particular, if a
+        // SetValue inside this builder references the same variable
+        // (common pattern: building `[H|R]` where R is the same R the
+        // caller passed in), the binding creates a cyclic structure
+        // and breaks subsequent unifications (#2400 part 2).  The
+        // sentinel vid=-1 is filtered in addToBuilder so no spurious
+        // binding survives.  GetList-in-write-mode preserves the
+        // caller-supplied unbound vid (>= 0) and binds it correctly.
         let push = pushBuilderIfActive s
-        Some { push with WsPC = s.WsPC + 1; WsBuilder = Some (BuildStruct (fn, ai, arity, [])) }
+        let regsCleared = Array.copy push.WsRegs
+        if ai < regsCleared.Length then regsCleared.[ai] <- Unbound -1
+        Some { push with WsPC      = s.WsPC + 1
+                         WsRegs    = regsCleared
+                         WsBuilder = Some (BuildStruct (fn, ai, arity, [])) }
 
     | PutList ai ->
+        // See PutStructure note above for why we reset the destination
+        // to the sentinel `Unbound -1` before starting the builder.
         let push = pushBuilderIfActive s
-        Some { push with WsPC = s.WsPC + 1; WsBuilder = Some (BuildList (ai, [])) }
+        let regsCleared = Array.copy push.WsRegs
+        if ai < regsCleared.Length then regsCleared.[ai] <- Unbound -1
+        Some { push with WsPC      = s.WsPC + 1
+                         WsRegs    = regsCleared
+                         WsBuilder = Some (BuildList (ai, [])) }
 
     | SetValue xn ->
         match getReg xn s with
