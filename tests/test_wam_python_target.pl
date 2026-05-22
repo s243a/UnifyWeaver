@@ -463,7 +463,12 @@ test(iso_errors_text_rewrite_uses_is_key_tables) :-
 	assertion(sub_string(ReadIso, _, _, _, "builtin_call read_term_from_atom_iso/3 3")),
 	wam_python_target:iso_errors_rewrite_text(iso_config(false, []), read_demo/0, Read0, ReadLax),
 	assertion(sub_string(ReadLax, _, _, _, "call read_term_from_atom_lax/2, 2")),
-	assertion(sub_string(ReadLax, _, _, _, "builtin_call read_term_from_atom_lax/3 3")).
+	assertion(sub_string(ReadLax, _, _, _, "builtin_call read_term_from_atom_lax/3 3")),
+	ReadStream0 = 'read_stream_demo/0:\n  builtin_call read/2 2',
+	wam_python_target:iso_errors_rewrite_text(iso_config(true, []), read_stream_demo/0, ReadStream0, ReadStreamIso),
+	assertion(sub_string(ReadStreamIso, _, _, _, "builtin_call read_iso/2 2")),
+	wam_python_target:iso_errors_rewrite_text(iso_config(false, []), read_stream_demo/0, ReadStream0, ReadStreamLax),
+	assertion(sub_string(ReadStreamLax, _, _, _, "builtin_call read_lax/2 2")).
 
 test(iso_errors_project_generation_rewrites_wam_text) :-
 	setup_call_cleanup(
@@ -745,6 +750,33 @@ test(runtime_parser_compiled_read_term_syntax_errors_policy) :-
 		(   retractall(user:py_read_term_syntax_lax),
 			retractall(user:py_read_term_syntax_iso),
 			retractall(user:py_read_term_syntax_override),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_parser_compiled_runs_read2_from_python_stream) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read2_demo),
+			assertz((user:py_read2_demo(S) :-
+				read(S, T1), T1 = fact(1),
+				read(S, T2), T2 = fact(2),
+				read(S, T3), T3 = expr(1 + 2 * 3),
+				read(S, T4), T4 = end_of_file)),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_read2', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_read2_demo/1],
+				[runtime_parser(compiled)], ProjectDir),
+			atomic_list_concat([
+				"import io",
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"wr.set_reg(state, 1, io.StringIO('fact(1).\\nfact(2).\\nexpr(1+2*3).\\n'))",
+				"print(wr.run_wam(code, labels, 'py_read2_demo/1', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read2_demo),
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
