@@ -199,6 +199,75 @@ and the resolver should be conservative — a follow-up refinement
 could read `/proc/sys/vm/swappiness` and `SwapFree` to further reduce
 `cap_pct`, but not needed for v1.
 
+### 3.2 Preflight findings (Rust runtime architecture + Haskell parity)
+
+Notes captured 2026-05-22 from reading the Rust runtime template
+(`templates/targets/rust_wam/state.rs.mustache`), both LMDB sources
+(`lmdb_fact_source_lmdb_zero.rs.mustache`, `lmdb_fact_source_heed.rs.mustache`),
+and the Haskell reference (`templates/targets/haskell_wam/lmdb_fact_source.hs.mustache`).
+
+**Rust runtime is template-emitted.** Correction to §2's "Files"
+list: there is no source-tree `src/unifyweaver/runtime/rust/wam_rust/`
+directory. The Rust WAM runtime is emitted from
+`templates/targets/rust_wam/state.rs.mustache` into each generated
+Cargo project. R7's runtime changes go in the template, propagating
+to every bench on next codegen. Test fixtures and generated benches
+in `output/` and `examples/more/.../gen/` are read-only outputs.
+
+**Foreign-predicate dispatch already supports a lazy path.**
+`WamState` has `foreign_native_kinds: HashMap<String, String>`,
+`foreign_predicates: HashSet<String>`, and a `CallForeign(name,
+arity)` instruction. R7 adds a new handler-kind tag
+`"lazy_lmdb_lookup"` plus a new VM field
+`lazy_lookups: HashMap<String, Arc<LmdbFactSource>>`. The existing
+eager path (`indexed_atom_fact2` + `CallIndexedAtomFact2`) is
+untouched — `lazy` is a parallel route, not a replacement.
+
+**Mirror Haskell's hot-vs-cold separation.** Haskell uses
+`EdgeLookup :: Int -> [Int]` for the hot kernel's forward-direction
+parent lookup, and a separate `computeDemandSetCursorBFS` for the
+one-shot reverse-direction demand-set BFS. Rust preserves this:
+`LookupSource` only covers the forward parent direction; reverse
+child lookup stays in `LmdbFactSource::reachable_to_root` and runs
+before the kernel. This matches `WAM_REVERSE_INDEX_ARTIFACTS.md` §7
+("If parent lookup is memory-mapped, the reverse child artifact
+should not be touched during the hot kernel unless
+`phase(runtime_available)` is explicit").
+
+**Cache wrappers must be transparent to the kernel.** Haskell's
+`lmdbRawEdgeLookup`, `lmdbL1EdgeLookup`, `lmdbL2EdgeLookup`,
+`lmdbTwoLevelEdgeLookup` all share the same `EdgeLookup` type — the
+kernel call site doesn't know which it has. Rust's R8
+`CachedLookup<LmdbFactSource>` must decorate the same `LookupSource`
+trait that R7's bare `LmdbFactSource` implements, so the step
+handler is identical for `lazy` and `cached`.
+
+**Cursor lifetime: per-call now, per-thread later.** Both Rust LMDB
+sources today open a short-lived read txn per `lookup_via_dupsort`
+call. That's the "open-per-call" mode in §10. Haskell uses
+per-thread cursors (`DupsortCursorCache`, `lmdb_fact_source.hs.mustache`
+lines 105-123). Rust R7 sticks with per-call (matches existing code,
+zero new infrastructure); per-thread caching is deferred — the
+source files' own comments call this out as a future R3-equivalent
+optimisation.
+
+**Cache capacity formula already implemented in Haskell.** Lines
+388-394 of `lmdb_fact_source.hs.mustache` (`l2MemoryBudgetBytes`)
+implement essentially the formula recorded in §3.1 above:
+`min(MemAvailable/2, MemAvailable - 500 MB)`. Rust R8 should port
+that code rather than re-derive it. My §3.1 design note adds two
+refinements (portable headroom `max(512 MB, 10% MemTotal)` and the
+`unrestricted_working_set` clamp from below) that Haskell could also
+adopt for consistency.
+
+**Result type: `Vec<i32>` vs `[Int]`.** Haskell's `EdgeLookup`
+returns a lazy list. Rust's `lookup_parents` returns `Vec<i32>`. The
+kernel's choice-point iteration consumes all results either way, so
+the difference is cosmetic at the kernel level. The spec's
+`impl Iterator<Item=i32>` ideal can be deferred until there's a
+measured cost from Vec materialisation — for `category_parent` the
+average list length is ~2-3 ints, so the Vec cost is trivial.
+
 ## 4. Phase R9 — workload-segregation contract
 
 **Scope**: Add the `workload_segregated(bool)` option to the
