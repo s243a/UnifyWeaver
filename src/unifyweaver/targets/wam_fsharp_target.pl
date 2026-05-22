@@ -645,12 +645,12 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
             // builder''s arg slot, if any, already holds the Unbound var
             // we just bound to the atom -- no append needed, outer
             // continues.
+            // Y-aware write via putReg so Yk registers land in the
+            // env frame rather than the X-register array.
             let str = Str (fn, [])
-            let r = Array.copy s.WsRegs
-            r.[ai] <- str
-            Some { s with
+            let s0 = putReg ai str s
+            Some { s0 with
                      WsPC      = s.WsPC + 1
-                     WsRegs    = r
                      WsBindings= Map.add vid str s.WsBindings
                      WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
                      WsTrailLen= s.WsTrailLen + 1 }
@@ -805,7 +805,15 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
     | Fail -> None
 
     | Allocate ->
-        let frame = { EfSavedCP = s.WsCP; EfYRegs = Map.empty }
+        // Save the previous cut barrier in the frame so Deallocate can
+        // restore it.  Without this, a cut inside a nested clause body
+        // (e.g. `take_digits` calling `digit_code/1`) used the wrong
+        // barrier and the cut became a no-op -- exposing every
+        // ancestor''s CPs to backtrack.  The frame already carries
+        // EfSavedCP for the same reason.
+        let frame = { EfSavedCP    = s.WsCP
+                      EfYRegs      = Map.empty
+                      EfSavedCutBar= s.WsCutBar }
         Some { s with
                  WsPC    = s.WsPC + 1
                  WsStack = frame :: s.WsStack
@@ -813,7 +821,12 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
 
     | Deallocate ->
         match s.WsStack with
-        | ef :: rest -> Some { s with WsPC = s.WsPC + 1; WsStack = rest; WsCP = ef.EfSavedCP }
+        | ef :: rest ->
+            Some { s with
+                     WsPC     = s.WsPC + 1
+                     WsStack  = rest
+                     WsCP     = ef.EfSavedCP
+                     WsCutBar = ef.EfSavedCutBar }
         | []         -> None
 
     | TryMeElse label ->
@@ -855,16 +868,45 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | []        -> Some { s with WsPC = s.WsPC + 1 }
 
     | RetryMeElse label ->
+        let nextPC = Map.tryFind label ctx.WcLabels |> Option.defaultValue 0
         match s.WsCPs with
         | cp :: rest ->
-            let nextPC = Map.tryFind label ctx.WcLabels |> Option.defaultValue 0
             Some { s with WsPC = s.WsPC + 1; WsCPs = { cp with CpNextPC = nextPC } :: rest }
-        | [] -> Some { s with WsPC = s.WsPC + 1 }
+        | [] ->
+            // Indexing-bypass synthesis: an instruction like
+            // SwitchOnTerm jumped directly to this clause without
+            // running clause 1''s TryMeElse, so no CP exists yet.
+            // Without synthesis the clause becomes deterministic --
+            // its failure can''t fall back to the next clause.
+            // Symmetric with TrustMe''s "empty CP = no-op advance".
+            let cp = { CpNextPC   = nextPC
+                       CpRegs     = Array.copy s.WsRegs
+                       CpStack    = s.WsStack
+                       CpCP       = s.WsCP
+                       CpTrailLen = s.WsTrailLen
+                       CpHeapLen  = s.WsHeapLen
+                       CpBindings = s.WsBindings
+                       CpCutBar   = s.WsCutBar
+                       CpAggFrame = None
+                       CpBuiltin  = None }
+            Some { s with WsPC = s.WsPC + 1; WsCPs = cp :: s.WsCPs; WsCPsLen = s.WsCPsLen + 1 }
 
     | RetryMeElsePc nextPC ->
         match s.WsCPs with
-        | cp :: rest -> Some { s with WsPC = s.WsPC + 1; WsCPs = { cp with CpNextPC = nextPC } :: rest }
-        | []         -> Some { s with WsPC = s.WsPC + 1 }
+        | cp :: rest ->
+            Some { s with WsPC = s.WsPC + 1; WsCPs = { cp with CpNextPC = nextPC } :: rest }
+        | [] ->
+            let cp = { CpNextPC   = nextPC
+                       CpRegs     = Array.copy s.WsRegs
+                       CpStack    = s.WsStack
+                       CpCP       = s.WsCP
+                       CpTrailLen = s.WsTrailLen
+                       CpHeapLen  = s.WsHeapLen
+                       CpBindings = s.WsBindings
+                       CpCutBar   = s.WsCutBar
+                       CpAggFrame = None
+                       CpBuiltin  = None }
+            Some { s with WsPC = s.WsPC + 1; WsCPs = cp :: s.WsCPs; WsCPsLen = s.WsCPsLen + 1 }
 
     // Phase 4.1 / Phase J — parallel WAM. ParTryMeElse dispatches through
     // forkOrSequential, which forks all branches in parallel when inside a
@@ -947,9 +989,20 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         Some { s with WsPC = s.WsPC + 1 }
 
     | BuiltinCall ("!/0", _) ->
+        // Cut: discard CPs created since clause entry.  WsCPs is
+        // stack-with-head-newest, so we DROP the newest
+        // (WsCPsLen - WsCutBar) entries to keep the OLDEST WsCutBar
+        // (the CPs that existed when Allocate set WsCutBar).  The
+        // prior `List.take WsCutBar` kept the NEWEST WsCutBar -- the
+        // exact opposite -- but every previously-tested predicate had
+        // either cut_bar = 0 (top level) or kept fewer CPs by
+        // happenstance, so the bug stayed hidden until the parser
+        // library''s in-clause cuts (every `tokenize_one` arm has
+        // `:- !.`) drove it.
+        let drop = max 0 (s.WsCPsLen - s.WsCutBar)
         Some { s with
                  WsPC    = s.WsPC + 1
-                 WsCPs   = List.take s.WsCutBar s.WsCPs
+                 WsCPs   = List.skip drop s.WsCPs
                  WsCPsLen= s.WsCutBar }
 
     | CutIte ->
@@ -1177,18 +1230,24 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
             match bindOutput 2 (VList codes) s with
             | None    -> None
             | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
-        | Some (Unbound _), Some (VList items) ->
-            let folder acc v =
-                match acc, derefVar s.WsBindings v with
-                | Some (sb: System.Text.StringBuilder), Integer c when c >= 0 && c <= 65535 ->
-                    Some (sb.Append(char c))
-                | _ -> None
-            match List.fold folder (Some (System.Text.StringBuilder())) items with
-            | Some sb ->
-                match bindOutput 1 (Atom (sb.ToString())) s with
-                | None    -> None
-                | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
-            | None -> None
+        | Some (Unbound _), Some listVal ->
+            // Accept both VList (proper-list shape) and Str(\"[|]\",_)
+            // cons-cell chains; the parser library produces the latter
+            // via take_ident / take_digits / take_syms accumulators.
+            match valueToProperList s.WsBindings listVal with
+            | None       -> None
+            | Some items ->
+                let folder acc v =
+                    match acc, derefVar s.WsBindings v with
+                    | Some (sb: System.Text.StringBuilder), Integer c when c >= 0 && c <= 65535 ->
+                        Some (sb.Append(char c))
+                    | _ -> None
+                match List.fold folder (Some (System.Text.StringBuilder())) items with
+                | Some sb ->
+                    match bindOutput 1 (Atom (sb.ToString())) s with
+                    | None    -> None
+                    | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+                | None -> None
         | _ -> None
 
     // atom_chars/2 — atom <-> list of single-char atoms. Bidirectional.
