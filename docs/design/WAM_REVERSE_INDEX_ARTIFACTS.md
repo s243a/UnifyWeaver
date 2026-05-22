@@ -30,6 +30,50 @@ The short version:
 This is not a fourth lazy/eager mode. It is an artifact and lifecycle
 choice that composes with the L0/L1/L2 parent-edge tier.
 
+## 0. Current artifact surface on `main`
+
+This design should be read against the artifact framework that already
+exists on `main`, not as a replacement for it.
+
+There are currently two relevant LMDB shapes:
+
+- **C# query relation artifact**: `mysql_stream_lmdb` writes a `main`
+  DUPSORT database plus a C#-query manifest. It stores the MediaWiki
+  IDs as decimal UTF-8 keys/values so the C# `LmdbRelationProvider`
+  can serve exact column-0 lookup without depending on the Phase 1
+  resident layout.
+- **Phase 1 resident layout**: `s2i`, `i2s`, `meta`,
+  `category_parent`, `category_child`, and `article_category` named
+  databases with int32 little-endian IDs. This is the layout expected
+  by resident LMDB WAM paths and by the Phase 1 converter.
+
+The C# query runtime also already has a dependency-free artifact routing
+surface in `QueryRuntime.cs`:
+
+| Storage kind | Current role |
+| --- | --- |
+| `binary_artifact` | Default exact two-column relation artifact. |
+| `delimited_artifact` | Text/bucket artifact fallback and bucket path. |
+| `lmdb_artifact` | Optional exact LMDB provider in the separate LMDB runtime assembly. |
+| `mmap_array_artifact` | Memory-mapped int-array artifact for large page/category relations and column-1-heavy access shapes. |
+
+`RelationArtifactAccessPolicy.ResolveEffectiveDistanceArtifactStorageKind`
+already chooses a storage kind from relation name, row count, and access
+shape. For large `article_category`, column-0 lookup prefers
+`lmdb_artifact`, while column-1 lookup, buckets, scans, and storage
+prefer `mmap_array_artifact`. For `category_parent` and smaller
+effective-distance relations, `mmap_array_artifact` is currently the
+preferred artifact kind.
+
+So the reverse-index question is not "do we need an artifact
+framework?" The current question is:
+
+1. which existing artifact kind can represent reverse child lookup for
+   a target today;
+2. when should the planner allow that artifact to be touched;
+3. whether we need a new non-mmap CSR storage kind for reverse lookup
+   when page-cache competition matters.
+
 ## 1. Problem
 
 Wikipedia's `categorylinks` export gives the raw material for both
@@ -113,6 +157,31 @@ Initial Prolog shape:
 `reverse_index(auto)` is allowed later, once the cost model has enough
 measurements to make the choice defensible.
 
+For targets that already use the relation-artifact policy layer, the
+resolved option should include a storage kind:
+
+```prolog
+reverse_index(artifact([
+    relation(category_child/2),
+    storage_kind(mmap_array_artifact),
+    ordering(parent_sort),
+    phase(cache_warmup)
+])).
+
+reverse_index(artifact([
+    relation(category_child/2),
+    storage_kind(csr_pread_artifact),
+    ordering(root_bfs),
+    phase(runtime_available),
+    cache_bytes(67108864)
+])).
+```
+
+`csr_pread_artifact` is a proposed storage kind, not a current one. It
+names the important distinction from `mmap_array_artifact`: reverse
+child rows are fetched by explicit reads with bounded user-space cache,
+not by mapping another large relation into the process address space.
+
 ### 2.1 Reverse-index phases
 
 | Phase | Meaning | Page-cache posture |
@@ -141,8 +210,13 @@ Build only the parent-edge LMDB. This is the right default when:
 ### 3.2 `reverse_index(lmdb(...))`
 
 Build a separate LMDB file or named database for
-`category_child(parent, child)`. This is convenient and reuses the
-existing ingestion path.
+`category_child(parent, child)`. This is convenient and can reuse the
+existing ingestion path, but the exact layout matters:
+
+- C# query artifact shape: `main` DUPSORT plus manifest, with decimal
+  UTF-8 IDs unless the manifest says otherwise.
+- Phase 1 resident shape: named `category_child` DUPSORT sub-db with
+  int32 little-endian IDs.
 
 Pros:
 
@@ -159,7 +233,32 @@ Cons:
 
 Recommended phase: `planning_only` or `cache_warmup`.
 
-### 3.3 `reverse_index(csr(...))`
+### 3.3 `reverse_index(mmap_array(...))`
+
+Use the existing `mmap_array_artifact` family for reverse child lookup.
+This is the closest current runtime artifact to a compact reverse
+integer layout. It already has manifests, provider routing, column
+selection, row-count metadata, and access-shape policy in the C# query
+runtime.
+
+Pros:
+
+- already implemented for the C# query runtime;
+- efficient for large int-ID relation scans and column lookups;
+- fits the current `RelationArtifactAccessPolicy` storage-kind model.
+
+Cons:
+
+- it is deliberately memory-mapped;
+- using it during the hot parent-edge walk can still compete for page
+  cache with parent LMDB pages;
+- it is target/runtime-specific today, not yet the cross-target reverse
+  artifact contract.
+
+Recommended phase: `planning_only` or `cache_warmup` unless the workload
+explicitly opts into `runtime_available`.
+
+### 3.4 `reverse_index(csr(...))`
 
 Build a compressed sparse row style artifact:
 
@@ -191,7 +290,12 @@ memory-mapped. The runtime can use ordinary reads or `pread`, keeping
 reverse-edge caching explicit and bounded instead of letting the OS page
 cache make the trade-off implicitly.
 
-### 3.4 `reverse_index(csr([block_size_edges(N), ...]))`
+This proposed artifact should be treated as a new storage kind in the
+same conceptual family as `binary_artifact`, `lmdb_artifact`, and
+`mmap_array_artifact`, rather than as a replacement for the existing C#
+artifact framework.
+
+### 3.5 `reverse_index(csr([block_size_edges(N), ...]))`
 
 For high-reuse corpora, the values can be split into related blocks:
 
@@ -277,7 +381,8 @@ The cost model needs these inputs:
 | --- | --- | --- |
 | Few upward queries | `reverse_index(none)` | Avoid preprocessing and page-cache competition. |
 | Planning needs descendants, hot kernel does not | `reverse_index(lmdb([phase(planning_only)]))` | Simple artifact; close before parent walk. |
-| Many queries on one corpus | `reverse_index(csr([ordering(parent_sort), phase(cache_warmup)]))` | Cheap build, non-mmap reverse reads, bounded warmup. |
+| Existing C# artifact path, planning/warmup only | `reverse_index(artifact([storage_kind(mmap_array_artifact), phase(cache_warmup)]))` | Uses implemented artifact routing while avoiding hot interleaving. |
+| Many queries on one corpus, page-cache competition matters | `reverse_index(csr([ordering(parent_sort), phase(cache_warmup)]))` | Cheap build, non-mmap reverse reads, bounded warmup. |
 | Many root-scoped queries | `reverse_index(csr([ordering(root_bfs), phase(cache_warmup)]))` | Better locality with roughly linear preprocessing. |
 | Runtime descendant traversal | `reverse_index(csr([ordering(root_bfs), phase(runtime_available), cache_bytes(B)]))` | Descendant lookup is explicit and bounded. |
 | Massive repeated workload | partitioned/block CSR with `graph_partition` or stronger ordering | High preprocessing cost may amortise. |
@@ -361,9 +466,12 @@ Regression guard:
 Phase A - design and option validation:
 
 - Land this design doc.
-- Add Prolog option parsing tests for `reverse_index(none|lmdb|csr|auto)`.
+- Add Prolog option parsing tests for
+  `reverse_index(none|lmdb|mmap_array|csr|artifact|auto)`.
 - Reject `phase(runtime_available)` when no runtime reverse lookup API
   exists for the target.
+- Map `reverse_index(artifact(...))` onto the existing storage-kind
+  vocabulary where a target already supports relation artifacts.
 
 Phase B - baseline builder:
 
@@ -371,6 +479,9 @@ Phase B - baseline builder:
   LMDB into a separate file or named database.
 - Emit manifest telemetry: edge count, parent key count, build wall
   time, ordering, artifact bytes.
+- For C# query artifacts, decide whether reverse child lookup should be
+  emitted as `mmap_array_artifact`, `lmdb_artifact`, or both, using the
+  same access-shape policy vocabulary already in `QueryRuntime.cs`.
 
 Phase C - CSR prototype:
 
@@ -402,3 +513,10 @@ Phase E - ordering refinements:
 - `QUERY_PLAN_RUNTIME_PHILOSOPHY.md` - planner placement for runtime
   decisions.
 - `CACHE_COST_MODEL_PHILOSOPHY.md` - cost-model vocabulary.
+- `src/unifyweaver/targets/csharp_query_runtime/QueryRuntime.cs` -
+  current relation artifact storage-kind policy and `mmap_array_artifact`
+  provider.
+- `src/unifyweaver/targets/csharp_query_runtime_lmdb/LmdbRelationProvider.cs`
+  - optional C# LMDB artifact provider.
+- `src/unifyweaver/runtime/rust/mysql_stream/src/lmdb_sink.rs` -
+  current MediaWiki categorylinks LMDB artifact sink.
