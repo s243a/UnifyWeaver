@@ -1308,9 +1308,8 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | _ -> None
 
     | BuiltinCall ("length/2", _) ->
-        let listVal = s.WsRegs.[1] |> derefVar s.WsBindings
-        match listVal with
-        | VList items ->
+        match flattenList s s.WsRegs.[1] with
+        | Some items ->
             let len = List.length items
             match getReg 2 s with
             | Some (Unbound vid) ->
@@ -1380,13 +1379,17 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
     // by F# structural equality on the Value DU. Mirrors the Rust ==/2 +
     // C++ ==/2 / \\==/2 step cases.
     | BuiltinCall ("==/2", _) ->
+        // Standard-order term equality.  Uses termEqual which derefs
+        // and normalises VList <-> Str ''[|]'' encoding so e.g. an
+        // append-built list compares equal to the literal that
+        // appears in source.  Raw F# equality would miss this.
         match getReg 1 s, getReg 2 s with
-        | Some a, Some b when a = b -> Some { s with WsPC = s.WsPC + 1 }
+        | Some a, Some b when termEqual a b s -> Some { s with WsPC = s.WsPC + 1 }
         | _ -> None
 
     | BuiltinCall ("\\\\==/2", _) ->
         match getReg 1 s, getReg 2 s with
-        | Some a, Some b when a <> b -> Some { s with WsPC = s.WsPC + 1 }
+        | Some a, Some b when not (termEqual a b s) -> Some { s with WsPC = s.WsPC + 1 }
         | _ -> None
 
     // true/0 / fail/0 — trivial control. Mirrors the Rust execute_control
@@ -1694,21 +1697,26 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
     // slice concat: both A1 and A2 must be VList).
     | BuiltinCall ("append/3", _) ->
         match getReg 1 s, getReg 2 s with
-        | Some (VList xs), Some (VList ys) ->
-            match bindOutput 3 (VList (xs @ ys)) s with
-            | None    -> None
-            | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+        | Some a, Some b ->
+            match flattenList s a, flattenList s b with
+            | Some xs, Some ys ->
+                match bindOutput 3 (VList (xs @ ys)) s with
+                | None    -> None
+                | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
+            | _ -> None
         | _ -> None
 
     // reverse/2 — list reverse. Bidirectional: whichever side is bound
     // becomes the source, the other becomes the output.
     | BuiltinCall ("reverse/2", _) ->
         match getReg 1 s, getReg 2 s with
-        | Some (VList items), _ ->
+        | Some a, _ when (flattenList s a).IsSome ->
+            let items = (flattenList s a).Value
             match bindOutput 2 (VList (List.rev items)) s with
             | None    -> None
             | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
-        | _, Some (VList items) ->
+        | _, Some b when (flattenList s b).IsSome ->
+            let items = (flattenList s b).Value
             match bindOutput 1 (VList (List.rev items)) s with
             | None    -> None
             | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
@@ -1716,8 +1724,8 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
 
     // last/2 — extract the last element of a non-empty list.
     | BuiltinCall ("last/2", _) ->
-        match getReg 1 s with
-        | Some (VList items) when not (List.isEmpty items) ->
+        match flattenList s s.WsRegs.[1] with
+        | Some (items) when not (List.isEmpty items) ->
             match bindOutput 2 (List.last items) s with
             | None    -> None
             | Some s1 -> Some { s1 with WsPC = s1.WsPC + 1 }
@@ -1729,8 +1737,8 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
             match instr with
             | BuiltinCall ("nth1/3", _) -> 1
             | _ -> 0
-        match getReg 1 s, getReg 2 s with
-        | Some (Integer i), Some (VList items) ->
+        match getReg 1 s, flattenList s s.WsRegs.[2] with
+        | Some (Integer i), Some items ->
             let idx = i - base_
             if idx >= 0 && idx < List.length items then
                 match bindOutput 3 (List.item idx items) s with
@@ -1743,8 +1751,8 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
     // first match, no choice points. Mirrors the Go memberchk/2 fast
     // path that just walks the list and returns true on first Unify.
     | BuiltinCall ("memberchk/2", _) ->
-        match getReg 1 s, getReg 2 s with
-        | Some elem_, Some (VList items) ->
+        match getReg 1 s, flattenList s s.WsRegs.[2] with
+        | Some elem_, Some items ->
             if items |> List.exists (fun v -> derefVar s.WsBindings v = elem_) then
                 Some { s with WsPC = s.WsPC + 1 }
             else None
@@ -1752,8 +1760,8 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
 
     // delete/3 — remove ALL occurrences of A2 from list A1, produce A3.
     | BuiltinCall ("delete/3", _) ->
-        match getReg 1 s, getReg 2 s with
-        | Some (VList items), Some target ->
+        match flattenList s s.WsRegs.[1], getReg 2 s with
+        | Some items, Some target ->
             let kept = items |> List.filter (fun v -> derefVar s.WsBindings v <> target)
             match bindOutput 3 (VList kept) s with
             | None    -> None
@@ -1825,8 +1833,8 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
     // without dedup. Both use compareValue (the runtime helper) for the
     // sort key.
     | BuiltinCall ("sort/2", _) ->
-        match getReg 1 s with
-        | Some (VList items) ->
+        match flattenList s s.WsRegs.[1] with
+        | Some items ->
             let deref_ = items |> List.map (derefVar s.WsBindings)
             let sorted = deref_ |> List.sortWith compareValue
             let rec dedup xs =
@@ -1841,8 +1849,8 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | _ -> None
 
     | BuiltinCall ("msort/2", _) ->
-        match getReg 1 s with
-        | Some (VList items) ->
+        match flattenList s s.WsRegs.[1] with
+        | Some items ->
             let sorted = items |> List.map (derefVar s.WsBindings) |> List.sortWith compareValue
             match bindOutput 2 (VList sorted) s with
             | None    -> None
@@ -1952,25 +1960,44 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         tryFrom items
 
     | BeginAggregate (aggType, valReg, resReg) ->
-        let cp = { CpNextPC   = s.WsPC
-                   CpRegs     = Array.copy s.WsRegs
-                   CpStack    = s.WsStack
-                   CpCP       = s.WsCP
-                   CpTrailLen = s.WsTrailLen
-                   CpHeapLen  = s.WsHeapLen
-                   CpBindings = s.WsBindings
-                   CpCutBar   = s.WsCutBar
-                   CpB0StackLen = List.length s.WsB0Stack
+        // Ensure the result register holds a fresh Unbound var BEFORE
+        // snapshotting -- without this, finalizeAggregate''s getReg on
+        // an unset Y-reg returns None and the aggregated result is
+        // silently dropped.  The compiler doesn''t always emit an
+        // explicit PutVariable for the result destination (it''s often
+        // a Y-reg used only after EndAggregate via PutValue), so the
+        // runtime has to seed it.
+        let s0 =
+            match getReg resReg s with
+            | Some _ -> s
+            | None ->
+                // Fresh Unbound var that finalizeAggregate can later
+                // bind to the aggregated result.  No bindings-map entry
+                // here -- a self-binding (vid -> Unbound vid) would loop
+                // derefVar; absence in the map is the truly-unbound
+                // representation.
+                let vid   = s.WsVarCounter
+                let fresh = Unbound vid
+                putReg resReg fresh { s with WsVarCounter = s.WsVarCounter + 1 }
+        let cp = { CpNextPC   = s0.WsPC
+                   CpRegs     = Array.copy s0.WsRegs
+                   CpStack    = s0.WsStack
+                   CpCP       = s0.WsCP
+                   CpTrailLen = s0.WsTrailLen
+                   CpHeapLen  = s0.WsHeapLen
+                   CpBindings = s0.WsBindings
+                   CpCutBar   = s0.WsCutBar
+                   CpB0StackLen = List.length s0.WsB0Stack
                    CpAggFrame = Some { AggType          = aggType
                                        AggValReg        = valReg
                                        AggResReg        = resReg
                                        AggReturnPC      = 0
                                        AggMergeStrategy = inferMergeStrategy aggType }
                    CpBuiltin  = None }
-        Some { s with
-                 WsPC       = s.WsPC + 1
-                 WsCPs      = cp :: s.WsCPs
-                 WsCPsLen   = s.WsCPsLen + 1
+        Some { s0 with
+                 WsPC       = s0.WsPC + 1
+                 WsCPs      = cp :: s0.WsCPs
+                 WsCPsLen   = s0.WsCPsLen + 1
                  WsAggAccum = [] }
 
     | EndAggregate valReg ->
@@ -2377,6 +2404,49 @@ and unifyTerms (a: Value) (b: Value) (s: WamState) : WamState option =
         go args1 args2 s
     | x, y when x = y -> Some s
     | _               -> None
+
+and flattenList (s: WamState) (v: Value) : Value list option =
+    // Walk a list in either runtime encoding (VList xs OR a Str ''[|]''
+    // cons-cell chain) into an F# list of elements.  Returns None for
+    // an improper list (one whose final tail is not [] / VList []) or a
+    // non-list value.  Use this at the entry of every list-consuming
+    // builtin (append/3, length/2, reverse/2, ...) so they accept
+    // whichever encoding the upstream builder produced -- BuildList
+    // chooses Str(''[|]'') when the tail is unbound during build, so
+    // even fully-ground source-level list literals can show up as
+    // cons-cell chains after a SetVariable + PutStructure pair.
+    let rec walk acc v =
+        match derefVar s.WsBindings v with
+        | VList xs            -> Some (List.rev acc @ xs)
+        | Atom "[]"           -> Some (List.rev acc)
+        | Str ("[|]", [h; t]) -> walk (h :: acc) t
+        | _                   -> None
+    walk [] v
+
+and termEqual (a: Value) (b: Value) (s: WamState) : bool =
+    // Standard-order structural equality (Prolog ==/2): like unifyTerms
+    // but pure — no binding, no trail.  Derefs both sides through the
+    // bindings, normalises VList <-> Str ''[|]'' cons-cell list encoding
+    // (same equivalence as unifyTerms), treats unbound vars as equal
+    // only when they share the same var id.
+    let a = derefVar s.WsBindings a
+    let b = derefVar s.WsBindings b
+    match a, b with
+    | Unbound v1, Unbound v2 -> v1 = v2
+    | Unbound _, _           -> false
+    | _, Unbound _           -> false
+    | VList [], Atom "[]"    -> true
+    | Atom "[]", VList []    -> true
+    | VList (h1 :: t1), VList (h2 :: t2) ->
+        termEqual h1 h2 s && termEqual (VList t1) (VList t2) s
+    | VList (h :: t), Str ("[|]", [hb; tb]) ->
+        termEqual h hb s && termEqual (VList t) tb s
+    | Str ("[|]", [ha; ta]), VList (h :: t) ->
+        termEqual ha h s && termEqual ta (VList t) s
+    | Str (f1, a1), Str (f2, a2)
+        when f1 = f2 && List.length a1 = List.length a2 ->
+        List.forall2 (fun x y -> termEqual x y s) a1 a2
+    | x, y -> x = y
 
 and unifyVal (a: Value) (b: Value) (s: WamState) : WamState option =
     // Public unification entry — performs the recursive unification
