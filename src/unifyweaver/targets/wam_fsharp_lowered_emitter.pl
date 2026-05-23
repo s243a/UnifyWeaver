@@ -941,13 +941,40 @@ fresh_sv_fs(Cur, Next) :-
 
 %% val_fs(+Str, -FSharpExpr)
 %  Convert a WAM value token to its F# Value constructor.
+%
+%  Quote handling matches wam_fsharp_target:fs_wam_value/2: a token
+%  with outer single quotes (e.g. `'42'`, `'+'`) is *always* an atom,
+%  even if the inner content looks like a number.  Without this the
+%  lowered emitter rendered `read_term_from_atom('42', _T)` as
+%  Atom "'42'" -- a 4-char atom -- so the runtime parser tokenized
+%  the quotes as syntax errors and every literal-atom parser test
+%  failed.
 val_fs(Str, FS) :-
-    (   number_string(N, Str), integer(N)
-    ->  format(atom(FS), 'Integer ~w', [N])
-    ;   number_string(F, Str), float(F)
-    ->  format(atom(FS), 'Float ~w', [F])
-    ;   escape_dq_fs(Str, EscStr),
+    val_fs_strip_quotes(Str, Inner, ForceAtom),
+    (   ForceAtom == true
+    ->  escape_dq_fs(Inner, EscStr),
         format(atom(FS), 'Atom "~w"', [EscStr])
+    ;   number_string(N, Inner), integer(N)
+    ->  format(atom(FS), 'Integer ~w', [N])
+    ;   number_string(F, Inner), float(F)
+    ->  format(atom(FS), 'Float ~w', [F])
+    ;   escape_dq_fs(Inner, EscStr),
+        format(atom(FS), 'Atom "~w"', [EscStr])
+    ).
+
+%% val_fs_strip_quotes(+Raw, -Inner, -ForceAtom)
+%  Strip a single pair of outer single quotes if present; ForceAtom
+%  is true iff the quotes were present (so the caller knows to skip
+%  the number-parse fallback).  Mirrors
+%  wam_fsharp_target:fs_strip_quoted_atom/3 but keeps the lowered
+%  emitter self-contained.
+val_fs_strip_quotes(S0, S, ForceAtom) :-
+    string_chars(S0, Chars0),
+    (   Chars0 = [''''|Rest], append(Inner, [''''], Rest)
+    ->  string_chars(S, Inner),
+        ForceAtom = true
+    ;   S = S0,
+        ForceAtom = false
     ).
 
 %% reg_to_int_fs(+RegStr, -Int)
