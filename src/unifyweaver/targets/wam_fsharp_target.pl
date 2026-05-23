@@ -2846,7 +2846,20 @@ and dispatchCall (ctx: WamContext) (pred: string) (sc: WamState) : WamState opti
     | Some sr -> Some sr
     | None ->
     match Map.tryFind pred ctx.WcLabels with
-    | Some pc -> run ctx { sc with WsPC = pc }
+    | Some pc ->
+        // Save the caller''s intended return PC and set WsCP = 0 before
+        // entering run.  Without this, the called predicate''s outermost
+        // Proceed sets WsPC = WsCP (the caller''s post-call PC), so the
+        // interpreter loop keeps executing the CALLER''s WAM continuation
+        // -- which is wrong when the caller is a lowered function that
+        // intends to handle its own continuation in F#.  Resetting WsCP
+        // to 0 makes Proceed stop the run loop (run returns on WsPC = 0);
+        // we restore WsCP before handing control back so the lowered
+        // caller''s subsequent Allocate sees the right value.
+        let savedCP = sc.WsCP
+        match run ctx { sc with WsPC = pc; WsCP = 0 } with
+        | Some sf -> Some { sf with WsCP = savedCP }
+        | None    -> None
     | None    -> None
 
 /// Foreign call for lowered functions.
