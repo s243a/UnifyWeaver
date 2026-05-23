@@ -145,8 +145,10 @@
 :- dynamic user:wam_ground_nested_unbound/1.
 :- dynamic user:wam_atom_codes_guard/2.
 :- dynamic user:wam_atom_codes_reverse/0.
+:- dynamic user:wam_atom_codes_reverse_mismatch/0.
 :- dynamic user:wam_atom_chars_guard/2.
 :- dynamic user:wam_atom_chars_reverse/0.
+:- dynamic user:wam_atom_chars_reverse_mismatch/0.
 :- dynamic user:wam_quoted_atom_quote/0.
 :- dynamic user:wam_quoted_atom_backslash/0.
 :- dynamic user:wam_atom_string_guard/2.
@@ -382,8 +384,10 @@ user:wam_ground_unbound(_) :- user:wam_unbound_arg(Y), ground(Y).
 user:wam_ground_nested_unbound(_) :- user:wam_unbound_arg(Y), ground(f(Y)).
 user:wam_atom_codes_guard(A, C) :- atom_codes(A, C).
 user:wam_atom_codes_reverse :- atom_codes(A, [102,111,111]), A = foo.
+user:wam_atom_codes_reverse_mismatch :- atom_codes(A, [102,111]), A = foo.
 user:wam_atom_chars_guard(A, C) :- atom_chars(A, C).
 user:wam_atom_chars_reverse :- atom_chars(A, [f,o,o]), A = foo.
+user:wam_atom_chars_reverse_mismatch :- atom_chars(A, [f,o]), A = foo.
 user:wam_quoted_atom_quote :- atom_codes('a''b', [97,39,98]).
 user:wam_quoted_atom_backslash :- atom_codes('a\\b', [97,92,98]).
 user:wam_atom_string_guard(A, S) :- atom_string(A, S).
@@ -624,8 +628,10 @@ run_smoke :-
           user:wam_ground_nested_unbound/1,
           user:wam_atom_codes_guard/2,
           user:wam_atom_codes_reverse/0,
+          user:wam_atom_codes_reverse_mismatch/0,
           user:wam_atom_chars_guard/2,
           user:wam_atom_chars_reverse/0,
+          user:wam_atom_chars_reverse_mismatch/0,
           user:wam_quoted_atom_quote/0,
           user:wam_quoted_atom_backslash/0,
           user:wam_atom_string_guard/2,
@@ -1018,9 +1024,11 @@ smoke_cases([
     case('wam_atom_codes_guard/2', args(foo, '[102,111,111]'), "true"),
     case('wam_atom_codes_guard/2', args(foo, '[102,111]'), "false"),
     case('wam_atom_codes_reverse/0', no_args, "true"),
+    case('wam_atom_codes_reverse_mismatch/0', no_args, "false"),
     case('wam_atom_chars_guard/2', args(foo, '[f,o,o]'), "true"),
     case('wam_atom_chars_guard/2', args(foo, '[f,o]'), "false"),
     case('wam_atom_chars_reverse/0', no_args, "true"),
+    case('wam_atom_chars_reverse_mismatch/0', no_args, "false"),
     case('wam_quoted_atom_quote/0', no_args, "true"),
     case('wam_quoted_atom_backslash/0', no_args, "true"),
     case('wam_atom_string_guard/2', args(hello, hello), "true"),
@@ -1438,7 +1446,9 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-ground-unbound-1"),
     has(CoreCode, "defn lowered-wam-ground-nested-unbound-1"),
     has(CoreCode, "defn lowered-wam-atom-codes-guard-2"),
+    has(CoreCode, "defn lowered-wam-atom-codes-reverse-mismatch-0"),
     has(CoreCode, "defn lowered-wam-atom-chars-guard-2"),
+    has(CoreCode, "defn lowered-wam-atom-chars-reverse-mismatch-0"),
     has(CoreCode, "defn lowered-wam-quoted-atom-quote-0"),
     has(CoreCode, "defn lowered-wam-quoted-atom-backslash-0"),
     has(CoreCode, "defn lowered-wam-atom-string-guard-2"),
