@@ -1711,6 +1711,43 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![target_reg, dist_reg], packed_results)
             }
+            "lazy_lmdb_lookup" => {
+                // R7: lazy parent-edge lookup via the LookupSource trait.
+                // A1 is the input atom key; A2 is the binding target.
+                // The backend (e.g. LmdbFactSource) maps the atom to an
+                // int, looks up parents, and maps each result back to
+                // an atom. Mirrors Haskell EdgeLookup :: Int -> [Int]
+                // but with the kernel staying in atom-space.
+                let key_atom = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(s)) => s,
+                    _ => return false,
+                };
+                let value_reg = match self.get_reg_raw("A2") {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let source = match self.lazy_lookup(&pred_key) {
+                    Some(src) => src,
+                    None => return false,
+                };
+                let key_int = match source.lookup_key_for_atom(&key_atom) {
+                    Some(k) => k,
+                    None => return false,
+                };
+                let value_ints = source.lookup_parents(key_int);
+                if value_ints.is_empty() {
+                    return false;
+                }
+                let results: Vec<Value> = value_ints.iter().filter_map(|vid| {
+                    source.atom_for_key(*vid).map(|s| {
+                        Value::Str("__tuple__".to_string(), vec![Value::Atom(s)])
+                    })
+                }).collect();
+                if results.is_empty() {
+                    return false;
+                }
+                self.finish_foreign_results(&pred_key, vec![value_reg], results)
+            }
             _ => false,
         }
     }'.

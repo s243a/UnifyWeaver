@@ -6,6 +6,27 @@ use std::sync::Arc;
 use crate::value::Value;
 use crate::instructions::Instruction;
 
+/// Lazy edge-lookup interface used by the `lazy_lmdb_lookup` foreign
+/// native-kind handler. Backends (LMDB, CSR, etc.) live in their own
+/// modules and implement this trait; the runtime holds them via
+/// `Arc<dyn LookupSource + Send + Sync>` and never depends on the
+/// backend types directly. Mirrors Haskell's `EdgeLookup :: Int -> [Int]`
+/// closure shape from `lmdb_fact_source.hs.mustache`.
+pub trait LookupSource: Send + Sync {
+    /// Map a kernel-side atom string to the integer key used by the
+    /// backend. `None` means the atom is not in the intern table — the
+    /// handler treats this as a lookup miss (returns false).
+    fn lookup_key_for_atom(&self, atom: &str) -> Option<i32>;
+    /// Look up parents (or values) for an integer key. Returns an
+    /// empty Vec for a missing key. Errors should be mapped to empty
+    /// at this boundary so the kernel sees a clean miss.
+    fn lookup_parents(&self, key: i32) -> Vec<i32>;
+    /// Map a result int id back to a kernel-side atom string.
+    /// `None` means the int has no reverse-intern entry, which the
+    /// handler skips silently.
+    fn atom_for_key(&self, key: i32) -> Option<String>;
+}
+
 /// Trail entry: records the old value of a register before mutation.
 #[derive(Clone, Debug)]
 pub struct TrailEntry {
@@ -104,6 +125,10 @@ pub struct WamState {
     pub foreign_result_layouts: HashMap<String, String>,
     /// Foreign predicate result-delivery modes keyed by "name/arity".
     pub foreign_result_modes: HashMap<String, String>,
+    /// Lazy edge-lookup backends keyed by "name/arity".
+    /// Populated by `register_lazy_lookup` when `lmdb_materialisation(lazy)`
+    /// is set; consumed by the `lazy_lmdb_lookup` foreign-native-kind handler.
+    pub lazy_lookups: HashMap<String, Arc<dyn LookupSource>>,
     /// Variable binding table: maps Unbound variable names to their bound values.
     /// This simulates the WAM heap's shared binding semantics when PutVariable
     /// creates a variable that's stored in both a Y-register and an A-register.
@@ -149,6 +174,7 @@ impl WamState {
             foreign_usize_configs: HashMap::new(),
             foreign_result_layouts: HashMap::new(),
             foreign_result_modes: HashMap::new(),
+            lazy_lookups: HashMap::new(),
             bindings: HashMap::new(),
             var_counter: 0,
             cut_barrier: 0,
@@ -310,6 +336,19 @@ impl WamState {
     /// Fetch the result-delivery mode for a foreign predicate.
     pub fn foreign_result_mode(&self, pred: &str) -> Option<&str> {
         self.foreign_result_modes.get(pred).map(|mode| mode.as_str())
+    }
+
+    /// Register a lazy edge-lookup backend for a predicate.
+    /// Pair with `register_foreign_native_kind(pred, "lazy_lmdb_lookup")`
+    /// and the spec's tuple-1 result layout. See the
+    /// `lazy_lmdb_lookup` arm in `execute_foreign_predicate`.
+    pub fn register_lazy_lookup(&mut self, pred: &str, source: Arc<dyn LookupSource>) {
+        self.lazy_lookups.insert(pred.to_string(), source);
+    }
+
+    /// Fetch a lazy edge-lookup backend by "name/arity".
+    pub fn lazy_lookup(&self, pred: &str) -> Option<Arc<dyn LookupSource>> {
+        self.lazy_lookups.get(pred).cloned()
     }
 
     /// Dereference an Unbound variable through the binding table.
