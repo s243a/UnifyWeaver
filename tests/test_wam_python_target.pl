@@ -780,6 +780,38 @@ test(runtime_parser_compiled_runs_read2_from_python_stream) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+test(runtime_parser_compiled_runs_read2_from_opened_file) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read2_file_demo),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_read2_file', ProjectDir),
+			atomic_list_concat([ProjectDir, '/read_terms.pl'], DataFile),
+			assertz((user:py_read2_file_demo :-
+				open(DataFile, read, S),
+				read(S, T1), T1 = fact(1),
+				read(S, T2), T2 = fact(2),
+				read(S, T3), T3 = expr(1 + 2 * 3),
+				read(S, T4), T4 = end_of_file,
+				close(S)))
+		),
+		(   wam_python_target:write_wam_python_project([user:py_read2_file_demo/0],
+				[runtime_parser(compiled)], ProjectDir),
+			setup_call_cleanup(
+				open(DataFile, write, Out),
+				format(Out, "fact(1).~nfact(2).~nexpr(1+2*3).~n", []),
+				close(Out)),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_read2_file_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read2_file_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_parser_compiled_runs_reverse_term_to_atom) :-
 	setup_call_cleanup(
 		(   retractall(user:py_term_to_atom_demo),

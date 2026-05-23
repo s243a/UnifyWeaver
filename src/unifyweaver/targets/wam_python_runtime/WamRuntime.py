@@ -46,7 +46,13 @@ class Ref:
     """Heap address reference."""
     addr: int
 
-Term = Atom | Compound | Var | Int | Float | Ref
+@dataclass
+class StreamHandle:
+    """Host stream wrapper that survives WAM state snapshots by identity."""
+    handle: Any
+    def __deepcopy__(self, memo): return self
+
+Term = Atom | Compound | Var | Int | Float | Ref | StreamHandle
 
 # -- Atom interning cache -----------------------------------------------------
 # Ensures `make_atom("foo") is make_atom("foo")` — pointer-equality for equal
@@ -1291,7 +1297,62 @@ def _execute_read_term_from_atom(state: WamState, arity: int = 2,
                                         options, syntax_default)
 
 
+def _unwrap_stream(stream: Any) -> Any:
+    return stream.handle if isinstance(stream, StreamHandle) else stream
+
+
+def _stream_open_mode(mode_term: Term, state: WamState) -> Optional[str]:
+    mode_term = deref(mode_term, state)
+    if not isinstance(mode_term, Atom):
+        return None
+    mode = _runtime_atom_text(mode_term.name)
+    if mode == 'read':
+        return 'r'
+    if mode == 'write':
+        return 'w'
+    if mode == 'append':
+        return 'a'
+    return None
+
+
+def _stream_path_text(path_term: Term, state: WamState) -> Optional[str]:
+    path_term = deref(path_term, state)
+    if not isinstance(path_term, Atom):
+        return None
+    return _runtime_atom_text(path_term.name)
+
+
+def _execute_open(state: WamState) -> bool:
+    path = _stream_path_text(get_reg(state, 1), state)
+    mode = _stream_open_mode(get_reg(state, 2), state)
+    if path is None or mode is None:
+        return False
+    try:
+        handle = open(path, mode, encoding='utf-8')
+    except OSError:
+        return False
+    if not unify(get_reg(state, 3), StreamHandle(handle), state):
+        try:
+            handle.close()
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def _execute_close(state: WamState) -> bool:
+    stream = _unwrap_stream(deref(get_reg(state, 1), state))
+    if stream is None or not hasattr(stream, 'close'):
+        return False
+    try:
+        stream.close()
+    except OSError:
+        return False
+    return True
+
+
 def _read_stream_char(stream: Any) -> str:
+    stream = _unwrap_stream(stream)
     if hasattr(stream, 'read'):
         chunk = stream.read(1)
         return chunk or ''
@@ -1511,6 +1572,10 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         return _execute_read_term_from_atom(state, 3, 'fail')
     if builtin in ('read_term_from_atom_iso/3',) and arity == 3:
         return _execute_read_term_from_atom(state, 3, 'error')
+    if builtin in ('open/3', 'open') and arity == 3:
+        return _execute_open(state)
+    if builtin in ('close/1', 'close') and arity == 1:
+        return _execute_close(state)
     if builtin in ('read/2', 'read_lax/2', 'read', 'read_lax') and arity == 2:
         return _execute_read(state, 'fail')
     if builtin in ('read_iso/2', 'read_iso') and arity == 2:
