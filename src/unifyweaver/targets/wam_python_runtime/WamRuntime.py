@@ -1392,6 +1392,28 @@ def _execute_get_code(state: WamState) -> bool:
     return unify(get_reg(state, 1), value, state)
 
 
+def _execute_put_char(state: WamState) -> bool:
+    value = deref(get_reg(state, 1), state)
+    if not isinstance(value, Atom):
+        return False
+    text = _runtime_atom_text(value.name)
+    if len(text) != 1:
+        return False
+    sys.stdout.write(text)
+    return True
+
+
+def _execute_put_code(state: WamState) -> bool:
+    value = deref(get_reg(state, 1), state)
+    if not isinstance(value, Int) or value.n < 0:
+        return False
+    try:
+        sys.stdout.write(chr(value.n))
+    except (OverflowError, ValueError):
+        return False
+    return True
+
+
 def _execute_read_from_stream(state: WamState, stream: Any, target: Term,
                               syntax_default: str = 'fail',
                               read_char: Optional[Callable[[], str]] = None) -> bool:
@@ -1635,6 +1657,10 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         return _execute_peek_char(state)
     if builtin in ('get_code/1', 'get_code') and arity == 1:
         return _execute_get_code(state)
+    if builtin in ('put_char/1', 'put_char') and arity == 1:
+        return _execute_put_char(state)
+    if builtin in ('put_code/1', 'put_code') and arity == 1:
+        return _execute_put_code(state)
     if builtin in ('read/1', 'read_lax/1', 'read_term/1', 'read_term_lax/1',
                    'read', 'read_lax', 'read_term', 'read_term_lax') and arity == 1:
         return _execute_read_default_stream(state, 'fail')
