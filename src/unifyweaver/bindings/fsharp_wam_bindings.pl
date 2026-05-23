@@ -145,7 +145,14 @@ fsharp_wam_builtin_state_type :-
     /// the CP snapshot, unifies elemReg with `selected`, and binds
     /// outReg to VList rest_items.  Mirrors the Go target's
     /// SelectResults field (templates/targets/go_wam/state.go.mustache).
-    | SelectRetry    of elemReg: int * outReg: int * remaining: (Value * Value list) list * retPC: int").
+    | SelectRetry    of elemReg: int * outReg: int * remaining: (Value * Value list) list * retPC: int
+    /// member/2 backtracking choice point.  `remaining` is the unflattened
+    /// list-tail still to be tried after the current success; on backtrack
+    /// the runtime restores the CP snapshot and walks `remaining` looking
+    /// for the next unifiable element.  Needed because the parser uses
+    /// `member(op(Name, P, T), OpTable), is_op_type(T), !` and depends on
+    /// backtracking into member when the type guard fails.
+    | MemberRetry    of elemReg: int * remaining: Value list * retPC: int").
 
 % ============================================================================
 % EnvFrame — mirrors Haskell `EnvFrame`

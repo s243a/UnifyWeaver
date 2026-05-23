@@ -63,6 +63,7 @@
 :- dynamic user:fs_parser_clause_two_vars/0.
 :- dynamic user:fs_parser_clause_append_base/0.
 :- dynamic user:fs_parser_clause_append_rec/0.
+:- dynamic user:fs_parser_clause_directive_compound/0.
 
 run_dotnet(Args, Dir, ExitCode, Out) :-
     process_create(path(dotnet), Args,
@@ -112,6 +113,7 @@ main :-
     retractall(user:fs_parser_clause_two_vars),
     retractall(user:fs_parser_clause_append_base),
     retractall(user:fs_parser_clause_append_rec),
+    retractall(user:fs_parser_clause_directive_compound),
     retractall(user:fs_simple),
     assertz((user:fs_simple :- true)),
     assertz((user:fs_parser_int :-
@@ -186,20 +188,16 @@ main :-
         read_term_from_atom('p(X) :- q(X) -> r(X) ; s(X)', _T))),
     assertz((user:fs_parser_clause_naf_body :-
         read_term_from_atom('p(X) :- \\+ q(X)', _T))),
-    %% NOTE: We use '?- p' here rather than the more natural ':- p'.
-    %% Both are prefix fx 1200 operators, but ':-' also has an infix xfx 1200
-    %% entry in the canonical_op_table that appears earlier. The F# WAM parser
-    %% fails to backtrack through the infix entry to find the prefix entry
-    %% for ':-' (other multi-entry ops like '-' work fine — root cause TBD).
-    %% '?- p' exercises the same prefix-1200 codepath with a single-entry op.
     assertz((user:fs_parser_clause_directive :-
-        read_term_from_atom('?- p', _T))),
+        read_term_from_atom(':- p', _T))),
     assertz((user:fs_parser_clause_two_vars :-
         read_term_from_atom('p(X,Y) :- q(X), r(Y)', _T))),
     assertz((user:fs_parser_clause_append_base :-
         read_term_from_atom('append([], L, L)', _T))),
     assertz((user:fs_parser_clause_append_rec :-
         read_term_from_atom('append([H|T], L, [H|R]) :- append(T, L, R)', _T))),
+    assertz((user:fs_parser_clause_directive_compound :-
+        read_term_from_atom(':- foo(a)', _T))),
 
     Dir = '/tmp/uw_fsharp_parser_repro',
     catch(delete_directory_and_contents(Dir), _, true),
@@ -229,7 +227,8 @@ main :-
          user:fs_parser_clause_naf_body/0, user:fs_parser_clause_directive/0,
          user:fs_parser_clause_two_vars/0,
          user:fs_parser_clause_append_base/0,
-         user:fs_parser_clause_append_rec/0],
+         user:fs_parser_clause_append_rec/0,
+         user:fs_parser_clause_directive_compound/0],
         [no_kernels(true),
          module_name('uw_fs_parser_repro'),
          runtime_parser(compiled)],
@@ -468,9 +467,11 @@ let main _argv =
     assertTrue \"read_term_from_atom('p(X) :- \\\\+ q(X)', T)\"
                (runPredicate \"fs_parser_clause_naf_body/0\")
 
-    // Directive prefix (using '?- p' — see note on the Prolog assertz for
-    // why ':- p' is a known F# WAM regression to fix separately)
-    assertTrue \"read_term_from_atom('?- p', T)\"
+    // Directive (prefix :-) — regression test for the member/2
+    // backtracking fix: ':-' has both xfx 1200 and fx 1200 entries
+    // in the canonical_op_table and resolve_prefix needs to skip the
+    // xfx one to reach the fx one.
+    assertTrue \"read_term_from_atom(':- p', T)\"
                (runPredicate \"fs_parser_clause_directive/0\")
 
     // Two head vars, two body goals
@@ -484,6 +485,10 @@ let main _argv =
     // append recursive clause — shared vars across head + body, list patterns
     assertTrue \"read_term_from_atom('append([H|T], L, [H|R]) :- append(T, L, R)', T)\"
                (runPredicate \"fs_parser_clause_append_rec/0\")
+
+    // Directive with compound arg — second regression for member/2 fix
+    assertTrue \"read_term_from_atom(':- foo(a)', T)\"
+               (runPredicate \"fs_parser_clause_directive_compound/0\")
 
     printfn \"RESULT %d/%d\" passes (passes + fails)
     if fails > 0 then 1 else 0

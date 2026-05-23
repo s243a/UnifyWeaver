@@ -495,6 +495,50 @@ and resumeBuiltin (bs: BuiltinState) (cp: ChoicePoint) (rest: ChoicePoint list) 
                                      WsCPs      = newCPs
                                      WsCPsLen   = List.length newCPs }
         tryNext candidates
+    | MemberRetry (_, [], _) ->
+        backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
+    | MemberRetry (elemReg, candidates, retPC) ->
+        // Restore from snapshot, then walk remaining list elements with
+        // unifyTerms until one succeeds (or all fail).  Mirrors the
+        // SelectRetry pattern: the snapshot lets unifyTerms attempts be
+        // independent of each other''s trail entries.
+        let diff = s.WsTrailLen - cp.CpTrailLen
+        let restoredS = { s with
+                             WsRegs     = Array.copy cp.CpRegs
+                             WsStack    = cp.CpStack
+                             WsCP       = cp.CpCP
+                             WsTrail    = List.skip diff s.WsTrail
+                             WsTrailLen = cp.CpTrailLen
+                             WsHeap     = List.take cp.CpHeapLen s.WsHeap
+                             WsHeapLen  = cp.CpHeapLen
+                             WsBindings = cp.CpBindings
+                             WsCutBar   = cp.CpCutBar
+                             WsB0Stack  = (let n = List.length s.WsB0Stack - cp.CpB0StackLen in if n > 0 then List.skip n s.WsB0Stack else s.WsB0Stack)
+                             WsPC       = retPC }
+        let rec tryNext cands =
+            match cands with
+            | [] -> backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
+            | x :: more ->
+                match getReg elemReg restoredS with
+                | None -> backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
+                | Some elem_ ->
+                    let xd = derefVar restoredS.WsBindings x
+                    match unifyTerms elem_ xd restoredS with
+                    | None    -> tryNext more
+                    | Some s2 ->
+                        let newCPs =
+                            match more with
+                            | [] -> rest
+                            | _  -> { cp with CpBuiltin = Some (MemberRetry (elemReg, more, retPC)) } :: rest
+                        Some { s2 with
+                                 WsPC      = retPC
+                                 WsStack   = cp.CpStack
+                                 WsCP      = cp.CpCP
+                                 WsCutBar  = cp.CpCutBar
+                                 WsB0Stack = (let n = List.length s.WsB0Stack - cp.CpB0StackLen in if n > 0 then List.skip n s.WsB0Stack else s.WsB0Stack)
+                                 WsCPs     = newCPs
+                                 WsCPsLen  = List.length newCPs }
+        tryNext candidates
     | FFIStreamRetry (_, _, [], _) ->
         backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
     | FFIStreamRetry (outRegs, outVars, tuple :: restTuples, retPC) ->
@@ -1859,39 +1903,53 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | _ -> None
 
     | BuiltinCall ("member/2", _) ->
-        // member(Elem, List): Elem unifies with some element of List.
-        // Non-deterministic in standard Prolog (backtracks through all
-        // matches), but the previous implementation only tried the
-        // FIRST element of a VList — wrong even for find-first
-        // semantics, and failed against Str-cons list encodings
-        // entirely.  Issue #2400 follow-up: parser library''s
-        // resolve_infix/4 uses `member(op(Name, Prec, Type), OpTable)`
-        // followed by cut, so it needs find-first across the whole
-        // table (and across BOTH list encodings).  Walk the list
-        // explicitly, trying unifyVal on each element with the
-        // current (snapshot) state and committing to the first
-        // success.  Backtracking through alternative members would
-        // require a FactRetry-style CP — left as a follow-up since
-        // the parser path uses `member, !` and never backtracks.
+        // member(Elem, List): non-deterministic — unifies Elem with the
+        // first matching element of List and pushes a MemberRetry CP so
+        // backtracking can try subsequent matches.  The parser uses
+        // `member(op(Name, P, T), OpTable), is_op_type(T), !` and depends
+        // on the backtracking when the first match fails the type guard
+        // (e.g. resolve_prefix on '':-'' must skip the xfx 1200 entry to
+        // find the fx 1200 entry).  Walks both list encodings (VList and
+        // Str ''[|]'' cons cells) so it works against either runtime
+        // representation.
         let elem_ = s.WsRegs.[1] |> derefVar s.WsBindings
-        let rec walk lst st =
-            match derefVar st.WsBindings lst with
-            | VList []               -> None
-            | Atom "[]"              -> None
-            | VList (x :: rest) ->
-                let xd = derefVar st.WsBindings x
-                match unifyTerms elem_ xd st with
-                | Some st1 -> Some st1
-                | None     -> walk (VList rest) st
-            | Str ("[|]", [h; t]) ->
-                let hd = derefVar st.WsBindings h
-                match unifyTerms elem_ hd st with
-                | Some st1 -> Some st1
-                | None     -> walk t st
-            | _ -> None
-        match walk s.WsRegs.[2] s with
-        | Some sN -> Some { sN with WsPC = sN.WsPC + 1 }
-        | None    -> None
+        let retPC = s.WsPC + 1
+        let rec flatten lst =
+            match derefVar s.WsBindings lst with
+            | VList xs            -> xs
+            | Atom "[]"           -> []
+            | Str ("[|]", [h; t]) -> h :: flatten t
+            | _                   -> []
+        let items = flatten s.WsRegs.[2]
+        let rec tryFrom cands =
+            match cands with
+            | [] -> None
+            | x :: rest ->
+                let xd = derefVar s.WsBindings x
+                match unifyTerms elem_ xd s with
+                | None     -> tryFrom rest
+                | Some st1 ->
+                    let newCPs, newCPsLen =
+                        match rest with
+                        | [] -> s.WsCPs, s.WsCPsLen
+                        | _  ->
+                            let cp = { CpNextPC   = retPC
+                                       CpRegs     = Array.copy s.WsRegs
+                                       CpStack    = s.WsStack
+                                       CpCP       = s.WsCP
+                                       CpTrailLen = s.WsTrailLen
+                                       CpHeapLen  = s.WsHeapLen
+                                       CpBindings = s.WsBindings
+                                       CpCutBar   = s.WsCutBar
+                                       CpB0StackLen = List.length s.WsB0Stack
+                                       CpAggFrame = None
+                                       CpBuiltin  = Some (MemberRetry (1, rest, retPC)) }
+                            cp :: s.WsCPs, s.WsCPsLen + 1
+                    Some { st1 with
+                             WsPC     = retPC
+                             WsCPs    = newCPs
+                             WsCPsLen = newCPsLen }
+        tryFrom items
 
     | BeginAggregate (aggType, valReg, resReg) ->
         let cp = { CpNextPC   = s.WsPC
