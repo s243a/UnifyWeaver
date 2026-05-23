@@ -36,6 +36,22 @@
 :- dynamic user:fs_parser_nested/0.
 :- dynamic user:fs_parser_three_args/0.
 :- dynamic user:fs_parser_mul_plus/0.
+:- dynamic user:fs_parser_list_vars/0.
+:- dynamic user:fs_parser_naf/0.
+:- dynamic user:fs_parser_prec/0.
+:- dynamic user:fs_parser_op_in_arg/0.
+:- dynamic user:fs_parser_partial_list/0.
+:- dynamic user:fs_parser_eq/0.
+:- dynamic user:fs_parser_is/0.
+:- dynamic user:fs_parser_list_tail_list/0.
+:- dynamic user:fs_parser_disj/0.
+:- dynamic user:fs_parser_ite/0.
+:- dynamic user:fs_parser_caret_assoc/0.
+:- dynamic user:fs_parser_minus_assoc/0.
+:- dynamic user:fs_parser_pow_assoc/0.
+:- dynamic user:fs_parser_empty_list/0.
+:- dynamic user:fs_parser_shared_var/0.
+:- dynamic user:fs_parser_deep_nest/0.
 
 run_dotnet(Args, Dir, ExitCode, Out) :-
     process_create(path(dotnet), Args,
@@ -58,6 +74,22 @@ main :-
     retractall(user:fs_parser_nested),
     retractall(user:fs_parser_three_args),
     retractall(user:fs_parser_mul_plus),
+    retractall(user:fs_parser_list_vars),
+    retractall(user:fs_parser_naf),
+    retractall(user:fs_parser_prec),
+    retractall(user:fs_parser_op_in_arg),
+    retractall(user:fs_parser_partial_list),
+    retractall(user:fs_parser_eq),
+    retractall(user:fs_parser_is),
+    retractall(user:fs_parser_list_tail_list),
+    retractall(user:fs_parser_disj),
+    retractall(user:fs_parser_ite),
+    retractall(user:fs_parser_caret_assoc),
+    retractall(user:fs_parser_minus_assoc),
+    retractall(user:fs_parser_pow_assoc),
+    retractall(user:fs_parser_empty_list),
+    retractall(user:fs_parser_shared_var),
+    retractall(user:fs_parser_deep_nest),
     retractall(user:fs_simple),
     assertz((user:fs_simple :- true)),
     assertz((user:fs_parser_int :-
@@ -86,6 +118,38 @@ main :-
         read_term_from_atom('foo(a,b,c)', _T))),
     assertz((user:fs_parser_mul_plus :-
         read_term_from_atom('2*3+4', _T))),
+    assertz((user:fs_parser_list_vars :-
+        read_term_from_atom('[X,Y,Z]', _T))),
+    assertz((user:fs_parser_naf :-
+        read_term_from_atom('\\+ foo', _T))),
+    assertz((user:fs_parser_prec :-
+        read_term_from_atom('a + b * c', _T))),
+    assertz((user:fs_parser_op_in_arg :-
+        read_term_from_atom('foo(a, b+c, d)', _T))),
+    assertz((user:fs_parser_partial_list :-
+        read_term_from_atom('[1|T]', _T))),
+    assertz((user:fs_parser_eq :-
+        read_term_from_atom('a = b', _T))),
+    assertz((user:fs_parser_is :-
+        read_term_from_atom('X is 1+2', _T))),
+    assertz((user:fs_parser_list_tail_list :-
+        read_term_from_atom('[a,b|[c,d]]', _T))),
+    assertz((user:fs_parser_disj :-
+        read_term_from_atom('(a;b)', _T))),
+    assertz((user:fs_parser_ite :-
+        read_term_from_atom('a->b;c', _T))),
+    assertz((user:fs_parser_caret_assoc :-
+        read_term_from_atom('a^b^c', _T))),
+    assertz((user:fs_parser_minus_assoc :-
+        read_term_from_atom('1-2-3', _T))),
+    assertz((user:fs_parser_pow_assoc :-
+        read_term_from_atom('2^3^4', _T))),
+    assertz((user:fs_parser_empty_list :-
+        read_term_from_atom('[]', _T))),
+    assertz((user:fs_parser_shared_var :-
+        read_term_from_atom('p(X,X)', _T))),
+    assertz((user:fs_parser_deep_nest :-
+        read_term_from_atom('f(g(h(i)))', _T))),
 
     Dir = '/tmp/uw_fsharp_parser_repro',
     catch(delete_directory_and_contents(Dir), _, true),
@@ -100,7 +164,15 @@ main :-
          user:fs_parser_demo/0, user:fs_parser_p_a/0,
          user:fs_parser_list_123/0, user:fs_parser_plus/0,
          user:fs_parser_nested/0, user:fs_parser_three_args/0,
-         user:fs_parser_mul_plus/0],
+         user:fs_parser_mul_plus/0, user:fs_parser_list_vars/0,
+         user:fs_parser_naf/0, user:fs_parser_prec/0,
+         user:fs_parser_op_in_arg/0, user:fs_parser_partial_list/0,
+         user:fs_parser_eq/0, user:fs_parser_is/0,
+         user:fs_parser_list_tail_list/0, user:fs_parser_disj/0,
+         user:fs_parser_ite/0, user:fs_parser_caret_assoc/0,
+         user:fs_parser_minus_assoc/0, user:fs_parser_pow_assoc/0,
+         user:fs_parser_empty_list/0, user:fs_parser_shared_var/0,
+         user:fs_parser_deep_nest/0],
         [no_kernels(true),
          module_name('uw_fs_parser_repro'),
          runtime_parser(compiled)],
@@ -245,10 +317,74 @@ let main _argv =
     assertTrue \"read_term_from_atom('2*3+4', T)\"
                (runPredicate \"fs_parser_mul_plus/0\")
 
+    // List with unbound vars — exercises list_build with unbound elements
+    assertTrue \"read_term_from_atom('[X,Y,Z]', T)\"
+               (runPredicate \"fs_parser_list_vars/0\")
+
+    // Prefix negation — \\+ as a prefix operator
+    assertTrue \"read_term_from_atom('\\\\+ foo', T)\"
+               (runPredicate \"fs_parser_naf/0\")
+
+    // Operator precedence chain — mul binds tighter than plus
+    assertTrue \"read_term_from_atom('a + b * c', T)\"
+               (runPredicate \"fs_parser_prec/0\")
+
+    // Operator inside compound arg — parse_args -> parse_expr recursion
+    assertTrue \"read_term_from_atom('foo(a, b+c, d)', T)\"
+               (runPredicate \"fs_parser_op_in_arg/0\")
+
+    // Partial list — exercises [H|T] syntax with unbound tail
+    assertTrue \"read_term_from_atom('[1|T]', T)\"
+               (runPredicate \"fs_parser_partial_list/0\")
+
+    // Equality operator — single infix
+    assertTrue \"read_term_from_atom('a = b', T)\"
+               (runPredicate \"fs_parser_eq/0\")
+
+    // is/2 — exercises mixed-precedence (is is xfx 700, + is yfx 500)
+    assertTrue \"read_term_from_atom('X is 1+2', T)\"
+               (runPredicate \"fs_parser_is/0\")
+
+    // Nested list tail — [a,b|[c,d]] should parse the tail as a list
+    assertTrue \"read_term_from_atom('[a,b|[c,d]]', T)\"
+               (runPredicate \"fs_parser_list_tail_list/0\")
+
+    // Disjunction in parens — exercises ; as xfy 1100 inside parens
+    assertTrue \"read_term_from_atom('(a;b)', T)\"
+               (runPredicate \"fs_parser_disj/0\")
+
+    // If-then-else — -> and ; combine with proper precedence
+    assertTrue \"read_term_from_atom('a->b;c', T)\"
+               (runPredicate \"fs_parser_ite/0\")
+
+    // Right-associative ^ — should parse as a^(b^c)
+    assertTrue \"read_term_from_atom('a^b^c', T)\"
+               (runPredicate \"fs_parser_caret_assoc/0\")
+
+    // Left-associative - — should parse as (1-2)-3
+    assertTrue \"read_term_from_atom('1-2-3', T)\"
+               (runPredicate \"fs_parser_minus_assoc/0\")
+
+    // ^ with integers — 2^(3^4)
+    assertTrue \"read_term_from_atom('2^3^4', T)\"
+               (runPredicate \"fs_parser_pow_assoc/0\")
+
+    // Empty list literal — should produce Atom \"[]\"
+    assertTrue \"read_term_from_atom('[]', T)\"
+               (runPredicate \"fs_parser_empty_list/0\")
+
+    // Shared variable — p(X,X) — both args must be the same Ref
+    assertTrue \"read_term_from_atom('p(X,X)', T)\"
+               (runPredicate \"fs_parser_shared_var/0\")
+
+    // Deeply nested compound — f(g(h(i)))
+    assertTrue \"read_term_from_atom('f(g(h(i)))', T)\"
+               (runPredicate \"fs_parser_deep_nest/0\")
+
     printfn \"RESULT %d/%d\" passes (passes + fails)
     if fails > 0 then 1 else 0
 ",
-    open(ProgPath, write, OW),
+    open(ProgPath, write, OW, [encoding(utf8)]),
     write(OW, DriverCode),
     close(OW),
 
