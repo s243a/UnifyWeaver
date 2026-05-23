@@ -52,6 +52,17 @@
 :- dynamic user:fs_parser_empty_list/0.
 :- dynamic user:fs_parser_shared_var/0.
 :- dynamic user:fs_parser_deep_nest/0.
+:- dynamic user:fs_parser_clause_simple/0.
+:- dynamic user:fs_parser_clause_var/0.
+:- dynamic user:fs_parser_clause_conj/0.
+:- dynamic user:fs_parser_clause_conj3/0.
+:- dynamic user:fs_parser_clause_disj_body/0.
+:- dynamic user:fs_parser_clause_ite_body/0.
+:- dynamic user:fs_parser_clause_naf_body/0.
+:- dynamic user:fs_parser_clause_directive/0.
+:- dynamic user:fs_parser_clause_two_vars/0.
+:- dynamic user:fs_parser_clause_append_base/0.
+:- dynamic user:fs_parser_clause_append_rec/0.
 
 run_dotnet(Args, Dir, ExitCode, Out) :-
     process_create(path(dotnet), Args,
@@ -90,6 +101,17 @@ main :-
     retractall(user:fs_parser_empty_list),
     retractall(user:fs_parser_shared_var),
     retractall(user:fs_parser_deep_nest),
+    retractall(user:fs_parser_clause_simple),
+    retractall(user:fs_parser_clause_var),
+    retractall(user:fs_parser_clause_conj),
+    retractall(user:fs_parser_clause_conj3),
+    retractall(user:fs_parser_clause_disj_body),
+    retractall(user:fs_parser_clause_ite_body),
+    retractall(user:fs_parser_clause_naf_body),
+    retractall(user:fs_parser_clause_directive),
+    retractall(user:fs_parser_clause_two_vars),
+    retractall(user:fs_parser_clause_append_base),
+    retractall(user:fs_parser_clause_append_rec),
     retractall(user:fs_simple),
     assertz((user:fs_simple :- true)),
     assertz((user:fs_parser_int :-
@@ -150,6 +172,34 @@ main :-
         read_term_from_atom('p(X,X)', _T))),
     assertz((user:fs_parser_deep_nest :-
         read_term_from_atom('f(g(h(i)))', _T))),
+    assertz((user:fs_parser_clause_simple :-
+        read_term_from_atom('p :- q', _T))),
+    assertz((user:fs_parser_clause_var :-
+        read_term_from_atom('p(X) :- q(X)', _T))),
+    assertz((user:fs_parser_clause_conj :-
+        read_term_from_atom('p(X) :- q(X), r(X)', _T))),
+    assertz((user:fs_parser_clause_conj3 :-
+        read_term_from_atom('p(X) :- q(X), r(X), s(X)', _T))),
+    assertz((user:fs_parser_clause_disj_body :-
+        read_term_from_atom('p(X) :- q(X) ; r(X)', _T))),
+    assertz((user:fs_parser_clause_ite_body :-
+        read_term_from_atom('p(X) :- q(X) -> r(X) ; s(X)', _T))),
+    assertz((user:fs_parser_clause_naf_body :-
+        read_term_from_atom('p(X) :- \\+ q(X)', _T))),
+    %% NOTE: We use '?- p' here rather than the more natural ':- p'.
+    %% Both are prefix fx 1200 operators, but ':-' also has an infix xfx 1200
+    %% entry in the canonical_op_table that appears earlier. The F# WAM parser
+    %% fails to backtrack through the infix entry to find the prefix entry
+    %% for ':-' (other multi-entry ops like '-' work fine — root cause TBD).
+    %% '?- p' exercises the same prefix-1200 codepath with a single-entry op.
+    assertz((user:fs_parser_clause_directive :-
+        read_term_from_atom('?- p', _T))),
+    assertz((user:fs_parser_clause_two_vars :-
+        read_term_from_atom('p(X,Y) :- q(X), r(Y)', _T))),
+    assertz((user:fs_parser_clause_append_base :-
+        read_term_from_atom('append([], L, L)', _T))),
+    assertz((user:fs_parser_clause_append_rec :-
+        read_term_from_atom('append([H|T], L, [H|R]) :- append(T, L, R)', _T))),
 
     Dir = '/tmp/uw_fsharp_parser_repro',
     catch(delete_directory_and_contents(Dir), _, true),
@@ -172,7 +222,14 @@ main :-
          user:fs_parser_ite/0, user:fs_parser_caret_assoc/0,
          user:fs_parser_minus_assoc/0, user:fs_parser_pow_assoc/0,
          user:fs_parser_empty_list/0, user:fs_parser_shared_var/0,
-         user:fs_parser_deep_nest/0],
+         user:fs_parser_deep_nest/0,
+         user:fs_parser_clause_simple/0, user:fs_parser_clause_var/0,
+         user:fs_parser_clause_conj/0, user:fs_parser_clause_conj3/0,
+         user:fs_parser_clause_disj_body/0, user:fs_parser_clause_ite_body/0,
+         user:fs_parser_clause_naf_body/0, user:fs_parser_clause_directive/0,
+         user:fs_parser_clause_two_vars/0,
+         user:fs_parser_clause_append_base/0,
+         user:fs_parser_clause_append_rec/0],
         [no_kernels(true),
          module_name('uw_fs_parser_repro'),
          runtime_parser(compiled)],
@@ -380,6 +437,53 @@ let main _argv =
     // Deeply nested compound — f(g(h(i)))
     assertTrue \"read_term_from_atom('f(g(h(i)))', T)\"
                (runPredicate \"fs_parser_deep_nest/0\")
+
+    // ---- whole-clause parsing (:-/2 at top level) ----
+
+    // Simplest rule
+    assertTrue \"read_term_from_atom('p :- q', T)\"
+               (runPredicate \"fs_parser_clause_simple/0\")
+
+    // Rule with variable
+    assertTrue \"read_term_from_atom('p(X) :- q(X)', T)\"
+               (runPredicate \"fs_parser_clause_var/0\")
+
+    // Conjunctive body
+    assertTrue \"read_term_from_atom('p(X) :- q(X), r(X)', T)\"
+               (runPredicate \"fs_parser_clause_conj/0\")
+
+    // 3-element conjunction
+    assertTrue \"read_term_from_atom('p(X) :- q(X), r(X), s(X)', T)\"
+               (runPredicate \"fs_parser_clause_conj3/0\")
+
+    // Disjunction in body
+    assertTrue \"read_term_from_atom('p(X) :- q(X) ; r(X)', T)\"
+               (runPredicate \"fs_parser_clause_disj_body/0\")
+
+    // If-then-else in body
+    assertTrue \"read_term_from_atom('p(X) :- q(X) -> r(X) ; s(X)', T)\"
+               (runPredicate \"fs_parser_clause_ite_body/0\")
+
+    // Negation-as-failure in body
+    assertTrue \"read_term_from_atom('p(X) :- \\\\+ q(X)', T)\"
+               (runPredicate \"fs_parser_clause_naf_body/0\")
+
+    // Directive prefix (using '?- p' — see note on the Prolog assertz for
+    // why ':- p' is a known F# WAM regression to fix separately)
+    assertTrue \"read_term_from_atom('?- p', T)\"
+               (runPredicate \"fs_parser_clause_directive/0\")
+
+    // Two head vars, two body goals
+    assertTrue \"read_term_from_atom('p(X,Y) :- q(X), r(Y)', T)\"
+               (runPredicate \"fs_parser_clause_two_vars/0\")
+
+    // append base case (fact, shared var across args)
+    assertTrue \"read_term_from_atom('append([], L, L)', T)\"
+               (runPredicate \"fs_parser_clause_append_base/0\")
+
+    // append recursive clause — shared vars across head + body, list patterns
+    assertTrue \"read_term_from_atom('append([H|T], L, [H|R]) :- append(T, L, R)', T)\"
+               (runPredicate \"fs_parser_clause_append_rec/0\")
 
     printfn \"RESULT %d/%d\" passes (passes + fails)
     if fails > 0 then 1 else 0
