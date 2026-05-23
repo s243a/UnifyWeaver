@@ -124,12 +124,29 @@ case class Execute(pred: String, arity: Int)            extends Instruction
 case class Jump(label: String)                          extends Instruction
 case class TryMeElse(label: String)                     extends Instruction
 case class RetryMeElse(label: String)                   extends Instruction
+// Indexed-dispatch chain ops (issue #2400). Emitted by
+// build_term_index_with_chains in wam_target.pl when a dispatch
+// group (e.g. all list-shaped first args in classify/1) has more
+// than one matching clause and clause 1 isn't one of them. The
+// switch_on_term/constant/structure instruction jumps to the
+// chain's first Try; backtrack walks through Retry…Trust. Unlike
+// the linear-chain TryMeElse, these JUMP to the target body label
+// (already past the retry_me_else / trust_me prologue) and the CP
+// saved by Try/Retry points at the NEXT chain instruction (so
+// backtrack resumes the chain rather than restarting a clause's
+// retry chain).
+case class Try(label: String)                           extends Instruction
+case class Retry(label: String)                         extends Instruction
+case class Trust(label: String)                         extends Instruction
 // Resolved control (populated by resolveInstructions)
 case class CallPc(targetPc: Int, arity: Int)            extends Instruction
 case class ExecutePc(targetPc: Int)                     extends Instruction
 case class JumpPc(targetPc: Int)                        extends Instruction
 case class TryMeElsePc(targetPc: Int)                   extends Instruction
 case class RetryMeElsePc(targetPc: Int)                 extends Instruction
+case class TryPc(targetPc: Int)                         extends Instruction
+case class RetryPc(targetPc: Int)                       extends Instruction
+case class TrustPc(targetPc: Int)                       extends Instruction
 // Environment
 case object Allocate                                    extends Instruction
 case object Deallocate                                  extends Instruction
@@ -546,6 +563,9 @@ object WamRuntime {
       case Jump(lbl)              => labels.get(lbl).map(JumpPc(_)).getOrElse(Jump(lbl))
       case TryMeElse(lbl)        => labels.get(lbl).map(TryMeElsePc(_)).getOrElse(TryMeElse(lbl))
       case RetryMeElse(lbl)      => labels.get(lbl).map(RetryMeElsePc(_)).getOrElse(RetryMeElse(lbl))
+      case Try(lbl)              => labels.get(lbl).map(TryPc(_)).getOrElse(Try(lbl))
+      case Retry(lbl)            => labels.get(lbl).map(RetryPc(_)).getOrElse(Retry(lbl))
+      case Trust(lbl)            => labels.get(lbl).map(TrustPc(_)).getOrElse(Trust(lbl))
       case SwitchOnConstant(cases) =>
         val resolved = cases.map { sc =>
           if (sc.label == "default") sc  // default = fallthrough (targetPc stays -1) or resolved below
@@ -1168,6 +1188,53 @@ object WamRuntime {
       case RetryMeElse(lbl) =>
         program.labels.get(lbl).foreach(pushChoicePoint(s, _))
         s.pc += 1
+
+      // Indexed-dispatch chain ops (issue #2400).  Layout:
+      //   L_<P>_<A>_<group>_dispatch:
+      //       try   L_<P>_<A>_<I1>_body
+      //       retry L_<P>_<A>_<I2>_body
+      //       ...
+      //       trust L_<P>_<A>_<IN>_body
+      // try/retry push a CP that resumes at the NEXT chain instruction
+      // (s.pc + 1) and JUMP to the body label.  trust just jumps —
+      // there's no CP after the last alternative.  This is symmetric
+      // to TryMeElse/RetryMeElse/TrustMe but with the destination
+      // carried by the instruction (not implicit pc+1) so the chain
+      // can dispatch into the middle of a predicate's clause bodies
+      // without re-entering the linear chain's retry_me_else chain.
+
+      case TryPc(targetPc) =>
+        pushChoicePoint(s, s.pc + 1)
+        s.pc = targetPc
+
+      case Try(lbl) =>
+        program.labels.get(lbl) match {
+          case Some(target) =>
+            pushChoicePoint(s, s.pc + 1)
+            s.pc = target
+          case None => backtrack(s)
+        }
+
+      case RetryPc(targetPc) =>
+        pushChoicePoint(s, s.pc + 1)
+        s.pc = targetPc
+
+      case Retry(lbl) =>
+        program.labels.get(lbl) match {
+          case Some(target) =>
+            pushChoicePoint(s, s.pc + 1)
+            s.pc = target
+          case None => backtrack(s)
+        }
+
+      case TrustPc(targetPc) =>
+        s.pc = targetPc
+
+      case Trust(lbl) =>
+        program.labels.get(lbl) match {
+          case Some(target) => s.pc = target
+          case None => backtrack(s)
+        }
 
       // --- Indexing ---
 

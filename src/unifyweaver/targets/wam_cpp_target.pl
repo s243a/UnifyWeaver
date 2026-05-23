@@ -294,6 +294,16 @@ wam_instruction_to_cpp_literal_det(retry_me_else(L), LabelMap, Code) :-
     label_index(L, LabelMap, Idx),
     format(atom(Code), 'Instruction::RetryMeElse(~w)', [Idx]).
 wam_instruction_to_cpp_literal_det(trust_me, _, 'Instruction::TrustMe()').
+%% Indexed-dispatch chain ops (issue #2400).
+wam_instruction_to_cpp_literal_det(try(L), LabelMap, Code) :-
+    label_index(L, LabelMap, Idx),
+    format(atom(Code), 'Instruction::Try(~w)', [Idx]).
+wam_instruction_to_cpp_literal_det(retry(L), LabelMap, Code) :-
+    label_index(L, LabelMap, Idx),
+    format(atom(Code), 'Instruction::Retry(~w)', [Idx]).
+wam_instruction_to_cpp_literal_det(trust(L), LabelMap, Code) :-
+    label_index(L, LabelMap, Idx),
+    format(atom(Code), 'Instruction::Trust(~w)', [Idx]).
 wam_instruction_to_cpp_literal_det(jump(L), LabelMap, Code) :-
     label_index(L, LabelMap, Idx),
     format(atom(Code), 'Instruction::Jump(~w)', [Idx]).
@@ -2211,6 +2221,23 @@ instr_to_setup_line(retry_me_else(L), Labels, Line) :- !,
     label_resolve(L, Labels, PC),
     format(atom(Line),
            '    vm.instrs.push_back(Instruction::RetryMeElse(~w));', [PC]).
+%% Indexed-dispatch chain ops (issue #2400).  See wam_target.pl''s
+%% build_term_index_with_chains.  Target is the body label of one of
+%% the matching clauses; the chain''s next-instruction PC is captured
+%% in the CP at runtime so backtrack resumes through the chain
+%% rather than re-entering the linear retry chain.
+instr_to_setup_line(try(L), Labels, Line) :- !,
+    label_resolve(L, Labels, PC),
+    format(atom(Line),
+           '    vm.instrs.push_back(Instruction::Try(~w));', [PC]).
+instr_to_setup_line(retry(L), Labels, Line) :- !,
+    label_resolve(L, Labels, PC),
+    format(atom(Line),
+           '    vm.instrs.push_back(Instruction::Retry(~w));', [PC]).
+instr_to_setup_line(trust(L), Labels, Line) :- !,
+    label_resolve(L, Labels, PC),
+    format(atom(Line),
+           '    vm.instrs.push_back(Instruction::Trust(~w));', [PC]).
 instr_to_setup_line(jump(L), Labels, Line) :- !,
     label_resolve(L, Labels, PC),
     format(atom(Line),
@@ -3065,7 +3092,9 @@ struct Instruction {
         SetVariable, SetValue, SetConstant,
         Call, Execute, Proceed, Fail, Allocate, Deallocate,
         BuiltinCall, CallForeign,
-        TryMeElse, RetryMeElse, TrustMe, Jump, CutIte,
+        TryMeElse, RetryMeElse, TrustMe,
+        Try, Retry, Trust,                                   // chain ops (#2400)
+        Jump, CutIte,
         BeginAggregate, EndAggregate,
         SwitchOnConstant, SwitchOnConstantA2,
         SwitchOnStructure, SwitchOnStructureA2,
@@ -3161,6 +3190,13 @@ struct Instruction {
     static Instruction RetryMeElse(std::size_t target)
         { Instruction i; i.op = Op::RetryMeElse; i.target = target; return i; }
     static Instruction TrustMe()    { Instruction i; i.op = Op::TrustMe;    return i; }
+    // Indexed-dispatch chain ops (issue #2400).
+    static Instruction Try(std::size_t target)
+        { Instruction i; i.op = Op::Try; i.target = target; return i; }
+    static Instruction Retry(std::size_t target)
+        { Instruction i; i.op = Op::Retry; i.target = target; return i; }
+    static Instruction Trust(std::size_t target)
+        { Instruction i; i.op = Op::Trust; i.target = target; return i; }
     static Instruction Jump(std::size_t target)
         { Instruction i; i.op = Op::Jump; i.target = target; return i; }
     static Instruction CutIte()     { Instruction i; i.op = Op::CutIte;     return i; }
@@ -8041,6 +8077,75 @@ bool WamState::step(const Instruction& instr) {
                 choice_points.pop_back();
             }
             pc += 1; return true;
+        }
+
+        // ---- Indexed-dispatch chain ops (issue #2400) -------------
+        // Emitted by wam_target.pl''s build_term_index_with_chains for
+        // SwitchOnTerm / SwitchOnConstant / SwitchOnStructure targets
+        // whose dispatch group has >1 matching clauses.  Layout:
+        //   L_<P>_<A>_<group>_dispatch:
+        //       try   L_<P>_<A>_<I1>_body
+        //       retry L_<P>_<A>_<I2>_body
+        //       ...
+        //       trust L_<P>_<A>_<IN>_body
+        // Each instruction''s target is the body label (PC).  CP push
+        // captures pc+1 (the next chain entry) so backtrack resumes
+        // through the chain.  Unlike TryMeElse/RetryMeElse, these
+        // JUMP to the body and don''t need the indexed_entry hack —
+        // the chain is self-contained.
+        case Instruction::Op::Try: {
+            // Push a CP that resumes the chain at pc+1 (= next chain
+            // instr) on backtrack, then JUMP to the body label.
+            indexed_entry = false; // chain is self-contained
+            ChoicePoint cp_;
+            cp_.alt_pc = pc + 1;
+            cp_.saved_cp = cp;
+            cp_.trail_mark = trail.size();
+            cp_.cut_barrier = cut_barrier;
+            cp_.saved_regs = regs;
+            cp_.saved_mode_stack = mode_stack;
+            cp_.saved_env_stack = env_stack;
+            cp_.saved_body_frames = body_frames;
+            choice_points.push_back(std::move(cp_));
+            pc = instr.target; return true;
+        }
+        case Instruction::Op::Retry: {
+            // Mutate the top CP''s alt_pc to pc+1 (next chain instr).
+            // The CP itself stays on the stack -- C++''s backtrack
+            // restores from but never pops, so Try''s CP survives
+            // each backtrack and we just update where to resume.
+            // (Symmetric to RetryMeElse''s mutate-don''t-push branch.)
+            // Defensive fallback: if no CP exists (shouldn''t happen
+            // in well-formed chains), synthesize one so the chain
+            // stays consistent.
+            indexed_entry = false;
+            if (!choice_points.empty()) {
+                choice_points.back().alt_pc = pc + 1;
+            } else {
+                ChoicePoint cp_;
+                cp_.alt_pc = pc + 1;
+                cp_.saved_cp = cp;
+                cp_.trail_mark = trail.size();
+                cp_.cut_barrier = cut_barrier;
+                cp_.saved_regs = regs;
+                cp_.saved_mode_stack = mode_stack;
+                cp_.saved_env_stack = env_stack;
+                cp_.saved_body_frames = body_frames;
+                choice_points.push_back(std::move(cp_));
+            }
+            pc = instr.target; return true;
+        }
+        case Instruction::Op::Trust: {
+            // Last entry in the chain: pop the chain CP and jump to
+            // the body label.  Mirrors TrustMe but jumps rather
+            // than falling through.  Skipping the pop leaks the
+            // chain CP and causes an infinite retry loop when this
+            // clause body fails and backtrack restores from it.
+            indexed_entry = false;
+            if (!choice_points.empty()) {
+                choice_points.pop_back();
+            }
+            pc = instr.target; return true;
         }
         case Instruction::Op::CutIte: {
             // Soft cut for inlined if-then-else. The topmost CP at this

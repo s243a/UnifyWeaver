@@ -366,23 +366,121 @@ test_python_bypass :-
     ).
 
 %% ========================================================================
-%% Other targets — stubs.  Step 2 of the rollout exercises F# + Python
-%% to validate the design; Haskell / Go / R / Scala subtests follow
-%% the same shape and are added once the F# emitter+runtime fix is
-%% confirmed working.
+%% C++ subtest
+%% ========================================================================
+
+:- use_module('../../src/unifyweaver/targets/wam_cpp_target').
+
+cpp_available :- tool_runs('g++', ['--version']).
+
+cpp_driver_program("#include \"wam_runtime.h\"
+#include <iostream>
+int main() {
+    WamState vm;
+    Program::apply_setup(vm);
+    bool ok = vm.query(\"bypass_demo/0\", {});
+    std::cout << \"BYPASS_DEMO_RESULT=\" << (ok ? \"true\" : \"false\") << std::endl;
+    return ok ? 0 : 1;
+}
+").
+
+write_cpp_project(Dir) :-
+    bypass_root(Root),
+    directory_file_path(Root, cpp, Dir),
+    clean_dir(Dir),
+    make_directory_path(Dir),
+    assert_bypass_predicates,
+    catch(
+        wam_cpp_target:write_wam_cpp_project(
+            [user:bypass_demo/0, user:choice/1, user:classify/1],
+            [],
+            Dir),
+        E,
+        (teardown_bypass_predicates, throw(E))),
+    teardown_bypass_predicates,
+    cpp_driver_program(Prog),
+    directory_file_path(Dir, 'cpp', CppDir),
+    directory_file_path(CppDir, 'driver.cpp', DFile),
+    setup_call_cleanup(
+        open(DFile, write, Out, [encoding(utf8)]),
+        write(Out, Prog),
+        close(Out)).
+
+run_cpp_build_and_exec(Dir, ExitCode, Output) :-
+    directory_file_path(Dir, 'cpp', CppDir),
+    %% Build with g++.
+    setup_call_cleanup(
+        process_create(path('g++'),
+            ['-std=c++17', '-O0', '-o', 'test_bypass',
+             'wam_runtime.cpp', 'generated_program.cpp', 'driver.cpp'],
+            [cwd(CppDir),
+             stdout(pipe(BOut)), stderr(pipe(BErr)),
+             process(BPid)]),
+        (   read_string(BOut, _, BOutText),
+            read_string(BErr, _, BErrText),
+            process_wait(BPid, exit(BExit))
+        ),
+        (catch(close(BOut), _, true), catch(close(BErr), _, true))),
+    (   BExit \== 0
+    ->  ExitCode = BExit,
+        atomic_list_concat([BOutText, '\n', BErrText], Output)
+    ;   %% Run the built binary.  process_create won't accept
+        %% `path('./test_bypass')` (relative) — pass the absolute
+        %% path directly so it skips the PATH lookup.
+        directory_file_path(CppDir, 'test_bypass', BinAbs),
+        setup_call_cleanup(
+            process_create(BinAbs, [],
+                [cwd(CppDir),
+                 stdout(pipe(ROut)), stderr(pipe(RErr)),
+                 process(RPid)]),
+            (   read_string(ROut, _, ROutText),
+                read_string(RErr, _, RErrText),
+                process_wait(RPid, exit(ExitCode)),
+                atomic_list_concat([ROutText, '\n', RErrText], Output)
+            ),
+            (catch(close(ROut), _, true), catch(close(RErr), _, true)))
+    ).
+
+test_cpp_bypass :-
+    Test = 'C++ WAM: bypass_demo succeeds',
+    (   \+ cpp_available
+    ->  skip(Test, 'g++ not on PATH')
+    ;   write_cpp_project(Dir),
+        run_cpp_build_and_exec(Dir, RunEC, RunOut),
+        (   sub_string(RunOut, _, _, _, "BYPASS_DEMO_RESULT=true"), RunEC == 0
+        ->  pass(Test),
+            maybe_clean(Dir)
+        ;   format('---- C++ build/run output ----~n~w~n----~n', [RunOut]),
+            fail_test(Test,
+                format_atom('expected BYPASS_DEMO_RESULT=true; exit=~w', [RunEC]))
+        )
+    ).
+
+%% ========================================================================
+%% Other targets — stubs.  Step 5 of the rollout: only Scala and C++
+%% have a working SwitchOnTerm where the indexing bypass could
+%% manifest (Python's switch_on_term parsing is broken; Haskell, Go,
+%% and R don't implement type-based dispatch at all — see comments
+%% above).  C++ is ported here; Scala is ported (codegen + runtime
+%% template) but its end-to-end test requires sbt/scala, which isn't
+%% available in this environment, so the subtest is skipped.
 %% ========================================================================
 
 test_haskell_bypass :-
-    skip('Haskell WAM: bypass_demo succeeds', 'TODO: pending step 5 (bulk port)').
+    skip('Haskell WAM: bypass_demo succeeds',
+         'no switch_on_term impl — bypass cannot fire').
 
 test_go_bypass :-
-    skip('Go WAM: bypass_demo succeeds', 'TODO: pending step 5 (bulk port)').
+    skip('Go WAM: bypass_demo succeeds',
+         'no switch_on_term impl — bypass cannot fire').
 
 test_r_bypass :-
-    skip('R WAM: bypass_demo succeeds', 'TODO: pending step 5 (bulk port)').
+    skip('R WAM: bypass_demo succeeds',
+         'switch_on_term is a stub — bypass cannot fire').
 
 test_scala_bypass :-
-    skip('Scala WAM: bypass_demo succeeds', 'TODO: pending step 5 (bulk port)').
+    skip('Scala WAM: bypass_demo succeeds',
+         'try/retry/trust ported; sbt/scala not available for runtime smoke').
 
 %% ========================================================================
 %% Runner
@@ -394,6 +492,7 @@ run_tests :-
     Tests = [
         test_fsharp_bypass,
         test_python_bypass,
+        test_cpp_bypass,
         test_haskell_bypass,
         test_go_bypass,
         test_r_bypass,
