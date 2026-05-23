@@ -281,8 +281,8 @@ is_match_instr_fs(get_integer(_, _)).
 is_match_instr_fs(unify_variable(_)).
 is_match_instr_fs(unify_value(_)).
 is_match_instr_fs(unify_constant(_)).
-is_match_instr_fs(put_structure(_, _)).
-is_match_instr_fs(put_list(_)).
+% PutStructure / PutList moved to inline let-binding emitters; no longer
+% match-emitting.
 is_match_instr_fs(set_variable(_)).
 is_match_instr_fs(set_value(_)).
 is_match_instr_fs(set_constant(_)).
@@ -610,17 +610,44 @@ emit_one_fs(get_variable(XnStr, AiStr), _, SV, SVout, I, _FP) :-
            [I, SVout, Xn, SV, Ai, SV, SV]).
 
 % GetConstant C Ai — can fail, delegate to step
-emit_one_fs(get_constant(CStr, AiStr), PC, SV, SVout, I, _FP) :-
+% GetConstant C Ai — inline: deref reg, succeed on match (with []/VList []
+% equivalence) or bind-when-Unbound, else fail.  Same logic as the
+% interpreter's step branch.
+emit_one_fs(get_constant(CStr, AiStr), _PC, SV, SVout, I, _FP) :-
     val_fs(CStr, FC), reg_to_int_fs(AiStr, Ai),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (GetConstant (~w, ~w)) with~n", [I, SV, PC, FC, Ai]),
+    format("~wmatch (match getReg ~w ~w with~n", [I, Ai, SV]),
+    format("~w       | Some v when v = (~w) -> Some ~w~n", [I, FC, SV]),
+    format("~w       | Some (VList []) when (~w) = Atom \"[]\" -> Some ~w~n", [I, FC, SV]),
+    format("~w       | Some (Unbound vid) ->~n", [I]),
+    format("~w           let r = Array.copy ~w.WsRegs~n", [I, SV]),
+    format("~w           r.[~w] <- (~w)~n", [I, Ai, FC]),
+    format("~w           Some { ~w with~n", [I, SV]),
+    format("~w                    WsRegs = r~n", [I]),
+    format("~w                    WsBindings = Map.add vid (~w) ~w.WsBindings~n", [I, FC, SV]),
+    format("~w                    WsTrail = { TrailVarId = vid; TrailOldVal = Map.tryFind vid ~w.WsBindings } :: ~w.WsTrail~n",
+           [I, SV, SV]),
+    format("~w                    WsTrailLen = ~w.WsTrailLen + 1 }~n", [I, SV]),
+    format("~w       | _ -> None) with~n", [I]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
-% GetValue Xn Ai — can fail (unification), delegate to step
-emit_one_fs(get_value(XnStr, AiStr), PC, SV, SVout, I, _FP) :-
+% GetValue Xn Ai — inline: deref both regs, equal -> succeed, Unbound ai ->
+% bind to xn's value, else fail.
+emit_one_fs(get_value(XnStr, AiStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(XnStr, Xn), reg_to_int_fs(AiStr, Ai),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (GetValue (~w, ~w)) with~n", [I, SV, PC, Xn, Ai]),
+    format("~wmatch (match getReg ~w ~w, getReg ~w ~w with~n", [I, Ai, SV, Xn, SV]),
+    format("~w       | Some a, Some x when a = x -> Some ~w~n", [I, SV]),
+    format("~w       | Some (Unbound vid), Some x ->~n", [I]),
+    format("~w           let r = Array.copy ~w.WsRegs~n", [I, SV]),
+    format("~w           r.[~w] <- x~n", [I, Ai]),
+    format("~w           Some { ~w with~n", [I, SV]),
+    format("~w                    WsRegs = r~n", [I]),
+    format("~w                    WsBindings = Map.add vid x ~w.WsBindings~n", [I, SV]),
+    format("~w                    WsTrail = { TrailVarId = vid; TrailOldVal = Map.tryFind vid ~w.WsBindings } :: ~w.WsTrail~n",
+           [I, SV, SV]),
+    format("~w                    WsTrailLen = ~w.WsTrailLen + 1 }~n", [I, SV]),
+    format("~w       | _ -> None) with~n", [I]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
 % GetStructure F Ai — inline read-mode / write-mode dispatch.  85
@@ -688,11 +715,23 @@ emit_one_fs(get_structure(FnStr, ArityStr, AiStr), PC, SV, SVout, I, _FP) :-
            [I, SV, PC, EscFnStr, Arity, Ai]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
-% GetList Ai — can fail, delegate to step
-emit_one_fs(get_list(AiStr), PC, SV, SVout, I, _FP) :-
+% GetList Ai — inline 3-case dispatch (VList cons, Str "[|]" cons, Unbound).
+% Read-mode for the first two (sets ReadArgs builder), write-mode for the
+% Unbound case (sets BuildList builder).  pushBuilderIfActive preserves any
+% outer build context the same way step does.
+emit_one_fs(get_list(AiStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(AiStr, Ai),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (GetList ~w) with~n", [I, SV, PC, Ai]),
+    format("~wmatch (let push = pushBuilderIfActive ~w in~n", [I, SV]),
+    format("~w       match getReg ~w ~w with~n", [I, Ai, SV]),
+    format("~w       | Some (VList (h :: t)) ->~n", [I]),
+    format("~w           let tailVal = if List.isEmpty t then Atom \"[]\" else VList t~n", [I]),
+    format("~w           Some { push with WsBuilder = Some (ReadArgs [h; tailVal]) }~n", [I]),
+    format("~w       | Some (Str (\"[|]\", [h; t])) ->~n", [I]),
+    format("~w           Some { push with WsBuilder = Some (ReadArgs [h; t]) }~n", [I]),
+    format("~w       | Some (Unbound _) ->~n", [I]),
+    format("~w           Some { push with WsBuilder = Some (BuildList (~w, [])) }~n", [I, Ai]),
+    format("~w       | _ -> None) with~n", [I]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
 % GetNil / GetInteger are Rust-lowered aliases for GetConstant.
@@ -776,37 +815,53 @@ emit_one_fs(put_constant(CStr, AiStr), _, SV, SVout, I, _FP) :-
            [I, SVout, Ai, FC, SV]).
 
 % PutStructure, PutList, SetVariable, SetValue, SetConstant — delegate to step
-emit_one_fs(put_structure(FnStr, AiStr), PC, SV, SVout, I, _FP) :-
+% PutStructure / PutList — always-succeed let-bindings.  Both start a fresh
+% build context; pushBuilderIfActive preserves any outer one.  Removed from
+% is_match_instr_fs/1 below since they no longer emit match arms.
+emit_one_fs(put_structure(FnStr, AiStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(AiStr, Ai),
     parse_functor_fs(FnStr, FuncName, Arity),
     escape_dq_fs(FuncName, EscFuncName),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (PutStructure (\"~w\", ~w, ~w)) with~n",
-           [I, SV, PC, EscFuncName, Ai, Arity]),
-    format("~w| Some ~w ->~n", [I, SVout]).
+    format("~wlet push_~w = pushBuilderIfActive ~w~n", [I, SVout, SV]),
+    format("~wlet ~w = { push_~w with WsBuilder = Some (BuildStruct (\"~w\", ~w, ~w, [])) }~n",
+           [I, SVout, SVout, EscFuncName, Ai, Arity]).
 
-emit_one_fs(put_list(AiStr), PC, SV, SVout, I, _FP) :-
+emit_one_fs(put_list(AiStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(AiStr, Ai),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (PutList ~w) with~n", [I, SV, PC, Ai]),
-    format("~w| Some ~w ->~n", [I, SVout]).
+    format("~wlet push_~w = pushBuilderIfActive ~w~n", [I, SVout, SV]),
+    format("~wlet ~w = { push_~w with WsBuilder = Some (BuildList (~w, [])) }~n",
+           [I, SVout, SVout, Ai]).
 
-emit_one_fs(set_variable(XnStr), PC, SV, SVout, I, _FP) :-
+% SetVariable Xn — inline: create fresh var, store in Xn, append to active
+% builder.  Always reaches addToBuilder (no None short-circuit), but
+% addToBuilder itself can return None when no builder is active, so the
+% emit stays match-emitting.
+emit_one_fs(set_variable(XnStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(XnStr, Xn),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (SetVariable ~w) with~n", [I, SV, PC, Xn]),
+    format("~wmatch (let vid = ~w.WsVarCounter in~n", [I, SV]),
+    format("~w       let var = Unbound vid in~n", [I]),
+    format("~w       let sV = putReg ~w var { ~w with WsVarCounter = ~w.WsVarCounter + 1 } in~n",
+           [I, Xn, SV, SV]),
+    format("~w       addToBuilder var sV) with~n", [I]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
-emit_one_fs(set_value(XnStr), PC, SV, SVout, I, _FP) :-
+% SetValue Xn — inline: read Xn (failwith on unbound), append to builder.
+emit_one_fs(set_value(XnStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(XnStr, Xn),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (SetValue ~w) with~n", [I, SV, PC, Xn]),
+    format("~wmatch (match getReg ~w ~w with~n", [I, Xn, SV]),
+    format("~w       | Some v -> addToBuilder v ~w~n", [I, SV]),
+    format("~w       | None   -> None) with~n", [I]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
-emit_one_fs(set_constant(CStr), PC, SV, SVout, I, _FP) :-
+% SetConstant C — inline: append constant to builder.
+emit_one_fs(set_constant(CStr), _PC, SV, SVout, I, _FP) :-
     val_fs(CStr, FC),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (SetConstant (~w)) with~n", [I, SV, PC, FC]),
+    format("~wmatch addToBuilder (~w) ~w with~n", [I, FC, SV]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
 % Call — use callForeign for known foreign preds, dispatchCall otherwise
