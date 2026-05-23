@@ -1195,16 +1195,33 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
                       V0, HasEnv, Vf, Code)
     ;   Rest == []
     ->  % Last goal: execute (Tail Call Optimization)
-        (   %% Term-construction builtins (=../2 and functor/3) compose-mode
-            %% lowering routes through compile_goal_execute which dispatches
-            %% to emit_put_structure_dyn_lowering when the binding-state
-            %% preconditions hold. We add the deallocate here (HasEnv == yes
-            %% case) so the resulting tail-call stays TCO-correct.
+        (   %% Term-construction builtins (=../2 and functor/3) only
+            %% take the `deallocate-before-execute` fast path when the
+            %% compose-mode lowering (emit_put_structure_dyn_lowering)
+            %% actually fires — that path reads from input registers
+            %% rather than Y registers, so the env frame can be popped
+            %% beforehand without consequence.  When the binding-state
+            %% preconditions don''t hold (e.g. `Term =.. [Name|Args]`
+            %% with Args runtime-variable, as in parse_atom_head''s
+            %% functor-call clause), compile_goal_execute falls through
+            %% to the generic builtin path which emits PutList +
+            %% SetValue Y_n reads inline.  Emitting Deallocate before
+            %% that body is the codegen bug behind issue #2400''s
+            %% `p(a)` parser regression: the Y reg reads see a stale
+            %% env frame and the =.. compose builds garbage.
+            %%
+            %% Fix: route the fast path only when the special lowering
+            %% will actually apply.  Otherwise fall through to the
+            %% generic builtin-with-env handling below, which emits
+            %% PutCode + BuiltinCall + Deallocate + Proceed in the
+            %% right order.
             is_term_construction_goal(Goal),
-            HasEnv == yes
+            HasEnv == yes,
+            term_construction_uses_special_lowering(Goal)
         ->  compile_goal_execute(Goal, V0, Vf, ExecCode),
             format(string(Code), "    deallocate~n~w", [ExecCode])
-        ;   is_term_construction_goal(Goal)
+        ;   is_term_construction_goal(Goal),
+            term_construction_uses_special_lowering(Goal)
         ->  compile_goal_execute(Goal, V0, Vf, Code)
         ;   %% Visited-set lowering (Layer 2.5) routes through
             %% compile_goal_execute where the rewrite clause fires.
@@ -2502,6 +2519,38 @@ is_term_construction_goal(Goal) :-
     ;   Goal = arg(_, _, _)
     ;   Goal = (\+ member(_, _))
     ).
+
+%% term_construction_uses_special_lowering(+Goal)
+%
+%   True iff the term-construction goal will actually take the
+%   compose-mode lowering path in compile_goal_execute /
+%   compile_goal_call (emit_put_structure_dyn_lowering).  When this
+%   holds, the body reads from input registers and Deallocate may
+%   safely precede it.  When it fails, compile_goal_execute falls
+%   through to the generic builtin path which emits Y-register reads
+%   inline, so Deallocate must follow them (otherwise Y reads land
+%   on a popped env frame — issue #2400 follow-up).
+term_construction_uses_special_lowering(T =.. L) :-
+    parse_univ_list_pattern(L, NameVar, _FixedArgs),
+    catch(
+        ( current_clause_binding_env(BeforeEnv),
+          binding_state_analysis:binding_state_at_var(BeforeEnv, T, unbound),
+          binding_state_analysis:binding_state_at_var(BeforeEnv, NameVar, bound)
+        ),
+        _, fail),
+    !.
+term_construction_uses_special_lowering(functor(T, NameVar, Arity)) :-
+    integer(Arity), Arity >= 0,
+    var(T), var(NameVar),
+    catch(
+        ( current_clause_binding_env(BeforeEnv),
+          binding_state_analysis:binding_state_at_var(BeforeEnv, T, unbound),
+          binding_state_analysis:binding_state_at_var(BeforeEnv, NameVar, bound)
+        ),
+        _, fail),
+    !.
+term_construction_uses_special_lowering(\+ member(_, _)).
+term_construction_uses_special_lowering(arg(_, _, _)).
 
 %% emit_not_member_list_lowering(+X, +L, +V0, -Vf, -Code)
 %

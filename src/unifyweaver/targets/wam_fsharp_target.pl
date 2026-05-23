@@ -589,6 +589,14 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         let valOpt = getReg ai s
         match valOpt with
         | Some v when v = c -> Some { s with WsPC = s.WsPC + 1 }
+        // Empty-list equivalence (issue #2400 continuation).
+        // `Atom "[]"` and `VList []` both denote Prolog''s empty
+        // list.  Two materialization paths produce them — `Atom`
+        // when GetNil / a literal `[]` constant was emitted, `VList
+        // []` when an addToBuilder run collapsed a `[H|[]]` to a
+        // singleton then materialized as the empty list at the
+        // tail.  GetConstant Atom "[]" must succeed against either.
+        | Some (VList []) when c = Atom "[]" -> Some { s with WsPC = s.WsPC + 1 }
         | Some (Unbound vid) ->
             let r = Array.copy s.WsRegs
             r.[ai] <- c
@@ -1186,6 +1194,16 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | Some (Str (fn, args)) ->
             let key = sprintf "%s/%d" fn (List.length args)
             match binarySearchStr structTable key with
+            | Some pc -> Some { s with WsPC = pc }
+            | None    -> Some { s with WsPC = s.WsPC + 1 }
+        // `VList []` IS the empty list — same as Atom "[]" — so it
+        // should look up "[]" in constTable, NOT jump to the cons-cell
+        // list chain.  Issue #2400 follow-up: without this, parse_op_loop''s
+        // base case `parse_op_loop([], ...)` was bypassed for A1=VList []
+        // and routed to the [H|T] chain whose head GetList read [] as
+        // an empty-list-typed cons (no head) and failed.
+        | Some (VList []) ->
+            match binarySearchStr constTable "[]" with
             | Some pc -> Some { s with WsPC = pc }
             | None    -> Some { s with WsPC = s.WsPC + 1 }
         | Some (VList _) when listPc > 0 ->
@@ -1984,10 +2002,31 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         let t = getReg 1 s
         match t with
         | Some (Unbound vid) ->
-            // Compose mode: read proper list from A2.
+            // Compose mode: read a proper list from A2.
+            // The runtime stores proper lists in two equivalent
+            // shapes: `VList [x1; ...; xn]` (compact) and `Str ("[|]",
+            // [head; tail])` cons cells (when the tail had to stay
+            // symbolic at materialization time — e.g. came back from
+            // parse_args bound to a head/tail var pair).  Both are
+            // valid Prolog lists; flatten Str-cons into the same
+            // sequence VList would have before destructuring.
+            let rec flattenCons (v: Value) : Value list option =
+                match derefVar s.WsBindings v with
+                | VList xs               -> Some xs
+                | Atom "[]"              -> Some []
+                | Str ("[|]", [h; tail]) ->
+                    match flattenCons tail with
+                    | Some rest -> Some (derefVar s.WsBindings h :: rest)
+                    | None      -> None
+                | _ -> None
             let l = getReg 2 s
-            match l with
-            | Some (VList items) ->
+            let itemsOpt =
+                match l with
+                | Some lv -> flattenCons lv
+                | None    -> None
+            match itemsOpt with
+            | None -> None
+            | Some items ->
                 let mBuilt =
                     match items with
                     | []                   -> None
@@ -2005,7 +2044,6 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                              WsBindings = Map.add vid built s.WsBindings
                              WsTrail    = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
                              WsTrailLen = s.WsTrailLen + 1 }
-            | _ -> None
         | Some tVal ->
             // Decompose mode: build list from T.
             let mList =
@@ -2218,22 +2256,68 @@ and updateNearestAggFrame (rpc: int) (cps: ChoicePoint list) : ChoicePoint list 
         | Some af -> { cp with CpAggFrame = Some { af with AggReturnPC = rpc } } :: rest
         | None    -> cp :: updateNearestAggFrame rpc rest
 
-and unifyVal (a: Value) (b: Value) (s: WamState) : WamState option =
+// Recursive structural unification — does NOT touch WsPC.  Returns
+// the updated state (with new bindings/trail entries) or None on
+// mismatch.  Handles the VList / Str cons-cell equivalence:
+// `VList [h1; ...; hn]` represents `[h1, ..., hn]` with `[]` tail;
+// `Str ("[|]", [h; t])` represents `[h | t]` where t may be a
+// variable, another structure, or another VList.  Both encodings
+// flow out of GetList / addToBuilder depending on which path
+// materialized them, so a unifier that only does structural F#
+// equality (==) misses the equivalence — that''s exactly the bug
+// that broke parse_args'' `Tokens1 = [tk_rparen|RestOut]` check on
+// the F# parser regression for `p(a)` / `p(a,b)`.
+and unifyTerms (a: Value) (b: Value) (s: WamState) : WamState option =
+    let a = derefVar s.WsBindings a
+    let b = derefVar s.WsBindings b
+    let bindUnbound vid v st =
+        { st with
+            WsBindings = Map.add vid v st.WsBindings
+            WsTrail    = { TrailVarId = vid; TrailOldVal = Map.tryFind vid st.WsBindings } :: st.WsTrail
+            WsTrailLen = st.WsTrailLen + 1 }
     match a, b with
-    | Unbound vid, v ->
-        Some { s with
-                 WsPC      = s.WsPC + 1
-                 WsBindings= Map.add vid v s.WsBindings
-                 WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
-                 WsTrailLen= s.WsTrailLen + 1 }
-    | v, Unbound vid ->
-        Some { s with
-                 WsPC      = s.WsPC + 1
-                 WsBindings= Map.add vid v s.WsBindings
-                 WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
-                 WsTrailLen= s.WsTrailLen + 1 }
-    | x, y when x = y -> Some { s with WsPC = s.WsPC + 1 }
-    | _                -> None'.
+    | Unbound vid, v -> Some (bindUnbound vid v s)
+    | v, Unbound vid -> Some (bindUnbound vid v s)
+    // [] equivalences.
+    | VList [], Atom "[]" -> Some s
+    | Atom "[]", VList [] -> Some s
+    // List ~ list element-wise.
+    | VList (h1 :: t1), VList (h2 :: t2) ->
+        match unifyTerms h1 h2 s with
+        | None    -> None
+        | Some s1 -> unifyTerms (VList t1) (VList t2) s1
+    // List ~ cons-cell.  VList [h; ...] ≡ Str ("[|]", [h; VList [...]]).
+    | VList (h :: t), Str ("[|]", [hb; tb]) ->
+        match unifyTerms h hb s with
+        | None    -> None
+        | Some s1 -> unifyTerms (VList t) tb s1
+    | Str ("[|]", [ha; ta]), VList (h :: t) ->
+        match unifyTerms ha h s with
+        | None    -> None
+        | Some s1 -> unifyTerms ta (VList t) s1
+    // Structural recurse on same-functor compounds.
+    | Str (f1, args1), Str (f2, args2)
+        when f1 = f2 && List.length args1 = List.length args2 ->
+        let rec go xs ys st =
+            match xs, ys with
+            | [], [] -> Some st
+            | x :: xt, y :: yt ->
+                match unifyTerms x y st with
+                | None     -> None
+                | Some st1 -> go xt yt st1
+            | _ -> None
+        go args1 args2 s
+    | x, y when x = y -> Some s
+    | _               -> None
+
+and unifyVal (a: Value) (b: Value) (s: WamState) : WamState option =
+    // Public unification entry — performs the recursive unification
+    // via unifyTerms (which is PC-agnostic) and advances WsPC by 1
+    // on success so the caller (typically the =/2 / unify_value
+    // step handler) doesn''t need to.
+    match unifyTerms a b s with
+    | None    -> None
+    | Some sN -> Some { sN with WsPC = sN.WsPC + 1 }'.
 
 % ============================================================================
 % PHASE 4: Run Loop
