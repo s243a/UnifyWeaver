@@ -385,7 +385,11 @@ and backtrack (s: WamState) : WamState option =
         // surfaced this.
         Some { s with
                  WsPC       = cp.CpNextPC
-                 WsRegs     = cp.CpRegs
+                 // Array.copy: cp stays on the stack across backtracks (so
+                 // RetryMeElse can modify it), and putReg now mutates
+                 // WsRegs in place.  Without copying here, in-place writes
+                 // after a restore would corrupt the CP''s saved registers.
+                 WsRegs     = Array.copy cp.CpRegs
                  WsStack    = cp.CpStack
                  WsCP       = cp.CpCP
                  WsTrail    = List.skip diff s.WsTrail
@@ -593,7 +597,9 @@ and finalizeAggregate (returnPC: int) (s: WamState) : WamState option =
                         , Map.add vid result cp.CpBindings
                         , { TrailVarId = vid; TrailOldVal = Map.tryFind vid cp.CpBindings } :: restoredTrail
                         , cp.CpTrailLen + 1 )
-                    | _ -> (cp.CpRegs, cp.CpBindings, restoredTrail, cp.CpTrailLen)
+                    // Array.copy: putReg now mutates WsRegs in place, so the
+                    // finalize''d state must not alias cp.CpRegs.
+                    | _ -> (Array.copy cp.CpRegs, cp.CpBindings, restoredTrail, cp.CpTrailLen)
                 Some { s with
                          WsPC       = returnPC
                          WsRegs     = finalRegs
