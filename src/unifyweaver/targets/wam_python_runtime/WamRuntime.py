@@ -133,6 +133,7 @@ class WamState:
         self.catcher_frames: List[CatcherFrame] = []
         self.temp_y_regs: Optional[List] = None
         self.input_pushback: List[str] = []
+        self.stream_pushback: Dict[int, List[str]] = {}
 
     def fresh_var(self) -> Var:
         v = Var(ref=[None], id=self._var_counter)
@@ -1374,44 +1375,132 @@ def _peek_default_char(state: WamState) -> str:
     return ch
 
 
+def _stream_pushback_key(stream: Any) -> int:
+    return id(_unwrap_stream(stream))
+
+
+def _read_handle_char(state: WamState, stream: Any) -> Optional[str]:
+    raw = _unwrap_stream(stream)
+    if raw is None or not hasattr(raw, 'read'):
+        return None
+    key = id(raw)
+    chars = state.stream_pushback.get(key)
+    if chars:
+        return chars.pop()
+    return _read_stream_char(raw)
+
+
+def _peek_handle_char(state: WamState, stream: Any) -> Optional[str]:
+    ch = _read_handle_char(state, stream)
+    if ch is not None and ch != '':
+        state.stream_pushback.setdefault(_stream_pushback_key(stream), []).append(ch)
+    return ch
+
+
+def _char_atom_value(ch: str) -> Atom:
+    return make_atom('end_of_file') if ch == '' else make_atom(ch)
+
+
+def _code_value(ch: str) -> Int:
+    return Int(-1) if ch == '' else Int(ord(ch))
+
+
+def _output_atom_char_text(value: Term, state: WamState) -> Optional[str]:
+    value = deref(value, state)
+    if not isinstance(value, Atom):
+        return None
+    text = _runtime_atom_text(value.name)
+    return text if len(text) == 1 else None
+
+
+def _output_code_text(value: Term, state: WamState) -> Optional[str]:
+    value = deref(value, state)
+    if not isinstance(value, Int) or value.n < 0:
+        return None
+    try:
+        return chr(value.n)
+    except (OverflowError, ValueError):
+        return None
+
+
+def _write_stream_char(stream: Any, text: str) -> bool:
+    stream = _unwrap_stream(stream)
+    if stream is None or not hasattr(stream, 'write'):
+        return False
+    try:
+        stream.write(text)
+    except OSError:
+        return False
+    return True
+
+
 def _execute_get_char(state: WamState) -> bool:
     ch = _read_default_char(state)
-    value = make_atom('end_of_file') if ch == '' else make_atom(ch)
-    return unify(get_reg(state, 1), value, state)
+    return unify(get_reg(state, 1), _char_atom_value(ch), state)
 
 
 def _execute_peek_char(state: WamState) -> bool:
     ch = _peek_default_char(state)
-    value = make_atom('end_of_file') if ch == '' else make_atom(ch)
-    return unify(get_reg(state, 1), value, state)
+    return unify(get_reg(state, 1), _char_atom_value(ch), state)
 
 
 def _execute_get_code(state: WamState) -> bool:
     ch = _read_default_char(state)
-    value = Int(-1) if ch == '' else Int(ord(ch))
-    return unify(get_reg(state, 1), value, state)
+    return unify(get_reg(state, 1), _code_value(ch), state)
+
+
+def _execute_get_char_stream(state: WamState) -> bool:
+    stream = deref(get_reg(state, 1), state)
+    ch = _read_handle_char(state, stream)
+    if ch is None:
+        return False
+    return unify(get_reg(state, 2), _char_atom_value(ch), state)
+
+
+def _execute_peek_char_stream(state: WamState) -> bool:
+    stream = deref(get_reg(state, 1), state)
+    ch = _peek_handle_char(state, stream)
+    if ch is None:
+        return False
+    return unify(get_reg(state, 2), _char_atom_value(ch), state)
+
+
+def _execute_get_code_stream(state: WamState) -> bool:
+    stream = deref(get_reg(state, 1), state)
+    ch = _read_handle_char(state, stream)
+    if ch is None:
+        return False
+    return unify(get_reg(state, 2), _code_value(ch), state)
 
 
 def _execute_put_char(state: WamState) -> bool:
-    value = deref(get_reg(state, 1), state)
-    if not isinstance(value, Atom):
-        return False
-    text = _runtime_atom_text(value.name)
-    if len(text) != 1:
+    text = _output_atom_char_text(get_reg(state, 1), state)
+    if text is None:
         return False
     sys.stdout.write(text)
     return True
 
 
 def _execute_put_code(state: WamState) -> bool:
-    value = deref(get_reg(state, 1), state)
-    if not isinstance(value, Int) or value.n < 0:
+    text = _output_code_text(get_reg(state, 1), state)
+    if text is None:
         return False
-    try:
-        sys.stdout.write(chr(value.n))
-    except (OverflowError, ValueError):
-        return False
+    sys.stdout.write(text)
     return True
+
+
+def _execute_put_char_stream(state: WamState) -> bool:
+    text = _output_atom_char_text(get_reg(state, 2), state)
+    if text is None:
+        return False
+    return _write_stream_char(deref(get_reg(state, 1), state), text)
+
+
+def _execute_put_code_stream(state: WamState) -> bool:
+    text = _output_code_text(get_reg(state, 2), state)
+    if text is None:
+        return False
+    return _write_stream_char(deref(get_reg(state, 1), state), text)
 
 
 def _execute_read_from_stream(state: WamState, stream: Any, target: Term,
@@ -1441,11 +1530,16 @@ def _execute_read_from_stream(state: WamState, stream: Any, target: Term,
 
 
 def _execute_read(state: WamState, syntax_default: str = 'fail') -> bool:
+    stream = deref(get_reg(state, 1), state)
+    raw = _unwrap_stream(stream)
+    if raw is None or not hasattr(raw, 'read'):
+        return False
     return _execute_read_from_stream(
         state,
-        deref(get_reg(state, 1), state),
+        stream,
         get_reg(state, 2),
         syntax_default,
+        lambda: _read_handle_char(state, stream) or '',
     )
 
 
@@ -1653,14 +1747,24 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         return _execute_close(state)
     if builtin in ('get_char/1', 'get_char') and arity == 1:
         return _execute_get_char(state)
+    if builtin in ('get_char/2',) and arity == 2:
+        return _execute_get_char_stream(state)
     if builtin in ('peek_char/1', 'peek_char') and arity == 1:
         return _execute_peek_char(state)
+    if builtin in ('peek_char/2',) and arity == 2:
+        return _execute_peek_char_stream(state)
     if builtin in ('get_code/1', 'get_code') and arity == 1:
         return _execute_get_code(state)
+    if builtin in ('get_code/2',) and arity == 2:
+        return _execute_get_code_stream(state)
     if builtin in ('put_char/1', 'put_char') and arity == 1:
         return _execute_put_char(state)
+    if builtin in ('put_char/2',) and arity == 2:
+        return _execute_put_char_stream(state)
     if builtin in ('put_code/1', 'put_code') and arity == 1:
         return _execute_put_code(state)
+    if builtin in ('put_code/2',) and arity == 2:
+        return _execute_put_code_stream(state)
     if builtin in ('read/1', 'read_lax/1', 'read_term/1', 'read_term_lax/1',
                    'read', 'read_lax', 'read_term', 'read_term_lax') and arity == 1:
         return _execute_read_default_stream(state, 'fail')

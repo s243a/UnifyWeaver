@@ -916,6 +916,49 @@ test(runtime_char_output_writes_to_stdout) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+test(runtime_stream_char_io_reads_and_writes_files) :-
+	setup_call_cleanup(
+		(   retractall(user:py_stream_char_io_demo),
+			user:python_parser_tmp_dir('tmp_wam_python_stream_char_io', ProjectDir),
+			atomic_list_concat([ProjectDir, '/chars_in.txt'], InFile),
+			atomic_list_concat([ProjectDir, '/chars_out.txt'], OutFile),
+			assertz((user:py_stream_char_io_demo :-
+				open(InFile, read, In),
+				peek_char(In, C0), C0 = a,
+				get_char(In, C1), C1 = a,
+				get_code(In, Code), Code = 98,
+				peek_char(In, E0), E0 = end_of_file,
+				get_char(In, E1), E1 = end_of_file,
+				get_code(In, ECode), ECode = -1,
+				close(In),
+				open(OutFile, write, Out),
+				put_char(Out, x),
+				put_code(Out, 121),
+				put_code(Out, 10),
+				close(Out)))
+		),
+		(   setup_call_cleanup(open(InFile, write, Input),
+				write(Input, ab),
+				close(Input)),
+			wam_python_target:write_wam_python_project([user:py_stream_char_io_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import pathlib",
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"ok = wr.run_wam(code, labels, 'py_stream_char_io_demo/0', state)",
+				"print(ok)",
+				"print(repr(pathlib.Path('chars_out.txt').read_text()))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True")),
+			once(sub_string(Output, _, _, _, "'xy\\n'"))
+		),
+		(   retractall(user:py_stream_char_io_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_parser_compiled_runs_reverse_term_to_atom) :-
 	setup_call_cleanup(
 		(   retractall(user:py_term_to_atom_demo),
@@ -1419,7 +1462,12 @@ test(static_runtime_has_lua_baseline_builtins, [nondet]) :-
 		"write/1",
 		"display/1",
 		"put_char/1",
+		"put_char/2",
 		"put_code/1",
+		"put_code/2",
+		"get_char/2",
+		"get_code/2",
+		"peek_char/2",
 		"nl/0"
 	]), sub_string(Content, _, _, _, Needle)).
 
