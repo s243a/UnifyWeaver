@@ -271,7 +271,6 @@ take_to_proceed_pc_fs([H|T], [H|R]) :- take_to_proceed_pc_fs(T, R).
 %  This drives the indentation decision in emit_instrs_fs for the
 %  last-instruction case (body = "Some SVout") and intermediate case
 %  (body = the rest of the chain at IndInner).
-is_match_instr_fs(deallocate).
 is_match_instr_fs(get_constant(_, _)).
 is_match_instr_fs(get_value(_, _)).
 is_match_instr_fs(get_structure(_, _)).
@@ -289,6 +288,9 @@ is_match_instr_fs(set_value(_)).
 is_match_instr_fs(set_constant(_)).
 is_match_instr_fs(call(_, _)).
 is_match_instr_fs(call_foreign(_, _)).
+% Cut (!/0) is now an always-succeed let-binding (inlined below).
+% Every other builtin_call still delegates to step as a match arm.
+is_match_instr_fs(builtin_call("!/0", _)) :- !, fail.
 is_match_instr_fs(builtin_call(_, _)).
 is_match_instr_fs(cut_ite).
 is_match_instr_fs(jump(_)).
@@ -586,11 +588,16 @@ emit_one_fs(allocate, _, SV, SVout, I, _FP) :-
     format("~w               WsStack = { EfSavedCP = ~w.WsCP; EfYRegs = Map.empty; EfSavedCutBar = ~w.WsCutBar } :: ~w.WsStack~n", [I, SV, SV, SV]),
     format("~w               WsCutBar = ~w.WsCPsLen }~n", [I, SV]).
 
-% Deallocate — can fail on empty stack, delegate to step
-emit_one_fs(deallocate, PC, SV, SVout, I, _FP) :-
+% Deallocate — inline pop of env frame.  Empty stack is a hard programming
+% error (compiler bug, not a runtime failure) so failwith rather than None.
+% Switched from match-emitting to let-binding: removed deallocate from
+% is_match_instr_fs/1 below.
+emit_one_fs(deallocate, _PC, SV, SVout, I, _FP) :-
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } Deallocate with~n", [I, SV, PC]),
-    format("~w| Some ~w ->~n", [I, SVout]).
+    format("~wlet ~w =~n", [I, SVout]),
+    format("~w    match ~w.WsStack with~n", [I, SV]),
+    format("~w    | ef :: rest -> { ~w with WsStack = rest; WsCP = ef.EfSavedCP; WsCutBar = ef.EfSavedCutBar }~n", [I, SV]),
+    format("~w    | [] -> failwith \"Deallocate: empty WsStack\"~n", [I]).
 
 % GetVariable Xn Ai — always succeeds, inline register copy
 emit_one_fs(get_variable(XnStr, AiStr), _, SV, SVout, I, _FP) :-
@@ -616,16 +623,57 @@ emit_one_fs(get_value(XnStr, AiStr), PC, SV, SVout, I, _FP) :-
     format("~wmatch step ctx { ~w with WsPC = ~w } (GetValue (~w, ~w)) with~n", [I, SV, PC, Xn, Ai]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
-% GetStructure F Ai — can fail, delegate to step
-% Accept both canonical lowered form get_structure("f/2", "A1") and
-% legacy split-arity form get_structure("f", "2", "A1").
-emit_one_fs(get_structure(FStr, AiStr), PC, SV, SVout, I, _FP) :-
+% GetStructure F Ai — inline read-mode / write-mode dispatch.  85
+% occurrences in the parser smoke (the biggest single source of step
+% delegations after Unify*), so worth inlining.  Mirrors step's
+% GetStructure cases:
+%   (1) reg holds Str matching fn/arity -> read mode (ReadArgs)
+%   (2) reg holds VList cons cell AND fn = "[|]"/2 -> read mode (cons-as-list)
+%   (3) reg holds Unbound, arity = 0 -> bind to Str(fn, [])
+%   (4) reg holds Unbound, arity > 0 -> write mode (BuildStruct)
+%   (5) otherwise -> fail (None)
+% Cons-cell branch (2) is only emitted when the static fn = "[|]" and
+% arity = 2; otherwise it'd be unreachable dead code (compiler warning).
+emit_one_fs(get_structure(FStr, AiStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(AiStr, Ai),
     parse_functor_fs(FStr, FuncName, Arity),
     escape_dq_fs(FuncName, EscFuncName),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (GetStructure (\"~w\", ~w, ~w)) with~n",
-           [I, SV, PC, EscFuncName, Arity, Ai]),
+    format("~wmatch (match getReg ~w ~w with~n", [I, Ai, SV]),
+    %% (1) Same-functor Str match
+    format("~w       | Some (Str (fn0, args)) when fn0 = \"~w\" && List.length args = ~w ->~n",
+           [I, EscFuncName, Arity]),
+    (   Arity =:= 0
+    ->  format("~w           Some ~w~n", [I, SV])
+    ;   format("~w           let push = pushBuilderIfActive ~w~n", [I, SV]),
+        format("~w           Some { push with WsBuilder = Some (ReadArgs args) }~n", [I])
+    ),
+    %% (2) Cons-cell match (only when fn = "[|]" and arity = 2)
+    (   FuncName == '[|]', Arity =:= 2
+    ->  format("~w       | Some (VList (h :: t)) ->~n", [I]),
+        format("~w           let tailVal = if List.isEmpty t then Atom \"[]\" else VList t~n", [I]),
+        format("~w           let push = pushBuilderIfActive ~w~n", [I, SV]),
+        format("~w           Some { push with WsBuilder = Some (ReadArgs [h; tailVal]) }~n", [I])
+    ;   true
+    ),
+    %% (3) Unbound, arity = 0: bind to Str(fn, [])
+    (   Arity =:= 0
+    ->  format("~w       | Some (Unbound vid) ->~n", [I]),
+        format("~w           let str = Str (\"~w\", [])~n", [I, EscFuncName]),
+        format("~w           let s0 = putReg ~w str ~w~n", [I, Ai, SV]),
+        format("~w           Some { s0 with~n", [I]),
+        format("~w                    WsBindings = Map.add vid str ~w.WsBindings~n", [I, SV]),
+        format("~w                    WsTrail = { TrailVarId = vid; TrailOldVal = Map.tryFind vid ~w.WsBindings } :: ~w.WsTrail~n",
+               [I, SV, SV]),
+        format("~w                    WsTrailLen = ~w.WsTrailLen + 1 }~n", [I, SV])
+    %% (4) Unbound, arity > 0: write mode (BuildStruct)
+    ;   format("~w       | Some (Unbound _) ->~n", [I]),
+        format("~w           let push = pushBuilderIfActive ~w~n", [I, SV]),
+        format("~w           Some { push with WsBuilder = Some (BuildStruct (\"~w\", ~w, ~w, [])) }~n",
+               [I, EscFuncName, Ai, Arity])
+    ),
+    %% (5) Default fail
+    format("~w       | _ -> None) with~n", [I]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
 emit_one_fs(get_structure(FnStr, ArityStr, AiStr), PC, SV, SVout, I, _FP) :-
@@ -665,10 +713,24 @@ emit_one_fs(get_integer(NStr, AiStr), PC, SV, SVout, I, _FP) :-
     format("~w| Some ~w ->~n", [I, SVout]).
 
 % Unify* — can fail, delegate to step
-emit_one_fs(unify_variable(XnStr), PC, SV, SVout, I, _FP) :-
+% UnifyVariable Xn — inline read-mode + write-mode dispatch.  Far hotter
+% than the other Unify* in real workloads (87 occurrences across the parser
+% smoke alone) so worth bypassing step's dispatch + WsPC record-with alloc.
+% Read mode: copy next arg into Xn (always succeeds).
+% Write mode (no readable arg): create fresh var, store in Xn, append to
+% the active builder (BuildList / BuildStruct), which may fail if no
+% builder is active.
+emit_one_fs(unify_variable(XnStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(XnStr, Xn),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (UnifyVariable ~w) with~n", [I, SV, PC, Xn]),
+    format("~wmatch (match readNextArg ~w with~n", [I, SV]),
+    format("~w       | Some (v, sR) -> Some (putReg ~w v sR)~n", [I, Xn]),
+    format("~w       | None ->~n", [I]),
+    format("~w           let vid = ~w.WsVarCounter~n", [I, SV]),
+    format("~w           let var = Unbound vid~n", [I]),
+    format("~w           let sW = putReg ~w var { ~w with WsVarCounter = ~w.WsVarCounter + 1 }~n",
+           [I, Xn, SV, SV]),
+    format("~w           addToBuilder var sW) with~n", [I]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
 emit_one_fs(unify_value(XnStr), PC, SV, SVout, I, _FP) :-
@@ -677,10 +739,17 @@ emit_one_fs(unify_value(XnStr), PC, SV, SVout, I, _FP) :-
     format("~wmatch step ctx { ~w with WsPC = ~w } (UnifyValue ~w) with~n", [I, SV, PC, Xn]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
-emit_one_fs(unify_constant(CStr), PC, SV, SVout, I, _FP) :-
+% UnifyConstant C — inline read-mode + write-mode dispatch.  By far the most
+% frequent step-delegating instruction in compiled parser code (132 of them
+% in the parser smoke alone), so the biggest win for inlining.  Read mode:
+% unify constant with the next structure arg.  Write mode: append constant
+% to the active builder.  Both can fail.
+emit_one_fs(unify_constant(CStr), _PC, SV, SVout, I, _FP) :-
     val_fs(CStr, FC),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (UnifyConstant (~w)) with~n", [I, SV, PC, FC]),
+    format("~wmatch (match readNextArg ~w with~n", [I, SV]),
+    format("~w       | Some (v, sR) -> unifyVal v (~w) sR~n", [I, FC]),
+    format("~w       | None -> addToBuilder (~w) ~w) with~n", [I, FC, SV]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
 % PutValue Xn Ai — always succeeds, inline
@@ -768,7 +837,16 @@ emit_one_fs(call_foreign(PredStr, NStr), PC, SV, SVout, I, _FP) :-
     format("~w| Some ~w ->~n", [I, SVout]).
 
 
-% BuiltinCall — delegate to step
+% BuiltinCall !/0 (cut) — inline always-succeed: drop CPs above WsCutBar.
+% Common enough (every clause with `:- !` body) and step's branch is
+% trivial, so worth bypassing the step dispatch + WsPC record-with allocation.
+emit_one_fs(builtin_call("!/0", _NStr), _PC, SV, SVout, I, _FP) :- !,
+    fresh_sv_fs(SV, SVout),
+    format("~wlet drop_~w = max 0 (~w.WsCPsLen - ~w.WsCutBar)~n", [I, SVout, SV, SV]),
+    format("~wlet ~w = { ~w with WsCPs = List.skip drop_~w ~w.WsCPs; WsCPsLen = ~w.WsCutBar }~n",
+           [I, SVout, SV, SVout, SV, SV]).
+
+% BuiltinCall (general) — delegate to step
 emit_one_fs(builtin_call(OpStr, NStr), PC, SV, SVout, I, _FP) :-
     escape_dq_fs(OpStr, EscOp),
     fresh_sv_fs(SV, SVout),
