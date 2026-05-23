@@ -460,26 +460,29 @@ let getReg (n: int) (s: WamState) : Value option =
         | v -> Some (derefVar s.WsBindings v)
     else None
 
-/// Set a register value (copy-on-write for snapshot semantics).
+/// Set a register value.  Mutates WsRegs in place for X-regs and the WsRegs
+/// mirror of Y-regs; the env-frame EfYRegs Map is updated via the normal
+/// record-with allocation.
+///
+/// In-place mutation is safe because WAM state ownership is single-threaded
+/// in this runtime: each step returns the new state, the caller uses it,
+/// and the previous reference is dead.  CPs snapshot WsRegs via an explicit
+/// Array.copy at TryMeElse / BeginAggregate / FactRetry / etc., so any
+/// subsequent in-place write doesn't bleed back into the CP's saved regs.
+/// Removing the previous per-write Array.copy of the 512-entry MaxRegs
+/// array dropped putReg from ~32% of CPU time (per dotnet-trace on the
+/// parser-heavy benchmark) to near zero.
 let putReg (n: int) (v: Value) (s: WamState) : WamState =
-    // Y register write -- update BOTH the env frame''s EfYRegs (so
-    // values survive being clobbered by a called predicate writing
-    // to the same numeric slot) AND WsRegs (so direct-array reads
-    // in code that hasn''t been audited still see the value).  Read
-    // path prefers the frame, then falls back to WsRegs.
     if n >= 201 then
-        let r = Array.copy s.WsRegs
-        if n < r.Length then r.[n] <- v
+        if n < s.WsRegs.Length then s.WsRegs.[n] <- v
         match s.WsStack with
         | frame :: rest ->
             let newFrame = { frame with EfYRegs = Map.add (n - 200) v frame.EfYRegs }
-            { s with WsRegs = r; WsStack = newFrame :: rest }
-        | [] ->
-            { s with WsRegs = r }
+            { s with WsStack = newFrame :: rest }
+        | [] -> s
     else
-        let r = Array.copy s.WsRegs
-        r.[n] <- v
-        { s with WsRegs = r }
+        if n >= 0 && n < s.WsRegs.Length then s.WsRegs.[n] <- v
+        s
 
 /// Set a register value in-place (use only when no snapshot is needed).
 let setReg (n: int) (v: Value) (regs: Value array) : Value array =
