@@ -752,37 +752,19 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
     | PutStructure (fn, ai, arity) ->
         // PutStructure starts a fresh build context.  If we''re already
         // inside one (nested PutStructure for compound subterms in a
-        // body call), push the outer so it can resume.
-        //
-        // Reset the destination register to the sentinel `Unbound -1`
-        // first.  Without this, when addToBuilder materializes the
-        // structure it inspects the OLD value of `ai` (which is what
-        // the caller had passed in — usually an unbound variable
-        // representing an output slot) and binds that variable to the
-        // newly-built struct.  PutStructure semantics is *overwrite*,
-        // not unify, so this binding is wrong.  In particular, if a
-        // SetValue inside this builder references the same variable
-        // (common pattern: building `[H|R]` where R is the same R the
-        // caller passed in), the binding creates a cyclic structure
-        // and breaks subsequent unifications (#2400 part 2).  The
-        // sentinel vid=-1 is filtered in addToBuilder so no spurious
-        // binding survives.  GetList-in-write-mode preserves the
-        // caller-supplied unbound vid (>= 0) and binds it correctly.
+        // body call), push the outer so it can resume.  When
+        // addToBuilder materializes the struct, it''ll bind the
+        // destination''s previous vid to the new term IF doing so
+        // doesn''t create a cycle (i.e. vid doesn''t appear inside the
+        // new term).  The cycle check lives in addToBuilder (#2400
+        // continuation).
         let push = pushBuilderIfActive s
-        let regsCleared = Array.copy push.WsRegs
-        if ai < regsCleared.Length then regsCleared.[ai] <- Unbound -1
         Some { push with WsPC      = s.WsPC + 1
-                         WsRegs    = regsCleared
                          WsBuilder = Some (BuildStruct (fn, ai, arity, [])) }
 
     | PutList ai ->
-        // See PutStructure note above for why we reset the destination
-        // to the sentinel `Unbound -1` before starting the builder.
         let push = pushBuilderIfActive s
-        let regsCleared = Array.copy push.WsRegs
-        if ai < regsCleared.Length then regsCleared.[ai] <- Unbound -1
         Some { push with WsPC      = s.WsPC + 1
-                         WsRegs    = regsCleared
                          WsBuilder = Some (BuildList (ai, [])) }
 
     | SetValue xn ->
@@ -1877,11 +1859,39 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | _ -> None
 
     | BuiltinCall ("member/2", _) ->
+        // member(Elem, List): Elem unifies with some element of List.
+        // Non-deterministic in standard Prolog (backtracks through all
+        // matches), but the previous implementation only tried the
+        // FIRST element of a VList — wrong even for find-first
+        // semantics, and failed against Str-cons list encodings
+        // entirely.  Issue #2400 follow-up: parser library''s
+        // resolve_infix/4 uses `member(op(Name, Prec, Type), OpTable)`
+        // followed by cut, so it needs find-first across the whole
+        // table (and across BOTH list encodings).  Walk the list
+        // explicitly, trying unifyVal on each element with the
+        // current (snapshot) state and committing to the first
+        // success.  Backtracking through alternative members would
+        // require a FactRetry-style CP — left as a follow-up since
+        // the parser path uses `member, !` and never backtracks.
         let elem_ = s.WsRegs.[1] |> derefVar s.WsBindings
-        let list_ = s.WsRegs.[2] |> derefVar s.WsBindings
-        match list_ with
-        | VList (x :: _) -> unifyVal elem_ x s
-        | _              -> None
+        let rec walk lst st =
+            match derefVar st.WsBindings lst with
+            | VList []               -> None
+            | Atom "[]"              -> None
+            | VList (x :: rest) ->
+                let xd = derefVar st.WsBindings x
+                match unifyTerms elem_ xd st with
+                | Some st1 -> Some st1
+                | None     -> walk (VList rest) st
+            | Str ("[|]", [h; t]) ->
+                let hd = derefVar st.WsBindings h
+                match unifyTerms elem_ hd st with
+                | Some st1 -> Some st1
+                | None     -> walk t st
+            | _ -> None
+        match walk s.WsRegs.[2] s with
+        | Some sN -> Some { sN with WsPC = sN.WsPC + 1 }
+        | None    -> None
 
     | BeginAggregate (aggType, valReg, resReg) ->
         let cp = { CpNextPC   = s.WsPC
