@@ -1224,7 +1224,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			if !ok {
 				return false
 			}
-			return vm.Unify(arg1, internAtom(quotedNumericAtomPrefix+text))
+			return vm.Unify(arg1, internAtom(text))
 		}
 		return false
 	case "upcase_atom/2":
