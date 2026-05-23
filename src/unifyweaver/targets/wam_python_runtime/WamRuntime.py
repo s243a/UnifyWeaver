@@ -132,6 +132,7 @@ class WamState:
         # unwind mechanism; these frames carry WAM-level state snapshots.
         self.catcher_frames: List[CatcherFrame] = []
         self.temp_y_regs: Optional[List] = None
+        self.input_pushback: List[str] = []
 
     def fresh_var(self) -> Var:
         v = Var(ref=[None], id=self._var_counter)
@@ -1360,14 +1361,46 @@ def _read_stream_char(stream: Any) -> str:
     return ''
 
 
+def _read_default_char(state: WamState) -> str:
+    if state.input_pushback:
+        return state.input_pushback.pop()
+    return _read_stream_char(sys.stdin)
+
+
+def _peek_default_char(state: WamState) -> str:
+    ch = _read_default_char(state)
+    if ch != '':
+        state.input_pushback.append(ch)
+    return ch
+
+
+def _execute_get_char(state: WamState) -> bool:
+    ch = _read_default_char(state)
+    value = make_atom('end_of_file') if ch == '' else make_atom(ch)
+    return unify(get_reg(state, 1), value, state)
+
+
+def _execute_peek_char(state: WamState) -> bool:
+    ch = _peek_default_char(state)
+    value = make_atom('end_of_file') if ch == '' else make_atom(ch)
+    return unify(get_reg(state, 1), value, state)
+
+
+def _execute_get_code(state: WamState) -> bool:
+    ch = _read_default_char(state)
+    value = Int(-1) if ch == '' else Int(ord(ch))
+    return unify(get_reg(state, 1), value, state)
+
+
 def _execute_read_from_stream(state: WamState, stream: Any, target: Term,
-                              syntax_default: str = 'fail') -> bool:
+                              syntax_default: str = 'fail',
+                              read_char: Optional[Callable[[], str]] = None) -> bool:
     if stream is None or isinstance(stream, (Atom, Compound, Var, Int, Float, Ref)):
         return False
 
     buffer = ''
     while True:
-        ch = _read_stream_char(stream)
+        ch = read_char() if read_char is not None else _read_stream_char(stream)
         if ch == '':
             if not buffer.strip():
                 return unify(target, make_atom('end_of_file'), state)
@@ -1401,6 +1434,7 @@ def _execute_read_default_stream(state: WamState,
         sys.stdin,
         get_reg(state, 1),
         syntax_default,
+        lambda: _read_default_char(state),
     )
 
 
@@ -1595,6 +1629,12 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         return _execute_open(state)
     if builtin in ('close/1', 'close') and arity == 1:
         return _execute_close(state)
+    if builtin in ('get_char/1', 'get_char') and arity == 1:
+        return _execute_get_char(state)
+    if builtin in ('peek_char/1', 'peek_char') and arity == 1:
+        return _execute_peek_char(state)
+    if builtin in ('get_code/1', 'get_code') and arity == 1:
+        return _execute_get_code(state)
     if builtin in ('read/1', 'read_lax/1', 'read_term/1', 'read_term_lax/1',
                    'read', 'read_lax', 'read_term', 'read_term_lax') and arity == 1:
         return _execute_read_default_stream(state, 'fail')
