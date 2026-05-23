@@ -849,6 +849,39 @@ test(runtime_parser_compiled_runs_read1_from_stdin) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+test(runtime_char_input_reads_from_stdin) :-
+	setup_call_cleanup(
+		(   retractall(user:py_char_input_demo),
+			assertz((user:py_char_input_demo :-
+				peek_char(C0), C0 = a,
+				get_char(C1), C1 = a,
+				get_code(Code), Code = 98,
+				peek_char(E0), E0 = end_of_file,
+				get_char(E1), E1 = end_of_file,
+				get_code(ECode), ECode = -1)),
+			user:python_parser_tmp_dir('tmp_wam_python_char_input', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_char_input_demo/0],
+				[runtime_parser(compiled)], ProjectDir),
+			atomic_list_concat([
+				"import io, sys",
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"old_stdin = sys.stdin",
+				"sys.stdin = io.StringIO('ab')",
+				"try:",
+				"    print(wr.run_wam(code, labels, 'py_char_input_demo/0', state))",
+				"finally:",
+				"    sys.stdin = old_stdin"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_char_input_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_parser_compiled_runs_reverse_term_to_atom) :-
 	setup_call_cleanup(
 		(   retractall(user:py_term_to_atom_demo),
