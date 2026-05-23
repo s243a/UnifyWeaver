@@ -205,7 +205,8 @@ let main _argv =
           WsVarCounter = 0
           WsBuilder = None
           WsBuilderStack = []
-          WsAggAccum = [] }
+          WsAggAccum = []
+          WsB0Stack = [] }
     let ok =
         match dispatchCall ctx \"bypass_demo/0\" s0 with
         | Some _ -> true

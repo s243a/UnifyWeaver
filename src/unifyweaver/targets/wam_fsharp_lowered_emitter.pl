@@ -232,6 +232,7 @@ emit_func_fs(FN, PCInstrs, LabelMap, ForeignPreds) :-
         format("                         CpHeapLen  = s_init.WsHeapLen~n"),
         format("                         CpBindings = s_init.WsBindings~n"),
         format("                         CpCutBar   = s_init.WsCutBar~n"),
+        format("                         CpB0StackLen = List.length s_init.WsB0Stack~n"),
         format("                         CpAggFrame = None~n"),
         format("                         CpBuiltin  = None } :: s_init.WsCPs~n"),
         format("            WsCPsLen = s_init.WsCPsLen + 1 }~n"),

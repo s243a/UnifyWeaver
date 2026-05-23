@@ -173,6 +173,15 @@ fsharp_wam_choicepoint_type :-
       CpHeapLen  : int
       CpBindings : Map<int, Value>   // O(1) snapshot — immutable tree
       CpCutBar   : int
+      // B0 stack depth at CP creation time (issue #2400 fu).
+      // Call/CallResolved push onto WsB0Stack; Proceed pops.  But
+      // backtrack into this CP must also discard any pushes that
+      // happened after the CP was created (the failed sub-calls'
+      // pushes never reached their Proceed).  CpB0StackLen captures
+      // the depth at TryMeElse time so backtrack can truncate
+      // WsB0Stack back to it — without that the stack grows
+      // unboundedly and subsequent Proceed pops the wrong entry.
+      CpB0StackLen : int
       CpAggFrame : AggFrame option
       CpBuiltin  : BuiltinState option }").
 
@@ -216,6 +225,19 @@ type WamState =
       // write_stack/read_stack) maintain the same stack discipline.
       WsBuilderStack : BuilderState list
       WsAggAccum  : Value list           // aggregate accumulator
+      // Cut-barrier (B0) stack — pushed by Call/CallResolved before
+      // jumping into a callee and popped by Proceed on return.
+      // Execute/ExecutePc (tail call) updates WsCutBar in place but
+      // does NOT push or pop — the caller's frame is gone, so the
+      // stack depth must remain matched with Call/Proceed pairs
+      // only.  Standard-WAM B0 protocol: each Call saves the
+      // caller's cut barrier here and sets WsCutBar = WsCPsLen
+      // (the count BEFORE the callee's leading TryMeElse pushes
+      // CP_self).  Without this, a `:- ..., !.` in the callee
+      // never drops the predicate's own retry CP because the
+      // barrier was set AFTER TryMeElse already incremented
+      // WsCPsLen — see issue #2400 follow-up.
+      WsB0Stack   : int list
     }
 
 and BuilderState =

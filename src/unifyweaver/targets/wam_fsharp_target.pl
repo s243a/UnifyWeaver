@@ -394,6 +394,7 @@ and backtrack (s: WamState) : WamState option =
                  WsHeapLen  = cp.CpHeapLen
                  WsBindings = restoredBindings
                  WsCutBar   = cp.CpCutBar
+                 WsB0Stack  = (let n = List.length s.WsB0Stack - cp.CpB0StackLen in if n > 0 then List.skip n s.WsB0Stack else s.WsB0Stack)
                  // WsCPs intentionally unchanged: keep CP on stack so
                  // RetryMeElse can modify it (or TrustMe can pop it later).
                }
@@ -421,6 +422,7 @@ and resumeBuiltin (bs: BuiltinState) (cp: ChoicePoint) (rest: ChoicePoint list) 
                  WsHeapLen  = cp.CpHeapLen
                  WsBindings = newBindings
                  WsCutBar   = cp.CpCutBar
+                 WsB0Stack  = (let n = List.length s.WsB0Stack - cp.CpB0StackLen in if n > 0 then List.skip n s.WsB0Stack else s.WsB0Stack)
                  WsCPs      = newCPs
                  WsCPsLen   = List.length newCPs }
     | HopsRetry (_, [], _) ->
@@ -444,6 +446,7 @@ and resumeBuiltin (bs: BuiltinState) (cp: ChoicePoint) (rest: ChoicePoint list) 
                  WsHeapLen  = cp.CpHeapLen
                  WsBindings = newBindings
                  WsCutBar   = cp.CpCutBar
+                 WsB0Stack  = (let n = List.length s.WsB0Stack - cp.CpB0StackLen in if n > 0 then List.skip n s.WsB0Stack else s.WsB0Stack)
                  WsCPs      = newCPs
                  WsCPsLen   = List.length newCPs }
     | SelectRetry (_, _, [], _) ->
@@ -464,6 +467,7 @@ and resumeBuiltin (bs: BuiltinState) (cp: ChoicePoint) (rest: ChoicePoint list) 
                              WsHeapLen  = cp.CpHeapLen
                              WsBindings = cp.CpBindings
                              WsCutBar   = cp.CpCutBar
+                             WsB0Stack  = (let n = List.length s.WsB0Stack - cp.CpB0StackLen in if n > 0 then List.skip n s.WsB0Stack else s.WsB0Stack)
                              WsPC       = retPC }
         let rec tryNext pairs =
             match pairs with
@@ -487,6 +491,7 @@ and resumeBuiltin (bs: BuiltinState) (cp: ChoicePoint) (rest: ChoicePoint list) 
                                      WsStack    = cp.CpStack
                                      WsCP       = cp.CpCP
                                      WsCutBar   = cp.CpCutBar
+                                     WsB0Stack  = (let n = List.length s.WsB0Stack - cp.CpB0StackLen in if n > 0 then List.skip n s.WsB0Stack else s.WsB0Stack)
                                      WsCPs      = newCPs
                                      WsCPsLen   = List.length newCPs }
         tryNext candidates
@@ -513,6 +518,7 @@ and resumeBuiltin (bs: BuiltinState) (cp: ChoicePoint) (rest: ChoicePoint list) 
                  WsHeapLen  = cp.CpHeapLen
                  WsBindings = newBindings
                  WsCutBar   = cp.CpCutBar
+                 WsB0Stack  = (let n = List.length s.WsB0Stack - cp.CpB0StackLen in if n > 0 then List.skip n s.WsB0Stack else s.WsB0Stack)
                  WsCPs      = newCPs
                  WsCPsLen   = List.length newCPs }
 
@@ -784,14 +790,47 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
 
     | SetConstant c -> addToBuilder c s
 
+    //
+    // Standard-WAM B0 protocol (issue #2400 follow-up).
+    //
+    // Call / CallResolved: save the caller''s WsCutBar onto WsB0Stack
+    // and set WsCutBar = current WsCPsLen.  This is the count BEFORE
+    // the callee''s leading TryMeElse pushes CP_self, so a `!` inside
+    // the callee drops above WsCutBar = correctly kills CP_self.
+    // Without this, Allocate set WsCutBar = post-TryMeElse count and
+    // cut was a no-op against the predicate''s own retry CP.
+    //
+    // Execute / ExecutePc (tail call): update WsCutBar in place but
+    // do NOT push.  The caller''s frame is being replaced — Proceed
+    // pops, so a push here would unbalance the stack.  The pairing
+    // invariant is: WsB0Stack depth changes only via Call/Proceed
+    // pairs.
+    //
+    // Proceed: pop WsB0Stack into WsCutBar to restore the caller''s
+    // barrier.  See the Proceed handler below.
+    //
     | CallResolved (pc, _arity) ->
-        Some { s with WsPC = pc; WsCP = s.WsPC + 1 }
+        Some { s with WsPC      = pc
+                      WsCP      = s.WsPC + 1
+                      WsB0Stack = s.WsCutBar :: s.WsB0Stack
+                      WsCutBar  = s.WsCPsLen }
 
     | CallForeign (pred, _arity) ->
-        executeForeign ctx pred { s with WsCP = s.WsPC + 1 }
+        // Foreign predicates don''t emit Proceed in the F# WAM (they
+        // either succeed via dispatchForeign''s direct return or push
+        // a builtin CP).  Mirror Call''s B0 protocol so any cut inside
+        // the foreign handler sees the correct barrier; if the
+        // foreign handler bypasses Proceed (e.g. via direct WsPC
+        // assignment) the B0 entry stays — that matches existing
+        // semantics where WsCutBar would not be restored either.
+        executeForeign ctx pred { s with WsCP      = s.WsPC + 1
+                                         WsB0Stack = s.WsCutBar :: s.WsB0Stack
+                                         WsCutBar  = s.WsCPsLen }
 
     | Call (pred, _arity) ->
-        let sc = { s with WsCP = s.WsPC + 1 }
+        let sc = { s with WsCP      = s.WsPC + 1
+                          WsB0Stack = s.WsCutBar :: s.WsB0Stack
+                          WsCutBar  = s.WsCPsLen }
         match Map.tryFind pred ctx.WcLoweredPredicates with
         | Some fn -> fn ctx sc
         | None ->
@@ -803,17 +842,22 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | None    -> None
 
     | Execute pred ->
+        // Tail call: no return, so no push.  Update barrier in place.
+        let st = { s with WsCutBar = s.WsCPsLen }
         match Map.tryFind pred ctx.WcLoweredPredicates with
-        | Some fn -> fn ctx s
+        | Some fn -> fn ctx st
         | None ->
-        match callIndexedFact2 ctx pred s with
+        match callIndexedFact2 ctx pred st with
         | Some sr -> Some sr
         | None ->
         match Map.tryFind pred ctx.WcLabels with
-        | Some pc -> Some { s with WsPC = pc }
+        | Some pc -> Some { st with WsPC = pc }
         | None    -> None
 
-    | ExecutePc pc -> Some { s with WsPC = pc }
+    | ExecutePc pc ->
+        // Tail call (resolved form): no push, update barrier only.
+        Some { s with WsPC     = pc
+                      WsCutBar = s.WsCPsLen }
 
     | Jump label ->
         match Map.tryFind label ctx.WcLabels with
@@ -823,26 +867,52 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
     | JumpPc pc -> Some { s with WsPC = pc }
 
     | Proceed ->
+        // Standard-WAM return: jump to WsCP (caller''s return PC)
+        // and restore the caller''s cut barrier from WsB0Stack.
+        // Call/CallResolved pushed; Proceed pops.  Tail-call
+        // (Execute/ExecutePc) does NOT push, so the pop here matches
+        // the most recent non-tail Call up the chain.  When the
+        // stack is empty (top-level entry), keep WsCutBar at 0.
         let ret = s.WsCP
-        if ret = 0 then Some { s with WsPC = 0 }
-        else Some { s with WsPC = ret; WsCP = 0 }
+        let cutBarR, stackR =
+            match s.WsB0Stack with
+            | top :: rest -> top, rest
+            | []          -> 0,   []
+        if ret = 0 then Some { s with WsPC      = 0
+                                      WsCutBar  = cutBarR
+                                      WsB0Stack = stackR }
+        else Some { s with WsPC      = ret
+                           WsCP      = 0
+                           WsCutBar  = cutBarR
+                           WsB0Stack = stackR }
 
     | Fail -> None
 
     | Allocate ->
         // Save the previous cut barrier in the frame so Deallocate can
-        // restore it.  Without this, a cut inside a nested clause body
-        // (e.g. `take_digits` calling `digit_code/1`) used the wrong
-        // barrier and the cut became a no-op -- exposing every
-        // ancestor''s CPs to backtrack.  The frame already carries
-        // EfSavedCP for the same reason.
+        // restore it for nested intra-clause cuts (e.g. a cut inside
+        // a goal that was itself inside another goal''s environment).
+        //
+        // Issue #2400 follow-up: do NOT overwrite WsCutBar here.  The
+        // cross-call cut barrier (B0) is now managed by Call/Proceed
+        // via WsB0Stack — Call sets WsCutBar = WsCPsLen BEFORE the
+        // callee''s TryMeElse pushes CP_self, which is the value cuts
+        // inside the callee body need.  If Allocate then re-set
+        // WsCutBar = WsCPsLen (the count AFTER TryMeElse), `:- ..., !.`
+        // would never drop the predicate''s own retry CP — exactly the
+        // bug that caused tokenize_one''s CPs to leak past the parser''s
+        // cut and corrupt later bindings.
+        //
+        // EfSavedCutBar still snapshots WsCutBar so Deallocate restores
+        // the right value when a sub-goal inside this clause had its
+        // own Allocate/Deallocate pair (the WsB0Stack handles
+        // call-to-call; this frame field handles intra-clause nesting).
         let frame = { EfSavedCP    = s.WsCP
                       EfYRegs      = Map.empty
                       EfSavedCutBar= s.WsCutBar }
         Some { s with
                  WsPC    = s.WsPC + 1
-                 WsStack = frame :: s.WsStack
-                 WsCutBar= s.WsCPsLen }
+                 WsStack = frame :: s.WsStack }
 
     | Deallocate ->
         match s.WsStack with
@@ -864,6 +934,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                    CpHeapLen  = s.WsHeapLen
                    CpBindings = s.WsBindings
                    CpCutBar   = s.WsCutBar
+                   CpB0StackLen = List.length s.WsB0Stack
                    CpAggFrame = None
                    CpBuiltin  = None }
         Some { s with WsPC = s.WsPC + 1; WsCPs = cp :: s.WsCPs; WsCPsLen = s.WsCPsLen + 1 }
@@ -877,6 +948,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                    CpHeapLen  = s.WsHeapLen
                    CpBindings = s.WsBindings
                    CpCutBar   = s.WsCutBar
+                   CpB0StackLen = List.length s.WsB0Stack
                    CpAggFrame = None
                    CpBuiltin  = None }
         Some { s with WsPC = s.WsPC + 1; WsCPs = cp :: s.WsCPs; WsCPsLen = s.WsCPsLen + 1 }
@@ -912,6 +984,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                        CpHeapLen  = s.WsHeapLen
                        CpBindings = s.WsBindings
                        CpCutBar   = s.WsCutBar
+                       CpB0StackLen = List.length s.WsB0Stack
                        CpAggFrame = None
                        CpBuiltin  = None }
             Some { s with WsPC = s.WsPC + 1; WsCPs = cp :: s.WsCPs; WsCPsLen = s.WsCPsLen + 1 }
@@ -929,6 +1002,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                        CpHeapLen  = s.WsHeapLen
                        CpBindings = s.WsBindings
                        CpCutBar   = s.WsCutBar
+                       CpB0StackLen = List.length s.WsB0Stack
                        CpAggFrame = None
                        CpBuiltin  = None }
             Some { s with WsPC = s.WsPC + 1; WsCPs = cp :: s.WsCPs; WsCPsLen = s.WsCPsLen + 1 }
@@ -957,6 +1031,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                    CpHeapLen  = s.WsHeapLen
                    CpBindings = s.WsBindings
                    CpCutBar   = s.WsCutBar
+                   CpB0StackLen = List.length s.WsB0Stack
                    CpAggFrame = None
                    CpBuiltin  = None }
         Some { s with WsPC = targetPC
@@ -973,6 +1048,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                    CpHeapLen  = s.WsHeapLen
                    CpBindings = s.WsBindings
                    CpCutBar   = s.WsCutBar
+                   CpB0StackLen = List.length s.WsB0Stack
                    CpAggFrame = None
                    CpBuiltin  = None }
         Some { s with WsPC = targetPC
@@ -997,6 +1073,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                        CpHeapLen  = s.WsHeapLen
                        CpBindings = s.WsBindings
                        CpCutBar   = s.WsCutBar
+                       CpB0StackLen = List.length s.WsB0Stack
                        CpAggFrame = None
                        CpBuiltin  = None }
             Some { s with WsPC = targetPC
@@ -1018,6 +1095,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                        CpHeapLen  = s.WsHeapLen
                        CpBindings = s.WsBindings
                        CpCutBar   = s.WsCutBar
+                       CpB0StackLen = List.length s.WsB0Stack
                        CpAggFrame = None
                        CpBuiltin  = None }
             Some { s with WsPC = targetPC
@@ -1678,6 +1756,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                                                CpHeapLen  = s.WsHeapLen
                                                CpBindings = s.WsBindings
                                                CpCutBar   = s.WsCutBar
+                                               CpB0StackLen = List.length s.WsB0Stack
                                                CpAggFrame = None
                                                CpBuiltin  = Some (SelectRetry (1, 3, more, retPC)) }
                                     cp :: s.WsCPs, s.WsCPsLen + 1
@@ -1795,6 +1874,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                    CpHeapLen  = s.WsHeapLen
                    CpBindings = s.WsBindings
                    CpCutBar   = s.WsCutBar
+                   CpB0StackLen = List.length s.WsB0Stack
                    CpAggFrame = Some { AggType          = aggType
                                        AggValReg        = valReg
                                        AggResReg        = resReg
@@ -2406,7 +2486,13 @@ and forkParBranches (ctx: WamContext) (s: WamState) (af: AggFrame)
                                WsPC       = pc
                                WsCP       = 0
                                WsCutBar   = 0
-                               WsAggAccum = [] }
+                               WsAggAccum = []
+                               // Fresh B0 stack for each branch — parent''s
+                               // pushes belong to a different execution
+                               // context.  Branch runs with WsCP=0 so a
+                               // mismatched pop would halt; starting empty
+                               // keeps Call/Proceed pairing consistent.
+                               WsB0Stack  = [] }
             return run ctx snapshot
         }
     let results =
@@ -2509,6 +2595,7 @@ and callIndexedFact2 (ctx: WamContext) (pred: string) (s: WamState) : WamState o
                                        CpHeapLen  = s.WsHeapLen
                                        CpBindings = s.WsBindings
                                        CpCutBar   = s.WsCutBar
+                                       CpB0StackLen = List.length s.WsB0Stack
                                        CpAggFrame = None
                                        CpBuiltin  = Some (FactRetry (vid, rest, retPC)) }
                             cp :: s.WsCPs, s.WsCPsLen + 1
@@ -2871,6 +2958,7 @@ emit_stream_binding_multi_fs(OutputRegs, Indent) :-
     format('~w               CpHeapLen  = s.WsHeapLen~n', [Indent]),
     format('~w               CpBindings = s.WsBindings~n', [Indent]),
     format('~w               CpCutBar   = s.WsCutBar~n', [Indent]),
+    format('~w               CpB0StackLen = List.length s.WsB0Stack~n', [Indent]),
     format('~w               CpAggFrame = None~n', [Indent]),
     format('~w               CpBuiltin  = Some (FFIStreamRetry (', [Indent]),
     emit_outregs_list_fs(OutputRegs),
@@ -3959,7 +4047,8 @@ let main argv =
           WsVarCounter = 0
           WsBuilder    = None
           WsBuilderStack = []
-          WsAggAccum   = [] }
+          WsAggAccum   = []
+          WsB0Stack    = [] }
 
     // Find entry point: prefer lowered predicates, fall back to code array
     let queryPred =
