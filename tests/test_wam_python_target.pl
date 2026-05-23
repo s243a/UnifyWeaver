@@ -882,6 +882,40 @@ test(runtime_char_input_reads_from_stdin) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+test(runtime_char_output_writes_to_stdout) :-
+	setup_call_cleanup(
+		(   retractall(user:py_char_output_demo),
+			assertz((user:py_char_output_demo :-
+				put_char(a),
+				put_code(98),
+				put_code(10))),
+			user:python_parser_tmp_dir('tmp_wam_python_char_output', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_char_output_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import io, sys",
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"old_stdout = sys.stdout",
+				"capture = io.StringIO()",
+				"sys.stdout = capture",
+				"try:",
+				"    ok = wr.run_wam(code, labels, 'py_char_output_demo/0', state)",
+				"finally:",
+				"    sys.stdout = old_stdout",
+				"print(repr(capture.getvalue()))",
+				"print(ok)"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "'ab\\n'")),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_char_output_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_parser_compiled_runs_reverse_term_to_atom) :-
 	setup_call_cleanup(
 		(   retractall(user:py_term_to_atom_demo),
@@ -1384,6 +1418,8 @@ test(static_runtime_has_lua_baseline_builtins, [nondet]) :-
 		"\\\\+/1",
 		"write/1",
 		"display/1",
+		"put_char/1",
+		"put_code/1",
 		"nl/0"
 	]), sub_string(Content, _, _, _, Needle)).
 
@@ -1396,6 +1432,8 @@ test(static_runtime_naf_uses_isolated_goal_execution, [nondet]) :-
 test(static_runtime_io_emits_output, [nondet]) :-
 	runtime_py_path(P), read_file_to_string(P, Content, []),
 	sub_string(Content, _, _, _, "print(_format_value(get_reg(state, 1), state), end='')"),
+	sub_string(Content, _, _, _, "def _execute_put_char"),
+	sub_string(Content, _, _, _, "def _execute_put_code"),
 	sub_string(Content, _, _, _, "print()").
 
 :- end_tests(wam_python_builtin_parity_guard).
