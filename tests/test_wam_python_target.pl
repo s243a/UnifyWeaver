@@ -464,6 +464,13 @@ test(iso_errors_text_rewrite_uses_is_key_tables) :-
 	wam_python_target:iso_errors_rewrite_text(iso_config(false, []), read_demo/0, Read0, ReadLax),
 	assertion(sub_string(ReadLax, _, _, _, "call read_term_from_atom_lax/2, 2")),
 	assertion(sub_string(ReadLax, _, _, _, "builtin_call read_term_from_atom_lax/3 3")),
+	ReadDefault0 = 'read_default_demo/0:\n  builtin_call read/1 1\n  call read_term/1, 1',
+	wam_python_target:iso_errors_rewrite_text(iso_config(true, []), read_default_demo/0, ReadDefault0, ReadDefaultIso),
+	assertion(sub_string(ReadDefaultIso, _, _, _, "builtin_call read_iso/1 1")),
+	assertion(sub_string(ReadDefaultIso, _, _, _, "call read_term_iso/1, 1")),
+	wam_python_target:iso_errors_rewrite_text(iso_config(false, []), read_default_demo/0, ReadDefault0, ReadDefaultLax),
+	assertion(sub_string(ReadDefaultLax, _, _, _, "builtin_call read_lax/1 1")),
+	assertion(sub_string(ReadDefaultLax, _, _, _, "call read_term_lax/1, 1")),
 	ReadStream0 = 'read_stream_demo/0:\n  builtin_call read/2 2',
 	wam_python_target:iso_errors_rewrite_text(iso_config(true, []), read_stream_demo/0, ReadStream0, ReadStreamIso),
 	assertion(sub_string(ReadStreamIso, _, _, _, "builtin_call read_iso/2 2")),
@@ -809,6 +816,36 @@ test(runtime_parser_compiled_runs_read2_from_opened_file) :-
 			once(sub_string(Output, _, _, _, "True"))
 		),
 		(   retractall(user:py_read2_file_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_parser_compiled_runs_read1_from_stdin) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read1_demo),
+			assertz((user:py_read1_demo :-
+				read(T1), T1 = fact(1),
+				read_term(T2), T2 = fact(2),
+				read(T3), T3 = end_of_file)),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_read1', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_read1_demo/0],
+				[runtime_parser(compiled)], ProjectDir),
+			atomic_list_concat([
+				"import io, sys",
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"old_stdin = sys.stdin",
+				"sys.stdin = io.StringIO('fact(1).\\nfact(2).\\n')",
+				"try:",
+				"    print(wr.run_wam(code, labels, 'py_read1_demo/0', state))",
+				"finally:",
+				"    sys.stdin = old_stdin"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read1_demo),
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 

@@ -32,7 +32,9 @@ wam_target_runtime_parser(Target, Options, Mode) :-
 %% parser_dependent_builtin(?Name/Arity)
 %
 % Builtins/features that need source text parsed into runtime terms.
+parser_dependent_builtin(read/1).
 parser_dependent_builtin(read/2).
+parser_dependent_builtin(read_term/1).
 parser_dependent_builtin(read_term_from_atom/2).
 parser_dependent_builtin(read_term_from_atom/3).
 parser_dependent_builtin(term_to_atom/2).

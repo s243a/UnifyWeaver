@@ -5,6 +5,7 @@ Trail-based mutable state. No external dependencies.
 
 from __future__ import annotations
 import copy
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Optional, Callable, Dict, List, Tuple
 
@@ -1359,9 +1360,8 @@ def _read_stream_char(stream: Any) -> str:
     return ''
 
 
-def _execute_read(state: WamState, syntax_default: str = 'fail') -> bool:
-    stream = deref(get_reg(state, 1), state)
-    target = get_reg(state, 2)
+def _execute_read_from_stream(state: WamState, stream: Any, target: Term,
+                              syntax_default: str = 'fail') -> bool:
     if stream is None or isinstance(stream, (Atom, Compound, Var, Int, Float, Ref)):
         return False
 
@@ -1383,6 +1383,25 @@ def _execute_read(state: WamState, syntax_default: str = 'fail') -> bool:
             continue
         if _execute_compiled_parse_atom(state, candidate, target, None, 'fail'):
             return True
+
+
+def _execute_read(state: WamState, syntax_default: str = 'fail') -> bool:
+    return _execute_read_from_stream(
+        state,
+        deref(get_reg(state, 1), state),
+        get_reg(state, 2),
+        syntax_default,
+    )
+
+
+def _execute_read_default_stream(state: WamState,
+                                 syntax_default: str = 'fail') -> bool:
+    return _execute_read_from_stream(
+        state,
+        sys.stdin,
+        get_reg(state, 1),
+        syntax_default,
+    )
 
 
 def _execute_term_to_atom(state: WamState) -> bool:
@@ -1576,6 +1595,12 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         return _execute_open(state)
     if builtin in ('close/1', 'close') and arity == 1:
         return _execute_close(state)
+    if builtin in ('read/1', 'read_lax/1', 'read_term/1', 'read_term_lax/1',
+                   'read', 'read_lax', 'read_term', 'read_term_lax') and arity == 1:
+        return _execute_read_default_stream(state, 'fail')
+    if builtin in ('read_iso/1', 'read_iso',
+                   'read_term_iso/1', 'read_term_iso') and arity == 1:
+        return _execute_read_default_stream(state, 'error')
     if builtin in ('read/2', 'read_lax/2', 'read', 'read_lax') and arity == 2:
         return _execute_read(state, 'fail')
     if builtin in ('read_iso/2', 'read_iso') and arity == 2:
