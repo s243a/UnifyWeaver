@@ -55,7 +55,8 @@ let mkEmptyState () =
       WsVarCounter = 0
       WsBuilder    = None
       WsBuilderStack = []
-      WsAggAccum   = [] }
+      WsAggAccum   = []
+      WsB0Stack    = [] }
 
 let mkContext (code: Instruction array) (labels: Map<string, int>) =
     { WcCode              = code
@@ -656,6 +657,7 @@ let scenario_remove_nearest_agg_frame () =
         CpNextPC = 10; CpRegs = Array.empty; CpStack = []
         CpCP = 0; CpTrailLen = 0; CpHeapLen = 0
         CpBindings = Map.empty; CpCutBar = 0
+        CpB0StackLen = 0
         CpAggFrame = None; CpBuiltin = None }
     let aggCP : ChoicePoint = {
         plainCP with CpAggFrame = Some { AggType = "sum"; AggValReg = 2
@@ -683,6 +685,7 @@ let scenario_par_step_inside_sequential_aggregate () =
         CpNextPC = 0; CpRegs = Array.empty; CpStack = []
         CpCP = 0; CpTrailLen = 0; CpHeapLen = 0
         CpBindings = Map.empty; CpCutBar = 0
+        CpB0StackLen = 0
         CpAggFrame = Some { AggType = "unknown"; AggValReg = 2
                             AggResReg = 1; AggReturnPC = 0
                             AggMergeStrategy = MergeSequential }

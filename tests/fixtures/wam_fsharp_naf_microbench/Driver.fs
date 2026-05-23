@@ -110,7 +110,8 @@ let mkState () =
       WsVarCounter = 1000
       WsBuilder    = None
       WsBuilderStack = []
-      WsAggAccum   = [] }
+      WsAggAccum   = []
+      WsB0Stack    = [] }
 
 let runScenario (name: string) (branch1: Instruction list) (expectTrue: bool) (slowSize: int) : int64 * int64 * bool =
     let ctx, parPC, elsePC = mkContext branch1 slowSize

@@ -66,7 +66,8 @@ let mkState (regs: (int * Value) list) =
       WsVarCounter = 0
       WsBuilder    = None
       WsBuilderStack = []
-      WsAggAccum   = [] }
+      WsAggAccum   = []
+      WsB0Stack    = [] }
 
 // -- arg/3 specialized ----------------------------------------------------
 
