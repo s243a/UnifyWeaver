@@ -219,6 +219,21 @@ wam_parts_to_scala(["retry_me_else", Label], Lit) :-
 
 wam_parts_to_scala(["trust_me"], 'TrustMe').
 
+%% Indexed-dispatch chain ops (issue #2400).  See wam_target.pl''s
+%% build_term_index_with_chains: synthesized try/retry/trust chains
+%% target the L_<Pred>_<Arity>_<I>_body labels when a dispatch group
+%% has >1 matching clauses.  Unlike try_me_else (CP points to alt,
+%% advance pc), these instructions JUMP to the body label and the
+%% CP holds the in-chain fall-through PC (= next chain instruction).
+wam_parts_to_scala(["try", Label], Lit) :-
+    format(string(Lit), 'Try("~w")', [Label]).
+
+wam_parts_to_scala(["retry", Label], Lit) :-
+    format(string(Lit), 'Retry("~w")', [Label]).
+
+wam_parts_to_scala(["trust", Label], Lit) :-
+    format(string(Lit), 'Trust("~w")', [Label]).
+
 % --- Environment ---
 wam_parts_to_scala(["allocate"], 'Allocate').
 wam_parts_to_scala(["deallocate"], 'Deallocate').

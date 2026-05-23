@@ -219,6 +219,14 @@ wam_recognise_instruction(["call_foreign", Pred, Ar],  call_foreign(Pred, Ar)).
 wam_recognise_instruction(["try_me_else", L],          try_me_else(L)).
 wam_recognise_instruction(["retry_me_else", L],        retry_me_else(L)).
 wam_recognise_instruction(["trust_me"],                trust_me).
+%% Indexed-dispatch chain ops (issue #2400) — emitted by
+%% build_term_index_with_chains in wam_target.pl for switch_on_term /
+%% switch_on_constant / switch_on_structure targets with >1 matching
+%% clauses.  Carry the destination body label; CP push uses the
+%% in-chain fall-through PC (= the next chain instruction).
+wam_recognise_instruction(["try", L],                  try(L)).
+wam_recognise_instruction(["retry", L],                retry(L)).
+wam_recognise_instruction(["trust", L],                trust(L)).
 wam_recognise_instruction(["jump", L],                 jump(L)).
 wam_recognise_instruction(["cut_ite"],                 cut_ite).
 wam_recognise_instruction(["begin_aggregate", K, V, R], begin_aggregate(K, V, R)).

@@ -739,12 +739,37 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         // PutStructure starts a fresh build context.  If we''re already
         // inside one (nested PutStructure for compound subterms in a
         // body call), push the outer so it can resume.
+        //
+        // Reset the destination register to the sentinel `Unbound -1`
+        // first.  Without this, when addToBuilder materializes the
+        // structure it inspects the OLD value of `ai` (which is what
+        // the caller had passed in — usually an unbound variable
+        // representing an output slot) and binds that variable to the
+        // newly-built struct.  PutStructure semantics is *overwrite*,
+        // not unify, so this binding is wrong.  In particular, if a
+        // SetValue inside this builder references the same variable
+        // (common pattern: building `[H|R]` where R is the same R the
+        // caller passed in), the binding creates a cyclic structure
+        // and breaks subsequent unifications (#2400 part 2).  The
+        // sentinel vid=-1 is filtered in addToBuilder so no spurious
+        // binding survives.  GetList-in-write-mode preserves the
+        // caller-supplied unbound vid (>= 0) and binds it correctly.
         let push = pushBuilderIfActive s
-        Some { push with WsPC = s.WsPC + 1; WsBuilder = Some (BuildStruct (fn, ai, arity, [])) }
+        let regsCleared = Array.copy push.WsRegs
+        if ai < regsCleared.Length then regsCleared.[ai] <- Unbound -1
+        Some { push with WsPC      = s.WsPC + 1
+                         WsRegs    = regsCleared
+                         WsBuilder = Some (BuildStruct (fn, ai, arity, [])) }
 
     | PutList ai ->
+        // See PutStructure note above for why we reset the destination
+        // to the sentinel `Unbound -1` before starting the builder.
         let push = pushBuilderIfActive s
-        Some { push with WsPC = s.WsPC + 1; WsBuilder = Some (BuildList (ai, [])) }
+        let regsCleared = Array.copy push.WsRegs
+        if ai < regsCleared.Length then regsCleared.[ai] <- Unbound -1
+        Some { push with WsPC      = s.WsPC + 1
+                         WsRegs    = regsCleared
+                         WsBuilder = Some (BuildList (ai, [])) }
 
     | SetValue xn ->
         match getReg xn s with
@@ -907,6 +932,112 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                        CpAggFrame = None
                        CpBuiltin  = None }
             Some { s with WsPC = s.WsPC + 1; WsCPs = cp :: s.WsCPs; WsCPsLen = s.WsCPsLen + 1 }
+
+    //
+    // Indexed-dispatch chain ops (issue #2400).  Used in chains
+    // synthesized by wam_target.pl''s build_term_index_with_chains
+    // for switch_on_term / switch_on_constant / switch_on_structure
+    // targets with >1 matching clauses.  Layout:
+    //   L_<P>_<A>_<group>_dispatch:
+    //       try   L_<P>_<A>_<I1>_body
+    //       retry L_<P>_<A>_<I2>_body
+    //       ...
+    //       trust L_<P>_<A>_<IN>_body
+    // Unlike try_me_else / retry_me_else / trust_me, these CARRY the
+    // body label as the jump target and store the in-chain
+    // fall-through PC (= next chain instruction) in the CP, so the
+    // chain is self-contained and never confuses with outer CPs.
+    //
+    | TryPc targetPC ->
+        let cp = { CpNextPC   = s.WsPC + 1
+                   CpRegs     = Array.copy s.WsRegs
+                   CpStack    = s.WsStack
+                   CpCP       = s.WsCP
+                   CpTrailLen = s.WsTrailLen
+                   CpHeapLen  = s.WsHeapLen
+                   CpBindings = s.WsBindings
+                   CpCutBar   = s.WsCutBar
+                   CpAggFrame = None
+                   CpBuiltin  = None }
+        Some { s with WsPC = targetPC
+                      WsCPs = cp :: s.WsCPs
+                      WsCPsLen = s.WsCPsLen + 1 }
+
+    | Try label ->
+        let targetPC = Map.tryFind label ctx.WcLabels |> Option.defaultValue 0
+        let cp = { CpNextPC   = s.WsPC + 1
+                   CpRegs     = Array.copy s.WsRegs
+                   CpStack    = s.WsStack
+                   CpCP       = s.WsCP
+                   CpTrailLen = s.WsTrailLen
+                   CpHeapLen  = s.WsHeapLen
+                   CpBindings = s.WsBindings
+                   CpCutBar   = s.WsCutBar
+                   CpAggFrame = None
+                   CpBuiltin  = None }
+        Some { s with WsPC = targetPC
+                      WsCPs = cp :: s.WsCPs
+                      WsCPsLen = s.WsCPsLen + 1 }
+
+    | RetryPc targetPC ->
+        match s.WsCPs with
+        | cp :: rest ->
+            Some { s with WsPC = targetPC
+                          WsCPs = { cp with CpNextPC = s.WsPC + 1 } :: rest }
+        | [] ->
+            // Should not happen if the chain is well-formed: a
+            // preceding `try` always pushed a CP.  Fall back to
+            // synthesizing one with the current state so we don''t
+            // silently lose backtrack ability.
+            let cp = { CpNextPC   = s.WsPC + 1
+                       CpRegs     = Array.copy s.WsRegs
+                       CpStack    = s.WsStack
+                       CpCP       = s.WsCP
+                       CpTrailLen = s.WsTrailLen
+                       CpHeapLen  = s.WsHeapLen
+                       CpBindings = s.WsBindings
+                       CpCutBar   = s.WsCutBar
+                       CpAggFrame = None
+                       CpBuiltin  = None }
+            Some { s with WsPC = targetPC
+                          WsCPs = cp :: s.WsCPs
+                          WsCPsLen = s.WsCPsLen + 1 }
+
+    | Retry label ->
+        let targetPC = Map.tryFind label ctx.WcLabels |> Option.defaultValue 0
+        match s.WsCPs with
+        | cp :: rest ->
+            Some { s with WsPC = targetPC
+                          WsCPs = { cp with CpNextPC = s.WsPC + 1 } :: rest }
+        | [] ->
+            let cp = { CpNextPC   = s.WsPC + 1
+                       CpRegs     = Array.copy s.WsRegs
+                       CpStack    = s.WsStack
+                       CpCP       = s.WsCP
+                       CpTrailLen = s.WsTrailLen
+                       CpHeapLen  = s.WsHeapLen
+                       CpBindings = s.WsBindings
+                       CpCutBar   = s.WsCutBar
+                       CpAggFrame = None
+                       CpBuiltin  = None }
+            Some { s with WsPC = targetPC
+                          WsCPs = cp :: s.WsCPs
+                          WsCPsLen = s.WsCPsLen + 1 }
+
+    | TrustPc targetPC ->
+        match s.WsCPs with
+        | _ :: rest -> Some { s with WsPC = targetPC
+                                     WsCPs = rest
+                                     WsCPsLen = s.WsCPsLen - 1 }
+        | []        -> Some { s with WsPC = targetPC }
+
+    | Trust label ->
+        let targetPC = Map.tryFind label ctx.WcLabels |> Option.defaultValue 0
+        match s.WsCPs with
+        | _ :: rest -> Some { s with WsPC = targetPC
+                                     WsCPs = rest
+                                     WsCPsLen = s.WsCPsLen - 1 }
+        | []        -> Some { s with WsPC = targetPC }
 
     // Phase 4.1 / Phase J — parallel WAM. ParTryMeElse dispatches through
     // forkOrSequential, which forks all branches in parallel when inside a
@@ -2444,6 +2575,18 @@ let resolveCallInstrs (labels: Map<string, int>) (foreignPreds: string list) (in
             match Map.tryFind label labels with
             | Some pc -> RetryMeElsePc pc
             | None    -> RetryMeElse label
+        | Try label ->
+            match Map.tryFind label labels with
+            | Some pc -> TryPc pc
+            | None    -> Try label
+        | Retry label ->
+            match Map.tryFind label labels with
+            | Some pc -> RetryPc pc
+            | None    -> Retry label
+        | Trust label ->
+            match Map.tryFind label labels with
+            | Some pc -> TrustPc pc
+            | None    -> Trust label
         | ParTryMeElse label ->
             match Map.tryFind label labels with
             | Some pc -> ParTryMeElsePc pc
@@ -3160,6 +3303,22 @@ wam_instr_to_fsharp(["try_me_else", Label], Fs) :-
 wam_instr_to_fsharp(["retry_me_else", Label], Fs) :-
     format(string(Fs), 'RetryMeElse "~w"', [Label]).
 wam_instr_to_fsharp(["trust_me"], "TrustMe").
+%% Indexed-dispatch chain ops (try / retry / trust without _me_else).
+%% Emitted by wam_target.pl into try/retry/trust chains synthesized
+%% for switch_on_term / switch_on_constant / switch_on_structure
+%% targets whose dispatch group has >1 matching clauses.  Semantics:
+%%   try   L : push CP with CpNextPC = PC+1 (the next chain
+%%             instruction), CpRegs/etc. = current; jump to L.
+%%   retry L : modify top CP's CpNextPC = PC+1; jump to L.
+%%   trust L : pop top CP; jump to L.
+%% See issue #2400 for the motivating bug and the docs at the
+%% Try*Pc step cases in the generated F# runtime.
+wam_instr_to_fsharp(["try", Label], Fs) :-
+    format(string(Fs), 'Try "~w"', [Label]).
+wam_instr_to_fsharp(["retry", Label], Fs) :-
+    format(string(Fs), 'Retry "~w"', [Label]).
+wam_instr_to_fsharp(["trust", Label], Fs) :-
+    format(string(Fs), 'Trust "~w"', [Label]).
 wam_instr_to_fsharp(["switch_on_constant"|Entries], Fs) :-
     fs_parse_switch_entries(Entries, FsPairs),
     atomic_list_concat(FsPairs, '; ', PairsStr),
