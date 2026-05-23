@@ -550,17 +550,35 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
                 | Some v -> v
                 | None   -> Unbound -1
             let s0 = putReg reg str s
+            // Cycle check: bind regVal''s vid to the new struct ONLY
+            // when vid doesn''t appear inside the struct.  Two
+            // patterns drive this (#2400 continuation):
+            //   1. PutList ai + SetValue Yn where Yn=ai (cyclic):
+            //      ai was the caller''s output var.  SetValue reads
+            //      Yn = ai = Unbound vid, appends it as the tail.
+            //      Materialization sees vid inside the new term ->
+            //      skipping the bind prevents `vid -> Str(...,vid)`
+            //      cycle.  (E.g. parse_primary''s tk_lparen clause
+            //      building `[tk_rparen | Rest]` where Rest is the
+            //      caller''s output reg.)
+            //   2. SetVariable Yn + PutStructure Yn (non-cyclic):
+            //      Yn was a fresh var, also referenced by some outer
+            //      builder.  Materialization binds vid -> new struct
+            //      so the outer ref derefs to the new term.  (E.g.
+            //      parse_op_loop building `[OpName|[Left|[Right|[]]]]`
+            //      via successive PutStructure on fresh tail vars.)
+            let regValVid =
+                match derefVar s.WsBindings regVal with
+                | Unbound v -> v
+                | _ -> -1
+            let rec containsVid v =
+                match derefVar s.WsBindings v with
+                | Unbound v' when v' >= 0 -> v' = regValVid
+                | Str (_, xs) | VList xs -> List.exists containsVid xs
+                | _ -> false
             let s0' =
                 match derefVar s.WsBindings regVal with
-                | Unbound vid when vid >= 0 ->
-                    // Bind the caller-supplied output variable to the
-                    // newly built struct.  This is the GetStructure-in-
-                    // write-mode path (when GetStructure encountered an
-                    // unbound A_i, it left vid>=0 in the register so we
-                    // could bind it here).  PutStructure clears `ai` to
-                    // Unbound -1 first so the sentinel (vid=-1) filters
-                    // through to the wildcard arm below — overwriting
-                    // rather than binding the caller''s var (#2400).
+                | Unbound vid when vid >= 0 && not (containsVid str) ->
                     { s0 with
                          WsBindings= Map.add vid str s.WsBindings
                          WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
@@ -600,10 +618,21 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
                 | Some v -> v
                 | None   -> Unbound -1
             let s0 = putReg reg listVal s
+            // Cycle check — see BuildStruct above for context.  Same
+            // rule: bind regVal''s vid to listVal unless vid appears
+            // inside listVal (which would create a self-reference).
+            let regValVid =
+                match derefVar s.WsBindings regVal with
+                | Unbound v -> v
+                | _ -> -1
+            let rec containsVid v =
+                match derefVar s.WsBindings v with
+                | Unbound v' when v' >= 0 -> v' = regValVid
+                | Str (_, xs) | VList xs -> List.exists containsVid xs
+                | _ -> false
             let s0' =
                 match derefVar s.WsBindings regVal with
-                | Unbound vid when vid >= 0 ->
-                    // See BuildStruct note above (#2400 cycle fix).
+                | Unbound vid when vid >= 0 && not (containsVid listVal) ->
                     { s0 with
                          WsBindings= Map.add vid listVal s.WsBindings
                          WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
