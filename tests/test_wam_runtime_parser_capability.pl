@@ -76,10 +76,15 @@ test(invalid_request_errors,
 
 test(parser_dependent_builtin_catalogue) :-
     findall(PI, parser_dependent_builtin(PI), PIs),
-    assertion(PIs == [read/2,
+    assertion(PIs == [read/1,
+                      read/2,
+                      read_term/1,
                       read_term_from_atom/2,
                       read_term_from_atom/3,
                       term_to_atom/2]).
+
+test(parser_dependent_goal_read_default_stream) :-
+    once(parser_dependent_goal(read(_), read/1)).
 
 test(parser_dependent_goal_read) :-
     parser_dependent_goal(read(_, _), read/2).
