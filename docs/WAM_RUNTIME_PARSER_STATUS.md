@@ -70,7 +70,7 @@ each WAM instruction).
 | **Python**   | ✅ | — | ✅ | `none` * | yes — `test_wam_python_target.pl` `wam_python_runtime_parser_mode` block |
 | **C++**      | ✅ | ✅ | ✅ | `native(parse_term)` | partial — codegen tests in `test_wam_cpp_generator.pl`, one `'42'` parse verified end-to-end during the audit |
 | **R**        | ✅ | ✅ | ✅ | `native(parse_term)` | codegen tests; runtime end-to-end via the R smoke harness |
-| **Elixir**   | ✅ | — | (advertised but **stub**) | `none` | n/a — `compiled` option exists but the parser predicates aren't actually bundled |
+| **Elixir**   | ✅ | — | — | `none` | n/a — `runtime_parser(compiled)` correctly throws `domain_error` (since Elixir isn't in the capability table); guarded by `test_runtime_parser_compiled_request_errors` |
 | **Rust**     | ✅ | — | — | `none` | n/a (no parser-mode wiring) |
 | **Haskell**  | ✅ | — | — | `none` | n/a (no parser-mode wiring) |
 | **Go**       | ✅ | — | — | `none` | n/a (no parser-mode wiring) |
@@ -143,20 +143,28 @@ someone writes one).
 
 Three threads, roughly in order of impact:
 
-### 1. Close the Elixir stub
+### 1. Elixir parser bundling (if a user appears)
 
-Elixir advertises `runtime_parser(compiled)` in
-`elixir_runtime_parser_mode_literal/2` but doesn't actually prepend the
-parser predicates to the project list.  At minimum: change the option
-to throw `domain_error` like the targets that genuinely don't support
-it, so users don't think they have a parser they don't have.  Better:
-implement the bundling (mirror Python's
-`wam_python_target.pl:expand_python_runtime_parser_predicates/3`).
+Elixir is not in the capability table for any parser mode, so
+`runtime_parser(compiled)` and `runtime_parser(native)` both
+correctly throw `domain_error` at codegen.  Regression-protected
+by `test_runtime_parser_compiled_request_errors` in
+`tests/test_wam_elixir_target.pl` (added alongside the existing
+`test_runtime_parser_native_request_errors`).
 
-The Elixir runtime would also need atom-codes / number-codes / WAM-text
-plumbing equivalent to what Python has — significant work.  Worth it
-if there's a real user for `read_term_from_atom` in Elixir; not
-otherwise.
+(An earlier version of this doc described Elixir as having an
+"advertised but stub" compiled mode -- that was inaccurate; the
+capability resolver rejects before reaching the unreachable
+`elixir_runtime_parser_mode_literal(compiled(_), _)` clause.  The
+clause itself is dead forward-compat code; left in place in case a
+later implementation needs it.)
+
+If someone wants Elixir to actually support `runtime_parser(compiled)`,
+the work is: add Elixir to the capability table, port Python's
+`expand_python_runtime_parser_predicates/3` to prepend the parser
+predicates to the project list, and add atom-codes / number-codes /
+WAM-text plumbing to the Elixir runtime equivalent to Python's.
+Significant work; worth it if there's a real user, not otherwise.
 
 ### 2. Add `compiled` to one more target with a real use case
 
