@@ -18,6 +18,7 @@
 :- dynamic user:test_sort_builtin/0.
 :- dynamic user:test_term_order_builtin/0.
 :- dynamic user:test_ground_builtin/0.
+:- dynamic user:test_sub_atom_builtin/0.
 :- dynamic user:test_succ_builtin/0.
 :- dynamic user:test_atom_number_builtin/0.
 :- dynamic user:test_atom_case_builtin/0.
@@ -169,6 +170,24 @@ test(builtins_execution) :-
                 \+ (Scratch = [z], ground(_), Scratch = [z]),
                 \+ ground(foo(1, _, 3)),
                 \+ ground([a, _])
+            )),
+          assertz(user:test_sub_atom_builtin :-
+            (   sub_atom(hello, 1, 3, A, S),
+                A =:= 1,
+                S == ell,
+                sub_atom(hello, 0, 3, 2, hel),
+                sub_atom(hello, 2, 3, 0, llo),
+                sub_atom(abc, 0, 3, 0, abc),
+                sub_atom(abc, 0, 0, 3, ''),
+                sub_atom(12345, 1, 3, 1, '234'),
+                \+ sub_atom(abc, 1, 99, _, _),
+                \+ sub_atom(abc, -1, 1, _, _),
+                \+ sub_atom(abc, 0, -1, _, _),
+                \+ sub_atom(_, 0, 1, _, _),
+                \+ sub_atom(abc, _, 1, _, _),
+                \+ sub_atom(abc, 0, _, _, _),
+                \+ sub_atom(abc, 0, 2, 0, ab),
+                \+ sub_atom(abc, 0, 2, _, ac)
             )),
           assertz(user:test_succ_builtin :-
             (   succ(0, 1),
@@ -369,6 +388,7 @@ test(builtins_execution) :-
           retractall(user:test_sort_builtin),
           retractall(user:test_term_order_builtin),
           retractall(user:test_ground_builtin),
+          retractall(user:test_sub_atom_builtin),
           retractall(user:test_succ_builtin),
           retractall(user:test_atom_number_builtin),
           retractall(user:test_atom_case_builtin),
@@ -389,7 +409,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -437,6 +457,7 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "@>=/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "compare/3"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "ground/1"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "sub_atom/5"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "succ/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "atom_number/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "upcase_atom/2"')),
@@ -576,6 +597,14 @@ func main() {
 		fmt.Println("GROUND_SUCCESS")
 	} else {
 		fmt.Println("GROUND_FAILURE")
+	}
+
+	subAtomVM := wam.NewWamState(wam.Test_sub_atom_builtinCode, wam.Test_sub_atom_builtinLabels)
+	subAtomVM.PC = wam.Test_sub_atom_builtinStartPC
+	if subAtomVM.Run() {
+		fmt.Println("SUB_ATOM_SUCCESS")
+	} else {
+		fmt.Println("SUB_ATOM_FAILURE")
 	}
 
 	succVM := wam.NewWamState(wam.Test_succ_builtinCode, wam.Test_succ_builtinLabels)
@@ -728,6 +757,7 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "SORT_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "TERM_ORDER_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "GROUND_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "SUB_ATOM_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SUCC_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_NUMBER_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_CASE_SUCCESS")),

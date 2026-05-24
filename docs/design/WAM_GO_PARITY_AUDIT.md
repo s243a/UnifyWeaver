@@ -14,7 +14,7 @@ current cross-target builtin/runtime baseline.
 | Structural builtins | `member/2`, `memberchk/2`, `select/3`, `delete/3`, `length/2`, `append/3`, `reverse/2`, `last/2`, `nth0/3`, `nth1/3`, `numlist/3`, `sort/2`, `msort/2` | `member/2`, `memberchk/2`, `length/2`; Rust `append/3` is explicitly unimplemented. Clojure/R/C++ also cover richer list builtins including `select/3`, `delete/3`, `reverse/2`, `last/2`, `nth0/3`, `nth1/3`, `numlist/3`, `sort/2`, and `msort/2` | Present for current baseline structural checks, with expanded cross-target list builtins |
 | Type builtins | `var/1`, `nonvar/1`, `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `atomic/1`, `is_list/1`, `ground/1` | Includes `is_list/1` and Clojure direct `ground/1` in the current baseline | Present for current baseline type and groundness checks |
 | Arithmetic builtins | `is/2`, `succ/2` | Arithmetic evaluation plus sibling-target `succ/2` coverage in Clojure and Elixir | Present for current baseline arithmetic checks, with expanded successor coverage |
-| Atom/text conversion | `atom_number/2`, `atom_codes/2`, `atom_chars/2`, `string_codes/2`, `string_chars/2`, `number_codes/2`, `number_chars/2`, `atom_string/2`, `string_to_atom/2`, `upcase_atom/2`, `downcase_atom/2`, `atom_concat/3`, `atom_length/2`, `string_length/2`, `char_code/2` | Clojure direct builtin surface includes bidirectional `atom_number/2`, atom/string/number code-list and char-list conversion, atom/string conversion, atom case conversion, deterministic atom concatenation, text length checks, and char-code conversion | Present for current atom-number, atom/string/number code-list, atom/string/number char-list, atom/string, atom-case, atom-concat, text-length, and char-code checks |
+| Atom/text conversion | `atom_number/2`, `atom_codes/2`, `atom_chars/2`, `string_codes/2`, `string_chars/2`, `number_codes/2`, `number_chars/2`, `atom_string/2`, `string_to_atom/2`, `upcase_atom/2`, `downcase_atom/2`, `atom_concat/3`, `atom_length/2`, `string_length/2`, `char_code/2`, `sub_atom/5` forward mode | Clojure direct builtin surface includes bidirectional `atom_number/2`, atom/string/number code-list and char-list conversion, atom/string conversion, atom case conversion, deterministic atom concatenation, text length checks, and char-code conversion | Present for current atom-number, atom/string/number code-list, atom/string/number char-list, atom/string, atom-case, atom-concat, text-length, char-code, and forward sub-atom checks |
 | Comparison builtins | `==/2`, `\==/2`, `\=/2`, `=:=/2`, `=\=/2`, `</2`, `>/2`, `=</2`, `>=/2`, `@</2`, `@=</2`, `@>/2`, `@>=/2`, `compare/3` | Includes `=</2`; Haskell mode analysis and Clojure lowering also cover term-order comparisons | Present for current baseline comparisons, with expanded term-order coverage |
 | Unification builtin | `=/2`, `\=/2` | `=/2`, `\=/2` | Present |
 | Term inspection | `functor/3`, `arg/3` | `functor/3`, `arg/3` | Present |
@@ -68,6 +68,12 @@ current cross-target builtin/runtime baseline.
   ground atoms, numbers, compounds, lists, empty lists, fresh variables,
   nested unbound compound arguments, and list elements with unbound variables,
   matching the current Clojure groundness surface.
+- Deterministic forward-mode `sub_atom/5` is now covered by the generated
+  Go WAM builtin E2E test for bound source, before, and length arguments,
+  after/sub-atom unification, empty substring extraction, numeric source
+  conversion, out-of-range failure, unbound source failure, unsupported
+  enumerable modes, and mismatch failure, matching the R WAM forward-mode
+  baseline while leaving full nondeterministic enumeration for a later slice.
 - Bidirectional `succ/2` is now covered by the generated Go WAM builtin E2E
   test for forward binding, reverse binding, matching integer pairs, mismatch
   failure, negative predecessor failure, non-positive successor failure, and
