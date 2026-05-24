@@ -185,15 +185,84 @@ The Python target now has end-to-end tests in
 `tests/test_wam_python_target.pl` for bare-integer atoms,
 prefix-directive atoms, and prefix-NaF atoms.  The C++ target has
 end-to-end tests for parser-label presence in the generated source but
-nothing that actually builds + runs.  Building C++ projects with the
-~45-predicate parser library takes ~12 minutes per case unoptimised,
-which is the blocker.
+nothing that actually builds + runs the parser library.
 
-A cheap improvement: pre-compile the C++ runtime once into a static
-library at fixture setup, then each per-case build only links the
-generated-program against it.  Order-of-magnitude faster, and unlocks
-end-to-end coverage of `:- p` / `\+ foo` / numeric quoted atoms for
-C++ — bringing it to parity with Python's coverage.
+#### What the C++ build time actually looks like
+
+Two distinct cost paths:
+
+| project shape                            | files                              | g++ -O0 wall time |
+| ---------------------------------------- | ---------------------------------- | ----------------- |
+| **fact-shaped** (no `runtime_parser`)    | `main.cpp` + `wam_runtime.cpp` + small `generated_program.cpp` | ~6-7 s            |
+| **parser-bundled** (`runtime_parser(compiled)`) | same files, but `generated_program.cpp` is now ~42k lines / 2.8 MB carrying the WAM-compiled parser predicates | **~11 min**       |
+
+The 11 min figure for the parser-bundled case lands almost entirely on
+`generated_program.cpp` -- I measured the breakdown after the cache
+landed:
+
+|                          | g++ default flags | g++ minimal safety flags | clang++ default      |
+| ------------------------ | ----------------- | ------------------------ | -------------------- |
+| `wam_runtime.cpp`        | 4.4 s             | -                        | -                    |
+| `generated_program.cpp`  | ~11 min           | 3 min (segfaults at run) | 1.5 min (segfaults at run) |
+
+So `wam_runtime.cpp` is ~4 s of an 11-minute total -- pre-compiling
+just it isn't enough.  The minimal-flag g++ / clang variants are
+~4-8x faster but the resulting binaries crash at the first line of
+`wam_cpp_setup` -- looks like deep-stack UB driven by ~40k consecutive
+`vm.instrs.push_back(...)` temporaries that g++'s default stack
+protections happen to mask.  Fixing that UB would unlock the
+fast-compile path but is significant debugging work in the codegen.
+
+#### What landed
+
+Added a `wam_runtime.o` cache to `build_e2e_binary/2` (in
+`tests/test_wam_cpp_generator.pl`).  First call per unique runtime
+content compiles `wam_runtime.cpp` to a content-hashed .o under
+`/tmp/uw_cpp_runtime_cache/`; subsequent C++ e2e tests in the same
+session reuse it.
+
+Measured impact on the existing `cpp_e2e_fact / cpp_e2e_choice_backtracking
+/ cpp_e2e_caller` suite (small fact-shaped projects, no parser bundling):
+
+- cold cache: 12.0 s for the 3 tests
+- warm cache:  7.6 s for the 3 tests
+- 4.4 s saved (≈ 1.5 s / test, ≈ 36 % faster overall)
+
+The full C++ generator suite has ~30+ `cpp_e2e_*` tests, so the cache
+saves around 30 s per full test run -- modest but real, and it scales
+with the number of C++ e2e tests added later.
+
+For parser-bundled projects the cache saves the same 4.4 s, which is
+noise against the 11 min `generated_program.cpp` compile -- so the
+infrastructure exists but a true end-to-end parser test would still
+need either the UB fix (so clang/minimal-flag g++ can be used) or a
+codegen split.
+
+#### What's left
+
+The actual order-of-magnitude speedup the original plan suggested
+needs **codegen-level work**.  Two routes:
+
+- **Fix the UB so clang / minimal-flag g++ work.**  Investigate the
+  `wam_cpp_setup` stack-usage pattern in the C++ codegen (~40k
+  consecutive `Instruction::Foo(...)` temporaries inside a single
+  function) and either factor it into per-predicate setup functions or
+  switch to a static-array-of-Instruction-structs initialisation.
+  Either restructuring should also make clang's faster compile path
+  produce a working binary.
+
+- **Split the parser library into a separately-compiled file.**  The
+  `wam_cpp_setup` function currently registers labels and emits
+  instructions for parser + user predicates in one giant body.  If the
+  parser portion went into its own translation unit, it could be
+  cached the same way `wam_runtime.cpp` now is.  Bigger codegen
+  refactor; the per-test compile would still need to know the parser
+  library's instruction count to compute absolute label offsets for
+  the user predicates.
+
+Either approach unlocks per-case parser-bundled tests in the seconds
+range and brings C++ to parity with Python's end-to-end coverage of
+the `:- p` / `\+ foo` / numeric-quoted-atom shapes.
 
 ### Not on the plan
 
