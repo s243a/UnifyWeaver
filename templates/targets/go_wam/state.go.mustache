@@ -674,6 +674,34 @@ func (vm *WamState) heapConsAfterUnbound(v *Unbound) (Value, bool) {
 	return nil, false
 }
 
+func (vm *WamState) heapListAfterUnbound(v *Unbound) (Value, bool) {
+	found := false
+	for i := 0; i < vm.HeapLen; i++ {
+		cell := vm.Heap[i]
+		if cell == v {
+			found = true
+			continue
+		}
+		if !found {
+			continue
+		}
+		next := vm.deref(cell)
+		switch t := next.(type) {
+		case *List:
+			return next, true
+		case *Compound:
+			if isConsFunctor(t.Functor) && len(t.Args) == 2 {
+				return next, true
+			}
+		case *Structure:
+			if isConsFunctor(t.Functor) && len(t.Args) == 2 {
+				return next, true
+			}
+		}
+	}
+	return nil, false
+}
+
 func (vm *WamState) listHeadTail(list *List) (Value, Value, bool) {
 	switch len(list.Elements) {
 	case 0:
@@ -904,6 +932,64 @@ func (vm *WamState) copyTermValue(v Value, seen map[int]*Unbound) Value {
 		return &List{Elements: items}
 	default:
 		return t
+	}
+}
+
+func (vm *WamState) groundTerm(v Value, seen map[Value]bool) bool {
+	v = vm.deref(v)
+	switch t := v.(type) {
+	case *Unbound:
+		if next, ok := vm.heapConsAfterUnbound(t); ok {
+			return vm.groundTerm(next, seen)
+		}
+		if next, ok := vm.heapListAfterUnbound(t); ok {
+			return vm.groundTerm(next, seen)
+		}
+		return false
+	case *Atom, *Integer, *Float:
+		return true
+	case *Compound:
+		if seen[t] {
+			return true
+		}
+		seen[t] = true
+		for _, arg := range t.Args {
+			if !vm.groundTerm(arg, seen) {
+				return false
+			}
+		}
+		return true
+	case *Structure:
+		if seen[t] {
+			return true
+		}
+		seen[t] = true
+		for _, arg := range t.Args {
+			if !vm.groundTerm(arg, seen) {
+				return false
+			}
+		}
+		return true
+	case *List:
+		if isEmptyListValue(t) {
+			return true
+		}
+		if seen[t] {
+			return true
+		}
+		seen[t] = true
+		items, ok := vm.listToSlice(t)
+		if !ok {
+			return false
+		}
+		for _, item := range items {
+			if !vm.groundTerm(item, seen) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1349,6 +1435,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "number/1": return isNumber(vm.deref(arg1))
 	case "compound/1": return isCompound(vm.deref(arg1))
 	case "atomic/1": return isAtomic(vm.deref(arg1))
+	case "ground/1": return vm.groundTerm(arg1, make(map[Value]bool))
 	case "is_list/1": return isList(vm.deref(arg1))
 
 	case "==/2": return valueEquals(vm.deref(arg1), vm.deref(arg2))
