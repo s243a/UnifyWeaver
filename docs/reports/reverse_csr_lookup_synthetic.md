@@ -27,8 +27,8 @@ python3 examples/benchmark/benchmark_reverse_csr_lookup.py \
 
 | backend | sample_parents | iterations | total_children | median_ms | min_ms | max_ms | csr_artifact_bytes | phase1_lmdb_env_bytes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| csr | 1000 | 5 | 8000 | 12.104892 | 11.941214 | 12.224214 | 480780 | 4579328 |
-| lmdb | 1000 | 5 | 8000 | 3.613239 | 3.578186 | 3.852191 | 480780 | 4579328 |
+| csr | 1000 | 5 | 8000 | 3.188616 | 3.180329 | 3.430460 | 480780 | 4579328 |
+| lmdb | 1000 | 5 | 8000 | 3.690326 | 3.581263 | 3.842682 | 480780 | 4579328 |
 
 `phase1_lmdb_env_bytes` is the size of the whole Phase 1 LMDB
 environment file (`data.mdb`), not the size of only the parent-edge or
@@ -47,14 +47,14 @@ artifact may become memory-resident only when memory budget allows, and
 that in-memory representation should preserve the compact typed-array /
 CSR shape rather than expanding into Python-style object lists.
 
-The current Python CSR reader is slower than LMDB lookup. That is
-expected for the first reader: every lookup opens, seeks, and reads from
-the values file.
+The original Python CSR reader was slower than LMDB lookup because every
+lookup opened, sought, and read from the values file. The reader now
+keeps the values file open across lookup batches, which makes this
+synthetic fixture measure positional lookup cost more directly.
 
-The next optimization target is therefore the reader path, not the CSR
-layout:
+The next optimization target is therefore no longer file-handle churn:
 
-- keep the values file open across lookup batches;
 - optionally cache recently used child slices or blocks;
-- then rerun the same benchmark before considering WAM runtime
-  integration.
+- compare parent-edge-only LMDB memory pressure against CSR residency;
+- then consider WAM runtime integration for workloads that need deferred
+  child expansion.

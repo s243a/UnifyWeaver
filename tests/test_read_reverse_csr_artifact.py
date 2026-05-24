@@ -13,6 +13,8 @@ from test_build_reverse_csr_artifact import BUILDER, ROOT, i32
 
 
 READER = ROOT / "examples" / "benchmark" / "read_reverse_csr_artifact.py"
+sys.path.insert(0, str(ROOT / "examples" / "benchmark"))
+from read_reverse_csr_artifact import ReverseCsrArtifact  # noqa: E402
 
 
 def make_phase1_lmdb(path: Path) -> None:
@@ -94,6 +96,31 @@ class ReadReverseCsrArtifactTest(unittest.TestCase):
             )
             self.assertEqual(validate.returncode, 0, validate.stderr)
             self.assertEqual(validate.stdout.strip(), "validated parents=2 edges=4")
+
+    def test_artifact_keeps_values_file_open_until_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            phase1 = tmp_path / "phase1.lmdb"
+            out_dir = tmp_path / "category_child_csr"
+            make_phase1_lmdb(phase1)
+
+            build = subprocess.run(
+                [sys.executable, str(BUILDER), str(phase1), str(out_dir)],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(build.returncode, 0, build.stderr)
+
+            with ReverseCsrArtifact(out_dir) as artifact:
+                self.assertFalse(artifact._values.closed)
+                self.assertEqual(artifact.lookup(20), [10, 12, 13])
+
+            self.assertTrue(artifact._values.closed)
+            with self.assertRaisesRegex(ValueError, "CSR values file is closed"):
+                artifact.lookup(20)
 
     def test_reader_rejects_unsupported_id_encoding(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

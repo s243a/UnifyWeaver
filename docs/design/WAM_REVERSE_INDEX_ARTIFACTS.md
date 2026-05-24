@@ -319,6 +319,15 @@ same conceptual family as `binary_artifact`, `lmdb_artifact`, and
 `mmap_array_artifact`, rather than as a replacement for the existing C#
 artifact framework.
 
+One concrete effective-distance use is a staged search for workloads
+that allow non-carrot-shaped paths. The runtime can first run the hot
+ancestor kernel over the parent-edge store, preserving the current
+ancestor-first reuse path. Only after that search is exhausted should it
+open the reverse CSR path to add child nodes and widen the frontier. In
+that shape, CSR is not competing with the parent-edge LMDB as the primary
+resident structure; it is a deferred expansion artifact used when the
+query semantics justify leaving the ancestor-only search space.
+
 ### 3.4.1 CSR I/O policy
 
 CSR access should expose an explicit I/O policy:
