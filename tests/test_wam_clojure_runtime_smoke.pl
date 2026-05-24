@@ -77,6 +77,8 @@
 :- dynamic user:wam_length_guard/2.
 :- dynamic user:wam_length_bad_list/1.
 :- dynamic user:wam_length_unbound_list/1.
+:- dynamic user:wam_length_generate_list/0.
+:- dynamic user:wam_length_negative_generate/0.
 :- dynamic user:wam_member_guard/2.
 :- dynamic user:wam_member_backtrack_b/0.
 :- dynamic user:wam_member_unbound_list/1.
@@ -321,6 +323,8 @@ user:wam_is_list_unbound(_) :- user:wam_unbound_arg(Y), is_list(Y).
 user:wam_length_guard(L, N) :- length(L, N).
 user:wam_length_bad_list(N) :- length([a|b], N).
 user:wam_length_unbound_list(N) :- user:wam_unbound_arg(Y), length(Y, N).
+user:wam_length_generate_list :- user:wam_unbound_arg(Y), length(Y, 2), Y = [_,_].
+user:wam_length_negative_generate :- user:wam_unbound_arg(Y), length(Y, -1).
 user:wam_member_guard(X, L) :- member(X, L).
 user:wam_member_backtrack_b :- member(X, [a,b]), X = b.
 user:wam_member_unbound_list(X) :- user:wam_unbound_arg(Y), member(X, Y).
@@ -570,6 +574,8 @@ run_smoke :-
           user:wam_length_guard/2,
           user:wam_length_bad_list/1,
           user:wam_length_unbound_list/1,
+          user:wam_length_generate_list/0,
+          user:wam_length_negative_generate/0,
           user:wam_member_guard/2,
           user:wam_member_backtrack_b/0,
           user:wam_member_unbound_list/1,
@@ -920,7 +926,9 @@ smoke_cases([
     case('wam_length_guard/2', args('[a,b]', 1), "false"),
     case('wam_length_guard/2', args('[]', 0), "true"),
     case('wam_length_bad_list/1', 1, "false"),
-    case('wam_length_unbound_list/1', 0, "false"),
+    case('wam_length_unbound_list/1', 0, "true"),
+    case('wam_length_generate_list/0', no_args, "true"),
+    case('wam_length_negative_generate/0', no_args, "false"),
     case('wam_member_guard/2', args(a, '[a,b]'), "true"),
     case('wam_member_guard/2', args(b, '[a,b]'), "true"),
     case('wam_member_guard/2', args(c, '[a,b]'), "false"),
@@ -1323,7 +1331,9 @@ assert_lowered_length_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-length-guard-2"),
     has(CoreCode, "defn lowered-wam-length-bad-list-1"),
     has(CoreCode, "defn lowered-wam-length-unbound-list-1"),
-    has(CoreCode, "runtime/proper-list-length").
+    has(CoreCode, "defn lowered-wam-length-generate-list-0"),
+    has(CoreCode, "defn lowered-wam-length-negative-generate-0"),
+    has(CoreCode, "runtime/apply-length-solution").
 
 assert_lowered_member_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),

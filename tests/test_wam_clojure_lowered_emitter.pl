@@ -524,11 +524,8 @@ test(simple_builtin_length_is_direct_lowered_in_prefix) :-
         WamCode = "test_length/2:\nbuiltin_call length/2, 2\nproceed\n",
         wam_clojure_lowerable(test_length/2, WamCode, deterministic),
         lower_predicate_to_clojure(test_length/2, WamCode, [], Code),
-        has(Code, "runtime/deref-value"),
-        has(Code, "runtime/proper-list-length"),
-        has(Code, "runtime/unify-values"),
-        has(Code, "runtime/advance"),
-        has(Code, "runtime/backtrack")
+        has(Code, "runtime/apply-length-solution"),
+        assertion(\+ has(Code, "runtime/proper-list-length"))
     )).
 
 test(simple_builtin_member_is_direct_lowered_in_prefix) :-
