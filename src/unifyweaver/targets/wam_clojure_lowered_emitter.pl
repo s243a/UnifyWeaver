@@ -801,12 +801,12 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "nth0/3" ; Op == 'nth0/3'),
     !,
-    format(atom(Expr), '(runtime/apply-nth0-solution ~w)', [S]).
+    format(atom(Expr), '(runtime/apply-nth0-solution ~w (inc (:pc ~w)))', [S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "nth1/3" ; Op == 'nth1/3'),
     !,
-    format(atom(Expr), '(runtime/apply-nth1-solution ~w)', [S]).
+    format(atom(Expr), '(runtime/apply-nth1-solution ~w (inc (:pc ~w)))', [S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "select/3" ; Op == 'select/3'),
