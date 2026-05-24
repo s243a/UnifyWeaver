@@ -505,4 +505,5 @@ visited-set instructions used by graph kernels).
 - [FSHARP_TARGET](FSHARP_TARGET.md) -- the older direct-to-functional-F# target (not WAM-based)
 - [WAM_R_TARGET](WAM_R_TARGET.md) -- analogous WAM target with mode analysis + lowered emitter
 - [WAM_HASKELL_LOWERED_PHILOSOPHY](design/WAM_HASKELL_LOWERED_PHILOSOPHY.md) -- the design rationale for the lowered-emitter pattern (Haskell first, F# / Clojure follow)
+- [WAM_PERF_CROSS_TARGET](WAM_PERF_CROSS_TARGET.md) -- why the F# perf wins are target-specific and don't backport
 - [DOTNET_COMPILATION](DOTNET_COMPILATION.md) -- general .NET project layout shared with the C# target
