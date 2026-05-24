@@ -1041,6 +1041,38 @@ test(runtime_stream_char_io_reads_and_writes_files) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+test(runtime_read_line_to_string_reads_file_lines) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read_line_demo),
+			user:python_parser_tmp_dir('tmp_wam_python_read_line', ProjectDir),
+			atomic_list_concat([ProjectDir, '/lines.txt'], InFile),
+			assertz((user:py_read_line_demo :-
+				open(InFile, read, S),
+				peek_char(S, C0), C0 = f,
+				read_line_to_string(S, L1), L1 = foo,
+				read_line_to_string(S, L2), L2 = '',
+				read_line_to_string(S, L3), L3 = bar,
+				read_line_to_string(S, L4), L4 = end_of_file,
+				close(S)))
+		),
+		(   setup_call_cleanup(open(InFile, write, Input),
+				format(Input, "foo~n~nbar", []),
+				close(Input)),
+			wam_python_target:write_wam_python_project([user:py_read_line_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_read_line_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read_line_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_parser_compiled_runs_reverse_term_to_atom) :-
 	setup_call_cleanup(
 		(   retractall(user:py_term_to_atom_demo),
@@ -1550,6 +1582,7 @@ test(static_runtime_has_lua_baseline_builtins, [nondet]) :-
 		"get_char/2",
 		"get_code/2",
 		"peek_char/2",
+		"read_line_to_string/2",
 		"nl/0"
 	]), sub_string(Content, _, _, _, Needle)).
 
@@ -1564,6 +1597,7 @@ test(static_runtime_io_emits_output, [nondet]) :-
 	sub_string(Content, _, _, _, "print(_format_value(get_reg(state, 1), state), end='')"),
 	sub_string(Content, _, _, _, "def _execute_put_char"),
 	sub_string(Content, _, _, _, "def _execute_put_code"),
+	sub_string(Content, _, _, _, "def _execute_read_line_to_string"),
 	sub_string(Content, _, _, _, "print()").
 
 :- end_tests(wam_python_builtin_parity_guard).
