@@ -125,7 +125,12 @@ reporting, but neither depends on the other.
 
 ## Remaining Work
 
-- Extract shared ISO config/audit helpers once a third target adopts the design.
+- Shared ISO config/audit helpers were extracted into
+  `src/unifyweaver/core/iso_errors.pl` once F# became the third adopter.
+  Python, Elixir, and F# all `use_module` from there now and only keep
+  the target-specific parts (key-table assertions, `iso_errors_rewrite_text`
+  variants, target audit wrapper).  C++ has its own implementation in C++
+  source and is intentionally separate.  Tests in `tests/test_iso_errors.pl`.
 - Decide which target should be the next adopter based on real `catch/3` /
   arithmetic-error users, not just target popularity.
 - Keep C++ and Elixir docs in sync with the shipped state; older parity plans

@@ -479,8 +479,12 @@ test_iso_errors_audit_is_resolves_to_lax :-
 
 test_iso_errors_is_table_populated :-
     Test = 'WAM-Elixir: PR #4 populates is/2 entries in iso/lax tables',
-    (   wam_elixir_target:iso_errors_default_to_iso("is/2", "is_iso/2"),
-        wam_elixir_target:iso_errors_default_to_lax("is/2", "is_lax/2")
+    %% After shared-module extraction, the key tables live as
+    %% multifile facts on iso_errors:iso_errors_default_to_iso/2
+    %% (and _lax/2) -- Elixir's wam_elixir_target.pl asserts into
+    %% that module rather than maintaining its own dynamic facts.
+    (   iso_errors:iso_errors_default_to_iso("is/2", "is_iso/2"),
+        iso_errors:iso_errors_default_to_lax("is/2", "is_lax/2")
     ->  pass(Test)
     ;   fail_test(Test, 'is/2 table entries missing')
     ).
@@ -489,11 +493,11 @@ test_iso_errors_sweep_table_populated :-
     Test = 'WAM-Elixir: PR #5 populates 6 compares + succ/2 in iso/lax tables',
     Compares = [">/2", "</2", ">=/2", "=</2", "=:=/2", "=\\=/2"],
     (   forall(member(K, Compares),
-               (   wam_elixir_target:iso_errors_default_to_iso(K, _),
-                   wam_elixir_target:iso_errors_default_to_lax(K, _)
+               (   iso_errors:iso_errors_default_to_iso(K, _),
+                   iso_errors:iso_errors_default_to_lax(K, _)
                )),
-        wam_elixir_target:iso_errors_default_to_iso("succ/2", "succ_iso/2"),
-        wam_elixir_target:iso_errors_default_to_lax("succ/2", "succ_lax/2")
+        iso_errors:iso_errors_default_to_iso("succ/2", "succ_iso/2"),
+        iso_errors:iso_errors_default_to_lax("succ/2", "succ_lax/2")
     ->  pass(Test)
     ;   fail_test(Test, 'one or more PR #5 table entries missing')
     ).

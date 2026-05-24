@@ -45,6 +45,15 @@
 :- use_module('../core/prolog_term_parser').
 :- use_module('../bindings/python_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../core/iso_errors',
+              [ iso_errors_resolve_options/2,
+                iso_errors_load_config/2,
+                iso_errors_mode_for/3,
+                iso_errors_warn_multi_module/2,
+                iso_errors_rewrite/4,
+                iso_errors_audit_normalise_pi/2,
+                iso_errors_audit_walk/5
+              ]).
 :- use_module('../targets/wam_python_lowered_emitter', [
 	emit_lowered_python/4,
 	is_deterministic_pred_py/1,
@@ -1388,179 +1397,50 @@ compile_wam_runtime_to_python(_Options, PythonCode) :-
 % ============================================================================
 % ISO Error Configuration And Rewrite Plumbing
 % ============================================================================
+%
+% The reusable helpers (option resolution, mode lookup, config-file
+% loader, multi-module warning, item-level rewrite, audit walker)
+% live in src/unifyweaver/core/iso_errors.pl and are imported via
+% use_module at the top of this file.  What stays here:
+%   - Python key tables (multifile facts asserted into iso_errors),
+%     including read/read_term/read_term_from_atom which only Python
+%     supports via the runtime-parser substrate.
+%   - Text-level rewrite + plans wrapper.
+%   - wam_python_iso_audit/3 itself plus its parse-lines helpers.
 
-% Python has catch/throw plus ISO error constructors. The config and rewrite
-% layer is wired now, while key tables remain empty until the first Python
-% ISO/lax builtin variants land.
-:- dynamic iso_errors_default_to_iso/2.
-:- dynamic iso_errors_default_to_lax/2.
+% Multifile dispatch tables -- assert into iso_errors so the shared
+% mode/audit helpers see our entries.
+iso_errors:iso_errors_default_to_iso("is/2", "is_iso/2").
+iso_errors:iso_errors_default_to_iso(">/2", ">_iso/2").
+iso_errors:iso_errors_default_to_iso("</2", "<_iso/2").
+iso_errors:iso_errors_default_to_iso(">=/2", ">=_iso/2").
+iso_errors:iso_errors_default_to_iso("=</2", "=<_iso/2").
+iso_errors:iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
+iso_errors:iso_errors_default_to_iso("=\\=/2", "=\\=_iso/2").
+iso_errors:iso_errors_default_to_iso("succ/2", "succ_iso/2").
+iso_errors:iso_errors_default_to_iso("read_term_from_atom/2", "read_term_from_atom_iso/2").
+iso_errors:iso_errors_default_to_iso("read_term_from_atom/3", "read_term_from_atom_iso/3").
+iso_errors:iso_errors_default_to_iso("read/1", "read_iso/1").
+iso_errors:iso_errors_default_to_iso("read_term/1", "read_term_iso/1").
+iso_errors:iso_errors_default_to_iso("read/2", "read_iso/2").
 
-iso_errors_default_to_iso("is/2", "is_iso/2").
-iso_errors_default_to_iso(">/2", ">_iso/2").
-iso_errors_default_to_iso("</2", "<_iso/2").
-iso_errors_default_to_iso(">=/2", ">=_iso/2").
-iso_errors_default_to_iso("=</2", "=<_iso/2").
-iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
-iso_errors_default_to_iso("=\\=/2", "=\\=_iso/2").
-iso_errors_default_to_iso("succ/2", "succ_iso/2").
-iso_errors_default_to_iso("read_term_from_atom/2", "read_term_from_atom_iso/2").
-iso_errors_default_to_iso("read_term_from_atom/3", "read_term_from_atom_iso/3").
-iso_errors_default_to_iso("read/1", "read_iso/1").
-iso_errors_default_to_iso("read_term/1", "read_term_iso/1").
-iso_errors_default_to_iso("read/2", "read_iso/2").
+iso_errors:iso_errors_default_to_lax("is/2", "is_lax/2").
+iso_errors:iso_errors_default_to_lax(">/2", ">_lax/2").
+iso_errors:iso_errors_default_to_lax("</2", "<_lax/2").
+iso_errors:iso_errors_default_to_lax(">=/2", ">=_lax/2").
+iso_errors:iso_errors_default_to_lax("=</2", "=<_lax/2").
+iso_errors:iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
+iso_errors:iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
+iso_errors:iso_errors_default_to_lax("succ/2", "succ_lax/2").
+iso_errors:iso_errors_default_to_lax("read_term_from_atom/2", "read_term_from_atom_lax/2").
+iso_errors:iso_errors_default_to_lax("read_term_from_atom/3", "read_term_from_atom_lax/3").
+iso_errors:iso_errors_default_to_lax("read/1", "read_lax/1").
+iso_errors:iso_errors_default_to_lax("read_term/1", "read_term_lax/1").
+iso_errors:iso_errors_default_to_lax("read/2", "read_lax/2").
 
-iso_errors_default_to_lax("is/2", "is_lax/2").
-iso_errors_default_to_lax(">/2", ">_lax/2").
-iso_errors_default_to_lax("</2", "<_lax/2").
-iso_errors_default_to_lax(">=/2", ">=_lax/2").
-iso_errors_default_to_lax("=</2", "=<_lax/2").
-iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
-iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
-iso_errors_default_to_lax("succ/2", "succ_lax/2").
-iso_errors_default_to_lax("read_term_from_atom/2", "read_term_from_atom_lax/2").
-iso_errors_default_to_lax("read_term_from_atom/3", "read_term_from_atom_lax/3").
-iso_errors_default_to_lax("read/1", "read_lax/1").
-iso_errors_default_to_lax("read_term/1", "read_term_lax/1").
-iso_errors_default_to_lax("read/2", "read_lax/2").
-
-%% iso_errors_resolve_options(+Options, -Config)
-%  Merges optional file config with inline options into iso_config(Default,
-%  Overrides). Inline options override file entries for the same PI.
-iso_errors_resolve_options(Options, iso_config(Default, Overrides)) :-
-	(   option(iso_errors_config(File), Options)
-	->  iso_errors_load_config(File, iso_config(FileDefault, FileOv))
-	;   FileDefault = false, FileOv = []
-	),
-	iso_errors_inline_default(Options, FileDefault, Default),
-	iso_errors_inline_overrides(Options, InlineOv),
-	iso_errors_merge_overrides(FileOv, InlineOv, Overrides).
-
-iso_errors_inline_default(Options, FileDefault, Default) :-
-	(   member(iso_errors(M), Options),
-		(M == true ; M == false)
-	->  Default = M
-	;   Default = FileDefault
-	).
-
-iso_errors_inline_overrides(Options, InlineOv) :-
-	findall(PI-Mode,
-		( member(iso_errors(PI, Mode), Options),
-		  (Mode == true ; Mode == false),
-		  iso_errors_valid_pi(PI)
-		),
-		InlineOv).
-
-iso_errors_valid_pi(Name/Arity) :- atom(Name), integer(Arity), Arity >= 0, !.
-iso_errors_valid_pi(Module:Name/Arity) :-
-	atom(Module), atom(Name), integer(Arity), Arity >= 0.
-
-iso_errors_merge_overrides(FileOv, InlineOv, Merged) :-
-	exclude(iso_errors_shadowed(InlineOv), FileOv, Kept),
-	append(Kept, InlineOv, Merged).
-
-iso_errors_shadowed(InlineOv, PI-_) :-
-	member(InlinePI-_, InlineOv),
-	iso_errors_pi_matches(InlinePI, PI), !.
-
-iso_errors_pi_matches(PI, PI) :- !.
-iso_errors_pi_matches(Name/Arity, _:Name/Arity) :-
-	atom(Name), integer(Arity), !.
-iso_errors_pi_matches(_:Name/Arity, Name/Arity) :-
-	atom(Name), integer(Arity), !.
-
-%% iso_errors_load_config(+File, -Config)
-%  Reads iso_errors_default/1 and iso_errors_override/2 facts. Unknown facts
-%  and I/O failures are ignored, yielding iso_config(false, []).
-iso_errors_load_config(File, iso_config(Default, Overrides)) :-
-	catch(
-		setup_call_cleanup(
-			open(File, read, Stream),
-			iso_errors_read_terms(Stream, RawTerms),
-			close(Stream)),
-		_,
-		RawTerms = []),
-	iso_errors_extract_terms(RawTerms, false, [], Default, RevOv),
-	reverse(RevOv, Overrides).
-
-iso_errors_read_terms(Stream, Terms) :-
-	read_term(Stream, T, []),
-	(   T == end_of_file
-	->  Terms = []
-	;   Terms = [T|Rest],
-		iso_errors_read_terms(Stream, Rest)
-	).
-
-iso_errors_extract_terms([], D, Ov, D, Ov).
-iso_errors_extract_terms([T|Rest], D0, Ov0, D, Ov) :-
-	(   T = iso_errors_default(NewD), (NewD == true ; NewD == false)
-	->  iso_errors_extract_terms(Rest, NewD, Ov0, D, Ov)
-	;   T = iso_errors_override(PI, Mode),
-		(Mode == true ; Mode == false),
-		iso_errors_valid_pi(PI)
-	->  iso_errors_extract_terms(Rest, D0, [PI-Mode|Ov0], D, Ov)
-	;   iso_errors_extract_terms(Rest, D0, Ov0, D, Ov)
-	).
-
-%% iso_errors_mode_for(+Config, +PI, -Mode)
-iso_errors_mode_for(iso_config(Default, Overrides), PI, Mode) :-
-	(   member(OvPI-OvMode, Overrides),
-		iso_errors_pi_matches(OvPI, PI)
-	->  Mode = OvMode
-	;   Mode = Default
-	).
-
-%% iso_errors_warn_multi_module(+Config, +Predicates)
-%  Warns when a bare override matches predicates from multiple modules.
-iso_errors_warn_multi_module(iso_config(_, Overrides), Predicates) :-
-	forall(member(OvPI-_, Overrides),
-	       iso_errors_check_override_scope(OvPI, Predicates)).
-
-iso_errors_check_override_scope(Name/Arity, Predicates) :-
-	atom(Name), integer(Arity), !,
-	findall(M, ( member(P, Predicates),
-	             iso_errors_pi_module(P, Name, Arity, M)
-	           ), Modules),
-	list_to_set(Modules, Unique),
-	(   Unique = [_, _ | _]
-	->  length(Unique, N),
-		format(user_error,
-		       'Warning: iso_errors_override(~w/~w, _) matches ~w predicates~n         in different modules (~w).~n         Qualify with `mod:~w/~w` for module-scoped overrides.~n',
-		       [Name, Arity, N, Unique, Name, Arity])
-	;   true
-	).
-iso_errors_check_override_scope(_, _).
-
-iso_errors_pi_module(Module:Name/Arity, Name, Arity, Module) :- !.
-iso_errors_pi_module(Name/Arity, Name, Arity, user).
-iso_errors_pi_module(Pred/Arity-_, Name, Arity, user) :-
-	atom(Pred), Pred = Name, !.
-
-%% iso_errors_rewrite(+Config, +PI, +Items0, -Items)
-%  Item-level rewrite API shared with C++/Elixir. Python currently uses the
-%  text-level wrapper below because both interpreter and lowered paths start
-%  from WAM text.
-iso_errors_rewrite(Config, PI, Items0, Items) :-
-	iso_errors_mode_for(Config, PI, Mode),
-	maplist(iso_errors_rewrite_item(Mode), Items0, Items).
-
-iso_errors_rewrite_item(true, builtin_call(Key, N), builtin_call(IsoKey, N)) :-
-	iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_rewrite_item(true, put_structure(Key, Reg), put_structure(IsoKey, Reg)) :-
-	iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_rewrite_item(true, call(Key, N), call(IsoKey, N)) :-
-	iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_rewrite_item(true, execute(Key), execute(IsoKey)) :-
-	iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_rewrite_item(false, builtin_call(Key, N), builtin_call(LaxKey, N)) :-
-	iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_rewrite_item(false, put_structure(Key, Reg), put_structure(LaxKey, Reg)) :-
-	iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_rewrite_item(false, call(Key, N), call(LaxKey, N)) :-
-	iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_rewrite_item(false, execute(Key), execute(LaxKey)) :-
-	iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_rewrite_item(_, Item, Item).
-
+%% iso_errors_rewrite_plans(+Config, +Plans0, -Plans)
+%  Python-specific pred_plan wrapper: applies iso_errors_rewrite_text
+%  to each pred_plan(Pred, Arity, Wam, wam) plan's WAM text.
 iso_errors_rewrite_plans(Config, Plans0, Plans) :-
 	maplist(iso_errors_rewrite_plan(Config), Plans0, Plans).
 
@@ -1581,7 +1461,7 @@ iso_errors_rewrite_text(Config, PI, WamText, RewrittenText) :-
 		atomic_list_concat(RewrittenLines, '\n', RewrittenText)
 	).
 
-iso_errors_has_lax_entries :- iso_errors_default_to_lax(_, _), !.
+iso_errors_has_lax_entries :- iso_errors:iso_errors_default_to_lax(_, _), !.
 
 iso_errors_rewrite_line(Mode, Line, OutLine) :-
 	split_string(Line, " \t", " \t", Parts0),
@@ -1619,9 +1499,9 @@ iso_errors_clean_key_token(Token0, Token) :-
 	).
 
 iso_errors_lookup(true, Key, NewKey) :-
-	iso_errors_default_to_iso(Key, NewKey), !.
+	iso_errors:iso_errors_default_to_iso(Key, NewKey), !.
 iso_errors_lookup(false, Key, NewKey) :-
-	iso_errors_default_to_lax(Key, NewKey), !.
+	iso_errors:iso_errors_default_to_lax(Key, NewKey), !.
 iso_errors_lookup(_, Key, Key).
 
 iso_errors_splice_line(Line, Key, NewKey, OutLine) :-
@@ -1642,10 +1522,6 @@ wam_python_iso_audit(Predicates, Options, Audit) :-
 		iso_errors_mode_for(Config, PI, Mode),
 		iso_errors_audit_predicate(PI, Mode, Sites)
 	), Audit).
-
-iso_errors_audit_normalise_pi(Pred/Arity-_, Pred/Arity) :- !.
-iso_errors_audit_normalise_pi(Module:Pred/Arity, Module:Pred/Arity) :- !.
-iso_errors_audit_normalise_pi(PI, PI).
 
 iso_errors_audit_predicate(PI, Mode, Sites) :-
 	(   catch(
@@ -1680,41 +1556,6 @@ iso_errors_audit_classify_line([Tok], label) :-
 iso_errors_audit_classify_line(["builtin_call", Key0 | _], builtin_call(Key, 0)) :- !,
 	iso_errors_clean_key_token(Key0, Key).
 iso_errors_audit_classify_line(_, other).
-
-iso_errors_audit_walk([], _, _, Acc, Acc).
-iso_errors_audit_walk([label|Rest], PC, Mode, Acc, Out) :- !,
-	iso_errors_audit_walk(Rest, PC, Mode, Acc, Out).
-iso_errors_audit_walk([builtin_call(Key, _)|Rest], PC, Mode, Acc, Out) :- !,
-	iso_errors_audit_classify(Key, Mode, Source, Resolved, Flip),
-	PC1 is PC + 1,
-	iso_errors_audit_walk(Rest, PC1, Mode, [site(PC, Key, Resolved, Source, Flip)|Acc], Out).
-iso_errors_audit_walk([_|Rest], PC, Mode, Acc, Out) :-
-	PC1 is PC + 1,
-	iso_errors_audit_walk(Rest, PC1, Mode, Acc, Out).
-
-iso_errors_audit_classify(Key, _Mode, explicit_iso, Key, false) :-
-	iso_errors_key_has_suffix(Key, "_iso"), !.
-iso_errors_audit_classify(Key, _Mode, explicit_lax, Key, false) :-
-	iso_errors_key_has_suffix(Key, "_lax"), !.
-iso_errors_audit_classify(Key, Mode, default, Resolved, Flip) :-
-	iso_errors_resolve_default(Key, Mode, Resolved),
-	iso_errors_other_mode(Mode, OtherMode),
-	iso_errors_resolve_default(Key, OtherMode, OtherResolved),
-	( Resolved == OtherResolved -> Flip = false ; Flip = true ).
-
-iso_errors_resolve_default(Key, true, IsoKey) :-
-	iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_resolve_default(Key, false, LaxKey) :-
-	iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_resolve_default(Key, _, Key).
-
-iso_errors_other_mode(true, false).
-iso_errors_other_mode(false, true).
-
-iso_errors_key_has_suffix(Key, Suffix) :-
-	( atom(Key) -> atom_string(Key, KS) ; KS = Key ),
-	split_string(KS, "/", "", [Name | _]),
-	string_concat(_, Suffix, Name).
 
 wam_python_iso_audit_report([]).
 wam_python_iso_audit_report([audit(PI, Mode, Sites)|Rest]) :-
