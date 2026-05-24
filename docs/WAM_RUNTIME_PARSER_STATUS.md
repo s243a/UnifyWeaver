@@ -276,6 +276,7 @@ the `:- p` / `\+ foo` / numeric-quoted-atom shapes.
 ## Related docs
 
 - [`docs/WAM_FSHARP_TARGET.md`](WAM_FSHARP_TARGET.md) — the F# WAM target's full usage guide, including the parser-related runtime invariants.
+- [`docs/WAM_PERF_CROSS_TARGET.md`](WAM_PERF_CROSS_TARGET.md) — cross-target perf notes; adjacent concern (the parser-bundled C++ compile-time bottleneck discussed above is captured there too).
 - [`src/unifyweaver/targets/wam_runtime_parser_capability.pl`](../src/unifyweaver/targets/wam_runtime_parser_capability.pl) — the canonical capability + default table.
 - [`src/unifyweaver/core/prolog_term_parser.pl`](../src/unifyweaver/core/prolog_term_parser.pl) — the portable parser source itself.
 - [`src/unifyweaver/core/cpp_runtime_parser_wrappers.pl`](../src/unifyweaver/core/cpp_runtime_parser_wrappers.pl) — the `read_term_from_atom/2,3` wrappers used by both C++ and the other `compiled`-mode targets.
