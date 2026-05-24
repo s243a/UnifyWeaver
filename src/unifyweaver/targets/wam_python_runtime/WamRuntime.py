@@ -5,6 +5,7 @@ Trail-based mutable state. No external dependencies.
 
 from __future__ import annotations
 import copy
+import os
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Optional, Callable, Dict, List, Tuple
@@ -1537,6 +1538,49 @@ def _execute_open(state: WamState) -> bool:
     return True
 
 
+def _execute_exists_file(state: WamState) -> bool:
+    path = _stream_path_text(get_reg(state, 1), state)
+    return path is not None and os.path.isfile(path)
+
+
+def _execute_exists_directory(state: WamState) -> bool:
+    path = _stream_path_text(get_reg(state, 1), state)
+    return path is not None and os.path.isdir(path)
+
+
+def _execute_directory_files(state: WamState) -> bool:
+    path = _stream_path_text(get_reg(state, 1), state)
+    if path is None or not os.path.isdir(path):
+        return False
+    try:
+        names = ['.', '..'] + sorted(os.listdir(path))
+    except OSError:
+        return False
+    return unify(get_reg(state, 2), _list_from_terms([make_atom(name) for name in names]), state)
+
+
+def _execute_make_directory(state: WamState) -> bool:
+    path = _stream_path_text(get_reg(state, 1), state)
+    if path is None:
+        return False
+    try:
+        os.mkdir(path)
+    except OSError:
+        return False
+    return True
+
+
+def _execute_delete_file(state: WamState) -> bool:
+    path = _stream_path_text(get_reg(state, 1), state)
+    if path is None:
+        return False
+    try:
+        os.remove(path)
+    except OSError:
+        return False
+    return True
+
+
 def _execute_close(state: WamState) -> bool:
     stream = _unwrap_stream(deref(get_reg(state, 1), state))
     if stream is None or not hasattr(stream, 'close'):
@@ -2051,6 +2095,16 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         return _execute_read_term_from_atom(state, 3, 'error')
     if builtin in ('open/3', 'open') and arity == 3:
         return _execute_open(state)
+    if builtin in ('exists_file/1', 'exists_file') and arity == 1:
+        return _execute_exists_file(state)
+    if builtin in ('exists_directory/1', 'exists_directory') and arity == 1:
+        return _execute_exists_directory(state)
+    if builtin in ('directory_files/2', 'directory_files') and arity == 2:
+        return _execute_directory_files(state)
+    if builtin in ('make_directory/1', 'make_directory') and arity == 1:
+        return _execute_make_directory(state)
+    if builtin in ('delete_file/1', 'delete_file') and arity == 1:
+        return _execute_delete_file(state)
     if builtin in ('close/1', 'close') and arity == 1:
         return _execute_close(state)
     if builtin in ('get_char/1', 'get_char') and arity == 1:

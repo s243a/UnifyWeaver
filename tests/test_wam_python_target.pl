@@ -1235,6 +1235,44 @@ test(runtime_atomic_split_string_helpers) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+test(runtime_filesystem_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_filesystem_helper_demo),
+			user:python_parser_tmp_dir('tmp_wam_python_filesystem_helpers', ProjectDir),
+			atomic_list_concat([ProjectDir, '/fs_dir'], Dir),
+			atomic_list_concat([Dir, '/data.txt'], File),
+			assertz((user:py_filesystem_helper_demo :-
+				\+ exists_directory(Dir),
+				make_directory(Dir),
+				exists_directory(Dir),
+				\+ exists_file(File),
+				open(File, write, Out),
+				write_to_stream(Out, payload),
+				close(Out),
+				exists_file(File),
+				directory_files(Dir, Files),
+				member('.', Files),
+				member('..', Files),
+				member('data.txt', Files),
+				delete_file(File),
+				\+ exists_file(File),
+				\+ delete_file(File)))
+		),
+		(   wam_python_target:write_wam_python_project([user:py_filesystem_helper_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_filesystem_helper_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_filesystem_helper_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_parser_compiled_runs_reverse_term_to_atom) :-
 	setup_call_cleanup(
 		(   retractall(user:py_term_to_atom_demo),
@@ -1729,6 +1767,11 @@ test(static_runtime_has_lua_baseline_builtins, [nondet]) :-
 		"atomic_list_concat/2",
 		"atomic_list_concat/3",
 		"split_string/4",
+		"exists_file/1",
+		"exists_directory/1",
+		"directory_files/2",
+		"make_directory/1",
+		"delete_file/1",
 		"var/1",
 		"nonvar/1",
 		"is_list/1",
@@ -1790,6 +1833,9 @@ test(static_runtime_io_emits_output, [nondet]) :-
 	sub_string(Content, _, _, _, "def _execute_string_code"),
 	sub_string(Content, _, _, _, "def _execute_atomic_list_concat"),
 	sub_string(Content, _, _, _, "def _execute_split_string"),
+	sub_string(Content, _, _, _, "def _execute_exists_file"),
+	sub_string(Content, _, _, _, "def _execute_directory_files"),
+	sub_string(Content, _, _, _, "def _execute_delete_file"),
 	sub_string(Content, _, _, _, "print()").
 
 :- end_tests(wam_python_builtin_parity_guard).
