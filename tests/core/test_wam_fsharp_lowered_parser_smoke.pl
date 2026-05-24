@@ -27,7 +27,7 @@
                                   make_directory_path/1,
                                   directory_file_path/3]).
 :- use_module(library(process)).
-:- use_module(library(readutil), [read_string/5]).
+%% read_string/3 used below is a SWI built-in -- no import needed.
 
 :- dynamic user:fs_lp_int/0.
 :- dynamic user:fs_lp_foo/0.
@@ -57,14 +57,14 @@ main :-
     retractall(user:fs_lp_list),
     retractall(user:fs_lp_plus),
 
-    assertz((user:fs_lp_int   :- read_term_from_atom('42', _T))),
-    assertz((user:fs_lp_foo   :- read_term_from_atom('foo', _T))),
-    assertz((user:fs_lp_a     :- read_term_from_atom('a', _T))),
-    assertz((user:fs_lp_paren :- read_term_from_atom('(a)', _T))),
-    assertz((user:fs_lp_minus :- read_term_from_atom('-3', _T))),
-    assertz((user:fs_lp_p_a   :- read_term_from_atom('p(a)', _T))),
-    assertz((user:fs_lp_list  :- read_term_from_atom('[1,2,3]', _T))),
-    assertz((user:fs_lp_plus  :- read_term_from_atom('1+2', _T))),
+    assertz((user:fs_lp_int   :- read_term_from_atom('42', _))),
+    assertz((user:fs_lp_foo   :- read_term_from_atom('foo', _))),
+    assertz((user:fs_lp_a     :- read_term_from_atom('a', _))),
+    assertz((user:fs_lp_paren :- read_term_from_atom('(a)', _))),
+    assertz((user:fs_lp_minus :- read_term_from_atom('-3', _))),
+    assertz((user:fs_lp_p_a   :- read_term_from_atom('p(a)', _))),
+    assertz((user:fs_lp_list  :- read_term_from_atom('[1,2,3]', _))),
+    assertz((user:fs_lp_plus  :- read_term_from_atom('1+2', _))),
 
     Dir = '/tmp/uw_fsharp_lowered_parser_repro',
     catch(delete_directory_and_contents(Dir), _, true),

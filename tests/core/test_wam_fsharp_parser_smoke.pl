@@ -20,7 +20,10 @@
                                   make_directory_path/1,
                                   directory_file_path/3]).
 :- use_module(library(process)).
-:- use_module(library(readutil), [read_string/5]).
+%% read_string/3 used below is a SWI built-in (system:read_string/3) -- no
+%% import needed.  The previous `use_module(library(readutil), [read_string/5])`
+%% triggered an "is not exported" warning because library(readutil) doesn't
+%% re-export the system predicate.
 
 :- dynamic user:fs_parser_demo/0.
 :- dynamic user:fs_parser_p_a/0.
@@ -117,87 +120,87 @@ main :-
     retractall(user:fs_simple),
     assertz((user:fs_simple :- true)),
     assertz((user:fs_parser_int :-
-        read_term_from_atom('42', _T))),
+        read_term_from_atom('42', _))),
     assertz((user:fs_parser_foo :-
-        read_term_from_atom('foo', _T))),
+        read_term_from_atom('foo', _))),
     assertz((user:fs_parser_a :-
-        read_term_from_atom('a', _T))),
+        read_term_from_atom('a', _))),
     assertz((user:fs_parser_var :-
-        read_term_from_atom('X', _T))),
+        read_term_from_atom('X', _))),
     assertz((user:fs_parser_paren_a :-
-        read_term_from_atom('(a)', _T))),
+        read_term_from_atom('(a)', _))),
     assertz((user:fs_parser_minus :-
-        read_term_from_atom('-3', _T))),
+        read_term_from_atom('-3', _))),
     assertz((user:fs_parser_demo :-
-        read_term_from_atom('p(a,b)', _T))),
+        read_term_from_atom('p(a,b)', _))),
     assertz((user:fs_parser_p_a :-
-        read_term_from_atom('p(a)', _T))),
+        read_term_from_atom('p(a)', _))),
     assertz((user:fs_parser_list_123 :-
-        read_term_from_atom('[1,2,3]', _T))),
+        read_term_from_atom('[1,2,3]', _))),
     assertz((user:fs_parser_plus :-
-        read_term_from_atom('1+2', _T))),
+        read_term_from_atom('1+2', _))),
     assertz((user:fs_parser_nested :-
-        read_term_from_atom('p(q(a))', _T))),
+        read_term_from_atom('p(q(a))', _))),
     assertz((user:fs_parser_three_args :-
-        read_term_from_atom('foo(a,b,c)', _T))),
+        read_term_from_atom('foo(a,b,c)', _))),
     assertz((user:fs_parser_mul_plus :-
-        read_term_from_atom('2*3+4', _T))),
+        read_term_from_atom('2*3+4', _))),
     assertz((user:fs_parser_list_vars :-
-        read_term_from_atom('[X,Y,Z]', _T))),
+        read_term_from_atom('[X,Y,Z]', _))),
     assertz((user:fs_parser_naf :-
-        read_term_from_atom('\\+ foo', _T))),
+        read_term_from_atom('\\+ foo', _))),
     assertz((user:fs_parser_prec :-
-        read_term_from_atom('a + b * c', _T))),
+        read_term_from_atom('a + b * c', _))),
     assertz((user:fs_parser_op_in_arg :-
-        read_term_from_atom('foo(a, b+c, d)', _T))),
+        read_term_from_atom('foo(a, b+c, d)', _))),
     assertz((user:fs_parser_partial_list :-
-        read_term_from_atom('[1|T]', _T))),
+        read_term_from_atom('[1|T]', _))),
     assertz((user:fs_parser_eq :-
-        read_term_from_atom('a = b', _T))),
+        read_term_from_atom('a = b', _))),
     assertz((user:fs_parser_is :-
-        read_term_from_atom('X is 1+2', _T))),
+        read_term_from_atom('X is 1+2', _))),
     assertz((user:fs_parser_list_tail_list :-
-        read_term_from_atom('[a,b|[c,d]]', _T))),
+        read_term_from_atom('[a,b|[c,d]]', _))),
     assertz((user:fs_parser_disj :-
-        read_term_from_atom('(a;b)', _T))),
+        read_term_from_atom('(a;b)', _))),
     assertz((user:fs_parser_ite :-
-        read_term_from_atom('a->b;c', _T))),
+        read_term_from_atom('a->b;c', _))),
     assertz((user:fs_parser_caret_assoc :-
-        read_term_from_atom('a^b^c', _T))),
+        read_term_from_atom('a^b^c', _))),
     assertz((user:fs_parser_minus_assoc :-
-        read_term_from_atom('1-2-3', _T))),
+        read_term_from_atom('1-2-3', _))),
     assertz((user:fs_parser_pow_assoc :-
-        read_term_from_atom('2^3^4', _T))),
+        read_term_from_atom('2^3^4', _))),
     assertz((user:fs_parser_empty_list :-
-        read_term_from_atom('[]', _T))),
+        read_term_from_atom('[]', _))),
     assertz((user:fs_parser_shared_var :-
-        read_term_from_atom('p(X,X)', _T))),
+        read_term_from_atom('p(X,X)', _))),
     assertz((user:fs_parser_deep_nest :-
-        read_term_from_atom('f(g(h(i)))', _T))),
+        read_term_from_atom('f(g(h(i)))', _))),
     assertz((user:fs_parser_clause_simple :-
-        read_term_from_atom('p :- q', _T))),
+        read_term_from_atom('p :- q', _))),
     assertz((user:fs_parser_clause_var :-
-        read_term_from_atom('p(X) :- q(X)', _T))),
+        read_term_from_atom('p(X) :- q(X)', _))),
     assertz((user:fs_parser_clause_conj :-
-        read_term_from_atom('p(X) :- q(X), r(X)', _T))),
+        read_term_from_atom('p(X) :- q(X), r(X)', _))),
     assertz((user:fs_parser_clause_conj3 :-
-        read_term_from_atom('p(X) :- q(X), r(X), s(X)', _T))),
+        read_term_from_atom('p(X) :- q(X), r(X), s(X)', _))),
     assertz((user:fs_parser_clause_disj_body :-
-        read_term_from_atom('p(X) :- q(X) ; r(X)', _T))),
+        read_term_from_atom('p(X) :- q(X) ; r(X)', _))),
     assertz((user:fs_parser_clause_ite_body :-
-        read_term_from_atom('p(X) :- q(X) -> r(X) ; s(X)', _T))),
+        read_term_from_atom('p(X) :- q(X) -> r(X) ; s(X)', _))),
     assertz((user:fs_parser_clause_naf_body :-
-        read_term_from_atom('p(X) :- \\+ q(X)', _T))),
+        read_term_from_atom('p(X) :- \\+ q(X)', _))),
     assertz((user:fs_parser_clause_directive :-
-        read_term_from_atom(':- p', _T))),
+        read_term_from_atom(':- p', _))),
     assertz((user:fs_parser_clause_two_vars :-
-        read_term_from_atom('p(X,Y) :- q(X), r(Y)', _T))),
+        read_term_from_atom('p(X,Y) :- q(X), r(Y)', _))),
     assertz((user:fs_parser_clause_append_base :-
-        read_term_from_atom('append([], L, L)', _T))),
+        read_term_from_atom('append([], L, L)', _))),
     assertz((user:fs_parser_clause_append_rec :-
-        read_term_from_atom('append([H|T], L, [H|R]) :- append(T, L, R)', _T))),
+        read_term_from_atom('append([H|T], L, [H|R]) :- append(T, L, R)', _))),
     assertz((user:fs_parser_clause_directive_compound :-
-        read_term_from_atom(':- foo(a)', _T))),
+        read_term_from_atom(':- foo(a)', _))),
 
     Dir = '/tmp/uw_fsharp_parser_repro',
     catch(delete_directory_and_contents(Dir), _, true),

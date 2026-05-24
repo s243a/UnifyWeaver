@@ -18,7 +18,7 @@
                                   make_directory_path/1,
                                   directory_file_path/3]).
 :- use_module(library(process)).
-:- use_module(library(readutil), [read_string/5]).
+%% read_string/3 used below is a SWI built-in -- no import needed.
 
 :- dynamic user:fs_rt_append/0.
 :- dynamic user:fs_rt_member_first/0.
