@@ -38,6 +38,7 @@
     resolve_reverse_index/2,    % +Options, -ReverseIndex
     validate_reverse_index_option/2, % +Spec, -Normalized
     resolve_csr_io_policy/2,    % +Options, -Policy
+    resolve_csr_index_backend/2, % +Options, -Backend
 
     %% Hardware constants
     default_constants/1,        % -Constants
@@ -284,6 +285,7 @@ normalize_kind_options(mmap_array, _Opts0, []).
 normalize_kind_options(csr, Opts0, Opts) :-
     option(ordering(Ordering), Opts0, parent_sort),
     validate_reverse_ordering(Ordering),
+    resolve_csr_index_backend(Opts0, IndexBackend),
     option(cache_bytes(CacheBytes), Opts0, 0),
     validate_nonnegative_integer(cache_bytes, CacheBytes),
     option(block_size_edges(BlockSizeEdges), Opts0, 0),
@@ -291,6 +293,7 @@ normalize_kind_options(csr, Opts0, Opts) :-
     resolve_csr_io_policy(Opts0, IoPolicy),
     Opts = [
         ordering(Ordering),
+        index_backend(IndexBackend),
         io_policy(IoPolicy),
         cache_bytes(CacheBytes),
         block_size_edges(BlockSizeEdges)
@@ -304,13 +307,24 @@ normalize_kind_options(artifact, Opts0, Opts) :-
     validate_reverse_ordering(Ordering),
     option(cache_bytes(CacheBytes), Opts0, 0),
     validate_nonnegative_integer(cache_bytes, CacheBytes),
+    artifact_index_options(StorageKind, Opts0, IndexOpt),
     artifact_io_options(StorageKind, Opts0, IoOpt),
     append([
         relation(Relation),
         storage_kind(StorageKind),
         ordering(Ordering),
         cache_bytes(CacheBytes)
-    ], IoOpt, Opts).
+    ], IndexOpt, PrefixOpts),
+    append(PrefixOpts, IoOpt, Opts).
+
+artifact_index_options(csr_pread_artifact, Opts0, [index_backend(IndexBackend)]) :-
+    !,
+    resolve_csr_index_backend(Opts0, IndexBackend).
+artifact_index_options(_StorageKind, Opts0, []) :-
+    \+ option(index_backend(_), Opts0),
+    !.
+artifact_index_options(StorageKind, _Opts0, _) :-
+    throw(error(permission_error(use, index_backend, StorageKind), _)).
 
 artifact_io_options(csr_pread_artifact, Opts0, [io_policy(IoPolicy)]) :-
     !,
@@ -348,6 +362,21 @@ resolve_csr_io_policy_value(Policy, _Options, Policy) :-
     validate_csr_io_policy(Policy),
     !.
 
+%! resolve_csr_index_backend(+Options, -Backend) is det.
+%
+%  Resolve CSR index backend. Omitted values keep the current sorted
+%  array behavior. Explicit `auto` is the future cost-analyzer hook; it
+%  conservatively resolves to sorted_array until measured override rules
+%  are added.
+resolve_csr_index_backend(Options, Backend) :-
+    option(index_backend(Backend0), Options, sorted_array),
+    resolve_csr_index_backend_value(Backend0, Options, Backend).
+
+resolve_csr_index_backend_value(auto, _Options, sorted_array) :- !.
+resolve_csr_index_backend_value(Backend, _Options, Backend) :-
+    validate_csr_index_backend(Backend),
+    !.
+
 validate_known_reverse_options([]).
 validate_known_reverse_options([Opt|Rest]) :-
     functor(Opt, Name, 1),
@@ -360,6 +389,7 @@ validate_known_reverse_options([Opt|_]) :-
 reverse_option_key(phase).
 reverse_option_key(id_encoding).
 reverse_option_key(ordering).
+reverse_option_key(index_backend).
 reverse_option_key(cache_bytes).
 reverse_option_key(block_size_edges).
 reverse_option_key(io_policy).
@@ -386,6 +416,17 @@ validate_csr_io_policy(Policy) :-
     !.
 validate_csr_io_policy(Policy) :-
     throw(error(domain_error(csr_io_policy, Policy), _)).
+
+validate_csr_index_backend(Backend) :-
+    memberchk(Backend, [
+        auto,
+        sorted_array,
+        lmdb_offset,
+        dense_direct
+    ]),
+    !.
+validate_csr_index_backend(Backend) :-
+    throw(error(domain_error(csr_index_backend, Backend), _)).
 
 validate_reverse_ordering(Ordering) :-
     memberchk(Ordering, [
