@@ -41,7 +41,7 @@ main :-
     ChildrenPerParent = 8,
 
     format('~n========================================~n'),
-    format('F# LMDB Scale Sweep (children_per_parent=~w)~n', [ChildrenPerParent]),
+    format('F# LMDB Scale Sweep — FULL demand (all edges queried)~n'),
     format('========================================~n~n'),
     format('~w ~w ~w ~w ~w ~w ~w ~w ~w~n',
            ['Parents', 'Edges', 'DictLoad', 'DictQ', 'EagerLoad', 'EagerQ',
@@ -49,12 +49,39 @@ main :-
     format('------- ----- -------- ----- --------- ------ ----- -------- --------~n'),
 
     forall(member(NParents, Scales),
-           run_one_scale(NParents, ChildrenPerParent, LmdbDir, ProjectDir)).
+           run_one_scale(NParents, ChildrenPerParent, LmdbDir, ProjectDir, full)),
 
-run_one_scale(NParents, CPP, LmdbDir, ProjectDir) :-
+    format('~n========================================~n'),
+    format('F# LMDB Scale Sweep — PARTIAL demand (100 seeds, varying graph)~n'),
+    format('This shows the lazy/cached advantage at large scale.~n'),
+    format('========================================~n~n'),
+    format('~w ~w ~w ~w ~w ~w ~w ~w ~w~n',
+           ['Parents', 'Edges', 'DictLoad', 'DictQ', 'EagerLoad', 'EagerQ',
+            'LazyQ', '2LvlCold', '2LvlWarm']),
+    format('------- ----- -------- ----- --------- ------ ----- -------- --------~n'),
+
+    forall(member(NParents, Scales),
+           run_one_scale(NParents, ChildrenPerParent, LmdbDir, ProjectDir, partial)).
+
+run_one_scale(NParents, CPP, LmdbDir, ProjectDir, DemandMode) :-
     NEdges is NParents * CPP,
     FirstChild is NParents + 1,
-    LastChild is NParents + NEdges,
+    (   DemandMode = full
+    ->  LastChild is NParents + NEdges
+    ;   % partial: query only 100 seeds from the middle of the range
+        NSeedsPartial is min(100, NEdges),
+        MidStart is NParents + 1 + (NEdges - NSeedsPartial) // 2,
+        FirstChild2 is MidStart,
+        LastChild is FirstChild2 + NSeedsPartial - 1
+    ),
+    (   DemandMode = partial, NEdges >= 100
+    ->  true  % use partial range
+    ;   true
+    ),
+    (   DemandMode = partial
+    ->  SeedFirst = FirstChild2
+    ;   SeedFirst = FirstChild
+    ),
     atom_number(NParentsA, NParents),
     atom_number(CPPA, CPP),
 
@@ -76,7 +103,7 @@ run_one_scale(NParents, CPP, LmdbDir, ProjectDir) :-
 
     %% Write Program.fs with this fixture's path and seed range
     atom_string(LmdbDir, LmdbDirStr),
-    atom_number(FirstChildA, FirstChild),
+    atom_number(FirstChildA, SeedFirst),
     atom_number(LastChildA, LastChild),
     atom_string(FirstChildA, FirstChildS),
     atom_string(LastChildA, LastChildS),
