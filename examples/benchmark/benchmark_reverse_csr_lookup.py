@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import shutil
 import statistics
 import struct
 import subprocess
@@ -44,6 +45,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("phase1_lmdb_dir", type=Path)
     parser.add_argument("--csr-dir", type=Path, default=None, help="existing or output CSR artifact directory")
     parser.add_argument("--refresh-csr", action="store_true", help="rebuild CSR artifact when --csr-dir exists")
+    parser.add_argument(
+        "--parent-lmdb-dir",
+        type=Path,
+        default=None,
+        help="existing or output category_parent-only LMDB directory for size comparison",
+    )
+    parser.add_argument(
+        "--refresh-parent-lmdb",
+        action="store_true",
+        help="rebuild the parent-only LMDB when --parent-lmdb-dir exists",
+    )
     parser.add_argument("--sample-parents", type=int, default=1000)
     parser.add_argument("--iterations", type=int, default=5)
     parser.add_argument("--seed", type=int, default=1)
@@ -107,6 +119,51 @@ def ensure_csr_artifact(phase1_lmdb_dir: Path, csr_dir: Path, refresh: bool) -> 
         raise RuntimeError(f"CSR builder failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
 
 
+def ensure_parent_only_lmdb(phase1_lmdb_dir: Path, parent_lmdb_dir: Path, refresh: bool) -> None:
+    if parent_lmdb_dir.resolve() == phase1_lmdb_dir.resolve():
+        raise ValueError("--parent-lmdb-dir must be different from phase1_lmdb_dir")
+    if parent_lmdb_dir.exists() and not refresh:
+        return
+    if parent_lmdb_dir.exists():
+        shutil.rmtree(parent_lmdb_dir)
+    parent_lmdb_dir.mkdir(parents=True, exist_ok=True)
+
+    source_size = (phase1_lmdb_dir / "data.mdb").stat().st_size
+    dst_env = lmdb.open(
+        str(parent_lmdb_dir),
+        map_size=max(source_size, 1 << 20),
+        max_dbs=8,
+        subdir=True,
+    )
+    src_env = lmdb.open(str(phase1_lmdb_dir), readonly=True, max_dbs=8, lock=False, subdir=True)
+    edge_count = 0
+    try:
+        with src_env.begin() as src_txn:
+            src_cp_db = src_env.open_db(b"category_parent", txn=src_txn, dupsort=True, create=False)
+            dst_meta_db = dst_env.open_db(b"meta")
+            dst_cp_db = dst_env.open_db(b"category_parent", dupsort=True)
+            dst_s2i_db = dst_env.open_db(b"s2i")
+            dst_i2s_db = dst_env.open_db(b"i2s")
+            dst_ac_db = dst_env.open_db(b"article_category", dupsort=True)
+            with dst_env.begin(write=True) as dst_txn:
+                cursor = src_txn.cursor(db=src_cp_db)
+                for key, value in cursor:
+                    if len(key) != 4 or len(value) != 4:
+                        continue
+                    dst_txn.put(key, value, db=dst_cp_db)
+                    edge_count += 1
+                dst_txn.put(b"schema_version", b"1", db=dst_meta_db)
+                dst_txn.put(b"id_encoding", b"int32_le", db=dst_meta_db)
+                dst_txn.put(b"category_parent_edge_count", str(edge_count).encode("ascii"), db=dst_meta_db)
+                dst_txn.put(b"hot_relation", b"category_parent/2", db=dst_meta_db)
+                dst_txn.put(b"storage_scope", b"parent_only_size_probe", db=dst_meta_db)
+                _ = (dst_s2i_db, dst_i2s_db, dst_ac_db)
+    finally:
+        src_env.close()
+        dst_env.sync()
+        dst_env.close()
+
+
 def sample_parent_ids(parent_ids: list[int], count: int, seed: int) -> list[int]:
     if count <= 0 or count >= len(parent_ids):
         return list(parent_ids)
@@ -142,6 +199,7 @@ def print_tsv(rows: list[dict[str, str]]) -> None:
         "min_ms",
         "max_ms",
         "csr_artifact_bytes",
+        "parent_lmdb_env_bytes",
         "phase1_lmdb_env_bytes",
     ]
     print("\t".join(headers))
@@ -159,14 +217,24 @@ def main(argv: list[str] | None = None) -> int:
     temp_dir: tempfile.TemporaryDirectory[str] | None = None
     if args.csr_dir is None:
         temp_dir = tempfile.TemporaryDirectory()
-        csr_dir = Path(temp_dir.name) / "category_child_csr"
+        temp_path = Path(temp_dir.name)
+        csr_dir = temp_path / "category_child_csr"
+        parent_lmdb_dir = args.parent_lmdb_dir or temp_path / "category_parent_only.lmdb"
         refresh_csr = False
+        refresh_parent_lmdb = args.refresh_parent_lmdb
     else:
         csr_dir = args.csr_dir
+        parent_lmdb_dir = args.parent_lmdb_dir
         refresh_csr = args.refresh_csr
+        refresh_parent_lmdb = args.refresh_parent_lmdb
+    if parent_lmdb_dir is None:
+        if temp_dir is None:
+            temp_dir = tempfile.TemporaryDirectory()
+        parent_lmdb_dir = Path(temp_dir.name) / "category_parent_only.lmdb"
 
     try:
         ensure_csr_artifact(phase1_lmdb_dir, csr_dir, refresh_csr)
+        ensure_parent_only_lmdb(phase1_lmdb_dir, parent_lmdb_dir, refresh_parent_lmdb)
         with ReverseCsrArtifact(csr_dir) as csr:
             lmdb_lookup = LmdbCategoryChildLookup(phase1_lmdb_dir)
             try:
@@ -200,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
                         "min_ms": f"{min(times_ms):.6f}",
                         "max_ms": f"{max(times_ms):.6f}",
                         "csr_artifact_bytes": str(artifact_bytes(csr_dir)),
+                        "parent_lmdb_env_bytes": str((parent_lmdb_dir / "data.mdb").stat().st_size),
                         "phase1_lmdb_env_bytes": str((phase1_lmdb_dir / "data.mdb").stat().st_size),
                     })
                 print_tsv(rows)
