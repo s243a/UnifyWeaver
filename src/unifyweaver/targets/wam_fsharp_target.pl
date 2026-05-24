@@ -4935,7 +4935,8 @@ let main argv =
           WcAtomDeintern      = atomDeintern
           WcForeignConfig     = Map.ofList [ ("max_depth", 10) ]
           WcLoweredPredicates = loweredPredicates
-          WcCancellationToken = None }
+          WcLookupSources   = Map.empty
+      WcCancellationToken = None }
 
     let emptyState =
         { WsPC         = 0
@@ -5051,8 +5052,8 @@ generate_fsproj(ModName, Options, Code) :-
     <Deterministic>true</Deterministic>
   </PropertyGroup>
 
-  <ItemGroup>~w
-    <Compile Include="WamTypes.fs" />
+  <ItemGroup>
+    <Compile Include="WamTypes.fs" />~w
     <Compile Include="WamRuntime.fs" />
     <Compile Include="Predicates.fs" />
     <Compile Include="Lowered.fs" />

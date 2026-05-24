@@ -114,3 +114,40 @@ let loadCategoryParent (env: LightningEnvironment) : Map<int, int list> =
 /// Convenience: load category_child(parent->children) for reverse lookup.
 let loadCategoryChild (env: LightningEnvironment) : Map<int, int list> =
     loadDupsortRelation env "category_child"
+
+/// On-demand LMDB cursor lookup — implements ILookupSource from WamTypes.
+/// Each Lookup call opens a short-lived ReadTransaction + cursor, seeks
+/// to the key, and iterates all DUPSORT duplicates.  No caching; that
+/// is the job of a future CachedLookupSource decorator.
+///
+/// This is "lazy" mode per WAM_LMDB_LAZY_SPECIFICATION.md: no startup
+/// materialisation cost, but each runtime lookup pays the cursor-open
+/// overhead.  Appropriate when the working set is small relative to
+/// the full database, or when memory is constrained.
+type LmdbCursorLookup(env: LightningEnvironment, dbName: string) =
+    let db =
+        use initTx = env.BeginTransaction(TransactionBeginFlags.ReadOnly)
+        let d = initTx.OpenDatabase(dbName, new DatabaseConfiguration(Flags = DatabaseOpenFlags.DuplicatesSort))
+        initTx.Commit()
+        d
+
+    interface WamTypes.ILookupSource with
+        member _.Lookup(key: int) : int list =
+            use tx = env.BeginTransaction(TransactionBeginFlags.ReadOnly)
+            use cursor = tx.CreateCursor(db)
+            let keyBytes = encodeI32 key
+            let struct (rc, _, _) = cursor.SetKey(keyBytes)
+            if rc <> MDBResultCode.Success then []
+            else
+                let mutable result = []
+                let struct (_, _, v) = cursor.GetCurrent()
+                result <- [decodeI32 (v.AsSpan())]
+                let mutable ok = true
+                while ok do
+                    let struct (rc2, _, _) = cursor.NextDuplicate()
+                    if rc2 = MDBResultCode.Success then
+                        let struct (_, _, v2) = cursor.GetCurrent()
+                        result <- result @ [decodeI32 (v2.AsSpan())]
+                    else
+                        ok <- false
+                result

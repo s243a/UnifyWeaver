@@ -176,6 +176,7 @@ let mkContext () =
       WcAtomDeintern      = Map.empty
       WcForeignConfig     = Map.empty
       WcLoweredPredicates = Map.empty
+      WcLookupSources   = Map.empty
       WcCancellationToken = None }
 
 let mkState () : WamState =

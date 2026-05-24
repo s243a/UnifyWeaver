@@ -105,6 +105,19 @@ main :-
     assertTrue \"reverse total edges = 10\" (ccTotalEdges = 10)
     assertTrue \"parent 1 -> [6; 7]\" (Map.tryFind 1 cc = Some [6; 7])
 
+    // --- ILookupSource interface tests (Phase 2) ---
+    // Test EagerLookupSource (wraps the eager Map).
+    let eagerSrc = WamTypes.EagerLookupSource(cp) :> WamTypes.ILookupSource
+    assertTrue \"EagerLookupSource.Lookup(6) = [1]\" (eagerSrc.Lookup(6) = [1])
+    assertTrue \"EagerLookupSource.Lookup(99) = []\" (eagerSrc.Lookup(99) = [])
+
+    // Test LmdbCursorLookup (lazy on-demand cursor reads).
+    let lazySrc = LmdbCursorLookup(env, \"category_parent\") :> WamTypes.ILookupSource
+    assertTrue \"LmdbCursorLookup.Lookup(6) = [1]\" (lazySrc.Lookup(6) = [1])
+    assertTrue \"LmdbCursorLookup.Lookup(7) = [1]\" (lazySrc.Lookup(7) = [1])
+    assertTrue \"LmdbCursorLookup.Lookup(8) = [2]\" (lazySrc.Lookup(8) = [2])
+    assertTrue \"LmdbCursorLookup.Lookup(99) = []\" (lazySrc.Lookup(99) = [])
+
     env.Dispose()
 
     printfn \"RESULT %d/%d\" passes (passes + fails)

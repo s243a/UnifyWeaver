@@ -287,7 +287,22 @@ and BuilderState =
 
 fsharp_wam_context_type :-
     writeln(
-"type WamContext =
+"/// Abstraction over fact-source access patterns.  Implementations:
+///   - EagerLookupSource: wraps a pre-loaded Map<int, int list> (Phase 1 eager).
+///   - LmdbCursorLookup: reads LMDB on demand per key (Phase 2 lazy).
+/// The WAM kernel dispatch checks WcLookupSources before falling back
+/// to the legacy WcFfiFacts path.  This lets lazy and cached modes
+/// plug in without changing caller code.
+type ILookupSource =
+    abstract member Lookup : int -> int list
+
+/// Eager implementation: wraps a fully-materialised Map built at startup.
+type EagerLookupSource(data: Map<int, int list>) =
+    interface ILookupSource with
+        member _.Lookup(key) =
+            Map.tryFind key data |> Option.defaultValue []
+
+type WamContext =
     { WcCode            : Instruction array    // instruction array (O(1) fetch)
       WcLabels          : Map<string, int>     // label → PC
       WcForeignFacts    : Map<string, Map<string, string list>>
@@ -301,6 +316,11 @@ fsharp_wam_context_type :-
       WcForeignConfig   : Map<string, int>     // config_int values
       WcLoweredPredicates: Map<string, WamContext -> WamState -> WamState option>
                                                // predicate name → lowered fn
+      WcLookupSources   : Map<string, ILookupSource>
+                                               // pred → polymorphic fact source
+                                               // (eager Map, lazy LMDB cursor, or
+                                               // cached decorator). Checked BEFORE
+                                               // WcFfiFacts by kernel dispatch.
       WcCancellationToken: System.Threading.CancellationToken option
                                                // optional hard-cancel signal.
                                                // `run` checks this each loop
