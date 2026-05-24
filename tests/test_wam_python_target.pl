@@ -1145,6 +1145,36 @@ test(runtime_stream_eof_and_output_helpers) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+test(runtime_atom_string_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_atom_string_helper_demo),
+			assertz((user:py_atom_string_helper_demo :-
+				atom_concat(foo, bar, FooBar), FooBar = foobar,
+				string_concat(FooBar, 7, FooBar7), FooBar7 = foobar7,
+				atom_length(FooBar7, 7),
+				string_length(123, 3),
+				atom_string(Atom, baz), Atom = baz,
+				atom_string(99, Text), Text = '99',
+				string_to_atom(qux, Q), Q = qux,
+				\+ atom_concat(_, b, ab),
+				\+ atom_length(f(1), _))),
+			user:python_parser_tmp_dir('tmp_wam_python_atom_string_helpers', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_atom_string_helper_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_atom_string_helper_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_atom_string_helper_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_parser_compiled_runs_reverse_term_to_atom) :-
 	setup_call_cleanup(
 		(   retractall(user:py_term_to_atom_demo),
@@ -1626,6 +1656,12 @@ test(static_runtime_has_lua_baseline_builtins, [nondet]) :-
 		"float/1",
 		"number/1",
 		"compound/1",
+		"atom_concat/3",
+		"atom_length/2",
+		"atom_string/2",
+		"string_concat/3",
+		"string_length/2",
+		"string_to_atom/2",
 		"var/1",
 		"nonvar/1",
 		"is_list/1",
@@ -1678,6 +1714,9 @@ test(static_runtime_io_emits_output, [nondet]) :-
 	sub_string(Content, _, _, _, "def _execute_at_end_of_stream"),
 	sub_string(Content, _, _, _, "def _execute_write_to_stream"),
 	sub_string(Content, _, _, _, "def _execute_nl_to_stream"),
+	sub_string(Content, _, _, _, "def _execute_atom_concat"),
+	sub_string(Content, _, _, _, "def _execute_atom_length"),
+	sub_string(Content, _, _, _, "def _execute_atom_string"),
 	sub_string(Content, _, _, _, "print()").
 
 :- end_tests(wam_python_builtin_parity_guard).

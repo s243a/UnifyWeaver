@@ -739,6 +739,48 @@ def _execute_number_codes(state: WamState) -> bool:
         return False
 
 
+def _text_coerce(value: Term, state: WamState, allow_float: bool = True) -> Optional[str]:
+    value = deref(value, state)
+    if isinstance(value, Atom):
+        return _runtime_atom_text(value.name)
+    if isinstance(value, Int):
+        return str(value.n)
+    if allow_float and isinstance(value, Float):
+        return _format_value(value, state)
+    return None
+
+
+def _execute_atom_concat(state: WamState) -> bool:
+    left = _text_coerce(get_reg(state, 1), state)
+    right = _text_coerce(get_reg(state, 2), state)
+    if left is None or right is None:
+        return False
+    return unify(get_reg(state, 3), make_atom(left + right), state)
+
+
+def _execute_atom_length(state: WamState) -> bool:
+    text = _text_coerce(get_reg(state, 1), state, allow_float=False)
+    if text is None:
+        return False
+    return unify(get_reg(state, 2), Int(len(text)), state)
+
+
+def _execute_atom_string(state: WamState) -> bool:
+    left = deref(get_reg(state, 1), state)
+    right = deref(get_reg(state, 2), state)
+    if not isinstance(left, Var):
+        text = _text_coerce(left, state)
+        if text is None:
+            return False
+        return unify(get_reg(state, 2), make_atom(text), state)
+    if isinstance(right, Var):
+        return False
+    text = _text_coerce(right, state)
+    if text is None:
+        return False
+    return unify(get_reg(state, 1), make_atom(text), state)
+
+
 def _execute_append(state: WamState) -> bool:
     left = _term_to_list(get_reg(state, 1), state)
     right = _term_to_list(get_reg(state, 2), state)
@@ -1833,6 +1875,12 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         return _execute_atom_codes(state)
     if builtin in ('number_codes/2', 'number_codes') and arity == 2:
         return _execute_number_codes(state)
+    if builtin in ('atom_concat/3', 'atom_concat', 'string_concat/3', 'string_concat') and arity == 3:
+        return _execute_atom_concat(state)
+    if builtin in ('atom_length/2', 'atom_length', 'string_length/2', 'string_length') and arity == 2:
+        return _execute_atom_length(state)
+    if builtin in ('atom_string/2', 'atom_string', 'string_to_atom/2', 'string_to_atom') and arity == 2:
+        return _execute_atom_string(state)
     if builtin in ('read_term_from_atom/2', 'read_term_from_atom_lax/2',
                    'read_term_from_atom', 'read_term_from_atom_lax') and arity == 2:
         return _execute_read_term_from_atom(state, 2, 'fail')
