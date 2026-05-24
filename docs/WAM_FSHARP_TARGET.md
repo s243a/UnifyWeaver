@@ -454,7 +454,9 @@ The runtime in `fsharp_wam_bindings.pl` + `wam_fsharp_target.pl`
 defines step branches for:
 
 **Control:** `true/0`, `fail/0`, `!/0` (cut), `\+/1` (negation),
-`call/1+`, `throw/1`, `catch/3`.
+`call/1+`. `throw/1` and `catch/3` are **not yet** wired in the F# WAM
+runtime; see `design/WAM_FSHARP_PARITY_AUDIT.md` for the ISO-error
+adoption plan.
 
 **Arithmetic:** `is/2` (full expression evaluator: `+`, `-`, `*`, `/`,
 `//`, `mod`, `rem`, `**`, `abs`, `min`, `max`, `gcd`, `truncate`,
