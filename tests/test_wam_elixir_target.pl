@@ -101,6 +101,34 @@ test_runtime_parser_native_request_errors :-
         elixir_parser_cleanup_tmp_dir(TmpDir)
     ).
 
+%% Regression: runtime_parser(compiled) must reject for Elixir.  The
+%% Elixir target doesn't actually bundle the portable parser predicates
+%% (unlike Python/F#/C++ which do), so silently accepting `compiled`
+%% would produce a project that throws "predicate not found" at run
+%% time when read_term_from_atom is finally called -- worse than
+%% rejecting cleanly at codegen.  The check belongs to
+%% wam_runtime_parser_capability:resolve_runtime_parser_request/3
+%% (wam_elixir isn't in the capability table for compiled), so this
+%% test guards against accidentally adding it there without
+%% implementing bundling on the Elixir side.
+test_runtime_parser_compiled_request_errors :-
+    Test = 'Runtime parser mode: compiled request is rejected for WAM-Elixir',
+    WamCode = 'parser_compiled/0:\n  proceed',
+    setup_call_cleanup(
+        elixir_parser_tmp_dir('tmp_wam_elixir_parser_compiled_err', TmpDir),
+        (   catch((write_wam_elixir_project([parser_compiled/0-WamCode],
+                                            [runtime_parser(compiled)],
+                                            TmpDir),
+                   Caught = false),
+                  error(domain_error(runtime_parser_mode(wam_elixir), compiled), _),
+                  Caught = true),
+            Caught == true
+        ->  pass(Test)
+        ;   fail_test(Test, 'expected compiled runtime parser mode domain_error')
+        ),
+        elixir_parser_cleanup_tmp_dir(TmpDir)
+    ).
+
 test_runtime_parser_none_rejects_parser_dependent_builtin :-
     Test = 'Runtime parser mode: disabled parser rejects read_term_from_atom/2',
     WamCode = 'elixir_parser_dep/0:\n  proceed',
@@ -3207,6 +3235,7 @@ run_tests :-
     test_runtime_assembly,
     test_runtime_parser_mode_metadata,
     test_runtime_parser_native_request_errors,
+    test_runtime_parser_compiled_request_errors,
     test_runtime_parser_none_rejects_parser_dependent_builtin,
     test_runtime_parser_none_allows_term_to_atom_forward,
     test_instruction_count,
