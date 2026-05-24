@@ -17,6 +17,7 @@ import json
 import struct
 import sys
 from pathlib import Path
+from types import TracebackType
 
 try:
     import lmdb
@@ -38,6 +39,22 @@ class ReverseCsrArtifact:
         self.idx_path = artifact_dir / self.meta["index_path"]
         self.val_path = artifact_dir / self.meta["values_path"]
         self.index = self._load_index(self.idx_path)
+        self._values = self.val_path.open("rb")
+
+    def close(self) -> None:
+        if not self._values.closed:
+            self._values.close()
+
+    def __enter__(self) -> "ReverseCsrArtifact":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
 
     @staticmethod
     def _load_meta(path: Path) -> dict:
@@ -91,9 +108,10 @@ class ReverseCsrArtifact:
         _parent, offset_edges, count = self.index[lo]
         byte_offset = offset_edges * I32.size
         byte_count = count * I32.size
-        with self.val_path.open("rb") as values:
-            values.seek(byte_offset)
-            data = values.read(byte_count)
+        if self._values.closed:
+            raise ValueError("CSR values file is closed")
+        self._values.seek(byte_offset)
+        data = self._values.read(byte_count)
         if len(data) != byte_count:
             raise ValueError("CSR values file ended before requested child slice")
         return [I32.unpack_from(data, offset)[0] for offset in range(0, len(data), I32.size)]
@@ -139,33 +157,36 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     artifact = ReverseCsrArtifact(args.artifact_dir)
 
-    if args.command == "lookup":
-        for child in artifact.lookup(args.parent_id):
-            print(child)
-        return 0
+    try:
+        if args.command == "lookup":
+            for child in artifact.lookup(args.parent_id):
+                print(child)
+            return 0
 
-    if args.command == "validate":
-        expected = lmdb_children_by_parent(args.phase1_lmdb_dir)
-        csr_parents = set(artifact.parents())
-        expected_parents = set(expected)
-        if csr_parents != expected_parents:
-            missing = sorted(expected_parents - csr_parents)[:10]
-            extra = sorted(csr_parents - expected_parents)[:10]
-            sys.stderr.write(f"parent key mismatch: missing={missing} extra={extra}\n")
-            return 4
-        for parent in sorted(expected):
-            actual_children = artifact.lookup(parent)
-            expected_children = expected[parent]
-            if actual_children != expected_children:
-                sys.stderr.write(
-                    f"children mismatch for parent={parent}: "
-                    f"actual={actual_children[:10]} expected={expected_children[:10]}\n"
-                )
-                return 5
-        print(f"validated parents={len(expected)} edges={sum(len(v) for v in expected.values())}")
-        return 0
+        if args.command == "validate":
+            expected = lmdb_children_by_parent(args.phase1_lmdb_dir)
+            csr_parents = set(artifact.parents())
+            expected_parents = set(expected)
+            if csr_parents != expected_parents:
+                missing = sorted(expected_parents - csr_parents)[:10]
+                extra = sorted(csr_parents - expected_parents)[:10]
+                sys.stderr.write(f"parent key mismatch: missing={missing} extra={extra}\n")
+                return 4
+            for parent in sorted(expected):
+                actual_children = artifact.lookup(parent)
+                expected_children = expected[parent]
+                if actual_children != expected_children:
+                    sys.stderr.write(
+                        f"children mismatch for parent={parent}: "
+                        f"actual={actual_children[:10]} expected={expected_children[:10]}\n"
+                    )
+                    return 5
+            print(f"validated parents={len(expected)} edges={sum(len(v) for v in expected.values())}")
+            return 0
 
-    raise AssertionError(args.command)
+        raise AssertionError(args.command)
+    finally:
+        artifact.close()
 
 
 if __name__ == "__main__":

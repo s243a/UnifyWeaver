@@ -167,45 +167,45 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         ensure_csr_artifact(phase1_lmdb_dir, csr_dir, refresh_csr)
-        csr = ReverseCsrArtifact(csr_dir)
-        lmdb_lookup = LmdbCategoryChildLookup(phase1_lmdb_dir)
-        try:
-            parent_ids = sample_parent_ids(lmdb_lookup.parents(), args.sample_parents, args.seed)
-            if not parent_ids:
-                sys.stderr.write("no parent ids found in category_child\n")
-                return 4
+        with ReverseCsrArtifact(csr_dir) as csr:
+            lmdb_lookup = LmdbCategoryChildLookup(phase1_lmdb_dir)
+            try:
+                parent_ids = sample_parent_ids(lmdb_lookup.parents(), args.sample_parents, args.seed)
+                if not parent_ids:
+                    sys.stderr.write("no parent ids found in category_child\n")
+                    return 4
 
-            for parent in parent_ids:
-                csr_children = csr.lookup(parent)
-                lmdb_children = lmdb_lookup.lookup(parent)
-                if csr_children != lmdb_children:
-                    sys.stderr.write(
-                        f"parity mismatch for parent={parent}: "
-                        f"csr={csr_children[:10]} lmdb={lmdb_children[:10]}\n"
-                    )
-                    return 5
+                for parent in parent_ids:
+                    csr_children = csr.lookup(parent)
+                    lmdb_children = lmdb_lookup.lookup(parent)
+                    if csr_children != lmdb_children:
+                        sys.stderr.write(
+                            f"parity mismatch for parent={parent}: "
+                            f"csr={csr_children[:10]} lmdb={lmdb_children[:10]}\n"
+                        )
+                        return 5
 
-            timed = [
-                time_lookup_loop("csr", csr.lookup, parent_ids, args.iterations),
-                time_lookup_loop("lmdb", lmdb_lookup.lookup, parent_ids, args.iterations),
-            ]
-            rows: list[dict[str, str]] = []
-            for backend, times_ms, total_children in timed:
-                rows.append({
-                    "backend": backend,
-                    "sample_parents": str(len(parent_ids)),
-                    "iterations": str(args.iterations),
-                    "total_children": str(total_children),
-                    "median_ms": f"{statistics.median(times_ms):.6f}",
-                    "min_ms": f"{min(times_ms):.6f}",
-                    "max_ms": f"{max(times_ms):.6f}",
-                    "csr_artifact_bytes": str(artifact_bytes(csr_dir)),
-                    "phase1_lmdb_env_bytes": str((phase1_lmdb_dir / "data.mdb").stat().st_size),
-                })
-            print_tsv(rows)
-            return 0
-        finally:
-            lmdb_lookup.close()
+                timed = [
+                    time_lookup_loop("csr", csr.lookup, parent_ids, args.iterations),
+                    time_lookup_loop("lmdb", lmdb_lookup.lookup, parent_ids, args.iterations),
+                ]
+                rows: list[dict[str, str]] = []
+                for backend, times_ms, total_children in timed:
+                    rows.append({
+                        "backend": backend,
+                        "sample_parents": str(len(parent_ids)),
+                        "iterations": str(args.iterations),
+                        "total_children": str(total_children),
+                        "median_ms": f"{statistics.median(times_ms):.6f}",
+                        "min_ms": f"{min(times_ms):.6f}",
+                        "max_ms": f"{max(times_ms):.6f}",
+                        "csr_artifact_bytes": str(artifact_bytes(csr_dir)),
+                        "phase1_lmdb_env_bytes": str((phase1_lmdb_dir / "data.mdb").stat().st_size),
+                    })
+                print_tsv(rows)
+                return 0
+            finally:
+                lmdb_lookup.close()
     finally:
         if temp_dir is not None:
             temp_dir.cleanup()
