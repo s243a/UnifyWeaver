@@ -1294,6 +1294,36 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return vm.Unify(arg1, internAtom(text))
 		}
 		return false
+	case "number_codes/2", "number_chars/2":
+		numberVal := vm.deref(arg1)
+		listVal := vm.deref(arg2)
+		if u, ok := listVal.(*Unbound); ok {
+			if next, ok := vm.heapConsAfterUnbound(u); ok {
+				listVal = vm.deref(next)
+			}
+		}
+		textFromList := vm.codeListText
+		listFromText := func(text string) *List { return atomCodeList(text) }
+		if op == "number_chars/2" {
+			textFromList = vm.charListText
+			listFromText = func(text string) *List { return atomCharList(text) }
+		}
+		if number, ok := atomNumberValue(numberVal); ok {
+			text, ok := atomNumberText(number)
+			if !ok {
+				return false
+			}
+			if _, unbound := listVal.(*Unbound); unbound {
+				return vm.Unify(arg2, listFromText(text))
+			}
+			listText, ok := textFromList(listVal)
+			return ok && text == listText
+		}
+		if text, ok := textFromList(listVal); ok {
+			parsed, ok := parseAtomNumberText(text)
+			return ok && vm.Unify(arg1, parsed)
+		}
+		return false
 	case "atom_string/2", "string_to_atom/2":
 		atomArg := arg1
 		stringArg := arg2
