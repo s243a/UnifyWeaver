@@ -1104,6 +1104,47 @@ test(runtime_read_string_reads_bounded_chunks) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+test(runtime_stream_eof_and_output_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_stream_helper_demo),
+			user:python_parser_tmp_dir('tmp_wam_python_stream_helpers', ProjectDir),
+			atomic_list_concat([ProjectDir, '/eof.txt'], InFile),
+			atomic_list_concat([ProjectDir, '/stream_out.txt'], OutFile),
+			assertz((user:py_stream_helper_demo :-
+				open(InFile, read, In),
+				\+ at_end_of_stream(In),
+				peek_char(In, C0), C0 = z,
+				\+ at_end_of_stream(In),
+				get_char(In, C1), C1 = z,
+				at_end_of_stream(In),
+				close(In),
+				open(OutFile, write, Out),
+				write_to_stream(Out, alpha),
+				nl_to_stream(Out),
+				write_to_stream(Out, pair(beta, 2)),
+				close(Out)))
+		),
+		(   setup_call_cleanup(open(InFile, write, Input),
+				write(Input, z),
+				close(Input)),
+			wam_python_target:write_wam_python_project([user:py_stream_helper_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import pathlib",
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_stream_helper_demo/0', state))",
+				"print(repr(pathlib.Path('stream_out.txt').read_text()))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True")),
+			once(sub_string(Output, _, _, _, "'alpha\\npair(beta, 2)'"))
+		),
+		(   retractall(user:py_stream_helper_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_parser_compiled_runs_reverse_term_to_atom) :-
 	setup_call_cleanup(
 		(   retractall(user:py_term_to_atom_demo),
@@ -1615,6 +1656,9 @@ test(static_runtime_has_lua_baseline_builtins, [nondet]) :-
 		"peek_char/2",
 		"read_line_to_string/2",
 		"read_string/5",
+		"at_end_of_stream/1",
+		"write_to_stream/2",
+		"nl_to_stream/1",
 		"nl/0"
 	]), sub_string(Content, _, _, _, Needle)).
 
@@ -1631,6 +1675,9 @@ test(static_runtime_io_emits_output, [nondet]) :-
 	sub_string(Content, _, _, _, "def _execute_put_code"),
 	sub_string(Content, _, _, _, "def _execute_read_line_to_string"),
 	sub_string(Content, _, _, _, "def _execute_read_string"),
+	sub_string(Content, _, _, _, "def _execute_at_end_of_stream"),
+	sub_string(Content, _, _, _, "def _execute_write_to_stream"),
+	sub_string(Content, _, _, _, "def _execute_nl_to_stream"),
 	sub_string(Content, _, _, _, "print()").
 
 :- end_tests(wam_python_builtin_parity_guard).
