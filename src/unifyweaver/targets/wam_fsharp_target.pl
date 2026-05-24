@@ -3726,31 +3726,6 @@ wam_instr_to_fsharp(["switch_on_term_a2", CLenS | Rest], Fs) :-
     format(string(Fs), 'SwitchOnTerm (~w, ~w, "~w")',
            [ConstArr, StructArr, ListLabel]).
 
-%% fs_parse_switch_term_entries(+Entries, -Pairs)
-%
-% Parse "key:label" string entries into (Key, Label) pairs.  Mirrors
-% fs_parse_switch_entries but returns string keys (no value-typing)
-% because SwitchOnTerm always keys by atom-name or "F/N" string.
-fs_parse_switch_term_entries([], []).
-fs_parse_switch_term_entries([E|Rest], [(K, L)|Pairs]) :-
-    fs_clean_comma(E, ECl),
-    atom_string(EA, ECl),
-    (   sub_atom(EA, Before, 1, _, ':')
-    ->  sub_atom(EA, 0, Before, _, KA),
-        After is Before + 1,
-        sub_atom(EA, After, _, 0, LA),
-        atom_string(KA, K),
-        atom_string(LA, L)
-    ;   K = ECl,
-        L = "default"
-    ),
-    fs_parse_switch_term_entries(Rest, Pairs).
-
-fs_term_entries_to_array_literal([], "[||]") :- !.
-fs_term_entries_to_array_literal(Pairs, Literal) :-
-    maplist([(K, L), S]>>format(string(S), '("~w", "~w")', [K, L]), Pairs, Strs),
-    atomic_list_concat(Strs, '; ', Joined),
-    format(string(Literal), '[| ~w |]', [Joined]).
 wam_instr_to_fsharp(["begin_aggregate", Type, ValReg, ResReg], Fs) :-
     fs_clean_comma(Type, CT), fs_clean_comma(ValReg, CV), fs_clean_comma(ResReg, CR),
     fs_reg_name_to_int(CV, VI), fs_reg_name_to_int(CR, RI),
@@ -3848,6 +3823,35 @@ wam_instr_to_fsharp(Parts, Fs) :-
     ;   true
     ),
     format(string(Fs), '(* UNKNOWN: ~w *) Proceed', [Joined]).
+
+%% fs_parse_switch_term_entries(+Entries, -Pairs)
+%
+% Parse "key:label" string entries into (Key, Label) pairs.  Mirrors
+% fs_parse_switch_entries but returns string keys (no value-typing)
+% because SwitchOnTerm always keys by atom-name or "F/N" string.
+% Placed after the wam_instr_to_fsharp clause group so the latter is
+% contiguous; callers are the switch_on_term / switch_on_term_a2
+% clauses above.
+fs_parse_switch_term_entries([], []).
+fs_parse_switch_term_entries([E|Rest], [(K, L)|Pairs]) :-
+    fs_clean_comma(E, ECl),
+    atom_string(EA, ECl),
+    (   sub_atom(EA, Before, 1, _, ':')
+    ->  sub_atom(EA, 0, Before, _, KA),
+        After is Before + 1,
+        sub_atom(EA, After, _, 0, LA),
+        atom_string(KA, K),
+        atom_string(LA, L)
+    ;   K = ECl,
+        L = "default"
+    ),
+    fs_parse_switch_term_entries(Rest, Pairs).
+
+fs_term_entries_to_array_literal([], "[||]") :- !.
+fs_term_entries_to_array_literal(Pairs, Literal) :-
+    maplist([(K, L), S]>>format(string(S), '("~w", "~w")', [K, L]), Pairs, Strs),
+    atomic_list_concat(Strs, '; ', Joined),
+    format(string(Literal), '[| ~w |]', [Joined]).
 
 %% fs_parse_switch_entries(+Entries, -FSharpPairs)
 fs_parse_switch_entries([], []).
@@ -4074,7 +4078,11 @@ open WamRuntime
 ', [AllPredCode, MergedCodeBuild]).
 
 compile_one_predicate_fs(Options, BasePCMap, PredIndicator, Code) :-
-    (   PredIndicator = _M:Pred/Arity -> true ; PredIndicator = Pred/Arity ),
+    %% Shape check: must be Module:Name/Arity or Name/Arity.  The
+    %% destructured Pred/Arity aren't used further (we pass
+    %% PredIndicator wholesale to the helpers below); underscore-
+    %% prefix the names so SWI doesn't flag them as singletons.
+    (   PredIndicator = _M:_Pred/_Arity -> true ; PredIndicator = _Pred/_Arity ),
     wam_fsharp_predicate_wamcode(PredIndicator, WamCode),
     predicate_base_pc_fs(PredIndicator, BasePCMap, BasePC),
     compile_wam_predicate_to_fsharp(PredIndicator, WamCode, [base_pc(BasePC)|Options], Code).

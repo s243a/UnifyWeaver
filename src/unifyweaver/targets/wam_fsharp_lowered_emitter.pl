@@ -337,18 +337,6 @@ emit_instrs_lm_fs([pc(_PC, try_me_else(ElseLabelStr))|Rest], SV, Ind, FP, LM) :-
         emit_instrs_lm_fs(ContInstrs, SVcont, ContInd, FP, LM),
         format("~w| None -> None~n", [Ind])
     ).
-emit_ite_match_fs(SV, CondInstrs, ThenInstrs, ElseInstrs, Ind, FP) :-
-    format("~wmatch (~n", [Ind]),
-    atom_concat(Ind, "    ", CondInd),
-    emit_ite_block_fs(CondInstrs, SV, CondInd, FP),
-    format("~w) with~n", [Ind]),
-    fresh_sv_fs(SV, SVthen),
-    format("~w| Some ~w ->~n", [Ind, SVthen]),
-    atom_concat(Ind, "    ", ThenInd),
-    emit_ite_block_fs(ThenInstrs, SVthen, ThenInd, FP),
-    format("~w| None ->~n", [Ind]),
-    atom_concat(Ind, "    ", ElseInd),
-    emit_ite_block_fs(ElseInstrs, SV, ElseInd, FP).
 
 % execute/1 is a tail call — it must always be the last instruction.
 % If it isn’t, the chain silently breaks because emit_one_fs emits a bare
@@ -389,6 +377,23 @@ emit_instrs_lm_fs([pc(PC, Instr)|Rest], SV, Ind, FP, LM) :-
         ;   emit_instrs_lm_fs(Rest, SVout, Ind, FP, LM)
         )
     ).
+
+%% emit_ite_match_fs(+SV, +CondInstrs, +ThenInstrs, +ElseInstrs, +Ind, +FP)
+%  Helper for emit_instrs_lm_fs's try_me_else clause: emits the F# nested
+%  match for an if-then-else block.  Placed after the emit_instrs_lm_fs
+%  clause group so the latter is contiguous.
+emit_ite_match_fs(SV, CondInstrs, ThenInstrs, ElseInstrs, Ind, FP) :-
+    format("~wmatch (~n", [Ind]),
+    atom_concat(Ind, "    ", CondInd),
+    emit_ite_block_fs(CondInstrs, SV, CondInd, FP),
+    format("~w) with~n", [Ind]),
+    fresh_sv_fs(SV, SVthen),
+    format("~w| Some ~w ->~n", [Ind, SVthen]),
+    atom_concat(Ind, "    ", ThenInd),
+    emit_ite_block_fs(ThenInstrs, SVthen, ThenInd, FP),
+    format("~w| None ->~n", [Ind]),
+    atom_concat(Ind, "    ", ElseInd),
+    emit_ite_block_fs(ElseInstrs, SV, ElseInd, FP).
 
 %% emit_instrs_fs(+PCInstrs, +CurrentStateVar, +Indent, +ForeignPreds)
 %  Legacy 4-arg version used inside ITE blocks (LabelMap not needed there
