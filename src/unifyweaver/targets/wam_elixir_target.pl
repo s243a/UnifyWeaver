@@ -39,6 +39,15 @@
 :- use_module('../core/template_system').
 :- use_module('../bindings/elixir_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../core/iso_errors',
+              [ iso_errors_resolve_options/2,
+                iso_errors_load_config/2,
+                iso_errors_mode_for/3,
+                iso_errors_warn_multi_module/2,
+                iso_errors_rewrite/4,
+                iso_errors_audit_normalise_pi/2,
+                iso_errors_audit_walk/5
+              ]).
 :- use_module('../targets/wam_elixir_utils', [camel_case/2]).
 :- use_module('../core/recursive_kernel_detection',
               [detect_recursive_kernel/4, kernel_config/2]).
@@ -6037,206 +6046,28 @@ end', [CasesStr]).
 % PR #3 ships: API + audit predicate + runtime helpers, all as
 % standalone exports. Behaviour is identical to pre-PR-#3.
 
-%% iso_errors_default_to_iso(+DefaultKey, -IsoKey)
-%  Maps a default builtin key (e.g. "is/2") to its ISO flavour
-%  ("is_iso/2"). Empty in this PR. Declared `dynamic` so calls
-%  with no clauses simply fail (rather than throwing
-%  existence_error) and so PR #4 can populate it either as
-%  asserted facts or as ordinary static clauses below this line.
-:- dynamic iso_errors_default_to_iso/2.
-:- dynamic iso_errors_default_to_lax/2.
-:- discontiguous iso_errors_default_to_iso/2.
-:- discontiguous iso_errors_default_to_lax/2.
+%% Multifile dispatch tables -- assert into the shared iso_errors
+%% module so the shared mode/audit helpers see our entries.  Each
+%% (DefaultKey -> IsoKey or LaxKey) entry needs a matching runtime
+%% builtin branch; adding an entry without a runtime branch silently
+%% rewrites default calls to dead keys.
+iso_errors:iso_errors_default_to_iso("is/2", "is_iso/2").
+iso_errors:iso_errors_default_to_lax("is/2", "is_lax/2").
 
-% PR #4: is/2 — first ISO-aware builtin. ISO-mode predicates get
-% their default is/2 calls rewritten to is_iso/2 (which throws on
-% bad RHS); lax-mode predicates rewrite to is_lax/2 (a no-op rename
-% since is/2 and is_lax/2 share the runtime body). Explicit
-% is_iso/2 or is_lax/2 in user source survives the rewrite — see
-% iso_errors_rewrite_item/3.
-iso_errors_default_to_iso("is/2", "is_iso/2").
-iso_errors_default_to_lax("is/2", "is_lax/2").
-
-% PR #5: arithmetic comparisons — six ops, each with iso/lax
-% variants. ISO body classifies args + throws via the same
-% machinery is_iso/2 uses; lax body shares with default.
-iso_errors_default_to_iso(">/2",   ">_iso/2").
-iso_errors_default_to_lax(">/2",   ">_lax/2").
-iso_errors_default_to_iso("</2",   "<_iso/2").
-iso_errors_default_to_lax("</2",   "<_lax/2").
-iso_errors_default_to_iso(">=/2",  ">=_iso/2").
-iso_errors_default_to_lax(">=/2",  ">=_lax/2").
-iso_errors_default_to_iso("=</2",  "=<_iso/2").
-iso_errors_default_to_lax("=</2",  "=<_lax/2").
-iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
-iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
-iso_errors_default_to_iso("=\\=/2", "=\\=_iso/2").
-iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
-% PR #5: succ/2 — bidirectional successor with proper ISO error throws.
-iso_errors_default_to_iso("succ/2", "succ_iso/2").
-iso_errors_default_to_lax("succ/2", "succ_lax/2").
-
-%% iso_errors_resolve_options(+Options, -Config)
-%  Merges the (optional) file config with inline options into one
-%  iso_config(Default, Overrides) struct. Inline options override
-%  file entries for the same PI.
-iso_errors_resolve_options(Options, iso_config(Default, Overrides)) :-
-    (   option(iso_errors_config(File), Options)
-    ->  iso_errors_load_config(File, iso_config(FileDefault, FileOv))
-    ;   FileDefault = false, FileOv = []
-    ),
-    iso_errors_inline_default(Options, FileDefault, Default),
-    iso_errors_inline_overrides(Options, InlineOv),
-    iso_errors_merge_overrides(FileOv, InlineOv, Overrides).
-
-iso_errors_inline_default(Options, FileDefault, Default) :-
-    (   member(iso_errors(M), Options),
-        (M == true ; M == false)
-    ->  Default = M
-    ;   Default = FileDefault
-    ).
-
-iso_errors_inline_overrides(Options, InlineOv) :-
-    findall(PI-Mode,
-            ( member(iso_errors(PI, Mode), Options),
-              (Mode == true ; Mode == false),
-              iso_errors_valid_pi(PI)
-            ),
-            InlineOv).
-
-% Accepts both bare Name/Arity and Module:Name/Arity.
-iso_errors_valid_pi(Name/Arity) :- atom(Name), integer(Arity), Arity >= 0, !.
-iso_errors_valid_pi(Module:Name/Arity) :-
-    atom(Module), atom(Name), integer(Arity), Arity >= 0.
-
-iso_errors_merge_overrides(FileOv, InlineOv, Merged) :-
-    exclude(iso_errors_shadowed(InlineOv), FileOv, Kept),
-    append(Kept, InlineOv, Merged).
-
-iso_errors_shadowed(InlineOv, PI-_) :-
-    member(InlinePI-_, InlineOv),
-    iso_errors_pi_matches(InlinePI, PI), !.
-
-% PI matching: bare Name/Arity matches Module:Name/Arity in any
-% module; Module:Name/Arity matches only its own module.
-iso_errors_pi_matches(PI, PI) :- !.
-iso_errors_pi_matches(Name/Arity, _:Name/Arity) :-
-    atom(Name), integer(Arity), !.
-iso_errors_pi_matches(_:Name/Arity, Name/Arity) :-
-    atom(Name), integer(Arity), !.
-
-%% iso_errors_load_config(+File, -Config)
-%  Reads a Prolog facts file and extracts iso_errors_default/1 +
-%  iso_errors_override/2 terms. Unrecognised terms are silently
-%  ignored. Returns iso_config(false, []) on I/O error.
-iso_errors_load_config(File, iso_config(Default, Overrides)) :-
-    catch(
-        setup_call_cleanup(
-            open(File, read, Stream),
-            iso_errors_read_terms(Stream, RawTerms),
-            close(Stream)),
-        _,
-        RawTerms = []),
-    iso_errors_extract_terms(RawTerms, false, [], Default, RevOv),
-    reverse(RevOv, Overrides).
-
-iso_errors_read_terms(Stream, Terms) :-
-    read_term(Stream, T, []),
-    ( T == end_of_file
-    -> Terms = []
-    ; Terms = [T|Rest],
-      iso_errors_read_terms(Stream, Rest)
-    ).
-
-iso_errors_extract_terms([], D, Ov, D, Ov).
-iso_errors_extract_terms([T|Rest], D0, Ov0, D, Ov) :-
-    (   T = iso_errors_default(NewD), (NewD == true ; NewD == false)
-    ->  iso_errors_extract_terms(Rest, NewD, Ov0, D, Ov)
-    ;   T = iso_errors_override(PI, Mode),
-        (Mode == true ; Mode == false),
-        iso_errors_valid_pi(PI)
-    ->  iso_errors_extract_terms(Rest, D0, [PI-Mode|Ov0], D, Ov)
-    ;   iso_errors_extract_terms(Rest, D0, Ov0, D, Ov)
-    ).
-
-%% iso_errors_mode_for(+Config, +PI, -Mode)
-%  Resolves a predicate's ISO mode. Bare Name/Arity in overrides
-%  matches Module:Name/Arity in any module and vice versa. Falls
-%  back to the config's default when no override matches.
-iso_errors_mode_for(iso_config(Default, Overrides), PI, Mode) :-
-    (   member(OvPI-OvMode, Overrides),
-        iso_errors_pi_matches(OvPI, PI)
-    ->  Mode = OvMode
-    ;   Mode = Default
-    ).
-
-%% iso_errors_warn_multi_module(+Config, +Predicates)
-%  Emits a user_error warning for each bare override that matches
-%  predicates from more than one module in the input list. Catches
-%  the safe_div/2-in-two-modules footgun (SPEC §1).
-iso_errors_warn_multi_module(iso_config(_, Overrides), Predicates) :-
-    forall(member(OvPI-_, Overrides),
-           iso_errors_check_override_scope(OvPI, Predicates)).
-
-iso_errors_check_override_scope(Name/Arity, Predicates) :-
-    atom(Name), integer(Arity), !,
-    findall(M, ( member(P, Predicates),
-                 iso_errors_pi_module(P, Name, Arity, M)
-               ), Modules),
-    list_to_set(Modules, Unique),
-    (   Unique = [_, _ | _]
-    ->  length(Unique, N),
-        format(user_error,
-               'Warning: iso_errors_override(~w/~w, _) matches ~w predicates~n         in different modules (~w).~n         Qualify with `mod:~w/~w` for module-scoped overrides.~n',
-               [Name, Arity, N, Unique, Name, Arity])
-    ;   true
-    ).
-iso_errors_check_override_scope(_, _).
-
-iso_errors_pi_module(Module:Name/Arity, Name, Arity, Module) :- !.
-iso_errors_pi_module(Name/Arity,         Name, Arity, user).
-% Predicates list arrives as Pred/Arity-WamCode pairs in this target;
-% extract the PI for module checking.
-iso_errors_pi_module(Pred/Arity-_, Name, Arity, user) :-
-    atom(Pred), Pred = Name, !.
-
-%% iso_errors_rewrite(+Config, +PI, +Items0, -Items)
-%  Rewrites the default-form builtin_call keys for one predicate.
-%  Explicit *_iso / *_lax keys pass through unchanged. With empty
-%  key tables (this PR), the rewrite is a no-op.
-%
-%  Item shape: matches the de-facto items vocabulary the WAM
-%  compiler emits (mirrors C++; see WAM_ITEMS_API_SPECIFICATION.md
-%  §2 for the canonical list). Targets that haven't migrated to the
-%  Items API yet can still call this on their own ad-hoc item form
-%  as long as the keyed shapes (builtin_call/2, put_structure/2,
-%  call/2, execute/1) match.
-iso_errors_rewrite(Config, PI, Items0, Items) :-
-    iso_errors_mode_for(Config, PI, Mode),
-    maplist(iso_errors_rewrite_item(Mode), Items0, Items).
-
-% Two surfaces to rewrite for an ISO-relevant builtin:
-% - builtin_call("is/2", _) — direct call form.
-% - put_structure("is/2", _) — data form when `is/2` appears inside
-%   a meta-goal (catch(Goal, ...) builds is(X, Expr) into A1).
-% Plus call/execute for completeness.
-iso_errors_rewrite_item(true, builtin_call(Key, N), builtin_call(IsoKey, N)) :-
-    iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_rewrite_item(true, put_structure(Key, Reg), put_structure(IsoKey, Reg)) :-
-    iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_rewrite_item(true, call(Key, N), call(IsoKey, N)) :-
-    iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_rewrite_item(true, execute(Key), execute(IsoKey)) :-
-    iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_rewrite_item(false, builtin_call(Key, N), builtin_call(LaxKey, N)) :-
-    iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_rewrite_item(false, put_structure(Key, Reg), put_structure(LaxKey, Reg)) :-
-    iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_rewrite_item(false, call(Key, N), call(LaxKey, N)) :-
-    iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_rewrite_item(false, execute(Key), execute(LaxKey)) :-
-    iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_rewrite_item(_, Item, Item).
+iso_errors:iso_errors_default_to_iso(">/2",   ">_iso/2").
+iso_errors:iso_errors_default_to_lax(">/2",   ">_lax/2").
+iso_errors:iso_errors_default_to_iso("</2",   "<_iso/2").
+iso_errors:iso_errors_default_to_lax("</2",   "<_lax/2").
+iso_errors:iso_errors_default_to_iso(">=/2",  ">=_iso/2").
+iso_errors:iso_errors_default_to_lax(">=/2",  ">=_lax/2").
+iso_errors:iso_errors_default_to_iso("=</2",  "=<_iso/2").
+iso_errors:iso_errors_default_to_lax("=</2",  "=<_lax/2").
+iso_errors:iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
+iso_errors:iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
+iso_errors:iso_errors_default_to_iso("=\\=/2", "=\\=_iso/2").
+iso_errors:iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
+iso_errors:iso_errors_default_to_iso("succ/2", "succ_iso/2").
+iso_errors:iso_errors_default_to_lax("succ/2", "succ_lax/2").
 
 %% wam_elixir_iso_audit(+Predicates, +Options, -Audit)
 %  Read-only inspection of how each predicate's builtin_call sites
@@ -6257,9 +6088,6 @@ wam_elixir_iso_audit(Predicates, Options, Audit) :-
         iso_errors_audit_predicate(PI, Mode, Sites)
     ), Audit).
 
-iso_errors_audit_normalise_pi(Pred/Arity-_, Pred/Arity) :- !.
-iso_errors_audit_normalise_pi(PI, PI).
-
 iso_errors_audit_predicate(PI, Mode, Sites) :-
     (   catch(
             ( wam_target:compile_predicate_to_wam(PI, [], WamText),
@@ -6274,6 +6102,9 @@ iso_errors_audit_predicate(PI, Mode, Sites) :-
 % Light-weight WAM-text parser for the audit. Only recognises the
 % builtin_call shape that the audit cares about — everything else
 % becomes an opaque `other` item that the walker advances past.
+% Elixir-specific: the audit_classify_line has a 3-element pattern
+% (the third slot is the arity string).  The shared audit walker
+% normalises this away.
 iso_errors_audit_parse_lines(WamText, Items) :-
     atom_string(WamText, S),
     split_string(S, "\n", "", Lines),
@@ -6295,46 +6126,6 @@ iso_errors_audit_classify_line(["builtin_call", KeyComma, _ArityStr], Item) :- !
 iso_errors_audit_classify_line(["builtin_call", Key, _ArityStr], Item) :- !,
     Item = builtin_call(Key, 0).
 iso_errors_audit_classify_line(_, other).
-
-iso_errors_audit_walk([], _, _, Acc, Acc).
-iso_errors_audit_walk([label|Rest], PC, Mode, Acc, Out) :- !,
-    iso_errors_audit_walk(Rest, PC, Mode, Acc, Out).
-iso_errors_audit_walk([builtin_call(Key, _)|Rest], PC, Mode, Acc, Out) :- !,
-    iso_errors_audit_classify(Key, Mode, Source, Resolved, Flip),
-    Site = site(PC, Key, Resolved, Source, Flip),
-    PC1 is PC + 1,
-    iso_errors_audit_walk(Rest, PC1, Mode, [Site|Acc], Out).
-iso_errors_audit_walk([_|Rest], PC, Mode, Acc, Out) :-
-    PC1 is PC + 1,
-    iso_errors_audit_walk(Rest, PC1, Mode, Acc, Out).
-
-% Classify a builtin_call key. Explicit *_iso/N or *_lax/N suffix
-% always wins; otherwise it's a default site whose resolution
-% depends on Mode and the (currently empty) swap tables.
-iso_errors_audit_classify(Key, _Mode, explicit_iso, Key, false) :-
-    iso_errors_key_has_suffix(Key, "_iso"), !.
-iso_errors_audit_classify(Key, _Mode, explicit_lax, Key, false) :-
-    iso_errors_key_has_suffix(Key, "_lax"), !.
-iso_errors_audit_classify(Key, Mode, default, Resolved, Flip) :-
-    iso_errors_resolve_default(Key, Mode, Resolved),
-    iso_errors_other_mode(Mode, OtherMode),
-    iso_errors_resolve_default(Key, OtherMode, OtherResolved),
-    ( Resolved == OtherResolved -> Flip = false ; Flip = true ).
-
-iso_errors_resolve_default(Key, true, IsoKey) :-
-    iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_resolve_default(Key, false, LaxKey) :-
-    iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_resolve_default(Key, _, Key).
-
-iso_errors_other_mode(true,  false).
-iso_errors_other_mode(false, true).
-
-iso_errors_key_has_suffix(Key, Suffix) :-
-    ( atom(Key) -> atom_string(Key, KS) ; KS = Key ),
-    split_string(KS, "/", "", Parts),
-    Parts = [Name | _],
-    string_concat(_, Suffix, Name).
 
 %% iso_errors_rewrite_text(+Config, +PI, +WamText, -RewrittenText)
 %  Token-aware text-level rewrite of WAM text for one predicate.
@@ -6367,7 +6158,7 @@ iso_errors_rewrite_text(Config, PI, WamText, RewrittenText) :-
         atomic_list_concat(RewrittenLines, '\n', RewrittenText)
     ).
 
-iso_errors_has_lax_entries :- iso_errors_default_to_lax(_, _), !.
+iso_errors_has_lax_entries :- iso_errors:iso_errors_default_to_lax(_, _), !.
 
 % Rewrite one line. Token-split, classify head, look up key in the
 % mode-appropriate table, splice the new key back in. Lines we
@@ -6418,9 +6209,9 @@ iso_errors_rewrite_parts(_, _, _, _) :- fail.
 % itself when no entry exists (the common case while tables are
 % sparse).
 iso_errors_lookup(true, Key, NewKey) :-
-    iso_errors_default_to_iso(Key, NewKey), !.
+    iso_errors:iso_errors_default_to_iso(Key, NewKey), !.
 iso_errors_lookup(false, Key, NewKey) :-
-    iso_errors_default_to_lax(Key, NewKey), !.
+    iso_errors:iso_errors_default_to_lax(Key, NewKey), !.
 iso_errors_lookup(_, Key, Key).
 
 % Replace the FIRST occurrence of Key in Line with NewKey. Both are

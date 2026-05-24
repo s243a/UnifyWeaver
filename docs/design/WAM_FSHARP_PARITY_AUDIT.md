@@ -87,11 +87,14 @@ F# runtime-parser side).
 
 Remaining cross-cutting work:
 
-- **Shared helper extraction**: F# is the third adopter of the
-  copy-pasted `iso_errors_*` block (after Elixir and Python).
-  Extracting these helpers into `src/unifyweaver/core/iso_errors.pl`
-  is appropriate next per
-  `WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md` § "Remaining Work".
+- _None at this layer._  The shared helper extraction landed once F#
+  became the third adopter -- `src/unifyweaver/core/iso_errors.pl`
+  now hosts the config loader, mode resolver, multi-module warning,
+  item-level rewrite, and audit-walker primitives.  Python, Elixir,
+  and F# all `use_module` from there and only keep their key-table
+  assertions, `iso_errors_rewrite_text` parser, and target-specific
+  audit wrapper.  Shared-module tests live in
+  `tests/test_iso_errors.pl`.
 
 ## LMDB Fact-Source Readiness
 
