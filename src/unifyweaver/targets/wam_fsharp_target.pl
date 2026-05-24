@@ -3526,7 +3526,7 @@ reg_var_name_fs(N, Name) :- format(atom(Name), 'r~w', [N]).
 
 emit_config_let_bindings_fs([]).
 emit_config_let_bindings_fs([config_facts(FactKey)|Rest]) :-
-    format('        let ~w_facts = resolveFactMap "~w" ctx~n',
+    format('        let ~w_facts = resolveFactLookup "~w" ctx~n',
            [FactKey, FactKey]),
     emit_config_let_bindings_fs(Rest).
 emit_config_let_bindings_fs([config_weighted_facts(FactKey)|Rest]) :-
@@ -4652,7 +4652,7 @@ write_wam_fsharp_project(Predicates, Options, ProjectDir) :-
     ->  fsharp_lmdb_template_source(LmdbTemplateCode),
         directory_file_path(ProjectDir, 'LmdbFactSource.fs', LmdbPath),
         write_fs_file(LmdbPath, LmdbTemplateCode),
-        option(lmdb_materialisation(LmdbMode), Options, eager),
+        option(lmdb_materialisation(LmdbMode), Options, cached),
         format(user_error, '[WAM-FSharp] LMDB fact source included (materialisation=~w)~n', [LmdbMode])
     ;   true
     ),

@@ -1,12 +1,17 @@
 /// Native depth-bounded DFS for the category_ancestor kernel.
 /// Auto-generated from kernel detection. Edge predicate: {{edge_pred}}.
-/// Atoms are interned at the FFI boundary so the hot loop uses Map<int,int list>
-/// with integer comparison instead of string hashing.
+///
+/// Takes a lookup function (int -> int list) instead of a concrete
+/// Map so it works with any ILookupSource implementation: eager Map,
+/// lazy LMDB cursor, or cached two-level.  This avoids materialising
+/// the entire edge relation into a Map at kernel entry, which is
+/// catastrophic at large scale (e.g. enwiki 10M edges → 140s for
+/// Map.add; see WAM_LMDB_LAZY_PHILOSOPHY.md §1).
 let rec nativeKernel_category_ancestor
-    (parents: Map<int, int list>)
+    (lookupParents: int -> int list)
     (cat: int) (root: int) (maxDepth: int)
     (depth: int) (visited: int list) : int list =
-    let directParents = Map.tryFind cat parents |> Option.defaultValue []
+    let directParents = lookupParents cat
     let baseHits = directParents |> List.choose (fun p -> if p = root then Some 1 else None)
     let recHits =
         if depth >= maxDepth then []
@@ -14,6 +19,6 @@ let rec nativeKernel_category_ancestor
             directParents |> List.collect (fun mid ->
                 if List.contains mid visited then []
                 else
-                    nativeKernel_category_ancestor parents mid root maxDepth (depth + 1) (mid :: visited)
+                    nativeKernel_category_ancestor lookupParents mid root maxDepth (depth + 1) (mid :: visited)
                     |> List.map (fun h -> h + 1))
     baseHits @ recHits
