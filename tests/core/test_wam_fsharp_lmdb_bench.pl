@@ -58,7 +58,20 @@ main :-
     // Seeds: all 8000 children (1001..9000)
     let seeds = [| 1001 .. 9000 |]
 
-    // --- Eager mode ---
+    // --- Dict mode (skip Map, O(1) Dictionary) ---
+    let swDict = Stopwatch.StartNew()
+    let dictData = loadDupsortRelationDict env \"category_parent\"
+    let dictLoadMs = swDict.Elapsed.TotalMilliseconds
+    let dictSrc = WamTypes.DictLookupSource(dictData) :> WamTypes.ILookupSource
+
+    let swDictQ = Stopwatch.StartNew()
+    let mutable dictTotal = 0
+    for seed in seeds do
+        dictTotal <- dictTotal + List.length (dictSrc.Lookup(seed))
+    swDictQ.Stop()
+    let dictQueryMs = swDictQ.Elapsed.TotalMilliseconds
+
+    // --- Eager mode (Map) ---
     let swEager = Stopwatch.StartNew()
     let eagerMap = loadCategoryParent env
     let eagerLoadMs = swEager.Elapsed.TotalMilliseconds
@@ -106,6 +119,29 @@ main :-
     swCachedHit.Stop()
     let cachedHitMs = swCachedHit.Elapsed.TotalMilliseconds
 
+    // --- Two-level cache (L1 per-thread + L2 bounded shared) ---
+    let swTwoLevel = Stopwatch.StartNew()
+    let twoLevelSrc = TwoLevelCachedLookupSource(
+                          LmdbCursorLookup(env, \"category_parent\"),
+                          l1Capacity = 4096,
+                          maxL2Entries = 65536) :> WamTypes.ILookupSource
+    let twoLevelLoadMs = swTwoLevel.Elapsed.TotalMilliseconds
+
+    let swTwoLevelQ = Stopwatch.StartNew()
+    let mutable twoLevelTotal = 0
+    for seed in seeds do
+        twoLevelTotal <- twoLevelTotal + List.length (twoLevelSrc.Lookup(seed))
+    swTwoLevelQ.Stop()
+    let twoLevelQueryMs = swTwoLevelQ.Elapsed.TotalMilliseconds
+
+    // Second pass: warm L1+L2
+    let swTwoLevelHit = Stopwatch.StartNew()
+    let mutable twoLevelHitTotal = 0
+    for seed in seeds do
+        twoLevelHitTotal <- twoLevelHitTotal + List.length (twoLevelSrc.Lookup(seed))
+    swTwoLevelHit.Stop()
+    let twoLevelHitMs = swTwoLevelHit.Elapsed.TotalMilliseconds
+
     env.Dispose()
     swTotal.Stop()
 
@@ -113,15 +149,18 @@ main :-
     printfn \"F# LMDB Benchmark (1000 parents x 8 children = 8000 edges, %d seeds)\" seeds.Length
     printfn \"========================================================================\"
     printfn \"Mode       load_ms   query_ms   total_ms   result\"
+    printfn \"dict       %7.2f   %8.2f   %8.2f   %d\" dictLoadMs dictQueryMs (dictLoadMs + dictQueryMs) dictTotal
     printfn \"eager      %7.2f   %8.2f   %8.2f   %d\" eagerLoadMs eagerQueryMs (eagerLoadMs + eagerQueryMs) eagerTotal
     printfn \"lazy       %7.2f   %8.2f   %8.2f   %d\" lazyLoadMs lazyQueryMs (lazyLoadMs + lazyQueryMs) lazyTotal
     printfn \"cached     %7.2f   %8.2f   %8.2f   %d\" cachedLoadMs cachedQueryMs (cachedLoadMs + cachedQueryMs) cachedTotal
     printfn \"cached-hit %7.2f   %8.2f   %8.2f   %d\" 0.0 cachedHitMs cachedHitMs cachedHitTotal
+    printfn \"2level     %7.2f   %8.2f   %8.2f   %d\" twoLevelLoadMs twoLevelQueryMs (twoLevelLoadMs + twoLevelQueryMs) twoLevelTotal
+    printfn \"2level-hit %7.2f   %8.2f   %8.2f   %d\" 0.0 twoLevelHitMs twoLevelHitMs twoLevelHitTotal
     printfn \"\"
     printfn \"total_wall_ms = %.2f\" swTotal.Elapsed.TotalMilliseconds
 
     // Sanity: all modes should produce same result
-    if eagerTotal = lazyTotal && lazyTotal = cachedTotal && cachedTotal = cachedHitTotal then
+    if dictTotal = eagerTotal && eagerTotal = lazyTotal && lazyTotal = cachedTotal && cachedTotal = cachedHitTotal && cachedHitTotal = twoLevelTotal && twoLevelTotal = twoLevelHitTotal then
         printfn \"RESULT OK (all modes agree)\"
         0
     else
