@@ -47,7 +47,19 @@
     fsharp_fact_only/2,                  % +Segments, -Bool
     fsharp_first_arg_groundness/3,       % +Segments, +Arity, -Status
     fsharp_pick_layout/5,                % +PredIndicator, +NClauses, +FactOnly, +Options, -Layout
-    split_wam_into_segments_fs/2         % +Lines, -Segments
+    split_wam_into_segments_fs/2,        % +Lines, -Segments
+    % ISO error config + rewrite (parity with C++/Elixir/Python).  See
+    % docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md for the shared
+    % contract.  Initial F# adoption ships is_iso/2 and is_lax/2; the
+    % comparison-op and succ/2 variants are follow-ups.
+    iso_errors_resolve_options/2,        % +Options, -Config
+    iso_errors_load_config/2,            % +File, -Config
+    iso_errors_mode_for/3,               % +Config, +PI, -Mode
+    iso_errors_warn_multi_module/2,      % +Config, +Predicates
+    iso_errors_rewrite/4,                % +Config, +PI, +Items0, -Items
+    iso_errors_rewrite_text/4,           % +Config, +PI, +WamText0, -WamText
+    wam_fsharp_iso_audit/3,              % +Predicates, +Options, -Audit
+    wam_fsharp_iso_audit_report/1        % +Audit
 ]).
 
 :- use_module(library(lists)).
@@ -867,6 +879,26 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                                          WsB0Stack = s.WsCutBar :: s.WsB0Stack
                                          WsCutBar  = s.WsCPsLen }
 
+    // catch/3 and throw/1 are emitted by the WAM compiler as
+    // Call / Execute (meta-call shape) rather than BuiltinCall.
+    // Dispatch them through the BuiltinCall step branch so the ISO
+    // substrate runs.  For Call: BuiltinCall returns PC=WsPC+1 which
+    // matches the natural advance past the Call site.  For Execute:
+    // BuiltinCall returns PC=WsPC+1 (past the Execute itself), then
+    // we convert that to PC=WsCP to honor tail-call return semantics.
+    // ISO meta-builtins emitted as Call by the WAM compiler.  These
+    // are predicate names the shared wam_target.pl does NOT classify
+    // as is_builtin_goal, so they normally fall through to label
+    // lookup -- which would fail since these aren''t labelled
+    // predicates.  Routing through BuiltinCall here picks up the F#
+    // step arms for ISO catch/throw/is_iso/is_lax.
+    | Call (pred, arity) when pred = \"catch/3\" || pred = \"throw/1\"
+                            || pred = \"is_iso/2\" || pred = \"is_lax/2\" ->
+        let sc = { s with WsCP      = s.WsPC + 1
+                          WsB0Stack = s.WsCutBar :: s.WsB0Stack
+                          WsCutBar  = s.WsCPsLen }
+        step ctx sc (BuiltinCall (pred, arity))
+
     | Call (pred, _arity) ->
         let sc = { s with WsCP      = s.WsPC + 1
                           WsB0Stack = s.WsCutBar :: s.WsB0Stack
@@ -880,6 +912,21 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         match Map.tryFind pred ctx.WcLabels with
         | Some pc -> Some { sc with WsPC = pc }
         | None    -> None
+
+    | Execute pred when pred = \"catch/3\" || pred = \"throw/1\"
+                      || pred = \"is_iso/2\" || pred = \"is_lax/2\" ->
+        // Tail-call meta-builtin: dispatch through BuiltinCall, then
+        // convert the PC+1 advance (past the Execute slot) to WsCP so
+        // control returns to the outer caller as a normal Proceed
+        // would.  Execute itself does not push WsB0Stack, so there''s
+        // nothing to pop here.
+        let arity =
+            if pred = \"throw/1\" then 1
+            elif pred = \"catch/3\" then 3
+            else 2
+        match step ctx s (BuiltinCall (pred, arity)) with
+        | Some sNext -> Some { sNext with WsPC = sNext.WsCP }
+        | None -> None
 
     | Execute pred ->
         // Tail call: no return, so no push.  Update barrier in place.
@@ -1295,7 +1342,12 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | Some (Integer _) | Some (Float _) -> Some { s with WsPC = s.WsPC + 1 }
         | _                                  -> None
 
-    | BuiltinCall ("is/2", _) ->
+    // is/2 and is_lax/2 share the lax body: arithmetic eval that fails
+    // silently on bad input.  is_iso/2 below has its own body that throws
+    // structured ISO error terms instead.  This split implements the
+    // three-form ISO/lax dispatch defined in WAM_CPP_ISO_ERRORS_SPECIFICATION.md
+    // and matches the Python/Elixir/C++ shipped reference shape.
+    | BuiltinCall ("is/2", _) | BuiltinCall ("is_lax/2", _) ->
         let expr   = s.WsRegs.[2] |> derefVar s.WsBindings
         let result = evalArith s.WsBindings expr
         let lhs    = getReg 1 s
@@ -1312,6 +1364,65 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                      WsTrailLen= s.WsTrailLen + 1 }
         | Some (Integer n), Some r when float n = r -> Some { s with WsPC = s.WsPC + 1 }
         | _ -> None
+
+    // is_iso/2 — same eval semantics as is/2, but on bad eval raise a
+    // structured ISO error via throwIsoError.  Failure classification:
+    //   - unbound var anywhere in RHS -> instantiation_error
+    //   - integer or float zero divide  -> evaluation_error(zero_divisor)
+    //   - non-evaluable atom / unknown functor -> type_error(evaluable, X/N)
+    // The actual unwind is via WamException, which propagates up to the
+    // nearest catch/3 try/with (set up by the catch/3 builtin).
+    | BuiltinCall ("is_iso/2", _) ->
+        let expr = s.WsRegs.[2] |> derefVar s.WsBindings
+        // Step 1: instantiation check.
+        let rec hasUnbound v =
+            match derefVar s.WsBindings v with
+            | Unbound _      -> true
+            | Str (_, args)  -> List.exists hasUnbound args
+            | VList items    -> List.exists hasUnbound items
+            | _              -> false
+        if hasUnbound expr then throwIsoError s (makeInstantiationError ())
+        // Step 2: zero-divide check.  Parens around the inner match
+        // are mandatory in F# so subsequent `| Str ...` arms attach to
+        // the outer match, not the inner.
+        let rec hasZeroDivide v =
+            match derefVar s.WsBindings v with
+            | Str ((\"/\" | \"//\" | \"mod\" | \"rem\"), [_; rhs]) ->
+                (match derefVar s.WsBindings rhs with
+                 | Integer 0 -> true
+                 | Float f when f = 0.0 -> true
+                 | _ -> false)
+            | Str (_, args) -> List.exists hasZeroDivide args
+            | _ -> false
+        if hasZeroDivide expr then
+            throwIsoError s (makeEvaluationError \"zero_divisor\")
+        // Step 3: evaluate, classify any remaining failure as type_error.
+        let result = evalArith s.WsBindings expr
+        match result with
+        | None ->
+            // Build culprit term.  For an Atom ''foo'' use foo/0; for a
+            // Str f(args) use f/arity.  Anything else uses unknown/0.
+            let culprit =
+                match derefVar s.WsBindings expr with
+                | Atom name      -> makePredIndicator name 0
+                | Str (fn, args) -> makePredIndicator fn (List.length args)
+                | _              -> makePredIndicator \"unknown\" 0
+            throwIsoError s (makeTypeError \"evaluable\" culprit)
+        | Some r ->
+            let lhs = getReg 1 s
+            match lhs with
+            | Some (Unbound vid) ->
+                let v = if float (int r) = r then Integer (int r) else Float r
+                let regs = Array.copy s.WsRegs
+                regs.[1] <- v
+                Some { s with
+                         WsPC      = s.WsPC + 1
+                         WsRegs    = regs
+                         WsBindings= Map.add vid v s.WsBindings
+                         WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
+                         WsTrailLen= s.WsTrailLen + 1 }
+            | Some (Integer n) when float n = r -> Some { s with WsPC = s.WsPC + 1 }
+            | _ -> None
 
     | BuiltinCall ("length/2", _) ->
         match flattenList s s.WsRegs.[1] with
@@ -2225,6 +2336,198 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | _ -> None
 
     // ========================================================================
+    // ISO catch/3 and throw/1 — exception-style non-local control.
+    //
+    // catch(Goal, Catcher, Recovery): pushes a CatcherFrame holding a
+    // snapshot of pre-call state, runs Goal recursively via `run`, pops
+    // the frame on normal return.  If Goal (or any nested goal) executes
+    // throw/1, F# raises WamException with the thrown term; the try/with
+    // here catches it, restores the snapshot, unifies Catcher with the
+    // thrown term, and runs Recovery.  Mirrors Python _execute_catch.
+    //
+    // throw(Term): deep-derefs Term through the current bindings and
+    // raises WamException.  Propagates through the run loop until caught
+    // by a catch/3 try/with or by the top-level runPredicate harness
+    // (which prints \"Uncaught Prolog throw: ...\" and returns None).
+    // ========================================================================
+    | BuiltinCall (\"throw/1\", _) ->
+        // Plain throw/1: pass the user''s term through unchanged.  ISO
+        // wrapping in error(ErrorTerm, Context) is the job of
+        // throwIsoError, which is_iso/2 and friends call directly when
+        // they detect a structured ISO failure.  User code that wants
+        // ISO shape passes error(...) terms explicitly.
+        match getReg 1 s with
+        | Some v ->
+            let thrown = derefDeep s.WsBindings v
+            raise (WamException thrown)
+        | None ->
+            raise (WamException (Atom \"instantiation_error\"))
+
+    | BuiltinCall (\"catch/3\", _) ->
+        let goal = getReg 1 s
+        let catcherTerm  = getReg 2 s |> Option.defaultValue (Unbound -1)
+        let recoveryTerm = getReg 3 s |> Option.defaultValue (Unbound -1)
+        let snapshotRegs = Array.copy s.WsRegs
+        let snapshot = { s with WsRegs = snapshotRegs }
+        let frame =
+            { CfCatcherTerm  = catcherTerm
+              CfRecoveryTerm = recoveryTerm
+              CfSnapshot     = snapshot
+              CfSnapshotRegs = snapshotRegs }
+        // Resolve the goal and build a child state to run.  Two
+        // dispatch paths:
+        //   1. Label lookup (user-defined predicate) -> jump to PC and
+        //      run.  This is the common case.
+        //   2. Builtin call (catch/3, throw/1, is_iso/2, is_lax/2, etc.)
+        //      -- the goal name isn''t a label so we fall through to a
+        //      BuiltinCall step.  Needed so nested catch/3 inside the
+        //      caller''s catch goal works, and so is_iso/2 (which the
+        //      WAM compiler emits as Execute, not BuiltinCall) can fire
+        //      its throw.
+        // true/fail are inlined to avoid round-tripping them through
+        // BuiltinCall.
+        let runGoalInChild (goalVal: Value) : WamState option =
+            let runWithArgs goalKey arity (dArgs: Value list) =
+                let regsCh = Array.create MaxRegs (Unbound -1)
+                dArgs |> List.iteri (fun i v -> regsCh.[i + 1] <- v)
+                let child =
+                    { s with
+                        WsRegs     = regsCh
+                        WsCP       = 0
+                        WsCutBar   = 0
+                        WsB0Stack  = []
+                        WsCatchers = frame :: s.WsCatchers }
+                match Map.tryFind goalKey ctx.WcLabels with
+                | Some pc -> run ctx { child with WsPC = pc }
+                | None ->
+                    // Fall through to BuiltinCall dispatch.  The PC is
+                    // immaterial here -- BuiltinCall doesn''t read WsPC
+                    // for dispatch; we set it to 0 so a recursive run
+                    // halts cleanly when the builtin returns.
+                    step ctx { child with WsPC = 0 } (BuiltinCall (goalKey, arity))
+            match goalVal with
+            | Atom \"true\" -> Some s
+            | Atom \"fail\" -> None
+            | Str (fname, args) ->
+                let arity = List.length args
+                let dArgs = args |> List.map (derefVar s.WsBindings)
+                let goalKey = sprintf \"%s/%d\" fname arity
+                runWithArgs goalKey arity dArgs
+            | Atom fname ->
+                let goalKey = sprintf \"%s/0\" fname
+                runWithArgs goalKey 0 []
+            | _ -> None
+        try
+            match goal with
+            | Some g ->
+                match runGoalInChild g with
+                | Some resultState ->
+                    // Goal succeeded.  Carry bindings/trail/heap forward
+                    // (they belong to the caller now), but revert WsRegs
+                    // to the catch/3 caller''s regs since the child used
+                    // a fresh register array.  Filter our specific
+                    // catcher frame out by reference identity in case
+                    // nested catches pushed their own.
+                    let withoutFrame =
+                        resultState.WsCatchers
+                        |> List.filter (fun f -> not (System.Object.ReferenceEquals(f, frame)))
+                    Some { resultState with
+                             WsRegs     = s.WsRegs
+                             WsCatchers = withoutFrame
+                             WsPC       = s.WsPC + 1 }
+                | None -> None
+            | None -> None
+        with
+        | WamException thrown ->
+            // Restore from snapshot, try to unify Catcher with Thrown,
+            // and on success run Recovery.  On unify failure rethrow so
+            // an outer catcher can try.
+            let regsRestored = Array.copy frame.CfSnapshotRegs
+            let restored = { frame.CfSnapshot with WsRegs = regsRestored }
+            // Unify in-place against the restored state''s bindings.
+            let rec unifyTerms (a: Value) (b: Value) (st: WamState) : WamState option =
+                let da = derefVar st.WsBindings a
+                let db = derefVar st.WsBindings b
+                match da, db with
+                | Unbound va, Unbound vb when va = vb -> Some st
+                | Unbound vid, v | v, Unbound vid ->
+                    Some { st with
+                             WsBindings = Map.add vid v st.WsBindings
+                             WsTrail    = { TrailVarId = vid
+                                            TrailOldVal = Map.tryFind vid st.WsBindings } :: st.WsTrail
+                             WsTrailLen = st.WsTrailLen + 1 }
+                | Atom a1, Atom a2 when a1 = a2 -> Some st
+                | Integer i1, Integer i2 when i1 = i2 -> Some st
+                | Float f1, Float f2 when f1 = f2 -> Some st
+                | Str (f1, a1), Str (f2, a2) when f1 = f2 && List.length a1 = List.length a2 ->
+                    let rec walk xs ys st0 =
+                        match xs, ys with
+                        | [], [] -> Some st0
+                        | x :: xr, y :: yr ->
+                            match unifyTerms x y st0 with
+                            | Some st1 -> walk xr yr st1
+                            | None -> None
+                        | _ -> None
+                    walk a1 a2 st
+                | VList l1, VList l2 when List.length l1 = List.length l2 ->
+                    let rec walk xs ys st0 =
+                        match xs, ys with
+                        | [], [] -> Some st0
+                        | x :: xr, y :: yr ->
+                            match unifyTerms x y st0 with
+                            | Some st1 -> walk xr yr st1
+                            | None -> None
+                        | _ -> None
+                    walk l1 l2 st
+                | _ -> None
+            match unifyTerms frame.CfCatcherTerm thrown restored with
+            | Some unified ->
+                // Run the recovery goal in a child state, similar to the
+                // catch''s goal path.  Recovery success advances PC past
+                // catch/3; failure causes catch to fail.
+                let recoveryRun =
+                    match derefVar unified.WsBindings frame.CfRecoveryTerm with
+                    // Common builtin atoms: handle directly without
+                    // requiring a label/builtin dispatch round-trip.
+                    | Atom \"true\"  -> Some unified
+                    | Atom \"fail\"  -> None
+                    | Str (fname, args) ->
+                        let dArgs = args |> List.map (derefVar unified.WsBindings)
+                        let goalKey = sprintf \"%s/%d\" fname (List.length args)
+                        match Map.tryFind goalKey ctx.WcLabels with
+                        | Some pc ->
+                            let regsCh = Array.create MaxRegs (Unbound -1)
+                            dArgs |> List.iteri (fun i v -> regsCh.[i + 1] <- v)
+                            let child =
+                                { unified with
+                                    WsPC      = pc
+                                    WsRegs    = regsCh
+                                    WsCP      = 0
+                                    WsCutBar  = 0
+                                    WsB0Stack = [] }
+                            run ctx child
+                        | None -> None
+                    | Atom fname ->
+                        let goalKey = sprintf \"%s/0\" fname
+                        match Map.tryFind goalKey ctx.WcLabels with
+                        | Some pc ->
+                            let child =
+                                { unified with
+                                    WsPC      = pc
+                                    WsCP      = 0
+                                    WsCutBar  = 0
+                                    WsB0Stack = [] }
+                            run ctx child
+                        | None -> None
+                    | _ -> None
+                match recoveryRun with
+                | Some _ -> Some { unified with WsPC = s.WsPC + 1 }
+                | None   -> None
+            | None ->
+                // Unify failed -- rethrow for outer catcher.
+                raise (WamException thrown)
+
+    // ========================================================================
     // Phase I — Haskell-only specialized instructions (perf optimizations).
     // ========================================================================
     // Reference: src/unifyweaver/targets/wam_haskell_target.pl. These are
@@ -2720,7 +3023,15 @@ and forkParBranches (ctx: WamContext) (s: WamState) (af: AggFrame)
                                // context.  Branch runs with WsCP=0 so a
                                // mismatched pop would halt; starting empty
                                // keeps Call/Proceed pairing consistent.
-                               WsB0Stack  = [] }
+                               WsB0Stack  = []
+                               // Catchers don''t span forks: a throw in a
+                               // forked branch propagates as uncaught
+                               // within the branch, killing it but not
+                               // the parent (whose catch frame holds a
+                               // snapshot of pre-fork state).  Conservative
+                               // choice for v1 -- distributed catch
+                               // across parallel branches is out of scope.
+                               WsCatchers = [] }
             return run ctx snapshot
         }
     let results =
@@ -2845,28 +3156,38 @@ and callIndexedFact2 (ctx: WamContext) (pred: string) (s: WamState) : WamState o
 
 /// Dispatch a Call to another predicate for use by lowered functions.
 and dispatchCall (ctx: WamContext) (pred: string) (sc: WamState) : WamState option =
-    match Map.tryFind pred ctx.WcLoweredPredicates with
-    | Some fn -> fn ctx sc
-    | None ->
-    match callIndexedFact2 ctx pred sc with
-    | Some sr -> Some sr
-    | None ->
-    match Map.tryFind pred ctx.WcLabels with
-    | Some pc ->
-        // Save the caller''s intended return PC and set WsCP = 0 before
-        // entering run.  Without this, the called predicate''s outermost
-        // Proceed sets WsPC = WsCP (the caller''s post-call PC), so the
-        // interpreter loop keeps executing the CALLER''s WAM continuation
-        // -- which is wrong when the caller is a lowered function that
-        // intends to handle its own continuation in F#.  Resetting WsCP
-        // to 0 makes Proceed stop the run loop (run returns on WsPC = 0);
-        // we restore WsCP before handing control back so the lowered
-        // caller''s subsequent Allocate sees the right value.
-        let savedCP = sc.WsCP
-        match run ctx { sc with WsPC = pc; WsCP = 0 } with
-        | Some sf -> Some { sf with WsCP = savedCP }
+    try
+        match Map.tryFind pred ctx.WcLoweredPredicates with
+        | Some fn -> fn ctx sc
+        | None ->
+        match callIndexedFact2 ctx pred sc with
+        | Some sr -> Some sr
+        | None ->
+        match Map.tryFind pred ctx.WcLabels with
+        | Some pc ->
+            // Save the caller''s intended return PC and set WsCP = 0 before
+            // entering run.  Without this, the called predicate''s outermost
+            // Proceed sets WsPC = WsCP (the caller''s post-call PC), so the
+            // interpreter loop keeps executing the CALLER''s WAM continuation
+            // -- which is wrong when the caller is a lowered function that
+            // intends to handle its own continuation in F#.  Resetting WsCP
+            // to 0 makes Proceed stop the run loop (run returns on WsPC = 0);
+            // we restore WsCP before handing control back so the lowered
+            // caller''s subsequent Allocate sees the right value.
+            let savedCP = sc.WsCP
+            match run ctx { sc with WsPC = pc; WsCP = 0 } with
+            | Some sf -> Some { sf with WsCP = savedCP }
+            | None    -> None
         | None    -> None
-    | None    -> None
+    with
+    | WamException term ->
+        // Uncaught throw at top-level dispatch.  Print a diagnostic on
+        // stderr (matching the Python runtime''s behavior) and return
+        // None so the caller observes a failed predicate rather than a
+        // .NET crash.  Tests that want to assert specific errors should
+        // use catch/3 from the Prolog side.
+        eprintfn \"Uncaught Prolog throw from %s: %A\" pred term
+        None
 
 /// Foreign call for lowered functions.
 and callForeign (ctx: WamContext) (pred: string) (sc: WamState) : WamState option =
@@ -3957,6 +4278,338 @@ fsharp_predicate_clause(Name/Arity, Head, Body) :-
     functor(Head, Name, Arity),
     clause(user:Head, Body).
 
+% ============================================================================
+% PHASE: ISO error configuration, rewrite, and audit
+% ============================================================================
+%
+% Shared contract: docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md +
+%                   docs/design/WAM_CPP_ISO_ERRORS_SPECIFICATION.md
+%
+% This block is a copy of the Python/Elixir iso_errors_* implementation
+% (which themselves descend from the C++ reference shape).  The three
+% targets all carry near-identical Prolog plumbing today; a future
+% refactor may extract this into src/unifyweaver/core/iso_errors.pl once
+% a fourth adopter motivates the move (note in
+% WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md §"Remaining Work").
+%
+% F# v1 ships only is/2 ↔ is_iso/2 / is_lax/2 in the key tables.  The
+% arithmetic-comparison sweep (>, <, >=, =<, =:=, =\=) and succ/2 are
+% follow-up PRs; adding them to the tables before the runtime branches
+% exist would silently rewrite default calls to dead keys.
+
+% Per-predicate ISO/lax dispatch tables.  Each (DefaultKey -> IsoKey
+% or LaxKey) entry needs a matching runtime branch in
+% step_function_fsharp -- adding to the table without the runtime
+% support silently drops calls.
+:- dynamic iso_errors_default_to_iso/2.
+:- dynamic iso_errors_default_to_lax/2.
+
+iso_errors_default_to_iso("is/2", "is_iso/2").
+iso_errors_default_to_lax("is/2", "is_lax/2").
+
+%% iso_errors_resolve_options(+Options, -Config)
+%  Merges optional file config with inline options into iso_config(Default,
+%  Overrides).  Inline options override file entries for the same PI.
+iso_errors_resolve_options(Options, iso_config(Default, Overrides)) :-
+    (   option(iso_errors_config(File), Options)
+    ->  iso_errors_load_config(File, iso_config(FileDefault, FileOv))
+    ;   FileDefault = false, FileOv = []
+    ),
+    iso_errors_inline_default(Options, FileDefault, Default),
+    iso_errors_inline_overrides(Options, InlineOv),
+    iso_errors_merge_overrides(FileOv, InlineOv, Overrides).
+
+iso_errors_inline_default(Options, FileDefault, Default) :-
+    (   member(iso_errors(M), Options),
+        (M == true ; M == false)
+    ->  Default = M
+    ;   Default = FileDefault
+    ).
+
+iso_errors_inline_overrides(Options, InlineOv) :-
+    findall(PI-Mode,
+        ( member(iso_errors(PI, Mode), Options),
+          (Mode == true ; Mode == false),
+          iso_errors_valid_pi(PI)
+        ),
+        InlineOv).
+
+iso_errors_valid_pi(Name/Arity) :- atom(Name), integer(Arity), Arity >= 0, !.
+iso_errors_valid_pi(Module:Name/Arity) :-
+    atom(Module), atom(Name), integer(Arity), Arity >= 0.
+
+iso_errors_merge_overrides(FileOv, InlineOv, Merged) :-
+    exclude(iso_errors_shadowed(InlineOv), FileOv, Kept),
+    append(Kept, InlineOv, Merged).
+
+iso_errors_shadowed(InlineOv, PI-_) :-
+    member(InlinePI-_, InlineOv),
+    iso_errors_pi_matches(InlinePI, PI), !.
+
+iso_errors_pi_matches(PI, PI) :- !.
+iso_errors_pi_matches(Name/Arity, _:Name/Arity) :-
+    atom(Name), integer(Arity), !.
+iso_errors_pi_matches(_:Name/Arity, Name/Arity) :-
+    atom(Name), integer(Arity), !.
+
+%% iso_errors_load_config(+File, -Config)
+%  Reads iso_errors_default/1 and iso_errors_override/2 facts.  Unknown
+%  facts and I/O failures are ignored, yielding iso_config(false, []).
+iso_errors_load_config(File, iso_config(Default, Overrides)) :-
+    catch(
+        setup_call_cleanup(
+            open(File, read, Stream),
+            iso_errors_read_terms(Stream, RawTerms),
+            close(Stream)),
+        _,
+        RawTerms = []),
+    iso_errors_extract_terms(RawTerms, false, [], Default, RevOv),
+    reverse(RevOv, Overrides).
+
+iso_errors_read_terms(Stream, Terms) :-
+    read_term(Stream, T, []),
+    (   T == end_of_file
+    ->  Terms = []
+    ;   Terms = [T|Rest],
+        iso_errors_read_terms(Stream, Rest)
+    ).
+
+iso_errors_extract_terms([], D, Ov, D, Ov).
+iso_errors_extract_terms([T|Rest], D0, Ov0, D, Ov) :-
+    (   T = iso_errors_default(NewD), (NewD == true ; NewD == false)
+    ->  iso_errors_extract_terms(Rest, NewD, Ov0, D, Ov)
+    ;   T = iso_errors_override(PI, Mode),
+        (Mode == true ; Mode == false),
+        iso_errors_valid_pi(PI)
+    ->  iso_errors_extract_terms(Rest, D0, [PI-Mode|Ov0], D, Ov)
+    ;   iso_errors_extract_terms(Rest, D0, Ov0, D, Ov)
+    ).
+
+%% iso_errors_mode_for(+Config, +PI, -Mode)
+iso_errors_mode_for(iso_config(Default, Overrides), PI, Mode) :-
+    (   member(OvPI-OvMode, Overrides),
+        iso_errors_pi_matches(OvPI, PI)
+    ->  Mode = OvMode
+    ;   Mode = Default
+    ).
+
+%% iso_errors_warn_multi_module(+Config, +Predicates)
+%  Warns when a bare override matches predicates from multiple modules.
+iso_errors_warn_multi_module(iso_config(_, Overrides), Predicates) :-
+    forall(member(OvPI-_, Overrides),
+           iso_errors_check_override_scope(OvPI, Predicates)).
+
+iso_errors_check_override_scope(Name/Arity, Predicates) :-
+    atom(Name), integer(Arity), !,
+    findall(M, ( member(P, Predicates),
+                 iso_errors_pi_module(P, Name, Arity, M)
+               ), Modules),
+    list_to_set(Modules, Unique),
+    (   Unique = [_, _ | _]
+    ->  length(Unique, N),
+        format(user_error,
+               'Warning: iso_errors_override(~w/~w, _) matches ~w predicates~n         in different modules (~w).~n         Qualify with `mod:~w/~w` for module-scoped overrides.~n',
+               [Name, Arity, N, Unique, Name, Arity])
+    ;   true
+    ).
+iso_errors_check_override_scope(_, _).
+
+iso_errors_pi_module(Module:Name/Arity, Name, Arity, Module) :- !.
+iso_errors_pi_module(Name/Arity, Name, Arity, user).
+iso_errors_pi_module(Pred/Arity-_, Name, Arity, user) :-
+    atom(Pred), Pred = Name, !.
+
+%% iso_errors_rewrite(+Config, +PI, +Items0, -Items)
+%  Item-level rewrite API shared with C++/Elixir/Python.  F# (like
+%  Python) currently uses the text-level wrapper below because both
+%  interpreter and lowered emitter paths start from WAM text.
+iso_errors_rewrite(Config, PI, Items0, Items) :-
+    iso_errors_mode_for(Config, PI, Mode),
+    maplist(iso_errors_rewrite_item(Mode), Items0, Items).
+
+iso_errors_rewrite_item(true, builtin_call(Key, N), builtin_call(IsoKey, N)) :-
+    iso_errors_default_to_iso(Key, IsoKey), !.
+iso_errors_rewrite_item(true, put_structure(Key, Reg), put_structure(IsoKey, Reg)) :-
+    iso_errors_default_to_iso(Key, IsoKey), !.
+iso_errors_rewrite_item(true, call(Key, N), call(IsoKey, N)) :-
+    iso_errors_default_to_iso(Key, IsoKey), !.
+iso_errors_rewrite_item(true, execute(Key), execute(IsoKey)) :-
+    iso_errors_default_to_iso(Key, IsoKey), !.
+iso_errors_rewrite_item(false, builtin_call(Key, N), builtin_call(LaxKey, N)) :-
+    iso_errors_default_to_lax(Key, LaxKey), !.
+iso_errors_rewrite_item(false, put_structure(Key, Reg), put_structure(LaxKey, Reg)) :-
+    iso_errors_default_to_lax(Key, LaxKey), !.
+iso_errors_rewrite_item(false, call(Key, N), call(LaxKey, N)) :-
+    iso_errors_default_to_lax(Key, LaxKey), !.
+iso_errors_rewrite_item(false, execute(Key), execute(LaxKey)) :-
+    iso_errors_default_to_lax(Key, LaxKey), !.
+iso_errors_rewrite_item(_, Item, Item).
+
+%% iso_errors_rewrite_text(+Config, +PI, +WamText, -RewrittenText)
+%  Text-level rewrite that walks the WAM text line-by-line, splicing
+%  default-form keys into their resolved ISO/lax forms.  Mirrors
+%  Python wam_python_target:iso_errors_rewrite_text/4.
+iso_errors_rewrite_text(Config, PI, WamText, RewrittenText) :-
+    iso_errors_mode_for(Config, PI, Mode),
+    (   Mode == false,
+        \+ iso_errors_has_lax_entries
+    ->  RewrittenText = WamText
+    ;   atom_string(WamText, S),
+        split_string(S, "\n", "", Lines),
+        maplist(iso_errors_rewrite_line(Mode), Lines, RewrittenLines),
+        atomic_list_concat(RewrittenLines, '\n', RewrittenText)
+    ).
+
+iso_errors_has_lax_entries :- iso_errors_default_to_lax(_, _), !.
+
+iso_errors_rewrite_line(Mode, Line, OutLine) :-
+    split_string(Line, " \t", " \t", Parts0),
+    exclude(==(""), Parts0, Parts),
+    (   iso_errors_rewrite_parts(Mode, Parts, Line, OutLine)
+    ->  true
+    ;   OutLine = Line
+    ).
+
+iso_errors_rewrite_parts(Mode, ["builtin_call", Key0 | _], Line, OutLine) :- !,
+    iso_errors_clean_key_token(Key0, Key),
+    iso_errors_lookup(Mode, Key, NewKey),
+    Key \== NewKey,
+    iso_errors_splice_line(Line, Key, NewKey, OutLine).
+iso_errors_rewrite_parts(Mode, ["put_structure", Key0 | _], Line, OutLine) :- !,
+    iso_errors_clean_key_token(Key0, Key),
+    iso_errors_lookup(Mode, Key, NewKey),
+    Key \== NewKey,
+    iso_errors_splice_line(Line, Key, NewKey, OutLine).
+iso_errors_rewrite_parts(Mode, ["call", Key0 | _], Line, OutLine) :- !,
+    iso_errors_clean_key_token(Key0, Key),
+    iso_errors_lookup(Mode, Key, NewKey),
+    Key \== NewKey,
+    iso_errors_splice_line(Line, Key, NewKey, OutLine).
+iso_errors_rewrite_parts(Mode, ["execute", Key0 | _], Line, OutLine) :- !,
+    iso_errors_clean_key_token(Key0, Key),
+    iso_errors_lookup(Mode, Key, NewKey),
+    Key \== NewKey,
+    iso_errors_splice_line(Line, Key, NewKey, OutLine).
+
+iso_errors_clean_key_token(Token0, Token) :-
+    (   string_concat(Token, ",", Token0)
+    ->  true
+    ;   Token = Token0
+    ).
+
+iso_errors_lookup(true, Key, NewKey) :-
+    iso_errors_default_to_iso(Key, NewKey), !.
+iso_errors_lookup(false, Key, NewKey) :-
+    iso_errors_default_to_lax(Key, NewKey), !.
+iso_errors_lookup(_, Key, Key).
+
+iso_errors_splice_line(Line, Key, NewKey, OutLine) :-
+    sub_string(Line, Before, KLen, _After, Key),
+    string_length(Key, KLen),
+    sub_string(Line, 0, Before, _, Pre),
+    PostStart is Before + KLen,
+    sub_string(Line, PostStart, _, 0, Post),
+    string_concat(Pre, NewKey, T1),
+    string_concat(T1, Post, OutLine), !.
+
+%% wam_fsharp_iso_audit(+Predicates, +Options, -Audit)
+%  Read-only audit pass that reports per-call-site resolution of
+%  default/explicit_iso/explicit_lax keys for each predicate in
+%  Predicates.  Useful for reviewing whether an iso_errors config does
+%  what was intended before generation.  Mirrors C++/Elixir/Python.
+wam_fsharp_iso_audit(Predicates, Options, Audit) :-
+    iso_errors_resolve_options(Options, Config),
+    findall(audit(PI, Mode, Sites), (
+        member(P, Predicates),
+        iso_errors_audit_normalise_pi(P, PI),
+        iso_errors_mode_for(Config, PI, Mode),
+        iso_errors_audit_predicate(PI, Mode, Sites)
+    ), Audit).
+
+iso_errors_audit_normalise_pi(Pred/Arity-_, Pred/Arity) :- !.
+iso_errors_audit_normalise_pi(Module:Pred/Arity, Module:Pred/Arity) :- !.
+iso_errors_audit_normalise_pi(PI, PI).
+
+iso_errors_audit_predicate(PI, Mode, Sites) :-
+    (   catch(
+            ( iso_errors_audit_wam_for_pi(PI, WamText),
+              iso_errors_audit_parse_lines(WamText, Items)
+            ),
+            _, fail)
+    ->  iso_errors_audit_walk(Items, 0, Mode, [], SitesRev),
+        reverse(SitesRev, Sites)
+    ;   Sites = []
+    ).
+
+iso_errors_audit_wam_for_pi(Module:Pred/Arity, WamText) :- !,
+    compile_predicate_to_wam(Module:Pred/Arity, [], WamText).
+iso_errors_audit_wam_for_pi(Pred/Arity, WamText) :-
+    compile_predicate_to_wam(Pred/Arity, [], WamText).
+
+iso_errors_audit_parse_lines(WamText, Items) :-
+    atom_string(WamText, S),
+    split_string(S, "\n", "", Lines),
+    maplist(iso_errors_audit_parse_one, Lines, MaybeItems),
+    exclude(==(skip), MaybeItems, Items).
+
+iso_errors_audit_parse_one(Line, Item) :-
+    split_string(Line, " \t", " \t", Parts0),
+    exclude(==(""), Parts0, Parts),
+    iso_errors_audit_classify_line(Parts, Item).
+
+iso_errors_audit_classify_line([], skip).
+iso_errors_audit_classify_line([Tok], label) :-
+    string_concat(_, ":", Tok), !.
+iso_errors_audit_classify_line(["builtin_call", Key0 | _], builtin_call(Key, 0)) :- !,
+    iso_errors_clean_key_token(Key0, Key).
+iso_errors_audit_classify_line(_, other).
+
+iso_errors_audit_walk([], _, _, Acc, Acc).
+iso_errors_audit_walk([label|Rest], PC, Mode, Acc, Out) :- !,
+    iso_errors_audit_walk(Rest, PC, Mode, Acc, Out).
+iso_errors_audit_walk([builtin_call(Key, _)|Rest], PC, Mode, Acc, Out) :- !,
+    iso_errors_audit_classify(Key, Mode, Source, Resolved, Flip),
+    PC1 is PC + 1,
+    iso_errors_audit_walk(Rest, PC1, Mode, [site(PC, Key, Resolved, Source, Flip)|Acc], Out).
+iso_errors_audit_walk([_|Rest], PC, Mode, Acc, Out) :-
+    PC1 is PC + 1,
+    iso_errors_audit_walk(Rest, PC1, Mode, Acc, Out).
+
+iso_errors_audit_classify(Key, _Mode, explicit_iso, Key, false) :-
+    iso_errors_key_has_suffix(Key, "_iso"), !.
+iso_errors_audit_classify(Key, _Mode, explicit_lax, Key, false) :-
+    iso_errors_key_has_suffix(Key, "_lax"), !.
+iso_errors_audit_classify(Key, Mode, default, Resolved, Flip) :-
+    iso_errors_resolve_default(Key, Mode, Resolved),
+    iso_errors_other_mode(Mode, OtherMode),
+    iso_errors_resolve_default(Key, OtherMode, OtherResolved),
+    ( Resolved == OtherResolved -> Flip = false ; Flip = true ).
+
+iso_errors_resolve_default(Key, true, IsoKey) :-
+    iso_errors_default_to_iso(Key, IsoKey), !.
+iso_errors_resolve_default(Key, false, LaxKey) :-
+    iso_errors_default_to_lax(Key, LaxKey), !.
+iso_errors_resolve_default(Key, _, Key).
+
+iso_errors_other_mode(true, false).
+iso_errors_other_mode(false, true).
+
+iso_errors_key_has_suffix(Key, Suffix) :-
+    ( atom(Key) -> atom_string(Key, KS) ; KS = Key ),
+    split_string(KS, "/", "", [Name | _]),
+    string_concat(_, Suffix, Name).
+
+wam_fsharp_iso_audit_report([]).
+wam_fsharp_iso_audit_report([audit(PI, Mode, Sites)|Rest]) :-
+    format('~w [~w]~n', [PI, Mode]),
+    (   Sites == []
+    ->  format('  (no builtin_call sites)~n', [])
+    ;   forall(member(site(PC, Orig, Res, Src, Flip), Sites),
+               format('  pc=~w  ~w -> ~w  (~w)  flip-changes=~w~n',
+                      [PC, Orig, Res, Src, Flip]))
+    ),
+    wam_fsharp_iso_audit_report(Rest).
+
 %% write_wam_fsharp_project(+Predicates, +Options, +ProjectDir)
 %  Generates a complete F# project with:
 %  - WamTypes.fs:   Value DU, WamState, WamContext, helpers
@@ -4061,7 +4714,13 @@ compile_predicates_to_fsharp(Predicates, Options, DetectedKernels, BasePCMap, Co
     ->  format(user_error, '[WAM-FSharp] skipped ~w FFI-owned fact predicates~n', [NSkipped])
     ;   true
     ),
-    maplist(compile_one_predicate_fs(Options, BasePCMap), WamPredicates, PredCodes),
+    % ISO error config: resolve once, warn about ambiguous bare overrides,
+    % pass through compile_one_predicate_fs so each predicate gets its
+    % WAM text rewritten according to its resolved Mode.  Mirrors Python
+    % wam_python_target:compile_all_predicates ISO wiring.
+    iso_errors_resolve_options(Options, IsoConfig),
+    iso_errors_warn_multi_module(IsoConfig, WamPredicates),
+    maplist(compile_one_predicate_fs(Options, BasePCMap, IsoConfig), WamPredicates, PredCodes),
     atomic_list_concat(PredCodes, '\n\n', AllPredCode),
     % Build merged code list and label map
     maplist(pred_func_name_fs, WamPredicates, FuncNames),
@@ -4077,15 +4736,27 @@ open WamRuntime
 ~w
 ', [AllPredCode, MergedCodeBuild]).
 
-compile_one_predicate_fs(Options, BasePCMap, PredIndicator, Code) :-
+compile_one_predicate_fs(Options, BasePCMap, IsoConfig, PredIndicator, Code) :-
     %% Shape check: must be Module:Name/Arity or Name/Arity.  The
     %% destructured Pred/Arity aren't used further (we pass
     %% PredIndicator wholesale to the helpers below); underscore-
     %% prefix the names so SWI doesn't flag them as singletons.
     (   PredIndicator = _M:_Pred/_Arity -> true ; PredIndicator = _Pred/_Arity ),
     wam_fsharp_predicate_wamcode(PredIndicator, WamCode),
+    %% ISO rewrite happens at the text level (matches Python).  Items
+    %% level rewrite is exported for future use but the F# emitter
+    %% currently parses WAM text, so a text-level pass is the natural
+    %% integration point.
+    iso_errors_pi_for_rewrite(PredIndicator, RewritePI),
+    iso_errors_rewrite_text(IsoConfig, RewritePI, WamCode, WamCodeIso),
     predicate_base_pc_fs(PredIndicator, BasePCMap, BasePC),
-    compile_wam_predicate_to_fsharp(PredIndicator, WamCode, [base_pc(BasePC)|Options], Code).
+    compile_wam_predicate_to_fsharp(PredIndicator, WamCodeIso, [base_pc(BasePC)|Options], Code).
+
+% Normalise an F# predicate indicator (possibly module-qualified or
+% paired) to the bare Name/Arity form iso_errors_mode_for expects.
+iso_errors_pi_for_rewrite(_M:Pred/Arity, Pred/Arity) :- !.
+iso_errors_pi_for_rewrite(Pred/Arity-_, Pred/Arity) :- !.
+iso_errors_pi_for_rewrite(PI, PI).
 
 pred_func_name_fs(PI, FN) :-
     (   PI = _M:P/A -> true ; PI = P/A ),
@@ -4297,7 +4968,8 @@ let main argv =
           WsBuilder    = None
           WsBuilderStack = []
           WsAggAccum   = []
-          WsB0Stack    = [] }
+          WsB0Stack    = []
+          WsCatchers   = [] }
 
     // Find entry point: prefer lowered predicates, fall back to code array
     let queryPred =

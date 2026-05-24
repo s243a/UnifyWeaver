@@ -199,7 +199,8 @@ let mkState () : WamState =
       WsBuilder    = None
       WsBuilderStack = []
       WsAggAccum   = []
-      WsB0Stack    = [] }
+      WsB0Stack    = []
+      WsCatchers   = [] }
 
 let runPredicate (predKey: string) =
     let ctx = mkContext ()

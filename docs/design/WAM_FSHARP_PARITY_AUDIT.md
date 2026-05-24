@@ -40,7 +40,7 @@ binding-level types in
 | Direct fact dispatch | `ForeignFacts` / `FfiFacts` / `FfiWeightedFacts` in-memory maps on `WamContext` | `call_indexed_atom_fact2`, fact-source registry | Present for in-memory facts only - no external fact source |
 | Aggregates | `BeginAggregate`/`EndAggregate` + `MergeStrategy` DU (`MergeSum`/`Count`/`Bag`/`Set`/`Findall`/`Sequential`); accumulator materializes on backtrack | `findall/3`, `aggregate_all/3` count/sum/min/max/set families | Present |
 | Structural builtins | `member/2`, `memberchk/2`, `append/3`, `length/2`, `reverse/2`, `last/2`, `nth0/3`, `nth1/3`, `delete/3`, `select/3`, `sort/2`, `msort/2`, `compare/3` | Same baseline expanded by Go/Clojure/C++ | Present |
-| Type builtins | `atom/1`, `atomic/1`, `compound/1`, `integer/1`, `number/1`, `float/1`, `var/1`, `nonvar/1` | Same baseline; Lua/Python/Go also have `is_list/1` | Present **except `is_list/1`** (not currently wired) |
+| Type builtins | `atom/1`, `atomic/1`, `compound/1`, `integer/1`, `number/1`, `float/1`, `var/1`, `nonvar/1`, `is_list/1` | Same baseline | Present |
 | Comparison builtins | `==/2`, `\==/2`, `=:=/2`, `=\=/2`, `</2`, `>/2`, `=</2`, `>=/2`, `@</2`, `@=</2`, `@>/2`, `@>=/2`, `compare/3` via Prolog-standard `compareValue` (Var < Number < Atom < Compound) | Same baseline | Present |
 | Unification builtin | `=/2`, `\=/2` | Same | Present |
 | Term inspection | `functor/3`, `arg/3` (both modes); specialized `Arg` opcode for literal-N case | Same | Present |
@@ -56,52 +56,44 @@ binding-level types in
 
 ## ISO Error Readiness
 
-F# is **not yet** an ISO-error adopter. Per
-`WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md`, the reference consumers are
-C++ and Elixir (both fully shipped) and Python (substrate + arithmetic
-variants shipped, remaining concrete builtins outstanding). F# has
-none of the components below.
+F# is now a **partial ISO-error adopter**. The substrate
+(catch/throw + error constructors + throw_iso_error), the config
+loader/rewrite/audit plumbing, and `is_iso/2` + `is_lax/2` shipped
+together. The arithmetic-comparison and `succ/2` ISO/lax variants
+are follow-up work.
 
 | Component | F# status | Notes |
 | --- | --- | --- |
-| Prolog `catch/3` / `throw/1` substrate | **Missing** | `WamRuntime.fs` has no `WamException` type and no catcher frames on `WsStack` / `WsCPs`. `docs/WAM_FSHARP_TARGET.md` currently lists `throw/1` and `catch/3` under "Control" - **that line is inaccurate** and should be removed or marked "planned" when this audit lands. The `throw` calls in `wam_fsharp_target.pl` and `wam_fsharp_lowered_emitter.pl` are codegen-time Prolog `throw/1`, not WAM-runtime catch/throw. |
-| ISO error constructors | **Missing** | No runtime builders for `instantiation_error`, `type_error/2`, `domain_error/2`, `evaluation_error/1` in `WamRuntime.fs`. |
-| `throw_iso_error` helper | **Missing** | Depends on the substrate above. |
-| `is_iso/2` / `is_lax/2` | **Missing** | Current `is/2` is lax by construction (arithmetic failures fail silently / return `nan`/`inf` via `Double.NaN` and `Double.PositiveInfinity`, matching the F# CLR float semantics). That is a viable starting point for `*_lax` aliases once the three-form split exists. |
-| ISO/lax arithmetic compares | **Missing** | Six comparison variants would need ISO/lax three-form dispatch. |
-| `succ/2` and ISO/lax variants | **Missing** | F# does not currently expose `succ/2`. |
-| Lax IEEE-754 float divide | Partial | F# `is/2` already returns `nan`/`inf`/`-inf` for float zero division (CLR default). Integer zero division throws `DivideByZeroException` which propagates as a runtime crash rather than failing silently; that needs adjustment for lax mode. |
-| Per-predicate ISO config loader | **Missing** | No `iso_errors_config(File)`, no inline `iso_errors(Default)` / `iso_errors(PI, Mode)` option parsing in `wam_fsharp_target.pl`. |
-| Per-predicate default rewrite | **Missing** | Text-level rewrite from `is/2` to `is_iso/2`/`is_lax/2` would feed both the interpreter and lowered emitter; neither is wired today. |
-| ISO audit predicate | **Missing** | No `wam_fsharp_iso_audit/3`. |
+| Prolog `catch/3` / `throw/1` substrate | Present | `WamException` exception type plus a `WsCatchers : CatcherFrame list` side stack on `WamState`. `dispatchCall` has a top-level try/with that prints "Uncaught Prolog throw" and returns `None`. The WAM compiler emits `catch/3` and `throw/1` as `Call`/`Execute` meta-calls (not `BuiltinCall`); special-case dispatch in the F# step `Call`/`Execute` arms routes them through `BuiltinCall` so the ISO arms fire. |
+| ISO error constructors | Present | `makeInstantiationError`, `makeTypeError`, `makeDomainError`, `makeEvaluationError`, `makePredIndicator` in `fsharp_wam_bindings.pl`. |
+| `throw_iso_error` helper | Present | Wraps the inner error term in `error(ErrorTerm, _)` (with a fresh unbound `Context`) and raises `WamException`. |
+| `is_iso/2` / `is_lax/2` | Present | `is/2` and `is_lax/2` share the lax body; `is_iso/2` does three-step classification (unbound -> instantiation_error, zero divide -> evaluation_error(zero_divisor), otherwise -> type_error(evaluable, Name/Arity)). |
+| ISO/lax arithmetic compares | **Missing** | Six comparison variants (`>`, `<`, `>=`, `=<`, `=:=`, `=\\=`) still need ISO/lax three-form dispatch. Follow-up PR. |
+| `succ/2` and ISO/lax variants | **Missing** | F# does not currently expose `succ/2` at all. Follow-up PR. |
+| Lax IEEE-754 float divide | Partial | F# `is/2` already returns `nan`/`inf`/`-inf` for float zero division (CLR default). Integer divide-by-zero in lax mode fails silently because `evalArith` returns `None` (no exception escapes), matching the documented lax contract. |
+| Per-predicate ISO config loader | Present | `iso_errors_config(File)`, inline `iso_errors(Default)` / `iso_errors(PI, Mode)`, file-vs-inline precedence per spec. Copied from Python target; future extraction into `src/unifyweaver/core/iso_errors.pl` is appropriate now that F# is the third adopter. |
+| Per-predicate default rewrite | Present | `iso_errors_rewrite_text/4` walks WAM text, rewriting `is/2` -> `is_iso/2` / `is_lax/2` according to the predicate's resolved mode. Wired into `compile_predicates_to_fsharp` so generated F# uses the ISO-mode key. |
+| ISO audit predicate | Present | `wam_fsharp_iso_audit/3` reports per-call-site resolution following the shared audit shape. `wam_fsharp_iso_audit_report/1` pretty-prints. |
 
-### Minimum Useful F# ISO Adoption
+### Remaining F# ISO Work
 
-Per the shared contract in `WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md` §
-"What Counts As Adoption", the minimum useful unit for F# is:
+Steps 1-5 and 7-8 of the original minimum-useful-adoption list (now
+matched against `WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md` § "What Counts
+As Adoption") shipped together. The remaining items:
 
-1. Add a `WamException` exception type (carries the ISO error term).
-2. Add catcher-frame plumbing on `WsCPs` so `step` can unwind on
-   `throw/1` and resume at a matching `catch/3` handler. Pattern:
-   either a new `ChoicePoint` variant with `CpCatcher: Value option`,
-   or a sibling stack on `WamState` for catcher frames. The Elixir
-   target's side-stack pattern is the closest reference.
-3. Add ISO error constructors (`instantiation_error/0`,
-   `type_error/2`, `domain_error/2`, `evaluation_error/1`) and a
-   `throw_iso_error` helper in `WamRuntime.fs`.
-4. Per-predicate config/override parsing in `wam_fsharp_target.pl`,
-   mirroring the option shape already shipped by C++/Elixir/Python.
-5. Default-key rewrite for `is/2`; `is_iso/2` and `is_lax/2`
-   implementations that survive the rewrite.
-6. Six ISO/lax arithmetic-compare aliases (`=:=`, `=\=`, `<`, `>`,
-   `=<`, `>=`).
-7. `wam_fsharp_iso_audit/3` reporting builtin call sites using the
-   shared audit shape.
-8. Tests under `tests/core/test_wam_fsharp_iso_*.pl` matching the
-   shape of the existing Python ISO E2E coverage.
-
-Steps 1-3 form a single self-contained PR; the rest can land in
-follow-ups once the substrate exists.
+- **Arithmetic-compare ISO/lax variants**: `>_iso/2`, `<_iso/2`,
+  `>=_iso/2`, `=<_iso/2`, `=:=_iso/2`, `=\\=_iso/2` plus matching
+  `*_lax/2` aliases. Each needs a step branch alongside the existing
+  lax branch, an entry in both `iso_errors_default_to_iso/2` and
+  `iso_errors_default_to_lax/2`, and a regression test case.
+- **`succ/2` family**: F# does not currently support `succ/2` at
+  all. Adding it adds three keys (default, `_iso`, `_lax`) per the
+  three-form pattern.
+- **Shared helper extraction**: F# is now the third adopter (after
+  Elixir and Python -- C++ is its own reference). Extracting the
+  `iso_errors_*` predicates into `src/unifyweaver/core/iso_errors.pl`
+  is appropriate next, as called out in
+  `WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md` § "Remaining Work".
 
 ## LMDB Fact-Source Readiness
 
@@ -206,9 +198,6 @@ then F# CSR.
 
 These are smaller than the three above but worth tracking:
 
-- **`is_list/1`** is in the cross-target baseline (Lua, Python, Go)
-  but not currently wired in F#. Trivial addition - one match clause
-  in `WamRuntime.fs` `step` plus a Prolog dispatch entry.
 - **`succ/2`** is in the Clojure/Elixir baseline but not F#. Would
   land naturally with the ISO `succ_iso/2` / `succ_lax/2` work
   above.
@@ -239,8 +228,8 @@ These are smaller than the three above but worth tracking:
    `lmdb_materialisation(lazy)` codegen option.
 6. **LMDB Phase 3 (cached)**: `CachedLookup` decorator + auto
    resolver.
-7. **`is_list/1` and `succ/2`** small builtins: bundle with whichever
-   ISO PR they fit alongside.
+7. **`succ/2`** small builtin: bundle with the ISO `succ_iso/2` /
+   `succ_lax/2` PR.
 8. **CSR reader**: gated on LMDB work and on Rust CSR Phase C
    stabilising the format.
 

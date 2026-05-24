@@ -160,7 +160,14 @@ fsharp_wam_builtin_state_type :-
 
 fsharp_wam_env_frame_type :-
     writeln(
-"type EnvFrame = { EfSavedCP: int; EfYRegs: Map<int, Value>; EfSavedCutBar: int }").
+"type EnvFrame = { EfSavedCP: int; EfYRegs: Map<int, Value>; EfSavedCutBar: int }
+
+/// Exception carrier for Prolog throw/1.  The thrown term is
+/// deep-dereferenced before being raised so the catcher sees the
+/// value the thrower intended, not bindings that may have changed
+/// during unwind.  Uncaught throws propagate to the top-level entry
+/// point (dispatchCall / runPredicate).
+exception WamException of Value").
 
 % ============================================================================
 % ChoicePoint — mirrors Haskell `ChoicePoint`
@@ -245,7 +252,25 @@ type WamState =
       // barrier was set AFTER TryMeElse already incremented
       // WsCPsLen — see issue #2400 follow-up.
       WsB0Stack   : int list
+      // ISO catcher stack for catch/3.  Each catch/3 pushes a frame
+      // carrying the catcher pattern, recovery goal, and a snapshot
+      // of state at catch-entry time.  throw/1 raises a WamException
+      // which the nearest catch/3 try/with catches; the catcher
+      // restores its snapshot, unifies catcher with thrown term, and
+      // runs recovery.  Mirrors Python wam_runtime.catcher_frames.
+      WsCatchers  : CatcherFrame list
     }
+
+/// ISO catcher frame for catch/3.  CfSnapshot is the live state at
+/// catch-entry time; on WamException unwind the catcher restores from
+/// it.  CfSnapshotRegs is a defensive Array.copy of the snapshot''s
+/// WsRegs so that putReg''s in-place mutation between catch and throw
+/// can''t corrupt the saved frame (same discipline as ChoicePoint.CpRegs).
+and CatcherFrame =
+    { CfCatcherTerm  : Value
+      CfRecoveryTerm : Value
+      CfSnapshot     : WamState
+      CfSnapshotRegs : Value array }
 
 and BuilderState =
     | BuildStruct of fn: string * reg: int * arity: int * args: Value list
@@ -518,6 +543,49 @@ let bindOutput (reg: int) (value: Value) (s: WamState) : WamState option =
                      WsTrailLen = s.WsTrailLen + 1 }
         | existing when existing = value -> Some s
         | _ -> None
+
+// ============================================================================
+// ISO error-term constructors.  Mirror the Python/Elixir/C++ shapes:
+//   error(ErrorTerm, Context) where Context is an unbound var for v1.
+// throwIsoError wraps an ErrorTerm in the error/2 envelope, deep-derefs
+// it (so the catcher sees what the thrower meant, not stale bindings),
+// then raises WamException for the nearest catch/3 try/with to catch.
+// ============================================================================
+
+/// Build error(instantiation_error, _) inner.
+let makeInstantiationError () : Value = Atom \"instantiation_error\"
+
+/// Build error(type_error(Expected, Culprit), _) inner.
+let makeTypeError (expected: string) (culprit: Value) : Value =
+    Str (\"type_error\", [Atom expected; culprit])
+
+/// Build error(domain_error(Domain, Culprit), _) inner.
+let makeDomainError (domain: string) (culprit: Value) : Value =
+    Str (\"domain_error\", [Atom domain; culprit])
+
+/// Build error(evaluation_error(Kind), _) inner.
+let makeEvaluationError (kind: string) : Value =
+    Str (\"evaluation_error\", [Atom kind])
+
+/// Deep-deref a Value through current bindings so the thrown term is
+/// self-contained.  Mirrors Python _deep_copy_term''s deref pass.
+let rec derefDeep (bindings: Map<int, Value>) (v: Value) : Value =
+    match derefVar bindings v with
+    | Str (fn, args) -> Str (fn, args |> List.map (derefDeep bindings))
+    | VList items    -> VList (items |> List.map (derefDeep bindings))
+    | other          -> other
+
+/// Wrap an ISO error term in error(ErrorTerm, _) and raise WamException.
+/// The fresh unbound Context slot follows the C++ spec §5 decision: the
+/// standard catcher shape `error(Pattern, _)` will unify regardless.
+let throwIsoError (s: WamState) (errTerm: Value) : 'a =
+    let wrapped = Str (\"error\", [derefDeep s.WsBindings errTerm; Unbound s.WsVarCounter])
+    raise (WamException wrapped)
+
+/// Build a predicate-indicator term (Atom/Arity) for ISO error reports.
+/// Used as the Culprit for type_error(evaluable, X/N).
+let makePredIndicator (name: string) (arity: int) : Value =
+    Str (\"/\", [Atom name; Integer arity])
 
 /// Append a value to the current builder (PutStructure / PutList).
 // popBuilderStack: when an inner builder is finished (BuildStruct/List

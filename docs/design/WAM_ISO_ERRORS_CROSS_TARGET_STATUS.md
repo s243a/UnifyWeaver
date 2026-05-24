@@ -57,26 +57,29 @@ Survey columns: shipped means code and tests exist in the target today.
 
 | Component | C++ | Elixir | Other WAM targets |
 |---|---|---|---|
-| Prolog config loader (`iso_errors_config/1`, inline overrides) | shipped | shipped | Python plumbing shipped; other targets not adopted |
-| Bare-PI multi-module warning | shipped | shipped | Python plumbing shipped; other targets not adopted |
-| Per-predicate default rewrite | shipped | shipped | Python plumbing shipped; other targets not adopted |
+| Prolog config loader (`iso_errors_config/1`, inline overrides) | shipped | shipped | Python and F# plumbing shipped; other targets not adopted |
+| Bare-PI multi-module warning | shipped | shipped | Python and F# plumbing shipped; other targets not adopted |
+| Per-predicate default rewrite | shipped | shipped | Python and F# plumbing shipped; other targets not adopted |
 | Text-path rewrite coverage (`builtin_call`, `put_structure`, `call`, `execute`) | shipped | shipped | target-specific |
-| Audit predicate and report | `wam_cpp_iso_audit/3` | `wam_elixir_iso_audit/3` | `wam_python_iso_audit/3`; others not adopted |
-| `catch/3` + `throw/1` substrate | shipped | shipped | Python shipped; others mostly missing/partial |
-| Error constructors and `throw_iso_error` helper | shipped | shipped | Python shipped; others not adopted |
-| `is_iso/2` / `is_lax/2` | shipped | shipped | Python shipped; others not adopted |
-| ISO/lax arithmetic compares | shipped | shipped | Python shipped; others not adopted |
-| `succ_iso/2` / `succ_lax/2` | shipped | shipped | Python shipped; others not adopted |
-| Lax IEEE-754 float divide behavior | shipped | shipped | Python shipped; others not adopted |
+| Audit predicate and report | `wam_cpp_iso_audit/3` | `wam_elixir_iso_audit/3` | `wam_python_iso_audit/3`, `wam_fsharp_iso_audit/3`; others not adopted |
+| `catch/3` + `throw/1` substrate | shipped | shipped | Python and F# shipped; others mostly missing/partial |
+| Error constructors and `throw_iso_error` helper | shipped | shipped | Python and F# shipped; others not adopted |
+| `is_iso/2` / `is_lax/2` | shipped | shipped | Python and F# shipped; others not adopted |
+| ISO/lax arithmetic compares | shipped | shipped | Python shipped; F# follow-up; others not adopted |
+| `succ_iso/2` / `succ_lax/2` | shipped | shipped | Python shipped; F# follow-up (succ/2 not yet wired); others not adopted |
+| Lax IEEE-754 float divide behavior | shipped | shipped | Python shipped; F# partial (float div by zero returns nan/inf via CLR; integer div by zero fails silently); others not adopted |
 
 The C++ and Elixir targets are therefore the current reference consumers. C++
 was the first implementation; Elixir proves the design is not C++-specific.
-Python has now adopted the catch/throw substrate, ISO error constructors,
+Python adopted the catch/throw substrate, ISO error constructors,
 `throw_iso_error`, per-predicate config/rewrite/audit plumbing, arithmetic
-assignment variants, arithmetic comparison variants, and successor variants. It
-should not be described as fully ISO-error compatible until remaining concrete
-builtins also adopt three-form keys. R, Lua, Haskell, Rust, and the remaining
-targets are still mostly missing or partial on this stack.
+assignment variants, arithmetic comparison variants, and successor variants. F#
+is now the third broad adopter (substrate + config/rewrite/audit +
+`is_iso/2` / `is_lax/2`); arithmetic comparison and successor variants are
+follow-up work for F#. Neither Python nor F# should be described as fully
+ISO-error compatible until remaining concrete builtins also adopt three-form
+keys. R, Lua, Haskell, Rust, and the remaining targets are still mostly missing
+or partial on this stack.
 
 ## What Counts As Adoption
 
