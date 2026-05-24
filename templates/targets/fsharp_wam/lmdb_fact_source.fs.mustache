@@ -172,16 +172,63 @@ let loadDupsortRelationDict (env: LightningEnvironment) (dbName: string)
 /// materialisation cost, but each runtime lookup pays the cursor-open
 /// overhead.  Appropriate when the working set is small relative to
 /// the full database, or when memory is constrained.
-/// Cached decorator over any ILookupSource.  First lookup for a key
-/// delegates to the inner source and memoises the result; subsequent
-/// lookups for the same key return the cached value without touching
-/// the inner source (no cursor open, no LMDB read).
+/// Two-level cached decorator over any ILookupSource.
 ///
-/// Uses ConcurrentDictionary for thread safety (parallel kernels via
-/// runNegationParallel / forkParBranches share the WamContext).
-/// V1 is unbounded; a bounded LRU variant (evicting by recency or
-/// capacity) is a future refinement once benchmark data shows the
-/// cache size matters relative to available memory.
+/// L1: per-thread Dictionary (ThreadLocal) — zero contention, plain
+///     hashtable lookup. Fixed capacity with collision-overwrite
+///     eviction (power-of-two size, hash mod index). Mirrors the
+///     Haskell per-HEC IOArray design. Most useful when work is
+///     grouped by cache hits (e.g. clustered seed batches).
+///
+/// L2: shared ConcurrentDictionary — cross-thread, lock-free CAS.
+///     Bounded by maxL2Entries; once full, new entries are NOT
+///     inserted (read-through to inner source). This prevents
+///     unbounded memory growth on large corpora.
+///
+/// Dispatch: L1 hit -> return.  L1 miss -> L2 hit -> populate L1,
+///           return.  L2 miss -> inner.Lookup -> populate L2 + L1,
+///           return.
+///
+/// Default capacities: L1 = 4096 (per-thread), L2 = 65536 (shared).
+/// Matches Haskell's lmdb_cache_mode(two_level) defaults.
+type TwoLevelCachedLookupSource(inner: WamTypes.ILookupSource,
+                                 ?l1Capacity: int,
+                                 ?maxL2Entries: int) =
+    let l1Cap = defaultArg l1Capacity 4096
+    let l2Max = defaultArg maxL2Entries 65536
+    let l1Mask = l1Cap - 1
+    let l2 = System.Collections.Concurrent.ConcurrentDictionary<int, int list>()
+    let mutable l2Count = 0
+
+    // L1: per-thread fixed-size array of (key, value) slots.
+    // Hash-mod index with collision-overwrite (no chaining).
+    let l1 = new System.Threading.ThreadLocal<_>(fun () ->
+        Array.create l1Cap (struct (System.Int32.MinValue, ([] : int list))))
+
+    interface WamTypes.ILookupSource with
+        member _.Lookup(key: int) : int list =
+            let arr = l1.Value
+            let idx = key &&& l1Mask
+            let struct (k, v) = arr.[idx]
+            if k = key then v  // L1 hit
+            else
+                // L1 miss -> check L2
+                let ok, v2 = l2.TryGetValue(key)
+                if ok then
+                    arr.[idx] <- struct (key, v2)  // populate L1
+                    v2
+                else
+                    // L2 miss -> inner source
+                    let result = inner.Lookup(key)
+                    // Atomic check-and-increment avoids O(n) l2.Count
+                    if System.Threading.Interlocked.Increment(&l2Count) <= l2Max then
+                        l2.TryAdd(key, result) |> ignore
+                    arr.[idx] <- struct (key, result)  // populate L1
+                    result
+
+/// Flat cached decorator (L2 only, unbounded).  Simpler than
+/// TwoLevelCachedLookupSource; appropriate when per-thread locality
+/// doesn't matter and memory is not constrained.
 type CachedLookupSource(inner: WamTypes.ILookupSource) =
     let cache = System.Collections.Concurrent.ConcurrentDictionary<int, int list>()
     interface WamTypes.ILookupSource with

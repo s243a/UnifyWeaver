@@ -125,6 +125,12 @@ main :-
     assertTrue \"CachedLookupSource.Lookup(6) cached = [1]\" (cachedSrc.Lookup(6) = [1])
     assertTrue \"CachedLookupSource.Lookup(99) = []\" (cachedSrc.Lookup(99) = [])
 
+    // Test TwoLevelCachedLookupSource (L1 per-thread + L2 bounded).
+    let twoLevelSrc = TwoLevelCachedLookupSource(lazySrc) :> WamTypes.ILookupSource
+    assertTrue \"TwoLevel.Lookup(6) = [1]\" (twoLevelSrc.Lookup(6) = [1])
+    assertTrue \"TwoLevel.Lookup(6) L1 hit = [1]\" (twoLevelSrc.Lookup(6) = [1])
+    assertTrue \"TwoLevel.Lookup(99) = []\" (twoLevelSrc.Lookup(99) = [])
+
     env.Dispose()
 
     printfn \"RESULT %d/%d\" passes (passes + fails)

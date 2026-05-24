@@ -119,6 +119,29 @@ main :-
     swCachedHit.Stop()
     let cachedHitMs = swCachedHit.Elapsed.TotalMilliseconds
 
+    // --- Two-level cache (L1 per-thread + L2 bounded shared) ---
+    let swTwoLevel = Stopwatch.StartNew()
+    let twoLevelSrc = TwoLevelCachedLookupSource(
+                          LmdbCursorLookup(env, \"category_parent\"),
+                          l1Capacity = 4096,
+                          maxL2Entries = 65536) :> WamTypes.ILookupSource
+    let twoLevelLoadMs = swTwoLevel.Elapsed.TotalMilliseconds
+
+    let swTwoLevelQ = Stopwatch.StartNew()
+    let mutable twoLevelTotal = 0
+    for seed in seeds do
+        twoLevelTotal <- twoLevelTotal + List.length (twoLevelSrc.Lookup(seed))
+    swTwoLevelQ.Stop()
+    let twoLevelQueryMs = swTwoLevelQ.Elapsed.TotalMilliseconds
+
+    // Second pass: warm L1+L2
+    let swTwoLevelHit = Stopwatch.StartNew()
+    let mutable twoLevelHitTotal = 0
+    for seed in seeds do
+        twoLevelHitTotal <- twoLevelHitTotal + List.length (twoLevelSrc.Lookup(seed))
+    swTwoLevelHit.Stop()
+    let twoLevelHitMs = swTwoLevelHit.Elapsed.TotalMilliseconds
+
     env.Dispose()
     swTotal.Stop()
 
@@ -131,11 +154,13 @@ main :-
     printfn \"lazy       %7.2f   %8.2f   %8.2f   %d\" lazyLoadMs lazyQueryMs (lazyLoadMs + lazyQueryMs) lazyTotal
     printfn \"cached     %7.2f   %8.2f   %8.2f   %d\" cachedLoadMs cachedQueryMs (cachedLoadMs + cachedQueryMs) cachedTotal
     printfn \"cached-hit %7.2f   %8.2f   %8.2f   %d\" 0.0 cachedHitMs cachedHitMs cachedHitTotal
+    printfn \"2level     %7.2f   %8.2f   %8.2f   %d\" twoLevelLoadMs twoLevelQueryMs (twoLevelLoadMs + twoLevelQueryMs) twoLevelTotal
+    printfn \"2level-hit %7.2f   %8.2f   %8.2f   %d\" 0.0 twoLevelHitMs twoLevelHitMs twoLevelHitTotal
     printfn \"\"
     printfn \"total_wall_ms = %.2f\" swTotal.Elapsed.TotalMilliseconds
 
     // Sanity: all modes should produce same result
-    if dictTotal = eagerTotal && eagerTotal = lazyTotal && lazyTotal = cachedTotal && cachedTotal = cachedHitTotal then
+    if dictTotal = eagerTotal && eagerTotal = lazyTotal && lazyTotal = cachedTotal && cachedTotal = cachedHitTotal && cachedHitTotal = twoLevelTotal && twoLevelTotal = twoLevelHitTotal then
         printfn \"RESULT OK (all modes agree)\"
         0
     else
