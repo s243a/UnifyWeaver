@@ -456,6 +456,16 @@ defines step branches for:
 **Control:** `true/0`, `fail/0`, `!/0` (cut), `\+/1` (negation),
 `call/1+`, `throw/1`, `catch/3`.
 
+**ISO error variants:** `is_iso/2` (throws structured `error(_, _)`
+on bad eval), `is_lax/2` (alias of `is/2`, fails silently). The
+default `is/2` can be rewritten per-predicate via the
+`iso_errors_config(File)` / `iso_errors(Bool)` /
+`iso_errors(PI, Bool)` options; `wam_fsharp_iso_audit/3` reports
+what each call site resolves to. Arithmetic-comparison variants
+(`>_iso/2`, `<_iso/2`, ...) and `succ_iso/2` are planned follow-ups
+-- see `design/WAM_FSHARP_PARITY_AUDIT.md`. Cross-target ISO
+contract: `design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md`.
+
 **Arithmetic:** `is/2` (full expression evaluator: `+`, `-`, `*`, `/`,
 `//`, `mod`, `rem`, `**`, `abs`, `min`, `max`, `gcd`, `truncate`,
 `round`, `ceiling`, `floor`, `sqrt`, `sin`, `cos`, `tan`, `pi`, `e`,

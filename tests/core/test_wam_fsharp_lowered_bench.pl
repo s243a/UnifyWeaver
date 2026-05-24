@@ -82,7 +82,8 @@ let mkState () : WamState =
       WsBuilder    = None
       WsBuilderStack = []
       WsAggAccum   = []
-      WsB0Stack    = [] }
+      WsB0Stack    = []
+      WsCatchers   = [] }
 
 let runPredicate (ctx: WamContext) (predKey: string) =
     let s = mkState ()
