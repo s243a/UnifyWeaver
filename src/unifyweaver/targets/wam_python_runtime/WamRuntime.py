@@ -1561,6 +1561,49 @@ def _execute_read_string(state: WamState) -> bool:
     return unify(get_reg(state, 5), make_atom(text), state)
 
 
+def _execute_at_end_of_stream(state: WamState) -> bool:
+    stream = deref(get_reg(state, 1), state)
+    raw = _unwrap_stream(stream)
+    if raw is None or not hasattr(raw, 'read'):
+        return False
+    if state.stream_pushback.get(_stream_pushback_key(stream)):
+        return False
+    try:
+        if hasattr(raw, 'tell') and hasattr(raw, 'seek'):
+            pos = raw.tell()
+            ch = raw.read(1)
+            raw.seek(pos)
+            return ch == ''
+        ch = _peek_handle_char(state, stream)
+    except (OSError, ValueError):
+        return False
+    return ch == ''
+
+
+def _execute_write_to_stream(state: WamState) -> bool:
+    stream = deref(get_reg(state, 1), state)
+    raw = _unwrap_stream(stream)
+    if raw is None or not hasattr(raw, 'write'):
+        return False
+    try:
+        raw.write(_format_value(get_reg(state, 2), state))
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _execute_nl_to_stream(state: WamState) -> bool:
+    stream = deref(get_reg(state, 1), state)
+    raw = _unwrap_stream(stream)
+    if raw is None or not hasattr(raw, 'write'):
+        return False
+    try:
+        raw.write('\n')
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def _execute_read_from_stream(state: WamState, stream: Any, target: Term,
                               syntax_default: str = 'fail',
                               read_char: Optional[Callable[[], str]] = None) -> bool:
@@ -1827,6 +1870,12 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         return _execute_read_line_to_string(state)
     if builtin in ('read_string/5', 'read_string') and arity == 5:
         return _execute_read_string(state)
+    if builtin in ('at_end_of_stream/1', 'at_end_of_stream') and arity == 1:
+        return _execute_at_end_of_stream(state)
+    if builtin in ('write_to_stream/2', 'write_to_stream') and arity == 2:
+        return _execute_write_to_stream(state)
+    if builtin in ('nl_to_stream/1', 'nl_to_stream') and arity == 1:
+        return _execute_nl_to_stream(state)
     if builtin in ('read/1', 'read_lax/1', 'read_term/1', 'read_term_lax/1',
                    'read', 'read_lax', 'read_term', 'read_term_lax') and arity == 1:
         return _execute_read_default_stream(state, 'fail')
