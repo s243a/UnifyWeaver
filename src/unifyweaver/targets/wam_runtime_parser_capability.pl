@@ -117,18 +117,21 @@ target_runtime_parser_default(wam_r, native(parse_term)).
 % restriction; we register both modes here and leave native as
 % the default since it ships today.
 target_runtime_parser_default(wam_cpp, native(parse_term)).
-% F# has no native runtime parser today; the F# target compiles
-% Prolog through WAM and can host the portable parser like Python
-% does, but several WAM instructions the parser needs are not yet
-% supported by the F# emitter (`get_structure`, certain
-% `unify_constant`/`get_constant` forms, the `switch_on_term` /
-% `switch_on_constant_fallthrough` variants) and are emitted as
-% `Proceed` stubs.  As a result, parser predicates COMPILE but
-% don't EXECUTE correctly today.  Default is therefore `none` so
-% existing F# projects don't silently pull the parser library in;
-% `runtime_parser(compiled)` is opt-in and primarily useful for
-% stress-testing the emitter while the missing instructions are
-% being filled in.
+% F# has no native runtime parser today; the F# target compiles the
+% portable parser through WAM and that path now executes correctly
+% end-to-end (42/42 inputs in test_wam_fsharp_parser_smoke.pl, including
+% prefix-directive '`:- p`', list patterns, and clauses with bodies).
+% A series of runtime fixes -- PR #2407 (B0 cut-barrier protocol),
+% PR #2408 (VList/Str list-encoding equivalence), PR #2415 (member/2
+% via MemberRetry), PR #2419 (==/2 list-encoding, findall result-reg
+% seeding), PR #2423 (dispatchCall WsCP reset), PR #2422 (lowered
+% quoted-atom rendering) -- closed the gaps that the earlier version
+% of this comment was warning about (Proceed-stubbed instructions).
+%
+% Default is kept at `none` so existing F# projects don't silently
+% pull in the parser library; `runtime_parser(compiled)` is opt-in.
+% See docs/WAM_RUNTIME_PARSER_STATUS.md for the cross-target picture
+% and why we don't flip the default.
 target_runtime_parser_default(wam_fsharp, none).
 
 target_runtime_parser_mode_(wam_r, native(parse_term)).
