@@ -165,6 +165,7 @@
 :- dynamic user:wam_upcase_atom_unbound_source/1.
 :- dynamic user:wam_downcase_atom_unbound_source/1.
 :- dynamic user:wam_atomic_list_concat_2_guard/1.
+:- dynamic user:wam_atomic_list_concat_2_mismatch/0.
 :- dynamic user:wam_atomic_list_concat_3_guard/1.
 :- dynamic user:wam_atomic_list_concat_3_split/0.
 :- dynamic user:wam_atomic_list_concat_3_split_empty_segments/0.
@@ -408,6 +409,7 @@ user:wam_downcase_atom_guard(A, L) :- downcase_atom(A, L).
 user:wam_upcase_atom_unbound_source(_) :- user:wam_unbound_arg(A), upcase_atom(A, _).
 user:wam_downcase_atom_unbound_source(_) :- user:wam_unbound_arg(A), downcase_atom(A, _).
 user:wam_atomic_list_concat_2_guard(A) :- atomic_list_concat([f,o,o], A).
+user:wam_atomic_list_concat_2_mismatch :- atomic_list_concat([f,o], A), A = foo.
 user:wam_atomic_list_concat_3_guard(A) :- atomic_list_concat([f,o], o, A).
 user:wam_atomic_list_concat_3_split :- user:wam_unbound_arg(L), atomic_list_concat(L, b, abcbd), L = [a,c,d].
 user:wam_atomic_list_concat_3_split_empty_segments :- user:wam_unbound_arg(L), atomic_list_concat(L, o, foo), L = [f,'',''].
@@ -656,6 +658,7 @@ run_smoke :-
           user:wam_upcase_atom_unbound_source/1,
           user:wam_downcase_atom_unbound_source/1,
           user:wam_atomic_list_concat_2_guard/1,
+          user:wam_atomic_list_concat_2_mismatch/0,
           user:wam_atomic_list_concat_3_guard/1,
           user:wam_atomic_list_concat_3_split/0,
           user:wam_atomic_list_concat_3_split_empty_segments/0,
@@ -1061,6 +1064,7 @@ smoke_cases([
     case('wam_upcase_atom_unbound_source/1', a, "false"),
     case('wam_downcase_atom_unbound_source/1', a, "false"),
     case('wam_atomic_list_concat_2_guard/1', foo, "true"),
+    case('wam_atomic_list_concat_2_mismatch/0', no_args, "false"),
     case('wam_atomic_list_concat_3_guard/1', foo, "true"),
     case('wam_atomic_list_concat_3_split/0', no_args, "true"),
     case('wam_atomic_list_concat_3_split_empty_segments/0', no_args, "true"),
@@ -1475,6 +1479,7 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-downcase-atom-guard-2"),
     has(CoreCode, "defn lowered-wam-downcase-atom-unbound-source-1"),
     has(CoreCode, "defn lowered-wam-atomic-list-concat-2-guard-1"),
+    has(CoreCode, "defn lowered-wam-atomic-list-concat-2-mismatch-0"),
     has(CoreCode, "defn lowered-wam-atomic-list-concat-3-guard-1"),
     has(CoreCode, "defn lowered-wam-atomic-list-concat-3-split-0"),
     has(CoreCode, "defn lowered-wam-atomic-list-concat-3-split-empty-segments-0"),
