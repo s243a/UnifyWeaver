@@ -1208,6 +1208,33 @@ test(runtime_number_char_helpers) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+test(runtime_atomic_split_string_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_atomic_split_helper_demo),
+			assertz((user:py_atomic_split_helper_demo :-
+				atomic_list_concat([a, 2, b], Joined), Joined = 'a2b',
+				atomic_list_concat([a, b, c], '-', Hyphen), Hyphen = 'a-b-c',
+				atomic_list_concat(Parts, '-', 'x-y-z'), Parts = [x, y, z],
+				split_string(' a, b,,c ', ',', ' ', Split), Split = [a, b, '', c],
+				\+ atomic_list_concat(_, '', abc),
+				\+ split_string(f(1), ',', '', _))),
+			user:python_parser_tmp_dir('tmp_wam_python_atomic_split_helpers', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_atomic_split_helper_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_atomic_split_helper_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_atomic_split_helper_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_parser_compiled_runs_reverse_term_to_atom) :-
 	setup_call_cleanup(
 		(   retractall(user:py_term_to_atom_demo),
@@ -1699,6 +1726,9 @@ test(static_runtime_has_lua_baseline_builtins, [nondet]) :-
 		"atom_number/2",
 		"char_code/2",
 		"string_code/3",
+		"atomic_list_concat/2",
+		"atomic_list_concat/3",
+		"split_string/4",
 		"var/1",
 		"nonvar/1",
 		"is_list/1",
@@ -1758,6 +1788,8 @@ test(static_runtime_io_emits_output, [nondet]) :-
 	sub_string(Content, _, _, _, "def _execute_atom_number"),
 	sub_string(Content, _, _, _, "def _execute_char_code"),
 	sub_string(Content, _, _, _, "def _execute_string_code"),
+	sub_string(Content, _, _, _, "def _execute_atomic_list_concat"),
+	sub_string(Content, _, _, _, "def _execute_split_string"),
 	sub_string(Content, _, _, _, "print()").
 
 :- end_tests(wam_python_builtin_parity_guard).

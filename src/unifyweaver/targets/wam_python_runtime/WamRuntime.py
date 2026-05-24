@@ -875,6 +875,57 @@ def _execute_string_code(state: WamState) -> bool:
     return unify(get_reg(state, 3), Int(ord(text[index.n - 1])), state)
 
 
+def _execute_atomic_list_concat(state: WamState, arity: int) -> bool:
+    if arity == 2:
+        items = _term_to_list(get_reg(state, 1), state)
+        if items is None:
+            return False
+        parts: List[str] = []
+        for item in items:
+            text = _text_coerce(item, state)
+            if text is None:
+                return False
+            parts.append(text)
+        return unify(get_reg(state, 2), make_atom(''.join(parts)), state)
+
+    separator = _text_coerce(get_reg(state, 2), state, allow_float=False)
+    if separator is None:
+        return False
+    items = _term_to_list(get_reg(state, 1), state)
+    if items is not None:
+        parts: List[str] = []
+        for item in items:
+            text = _text_coerce(item, state)
+            if text is None:
+                return False
+            parts.append(text)
+        return unify(get_reg(state, 3), make_atom(separator.join(parts)), state)
+
+    source = _text_coerce(get_reg(state, 3), state, allow_float=False)
+    if source is None or separator == '':
+        return False
+    return unify(get_reg(state, 1), _list_from_terms([make_atom(part) for part in source.split(separator)]), state)
+
+
+def _execute_split_string(state: WamState) -> bool:
+    text = _text_coerce(get_reg(state, 1), state)
+    separators = _text_coerce(get_reg(state, 2), state, allow_float=False)
+    pads = _text_coerce(get_reg(state, 3), state, allow_float=False)
+    if text is None or separators is None or pads is None:
+        return False
+
+    parts: List[str] = []
+    current: List[str] = []
+    for ch in text:
+        if ch in separators:
+            parts.append(''.join(current).strip(pads))
+            current = []
+        else:
+            current.append(ch)
+    parts.append(''.join(current).strip(pads))
+    return unify(get_reg(state, 4), _list_from_terms([make_atom(part) for part in parts]), state)
+
+
 def _execute_append(state: WamState) -> bool:
     left = _term_to_list(get_reg(state, 1), state)
     right = _term_to_list(get_reg(state, 2), state)
@@ -1983,6 +2034,12 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         return _execute_char_code(state)
     if builtin in ('string_code/3', 'string_code') and arity == 3:
         return _execute_string_code(state)
+    if builtin in ('atomic_list_concat/2', 'atomic_list_concat') and arity == 2:
+        return _execute_atomic_list_concat(state, 2)
+    if builtin in ('atomic_list_concat/3',) and arity == 3:
+        return _execute_atomic_list_concat(state, 3)
+    if builtin in ('split_string/4', 'split_string') and arity == 4:
+        return _execute_split_string(state)
     if builtin in ('read_term_from_atom/2', 'read_term_from_atom_lax/2',
                    'read_term_from_atom', 'read_term_from_atom_lax') and arity == 2:
         return _execute_read_term_from_atom(state, 2, 'fail')
