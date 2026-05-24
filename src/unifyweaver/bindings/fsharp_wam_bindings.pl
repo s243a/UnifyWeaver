@@ -298,9 +298,11 @@ type ILookupSource =
 
 /// Eager implementation: wraps a fully-materialised Map built at startup.
 type EagerLookupSource(data: Map<int, int list>) =
+    member _.Data = data
     interface ILookupSource with
         member _.Lookup(key) =
             Map.tryFind key data |> Option.defaultValue []
+
 
 type WamContext =
     { WcCode            : Instruction array    // instruction array (O(1) fetch)
@@ -445,6 +447,18 @@ fsharp_wam_helpers :-
 "// ============================================================================
 // Helper functions
 // ============================================================================
+
+/// Resolve a fact Map for kernel dispatch.  Checks WcLookupSources
+/// first (preferred path after LMDB Phase 2); extracts the inner Map
+/// from EagerLookupSource for zero-cost access.  Falls back to
+/// WcFfiFacts for legacy compatibility.
+let resolveFactMap (pred: string) (ctx: WamContext) : Map<int, int list> =
+    match Map.tryFind pred ctx.WcLookupSources with
+    | Some (:? EagerLookupSource as eager) -> eager.Data
+    | Some _ ->
+        Map.tryFind pred ctx.WcFfiFacts |> Option.defaultValue Map.empty
+    | None ->
+        Map.tryFind pred ctx.WcFfiFacts |> Option.defaultValue Map.empty
 
 /// Merge two maps (right-biased: values from m2 overwrite m1).
 let mapUnion (m1: Map<'k, 'v>) (m2: Map<'k, 'v>) : Map<'k, 'v> =

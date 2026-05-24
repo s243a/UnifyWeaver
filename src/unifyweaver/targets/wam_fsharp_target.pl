@@ -3526,7 +3526,7 @@ reg_var_name_fs(N, Name) :- format(atom(Name), 'r~w', [N]).
 
 emit_config_let_bindings_fs([]).
 emit_config_let_bindings_fs([config_facts(FactKey)|Rest]) :-
-    format('        let ~w_facts = Map.tryFind "~w" ctx.WcFfiFacts |> Option.defaultValue Map.empty~n',
+    format('        let ~w_facts = resolveFactMap "~w" ctx~n',
            [FactKey, FactKey]),
     emit_config_let_bindings_fs(Rest).
 emit_config_let_bindings_fs([config_weighted_facts(FactKey)|Rest]) :-
