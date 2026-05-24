@@ -346,14 +346,14 @@ user:wam_nth0_guard(N, L, X) :- nth0(N, L, X).
 user:wam_nth0_negative(X) :- nth0(-1, [a,b,c], X).
 user:wam_nth0_out_of_range(X) :- nth0(3, [a,b,c], X).
 user:wam_nth0_bad_list(X) :- nth0(1, [a|b], X).
-user:wam_nth0_unbound_index(X) :- user:wam_unbound_arg(N), nth0(N, [a,b,c], X).
+user:wam_nth0_unbound_index(X) :- nth0(N, [a,b,c], X), integer(N).
 user:wam_nth0_unbound_list(X) :- user:wam_unbound_arg(L), nth0(0, L, X).
 user:wam_nth1_guard(N, L, X) :- nth1(N, L, X).
 user:wam_nth1_zero(X) :- nth1(0, [a,b,c], X).
 user:wam_nth1_negative(X) :- nth1(-1, [a,b,c], X).
 user:wam_nth1_out_of_range(X) :- nth1(4, [a,b,c], X).
 user:wam_nth1_bad_list(X) :- nth1(2, [a|b], X).
-user:wam_nth1_unbound_index(X) :- user:wam_unbound_arg(N), nth1(N, [a,b,c], X).
+user:wam_nth1_unbound_index(X) :- nth1(N, [a,b,c], X), integer(N).
 user:wam_nth1_unbound_list(X) :- user:wam_unbound_arg(L), nth1(1, L, X).
 user:wam_select_guard(Elem, List, Rest) :- select(Elem, List, Rest).
 user:wam_select_backtrack(Elem, Rest) :- select(Elem, [a,b,c], Rest), Elem = b.
@@ -968,7 +968,10 @@ smoke_cases([
     case('wam_nth0_negative/1', a, "false"),
     case('wam_nth0_out_of_range/1', a, "false"),
     case('wam_nth0_bad_list/1', a, "false"),
-    case('wam_nth0_unbound_index/1', a, "false"),
+    case('wam_nth0_unbound_index/1', a, "true"),
+    case('wam_nth0_unbound_index/1', b, "true"),
+    case('wam_nth0_unbound_index/1', c, "true"),
+    case('wam_nth0_unbound_index/1', d, "false"),
     case('wam_nth0_unbound_list/1', a, "false"),
     case('wam_nth1_guard/3', args(1, '[a,b,c]', a), "true"),
     case('wam_nth1_guard/3', args(2, '[a,b,c]', b), "true"),
@@ -978,7 +981,10 @@ smoke_cases([
     case('wam_nth1_negative/1', a, "false"),
     case('wam_nth1_out_of_range/1', a, "false"),
     case('wam_nth1_bad_list/1', a, "false"),
-    case('wam_nth1_unbound_index/1', a, "false"),
+    case('wam_nth1_unbound_index/1', a, "true"),
+    case('wam_nth1_unbound_index/1', b, "true"),
+    case('wam_nth1_unbound_index/1', c, "true"),
+    case('wam_nth1_unbound_index/1', d, "false"),
     case('wam_nth1_unbound_list/1', a, "false"),
     case('wam_select_guard/3', args(a, '[a,b,c]', '[b,c]'), "true"),
     case('wam_select_guard/3', args(b, '[a,b,c]', '[a,c]'), "true"),
