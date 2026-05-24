@@ -4647,6 +4647,15 @@ write_wam_fsharp_project(Predicates, Options, ProjectDir) :-
     directory_file_path(ProjectDir, 'Lowered.fs', LoweredPath),
     write_fs_file(LoweredPath, LoweredCode),
 
+    % Generate LmdbFactSource.fs when lmdb_path is set.
+    (   option(lmdb_path(_), Options)
+    ->  fsharp_lmdb_template_source(LmdbTemplateCode),
+        directory_file_path(ProjectDir, 'LmdbFactSource.fs', LmdbPath),
+        write_fs_file(LmdbPath, LmdbTemplateCode),
+        format(user_error, '[WAM-FSharp] LMDB fact source included~n', [])
+    ;   true
+    ),
+
     % Generate Program.fs (benchmark driver).  The driver calls into
     % USER predicates only -- portable-parser predicates are library
     % code, not entry points -- so this stays on the original list.
@@ -4662,6 +4671,19 @@ write_wam_fsharp_project(Predicates, Options, ProjectDir) :-
     write_fs_file(FsprojPath, FsprojCode),
 
     format(user_error, '[WAM-FSharp] Generated project at: ~w~n', [ProjectDir]).
+
+%% fsharp_lmdb_template_source(-Code)
+%  Reads the LmdbFactSource.fs.mustache template and returns it
+%  as a string.  The template is a plain F# module with no mustache
+%  variables (the LMDB path is passed at runtime, not baked in).
+fsharp_lmdb_template_source(Code) :-
+    source_file(wam_fsharp_target:_, SrcFile),
+    file_directory_name(SrcFile, SrcDir),
+    file_directory_name(SrcDir, TargetsDir),
+    file_directory_name(TargetsDir, UnifyWeaverDir),
+    file_directory_name(UnifyWeaverDir, ProjectRoot),
+    atom_concat(ProjectRoot, '/templates/targets/fsharp_wam/lmdb_fact_source.fs.mustache', TemplatePath),
+    read_file_to_string(TemplatePath, Code, []).
 
 %% write_fs_file(+Path, +Content)
 write_fs_file(Path, Content) :-
@@ -5010,7 +5032,13 @@ format_foreign_preds_fs(Keys, Str) :-
     atomic_list_concat(Quoted, '; ', Str).
 
 %% generate_fsproj(+ModName, +Options, -Code)
-generate_fsproj(ModName, _Options, Code) :-
+generate_fsproj(ModName, Options, Code) :-
+    (   option(lmdb_path(_), Options)
+    ->  LmdbCompile  = '\n    <Compile Include="LmdbFactSource.fs" />',
+        LmdbPackage  = '\n  <ItemGroup>\n    <PackageReference Include="LightningDB" Version="0.21.0" />\n  </ItemGroup>\n'
+    ;   LmdbCompile  = '',
+        LmdbPackage  = ''
+    ),
     format(string(Code),
 '<Project Sdk="Microsoft.NET.Sdk">
 
@@ -5023,13 +5051,13 @@ generate_fsproj(ModName, _Options, Code) :-
     <Deterministic>true</Deterministic>
   </PropertyGroup>
 
-  <ItemGroup>
+  <ItemGroup>~w
     <Compile Include="WamTypes.fs" />
     <Compile Include="WamRuntime.fs" />
     <Compile Include="Predicates.fs" />
     <Compile Include="Lowered.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
-
+~w
 </Project>
-', [ModName]).
+', [ModName, LmdbCompile, LmdbPackage]).
