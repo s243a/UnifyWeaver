@@ -103,6 +103,32 @@ test(iso_errors_text_rewrite_explicit_iso_survives) :-
     % Lax mode shouldn''t touch the explicit iso form either.
     assertion(sub_string(LaxWam, _, _, _, "builtin_call is_iso/2 2")).
 
+test(iso_errors_text_rewrite_comparison_iso) :-
+    % Arithmetic-compare sweep: each of the 6 ops rewrites to its
+    % _iso variant under iso_config(true, []).
+    Wam0 = 'cmp/0:\n  builtin_call </2 2\n  builtin_call >/2 2\n  builtin_call >=/2 2\n  builtin_call =</2 2\n  builtin_call =:=/2 2\n  builtin_call =\\=/2 2',
+    iso_errors_rewrite_text(iso_config(true, []), cmp/0, Wam0, IsoWam),
+    assertion(sub_string(IsoWam, _, _, _, "builtin_call <_iso/2 2")),
+    assertion(sub_string(IsoWam, _, _, _, "builtin_call >_iso/2 2")),
+    assertion(sub_string(IsoWam, _, _, _, "builtin_call >=_iso/2 2")),
+    assertion(sub_string(IsoWam, _, _, _, "builtin_call =<_iso/2 2")),
+    assertion(sub_string(IsoWam, _, _, _, "builtin_call =:=_iso/2 2")),
+    assertion(sub_string(IsoWam, _, _, _, "builtin_call =\\=_iso/2 2")).
+
+test(iso_errors_text_rewrite_comparison_lax) :-
+    Wam0 = 'cmp/0:\n  builtin_call </2 2\n  builtin_call >/2 2\n  builtin_call =:=/2 2',
+    iso_errors_rewrite_text(iso_config(false, []), cmp/0, Wam0, LaxWam),
+    assertion(sub_string(LaxWam, _, _, _, "builtin_call <_lax/2 2")),
+    assertion(sub_string(LaxWam, _, _, _, "builtin_call >_lax/2 2")),
+    assertion(sub_string(LaxWam, _, _, _, "builtin_call =:=_lax/2 2")).
+
+test(iso_errors_text_rewrite_succ) :-
+    Wam0 = 'succ_demo/0:\n  builtin_call succ/2 2',
+    iso_errors_rewrite_text(iso_config(true, []), succ_demo/0, Wam0, IsoWam),
+    assertion(sub_string(IsoWam, _, _, _, "builtin_call succ_iso/2 2")),
+    iso_errors_rewrite_text(iso_config(false, []), succ_demo/0, Wam0, LaxWam),
+    assertion(sub_string(LaxWam, _, _, _, "builtin_call succ_lax/2 2")).
+
 test(iso_errors_text_rewrite_per_pred_override) :-
     % Default ISO, override demo/0 to lax.
     Config = iso_config(true, [demo/0-false]),

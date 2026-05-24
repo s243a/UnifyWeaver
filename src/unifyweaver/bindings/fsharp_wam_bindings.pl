@@ -587,6 +587,48 @@ let throwIsoError (s: WamState) (errTerm: Value) : 'a =
 let makePredIndicator (name: string) (arity: int) : Value =
     Str (\"/\", [Atom name; Integer arity])
 
+/// True iff any subterm in v dereferences to an unbound variable.
+/// Used by is_iso/2 and the ISO arithmetic-compare variants to
+/// detect instantiation_error before evaluating.
+let rec hasUnboundDeep (bindings: Map<int, Value>) (v: Value) : bool =
+    match derefVar bindings v with
+    | Unbound _      -> true
+    | Str (_, args)  -> args  |> List.exists (hasUnboundDeep bindings)
+    | VList items    -> items |> List.exists (hasUnboundDeep bindings)
+    | _              -> false
+
+/// Build the Name/Arity culprit term used by type_error(evaluable, ...).
+/// Walks one level: Atom 'foo' -> foo/0; Str (f, args) -> f/(length args);
+/// anything else -> unknown/0.  Mirrors Python iso_arith_culprit.
+let arithCulprit (bindings: Map<int, Value>) (expr: Value) : Value =
+    match derefVar bindings expr with
+    | Atom name      -> makePredIndicator name 0
+    | Str (fn, args) -> makePredIndicator fn (List.length args)
+    | _              -> makePredIndicator \"unknown\" 0
+
+/// True for predicate names the WAM compiler emits as Call/Execute
+/// (meta-call shape) but that the F# step function handles as ISO
+/// builtins.  The Call/Execute step arms check this to route through
+/// BuiltinCall dispatch.
+let isIsoMetaBuiltin (pred: string) : bool =
+    match pred with
+    | \"catch/3\" | \"throw/1\"
+    | \"is_iso/2\" | \"is_lax/2\"
+    | \"<_iso/2\" | \">_iso/2\" | \">=_iso/2\" | \"=<_iso/2\"
+    | \"=:=_iso/2\" | \"=\\\\=_iso/2\"
+    | \"<_lax/2\" | \">_lax/2\" | \">=_lax/2\" | \"=<_lax/2\"
+    | \"=:=_lax/2\" | \"=\\\\=_lax/2\"
+    | \"succ/2\" | \"succ_iso/2\" | \"succ_lax/2\" -> true
+    | _ -> false
+
+/// Arity of an ISO meta-builtin.  Used by the Execute step arm to
+/// reconstruct the BuiltinCall instruction.
+let isoMetaBuiltinArity (pred: string) : int =
+    match pred with
+    | \"throw/1\" -> 1
+    | \"catch/3\" -> 3
+    | _ -> 2  // is_*, comparison ops, succ all arity 2
+
 /// Append a value to the current builder (PutStructure / PutList).
 // popBuilderStack: when an inner builder is finished (BuildStruct/List
 // arity filled, or ReadArgs exhausted), restore the outer builder

@@ -27,8 +27,22 @@
 :- dynamic user:fs_iso_is_iso_type_err/0.
 :- dynamic user:fs_iso_is_iso_zero_div/0.
 :- dynamic user:fs_iso_is_lax_silent/0.
-:- dynamic user:fs_iso_default_rewrite_is_iso/0.
-:- dynamic user:fs_iso_per_pred_override_lax/0.
+
+%% Comparison ISO variants
+:- dynamic user:fs_iso_lt_iso_inst/0.
+:- dynamic user:fs_iso_lt_iso_type/0.
+:- dynamic user:fs_iso_gt_iso_inst/0.
+:- dynamic user:fs_iso_eq_iso_type/0.
+:- dynamic user:fs_iso_lt_lax_silent/0.
+:- dynamic user:fs_iso_gt_lax_silent/0.
+
+%% Successor ISO variants
+:- dynamic user:fs_iso_succ_forward/0.
+:- dynamic user:fs_iso_succ_reverse/0.
+:- dynamic user:fs_iso_succ_iso_both_unbound/0.
+:- dynamic user:fs_iso_succ_iso_x_negative/0.
+:- dynamic user:fs_iso_succ_iso_y_zero/0.
+:- dynamic user:fs_iso_succ_lax_silent/0.
 
 :- dynamic user:throwing_pred/0.
 :- dynamic user:simple_recovery/0.
@@ -37,6 +51,18 @@
 :- dynamic user:eval_is_iso_unbound/1.
 :- dynamic user:eval_is_iso_zerodiv/1.
 :- dynamic user:eval_is_lax_bad/1.
+:- dynamic user:lt_iso_unbound/1.
+:- dynamic user:lt_iso_bad/0.
+:- dynamic user:gt_iso_unbound/1.
+:- dynamic user:eq_iso_bad/0.
+:- dynamic user:lt_lax_bad/0.
+:- dynamic user:gt_lax_bad/0.
+:- dynamic user:succ_lax_bad/0.
+:- dynamic user:succ_iso_neg/0.
+:- dynamic user:succ_iso_zero/0.
+:- dynamic user:succ_iso_unbound/0.
+:- dynamic user:succ_forward/1.
+:- dynamic user:succ_reverse/1.
 
 run_dotnet(Args, Dir, ExitCode, OutText) :-
     setup_call_cleanup(
@@ -120,6 +146,78 @@ main :-
     assertz((user:fs_iso_is_lax_silent :-
         \+ eval_is_lax_bad(_X))),
 
+    %% ----- ISO arithmetic comparison variants -----
+    %% Helpers that issue the explicit *_iso / *_lax forms.
+    assertz((user:lt_iso_unbound(X) :- '<_iso'(X, 3))),
+    assertz((user:lt_iso_bad      :- '<_iso'(foo, 3))),
+    assertz((user:gt_iso_unbound(X) :- '>_iso'(X, 3))),
+    assertz((user:eq_iso_bad      :- '=:=_iso'(foo, 3))),
+    assertz((user:lt_lax_bad      :- '<_lax'(foo, 3))),
+    assertz((user:gt_lax_bad      :- '>_lax'(foo, bar))),
+
+    %% 8. <_iso with unbound LHS -> instantiation_error.
+    assertz((user:fs_iso_lt_iso_inst :-
+        catch(lt_iso_unbound(_X),
+              error(instantiation_error, _),
+              true))),
+
+    %% 9. <_iso with non-evaluable -> type_error(evaluable, ...).
+    assertz((user:fs_iso_lt_iso_type :-
+        catch(lt_iso_bad,
+              error(type_error(evaluable, _), _),
+              true))),
+
+    %% 10. >_iso with unbound -> instantiation_error.
+    assertz((user:fs_iso_gt_iso_inst :-
+        catch(gt_iso_unbound(_X),
+              error(instantiation_error, _),
+              true))),
+
+    %% 11. =:=_iso with non-evaluable -> type_error.
+    assertz((user:fs_iso_eq_iso_type :-
+        catch(eq_iso_bad,
+              error(type_error(evaluable, _), _),
+              true))),
+
+    %% 12, 13: lax comparisons fail silently on bad eval.
+    assertz((user:fs_iso_lt_lax_silent :- \+ lt_lax_bad)),
+    assertz((user:fs_iso_gt_lax_silent :- \+ gt_lax_bad)),
+
+    %% ----- succ/2 variants -----
+    assertz((user:succ_forward(Y) :- succ(2, Y))),
+    assertz((user:succ_reverse(X) :- succ(X, 5))),
+    assertz((user:succ_iso_neg     :- succ_iso(-1, _Y))),
+    assertz((user:succ_iso_zero    :- succ_iso(_X, 0))),
+    assertz((user:succ_iso_unbound :- succ_iso(_X, _Y))),
+    assertz((user:succ_lax_bad     :- succ_lax(-3, _Y))),
+
+    %% 14, 15: succ/2 bidirectional.
+    assertz((user:fs_iso_succ_forward :-
+        succ_forward(Y), Y == 3)),
+    assertz((user:fs_iso_succ_reverse :-
+        succ_reverse(X), X == 4)),
+
+    %% 16: succ_iso both unbound -> instantiation_error.
+    assertz((user:fs_iso_succ_iso_both_unbound :-
+        catch(succ_iso_unbound,
+              error(instantiation_error, _),
+              true))),
+
+    %% 17: succ_iso negative X -> type_error(not_less_than_zero, X).
+    assertz((user:fs_iso_succ_iso_x_negative :-
+        catch(succ_iso_neg,
+              error(type_error(not_less_than_zero, _), _),
+              true))),
+
+    %% 18: succ_iso Y = 0 -> domain_error(not_less_than_zero, Y).
+    assertz((user:fs_iso_succ_iso_y_zero :-
+        catch(succ_iso_zero,
+              error(domain_error(not_less_than_zero, _), _),
+              true))),
+
+    %% 19: succ_lax with bad arg fails silently.
+    assertz((user:fs_iso_succ_lax_silent :- \+ succ_lax_bad)),
+
     %% Setup: project dir.
     Dir = '/tmp/uw_fsharp_iso_repro',
     catch(delete_directory_and_contents(Dir), _, true),
@@ -136,13 +234,40 @@ main :-
          user:fs_iso_is_iso_type_err/0,
          user:fs_iso_is_iso_zero_div/0,
          user:fs_iso_is_lax_silent/0,
+         %% Comparison ISO/lax tests
+         user:fs_iso_lt_iso_inst/0,
+         user:fs_iso_lt_iso_type/0,
+         user:fs_iso_gt_iso_inst/0,
+         user:fs_iso_eq_iso_type/0,
+         user:fs_iso_lt_lax_silent/0,
+         user:fs_iso_gt_lax_silent/0,
+         %% succ/2 + variants
+         user:fs_iso_succ_forward/0,
+         user:fs_iso_succ_reverse/0,
+         user:fs_iso_succ_iso_both_unbound/0,
+         user:fs_iso_succ_iso_x_negative/0,
+         user:fs_iso_succ_iso_y_zero/0,
+         user:fs_iso_succ_lax_silent/0,
+         %% Helpers
          user:throwing_pred/0,
          user:simple_recovery/0,
          user:bind_to_42/1,
          user:eval_is_iso/1,
          user:eval_is_iso_unbound/1,
          user:eval_is_iso_zerodiv/1,
-         user:eval_is_lax_bad/1],
+         user:eval_is_lax_bad/1,
+         user:lt_iso_unbound/1,
+         user:lt_iso_bad/0,
+         user:gt_iso_unbound/1,
+         user:eq_iso_bad/0,
+         user:lt_lax_bad/0,
+         user:gt_lax_bad/0,
+         user:succ_forward/1,
+         user:succ_reverse/1,
+         user:succ_iso_neg/0,
+         user:succ_iso_zero/0,
+         user:succ_iso_unbound/0,
+         user:succ_lax_bad/0],
         [no_kernels(true),
          module_name('uw_fs_iso_repro')],
         Dir),
@@ -221,6 +346,20 @@ let main _argv =
     assertTrue \"catch(is_iso(X, foo), error(type_error(evaluable, _), _), _)\" (runPredicate \"fs_iso_is_iso_type_err/0\")
     assertTrue \"catch(is_iso(X, 1/0), error(evaluation_error(zero_divisor), _), _)\" (runPredicate \"fs_iso_is_iso_zero_div/0\")
     assertTrue \"\\\\+ is_lax(X, foo)\"                                    (runPredicate \"fs_iso_is_lax_silent/0\")
+    // Comparison ISO/lax variants
+    assertTrue \"catch(<_iso(X, 3), error(instantiation_error, _), _)\"   (runPredicate \"fs_iso_lt_iso_inst/0\")
+    assertTrue \"catch(<_iso(foo, 3), error(type_error(evaluable, _), _), _)\" (runPredicate \"fs_iso_lt_iso_type/0\")
+    assertTrue \"catch(>_iso(X, 3), error(instantiation_error, _), _)\"   (runPredicate \"fs_iso_gt_iso_inst/0\")
+    assertTrue \"catch(=:=_iso(foo, 3), error(type_error(evaluable, _), _), _)\" (runPredicate \"fs_iso_eq_iso_type/0\")
+    assertTrue \"\\\\+ <_lax(foo, 3)\"                                     (runPredicate \"fs_iso_lt_lax_silent/0\")
+    assertTrue \"\\\\+ >_lax(foo, bar)\"                                   (runPredicate \"fs_iso_gt_lax_silent/0\")
+    // succ/2 + variants
+    assertTrue \"succ(2, 3)\"                                              (runPredicate \"fs_iso_succ_forward/0\")
+    assertTrue \"succ(4, 5)\"                                              (runPredicate \"fs_iso_succ_reverse/0\")
+    assertTrue \"catch(succ_iso(_,_), error(instantiation_error,_), _)\"  (runPredicate \"fs_iso_succ_iso_both_unbound/0\")
+    assertTrue \"catch(succ_iso(-1,_), error(type_error(not_less_than_zero,_),_), _)\" (runPredicate \"fs_iso_succ_iso_x_negative/0\")
+    assertTrue \"catch(succ_iso(_,0), error(domain_error(not_less_than_zero,_),_), _)\" (runPredicate \"fs_iso_succ_iso_y_zero/0\")
+    assertTrue \"\\\\+ succ_lax(-3, _)\"                                    (runPredicate \"fs_iso_succ_lax_silent/0\")
 
     printfn \"RESULT %d/%d\" passes (passes + fails)
     if fails > 0 then 1 else 0

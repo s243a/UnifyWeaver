@@ -68,8 +68,8 @@ are follow-up work.
 | ISO error constructors | Present | `makeInstantiationError`, `makeTypeError`, `makeDomainError`, `makeEvaluationError`, `makePredIndicator` in `fsharp_wam_bindings.pl`. |
 | `throw_iso_error` helper | Present | Wraps the inner error term in `error(ErrorTerm, _)` (with a fresh unbound `Context`) and raises `WamException`. |
 | `is_iso/2` / `is_lax/2` | Present | `is/2` and `is_lax/2` share the lax body; `is_iso/2` does three-step classification (unbound -> instantiation_error, zero divide -> evaluation_error(zero_divisor), otherwise -> type_error(evaluable, Name/Arity)). |
-| ISO/lax arithmetic compares | **Missing** | Six comparison variants (`>`, `<`, `>=`, `=<`, `=:=`, `=\\=`) still need ISO/lax three-form dispatch. Follow-up PR. |
-| `succ/2` and ISO/lax variants | **Missing** | F# does not currently expose `succ/2` at all. Follow-up PR. |
+| ISO/lax arithmetic compares | Present | All six variants (`>`, `<`, `>=`, `=<`, `=:=`, `=\\=`) ship with `_iso/2` and `_lax/2` aliases. The lax aliases share the existing lax body via OR-pattern dispatch; the ISO variants classify failures as `instantiation_error` (unbound side) or `type_error(evaluable, X/N)`. |
+| `succ/2` and ISO/lax variants | Present | `succ/2` (bidirectional successor with lax silent-fail) plus `succ_iso/2` (raises `instantiation_error` / `type_error(integer, _)` / `type_error(not_less_than_zero, X)` / `domain_error(not_less_than_zero, Y)` per Aït-Kaci spec §6) and `succ_lax/2`. |
 | Lax IEEE-754 float divide | Partial | F# `is/2` already returns `nan`/`inf`/`-inf` for float zero division (CLR default). Integer divide-by-zero in lax mode fails silently because `evalArith` returns `None` (no exception escapes), matching the documented lax contract. |
 | Per-predicate ISO config loader | Present | `iso_errors_config(File)`, inline `iso_errors(Default)` / `iso_errors(PI, Mode)`, file-vs-inline precedence per spec. Copied from Python target; future extraction into `src/unifyweaver/core/iso_errors.pl` is appropriate now that F# is the third adopter. |
 | Per-predicate default rewrite | Present | `iso_errors_rewrite_text/4` walks WAM text, rewriting `is/2` -> `is_iso/2` / `is_lax/2` according to the predicate's resolved mode. Wired into `compile_predicates_to_fsharp` so generated F# uses the ISO-mode key. |
@@ -77,22 +77,20 @@ are follow-up work.
 
 ### Remaining F# ISO Work
 
-Steps 1-5 and 7-8 of the original minimum-useful-adoption list (now
-matched against `WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md` § "What Counts
-As Adoption") shipped together. The remaining items:
+The arithmetic-compare sweep and `succ/2` family shipped in a
+follow-up PR alongside the substrate work. F# now matches the full
+"minimum useful adoption unit" in
+`WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md` § "What Counts As Adoption"
+plus the C++/Elixir/Python reference key tables (minus `read/*` /
+`read_term*/*`, which are runtime-parser-dependent and live on the
+F# runtime-parser side).
 
-- **Arithmetic-compare ISO/lax variants**: `>_iso/2`, `<_iso/2`,
-  `>=_iso/2`, `=<_iso/2`, `=:=_iso/2`, `=\\=_iso/2` plus matching
-  `*_lax/2` aliases. Each needs a step branch alongside the existing
-  lax branch, an entry in both `iso_errors_default_to_iso/2` and
-  `iso_errors_default_to_lax/2`, and a regression test case.
-- **`succ/2` family**: F# does not currently support `succ/2` at
-  all. Adding it adds three keys (default, `_iso`, `_lax`) per the
-  three-form pattern.
-- **Shared helper extraction**: F# is now the third adopter (after
-  Elixir and Python -- C++ is its own reference). Extracting the
-  `iso_errors_*` predicates into `src/unifyweaver/core/iso_errors.pl`
-  is appropriate next, as called out in
+Remaining cross-cutting work:
+
+- **Shared helper extraction**: F# is the third adopter of the
+  copy-pasted `iso_errors_*` block (after Elixir and Python).
+  Extracting these helpers into `src/unifyweaver/core/iso_errors.pl`
+  is appropriate next per
   `WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md` § "Remaining Work".
 
 ## LMDB Fact-Source Readiness

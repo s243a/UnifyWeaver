@@ -892,8 +892,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
     // lookup -- which would fail since these aren''t labelled
     // predicates.  Routing through BuiltinCall here picks up the F#
     // step arms for ISO catch/throw/is_iso/is_lax.
-    | Call (pred, arity) when pred = \"catch/3\" || pred = \"throw/1\"
-                            || pred = \"is_iso/2\" || pred = \"is_lax/2\" ->
+    | Call (pred, arity) when isIsoMetaBuiltin pred ->
         let sc = { s with WsCP      = s.WsPC + 1
                           WsB0Stack = s.WsCutBar :: s.WsB0Stack
                           WsCutBar  = s.WsCPsLen }
@@ -913,17 +912,13 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | Some pc -> Some { sc with WsPC = pc }
         | None    -> None
 
-    | Execute pred when pred = \"catch/3\" || pred = \"throw/1\"
-                      || pred = \"is_iso/2\" || pred = \"is_lax/2\" ->
+    | Execute pred when isIsoMetaBuiltin pred ->
         // Tail-call meta-builtin: dispatch through BuiltinCall, then
         // convert the PC+1 advance (past the Execute slot) to WsCP so
         // control returns to the outer caller as a normal Proceed
         // would.  Execute itself does not push WsB0Stack, so there''s
         // nothing to pop here.
-        let arity =
-            if pred = \"throw/1\" then 1
-            elif pred = \"catch/3\" then 3
-            else 2
+        let arity = isoMetaBuiltinArity pred
         match step ctx s (BuiltinCall (pred, arity)) with
         | Some sNext -> Some { sNext with WsPC = sNext.WsCP }
         | None -> None
@@ -1374,14 +1369,9 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
     // nearest catch/3 try/with (set up by the catch/3 builtin).
     | BuiltinCall ("is_iso/2", _) ->
         let expr = s.WsRegs.[2] |> derefVar s.WsBindings
-        // Step 1: instantiation check.
-        let rec hasUnbound v =
-            match derefVar s.WsBindings v with
-            | Unbound _      -> true
-            | Str (_, args)  -> List.exists hasUnbound args
-            | VList items    -> List.exists hasUnbound items
-            | _              -> false
-        if hasUnbound expr then throwIsoError s (makeInstantiationError ())
+        // Step 1: instantiation check (helper in fsharp_wam_bindings).
+        if hasUnboundDeep s.WsBindings expr then
+            throwIsoError s (makeInstantiationError ())
         // Step 2: zero-divide check.  Parens around the inner match
         // are mandatory in F# so subsequent `| Str ...` arms attach to
         // the outer match, not the inner.
@@ -1424,6 +1414,44 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
             | Some (Integer n) when float n = r -> Some { s with WsPC = s.WsPC + 1 }
             | _ -> None
 
+    // ISO arithmetic-compare variants.  Each iso_arithCompare branch
+    // classifies a failed eval as either instantiation_error (any
+    // side has unbound) or type_error(evaluable, X/N).  Lax variants
+    // share the existing op/2 body via the alias match below.
+    | BuiltinCall (\"<_iso/2\", _) | BuiltinCall (\">_iso/2\", _)
+    | BuiltinCall (\">=_iso/2\", _) | BuiltinCall (\"=<_iso/2\", _)
+    | BuiltinCall (\"=:=_iso/2\", _) | BuiltinCall (\"=\\\\=_iso/2\", _) ->
+        let op = match instr with
+                 | BuiltinCall (k, _) -> k
+                 | _ -> \"<_iso/2\"
+        let a1 = getReg 1 s
+        let a2 = getReg 2 s
+        // ISO instantiation check fires on either side.
+        let unboundA = match a1 with Some v -> hasUnboundDeep s.WsBindings v | None -> true
+        let unboundB = match a2 with Some v -> hasUnboundDeep s.WsBindings v | None -> true
+        if unboundA || unboundB then
+            throwIsoError s (makeInstantiationError ())
+        let r1 = a1 |> Option.bind (evalArith s.WsBindings)
+        let r2 = a2 |> Option.bind (evalArith s.WsBindings)
+        match r1, r2 with
+        | None, _ ->
+            let culprit = match a1 with Some v -> arithCulprit s.WsBindings v | None -> makePredIndicator \"unknown\" 0
+            throwIsoError s (makeTypeError \"evaluable\" culprit)
+        | _, None ->
+            let culprit = match a2 with Some v -> arithCulprit s.WsBindings v | None -> makePredIndicator \"unknown\" 0
+            throwIsoError s (makeTypeError \"evaluable\" culprit)
+        | Some a, Some b ->
+            let ok =
+                match op with
+                | \"<_iso/2\"   -> a < b
+                | \">_iso/2\"   -> a > b
+                | \">=_iso/2\"  -> a >= b
+                | \"=<_iso/2\"  -> a <= b
+                | \"=:=_iso/2\" -> abs (a - b) < System.Double.Epsilon
+                | \"=\\\\=_iso/2\" -> abs (a - b) >= System.Double.Epsilon
+                | _ -> false
+            if ok then Some { s with WsPC = s.WsPC + 1 } else None
+
     | BuiltinCall ("length/2", _) ->
         match flattenList s s.WsRegs.[1] with
         | Some items ->
@@ -1443,14 +1471,18 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
             | _ -> None
         | _ -> None
 
-    | BuiltinCall ("</2", _) ->
+    // Lax arithmetic comparisons: silent failure on bad eval.  Each
+    // op/2 also matches op_lax/2 so user code can write the explicit
+    // form to bypass an ISO-mode rewrite.  See is_iso/is_lax above
+    // for the three-form contract.
+    | BuiltinCall ("</2", _) | BuiltinCall (\"<_lax/2\", _) ->
         let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
         let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
         match v1, v2 with
         | Some a, Some b when a < b -> Some { s with WsPC = s.WsPC + 1 }
         | _ -> None
 
-    | BuiltinCall (">/2", _) ->
+    | BuiltinCall (">/2", _) | BuiltinCall (\">_lax/2\", _) ->
         let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
         let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
         match v1, v2 with
@@ -1461,21 +1493,21 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
     // C++ comparison builtins). Each evaluates both sides via evalArith and
     // dispatches on the operator. =:=/2 and =\\=/2 use EPSILON tolerance to
     // bridge integer / float comparisons (mirrors the Rust implementation).
-    | BuiltinCall (">=/2", _) ->
+    | BuiltinCall (">=/2", _) | BuiltinCall (\">=_lax/2\", _) ->
         let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
         let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
         match v1, v2 with
         | Some a, Some b when a >= b -> Some { s with WsPC = s.WsPC + 1 }
         | _ -> None
 
-    | BuiltinCall ("=</2", _) ->
+    | BuiltinCall ("=</2", _) | BuiltinCall (\"=<_lax/2\", _) ->
         let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
         let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
         match v1, v2 with
         | Some a, Some b when a <= b -> Some { s with WsPC = s.WsPC + 1 }
         | _ -> None
 
-    | BuiltinCall ("=:=/2", _) ->
+    | BuiltinCall ("=:=/2", _) | BuiltinCall (\"=:=_lax/2\", _) ->
         let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
         let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
         match v1, v2 with
@@ -1483,12 +1515,100 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
             Some { s with WsPC = s.WsPC + 1 }
         | _ -> None
 
-    | BuiltinCall ("=\\\\=/2", _) ->
+    | BuiltinCall ("=\\\\=/2", _) | BuiltinCall (\"=\\\\=_lax/2\", _) ->
         let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
         let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
         match v1, v2 with
         | Some a, Some b when abs (a - b) >= System.Double.Epsilon ->
             Some { s with WsPC = s.WsPC + 1 }
+        | _ -> None
+
+    // succ/2 + succ_lax/2 - bidirectional successor.  Lax semantics:
+    // X bound non-negative integer -> Y = X+1; Y bound positive
+    // integer -> X = Y-1; both unbound, or X negative, or Y zero/
+    // negative -> silent fail.  Mirrors Python _execute_succ_lax.
+    | BuiltinCall (\"succ/2\", _) | BuiltinCall (\"succ_lax/2\", _) ->
+        let a = getReg 1 s
+        let b = getReg 2 s
+        let bindReg reg value =
+            match getReg reg s with
+            | Some (Unbound vid) ->
+                let regs = Array.copy s.WsRegs
+                regs.[reg] <- value
+                Some { s with
+                         WsPC      = s.WsPC + 1
+                         WsRegs    = regs
+                         WsBindings= Map.add vid value s.WsBindings
+                         WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
+                         WsTrailLen= s.WsTrailLen + 1 }
+            | Some bound when bound = value -> Some { s with WsPC = s.WsPC + 1 }
+            | _ -> None
+        match a, b with
+        | Some (Integer n), _ when n >= 0 -> bindReg 2 (Integer (n + 1))
+        | _, Some (Integer m) when m > 0  -> bindReg 1 (Integer (m - 1))
+        | _ -> None
+
+    // succ_iso/2 - bidirectional successor with ISO error throws.
+    // Mirrors Python _execute_succ_iso and Aït-Kaci spec §6:
+    //   both unbound          -> instantiation_error
+    //   X not integer         -> type_error(integer, X)
+    //   Y not integer         -> type_error(integer, Y)
+    //   X negative            -> type_error(not_less_than_zero, X)
+    //   Y zero or negative    -> domain_error(not_less_than_zero, Y)
+    | BuiltinCall (\"succ_iso/2\", _) ->
+        let a = getReg 1 s
+        let b = getReg 2 s
+        let aUnbound = match a with Some (Unbound _) -> true | None -> true | _ -> false
+        let bUnbound = match b with Some (Unbound _) -> true | None -> true | _ -> false
+        if aUnbound && bUnbound then
+            throwIsoError s (makeInstantiationError ())
+        // Type check non-unbound args.
+        (match a with
+         | Some v when not aUnbound ->
+            (match v with
+             | Integer _ -> ()
+             | _ -> throwIsoError s (makeTypeError \"integer\" v))
+         | _ -> ())
+        (match b with
+         | Some v when not bUnbound ->
+            (match v with
+             | Integer _ -> ()
+             | _ -> throwIsoError s (makeTypeError \"integer\" v))
+         | _ -> ())
+        // Negativity / domain checks.
+        match a, b with
+        | Some (Integer n), _ when n < 0 ->
+            throwIsoError s (makeTypeError \"not_less_than_zero\" (Integer n))
+        | _, Some (Integer m) when m <= 0 ->
+            throwIsoError s (makeDomainError \"not_less_than_zero\" (Integer m))
+        | Some (Integer n), _ ->
+            let v = Integer (n + 1)
+            match getReg 2 s with
+            | Some (Unbound vid) ->
+                let regs = Array.copy s.WsRegs
+                regs.[2] <- v
+                Some { s with
+                         WsPC      = s.WsPC + 1
+                         WsRegs    = regs
+                         WsBindings= Map.add vid v s.WsBindings
+                         WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
+                         WsTrailLen= s.WsTrailLen + 1 }
+            | Some bound when bound = v -> Some { s with WsPC = s.WsPC + 1 }
+            | _ -> None
+        | _, Some (Integer m) ->
+            let v = Integer (m - 1)
+            match getReg 1 s with
+            | Some (Unbound vid) ->
+                let regs = Array.copy s.WsRegs
+                regs.[1] <- v
+                Some { s with
+                         WsPC      = s.WsPC + 1
+                         WsRegs    = regs
+                         WsBindings= Map.add vid v s.WsBindings
+                         WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
+                         WsTrailLen= s.WsTrailLen + 1 }
+            | Some bound when bound = v -> Some { s with WsPC = s.WsPC + 1 }
+            | _ -> None
         | _ -> None
 
     // ==/2, \\==/2 — structural term equality (no unification, no binding).
@@ -4305,7 +4425,22 @@ fsharp_predicate_clause(Name/Arity, Head, Body) :-
 :- dynamic iso_errors_default_to_lax/2.
 
 iso_errors_default_to_iso("is/2", "is_iso/2").
+iso_errors_default_to_iso(">/2", ">_iso/2").
+iso_errors_default_to_iso("</2", "<_iso/2").
+iso_errors_default_to_iso(">=/2", ">=_iso/2").
+iso_errors_default_to_iso("=</2", "=<_iso/2").
+iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
+iso_errors_default_to_iso("=\\=/2", "=\\=_iso/2").
+iso_errors_default_to_iso("succ/2", "succ_iso/2").
+
 iso_errors_default_to_lax("is/2", "is_lax/2").
+iso_errors_default_to_lax(">/2", ">_lax/2").
+iso_errors_default_to_lax("</2", "<_lax/2").
+iso_errors_default_to_lax(">=/2", ">=_lax/2").
+iso_errors_default_to_lax("=</2", "=<_lax/2").
+iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
+iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
+iso_errors_default_to_lax("succ/2", "succ_lax/2").
 
 %% iso_errors_resolve_options(+Options, -Config)
 %  Merges optional file config with inline options into iso_config(Default,
