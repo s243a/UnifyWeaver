@@ -1537,6 +1537,30 @@ def _execute_read_line_to_string(state: WamState) -> bool:
         chars.append(ch)
 
 
+def _execute_read_string(state: WamState) -> bool:
+    stream = deref(get_reg(state, 1), state)
+    raw = _unwrap_stream(stream)
+    length = deref(get_reg(state, 2), state)
+    if raw is None or not hasattr(raw, 'read'):
+        return False
+    if not isinstance(length, Int) or length.n < 0:
+        return False
+
+    chars: List[str] = []
+    for _ in range(length.n):
+        ch = _read_handle_char(state, stream)
+        if ch is None:
+            return False
+        if ch == '':
+            break
+        chars.append(ch)
+
+    text = ''.join(chars)
+    if not unify(get_reg(state, 3), Int(len(text)), state):
+        return False
+    return unify(get_reg(state, 5), make_atom(text), state)
+
+
 def _execute_read_from_stream(state: WamState, stream: Any, target: Term,
                               syntax_default: str = 'fail',
                               read_char: Optional[Callable[[], str]] = None) -> bool:
@@ -1801,6 +1825,8 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         return _execute_put_code_stream(state)
     if builtin in ('read_line_to_string/2', 'read_line_to_string') and arity == 2:
         return _execute_read_line_to_string(state)
+    if builtin in ('read_string/5', 'read_string') and arity == 5:
+        return _execute_read_string(state)
     if builtin in ('read/1', 'read_lax/1', 'read_term/1', 'read_term_lax/1',
                    'read', 'read_lax', 'read_term', 'read_term_lax') and arity == 1:
         return _execute_read_default_stream(state, 'fail')
