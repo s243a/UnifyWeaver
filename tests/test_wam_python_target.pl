@@ -720,6 +720,88 @@ test(runtime_parser_compiled_read_term_singletons) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+% Regression: read_term_from_atom on a bare numeric-looking atom (`'42'`).
+% Two bugs collided to break this:
+%   (1) _constant_term in WamRuntime.py re-parsed Atom("42").name through
+%       _parse_constant, which promotes numeric-looking strings to Int.
+%       So put_constant Atom("42") silently became Int(42) at runtime,
+%       and read_term_from_atom rejects non-Atom input (returns False).
+%   (2) wam_lines_to_python used a naive whitespace split that broke any
+%       atom token containing a space (`':- p'`), splitting it across
+%       multiple parts and emitting a `# SKIP:` comment instead of the
+%       real put_constant -- so even after (1) was fixed, a directive-
+%       shaped atom never made it into A1.
+% Both fixes verified by this test: bare integer-shaped quoted atoms,
+% prefix-directive atoms, prefix-NaF atoms.
+test(runtime_parser_compiled_read_term_integer_shaped_atom) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read_int_shape),
+			assertz((user:py_read_int_shape :-
+				read_term_from_atom('42', T),
+				T == 42)),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_int_shape', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_read_int_shape/0],
+				[runtime_parser(compiled)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_read_int_shape/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read_int_shape),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_parser_compiled_read_term_prefix_directive) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read_prefix_directive),
+			assertz((user:py_read_prefix_directive :-
+				read_term_from_atom(':- p', T),
+				T == ':-'(p))),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_prefix_dir', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_read_prefix_directive/0],
+				[runtime_parser(compiled)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_read_prefix_directive/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read_prefix_directive),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_parser_compiled_read_term_prefix_naf) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read_prefix_naf),
+			assertz((user:py_read_prefix_naf :-
+				read_term_from_atom('\\+ foo', T),
+				T == '\\+'(foo))),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_prefix_naf', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_read_prefix_naf/0],
+				[runtime_parser(compiled)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_read_prefix_naf/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read_prefix_naf),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_parser_compiled_read_term_syntax_errors_policy) :-
 	setup_call_cleanup(
 		(   retractall(user:py_read_term_syntax_lax),

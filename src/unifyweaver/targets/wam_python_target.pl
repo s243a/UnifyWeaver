@@ -51,7 +51,9 @@
 	parse_wam_text_py/2,
 	python_func_name/2
 ]).
-:- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
+:- use_module('../targets/wam_text_parser',
+              [wam_classify_constant_token/2,
+               wam_tokenize_line/2]).
 :- use_module(wam_runtime_parser_capability, [
 	parser_dependent_body_goal/2,
 	wam_target_runtime_parser/3
@@ -1333,8 +1335,13 @@ wam_code_to_python_instructions(WamCode, _PredIndicator, InstrLiterals, LabelLit
 
 wam_lines_to_python([], _, [], []).
 wam_lines_to_python([Line|Rest], PC, Instrs, Labels) :-
-	split_string(Line, " \t", " \t", Parts),
-	delete(Parts, "", CleanParts),
+	%% Quote-respecting tokeniser: the naive `split_string` on whitespace
+	%% broke any atom token containing a space (e.g. `':- p'`), splitting
+	%% it across multiple parts and causing wam_line_to_python_literal/2
+	%% to silently emit `# SKIP: ...` instead of the real put_constant.
+	%% wam_text_parser:wam_tokenize_line/2 honours the WAM-text
+	%% single-quote convention.
+	wam_tokenize_line(Line, CleanParts),
 	(   CleanParts == []
 	->  wam_lines_to_python(Rest, PC, Instrs, Labels)
 	;   CleanParts = [First|_],
