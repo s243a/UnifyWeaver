@@ -98,8 +98,8 @@ Remaining cross-cutting work:
 
 ## LMDB Fact-Source Readiness
 
-F# is **not yet** named in `WAM_LMDB_LAZY_IMPLEMENTATION_PLAN.md`. The
-current state across all WAM targets (from the plan's §1 table) is:
+F# now has all three materialisation modes from
+`WAM_LMDB_LAZY_SPECIFICATION.md`:
 
 | Target | `eager` | `lazy` | `cached` | Scan | Segregation |
 | --- | :-: | :-: | :-: | :-: | :-: |
@@ -109,59 +109,44 @@ current state across all WAM targets (from the plan's §1 table) is:
 | Go | shipped | not yet | not yet | not yet | not yet |
 | Elixir | shipped + generator-mode | not yet | not yet | not yet | not yet |
 | Python | shipped + `yield from` | not yet | not yet | not yet | not yet |
-| **F#** | **none** | **none** | **none** | **none** | **none** |
+| **F#** | **shipped** | **shipped** | **shipped** | not yet | not yet |
 
-The `eager` baseline is missing too because F# has no `WcFactSource`
-shape at all - the `WamContext` exposes only in-memory
-`Map<string, Map<string, string list>>` for `WcForeignFacts` and
-`Map<string, Map<int, int list>>` for `WcFfiFacts`. There is no
-fact-source trait, no LMDB template, and no .NET LMDB binding
-selected. The closest precedent in the codebase is the C# ingest at
-`src/unifyweaver/runtime/csharp/lmdb_ingest/` which uses the
-[LightningDB](https://www.nuget.org/packages/LightningDB) NuGet
-package (0.21+) - F# can consume the same package since it shares the
-CLR with C#.
+### What shipped
 
-### Minimum Useful F# LMDB Adoption
+- **LightningDB 0.21** NuGet package (same CLR binding as
+  `src/unifyweaver/runtime/csharp/lmdb_ingest/`).
+- **`ILookupSource`** interface in `WamTypes.fs` with
+  `member _.Lookup : int -> int list`.
+- **`EagerLookupSource`** wraps a pre-loaded `Map<int, int list>`
+  (Phase 1 eager materialisation; zero-cost unwrap via `.Data`).
+- **`LmdbCursorLookup`** opens a per-call ReadTransaction + cursor
+  (Phase 2 lazy mode; no startup cost, per-lookup cursor overhead).
+- **`CachedLookupSource`** decorates any `ILookupSource` with a
+  `ConcurrentDictionary<int, int list>` memo cache (Phase 3 cached
+  mode; first lookup delegates to inner, subsequent hits return
+  cached value).
+- **`resolveFactMap`** helper checks `WcLookupSources` before
+  falling back to `WcFfiFacts`; kernel codegen wired to use it.
+- **`lmdb_path(Path)`** codegen option: includes `LmdbFactSource.fs`
+  + `LightningDB` NuGet reference in the generated project.
+- **`lmdb_materialisation(eager|lazy|cached)`** codegen option
+  (default `eager`); logged at project-generation time.
+- Template: `templates/targets/fsharp_wam/lmdb_fact_source.fs.mustache`.
+- E2E tests: `tests/core/test_wam_fsharp_lmdb_smoke.pl` (18
+  assertions against a synthetic Phase 1 LMDB fixture).
 
-The path mirrors the Rust R7 plan but is independent of it:
+### Remaining LMDB work
 
-1. **Pick the binding.** LightningDB 0.21+ is the obvious choice
-   (already used by `lmdb_ingest`); a `FSharp.LMDB` wrapper is not
-   needed and would be premature.
-2. **Add a `LookupSource` interface to `WamRuntime.fs`** with one
-   method along the shape `member _.Lookup : int -> seq<int>` (or
-   `seq<Value>` once interning vs raw int IDs is decided). This is
-   the equivalent of the Haskell `FactSource` typeclass and the Rust
-   `LookupSource` trait that R7 introduces.
-3. **Add an `LmdbCursorLookup` implementation** reading the Phase 1
-   resident layout (`int32_le` keys) from
-   `WAM_LMDB_RESIDENT_INTERNING_SPECIFICATION.md`. One shared cursor
-   protected by a mutex is the simplest starting shape.
-4. **Add `WcLookupSources : Map<string, LookupSource>`** to
-   `WamContext` and a `dispatchLookup` path that prefers the
-   registered lookup over `WcFfiFacts` when present.
-5. **Codegen option `lmdb_materialisation(eager|lazy|cached)`** in
-   `wam_fsharp_target.pl`. Initial PR can omit the `auto` token
-   (resolver wiring) and the `cached` decorator; those land in a
-   follow-up.
-6. **Mustache template `templates/targets/fsharp_wam/lmdb_fact_source.fs.mustache`**
-   carrying the LMDB-zero-allocation pattern used by the Rust
-   template at `templates/targets/rust_wam/lmdb_fact_source_lmdb_zero.rs.mustache`.
-7. **Tests** under `tests/test_wam_fsharp_target.pl` for codegen
-   shape; a generated-project smoke test under `tests/core/` for
-   end-to-end behavior against a small fixture LMDB.
-
-`cached` mode (step beyond the minimum) follows the Haskell
-`resident_cursor` pattern: a `CachedLookup` decorator wraps any
-`LookupSource` with a sharded LRU. .NET's
-`System.Collections.Concurrent.ConcurrentDictionary` plus a
-`LinkedList<int>` for LRU ordering is the simplest portable choice;
-`Microsoft.Extensions.Caching.Memory` is heavier than needed.
-
-The plan's §9 "out-of-scope" list does not currently include F#; this
-audit suggests adding F# explicitly so future readers know whether to
-expect it in a given phase.
+- **`lmdb_materialisation(auto)` cost-model resolver**: picks
+  eager/lazy/cached from workload metadata. Mirrors the Rust R8
+  plan and the shared `resolve_auto_lmdb_materialisation/2` design
+  in `WAM_LMDB_LAZY_SPECIFICATION.md` §7.2.
+- **Scan-mode** and **workload-segregation** contract: Rust R9/R10;
+  out of scope for F# until Rust ships the reference.
+- **Bounded LRU eviction** in `CachedLookupSource`: v1 is unbounded
+  (`ConcurrentDictionary` grows without limit). A capacity-bounded
+  variant with recency-based eviction is a refinement for memory-
+  constrained workloads.
 
 ## CSR Reverse-Index Readiness
 

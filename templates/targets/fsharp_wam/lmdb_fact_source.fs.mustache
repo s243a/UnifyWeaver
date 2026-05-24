@@ -124,6 +124,22 @@ let loadCategoryChild (env: LightningEnvironment) : Map<int, int list> =
 /// materialisation cost, but each runtime lookup pays the cursor-open
 /// overhead.  Appropriate when the working set is small relative to
 /// the full database, or when memory is constrained.
+/// Cached decorator over any ILookupSource.  First lookup for a key
+/// delegates to the inner source and memoises the result; subsequent
+/// lookups for the same key return the cached value without touching
+/// the inner source (no cursor open, no LMDB read).
+///
+/// Uses ConcurrentDictionary for thread safety (parallel kernels via
+/// runNegationParallel / forkParBranches share the WamContext).
+/// V1 is unbounded; a bounded LRU variant (evicting by recency or
+/// capacity) is a future refinement once benchmark data shows the
+/// cache size matters relative to available memory.
+type CachedLookupSource(inner: WamTypes.ILookupSource) =
+    let cache = System.Collections.Concurrent.ConcurrentDictionary<int, int list>()
+    interface WamTypes.ILookupSource with
+        member _.Lookup(key: int) : int list =
+            cache.GetOrAdd(key, fun k -> inner.Lookup(k))
+
 type LmdbCursorLookup(env: LightningEnvironment, dbName: string) =
     let db =
         use initTx = env.BeginTransaction(TransactionBeginFlags.ReadOnly)

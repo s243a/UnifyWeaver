@@ -118,6 +118,13 @@ main :-
     assertTrue \"LmdbCursorLookup.Lookup(8) = [2]\" (lazySrc.Lookup(8) = [2])
     assertTrue \"LmdbCursorLookup.Lookup(99) = []\" (lazySrc.Lookup(99) = [])
 
+    // Test CachedLookupSource (decorator over lazy cursor).
+    let cachedSrc = CachedLookupSource(lazySrc) :> WamTypes.ILookupSource
+    assertTrue \"CachedLookupSource.Lookup(6) = [1]\" (cachedSrc.Lookup(6) = [1])
+    // Second call should hit the cache (same result, no cursor open).
+    assertTrue \"CachedLookupSource.Lookup(6) cached = [1]\" (cachedSrc.Lookup(6) = [1])
+    assertTrue \"CachedLookupSource.Lookup(99) = []\" (cachedSrc.Lookup(99) = [])
+
     env.Dispose()
 
     printfn \"RESULT %d/%d\" passes (passes + fails)
