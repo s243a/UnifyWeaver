@@ -303,6 +303,16 @@ type EagerLookupSource(data: Map<int, int list>) =
         member _.Lookup(key) =
             Map.tryFind key data |> Option.defaultValue []
 
+/// Dictionary-backed eager lookup: O(1) amortized access without the
+/// cost of building an immutable Map. Used when the caller only needs
+/// ILookupSource (not a Map for kernel dispatch).
+type DictLookupSource(data: System.Collections.Generic.Dictionary<int, int list>) =
+    member _.Dict = data
+    interface ILookupSource with
+        member _.Lookup(key) =
+            let ok, vs = data.TryGetValue(key)
+            if ok then vs else []
+
 
 type WamContext =
     { WcCode            : Instruction array    // instruction array (O(1) fetch)
@@ -450,11 +460,18 @@ fsharp_wam_helpers :-
 
 /// Resolve a fact Map for kernel dispatch.  Checks WcLookupSources
 /// first (preferred path after LMDB Phase 2); extracts the inner Map
-/// from EagerLookupSource for zero-cost access.  Falls back to
-/// WcFfiFacts for legacy compatibility.
+/// from EagerLookupSource for zero-cost access, or builds a Map from
+/// DictLookupSource on demand.  Falls back to WcFfiFacts for legacy
+/// compatibility.
 let resolveFactMap (pred: string) (ctx: WamContext) : Map<int, int list> =
     match Map.tryFind pred ctx.WcLookupSources with
     | Some (:? EagerLookupSource as eager) -> eager.Data
+    | Some (:? DictLookupSource as dict) ->
+        // Convert Dictionary to Map for kernel consumption.
+        // One-time cost; callers that only need ILookupSource should
+        // use the Dict path directly for O(1) lookup.
+        dict.Dict |> Seq.fold (fun acc kv ->
+            Map.add kv.Key kv.Value acc) Map.empty
     | Some _ ->
         Map.tryFind pred ctx.WcFfiFacts |> Option.defaultValue Map.empty
     | None ->

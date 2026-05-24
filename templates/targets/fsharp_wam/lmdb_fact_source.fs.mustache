@@ -82,21 +82,29 @@ let loadI2S (env: LightningEnvironment) : Map<int, string> =
 
 /// Load a DUPSORT database (e.g. category_parent) into a Map<int, int list>.
 /// Each key may have multiple values (duplicates); all are collected.
+///
+/// Uses a mutable Dictionary + ResizeArray during the cursor scan for
+/// O(1) amortized insert, then converts to immutable Map in one pass.
+/// Previous version used Map.add + list append per entry, which was
+/// O(n log n) with heavy allocation pressure from intermediate Map
+/// nodes — profiling showed this dominated eager load time.
 let loadDupsortRelation (env: LightningEnvironment) (dbName: string) : Map<int, int list> =
     use tx = env.BeginTransaction(TransactionBeginFlags.ReadOnly)
     let db = tx.OpenDatabase(dbName, new DatabaseConfiguration(Flags = DatabaseOpenFlags.DuplicatesSort))
     use cursor = tx.CreateCursor(db)
-    let mutable result : Map<int, int list> = Map.empty
+    let dict = System.Collections.Generic.Dictionary<int, System.Collections.Generic.List<int>>()
     let struct (rc, _, _) = cursor.First()
     if rc = MDBResultCode.Success then
         let addEntry () =
             let struct (_, k, v) = cursor.GetCurrent()
             let key = decodeI32 (k.AsSpan())
             let value = decodeI32 (v.AsSpan())
-            result <-
-                match Map.tryFind key result with
-                | Some vs -> Map.add key (vs @ [value]) result
-                | None    -> Map.add key [value] result
+            let ok, vs = dict.TryGetValue(key)
+            if ok then vs.Add(value)
+            else
+                let vs = System.Collections.Generic.List<int>()
+                vs.Add(value)
+                dict.[key] <- vs
         addEntry ()
         let mutable ok = true
         while ok do
@@ -105,6 +113,10 @@ let loadDupsortRelation (env: LightningEnvironment) (dbName: string) : Map<int, 
                 addEntry ()
             else
                 ok <- false
+    // Single-pass conversion to immutable Map<int, int list>.
+    let mutable result = Map.empty
+    for kv in dict do
+        result <- Map.add kv.Key (Seq.toList kv.Value) result
     result
 
 /// Convenience: load category_parent(child->parents) for WcFfiFacts.
@@ -114,6 +126,42 @@ let loadCategoryParent (env: LightningEnvironment) : Map<int, int list> =
 /// Convenience: load category_child(parent->children) for reverse lookup.
 let loadCategoryChild (env: LightningEnvironment) : Map<int, int list> =
     loadDupsortRelation env "category_child"
+
+/// Load a DUPSORT database directly into a Dictionary (skipping the
+/// Map conversion). Returns O(1) lookup via DictLookupSource. Use
+/// this when the caller only needs ILookupSource access (not a Map
+/// for kernel dispatch that requires Map.tryFind).
+let loadDupsortRelationDict (env: LightningEnvironment) (dbName: string)
+    : System.Collections.Generic.Dictionary<int, int list> =
+    use tx = env.BeginTransaction(TransactionBeginFlags.ReadOnly)
+    let db = tx.OpenDatabase(dbName, new DatabaseConfiguration(Flags = DatabaseOpenFlags.DuplicatesSort))
+    use cursor = tx.CreateCursor(db)
+    let dict = System.Collections.Generic.Dictionary<int, System.Collections.Generic.List<int>>()
+    let struct (rc, _, _) = cursor.First()
+    if rc = MDBResultCode.Success then
+        let addEntry () =
+            let struct (_, k, v) = cursor.GetCurrent()
+            let key = decodeI32 (k.AsSpan())
+            let value = decodeI32 (v.AsSpan())
+            let ok, vs = dict.TryGetValue(key)
+            if ok then vs.Add(value)
+            else
+                let vs = System.Collections.Generic.List<int>()
+                vs.Add(value)
+                dict.[key] <- vs
+        addEntry ()
+        let mutable ok = true
+        while ok do
+            let struct (rc2, _, _) = cursor.Next()
+            if rc2 = MDBResultCode.Success then
+                addEntry ()
+            else
+                ok <- false
+    // Convert List<int> -> int list for F# immutable consumption.
+    let result = System.Collections.Generic.Dictionary<int, int list>()
+    for kv in dict do
+        result.[kv.Key] <- Seq.toList kv.Value
+    result
 
 /// On-demand LMDB cursor lookup — implements ILookupSource from WamTypes.
 /// Each Lookup call opens a short-lived ReadTransaction + cursor, seeks

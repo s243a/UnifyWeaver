@@ -58,7 +58,20 @@ main :-
     // Seeds: all 8000 children (1001..9000)
     let seeds = [| 1001 .. 9000 |]
 
-    // --- Eager mode ---
+    // --- Dict mode (skip Map, O(1) Dictionary) ---
+    let swDict = Stopwatch.StartNew()
+    let dictData = loadDupsortRelationDict env \"category_parent\"
+    let dictLoadMs = swDict.Elapsed.TotalMilliseconds
+    let dictSrc = WamTypes.DictLookupSource(dictData) :> WamTypes.ILookupSource
+
+    let swDictQ = Stopwatch.StartNew()
+    let mutable dictTotal = 0
+    for seed in seeds do
+        dictTotal <- dictTotal + List.length (dictSrc.Lookup(seed))
+    swDictQ.Stop()
+    let dictQueryMs = swDictQ.Elapsed.TotalMilliseconds
+
+    // --- Eager mode (Map) ---
     let swEager = Stopwatch.StartNew()
     let eagerMap = loadCategoryParent env
     let eagerLoadMs = swEager.Elapsed.TotalMilliseconds
@@ -113,6 +126,7 @@ main :-
     printfn \"F# LMDB Benchmark (1000 parents x 8 children = 8000 edges, %d seeds)\" seeds.Length
     printfn \"========================================================================\"
     printfn \"Mode       load_ms   query_ms   total_ms   result\"
+    printfn \"dict       %7.2f   %8.2f   %8.2f   %d\" dictLoadMs dictQueryMs (dictLoadMs + dictQueryMs) dictTotal
     printfn \"eager      %7.2f   %8.2f   %8.2f   %d\" eagerLoadMs eagerQueryMs (eagerLoadMs + eagerQueryMs) eagerTotal
     printfn \"lazy       %7.2f   %8.2f   %8.2f   %d\" lazyLoadMs lazyQueryMs (lazyLoadMs + lazyQueryMs) lazyTotal
     printfn \"cached     %7.2f   %8.2f   %8.2f   %d\" cachedLoadMs cachedQueryMs (cachedLoadMs + cachedQueryMs) cachedTotal
@@ -121,7 +135,7 @@ main :-
     printfn \"total_wall_ms = %.2f\" swTotal.Elapsed.TotalMilliseconds
 
     // Sanity: all modes should produce same result
-    if eagerTotal = lazyTotal && lazyTotal = cachedTotal && cachedTotal = cachedHitTotal then
+    if dictTotal = eagerTotal && eagerTotal = lazyTotal && lazyTotal = cachedTotal && cachedTotal = cachedHitTotal then
         printfn \"RESULT OK (all modes agree)\"
         0
     else
