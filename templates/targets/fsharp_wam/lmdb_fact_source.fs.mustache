@@ -1,0 +1,116 @@
+// LMDB-backed edge lookup for the wam-fsharp runtime.
+//
+// Mirrors the Rust lmdb_fact_source for the Phase 1 sub-db layout:
+//
+//   s2i              (string -> int32)   intern table forward
+//   i2s              (int32  -> string)  intern table reverse
+//   category_parent  (int32 child  -> int32 parent)  DUPSORT
+//   category_child   (int32 parent -> int32 child)   DUPSORT
+//
+// Uses the LightningDB NuGet package (same CLR binding used by the
+// C# lmdb_ingest tool at src/unifyweaver/runtime/csharp/lmdb_ingest).
+//
+// Endianness: int32 keys/values are stored little-endian, matching
+// the streaming ingest pipeline and Phase 1 converter.
+
+module LmdbFactSource
+
+open System
+open LightningDB
+
+/// Decode a 4-byte little-endian int32 from LMDB key/value bytes.
+let private decodeI32 (bytes: ReadOnlySpan<byte>) : int =
+    if bytes.Length >= 4 then
+        BitConverter.ToInt32(bytes)
+    else
+        let buf = Array.zeroCreate<byte> 4
+        bytes.CopyTo(Span<byte>(buf))
+        BitConverter.ToInt32(buf, 0)
+
+/// Encode an int32 as 4-byte little-endian (for LMDB key lookup).
+let encodeI32 (value: int) : byte[] =
+    BitConverter.GetBytes(value)
+
+/// Open the Phase 1 LMDB environment at `lmdbPath`.  Returns the
+/// environment handle; callers use it with the load* helpers below
+/// to materialise facts into the WAM context.
+let openEnv (lmdbPath: string) : LightningEnvironment =
+    let env = new LightningEnvironment(lmdbPath)
+    env.MaxDatabases <- 8
+    env.Open(EnvironmentOpenFlags.ReadOnly ||| EnvironmentOpenFlags.NoLock)
+    env
+
+/// Load the s2i (string->int) intern table into a Map.
+let loadS2I (env: LightningEnvironment) : Map<string, int> =
+    use tx = env.BeginTransaction(TransactionBeginFlags.ReadOnly)
+    let db = tx.OpenDatabase("s2i", new DatabaseConfiguration(Flags = DatabaseOpenFlags.None))
+    use cursor = tx.CreateCursor(db)
+    let mutable result = Map.empty
+    let struct (rc, _, _) = cursor.First()
+    if rc = MDBResultCode.Success then
+        let struct (_, k, v) = cursor.GetCurrent()
+        result <- Map.add (Text.Encoding.UTF8.GetString(k.CopyToNewArray())) (decodeI32 (v.AsSpan())) result
+        let mutable ok = true
+        while ok do
+            let struct (rc2, _, _) = cursor.Next()
+            if rc2 = MDBResultCode.Success then
+                let struct (_, k2, v2) = cursor.GetCurrent()
+                result <- Map.add (Text.Encoding.UTF8.GetString(k2.CopyToNewArray())) (decodeI32 (v2.AsSpan())) result
+            else
+                ok <- false
+    result
+
+/// Load the i2s (int->string) reverse intern table.
+let loadI2S (env: LightningEnvironment) : Map<int, string> =
+    use tx = env.BeginTransaction(TransactionBeginFlags.ReadOnly)
+    let db = tx.OpenDatabase("i2s", new DatabaseConfiguration(Flags = DatabaseOpenFlags.None))
+    use cursor = tx.CreateCursor(db)
+    let mutable result = Map.empty
+    let struct (rc, _, _) = cursor.First()
+    if rc = MDBResultCode.Success then
+        let struct (_, k, v) = cursor.GetCurrent()
+        result <- Map.add (decodeI32 (k.AsSpan())) (Text.Encoding.UTF8.GetString(v.CopyToNewArray())) result
+        let mutable ok = true
+        while ok do
+            let struct (rc2, _, _) = cursor.Next()
+            if rc2 = MDBResultCode.Success then
+                let struct (_, k2, v2) = cursor.GetCurrent()
+                result <- Map.add (decodeI32 (k2.AsSpan())) (Text.Encoding.UTF8.GetString(v2.CopyToNewArray())) result
+            else
+                ok <- false
+    result
+
+/// Load a DUPSORT database (e.g. category_parent) into a Map<int, int list>.
+/// Each key may have multiple values (duplicates); all are collected.
+let loadDupsortRelation (env: LightningEnvironment) (dbName: string) : Map<int, int list> =
+    use tx = env.BeginTransaction(TransactionBeginFlags.ReadOnly)
+    let db = tx.OpenDatabase(dbName, new DatabaseConfiguration(Flags = DatabaseOpenFlags.DuplicatesSort))
+    use cursor = tx.CreateCursor(db)
+    let mutable result : Map<int, int list> = Map.empty
+    let struct (rc, _, _) = cursor.First()
+    if rc = MDBResultCode.Success then
+        let addEntry () =
+            let struct (_, k, v) = cursor.GetCurrent()
+            let key = decodeI32 (k.AsSpan())
+            let value = decodeI32 (v.AsSpan())
+            result <-
+                match Map.tryFind key result with
+                | Some vs -> Map.add key (vs @ [value]) result
+                | None    -> Map.add key [value] result
+        addEntry ()
+        let mutable ok = true
+        while ok do
+            let struct (rc2, _, _) = cursor.Next()
+            if rc2 = MDBResultCode.Success then
+                addEntry ()
+            else
+                ok <- false
+    result
+
+/// Convenience: load category_parent(child->parents) for WcFfiFacts.
+let loadCategoryParent (env: LightningEnvironment) : Map<int, int list> =
+    loadDupsortRelation env "category_parent"
+
+/// Convenience: load category_child(parent->children) for reverse lookup.
+let loadCategoryChild (env: LightningEnvironment) : Map<int, int list> =
+    loadDupsortRelation env "category_child"
