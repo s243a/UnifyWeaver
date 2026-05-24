@@ -1175,6 +1175,39 @@ test(runtime_atom_string_helpers) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+test(runtime_number_char_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_number_char_helper_demo),
+			assertz((user:py_number_char_helper_demo :-
+				number_chars(120, Chars), Chars = ['1', '2', '0'],
+				number_chars(N, ['-', '4', '2']), N = -42,
+				number_chars(F, ['3', '.', '5']), F = 3.5,
+				atom_number('17', AN), AN = 17,
+				atom_number(Atom, 2.5), Atom = '2.5',
+				char_code(a, Code), Code = 97,
+				char_code(Char, 98), Char = b,
+				string_code(2, abc, BCode), BCode = 98,
+				\+ number_chars(_, []),
+				\+ atom_number(not_a_number, _),
+				\+ char_code(ab, _),
+				\+ string_code(4, abc, _))),
+			user:python_parser_tmp_dir('tmp_wam_python_number_char_helpers', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_number_char_helper_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_number_char_helper_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_number_char_helper_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_parser_compiled_runs_reverse_term_to_atom) :-
 	setup_call_cleanup(
 		(   retractall(user:py_term_to_atom_demo),
@@ -1662,6 +1695,10 @@ test(static_runtime_has_lua_baseline_builtins, [nondet]) :-
 		"string_concat/3",
 		"string_length/2",
 		"string_to_atom/2",
+		"number_chars/2",
+		"atom_number/2",
+		"char_code/2",
+		"string_code/3",
 		"var/1",
 		"nonvar/1",
 		"is_list/1",
@@ -1717,6 +1754,10 @@ test(static_runtime_io_emits_output, [nondet]) :-
 	sub_string(Content, _, _, _, "def _execute_atom_concat"),
 	sub_string(Content, _, _, _, "def _execute_atom_length"),
 	sub_string(Content, _, _, _, "def _execute_atom_string"),
+	sub_string(Content, _, _, _, "def _execute_number_chars"),
+	sub_string(Content, _, _, _, "def _execute_atom_number"),
+	sub_string(Content, _, _, _, "def _execute_char_code"),
+	sub_string(Content, _, _, _, "def _execute_string_code"),
 	sub_string(Content, _, _, _, "print()").
 
 :- end_tests(wam_python_builtin_parity_guard).

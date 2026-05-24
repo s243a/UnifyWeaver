@@ -705,6 +705,48 @@ def _list_from_codes(codes: List[int]) -> 'Term':
     return _list_from_terms([Int(code) for code in codes])
 
 
+def _chars_from_list(term: 'Term', state: WamState) -> Optional[List[str]]:
+    items = _term_to_list(term, state)
+    if items is None:
+        return None
+    chars: List[str] = []
+    for item in items:
+        value = deref(item, state)
+        if not isinstance(value, Atom):
+            return None
+        text = _runtime_atom_text(value.name)
+        if len(text) != 1:
+            return None
+        chars.append(text)
+    return chars
+
+
+def _list_from_chars(chars: List[str]) -> 'Term':
+    return _list_from_terms([make_atom(ch) for ch in chars])
+
+
+def _parse_number_text(text: str) -> Optional[Term]:
+    if text == '':
+        return None
+    try:
+        return Int(int(text, 10))
+    except ValueError:
+        pass
+    try:
+        return Float(float(text))
+    except ValueError:
+        return None
+
+
+def _number_text(value: Term, state: WamState) -> Optional[str]:
+    value = deref(value, state)
+    if isinstance(value, Int):
+        return str(value.n)
+    if isinstance(value, Float):
+        return _format_value(value, state)
+    return None
+
+
 def _execute_atom_codes(state: WamState) -> bool:
     atom_term = deref(get_reg(state, 1), state)
     codes_term = deref(get_reg(state, 2), state)
@@ -779,6 +821,58 @@ def _execute_atom_string(state: WamState) -> bool:
     if text is None:
         return False
     return unify(get_reg(state, 1), make_atom(text), state)
+
+
+def _execute_number_chars(state: WamState) -> bool:
+    number_text = _number_text(get_reg(state, 1), state)
+    if number_text is not None:
+        return unify(get_reg(state, 2), _list_from_chars(list(number_text)), state)
+    chars = _chars_from_list(get_reg(state, 2), state)
+    if chars is None:
+        return False
+    parsed = _parse_number_text(''.join(chars))
+    if parsed is None:
+        return False
+    return unify(get_reg(state, 1), parsed, state)
+
+
+def _execute_atom_number(state: WamState) -> bool:
+    atom_term = deref(get_reg(state, 1), state)
+    if not isinstance(atom_term, Var):
+        if not isinstance(atom_term, Atom):
+            return False
+        parsed = _parse_number_text(_runtime_atom_text(atom_term.name))
+        if parsed is None:
+            return False
+        return unify(get_reg(state, 2), parsed, state)
+    text = _number_text(get_reg(state, 2), state)
+    if text is None:
+        return False
+    return unify(get_reg(state, 1), make_atom(text), state)
+
+
+def _execute_char_code(state: WamState) -> bool:
+    char_term = deref(get_reg(state, 1), state)
+    code_term = deref(get_reg(state, 2), state)
+    if isinstance(char_term, Atom):
+        text = _runtime_atom_text(char_term.name)
+        if len(text) != 1:
+            return False
+        return unify(get_reg(state, 2), Int(ord(text)), state)
+    if isinstance(code_term, Int) and 0 <= code_term.n <= 255:
+        return unify(get_reg(state, 1), make_atom(chr(code_term.n)), state)
+    return False
+
+
+def _execute_string_code(state: WamState) -> bool:
+    index = deref(get_reg(state, 1), state)
+    text_term = deref(get_reg(state, 2), state)
+    if not isinstance(index, Int) or not isinstance(text_term, Atom):
+        return False
+    text = _runtime_atom_text(text_term.name)
+    if index.n < 1 or index.n > len(text):
+        return False
+    return unify(get_reg(state, 3), Int(ord(text[index.n - 1])), state)
 
 
 def _execute_append(state: WamState) -> bool:
@@ -1881,6 +1975,14 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         return _execute_atom_length(state)
     if builtin in ('atom_string/2', 'atom_string', 'string_to_atom/2', 'string_to_atom') and arity == 2:
         return _execute_atom_string(state)
+    if builtin in ('number_chars/2', 'number_chars') and arity == 2:
+        return _execute_number_chars(state)
+    if builtin in ('atom_number/2', 'atom_number') and arity == 2:
+        return _execute_atom_number(state)
+    if builtin in ('char_code/2', 'char_code') and arity == 2:
+        return _execute_char_code(state)
+    if builtin in ('string_code/3', 'string_code') and arity == 3:
+        return _execute_string_code(state)
     if builtin in ('read_term_from_atom/2', 'read_term_from_atom_lax/2',
                    'read_term_from_atom', 'read_term_from_atom_lax') and arity == 2:
         return _execute_read_term_from_atom(state, 2, 'fail')
