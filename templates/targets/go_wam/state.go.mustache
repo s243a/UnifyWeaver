@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 )
 
 type TrailEntry struct {
@@ -1455,6 +1456,45 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return false
 		}
 		return true
+	case "char_type/2":
+		charAtom, okChar := vm.deref(arg1).(*Atom)
+		typeAtom, okType := vm.deref(arg2).(*Atom)
+		if !okChar || !okType {
+			return false
+		}
+		runes := []rune(charAtom.Name)
+		if len(runes) != 1 {
+			return false
+		}
+		r := runes[0]
+		switch typeAtom.Name {
+		case "alpha":
+			return unicode.IsLetter(r)
+		case "alnum":
+			return unicode.IsLetter(r) || unicode.IsDigit(r)
+		case "digit":
+			return unicode.IsDigit(r)
+		case "space":
+			return unicode.IsSpace(r)
+		case "white":
+			return r == ' ' || r == '\t'
+		case "upper":
+			return unicode.IsUpper(r)
+		case "lower":
+			return unicode.IsLower(r)
+		case "punct":
+			return unicode.IsPunct(r)
+		case "ascii":
+			return r >= 1 && r <= 127
+		case "csym":
+			return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+		case "csymf":
+			return unicode.IsLetter(r) || r == '_'
+		case "newline":
+			return r == '\n'
+		default:
+			return false
+		}
 
 	case "var/1": return isUnbound(vm.deref(arg1))
 	case "nonvar/1": return !isUnbound(vm.deref(arg1))
