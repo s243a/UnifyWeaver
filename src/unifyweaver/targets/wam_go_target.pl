@@ -463,6 +463,9 @@ wam_go_direct_builtin("compare/3", 3, 'compare/3').
 wam_go_direct_builtin(ground/1, 1, 'ground/1').
 wam_go_direct_builtin('ground/1', 1, 'ground/1').
 wam_go_direct_builtin("ground/1", 1, 'ground/1').
+wam_go_direct_builtin(sub_atom/5, 5, 'sub_atom/5').
+wam_go_direct_builtin('sub_atom/5', 5, 'sub_atom/5').
+wam_go_direct_builtin("sub_atom/5", 5, 'sub_atom/5').
 wam_go_direct_builtin(succ/2, 2, 'succ/2').
 wam_go_direct_builtin('succ/2', 2, 'succ/2').
 wam_go_direct_builtin("succ/2", 2, 'succ/2').

@@ -1210,9 +1210,11 @@ func (vm *WamState) evalArithmetic(v Value) (float64, bool) {
 
 func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	arg1 := vm.getReg(0) // A1
-	var arg2, arg3 Value
+	var arg2, arg3, arg4, arg5 Value
 	if arity >= 2 { arg2 = vm.getReg(1) } // A2
 	if arity >= 3 { arg3 = vm.getReg(2) } // A3
+	if arity >= 4 { arg4 = vm.getReg(3) } // A4
+	if arity >= 5 { arg5 = vm.getReg(4) } // A5
 
 	switch op {
 	case "display/1":
@@ -1426,6 +1428,33 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return vm.Unify(atomArg, internAtom(text.Name))
 		}
 		return false
+	case "sub_atom/5":
+		source, ok := atomNumberText(vm.deref(arg1))
+		if !ok {
+			return false
+		}
+		before, okBefore := vm.deref(arg2).(*Integer)
+		length, okLength := vm.deref(arg3).(*Integer)
+		if !okBefore || !okLength || before.Val < 0 || length.Val < 0 {
+			return false
+		}
+		runes := []rune(source)
+		start := before.Val
+		end := start + length.Val
+		if end > int64(len(runes)) {
+			return false
+		}
+		after := int64(len(runes)) - end
+		sub := string(runes[start:end])
+		mark := vm.TrailLen
+		if !vm.Unify(arg4, &Integer{Val: after}) {
+			return false
+		}
+		if !vm.Unify(arg5, internAtom(sub)) {
+			vm.unwindTrailTo(mark)
+			return false
+		}
+		return true
 
 	case "var/1": return isUnbound(vm.deref(arg1))
 	case "nonvar/1": return !isUnbound(vm.deref(arg1))
