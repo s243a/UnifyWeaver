@@ -898,10 +898,17 @@ def _parse_constant(name: str) -> 'Term':
 
 
 def _constant_term(atom_arg: 'Term') -> 'Term':
-    if isinstance(atom_arg, (Int, Float)):
+    # Preserve already-typed terms verbatim.  The previous behaviour
+    # was to re-parse Atom("42").name through _parse_constant which
+    # promotes any numeric-looking string to Int / Float -- so a
+    # source-level quoted-numeric atom like `'42'` (correctly emitted
+    # by the codegen as Atom("42")) silently became Int(42) at
+    # put_constant time, breaking read_term_from_atom('42', _) and
+    # related uses of quoted-numeric atoms.  The _parse_constant
+    # fallback below is reserved for the WAM-text load path where
+    # atom_arg arrives as a raw string with no type information.
+    if isinstance(atom_arg, (Int, Float, Atom)):
         return atom_arg
-    if isinstance(atom_arg, Atom):
-        return _parse_constant(atom_arg.name)
     return _parse_constant(str(atom_arg))
 
 
