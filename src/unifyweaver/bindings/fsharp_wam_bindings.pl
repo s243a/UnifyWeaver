@@ -458,18 +458,31 @@ fsharp_wam_helpers :-
 // Helper functions
 // ============================================================================
 
-/// Resolve a fact Map for kernel dispatch.  Checks WcLookupSources
-/// first (preferred path after LMDB Phase 2); extracts the inner Map
-/// from EagerLookupSource for zero-cost access, or builds a Map from
-/// DictLookupSource on demand.  Falls back to WcFfiFacts for legacy
-/// compatibility.
+/// Resolve a fact lookup function for kernel dispatch.  Returns
+/// int -> int list, which kernels call directly instead of
+/// Map.tryFind.  This avoids materialising the entire relation
+/// into a Map — critical for lazy/cached modes at large scale
+/// (enwiki 10M edges: Map.add would take ~140s).
+///
+/// Dispatch order:
+///   1. WcLookupSources (ILookupSource.Lookup — works for eager,
+///      lazy cursor, cached two-level, dict)
+///   2. WcFfiFacts (legacy Map<int, int list> path)
+///   3. empty (returns [] for any key)
+let resolveFactLookup (pred: string) (ctx: WamContext) : (int -> int list) =
+    match Map.tryFind pred ctx.WcLookupSources with
+    | Some src -> src.Lookup
+    | None ->
+        match Map.tryFind pred ctx.WcFfiFacts with
+        | Some factMap -> fun key -> Map.tryFind key factMap |> Option.defaultValue []
+        | None -> fun _ -> []
+
+/// Legacy: resolve a fact Map for callers that still need Map<int, int list>.
+/// Prefer resolveFactLookup for new code.
 let resolveFactMap (pred: string) (ctx: WamContext) : Map<int, int list> =
     match Map.tryFind pred ctx.WcLookupSources with
     | Some (:? EagerLookupSource as eager) -> eager.Data
     | Some (:? DictLookupSource as dict) ->
-        // Convert Dictionary to Map for kernel consumption.
-        // One-time cost; callers that only need ILookupSource should
-        // use the Dict path directly for O(1) lookup.
         dict.Dict |> Seq.fold (fun acc kv ->
             Map.add kv.Key kv.Value acc) Map.empty
     | Some _ ->
