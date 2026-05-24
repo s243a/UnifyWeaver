@@ -709,6 +709,7 @@
 (declare apply-append-solution)
 (declare apply-first-foreign-solution)
 (declare list->term)
+(declare fresh-var)
 
 (defn push-member-choice-point [state base-state resume-pc elem rest-list]
   (let [rest* (deref-value (:bindings base-state) rest-list)
@@ -1445,6 +1446,52 @@
           (normalize-literal-atom ctx "[]")
           (reverse items)))
 
+(defn length-count-value [state value]
+  (cond
+    (integer? value) value
+    (string? value) (parse-number-text value)
+    (atom-term? value) (parse-number-text (atom-text state value))
+    :else nil))
+
+(defn generated-list-term [state n]
+  (when (and (integer? n) (not (neg? n)))
+    (loop [s state
+           remaining n
+           items []]
+      (if (zero? remaining)
+        [(list->term (:intern-context s) items) s]
+        (let [[fresh s*] (fresh-var s)]
+          (recur s* (dec remaining) (conj items fresh)))))))
+
+(defn apply-length-solution [state]
+  (let [list-value (deref-value (:bindings state)
+                                (or (reg-get-raw state "A1") ::unbound))
+        out (deref-value (:bindings state)
+                         (or (reg-get-raw state "A2") ::unbound))
+        len (proper-list-length state list-value)
+        out-count (length-count-value state out)]
+    (cond
+      (some? len)
+      (if (logic-var? out)
+        (let [[ok next-state] (unify-values state out len)]
+          (if ok
+            (advance next-state)
+            (backtrack state)))
+        (if (= out-count len)
+          (advance state)
+          (backtrack state)))
+
+      (and (logic-var? list-value) (integer? out-count) (not (neg? out-count)))
+      (if-let [[list-term generated-state] (generated-list-term state out-count)]
+        (let [[ok next-state] (unify-values generated-state list-value list-term)]
+          (if ok
+            (advance next-state)
+            (backtrack state)))
+        (backtrack state))
+
+      :else
+      (backtrack state))))
+
 (defn univ-decompose-term [state term]
   (let [term* (deref-value (:bindings state) term)
         ctx (:intern-context state)]
@@ -2108,17 +2155,7 @@
               (backtrack state)))
 
           "length/2"
-          (let [list-value (deref-value (:bindings state)
-                                        (or (reg-get-raw state "A1") ::unbound))
-                len (proper-list-length state list-value)
-                out (deref-value (:bindings state)
-                                 (or (reg-get-raw state "A2") ::unbound))]
-            (if (some? len)
-              (let [[ok next-state] (unify-values state out len)]
-                (if ok
-                  (advance next-state)
-                  (backtrack state)))
-              (backtrack state)))
+          (apply-length-solution state)
 
           "member/2"
           (let [elem (deref-value (:bindings state)

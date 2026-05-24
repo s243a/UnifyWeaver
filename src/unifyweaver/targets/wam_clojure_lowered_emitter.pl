@@ -765,9 +765,7 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "length/2" ; Op == 'length/2'),
     !,
-    format(atom(Expr),
-           '(let [list-value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound)) len (runtime/proper-list-length ~w list-value) out (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound))] (if (some? len) (let [[ok next-state] (runtime/unify-values ~w out len)] (if ok (runtime/advance next-state) (runtime/backtrack ~w))) (runtime/backtrack ~w)))',
-           [S, S, S, S, S, S, S, S]).
+    format(atom(Expr), '(runtime/apply-length-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "member/2" ; Op == 'member/2'),
