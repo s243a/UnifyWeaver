@@ -189,25 +189,47 @@ let loadDupsortRelationDict (env: LightningEnvironment) (dbName: string)
 ///           return.  L2 miss -> inner.Lookup -> populate L2 + L1,
 ///           return.
 ///
-/// Default capacities: L1 = 4096 (per-thread), L2 = 524288 (shared).
-///
 /// L2 sizing rationale:
-///   - 512k entries ≈ 8 MB at ~16 bytes/entry (int key + short list).
-///     Sufficient for simplewiki (~300k category nodes) and most real
-///     corpora without configuration.
-///   - Full English Wikipedia has ~2M category nodes (9.93M edges).
-///     An enwiki deployment doing many effective-distance queries
-///     should raise L2 to ~2M entries (~80 MB) via the maxL2Entries
-///     parameter: TwoLevelCachedLookupSource(inner, maxL2Entries=2_000_000).
-///     For a single query or small batch, the default 512k is fine —
-///     only the visited fraction of the graph occupies cache.
+///   - Default capacity is computed at runtime from available memory
+///     using the same formula as Haskell's lmdb_fact_source:
+///       available = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes
+///       budget    = max(0, min(available/2, available - 500MB))
+///       capacity  = roundDownPow2(clamp(budget / 32, 1024, 1048576))
+///   - On a typical 8 GB system: budget ≈ 3.5 GB, capacity = 1M entries
+///   - On a 2 GB system: budget ≈ 500 MB, capacity = 1M (capped)
+///   - On a 1 GB system: budget ≈ 0, capacity = 1024 (floor)
+///   - For full English Wikipedia (~2M category nodes, 9.93M edges):
+///     override with maxL2Entries = 2_000_000 for heavy-batch
+///     workloads. The default 1M cap covers simplewiki + most corpora.
 ///   - ConcurrentDictionary grows lazily; no upfront allocation.
 ///     The cap only limits inserts once reached.
+
+/// Compute L2 capacity from available system memory.  Mirrors Haskell's
+/// defaultL2Capacity: min(half available, available - 500MB headroom),
+/// divided by 32 bytes/entry, clamped to [1024, 1048576], rounded down
+/// to a power of two.
+let private defaultL2CapacityFromMemory () : int =
+    let available =
+        try
+            let info = System.GC.GetGCMemoryInfo()
+            int64 info.TotalAvailableMemoryBytes
+        with _ -> 1024L * 1024L * 1024L  // fallback: 1 GB
+    let bufferBytes = 500L * 1024L * 1024L
+    let halfBytes = available / 2L
+    let budget = max 0L (min halfBytes (available - bufferBytes))
+    let bytesPerEntry = 32L
+    let rawEntries = int (budget / bytesPerEntry)
+    let bounded = max 1024 (min 1048576 rawEntries)
+    // Round down to nearest power of two.
+    let mutable p = 1
+    while p * 2 <= bounded do p <- p * 2
+    p
+
 type TwoLevelCachedLookupSource(inner: WamTypes.ILookupSource,
                                  ?l1Capacity: int,
                                  ?maxL2Entries: int) =
     let l1Cap = defaultArg l1Capacity 4096
-    let l2Max = defaultArg maxL2Entries 524288
+    let l2Max = defaultArg maxL2Entries (defaultL2CapacityFromMemory ())
     let l1Mask = l1Cap - 1
     let l2 = System.Collections.Concurrent.ConcurrentDictionary<int, int list>()
     let mutable l2Count = 0
