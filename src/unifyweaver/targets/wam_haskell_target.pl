@@ -2944,10 +2944,127 @@ stepST !ctx regs !pw (CallForeign pred _arity) = do
       forM_ (IM.toList (wsRegs ws'''')) $ \\(k, v) -> writeArray regs k v
       return (Just (wamStateToPure ws''''))
 
+-- length/2: list length query/check
+stepST !ctx regs !pw (BuiltinCall "length/2" _) = do
+  v1 <- readArray regs 1
+  let !listVal = derefVar (pwBindings pw) v1
+  case listVal of
+    VList items -> do
+      let len = length items
+      v2 <- readArray regs 2
+      let !lhs = derefVar (pwBindings pw) v2
+      case lhs of
+        Unbound vid -> do
+          let val = Integer len
+          writeArray regs 2 val
+          return $ Just pw { pwPC = pwPC pw + 1
+                           , pwBindings = IM.insert vid val (pwBindings pw)
+                           , pwTrail = TrailEntry vid (IM.lookup vid (pwBindings pw)) : pwTrail pw
+                           , pwTrailLen = pwTrailLen pw + 1
+                           }
+        Integer n | n == len -> return $ Just pw { pwPC = pwPC pw + 1 }
+        _ -> return Nothing
+    _ -> return Nothing
+
+-- Arg n tReg aReg: extract Nth argument from compound
+stepST _ regs !pw (Arg n tReg aReg) | n >= 1 = do
+  vT <- readArray regs tReg
+  let !tVal = derefVar (pwBindings pw) vT
+      mElem = case tVal of
+        Str _ args | n <= length args -> Just (args !! (n - 1))
+        VList (x : _) | n == 1 -> Just x
+        VList (_ : xs) | n == 2 -> Just (VList xs)
+        _ -> Nothing
+  case mElem of
+    Nothing -> return Nothing
+    Just el -> do
+      vA <- readArray regs aReg
+      let !aVal = derefVar (pwBindings pw) vA
+      case aVal of
+        Unbound vid -> do
+          writeArray regs aReg el
+          return $ Just pw { pwPC = pwPC pw + 1
+                           , pwBindings = IM.insert vid el (pwBindings pw)
+                           , pwTrail = TrailEntry vid (IM.lookup vid (pwBindings pw)) : pwTrail pw
+                           , pwTrailLen = pwTrailLen pw + 1
+                           }
+        _ | aVal == el -> return $ Just pw { pwPC = pwPC pw + 1 }
+        _ -> return Nothing
+
+stepST _ _ _ (Arg _ _ _) = return Nothing
+
+-- NotMemberList: specialized \\+ member(X, L)
+stepST _ regs !pw (NotMemberList xReg lReg) = do
+  vX <- readArray regs xReg
+  vL <- readArray regs lReg
+  let !x = derefVar (pwBindings pw) vX
+      !l = derefVar (pwBindings pw) vL
+      found = case l of
+        VList items -> any (\\item -> derefVar (pwBindings pw) item == x) items
+        _ -> False
+  if found then return Nothing else return $ Just pw { pwPC = pwPC pw + 1 }
+
+-- NotMemberConstAtoms: specialized \\+ member(X, [a,b,c])
+stepST _ regs !pw (NotMemberConstAtoms xReg atomIds) = do
+  vX <- readArray regs xReg
+  let !x = derefVar (pwBindings pw) vX
+  case x of
+    Atom aid   -> if aid `elem` atomIds then return Nothing
+                  else return $ Just pw { pwPC = pwPC pw + 1 }
+    Unbound _  -> return Nothing
+    Ref _      -> return Nothing
+    _          -> return $ Just pw { pwPC = pwPC pw + 1 }
+
+-- BuildEmptySet: write empty IntSet to register
+stepST _ regs !pw (BuildEmptySet r) = do
+  writeArray regs r (VSet IS.empty)
+  return $ Just pw { pwPC = pwPC pw + 1 }
+
+-- SetInsert: IntSet insert
+stepST _ regs !pw (SetInsert eReg inReg outReg) = do
+  vE <- readArray regs eReg
+  vIn <- readArray regs inReg
+  let !e = derefVar (pwBindings pw) vE
+      !inSet = derefVar (pwBindings pw) vIn
+  case (e, inSet) of
+    (Atom aid, VSet s0) -> do
+      writeArray regs outReg (VSet (IS.insert aid s0))
+      return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return Nothing
+
+-- NotMemberSet: IntSet membership check
+stepST _ regs !pw (NotMemberSet eReg setReg) = do
+  vE <- readArray regs eReg
+  vS <- readArray regs setReg
+  let !e = derefVar (pwBindings pw) vE
+      !s = derefVar (pwBindings pw) vS
+  case (e, s) of
+    (Atom aid, VSet set) ->
+      if IS.member aid set then return Nothing
+      else return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return Nothing
+
+-- PutStructureDyn: dynamic structure (functor/arity from registers)
+stepST _ regs !pw (PutStructureDyn nameReg arityReg targetReg) = do
+  mvN <- getRegST regs nameReg pw
+  mvA <- getRegST regs arityReg pw
+  case (mvN, mvA) of
+    (Just (Atom fnId), Just (Integer arity)) | arity >= 0 ->
+      return $ Just pw { pwPC = pwPC pw + 1
+                       , pwBuilder = BuildStruct fnId targetReg (fromIntegral arity) [] }
+    _ -> return Nothing
+
+-- Parallel variants delegate to their sequential counterparts
+stepST !ctx regs !pw (ParTryMeElse label) = stepST ctx regs pw (TryMeElse label)
+stepST !ctx regs !pw (ParRetryMeElse label) = stepST ctx regs pw (RetryMeElse label)
+stepST !ctx regs !pw ParTrustMe = stepST ctx regs pw TrustMe
+stepST !ctx regs !pw (ParTryMeElsePc pc) = stepST ctx regs pw (TryMeElsePc pc)
+stepST !ctx regs !pw (ParRetryMeElsePc pc) = stepST ctx regs pw (RetryMeElsePc pc)
+
 -- Fallback: delegate to pure step via bridge (freeze/thaw per call).
--- Handles: member/2, \\+/1, length/2, aggregates, parallel fork,
--- =../2, copy_term/2, functor/3, arg/3, NotMember*, BuildEmptySet,
--- SetInsert, PutStructureDyn, CallFactStream.
+-- Handles: member/2, \\+/1, aggregates (BeginAggregate, EndAggregate),
+-- SwitchOnConstant (label-based), functor/3, =../2, copy_term/2,
+-- CallFactStream.
 stepST !ctx regs !pw instr = do
   regMap <- freezeRegsToIntMap regs
   let s = pureToWamState pw regMap
@@ -3880,6 +3997,11 @@ generate_merged_code_build(DetectedKernels, Options, Code) :-
     ).
 
 generate_query_body(Options, QueryBody) :-
+    % Phase 3: select run function based on register_mode option
+    (   member(register_mode(st_array), Options)
+    ->  RunFn = 'runMutableRegs'
+    ;   RunFn = 'run'
+    ),
     % Emit a PURE expression so the seed loop can use `parMap rdeepseq`.
     % We use explicit braces and semicolons on the `let` to avoid Haskell's
     % column-alignment layout rules (the template renderer doesn't re-indent
@@ -3888,8 +4010,8 @@ generate_query_body(Options, QueryBody) :-
     ->  % Optimized: call WAM-compiled aggregation predicate per seed.
         format(atom(QueryPred1), '~w', [QueryPred]),
         format(atom(QueryBody),
-'let { wsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "~w" mergedLabels, wsRegs = IM.fromList [ (1, Atom (iAtom cat)), (2, Atom (iAtom root)), (3, Unbound wsVarId) ], wsCP = 0 } ; !result = case run ctx s0 of { Just s1 -> case IM.lookup wsVarId (wsBindings s1) of { Just v -> case extractDouble fullInternTable (derefVar (wsBindings s1) v) of { Just ws -> ws ; Nothing -> 0.0 } ; Nothing -> 0.0 } ; Nothing -> 0.0 } } in (cat, result)',
-            [QueryPred1])
+'let { wsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "~w" mergedLabels, wsRegs = IM.fromList [ (1, Atom (iAtom cat)), (2, Atom (iAtom root)), (3, Unbound wsVarId) ], wsCP = 0 } ; !result = case ~w ctx s0 of { Just s1 -> case IM.lookup wsVarId (wsBindings s1) of { Just v -> case extractDouble fullInternTable (derefVar (wsBindings s1) v) of { Just ws -> ws ; Nothing -> 0.0 } ; Nothing -> 0.0 } ; Nothing -> 0.0 } } in (cat, result)',
+            [QueryPred1, RunFn])
     ;   member(use_ffi(true), Options)
     ->  % FFI path: call executeForeign directly instead of running WAM code.
         % When the query predicate has an FFI kernel, the WAM code's internal
