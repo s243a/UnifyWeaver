@@ -4845,6 +4845,11 @@ generate_program_fs(_Predicates, DetectedKernels, Options, Code) :-
     pairs_keys(DetectedKernels, ForeignKeys),
     format_foreign_preds_fs(ForeignKeys, ForeignPredsStr),
     option(module_name(_ModName), Options, 'wam-fsharp-bench'),
+    %% Phase 3: generate WcLookupSources expression
+    generate_lookup_sources_expr_fs(Options, LookupSourcesExpr),
+    %% Conditional module opens
+    (   option(csr_path(_), Options) -> CsrOpen = '\nopen CsrReader' ; CsrOpen = '' ),
+    (   option(lmdb_path(_), Options) -> LmdbOpen = '\nopen LmdbFactSource' ; LmdbOpen = '' ),
     format(string(Code),
 'module Program
 
@@ -4853,7 +4858,7 @@ open System.Diagnostics
 open WamTypes
 open WamRuntime
 open Predicates
-open Lowered
+open Lowered~w~w
 
 // -- TSV loading helpers --------------------------------------------------
 
@@ -4957,7 +4962,7 @@ let main argv =
           WcAtomDeintern      = atomDeintern
           WcForeignConfig     = Map.ofList [ ("max_depth", 10) ]
           WcLoweredPredicates = loweredPredicates
-          WcLookupSources   = Map.empty
+          WcLookupSources   = ~w
       WcCancellationToken = None }
 
     let emptyState =
@@ -5046,13 +5051,37 @@ let main argv =
         lastQueryMs seedCats.Length (totalSolutions / numReps) numReps
     printfn "total_ms=%d" totalMs
     0
-', [ForeignPredsStr]).
+', [LmdbOpen, CsrOpen, ForeignPredsStr, LookupSourcesExpr]).
 
 format_foreign_preds_fs([], '').
 format_foreign_preds_fs(Keys, Str) :-
     Keys \= [],
     maplist([Key, Q]>>(format(atom(Q), '"~w"', [Key])), Keys, Quoted),
     atomic_list_concat(Quoted, '; ', Str).
+
+%% generate_lookup_sources_expr_fs(+Options, -Expr)
+%  Generate the F# expression for WcLookupSources based on configured
+%  data sources (CSR, LMDB, or Map.empty).
+generate_lookup_sources_expr_fs(Options, Expr) :-
+    findall(Entry, lookup_source_entry_fs(Options, Entry), Entries),
+    (   Entries = []
+    ->  Expr = 'Map.empty'
+    ;   atomic_list_concat(Entries, '; ', EntriesStr),
+        format(atom(Expr), 'Map.ofList [ ~w ]', [EntriesStr])
+    ).
+
+lookup_source_entry_fs(Options, Entry) :-
+    option(csr_path(CsrPath), Options),
+    option(csr_relation(Rel), Options, category_child),
+    format(atom(Entry),
+        '("~w", CsrReader.CsrLookupSource("~w", "~w") :> ILookupSource)',
+        [Rel, CsrPath, Rel]).
+
+lookup_source_entry_fs(Options, Entry) :-
+    option(csr_parent_path(CsrParentPath), Options),
+    format(atom(Entry),
+        '("category_parent", CsrReader.CsrLookupSource("~w", "category_parent") :> ILookupSource)',
+        [CsrParentPath]).
 
 %% generate_fsproj(+ModName, +Options, -Code)
 generate_fsproj(ModName, Options, Code) :-
