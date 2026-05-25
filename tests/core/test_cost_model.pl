@@ -86,6 +86,9 @@ test(test_reverse_index_auto_defaults_none).
 test(test_reverse_index_auto_descendant_uses_existing_artifact).
 test(test_reverse_index_csr_normalizes_defaults).
 test(test_reverse_index_csr_auto_index_backend_keeps_sorted_array).
+test(test_reverse_index_csr_auto_index_backend_selects_lmdb_offset_when_amortized).
+test(test_reverse_index_csr_auto_index_backend_keeps_sorted_array_when_build_not_amortized).
+test(test_reverse_index_csr_auto_index_backend_keeps_sorted_array_when_memory_does_not_fit).
 test(test_reverse_index_csr_accepts_lmdb_offset_index_backend).
 test(test_reverse_index_csr_runtime_auto_direct_io_when_supported).
 test(test_reverse_index_csr_runtime_auto_buffered_when_direct_io_not_verified).
@@ -396,6 +399,80 @@ test_reverse_index_csr_auto_index_backend_keeps_sorted_array :-
         block_size_edges(0)
     ]),
     (   ReverseIndex = Expected
+    ->  pass(Test)
+    ;   fail_test(Test, format_atom("got reverse_index=~w", [ReverseIndex]))
+    ).
+
+test_reverse_index_csr_auto_index_backend_selects_lmdb_offset_when_amortized :-
+    Test = 'validate_reverse_index_option csr auto index_backend selects lmdb_offset when savings amortize build cost',
+    validate_reverse_index_option(
+        csr([
+            index_backend(auto),
+            expected_child_lookups_per_query(500),
+            expected_query_count_per_artifact(100),
+            sorted_array_lookup_ms_per_1000(4.418097),
+            lmdb_offset_lookup_ms_per_1000(2.961144),
+            sorted_array_build_seconds(0.331824),
+            lmdb_offset_build_seconds(0.381317),
+            lmdb_offset_bytes(2113536),
+            available_memory_bytes(1073741824)
+        ]),
+        ReverseIndex
+    ),
+    Expected = csr([
+        phase(planning_only),
+        id_encoding(int32_le),
+        ordering(parent_sort),
+        index_backend(lmdb_offset),
+        io_policy(buffered_pread_drop),
+        cache_bytes(0),
+        block_size_edges(0)
+    ]),
+    (   ReverseIndex = Expected
+    ->  pass(Test)
+    ;   fail_test(Test, format_atom("got reverse_index=~w", [ReverseIndex]))
+    ).
+
+test_reverse_index_csr_auto_index_backend_keeps_sorted_array_when_build_not_amortized :-
+    Test = 'validate_reverse_index_option csr auto index_backend keeps sorted_array when query reuse is too low',
+    validate_reverse_index_option(
+        csr([
+            index_backend(auto),
+            expected_child_lookups_per_query(100),
+            expected_query_count_per_artifact(1),
+            sorted_array_lookup_ms_per_1000(4.418097),
+            lmdb_offset_lookup_ms_per_1000(2.961144),
+            sorted_array_build_seconds(0.331824),
+            lmdb_offset_build_seconds(0.381317),
+            lmdb_offset_bytes(2113536),
+            available_memory_bytes(1073741824)
+        ]),
+        ReverseIndex
+    ),
+    (   ReverseIndex = csr(Opts),
+        memberchk(index_backend(sorted_array), Opts)
+    ->  pass(Test)
+    ;   fail_test(Test, format_atom("got reverse_index=~w", [ReverseIndex]))
+    ).
+
+test_reverse_index_csr_auto_index_backend_keeps_sorted_array_when_memory_does_not_fit :-
+    Test = 'validate_reverse_index_option csr auto index_backend keeps sorted_array when lmdb_offset exceeds memory budget',
+    validate_reverse_index_option(
+        csr([
+            index_backend(auto),
+            expected_child_lookups_per_query(500),
+            expected_query_count_per_artifact(100),
+            sorted_array_lookup_ms_per_1000(4.418097),
+            lmdb_offset_lookup_ms_per_1000(2.961144),
+            sorted_array_build_seconds(0.331824),
+            lmdb_offset_build_seconds(0.381317),
+            lmdb_offset_bytes(2113536),
+            available_memory_bytes(1048576)
+        ]),
+        ReverseIndex
+    ),
+    (   ReverseIndex = csr(Opts),
+        memberchk(index_backend(sorted_array), Opts)
     ->  pass(Test)
     ;   fail_test(Test, format_atom("got reverse_index=~w", [ReverseIndex]))
     ).
