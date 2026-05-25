@@ -189,13 +189,16 @@ let loadDupsortRelationDict (env: LightningEnvironment) (dbName: string)
 ///           return.  L2 miss -> inner.Lookup -> populate L2 + L1,
 ///           return.
 ///
-/// Default capacities: L1 = 4096 (per-thread), L2 = 65536 (shared).
-/// Matches Haskell's lmdb_cache_mode(two_level) defaults.
+/// Default capacities: L1 = 4096 (per-thread), L2 = 524288 (shared).
+/// L2 at 512k entries (~8 MB) fits the entire enwiki category graph
+/// (~300k nodes) with headroom. Memory cost is trivial relative to
+/// the LMDB mmap; the trade-off favors keeping nodes cached once
+/// visited rather than re-opening cursors on eviction boundaries.
 type TwoLevelCachedLookupSource(inner: WamTypes.ILookupSource,
                                  ?l1Capacity: int,
                                  ?maxL2Entries: int) =
     let l1Cap = defaultArg l1Capacity 4096
-    let l2Max = defaultArg maxL2Entries 65536
+    let l2Max = defaultArg maxL2Entries 524288
     let l1Mask = l1Cap - 1
     let l2 = System.Collections.Concurrent.ConcurrentDictionary<int, int list>()
     let mutable l2Count = 0
