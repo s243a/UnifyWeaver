@@ -198,9 +198,25 @@ logic — test with pure, ship with mutable.
 ### Expected speedup
 
 - Register operations dominate the hot loop (5-10 per WAM step)
-- Switching from IntMap to array: ~5-8× speedup on register-heavy code
-- Overall query: 107 ms → ~15-25 ms (approaching F#'s 11 ms)
+- Switching from IntMap to array: ~5-8x speedup on register-heavy code
+- Overall query: 107 ms -> ~15-25 ms (approaching F#'s 11 ms)
 - With parallelism on top: would match or beat F#
+
+### Proof-of-concept benchmark results
+
+Standalone microbenchmark comparing register store implementations
+(`examples/benchmark/haskell_register_bench/Main.hs`):
+500k steps, 200 registers, 7 ops/step, choice point every 50 steps.
+
+| Implementation | median_ms | speedup | notes |
+|---|---:|---|---|
+| IntMap (current) | 178.3 | 1.0x | O(log n) per op, O(1) snapshot |
+| STArray (proposed) | 22.6 | 7.9x | O(1) per op, pure outside ST |
+| IOArray | 22.6 | 7.9x | O(1) per op, IO monad |
+| Array (//) | 281.1 | 0.63x | O(1) read, O(n) write -- worse |
+
+**STArray is the recommended approach**: 7.9x speedup with pure
+referential transparency (safe for parallel sparking via `runST`).
 
 ### Risk
 
@@ -208,8 +224,19 @@ logic — test with pure, ship with mutable.
 - Choice point save/restore semantics must be carefully preserved
 - The persistent IntMap advantage (O(1) snapshot) is lost; need
   explicit Array.copy on every TryMeElse
+- 90+ register access sites in the code generator need updating
 
 ### Estimated effort: 2-3 sessions
+
+### Implementation approach
+
+1. Wrap `step` execution in `runST` so the outer interface stays pure
+2. Use `STArray s Int Value` for `wsRegs` inside the ST block
+3. `freeze` for choice point snapshots (O(n) copy, n=200)
+4. `thaw + copyArray` for backtrack restore
+5. The `run` loop and `backtrack` move inside the same ST block
+6. The `MonadReg` typeclass approach allows testing with both pure
+   (IntMap) and mutable (STArray) backends
 
 ---
 
@@ -220,7 +247,7 @@ Phase 1: F# CSR reader          [DONE]
     |
 Phase 2: F# parallel seeds      [DONE]
     |
-Phase 3: Haskell mutable regs   [next -- separate sessions, independent of 1+2]
+Phase 3: Haskell mutable regs   [proof-of-concept done, full conversion next]
 ```
 
 Phase 3 is independent -- can be started anytime, doesn't depend on
