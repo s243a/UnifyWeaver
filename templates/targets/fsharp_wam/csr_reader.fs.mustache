@@ -5,6 +5,10 @@
 //   category_child.csr.val   int32_le child IDs (4 bytes each)
 //   category_child.csr.meta  JSON manifest (format: unifyweaver.reverse_csr.v1)
 //
+// Supports two index backends:
+//   sorted_array: binary search on the .idx file (default)
+//   lmdb_offset: O(1) lookup via companion LMDB offset index
+//
 // Implements ILookupSource for reverse child-edge lookup (parent -> children).
 // Plugs into the same WcLookupSources ecosystem as LmdbCursorLookup and
 // TwoLevelCachedLookupSource.
@@ -36,6 +40,25 @@ let loadIdx (idxPath: string) : CsrIdxRecord array =
           OffsetEdges = int64 (BitConverter.ToUInt64(data, off + 4))
           CountEdges = int (BitConverter.ToUInt32(data, off + 12)) })
 
+/// Read children from the .val file at the given offset.
+let private readChildren (valStream: FileStream) (valLock: obj)
+                         (offsetEdges: int64) (countEdges: int) : int list =
+    if countEdges = 0 then []
+    else
+        let byteOffset = offsetEdges * 4L
+        let byteCount = countEdges * 4
+        let buffer = Array.zeroCreate<byte> byteCount
+        lock valLock (fun () ->
+            valStream.Seek(byteOffset, SeekOrigin.Begin) |> ignore
+            let mutable totalRead = 0
+            while totalRead < byteCount do
+                let n = valStream.Read(buffer, totalRead, byteCount - totalRead)
+                if n = 0 then failwith "CSR values file ended before full child slice"
+                totalRead <- totalRead + n
+        )
+        [ for j in 0 .. countEdges - 1 ->
+            BitConverter.ToInt32(buffer, j * 4) ]
+
 /// CSR-backed child lookup implementing ILookupSource.
 ///
 /// Index: loaded into memory at construction (small -- 16 bytes per parent).
@@ -61,22 +84,27 @@ type CsrLookupSource(artifactDir: string) =
         if enc <> "int32_le" then
             failwithf "unsupported CSR id_encoding: %s" enc
 
+    let indexBackend =
+        if root.TryGetProperty("index_backend") |> fst then
+            root.GetProperty("index_backend").GetString()
+        else "sorted_array"
+
     let idxPath = Path.Combine(artifactDir, root.GetProperty("index_path").GetString())
     let valPath = Path.Combine(artifactDir, root.GetProperty("values_path").GetString())
     let idx = loadIdx idxPath
     let valStream = new FileStream(valPath, FileMode.Open, FileAccess.Read, FileShare.Read)
     let valLock = obj()
 
-    /// Binary search for parent ID in the sorted index. Returns index or -1.
-    let binarySearch (parent: int) : int =
+    /// Binary search for parent ID in the sorted index. Returns (offset, count) or None.
+    let binarySearchLookup (parent: int) : (int64 * int) option =
         let mutable lo = 0
         let mutable hi = idx.Length - 1
-        let mutable result = -1
+        let mutable result = None
         while lo <= hi do
             let mid = lo + (hi - lo) / 2
             let midParent = idx.[mid].Parent
             if midParent = parent then
-                result <- mid
+                result <- Some (idx.[mid].OffsetEdges, idx.[mid].CountEdges)
                 lo <- hi + 1
             elif midParent < parent then
                 lo <- mid + 1
@@ -84,8 +112,65 @@ type CsrLookupSource(artifactDir: string) =
                 hi <- mid - 1
         result
 
+    /// LMDB offset index lookup (when index_backend = "lmdb_offset").
+    /// Opens the companion LMDB and looks up the parent key.
+    /// Value format: uint64_le offset_edges (8) + uint32_le count_edges (4) = 12 bytes.
+    let lmdbOffsetEnv =
+        if indexBackend = "lmdb_offset" then
+            let offsetPath =
+                if root.TryGetProperty("offset_index_path") |> fst then
+                    Path.Combine(artifactDir, root.GetProperty("offset_index_path").GetString())
+                else
+                    Path.Combine(artifactDir, "category_child.csr.offsets.lmdb")
+            if Directory.Exists(offsetPath) then
+                let env = new LightningDB.LightningEnvironment(offsetPath)
+                env.MaxDatabases <- 2
+                env.Open(LightningDB.EnvironmentOpenFlags.ReadOnly ||| LightningDB.EnvironmentOpenFlags.NoLock)
+                Some env
+            else None
+        else None
+
+    let lmdbOffsetDb =
+        match lmdbOffsetEnv with
+        | Some env ->
+            let dbName =
+                if root.TryGetProperty("offset_index_database") |> fst then
+                    root.GetProperty("offset_index_database").GetString()
+                else "offsets"
+            use tx = env.BeginTransaction(LightningDB.TransactionBeginFlags.ReadOnly)
+            let db = tx.OpenDatabase(dbName, new LightningDB.DatabaseConfiguration(Flags = LightningDB.DatabaseOpenFlags.None))
+            tx.Commit()
+            Some db
+        | None -> None
+
+    let lmdbOffsetLookup (parent: int) : (int64 * int) option =
+        match lmdbOffsetEnv, lmdbOffsetDb with
+        | Some env, Some db ->
+            use tx = env.BeginTransaction(LightningDB.TransactionBeginFlags.ReadOnly)
+            use cursor = tx.CreateCursor(db)
+            let keyBytes = BitConverter.GetBytes(parent)
+            let struct (rc, _, _) = cursor.SetKey(keyBytes)
+            if rc <> LightningDB.MDBResultCode.Success then None
+            else
+                let struct (_, _, v) = cursor.GetCurrent()
+                let vBytes = v.CopyToNewArray()
+                if vBytes.Length >= 12 then
+                    let offsetEdges = int64 (BitConverter.ToUInt64(vBytes, 0))
+                    let countEdges = int (BitConverter.ToUInt32(vBytes, 8))
+                    Some (offsetEdges, countEdges)
+                else None
+        | _ -> None
+
+    /// Dispatch to the appropriate index backend.
+    let lookupOffsetCount (parent: int) : (int64 * int) option =
+        if indexBackend = "lmdb_offset" then
+            lmdbOffsetLookup parent
+        else
+            binarySearchLookup parent
+
     member _.ParentCount = root.GetProperty("parent_count").GetInt32()
     member _.EdgeCount = root.GetProperty("edge_count").GetInt32()
+    member _.IndexBackend = indexBackend
 
     /// List all parent IDs in the index (sorted).
     member _.Parents () : int array =
@@ -93,30 +178,18 @@ type CsrLookupSource(artifactDir: string) =
 
     interface WamTypes.ILookupSource with
         member _.Lookup(key: int) : int list =
-            let i = binarySearch key
-            if i < 0 then []
-            else
-                let record = idx.[i]
-                let byteOffset = record.OffsetEdges * 4L
-                let byteCount = record.CountEdges * 4
-                if byteCount = 0 then []
-                else
-                    let buffer = Array.zeroCreate<byte> byteCount
-                    lock valLock (fun () ->
-                        valStream.Seek(byteOffset, SeekOrigin.Begin) |> ignore
-                        let mutable totalRead = 0
-                        while totalRead < byteCount do
-                            let n = valStream.Read(buffer, totalRead, byteCount - totalRead)
-                            if n = 0 then failwith "CSR values file ended before full child slice"
-                            totalRead <- totalRead + n
-                    )
-                    [ for j in 0 .. record.CountEdges - 1 ->
-                        BitConverter.ToInt32(buffer, j * 4) ]
+            match lookupOffsetCount key with
+            | None -> []
+            | Some (offsetEdges, countEdges) ->
+                readChildren valStream valLock offsetEdges countEdges
 
     interface IDisposable with
         member _.Dispose() =
             valStream.Dispose()
             meta.Dispose()
+            match lmdbOffsetEnv with
+            | Some env -> env.Dispose()
+            | None -> ()
 
 /// Open a CSR artifact directory and return a CsrLookupSource.
 let openCsr (artifactDir: string) : CsrLookupSource =

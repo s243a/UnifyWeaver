@@ -5058,13 +5058,20 @@ format_foreign_preds_fs(Keys, Str) :-
 generate_fsproj(ModName, Options, Code) :-
     (   option(lmdb_path(_), Options)
     ->  LmdbCompile  = '\n    <Compile Include="LmdbFactSource.fs" />',
-        LmdbPackage  = '\n  <ItemGroup>\n    <PackageReference Include="LightningDB" Version="0.21.0" />\n  </ItemGroup>\n'
+        NeedLightningDB = true
     ;   LmdbCompile  = '',
-        LmdbPackage  = ''
+        NeedLightningDB = false
     ),
     (   option(csr_path(_), Options)
-    ->  CsrCompile = '\n    <Compile Include="CsrReader.fs" />'
-    ;   CsrCompile = ''
+    ->  CsrCompile = '\n    <Compile Include="CsrReader.fs" />',
+        NeedLightningDBForCsr = true
+    ;   CsrCompile = '',
+        NeedLightningDBForCsr = false
+    ),
+    %% Include LightningDB if either LMDB or CSR needs it
+    (   (NeedLightningDB = true ; NeedLightningDBForCsr = true)
+    ->  LmdbPackage = '\n  <ItemGroup>\n    <PackageReference Include="LightningDB" Version="0.21.0" />\n  </ItemGroup>\n'
+    ;   LmdbPackage = ''
     ),
     format(string(Code),
 '<Project Sdk="Microsoft.NET.Sdk">
