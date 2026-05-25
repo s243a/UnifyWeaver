@@ -189,13 +189,105 @@ let loadDupsortRelationDict (env: LightningEnvironment) (dbName: string)
 ///           return.  L2 miss -> inner.Lookup -> populate L2 + L1,
 ///           return.
 ///
-/// Default capacities: L1 = 4096 (per-thread), L2 = 65536 (shared).
-/// Matches Haskell's lmdb_cache_mode(two_level) defaults.
+/// L2 sizing: controlled via l2CapacitySpec string or maxL2Entries int.
+///
+///   Spec string     Resolves to     Use case
+///   ─────────────   ─────────────   ─────────────────────────────────
+///   "auto"          memory formula  Default — adapts to system RAM
+///   "unlimited"     Int32.MaxValue  Never cap; memory unconstrained
+///   "tiny" / "dev"  4,096 entries   Testing / development
+///   "small"         ~262k (8 MB)    Small corpora, constrained memory
+///   "medium"        ~2.6M (80 MB)   Most production workloads
+///   "large"         ~26M (800 MB)   Very large corpora
+///   "simplewiki"    300k entries    Simple English Wikipedia
+///   "enwiki"        2M entries      Full English Wikipedia
+///   "80mb"          byte budget/32  Explicit byte budget
+///   "500000"        500k entries    Explicit entry count
+///
+/// Default "auto" formula (matches Haskell lmdb_fact_source):
+///   available = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes
+///   budget    = max(0, min(available/2, available - 500MB))
+///   capacity  = roundDownPow2(clamp(budget / 32, 1024, 1048576))
+///
+/// ConcurrentDictionary grows lazily; no upfront allocation.
+/// The cap only limits inserts once reached.
+
+/// Compute L2 capacity from available system memory.  Mirrors Haskell's
+/// defaultL2Capacity: min(half available, available - 500MB headroom),
+/// divided by 32 bytes/entry, clamped to [1024, 1048576], rounded down
+/// to a power of two.
+let private l2CapacityFromMemory () : int =
+    let available =
+        try
+            let info = System.GC.GetGCMemoryInfo()
+            int64 info.TotalAvailableMemoryBytes
+        with _ -> 1024L * 1024L * 1024L  // fallback: 1 GB
+    let bufferBytes = 500L * 1024L * 1024L
+    let halfBytes = available / 2L
+    let budget = max 0L (min halfBytes (available - bufferBytes))
+    let bytesPerEntry = 32L
+    let rawEntries = int (budget / bytesPerEntry)
+    let bounded = max 1024 (min 1048576 rawEntries)
+    let mutable p = 1
+    while p * 2 <= bounded do p <- p * 2
+    p
+
+/// Compute L2 capacity from a byte budget (e.g. 8MB, 80MB).
+/// Divides by 32 bytes/entry, floors at 1024.
+let private l2CapacityFromBytes (bytes: int64) : int =
+    max 1024 (int (bytes / 32L))
+
+/// Named presets: corpus sizes and T-shirt sizes.
+let private l2CapacityPreset (name: string) : int =
+    match name.ToLowerInvariant() with
+    // Corpus presets
+    | "enwiki"     -> 2_000_000   // full English Wikipedia (~2M categories)
+    | "simplewiki" -> 300_000     // Simple English Wikipedia
+    | "dev"        -> 4096        // development/test fixture
+    // T-shirt sizes (aliased to byte budgets)
+    | "tiny"       -> 4_096       // ~128 KB — testing only
+    | "small"      -> l2CapacityFromBytes (8L * 1024L * 1024L)   // 8 MB → ~262k
+    | "medium"     -> l2CapacityFromBytes (80L * 1024L * 1024L)  // 80 MB → ~2.6M
+    | "large"      -> l2CapacityFromBytes (800L * 1024L * 1024L) // 800 MB → ~26M
+    | _            -> l2CapacityFromMemory ()  // unknown → auto
+
+/// Resolve L2 capacity from any supported specification:
+///   "auto"           → runtime memory detection
+///   "unlimited"      → Int32.MaxValue (effectively unbounded)
+///   "small/medium/large" → T-shirt sizes (8/80/800 MB)
+///   "enwiki/simplewiki/dev" → corpus presets
+///   "8mb", "80mb"    → byte budget (suffix: mb, gb, kb)
+///   numeric string   → raw entry count
+let resolveL2Capacity (spec: string) : int =
+    match spec.ToLowerInvariant().Trim() with
+    | "auto" -> l2CapacityFromMemory ()
+    | "unlimited" -> System.Int32.MaxValue
+    | s when s.EndsWith("gb") ->
+        let n = System.Double.Parse(s.[..s.Length-3])
+        l2CapacityFromBytes (int64 (n * 1024.0 * 1024.0 * 1024.0))
+    | s when s.EndsWith("mb") ->
+        let n = System.Double.Parse(s.[..s.Length-3])
+        l2CapacityFromBytes (int64 (n * 1024.0 * 1024.0))
+    | s when s.EndsWith("kb") ->
+        let n = System.Double.Parse(s.[..s.Length-3])
+        l2CapacityFromBytes (int64 (n * 1024.0))
+    | s ->
+        match System.Int32.TryParse(s) with
+        | true, n -> max 1024 n
+        | false, _ -> l2CapacityPreset s
+
+/// Overload: resolve from integer directly (for programmatic use).
+let resolveL2CapacityInt (entries: int) : int = max 1024 entries
+
 type TwoLevelCachedLookupSource(inner: WamTypes.ILookupSource,
                                  ?l1Capacity: int,
-                                 ?maxL2Entries: int) =
+                                 ?maxL2Entries: int,
+                                 ?l2CapacitySpec: string) =
     let l1Cap = defaultArg l1Capacity 4096
-    let l2Max = defaultArg maxL2Entries 65536
+    let l2Max =
+        match l2CapacitySpec with
+        | Some spec -> resolveL2Capacity spec
+        | None -> defaultArg maxL2Entries (l2CapacityFromMemory ())
     let l1Mask = l1Cap - 1
     let l2 = System.Collections.Concurrent.ConcurrentDictionary<int, int list>()
     let mutable l2Count = 0

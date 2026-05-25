@@ -122,6 +122,9 @@ or `Module:Name/Arity`).
 | `emit_mode(Mode)` | `interpreter` | One of `interpreter`, `functions`, `mixed([Pred/Arity, ...])`.  See [Emit modes](#emit-modes). |
 | `runtime_parser(Mode)` | `none` | One of `none`, `compiled(prolog_term_parser)`.  See [Runtime parser](#runtime-parser). |
 | `base_pc(N)` | computed | Override the starting PC of the first emitted predicate.  Mostly for testing -- normal use leaves this unset. |
+| `lmdb_path(Path)` | (none) | When set, includes `LmdbFactSource.fs` + LightningDB NuGet in the generated project. The module provides `openEnv`, `loadCategoryParent`, `LmdbCursorLookup`, `TwoLevelCachedLookupSource`, etc. |
+| `lmdb_materialisation(Mode)` | `cached` | One of `eager`, `lazy`, `cached`. Controls how LMDB facts are accessed at runtime. `cached` (two-level L1/L2) is the recommended default — zero startup cost, sub-ms warm hits, bounded memory. See [LMDB modes](#lmdb-modes). |
+| `lmdb_l2_capacity(Spec)` | `auto` | L2 cache sizing. `auto` = runtime memory formula; `small`/`medium`/`large` = T-shirt sizes (8/80/800 MB); `enwiki`/`simplewiki` = corpus presets; `'80mb'` = explicit byte budget; integer = raw entry count; `unlimited` = no cap. |
 
 Beyond these, the F# target threads the standard cross-target options
 (kernel detection, mode hints, etc.) through to `wam_target` and the
@@ -509,6 +512,34 @@ visited-set instructions used by graph kernels).
 **Parser bridge:** with `runtime_parser(compiled(prolog_term_parser))`,
 `read_term_from_atom/2,3`, `parse_term_from_atom/3,4`,
 `parse_term_from_codes/3,4` become callable from generated code.
+
+## LMDB modes
+
+When `lmdb_path(Path)` is set, the generated project includes
+`LmdbFactSource.fs` with three materialisation modes:
+
+| Mode | Startup | Per-lookup | Best for |
+| --- | --- | --- | --- |
+| `eager` | Loads entire relation into Map/Dict | O(1) Map.tryFind or Dict.TryGetValue | Full-graph scans, small corpora |
+| `lazy` | Zero (opens env only) | LMDB cursor per call (~0.1 ms) | Single queries, memory-constrained |
+| `cached` (default) | Zero | L1 array hit (~0.001 ms warm) | Everything else — adapts to demand |
+
+**Why `cached` is the default:** at large scale (enwiki, 10M edges),
+eager materialisation costs ~140 seconds — time spent building an
+in-memory structure for edges the query may never touch. Cached mode
+pays only for edges actually visited, and subsequent visits hit the
+L1 per-thread cache at near-zero cost. The advantage is *time savings
+from skipping unnecessary work*, not memory pressure (even "large"
+cache at 800 MB is modest for a server).
+
+The `TwoLevelCachedLookupSource` implements cached mode:
+- **L1**: per-thread fixed array (4096 slots), collision-overwrite,
+  zero contention
+- **L2**: shared `ConcurrentDictionary`, bounded by
+  `lmdb_l2_capacity` (default: auto-sized from available RAM)
+
+Kernel templates accept `int -> int list` lookup functions so they
+work transparently with any mode — no materialisation at kernel entry.
 
 ## See also
 
