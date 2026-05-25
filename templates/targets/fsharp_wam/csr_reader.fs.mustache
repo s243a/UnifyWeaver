@@ -70,8 +70,9 @@ let private readChildren (valStream: FileStream) (valLock: obj)
 ///
 /// Wrap with TwoLevelCachedLookupSource for repeated lookups to avoid
 /// repeated disk reads of the same parent's children.
-type CsrLookupSource(artifactDir: string) =
-    let metaPath = Path.Combine(artifactDir, "category_child.csr.meta")
+type CsrLookupSource(artifactDir: string, ?relation: string) =
+    let rel = defaultArg relation "category_child"
+    let metaPath = Path.Combine(artifactDir, sprintf "%s.csr.meta" rel)
     let metaText = File.ReadAllText(metaPath)
     let meta = JsonDocument.Parse(metaText)
     let root = meta.RootElement
@@ -171,6 +172,7 @@ type CsrLookupSource(artifactDir: string) =
     member _.ParentCount = root.GetProperty("parent_count").GetInt32()
     member _.EdgeCount = root.GetProperty("edge_count").GetInt32()
     member _.IndexBackend = indexBackend
+    member _.Relation = rel
 
     /// List all parent IDs in the index (sorted).
     member _.Parents () : int array =
@@ -191,6 +193,10 @@ type CsrLookupSource(artifactDir: string) =
             | Some env -> env.Dispose()
             | None -> ()
 
-/// Open a CSR artifact directory and return a CsrLookupSource.
+/// Open a CSR artifact directory for category_child (default) or any relation.
 let openCsr (artifactDir: string) : CsrLookupSource =
     CsrLookupSource(artifactDir)
+
+/// Open a CSR artifact directory for a specific relation.
+let openCsrRelation (artifactDir: string) (relation: string) : CsrLookupSource =
+    CsrLookupSource(artifactDir, relation)
