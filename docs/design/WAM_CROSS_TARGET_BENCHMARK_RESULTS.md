@@ -20,6 +20,7 @@ All primary measurements at **scale 300** (6004 `category_parent` facts,
 | Rust WAM interpreter (accumulated) | 137 | 151 | 1 | Yes | `generate_wam_effective_distance_benchmark.pl` |
 | SWI-Prolog (optimized, accumulated) | 336 | 409 | 1 | -- | Reference implementation |
 | **F# WAM + FFI (functions mode)** | **11** | **159** | **1** | **Yes** | Lowered predicates; .NET 8 Release build |
+| **F# LMDB cached (two-level L1/L2)** | **2** | -- | **1** | **Yes** | Fact-access only (no WAM overhead); see below |
 | Python WAM | 215 | 689 | 1 | Yes | CPython 3.12; WAM interpreter, FFI for `category_parent/2` |
 | Go WAM | -- | -- | -- | Yes | Build OK; benchmark driver in progress |
 
@@ -34,6 +35,19 @@ from eliminating String hashing, cloning, and comparison in the hot
 The **F# WAM** (functions mode, .NET 8) achieves **11 ms query** at scale 300,
 matching Rust FFI on raw query time. Total wall-clock (159 ms) is higher due
 to .NET startup overhead (~80–185 ms), which dominates at small scale.
+
+The **F# LMDB cached** entry (2 ms) measures fact-access throughput only (BFS
+kernel calling `ILookupSource.Lookup` via the two-level L1/L2 cache, no WAM
+interpreter overhead).  This is 3.1× faster than the in-memory `Map.tryFind`
+path (6.2 ms) because the L1 per-thread array avoids O(log n) tree traversal.
+The full effective-distance query with LMDB backing would be ~7–8 ms (2 ms
+fact access + ~5 ms WAM interpreter).  See `tests/core/test_wam_fsharp_lmdb_e2e_bench.pl`.
+
+**LMDB scale sweep** (partial demand, 100 seeds from varying graph sizes)
+confirms the lazy/cached advantage at scale: at 40k edges, eager Map takes
+137 ms (dominated by materialisation), while lazy takes 1.6 ms (86× faster).
+The `cached` default is unconditionally correct for effective-distance
+workloads — see `tests/core/test_wam_fsharp_lmdb_scale_sweep.pl`.
 
 ## Test Environment
 
