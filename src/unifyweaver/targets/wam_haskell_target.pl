@@ -3997,10 +3997,11 @@ generate_merged_code_build(DetectedKernels, Options, Code) :-
     ).
 
 generate_query_body(Options, QueryBody) :-
-    % Phase 3: select run function based on register_mode option
-    (   member(register_mode(st_array), Options)
-    ->  RunFn = 'runMutableRegs'
-    ;   RunFn = 'run'
+    % Phase 3: select run function. Default is runMutableRegs (STArray,
+    % 7.66x faster). Override with register_mode(intmap) for pure path.
+    (   member(register_mode(intmap), Options)
+    ->  RunFn = 'run'
+    ;   RunFn = 'runMutableRegs'
     ),
     % Emit a PURE expression so the seed loop can use `parMap rdeepseq`.
     % We use explicit braces and semicolons on the `let` to avoid Haskell's
@@ -4019,9 +4020,16 @@ generate_query_body(Options, QueryBody) :-
         % collectForeignSolutions which calls the native kernel directly.
         QueryBody =
 'let { hopsVarId = 1000000 ; s0 = emptyState { wsRegs = IM.fromList [ (1, Atom (iAtom cat)), (2, Atom (iAtom root)), (3, Unbound hopsVarId), (4, VList [Atom (iAtom cat)]) ], wsCP = 0 } ; !solutions = collectForeignSolutions ctx "category_ancestor/4" s0 hopsVarId ; !weightSum = sum [((hops + 1) ** negN) | hops <- solutions] } in (cat, weightSum)'
-    ;   % Default: collectSolutions loop for category_ancestor/4
-        QueryBody =
-'let { hopsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels, wsRegs = IM.fromList [ (1, Atom (iAtom cat)), (2, Atom (iAtom root)), (3, Unbound hopsVarId), (4, VList [Atom (iAtom cat)]) ], wsCP = 0 } ; !solutions = collectSolutions ctx s0 hopsVarId ; !weightSum = sum [((hops + 1) ** negN) | hops <- solutions] } in (cat, weightSum)'
+    ;   % Default: collectSolutions loop for category_ancestor/4.
+        % Phase 3: use collectSolutionsST (STArray mutable regs) by default.
+        % Override with register_mode(intmap) to use the pure IntMap path.
+        (   member(register_mode(intmap), Options)
+        ->  CollectFn = 'collectSolutions'
+        ;   CollectFn = 'collectSolutionsST'
+        ),
+        format(atom(QueryBody),
+'let { hopsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels, wsRegs = IM.fromList [ (1, Atom (iAtom cat)), (2, Atom (iAtom root)), (3, Unbound hopsVarId), (4, VList [Atom (iAtom cat)]) ], wsCP = 0 } ; !solutions = ~w ctx s0 hopsVarId ; !weightSum = sum [((hops + 1) ** negN) | hops <- solutions] } in (cat, weightSum)',
+            [CollectFn])
     ).
 
 %% detected_kernel_keys(+DetectedKernels, -Keys)
