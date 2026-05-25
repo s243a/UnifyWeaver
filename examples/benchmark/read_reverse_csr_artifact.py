@@ -27,6 +27,7 @@ except ImportError:
 
 
 IDX_RECORD = struct.Struct("<iQI")
+OFFSET_RECORD = struct.Struct("<QI")
 I32 = struct.Struct("<i")
 EXPECTED_FORMAT = "unifyweaver.reverse_csr.v1"
 
@@ -38,12 +39,24 @@ class ReverseCsrArtifact:
         self.meta = self._load_meta(self.meta_path)
         self.idx_path = artifact_dir / self.meta["index_path"]
         self.val_path = artifact_dir / self.meta["values_path"]
+        self.index_backend = self.meta.get("index_backend", "sorted_array")
+        self.offset_index_path = (
+            artifact_dir / self.meta["offset_index_path"]
+            if self.index_backend == "lmdb_offset"
+            else None
+        )
         self.index = self._load_index(self.idx_path)
         self._values = self.val_path.open("rb")
+        self._offset_db = None
+        self._offset_env = self._open_offset_index()
 
     def close(self) -> None:
         if not self._values.closed:
             self._values.close()
+        if self._offset_env is not None:
+            self._offset_env.close()
+            self._offset_env = None
+            self._offset_db = None
 
     def __enter__(self) -> "ReverseCsrArtifact":
         return self
@@ -71,11 +84,31 @@ class ReverseCsrArtifact:
             raise ValueError(f"unsupported CSR id_encoding: {meta.get('id_encoding')!r}")
         if meta.get("ordering") != "parent_sort":
             raise ValueError(f"unsupported CSR ordering: {meta.get('ordering')!r}")
+        if meta.get("index_backend", "sorted_array") not in {"sorted_array", "lmdb_offset"}:
+            raise ValueError(f"unsupported CSR index_backend: {meta.get('index_backend')!r}")
         if meta.get("index_record_bytes") != IDX_RECORD.size:
             raise ValueError("CSR index_record_bytes does not match reader format")
+        if meta.get("index_backend", "sorted_array") == "lmdb_offset":
+            if meta.get("offset_index_record_bytes") != OFFSET_RECORD.size:
+                raise ValueError("CSR offset_index_record_bytes does not match reader format")
+            if not meta.get("offset_index_path"):
+                raise ValueError("CSR lmdb_offset backend missing offset_index_path")
         if meta.get("value_record_bytes") != I32.size:
             raise ValueError("CSR value_record_bytes does not match reader format")
         return meta
+
+    def _open_offset_index(self) -> lmdb.Environment | None:
+        if self.index_backend != "lmdb_offset":
+            return None
+        assert self.offset_index_path is not None
+        if not (self.offset_index_path / "data.mdb").exists():
+            raise FileNotFoundError(f"missing CSR offset index LMDB: {self.offset_index_path}")
+        env = lmdb.open(str(self.offset_index_path), readonly=True, max_dbs=2, lock=False, subdir=True)
+        self._offset_db = env.open_db(
+            self.meta.get("offset_index_database", "offsets").encode("ascii"),
+            create=False,
+        )
+        return env
 
     def _load_index(self, path: Path) -> list[tuple[int, int, int]]:
         data = path.read_bytes()
@@ -93,6 +126,33 @@ class ReverseCsrArtifact:
         return records
 
     def lookup(self, parent: int) -> list[int]:
+        offset_count = self._lookup_offset_count(parent)
+        if offset_count is None:
+            return []
+
+        offset_edges, count = offset_count
+        byte_offset = offset_edges * I32.size
+        byte_count = count * I32.size
+        if self._values.closed:
+            raise ValueError("CSR values file is closed")
+        self._values.seek(byte_offset)
+        data = self._values.read(byte_count)
+        if len(data) != byte_count:
+            raise ValueError("CSR values file ended before requested child slice")
+        return [I32.unpack_from(data, offset)[0] for offset in range(0, len(data), I32.size)]
+
+    def _lookup_offset_count(self, parent: int) -> tuple[int, int] | None:
+        if self.index_backend == "lmdb_offset":
+            assert self._offset_env is not None
+            assert self._offset_db is not None
+            with self._offset_env.begin() as txn:
+                value = txn.get(I32.pack(parent), db=self._offset_db)
+            if value is None:
+                return None
+            if len(value) != OFFSET_RECORD.size:
+                raise ValueError("CSR offset index record has unexpected size")
+            return OFFSET_RECORD.unpack(value)
+
         lo = 0
         hi = len(self.index)
         while lo < hi:
@@ -103,18 +163,9 @@ class ReverseCsrArtifact:
             else:
                 hi = mid
         if lo >= len(self.index) or self.index[lo][0] != parent:
-            return []
-
+            return None
         _parent, offset_edges, count = self.index[lo]
-        byte_offset = offset_edges * I32.size
-        byte_count = count * I32.size
-        if self._values.closed:
-            raise ValueError("CSR values file is closed")
-        self._values.seek(byte_offset)
-        data = self._values.read(byte_count)
-        if len(data) != byte_count:
-            raise ValueError("CSR values file ended before requested child slice")
-        return [I32.unpack_from(data, offset)[0] for offset in range(0, len(data), I32.size)]
+        return offset_edges, count
 
     def parents(self) -> list[int]:
         return [parent for parent, _offset_edges, _count in self.index]
