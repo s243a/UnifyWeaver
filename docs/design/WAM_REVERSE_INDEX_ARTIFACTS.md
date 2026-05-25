@@ -414,6 +414,27 @@ the terms from local benchmark telemetry, artifact manifests, or
 platform probes, while omitted or incomplete measurements keep the
 current `sorted_array` behavior.
 
+The cost model exposes a small telemetry adapter for benchmark output:
+
+```prolog
+csr_index_backend_options_from_benchmark_tsv(
+    "reverse_csr_lookup.tsv",
+    [
+        expected_child_lookups_per_query(500),
+        expected_query_count_per_artifact(100),
+        available_memory_bytes(1073741824)
+    ],
+    Options
+),
+resolve_csr_index_backend(Options, Backend).
+```
+
+The adapter extracts `median_ms`, `csr_build_seconds`, and
+`offset_index_bytes` from the `sorted_array` and `lmdb_offset` rows
+emitted by `benchmark_reverse_csr_lookup.py`. Workload expectations and
+memory policy remain caller-provided because they are query- and
+deployment-specific.
+
 ### 3.4.2 CSR I/O policy
 
 CSR access should expose an explicit I/O policy:
