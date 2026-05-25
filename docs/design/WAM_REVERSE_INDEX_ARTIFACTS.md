@@ -353,7 +353,7 @@ The first step is controlled by `index_backend(...)`:
 | `sorted_array` | Keep `.idx` sorted by parent ID and use binary search. | Simple, compact, no second LMDB lookup; best when the index fits in memory. |
 | `lmdb_offset` | Store `parent_id -> offset,count` or `parent_id -> idx_row` in an LMDB sub-db. | Handles sparse Wikipedia/page IDs without dense direct arrays; adds LMDB B-tree lookup and page-cache pressure. |
 | `dense_direct` | Store a direct array indexed by numeric parent ID. | Fastest lookup when IDs are dense; wasteful or impossible for sparse page-id spaces. |
-| `auto` | Let the cost analyzer choose. | Current conservative resolution is `sorted_array`; future overrides require measured density, index size, query count, and preprocessing terms. |
+| `auto` | Let the cost analyzer choose. | Defaults to `sorted_array`; may select `lmdb_offset` when measured lookup savings amortize extra build cost and the offset index fits the memory budget. |
 
 An LMDB offset index may store the final `.val` offset directly, or it
 may store the row number in `.idx`. Storing the final offset can skip the
@@ -363,6 +363,56 @@ extra preprocessing and another artifact to keep consistent with the CSR
 files. The cost analyzer should only choose it when the saved lookup
 work outweighs the additional build time, disk bytes, and page-cache
 touches.
+
+The first `auto` rule is deliberately narrow. It selects `lmdb_offset`
+only when all of these are known:
+
+```prolog
+expected_child_lookups_per_query(NLookups).
+expected_query_count_per_artifact(NQueries).
+sorted_array_lookup_ms_per_1000(SortedMs).
+lmdb_offset_lookup_ms_per_1000(OffsetMs).
+sorted_array_build_seconds(SortedBuild).
+lmdb_offset_build_seconds(OffsetBuild).
+```
+
+The rule computes:
+
+```text
+total_lookup_savings_seconds =
+  (NLookups * NQueries / 1000) * ((SortedMs - OffsetMs) / 1000)
+
+marginal_build_seconds =
+  max(0, OffsetBuild - SortedBuild)
+```
+
+`lmdb_offset` is eligible only when lookup savings is positive and
+`total_lookup_savings_seconds >= marginal_build_seconds`.
+
+It must also pass a memory guard. The caller can either declare:
+
+```prolog
+lmdb_offset_memory_fits(true).
+```
+
+or provide:
+
+```prolog
+lmdb_offset_bytes(Bytes).
+available_memory_bytes(Available).
+csr_index_memory_fraction(Fraction).  % default 0.05
+```
+
+In the second form, `lmdb_offset` is eligible only when:
+
+```text
+Bytes <= Available * Fraction
+```
+
+This keeps `auto` target-neutral and evidence-driven. Targets can feed
+the terms from local benchmark telemetry, artifact manifests, or
+platform probes, while omitted or incomplete measurements keep the
+current `sorted_array` behavior.
 
 ### 3.4.2 CSR I/O policy
 

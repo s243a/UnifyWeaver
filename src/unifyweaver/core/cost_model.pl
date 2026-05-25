@@ -365,17 +365,57 @@ resolve_csr_io_policy_value(Policy, _Options, Policy) :-
 %! resolve_csr_index_backend(+Options, -Backend) is det.
 %
 %  Resolve CSR index backend. Omitted values keep the current sorted
-%  array behavior. Explicit `auto` is the future cost-analyzer hook; it
-%  conservatively resolves to sorted_array until measured override rules
-%  are added.
+%  array behavior. Explicit `auto` may select lmdb_offset when measured
+%  lookup savings amortize the marginal build cost and the offset index
+%  fits the configured memory budget.
 resolve_csr_index_backend(Options, Backend) :-
     option(index_backend(Backend0), Options, sorted_array),
     resolve_csr_index_backend_value(Backend0, Options, Backend).
 
+resolve_csr_index_backend_value(auto, Options, lmdb_offset) :-
+    csr_lmdb_offset_pays_off(Options),
+    csr_lmdb_offset_memory_fits(Options),
+    !.
 resolve_csr_index_backend_value(auto, _Options, sorted_array) :- !.
 resolve_csr_index_backend_value(Backend, _Options, Backend) :-
     validate_csr_index_backend(Backend),
     !.
+
+csr_lmdb_offset_pays_off(Options) :-
+    option(expected_child_lookups_per_query(LookupsPerQuery), Options),
+    validate_nonnegative_number(expected_child_lookups_per_query, LookupsPerQuery),
+    LookupsPerQuery > 0,
+    option(expected_query_count_per_artifact(QueryCount), Options),
+    validate_nonnegative_number(expected_query_count_per_artifact, QueryCount),
+    QueryCount > 0,
+    option(sorted_array_lookup_ms_per_1000(SortedMsPer1000), Options),
+    validate_nonnegative_number(sorted_array_lookup_ms_per_1000, SortedMsPer1000),
+    option(lmdb_offset_lookup_ms_per_1000(LmdbMsPer1000), Options),
+    validate_nonnegative_number(lmdb_offset_lookup_ms_per_1000, LmdbMsPer1000),
+    LookupSavingsMsPer1000 is SortedMsPer1000 - LmdbMsPer1000,
+    LookupSavingsMsPer1000 > 0,
+    option(sorted_array_build_seconds(SortedBuildSeconds), Options),
+    validate_nonnegative_number(sorted_array_build_seconds, SortedBuildSeconds),
+    option(lmdb_offset_build_seconds(LmdbBuildSeconds), Options),
+    validate_nonnegative_number(lmdb_offset_build_seconds, LmdbBuildSeconds),
+    MarginalBuildSeconds is max(0, LmdbBuildSeconds - SortedBuildSeconds),
+    TotalLookupSavingsSeconds is
+        (LookupsPerQuery * QueryCount / 1000.0) *
+        (LookupSavingsMsPer1000 / 1000.0),
+    TotalLookupSavingsSeconds >= MarginalBuildSeconds.
+
+csr_lmdb_offset_memory_fits(Options) :-
+    option(lmdb_offset_memory_fits(true), Options),
+    !.
+csr_lmdb_offset_memory_fits(Options) :-
+    option(lmdb_offset_bytes(LmdbOffsetBytes), Options),
+    validate_nonnegative_number(lmdb_offset_bytes, LmdbOffsetBytes),
+    option(available_memory_bytes(AvailableBytes), Options),
+    validate_nonnegative_number(available_memory_bytes, AvailableBytes),
+    AvailableBytes > 0,
+    option(csr_index_memory_fraction(Fraction), Options, 0.05),
+    validate_fraction(csr_index_memory_fraction, Fraction),
+    LmdbOffsetBytes =< AvailableBytes * Fraction.
 
 validate_known_reverse_options([]).
 validate_known_reverse_options([Opt|Rest]) :-
@@ -393,6 +433,16 @@ reverse_option_key(index_backend).
 reverse_option_key(cache_bytes).
 reverse_option_key(block_size_edges).
 reverse_option_key(io_policy).
+reverse_option_key(expected_child_lookups_per_query).
+reverse_option_key(expected_query_count_per_artifact).
+reverse_option_key(sorted_array_lookup_ms_per_1000).
+reverse_option_key(lmdb_offset_lookup_ms_per_1000).
+reverse_option_key(sorted_array_build_seconds).
+reverse_option_key(lmdb_offset_build_seconds).
+reverse_option_key(lmdb_offset_bytes).
+reverse_option_key(available_memory_bytes).
+reverse_option_key(csr_index_memory_fraction).
+reverse_option_key(lmdb_offset_memory_fits).
 reverse_option_key(platform_supports_direct_io).
 reverse_option_key(alignment_verified).
 reverse_option_key(measured_direct_io_win).
@@ -427,6 +477,21 @@ validate_csr_index_backend(Backend) :-
     !.
 validate_csr_index_backend(Backend) :-
     throw(error(domain_error(csr_index_backend, Backend), _)).
+
+validate_nonnegative_number(_Name, Value) :-
+    number(Value),
+    Value >= 0,
+    !.
+validate_nonnegative_number(Name, Value) :-
+    throw(error(domain_error(nonnegative_number(Name), Value), _)).
+
+validate_fraction(_Name, Value) :-
+    number(Value),
+    Value >= 0,
+    Value =< 1,
+    !.
+validate_fraction(Name, Value) :-
+    throw(error(domain_error(fraction(Name), Value), _)).
 
 validate_reverse_ordering(Ordering) :-
     memberchk(Ordering, [
