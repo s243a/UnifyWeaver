@@ -97,6 +97,41 @@ class ReadReverseCsrArtifactTest(unittest.TestCase):
             self.assertEqual(validate.returncode, 0, validate.stderr)
             self.assertEqual(validate.stdout.strip(), "validated parents=2 edges=4")
 
+    def test_lookup_reads_lmdb_offset_index_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            phase1 = tmp_path / "phase1.lmdb"
+            out_dir = tmp_path / "category_child_csr"
+            make_phase1_lmdb(phase1)
+
+            build = subprocess.run(
+                [
+                    sys.executable,
+                    str(BUILDER),
+                    str(phase1),
+                    str(out_dir),
+                    "--index-backend",
+                    "lmdb_offset",
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(build.returncode, 0, build.stderr)
+
+            lookup = subprocess.run(
+                [sys.executable, str(READER), "lookup", str(out_dir), "20"],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(lookup.returncode, 0, lookup.stderr)
+            self.assertEqual(lookup.stdout.splitlines(), ["10", "12", "13"])
+
     def test_artifact_keeps_values_file_open_until_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

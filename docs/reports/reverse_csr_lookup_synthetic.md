@@ -19,6 +19,7 @@ python3 examples/benchmark/benchmark_reverse_csr_lookup.py \
   "$tmpdir/phase1.lmdb" \
   --csr-dir "$tmpdir/csr" \
   --parent-lmdb-dir "$tmpdir/parent_only.lmdb" \
+  --csr-index-backends sorted_array,lmdb_offset \
   --sample-parents 1000 \
   --iterations 5 \
   --seed 7
@@ -26,10 +27,11 @@ python3 examples/benchmark/benchmark_reverse_csr_lookup.py \
 
 ## Result
 
-| backend | sample_parents | iterations | total_children | median_ms | min_ms | max_ms | csr_artifact_bytes | parent_lmdb_env_bytes | phase1_lmdb_env_bytes |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| csr | 1000 | 5 | 8000 | 3.136484 | 3.076236 | 3.269940 | 480780 | 1507328 | 4579328 |
-| lmdb | 1000 | 5 | 8000 | 3.525135 | 3.490397 | 3.926229 | 480780 | 1507328 | 4579328 |
+| backend | index_backend | sample_parents | iterations | total_children | median_ms | min_ms | max_ms | csr_artifact_bytes | csr_build_seconds | offset_index_bytes | parent_lmdb_env_bytes | phase1_lmdb_env_bytes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| csr_sorted_array | sorted_array | 1000 | 5 | 8000 | 3.413093 | 3.299319 | 3.427612 | 481020 | 0.060911 | 0 | 1507328 | 4579328 |
+| csr_lmdb_offset | lmdb_offset | 1000 | 5 | 8000 | 2.649246 | 2.543666 | 2.820476 | 943906 | 0.075248 | 454656 | 1507328 | 4579328 |
+| lmdb | n/a | 1000 | 5 | 8000 | 3.514109 | 3.445555 | 3.775466 | 481020 | 0.060911 | 0 | 1507328 | 4579328 |
 
 `phase1_lmdb_env_bytes` is the size of the whole Phase 1 LMDB
 environment file (`data.mdb`), not the size of only the parent-edge or
@@ -55,6 +57,14 @@ only when memory budget allows, and that in-memory representation should
 preserve the compact typed-array / CSR shape rather than expanding into
 Python-style object lists.
 
+The `lmdb_offset` CSR index backend is slightly faster than binary
+search over the sorted `.idx` file in this run, but it pays for that with
+extra preprocessing and bytes: build time rises from 0.060911s to
+0.075248s, and artifact size rises from 481020 bytes to 943906 bytes.
+That is the cost-analyzer tradeoff. At Wikipedia scale, the sorted CSR
+index is expected to fit in memory, so lookup savings must be large
+enough to justify the additional LMDB offset artifact and build work.
+
 The original Python CSR reader was slower than LMDB lookup because every
 lookup opened, sought, and read from the values file. The reader now
 keeps the values file open across lookup batches, which makes this
@@ -63,6 +73,6 @@ synthetic fixture measure positional lookup cost more directly.
 The next optimization target is therefore no longer file-handle churn:
 
 - optionally cache recently used child slices or blocks;
-- compare parent-edge-only LMDB memory pressure against CSR residency;
+- sweep CSR index backends across larger scales and fanout shapes;
 - then consider WAM runtime integration for workloads that need deferred
   child expansion.
