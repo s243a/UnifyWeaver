@@ -361,7 +361,7 @@ user:wam_select_bad_list(Rest) :- select(a, [a|b], Rest).
 user:wam_select_unbound_list(Rest) :- user:wam_unbound_arg(L), select(a, L, Rest).
 user:wam_numlist_guard(Low, High, List) :- numlist(Low, High, List).
 user:wam_numlist_high_before_low(List) :- numlist(3, 1, List).
-user:wam_numlist_unbound_low(List) :- user:wam_unbound_arg(Low), numlist(Low, 3, List).
+user:wam_numlist_unbound_low(List) :- numlist(Low, 3, List), integer(Low).
 user:wam_delete_guard(L, Elem, Rest) :- delete(L, Elem, Rest).
 user:wam_delete_bad_list(Rest) :- delete([a|b], a, Rest).
 user:wam_delete_unbound_list(Rest) :- user:wam_unbound_arg(L), delete(L, a, Rest).
@@ -997,7 +997,10 @@ smoke_cases([
     case('wam_numlist_guard/3', args(2, 2, '[2]'), "true"),
     case('wam_numlist_guard/3', args(1, 3, '[1,3]'), "false"),
     case('wam_numlist_high_before_low/1', '[]', "false"),
-    case('wam_numlist_unbound_low/1', '[1,2,3]', "false"),
+    case('wam_numlist_unbound_low/1', '[1,2,3]', "true"),
+    case('wam_numlist_unbound_low/1', '[2,3]', "true"),
+    case('wam_numlist_unbound_low/1', '[1,3]', "false"),
+    case('wam_numlist_unbound_low/1', '[]', "false"),
     case('wam_delete_guard/3', args('[a,b,a,c]', a, '[b,c]'), "true"),
     case('wam_delete_guard/3', args('[a,b,a,c]', z, '[a,b,a,c]'), "true"),
     case('wam_delete_guard/3', args('[f(a),f(b),f(a)]', 'f(a)', '[f(b)]'), "true"),
@@ -1751,6 +1754,7 @@ prolog_term_string_to_edn('[102,111]', "{:tag :struct :functor \"[|]/2\" :args [
 prolog_term_string_to_edn('[102,111,111]', "{:tag :struct :functor \"[|]/2\" :args [102 {:tag :struct :functor \"[|]/2\" :args [111 {:tag :struct :functor \"[|]/2\" :args [111 \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[1,2,3]', "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [2 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[1,3]', "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}") :- !.
+prolog_term_string_to_edn('[2,3]', "{:tag :struct :functor \"[|]/2\" :args [2 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[2]', "{:tag :struct :functor \"[|]/2\" :args [2 \"[]\"]}") :- !.
 prolog_term_string_to_edn('[f,o]', "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"o\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[f,o,o]', "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"o\" {:tag :struct :functor \"[|]/2\" :args [\"o\" \"[]\"]}]}]}") :- !.
