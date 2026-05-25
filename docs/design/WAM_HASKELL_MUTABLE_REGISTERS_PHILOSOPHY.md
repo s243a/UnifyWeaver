@@ -1,6 +1,6 @@
 # Haskell WAM Mutable Registers: Philosophy
 
-**Status**: POC validated. Full conversion pending.
+**Status**: Default in generated projects. 52/55 step arms converted.
 **Date**: 2026-05-25
 **POC benchmark**: commit `9889825` (PR #2471) --
 `examples/benchmark/haskell_register_bench/Main.hs`
@@ -106,7 +106,56 @@ The approach: wrap the `run` loop (including `step` and `backtrack`)
 inside `runST`. All register access becomes `readArray`/`writeArray`.
 The outer interface stays pure: `run :: WamContext -> WamState -> Maybe WamState`.
 
-## 6. References
+## 6. Future work
+
+### 6.1 Remaining bridge arms (~7)
+
+The following step arms still use the freeze/thaw bridge (converting
+between STArray and IntMap per call). These are rare in the hot loop
+but would eliminate the last conversion overhead:
+
+- `member/2` (choice point creation inside builtin)
+- `\+/1` (negation-as-failure with parallel fast path)
+- `BeginAggregate` / `EndAggregate` (aggregate frames)
+- `SwitchOnConstant` (label-based, pre-resolution form)
+- `functor/3`, `=../2`, `copy_term/2` (term manipulation)
+- `CallFactStream` (Phase F2 fact iteration)
+
+### 6.2 Lowered emitter (4 sites)
+
+`wam_haskell_lowered_emitter.pl` generates functions that access
+registers directly via `IM.lookup` and `IM.insert`. When a workload
+uses lowered predicates, these bypass `stepST` and miss the ST
+speedup. Converting these 4 sites requires the lowered functions to
+accept an `STArray` parameter or to be called from within the same
+`runST` block.
+
+### 6.3 Simplewiki-scale benchmark
+
+The dev fixture (198 edges) is too small for timing. A benchmark on
+simplewiki (6k+ edges, 300+ seeds) would measure the actual speedup
+on the effective-distance workload. The POC prototype predicts 7.66x;
+the real number depends on how often the bridge arms are hit and on
+the overhead of `freeze` at choice points.
+
+### 6.4 Bindings store
+
+`wsBindings` (also IntMap) is the second-hottest data structure after
+registers. Converting it to a mutable hash table or flat array would
+give additional speedup. The trade-off is more complex: bindings
+grow unboundedly (unlike registers which are fixed at 200), and trail
+undo needs efficient deletion. A segmented approach (mutable array
+for recently-bound variables, IntMap for overflow) may work.
+
+### 6.5 Parallel seed dispatch via runST
+
+Each seed currently runs through `parMap rdeepseq` with `run` (pure).
+With `runMutableRegs` (also pure via `runST`), each seed still gets
+its own isolated mutable register file — the type system prevents
+sharing. The parallel infrastructure (`parMap`, `async`) should work
+unchanged. Testing with `-N4` on a larger fixture would confirm.
+
+## 7. References
 
 - POC benchmark: `examples/benchmark/haskell_register_bench/Main.hs`
   (commit `9889825`, PR #2471)
