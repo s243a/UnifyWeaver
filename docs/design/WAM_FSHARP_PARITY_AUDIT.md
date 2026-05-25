@@ -160,35 +160,47 @@ F# now has all three materialisation modes from
 
 ## CSR Reverse-Index Readiness
 
-F# is **not yet** named in `WAM_REVERSE_INDEX_ARTIFACTS.md`. The
-implementation plan's Phase C calls for "a small Rust reader,
-co-located with the Rust LMDB sink/build path, with direct-index or
-binary-search lookup. C# binding can follow once the format and policy
-are stable." F# is a natural follower of the C# binding step since
-both share the CLR and can consume the same `.csr.idx` / `.csr.val` /
-`.csr.meta` files.
+**Status**: Implemented (Phase 1). The F# `CsrLookupSource` reads
+the `unifyweaver.reverse_csr.v1` binary format (`.csr.idx` /
+`.csr.val` / `.csr.meta`) and implements `ILookupSource` for reverse
+child-edge lookup (parent -> children).
 
-For F#, the minimum useful unit once Phase C has stabilized the
-format is:
+### What's done
 
-1. **Add a CSR-reader module** to the F# runtime tree (likely
-   `src/unifyweaver/targets/fsharp_runtime/CsrReader.fs`) implementing
-   the `io_policy(buffered_pread)` and `io_policy(buffered_pread_drop)`
-   paths. `direct_io` can stay out-of-scope on the first pass.
-2. **Wire the `reverse_index(csr(...))` option** into
-   `wam_fsharp_target.pl`'s option parsing, including
-   `id_encoding(int32_le)` and `phase(planning_only|cache_warmup|runtime_available)`.
-3. **Phase enforcement**: reject `phase(runtime_available)` at codegen
-   time until an F# runtime reverse-lookup API exists - matches the
-   guard already specified in §9 Phase A of the artifacts doc.
-4. **Tests** verifying identical descendant sets for sampled parents
-   against the Rust-built CSR fixture used by the existing
-   `tests/test_benchmark_reverse_csr_lookup.py`.
+1. **`CsrReader.fs` template** (`templates/targets/fsharp_wam/csr_reader.fs.mustache`):
+   `CsrLookupSource` loads the index into memory and reads the values
+   file via positioned seek+read (thread-safe via lock). Validates the
+   JSON manifest format and id_encoding. Implements `IDisposable`.
 
-CSR work is gated on LMDB work because the cost-model resolver
-(`WAM_REVERSE_INDEX_ARTIFACTS.md` §5) needs the parent-edge
-`eager`/`lazy`/`cached` choice as input. Sequencing: F# LMDB first,
-then F# CSR.
+2. **`csr_path(Path)` codegen option** in `wam_fsharp_target.pl`:
+   conditional `.fsproj` inclusion of `CsrReader.fs` (compiled after
+   `WamTypes.fs`, before `WamRuntime.fs`). No extra NuGet dependencies
+   (uses `System.IO` + `System.Text.Json` from .NET 8 SDK).
+
+3. **Composable with TwoLevelCachedLookupSource**: wrapping
+   `CsrLookupSource` in the two-level cache gives the same L1/L2
+   caching benefits as LMDB cached mode.
+
+4. **Tests**:
+   - `tests/core/test_wam_fsharp_csr_smoke.pl` -- E2E smoke (50 parents, correctness)
+   - `tests/core/test_wam_fsharp_csr_bench.pl` -- CSR vs LMDB benchmark (500 parents)
+
+### Benchmark (500 parents x 6 children = 3000 edges)
+
+| Mode | median_ms | vs LMDB cursor |
+|---|---:|---|
+| CSR raw | 0.55 | 2.7x faster |
+| CSR cached (L1/L2) | 0.06 | 24.5x faster |
+| LMDB cursor | 1.47 | baseline |
+
+### What's next
+
+- `io_policy(buffered_pread_drop)` -- `posix_fadvise(DONTNEED)` after reads
+- `io_policy(direct_io)` -- `O_DIRECT` for page-cache isolation
+- `index_backend(lmdb_offset)` -- LMDB offset index for sparse IDs
+- Phase enforcement (`planning_only` / `cache_warmup` / `runtime_available`)
+- `reverse_index(csr(...))` declarative option parsing
+- Integration with effective-distance kernel (descendant-path exploration)
 
 ## Other Notable Gaps
 
@@ -226,8 +238,9 @@ These are smaller than the three above but worth tracking:
    resolver.
 7. **`succ/2`** small builtin: bundle with the ISO `succ_iso/2` /
    `succ_lax/2` PR.
-8. **CSR reader**: gated on LMDB work and on Rust CSR Phase C
-   stabilising the format.
+8. **CSR reader**: done. `CsrLookupSource` reads
+   `unifyweaver.reverse_csr.v1` format, wired via `csr_path(Path)`.
+   Next: `io_policy` variants and phase enforcement.
 
 ## Verification Commands
 
@@ -241,8 +254,13 @@ swipl -q -g run_tests -t halt tests/core/test_wam_fsharp_parser_smoke.pl
 swipl -q -g run_tests -t halt tests/core/test_wam_fsharp_lowered_smoke.pl
 swipl -q -g run_tests -t halt tests/core/test_wam_fsharp_lowered_parser_smoke.pl
 swipl -q -g "use_module(src/unifyweaver/targets/wam_fsharp_target), halt"
+
+# CSR tests (need python3 + lmdb + .NET 8 SDK):
+swipl -g main tests/core/test_wam_fsharp_csr_smoke.pl
+swipl -g main tests/core/test_wam_fsharp_csr_bench.pl
 ```
 
 The dotnet smoke tests need the .NET 8 SDK on `PATH` and should be
 run under `LANG=C.UTF-8` (the test files contain em-dashes that the
-default POSIX locale rejects).
+default POSIX locale rejects). The CSR tests additionally need
+`python3` with the `lmdb` package.

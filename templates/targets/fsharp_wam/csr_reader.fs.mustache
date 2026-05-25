@@ -1,0 +1,123 @@
+// CSR (Compressed Sparse Row) reverse-index reader for category_child.
+//
+// Reads the binary CSR artifact produced by build_reverse_csr_artifact.py:
+//   category_child.csr.idx   int32_le parent, uint64_le offset, uint32_le count (16 bytes/record)
+//   category_child.csr.val   int32_le child IDs (4 bytes each)
+//   category_child.csr.meta  JSON manifest (format: unifyweaver.reverse_csr.v1)
+//
+// Implements ILookupSource for reverse child-edge lookup (parent -> children).
+// Plugs into the same WcLookupSources ecosystem as LmdbCursorLookup and
+// TwoLevelCachedLookupSource.
+
+module CsrReader
+
+open System
+open System.IO
+open System.Text.Json
+
+/// A single CSR index record: parent ID -> (edge offset in val file, count).
+[<Struct>]
+type CsrIdxRecord =
+    { Parent: int
+      OffsetEdges: int64
+      CountEdges: int }
+
+/// Load the .csr.idx file into a sorted array of CsrIdxRecord.
+/// Record layout: int32_le parent (4), uint64_le offset_edges (8), uint32_le count_edges (4) = 16 bytes.
+let loadIdx (idxPath: string) : CsrIdxRecord array =
+    let data = File.ReadAllBytes(idxPath)
+    let recordSize = 16
+    if data.Length % recordSize <> 0 then
+        failwithf "CSR index file size (%d) is not a multiple of %d bytes" data.Length recordSize
+    let count = data.Length / recordSize
+    Array.init count (fun i ->
+        let off = i * recordSize
+        { Parent = BitConverter.ToInt32(data, off)
+          OffsetEdges = int64 (BitConverter.ToUInt64(data, off + 4))
+          CountEdges = int (BitConverter.ToUInt32(data, off + 12)) })
+
+/// CSR-backed child lookup implementing ILookupSource.
+///
+/// Index: loaded into memory at construction (small -- 16 bytes per parent).
+/// Values: read from disk via positioned seek+read (thread-safe via lock).
+///
+/// For a typical simplewiki graph (~750 parents), the index is ~12 KB.
+/// For full enwiki (~1.5M parents), the index is ~24 MB -- still fits
+/// comfortably in memory.
+///
+/// Wrap with TwoLevelCachedLookupSource for repeated lookups to avoid
+/// repeated disk reads of the same parent's children.
+type CsrLookupSource(artifactDir: string) =
+    let metaPath = Path.Combine(artifactDir, "category_child.csr.meta")
+    let metaText = File.ReadAllText(metaPath)
+    let meta = JsonDocument.Parse(metaText)
+    let root = meta.RootElement
+
+    do
+        let fmt = root.GetProperty("format").GetString()
+        if fmt <> "unifyweaver.reverse_csr.v1" then
+            failwithf "unsupported CSR format: %s" fmt
+        let enc = root.GetProperty("id_encoding").GetString()
+        if enc <> "int32_le" then
+            failwithf "unsupported CSR id_encoding: %s" enc
+
+    let idxPath = Path.Combine(artifactDir, root.GetProperty("index_path").GetString())
+    let valPath = Path.Combine(artifactDir, root.GetProperty("values_path").GetString())
+    let idx = loadIdx idxPath
+    let valStream = new FileStream(valPath, FileMode.Open, FileAccess.Read, FileShare.Read)
+    let valLock = obj()
+
+    /// Binary search for parent ID in the sorted index. Returns index or -1.
+    let binarySearch (parent: int) : int =
+        let mutable lo = 0
+        let mutable hi = idx.Length - 1
+        let mutable result = -1
+        while lo <= hi do
+            let mid = lo + (hi - lo) / 2
+            let midParent = idx.[mid].Parent
+            if midParent = parent then
+                result <- mid
+                lo <- hi + 1
+            elif midParent < parent then
+                lo <- mid + 1
+            else
+                hi <- mid - 1
+        result
+
+    member _.ParentCount = root.GetProperty("parent_count").GetInt32()
+    member _.EdgeCount = root.GetProperty("edge_count").GetInt32()
+
+    /// List all parent IDs in the index (sorted).
+    member _.Parents () : int array =
+        idx |> Array.map (fun r -> r.Parent)
+
+    interface WamTypes.ILookupSource with
+        member _.Lookup(key: int) : int list =
+            let i = binarySearch key
+            if i < 0 then []
+            else
+                let record = idx.[i]
+                let byteOffset = record.OffsetEdges * 4L
+                let byteCount = record.CountEdges * 4
+                if byteCount = 0 then []
+                else
+                    let buffer = Array.zeroCreate<byte> byteCount
+                    lock valLock (fun () ->
+                        valStream.Seek(byteOffset, SeekOrigin.Begin) |> ignore
+                        let mutable totalRead = 0
+                        while totalRead < byteCount do
+                            let n = valStream.Read(buffer, totalRead, byteCount - totalRead)
+                            if n = 0 then failwith "CSR values file ended before full child slice"
+                            totalRead <- totalRead + n
+                    )
+                    [ for j in 0 .. record.CountEdges - 1 ->
+                        BitConverter.ToInt32(buffer, j * 4) ]
+
+    interface IDisposable with
+        member _.Dispose() =
+            valStream.Dispose()
+            meta.Dispose()
+
+/// Open a CSR artifact directory and return a CsrLookupSource.
+let openCsr (artifactDir: string) : CsrLookupSource =
+    CsrLookupSource(artifactDir)

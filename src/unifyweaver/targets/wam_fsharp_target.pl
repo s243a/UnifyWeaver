@@ -4658,6 +4658,15 @@ write_wam_fsharp_project(Predicates, Options, ProjectDir) :-
     ;   true
     ),
 
+    % Generate CsrReader.fs when csr_path is set.
+    (   option(csr_path(_), Options)
+    ->  fsharp_csr_template_source(CsrTemplateCode),
+        directory_file_path(ProjectDir, 'CsrReader.fs', CsrFsPath),
+        write_fs_file(CsrFsPath, CsrTemplateCode),
+        format(user_error, '[WAM-FSharp] CSR reader included~n', [])
+    ;   true
+    ),
+
     % Generate Program.fs (benchmark driver).  The driver calls into
     % USER predicates only -- portable-parser predicates are library
     % code, not entry points -- so this stays on the original list.
@@ -4685,6 +4694,17 @@ fsharp_lmdb_template_source(Code) :-
     file_directory_name(TargetsDir, UnifyWeaverDir),
     file_directory_name(UnifyWeaverDir, ProjectRoot),
     atom_concat(ProjectRoot, '/templates/targets/fsharp_wam/lmdb_fact_source.fs.mustache', TemplatePath),
+    read_file_to_string(TemplatePath, Code, []).
+
+%% fsharp_csr_template_source(-Code)
+%  Reads the CsrReader.fs.mustache template.
+fsharp_csr_template_source(Code) :-
+    source_file(wam_fsharp_target:_, SrcFile),
+    file_directory_name(SrcFile, SrcDir),
+    file_directory_name(SrcDir, TargetsDir),
+    file_directory_name(TargetsDir, UnifyWeaverDir),
+    file_directory_name(UnifyWeaverDir, ProjectRoot),
+    atom_concat(ProjectRoot, '/templates/targets/fsharp_wam/csr_reader.fs.mustache', TemplatePath),
     read_file_to_string(TemplatePath, Code, []).
 
 %% write_fs_file(+Path, +Content)
@@ -5042,6 +5062,10 @@ generate_fsproj(ModName, Options, Code) :-
     ;   LmdbCompile  = '',
         LmdbPackage  = ''
     ),
+    (   option(csr_path(_), Options)
+    ->  CsrCompile = '\n    <Compile Include="CsrReader.fs" />'
+    ;   CsrCompile = ''
+    ),
     format(string(Code),
 '<Project Sdk="Microsoft.NET.Sdk">
 
@@ -5055,7 +5079,7 @@ generate_fsproj(ModName, Options, Code) :-
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="WamTypes.fs" />~w
+    <Compile Include="WamTypes.fs" />~w~w
     <Compile Include="WamRuntime.fs" />
     <Compile Include="Predicates.fs" />
     <Compile Include="Lowered.fs" />
@@ -5063,4 +5087,4 @@ generate_fsproj(ModName, Options, Code) :-
   </ItemGroup>
 ~w
 </Project>
-', [ModName, LmdbCompile, LmdbPackage]).
+', [ModName, LmdbCompile, CsrCompile, LmdbPackage]).

@@ -125,6 +125,7 @@ or `Module:Name/Arity`).
 | `lmdb_path(Path)` | (none) | When set, includes `LmdbFactSource.fs` + LightningDB NuGet in the generated project. The module provides `openEnv`, `loadCategoryParent`, `LmdbCursorLookup`, `TwoLevelCachedLookupSource`, etc. |
 | `lmdb_materialisation(Mode)` | `cached` | One of `eager`, `lazy`, `cached`. Controls how LMDB facts are accessed at runtime. `cached` (two-level L1/L2) is the recommended default — zero startup cost, sub-ms warm hits, bounded memory. See [LMDB modes](#lmdb-modes). |
 | `lmdb_l2_capacity(Spec)` | `auto` | L2 cache sizing. `auto` = runtime memory formula; `small`/`medium`/`large` = T-shirt sizes (8/80/800 MB); `enwiki`/`simplewiki` = corpus presets; `'80mb'` = explicit byte budget; integer = raw entry count; `unlimited` = no cap. |
+| `csr_path(Path)` | (none) | When set, includes `CsrReader.fs` in the generated project. The module provides `CsrLookupSource` implementing `ILookupSource` for reverse child-edge lookup from CSR artifacts (`.csr.idx` / `.csr.val` / `.csr.meta`). No extra NuGet dependencies. |
 
 Beyond these, the F# target threads the standard cross-target options
 (kernel detection, mode hints, etc.) through to `wam_target` and the
@@ -539,7 +540,35 @@ The `TwoLevelCachedLookupSource` implements cached mode:
   `lmdb_l2_capacity` (default: auto-sized from available RAM)
 
 Kernel templates accept `int -> int list` lookup functions so they
-work transparently with any mode — no materialisation at kernel entry.
+work transparently with any mode -- no materialisation at kernel entry.
+
+## CSR reverse-index support
+
+When `csr_path(Path)` is set, the generated project includes
+`CsrReader.fs` with `CsrLookupSource` for reverse child-edge lookup
+(parent -> children) from CSR (Compressed Sparse Row) artifacts.
+
+CSR artifacts are built by `examples/benchmark/build_reverse_csr_artifact.py`
+from a Phase 1 LMDB `category_parent` database. The format is:
+
+| File | Content |
+| --- | --- |
+| `.csr.idx` | `int32_le parent, uint64_le offset, uint32_le count` (16 bytes/record, sorted) |
+| `.csr.val` | `int32_le child` (4 bytes each, packed) |
+| `.csr.meta` | JSON manifest (`format: unifyweaver.reverse_csr.v1`) |
+
+`CsrLookupSource` loads the index into memory and reads child slices
+from the values file on demand. It implements `ILookupSource` and
+composes with `TwoLevelCachedLookupSource` for repeated lookups:
+
+```fsharp
+use csr = CsrReader.openCsr "/path/to/csr/artifact"
+let cachedCsr = TwoLevelCachedLookupSource(csr, l2CapacitySpec = "auto") :> ILookupSource
+let children = cachedCsr.Lookup(parentId)
+```
+
+No extra NuGet dependencies required (uses `System.IO` and
+`System.Text.Json` from the .NET 8 SDK).
 
 ## See also
 

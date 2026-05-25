@@ -1,13 +1,13 @@
 # F# CSR + Parallelization + Haskell Speedup Plan
 
-**Status**: Design plan for the next session(s).
+**Status**: Phase 1 done. Phases 2-3 pending.
 **Date**: 2026-05-25
 **Context**: This session delivered F# ISO support (6 PRs) + LMDB full
 stack (11 PRs). F# achieves 11 ms query at scale 300 (beating Haskell
 107 ms single-core, 32 ms 4-core). LMDB cached mode is 3.1× faster
 than in-memory Map for the DFS hot loop.
 
-## Phase 1: F# CSR Reader
+## Phase 1: F# CSR Reader  [DONE]
 
 ### Motivation
 
@@ -66,14 +66,19 @@ Key decisions:
 - A CSR builder (Python script) to convert from the Phase 1 LMDB
   `category_child` DUPSORT database to the packed CSR files.
 
-### Files to create
+### Files created
 
-- `templates/targets/fsharp_wam/csr_reader.fs.mustache` — the reader
-- `examples/benchmark/build_csr_from_lmdb.py` — builder script
-- `tests/core/test_wam_fsharp_csr_smoke.pl` — E2E test
-- Update `.fsproj` template for optional CSR inclusion
+- `templates/targets/fsharp_wam/csr_reader.fs.mustache` -- CsrLookupSource
+- `tests/core/test_wam_fsharp_csr_smoke.pl` -- E2E smoke test
+- `tests/core/test_wam_fsharp_csr_bench.pl` -- CSR vs LMDB benchmark
+- Updated `wam_fsharp_target.pl` -- `csr_path(Path)` option + conditional .fsproj
+- Builder already existed: `examples/benchmark/build_reverse_csr_artifact.py`
 
-### Estimated effort: 1 session (~3-4 hours)
+### Benchmark results (500 parents x 6 children)
+
+- CSR raw: 0.55 ms (2.7x faster than LMDB cursor)
+- CSR cached (L1/L2): 0.06 ms (24.5x faster than LMDB cursor)
+- LMDB cursor: 1.47 ms (baseline)
 
 ---
 
@@ -197,14 +202,14 @@ logic — test with pure, ship with mutable.
 ## Sequencing
 
 ```
-Phase 1: F# CSR reader          [next session]
-    ↓
-Phase 2: F# parallel seeds      [same or next session]
-    ↓
+Phase 1: F# CSR reader          [DONE]
+    |
+Phase 2: F# parallel seeds      [next]
+    |
 Phase 3: Haskell mutable regs   [separate sessions, independent of 1+2]
 ```
 
-Phase 3 is independent — can be started anytime, doesn't depend on
+Phase 3 is independent -- can be started anytime, doesn't depend on
 CSR or F# parallel work. The value is bringing Haskell back into
 competition with F# so both targets can serve as viable production
 choices.
