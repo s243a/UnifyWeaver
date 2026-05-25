@@ -3997,6 +3997,11 @@ generate_merged_code_build(DetectedKernels, Options, Code) :-
     ).
 
 generate_query_body(Options, QueryBody) :-
+    % Phase 3: select run function based on register_mode option
+    (   member(register_mode(st_array), Options)
+    ->  RunFn = 'runMutableRegs'
+    ;   RunFn = 'run'
+    ),
     % Emit a PURE expression so the seed loop can use `parMap rdeepseq`.
     % We use explicit braces and semicolons on the `let` to avoid Haskell's
     % column-alignment layout rules (the template renderer doesn't re-indent
@@ -4005,8 +4010,8 @@ generate_query_body(Options, QueryBody) :-
     ->  % Optimized: call WAM-compiled aggregation predicate per seed.
         format(atom(QueryPred1), '~w', [QueryPred]),
         format(atom(QueryBody),
-'let { wsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "~w" mergedLabels, wsRegs = IM.fromList [ (1, Atom (iAtom cat)), (2, Atom (iAtom root)), (3, Unbound wsVarId) ], wsCP = 0 } ; !result = case run ctx s0 of { Just s1 -> case IM.lookup wsVarId (wsBindings s1) of { Just v -> case extractDouble fullInternTable (derefVar (wsBindings s1) v) of { Just ws -> ws ; Nothing -> 0.0 } ; Nothing -> 0.0 } ; Nothing -> 0.0 } } in (cat, result)',
-            [QueryPred1])
+'let { wsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "~w" mergedLabels, wsRegs = IM.fromList [ (1, Atom (iAtom cat)), (2, Atom (iAtom root)), (3, Unbound wsVarId) ], wsCP = 0 } ; !result = case ~w ctx s0 of { Just s1 -> case IM.lookup wsVarId (wsBindings s1) of { Just v -> case extractDouble fullInternTable (derefVar (wsBindings s1) v) of { Just ws -> ws ; Nothing -> 0.0 } ; Nothing -> 0.0 } ; Nothing -> 0.0 } } in (cat, result)',
+            [QueryPred1, RunFn])
     ;   member(use_ffi(true), Options)
     ->  % FFI path: call executeForeign directly instead of running WAM code.
         % When the query predicate has an FFI kernel, the WAM code's internal
