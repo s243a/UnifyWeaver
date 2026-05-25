@@ -2844,11 +2844,110 @@ stepST !ctx regs !pw (BuiltinCall ">/2" _) = do
     (Just a, Just b) | a > b -> return $ Just pw { pwPC = pwPC pw + 1 }
     _ -> return Nothing
 
+-- Builder operations: read reg value and pass to addToBuilder (pure helper).
+-- addToBuilder is pure and only touches wsBuilder/wsRegs, so we can
+-- do the reg read in ST and delegate the builder logic to pure.
+stepST _ regs !pw (SetValue xn) = do
+  mv <- getRegST regs xn pw
+  case mv of
+    Nothing -> return Nothing
+    Just val -> do
+      let s0 = PureWamState { pwPC = pwPC pw, pwStack = pwStack pw
+                            , pwHeap = pwHeap pw, pwHeapLen = pwHeapLen pw
+                            , pwTrail = pwTrail pw, pwTrailLen = pwTrailLen pw
+                            , pwCP = pwCP pw, pwCPs = pwCPs pw, pwCPsLen = pwCPsLen pw
+                            , pwBindings = pwBindings pw, pwCutBar = pwCutBar pw
+                            , pwBuilder = pwBuilder pw, pwVarCounter = pwVarCounter pw
+                            , pwAggAccum = pwAggAccum pw }
+      -- addToBuilder is pure: only modifies wsBuilder and wsRegs (for struct/list finalize)
+      regMap <- freezeRegsToIntMap regs
+      let ws = pureToWamState s0 regMap
+      case addToBuilder val ws of
+        Nothing -> return Nothing
+        Just ws'''' -> do
+          forM_ (IM.toList (wsRegs ws'''')) $ \\(k, v) -> writeArray regs k v
+          return (Just (wamStateToPure ws''''))
+
+stepST _ regs !pw (SetVariable xn) = do
+  let !vid = pwVarCounter pw
+      !var = Unbound vid
+  pw'''' <- putRegST regs xn var pw
+  let pw2 = pw'''' { pwVarCounter = vid + 1 }
+  -- Delegate builder logic to pure
+  regMap <- freezeRegsToIntMap regs
+  let ws = pureToWamState pw2 regMap
+  case addToBuilder var ws of
+    Nothing -> return Nothing
+    Just ws2 -> do
+      forM_ (IM.toList (wsRegs ws2)) $ \\(k, v) -> writeArray regs k v
+      return (Just (wamStateToPure ws2))
+
+stepST _ regs !pw (SetConstant c) = do
+  regMap <- freezeRegsToIntMap regs
+  let ws = pureToWamState pw regMap
+  case addToBuilder c ws of
+    Nothing -> return Nothing
+    Just ws'''' -> do
+      forM_ (IM.toList (wsRegs ws'''')) $ \\(k, v) -> writeArray regs k v
+      return (Just (wamStateToPure ws''''))
+
+-- Call/Execute dispatch (string-based, not pre-resolved)
+stepST !ctx regs !pw (Call pred _arity) = do
+  let sc = pw { pwCP = pwPC pw + 1 }
+  case Map.lookup pred (wcLoweredPredicates ctx) of
+    Just fn -> do
+      regMap <- freezeRegsToIntMap regs
+      let ws = pureToWamState sc regMap
+      case fn ctx ws of
+        Nothing -> return Nothing
+        Just ws'''' -> do
+          forM_ (IM.toList (wsRegs ws'''')) $ \\(k, v) -> writeArray regs k v
+          return (Just (wamStateToPure ws''''))
+    Nothing -> do
+      regMap <- freezeRegsToIntMap regs
+      let ws = pureToWamState sc regMap
+      case callIndexedFact2 ctx pred ws of
+        Just sr -> do
+          forM_ (IM.toList (wsRegs sr)) $ \\(k, v) -> writeArray regs k v
+          return (Just (wamStateToPure sr))
+        Nothing -> case Map.lookup pred (wcLabels ctx) of
+          Just pc -> return $ Just sc { pwPC = pc }
+          Nothing -> return Nothing
+
+stepST !ctx regs !pw (Execute pred) = do
+  case Map.lookup pred (wcLoweredPredicates ctx) of
+    Just fn -> do
+      regMap <- freezeRegsToIntMap regs
+      let ws = pureToWamState pw regMap
+      case fn ctx ws of
+        Nothing -> return Nothing
+        Just ws'''' -> do
+          forM_ (IM.toList (wsRegs ws'''')) $ \\(k, v) -> writeArray regs k v
+          return (Just (wamStateToPure ws''''))
+    Nothing -> do
+      regMap <- freezeRegsToIntMap regs
+      let ws = pureToWamState pw regMap
+      case callIndexedFact2 ctx pred ws of
+        Just sr -> do
+          forM_ (IM.toList (wsRegs sr)) $ \\(k, v) -> writeArray regs k v
+          return (Just (wamStateToPure sr))
+        Nothing -> case Map.lookup pred (wcLabels ctx) of
+          Just pc -> return $ Just pw { pwPC = pc }
+          Nothing -> return Nothing
+
+stepST !ctx regs !pw (CallForeign pred _arity) = do
+  regMap <- freezeRegsToIntMap regs
+  let ws = pureToWamState (pw { pwCP = pwPC pw + 1 }) regMap
+  case executeForeign ctx pred ws of
+    Nothing -> return Nothing
+    Just ws'''' -> do
+      forM_ (IM.toList (wsRegs ws'''')) $ \\(k, v) -> writeArray regs k v
+      return (Just (wamStateToPure ws''''))
+
 -- Fallback: delegate to pure step via bridge (freeze/thaw per call).
--- Handles: SetValue/SetVariable/SetConstant (builder), member/2, \\+/1,
--- length/2, aggregates, parallel fork, =../2, copy_term/2, functor/3,
--- arg/3, NotMember*, BuildEmptySet, SetInsert, PutStructureDyn,
--- Call/Execute (string dispatch), CallForeign, CallFactStream.
+-- Handles: member/2, \\+/1, length/2, aggregates, parallel fork,
+-- =../2, copy_term/2, functor/3, arg/3, NotMember*, BuildEmptySet,
+-- SetInsert, PutStructureDyn, CallFactStream.
 stepST !ctx regs !pw instr = do
   regMap <- freezeRegsToIntMap regs
   let s = pureToWamState pw regMap
