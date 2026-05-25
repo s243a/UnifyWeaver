@@ -3560,6 +3560,13 @@ import Control.DeepSeq (NFData(..), deepseq)
 import Control.Concurrent.Async (async, cancel, waitAny)
 import Control.Exception (evaluate)
 import System.IO.Unsafe (unsafePerformIO)
+-- Phase 3 (mutable registers): ST monad + STArray for O(1) register access.
+import Control.Monad.ST.Strict (ST, runST)
+import qualified Data.Array.ST as STA
+import Data.Array.MArray (readArray, writeArray, freeze, newArray)
+import Data.STRef.Strict (newSTRef, readSTRef, writeSTRef, modifySTRef'')
+import Control.Monad (forM_)
+import qualified Data.Array as A
 ~w
 import WamTypes
 
@@ -3693,6 +3700,74 @@ fetchInstr pc code
 {-# INLINE unsafeFetchInstr #-}
 unsafeFetchInstr :: Int -> Array Int Instruction -> Instruction
 unsafeFetchInstr pc code = code ! pc
+
+-- | Phase 3: ST-mode register helpers.
+-- Convert between WamState (IntMap regs) and PureWamState (regs in separate STArray).
+
+wamStateToPure :: WamState -> PureWamState
+wamStateToPure s = PureWamState
+  { pwPC = wsPC s, pwStack = wsStack s, pwHeap = wsHeap s
+  , pwHeapLen = wsHeapLen s, pwTrail = wsTrail s, pwTrailLen = wsTrailLen s
+  , pwCP = wsCP s, pwCPs = [], pwCPsLen = 0
+  , pwBindings = wsBindings s, pwCutBar = wsCutBar s
+  , pwBuilder = wsBuilder s, pwVarCounter = wsVarCounter s
+  , pwAggAccum = wsAggAccum s
+  }
+
+pureToWamState :: PureWamState -> IM.IntMap Value -> WamState
+pureToWamState pw regMap = WamState
+  { wsPC = pwPC pw, wsRegs = regMap, wsStack = pwStack pw
+  , wsHeap = pwHeap pw, wsHeapLen = pwHeapLen pw
+  , wsTrail = pwTrail pw, wsTrailLen = pwTrailLen pw
+  , wsCP = pwCP pw, wsCPs = [], wsCPsLen = 0
+  , wsBindings = pwBindings pw, wsCutBar = pwCutBar pw
+  , wsBuilder = pwBuilder pw, wsVarCounter = pwVarCounter pw
+  , wsAggAccum = pwAggAccum pw
+  }
+
+-- | Read a register value in ST mode. Y-registers (>= 200) come from env frame.
+{-# INLINE getRegST #-}
+getRegST :: STA.STArray s Int Value -> Int -> PureWamState -> ST s (Maybe Value)
+getRegST regs rid pw
+  | rid >= 200 = return $ findYRegPure rid (pwStack pw)
+  | otherwise = do
+      v <- readArray regs rid
+      return $ Just (derefVar (pwBindings pw) v)
+  where
+    findYRegPure _ [] = Nothing
+    findYRegPure r (EnvFrame _ yregs : _) =
+      derefVar (pwBindings pw) <$> IM.lookup r yregs
+    findYRegPure r (_ : rest) = findYRegPure r rest
+
+-- | Write a register value in ST mode. Y-registers go to env frame.
+{-# INLINE putRegST #-}
+putRegST :: STA.STArray s Int Value -> Int -> Value -> PureWamState -> ST s PureWamState
+putRegST regs rid val pw
+  | rid >= 200 = return $ pw { pwStack = updateTopEnvPure rid val (pwStack pw) }
+  | otherwise = do writeArray regs rid val; return pw
+  where
+    updateTopEnvPure _ _ [] = []
+    updateTopEnvPure r v (EnvFrame cp yregs : rest) =
+      EnvFrame cp (IM.insert r v yregs) : rest
+    updateTopEnvPure r v (x : rest) = x : updateTopEnvPure r v rest
+
+-- | Freeze registers into an immutable snapshot for choice points.
+{-# INLINE snapshotRegsST #-}
+snapshotRegsST :: STA.STArray s Int Value -> ST s (A.Array Int Value)
+snapshotRegsST = freeze
+
+-- | Restore registers from a frozen snapshot (backtrack).
+{-# INLINE restoreRegsST #-}
+restoreRegsST :: STA.STArray s Int Value -> A.Array Int Value -> ST s ()
+restoreRegsST regs snap = forM_ [1..maxRegId] $ \\i ->
+  writeArray regs i (snap A.! i)
+
+-- | Freeze STArray registers into an IntMap (for returning WamState).
+freezeRegsToIntMap :: STA.STArray s Int Value -> ST s (IM.IntMap Value)
+freezeRegsToIntMap regs = do
+  arr <- freeze regs
+  return $ IM.fromList [(i, arr A.! i) | i <- [1..maxRegId],
+                         arr A.! i /= Unbound (-1)]
 
 -- | Resolve Call instructions at project load time:
 --   - Foreign predicates (detected kernels) → CallForeign (direct FFI, Nothing = fail)
@@ -3981,6 +4056,44 @@ data WamState = WamState
   , wsVarCounter :: {-# UNPACK #-} !Int
   , wsAggAccum :: ![Value]
   } deriving (Show)
+
+-- | Maximum register ID. A1-A99=1-99, X1-X99=101-199, Y handled via stack.
+maxRegId :: Int
+maxRegId = 199
+
+-- | Pure WAM state for ST-mode execution. All fields except registers.
+-- Registers live in a separate mutable STArray, passed alongside this record.
+-- See WAM_HASKELL_MUTABLE_REGISTERS_SPECIFICATION.md.
+data PureWamState = PureWamState
+  { pwPC        :: {-# UNPACK #-} !Int
+  , pwStack     :: ![EnvFrame]
+  , pwHeap      :: ![Value]
+  , pwHeapLen   :: {-# UNPACK #-} !Int
+  , pwTrail     :: ![TrailEntry]
+  , pwTrailLen  :: {-# UNPACK #-} !Int
+  , pwCP        :: {-# UNPACK #-} !Int
+  , pwCPs       :: ![MutableChoicePoint]
+  , pwCPsLen    :: {-# UNPACK #-} !Int
+  , pwBindings  :: !(IM.IntMap Value)
+  , pwCutBar    :: {-# UNPACK #-} !Int
+  , pwBuilder   :: !Builder
+  , pwVarCounter :: {-# UNPACK #-} !Int
+  , pwAggAccum  :: ![Value]
+  }
+
+-- | Choice point with frozen register snapshot (for ST-mode execution).
+data MutableChoicePoint = MutableChoicePoint
+  { mcpNextPC    :: {-# UNPACK #-} !Int
+  , mcpRegs      :: !(Array Int Value)
+  , mcpStack     :: ![EnvFrame]
+  , mcpCP        :: {-# UNPACK #-} !Int
+  , mcpTrailLen  :: {-# UNPACK #-} !Int
+  , mcpHeapLen   :: {-# UNPACK #-} !Int
+  , mcpBindings  :: !(IM.IntMap Value)
+  , mcpCutBar    :: {-# UNPACK #-} !Int
+  , mcpAggFrame  :: !(Maybe AggFrame)
+  , mcpBuiltin   :: !(Maybe BuiltinState)
+  }
 
 -- | Instruction type for the WAM.
 -- | Register IDs are pre-interned at compile time as Ints to avoid string
