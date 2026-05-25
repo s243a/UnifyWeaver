@@ -2730,9 +2730,125 @@ stepST _ _ !pw (RetryMeElsePc nextPC) =
                        , pwCPs = mcp { mcpNextPC = nextPC } : rest }
     [] -> return $ Just pw { pwPC = pwPC pw + 1 }
 
+-- Label-based variants (lookup label -> PC)
+stepST !ctx regs !pw (TryMeElse label) =
+  let nextPC = fromMaybe 0 $ Map.lookup label (wcLabels ctx)
+  in stepST ctx regs pw (TryMeElsePc nextPC)
+
+stepST !ctx regs !pw (RetryMeElse label) =
+  let nextPC = fromMaybe 0 $ Map.lookup label (wcLabels ctx)
+  in stepST ctx regs pw (RetryMeElsePc nextPC)
+
+stepST !ctx _ !pw (Jump label) =
+  case Map.lookup label (wcLabels ctx) of
+    Just pc -> return $ Just pw { pwPC = pc }
+    Nothing -> return Nothing
+
+-- SwitchOnConstantPc: indexed dispatch on A1 register
+stepST _ regs !pw (SwitchOnConstantPc table) = do
+  v <- readArray regs 1
+  let !dv = derefVar (pwBindings pw) v
+  case dv of
+    Unbound _ -> return $ Just pw { pwPC = pwPC pw + 1 }
+    Atom aid -> case IM.lookup aid table of
+      Just pc -> return $ Just pw { pwPC = pc }
+      Nothing -> return $ Just pw { pwPC = pwPC pw + 1 }
+    Integer n -> case IM.lookup n table of
+      Just pc -> return $ Just pw { pwPC = pc }
+      Nothing -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return $ Just pw { pwPC = pwPC pw + 1 }
+
+-- Cut: truncate choice point stack
+stepST _ _ !pw (BuiltinCall "!/0" _) =
+  return $ Just pw { pwPC = pwPC pw + 1
+                   , pwCPs = take (pwCutBar pw) (pwCPs pw)
+                   , pwCPsLen = pwCutBar pw }
+
+-- CutIte: soft cut for if-then-else
+stepST _ _ !pw CutIte =
+  case pwCPs pw of
+    (_ : rest) -> return $ Just pw { pwPC = pwPC pw + 1
+                                   , pwCPs = rest, pwCPsLen = pwCPsLen pw - 1 }
+    [] -> return $ Just pw { pwPC = pwPC pw + 1 }
+
+-- Type-checking builtins
+stepST _ regs !pw (BuiltinCall "nonvar/1" _) = do
+  v <- readArray regs 1
+  let !dv = derefVar (pwBindings pw) v
+  case dv of
+    Unbound _ -> return Nothing
+    _         -> return $ Just pw { pwPC = pwPC pw + 1 }
+
+stepST _ regs !pw (BuiltinCall "var/1" _) = do
+  v <- readArray regs 1
+  let !dv = derefVar (pwBindings pw) v
+  case dv of
+    Unbound _ -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _         -> return Nothing
+
+stepST _ regs !pw (BuiltinCall "atom/1" _) = do
+  v <- readArray regs 1
+  let !dv = derefVar (pwBindings pw) v
+  case dv of
+    Atom _ -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _      -> return Nothing
+
+stepST _ regs !pw (BuiltinCall "integer/1" _) = do
+  v <- readArray regs 1
+  let !dv = derefVar (pwBindings pw) v
+  case dv of
+    Integer _ -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _         -> return Nothing
+
+stepST _ regs !pw (BuiltinCall "number/1" _) = do
+  v <- readArray regs 1
+  let !dv = derefVar (pwBindings pw) v
+  case dv of
+    Integer _ -> return $ Just pw { pwPC = pwPC pw + 1 }
+    Float _   -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _         -> return Nothing
+
+stepST !ctx regs !pw (BuiltinCall "is/2" _) = do
+  v2 <- readArray regs 2
+  v1 <- readArray regs 1
+  let !expr = derefVar (pwBindings pw) v2
+      result = evalArith (wcInternTable ctx) (pwBindings pw) expr
+      !lhs = derefVar (pwBindings pw) v1
+  case (lhs, result) of
+    (Unbound vid, Just r) -> do
+      let val = if fromIntegral (round r :: Int) == r then Integer (round r) else Float r
+      writeArray regs 1 val
+      return $ Just pw { pwPC = pwPC pw + 1
+                       , pwBindings = IM.insert vid val (pwBindings pw)
+                       , pwTrail = TrailEntry vid (IM.lookup vid (pwBindings pw)) : pwTrail pw
+                       , pwTrailLen = pwTrailLen pw + 1
+                       }
+    (Integer n, Just r) | fromIntegral n == r -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return Nothing
+
+stepST !ctx regs !pw (BuiltinCall "</2" _) = do
+  v1 <- readArray regs 1
+  v2 <- readArray regs 2
+  let r1 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v1)
+      r2 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v2)
+  case (r1, r2) of
+    (Just a, Just b) | a < b -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return Nothing
+
+stepST !ctx regs !pw (BuiltinCall ">/2" _) = do
+  v1 <- readArray regs 1
+  v2 <- readArray regs 2
+  let r1 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v1)
+      r2 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v2)
+  case (r1, r2) of
+    (Just a, Just b) | a > b -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return Nothing
+
 -- Fallback: delegate to pure step via bridge (freeze/thaw per call).
--- Handles builtins, aggregates, parallel fork, SwitchOnConstant,
--- SetValue/SetVariable/SetConstant (builder), and other complex arms.
+-- Handles: SetValue/SetVariable/SetConstant (builder), member/2, \\+/1,
+-- length/2, aggregates, parallel fork, =../2, copy_term/2, functor/3,
+-- arg/3, NotMember*, BuildEmptySet, SetInsert, PutStructureDyn,
+-- Call/Execute (string dispatch), CallForeign, CallFactStream.
 stepST !ctx regs !pw instr = do
   regMap <- freezeRegsToIntMap regs
   let s = pureToWamState pw regMap
