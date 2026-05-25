@@ -165,7 +165,7 @@ let main argv =
             // candidates are lowered aggregate variants whose semantics fold
             // a target root into the call shape, so A2 is the root and A3
             // accumulates the result.  The /4 variant is the raw
-            // category_ancestor(+Cat, -Ancestor, -Hops, +Visited) — A2 and
+            // category_ancestor(+Cat, -Ancestor, -Hops, +Visited) -- A2 and
             // A3 are outputs (Unbound), and A4 must be a list-valued input
             // seeded with [Cat] so that the cycle-detection guard (negation
             // over member/2) sees a real list rather than an unbound
