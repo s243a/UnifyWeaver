@@ -122,31 +122,40 @@ F# now has all three materialisation modes from
 - **`LmdbCursorLookup`** opens a per-call ReadTransaction + cursor
   (Phase 2 lazy mode; no startup cost, per-lookup cursor overhead).
 - **`CachedLookupSource`** decorates any `ILookupSource` with a
-  `ConcurrentDictionary<int, int list>` memo cache (Phase 3 cached
-  mode; first lookup delegates to inner, subsequent hits return
-  cached value).
-- **`resolveFactMap`** helper checks `WcLookupSources` before
-  falling back to `WcFfiFacts`; kernel codegen wired to use it.
+  `ConcurrentDictionary<int, int list>` memo cache (flat unbounded).
+- **`TwoLevelCachedLookupSource`** — per-thread L1 array (4096
+  slots, collision-overwrite) + shared L2 `ConcurrentDictionary`
+  (default 512k entries ≈ 8 MB). L2 grows lazily; cap prevents
+  unbounded growth. For full enwiki (~2M category nodes), pass
+  `maxL2Entries = 2_000_000` (~80 MB) for heavy-batch workloads.
+- **`DictLookupSource`** wraps `Dictionary<int, int list>` for O(1)
+  eager access without the cost of immutable Map.
+- **`resolveFactLookup`** returns `int -> int list` dispatching
+  through `ILookupSource.Lookup`; kernel codegen uses this so the
+  DFS never materialises the full relation into a Map.
 - **`lmdb_path(Path)`** codegen option: includes `LmdbFactSource.fs`
   + `LightningDB` NuGet reference in the generated project.
 - **`lmdb_materialisation(eager|lazy|cached)`** codegen option
-  (default `eager`); logged at project-generation time.
+  (default `cached`); logged at project-generation time.
 - Template: `templates/targets/fsharp_wam/lmdb_fact_source.fs.mustache`.
 - E2E tests: `tests/core/test_wam_fsharp_lmdb_smoke.pl` (18
   assertions against a synthetic Phase 1 LMDB fixture).
 
 ### Remaining LMDB work
 
-- **`lmdb_materialisation(auto)` cost-model resolver**: picks
-  eager/lazy/cached from workload metadata. Mirrors the Rust R8
-  plan and the shared `resolve_auto_lmdb_materialisation/2` design
-  in `WAM_LMDB_LAZY_SPECIFICATION.md` §7.2.
+- **`lmdb_materialisation(auto)` cost-model resolver**: The
+  current default (`cached`) is unconditionally correct for
+  effective-distance workloads at any scale. A future `auto`
+  resolver would only be needed if a workload benefits from eager
+  (full-graph scan with high demand ratio) — rare in practice.
 - **Scan-mode** and **workload-segregation** contract: Rust R9/R10;
   out of scope for F# until Rust ships the reference.
-- **Bounded LRU eviction** in `CachedLookupSource`: v1 is unbounded
-  (`ConcurrentDictionary` grows without limit). A capacity-bounded
-  variant with recency-based eviction is a refinement for memory-
-  constrained workloads.
+- **L2 cache sizing for enwiki**: default 512k entries ≈ 8 MB is
+  sufficient for simplewiki and most corpora. Full English
+  Wikipedia (~2M category nodes, 9.93M edges) should override to
+  `maxL2Entries = 2_000_000` (~80 MB) for heavy-batch workloads.
+  A future `lmdb_l2_capacity(N)` codegen option could thread this
+  through project generation automatically.
 
 ## CSR Reverse-Index Readiness
 

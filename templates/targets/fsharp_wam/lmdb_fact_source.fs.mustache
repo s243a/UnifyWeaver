@@ -190,10 +190,19 @@ let loadDupsortRelationDict (env: LightningEnvironment) (dbName: string)
 ///           return.
 ///
 /// Default capacities: L1 = 4096 (per-thread), L2 = 524288 (shared).
-/// L2 at 512k entries (~8 MB) fits the entire enwiki category graph
-/// (~300k nodes) with headroom. Memory cost is trivial relative to
-/// the LMDB mmap; the trade-off favors keeping nodes cached once
-/// visited rather than re-opening cursors on eviction boundaries.
+///
+/// L2 sizing rationale:
+///   - 512k entries ≈ 8 MB at ~16 bytes/entry (int key + short list).
+///     Sufficient for simplewiki (~300k category nodes) and most real
+///     corpora without configuration.
+///   - Full English Wikipedia has ~2M category nodes (9.93M edges).
+///     An enwiki deployment doing many effective-distance queries
+///     should raise L2 to ~2M entries (~80 MB) via the maxL2Entries
+///     parameter: TwoLevelCachedLookupSource(inner, maxL2Entries=2_000_000).
+///     For a single query or small batch, the default 512k is fine —
+///     only the visited fraction of the graph occupies cache.
+///   - ConcurrentDictionary grows lazily; no upfront allocation.
+///     The cap only limits inserts once reached.
 type TwoLevelCachedLookupSource(inner: WamTypes.ILookupSource,
                                  ?l1Capacity: int,
                                  ?maxL2Entries: int) =
