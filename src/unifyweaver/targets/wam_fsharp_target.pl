@@ -4653,7 +4653,8 @@ write_wam_fsharp_project(Predicates, Options, ProjectDir) :-
         directory_file_path(ProjectDir, 'LmdbFactSource.fs', LmdbPath),
         write_fs_file(LmdbPath, LmdbTemplateCode),
         option(lmdb_materialisation(LmdbMode), Options, cached),
-        format(user_error, '[WAM-FSharp] LMDB fact source included (materialisation=~w)~n', [LmdbMode])
+        option(lmdb_l2_capacity(L2Cap), Options, auto),
+        format(user_error, '[WAM-FSharp] LMDB fact source included (materialisation=~w, l2_capacity=~w)~n', [LmdbMode, L2Cap])
     ;   true
     ),
 

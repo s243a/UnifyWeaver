@@ -150,12 +150,13 @@ F# now has all three materialisation modes from
   (full-graph scan with high demand ratio) — rare in practice.
 - **Scan-mode** and **workload-segregation** contract: Rust R9/R10;
   out of scope for F# until Rust ships the reference.
-- **L2 cache sizing for enwiki**: default 512k entries ≈ 8 MB is
-  sufficient for simplewiki and most corpora. Full English
-  Wikipedia (~2M category nodes, 9.93M edges) should override to
-  `maxL2Entries = 2_000_000` (~80 MB) for heavy-batch workloads.
-  A future `lmdb_l2_capacity(N)` codegen option could thread this
-  through project generation automatically.
+- **L2 cache sizing**: defaults to `auto` (runtime memory-based
+  formula matching Haskell). Also supports named sizes (`tiny`,
+  `small`, `medium`, `large`), corpus presets (`enwiki`,
+  `simplewiki`, `dev`), byte budgets (`80mb`), and explicit entry
+  counts. Codegen option: `lmdb_l2_capacity(auto|small|enwiki|...)`.
+  See `lmdb_fact_source.fs.mustache` resolveL2Capacity for the full
+  resolution table.
 
 ## CSR Reverse-Index Readiness
 
