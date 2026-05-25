@@ -20,25 +20,27 @@ benchmark_workload_path(Path) :-
 
 main :-
     current_prolog_flag(argv, Argv),
-    (   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom]
+    (   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, LmdbMaterialisationAtom]
     ->  true
+    ;   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom]
+    ->  LmdbMaterialisationAtom = eager
     ;   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom]
-    ->  LmdbCrateAtom = auto
+    ->  LmdbCrateAtom = auto, LmdbMaterialisationAtom = eager
     ;   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom]
-    ->  LmdbModeAtom = none, LmdbCrateAtom = auto
+    ->  LmdbModeAtom = none, LmdbCrateAtom = auto, LmdbMaterialisationAtom = eager
     ;   format(user_error,
-            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off> [<none|cursor>] [<lmdb_zero|heed|auto>]~n',
+            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off> [<none|cursor>] [<lmdb_zero|heed|auto>] [<eager|lazy|cached|auto>]~n',
             []),
         halt(1)
     ),
-    generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, OutputDir),
+    generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, LmdbMaterialisationAtom, OutputDir),
     halt(0).
 
 main :-
     format(user_error, 'Error: generation failed~n', []),
     halt(1).
 
-generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, OutputDir) :-
+generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, LmdbMaterialisationAtom, OutputDir) :-
     benchmark_workload_path(WorkloadPath),
     load_files(WorkloadPath, [silent(true)]),
     retractall(user:mode(category_ancestor(_, _, _, _))),
@@ -48,6 +50,8 @@ generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom,
     parse_kernel_mode(KernelModeAtom, KernelOptions),
     parse_lmdb_mode(LmdbModeAtom, LmdbOptions),
     parse_lmdb_crate(LmdbCrateAtom, LmdbCrateOptions),
+    parse_lmdb_materialisation(LmdbMaterialisationAtom, LmdbMaterialisation, LmdbMaterialisationOptions),
+    validate_lmdb_materialisation_combo(LmdbMaterialisation, LmdbModeAtom),
     BasePreds = [dimension_n/1, max_depth/1, category_ancestor/4],
     prolog_target:generate_prolog_script(BasePreds, OptimizationOptions, ScriptCode),
     tmp_file_stream(text, TmpPath, TmpStream),
@@ -57,12 +61,12 @@ generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom,
     delete_file(TmpPath),
     collect_wam_predicates(VariantAtom, Predicates),
     append([[module_name(wam_rust_matrix_bench), wam_fallback(true), emit_mode(EmitMode), parallel(true)],
-            KernelOptions, LmdbOptions, LmdbCrateOptions], Options),
+            KernelOptions, LmdbOptions, LmdbCrateOptions, LmdbMaterialisationOptions], Options),
     write_wam_rust_project(Predicates, Options, OutputDir),
-    write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom, LmdbModeAtom),
+    write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbMaterialisation),
     format(user_error,
-           '[WAM-Rust-Matrix] variant=~w emit_mode=~w kernels=~w lmdb=~w lmdb_crate=~w output=~w~n',
-           [VariantAtom, EmitMode, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, OutputDir]).
+           '[WAM-Rust-Matrix] variant=~w emit_mode=~w kernels=~w lmdb=~w lmdb_crate=~w materialisation=~w output=~w~n',
+           [VariantAtom, EmitMode, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, LmdbMaterialisation, OutputDir]).
 
 parse_lmdb_mode(none, []).
 parse_lmdb_mode(cursor, [lmdb_mode(cursor)]).
@@ -70,6 +74,30 @@ parse_lmdb_mode(cursor, [lmdb_mode(cursor)]).
 parse_lmdb_crate(auto, [lmdb_crate(auto)]).
 parse_lmdb_crate(lmdb_zero, [lmdb_crate(lmdb_zero)]).
 parse_lmdb_crate(heed, [lmdb_crate(heed)]).
+
+% Phase R7: lmdb_materialisation option (eager | lazy | cached | auto).
+% - eager: current behaviour — build runtime_category_parents Vec at startup.
+% - lazy:  parent edges read on-demand via LookupSource trait + LMDB cursor.
+% - cached: not yet implemented (R8); errors here.
+% - auto: R7 returns eager; R8 will wire the cost-model resolver.
+parse_lmdb_materialisation(eager, eager, [lmdb_materialisation(eager)]).
+parse_lmdb_materialisation(auto,  eager, [lmdb_materialisation(eager)]).
+parse_lmdb_materialisation(lazy,  lazy,  [lmdb_materialisation(lazy)]).
+parse_lmdb_materialisation(cached, _, _) :-
+    format(user_error,
+        'Error: lmdb_materialisation(cached) not yet implemented (see Phase R8 in docs/design/WAM_LMDB_LAZY_IMPLEMENTATION_PLAN.md)~n', []),
+    halt(1).
+
+% Lazy mode only makes sense when the LMDB is opened at runtime
+% (i.e., lmdb_mode == cursor). Without it there is no LmdbFactSource
+% for the LookupSource backend to wrap.
+validate_lmdb_materialisation_combo(eager, _).
+validate_lmdb_materialisation_combo(lazy, cursor) :- !.
+validate_lmdb_materialisation_combo(lazy, LmdbModeAtom) :-
+    format(user_error,
+        'Error: lmdb_materialisation(lazy) requires lmdb_mode(cursor); got lmdb_mode(~w)~n',
+        [LmdbModeAtom]),
+    halt(1).
 
 parse_variant(seeded, [
     dialect(swi),
@@ -108,7 +136,7 @@ collect_wam_predicates(accumulated, [
     user:'category_ancestor$effective_distance_sum_bound'/3
 ]).
 
-write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom, LmdbModeAtom) :-
+write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbMaterialisation) :-
     directory_file_path(OutputDir, 'src', SrcDir),
     directory_file_path(SrcDir, 'main.rs', MainPath),
     format(string(ModeMetric), 'wam_rust_matrix_~w_~w', [EmitModeAtom, KernelModeAtom]),
@@ -116,12 +144,72 @@ write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom, LmdbModeAtom) :-
     ->  rust_main_template_lmdb(Template)
     ;   rust_main_template(Template)
     ),
-    format(string(Code), Template, [ModeMetric]),
+    format(string(BaseCode), Template, [ModeMetric]),
+    apply_lmdb_materialisation_transform(LmdbMaterialisation, BaseCode, Code),
     setup_call_cleanup(
         open(MainPath, write, Stream, [encoding(utf8)]),
         format(Stream, '~w', [Code]),
         close(Stream)
     ).
+
+% R7: for lmdb_materialisation(lazy), rewrite the eager-Vec build block
+% in the LMDB main template to use the LookupSource trait. The eager
+% template stays the source of truth — we string-substitute the
+% materialisation block + WAM kernel dispatch. R8 should replace this
+% post-process hack with a proper template-section / compiler-option.
+apply_lmdb_materialisation_transform(eager, Code, Code).
+apply_lmdb_materialisation_transform(lazy, BaseCode, Code) :-
+    rewrite_eager_to_lazy(BaseCode, Code).
+
+% --- R7 lazy-mode post-process rewrite ---
+%
+% Performs two textual edits to the rendered LMDB main.rs:
+%   1. Inject a `LazyCategoryParents` struct + LookupSource impl after
+%      the LmdbFactSource use-statement.
+%   2. Replace the eager runtime_category_parents Vec build (plus
+%      register_indexed_atom_fact2 + ffi_facts population +
+%      setup_foreign_predicates) with the lazy setup block that
+%      registers category_parent/2 as a foreign predicate dispatched
+%      via the "lazy_lmdb_lookup" handler.
+%
+% The generated lazy setup also patches the in-memory WAM Vec<Instruction>
+% in place: any CallIndexedAtomFact2("category_parent") is rewritten to
+% CallForeign("category_parent", 2). TODO(R8): replace this in-place
+% Vec rewrite with proper compiler-option support in wam_target.pl.
+rewrite_eager_to_lazy(BaseCode, Code) :-
+    inject_lazy_struct(BaseCode, Code1),
+    replace_eager_setup_block(Code1, Code).
+
+inject_lazy_struct(Source, Result) :-
+    StructAnchor = "use wam_rust_matrix_bench::lmdb_fact_source::LmdbFactSource;",
+    lazy_struct_definition(StructCode),
+    find_and_split_once(Source, StructAnchor, Prefix, Suffix),
+    atomics_to_string([Prefix, StructAnchor, StructCode, Suffix], Result).
+
+replace_eager_setup_block(Source, Result) :-
+    BlockStart = "    // Build runtime_category_parents",
+    BlockEnd = "    setup_foreign_predicates(&mut vm);",
+    lazy_setup_block(Replacement),
+    find_and_split_once(Source, BlockStart, Prefix, MidPlusEnd),
+    find_and_split_once(MidPlusEnd, BlockEnd, _DiscardedMid, Suffix),
+    atomics_to_string([Prefix, Replacement, Suffix], Result).
+
+% First-match deterministic split: Source = Prefix ++ Needle ++ Suffix.
+find_and_split_once(Source, Needle, Prefix, Suffix) :-
+    once((
+        string_concat(Prefix, Rest, Source),
+        string_concat(Needle, Suffix, Rest)
+    )).
+
+% Rust source for the LazyCategoryParents struct + LookupSource impl.
+% Inserted right after `use ... LmdbFactSource;`. Uses the fully-qualified
+% trait path so we don't need to also edit the use-statements block.
+lazy_struct_definition(Code) :-
+    Code = "\n\n// R7 lazy-mode wrapper: bundles LmdbFactSource with the\n// s2i/i2s atom intern maps so the kernel can call into a single\n// LookupSource for category_parent/2.\nstruct LazyCategoryParents {\n    source: LmdbFactSource,\n    s2i: HashMap<String, i32>,\n    i2s: HashMap<i32, String>,\n}\n\nimpl wam_rust_matrix_bench::state::LookupSource for LazyCategoryParents {\n    fn lookup_key_for_atom(&self, atom: &str) -> Option<i32> {\n        self.s2i.get(atom).copied()\n    }\n    fn lookup_parents(&self, key: i32) -> Vec<i32> {\n        self.source.lookup_parents(key).unwrap_or_default()\n    }\n    fn atom_for_key(&self, key: i32) -> Option<String> {\n        self.i2s.get(&key).cloned()\n    }\n}\n".
+
+% Replacement for the eager-Vec build + register/ffi_facts/setup block.
+lazy_setup_block(Code) :-
+    Code = "    // R7 lazy: skip the eager runtime_category_parents Vec build.\n    // The kernel reads parent edges on-demand via the LookupSource\n    // trait. Materialisation cost drops from O(demand_set_edges) to\n    // O(1) at setup time; per-call cost shifts to the kernel.\n    // The eager path only loads i2s (it translates ints to strings\n    // when building the Vec). Lazy needs s2i too to translate the\n    // kernel's atom A1 to the LMDB int key.\n    let s2i = lmdb.load_s2i().expect(\"load_s2i\");\n    let load_ms = started.elapsed().as_millis();\n\n    let (mut code, mut labels) = shared_wam_program();\n    // R7 lazy: rewrite category_parent dispatch from CallIndexedAtomFact2\n    // to CallForeign so it lands in the \"lazy_lmdb_lookup\" handler.\n    // TODO(R8): move this rewrite into the WAM compiler via a proper\n    // option, instead of patching the emitted Vec<Instruction> here.\n    for instr in code.iter_mut() {\n        if let Instruction::CallIndexedAtomFact2(pred) = instr {\n            if pred == \"category_parent\" {\n                *instr = Instruction::CallForeign(\"category_parent\".to_string(), 2);\n            }\n        }\n    }\n    resolve_targets(&mut code, &labels);\n\n    let mut vm = WamState::new(code, labels);\n    // Register category_parent/2 as a foreign predicate backed by the\n    // LookupSource trait wrapping LmdbFactSource.\n    let lazy_source = std::sync::Arc::new(LazyCategoryParents {\n        source: lmdb.clone(),\n        s2i: s2i.clone(),\n        i2s: i2s.clone(),\n    });\n    vm.register_lazy_lookup(\"category_parent/2\", lazy_source);\n    vm.register_foreign_predicate(\"category_parent/2\");\n    vm.register_foreign_native_kind(\"category_parent/2\", \"lazy_lmdb_lookup\");\n    vm.register_foreign_result_layout(\"category_parent/2\", \"tuple:1\");\n    vm.register_foreign_result_mode(\"category_parent/2\", \"stream\");\n    // Pre-intern every atom the kernel might produce. Mirrors what the\n    // eager path does implicitly via ffi_facts population.\n    for cat in s2i.keys() {\n        vm.intern_atom(cat);\n    }\n    setup_foreign_predicates(&mut vm);".
 
 rust_main_template('use std::collections::{HashMap, HashSet};
 use std::fs::File;
