@@ -87,7 +87,7 @@ let loadI2S (env: LightningEnvironment) : Map<int, string> =
 /// O(1) amortized insert, then converts to immutable Map in one pass.
 /// Previous version used Map.add + list append per entry, which was
 /// O(n log n) with heavy allocation pressure from intermediate Map
-/// nodes — profiling showed this dominated eager load time.
+/// nodes -- profiling showed this dominated eager load time.
 let loadDupsortRelation (env: LightningEnvironment) (dbName: string) : Map<int, int list> =
     use tx = env.BeginTransaction(TransactionBeginFlags.ReadOnly)
     let db = tx.OpenDatabase(dbName, new DatabaseConfiguration(Flags = DatabaseOpenFlags.DuplicatesSort))
@@ -163,7 +163,7 @@ let loadDupsortRelationDict (env: LightningEnvironment) (dbName: string)
         result.[kv.Key] <- Seq.toList kv.Value
     result
 
-/// On-demand LMDB cursor lookup — implements ILookupSource from WamTypes.
+/// On-demand LMDB cursor lookup -- implements ILookupSource from WamTypes.
 /// Each Lookup call opens a short-lived ReadTransaction + cursor, seeks
 /// to the key, and iterates all DUPSORT duplicates.  No caching; that
 /// is the job of a future CachedLookupSource decorator.
@@ -174,13 +174,13 @@ let loadDupsortRelationDict (env: LightningEnvironment) (dbName: string)
 /// the full database, or when memory is constrained.
 /// Two-level cached decorator over any ILookupSource.
 ///
-/// L1: per-thread Dictionary (ThreadLocal) — zero contention, plain
+/// L1: per-thread Dictionary (ThreadLocal) -- zero contention, plain
 ///     hashtable lookup. Fixed capacity with collision-overwrite
 ///     eviction (power-of-two size, hash mod index). Mirrors the
 ///     Haskell per-HEC IOArray design. Most useful when work is
 ///     grouped by cache hits (e.g. clustered seed batches).
 ///
-/// L2: shared ConcurrentDictionary — cross-thread, lock-free CAS.
+/// L2: shared ConcurrentDictionary -- cross-thread, lock-free CAS.
 ///     Bounded by maxL2Entries; once full, new entries are NOT
 ///     inserted (read-through to inner source). This prevents
 ///     unbounded memory growth on large corpora.
@@ -192,8 +192,8 @@ let loadDupsortRelationDict (env: LightningEnvironment) (dbName: string)
 /// L2 sizing: controlled via l2CapacitySpec string or maxL2Entries int.
 ///
 ///   Spec string     Resolves to     Use case
-///   ─────────────   ─────────────   ─────────────────────────────────
-///   "auto"          memory formula  Default — adapts to system RAM
+///   -------------   -------------   ---------------------------------
+///   "auto"          memory formula  Default -- adapts to system RAM
 ///   "unlimited"     Int32.MaxValue  Never cap; memory unconstrained
 ///   "tiny" / "dev"  4,096 entries   Testing / development
 ///   "small"         ~262k (8 MB)    Small corpora, constrained memory
@@ -245,19 +245,19 @@ let private l2CapacityPreset (name: string) : int =
     | "simplewiki" -> 300_000     // Simple English Wikipedia
     | "dev"        -> 4096        // development/test fixture
     // T-shirt sizes (aliased to byte budgets)
-    | "tiny"       -> 4_096       // ~128 KB — testing only
-    | "small"      -> l2CapacityFromBytes (8L * 1024L * 1024L)   // 8 MB → ~262k
-    | "medium"     -> l2CapacityFromBytes (80L * 1024L * 1024L)  // 80 MB → ~2.6M
-    | "large"      -> l2CapacityFromBytes (800L * 1024L * 1024L) // 800 MB → ~26M
-    | _            -> l2CapacityFromMemory ()  // unknown → auto
+    | "tiny"       -> 4_096       // ~128 KB -- testing only
+    | "small"      -> l2CapacityFromBytes (8L * 1024L * 1024L)   // 8 MB -> ~262k
+    | "medium"     -> l2CapacityFromBytes (80L * 1024L * 1024L)  // 80 MB -> ~2.6M
+    | "large"      -> l2CapacityFromBytes (800L * 1024L * 1024L) // 800 MB -> ~26M
+    | _            -> l2CapacityFromMemory ()  // unknown -> auto
 
 /// Resolve L2 capacity from any supported specification:
-///   "auto"           → runtime memory detection
-///   "unlimited"      → Int32.MaxValue (effectively unbounded)
-///   "small/medium/large" → T-shirt sizes (8/80/800 MB)
-///   "enwiki/simplewiki/dev" → corpus presets
-///   "8mb", "80mb"    → byte budget (suffix: mb, gb, kb)
-///   numeric string   → raw entry count
+///   "auto"           -> runtime memory detection
+///   "unlimited"      -> Int32.MaxValue (effectively unbounded)
+///   "small/medium/large" -> T-shirt sizes (8/80/800 MB)
+///   "enwiki/simplewiki/dev" -> corpus presets
+///   "8mb", "80mb"    -> byte budget (suffix: mb, gb, kb)
+///   numeric string   -> raw entry count
 let resolveL2Capacity (spec: string) : int =
     match spec.ToLowerInvariant().Trim() with
     | "auto" -> l2CapacityFromMemory ()

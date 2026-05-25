@@ -82,13 +82,13 @@ Key decisions:
 
 ---
 
-## Phase 2: F# Parallel Kernel Execution
+## Phase 2: F# Parallel Kernel Execution  [DONE]
 
 ### Motivation
 
 F# already has parallel infrastructure (`runNegationParallel`,
 `forkParBranches`, `Async.Choice`). What's missing: parallel
-*seed-level* execution for effective-distance — running multiple
+*seed-level* execution for effective-distance -- running multiple
 seeds concurrently against the same read-only graph.
 
 ### Design
@@ -115,11 +115,25 @@ Key decisions:
 
 ### Expected speedup
 
-At scale 300 with 100+ seeds: ~2-3× on 4 cores (matching Haskell's
-107 ms → 32 ms at `-N4`). The limiting factor is work balance across
+At scale 300 with 100+ seeds: ~2-3x on 4 cores (matching Haskell's
+107 ms -> 32 ms at `-N4`). The limiting factor is work balance across
 seeds (some seeds have deep ancestor paths, others don't).
 
-### Estimated effort: small (~1-2 hours)
+### Measured results (depth-12 tree, branching=3, 2000 seeds, 4 cores)
+
+| Mode | median_ms | speedup |
+|---|---:|---|
+| Sequential | 11.1 | 1.0x |
+| Array.Parallel.map | 6.3 | 1.77x |
+| Parallel.For(N=4) | 5.6 | 1.98x |
+
+Correctness verified: all modes produce identical hit counts.
+TwoLevelCachedLookupSource confirmed thread-safe under parallel access
+(L1 ThreadLocal + L2 ConcurrentDictionary).
+
+### Test
+
+- `tests/core/test_wam_fsharp_parallel_seeds.pl` -- E2E benchmark
 
 ---
 
@@ -204,9 +218,9 @@ logic — test with pure, ship with mutable.
 ```
 Phase 1: F# CSR reader          [DONE]
     |
-Phase 2: F# parallel seeds      [next]
+Phase 2: F# parallel seeds      [DONE]
     |
-Phase 3: Haskell mutable regs   [separate sessions, independent of 1+2]
+Phase 3: Haskell mutable regs   [next -- separate sessions, independent of 1+2]
 ```
 
 Phase 3 is independent -- can be started anytime, doesn't depend on
