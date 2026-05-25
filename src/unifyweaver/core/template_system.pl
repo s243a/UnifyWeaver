@@ -250,12 +250,13 @@ render_named_template(TemplateName, Dict, Options, Result) :-
 %% ORIGINAL TEMPLATE RENDERING (unchanged)
 %% ============================================
 
-%% Named placeholder substitution + section blocks.
+%% Named placeholder substitution + section/match blocks.
 %
-% Supports a small mustache subset:
-%   {{name}}              — substitution (existing behavior)
-%   {{#flag}}...{{/flag}}  — truthy section: rendered iff Dict says flag is truthy
-%   {{^flag}}...{{/flag}}  — inverted section: rendered iff Dict says flag is falsy
+% Supports a mustache subset plus match/case extension:
+%   {{name}}                                       -- substitution
+%   {{#flag}}...{{/flag}}                           -- truthy section
+%   {{^flag}}...{{/flag}}                           -- inverted section
+%   {{match key}}{{case v1}}...{{case v2}}...{{default}}...{{/match}}  -- match/case dispatch
 %
 % Section bodies may themselves contain {{name}} substitutions and other
 % sections (with different tag names; see limitation below).
@@ -269,7 +270,8 @@ render_named_template(TemplateName, Dict, Options, Result) :-
 % sections nest fine.
 render_template(Template, Dict, Result) :-
     atom_string(Template, TStr),
-    expand_sections(TStr, Dict, Expanded),
+    expand_match_blocks(TStr, Dict, MatchExpanded),
+    expand_sections(MatchExpanded, Dict, Expanded),
     render_template_string(Expanded, Dict, Result).
 
 % Fixed version using atom_string and sub_atom for reliable replacement
@@ -396,6 +398,162 @@ falsy_value(0).
 falsy_value("").
 falsy_value('').
 falsy_value([]).
+
+%% ============================================
+%% MATCH/CASE BLOCK EXPANSION
+%% ============================================
+%
+% {{match key}}{{case val1}}body1{{case val2}}body2{{default}}fallback{{/match}}
+%
+% Dispatches on the value of `key` in the Dict. The first {{case}}
+% whose value matches is rendered; if none match, {{default}} is
+% rendered (or nothing if no default). Only exact string match is
+% supported currently.
+%
+% Future: the case_matches/2 predicate can be extended to support
+% glob patterns (e.g., lmdb_*), regex (PCRE2 via re_match/2), or
+% structured patterns. Python and VB use regex in match statements;
+% bash's case uses glob. The predicate is factored out to make this
+% extension straightforward.
+
+%% expand_match_blocks(+Template, +Dict, -Result)
+%  Find and expand all {{match key}}...{{/match}} blocks in Template.
+%  Runs before section expansion so match blocks can contain sections.
+expand_match_blocks(Template, Dict, Result) :-
+    (   find_match_block(Template, Key, Before, MatchBody, After)
+    ->  parse_match_cases(MatchBody, Cases, Default),
+        resolve_match(Key, Dict, Cases, Default, Rendered),
+        expand_match_blocks(Rendered, Dict, RenderedExpanded),
+        expand_match_blocks(After, Dict, AfterExpanded),
+        string_concat(Before, RenderedExpanded, P1),
+        string_concat(P1, AfterExpanded, Result)
+    ;   Result = Template
+    ).
+
+%% find_match_block(+Str, -Key, -Before, -Body, -After)
+%  Locate the first {{match key}} in Str and its matching {{/match}}.
+find_match_block(Str, Key, Before, Body, After) :-
+    sub_string(Str, OpenIdx, 8, _, "{{match "),
+    AfterOpen is OpenIdx + 8,
+    sub_string(Str, AfterOpen, _, 0, Tail),
+    sub_string(Tail, EndRel, 2, _, "}}"),
+    sub_string(Tail, 0, EndRel, _, KeyStr),
+    KeyStr \= "",
+    atom_string(Key, KeyStr),
+    BodyStart is AfterOpen + EndRel + 2,
+    sub_string(Str, BodyStart, _, 0, BodyAndAfter),
+    sub_string(BodyAndAfter, CloseRel, 10, _, "{{/match}}"),
+    sub_string(BodyAndAfter, 0, CloseRel, _, Body),
+    CloseEnd is CloseRel + 10,
+    sub_string(BodyAndAfter, CloseEnd, _, 0, After),
+    sub_string(Str, 0, OpenIdx, _, Before).
+
+%% parse_match_cases(+Body, -Cases, -Default)
+%  Parse the body of a match block into a list of case(Value, CaseBody)
+%  and an optional Default body. Cases appear as {{case value}}...
+%  and {{default}}... The last segment before {{case}}/{{default}}/end
+%  is the case body.
+parse_match_cases(Body, Cases, Default) :-
+    split_match_segments(Body, Segments),
+    extract_cases(Segments, Cases, Default).
+
+%% split_match_segments(+Body, -Segments)
+%  Split match body into segments at {{case ...}} and {{default}} markers.
+%  Returns a list of segment(Type, Value, Content) terms where Type is
+%  'case_seg' or 'default_seg', Value is the case value (or '' for default),
+%  and Content is the text content.
+split_match_segments(Body, Segments) :-
+    split_match_segments_(Body, [], Segments).
+
+split_match_segments_("", Acc, Segments) :-
+    reverse(Acc, Segments).
+split_match_segments_(Body, Acc, Segments) :-
+    Body \= "",
+    (   find_next_case_marker(Body, Type, Value, Before, After)
+    ->  (   Before \= "", Acc = []
+        ->  % Leading text before first case — discard (whitespace/comments)
+            split_match_segments_(After, [segment(Type, Value, "")|Acc], Segments)
+        ;   Before \= "", Acc = [segment(PrevType, PrevVal, _)|RestAcc]
+        ->  % Attach Before as content of previous segment
+            split_match_segments_(After, [segment(Type, Value, "")|[segment(PrevType, PrevVal, Before)|RestAcc]], Segments)
+        ;   split_match_segments_(After, [segment(Type, Value, "")|Acc], Segments)
+        )
+    ;   % No more markers — remaining text is content of last segment
+        (   Acc = [segment(PrevType, PrevVal, _)|RestAcc]
+        ->  reverse([segment(PrevType, PrevVal, Body)|RestAcc], Segments)
+        ;   Segments = []  % no cases at all
+        )
+    ).
+
+%% find_next_case_marker(+Str, -Type, -Value, -Before, -After)
+%  Find the next {{case value}} or {{default}} in Str.
+find_next_case_marker(Str, Type, Value, Before, After) :-
+    (   find_case_at(Str, CaseIdx, CaseVal, CaseAfterIdx),
+        find_default_at(Str, DefIdx, DefAfterIdx)
+    ->  (   CaseIdx < DefIdx
+        ->  Type = case_seg, Value = CaseVal,
+            sub_string(Str, 0, CaseIdx, _, Before),
+            sub_string(Str, CaseAfterIdx, _, 0, After)
+        ;   Type = default_seg, Value = '',
+            sub_string(Str, 0, DefIdx, _, Before),
+            sub_string(Str, DefAfterIdx, _, 0, After)
+        )
+    ;   find_case_at(Str, CaseIdx, CaseVal, CaseAfterIdx)
+    ->  Type = case_seg, Value = CaseVal,
+        sub_string(Str, 0, CaseIdx, _, Before),
+        sub_string(Str, CaseAfterIdx, _, 0, After)
+    ;   find_default_at(Str, DefIdx, DefAfterIdx)
+    ->  Type = default_seg, Value = '',
+        sub_string(Str, 0, DefIdx, _, Before),
+        sub_string(Str, DefAfterIdx, _, 0, After)
+    ).
+
+find_case_at(Str, Idx, Value, AfterIdx) :-
+    sub_string(Str, Idx, 7, _, "{{case "),
+    Start is Idx + 7,
+    sub_string(Str, Start, _, 0, Tail),
+    sub_string(Tail, EndRel, 2, _, "}}"),
+    sub_string(Tail, 0, EndRel, _, ValStr),
+    atom_string(Value, ValStr),
+    AfterIdx is Start + EndRel + 2.
+
+find_default_at(Str, Idx, AfterIdx) :-
+    sub_string(Str, Idx, 11, _, "{{default}}"),
+    AfterIdx is Idx + 11.
+
+%% extract_cases(+Segments, -Cases, -Default)
+extract_cases([], [], "").
+extract_cases(Segments, Cases, Default) :-
+    Segments \= [],
+    include(is_case_seg, Segments, CaseSegs),
+    maplist(seg_to_case, CaseSegs, Cases),
+    (   member(segment(default_seg, _, DefBody), Segments)
+    ->  Default = DefBody
+    ;   Default = ""
+    ).
+
+is_case_seg(segment(case_seg, _, _)).
+seg_to_case(segment(case_seg, Val, Body), case(Val, Body)).
+
+%% resolve_match(+Key, +Dict, +Cases, +Default, -Rendered)
+%  Find the first matching case and return its body, or Default.
+resolve_match(Key, Dict, Cases, Default, Rendered) :-
+    (   member(Key=DictValue, Dict),
+        atom_string(DictValue, DictValueStr),
+        member(case(CaseValue, CaseBody), Cases),
+        atom_string(CaseValue, CaseValueStr),
+        case_matches(DictValueStr, CaseValueStr)
+    ->  Rendered = CaseBody
+    ;   Rendered = Default
+    ).
+
+%% case_matches(+ActualValue, +PatternValue)
+%  Currently: exact string match.
+%  Future extensions (see philosophy note above):
+%    - Glob: case_matches_glob/2 using wildcard expansion
+%    - Regex: case_matches_regex/2 using re_match/2 (PCRE2)
+%    - Structured: case_matches_term/2 for Prolog term patterns
+case_matches(Value, Pattern) :- Value = Pattern.
 
 %% Compose multiple templates into one
 compose_templates([], _, "") :- !.
