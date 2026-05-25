@@ -85,10 +85,14 @@ test(test_recommend_scan_at_high_k).
 test(test_reverse_index_auto_defaults_none).
 test(test_reverse_index_auto_descendant_uses_existing_artifact).
 test(test_reverse_index_csr_normalizes_defaults).
+test(test_reverse_index_csr_auto_index_backend_keeps_sorted_array).
+test(test_reverse_index_csr_accepts_lmdb_offset_index_backend).
 test(test_reverse_index_csr_runtime_auto_direct_io_when_supported).
 test(test_reverse_index_csr_runtime_auto_buffered_when_direct_io_not_verified).
 test(test_reverse_index_rejects_bad_id_encoding).
+test(test_reverse_index_rejects_unknown_index_backend).
 test(test_reverse_index_rejects_unknown_io_policy).
+test(test_reverse_index_rejects_index_backend_for_mmap_artifact).
 test(test_reverse_index_rejects_io_policy_for_mmap_artifact).
 test(test_reverse_index_artifact_normalizes_storage_kind).
 
@@ -345,6 +349,48 @@ test_reverse_index_csr_normalizes_defaults :-
         phase(planning_only),
         id_encoding(int32_le),
         ordering(parent_sort),
+        index_backend(sorted_array),
+        io_policy(buffered_pread_drop),
+        cache_bytes(0),
+        block_size_edges(0)
+    ]),
+    (   ReverseIndex = Expected
+    ->  pass(Test)
+    ;   fail_test(Test, format_atom("got reverse_index=~w", [ReverseIndex]))
+    ).
+
+test_reverse_index_csr_accepts_lmdb_offset_index_backend :-
+    Test = 'validate_reverse_index_option csr accepts lmdb_offset index backend',
+    validate_reverse_index_option(
+        csr([
+            phase(runtime_available),
+            index_backend(lmdb_offset),
+            io_policy(buffered_pread)
+        ]),
+        ReverseIndex
+    ),
+    Expected = csr([
+        phase(runtime_available),
+        id_encoding(int32_le),
+        ordering(parent_sort),
+        index_backend(lmdb_offset),
+        io_policy(buffered_pread),
+        cache_bytes(0),
+        block_size_edges(0)
+    ]),
+    (   ReverseIndex = Expected
+    ->  pass(Test)
+    ;   fail_test(Test, format_atom("got reverse_index=~w", [ReverseIndex]))
+    ).
+
+test_reverse_index_csr_auto_index_backend_keeps_sorted_array :-
+    Test = 'validate_reverse_index_option csr auto index_backend keeps sorted_array until cost override',
+    validate_reverse_index_option(csr([index_backend(auto)]), ReverseIndex),
+    Expected = csr([
+        phase(planning_only),
+        id_encoding(int32_le),
+        ordering(parent_sort),
+        index_backend(sorted_array),
         io_policy(buffered_pread_drop),
         cache_bytes(0),
         block_size_edges(0)
@@ -393,6 +439,15 @@ test_reverse_index_rejects_bad_id_encoding :-
     ;   fail_test(Test, 'expected domain_error(reverse_index_id_encoding, bytes)')
     ).
 
+test_reverse_index_rejects_unknown_index_backend :-
+    Test = 'validate_reverse_index_option rejects unsupported csr index_backend',
+    (   catch((validate_reverse_index_option(csr([index_backend(heap_map)]), _), fail),
+              error(domain_error(csr_index_backend, heap_map), _),
+              true)
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected domain_error(csr_index_backend, heap_map)')
+    ).
+
 test_reverse_index_rejects_unknown_io_policy :-
     Test = 'validate_reverse_index_option rejects unsupported io_policy',
     (   catch((validate_reverse_index_option(csr([io_policy(magic)]), _), fail),
@@ -400,6 +455,21 @@ test_reverse_index_rejects_unknown_io_policy :-
               true)
     ->  pass(Test)
     ;   fail_test(Test, 'expected domain_error(csr_io_policy, magic)')
+    ).
+
+test_reverse_index_rejects_index_backend_for_mmap_artifact :-
+    Test = 'validate_reverse_index_option rejects index_backend for mmap_array artifact',
+    (   catch((validate_reverse_index_option(
+                  artifact([
+                      storage_kind(mmap_array_artifact),
+                      index_backend(lmdb_offset)
+                  ]),
+                  _),
+                fail),
+              error(permission_error(use, index_backend, mmap_array_artifact), _),
+              true)
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected permission_error(use, index_backend, mmap_array_artifact)')
     ).
 
 test_reverse_index_rejects_io_policy_for_mmap_artifact :-
@@ -426,6 +496,7 @@ test_reverse_index_artifact_normalizes_storage_kind :-
             phase(runtime_available),
             id_encoding(int32_le),
             ordering(root_bfs),
+            index_backend(lmdb_offset),
             io_policy(buffered_pread),
             cache_bytes(1024)
         ]),
@@ -438,6 +509,7 @@ test_reverse_index_artifact_normalizes_storage_kind :-
         storage_kind(csr_pread_artifact),
         ordering(root_bfs),
         cache_bytes(1024),
+        index_backend(lmdb_offset),
         io_policy(buffered_pread)
     ]),
     (   ReverseIndex = Expected
