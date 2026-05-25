@@ -2599,36 +2599,194 @@ runLoopST !ctx regs !pw
             Just !pw'''' -> runLoopST ctx regs pw''''
             Nothing -> return Nothing
 
--- | Phase 3: ST-mode step function. Mutates registers in place via STArray.
--- Currently delegates to the pure step function (converting at boundaries).
--- Future: direct ST implementation of each instruction arm for full speedup.
+-- | Phase 3: ST-mode step function. Core register arms use direct
+-- readArray/writeArray for O(1) access. Complex arms (builtins,
+-- aggregates, parallel fork) fall through to the pure step bridge.
 stepST :: WamContext -> STA.STArray s Int Value -> PureWamState
        -> Instruction -> ST s (Maybe PureWamState)
+
+stepST _ regs !pw (PutConstant c ai) = do
+  writeArray regs ai c
+  return $ Just pw { pwPC = pwPC pw + 1 }
+
+stepST _ regs !pw (GetConstant c ai) = do
+  v <- readArray regs ai
+  let !dv = derefVar (pwBindings pw) v
+  if dv == c
+    then return $ Just pw { pwPC = pwPC pw + 1 }
+    else case dv of
+      Unbound vid -> do
+        writeArray regs ai c
+        return $ Just pw { pwPC = pwPC pw + 1
+                         , pwBindings = IM.insert vid c (pwBindings pw)
+                         , pwTrail = TrailEntry vid (IM.lookup vid (pwBindings pw)) : pwTrail pw
+                         , pwTrailLen = pwTrailLen pw + 1
+                         }
+      _ -> return Nothing
+
+stepST _ regs !pw (GetVariable xn ai) = do
+  v <- readArray regs ai
+  let !dv = derefVar (pwBindings pw) v
+  pw'''' <- putRegST regs xn dv pw
+  return $ Just pw'''' { pwPC = pwPC pw + 1 }
+
+stepST _ regs !pw (GetValue xn ai) = do
+  va0 <- readArray regs ai
+  let !va = derefVar (pwBindings pw) va0
+  mvx <- getRegST regs xn pw
+  case mvx of
+    Nothing -> return Nothing
+    Just vx
+      | va == vx -> return $ Just pw { pwPC = pwPC pw + 1 }
+    Just (Unbound vid) ->
+      return $ Just pw { pwPC = pwPC pw + 1
+                        , pwBindings = IM.insert vid va (pwBindings pw)
+                        , pwTrail = TrailEntry vid (IM.lookup vid (pwBindings pw)) : pwTrail pw
+                        , pwTrailLen = pwTrailLen pw + 1
+                        }
+    Just vx -> case va of
+      Unbound vid -> do
+        writeArray regs ai vx
+        return $ Just pw { pwPC = pwPC pw + 1
+                         , pwBindings = IM.insert vid vx (pwBindings pw)
+                         , pwTrail = TrailEntry vid (IM.lookup vid (pwBindings pw)) : pwTrail pw
+                         , pwTrailLen = pwTrailLen pw + 1
+                         }
+      _ -> return Nothing
+
+stepST _ regs !pw (PutVariable xn ai) = do
+  let !vid = pwVarCounter pw
+      !var = Unbound vid
+  pw'''' <- putRegST regs xn var pw
+  writeArray regs ai var
+  return $ Just pw'''' { pwPC = pwPC pw + 1, pwVarCounter = vid + 1 }
+
+stepST _ regs !pw (PutValue xn ai) = do
+  mv <- getRegST regs xn pw
+  case mv of
+    Just val -> do
+      writeArray regs ai val
+      return $ Just pw { pwPC = pwPC pw + 1 }
+    Nothing -> return Nothing
+
+stepST _ _ !pw (PutStructure fnId ai arity) =
+  return $ Just pw { pwPC = pwPC pw + 1
+                   , pwBuilder = BuildStruct fnId ai arity [] }
+
+stepST _ _ !pw (PutList ai) =
+  return $ Just pw { pwPC = pwPC pw + 1
+                   , pwBuilder = BuildList ai [] }
+
+stepST _ _ !pw (CallResolved pc _arity) =
+  return $ Just pw { pwPC = pc, pwCP = pwPC pw + 1 }
+
+stepST _ _ !pw (JumpPc pc) =
+  return $ Just pw { pwPC = pc }
+
+stepST _ _ !pw (ExecutePc pc) =
+  return $ Just pw { pwPC = pc }
+
+stepST _ _ !pw Proceed =
+  let ret = pwCP pw
+  in if ret == 0 then return $ Just pw { pwPC = 0 }
+     else return $ Just pw { pwPC = ret, pwCP = 0 }
+
+stepST _ _ !pw Allocate =
+  let frame = EnvFrame (pwCP pw) IM.empty
+  in return $ Just pw { pwPC = pwPC pw + 1
+                       , pwStack = frame : pwStack pw
+                       , pwCutBar = pwCPsLen pw }
+
+stepST _ _ !pw Deallocate =
+  case pwStack pw of
+    (EnvFrame oldCP _ : rest) ->
+      return $ Just pw { pwPC = pwPC pw + 1, pwStack = rest, pwCP = oldCP }
+    _ -> return Nothing
+
+stepST _ regs !pw (TryMeElsePc nextPC) = do
+  snap <- snapshotRegsST regs
+  let mcp = MutableChoicePoint
+        { mcpNextPC = nextPC, mcpRegs = snap
+        , mcpStack = pwStack pw, mcpCP = pwCP pw
+        , mcpTrailLen = pwTrailLen pw, mcpHeapLen = pwHeapLen pw
+        , mcpBindings = pwBindings pw, mcpCutBar = pwCutBar pw
+        , mcpAggFrame = Nothing, mcpBuiltin = Nothing
+        }
+  return $ Just pw { pwPC = pwPC pw + 1
+                   , pwCPs = mcp : pwCPs pw
+                   , pwCPsLen = pwCPsLen pw + 1 }
+
+stepST _ _ !pw TrustMe =
+  case pwCPs pw of
+    (_ : rest) -> return $ Just pw { pwPC = pwPC pw + 1
+                                   , pwCPs = rest
+                                   , pwCPsLen = pwCPsLen pw - 1 }
+    [] -> return $ Just pw { pwPC = pwPC pw + 1 }
+
+stepST _ _ !pw (RetryMeElsePc nextPC) =
+  case pwCPs pw of
+    (mcp : rest) ->
+      return $ Just pw { pwPC = pwPC pw + 1
+                       , pwCPs = mcp { mcpNextPC = nextPC } : rest }
+    [] -> return $ Just pw { pwPC = pwPC pw + 1 }
+
+-- Fallback: delegate to pure step via bridge (freeze/thaw per call).
+-- Handles builtins, aggregates, parallel fork, SwitchOnConstant,
+-- SetValue/SetVariable/SetConstant (builder), and other complex arms.
 stepST !ctx regs !pw instr = do
-  -- Convert PureWamState + mutable regs -> WamState for pure step
   regMap <- freezeRegsToIntMap regs
   let s = pureToWamState pw regMap
   case step ctx s instr of
     Nothing -> return Nothing
     Just s'''' -> do
-      -- Write back changed registers
       forM_ (IM.toList (wsRegs s'''')) $ \\(k, v) ->
         writeArray regs k v
       return (Just (wamStateToPure s''''))
 
--- | Phase 3: ST-mode backtrack. Restores registers from frozen snapshot.
--- Currently delegates to pure backtrack (converting at boundaries).
+-- | Phase 3: ST-mode backtrack. Restores registers from MutableChoicePoint.
+-- Handles the common case (normal CP restore) directly. Complex cases
+-- (aggregate frames, builtin state) fall through to the pure bridge.
 backtrackST :: STA.STArray s Int Value -> PureWamState
             -> ST s (Maybe PureWamState)
-backtrackST regs pw = do
-  regMap <- freezeRegsToIntMap regs
-  let s = pureToWamState pw regMap
-  case backtrack s of
-    Nothing -> return Nothing
-    Just s'''' -> do
-      forM_ (IM.toList (wsRegs s'''')) $ \\(k, v) ->
-        writeArray regs k v
-      return (Just (wamStateToPure s''''))
+backtrackST regs pw = case pwCPs pw of
+  [] -> return Nothing
+  (mcp : rest)
+    | isNothing (mcpAggFrame mcp) && isNothing (mcpBuiltin mcp) -> do
+      -- Normal choice point: restore registers from frozen snapshot
+      restoreRegsST regs (mcpRegs mcp)
+      -- Undo trail entries
+      let trailLen = mcpTrailLen mcp
+          diff = pwTrailLen pw - trailLen
+          newEntries = reverse $ take diff (pwTrail pw)
+          restoredBindings = foldl'' undoBinding (mcpBindings mcp) newEntries
+      return $ Just pw
+        { pwPC = mcpNextPC mcp
+        , pwStack = mcpStack mcp
+        , pwCP = mcpCP mcp
+        , pwTrail = drop diff (pwTrail pw)
+        , pwTrailLen = trailLen
+        , pwHeap = take (mcpHeapLen mcp) (pwHeap pw)
+        , pwHeapLen = mcpHeapLen mcp
+        , pwBindings = restoredBindings
+        , pwCutBar = mcpCutBar mcp
+        , pwCPs = rest
+        , pwCPsLen = pwCPsLen pw - 1
+        }
+    | otherwise -> do
+      -- Complex case: aggregate/builtin. Delegate to pure bridge.
+      regMap <- freezeRegsToIntMap regs
+      let s = pureToWamState pw regMap
+      case backtrack s of
+        Nothing -> return Nothing
+        Just s'''' -> do
+          forM_ (IM.toList (wsRegs s'''')) $ \\(k, v) ->
+            writeArray regs k v
+          return (Just (wamStateToPure s''''))
+  where
+    undoBinding bindings (TrailEntry vid mOld) =
+      case mOld of
+        Just old -> IM.insert vid old bindings
+        Nothing  -> IM.delete vid bindings
 
 -- | Dispatch a Call to another predicate, trying all resolution paths.
 -- Used by lowered predicate functions for inter-predicate calls.
@@ -2848,7 +3006,7 @@ generate_lowered_hs([], Code) :- !,
         format("import qualified Data.Map.Strict as Map~n"),
         format("import qualified Data.IntMap.Strict as IM~n"),
         format("import WamTypes~n"),
-        format("import Data.Maybe (fromMaybe)~n"),
+        format("import Data.Maybe (fromMaybe, isNothing)~n"),
         format("import WamRuntime~n~n"),
         format("loweredPredicates :: Map.Map String (WamContext -> WamState -> Maybe WamState)~n"),
         format("loweredPredicates = Map.empty~n")
@@ -2865,7 +3023,7 @@ generate_lowered_hs(LoweredEntries, Code) :-
         format("import qualified Data.Map.Strict as Map~n"),
         format("import qualified Data.IntMap.Strict as IM~n"),
         format("import WamTypes~n"),
-        format("import Data.Maybe (fromMaybe)~n"),
+        format("import Data.Maybe (fromMaybe, isNothing)~n"),
         format("import WamRuntime~n~n"),
         % Function definitions
         forall(member(lowered(_, _, HsCode), LoweredEntries),
@@ -3618,7 +3776,7 @@ import qualified Data.IntSet as IS
 import Data.Array (Array, listArray, (!), bounds)
 import qualified Data.Set as Set
 import Data.List (isPrefixOf, foldl'', nub)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isNothing)
 -- Phase 4.2: intra-query parallelism. parMap/rdeepseq spark the
 -- alternative clauses of a forkable ParTryMeElse choice point; the
 -- WamState NFData instance lives in WamTypes.
