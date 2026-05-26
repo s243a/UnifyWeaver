@@ -7,6 +7,8 @@
 #include <string.h>
 #include <stdbool.h>
 #include <assert.h>
+#include <stdint.h>
+#include <sys/types.h>
 #ifdef WAM_C_ENABLE_LMDB
 #include <lmdb.h>
 #endif
@@ -123,6 +125,19 @@ typedef struct {
     int edge_count;
     int edge_cap;
 } WamFactSource;
+
+typedef struct {
+    int parent;
+    uint64_t offset_edges;
+    uint32_t child_count;
+} WamReverseCsrRow;
+
+typedef struct {
+    int index_fd;
+    int values_fd;
+    WamReverseCsrRow *rows;
+    int row_count;
+} WamReverseCsrArtifact;
 
 typedef struct {
     int *values;
@@ -286,6 +301,15 @@ bool wam_fact_source_load_lmdb(WamState *state, WamFactSource *source,
 int wam_fact_source_lookup_arg1(WamFactSource *source, const char *arg1,
                                 CategoryEdge *out_edges, int max_edges);
 bool wam_register_category_parent_fact_source(WamState *state, WamFactSource *source);
+void wam_reverse_csr_init(WamReverseCsrArtifact *artifact);
+void wam_reverse_csr_close(WamReverseCsrArtifact *artifact);
+bool wam_reverse_csr_load(WamReverseCsrArtifact *artifact,
+                          const char *index_path,
+                          const char *values_path);
+int wam_reverse_csr_lookup_children(WamReverseCsrArtifact *artifact,
+                                    int parent,
+                                    int *out_children,
+                                    int max_children);
 void wam_int_results_init(WamIntResults *results);
 void wam_int_results_close(WamIntResults *results);
 bool wam_int_results_push(WamIntResults *results, int value);
