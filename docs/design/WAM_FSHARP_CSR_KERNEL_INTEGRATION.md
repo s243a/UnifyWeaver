@@ -222,6 +222,84 @@ work can explore:
 - The separation of inclusion threshold from distance metric makes
   it easy to swap metric functions without changing the search logic
 
+### 3.7 Future: parallel search with sorted-neighbor work distribution
+
+The current kernel is single-threaded DFS. For parallel execution
+(F#'s TPL / `Parallel.map`), the search needs a way to distribute
+work across threads without global synchronization on the frontier.
+
+**Key idea**: precompute each node's neighbors sorted by `min_dist`
+to root. Each node tracks which neighbors have been explored (by
+index into the sorted array). A worker arriving at a node picks up
+the next unexplored neighbor without blocking on other workers.
+
+#### Precomputation (one-time, during `computeMinDistToRoot`)
+
+```fsharp
+let buildSortedParents
+    (lookupParents: int -> int list)
+    (minDist: Dictionary<int, int>)
+    : Dictionary<int, int array> =
+    let sorted = Dictionary<int, int array>()
+    for kv in minDist do
+        let parents = lookupParents kv.Key
+        if not (List.isEmpty parents) then
+            sorted.[kv.Key] <-
+                parents
+                |> List.sortBy (fun p ->
+                    match minDist.TryGetValue(p) with
+                    | true, d -> d
+                    | _ -> Int32.MaxValue)
+                |> List.toArray
+    sorted
+```
+
+#### Per-node work tracking
+
+```fsharp
+// Each node tracks the index of the next unexplored neighbor.
+// Workers atomically increment the index to claim work.
+let nextIndex = ConcurrentDictionary<int, int ref>()
+
+let claimNextNeighbor (node: int) (sortedParents: int array) =
+    let idx = nextIndex.GetOrAdd(node, fun _ -> ref 0)
+    let i = System.Threading.Interlocked.Increment(idx) - 1
+    if i < sortedParents.Length then Some sortedParents.[i]
+    else None
+```
+
+#### Why this enables parallelism
+
+Without sorted neighbors, a parallel search has two options:
+1. **Global frontier queue** with lock contention -- threads compete
+   for the next item.
+2. **Partition by subtree** -- requires static work estimation.
+
+With sorted neighbors and per-node indexing, each thread can
+independently explore a node's neighbors in priority order. When
+a thread arrives at a node, it atomically claims the next-best
+unexplored neighbor. No thread blocks waiting for another thread's
+A* computation -- the sorted order guarantees the claimed neighbor
+is the best available.
+
+The per-neighbor global A* bound (`nc + minCostToRoot neighbor >
+budget`) is still applied per expansion. The sorted order just
+ensures threads naturally work on the most promising branches
+first.
+
+#### Measured baseline (single-threaded)
+
+On simplewiki (25k edges, 50 seeds, childCost=3, budget=15):
+- The visited-aware conditional bound (checking if best parent is
+  in visited set) showed zero additional pruning on this graph
+  because parent fan-out is low (1-3 parents per node) and the
+  shortest-path parent is rarely visited.
+- On deeper or narrower graphs where paths consume more parents,
+  the conditional bound would prune more.
+- Informal timing showed ~20% wall-time difference when using
+  sorted arrays vs `List.choose`, likely from reduced allocation
+  pressure. Not rigorously isolated.
+
 ## 4. Sequencing
 
 ```
