@@ -27,24 +27,32 @@ run_tests :-
             [edge_store(auto), edge_count(1000), graph_mutability('dynamic')], R),
           member(lmdb_materialisation(cached), R) )),
 
-    run_test("edge_store(auto): small static, few queries -> lmdb_eager",
+    run_test("edge_store(auto): small static, few queries -> lmdb_cached",
         ( resolve_auto_edge_store_fs(
             [edge_store(auto), edge_count(1000),
              expected_query_count(10), expected_lookups_per_query(50)], R),
-          member(lmdb_materialisation(eager), R) )),
+          member(lmdb_materialisation(cached), R) )),
 
-    run_test("edge_store(auto): large static, many queries -> csr or dual_csr",
+    run_test("edge_store(auto): large static, many queries -> lmdb_eager",
         ( resolve_auto_edge_store_fs(
             [edge_store(auto), edge_count(100000),
              expected_query_count(10000), expected_lookups_per_query(50)], R),
-          \+ member(lmdb_materialisation(eager), R) )),
+          member(lmdb_materialisation(eager), R) )),
 
-    run_test("edge_store(auto): needs_reverse -> dual_csr",
+    run_test("edge_store(auto): cost model considers preprocessing",
         ( resolve_auto_edge_store_fs(
-            [edge_store(auto), edge_count(100000),
-             expected_query_count(10000), expected_lookups_per_query(50),
+            [edge_store(auto), edge_count(6000),
+             expected_query_count(300), expected_lookups_per_query(50),
+             edge_store_verbose(true)], R),
+          member(lmdb_materialisation(M), R),
+          format(user_error, '    -> resolved to ~w~n', [M]) )),
+
+    run_test("edge_store(auto): needs_reverse but csr costly -> lmdb_cached",
+        ( resolve_auto_edge_store_fs(
+            [edge_store(auto), edge_count(6000),
+             expected_query_count(300), expected_lookups_per_query(50),
              needs_reverse(true)], R),
-          \+ member(lmdb_materialisation(_), R) )),
+          member(lmdb_materialisation(cached), R) )),
 
     run_test("edge_store not auto -> pass through",
         ( resolve_auto_edge_store_fs(

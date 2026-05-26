@@ -98,16 +98,17 @@ let main argv =
     let lmdbEnv = openEnv (System.IO.Path.Combine(factsDir, "lmdb"))
 {{match materialisation}}
 {{case eager}}
-    // Eager: load entire LMDB relation into a Dictionary for O(1) lookup
-    let lmdbFactDict = loadDupsortRelationDict lmdbEnv "category_parent"
-    let lmdbFactSource = DictLookupSource(lmdbFactDict) :> ILookupSource
+    // Eager: load entire LMDB relation into memory for O(log n) Map lookup
+    let lmdbFactMap = loadCategoryParent lmdbEnv
+    let lmdbFactLookup (key: int) : int list =
+        Map.tryFind key lmdbFactMap |> Option.defaultValue []
 {{case lazy}}
     // Lazy: on-demand cursor lookup, no startup materialisation cost
     let lmdbFactSource = LmdbCursorLookup(lmdbEnv, "category_parent") :> ILookupSource
 {{default}}
     // Cached (default): two-level L1/L2 cache over cursor lookup
     let lmdbInner = LmdbCursorLookup(lmdbEnv, "category_parent") :> ILookupSource
-    let lmdbFactSource = TwoLevelCachedLookupSource(lmdbInner, {{l2_capacity}}) :> ILookupSource
+    let lmdbFactSource = TwoLevelCachedLookupSource(lmdbInner, maxL2Entries = {{l2_capacity}}) :> ILookupSource
 {{/match}}
 {{/has_lmdb}}
 
@@ -129,8 +130,8 @@ let main argv =
           WcAtomDeintern      = atomDeintern
           WcForeignConfig     = Map.ofList [ ("max_depth", 10) ]
           WcLoweredPredicates = loweredPredicates
-          WcLookupSources   = {{lookup_sources_expr}}
-      WcCancellationToken = None }
+          WcLookupSources     = {{lookup_sources_expr}}
+          WcCancellationToken = None }
 
     let emptyState =
         { WsPC         = 0
