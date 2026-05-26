@@ -282,6 +282,17 @@ def _term_identical(a: 'Term', b: 'Term', state: WamState) -> bool:
     return False
 
 
+def _term_ground(term: 'Term', state: WamState) -> bool:
+    term = deref(term, state)
+    if isinstance(term, Var):
+        return False
+    if isinstance(term, Compound):
+        return all(_term_ground(arg, state) for arg in term.args)
+    if isinstance(term, Ref):
+        return _term_ground(deref(term, state), state)
+    return True
+
+
 def _make_cons(head: 'Term', tail: 'Term') -> 'Compound':
     """Construct a cons cell Compound('.', [head, tail])."""
     return Compound('.', [head, tail])
@@ -2027,6 +2038,8 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         return not unify(get_reg(sub, 1), get_reg(sub, 2), sub)
     if builtin in ('==/2', '==') and arity == 2:
         return _term_identical(get_reg(state, 1), get_reg(state, 2), state)
+    if builtin in ('\\==/2', '\\==') and arity == 2:
+        return not _term_identical(get_reg(state, 1), get_reg(state, 2), state)
     if builtin in ('is/2', 'is_lax/2', 'is', 'is_lax') and arity == 2:
         return _execute_is_lax(state)
     if builtin in ('is_iso/2', 'is_iso') and arity == 2:
@@ -2182,6 +2195,11 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
     if builtin in ('compound/1', 'compound'):
         val = deref(get_reg(state, 1), state)
         return isinstance(val, Compound)
+    if builtin in ('atomic/1', 'atomic'):
+        val = deref(get_reg(state, 1), state)
+        return isinstance(val, (Atom, Int, Float))
+    if builtin in ('ground/1', 'ground'):
+        return _term_ground(get_reg(state, 1), state)
     if builtin in ('is_list/1', 'is_list'):
         val = deref(get_reg(state, 1), state)
         return _term_to_list(val, state) is not None

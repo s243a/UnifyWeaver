@@ -1273,6 +1273,31 @@ test(runtime_filesystem_helpers) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+test(runtime_term_type_parity_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_term_type_parity_demo),
+			assertz((user:py_term_type_parity_demo :-
+				a \== b,
+				\+ (same \== same),
+				ground(f(a, [1, b])),
+				\+ ground(f(_)))),
+			user:python_parser_tmp_dir('tmp_wam_python_term_type_parity', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_term_type_parity_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_term_type_parity_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_term_type_parity_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_parser_compiled_runs_reverse_term_to_atom) :-
 	setup_call_cleanup(
 		(   retractall(user:py_term_to_atom_demo),
@@ -1754,6 +1779,9 @@ test(static_runtime_has_lua_baseline_builtins, [nondet]) :-
 		"float/1",
 		"number/1",
 		"compound/1",
+		"atomic/1",
+		"ground/1",
+		"\\==/2",
 		"atom_concat/3",
 		"atom_length/2",
 		"atom_string/2",
@@ -1836,6 +1864,9 @@ test(static_runtime_io_emits_output, [nondet]) :-
 	sub_string(Content, _, _, _, "def _execute_exists_file"),
 	sub_string(Content, _, _, _, "def _execute_directory_files"),
 	sub_string(Content, _, _, _, "def _execute_delete_file"),
+	sub_string(Content, _, _, _, "def _term_ground"),
+	sub_string(Content, _, _, _, "'atomic/1'"),
+	sub_string(Content, _, _, _, "'\\\\==/2'"),
 	sub_string(Content, _, _, _, "print()").
 
 :- end_tests(wam_python_builtin_parity_guard).
@@ -2013,6 +2044,11 @@ type_compare_wam(
   put_constant same, 1
   put_constant same, 2
   builtin_call ==/2 2
+  put_constant left, 1
+  put_constant right, 2
+  builtin_call \\==/2 2
+  put_integer 42, 1
+  builtin_call atomic/1 1
   put_integer 2, 1
   put_integer 2, 2
   builtin_call =:=/2 2
