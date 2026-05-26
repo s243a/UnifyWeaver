@@ -40,10 +40,8 @@
 ]).
 
 %% resolve_wam_c_reverse_index_plan(+Options, -Plan)
-%  Normalizes reverse-index options for WAM-C without claiming runtime child-edge
-%  lookup support. The generated C runtime currently has parent fact-source
-%  loading and ancestor kernels; CSR reverse indexes are planning/build inputs
-%  until a C reader and lookup API are added.
+%  Normalizes reverse-index options for WAM-C and reports which normalized
+%  variants the generated C runtime can currently consume.
 resolve_wam_c_reverse_index_plan(Options, Plan) :-
     resolve_reverse_index(Options, ReverseIndex),
     wam_c_reverse_index_capabilities(ReverseIndex, Capabilities),
@@ -53,12 +51,44 @@ wam_c_reverse_index_capabilities(none, [
     planning(unneeded),
     runtime_child_lookup(unavailable)
 ]) :- !.
+wam_c_reverse_index_capabilities(artifact(Opts), [
+    planning(accepted),
+    runtime_child_lookup(available),
+    runtime_api(wam_reverse_csr_lookup_children),
+    runtime_index_backend(sorted_array),
+    runtime_io(pread)
+]) :-
+    memberchk(storage_kind(csr_pread_artifact), Opts),
+    memberchk(index_backend(sorted_array), Opts),
+    !.
+wam_c_reverse_index_capabilities(csr(Opts), [
+    planning(accepted),
+    runtime_child_lookup(available_after_artifact_build),
+    runtime_api(wam_reverse_csr_lookup_children),
+    runtime_index_backend(sorted_array),
+    runtime_io(pread)
+]) :-
+    memberchk(index_backend(sorted_array), Opts),
+    !.
 wam_c_reverse_index_capabilities(ReverseIndex, [
     planning(accepted),
     runtime_child_lookup(unsupported),
-    runtime_reason(no_c_reverse_index_reader)
+    runtime_reason(lmdb_offset_index_not_implemented)
+]) :-
+    wam_c_reverse_index_uses_lmdb_offset(ReverseIndex),
+    !.
+wam_c_reverse_index_capabilities(ReverseIndex, [
+    planning(accepted),
+    runtime_child_lookup(unsupported),
+    runtime_reason(reverse_index_kind_not_implemented)
 ]) :-
     ReverseIndex \= none.
+
+wam_c_reverse_index_uses_lmdb_offset(csr(Opts)) :-
+    memberchk(index_backend(lmdb_offset), Opts).
+wam_c_reverse_index_uses_lmdb_offset(artifact(Opts)) :-
+    memberchk(storage_kind(csr_pread_artifact), Opts),
+    memberchk(index_backend(lmdb_offset), Opts).
 
 % ============================================================================
 % PHASE 4: Hybrid Module Assembly

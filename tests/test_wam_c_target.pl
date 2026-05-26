@@ -391,13 +391,34 @@ test_reverse_index_plan_csr_cost_model :-
         memberchk(index_backend(lmdb_offset), Resolved),
         memberchk(io_policy(buffered_pread_drop), Resolved),
         memberchk(runtime_child_lookup(unsupported), Capabilities),
-        memberchk(runtime_reason(no_c_reverse_index_reader), Capabilities)
+        memberchk(runtime_reason(lmdb_offset_index_not_implemented), Capabilities)
     ->  pass(Test)
     ;   fail_test(Test, 'CSR options were not normalized through the cost model')
     ).
 
-test_reverse_index_plan_runtime_available_marks_unsupported :-
-    Test = 'WAM-C: runtime reverse_index request is accepted as unsupported plan',
+test_reverse_index_plan_runtime_available_sorted_array :-
+    Test = 'WAM-C: runtime sorted-array CSR artifact is available',
+    (   resolve_wam_c_reverse_index_plan(
+            [reverse_index(artifact([
+                storage_kind(csr_pread_artifact),
+                phase(runtime_available),
+                index_backend(sorted_array),
+                io_policy(buffered_pread)
+            ]))],
+            wam_c_reverse_index_plan(artifact(Resolved), Capabilities)
+        ),
+        memberchk(phase(runtime_available), Resolved),
+        memberchk(storage_kind(csr_pread_artifact), Resolved),
+        memberchk(index_backend(sorted_array), Resolved),
+        memberchk(runtime_child_lookup(available), Capabilities),
+        memberchk(runtime_api(wam_reverse_csr_lookup_children), Capabilities),
+        memberchk(runtime_io(pread), Capabilities)
+    ->  pass(Test)
+    ;   fail_test(Test, 'runtime sorted-array CSR artifact was not marked available')
+    ).
+
+test_reverse_index_plan_runtime_available_lmdb_offset_unsupported :-
+    Test = 'WAM-C: runtime lmdb-offset CSR artifact is still unsupported',
     (   resolve_wam_c_reverse_index_plan(
             [reverse_index(artifact([
                 storage_kind(csr_pread_artifact),
@@ -410,9 +431,10 @@ test_reverse_index_plan_runtime_available_marks_unsupported :-
         memberchk(phase(runtime_available), Resolved),
         memberchk(storage_kind(csr_pread_artifact), Resolved),
         memberchk(index_backend(lmdb_offset), Resolved),
-        memberchk(runtime_child_lookup(unsupported), Capabilities)
+        memberchk(runtime_child_lookup(unsupported), Capabilities),
+        memberchk(runtime_reason(lmdb_offset_index_not_implemented), Capabilities)
     ->  pass(Test)
-    ;   fail_test(Test, 'runtime reverse index request did not stay explicit')
+    ;   fail_test(Test, 'runtime lmdb-offset CSR artifact did not stay unsupported')
     ).
 
 test_streaming_foreign_results_generation :-
@@ -4524,7 +4546,8 @@ run_tests_once :-
     test_reverse_csr_generation,
     test_reverse_index_plan_none,
     test_reverse_index_plan_csr_cost_model,
-    test_reverse_index_plan_runtime_available_marks_unsupported,
+    test_reverse_index_plan_runtime_available_sorted_array,
+    test_reverse_index_plan_runtime_available_lmdb_offset_unsupported,
     test_streaming_foreign_results_generation,
     test_kernel_detector_setup_generation,
     test_transitive_closure_detector_setup_generation,
