@@ -7,43 +7,47 @@
 **Seeds**: 50 categories at depth ~4 from root (e.g., Ice, Soviet_Union, Kingdom_of_France, History_of_London)
 **Kernel**: DFS with path-cost pruning, parentCost=1.0, budget=15.0
 **Metric**: effective distance d_eff = (Σ (hops+1)^(-n))^(-1/n), n=2.0
-**Expansion cap**: 200,000 nodes per seed
+**Pruning**: A*-style lower-bound pruning using precomputed minimum
+parent-hop distance from each node to root. No expansion cap.
 
-## 1. childCost sweep
+## 1. childCost sweep (A* pruned, complete search)
 
-| childCost | Total paths | Mixed (child hops) | Upward-only | Avg d_eff bidir | Avg d_eff up | Time (ms) |
-|-----------|------------|-------------------|-------------|----------------|-------------|-----------|
-| 1.5 | 839 | 829 | 513 | 5.54 | 3.01 | 2162 |
-| 2.0 | 650 | 640 | 513 | 5.12 | 3.05 | 1879 |
-| **3.0** | **1,317** | **1,306** | **513** | **2.82** | **3.04** | **1844** |
-| 5.0 | 13,825 | 13,750 | 513 | 1.17 | 3.04 | 1827 |
-| 10.0 | 1,914 | 1,439 | 513 | 1.44 | 3.04 | 786 |
-| 100.0 | 513 | 0 | 513 | 3.04 | 3.04 | 88 |
+| childCost | Total paths | Mixed (child hops) | Upward-only | Expansions (k) | Avg d_eff bidir | Avg d_eff up | Time |
+|-----------|------------|-------------------|-------------|---------------|----------------|-------------|------|
+| 100.0 | 513 | 0 | 513 | 3 | 3.04 | 3.04 | 10ms |
+| 10.0 | 933 | 420 | 513 | 6 | 2.02 | 3.04 | 10ms |
+| 5.0 | 11,035 | 10,522 | 513 | 54 | 1.01 | 3.04 | 90ms |
+| **3.0** | **558,017** | **557,504** | **513** | **2,804** | **0.29** | **3.04** | **1.5s** |
+| 2.5 | 1,636,160 | 1,635,647 | 513 | 8,917 | 0.16 | 3.04 | 5s |
+| 2.0 | 21,741,496 | 21,740,983 | 513 | 119,874 | 0.06 | 3.04 | 77s |
 
 ### Observations
 
 - **childCost=100 (effectively infinity)**: bidirectional matches
   upward-only exactly (513 paths, d_eff=3.04). Correctness verified.
 
-- **childCost=3 (default)**: 1,306 mixed paths discovered (paths
-  routing through at least one child hop). d_eff drops from 3.04
-  to 2.82 — a **7% improvement** averaged across 50 seeds. Individual
-  categories see 30-50% reductions.
+- **Monotonic path count**: lower childCost strictly produces more
+  paths (as expected — cheaper child hops open more routes within
+  the budget). Path count grows roughly exponentially as childCost
+  decreases.
 
-- **childCost=5**: search explodes to 13,750 mixed paths and d_eff
-  drops to 1.17 (62% reduction). Some seeds hit the 200k expansion
-  cap. The lower per-hop cost allows deeper child exploration,
-  finding many more lateral connections.
+- **childCost=3.0**: 558k paths (1,088x more than upward-only),
+  d_eff drops from 3.04 to 0.29 — a **90% reduction**. The massive
+  number of mixed paths reflects genuine lateral connectivity in
+  Wikipedia's category graph. Completes in 1.5 seconds with A*
+  pruning.
 
-- **childCost=1.5 and 2.0**: d_eff is *worse* than upward-only
-  (5.54 and 5.12 vs 3.04). The search explores many short
-  child-heavy paths that find longer routes, diluting the
-  effective distance sum. This demonstrates that too-cheap child
-  hops degrade quality by adding low-value paths.
+- **childCost=10.0**: 420 mixed paths, d_eff drops 33% to 2.02.
+  Very fast (10ms). Good for latency-sensitive applications.
 
-- **childCost=3 is the sweet spot**: enough child exploration to
-  find genuine lateral connectivity, but expensive enough to
-  prevent the search from being dominated by child-heavy routes.
+- **childCost=5.0**: 10.5k mixed paths, d_eff drops 67% to 1.01.
+  Fast (90ms). A good balance for interactive use.
+
+- **Search space growth**: the number of valid paths grows
+  exponentially as childCost decreases, because each child hop
+  opens up a subtree of nodes that can then route back to root
+  via parent hops. The A* pruning keeps the search tractable
+  by eliminating branches that cannot reach root within budget.
 
 ## 2. Per-category detail (childCost=3)
 
@@ -76,23 +80,34 @@
   Physics — "non-carrot-shaped" routes that capture real
   graph connectivity the upward-only kernel misses.
 
-## 3. Comparison with synthetic data
+## 3. A* pruning effectiveness
 
-The synthetic DAG benchmark (1,376 nodes, 15 levels) showed:
-- childCost=3: 6,238 mixed paths, d_eff reduced 24%
-- childCost=2: 16,758 mixed paths, d_eff reduced 47%
+Precomputing the minimum parent-hop distance from each node to root
+(BFS from root via child edges) provides an admissible heuristic:
+`lower_bound = current_cost + min_dist[node] * parentCost`. Branches
+where this lower bound exceeds the budget are pruned.
 
-The real Wikipedia data shows a more modest average improvement (7%)
-at childCost=3, but much larger per-category improvements (up to 50%).
-This is because Wikipedia's category graph is less uniform — some
-categories have rich lateral connectivity while others are isolated
-subtrees.
+This makes the search complete (no expansion cap needed) while
+keeping it tractable:
+- At childCost=3.0: 2.8M expansions for 558k paths (1.5s)
+- At childCost=2.0: 120M expansions for 21.7M paths (77s)
+- Without A* pruning, these runs either hit caps or ran for minutes
+  without completing
 
 ## 4. Recommendations
 
-- **Default childCost=3.0** is well-calibrated for Wikipedia data.
-  It finds genuine lateral connectivity without exploding the search
-  space or degrading quality through low-value child-heavy paths.
+- **childCost=3.0** produces a 90% d_eff reduction in 1.5s with
+  558k paths. Suitable for batch/offline workloads.
+
+- **childCost=5.0** produces a 67% d_eff reduction in 90ms with
+  11k paths. Good for interactive use.
+
+- **childCost=10.0** produces a 33% d_eff reduction in 10ms with
+  933 paths. Good for latency-sensitive applications.
+
+- The choice of childCost is a knob trading computation time for
+  path coverage. The cost model could tune this based on workload
+  requirements (latency budget, desired d_eff precision).
 
 - **Budget=15** with parentCost=1.0 and childCost=3.0 allows:
   - Up to 15 pure parent hops
@@ -101,7 +116,8 @@ subtrees.
 
 - Future work: test on full enwiki (9.93M edges) where the deeper
   graph and richer lateral structure should amplify the bidirectional
-  advantage.
+  advantage. Also explore tighter per-node lower bounds that account
+  for which neighbors have already been visited.
 
 ## 5. References
 
