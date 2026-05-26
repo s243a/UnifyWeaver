@@ -351,6 +351,37 @@ impl WamState {
         self.lazy_lookups.get(pred).cloned()
     }
 
+    /// Look up parents for an interned atom id, consulting lazy_lookups
+    /// first and falling back to ffi_facts. Used by the native
+    /// category_ancestor handler so it can read parent edges via
+    /// either the eager (ffi_facts) or lazy (LookupSource) path
+    /// transparently. `edge_pred` is the bare predicate name (no
+    /// "/arity" suffix) as stored in ffi_facts; the lazy lookup key
+    /// is constructed by appending "/2" (the convention for edge
+    /// predicates).
+    pub fn edge_parents(&self, cat_id: u32, edge_pred: &str) -> Vec<u32> {
+        // Lazy path: round-trip through the LMDB intern table.
+        let lazy_key = format!("{}/2", edge_pred);
+        if let Some(source) = self.lazy_lookups.get(&lazy_key) {
+            if let Some(atom_str) = self.atom_deintern.get(cat_id as usize).cloned() {
+                if let Some(int_key) = source.lookup_key_for_atom(&atom_str) {
+                    let parent_ints = source.lookup_parents(int_key);
+                    return parent_ints.iter().filter_map(|pid| {
+                        source.atom_for_key(*pid).and_then(|s| self.atom_intern.get(&s).copied())
+                    }).collect();
+                }
+            }
+            // Lazy registered but the key isn't in s2i / deintern; treat as miss.
+            return Vec::new();
+        }
+        // Eager fallback.
+        self.ffi_facts
+            .get(edge_pred)
+            .and_then(|table| table.get(&cat_id))
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Dereference an Unbound variable through the binding table.
     /// Follows chains: if Unbound("X") -> Unbound("Y") -> Atom("hello"), returns Atom("hello").
     pub fn deref_var(&self, val: &Value) -> Value {

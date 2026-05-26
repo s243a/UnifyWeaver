@@ -1843,13 +1843,14 @@ compile_collect_native_category_ancestor_to_rust(Code) :-
         edge_pred: &str,
         out: &mut Vec<i64>,
     ) {
-        let ffi_table = self.ffi_facts.get(edge_pred);
+        // R7: route through self.edge_parents so lazy_lookups is
+        // consulted before ffi_facts. This keeps the kernels_on
+        // native path working under lmdb_materialisation(lazy).
+        let parents = self.edge_parents(cat_id, edge_pred);
         let root_seen = visited.contains(&root_id);
         if !root_seen {
-            if let Some(values) = ffi_table.and_then(|table| table.get(&cat_id)) {
-                if values.contains(&root_id) {
-                    out.push(1);
-                }
+            if parents.contains(&root_id) {
+                out.push(1);
             }
         }
 
@@ -1857,20 +1858,17 @@ compile_collect_native_category_ancestor_to_rust(Code) :-
             return;
         }
 
-        if let Some(values) = ffi_table.and_then(|table| table.get(&cat_id)) {
-            let values = values.clone();
-            for parent_id in &values {
-                if visited.contains(parent_id) {
-                    continue;
-                }
-                let mut next_visited: Vec<u32> = Vec::with_capacity(visited.len() + 1);
-                next_visited.push(*parent_id);
-                next_visited.extend_from_slice(visited);
-                let before = out.len();
-                self.collect_native_category_ancestor_hops(*parent_id, root_id, &next_visited, max_depth, edge_pred, out);
-                for hop in out.iter_mut().skip(before) {
-                    *hop += 1;
-                }
+        for parent_id in &parents {
+            if visited.contains(parent_id) {
+                continue;
+            }
+            let mut next_visited: Vec<u32> = Vec::with_capacity(visited.len() + 1);
+            next_visited.push(*parent_id);
+            next_visited.extend_from_slice(visited);
+            let before = out.len();
+            self.collect_native_category_ancestor_hops(*parent_id, root_id, &next_visited, max_depth, edge_pred, out);
+            for hop in out.iter_mut().skip(before) {
+                *hop += 1;
             }
         }
     }'.
