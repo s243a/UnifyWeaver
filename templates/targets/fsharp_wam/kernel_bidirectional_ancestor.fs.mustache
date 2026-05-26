@@ -19,23 +19,64 @@
 /// using parentHops and childHops for direction-weighted scoring.
 /// With childCost = infinity, degenerates to upward-only search.
 
-let private computeMinDistToRoot
-    (lookupChildren: int -> int list) (root: int)
-    : System.Collections.Generic.Dictionary<int, int> =
+/// Graph calibration result: dimensionality D and effective branching
+/// ratio b, computed from BFS growth rates. Used by the distance metric.
+type GraphCalibration = {
+    Dimensionality: float
+    BranchRatio: float
+    MinDist: System.Collections.Generic.Dictionary<int, int>
+}
+
+let private calibrateGraph
+    (lookupParents: int -> int list)
+    (lookupChildren: int -> int list)
+    (root: int)
+    : GraphCalibration =
     let dist = System.Collections.Generic.Dictionary<int, int>()
     dist.[root] <- 0
     let mutable frontier = [root]
     let mutable depth = 0
+    let growthRates = System.Collections.Generic.List<float>()
+    let mutable prevSize = 1
+    let mutable totalParentFanout = 0.0
+    let mutable totalChildFanout = 0.0
+    let mutable parentNodes = 0
+    let mutable childNodes = 0
     while not (List.isEmpty frontier) do
         depth <- depth + 1
         let mutable next = []
         for nd in frontier do
-            for c in lookupChildren nd do
+            let children = lookupChildren nd
+            if not (List.isEmpty children) then
+                totalChildFanout <- totalChildFanout + float children.Length
+                childNodes <- childNodes + 1
+            let parents = lookupParents nd
+            if not (List.isEmpty parents) then
+                totalParentFanout <- totalParentFanout + float parents.Length
+                parentNodes <- parentNodes + 1
+            for c in children do
                 if not (dist.ContainsKey(c)) then
                     dist.[c] <- depth
                     next <- c :: next
+        let fSize = List.length next
+        if fSize > 0 && prevSize > 0 && depth >= 2 && depth <= 6 then
+            growthRates.Add(float fSize / float prevSize)
+        prevSize <- fSize
         frontier <- next
-    dist
+    let dimensionality =
+        if growthRates.Count > 0 then
+            let logMean = growthRates |> Seq.averageBy log
+            max 1.5 (exp logMean)
+        else 3.0
+    let branchRatio =
+        if parentNodes > 0 && childNodes > 0 then
+            let avgChild = totalChildFanout / float childNodes
+            let avgParent = totalParentFanout / float parentNodes
+            max 1.0 (avgChild / avgParent)
+        else 1.0
+    { Dimensionality = dimensionality
+      BranchRatio = branchRatio
+      MinDist = dist }
 
 let nativeKernel_bidirectional_ancestor
     (lookupParents: int -> int list)
@@ -43,9 +84,9 @@ let nativeKernel_bidirectional_ancestor
     (cat: int) (root: int)
     (parentCost: float) (childCost: float) (budget: float)
     : (int * int * int) list =
-    let minDist = computeMinDistToRoot lookupChildren root
+    let cal = calibrateGraph lookupParents lookupChildren root
     let minCostToRoot nd =
-        match minDist.TryGetValue(nd) with
+        match cal.MinDist.TryGetValue(nd) with
         | true, d -> float d * parentCost
         | _ -> infinity
     let rec explore
