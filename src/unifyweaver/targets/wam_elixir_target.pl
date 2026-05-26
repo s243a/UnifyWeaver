@@ -1601,14 +1601,13 @@ compile_utility_helpers_to_elixir(Code) :-
         goal_term = deref_var(state, get_reg(state, 2))
         prepared = %{state | regs: Map.put(state.regs, 1, goal_term)}
         dispatch_call_meta(prepared, 1, state.cp)
+      {"findall/3", 3} ->
+        execute_aggregate_meta(state, :collect)
+      {"bagof/3", 3} ->
+        execute_aggregate_meta(state, :bagof)
+      {"setof/3", 3} ->
+        execute_aggregate_meta(state, :setof)
       {"throw/1", 1} ->
-        # throw(Term). Deep-copy the term (independent of catch
-        # boundary), then BEAM-throw {:wam_throw, copy} so the
-        # nearest enclosing execute_catch unwinds the BEAM stack
-        # back to itself. If catcher_frames is empty, no enclosing
-        # catch exists at the WAM level — convert to :fail + stderr
-        # diagnostic so the lowered run(args) wrapper sees a clean
-        # failure rather than a crash.
         execute_throw(state)
       _ ->
         # Hardening: surface unimplemented builtins instead of silently
@@ -1644,6 +1643,140 @@ compile_utility_helpers_to_elixir(Code) :-
   # `defp`: only invoked from within WamRuntime (execute_builtin
   # arm + the :call/:execute step arms via the same module). Not
   # part of the runtime''s external API.
+  # Meta-call dispatch for findall/3, bagof/3, setof/3.
+  # A1=Template, A2=Goal, A3=Result. Pushes an aggregate frame,
+  # sets cp to a collector closure, then dispatches Goal via
+  # dispatch_call_meta. Each time Goal succeeds the collector
+  # captures the template value and throws fail to drive the next
+  # solution. When Goal exhausts, backtrack finds the aggregate
+  # frame and finalise_aggregate groups + binds the result.
+  defp execute_aggregate_meta(state, kind) do
+    template_ref = get_reg_raw(state, 1)
+    goal = deref_var(state, get_reg(state, 2))
+    result_reg_val = get_reg_raw(state, 3)
+
+    # For bagof/setof: walk Goal to find witness vars not in Template
+    # and not under ^/2. In the meta-call path we track witness
+    # bindings by storing the derefed unbound refs directly (not
+    # register IDs, since meta-call args are heap-allocated, not in
+    # fixed registers).
+    witness_refs =
+      if kind in [:bagof, :setof] do
+        template_vars = collect_term_vars(state, template_ref, MapSet.new())
+        {goal_vars, _} = collect_goal_witnesses(state, goal, template_vars)
+        goal_vars
+      else
+        []
+      end
+
+    # Push aggregate frame. value_reg and result_reg are register
+    # indices in the inline path, but here we store a sentinel (-1)
+    # and use the saved refs directly.
+    state = push_aggregate_frame(state, kind, -1, -1, [])
+    # Stash template_ref, result_reg_val, and witness_refs in the
+    # aggregate CP so the collector and finaliser can read them.
+    {updated_cps, _} =
+      Enum.map_reduce(state.choice_points, false, fn cp, done ->
+        cond do
+          done -> {cp, done}
+          Map.has_key?(cp, :agg_type) ->
+            cp = cp
+            |> Map.put(:meta_template_ref, template_ref)
+            |> Map.put(:meta_result_ref, result_reg_val)
+            |> Map.put(:meta_witness_refs, witness_refs)
+            {cp, true}
+          true -> {cp, done}
+        end
+      end)
+    state = %{state | choice_points: updated_cps}
+
+    # Collector closure: on each Goal success, capture template
+    # value and witness values, then fail to drive the next solution.
+    collector = fn(s) ->
+      val = deep_copy_value(s, deref_var(s, template_ref))
+      {updated, _} =
+        Enum.map_reduce(s.choice_points, false, fn cp, done ->
+          cond do
+            done -> {cp, done}
+            Map.has_key?(cp, :agg_type) ->
+              cp = Map.put(cp, :agg_accum, [val | Map.get(cp, :agg_accum, [])])
+              w_refs = Map.get(cp, :meta_witness_refs, [])
+              cp =
+                if w_refs != [] do
+                  wvals = Enum.map(w_refs, fn wr ->
+                    deep_copy_value(s, deref_var(s, wr))
+                  end)
+                  Map.put(cp, :agg_witness_accum, [wvals | Map.get(cp, :agg_witness_accum, [])])
+                else
+                  cp
+                end
+              {cp, true}
+            true -> {cp, done}
+          end
+        end)
+      throw({:fail, %{s | choice_points: updated}})
+    end
+
+    # Load Goal into A1 and dispatch as 1-arity meta-call with
+    # cp = collector so Goal proceeds into collection.
+    state = %{state | regs: Map.put(state.regs, 1, goal)}
+    dispatch_call_meta(state, 1, collector)
+  end
+
+  # Walk a term collecting unbound variable refs.
+  defp collect_term_vars(_state, {:unbound, _} = ref, seen) do
+    if MapSet.member?(seen, ref), do: seen, else: MapSet.put(seen, ref)
+  end
+  defp collect_term_vars(state, {:ref, addr}, seen) do
+    case Map.get(state.heap, addr) do
+      {:str, fn_name} ->
+        arity = parse_functor_arity(fn_name)
+        Enum.reduce(1..max(arity, 1), seen, fn i, acc ->
+          if arity == 0, do: acc,
+          else: collect_term_vars(state, deref_var(state, Map.get(state.heap, addr + i)), acc)
+        end)
+      _ -> seen
+    end
+  end
+  defp collect_term_vars(state, val, seen) do
+    derefed = deref_var(state, val)
+    if derefed != val, do: collect_term_vars(state, derefed, seen), else: seen
+  end
+
+  # Walk Goal collecting witness vars: vars not in exclude set and
+  # not under ^/2 LHS. Returns {witness_list, seen_set}.
+  defp collect_goal_witnesses(state, {:unbound, _} = ref, exclude) do
+    if MapSet.member?(exclude, ref), do: {[], exclude},
+    else: {[ref], MapSet.put(exclude, ref)}
+  end
+  defp collect_goal_witnesses(state, {:ref, addr}, exclude) do
+    case Map.get(state.heap, addr) do
+      {:str, "^/2"} ->
+        lhs = deref_var(state, Map.get(state.heap, addr + 1))
+        lhs_vars = collect_term_vars(state, lhs, MapSet.new())
+        exclude2 = MapSet.union(exclude, lhs_vars)
+        rhs = deref_var(state, Map.get(state.heap, addr + 2))
+        collect_goal_witnesses(state, rhs, exclude2)
+      {:str, fn_name} ->
+        arity = parse_functor_arity(fn_name)
+        if arity > 0 do
+          Enum.reduce(1..arity, {[], exclude}, fn i, {acc, exc} ->
+            arg = deref_var(state, Map.get(state.heap, addr + i))
+            {new_vars, new_exc} = collect_goal_witnesses(state, arg, exc)
+            {acc ++ new_vars, new_exc}
+          end)
+        else
+          {[], exclude}
+        end
+      _ -> {[], exclude}
+    end
+  end
+  defp collect_goal_witnesses(state, val, exclude) do
+    derefed = deref_var(state, val)
+    if derefed != val, do: collect_goal_witnesses(state, derefed, exclude),
+    else: {[], exclude}
+  end
+
   defp dispatch_call_meta(state, total_arity, after_pc) do
     goal = deref_var(state, get_reg(state, 1))
     # Elixir descending-range trap: `for i <- 2..1` would raise
@@ -2831,10 +2964,13 @@ compile_aggregate_helpers_to_elixir(Code) :-
   def finalise_aggregate(state, agg_cp, rest_cps, agg_type) do
     accum_rev = Enum.reverse(agg_cp.agg_accum)
     witness_regs = Map.get(agg_cp, :agg_witness_regs, [])
+    meta_witness_refs = Map.get(agg_cp, :meta_witness_refs, [])
     witness_accum_rev = Enum.reverse(Map.get(agg_cp, :agg_witness_accum, []))
+    has_witnesses = (witness_regs != [] or meta_witness_refs != []) and
+                    witness_accum_rev != []
 
     # Witness-group path for bagof/setof with free witnesses.
-    if agg_type in [:bagof, :setof] and witness_regs != [] do
+    if agg_type in [:bagof, :setof] and has_witnesses do
       if accum_rev == [], do: throw({:fail, state})
       groups = group_by_witness(accum_rev, witness_accum_rev, agg_type)
       if groups == [], do: throw({:fail, state})
@@ -2865,16 +3001,26 @@ compile_aggregate_helpers_to_elixir(Code) :-
           :min ->
             if accum_rev == [], do: throw({:fail, state}), else: Enum.min(accum_rev)
         end
-      # Bind the result through the trail when result_reg holds an
-      # unbound ref.
+      # Bind the result. Meta-call path stores result ref in the CP
+      # (agg_result_reg == -1); inline path uses a register index.
+      meta_result_ref = Map.get(agg_cp, :meta_result_ref)
       bound_regs =
-        case Map.get(agg_cp.regs, agg_cp.agg_result_reg) do
-          {:unbound, id} ->
-            agg_cp.regs
-            |> Map.put(id, result)
-            |> Map.put(agg_cp.agg_result_reg, result)
-          _ ->
-            Map.put(agg_cp.regs, agg_cp.agg_result_reg, result)
+        if meta_result_ref != nil and agg_cp.agg_result_reg == -1 do
+          case meta_result_ref do
+            {:unbound, id} ->
+              agg_cp.regs |> Map.put(id, result)
+            _ ->
+              agg_cp.regs
+          end
+        else
+          case Map.get(agg_cp.regs, agg_cp.agg_result_reg) do
+            {:unbound, id} ->
+              agg_cp.regs
+              |> Map.put(id, result)
+              |> Map.put(agg_cp.agg_result_reg, result)
+            _ ->
+              Map.put(agg_cp.regs, agg_cp.agg_result_reg, result)
+          end
         end
       restored = %{state |
         regs: bound_regs,
