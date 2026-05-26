@@ -1,6 +1,6 @@
 # F# Program.fs Template Migration: Design
 
-**Status**: Design. Depends on template match/case testing.
+**Status**: Implemented. Template created, generate_program_fs/4 refactored.
 **Date**: 2026-05-25
 **Prerequisite**: `WAM_TEMPLATE_MATCH_CASE_TESTING.md` edge cases pass
 
