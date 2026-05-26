@@ -59,7 +59,13 @@
     iso_errors_rewrite/4,                % +Config, +PI, +Items0, -Items
     iso_errors_rewrite_text/4,           % +Config, +PI, +WamText0, -WamText
     wam_fsharp_iso_audit/3,              % +Predicates, +Options, -Audit
-    wam_fsharp_iso_audit_report/1        % +Audit
+    wam_fsharp_iso_audit_report/1,       % +Audit
+    % Cost-based auto-resolvers
+    resolve_auto_edge_store_fs/2,        % +Options0, -Options
+    resolve_auto_lmdb_materialisation_fs/2, % +Options0, -Options
+    resolve_auto_lmdb_cache_tier_fs/2,   % +Options0, -Options
+    resolve_auto_csr_index_backend_fs/2, % +Options0, -Options
+    resolve_fsharp_cost_options/2        % +Options0, -Options
 ]).
 
 :- use_module(library(lists)).
@@ -71,6 +77,11 @@
              [detect_recursive_kernel/4, kernel_metadata/4, kernel_config/2,
               kernel_register_layout/2, kernel_native_call/2, kernel_template_file/2]).
 :- use_module('../core/template_system', [render_template/3]).
+:- use_module('../core/cost_model', [
+    recommend_access_pattern/5,
+    read_mem_available_bytes/1,
+    resolve_csr_index_backend/2
+]).
 :- use_module('../core/purity_certificate', [analyze_predicate_purity/2]).
 :- use_module('../bindings/fsharp_wam_bindings').
 :- use_module('../core/iso_errors',
@@ -4574,6 +4585,147 @@ wam_fsharp_iso_audit_report([audit(PI, Mode, Sites)|Rest]) :-
     ),
     wam_fsharp_iso_audit_report(Rest).
 
+%% =====================================================================
+%% Cost-based auto-resolvers for F# WAM target
+%% =====================================================================
+
+%% resolve_auto_edge_store_fs(+Options0, -Options)
+%  Resolve edge_store(auto) into a concrete store selection.
+%  Decides between lmdb_cached, lmdb_eager, csr, or dual_csr based on
+%  workload metadata. When edge_store is not auto (or absent), pass through.
+resolve_auto_edge_store_fs(Options0, Options) :-
+    (   option(edge_store(auto), Options0)
+    ->  compute_edge_store_fs(Options0, Store),
+        exclude(=(edge_store(_)), Options0, Rest),
+        apply_edge_store_fs(Store, Rest, Options)
+    ;   Options = Options0
+    ).
+
+compute_edge_store_fs(Options, Store) :-
+    option(expected_query_count(Q), Options, 1),
+    option(expected_lookups_per_query(L), Options, 50),
+    option(edge_count(E), Options, 0),
+    option(graph_mutability(Mut), Options, 'static'),
+    option(needs_reverse(NeedsRev), Options, false),
+    TotalLookups is Q * L,
+    CsrBuildMs is E * 0.01,
+    PerLookupSavingsUs is 5,
+    (   PerLookupSavingsUs > 0
+    ->  BreakEvenLookups is CsrBuildMs * 1000 / PerLookupSavingsUs
+    ;   BreakEvenLookups is 1.0e12
+    ),
+    (   Mut == 'dynamic'
+    ->  Store = lmdb_cached
+    ;   (   TotalLookups < BreakEvenLookups
+        ->  (   E < 50000
+            ->  Store = lmdb_eager
+            ;   Store = lmdb_cached
+            )
+        ;   (   NeedsRev = true
+            ->  Store = dual_csr
+            ;   Store = csr
+            )
+        )
+    ),
+    (   option(edge_store_verbose(true), Options)
+    ->  format(user_error,
+               '[WAM-FSharp] edge_store(auto): Q=~w L=~w E=~w mut=~w rev=~w -> ~w~n',
+               [Q, L, E, Mut, NeedsRev, Store])
+    ;   true
+    ).
+
+apply_edge_store_fs(lmdb_cached, Opts, [lmdb_materialisation(cached) | Opts]).
+apply_edge_store_fs(lmdb_eager, Opts, [lmdb_materialisation(eager) | Opts]).
+apply_edge_store_fs(csr, Opts, Opts).
+apply_edge_store_fs(dual_csr, Opts, Opts).
+
+%% resolve_auto_lmdb_materialisation_fs(+Options0, -Options)
+%  Resolve lmdb_materialisation(auto) into eager/lazy/cached using
+%  the shared cost model. When not auto, pass through.
+resolve_auto_lmdb_materialisation_fs(Options0, Options) :-
+    (   option(lmdb_materialisation(auto), Options0)
+    ->  compute_lmdb_materialisation_fs(Options0, Mode),
+        exclude(=(lmdb_materialisation(_)), Options0, Rest),
+        Options = [lmdb_materialisation(Mode) | Rest]
+    ;   Options = Options0
+    ).
+
+compute_lmdb_materialisation_fs(Options, Mode) :-
+    option(fact_count(F), Options, 0),
+    option(demand_set_estimate(D), Options, F),
+    option(expected_query_count(NQ), Options, 1),
+    option(workload_segregated(WS), Options, false),
+    option(working_set_fraction(WSF), Options, 0.05),
+    EdgeBytes is D * 50,
+    (   option(memory_budget(B), Options)
+    ->  true
+    ;   catch(read_mem_available_bytes(B), _, B = 1_000_000_000)
+    ),
+    (   EdgeBytes > B
+    ->  (WS == true -> Mode = lazy ; Mode = cached)
+    ;   KKeys is integer(F * WSF),
+        option(cost_model_constants(Constants), Options, []),
+        recommend_access_pattern(KKeys, EdgeBytes, B, Constants, Pattern),
+        (   Pattern = sort
+        ->  (NQ >= 10, F =< 100_000 -> Mode = eager ; Mode = cached)
+        ;   (EdgeBytes > B -> Mode = cached ; Mode = eager)
+        )
+    ),
+    (   option(materialisation_verbose(true), Options)
+    ->  format(user_error,
+               '[WAM-FSharp] lmdb_materialisation(auto): F=~w D=~w B=~w NQ=~w WS=~w -> ~w~n',
+               [F, D, B, NQ, WS, Mode])
+    ;   true
+    ).
+
+%% resolve_auto_lmdb_cache_tier_fs(+Options0, -Options)
+%  Resolve lmdb_l2_capacity(auto) into a concrete cache size.
+%  For eager/lazy modes the capacity is 0 (no cache tier).
+%  For cached mode the capacity scales with demand set size.
+resolve_auto_lmdb_cache_tier_fs(Options0, Options) :-
+    (   option(lmdb_l2_capacity(auto), Options0)
+    ->  compute_l2_capacity_fs(Options0, Cap),
+        exclude(=(lmdb_l2_capacity(_)), Options0, Rest),
+        Options = [lmdb_l2_capacity(Cap) | Rest]
+    ;   Options = Options0
+    ).
+
+compute_l2_capacity_fs(Options, Cap) :-
+    option(lmdb_materialisation(Mode), Options, cached),
+    (   Mode \= cached
+    ->  Cap = 0
+    ;   option(fact_count(F), Options, 0),
+        option(demand_set_estimate(D), Options, F),
+        Target is max(256, min(65536, integer(D * 0.1))),
+        Cap = Target
+    ),
+    (   option(l2_capacity_verbose(true), Options)
+    ->  format(user_error,
+               '[WAM-FSharp] lmdb_l2_capacity(auto): mode=~w -> ~w~n',
+               [Mode, Cap])
+    ;   true
+    ).
+
+%% resolve_auto_csr_index_backend_fs(+Options0, -Options)
+%  Resolve csr_index_backend(auto) by delegating to the shared
+%  cost rule in cost_model.pl.
+resolve_auto_csr_index_backend_fs(Options0, Options) :-
+    (   option(csr_path(_), Options0),
+        option(csr_index_backend(auto), Options0)
+    ->  resolve_csr_index_backend(Options0, Backend),
+        exclude(=(csr_index_backend(_)), Options0, Rest),
+        Options = [csr_index_backend(Backend) | Rest]
+    ;   Options = Options0
+    ).
+
+%% resolve_fsharp_cost_options(+Options0, -Options)
+%  Composed resolver chain: runs all four auto-resolvers in sequence.
+resolve_fsharp_cost_options(Options0, Options) :-
+    resolve_auto_edge_store_fs(Options0, Options1),
+    resolve_auto_lmdb_materialisation_fs(Options1, Options2),
+    resolve_auto_lmdb_cache_tier_fs(Options2, Options3),
+    resolve_auto_csr_index_backend_fs(Options3, Options).
+
 %% write_wam_fsharp_project(+Predicates, +Options, +ProjectDir)
 %  Generates a complete F# project with:
 %  - WamTypes.fs:   Value DU, WamState, WamContext, helpers
@@ -4582,8 +4734,11 @@ wam_fsharp_iso_audit_report([audit(PI, Mode, Sites)|Rest]) :-
 %  - Lowered.fs:    lowered predicate functions (Phase 3+)
 %  - Program.fs:    benchmark driver
 %  - wam-fsharp-bench.fsproj: project file
-write_wam_fsharp_project(Predicates, Options, ProjectDir) :-
+write_wam_fsharp_project(Predicates, Options0, ProjectDir) :-
     make_directory_path(ProjectDir),
+
+    % Phase 0: resolve cost-based auto options
+    resolve_fsharp_cost_options(Options0, Options),
 
     % Resolve runtime parser mode (capability hook).  When `compiled`
     % is selected, the portable parser predicates + the target-agnostic
