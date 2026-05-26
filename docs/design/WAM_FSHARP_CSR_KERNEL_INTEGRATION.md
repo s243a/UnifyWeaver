@@ -88,24 +88,76 @@ paths from Cat, including branches that never reach Root. The
 demand-set filter (reverse BFS from Root) prunes unreachable nodes,
 but the remaining search tree can still be large.
 
-### 3.2 Bidirectional search
+### 3.2 Bidirectional search with path-cost threshold
 
-With CSR providing parent -> children lookup, we can search from
-both ends:
+With CSR providing parent -> children lookup, we can search in both
+directions. But child fan-out is much larger than parent fan-out, so
+we need to constrain the search space.
+
+**Key design**: two separate concerns:
+
+1. **Inclusion threshold** (path-cost budget): which paths to explore.
+   Each step has a direction-dependent cost. Paths are pruned when
+   cumulative cost exceeds the budget. This controls the search space.
+
+2. **Distance metric** (weighting function): how to score included
+   paths in the effective-distance sum. Currently power-law
+   `(hops+1)^(-n)`. Could later be flux-based or other schemes
+   (see `COST_FUNCTION_PHILOSOPHY.md`). The metric is independent
+   of the inclusion threshold.
+
+These two are specified separately. You CAN use the same cost
+function for both, but you don't have to.
+
+#### Path-cost function (for pruning)
 
 ```
-bidirectional_ancestor(Cat, Root, MaxDepth) :-
-    % Phase 1: BFS downward from Root to find reachable descendants
-    bfs_down(Root, MaxDepth, RootDescendants),
-    % Phase 2: BFS upward from Cat, stopping when we hit RootDescendants
-    bfs_up_to_set(Cat, RootDescendants, MaxDepth, Hops).
+step_cost(parent_hop) = 1.0    -- cheap, natural direction
+step_cost(child_hop)  = k      -- expensive, k > 1 (e.g., 3.0)
+path_cost(path)       = sum of step_cost for each hop in path
+include(path)         = path_cost(path) <= budget
 ```
 
-This is the **meet-in-the-middle** optimization: instead of searching
-depth D from one end (exploring O(b^D) nodes where b is branching
-factor), search depth D/2 from each end (exploring O(2 * b^(D/2))
-nodes). For b=3, D=10: upward-only explores 59049 nodes;
-bidirectional explores 486 nodes — a 121x reduction.
+With k=3 and budget=10: a path can take 10 parent hops, or 3 child
+hops, or 1 child + 7 parent hops, etc. This naturally limits child
+exploration without a hard depth cap.
+
+#### Distance metric (for d_eff, unchanged initially)
+
+```
+d_eff = (Σ (hops+1)^(-n))^(-1/n)   -- current power-law, raw hop count
+```
+
+Initially we keep the existing power-law metric using raw hop count
+(not weighted by direction). The inclusion threshold determines WHICH
+paths contribute to the sum; the metric determines HOW they contribute.
+Later we can explore direction-weighted metrics or flux-based schemes.
+
+#### Kernel signature
+
+```fsharp
+let bidirectionalAncestor
+    (lookupParents: int -> int list)
+    (lookupChildren: int -> int list)
+    (cat: int) (root: int)
+    (parentStepCost: float) (childStepCost: float) (costBudget: float)
+    : int list =
+    // BFS with per-step costs, pruning when cumulative > budget.
+    // Returns list of hop counts for paths that reach root.
+    ...
+```
+
+#### Why bidirectional finds new paths
+
+Upward-only search finds paths like: seed -> A -> B -> root (always
+going up). Bidirectional finds additional "non-carrot-shaped" paths
+like: seed -> A -> B <- C <- root (going up from seed AND down from
+root). These are paths through shared ancestors that the upward-only
+kernel cannot discover.
+
+The effective-distance with bidirectional search will generally be
+**lower** (more paths = more terms = lower d_eff). This is a feature:
+it captures more of the graph's connectivity.
 
 ### 3.3 Implementation approach
 
@@ -113,18 +165,26 @@ The bidirectional kernel is a native F# function (not WAM-compiled).
 It plugs into the existing kernel detection + FFI dispatch:
 
 ```fsharp
-/// Bidirectional effective-distance kernel.
-/// Phase 1: BFS down from root via category_child CSR.
-/// Phase 2: BFS up from seed via category_parent, stopping at
-///          the root-reachable set.
+/// Bidirectional effective-distance kernel with path-cost pruning.
+///
+/// Explores paths in both directions (parent hops and child hops).
+/// Each step has a direction-dependent cost. Paths are pruned when
+/// cumulative cost exceeds the budget. Returns hop counts for all
+/// paths that reach root within the budget.
+///
+/// The distance metric (how hop counts become d_eff) is applied
+/// outside this function -- it only returns raw hop counts.
 let bidirectionalAncestor
     (lookupParents: int -> int list)
     (lookupChildren: int -> int list)
-    (cat: int) (root: int) (maxDepth: int) : int list =
-    // Phase 1: BFS down from root (using CSR category_child)
-    let rootSet = bfsDown lookupChildren root (maxDepth / 2)
-    // Phase 2: BFS up from cat, each hit on rootSet is a path
-    bfsUpToSet lookupParents cat rootSet (maxDepth - maxDepth / 2)
+    (cat: int) (root: int)
+    (parentCost: float) (childCost: float) (budget: float)
+    : int list =
+    // DFS/BFS with cumulative cost tracking.
+    // Each frontier entry: (node, cumulative_cost, hop_count, visited_set)
+    // Parent steps add parentCost; child steps add childCost.
+    // Prune when cumulative_cost > budget.
+    ...
 ```
 
 ### 3.4 Where it lives
@@ -136,12 +196,31 @@ let bidirectionalAncestor
 - Option: `kernel_mode(bidirectional)` or auto-detect when `csr_path`
   is set
 
-### 3.5 Correctness constraint
+### 3.5 Correctness and comparison
 
-Bidirectional search must produce the SAME effective-distance values
-as upward-only search. The Hops values may differ in ordering but
-the sum `Sigma (Hops+1)^(-n)` must be identical. Test this by
-running both kernels on the same fixture and comparing results.
+Bidirectional search finds a SUPERSET of paths (upward-only paths
+plus non-carrot-shaped paths via child hops). So:
+
+- `d_eff_bidirectional <= d_eff_upward_only` (more paths = lower distance)
+- When `childStepCost` is very high (effectively infinite), bidirectional
+  degenerates to upward-only and results should match exactly
+- Test: run both kernels, verify `d_eff_bidir <= d_eff_upward + epsilon`,
+  and verify exact match when child hops are disabled
+
+The interesting comparison is: how much does d_eff change when we
+allow child hops? This measures how much connectivity the upward-only
+kernel misses.
+
+### 3.6 Future: alternative weighting schemes
+
+The current distance metric uses power-law `(hops+1)^(-n)`. Future
+work can explore:
+
+- Direction-weighted metric: child hops contribute differently to
+  the distance calculation (not just the inclusion threshold)
+- Flux-based weighting: see `docs/design/COST_FUNCTION_PHILOSOPHY.md`
+- The separation of inclusion threshold from distance metric makes
+  it easy to swap metric functions without changing the search logic
 
 ## 4. Sequencing
 
@@ -161,9 +240,12 @@ the benchmark harness.
 
 ## 5. Success criteria
 
-- Phase A: cost analyzer picks the fastest mode at 3/4 scales
-- Phase B: bidirectional search produces identical effective-distance
-  values with measurable speedup (>2x) on deep graphs
+- Phase A: cost analyzer picks the fastest mode at 3/4 scales;
+  all modes produce identical BFS results
+- Phase B: bidirectional kernel with childCost=infinity matches
+  upward-only exactly; with finite childCost, d_eff is lower
+  (finds more paths); path-cost pruning keeps the search space
+  manageable (child fan-out doesn't explode)
 
 ## 6. References
 
