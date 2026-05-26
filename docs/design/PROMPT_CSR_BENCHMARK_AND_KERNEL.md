@@ -52,20 +52,36 @@ Create `templates/targets/fsharp_wam/kernel_bidirectional_ancestor.fs.mustache`:
 let bidirectionalAncestor
     (lookupParents: int -> int list)
     (lookupChildren: int -> int list)
-    (cat: int) (root: int) (maxDepth: int) : int list =
-    // Phase 1: BFS down from root (using category_child CSR)
-    let rootSet = bfsDown lookupChildren root (maxDepth / 2)
-    // Phase 2: BFS up from cat, stopping when we hit rootSet
-    bfsUpToSet lookupParents cat rootSet (maxDepth - maxDepth / 2)
+    (cat: int) (root: int)
+    (parentCost: float) (childCost: float) (budget: float)
+    : int list =
+    // DFS/BFS with cumulative cost tracking.
+    // Parent steps add parentCost, child steps add childCost.
+    // Prune when cumulative cost > budget.
+    // Returns hop counts for paths that reach root.
+    ...
 ```
 
-This is the **meet-in-the-middle** optimization: instead of exploring
-O(b^D) nodes upward, explore O(2 * b^(D/2)) from each end. For
-branching factor 3 and depth 10: 59049 vs 486 nodes.
+**Key design**: two separate concerns:
 
-**Critical**: the bidirectional kernel must produce the SAME
-effective-distance values as the upward-only kernel. Test by running
-both on the same fixture and comparing `sum ((hops+1)^(-n))`.
+1. **Inclusion threshold** (path-cost budget): `parentCost=1.0`,
+   `childCost=3.0`, `budget=10.0` means at most 10 parent hops
+   or 3 child hops or any mix. This constrains child fan-out
+   without a hard depth limit.
+
+2. **Distance metric** (unchanged): the existing `(hops+1)^(-n)`
+   power-law uses raw hop count. The inclusion threshold determines
+   WHICH paths contribute; the metric determines HOW. These are
+   specified separately so we can later swap in flux-based or
+   direction-weighted metrics independently.
+
+**Correctness**: bidirectional finds a SUPERSET of paths (upward
+paths plus non-carrot-shaped paths via child hops). So:
+- `d_eff_bidir <= d_eff_upward` (more paths = lower distance)
+- When `childCost` is very high (infinity), it degenerates to
+  upward-only and results should match exactly
+- Test both: exact match with childCost=infinity, and verify
+  d_eff decreases with finite childCost
 
 The kernel plugs into the existing FFI dispatch via
 `executeForeign` / kernel detection.
@@ -86,5 +102,7 @@ approach.
 
 - Phase A: benchmark report showing cost analyzer picks fastest
   mode at 3+ scales; all modes produce identical BFS results
-- Phase B: bidirectional kernel produces identical effective-distance
-  with measurable speedup (>2x) on a deep synthetic graph
+- Phase B: bidirectional kernel with childCost=infinity matches
+  upward-only exactly; with finite childCost, d_eff is lower
+  (finds more paths through non-carrot-shaped routes); path-cost
+  pruning keeps search space manageable
