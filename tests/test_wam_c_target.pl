@@ -347,6 +347,61 @@ test_fact_source_generation :-
     ;   fail_test(Test, 'file FactSource helpers missing')
     ).
 
+test_reverse_index_plan_none :-
+    Test = 'WAM-C: reverse_index none plans no runtime child lookup',
+    (   resolve_wam_c_reverse_index_plan(
+            [reverse_index(none)],
+            wam_c_reverse_index_plan(none, Capabilities)
+        ),
+        memberchk(planning(unneeded), Capabilities),
+        memberchk(runtime_child_lookup(unavailable), Capabilities)
+    ->  pass(Test)
+    ;   fail_test(Test, 'reverse_index(none) did not plan as unavailable')
+    ).
+
+test_reverse_index_plan_csr_cost_model :-
+    Test = 'WAM-C: reverse_index csr uses shared CSR cost model',
+    (   resolve_wam_c_reverse_index_plan(
+            [reverse_index(csr([
+                index_backend(auto),
+                expected_child_lookups_per_query(500),
+                expected_query_count_per_artifact(100),
+                sorted_array_lookup_ms_per_1000(4.418097),
+                lmdb_offset_lookup_ms_per_1000(2.961144),
+                sorted_array_build_seconds(0.331824),
+                lmdb_offset_build_seconds(0.381317),
+                lmdb_offset_bytes(2113536),
+                available_memory_bytes(1073741824)
+            ]))],
+            wam_c_reverse_index_plan(csr(Resolved), Capabilities)
+        ),
+        memberchk(index_backend(lmdb_offset), Resolved),
+        memberchk(io_policy(buffered_pread_drop), Resolved),
+        memberchk(runtime_child_lookup(unsupported), Capabilities),
+        memberchk(runtime_reason(no_c_reverse_index_reader), Capabilities)
+    ->  pass(Test)
+    ;   fail_test(Test, 'CSR options were not normalized through the cost model')
+    ).
+
+test_reverse_index_plan_runtime_available_marks_unsupported :-
+    Test = 'WAM-C: runtime reverse_index request is accepted as unsupported plan',
+    (   resolve_wam_c_reverse_index_plan(
+            [reverse_index(artifact([
+                storage_kind(csr_pread_artifact),
+                phase(runtime_available),
+                index_backend(lmdb_offset),
+                io_policy(buffered_pread)
+            ]))],
+            wam_c_reverse_index_plan(artifact(Resolved), Capabilities)
+        ),
+        memberchk(phase(runtime_available), Resolved),
+        memberchk(storage_kind(csr_pread_artifact), Resolved),
+        memberchk(index_backend(lmdb_offset), Resolved),
+        memberchk(runtime_child_lookup(unsupported), Capabilities)
+    ->  pass(Test)
+    ;   fail_test(Test, 'runtime reverse index request did not stay explicit')
+    ).
+
 test_streaming_foreign_results_generation :-
     Test = 'WAM-C: streaming foreign result helpers generated',
     (   compile_wam_runtime_to_c([], RuntimeCode),
@@ -4363,6 +4418,9 @@ run_tests_once :-
     test_weighted_shortest_path_kernel_generation,
     test_astar_shortest_path_kernel_generation,
     test_fact_source_generation,
+    test_reverse_index_plan_none,
+    test_reverse_index_plan_csr_cost_model,
+    test_reverse_index_plan_runtime_available_marks_unsupported,
     test_streaming_foreign_results_generation,
     test_kernel_detector_setup_generation,
     test_transitive_closure_detector_setup_generation,

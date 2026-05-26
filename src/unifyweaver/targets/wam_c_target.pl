@@ -21,6 +21,7 @@
     wam_instruction_to_c_literal/3,   % +WamInstr, +LabelMap, -CCode
     detect_kernels/2,                 % +Predicates, -DetectedKernels
     generate_setup_detected_kernels_c/2, % +DetectedKernels, -CCode
+    resolve_wam_c_reverse_index_plan/2, % +Options, -Plan
     plan_wam_c_lowered_helpers/4,     % +Predicates, +Options, +DetectedKeys, -Plans
     write_wam_c_project/3             % +Predicates, +Options, +ProjectDir
 ]).
@@ -33,9 +34,31 @@
 :- use_module('../core/template_system').
 :- use_module('../bindings/c_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../core/cost_model', [resolve_reverse_index/2]).
 :- use_module('../core/recursive_kernel_detection', [
     detect_recursive_kernel/4
 ]).
+
+%% resolve_wam_c_reverse_index_plan(+Options, -Plan)
+%  Normalizes reverse-index options for WAM-C without claiming runtime child-edge
+%  lookup support. The generated C runtime currently has parent fact-source
+%  loading and ancestor kernels; CSR reverse indexes are planning/build inputs
+%  until a C reader and lookup API are added.
+resolve_wam_c_reverse_index_plan(Options, Plan) :-
+    resolve_reverse_index(Options, ReverseIndex),
+    wam_c_reverse_index_capabilities(ReverseIndex, Capabilities),
+    Plan = wam_c_reverse_index_plan(ReverseIndex, Capabilities).
+
+wam_c_reverse_index_capabilities(none, [
+    planning(unneeded),
+    runtime_child_lookup(unavailable)
+]) :- !.
+wam_c_reverse_index_capabilities(ReverseIndex, [
+    planning(accepted),
+    runtime_child_lookup(unsupported),
+    runtime_reason(no_c_reverse_index_reader)
+]) :-
+    ReverseIndex \= none.
 
 % ============================================================================
 % PHASE 4: Hybrid Module Assembly
