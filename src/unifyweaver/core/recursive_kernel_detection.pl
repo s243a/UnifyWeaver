@@ -91,6 +91,7 @@ kernel_detector(transitive_step_parent_distance5, detect_transitive_step_parent_
 %% =====================================================================
 
 kernel_native_kind(category_ancestor, category_ancestor).
+kernel_native_kind(bidirectional_ancestor, bidirectional_ancestor).
 kernel_native_kind(transitive_closure2, transitive_closure2).
 kernel_native_kind(transitive_distance3, transitive_distance3).
 kernel_native_kind(weighted_shortest_path3, weighted_shortest_path3).
@@ -99,6 +100,7 @@ kernel_native_kind(astar_shortest_path4, astar_shortest_path4).
 kernel_native_kind(transitive_step_parent_distance5, transitive_step_parent_distance5).
 
 kernel_result_layout(category_ancestor, tuple(1)).
+kernel_result_layout(bidirectional_ancestor, tuple(1)).
 kernel_result_layout(transitive_closure2, tuple(1)).
 kernel_result_layout(transitive_distance3, tuple(2)).  % (target, distance)
 kernel_result_layout(weighted_shortest_path3, tuple(2)).  % (target, weight)
@@ -107,6 +109,7 @@ kernel_result_layout(astar_shortest_path4, tuple(1)).  % single distance (goal-d
 kernel_result_layout(transitive_step_parent_distance5, tuple(4)).  % (target, step, parent, distance)
 
 kernel_result_mode(category_ancestor, stream).
+kernel_result_mode(bidirectional_ancestor, stream).
 kernel_result_mode(transitive_closure2, stream).
 kernel_result_mode(transitive_distance3, stream).
 kernel_result_mode(weighted_shortest_path3, stream).
@@ -115,6 +118,7 @@ kernel_result_mode(astar_shortest_path4, stream).  % stream of at most 1
 kernel_result_mode(transitive_step_parent_distance5, stream).
 
 kernel_expected_arity(category_ancestor, 4).
+kernel_expected_arity(bidirectional_ancestor, 4).
 kernel_expected_arity(transitive_closure2, 2).
 kernel_expected_arity(transitive_distance3, 3).
 kernel_expected_arity(weighted_shortest_path3, 3).
@@ -131,6 +135,13 @@ kernel_expected_arity(transitive_step_parent_distance5, 5).
 %%   output(RegN, integer)   — bind result to register N as Integer
 %%   output(RegN, atom)      — bind result to register N as Atom
 %% =====================================================================
+
+kernel_register_layout(bidirectional_ancestor, [
+    input(1, atom),          % cat
+    input(2, atom),          % root
+    output(3, integer),      % hops (result)
+    input(4, vlist_atoms)    % visited
+]).
 
 kernel_register_layout(category_ancestor, [
     input(1, atom),          % cat
@@ -191,6 +202,17 @@ kernel_register_layout(transitive_step_parent_distance5, [
 %%   derived(length, RegN)        — length of extracted list from register N
 %% =====================================================================
 
+kernel_native_call(bidirectional_ancestor,
+    call(nativeKernel_bidirectional_ancestor, [
+        config_facts_from(edge_pred),     % parents lookup (category_parent)
+        config_facts('category_child'),   % children lookup (category_child CSR)
+        reg(1),                           % catS
+        reg(2),                           % rootS
+        config_int(max_depth, 10),        % maxD
+        derived(length, 4),               % length visitedStrs
+        reg(4)                            % visitedStrs
+    ])).
+
 kernel_native_call(category_ancestor,
     call(nativeKernel_category_ancestor, [
         config_facts_from(edge_pred),     % parents map (edge pred name from detection)
@@ -245,6 +267,7 @@ kernel_native_call(transitive_step_parent_distance5,
 %% =====================================================================
 
 kernel_template_file(category_ancestor, 'kernel_category_ancestor.hs.mustache').
+kernel_template_file(bidirectional_ancestor, 'kernel_bidirectional_ancestor.hs.mustache').
 kernel_template_file(transitive_closure2, 'kernel_transitive_closure.hs.mustache').
 kernel_template_file(transitive_distance3, 'kernel_transitive_distance.hs.mustache').
 kernel_template_file(weighted_shortest_path3, 'kernel_weighted_shortest_path.hs.mustache').

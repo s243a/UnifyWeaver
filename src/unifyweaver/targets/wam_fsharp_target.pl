@@ -4585,6 +4585,12 @@ wam_fsharp_iso_audit_report([audit(PI, Mode, Sites)|Rest]) :-
     ),
     wam_fsharp_iso_audit_report(Rest).
 
+%% maybe_upgrade_bidirectional(+KV0, -KV)
+%  Upgrade a category_ancestor kernel to bidirectional_ancestor.
+maybe_upgrade_bidirectional(Key-recursive_kernel(category_ancestor, PI, Config),
+                            Key-recursive_kernel(bidirectional_ancestor, PI, Config)) :- !.
+maybe_upgrade_bidirectional(KV, KV).
+
 %% =====================================================================
 %% Cost-based auto-resolvers for F# WAM target
 %% =====================================================================
@@ -4762,7 +4768,15 @@ write_wam_fsharp_project(Predicates, Options0, ProjectDir) :-
     (   option(no_kernels(true), Options)
     ->  DetectedKernels = [],
         format(user_error, '[WAM-FSharp] kernel detection suppressed~n', [])
-    ;   detect_kernels_fs(ProjectPredicates, DetectedKernels),
+    ;   detect_kernels_fs(ProjectPredicates, DetectedKernels0),
+        % Upgrade category_ancestor to bidirectional when CSR child
+        % lookup is available (csr_path provides category_child).
+        (   option(kernel_mode(bidirectional), Options),
+            option(csr_path(_), Options)
+        ->  maplist(maybe_upgrade_bidirectional, DetectedKernels0, DetectedKernels),
+            format(user_error, '[WAM-FSharp] bidirectional kernel upgrade enabled~n', [])
+        ;   DetectedKernels = DetectedKernels0
+        ),
         (   DetectedKernels \= []
         ->  pairs_keys(DetectedKernels, DetectedKeys),
             format(user_error, '[WAM-FSharp] detected kernels: ~w~n', [DetectedKeys])
