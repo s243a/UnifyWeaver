@@ -19,6 +19,7 @@
 :- dynamic user:test_term_order_builtin/0.
 :- dynamic user:test_ground_builtin/0.
 :- dynamic user:test_sub_atom_builtin/0.
+:- dynamic user:test_char_type_builtin/0.
 :- dynamic user:test_succ_builtin/0.
 :- dynamic user:test_atom_number_builtin/0.
 :- dynamic user:test_atom_case_builtin/0.
@@ -188,6 +189,29 @@ test(builtins_execution) :-
                 \+ sub_atom(abc, 0, _, _, _),
                 \+ sub_atom(abc, 0, 2, 0, ab),
                 \+ sub_atom(abc, 0, 2, _, ac)
+            )),
+          assertz(user:test_char_type_builtin :-
+            (   char_type(a, alpha),
+                char_type('5', alnum),
+                char_type('5', digit),
+                char_code(Space, 32),
+                char_type(Space, space),
+                char_type(Space, white),
+                char_type('Z', upper),
+                char_type(z, lower),
+                char_type('!', punct),
+                char_type('A', ascii),
+                char_type('_', csym),
+                char_type('_', csymf),
+                char_code(Newline, 10),
+                char_type(Newline, newline),
+                \+ char_type('1', alpha),
+                \+ char_type('Z', lower),
+                \+ char_type(z, upper),
+                \+ char_type(ab, alpha),
+                \+ char_type(_, alpha),
+                \+ char_type(a, _),
+                \+ char_type(a, unknown)
             )),
           assertz(user:test_succ_builtin :-
             (   succ(0, 1),
@@ -389,6 +413,7 @@ test(builtins_execution) :-
           retractall(user:test_term_order_builtin),
           retractall(user:test_ground_builtin),
           retractall(user:test_sub_atom_builtin),
+          retractall(user:test_char_type_builtin),
           retractall(user:test_succ_builtin),
           retractall(user:test_atom_number_builtin),
           retractall(user:test_atom_case_builtin),
@@ -409,7 +434,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -458,6 +483,7 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "compare/3"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "ground/1"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "sub_atom/5"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "char_type/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "succ/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "atom_number/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "upcase_atom/2"')),
@@ -605,6 +631,14 @@ func main() {
 		fmt.Println("SUB_ATOM_SUCCESS")
 	} else {
 		fmt.Println("SUB_ATOM_FAILURE")
+	}
+
+	charTypeVM := wam.NewWamState(wam.Test_char_type_builtinCode, wam.Test_char_type_builtinLabels)
+	charTypeVM.PC = wam.Test_char_type_builtinStartPC
+	if charTypeVM.Run() {
+		fmt.Println("CHAR_TYPE_SUCCESS")
+	} else {
+		fmt.Println("CHAR_TYPE_FAILURE")
 	}
 
 	succVM := wam.NewWamState(wam.Test_succ_builtinCode, wam.Test_succ_builtinLabels)
@@ -758,6 +792,7 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "TERM_ORDER_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "GROUND_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SUB_ATOM_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "CHAR_TYPE_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SUCC_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_NUMBER_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_CASE_SUCCESS")),
