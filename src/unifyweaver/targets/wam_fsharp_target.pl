@@ -4858,11 +4858,16 @@ generate_program_fs(_Predicates, DetectedKernels, Options, Code) :-
     generate_lookup_sources_expr_fs(Options, LookupSourcesExpr),
     (option(csr_path(_), Options) -> HasCsr = true ; HasCsr = false),
     (option(lmdb_path(_), Options) -> HasLmdb = true ; HasLmdb = false),
+    option(lmdb_materialisation(Materialisation), Options, cached),
+    option(lmdb_l2_capacity(L2Cap), Options, auto),
+    format(atom(L2CapStr), '"~w"', [L2Cap]),
     Dict = [
         foreign_preds = ForeignPredsStr,
         lookup_sources_expr = LookupSourcesExpr,
         has_csr = HasCsr,
-        has_lmdb = HasLmdb
+        has_lmdb = HasLmdb,
+        materialisation = Materialisation,
+        l2_capacity = L2CapStr
     ],
     fsharp_program_template_source(Template),
     render_template(Template, Dict, Code).

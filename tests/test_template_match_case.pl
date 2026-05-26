@@ -167,6 +167,77 @@ run_tests :-
             \+ sub_string(R26, _, _, _, "import SortedArraySource")
         )),
 
+    % === Section 3.10: Integration with real codegen template ===
+    % Uses the actual program.fs.mustache from the fsharp_wam target.
+
+    run_test("3.10a Codegen: LMDB cached materialisation",
+        (   load_template_from_file("templates/targets/fsharp_wam/program.fs.mustache", TmplFsCached),
+            render_template(TmplFsCached,
+                [foreign_preds = '"category_ancestor/4"',
+                 lookup_sources_expr = 'Map.empty',
+                 has_csr = false, has_lmdb = true,
+                 materialisation = cached, l2_capacity = '"auto"'], RFsCached)
+        ),
+        (   sub_string(RFsCached, _, _, _, "open LmdbFactSource"),
+            sub_string(RFsCached, _, _, _, "TwoLevelCachedLookupSource"),
+            sub_string(RFsCached, _, _, _, "LmdbCursorLookup"),
+            \+ sub_string(RFsCached, _, _, _, "DictLookupSource"),
+            \+ sub_string(RFsCached, _, _, _, "open CsrReader")
+        )),
+
+    run_test("3.10b Codegen: LMDB eager materialisation",
+        (   load_template_from_file("templates/targets/fsharp_wam/program.fs.mustache", TmplFsEager),
+            render_template(TmplFsEager,
+                [foreign_preds = '"category_ancestor/4"',
+                 lookup_sources_expr = 'Map.empty',
+                 has_csr = false, has_lmdb = true,
+                 materialisation = eager, l2_capacity = '"auto"'], RFsEager)
+        ),
+        (   sub_string(RFsEager, _, _, _, "DictLookupSource"),
+            sub_string(RFsEager, _, _, _, "loadDupsortRelationDict"),
+            \+ sub_string(RFsEager, _, _, _, "TwoLevelCachedLookupSource")
+        )),
+
+    run_test("3.10c Codegen: LMDB lazy materialisation",
+        (   load_template_from_file("templates/targets/fsharp_wam/program.fs.mustache", TmplFsLazy),
+            render_template(TmplFsLazy,
+                [foreign_preds = '"category_ancestor/4"',
+                 lookup_sources_expr = 'Map.empty',
+                 has_csr = false, has_lmdb = true,
+                 materialisation = lazy, l2_capacity = '"auto"'], RFsLazy)
+        ),
+        (   sub_string(RFsLazy, _, _, _, "LmdbCursorLookup"),
+            sub_string(RFsLazy, _, _, _, "Lazy"),
+            \+ sub_string(RFsLazy, _, _, _, "TwoLevelCachedLookupSource"),
+            \+ sub_string(RFsLazy, _, _, _, "DictLookupSource")
+        )),
+
+    run_test("3.10d Codegen: no LMDB (has_lmdb=false), no match block output",
+        (   load_template_from_file("templates/targets/fsharp_wam/program.fs.mustache", TmplFsNoLmdb),
+            render_template(TmplFsNoLmdb,
+                [foreign_preds = '', lookup_sources_expr = 'Map.empty',
+                 has_csr = false, has_lmdb = false,
+                 materialisation = cached, l2_capacity = '"auto"'], RFsNoLmdb)
+        ),
+        (   \+ sub_string(RFsNoLmdb, _, _, _, "open LmdbFactSource"),
+            \+ sub_string(RFsNoLmdb, _, _, _, "lmdbFactSource"),
+            \+ sub_string(RFsNoLmdb, _, _, _, "TwoLevelCachedLookupSource"),
+            sub_string(RFsNoLmdb, _, _, _, "WcLookupSources")
+        )),
+
+    run_test("3.10e Codegen: CSR + LMDB together",
+        (   load_template_from_file("templates/targets/fsharp_wam/program.fs.mustache", TmplFsBoth),
+            render_template(TmplFsBoth,
+                [foreign_preds = '"category_ancestor/4"',
+                 lookup_sources_expr = 'Map.ofList [ ("category_child", csrSrc) ]',
+                 has_csr = true, has_lmdb = true,
+                 materialisation = eager, l2_capacity = '"auto"'], RFsBoth)
+        ),
+        (   sub_string(RFsBoth, _, _, _, "open CsrReader"),
+            sub_string(RFsBoth, _, _, _, "open LmdbFactSource"),
+            sub_string(RFsBoth, _, _, _, "DictLookupSource")
+        )),
+
     % Summary
     test_count(pass, P),
     test_count(fail, F),
