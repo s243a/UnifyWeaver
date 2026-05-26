@@ -1,4 +1,5 @@
-/// Bidirectional effective-distance kernel with path-cost pruning.
+/// Bidirectional effective-distance kernel with path-cost pruning
+/// and A*-style lower-bound elimination.
 /// Auto-generated from kernel detection. Edge predicates:
 ///   upward: {{edge_pred}} (category_parent), downward: category_child CSR.
 ///
@@ -7,12 +8,32 @@
 /// parentCost, child steps cost childCost. Paths are pruned when
 /// cumulative cost exceeds the budget.
 ///
-/// Two separate concerns:
-///   1. Inclusion threshold (path-cost budget): which paths to explore
-///   2. Distance metric: how to score included paths (applied outside)
+/// A* pruning: precomputes the minimum parent-hop distance from every
+/// node to root (BFS from root via child edges). During search, any
+/// frontier entry where current_cost + min_dist[node] * parentCost
+/// exceeds the budget is eliminated, since it cannot reach root
+/// within the remaining budget even using only parent hops (cheapest).
 ///
 /// Returns hop counts for all paths that reach root within budget.
 /// With childCost = infinity, degenerates to upward-only search.
+
+let private computeMinDistToRoot
+    (lookupChildren: int -> int list) (root: int)
+    : System.Collections.Generic.Dictionary<int, int> =
+    let dist = System.Collections.Generic.Dictionary<int, int>()
+    dist.[root] <- 0
+    let mutable frontier = [root]
+    let mutable depth = 0
+    while not (List.isEmpty frontier) do
+        depth <- depth + 1
+        let mutable next = []
+        for nd in frontier do
+            for c in lookupChildren nd do
+                if not (dist.ContainsKey(c)) then
+                    dist.[c] <- depth
+                    next <- c :: next
+        frontier <- next
+    dist
 
 let nativeKernel_bidirectional_ancestor
     (lookupParents: int -> int list)
@@ -20,33 +41,39 @@ let nativeKernel_bidirectional_ancestor
     (cat: int) (root: int)
     (parentCost: float) (childCost: float) (budget: float)
     : int list =
-    // Frontier entry: (node, cumulative cost, hop count, visited set)
+    let minDist = computeMinDistToRoot lookupChildren root
+    let minCostToRoot nd =
+        match minDist.TryGetValue(nd) with
+        | true, d -> float d * parentCost
+        | _ -> infinity
     let rec explore
         (frontier: (int * float * int * Set<int>) list)
         (acc: int list) : int list =
         match frontier with
         | [] -> acc
         | (node, cost, hops, visited) :: rest ->
-            // Check if we reached root
             let acc' =
                 if node = root && hops > 0 then hops :: acc
                 else acc
-            // Expand parent neighbors (upward)
             let parentNext =
                 if cost + parentCost > budget then []
                 else
                     lookupParents node
                     |> List.choose (fun p ->
                         if Set.contains p visited then None
-                        else Some (p, cost + parentCost, hops + 1, Set.add p visited))
-            // Expand child neighbors (downward)
+                        else
+                            let nc = cost + parentCost
+                            if nc + minCostToRoot p > budget then None
+                            else Some (p, nc, hops + 1, Set.add p visited))
             let childNext =
                 if cost + childCost > budget then []
                 else
                     lookupChildren node
                     |> List.choose (fun c ->
                         if Set.contains c visited then None
-                        else Some (c, cost + childCost, hops + 1, Set.add c visited))
+                        else
+                            let nc = cost + childCost
+                            if nc + minCostToRoot c > budget then None
+                            else Some (c, nc, hops + 1, Set.add c visited))
             explore (parentNext @ childNext @ rest) acc'
-    let initVisited = Set.singleton cat
-    explore [(cat, 0.0, 0, initVisited)] []
+    explore [(cat, 0.0, 0, Set.singleton cat)] []
