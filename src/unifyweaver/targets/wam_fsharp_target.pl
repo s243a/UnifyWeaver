@@ -4585,6 +4585,12 @@ wam_fsharp_iso_audit_report([audit(PI, Mode, Sites)|Rest]) :-
     ),
     wam_fsharp_iso_audit_report(Rest).
 
+%% maybe_upgrade_bidirectional(+KV0, -KV)
+%  Upgrade a category_ancestor kernel to bidirectional_ancestor.
+maybe_upgrade_bidirectional(Key-recursive_kernel(category_ancestor, PI, Config),
+                            Key-recursive_kernel(bidirectional_ancestor, PI, Config)) :- !.
+maybe_upgrade_bidirectional(KV, KV).
+
 %% =====================================================================
 %% Cost-based auto-resolvers for F# WAM target
 %% =====================================================================
@@ -4608,29 +4614,34 @@ compute_edge_store_fs(Options, Store) :-
     option(graph_mutability(Mut), Options, 'static'),
     option(needs_reverse(NeedsRev), Options, false),
     TotalLookups is Q * L,
+    %% Cost model (milliseconds):
+    %%   LMDB eager: one-time load E*0.005ms, per-lookup ~0.5us (Map.tryFind)
+    %%   LMDB cached: no load, per-lookup ~2us warm (cursor + L2 cache)
+    %%   CSR: build E*0.01ms, per-lookup ~1.5us (binary search on index)
+    EagerLoadMs is E * 0.005,
+    EagerPerLookupUs is 0.5,
+    CachedPerLookupUs is 2.0,
     CsrBuildMs is E * 0.01,
-    PerLookupSavingsUs is 5,
-    (   PerLookupSavingsUs > 0
-    ->  BreakEvenLookups is CsrBuildMs * 1000 / PerLookupSavingsUs
-    ;   BreakEvenLookups is 1.0e12
-    ),
+    CsrPerLookupUs is 1.5,
+    %% Total wall time per mode (ms):
+    EagerTotalMs is EagerLoadMs + TotalLookups * EagerPerLookupUs / 1000,
+    CachedTotalMs is TotalLookups * CachedPerLookupUs / 1000,
+    CsrTotalMs is CsrBuildMs + TotalLookups * CsrPerLookupUs / 1000,
     (   Mut == 'dynamic'
     ->  Store = lmdb_cached
-    ;   (   TotalLookups < BreakEvenLookups
-        ->  (   E < 50000
-            ->  Store = lmdb_eager
-            ;   Store = lmdb_cached
-            )
-        ;   (   NeedsRev = true
-            ->  Store = dual_csr
-            ;   Store = csr
-            )
+    ;   NeedsRev == true, CsrTotalMs =< CachedTotalMs
+    ->  Store = dual_csr
+    ;   (   CsrTotalMs =< EagerTotalMs, CsrTotalMs =< CachedTotalMs
+        ->  Store = csr
+        ;   EagerTotalMs =< CachedTotalMs
+        ->  Store = lmdb_eager
+        ;   Store = lmdb_cached
         )
     ),
     (   option(edge_store_verbose(true), Options)
     ->  format(user_error,
-               '[WAM-FSharp] edge_store(auto): Q=~w L=~w E=~w mut=~w rev=~w -> ~w~n',
-               [Q, L, E, Mut, NeedsRev, Store])
+               '[WAM-FSharp] edge_store(auto): Q=~w L=~w E=~w eager=~2fms cached=~2fms csr=~2fms -> ~w~n',
+               [Q, L, E, EagerTotalMs, CachedTotalMs, CsrTotalMs, Store])
     ;   true
     ).
 
@@ -4683,7 +4694,8 @@ compute_lmdb_materialisation_fs(Options, Mode) :-
 %  For eager/lazy modes the capacity is 0 (no cache tier).
 %  For cached mode the capacity scales with demand set size.
 resolve_auto_lmdb_cache_tier_fs(Options0, Options) :-
-    (   option(lmdb_l2_capacity(auto), Options0)
+    option(lmdb_l2_capacity(L2Val), Options0, auto),
+    (   L2Val == auto
     ->  compute_l2_capacity_fs(Options0, Cap),
         exclude(=(lmdb_l2_capacity(_)), Options0, Rest),
         Options = [lmdb_l2_capacity(Cap) | Rest]
@@ -4762,7 +4774,15 @@ write_wam_fsharp_project(Predicates, Options0, ProjectDir) :-
     (   option(no_kernels(true), Options)
     ->  DetectedKernels = [],
         format(user_error, '[WAM-FSharp] kernel detection suppressed~n', [])
-    ;   detect_kernels_fs(ProjectPredicates, DetectedKernels),
+    ;   detect_kernels_fs(ProjectPredicates, DetectedKernels0),
+        % Upgrade category_ancestor to bidirectional when CSR child
+        % lookup is available (csr_path provides category_child).
+        (   option(kernel_mode(bidirectional), Options),
+            option(csr_path(_), Options)
+        ->  maplist(maybe_upgrade_bidirectional, DetectedKernels0, DetectedKernels),
+            format(user_error, '[WAM-FSharp] bidirectional kernel upgrade enabled~n', [])
+        ;   DetectedKernels = DetectedKernels0
+        ),
         (   DetectedKernels \= []
         ->  pairs_keys(DetectedKernels, DetectedKeys),
             format(user_error, '[WAM-FSharp] detected kernels: ~w~n', [DetectedKeys])
@@ -5014,8 +5034,11 @@ generate_program_fs(_Predicates, DetectedKernels, Options, Code) :-
     (option(csr_path(_), Options) -> HasCsr = true ; HasCsr = false),
     (option(lmdb_path(_), Options) -> HasLmdb = true ; HasLmdb = false),
     option(lmdb_materialisation(Materialisation), Options, cached),
-    option(lmdb_l2_capacity(L2Cap), Options, auto),
-    format(atom(L2CapStr), '"~w"', [L2Cap]),
+    option(lmdb_l2_capacity(L2Cap), Options, 4096),
+    (   integer(L2Cap)
+    ->  atom_number(L2CapStr, L2Cap)
+    ;   L2CapStr = L2Cap
+    ),
     Dict = [
         foreign_preds = ForeignPredsStr,
         lookup_sources_expr = LookupSourcesExpr,

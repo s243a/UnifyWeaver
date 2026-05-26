@@ -1,0 +1,52 @@
+/// Bidirectional effective-distance kernel with path-cost pruning.
+/// Auto-generated from kernel detection. Edge predicates:
+///   upward: {{edge_pred}} (category_parent), downward: category_child CSR.
+///
+/// Explores paths in both directions (parent hops and child hops).
+/// Each step has a direction-dependent cost: parent steps cost
+/// parentCost, child steps cost childCost. Paths are pruned when
+/// cumulative cost exceeds the budget.
+///
+/// Two separate concerns:
+///   1. Inclusion threshold (path-cost budget): which paths to explore
+///   2. Distance metric: how to score included paths (applied outside)
+///
+/// Returns hop counts for all paths that reach root within budget.
+/// With childCost = infinity, degenerates to upward-only search.
+
+let nativeKernel_bidirectional_ancestor
+    (lookupParents: int -> int list)
+    (lookupChildren: int -> int list)
+    (cat: int) (root: int)
+    (parentCost: float) (childCost: float) (budget: float)
+    : int list =
+    // Frontier entry: (node, cumulative cost, hop count, visited set)
+    let rec explore
+        (frontier: (int * float * int * Set<int>) list)
+        (acc: int list) : int list =
+        match frontier with
+        | [] -> acc
+        | (node, cost, hops, visited) :: rest ->
+            // Check if we reached root
+            let acc' =
+                if node = root && hops > 0 then hops :: acc
+                else acc
+            // Expand parent neighbors (upward)
+            let parentNext =
+                if cost + parentCost > budget then []
+                else
+                    lookupParents node
+                    |> List.choose (fun p ->
+                        if Set.contains p visited then None
+                        else Some (p, cost + parentCost, hops + 1, Set.add p visited))
+            // Expand child neighbors (downward)
+            let childNext =
+                if cost + childCost > budget then []
+                else
+                    lookupChildren node
+                    |> List.choose (fun c ->
+                        if Set.contains c visited then None
+                        else Some (c, cost + childCost, hops + 1, Set.add c visited))
+            explore (parentNext @ childNext @ rest) acc'
+    let initVisited = Set.singleton cat
+    explore [(cat, 0.0, 0, initVisited)] []
