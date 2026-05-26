@@ -14,7 +14,9 @@
 /// exceeds the budget is eliminated, since it cannot reach root
 /// within the remaining budget even using only parent hops (cheapest).
 ///
-/// Returns hop counts for all paths that reach root within budget.
+/// Returns (totalHops, parentHops, childHops) for all paths that
+/// reach root within budget. The caller applies the distance metric
+/// using parentHops and childHops for direction-weighted scoring.
 /// With childCost = infinity, degenerates to upward-only search.
 
 let private computeMinDistToRoot
@@ -40,20 +42,20 @@ let nativeKernel_bidirectional_ancestor
     (lookupChildren: int -> int list)
     (cat: int) (root: int)
     (parentCost: float) (childCost: float) (budget: float)
-    : int list =
+    : (int * int * int) list =
     let minDist = computeMinDistToRoot lookupChildren root
     let minCostToRoot nd =
         match minDist.TryGetValue(nd) with
         | true, d -> float d * parentCost
         | _ -> infinity
     let rec explore
-        (frontier: (int * float * int * Set<int>) list)
-        (acc: int list) : int list =
+        (frontier: (int * float * int * int * int * Set<int>) list)
+        (acc: (int * int * int) list) : (int * int * int) list =
         match frontier with
         | [] -> acc
-        | (node, cost, hops, visited) :: rest ->
+        | (node, cost, hops, pHops, cHops, visited) :: rest ->
             let acc' =
-                if node = root && hops > 0 then hops :: acc
+                if node = root && hops > 0 then (hops, pHops, cHops) :: acc
                 else acc
             let parentNext =
                 if cost + parentCost > budget then []
@@ -64,7 +66,7 @@ let nativeKernel_bidirectional_ancestor
                         else
                             let nc = cost + parentCost
                             if nc + minCostToRoot p > budget then None
-                            else Some (p, nc, hops + 1, Set.add p visited))
+                            else Some (p, nc, hops + 1, pHops + 1, cHops, Set.add p visited))
             let childNext =
                 if cost + childCost > budget then []
                 else
@@ -74,6 +76,6 @@ let nativeKernel_bidirectional_ancestor
                         else
                             let nc = cost + childCost
                             if nc + minCostToRoot c > budget then None
-                            else Some (c, nc, hops + 1, Set.add c visited))
+                            else Some (c, nc, hops + 1, pHops, cHops + 1, Set.add c visited))
             explore (parentNext @ childNext @ rest) acc'
-    explore [(cat, 0.0, 0, Set.singleton cat)] []
+    explore [(cat, 0.0, 0, 0, 0, Set.singleton cat)] []
