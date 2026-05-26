@@ -66,19 +66,23 @@ let extractDouble (v: Value) : float option =
 // -- Direction-weighted effective distance metric -------------------------
 //
 // Each path is weighted by direction: w = (1/D)^N * (1/(b*D))^M
-// where N = parent hops, M = child hops, D = dimensionality, b = branch factor.
+// where N = parent hops, M = child hops, D = dimensionality, b = branch ratio.
 // Normalized power-mean: d = (Σ(w * (h+1)^(-n)) / Σw)^(-1/n)
+//
+// D and b are calibrated per-graph from BFS growth rates and fan-out
+// statistics (see GraphCalibration in kernel_bidirectional_ancestor).
+// Fallback defaults: D={{dimensionality}}, b={{branch_factor}}.
 
-let private parentWeight = 1.0 / {{dimensionality}}
-let private childWeight  = 1.0 / ({{branch_factor}} * {{dimensionality}})
-
-let effectiveDistanceWeighted (results: (int * int * int) list) (n: float) : float =
+let effectiveDistanceWeighted
+    (cal: GraphCalibration) (results: (int * int * int) list) (n: float) : float =
     if List.isEmpty results then infinity
     else
+        let parentW = 1.0 / cal.Dimensionality
+        let childW = 1.0 / (cal.BranchRatio * cal.Dimensionality)
         let mutable sumWF = 0.0
         let mutable sumW = 0.0
         for (totalHops, parentHops, childHops) in results do
-            let w = (parentWeight ** float parentHops) * (childWeight ** float childHops)
+            let w = (parentW ** float parentHops) * (childW ** float childHops)
             sumWF <- sumWF + w * (float (totalHops + 1)) ** (-n)
             sumW <- sumW + w
         (sumWF / sumW) ** (-1.0 / n)
