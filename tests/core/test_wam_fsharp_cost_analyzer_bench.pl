@@ -106,7 +106,8 @@ run_scale(Scale) :-
     make_directory_path(ProjectDir),
     write_wam_fsharp_project([], [
         lmdb_path(LmdbDir),
-        csr_parent_path(CsrDir),
+        csr_path(CsrDir),
+        csr_relation(category_parent),
         no_kernels(true),
         module_name('uw_fs_cost_bench')
     ], ProjectDir),
@@ -270,7 +271,8 @@ run_auto_medium :-
         edge_store(auto),
         edge_count(NEdges),
         lmdb_path(LmdbDir),
-        csr_parent_path(CsrDir),
+        csr_path(CsrDir),
+        csr_relation(category_parent),
         no_kernels(true),
         module_name('uw_fs_cost_auto')
     ], AutoDir),

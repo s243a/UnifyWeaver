@@ -95,7 +95,7 @@ let main argv =
 
 {{#has_lmdb}}
     // LMDB fact source setup (materialisation mode dispatch)
-    let lmdbEnv = openLmdbEnv (System.IO.Path.Combine(factsDir, "lmdb"))
+    let lmdbEnv = openEnv (System.IO.Path.Combine(factsDir, "lmdb"))
 {{match materialisation}}
 {{case eager}}
     // Eager: load entire LMDB relation into a Dictionary for O(1) lookup
