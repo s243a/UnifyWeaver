@@ -299,6 +299,21 @@ user:elx_setof_sorts_ints(R) :- setof(X, em(X, [3,1,2]), R).
 user:elx_bagof_with_quantifier(R) :-
     bagof(X, Y^em(X-Y, [a-1, b-2, c-3]), R).
 
+% --- Witness-group backtracking tests ---
+% bagof/setof WITHOUT ^/2 quantifier: the free variable Y in
+% wg(X, Y) becomes a witness. ISO semantics: bagof groups solutions
+% by witness-variable bindings, returning one bag per group.
+% First-solution tests verify the FIRST group is returned correctly.
+:- dynamic user:wg/2.
+user:wg(a, 1).
+user:wg(b, 2).
+user:wg(c, 1).
+user:wg(d, 2).
+user:wg(e, 3).
+
+:- dynamic user:elx_bagof_witness_first/1.
+user:elx_bagof_witness_first(Bag) :- bagof(X, wg(X, Y), Bag).
+
 % --- User-source enumerating em/2 focused tests ---
 % These verify em/2 itself works as a backtracking enumerator,
 % independent of bagof/setof. Isolates the enumeration mechanism
@@ -728,6 +743,19 @@ test(bagof_with_quantifier) :-
         TmpDir,
         verify_elixir_args(TmpDir, 'elx_bagof_with_quantifier/1',
                            ['[a,b,c]'], "true")).
+
+% --- Witness-group bagof test ---
+
+test(bagof_witness_first_group) :-
+    % bagof(X, wg(X, Y), Bag) without ^/2: Y is a free witness.
+    % wg facts: a-1, b-2, c-1, d-2, e-3. Groups by Y: {1:[a,c], 2:[b,d], 3:[e]}.
+    % First solution should return the first group (Y=1, Bag=[a,c]).
+    with_elixir_project(
+        [user:elx_bagof_witness_first/1, user:wg/2],
+        [inline_bagof_setof(true)],
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_bagof_witness_first/1',
+                           ['[a,c]'], "true")).
 
 % --- User-source enumerating em/2 tests ---
 

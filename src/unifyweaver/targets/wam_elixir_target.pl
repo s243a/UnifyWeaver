@@ -498,6 +498,61 @@ compile_backtrack_to_elixir(Code) :-
           {:return, result} -> result
         end
 
+      match?({:agg_next_group, _, _, _, _}, cp.pc) ->
+        {:agg_next_group, remaining, witness_regs, result_reg, agg_type} = cp.pc
+        [{wvals, vals} | more] = remaining
+        # Bind this groups result + witnesses, push CP for more.
+        result_val =
+          case agg_type do
+            :setof -> vals |> Enum.sort(&standard_term_compare/2) |> Enum.uniq()
+            _ -> vals
+          end
+        regs2 =
+          case Map.get(state.regs, result_reg) do
+            {:unbound, id} ->
+              state.regs |> Map.put(id, result_val) |> Map.put(result_reg, result_val)
+            _ ->
+              Map.put(state.regs, result_reg, result_val)
+          end
+        y_regs2 =
+          Enum.zip(witness_regs, wvals)
+          |> Enum.reduce(state.y_regs, fn {wr, wv}, acc ->
+            if is_integer(wr) and wr >= 201 and wr < 300 do
+              case Map.get(acc, wr) do
+                {:unbound, id} -> acc |> Map.put(id, wv) |> Map.put(wr, wv)
+                _ -> Map.put(acc, wr, wv)
+              end
+            else
+              acc
+            end
+          end)
+        regs2 =
+          Enum.zip(witness_regs, wvals)
+          |> Enum.reduce(regs2, fn {wr, wv}, acc ->
+            if is_integer(wr) and wr >= 201 and wr < 300 do
+              acc
+            else
+              case Map.get(acc, wr) do
+                {:unbound, id} -> acc |> Map.put(id, wv) |> Map.put(wr, wv)
+                _ -> Map.put(acc, wr, wv)
+              end
+            end
+          end)
+        state = %{state | regs: regs2, y_regs: y_regs2}
+        state =
+          if more != [] do
+            next_cp = %{cp | pc: {:agg_next_group, more, witness_regs, result_reg, agg_type}}
+            %{state | choice_points: [next_cp | rest]}
+          else
+            state
+          end
+        try do
+          state.cp.(state)
+        catch
+          {:fail, thrown_state} -> backtrack(thrown_state)
+          {:return, result} -> result
+        end
+
       true ->
         {:ok, state}
     end
@@ -2577,6 +2632,10 @@ compile_aggregate_helpers_to_elixir(Code) :-
   resuming a clause.
   """
   def push_aggregate_frame(state, agg_type, value_reg, result_reg) do
+    push_aggregate_frame(state, agg_type, value_reg, result_reg, [])
+  end
+
+  def push_aggregate_frame(state, agg_type, value_reg, result_reg, witness_regs) do
     cp = %{
       pc: nil,
       regs: state.regs,
@@ -2590,7 +2649,9 @@ compile_aggregate_helpers_to_elixir(Code) :-
       agg_type: agg_type,
       agg_value_reg: value_reg,
       agg_result_reg: result_reg,
-      agg_accum: []
+      agg_accum: [],
+      agg_witness_regs: witness_regs,
+      agg_witness_accum: []
     }
     %{state | choice_points: [cp | state.choice_points]}
   end
@@ -2628,7 +2689,19 @@ compile_aggregate_helpers_to_elixir(Code) :-
           collected -> {cp, collected}
           Map.has_key?(cp, :agg_type) ->
             prior = Map.get(cp, :agg_accum, [])
-            {Map.put(cp, :agg_accum, [val | prior]), true}
+            cp = Map.put(cp, :agg_accum, [val | prior])
+            witness_regs = Map.get(cp, :agg_witness_regs, [])
+            cp =
+              if witness_regs != [] do
+                wvals = Enum.map(witness_regs, fn wr ->
+                  deep_copy_value(state, deref_var(state, get_reg(state, wr)))
+                end)
+                prior_w = Map.get(cp, :agg_witness_accum, [])
+                Map.put(cp, :agg_witness_accum, [wvals | prior_w])
+              else
+                cp
+              end
+            {cp, true}
           true -> {cp, collected}
         end
       end)
@@ -2757,66 +2830,62 @@ compile_aggregate_helpers_to_elixir(Code) :-
 
   def finalise_aggregate(state, agg_cp, rest_cps, agg_type) do
     accum_rev = Enum.reverse(agg_cp.agg_accum)
-    result =
-      case agg_type do
-        t when t in [:collect, :findall, :aggregate_all, :bag] -> accum_rev
-        :set -> Enum.uniq(accum_rev)
-        # bagof/setof differ from bag/set in that they FAIL when no
-        # solutions exist (ISO semantics). bagof returns the list as-is;
-        # setof additionally sorts in standard term order + dedups.
-        :bagof ->
-          if accum_rev == [],
-            do: throw({:fail, state}),
-            else: accum_rev
-        :setof ->
-          if accum_rev == [],
-            do: throw({:fail, state}),
-            else:
-              accum_rev
-              |> Enum.sort(&standard_term_compare/2)
-              |> Enum.uniq()
-        :sum -> Enum.sum(accum_rev)
-        :count -> length(accum_rev)
-        :max ->
-          if accum_rev == [], do: throw({:fail, state}), else: Enum.max(accum_rev)
-        :min ->
-          if accum_rev == [], do: throw({:fail, state}), else: Enum.min(accum_rev)
-      end
-    # Bind the result through the trail when result_reg holds an
-    # unbound ref. Direct slot overwrite (the pre-#1659 behaviour)
-    # writes to agg_cp.regs[result_reg_idx] but leaves the underlying
-    # ref unbound — fine for the simple case where the result_reg
-    # slot IS the binding target, but breaks for nested findall: the
-    # inner findalls result_reg shares its unbound ref with the
-    # outer callers reg via the calls get_variable, and the inner
-    # predicates deallocate merge restores the outers Y-reg
-    # snapshot — overwriting the inners reg-slot binding. Trail-style
-    # binding (Map.put under the ref id, not the integer reg-slot)
-    # propagates through deref_var across frame boundaries and
-    # survives deallocate. Proposal section 6 risk 7 (nested findall)
-    # fix surfaced by Phase 3c.
-    bound_regs =
-      case Map.get(agg_cp.regs, agg_cp.agg_result_reg) do
-        {:unbound, id} ->
-          # Trail the binding under the unbound refs id so any
-          # aliased copy sees it via deref_var.
-          agg_cp.regs
-          |> Map.put(id, result)
-          |> Map.put(agg_cp.agg_result_reg, result)
-        _ ->
-          # Slot was bound or empty — preserve legacy direct overwrite.
-          Map.put(agg_cp.regs, agg_cp.agg_result_reg, result)
-      end
-    restored = %{state |
-      regs: bound_regs,
-      heap: agg_cp.heap,
-      heap_len: agg_cp.heap_len,
-      trail: agg_cp.trail,
-      trail_len: agg_cp.trail_len,
-      stack: agg_cp.stack,
-      cp: agg_cp.cp,
-      choice_points: rest_cps
-    }
+    witness_regs = Map.get(agg_cp, :agg_witness_regs, [])
+    witness_accum_rev = Enum.reverse(Map.get(agg_cp, :agg_witness_accum, []))
+
+    # Witness-group path for bagof/setof with free witnesses.
+    if agg_type in [:bagof, :setof] and witness_regs != [] do
+      if accum_rev == [], do: throw({:fail, state})
+      groups = group_by_witness(accum_rev, witness_accum_rev, agg_type)
+      if groups == [], do: throw({:fail, state})
+      [{first_wvals, first_vals} | remaining] = groups
+      finalise_witness_group(state, agg_cp, rest_cps, agg_type,
+                             first_wvals, first_vals, remaining,
+                             witness_regs)
+    else
+      result =
+        case agg_type do
+          t when t in [:collect, :findall, :aggregate_all, :bag] -> accum_rev
+          :set -> Enum.uniq(accum_rev)
+          :bagof ->
+            if accum_rev == [],
+              do: throw({:fail, state}),
+              else: accum_rev
+          :setof ->
+            if accum_rev == [],
+              do: throw({:fail, state}),
+              else:
+                accum_rev
+                |> Enum.sort(&standard_term_compare/2)
+                |> Enum.uniq()
+          :sum -> Enum.sum(accum_rev)
+          :count -> length(accum_rev)
+          :max ->
+            if accum_rev == [], do: throw({:fail, state}), else: Enum.max(accum_rev)
+          :min ->
+            if accum_rev == [], do: throw({:fail, state}), else: Enum.min(accum_rev)
+        end
+      # Bind the result through the trail when result_reg holds an
+      # unbound ref.
+      bound_regs =
+        case Map.get(agg_cp.regs, agg_cp.agg_result_reg) do
+          {:unbound, id} ->
+            agg_cp.regs
+            |> Map.put(id, result)
+            |> Map.put(agg_cp.agg_result_reg, result)
+          _ ->
+            Map.put(agg_cp.regs, agg_cp.agg_result_reg, result)
+        end
+      restored = %{state |
+        regs: bound_regs,
+        heap: agg_cp.heap,
+        heap_len: agg_cp.heap_len,
+        trail: agg_cp.trail,
+        trail_len: agg_cp.trail_len,
+        stack: agg_cp.stack,
+        cp: agg_cp.cp,
+        choice_points: rest_cps
+      }
     # No env-frame pop here. The pop logic from #1661 (which
     # simulated deallocate to handle the case where end_aggregates
     # throw fail bypassed the predicates deallocate) is no longer
@@ -2835,7 +2904,112 @@ compile_aggregate_helpers_to_elixir(Code) :-
     # Removing the pop also fixes the multi-findall-in-one-body
     # bug: the prior pop overwrote agg_cp.cp with env.cp during
     # restoration, defeating update_topmost_agg_cp.
+      restored.cp.(restored)
+    end
+  end
+
+  # Group solutions by witness-variable equality. Returns a list of
+  # {witness_values, template_values} pairs. For setof, groups are
+  # sorted by witness values (ISO standard order) and template values
+  # within each group are sorted and deduped.
+  defp group_by_witness(vals, wvals, agg_type) do
+    zipped = Enum.zip(vals, wvals)
+    grouped =
+      Enum.group_by(zipped, fn {_v, w} -> w end, fn {v, _w} -> v end)
+      |> Enum.map(fn {wkey, templates} ->
+        sorted_templates =
+          case agg_type do
+            :setof ->
+              templates
+              |> Enum.sort(&standard_term_compare/2)
+              |> Enum.uniq()
+            _ ->
+              templates
+          end
+        {wkey, sorted_templates}
+      end)
+      |> Enum.sort(fn {w1, _}, {w2, _} ->
+        standard_term_compare(w1, w2)
+      end)
+    grouped
+  end
+
+  # Bind the first witness group result + witness regs, then push
+  # an iterator CP for remaining groups if any exist.
+  defp finalise_witness_group(state, agg_cp, rest_cps, agg_type,
+                              wvals, vals, remaining, witness_regs) do
+    bound_regs = bind_result_to_regs(agg_cp, vals)
+    bound_regs = bind_witness_to_regs(bound_regs, agg_cp, witness_regs, wvals)
+    restored = %{state |
+      regs: bound_regs,
+      y_regs: bind_witness_to_y_regs(agg_cp, state.y_regs, witness_regs, wvals),
+      heap: agg_cp.heap,
+      heap_len: agg_cp.heap_len,
+      trail: agg_cp.trail,
+      trail_len: agg_cp.trail_len,
+      stack: agg_cp.stack,
+      cp: agg_cp.cp,
+      choice_points: rest_cps
+    }
+    restored =
+      if remaining != [] do
+        iter_cp = %{
+          pc: {:agg_next_group, remaining, witness_regs,
+               agg_cp.agg_result_reg, agg_type},
+          regs: restored.regs,
+          y_regs: restored.y_regs,
+          heap: restored.heap,
+          heap_len: restored.heap_len,
+          cp: restored.cp,
+          trail: restored.trail,
+          trail_len: restored.trail_len,
+          stack: restored.stack
+        }
+        %{restored | choice_points: [iter_cp | restored.choice_points]}
+      else
+        restored
+      end
     restored.cp.(restored)
+  end
+
+  defp bind_result_to_regs(agg_cp, result) do
+    case Map.get(agg_cp.regs, agg_cp.agg_result_reg) do
+      {:unbound, id} ->
+        agg_cp.regs
+        |> Map.put(id, result)
+        |> Map.put(agg_cp.agg_result_reg, result)
+      _ ->
+        Map.put(agg_cp.regs, agg_cp.agg_result_reg, result)
+    end
+  end
+
+  defp bind_witness_to_regs(regs, agg_cp, witness_regs, wvals) do
+    Enum.zip(witness_regs, wvals)
+    |> Enum.reduce(regs, fn {wr, wv}, acc ->
+      if is_integer(wr) and wr >= 201 and wr < 300 do
+        acc
+      else
+        case Map.get(agg_cp.regs, wr) do
+          {:unbound, id} -> acc |> Map.put(id, wv) |> Map.put(wr, wv)
+          _ -> Map.put(acc, wr, wv)
+        end
+      end
+    end)
+  end
+
+  defp bind_witness_to_y_regs(agg_cp, _current_y_regs, witness_regs, wvals) do
+    saved_y = Map.get(agg_cp, :y_regs, %{})
+    Enum.zip(witness_regs, wvals)
+    |> Enum.reduce(saved_y, fn {wr, wv}, acc ->
+      if is_integer(wr) and wr >= 201 and wr < 300 do
+        case Map.get(saved_y, wr) do
+          {:unbound, id} -> acc |> Map.put(id, wv) |> Map.put(wr, wv)
+          _ -> Map.put(acc, wr, wv)
+        end
+      else
+        acc
+      end
+    end)
   end', []).
 
 % ============================================================================
