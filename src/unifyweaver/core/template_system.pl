@@ -29,6 +29,7 @@
 :- discontiguous template/2.
 
 :- use_module(library(lists)).
+:- use_module(constraint_analyzer, [get_dedup_strategy/2]).
 
 %% ============================================
 %% DYNAMIC PREDICATES (Configuration & Cache)
