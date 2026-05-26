@@ -266,6 +266,17 @@ user:bs_pair(c, 3).
 :- dynamic user:bs_none/1.
 user:bs_none(_) :- fail.
 
+% --- Meta-call aggregate tests (NO inline_bagof_setof) ---
+% These exercise the runtime dispatch path for findall/3 and bagof/3
+% where the WAM compiler emits `execute findall/3` instead of
+% begin_aggregate/end_aggregate. Uses bs_int/1 facts (1,2,3) which
+% are defined above.
+:- dynamic user:elx_findall_meta/1.
+user:elx_findall_meta(L) :- findall(X, bs_int(X), L).
+
+:- dynamic user:elx_bagof_meta/1.
+user:elx_bagof_meta(L) :- bagof(X, bs_int(X), L).
+
 :- dynamic user:elx_bagof_basic/1.
 :- dynamic user:elx_bagof_fails_empty/0.
 :- dynamic user:elx_setof_basic/1.
@@ -684,11 +695,33 @@ test(compound_eq_mismatch_arity) :-
                            [], "false")).
 
 % --- bagof/setof tests ---
+% --- Meta-call aggregate tests (NO inline_bagof_setof) ---
+% These use the runtime execute_aggregate_meta path where the WAM
+% compiler emits `execute findall/3` / `execute bagof/3` instead of
+% begin_aggregate/end_aggregate.
+
+test(findall_meta) :-
+    % findall(X, bs_int(X), L) via meta-call dispatch. No inline.
+    with_elixir_project(
+        [user:elx_findall_meta/1, user:bs_int/1],
+        _Opts,
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_findall_meta/1',
+                           ['[1,2,3]'], "true")).
+
+test(bagof_meta) :-
+    % bagof(X, bs_int(X), L) via meta-call dispatch. No witness
+    % vars (X is both template and goal arg). Should give [1,2,3].
+    with_elixir_project(
+        [user:elx_bagof_meta/1, user:bs_int/1],
+        _Opts,
+        TmpDir,
+        verify_elixir_args(TmpDir, 'elx_bagof_meta/1',
+                           ['[1,2,3]'], "true")).
+
+% --- Inline bagof/setof tests (with inline_bagof_setof(true)) ---
 % All pass inline_bagof_setof(true) so the WAM compiler inlines
-% bagof/setof into begin_aggregate / end_aggregate (which the Elixir
-% runtime already supports). Without this option the compiler emits
-% `execute bagof/3` which the Elixir runtime cannot dispatch (no
-% meta-call findall/bagof/setof; deferred to a separate PR).
+% bagof/setof into begin_aggregate / end_aggregate.
 
 test(bagof_basic) :-
     with_elixir_project(
