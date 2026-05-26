@@ -1,6 +1,6 @@
 # F# Edge Store Cost Analyzer: Design
 
-**Status**: Design. Ready for implementation.
+**Status**: Implemented. Resolver chain wired into write_wam_fsharp_project/3.
 **Date**: 2026-05-26
 **Depends on**: CSR reader (done), dual-CSR builder (done),
 `WcLookupSources` auto-wiring (done)
