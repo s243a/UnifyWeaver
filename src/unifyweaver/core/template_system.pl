@@ -14,6 +14,7 @@
     generate_transitive_closure/4,
     load_template/2,
     load_template/3,
+    load_template_from_file/2,
     cache_template/2,
     clear_template_cache/0,
     clear_template_cache/1,

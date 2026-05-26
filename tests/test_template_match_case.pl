@@ -111,6 +111,62 @@ run_tests :-
         render_template("{{match k}}{{case }}body{{/match}}", [k=a], _R22),
         true),  % should not crash
 
+    % === Section 3.9: Real template file loaded from disk ===
+
+    run_test("3.9a File load: ST mode + lmdb backend",
+        (   load_template_from_file("tests/fixtures/kernel_match_dispatch.hs.mustache", Tmpl23),
+            render_template(Tmpl23, [module_name='TestModule', run_mode=st,
+                                     backend=lmdb_offset, run_function=runMutableRegs,
+                                     has_metrics=true, query_expr='pure 42'], R23)
+        ),
+        (   sub_string(R23, _, _, _, "module=TestModule"),
+            sub_string(R23, _, _, _, "import Control.Monad.ST"),
+            sub_string(R23, _, _, _, "import LmdbFactSource"),
+            sub_string(R23, _, _, _, "st_result="),
+            sub_string(R23, _, _, _, "metrics=enabled"),
+            \+ sub_string(R23, _, _, _, "pure mode"),
+            \+ sub_string(R23, _, _, _, "import SortedArraySource")
+        )),
+
+    run_test("3.9b File load: pure mode + memory backend",
+        (   load_template_from_file("tests/fixtures/kernel_match_dispatch.hs.mustache", Tmpl24),
+            render_template(Tmpl24, [module_name='PureMod', run_mode=pure,
+                                     backend=memory, run_function=run,
+                                     has_metrics=false, query_expr='length [1,2,3]'], R24)
+        ),
+        (   sub_string(R24, _, _, _, "module=PureMod"),
+            sub_string(R24, _, _, _, "pure mode"),
+            sub_string(R24, _, _, _, "in-memory backend"),
+            sub_string(R24, _, _, _, "pure_result="),
+            sub_string(R24, _, _, _, "length [1,2,3]"),
+            sub_string(R24, _, _, _, "metrics=disabled"),
+            \+ sub_string(R24, _, _, _, "import Control.Monad.ST"),
+            \+ sub_string(R24, _, _, _, "import LmdbFactSource")
+        )),
+
+    run_test("3.9c File load: unknown run_mode -> default",
+        (   load_template_from_file("tests/fixtures/kernel_match_dispatch.hs.mustache", Tmpl25),
+            render_template(Tmpl25, [module_name='FallbackMod', run_mode=exotic,
+                                     backend=sorted_array, run_function=run,
+                                     has_metrics=true, query_expr='0'], R25)
+        ),
+        (   sub_string(R25, _, _, _, "unknown run_mode"),
+            sub_string(R25, _, _, _, "fallback_mode"),
+            sub_string(R25, _, _, _, "import SortedArraySource"),
+            \+ sub_string(R25, _, _, _, "import Control.Monad.ST")
+        )),
+
+    run_test("3.9d File load: backend not in dict -> default empty",
+        (   load_template_from_file("tests/fixtures/kernel_match_dispatch.hs.mustache", Tmpl26),
+            render_template(Tmpl26, [module_name='NoBackend', run_mode=pure,
+                                     run_function=run, has_metrics=false,
+                                     query_expr='0'], R26)
+        ),
+        (   sub_string(R26, _, _, _, "module=NoBackend"),
+            \+ sub_string(R26, _, _, _, "import LmdbFactSource"),
+            \+ sub_string(R26, _, _, _, "import SortedArraySource")
+        )),
+
     % Summary
     test_count(pass, P),
     test_count(fail, F),
