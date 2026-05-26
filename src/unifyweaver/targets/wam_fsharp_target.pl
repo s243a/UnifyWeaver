@@ -5039,11 +5039,20 @@ generate_program_fs(_Predicates, DetectedKernels, Options, Code) :-
     ->  atom_number(L2CapStr, L2Cap)
     ;   L2CapStr = L2Cap
     ),
+    (   option(kernel_mode(bidirectional), Options)
+    ->  HasBidir = true,
+        option(child_branch_factor(BranchFactor), Options, 15.0),
+        option(graph_dimensionality(Dimensionality), Options, 5.0)
+    ;   HasBidir = false, BranchFactor = 15.0, Dimensionality = 5.0
+    ),
     Dict = [
         foreign_preds = ForeignPredsStr,
         lookup_sources_expr = LookupSourcesExpr,
         has_csr = HasCsr,
         has_lmdb = HasLmdb,
+        has_bidirectional = HasBidir,
+        branch_factor = BranchFactor,
+        dimensionality = Dimensionality,
         materialisation = Materialisation,
         l2_capacity = L2CapStr
     ],

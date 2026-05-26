@@ -62,6 +62,28 @@ let extractDouble (v: Value) : float option =
     | Integer n -> Some (float n)
     | _         -> None
 
+{{#has_bidirectional}}
+// -- Direction-weighted effective distance metric -------------------------
+//
+// Each path is weighted by direction: w = (1/D)^N * (1/(b*D))^M
+// where N = parent hops, M = child hops, D = dimensionality, b = branch factor.
+// Normalized power-mean: d = (Σ(w * (h+1)^(-n)) / Σw)^(-1/n)
+
+let private parentWeight = 1.0 / {{dimensionality}}
+let private childWeight  = 1.0 / ({{branch_factor}} * {{dimensionality}})
+
+let effectiveDistanceWeighted (results: (int * int * int) list) (n: float) : float =
+    if List.isEmpty results then infinity
+    else
+        let mutable sumWF = 0.0
+        let mutable sumW = 0.0
+        for (totalHops, parentHops, childHops) in results do
+            let w = (parentWeight ** float parentHops) * (childWeight ** float childHops)
+            sumWF <- sumWF + w * (float (totalHops + 1)) ** (-n)
+            sumW <- sumW + w
+        (sumWF / sumW) ** (-1.0 / n)
+{{/has_bidirectional}}
+
 [<EntryPoint>]
 let main argv =
     let factsDir = if argv.Length > 0 then argv.[0] else "."
