@@ -89,6 +89,8 @@ test(test_reverse_index_csr_auto_index_backend_keeps_sorted_array).
 test(test_reverse_index_csr_auto_index_backend_selects_lmdb_offset_when_amortized).
 test(test_reverse_index_csr_auto_index_backend_keeps_sorted_array_when_build_not_amortized).
 test(test_reverse_index_csr_auto_index_backend_keeps_sorted_array_when_memory_does_not_fit).
+test(test_csr_index_backend_options_from_benchmark_rows).
+test(test_csr_index_backend_options_from_benchmark_tsv).
 test(test_reverse_index_csr_accepts_lmdb_offset_index_backend).
 test(test_reverse_index_csr_runtime_auto_direct_io_when_supported).
 test(test_reverse_index_csr_runtime_auto_buffered_when_direct_io_not_verified).
@@ -477,6 +479,59 @@ test_reverse_index_csr_auto_index_backend_keeps_sorted_array_when_memory_does_no
     ;   fail_test(Test, format_atom("got reverse_index=~w", [ReverseIndex]))
     ).
 
+test_csr_index_backend_options_from_benchmark_rows :-
+    Test = 'csr_index_backend_options_from_benchmark_rows extracts measured cost terms',
+    csr_benchmark_rows(Rows),
+    csr_index_backend_options_from_benchmark_rows(
+        Rows,
+        [
+            expected_child_lookups_per_query(500),
+            expected_query_count_per_artifact(100),
+            available_memory_bytes(1073741824)
+        ],
+        Options
+    ),
+    resolve_csr_index_backend(Options, Backend),
+    (   Backend = lmdb_offset,
+        memberchk(sorted_array_lookup_ms_per_1000(4.418097), Options),
+        memberchk(lmdb_offset_lookup_ms_per_1000(2.961144), Options),
+        memberchk(sorted_array_build_seconds(0.331824), Options),
+        memberchk(lmdb_offset_build_seconds(0.381317), Options),
+        memberchk(lmdb_offset_bytes(2113536), Options),
+        memberchk(available_memory_bytes(1073741824), Options)
+    ->  pass(Test)
+    ;   fail_test(Test, format_atom("options=~w backend=~w", [Options, Backend]))
+    ).
+
+test_csr_index_backend_options_from_benchmark_tsv :-
+    Test = 'csr_index_backend_options_from_benchmark_tsv reads lookup benchmark TSV',
+    csr_benchmark_tsv(Text),
+    setup_call_cleanup(
+        tmp_file_stream(text, Path, Stream),
+        (   write(Stream, Text),
+            close(Stream),
+            csr_index_backend_options_from_benchmark_tsv(
+                Path,
+                [
+                    expected_child_lookups_per_query(100),
+                    expected_query_count_per_artifact(1),
+                    lmdb_offset_memory_fits(true)
+                ],
+                Options
+            ),
+            resolve_csr_index_backend(Options, Backend)
+        ),
+        (   exists_file(Path)
+        ->  delete_file(Path)
+        ;   true
+        )
+    ),
+    (   Backend = sorted_array,
+        memberchk(lmdb_offset_memory_fits(true), Options)
+    ->  pass(Test)
+    ;   fail_test(Test, format_atom("options=~w backend=~w", [Options, Backend]))
+    ).
+
 test_reverse_index_csr_runtime_auto_direct_io_when_supported :-
     Test = 'resolve_csr_io_policy auto selects direct_io only when runtime support is verified',
     Options = [
@@ -607,6 +662,49 @@ test_read_mem_available_returns_positive :-
     ;   %% Skip on non-Linux platforms
         format("[SKIP] ~w (no /proc/meminfo)~n", [Test])
     ).
+
+csr_benchmark_rows([
+    [
+        backend-"csr_sorted_array",
+        index_backend-"sorted_array",
+        sample_parents-"1000",
+        iterations-"5",
+        total_children-"8000",
+        median_ms-"4.418097",
+        csr_artifact_bytes-"2401022",
+        csr_build_seconds-"0.331824",
+        offset_index_bytes-"0"
+    ],
+    [
+        backend-"csr_lmdb_offset",
+        index_backend-"lmdb_offset",
+        sample_parents-"1000",
+        iterations-"5",
+        total_children-"8000",
+        median_ms-"2.961144",
+        csr_artifact_bytes-"4522789",
+        csr_build_seconds-"0.381317",
+        offset_index_bytes-"2113536"
+    ],
+    [
+        backend-"lmdb",
+        index_backend-"n/a",
+        sample_parents-"1000",
+        iterations-"5",
+        total_children-"8000",
+        median_ms-"3.812495",
+        csr_artifact_bytes-"2401022",
+        csr_build_seconds-"0.331824",
+        offset_index_bytes-"0"
+    ]
+]).
+
+csr_benchmark_tsv(
+"backend\tindex_backend\tsample_parents\titerations\ttotal_children\tmedian_ms\tcsr_artifact_bytes\tcsr_build_seconds\toffset_index_bytes
+csr_sorted_array\tsorted_array\t1000\t5\t8000\t4.418097\t2401022\t0.331824\t0
+csr_lmdb_offset\tlmdb_offset\t1000\t5\t8000\t2.961144\t4522789\t0.381317\t2113536
+lmdb\tn/a\t1000\t5\t8000\t3.812495\t2401022\t0.331824\t0
+").
 
 %% ========================================================================
 %% Helper: format an atom for fail_test reasons
