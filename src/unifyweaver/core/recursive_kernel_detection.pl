@@ -139,8 +139,7 @@ kernel_expected_arity(transitive_step_parent_distance5, 5).
 kernel_register_layout(bidirectional_ancestor, [
     input(1, atom),          % cat
     input(2, atom),          % root
-    output(3, integer),      % hops (result)
-    input(4, vlist_atoms)    % visited
+    output(3, integer)       % hops (result)
 ]).
 
 kernel_register_layout(category_ancestor, [
@@ -208,9 +207,9 @@ kernel_native_call(bidirectional_ancestor,
         config_facts('category_child'),   % children lookup (category_child CSR)
         reg(1),                           % catS
         reg(2),                           % rootS
-        config_int(max_depth, 10),        % maxD
-        derived(length, 4),               % length visitedStrs
-        reg(4)                            % visitedStrs
+        config_float(parent_step_cost, 1.0),  % cost per parent hop
+        config_float(child_step_cost, 3.0),   % cost per child hop
+        config_float(cost_budget, 10.0)       % max cumulative path cost
     ])).
 
 kernel_native_call(category_ancestor,
