@@ -21,6 +21,7 @@
     wam_instruction_to_c_literal/3,   % +WamInstr, +LabelMap, -CCode
     detect_kernels/2,                 % +Predicates, -DetectedKernels
     generate_setup_detected_kernels_c/2, % +DetectedKernels, -CCode
+    resolve_wam_c_reverse_index_plan/2, % +Options, -Plan
     plan_wam_c_lowered_helpers/4,     % +Predicates, +Options, +DetectedKeys, -Plans
     write_wam_c_project/3             % +Predicates, +Options, +ProjectDir
 ]).
@@ -33,9 +34,61 @@
 :- use_module('../core/template_system').
 :- use_module('../bindings/c_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../core/cost_model', [resolve_reverse_index/2]).
 :- use_module('../core/recursive_kernel_detection', [
     detect_recursive_kernel/4
 ]).
+
+%% resolve_wam_c_reverse_index_plan(+Options, -Plan)
+%  Normalizes reverse-index options for WAM-C and reports which normalized
+%  variants the generated C runtime can currently consume.
+resolve_wam_c_reverse_index_plan(Options, Plan) :-
+    resolve_reverse_index(Options, ReverseIndex),
+    wam_c_reverse_index_capabilities(ReverseIndex, Capabilities),
+    Plan = wam_c_reverse_index_plan(ReverseIndex, Capabilities).
+
+wam_c_reverse_index_capabilities(none, [
+    planning(unneeded),
+    runtime_child_lookup(unavailable)
+]) :- !.
+wam_c_reverse_index_capabilities(artifact(Opts), [
+    planning(accepted),
+    runtime_child_lookup(available),
+    runtime_api(wam_reverse_csr_lookup_children),
+    runtime_index_backend(sorted_array),
+    runtime_io(pread)
+]) :-
+    memberchk(storage_kind(csr_pread_artifact), Opts),
+    memberchk(index_backend(sorted_array), Opts),
+    !.
+wam_c_reverse_index_capabilities(csr(Opts), [
+    planning(accepted),
+    runtime_child_lookup(available_after_artifact_build),
+    runtime_api(wam_reverse_csr_lookup_children),
+    runtime_index_backend(sorted_array),
+    runtime_io(pread)
+]) :-
+    memberchk(index_backend(sorted_array), Opts),
+    !.
+wam_c_reverse_index_capabilities(ReverseIndex, [
+    planning(accepted),
+    runtime_child_lookup(unsupported),
+    runtime_reason(lmdb_offset_index_not_implemented)
+]) :-
+    wam_c_reverse_index_uses_lmdb_offset(ReverseIndex),
+    !.
+wam_c_reverse_index_capabilities(ReverseIndex, [
+    planning(accepted),
+    runtime_child_lookup(unsupported),
+    runtime_reason(reverse_index_kind_not_implemented)
+]) :-
+    ReverseIndex \= none.
+
+wam_c_reverse_index_uses_lmdb_offset(csr(Opts)) :-
+    memberchk(index_backend(lmdb_offset), Opts).
+wam_c_reverse_index_uses_lmdb_offset(artifact(Opts)) :-
+    memberchk(storage_kind(csr_pread_artifact), Opts),
+    memberchk(index_backend(lmdb_offset), Opts).
 
 % ============================================================================
 % PHASE 4: Hybrid Module Assembly
@@ -1969,7 +2022,12 @@ compile_step_wam_to_c(_Options, CCode) :-
 
 compile_wam_helpers_to_c(_Options, CCode) :-
     CCode =
-'#include "wam_runtime.h"
+'#define _POSIX_C_SOURCE 200809L
+#include "wam_runtime.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <unistd.h>
 
 void wam_state_init(WamState *state) {
     memset(state, 0, sizeof(WamState));
@@ -2465,6 +2523,140 @@ bool wam_register_category_parent_fact_source(WamState *state, WamFactSource *so
         wam_register_category_parent(state, source->edges[i].child, source->edges[i].parent);
     }
     return true;
+}
+
+static int32_t wam_read_i32_le(const unsigned char *p) {
+    uint32_t v = ((uint32_t)p[0]) |
+                 ((uint32_t)p[1] << 8) |
+                 ((uint32_t)p[2] << 16) |
+                 ((uint32_t)p[3] << 24);
+    return (int32_t)v;
+}
+
+static uint32_t wam_read_u32_le(const unsigned char *p) {
+    return ((uint32_t)p[0]) |
+           ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
+static uint64_t wam_read_u64_le(const unsigned char *p) {
+    uint64_t v = 0;
+    for (int i = 7; i >= 0; i--) {
+        v = (v << 8) | (uint64_t)p[i];
+    }
+    return v;
+}
+
+static bool wam_pread_exact(int fd, void *buffer, size_t bytes, off_t offset) {
+    unsigned char *out = (unsigned char *)buffer;
+    size_t done = 0;
+    while (done < bytes) {
+        ssize_t n = pread(fd, out + done, bytes - done, offset + (off_t)done);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        if (n == 0) return false;
+        done += (size_t)n;
+    }
+    return true;
+}
+
+void wam_reverse_csr_init(WamReverseCsrArtifact *artifact) {
+    memset(artifact, 0, sizeof(WamReverseCsrArtifact));
+    artifact->index_fd = -1;
+    artifact->values_fd = -1;
+}
+
+void wam_reverse_csr_close(WamReverseCsrArtifact *artifact) {
+    if (artifact->index_fd >= 0) close(artifact->index_fd);
+    if (artifact->values_fd >= 0) close(artifact->values_fd);
+    free(artifact->rows);
+    wam_reverse_csr_init(artifact);
+}
+
+bool wam_reverse_csr_load(WamReverseCsrArtifact *artifact,
+                          const char *index_path,
+                          const char *values_path) {
+    const size_t record_bytes = 16;
+    unsigned char *raw = NULL;
+    bool ok = false;
+    off_t index_size = 0;
+
+    wam_reverse_csr_close(artifact);
+    artifact->index_fd = open(index_path, O_RDONLY);
+    if (artifact->index_fd < 0) goto done;
+    artifact->values_fd = open(values_path, O_RDONLY);
+    if (artifact->values_fd < 0) goto done;
+
+    index_size = lseek(artifact->index_fd, 0, SEEK_END);
+    if (index_size < 0 || (index_size % (off_t)record_bytes) != 0) goto done;
+    if (lseek(artifact->index_fd, 0, SEEK_SET) < 0) goto done;
+    if ((index_size / (off_t)record_bytes) > INT_MAX) goto done;
+    artifact->row_count = (int)(index_size / (off_t)record_bytes);
+    if ((off_t)artifact->row_count * (off_t)record_bytes != index_size) goto done;
+
+    if (artifact->row_count > 0) {
+        artifact->rows = calloc((size_t)artifact->row_count, sizeof(WamReverseCsrRow));
+        raw = malloc((size_t)index_size);
+        if (!artifact->rows || !raw) goto done;
+        if (!wam_pread_exact(artifact->index_fd, raw, (size_t)index_size, 0)) goto done;
+        for (int i = 0; i < artifact->row_count; i++) {
+            const unsigned char *record = raw + ((size_t)i * record_bytes);
+            int parent = (int)wam_read_i32_le(record);
+            if (i > 0 && parent <= artifact->rows[i - 1].parent) goto done;
+            artifact->rows[i].parent = parent;
+            artifact->rows[i].offset_edges = wam_read_u64_le(record + 4);
+            artifact->rows[i].child_count = wam_read_u32_le(record + 12);
+        }
+    }
+
+    ok = true;
+
+done:
+    free(raw);
+    if (!ok) wam_reverse_csr_close(artifact);
+    return ok;
+}
+
+static WamReverseCsrRow *wam_reverse_csr_find_row(WamReverseCsrArtifact *artifact,
+                                                  int parent) {
+    int lo = 0;
+    int hi = artifact->row_count;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        int mid_parent = artifact->rows[mid].parent;
+        if (mid_parent < parent) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if (lo >= artifact->row_count || artifact->rows[lo].parent != parent) return NULL;
+    return &artifact->rows[lo];
+}
+
+int wam_reverse_csr_lookup_children(WamReverseCsrArtifact *artifact,
+                                    int parent,
+                                    int *out_children,
+                                    int max_children) {
+    WamReverseCsrRow *row = wam_reverse_csr_find_row(artifact, parent);
+    if (!row) return 0;
+    if (max_children < 0) max_children = 0;
+    if (row->child_count > (uint32_t)INT_MAX) return -1;
+    int total = (int)row->child_count;
+    int to_read = total < max_children ? total : max_children;
+    for (int i = 0; i < to_read; i++) {
+        unsigned char encoded[4];
+        uint64_t edge_offset = row->offset_edges + (uint64_t)i;
+        if (edge_offset > (UINT64_MAX / 4ULL)) return -1;
+        if (!wam_pread_exact(artifact->values_fd, encoded, sizeof(encoded), (off_t)(edge_offset * 4ULL))) {
+            return -1;
+        }
+        out_children[i] = (int)wam_read_i32_le(encoded);
+    }
+    return total;
 }
 
 void wam_int_results_init(WamIntResults *results) {

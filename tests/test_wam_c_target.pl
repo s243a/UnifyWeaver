@@ -347,6 +347,96 @@ test_fact_source_generation :-
     ;   fail_test(Test, 'file FactSource helpers missing')
     ).
 
+test_reverse_csr_generation :-
+    Test = 'WAM-C: reverse CSR pread helpers generated',
+    (   compile_wam_runtime_to_c([], RuntimeCode),
+        atom_string(RuntimeCode, S),
+        sub_string(S, _, _, _, 'void wam_reverse_csr_init'),
+        sub_string(S, _, _, _, 'bool wam_reverse_csr_load'),
+        sub_string(S, _, _, _, 'int wam_reverse_csr_lookup_children'),
+        sub_string(S, _, _, _, 'pread('),
+        sub_string(S, _, _, _, 'wam_read_i32_le')
+    ->  pass(Test)
+    ;   fail_test(Test, 'reverse CSR helpers missing')
+    ).
+
+test_reverse_index_plan_none :-
+    Test = 'WAM-C: reverse_index none plans no runtime child lookup',
+    (   resolve_wam_c_reverse_index_plan(
+            [reverse_index(none)],
+            wam_c_reverse_index_plan(none, Capabilities)
+        ),
+        memberchk(planning(unneeded), Capabilities),
+        memberchk(runtime_child_lookup(unavailable), Capabilities)
+    ->  pass(Test)
+    ;   fail_test(Test, 'reverse_index(none) did not plan as unavailable')
+    ).
+
+test_reverse_index_plan_csr_cost_model :-
+    Test = 'WAM-C: reverse_index csr uses shared CSR cost model',
+    (   resolve_wam_c_reverse_index_plan(
+            [reverse_index(csr([
+                index_backend(auto),
+                expected_child_lookups_per_query(500),
+                expected_query_count_per_artifact(100),
+                sorted_array_lookup_ms_per_1000(4.418097),
+                lmdb_offset_lookup_ms_per_1000(2.961144),
+                sorted_array_build_seconds(0.331824),
+                lmdb_offset_build_seconds(0.381317),
+                lmdb_offset_bytes(2113536),
+                available_memory_bytes(1073741824)
+            ]))],
+            wam_c_reverse_index_plan(csr(Resolved), Capabilities)
+        ),
+        memberchk(index_backend(lmdb_offset), Resolved),
+        memberchk(io_policy(buffered_pread_drop), Resolved),
+        memberchk(runtime_child_lookup(unsupported), Capabilities),
+        memberchk(runtime_reason(lmdb_offset_index_not_implemented), Capabilities)
+    ->  pass(Test)
+    ;   fail_test(Test, 'CSR options were not normalized through the cost model')
+    ).
+
+test_reverse_index_plan_runtime_available_sorted_array :-
+    Test = 'WAM-C: runtime sorted-array CSR artifact is available',
+    (   resolve_wam_c_reverse_index_plan(
+            [reverse_index(artifact([
+                storage_kind(csr_pread_artifact),
+                phase(runtime_available),
+                index_backend(sorted_array),
+                io_policy(buffered_pread)
+            ]))],
+            wam_c_reverse_index_plan(artifact(Resolved), Capabilities)
+        ),
+        memberchk(phase(runtime_available), Resolved),
+        memberchk(storage_kind(csr_pread_artifact), Resolved),
+        memberchk(index_backend(sorted_array), Resolved),
+        memberchk(runtime_child_lookup(available), Capabilities),
+        memberchk(runtime_api(wam_reverse_csr_lookup_children), Capabilities),
+        memberchk(runtime_io(pread), Capabilities)
+    ->  pass(Test)
+    ;   fail_test(Test, 'runtime sorted-array CSR artifact was not marked available')
+    ).
+
+test_reverse_index_plan_runtime_available_lmdb_offset_unsupported :-
+    Test = 'WAM-C: runtime lmdb-offset CSR artifact is still unsupported',
+    (   resolve_wam_c_reverse_index_plan(
+            [reverse_index(artifact([
+                storage_kind(csr_pread_artifact),
+                phase(runtime_available),
+                index_backend(lmdb_offset),
+                io_policy(buffered_pread)
+            ]))],
+            wam_c_reverse_index_plan(artifact(Resolved), Capabilities)
+        ),
+        memberchk(phase(runtime_available), Resolved),
+        memberchk(storage_kind(csr_pread_artifact), Resolved),
+        memberchk(index_backend(lmdb_offset), Resolved),
+        memberchk(runtime_child_lookup(unsupported), Capabilities),
+        memberchk(runtime_reason(lmdb_offset_index_not_implemented), Capabilities)
+    ->  pass(Test)
+    ;   fail_test(Test, 'runtime lmdb-offset CSR artifact did not stay unsupported')
+    ).
+
 test_streaming_foreign_results_generation :-
     Test = 'WAM-C: streaming foreign result helpers generated',
     (   compile_wam_runtime_to_c([], RuntimeCode),
@@ -1108,6 +1198,16 @@ test_lmdb_fact_source_executable_smoke :-
     ;   format('[PASS] ~w (gcc or lmdb unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_reverse_csr_executable_smoke :-
+    Test = 'WAM-C: reverse CSR executable smoke',
+    (   gcc_available
+    ->  (   run_reverse_csr_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'reverse CSR executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_streaming_foreign_results_executable_smoke :-
     Test = 'WAM-C: streaming category_ancestor result executable smoke',
     (   gcc_available
@@ -1619,6 +1719,34 @@ run_lmdb_fact_source_executable_smoke :-
     wam_c_lmdb_fact_source_smoke_main(EnvPath, MainCode),
     write_text_file(MainPath, MainCode),
     compile_c_smoke_lmdb(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
+run_reverse_csr_executable_smoke :-
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_reverse_csr_smoke', Stamp, TmpBase),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(IndexPath), '~w.csr.idx', [TmpBase]),
+    format(atom(ValuesPath), '~w.csr.val', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    write_text_file(PredPath, '#include "wam_runtime.h"\n'),
+    write_binary_file(IndexPath, [
+        20,0,0,0, 0,0,0,0,0,0,0,0, 3,0,0,0,
+        30,0,0,0, 3,0,0,0,0,0,0,0, 1,0,0,0
+    ]),
+    write_binary_file(ValuesPath, [
+        10,0,0,0,
+        12,0,0,0,
+        13,0,0,0,
+        11,0,0,0
+    ]),
+    wam_c_reverse_csr_smoke_main(IndexPath, ValuesPath, MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
     run_c_smoke_plain(ExePath).
 
 run_kernel_detector_executable_smoke :-
@@ -2165,6 +2293,13 @@ write_text_file(Path, Content) :-
     setup_call_cleanup(
         open(Path, write, Stream),
         format(Stream, '~w', [Content]),
+        close(Stream)
+    ).
+
+write_binary_file(Path, Bytes) :-
+    setup_call_cleanup(
+        open(Path, write, Stream, [type(binary)]),
+        forall(member(Byte, Bytes), put_byte(Stream, Byte)),
         close(Stream)
     ).
 
@@ -3546,6 +3681,51 @@ int main(void) {
 }
 ', [EnvPath, EnvPath]).
 
+wam_c_reverse_csr_smoke_main(IndexPath, ValuesPath, MainCode) :-
+    format(atom(MainCode),
+'#include "wam_runtime.h"
+
+int main(void) {
+    WamReverseCsrArtifact csr;
+    int children[4] = {0, 0, 0, 0};
+    int count = 0;
+
+    wam_reverse_csr_init(&csr);
+    if (!wam_reverse_csr_load(&csr, "~w", "~w")) {
+        return 10;
+    }
+
+    count = wam_reverse_csr_lookup_children(&csr, 20, children, 4);
+    if (count != 3 || children[0] != 10 || children[1] != 12 || children[2] != 13) {
+        wam_reverse_csr_close(&csr);
+        return 20;
+    }
+
+    children[0] = 0;
+    children[1] = 0;
+    count = wam_reverse_csr_lookup_children(&csr, 20, children, 2);
+    if (count != 3 || children[0] != 10 || children[1] != 12) {
+        wam_reverse_csr_close(&csr);
+        return 30;
+    }
+
+    count = wam_reverse_csr_lookup_children(&csr, 30, children, 4);
+    if (count != 1 || children[0] != 11) {
+        wam_reverse_csr_close(&csr);
+        return 40;
+    }
+
+    count = wam_reverse_csr_lookup_children(&csr, 99, children, 4);
+    if (count != 0) {
+        wam_reverse_csr_close(&csr);
+        return 50;
+    }
+
+    wam_reverse_csr_close(&csr);
+    return 0;
+}
+', [IndexPath, ValuesPath]).
+
 wam_c_streaming_foreign_smoke_main(
 '#include "wam_runtime.h"
 
@@ -4363,6 +4543,11 @@ run_tests_once :-
     test_weighted_shortest_path_kernel_generation,
     test_astar_shortest_path_kernel_generation,
     test_fact_source_generation,
+    test_reverse_csr_generation,
+    test_reverse_index_plan_none,
+    test_reverse_index_plan_csr_cost_model,
+    test_reverse_index_plan_runtime_available_sorted_array,
+    test_reverse_index_plan_runtime_available_lmdb_offset_unsupported,
     test_streaming_foreign_results_generation,
     test_kernel_detector_setup_generation,
     test_transitive_closure_detector_setup_generation,
@@ -4400,6 +4585,7 @@ run_tests_once :-
     test_astar_shortest_path_kernel_executable_smoke,
     test_fact_source_executable_smoke,
     test_lmdb_fact_source_executable_smoke,
+    test_reverse_csr_executable_smoke,
     test_kernel_detector_executable_smoke,
     test_transitive_closure_detector_executable_smoke,
     test_transitive_distance_detector_executable_smoke,
