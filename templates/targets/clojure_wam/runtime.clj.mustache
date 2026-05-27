@@ -978,6 +978,12 @@
           (backtrack state)))
       (backtrack state))))
 
+(defn sorted-unique-list? [state items]
+  (= items (vec (sorted-unique-terms state items))))
+
+(defn sorted-list? [state items]
+  (= items (vec (sorted-terms state items))))
+
 (defn apply-sort-solution [state]
   (let [list-value (deref-value (:bindings state)
                                 (or (reg-get-raw state "A1") ::unbound))
@@ -990,7 +996,15 @@
         (if ok
           (advance next-state)
           (backtrack state)))
-      (backtrack state))))
+      (if-let [out-items (proper-list-items state out)]
+        (if (and (logic-var? list-value)
+                 (sorted-unique-list? state out-items))
+          (let [[ok next-state] (unify-values state list-value out)]
+            (if ok
+              (advance next-state)
+              (backtrack state)))
+          (backtrack state))
+        (backtrack state)))))
 
 (defn apply-msort-solution [state]
   (let [list-value (deref-value (:bindings state)
@@ -1004,7 +1018,15 @@
         (if ok
           (advance next-state)
           (backtrack state)))
-      (backtrack state))))
+      (if-let [out-items (proper-list-items state out)]
+        (if (and (logic-var? list-value)
+                 (sorted-list? state out-items))
+          (let [[ok next-state] (unify-values state list-value out)]
+            (if ok
+              (advance next-state)
+              (backtrack state)))
+          (backtrack state))
+        (backtrack state)))))
 
 (defn atom-text [state value]
   (cond
