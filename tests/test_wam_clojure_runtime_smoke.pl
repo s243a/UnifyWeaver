@@ -367,10 +367,10 @@ user:wam_delete_bad_list(Rest) :- delete([a|b], a, Rest).
 user:wam_delete_unbound_list(Rest) :- user:wam_unbound_arg(L), delete(L, a, Rest).
 user:wam_sort_guard(L, S) :- sort(L, S).
 user:wam_sort_bad_list(S) :- sort([a|b], S).
-user:wam_sort_unbound_list(S) :- user:wam_unbound_arg(L), sort(L, S).
+user:wam_sort_unbound_list(S) :- sort(L, S), is_list(L).
 user:wam_msort_guard(L, S) :- msort(L, S).
 user:wam_msort_bad_list(S) :- msort([a|b], S).
-user:wam_msort_unbound_list(S) :- user:wam_unbound_arg(L), msort(L, S).
+user:wam_msort_unbound_list(S) :- msort(L, S), is_list(L).
 user:wam_copy_term_guard(A, B) :- copy_term(A, B).
 user:wam_copy_term_sharing_fail :- user:wam_unbound_arg(X), copy_term(f(X, X), f(a, b)).
 user:wam_copy_term_independent_ok :- copy_term(f(_, _), f(a, b)).
@@ -1011,12 +1011,14 @@ smoke_cases([
     case('wam_sort_guard/2', args('[b,a,a,c]', '[a,b]'), "false"),
     case('wam_sort_guard/2', args('[f(b),f(a),a]', '[a,f(a),f(b)]'), "true"),
     case('wam_sort_bad_list/1', '[a,b,c]', "false"),
-    case('wam_sort_unbound_list/1', '[a,b,c]', "false"),
+    case('wam_sort_unbound_list/1', '[a,b,c]', "true"),
+    case('wam_sort_unbound_list/1', '[a,a,b,c]', "false"),
     case('wam_msort_guard/2', args('[b,a,a,c]', '[a,a,b,c]'), "true"),
     case('wam_msort_guard/2', args('[b,a,a,c]', '[a,b,c]'), "false"),
     case('wam_msort_guard/2', args('[f(b),f(a),a]', '[a,f(a),f(b)]'), "true"),
     case('wam_msort_bad_list/1', '[a,b,c]', "false"),
-    case('wam_msort_unbound_list/1', '[a,b,c]', "false"),
+    case('wam_msort_unbound_list/1', '[a,b,c]', "true"),
+    case('wam_msort_unbound_list/1', '[a,a,b,c]', "true"),
     case('wam_copy_term_guard/2', args(a, a), "true"),
     case('wam_copy_term_guard/2', args(a, b), "false"),
     case('wam_copy_term_guard/2', args('f(a)', 'f(a)'), "true"),
