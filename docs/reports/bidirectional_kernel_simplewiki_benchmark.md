@@ -133,7 +133,40 @@ keeping it tractable:
   compare with exponential decay flux from
   `docs/design/COST_FUNCTION_PHILOSOPHY.md`.
 
-## 5. References
+## 5. Stress test: budget=20, 100 seeds at depth 4
+
+With a higher budget (20 vs 15) and more seeds (100 vs 50), the
+path count grows dramatically:
+
+| childCost | Paths | Mixed | d_wPow | Time |
+|-----------|-------|-------|--------|------|
+| 100 (up-only) | 6,260 | 0 | 5.343 | 88ms |
+| 10 | 62,298 | 56,038 | 5.386 | 211ms |
+| 5 | 4,535,301 | 4,529,041 | 5.391 | 10.3s |
+| 3 | (>120s, killed) | — | — | >120s |
+
+The weighted metric converges well (+0.8% then +0.1%), but
+childCost=3 with budget=20 is computationally intractable even
+on simplewiki (25k edges). For enwiki (9.93M edges) or real-time
+applications, either:
+- Use childCost >= 5 (10.3s for 4.5M paths, convergent)
+- Implement top-K path pruning to bound enumeration
+- Reduce budget to 15 (childCost=3 completes in 1.5s)
+
+## 6. Scale limitations and next steps
+
+The full enwiki benchmark (9.93M edges) could not be run because
+Wikipedia dumps are blocked by the environment's network policy.
+The simplewiki results (25k edges, depth 20) characterize the
+kernel's behavior on real Wikipedia structure but at 400x smaller
+scale.
+
+Expected enwiki behavior:
+- childCost=5 with budget=15: likely tractable (~minutes)
+- childCost=3 with budget=15: likely multi-hour per seed
+- Top-K pruning needed for any childCost < 5 at enwiki scale
+
+## 7. References
 
 - Kernel template: `templates/targets/fsharp_wam/kernel_bidirectional_ancestor.fs.mustache`
 - Design: `docs/design/WAM_FSHARP_CSR_KERNEL_INTEGRATION.md`
