@@ -23,12 +23,18 @@
 /// ratio b, computed from degree distribution moments during BFS.
 /// Used by the distance metric to weight parent vs child hops.
 ///   D = E[d_child] (average child fan-out)
-///   b = E[d²_child] / E[d²_parent] (second moment ratio)
+///   b_raw = E[d²_child] / E[d²_parent] (second moment ratio)
+///   b = b_raw * routing_correction (optional)
 /// The second moment ratio captures the path amplification asymmetry
 /// from heavy-tail nodes (hubs with hundreds of children).
+/// The routing correction (avg_min_dist / avg_path_hops) accounts for
+/// hub correlation: in graphs where paths overlap through shared hubs,
+/// the raw b overestimates the effective branching.
 type GraphCalibration = {
     Dimensionality: float
     BranchRatio: float
+    BranchRatioRaw: float
+    RoutingCorrection: float
     MinDist: System.Collections.Generic.Dictionary<int, int>
 }
 
@@ -71,15 +77,66 @@ let private calibrateGraph
     let dimensionality =
         if childNodes > 0 then max 1.5 (sumChildDeg / float childNodes)
         else 3.0
-    let branchRatio =
+    let branchRatioRaw =
         if childNodes > 0 && parentNodes > 0 then
             let ed2Child = sumChildDeg2 / float childNodes
             let ed2Parent = sumParentDeg2 / float parentNodes
             if ed2Parent > 0.0 then max 1.0 (ed2Child / ed2Parent)
             else 1.0
         else 1.0
+    // Routing correction: probe a sample of seeds to measure
+    // avg_min_dist / avg_path_hops. This accounts for hub correlation.
+    let seedSample =
+        dist
+        |> Seq.filter (fun kv -> kv.Value >= 3 && kv.Value <= 6)
+        |> Seq.truncate 20
+        |> Seq.map (fun kv -> kv.Key)
+        |> Seq.toArray
+    let routingCorrection =
+        if seedSample.Length > 0 then
+            let mutable totalMinD = 0.0
+            let mutable totalHops = 0.0
+            let mutable totalPaths = 0
+            for s in seedSample do
+                totalMinD <- totalMinD + float dist.[s]
+                let gcr nd = match dist.TryGetValue(nd) with true,d -> float d | _ -> infinity
+                let rec probe f a =
+                    match f with
+                    | [] -> a
+                    | (nd,co:float,h,v:Set<int>) :: r ->
+                        let a' = if nd = root then (h :: a) else a
+                        let pN =
+                            if co + 1.0 > 15.0 then []
+                            else
+                                lookupParents nd |> List.choose (fun x ->
+                                    if Set.contains x v then None
+                                    else
+                                        let nc = co + 1.0
+                                        if nc + gcr x > 15.0 then None
+                                        else Some(x, nc, h+1, Set.add x v))
+                        let cN =
+                            if co + 5.0 > 15.0 then []
+                            else
+                                lookupChildren nd |> List.choose (fun x ->
+                                    if Set.contains x v then None
+                                    else
+                                        let nc = co + 5.0
+                                        if nc + gcr x > 15.0 then None
+                                        else Some(x, nc, h+1, Set.add x v))
+                        probe (pN @ cN @ r) a'
+                let hops = probe [(s, 0.0, 0, Set.singleton s)] []
+                for h in hops do
+                    totalHops <- totalHops + float h
+                    totalPaths <- totalPaths + 1
+            let avgMinD = totalMinD / float seedSample.Length
+            let avgHops = if totalPaths > 0 then totalHops / float totalPaths else avgMinD
+            if avgHops > 0.0 then min 1.0 (avgMinD / avgHops) else 1.0
+        else 1.0
+    let branchRatio = branchRatioRaw * routingCorrection
     { Dimensionality = dimensionality
       BranchRatio = branchRatio
+      BranchRatioRaw = branchRatioRaw
+      RoutingCorrection = routingCorrection
       MinDist = dist }
 
 let nativeKernel_bidirectional_ancestor
