@@ -3633,6 +3633,18 @@ write_wam_haskell_project(Predicates, Options0, ProjectDir) :-
     directory_file_path(SrcDir, 'Main.hs', MainPath),
     write_hs_file(MainPath, MainCode),
 
+    % Generate CsrReader.hs if csr_path is set
+    (   option(csr_path(_CsrPath), Options)
+    ->  option(csr_relation(CsrRel), Options, 'category_child'),
+        read_kernel_template('csr_reader.hs.mustache', CsrTemplate),
+        render_template(CsrTemplate, [csr_relation=CsrRel], CsrCode0),
+        atom_string(CsrCode0, CsrCode),
+        directory_file_path(SrcDir, 'CsrReader.hs', CsrPath0),
+        write_hs_file(CsrPath0, CsrCode),
+        format(user_error, '[WAM-Haskell] CSR reader emitted for relation: ~w~n', [CsrRel])
+    ;   true
+    ),
+
     format(user_error, '[WAM-Haskell] Generated project at: ~w (hashmap=~w)~n', [ProjectDir, UseHM]).
 
 %% apply_hashmap_rewrite(+UseHM, +Module, +InCode, -OutCode)
@@ -3830,6 +3842,22 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     ->  DemandBfsModeCursor = true
     ;   DemandBfsModeCursor = false
     ),
+    % CSR support: generate import and setup blocks when csr_path is set.
+    (   option(csr_path(CsrPathOpt), Options)
+    ->  HasCsr = true,
+        option(csr_relation(CsrRelOpt), Options, 'category_child'),
+        format(atom(CsrSetup),
+            '    -- CSR reverse-index setup\n    csrEdgeLookup <- CsrReader.openCsrEdgeLookup (factsDir ++ "/~w") "~w"\n',
+            [CsrPathOpt, CsrRelOpt]),
+        format(atom(CsrContext),
+            '            , wcEdgeLookups = Map.insert "~w" csrEdgeLookup (wcEdgeLookups ctx)\n',
+            [CsrRelOpt]),
+        CsrImport = 'import qualified CsrReader'
+    ;   HasCsr = false,
+        CsrSetup = '',
+        CsrContext = '',
+        CsrImport = ''
+    ),
     render_template(Template,
         [ foreign_preds=ForeignPredsStr
         , benchmark_mode=Mode
@@ -3842,6 +3870,10 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
         , lmdb_setup=LmdbSetup
         , lmdb_context=LmdbContext
         , lmdb_import=LmdbImport
+        , csr_import=CsrImport
+        , csr_setup=CsrSetup
+        , csr_context=CsrContext
+        , has_csr=HasCsr
         , int_atom_seeds=IntAtomSeeds
         , int_atom_seeds_lmdb=IntAtomSeedsLmdb
         , demand_bfs_mode_cursor=DemandBfsModeCursor
