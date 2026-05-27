@@ -17,6 +17,7 @@ import WamRuntime
 import Predicates
 import qualified Lowered
 {{lmdb_import}}
+{{csr_import}}
 
 -- | Load a TSV file, skip header, return pairs.
 loadTsvPairs :: FilePath -> IO [(String, String)]
@@ -278,6 +279,9 @@ main = do
     -- Phase B1: LMDB fact source setup (conditional, empty when not enabled)
 {{lmdb_setup}}
 
+    -- Phase B2: CSR reverse-index setup (conditional, empty when not enabled)
+{{csr_setup}}
+
     -- Build the read-only WamContext ONCE before the seed loop. The hot
     -- WamState gets a fresh copy per seed; the cold context is shared.
     -- wcInternTable is the system-wide atom intern table (compile-time +
@@ -289,6 +293,7 @@ main = do
             , wcFfiFacts      = Map.singleton "category_parent" {{facts_source}}
 {{inline_facts}}
 {{lmdb_context}}
+{{csr_context}}
             }
 
     t2 <- getCurrentTime
