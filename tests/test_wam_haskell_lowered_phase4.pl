@@ -191,7 +191,7 @@ test_emit_deallocate_inline :-
     WamText = "foo/1:\n    allocate\n    get_constant 1, A1\n    deallocate\n    proceed\n",
     lower_predicate_to_haskell(foo/1, WamText, [], lowered(_, _, Code)),
     (   sub_string(Code, _, _, _, "EnvFrame oldCP"),
-        \+ sub_string(Code, _, _, _, "Deallocate")
+        \+ sub_string(Code, _, _, _, "step ctx")
     ->  pass(Test)
     ;   fail_test(Test, 'expected inline deallocate')
     ).
