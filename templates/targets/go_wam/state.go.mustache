@@ -1495,6 +1495,17 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		default:
 			return false
 		}
+	case "string_code/3":
+		index, okIndex := vm.deref(arg1).(*Integer)
+		text, okText := vm.deref(arg2).(*Atom)
+		if !okIndex || !okText || index.Val < 1 {
+			return false
+		}
+		runes := []rune(text.Name)
+		if index.Val > int64(len(runes)) {
+			return false
+		}
+		return vm.Unify(arg3, &Integer{Val: int64(runes[index.Val-1])})
 
 	case "var/1": return isUnbound(vm.deref(arg1))
 	case "nonvar/1": return !isUnbound(vm.deref(arg1))
