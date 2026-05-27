@@ -4328,14 +4328,112 @@ resolve_auto_csr_index_backend_hs(Options0, Options) :-
     ;   Options = Options0
     ).
 
+%% resolve_auto_edge_store_hs(+Options0, -Options)
+%  Resolve edge_store(auto) into a concrete store selection.
+%  Decides between lmdb_cached, lmdb_eager, csr, or dual_csr based on
+%  workload metadata. When edge_store is not auto (or absent), pass through.
+%  Mirrors F#'s resolve_auto_edge_store_fs/2.
+resolve_auto_edge_store_hs(Options0, Options) :-
+    (   option(edge_store(auto), Options0)
+    ->  compute_edge_store_hs(Options0, Store),
+        exclude(=(edge_store(_)), Options0, Rest),
+        apply_edge_store_hs(Store, Rest, Options)
+    ;   Options = Options0
+    ).
+
+compute_edge_store_hs(Options, Store) :-
+    option(expected_query_count(Q), Options, 1),
+    option(expected_lookups_per_query(L), Options, 50),
+    option(edge_count(E), Options, 0),
+    option(graph_mutability(Mut), Options, 'static'),
+    option(needs_reverse(NeedsRev), Options, false),
+    TotalLookups is Q * L,
+    %% Cost model (milliseconds):
+    %%   LMDB eager: one-time load E*0.005ms, per-lookup ~0.5us (IntMap.lookup)
+    %%   LMDB cached: no load, per-lookup ~2us warm (cursor + L2 cache)
+    %%   CSR: build E*0.01ms, per-lookup ~1.5us (binary search on index)
+    EagerLoadMs is E * 0.005,
+    EagerPerLookupUs is 0.5,
+    CachedPerLookupUs is 2.0,
+    CsrBuildMs is E * 0.01,
+    CsrPerLookupUs is 1.5,
+    %% Total wall time per mode (ms):
+    EagerTotalMs is EagerLoadMs + TotalLookups * EagerPerLookupUs / 1000,
+    CachedTotalMs is TotalLookups * CachedPerLookupUs / 1000,
+    CsrTotalMs is CsrBuildMs + TotalLookups * CsrPerLookupUs / 1000,
+    (   Mut == 'dynamic'
+    ->  Store = lmdb_cached
+    ;   NeedsRev == true, CsrTotalMs =< CachedTotalMs
+    ->  Store = dual_csr
+    ;   (   CsrTotalMs =< EagerTotalMs, CsrTotalMs =< CachedTotalMs
+        ->  Store = csr
+        ;   EagerTotalMs =< CachedTotalMs
+        ->  Store = lmdb_eager
+        ;   Store = lmdb_cached
+        )
+    ),
+    (   option(edge_store_verbose(true), Options)
+    ->  format(user_error,
+               '[WAM-Haskell] edge_store(auto): Q=~w L=~w E=~w eager=~2fms cached=~2fms csr=~2fms -> ~w~n',
+               [Q, L, E, EagerTotalMs, CachedTotalMs, CsrTotalMs, Store])
+    ;   true
+    ).
+
+apply_edge_store_hs(lmdb_cached, Opts, [lmdb_materialisation(cached) | Opts]).
+apply_edge_store_hs(lmdb_eager, Opts, [lmdb_materialisation(eager) | Opts]).
+apply_edge_store_hs(csr, Opts, Opts).
+apply_edge_store_hs(dual_csr, Opts, Opts).
+
+%% resolve_auto_lmdb_materialisation_hs(+Options0, -Options)
+%  Resolve lmdb_materialisation(auto) into eager/lazy/cached using
+%  the shared cost model. When not auto, pass through.
+%  Mirrors F#'s resolve_auto_lmdb_materialisation_fs/2.
+resolve_auto_lmdb_materialisation_hs(Options0, Options) :-
+    (   option(lmdb_materialisation(auto), Options0)
+    ->  compute_lmdb_materialisation_hs(Options0, Mode),
+        exclude(=(lmdb_materialisation(_)), Options0, Rest),
+        Options = [lmdb_materialisation(Mode) | Rest]
+    ;   Options = Options0
+    ).
+
+compute_lmdb_materialisation_hs(Options, Mode) :-
+    option(fact_count(F), Options, 0),
+    option(demand_set_estimate(D), Options, F),
+    option(expected_query_count(NQ), Options, 1),
+    option(workload_segregated(WS), Options, false),
+    option(working_set_fraction(WSF), Options, 0.05),
+    EdgeBytes is D * 50,
+    (   option(memory_budget(B), Options)
+    ->  true
+    ;   catch(read_mem_available_bytes(B), _, B = 1_000_000_000)
+    ),
+    (   EdgeBytes > B
+    ->  (WS == true -> Mode = lazy ; Mode = cached)
+    ;   KKeys is integer(F * WSF),
+        option(cost_model_constants(Constants), Options, []),
+        recommend_access_pattern(KKeys, EdgeBytes, B, Constants, Pattern),
+        (   Pattern = sort
+        ->  (NQ >= 10, F =< 100_000 -> Mode = eager ; Mode = cached)
+        ;   (EdgeBytes > B -> Mode = cached ; Mode = eager)
+        )
+    ),
+    (   option(materialisation_verbose(true), Options)
+    ->  format(user_error,
+               '[WAM-Haskell] lmdb_materialisation(auto): F=~w D=~w B=~w NQ=~w WS=~w -> ~w~n',
+               [F, D, B, NQ, WS, Mode])
+    ;   true
+    ).
+
 %% resolve_haskell_cost_options(+Options0, -Options)
 %  Composed resolver chain: runs all auto-resolvers in sequence.
 %  Mirrors F#'s resolve_fsharp_cost_options/2.
 resolve_haskell_cost_options(Options0, Options) :-
-    resolve_auto_use_lmdb(Options0, Options1),
-    resolve_auto_cache_strategy(Options1, Options2),
-    resolve_auto_lmdb_cache_mode(Options2, Options3),
-    resolve_auto_csr_index_backend_hs(Options3, Options).
+    resolve_auto_edge_store_hs(Options0, Options1),
+    resolve_auto_use_lmdb(Options1, Options2),
+    resolve_auto_cache_strategy(Options2, Options3),
+    resolve_auto_lmdb_materialisation_hs(Options3, Options4),
+    resolve_auto_lmdb_cache_mode(Options4, Options5),
+    resolve_auto_csr_index_backend_hs(Options5, Options).
 
 %% resolve_demand_filter_spec(+Options, -SpecHs)
 %  Pick the DemandFilterSpec literal to emit into Main.hs.
