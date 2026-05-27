@@ -1034,6 +1034,52 @@ test(runtime_output_canonical_helpers) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+test(runtime_format_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_format_stdout_demo),
+			retractall(user:py_format_dest_demo),
+			assertz((user:py_format_stdout_demo :-
+				format('plain~n'),
+				format('X=~w D=~d A=~a S=~s T=~~~n', [foo(1), 42, hello, [111, 107]]))),
+			assertz((user:py_format_dest_demo :-
+				format(atom(A), 'n=~d', [42]),
+				A = 'n=42',
+				format(string(S), 's=~a', [hello]),
+				S = 's=hello',
+				format(codes(C), 'ab', []),
+				C = [97, 98])),
+			user:python_parser_tmp_dir('tmp_wam_python_format_helpers', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project(
+				[user:py_format_stdout_demo/0, user:py_format_dest_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import io, sys",
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"old_stdout = sys.stdout",
+				"capture = io.StringIO()",
+				"sys.stdout = capture",
+				"try:",
+				"    ok_stdout = wr.run_wam(code, labels, 'py_format_stdout_demo/0', state)",
+				"finally:",
+				"    sys.stdout = old_stdout",
+				"state2 = wr.WamState()",
+				"ok_dest = wr.run_wam(code, labels, 'py_format_dest_demo/0', state2)",
+				"print(repr(capture.getvalue()))",
+				"print(ok_stdout)",
+				"print(ok_dest)"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "plain\\nX=foo(1) D=42 A=hello S=ok T=~\\n")),
+			once(sub_string(Output, _, _, _, "True\nTrue"))
+		),
+		(   retractall(user:py_format_stdout_demo),
+			retractall(user:py_format_dest_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_stream_char_io_reads_and_writes_files) :-
 	setup_call_cleanup(
 		(   retractall(user:py_stream_char_io_demo),
@@ -1859,6 +1905,9 @@ test(static_runtime_has_lua_baseline_builtins, [nondet]) :-
 		"display/1",
 		"tab/1",
 		"write_canonical/1",
+		"format/1",
+		"format/2",
+		"format/3",
 		"put_char/1",
 		"put_char/2",
 		"put_code/1",
@@ -1882,10 +1931,15 @@ test(static_runtime_naf_uses_isolated_goal_execution, [nondet]) :-
 
 test(static_runtime_io_emits_output, [nondet]) :-
 	runtime_py_path(P), read_file_to_string(P, Content, []),
-	sub_string(Content, _, _, _, "print(_format_value(get_reg(state, 1), state), end='')"),
+	sub_string(Content, _, _, _, "def _emit_output"),
+	sub_string(Content, _, _, _, "return _emit_output(_format_value(get_reg(state, 1), state))"),
 	sub_string(Content, _, _, _, "def _format_canonical_value"),
 	sub_string(Content, _, _, _, "'write_canonical/1'"),
 	sub_string(Content, _, _, _, "'tab/1'"),
+	sub_string(Content, _, _, _, "def _execute_format_builtin"),
+	sub_string(Content, _, _, _, "'format/1'"),
+	sub_string(Content, _, _, _, "'format/2'"),
+	sub_string(Content, _, _, _, "'format/3'"),
 	sub_string(Content, _, _, _, "def _execute_put_char"),
 	sub_string(Content, _, _, _, "def _execute_put_code"),
 	sub_string(Content, _, _, _, "def _execute_read_line_to_string"),
@@ -1908,7 +1962,7 @@ test(static_runtime_io_emits_output, [nondet]) :-
 	sub_string(Content, _, _, _, "def _term_ground"),
 	sub_string(Content, _, _, _, "'atomic/1'"),
 	sub_string(Content, _, _, _, "'\\\\==/2'"),
-	sub_string(Content, _, _, _, "print()").
+	sub_string(Content, _, _, _, "return _emit_output('\\n')").
 
 :- end_tests(wam_python_builtin_parity_guard).
 

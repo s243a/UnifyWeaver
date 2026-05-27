@@ -1322,6 +1322,121 @@ def _format_canonical_value(val: 'Term', state: WamState) -> str:
     return str(val)
 
 
+def _emit_output(text: str, stream: Any = None) -> bool:
+    out = sys.stdout if stream is None else stream
+    try:
+        out.write(text)
+        out.flush()
+    except OSError:
+        return False
+    return True
+
+
+def _format_string_text(term: 'Term', state: WamState) -> Optional[str]:
+    term = deref(term, state)
+    if isinstance(term, Atom):
+        return _runtime_atom_text(term.name)
+    if isinstance(term, Int):
+        return str(term.n)
+    return None
+
+
+def _format_s_arg(term: 'Term', state: WamState) -> Optional[str]:
+    term = deref(term, state)
+    if isinstance(term, Atom):
+        return _runtime_atom_text(term.name)
+    codes = _codes_from_list(term, state)
+    if codes is not None:
+        try:
+            return ''.join(chr(code) for code in codes)
+        except (OverflowError, ValueError):
+            return None
+    return _format_value(term, state)
+
+
+def _render_format_buffer(fmt: str, args: List['Term'], state: WamState) -> Optional[str]:
+    out: List[str] = []
+    arg_index = 0
+    i = 0
+    while i < len(fmt):
+        ch = fmt[i]
+        if ch != '~' or i + 1 >= len(fmt):
+            out.append(ch)
+            i += 1
+            continue
+        i += 1
+        directive = fmt[i]
+        if directive == 'n':
+            out.append('\n')
+        elif directive == 't':
+            out.append('\t')
+        elif directive == '~':
+            out.append('~')
+        elif directive in ('w', 'p'):
+            if arg_index >= len(args):
+                return None
+            out.append(_format_value(args[arg_index], state))
+            arg_index += 1
+        elif directive == 'a':
+            if arg_index >= len(args):
+                return None
+            value = deref(args[arg_index], state)
+            out.append(_runtime_atom_text(value.name) if isinstance(value, Atom) else _format_value(value, state))
+            arg_index += 1
+        elif directive == 'd':
+            if arg_index >= len(args):
+                return None
+            value = deref(args[arg_index], state)
+            out.append(str(value.n) if isinstance(value, Int) else _format_value(value, state))
+            arg_index += 1
+        elif directive == 's':
+            if arg_index >= len(args):
+                return None
+            text = _format_s_arg(args[arg_index], state)
+            if text is None:
+                return None
+            out.append(text)
+            arg_index += 1
+        else:
+            out.append('~')
+            out.append(directive)
+        i += 1
+    return ''.join(out)
+
+
+def _execute_format_builtin(arity: int, state: WamState) -> bool:
+    fmt_reg = 2 if arity == 3 else 1
+    fmt = _format_string_text(get_reg(state, fmt_reg), state)
+    if fmt is None:
+        return False
+    if arity == 1:
+        args: List[Term] = []
+    else:
+        args = _term_to_list(get_reg(state, 3 if arity == 3 else 2), state)
+        if args is None:
+            return False
+    rendered = _render_format_buffer(fmt, args, state)
+    if rendered is None:
+        return False
+    if arity != 3:
+        return _emit_output(rendered)
+    dest = deref(get_reg(state, 1), state)
+    if isinstance(dest, Atom):
+        name = _runtime_atom_text(dest.name)
+        if name == 'user_output':
+            return _emit_output(rendered)
+        if name == 'user_error':
+            return _emit_output(rendered, sys.stderr)
+        return False
+    if isinstance(dest, Compound) and len(dest.args) == 1:
+        functor = _display_functor_name(dest.functor, len(dest.args))
+        if functor in ('atom', 'string'):
+            return unify(dest.args[0], make_atom(rendered), state)
+        if functor == 'codes':
+            return unify(dest.args[0], _list_from_codes([ord(ch) for ch in rendered]), state)
+    return False
+
+
 def _deep_copy_term(val: 'Term', var_map: Dict[int, Var], state: WamState) -> 'Term':
     """Copy a term, giving each source variable one fresh target variable."""
     val = deref(val, state)
@@ -2308,23 +2423,20 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         target = get_reg(state, 2)
         return unify(target, _deep_copy_term(original, {}, state), state)
     if builtin in ('write/1', 'display/1', 'print/1'):
-        print(_format_value(get_reg(state, 1), state), end='')
-        return True
+        return _emit_output(_format_value(get_reg(state, 1), state))
     if builtin in ('write_canonical/1',):
-        print(_format_canonical_value(get_reg(state, 1), state), end='')
-        return True
+        return _emit_output(_format_canonical_value(get_reg(state, 1), state))
     if builtin in ('writeln/1',):
-        print(_format_value(get_reg(state, 1), state))
-        return True
+        return _emit_output(_format_value(get_reg(state, 1), state) + '\n')
     if builtin in ('tab/1',):
         n = deref(get_reg(state, 1), state)
         if not isinstance(n, Int) or n.n < 0:
             return False
-        print(' ' * n.n, end='')
-        return True
+        return _emit_output(' ' * n.n)
+    if builtin in ('format/1', 'format/2', 'format/3'):
+        return _execute_format_builtin(arity, state)
     if builtin in ('nl/0', 'nl'):
-        print()
-        return True
+        return _emit_output('\n')
     return False
 
 

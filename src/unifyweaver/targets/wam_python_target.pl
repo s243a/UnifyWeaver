@@ -753,6 +753,8 @@ compile_execute_builtin_to_python(Code) :-
                 return False
             print(\" \" * d.n, end=\"\")
             return True
+        if op == \"format\" and arity in (1, 2, 3):
+            return _execute_format_builtin(self, arity)
         if op == \"nl\" and arity == 0:
             print()
             return True
@@ -873,6 +875,115 @@ def _format_list(val, formatter):
         return \", \".join(items)
     items.append(\"|\" + formatter(current))
     return \", \".join(items)
+
+def _legacy_term_to_list(val):
+    items = []
+    current = val
+    while isinstance(current, Var) and current.ref is not None:
+        current = current.ref
+    while isinstance(current, Compound) and current.functor == \".\" and len(current.args) == 2:
+        head = current.args[0]
+        while isinstance(head, Var) and head.ref is not None:
+            head = head.ref
+        items.append(head)
+        current = current.args[1]
+        while isinstance(current, Var) and current.ref is not None:
+            current = current.ref
+    if isinstance(current, Atom) and current.name == \"[]\":
+        return items
+    return None
+
+def _legacy_list_from_codes(codes):
+    result = Atom(\"[]\")
+    for code in reversed(codes):
+        result = Compound(\".\", [Int(code), result])
+    return result
+
+def _legacy_render_format(fmt, args):
+    out = []
+    ai = 0
+    i = 0
+    while i < len(fmt):
+        ch = fmt[i]
+        if ch != \"~\" or i + 1 >= len(fmt):
+            out.append(ch)
+            i += 1
+            continue
+        i += 1
+        d = fmt[i]
+        if d == \"n\":
+            out.append(\"\\n\")
+        elif d == \"t\":
+            out.append(\"\\t\")
+        elif d == \"~\":
+            out.append(\"~\")
+        elif d in (\"w\", \"p\"):
+            if ai >= len(args):
+                return None
+            out.append(_format_value(args[ai]))
+            ai += 1
+        elif d == \"a\":
+            if ai >= len(args):
+                return None
+            v = args[ai]
+            out.append(v.name if isinstance(v, Atom) else _format_value(v))
+            ai += 1
+        elif d == \"d\":
+            if ai >= len(args):
+                return None
+            v = args[ai]
+            out.append(str(v.n) if isinstance(v, Int) else _format_value(v))
+            ai += 1
+        elif d == \"s\":
+            if ai >= len(args):
+                return None
+            v = args[ai]
+            if isinstance(v, Atom):
+                out.append(v.name)
+            else:
+                codes = _legacy_term_to_list(v)
+                if codes is not None and all(isinstance(c, Int) for c in codes):
+                    out.append(\"\".join(chr(c.n) for c in codes))
+                else:
+                    out.append(_format_value(v))
+            ai += 1
+        else:
+            out.append(\"~\" + d)
+        i += 1
+    return \"\".join(out)
+
+def _execute_format_builtin(state, arity):
+    fmt = deref(get_reg(state, 2 if arity == 3 else 1), state)
+    if isinstance(fmt, Atom):
+        fmt_text = fmt.name
+    elif isinstance(fmt, Int):
+        fmt_text = str(fmt.n)
+    else:
+        return False
+    args = [] if arity == 1 else _legacy_term_to_list(deref(get_reg(state, 3 if arity == 3 else 2), state))
+    if args is None:
+        return False
+    rendered = _legacy_render_format(fmt_text, args)
+    if rendered is None:
+        return False
+    if arity != 3:
+        print(rendered, end=\"\")
+        return True
+    dest = deref(get_reg(state, 1), state)
+    if isinstance(dest, Atom):
+        if dest.name == \"user_output\":
+            print(rendered, end=\"\")
+            return True
+        if dest.name == \"user_error\":
+            print(rendered, end=\"\", file=__import__(\"sys\").stderr)
+            return True
+        return False
+    if isinstance(dest, Compound) and len(dest.args) == 1:
+        if dest.functor in (\"atom\", \"atom/1\", \"string\", \"string/1\"):
+            return unify(dest.args[0], Atom(rendered), state)
+        if dest.functor in (\"codes\", \"codes/1\"):
+            return unify(dest.args[0], _legacy_list_from_codes([ord(ch) for ch in rendered]), state)
+    return False
 
 def _deep_copy_term(val, var_map, state):
     """Deep copy a term, renaming variables."""
