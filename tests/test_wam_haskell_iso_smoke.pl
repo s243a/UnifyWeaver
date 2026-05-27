@@ -58,7 +58,7 @@ test_iso_key_tables_registered :-
 test_iso_rewrite_is_to_iso :-
     Test = 'Phase 5: ISO rewrite is/2 -> is_iso/2 in ISO mode',
     Config = iso_config(true, []),
-    iso_errors_rewrite_text_hs(Config, test/0,
+    wam_haskell_target:iso_errors_rewrite_text(Config, test/0,
         "    builtin_call is/2, 2\n    proceed\n",
         Rewritten),
     (   sub_string(Rewritten, _, _, _, "is_iso/2")
@@ -69,7 +69,7 @@ test_iso_rewrite_is_to_iso :-
 test_iso_rewrite_is_to_lax :-
     Test = 'Phase 5: ISO rewrite is/2 -> is_lax/2 in lax mode',
     Config = iso_config(false, []),
-    iso_errors_rewrite_text_hs(Config, test/0,
+    wam_haskell_target:iso_errors_rewrite_text(Config, test/0,
         "    builtin_call is/2, 2\n    proceed\n",
         Rewritten),
     (   sub_string(Rewritten, _, _, _, "is_lax/2")
@@ -80,7 +80,7 @@ test_iso_rewrite_is_to_lax :-
 test_iso_rewrite_explicit_survives :-
     Test = 'Phase 5: explicit is_iso/2 survives lax mode rewrite',
     Config = iso_config(false, []),
-    iso_errors_rewrite_text_hs(Config, test/0,
+    wam_haskell_target:iso_errors_rewrite_text(Config, test/0,
         "    builtin_call is_iso/2, 2\n    proceed\n",
         Rewritten),
     (   sub_string(Rewritten, _, _, _, "is_iso/2")
@@ -91,7 +91,7 @@ test_iso_rewrite_explicit_survives :-
 test_iso_rewrite_comparison_sweep :-
     Test = 'Phase 5: ISO rewrite all 6 comparison ops',
     Config = iso_config(true, []),
-    iso_errors_rewrite_text_hs(Config, test/0,
+    wam_haskell_target:iso_errors_rewrite_text(Config, test/0,
         "    builtin_call </2, 2\n    builtin_call >/2, 2\n    builtin_call >=/2, 2\n    builtin_call =</2, 2\n    builtin_call =:=/2, 2\n    builtin_call =\\=/2, 2\n    proceed\n",
         Rewritten),
     (   sub_string(Rewritten, _, _, _, "<_iso/2"),

@@ -6061,11 +6061,15 @@ iso_errors:iso_errors_default_to_lax("succ/2", "succ_lax/2").
 %  Mirrors the F# and Python iso_errors_rewrite_text/4.
 iso_errors_rewrite_text(Config, PI, WamText, RewrittenText) :-
     iso_errors_mode_for(Config, PI, Mode),
-    (   Mode == default
+    (   Mode == true  -> RMode = iso
+    ;   Mode == false -> RMode = lax
+    ;   RMode = default
+    ),
+    (   RMode == default
     ->  RewrittenText = WamText
     ;   atom_string(WamText, WamStr),
         split_string(WamStr, "\n", "", Lines),
-        maplist(iso_errors_rewrite_line(Mode), Lines, NewLines),
+        maplist(iso_errors_rewrite_line(RMode), Lines, NewLines),
         atomic_list_concat(NewLines, "\n", RewrittenText)
     ).
 
@@ -6075,9 +6079,16 @@ iso_errors_rewrite_line(Mode, Line, NewLine) :-
     ->  sub_string(Line, 0, Before, _, Prefix),
         Offset is Before + 13,
         sub_string(Line, Offset, _, 0, Rest),
-        split_string(Rest, " ", "", [Key|Tail]),
+        split_string(Rest, " ", "", [KeyRaw|Tail]),
+        % Strip trailing comma from key token (e.g. "is/2," -> "is/2")
+        (   string_concat(Key, ",", KeyRaw) -> true ; Key = KeyRaw ),
         iso_errors_rewrite_key(Mode, Key, NewKey),
-        atomic_list_concat([NewKey|Tail], " ", NewRest),
+        % Reattach comma if it was there
+        (   string_concat(_, ",", KeyRaw)
+        ->  string_concat(NewKey, ",", NewKeyTok)
+        ;   NewKeyTok = NewKey
+        ),
+        atomic_list_concat([NewKeyTok|Tail], " ", NewRest),
         atom_concat(Prefix, "builtin_call ", P2),
         atom_concat(P2, NewRest, NewLine)
     ;   NewLine = Line
