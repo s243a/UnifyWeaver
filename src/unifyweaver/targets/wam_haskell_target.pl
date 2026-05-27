@@ -67,7 +67,8 @@
 :- use_module('../core/statistics',
              [select_cache_mode/2]).
 :- use_module('../core/cost_model',
-             [recommend_access_pattern/5, read_mem_available_bytes/1]).
+             [recommend_access_pattern/5, read_mem_available_bytes/1,
+              resolve_csr_index_backend/2]).
 :- use_module('../core/algorithm_manifest',
              [load_algorithm_manifest/2]).
 :- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
@@ -3529,17 +3530,9 @@ write_wam_haskell_project(Predicates, Options0, ProjectDir) :-
     % BEFORE any downstream `option(use_lmdb(true), ...)` checks fire.
     % Auto consults ghc-pkg for the lmdb package + fact_count threshold;
     % see resolve_auto_use_lmdb/2.
-    resolve_auto_use_lmdb(OptionsM, Options1),
-    % Phase 2c: resolve cache_strategy(auto) into a concrete
-    % demand_bfs_mode/1 via cost_model:recommend_access_pattern/5.
-    % No-op when cache_strategy(auto) is absent.
-    resolve_auto_cache_strategy(Options1, Options2),
-    % Phase 2c+: resolve lmdb_cache_mode(auto) into a concrete tier
-    % (none/per_hec/sharded/two_level) when workload_locality/1 is
-    % set. Composes with the cache_strategy decision above: in_memory
-    % → none. No-op when workload_locality is absent (the in-place
-    % auto resolver in generate_lmdb_functions/2 then takes over).
-    resolve_auto_lmdb_cache_mode(Options2, Options),
+    % Resolve all cost-based auto options (use_lmdb, cache_strategy,
+    % lmdb_cache_mode, csr_index_backend) via composed chain.
+    resolve_haskell_cost_options(OptionsM, Options),
 
     % Initialize the compile-time atom intern table with well-known atoms
     init_atom_intern_table,
@@ -3567,7 +3560,15 @@ write_wam_haskell_project(Predicates, Options0, ProjectDir) :-
     (   option(no_kernels(true), Options)
     ->  DetectedKernels = [],
         format(user_error, '[WAM-Haskell] kernel detection suppressed~n', [])
-    ;   detect_kernels(InternalPreds, DetectedKernels),
+    ;   detect_kernels(InternalPreds, DetectedKernels0),
+        % Upgrade category_ancestor to bidirectional when CSR child
+        % lookup is available (csr_path provides category_child).
+        (   option(kernel_mode(bidirectional), Options),
+            option(csr_path(_), Options)
+        ->  maplist(maybe_upgrade_bidirectional, DetectedKernels0, DetectedKernels),
+            format(user_error, '[WAM-Haskell] bidirectional kernel upgrade enabled~n', [])
+        ;   DetectedKernels = DetectedKernels0
+        ),
         (   DetectedKernels \= []
         ->  pairs_keys(DetectedKernels, DetectedKeys),
             format(user_error, '[WAM-Haskell] detected kernels: ~w~n', [DetectedKeys])
@@ -4303,6 +4304,38 @@ cache_tier_memory_budget_short(Options, FloorBytes, RFree) :-
     ;   catch(read_mem_available_bytes(RFree), _, RFree = 1_000_000_000)
     ),
     RFree < FloorBytes.
+
+%% =====================================================================
+%% CSR auto-resolution and bidirectional kernel upgrade
+%% =====================================================================
+
+%% maybe_upgrade_bidirectional(+KV0, -KV)
+%  Upgrade a category_ancestor kernel to bidirectional_ancestor.
+%  Only applied when kernel_mode(bidirectional) + csr_path are both set.
+maybe_upgrade_bidirectional(Key-recursive_kernel(category_ancestor, PI, Config),
+                            Key-recursive_kernel(bidirectional_ancestor, PI, Config)) :- !.
+maybe_upgrade_bidirectional(KV, KV).
+
+%% resolve_auto_csr_index_backend_hs(+Options0, -Options)
+%  Resolve csr_index_backend(auto) by delegating to the shared
+%  cost rule in cost_model.pl.
+resolve_auto_csr_index_backend_hs(Options0, Options) :-
+    (   option(csr_path(_), Options0),
+        option(csr_index_backend(auto), Options0)
+    ->  resolve_csr_index_backend(Options0, Backend),
+        exclude(=(csr_index_backend(_)), Options0, Rest),
+        Options = [csr_index_backend(Backend) | Rest]
+    ;   Options = Options0
+    ).
+
+%% resolve_haskell_cost_options(+Options0, -Options)
+%  Composed resolver chain: runs all auto-resolvers in sequence.
+%  Mirrors F#'s resolve_fsharp_cost_options/2.
+resolve_haskell_cost_options(Options0, Options) :-
+    resolve_auto_use_lmdb(Options0, Options1),
+    resolve_auto_cache_strategy(Options1, Options2),
+    resolve_auto_lmdb_cache_mode(Options2, Options3),
+    resolve_auto_csr_index_backend_hs(Options3, Options).
 
 %% resolve_demand_filter_spec(+Options, -SpecHs)
 %  Pick the DemandFilterSpec literal to emit into Main.hs.
