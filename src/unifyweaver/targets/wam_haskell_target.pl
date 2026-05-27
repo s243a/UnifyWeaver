@@ -268,10 +268,7 @@ wam_haskell_indicator_in_list(_Mod:Pred/Arity, HotPreds) :-
 
 % Compile WAM code on demand for the lowerability check and emission.
 wam_haskell_predicate_wamcode(PredIndicator, WamCode) :-
-    (   PredIndicator = _Module:Pred/Arity -> true
-    ;   PredIndicator = Pred/Arity
-    ),
-    wam_target:compile_predicate_to_wam(Pred/Arity, [], WamCode).
+    wam_target:compile_predicate_to_wam(PredIndicator, [], WamCode).
 
 % ============================================================================
 % PHASE F1: FACT PREDICATE CLASSIFICATION
