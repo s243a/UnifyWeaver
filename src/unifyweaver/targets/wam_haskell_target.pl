@@ -43,7 +43,14 @@
     haskell_fact_list_name/2,            % +PredName, -ListName
     init_atom_intern_table/0,            % reinitialize atom intern table
     % E2E wiring
-    generate_inline_facts_wiring/2       % +InlineDefs, -Code
+    generate_inline_facts_wiring/2,      % +InlineDefs, -Code
+    % ISO error config + rewrite (parity with F#/C++/Elixir/Python)
+    iso_errors_resolve_options/2,        % +Options, -Config
+    iso_errors_load_config/2,            % +File, -Config
+    iso_errors_mode_for/3,               % +Config, +PI, -Mode
+    iso_errors_warn_multi_module/2,      % +Config, +Predicates
+    iso_errors_rewrite/4,                % +Config, +PI, +Items0, -Items
+    iso_errors_rewrite_text/4            % +Config, +PI, +WamText0, -WamText
 ]).
 
 :- use_module(library(lists)).
@@ -66,6 +73,15 @@
 :- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
 :- use_module('../core/cost_function',
              [validate_cost_function/1, cost_function_with_defaults/2]).
+:- use_module('../core/iso_errors',
+              [ iso_errors_resolve_options/2,
+                iso_errors_load_config/2,
+                iso_errors_mode_for/3,
+                iso_errors_warn_multi_module/2,
+                iso_errors_rewrite/4,
+                iso_errors_audit_normalise_pi/2,
+                iso_errors_audit_walk/5
+              ]).
 
 % Phase 3: the real lowerability check and emission helpers live in the
 % wam_haskell_lowered_emitter module. We reexport so existing callers can
@@ -85,13 +101,26 @@
 init_atom_intern_table :-
     retractall(atom_intern_id(_, _)),
     retractall(atom_intern_next(_)),
-    % Reserve well-known atoms
+    % Reserve well-known atoms (0-4)
     assertz(atom_intern_id("true", 0)),
     assertz(atom_intern_id("fail", 1)),
     assertz(atom_intern_id("[]", 2)),
     assertz(atom_intern_id(".", 3)),
     assertz(atom_intern_id("", 4)),
-    assertz(atom_intern_next(5)).
+    % Reserve ISO error atoms (5-15). IDs MUST match the atomXxx constants
+    % in WamTypes.hs (atomError=5 .. atomUnknown=15).
+    assertz(atom_intern_id("error", 5)),
+    assertz(atom_intern_id("instantiation_error", 6)),
+    assertz(atom_intern_id("type_error", 7)),
+    assertz(atom_intern_id("domain_error", 8)),
+    assertz(atom_intern_id("evaluation_error", 9)),
+    assertz(atom_intern_id("evaluable", 10)),
+    assertz(atom_intern_id("integer", 11)),
+    assertz(atom_intern_id("not_less_than_zero", 12)),
+    assertz(atom_intern_id("zero_divisor", 13)),
+    assertz(atom_intern_id("/", 14)),
+    assertz(atom_intern_id("unknown", 15)),
+    assertz(atom_intern_next(16)).
 
 %% intern_atom(+AtomStr, -Id) is det.
 %  Assigns a stable integer ID to the given atom string. Idempotent.
@@ -1954,6 +1983,13 @@ step !ctx s (CallForeign pred _arity) =
 step !ctx s (CallFactStream pred _arity) =
   streamFacts ctx pred (s { wsCP = wsPC s + 1 })
 
+-- ISO meta-builtins emitted as Call by the WAM compiler.  These predicate
+-- names (catch/3, throw/1, is_iso/2, etc.) are not labelled predicates, so
+-- normal label lookup would fail.  Route through BuiltinCall dispatch.
+step !ctx s (Call pred arity) | isIsoMetaBuiltin pred =
+  let sc = s { wsCP = wsPC s + 1, wsCutBar = wsCPsLen s }
+  in step ctx sc (BuiltinCall pred arity)
+
 -- Call dispatch for non-foreign, non-resolved predicates. Foreign predicates
 -- are handled by CallForeign (resolved at compile time), so executeForeign
 -- is NOT checked here — no ambiguity between "unhandled" and "no solutions".
@@ -1978,6 +2014,14 @@ step !ctx s (JumpPc pc) = Just (s { wsPC = pc })
 
 -- ExecutePc: pre-resolved tail call (direct PC jump, no wsCP change)
 step !ctx s (ExecutePc pc) = Just (s { wsPC = pc })
+
+-- Execute ISO meta-builtin: tail-call dispatch through BuiltinCall, then
+-- convert the PC+1 advance to wsCP for proper tail-call return semantics.
+step !ctx s (Execute pred) | isIsoMetaBuiltin pred =
+  let arity = isoMetaBuiltinArity pred
+  in case step ctx s (BuiltinCall pred arity) of
+    Just sNext -> Just (sNext { wsPC = wsCP sNext })
+    Nothing -> Nothing
 
 -- Execute: tail call, like Call but without setting wsCP
 step !ctx s (Execute pred) =
@@ -2271,6 +2315,224 @@ step !ctx s (BuiltinCall ">/2" _) =
     (Just a, Just b) | a > b -> Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing
 
+-- =</2 lax comparison
+step !ctx s (BuiltinCall "=</2" _) =
+  let v1 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
+      v2 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
+  in case (v1, v2) of
+    (Just a, Just b) | a <= b -> Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
+-- >=/2 lax comparison
+step !ctx s (BuiltinCall ">=/2" _) =
+  let v1 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
+      v2 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
+  in case (v1, v2) of
+    (Just a, Just b) | a >= b -> Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
+-- =:=/2 lax arithmetic equality
+step !ctx s (BuiltinCall "=:=/2" _) =
+  let v1 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
+      v2 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
+  in case (v1, v2) of
+    (Just a, Just b) | abs (a - b) < 1e-15 -> Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
+-- =\\=/2 lax arithmetic inequality
+step !ctx s (BuiltinCall "=\\\\=/2" _) =
+  let v1 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
+      v2 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
+  in case (v1, v2) of
+    (Just a, Just b) | abs (a - b) >= 1e-15 -> Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
+-- is_lax/2 shares body with is/2 (silent failure on bad input)
+step !ctx s (BuiltinCall "is_lax/2" _) = step ctx s (BuiltinCall "is/2" 2)
+
+-- is_iso/2: arithmetic eval with ISO error throws on bad input.
+--   unbound var in RHS -> instantiation_error
+--   non-evaluable atom/functor -> type_error(evaluable, X/N)
+step !ctx s (BuiltinCall "is_iso/2" _) =
+  let expr = derefVar (wsBindings s) $ fromMaybe (Integer 0) (IM.lookup 2 (wsRegs s))
+  in if hasUnboundDeep (wsBindings s) expr
+     then throwIsoError s makeInstantiationError
+     else case evalArith (wcInternTable ctx) (wsBindings s) expr of
+       Nothing -> throwIsoError s (makeTypeError atomEvaluable (arithCulprit (wsBindings s) expr))
+       Just r ->
+         let lhs = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
+         in case lhs of
+           Just (Unbound vid) ->
+             let val = if fromIntegral (round r :: Int) == r then Integer (round r) else Float r
+             in Just (s { wsPC = wsPC s + 1
+                        , wsRegs = IM.insert 1 val (wsRegs s)
+                        , wsBindings = IM.insert vid val (wsBindings s)
+                        , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+                        , wsTrailLen = wsTrailLen s + 1 })
+           Just (Integer n) | fromIntegral n == r -> Just (s { wsPC = wsPC s + 1 })
+           _ -> Nothing
+
+-- ISO arithmetic comparisons: <_iso, >_iso, >=_iso, =<_iso, =:=_iso, =\\=_iso.
+-- Throws instantiation_error if either side has unbound vars, type_error(evaluable,...)
+-- if eval fails.
+step !ctx s instr@(BuiltinCall op _)
+  | op == "<_iso/2" || op == ">_iso/2" || op == ">=_iso/2"
+    || op == "=<_iso/2" || op == "=:=_iso/2" || op == "=\\\\=_iso/2" =
+  let a1 = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
+      a2 = derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s)
+      unboundA = case a1 of { Just v -> hasUnboundDeep (wsBindings s) v; Nothing -> True }
+      unboundB = case a2 of { Just v -> hasUnboundDeep (wsBindings s) v; Nothing -> True }
+  in if unboundA || unboundB
+     then throwIsoError s makeInstantiationError
+     else let r1 = a1 >>= evalArith (wcInternTable ctx) (wsBindings s)
+              r2 = a2 >>= evalArith (wcInternTable ctx) (wsBindings s)
+          in case (r1, r2) of
+            (Nothing, _) ->
+              let culprit = case a1 of { Just v -> arithCulprit (wsBindings s) v; Nothing -> makePredIndicator atomUnknown 0 }
+              in throwIsoError s (makeTypeError atomEvaluable culprit)
+            (_, Nothing) ->
+              let culprit = case a2 of { Just v -> arithCulprit (wsBindings s) v; Nothing -> makePredIndicator atomUnknown 0 }
+              in throwIsoError s (makeTypeError atomEvaluable culprit)
+            (Just a, Just b) ->
+              let ok = case op of
+                    "<_iso/2"    -> a < b
+                    ">_iso/2"    -> a > b
+                    ">=_iso/2"   -> a >= b
+                    "=<_iso/2"   -> a <= b
+                    "=:=_iso/2"  -> abs (a - b) < 1e-15
+                    "=\\\\=_iso/2" -> abs (a - b) >= 1e-15
+                    _            -> False
+              in if ok then Just (s { wsPC = wsPC s + 1 }) else Nothing
+
+-- Lax comparison variants: delegate to their default-form counterparts
+step !ctx s (BuiltinCall "<_lax/2" _) = step ctx s (BuiltinCall "</2" 2)
+step !ctx s (BuiltinCall ">_lax/2" _) = step ctx s (BuiltinCall ">/2" 2)
+step !ctx s (BuiltinCall ">=_lax/2" _) = step ctx s (BuiltinCall ">=/2" 2)
+step !ctx s (BuiltinCall "=<_lax/2" _) = step ctx s (BuiltinCall "=</2" 2)
+step !ctx s (BuiltinCall "=:=_lax/2" _) = step ctx s (BuiltinCall "=:=/2" 2)
+step !ctx s (BuiltinCall "=\\\\=_lax/2" _) = step ctx s (BuiltinCall "=\\\\=/2" 2)
+
+-- throw/1: deep-deref the term and raise WamException.
+step !ctx s (BuiltinCall "throw/1" _) =
+  case IM.lookup 1 (wsRegs s) of
+    Just v -> throw $ WamException (derefDeep (wsBindings s) (derefVar (wsBindings s) v))
+    Nothing -> throw $ WamException (Atom atomInstantiationError)
+
+-- catch/3: run goal, catch WamException, unify catcher, run recovery.
+-- Uses unsafePerformIO + try to bridge the pure step function with
+-- exception catching.
+step !ctx s (BuiltinCall "catch/3" _) =
+  let goalVal  = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
+      catcherTerm  = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 2 (wsRegs s))
+      recoveryTerm = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 3 (wsRegs s))
+      tbl = wcInternTable ctx
+      runGoalInChild gv =
+        let resolveGoal v = case v of
+              Atom aid ->
+                let goalKey = lookupAtom tbl aid ++ "/0"
+                in case Map.lookup goalKey (wcLabels ctx) of
+                  Just pc ->
+                    let child = s { wsPC = pc, wsRegs = IM.empty, wsCP = 0
+                                  , wsCutBar = 0 }
+                    in run ctx child
+                  Nothing -> step ctx (s { wsPC = 0 }) (BuiltinCall goalKey 0)
+              Str fnId args ->
+                let arity = length args
+                    dArgs = map (derefVar (wsBindings s)) args
+                    goalKey = lookupAtom tbl fnId ++ "/" ++ show arity
+                    childRegs = IM.fromList (zip [1..] dArgs)
+                    child = s { wsPC = 0, wsRegs = childRegs, wsCP = 0
+                              , wsCutBar = 0 }
+                in case Map.lookup goalKey (wcLabels ctx) of
+                  Just pc -> run ctx (child { wsPC = pc })
+                  Nothing -> step ctx child (BuiltinCall goalKey arity)
+              _ -> Nothing
+        in case gv of
+          Atom aid | lookupAtom tbl aid == "true" -> Just s
+          Atom aid | lookupAtom tbl aid == "fail" -> Nothing
+          _ -> resolveGoal gv
+      runRecovery unified =
+        let rv = derefVar (wsBindings unified) recoveryTerm
+        in case rv of
+          Atom aid | lookupAtom tbl aid == "true" -> Just unified
+          Atom aid | lookupAtom tbl aid == "fail" -> Nothing
+          Atom aid ->
+            let goalKey = lookupAtom tbl aid ++ "/0"
+            in case Map.lookup goalKey (wcLabels ctx) of
+              Just pc -> run ctx (unified { wsPC = pc, wsCP = 0, wsCutBar = 0 })
+              Nothing -> Nothing
+          Str fnId args ->
+            let arity = length args
+                dArgs = map (derefVar (wsBindings unified)) args
+                goalKey = lookupAtom tbl fnId ++ "/" ++ show arity
+                childRegs = IM.fromList (zip [1..] dArgs)
+            in case Map.lookup goalKey (wcLabels ctx) of
+              Just pc -> run ctx (unified { wsPC = pc, wsRegs = childRegs, wsCP = 0, wsCutBar = 0 })
+              Nothing -> Nothing
+          _ -> Nothing
+      tryUnify a b st = case (derefVar (wsBindings st) a, derefVar (wsBindings st) b) of
+        (Unbound va, Unbound vb) | va == vb -> Just st
+        (Unbound vid, v) -> Just (st { wsBindings = IM.insert vid v (wsBindings st)
+                                     , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings st)) : wsTrail st
+                                     , wsTrailLen = wsTrailLen st + 1 })
+        (v, Unbound vid) -> Just (st { wsBindings = IM.insert vid v (wsBindings st)
+                                     , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings st)) : wsTrail st
+                                     , wsTrailLen = wsTrailLen st + 1 })
+        (Atom a1, Atom a2) | a1 == a2 -> Just st
+        (Integer i1, Integer i2) | i1 == i2 -> Just st
+        (Float f1, Float f2) | f1 == f2 -> Just st
+        (Str f1 as1, Str f2 as2) | f1 == f2 && length as1 == length as2 ->
+          foldl (\\acc (x, y) -> acc >>= tryUnify x y) (Just st) (zip as1 as2)
+        (VList l1, VList l2) | length l1 == length l2 ->
+          foldl (\\acc (x, y) -> acc >>= tryUnify x y) (Just st) (zip l1 l2)
+        _ -> Nothing
+  in case goalVal of
+    Nothing -> Nothing
+    Just gv -> unsafePerformIO $ do
+      result <- try (evaluate (runGoalInChild gv)) :: IO (Either WamException (Maybe WamState))
+      case result of
+        Right res -> case res of
+          Just resultState -> return $ Just (resultState { wsRegs = wsRegs s, wsPC = wsPC s + 1 })
+          Nothing -> return Nothing
+        Left (WamException thrown) ->
+          case tryUnify catcherTerm thrown s of
+            Just unified -> case runRecovery unified of
+              Just _ -> return $ Just (unified { wsPC = wsPC s + 1 })
+              Nothing -> return Nothing
+            Nothing -> throw (WamException thrown)
+
+-- succ/2 + succ_lax/2: bidirectional successor (lax semantics).
+-- X bound non-negative -> Y=X+1; Y bound positive -> X=Y-1; else fail.
+step !ctx s (BuiltinCall "succ/2" _) = succLax s
+step !ctx s (BuiltinCall "succ_lax/2" _) = succLax s
+
+-- succ_iso/2: bidirectional successor with ISO error throws.
+step !ctx s (BuiltinCall "succ_iso/2" _) =
+  let a = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
+      b = derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s)
+      aUnbound = case a of { Just (Unbound _) -> True; Nothing -> True; _ -> False }
+      bUnbound = case b of { Just (Unbound _) -> True; Nothing -> True; _ -> False }
+      checkType v = case v of { Integer _ -> (); _ -> throwIsoError s (makeTypeError atomIntegerTy v) }
+      bindReg reg value =
+        case derefVar (wsBindings s) <$> IM.lookup reg (wsRegs s) of
+          Just (Unbound vid) ->
+            Just (s { wsPC = wsPC s + 1
+                    , wsRegs = IM.insert reg value (wsRegs s)
+                    , wsBindings = IM.insert vid value (wsBindings s)
+                    , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+                    , wsTrailLen = wsTrailLen s + 1 })
+          Just bound | bound == value -> Just (s { wsPC = wsPC s + 1 })
+          _ -> Nothing
+  in if aUnbound && bUnbound
+     then throwIsoError s makeInstantiationError
+     else case a of
+       Just v | not aUnbound -> checkType v `seq` case b of
+         Just w | not bUnbound -> checkType w `seq` succIsoBody a b bindReg s
+         _ -> succIsoBody a b bindReg s
+       _ -> case b of
+         Just w | not bUnbound -> checkType w `seq` succIsoBody a b bindReg s
+         _ -> succIsoBody a b bindReg s
+
 -- member/2 builtin: A1=Elem, A2=List. Creates choice points for backtracking.
 step !ctx s (BuiltinCall "member/2" _) =
   let elem_ = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 1 (wsRegs s))
@@ -2544,7 +2806,40 @@ step !_ctx s (BuiltinCall "copy_term/2" _) =
     Nothing -> Nothing
 
 -- Fallback for unhandled instructions
-step _ _ _ = Nothing'.
+step _ _ _ = Nothing
+
+-- | Lax succ helper: X>=0 -> Y=X+1; Y>0 -> X=Y-1; else fail.
+succLax :: WamState -> Maybe WamState
+succLax s =
+  let a = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
+      b = derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s)
+      bindReg reg value =
+        case derefVar (wsBindings s) <$> IM.lookup reg (wsRegs s) of
+          Just (Unbound vid) ->
+            Just (s { wsPC = wsPC s + 1
+                    , wsRegs = IM.insert reg value (wsRegs s)
+                    , wsBindings = IM.insert vid value (wsBindings s)
+                    , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+                    , wsTrailLen = wsTrailLen s + 1 })
+          Just bound | bound == value -> Just (s { wsPC = wsPC s + 1 })
+          _ -> Nothing
+  in case (a, b) of
+    (Just (Integer n), _) | n >= 0 -> bindReg 2 (Integer (n + 1))
+    (_, Just (Integer m)) | m > 0  -> bindReg 1 (Integer (m - 1))
+    _ -> Nothing
+
+-- | ISO succ body: dispatch after type/instantiation checks passed.
+succIsoBody :: Maybe Value -> Maybe Value -> (Int -> Value -> Maybe WamState) -> WamState -> Maybe WamState
+succIsoBody a b bindReg s = case (a, b) of
+  (Just (Integer n), _) | n < 0 ->
+    throwIsoError s (makeTypeError atomNotLessThanZero (Integer n))
+  (_, Just (Integer m)) | m <= 0 ->
+    throwIsoError s (makeDomainError atomNotLessThanZero (Integer m))
+  (Just (Integer n), _) -> bindReg 2 (Integer (n + 1))
+  (_, Just (Integer m)) -> bindReg 1 (Integer (m - 1))
+  _ -> Nothing
+
+'.
 
 run_loop_haskell(Code) :-
     Code = '-- | Main execution loop. Runs until halt (pc=0) or failure.
@@ -4130,7 +4425,7 @@ import Control.DeepSeq (NFData(..), deepseq)
 -- Phase 4.4: race-to-cancel for parallel negation. async/waitAny
 -- let us cancel remaining branches once one succeeds.
 import Control.Concurrent.Async (async, cancel, waitAny)
-import Control.Exception (evaluate)
+import Control.Exception (Exception, SomeException, evaluate, throw, try)
 import System.IO.Unsafe (unsafePerformIO)
 -- Phase 3 (mutable registers): ST monad + STArray for O(1) register access.
 import Control.Monad.ST.Strict (ST, runST)
@@ -4157,6 +4452,66 @@ derefVar bindings (Unbound vid) =
     Just val -> derefVar bindings val
     Nothing  -> Unbound vid
 derefVar _ v = v
+
+-- | Deep-dereference a value through bindings (resolves all nested Unbounds).
+derefDeep :: IM.IntMap Value -> Value -> Value
+derefDeep bindings v = case derefVar bindings v of
+  Str fn args -> Str fn (map (derefDeep bindings) args)
+  VList items -> VList (map (derefDeep bindings) items)
+  other -> other
+
+-- | Check if a value contains any unbound variables after dereferencing.
+hasUnboundDeep :: IM.IntMap Value -> Value -> Bool
+hasUnboundDeep bindings v = case derefVar bindings v of
+  Unbound _ -> True
+  Str _ args -> any (hasUnboundDeep bindings) args
+  VList items -> any (hasUnboundDeep bindings) items
+  _ -> False
+
+-- | ISO error term constructors.
+makeInstantiationError :: Value
+makeInstantiationError = Atom atomInstantiationError
+
+makeTypeError :: Int -> Value -> Value
+makeTypeError expected culprit = Str atomTypeError [Atom expected, culprit]
+
+makeDomainError :: Int -> Value -> Value
+makeDomainError domain culprit = Str atomDomainError [Atom domain, culprit]
+
+makeEvaluationError :: Int -> Value
+makeEvaluationError kind = Str atomEvaluationError [Atom kind]
+
+makePredIndicator :: Int -> Int -> Value
+makePredIndicator nameId arity = Str atomSlash [Atom nameId, Integer arity]
+
+-- | Throw a wrapped ISO error: error(ErrorTerm, _Context).
+throwIsoError :: WamState -> Value -> a
+throwIsoError s errTerm = throw $ WamException $
+  Str atomError [derefDeep (wsBindings s) errTerm, Unbound (wsVarCounter s)]
+
+-- | Build the Name/Arity culprit for type_error(evaluable, ...).
+arithCulprit :: IM.IntMap Value -> Value -> Value
+arithCulprit bindings expr = case derefVar bindings expr of
+  Atom aid -> makePredIndicator aid 0
+  Str fn args -> makePredIndicator fn (length args)
+  _ -> makePredIndicator atomUnknown 0
+
+-- | True for predicate names that are ISO meta-builtins routed through BuiltinCall.
+isIsoMetaBuiltin :: String -> Bool
+isIsoMetaBuiltin pred = case pred of
+  "catch/3" -> True; "throw/1" -> True
+  "is_iso/2" -> True; "is_lax/2" -> True
+  "<_iso/2" -> True; ">_iso/2" -> True; ">=_iso/2" -> True; "=<_iso/2" -> True
+  "=:=_iso/2" -> True; "=\\\\=_iso/2" -> True
+  "<_lax/2" -> True; ">_lax/2" -> True; ">=_lax/2" -> True; "=<_lax/2" -> True
+  "=:=_lax/2" -> True; "=\\\\=_lax/2" -> True
+  "succ/2" -> True; "succ_iso/2" -> True; "succ_lax/2" -> True
+  _ -> False
+
+-- | Arity of an ISO meta-builtin.
+isoMetaBuiltinArity :: String -> Int
+isoMetaBuiltinArity pred = case pred of
+  "throw/1" -> 1; "catch/3" -> 3; _ -> 2
 
 -- | Evaluate arithmetic expression. InternTable needed for reverse
 -- lookup of atom strings (numeric atom parsing, operator names).
@@ -4396,6 +4751,9 @@ import Data.Array (Array, listArray, (!), bounds)
 -- Phase 4.2: NFData is needed for parMap rdeepseq to fully evaluate
 -- each forked branch''s contribution before the merge step.
 import Control.DeepSeq (NFData(..))
+-- ISO error handling: WamException is defined here so both WamTypes
+-- and WamRuntime can reference it.
+import Control.Exception (Exception)
 
 -- | Core value type. Atoms and Str functor names are interned as Ints
 -- for O(1) equality. Use lookupAtom/internAtom via the InternTable in
@@ -4446,6 +4804,25 @@ atomFail  = 1
 atomNil   = 2   -- "[]"
 atomDot   = 3   -- "."
 atomEmpty = 4   -- ""
+
+atomError, atomInstantiationError, atomTypeError, atomDomainError :: Int
+atomEvaluationError, atomEvaluable, atomIntegerTy, atomNotLessThanZero :: Int
+atomZeroDivisor, atomSlash, atomUnknown :: Int
+atomError = 5
+atomInstantiationError = 6
+atomTypeError = 7
+atomDomainError = 8
+atomEvaluationError = 9
+atomEvaluable = 10
+atomIntegerTy = 11
+atomNotLessThanZero = 12
+atomZeroDivisor = 13
+atomSlash = 14
+atomUnknown = 15
+
+-- | ISO exception type for throw/1 and catch/3.
+data WamException = WamException !Value deriving (Show)
+instance Exception WamException
 
 data EnvFrame = EnvFrame {-# UNPACK #-} !Int !(IM.IntMap Value)
               deriving (Show)
@@ -5654,6 +6031,78 @@ escape_haskell_string(In, Out) :-
     atom_string(In, S),
     split_string(S, "\\", "", Parts),
     atomic_list_concat(Parts, "\\\\", Out).
+
+% ============================================================================
+% ISO error tables: default-to-iso and default-to-lax rewrites.
+% These must match the BuiltinCall step arms above. See
+% docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md.
+% ============================================================================
+
+iso_errors:iso_errors_default_to_iso("is/2", "is_iso/2").
+iso_errors:iso_errors_default_to_iso(">/2", ">_iso/2").
+iso_errors:iso_errors_default_to_iso("</2", "<_iso/2").
+iso_errors:iso_errors_default_to_iso(">=/2", ">=_iso/2").
+iso_errors:iso_errors_default_to_iso("=</2", "=<_iso/2").
+iso_errors:iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
+iso_errors:iso_errors_default_to_iso("=\\=/2", "=\\=_iso/2").
+iso_errors:iso_errors_default_to_iso("succ/2", "succ_iso/2").
+
+iso_errors:iso_errors_default_to_lax("is/2", "is_lax/2").
+iso_errors:iso_errors_default_to_lax(">/2", ">_lax/2").
+iso_errors:iso_errors_default_to_lax("</2", "<_lax/2").
+iso_errors:iso_errors_default_to_lax(">=/2", ">=_lax/2").
+iso_errors:iso_errors_default_to_lax("=</2", "=<_lax/2").
+iso_errors:iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
+iso_errors:iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
+iso_errors:iso_errors_default_to_lax("succ/2", "succ_lax/2").
+
+%% iso_errors_rewrite_text(+Config, +PI, +WamText, -RewrittenText)
+%  Text-level ISO rewrite: replaces BuiltinCall keys per the ISO config.
+%  Mirrors the F# and Python iso_errors_rewrite_text/4.
+iso_errors_rewrite_text(Config, PI, WamText, RewrittenText) :-
+    iso_errors_mode_for(Config, PI, Mode),
+    (   Mode == true  -> RMode = iso
+    ;   Mode == false -> RMode = lax
+    ;   RMode = default
+    ),
+    (   RMode == default
+    ->  RewrittenText = WamText
+    ;   atom_string(WamText, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        maplist(iso_errors_rewrite_line(RMode), Lines, NewLines),
+        atomic_list_concat(NewLines, "\n", RewrittenText)
+    ).
+
+iso_errors_rewrite_line(Mode, Line, NewLine) :-
+    (   sub_string(Line, Before, _, _, "builtin_call "),
+        sub_string(Line, Before, 13, _, "builtin_call ")
+    ->  sub_string(Line, 0, Before, _, Prefix),
+        Offset is Before + 13,
+        sub_string(Line, Offset, _, 0, Rest),
+        split_string(Rest, " ", "", [KeyRaw|Tail]),
+        % Strip trailing comma from key token (e.g. "is/2," -> "is/2")
+        (   string_concat(Key, ",", KeyRaw) -> true ; Key = KeyRaw ),
+        iso_errors_rewrite_key(Mode, Key, NewKey),
+        % Reattach comma if it was there
+        (   string_concat(_, ",", KeyRaw)
+        ->  string_concat(NewKey, ",", NewKeyTok)
+        ;   NewKeyTok = NewKey
+        ),
+        atomic_list_concat([NewKeyTok|Tail], " ", NewRest),
+        atom_concat(Prefix, "builtin_call ", P2),
+        atom_concat(P2, NewRest, NewLine)
+    ;   NewLine = Line
+    ).
+
+iso_errors_rewrite_key(iso, Key, NewKey) :-
+    (   iso_errors:iso_errors_default_to_iso(Key, NewKey) -> true
+    ;   NewKey = Key
+    ).
+iso_errors_rewrite_key(lax, Key, NewKey) :-
+    (   iso_errors:iso_errors_default_to_lax(Key, NewKey) -> true
+    ;   NewKey = Key
+    ).
+iso_errors_rewrite_key(default, Key, Key).
 
 %% write_hs_file(+Path, +Content)
 write_hs_file(Path, Content) :-
