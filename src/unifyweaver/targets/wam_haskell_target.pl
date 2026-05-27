@@ -3506,6 +3506,118 @@ stepST _ regs !pw (UnifyConstant c) = do
         forM_ (IM.toList (wsRegs ws2)) $ \\(k, val) -> writeArray regs k val
         return (Just (wamStateToPure ws2))
 
+-- Missing lax comparisons: =</2, >=/2, =:=/2, =\\=/2 (native ST).
+stepST !ctx regs !pw (BuiltinCall "=</2" _) = do
+  v1 <- readArray regs 1
+  v2 <- readArray regs 2
+  let r1 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v1)
+      r2 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v2)
+  case (r1, r2) of
+    (Just a, Just b) | a <= b -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return Nothing
+
+stepST !ctx regs !pw (BuiltinCall ">=/2" _) = do
+  v1 <- readArray regs 1
+  v2 <- readArray regs 2
+  let r1 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v1)
+      r2 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v2)
+  case (r1, r2) of
+    (Just a, Just b) | a >= b -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return Nothing
+
+stepST !ctx regs !pw (BuiltinCall "=:=/2" _) = do
+  v1 <- readArray regs 1
+  v2 <- readArray regs 2
+  let r1 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v1)
+      r2 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v2)
+  case (r1, r2) of
+    (Just a, Just b) | abs (a - b) < 1e-15 -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return Nothing
+
+stepST !ctx regs !pw (BuiltinCall "=\\\\=/2" _) = do
+  v1 <- readArray regs 1
+  v2 <- readArray regs 2
+  let r1 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v1)
+      r2 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v2)
+  case (r1, r2) of
+    (Just a, Just b) | abs (a - b) >= 1e-15 -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return Nothing
+
+-- is_lax/2: delegates to is/2 (already has native stepST handler).
+stepST !ctx regs !pw (BuiltinCall "is_lax/2" _) = stepST ctx regs pw (BuiltinCall "is/2" 2)
+
+-- Lax comparison variants: delegate to their default-form handlers.
+stepST !ctx regs !pw (BuiltinCall "<_lax/2" _) = stepST ctx regs pw (BuiltinCall "</2" 2)
+stepST !ctx regs !pw (BuiltinCall ">_lax/2" _) = stepST ctx regs pw (BuiltinCall ">/2" 2)
+stepST !ctx regs !pw (BuiltinCall ">=_lax/2" _) = stepST ctx regs pw (BuiltinCall ">=/2" 2)
+stepST !ctx regs !pw (BuiltinCall "=<_lax/2" _) = stepST ctx regs pw (BuiltinCall "=</2" 2)
+stepST !ctx regs !pw (BuiltinCall "=:=_lax/2" _) = stepST ctx regs pw (BuiltinCall "=:=/2" 2)
+stepST !ctx regs !pw (BuiltinCall "=\\\\=_lax/2" _) = stepST ctx regs pw (BuiltinCall "=\\\\=/2" 2)
+
+-- is_iso/2: native ST with ISO error throws.
+stepST !ctx regs !pw (BuiltinCall "is_iso/2" _) = do
+  v2 <- readArray regs 2
+  v1 <- readArray regs 1
+  let !expr = derefVar (pwBindings pw) v2
+  if hasUnboundDeep (pwBindings pw) expr
+    then throwIsoErrorPure pw (makeInstantiationError)
+    else case evalArith (wcInternTable ctx) (pwBindings pw) expr of
+      Nothing -> throwIsoErrorPure pw (makeTypeError atomEvaluable (arithCulprit (pwBindings pw) expr))
+      Just r -> do
+        let !lhs = derefVar (pwBindings pw) v1
+        case lhs of
+          Unbound vid -> do
+            let val = if fromIntegral (round r :: Int) == r then Integer (round r) else Float r
+            writeArray regs 1 val
+            return $ Just pw { pwPC = pwPC pw + 1
+                             , pwBindings = IM.insert vid val (pwBindings pw)
+                             , pwTrail = TrailEntry vid (IM.lookup vid (pwBindings pw)) : pwTrail pw
+                             , pwTrailLen = pwTrailLen pw + 1 }
+          Integer n | fromIntegral n == r -> return $ Just pw { pwPC = pwPC pw + 1 }
+          _ -> return Nothing
+
+-- ISO comparison variants: native ST with error throws.
+-- Grouped handler for <_iso, >_iso, >=_iso, =<_iso, =:=_iso, =\\=_iso.
+stepST !ctx regs !pw instr@(BuiltinCall op _)
+  | op == "<_iso/2" || op == ">_iso/2" || op == ">=_iso/2"
+    || op == "=<_iso/2" || op == "=:=_iso/2" || op == "=\\\\=_iso/2" = do
+  v1 <- readArray regs 1
+  v2 <- readArray regs 2
+  let a1 = Just (derefVar (pwBindings pw) v1)
+      a2 = Just (derefVar (pwBindings pw) v2)
+      unboundA = case a1 of { Just v -> hasUnboundDeep (pwBindings pw) v; Nothing -> True }
+      unboundB = case a2 of { Just v -> hasUnboundDeep (pwBindings pw) v; Nothing -> True }
+  if unboundA || unboundB
+    then throwIsoErrorPure pw (makeInstantiationError)
+    else do
+      let r1 = a1 >>= evalArith (wcInternTable ctx) (pwBindings pw)
+          r2 = a2 >>= evalArith (wcInternTable ctx) (pwBindings pw)
+      case (r1, r2) of
+        (Nothing, _) ->
+          let culprit = case a1 of { Just v -> arithCulprit (pwBindings pw) v; Nothing -> makePredIndicator atomUnknown 0 }
+          in throwIsoErrorPure pw (makeTypeError atomEvaluable culprit)
+        (_, Nothing) ->
+          let culprit = case a2 of { Just v -> arithCulprit (pwBindings pw) v; Nothing -> makePredIndicator atomUnknown 0 }
+          in throwIsoErrorPure pw (makeTypeError atomEvaluable culprit)
+        (Just a, Just b) ->
+          let ok = case op of
+                "=<_iso/2"    -> a <= b
+                ">=_iso/2"    -> a >= b
+                "<_iso/2"     -> a < b
+                ">_iso/2"     -> a > b
+                "=:=_iso/2"   -> abs (a - b) < 1e-15
+                "=\\\\=_iso/2" -> abs (a - b) >= 1e-15
+                _             -> False
+          in if ok then return $ Just pw { pwPC = pwPC pw + 1 } else return Nothing
+
+-- succ/2, succ_lax/2: native ST bidirectional successor.
+stepST _ regs !pw (BuiltinCall "succ/2" _) = succLaxST regs pw
+stepST _ regs !pw (BuiltinCall "succ_lax/2" _) = succLaxST regs pw
+
+-- succ_iso/2, throw/1, catch/3: delegate to pure bridge.
+-- These use throwIsoError/WamException which need the pure WamState,
+-- or (catch/3) run sub-goals via unsafePerformIO + try.
+
 stepST !ctx regs !pw (ParTryMeElse label) = stepST ctx regs pw (TryMeElse label)
 stepST !ctx regs !pw (ParRetryMeElse label) = stepST ctx regs pw (RetryMeElse label)
 stepST !ctx regs !pw ParTrustMe = stepST ctx regs pw TrustMe
@@ -5031,6 +5143,41 @@ pushBuilderIfActivePure pw = case pwBuilder pw of
   NoBuilder -> pw
   b -> pw { pwBuilder = NoBuilder
           , pwBuilderStack = b : pwBuilderStack pw }
+
+-- | Throw an ISO error from the ST path. Constructs a WamState-shaped
+-- error envelope and throws WamException. Works because throw is lazy
+-- and can fire from any context (pure or ST).
+throwIsoErrorPure :: PureWamState -> Value -> ST s a
+throwIsoErrorPure pw errTerm =
+  let wrapped = Str atomError [derefDeep (pwBindings pw) errTerm, Unbound (pwVarCounter pw)]
+  in throw (WamException wrapped)
+
+-- | ST-mode succLax: read registers directly, avoid freeze/thaw.
+succLaxST :: STA.STArray s Int Value -> PureWamState -> ST s (Maybe PureWamState)
+succLaxST regs pw = do
+  v1 <- readArray regs 1
+  v2 <- readArray regs 2
+  let a = Just (derefVar (pwBindings pw) v1)
+      b = Just (derefVar (pwBindings pw) v2)
+      bindReg reg value = do
+        let dv = derefVar (pwBindings pw) <$> Just value
+        case derefVar (pwBindings pw) <$> IM.lookup reg (pwBindings pw) of
+          _ -> return ()
+        -- Read current register value to check for Unbound
+        rv <- readArray regs reg
+        case derefVar (pwBindings pw) rv of
+          Unbound vid -> do
+            writeArray regs reg value
+            return $ Just pw { pwPC = pwPC pw + 1
+                             , pwBindings = IM.insert vid value (pwBindings pw)
+                             , pwTrail = TrailEntry vid (IM.lookup vid (pwBindings pw)) : pwTrail pw
+                             , pwTrailLen = pwTrailLen pw + 1 }
+          bound | bound == value -> return $ Just pw { pwPC = pwPC pw + 1 }
+          _ -> return Nothing
+  case (a, b) of
+    (Just (Integer n), _) | n >= 0 -> bindReg 2 (Integer (n + 1))
+    (_, Just (Integer m)) | m > 0  -> bindReg 1 (Integer (m - 1))
+    _ -> return Nothing
 
 -- | Restore the top builder from the stack.
 popBuilderStack :: WamState -> WamState
