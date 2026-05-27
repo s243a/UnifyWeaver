@@ -111,6 +111,13 @@ supported(deallocate).
 supported(get_constant(_, _)).
 supported(get_variable(_, _)).
 supported(get_value(_, _)).
+supported(get_structure(_, _)).
+supported(get_list(_)).
+supported(get_nil(_)).
+supported(get_integer(_, _)).
+supported(unify_variable(_)).
+supported(unify_value(_)).
+supported(unify_constant(_)).
 supported(put_constant(_, _)).
 supported(put_variable(_, _)).
 supported(put_value(_, _)).
@@ -510,6 +517,59 @@ emit_one(get_value(XnStr, AiStr), _PC, SV, SVout, I, _FP) :-
            [I, SV, SV]),
     format("~w              , wsTrailLen = wsTrailLen ~w + 1 })~n", [I, SV]),
     format("~w  _ -> Nothing~n", [I]).
+
+% ---- GetStructure F Ai — delegate to step ----
+emit_one(get_structure(FnStr, AiStr), PC, SV, SVout, I, _FP) :-
+    reg_to_int(AiStr, Ai),
+    parse_functor(FnStr, FuncName, Arity),
+    wam_haskell_target:intern_atom(FuncName, FnId),
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) (GetStructure ~w ~w ~w)~n",
+           [I, SVout, SV, PC, FnId, Ai, Arity]).
+
+% ---- GetList Ai — delegate to step ----
+emit_one(get_list(AiStr), PC, SV, SVout, I, _FP) :-
+    reg_to_int(AiStr, Ai),
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) (GetList ~w)~n",
+           [I, SVout, SV, PC, Ai]).
+
+% ---- GetNil Ai — delegate to step as GetConstant (Atom atomNil) ----
+emit_one(get_nil(AiStr), PC, SV, SVout, I, _FP) :-
+    reg_to_int(AiStr, Ai),
+    wam_haskell_target:intern_atom("[]", NilId),
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) (GetConstant (Atom ~w) ~w)~n",
+           [I, SVout, SV, PC, NilId, Ai]).
+
+% ---- GetInteger N Ai — delegate to step as GetConstant (Integer N) ----
+emit_one(get_integer(NStr, AiStr), PC, SV, SVout, I, _FP) :-
+    (   number_string(N, NStr) -> true ; N = 0 ),
+    reg_to_int(AiStr, Ai),
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) (GetConstant (Integer ~w) ~w)~n",
+           [I, SVout, SV, PC, N, Ai]).
+
+% ---- UnifyVariable Xn — delegate to step ----
+emit_one(unify_variable(XnStr), PC, SV, SVout, I, _FP) :-
+    reg_to_int(XnStr, Xn),
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) (UnifyVariable ~w)~n",
+           [I, SVout, SV, PC, Xn]).
+
+% ---- UnifyValue Xn — delegate to step ----
+emit_one(unify_value(XnStr), PC, SV, SVout, I, _FP) :-
+    reg_to_int(XnStr, Xn),
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) (UnifyValue ~w)~n",
+           [I, SVout, SV, PC, Xn]).
+
+% ---- UnifyConstant C — delegate to step ----
+emit_one(unify_constant(CStr), PC, SV, SVout, I, _FP) :-
+    val_hs(CStr, HC),
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) (UnifyConstant (~w))~n",
+           [I, SVout, SV, PC, HC]).
 
 % ---- PutValue Xn Ai — always succeeds, inline ----
 % Defensive: error on missing source register.

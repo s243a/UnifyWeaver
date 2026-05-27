@@ -1932,9 +1932,10 @@ step !ctx s (PutValue xn ai) =
     Nothing -> Nothing
 
 step !ctx s (PutStructure fnId ai arity) =
-  Just (s { wsPC = wsPC s + 1
-          , wsBuilder = BuildStruct fnId ai arity []
-          })
+  let push = pushBuilderIfActive s
+  in Just (push { wsPC = wsPC push + 1
+                , wsBuilder = BuildStruct fnId ai arity []
+                })
 
 -- PutStructureDyn: like PutStructure but functor name and arity come
 -- from registers at runtime. Used when the term shape is computed
@@ -1950,9 +1951,10 @@ step !ctx s (PutStructureDyn nameReg arityReg targetReg) =
     _ -> Nothing  -- name must be an atom, arity a non-negative integer
 
 step !ctx s (PutList ai) =
-  Just (s { wsPC = wsPC s + 1
-           , wsBuilder = BuildList ai []
-           })
+  let push = pushBuilderIfActive s
+  in Just (push { wsPC = wsPC push + 1
+                , wsBuilder = BuildList ai []
+                })
 
 step !ctx s (SetValue xn) =
   case getReg xn s of
@@ -1967,6 +1969,74 @@ step !ctx s (SetVariable xn) =
 
 step !ctx s (SetConstant c) =
   addToBuilder c s
+
+-- GetStructure: read-mode if register holds matching Str, write-mode if Unbound.
+step !ctx s (GetStructure fnId ai arity) =
+  let push = pushBuilderIfActive s
+  in case derefVar (wsBindings push) <$> IM.lookup ai (wsRegs push) of
+    Just (Str fn args) | fn == fnId && length args == arity ->
+      if arity == 0
+      then Just (push { wsPC = wsPC push + 1 })
+      else Just (push { wsPC = wsPC push + 1, wsBuilder = ReadArgs args })
+    Just (VList (h : t)) | fnId == atomDot && arity == 2 ->
+      let tailVal = if null t then Atom atomNil else VList t
+      in Just (push { wsPC = wsPC push + 1, wsBuilder = ReadArgs [h, tailVal] })
+    Just (Unbound vid) | arity == 0 ->
+      let str = Str fnId []
+      in Just (push { wsPC = wsPC push + 1
+                    , wsRegs = IM.insert ai str (wsRegs push)
+                    , wsBindings = IM.insert vid str (wsBindings push)
+                    , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings push)) : wsTrail push
+                    , wsTrailLen = wsTrailLen push + 1 })
+    Just (Unbound _) ->
+      Just (push { wsPC = wsPC push + 1
+                 , wsBuilder = BuildStruct fnId ai arity [] })
+    _ -> Nothing
+
+-- GetList: read-mode if register holds VList/Str cons, write-mode if Unbound.
+step !ctx s (GetList ai) =
+  let push = pushBuilderIfActive s
+  in case derefVar (wsBindings push) <$> IM.lookup ai (wsRegs push) of
+    Just (VList (h : t)) ->
+      let tailVal = if null t then Atom atomNil else VList t
+      in Just (push { wsPC = wsPC push + 1, wsBuilder = ReadArgs [h, tailVal] })
+    Just (Str fn [h, t]) | fn == atomDot ->
+      Just (push { wsPC = wsPC push + 1, wsBuilder = ReadArgs [h, t] })
+    Just (Unbound _) ->
+      Just (push { wsPC = wsPC push + 1, wsBuilder = BuildList ai [] })
+    _ -> Nothing
+
+-- UnifyVariable: read-mode -> bind register to next arg; write-mode -> create fresh var.
+step !ctx s (UnifyVariable xn) =
+  case readNextArg s of
+    Just (v, s'''') -> Just ((putReg xn v s'''') { wsPC = wsPC s + 1 })
+    Nothing ->
+      let vid = wsVarCounter s
+          var = Unbound vid
+          s1 = putReg xn var (s { wsVarCounter = vid + 1 })
+      in addToBuilder var s1
+
+-- UnifyValue: read-mode -> unify register with next arg; write-mode -> append to builder.
+step !ctx s (UnifyValue xn) =
+  case readNextArg s of
+    Just (v, s'''') ->
+      case getReg xn s of
+        Just xv -> case unifyValues (derefVar (wsBindings s) v) (derefVar (wsBindings s) xv) s'''' of
+          Just s2 -> Just (s2 { wsPC = wsPC s + 1 })
+          Nothing -> Nothing
+        Nothing -> Nothing
+    Nothing ->
+      case getReg xn s of
+        Just val -> addToBuilder val s
+        Nothing -> Nothing
+
+-- UnifyConstant: read-mode -> unify constant with next arg; write-mode -> append to builder.
+step !ctx s (UnifyConstant c) =
+  case readNextArg s of
+    Just (v, s'''') -> case unifyValues (derefVar (wsBindings s) v) c s'''' of
+      Just s2 -> Just (s2 { wsPC = wsPC s + 1 })
+      Nothing -> Nothing
+    Nothing -> addToBuilder c s
 
 -- Fast path: call has been pre-resolved to a target PC at load time.
 -- No string lookup, no foreign/indexed dispatch — just a jump.
@@ -3152,7 +3222,8 @@ stepST _ regs !pw (SetValue xn) = do
                             , pwTrail = pwTrail pw, pwTrailLen = pwTrailLen pw
                             , pwCP = pwCP pw, pwCPs = pwCPs pw, pwCPsLen = pwCPsLen pw
                             , pwBindings = pwBindings pw, pwCutBar = pwCutBar pw
-                            , pwBuilder = pwBuilder pw, pwVarCounter = pwVarCounter pw
+                            , pwBuilder = pwBuilder pw, pwBuilderStack = pwBuilderStack pw
+                            , pwVarCounter = pwVarCounter pw
                             , pwAggAccum = pwAggAccum pw }
       -- addToBuilder is pure: only modifies wsBuilder and wsRegs (for struct/list finalize)
       regMap <- freezeRegsToIntMap regs
@@ -4611,6 +4682,44 @@ addToBuilder val s = case wsBuilder s of
     -- No builder active, just push to heap (fallback)
     Just (s { wsPC = wsPC s + 1, wsHeap = wsHeap s ++ [val], wsHeapLen = wsHeapLen s + 1 })
 
+-- | Read the next arg from a ReadArgs builder.
+-- Returns (value, new_state) or Nothing if no ReadArgs active.
+readNextArg :: WamState -> Maybe (Value, WamState)
+readNextArg s = case wsBuilder s of
+  ReadArgs (v : rest) ->
+    let s'''' = if null rest
+              then popBuilderStack s
+              else s { wsBuilder = ReadArgs rest }
+    in Just (derefVar (wsBindings s) v, s'''')
+  _ -> Nothing
+
+-- | Save the current builder (if active) onto the builder stack.
+pushBuilderIfActive :: WamState -> WamState
+pushBuilderIfActive s = case wsBuilder s of
+  NoBuilder -> s
+  b -> s { wsBuilder = NoBuilder
+         , wsBuilderStack = b : wsBuilderStack s }
+
+-- | Restore the top builder from the stack.
+popBuilderStack :: WamState -> WamState
+popBuilderStack s = case wsBuilderStack s of
+  (b : rest) -> s { wsBuilder = b, wsBuilderStack = rest }
+  [] -> s { wsBuilder = NoBuilder }
+
+-- | Unify two values. Returns updated state on success, Nothing on failure.
+unifyValues :: Value -> Value -> WamState -> Maybe WamState
+unifyValues v1 v2 s
+  | v1 == v2 = Just s
+unifyValues (Unbound vid) v2 s =
+  Just (s { wsBindings = IM.insert vid v2 (wsBindings s)
+          , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+          , wsTrailLen = wsTrailLen s + 1 })
+unifyValues v1 (Unbound vid) s =
+  Just (s { wsBindings = IM.insert vid v1 (wsBindings s)
+          , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+          , wsTrailLen = wsTrailLen s + 1 })
+unifyValues _ _ _ = Nothing
+
 -- | Lookup a label in the label map (now in WamContext).
 lookupLabel :: String -> WamContext -> Int
 lookupLabel label ctx = fromMaybe 0 $ Map.lookup label (wcLabels ctx)
@@ -4637,7 +4746,8 @@ wamStateToPure s = PureWamState
   , pwHeapLen = wsHeapLen s, pwTrail = wsTrail s, pwTrailLen = wsTrailLen s
   , pwCP = wsCP s, pwCPs = [], pwCPsLen = 0
   , pwBindings = wsBindings s, pwCutBar = wsCutBar s
-  , pwBuilder = wsBuilder s, pwVarCounter = wsVarCounter s
+  , pwBuilder = wsBuilder s, pwBuilderStack = wsBuilderStack s
+  , pwVarCounter = wsVarCounter s
   , pwAggAccum = wsAggAccum s
   }
 
@@ -4648,7 +4758,8 @@ pureToWamState pw regMap = WamState
   , wsTrail = pwTrail pw, wsTrailLen = pwTrailLen pw
   , wsCP = pwCP pw, wsCPs = [], wsCPsLen = 0
   , wsBindings = pwBindings pw, wsCutBar = pwCutBar pw
-  , wsBuilder = pwBuilder pw, wsVarCounter = pwVarCounter pw
+  , wsBuilder = pwBuilder pw, wsBuilderStack = pwBuilderStack pw
+  , wsVarCounter = pwVarCounter pw
   , wsAggAccum = pwAggAccum pw
   }
 
@@ -4925,6 +5036,7 @@ instance NFData Value where
 -- | Builder for PutStructure/PutList + SetValue/SetConstant sequences.
 data Builder = BuildStruct !Int !Int !Int ![Value]  -- interned functor ID, target reg ID, arity, collected args
              | BuildList !Int ![Value]               -- target reg ID, collected [head, tail]
+             | ReadArgs ![Value]                     -- remaining args to read from structure (get_structure read mode)
              | NoBuilder
              deriving (Show)
 
@@ -5001,8 +5113,9 @@ data WamState = WamState
   , wsCPsLen   :: {-# UNPACK #-} !Int
   , wsBindings :: !(IM.IntMap Value)
   , wsCutBar   :: {-# UNPACK #-} !Int
-  , wsBuilder  :: !Builder
-  , wsVarCounter :: {-# UNPACK #-} !Int
+  , wsBuilder      :: !Builder
+  , wsBuilderStack :: ![Builder]    -- saved builders for nested get_structure
+  , wsVarCounter   :: {-# UNPACK #-} !Int
   , wsAggAccum :: ![Value]
   } deriving (Show)
 
@@ -5025,9 +5138,10 @@ data PureWamState = PureWamState
   , pwCPsLen    :: {-# UNPACK #-} !Int
   , pwBindings  :: !(IM.IntMap Value)
   , pwCutBar    :: {-# UNPACK #-} !Int
-  , pwBuilder   :: !Builder
-  , pwVarCounter :: {-# UNPACK #-} !Int
-  , pwAggAccum  :: ![Value]
+  , pwBuilder      :: !Builder
+  , pwBuilderStack :: ![Builder]    -- saved builders for nested get_structure
+  , pwVarCounter   :: {-# UNPACK #-} !Int
+  , pwAggAccum     :: ![Value]
   }
 
 -- | Choice point with frozen register snapshot (for ST-mode execution).
@@ -5070,6 +5184,11 @@ data Instruction
   | SetValue !RegId
   | SetVariable !RegId                  -- builder slot = fresh unbound; also write to register
   | SetConstant Value
+  | GetStructure !Int !RegId !Int   -- interned functor ID, target reg, arity
+  | GetList !RegId                  -- target reg
+  | UnifyVariable !RegId            -- target register to bind
+  | UnifyValue !RegId               -- register whose value to unify with
+  | UnifyConstant Value             -- constant to unify with
   | Allocate
   | Deallocate
   | Call String !Int                  -- pre-resolution form (string-keyed)
@@ -5149,6 +5268,7 @@ emptyState = WamState
   , wsBindings = IM.empty
   , wsCutBar   = 0
   , wsBuilder  = NoBuilder
+  , wsBuilderStack = []
   , wsVarCounter = 0
   , wsAggAccum = []
   }
@@ -5958,6 +6078,33 @@ wam_instr_to_haskell(["end_aggregate", ValReg], Hs) :-
     clean_comma(ValReg, CV),
     reg_name_to_int(CV, VI),
     format(string(Hs), 'EndAggregate ~w', [VI]).
+wam_instr_to_haskell(["get_structure", FN, Ai], Hs) :-
+    clean_comma(FN, CFN), clean_comma(Ai, CAi),
+    parse_functor_arity(CFN, Arity),
+    reg_name_to_int(CAi, AiI),
+    intern_atom(CFN, FnId),
+    format(string(Hs), 'GetStructure ~w ~w ~w', [FnId, AiI, Arity]).
+wam_instr_to_haskell(["get_list", Ai], Hs) :-
+    clean_comma(Ai, CAi), reg_name_to_int(CAi, AiI),
+    format(string(Hs), 'GetList ~w', [AiI]).
+wam_instr_to_haskell(["get_nil", Ai], Hs) :-
+    clean_comma(Ai, CAi), reg_name_to_int(CAi, AiI),
+    intern_atom("[]", NilId),
+    format(string(Hs), 'GetConstant (Atom ~w) ~w', [NilId, AiI]).
+wam_instr_to_haskell(["get_integer", N, Ai], Hs) :-
+    clean_comma(N, CN), clean_comma(Ai, CAi),
+    (number_string(NI, CN) -> true ; NI = 0),
+    reg_name_to_int(CAi, AiI),
+    format(string(Hs), 'GetConstant (Integer ~w) ~w', [NI, AiI]).
+wam_instr_to_haskell(["unify_variable", Xn], Hs) :-
+    clean_comma(Xn, CXn), reg_name_to_int(CXn, XnI),
+    format(string(Hs), 'UnifyVariable ~w', [XnI]).
+wam_instr_to_haskell(["unify_value", Xn], Hs) :-
+    clean_comma(Xn, CXn), reg_name_to_int(CXn, XnI),
+    format(string(Hs), 'UnifyValue ~w', [XnI]).
+wam_instr_to_haskell(["unify_constant", C], Hs) :-
+    wam_value_to_haskell(C, HsVal),
+    format(string(Hs), 'UnifyConstant (~w)', [HsVal]).
 % Fallback for unknown instructions
 wam_instr_to_haskell(Parts, Hs) :-
     atomic_list_concat(Parts, ' ', Joined),
