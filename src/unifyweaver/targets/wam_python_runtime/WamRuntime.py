@@ -1274,6 +1274,54 @@ def _format_value(val: 'Term', state: WamState) -> str:
     return str(val)
 
 
+def _atom_needs_canonical_quote(name: str) -> bool:
+    if name == '[]':
+        return False
+    if not name:
+        return True
+    try:
+        int(name)
+        return True
+    except ValueError:
+        try:
+            float(name)
+            return True
+        except ValueError:
+            pass
+    if not name[0].islower():
+        return True
+    return any(not (ch.isalnum() or ch == '_') for ch in name)
+
+
+def _canonical_atom_text(name: str) -> str:
+    if not _atom_needs_canonical_quote(name):
+        return name
+    return "'" + name.replace('\\', '\\\\').replace("'", "\\'") + "'"
+
+
+def _format_canonical_value(val: 'Term', state: WamState) -> str:
+    """Format a WAM term for write_canonical/1."""
+    val = deref(val, state)
+    if isinstance(val, Atom):
+        return _canonical_atom_text(val.name)
+    if isinstance(val, Int):
+        return str(val.n)
+    if isinstance(val, Float):
+        return str(val.f)
+    if isinstance(val, Var):
+        return f"_V{val.id}"
+    if isinstance(val, Compound):
+        if _is_cons_functor(val.functor) and len(val.args) == 2:
+            items = _term_to_list(val, state)
+            if items is not None:
+                return '[' + ', '.join(_format_canonical_value(item, state) for item in items) + ']'
+        functor = _canonical_atom_text(_display_functor_name(val.functor, len(val.args)))
+        return f"{functor}(" + ', '.join(_format_canonical_value(arg, state) for arg in val.args) + ')'
+    if isinstance(val, Ref):
+        return _format_canonical_value(deref(val, state), state)
+    return str(val)
+
+
 def _deep_copy_term(val: 'Term', var_map: Dict[int, Var], state: WamState) -> 'Term':
     """Copy a term, giving each source variable one fresh target variable."""
     val = deref(val, state)
@@ -2262,8 +2310,17 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
     if builtin in ('write/1', 'display/1', 'print/1'):
         print(_format_value(get_reg(state, 1), state), end='')
         return True
+    if builtin in ('write_canonical/1',):
+        print(_format_canonical_value(get_reg(state, 1), state), end='')
+        return True
     if builtin in ('writeln/1',):
         print(_format_value(get_reg(state, 1), state))
+        return True
+    if builtin in ('tab/1',):
+        n = deref(get_reg(state, 1), state)
+        if not isinstance(n, Int) or n.n < 0:
+            return False
+        print(' ' * n.n, end='')
         return True
     if builtin in ('nl/0', 'nl'):
         print()

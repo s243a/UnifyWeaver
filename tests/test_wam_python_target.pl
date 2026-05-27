@@ -998,6 +998,42 @@ test(runtime_char_output_writes_to_stdout) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+test(runtime_output_canonical_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_output_canonical_demo),
+			assertz((user:py_output_canonical_demo :-
+				write_canonical('hello world'),
+				tab(2),
+				write_canonical(f('two words', [a, 2])),
+				nl,
+				\+ tab(-1))),
+			user:python_parser_tmp_dir('tmp_wam_python_output_canonical', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_output_canonical_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import io, sys",
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"old_stdout = sys.stdout",
+				"capture = io.StringIO()",
+				"sys.stdout = capture",
+				"try:",
+				"    ok = wr.run_wam(code, labels, 'py_output_canonical_demo/0', state)",
+				"finally:",
+				"    sys.stdout = old_stdout",
+				"print(repr(capture.getvalue()))",
+				"print(ok)"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "'hello world'  f('two words', [a, 2])\\n")),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_output_canonical_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_stream_char_io_reads_and_writes_files) :-
 	setup_call_cleanup(
 		(   retractall(user:py_stream_char_io_demo),
@@ -1821,6 +1857,8 @@ test(static_runtime_has_lua_baseline_builtins, [nondet]) :-
 		"\\\\+/1",
 		"write/1",
 		"display/1",
+		"tab/1",
+		"write_canonical/1",
 		"put_char/1",
 		"put_char/2",
 		"put_code/1",
@@ -1845,6 +1883,9 @@ test(static_runtime_naf_uses_isolated_goal_execution, [nondet]) :-
 test(static_runtime_io_emits_output, [nondet]) :-
 	runtime_py_path(P), read_file_to_string(P, Content, []),
 	sub_string(Content, _, _, _, "print(_format_value(get_reg(state, 1), state), end='')"),
+	sub_string(Content, _, _, _, "def _format_canonical_value"),
+	sub_string(Content, _, _, _, "'write_canonical/1'"),
+	sub_string(Content, _, _, _, "'tab/1'"),
 	sub_string(Content, _, _, _, "def _execute_put_char"),
 	sub_string(Content, _, _, _, "def _execute_put_code"),
 	sub_string(Content, _, _, _, "def _execute_read_line_to_string"),

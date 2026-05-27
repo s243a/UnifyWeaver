@@ -739,9 +739,19 @@ compile_execute_builtin_to_python(Code) :-
             d = deref(get_reg(self, 1), self)
             print(_format_value(d), end=\"\")
             return True
+        if op == \"write_canonical\" and arity == 1:
+            d = deref(get_reg(self, 1), self)
+            print(_format_canonical_value(d), end=\"\")
+            return True
         if op == \"writeln\" and arity == 1:
             d = deref(get_reg(self, 1), self)
             print(_format_value(d))
+            return True
+        if op == \"tab\" and arity == 1:
+            d = deref(get_reg(self, 1), self)
+            if not isinstance(d, Int) or d.n < 0:
+                return False
+            print(\" \" * d.n, end=\"\")
             return True
         if op == \"nl\" and arity == 0:
             print()
@@ -801,7 +811,7 @@ def _format_value(val):
         return str(val.f)
     if isinstance(val, Compound):
         if val.functor == \".\" and len(val.args) == 2:
-            return \"[\" + _format_list(val) + \"]\"
+            return \"[\" + _format_list(val, _format_value) + \"]\"
         args_str = \", \".join(_format_value(a) for a in val.args)
         return f\"{val.functor}({args_str})\"
     if isinstance(val, Var):
@@ -810,16 +820,58 @@ def _format_value(val):
         return f\"ref({val.addr})\"
     return str(val)
 
-def _format_list(val):
+def _atom_needs_canonical_quote(name):
+    if name == \"[]\":
+        return False
+    if not name:
+        return True
+    try:
+        int(name)
+        return True
+    except ValueError:
+        try:
+            float(name)
+            return True
+        except ValueError:
+            pass
+    if not name[0].islower():
+        return True
+    return any(not (ch.isalnum() or ch == \"_\") for ch in name)
+
+def _canonical_atom_text(name):
+    if not _atom_needs_canonical_quote(name):
+        return name
+    return \"''\" + name.replace(\"\\\\\", \"\\\\\\\\\").replace(\"''\", \"\\\\''\") + \"''\"
+
+def _format_canonical_value(val):
+    """Format a Value for write_canonical/1."""
+    if isinstance(val, Atom):
+        return _canonical_atom_text(val.name)
+    if isinstance(val, Int):
+        return str(val.n)
+    if isinstance(val, Float):
+        return str(val.f)
+    if isinstance(val, Compound):
+        if val.functor == \".\" and len(val.args) == 2:
+            return \"[\" + _format_list(val, _format_canonical_value) + \"]\"
+        args_str = \", \".join(_format_canonical_value(a) for a in val.args)
+        return f\"{_canonical_atom_text(val.functor)}({args_str})\"
+    if isinstance(val, Var):
+        return \"_\" if val.ref is None else _format_canonical_value(val.ref)
+    if isinstance(val, Ref):
+        return f\"ref({val.addr})\"
+    return str(val)
+
+def _format_list(val, formatter):
     """Format a ./2 cons-cell chain as a Prolog list."""
     items = []
     current = val
     while isinstance(current, Compound) and current.functor == \".\" and len(current.args) == 2:
-        items.append(_format_value(current.args[0]))
+        items.append(formatter(current.args[0]))
         current = current.args[1]
     if isinstance(current, Atom) and current.name == \"[]\":
         return \", \".join(items)
-    items.append(\"|\" + _format_value(current))
+    items.append(\"|\" + formatter(current))
     return \", \".join(items)
 
 def _deep_copy_term(val, var_map, state):
