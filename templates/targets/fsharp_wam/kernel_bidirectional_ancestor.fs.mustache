@@ -20,7 +20,12 @@
 /// With childCost = infinity, degenerates to upward-only search.
 
 /// Graph calibration result: dimensionality D and effective branching
-/// ratio b, computed from BFS growth rates. Used by the distance metric.
+/// ratio b, computed from degree distribution moments during BFS.
+/// Used by the distance metric to weight parent vs child hops.
+///   D = E[d_child] (average child fan-out)
+///   b = E[d²_child] / E[d²_parent] (second moment ratio)
+/// The second moment ratio captures the path amplification asymmetry
+/// from heavy-tail nodes (hubs with hundreds of children).
 type GraphCalibration = {
     Dimensionality: float
     BranchRatio: float
@@ -36,43 +41,42 @@ let private calibrateGraph
     dist.[root] <- 0
     let mutable frontier = [root]
     let mutable depth = 0
-    let growthRates = System.Collections.Generic.List<float>()
-    let mutable prevSize = 1
-    let mutable totalParentFanout = 0.0
-    let mutable totalChildFanout = 0.0
-    let mutable parentNodes = 0
+    let mutable sumChildDeg = 0.0
+    let mutable sumChildDeg2 = 0.0
     let mutable childNodes = 0
+    let mutable sumParentDeg = 0.0
+    let mutable sumParentDeg2 = 0.0
+    let mutable parentNodes = 0
     while not (List.isEmpty frontier) do
         depth <- depth + 1
         let mutable next = []
         for nd in frontier do
             let children = lookupChildren nd
             if not (List.isEmpty children) then
-                totalChildFanout <- totalChildFanout + float children.Length
+                let d = float children.Length
+                sumChildDeg <- sumChildDeg + d
+                sumChildDeg2 <- sumChildDeg2 + d * d
                 childNodes <- childNodes + 1
             let parents = lookupParents nd
             if not (List.isEmpty parents) then
-                totalParentFanout <- totalParentFanout + float parents.Length
+                let d = float parents.Length
+                sumParentDeg <- sumParentDeg + d
+                sumParentDeg2 <- sumParentDeg2 + d * d
                 parentNodes <- parentNodes + 1
             for c in children do
                 if not (dist.ContainsKey(c)) then
                     dist.[c] <- depth
                     next <- c :: next
-        let fSize = List.length next
-        if fSize > 0 && prevSize > 0 && depth >= 2 && depth <= 6 then
-            growthRates.Add(float fSize / float prevSize)
-        prevSize <- fSize
         frontier <- next
     let dimensionality =
-        if growthRates.Count > 0 then
-            let logMean = growthRates |> Seq.averageBy log
-            max 1.5 (exp logMean)
+        if childNodes > 0 then max 1.5 (sumChildDeg / float childNodes)
         else 3.0
     let branchRatio =
-        if parentNodes > 0 && childNodes > 0 then
-            let avgChild = totalChildFanout / float childNodes
-            let avgParent = totalParentFanout / float parentNodes
-            max 1.0 (avgChild / avgParent)
+        if childNodes > 0 && parentNodes > 0 then
+            let ed2Child = sumChildDeg2 / float childNodes
+            let ed2Parent = sumParentDeg2 / float parentNodes
+            if ed2Parent > 0.0 then max 1.0 (ed2Child / ed2Parent)
+            else 1.0
         else 1.0
     { Dimensionality = dimensionality
       BranchRatio = branchRatio
