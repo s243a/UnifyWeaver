@@ -106,12 +106,12 @@ test_lowerable_accepts_not_member_set :-
     ;   fail_test(Test, 'not_member_set was rejected')
     ).
 
-test_lowerable_still_rejects_get_structure :-
-    Test = 'Phase 4: lowerable still rejects get_structure (not in Haskell Instruction type)',
+test_lowerable_accepts_get_structure :-
+    Test = 'Phase 4: lowerable now accepts get_structure (added to Instruction type)',
     WamText = "foo/1:\n    get_structure f/2, A1\n    proceed\n",
-    (   \+ wam_haskell_lowerable(foo/1, WamText, _)
+    (   wam_haskell_lowerable(foo/1, WamText, _)
     ->  pass(Test)
-    ;   fail_test(Test, 'get_structure should be rejected — not in Instruction data type')
+    ;   fail_test(Test, 'get_structure was rejected but should now be accepted')
     ).
 
 %% =====================================================================
@@ -354,7 +354,7 @@ run_tests :-
     test_lowerable_accepts_build_empty_set,
     test_lowerable_accepts_set_insert,
     test_lowerable_accepts_not_member_set,
-    test_lowerable_still_rejects_get_structure,
+    test_lowerable_accepts_get_structure,
     % Inline optimizations
     test_emit_get_constant_inline,
     test_emit_get_value_inline,
