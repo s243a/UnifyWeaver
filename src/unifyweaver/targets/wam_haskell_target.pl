@@ -957,9 +957,12 @@ result_wrap_expr(float, 'Float rv').
 %  full recursive_kernel(Kind, Pred/Arity, ConfigOps) term.
 detect_kernels([], []).
 detect_kernels([PI|Rest], Kernels) :-
-    (   PI = _Mod:Pred/Arity -> true ; PI = Pred/Arity ),
+    (   PI = Mod:Pred/Arity -> true ; PI = Pred/Arity, Mod = user ),
     functor(Head, Pred, Arity),
-    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   catch(findall(Head-Body, clause(Mod:Head, Body), Clauses), _, Clauses = [])
+    ->  true
+    ;   Clauses = []
+    ),
     (   Clauses \= [],
         detect_recursive_kernel(Pred, Arity, Clauses, Kernel)
     ->  format(atom(Key), '~w/~w', [Pred, Arity]),
@@ -3695,7 +3698,7 @@ write_wam_haskell_project(Predicates, Options0, ProjectDir) :-
     % lowered ones — so backtrack can land on alternate clauses that the
     % lowered function doesn't handle. Phase 4+ lowered functions only
     % inline clause 1; clause 2+ runs through the interpreter on backtrack.
-    compile_predicates_to_haskell(Predicates, Options, PredsCode0, InlineDefs),
+    compile_predicates_to_haskell(InternalPreds, Options, PredsCode0, InlineDefs),
     % Append compile-time atom table to Predicates.hs
     emit_atom_table_haskell(AtomTableCode),
     format(string(PredsCode0WithAtoms), "~w~n~n~w", [PredsCode0, AtomTableCode]),
@@ -3722,7 +3725,7 @@ write_wam_haskell_project(Predicates, Options0, ProjectDir) :-
     write_hs_file(CabalPath, CabalCode),
 
     % Generate Main.hs (InlineDefs from F3 → wcInlineFacts wiring)
-    generate_main_hs(Predicates, DetectedKernels, InlineDefs, Options, MainCode0),
+    generate_main_hs(InternalPreds, DetectedKernels, InlineDefs, Options, MainCode0),
     apply_hashmap_rewrite(UseHM, main, MainCode0, MainCode),
     directory_file_path(SrcDir, 'Main.hs', MainPath),
     write_hs_file(MainPath, MainCode),
