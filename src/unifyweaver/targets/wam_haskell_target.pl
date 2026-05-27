@@ -72,6 +72,10 @@
 :- use_module('../core/algorithm_manifest',
              [load_algorithm_manifest/2]).
 :- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
+:- use_module('../targets/wam_runtime_parser_capability',
+             [parser_dependent_body_goal/2, wam_target_runtime_parser/3]).
+:- use_module('../core/prolog_term_parser').
+:- use_module('../core/cpp_runtime_parser_wrappers').
 :- use_module('../core/cost_function',
              [validate_cost_function/1, cost_function_with_defaults/2]).
 :- use_module('../core/iso_errors',
@@ -3614,6 +3618,15 @@ write_wam_haskell_project(Predicates, Options0, ProjectDir) :-
     % lmdb_cache_mode, csr_index_backend) via composed chain.
     resolve_haskell_cost_options(OptionsM, Options),
 
+    % Resolve runtime parser mode (capability hook). When `compiled`
+    % is selected, the portable parser predicates + the target-agnostic
+    % wrappers are appended to the user's predicate list so the Haskell
+    % WAM compiler emits them too. When `none` (default), statically
+    % visible parser-dependent bodies are rejected at codegen time.
+    wam_target_runtime_parser(wam_haskell, Options, RuntimeParserMode),
+    haskell_validate_runtime_parser_mode(Predicates, RuntimeParserMode),
+    haskell_project_predicates(Predicates, RuntimeParserMode, ProjectPredicates),
+
     % Initialize the compile-time atom intern table with well-known atoms
     init_atom_intern_table,
     make_directory_path(ProjectDir),
@@ -3629,7 +3642,7 @@ write_wam_haskell_project(Predicates, Options0, ProjectDir) :-
     % must bypass kernel detection, lowering, PC computation, and WAM
     % compilation. They still appear in `Predicates` so
     % compile_predicates_to_haskell emits a skip-comment for each.
-    partition(pred_is_external_source(Options), Predicates, _ExternalPreds, InternalPreds),
+    partition(pred_is_external_source(Options), ProjectPredicates, _ExternalPreds, InternalPreds),
 
     % Detect recursive kernels in the predicate list. Detected kernels
     % are handled by the FFI (executeForeign) at runtime and are excluded
@@ -4384,6 +4397,75 @@ cache_tier_memory_budget_short(Options, FloorBytes, RFree) :-
     ;   catch(read_mem_available_bytes(RFree), _, RFree = 1_000_000_000)
     ),
     RFree < FloorBytes.
+
+%% =====================================================================
+%% Runtime parser integration
+%% =====================================================================
+
+%% haskell_project_predicates(+UserPreds, +Mode, -ProjectPreds)
+%  In `compiled` mode, append the portable parser + wrapper
+%  predicate indicators. In other modes, leave the list untouched.
+haskell_project_predicates(Predicates, compiled(prolog_term_parser), ProjectPredicates) :-
+    !,
+    haskell_runtime_parser_predicates(ParserPreds),
+    haskell_runtime_parser_wrapper_predicates(WrapperPreds),
+    append([Predicates, ParserPreds, WrapperPreds], Combined),
+    sort(Combined, ProjectPredicates).
+haskell_project_predicates(Predicates, _RuntimeParserMode, Predicates).
+
+%% haskell_runtime_parser_predicates(-Predicates)
+%  Enumerate non-imported predicates of `prolog_term_parser` as
+%  `prolog_term_parser:Name/Arity` indicators.
+haskell_runtime_parser_predicates(Predicates) :-
+    findall(prolog_term_parser:Name/Arity,
+            ( current_predicate(prolog_term_parser:Name/Arity),
+              functor(Head, Name, Arity),
+              once(clause(prolog_term_parser:Head, _)),
+              \+ predicate_property(prolog_term_parser:Head, imported_from(_))
+            ),
+            Raw),
+    sort(Raw, Predicates).
+
+%% haskell_runtime_parser_wrapper_predicates(-Predicates)
+%  Enumerate non-imported predicates of `cpp_runtime_parser_wrappers`
+%  (the module name is C++-historical but the wrappers are target-agnostic).
+haskell_runtime_parser_wrapper_predicates(Predicates) :-
+    findall(cpp_runtime_parser_wrappers:Name/Arity,
+            ( current_predicate(cpp_runtime_parser_wrappers:Name/Arity),
+              functor(Head, Name, Arity),
+              once(clause(cpp_runtime_parser_wrappers:Head, _)),
+              \+ predicate_property(cpp_runtime_parser_wrappers:Head,
+                                    imported_from(_))
+            ),
+            Raw),
+    sort(Raw, Predicates).
+
+%% haskell_validate_runtime_parser_mode(+Predicates, +Mode)
+%  When the mode is `none`, reject any user predicate whose body
+%  statically calls a parser-dependent builtin.
+haskell_validate_runtime_parser_mode(Predicates, none) :-
+    !,
+    (   haskell_predicates_parser_dependency(Predicates, Pred, Builtin)
+    ->  throw(error(permission_error(use, runtime_parser, Builtin),
+                    context(write_wam_haskell_project/3,
+                            parser_disabled_for_predicate(Pred))))
+    ;   true
+    ).
+haskell_validate_runtime_parser_mode(_Predicates, _Mode).
+
+haskell_predicates_parser_dependency(Predicates, Pred, Builtin) :-
+    member(Pred, Predicates),
+    haskell_predicate_clause(Pred, _Head, Body),
+    parser_dependent_body_goal(Body, Builtin),
+    !.
+
+haskell_predicate_clause(Module:Name/Arity, Head, Body) :-
+    !,
+    functor(Head, Name, Arity),
+    clause(Module:Head, Body).
+haskell_predicate_clause(Name/Arity, Head, Body) :-
+    functor(Head, Name, Arity),
+    clause(user:Head, Body).
 
 %% =====================================================================
 %% CSR auto-resolution and bidirectional kernel upgrade
