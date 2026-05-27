@@ -3548,6 +3548,9 @@ emit_config_let_bindings_fs([config_int(ConfigKey, Default)|Rest]) :-
     format('        let ~w_cfg = Map.tryFind "~w" ctx.WcForeignConfig |> Option.defaultValue ~w~n',
            [ConfigKey, ConfigKey, Default]),
     emit_config_let_bindings_fs(Rest).
+emit_config_let_bindings_fs([config_float(ConfigKey, Default)|Rest]) :-
+    format('        let ~w_cfg = ~w~n', [ConfigKey, Default]),
+    emit_config_let_bindings_fs(Rest).
 emit_config_let_bindings_fs([_|Rest]) :-
     emit_config_let_bindings_fs(Rest).
 
@@ -3610,6 +3613,8 @@ emit_one_call_arg_fs(config_facts(FactKey), _) :-
 emit_one_call_arg_fs(config_weighted_facts(FactKey), _) :-
     format('~w_facts', [FactKey]).
 emit_one_call_arg_fs(config_int(ConfigKey, _), _) :-
+    format('~w_cfg', [ConfigKey]).
+emit_one_call_arg_fs(config_float(ConfigKey, _), _) :-
     format('~w_cfg', [ConfigKey]).
 emit_one_call_arg_fs(reg(RegN), InputRegs) :-
     member(input(RegN, Type), InputRegs),
@@ -3691,7 +3696,7 @@ emit_multi_wrap_bindings_fs([], _) :- format('~n', []).
 emit_multi_wrap_bindings_fs([output(_, Type)|Rest], I) :-
     fsharp_wam_result_wrap_rv(Type, I, WrapExpr),
     (   I =:= 1 -> format('w_~w = ~w', [I, WrapExpr])
-    ;              format('; w_~w = ~w', [I, WrapExpr])
+    ;              format('~n                let w_~w = ~w', [I, WrapExpr])
     ),
     I1 is I + 1,
     emit_multi_wrap_bindings_fs(Rest, I1).
@@ -3709,33 +3714,33 @@ emit_reg_set_chain_fs([output(RegN, _)|Rest], I) :-
 
 emit_multi_binding_updates_fs(OutputRegs, Indent) :-
     format('~w             WsBindings = ', [Indent]),
-    emit_binding_add_chain_fs(OutputRegs, 1),
-    format('s.WsBindings~n', []).
+    emit_binding_add_chain_fs(OutputRegs, 1, 's.WsBindings'),
+    format('~n', []).
 
-emit_binding_add_chain_fs([], _).
-emit_binding_add_chain_fs([output(RegN, _)|Rest], I) :-
+emit_binding_add_chain_fs([], _, Base) :- format('~w', [Base]).
+emit_binding_add_chain_fs([output(RegN, _)|Rest], I, Base) :-
     format('(match outReg_~w with | Unbound v -> Map.add v w_~w | _ -> id) ', [RegN, I]),
     I1 is I + 1,
     (   Rest = []
-    ->  true
+    ->  format('~w', [Base])
     ;   format('(', []),
-        emit_binding_add_chain_fs(Rest, I1),
+        emit_binding_add_chain_fs(Rest, I1, Base),
         format(')', [])
     ).
 
 emit_multi_trail_updates_fs(OutputRegs, Indent) :-
     format('~w             WsTrail = ', [Indent]),
-    emit_trail_entry_chain_fs(OutputRegs, 1),
-    format('s.WsTrail~n', []).
+    emit_trail_entry_chain_fs(OutputRegs, 1, 's.WsTrail'),
+    format('~n', []).
 
-emit_trail_entry_chain_fs([], _).
-emit_trail_entry_chain_fs([output(RegN, _)|Rest], I) :-
+emit_trail_entry_chain_fs([], _, Base) :- format('~w', [Base]).
+emit_trail_entry_chain_fs([output(RegN, _)|Rest], I, Base) :-
     format('(match outReg_~w with | Unbound v -> (fun tl -> { TrailVarId = v; TrailOldVal = Map.tryFind v s.WsBindings } :: tl) | _ -> id) ', [RegN]),
     I1 is I + 1,
     (   Rest = []
-    ->  true
+    ->  format('~w', [Base])
     ;   format('(', []),
-        emit_trail_entry_chain_fs(Rest, I1),
+        emit_trail_entry_chain_fs(Rest, I1, Base),
         format(')', [])
     ).
 

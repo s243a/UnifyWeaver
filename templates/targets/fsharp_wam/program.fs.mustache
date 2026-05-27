@@ -67,7 +67,7 @@ let extractDouble (v: Value) : float option =
 //
 // Each path is weighted by direction: w = (1/D)^N * (1/(b*D))^M
 // where N = parent hops, M = child hops, D = dimensionality, b = branch ratio.
-// Normalized power-mean: d = (Σ(w * (h+1)^(-n)) / Σw)^(-1/n)
+// Normalized power-mean: d = (Sum(w * (h+1)^(-n)) / Sum(w))^(-1/n)
 //
 // D and b are calibrated per-graph from BFS growth rates and fan-out
 // statistics (see GraphCalibration in kernel_bidirectional_ancestor).

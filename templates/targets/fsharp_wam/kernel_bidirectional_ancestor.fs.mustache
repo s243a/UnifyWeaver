@@ -23,7 +23,7 @@
 /// ratio b, computed from degree distribution moments during BFS.
 /// Used by the distance metric to weight parent vs child hops.
 ///   D = E[d_child] (average child fan-out)
-///   b_raw = E[d²_child] / E[d²_parent] (second moment ratio)
+///   b_raw = E[d^2_child] / E[d^2_parent] (second moment ratio)
 ///   b = b_raw * routing_correction (optional)
 /// The second moment ratio captures the path amplification asymmetry
 /// from heavy-tail nodes (hubs with hundreds of children).
