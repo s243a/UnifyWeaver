@@ -3036,12 +3036,14 @@ stepST _ regs !pw (PutValue xn ai) = do
     Nothing -> return Nothing
 
 stepST _ _ !pw (PutStructure fnId ai arity) =
-  return $ Just pw { pwPC = pwPC pw + 1
-                   , pwBuilder = BuildStruct fnId ai arity [] }
+  let push = pushBuilderIfActivePure pw
+  in return $ Just push { pwPC = pwPC push + 1
+                        , pwBuilder = BuildStruct fnId ai arity [] }
 
 stepST _ _ !pw (PutList ai) =
-  return $ Just pw { pwPC = pwPC pw + 1
-                   , pwBuilder = BuildList ai [] }
+  let push = pushBuilderIfActivePure pw
+  in return $ Just push { pwPC = pwPC push + 1
+                        , pwBuilder = BuildList ai [] }
 
 stepST _ _ !pw (CallResolved pc _arity) =
   return $ Just pw { pwPC = pc, pwCP = pwPC pw + 1 }
@@ -3422,6 +3424,84 @@ stepST _ regs !pw (PutStructureDyn nameReg arityReg targetReg) = do
     _ -> return Nothing
 
 -- Parallel variants delegate to their sequential counterparts
+-- GetStructure: read-mode if register holds matching Str, write-mode if Unbound.
+-- Delegates to pure bridge for builder interactions.
+stepST !ctx regs !pw (GetStructure fnId ai arity) = do
+  regMap <- freezeRegsToIntMap regs
+  let ws = pureToWamState pw regMap
+  case step ctx ws (GetStructure fnId ai arity) of
+    Nothing -> return Nothing
+    Just ws'''' -> do
+      forM_ (IM.toList (wsRegs ws'''')) $ \\(k, v) -> writeArray regs k v
+      return (Just (wamStateToPure ws''''))
+
+-- GetList: read-mode or write-mode. Delegates to pure bridge.
+stepST !ctx regs !pw (GetList ai) = do
+  regMap <- freezeRegsToIntMap regs
+  let ws = pureToWamState pw regMap
+  case step ctx ws (GetList ai) of
+    Nothing -> return Nothing
+    Just ws'''' -> do
+      forM_ (IM.toList (wsRegs ws'''')) $ \\(k, v) -> writeArray regs k v
+      return (Just (wamStateToPure ws''''))
+
+-- UnifyVariable: read-mode -> bind register, write-mode -> create fresh var + addToBuilder.
+stepST _ regs !pw (UnifyVariable xn) = do
+  regMap <- freezeRegsToIntMap regs
+  let ws = pureToWamState pw regMap
+  case readNextArg ws of
+    Just (v, ws'''') ->
+      let ws2 = (putReg xn v ws'''') { wsPC = wsPC ws + 1 }
+      in do forM_ (IM.toList (wsRegs ws2)) $ \\(k, val) -> writeArray regs k val
+            return (Just (wamStateToPure ws2))
+    Nothing ->
+      let vid = wsVarCounter ws
+          var = Unbound vid
+          s1 = putReg xn var (ws { wsVarCounter = vid + 1 })
+      in case addToBuilder var s1 of
+        Nothing -> return Nothing
+        Just ws2 -> do
+          forM_ (IM.toList (wsRegs ws2)) $ \\(k, val) -> writeArray regs k val
+          return (Just (wamStateToPure ws2))
+
+-- UnifyValue: read-mode -> unify register with next arg, write-mode -> addToBuilder.
+stepST _ regs !pw (UnifyValue xn) = do
+  regMap <- freezeRegsToIntMap regs
+  let ws = pureToWamState pw regMap
+  case readNextArg ws of
+    Just (v, ws'''') ->
+      case getReg xn ws of
+        Just xv -> case unifyValues (derefVar (wsBindings ws) v) (derefVar (wsBindings ws) xv) ws'''' of
+          Just ws2 -> do
+            forM_ (IM.toList (wsRegs ws2)) $ \\(k, val) -> writeArray regs k val
+            return (Just (wamStateToPure (ws2 { wsPC = wsPC ws + 1 })))
+          Nothing -> return Nothing
+        Nothing -> return Nothing
+    Nothing ->
+      case getReg xn ws of
+        Just val -> case addToBuilder val ws of
+          Nothing -> return Nothing
+          Just ws2 -> do
+            forM_ (IM.toList (wsRegs ws2)) $ \\(k, val2) -> writeArray regs k val2
+            return (Just (wamStateToPure ws2))
+        Nothing -> return Nothing
+
+-- UnifyConstant: read-mode -> unify constant with next arg, write-mode -> addToBuilder.
+stepST _ regs !pw (UnifyConstant c) = do
+  regMap <- freezeRegsToIntMap regs
+  let ws = pureToWamState pw regMap
+  case readNextArg ws of
+    Just (v, ws'''') -> case unifyValues (derefVar (wsBindings ws) v) c ws'''' of
+      Just ws2 -> do
+        forM_ (IM.toList (wsRegs ws2)) $ \\(k, val) -> writeArray regs k val
+        return (Just (wamStateToPure (ws2 { wsPC = wsPC ws + 1 })))
+      Nothing -> return Nothing
+    Nothing -> case addToBuilder c ws of
+      Nothing -> return Nothing
+      Just ws2 -> do
+        forM_ (IM.toList (wsRegs ws2)) $ \\(k, val) -> writeArray regs k val
+        return (Just (wamStateToPure ws2))
+
 stepST !ctx regs !pw (ParTryMeElse label) = stepST ctx regs pw (TryMeElse label)
 stepST !ctx regs !pw (ParRetryMeElse label) = stepST ctx regs pw (RetryMeElse label)
 stepST !ctx regs !pw ParTrustMe = stepST ctx regs pw TrustMe
@@ -4862,6 +4942,13 @@ pushBuilderIfActive s = case wsBuilder s of
   NoBuilder -> s
   b -> s { wsBuilder = NoBuilder
          , wsBuilderStack = b : wsBuilderStack s }
+
+-- | PureWamState variant for stepST.
+pushBuilderIfActivePure :: PureWamState -> PureWamState
+pushBuilderIfActivePure pw = case pwBuilder pw of
+  NoBuilder -> pw
+  b -> pw { pwBuilder = NoBuilder
+          , pwBuilderStack = b : pwBuilderStack pw }
 
 -- | Restore the top builder from the stack.
 popBuilderStack :: WamState -> WamState
