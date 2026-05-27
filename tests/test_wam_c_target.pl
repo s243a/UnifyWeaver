@@ -353,6 +353,7 @@ test_reverse_csr_generation :-
         atom_string(RuntimeCode, S),
         sub_string(S, _, _, _, 'void wam_reverse_csr_init'),
         sub_string(S, _, _, _, 'bool wam_reverse_csr_load'),
+        sub_string(S, _, _, _, 'bool wam_reverse_csr_load_lmdb_offset'),
         sub_string(S, _, _, _, 'int wam_reverse_csr_lookup_children'),
         sub_string(S, _, _, _, 'pread('),
         sub_string(S, _, _, _, 'wam_read_i32_le')
@@ -390,8 +391,10 @@ test_reverse_index_plan_csr_cost_model :-
         ),
         memberchk(index_backend(lmdb_offset), Resolved),
         memberchk(io_policy(buffered_pread_drop), Resolved),
-        memberchk(runtime_child_lookup(unsupported), Capabilities),
-        memberchk(runtime_reason(lmdb_offset_index_not_implemented), Capabilities)
+        memberchk(runtime_child_lookup(available), Capabilities),
+        memberchk(runtime_api(wam_reverse_csr_lookup_children), Capabilities),
+        memberchk(runtime_index_backend(lmdb_offset), Capabilities),
+        memberchk(runtime_requires(wam_c_enable_lmdb), Capabilities)
     ->  pass(Test)
     ;   fail_test(Test, 'CSR options were not normalized through the cost model')
     ).
@@ -417,8 +420,8 @@ test_reverse_index_plan_runtime_available_sorted_array :-
     ;   fail_test(Test, 'runtime sorted-array CSR artifact was not marked available')
     ).
 
-test_reverse_index_plan_runtime_available_lmdb_offset_unsupported :-
-    Test = 'WAM-C: runtime lmdb-offset CSR artifact is still unsupported',
+test_reverse_index_plan_runtime_available_lmdb_offset :-
+    Test = 'WAM-C: runtime lmdb-offset CSR artifact is available with LMDB',
     (   resolve_wam_c_reverse_index_plan(
             [reverse_index(artifact([
                 storage_kind(csr_pread_artifact),
@@ -431,10 +434,11 @@ test_reverse_index_plan_runtime_available_lmdb_offset_unsupported :-
         memberchk(phase(runtime_available), Resolved),
         memberchk(storage_kind(csr_pread_artifact), Resolved),
         memberchk(index_backend(lmdb_offset), Resolved),
-        memberchk(runtime_child_lookup(unsupported), Capabilities),
-        memberchk(runtime_reason(lmdb_offset_index_not_implemented), Capabilities)
+        memberchk(runtime_child_lookup(available), Capabilities),
+        memberchk(runtime_index_backend(lmdb_offset), Capabilities),
+        memberchk(runtime_requires(wam_c_enable_lmdb), Capabilities)
     ->  pass(Test)
-    ;   fail_test(Test, 'runtime lmdb-offset CSR artifact did not stay unsupported')
+    ;   fail_test(Test, 'runtime lmdb-offset CSR artifact was not marked available')
     ).
 
 test_streaming_foreign_results_generation :-
@@ -1208,6 +1212,17 @@ test_reverse_csr_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_reverse_csr_lmdb_offset_executable_smoke :-
+    Test = 'WAM-C: reverse CSR LMDB offset executable smoke',
+    (   gcc_available,
+        lmdb_available
+    ->  (   run_reverse_csr_lmdb_offset_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'reverse CSR LMDB offset executable failed')
+        )
+    ;   format('[PASS] ~w (gcc or lmdb unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_streaming_foreign_results_executable_smoke :-
     Test = 'WAM-C: streaming category_ancestor result executable smoke',
     (   gcc_available
@@ -1747,6 +1762,30 @@ run_reverse_csr_executable_smoke :-
     wam_c_reverse_csr_smoke_main(IndexPath, ValuesPath, MainCode),
     write_text_file(MainPath, MainCode),
     compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
+run_reverse_csr_lmdb_offset_executable_smoke :-
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_reverse_csr_lmdb_offset_smoke', Stamp, TmpBase),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(ValuesPath), '~w.csr.val', [TmpBase]),
+    format(atom(OffsetEnvPath), '~w.offsets.lmdb', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    write_text_file(PredPath, '#include "wam_runtime.h"\n'),
+    write_binary_file(ValuesPath, [
+        10,0,0,0,
+        12,0,0,0,
+        13,0,0,0,
+        11,0,0,0
+    ]),
+    wam_c_reverse_csr_lmdb_offset_smoke_main(ValuesPath, OffsetEnvPath, MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_lmdb(RuntimePath, PredPath, MainPath, ExePath),
     run_c_smoke_plain(ExePath).
 
 run_kernel_detector_executable_smoke :-
@@ -3726,6 +3765,112 @@ int main(void) {
 }
 ', [IndexPath, ValuesPath]).
 
+wam_c_reverse_csr_lmdb_offset_smoke_main(ValuesPath, OffsetEnvPath, MainCode) :-
+    format(atom(MainCode),
+'#include "wam_runtime.h"
+#include <sys/stat.h>
+
+static void encode_i32(unsigned char *out, int value) {
+    unsigned int v = (unsigned int)value;
+    out[0] = (unsigned char)(v & 0xffU);
+    out[1] = (unsigned char)((v >> 8) & 0xffU);
+    out[2] = (unsigned char)((v >> 16) & 0xffU);
+    out[3] = (unsigned char)((v >> 24) & 0xffU);
+}
+
+static void encode_offset_record(unsigned char *out, unsigned long long offset_edges, unsigned int child_count) {
+    for (int i = 0; i < 8; i++) {
+        out[i] = (unsigned char)((offset_edges >> (8 * i)) & 0xffULL);
+    }
+    out[8] = (unsigned char)(child_count & 0xffU);
+    out[9] = (unsigned char)((child_count >> 8) & 0xffU);
+    out[10] = (unsigned char)((child_count >> 16) & 0xffU);
+    out[11] = (unsigned char)((child_count >> 24) & 0xffU);
+}
+
+static int put_offset(MDB_txn *txn, MDB_dbi dbi, int parent, unsigned long long offset_edges, unsigned int child_count) {
+    unsigned char key_bytes[4];
+    unsigned char data_bytes[12];
+    MDB_val key;
+    MDB_val data;
+    encode_i32(key_bytes, parent);
+    encode_offset_record(data_bytes, offset_edges, child_count);
+    key.mv_size = sizeof(key_bytes);
+    key.mv_data = key_bytes;
+    data.mv_size = sizeof(data_bytes);
+    data.mv_data = data_bytes;
+    return mdb_put(txn, dbi, &key, &data, 0);
+}
+
+static int seed_offsets(const char *path) {
+    MDB_env *env = NULL;
+    MDB_txn *txn = NULL;
+    MDB_dbi dbi = 0;
+    int rc = mkdir(path, 0777);
+    (void)rc;
+    rc = mdb_env_create(&env);
+    if (rc != MDB_SUCCESS) return rc;
+    rc = mdb_env_set_maxdbs(env, 2);
+    if (rc != MDB_SUCCESS) { mdb_env_close(env); return rc; }
+    rc = mdb_env_set_mapsize(env, 1048576);
+    if (rc != MDB_SUCCESS) { mdb_env_close(env); return rc; }
+    rc = mdb_env_open(env, path, 0, 0664);
+    if (rc != MDB_SUCCESS) { mdb_env_close(env); return rc; }
+    rc = mdb_txn_begin(env, NULL, 0, &txn);
+    if (rc != MDB_SUCCESS) { mdb_env_close(env); return rc; }
+    rc = mdb_dbi_open(txn, "offsets", MDB_CREATE, &dbi);
+    if (rc == MDB_SUCCESS) rc = put_offset(txn, dbi, 20, 0, 3);
+    if (rc == MDB_SUCCESS) rc = put_offset(txn, dbi, 30, 3, 1);
+    if (rc == MDB_SUCCESS) rc = mdb_txn_commit(txn);
+    else mdb_txn_abort(txn);
+    mdb_dbi_close(env, dbi);
+    mdb_env_close(env);
+    return rc;
+}
+
+int main(void) {
+    WamReverseCsrArtifact csr;
+    int children[4] = {0, 0, 0, 0};
+    int count = 0;
+
+    if (seed_offsets("~w") != MDB_SUCCESS) return 5;
+
+    wam_reverse_csr_init(&csr);
+    if (!wam_reverse_csr_load_lmdb_offset(&csr, "~w", "~w", "offsets")) {
+        return 10;
+    }
+
+    count = wam_reverse_csr_lookup_children(&csr, 20, children, 4);
+    if (count != 3 || children[0] != 10 || children[1] != 12 || children[2] != 13) {
+        wam_reverse_csr_close(&csr);
+        return 20;
+    }
+
+    children[0] = 0;
+    children[1] = 0;
+    count = wam_reverse_csr_lookup_children(&csr, 20, children, 2);
+    if (count != 3 || children[0] != 10 || children[1] != 12) {
+        wam_reverse_csr_close(&csr);
+        return 30;
+    }
+
+    count = wam_reverse_csr_lookup_children(&csr, 30, children, 4);
+    if (count != 1 || children[0] != 11) {
+        wam_reverse_csr_close(&csr);
+        return 40;
+    }
+
+    count = wam_reverse_csr_lookup_children(&csr, 99, children, 4);
+    if (count != 0) {
+        wam_reverse_csr_close(&csr);
+        return 50;
+    }
+
+    wam_reverse_csr_close(&csr);
+    return 0;
+}
+', [OffsetEnvPath, ValuesPath, OffsetEnvPath]).
+
 wam_c_streaming_foreign_smoke_main(
 '#include "wam_runtime.h"
 
@@ -4547,7 +4692,7 @@ run_tests_once :-
     test_reverse_index_plan_none,
     test_reverse_index_plan_csr_cost_model,
     test_reverse_index_plan_runtime_available_sorted_array,
-    test_reverse_index_plan_runtime_available_lmdb_offset_unsupported,
+    test_reverse_index_plan_runtime_available_lmdb_offset,
     test_streaming_foreign_results_generation,
     test_kernel_detector_setup_generation,
     test_transitive_closure_detector_setup_generation,
@@ -4586,6 +4731,7 @@ run_tests_once :-
     test_fact_source_executable_smoke,
     test_lmdb_fact_source_executable_smoke,
     test_reverse_csr_executable_smoke,
+    test_reverse_csr_lmdb_offset_executable_smoke,
     test_kernel_detector_executable_smoke,
     test_transitive_closure_detector_executable_smoke,
     test_transitive_distance_detector_executable_smoke,

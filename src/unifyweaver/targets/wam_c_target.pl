@@ -72,8 +72,11 @@ wam_c_reverse_index_capabilities(csr(Opts), [
     !.
 wam_c_reverse_index_capabilities(ReverseIndex, [
     planning(accepted),
-    runtime_child_lookup(unsupported),
-    runtime_reason(lmdb_offset_index_not_implemented)
+    runtime_child_lookup(available),
+    runtime_api(wam_reverse_csr_lookup_children),
+    runtime_index_backend(lmdb_offset),
+    runtime_io(pread),
+    runtime_requires(wam_c_enable_lmdb)
 ]) :-
     wam_c_reverse_index_uses_lmdb_offset(ReverseIndex),
     !.
@@ -2572,6 +2575,14 @@ void wam_reverse_csr_init(WamReverseCsrArtifact *artifact) {
 void wam_reverse_csr_close(WamReverseCsrArtifact *artifact) {
     if (artifact->index_fd >= 0) close(artifact->index_fd);
     if (artifact->values_fd >= 0) close(artifact->values_fd);
+#ifdef WAM_C_ENABLE_LMDB
+    if (artifact->offset_env) {
+        if (artifact->offset_dbi_open) {
+            mdb_dbi_close(artifact->offset_env, artifact->offset_dbi);
+        }
+        mdb_env_close(artifact->offset_env);
+    }
+#endif
     free(artifact->rows);
     wam_reverse_csr_init(artifact);
 }
@@ -2620,6 +2631,50 @@ done:
     return ok;
 }
 
+bool wam_reverse_csr_load_lmdb_offset(WamReverseCsrArtifact *artifact,
+                                      const char *values_path,
+                                      const char *offset_env_path,
+                                      const char *db_name) {
+#ifndef WAM_C_ENABLE_LMDB
+    (void)artifact;
+    (void)values_path;
+    (void)offset_env_path;
+    (void)db_name;
+    return false;
+#else
+    MDB_txn *txn = NULL;
+    int rc = 0;
+    bool ok = false;
+
+    wam_reverse_csr_close(artifact);
+    artifact->values_fd = open(values_path, O_RDONLY);
+    if (artifact->values_fd < 0) goto done;
+
+    rc = mdb_env_create(&artifact->offset_env);
+    if (rc != MDB_SUCCESS) goto done;
+    rc = mdb_env_set_maxdbs(artifact->offset_env, 2);
+    if (rc != MDB_SUCCESS) goto done;
+    rc = mdb_env_open(artifact->offset_env, offset_env_path, MDB_RDONLY, 0664);
+    if (rc != MDB_SUCCESS) goto done;
+    rc = mdb_txn_begin(artifact->offset_env, NULL, MDB_RDONLY, &txn);
+    if (rc != MDB_SUCCESS) goto done;
+    rc = mdb_dbi_open(txn, (db_name && db_name[0]) ? db_name : "offsets", 0, &artifact->offset_dbi);
+    if (rc != MDB_SUCCESS) goto done;
+    rc = mdb_txn_commit(txn);
+    txn = NULL;
+    if (rc != MDB_SUCCESS) goto done;
+
+    artifact->offset_dbi_open = true;
+    artifact->use_lmdb_offset = true;
+    ok = true;
+
+done:
+    if (txn) mdb_txn_abort(txn);
+    if (!ok) wam_reverse_csr_close(artifact);
+    return ok;
+#endif
+}
+
 static WamReverseCsrRow *wam_reverse_csr_find_row(WamReverseCsrArtifact *artifact,
                                                   int parent) {
     int lo = 0;
@@ -2637,19 +2692,69 @@ static WamReverseCsrRow *wam_reverse_csr_find_row(WamReverseCsrArtifact *artifac
     return &artifact->rows[lo];
 }
 
+#ifdef WAM_C_ENABLE_LMDB
+static int wam_reverse_csr_find_lmdb_offset(WamReverseCsrArtifact *artifact,
+                                            int parent,
+                                            uint64_t *offset_edges,
+                                            uint32_t *child_count) {
+    unsigned char key_bytes[4];
+    MDB_txn *txn = NULL;
+    MDB_val key;
+    MDB_val data;
+    int rc = 0;
+
+    key_bytes[0] = (unsigned char)((uint32_t)parent & 0xffU);
+    key_bytes[1] = (unsigned char)(((uint32_t)parent >> 8) & 0xffU);
+    key_bytes[2] = (unsigned char)(((uint32_t)parent >> 16) & 0xffU);
+    key_bytes[3] = (unsigned char)(((uint32_t)parent >> 24) & 0xffU);
+    key.mv_size = sizeof(key_bytes);
+    key.mv_data = key_bytes;
+
+    rc = mdb_txn_begin(artifact->offset_env, NULL, MDB_RDONLY, &txn);
+    if (rc != MDB_SUCCESS) return -1;
+    rc = mdb_get(txn, artifact->offset_dbi, &key, &data);
+    if (rc == MDB_NOTFOUND) {
+        mdb_txn_abort(txn);
+        return 0;
+    }
+    if (rc != MDB_SUCCESS || data.mv_size != 12) {
+        mdb_txn_abort(txn);
+        return -1;
+    }
+    *offset_edges = wam_read_u64_le((const unsigned char *)data.mv_data);
+    *child_count = wam_read_u32_le(((const unsigned char *)data.mv_data) + 8);
+    mdb_txn_abort(txn);
+    return 1;
+}
+#endif
+
 int wam_reverse_csr_lookup_children(WamReverseCsrArtifact *artifact,
                                     int parent,
                                     int *out_children,
                                     int max_children) {
-    WamReverseCsrRow *row = wam_reverse_csr_find_row(artifact, parent);
-    if (!row) return 0;
+    uint64_t offset_edges = 0;
+    uint32_t child_count = 0;
+
+#ifdef WAM_C_ENABLE_LMDB
+    if (artifact->use_lmdb_offset) {
+        int status = wam_reverse_csr_find_lmdb_offset(artifact, parent, &offset_edges, &child_count);
+        if (status <= 0) return status;
+    } else
+#endif
+    {
+        WamReverseCsrRow *row = wam_reverse_csr_find_row(artifact, parent);
+        if (!row) return 0;
+        offset_edges = row->offset_edges;
+        child_count = row->child_count;
+    }
+
     if (max_children < 0) max_children = 0;
-    if (row->child_count > (uint32_t)INT_MAX) return -1;
-    int total = (int)row->child_count;
+    if (child_count > (uint32_t)INT_MAX) return -1;
+    int total = (int)child_count;
     int to_read = total < max_children ? total : max_children;
     for (int i = 0; i < to_read; i++) {
         unsigned char encoded[4];
-        uint64_t edge_offset = row->offset_edges + (uint64_t)i;
+        uint64_t edge_offset = offset_edges + (uint64_t)i;
         if (edge_offset > (UINT64_MAX / 4ULL)) return -1;
         if (!wam_pread_exact(artifact->values_fd, encoded, sizeof(encoded), (off_t)(edge_offset * 4ULL))) {
             return -1;
