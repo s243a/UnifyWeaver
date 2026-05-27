@@ -1,0 +1,128 @@
+-- | Bidirectional effective-distance kernel with path-cost pruning
+-- and A*-style lower-bound elimination.
+-- Auto-generated from kernel detection. Edge predicates:
+--   upward: {{edge_pred}} (category_parent), downward: category_child.
+--
+-- Explores paths in both directions (parent hops and child hops).
+-- Each step has a direction-dependent cost: parent steps cost
+-- parentCost, child steps cost childCost. Paths are pruned when
+-- cumulative cost exceeds the budget.
+--
+-- A* pruning: precomputes the minimum parent-hop distance from every
+-- node to root (BFS from root via child edges). During search, any
+-- frontier entry where current_cost + min_dist[node] * parentCost
+-- exceeds the budget is eliminated.
+--
+-- Returns (totalHops, parentHops, childHops) for all paths that
+-- reach root within budget. With childCost = infinity, degenerates
+-- to upward-only search.
+
+-- | Graph calibration: dimensionality, branching ratio, and min-dist map.
+data GraphCalibration = GraphCalibration
+  { gcDimensionality    :: {-# UNPACK #-} !Double
+  , gcBranchRatio       :: {-# UNPACK #-} !Double
+  , gcBranchRatioRaw    :: {-# UNPACK #-} !Double
+  , gcRoutingCorrection :: {-# UNPACK #-} !Double
+  , gcMinDist           :: !(IM.IntMap Int)
+  }
+
+-- | BFS from root via child edges to precompute min-dist and graph metrics.
+calibrateGraph :: EdgeLookup -> EdgeLookup -> Int -> GraphCalibration
+calibrateGraph lookupParents lookupChildren root =
+  let initDist = IM.singleton root 0
+      (finalDist, sumCD, sumCD2, cNodes, sumPD, sumPD2, pNodes) =
+        bfs [root] 1 initDist 0.0 0.0 0 0.0 0.0 0
+      dimensionality = if cNodes > 0 then max 1.5 (sumCD / fromIntegral cNodes) else 3.0
+      branchRatioRaw =
+        if cNodes > 0 && pNodes > 0
+        then let ed2c = sumCD2 / fromIntegral cNodes
+                 ed2p = sumPD2 / fromIntegral pNodes
+             in if ed2p > 0.0 then max 1.0 (ed2c / ed2p) else 1.0
+        else 1.0
+      seedSample = take 20 [k | (k, d) <- IM.toList finalDist, d >= 3, d <= 6]
+      routingCorrection = computeRoutingCorrection lookupParents lookupChildren finalDist root seedSample
+      branchRatio = branchRatioRaw * routingCorrection
+  in GraphCalibration dimensionality branchRatio branchRatioRaw routingCorrection finalDist
+  where
+    bfs [] _ !dist !sCD !sCD2 !cN !sPD !sPD2 !pN =
+      (dist, sCD, sCD2, cN, sPD, sPD2, pN)
+    bfs frontier !depth !dist !sCD !sCD2 !cN !sPD !sPD2 !pN =
+      let (next, dist', sCD', sCD2', cN', sPD', sPD2', pN') =
+            foldl' (\(!nxt, !dm, !sc, !sc2, !cn, !sp, !sp2, !pn) nd ->
+              let children = lookupChildren nd
+                  (sc1, sc21, cn1) = if null children then (sc, sc2, cn)
+                    else let d = fromIntegral (length children) :: Double
+                         in (sc + d, sc2 + d * d, cn + 1)
+                  parents = lookupParents nd
+                  (sp1, sp21, pn1) = if null parents then (sp, sp2, pn)
+                    else let d = fromIntegral (length parents) :: Double
+                         in (sp + d, sp2 + d * d, pn + 1)
+                  (nxt1, dm1) = foldl' (\(!n, !m) c ->
+                    case IM.lookup c m of
+                      Just _ -> (n, m)
+                      Nothing -> (c : n, IM.insert c depth m)
+                    ) (nxt, dm) children
+              in (nxt1, dm1, sc1, sc21, cn1, sp1, sp21, pn1)
+            ) ([], dist, sCD, sCD2, cN, sPD, sPD2, pN) frontier
+      in bfs next (depth + 1) dist' sCD' sCD2' cN' sPD' sPD2' pN'
+
+-- | Routing correction: probe sample seeds to measure avg_min_dist / avg_path_hops.
+computeRoutingCorrection :: EdgeLookup -> EdgeLookup -> IM.IntMap Int -> Int -> [Int] -> Double
+computeRoutingCorrection _ _ _ _ [] = 1.0
+computeRoutingCorrection lookupParents lookupChildren dist root seeds =
+  let gcr nd = case IM.lookup nd dist of Just d -> fromIntegral d; Nothing -> 1e18
+      probeOne s =
+        let hops = probe [(s, 0.0, 0, Set.singleton s)] []
+        in (fromIntegral (IM.findWithDefault 0 s dist), hops)
+      probe [] !acc = acc
+      probe ((nd, !co, !h, !v) : rest) !acc =
+        let acc' = if nd == root then h : acc else acc
+            pN = if co + 1.0 > 15.0 then []
+                 else [e | p <- lookupParents nd
+                         , not (Set.member p v)
+                         , let nc = co + 1.0
+                         , nc + gcr p <= 15.0
+                         , let e = (p, nc, h + 1, Set.insert p v)]
+            cN = if co + 5.0 > 15.0 then []
+                 else [e | c <- lookupChildren nd
+                         , not (Set.member c v)
+                         , let nc = co + 5.0
+                         , nc + gcr c <= 15.0
+                         , let e = (c, nc, h + 1, Set.insert c v)]
+        in probe (pN ++ cN ++ rest) acc'
+      results = map probeOne seeds
+      totalMinD = sum (map fst results)
+      allHops = concatMap snd results
+      totalPaths = length allHops
+      totalHops = sum (map fromIntegral allHops) :: Double
+      avgMinD = totalMinD / fromIntegral (length seeds)
+      avgHops = if totalPaths > 0 then totalHops / fromIntegral totalPaths else avgMinD
+  in if avgHops > 0.0 then min 1.0 (avgMinD / avgHops) else 1.0
+
+-- | Main bidirectional search kernel.
+{-# INLINE nativeKernel_bidirectional_ancestor #-}
+nativeKernel_bidirectional_ancestor :: EdgeLookup -> EdgeLookup -> Int -> Int -> Double -> Double -> Double -> [(Int, Int, Int)]
+nativeKernel_bidirectional_ancestor lookupParents lookupChildren cat root parentCost childCost budget =
+  let cal = calibrateGraph lookupParents lookupChildren root
+      minCostToRoot nd = case IM.lookup nd (gcMinDist cal) of
+        Just d  -> fromIntegral d * parentCost
+        Nothing -> 1e18
+      explore [] !acc = acc
+      explore ((!node, !cost, !hops, !pHops, !cHops, !visited) : rest) !acc =
+        let acc' = if node == root && hops > 0 then (hops, pHops, cHops) : acc else acc
+            parentNext =
+              if cost + parentCost > budget then []
+              else [e | p <- lookupParents node
+                      , not (Set.member p visited)
+                      , let nc = cost + parentCost
+                      , nc + minCostToRoot p <= budget
+                      , let e = (p, nc, hops + 1, pHops + 1, cHops, Set.insert p visited)]
+            childNext =
+              if cost + childCost > budget then []
+              else [e | c <- lookupChildren node
+                      , not (Set.member c visited)
+                      , let nc = cost + childCost
+                      , nc + minCostToRoot c <= budget
+                      , let e = (c, nc, hops + 1, pHops, cHops + 1, Set.insert c visited)]
+        in explore (parentNext ++ childNext ++ rest) acc'
+  in explore [(cat, 0.0, 0, 0, 0, Set.singleton cat)] []
