@@ -34,7 +34,8 @@
     wam_tokenize_line/2,           % +Line, -Tokens
     wam_recognise_label/2,         % +Tokens, -LabelName
     wam_recognise_instruction/2,   % +Tokens, -Item
-    wam_text_to_items/2            % +WamText, -Items
+    wam_text_to_items/2,           % +WamText, -Items
+    wam_classify_constant_token/2  % +Token, -Class
 ]).
 
 :- use_module(library(lists)).
@@ -75,12 +76,21 @@ parse_lines([Line|Rest], Items) :-
 
 %% wam_tokenize_line(+Line, -Tokens) is det.
 %
-%  Splits a WAM-text line into tokens. Whitespace separates;
-%  single-quoted regions preserve their content verbatim (with the
-%  surrounding quotes stripped); bare commas are separators except
-%  when immediately followed by ''/'' (so the conjunction functor
-%  ",/N" survives as one token). Inside quotes, backslash escapes the
-%  following character, matching wam_target:quote_wam_constant/2.
+%  Splits a WAM-text line into tokens. Whitespace separates; bare
+%  commas are separators except when immediately followed by ''/''
+%  (so the conjunction functor ",/N" survives as one token). Inside
+%  quotes, backslash escapes the following character, matching
+%  wam_target:quote_wam_constant/2.
+%
+%  Quoted regions preserve their surrounding single quotes attached
+%  to the token: ''foo bar'' produces the token "''foo bar''" (with
+%  the outer apostrophes), not "foo bar". The quotes are the
+%  atom-vs-number discriminator — a bare token `5` is the integer 5,
+%  a quoted token ''5'' is the atom ''5''. Use
+%  wam_classify_constant_token/2 to consume the discriminator
+%  uniformly. Keywords like `get_constant` and register names are
+%  never quoted in WAM TEXT, so the instruction recognisers (which
+%  pattern-match on bare strings) are unaffected.
 wam_tokenize_line(Line, Tokens) :-
     string_chars(Line, Chars),
     tokenize_chars(Chars, Tokens).
@@ -91,7 +101,9 @@ tokenize_chars([C|Cs], Tokens) :-
     ->  tokenize_chars(Cs, Tokens)
     ;   C == '\''
     ->  read_quoted(Cs, QChars, Rest),
-        string_chars(Tok, QChars),
+        % Preserve the outer quotes attached to the token so
+        % atom-vs-number is recoverable downstream.
+        string_chars(Tok, ['\''|QChars]),
         Tokens = [Tok|More],
         tokenize_chars(Rest, More)
     ;   C == ',' , \+ ( Cs = ['/'|_] )
@@ -107,12 +119,48 @@ tokenize_chars([C|Cs], Tokens) :-
 ws(' ').
 ws('\t').
 
+% read_quoted/3 returns the inner (escape-resolved) chars WITH the
+% trailing closing quote appended, so the caller prepends the opening
+% quote and ends up with the quote-bracketed token verbatim.
 read_quoted([], [], []).
-read_quoted(['\''|Rest], [], Rest) :- !.
+read_quoted(['\''|Rest], ['\''], Rest) :- !.
 read_quoted(['\\', C|Cs], [C|More], Rest) :- !,
     read_quoted(Cs, More, Rest).
 read_quoted([C|Cs], [C|More], Rest) :-
     read_quoted(Cs, More, Rest).
+
+%% wam_classify_constant_token(+Token, -Class) is det.
+%
+%  Classify a WAM TEXT constant token (as produced by
+%  wam_tokenize_line/2 or any tokenizer following the same
+%  quote-preserving convention) into one of:
+%
+%    atom(NameStr)      - Token came from a quoted region (outer ''
+%                         present), OR is bare-but-non-numeric.
+%                         NameStr is the atom name with the outer
+%                         quotes stripped.
+%    integer(N)         - Bare token that parses as an integer.
+%    float(F)           - Bare token that parses as a float.
+%
+%  The atom-vs-number discriminator is the presence of outer quotes:
+%  bare `5` is the integer; quoted ''5'' is the atom. This matches
+%  the format produced by wam_target:quote_wam_constant/2.
+wam_classify_constant_token(Token, Class) :-
+    (   string(Token) -> Str = Token
+    ;   atom(Token)   -> atom_string(Token, Str)
+    ;   number(Token) -> number_string(Token, Str)
+    ;   Str = Token
+    ),
+    string_chars(Str, Chars),
+    (   Chars = ['\''|Rest], append(Inner, ['\''], Rest)
+    ->  string_chars(Name, Inner),
+        Class = atom(Name)
+    ;   catch(number_string(N, Str), _, fail), integer(N)
+    ->  Class = integer(N)
+    ;   catch(number_string(F, Str), _, fail), float(F)
+    ->  Class = float(F)
+    ;   Class = atom(Str)
+    ).
 
 read_unquoted([], [], []).
 read_unquoted([C|Cs], [], [C|Cs]) :- ws(C), !.
@@ -171,6 +219,14 @@ wam_recognise_instruction(["call_foreign", Pred, Ar],  call_foreign(Pred, Ar)).
 wam_recognise_instruction(["try_me_else", L],          try_me_else(L)).
 wam_recognise_instruction(["retry_me_else", L],        retry_me_else(L)).
 wam_recognise_instruction(["trust_me"],                trust_me).
+%% Indexed-dispatch chain ops (issue #2400) — emitted by
+%% build_term_index_with_chains in wam_target.pl for switch_on_term /
+%% switch_on_constant / switch_on_structure targets with >1 matching
+%% clauses.  Carry the destination body label; CP push uses the
+%% in-chain fall-through PC (= the next chain instruction).
+wam_recognise_instruction(["try", L],                  try(L)).
+wam_recognise_instruction(["retry", L],                retry(L)).
+wam_recognise_instruction(["trust", L],                trust(L)).
 wam_recognise_instruction(["jump", L],                 jump(L)).
 wam_recognise_instruction(["cut_ite"],                 cut_ite).
 wam_recognise_instruction(["begin_aggregate", K, V, R], begin_aggregate(K, V, R)).

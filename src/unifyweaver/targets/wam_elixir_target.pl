@@ -39,6 +39,15 @@
 :- use_module('../core/template_system').
 :- use_module('../bindings/elixir_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../core/iso_errors',
+              [ iso_errors_resolve_options/2,
+                iso_errors_load_config/2,
+                iso_errors_mode_for/3,
+                iso_errors_warn_multi_module/2,
+                iso_errors_rewrite/4,
+                iso_errors_audit_normalise_pi/2,
+                iso_errors_audit_walk/5
+              ]).
 :- use_module('../targets/wam_elixir_utils', [camel_case/2]).
 :- use_module('../core/recursive_kernel_detection',
               [detect_recursive_kernel/4, kernel_config/2]).
@@ -484,6 +493,61 @@ compile_backtrack_to_elixir(Code) :-
         {:fact_stream, remaining, arity} = cp.pc
         try do
           resume_fact_stream(state, remaining, arity)
+        catch
+          {:fail, thrown_state} -> backtrack(thrown_state)
+          {:return, result} -> result
+        end
+
+      match?({:agg_next_group, _, _, _, _}, cp.pc) ->
+        {:agg_next_group, remaining, witness_regs, result_reg, agg_type} = cp.pc
+        [{wvals, vals} | more] = remaining
+        # Bind this groups result + witnesses, push CP for more.
+        result_val =
+          case agg_type do
+            :setof -> vals |> Enum.sort(&standard_term_compare/2) |> Enum.uniq()
+            _ -> vals
+          end
+        regs2 =
+          case Map.get(state.regs, result_reg) do
+            {:unbound, id} ->
+              state.regs |> Map.put(id, result_val) |> Map.put(result_reg, result_val)
+            _ ->
+              Map.put(state.regs, result_reg, result_val)
+          end
+        y_regs2 =
+          Enum.zip(witness_regs, wvals)
+          |> Enum.reduce(state.y_regs, fn {wr, wv}, acc ->
+            if is_integer(wr) and wr >= 201 and wr < 300 do
+              case Map.get(acc, wr) do
+                {:unbound, id} -> acc |> Map.put(id, wv) |> Map.put(wr, wv)
+                _ -> Map.put(acc, wr, wv)
+              end
+            else
+              acc
+            end
+          end)
+        regs2 =
+          Enum.zip(witness_regs, wvals)
+          |> Enum.reduce(regs2, fn {wr, wv}, acc ->
+            if is_integer(wr) and wr >= 201 and wr < 300 do
+              acc
+            else
+              case Map.get(acc, wr) do
+                {:unbound, id} -> acc |> Map.put(id, wv) |> Map.put(wr, wv)
+                _ -> Map.put(acc, wr, wv)
+              end
+            end
+          end)
+        state = %{state | regs: regs2, y_regs: y_regs2}
+        state =
+          if more != [] do
+            next_cp = %{cp | pc: {:agg_next_group, more, witness_regs, result_reg, agg_type}}
+            %{state | choice_points: [next_cp | rest]}
+          else
+            state
+          end
+        try do
+          state.cp.(state)
         catch
           {:fail, thrown_state} -> backtrack(thrown_state)
           {:return, result} -> result
@@ -1537,14 +1601,13 @@ compile_utility_helpers_to_elixir(Code) :-
         goal_term = deref_var(state, get_reg(state, 2))
         prepared = %{state | regs: Map.put(state.regs, 1, goal_term)}
         dispatch_call_meta(prepared, 1, state.cp)
+      {"findall/3", 3} ->
+        execute_aggregate_meta(state, :collect)
+      {"bagof/3", 3} ->
+        execute_aggregate_meta(state, :bagof)
+      {"setof/3", 3} ->
+        execute_aggregate_meta(state, :setof)
       {"throw/1", 1} ->
-        # throw(Term). Deep-copy the term (independent of catch
-        # boundary), then BEAM-throw {:wam_throw, copy} so the
-        # nearest enclosing execute_catch unwinds the BEAM stack
-        # back to itself. If catcher_frames is empty, no enclosing
-        # catch exists at the WAM level — convert to :fail + stderr
-        # diagnostic so the lowered run(args) wrapper sees a clean
-        # failure rather than a crash.
         execute_throw(state)
       _ ->
         # Hardening: surface unimplemented builtins instead of silently
@@ -1580,6 +1643,140 @@ compile_utility_helpers_to_elixir(Code) :-
   # `defp`: only invoked from within WamRuntime (execute_builtin
   # arm + the :call/:execute step arms via the same module). Not
   # part of the runtime''s external API.
+  # Meta-call dispatch for findall/3, bagof/3, setof/3.
+  # A1=Template, A2=Goal, A3=Result. Pushes an aggregate frame,
+  # sets cp to a collector closure, then dispatches Goal via
+  # dispatch_call_meta. Each time Goal succeeds the collector
+  # captures the template value and throws fail to drive the next
+  # solution. When Goal exhausts, backtrack finds the aggregate
+  # frame and finalise_aggregate groups + binds the result.
+  defp execute_aggregate_meta(state, kind) do
+    template_ref = get_reg_raw(state, 1)
+    goal = deref_var(state, get_reg(state, 2))
+    result_reg_val = get_reg_raw(state, 3)
+
+    # For bagof/setof: walk Goal to find witness vars not in Template
+    # and not under ^/2. In the meta-call path we track witness
+    # bindings by storing the derefed unbound refs directly (not
+    # register IDs, since meta-call args are heap-allocated, not in
+    # fixed registers).
+    witness_refs =
+      if kind in [:bagof, :setof] do
+        template_vars = collect_term_vars(state, template_ref, MapSet.new())
+        {goal_vars, _} = collect_goal_witnesses(state, goal, template_vars)
+        goal_vars
+      else
+        []
+      end
+
+    # Push aggregate frame. value_reg and result_reg are register
+    # indices in the inline path, but here we store a sentinel (-1)
+    # and use the saved refs directly.
+    state = push_aggregate_frame(state, kind, -1, -1, [])
+    # Stash template_ref, result_reg_val, and witness_refs in the
+    # aggregate CP so the collector and finaliser can read them.
+    {updated_cps, _} =
+      Enum.map_reduce(state.choice_points, false, fn cp, done ->
+        cond do
+          done -> {cp, done}
+          Map.has_key?(cp, :agg_type) ->
+            cp = cp
+            |> Map.put(:meta_template_ref, template_ref)
+            |> Map.put(:meta_result_ref, result_reg_val)
+            |> Map.put(:meta_witness_refs, witness_refs)
+            {cp, true}
+          true -> {cp, done}
+        end
+      end)
+    state = %{state | choice_points: updated_cps}
+
+    # Collector closure: on each Goal success, capture template
+    # value and witness values, then fail to drive the next solution.
+    collector = fn(s) ->
+      val = deep_copy_value(s, deref_var(s, template_ref))
+      {updated, _} =
+        Enum.map_reduce(s.choice_points, false, fn cp, done ->
+          cond do
+            done -> {cp, done}
+            Map.has_key?(cp, :agg_type) ->
+              cp = Map.put(cp, :agg_accum, [val | Map.get(cp, :agg_accum, [])])
+              w_refs = Map.get(cp, :meta_witness_refs, [])
+              cp =
+                if w_refs != [] do
+                  wvals = Enum.map(w_refs, fn wr ->
+                    deep_copy_value(s, deref_var(s, wr))
+                  end)
+                  Map.put(cp, :agg_witness_accum, [wvals | Map.get(cp, :agg_witness_accum, [])])
+                else
+                  cp
+                end
+              {cp, true}
+            true -> {cp, done}
+          end
+        end)
+      throw({:fail, %{s | choice_points: updated}})
+    end
+
+    # Load Goal into A1 and dispatch as 1-arity meta-call with
+    # cp = collector so Goal proceeds into collection.
+    state = %{state | regs: Map.put(state.regs, 1, goal)}
+    dispatch_call_meta(state, 1, collector)
+  end
+
+  # Walk a term collecting unbound variable refs.
+  defp collect_term_vars(_state, {:unbound, _} = ref, seen) do
+    if MapSet.member?(seen, ref), do: seen, else: MapSet.put(seen, ref)
+  end
+  defp collect_term_vars(state, {:ref, addr}, seen) do
+    case Map.get(state.heap, addr) do
+      {:str, fn_name} ->
+        arity = parse_functor_arity(fn_name)
+        Enum.reduce(1..max(arity, 1), seen, fn i, acc ->
+          if arity == 0, do: acc,
+          else: collect_term_vars(state, deref_var(state, Map.get(state.heap, addr + i)), acc)
+        end)
+      _ -> seen
+    end
+  end
+  defp collect_term_vars(state, val, seen) do
+    derefed = deref_var(state, val)
+    if derefed != val, do: collect_term_vars(state, derefed, seen), else: seen
+  end
+
+  # Walk Goal collecting witness vars: vars not in exclude set and
+  # not under ^/2 LHS. Returns {witness_list, seen_set}.
+  defp collect_goal_witnesses(state, {:unbound, _} = ref, exclude) do
+    if MapSet.member?(exclude, ref), do: {[], exclude},
+    else: {[ref], MapSet.put(exclude, ref)}
+  end
+  defp collect_goal_witnesses(state, {:ref, addr}, exclude) do
+    case Map.get(state.heap, addr) do
+      {:str, "^/2"} ->
+        lhs = deref_var(state, Map.get(state.heap, addr + 1))
+        lhs_vars = collect_term_vars(state, lhs, MapSet.new())
+        exclude2 = MapSet.union(exclude, lhs_vars)
+        rhs = deref_var(state, Map.get(state.heap, addr + 2))
+        collect_goal_witnesses(state, rhs, exclude2)
+      {:str, fn_name} ->
+        arity = parse_functor_arity(fn_name)
+        if arity > 0 do
+          Enum.reduce(1..arity, {[], exclude}, fn i, {acc, exc} ->
+            arg = deref_var(state, Map.get(state.heap, addr + i))
+            {new_vars, new_exc} = collect_goal_witnesses(state, arg, exc)
+            {acc ++ new_vars, new_exc}
+          end)
+        else
+          {[], exclude}
+        end
+      _ -> {[], exclude}
+    end
+  end
+  defp collect_goal_witnesses(state, val, exclude) do
+    derefed = deref_var(state, val)
+    if derefed != val, do: collect_goal_witnesses(state, derefed, exclude),
+    else: {[], exclude}
+  end
+
   defp dispatch_call_meta(state, total_arity, after_pc) do
     goal = deref_var(state, get_reg(state, 1))
     # Elixir descending-range trap: `for i <- 2..1` would raise
@@ -2568,6 +2765,10 @@ compile_aggregate_helpers_to_elixir(Code) :-
   resuming a clause.
   """
   def push_aggregate_frame(state, agg_type, value_reg, result_reg) do
+    push_aggregate_frame(state, agg_type, value_reg, result_reg, [])
+  end
+
+  def push_aggregate_frame(state, agg_type, value_reg, result_reg, witness_regs) do
     cp = %{
       pc: nil,
       regs: state.regs,
@@ -2581,7 +2782,9 @@ compile_aggregate_helpers_to_elixir(Code) :-
       agg_type: agg_type,
       agg_value_reg: value_reg,
       agg_result_reg: result_reg,
-      agg_accum: []
+      agg_accum: [],
+      agg_witness_regs: witness_regs,
+      agg_witness_accum: []
     }
     %{state | choice_points: [cp | state.choice_points]}
   end
@@ -2619,7 +2822,19 @@ compile_aggregate_helpers_to_elixir(Code) :-
           collected -> {cp, collected}
           Map.has_key?(cp, :agg_type) ->
             prior = Map.get(cp, :agg_accum, [])
-            {Map.put(cp, :agg_accum, [val | prior]), true}
+            cp = Map.put(cp, :agg_accum, [val | prior])
+            witness_regs = Map.get(cp, :agg_witness_regs, [])
+            cp =
+              if witness_regs != [] do
+                wvals = Enum.map(witness_regs, fn wr ->
+                  deep_copy_value(state, deref_var(state, get_reg(state, wr)))
+                end)
+                prior_w = Map.get(cp, :agg_witness_accum, [])
+                Map.put(cp, :agg_witness_accum, [wvals | prior_w])
+              else
+                cp
+              end
+            {cp, true}
           true -> {cp, collected}
         end
       end)
@@ -2748,66 +2963,75 @@ compile_aggregate_helpers_to_elixir(Code) :-
 
   def finalise_aggregate(state, agg_cp, rest_cps, agg_type) do
     accum_rev = Enum.reverse(agg_cp.agg_accum)
-    result =
-      case agg_type do
-        t when t in [:collect, :findall, :aggregate_all, :bag] -> accum_rev
-        :set -> Enum.uniq(accum_rev)
-        # bagof/setof differ from bag/set in that they FAIL when no
-        # solutions exist (ISO semantics). bagof returns the list as-is;
-        # setof additionally sorts in standard term order + dedups.
-        :bagof ->
-          if accum_rev == [],
-            do: throw({:fail, state}),
-            else: accum_rev
-        :setof ->
-          if accum_rev == [],
-            do: throw({:fail, state}),
-            else:
-              accum_rev
-              |> Enum.sort(&standard_term_compare/2)
-              |> Enum.uniq()
-        :sum -> Enum.sum(accum_rev)
-        :count -> length(accum_rev)
-        :max ->
-          if accum_rev == [], do: throw({:fail, state}), else: Enum.max(accum_rev)
-        :min ->
-          if accum_rev == [], do: throw({:fail, state}), else: Enum.min(accum_rev)
-      end
-    # Bind the result through the trail when result_reg holds an
-    # unbound ref. Direct slot overwrite (the pre-#1659 behaviour)
-    # writes to agg_cp.regs[result_reg_idx] but leaves the underlying
-    # ref unbound — fine for the simple case where the result_reg
-    # slot IS the binding target, but breaks for nested findall: the
-    # inner findalls result_reg shares its unbound ref with the
-    # outer callers reg via the calls get_variable, and the inner
-    # predicates deallocate merge restores the outers Y-reg
-    # snapshot — overwriting the inners reg-slot binding. Trail-style
-    # binding (Map.put under the ref id, not the integer reg-slot)
-    # propagates through deref_var across frame boundaries and
-    # survives deallocate. Proposal section 6 risk 7 (nested findall)
-    # fix surfaced by Phase 3c.
-    bound_regs =
-      case Map.get(agg_cp.regs, agg_cp.agg_result_reg) do
-        {:unbound, id} ->
-          # Trail the binding under the unbound refs id so any
-          # aliased copy sees it via deref_var.
-          agg_cp.regs
-          |> Map.put(id, result)
-          |> Map.put(agg_cp.agg_result_reg, result)
-        _ ->
-          # Slot was bound or empty — preserve legacy direct overwrite.
-          Map.put(agg_cp.regs, agg_cp.agg_result_reg, result)
-      end
-    restored = %{state |
-      regs: bound_regs,
-      heap: agg_cp.heap,
-      heap_len: agg_cp.heap_len,
-      trail: agg_cp.trail,
-      trail_len: agg_cp.trail_len,
-      stack: agg_cp.stack,
-      cp: agg_cp.cp,
-      choice_points: rest_cps
-    }
+    witness_regs = Map.get(agg_cp, :agg_witness_regs, [])
+    meta_witness_refs = Map.get(agg_cp, :meta_witness_refs, [])
+    witness_accum_rev = Enum.reverse(Map.get(agg_cp, :agg_witness_accum, []))
+    has_witnesses = (witness_regs != [] or meta_witness_refs != []) and
+                    witness_accum_rev != []
+
+    # Witness-group path for bagof/setof with free witnesses.
+    if agg_type in [:bagof, :setof] and has_witnesses do
+      if accum_rev == [], do: throw({:fail, state})
+      groups = group_by_witness(accum_rev, witness_accum_rev, agg_type)
+      if groups == [], do: throw({:fail, state})
+      [{first_wvals, first_vals} | remaining] = groups
+      finalise_witness_group(state, agg_cp, rest_cps, agg_type,
+                             first_wvals, first_vals, remaining,
+                             witness_regs)
+    else
+      result =
+        case agg_type do
+          t when t in [:collect, :findall, :aggregate_all, :bag] -> accum_rev
+          :set -> Enum.uniq(accum_rev)
+          :bagof ->
+            if accum_rev == [],
+              do: throw({:fail, state}),
+              else: accum_rev
+          :setof ->
+            if accum_rev == [],
+              do: throw({:fail, state}),
+              else:
+                accum_rev
+                |> Enum.sort(&standard_term_compare/2)
+                |> Enum.uniq()
+          :sum -> Enum.sum(accum_rev)
+          :count -> length(accum_rev)
+          :max ->
+            if accum_rev == [], do: throw({:fail, state}), else: Enum.max(accum_rev)
+          :min ->
+            if accum_rev == [], do: throw({:fail, state}), else: Enum.min(accum_rev)
+        end
+      # Bind the result. Meta-call path stores result ref in the CP
+      # (agg_result_reg == -1); inline path uses a register index.
+      meta_result_ref = Map.get(agg_cp, :meta_result_ref)
+      bound_regs =
+        if meta_result_ref != nil and agg_cp.agg_result_reg == -1 do
+          case meta_result_ref do
+            {:unbound, id} ->
+              agg_cp.regs |> Map.put(id, result)
+            _ ->
+              agg_cp.regs
+          end
+        else
+          case Map.get(agg_cp.regs, agg_cp.agg_result_reg) do
+            {:unbound, id} ->
+              agg_cp.regs
+              |> Map.put(id, result)
+              |> Map.put(agg_cp.agg_result_reg, result)
+            _ ->
+              Map.put(agg_cp.regs, agg_cp.agg_result_reg, result)
+          end
+        end
+      restored = %{state |
+        regs: bound_regs,
+        heap: agg_cp.heap,
+        heap_len: agg_cp.heap_len,
+        trail: agg_cp.trail,
+        trail_len: agg_cp.trail_len,
+        stack: agg_cp.stack,
+        cp: agg_cp.cp,
+        choice_points: rest_cps
+      }
     # No env-frame pop here. The pop logic from #1661 (which
     # simulated deallocate to handle the case where end_aggregates
     # throw fail bypassed the predicates deallocate) is no longer
@@ -2826,7 +3050,112 @@ compile_aggregate_helpers_to_elixir(Code) :-
     # Removing the pop also fixes the multi-findall-in-one-body
     # bug: the prior pop overwrote agg_cp.cp with env.cp during
     # restoration, defeating update_topmost_agg_cp.
+      restored.cp.(restored)
+    end
+  end
+
+  # Group solutions by witness-variable equality. Returns a list of
+  # {witness_values, template_values} pairs. For setof, groups are
+  # sorted by witness values (ISO standard order) and template values
+  # within each group are sorted and deduped.
+  defp group_by_witness(vals, wvals, agg_type) do
+    zipped = Enum.zip(vals, wvals)
+    grouped =
+      Enum.group_by(zipped, fn {_v, w} -> w end, fn {v, _w} -> v end)
+      |> Enum.map(fn {wkey, templates} ->
+        sorted_templates =
+          case agg_type do
+            :setof ->
+              templates
+              |> Enum.sort(&standard_term_compare/2)
+              |> Enum.uniq()
+            _ ->
+              templates
+          end
+        {wkey, sorted_templates}
+      end)
+      |> Enum.sort(fn {w1, _}, {w2, _} ->
+        standard_term_compare(w1, w2)
+      end)
+    grouped
+  end
+
+  # Bind the first witness group result + witness regs, then push
+  # an iterator CP for remaining groups if any exist.
+  defp finalise_witness_group(state, agg_cp, rest_cps, agg_type,
+                              wvals, vals, remaining, witness_regs) do
+    bound_regs = bind_result_to_regs(agg_cp, vals)
+    bound_regs = bind_witness_to_regs(bound_regs, agg_cp, witness_regs, wvals)
+    restored = %{state |
+      regs: bound_regs,
+      y_regs: bind_witness_to_y_regs(agg_cp, state.y_regs, witness_regs, wvals),
+      heap: agg_cp.heap,
+      heap_len: agg_cp.heap_len,
+      trail: agg_cp.trail,
+      trail_len: agg_cp.trail_len,
+      stack: agg_cp.stack,
+      cp: agg_cp.cp,
+      choice_points: rest_cps
+    }
+    restored =
+      if remaining != [] do
+        iter_cp = %{
+          pc: {:agg_next_group, remaining, witness_regs,
+               agg_cp.agg_result_reg, agg_type},
+          regs: restored.regs,
+          y_regs: restored.y_regs,
+          heap: restored.heap,
+          heap_len: restored.heap_len,
+          cp: restored.cp,
+          trail: restored.trail,
+          trail_len: restored.trail_len,
+          stack: restored.stack
+        }
+        %{restored | choice_points: [iter_cp | restored.choice_points]}
+      else
+        restored
+      end
     restored.cp.(restored)
+  end
+
+  defp bind_result_to_regs(agg_cp, result) do
+    case Map.get(agg_cp.regs, agg_cp.agg_result_reg) do
+      {:unbound, id} ->
+        agg_cp.regs
+        |> Map.put(id, result)
+        |> Map.put(agg_cp.agg_result_reg, result)
+      _ ->
+        Map.put(agg_cp.regs, agg_cp.agg_result_reg, result)
+    end
+  end
+
+  defp bind_witness_to_regs(regs, agg_cp, witness_regs, wvals) do
+    Enum.zip(witness_regs, wvals)
+    |> Enum.reduce(regs, fn {wr, wv}, acc ->
+      if is_integer(wr) and wr >= 201 and wr < 300 do
+        acc
+      else
+        case Map.get(agg_cp.regs, wr) do
+          {:unbound, id} -> acc |> Map.put(id, wv) |> Map.put(wr, wv)
+          _ -> Map.put(acc, wr, wv)
+        end
+      end
+    end)
+  end
+
+  defp bind_witness_to_y_regs(agg_cp, _current_y_regs, witness_regs, wvals) do
+    saved_y = Map.get(agg_cp, :y_regs, %{})
+    Enum.zip(witness_regs, wvals)
+    |> Enum.reduce(saved_y, fn {wr, wv}, acc ->
+      if is_integer(wr) and wr >= 201 and wr < 300 do
+        case Map.get(saved_y, wr) do
+          {:unbound, id} -> acc |> Map.put(id, wv) |> Map.put(wr, wv)
+          _ -> Map.put(acc, wr, wv)
+        end
+      else
+        acc
+      end
+    end)
   end', []).
 
 % ============================================================================
@@ -6037,206 +6366,28 @@ end', [CasesStr]).
 % PR #3 ships: API + audit predicate + runtime helpers, all as
 % standalone exports. Behaviour is identical to pre-PR-#3.
 
-%% iso_errors_default_to_iso(+DefaultKey, -IsoKey)
-%  Maps a default builtin key (e.g. "is/2") to its ISO flavour
-%  ("is_iso/2"). Empty in this PR. Declared `dynamic` so calls
-%  with no clauses simply fail (rather than throwing
-%  existence_error) and so PR #4 can populate it either as
-%  asserted facts or as ordinary static clauses below this line.
-:- dynamic iso_errors_default_to_iso/2.
-:- dynamic iso_errors_default_to_lax/2.
-:- discontiguous iso_errors_default_to_iso/2.
-:- discontiguous iso_errors_default_to_lax/2.
+%% Multifile dispatch tables -- assert into the shared iso_errors
+%% module so the shared mode/audit helpers see our entries.  Each
+%% (DefaultKey -> IsoKey or LaxKey) entry needs a matching runtime
+%% builtin branch; adding an entry without a runtime branch silently
+%% rewrites default calls to dead keys.
+iso_errors:iso_errors_default_to_iso("is/2", "is_iso/2").
+iso_errors:iso_errors_default_to_lax("is/2", "is_lax/2").
 
-% PR #4: is/2 — first ISO-aware builtin. ISO-mode predicates get
-% their default is/2 calls rewritten to is_iso/2 (which throws on
-% bad RHS); lax-mode predicates rewrite to is_lax/2 (a no-op rename
-% since is/2 and is_lax/2 share the runtime body). Explicit
-% is_iso/2 or is_lax/2 in user source survives the rewrite — see
-% iso_errors_rewrite_item/3.
-iso_errors_default_to_iso("is/2", "is_iso/2").
-iso_errors_default_to_lax("is/2", "is_lax/2").
-
-% PR #5: arithmetic comparisons — six ops, each with iso/lax
-% variants. ISO body classifies args + throws via the same
-% machinery is_iso/2 uses; lax body shares with default.
-iso_errors_default_to_iso(">/2",   ">_iso/2").
-iso_errors_default_to_lax(">/2",   ">_lax/2").
-iso_errors_default_to_iso("</2",   "<_iso/2").
-iso_errors_default_to_lax("</2",   "<_lax/2").
-iso_errors_default_to_iso(">=/2",  ">=_iso/2").
-iso_errors_default_to_lax(">=/2",  ">=_lax/2").
-iso_errors_default_to_iso("=</2",  "=<_iso/2").
-iso_errors_default_to_lax("=</2",  "=<_lax/2").
-iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
-iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
-iso_errors_default_to_iso("=\\=/2", "=\\=_iso/2").
-iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
-% PR #5: succ/2 — bidirectional successor with proper ISO error throws.
-iso_errors_default_to_iso("succ/2", "succ_iso/2").
-iso_errors_default_to_lax("succ/2", "succ_lax/2").
-
-%% iso_errors_resolve_options(+Options, -Config)
-%  Merges the (optional) file config with inline options into one
-%  iso_config(Default, Overrides) struct. Inline options override
-%  file entries for the same PI.
-iso_errors_resolve_options(Options, iso_config(Default, Overrides)) :-
-    (   option(iso_errors_config(File), Options)
-    ->  iso_errors_load_config(File, iso_config(FileDefault, FileOv))
-    ;   FileDefault = false, FileOv = []
-    ),
-    iso_errors_inline_default(Options, FileDefault, Default),
-    iso_errors_inline_overrides(Options, InlineOv),
-    iso_errors_merge_overrides(FileOv, InlineOv, Overrides).
-
-iso_errors_inline_default(Options, FileDefault, Default) :-
-    (   member(iso_errors(M), Options),
-        (M == true ; M == false)
-    ->  Default = M
-    ;   Default = FileDefault
-    ).
-
-iso_errors_inline_overrides(Options, InlineOv) :-
-    findall(PI-Mode,
-            ( member(iso_errors(PI, Mode), Options),
-              (Mode == true ; Mode == false),
-              iso_errors_valid_pi(PI)
-            ),
-            InlineOv).
-
-% Accepts both bare Name/Arity and Module:Name/Arity.
-iso_errors_valid_pi(Name/Arity) :- atom(Name), integer(Arity), Arity >= 0, !.
-iso_errors_valid_pi(Module:Name/Arity) :-
-    atom(Module), atom(Name), integer(Arity), Arity >= 0.
-
-iso_errors_merge_overrides(FileOv, InlineOv, Merged) :-
-    exclude(iso_errors_shadowed(InlineOv), FileOv, Kept),
-    append(Kept, InlineOv, Merged).
-
-iso_errors_shadowed(InlineOv, PI-_) :-
-    member(InlinePI-_, InlineOv),
-    iso_errors_pi_matches(InlinePI, PI), !.
-
-% PI matching: bare Name/Arity matches Module:Name/Arity in any
-% module; Module:Name/Arity matches only its own module.
-iso_errors_pi_matches(PI, PI) :- !.
-iso_errors_pi_matches(Name/Arity, _:Name/Arity) :-
-    atom(Name), integer(Arity), !.
-iso_errors_pi_matches(_:Name/Arity, Name/Arity) :-
-    atom(Name), integer(Arity), !.
-
-%% iso_errors_load_config(+File, -Config)
-%  Reads a Prolog facts file and extracts iso_errors_default/1 +
-%  iso_errors_override/2 terms. Unrecognised terms are silently
-%  ignored. Returns iso_config(false, []) on I/O error.
-iso_errors_load_config(File, iso_config(Default, Overrides)) :-
-    catch(
-        setup_call_cleanup(
-            open(File, read, Stream),
-            iso_errors_read_terms(Stream, RawTerms),
-            close(Stream)),
-        _,
-        RawTerms = []),
-    iso_errors_extract_terms(RawTerms, false, [], Default, RevOv),
-    reverse(RevOv, Overrides).
-
-iso_errors_read_terms(Stream, Terms) :-
-    read_term(Stream, T, []),
-    ( T == end_of_file
-    -> Terms = []
-    ; Terms = [T|Rest],
-      iso_errors_read_terms(Stream, Rest)
-    ).
-
-iso_errors_extract_terms([], D, Ov, D, Ov).
-iso_errors_extract_terms([T|Rest], D0, Ov0, D, Ov) :-
-    (   T = iso_errors_default(NewD), (NewD == true ; NewD == false)
-    ->  iso_errors_extract_terms(Rest, NewD, Ov0, D, Ov)
-    ;   T = iso_errors_override(PI, Mode),
-        (Mode == true ; Mode == false),
-        iso_errors_valid_pi(PI)
-    ->  iso_errors_extract_terms(Rest, D0, [PI-Mode|Ov0], D, Ov)
-    ;   iso_errors_extract_terms(Rest, D0, Ov0, D, Ov)
-    ).
-
-%% iso_errors_mode_for(+Config, +PI, -Mode)
-%  Resolves a predicate's ISO mode. Bare Name/Arity in overrides
-%  matches Module:Name/Arity in any module and vice versa. Falls
-%  back to the config's default when no override matches.
-iso_errors_mode_for(iso_config(Default, Overrides), PI, Mode) :-
-    (   member(OvPI-OvMode, Overrides),
-        iso_errors_pi_matches(OvPI, PI)
-    ->  Mode = OvMode
-    ;   Mode = Default
-    ).
-
-%% iso_errors_warn_multi_module(+Config, +Predicates)
-%  Emits a user_error warning for each bare override that matches
-%  predicates from more than one module in the input list. Catches
-%  the safe_div/2-in-two-modules footgun (SPEC §1).
-iso_errors_warn_multi_module(iso_config(_, Overrides), Predicates) :-
-    forall(member(OvPI-_, Overrides),
-           iso_errors_check_override_scope(OvPI, Predicates)).
-
-iso_errors_check_override_scope(Name/Arity, Predicates) :-
-    atom(Name), integer(Arity), !,
-    findall(M, ( member(P, Predicates),
-                 iso_errors_pi_module(P, Name, Arity, M)
-               ), Modules),
-    list_to_set(Modules, Unique),
-    (   Unique = [_, _ | _]
-    ->  length(Unique, N),
-        format(user_error,
-               'Warning: iso_errors_override(~w/~w, _) matches ~w predicates~n         in different modules (~w).~n         Qualify with `mod:~w/~w` for module-scoped overrides.~n',
-               [Name, Arity, N, Unique, Name, Arity])
-    ;   true
-    ).
-iso_errors_check_override_scope(_, _).
-
-iso_errors_pi_module(Module:Name/Arity, Name, Arity, Module) :- !.
-iso_errors_pi_module(Name/Arity,         Name, Arity, user).
-% Predicates list arrives as Pred/Arity-WamCode pairs in this target;
-% extract the PI for module checking.
-iso_errors_pi_module(Pred/Arity-_, Name, Arity, user) :-
-    atom(Pred), Pred = Name, !.
-
-%% iso_errors_rewrite(+Config, +PI, +Items0, -Items)
-%  Rewrites the default-form builtin_call keys for one predicate.
-%  Explicit *_iso / *_lax keys pass through unchanged. With empty
-%  key tables (this PR), the rewrite is a no-op.
-%
-%  Item shape: matches the de-facto items vocabulary the WAM
-%  compiler emits (mirrors C++; see WAM_ITEMS_API_SPECIFICATION.md
-%  §2 for the canonical list). Targets that haven't migrated to the
-%  Items API yet can still call this on their own ad-hoc item form
-%  as long as the keyed shapes (builtin_call/2, put_structure/2,
-%  call/2, execute/1) match.
-iso_errors_rewrite(Config, PI, Items0, Items) :-
-    iso_errors_mode_for(Config, PI, Mode),
-    maplist(iso_errors_rewrite_item(Mode), Items0, Items).
-
-% Two surfaces to rewrite for an ISO-relevant builtin:
-% - builtin_call("is/2", _) — direct call form.
-% - put_structure("is/2", _) — data form when `is/2` appears inside
-%   a meta-goal (catch(Goal, ...) builds is(X, Expr) into A1).
-% Plus call/execute for completeness.
-iso_errors_rewrite_item(true, builtin_call(Key, N), builtin_call(IsoKey, N)) :-
-    iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_rewrite_item(true, put_structure(Key, Reg), put_structure(IsoKey, Reg)) :-
-    iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_rewrite_item(true, call(Key, N), call(IsoKey, N)) :-
-    iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_rewrite_item(true, execute(Key), execute(IsoKey)) :-
-    iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_rewrite_item(false, builtin_call(Key, N), builtin_call(LaxKey, N)) :-
-    iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_rewrite_item(false, put_structure(Key, Reg), put_structure(LaxKey, Reg)) :-
-    iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_rewrite_item(false, call(Key, N), call(LaxKey, N)) :-
-    iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_rewrite_item(false, execute(Key), execute(LaxKey)) :-
-    iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_rewrite_item(_, Item, Item).
+iso_errors:iso_errors_default_to_iso(">/2",   ">_iso/2").
+iso_errors:iso_errors_default_to_lax(">/2",   ">_lax/2").
+iso_errors:iso_errors_default_to_iso("</2",   "<_iso/2").
+iso_errors:iso_errors_default_to_lax("</2",   "<_lax/2").
+iso_errors:iso_errors_default_to_iso(">=/2",  ">=_iso/2").
+iso_errors:iso_errors_default_to_lax(">=/2",  ">=_lax/2").
+iso_errors:iso_errors_default_to_iso("=</2",  "=<_iso/2").
+iso_errors:iso_errors_default_to_lax("=</2",  "=<_lax/2").
+iso_errors:iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
+iso_errors:iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
+iso_errors:iso_errors_default_to_iso("=\\=/2", "=\\=_iso/2").
+iso_errors:iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
+iso_errors:iso_errors_default_to_iso("succ/2", "succ_iso/2").
+iso_errors:iso_errors_default_to_lax("succ/2", "succ_lax/2").
 
 %% wam_elixir_iso_audit(+Predicates, +Options, -Audit)
 %  Read-only inspection of how each predicate's builtin_call sites
@@ -6257,9 +6408,6 @@ wam_elixir_iso_audit(Predicates, Options, Audit) :-
         iso_errors_audit_predicate(PI, Mode, Sites)
     ), Audit).
 
-iso_errors_audit_normalise_pi(Pred/Arity-_, Pred/Arity) :- !.
-iso_errors_audit_normalise_pi(PI, PI).
-
 iso_errors_audit_predicate(PI, Mode, Sites) :-
     (   catch(
             ( wam_target:compile_predicate_to_wam(PI, [], WamText),
@@ -6274,6 +6422,9 @@ iso_errors_audit_predicate(PI, Mode, Sites) :-
 % Light-weight WAM-text parser for the audit. Only recognises the
 % builtin_call shape that the audit cares about — everything else
 % becomes an opaque `other` item that the walker advances past.
+% Elixir-specific: the audit_classify_line has a 3-element pattern
+% (the third slot is the arity string).  The shared audit walker
+% normalises this away.
 iso_errors_audit_parse_lines(WamText, Items) :-
     atom_string(WamText, S),
     split_string(S, "\n", "", Lines),
@@ -6295,46 +6446,6 @@ iso_errors_audit_classify_line(["builtin_call", KeyComma, _ArityStr], Item) :- !
 iso_errors_audit_classify_line(["builtin_call", Key, _ArityStr], Item) :- !,
     Item = builtin_call(Key, 0).
 iso_errors_audit_classify_line(_, other).
-
-iso_errors_audit_walk([], _, _, Acc, Acc).
-iso_errors_audit_walk([label|Rest], PC, Mode, Acc, Out) :- !,
-    iso_errors_audit_walk(Rest, PC, Mode, Acc, Out).
-iso_errors_audit_walk([builtin_call(Key, _)|Rest], PC, Mode, Acc, Out) :- !,
-    iso_errors_audit_classify(Key, Mode, Source, Resolved, Flip),
-    Site = site(PC, Key, Resolved, Source, Flip),
-    PC1 is PC + 1,
-    iso_errors_audit_walk(Rest, PC1, Mode, [Site|Acc], Out).
-iso_errors_audit_walk([_|Rest], PC, Mode, Acc, Out) :-
-    PC1 is PC + 1,
-    iso_errors_audit_walk(Rest, PC1, Mode, Acc, Out).
-
-% Classify a builtin_call key. Explicit *_iso/N or *_lax/N suffix
-% always wins; otherwise it's a default site whose resolution
-% depends on Mode and the (currently empty) swap tables.
-iso_errors_audit_classify(Key, _Mode, explicit_iso, Key, false) :-
-    iso_errors_key_has_suffix(Key, "_iso"), !.
-iso_errors_audit_classify(Key, _Mode, explicit_lax, Key, false) :-
-    iso_errors_key_has_suffix(Key, "_lax"), !.
-iso_errors_audit_classify(Key, Mode, default, Resolved, Flip) :-
-    iso_errors_resolve_default(Key, Mode, Resolved),
-    iso_errors_other_mode(Mode, OtherMode),
-    iso_errors_resolve_default(Key, OtherMode, OtherResolved),
-    ( Resolved == OtherResolved -> Flip = false ; Flip = true ).
-
-iso_errors_resolve_default(Key, true, IsoKey) :-
-    iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_resolve_default(Key, false, LaxKey) :-
-    iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_resolve_default(Key, _, Key).
-
-iso_errors_other_mode(true,  false).
-iso_errors_other_mode(false, true).
-
-iso_errors_key_has_suffix(Key, Suffix) :-
-    ( atom(Key) -> atom_string(Key, KS) ; KS = Key ),
-    split_string(KS, "/", "", Parts),
-    Parts = [Name | _],
-    string_concat(_, Suffix, Name).
 
 %% iso_errors_rewrite_text(+Config, +PI, +WamText, -RewrittenText)
 %  Token-aware text-level rewrite of WAM text for one predicate.
@@ -6367,7 +6478,7 @@ iso_errors_rewrite_text(Config, PI, WamText, RewrittenText) :-
         atomic_list_concat(RewrittenLines, '\n', RewrittenText)
     ).
 
-iso_errors_has_lax_entries :- iso_errors_default_to_lax(_, _), !.
+iso_errors_has_lax_entries :- iso_errors:iso_errors_default_to_lax(_, _), !.
 
 % Rewrite one line. Token-split, classify head, look up key in the
 % mode-appropriate table, splice the new key back in. Lines we
@@ -6418,9 +6529,9 @@ iso_errors_rewrite_parts(_, _, _, _) :- fail.
 % itself when no entry exists (the common case while tables are
 % sparse).
 iso_errors_lookup(true, Key, NewKey) :-
-    iso_errors_default_to_iso(Key, NewKey), !.
+    iso_errors:iso_errors_default_to_iso(Key, NewKey), !.
 iso_errors_lookup(false, Key, NewKey) :-
-    iso_errors_default_to_lax(Key, NewKey), !.
+    iso_errors:iso_errors_default_to_lax(Key, NewKey), !.
 iso_errors_lookup(_, Key, Key).
 
 % Replace the FIRST occurrence of Key in Line with NewKey. Both are

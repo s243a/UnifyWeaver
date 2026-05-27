@@ -17,6 +17,10 @@
 :- dynamic user:test_numlist_builtin/0.
 :- dynamic user:test_sort_builtin/0.
 :- dynamic user:test_term_order_builtin/0.
+:- dynamic user:test_ground_builtin/0.
+:- dynamic user:test_sub_atom_builtin/0.
+:- dynamic user:test_char_type_builtin/0.
+:- dynamic user:test_string_code_builtin/0.
 :- dynamic user:test_succ_builtin/0.
 :- dynamic user:test_atom_number_builtin/0.
 :- dynamic user:test_atom_case_builtin/0.
@@ -25,6 +29,8 @@
 :- dynamic user:test_char_code_builtin/0.
 :- dynamic user:test_atom_codes_builtin/0.
 :- dynamic user:test_atom_chars_builtin/0.
+:- dynamic user:test_string_list_builtin/0.
+:- dynamic user:test_number_list_builtin/0.
 :- dynamic user:test_atom_string_builtin/0.
 :- dynamic user:test_set_aggregate/0.
 :- dynamic user:test_unify_builtin/0.
@@ -156,6 +162,72 @@ test(builtins_execution) :-
                 compare(=, foo, foo),
                 compare(>, 2, 1)
             )),
+          assertz(user:test_ground_builtin :-
+            (   ground(hello),
+                ground(42),
+                ground(foo(1, [2, 3], bar)),
+                ground([a,b,c]),
+                ground([]),
+                \+ ground(_),
+                \+ (Scratch = [z], ground(_), Scratch = [z]),
+                \+ ground(foo(1, _, 3)),
+                \+ ground([a, _])
+            )),
+          assertz(user:test_sub_atom_builtin :-
+            (   sub_atom(hello, 1, 3, A, S),
+                A =:= 1,
+                S == ell,
+                sub_atom(hello, 0, 3, 2, hel),
+                sub_atom(hello, 2, 3, 0, llo),
+                sub_atom(abc, 0, 3, 0, abc),
+                sub_atom(abc, 0, 0, 3, ''),
+                sub_atom(12345, 1, 3, 1, '234'),
+                \+ sub_atom(abc, 1, 99, _, _),
+                \+ sub_atom(abc, -1, 1, _, _),
+                \+ sub_atom(abc, 0, -1, _, _),
+                \+ sub_atom(_, 0, 1, _, _),
+                \+ sub_atom(abc, _, 1, _, _),
+                \+ sub_atom(abc, 0, _, _, _),
+                \+ sub_atom(abc, 0, 2, 0, ab),
+                \+ sub_atom(abc, 0, 2, _, ac)
+            )),
+          assertz(user:test_char_type_builtin :-
+            (   char_type(a, alpha),
+                char_type('5', alnum),
+                char_type('5', digit),
+                char_code(Space, 32),
+                char_type(Space, space),
+                char_type(Space, white),
+                char_type('Z', upper),
+                char_type(z, lower),
+                char_type('!', punct),
+                char_type('A', ascii),
+                char_type('_', csym),
+                char_type('_', csymf),
+                char_code(Newline, 10),
+                char_type(Newline, newline),
+                \+ char_type('1', alpha),
+                \+ char_type('Z', lower),
+                \+ char_type(z, upper),
+                \+ char_type(ab, alpha),
+                \+ char_type(_, alpha),
+                \+ char_type(a, _),
+                \+ char_type(a, unknown)
+            )),
+          assertz(user:test_string_code_builtin :-
+            (   string_code(1, abc, C1),
+                C1 =:= 97,
+                string_code(2, abc, 98),
+                string_code(3, abc, C3),
+                C3 =:= 99,
+                \+ string_code(0, abc, _),
+                \+ string_code(4, abc, _),
+                \+ string_code(-1, abc, _),
+                \+ string_code(_, abc, _),
+                \+ string_code(1, _, _),
+                \+ string_code(1, 42, _),
+                \+ string_code(1, abc, 98)
+            )),
           assertz(user:test_succ_builtin :-
             (   succ(0, 1),
                 succ(2, X),
@@ -258,6 +330,55 @@ test(builtins_execution) :-
                 \+ atom_chars(_, [ab]),
                 \+ atom_chars(_, [1])
             )),
+          assertz(user:test_string_list_builtin :-
+            (   string_codes(foo, Codes),
+                Codes = [102,111,111],
+                string_codes(foo, [102,111,111]),
+                \+ string_codes(foo, [102,111]),
+                string_codes(A2, [98,97,114]),
+                A2 == bar,
+                string_codes('', EmptyCodes),
+                EmptyCodes = [],
+                \+ string_codes(_, _),
+                \+ string_codes(_, [-1]),
+                \+ string_codes(_, [foo]),
+                string_chars(baz, Chars),
+                Chars = [b,a,z],
+                string_chars(baz, [b,a,z]),
+                \+ string_chars(baz, [b,a]),
+                string_chars(A3, [q,u,x]),
+                A3 == qux,
+                string_chars('', EmptyChars),
+                EmptyChars = [],
+                \+ string_chars(_, _),
+                \+ string_chars(_, [ab]),
+                \+ string_chars(_, [1])
+            )),
+          assertz(user:test_number_list_builtin :-
+            (   number_codes(42, Codes),
+                Codes = [52,50],
+                number_codes(42, [52,50]),
+                \+ number_codes(42, [52]),
+                number_codes(N2, [45,51]),
+                N2 =:= -3,
+                number_codes(F2, [51,46,53]),
+                F2 =:= 3.5,
+                \+ number_codes(_, _),
+                \+ number_codes(_, [foo]),
+                \+ number_codes(_, [65536]),
+                \+ number_codes(_, [97,98,99]),
+                number_chars(42, Chars),
+                Chars = ['4','2'],
+                number_chars(42, ['4','2']),
+                \+ number_chars(42, ['4']),
+                number_chars(N3, ['-','3']),
+                N3 =:= -3,
+                number_chars(F3, ['3','.','5']),
+                F3 =:= 3.5,
+                \+ number_chars(_, _),
+                \+ number_chars(_, [ab]),
+                \+ number_chars(_, [a,b,c])
+            )),
           assertz(user:test_atom_string_builtin :-
             (   atom_string(hello, S),
                 S == hello,
@@ -305,6 +426,10 @@ test(builtins_execution) :-
           retractall(user:test_numlist_builtin),
           retractall(user:test_sort_builtin),
           retractall(user:test_term_order_builtin),
+          retractall(user:test_ground_builtin),
+          retractall(user:test_sub_atom_builtin),
+          retractall(user:test_char_type_builtin),
+          retractall(user:test_string_code_builtin),
           retractall(user:test_succ_builtin),
           retractall(user:test_atom_number_builtin),
           retractall(user:test_atom_case_builtin),
@@ -313,6 +438,8 @@ test(builtins_execution) :-
           retractall(user:test_char_code_builtin),
           retractall(user:test_atom_codes_builtin),
           retractall(user:test_atom_chars_builtin),
+          retractall(user:test_string_list_builtin),
+          retractall(user:test_number_list_builtin),
           retractall(user:test_atom_string_builtin),
           retractall(user:test_set_aggregate),
           retractall(user:test_unify_builtin),
@@ -323,7 +450,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -370,6 +497,10 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "@>/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "@>=/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "compare/3"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "ground/1"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "sub_atom/5"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "char_type/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "string_code/3"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "succ/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "atom_number/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "upcase_atom/2"')),
@@ -380,6 +511,10 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "char_code/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "atom_codes/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "atom_chars/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "string_codes/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "string_chars/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "number_codes/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "number_chars/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "atom_string/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "string_to_atom/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "\\\\+/1"')),
@@ -499,6 +634,38 @@ func main() {
 		fmt.Println("TERM_ORDER_FAILURE")
 	}
 
+	groundVM := wam.NewWamState(wam.Test_ground_builtinCode, wam.Test_ground_builtinLabels)
+	groundVM.PC = wam.Test_ground_builtinStartPC
+	if groundVM.Run() {
+		fmt.Println("GROUND_SUCCESS")
+	} else {
+		fmt.Println("GROUND_FAILURE")
+	}
+
+	subAtomVM := wam.NewWamState(wam.Test_sub_atom_builtinCode, wam.Test_sub_atom_builtinLabels)
+	subAtomVM.PC = wam.Test_sub_atom_builtinStartPC
+	if subAtomVM.Run() {
+		fmt.Println("SUB_ATOM_SUCCESS")
+	} else {
+		fmt.Println("SUB_ATOM_FAILURE")
+	}
+
+	charTypeVM := wam.NewWamState(wam.Test_char_type_builtinCode, wam.Test_char_type_builtinLabels)
+	charTypeVM.PC = wam.Test_char_type_builtinStartPC
+	if charTypeVM.Run() {
+		fmt.Println("CHAR_TYPE_SUCCESS")
+	} else {
+		fmt.Println("CHAR_TYPE_FAILURE")
+	}
+
+	stringCodeVM := wam.NewWamState(wam.Test_string_code_builtinCode, wam.Test_string_code_builtinLabels)
+	stringCodeVM.PC = wam.Test_string_code_builtinStartPC
+	if stringCodeVM.Run() {
+		fmt.Println("STRING_CODE_SUCCESS")
+	} else {
+		fmt.Println("STRING_CODE_FAILURE")
+	}
+
 	succVM := wam.NewWamState(wam.Test_succ_builtinCode, wam.Test_succ_builtinLabels)
 	succVM.PC = wam.Test_succ_builtinStartPC
 	if succVM.Run() {
@@ -561,6 +728,22 @@ func main() {
 		fmt.Println("ATOM_CHARS_SUCCESS")
 	} else {
 		fmt.Println("ATOM_CHARS_FAILURE")
+	}
+
+	stringListVM := wam.NewWamState(wam.Test_string_list_builtinCode, wam.Test_string_list_builtinLabels)
+	stringListVM.PC = wam.Test_string_list_builtinStartPC
+	if stringListVM.Run() {
+		fmt.Println("STRING_LIST_SUCCESS")
+	} else {
+		fmt.Println("STRING_LIST_FAILURE")
+	}
+
+	numberListVM := wam.NewWamState(wam.Test_number_list_builtinCode, wam.Test_number_list_builtinLabels)
+	numberListVM.PC = wam.Test_number_list_builtinStartPC
+	if numberListVM.Run() {
+		fmt.Println("NUMBER_LIST_SUCCESS")
+	} else {
+		fmt.Println("NUMBER_LIST_FAILURE")
 	}
 
 	atomStringVM := wam.NewWamState(wam.Test_atom_string_builtinCode, wam.Test_atom_string_builtinLabels)
@@ -632,6 +815,10 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "NUMLIST_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SORT_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "TERM_ORDER_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "GROUND_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "SUB_ATOM_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "CHAR_TYPE_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "STRING_CODE_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SUCC_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_NUMBER_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_CASE_SUCCESS")),
@@ -640,6 +827,8 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "CHAR_CODE_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_CODES_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_CHARS_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "STRING_LIST_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "NUMBER_LIST_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_STRING_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SET_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "UNIFY_SUCCESS")),

@@ -1904,6 +1904,45 @@ test_r7_native_category_ancestor_uses_edge_parents :-
     ;   fail_test(Test, 'collect_native_category_ancestor_hops still reads ffi_facts directly; should call edge_parents')
     ).
 
+%% Regression: rust_val_literal must strip outer quotes from atom tokens
+%% so a Prolog source-level `'42'` (numeric-looking quoted atom) becomes
+%% Value::Atom("42") rather than Value::Atom("'42'").  The naive
+%% number_string-first path emitted the literal-with-quotes verbatim and
+%% broke any predicate that bound a quoted-numeric atom.  Same fix as F#
+%% PR #2422 -- the Rust lowered emitter was the last target with this bug.
+test_lowered_quoted_numeric_atom_strips_quotes :-
+    Test = 'WAM-Rust: lowered put_constant on quoted-numeric atom strips outer quotes',
+    %% `put_constant '42', A1` -> the WAM tokenizer hands the lowered
+    %% emitter the literal string `'42'` (with quotes).  Rendering
+    %% should produce Value::Atom("42"), not Value::Atom("'42'").
+    WamCode = 'put_constant \'42\' A1\nproceed\n',
+    (   lower_predicate_to_rust(test_quoted_numeric/1, WamCode, [], Lines),
+        atomic_list_concat(Lines, '\n', RustCode),
+        %% Must contain the quote-stripped form...
+        sub_string(RustCode, _, _, _, 'Value::Atom("42".to_string())'),
+        %% ...and must NOT contain the buggy verbatim-with-quotes form.
+        \+ sub_string(RustCode, _, _, _, 'Value::Atom("\'42\'".to_string())')
+    ->  pass(Test)
+    ;   fail_test(Test,
+            'Lowered emitter rendered quoted-numeric atom with quotes baked into the Rust string literal')
+    ).
+
+%% Companion: a normal (unquoted) numeric token must still classify as
+%% Integer, not Atom -- catches the symmetric regression where the
+%% quote-stripping pass might over-strip and accidentally turn an
+%% integer literal into an atom.
+test_lowered_unquoted_integer_stays_integer :-
+    Test = 'WAM-Rust: lowered put_constant on unquoted integer renders Value::Integer',
+    WamCode = 'put_constant 42 A1\nproceed\n',
+    (   lower_predicate_to_rust(test_unquoted_integer/1, WamCode, [], Lines),
+        atomic_list_concat(Lines, '\n', RustCode),
+        sub_string(RustCode, _, _, _, 'Value::Integer(42)'),
+        \+ sub_string(RustCode, _, _, _, 'Value::Atom("42".to_string())')
+    ->  pass(Test)
+    ;   fail_test(Test,
+            'Lowered emitter mis-classified an unquoted integer as an atom')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -1987,6 +2026,8 @@ run_tests :-
     test_r7_lookupsource_trait_in_state_template,
     test_r7_lazy_lmdb_lookup_handler_arm,
     test_r7_native_category_ancestor_uses_edge_parents,
+    test_lowered_quoted_numeric_atom_strips_quotes,
+    test_lowered_unquoted_integer_stays_integer,
 
     format('~n========================================~n'),
     (   test_failed

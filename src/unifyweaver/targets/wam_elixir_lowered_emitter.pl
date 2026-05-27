@@ -36,6 +36,7 @@
 :- use_module(library(option)).
 :- use_module(library(pairs), [group_pairs_by_key/2]).
 :- use_module('wam_elixir_utils', [reg_id/2, is_label_part/1, camel_case/2, parse_arity/2]).
+:- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
 :- use_module('../core/purity_certificate', [analyze_predicate_purity/2]).
 :- use_module('../core/predicate_preprocessing',
               [declared_preprocess_metadata/4]).
@@ -711,12 +712,21 @@ render_index_entry(Key-Tuples, Entry) :-
 %  default ~1M atom table limit. See the experiment writeup for
 %  measurements.
 elixir_constant_literal(TokenStr, ElixirLiteral) :-
-    (   number_string(_, TokenStr)
-    ->  ElixirLiteral = TokenStr
-    ;   intern_atoms_enabled,
-        valid_elixir_atom_name(TokenStr)
-    ->  format(string(ElixirLiteral), ':~w', [TokenStr])
-    ;   format(string(ElixirLiteral), '"~w"', [TokenStr])
+    %% Atom-vs-number disambiguation via wam_text_parser. A bare
+    %% token `5` is the integer 5 (emit as bare); a quoted token
+    %% `'5'` is the atom whose name is "5" (emit as :5 or "5" per
+    %% the intern_atoms_enabled toggle).
+    wam_classify_constant_token(TokenStr, Class),
+    (   Class = integer(N)
+    ->  format(string(ElixirLiteral), "~w", [N])
+    ;   Class = float(F)
+    ->  format(string(ElixirLiteral), "~w", [F])
+    ;   Class = atom(Name),
+        intern_atoms_enabled,
+        valid_elixir_atom_name(Name)
+    ->  format(string(ElixirLiteral), ':~w', [Name])
+    ;   Class = atom(Name),
+        format(string(ElixirLiteral), '"~w"', [Name])
     ).
 
 %% intern_atoms_enabled is asserted by write_wam_elixir_project/3
@@ -758,7 +768,11 @@ tokenize_chars([C | Rest], Tokens) :-
     ->  tokenize_chars(Rest, Tokens)
     ;   C == '\''
     ->  read_quoted_chars(Rest, TokenChars, Remainder),
-        string_chars(Token, TokenChars),
+        % Preserve the outer single quotes attached to the token so
+        % atom-vs-number is recoverable downstream via
+        % wam_text_parser:wam_classify_constant_token/2 (bare `5`
+        % is the integer 5; quoted `'5'` is the atom whose name is "5").
+        string_chars(Token, ['\''|TokenChars]),
         Tokens = [Token | RestTokens],
         tokenize_chars(Remainder, RestTokens)
     ;   read_unquoted_chars([C | Rest], TokenChars, Remainder),
@@ -771,8 +785,11 @@ wam_separator_char(' ').
 wam_separator_char('\t').
 wam_separator_char(',').
 
+% read_quoted_chars/3: returns the inner unescaped chars WITH the
+% trailing closing quote appended. The caller prepends the opening
+% quote so the produced token has both outer quotes preserved.
 read_quoted_chars([], [], []).             % unterminated quote — yield what we have
-read_quoted_chars(['\'' | Rest], [], Rest).
+read_quoted_chars(['\'' | Rest], ['\''], Rest).
 read_quoted_chars(['\\', Escaped | Rest], [Real | More], Remainder) :-
     !,
     unescape_wam_char(Escaped, Real),
@@ -846,17 +863,25 @@ generate_all_segments(Segments, Labels, Suffix, SegCodes) :-
     % emit `clause_X_impl` names while the surface `clause_X` slot is
     % taken by the super-wrapper. For the default Suffix="" path every
     % emitted byte is byte-for-byte identical to the pre-wiring output.
-    maplist(generate_one_segment(Labels, Suffix), Segments, SegCodesNested),
+    maplist(generate_one_segment(Labels, Suffix, Segments), Segments, SegCodesNested),
     append(SegCodesNested, SegCodes).
 
-generate_one_segment(Labels, Suffix, Name-Instrs, ThisSegCodes) :-
+generate_one_segment(Labels, Suffix, AllSegments, Name-Instrs, ThisSegCodes) :-
     segment_func_name(Name, Suffix, FuncName),
-    classify_segment_head(Instrs, HeadType, BodyInstrs),
-    % CPS split: every non-tail `call P, N` terminates a sub-segment;
-    % subsequent instrs go into a fresh continuation function. This lets
-    % backtrack re-enter a retry point without losing the outer caller's
-    % post-call code (which Elixir would otherwise have on a collapsed
-    % tail-call stack).
+    classify_segment_head(Instrs, HeadType, BodyInstrs0),
+    % When a retry/trust segment has an empty body (all instructions
+    % were placed in a sibling _body segment for switch_on_constant
+    % dispatch), inject a tail-call to the body function so the
+    % retry path is not dead code.
+    (   BodyInstrs0 == [],
+        HeadType \= none,
+        atom_string(Name, NameStr),
+        string_concat(NameStr, "_body", BodyNameStr),
+        member(BodyName-BodySiblingInstrs, AllSegments),
+        atom_string(BodyName, BodyNameStr)
+    ->  BodyInstrs = BodySiblingInstrs
+    ;   BodyInstrs = BodyInstrs0
+    ),
     split_body_at_calls(BodyInstrs, SubSegs),
     emit_sub_segments(SubSegs, FuncName, HeadType, Labels, Suffix, ThisSegCodes).
 
@@ -1282,6 +1307,7 @@ instr_cost(builtin_call(_, _),    5) :- !.
 instr_cost(call(_, _),            5) :- !.
 instr_cost(execute(_),            5) :- !.
 instr_cost(begin_aggregate(_, _, _), 10) :- !.
+instr_cost(begin_aggregate(_, _, _, _), 10) :- !.
 instr_cost(end_aggregate(_),      5) :- !.
 instr_cost(put_structure(_, _),   3) :- !.
 instr_cost(get_structure(_, _),   3) :- !.
@@ -1535,12 +1561,12 @@ instr_from_parts(["switch_on_constant"|Entries], switch_on_constant(Entries)).
 instr_from_parts(["switch_on_constant_a2"|Entries], switch_on_constant_a2(Entries)).
 instr_from_parts(["proceed"], proceed).
 instr_from_parts(["begin_aggregate", Type, ValReg, ResReg], begin_aggregate(Type, ValReg, ResReg)).
-% bagof/setof inlining (inline_bagof_setof(true)) emits a 4th token —
-% the witness/quantifier list — that the WAM compiler uses for group
-% backtracking. PR 1 ignores the witness (no grouping yet); future
-% witness-group PR can read it.
-instr_from_parts(["begin_aggregate", Type, ValReg, ResReg, _Witness],
-                 begin_aggregate(Type, ValReg, ResReg)).
+% bagof/setof with witness-group backtracking: the 4th token is a
+% semicolon-delimited list of witness register names (e.g. "'Y2;Y3'").
+% Passed through to push_aggregate_frame so the runtime can snapshot
+% witness values per solution and group at finalise time.
+instr_from_parts(["begin_aggregate", Type, ValReg, ResReg, WitnessStr],
+                 begin_aggregate(Type, ValReg, ResReg, WitnessStr)).
 instr_from_parts(["end_aggregate", ValReg], end_aggregate(ValReg)).
 instr_from_parts(Parts, raw(Combined)) :-
     atomic_list_concat(Parts, ' ', Combined).
@@ -1840,6 +1866,16 @@ wam_elixir_lower_instr(begin_aggregate(AggTypeStr, ValueReg, ResultReg),
 '    state = WamRuntime.push_aggregate_frame(state, :~w, ~w, ~w)',
         [AggType, ValReg, ResReg]).
 
+wam_elixir_lower_instr(begin_aggregate(AggTypeStr, ValueReg, ResultReg, WitnessStr),
+                       _PC, _Labels, _FuncName, _Suffix, Code) :-
+    agg_type_atom(AggTypeStr, AggType),
+    reg_id(ValueReg, ValReg),
+    reg_id(ResultReg, ResReg),
+    witness_str_to_reg_ids(WitnessStr, WitnessRegIds),
+    format(string(Code),
+'    state = WamRuntime.push_aggregate_frame(state, :~w, ~w, ~w, ~w)',
+        [AggType, ValReg, ResReg, WitnessRegIds]).
+
 % Control flow note: the throw({:fail, state}) here is caught by the
 % enclosing wrap_segment\'s try/catch, which calls WamRuntime.backtrack
 % on the thrown state. backtrack/1 sees the aggregate CP at the top of
@@ -1857,6 +1893,26 @@ wam_elixir_lower_instr(end_aggregate(ValueReg), _PC, _Labels, _FuncName, _Suffix
 
 wam_elixir_lower_instr(raw(Combined), _PC, _Labels, _FuncName, _Suffix, Code) :-
     format(string(Code), '    # raw: ~w\n    raise "TODO: ~w"', [Combined, Combined]).
+
+%% witness_str_to_reg_ids(+WitnessStr, -RegIdList)
+%  Converts the WAM witness string (e.g. "'Y2;Y3'") to an Elixir list
+%  literal of integer reg IDs (e.g. "[203, 204]").
+witness_str_to_reg_ids(WitnessStr, RegIdList) :-
+    (   atom(WitnessStr) -> atom_string(WitnessStr, WStr0)
+    ;   WStr0 = WitnessStr
+    ),
+    ( string_concat("'", Rest0, WStr0),
+      string_concat(Inner, "'", Rest0)
+    -> WStr = Inner
+    ;  WStr = WStr0
+    ),
+    split_string(WStr, ";", " ", Parts),
+    maplist(witness_part_to_id, Parts, Ids),
+    format(string(RegIdList), "~w", [Ids]).
+
+witness_part_to_id(Part, Id) :-
+    atom_string(RegAtom, Part),
+    reg_id(RegAtom, Id).
 
 %% escape_backslashes_for_elixir(+Token, -Escaped)
 %  Double backslashes when emitting `Token` into an Elixir double-

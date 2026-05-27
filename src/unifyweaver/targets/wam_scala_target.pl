@@ -28,6 +28,7 @@
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module('../core/template_system', [render_template/3]).
+:- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
 
 % ============================================================================
 % ATOM INTERNING TABLE (compile-time)
@@ -139,7 +140,10 @@ tokenize_wam_chars([C|Rest], CurR, Acc, outside, Tokens) :-
         )
     ;   C == '\''
     ->  (   CurR == []
-        ->  tokenize_wam_chars(Rest, [], Acc, inside, Tokens)
+        ->  % Enter quoted region — keep the opening quote attached
+            % to the token so atom-vs-number is recoverable
+            % downstream via wam_classify_constant_token/2.
+            tokenize_wam_chars(Rest, ['\''], Acc, inside, Tokens)
         ;   % Stray quote in the middle of an unquoted token — keep it.
             tokenize_wam_chars(Rest, [C|CurR], Acc, outside, Tokens)
         )
@@ -150,7 +154,9 @@ tokenize_wam_chars([C|Rest], CurR, Acc, inside, Tokens) :-
         Rest = [Escaped|More]
     ->  tokenize_wam_chars(More, [Escaped|CurR], Acc, inside, Tokens)
     ;   C == '\''
-    ->  reverse(CurR, CurC), string_chars(T, CurC),
+    ->  % Closing quote — keep it attached so the outer quotes
+        % survive to the constant classifier.
+        reverse(['\''|CurR], CurC), string_chars(T, CurC),
         tokenize_wam_chars(Rest, [], [T|Acc], outside, Tokens)
     ;   tokenize_wam_chars(Rest, [C|CurR], Acc, inside, Tokens)
     ).
@@ -212,6 +218,21 @@ wam_parts_to_scala(["retry_me_else", Label], Lit) :-
     format(string(Lit), 'RetryMeElse("~w")', [Label]).
 
 wam_parts_to_scala(["trust_me"], 'TrustMe').
+
+%% Indexed-dispatch chain ops (issue #2400).  See wam_target.pl''s
+%% build_term_index_with_chains: synthesized try/retry/trust chains
+%% target the L_<Pred>_<Arity>_<I>_body labels when a dispatch group
+%% has >1 matching clauses.  Unlike try_me_else (CP points to alt,
+%% advance pc), these instructions JUMP to the body label and the
+%% CP holds the in-chain fall-through PC (= next chain instruction).
+wam_parts_to_scala(["try", Label], Lit) :-
+    format(string(Lit), 'Try("~w")', [Label]).
+
+wam_parts_to_scala(["retry", Label], Lit) :-
+    format(string(Lit), 'Retry("~w")', [Label]).
+
+wam_parts_to_scala(["trust", Label], Lit) :-
+    format(string(Lit), 'Trust("~w")', [Label]).
 
 % --- Environment ---
 wam_parts_to_scala(["allocate"], 'Allocate').
@@ -379,14 +400,20 @@ strip_arity_suffix(Pred, Name) :-
 %  Converts a WAM constant token to its Scala-source-literal form.
 %  Integer tokens become IntTerm(N); float tokens become FloatTerm(N);
 %  everything else is interned as an atom.
+%
+%  Atom-vs-number disambiguation goes through
+%  wam_text_parser:wam_classify_constant_token/2: a bare token `5`
+%  is the integer 5, a quoted token `'5'` is the atom whose name is
+%  "5". tokenize_wam_chars/5 above preserves outer quotes attached
+%  to the token so the discriminator reaches this predicate.
 constant_to_scala_term(C, Lit) :-
-    (   number_string(N, C),
-        integer(N)
+    wam_classify_constant_token(C, Class),
+    (   Class = integer(N)
     ->  format(string(Lit), 'IntTerm(~w)', [N])
-    ;   number_string(F, C),
-        float(F)
+    ;   Class = float(F)
     ->  format(string(Lit), 'FloatTerm(~w)', [F])
-    ;   intern_scala_atom(C, AtomId),
+    ;   Class = atom(Name),
+        intern_scala_atom(Name, AtomId),
         format(string(Lit), 'Atom(~w)', [AtomId])
     ).
 

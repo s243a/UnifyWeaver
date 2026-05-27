@@ -45,12 +45,24 @@
 :- use_module('../core/prolog_term_parser').
 :- use_module('../bindings/python_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../core/iso_errors',
+              [ iso_errors_resolve_options/2,
+                iso_errors_load_config/2,
+                iso_errors_mode_for/3,
+                iso_errors_warn_multi_module/2,
+                iso_errors_rewrite/4,
+                iso_errors_audit_normalise_pi/2,
+                iso_errors_audit_walk/5
+              ]).
 :- use_module('../targets/wam_python_lowered_emitter', [
 	emit_lowered_python/4,
 	is_deterministic_pred_py/1,
 	parse_wam_text_py/2,
 	python_func_name/2
 ]).
+:- use_module('../targets/wam_text_parser',
+              [wam_classify_constant_token/2,
+               wam_tokenize_line/2]).
 :- use_module(wam_runtime_parser_capability, [
 	parser_dependent_body_goal/2,
 	wam_target_runtime_parser/3
@@ -727,10 +739,22 @@ compile_execute_builtin_to_python(Code) :-
             d = deref(get_reg(self, 1), self)
             print(_format_value(d), end=\"\")
             return True
+        if op == \"write_canonical\" and arity == 1:
+            d = deref(get_reg(self, 1), self)
+            print(_format_canonical_value(d), end=\"\")
+            return True
         if op == \"writeln\" and arity == 1:
             d = deref(get_reg(self, 1), self)
             print(_format_value(d))
             return True
+        if op == \"tab\" and arity == 1:
+            d = deref(get_reg(self, 1), self)
+            if not isinstance(d, Int) or d.n < 0:
+                return False
+            print(\" \" * d.n, end=\"\")
+            return True
+        if op == \"format\" and arity in (1, 2, 3):
+            return _execute_format_builtin(self, arity)
         if op == \"nl\" and arity == 0:
             print()
             return True
@@ -789,7 +813,7 @@ def _format_value(val):
         return str(val.f)
     if isinstance(val, Compound):
         if val.functor == \".\" and len(val.args) == 2:
-            return \"[\" + _format_list(val) + \"]\"
+            return \"[\" + _format_list(val, _format_value) + \"]\"
         args_str = \", \".join(_format_value(a) for a in val.args)
         return f\"{val.functor}({args_str})\"
     if isinstance(val, Var):
@@ -798,17 +822,168 @@ def _format_value(val):
         return f\"ref({val.addr})\"
     return str(val)
 
-def _format_list(val):
+def _atom_needs_canonical_quote(name):
+    if name == \"[]\":
+        return False
+    if not name:
+        return True
+    try:
+        int(name)
+        return True
+    except ValueError:
+        try:
+            float(name)
+            return True
+        except ValueError:
+            pass
+    if not name[0].islower():
+        return True
+    return any(not (ch.isalnum() or ch == \"_\") for ch in name)
+
+def _canonical_atom_text(name):
+    if not _atom_needs_canonical_quote(name):
+        return name
+    return \"''\" + name.replace(\"\\\\\", \"\\\\\\\\\").replace(\"''\", \"\\\\''\") + \"''\"
+
+def _format_canonical_value(val):
+    """Format a Value for write_canonical/1."""
+    if isinstance(val, Atom):
+        return _canonical_atom_text(val.name)
+    if isinstance(val, Int):
+        return str(val.n)
+    if isinstance(val, Float):
+        return str(val.f)
+    if isinstance(val, Compound):
+        if val.functor == \".\" and len(val.args) == 2:
+            return \"[\" + _format_list(val, _format_canonical_value) + \"]\"
+        args_str = \", \".join(_format_canonical_value(a) for a in val.args)
+        return f\"{_canonical_atom_text(val.functor)}({args_str})\"
+    if isinstance(val, Var):
+        return \"_\" if val.ref is None else _format_canonical_value(val.ref)
+    if isinstance(val, Ref):
+        return f\"ref({val.addr})\"
+    return str(val)
+
+def _format_list(val, formatter):
     """Format a ./2 cons-cell chain as a Prolog list."""
     items = []
     current = val
     while isinstance(current, Compound) and current.functor == \".\" and len(current.args) == 2:
-        items.append(_format_value(current.args[0]))
+        items.append(formatter(current.args[0]))
         current = current.args[1]
     if isinstance(current, Atom) and current.name == \"[]\":
         return \", \".join(items)
-    items.append(\"|\" + _format_value(current))
+    items.append(\"|\" + formatter(current))
     return \", \".join(items)
+
+def _legacy_term_to_list(val):
+    items = []
+    current = val
+    while isinstance(current, Var) and current.ref is not None:
+        current = current.ref
+    while isinstance(current, Compound) and current.functor == \".\" and len(current.args) == 2:
+        head = current.args[0]
+        while isinstance(head, Var) and head.ref is not None:
+            head = head.ref
+        items.append(head)
+        current = current.args[1]
+        while isinstance(current, Var) and current.ref is not None:
+            current = current.ref
+    if isinstance(current, Atom) and current.name == \"[]\":
+        return items
+    return None
+
+def _legacy_list_from_codes(codes):
+    result = Atom(\"[]\")
+    for code in reversed(codes):
+        result = Compound(\".\", [Int(code), result])
+    return result
+
+def _legacy_render_format(fmt, args):
+    out = []
+    ai = 0
+    i = 0
+    while i < len(fmt):
+        ch = fmt[i]
+        if ch != \"~\" or i + 1 >= len(fmt):
+            out.append(ch)
+            i += 1
+            continue
+        i += 1
+        d = fmt[i]
+        if d == \"n\":
+            out.append(\"\\n\")
+        elif d == \"t\":
+            out.append(\"\\t\")
+        elif d == \"~\":
+            out.append(\"~\")
+        elif d in (\"w\", \"p\"):
+            if ai >= len(args):
+                return None
+            out.append(_format_value(args[ai]))
+            ai += 1
+        elif d == \"a\":
+            if ai >= len(args):
+                return None
+            v = args[ai]
+            out.append(v.name if isinstance(v, Atom) else _format_value(v))
+            ai += 1
+        elif d == \"d\":
+            if ai >= len(args):
+                return None
+            v = args[ai]
+            out.append(str(v.n) if isinstance(v, Int) else _format_value(v))
+            ai += 1
+        elif d == \"s\":
+            if ai >= len(args):
+                return None
+            v = args[ai]
+            if isinstance(v, Atom):
+                out.append(v.name)
+            else:
+                codes = _legacy_term_to_list(v)
+                if codes is not None and all(isinstance(c, Int) for c in codes):
+                    out.append(\"\".join(chr(c.n) for c in codes))
+                else:
+                    out.append(_format_value(v))
+            ai += 1
+        else:
+            out.append(\"~\" + d)
+        i += 1
+    return \"\".join(out)
+
+def _execute_format_builtin(state, arity):
+    fmt = deref(get_reg(state, 2 if arity == 3 else 1), state)
+    if isinstance(fmt, Atom):
+        fmt_text = fmt.name
+    elif isinstance(fmt, Int):
+        fmt_text = str(fmt.n)
+    else:
+        return False
+    args = [] if arity == 1 else _legacy_term_to_list(deref(get_reg(state, 3 if arity == 3 else 2), state))
+    if args is None:
+        return False
+    rendered = _legacy_render_format(fmt_text, args)
+    if rendered is None:
+        return False
+    if arity != 3:
+        print(rendered, end=\"\")
+        return True
+    dest = deref(get_reg(state, 1), state)
+    if isinstance(dest, Atom):
+        if dest.name == \"user_output\":
+            print(rendered, end=\"\")
+            return True
+        if dest.name == \"user_error\":
+            print(rendered, end=\"\", file=__import__(\"sys\").stderr)
+            return True
+        return False
+    if isinstance(dest, Compound) and len(dest.args) == 1:
+        if dest.functor in (\"atom\", \"atom/1\", \"string\", \"string/1\"):
+            return unify(dest.args[0], Atom(rendered), state)
+        if dest.functor in (\"codes\", \"codes/1\"):
+            return unify(dest.args[0], _legacy_list_from_codes([ord(ch) for ch in rendered]), state)
+    return False
 
 def _deep_copy_term(val, var_map, state):
     """Deep copy a term, renaming variables."""
@@ -1000,6 +1175,10 @@ escape_python_string(In, Out) :-
 	atomic_list_concat(Parts2, "\\\"", Out).
 
 clean_wam_constant_token(Token, Clean) :-
+	% Kept for legacy callers — strips outer quotes if present, drops
+	% trailing comma otherwise. Constant emission should use
+	% python_text_constant_literal/2 below, which preserves the
+	% atom-vs-number distinction via wam_classify_constant_token/2.
 	atom_string(Token, S),
 	string_length(S, Len),
 	Len >= 2,
@@ -1012,14 +1191,24 @@ clean_wam_constant_token(Token, Clean) :-
 clean_wam_constant_token(Token, Clean) :-
 	clean_comma(Token, Clean).
 
+%% python_text_constant_literal(+Token, -PyVal) is det.
+%
+%  Convert a WAM constant token to a Python Value literal.
+%  Atom-vs-number disambiguation goes through
+%  wam_text_parser:wam_classify_constant_token/2: tokens with outer
+%  single quotes are atoms regardless of inner shape (so `'5'` is
+%  the atom `'5'`, distinct from the integer 5). Strips a trailing
+%  comma left attached by the split-based tokenizer before
+%  classifying.
 python_text_constant_literal(Token, PyVal) :-
-	clean_wam_constant_token(Token, Clean),
-	atom_string(Clean, S),
-	(   number_string(N, S), integer(N)
+	clean_comma(Token, Token1),
+	wam_classify_constant_token(Token1, Class),
+	(   Class = integer(N)
 	->  format(atom(PyVal), 'Int(~w)', [N])
-	;   number_string(F, S), float(F)
+	;   Class = float(F)
 	->  format(atom(PyVal), 'Float(~w)', [F])
-	;   escape_python_string(Clean, Esc),
+	;   Class = atom(Name),
+	    escape_python_string(Name, Esc),
 	    format(atom(PyVal), 'Atom("~w")', [Esc])
 	).
 
@@ -1318,8 +1507,13 @@ wam_code_to_python_instructions(WamCode, _PredIndicator, InstrLiterals, LabelLit
 
 wam_lines_to_python([], _, [], []).
 wam_lines_to_python([Line|Rest], PC, Instrs, Labels) :-
-	split_string(Line, " \t", " \t", Parts),
-	delete(Parts, "", CleanParts),
+	%% Quote-respecting tokeniser: the naive `split_string` on whitespace
+	%% broke any atom token containing a space (e.g. `':- p'`), splitting
+	%% it across multiple parts and causing wam_line_to_python_literal/2
+	%% to silently emit `# SKIP: ...` instead of the real put_constant.
+	%% wam_text_parser:wam_tokenize_line/2 honours the WAM-text
+	%% single-quote convention.
+	wam_tokenize_line(Line, CleanParts),
 	(   CleanParts == []
 	->  wam_lines_to_python(Rest, PC, Instrs, Labels)
 	;   CleanParts = [First|_],
@@ -1366,169 +1560,50 @@ compile_wam_runtime_to_python(_Options, PythonCode) :-
 % ============================================================================
 % ISO Error Configuration And Rewrite Plumbing
 % ============================================================================
+%
+% The reusable helpers (option resolution, mode lookup, config-file
+% loader, multi-module warning, item-level rewrite, audit walker)
+% live in src/unifyweaver/core/iso_errors.pl and are imported via
+% use_module at the top of this file.  What stays here:
+%   - Python key tables (multifile facts asserted into iso_errors),
+%     including read/read_term/read_term_from_atom which only Python
+%     supports via the runtime-parser substrate.
+%   - Text-level rewrite + plans wrapper.
+%   - wam_python_iso_audit/3 itself plus its parse-lines helpers.
 
-% Python has catch/throw plus ISO error constructors. The config and rewrite
-% layer is wired now, while key tables remain empty until the first Python
-% ISO/lax builtin variants land.
-:- dynamic iso_errors_default_to_iso/2.
-:- dynamic iso_errors_default_to_lax/2.
+% Multifile dispatch tables -- assert into iso_errors so the shared
+% mode/audit helpers see our entries.
+iso_errors:iso_errors_default_to_iso("is/2", "is_iso/2").
+iso_errors:iso_errors_default_to_iso(">/2", ">_iso/2").
+iso_errors:iso_errors_default_to_iso("</2", "<_iso/2").
+iso_errors:iso_errors_default_to_iso(">=/2", ">=_iso/2").
+iso_errors:iso_errors_default_to_iso("=</2", "=<_iso/2").
+iso_errors:iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
+iso_errors:iso_errors_default_to_iso("=\\=/2", "=\\=_iso/2").
+iso_errors:iso_errors_default_to_iso("succ/2", "succ_iso/2").
+iso_errors:iso_errors_default_to_iso("read_term_from_atom/2", "read_term_from_atom_iso/2").
+iso_errors:iso_errors_default_to_iso("read_term_from_atom/3", "read_term_from_atom_iso/3").
+iso_errors:iso_errors_default_to_iso("read/1", "read_iso/1").
+iso_errors:iso_errors_default_to_iso("read_term/1", "read_term_iso/1").
+iso_errors:iso_errors_default_to_iso("read/2", "read_iso/2").
 
-iso_errors_default_to_iso("is/2", "is_iso/2").
-iso_errors_default_to_iso(">/2", ">_iso/2").
-iso_errors_default_to_iso("</2", "<_iso/2").
-iso_errors_default_to_iso(">=/2", ">=_iso/2").
-iso_errors_default_to_iso("=</2", "=<_iso/2").
-iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
-iso_errors_default_to_iso("=\\=/2", "=\\=_iso/2").
-iso_errors_default_to_iso("succ/2", "succ_iso/2").
+iso_errors:iso_errors_default_to_lax("is/2", "is_lax/2").
+iso_errors:iso_errors_default_to_lax(">/2", ">_lax/2").
+iso_errors:iso_errors_default_to_lax("</2", "<_lax/2").
+iso_errors:iso_errors_default_to_lax(">=/2", ">=_lax/2").
+iso_errors:iso_errors_default_to_lax("=</2", "=<_lax/2").
+iso_errors:iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
+iso_errors:iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
+iso_errors:iso_errors_default_to_lax("succ/2", "succ_lax/2").
+iso_errors:iso_errors_default_to_lax("read_term_from_atom/2", "read_term_from_atom_lax/2").
+iso_errors:iso_errors_default_to_lax("read_term_from_atom/3", "read_term_from_atom_lax/3").
+iso_errors:iso_errors_default_to_lax("read/1", "read_lax/1").
+iso_errors:iso_errors_default_to_lax("read_term/1", "read_term_lax/1").
+iso_errors:iso_errors_default_to_lax("read/2", "read_lax/2").
 
-iso_errors_default_to_lax("is/2", "is_lax/2").
-iso_errors_default_to_lax(">/2", ">_lax/2").
-iso_errors_default_to_lax("</2", "<_lax/2").
-iso_errors_default_to_lax(">=/2", ">=_lax/2").
-iso_errors_default_to_lax("=</2", "=<_lax/2").
-iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
-iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
-iso_errors_default_to_lax("succ/2", "succ_lax/2").
-
-%% iso_errors_resolve_options(+Options, -Config)
-%  Merges optional file config with inline options into iso_config(Default,
-%  Overrides). Inline options override file entries for the same PI.
-iso_errors_resolve_options(Options, iso_config(Default, Overrides)) :-
-	(   option(iso_errors_config(File), Options)
-	->  iso_errors_load_config(File, iso_config(FileDefault, FileOv))
-	;   FileDefault = false, FileOv = []
-	),
-	iso_errors_inline_default(Options, FileDefault, Default),
-	iso_errors_inline_overrides(Options, InlineOv),
-	iso_errors_merge_overrides(FileOv, InlineOv, Overrides).
-
-iso_errors_inline_default(Options, FileDefault, Default) :-
-	(   member(iso_errors(M), Options),
-		(M == true ; M == false)
-	->  Default = M
-	;   Default = FileDefault
-	).
-
-iso_errors_inline_overrides(Options, InlineOv) :-
-	findall(PI-Mode,
-		( member(iso_errors(PI, Mode), Options),
-		  (Mode == true ; Mode == false),
-		  iso_errors_valid_pi(PI)
-		),
-		InlineOv).
-
-iso_errors_valid_pi(Name/Arity) :- atom(Name), integer(Arity), Arity >= 0, !.
-iso_errors_valid_pi(Module:Name/Arity) :-
-	atom(Module), atom(Name), integer(Arity), Arity >= 0.
-
-iso_errors_merge_overrides(FileOv, InlineOv, Merged) :-
-	exclude(iso_errors_shadowed(InlineOv), FileOv, Kept),
-	append(Kept, InlineOv, Merged).
-
-iso_errors_shadowed(InlineOv, PI-_) :-
-	member(InlinePI-_, InlineOv),
-	iso_errors_pi_matches(InlinePI, PI), !.
-
-iso_errors_pi_matches(PI, PI) :- !.
-iso_errors_pi_matches(Name/Arity, _:Name/Arity) :-
-	atom(Name), integer(Arity), !.
-iso_errors_pi_matches(_:Name/Arity, Name/Arity) :-
-	atom(Name), integer(Arity), !.
-
-%% iso_errors_load_config(+File, -Config)
-%  Reads iso_errors_default/1 and iso_errors_override/2 facts. Unknown facts
-%  and I/O failures are ignored, yielding iso_config(false, []).
-iso_errors_load_config(File, iso_config(Default, Overrides)) :-
-	catch(
-		setup_call_cleanup(
-			open(File, read, Stream),
-			iso_errors_read_terms(Stream, RawTerms),
-			close(Stream)),
-		_,
-		RawTerms = []),
-	iso_errors_extract_terms(RawTerms, false, [], Default, RevOv),
-	reverse(RevOv, Overrides).
-
-iso_errors_read_terms(Stream, Terms) :-
-	read_term(Stream, T, []),
-	(   T == end_of_file
-	->  Terms = []
-	;   Terms = [T|Rest],
-		iso_errors_read_terms(Stream, Rest)
-	).
-
-iso_errors_extract_terms([], D, Ov, D, Ov).
-iso_errors_extract_terms([T|Rest], D0, Ov0, D, Ov) :-
-	(   T = iso_errors_default(NewD), (NewD == true ; NewD == false)
-	->  iso_errors_extract_terms(Rest, NewD, Ov0, D, Ov)
-	;   T = iso_errors_override(PI, Mode),
-		(Mode == true ; Mode == false),
-		iso_errors_valid_pi(PI)
-	->  iso_errors_extract_terms(Rest, D0, [PI-Mode|Ov0], D, Ov)
-	;   iso_errors_extract_terms(Rest, D0, Ov0, D, Ov)
-	).
-
-%% iso_errors_mode_for(+Config, +PI, -Mode)
-iso_errors_mode_for(iso_config(Default, Overrides), PI, Mode) :-
-	(   member(OvPI-OvMode, Overrides),
-		iso_errors_pi_matches(OvPI, PI)
-	->  Mode = OvMode
-	;   Mode = Default
-	).
-
-%% iso_errors_warn_multi_module(+Config, +Predicates)
-%  Warns when a bare override matches predicates from multiple modules.
-iso_errors_warn_multi_module(iso_config(_, Overrides), Predicates) :-
-	forall(member(OvPI-_, Overrides),
-	       iso_errors_check_override_scope(OvPI, Predicates)).
-
-iso_errors_check_override_scope(Name/Arity, Predicates) :-
-	atom(Name), integer(Arity), !,
-	findall(M, ( member(P, Predicates),
-	             iso_errors_pi_module(P, Name, Arity, M)
-	           ), Modules),
-	list_to_set(Modules, Unique),
-	(   Unique = [_, _ | _]
-	->  length(Unique, N),
-		format(user_error,
-		       'Warning: iso_errors_override(~w/~w, _) matches ~w predicates~n         in different modules (~w).~n         Qualify with `mod:~w/~w` for module-scoped overrides.~n',
-		       [Name, Arity, N, Unique, Name, Arity])
-	;   true
-	).
-iso_errors_check_override_scope(_, _).
-
-iso_errors_pi_module(Module:Name/Arity, Name, Arity, Module) :- !.
-iso_errors_pi_module(Name/Arity, Name, Arity, user).
-iso_errors_pi_module(Pred/Arity-_, Name, Arity, user) :-
-	atom(Pred), Pred = Name, !.
-
-%% iso_errors_rewrite(+Config, +PI, +Items0, -Items)
-%  Item-level rewrite API shared with C++/Elixir. Python currently uses the
-%  text-level wrapper below because both interpreter and lowered paths start
-%  from WAM text.
-iso_errors_rewrite(Config, PI, Items0, Items) :-
-	iso_errors_mode_for(Config, PI, Mode),
-	maplist(iso_errors_rewrite_item(Mode), Items0, Items).
-
-iso_errors_rewrite_item(true, builtin_call(Key, N), builtin_call(IsoKey, N)) :-
-	iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_rewrite_item(true, put_structure(Key, Reg), put_structure(IsoKey, Reg)) :-
-	iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_rewrite_item(true, call(Key, N), call(IsoKey, N)) :-
-	iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_rewrite_item(true, execute(Key), execute(IsoKey)) :-
-	iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_rewrite_item(false, builtin_call(Key, N), builtin_call(LaxKey, N)) :-
-	iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_rewrite_item(false, put_structure(Key, Reg), put_structure(LaxKey, Reg)) :-
-	iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_rewrite_item(false, call(Key, N), call(LaxKey, N)) :-
-	iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_rewrite_item(false, execute(Key), execute(LaxKey)) :-
-	iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_rewrite_item(_, Item, Item).
-
+%% iso_errors_rewrite_plans(+Config, +Plans0, -Plans)
+%  Python-specific pred_plan wrapper: applies iso_errors_rewrite_text
+%  to each pred_plan(Pred, Arity, Wam, wam) plan's WAM text.
 iso_errors_rewrite_plans(Config, Plans0, Plans) :-
 	maplist(iso_errors_rewrite_plan(Config), Plans0, Plans).
 
@@ -1549,7 +1624,7 @@ iso_errors_rewrite_text(Config, PI, WamText, RewrittenText) :-
 		atomic_list_concat(RewrittenLines, '\n', RewrittenText)
 	).
 
-iso_errors_has_lax_entries :- iso_errors_default_to_lax(_, _), !.
+iso_errors_has_lax_entries :- iso_errors:iso_errors_default_to_lax(_, _), !.
 
 iso_errors_rewrite_line(Mode, Line, OutLine) :-
 	split_string(Line, " \t", " \t", Parts0),
@@ -1587,9 +1662,9 @@ iso_errors_clean_key_token(Token0, Token) :-
 	).
 
 iso_errors_lookup(true, Key, NewKey) :-
-	iso_errors_default_to_iso(Key, NewKey), !.
+	iso_errors:iso_errors_default_to_iso(Key, NewKey), !.
 iso_errors_lookup(false, Key, NewKey) :-
-	iso_errors_default_to_lax(Key, NewKey), !.
+	iso_errors:iso_errors_default_to_lax(Key, NewKey), !.
 iso_errors_lookup(_, Key, Key).
 
 iso_errors_splice_line(Line, Key, NewKey, OutLine) :-
@@ -1610,10 +1685,6 @@ wam_python_iso_audit(Predicates, Options, Audit) :-
 		iso_errors_mode_for(Config, PI, Mode),
 		iso_errors_audit_predicate(PI, Mode, Sites)
 	), Audit).
-
-iso_errors_audit_normalise_pi(Pred/Arity-_, Pred/Arity) :- !.
-iso_errors_audit_normalise_pi(Module:Pred/Arity, Module:Pred/Arity) :- !.
-iso_errors_audit_normalise_pi(PI, PI).
 
 iso_errors_audit_predicate(PI, Mode, Sites) :-
 	(   catch(
@@ -1648,41 +1719,6 @@ iso_errors_audit_classify_line([Tok], label) :-
 iso_errors_audit_classify_line(["builtin_call", Key0 | _], builtin_call(Key, 0)) :- !,
 	iso_errors_clean_key_token(Key0, Key).
 iso_errors_audit_classify_line(_, other).
-
-iso_errors_audit_walk([], _, _, Acc, Acc).
-iso_errors_audit_walk([label|Rest], PC, Mode, Acc, Out) :- !,
-	iso_errors_audit_walk(Rest, PC, Mode, Acc, Out).
-iso_errors_audit_walk([builtin_call(Key, _)|Rest], PC, Mode, Acc, Out) :- !,
-	iso_errors_audit_classify(Key, Mode, Source, Resolved, Flip),
-	PC1 is PC + 1,
-	iso_errors_audit_walk(Rest, PC1, Mode, [site(PC, Key, Resolved, Source, Flip)|Acc], Out).
-iso_errors_audit_walk([_|Rest], PC, Mode, Acc, Out) :-
-	PC1 is PC + 1,
-	iso_errors_audit_walk(Rest, PC1, Mode, Acc, Out).
-
-iso_errors_audit_classify(Key, _Mode, explicit_iso, Key, false) :-
-	iso_errors_key_has_suffix(Key, "_iso"), !.
-iso_errors_audit_classify(Key, _Mode, explicit_lax, Key, false) :-
-	iso_errors_key_has_suffix(Key, "_lax"), !.
-iso_errors_audit_classify(Key, Mode, default, Resolved, Flip) :-
-	iso_errors_resolve_default(Key, Mode, Resolved),
-	iso_errors_other_mode(Mode, OtherMode),
-	iso_errors_resolve_default(Key, OtherMode, OtherResolved),
-	( Resolved == OtherResolved -> Flip = false ; Flip = true ).
-
-iso_errors_resolve_default(Key, true, IsoKey) :-
-	iso_errors_default_to_iso(Key, IsoKey), !.
-iso_errors_resolve_default(Key, false, LaxKey) :-
-	iso_errors_default_to_lax(Key, LaxKey), !.
-iso_errors_resolve_default(Key, _, Key).
-
-iso_errors_other_mode(true, false).
-iso_errors_other_mode(false, true).
-
-iso_errors_key_has_suffix(Key, Suffix) :-
-	( atom(Key) -> atom_string(Key, KS) ; KS = Key ),
-	split_string(KS, "/", "", [Name | _]),
-	string_concat(_, Suffix, Name).
 
 wam_python_iso_audit_report([]).
 wam_python_iso_audit_report([audit(PI, Mode, Sites)|Rest]) :-

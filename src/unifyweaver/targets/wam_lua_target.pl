@@ -32,7 +32,8 @@
 :- use_module(wam_text_parser, [
     wam_tokenize_line/2,
     wam_recognise_label/2,
-    wam_recognise_instruction/2
+    wam_recognise_instruction/2,
+    wam_classify_constant_token/2
 ]).
 :- use_module(wam_lua_lowered_emitter, [
     wam_lua_lowerable/3,
@@ -305,11 +306,13 @@ normalize_switch_case_tokens([Token|Rest], [Token|More]) :-
     normalize_switch_case_tokens(Rest, More).
 
 constant_to_lua_term(C, Lit) :-
-    (   number_string(N, C), integer(N)
+    wam_classify_constant_token(C, Class),
+    (   Class = integer(N)
     ->  format(string(Lit), 'V.Int(~w)', [N])
-    ;   number_string(F, C), float(F)
+    ;   Class = float(F)
     ->  format(string(Lit), 'V.Float(~w)', [F])
-    ;   intern_lua_atom(C, Id),
+    ;   Class = atom(Name),
+        intern_lua_atom(Name, Id),
         format(string(Lit), 'V.Atom(~w)', [Id])
     ).
 

@@ -154,6 +154,7 @@ Initial Prolog shape:
     parent_edge(category_parent/2),
     reverse_index(csr([
         ordering(parent_sort),
+        index_backend(sorted_array),
         phase(cache_warmup),
         cache_bytes(67108864)
     ]))
@@ -163,6 +164,7 @@ Initial Prolog shape:
     parent_edge(category_parent/2),
     reverse_index(csr([
         ordering(root_bfs),
+        index_backend(lmdb_offset),
         block_size_edges(65536),
         phase(runtime_available)
     ]))
@@ -189,6 +191,7 @@ reverse_index(artifact([
     storage_kind(csr_pread_artifact),
     id_encoding(int32_le),
     ordering(root_bfs),
+    index_backend(sorted_array),
     phase(runtime_available),
     io_policy(auto),
     cache_bytes(67108864)
@@ -200,8 +203,16 @@ names the important distinction from `mmap_array_artifact`: reverse
 child rows are fetched by explicit reads with bounded user-space cache,
 not by mapping another large relation into the process address space.
 
-`io_policy(auto)` is the default for CSR. See §3.4.1 for how it
+`io_policy(auto)` is the default for CSR. See §3.4.2 for how it
 resolves.
+
+`index_backend(auto|sorted_array|lmdb_offset|dense_direct)` selects how
+the runtime finds a parent's `(offset, count)` record before reading
+`.val`. If omitted, the current behavior is `sorted_array`: binary
+search over the CSR index. Explicit `index_backend(auto)` is the
+cost-analyzer hook. It should resolve to `sorted_array` until the cost
+model has measured terms for ID density, index size, LMDB lookup cost,
+and preprocessing cost.
 
 ### 2.1 Reverse-index phases
 
@@ -319,7 +330,112 @@ same conceptual family as `binary_artifact`, `lmdb_artifact`, and
 `mmap_array_artifact`, rather than as a replacement for the existing C#
 artifact framework.
 
-### 3.4.1 CSR I/O policy
+One concrete effective-distance use is a staged search for workloads
+that allow non-carrot-shaped paths. The runtime can first run the hot
+ancestor kernel over the parent-edge store, preserving the current
+ancestor-first reuse path. Only after that search is exhausted should it
+open the reverse CSR path to add child nodes and widen the frontier. In
+that shape, CSR is not competing with the parent-edge LMDB as the primary
+resident structure; it is a deferred expansion artifact used when the
+query semantics justify leaving the ancestor-only search space.
+
+### 3.4.1 CSR index backend
+
+CSR has two lookups:
+
+1. map `parent_id` to the row location for that parent;
+2. read the child slice from `.val`.
+
+The first step is controlled by `index_backend(...)`:
+
+| Backend | Meaning | Tradeoff |
+| --- | --- | --- |
+| `sorted_array` | Keep `.idx` sorted by parent ID and use binary search. | Simple, compact, no second LMDB lookup; best when the index fits in memory. |
+| `lmdb_offset` | Store `parent_id -> offset,count` or `parent_id -> idx_row` in an LMDB sub-db. | Handles sparse Wikipedia/page IDs without dense direct arrays; adds LMDB B-tree lookup and page-cache pressure. |
+| `dense_direct` | Store a direct array indexed by numeric parent ID. | Fastest lookup when IDs are dense; wasteful or impossible for sparse page-id spaces. |
+| `auto` | Let the cost analyzer choose. | Defaults to `sorted_array`; may select `lmdb_offset` when measured lookup savings amortize extra build cost and the offset index fits the memory budget. |
+
+An LMDB offset index may store the final `.val` offset directly, or it
+may store the row number in `.idx`. Storing the final offset can skip the
+binary search and the `.idx` read, but it means the CSR builder must
+write or rewrite LMDB offset metadata as rows are finalized. That is
+extra preprocessing and another artifact to keep consistent with the CSR
+files. The cost analyzer should only choose it when the saved lookup
+work outweighs the additional build time, disk bytes, and page-cache
+touches.
+
+The first `auto` rule is deliberately narrow. It selects `lmdb_offset`
+only when all of these are known:
+
+```prolog
+expected_child_lookups_per_query(NLookups).
+expected_query_count_per_artifact(NQueries).
+sorted_array_lookup_ms_per_1000(SortedMs).
+lmdb_offset_lookup_ms_per_1000(OffsetMs).
+sorted_array_build_seconds(SortedBuild).
+lmdb_offset_build_seconds(OffsetBuild).
+```
+
+The rule computes:
+
+```text
+total_lookup_savings_seconds =
+  (NLookups * NQueries / 1000) * ((SortedMs - OffsetMs) / 1000)
+
+marginal_build_seconds =
+  max(0, OffsetBuild - SortedBuild)
+```
+
+`lmdb_offset` is eligible only when lookup savings is positive and
+`total_lookup_savings_seconds >= marginal_build_seconds`.
+
+It must also pass a memory guard. The caller can either declare:
+
+```prolog
+lmdb_offset_memory_fits(true).
+```
+
+or provide:
+
+```prolog
+lmdb_offset_bytes(Bytes).
+available_memory_bytes(Available).
+csr_index_memory_fraction(Fraction).  % default 0.05
+```
+
+In the second form, `lmdb_offset` is eligible only when:
+
+```text
+Bytes <= Available * Fraction
+```
+
+This keeps `auto` target-neutral and evidence-driven. Targets can feed
+the terms from local benchmark telemetry, artifact manifests, or
+platform probes, while omitted or incomplete measurements keep the
+current `sorted_array` behavior.
+
+The cost model exposes a small telemetry adapter for benchmark output:
+
+```prolog
+csr_index_backend_options_from_benchmark_tsv(
+    "reverse_csr_lookup.tsv",
+    [
+        expected_child_lookups_per_query(500),
+        expected_query_count_per_artifact(100),
+        available_memory_bytes(1073741824)
+    ],
+    Options
+),
+resolve_csr_index_backend(Options, Backend).
+```
+
+The adapter extracts `median_ms`, `csr_build_seconds`, and
+`offset_index_bytes` from the `sorted_array` and `lmdb_offset` rows
+emitted by `benchmark_reverse_csr_lookup.py`. Workload expectations and
+memory policy remain caller-provided because they are query- and
+deployment-specific.
+
+### 3.4.2 CSR I/O policy
 
 CSR access should expose an explicit I/O policy:
 
@@ -540,6 +656,8 @@ Performance:
 - Record minor and major page faults where the platform exposes them.
 - Compare parent-only LMDB, reverse LMDB, `parent_sort` CSR, and
   `root_bfs` CSR.
+- Compare `sorted_array`, `lmdb_offset`, and dense-direct CSR index
+  backends where the ID space makes each backend plausible.
 - Compare `buffered_pread`, `buffered_pread_drop`, and `direct_io`
   where the platform supports direct I/O and the block layout can meet
   alignment requirements.
@@ -562,6 +680,8 @@ Phase A - design and option validation:
   `reverse_index(none|lmdb|mmap_array|csr|artifact|auto)`.
 - Add option parsing for `id_encoding(...)` and
   `io_policy(auto|buffered_pread|buffered_pread_drop|direct_io)`.
+- Add option parsing for
+  `index_backend(auto|sorted_array|lmdb_offset|dense_direct)`.
 - Reject `phase(runtime_available)` when no runtime reverse lookup API
   exists for the target.
 - Map `reverse_index(artifact(...))` onto the existing storage-kind

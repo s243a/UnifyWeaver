@@ -23,6 +23,7 @@
 
 :- use_module(library(lists)).
 :- use_module(wam_rust_target, [escape_rust_string/2]).
+:- use_module(wam_text_parser, [wam_classify_constant_token/2]).
 
 % =====================================================================
 % Parsing
@@ -432,12 +433,20 @@ rust_reg_name(RegStr, Name) :-
 
 %% rust_val_literal(+Str, -RustLiteral)
 %  Convert a WAM constant to a Rust value literal.
+%
+%  Uses the shared wam_classify_constant_token/2 so quoted atoms like
+%  `'42'` are classified as atoms (with the outer quotes stripped to
+%  `42`) instead of being formatted verbatim with the quote characters
+%  baked into the F# string.  This mirrors the F# target's #2422 fix
+%  and the existing approach in the Haskell / Go / C++ / Elixir /
+%  Python lowered emitters, all of which already delegate to this
+%  classifier.
 rust_val_literal(Str, RustVal) :-
-    (   number_string(N, Str), integer(N)
+    wam_classify_constant_token(Str, Class),
+    (   Class = integer(N)
     ->  format(atom(RustVal), 'Value::Integer(~w)', [N])
-    ;   number_string(F, Str), float(F)
+    ;   Class = float(F)
     ->  format(atom(RustVal), 'Value::Float(~w)', [F])
-    ;   Str == "[]"
-    ->  RustVal = 'Value::Atom("[]".to_string())'
-    ;   format(atom(RustVal), 'Value::Atom("~w".to_string())', [Str])
+    ;   Class = atom(Name),
+        format(atom(RustVal), 'Value::Atom("~w".to_string())', [Name])
     ).

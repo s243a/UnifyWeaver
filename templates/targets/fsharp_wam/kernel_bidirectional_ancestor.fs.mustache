@@ -1,0 +1,183 @@
+/// Bidirectional effective-distance kernel with path-cost pruning
+/// and A*-style lower-bound elimination.
+/// Auto-generated from kernel detection. Edge predicates:
+///   upward: {{edge_pred}} (category_parent), downward: category_child CSR.
+///
+/// Explores paths in both directions (parent hops and child hops).
+/// Each step has a direction-dependent cost: parent steps cost
+/// parentCost, child steps cost childCost. Paths are pruned when
+/// cumulative cost exceeds the budget.
+///
+/// A* pruning: precomputes the minimum parent-hop distance from every
+/// node to root (BFS from root via child edges). During search, any
+/// frontier entry where current_cost + min_dist[node] * parentCost
+/// exceeds the budget is eliminated, since it cannot reach root
+/// within the remaining budget even using only parent hops (cheapest).
+///
+/// Returns (totalHops, parentHops, childHops) for all paths that
+/// reach root within budget. The caller applies the distance metric
+/// using parentHops and childHops for direction-weighted scoring.
+/// With childCost = infinity, degenerates to upward-only search.
+
+/// Graph calibration result: dimensionality D and effective branching
+/// ratio b, computed from degree distribution moments during BFS.
+/// Used by the distance metric to weight parent vs child hops.
+///   D = E[d_child] (average child fan-out)
+///   b_raw = E[d^2_child] / E[d^2_parent] (second moment ratio)
+///   b = b_raw * routing_correction (optional)
+/// The second moment ratio captures the path amplification asymmetry
+/// from heavy-tail nodes (hubs with hundreds of children).
+/// The routing correction (avg_min_dist / avg_path_hops) accounts for
+/// hub correlation: in graphs where paths overlap through shared hubs,
+/// the raw b overestimates the effective branching.
+type GraphCalibration = {
+    Dimensionality: float
+    BranchRatio: float
+    BranchRatioRaw: float
+    RoutingCorrection: float
+    MinDist: System.Collections.Generic.Dictionary<int, int>
+}
+
+let private calibrateGraph
+    (lookupParents: int -> int list)
+    (lookupChildren: int -> int list)
+    (root: int)
+    : GraphCalibration =
+    let dist = System.Collections.Generic.Dictionary<int, int>()
+    dist.[root] <- 0
+    let mutable frontier = [root]
+    let mutable depth = 0
+    let mutable sumChildDeg = 0.0
+    let mutable sumChildDeg2 = 0.0
+    let mutable childNodes = 0
+    let mutable sumParentDeg = 0.0
+    let mutable sumParentDeg2 = 0.0
+    let mutable parentNodes = 0
+    while not (List.isEmpty frontier) do
+        depth <- depth + 1
+        let mutable next = []
+        for nd in frontier do
+            let children = lookupChildren nd
+            if not (List.isEmpty children) then
+                let d = float children.Length
+                sumChildDeg <- sumChildDeg + d
+                sumChildDeg2 <- sumChildDeg2 + d * d
+                childNodes <- childNodes + 1
+            let parents = lookupParents nd
+            if not (List.isEmpty parents) then
+                let d = float parents.Length
+                sumParentDeg <- sumParentDeg + d
+                sumParentDeg2 <- sumParentDeg2 + d * d
+                parentNodes <- parentNodes + 1
+            for c in children do
+                if not (dist.ContainsKey(c)) then
+                    dist.[c] <- depth
+                    next <- c :: next
+        frontier <- next
+    let dimensionality =
+        if childNodes > 0 then max 1.5 (sumChildDeg / float childNodes)
+        else 3.0
+    let branchRatioRaw =
+        if childNodes > 0 && parentNodes > 0 then
+            let ed2Child = sumChildDeg2 / float childNodes
+            let ed2Parent = sumParentDeg2 / float parentNodes
+            if ed2Parent > 0.0 then max 1.0 (ed2Child / ed2Parent)
+            else 1.0
+        else 1.0
+    // Routing correction: probe a sample of seeds to measure
+    // avg_min_dist / avg_path_hops. This accounts for hub correlation.
+    let seedSample =
+        dist
+        |> Seq.filter (fun kv -> kv.Value >= 3 && kv.Value <= 6)
+        |> Seq.truncate 20
+        |> Seq.map (fun kv -> kv.Key)
+        |> Seq.toArray
+    let routingCorrection =
+        if seedSample.Length > 0 then
+            let mutable totalMinD = 0.0
+            let mutable totalHops = 0.0
+            let mutable totalPaths = 0
+            for s in seedSample do
+                totalMinD <- totalMinD + float dist.[s]
+                let gcr nd = match dist.TryGetValue(nd) with true,d -> float d | _ -> infinity
+                let rec probe f a =
+                    match f with
+                    | [] -> a
+                    | (nd,co:float,h,v:Set<int>) :: r ->
+                        let a' = if nd = root then (h :: a) else a
+                        let pN =
+                            if co + 1.0 > 15.0 then []
+                            else
+                                lookupParents nd |> List.choose (fun x ->
+                                    if Set.contains x v then None
+                                    else
+                                        let nc = co + 1.0
+                                        if nc + gcr x > 15.0 then None
+                                        else Some(x, nc, h+1, Set.add x v))
+                        let cN =
+                            if co + 5.0 > 15.0 then []
+                            else
+                                lookupChildren nd |> List.choose (fun x ->
+                                    if Set.contains x v then None
+                                    else
+                                        let nc = co + 5.0
+                                        if nc + gcr x > 15.0 then None
+                                        else Some(x, nc, h+1, Set.add x v))
+                        probe (pN @ cN @ r) a'
+                let hops = probe [(s, 0.0, 0, Set.singleton s)] []
+                for h in hops do
+                    totalHops <- totalHops + float h
+                    totalPaths <- totalPaths + 1
+            let avgMinD = totalMinD / float seedSample.Length
+            let avgHops = if totalPaths > 0 then totalHops / float totalPaths else avgMinD
+            if avgHops > 0.0 then min 1.0 (avgMinD / avgHops) else 1.0
+        else 1.0
+    let branchRatio = branchRatioRaw * routingCorrection
+    { Dimensionality = dimensionality
+      BranchRatio = branchRatio
+      BranchRatioRaw = branchRatioRaw
+      RoutingCorrection = routingCorrection
+      MinDist = dist }
+
+let nativeKernel_bidirectional_ancestor
+    (lookupParents: int -> int list)
+    (lookupChildren: int -> int list)
+    (cat: int) (root: int)
+    (parentCost: float) (childCost: float) (budget: float)
+    : (int * int * int) list =
+    let cal = calibrateGraph lookupParents lookupChildren root
+    let minCostToRoot nd =
+        match cal.MinDist.TryGetValue(nd) with
+        | true, d -> float d * parentCost
+        | _ -> infinity
+    let rec explore
+        (frontier: (int * float * int * int * int * Set<int>) list)
+        (acc: (int * int * int) list) : (int * int * int) list =
+        match frontier with
+        | [] -> acc
+        | (node, cost, hops, pHops, cHops, visited) :: rest ->
+            let acc' =
+                if node = root && hops > 0 then (hops, pHops, cHops) :: acc
+                else acc
+            let parentNext =
+                if cost + parentCost > budget then []
+                else
+                    lookupParents node
+                    |> List.choose (fun p ->
+                        if Set.contains p visited then None
+                        else
+                            let nc = cost + parentCost
+                            if nc + minCostToRoot p > budget then None
+                            else Some (p, nc, hops + 1, pHops + 1, cHops, Set.add p visited))
+            let childNext =
+                if cost + childCost > budget then []
+                else
+                    lookupChildren node
+                    |> List.choose (fun c ->
+                        if Set.contains c visited then None
+                        else
+                            let nc = cost + childCost
+                            if nc + minCostToRoot c > budget then None
+                            else Some (c, nc, hops + 1, pHops, cHops + 1, Set.add c visited))
+            explore (parentNext @ childNext @ rest) acc'
+    explore [(cat, 0.0, 0, 0, 0, Set.singleton cat)] []

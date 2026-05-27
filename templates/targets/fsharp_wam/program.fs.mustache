@@ -1,0 +1,247 @@
+module Program
+
+open System
+open System.Diagnostics
+open WamTypes
+open WamRuntime
+open Predicates
+open Lowered
+{{#has_lmdb}}open LmdbFactSource
+{{/has_lmdb}}{{#has_csr}}open CsrReader
+{{/has_csr}}
+// -- TSV loading helpers --------------------------------------------------
+
+let loadTsvPairs (path: string) : (string * string) array =
+    System.IO.File.ReadAllLines(path)
+    |> Array.skip 1
+    |> Array.filter (fun l -> l.Trim().Length > 0 && not (l.StartsWith("#")))
+    |> Array.choose (fun l ->
+        let parts = l.Split('\t')
+        if parts.Length >= 2 then Some (parts.[0].Trim(), parts.[1].Trim())
+        else None)
+
+let loadSingleColumn (path: string) : string array =
+    System.IO.File.ReadAllLines(path)
+    |> Array.skip 1
+    |> Array.filter (fun l -> l.Trim().Length > 0 && not (l.StartsWith("#")))
+    |> Array.map (fun l -> l.Trim())
+
+// -- Atom interning from all string sources --------------------------------
+
+let buildFullAtomInternTable (code: Instruction array) (extraAtoms: string seq) : Map<string, int> * Map<int, string> =
+    let atoms = System.Collections.Generic.HashSet<string>()
+    for instr in code do
+        match instr with
+        | GetConstant (Atom a, _) -> atoms.Add(a) |> ignore
+        | PutConstant (Atom a, _) -> atoms.Add(a) |> ignore
+        | SwitchOnConstantPc table -> for (k, _) in table do atoms.Add(k) |> ignore
+        | _ -> ()
+    for a in extraAtoms do atoms.Add(a) |> ignore
+    let sorted = atoms |> Seq.sort |> Seq.toArray
+    let intern   = sorted |> Array.mapi (fun i a -> (a, i)) |> Map.ofArray
+    let deintern = sorted |> Array.mapi (fun i a -> (i, a)) |> Map.ofArray
+    intern, deintern
+
+// -- Build interned FFI facts map -----------------------------------------
+
+let buildFfiFacts (pairs: (string * string) array) (intern: Map<string, int>) : Map<int, int list> =
+    let mutable m : Map<int, int list> = Map.empty
+    for (child, parent) in pairs do
+        match Map.tryFind child intern, Map.tryFind parent intern with
+        | Some cid, Some pid ->
+            let existing = Map.tryFind cid m |> Option.defaultValue []
+            m <- Map.add cid (pid :: existing) m
+        | _ -> ()
+    m
+
+// -- Extract double from WAM Value ----------------------------------------
+
+let extractDouble (v: Value) : float option =
+    match v with
+    | Float f   -> Some f
+    | Integer n -> Some (float n)
+    | _         -> None
+
+{{#has_bidirectional}}
+// -- Direction-weighted effective distance metric -------------------------
+//
+// Each path is weighted by direction: w = (1/D)^N * (1/(b*D))^M
+// where N = parent hops, M = child hops, D = dimensionality, b = branch ratio.
+// Normalized power-mean: d = (Sum(w * (h+1)^(-n)) / Sum(w))^(-1/n)
+//
+// D and b are calibrated per-graph from BFS growth rates and fan-out
+// statistics (see GraphCalibration in kernel_bidirectional_ancestor).
+// Fallback defaults: D={{dimensionality}}, b={{branch_factor}}.
+
+let effectiveDistanceWeighted
+    (cal: GraphCalibration) (results: (int * int * int) list) (n: float) : float =
+    if List.isEmpty results then infinity
+    else
+        let parentW = 1.0 / cal.Dimensionality
+        let childW = 1.0 / (cal.BranchRatio * cal.Dimensionality)
+        let mutable sumWF = 0.0
+        let mutable sumW = 0.0
+        for (totalHops, parentHops, childHops) in results do
+            let w = (parentW ** float parentHops) * (childW ** float childHops)
+            sumWF <- sumWF + w * (float (totalHops + 1)) ** (-n)
+            sumW <- sumW + w
+        (sumWF / sumW) ** (-1.0 / n)
+{{/has_bidirectional}}
+
+[<EntryPoint>]
+let main argv =
+    let factsDir = if argv.Length > 0 then argv.[0] else "."
+    let numReps  = if argv.Length > 1 then (try int argv.[1] with _ -> 3) else 3
+
+    let sw = Stopwatch.StartNew()
+
+    // Load TSV facts
+    let categoryParents  = loadTsvPairs (System.IO.Path.Combine(factsDir, "category_parent.tsv"))
+    let articleCategories = loadTsvPairs (System.IO.Path.Combine(factsDir, "article_category.tsv"))
+    let roots            = loadSingleColumn (System.IO.Path.Combine(factsDir, "root_categories.tsv"))
+    let root = if roots.Length > 0 then roots.[0] else "Physics"
+
+    let loadMs = sw.ElapsedMilliseconds
+    eprintfn "load_ms=%d" loadMs
+
+    // Resolve call instructions
+    let foreignPreds = [ {{foreign_preds}} ]
+    let resolvedCode = resolveCallInstrs allLabels foreignPreds (Array.toList allCode) |> List.toArray
+
+    // Build atom intern table from instructions + all TSV atoms
+    let extraAtoms = seq {
+        for (c, p) in categoryParents do yield c; yield p
+        for (_, c) in articleCategories do yield c
+        for r in roots do yield r
+    }
+    let atomIntern, atomDeintern = buildFullAtomInternTable resolvedCode extraAtoms
+
+    // Build interned FFI facts: category_parent child -> [parent ids]
+    let parentsInterned = buildFfiFacts categoryParents atomIntern
+
+{{#has_lmdb}}
+    // LMDB fact source setup (materialisation mode dispatch)
+    let lmdbEnv = openEnv (System.IO.Path.Combine(factsDir, "lmdb"))
+{{match materialisation}}
+{{case eager}}
+    // Eager: load entire LMDB relation into memory for O(log n) Map lookup
+    let lmdbFactMap = loadCategoryParent lmdbEnv
+    let lmdbFactLookup (key: int) : int list =
+        Map.tryFind key lmdbFactMap |> Option.defaultValue []
+{{case lazy}}
+    // Lazy: on-demand cursor lookup, no startup materialisation cost
+    let lmdbFactSource = LmdbCursorLookup(lmdbEnv, "category_parent") :> ILookupSource
+{{default}}
+    // Cached (default): two-level L1/L2 cache over cursor lookup
+    let lmdbInner = LmdbCursorLookup(lmdbEnv, "category_parent") :> ILookupSource
+    let lmdbFactSource = TwoLevelCachedLookupSource(lmdbInner, maxL2Entries = {{l2_capacity}}) :> ILookupSource
+{{/match}}
+{{/has_lmdb}}
+
+    // Seed categories (distinct second column of article_category)
+    let seedCats =
+        articleCategories
+        |> Array.map snd
+        |> Array.distinct
+        |> Array.sort
+
+    // Build WamContext
+    let ctx =
+        { WcCode             = resolvedCode
+          WcLabels            = allLabels
+          WcForeignFacts      = Map.empty
+          WcFfiFacts          = Map.ofList [ ("category_parent", parentsInterned) ]
+          WcFfiWeightedFacts  = Map.empty
+          WcAtomIntern        = atomIntern
+          WcAtomDeintern      = atomDeintern
+          WcForeignConfig     = Map.ofList [ ("max_depth", 10) ]
+          WcLoweredPredicates = loweredPredicates
+          WcLookupSources     = {{lookup_sources_expr}}
+          WcCancellationToken = None }
+
+    let emptyState =
+        { WsPC         = 0
+          WsRegs       = Array.create MaxRegs (Unbound -1)
+          WsStack      = []
+          WsHeap       = []
+          WsHeapLen    = 0
+          WsTrail      = []
+          WsTrailLen   = 0
+          WsCP         = 0
+          WsCPs        = []
+          WsCPsLen     = 0
+          WsBindings   = Map.empty
+          WsCutBar     = 0
+          WsVarCounter = 0
+          WsBuilder    = None
+          WsBuilderStack = []
+          WsAggAccum   = []
+          WsB0Stack    = []
+          WsCatchers   = [] }
+
+    // Find entry point: prefer lowered predicates, fall back to code array
+    let queryPred =
+        let candidates = [
+            "category_ancestor$effective_distance_sum_selected/3"
+            "category_ancestor$effective_distance_sum_bound/3"
+            "category_ancestor/4"
+        ]
+        candidates
+        |> List.tryFind (fun p ->
+            Map.containsKey p ctx.WcLoweredPredicates ||
+            Map.containsKey p ctx.WcLabels)
+        |> Option.defaultValue "category_ancestor/4"
+
+    let setupMs = sw.ElapsedMilliseconds
+    eprintfn "setup_ms=%d queryPred=%s" setupMs queryPred
+
+    // Benchmark loop: numReps repetitions
+    let mutable totalSolutions = 0
+    let mutable lastQueryMs = 0L
+
+    for rep = 1 to numReps do
+        let querySw = Stopwatch.StartNew()
+        let mutable repSolutions = 0
+
+        for cat in seedCats do
+            let varId = 1000000
+            let regs = Array.create MaxRegs (Unbound -1)
+            // Register layout depends on which queryPred resolved.  The /3
+            // candidates are lowered aggregate variants whose semantics fold
+            // a target root into the call shape, so A2 is the root and A3
+            // accumulates the result.  The /4 variant is the raw
+            // category_ancestor(+Cat, -Ancestor, -Hops, +Visited) -- A2 and
+            // A3 are outputs (Unbound), and A4 must be a list-valued input
+            // seeded with [Cat] so that the cycle-detection guard (negation
+            // over member/2) sees a real list rather than an unbound
+            // variable.  Without the seeded A4 the predicate fails
+            // unconditionally and the benchmark reports solutions=0.
+            if queryPred.EndsWith "/4" then
+                regs.[1] <- Atom cat
+                regs.[2] <- Unbound varId
+                regs.[3] <- Unbound (varId + 1)
+                regs.[4] <- VList [ Atom cat ]
+            else
+                regs.[1] <- Atom cat
+                regs.[2] <- Atom root
+                regs.[3] <- Unbound varId
+            let s0 = { emptyState with WsPC = 0; WsRegs = regs; WsCP = 0 }
+            match dispatchCall ctx queryPred s0 with
+            | Some s1 ->
+                repSolutions <- repSolutions + 1
+            | None -> ()
+
+        querySw.Stop()
+        lastQueryMs <- querySw.ElapsedMilliseconds
+        totalSolutions <- totalSolutions + repSolutions
+        eprintfn "rep=%d query_ms=%d seeds=%d solutions=%d"
+            rep lastQueryMs seedCats.Length repSolutions
+
+    sw.Stop()
+    let totalMs = sw.ElapsedMilliseconds
+
+    // Summary output
+    printfn "query_ms=%d seeds=%d solutions=%d reps=%d"
+        lastQueryMs seedCats.Length (totalSolutions / numReps) numReps
+    printfn "total_ms=%d" totalMs
+    0

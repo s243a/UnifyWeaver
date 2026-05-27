@@ -10371,11 +10371,48 @@ build_e2e_binary(TmpDir, BinPath) :-
     directory_file_path(CppDir, 'generated_program.cpp', Prog),
     directory_file_path(CppDir, 'main.cpp', Main),
     directory_file_path(CppDir, 'cpp_test', BinPath),
+    %% Pre-compile wam_runtime.cpp to a content-hashed cache directory
+    %% the first time we see this version of the runtime, then reuse
+    %% the .o file across every cpp_e2e_* test in the suite.  Saves the
+    %% ~4-5 second wam_runtime.cpp compile per case (was ~6-7s total
+    %% for fact-shaped projects).  The generated_program.cpp + main.cpp
+    %% still recompile per case since their content is test-specific.
+    %% See docs/WAM_RUNTIME_PARSER_STATUS.md for the bottleneck analysis
+    %% of why parser-bundled (runtime_parser(compiled)) projects still
+    %% take 11+ min/case even with this cache (the bulk is in
+    %% generated_program.cpp, not wam_runtime.cpp).
+    cached_wam_runtime_object(Rt, RuntimeObj),
     process_create(path('g++'),
-                   ['-std=c++17', '-O0', '-o', BinPath, Rt, Prog, Main],
+                   ['-std=c++17', '-O0', '-o', BinPath, RuntimeObj, Prog, Main],
                    [stderr(null), process(PID)]),
     process_wait(PID, Status),
     assertion(Status == exit(0)).
+
+%% cached_wam_runtime_object(+RuntimeCpp, -CachedObj)
+%
+%  Compile RuntimeCpp to a .o file in a content-hashed cache directory.
+%  First call per unique RuntimeCpp content does the compile; subsequent
+%  calls reuse the existing .o.  Compile uses the same flags as the
+%  non-cached build_e2e_binary so behaviour is preserved.
+cached_wam_runtime_object(RuntimeCpp, CachedObj) :-
+    use_module(library(crypto)),
+    crypto_file_hash(RuntimeCpp, Hash, [algorithm(sha256)]),
+    %% Per-suite cache directory under /tmp.  Sharing across suites is
+    %% intentional -- wam_runtime.cpp is the same content for every
+    %% C++ test in this repo's lifetime, so one compile per Prolog
+    %% release of the project is plenty.
+    CacheDir = '/tmp/uw_cpp_runtime_cache',
+    catch(make_directory_path(CacheDir), _, true),
+    format(atom(CachedObj), '~w/wam_runtime_~w.o', [CacheDir, Hash]),
+    (   exists_file(CachedObj)
+    ->  true
+    ;   process_create(path('g++'),
+                       ['-std=c++17', '-O0', '-c',
+                        '-o', CachedObj, RuntimeCpp],
+                       [stderr(null), process(PID)]),
+        process_wait(PID, Status),
+        assertion(Status == exit(0))
+    ).
 
 run_query(BinPath, PredKey, Args, Expected) :-
     maplist(atom_string, Args, ArgStrs),

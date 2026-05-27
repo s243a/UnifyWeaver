@@ -43,7 +43,14 @@
     haskell_fact_list_name/2,            % +PredName, -ListName
     init_atom_intern_table/0,            % reinitialize atom intern table
     % E2E wiring
-    generate_inline_facts_wiring/2       % +InlineDefs, -Code
+    generate_inline_facts_wiring/2,      % +InlineDefs, -Code
+    % ISO error config + rewrite (parity with F#/C++/Elixir/Python)
+    iso_errors_resolve_options/2,        % +Options, -Config
+    iso_errors_load_config/2,            % +File, -Config
+    iso_errors_mode_for/3,               % +Config, +PI, -Mode
+    iso_errors_warn_multi_module/2,      % +Config, +Predicates
+    iso_errors_rewrite/4,                % +Config, +PI, +Items0, -Items
+    iso_errors_rewrite_text/4            % +Config, +PI, +WamText0, -WamText
 ]).
 
 :- use_module(library(lists)).
@@ -60,11 +67,26 @@
 :- use_module('../core/statistics',
              [select_cache_mode/2]).
 :- use_module('../core/cost_model',
-             [recommend_access_pattern/5, read_mem_available_bytes/1]).
+             [recommend_access_pattern/5, read_mem_available_bytes/1,
+              resolve_csr_index_backend/2]).
 :- use_module('../core/algorithm_manifest',
              [load_algorithm_manifest/2]).
+:- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
+:- use_module('../targets/wam_runtime_parser_capability',
+             [parser_dependent_body_goal/2, wam_target_runtime_parser/3]).
+:- use_module('../core/prolog_term_parser').
+:- use_module('../core/cpp_runtime_parser_wrappers').
 :- use_module('../core/cost_function',
              [validate_cost_function/1, cost_function_with_defaults/2]).
+:- use_module('../core/iso_errors',
+              [ iso_errors_resolve_options/2,
+                iso_errors_load_config/2,
+                iso_errors_mode_for/3,
+                iso_errors_warn_multi_module/2,
+                iso_errors_rewrite/4,
+                iso_errors_audit_normalise_pi/2,
+                iso_errors_audit_walk/5
+              ]).
 
 % Phase 3: the real lowerability check and emission helpers live in the
 % wam_haskell_lowered_emitter module. We reexport so existing callers can
@@ -84,13 +106,26 @@
 init_atom_intern_table :-
     retractall(atom_intern_id(_, _)),
     retractall(atom_intern_next(_)),
-    % Reserve well-known atoms
+    % Reserve well-known atoms (0-4)
     assertz(atom_intern_id("true", 0)),
     assertz(atom_intern_id("fail", 1)),
     assertz(atom_intern_id("[]", 2)),
     assertz(atom_intern_id(".", 3)),
     assertz(atom_intern_id("", 4)),
-    assertz(atom_intern_next(5)).
+    % Reserve ISO error atoms (5-15). IDs MUST match the atomXxx constants
+    % in WamTypes.hs (atomError=5 .. atomUnknown=15).
+    assertz(atom_intern_id("error", 5)),
+    assertz(atom_intern_id("instantiation_error", 6)),
+    assertz(atom_intern_id("type_error", 7)),
+    assertz(atom_intern_id("domain_error", 8)),
+    assertz(atom_intern_id("evaluation_error", 9)),
+    assertz(atom_intern_id("evaluable", 10)),
+    assertz(atom_intern_id("integer", 11)),
+    assertz(atom_intern_id("not_less_than_zero", 12)),
+    assertz(atom_intern_id("zero_divisor", 13)),
+    assertz(atom_intern_id("/", 14)),
+    assertz(atom_intern_id("unknown", 15)),
+    assertz(atom_intern_next(16)).
 
 %% intern_atom(+AtomStr, -Id) is det.
 %  Assigns a stable integer ID to the given atom string. Idempotent.
@@ -233,10 +268,7 @@ wam_haskell_indicator_in_list(_Mod:Pred/Arity, HotPreds) :-
 
 % Compile WAM code on demand for the lowerability check and emission.
 wam_haskell_predicate_wamcode(PredIndicator, WamCode) :-
-    (   PredIndicator = _Module:Pred/Arity -> true
-    ;   PredIndicator = Pred/Arity
-    ),
-    wam_target:compile_predicate_to_wam(Pred/Arity, [], WamCode).
+    wam_target:compile_predicate_to_wam(PredIndicator, [], WamCode).
 
 % ============================================================================
 % PHASE F1: FACT PREDICATE CLASSIFICATION
@@ -922,9 +954,12 @@ result_wrap_expr(float, 'Float rv').
 %  full recursive_kernel(Kind, Pred/Arity, ConfigOps) term.
 detect_kernels([], []).
 detect_kernels([PI|Rest], Kernels) :-
-    (   PI = _Mod:Pred/Arity -> true ; PI = Pred/Arity ),
+    (   PI = Mod:Pred/Arity -> true ; PI = Pred/Arity, Mod = user ),
     functor(Head, Pred, Arity),
-    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   catch(findall(Head-Body, clause(Mod:Head, Body), Clauses), _, Clauses = [])
+    ->  true
+    ;   Clauses = []
+    ),
     (   Clauses \= [],
         detect_recursive_kernel(Pred, Arity, Clauses, Kernel)
     ->  format(atom(Key), '~w/~w', [Pred, Arity]),
@@ -1902,9 +1937,10 @@ step !ctx s (PutValue xn ai) =
     Nothing -> Nothing
 
 step !ctx s (PutStructure fnId ai arity) =
-  Just (s { wsPC = wsPC s + 1
-          , wsBuilder = BuildStruct fnId ai arity []
-          })
+  let push = pushBuilderIfActive s
+  in Just (push { wsPC = wsPC push + 1
+                , wsBuilder = BuildStruct fnId ai arity []
+                })
 
 -- PutStructureDyn: like PutStructure but functor name and arity come
 -- from registers at runtime. Used when the term shape is computed
@@ -1920,9 +1956,10 @@ step !ctx s (PutStructureDyn nameReg arityReg targetReg) =
     _ -> Nothing  -- name must be an atom, arity a non-negative integer
 
 step !ctx s (PutList ai) =
-  Just (s { wsPC = wsPC s + 1
-           , wsBuilder = BuildList ai []
-           })
+  let push = pushBuilderIfActive s
+  in Just (push { wsPC = wsPC push + 1
+                , wsBuilder = BuildList ai []
+                })
 
 step !ctx s (SetValue xn) =
   case getReg xn s of
@@ -1938,6 +1975,74 @@ step !ctx s (SetVariable xn) =
 step !ctx s (SetConstant c) =
   addToBuilder c s
 
+-- GetStructure: read-mode if register holds matching Str, write-mode if Unbound.
+step !ctx s (GetStructure fnId ai arity) =
+  let push = pushBuilderIfActive s
+  in case derefVar (wsBindings push) <$> IM.lookup ai (wsRegs push) of
+    Just (Str fn args) | fn == fnId && length args == arity ->
+      if arity == 0
+      then Just (push { wsPC = wsPC push + 1 })
+      else Just (push { wsPC = wsPC push + 1, wsBuilder = ReadArgs args })
+    Just (VList (h : t)) | fnId == atomDot && arity == 2 ->
+      let tailVal = if null t then Atom atomNil else VList t
+      in Just (push { wsPC = wsPC push + 1, wsBuilder = ReadArgs [h, tailVal] })
+    Just (Unbound vid) | arity == 0 ->
+      let str = Str fnId []
+      in Just (push { wsPC = wsPC push + 1
+                    , wsRegs = IM.insert ai str (wsRegs push)
+                    , wsBindings = IM.insert vid str (wsBindings push)
+                    , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings push)) : wsTrail push
+                    , wsTrailLen = wsTrailLen push + 1 })
+    Just (Unbound _) ->
+      Just (push { wsPC = wsPC push + 1
+                 , wsBuilder = BuildStruct fnId ai arity [] })
+    _ -> Nothing
+
+-- GetList: read-mode if register holds VList/Str cons, write-mode if Unbound.
+step !ctx s (GetList ai) =
+  let push = pushBuilderIfActive s
+  in case derefVar (wsBindings push) <$> IM.lookup ai (wsRegs push) of
+    Just (VList (h : t)) ->
+      let tailVal = if null t then Atom atomNil else VList t
+      in Just (push { wsPC = wsPC push + 1, wsBuilder = ReadArgs [h, tailVal] })
+    Just (Str fn [h, t]) | fn == atomDot ->
+      Just (push { wsPC = wsPC push + 1, wsBuilder = ReadArgs [h, t] })
+    Just (Unbound _) ->
+      Just (push { wsPC = wsPC push + 1, wsBuilder = BuildList ai [] })
+    _ -> Nothing
+
+-- UnifyVariable: read-mode -> bind register to next arg; write-mode -> create fresh var.
+step !ctx s (UnifyVariable xn) =
+  case readNextArg s of
+    Just (v, s'''') -> Just ((putReg xn v s'''') { wsPC = wsPC s + 1 })
+    Nothing ->
+      let vid = wsVarCounter s
+          var = Unbound vid
+          s1 = putReg xn var (s { wsVarCounter = vid + 1 })
+      in addToBuilder var s1
+
+-- UnifyValue: read-mode -> unify register with next arg; write-mode -> append to builder.
+step !ctx s (UnifyValue xn) =
+  case readNextArg s of
+    Just (v, s'''') ->
+      case getReg xn s of
+        Just xv -> case unifyValues (derefVar (wsBindings s) v) (derefVar (wsBindings s) xv) s'''' of
+          Just s2 -> Just (s2 { wsPC = wsPC s + 1 })
+          Nothing -> Nothing
+        Nothing -> Nothing
+    Nothing ->
+      case getReg xn s of
+        Just val -> addToBuilder val s
+        Nothing -> Nothing
+
+-- UnifyConstant: read-mode -> unify constant with next arg; write-mode -> append to builder.
+step !ctx s (UnifyConstant c) =
+  case readNextArg s of
+    Just (v, s'''') -> case unifyValues (derefVar (wsBindings s) v) c s'''' of
+      Just s2 -> Just (s2 { wsPC = wsPC s + 1 })
+      Nothing -> Nothing
+    Nothing -> addToBuilder c s
+
 -- Fast path: call has been pre-resolved to a target PC at load time.
 -- No string lookup, no foreign/indexed dispatch — just a jump.
 step !ctx s (CallResolved pc _arity) =
@@ -1952,6 +2057,13 @@ step !ctx s (CallForeign pred _arity) =
 -- inline fact tuples from wcInlineFacts. Nothing = no matching facts.
 step !ctx s (CallFactStream pred _arity) =
   streamFacts ctx pred (s { wsCP = wsPC s + 1 })
+
+-- ISO meta-builtins emitted as Call by the WAM compiler.  These predicate
+-- names (catch/3, throw/1, is_iso/2, etc.) are not labelled predicates, so
+-- normal label lookup would fail.  Route through BuiltinCall dispatch.
+step !ctx s (Call pred arity) | isIsoMetaBuiltin pred =
+  let sc = s { wsCP = wsPC s + 1, wsCutBar = wsCPsLen s }
+  in step ctx sc (BuiltinCall pred arity)
 
 -- Call dispatch for non-foreign, non-resolved predicates. Foreign predicates
 -- are handled by CallForeign (resolved at compile time), so executeForeign
@@ -1977,6 +2089,14 @@ step !ctx s (JumpPc pc) = Just (s { wsPC = pc })
 
 -- ExecutePc: pre-resolved tail call (direct PC jump, no wsCP change)
 step !ctx s (ExecutePc pc) = Just (s { wsPC = pc })
+
+-- Execute ISO meta-builtin: tail-call dispatch through BuiltinCall, then
+-- convert the PC+1 advance to wsCP for proper tail-call return semantics.
+step !ctx s (Execute pred) | isIsoMetaBuiltin pred =
+  let arity = isoMetaBuiltinArity pred
+  in case step ctx s (BuiltinCall pred arity) of
+    Just sNext -> Just (sNext { wsPC = wsCP sNext })
+    Nothing -> Nothing
 
 -- Execute: tail call, like Call but without setting wsCP
 step !ctx s (Execute pred) =
@@ -2270,6 +2390,224 @@ step !ctx s (BuiltinCall ">/2" _) =
     (Just a, Just b) | a > b -> Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing
 
+-- =</2 lax comparison
+step !ctx s (BuiltinCall "=</2" _) =
+  let v1 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
+      v2 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
+  in case (v1, v2) of
+    (Just a, Just b) | a <= b -> Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
+-- >=/2 lax comparison
+step !ctx s (BuiltinCall ">=/2" _) =
+  let v1 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
+      v2 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
+  in case (v1, v2) of
+    (Just a, Just b) | a >= b -> Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
+-- =:=/2 lax arithmetic equality
+step !ctx s (BuiltinCall "=:=/2" _) =
+  let v1 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
+      v2 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
+  in case (v1, v2) of
+    (Just a, Just b) | abs (a - b) < 1e-15 -> Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
+-- =\\=/2 lax arithmetic inequality
+step !ctx s (BuiltinCall "=\\\\=/2" _) =
+  let v1 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
+      v2 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
+  in case (v1, v2) of
+    (Just a, Just b) | abs (a - b) >= 1e-15 -> Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
+-- is_lax/2 shares body with is/2 (silent failure on bad input)
+step !ctx s (BuiltinCall "is_lax/2" _) = step ctx s (BuiltinCall "is/2" 2)
+
+-- is_iso/2: arithmetic eval with ISO error throws on bad input.
+--   unbound var in RHS -> instantiation_error
+--   non-evaluable atom/functor -> type_error(evaluable, X/N)
+step !ctx s (BuiltinCall "is_iso/2" _) =
+  let expr = derefVar (wsBindings s) $ fromMaybe (Integer 0) (IM.lookup 2 (wsRegs s))
+  in if hasUnboundDeep (wsBindings s) expr
+     then throwIsoError s makeInstantiationError
+     else case evalArith (wcInternTable ctx) (wsBindings s) expr of
+       Nothing -> throwIsoError s (makeTypeError atomEvaluable (arithCulprit (wsBindings s) expr))
+       Just r ->
+         let lhs = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
+         in case lhs of
+           Just (Unbound vid) ->
+             let val = if fromIntegral (round r :: Int) == r then Integer (round r) else Float r
+             in Just (s { wsPC = wsPC s + 1
+                        , wsRegs = IM.insert 1 val (wsRegs s)
+                        , wsBindings = IM.insert vid val (wsBindings s)
+                        , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+                        , wsTrailLen = wsTrailLen s + 1 })
+           Just (Integer n) | fromIntegral n == r -> Just (s { wsPC = wsPC s + 1 })
+           _ -> Nothing
+
+-- ISO arithmetic comparisons: <_iso, >_iso, >=_iso, =<_iso, =:=_iso, =\\=_iso.
+-- Throws instantiation_error if either side has unbound vars, type_error(evaluable,...)
+-- if eval fails.
+step !ctx s instr@(BuiltinCall op _)
+  | op == "<_iso/2" || op == ">_iso/2" || op == ">=_iso/2"
+    || op == "=<_iso/2" || op == "=:=_iso/2" || op == "=\\\\=_iso/2" =
+  let a1 = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
+      a2 = derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s)
+      unboundA = case a1 of { Just v -> hasUnboundDeep (wsBindings s) v; Nothing -> True }
+      unboundB = case a2 of { Just v -> hasUnboundDeep (wsBindings s) v; Nothing -> True }
+  in if unboundA || unboundB
+     then throwIsoError s makeInstantiationError
+     else let r1 = a1 >>= evalArith (wcInternTable ctx) (wsBindings s)
+              r2 = a2 >>= evalArith (wcInternTable ctx) (wsBindings s)
+          in case (r1, r2) of
+            (Nothing, _) ->
+              let culprit = case a1 of { Just v -> arithCulprit (wsBindings s) v; Nothing -> makePredIndicator atomUnknown 0 }
+              in throwIsoError s (makeTypeError atomEvaluable culprit)
+            (_, Nothing) ->
+              let culprit = case a2 of { Just v -> arithCulprit (wsBindings s) v; Nothing -> makePredIndicator atomUnknown 0 }
+              in throwIsoError s (makeTypeError atomEvaluable culprit)
+            (Just a, Just b) ->
+              let ok = case op of
+                    "<_iso/2"    -> a < b
+                    ">_iso/2"    -> a > b
+                    ">=_iso/2"   -> a >= b
+                    "=<_iso/2"   -> a <= b
+                    "=:=_iso/2"  -> abs (a - b) < 1e-15
+                    "=\\\\=_iso/2" -> abs (a - b) >= 1e-15
+                    _            -> False
+              in if ok then Just (s { wsPC = wsPC s + 1 }) else Nothing
+
+-- Lax comparison variants: delegate to their default-form counterparts
+step !ctx s (BuiltinCall "<_lax/2" _) = step ctx s (BuiltinCall "</2" 2)
+step !ctx s (BuiltinCall ">_lax/2" _) = step ctx s (BuiltinCall ">/2" 2)
+step !ctx s (BuiltinCall ">=_lax/2" _) = step ctx s (BuiltinCall ">=/2" 2)
+step !ctx s (BuiltinCall "=<_lax/2" _) = step ctx s (BuiltinCall "=</2" 2)
+step !ctx s (BuiltinCall "=:=_lax/2" _) = step ctx s (BuiltinCall "=:=/2" 2)
+step !ctx s (BuiltinCall "=\\\\=_lax/2" _) = step ctx s (BuiltinCall "=\\\\=/2" 2)
+
+-- throw/1: deep-deref the term and raise WamException.
+step !ctx s (BuiltinCall "throw/1" _) =
+  case IM.lookup 1 (wsRegs s) of
+    Just v -> throw $ WamException (derefDeep (wsBindings s) (derefVar (wsBindings s) v))
+    Nothing -> throw $ WamException (Atom atomInstantiationError)
+
+-- catch/3: run goal, catch WamException, unify catcher, run recovery.
+-- Uses unsafePerformIO + try to bridge the pure step function with
+-- exception catching.
+step !ctx s (BuiltinCall "catch/3" _) =
+  let goalVal  = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
+      catcherTerm  = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 2 (wsRegs s))
+      recoveryTerm = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 3 (wsRegs s))
+      tbl = wcInternTable ctx
+      runGoalInChild gv =
+        let resolveGoal v = case v of
+              Atom aid ->
+                let goalKey = lookupAtom tbl aid ++ "/0"
+                in case Map.lookup goalKey (wcLabels ctx) of
+                  Just pc ->
+                    let child = s { wsPC = pc, wsRegs = IM.empty, wsCP = 0
+                                  , wsCutBar = 0 }
+                    in run ctx child
+                  Nothing -> step ctx (s { wsPC = 0 }) (BuiltinCall goalKey 0)
+              Str fnId args ->
+                let arity = length args
+                    dArgs = map (derefVar (wsBindings s)) args
+                    goalKey = lookupAtom tbl fnId ++ "/" ++ show arity
+                    childRegs = IM.fromList (zip [1..] dArgs)
+                    child = s { wsPC = 0, wsRegs = childRegs, wsCP = 0
+                              , wsCutBar = 0 }
+                in case Map.lookup goalKey (wcLabels ctx) of
+                  Just pc -> run ctx (child { wsPC = pc })
+                  Nothing -> step ctx child (BuiltinCall goalKey arity)
+              _ -> Nothing
+        in case gv of
+          Atom aid | lookupAtom tbl aid == "true" -> Just s
+          Atom aid | lookupAtom tbl aid == "fail" -> Nothing
+          _ -> resolveGoal gv
+      runRecovery unified =
+        let rv = derefVar (wsBindings unified) recoveryTerm
+        in case rv of
+          Atom aid | lookupAtom tbl aid == "true" -> Just unified
+          Atom aid | lookupAtom tbl aid == "fail" -> Nothing
+          Atom aid ->
+            let goalKey = lookupAtom tbl aid ++ "/0"
+            in case Map.lookup goalKey (wcLabels ctx) of
+              Just pc -> run ctx (unified { wsPC = pc, wsCP = 0, wsCutBar = 0 })
+              Nothing -> Nothing
+          Str fnId args ->
+            let arity = length args
+                dArgs = map (derefVar (wsBindings unified)) args
+                goalKey = lookupAtom tbl fnId ++ "/" ++ show arity
+                childRegs = IM.fromList (zip [1..] dArgs)
+            in case Map.lookup goalKey (wcLabels ctx) of
+              Just pc -> run ctx (unified { wsPC = pc, wsRegs = childRegs, wsCP = 0, wsCutBar = 0 })
+              Nothing -> Nothing
+          _ -> Nothing
+      tryUnify a b st = case (derefVar (wsBindings st) a, derefVar (wsBindings st) b) of
+        (Unbound va, Unbound vb) | va == vb -> Just st
+        (Unbound vid, v) -> Just (st { wsBindings = IM.insert vid v (wsBindings st)
+                                     , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings st)) : wsTrail st
+                                     , wsTrailLen = wsTrailLen st + 1 })
+        (v, Unbound vid) -> Just (st { wsBindings = IM.insert vid v (wsBindings st)
+                                     , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings st)) : wsTrail st
+                                     , wsTrailLen = wsTrailLen st + 1 })
+        (Atom a1, Atom a2) | a1 == a2 -> Just st
+        (Integer i1, Integer i2) | i1 == i2 -> Just st
+        (Float f1, Float f2) | f1 == f2 -> Just st
+        (Str f1 as1, Str f2 as2) | f1 == f2 && length as1 == length as2 ->
+          foldl (\\acc (x, y) -> acc >>= tryUnify x y) (Just st) (zip as1 as2)
+        (VList l1, VList l2) | length l1 == length l2 ->
+          foldl (\\acc (x, y) -> acc >>= tryUnify x y) (Just st) (zip l1 l2)
+        _ -> Nothing
+  in case goalVal of
+    Nothing -> Nothing
+    Just gv -> unsafePerformIO $ do
+      result <- try (evaluate (runGoalInChild gv)) :: IO (Either WamException (Maybe WamState))
+      case result of
+        Right res -> case res of
+          Just resultState -> return $ Just (resultState { wsRegs = wsRegs s, wsPC = wsPC s + 1 })
+          Nothing -> return Nothing
+        Left (WamException thrown) ->
+          case tryUnify catcherTerm thrown s of
+            Just unified -> case runRecovery unified of
+              Just _ -> return $ Just (unified { wsPC = wsPC s + 1 })
+              Nothing -> return Nothing
+            Nothing -> throw (WamException thrown)
+
+-- succ/2 + succ_lax/2: bidirectional successor (lax semantics).
+-- X bound non-negative -> Y=X+1; Y bound positive -> X=Y-1; else fail.
+step !ctx s (BuiltinCall "succ/2" _) = succLax s
+step !ctx s (BuiltinCall "succ_lax/2" _) = succLax s
+
+-- succ_iso/2: bidirectional successor with ISO error throws.
+step !ctx s (BuiltinCall "succ_iso/2" _) =
+  let a = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
+      b = derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s)
+      aUnbound = case a of { Just (Unbound _) -> True; Nothing -> True; _ -> False }
+      bUnbound = case b of { Just (Unbound _) -> True; Nothing -> True; _ -> False }
+      checkType v = case v of { Integer _ -> (); _ -> throwIsoError s (makeTypeError atomIntegerTy v) }
+      bindReg reg value =
+        case derefVar (wsBindings s) <$> IM.lookup reg (wsRegs s) of
+          Just (Unbound vid) ->
+            Just (s { wsPC = wsPC s + 1
+                    , wsRegs = IM.insert reg value (wsRegs s)
+                    , wsBindings = IM.insert vid value (wsBindings s)
+                    , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+                    , wsTrailLen = wsTrailLen s + 1 })
+          Just bound | bound == value -> Just (s { wsPC = wsPC s + 1 })
+          _ -> Nothing
+  in if aUnbound && bUnbound
+     then throwIsoError s makeInstantiationError
+     else case a of
+       Just v | not aUnbound -> checkType v `seq` case b of
+         Just w | not bUnbound -> checkType w `seq` succIsoBody a b bindReg s
+         _ -> succIsoBody a b bindReg s
+       _ -> case b of
+         Just w | not bUnbound -> checkType w `seq` succIsoBody a b bindReg s
+         _ -> succIsoBody a b bindReg s
+
 -- member/2 builtin: A1=Elem, A2=List. Creates choice points for backtracking.
 step !ctx s (BuiltinCall "member/2" _) =
   let elem_ = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 1 (wsRegs s))
@@ -2543,7 +2881,40 @@ step !_ctx s (BuiltinCall "copy_term/2" _) =
     Nothing -> Nothing
 
 -- Fallback for unhandled instructions
-step _ _ _ = Nothing'.
+step _ _ _ = Nothing
+
+-- | Lax succ helper: X>=0 -> Y=X+1; Y>0 -> X=Y-1; else fail.
+succLax :: WamState -> Maybe WamState
+succLax s =
+  let a = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
+      b = derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s)
+      bindReg reg value =
+        case derefVar (wsBindings s) <$> IM.lookup reg (wsRegs s) of
+          Just (Unbound vid) ->
+            Just (s { wsPC = wsPC s + 1
+                    , wsRegs = IM.insert reg value (wsRegs s)
+                    , wsBindings = IM.insert vid value (wsBindings s)
+                    , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+                    , wsTrailLen = wsTrailLen s + 1 })
+          Just bound | bound == value -> Just (s { wsPC = wsPC s + 1 })
+          _ -> Nothing
+  in case (a, b) of
+    (Just (Integer n), _) | n >= 0 -> bindReg 2 (Integer (n + 1))
+    (_, Just (Integer m)) | m > 0  -> bindReg 1 (Integer (m - 1))
+    _ -> Nothing
+
+-- | ISO succ body: dispatch after type/instantiation checks passed.
+succIsoBody :: Maybe Value -> Maybe Value -> (Int -> Value -> Maybe WamState) -> WamState -> Maybe WamState
+succIsoBody a b bindReg s = case (a, b) of
+  (Just (Integer n), _) | n < 0 ->
+    throwIsoError s (makeTypeError atomNotLessThanZero (Integer n))
+  (_, Just (Integer m)) | m <= 0 ->
+    throwIsoError s (makeDomainError atomNotLessThanZero (Integer m))
+  (Just (Integer n), _) -> bindReg 2 (Integer (n + 1))
+  (_, Just (Integer m)) -> bindReg 1 (Integer (m - 1))
+  _ -> Nothing
+
+'.
 
 run_loop_haskell(Code) :-
     Code = '-- | Main execution loop. Runs until halt (pc=0) or failure.
@@ -2557,10 +2928,760 @@ run !ctx !s
   | otherwise =
       let !instr = unsafeFetchInstr (wsPC s) (wcCode ctx)
       in case step ctx s instr of
-           Just !s'' -> run ctx s''
+           Just !s'''' -> run ctx s''''
            Nothing -> case backtrack s of
-             Just !s'' -> run ctx s''
+             Just !s'''' -> run ctx s''''
              Nothing -> Nothing
+
+-- | Phase 3: ST-mode execution with mutable STArray registers.
+-- Pure outer interface (via runST), mutable O(1) registers inside.
+-- Converts WamState <-> PureWamState at boundaries.
+-- 7.66x faster than IntMap on register-heavy workloads (POC validated).
+runMutableRegs :: WamContext -> WamState -> Maybe WamState
+runMutableRegs !ctx !s0 = runST go
+  where
+    go :: forall s. ST s (Maybe WamState)
+    go = do
+      regs <- newArray (1, maxRegId) (Unbound (-1)) :: ST s (STA.STArray s Int Value)
+      forM_ (IM.toList (wsRegs s0)) $ \\(k, v) ->
+        writeArray regs k v
+      let !pw0 = wamStateToPure s0
+      result <- runLoopST ctx regs pw0
+      case result of
+        Nothing -> return Nothing
+        Just pw -> do
+          regMap <- freezeRegsToIntMap regs
+          return (Just (pureToWamState pw regMap))
+
+-- | Internal ST-mode run loop. Tail-recursive, same shape as `run`.
+runLoopST :: WamContext -> STA.STArray s Int Value -> PureWamState
+          -> ST s (Maybe PureWamState)
+runLoopST !ctx regs !pw
+  | pwPC pw == 0 = return (Just pw)
+  | otherwise = do
+      let !instr = unsafeFetchInstr (pwPC pw) (wcCode ctx)
+      result <- stepST ctx regs pw instr
+      case result of
+        Just !pw'''' -> runLoopST ctx regs pw''''
+        Nothing -> do
+          bt <- backtrackST regs pw
+          case bt of
+            Just !pw'''' -> runLoopST ctx regs pw''''
+            Nothing -> return Nothing
+
+-- | Phase 3: ST-mode step function. Core register arms use direct
+-- readArray/writeArray for O(1) access. Complex arms (builtins,
+-- aggregates, parallel fork) fall through to the pure step bridge.
+stepST :: WamContext -> STA.STArray s Int Value -> PureWamState
+       -> Instruction -> ST s (Maybe PureWamState)
+
+stepST _ regs !pw (PutConstant c ai) = do
+  writeArray regs ai c
+  return $ Just pw { pwPC = pwPC pw + 1 }
+
+stepST _ regs !pw (GetConstant c ai) = do
+  v <- readArray regs ai
+  let !dv = derefVar (pwBindings pw) v
+  if dv == c
+    then return $ Just pw { pwPC = pwPC pw + 1 }
+    else case dv of
+      Unbound vid -> do
+        writeArray regs ai c
+        return $ Just pw { pwPC = pwPC pw + 1
+                         , pwBindings = IM.insert vid c (pwBindings pw)
+                         , pwTrail = TrailEntry vid (IM.lookup vid (pwBindings pw)) : pwTrail pw
+                         , pwTrailLen = pwTrailLen pw + 1
+                         }
+      _ -> return Nothing
+
+stepST _ regs !pw (GetVariable xn ai) = do
+  v <- readArray regs ai
+  let !dv = derefVar (pwBindings pw) v
+  pw'''' <- putRegST regs xn dv pw
+  return $ Just pw'''' { pwPC = pwPC pw + 1 }
+
+stepST _ regs !pw (GetValue xn ai) = do
+  va0 <- readArray regs ai
+  let !va = derefVar (pwBindings pw) va0
+  mvx <- getRegST regs xn pw
+  case mvx of
+    Nothing -> return Nothing
+    Just vx
+      | va == vx -> return $ Just pw { pwPC = pwPC pw + 1 }
+    Just (Unbound vid) ->
+      return $ Just pw { pwPC = pwPC pw + 1
+                        , pwBindings = IM.insert vid va (pwBindings pw)
+                        , pwTrail = TrailEntry vid (IM.lookup vid (pwBindings pw)) : pwTrail pw
+                        , pwTrailLen = pwTrailLen pw + 1
+                        }
+    Just vx -> case va of
+      Unbound vid -> do
+        writeArray regs ai vx
+        return $ Just pw { pwPC = pwPC pw + 1
+                         , pwBindings = IM.insert vid vx (pwBindings pw)
+                         , pwTrail = TrailEntry vid (IM.lookup vid (pwBindings pw)) : pwTrail pw
+                         , pwTrailLen = pwTrailLen pw + 1
+                         }
+      _ -> return Nothing
+
+stepST _ regs !pw (PutVariable xn ai) = do
+  let !vid = pwVarCounter pw
+      !var = Unbound vid
+  pw'''' <- putRegST regs xn var pw
+  writeArray regs ai var
+  return $ Just pw'''' { pwPC = pwPC pw + 1, pwVarCounter = vid + 1 }
+
+stepST _ regs !pw (PutValue xn ai) = do
+  mv <- getRegST regs xn pw
+  case mv of
+    Just val -> do
+      writeArray regs ai val
+      return $ Just pw { pwPC = pwPC pw + 1 }
+    Nothing -> return Nothing
+
+stepST _ _ !pw (PutStructure fnId ai arity) =
+  let push = pushBuilderIfActivePure pw
+  in return $ Just push { pwPC = pwPC push + 1
+                        , pwBuilder = BuildStruct fnId ai arity [] }
+
+stepST _ _ !pw (PutList ai) =
+  let push = pushBuilderIfActivePure pw
+  in return $ Just push { pwPC = pwPC push + 1
+                        , pwBuilder = BuildList ai [] }
+
+stepST _ _ !pw (CallResolved pc _arity) =
+  return $ Just pw { pwPC = pc, pwCP = pwPC pw + 1 }
+
+stepST _ _ !pw (JumpPc pc) =
+  return $ Just pw { pwPC = pc }
+
+stepST _ _ !pw (ExecutePc pc) =
+  return $ Just pw { pwPC = pc }
+
+stepST _ _ !pw Proceed =
+  let ret = pwCP pw
+  in if ret == 0 then return $ Just pw { pwPC = 0 }
+     else return $ Just pw { pwPC = ret, pwCP = 0 }
+
+stepST _ _ !pw Allocate =
+  let frame = EnvFrame (pwCP pw) IM.empty
+  in return $ Just pw { pwPC = pwPC pw + 1
+                       , pwStack = frame : pwStack pw
+                       , pwCutBar = pwCPsLen pw }
+
+stepST _ _ !pw Deallocate =
+  case pwStack pw of
+    (EnvFrame oldCP _ : rest) ->
+      return $ Just pw { pwPC = pwPC pw + 1, pwStack = rest, pwCP = oldCP }
+    _ -> return Nothing
+
+stepST _ regs !pw (TryMeElsePc nextPC) = do
+  snap <- snapshotRegsST regs
+  let mcp = MutableChoicePoint
+        { mcpNextPC = nextPC, mcpRegs = snap
+        , mcpStack = pwStack pw, mcpCP = pwCP pw
+        , mcpTrailLen = pwTrailLen pw, mcpHeapLen = pwHeapLen pw
+        , mcpBindings = pwBindings pw, mcpCutBar = pwCutBar pw
+        , mcpAggFrame = Nothing, mcpBuiltin = Nothing
+        }
+  return $ Just pw { pwPC = pwPC pw + 1
+                   , pwCPs = mcp : pwCPs pw
+                   , pwCPsLen = pwCPsLen pw + 1 }
+
+stepST _ _ !pw TrustMe =
+  case pwCPs pw of
+    (_ : rest) -> return $ Just pw { pwPC = pwPC pw + 1
+                                   , pwCPs = rest
+                                   , pwCPsLen = pwCPsLen pw - 1 }
+    [] -> return $ Just pw { pwPC = pwPC pw + 1 }
+
+stepST _ _ !pw (RetryMeElsePc nextPC) =
+  case pwCPs pw of
+    (mcp : rest) ->
+      return $ Just pw { pwPC = pwPC pw + 1
+                       , pwCPs = mcp { mcpNextPC = nextPC } : rest }
+    [] -> return $ Just pw { pwPC = pwPC pw + 1 }
+
+-- Label-based variants (lookup label -> PC)
+stepST !ctx regs !pw (TryMeElse label) =
+  let nextPC = fromMaybe 0 $ Map.lookup label (wcLabels ctx)
+  in stepST ctx regs pw (TryMeElsePc nextPC)
+
+stepST !ctx regs !pw (RetryMeElse label) =
+  let nextPC = fromMaybe 0 $ Map.lookup label (wcLabels ctx)
+  in stepST ctx regs pw (RetryMeElsePc nextPC)
+
+stepST !ctx _ !pw (Jump label) =
+  case Map.lookup label (wcLabels ctx) of
+    Just pc -> return $ Just pw { pwPC = pc }
+    Nothing -> return Nothing
+
+-- SwitchOnConstantPc: indexed dispatch on A1 register
+stepST _ regs !pw (SwitchOnConstantPc table) = do
+  v <- readArray regs 1
+  let !dv = derefVar (pwBindings pw) v
+  case dv of
+    Unbound _ -> return $ Just pw { pwPC = pwPC pw + 1 }
+    Atom aid -> case IM.lookup aid table of
+      Just pc -> return $ Just pw { pwPC = pc }
+      Nothing -> return $ Just pw { pwPC = pwPC pw + 1 }
+    Integer n -> case IM.lookup n table of
+      Just pc -> return $ Just pw { pwPC = pc }
+      Nothing -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return $ Just pw { pwPC = pwPC pw + 1 }
+
+-- Cut: truncate choice point stack
+stepST _ _ !pw (BuiltinCall "!/0" _) =
+  return $ Just pw { pwPC = pwPC pw + 1
+                   , pwCPs = take (pwCutBar pw) (pwCPs pw)
+                   , pwCPsLen = pwCutBar pw }
+
+-- CutIte: soft cut for if-then-else
+stepST _ _ !pw CutIte =
+  case pwCPs pw of
+    (_ : rest) -> return $ Just pw { pwPC = pwPC pw + 1
+                                   , pwCPs = rest, pwCPsLen = pwCPsLen pw - 1 }
+    [] -> return $ Just pw { pwPC = pwPC pw + 1 }
+
+-- Type-checking builtins
+stepST _ regs !pw (BuiltinCall "nonvar/1" _) = do
+  v <- readArray regs 1
+  let !dv = derefVar (pwBindings pw) v
+  case dv of
+    Unbound _ -> return Nothing
+    _         -> return $ Just pw { pwPC = pwPC pw + 1 }
+
+stepST _ regs !pw (BuiltinCall "var/1" _) = do
+  v <- readArray regs 1
+  let !dv = derefVar (pwBindings pw) v
+  case dv of
+    Unbound _ -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _         -> return Nothing
+
+stepST _ regs !pw (BuiltinCall "atom/1" _) = do
+  v <- readArray regs 1
+  let !dv = derefVar (pwBindings pw) v
+  case dv of
+    Atom _ -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _      -> return Nothing
+
+stepST _ regs !pw (BuiltinCall "integer/1" _) = do
+  v <- readArray regs 1
+  let !dv = derefVar (pwBindings pw) v
+  case dv of
+    Integer _ -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _         -> return Nothing
+
+stepST _ regs !pw (BuiltinCall "number/1" _) = do
+  v <- readArray regs 1
+  let !dv = derefVar (pwBindings pw) v
+  case dv of
+    Integer _ -> return $ Just pw { pwPC = pwPC pw + 1 }
+    Float _   -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _         -> return Nothing
+
+stepST !ctx regs !pw (BuiltinCall "is/2" _) = do
+  v2 <- readArray regs 2
+  v1 <- readArray regs 1
+  let !expr = derefVar (pwBindings pw) v2
+      result = evalArith (wcInternTable ctx) (pwBindings pw) expr
+      !lhs = derefVar (pwBindings pw) v1
+  case (lhs, result) of
+    (Unbound vid, Just r) -> do
+      let val = if fromIntegral (round r :: Int) == r then Integer (round r) else Float r
+      writeArray regs 1 val
+      return $ Just pw { pwPC = pwPC pw + 1
+                       , pwBindings = IM.insert vid val (pwBindings pw)
+                       , pwTrail = TrailEntry vid (IM.lookup vid (pwBindings pw)) : pwTrail pw
+                       , pwTrailLen = pwTrailLen pw + 1
+                       }
+    (Integer n, Just r) | fromIntegral n == r -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return Nothing
+
+stepST !ctx regs !pw (BuiltinCall "</2" _) = do
+  v1 <- readArray regs 1
+  v2 <- readArray regs 2
+  let r1 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v1)
+      r2 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v2)
+  case (r1, r2) of
+    (Just a, Just b) | a < b -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return Nothing
+
+stepST !ctx regs !pw (BuiltinCall ">/2" _) = do
+  v1 <- readArray regs 1
+  v2 <- readArray regs 2
+  let r1 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v1)
+      r2 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v2)
+  case (r1, r2) of
+    (Just a, Just b) | a > b -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return Nothing
+
+-- Builder operations: read reg value and pass to addToBuilder (pure helper).
+-- addToBuilder is pure and only touches wsBuilder/wsRegs, so we can
+-- do the reg read in ST and delegate the builder logic to pure.
+stepST _ regs !pw (SetValue xn) = do
+  mv <- getRegST regs xn pw
+  case mv of
+    Nothing -> return Nothing
+    Just val -> do
+      let s0 = PureWamState { pwPC = pwPC pw, pwStack = pwStack pw
+                            , pwHeap = pwHeap pw, pwHeapLen = pwHeapLen pw
+                            , pwTrail = pwTrail pw, pwTrailLen = pwTrailLen pw
+                            , pwCP = pwCP pw, pwCPs = pwCPs pw, pwCPsLen = pwCPsLen pw
+                            , pwBindings = pwBindings pw, pwCutBar = pwCutBar pw
+                            , pwBuilder = pwBuilder pw, pwBuilderStack = pwBuilderStack pw
+                            , pwVarCounter = pwVarCounter pw
+                            , pwAggAccum = pwAggAccum pw }
+      -- addToBuilder is pure: only modifies wsBuilder and wsRegs (for struct/list finalize)
+      regMap <- freezeRegsToIntMap regs
+      let ws = pureToWamState s0 regMap
+      case addToBuilder val ws of
+        Nothing -> return Nothing
+        Just ws'''' -> do
+          forM_ (IM.toList (wsRegs ws'''')) $ \\(k, v) -> writeArray regs k v
+          return (Just (wamStateToPure ws''''))
+
+stepST _ regs !pw (SetVariable xn) = do
+  let !vid = pwVarCounter pw
+      !var = Unbound vid
+  pw'''' <- putRegST regs xn var pw
+  let pw2 = pw'''' { pwVarCounter = vid + 1 }
+  -- Delegate builder logic to pure
+  regMap <- freezeRegsToIntMap regs
+  let ws = pureToWamState pw2 regMap
+  case addToBuilder var ws of
+    Nothing -> return Nothing
+    Just ws2 -> do
+      forM_ (IM.toList (wsRegs ws2)) $ \\(k, v) -> writeArray regs k v
+      return (Just (wamStateToPure ws2))
+
+stepST _ regs !pw (SetConstant c) = do
+  regMap <- freezeRegsToIntMap regs
+  let ws = pureToWamState pw regMap
+  case addToBuilder c ws of
+    Nothing -> return Nothing
+    Just ws'''' -> do
+      forM_ (IM.toList (wsRegs ws'''')) $ \\(k, v) -> writeArray regs k v
+      return (Just (wamStateToPure ws''''))
+
+-- Call/Execute dispatch (string-based, not pre-resolved)
+stepST !ctx regs !pw (Call pred _arity) = do
+  let sc = pw { pwCP = pwPC pw + 1 }
+  case Map.lookup pred (wcLoweredPredicates ctx) of
+    Just fn -> do
+      regMap <- freezeRegsToIntMap regs
+      let ws = pureToWamState sc regMap
+      case fn ctx ws of
+        Nothing -> return Nothing
+        Just ws'''' -> do
+          forM_ (IM.toList (wsRegs ws'''')) $ \\(k, v) -> writeArray regs k v
+          return (Just (wamStateToPure ws''''))
+    Nothing -> do
+      regMap <- freezeRegsToIntMap regs
+      let ws = pureToWamState sc regMap
+      case callIndexedFact2 ctx pred ws of
+        Just sr -> do
+          forM_ (IM.toList (wsRegs sr)) $ \\(k, v) -> writeArray regs k v
+          return (Just (wamStateToPure sr))
+        Nothing -> case Map.lookup pred (wcLabels ctx) of
+          Just pc -> return $ Just sc { pwPC = pc }
+          Nothing -> return Nothing
+
+stepST !ctx regs !pw (Execute pred) = do
+  case Map.lookup pred (wcLoweredPredicates ctx) of
+    Just fn -> do
+      regMap <- freezeRegsToIntMap regs
+      let ws = pureToWamState pw regMap
+      case fn ctx ws of
+        Nothing -> return Nothing
+        Just ws'''' -> do
+          forM_ (IM.toList (wsRegs ws'''')) $ \\(k, v) -> writeArray regs k v
+          return (Just (wamStateToPure ws''''))
+    Nothing -> do
+      regMap <- freezeRegsToIntMap regs
+      let ws = pureToWamState pw regMap
+      case callIndexedFact2 ctx pred ws of
+        Just sr -> do
+          forM_ (IM.toList (wsRegs sr)) $ \\(k, v) -> writeArray regs k v
+          return (Just (wamStateToPure sr))
+        Nothing -> case Map.lookup pred (wcLabels ctx) of
+          Just pc -> return $ Just pw { pwPC = pc }
+          Nothing -> return Nothing
+
+stepST !ctx regs !pw (CallForeign pred _arity) = do
+  regMap <- freezeRegsToIntMap regs
+  let ws = pureToWamState (pw { pwCP = pwPC pw + 1 }) regMap
+  case executeForeign ctx pred ws of
+    Nothing -> return Nothing
+    Just ws'''' -> do
+      forM_ (IM.toList (wsRegs ws'''')) $ \\(k, v) -> writeArray regs k v
+      return (Just (wamStateToPure ws''''))
+
+-- length/2: list length query/check
+stepST !ctx regs !pw (BuiltinCall "length/2" _) = do
+  v1 <- readArray regs 1
+  let !listVal = derefVar (pwBindings pw) v1
+  case listVal of
+    VList items -> do
+      let len = length items
+      v2 <- readArray regs 2
+      let !lhs = derefVar (pwBindings pw) v2
+      case lhs of
+        Unbound vid -> do
+          let val = Integer len
+          writeArray regs 2 val
+          return $ Just pw { pwPC = pwPC pw + 1
+                           , pwBindings = IM.insert vid val (pwBindings pw)
+                           , pwTrail = TrailEntry vid (IM.lookup vid (pwBindings pw)) : pwTrail pw
+                           , pwTrailLen = pwTrailLen pw + 1
+                           }
+        Integer n | n == len -> return $ Just pw { pwPC = pwPC pw + 1 }
+        _ -> return Nothing
+    _ -> return Nothing
+
+-- Arg n tReg aReg: extract Nth argument from compound
+stepST _ regs !pw (Arg n tReg aReg) | n >= 1 = do
+  vT <- readArray regs tReg
+  let !tVal = derefVar (pwBindings pw) vT
+      mElem = case tVal of
+        Str _ args | n <= length args -> Just (args !! (n - 1))
+        VList (x : _) | n == 1 -> Just x
+        VList (_ : xs) | n == 2 -> Just (VList xs)
+        _ -> Nothing
+  case mElem of
+    Nothing -> return Nothing
+    Just el -> do
+      vA <- readArray regs aReg
+      let !aVal = derefVar (pwBindings pw) vA
+      case aVal of
+        Unbound vid -> do
+          writeArray regs aReg el
+          return $ Just pw { pwPC = pwPC pw + 1
+                           , pwBindings = IM.insert vid el (pwBindings pw)
+                           , pwTrail = TrailEntry vid (IM.lookup vid (pwBindings pw)) : pwTrail pw
+                           , pwTrailLen = pwTrailLen pw + 1
+                           }
+        _ | aVal == el -> return $ Just pw { pwPC = pwPC pw + 1 }
+        _ -> return Nothing
+
+stepST _ _ _ (Arg _ _ _) = return Nothing
+
+-- NotMemberList: specialized \\+ member(X, L)
+stepST _ regs !pw (NotMemberList xReg lReg) = do
+  vX <- readArray regs xReg
+  vL <- readArray regs lReg
+  let !x = derefVar (pwBindings pw) vX
+      !l = derefVar (pwBindings pw) vL
+      found = case l of
+        VList items -> any (\\item -> derefVar (pwBindings pw) item == x) items
+        _ -> False
+  if found then return Nothing else return $ Just pw { pwPC = pwPC pw + 1 }
+
+-- NotMemberConstAtoms: specialized \\+ member(X, [a,b,c])
+stepST _ regs !pw (NotMemberConstAtoms xReg atomIds) = do
+  vX <- readArray regs xReg
+  let !x = derefVar (pwBindings pw) vX
+  case x of
+    Atom aid   -> if aid `elem` atomIds then return Nothing
+                  else return $ Just pw { pwPC = pwPC pw + 1 }
+    Unbound _  -> return Nothing
+    Ref _      -> return Nothing
+    _          -> return $ Just pw { pwPC = pwPC pw + 1 }
+
+-- BuildEmptySet: write empty IntSet to register
+stepST _ regs !pw (BuildEmptySet r) = do
+  writeArray regs r (VSet IS.empty)
+  return $ Just pw { pwPC = pwPC pw + 1 }
+
+-- SetInsert: IntSet insert
+stepST _ regs !pw (SetInsert eReg inReg outReg) = do
+  vE <- readArray regs eReg
+  vIn <- readArray regs inReg
+  let !e = derefVar (pwBindings pw) vE
+      !inSet = derefVar (pwBindings pw) vIn
+  case (e, inSet) of
+    (Atom aid, VSet s0) -> do
+      writeArray regs outReg (VSet (IS.insert aid s0))
+      return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return Nothing
+
+-- NotMemberSet: IntSet membership check
+stepST _ regs !pw (NotMemberSet eReg setReg) = do
+  vE <- readArray regs eReg
+  vS <- readArray regs setReg
+  let !e = derefVar (pwBindings pw) vE
+      !s = derefVar (pwBindings pw) vS
+  case (e, s) of
+    (Atom aid, VSet set) ->
+      if IS.member aid set then return Nothing
+      else return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return Nothing
+
+-- PutStructureDyn: dynamic structure (functor/arity from registers)
+stepST _ regs !pw (PutStructureDyn nameReg arityReg targetReg) = do
+  mvN <- getRegST regs nameReg pw
+  mvA <- getRegST regs arityReg pw
+  case (mvN, mvA) of
+    (Just (Atom fnId), Just (Integer arity)) | arity >= 0 ->
+      return $ Just pw { pwPC = pwPC pw + 1
+                       , pwBuilder = BuildStruct fnId targetReg (fromIntegral arity) [] }
+    _ -> return Nothing
+
+-- Parallel variants delegate to their sequential counterparts
+-- GetStructure: read-mode if register holds matching Str, write-mode if Unbound.
+-- Delegates to pure bridge for builder interactions.
+stepST !ctx regs !pw (GetStructure fnId ai arity) = do
+  regMap <- freezeRegsToIntMap regs
+  let ws = pureToWamState pw regMap
+  case step ctx ws (GetStructure fnId ai arity) of
+    Nothing -> return Nothing
+    Just ws'''' -> do
+      forM_ (IM.toList (wsRegs ws'''')) $ \\(k, v) -> writeArray regs k v
+      return (Just (wamStateToPure ws''''))
+
+-- GetList: read-mode or write-mode. Delegates to pure bridge.
+stepST !ctx regs !pw (GetList ai) = do
+  regMap <- freezeRegsToIntMap regs
+  let ws = pureToWamState pw regMap
+  case step ctx ws (GetList ai) of
+    Nothing -> return Nothing
+    Just ws'''' -> do
+      forM_ (IM.toList (wsRegs ws'''')) $ \\(k, v) -> writeArray regs k v
+      return (Just (wamStateToPure ws''''))
+
+-- UnifyVariable: read-mode -> bind register, write-mode -> create fresh var + addToBuilder.
+stepST _ regs !pw (UnifyVariable xn) = do
+  regMap <- freezeRegsToIntMap regs
+  let ws = pureToWamState pw regMap
+  case readNextArg ws of
+    Just (v, ws'''') ->
+      let ws2 = (putReg xn v ws'''') { wsPC = wsPC ws + 1 }
+      in do forM_ (IM.toList (wsRegs ws2)) $ \\(k, val) -> writeArray regs k val
+            return (Just (wamStateToPure ws2))
+    Nothing ->
+      let vid = wsVarCounter ws
+          var = Unbound vid
+          s1 = putReg xn var (ws { wsVarCounter = vid + 1 })
+      in case addToBuilder var s1 of
+        Nothing -> return Nothing
+        Just ws2 -> do
+          forM_ (IM.toList (wsRegs ws2)) $ \\(k, val) -> writeArray regs k val
+          return (Just (wamStateToPure ws2))
+
+-- UnifyValue: read-mode -> unify register with next arg, write-mode -> addToBuilder.
+stepST _ regs !pw (UnifyValue xn) = do
+  regMap <- freezeRegsToIntMap regs
+  let ws = pureToWamState pw regMap
+  case readNextArg ws of
+    Just (v, ws'''') ->
+      case getReg xn ws of
+        Just xv -> case unifyValues (derefVar (wsBindings ws) v) (derefVar (wsBindings ws) xv) ws'''' of
+          Just ws2 -> do
+            forM_ (IM.toList (wsRegs ws2)) $ \\(k, val) -> writeArray regs k val
+            return (Just (wamStateToPure (ws2 { wsPC = wsPC ws + 1 })))
+          Nothing -> return Nothing
+        Nothing -> return Nothing
+    Nothing ->
+      case getReg xn ws of
+        Just val -> case addToBuilder val ws of
+          Nothing -> return Nothing
+          Just ws2 -> do
+            forM_ (IM.toList (wsRegs ws2)) $ \\(k, val2) -> writeArray regs k val2
+            return (Just (wamStateToPure ws2))
+        Nothing -> return Nothing
+
+-- UnifyConstant: read-mode -> unify constant with next arg, write-mode -> addToBuilder.
+stepST _ regs !pw (UnifyConstant c) = do
+  regMap <- freezeRegsToIntMap regs
+  let ws = pureToWamState pw regMap
+  case readNextArg ws of
+    Just (v, ws'''') -> case unifyValues (derefVar (wsBindings ws) v) c ws'''' of
+      Just ws2 -> do
+        forM_ (IM.toList (wsRegs ws2)) $ \\(k, val) -> writeArray regs k val
+        return (Just (wamStateToPure (ws2 { wsPC = wsPC ws + 1 })))
+      Nothing -> return Nothing
+    Nothing -> case addToBuilder c ws of
+      Nothing -> return Nothing
+      Just ws2 -> do
+        forM_ (IM.toList (wsRegs ws2)) $ \\(k, val) -> writeArray regs k val
+        return (Just (wamStateToPure ws2))
+
+-- Missing lax comparisons: =</2, >=/2, =:=/2, =\\=/2 (native ST).
+stepST !ctx regs !pw (BuiltinCall "=</2" _) = do
+  v1 <- readArray regs 1
+  v2 <- readArray regs 2
+  let r1 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v1)
+      r2 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v2)
+  case (r1, r2) of
+    (Just a, Just b) | a <= b -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return Nothing
+
+stepST !ctx regs !pw (BuiltinCall ">=/2" _) = do
+  v1 <- readArray regs 1
+  v2 <- readArray regs 2
+  let r1 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v1)
+      r2 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v2)
+  case (r1, r2) of
+    (Just a, Just b) | a >= b -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return Nothing
+
+stepST !ctx regs !pw (BuiltinCall "=:=/2" _) = do
+  v1 <- readArray regs 1
+  v2 <- readArray regs 2
+  let r1 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v1)
+      r2 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v2)
+  case (r1, r2) of
+    (Just a, Just b) | abs (a - b) < 1e-15 -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return Nothing
+
+stepST !ctx regs !pw (BuiltinCall "=\\\\=/2" _) = do
+  v1 <- readArray regs 1
+  v2 <- readArray regs 2
+  let r1 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v1)
+      r2 = evalArith (wcInternTable ctx) (pwBindings pw) (derefVar (pwBindings pw) v2)
+  case (r1, r2) of
+    (Just a, Just b) | abs (a - b) >= 1e-15 -> return $ Just pw { pwPC = pwPC pw + 1 }
+    _ -> return Nothing
+
+-- is_lax/2: delegates to is/2 (already has native stepST handler).
+stepST !ctx regs !pw (BuiltinCall "is_lax/2" _) = stepST ctx regs pw (BuiltinCall "is/2" 2)
+
+-- Lax comparison variants: delegate to their default-form handlers.
+stepST !ctx regs !pw (BuiltinCall "<_lax/2" _) = stepST ctx regs pw (BuiltinCall "</2" 2)
+stepST !ctx regs !pw (BuiltinCall ">_lax/2" _) = stepST ctx regs pw (BuiltinCall ">/2" 2)
+stepST !ctx regs !pw (BuiltinCall ">=_lax/2" _) = stepST ctx regs pw (BuiltinCall ">=/2" 2)
+stepST !ctx regs !pw (BuiltinCall "=<_lax/2" _) = stepST ctx regs pw (BuiltinCall "=</2" 2)
+stepST !ctx regs !pw (BuiltinCall "=:=_lax/2" _) = stepST ctx regs pw (BuiltinCall "=:=/2" 2)
+stepST !ctx regs !pw (BuiltinCall "=\\\\=_lax/2" _) = stepST ctx regs pw (BuiltinCall "=\\\\=/2" 2)
+
+-- is_iso/2: native ST with ISO error throws.
+stepST !ctx regs !pw (BuiltinCall "is_iso/2" _) = do
+  v2 <- readArray regs 2
+  v1 <- readArray regs 1
+  let !expr = derefVar (pwBindings pw) v2
+  if hasUnboundDeep (pwBindings pw) expr
+    then throwIsoErrorPure pw (makeInstantiationError)
+    else case evalArith (wcInternTable ctx) (pwBindings pw) expr of
+      Nothing -> throwIsoErrorPure pw (makeTypeError atomEvaluable (arithCulprit (pwBindings pw) expr))
+      Just r -> do
+        let !lhs = derefVar (pwBindings pw) v1
+        case lhs of
+          Unbound vid -> do
+            let val = if fromIntegral (round r :: Int) == r then Integer (round r) else Float r
+            writeArray regs 1 val
+            return $ Just pw { pwPC = pwPC pw + 1
+                             , pwBindings = IM.insert vid val (pwBindings pw)
+                             , pwTrail = TrailEntry vid (IM.lookup vid (pwBindings pw)) : pwTrail pw
+                             , pwTrailLen = pwTrailLen pw + 1 }
+          Integer n | fromIntegral n == r -> return $ Just pw { pwPC = pwPC pw + 1 }
+          _ -> return Nothing
+
+-- ISO comparison variants: native ST with error throws.
+-- Grouped handler for <_iso, >_iso, >=_iso, =<_iso, =:=_iso, =\\=_iso.
+stepST !ctx regs !pw instr@(BuiltinCall op _)
+  | op == "<_iso/2" || op == ">_iso/2" || op == ">=_iso/2"
+    || op == "=<_iso/2" || op == "=:=_iso/2" || op == "=\\\\=_iso/2" = do
+  v1 <- readArray regs 1
+  v2 <- readArray regs 2
+  let a1 = Just (derefVar (pwBindings pw) v1)
+      a2 = Just (derefVar (pwBindings pw) v2)
+      unboundA = case a1 of { Just v -> hasUnboundDeep (pwBindings pw) v; Nothing -> True }
+      unboundB = case a2 of { Just v -> hasUnboundDeep (pwBindings pw) v; Nothing -> True }
+  if unboundA || unboundB
+    then throwIsoErrorPure pw (makeInstantiationError)
+    else do
+      let r1 = a1 >>= evalArith (wcInternTable ctx) (pwBindings pw)
+          r2 = a2 >>= evalArith (wcInternTable ctx) (pwBindings pw)
+      case (r1, r2) of
+        (Nothing, _) ->
+          let culprit = case a1 of { Just v -> arithCulprit (pwBindings pw) v; Nothing -> makePredIndicator atomUnknown 0 }
+          in throwIsoErrorPure pw (makeTypeError atomEvaluable culprit)
+        (_, Nothing) ->
+          let culprit = case a2 of { Just v -> arithCulprit (pwBindings pw) v; Nothing -> makePredIndicator atomUnknown 0 }
+          in throwIsoErrorPure pw (makeTypeError atomEvaluable culprit)
+        (Just a, Just b) ->
+          let ok = case op of
+                "=<_iso/2"    -> a <= b
+                ">=_iso/2"    -> a >= b
+                "<_iso/2"     -> a < b
+                ">_iso/2"     -> a > b
+                "=:=_iso/2"   -> abs (a - b) < 1e-15
+                "=\\\\=_iso/2" -> abs (a - b) >= 1e-15
+                _             -> False
+          in if ok then return $ Just pw { pwPC = pwPC pw + 1 } else return Nothing
+
+-- succ/2, succ_lax/2: native ST bidirectional successor.
+stepST _ regs !pw (BuiltinCall "succ/2" _) = succLaxST regs pw
+stepST _ regs !pw (BuiltinCall "succ_lax/2" _) = succLaxST regs pw
+
+-- succ_iso/2, throw/1, catch/3: delegate to pure bridge.
+-- These use throwIsoError/WamException which need the pure WamState,
+-- or (catch/3) run sub-goals via unsafePerformIO + try.
+
+stepST !ctx regs !pw (ParTryMeElse label) = stepST ctx regs pw (TryMeElse label)
+stepST !ctx regs !pw (ParRetryMeElse label) = stepST ctx regs pw (RetryMeElse label)
+stepST !ctx regs !pw ParTrustMe = stepST ctx regs pw TrustMe
+stepST !ctx regs !pw (ParTryMeElsePc pc) = stepST ctx regs pw (TryMeElsePc pc)
+stepST !ctx regs !pw (ParRetryMeElsePc pc) = stepST ctx regs pw (RetryMeElsePc pc)
+
+-- Fallback: delegate to pure step via bridge (freeze/thaw per call).
+-- Handles: member/2, \\+/1, aggregates (BeginAggregate, EndAggregate),
+-- SwitchOnConstant (label-based), functor/3, =../2, copy_term/2,
+-- CallFactStream.
+stepST !ctx regs !pw instr = do
+  regMap <- freezeRegsToIntMap regs
+  let s = pureToWamState pw regMap
+  case step ctx s instr of
+    Nothing -> return Nothing
+    Just s'''' -> do
+      forM_ (IM.toList (wsRegs s'''')) $ \\(k, v) ->
+        writeArray regs k v
+      return (Just (wamStateToPure s''''))
+
+-- | Phase 3: ST-mode backtrack. Restores registers from MutableChoicePoint.
+-- Handles the common case (normal CP restore) directly. Complex cases
+-- (aggregate frames, builtin state) fall through to the pure bridge.
+backtrackST :: STA.STArray s Int Value -> PureWamState
+            -> ST s (Maybe PureWamState)
+backtrackST regs pw = case pwCPs pw of
+  [] -> return Nothing
+  (mcp : rest)
+    | isNothing (mcpAggFrame mcp) && isNothing (mcpBuiltin mcp) -> do
+      -- Normal choice point: restore registers from frozen snapshot
+      restoreRegsST regs (mcpRegs mcp)
+      -- Undo trail entries
+      let trailLen = mcpTrailLen mcp
+          diff = pwTrailLen pw - trailLen
+          newEntries = reverse $ take diff (pwTrail pw)
+          restoredBindings = foldl'' undoBinding (mcpBindings mcp) newEntries
+      return $ Just pw
+        { pwPC = mcpNextPC mcp
+        , pwStack = mcpStack mcp
+        , pwCP = mcpCP mcp
+        , pwTrail = drop diff (pwTrail pw)
+        , pwTrailLen = trailLen
+        , pwHeap = take (mcpHeapLen mcp) (pwHeap pw)
+        , pwHeapLen = mcpHeapLen mcp
+        , pwBindings = restoredBindings
+        , pwCutBar = mcpCutBar mcp
+        , pwCPs = rest
+        , pwCPsLen = pwCPsLen pw - 1
+        }
+    | otherwise -> do
+      -- Complex case: aggregate/builtin. Delegate to pure bridge.
+      regMap <- freezeRegsToIntMap regs
+      let s = pureToWamState pw regMap
+      case backtrack s of
+        Nothing -> return Nothing
+        Just s'''' -> do
+          forM_ (IM.toList (wsRegs s'''')) $ \\(k, v) ->
+            writeArray regs k v
+          return (Just (wamStateToPure s''''))
+  where
+    undoBinding bindings (TrailEntry vid mOld) =
+      case mOld of
+        Just old -> IM.insert vid old bindings
+        Nothing  -> IM.delete vid bindings
 
 -- | Dispatch a Call to another predicate, trying all resolution paths.
 -- Used by lowered predicate functions for inter-predicate calls.
@@ -2605,17 +3726,18 @@ write_wam_haskell_project(Predicates, Options0, ProjectDir) :-
     % BEFORE any downstream `option(use_lmdb(true), ...)` checks fire.
     % Auto consults ghc-pkg for the lmdb package + fact_count threshold;
     % see resolve_auto_use_lmdb/2.
-    resolve_auto_use_lmdb(OptionsM, Options1),
-    % Phase 2c: resolve cache_strategy(auto) into a concrete
-    % demand_bfs_mode/1 via cost_model:recommend_access_pattern/5.
-    % No-op when cache_strategy(auto) is absent.
-    resolve_auto_cache_strategy(Options1, Options2),
-    % Phase 2c+: resolve lmdb_cache_mode(auto) into a concrete tier
-    % (none/per_hec/sharded/two_level) when workload_locality/1 is
-    % set. Composes with the cache_strategy decision above: in_memory
-    % → none. No-op when workload_locality is absent (the in-place
-    % auto resolver in generate_lmdb_functions/2 then takes over).
-    resolve_auto_lmdb_cache_mode(Options2, Options),
+    % Resolve all cost-based auto options (use_lmdb, cache_strategy,
+    % lmdb_cache_mode, csr_index_backend) via composed chain.
+    resolve_haskell_cost_options(OptionsM, Options),
+
+    % Resolve runtime parser mode (capability hook). When `compiled`
+    % is selected, the portable parser predicates + the target-agnostic
+    % wrappers are appended to the user's predicate list so the Haskell
+    % WAM compiler emits them too. When `none` (default), statically
+    % visible parser-dependent bodies are rejected at codegen time.
+    wam_target_runtime_parser(wam_haskell, Options, RuntimeParserMode),
+    haskell_validate_runtime_parser_mode(Predicates, RuntimeParserMode),
+    haskell_project_predicates(Predicates, RuntimeParserMode, ProjectPredicates),
 
     % Initialize the compile-time atom intern table with well-known atoms
     init_atom_intern_table,
@@ -2632,7 +3754,7 @@ write_wam_haskell_project(Predicates, Options0, ProjectDir) :-
     % must bypass kernel detection, lowering, PC computation, and WAM
     % compilation. They still appear in `Predicates` so
     % compile_predicates_to_haskell emits a skip-comment for each.
-    partition(pred_is_external_source(Options), Predicates, _ExternalPreds, InternalPreds),
+    partition(pred_is_external_source(Options), ProjectPredicates, _ExternalPreds, InternalPreds),
 
     % Detect recursive kernels in the predicate list. Detected kernels
     % are handled by the FFI (executeForeign) at runtime and are excluded
@@ -2643,7 +3765,15 @@ write_wam_haskell_project(Predicates, Options0, ProjectDir) :-
     (   option(no_kernels(true), Options)
     ->  DetectedKernels = [],
         format(user_error, '[WAM-Haskell] kernel detection suppressed~n', [])
-    ;   detect_kernels(InternalPreds, DetectedKernels),
+    ;   detect_kernels(InternalPreds, DetectedKernels0),
+        % Upgrade category_ancestor to bidirectional when CSR child
+        % lookup is available (csr_path provides category_child).
+        (   option(kernel_mode(bidirectional), Options),
+            option(csr_path(_), Options)
+        ->  maplist(maybe_upgrade_bidirectional, DetectedKernels0, DetectedKernels),
+            format(user_error, '[WAM-Haskell] bidirectional kernel upgrade enabled~n', [])
+        ;   DetectedKernels = DetectedKernels0
+        ),
         (   DetectedKernels \= []
         ->  pairs_keys(DetectedKernels, DetectedKeys),
             format(user_error, '[WAM-Haskell] detected kernels: ~w~n', [DetectedKeys])
@@ -2677,7 +3807,7 @@ write_wam_haskell_project(Predicates, Options0, ProjectDir) :-
     % lowered ones — so backtrack can land on alternate clauses that the
     % lowered function doesn't handle. Phase 4+ lowered functions only
     % inline clause 1; clause 2+ runs through the interpreter on backtrack.
-    compile_predicates_to_haskell(Predicates, Options, PredsCode0, InlineDefs),
+    compile_predicates_to_haskell(InternalPreds, Options, PredsCode0, InlineDefs),
     % Append compile-time atom table to Predicates.hs
     emit_atom_table_haskell(AtomTableCode),
     format(string(PredsCode0WithAtoms), "~w~n~n~w", [PredsCode0, AtomTableCode]),
@@ -2704,10 +3834,22 @@ write_wam_haskell_project(Predicates, Options0, ProjectDir) :-
     write_hs_file(CabalPath, CabalCode),
 
     % Generate Main.hs (InlineDefs from F3 → wcInlineFacts wiring)
-    generate_main_hs(Predicates, DetectedKernels, InlineDefs, Options, MainCode0),
+    generate_main_hs(InternalPreds, DetectedKernels, InlineDefs, Options, MainCode0),
     apply_hashmap_rewrite(UseHM, main, MainCode0, MainCode),
     directory_file_path(SrcDir, 'Main.hs', MainPath),
     write_hs_file(MainPath, MainCode),
+
+    % Generate CsrReader.hs if csr_path is set
+    (   option(csr_path(_CsrPath), Options)
+    ->  option(csr_relation(CsrRel), Options, 'category_child'),
+        read_kernel_template('csr_reader.hs.mustache', CsrTemplate),
+        render_template(CsrTemplate, [csr_relation=CsrRel], CsrCode0),
+        atom_string(CsrCode0, CsrCode),
+        directory_file_path(SrcDir, 'CsrReader.hs', CsrPath0),
+        write_hs_file(CsrPath0, CsrCode),
+        format(user_error, '[WAM-Haskell] CSR reader emitted for relation: ~w~n', [CsrRel])
+    ;   true
+    ),
 
     format(user_error, '[WAM-Haskell] Generated project at: ~w (hashmap=~w)~n', [ProjectDir, UseHM]).
 
@@ -2780,7 +3922,7 @@ generate_lowered_hs([], Code) :- !,
         format("import qualified Data.Map.Strict as Map~n"),
         format("import qualified Data.IntMap.Strict as IM~n"),
         format("import WamTypes~n"),
-        format("import Data.Maybe (fromMaybe)~n"),
+        format("import Data.Maybe (fromMaybe, isNothing)~n"),
         format("import WamRuntime~n~n"),
         format("loweredPredicates :: Map.Map String (WamContext -> WamState -> Maybe WamState)~n"),
         format("loweredPredicates = Map.empty~n")
@@ -2797,7 +3939,7 @@ generate_lowered_hs(LoweredEntries, Code) :-
         format("import qualified Data.Map.Strict as Map~n"),
         format("import qualified Data.IntMap.Strict as IM~n"),
         format("import WamTypes~n"),
-        format("import Data.Maybe (fromMaybe)~n"),
+        format("import Data.Maybe (fromMaybe, isNothing)~n"),
         format("import WamRuntime~n~n"),
         % Function definitions
         forall(member(lowered(_, _, HsCode), LoweredEntries),
@@ -2906,6 +4048,22 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     ->  DemandBfsModeCursor = true
     ;   DemandBfsModeCursor = false
     ),
+    % CSR support: generate import and setup blocks when csr_path is set.
+    (   option(csr_path(CsrPathOpt), Options)
+    ->  HasCsr = true,
+        option(csr_relation(CsrRelOpt), Options, 'category_child'),
+        format(atom(CsrSetup),
+            '    -- CSR reverse-index setup\n    csrEdgeLookup <- CsrReader.openCsrEdgeLookup (factsDir ++ "/~w") "~w"\n',
+            [CsrPathOpt, CsrRelOpt]),
+        format(atom(CsrContext),
+            '            , wcEdgeLookups = Map.insert "~w" csrEdgeLookup (wcEdgeLookups ctx)\n',
+            [CsrRelOpt]),
+        CsrImport = 'import qualified CsrReader'
+    ;   HasCsr = false,
+        CsrSetup = '',
+        CsrContext = '',
+        CsrImport = ''
+    ),
     render_template(Template,
         [ foreign_preds=ForeignPredsStr
         , benchmark_mode=Mode
@@ -2918,6 +4076,10 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
         , lmdb_setup=LmdbSetup
         , lmdb_context=LmdbContext
         , lmdb_import=LmdbImport
+        , csr_import=CsrImport
+        , csr_setup=CsrSetup
+        , csr_context=CsrContext
+        , has_csr=HasCsr
         , int_atom_seeds=IntAtomSeeds
         , int_atom_seeds_lmdb=IntAtomSeedsLmdb
         , demand_bfs_mode_cursor=DemandBfsModeCursor
@@ -3348,6 +4510,205 @@ cache_tier_memory_budget_short(Options, FloorBytes, RFree) :-
     ),
     RFree < FloorBytes.
 
+%% =====================================================================
+%% Runtime parser integration
+%% =====================================================================
+
+%% haskell_project_predicates(+UserPreds, +Mode, -ProjectPreds)
+%  In `compiled` mode, append the portable parser + wrapper
+%  predicate indicators. In other modes, leave the list untouched.
+haskell_project_predicates(Predicates, compiled(prolog_term_parser), ProjectPredicates) :-
+    !,
+    haskell_runtime_parser_predicates(ParserPreds),
+    haskell_runtime_parser_wrapper_predicates(WrapperPreds),
+    append([Predicates, ParserPreds, WrapperPreds], Combined),
+    sort(Combined, ProjectPredicates).
+haskell_project_predicates(Predicates, _RuntimeParserMode, Predicates).
+
+%% haskell_runtime_parser_predicates(-Predicates)
+%  Enumerate non-imported predicates of `prolog_term_parser` as
+%  `prolog_term_parser:Name/Arity` indicators.
+haskell_runtime_parser_predicates(Predicates) :-
+    findall(prolog_term_parser:Name/Arity,
+            ( current_predicate(prolog_term_parser:Name/Arity),
+              functor(Head, Name, Arity),
+              once(clause(prolog_term_parser:Head, _)),
+              \+ predicate_property(prolog_term_parser:Head, imported_from(_))
+            ),
+            Raw),
+    sort(Raw, Predicates).
+
+%% haskell_runtime_parser_wrapper_predicates(-Predicates)
+%  Enumerate non-imported predicates of `cpp_runtime_parser_wrappers`
+%  (the module name is C++-historical but the wrappers are target-agnostic).
+haskell_runtime_parser_wrapper_predicates(Predicates) :-
+    findall(cpp_runtime_parser_wrappers:Name/Arity,
+            ( current_predicate(cpp_runtime_parser_wrappers:Name/Arity),
+              functor(Head, Name, Arity),
+              once(clause(cpp_runtime_parser_wrappers:Head, _)),
+              \+ predicate_property(cpp_runtime_parser_wrappers:Head,
+                                    imported_from(_))
+            ),
+            Raw),
+    sort(Raw, Predicates).
+
+%% haskell_validate_runtime_parser_mode(+Predicates, +Mode)
+%  When the mode is `none`, reject any user predicate whose body
+%  statically calls a parser-dependent builtin.
+haskell_validate_runtime_parser_mode(Predicates, none) :-
+    !,
+    (   haskell_predicates_parser_dependency(Predicates, Pred, Builtin)
+    ->  throw(error(permission_error(use, runtime_parser, Builtin),
+                    context(write_wam_haskell_project/3,
+                            parser_disabled_for_predicate(Pred))))
+    ;   true
+    ).
+haskell_validate_runtime_parser_mode(_Predicates, _Mode).
+
+haskell_predicates_parser_dependency(Predicates, Pred, Builtin) :-
+    member(Pred, Predicates),
+    haskell_predicate_clause(Pred, _Head, Body),
+    parser_dependent_body_goal(Body, Builtin),
+    !.
+
+haskell_predicate_clause(Module:Name/Arity, Head, Body) :-
+    !,
+    functor(Head, Name, Arity),
+    clause(Module:Head, Body).
+haskell_predicate_clause(Name/Arity, Head, Body) :-
+    functor(Head, Name, Arity),
+    clause(user:Head, Body).
+
+%% =====================================================================
+%% CSR auto-resolution and bidirectional kernel upgrade
+%% =====================================================================
+
+%% maybe_upgrade_bidirectional(+KV0, -KV)
+%  Upgrade a category_ancestor kernel to bidirectional_ancestor.
+%  Only applied when kernel_mode(bidirectional) + csr_path are both set.
+maybe_upgrade_bidirectional(Key-recursive_kernel(category_ancestor, PI, Config),
+                            Key-recursive_kernel(bidirectional_ancestor, PI, Config)) :- !.
+maybe_upgrade_bidirectional(KV, KV).
+
+%% resolve_auto_csr_index_backend_hs(+Options0, -Options)
+%  Resolve csr_index_backend(auto) by delegating to the shared
+%  cost rule in cost_model.pl.
+resolve_auto_csr_index_backend_hs(Options0, Options) :-
+    (   option(csr_path(_), Options0),
+        option(csr_index_backend(auto), Options0)
+    ->  resolve_csr_index_backend(Options0, Backend),
+        exclude(=(csr_index_backend(_)), Options0, Rest),
+        Options = [csr_index_backend(Backend) | Rest]
+    ;   Options = Options0
+    ).
+
+%% resolve_auto_edge_store_hs(+Options0, -Options)
+%  Resolve edge_store(auto) into a concrete store selection.
+%  Decides between lmdb_cached, lmdb_eager, csr, or dual_csr based on
+%  workload metadata. When edge_store is not auto (or absent), pass through.
+%  Mirrors F#'s resolve_auto_edge_store_fs/2.
+resolve_auto_edge_store_hs(Options0, Options) :-
+    (   option(edge_store(auto), Options0)
+    ->  compute_edge_store_hs(Options0, Store),
+        exclude(=(edge_store(_)), Options0, Rest),
+        apply_edge_store_hs(Store, Rest, Options)
+    ;   Options = Options0
+    ).
+
+compute_edge_store_hs(Options, Store) :-
+    option(expected_query_count(Q), Options, 1),
+    option(expected_lookups_per_query(L), Options, 50),
+    option(edge_count(E), Options, 0),
+    option(graph_mutability(Mut), Options, 'static'),
+    option(needs_reverse(NeedsRev), Options, false),
+    TotalLookups is Q * L,
+    %% Cost model (milliseconds):
+    %%   LMDB eager: one-time load E*0.005ms, per-lookup ~0.5us (IntMap.lookup)
+    %%   LMDB cached: no load, per-lookup ~2us warm (cursor + L2 cache)
+    %%   CSR: build E*0.01ms, per-lookup ~1.5us (binary search on index)
+    EagerLoadMs is E * 0.005,
+    EagerPerLookupUs is 0.5,
+    CachedPerLookupUs is 2.0,
+    CsrBuildMs is E * 0.01,
+    CsrPerLookupUs is 1.5,
+    %% Total wall time per mode (ms):
+    EagerTotalMs is EagerLoadMs + TotalLookups * EagerPerLookupUs / 1000,
+    CachedTotalMs is TotalLookups * CachedPerLookupUs / 1000,
+    CsrTotalMs is CsrBuildMs + TotalLookups * CsrPerLookupUs / 1000,
+    (   Mut == 'dynamic'
+    ->  Store = lmdb_cached
+    ;   NeedsRev == true, CsrTotalMs =< CachedTotalMs
+    ->  Store = dual_csr
+    ;   (   CsrTotalMs =< EagerTotalMs, CsrTotalMs =< CachedTotalMs
+        ->  Store = csr
+        ;   EagerTotalMs =< CachedTotalMs
+        ->  Store = lmdb_eager
+        ;   Store = lmdb_cached
+        )
+    ),
+    (   option(edge_store_verbose(true), Options)
+    ->  format(user_error,
+               '[WAM-Haskell] edge_store(auto): Q=~w L=~w E=~w eager=~2fms cached=~2fms csr=~2fms -> ~w~n',
+               [Q, L, E, EagerTotalMs, CachedTotalMs, CsrTotalMs, Store])
+    ;   true
+    ).
+
+apply_edge_store_hs(lmdb_cached, Opts, [lmdb_materialisation(cached) | Opts]).
+apply_edge_store_hs(lmdb_eager, Opts, [lmdb_materialisation(eager) | Opts]).
+apply_edge_store_hs(csr, Opts, Opts).
+apply_edge_store_hs(dual_csr, Opts, Opts).
+
+%% resolve_auto_lmdb_materialisation_hs(+Options0, -Options)
+%  Resolve lmdb_materialisation(auto) into eager/lazy/cached using
+%  the shared cost model. When not auto, pass through.
+%  Mirrors F#'s resolve_auto_lmdb_materialisation_fs/2.
+resolve_auto_lmdb_materialisation_hs(Options0, Options) :-
+    (   option(lmdb_materialisation(auto), Options0)
+    ->  compute_lmdb_materialisation_hs(Options0, Mode),
+        exclude(=(lmdb_materialisation(_)), Options0, Rest),
+        Options = [lmdb_materialisation(Mode) | Rest]
+    ;   Options = Options0
+    ).
+
+compute_lmdb_materialisation_hs(Options, Mode) :-
+    option(fact_count(F), Options, 0),
+    option(demand_set_estimate(D), Options, F),
+    option(expected_query_count(NQ), Options, 1),
+    option(workload_segregated(WS), Options, false),
+    option(working_set_fraction(WSF), Options, 0.05),
+    EdgeBytes is D * 50,
+    (   option(memory_budget(B), Options)
+    ->  true
+    ;   catch(read_mem_available_bytes(B), _, B = 1_000_000_000)
+    ),
+    (   EdgeBytes > B
+    ->  (WS == true -> Mode = lazy ; Mode = cached)
+    ;   KKeys is integer(F * WSF),
+        option(cost_model_constants(Constants), Options, []),
+        recommend_access_pattern(KKeys, EdgeBytes, B, Constants, Pattern),
+        (   Pattern = sort
+        ->  (NQ >= 10, F =< 100_000 -> Mode = eager ; Mode = cached)
+        ;   (EdgeBytes > B -> Mode = cached ; Mode = eager)
+        )
+    ),
+    (   option(materialisation_verbose(true), Options)
+    ->  format(user_error,
+               '[WAM-Haskell] lmdb_materialisation(auto): F=~w D=~w B=~w NQ=~w WS=~w -> ~w~n',
+               [F, D, B, NQ, WS, Mode])
+    ;   true
+    ).
+
+%% resolve_haskell_cost_options(+Options0, -Options)
+%  Composed resolver chain: runs all auto-resolvers in sequence.
+%  Mirrors F#'s resolve_fsharp_cost_options/2.
+resolve_haskell_cost_options(Options0, Options) :-
+    resolve_auto_edge_store_hs(Options0, Options1),
+    resolve_auto_use_lmdb(Options1, Options2),
+    resolve_auto_cache_strategy(Options2, Options3),
+    resolve_auto_lmdb_materialisation_hs(Options3, Options4),
+    resolve_auto_lmdb_cache_mode(Options4, Options5),
+    resolve_auto_csr_index_backend_hs(Options5, Options).
+
 %% resolve_demand_filter_spec(+Options, -SpecHs)
 %  Pick the DemandFilterSpec literal to emit into Main.hs.
 %  Precedence:
@@ -3439,6 +4800,12 @@ generate_merged_code_build(DetectedKernels, Options, Code) :-
     ).
 
 generate_query_body(Options, QueryBody) :-
+    % Phase 3: select run function. Default is runMutableRegs (STArray,
+    % 7.66x faster). Override with register_mode(intmap) for pure path.
+    (   member(register_mode(intmap), Options)
+    ->  RunFn = 'run'
+    ;   RunFn = 'runMutableRegs'
+    ),
     % Emit a PURE expression so the seed loop can use `parMap rdeepseq`.
     % We use explicit braces and semicolons on the `let` to avoid Haskell's
     % column-alignment layout rules (the template renderer doesn't re-indent
@@ -3447,8 +4814,8 @@ generate_query_body(Options, QueryBody) :-
     ->  % Optimized: call WAM-compiled aggregation predicate per seed.
         format(atom(QueryPred1), '~w', [QueryPred]),
         format(atom(QueryBody),
-'let { wsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "~w" mergedLabels, wsRegs = IM.fromList [ (1, Atom (iAtom cat)), (2, Atom (iAtom root)), (3, Unbound wsVarId) ], wsCP = 0 } ; !result = case run ctx s0 of { Just s1 -> case IM.lookup wsVarId (wsBindings s1) of { Just v -> case extractDouble fullInternTable (derefVar (wsBindings s1) v) of { Just ws -> ws ; Nothing -> 0.0 } ; Nothing -> 0.0 } ; Nothing -> 0.0 } } in (cat, result)',
-            [QueryPred1])
+'let { wsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "~w" mergedLabels, wsRegs = IM.fromList [ (1, Atom (iAtom cat)), (2, Atom (iAtom root)), (3, Unbound wsVarId) ], wsCP = 0 } ; !result = case ~w ctx s0 of { Just s1 -> case IM.lookup wsVarId (wsBindings s1) of { Just v -> case extractDouble fullInternTable (derefVar (wsBindings s1) v) of { Just ws -> ws ; Nothing -> 0.0 } ; Nothing -> 0.0 } ; Nothing -> 0.0 } } in (cat, result)',
+            [QueryPred1, RunFn])
     ;   member(use_ffi(true), Options)
     ->  % FFI path: call executeForeign directly instead of running WAM code.
         % When the query predicate has an FFI kernel, the WAM code's internal
@@ -3456,9 +4823,16 @@ generate_query_body(Options, QueryBody) :-
         % collectForeignSolutions which calls the native kernel directly.
         QueryBody =
 'let { hopsVarId = 1000000 ; s0 = emptyState { wsRegs = IM.fromList [ (1, Atom (iAtom cat)), (2, Atom (iAtom root)), (3, Unbound hopsVarId), (4, VList [Atom (iAtom cat)]) ], wsCP = 0 } ; !solutions = collectForeignSolutions ctx "category_ancestor/4" s0 hopsVarId ; !weightSum = sum [((hops + 1) ** negN) | hops <- solutions] } in (cat, weightSum)'
-    ;   % Default: collectSolutions loop for category_ancestor/4
-        QueryBody =
-'let { hopsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels, wsRegs = IM.fromList [ (1, Atom (iAtom cat)), (2, Atom (iAtom root)), (3, Unbound hopsVarId), (4, VList [Atom (iAtom cat)]) ], wsCP = 0 } ; !solutions = collectSolutions ctx s0 hopsVarId ; !weightSum = sum [((hops + 1) ** negN) | hops <- solutions] } in (cat, weightSum)'
+    ;   % Default: collectSolutions loop for category_ancestor/4.
+        % Phase 3: use collectSolutionsST (STArray mutable regs) by default.
+        % Override with register_mode(intmap) to use the pure IntMap path.
+        (   member(register_mode(intmap), Options)
+        ->  CollectFn = 'collectSolutions'
+        ;   CollectFn = 'collectSolutionsST'
+        ),
+        format(atom(QueryBody),
+'let { hopsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels, wsRegs = IM.fromList [ (1, Atom (iAtom cat)), (2, Atom (iAtom root)), (3, Unbound hopsVarId), (4, VList [Atom (iAtom cat)]) ], wsCP = 0 } ; !solutions = ~w ctx s0 hopsVarId ; !weightSum = sum [((hops + 1) ** negN) | hops <- solutions] } in (cat, weightSum)',
+            [CollectFn])
     ).
 
 %% detected_kernel_keys(+DetectedKernels, -Keys)
@@ -3540,6 +4914,8 @@ compile_wam_runtime_to_haskell(Options0, DetectedKernels, Code) :-
     generate_cost_function_code(Options, CostFunctionCode),
     format(string(Code),
 '{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module WamRuntime where
 
 import qualified Data.Map.Strict as Map
@@ -3548,7 +4924,7 @@ import qualified Data.IntSet as IS
 import Data.Array (Array, listArray, (!), bounds)
 import qualified Data.Set as Set
 import Data.List (isPrefixOf, foldl'', nub)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isNothing)
 -- Phase 4.2: intra-query parallelism. parMap/rdeepseq spark the
 -- alternative clauses of a forkable ParTryMeElse choice point; the
 -- WamState NFData instance lives in WamTypes.
@@ -3557,8 +4933,15 @@ import Control.DeepSeq (NFData(..), deepseq)
 -- Phase 4.4: race-to-cancel for parallel negation. async/waitAny
 -- let us cancel remaining branches once one succeeds.
 import Control.Concurrent.Async (async, cancel, waitAny)
-import Control.Exception (evaluate)
+import Control.Exception (Exception, SomeException, evaluate, throw, try)
 import System.IO.Unsafe (unsafePerformIO)
+-- Phase 3 (mutable registers): ST monad + STArray for O(1) register access.
+import Control.Monad.ST.Strict (ST, runST)
+import qualified Data.Array.ST as STA
+import Data.Array.MArray (readArray, writeArray, freeze, newArray)
+import Data.STRef.Strict (newSTRef, readSTRef, writeSTRef, modifySTRef'')
+import Control.Monad (forM_)
+import qualified Data.Array as A
 ~w
 import WamTypes
 
@@ -3577,6 +4960,66 @@ derefVar bindings (Unbound vid) =
     Just val -> derefVar bindings val
     Nothing  -> Unbound vid
 derefVar _ v = v
+
+-- | Deep-dereference a value through bindings (resolves all nested Unbounds).
+derefDeep :: IM.IntMap Value -> Value -> Value
+derefDeep bindings v = case derefVar bindings v of
+  Str fn args -> Str fn (map (derefDeep bindings) args)
+  VList items -> VList (map (derefDeep bindings) items)
+  other -> other
+
+-- | Check if a value contains any unbound variables after dereferencing.
+hasUnboundDeep :: IM.IntMap Value -> Value -> Bool
+hasUnboundDeep bindings v = case derefVar bindings v of
+  Unbound _ -> True
+  Str _ args -> any (hasUnboundDeep bindings) args
+  VList items -> any (hasUnboundDeep bindings) items
+  _ -> False
+
+-- | ISO error term constructors.
+makeInstantiationError :: Value
+makeInstantiationError = Atom atomInstantiationError
+
+makeTypeError :: Int -> Value -> Value
+makeTypeError expected culprit = Str atomTypeError [Atom expected, culprit]
+
+makeDomainError :: Int -> Value -> Value
+makeDomainError domain culprit = Str atomDomainError [Atom domain, culprit]
+
+makeEvaluationError :: Int -> Value
+makeEvaluationError kind = Str atomEvaluationError [Atom kind]
+
+makePredIndicator :: Int -> Int -> Value
+makePredIndicator nameId arity = Str atomSlash [Atom nameId, Integer arity]
+
+-- | Throw a wrapped ISO error: error(ErrorTerm, _Context).
+throwIsoError :: WamState -> Value -> a
+throwIsoError s errTerm = throw $ WamException $
+  Str atomError [derefDeep (wsBindings s) errTerm, Unbound (wsVarCounter s)]
+
+-- | Build the Name/Arity culprit for type_error(evaluable, ...).
+arithCulprit :: IM.IntMap Value -> Value -> Value
+arithCulprit bindings expr = case derefVar bindings expr of
+  Atom aid -> makePredIndicator aid 0
+  Str fn args -> makePredIndicator fn (length args)
+  _ -> makePredIndicator atomUnknown 0
+
+-- | True for predicate names that are ISO meta-builtins routed through BuiltinCall.
+isIsoMetaBuiltin :: String -> Bool
+isIsoMetaBuiltin pred = case pred of
+  "catch/3" -> True; "throw/1" -> True
+  "is_iso/2" -> True; "is_lax/2" -> True
+  "<_iso/2" -> True; ">_iso/2" -> True; ">=_iso/2" -> True; "=<_iso/2" -> True
+  "=:=_iso/2" -> True; "=\\\\=_iso/2" -> True
+  "<_lax/2" -> True; ">_lax/2" -> True; ">=_lax/2" -> True; "=<_lax/2" -> True
+  "=:=_lax/2" -> True; "=\\\\=_lax/2" -> True
+  "succ/2" -> True; "succ_iso/2" -> True; "succ_lax/2" -> True
+  _ -> False
+
+-- | Arity of an ISO meta-builtin.
+isoMetaBuiltinArity :: String -> Int
+isoMetaBuiltinArity pred = case pred of
+  "throw/1" -> 1; "catch/3" -> 3; _ -> 2
 
 -- | Evaluate arithmetic expression. InternTable needed for reverse
 -- lookup of atom strings (numeric atom parsing, operator names).
@@ -3676,6 +5119,86 @@ addToBuilder val s = case wsBuilder s of
     -- No builder active, just push to heap (fallback)
     Just (s { wsPC = wsPC s + 1, wsHeap = wsHeap s ++ [val], wsHeapLen = wsHeapLen s + 1 })
 
+-- | Read the next arg from a ReadArgs builder.
+-- Returns (value, new_state) or Nothing if no ReadArgs active.
+readNextArg :: WamState -> Maybe (Value, WamState)
+readNextArg s = case wsBuilder s of
+  ReadArgs (v : rest) ->
+    let s'''' = if null rest
+              then popBuilderStack s
+              else s { wsBuilder = ReadArgs rest }
+    in Just (derefVar (wsBindings s) v, s'''')
+  _ -> Nothing
+
+-- | Save the current builder (if active) onto the builder stack.
+pushBuilderIfActive :: WamState -> WamState
+pushBuilderIfActive s = case wsBuilder s of
+  NoBuilder -> s
+  b -> s { wsBuilder = NoBuilder
+         , wsBuilderStack = b : wsBuilderStack s }
+
+-- | PureWamState variant for stepST.
+pushBuilderIfActivePure :: PureWamState -> PureWamState
+pushBuilderIfActivePure pw = case pwBuilder pw of
+  NoBuilder -> pw
+  b -> pw { pwBuilder = NoBuilder
+          , pwBuilderStack = b : pwBuilderStack pw }
+
+-- | Throw an ISO error from the ST path. Constructs a WamState-shaped
+-- error envelope and throws WamException. Works because throw is lazy
+-- and can fire from any context (pure or ST).
+throwIsoErrorPure :: PureWamState -> Value -> ST s a
+throwIsoErrorPure pw errTerm =
+  let wrapped = Str atomError [derefDeep (pwBindings pw) errTerm, Unbound (pwVarCounter pw)]
+  in throw (WamException wrapped)
+
+-- | ST-mode succLax: read registers directly, avoid freeze/thaw.
+succLaxST :: STA.STArray s Int Value -> PureWamState -> ST s (Maybe PureWamState)
+succLaxST regs pw = do
+  v1 <- readArray regs 1
+  v2 <- readArray regs 2
+  let a = Just (derefVar (pwBindings pw) v1)
+      b = Just (derefVar (pwBindings pw) v2)
+      bindReg reg value = do
+        let dv = derefVar (pwBindings pw) <$> Just value
+        case derefVar (pwBindings pw) <$> IM.lookup reg (pwBindings pw) of
+          _ -> return ()
+        -- Read current register value to check for Unbound
+        rv <- readArray regs reg
+        case derefVar (pwBindings pw) rv of
+          Unbound vid -> do
+            writeArray regs reg value
+            return $ Just pw { pwPC = pwPC pw + 1
+                             , pwBindings = IM.insert vid value (pwBindings pw)
+                             , pwTrail = TrailEntry vid (IM.lookup vid (pwBindings pw)) : pwTrail pw
+                             , pwTrailLen = pwTrailLen pw + 1 }
+          bound | bound == value -> return $ Just pw { pwPC = pwPC pw + 1 }
+          _ -> return Nothing
+  case (a, b) of
+    (Just (Integer n), _) | n >= 0 -> bindReg 2 (Integer (n + 1))
+    (_, Just (Integer m)) | m > 0  -> bindReg 1 (Integer (m - 1))
+    _ -> return Nothing
+
+-- | Restore the top builder from the stack.
+popBuilderStack :: WamState -> WamState
+popBuilderStack s = case wsBuilderStack s of
+  (b : rest) -> s { wsBuilder = b, wsBuilderStack = rest }
+  [] -> s { wsBuilder = NoBuilder }
+
+-- | Unify two values. Returns updated state on success, Nothing on failure.
+unifyValues :: Value -> Value -> WamState -> Maybe WamState
+unifyValues v1 v2 s
+  | v1 == v2 = Just s
+unifyValues (Unbound vid) v2 s =
+  Just (s { wsBindings = IM.insert vid v2 (wsBindings s)
+          , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+          , wsTrailLen = wsTrailLen s + 1 })
+unifyValues v1 (Unbound vid) s =
+  Just (s { wsBindings = IM.insert vid v1 (wsBindings s)
+          , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+          , wsTrailLen = wsTrailLen s + 1 })
+unifyValues _ _ _ = Nothing
+
 -- | Lookup a label in the label map (now in WamContext).
 lookupLabel :: String -> WamContext -> Int
 lookupLabel label ctx = fromMaybe 0 $ Map.lookup label (wcLabels ctx)
@@ -3692,6 +5215,76 @@ fetchInstr pc code
 {-# INLINE unsafeFetchInstr #-}
 unsafeFetchInstr :: Int -> Array Int Instruction -> Instruction
 unsafeFetchInstr pc code = code ! pc
+
+-- | Phase 3: ST-mode register helpers.
+-- Convert between WamState (IntMap regs) and PureWamState (regs in separate STArray).
+
+wamStateToPure :: WamState -> PureWamState
+wamStateToPure s = PureWamState
+  { pwPC = wsPC s, pwStack = wsStack s, pwHeap = wsHeap s
+  , pwHeapLen = wsHeapLen s, pwTrail = wsTrail s, pwTrailLen = wsTrailLen s
+  , pwCP = wsCP s, pwCPs = [], pwCPsLen = 0
+  , pwBindings = wsBindings s, pwCutBar = wsCutBar s
+  , pwBuilder = wsBuilder s, pwBuilderStack = wsBuilderStack s
+  , pwVarCounter = wsVarCounter s
+  , pwAggAccum = wsAggAccum s
+  }
+
+pureToWamState :: PureWamState -> IM.IntMap Value -> WamState
+pureToWamState pw regMap = WamState
+  { wsPC = pwPC pw, wsRegs = regMap, wsStack = pwStack pw
+  , wsHeap = pwHeap pw, wsHeapLen = pwHeapLen pw
+  , wsTrail = pwTrail pw, wsTrailLen = pwTrailLen pw
+  , wsCP = pwCP pw, wsCPs = [], wsCPsLen = 0
+  , wsBindings = pwBindings pw, wsCutBar = pwCutBar pw
+  , wsBuilder = pwBuilder pw, wsBuilderStack = pwBuilderStack pw
+  , wsVarCounter = pwVarCounter pw
+  , wsAggAccum = pwAggAccum pw
+  }
+
+-- | Read a register value in ST mode. Y-registers (>= 200) come from env frame.
+{-# INLINE getRegST #-}
+getRegST :: STA.STArray s Int Value -> Int -> PureWamState -> ST s (Maybe Value)
+getRegST regs rid pw
+  | rid >= 200 = return $ findYRegPure rid (pwStack pw)
+  | otherwise = do
+      v <- readArray regs rid
+      return $ Just (derefVar (pwBindings pw) v)
+  where
+    findYRegPure _ [] = Nothing
+    findYRegPure r (EnvFrame _ yregs : _) =
+      derefVar (pwBindings pw) <$> IM.lookup r yregs
+    findYRegPure r (_ : rest) = findYRegPure r rest
+
+-- | Write a register value in ST mode. Y-registers go to env frame.
+{-# INLINE putRegST #-}
+putRegST :: STA.STArray s Int Value -> Int -> Value -> PureWamState -> ST s PureWamState
+putRegST regs rid val pw
+  | rid >= 200 = return $ pw { pwStack = updateTopEnvPure rid val (pwStack pw) }
+  | otherwise = do writeArray regs rid val; return pw
+  where
+    updateTopEnvPure _ _ [] = []
+    updateTopEnvPure r v (EnvFrame cp yregs : rest) =
+      EnvFrame cp (IM.insert r v yregs) : rest
+    updateTopEnvPure r v (x : rest) = x : updateTopEnvPure r v rest
+
+-- | Freeze registers into an immutable snapshot for choice points.
+{-# INLINE snapshotRegsST #-}
+snapshotRegsST :: STA.STArray s Int Value -> ST s (A.Array Int Value)
+snapshotRegsST = freeze
+
+-- | Restore registers from a frozen snapshot (backtrack).
+{-# INLINE restoreRegsST #-}
+restoreRegsST :: STA.STArray s Int Value -> A.Array Int Value -> ST s ()
+restoreRegsST regs snap = forM_ [1..maxRegId] $ \\i ->
+  writeArray regs i (snap A.! i)
+
+-- | Freeze STArray registers into an IntMap (for returning WamState).
+freezeRegsToIntMap :: STA.STArray s Int Value -> ST s (IM.IntMap Value)
+freezeRegsToIntMap regs = do
+  arr <- freeze regs
+  return $ IM.fromList [(i, arr A.! i) | i <- [1..maxRegId],
+                         arr A.! i /= Unbound (-1)]
 
 -- | Resolve Call instructions at project load time:
 --   - Foreign predicates (detected kernels) → CallForeign (direct FFI, Nothing = fail)
@@ -3748,6 +5341,9 @@ import Data.Array (Array, listArray, (!), bounds)
 -- Phase 4.2: NFData is needed for parMap rdeepseq to fully evaluate
 -- each forked branch''s contribution before the merge step.
 import Control.DeepSeq (NFData(..))
+-- ISO error handling: WamException is defined here so both WamTypes
+-- and WamRuntime can reference it.
+import Control.Exception (Exception)
 
 -- | Core value type. Atoms and Str functor names are interned as Ints
 -- for O(1) equality. Use lookupAtom/internAtom via the InternTable in
@@ -3798,6 +5394,25 @@ atomFail  = 1
 atomNil   = 2   -- "[]"
 atomDot   = 3   -- "."
 atomEmpty = 4   -- ""
+
+atomError, atomInstantiationError, atomTypeError, atomDomainError :: Int
+atomEvaluationError, atomEvaluable, atomIntegerTy, atomNotLessThanZero :: Int
+atomZeroDivisor, atomSlash, atomUnknown :: Int
+atomError = 5
+atomInstantiationError = 6
+atomTypeError = 7
+atomDomainError = 8
+atomEvaluationError = 9
+atomEvaluable = 10
+atomIntegerTy = 11
+atomNotLessThanZero = 12
+atomZeroDivisor = 13
+atomSlash = 14
+atomUnknown = 15
+
+-- | ISO exception type for throw/1 and catch/3.
+data WamException = WamException !Value deriving (Show)
+instance Exception WamException
 
 data EnvFrame = EnvFrame {-# UNPACK #-} !Int !(IM.IntMap Value)
               deriving (Show)
@@ -3900,6 +5515,7 @@ instance NFData Value where
 -- | Builder for PutStructure/PutList + SetValue/SetConstant sequences.
 data Builder = BuildStruct !Int !Int !Int ![Value]  -- interned functor ID, target reg ID, arity, collected args
              | BuildList !Int ![Value]               -- target reg ID, collected [head, tail]
+             | ReadArgs ![Value]                     -- remaining args to read from structure (get_structure read mode)
              | NoBuilder
              deriving (Show)
 
@@ -3976,10 +5592,50 @@ data WamState = WamState
   , wsCPsLen   :: {-# UNPACK #-} !Int
   , wsBindings :: !(IM.IntMap Value)
   , wsCutBar   :: {-# UNPACK #-} !Int
-  , wsBuilder  :: !Builder
-  , wsVarCounter :: {-# UNPACK #-} !Int
+  , wsBuilder      :: !Builder
+  , wsBuilderStack :: ![Builder]    -- saved builders for nested get_structure
+  , wsVarCounter   :: {-# UNPACK #-} !Int
   , wsAggAccum :: ![Value]
   } deriving (Show)
+
+-- | Maximum register ID. A1-A99=1-99, X1-X99=101-199, Y handled via stack.
+maxRegId :: Int
+maxRegId = 199
+
+-- | Pure WAM state for ST-mode execution. All fields except registers.
+-- Registers live in a separate mutable STArray, passed alongside this record.
+-- See WAM_HASKELL_MUTABLE_REGISTERS_SPECIFICATION.md.
+data PureWamState = PureWamState
+  { pwPC        :: {-# UNPACK #-} !Int
+  , pwStack     :: ![EnvFrame]
+  , pwHeap      :: ![Value]
+  , pwHeapLen   :: {-# UNPACK #-} !Int
+  , pwTrail     :: ![TrailEntry]
+  , pwTrailLen  :: {-# UNPACK #-} !Int
+  , pwCP        :: {-# UNPACK #-} !Int
+  , pwCPs       :: ![MutableChoicePoint]
+  , pwCPsLen    :: {-# UNPACK #-} !Int
+  , pwBindings  :: !(IM.IntMap Value)
+  , pwCutBar    :: {-# UNPACK #-} !Int
+  , pwBuilder      :: !Builder
+  , pwBuilderStack :: ![Builder]    -- saved builders for nested get_structure
+  , pwVarCounter   :: {-# UNPACK #-} !Int
+  , pwAggAccum     :: ![Value]
+  }
+
+-- | Choice point with frozen register snapshot (for ST-mode execution).
+data MutableChoicePoint = MutableChoicePoint
+  { mcpNextPC    :: {-# UNPACK #-} !Int
+  , mcpRegs      :: !(Array Int Value)
+  , mcpStack     :: ![EnvFrame]
+  , mcpCP        :: {-# UNPACK #-} !Int
+  , mcpTrailLen  :: {-# UNPACK #-} !Int
+  , mcpHeapLen   :: {-# UNPACK #-} !Int
+  , mcpBindings  :: !(IM.IntMap Value)
+  , mcpCutBar    :: {-# UNPACK #-} !Int
+  , mcpAggFrame  :: !(Maybe AggFrame)
+  , mcpBuiltin   :: !(Maybe BuiltinState)
+  }
 
 -- | Instruction type for the WAM.
 -- | Register IDs are pre-interned at compile time as Ints to avoid string
@@ -4007,6 +5663,11 @@ data Instruction
   | SetValue !RegId
   | SetVariable !RegId                  -- builder slot = fresh unbound; also write to register
   | SetConstant Value
+  | GetStructure !Int !RegId !Int   -- interned functor ID, target reg, arity
+  | GetList !RegId                  -- target reg
+  | UnifyVariable !RegId            -- target register to bind
+  | UnifyValue !RegId               -- register whose value to unify with
+  | UnifyConstant Value             -- constant to unify with
   | Allocate
   | Deallocate
   | Call String !Int                  -- pre-resolution form (string-keyed)
@@ -4086,6 +5747,7 @@ emptyState = WamState
   , wsBindings = IM.empty
   , wsCutBar   = 0
   , wsBuilder  = NoBuilder
+  , wsBuilderStack = []
   , wsVarCounter = 0
   , wsAggAccum = []
   }
@@ -4895,6 +6557,33 @@ wam_instr_to_haskell(["end_aggregate", ValReg], Hs) :-
     clean_comma(ValReg, CV),
     reg_name_to_int(CV, VI),
     format(string(Hs), 'EndAggregate ~w', [VI]).
+wam_instr_to_haskell(["get_structure", FN, Ai], Hs) :-
+    clean_comma(FN, CFN), clean_comma(Ai, CAi),
+    parse_functor_arity(CFN, Arity),
+    reg_name_to_int(CAi, AiI),
+    intern_atom(CFN, FnId),
+    format(string(Hs), 'GetStructure ~w ~w ~w', [FnId, AiI, Arity]).
+wam_instr_to_haskell(["get_list", Ai], Hs) :-
+    clean_comma(Ai, CAi), reg_name_to_int(CAi, AiI),
+    format(string(Hs), 'GetList ~w', [AiI]).
+wam_instr_to_haskell(["get_nil", Ai], Hs) :-
+    clean_comma(Ai, CAi), reg_name_to_int(CAi, AiI),
+    intern_atom("[]", NilId),
+    format(string(Hs), 'GetConstant (Atom ~w) ~w', [NilId, AiI]).
+wam_instr_to_haskell(["get_integer", N, Ai], Hs) :-
+    clean_comma(N, CN), clean_comma(Ai, CAi),
+    (number_string(NI, CN) -> true ; NI = 0),
+    reg_name_to_int(CAi, AiI),
+    format(string(Hs), 'GetConstant (Integer ~w) ~w', [NI, AiI]).
+wam_instr_to_haskell(["unify_variable", Xn], Hs) :-
+    clean_comma(Xn, CXn), reg_name_to_int(CXn, XnI),
+    format(string(Hs), 'UnifyVariable ~w', [XnI]).
+wam_instr_to_haskell(["unify_value", Xn], Hs) :-
+    clean_comma(Xn, CXn), reg_name_to_int(CXn, XnI),
+    format(string(Hs), 'UnifyValue ~w', [XnI]).
+wam_instr_to_haskell(["unify_constant", C], Hs) :-
+    wam_value_to_haskell(C, HsVal),
+    format(string(Hs), 'UnifyConstant (~w)', [HsVal]).
 % Fallback for unknown instructions
 wam_instr_to_haskell(Parts, Hs) :-
     atomic_list_concat(Parts, ' ', Joined),
@@ -4914,21 +6603,29 @@ parse_functor_arity(FN, Arity) :-
 
 %% wam_value_to_haskell(+WamVal, -HaskellExpr)
 %  Converts a WAM constant to a Haskell Value constructor.
+%
+%  Atom-vs-number disambiguation goes through
+%  wam_text_parser:wam_classify_constant_token/2: a bare token `5`
+%  is the integer 5, a quoted token `'5'` is the atom whose name
+%  is "5". Without the classifier, intern_atom would intern the
+%  atom with the outer quotes attached.
 wam_value_to_haskell(Val, Hs) :-
     atom_string(Val, ValStr),
-    (   number_string(N, ValStr), integer(N)
+    wam_classify_constant_token(ValStr, Class),
+    (   Class = integer(N)
     ->  % Wrap negative integers in parens so Haskell parses correctly:
         % Integer (-5) not Integer -5
         (   N < 0
         ->  format(string(Hs), 'Integer (~w)', [N])
         ;   format(string(Hs), 'Integer ~w', [N])
         )
-    ;   number_string(F, ValStr), float(F)
+    ;   Class = float(F)
     ->  (   F < 0
         ->  format(string(Hs), 'Float (~w)', [F])
         ;   format(string(Hs), 'Float ~w', [F])
         )
-    ;   intern_atom(Val, AtomId),
+    ;   Class = atom(Name),
+        intern_atom(Name, AtomId),
         format(string(Hs), 'Atom ~w', [AtomId])
     ).
 
@@ -4960,6 +6657,78 @@ escape_haskell_string(In, Out) :-
     atom_string(In, S),
     split_string(S, "\\", "", Parts),
     atomic_list_concat(Parts, "\\\\", Out).
+
+% ============================================================================
+% ISO error tables: default-to-iso and default-to-lax rewrites.
+% These must match the BuiltinCall step arms above. See
+% docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md.
+% ============================================================================
+
+iso_errors:iso_errors_default_to_iso("is/2", "is_iso/2").
+iso_errors:iso_errors_default_to_iso(">/2", ">_iso/2").
+iso_errors:iso_errors_default_to_iso("</2", "<_iso/2").
+iso_errors:iso_errors_default_to_iso(">=/2", ">=_iso/2").
+iso_errors:iso_errors_default_to_iso("=</2", "=<_iso/2").
+iso_errors:iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
+iso_errors:iso_errors_default_to_iso("=\\=/2", "=\\=_iso/2").
+iso_errors:iso_errors_default_to_iso("succ/2", "succ_iso/2").
+
+iso_errors:iso_errors_default_to_lax("is/2", "is_lax/2").
+iso_errors:iso_errors_default_to_lax(">/2", ">_lax/2").
+iso_errors:iso_errors_default_to_lax("</2", "<_lax/2").
+iso_errors:iso_errors_default_to_lax(">=/2", ">=_lax/2").
+iso_errors:iso_errors_default_to_lax("=</2", "=<_lax/2").
+iso_errors:iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
+iso_errors:iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
+iso_errors:iso_errors_default_to_lax("succ/2", "succ_lax/2").
+
+%% iso_errors_rewrite_text(+Config, +PI, +WamText, -RewrittenText)
+%  Text-level ISO rewrite: replaces BuiltinCall keys per the ISO config.
+%  Mirrors the F# and Python iso_errors_rewrite_text/4.
+iso_errors_rewrite_text(Config, PI, WamText, RewrittenText) :-
+    iso_errors_mode_for(Config, PI, Mode),
+    (   Mode == true  -> RMode = iso
+    ;   Mode == false -> RMode = lax
+    ;   RMode = default
+    ),
+    (   RMode == default
+    ->  RewrittenText = WamText
+    ;   atom_string(WamText, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        maplist(iso_errors_rewrite_line(RMode), Lines, NewLines),
+        atomic_list_concat(NewLines, "\n", RewrittenText)
+    ).
+
+iso_errors_rewrite_line(Mode, Line, NewLine) :-
+    (   sub_string(Line, Before, _, _, "builtin_call "),
+        sub_string(Line, Before, 13, _, "builtin_call ")
+    ->  sub_string(Line, 0, Before, _, Prefix),
+        Offset is Before + 13,
+        sub_string(Line, Offset, _, 0, Rest),
+        split_string(Rest, " ", "", [KeyRaw|Tail]),
+        % Strip trailing comma from key token (e.g. "is/2," -> "is/2")
+        (   string_concat(Key, ",", KeyRaw) -> true ; Key = KeyRaw ),
+        iso_errors_rewrite_key(Mode, Key, NewKey),
+        % Reattach comma if it was there
+        (   string_concat(_, ",", KeyRaw)
+        ->  string_concat(NewKey, ",", NewKeyTok)
+        ;   NewKeyTok = NewKey
+        ),
+        atomic_list_concat([NewKeyTok|Tail], " ", NewRest),
+        atom_concat(Prefix, "builtin_call ", P2),
+        atom_concat(P2, NewRest, NewLine)
+    ;   NewLine = Line
+    ).
+
+iso_errors_rewrite_key(iso, Key, NewKey) :-
+    (   iso_errors:iso_errors_default_to_iso(Key, NewKey) -> true
+    ;   NewKey = Key
+    ).
+iso_errors_rewrite_key(lax, Key, NewKey) :-
+    (   iso_errors:iso_errors_default_to_lax(Key, NewKey) -> true
+    ;   NewKey = Key
+    ).
+iso_errors_rewrite_key(default, Key, Key).
 
 %% write_hs_file(+Path, +Content)
 write_hs_file(Path, Content) :-

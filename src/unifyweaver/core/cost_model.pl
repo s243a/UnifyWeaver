@@ -38,6 +38,11 @@
     resolve_reverse_index/2,    % +Options, -ReverseIndex
     validate_reverse_index_option/2, % +Spec, -Normalized
     resolve_csr_io_policy/2,    % +Options, -Policy
+    resolve_csr_index_backend/2, % +Options, -Backend
+    csr_index_backend_options_from_benchmark_tsv/3,
+                                % +Path, +WorkloadOptions, -Options
+    csr_index_backend_options_from_benchmark_rows/3,
+                                % +Rows, +WorkloadOptions, -Options
 
     %% Hardware constants
     default_constants/1,        % -Constants
@@ -48,6 +53,9 @@
 ]).
 
 :- use_module(library(option)).
+:- use_module(library(apply)).
+:- use_module(library(pairs)).
+:- use_module(library(readutil)).
 
 %% =====================================================================
 %% Hardware constants
@@ -284,6 +292,7 @@ normalize_kind_options(mmap_array, _Opts0, []).
 normalize_kind_options(csr, Opts0, Opts) :-
     option(ordering(Ordering), Opts0, parent_sort),
     validate_reverse_ordering(Ordering),
+    resolve_csr_index_backend(Opts0, IndexBackend),
     option(cache_bytes(CacheBytes), Opts0, 0),
     validate_nonnegative_integer(cache_bytes, CacheBytes),
     option(block_size_edges(BlockSizeEdges), Opts0, 0),
@@ -291,6 +300,7 @@ normalize_kind_options(csr, Opts0, Opts) :-
     resolve_csr_io_policy(Opts0, IoPolicy),
     Opts = [
         ordering(Ordering),
+        index_backend(IndexBackend),
         io_policy(IoPolicy),
         cache_bytes(CacheBytes),
         block_size_edges(BlockSizeEdges)
@@ -304,13 +314,24 @@ normalize_kind_options(artifact, Opts0, Opts) :-
     validate_reverse_ordering(Ordering),
     option(cache_bytes(CacheBytes), Opts0, 0),
     validate_nonnegative_integer(cache_bytes, CacheBytes),
+    artifact_index_options(StorageKind, Opts0, IndexOpt),
     artifact_io_options(StorageKind, Opts0, IoOpt),
     append([
         relation(Relation),
         storage_kind(StorageKind),
         ordering(Ordering),
         cache_bytes(CacheBytes)
-    ], IoOpt, Opts).
+    ], IndexOpt, PrefixOpts),
+    append(PrefixOpts, IoOpt, Opts).
+
+artifact_index_options(csr_pread_artifact, Opts0, [index_backend(IndexBackend)]) :-
+    !,
+    resolve_csr_index_backend(Opts0, IndexBackend).
+artifact_index_options(_StorageKind, Opts0, []) :-
+    \+ option(index_backend(_), Opts0),
+    !.
+artifact_index_options(StorageKind, _Opts0, _) :-
+    throw(error(permission_error(use, index_backend, StorageKind), _)).
 
 artifact_io_options(csr_pread_artifact, Opts0, [io_policy(IoPolicy)]) :-
     !,
@@ -348,6 +369,135 @@ resolve_csr_io_policy_value(Policy, _Options, Policy) :-
     validate_csr_io_policy(Policy),
     !.
 
+%! resolve_csr_index_backend(+Options, -Backend) is det.
+%
+%  Resolve CSR index backend. Omitted values keep the current sorted
+%  array behavior. Explicit `auto` may select lmdb_offset when measured
+%  lookup savings amortize the marginal build cost and the offset index
+%  fits the configured memory budget.
+resolve_csr_index_backend(Options, Backend) :-
+    option(index_backend(Backend0), Options, sorted_array),
+    resolve_csr_index_backend_value(Backend0, Options, Backend).
+
+resolve_csr_index_backend_value(auto, Options, lmdb_offset) :-
+    csr_lmdb_offset_pays_off(Options),
+    csr_lmdb_offset_memory_fits(Options),
+    !.
+resolve_csr_index_backend_value(auto, _Options, sorted_array) :- !.
+resolve_csr_index_backend_value(Backend, _Options, Backend) :-
+    validate_csr_index_backend(Backend),
+    !.
+
+%! csr_index_backend_options_from_benchmark_tsv(+Path, +WorkloadOptions, -Options) is det.
+%
+%  Read benchmark_reverse_csr_lookup.py TSV output and produce the
+%  measured option terms consumed by resolve_csr_index_backend/2.
+%  WorkloadOptions should provide expected_child_lookups_per_query/1 and
+%  expected_query_count_per_artifact/1. It may also provide
+%  available_memory_bytes/1 or lmdb_offset_memory_fits(true).
+csr_index_backend_options_from_benchmark_tsv(Path, WorkloadOptions, Options) :-
+    read_file_to_string(Path, Text, []),
+    tsv_rows(Text, Rows),
+    csr_index_backend_options_from_benchmark_rows(Rows, WorkloadOptions, Options).
+
+%! csr_index_backend_options_from_benchmark_rows(+Rows, +WorkloadOptions, -Options) is det.
+%
+%  Rows is a list of Field-ValueString pairs as produced by tsv_rows/2.
+csr_index_backend_options_from_benchmark_rows(Rows, WorkloadOptions, Options) :-
+    must_be(list, WorkloadOptions),
+    memberchk(expected_child_lookups_per_query(LookupsPerQuery), WorkloadOptions),
+    memberchk(expected_query_count_per_artifact(QueryCount), WorkloadOptions),
+    benchmark_row_for_index_backend(Rows, sorted_array, SortedRow),
+    benchmark_row_for_index_backend(Rows, lmdb_offset, LmdbRow),
+    row_number(SortedRow, median_ms, SortedMsPer1000),
+    row_number(LmdbRow, median_ms, LmdbMsPer1000),
+    row_number(SortedRow, csr_build_seconds, SortedBuildSeconds),
+    row_number(LmdbRow, csr_build_seconds, LmdbBuildSeconds),
+    row_number(LmdbRow, offset_index_bytes, LmdbOffsetBytes),
+    BaseOptions = [
+        index_backend(auto),
+        expected_child_lookups_per_query(LookupsPerQuery),
+        expected_query_count_per_artifact(QueryCount),
+        sorted_array_lookup_ms_per_1000(SortedMsPer1000),
+        lmdb_offset_lookup_ms_per_1000(LmdbMsPer1000),
+        sorted_array_build_seconds(SortedBuildSeconds),
+        lmdb_offset_build_seconds(LmdbBuildSeconds),
+        lmdb_offset_bytes(LmdbOffsetBytes)
+    ],
+    include(csr_index_passthrough_workload_option, WorkloadOptions, PassThrough),
+    append(BaseOptions, PassThrough, Options).
+
+tsv_rows(Text, Rows) :-
+    split_string(Text, "\n", "\n\r", RawLines),
+    exclude(=(""), RawLines, Lines),
+    Lines = [HeaderLine|DataLines],
+    split_string(HeaderLine, "\t", "", HeaderStrings),
+    maplist(atom_string, Headers, HeaderStrings),
+    maplist(tsv_row(Headers), DataLines, Rows).
+
+tsv_row(Headers, Line, Row) :-
+    split_string(Line, "\t", "\r", Values),
+    same_length(Headers, Values),
+    pairs_keys_values(Row, Headers, Values).
+
+benchmark_row_for_index_backend(Rows, Backend, Row) :-
+    atom_string(Backend, BackendString),
+    member(Row, Rows),
+    memberchk(index_backend-BackendString, Row),
+    !.
+benchmark_row_for_index_backend(_Rows, Backend, _Row) :-
+    throw(error(existence_error(csr_benchmark_row, Backend), _)).
+
+row_number(Row, Field, Number) :-
+    memberchk(Field-String, Row),
+    number_string(Number, String),
+    !.
+row_number(Row, Field, _Number) :-
+    (   memberchk(Field-String, Row)
+    ->  throw(error(type_error(number_string(Field), String), _))
+    ;   throw(error(existence_error(csr_benchmark_field, Field), _))
+    ).
+
+csr_index_passthrough_workload_option(available_memory_bytes(_)).
+csr_index_passthrough_workload_option(csr_index_memory_fraction(_)).
+csr_index_passthrough_workload_option(lmdb_offset_memory_fits(true)).
+
+csr_lmdb_offset_pays_off(Options) :-
+    option(expected_child_lookups_per_query(LookupsPerQuery), Options),
+    validate_nonnegative_number(expected_child_lookups_per_query, LookupsPerQuery),
+    LookupsPerQuery > 0,
+    option(expected_query_count_per_artifact(QueryCount), Options),
+    validate_nonnegative_number(expected_query_count_per_artifact, QueryCount),
+    QueryCount > 0,
+    option(sorted_array_lookup_ms_per_1000(SortedMsPer1000), Options),
+    validate_nonnegative_number(sorted_array_lookup_ms_per_1000, SortedMsPer1000),
+    option(lmdb_offset_lookup_ms_per_1000(LmdbMsPer1000), Options),
+    validate_nonnegative_number(lmdb_offset_lookup_ms_per_1000, LmdbMsPer1000),
+    LookupSavingsMsPer1000 is SortedMsPer1000 - LmdbMsPer1000,
+    LookupSavingsMsPer1000 > 0,
+    option(sorted_array_build_seconds(SortedBuildSeconds), Options),
+    validate_nonnegative_number(sorted_array_build_seconds, SortedBuildSeconds),
+    option(lmdb_offset_build_seconds(LmdbBuildSeconds), Options),
+    validate_nonnegative_number(lmdb_offset_build_seconds, LmdbBuildSeconds),
+    MarginalBuildSeconds is max(0, LmdbBuildSeconds - SortedBuildSeconds),
+    TotalLookupSavingsSeconds is
+        (LookupsPerQuery * QueryCount / 1000.0) *
+        (LookupSavingsMsPer1000 / 1000.0),
+    TotalLookupSavingsSeconds >= MarginalBuildSeconds.
+
+csr_lmdb_offset_memory_fits(Options) :-
+    option(lmdb_offset_memory_fits(true), Options),
+    !.
+csr_lmdb_offset_memory_fits(Options) :-
+    option(lmdb_offset_bytes(LmdbOffsetBytes), Options),
+    validate_nonnegative_number(lmdb_offset_bytes, LmdbOffsetBytes),
+    option(available_memory_bytes(AvailableBytes), Options),
+    validate_nonnegative_number(available_memory_bytes, AvailableBytes),
+    AvailableBytes > 0,
+    option(csr_index_memory_fraction(Fraction), Options, 0.05),
+    validate_fraction(csr_index_memory_fraction, Fraction),
+    LmdbOffsetBytes =< AvailableBytes * Fraction.
+
 validate_known_reverse_options([]).
 validate_known_reverse_options([Opt|Rest]) :-
     functor(Opt, Name, 1),
@@ -360,9 +510,20 @@ validate_known_reverse_options([Opt|_]) :-
 reverse_option_key(phase).
 reverse_option_key(id_encoding).
 reverse_option_key(ordering).
+reverse_option_key(index_backend).
 reverse_option_key(cache_bytes).
 reverse_option_key(block_size_edges).
 reverse_option_key(io_policy).
+reverse_option_key(expected_child_lookups_per_query).
+reverse_option_key(expected_query_count_per_artifact).
+reverse_option_key(sorted_array_lookup_ms_per_1000).
+reverse_option_key(lmdb_offset_lookup_ms_per_1000).
+reverse_option_key(sorted_array_build_seconds).
+reverse_option_key(lmdb_offset_build_seconds).
+reverse_option_key(lmdb_offset_bytes).
+reverse_option_key(available_memory_bytes).
+reverse_option_key(csr_index_memory_fraction).
+reverse_option_key(lmdb_offset_memory_fits).
 reverse_option_key(platform_supports_direct_io).
 reverse_option_key(alignment_verified).
 reverse_option_key(measured_direct_io_win).
@@ -386,6 +547,32 @@ validate_csr_io_policy(Policy) :-
     !.
 validate_csr_io_policy(Policy) :-
     throw(error(domain_error(csr_io_policy, Policy), _)).
+
+validate_csr_index_backend(Backend) :-
+    memberchk(Backend, [
+        auto,
+        sorted_array,
+        lmdb_offset,
+        dense_direct
+    ]),
+    !.
+validate_csr_index_backend(Backend) :-
+    throw(error(domain_error(csr_index_backend, Backend), _)).
+
+validate_nonnegative_number(_Name, Value) :-
+    number(Value),
+    Value >= 0,
+    !.
+validate_nonnegative_number(Name, Value) :-
+    throw(error(domain_error(nonnegative_number(Name), Value), _)).
+
+validate_fraction(_Name, Value) :-
+    number(Value),
+    Value >= 0,
+    Value =< 1,
+    !.
+validate_fraction(Name, Value) :-
+    throw(error(domain_error(fraction(Name), Value), _)).
 
 validate_reverse_ordering(Ordering) :-
     memberchk(Ordering, [

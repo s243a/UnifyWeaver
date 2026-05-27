@@ -708,7 +708,10 @@
 (declare apply-member-solution)
 (declare apply-append-solution)
 (declare apply-first-foreign-solution)
+(declare parse-number-text)
+(declare atom-text)
 (declare list->term)
+(declare fresh-var)
 
 (defn push-member-choice-point [state base-state resume-pc elem rest-list]
   (let [rest* (deref-value (:bindings base-state) rest-list)
@@ -835,40 +838,68 @@
         (backtrack state))
       (backtrack state))))
 
-(defn apply-nth0-solution [state]
+(defn nth-index-value [state value]
+  (cond
+    (integer? value) value
+    (string? value) (parse-number-text value)
+    (atom-term? value) (parse-number-text (atom-text state value))
+    :else nil))
+
+(defn nth-solution-results [items base-index]
+  (mapv (fn [zero-index item]
+          {:bindings {1 (+ base-index zero-index)
+                      3 item}})
+        (range)
+        items))
+
+(defn apply-nth0-solution [state resume-pc]
   (let [index-value (deref-value (:bindings state)
                                  (or (reg-get-raw state "A1") ::unbound))
         list-value (deref-value (:bindings state)
                                 (or (reg-get-raw state "A2") ::unbound))
         out (deref-value (:bindings state)
-                         (or (reg-get-raw state "A3") ::unbound))]
-    (if (and (integer? index-value) (not (neg? index-value)))
-      (if-let [items (proper-list-items state list-value)]
-        (if (< index-value (count items))
-          (let [[ok next-state] (unify-values state out (nth items index-value))]
+                         (or (reg-get-raw state "A3") ::unbound))
+        index-count (nth-index-value state index-value)]
+    (if-let [items (proper-list-items state list-value)]
+      (cond
+        (and (integer? index-count) (not (neg? index-count)))
+        (if (< index-count (count items))
+          (let [[ok next-state] (unify-values state out (nth items index-count))]
             (if ok
               (advance next-state)
               (backtrack state)))
           (backtrack state))
+
+        (logic-var? index-value)
+        (apply-first-foreign-solution state resume-pc (nth-solution-results items 0))
+
+        :else
         (backtrack state))
       (backtrack state))))
 
-(defn apply-nth1-solution [state]
+(defn apply-nth1-solution [state resume-pc]
   (let [index-value (deref-value (:bindings state)
                                  (or (reg-get-raw state "A1") ::unbound))
         list-value (deref-value (:bindings state)
                                 (or (reg-get-raw state "A2") ::unbound))
         out (deref-value (:bindings state)
-                         (or (reg-get-raw state "A3") ::unbound))]
-    (if (and (integer? index-value) (pos? index-value))
-      (if-let [items (proper-list-items state list-value)]
-        (let [zero-index (dec index-value)]
+                         (or (reg-get-raw state "A3") ::unbound))
+        index-count (nth-index-value state index-value)]
+    (if-let [items (proper-list-items state list-value)]
+      (cond
+        (and (integer? index-count) (pos? index-count))
+        (let [zero-index (dec index-count)]
           (if (< zero-index (count items))
             (let [[ok next-state] (unify-values state out (nth items zero-index))]
               (if ok
                 (advance next-state)
                 (backtrack state)))
             (backtrack state)))
+
+        (logic-var? index-value)
+        (apply-first-foreign-solution state resume-pc (nth-solution-results items 1))
+
+        :else
         (backtrack state))
       (backtrack state))))
 
@@ -887,19 +918,48 @@
                                   (select-solution-results base-state items))
     (backtrack base-state)))
 
+(defn numlist-int-value [state value]
+  (cond
+    (integer? value) value
+    (string? value) (parse-number-text value)
+    (atom-term? value) (parse-number-text (atom-text state value))
+    :else nil))
+
+(defn consecutive-ints-ending-at? [ints high]
+  (and (seq ints)
+       (= (last ints) high)
+       (= ints (vec (range (first ints) (inc high))))))
+
 (defn apply-numlist-solution [state]
   (let [low (deref-value (:bindings state)
                          (or (reg-get-raw state "A1") ::unbound))
         high (deref-value (:bindings state)
                           (or (reg-get-raw state "A2") ::unbound))
         out (deref-value (:bindings state)
-                         (or (reg-get-raw state "A3") ::unbound))]
-    (if (and (integer? low) (integer? high) (<= low high))
-      (let [result-term (list->term (:intern-context state) (range low (inc high)))
+                         (or (reg-get-raw state "A3") ::unbound))
+        low-int (numlist-int-value state low)
+        high-int (numlist-int-value state high)]
+    (cond
+      (and (integer? low-int) (integer? high-int) (<= low-int high-int))
+      (let [result-term (list->term (:intern-context state) (range low-int (inc high-int)))
             [ok next-state] (unify-values state out result-term)]
         (if ok
           (advance next-state)
           (backtrack state)))
+
+      (and (logic-var? low) (integer? high-int))
+      (if-let [items (proper-list-items state out)]
+        (let [ints (mapv #(numlist-int-value state %) items)]
+          (if (and (every? integer? ints)
+                   (consecutive-ints-ending-at? ints high-int))
+            (let [[ok next-state] (unify-values state low (first ints))]
+              (if ok
+                (advance next-state)
+                (backtrack state)))
+            (backtrack state)))
+        (backtrack state))
+
+      :else
       (backtrack state))))
 
 (defn apply-delete-solution [state]
@@ -918,6 +978,12 @@
           (backtrack state)))
       (backtrack state))))
 
+(defn sorted-unique-list? [state items]
+  (= items (vec (sorted-unique-terms state items))))
+
+(defn sorted-list? [state items]
+  (= items (vec (sorted-terms state items))))
+
 (defn apply-sort-solution [state]
   (let [list-value (deref-value (:bindings state)
                                 (or (reg-get-raw state "A1") ::unbound))
@@ -930,7 +996,15 @@
         (if ok
           (advance next-state)
           (backtrack state)))
-      (backtrack state))))
+      (if-let [out-items (proper-list-items state out)]
+        (if (and (logic-var? list-value)
+                 (sorted-unique-list? state out-items))
+          (let [[ok next-state] (unify-values state list-value out)]
+            (if ok
+              (advance next-state)
+              (backtrack state)))
+          (backtrack state))
+        (backtrack state)))))
 
 (defn apply-msort-solution [state]
   (let [list-value (deref-value (:bindings state)
@@ -944,7 +1018,15 @@
         (if ok
           (advance next-state)
           (backtrack state)))
-      (backtrack state))))
+      (if-let [out-items (proper-list-items state out)]
+        (if (and (logic-var? list-value)
+                 (sorted-list? state out-items))
+          (let [[ok next-state] (unify-values state list-value out)]
+            (if ok
+              (advance next-state)
+              (backtrack state)))
+          (backtrack state))
+        (backtrack state)))))
 
 (defn atom-text [state value]
   (cond
@@ -1444,6 +1526,52 @@
             (structure-term (list-functor-term ctx) [item tail]))
           (normalize-literal-atom ctx "[]")
           (reverse items)))
+
+(defn length-count-value [state value]
+  (cond
+    (integer? value) value
+    (string? value) (parse-number-text value)
+    (atom-term? value) (parse-number-text (atom-text state value))
+    :else nil))
+
+(defn generated-list-term [state n]
+  (when (and (integer? n) (not (neg? n)))
+    (loop [s state
+           remaining n
+           items []]
+      (if (zero? remaining)
+        [(list->term (:intern-context s) items) s]
+        (let [[fresh s*] (fresh-var s)]
+          (recur s* (dec remaining) (conj items fresh)))))))
+
+(defn apply-length-solution [state]
+  (let [list-value (deref-value (:bindings state)
+                                (or (reg-get-raw state "A1") ::unbound))
+        out (deref-value (:bindings state)
+                         (or (reg-get-raw state "A2") ::unbound))
+        len (proper-list-length state list-value)
+        out-count (length-count-value state out)]
+    (cond
+      (some? len)
+      (if (logic-var? out)
+        (let [[ok next-state] (unify-values state out len)]
+          (if ok
+            (advance next-state)
+            (backtrack state)))
+        (if (= out-count len)
+          (advance state)
+          (backtrack state)))
+
+      (and (logic-var? list-value) (integer? out-count) (not (neg? out-count)))
+      (if-let [[list-term generated-state] (generated-list-term state out-count)]
+        (let [[ok next-state] (unify-values generated-state list-value list-term)]
+          (if ok
+            (advance next-state)
+            (backtrack state)))
+        (backtrack state))
+
+      :else
+      (backtrack state))))
 
 (defn univ-decompose-term [state term]
   (let [term* (deref-value (:bindings state) term)
@@ -2108,17 +2236,7 @@
               (backtrack state)))
 
           "length/2"
-          (let [list-value (deref-value (:bindings state)
-                                        (or (reg-get-raw state "A1") ::unbound))
-                len (proper-list-length state list-value)
-                out (deref-value (:bindings state)
-                                 (or (reg-get-raw state "A2") ::unbound))]
-            (if (some? len)
-              (let [[ok next-state] (unify-values state out len)]
-                (if ok
-                  (advance next-state)
-                  (backtrack state)))
-              (backtrack state)))
+          (apply-length-solution state)
 
           "member/2"
           (let [elem (deref-value (:bindings state)
@@ -2150,10 +2268,10 @@
           (apply-last-solution state)
 
           "nth0/3"
-          (apply-nth0-solution state)
+          (apply-nth0-solution state (inc (:pc state)))
 
           "nth1/3"
-          (apply-nth1-solution state)
+          (apply-nth1-solution state (inc (:pc state)))
 
           "select/3"
           (let [list-value (deref-value (:bindings state)

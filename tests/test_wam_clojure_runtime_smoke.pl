@@ -77,6 +77,8 @@
 :- dynamic user:wam_length_guard/2.
 :- dynamic user:wam_length_bad_list/1.
 :- dynamic user:wam_length_unbound_list/1.
+:- dynamic user:wam_length_generate_list/0.
+:- dynamic user:wam_length_negative_generate/0.
 :- dynamic user:wam_member_guard/2.
 :- dynamic user:wam_member_backtrack_b/0.
 :- dynamic user:wam_member_unbound_list/1.
@@ -145,21 +147,27 @@
 :- dynamic user:wam_ground_nested_unbound/1.
 :- dynamic user:wam_atom_codes_guard/2.
 :- dynamic user:wam_atom_codes_reverse/0.
+:- dynamic user:wam_atom_codes_reverse_mismatch/0.
 :- dynamic user:wam_atom_chars_guard/2.
 :- dynamic user:wam_atom_chars_reverse/0.
+:- dynamic user:wam_atom_chars_reverse_mismatch/0.
 :- dynamic user:wam_quoted_atom_quote/0.
 :- dynamic user:wam_quoted_atom_backslash/0.
 :- dynamic user:wam_atom_string_guard/2.
 :- dynamic user:wam_atom_string_reverse/0.
+:- dynamic user:wam_atom_string_reverse_mismatch/0.
 :- dynamic user:wam_atom_string_unbound_pair/1.
 :- dynamic user:wam_atom_number_guard/2.
 :- dynamic user:wam_atom_number_reverse/0.
+:- dynamic user:wam_atom_number_reverse_mismatch/0.
 :- dynamic user:wam_atom_number_bad_atom/0.
 :- dynamic user:wam_atom_number_unbound_pair/1.
 :- dynamic user:wam_upcase_atom_guard/2.
 :- dynamic user:wam_downcase_atom_guard/2.
 :- dynamic user:wam_upcase_atom_unbound_source/1.
+:- dynamic user:wam_downcase_atom_unbound_source/1.
 :- dynamic user:wam_atomic_list_concat_2_guard/1.
+:- dynamic user:wam_atomic_list_concat_2_mismatch/0.
 :- dynamic user:wam_atomic_list_concat_3_guard/1.
 :- dynamic user:wam_atomic_list_concat_3_split/0.
 :- dynamic user:wam_atomic_list_concat_3_split_empty_segments/0.
@@ -170,11 +178,14 @@
 :- dynamic user:wam_atomic_list_concat_unbound_list/1.
 :- dynamic user:wam_string_to_atom_guard/2.
 :- dynamic user:wam_string_to_atom_reverse/0.
+:- dynamic user:wam_string_to_atom_reverse_mismatch/0.
 :- dynamic user:wam_string_to_atom_unbound_pair/1.
 :- dynamic user:wam_string_codes_guard/2.
 :- dynamic user:wam_string_codes_reverse/0.
+:- dynamic user:wam_string_codes_reverse_mismatch/0.
 :- dynamic user:wam_string_chars_guard/2.
 :- dynamic user:wam_string_chars_reverse/0.
+:- dynamic user:wam_string_chars_reverse_mismatch/0.
 :- dynamic user:wam_char_code_guard/2.
 :- dynamic user:wam_char_code_reverse/0.
 :- dynamic user:wam_char_code_bad_char/0.
@@ -204,6 +215,7 @@
 :- dynamic user:wam_atom_length_guard/2.
 :- dynamic user:wam_atom_length_unbound/1.
 :- dynamic user:wam_string_length_guard/2.
+:- dynamic user:wam_string_length_unbound/1.
 :- dynamic user:wam_sub_atom_extract/0.
 :- dynamic user:wam_sub_atom_prefix/0.
 :- dynamic user:wam_sub_atom_suffix/0.
@@ -311,6 +323,8 @@ user:wam_is_list_unbound(_) :- user:wam_unbound_arg(Y), is_list(Y).
 user:wam_length_guard(L, N) :- length(L, N).
 user:wam_length_bad_list(N) :- length([a|b], N).
 user:wam_length_unbound_list(N) :- user:wam_unbound_arg(Y), length(Y, N).
+user:wam_length_generate_list :- user:wam_unbound_arg(Y), length(Y, 2), Y = [_,_].
+user:wam_length_negative_generate :- user:wam_unbound_arg(Y), length(Y, -1).
 user:wam_member_guard(X, L) :- member(X, L).
 user:wam_member_backtrack_b :- member(X, [a,b]), X = b.
 user:wam_member_unbound_list(X) :- user:wam_unbound_arg(Y), member(X, Y).
@@ -332,14 +346,14 @@ user:wam_nth0_guard(N, L, X) :- nth0(N, L, X).
 user:wam_nth0_negative(X) :- nth0(-1, [a,b,c], X).
 user:wam_nth0_out_of_range(X) :- nth0(3, [a,b,c], X).
 user:wam_nth0_bad_list(X) :- nth0(1, [a|b], X).
-user:wam_nth0_unbound_index(X) :- user:wam_unbound_arg(N), nth0(N, [a,b,c], X).
+user:wam_nth0_unbound_index(X) :- nth0(N, [a,b,c], X), integer(N).
 user:wam_nth0_unbound_list(X) :- user:wam_unbound_arg(L), nth0(0, L, X).
 user:wam_nth1_guard(N, L, X) :- nth1(N, L, X).
 user:wam_nth1_zero(X) :- nth1(0, [a,b,c], X).
 user:wam_nth1_negative(X) :- nth1(-1, [a,b,c], X).
 user:wam_nth1_out_of_range(X) :- nth1(4, [a,b,c], X).
 user:wam_nth1_bad_list(X) :- nth1(2, [a|b], X).
-user:wam_nth1_unbound_index(X) :- user:wam_unbound_arg(N), nth1(N, [a,b,c], X).
+user:wam_nth1_unbound_index(X) :- nth1(N, [a,b,c], X), integer(N).
 user:wam_nth1_unbound_list(X) :- user:wam_unbound_arg(L), nth1(1, L, X).
 user:wam_select_guard(Elem, List, Rest) :- select(Elem, List, Rest).
 user:wam_select_backtrack(Elem, Rest) :- select(Elem, [a,b,c], Rest), Elem = b.
@@ -347,16 +361,16 @@ user:wam_select_bad_list(Rest) :- select(a, [a|b], Rest).
 user:wam_select_unbound_list(Rest) :- user:wam_unbound_arg(L), select(a, L, Rest).
 user:wam_numlist_guard(Low, High, List) :- numlist(Low, High, List).
 user:wam_numlist_high_before_low(List) :- numlist(3, 1, List).
-user:wam_numlist_unbound_low(List) :- user:wam_unbound_arg(Low), numlist(Low, 3, List).
+user:wam_numlist_unbound_low(List) :- numlist(Low, 3, List), integer(Low).
 user:wam_delete_guard(L, Elem, Rest) :- delete(L, Elem, Rest).
 user:wam_delete_bad_list(Rest) :- delete([a|b], a, Rest).
 user:wam_delete_unbound_list(Rest) :- user:wam_unbound_arg(L), delete(L, a, Rest).
 user:wam_sort_guard(L, S) :- sort(L, S).
 user:wam_sort_bad_list(S) :- sort([a|b], S).
-user:wam_sort_unbound_list(S) :- user:wam_unbound_arg(L), sort(L, S).
+user:wam_sort_unbound_list(S) :- sort(L, S), is_list(L).
 user:wam_msort_guard(L, S) :- msort(L, S).
 user:wam_msort_bad_list(S) :- msort([a|b], S).
-user:wam_msort_unbound_list(S) :- user:wam_unbound_arg(L), msort(L, S).
+user:wam_msort_unbound_list(S) :- msort(L, S), is_list(L).
 user:wam_copy_term_guard(A, B) :- copy_term(A, B).
 user:wam_copy_term_sharing_fail :- user:wam_unbound_arg(X), copy_term(f(X, X), f(a, b)).
 user:wam_copy_term_independent_ok :- copy_term(f(_, _), f(a, b)).
@@ -379,21 +393,27 @@ user:wam_ground_unbound(_) :- user:wam_unbound_arg(Y), ground(Y).
 user:wam_ground_nested_unbound(_) :- user:wam_unbound_arg(Y), ground(f(Y)).
 user:wam_atom_codes_guard(A, C) :- atom_codes(A, C).
 user:wam_atom_codes_reverse :- atom_codes(A, [102,111,111]), A = foo.
+user:wam_atom_codes_reverse_mismatch :- atom_codes(A, [102,111]), A = foo.
 user:wam_atom_chars_guard(A, C) :- atom_chars(A, C).
 user:wam_atom_chars_reverse :- atom_chars(A, [f,o,o]), A = foo.
+user:wam_atom_chars_reverse_mismatch :- atom_chars(A, [f,o]), A = foo.
 user:wam_quoted_atom_quote :- atom_codes('a''b', [97,39,98]).
 user:wam_quoted_atom_backslash :- atom_codes('a\\b', [97,92,98]).
 user:wam_atom_string_guard(A, S) :- atom_string(A, S).
 user:wam_atom_string_reverse :- atom_string(A, world), A = world.
+user:wam_atom_string_reverse_mismatch :- atom_string(A, world), A = hello.
 user:wam_atom_string_unbound_pair(_) :- user:wam_unbound_arg(A), user:wam_unbound_arg(S), atom_string(A, S).
 user:wam_atom_number_guard(A, N) :- atom_number(A, N).
 user:wam_atom_number_reverse :- atom_number(A, 42), atom_codes(A, [52,50]).
+user:wam_atom_number_reverse_mismatch :- atom_number(A, 42), atom_codes(A, [52,51]).
 user:wam_atom_number_bad_atom :- atom_number(foo, _).
 user:wam_atom_number_unbound_pair(_) :- user:wam_unbound_arg(A), user:wam_unbound_arg(N), atom_number(A, N).
 user:wam_upcase_atom_guard(A, U) :- upcase_atom(A, U).
 user:wam_downcase_atom_guard(A, L) :- downcase_atom(A, L).
 user:wam_upcase_atom_unbound_source(_) :- user:wam_unbound_arg(A), upcase_atom(A, _).
+user:wam_downcase_atom_unbound_source(_) :- user:wam_unbound_arg(A), downcase_atom(A, _).
 user:wam_atomic_list_concat_2_guard(A) :- atomic_list_concat([f,o,o], A).
+user:wam_atomic_list_concat_2_mismatch :- atomic_list_concat([f,o], A), A = foo.
 user:wam_atomic_list_concat_3_guard(A) :- atomic_list_concat([f,o], o, A).
 user:wam_atomic_list_concat_3_split :- user:wam_unbound_arg(L), atomic_list_concat(L, b, abcbd), L = [a,c,d].
 user:wam_atomic_list_concat_3_split_empty_segments :- user:wam_unbound_arg(L), atomic_list_concat(L, o, foo), L = [f,'',''].
@@ -404,11 +424,14 @@ user:wam_atomic_list_concat_bad_list :- atomic_list_concat([a|b], _).
 user:wam_atomic_list_concat_unbound_list(_) :- user:wam_unbound_arg(L), atomic_list_concat(L, _).
 user:wam_string_to_atom_guard(S, A) :- string_to_atom(S, A).
 user:wam_string_to_atom_reverse :- string_to_atom(world, A), A = world.
+user:wam_string_to_atom_reverse_mismatch :- string_to_atom(world, A), A = hello.
 user:wam_string_to_atom_unbound_pair(_) :- user:wam_unbound_arg(S), user:wam_unbound_arg(A), string_to_atom(S, A).
 user:wam_string_codes_guard(A, C) :- string_codes(A, C).
 user:wam_string_codes_reverse :- string_codes(A, [102,111,111]), A = foo.
+user:wam_string_codes_reverse_mismatch :- string_codes(A, [102,111]), A = foo.
 user:wam_string_chars_guard(A, C) :- string_chars(A, C).
 user:wam_string_chars_reverse :- string_chars(A, [f,o,o]), A = foo.
+user:wam_string_chars_reverse_mismatch :- string_chars(A, [f,o]), A = foo.
 user:wam_char_code_guard(C, N) :- char_code(C, N).
 user:wam_char_code_reverse :- char_code(C, 65), C = 'A'.
 user:wam_char_code_bad_char :- char_code(ab, _).
@@ -438,6 +461,7 @@ user:wam_string_concat_unbound_right(C) :- user:wam_unbound_arg(B), string_conca
 user:wam_atom_length_guard(A, N) :- atom_length(A, N).
 user:wam_atom_length_unbound(N) :- user:wam_unbound_arg(A), atom_length(A, N).
 user:wam_string_length_guard(A, N) :- string_length(A, N).
+user:wam_string_length_unbound(N) :- user:wam_unbound_arg(A), string_length(A, N).
 user:wam_sub_atom_extract :- sub_atom(hello, 1, 3, A, S), A =:= 1, S = ell.
 user:wam_sub_atom_prefix :- sub_atom(hello, 0, 3, _, hel).
 user:wam_sub_atom_suffix :- sub_atom(hello, _, 3, 0, llo).
@@ -550,6 +574,8 @@ run_smoke :-
           user:wam_length_guard/2,
           user:wam_length_bad_list/1,
           user:wam_length_unbound_list/1,
+          user:wam_length_generate_list/0,
+          user:wam_length_negative_generate/0,
           user:wam_member_guard/2,
           user:wam_member_backtrack_b/0,
           user:wam_member_unbound_list/1,
@@ -618,21 +644,27 @@ run_smoke :-
           user:wam_ground_nested_unbound/1,
           user:wam_atom_codes_guard/2,
           user:wam_atom_codes_reverse/0,
+          user:wam_atom_codes_reverse_mismatch/0,
           user:wam_atom_chars_guard/2,
           user:wam_atom_chars_reverse/0,
+          user:wam_atom_chars_reverse_mismatch/0,
           user:wam_quoted_atom_quote/0,
           user:wam_quoted_atom_backslash/0,
           user:wam_atom_string_guard/2,
           user:wam_atom_string_reverse/0,
+          user:wam_atom_string_reverse_mismatch/0,
           user:wam_atom_string_unbound_pair/1,
           user:wam_atom_number_guard/2,
           user:wam_atom_number_reverse/0,
+          user:wam_atom_number_reverse_mismatch/0,
           user:wam_atom_number_bad_atom/0,
           user:wam_atom_number_unbound_pair/1,
           user:wam_upcase_atom_guard/2,
           user:wam_downcase_atom_guard/2,
           user:wam_upcase_atom_unbound_source/1,
+          user:wam_downcase_atom_unbound_source/1,
           user:wam_atomic_list_concat_2_guard/1,
+          user:wam_atomic_list_concat_2_mismatch/0,
           user:wam_atomic_list_concat_3_guard/1,
           user:wam_atomic_list_concat_3_split/0,
           user:wam_atomic_list_concat_3_split_empty_segments/0,
@@ -643,11 +675,14 @@ run_smoke :-
           user:wam_atomic_list_concat_unbound_list/1,
           user:wam_string_to_atom_guard/2,
           user:wam_string_to_atom_reverse/0,
+          user:wam_string_to_atom_reverse_mismatch/0,
           user:wam_string_to_atom_unbound_pair/1,
           user:wam_string_codes_guard/2,
           user:wam_string_codes_reverse/0,
+          user:wam_string_codes_reverse_mismatch/0,
           user:wam_string_chars_guard/2,
           user:wam_string_chars_reverse/0,
+          user:wam_string_chars_reverse_mismatch/0,
           user:wam_char_code_guard/2,
           user:wam_char_code_reverse/0,
           user:wam_char_code_bad_char/0,
@@ -677,6 +712,7 @@ run_smoke :-
           user:wam_atom_length_guard/2,
           user:wam_atom_length_unbound/1,
           user:wam_string_length_guard/2,
+          user:wam_string_length_unbound/1,
           user:wam_sub_atom_extract/0,
           user:wam_sub_atom_prefix/0,
           user:wam_sub_atom_suffix/0,
@@ -890,7 +926,9 @@ smoke_cases([
     case('wam_length_guard/2', args('[a,b]', 1), "false"),
     case('wam_length_guard/2', args('[]', 0), "true"),
     case('wam_length_bad_list/1', 1, "false"),
-    case('wam_length_unbound_list/1', 0, "false"),
+    case('wam_length_unbound_list/1', 0, "true"),
+    case('wam_length_generate_list/0', no_args, "true"),
+    case('wam_length_negative_generate/0', no_args, "false"),
     case('wam_member_guard/2', args(a, '[a,b]'), "true"),
     case('wam_member_guard/2', args(b, '[a,b]'), "true"),
     case('wam_member_guard/2', args(c, '[a,b]'), "false"),
@@ -930,7 +968,10 @@ smoke_cases([
     case('wam_nth0_negative/1', a, "false"),
     case('wam_nth0_out_of_range/1', a, "false"),
     case('wam_nth0_bad_list/1', a, "false"),
-    case('wam_nth0_unbound_index/1', a, "false"),
+    case('wam_nth0_unbound_index/1', a, "true"),
+    case('wam_nth0_unbound_index/1', b, "true"),
+    case('wam_nth0_unbound_index/1', c, "true"),
+    case('wam_nth0_unbound_index/1', d, "false"),
     case('wam_nth0_unbound_list/1', a, "false"),
     case('wam_nth1_guard/3', args(1, '[a,b,c]', a), "true"),
     case('wam_nth1_guard/3', args(2, '[a,b,c]', b), "true"),
@@ -940,7 +981,10 @@ smoke_cases([
     case('wam_nth1_negative/1', a, "false"),
     case('wam_nth1_out_of_range/1', a, "false"),
     case('wam_nth1_bad_list/1', a, "false"),
-    case('wam_nth1_unbound_index/1', a, "false"),
+    case('wam_nth1_unbound_index/1', a, "true"),
+    case('wam_nth1_unbound_index/1', b, "true"),
+    case('wam_nth1_unbound_index/1', c, "true"),
+    case('wam_nth1_unbound_index/1', d, "false"),
     case('wam_nth1_unbound_list/1', a, "false"),
     case('wam_select_guard/3', args(a, '[a,b,c]', '[b,c]'), "true"),
     case('wam_select_guard/3', args(b, '[a,b,c]', '[a,c]'), "true"),
@@ -953,7 +997,10 @@ smoke_cases([
     case('wam_numlist_guard/3', args(2, 2, '[2]'), "true"),
     case('wam_numlist_guard/3', args(1, 3, '[1,3]'), "false"),
     case('wam_numlist_high_before_low/1', '[]', "false"),
-    case('wam_numlist_unbound_low/1', '[1,2,3]', "false"),
+    case('wam_numlist_unbound_low/1', '[1,2,3]', "true"),
+    case('wam_numlist_unbound_low/1', '[2,3]', "true"),
+    case('wam_numlist_unbound_low/1', '[1,3]', "false"),
+    case('wam_numlist_unbound_low/1', '[]', "false"),
     case('wam_delete_guard/3', args('[a,b,a,c]', a, '[b,c]'), "true"),
     case('wam_delete_guard/3', args('[a,b,a,c]', z, '[a,b,a,c]'), "true"),
     case('wam_delete_guard/3', args('[f(a),f(b),f(a)]', 'f(a)', '[f(b)]'), "true"),
@@ -964,12 +1011,14 @@ smoke_cases([
     case('wam_sort_guard/2', args('[b,a,a,c]', '[a,b]'), "false"),
     case('wam_sort_guard/2', args('[f(b),f(a),a]', '[a,f(a),f(b)]'), "true"),
     case('wam_sort_bad_list/1', '[a,b,c]', "false"),
-    case('wam_sort_unbound_list/1', '[a,b,c]', "false"),
+    case('wam_sort_unbound_list/1', '[a,b,c]', "true"),
+    case('wam_sort_unbound_list/1', '[a,a,b,c]', "false"),
     case('wam_msort_guard/2', args('[b,a,a,c]', '[a,a,b,c]'), "true"),
     case('wam_msort_guard/2', args('[b,a,a,c]', '[a,b,c]'), "false"),
     case('wam_msort_guard/2', args('[f(b),f(a),a]', '[a,f(a),f(b)]'), "true"),
     case('wam_msort_bad_list/1', '[a,b,c]', "false"),
-    case('wam_msort_unbound_list/1', '[a,b,c]', "false"),
+    case('wam_msort_unbound_list/1', '[a,b,c]', "true"),
+    case('wam_msort_unbound_list/1', '[a,a,b,c]', "true"),
     case('wam_copy_term_guard/2', args(a, a), "true"),
     case('wam_copy_term_guard/2', args(a, b), "false"),
     case('wam_copy_term_guard/2', args('f(a)', 'f(a)'), "true"),
@@ -1009,18 +1058,22 @@ smoke_cases([
     case('wam_atom_codes_guard/2', args(foo, '[102,111,111]'), "true"),
     case('wam_atom_codes_guard/2', args(foo, '[102,111]'), "false"),
     case('wam_atom_codes_reverse/0', no_args, "true"),
+    case('wam_atom_codes_reverse_mismatch/0', no_args, "false"),
     case('wam_atom_chars_guard/2', args(foo, '[f,o,o]'), "true"),
     case('wam_atom_chars_guard/2', args(foo, '[f,o]'), "false"),
     case('wam_atom_chars_reverse/0', no_args, "true"),
+    case('wam_atom_chars_reverse_mismatch/0', no_args, "false"),
     case('wam_quoted_atom_quote/0', no_args, "true"),
     case('wam_quoted_atom_backslash/0', no_args, "true"),
     case('wam_atom_string_guard/2', args(hello, hello), "true"),
     case('wam_atom_string_guard/2', args(hello, world), "false"),
     case('wam_atom_string_reverse/0', no_args, "true"),
+    case('wam_atom_string_reverse_mismatch/0', no_args, "false"),
     case('wam_atom_string_unbound_pair/1', a, "false"),
     case('wam_atom_number_guard/2', args(42, 42), "true"),
     case('wam_atom_number_guard/2', args(42, 43), "false"),
     case('wam_atom_number_reverse/0', no_args, "true"),
+    case('wam_atom_number_reverse_mismatch/0', no_args, "false"),
     case('wam_atom_number_bad_atom/0', no_args, "false"),
     case('wam_atom_number_unbound_pair/1', a, "false"),
     case('wam_upcase_atom_guard/2', args(hello, 'HELLO'), "true"),
@@ -1028,7 +1081,9 @@ smoke_cases([
     case('wam_downcase_atom_guard/2', args('HELLO', hello), "true"),
     case('wam_downcase_atom_guard/2', args('HELLO', 'HELLO'), "false"),
     case('wam_upcase_atom_unbound_source/1', a, "false"),
+    case('wam_downcase_atom_unbound_source/1', a, "false"),
     case('wam_atomic_list_concat_2_guard/1', foo, "true"),
+    case('wam_atomic_list_concat_2_mismatch/0', no_args, "false"),
     case('wam_atomic_list_concat_3_guard/1', foo, "true"),
     case('wam_atomic_list_concat_3_split/0', no_args, "true"),
     case('wam_atomic_list_concat_3_split_empty_segments/0', no_args, "true"),
@@ -1040,13 +1095,16 @@ smoke_cases([
     case('wam_string_to_atom_guard/2', args(hello, hello), "true"),
     case('wam_string_to_atom_guard/2', args(hello, world), "false"),
     case('wam_string_to_atom_reverse/0', no_args, "true"),
+    case('wam_string_to_atom_reverse_mismatch/0', no_args, "false"),
     case('wam_string_to_atom_unbound_pair/1', a, "false"),
     case('wam_string_codes_guard/2', args(foo, '[102,111,111]'), "true"),
     case('wam_string_codes_guard/2', args(foo, '[102,111]'), "false"),
     case('wam_string_codes_reverse/0', no_args, "true"),
+    case('wam_string_codes_reverse_mismatch/0', no_args, "false"),
     case('wam_string_chars_guard/2', args(foo, '[f,o,o]'), "true"),
     case('wam_string_chars_guard/2', args(foo, '[f,o]'), "false"),
     case('wam_string_chars_reverse/0', no_args, "true"),
+    case('wam_string_chars_reverse_mismatch/0', no_args, "false"),
     case('wam_char_code_guard/2', args(a, 97), "true"),
     case('wam_char_code_guard/2', args(a, 98), "false"),
     case('wam_char_code_reverse/0', no_args, "true"),
@@ -1083,6 +1141,7 @@ smoke_cases([
     case('wam_atom_length_guard/2', args(foo, 2), "false"),
     case('wam_atom_length_unbound/1', 0, "false"),
     case('wam_string_length_guard/2', args(foo, 3), "true"),
+    case('wam_string_length_unbound/1', 0, "false"),
     case('wam_sub_atom_extract/0', no_args, "true"),
     case('wam_sub_atom_prefix/0', no_args, "true"),
     case('wam_sub_atom_suffix/0', no_args, "true"),
@@ -1283,7 +1342,9 @@ assert_lowered_length_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-length-guard-2"),
     has(CoreCode, "defn lowered-wam-length-bad-list-1"),
     has(CoreCode, "defn lowered-wam-length-unbound-list-1"),
-    has(CoreCode, "runtime/proper-list-length").
+    has(CoreCode, "defn lowered-wam-length-generate-list-0"),
+    has(CoreCode, "defn lowered-wam-length-negative-generate-0"),
+    has(CoreCode, "runtime/apply-length-solution").
 
 assert_lowered_member_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
@@ -1426,21 +1487,30 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-ground-unbound-1"),
     has(CoreCode, "defn lowered-wam-ground-nested-unbound-1"),
     has(CoreCode, "defn lowered-wam-atom-codes-guard-2"),
+    has(CoreCode, "defn lowered-wam-atom-codes-reverse-mismatch-0"),
     has(CoreCode, "defn lowered-wam-atom-chars-guard-2"),
+    has(CoreCode, "defn lowered-wam-atom-chars-reverse-mismatch-0"),
     has(CoreCode, "defn lowered-wam-quoted-atom-quote-0"),
     has(CoreCode, "defn lowered-wam-quoted-atom-backslash-0"),
     has(CoreCode, "defn lowered-wam-atom-string-guard-2"),
+    has(CoreCode, "defn lowered-wam-atom-string-reverse-mismatch-0"),
     has(CoreCode, "defn lowered-wam-atom-number-guard-2"),
+    has(CoreCode, "defn lowered-wam-atom-number-reverse-mismatch-0"),
     has(CoreCode, "defn lowered-wam-upcase-atom-guard-2"),
     has(CoreCode, "defn lowered-wam-downcase-atom-guard-2"),
+    has(CoreCode, "defn lowered-wam-downcase-atom-unbound-source-1"),
     has(CoreCode, "defn lowered-wam-atomic-list-concat-2-guard-1"),
+    has(CoreCode, "defn lowered-wam-atomic-list-concat-2-mismatch-0"),
     has(CoreCode, "defn lowered-wam-atomic-list-concat-3-guard-1"),
     has(CoreCode, "defn lowered-wam-atomic-list-concat-3-split-0"),
     has(CoreCode, "defn lowered-wam-atomic-list-concat-3-split-empty-segments-0"),
     has(CoreCode, "defn lowered-wam-atomic-list-concat-3-split-mismatch-0"),
     has(CoreCode, "defn lowered-wam-string-to-atom-guard-2"),
+    has(CoreCode, "defn lowered-wam-string-to-atom-reverse-mismatch-0"),
     has(CoreCode, "defn lowered-wam-string-codes-guard-2"),
+    has(CoreCode, "defn lowered-wam-string-codes-reverse-mismatch-0"),
     has(CoreCode, "defn lowered-wam-string-chars-guard-2"),
+    has(CoreCode, "defn lowered-wam-string-chars-reverse-mismatch-0"),
     has(CoreCode, "defn lowered-wam-char-code-guard-2"),
     has(CoreCode, "defn lowered-wam-char-type-alpha-0"),
     has(CoreCode, "defn lowered-wam-char-type-code-forward-0"),
@@ -1454,6 +1524,7 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-string-concat-unbound-left-1"),
     has(CoreCode, "defn lowered-wam-string-concat-unbound-right-1"),
     has(CoreCode, "defn lowered-wam-atom-length-guard-2"),
+    has(CoreCode, "defn lowered-wam-string-length-unbound-1"),
     has(CoreCode, "defn lowered-wam-sub-atom-extract-0"),
     has(CoreCode, "runtime/ground-term?"),
     has(CoreCode, "runtime/apply-text-conversion-solution"),
@@ -1685,6 +1756,7 @@ prolog_term_string_to_edn('[102,111]', "{:tag :struct :functor \"[|]/2\" :args [
 prolog_term_string_to_edn('[102,111,111]', "{:tag :struct :functor \"[|]/2\" :args [102 {:tag :struct :functor \"[|]/2\" :args [111 {:tag :struct :functor \"[|]/2\" :args [111 \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[1,2,3]', "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [2 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[1,3]', "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}") :- !.
+prolog_term_string_to_edn('[2,3]', "{:tag :struct :functor \"[|]/2\" :args [2 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[2]', "{:tag :struct :functor \"[|]/2\" :args [2 \"[]\"]}") :- !.
 prolog_term_string_to_edn('[f,o]', "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"o\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[f,o,o]', "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"o\" {:tag :struct :functor \"[|]/2\" :args [\"o\" \"[]\"]}]}]}") :- !.

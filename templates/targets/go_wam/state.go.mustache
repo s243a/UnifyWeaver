@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 )
 
 type TrailEntry struct {
@@ -674,6 +675,34 @@ func (vm *WamState) heapConsAfterUnbound(v *Unbound) (Value, bool) {
 	return nil, false
 }
 
+func (vm *WamState) heapListAfterUnbound(v *Unbound) (Value, bool) {
+	found := false
+	for i := 0; i < vm.HeapLen; i++ {
+		cell := vm.Heap[i]
+		if cell == v {
+			found = true
+			continue
+		}
+		if !found {
+			continue
+		}
+		next := vm.deref(cell)
+		switch t := next.(type) {
+		case *List:
+			return next, true
+		case *Compound:
+			if isConsFunctor(t.Functor) && len(t.Args) == 2 {
+				return next, true
+			}
+		case *Structure:
+			if isConsFunctor(t.Functor) && len(t.Args) == 2 {
+				return next, true
+			}
+		}
+	}
+	return nil, false
+}
+
 func (vm *WamState) listHeadTail(list *List) (Value, Value, bool) {
 	switch len(list.Elements) {
 	case 0:
@@ -907,6 +936,64 @@ func (vm *WamState) copyTermValue(v Value, seen map[int]*Unbound) Value {
 	}
 }
 
+func (vm *WamState) groundTerm(v Value, seen map[Value]bool) bool {
+	v = vm.deref(v)
+	switch t := v.(type) {
+	case *Unbound:
+		if next, ok := vm.heapConsAfterUnbound(t); ok {
+			return vm.groundTerm(next, seen)
+		}
+		if next, ok := vm.heapListAfterUnbound(t); ok {
+			return vm.groundTerm(next, seen)
+		}
+		return false
+	case *Atom, *Integer, *Float:
+		return true
+	case *Compound:
+		if seen[t] {
+			return true
+		}
+		seen[t] = true
+		for _, arg := range t.Args {
+			if !vm.groundTerm(arg, seen) {
+				return false
+			}
+		}
+		return true
+	case *Structure:
+		if seen[t] {
+			return true
+		}
+		seen[t] = true
+		for _, arg := range t.Args {
+			if !vm.groundTerm(arg, seen) {
+				return false
+			}
+		}
+		return true
+	case *List:
+		if isEmptyListValue(t) {
+			return true
+		}
+		if seen[t] {
+			return true
+		}
+		seen[t] = true
+		items, ok := vm.listToSlice(t)
+		if !ok {
+			return false
+		}
+		for _, item := range items {
+			if !vm.groundTerm(item, seen) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
 const quotedNumericAtomPrefix = "\x01"
 
 func atomNumberText(v Value) (string, bool) {
@@ -1124,9 +1211,11 @@ func (vm *WamState) evalArithmetic(v Value) (float64, bool) {
 
 func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	arg1 := vm.getReg(0) // A1
-	var arg2, arg3 Value
+	var arg2, arg3, arg4, arg5 Value
 	if arity >= 2 { arg2 = vm.getReg(1) } // A2
 	if arity >= 3 { arg3 = vm.getReg(2) } // A3
+	if arity >= 4 { arg4 = vm.getReg(3) } // A4
+	if arity >= 5 { arg5 = vm.getReg(4) } // A5
 
 	switch op {
 	case "display/1":
@@ -1224,7 +1313,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			if !ok {
 				return false
 			}
-			return vm.Unify(arg1, internAtom(quotedNumericAtomPrefix+text))
+			return vm.Unify(arg1, internAtom(text))
 		}
 		return false
 	case "upcase_atom/2":
@@ -1269,7 +1358,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return vm.Unify(arg1, internAtom(string(rune(code.Val))))
 		}
 		return false
-	case "atom_codes/2", "atom_chars/2":
+	case "atom_codes/2", "atom_chars/2", "string_codes/2", "string_chars/2":
 		atomVal := vm.deref(arg1)
 		listVal := vm.deref(arg2)
 		if u, ok := listVal.(*Unbound); ok {
@@ -1279,7 +1368,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		}
 		textFromList := vm.codeListText
 		listFromText := func(text string) *List { return atomCodeList(text) }
-		if op == "atom_chars/2" {
+		if op == "atom_chars/2" || op == "string_chars/2" {
 			textFromList = vm.charListText
 			listFromText = func(text string) *List { return atomCharList(text) }
 		}
@@ -1292,6 +1381,36 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		}
 		if text, ok := textFromList(listVal); ok {
 			return vm.Unify(arg1, internAtom(text))
+		}
+		return false
+	case "number_codes/2", "number_chars/2":
+		numberVal := vm.deref(arg1)
+		listVal := vm.deref(arg2)
+		if u, ok := listVal.(*Unbound); ok {
+			if next, ok := vm.heapConsAfterUnbound(u); ok {
+				listVal = vm.deref(next)
+			}
+		}
+		textFromList := vm.codeListText
+		listFromText := func(text string) *List { return atomCodeList(text) }
+		if op == "number_chars/2" {
+			textFromList = vm.charListText
+			listFromText = func(text string) *List { return atomCharList(text) }
+		}
+		if number, ok := atomNumberValue(numberVal); ok {
+			text, ok := atomNumberText(number)
+			if !ok {
+				return false
+			}
+			if _, unbound := listVal.(*Unbound); unbound {
+				return vm.Unify(arg2, listFromText(text))
+			}
+			listText, ok := textFromList(listVal)
+			return ok && text == listText
+		}
+		if text, ok := textFromList(listVal); ok {
+			parsed, ok := parseAtomNumberText(text)
+			return ok && vm.Unify(arg1, parsed)
 		}
 		return false
 	case "atom_string/2", "string_to_atom/2":
@@ -1310,6 +1429,83 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return vm.Unify(atomArg, internAtom(text.Name))
 		}
 		return false
+	case "sub_atom/5":
+		source, ok := atomNumberText(vm.deref(arg1))
+		if !ok {
+			return false
+		}
+		before, okBefore := vm.deref(arg2).(*Integer)
+		length, okLength := vm.deref(arg3).(*Integer)
+		if !okBefore || !okLength || before.Val < 0 || length.Val < 0 {
+			return false
+		}
+		runes := []rune(source)
+		start := before.Val
+		end := start + length.Val
+		if end > int64(len(runes)) {
+			return false
+		}
+		after := int64(len(runes)) - end
+		sub := string(runes[start:end])
+		mark := vm.TrailLen
+		if !vm.Unify(arg4, &Integer{Val: after}) {
+			return false
+		}
+		if !vm.Unify(arg5, internAtom(sub)) {
+			vm.unwindTrailTo(mark)
+			return false
+		}
+		return true
+	case "char_type/2":
+		charAtom, okChar := vm.deref(arg1).(*Atom)
+		typeAtom, okType := vm.deref(arg2).(*Atom)
+		if !okChar || !okType {
+			return false
+		}
+		runes := []rune(charAtom.Name)
+		if len(runes) != 1 {
+			return false
+		}
+		r := runes[0]
+		switch typeAtom.Name {
+		case "alpha":
+			return unicode.IsLetter(r)
+		case "alnum":
+			return unicode.IsLetter(r) || unicode.IsDigit(r)
+		case "digit":
+			return unicode.IsDigit(r)
+		case "space":
+			return unicode.IsSpace(r)
+		case "white":
+			return r == ' ' || r == '\t'
+		case "upper":
+			return unicode.IsUpper(r)
+		case "lower":
+			return unicode.IsLower(r)
+		case "punct":
+			return unicode.IsPunct(r)
+		case "ascii":
+			return r >= 1 && r <= 127
+		case "csym":
+			return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+		case "csymf":
+			return unicode.IsLetter(r) || r == '_'
+		case "newline":
+			return r == '\n'
+		default:
+			return false
+		}
+	case "string_code/3":
+		index, okIndex := vm.deref(arg1).(*Integer)
+		text, okText := vm.deref(arg2).(*Atom)
+		if !okIndex || !okText || index.Val < 1 {
+			return false
+		}
+		runes := []rune(text.Name)
+		if index.Val > int64(len(runes)) {
+			return false
+		}
+		return vm.Unify(arg3, &Integer{Val: int64(runes[index.Val-1])})
 
 	case "var/1": return isUnbound(vm.deref(arg1))
 	case "nonvar/1": return !isUnbound(vm.deref(arg1))
@@ -1319,6 +1515,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "number/1": return isNumber(vm.deref(arg1))
 	case "compound/1": return isCompound(vm.deref(arg1))
 	case "atomic/1": return isAtomic(vm.deref(arg1))
+	case "ground/1": return vm.groundTerm(arg1, make(map[Value]bool))
 	case "is_list/1": return isList(vm.deref(arg1))
 
 	case "==/2": return valueEquals(vm.deref(arg1), vm.deref(arg2))

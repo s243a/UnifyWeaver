@@ -1,0 +1,116 @@
+-- | CSR (Compressed Sparse Row) reverse-index reader.
+-- Auto-generated for relation: {{csr_relation}}.
+-- Reads binary artifacts built by build_reverse_csr_artifact.py:
+--   {{csr_relation}}.csr.idx — sorted index (16 bytes/record: int32 parent, uint64 offset, uint32 count)
+--   {{csr_relation}}.csr.val — packed int32 child IDs (4 bytes each)
+--
+-- Provides O(log N) parent→children lookup via binary search on the
+-- in-memory index, with positioned reads from the values file.
+-- Thread-safe: uses IORef lock for the shared file handle.
+
+module CsrReader (openCsrEdgeLookup) where
+
+import qualified Data.ByteString as BS
+import Data.Word (Word32, Word64, Word8)
+import Data.Int (Int32)
+import Data.Bits (shiftL, (.|.))
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import System.IO (Handle, hSeek, SeekMode(..), openBinaryFile, IOMode(..), hClose)
+import System.IO.Unsafe (unsafePerformIO)
+
+-- | CSR index record: parent ID, byte offset into .val file, child count.
+data CsrIdxRecord = CsrIdxRecord
+  { csrParent      :: {-# UNPACK #-} !Int
+  , csrOffsetEdges :: {-# UNPACK #-} !Word64
+  , csrCountEdges  :: {-# UNPACK #-} !Int
+  } deriving (Show)
+
+-- | Size of one index record in bytes: int32 + uint64 + uint32 = 16.
+csrRecordSize :: Int
+csrRecordSize = 16
+
+-- | Parse a little-endian Int32 from 4 bytes.
+leInt32 :: BS.ByteString -> Int -> Int32
+leInt32 bs off =
+  let b0 = fromIntegral (BS.index bs off) :: Int32
+      b1 = fromIntegral (BS.index bs (off+1)) :: Int32
+      b2 = fromIntegral (BS.index bs (off+2)) :: Int32
+      b3 = fromIntegral (BS.index bs (off+3)) :: Int32
+  in b0 .|. (b1 `shiftL` 8) .|. (b2 `shiftL` 16) .|. (b3 `shiftL` 24)
+
+-- | Parse a little-endian Word64 from 8 bytes.
+leWord64 :: BS.ByteString -> Int -> Word64
+leWord64 bs off =
+  let b i = fromIntegral (BS.index bs (off+i)) :: Word64
+  in b 0 .|. (b 1 `shiftL` 8) .|. (b 2 `shiftL` 16) .|. (b 3 `shiftL` 24)
+     .|. (b 4 `shiftL` 32) .|. (b 5 `shiftL` 40) .|. (b 6 `shiftL` 48) .|. (b 7 `shiftL` 56)
+
+-- | Parse a little-endian Word32 from 4 bytes.
+leWord32 :: BS.ByteString -> Int -> Word32
+leWord32 bs off =
+  let b0 = fromIntegral (BS.index bs off) :: Word32
+      b1 = fromIntegral (BS.index bs (off+1)) :: Word32
+      b2 = fromIntegral (BS.index bs (off+2)) :: Word32
+      b3 = fromIntegral (BS.index bs (off+3)) :: Word32
+  in b0 .|. (b1 `shiftL` 8) .|. (b2 `shiftL` 16) .|. (b3 `shiftL` 24)
+
+-- | Parse one CsrIdxRecord from the index ByteString at the given record index.
+parseIdxRecord :: BS.ByteString -> Int -> CsrIdxRecord
+parseIdxRecord idxBytes i =
+  let off = i * csrRecordSize
+  in CsrIdxRecord
+    { csrParent      = fromIntegral (leInt32 idxBytes off)
+    , csrOffsetEdges = leWord64 idxBytes (off + 4)
+    , csrCountEdges  = fromIntegral (leWord32 idxBytes (off + 12))
+    }
+
+-- | Binary search for a parent ID in the sorted index.
+-- Returns the (offset, count) pair if found.
+binarySearchIdx :: BS.ByteString -> Int -> Int -> Int -> Int -> Maybe (Word64, Int)
+binarySearchIdx idxBytes nRecords lo hi key
+  | lo > hi   = Nothing
+  | otherwise =
+      let mid = (lo + hi) `div` 2
+          rec = parseIdxRecord idxBytes mid
+          p   = csrParent rec
+      in if p == key
+         then Just (csrOffsetEdges rec, csrCountEdges rec)
+         else if p < key
+              then binarySearchIdx idxBytes nRecords (mid + 1) hi key
+              else binarySearchIdx idxBytes nRecords lo (mid - 1) key
+
+-- | Read child IDs from the .val file at the given byte offset.
+-- Thread-safe: acquires the IORef lock before seeking.
+readChildren :: IORef Handle -> Word64 -> Int -> IO [Int]
+readChildren handleRef offset count = do
+  h <- readIORef handleRef
+  hSeek h AbsoluteSeek (fromIntegral offset)
+  bs <- BS.hGet h (count * 4)
+  return [fromIntegral (leInt32 bs (i * 4)) | i <- [0 .. count - 1], (i + 1) * 4 <= BS.length bs]
+
+-- | Open a CSR edge lookup for the given relation.
+-- Loads the .idx file into memory, opens the .val file for positioned reads.
+-- Returns an EdgeLookup (Int -> [Int]) backed by binary search + file reads.
+--
+-- Usage:
+--   lookup <- openCsrEdgeLookup "/path/to/csr" "category_child"
+--   let children = lookup parentId  -- returns [Int]
+openCsrEdgeLookup :: FilePath -> String -> IO (Int -> [Int])
+openCsrEdgeLookup csrDir relation = do
+  let idxPath = csrDir ++ "/" ++ relation ++ ".csr.idx"
+      valPath = csrDir ++ "/" ++ relation ++ ".csr.val"
+  idxBytes <- BS.readFile idxPath
+  let nRecords = BS.length idxBytes `div` csrRecordSize
+  valHandle <- openBinaryFile valPath ReadMode
+  handleRef <- newIORef valHandle
+  return $ \key ->
+    case binarySearchIdx idxBytes nRecords 0 (nRecords - 1) key of
+      Nothing -> []
+      Just (offset, count) -> unsafePerformIOCsr (readChildren handleRef offset count)
+
+-- | Bridge IO to pure EdgeLookup. Safe because: the .val file is read-only
+-- (no mutation), the IORef lock serializes reads, and the ByteString index
+-- is immutable. Same pattern as LMDB's unsafePerformIO edge lookups.
+{-# NOINLINE unsafePerformIOCsr #-}
+unsafePerformIOCsr :: IO a -> a
+unsafePerformIOCsr = unsafePerformIO

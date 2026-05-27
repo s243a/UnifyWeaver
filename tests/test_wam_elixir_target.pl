@@ -101,6 +101,34 @@ test_runtime_parser_native_request_errors :-
         elixir_parser_cleanup_tmp_dir(TmpDir)
     ).
 
+%% Regression: runtime_parser(compiled) must reject for Elixir.  The
+%% Elixir target doesn't actually bundle the portable parser predicates
+%% (unlike Python/F#/C++ which do), so silently accepting `compiled`
+%% would produce a project that throws "predicate not found" at run
+%% time when read_term_from_atom is finally called -- worse than
+%% rejecting cleanly at codegen.  The check belongs to
+%% wam_runtime_parser_capability:resolve_runtime_parser_request/3
+%% (wam_elixir isn't in the capability table for compiled), so this
+%% test guards against accidentally adding it there without
+%% implementing bundling on the Elixir side.
+test_runtime_parser_compiled_request_errors :-
+    Test = 'Runtime parser mode: compiled request is rejected for WAM-Elixir',
+    WamCode = 'parser_compiled/0:\n  proceed',
+    setup_call_cleanup(
+        elixir_parser_tmp_dir('tmp_wam_elixir_parser_compiled_err', TmpDir),
+        (   catch((write_wam_elixir_project([parser_compiled/0-WamCode],
+                                            [runtime_parser(compiled)],
+                                            TmpDir),
+                   Caught = false),
+                  error(domain_error(runtime_parser_mode(wam_elixir), compiled), _),
+                  Caught = true),
+            Caught == true
+        ->  pass(Test)
+        ;   fail_test(Test, 'expected compiled runtime parser mode domain_error')
+        ),
+        elixir_parser_cleanup_tmp_dir(TmpDir)
+    ).
+
 test_runtime_parser_none_rejects_parser_dependent_builtin :-
     Test = 'Runtime parser mode: disabled parser rejects read_term_from_atom/2',
     WamCode = 'elixir_parser_dep/0:\n  proceed',
@@ -451,8 +479,12 @@ test_iso_errors_audit_is_resolves_to_lax :-
 
 test_iso_errors_is_table_populated :-
     Test = 'WAM-Elixir: PR #4 populates is/2 entries in iso/lax tables',
-    (   wam_elixir_target:iso_errors_default_to_iso("is/2", "is_iso/2"),
-        wam_elixir_target:iso_errors_default_to_lax("is/2", "is_lax/2")
+    %% After shared-module extraction, the key tables live as
+    %% multifile facts on iso_errors:iso_errors_default_to_iso/2
+    %% (and _lax/2) -- Elixir's wam_elixir_target.pl asserts into
+    %% that module rather than maintaining its own dynamic facts.
+    (   iso_errors:iso_errors_default_to_iso("is/2", "is_iso/2"),
+        iso_errors:iso_errors_default_to_lax("is/2", "is_lax/2")
     ->  pass(Test)
     ;   fail_test(Test, 'is/2 table entries missing')
     ).
@@ -461,11 +493,11 @@ test_iso_errors_sweep_table_populated :-
     Test = 'WAM-Elixir: PR #5 populates 6 compares + succ/2 in iso/lax tables',
     Compares = [">/2", "</2", ">=/2", "=</2", "=:=/2", "=\\=/2"],
     (   forall(member(K, Compares),
-               (   wam_elixir_target:iso_errors_default_to_iso(K, _),
-                   wam_elixir_target:iso_errors_default_to_lax(K, _)
+               (   iso_errors:iso_errors_default_to_iso(K, _),
+                   iso_errors:iso_errors_default_to_lax(K, _)
                )),
-        wam_elixir_target:iso_errors_default_to_iso("succ/2", "succ_iso/2"),
-        wam_elixir_target:iso_errors_default_to_lax("succ/2", "succ_lax/2")
+        iso_errors:iso_errors_default_to_iso("succ/2", "succ_iso/2"),
+        iso_errors:iso_errors_default_to_lax("succ/2", "succ_lax/2")
     ->  pass(Test)
     ;   fail_test(Test, 'one or more PR #5 table entries missing')
     ).
@@ -848,7 +880,10 @@ test_tokenize_unquoted :-
 test_tokenize_quoted_atom_with_comma :-
     Test = 'Tokenizer: quoted atom containing comma stays one token',
     wam_elixir_lowered_emitter:tokenize_wam_line("    get_constant 'Has,comma', A1", Tokens),
-    (   Tokens == ["get_constant", "Has,comma", "A1"]
+    %% Quote-preserving convention (post SOH-removal): outer quotes
+    %% stay attached so atom-vs-number is recoverable via
+    %% wam_text_parser:wam_classify_constant_token/2.
+    (   Tokens == ["get_constant", "'Has,comma'", "A1"]
     ->  pass(Test)
     ;   fail_test(Test, Tokens)
     ).
@@ -856,7 +891,9 @@ test_tokenize_quoted_atom_with_comma :-
 test_tokenize_quoted_atom_with_escape :-
     Test = 'Tokenizer: quoted atom with \\\' escape unquotes to literal',
     wam_elixir_lowered_emitter:tokenize_wam_line("    get_constant 'it\\'s', A1", Tokens),
-    (   Tokens == ["get_constant", "it's", "A1"]
+    %% Inner backslash-escape is still resolved (\\' -> '); outer
+    %% quotes are preserved so the token round-trips as a quoted atom.
+    (   Tokens == ["get_constant", "'it's'", "A1"]
     ->  pass(Test)
     ;   fail_test(Test, Tokens)
     ).
@@ -3202,6 +3239,7 @@ run_tests :-
     test_runtime_assembly,
     test_runtime_parser_mode_metadata,
     test_runtime_parser_native_request_errors,
+    test_runtime_parser_compiled_request_errors,
     test_runtime_parser_none_rejects_parser_dependent_builtin,
     test_runtime_parser_none_allows_term_to_atom_forward,
     test_instruction_count,
