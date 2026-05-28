@@ -337,7 +337,7 @@ user:wam_append_unbound_left(C) :- user:wam_unbound_arg(A), append(A, [b], C).
 user:wam_append_split(A, B) :- append(A, B, [a,b,c]).
 user:wam_reverse_guard(L, R) :- reverse(L, R).
 user:wam_reverse_bad_list(R) :- reverse([a|b], R).
-user:wam_reverse_unbound_list(R) :- user:wam_unbound_arg(L), reverse(L, R).
+user:wam_reverse_unbound_list(R) :- reverse(L, R), is_list(L).
 user:wam_last_guard(L, X) :- last(L, X).
 user:wam_last_empty(X) :- last([], X).
 user:wam_last_bad_list(X) :- last([a|b], X).
@@ -954,7 +954,8 @@ smoke_cases([
     case('wam_reverse_guard/2', args('[]', '[]'), "true"),
     case('wam_reverse_guard/2', args('[a,b,c]', '[a,b,c]'), "false"),
     case('wam_reverse_bad_list/1', '[b,a]', "false"),
-    case('wam_reverse_unbound_list/1', '[b,a]', "false"),
+    case('wam_reverse_unbound_list/1', '[b,a]', "true"),
+    case('wam_reverse_unbound_list/1', '[a,b]', "true"),
     case('wam_last_guard/2', args('[a,b,c]', c), "true"),
     case('wam_last_guard/2', args('[a]', a), "true"),
     case('wam_last_guard/2', args('[a,b,c]', b), "false"),
