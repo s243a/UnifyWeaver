@@ -151,6 +151,11 @@ is_deterministic_pred_llvm(Instrs) :-
 supported(get_constant(_, _)).
 supported(get_variable(_, _)).
 supported(get_value(_, _)).
+supported(get_structure(_, _)).
+supported(get_list(_)).
+supported(unify_variable(_)).
+supported(unify_value(_)).
+supported(unify_constant(_)).
 supported(put_constant(_, _)).
 supported(put_variable(_, _)).
 supported(put_value(_, _)).
@@ -803,6 +808,425 @@ emit_instr(deallocate, N, Next, Block) :- !,
          '', LB0, LB1, LB2, LB3, LB4, LB5, LB6, LB7,
          '', SK0, SK1, SK2,
          '', P0, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11],
+        '\n', Block).
+
+% --- get_structure F/Arity, Ai: read mode if Ai is a compound,
+%     write mode if Ai is unbound, fail otherwise ---
+%
+% Mirrors the @step 'get_structure' case. Read mode: extract the
+% compound's args array, push a UnifyCtx; subsequent unify_* instrs
+% consume args from the ctx. Write mode: allocate a fresh compound on
+% the arena, push a WriteCtx; subsequent set_* and unify_* instrs (in
+% write mode) populate args. Anything else (bound non-compound) fails.
+emit_instr(get_structure(FStr, AiStr), N, Next, Block) :- !,
+    parse_reg(AiStr, AiIdx),
+    parse_functor(FStr, FunctorName, FArity),
+    wam_llvm_target:sanitize_functor_for_llvm(FunctorName, SaneFN),
+    wam_llvm_target:register_functor_string(FunctorName),
+    string_length(FunctorName, FNLen0),
+    FNLen is FNLen0 + 1,
+    format(atom(LblWrite), 'pc_~w_gs_write', [N]),
+    format(atom(LblCheck), 'pc_~w_gs_check', [N]),
+    format(atom(LblRead),  'pc_~w_gs_read',  [N]),
+    % --- entry block: deref Ai and branch on tag ---
+    format(atom(E0), 'pc_~w:', [N]),
+    format(atom(E1), '  ; get_structure ~w, ~w', [FStr, AiStr]),
+    format(atom(E2),
+'  %gs.~w.val = call %Value @wam_get_reg_deref(%WamState* %vm, i32 ~w)',
+        [N, AiIdx]),
+    format(atom(E3),
+'  %gs.~w.tag = extractvalue %Value %gs.~w.val, 0',
+        [N, N]),
+    format(atom(E4),
+'  %gs.~w.is_cp = icmp eq i32 %gs.~w.tag, 3',
+        [N, N]),
+    format(atom(E5),
+'  br i1 %gs.~w.is_cp, label %~w, label %~w',
+        [N, LblRead, LblCheck]),
+    % --- check_unb block: bound non-compound → fail, unbound → write ---
+    format(atom(C0), '~w:', [LblCheck]),
+    format(atom(C1),
+'  %gs.~w.unb = call i1 @value_is_unbound(%Value %gs.~w.val)',
+        [N, N]),
+    format(atom(C2),
+'  br i1 %gs.~w.unb, label %~w, label %lowered_fail',
+        [N, LblWrite]),
+    % --- write block: allocate compound, push WriteCtx ---
+    %
+    % Same shape as put_structure (uses the @.fn_<sane> functor global
+    % and registers it for emission), but binds Ai to a Ref into the
+    % freshly-allocated compound's args region. Subsequent set_*/unify_*
+    % instrs in write mode populate the args.
+    format(atom(W0), '~w:', [LblWrite]),
+    format(atom(W1),
+'  %gs.~w.fn_ptr = getelementptr [~w x i8], [~w x i8]* @.fn_~w, i32 0, i32 0',
+        [N, FNLen, FNLen, SaneFN]),
+    W2 = '  call void @wam_arena_ensure()',
+    format(atom(W3),
+'  %gs.~w.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64',
+        [N]),
+    format(atom(W4),
+'  %gs.~w.cp_mem = call i8* @wam_arena_alloc(i64 %gs.~w.cp_size)',
+        [N, N]),
+    format(atom(W5),
+'  %gs.~w.cp_ptr = bitcast i8* %gs.~w.cp_mem to %Compound*',
+        [N, N]),
+    format(atom(W6),
+'  %gs.~w.fn_slot = getelementptr %Compound, %Compound* %gs.~w.cp_ptr, i32 0, i32 0',
+        [N, N]),
+    format(atom(W7),
+'  store i8* %gs.~w.fn_ptr, i8** %gs.~w.fn_slot',
+        [N, N]),
+    format(atom(W8),
+'  %gs.~w.ar_slot = getelementptr %Compound, %Compound* %gs.~w.cp_ptr, i32 0, i32 1',
+        [N, N]),
+    format(atom(W9),
+'  store i32 ~w, i32* %gs.~w.ar_slot',
+        [FArity, N]),
+    ArgsBytes is FArity * 16,
+    format(atom(W10),
+'  %gs.~w.args_mem = call i8* @wam_arena_alloc(i64 ~w)',
+        [N, ArgsBytes]),
+    format(atom(W11),
+'  %gs.~w.args = bitcast i8* %gs.~w.args_mem to %Value*',
+        [N, N]),
+    format(atom(W12),
+'  %gs.~w.args_slot = getelementptr %Compound, %Compound* %gs.~w.cp_ptr, i32 0, i32 2',
+        [N, N]),
+    format(atom(W13),
+'  store %Value* %gs.~w.args, %Value** %gs.~w.args_slot',
+        [N, N]),
+    format(atom(W14),
+'  %gs.~w.cp_i64 = ptrtoint %Compound* %gs.~w.cp_ptr to i64',
+        [N, N]),
+    format(atom(W15),
+'  %gs.~w.cv0 = insertvalue %Value undef, i32 3, 0',
+        [N]),
+    format(atom(W16),
+'  %gs.~w.cv = insertvalue %Value %gs.~w.cv0, i64 %gs.~w.cp_i64, 1',
+        [N, N, N]),
+    format(atom(W17),
+'  call void @wam_trail_binding(%WamState* %vm, i32 ~w)',
+        [AiIdx]),
+    format(atom(W18),
+'  call void @wam_set_reg(%WamState* %vm, i32 ~w, %Value %gs.~w.cv)',
+        [AiIdx, N]),
+    format(atom(W19),
+'  call void @wam_push_write_ctx(%WamState* %vm, i32 ~w)',
+        [FArity]),
+    format(atom(W20),
+'  call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %gs.~w.args)',
+        [N]),
+    format(atom(W21), '  br label %~w', [Next]),
+    % --- read block: extract args from compound, push UnifyCtx ---
+    format(atom(R0), '~w:', [LblRead]),
+    format(atom(R1),
+'  %gs.~w.rcp_bits = extractvalue %Value %gs.~w.val, 1',
+        [N, N]),
+    format(atom(R2),
+'  %gs.~w.rcp_ptr = inttoptr i64 %gs.~w.rcp_bits to %Compound*',
+        [N, N]),
+    format(atom(R3),
+'  %gs.~w.rargs_slot = getelementptr %Compound, %Compound* %gs.~w.rcp_ptr, i32 0, i32 2',
+        [N, N]),
+    format(atom(R4),
+'  %gs.~w.rargs = load %Value*, %Value** %gs.~w.rargs_slot',
+        [N, N]),
+    format(atom(R5),
+'  call void @wam_push_unify_ctx(%WamState* %vm, %Value* %gs.~w.rargs, i32 ~w)',
+        [N, FArity]),
+    format(atom(R6), '  br label %~w', [Next]),
+    atomic_list_concat(
+        [E0, E1, E2, E3, E4, E5,
+         '', C0, C1, C2,
+         '', W0, W1, W2, W3, W4, W5, W6, W7, W8, W9,
+              W10, W11, W12, W13, W14, W15, W16, W17, W18, W19, W20, W21,
+         '', R0, R1, R2, R3, R4, R5, R6],
+        '\n', Block).
+
+% --- get_list Ai: special case of get_structure for the `.`/2 cons cell ---
+%
+% Read mode: Ai is a list — push a 2-arg UnifyCtx onto its args. Write
+% mode: Ai is unbound — push a fresh 2-cell heap region (functor marker,
+% then 2 unbound slots), bind Ai to a Ref into it, push a WriteCtx.
+emit_instr(get_list(AiStr), N, Next, Block) :- !,
+    parse_reg(AiStr, AiIdx),
+    format(atom(LblWrite), 'pc_~w_gl_write', [N]),
+    format(atom(LblRead),  'pc_~w_gl_read',  [N]),
+    % --- entry: deref Ai, branch on tag ---
+    format(atom(E0), 'pc_~w:', [N]),
+    format(atom(E1), '  ; get_list ~w', [AiStr]),
+    format(atom(E2),
+'  %gl.~w.val = call %Value @wam_get_reg_deref(%WamState* %vm, i32 ~w)',
+        [N, AiIdx]),
+    format(atom(E3),
+'  %gl.~w.tag = extractvalue %Value %gl.~w.val, 0',
+        [N, N]),
+    % Tag uge 5 → Ref(5) or Unbound(6) → write; otherwise read or fail.
+    format(atom(E4),
+'  %gl.~w.is_ru = icmp uge i32 %gl.~w.tag, 5',
+        [N, N]),
+    format(atom(E5),
+'  br i1 %gl.~w.is_ru, label %~w, label %~w',
+        [N, LblWrite, LblRead]),
+    % --- write block ---
+    format(atom(W0), '~w:', [LblWrite]),
+    format(atom(W1),
+'  %gl.~w.marker = call %Value @value_atom(i8* null)',
+        [N]),
+    format(atom(W2),
+'  %gl.~w.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %gl.~w.marker)',
+        [N, N]),
+    format(atom(W3),
+'  %gl.~w.unb = call %Value @value_unbound(i8* null)',
+        [N]),
+    format(atom(W4),
+'  call i32 @wam_heap_push(%WamState* %vm, %Value %gl.~w.unb)',
+        [N]),
+    format(atom(W5),
+'  call i32 @wam_heap_push(%WamState* %vm, %Value %gl.~w.unb)',
+        [N]),
+    format(atom(W6),
+'  %gl.~w.ref = call %Value @value_ref(i32 %gl.~w.addr)',
+        [N, N]),
+    format(atom(W7),
+'  call void @wam_trail_binding(%WamState* %vm, i32 ~w)',
+        [AiIdx]),
+    format(atom(W8),
+'  call void @wam_set_reg(%WamState* %vm, i32 ~w, %Value %gl.~w.ref)',
+        [AiIdx, N]),
+    W9 = '  call void @wam_push_write_ctx(%WamState* %vm, i32 2)',
+    format(atom(W10),
+'  %gl.~w.hp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5',
+        [N]),
+    format(atom(W11),
+'  %gl.~w.hp = load %Value*, %Value** %gl.~w.hp_ptr',
+        [N, N]),
+    format(atom(W12),
+'  %gl.~w.h_addr = add i32 %gl.~w.addr, 1',
+        [N, N]),
+    format(atom(W13),
+'  %gl.~w.args = getelementptr %Value, %Value* %gl.~w.hp, i32 %gl.~w.h_addr',
+        [N, N, N]),
+    format(atom(W14),
+'  call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %gl.~w.args)',
+        [N]),
+    format(atom(W15), '  br label %~w', [Next]),
+    % --- read block: matches a list payload that's a %List* ptr ---
+    %
+    % The bytecode @step's get_list case has a `ret i1 false` at the
+    % read label as a TODO sentinel (see wam_llvm_target.pl 'get_list'
+    % case body) — that suggests "ground list reading" was not yet
+    % implemented in the interpreter and is also out of scope here.
+    % Mirror that: a bound non-unbound non-ref Ai means failure.
+    %
+    % Once the interpreter grows ground-list read support, this block
+    % can be replaced with a UnifyCtx push pointing at the %List's
+    % elements buffer.
+    format(atom(R0), '~w:', [LblRead]),
+    R1 = '  br label %lowered_fail',
+    atomic_list_concat(
+        [E0, E1, E2, E3, E4, E5,
+         '', W0, W1, W2, W3, W4, W5, W6, W7, W8, W9,
+              W10, W11, W12, W13, W14, W15,
+         '', R0, R1],
+        '\n', Block).
+
+% --- unify_variable Xn ---
+%
+% Stack-context-sensitive: read mode pops the next arg from a UnifyCtx
+% (which a preceding get_structure/get_list put there); write mode
+% creates a fresh unbound heap cell and appends to a WriteCtx. The
+% stack-type peek decides which.
+emit_instr(unify_variable(XnStr), N, Next, Block) :- !,
+    parse_reg(XnStr, XnIdx),
+    format(atom(LblRead),  'pc_~w_uv_read',  [N]),
+    format(atom(LblWrite), 'pc_~w_uv_write', [N]),
+    format(atom(E0), 'pc_~w:', [N]),
+    format(atom(E1), '  ; unify_variable ~w', [XnStr]),
+    format(atom(E2),
+'  %uv.~w.stype = call i32 @wam_peek_stack_type(%WamState* %vm)',
+        [N]),
+    format(atom(E3),
+'  %uv.~w.is_read = icmp eq i32 %uv.~w.stype, 1',
+        [N, N]),
+    format(atom(E4),
+'  br i1 %uv.~w.is_read, label %~w, label %~w',
+        [N, LblRead, LblWrite]),
+    % --- read block ---
+    format(atom(R0), '~w:', [LblRead]),
+    format(atom(R1),
+'  %uv.~w.arg = call %Value @wam_unify_ctx_next(%WamState* %vm)',
+        [N]),
+    format(atom(R2),
+'  call void @wam_trail_binding(%WamState* %vm, i32 ~w)',
+        [XnIdx]),
+    format(atom(R3),
+'  call void @wam_set_reg(%WamState* %vm, i32 ~w, %Value %uv.~w.arg)',
+        [XnIdx, N]),
+    format(atom(R4), '  br label %~w', [Next]),
+    % --- write block ---
+    format(atom(W0), '~w:', [LblWrite]),
+    format(atom(W1),
+'  %uv.~w.unb = call %Value @value_unbound(i8* null)',
+        [N]),
+    format(atom(W2),
+'  %uv.~w.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %uv.~w.unb)',
+        [N, N]),
+    format(atom(W3),
+'  %uv.~w.ref = call %Value @value_ref(i32 %uv.~w.addr)',
+        [N, N]),
+    format(atom(W4),
+'  call void @wam_write_ctx_set_arg(%WamState* %vm, %Value %uv.~w.ref)',
+        [N]),
+    format(atom(W5),
+'  call void @wam_trail_binding(%WamState* %vm, i32 ~w)',
+        [XnIdx]),
+    format(atom(W6),
+'  call void @wam_set_reg(%WamState* %vm, i32 ~w, %Value %uv.~w.ref)',
+        [XnIdx, N]),
+    format(atom(W7), '  br label %~w', [Next]),
+    atomic_list_concat(
+        [E0, E1, E2, E3, E4,
+         '', R0, R1, R2, R3, R4,
+         '', W0, W1, W2, W3, W4, W5, W6, W7],
+        '\n', Block).
+
+% --- unify_value Xn ---
+%
+% Read mode: unify reg Xn with the next arg from the UnifyCtx; if
+% either side is unbound, bind it to the other. Write mode: append
+% the reg value into the current WriteCtx.
+emit_instr(unify_value(XnStr), N, Next, Block) :- !,
+    parse_reg(XnStr, XnIdx),
+    format(atom(LblRead),  'pc_~w_uval_read',  [N]),
+    format(atom(LblWrite), 'pc_~w_uval_write', [N]),
+    format(atom(LblBind),  'pc_~w_uval_bind',  [N]),
+    format(atom(LblROk),   'pc_~w_uval_rok',   [N]),
+    format(atom(E0), 'pc_~w:', [N]),
+    format(atom(E1), '  ; unify_value ~w', [XnStr]),
+    format(atom(E2),
+'  %uvl.~w.stype = call i32 @wam_peek_stack_type(%WamState* %vm)',
+        [N]),
+    format(atom(E3),
+'  %uvl.~w.is_read = icmp eq i32 %uvl.~w.stype, 1',
+        [N, N]),
+    format(atom(E4),
+'  br i1 %uvl.~w.is_read, label %~w, label %~w',
+        [N, LblRead, LblWrite]),
+    % --- read block ---
+    format(atom(R0), '~w:', [LblRead]),
+    format(atom(R1),
+'  %uvl.~w.exp = call %Value @wam_unify_ctx_next(%WamState* %vm)',
+        [N]),
+    format(atom(R2),
+'  %uvl.~w.act = call %Value @wam_get_reg(%WamState* %vm, i32 ~w)',
+        [N, XnIdx]),
+    format(atom(R3),
+'  %uvl.~w.eq = call i1 @value_equals(%Value %uvl.~w.exp, %Value %uvl.~w.act)',
+        [N, N, N]),
+    format(atom(R4),
+'  %uvl.~w.exp_unb = call i1 @value_is_unbound(%Value %uvl.~w.exp)',
+        [N, N]),
+    format(atom(R5),
+'  %uvl.~w.act_unb = call i1 @value_is_unbound(%Value %uvl.~w.act)',
+        [N, N]),
+    format(atom(R6),
+'  %uvl.~w.ok1 = or i1 %uvl.~w.eq, %uvl.~w.exp_unb',
+        [N, N, N]),
+    format(atom(R7),
+'  %uvl.~w.ok = or i1 %uvl.~w.ok1, %uvl.~w.act_unb',
+        [N, N, N]),
+    format(atom(R8),
+'  br i1 %uvl.~w.ok, label %~w, label %lowered_fail',
+        [N, LblROk]),
+    % rok block — if actual is unbound, bind it
+    format(atom(RO0), '~w:', [LblROk]),
+    format(atom(RO1),
+'  br i1 %uvl.~w.act_unb, label %~w, label %~w',
+        [N, LblBind, Next]),
+    % bind block
+    format(atom(B0), '~w:', [LblBind]),
+    format(atom(B1),
+'  call void @wam_trail_binding(%WamState* %vm, i32 ~w)',
+        [XnIdx]),
+    format(atom(B2),
+'  call void @wam_set_reg(%WamState* %vm, i32 ~w, %Value %uvl.~w.exp)',
+        [XnIdx, N]),
+    format(atom(B3), '  br label %~w', [Next]),
+    % --- write block ---
+    format(atom(W0), '~w:', [LblWrite]),
+    format(atom(W1),
+'  %uvl.~w.wv = call %Value @wam_get_reg(%WamState* %vm, i32 ~w)',
+        [N, XnIdx]),
+    format(atom(W2),
+'  call void @wam_write_ctx_set_arg(%WamState* %vm, %Value %uvl.~w.wv)',
+        [N]),
+    format(atom(W3), '  br label %~w', [Next]),
+    atomic_list_concat(
+        [E0, E1, E2, E3, E4,
+         '', R0, R1, R2, R3, R4, R5, R6, R7, R8,
+         '', RO0, RO1,
+         '', B0, B1, B2, B3,
+         '', W0, W1, W2, W3],
+        '\n', Block).
+
+% --- unify_constant C ---
+%
+% Read mode: pop next arg from UnifyCtx, check equal to constant.
+% Unbound expected → accept (no binding done — matches the bytecode
+% @step shape). Write mode: append the constant to the WriteCtx.
+emit_instr(unify_constant(CStr), N, Next, Block) :- !,
+    parse_constant(CStr, Tag, Payload),
+    format(atom(LblRead),  'pc_~w_uc_read',  [N]),
+    format(atom(LblWrite), 'pc_~w_uc_write', [N]),
+    format(atom(E0), 'pc_~w:', [N]),
+    format(atom(E1), '  ; unify_constant ~w', [CStr]),
+    format(atom(E2),
+'  %uc.~w.stype = call i32 @wam_peek_stack_type(%WamState* %vm)',
+        [N]),
+    format(atom(E3),
+'  %uc.~w.is_read = icmp eq i32 %uc.~w.stype, 1',
+        [N, N]),
+    format(atom(E4),
+'  %uc.~w.val0 = insertvalue %Value undef, i32 ~w, 0',
+        [N, Tag]),
+    format(atom(E5),
+'  %uc.~w.val = insertvalue %Value %uc.~w.val0, i64 ~w, 1',
+        [N, N, Payload]),
+    format(atom(E6),
+'  br i1 %uc.~w.is_read, label %~w, label %~w',
+        [N, LblRead, LblWrite]),
+    % --- read block ---
+    format(atom(R0), '~w:', [LblRead]),
+    format(atom(R1),
+'  %uc.~w.exp = call %Value @wam_unify_ctx_next(%WamState* %vm)',
+        [N]),
+    format(atom(R2),
+'  %uc.~w.eq = call i1 @value_equals(%Value %uc.~w.exp, %Value %uc.~w.val)',
+        [N, N, N]),
+    format(atom(R3),
+'  %uc.~w.exp_unb = call i1 @value_is_unbound(%Value %uc.~w.exp)',
+        [N, N]),
+    format(atom(R4),
+'  %uc.~w.ok = or i1 %uc.~w.eq, %uc.~w.exp_unb',
+        [N, N, N]),
+    format(atom(R5),
+'  br i1 %uc.~w.ok, label %~w, label %lowered_fail',
+        [N, Next]),
+    % --- write block ---
+    format(atom(W0), '~w:', [LblWrite]),
+    format(atom(W1),
+'  call i32 @wam_heap_push(%WamState* %vm, %Value %uc.~w.val)',
+        [N]),
+    format(atom(W2),
+'  call void @wam_write_ctx_set_arg(%WamState* %vm, %Value %uc.~w.val)',
+        [N]),
+    format(atom(W3), '  br label %~w', [Next]),
+    atomic_list_concat(
+        [E0, E1, E2, E3, E4, E5, E6,
+         '', R0, R1, R2, R3, R4, R5,
+         '', W0, W1, W2, W3],
         '\n', Block).
 
 % --- builtin_call op/Arity, ArgCount: delegate to @execute_builtin ---

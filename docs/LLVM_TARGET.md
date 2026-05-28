@@ -284,12 +284,13 @@ Mirrors `wam_fsharp_lowered_emitter.pl` / `wam_rust_lowered_emitter.pl`:
    `retry_me_else` / `trust_me` in the bytecode (multi-clause + WAM
    indexing) are rejected. They stay on the bytecode path where the
    choice-point machinery handles backtracking.
-2. **Supported instructions only** — the initial supported set is
-   `get_constant`, `get_variable`, `get_value`, `put_constant`,
-   `put_variable`, `put_value`, `put_structure`, `set_constant`,
-   `set_variable`, `set_value`, `allocate`, `deallocate`,
-   `builtin_call`, `proceed`, `fail`. Anything else (`call`,
-   `execute`, `get_structure`, `get_list`, etc.) makes the gate fail
+2. **Supported instructions only** — the supported set is
+   `get_constant`, `get_variable`, `get_value`, `get_structure`,
+   `get_list`, `unify_variable`, `unify_value`, `unify_constant`,
+   `put_constant`, `put_variable`, `put_value`, `put_structure`,
+   `set_constant`, `set_variable`, `set_value`, `allocate`,
+   `deallocate`, `builtin_call`, `proceed`, `fail`. Anything else
+   (`call`, `execute`, `jump`, `cut_ite`, etc.) makes the gate fail
    silently and the predicate falls back to the bytecode path.
 
 Predicates that fail the gate emit a `<pred>/<arity>: WAM fallback`
@@ -308,13 +309,19 @@ predicate took.
 
 ### Status
 
-- M1 (this release): single-clause deterministic predicates with the
-  supported instruction set above.
+- M1: single-clause deterministic predicates over simple
+  register/arithmetic ops.
+- M2 (this release): pattern matching — `get_structure`, `get_list`,
+  `unify_variable`, `unify_value`, `unify_constant`. Read-mode
+  (matching against a bound compound from the caller) and write-mode
+  (allocating a fresh compound on the arena) both supported, mirroring
+  the bytecode `@step` cases. `get_list` read-mode currently returns
+  the same failure sentinel the bytecode interpreter does — once the
+  interpreter gains ground-list read support, this path follows.
 - Future: multi-clause via "lowered clause-1 + bytecode clause-2+"
   (mirrors the F# emit-mode pattern), `call`/`execute` lowered to
   direct `call i1 @<other_pred>`, indirect dispatch through a
-  caller-supplied %WamState pointer to avoid the per-call state
-  alloc.
+  caller-supplied `%WamState*` to avoid the per-call state alloc.
 
 ### Tests
 
