@@ -822,7 +822,15 @@
         (if ok
           (advance next-state)
           (backtrack state)))
-      (backtrack state))))
+      (if-let [out-items (proper-list-items state out)]
+        (if (logic-var? list-value)
+          (let [input-term (list->term (:intern-context state) (reverse out-items))
+                [ok next-state] (unify-values state list-value input-term)]
+            (if ok
+              (advance next-state)
+              (backtrack state)))
+          (backtrack state))
+        (backtrack state)))))
 
 (defn apply-last-solution [state]
   (let [list-value (deref-value (:bindings state)
