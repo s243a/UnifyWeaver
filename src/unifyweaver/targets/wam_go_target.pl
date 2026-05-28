@@ -174,7 +174,26 @@ var _ = fmt.Sprintf
 
     % Generate main.go with RunParallel when parallel(true)
     (   option(parallel(true), Options)
-    ->  format(atom(MainContent),
+    ->  (   PackageName == main
+        ->  format(atom(MainContent),
+'package main
+
+import "fmt"
+
+func main() {
+	ctx := NewWamContext(SharedWamCode, SharedWamLabels)
+	seeds := [][]Value{
+		{&Atom{Name: "query"}},
+	}
+	results := RunParallel(ctx, seeds, 0)
+	for i, res := range results {
+		if res != nil {
+			fmt.Printf("Seed %%d: %%v\\n", i, res)
+		}
+	}
+}
+', [])
+        ;   format(atom(MainContent),
 'package main
 
 import (
@@ -194,7 +213,8 @@ func main() {
 		}
 	}
 }
-', [ModuleName, PackageName, PackageName, PackageName, PackageName, PackageName, PackageName]),
+', [ModuleName, PackageName, PackageName, PackageName, PackageName, PackageName, PackageName])
+        ),
         directory_file_path(ProjectDir, 'main.go', MainPath),
         write_file(MainPath, MainContent)
     ;   true
