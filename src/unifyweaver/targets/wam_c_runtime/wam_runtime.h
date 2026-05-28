@@ -146,6 +146,11 @@ typedef struct {
 } WamReverseCsrArtifact;
 
 typedef struct {
+    const char *atom;
+    int id;
+} WamCategoryIdEntry;
+
+typedef struct {
     int *values;
     int count;
     int cap;
@@ -280,6 +285,10 @@ struct WamState {
     double bidirectional_parent_step_cost;
     double bidirectional_child_step_cost;
     double bidirectional_cost_budget;
+    WamReverseCsrArtifact *bidirectional_child_csr;
+    WamCategoryIdEntry *category_ids;
+    int category_id_count;
+    int category_id_cap;
 
     /* Native weighted_shortest_path3 kernel data */
     WeightedEdge *weighted_edges;
@@ -329,6 +338,8 @@ bool wam_fact_source_load_lmdb(WamState *state, WamFactSource *source,
 int wam_fact_source_lookup_arg1(WamFactSource *source, const char *arg1,
                                 CategoryEdge *out_edges, int max_edges);
 bool wam_register_category_parent_fact_source(WamState *state, WamFactSource *source);
+void wam_register_category_id(WamState *state, const char *atom, int id);
+void wam_attach_bidirectional_child_csr(WamState *state, WamReverseCsrArtifact *artifact);
 void wam_reverse_csr_init(WamReverseCsrArtifact *artifact);
 void wam_reverse_csr_close(WamReverseCsrArtifact *artifact);
 bool wam_reverse_csr_load(WamReverseCsrArtifact *artifact,

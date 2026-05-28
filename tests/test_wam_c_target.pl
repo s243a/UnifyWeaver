@@ -272,6 +272,8 @@ test_bidirectional_ancestor_kernel_generation :-
         sub_string(S, _, _, _, 'void wam_register_bidirectional_ancestor_kernel'),
         sub_string(S, _, _, _, 'bool wam_bidirectional_ancestor_handler'),
         sub_string(S, _, _, _, 'wam_bidirectional_ancestor_dfs'),
+        sub_string(S, _, _, _, 'void wam_attach_bidirectional_child_csr'),
+        sub_string(S, _, _, _, 'void wam_register_category_id'),
         sub_string(S, _, _, _, 'bidirectional_parent_step_cost')
     ->  pass(Test)
     ;   fail_test(Test, 'bidirectional_ancestor native kernel helpers missing')
@@ -1156,6 +1158,16 @@ test_bidirectional_ancestor_kernel_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_bidirectional_ancestor_csr_child_lookup_executable_smoke :-
+    Test = 'WAM-C: bidirectional_ancestor uses reverse CSR child lookup',
+    (   gcc_available
+    ->  (   run_bidirectional_ancestor_csr_child_lookup_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'bidirectional_ancestor reverse CSR child lookup failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_transitive_closure_kernel_executable_smoke :-
     Test = 'WAM-C: transitive_closure2 native kernel executable smoke',
     (   gcc_available
@@ -1631,6 +1643,33 @@ run_bidirectional_ancestor_kernel_executable_smoke :-
     format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
     write_text_file(PredPath, PredTranslationUnit),
     wam_c_bidirectional_ancestor_smoke_main(MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
+run_bidirectional_ancestor_csr_child_lookup_executable_smoke :-
+    WamCode = 'bidirectional_ancestor/5:\n    call_foreign bidirectional_ancestor/5, 5\n    proceed',
+    compile_wam_predicate_to_c(user:bidirectional_ancestor/5, WamCode, [], PredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_bidirectional_ancestor_csr_smoke', Stamp, TmpBase),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(IndexPath), '~w.csr.idx', [TmpBase]),
+    format(atom(ValuesPath), '~w.csr.val', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    write_binary_file(IndexPath, [
+        20,0,0,0, 0,0,0,0,0,0,0,0, 1,0,0,0
+    ]),
+    write_binary_file(ValuesPath, [
+        30,0,0,0
+    ]),
+    wam_c_bidirectional_ancestor_csr_smoke_main(IndexPath, ValuesPath, MainCode),
     write_text_file(MainPath, MainCode),
     compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
     run_c_smoke_plain(ExePath).
@@ -2998,6 +3037,71 @@ int main(void) {
     return 0;
 }
 ').
+
+wam_c_bidirectional_ancestor_csr_smoke_main(IndexPath, ValuesPath, MainCode) :-
+    format(atom(MainCode),
+'#include "wam_runtime.h"
+
+void setup_bidirectional_ancestor_5(WamState* state);
+
+int main(void) {
+    WamState state;
+    WamReverseCsrArtifact csr;
+    wam_state_init(&state);
+    wam_reverse_csr_init(&csr);
+    setup_bidirectional_ancestor_5(&state);
+
+    if (!wam_reverse_csr_load(&csr, "~w", "~w")) {
+        wam_reverse_csr_close(&csr);
+        wam_free_state(&state);
+        return 5;
+    }
+
+    wam_register_category_id(&state, "orphan", 20);
+    wam_register_category_id(&state, "child", 30);
+    wam_register_category_id(&state, "root", 40);
+    wam_register_category_parent(&state, "child", "root");
+    wam_attach_bidirectional_child_csr(&state, &csr);
+    wam_register_bidirectional_ancestor_kernel(&state, "bidirectional_ancestor/5",
+                                               4, 1.0, 2.0, 10.0);
+
+    WamValue args[5] = {
+        val_atom("orphan"),
+        val_atom("root"),
+        val_unbound("Total"),
+        val_unbound("Parents"),
+        val_unbound("Children")
+    };
+    int rc = wam_run_predicate(&state, "bidirectional_ancestor/5", args, 5);
+    if (rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_INT || state.A[2].data.integer != 2 ||
+        state.A[3].tag != VAL_INT || state.A[3].data.integer != 1 ||
+        state.A[4].tag != VAL_INT || state.A[4].data.integer != 1) {
+        wam_reverse_csr_close(&csr);
+        wam_free_state(&state);
+        return 10;
+    }
+
+    wam_attach_bidirectional_child_csr(&state, NULL);
+    WamValue fallback_args[5] = {
+        val_atom("orphan"),
+        val_atom("root"),
+        val_unbound("Total"),
+        val_unbound("Parents"),
+        val_unbound("Children")
+    };
+    int fallback_rc = wam_run_predicate(&state, "bidirectional_ancestor/5", fallback_args, 5);
+    if (fallback_rc != WAM_HALT) {
+        wam_reverse_csr_close(&csr);
+        wam_free_state(&state);
+        return 20;
+    }
+
+    wam_reverse_csr_close(&csr);
+    wam_free_state(&state);
+    return 0;
+}
+', [IndexPath, ValuesPath]).
 
 wam_c_transitive_closure_smoke_main(
 '#include "wam_runtime.h"
@@ -4849,6 +4953,7 @@ run_tests_once :-
     test_call_foreign_executable_smoke,
     test_category_ancestor_kernel_executable_smoke,
     test_bidirectional_ancestor_kernel_executable_smoke,
+    test_bidirectional_ancestor_csr_child_lookup_executable_smoke,
     test_transitive_closure_kernel_executable_smoke,
     test_transitive_distance_kernel_executable_smoke,
     test_transitive_parent_distance_kernel_executable_smoke,
