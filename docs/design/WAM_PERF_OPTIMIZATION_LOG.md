@@ -854,6 +854,52 @@ where inlining would help (e.g., recursive small-pred chains where
 musttail run_loop sees the full dispatch); revisit if a future
 workload benchmark shows trampoline overhead dominating.
 
+### M8: Real-data benchmark (dev-scale Wikipedia category graph)
+
+After the M7 microbench-only baseline plus the split_functor_arity
+codegen fix that unblocked real Prolog programs, M8 set up the first
+LLVM benchmark against the same fixtures Haskell / Rust / Elixir use.
+Substrate: `data/benchmark/dev/category_parent.tsv` (198 edges loaded
+into `dev_cat_parent/2` dynamic facts at SWI-time, then baked into
+the `.ll` module via `foreign_predicates([... edge_pred(...) ...])`).
+The driver IR runs `category_ancestor(Quantum_mechanics, _, _, _)` in
+streaming mode 100 times, then counts the BFS frontier via backtrack
+on the final iteration as a correctness sanity check.
+
+Numbers (`tests/core/test_wam_llvm_realdata_benchmark.pl`,
+median wall-clock on a 4-vCPU Linux box, `llc -O2 + clang -O2`):
+
+| step | time |
+| --- | ---: |
+| compile (SWI → .ll → llc → clang) | 295 ms (one-shot) |
+| run loop (100 streaming-mode `category_ancestor` calls) | 4.2 ms |
+| **per query** | **42 μs** |
+| ancestors found (verifies kernel correctness on real data) | 31 |
+
+This is the first LLVM number in the cross-target effective-distance
+context. The `category_ancestor` kernel here exercises the M5/M6
+grow infrastructure (it streams via foreign choice-point iteration —
+the multi-result CP machinery — and the arena-backed result buffer;
+both can trigger CP and arena growth on cold start). Per-iter perf
+is in the same ball-park as the Rust kernel
+(`benchmarks/wam_effective_distance_cross_target.md` — Rust 3 ms
+total for the full effective-distance computation at dev scale,
+which includes outer enumeration over articles × roots that the LLVM
+benchmark doesn't yet do).
+
+What this doesn't measure (deferred):
+
+- The outer `setof(A, C^article_category(A, C), Articles), member(A, Articles)`
+  enumeration that the full `effective_distance/3` requires. The
+  bytecode interpreter doesn't have `setof/3` / `member/2` /
+  `aggregate_all` over arbitrary goals yet. Adding builtins coverage
+  is the natural M9.
+- Larger fixture scales (300 / 1k / 10k). Pre-M9 we'd need to handle
+  larger atom-intern tables and check there's no quadratic blow-up in
+  the .ll compile time — the `llc -O2` step on the dev fixture
+  already takes ~300 ms; at 10k the .ll module grows roughly 50x
+  and that may bottleneck.
+
 ---
 
 ## Clojure WAM — current implementation status
