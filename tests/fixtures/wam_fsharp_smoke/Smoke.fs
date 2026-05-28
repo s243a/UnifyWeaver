@@ -56,7 +56,8 @@ let mkEmptyState () =
       WsBuilder    = None
       WsBuilderStack = []
       WsAggAccum   = []
-      WsB0Stack    = [] }
+      WsB0Stack    = []
+      WsCatchers   = [] }
 
 let mkContext (code: Instruction array) (labels: Map<string, int>) =
     { WcCode              = code
