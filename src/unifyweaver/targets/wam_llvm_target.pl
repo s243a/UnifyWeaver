@@ -53,7 +53,9 @@
 :- use_module(wam_llvm_lowered_emitter, [
     wam_llvm_lowerable/3,
     lower_predicate_to_llvm/4,
-    llvm_lowered_func_name/2
+    llvm_lowered_func_name/2,
+    emit_native_wrapper/2,
+    emit_hybrid_dispatcher/5
 ]).
 
 :- discontiguous wam_llvm_case/2.
@@ -1494,14 +1496,25 @@ compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode) :-
 %
 %  Classified is a list of records (in input order):
 %    native(PredIndicator, Arity, PredCode)
-%       — native-lowered; emit PredCode as-is.
+%       — native-lowered (legacy llvm_target.pl or single-clause
+%         wam_llvm_lowered_emitter); emit PredCode as-is. PredCode
+%         already includes the `@<pred>` public-entry wrapper.
 %    wam(PredIndicator, Arity, RawInstrs, LocalLabels, StartPC, NumInstrs)
 %       — wam-fallback or foreign-kernel; goes into merged code.
+%         Public entry `@<pred>` is emitted by emit_one_entry_func.
+%    hybrid(PredIndicator, Arity, LoweredCode, RawInstrs, LocalLabels,
+%           StartPC, NumInstrs)
+%       — multi-clause predicate whose clause 1 is lowerable (M3).
+%         LoweredCode is the `@lowered_<pred>_<arity>` clause-1 fast
+%         path. The full bytecode (all clauses) goes into merged
+%         @module_code at StartPC. Public entry `@<pred>` is emitted
+%         by emit_hybrid_dispatcher and tries the fast path first,
+%         then falls back to @run_loop at StartPC on failure.
 %    failed(PredIndicator, Arity)
 %       — both native + wam failed; emit a comment.
 %
-%  StartPC threads through wam/foreign records only; native/failed do
-%  not consume code slots.
+%  StartPC threads through wam/foreign/hybrid records only; native
+%  and failed do not consume code slots.
 pass1_classify_predicates([], _, _, []).
 pass1_classify_predicates([PredIndicator|Rest], Options, StartPC,
                           [Record | RestRecs]) :-
@@ -1519,24 +1532,28 @@ pass1_classify_predicates([PredIndicator|Rest], Options, StartPC,
     ->  format(user_error, '  ~w/~w: native lowering~n', [Pred, Arity]),
         Record = native(PredIndicator, Arity, PredCode),
         NextPC = StartPC
-    ;   % WAM-lowered LLVM emission (PR #N — wam_llvm_lowered_emitter).
+    ;   % WAM-lowered LLVM emission (wam_llvm_lowered_emitter).
         %
         % Gate: opt-in via emit_mode(Mode), where Mode is one of:
         %   functions          — try to lower every predicate
         %   mixed([P/A, ...])  — try to lower only the listed predicates
         %   interpreter        — never lower (default; matches prior behaviour)
         %
-        % If lowering succeeds, the predicate ships as a standalone
-        % LLVM function with the WAM instruction sequence inlined as
-        % straight-line basic blocks. No %Instruction array, no @step
-        % switch dispatch, no @run_loop trampoline for this predicate.
+        % Shape (returned by wam_llvm_lowerable/3):
+        %   single_clause   — full body is the lowered fn; no bytecode
+        %                     needed. Classify as Native; PredCode
+        %                     bundles the lowered fn + @<pred> wrapper.
+        %   multi_clause_c1 — clause 1 lowered as a fast path; full
+        %                     bytecode also emitted into @module_code
+        %                     so the dispatcher's slow path can run
+        %                     all clauses. Classify as Hybrid.
         emit_mode_allows_lowering(Module:Pred/Arity, Options),
         catch(
             wam_target:compile_predicate_to_wam(Module:Pred/Arity,
                 Options, LowerWamRaw),
             _, fail),
         catch(
-            wam_llvm_lowerable(Pred/Arity, LowerWamRaw, _LowerReason),
+            wam_llvm_lowerable(Pred/Arity, LowerWamRaw, LowerShape),
             _, fail)
     ->  catch(
             lower_predicate_to_llvm(Pred/Arity, LowerWamRaw,
@@ -1547,10 +1564,35 @@ pass1_classify_predicates([PredIndicator|Rest], Options, StartPC,
                 [Pred, Arity, LowerErr]),
               fail
             )),
-        format(user_error, '  ~w/~w: lowered LLVM emission~n',
+        ( LowerShape == single_clause
+        -> format(user_error,
+            '  ~w/~w: lowered LLVM emission (single-clause)~n',
             [Pred, Arity]),
-        Record = native(PredIndicator, Arity, LoweredCode),
-        NextPC = StartPC
+           % Pack the lowered fn + thin @<pred> wrapper into one PredCode
+           % blob so the existing Native record path emits everything.
+           emit_native_wrapper(Pred/Arity, NativeWrapper),
+           atomic_list_concat([LoweredCode, '\n\n', NativeWrapper],
+               BundledCode),
+           Record = native(PredIndicator, Arity, BundledCode),
+           NextPC = StartPC
+        ;  LowerShape == multi_clause_c1
+        -> format(user_error,
+            '  ~w/~w: lowered LLVM emission (hybrid clause-1 + bytecode)~n',
+            [Pred, Arity]),
+           % Parse the WAM bytecode (all clauses) into the merge so the
+           % dispatcher's slow path can run it. The dispatcher entry
+           % is emitted in pass2 via emit_hybrid_dispatcher.
+           %
+           % Hybrid records use the bare Pred/Arity form (matching the
+           % wam-record convention) so partition / resolve / dispatch
+           % helpers can pattern-match the indicator uniformly.
+           parse_wam_to_pass1(Pred/Arity, LowerWamRaw, Arity, StartPC,
+               wam(Pred/Arity, _, RawInstrs, LocalLabels, StartPC, NumInstrs),
+               NumInstrs),
+           Record = hybrid(Pred/Arity, Arity, LoweredCode,
+               RawInstrs, LocalLabels, StartPC, NumInstrs),
+           NextPC is StartPC + NumInstrs
+        )
     ;   option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
         catch(
@@ -1624,6 +1666,11 @@ build_merged_labels_entries([wam(_, _, _, LocalLabels, StartPC, _)|Rest],
     shift_labels(LocalLabels, StartPC, Shifted),
     build_merged_labels_entries(Rest, RestEntries),
     append(Shifted, RestEntries, Entries).
+build_merged_labels_entries([hybrid(_, _, _, _, LocalLabels, StartPC, _)|Rest],
+                            Entries) :- !,
+    shift_labels(LocalLabels, StartPC, Shifted),
+    build_merged_labels_entries(Rest, RestEntries),
+    append(Shifted, RestEntries, Entries).
 build_merged_labels_entries([_|Rest], Entries) :-
     build_merged_labels_entries(Rest, Entries).
 
@@ -1643,11 +1690,25 @@ shift_labels([Name-LocalPC|Rest], Shift, [Name-GlobalPC|RestShifted]) :-
 %  All of these go into WamParts.
 pass2_emit_merged(Classified, LabelMap, NamePCPairs, Options,
                   NativeParts, WamParts) :-
-    partition_classified(Classified, NativeRecords, WamRecords, FailedRecords),
-    maplist([native(_,_,Code), Code]>>true, NativeRecords, NativeParts),
-    (   WamRecords == []
+    partition_classified(Classified,
+        NativeRecords, WamRecords, HybridRecords, FailedRecords),
+    % Native records' PredCode already includes both the lowered
+    % function AND the @<pred> wrapper. Hybrid records contribute
+    % their LoweredCode (just the @lowered_*_* fn); the matching
+    % @<pred> dispatcher is emitted in the WAM entry-funcs section
+    % because it needs InstrCount/LabelCount/StartPC.
+    maplist([native(_,_,Code), Code]>>true, NativeRecords, NativeCodes),
+    maplist([hybrid(_,_,LC,_,_,_,_), LC]>>true,
+            HybridRecords, HybridLowered),
+    append(NativeCodes, HybridLowered, NativeParts),
+    % WAM-like records (wam + hybrid) all participate in the merged
+    % @module_code. Their entry funcs differ — emit_one_entry_func
+    % vs emit_hybrid_dispatcher — dispatched on record type by
+    % emit_one_record_entry_func/5 inside emit_all_entry_funcs.
+    append(WamRecords, HybridRecords, WamLikeRecords),
+    (   WamLikeRecords == []
     ->  MergedCode = '', EntryFuncs = '', SwitchDefs = ''
-    ;   emit_merged_wam_section(WamRecords, LabelMap, NamePCPairs, Options,
+    ;   emit_merged_wam_section(WamLikeRecords, LabelMap, NamePCPairs, Options,
                                 MergedCode, EntryFuncs, SwitchDefs)
     ),
     maplist([failed(PI,A), C]>>format(atom(C),
@@ -1656,13 +1717,16 @@ pass2_emit_merged(Classified, LabelMap, NamePCPairs, Options,
     WamParts0 = [SwitchDefs, MergedCode, EntryFuncs | FailedComments],
     exclude(==(''), WamParts0, WamParts).
 
-partition_classified([], [], [], []).
-partition_classified([native(PI,A,C)|Rest], [native(PI,A,C)|RN], RW, RF) :- !,
-    partition_classified(Rest, RN, RW, RF).
-partition_classified([wam(P,A,I,L,S,N)|Rest], RN, [wam(P,A,I,L,S,N)|RW], RF) :- !,
-    partition_classified(Rest, RN, RW, RF).
-partition_classified([failed(PI,A)|Rest], RN, RW, [failed(PI,A)|RF]) :-
-    partition_classified(Rest, RN, RW, RF).
+partition_classified([], [], [], [], []).
+partition_classified([native(PI,A,C)|Rest], [native(PI,A,C)|RN], RW, RH, RF) :- !,
+    partition_classified(Rest, RN, RW, RH, RF).
+partition_classified([wam(P,A,I,L,S,N)|Rest], RN, [wam(P,A,I,L,S,N)|RW], RH, RF) :- !,
+    partition_classified(Rest, RN, RW, RH, RF).
+partition_classified([hybrid(P,A,LC,I,L,S,N)|Rest], RN, RW,
+                     [hybrid(P,A,LC,I,L,S,N)|RH], RF) :- !,
+    partition_classified(Rest, RN, RW, RH, RF).
+partition_classified([failed(PI,A)|Rest], RN, RW, RH, [failed(PI,A)|RF]) :-
+    partition_classified(Rest, RN, RW, RH, RF).
 
 %% emit_merged_wam_section(+WamRecords, +GlobalLabels, +Options,
 %%                         -CodeGlobal, -EntryFuncs, -SwitchDefs)
@@ -1719,7 +1783,20 @@ emit_merged_wam_section(WamRecords, LabelMap, NamePCPairs, Options,
 %  names are predicate-qualified so flattening doesn't collide.
 resolve_all_wam_records([], _, [], []).
 resolve_all_wam_records([wam(Pred/_Arity, _, RawInstrs, _, _, _)|Rest],
-                        GlobalLabels, AllLiterals, AllSwitchDefs) :-
+                        GlobalLabels, AllLiterals, AllSwitchDefs) :- !,
+    atom_string(Pred, PredStr),
+    maplist(resolve_llvm_literal(GlobalLabels), RawInstrs, Literals0),
+    resolve_switch_tables(Literals0, PredStr, 0, ResolvedLits, SwitchDefs),
+    resolve_all_wam_records(Rest, GlobalLabels, RestLits, RestDefs),
+    append(ResolvedLits, RestLits, AllLiterals),
+    append(SwitchDefs, RestDefs, AllSwitchDefs).
+resolve_all_wam_records([hybrid(Pred/_Arity, _, _, RawInstrs, _, _, _)|Rest],
+                        GlobalLabels, AllLiterals, AllSwitchDefs) :- !,
+    % Hybrid records (M3) participate in the merged @module_code on
+    % equal footing with pure wam records — same resolution pass over
+    % their RawInstrs, same per-predicate switch-table namespace.
+    % The dispatcher entry (which uses the merged PC) is emitted by
+    % emit_one_record_entry_func/5, not here.
     atom_string(Pred, PredStr),
     maplist(resolve_llvm_literal(GlobalLabels), RawInstrs, Literals0),
     resolve_switch_tables(Literals0, PredStr, 0, ResolvedLits, SwitchDefs),
@@ -1733,11 +1810,28 @@ resolve_all_wam_records([wam(Pred/_Arity, _, RawInstrs, _, _, _)|Rest],
 %  One `define i1 @<pred>(...)` per wam/foreign predicate. All share
 %  @module_code and @module_labels, setting PC = StartPC before
 %  invoking the run loop.
-emit_all_entry_funcs(WamRecords, _Options, InstrCount, LabelCount,
+emit_all_entry_funcs(WamLikeRecords, _Options, InstrCount, LabelCount,
                      LabelArraySize, EntryFuncs) :-
-    maplist(emit_one_entry_func(InstrCount, LabelCount, LabelArraySize),
-            WamRecords, Funcs),
+    maplist(emit_one_record_entry_func(InstrCount, LabelCount, LabelArraySize),
+            WamLikeRecords, Funcs),
     atomic_list_concat(Funcs, '\n\n', EntryFuncs).
+
+%% emit_one_record_entry_func(+IC, +LC, +LAS, +Record, -Func)
+%
+%  Dispatcher: wam records use the standard entry-func shape;
+%  hybrid records (M3) get the fast-path-plus-slow-path dispatcher
+%  from the lowered emitter.
+emit_one_record_entry_func(InstrCount, LabelCount, LabelArraySize,
+                           wam(Pred/Arity, _, _, _, StartPC, _),
+                           Func) :- !,
+    emit_one_entry_func(InstrCount, LabelCount, LabelArraySize,
+                        wam(Pred/Arity, _, _, _, StartPC, _),
+                        Func).
+emit_one_record_entry_func(InstrCount, _LabelCount, LabelArraySize,
+                           hybrid(Pred/Arity, _, _, _, _, StartPC, _),
+                           Func) :- !,
+    emit_hybrid_dispatcher(Pred/Arity, StartPC,
+                           InstrCount, LabelArraySize, Func).
 
 emit_one_entry_func(InstrCount, LabelCount, LabelArraySize,
                     wam(Pred/Arity, _, _, _, StartPC, _),

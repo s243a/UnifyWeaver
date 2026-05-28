@@ -54,10 +54,14 @@
 %   - proceed, fail
 
 :- module(wam_llvm_lowered_emitter, [
-    wam_llvm_lowerable/3,            % +Pred/Arity, +WamCode, -Reason
+    wam_llvm_lowerable/3,            % +Pred/Arity, +WamCode, -Shape
     lower_predicate_to_llvm/4,       % +Pred/Arity, +WamCode, +Options, -LLVMCode
     is_deterministic_pred_llvm/1,    % +Instrs
-    llvm_lowered_func_name/2         % +Pred/Arity, -LLVMFuncName
+    llvm_lowered_func_name/2,        % +Pred/Arity, -LLVMFuncName
+    clause1_instrs/2,                % +Instrs, -Clause1Body (exported for tests)
+    emit_native_wrapper/2,           % +Pred/Arity, -WrapperCode (M3)
+    emit_hybrid_dispatcher/5         % +Pred/Arity, +StartPC, +InstrCount,
+                                     % +LabelArraySize, -DispatcherCode (M3)
 ]).
 
 :- use_module(library(lists)).
@@ -130,23 +134,88 @@ instr_from_parts(["cut_ite"], cut_ite).
 % Lowerability gate
 % ============================================================================
 
-%% wam_llvm_lowerable(+PI, +WamCode, -Reason) is semidet.
+%% wam_llvm_lowerable(+PI, +WamCode, -Shape) is semidet.
 %
-%  Succeeds iff the predicate is safe to lower to a standalone LLVM
-%  function. Reason is bound to a short tag for logging.
-wam_llvm_lowerable(_PI, WamCode, Reason) :-
+%  Succeeds iff the predicate's *clause-1 body* is safe to lower to a
+%  standalone LLVM function. Shape distinguishes how the dispatcher
+%  should wire it up:
+%
+%    single_clause    — the bytecode has no try_me_else / retry_me_else
+%                       / trust_me anywhere; the lowered function is
+%                       the whole predicate. No bytecode fallback
+%                       needed; the caller's @<pred> wrapper just
+%                       delegates to @lowered_<pred>_<arity>.
+%
+%    multi_clause_c1  — clause 1 is deterministic + supported, but the
+%                       bytecode has try_me_else / retry_me_else /
+%                       trust_me for additional clauses. The lowered
+%                       function is the *fast path*; on failure the
+%                       dispatcher falls back to running the full
+%                       bytecode (all clauses) through @run_loop.
+%                       Mirrors the F# emitter's multi-clause
+%                       approach (see wam_fsharp_lowered_emitter.pl).
+wam_llvm_lowerable(_PI, WamCode, Shape) :-
     (   is_list(WamCode) -> Instrs = WamCode
     ;   atom(WamCode) -> parse_wam_text(WamCode, Instrs)
     ;   parse_wam_text(WamCode, Instrs)
     ),
-    is_deterministic_pred_llvm(Instrs),
-    forall(member(I, Instrs), supported(I)),
-    Reason = deterministic.
+    clause1_instrs(Instrs, C1),
+    is_deterministic_pred_llvm(C1),
+    forall(member(I, C1), supported(I)),
+    ( has_choice_point_instrs(Instrs)
+    -> Shape = multi_clause_c1
+    ;  Shape = single_clause
+    ).
 
 is_deterministic_pred_llvm(Instrs) :-
     \+ member(try_me_else(_), Instrs),
     \+ member(retry_me_else(_), Instrs),
     \+ member(trust_me, Instrs).
+
+%% has_choice_point_instrs(+Instrs) is semidet.
+%
+%  Predicate-level check: does the bytecode contain any choice-point
+%  instructions across all clauses? Used to distinguish single-clause
+%  from multi-clause predicates after clause-1 lowerability passes.
+has_choice_point_instrs(Instrs) :-
+    member(I, Instrs),
+    ( I = try_me_else(_)
+    ; I = retry_me_else(_)
+    ; I = trust_me
+    ), !.
+
+%% clause1_instrs(+Instrs, -Clause1Body) is det.
+%
+%  Extract clause 1's instruction body from a full predicate's parsed
+%  instruction list, mirroring wam_fsharp_lowered_emitter.pl /
+%  wam_rust_lowered_emitter.pl. Strips any switch_on_constant prefix
+%  (multi-clause indexing) and the `try_me_else` first-clause marker;
+%  the body extends through the first `proceed` or `fail` terminator.
+%
+%  For single-clause predicates with no try_me_else, returns the full
+%  instruction list as-is (it IS clause 1).
+clause1_instrs(Instrs0, C1) :-
+    % NB: switch_on_constant / switch_on_constant_a2 instructions are
+    % silently ignored by parse_wam_text/2 (the parser doesn't have an
+    % instr_from_parts/2 clause for them), so the head of Instrs0 here
+    % is whatever follows the switch prefix. The strip_* clauses below
+    % are belt-and-braces in case a future parser change emits these.
+    strip_switch_prefix(Instrs0, Instrs),
+    ( Instrs = [try_me_else(_)|Rest]
+    -> take_to_proceed(Rest, C1)
+    ;  C1 = Instrs
+    ).
+
+strip_switch_prefix([switch_on_constant(_,_,_)|Rest], Out) :- !,
+    strip_switch_prefix(Rest, Out).
+strip_switch_prefix([switch_on_constant_a2(_,_,_)|Rest], Out) :- !,
+    strip_switch_prefix(Rest, Out).
+strip_switch_prefix(L, L).
+
+take_to_proceed([], []).
+take_to_proceed([proceed|_], [proceed]) :- !.
+take_to_proceed([fail|_], [fail]) :- !.
+take_to_proceed([I|Rest], [I|Out]) :- take_to_proceed(Rest, Out).
 
 supported(get_constant(_, _)).
 supported(get_variable(_, _)).
@@ -205,18 +274,24 @@ llvm_safe_code(_, 0'_).
 %% lower_predicate_to_llvm(+PI, +WamCode, +Options, -LLVMCode) is det.
 %
 %  Caller must have already verified wam_llvm_lowerable/3.
+%  Emits a function for *clause 1 only* — for multi-clause predicates,
+%  clauses 2+ are reached via dispatcher fallback to the bytecode path.
 lower_predicate_to_llvm(PI, WamCode, _Options, LLVMCode) :-
     ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
     llvm_lowered_func_name(Pred/Arity, FuncName),
     (   is_list(WamCode) -> Instrs = WamCode
     ;   parse_wam_text(WamCode, Instrs)
     ),
+    % Lower the clause-1 body only. For single-clause preds this is
+    % the whole instruction list; for multi-clause preds it's the body
+    % between try_me_else and the first proceed/fail.
+    clause1_instrs(Instrs, C1Instrs),
     % Build the parameter list and the entry-block "copy %a<i> into reg i-1".
     build_param_list(Arity, ParamList),
     build_arg_setup(Arity, ArgSetup),
     % Emit one basic block per instruction, then the shared
     % succeed/fail epilogue blocks.
-    emit_all_instrs(Instrs, 0, BodyBlocks),
+    emit_all_instrs(C1Instrs, 0, BodyBlocks),
     atomic_list_concat(BodyBlocks, '\n', BodyStr),
     format(atom(LLVMCode),
 '; === lowered predicate: ~w/~w ===
@@ -1315,3 +1390,131 @@ parse_functor(FStr, Name, Arity) :-
     split_string(S, "/", "", [NameStr, ArityStr]),
     Name = NameStr,
     number_string(Arity, ArityStr).
+
+% ============================================================================
+% M3: Public-entry wrappers + multi-clause dispatchers
+% ============================================================================
+
+%% emit_native_wrapper(+Pred/Arity, -WrapperCode) is det.
+%
+%  Emits `define i1 @<pred>(%Value %a1, ...)` as a thin wrapper around
+%  the lowered function. Single-clause lowered predicates use this so
+%  external callers can invoke `@<pred>` regardless of emit mode
+%  (unifies the API between emit_mode(interpreter) and
+%  emit_mode(functions) for the same predicate).
+%
+%  Single-arg form (the lowered function returns success/failure with
+%  no extra dispatch logic needed) — at -O2 the wrapper inlines into
+%  the caller's call site.
+emit_native_wrapper(Pred/Arity, WrapperCode) :-
+    atom_string(Pred, PredStr),
+    llvm_lowered_func_name(Pred/Arity, LoweredName),
+    build_param_list(Arity, ParamList),
+    build_arg_list(Arity, ArgList),
+    format(atom(WrapperCode),
+'; Public entry for ~w/~w (M3 native wrapper around the lowered fn).
+; At -O2 this collapses into the caller via inlining.
+define i1 @~w(~w) {
+entry:
+  %r = call i1 @~w(~w)
+  ret i1 %r
+}',
+        [PredStr, Arity,
+         PredStr, ParamList,
+         LoweredName, ArgList]).
+
+%% emit_hybrid_dispatcher(+Pred/Arity, +StartPC, +InstrCount,
+%%                        +LabelArraySize, -DispatcherCode) is det.
+%
+%  Emits the M3 multi-clause dispatcher entry `@<pred>` for predicates
+%  whose clause 1 is lowerable but whose full body contains
+%  try_me_else / retry_me_else / trust_me (so additional clauses need
+%  the bytecode interpreter for backtrack).
+%
+%  Fast path: invoke `@lowered_<pred>_<arity>` first; if it returns
+%  true, return true immediately.
+%
+%  Slow path: on failure, allocate a fresh %WamState, set the input
+%  registers, set the start PC to the predicate's offset in
+%  @module_code, and call @run_loop. This runs the FULL bytecode for
+%  the predicate (all clauses, with proper choice-point management),
+%  matching the F# target's dispatchCall semantics:
+%  the lowered clause-1 is a hint, not a replacement.
+%
+%  Limitation accepted in M3: the fast path doesn't share its
+%  %WamState with the slow path. If clause 1 binds an A-register via
+%  the lowered code and then fails, the slow path starts clean — it
+%  doesn't see clause 1's intermediate bindings. That matches the F#
+%  target's behaviour and is correct for first-arg-indexed predicates
+%  where clause 1 either succeeds deterministically or fails before
+%  any side-effecting binding. Predicates that don't fit that shape
+%  still benefit from the slow path; they just pay a small redundant
+%  cost on the fast-path attempt.
+emit_hybrid_dispatcher(Pred/Arity, StartPC, InstrCount, LabelArraySize,
+                       DispatcherCode) :-
+    atom_string(Pred, PredStr),
+    llvm_lowered_func_name(Pred/Arity, LoweredName),
+    build_param_list(Arity, ParamList),
+    build_arg_list(Arity, ArgList),
+    build_arg_setup_slow(Arity, ArgSetupSlow),
+    format(atom(DispatcherCode),
+'; Public entry for ~w/~w (M3 hybrid dispatcher).
+; Fast path: lowered clause 1 (deterministic + supported instr subset).
+; Slow path on fast-path failure: full bytecode via @run_loop, which
+; handles try_me_else / retry_me_else / trust_me for clauses 2+.
+define i1 @~w(~w) {
+entry:
+  %fast = call i1 @~w(~w)
+  br i1 %fast, label %success, label %slow_path
+
+success:
+  ret i1 true
+
+slow_path:
+  %vm = call %WamState* @wam_state_new(
+    %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @module_code, i32 0, i32 0),
+    i32 ~w,
+    i32* getelementptr ([~w x i32], [~w x i32]* @module_labels, i32 0, i32 0),
+    i32 ~w)
+~w
+  call void @wam_set_pc(%WamState* %vm, i32 ~w)
+  %slow = call i1 @run_loop(%WamState* %vm)
+  call void @wam_state_free(%WamState* %vm)
+  ret i1 %slow
+}',
+        [PredStr, Arity,
+         PredStr, ParamList,
+         LoweredName, ArgList,
+         InstrCount, InstrCount,
+         InstrCount,
+         LabelArraySize, LabelArraySize,
+         LabelArraySize,
+         ArgSetupSlow,
+         StartPC]).
+
+%% build_arg_list(+Arity, -ArgList)
+%
+%  Comma-separated list "%Value %a1, %Value %a2, ..." used at the
+%  call sites in the native wrapper and hybrid dispatcher (where the
+%  callee expects the same %Value parameters the entry received).
+build_arg_list(0, "") :- !.
+build_arg_list(Arity, ArgList) :-
+    numlist(1, Arity, Indices),
+    maplist([I, S]>>format(atom(S), "%Value %a~w", [I]), Indices, Parts),
+    atomic_list_concat(Parts, ', ', ArgList).
+
+%% build_arg_setup_slow(+Arity, -SetupIR)
+%
+%  Mirror of build_arg_setup/2 but emitted into the hybrid dispatcher's
+%  slow_path block — copies each %Value %a<i> into the fresh
+%  %WamState's argument register i-1 before calling @run_loop.
+build_arg_setup_slow(0, "") :- !.
+build_arg_setup_slow(Arity, Setup) :-
+    numlist(1, Arity, Indices),
+    maplist([I, S]>>(
+        RegIdx is I - 1,
+        format(atom(S),
+            '  call void @wam_set_reg(%WamState* %vm, i32 ~w, %Value %a~w)',
+            [RegIdx, I])
+    ), Indices, Parts),
+    atomic_list_concat(Parts, '\n', Setup).

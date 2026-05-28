@@ -280,10 +280,11 @@ per WAM instruction.
 
 Mirrors `wam_fsharp_lowered_emitter.pl` / `wam_rust_lowered_emitter.pl`:
 
-1. **Single-clause only** — predicates with `try_me_else` /
-   `retry_me_else` / `trust_me` in the bytecode (multi-clause + WAM
-   indexing) are rejected. They stay on the bytecode path where the
-   choice-point machinery handles backtracking.
+1. **Clause-1 body must be deterministic** — `wam_llvm_lowerable/3`
+   strips any `try_me_else` prefix and the leading `switch_on_constant`
+   indexing, then takes the body through the first `proceed`/`fail`
+   as "clause 1". That body must contain no choice-point instructions
+   (`try_me_else` / `retry_me_else` / `trust_me`).
 2. **Supported instructions only** — the supported set is
    `get_constant`, `get_variable`, `get_value`, `get_structure`,
    `get_list`, `unify_variable`, `unify_value`, `unify_constant`,
@@ -292,6 +293,19 @@ Mirrors `wam_fsharp_lowered_emitter.pl` / `wam_rust_lowered_emitter.pl`:
    `deallocate`, `builtin_call`, `proceed`, `fail`. Anything else
    (`call`, `execute`, `jump`, `cut_ite`, etc.) makes the gate fail
    silently and the predicate falls back to the bytecode path.
+
+The lowerability check returns a *shape* the pipeline acts on:
+
+- `single_clause` — bytecode contains no choice-point instrs anywhere;
+  the lowered fn IS the whole predicate. Emitted as a `native` record
+  plus a thin `@<pred>` wrapper that just delegates to
+  `@lowered_<pred>_<arity>`.
+- `multi_clause_c1` — clause 1 is lowerable but the bytecode contains
+  `try_me_else` / `retry_me_else` / `trust_me` for additional clauses.
+  Emitted as a `hybrid` record: the lowered clause-1 fast path AND the
+  full bytecode (all clauses) ship in the module, and `@<pred>` is a
+  dispatcher that tries the fast path first; on failure it falls back
+  to running the full bytecode through `@run_loop`.
 
 Predicates that fail the gate emit a `<pred>/<arity>: WAM fallback`
 log line instead of `<pred>/<arity>: lowered LLVM emission`, and the
@@ -309,19 +323,33 @@ predicate took.
 
 ### Status
 
-- M1: single-clause deterministic predicates over simple
+- **M1**: single-clause deterministic predicates over simple
   register/arithmetic ops.
-- M2 (this release): pattern matching — `get_structure`, `get_list`,
+- **M2**: pattern matching — `get_structure`, `get_list`,
   `unify_variable`, `unify_value`, `unify_constant`. Read-mode
   (matching against a bound compound from the caller) and write-mode
   (allocating a fresh compound on the arena) both supported, mirroring
   the bytecode `@step` cases. `get_list` read-mode currently returns
   the same failure sentinel the bytecode interpreter does — once the
   interpreter gains ground-list read support, this path follows.
-- Future: multi-clause via "lowered clause-1 + bytecode clause-2+"
-  (mirrors the F# emit-mode pattern), `call`/`execute` lowered to
-  direct `call i1 @<other_pred>`, indirect dispatch through a
-  caller-supplied `%WamState*` to avoid the per-call state alloc.
+- **M3 (this release): multi-clause via lowered clause-1 + bytecode
+  fallback**. Predicates whose clause 1 is deterministic + supported
+  but whose full body has additional clauses with `try_me_else` /
+  `retry_me_else` / `trust_me` now lower as a `hybrid` record. The
+  emitted module contains BOTH `@lowered_<pred>_<arity>` (the
+  clause-1 fast path) AND `@<pred>` (a dispatcher that tries the fast
+  path first, then on failure runs the full bytecode through
+  `@run_loop` at the predicate's `StartPC` in `@module_code`).
+  Mirrors the F# target's `dispatchCall` semantics:
+  the lowered clause-1 is a hint, not a replacement — the slow path
+  always handles the full backtracking behaviour. Single-clause
+  predicates also gain a `@<pred>` wrapper around their lowered
+  function so external callers can use the same name across emit
+  modes.
+- Future: `call`/`execute` lowered to direct `call i1 @<other_pred>`
+  so cross-predicate calls within lowered code stay native;
+  caller-supplied `%WamState*` to avoid per-call state alloc when a
+  lowered predicate calls another lowered predicate.
 
 ### Tests
 
