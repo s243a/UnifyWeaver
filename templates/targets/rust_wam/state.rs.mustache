@@ -118,6 +118,73 @@ impl<S: LookupSource> LookupSource for CachedLookup<S> {
     }
 }
 
+/// R8b: §3.1 cache-capacity resolution, applied at *runtime*.
+///
+/// The codegen layer emits `working_set` (the §3.1
+/// `unrestricted_working_set` — the demand-set size, i.e. the capacity
+/// that serves the workload with zero evictions) plus the clamp
+/// parameters. This function applies the MemAvailable-dependent clamp
+/// when the binary actually runs, so cache sizing adapts to the host
+/// rather than to the build machine (MemAvailable must never be baked
+/// in at codegen time):
+///
+///   capacity = min(working_set,
+///                  cap_pct * (MemAvailable - max(floor_bytes, 0.10*MemTotal))
+///                    / edge_bytes)
+///
+/// For the small demand sets typical of the category graph the
+/// `working_set` term wins and the memory math is irrelevant; the clamp
+/// only bites for very large fan-out workloads on memory-constrained
+/// hosts. On non-Linux hosts (`/proc/meminfo` absent) the working set is
+/// used unclamped — the conservative cross-platform default. Floored at
+/// 1024 entries so even a tight machine keeps a usable cache.
+pub fn resolve_runtime_cache_capacity(
+    working_set: usize,
+    cap_pct: f64,
+    floor_bytes: u64,
+) -> usize {
+    const EDGE_BYTES: u64 = 12; // i32 key + i32 val + container overhead
+    match read_meminfo_available_total() {
+        Some((avail, total)) => {
+            let headroom_floor = floor_bytes.max((total as f64 * 0.10) as u64);
+            let budget_bytes = if avail > headroom_floor {
+                (cap_pct * (avail - headroom_floor) as f64) as u64
+            } else {
+                0
+            };
+            let budget_entries = (budget_bytes / EDGE_BYTES) as usize;
+            working_set.min(budget_entries.max(1024))
+        }
+        None => working_set,
+    }
+}
+
+/// Read `MemAvailable` and `MemTotal` (in bytes) from `/proc/meminfo`.
+/// Returns `None` on any platform/parse failure (e.g. non-Linux hosts).
+fn read_meminfo_available_total() -> Option<(u64, u64)> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let mut avail: Option<u64> = None;
+    let mut total: Option<u64> = None;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("MemAvailable:") {
+            avail = parse_meminfo_kib(rest);
+        } else if let Some(rest) = line.strip_prefix("MemTotal:") {
+            total = parse_meminfo_kib(rest);
+        }
+    }
+    match (avail, total) {
+        (Some(a), Some(t)) => Some((a, t)),
+        _ => None,
+    }
+}
+
+/// Parse the leading kibibyte count of a `/proc/meminfo` value line
+/// (e.g. `"  16384256 kB"`) and convert to bytes.
+fn parse_meminfo_kib(rest: &str) -> Option<u64> {
+    let kib: u64 = rest.split_whitespace().next()?.parse().ok()?;
+    Some(kib * 1024)
+}
+
 /// Trail entry: records the old value of a register before mutation.
 #[derive(Clone, Debug)]
 pub struct TrailEntry {

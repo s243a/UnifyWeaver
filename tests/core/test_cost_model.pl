@@ -103,6 +103,24 @@ test(test_reverse_index_artifact_normalizes_storage_kind).
 
 test(test_read_mem_available_returns_positive).
 
+test(test_materialisation_explicit_eager_passthrough).
+test(test_materialisation_explicit_lazy_passthrough).
+test(test_materialisation_explicit_cached_passthrough).
+test(test_materialisation_auto_1k_picks_eager).
+test(test_materialisation_auto_simplewiki_picks_cached).
+test(test_materialisation_auto_enwiki_picks_cached).
+test(test_materialisation_auto_segregated_picks_lazy).
+test(test_materialisation_auto_budget_overflow_picks_cached).
+test(test_materialisation_auto_budget_overflow_segregated_picks_lazy).
+test(test_materialisation_auto_high_query_count_amortises_eager).
+test(test_materialisation_auto_default_no_metadata).
+test(test_materialisation_rejects_unknown_mode).
+test(test_cache_capacity_uses_working_set).
+test(test_cache_capacity_floored).
+test(test_cache_capacity_explicit_override).
+test(test_cache_capacity_free_pct_default_and_override).
+test(test_cache_capacity_floor_bytes_default_and_override).
+
 %% ========================================================================
 %% Default constants
 %% ========================================================================
@@ -661,6 +679,144 @@ test_read_mem_available_returns_positive :-
     ->  pass(Test)
     ;   %% Skip on non-Linux platforms
         format("[SKIP] ~w (no /proc/meminfo)~n", [Test])
+    ).
+
+%% ========================================================================
+%% LMDB materialisation-mode resolver
+%% ========================================================================
+
+%% Helper: assert resolve_auto_lmdb_materialisation picks Expected.
+expect_materialisation(Test, Options, Expected) :-
+    (   resolve_auto_lmdb_materialisation(Options, Mode),
+        Mode == Expected
+    ->  pass(Test)
+    ;   ( resolve_auto_lmdb_materialisation(Options, Got) -> true ; Got = '<failed>' ),
+        fail_test(Test, format_atom("got ~w (expected ~w)", [Got, Expected]))
+    ).
+
+test_materialisation_explicit_eager_passthrough :-
+    %% Explicit modes are returned verbatim even at huge scale.
+    expect_materialisation(
+        'explicit eager passes through regardless of scale',
+        [lmdb_materialisation(eager), fact_count(9_930_000)], eager).
+
+test_materialisation_explicit_lazy_passthrough :-
+    expect_materialisation(
+        'explicit lazy passes through',
+        [lmdb_materialisation(lazy), fact_count(1000)], lazy).
+
+test_materialisation_explicit_cached_passthrough :-
+    expect_materialisation(
+        'explicit cached passes through',
+        [lmdb_materialisation(cached), fact_count(1000)], cached).
+
+test_materialisation_auto_1k_picks_eager :-
+    %% Build of ~1000 cold seeds is ~100 ms < 1 s budget → eager.
+    expect_materialisation(
+        'auto at 1k picks eager (cheap up-front build)',
+        [lmdb_materialisation(auto), fact_count(1000)], eager).
+
+test_materialisation_auto_simplewiki_picks_cached :-
+    %% ~297k cold seeds is ~30 s >> 1 s budget → cached.
+    expect_materialisation(
+        'auto at simplewiki scale picks cached',
+        [lmdb_materialisation(auto), fact_count(297_000)], cached).
+
+test_materialisation_auto_enwiki_picks_cached :-
+    expect_materialisation(
+        'auto at enwiki scale picks cached',
+        [lmdb_materialisation(auto), fact_count(9_930_000)], cached).
+
+test_materialisation_auto_segregated_picks_lazy :-
+    %% Same scale, but a segregated workload has no cross-query reuse
+    %% to exploit → bare lazy beats cached.
+    expect_materialisation(
+        'auto + workload_segregated picks lazy over cached',
+        [lmdb_materialisation(auto), fact_count(9_930_000),
+         workload_segregated(true)], lazy).
+
+test_materialisation_auto_budget_overflow_picks_cached :-
+    %% Demand set (2000 edges × 12 B = 24 kB) exceeds the declared 1 kB
+    %% budget → can't hold resident → cached.
+    expect_materialisation(
+        'auto with declared budget overflow picks cached',
+        [lmdb_materialisation(auto), fact_count(2000), memory_budget(1000)],
+        cached).
+
+test_materialisation_auto_budget_overflow_segregated_picks_lazy :-
+    expect_materialisation(
+        'auto budget overflow + segregated picks lazy',
+        [lmdb_materialisation(auto), fact_count(2000), memory_budget(1000),
+         workload_segregated(true)],
+        lazy).
+
+test_materialisation_auto_high_query_count_amortises_eager :-
+    %% A long-lived process (many queries) tolerates a bigger one-time
+    %% build, so even 1M edges can amortise to eager.
+    expect_materialisation(
+        'auto with high query count amortises a large eager build',
+        [lmdb_materialisation(auto), fact_count(1_000_000),
+         expected_query_count_per_process(100_000)],
+        eager).
+
+test_materialisation_auto_default_no_metadata :-
+    %% No metadata + no explicit option: demand set defaults to 0,
+    %% build is free → eager (matches R7's safe default).
+    expect_materialisation(
+        'auto with no metadata defaults to eager',
+        [], eager).
+
+test_materialisation_rejects_unknown_mode :-
+    Test = 'resolve_auto_lmdb_materialisation rejects an unknown mode',
+    (   catch(resolve_auto_lmdb_materialisation([lmdb_materialisation(bogus)], _),
+              error(domain_error(lmdb_materialisation, bogus), _),
+              true)
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected domain_error(lmdb_materialisation, bogus)')
+    ).
+
+test_cache_capacity_uses_working_set :-
+    Test = 'resolve_lmdb_cache_capacity uses the demand-set working set',
+    (   resolve_lmdb_cache_capacity([fact_count(9_930_000)], Cap),
+        Cap =:= 9_930_000
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected capacity = fact_count')
+    ).
+
+test_cache_capacity_floored :-
+    Test = 'resolve_lmdb_cache_capacity floors tiny fixtures at 1024',
+    (   resolve_lmdb_cache_capacity([fact_count(100)], Cap),
+        Cap =:= 1024
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected capacity floored to 1024')
+    ).
+
+test_cache_capacity_explicit_override :-
+    Test = 'resolve_lmdb_cache_capacity honours explicit cache_capacity',
+    (   resolve_lmdb_cache_capacity(
+            [fact_count(9_930_000), cache_capacity(50_000)], Cap),
+        Cap =:= 50_000
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected explicit cache_capacity to win')
+    ).
+
+test_cache_capacity_free_pct_default_and_override :-
+    Test = 'lmdb_cache_capacity_free_pct default 0.5 + override',
+    (   lmdb_cache_capacity_free_pct([], P0), P0 =:= 0.5,
+        lmdb_cache_capacity_free_pct([cache_capacity_free_pct(0.3)], P1),
+        P1 =:= 0.3
+    ->  pass(Test)
+    ;   fail_test(Test, 'free_pct default/override mismatch')
+    ).
+
+test_cache_capacity_floor_bytes_default_and_override :-
+    Test = 'lmdb_cache_capacity_floor_bytes default 512 MiB + override',
+    (   lmdb_cache_capacity_floor_bytes([], B0), B0 =:= 536870912,
+        lmdb_cache_capacity_floor_bytes(
+            [cache_capacity_floor_bytes(1073741824)], B1),
+        B1 =:= 1073741824
+    ->  pass(Test)
+    ;   fail_test(Test, 'floor_bytes default/override mismatch')
     ).
 
 csr_benchmark_rows([

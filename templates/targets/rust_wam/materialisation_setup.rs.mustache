@@ -86,10 +86,10 @@
     // Cached: lazy with a sharded bounded cache layered in front.
     // Decorator pattern — CachedLookup<LazyCategoryParents> implements
     // LookupSource itself, so the kernel can't tell whether it's
-    // hitting a cache. Mirrors Haskell's lmdbL2EdgeLookup. Capacity
-    // is set explicitly here (R8a); R8b's auto-resolver will compute
-    // it from MemAvailable per WAM_LMDB_LAZY_IMPLEMENTATION_PLAN.md
-    // §3.1.
+    // hitting a cache. Mirrors Haskell's lmdbL2EdgeLookup. Capacity is
+    // the §3.1 working-set default ({{cache_capacity_default}} entries)
+    // computed by the cost-model resolver at codegen time, clamped at
+    // runtime against MemAvailable (read here, never baked in).
     let s2i = lmdb.load_s2i().expect("load_s2i");
     let load_ms = started.elapsed().as_millis();
 
@@ -109,16 +109,25 @@
         s2i: s2i.clone(),
         i2s: i2s.clone(),
     };
+    // WAM_CACHE_CAPACITY overrides everything; otherwise apply the
+    // §3.1 runtime clamp of the codegen working-set default by the
+    // host's MemAvailable (read now, at runtime).
     let cache_capacity: usize = std::env::var("WAM_CACHE_CAPACITY")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or({{cache_capacity_default}});
+        .unwrap_or_else(|| {
+            wam_lib::state::resolve_runtime_cache_capacity(
+                {{cache_capacity_default}},
+                {{cache_cap_pct}},
+                {{cache_floor_bytes}},
+            )
+        });
     let cache_shards: usize = std::env::var("WAM_CACHE_SHARDS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or({{cache_shards_default}});
     let cached_source = std::sync::Arc::new(
-        wam_rust_matrix_bench::state::CachedLookup::new(inner, cache_capacity, cache_shards)
+        wam_lib::state::CachedLookup::new(inner, cache_capacity, cache_shards)
     );
     vm.register_lazy_lookup("category_parent/2", cached_source);
     vm.register_foreign_predicate("category_parent/2");

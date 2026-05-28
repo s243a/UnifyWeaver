@@ -10,7 +10,7 @@ struct LazyCategoryParents {
     i2s: HashMap<i32, String>,
 }
 
-impl wam_rust_matrix_bench::state::LookupSource for LazyCategoryParents {
+impl wam_lib::state::LookupSource for LazyCategoryParents {
     fn lookup_key_for_atom(&self, atom: &str) -> Option<i32> {
         self.s2i.get(atom).copied()
     }
