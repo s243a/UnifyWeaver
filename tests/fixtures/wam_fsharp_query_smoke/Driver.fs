@@ -67,6 +67,7 @@ let mkContext () =
       WcAtomDeintern      = Map.empty
       WcForeignConfig     = Map.empty
       WcLoweredPredicates = Map.empty
+      WcLookupSources     = Map.empty
       WcCancellationToken = None }
 
 let mkQueryState (a1: Value) (a2: Value) (vidStart: int) =

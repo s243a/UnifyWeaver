@@ -69,6 +69,7 @@ let mkContext (code: Instruction array) (labels: Map<string, int>) =
       WcAtomDeintern      = Map.empty
       WcForeignConfig     = Map.empty
       WcLoweredPredicates = Map.empty
+      WcLookupSources     = Map.empty
       WcCancellationToken = None }
 
 // -- Scenario 1: PutConstant writes to register and advances PC ------------

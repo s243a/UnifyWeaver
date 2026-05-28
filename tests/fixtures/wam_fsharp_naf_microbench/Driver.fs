@@ -88,6 +88,7 @@ let mkContext (branch1Body: Instruction list) (slowSize: int) =
         WcAtomDeintern      = Map.empty
         WcForeignConfig     = Map.empty
         WcLoweredPredicates = Map.empty
+        WcLookupSources     = Map.empty
         WcCancellationToken = None }
     ctx, pcParTry, pcParRetry2
 
