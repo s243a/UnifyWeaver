@@ -86,6 +86,32 @@ func collectSolutions(ctx *WamContext, pc int, cat, root string, negN float64) f
 	return weightSum
 }
 
+func computeReachableToRoot(root string, reverseIndex map[string][]string, maxDepth int) map[string]bool {
+	reachable := make(map[string]bool)
+	bestDepth := make(map[string]int)
+	type entry struct {
+		node  string
+		depth int
+	}
+	queue := []entry{{root, 0}}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if prev, ok := bestDepth[cur.node]; ok && cur.depth >= prev {
+			continue
+		}
+		bestDepth[cur.node] = cur.depth
+		reachable[cur.node] = true
+		if cur.depth >= maxDepth {
+			continue
+		}
+		for _, child := range reverseIndex[cur.node] {
+			queue = append(queue, entry{child, cur.depth + 1})
+		}
+	}
+	return reachable
+}
+
 func main() {
 	factsDir := "."
 	if len(os.Args) > 1 {
@@ -98,20 +124,33 @@ func main() {
 	articleCategories := loadTsvPairs(factsDir + "/article_category.tsv")
 	roots := loadSingleColumn(factsDir + "/root_categories.tsv")
 
-	ctx := NewWamContext(SharedWamCode, SharedWamLabels)
-
-	vm := NewWamStateFromCtx(ctx)
-	setupSharedForeignPredicates(vm)
-	vm.registerIndexedAtomFact2Pairs("category_parent/2", categoryParents)
-
 	root := ""
 	if len(roots) > 0 {
 		root = roots[0]
 	}
+	const maxDepthLimit = 10
+
+	reverseIndex := make(map[string][]string)
+	for _, p := range categoryParents {
+		reverseIndex[p.Right] = append(reverseIndex[p.Right], p.Left)
+	}
+	reachableToRoot := computeReachableToRoot(root, reverseIndex, maxDepthLimit)
+	var filteredEdges []AtomPair
+	for _, p := range categoryParents {
+		if reachableToRoot[p.Right] {
+			filteredEdges = append(filteredEdges, p)
+		}
+	}
+
+	ctx := NewWamContext(SharedWamCode, SharedWamLabels)
+
+	vm := NewWamStateFromCtx(ctx)
+	setupSharedForeignPredicates(vm)
+	vm.registerIndexedAtomFact2Pairs("category_parent/2", filteredEdges)
 
 	seedSet := make(map[string]bool)
-	for _, p := range categoryParents {
-		seedSet[p.Left] = true
+	for _, ac := range articleCategories {
+		seedSet[ac.Right] = true
 	}
 	seedCats := make([]string, 0, len(seedSet))
 	for k := range seedSet {

@@ -157,7 +157,7 @@ run_benchmark() {
     for i in $(seq 1 $REPS); do
         local stdout_file="$OUTPUT_DIR/${name}_run${i}.tsv"
         local stderr_file="$OUTPUT_DIR/${name}_run${i}.stderr"
-        eval "$cmd" "$data_arg" > "$stdout_file" 2> "$stderr_file" || true
+        LANG=C.utf8 LC_ALL=C.utf8 eval "$cmd" "$data_arg" > "$stdout_file" 2> "$stderr_file" || true
         local qms=$(grep 'query_ms=' "$stderr_file" 2>/dev/null | sed 's/query_ms=//')
         local tms=$(grep 'total_ms=' "$stderr_file" 2>/dev/null | sed 's/total_ms=//')
         times+=("${qms:-?}")
