@@ -265,12 +265,10 @@ instr_calls_target(Instrs, Pred/Arity) :-
     ( I = call(PredStr, _)
     ; I = execute(PredStr)
     ),
-    ( atom(PredStr) -> atom_string(PredStr, S)
-    ; string(PredStr) -> S = PredStr
-    ),
-    split_string(S, "/", "", [NameStr, ArityStr]),
-    atom_string(Pred, NameStr),
-    number_string(Arity, ArityStr).
+    % Use the target's split_functor_arity/3 — handles names with `/`
+    % in them (e.g. integer-division `//2`).
+    wam_llvm_target:split_functor_arity(PredStr, NameStr, Arity),
+    atom_string(Pred, NameStr).
 
 supported(get_constant(_, _)).
 supported(get_variable(_, _)).
@@ -1487,27 +1485,19 @@ parse_constant(CStr, Tag, Payload) :-
 
 %% parse_functor(+FStr, -Name, -Arity)
 %
-%  "foo/2" → Name="foo", Arity=2. Handles either a string or atom
-%  representation.
+%  "foo/2" → Name="foo", Arity=2. Delegates to
+%  wam_llvm_target:split_functor_arity/3 which handles names with `/`
+%  in them (e.g. integer-division `//2`).
 parse_functor(FStr, Name, Arity) :-
-    (   atom(FStr) -> atom_string(FStr, S)
-    ;   string(FStr) -> S = FStr
-    ),
-    split_string(S, "/", "", [NameStr, ArityStr]),
-    Name = NameStr,
-    number_string(Arity, ArityStr).
+    wam_llvm_target:split_functor_arity(FStr, Name, Arity).
 
 %% parse_call_target(+PredStr, -Name, -Arity)
 %
 %  "foo/2" → Name='foo', Arity=2. Used by the call/execute emitters
 %  to resolve the callee's lowered-kernel symbol.
 parse_call_target(PredStr, NameAtom, Arity) :-
-    ( atom(PredStr) -> atom_string(PredStr, S)
-    ; string(PredStr) -> S = PredStr
-    ),
-    split_string(S, "/", "", [NameStr, ArityStr]),
-    atom_string(NameAtom, NameStr),
-    number_string(Arity, ArityStr).
+    wam_llvm_target:split_functor_arity(PredStr, NameStr, Arity),
+    atom_string(NameAtom, NameStr).
 
 % ============================================================================
 % M3: Public-entry wrappers + multi-clause dispatchers
