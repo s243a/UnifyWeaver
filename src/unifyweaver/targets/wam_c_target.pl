@@ -21,6 +21,7 @@
     wam_instruction_to_c_literal/3,   % +WamInstr, +LabelMap, -CCode
     detect_kernels/2,                 % +Predicates, -DetectedKernels
     generate_setup_detected_kernels_c/2, % +DetectedKernels, -CCode
+    generate_setup_reverse_index_c/2, % +Options, -CCode
     resolve_wam_c_reverse_index_plan/2, % +Options, -Plan
     plan_wam_c_lowered_helpers/4,     % +Predicates, +Options, +DetectedKeys, -Plans
     write_wam_c_project/3             % +Predicates, +Options, +ProjectDir
@@ -114,12 +115,14 @@ write_wam_c_project(Predicates, Options, ProjectDir) :-
     compile_lowered_helpers_for_project(LoweredPlans, LoweredKeys, LoweredCode, SetupLoweredCode),
     render_wam_c_lowered_helper_plan(LoweredPlans, LoweredPlanCode),
     generate_setup_detected_kernels_c(DetectedKernels, SetupKernelCode),
+    generate_setup_reverse_index_c(Options, SetupReverseIndexCode),
     compile_predicates_for_project(Predicates,
                                    [detected_kernel_keys(DetectedKeys),
                                     lowered_helper_keys(LoweredKeys)|Options],
                                    PredicatesCode),
-    format(atom(LibCode), '#include "wam_runtime.h"~n~n~w~n~n~w~n~n~w~n~n~w',
-           [LoweredPlanCode, SetupKernelCode, LoweredCode, SetupLoweredCode]),
+    format(atom(LibCode), '#include "wam_runtime.h"~n~n~w~n~n~w~n~n~w~n~n~w~n~n~w',
+           [LoweredPlanCode, SetupKernelCode, SetupReverseIndexCode,
+            LoweredCode, SetupLoweredCode]),
     format(atom(LibCodeWithPredicates), '~w~n~n~w', [LibCode, PredicatesCode]),
     directory_file_path(ProjectDir, 'lib.c', LibPath),
     write_file(LibPath, LibCodeWithPredicates),
@@ -207,6 +210,147 @@ generate_setup_detected_kernels_c(DetectedKernels, Code) :-
     format(atom(Code),
            'void setup_detected_wam_c_kernels(WamState* state) {\n~w\n}',
            [Body]).
+
+%% generate_setup_reverse_index_c(+Options, -CCode)
+%  Emit project-level lifecycle hooks for a declaratively configured
+%  runtime reverse CSR. The generated setup function only attaches an
+%  artifact when the normalized reverse_index phase is runtime_available
+%  and the caller provided the concrete artifact paths.
+generate_setup_reverse_index_c(Options, Code) :-
+    (   wam_c_reverse_index_setup_plan(Options, Plan)
+    ->  wam_c_reverse_index_setup_code(Plan, Code)
+    ;   wam_c_reverse_index_noop_setup_code(Code)
+    ).
+
+wam_c_reverse_index_setup_plan(Options, Plan) :-
+    resolve_wam_c_reverse_index_plan(Options,
+        wam_c_reverse_index_plan(ReverseIndex, Capabilities)),
+    wam_c_reverse_index_runtime_available(ReverseIndex, Capabilities),
+    wam_c_reverse_index_setup_backend(ReverseIndex, Backend),
+    wam_c_reverse_index_setup_paths(Backend, Options, Paths),
+    option(category_id_map(CategoryIdMap), Options, []),
+    Plan = wam_c_reverse_index_setup(Backend, Paths, CategoryIdMap).
+
+wam_c_reverse_index_runtime_available(artifact(Opts), Capabilities) :-
+    memberchk(phase(runtime_available), Opts),
+    memberchk(runtime_child_lookup(available), Capabilities).
+wam_c_reverse_index_runtime_available(csr(Opts), Capabilities) :-
+    memberchk(phase(runtime_available), Opts),
+    (   memberchk(runtime_child_lookup(available), Capabilities)
+    ;   memberchk(runtime_child_lookup(available_after_artifact_build), Capabilities)
+    ).
+
+wam_c_reverse_index_setup_backend(ReverseIndex, lmdb_offset) :-
+    wam_c_reverse_index_uses_lmdb_offset(ReverseIndex),
+    !.
+wam_c_reverse_index_setup_backend(_ReverseIndex, sorted_array).
+
+wam_c_reverse_index_setup_paths(sorted_array, Options,
+                                sorted_array(IndexPath, ValuesPath)) :-
+    option(reverse_csr_index_path(IndexPath), Options),
+    option(reverse_csr_values_path(ValuesPath), Options).
+wam_c_reverse_index_setup_paths(lmdb_offset, Options,
+                                lmdb_offset(OffsetPath, ValuesPath, DbiName)) :-
+    option(reverse_csr_offset_lmdb_path(OffsetPath), Options),
+    option(reverse_csr_values_path(ValuesPath), Options),
+    option(reverse_csr_offset_lmdb_dbi(DbiName), Options, offsets).
+
+wam_c_reverse_index_noop_setup_code(
+'bool setup_wam_c_reverse_index_artifacts(WamState* state,
+                                         WamReverseCsrArtifact* bidirectional_child_csr) {
+    (void)state;
+    (void)bidirectional_child_csr;
+    return true;
+}
+
+void teardown_wam_c_reverse_index_artifacts(WamState* state,
+                                           WamReverseCsrArtifact* bidirectional_child_csr) {
+    (void)state;
+    (void)bidirectional_child_csr;
+}
+').
+
+wam_c_reverse_index_setup_code(
+        wam_c_reverse_index_setup(Backend, Paths, CategoryIdMap),
+        Code) :-
+    wam_c_reverse_index_load_call(Backend, Paths, LoadCall),
+    wam_c_category_id_setup_lines(CategoryIdMap, IdLines),
+    format(atom(Code),
+'bool setup_wam_c_reverse_index_artifacts(WamState* state,
+                                         WamReverseCsrArtifact* bidirectional_child_csr) {
+    wam_reverse_csr_init(bidirectional_child_csr);
+    if (!(~w)) {
+        wam_reverse_csr_close(bidirectional_child_csr);
+        return false;
+    }
+~w
+    wam_attach_bidirectional_child_csr(state, bidirectional_child_csr);
+    return true;
+}
+
+void teardown_wam_c_reverse_index_artifacts(WamState* state,
+                                           WamReverseCsrArtifact* bidirectional_child_csr) {
+    wam_attach_bidirectional_child_csr(state, NULL);
+    wam_reverse_csr_close(bidirectional_child_csr);
+}
+', [LoadCall, IdLines]).
+
+wam_c_reverse_index_load_call(sorted_array,
+                              sorted_array(IndexPath, ValuesPath),
+                              LoadCall) :-
+    c_string_literal(IndexPath, IndexLit),
+    c_string_literal(ValuesPath, ValuesLit),
+    format(atom(LoadCall),
+           'wam_reverse_csr_load(bidirectional_child_csr, ~w, ~w)',
+           [IndexLit, ValuesLit]).
+wam_c_reverse_index_load_call(lmdb_offset,
+                              lmdb_offset(OffsetPath, ValuesPath, DbiName),
+                              LoadCall) :-
+    c_string_literal(OffsetPath, OffsetLit),
+    c_string_literal(ValuesPath, ValuesLit),
+    c_string_literal(DbiName, DbiLit),
+    format(atom(LoadCall),
+           'wam_reverse_csr_load_lmdb_offset(bidirectional_child_csr, ~w, ~w, ~w)',
+           [ValuesLit, OffsetLit, DbiLit]).
+
+wam_c_category_id_setup_lines([], '').
+wam_c_category_id_setup_lines(CategoryIdMap, Lines) :-
+    CategoryIdMap \= [],
+    maplist(wam_c_category_id_setup_line, CategoryIdMap, LineList),
+    atomic_list_concat(LineList, '\n', Body),
+    format(atom(Lines), '~w\n', [Body]).
+
+wam_c_category_id_setup_line(Atom-Id, Line) :-
+    !,
+    wam_c_category_id_setup_line_(Atom, Id, Line).
+wam_c_category_id_setup_line(category_id(Atom, Id), Line) :-
+    !,
+    wam_c_category_id_setup_line_(Atom, Id, Line).
+wam_c_category_id_setup_line(id(Atom, Id), Line) :-
+    !,
+    wam_c_category_id_setup_line_(Atom, Id, Line).
+
+wam_c_category_id_setup_line_(Atom, Id, Line) :-
+    integer(Id),
+    c_string_literal(Atom, AtomLit),
+    format(atom(Line),
+           '    wam_register_category_id(state, ~w, ~w);',
+           [AtomLit, Id]).
+
+c_string_literal(Value, Literal) :-
+    format(atom(Raw), '~w', [Value]),
+    atom_codes(Raw, Codes),
+    phrase(c_string_literal_codes(Codes), EscapedCodes),
+    atom_codes(Escaped, EscapedCodes),
+    format(atom(Literal), '"~w"', [Escaped]).
+
+c_string_literal_codes([]) --> [].
+c_string_literal_codes([0'\\|Rest]) --> "\\\\", c_string_literal_codes(Rest).
+c_string_literal_codes([0'"|Rest]) --> "\\\"", c_string_literal_codes(Rest).
+c_string_literal_codes([10|Rest]) --> "\\n", c_string_literal_codes(Rest).
+c_string_literal_codes([13|Rest]) --> "\\r", c_string_literal_codes(Rest).
+c_string_literal_codes([9|Rest]) --> "\\t", c_string_literal_codes(Rest).
+c_string_literal_codes([Code|Rest]) --> [Code], c_string_literal_codes(Rest).
 
 wam_c_kernel_registration_line(Key-recursive_kernel(category_ancestor, _Pred, ConfigOps), Line) :-
     wam_c_kernel_max_depth(ConfigOps, MaxDepth),
