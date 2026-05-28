@@ -101,6 +101,53 @@ test_generate_and_run_bounded_child_search :-
     ;   fail_test(Test, 'bounded child search runner output mismatch')
     ).
 
+test_child_search_uses_bidirectional_kernel :-
+    Test = 'WAM-C effective-distance: child search uses bidirectional collector',
+    (   unique_tmp_dir(child_search_codegen, OutputDir),
+        write_child_search_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(
+            FactsPath,
+            OutputDir,
+            kernels_on,
+            [ fact_storage(facts_tsv),
+              child_search(bounded),
+              max_child_expansions(4),
+              child_search_depth(1)
+            ]),
+        directory_file_path(OutputDir, 'lib.c', LibPath),
+        directory_file_path(OutputDir, 'main.c', MainPath),
+        read_file_to_string(LibPath, Lib, []),
+        read_file_to_string(MainPath, Main, []),
+        sub_string(Lib, _, _, _, 'WAM-compiled predicate: bidirectional_ancestor/5'),
+        sub_string(Main, _, _, _, 'setup_bidirectional_ancestor_5(&state);'),
+        sub_string(Main, _, _, _, 'wam_register_bidirectional_ancestor_kernel(&state, "bidirectional_ancestor/5"'),
+        sub_string(Main, _, _, _, 'wam_collect_bidirectional_ancestor_hops(state, &bidir)'),
+        sub_string(Main, _, _, _, 'path->child_hops <= 0')
+    ->  pass(Test)
+    ;   fail_test(Test, 'child search did not route through bidirectional collector')
+    ).
+
+test_generate_and_run_bounded_child_search_kernels_off :-
+    Test = 'WAM-C effective-distance: kernels_off child search matches reference path',
+    (   unique_tmp_dir(child_search_kernels_off, OutputDir),
+        write_child_search_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(
+            FactsPath,
+            OutputDir,
+            kernels_off,
+            [ fact_storage(facts_tsv),
+              child_search(bounded),
+              max_child_expansions(4),
+              child_search_depth(1)
+            ]),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project(OutputDir, Output),
+        sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
+        sub_string(Output, _, _, _, "article_a\troot\t3.000000")
+    ->  pass(Test)
+    ;   fail_test(Test, 'kernels_off child search runner output mismatch')
+    ).
+
 test_generate_and_run_weighted_child_search :-
     Test = 'WAM-C effective-distance: child search applies direction costs',
     (   unique_tmp_dir(weighted_child_search, OutputDir),
@@ -285,6 +332,8 @@ run_tests_once :-
     test_generated_runner_bounds_kernel_heap,
     test_generate_and_run_lmdb_if_available,
     test_generate_and_run_bounded_child_search,
+    test_child_search_uses_bidirectional_kernel,
+    test_generate_and_run_bounded_child_search_kernels_off,
     test_generate_and_run_weighted_child_search,
     test_generate_and_run_child_search_budget_pruning,
     format('~n=== WAM-C Effective Distance Benchmark Tests Complete ===~n'),
