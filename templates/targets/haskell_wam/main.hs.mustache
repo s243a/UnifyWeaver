@@ -505,6 +505,7 @@ runDemandBFS spec parents rootId = case spec of
       , dfrFluxScores  = Nothing
       }
 
+{{#demand_bfs_mode_cursor}}
 -- | Phase 2b.3 cursor-mode counterpart of runDemandBFS. Same dispatch
 -- shape but the demand set is computed via LMDB cursor on the
 -- category_child sub-db instead of an in-memory IntMap. No 5M-edge
@@ -529,6 +530,7 @@ runDemandBFSCursor spec env childDbName rootId = case spec of
       , dfrSortedSeeds = Nothing
       , dfrFluxScores  = Nothing
       }
+{{/demand_bfs_mode_cursor}}
 
 -- | Compute the backward-reachable demand set from a root node, with an
 -- optional hop limit. Nothing = unbounded (legacy behaviour). The bound
