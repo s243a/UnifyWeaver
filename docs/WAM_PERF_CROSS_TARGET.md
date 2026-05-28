@@ -115,6 +115,68 @@ A few things ARE universal and *are* worth keeping in mind:
   throughput, but it's hard to influence from the target codegen
   side.
 
+## Case study: the LLVM arena-cleanup fix (~18% per-query speedup)
+
+The WAM-LLVM target's `@wam_cleanup` was advertised in three places as
+a *rewind* (e.g. `wam_llvm_target.pl:1298` "free() is a no-op — memory
+is reclaimed by @wam_cleanup via arena rewind") but the implementation
+in `templates/targets/llvm_wam/state.ll.mustache` actually called
+`@wam_arena_destroy`, which `free()`s the entire 1 MiB arena buffer.
+The WASM-export wrapper invokes `@wam_cleanup` after *every* exported
+predicate call, so each query paid a `free()` plus the next iteration's
+1 MiB `malloc()` to re-establish the arena.
+
+The fix splits the two operations:
+
+- `@wam_arena_reset` — zeros the bump pointer (`@wam_arena_pos`),
+  keeps the buffer mapped. All previously-allocated `%Compound` /
+  `%List` pointers become invalid, which is the documented and
+  expected semantics.
+- `@wam_cleanup` — now calls `@wam_arena_reset`. Per-query path
+  pays one `store i64 0`.
+- `@wam_full_shutdown` (new) — calls `@wam_arena_destroy` for hosts
+  that actually want to reclaim the 1 MiB on module unload.
+
+Numbers from `/tmp/wam_dispatch_bench.pl` (single-clause arithmetic
+predicate, single `%WamState` reused across iterations, `-O2` build,
+median of 3 runs, 10M iterations):
+
+| variant                              | total   | per-iter |
+| ------------------------------------ | ------: | -------: |
+| baseline (`free` + next-iter `malloc`) | 2362 ms |   236 ns |
+| arena-reset (this PR)                | 1937 ms |   194 ns |
+
+This is independent of the LLVM optimization level — the win comes
+from removing the per-iter `malloc(1 MiB)` syscall path, not from
+LLVM IR shape.
+
+## LLVM hot-path inline attributes
+
+A second LLVM-target change: every register / heap / trail / deref
+helper in `templates/targets/llvm_wam/{value,state}.ll.mustache`
+(roughly 25 functions, e.g. `@wam_get_reg`, `@wam_set_reg`,
+`@wam_inc_pc`, `@wam_deref_value`, `@wam_trail_binding`,
+`@value_is_unbound`, `@value_tag`) is now tagged
+`alwaysinline nounwind`, plus `readnone` on the pure constructors
+and inspectors. `@value_equals` (recursive) uses `inlinehint
+readonly` instead of `alwaysinline` so LLVM can still inline the
+non-recursive call sites without rejecting the IR.
+
+**Perf impact at `-O2`: essentially zero.** Modern clang's inliner is
+aggressive enough that it already inlines these small helpers without
+hints — `opt -O2` of the generated IR with the hints stripped still
+yields the same `@step` body. The hints matter for:
+
+1. **`-O0` / `-O1` development builds** — the always-inline pass runs
+   independent of the inliner heuristic, so the inlined dispatch loop
+   stays consistent across optimization levels.
+2. **IR review** — the dispatch loop's intent ("these are inline
+   primitives, not external calls") is now legible in the source
+   template, matching what the C runtime gets from `static inline`
+   in `wam_c_runtime/wam_runtime.h:474+` (`resolve_reg`,
+   `trail_binding`, `wam_deref_ptr`) and what F# gets from
+   `let inline`.
+
 ## Related
 
 - [WAM_FSHARP_TARGET.md](WAM_FSHARP_TARGET.md) — the F# WAM target's
@@ -126,3 +188,8 @@ A few things ARE universal and *are* worth keeping in mind:
 - [`tests/core/test_wam_fsharp_lowered_bench.pl`](../tests/core/test_wam_fsharp_lowered_bench.pl)
   — the F# benchmark harness; methodology (5 warm-up rounds, forced
   GC, median-of-3) is reusable for other targets.
+- [`tests/core/test_wam_llvm_benchmark.pl`](../tests/core/test_wam_llvm_benchmark.pl)
+  — the LLVM foreign-kernel BFS / Dijkstra harness. Per-iter timings
+  for that bench did not move with the arena-reset fix because the
+  kernels run inside their own helpers and do not exercise the
+  per-query `@wam_cleanup` path.

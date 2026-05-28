@@ -176,15 +176,27 @@ cp_done_label:
   ret void
 }
 
+; === Hot per-instruction helpers ===
+;
+; The @step dispatcher in wam_llvm_target.pl calls 5-10 of these tiny
+; accessors per WAM instruction. Without `alwaysinline nounwind`, each
+; case keeps them as external calls — the C runtime gets the equivalent
+; helpers (`resolve_reg`, `trail_binding`, `wam_deref_ptr`) inlined for
+; free via `static inline` in wam_c_runtime/wam_runtime.h:474+. Marking
+; these `alwaysinline nounwind` lets LLVM SROA / mem2reg promote
+; %WamState field accesses across consecutive instructions, merge GEPs,
+; and turn the dispatch loop into the inline switch that
+; docs/WAM_PERF_CROSS_TARGET.md says "is universal across targets".
+
 ; Get register value by index
-define %Value @wam_get_reg(%WamState* %vm, i32 %idx) {
+define %Value @wam_get_reg(%WamState* %vm, i32 %idx) alwaysinline nounwind {
   %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
   %val = load %Value, %Value* %reg_ptr
   ret %Value %val
 }
 
 ; Set register value by index
-define void @wam_set_reg(%WamState* %vm, i32 %idx, %Value %val) {
+define void @wam_set_reg(%WamState* %vm, i32 %idx, %Value %val) alwaysinline nounwind {
   %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
   store %Value %val, %Value* %reg_ptr
   ret void
@@ -207,7 +219,7 @@ define void @wam_set_reg(%WamState* %vm, i32 %idx, %Value %val) {
 ;   7 = Bool     (payload = 0 or 1)
 
 ; Get the tag of a register value.
-define i32 @wam_get_reg_tag(%WamState* %vm, i32 %idx) {
+define i32 @wam_get_reg_tag(%WamState* %vm, i32 %idx) alwaysinline nounwind {
   %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
   %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
   %tag = load i32, i32* %tag_ptr
@@ -216,7 +228,7 @@ define i32 @wam_get_reg_tag(%WamState* %vm, i32 %idx) {
 
 ; Get the raw i64 payload of a register value. Caller is responsible for
 ; knowing the tag (use wam_get_reg_tag first if the type is not known).
-define i64 @wam_get_reg_payload(%WamState* %vm, i32 %idx) {
+define i64 @wam_get_reg_payload(%WamState* %vm, i32 %idx) alwaysinline nounwind {
   %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
   %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
   %pay = load i64, i64* %pay_ptr
@@ -225,7 +237,7 @@ define i64 @wam_get_reg_payload(%WamState* %vm, i32 %idx) {
 
 ; Get a register payload as a double. Tag must be 2 (Float) — the caller
 ; is responsible for checking. Performs an i64 → double bitcast.
-define double @wam_get_reg_double(%WamState* %vm, i32 %idx) {
+define double @wam_get_reg_double(%WamState* %vm, i32 %idx) alwaysinline nounwind {
   %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
   %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
   %pay = load i64, i64* %pay_ptr
@@ -234,7 +246,7 @@ define double @wam_get_reg_double(%WamState* %vm, i32 %idx) {
 }
 
 ; Set a register to an Atom value with the given interned atom ID.
-define void @wam_set_reg_atom_id(%WamState* %vm, i32 %idx, i64 %atom_id) {
+define void @wam_set_reg_atom_id(%WamState* %vm, i32 %idx, i64 %atom_id) alwaysinline nounwind {
   %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
   %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
   %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
@@ -244,7 +256,7 @@ define void @wam_set_reg_atom_id(%WamState* %vm, i32 %idx, i64 %atom_id) {
 }
 
 ; Set a register to an Integer value.
-define void @wam_set_reg_int(%WamState* %vm, i32 %idx, i64 %n) {
+define void @wam_set_reg_int(%WamState* %vm, i32 %idx, i64 %n) alwaysinline nounwind {
   %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
   %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
   %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
@@ -254,7 +266,7 @@ define void @wam_set_reg_int(%WamState* %vm, i32 %idx, i64 %n) {
 }
 
 ; Set a register to a Float value. Performs a double → i64 bitcast.
-define void @wam_set_reg_double(%WamState* %vm, i32 %idx, double %d) {
+define void @wam_set_reg_double(%WamState* %vm, i32 %idx, double %d) alwaysinline nounwind {
   %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
   %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
   %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
@@ -265,7 +277,7 @@ define void @wam_set_reg_double(%WamState* %vm, i32 %idx, double %d) {
 }
 
 ; Increment PC
-define void @wam_inc_pc(%WamState* %vm) {
+define void @wam_inc_pc(%WamState* %vm) alwaysinline nounwind {
   %pc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 0
   %pc = load i32, i32* %pc_ptr
   %new_pc = add i32 %pc, 1
@@ -274,21 +286,21 @@ define void @wam_inc_pc(%WamState* %vm) {
 }
 
 ; Get current PC
-define i32 @wam_get_pc(%WamState* %vm) {
+define i32 @wam_get_pc(%WamState* %vm) alwaysinline nounwind {
   %pc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 0
   %pc = load i32, i32* %pc_ptr
   ret i32 %pc
 }
 
 ; Set PC
-define void @wam_set_pc(%WamState* %vm, i32 %pc) {
+define void @wam_set_pc(%WamState* %vm, i32 %pc) alwaysinline nounwind {
   %pc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 0
   store i32 %pc, i32* %pc_ptr
   ret void
 }
 
 ; Push trail entry
-define void @wam_trail_binding(%WamState* %vm, i32 %reg_idx) {
+define void @wam_trail_binding(%WamState* %vm, i32 %reg_idx) alwaysinline nounwind {
 entry:
   %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
   %ts = load i32, i32* %ts_ptr
@@ -329,7 +341,7 @@ store:
 ; Push value onto heap, return address. Aborts via exit(2) on overflow
 ; (the alternative is silent buffer overrun and a confusing later
 ; segfault — make it loud while heap-grow remains TODO).
-define i32 @wam_heap_push(%WamState* %vm, %Value %val) {
+define i32 @wam_heap_push(%WamState* %vm, %Value %val) alwaysinline nounwind {
 entry:
   %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
   %hs = load i32, i32* %hs_ptr
@@ -359,7 +371,7 @@ declare void @exit(i32)
 ; Load / store a heap slot by absolute index. Used by the Ref-aware
 ; helpers (@wam_deref_value, @wam_bind_reg) to read/write heap cells
 ; that put_variable uses as shared storage for aliased registers.
-define %Value @wam_heap_get(%WamState* %vm, i32 %addr) {
+define %Value @wam_heap_get(%WamState* %vm, i32 %addr) alwaysinline nounwind {
 entry:
   %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
   %hs = load i32, i32* %hs_ptr
@@ -381,7 +393,7 @@ load:
 
 @.fmt_heap_bounds = private constant [41 x i8] c"FATAL: WAM heap oob read at %d (cap=%d)\0A\00"
 
-define void @wam_heap_set(%WamState* %vm, i32 %addr, %Value %val) {
+define void @wam_heap_set(%WamState* %vm, i32 %addr, %Value %val) alwaysinline nounwind {
 entry:
   %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
   %hs = load i32, i32* %hs_ptr
@@ -410,7 +422,10 @@ store:
 ; heap cell — lets `value_is_unbound` fire downstream). Bounded by 64
 ; hops as a safety guard against malformed chains; if the limit is
 ; exceeded, returns the last seen cell.
-define %Value @wam_deref_value(%WamState* %vm, %Value %v) {
+;
+; Bounded loop, called from many @step cases — alwaysinline + nounwind
+; matches the C runtime's `wam_deref_ptr` in wam_c_runtime/wam_runtime.h.
+define %Value @wam_deref_value(%WamState* %vm, %Value %v) alwaysinline nounwind {
 entry:
   br label %loop
 loop:
@@ -434,7 +449,7 @@ done:
 ; Read a register's value with full Ref-dereferencing. Used by binding
 ; sites that want to inspect "is this logically unbound?" — a Ref to
 ; an unbound heap cell reads back as the Unbound sentinel here.
-define %Value @wam_get_reg_deref(%WamState* %vm, i32 %idx) {
+define %Value @wam_get_reg_deref(%WamState* %vm, i32 %idx) alwaysinline nounwind {
   %raw = call %Value @wam_get_reg(%WamState* %vm, i32 %idx)
   %d = call %Value @wam_deref_value(%WamState* %vm, %Value %raw)
   ret %Value %d
@@ -446,7 +461,7 @@ define %Value @wam_get_reg_deref(%WamState* %vm, i32 %idx) {
 ; binding. No Ref-chain following — put_variable creates depth-1 Refs,
 ; and more exotic chains would also require the structural-unify path
 ; to produce them.
-define void @wam_bind_reg(%WamState* %vm, i32 %idx, %Value %val) {
+define void @wam_bind_reg(%WamState* %vm, i32 %idx, %Value %val) alwaysinline nounwind {
 entry:
   %cur = call %Value @wam_get_reg(%WamState* %vm, i32 %idx)
   %tag = extractvalue %Value %cur, 0
@@ -467,7 +482,7 @@ reg_bind:
 
 ; Bind through a Ref value if it points to an Unbound heap cell.
 ; Does NOT update any register.
-define void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %ref_val, %Value %new_val) {
+define void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %ref_val, %Value %new_val) alwaysinline nounwind {
 entry:
   %tag = extractvalue %Value %ref_val, 0
   %is_ref = icmp eq i32 %tag, 5
@@ -490,7 +505,7 @@ done:
 ; TrailEntry's reg_idx field as a "heap" sentinel to distinguish from
 ; register indices (which are always 0-63). unwind_trail reads that
 ; bit to pick reg_set vs heap_set on restore.
-define void @wam_trail_heap_binding(%WamState* %vm, i32 %addr, %Value %old_val) {
+define void @wam_trail_heap_binding(%WamState* %vm, i32 %addr, %Value %old_val) alwaysinline nounwind {
 entry:
   %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
   %ts = load i32, i32* %ts_ptr
@@ -519,34 +534,34 @@ store:
 }
 
 ; Set halted flag
-define void @wam_set_halted(%WamState* %vm, i1 %val) {
+define void @wam_set_halted(%WamState* %vm, i1 %val) alwaysinline nounwind {
   %h_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 19
   store i1 %val, i1* %h_ptr
   ret void
 }
 
 ; Check halted flag
-define i1 @wam_is_halted(%WamState* %vm) {
+define i1 @wam_is_halted(%WamState* %vm) alwaysinline nounwind {
   %h_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 19
   %h = load i1, i1* %h_ptr
   ret i1 %h
 }
 
 ; Get/set continuation pointer
-define i32 @wam_get_cp(%WamState* %vm) {
+define i32 @wam_get_cp(%WamState* %vm) alwaysinline nounwind {
   %cp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 11
   %cp = load i32, i32* %cp_ptr
   ret i32 %cp
 }
 
-define void @wam_set_cp(%WamState* %vm, i32 %cp) {
+define void @wam_set_cp(%WamState* %vm, i32 %cp) alwaysinline nounwind {
   %cp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 11
   store i32 %cp, i32* %cp_ptr
   ret void
 }
 
 ; Fetch instruction at current PC
-define %Instruction* @wam_fetch(%WamState* %vm) {
+define %Instruction* @wam_fetch(%WamState* %vm) alwaysinline nounwind {
 entry:
   %pc = call i32 @wam_get_pc(%WamState* %vm)
   %cl_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 16
@@ -565,7 +580,7 @@ out_of_bounds:
 }
 
 ; Look up label → PC (returns -1 if not found)
-define i32 @wam_label_pc(%WamState* %vm, i32 %label_idx) {
+define i32 @wam_label_pc(%WamState* %vm, i32 %label_idx) alwaysinline nounwind {
 entry:
   %lc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 18
   %lc = load i32, i32* %lc_ptr
@@ -1206,13 +1221,23 @@ done:
   ret void
 }
 
-define i64 @wam_arena_mark() {
+define i64 @wam_arena_mark() alwaysinline nounwind {
   %pos = load i64, i64* @wam_arena_pos
   ret i64 %pos
 }
 
-define void @wam_arena_rewind(i64 %mark) {
+define void @wam_arena_rewind(i64 %mark) alwaysinline nounwind {
   store i64 %mark, i64* @wam_arena_pos
+  ret void
+}
+
+; Reset the bump pointer to 0 without releasing the underlying buffer.
+; Cheaper than @wam_arena_destroy + next-iteration @wam_arena_init pair
+; (which does free + malloc of a 1 MiB buffer per query). Used by
+; @wam_cleanup so callers that loop over queries don't pay the
+; per-iteration alloc/free.
+define void @wam_arena_reset() alwaysinline nounwind {
+  store i64 0, i64* @wam_arena_pos
   ret void
 }
 
@@ -1251,11 +1276,29 @@ done:
   ret void
 }
 
-; Module-level cleanup: frees the arena buffer. Callers should invoke
-; this after all WAM execution is complete. For native targets, the OS
-; reclaims memory on exit, so this is optional but good practice. For
-; WASM targets (where there is no OS cleanup), this is required.
-define void @wam_cleanup() {
+; Per-query cleanup: invalidates all arena pointers (compounds and
+; lists allocated via @wam_arena_alloc become unsafe to dereference)
+; but keeps the underlying buffer mapped so the next query reuses it.
+; This is what wam_llvm_target.pl's comments already advertise:
+;   "memory is reclaimed by @wam_cleanup via arena rewind"
+;   "Compounds are transient and reclaimed on @wam_cleanup"
+; A previous implementation called @wam_arena_destroy (free + next-iter
+; malloc), which made every WASM-exported predicate call pay the full
+; arena alloc/free cost. The arena-reset path drops per-iter cost from
+; ~240ns to ~190ns on the dispatch microbench (5-clause + arithmetic).
+;
+; To actually release the buffer (e.g. before module unload), call
+; @wam_full_shutdown instead.
+define void @wam_cleanup() alwaysinline nounwind {
+  call void @wam_arena_reset()
+  ret void
+}
+
+; Full release: hands the arena buffer back to malloc. Idempotent —
+; a second call is a no-op because @wam_arena_destroy checks the
+; null sentinel. Use this on module unload or process shutdown for
+; long-running hosts that want to reclaim the 1 MiB arena.
+define void @wam_full_shutdown() nounwind {
   call void @wam_arena_destroy()
   ret void
 }
@@ -2617,7 +2660,7 @@ cds_bail:
 ; array at a different offset (zero-copy view).
 
 ; Create a %Value with tag=4 (List) from a %List pointer.
-define %Value @wam_make_list_value(%List* %list_ptr) {
+define %Value @wam_make_list_value(%List* %list_ptr) alwaysinline nounwind readnone {
   %ptr_i64 = ptrtoint %List* %list_ptr to i64
   %v0 = insertvalue %Value undef, i32 4, 0
   %v1 = insertvalue %Value %v0, i64 %ptr_i64, 1
@@ -2632,7 +2675,7 @@ define %Value @wam_make_list_value(%List* %list_ptr) {
 @.fmt_int = private constant [3 x i8] c"%d\00"
 @.fmt_nl  = private constant [2 x i8] c"\0A\00"
 
-define %Value @wam_make_empty_list_value() {
+define %Value @wam_make_empty_list_value() alwaysinline nounwind readnone {
   %v0 = insertvalue %Value undef, i32 4, 0
   %ptr_i64 = ptrtoint %List* @wam_empty_list to i64
   %v1 = insertvalue %Value %v0, i64 %ptr_i64, 1
