@@ -86,26 +86,38 @@ host_target_triple(Triple) :-
 
 test_lowerability :-
     format('--- lowerability gate ---~n'),
-    % Single-clause deterministic predicates should lower. The first 4
-    % are simple register/builtin shapes (added in PR M1); the latter 3
-    % exercise the pattern-matching extension (get_structure / get_list
-    % / unify_variable / unify_constant).
+    % Single-clause deterministic predicates lower as single_clause.
+    % The first 4 are simple register/builtin shapes (M1); the latter
+    % 3 exercise the pattern-matching extension (M2 — get_structure /
+    % get_list / unify_variable / unify_constant).
     forall(member(PI,
                   [lw_const/2, lw_unify/2, lw_add/2, lw_multi/2,
                    lw_pair_first/2, lw_head/2, lw_lit_pair/1]),
         ( compile_predicate_to_wam(user:PI, [], Wam),
-          ( wam_llvm_lowerable(PI, Wam, R)
-          -> format('  PASS: ~w lowerable (~w)~n', [PI, R])
+          ( wam_llvm_lowerable(PI, Wam, Shape)
+          -> ( Shape == single_clause
+             -> format('  PASS: ~w lowerable (single_clause)~n', [PI])
+             ;  format('  FAIL: ~w expected single_clause shape, got ~w~n',
+                       [PI, Shape]),
+                throw(unexpected_shape(PI, Shape))
+             )
           ;  format('  FAIL: ~w should be lowerable~n', [PI]),
              throw(unexpected_unlowerable(PI))
           )
         )),
-    % Multi-clause should NOT lower (try_me_else present).
+    % Multi-clause first-arg-indexed predicates are now lowerable as
+    % multi_clause_c1 (M3) — clause 1 becomes the fast path, the full
+    % bytecode handles clauses 2+ via the dispatcher's slow path.
     compile_predicate_to_wam(user:lw_choice/2, [], MultiWam),
-    ( wam_llvm_lowerable(lw_choice/2, MultiWam, _)
-    -> format('  FAIL: lw_choice/2 should NOT be lowerable (multi-clause)~n'),
-       throw(unexpected_lowerable(lw_choice/2))
-    ;  format('  PASS: lw_choice/2 correctly rejected (multi-clause)~n')
+    ( wam_llvm_lowerable(lw_choice/2, MultiWam, MultiShape)
+    -> ( MultiShape == multi_clause_c1
+       -> format('  PASS: lw_choice/2 lowerable (multi_clause_c1)~n')
+       ;  format('  FAIL: lw_choice/2 expected multi_clause_c1, got ~w~n',
+                 [MultiShape]),
+          throw(unexpected_shape(lw_choice/2, MultiShape))
+       )
+    ;  format('  FAIL: lw_choice/2 should be lowerable as multi_clause_c1~n'),
+       throw(unexpected_unlowerable(lw_choice/2))
     ).
 
 % ============================================================================
@@ -151,12 +163,19 @@ test_ir_structure :-
     -> format('  PASS: lowered lw_lit_pair_1 (unify_constant path)~n')
     ;  throw(missing_lowered(lw_lit_pair_1))
     ),
-    % lw_choice/2 is multi-clause → must fall back to WAM bytecode path,
-    % so its `@lw_choice` entry is the WAM entry func, NOT a lowered one.
+    % lw_choice/2 is multi-clause → under M3 it gets BOTH a lowered
+    % clause-1 fast path AND a hybrid dispatcher @lw_choice that
+    % falls back to the full bytecode on failure. Verify both
+    % symbols are present.
     ( sub_string(Src, _, _, _, "define i1 @lowered_lw_choice_2")
-    -> format('  FAIL: lw_choice/2 should NOT have lowered emission~n'),
-       throw(unexpected_lowered_emission(lw_choice_2))
-    ;  format('  PASS: lw_choice_2 correctly stays on bytecode path~n')
+    -> format('  PASS: hybrid lowered_lw_choice_2 fast-path present~n')
+    ;  format('  FAIL: hybrid lowered_lw_choice_2 missing~n'),
+       throw(missing_hybrid_fast(lw_choice_2))
+    ),
+    ( sub_string(Src, _, _, _, "M3 hybrid dispatcher")
+    -> format('  PASS: hybrid dispatcher @lw_choice present~n')
+    ;  format('  FAIL: hybrid dispatcher @lw_choice missing~n'),
+       throw(missing_hybrid_dispatcher(lw_choice_2))
     ),
     catch(delete_file(LLPath), _, true),
     clear_llvm_foreign_kernel_specs.
@@ -276,7 +295,78 @@ test_execution :-
     % which is already covered indirectly by the wider regression suite.
     run_exec_test(lw_pair_first, 6, 0),
     run_exec_test(lw_head, 6, 0),
-    test_exec_unary(lw_lit_pair, 6, 0).
+    test_exec_unary(lw_lit_pair, 6, 0),
+    % --- M3 hybrid dispatcher coverage ---
+    %
+    % lw_choice/2 has 3 clauses indexed on A1. Calling the dispatcher
+    % `@lw_choice` (the public entry) with each A1 value verifies:
+    %
+    %   A1 = 1 → fast path (lowered clause 1) hits, returns true.
+    %   A1 = 2 → fast path fails on `get_constant 1, A1` mismatch;
+    %            slow path runs full bytecode, clause 2 succeeds.
+    %   A1 = 3 → same as A1=2 but clause 3 succeeds in the slow path.
+    %   A1 = 9 → both paths fail (no matching clause), returns false.
+    %
+    % `run_exec_test_pred/4` calls the public entry `@<pred>` directly
+    % (not @lowered_*), which is what external WAM users do.
+    test_hybrid_dispatch(lw_choice, 1, 1, success),
+    test_hybrid_dispatch(lw_choice, 2, 1, success),
+    test_hybrid_dispatch(lw_choice, 3, 1, success),
+    test_hybrid_dispatch(lw_choice, 9, 1, failure).
+
+%% test_hybrid_dispatch(+Pred, +A1Value, +A1Tag, +Expected)
+%
+%  Compile a hybrid predicate and call its public entry `@<pred>` with
+%  the given A1 (passing A2 as unbound). Expected ∈ {success, failure}.
+test_hybrid_dispatch(Pred, A1Val, A1Tag, Expected) :-
+    format('  hybrid dispatch ~w(~w, _) → ~w...~n', [Pred, A1Val, Expected]),
+    clear_llvm_foreign_kernel_specs,
+    tmp_file_stream(text, LLPath, S0), close(S0),
+    host_target_triple(Triple),
+    write_wam_llvm_project(
+        [user:Pred/2],
+        [ module_name('lwhybrid'),
+          target_triple(Triple),
+          target_datalayout(''),
+          emit_mode(functions)
+        ],
+        LLPath),
+    atom_string(Pred, PredStr),
+    ( Expected == success -> ExpectedExit = 0 ; ExpectedExit = 1 ),
+    format(atom(DriverIR),
+'define i32 @main() {
+entry:
+  %a1_0 = insertvalue %Value undef, i32 ~w, 0
+  %a1 = insertvalue %Value %a1_0, i64 ~w, 1
+  %a2_0 = insertvalue %Value undef, i32 6, 0
+  %a2 = insertvalue %Value %a2_0, i64 0, 1
+  %ok = call i1 @~w(%Value %a1, %Value %a2)
+  %ret = select i1 %ok, i32 0, i32 1
+  ret i32 %ret
+}
+', [A1Tag, A1Val, PredStr]),
+    setup_call_cleanup(open(LLPath, append, Out),
+        ( write(Out, '\n'), write(Out, DriverIR) ), close(Out)),
+    atom_concat(LLPath, '.o', OPath),
+    atom_concat(LLPath, '.out', BinPath),
+    format(atom(LlcCmd),
+        'llc -O2 -filetype=obj -relocation-model=pic ~w -o ~w 2>/dev/null',
+        [LLPath, OPath]),
+    shell(LlcCmd, _),
+    format(atom(ClangCmd), 'clang -O2 ~w -o ~w 2>/dev/null', [OPath, BinPath]),
+    shell(ClangCmd, _),
+    shell(BinPath, RunExit),
+    ( RunExit =:= ExpectedExit
+    -> format('    PASS: @~w(~w, _) → ~w (exit=~w)~n',
+              [Pred, A1Val, Expected, RunExit])
+    ;  format('    FAIL: @~w(~w, _) expected exit=~w, got ~w~n',
+              [Pred, A1Val, ExpectedExit, RunExit]),
+       throw(hybrid_dispatch_failed(Pred, A1Val, Expected, RunExit))
+    ),
+    catch(delete_file(LLPath), _, true),
+    catch(delete_file(OPath), _, true),
+    catch(delete_file(BinPath), _, true),
+    clear_llvm_foreign_kernel_specs.
 
 % Same as run_exec_test but for 1-arity preds.
 test_exec_unary(PredAtom, A1Tag, A1Pay) :-
