@@ -242,6 +242,86 @@ declare_component(source, my_chart, custom_chart, [
 
 See [custom_chart.pl](../src/unifyweaver/targets/typescript_runtime/custom_chart.pl) for implementation.
 
+## Lowered Emit Mode (WAM-LLVM hybrid target)
+
+The WAM-LLVM hybrid target (`wam_llvm_target`, distinct from the legacy
+`llvm_target` documented above) compiles every predicate to WAM
+bytecode and runs it through the `@step` switch dispatcher by default.
+With `emit_mode(functions)` or `emit_mode(mixed([P/A, ...]))`, eligible
+predicates are instead compiled to standalone LLVM functions whose
+bodies inline the WAM instruction sequence as straight-line basic
+blocks. No bytecode array, no `@step` switch, no `@run_loop`
+trampoline for those predicates.
+
+```prolog
+:- use_module('src/unifyweaver/targets/wam_llvm_target',
+              [write_wam_llvm_project/3]).
+
+:- dynamic add1/2.
+add1(X, R) :- R is X + 1.
+
+:- initialization((
+    write_wam_llvm_project(
+        [user:add1/2],
+        [ module_name('add1_mod'),
+          target_triple('x86_64-pc-linux-gnu'),
+          emit_mode(functions)    %% <-- opt in to lowered emission
+        ],
+        '/tmp/add1.ll'),
+    halt
+)).
+```
+
+The generated module defines `@lowered_add1_2(%Value %a1, %Value %a2)`
+whose body is `entry → pc_0 → pc_1 → ... → lowered_succeed`, one block
+per WAM instruction.
+
+### Eligibility gate
+
+Mirrors `wam_fsharp_lowered_emitter.pl` / `wam_rust_lowered_emitter.pl`:
+
+1. **Single-clause only** — predicates with `try_me_else` /
+   `retry_me_else` / `trust_me` in the bytecode (multi-clause + WAM
+   indexing) are rejected. They stay on the bytecode path where the
+   choice-point machinery handles backtracking.
+2. **Supported instructions only** — the initial supported set is
+   `get_constant`, `get_variable`, `get_value`, `put_constant`,
+   `put_variable`, `put_value`, `put_structure`, `set_constant`,
+   `set_variable`, `set_value`, `allocate`, `deallocate`,
+   `builtin_call`, `proceed`, `fail`. Anything else (`call`,
+   `execute`, `get_structure`, `get_list`, etc.) makes the gate fail
+   silently and the predicate falls back to the bytecode path.
+
+Predicates that fail the gate emit a `<pred>/<arity>: WAM fallback`
+log line instead of `<pred>/<arity>: lowered LLVM emission`, and the
+generated module still works — `emit_mode(functions)` is "try to
+lower, fall back to bytecode if we can't", not "fail compilation if
+some predicate isn't lowerable".
+
+### Calling convention
+
+The lowered function has the *same* signature as the WAM-fallback
+entry function — `define i1 @<name>(%Value %a1, %Value %a2, ...)`
+— and allocates its own `%WamState` internally. External drivers
+that invoke either form by name don't need to know which path the
+predicate took.
+
+### Status
+
+- M1 (this release): single-clause deterministic predicates with the
+  supported instruction set above.
+- Future: multi-clause via "lowered clause-1 + bytecode clause-2+"
+  (mirrors the F# emit-mode pattern), `call`/`execute` lowered to
+  direct `call i1 @<other_pred>`, indirect dispatch through a
+  caller-supplied %WamState pointer to avoid the per-call state
+  alloc.
+
+### Tests
+
+- [`tests/core/test_wam_llvm_lowered_emitter.pl`](../tests/core/test_wam_llvm_lowered_emitter.pl)
+  — lowerability gate, IR structure, `llvm-as` validation, and
+  `llc -O2 + clang -O2 + run` execution tests.
+
 ## See Also
 
 - [llvm_target_design.md](./proposals/llvm_target_design.md) - Design doc
@@ -249,3 +329,4 @@ See [custom_chart.pl](../src/unifyweaver/targets/typescript_runtime/custom_chart
 - [Cross-Target Glue Book](../education/book-07-cross-target-glue/) - FFI examples
 - [GO_TARGET.md](./GO_TARGET.md) - Go target
 - [RUST_TARGET.md](./RUST_TARGET.md) - Rust target
+- [WAM_FSHARP_TARGET.md](./WAM_FSHARP_TARGET.md#emit-modes) - F# emit-mode reference
