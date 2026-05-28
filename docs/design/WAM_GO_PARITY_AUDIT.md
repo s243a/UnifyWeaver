@@ -21,7 +21,7 @@ current cross-target builtin/runtime baseline.
 | Univ | `=../2` compose/decompose | `=../2` compose/decompose | Present |
 | Copying | `copy_term/2` with fresh variables and preserved sharing | `copy_term/2` with fresh variables and preserved sharing | Present |
 | Control | `true/0`, `fail/0`, `!/0`, `\+/1`, `CutIte` | Same baseline, with broader isolated-goal NAF in Haskell/Python | Present for current baseline, including isolated user-goal NAF and race-to-true over multi-clause WAM targets |
-| IO | `write/1`, `display/1`, `nl/0` | `write/1`, `display/1`, `nl/0` | Present |
+| IO | `write/1`, `display/1`, `nl/0`, `tab/1` | `write/1`, `display/1`, `nl/0`; R/C++ also cover `tab/1` | Present for current baseline plus tab output |
 
 ## Immediate Findings
 
@@ -88,6 +88,10 @@ current cross-target builtin/runtime baseline.
   no-separator padding, separator plus pad trimming, multiple separators,
   numeric source conversion, unbound input failure, and bound-output mismatch
   failure, matching the R/C++ deterministic split-string surface.
+- `tab/1` is now covered by the generated Go WAM builtin E2E test for
+  nonnegative space output, zero-width success, negative integer failure,
+  unbound argument failure, and non-integer failure, matching the R/C++
+  basic I/O polish surface.
 - Bidirectional `succ/2` is now covered by the generated Go WAM builtin E2E
   test for forward binding, reverse binding, matching integer pairs, mismatch
   failure, negative predecessor failure, non-positive successor failure, and

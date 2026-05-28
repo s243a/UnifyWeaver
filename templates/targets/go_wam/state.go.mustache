@@ -1227,6 +1227,13 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "nl/0":
 		fmt.Println()
 		return true
+	case "tab/1":
+		count, ok := vm.deref(arg1).(*Integer)
+		if !ok || count.Val < 0 {
+			return false
+		}
+		fmt.Print(strings.Repeat(" ", int(count.Val)))
+		return true
 	case "true/0":
 		return true
 	case "fail/0":
