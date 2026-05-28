@@ -773,6 +773,7 @@ emit_instr(set_variable(XnStr), N, Next, Block) :- !,
 emit_instr(allocate, N, Next, Block) :- !,
     format(atom(L0), 'pc_~w:', [N]),
     L1 = '  ; allocate (env frame push: type=0, save CP, snapshot regs[16..63])',
+    L_ensure = '  call void @wam_stack_ensure_capacity(%WamState* %vm)',
     format(atom(L2),
 '  %al.~w.ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3',
         [N]),
@@ -830,7 +831,7 @@ emit_instr(allocate, N, Next, Block) :- !,
         [N, N]),
     format(atom(L21), '  br label %~w', [Next]),
     atomic_list_concat(
-        [L0, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10,
+        [L0, L1, L_ensure, L2, L3, L4, L5, L6, L7, L8, L9, L10,
          L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21],
         '\n', Block).
 

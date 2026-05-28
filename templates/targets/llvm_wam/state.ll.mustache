@@ -299,22 +299,44 @@ define void @wam_set_pc(%WamState* %vm, i32 %pc) alwaysinline nounwind {
   ret void
 }
 
-; Push trail entry
-define void @wam_trail_binding(%WamState* %vm, i32 %reg_idx) alwaysinline nounwind {
+; M5: Doubling-realloc grow for the trail. Called by @wam_trail_binding
+; (and @wam_trail_heap_binding) when the size hits the current cap.
+; CPs hold trail indices, not pointers, so post-realloc indices remain
+; valid; nothing else needs to be patched up.
+define void @wam_trail_grow(%WamState* %vm) {
+entry:
+  %tc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 10
+  %tc = load i32, i32* %tc_ptr
+  %new_tc = mul i32 %tc, 2
+  %new_tc_i64 = zext i32 %new_tc to i64
+  %elem_size = ptrtoint %TrailEntry* getelementptr (%TrailEntry, %TrailEntry* null, i32 1) to i64
+  %new_bytes = mul i64 %new_tc_i64, %elem_size
+  %trail_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
+  %old_trail = load %TrailEntry*, %TrailEntry** %trail_ptr
+  %old_i8 = bitcast %TrailEntry* %old_trail to i8*
+  %new_i8 = call i8* @realloc(i8* %old_i8, i64 %new_bytes)
+  %new_trail = bitcast i8* %new_i8 to %TrailEntry*
+  store %TrailEntry* %new_trail, %TrailEntry** %trail_ptr
+  store i32 %new_tc, i32* %tc_ptr
+  ret void
+}
+
+; Push trail entry (M5: grows automatically when at cap).
+define void @wam_trail_binding(%WamState* %vm, i32 %reg_idx) nounwind {
 entry:
   %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
   %ts = load i32, i32* %ts_ptr
   %tc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 10
   %tc = load i32, i32* %tc_ptr
-  %ovf = icmp sge i32 %ts, %tc
-  br i1 %ovf, label %abort, label %store
+  %need_grow = icmp sge i32 %ts, %tc
+  br i1 %need_grow, label %grow, label %store
 
-abort:
-  call i32 (i8*, ...) @printf(i8* getelementptr ([42 x i8], [42 x i8]* @.fmt_trail_oom, i32 0, i32 0), i32 %ts, i32 %tc)
-  call void @exit(i32 4)
-  unreachable
+grow:
+  call void @wam_trail_grow(%WamState* %vm)
+  br label %store
 
 store:
+  ; Reload trail pointer — realloc may have moved it.
   %trail_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
   %trail_arr = load %TrailEntry*, %TrailEntry** %trail_arr_ptr
   %entry_ptr = getelementptr %TrailEntry, %TrailEntry* %trail_arr, i32 %ts
@@ -505,21 +527,21 @@ done:
 ; TrailEntry's reg_idx field as a "heap" sentinel to distinguish from
 ; register indices (which are always 0-63). unwind_trail reads that
 ; bit to pick reg_set vs heap_set on restore.
-define void @wam_trail_heap_binding(%WamState* %vm, i32 %addr, %Value %old_val) alwaysinline nounwind {
+define void @wam_trail_heap_binding(%WamState* %vm, i32 %addr, %Value %old_val) nounwind {
 entry:
   %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
   %ts = load i32, i32* %ts_ptr
   %tc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 10
   %tc = load i32, i32* %tc_ptr
-  %ovf = icmp sge i32 %ts, %tc
-  br i1 %ovf, label %abort, label %store
+  %need_grow = icmp sge i32 %ts, %tc
+  br i1 %need_grow, label %grow, label %store
 
-abort:
-  call i32 (i8*, ...) @printf(i8* getelementptr ([42 x i8], [42 x i8]* @.fmt_trail_oom, i32 0, i32 0), i32 %ts, i32 %tc)
-  call void @exit(i32 4)
-  unreachable
+grow:
+  call void @wam_trail_grow(%WamState* %vm)
+  br label %store
 
 store:
+  ; Reload trail pointer — realloc may have moved it.
   %trail_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
   %trail_arr = load %TrailEntry*, %TrailEntry** %trail_arr_ptr
   %entry_ptr = getelementptr %TrailEntry, %TrailEntry* %trail_arr, i32 %ts
@@ -729,8 +751,110 @@ not_match:
 
 ; === Stack Context Helpers (for compound term read/write mode) ===
 
-; Push a UnifyCtx (type=1) with args array and arg count
+; ============================================================================
+; M5: Growable stack + choice-point allocators
+; ============================================================================
+;
+; The stack, choice-point array, and trail (above) all start with the
+; modest initial capacity set in @wam_state_new and double via realloc
+; when a push hits the cap. Stack overflow used to silently write past
+; the end of the buffer (no overflow check was present in
+; wam_push_unify_ctx / wam_push_write_ctx / the allocate @step case);
+; CP overflow same. M5 routes every push through an ensure_capacity
+; helper that calls into the doubling-grow path.
+;
+; Pointer-stability invariant: the choice-point struct stores trail
+; marks and heap-top markers as INDICES (i32), not as pointers, so
+; trail-grow / CP-grow is transparent to backtrack. The stack stores
+; %Value* in its UnifyCtx / WriteCtx `data` field — for UnifyCtx those
+; point into the arena (allocated by put_structure), for WriteCtx via
+; @wam_write_ctx_set_args those can point into the WAM heap (get_list
+; write mode). Since this PR does NOT grow the heap (heap overflow
+; still exits via the existing abort path), those pointers remain
+; stable for the duration of any active WriteCtx and stack-grow itself
+; only moves the stack buffer, not the heap. Heap-grow is a follow-up
+; that would require either walking the stack on grow or changing the
+; WriteCtx data field to a heap-relative index.
+
+define void @wam_stack_grow(%WamState* %vm) {
+entry:
+  %sc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 4
+  %sc = load i32, i32* %sc_ptr
+  %new_sc = mul i32 %sc, 2
+  %new_sc_i64 = zext i32 %new_sc to i64
+  %elem_size = ptrtoint %StackEntry* getelementptr (%StackEntry, %StackEntry* null, i32 1) to i64
+  %new_bytes = mul i64 %new_sc_i64, %elem_size
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %old_stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %old_i8 = bitcast %StackEntry* %old_stack to i8*
+  %new_i8 = call i8* @realloc(i8* %old_i8, i64 %new_bytes)
+  %new_stack = bitcast i8* %new_i8 to %StackEntry*
+  store %StackEntry* %new_stack, %StackEntry** %stack_ptr
+  store i32 %new_sc, i32* %sc_ptr
+  ret void
+}
+
+; Ensures there is at least one free slot at the top of the stack.
+; Callers MUST invoke this BEFORE reading the stack pointer (because
+; grow may realloc the buffer to a new address). All push helpers
+; below follow this discipline.
+define void @wam_stack_ensure_capacity(%WamState* %vm) nounwind {
+entry:
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %sc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 4
+  %sc = load i32, i32* %sc_ptr
+  %ovf = icmp sge i32 %ss, %sc
+  br i1 %ovf, label %grow, label %done
+
+grow:
+  call void @wam_stack_grow(%WamState* %vm)
+  br label %done
+
+done:
+  ret void
+}
+
+define void @wam_cp_grow(%WamState* %vm) {
+entry:
+  %cc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 14
+  %cc = load i32, i32* %cc_ptr
+  %new_cc = mul i32 %cc, 2
+  %new_cc_i64 = zext i32 %new_cc to i64
+  %elem_size = ptrtoint %ChoicePoint* getelementptr (%ChoicePoint, %ChoicePoint* null, i32 1) to i64
+  %new_bytes = mul i64 %new_cc_i64, %elem_size
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %old_cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  %old_i8 = bitcast %ChoicePoint* %old_cps to i8*
+  %new_i8 = call i8* @realloc(i8* %old_i8, i64 %new_bytes)
+  %new_cps = bitcast i8* %new_i8 to %ChoicePoint*
+  store %ChoicePoint* %new_cps, %ChoicePoint** %cps_ptr
+  store i32 %new_cc, i32* %cc_ptr
+  ret void
+}
+
+define void @wam_cp_ensure_capacity(%WamState* %vm) nounwind {
+entry:
+  %cn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cn = load i32, i32* %cn_ptr
+  %cc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 14
+  %cc = load i32, i32* %cc_ptr
+  %ovf = icmp sge i32 %cn, %cc
+  br i1 %ovf, label %grow, label %done
+
+grow:
+  call void @wam_cp_grow(%WamState* %vm)
+  br label %done
+
+done:
+  ret void
+}
+
+; Push a UnifyCtx (type=1) with args array and arg count.
+; M5: calls @wam_stack_ensure_capacity first so the buffer is grown
+; if at cap; reloads the stack pointer afterward in case realloc moved it.
 define void @wam_push_unify_ctx(%WamState* %vm, %Value* %args, i32 %count) {
+  call void @wam_stack_ensure_capacity(%WamState* %vm)
   %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
   %ss = load i32, i32* %ss_ptr
   %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
@@ -757,7 +881,9 @@ define void @wam_push_unify_ctx(%WamState* %vm, %Value* %args, i32 %count) {
 ; Push a WriteCtx (type=2) with write count.
 ; For compound terms, data field stores the args %Value* pointer
 ; so set_value/set_constant write directly into the compound's args array.
+; M5: routes through @wam_stack_ensure_capacity first.
 define void @wam_push_write_ctx(%WamState* %vm, i32 %count) {
+  call void @wam_stack_ensure_capacity(%WamState* %vm)
   %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
   %ss = load i32, i32* %ss_ptr
   %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
@@ -3237,12 +3363,13 @@ define void @wam_push_foreign_choice_point(
     i32 %result_reg,
     i32 %return_pc) {
 entry:
+  ; M5: ensure cap before reading cps pointer (grow may realloc).
+  call void @wam_cp_ensure_capacity(%WamState* %vm)
   %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
   %cpn = load i32, i32* %cpn_ptr
   %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
   %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
 
-  ; TODO: check capacity and realloc if needed (current cap=64, sufficient for now)
   %cp = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %cpn
 
   ; next_pc = 0 (unused for foreign iter — backtrack handler reads cursor instead)

@@ -368,9 +368,28 @@ predicate took.
   the set of mutually-call-resolvable preds before classification,
   so the emitter can confidently emit direct calls knowing the
   symbols will resolve at link time.
-- Future: trail-rollback between fast and slow paths in the hybrid
-  dispatcher so clause-1 partial bindings don't leak into the slow
-  path; cross-module closure when LTO is available.
+- **M5 (this release): growable trail, stack, and choice-point
+  allocators**. `wam_state_new` still mallocs the initial buffers
+  (trail 65536 entries, CPs 1024, stack 1024) but `wam_trail_binding`,
+  `wam_trail_heap_binding`, the stack push helpers
+  (`wam_push_unify_ctx`, `wam_push_write_ctx`, the `allocate` @step
+  case, the lowered emitter's allocate), and the CP push sites
+  (`try_me_else`, `begin_aggregate`, `wam_push_foreign_choice_point`)
+  now route through `wam_<area>_ensure_capacity` helpers that double
+  the buffer via `realloc` when at cap. Choice points hold trail
+  marks and heap-top as indices (not pointers), so trail / CP grow
+  is transparent to backtrack; stack grow only moves the stack
+  buffer (the heap-pointed-to data in WriteCtx remains valid
+  because this PR does not grow the heap). The pre-M5 code aborted
+  via `exit(4)` on trail overflow and silently wrote past the end
+  of the stack / CP buffers on those — both are now growth events
+  the runtime handles transparently. A 200k-iteration stress test
+  forces the trail to grow from 65k → ~1M entries and completes in
+  ~95 ms.
+- Future: heap grow (requires a WriteCtx `data` field rework so
+  args pointers survive `realloc`); trail-rollback between fast
+  and slow paths in the hybrid dispatcher; cross-module closure
+  when LTO is available.
 
 ### Tests
 

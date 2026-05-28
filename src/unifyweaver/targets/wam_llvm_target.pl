@@ -1325,6 +1325,34 @@ define void @free(i8* %ptr) {
   ret void
 }
 
+; Bump-allocator @realloc for WASM: allocate fresh, memcpy old data,
+; return new ptr. Old block is leaked (the bump allocator has no
+; freelist). Used by M5 growable trail/stack/CP allocators.
+;
+; Note: this doesn\'t know the old block\'s size, so it conservatively
+; copies up to %new_size bytes. The bump allocator only ever hands
+; out blocks aligned to 8 bytes, and grows always double, so this
+; over-copies by at most a factor of 2 — within the WASM page budget
+; that callers already accept.
+define i8* @realloc(i8* %old, i64 %new_size) {
+entry:
+  %is_null = icmp eq i8* %old, null
+  br i1 %is_null, label %fresh_alloc, label %do_copy
+
+fresh_alloc:
+  %new0 = call i8* @malloc(i64 %new_size)
+  ret i8* %new0
+
+do_copy:
+  %new1 = call i8* @malloc(i64 %new_size)
+  ; We don\'t know the old block\'s actual size; the WAM grow path
+  ; always doubles, so copying %new_size / 2 is safe (the old block
+  ; was at least that large). Use shr by 1 to avoid sdiv.
+  %half = lshr i64 %new_size, 1
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %new1, i8* %old, i64 %half, i1 false)
+  ret i8* %new1
+}
+
 ; Stub printf for WASM (no-op, returns 0).
 define i32 @printf(i8* %fmt, ...) {
   ret i32 0
@@ -1341,6 +1369,7 @@ define i32 @strcmp(i8* %a, i8* %b) {
 }
 '
     ;  Decls = 'declare i8* @malloc(i64)
+declare i8* @realloc(i8*, i64)
 declare void @free(i8*)
 declare i32 @snprintf(i8*, i64, i8*, ...)
 declare i32 @strcmp(i8*, i8*)
@@ -2469,6 +2498,10 @@ wam_llvm_case('allocate',
   ; Y-regs no longer clobbers the outer caller. Canonical WAM stores
   ; Y-regs in env frames directly; we snapshot instead to keep every
   ; other instruction body unchanged.
+  ;
+  ; M5: ensure the stack has room before reading its pointer (grow
+  ; may realloc the buffer to a new address).
+  call void @wam_stack_ensure_capacity(%WamState* %vm)
   %alloc.ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
   %alloc.ss = load i32, i32* %alloc.ss_ptr
   %alloc.stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
@@ -2640,6 +2673,8 @@ wam_llvm_case('try_me_else',
 '  ; op1 = label index for alternative
   %tme.label = trunc i64 %op1 to i32
   %tme.next_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %tme.label)
+  ; M5: ensure CP array has room before reading its pointer.
+  call void @wam_cp_ensure_capacity(%WamState* %vm)
   ; Push choice point
   %tme.cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
   %tme.cpn = load i32, i32* %tme.cpn_ptr
@@ -2784,6 +2819,8 @@ wam_llvm_case('begin_aggregate',
   %ba.val_reg = lshr i32 %ba.op2_trunc, 16
   %ba.res_reg = and i32 %ba.op2_trunc, 65535
 
+  ; M5: ensure CP array has room before reading its pointer.
+  call void @wam_cp_ensure_capacity(%WamState* %vm)
   ; Push a choice point
   %ba.cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
   %ba.cpn = load i32, i32* %ba.cpn_ptr
