@@ -1,0 +1,132 @@
+    // R7/R8: materialisation-mode-dispatched setup block.
+    // Replaces the eager runtime_category_parents Vec build that
+    // dominated startup cost at enwiki scale (~140s of M).
+    // Mirrors Haskell's lmdbCachedEdgeLookup / lmdbL2EdgeLookup /
+    // lmdbRawEdgeLookup dispatch in lmdb_fact_source.hs.mustache.
+{{match materialisation}}
+{{case eager}}
+    // Eager: build the full demand-set Vec at startup, then walk it
+    // in the kernel via the existing indexed_atom_fact2 path. The
+    // template renders this branch when lmdb_materialisation(eager).
+    let mut runtime_category_parents: Vec<(String, String)> = Vec::new();
+    for child_id in &reachable_ids {
+        let parents = lmdb.lookup_parents(*child_id).unwrap_or_default();
+        for parent_id in parents {
+            if reachable_ids.contains(&parent_id) {
+                if let (Some(c), Some(p)) = (i2s.get(child_id), i2s.get(&parent_id)) {
+                    runtime_category_parents.push((c.clone(), p.clone()));
+                }
+            }
+        }
+    }
+    let load_ms = started.elapsed().as_millis();
+
+    let (mut code, mut labels) = shared_wam_program();
+    append_fact2(&mut code, &mut labels, "category_parent", &runtime_category_parents);
+    resolve_targets(&mut code, &labels);
+
+    let mut vm = WamState::new(code, labels);
+    vm.register_indexed_atom_fact2("category_parent/2", build_indexed_fact2(&runtime_category_parents));
+    for (_pred, table) in &vm.indexed_atom_fact2.clone() {
+        for (key, vals) in table {
+            vm.intern_atom(key);
+            for val in vals {
+                vm.intern_atom(val);
+            }
+        }
+    }
+    for (pred, table) in &vm.indexed_atom_fact2.clone() {
+        let pred_name = pred.split('/').next().unwrap_or(pred);
+        let mut interned_table: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (key, vals) in table {
+            let kid = vm.intern_atom(key);
+            let vids: Vec<u32> = vals.iter().map(|v| vm.intern_atom(v)).collect();
+            interned_table.insert(kid, vids);
+        }
+        vm.ffi_facts.insert(pred_name.to_string(), interned_table);
+    }
+    setup_foreign_predicates(&mut vm);
+{{case lazy}}
+    // Lazy: no Vec build. Kernel reads parent edges on-demand via
+    // the LookupSource trait wrapping LmdbFactSource. Per-call cost
+    // is O(log B) cursor seek; startup is O(1).
+    let s2i = lmdb.load_s2i().expect("load_s2i");
+    let load_ms = started.elapsed().as_millis();
+
+    let (mut code, mut labels) = shared_wam_program();
+    // Rewrite category_parent dispatch from CallIndexedAtomFact2 to
+    // CallForeign so it lands in the "lazy_lmdb_lookup" handler.
+    // TODO(R9): move this rewrite into the WAM compiler via a proper
+    // option, instead of patching the emitted Vec<Instruction> here.
+    for instr in code.iter_mut() {
+        if let Instruction::CallIndexedAtomFact2(pred) = instr {
+            if pred == "category_parent" {
+                *instr = Instruction::CallForeign("category_parent".to_string(), 2);
+            }
+        }
+    }
+    resolve_targets(&mut code, &labels);
+
+    let mut vm = WamState::new(code, labels);
+    let lazy_source = std::sync::Arc::new(LazyCategoryParents {
+        source: lmdb.clone(),
+        s2i: s2i.clone(),
+        i2s: i2s.clone(),
+    });
+    vm.register_lazy_lookup("category_parent/2", lazy_source);
+    vm.register_foreign_predicate("category_parent/2");
+    vm.register_foreign_native_kind("category_parent/2", "lazy_lmdb_lookup");
+    vm.register_foreign_result_layout("category_parent/2", "tuple:1");
+    vm.register_foreign_result_mode("category_parent/2", "stream");
+    for cat in s2i.keys() {
+        vm.intern_atom(cat);
+    }
+    setup_foreign_predicates(&mut vm);
+{{default}}
+    // Cached: lazy with a sharded bounded cache layered in front.
+    // Decorator pattern — CachedLookup<LazyCategoryParents> implements
+    // LookupSource itself, so the kernel can't tell whether it's
+    // hitting a cache. Mirrors Haskell's lmdbL2EdgeLookup. Capacity
+    // is set explicitly here (R8a); R8b's auto-resolver will compute
+    // it from MemAvailable per WAM_LMDB_LAZY_IMPLEMENTATION_PLAN.md
+    // §3.1.
+    let s2i = lmdb.load_s2i().expect("load_s2i");
+    let load_ms = started.elapsed().as_millis();
+
+    let (mut code, mut labels) = shared_wam_program();
+    for instr in code.iter_mut() {
+        if let Instruction::CallIndexedAtomFact2(pred) = instr {
+            if pred == "category_parent" {
+                *instr = Instruction::CallForeign("category_parent".to_string(), 2);
+            }
+        }
+    }
+    resolve_targets(&mut code, &labels);
+
+    let mut vm = WamState::new(code, labels);
+    let inner = LazyCategoryParents {
+        source: lmdb.clone(),
+        s2i: s2i.clone(),
+        i2s: i2s.clone(),
+    };
+    let cache_capacity: usize = std::env::var("WAM_CACHE_CAPACITY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or({{cache_capacity_default}});
+    let cache_shards: usize = std::env::var("WAM_CACHE_SHARDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or({{cache_shards_default}});
+    let cached_source = std::sync::Arc::new(
+        wam_rust_matrix_bench::state::CachedLookup::new(inner, cache_capacity, cache_shards)
+    );
+    vm.register_lazy_lookup("category_parent/2", cached_source);
+    vm.register_foreign_predicate("category_parent/2");
+    vm.register_foreign_native_kind("category_parent/2", "lazy_lmdb_lookup");
+    vm.register_foreign_result_layout("category_parent/2", "tuple:1");
+    vm.register_foreign_result_mode("category_parent/2", "stream");
+    for cat in s2i.keys() {
+        vm.intern_atom(cat);
+    }
+    setup_foreign_predicates(&mut vm);
+{{/match}}
