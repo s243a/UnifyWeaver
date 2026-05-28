@@ -135,6 +135,7 @@ class WamState:
         self.temp_y_regs: Optional[List] = None
         self.input_pushback: List[str] = []
         self.stream_pushback: Dict[int, List[str]] = {}
+        self.output_capture_stack: List[List[str]] = []
 
     def fresh_var(self) -> Var:
         v = Var(ref=[None], id=self._var_counter)
@@ -1322,7 +1323,10 @@ def _format_canonical_value(val: 'Term', state: WamState) -> str:
     return str(val)
 
 
-def _emit_output(text: str, stream: Any = None) -> bool:
+def _emit_output(text: str, stream: Any = None, state: Optional[WamState] = None) -> bool:
+    if stream is None and state is not None and state.output_capture_stack:
+        state.output_capture_stack[-1].append(text)
+        return True
     out = sys.stdout if stream is None else stream
     try:
         out.write(text)
@@ -1330,6 +1334,49 @@ def _emit_output(text: str, stream: Any = None) -> bool:
     except OSError:
         return False
     return True
+
+
+def _capture_sink_functor(sink: 'Term', state: WamState) -> Optional[Tuple[str, Term]]:
+    sink = deref(sink, state)
+    if not isinstance(sink, Compound) or len(sink.args) != 1:
+        return None
+    functor = _display_functor_name(sink.functor, len(sink.args))
+    if functor in ('atom', 'string', 'codes'):
+        return functor, sink.args[0]
+    return None
+
+
+def _unify_capture_sink(sink: 'Term', text: str, state: WamState) -> bool:
+    parsed = _capture_sink_functor(sink, state)
+    if parsed is None:
+        return False
+    kind, target = parsed
+    if kind in ('atom', 'string'):
+        return unify(target, make_atom(text), state)
+    return unify(target, _list_from_codes([ord(ch) for ch in text]), state)
+
+
+def _execute_with_output_to(state: WamState) -> bool:
+    sink = get_reg(state, 1)
+    if _capture_sink_functor(sink, state) is None:
+        return False
+    goal = deref(get_reg(state, 2), state)
+    snapshot = copy.deepcopy(state)
+    state.output_capture_stack.append([])
+    try:
+        ok = _execute_goal_in_state(goal, state)
+    except Exception:
+        if state.output_capture_stack:
+            state.output_capture_stack.pop()
+        raise
+    if not ok:
+        _restore_state_from_snapshot(state, snapshot)
+        return False
+    captured = ''.join(state.output_capture_stack.pop())
+    if _unify_capture_sink(sink, captured, state):
+        return True
+    _restore_state_from_snapshot(state, snapshot)
+    return False
 
 
 def _format_string_text(term: 'Term', state: WamState) -> Optional[str]:
@@ -1419,12 +1466,12 @@ def _execute_format_builtin(arity: int, state: WamState) -> bool:
     if rendered is None:
         return False
     if arity != 3:
-        return _emit_output(rendered)
+        return _emit_output(rendered, state=state)
     dest = deref(get_reg(state, 1), state)
     if isinstance(dest, Atom):
         name = _runtime_atom_text(dest.name)
         if name == 'user_output':
-            return _emit_output(rendered)
+            return _emit_output(rendered, state=state)
         if name == 'user_error':
             return _emit_output(rendered, sys.stderr)
         return False
@@ -1889,16 +1936,14 @@ def _execute_put_char(state: WamState) -> bool:
     text = _output_atom_char_text(get_reg(state, 1), state)
     if text is None:
         return False
-    sys.stdout.write(text)
-    return True
+    return _emit_output(text, state=state)
 
 
 def _execute_put_code(state: WamState) -> bool:
     text = _output_code_text(get_reg(state, 1), state)
     if text is None:
         return False
-    sys.stdout.write(text)
-    return True
+    return _emit_output(text, state=state)
 
 
 def _execute_put_char_stream(state: WamState) -> bool:
@@ -2074,23 +2119,7 @@ def _goal_succeeds_once(goal: 'Term', state: WamState) -> bool:
     """Evaluate a callable goal against an isolated copy of the current state."""
     isolated_goal = copy.deepcopy(deref(goal, state))
     sub = copy.deepcopy(state)
-    goal = deref(isolated_goal, sub)
-    if isinstance(goal, Atom):
-        return _execute_builtin(goal.name, 0, sub)
-    if not isinstance(goal, Compound):
-        return False
-    functor = goal.functor
-    arity = len(goal.args)
-    pred_key = functor if '/' in functor else f"{functor}/{arity}"
-    for i, arg in enumerate(goal.args, start=1):
-        set_reg(sub, i, deref(arg, sub))
-    if _execute_builtin(pred_key, arity, sub):
-        return True
-    code = getattr(state, '_code', None)
-    labels = getattr(state, '_labels', None)
-    if code is not None and labels is not None and pred_key in labels:
-        return run_wam(code, labels, pred_key, sub)
-    return False
+    return _execute_goal_in_state(deref(isolated_goal, sub), sub)
 
 
 def _restore_state_from_snapshot(state: WamState, snapshot: WamState) -> None:
@@ -2106,9 +2135,12 @@ def _execute_goal_in_state(goal: 'Term', state: WamState) -> bool:
         return _execute_builtin(goal.name, 0, state)
     if not isinstance(goal, Compound):
         return False
-    functor = goal.functor
+    functor = _display_functor_name(goal.functor, len(goal.args))
+    if functor == ',' and len(goal.args) == 2:
+        return (_execute_goal_in_state(goal.args[0], state) and
+                _execute_goal_in_state(goal.args[1], state))
     arity = len(goal.args)
-    pred_key = functor if '/' in functor else f"{functor}/{arity}"
+    pred_key = goal.functor if '/' in goal.functor else f"{goal.functor}/{arity}"
     for i, arg in enumerate(goal.args, start=1):
         set_reg(state, i, deref(arg, state))
     if _execute_builtin(pred_key, arity, state):
@@ -2186,6 +2218,8 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         return _execute_catch(state)
     if builtin in ('throw/1', 'throw') and arity == 1:
         return _execute_throw(state)
+    if builtin in ('with_output_to/2', 'with_output_to') and arity == 2:
+        return _execute_with_output_to(state)
     if builtin == '!/0' or builtin == '!':  # cut
         target_b = state.cut_b
         if state.e >= 0:
@@ -2423,20 +2457,20 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         target = get_reg(state, 2)
         return unify(target, _deep_copy_term(original, {}, state), state)
     if builtin in ('write/1', 'display/1', 'print/1'):
-        return _emit_output(_format_value(get_reg(state, 1), state))
+        return _emit_output(_format_value(get_reg(state, 1), state), state=state)
     if builtin in ('write_canonical/1',):
-        return _emit_output(_format_canonical_value(get_reg(state, 1), state))
+        return _emit_output(_format_canonical_value(get_reg(state, 1), state), state=state)
     if builtin in ('writeln/1',):
-        return _emit_output(_format_value(get_reg(state, 1), state) + '\n')
+        return _emit_output(_format_value(get_reg(state, 1), state) + '\n', state=state)
     if builtin in ('tab/1',):
         n = deref(get_reg(state, 1), state)
         if not isinstance(n, Int) or n.n < 0:
             return False
-        return _emit_output(' ' * n.n)
+        return _emit_output(' ' * n.n, state=state)
     if builtin in ('format/1', 'format/2', 'format/3'):
         return _execute_format_builtin(arity, state)
     if builtin in ('nl/0', 'nl'):
-        return _emit_output('\n')
+        return _emit_output('\n', state=state)
     return False
 
 
