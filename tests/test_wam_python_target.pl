@@ -1080,6 +1080,51 @@ test(runtime_format_helpers) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+test(runtime_with_output_to_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_with_output_to_demo),
+			assertz((user:py_with_output_to_demo :-
+				with_output_to(atom(A), write(hello)),
+				A = hello,
+				with_output_to(atom(B), (write(foo), write(bar))),
+				B = foobar,
+				with_output_to(atom(C), format('X = ~w', [42])),
+				C = 'X = 42',
+				with_output_to(string(S), write(test)),
+				S = test,
+				with_output_to(codes(Cs), write(ab)),
+				Cs = [97, 98],
+				with_output_to(atom(Empty), true),
+				Empty = '',
+				\+ with_output_to(atom(_), fail),
+				with_output_to(atom(Tabbed), (write(x), tab(3), write(y))),
+				Tabbed = 'x   y',
+				with_output_to(atom(Outer),
+					(write(a), with_output_to(atom(Inner), write(b)), write(c))),
+				Outer = ac,
+				Inner = b,
+				with_output_to(atom(Chars), (put_char(q), put_code(82))),
+				Chars = qR,
+				Seed = keep,
+				\+ with_output_to(atom(Seed), write(changed)),
+				Seed = keep)),
+			user:python_parser_tmp_dir('tmp_wam_python_with_output_to', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_with_output_to_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_with_output_to_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_with_output_to_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_stream_char_io_reads_and_writes_files) :-
 	setup_call_cleanup(
 		(   retractall(user:py_stream_char_io_demo),
@@ -1908,6 +1953,7 @@ test(static_runtime_has_lua_baseline_builtins, [nondet]) :-
 		"format/1",
 		"format/2",
 		"format/3",
+		"with_output_to/2",
 		"put_char/1",
 		"put_char/2",
 		"put_code/1",
@@ -1932,7 +1978,7 @@ test(static_runtime_naf_uses_isolated_goal_execution, [nondet]) :-
 test(static_runtime_io_emits_output, [nondet]) :-
 	runtime_py_path(P), read_file_to_string(P, Content, []),
 	sub_string(Content, _, _, _, "def _emit_output"),
-	sub_string(Content, _, _, _, "return _emit_output(_format_value(get_reg(state, 1), state))"),
+	sub_string(Content, _, _, _, "return _emit_output(_format_value(get_reg(state, 1), state), state=state)"),
 	sub_string(Content, _, _, _, "def _format_canonical_value"),
 	sub_string(Content, _, _, _, "'write_canonical/1'"),
 	sub_string(Content, _, _, _, "'tab/1'"),
@@ -1940,6 +1986,8 @@ test(static_runtime_io_emits_output, [nondet]) :-
 	sub_string(Content, _, _, _, "'format/1'"),
 	sub_string(Content, _, _, _, "'format/2'"),
 	sub_string(Content, _, _, _, "'format/3'"),
+	sub_string(Content, _, _, _, "def _execute_with_output_to"),
+	sub_string(Content, _, _, _, "'with_output_to/2'"),
 	sub_string(Content, _, _, _, "def _execute_put_char"),
 	sub_string(Content, _, _, _, "def _execute_put_code"),
 	sub_string(Content, _, _, _, "def _execute_read_line_to_string"),
@@ -1962,7 +2010,7 @@ test(static_runtime_io_emits_output, [nondet]) :-
 	sub_string(Content, _, _, _, "def _term_ground"),
 	sub_string(Content, _, _, _, "'atomic/1'"),
 	sub_string(Content, _, _, _, "'\\\\==/2'"),
-	sub_string(Content, _, _, _, "return _emit_output('\\n')").
+	sub_string(Content, _, _, _, "return _emit_output('\\n', state=state)").
 
 :- end_tests(wam_python_builtin_parity_guard).
 
