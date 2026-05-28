@@ -66,6 +66,17 @@ test_ir_structure :-
         ;  format('  FAIL: ~w missing~n', [Sym]),
            throw(missing_symbol(Sym))
         )),
+    % M7: !prof branch_weights on the @step switch.
+    ( sub_string(Src, _, _, _, '], !prof !99')
+    -> format('  PASS: !prof !99 attached to @step switch~n')
+    ;  format('  FAIL: !prof !99 missing from @step switch~n'),
+       throw(missing_prof_metadata)
+    ),
+    ( sub_string(Src, _, _, _, '!99 = !{!"branch_weights"')
+    -> format('  PASS: !99 branch_weights metadata defined~n')
+    ;  format('  FAIL: !99 branch_weights metadata missing~n'),
+       throw(missing_branch_weights_def)
+    ),
     % Trail / stack / CP push sites must route through the grow helpers.
     forall(member(Pattern-Site, [
                 'call void @wam_trail_grow'             - 'wam_trail_binding',
