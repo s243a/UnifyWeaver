@@ -844,7 +844,15 @@
             (advance next-state)
             (backtrack state)))
         (backtrack state))
-      (backtrack state))))
+      (if (and (logic-var? list-value)
+               (not= out ::unbound)
+               (not (logic-var? out)))
+        (let [singleton-term (list->term (:intern-context state) [out])
+              [ok next-state] (unify-values state list-value singleton-term)]
+          (if ok
+            (advance next-state)
+            (backtrack state)))
+        (backtrack state)))))
 
 (defn nth-index-value [state value]
   (cond
