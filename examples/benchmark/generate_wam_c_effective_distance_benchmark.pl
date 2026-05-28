@@ -59,6 +59,7 @@ generate(FactsPath, OutputDir, KernelMode, OptionsOrFactStorage) :-
     ),
     parse_kernel_mode(KernelMode, ParsedMode),
     parse_fact_storage_option(OptionsOrFactStorage, FactStorage),
+    parse_child_search_options(OptionsOrFactStorage, ChildSearch),
     reset_benchmark_predicates,
     benchmark_workload_path(WorkloadPath),
     load_files(user:WorkloadPath, [silent(true), if(true)]),
@@ -82,7 +83,7 @@ generate(FactsPath, OutputDir, KernelMode, OptionsOrFactStorage) :-
     directory_file_path(OutputDir, 'category_parent.tsv', CategoryPath),
     write_text_file(CategoryPath, CategoryTsv),
     maybe_write_lmdb_seeder(FactStorage, OutputDir, CategoryParents),
-    effective_distance_main_code(ParsedMode, FactStorage, Dimension, MaxDepth,
+    effective_distance_main_code(ParsedMode, FactStorage, ChildSearch, Dimension, MaxDepth,
                                  ArticleCategories, RootCategories, MainCode),
     directory_file_path(OutputDir, 'main.c', MainPath),
     write_text_file(MainPath, MainCode),
@@ -128,6 +129,45 @@ parse_fact_storage(Atom, Mode) :-
     parse_fact_storage(String, Mode), !.
 parse_fact_storage(Atom, _) :-
     throw(error(domain_error(wam_c_fact_storage, Atom), _)).
+
+parse_child_search_options(Options, ChildSearch) :-
+    is_list(Options),
+    !,
+    (   memberchk(child_search(Raw), Options)
+    ->  parse_child_search(Raw, Mode)
+    ;   Mode = parent_only
+    ),
+    option_or_default(max_child_expansions, Options, 0, MaxChildren),
+    option_or_default(child_search_depth, Options, 1, ChildDepth),
+    validate_nonnegative_int(max_child_expansions, MaxChildren),
+    validate_nonnegative_int(child_search_depth, ChildDepth),
+    ChildSearch = child_search(Mode, MaxChildren, ChildDepth).
+parse_child_search_options(_, child_search(parent_only, 0, 1)).
+
+parse_child_search(parent_only, parent_only).
+parse_child_search(bounded, bounded).
+parse_child_search("parent_only", parent_only).
+parse_child_search("bounded", bounded).
+parse_child_search(Atom, Mode) :-
+    atom(Atom),
+    atom_string(Atom, String),
+    parse_child_search(String, Mode), !.
+parse_child_search(Atom, _) :-
+    throw(error(domain_error(wam_c_child_search, Atom), _)).
+
+option_or_default(Key, Options, Default, Value) :-
+    Term =.. [Key, Value0],
+    (   memberchk(Term, Options)
+    ->  Value = Value0
+    ;   Value = Default
+    ).
+
+validate_nonnegative_int(_Key, Value) :-
+    integer(Value),
+    Value >= 0,
+    !.
+validate_nonnegative_int(Key, Value) :-
+    throw(error(domain_error(nonnegative_integer_option(Key), Value), _)).
 
 reset_benchmark_predicates :-
     forall(member(Name/Arity,
@@ -340,7 +380,7 @@ int main(void) {
 }
 ', [ExpectedRows, ExpectedDuplicate]).
 
-effective_distance_main_code(KernelMode, FactStorage, Dimension, MaxDepth,
+effective_distance_main_code(KernelMode, FactStorage, ChildSearch, Dimension, MaxDepth,
                              ArticleCategories, RootCategories, Code) :-
     c_pair_arrays('ARTICLE_IDS', 'ARTICLE_CATS', ArticleCategories, ArticleArrays),
     pairs_keys(ArticleCategories, ArticleIds0),
@@ -348,6 +388,9 @@ effective_distance_main_code(KernelMode, FactStorage, Dimension, MaxDepth,
     c_string_array('ARTICLE_COUNT', 'ARTICLES', ArticleIds, ArticlesArray),
     c_string_array('ROOT_COUNT', 'ROOTS', RootCategories, RootArray),
     kernel_mode_flag(KernelMode, KernelFlag),
+    child_search_flag(ChildSearch, ChildSearchFlag),
+    child_search_max_children(ChildSearch, MaxChildExpansions),
+    child_search_depth(ChildSearch, ChildSearchDepth),
     fact_source_load_code(FactStorage, LoadCode),
     format(atom(Code),
 '#include <math.h>
@@ -421,6 +464,50 @@ static void collect_hops(WamState *state,
                          const char *cat,
                          const char *root,
                          int kernels_on,
+                         WamIntResults *results);
+
+static int collect_bounded_child_hops(WamState *state,
+                                      WamFactSource *source,
+                                      const char *cat,
+                                      const char *root,
+                                      int kernels_on,
+                                      int max_child_expansions,
+                                      int child_depth,
+                                      WamIntResults *results) {
+    if (max_child_expansions <= 0 || child_depth <= 0) return 0;
+    int found = 0;
+    int expanded = 0;
+    for (int i = 0; i < source->edge_count; i++) {
+        CategoryEdge *edge = &source->edges[i];
+        if (strcmp(edge->parent, cat) != 0) continue;
+        if (expanded >= max_child_expansions) break;
+        expanded++;
+
+        WamIntResults child_hops;
+        wam_int_results_init(&child_hops);
+        collect_hops(state, source, edge->child, root, kernels_on, &child_hops);
+        if (child_hops.count == 0 && child_depth > 1) {
+            (void)collect_bounded_child_hops(state, source, edge->child, root,
+                                             kernels_on, max_child_expansions,
+                                             child_depth - 1, &child_hops);
+        }
+        for (int hi = 0; hi < child_hops.count; hi++) {
+            if (!wam_int_results_push(results, child_hops.values[hi] + 1)) {
+                wam_int_results_close(&child_hops);
+                return 0;
+            }
+            found = 1;
+        }
+        wam_int_results_close(&child_hops);
+    }
+    return found;
+}
+
+static void collect_hops(WamState *state,
+                         WamFactSource *source,
+                         const char *cat,
+                         const char *root,
+                         int kernels_on,
                          WamIntResults *results) {
     if (kernels_on) {
         int heap_mark = state->H;
@@ -465,6 +552,11 @@ int main(void) {
                     wam_int_results_push(&hops, 1);
                 } else {
                     collect_hops(&state, &source, ARTICLE_CATS[ci], ROOTS[ri], ~w, &hops);
+                    if (hops.count == 0 && ~w) {
+                        (void)collect_bounded_child_hops(&state, &source,
+                                                         ARTICLE_CATS[ci], ROOTS[ri],
+                                                         ~w, ~w, ~w, &hops);
+                    }
                     for (int hi = 0; hi < hops.count; hi++) {
                         hops.values[hi] += 1;
                     }
@@ -485,7 +577,8 @@ int main(void) {
     wam_free_state(&state);
     return 0;
 }
-', [ArticleArrays, ArticlesArray, RootArray, MaxDepth, LoadCode, MaxDepth, KernelFlag, Dimension, Dimension]).
+', [ArticleArrays, ArticlesArray, RootArray, MaxDepth, LoadCode, MaxDepth, KernelFlag,
+    ChildSearchFlag, KernelFlag, MaxChildExpansions, ChildSearchDepth, Dimension, Dimension]).
 
 fact_source_load_code(facts_tsv,
                       'wam_fact_source_load_tsv(&state, &source, "category_parent.tsv")').
@@ -494,6 +587,15 @@ fact_source_load_code(facts_lmdb,
 
 kernel_mode_flag(kernels_on, 1).
 kernel_mode_flag(kernels_off, 0).
+
+child_search_flag(child_search(bounded, MaxChildren, ChildDepth), 1) :-
+    MaxChildren > 0,
+    ChildDepth > 0,
+    !.
+child_search_flag(_, 0).
+
+child_search_max_children(child_search(_, MaxChildren, _), MaxChildren).
+child_search_depth(child_search(_, _, ChildDepth), ChildDepth).
 
 c_pair_arrays(NamesName, ValuesName, Pairs, Code) :-
     pairs_keys(Pairs, Keys),
