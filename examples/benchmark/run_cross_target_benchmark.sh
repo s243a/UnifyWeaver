@@ -103,7 +103,7 @@ fi
 # Rust
 RUST_BIN=""
 if [ -n "${RUST_DIR:-}" ] && [ -f "$RUST_DIR/Cargo.toml" ]; then
-    if [ ! -f "$RUST_DIR/target/release/wam-rust-bench" ] && [ ! -f "$RUST_DIR/target/release/main" ]; then
+    if [ ! -f "$RUST_DIR/target/release/bench" ] && [ ! -f "$RUST_DIR/target/release/wam-rust-bench" ] && [ ! -f "$RUST_DIR/target/release/main" ]; then
         echo -n "  Building Rust... "
         BUILD_START=$(date +%s%N)
         (cd "$RUST_DIR" && cargo build --release 2>&1 | tail -1) || {
@@ -116,7 +116,7 @@ if [ -n "${RUST_DIR:-}" ] && [ -f "$RUST_DIR/Cargo.toml" ]; then
         echo "  Rust binary cached"
     fi
     # Find the binary
-    for name in wam-rust-bench main; do
+    for name in bench wam-rust-bench main; do
         if [ -f "$RUST_DIR/target/release/$name" ]; then
             RUST_BIN="$RUST_DIR/target/release/$name"
             break
