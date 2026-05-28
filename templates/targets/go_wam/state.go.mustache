@@ -1506,6 +1506,46 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return false
 		}
 		return vm.Unify(arg3, &Integer{Val: int64(runes[index.Val-1])})
+	case "split_string/4":
+		source, okSource := atomNumberText(vm.deref(arg1))
+		seps, okSeps := atomNumberText(vm.deref(arg2))
+		pads, okPads := atomNumberText(vm.deref(arg3))
+		if !okSource || !okSeps || !okPads {
+			return false
+		}
+		sepSet := make(map[rune]bool)
+		for _, r := range seps {
+			sepSet[r] = true
+		}
+		padSet := make(map[rune]bool)
+		for _, r := range pads {
+			padSet[r] = true
+		}
+		parts := []string{}
+		current := []rune{}
+		for _, r := range source {
+			if sepSet[r] {
+				parts = append(parts, string(current))
+				current = current[:0]
+				continue
+			}
+			current = append(current, r)
+		}
+		parts = append(parts, string(current))
+		items := make([]Value, 0, len(parts))
+		for _, part := range parts {
+			runes := []rune(part)
+			start := 0
+			for start < len(runes) && padSet[runes[start]] {
+				start++
+			}
+			end := len(runes)
+			for end > start && padSet[runes[end-1]] {
+				end--
+			}
+			items = append(items, internAtom(string(runes[start:end])))
+		}
+		return vm.Unify(arg4, &List{Elements: items})
 
 	case "var/1": return isUnbound(vm.deref(arg1))
 	case "nonvar/1": return !isUnbound(vm.deref(arg1))

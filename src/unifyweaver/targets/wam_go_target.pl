@@ -472,6 +472,9 @@ wam_go_direct_builtin("char_type/2", 2, 'char_type/2').
 wam_go_direct_builtin(string_code/3, 3, 'string_code/3').
 wam_go_direct_builtin('string_code/3', 3, 'string_code/3').
 wam_go_direct_builtin("string_code/3", 3, 'string_code/3').
+wam_go_direct_builtin(split_string/4, 4, 'split_string/4').
+wam_go_direct_builtin('split_string/4', 4, 'split_string/4').
+wam_go_direct_builtin("split_string/4", 4, 'split_string/4').
 wam_go_direct_builtin(succ/2, 2, 'succ/2').
 wam_go_direct_builtin('succ/2', 2, 'succ/2').
 wam_go_direct_builtin("succ/2", 2, 'succ/2').
