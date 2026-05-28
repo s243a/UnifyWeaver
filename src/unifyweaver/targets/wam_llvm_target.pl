@@ -1193,18 +1193,20 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     retractall(functor_string_global(_, _)),
     % Pre-register functor globals referenced directly by runtime
     % helpers (e.g. =../2 needs the cons-cell functor "." and the
-    % empty-list atom "[]").
-    assert(functor_string_global(".", 2)),
-    assert(functor_string_global("[]", 3)),
+    % empty-list atom "[]"). Route through register_functor_string so
+    % the key type (string) matches the bytecode-side registration —
+    % otherwise a program that BOTH uses findall AND explicitly
+    % constructs cons cells emits two `@.fn__5B_7C_5D` globals and
+    % llc rejects the module ("redefinition of global").
+    register_functor_string("."),
+    register_functor_string("[]"),
     % M9: cons-cell functor for the findall / aggregate_all(bag/set)
     % result list. @wam_apply_aggregation's collect_case allocates
     % `[|]`-tagged Compounds on the arena to build the result; the
     % functor string global it references must exist or llvm-as rejects
-    % the module. The bytecode emit already registers "[|]" lazily on
-    % first `put_structure [|]/2` — registering it eagerly here means
-    % programs that ONLY consume the list via findall (no explicit
-    % cons-cell construction in the body) still get a valid module.
-    assert(functor_string_global("[|]", 4)),
+    % the module. Eager registration handles programs that consume the
+    % list via findall but never explicitly construct a cons cell.
+    register_functor_string("[|]"),
     % M9: intern "[]" so the empty-list atom id is known at runtime.
     % @wam_apply_aggregation's collect_case reads this id from a
     % module-level global to terminate the cons-cell chain.
@@ -4814,6 +4816,13 @@ wam_line_to_llvm_literal_resolved(["switch_on_structure" | _], _, Lit) :- !,
 wam_line_to_llvm_literal_resolved(["switch_on_constant_a2" | EntryParts], LabelMap,
         switch_deferred(constant_a2, Entries)) :- !,
     parse_switch_entries(EntryParts, LabelMap, Entries).
+% switch_on_term / switch_on_term_a2: type-based dispatch that falls
+% back to the try_me_else / retry_me_else chain. The LLVM target does
+% not implement these yet, so emit a nop and let the linear chain run.
+wam_line_to_llvm_literal_resolved(["switch_on_term" | _], _, Lit) :- !,
+    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
+wam_line_to_llvm_literal_resolved(["switch_on_term_a2" | _], _, Lit) :- !,
+    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
 % All other instructions: delegate to existing parser (no labels needed)
 wam_line_to_llvm_literal_resolved(Parts, _LabelMap, Lit) :-
     wam_line_to_llvm_literal(Parts, Lit).
@@ -4947,10 +4956,13 @@ wam_line_to_llvm_literal(["put_structure", FN, Ai], Lit) :-
     format(atom(Lit),
         '%Instruction { i32 11, i64 ptrtoint ([~w x i8]* @.fn_~w to i64), i64 ~w }',
         [NameLenPlus1, SaneName, Op2]),
-    % Record functor string for emission as global.
-    ( functor_string_global(NameStr, _) -> true
-    ; assert(functor_string_global(NameStr, NameLenPlus1))
-    ).
+    % Record functor string for emission as global. Route through
+    % register_functor_string so the table key normalises to a
+    % string regardless of whether NameStr arrives as an atom or
+    % string -- otherwise an eager-registered "[|]" (string key)
+    % and a lazy-registered '[|]' (atom key from split_functor_arity)
+    % both get emitted, causing `redefinition of global` in llc.
+    register_functor_string(NameStr).
 wam_line_to_llvm_literal(["put_list", Ai], Lit) :-
     clean_comma(Ai, CAi),
     atom_string(CAi, CAiAtom),
@@ -5054,6 +5066,10 @@ wam_line_to_llvm_literal(["switch_on_structure"|_],
     '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
 wam_line_to_llvm_literal(["switch_on_constant_a2"|_],
     '%Instruction { i32 27, i64 0, i64 0 }').  % nop fallthrough
+wam_line_to_llvm_literal(["switch_on_term"|_],
+    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
+wam_line_to_llvm_literal(["switch_on_term_a2"|_],
+    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
 
 wam_line_to_llvm_literal(["cut_ite"],
     '%Instruction { i32 31, i64 0, i64 0 }').
