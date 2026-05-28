@@ -341,7 +341,7 @@ user:wam_reverse_unbound_list(R) :- reverse(L, R), is_list(L).
 user:wam_last_guard(L, X) :- last(L, X).
 user:wam_last_empty(X) :- last([], X).
 user:wam_last_bad_list(X) :- last([a|b], X).
-user:wam_last_unbound_list(X) :- user:wam_unbound_arg(L), last(L, X).
+user:wam_last_unbound_list(X) :- last(L, X), L = [X].
 user:wam_nth0_guard(N, L, X) :- nth0(N, L, X).
 user:wam_nth0_negative(X) :- nth0(-1, [a,b,c], X).
 user:wam_nth0_out_of_range(X) :- nth0(3, [a,b,c], X).
@@ -961,7 +961,8 @@ smoke_cases([
     case('wam_last_guard/2', args('[a,b,c]', b), "false"),
     case('wam_last_empty/1', a, "false"),
     case('wam_last_bad_list/1', a, "false"),
-    case('wam_last_unbound_list/1', a, "false"),
+    case('wam_last_unbound_list/1', a, "true"),
+    case('wam_last_unbound_list/1', b, "true"),
     case('wam_nth0_guard/3', args(0, '[a,b,c]', a), "true"),
     case('wam_nth0_guard/3', args(1, '[a,b,c]', b), "true"),
     case('wam_nth0_guard/3', args(2, '[a,b,c]', c), "true"),
