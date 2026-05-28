@@ -743,6 +743,119 @@ was generated with `max_depth >= 50`; tracked in
 
 ---
 
+## LLVM WAM (hybrid) — optimization timeline
+
+The WAM-LLVM hybrid target compiles WAM bytecode to native code via
+LLVM IR. The pipeline ships a generated `.ll` module that contains
+both a bytecode interpreter (`@step`, `@run_loop`, `@backtrack`) and,
+optionally, lowered native functions for clause-1 bodies and / or
+foreign graph kernels (BFS, Dijkstra, A*, etc.).
+
+Benchmark substrate: the dispatch micro-bench is a tight loop calling
+`add1/2` ≡ `add1(X, R) :- R is X + 1.` (8 WAM instructions per call,
+mix of register / arithmetic ops; no choice points) against a single
+reused `%WamState`. The arena is reset per-iter via `@wam_cleanup`.
+Numbers are min-of-7 wall-clock on a 4-vCPU Linux box, `llc -O2`
++ `clang -O2`.
+
+| PR | Change | Per-iter | Δ |
+|---|---|---:|---:|
+| (baseline) | M1 release shape | ~236 ns | — |
+| #2539 | `@wam_cleanup` is arena-reset, not destroy + free → ~85 ns saved per query | 194 ns | -18% |
+| #2539 | `alwaysinline nounwind readnone` on the hot helpers (`@wam_get_reg`, `@wam_set_reg`, `@wam_inc_pc`, `@value_*`, `@wam_deref_value`, `@wam_heap_push`, `@wam_trail_binding`, etc.) | 194 ns | wash at -O2 |
+| (M5/M6 grow infrastructure) | Doubling realloc on trail / stack / CP / heap; no perf cost when no grow fires | 170 ns | within noise of M3/M4 baseline |
+| (M7, this section) | `!prof` branch weights on the `@step` switch | 175 ns | ~ wash, see below |
+
+### The inline-attrs case study (PR #2539)
+
+Modern clang's `-O2` inliner already inlines small helpers (≤ ~20
+LLVM IR instructions) aggressively. After `opt -O2` on the generated
+module, `@step`'s switch cases had zero call sites to
+`@wam_get_reg / @wam_set_reg / @wam_inc_pc / @value_*` — all
+inlined regardless of attributes.
+
+The annotations were kept because:
+
+1. They keep the dispatch loop's intent legible in the templates
+   (these are inline primitives, not external calls).
+2. They guarantee inlining at `-O0` / `-O1` for development builds.
+3. They mirror what the C runtime already gets from `static inline`
+   in `wam_c_runtime/wam_runtime.h` and what F# gets from `let inline`.
+
+### The `@wam_cleanup` arena-reset fix (PR #2539)
+
+A latent bug: `@wam_cleanup` was advertised in three places as a
+*rewind* (`wam_llvm_target.pl:1298` "memory is reclaimed by
+`@wam_cleanup` via arena rewind") but actually called
+`@wam_arena_destroy` — `free`'d the 1 MiB arena buffer outright. The
+WASM-export wrapper invokes `@wam_cleanup` after every exported
+predicate call, so each query paid a `free()` + next-iter `malloc()`
+of 1 MiB.
+
+The fix split the operations: new `@wam_arena_reset` zeros the bump
+pointer (keeps the buffer), `@wam_cleanup` calls it, and new
+`@wam_full_shutdown` keeps the `@wam_arena_destroy` path available
+for hosts that want to release the buffer. Per-query path now pays
+one `store i64 0` instead of a malloc/free pair. **~18% per-query
+speedup**.
+
+### Growable allocators (PR #2545 / M5, PR #2548 / M6)
+
+Pre-M5, `wam_state_new` malloc'd ~5 MiB upfront and the trail aborted
+via `exit(4)` on overflow; stack and CP pushes silently wrote past
+the fixed-size buffer. M5 added doubling realloc with
+`@wam_<area>_ensure_capacity` helpers for trail / stack / CP.
+M6 added the same for the heap, including a
+`@wam_fixup_writectx_after_heap_grow` walker that translates any
+WriteCtx data pointer in the old heap range to the new heap base.
+
+This is a correctness / scale fix, not a perf win in the benchmark
+(the loop doesn't exceed initial caps), but it lifts the
+LLVM target from "toy workloads" to production. The 200k-iter trail
+stress (#2545) and 50k-iter heap stress (#2548) complete in 95 ms
+and 10 ms respectively; pre-M5/M6 they would `exit(4)` / `exit(2)`
+after ~16k and ~22k iterations.
+
+### `!prof` branch weights on the `@step` switch (this section)
+
+Added relative branch weights (`!prof !99`) to the @step instruction
+dispatcher. Weights estimated from typical Prolog workload
+frequencies: head unification (`get_value`), body construction
+(`put_value`), proceed, and call dominate; backtrack-only opcodes
+(`retry_me_else`, `trust_me`) get small weights; control opcodes
+(`switch_on_*`, `cut_ite`, `jump`) are rarer still.
+
+At x86 `-O2` the dense 0..32 case range typically lowers to a jump
+table regardless of weights, so the per-iter impact stays within
+noise of the M3/M4/M5/M6 baseline (175 ± 5 ns/iter). The weights
+still inform LLVM's per-case inner-branch ordering and help on
+ARM / RISC-V backends that use a balanced-binary-search lowering.
+
+The intent-documentation aspect matters as much as the perf aspect:
+the `!99` definition makes "which opcodes are hot" legible without
+needing profiling data.
+
+### Tried and dropped: `alwaysinline` on `@step`
+
+Marking `@step` `internal alwaysinline` collapsed its body into
+`@run_loop`'s `do_step` block, expanding `@run_loop` to ~1700 lines
+of optimized IR. The dead-code-eliminate path removed `@step`
+entirely.
+
+Outcome: the benchmark regressed 3-5% (177 vs 168 ns/iter, median of
+3 runs each). The most likely cause is L1 icache pressure from
+`@run_loop` becoming much larger — the original `step → run_loop →
+musttail` trampoline kept the hot dispatch under the icache budget,
+and inlining defeated that.
+
+Kept the original shape with `@step` as a separate function. The
+microbench doesn't exercise enough opcode diversity to demonstrate
+where inlining would help (e.g., recursive small-pred chains where
+musttail run_loop sees the full dispatch); revisit if a future
+workload benchmark shows trampoline overhead dominating.
+
+---
+
 ## Clojure WAM — current implementation status
 
 The Clojure hybrid/WAM target is not yet in the same maturity class as

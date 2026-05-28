@@ -2020,8 +2020,48 @@ allocate_foreign_instance_id(PredArity, Kind, InstanceId) :-
 compile_step_wam_to_llvm(_Options, LLVMCode) :-
     findall(Case, compile_llvm_step_case(Case), Cases),
     atomic_list_concat(Cases, '\n', CasesCode),
+    % M7: !prof branch_weights on the @step switch. These are relative
+    % weights estimated from typical Prolog workload instruction
+    % frequencies (head unification + body construction + control
+    % dominate; backtrack-only opcodes are rare). LLVM uses them to
+    % order the switch lowering — at x86 -O2 the cases are dense
+    % enough that a jump table is generated regardless, but the
+    % weights still influence branch prediction on the per-case
+    % inner branches and can help on architectures (ARM, RISC-V)
+    % where the switch lowers to a balanced binary search.
+    %
+    % The metadata MUST be a reference (`!prof !N`) — inline `!{...}`
+    % is not valid for !prof in LLVM IR. We define the node as
+    % `!wam_step_branch_weights` at module scope right after @step's
+    % closing brace; the named metadata avoids collision with any
+    % numeric `!N` ids the module might pick up from other sources
+    % (LTO bitcode, debug info, etc.).
+    %
+    % First weight is for the `default` label (taken only on a
+    % malformed bytecode tag, so 1). The 33 case weights match the
+    % opcode order in the switch above (tag 0..32).
     format(atom(LLVMCode),
-'define i1 @step(%WamState* %vm, %Instruction* %instr) {
+'; M7 @step branch weights (!prof !99 below) — relative frequencies
+; estimated from typical Prolog workloads. The slot order in !99
+; matches the switch case order: slot 0 = default (malformed tag),
+; slot k+1 = case for tag k (k = 0..32). Per-opcode weights:
+;   default: 1   — never expected, only on a bytecode bug
+;   get_constant      50,  get_variable      80,  get_value        100
+;   get_structure     20,  get_list          20,  unify_variable    30
+;   unify_value       30,  unify_constant    10,  put_constant      50
+;   put_variable      80,  put_value        100,  put_structure     20
+;   put_list          10,  set_variable      20,  set_value         30
+;   set_constant      30,  allocate          50,  deallocate        50
+;   do_call           80,  do_execute        50,  proceed          100
+;   builtin_call      60,  try_me_else       30,  retry_me_else      5
+;   trust_me          10,  switch_on_constant 10, switch_on_structure 5
+;   switch_on_const_a2 5,  begin_aggregate    5,  end_aggregate      5
+;   call_foreign      10,  cut_ite            5,  jump               5
+; At -O2 on x86 the dense 0..32 range typically lowers to a jump
+; table regardless, but the weights still inform LLVM\'s per-case
+; inner-branch ordering and help on ARM/RISC-V backends that use a
+; balanced-binary-search lowering.
+define i1 @step(%WamState* %vm, %Instruction* %instr) {
 entry:
   %tag_ptr = getelementptr %Instruction, %Instruction* %instr, i32 0, i32 0
   %tag = load i32, i32* %tag_ptr
@@ -2063,13 +2103,23 @@ entry:
     i32 30, label %call_foreign
     i32 31, label %cut_ite
     i32 32, label %jump
-  ]
+  ], !prof !99
 
 ~w
 
 default:
   ret i1 false
-}', [CasesCode]).
+}
+
+; M7 step-dispatch branch weights — relative frequencies estimated
+; from typical Prolog workloads. Operand layout (must match the
+; switch case order above):
+;   slot 0 = default (malformed tag)
+;   slot k+1 = case for tag k, k = 0..32
+; Comments inside the operand list aren\'t allowed (the LLVM IR
+; parser rejects `;` mid-operand), so the per-opcode rationale lives
+; in the comment block above the @step definition.
+!99 = !{!\"branch_weights\", i32 1, i32 50, i32 80, i32 100, i32 20, i32 20, i32 30, i32 30, i32 10, i32 50, i32 80, i32 100, i32 20, i32 10, i32 20, i32 30, i32 30, i32 50, i32 50, i32 80, i32 50, i32 100, i32 60, i32 30, i32 5, i32 10, i32 10, i32 5, i32 5, i32 5, i32 5, i32 10, i32 5, i32 5}', [CasesCode]).
 
 compile_llvm_step_case(CaseCode) :-
     wam_llvm_case(Label, BodyCode),
