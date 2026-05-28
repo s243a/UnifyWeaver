@@ -80,6 +80,27 @@ test_generate_and_run_lmdb_if_available :-
     ;   pass('WAM-C effective-distance: facts_lmdb generated runner skipped (LMDB toolchain unavailable)')
     ).
 
+test_generate_and_run_bounded_child_search :-
+    Test = 'WAM-C effective-distance: bounded child search finds non-parent path',
+    (   unique_tmp_dir(child_search, OutputDir),
+        write_child_search_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(
+            FactsPath,
+            OutputDir,
+            kernels_on,
+            [ fact_storage(facts_tsv),
+              child_search(bounded),
+              max_child_expansions(4),
+              child_search_depth(1)
+            ]),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project(OutputDir, Output),
+        sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
+        sub_string(Output, _, _, _, "article_a\troot\t3.000000")
+    ->  pass(Test)
+    ;   fail_test(Test, 'bounded child search runner output mismatch')
+    ).
+
 run_generated_effective_distance(KernelMode, FactStorage, Output) :-
     unique_tmp_dir(KernelMode, OutputDir),
     write_test_facts(OutputDir, FactsPath),
@@ -95,6 +116,15 @@ root_category(root).
 category_parent(leaf, root).
 category_parent(leaf, mid).
 category_parent(mid, root).
+').
+
+write_child_search_facts(OutputDir, FactsPath) :-
+    directory_file_path(OutputDir, 'facts.pl', FactsPath),
+    write_text_file(FactsPath,
+'article_category(article_a, orphan).
+root_category(root).
+category_parent(child, orphan).
+category_parent(child, root).
 ').
 
 unique_tmp_dir(KernelMode, OutputDir) :-
@@ -206,6 +236,7 @@ run_tests_once :-
     test_generate_lmdb_mode_files,
     test_generated_runner_bounds_kernel_heap,
     test_generate_and_run_lmdb_if_available,
+    test_generate_and_run_bounded_child_search,
     format('~n=== WAM-C Effective Distance Benchmark Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
 
