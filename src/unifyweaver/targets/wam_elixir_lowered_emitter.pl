@@ -1315,6 +1315,12 @@ instr_cost(put_list(_),           3) :- !.
 instr_cost(get_list(_),           3) :- !.
 instr_cost(switch_on_constant(_), 2) :- !.
 instr_cost(switch_on_constant_a2(_), 2) :- !.
+instr_cost(switch_on_constant_fallthrough(_), 2) :- !.
+instr_cost(switch_on_constant_a2_fallthrough(_), 2) :- !.
+instr_cost(switch_on_term(_), 3) :- !.
+instr_cost(switch_on_term_a2(_), 3) :- !.
+instr_cost(switch_on_structure(_), 2) :- !.
+instr_cost(switch_on_structure_a2(_), 2) :- !.
 instr_cost(_,                     1).
 
 %% emit_par_tier2_wrapper(+EntryFunc, +EntryImplFunc, +BranchImplFuncs, -Code)
@@ -1559,6 +1565,12 @@ instr_from_parts(["set_value", Xn], set_value(Xn)).
 instr_from_parts(["set_constant", C], set_constant(C)).
 instr_from_parts(["switch_on_constant"|Entries], switch_on_constant(Entries)).
 instr_from_parts(["switch_on_constant_a2"|Entries], switch_on_constant_a2(Entries)).
+instr_from_parts(["switch_on_constant_fallthrough"|Entries], switch_on_constant_fallthrough(Entries)).
+instr_from_parts(["switch_on_constant_a2_fallthrough"|Entries], switch_on_constant_a2_fallthrough(Entries)).
+instr_from_parts(["switch_on_term"|Tokens], switch_on_term(Tokens)).
+instr_from_parts(["switch_on_term_a2"|Tokens], switch_on_term_a2(Tokens)).
+instr_from_parts(["switch_on_structure"|Entries], switch_on_structure(Entries)).
+instr_from_parts(["switch_on_structure_a2"|Entries], switch_on_structure_a2(Entries)).
 instr_from_parts(["proceed"], proceed).
 instr_from_parts(["begin_aggregate", Type, ValReg, ResReg], begin_aggregate(Type, ValReg, ResReg)).
 % bagof/setof with witness-group backtracking: the 4th token is a
@@ -1846,6 +1858,46 @@ wam_elixir_lower_instr(switch_on_constant_a2(Entries), _PC, _Labels, _FuncName, 
         end
     end', [ArmsStr]).
 
+wam_elixir_lower_instr(switch_on_constant_fallthrough(Entries), _PC, _Labels, _FuncName, Suffix, Code) :-
+    build_switch_arms(Entries, Suffix, ArmsStr),
+    format(string(Code),
+'    val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
+    case val do
+      {:unbound, _} -> :ok
+      _ ->
+        case val do
+          ~w
+          _ -> :ok
+        end
+    end', [ArmsStr]).
+
+wam_elixir_lower_instr(switch_on_constant_a2_fallthrough(Entries), _PC, _Labels, _FuncName, Suffix, Code) :-
+    build_switch_arms(Entries, Suffix, ArmsStr),
+    format(string(Code),
+'    val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 2))
+    case val do
+      {:unbound, _} -> :ok
+      _ ->
+        case val do
+          ~w
+          _ -> :ok
+        end
+    end', [ArmsStr]).
+
+wam_elixir_lower_instr(switch_on_term(Tokens), _PC, _Labels, _FuncName, Suffix, Code) :-
+    parse_switch_on_term_tokens(Tokens, ConstEntries, StructEntries, ListLabel),
+    build_switch_on_term_code(1, ConstEntries, StructEntries, ListLabel, Suffix, Code).
+
+wam_elixir_lower_instr(switch_on_term_a2(Tokens), _PC, _Labels, _FuncName, Suffix, Code) :-
+    parse_switch_on_term_tokens(Tokens, ConstEntries, StructEntries, ListLabel),
+    build_switch_on_term_code(2, ConstEntries, StructEntries, ListLabel, Suffix, Code).
+
+wam_elixir_lower_instr(switch_on_structure(Entries), _PC, _Labels, _FuncName, Suffix, Code) :-
+    build_switch_on_term_code(1, [], Entries, "none", Suffix, Code).
+
+wam_elixir_lower_instr(switch_on_structure_a2(Entries), _PC, _Labels, _FuncName, Suffix, Code) :-
+    build_switch_on_term_code(2, [], Entries, "none", Suffix, Code).
+
 wam_elixir_lower_instr(proceed, _PC, _Labels, _FuncName, _Suffix, Code) :-
     % CPS: proceed = tail-call the continuation stored in state.cp. The
     % caller\'s post-call code (or the driver\'s terminal_cp) lives in
@@ -1913,6 +1965,93 @@ witness_str_to_reg_ids(WitnessStr, RegIdList) :-
 witness_part_to_id(Part, Id) :-
     atom_string(RegAtom, Part),
     reg_id(RegAtom, Id).
+
+%% parse_switch_on_term_tokens(+Tokens, -ConstEntries, -StructEntries, -ListLabel)
+%  Parses the flat token list from `switch_on_term CLen <consts...> SLen <structs...> ListLabel`.
+parse_switch_on_term_tokens(Tokens, ConstEntries, StructEntries, ListLabel) :-
+    Tokens = [CLenStr|Rest0],
+    (atom(CLenStr) -> atom_number(CLenStr, CLen) ; number_string(CLen, CLenStr)),
+    length(ConstEntries, CLen),
+    append(ConstEntries, [SLenStr|Rest1], Rest0),
+    (atom(SLenStr) -> atom_number(SLenStr, SLen) ; number_string(SLen, SLenStr)),
+    length(StructEntries, SLen),
+    append(StructEntries, [ListLabel], Rest1).
+
+%% build_switch_on_term_code(+RegIdx, +ConstEntries, +StructEntries, +ListLabel, +Suffix, -Code)
+%  Generates Elixir code for switch_on_term / switch_on_term_a2.
+%  Type-dispatches on the dereferenced register value:
+%    unbound   → fall through (:ok)
+%    {:ref, _} → heap lookup: list functor → list arm, else struct arm
+%    other     → constant arm
+build_switch_on_term_code(RegIdx, ConstEntries, StructEntries, ListLabel, Suffix, Code) :-
+    build_sot_list_dispatch(ListLabel, Suffix, ListCode),
+    build_sot_struct_dispatch(StructEntries, Suffix, StructCode),
+    build_sot_const_dispatch(ConstEntries, Suffix, ConstCode),
+    format(string(Code),
+'    val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, ~w))
+    cond do
+      match?({:unbound, _}, val) -> :ok
+      match?({:ref, _}, val) ->
+        {:ref, __sot_addr} = val
+        case Map.get(state.heap, __sot_addr) do
+          {:str, sot_fn} ->
+            cond do
+              sot_fn == "./2" or sot_fn == "[|]/2" ->
+~w
+              true ->
+~w
+            end
+          _ -> throw({:fail, state})
+        end
+      true ->
+~w
+    end', [RegIdx, ListCode, StructCode, ConstCode]).
+
+%% build_sot_list_dispatch(+ListLabel, +Suffix, -Code)
+build_sot_list_dispatch(ListLabel, _Suffix, Code) :-
+    (ListLabel == "none" ; ListLabel == none), !,
+    Code = "                throw({:fail, state})".
+build_sot_list_dispatch(ListLabel, _Suffix, Code) :-
+    (ListLabel == "default" ; ListLabel == default), !,
+    Code = "                :ok".
+build_sot_list_dispatch(ListLabel, Suffix, Code) :-
+    atom_string(ListLabel, LabelStr),
+    segment_func_name(LabelStr, Suffix, Func),
+    format(string(Code),
+           "                throw({:return, ~w(%{state | choice_points: tl(state.choice_points)})})",
+           [Func]).
+
+%% build_sot_struct_dispatch(+StructEntries, +Suffix, -Code)
+build_sot_struct_dispatch(StructEntries, Suffix, Code) :-
+    (   StructEntries == []
+    ->  Code = "                throw({:fail, state})"
+    ;   maplist(build_sot_struct_arm(Suffix), StructEntries, Arms),
+        atomic_list_concat(Arms, '\n                  ', ArmsJoined),
+        format(string(Code),
+               "                case sot_fn do\n                  ~w\n                  _ -> throw({:fail, state})\n                end",
+               [ArmsJoined])
+    ).
+
+build_sot_struct_arm(Suffix, Entry, Arm) :-
+    split_last_colon(Entry, Key, Label),
+    (   (Label == "default" ; Label == default)
+    ->  format(string(Arm), '"~w" -> :ok', [Key])
+    ;   atom_string(Label, LabelStr),
+        segment_func_name(LabelStr, Suffix, Func),
+        format(string(Arm),
+               '"~w" -> throw({:return, ~w(%{state | choice_points: tl(state.choice_points)})})',
+               [Key, Func])
+    ).
+
+%% build_sot_const_dispatch(+ConstEntries, +Suffix, -Code)
+build_sot_const_dispatch(ConstEntries, Suffix, Code) :-
+    (   ConstEntries == []
+    ->  Code = "        throw({:fail, state})"
+    ;   build_switch_arms(ConstEntries, Suffix, ArmsStr),
+        format(string(Code),
+               "        case val do\n          ~w\n          _ -> throw({:fail, state})\n        end",
+               [ArmsStr])
+    ).
 
 %% escape_backslashes_for_elixir(+Token, -Escaped)
 %  Double backslashes when emitting `Token` into an Elixir double-
