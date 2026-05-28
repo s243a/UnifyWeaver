@@ -39,7 +39,10 @@
     % Foreign lowering pipeline (M5.6)
     llvm_foreign_kernel_spec/3,          % ?Pred/Arity, ?KernelKind, ?Config (dynamic)
     clear_llvm_foreign_kernel_specs/0,   % retractall helper (for test isolation)
-    foreign_kernel/3                     % +Pred/Arity, +Kind, +Config (user directive)
+    foreign_kernel/3,                    % +Pred/Arity, +Kind, +Config (user directive)
+    % Shared helpers (used by wam_llvm_lowered_emitter)
+    sanitize_functor_for_llvm/2,         % +Name, -SaneName (bijective hex escape)
+    register_functor_string/1            % +NameStr (assert into functor_string_global table)
 ]).
 
 :- use_module(library(lists)).
@@ -47,6 +50,11 @@
 :- use_module('../core/template_system').
 :- use_module('../bindings/llvm_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module(wam_llvm_lowered_emitter, [
+    wam_llvm_lowerable/3,
+    lower_predicate_to_llvm/4,
+    llvm_lowered_func_name/2
+]).
 
 :- discontiguous wam_llvm_case/2.
 :- discontiguous wam_line_to_llvm_literal/2.
@@ -1511,6 +1519,38 @@ pass1_classify_predicates([PredIndicator|Rest], Options, StartPC,
     ->  format(user_error, '  ~w/~w: native lowering~n', [Pred, Arity]),
         Record = native(PredIndicator, Arity, PredCode),
         NextPC = StartPC
+    ;   % WAM-lowered LLVM emission (PR #N — wam_llvm_lowered_emitter).
+        %
+        % Gate: opt-in via emit_mode(Mode), where Mode is one of:
+        %   functions          — try to lower every predicate
+        %   mixed([P/A, ...])  — try to lower only the listed predicates
+        %   interpreter        — never lower (default; matches prior behaviour)
+        %
+        % If lowering succeeds, the predicate ships as a standalone
+        % LLVM function with the WAM instruction sequence inlined as
+        % straight-line basic blocks. No %Instruction array, no @step
+        % switch dispatch, no @run_loop trampoline for this predicate.
+        emit_mode_allows_lowering(Module:Pred/Arity, Options),
+        catch(
+            wam_target:compile_predicate_to_wam(Module:Pred/Arity,
+                Options, LowerWamRaw),
+            _, fail),
+        catch(
+            wam_llvm_lowerable(Pred/Arity, LowerWamRaw, _LowerReason),
+            _, fail)
+    ->  catch(
+            lower_predicate_to_llvm(Pred/Arity, LowerWamRaw,
+                Options, LoweredCode),
+            LowerErr,
+            ( format(user_error,
+                '  ~w/~w: lowered emit failed (~w), falling back~n',
+                [Pred, Arity, LowerErr]),
+              fail
+            )),
+        format(user_error, '  ~w/~w: lowered LLVM emission~n',
+            [Pred, Arity]),
+        Record = native(PredIndicator, Arity, LoweredCode),
+        NextPC = StartPC
     ;   option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
         catch(
@@ -1524,6 +1564,29 @@ pass1_classify_predicates([PredIndicator|Rest], Options, StartPC,
         NextPC = StartPC
     ),
     pass1_classify_predicates(Rest, Options, NextPC, RestRecs).
+
+%% emit_mode_allows_lowering(+PredIndicator, +Options) is semidet.
+%
+%  Gate for the wam_llvm_lowered_emitter branch in
+%  pass1_classify_predicates/4. Matches the F# target's
+%  `wam_fsharp_resolve_emit_mode/2` semantics:
+%
+%    emit_mode(functions)          → succeeds for every predicate.
+%    emit_mode(mixed([P/A, ...]))  → succeeds iff PredIndicator is
+%                                    in the list (Module:Pred/Arity
+%                                    or bare Pred/Arity).
+%    emit_mode(interpreter)        → always fails.
+%    no emit_mode option           → defaults to interpreter (fails).
+emit_mode_allows_lowering(Module:Pred/Arity, Options) :-
+    option(emit_mode(Mode), Options, interpreter),
+    Mode \== interpreter,
+    ( Mode == functions
+    -> true
+    ; Mode = mixed(List)
+    -> ( memberchk(Pred/Arity, List)
+       ; memberchk(Module:Pred/Arity, List)
+       )
+    ).
 
 %% parse_wam_to_pass1(+Pred/Arity, +WamCode, +Arity, +StartPC,
 %%                    -wam(...), -NumInstrs)
@@ -3990,9 +4053,33 @@ emit_functor_string_globals(IR) :-
 %  `redefinition of global` when llc sees the bench module (which
 %  references e.g. both `+` and `*` as functors).
 sanitize_functor_for_llvm(Name, Sanitized) :-
-    string_codes(Name, Codes),
+    ( atom(Name) -> atom_string(Name, Str)
+    ; string(Name) -> Str = Name
+    ; Str = Name
+    ),
+    string_codes(Str, Codes),
     sanitize_codes(Codes, SanCodes),
     string_codes(Sanitized, SanCodes).
+
+%% register_functor_string(+NameStr) is det.
+%
+%  Idempotent assert into the functor_string_global/2 table. Callers
+%  that emit `@.fn_<sane>` references must call this so the matching
+%  `@.fn_<sane> = private constant [N x i8] c"<name>\00"` global is
+%  emitted by emit_functor_string_globals/1 at module assembly time.
+%
+%  Accepts a string OR an atom — converted to string internally so the
+%  table key is consistent.
+register_functor_string(Name) :-
+    ( atom(Name) -> atom_string(Name, NameStr)
+    ; string(Name) -> NameStr = Name
+    ; NameStr = Name
+    ),
+    string_length(NameStr, Len),
+    LenPlus1 is Len + 1,
+    ( functor_string_global(NameStr, _) -> true
+    ; assertz(functor_string_global(NameStr, LenPlus1))
+    ).
 
 sanitize_codes([], []).
 sanitize_codes([C|Cs], [C|Out]) :-
