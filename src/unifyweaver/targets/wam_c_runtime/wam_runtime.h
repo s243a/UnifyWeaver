@@ -137,6 +137,12 @@ typedef struct {
     int values_fd;
     WamReverseCsrRow *rows;
     int row_count;
+#ifdef WAM_C_ENABLE_LMDB
+    bool use_lmdb_offset;
+    bool offset_dbi_open;
+    MDB_env *offset_env;
+    MDB_dbi offset_dbi;
+#endif
 } WamReverseCsrArtifact;
 
 typedef struct {
@@ -306,6 +312,10 @@ void wam_reverse_csr_close(WamReverseCsrArtifact *artifact);
 bool wam_reverse_csr_load(WamReverseCsrArtifact *artifact,
                           const char *index_path,
                           const char *values_path);
+bool wam_reverse_csr_load_lmdb_offset(WamReverseCsrArtifact *artifact,
+                                      const char *values_path,
+                                      const char *offset_env_path,
+                                      const char *db_name);
 int wam_reverse_csr_lookup_children(WamReverseCsrArtifact *artifact,
                                     int parent,
                                     int *out_children,
