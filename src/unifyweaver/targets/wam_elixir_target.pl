@@ -45,8 +45,13 @@
                 iso_errors_mode_for/3,
                 iso_errors_warn_multi_module/2,
                 iso_errors_rewrite/4,
+                iso_errors_rewrite_item/3,
                 iso_errors_audit_normalise_pi/2,
                 iso_errors_audit_walk/5
+              ]).
+:- use_module('wam_text_parser',
+              [ wam_tokenize_line/2,
+                wam_recognise_instruction/2
               ]).
 :- use_module('../targets/wam_elixir_utils', [camel_case/2]).
 :- use_module('../core/recursive_kernel_detection',
@@ -6480,59 +6485,32 @@ iso_errors_rewrite_text(Config, PI, WamText, RewrittenText) :-
 
 iso_errors_has_lax_entries :- iso_errors:iso_errors_default_to_lax(_, _), !.
 
-% Rewrite one line. Token-split, classify head, look up key in the
-% mode-appropriate table, splice the new key back in. Lines we
-% don't recognise pass through unchanged.
+% Rewrite one line via the shared items pipeline. Tokenize the line
+% with the shared quote-aware tokenizer, recognise it to a structured
+% WAM item, apply the shared item-level ISO rewrite, and splice the
+% new key back into the original line.
+%
+% iso_errors_rewrite_item/3 (in core/iso_errors) is the single source
+% of truth for the builtin_call / put_structure / call / execute key
+% swaps — this target no longer carries its own per-shape text rules.
+% All four rewritable shapes carry the key as their first argument, so
+% arg(1, ...) extracts old/new keys generically.
+%
+% Splicing rather than re-printing the recognised item preserves the
+% original whitespace byte-for-byte, so existing text output is
+% unaffected. Any failure along the chain (unrecognised line, key not
+% in the ISO/lax tables, splice miss) falls through to OutLine = Line.
 iso_errors_rewrite_line(Mode, Line, OutLine) :-
-    split_string(Line, " \t", "", Parts0),
-    exclude(==(""), Parts0, Parts),
-    (   iso_errors_rewrite_parts(Mode, Parts, Line, OutLine)
+    (   wam_tokenize_line(Line, Tokens),
+        wam_recognise_instruction(Tokens, Item0),
+        iso_errors_rewrite_item(Mode, Item0, Item1),
+        Item0 \== Item1,
+        arg(1, Item0, OldKey),
+        arg(1, Item1, NewKey),
+        iso_errors_splice_line(Line, OldKey, NewKey, OutLine)
     ->  true
     ;   OutLine = Line
     ).
-
-% builtin_call <key>, <arity>  (key has trailing comma)
-iso_errors_rewrite_parts(Mode, ["builtin_call", KeyComma | _Rest], Line, OutLine) :-
-    string_concat(Key, ",", KeyComma), !,
-    iso_errors_lookup(Mode, Key, NewKey),
-    Key \== NewKey,
-    iso_errors_splice_line(Line, Key, NewKey, OutLine),
-    !.
-iso_errors_rewrite_parts(_, ["builtin_call", _Key | _], _, _) :- !, fail.
-
-% put_structure <key>, <reg>   (key has trailing comma; key is "name/arity")
-iso_errors_rewrite_parts(Mode, ["put_structure", KeyComma | _], Line, OutLine) :-
-    string_concat(Key, ",", KeyComma), !,
-    iso_errors_lookup(Mode, Key, NewKey),
-    Key \== NewKey,
-    iso_errors_splice_line(Line, Key, NewKey, OutLine),
-    !.
-
-% call <key>, <arity>
-iso_errors_rewrite_parts(Mode, ["call", KeyComma | _], Line, OutLine) :-
-    string_concat(Key, ",", KeyComma), !,
-    iso_errors_lookup(Mode, Key, NewKey),
-    Key \== NewKey,
-    iso_errors_splice_line(Line, Key, NewKey, OutLine),
-    !.
-
-% execute <key>   (no comma — execute carries no arity field)
-iso_errors_rewrite_parts(Mode, ["execute", Key | _], Line, OutLine) :-
-    iso_errors_lookup(Mode, Key, NewKey),
-    Key \== NewKey,
-    iso_errors_splice_line(Line, Key, NewKey, OutLine),
-    !.
-
-iso_errors_rewrite_parts(_, _, _, _) :- fail.
-
-% Look up Key in the mode-appropriate table. Falls through to Key
-% itself when no entry exists (the common case while tables are
-% sparse).
-iso_errors_lookup(true, Key, NewKey) :-
-    iso_errors:iso_errors_default_to_iso(Key, NewKey), !.
-iso_errors_lookup(false, Key, NewKey) :-
-    iso_errors:iso_errors_default_to_lax(Key, NewKey), !.
-iso_errors_lookup(_, Key, Key).
 
 % Replace the FIRST occurrence of Key in Line with NewKey. Both are
 % string. Simple substring replacement — Key is a "name/arity"
