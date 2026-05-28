@@ -1083,6 +1083,9 @@ test(runtime_format_helpers) :-
 test(runtime_with_output_to_helpers) :-
 	setup_call_cleanup(
 		(   retractall(user:py_with_output_to_demo),
+			user:python_parser_tmp_dir('tmp_wam_python_with_output_to', ProjectDir),
+			atomic_list_concat([ProjectDir, '/wot_stream.txt'], StreamOutFile),
+			atomic_list_concat([ProjectDir, '/wot_stream_format.txt'], StreamFmtFile),
 			assertz((user:py_with_output_to_demo :-
 				with_output_to(atom(A), write(hello)),
 				A = hello,
@@ -1107,8 +1110,21 @@ test(runtime_with_output_to_helpers) :-
 				Chars = qR,
 				Seed = keep,
 				\+ with_output_to(atom(Seed), write(changed)),
-				Seed = keep)),
-			user:python_parser_tmp_dir('tmp_wam_python_with_output_to', ProjectDir)
+				Seed = keep,
+				open(StreamOutFile, write, Out),
+				with_output_to(stream(Out), (write(hello), write(' '), write(world))),
+				close(Out),
+				open(StreamOutFile, read, In),
+				read_line_to_string(In, Line),
+				close(In),
+				Line = 'hello world',
+				open(StreamFmtFile, write, FOut),
+				with_output_to(stream(FOut), format('~w-~w', [42, ok])),
+				close(FOut),
+				open(StreamFmtFile, read, FIn),
+				read_line_to_string(FIn, FLine),
+				close(FIn),
+				FLine = '42-ok'))
 		),
 		(   wam_python_target:write_wam_python_project([user:py_with_output_to_demo/0],
 				[runtime_parser(off)], ProjectDir),
