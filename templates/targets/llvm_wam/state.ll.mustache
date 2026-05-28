@@ -360,24 +360,136 @@ store:
 @.fmt_arith_fail = private constant [26 x i8] c"ERROR: eval_arith failed\0A\00"
 
 
-; Push value onto heap, return address. Aborts via exit(2) on overflow
-; (the alternative is silent buffer overrun and a confusing later
-; segfault — make it loud while heap-grow remains TODO).
-define i32 @wam_heap_push(%WamState* %vm, %Value %val) alwaysinline nounwind {
+; ============================================================================
+; M6: Growable heap allocator (with WriteCtx fixup)
+; ============================================================================
+;
+; The heap was the last fixed-size allocator after M5. The reason it was
+; held back: WriteCtx stack entries store a `%Value*` in their `data`
+; field that can point into the WAM heap (set by @wam_write_ctx_set_args
+; in get_list write mode), and a naive realloc would invalidate those
+; pointers — subsequent @wam_write_ctx_set_arg calls would write to
+; freed memory.
+;
+; M6 fixes that by walking the stack on heap grow and translating any
+; WriteCtx data pointer that was in the old heap range to the new heap
+; base + same byte offset. The walk only fires on the rare grow event
+; (geometric doubling — log N grows for N cells over the lifetime of a
+; query), and only inspects stack frames (cap is small even after the
+; M5 stack grow), so the amortised cost stays well under one cycle per
+; heap push.
+;
+; Refs (%Value{tag=5, payload=heap_addr}) hold heap INDICES (i32), not
+; pointers, so they survive realloc untouched. Same for any code that
+; reads heap[index] via @wam_heap_get — the index is stable.
+
+define void @wam_heap_grow(%WamState* %vm) {
+entry:
+  ; Snapshot old heap pointer + cap for the post-realloc fixup pass.
+  %hc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 7
+  %old_hc = load i32, i32* %hc_ptr
+  %heap_ptr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
+  %old_heap = load %Value*, %Value** %heap_ptr_ptr
+  ; Double the capacity and realloc.
+  %new_hc = mul i32 %old_hc, 2
+  %new_hc_i64 = zext i32 %new_hc to i64
+  %elem_size = ptrtoint %Value* getelementptr (%Value, %Value* null, i32 1) to i64
+  %new_bytes = mul i64 %new_hc_i64, %elem_size
+  %old_i8 = bitcast %Value* %old_heap to i8*
+  %new_i8 = call i8* @realloc(i8* %old_i8, i64 %new_bytes)
+  %new_heap = bitcast i8* %new_i8 to %Value*
+  store %Value* %new_heap, %Value** %heap_ptr_ptr
+  store i32 %new_hc, i32* %hc_ptr
+  ; Fix up any WriteCtx data pointers that were in the old heap range.
+  call void @wam_fixup_writectx_after_heap_grow(%WamState* %vm,
+      %Value* %old_heap, i32 %old_hc, %Value* %new_heap)
+  ret void
+}
+
+; Walks the stack, translating any WriteCtx (type=2) entry whose
+; `data` pointer fell within the old heap range to the corresponding
+; offset inside the new heap.
+;
+; Pointers that lived in the arena (set by put_structure / get_structure
+; write mode) fall outside the old heap range and are left untouched
+; — the arena buffer is independent of the WAM heap.
+;
+; Other stack-entry types (EnvFrame type=0, UnifyCtx type=1) carry
+; data pointers that point into the arena (set by put_structure /
+; get_structure) or are null (EnvFrame doesn't use the field at all),
+; so they're skipped.
+define void @wam_fixup_writectx_after_heap_grow(
+    %WamState* %vm, %Value* %old_heap, i32 %old_cap, %Value* %new_heap) {
+entry:
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %old_end = getelementptr %Value, %Value* %old_heap, i32 %old_cap
+  %old_base_i64 = ptrtoint %Value* %old_heap to i64
+  %old_end_i64 = ptrtoint %Value* %old_end to i64
+  %new_base_i64 = ptrtoint %Value* %new_heap to i64
+  br label %loop
+
+loop:
+  %i = phi i32 [ 0, %entry ], [ %i_next, %loop_continue ]
+  %done = icmp sge i32 %i, %ss
+  br i1 %done, label %exit, label %check_entry
+
+check_entry:
+  %entry_ptr = getelementptr %StackEntry, %StackEntry* %stack, i32 %i
+  %type_ptr = getelementptr %StackEntry, %StackEntry* %entry_ptr, i32 0, i32 0
+  %type = load i32, i32* %type_ptr
+  %is_writectx = icmp eq i32 %type, 2
+  br i1 %is_writectx, label %check_data, label %loop_continue
+
+check_data:
+  %data_pp = getelementptr %StackEntry, %StackEntry* %entry_ptr, i32 0, i32 2
+  %data_ptr = load %Value*, %Value** %data_pp
+  %is_null = icmp eq %Value* %data_ptr, null
+  br i1 %is_null, label %loop_continue, label %check_range
+
+check_range:
+  %data_i64 = ptrtoint %Value* %data_ptr to i64
+  %ge = icmp uge i64 %data_i64, %old_base_i64
+  %lt = icmp ult i64 %data_i64, %old_end_i64
+  %in_range = and i1 %ge, %lt
+  br i1 %in_range, label %translate, label %loop_continue
+
+translate:
+  %byte_offset = sub i64 %data_i64, %old_base_i64
+  %new_addr = add i64 %new_base_i64, %byte_offset
+  %new_data_ptr = inttoptr i64 %new_addr to %Value*
+  store %Value* %new_data_ptr, %Value** %data_pp
+  br label %loop_continue
+
+loop_continue:
+  %i_next = add i32 %i, 1
+  br label %loop
+
+exit:
+  ret void
+}
+
+; Push value onto heap, return address. (M6: replaces the M5-era
+; exit(2) abort path with a doubling realloc + WriteCtx fixup. Refs
+; into the heap are unaffected because they store i32 indices, not
+; pointers.)
+define i32 @wam_heap_push(%WamState* %vm, %Value %val) nounwind {
 entry:
   %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
   %hs = load i32, i32* %hs_ptr
   %hc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 7
   %hc = load i32, i32* %hc_ptr
-  %ovf = icmp sge i32 %hs, %hc
-  br i1 %ovf, label %abort, label %store_it
+  %need_grow = icmp sge i32 %hs, %hc
+  br i1 %need_grow, label %grow, label %store_it
 
-abort:
-  call i32 (i8*, ...) @printf(i8* getelementptr ([41 x i8], [41 x i8]* @.fmt_heap_oom, i32 0, i32 0), i32 %hs, i32 %hc)
-  call void @exit(i32 2)
-  unreachable
+grow:
+  call void @wam_heap_grow(%WamState* %vm)
+  br label %store_it
 
 store_it:
+  ; Reload heap pointer — realloc may have moved it.
   %heap_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
   %heap_arr = load %Value*, %Value** %heap_arr_ptr
   %slot = getelementptr %Value, %Value* %heap_arr, i32 %hs
