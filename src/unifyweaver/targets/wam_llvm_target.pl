@@ -42,7 +42,8 @@
     foreign_kernel/3,                    % +Pred/Arity, +Kind, +Config (user directive)
     % Shared helpers (used by wam_llvm_lowered_emitter)
     sanitize_functor_for_llvm/2,         % +Name, -SaneName (bijective hex escape)
-    register_functor_string/1            % +NameStr (assert into functor_string_global table)
+    register_functor_string/1,           % +NameStr (assert into functor_string_global table)
+    split_functor_arity/3                % +Str, -Name, -Arity (handles `/` in name)
 ]).
 
 :- use_module(library(lists)).
@@ -4321,6 +4322,40 @@ sanitize_functor_for_llvm(Name, Sanitized) :-
     sanitize_codes(Codes, SanCodes),
     string_codes(Sanitized, SanCodes).
 
+%% split_functor_arity(+Str, -NameStr, -Arity) is det.
+%
+%  Parses a Prolog functor/arity string ("foo/2") into name and arity,
+%  splitting on the LAST `/` rather than the first. This handles
+%  predicate / functor names that themselves contain `/`:
+%
+%    "foo/2"   → Name = "foo",  Arity = 2
+%    "//2"     → Name = "/",    Arity = 2   (integer division)
+%    "/3"      → Name = "",     Arity = 3   (degenerate but accepted)
+%    "a/b/4"   → Name = "a/b",  Arity = 4   (no native equivalent but
+%                                            correct under this rule)
+%
+%  Used by put_structure / get_structure / call / execute literal
+%  emitters in both the bytecode pipeline and the lowered emitter.
+%  Throws if there's no `/` in the input (callers expect a Name/Arity
+%  shape; absence of `/` is a bytecode bug).
+split_functor_arity(Str0, Name, Arity) :-
+    ( atom(Str0) -> atom_string(Str0, S)
+    ; string(Str0) -> S = Str0
+    ; S = Str0
+    ),
+    split_string(S, "/", "", Parts),
+    length(Parts, NParts),
+    ( NParts < 2
+    -> throw(error(split_functor_arity_no_slash(S), _))
+    ;  true
+    ),
+    last(Parts, ArityStr),
+    number_string(Arity, ArityStr),
+    NameCount is NParts - 1,
+    length(NameParts, NameCount),
+    append(NameParts, [_], Parts),
+    atomic_list_concat(NameParts, "/", Name).
+
 %% register_functor_string(+NameStr) is det.
 %
 %  Idempotent assert into the functor_string_global/2 table. Callers
@@ -4838,10 +4873,13 @@ wam_line_to_llvm_literal(["put_structure", FN, Ai], Lit) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
     atom_string(CAi, CAiAtom),
     reg_name_to_index(CAiAtom, AiIdx),
-    % Parse functor/arity from "name/N" format.
+    % Parse functor/arity from "name/N" format. Use split_functor_arity/3
+    % which splits on the LAST `/` so functor names that contain `/`
+    % (e.g. the integer-division operator `//`) parse correctly. The
+    % naive split_string(_, "/", "", [Name, Arity]) fails on `//2`
+    % because consecutive separators produce an empty middle part.
     atom_string(CFN, CFNStr),
-    split_string(CFNStr, "/", "", [NameStr, ArityStr]),
-    number_string(Arity, ArityStr),
+    split_functor_arity(CFNStr, NameStr, Arity),
     string_length(NameStr, NameLen),
     NameLenPlus1 is NameLen + 1,
     % Encode: op1 = ptrtoint of functor string global, op2 = (arity << 16) | reg_idx.
