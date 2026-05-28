@@ -455,6 +455,51 @@ test_reverse_index_plan_runtime_available_lmdb_offset :-
     ;   fail_test(Test, 'runtime lmdb-offset CSR artifact was not marked available')
     ).
 
+test_reverse_index_setup_generation :-
+    Test = 'WAM-C: reverse_index artifact emits CSR setup lifecycle',
+    (   generate_setup_reverse_index_c(
+            [reverse_index(artifact([
+                storage_kind(csr_pread_artifact),
+                phase(runtime_available),
+                index_backend(sorted_array),
+                io_policy(buffered_pread)
+            ])),
+             reverse_csr_index_path('/tmp/category_child.csr.idx'),
+             reverse_csr_values_path('/tmp/category_child.csr.val'),
+             category_id_map([orphan-20, child-30])],
+            Code
+        ),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'bool setup_wam_c_reverse_index_artifacts'),
+        sub_string(S, _, _, _, 'wam_reverse_csr_load(bidirectional_child_csr, "/tmp/category_child.csr.idx", "/tmp/category_child.csr.val")'),
+        sub_string(S, _, _, _, 'wam_register_category_id(state, "orphan", 20)'),
+        sub_string(S, _, _, _, 'wam_register_category_id(state, "child", 30)'),
+        sub_string(S, _, _, _, 'wam_attach_bidirectional_child_csr(state, bidirectional_child_csr)'),
+        sub_string(S, _, _, _, 'void teardown_wam_c_reverse_index_artifacts')
+    ->  pass(Test)
+    ;   fail_test(Test, 'reverse_index artifact setup lifecycle missing')
+    ).
+
+test_reverse_index_setup_lmdb_offset_generation :-
+    Test = 'WAM-C: reverse_index lmdb-offset setup preserves CSR load order',
+    (   generate_setup_reverse_index_c(
+            [reverse_index(artifact([
+                storage_kind(csr_pread_artifact),
+                phase(runtime_available),
+                index_backend(lmdb_offset),
+                io_policy(buffered_pread)
+            ])),
+             reverse_csr_offset_lmdb_path('/tmp/category_child.offsets.lmdb'),
+             reverse_csr_values_path('/tmp/category_child.csr.val'),
+             reverse_csr_offset_lmdb_dbi(offsets)],
+            Code
+        ),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'wam_reverse_csr_load_lmdb_offset(bidirectional_child_csr, "/tmp/category_child.csr.val", "/tmp/category_child.offsets.lmdb", "offsets")')
+    ->  pass(Test)
+    ;   fail_test(Test, 'LMDB-offset CSR setup load order changed')
+    ).
+
 test_streaming_foreign_results_generation :-
     Test = 'WAM-C: streaming foreign result helpers generated',
     (   compile_wam_runtime_to_c([], RuntimeCode),
@@ -1168,6 +1213,16 @@ test_bidirectional_ancestor_csr_child_lookup_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_reverse_index_setup_executable_smoke :-
+    Test = 'WAM-C: generated reverse_index CSR setup executable smoke',
+    (   gcc_available
+    ->  (   run_reverse_index_setup_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'generated reverse_index CSR setup executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_transitive_closure_kernel_executable_smoke :-
     Test = 'WAM-C: transitive_closure2 native kernel executable smoke',
     (   gcc_available
@@ -1670,6 +1725,46 @@ run_bidirectional_ancestor_csr_child_lookup_executable_smoke :-
         30,0,0,0
     ]),
     wam_c_bidirectional_ancestor_csr_smoke_main(IndexPath, ValuesPath, MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
+run_reverse_index_setup_executable_smoke :-
+    WamCode = 'bidirectional_ancestor/5:\n    call_foreign bidirectional_ancestor/5, 5\n    proceed',
+    compile_wam_predicate_to_c(user:bidirectional_ancestor/5, WamCode, [], PredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_reverse_index_setup_smoke', Stamp, TmpBase),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(IndexPath), '~w.csr.idx', [TmpBase]),
+    format(atom(ValuesPath), '~w.csr.val', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    generate_setup_reverse_index_c(
+        [reverse_index(artifact([
+            storage_kind(csr_pread_artifact),
+            phase(runtime_available),
+            index_backend(sorted_array),
+            io_policy(buffered_pread)
+        ])),
+         reverse_csr_index_path(IndexPath),
+         reverse_csr_values_path(ValuesPath),
+         category_id_map([orphan-20, child-30, root-40])],
+        SetupCode
+    ),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w~n~n~w',
+           [SetupCode, PredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    write_binary_file(IndexPath, [
+        20,0,0,0, 0,0,0,0,0,0,0,0, 1,0,0,0
+    ]),
+    write_binary_file(ValuesPath, [
+        30,0,0,0
+    ]),
+    wam_c_reverse_index_setup_smoke_main(MainCode),
     write_text_file(MainPath, MainCode),
     compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
     run_c_smoke_plain(ExePath).
@@ -3102,6 +3197,66 @@ int main(void) {
     return 0;
 }
 ', [IndexPath, ValuesPath]).
+
+wam_c_reverse_index_setup_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_bidirectional_ancestor_5(WamState* state);
+bool setup_wam_c_reverse_index_artifacts(WamState* state,
+                                         WamReverseCsrArtifact* bidirectional_child_csr);
+void teardown_wam_c_reverse_index_artifacts(WamState* state,
+                                            WamReverseCsrArtifact* bidirectional_child_csr);
+
+int main(void) {
+    WamState state;
+    WamReverseCsrArtifact csr;
+    wam_state_init(&state);
+    setup_bidirectional_ancestor_5(&state);
+
+    if (!setup_wam_c_reverse_index_artifacts(&state, &csr)) {
+        wam_free_state(&state);
+        return 5;
+    }
+
+    wam_register_category_parent(&state, "child", "root");
+    wam_register_bidirectional_ancestor_kernel(&state, "bidirectional_ancestor/5",
+                                               4, 1.0, 2.0, 10.0);
+
+    WamValue args[5] = {
+        val_atom("orphan"),
+        val_atom("root"),
+        val_unbound("Total"),
+        val_unbound("Parents"),
+        val_unbound("Children")
+    };
+    int rc = wam_run_predicate(&state, "bidirectional_ancestor/5", args, 5);
+    if (rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_INT || state.A[2].data.integer != 2 ||
+        state.A[3].tag != VAL_INT || state.A[3].data.integer != 1 ||
+        state.A[4].tag != VAL_INT || state.A[4].data.integer != 1) {
+        teardown_wam_c_reverse_index_artifacts(&state, &csr);
+        wam_free_state(&state);
+        return 10;
+    }
+
+    teardown_wam_c_reverse_index_artifacts(&state, &csr);
+    WamValue fallback_args[5] = {
+        val_atom("orphan"),
+        val_atom("root"),
+        val_unbound("Total"),
+        val_unbound("Parents"),
+        val_unbound("Children")
+    };
+    int fallback_rc = wam_run_predicate(&state, "bidirectional_ancestor/5", fallback_args, 5);
+    if (fallback_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
 
 wam_c_transitive_closure_smoke_main(
 '#include "wam_runtime.h"
@@ -4922,6 +5077,8 @@ run_tests_once :-
     test_reverse_index_plan_csr_cost_model,
     test_reverse_index_plan_runtime_available_sorted_array,
     test_reverse_index_plan_runtime_available_lmdb_offset,
+    test_reverse_index_setup_generation,
+    test_reverse_index_setup_lmdb_offset_generation,
     test_streaming_foreign_results_generation,
     test_kernel_detector_setup_generation,
     test_bidirectional_ancestor_setup_generation,
@@ -4954,6 +5111,7 @@ run_tests_once :-
     test_category_ancestor_kernel_executable_smoke,
     test_bidirectional_ancestor_kernel_executable_smoke,
     test_bidirectional_ancestor_csr_child_lookup_executable_smoke,
+    test_reverse_index_setup_executable_smoke,
     test_transitive_closure_kernel_executable_smoke,
     test_transitive_distance_kernel_executable_smoke,
     test_transitive_parent_distance_kernel_executable_smoke,
