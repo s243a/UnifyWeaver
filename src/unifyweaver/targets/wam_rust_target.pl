@@ -608,6 +608,12 @@ wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
                     self.cp = self.pc + 1;
                     self.pc = target_pc;
                     true
+                } else if self.foreign_predicates.contains(p) {
+                    self.cp = self.pc + 1;
+                    if self.execute_foreign_predicate(p, *_arity) {
+                        self.pc = self.cp;
+                        true
+                    } else { false }
                 } else { false }'.
 
 wam_instruction_arm('Instruction::CallPc(target_pc, _arity)', Body) :-
@@ -658,6 +664,8 @@ wam_instruction_arm('Instruction::Execute(p)', Body) :-
     Body = '                if let Some(&target_pc) = self.labels.get(p) {
                     self.pc = target_pc;
                     true
+                } else if self.foreign_predicates.contains(p) {
+                    self.execute_foreign_predicate(p, 0)
                 } else { false }'.
 
 wam_instruction_arm('Instruction::ExecutePc(target_pc)', Body) :-
@@ -1353,7 +1361,11 @@ compile_execute_term_builtin_to_rust(Code) :-
 compile_execute_foreign_predicate_to_rust(Code) :-
     Code = '    /// Execute a registered foreign predicate by name/arity.
     pub fn execute_foreign_predicate(&mut self, pred: &str, arity: usize) -> bool {
-        let pred_key = format!("{}/{}", pred, arity);
+        let pred_key = if pred.contains(\'/\') && self.foreign_predicates.contains(pred) {
+            pred.to_string()
+        } else {
+            format!("{}/{}", pred, arity)
+        };
         if !self.foreign_predicates.contains(&pred_key) {
             return false;
         }
@@ -1830,7 +1842,11 @@ compile_foreign_result_helpers_to_rust(Code) :-
 
 compile_parse_foreign_tuple_layout_to_rust(Code) :-
     Code = '    fn parse_foreign_tuple_layout(layout: &str) -> Option<usize> {
-        layout.strip_prefix("tuple:")?.parse::<usize>().ok()
+        if let Some(inner) = layout.strip_prefix("tuple(").and_then(|s| s.strip_suffix(")")) {
+            inner.parse::<usize>().ok()
+        } else {
+            layout.strip_prefix("tuple:")?.parse::<usize>().ok()
+        }
     }'.
 
 compile_collect_native_category_ancestor_to_rust(Code) :-
@@ -3099,6 +3115,12 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
         LibContent),
     directory_file_path(SrcDir, 'lib.rs', LibPath),
     write_file(LibPath, LibContent),
+
+    % Generate src/main.rs benchmark harness from template file
+    read_template_file('templates/targets/rust_wam/main.rs.mustache', MainTemplate),
+    render_template(MainTemplate, [date=Date], MainContent),
+    directory_file_path(SrcDir, 'main.rs', MainRsPath),
+    write_file(MainRsPath, MainContent),
 
     format('WAM Rust project created at: ~w~n', [ProjectDir]),
     format('  Predicates compiled: ~w~n', [Predicates]).
