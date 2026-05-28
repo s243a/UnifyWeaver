@@ -854,6 +854,102 @@ where inlining would help (e.g., recursive small-pred chains where
 musttail run_loop sees the full dispatch); revisit if a future
 workload benchmark shows trampoline overhead dominating.
 
+### M8: Real-data benchmark (dev-scale Wikipedia category graph)
+
+After the M7 microbench-only baseline plus the split_functor_arity
+codegen fix that unblocked real Prolog programs, M8 set up the first
+LLVM benchmark against the same fixtures Haskell / Rust / Elixir use.
+Substrate: `data/benchmark/dev/category_parent.tsv` (198 edges loaded
+into `dev_cat_parent/2` dynamic facts at SWI-time, then baked into
+the `.ll` module via `foreign_predicates([... edge_pred(...) ...])`).
+The driver IR runs `category_ancestor(Quantum_mechanics, _, _, _)` in
+streaming mode 100 times, then counts the BFS frontier via backtrack
+on the final iteration as a correctness sanity check.
+
+Numbers (`tests/core/test_wam_llvm_realdata_benchmark.pl`,
+median wall-clock on a 4-vCPU Linux box, `llc -O2 + clang -O2`):
+
+| step | time |
+| --- | ---: |
+| compile (SWI → .ll → llc → clang) | 295 ms (one-shot) |
+| run loop (100 streaming-mode `category_ancestor` calls) | 4.2 ms |
+| **per query** | **42 μs** |
+| ancestors found (verifies kernel correctness on real data) | 31 |
+
+This is the first LLVM number in the cross-target effective-distance
+context. The `category_ancestor` kernel here exercises the M5/M6
+grow infrastructure (it streams via foreign choice-point iteration —
+the multi-result CP machinery — and the arena-backed result buffer;
+both can trigger CP and arena growth on cold start). Per-iter perf
+is in the same ball-park as the Rust kernel
+(`benchmarks/wam_effective_distance_cross_target.md` — Rust 3 ms
+total for the full effective-distance computation at dev scale,
+which includes outer enumeration over articles × roots that the LLVM
+benchmark doesn't yet do).
+
+What this doesn't measure (deferred):
+
+- The outer `setof(A, C^article_category(A, C), Articles), member(A, Articles)`
+  enumeration that the full `effective_distance/3` requires. The
+  bytecode interpreter doesn't have `setof/3` / `member/2` /
+  `aggregate_all` over arbitrary goals yet. Adding builtins coverage
+  is the natural M9.
+- Larger fixture scales (300 / 1k / 10k). Pre-M9 we'd need to handle
+  larger atom-intern tables and check there's no quadratic blow-up in
+  the .ll compile time — the `llc -O2` step on the dev fixture
+  already takes ~300 ms; at 10k the .ll module grows roughly 50x
+  and that may bottleneck.
+
+### M9: findall / aggregate_all(bag/set) end-to-end
+
+The pre-M9 `wam_apply_aggregation` returned a sentinel Atom for the
+collect agg-type (id 4 — the type the WAM compiler lowers `findall/3`
+and `aggregate_all(bag(_), ..., _)` to), so any program that used
+findall got `L = Atom_0` regardless of the body's solutions. M9 lands
+three coupled fixes that together make findall actually return a list:
+
+1. **`collect_case` in `@wam_apply_aggregation`** — builds a Prolog
+   cons-cell chain from the accumulator entries, terminated by an
+   empty-list Atom. Tail-first iteration so the chain ends up in
+   solution order. Compound + 2-element args array are arena-allocated.
+
+2. **Module-level globals** — `@wam_empty_list_atom_id` (interned at
+   codegen time) lets `collect_case` build the empty-list Atom without
+   a runtime intern table; the `[|]/2` functor string global
+   (`@.fn__5B_7C_5D`) is registered eagerly so programs that consume
+   findall results without explicitly constructing cons cells still
+   produce a valid module.
+
+3. **`wam_switch_on_constant` deref + `wam_finalize_aggregate`
+   bind-via-Ref** — first-arg-indexed multi-clause predicates called
+   from inside an aggregate body had their A1 passed as a Ref. The
+   pre-M9 `wam_get_reg` (no deref) saw the Ref payload as a literal
+   and never matched any switch entry, so the body silently failed.
+   `wam_finalize_aggregate` used to bind the result via `wam_set_reg`
+   which overwrites the register slot instead of writing through any
+   Ref to its heap cell — meaning the caller's output variable never
+   saw the result. Both now use the dereffing / Ref-aware paths.
+
+Test: `tests/core/test_wam_llvm_findall_execution.pl` compiles
+
+```prolog
+my_fact(11).  my_fact(22).  my_fact(33).
+test_collect(L) :- findall(X, my_fact(X), L).
+```
+
+then runs a hand-rolled LLVM driver that calls `test_collect` with an
+unbound A1 backed by a heap cell, derefs the result, walks the
+cons-cell chain. Pre-M9 the driver returned 0 (empty list); post-M9
+it returns 3 (the three solutions).
+
+This is the first M9 deliverable. Builtins coverage for the surrounding
+`effective_distance.pl` workload — `setof/3` (which needs msort+dedup
+over findall), `member/2` (multi-result enumeration), `aggregate_all(sum)`
+(already works for fully-deterministic bodies, but the bodies inside
+`effective_distance` lean on findall via path_to_root) — is incremental
+follow-up. Each one unblocks more of the workload; the perf measurement
+context for them is the M8 dev-scale benchmark.
+
 ---
 
 ## Clojure WAM — current implementation status
