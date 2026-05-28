@@ -57,6 +57,14 @@ test_add(X, R) :- R is X + 1.
 :- dynamic test_mul/2.
 test_mul(X, R) :- R is X * 3.
 
+% Compound arithmetic: R is X ** 3 (integer power)
+:- dynamic test_pow/2.
+test_pow(X, R) :- R is X ** 3.
+
+% Compound arithmetic: R is 2 ** X (variable exponent)
+:- dynamic test_pow2/2.
+test_pow2(X, R) :- R is 2 ** X.
+
 % Multi-step: R is (X + 1) * 2 — two separate is/2 calls
 :- dynamic test_multi/2.
 test_multi(X, R) :- T is X + 1, R is T * 2.
@@ -218,6 +226,11 @@ test_all :-
        run_test_r0('10+1 = 11', test_add, 10, 11),
        run_test_r0('0+1 = 1', test_add, 0, 1),
        run_test_r0('7*3 = 21', test_mul, 7, 21),
+       run_test_r0('2**3 = 8', test_pow, 2, 8),
+       run_test_r0('3**3 = 27', test_pow, 3, 27),
+       run_test_r0('5**3 = 125', test_pow, 5, 125),
+       run_test_r0('2**5 = 32', test_pow2, 5, 32),
+       run_test_r0('2**7 = 128', test_pow2, 7, 128),
        format('--- multi-clause (first-arg indexing) ---~n'),
        run_test('choice(1) = 10', test_choice, 1, 10),
        run_test('choice(2) = 20', test_choice, 2, 20),

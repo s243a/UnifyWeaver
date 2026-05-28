@@ -4016,8 +4016,45 @@ do_sub:
   ret i64 %sub_r
 
 do_mul:
+  ; M10: disambiguate `**` (power) from `*` (multiply) by inspecting
+  ; the second byte of the functor name. `*` has fn[1] = \\0;
+  ; `**` has fn[1] = \'*\'. Anything else falls through to plain `*`.
+  %mul_fn_second_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %mul_fn_second = load i8, i8* %mul_fn_second_ptr
+  %mul_is_pow = icmp eq i8 %mul_fn_second, 42  ; \'*\'
+  br i1 %mul_is_pow, label %do_pow, label %do_mul_plain
+
+do_mul_plain:
   %mul_r = mul i64 %a, %b
   ret i64 %mul_r
+
+do_pow:
+  ; Integer power loop: base ** exp computed as repeated multiply.
+  ; Negative exponent returns 0 (eval_arith is integer-only; proper
+  ; float pow is M11 deferred work that retags eval_arith to carry
+  ; either i64 or double).
+  %p_neg = icmp slt i64 %b, 0
+  br i1 %p_neg, label %pow_neg, label %pow_loop_setup
+
+pow_neg:
+  ret i64 0
+
+pow_loop_setup:
+  br label %pow_loop
+
+pow_loop:
+  %p_acc = phi i64 [ 1, %pow_loop_setup ], [ %p_new_acc, %pow_step ]
+  %p_n = phi i64 [ %b, %pow_loop_setup ], [ %p_dec, %pow_step ]
+  %p_done = icmp sle i64 %p_n, 0
+  br i1 %p_done, label %pow_done, label %pow_step
+
+pow_step:
+  %p_new_acc = mul i64 %p_acc, %a
+  %p_dec = sub i64 %p_n, 1
+  br label %pow_loop
+
+pow_done:
+  ret i64 %p_acc
 
 do_div:
   %div_zero = icmp eq i64 %b, 0
