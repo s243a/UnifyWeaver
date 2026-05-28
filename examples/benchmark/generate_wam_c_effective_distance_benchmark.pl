@@ -139,10 +139,17 @@ parse_child_search_options(Options, ChildSearch) :-
     ),
     option_or_default(max_child_expansions, Options, 0, MaxChildren),
     option_or_default(child_search_depth, Options, 1, ChildDepth),
+    option_or_default(parent_step_cost, Options, 1.0, ParentCost),
+    option_or_default(child_step_cost, Options, 1.0, ChildCost),
+    option_or_default(child_search_budget, Options, 1.0e100, Budget),
     validate_nonnegative_int(max_child_expansions, MaxChildren),
     validate_nonnegative_int(child_search_depth, ChildDepth),
-    ChildSearch = child_search(Mode, MaxChildren, ChildDepth).
-parse_child_search_options(_, child_search(parent_only, 0, 1)).
+    validate_positive_number(parent_step_cost, ParentCost),
+    validate_positive_number(child_step_cost, ChildCost),
+    validate_positive_number(child_search_budget, Budget),
+    ChildSearch = child_search(Mode, MaxChildren, ChildDepth,
+                               ParentCost, ChildCost, Budget).
+parse_child_search_options(_, child_search(parent_only, 0, 1, 1.0, 1.0, 1.0e100)).
 
 parse_child_search(parent_only, parent_only).
 parse_child_search(bounded, bounded).
@@ -168,6 +175,13 @@ validate_nonnegative_int(_Key, Value) :-
     !.
 validate_nonnegative_int(Key, Value) :-
     throw(error(domain_error(nonnegative_integer_option(Key), Value), _)).
+
+validate_positive_number(_Key, Value) :-
+    number(Value),
+    Value > 0,
+    !.
+validate_positive_number(Key, Value) :-
+    throw(error(domain_error(positive_number_option(Key), Value), _)).
 
 reset_benchmark_predicates :-
     forall(member(Name/Arity,
@@ -391,6 +405,9 @@ effective_distance_main_code(KernelMode, FactStorage, ChildSearch, Dimension, Ma
     child_search_flag(ChildSearch, ChildSearchFlag),
     child_search_max_children(ChildSearch, MaxChildExpansions),
     child_search_depth(ChildSearch, ChildSearchDepth),
+    child_search_parent_cost(ChildSearch, ParentStepCost),
+    child_search_child_cost(ChildSearch, ChildStepCost),
+    child_search_budget(ChildSearch, ChildSearchBudget),
     fact_source_load_code(FactStorage, LoadCode),
     format(atom(Code),
 '#include <math.h>
@@ -424,6 +441,35 @@ static int visited_contains(const char **visited, int visited_len, const char *a
         if (strcmp(visited[i], atom) == 0) return 1;
     }
     return 0;
+}
+
+typedef struct {
+    double *values;
+    int count;
+    int cap;
+} WamDoubleResults;
+
+static void double_results_init(WamDoubleResults *results) {
+    memset(results, 0, sizeof(WamDoubleResults));
+}
+
+static void double_results_close(WamDoubleResults *results) {
+    free(results->values);
+    memset(results, 0, sizeof(WamDoubleResults));
+}
+
+static int double_results_push(WamDoubleResults *results, double value) {
+    if (results->count >= results->cap) {
+        results->cap = results->cap ? results->cap * 2 : WAM_INITIAL_CAP;
+        results->values = realloc(results->values, sizeof(double) * results->cap);
+        if (!results->values) {
+            results->count = 0;
+            results->cap = 0;
+            return 0;
+        }
+    }
+    results->values[results->count++] = value;
+    return 1;
 }
 
 static int collect_reference_hops(WamFactSource *source,
@@ -473,7 +519,10 @@ static int collect_bounded_child_hops(WamState *state,
                                       int kernels_on,
                                       int max_child_expansions,
                                       int child_depth,
-                                      WamIntResults *results) {
+                                      double parent_step_cost,
+                                      double child_step_cost,
+                                      double budget,
+                                      WamDoubleResults *results) {
     if (max_child_expansions <= 0 || child_depth <= 0) return 0;
     int found = 0;
     int expanded = 0;
@@ -486,13 +535,33 @@ static int collect_bounded_child_hops(WamState *state,
         WamIntResults child_hops;
         wam_int_results_init(&child_hops);
         collect_hops(state, source, edge->child, root, kernels_on, &child_hops);
-        if (child_hops.count == 0 && child_depth > 1) {
+        if (child_hops.count == 0 && child_depth > 1 &&
+            child_step_cost < budget) {
+            WamDoubleResults child_costs;
+            double_results_init(&child_costs);
             (void)collect_bounded_child_hops(state, source, edge->child, root,
                                              kernels_on, max_child_expansions,
-                                             child_depth - 1, &child_hops);
+                                             child_depth - 1,
+                                             parent_step_cost, child_step_cost,
+                                             budget - child_step_cost,
+                                             &child_costs);
+            for (int ci = 0; ci < child_costs.count; ci++) {
+                double path_cost = child_step_cost + child_costs.values[ci];
+                if (path_cost > budget) continue;
+                if (!double_results_push(results, path_cost)) {
+                    double_results_close(&child_costs);
+                    wam_int_results_close(&child_hops);
+                    return 0;
+                }
+                found = 1;
+            }
+            double_results_close(&child_costs);
         }
         for (int hi = 0; hi < child_hops.count; hi++) {
-            if (!wam_int_results_push(results, child_hops.values[hi] + 1)) {
+            double path_cost = child_step_cost +
+                               ((double)child_hops.values[hi] * parent_step_cost);
+            if (path_cost > budget) continue;
+            if (!double_results_push(results, path_cost)) {
                 wam_int_results_close(&child_hops);
                 return 0;
             }
@@ -547,23 +616,32 @@ int main(void) {
             for (int ci = 0; ci < ARTICLE_CATEGORY_COUNT; ci++) {
                 if (strcmp(ARTICLE_IDS[ci], ARTICLES[ai]) != 0) continue;
                 WamIntResults hops;
+                WamDoubleResults path_costs;
                 wam_int_results_init(&hops);
+                double_results_init(&path_costs);
                 if (strcmp(ARTICLE_CATS[ci], ROOTS[ri]) == 0) {
-                    wam_int_results_push(&hops, 1);
+                    double_results_push(&path_costs, ~w);
                 } else {
                     collect_hops(&state, &source, ARTICLE_CATS[ci], ROOTS[ri], ~w, &hops);
-                    if (hops.count == 0 && ~w) {
+                    for (int hi = 0; hi < hops.count; hi++) {
+                        double_results_push(&path_costs,
+                                            ((double)hops.values[hi] + 1.0) * ~w);
+                    }
+                    if (path_costs.count == 0 && ~w) {
                         (void)collect_bounded_child_hops(&state, &source,
                                                          ARTICLE_CATS[ci], ROOTS[ri],
-                                                         ~w, ~w, ~w, &hops);
-                    }
-                    for (int hi = 0; hi < hops.count; hi++) {
-                        hops.values[hi] += 1;
+                                                         ~w, ~w,
+                                                         ~w, ~w, ~w, ~w,
+                                                         &path_costs);
+                        for (int pi = 0; pi < path_costs.count; pi++) {
+                            path_costs.values[pi] += ~w;
+                        }
                     }
                 }
-                for (int hi = 0; hi < hops.count; hi++) {
-                    weight_sum += pow((double)hops.values[hi], -~w.0);
+                for (int pi = 0; pi < path_costs.count; pi++) {
+                    weight_sum += pow(path_costs.values[pi], -~w.0);
                 }
+                double_results_close(&path_costs);
                 wam_int_results_close(&hops);
             }
             if (weight_sum > 0.0) {
@@ -577,8 +655,11 @@ int main(void) {
     wam_free_state(&state);
     return 0;
 }
-', [ArticleArrays, ArticlesArray, RootArray, MaxDepth, LoadCode, MaxDepth, KernelFlag,
-    ChildSearchFlag, KernelFlag, MaxChildExpansions, ChildSearchDepth, Dimension, Dimension]).
+', [ArticleArrays, ArticlesArray, RootArray, MaxDepth, LoadCode, MaxDepth,
+    ParentStepCost, KernelFlag, ParentStepCost,
+    ChildSearchFlag, KernelFlag, MaxChildExpansions, ChildSearchDepth,
+    ParentStepCost, ChildStepCost, ChildSearchBudget, ParentStepCost,
+    Dimension, Dimension]).
 
 fact_source_load_code(facts_tsv,
                       'wam_fact_source_load_tsv(&state, &source, "category_parent.tsv")').
@@ -588,14 +669,17 @@ fact_source_load_code(facts_lmdb,
 kernel_mode_flag(kernels_on, 1).
 kernel_mode_flag(kernels_off, 0).
 
-child_search_flag(child_search(bounded, MaxChildren, ChildDepth), 1) :-
+child_search_flag(child_search(bounded, MaxChildren, ChildDepth, _, _, _), 1) :-
     MaxChildren > 0,
     ChildDepth > 0,
     !.
 child_search_flag(_, 0).
 
-child_search_max_children(child_search(_, MaxChildren, _), MaxChildren).
-child_search_depth(child_search(_, _, ChildDepth), ChildDepth).
+child_search_max_children(child_search(_, MaxChildren, _, _, _, _), MaxChildren).
+child_search_depth(child_search(_, _, ChildDepth, _, _, _), ChildDepth).
+child_search_parent_cost(child_search(_, _, _, ParentCost, _, _), ParentCost).
+child_search_child_cost(child_search(_, _, _, _, ChildCost, _), ChildCost).
+child_search_budget(child_search(_, _, _, _, _, Budget), Budget).
 
 c_pair_arrays(NamesName, ValuesName, Pairs, Code) :-
     pairs_keys(Pairs, Keys),

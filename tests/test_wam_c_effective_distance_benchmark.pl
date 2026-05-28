@@ -101,6 +101,54 @@ test_generate_and_run_bounded_child_search :-
     ;   fail_test(Test, 'bounded child search runner output mismatch')
     ).
 
+test_generate_and_run_weighted_child_search :-
+    Test = 'WAM-C effective-distance: child search applies direction costs',
+    (   unique_tmp_dir(weighted_child_search, OutputDir),
+        write_child_search_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(
+            FactsPath,
+            OutputDir,
+            kernels_on,
+            [ fact_storage(facts_tsv),
+              child_search(bounded),
+              max_child_expansions(4),
+              child_search_depth(1),
+              parent_step_cost(1.0),
+              child_step_cost(2.0),
+              child_search_budget(10.0)
+            ]),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project(OutputDir, Output),
+        sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
+        sub_string(Output, _, _, _, "article_a\troot\t4.000000")
+    ->  pass(Test)
+    ;   fail_test(Test, 'weighted child search runner output mismatch')
+    ).
+
+test_generate_and_run_child_search_budget_pruning :-
+    Test = 'WAM-C effective-distance: child search budget prunes costly child paths',
+    (   unique_tmp_dir(child_search_budget, OutputDir),
+        write_child_search_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(
+            FactsPath,
+            OutputDir,
+            kernels_on,
+            [ fact_storage(facts_tsv),
+              child_search(bounded),
+              max_child_expansions(4),
+              child_search_depth(1),
+              parent_step_cost(1.0),
+              child_step_cost(2.0),
+              child_search_budget(2.5)
+            ]),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project(OutputDir, Output),
+        sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
+        \+ sub_string(Output, _, _, _, "article_a\troot")
+    ->  pass(Test)
+    ;   fail_test(Test, 'child search budget pruning output mismatch')
+    ).
+
 run_generated_effective_distance(KernelMode, FactStorage, Output) :-
     unique_tmp_dir(KernelMode, OutputDir),
     write_test_facts(OutputDir, FactsPath),
@@ -237,6 +285,8 @@ run_tests_once :-
     test_generated_runner_bounds_kernel_heap,
     test_generate_and_run_lmdb_if_available,
     test_generate_and_run_bounded_child_search,
+    test_generate_and_run_weighted_child_search,
+    test_generate_and_run_child_search_budget_pruning,
     format('~n=== WAM-C Effective Distance Benchmark Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
 
