@@ -265,6 +265,18 @@ test_category_ancestor_kernel_generation :-
     ;   fail_test(Test, 'category_ancestor native kernel helpers missing')
     ).
 
+test_bidirectional_ancestor_kernel_generation :-
+    Test = 'WAM-C: bidirectional_ancestor native kernel helpers generated',
+    (   compile_wam_runtime_to_c([], RuntimeCode),
+        atom_string(RuntimeCode, S),
+        sub_string(S, _, _, _, 'void wam_register_bidirectional_ancestor_kernel'),
+        sub_string(S, _, _, _, 'bool wam_bidirectional_ancestor_handler'),
+        sub_string(S, _, _, _, 'wam_bidirectional_ancestor_dfs'),
+        sub_string(S, _, _, _, 'bidirectional_parent_step_cost')
+    ->  pass(Test)
+    ;   fail_test(Test, 'bidirectional_ancestor native kernel helpers missing')
+    ).
+
 test_transitive_closure_kernel_generation :-
     Test = 'WAM-C: transitive_closure2 native kernel helpers generated',
     (   compile_wam_runtime_to_c([], RuntimeCode),
@@ -465,6 +477,19 @@ test_kernel_detector_setup_generation :-
         pass(Test)
     ;   cleanup_wam_c_detector_category_ancestor,
         fail_test(Test, 'detected kernel setup missing')
+    ).
+
+test_bidirectional_ancestor_setup_generation :-
+    Test = 'WAM-C: bidirectional_ancestor setup preserves direction costs',
+    Kernel = 'bidirectional_ancestor/5'-recursive_kernel(
+        bidirectional_ancestor,
+        bidirectional_ancestor/5,
+        [max_depth(7), parent_step_cost(1.5), child_step_cost(4.0), cost_budget(12.0)]),
+    (   generate_setup_detected_kernels_c([Kernel], SetupCode),
+        sub_atom(SetupCode, _, _, _, 'setup_detected_wam_c_kernels'),
+        sub_atom(SetupCode, _, _, _, 'wam_register_bidirectional_ancestor_kernel(state, "bidirectional_ancestor/5", 7, 1.5, 4.0, 12.0)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'bidirectional_ancestor setup missing direction costs')
     ).
 
 test_transitive_closure_detector_setup_generation :-
@@ -1121,6 +1146,16 @@ test_category_ancestor_kernel_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_bidirectional_ancestor_kernel_executable_smoke :-
+    Test = 'WAM-C: bidirectional_ancestor native kernel executable smoke',
+    (   gcc_available
+    ->  (   run_bidirectional_ancestor_kernel_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'bidirectional_ancestor native kernel executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_transitive_closure_kernel_executable_smoke :-
     Test = 'WAM-C: transitive_closure2 native kernel executable smoke',
     (   gcc_available
@@ -1581,6 +1616,25 @@ run_category_ancestor_kernel_executable_smoke :-
     compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
     run_c_smoke_plain(ExePath).
 
+run_bidirectional_ancestor_kernel_executable_smoke :-
+    WamCode = 'bidirectional_ancestor/5:\n    call_foreign bidirectional_ancestor/5, 5\n    proceed',
+    compile_wam_predicate_to_c(user:bidirectional_ancestor/5, WamCode, [], PredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_bidirectional_ancestor_smoke', Stamp, TmpBase),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    wam_c_bidirectional_ancestor_smoke_main(MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
 run_transitive_closure_kernel_executable_smoke :-
     WamCode = 'tc_ancestor/2:\n    call_foreign tc_ancestor/2, 2\n    proceed',
     compile_wam_predicate_to_c(user:tc_ancestor/2, WamCode, [], PredCode),
@@ -2004,7 +2058,7 @@ run_real_prolog_multiclause_executable_smoke :-
     assertz((user:wam_c_real_multi(X, int) :- integer(X))),
     assertz((user:wam_c_real_multi([_|_], list) :- true)),
     (   compile_predicate_to_wam(user:wam_c_real_multi/2, [], WamCode),
-        sub_string(WamCode, _, _, _, 'switch_on_constant_a2'),
+        sub_string(WamCode, _, _, _, 'switch_on_constant_fallthrough'),
         sub_string(WamCode, _, _, _, 'retry_me_else'),
         sub_string(WamCode, _, _, _, 'builtin_call integer/1, 1'),
         compile_wam_predicate_to_c(user:wam_c_real_multi/2, WamCode, [], PredCode),
@@ -2868,6 +2922,76 @@ int main(void) {
     if (fail_rc != WAM_HALT) {
         wam_free_state(&state);
         return 30;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_bidirectional_ancestor_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_bidirectional_ancestor_5(WamState* state);
+
+static int run_query(WamState *state,
+                     const char *cat,
+                     const char *root,
+                     int *total,
+                     int *parents,
+                     int *children) {
+    WamValue args[5] = {
+        val_atom(cat),
+        val_atom(root),
+        val_unbound("Total"),
+        val_unbound("Parents"),
+        val_unbound("Children")
+    };
+    int rc = wam_run_predicate(state, "bidirectional_ancestor/5", args, 5);
+    if (rc != 0 || state->P != WAM_HALT) return 0;
+    if (state->A[2].tag != VAL_INT ||
+        state->A[3].tag != VAL_INT ||
+        state->A[4].tag != VAL_INT) {
+        return 0;
+    }
+    *total = state->A[2].data.integer;
+    *parents = state->A[3].data.integer;
+    *children = state->A[4].data.integer;
+    return 1;
+}
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_bidirectional_ancestor_5(&state);
+    wam_register_category_parent(&state, "orphan", "side");
+    wam_register_category_parent(&state, "child", "orphan");
+    wam_register_category_parent(&state, "child", "root");
+    wam_register_bidirectional_ancestor_kernel(&state, "bidirectional_ancestor/5",
+                                               4, 1.0, 2.0, 10.0);
+
+    int total = -1;
+    int parents = -1;
+    int children = -1;
+    if (!run_query(&state, "orphan", "root", &total, &parents, &children) ||
+        total != 2 || parents != 1 || children != 1) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    wam_register_bidirectional_ancestor_kernel(&state, "bidirectional_ancestor/5",
+                                               4, 1.0, 2.0, 2.5);
+    WamValue pruned_args[5] = {
+        val_atom("orphan"),
+        val_atom("root"),
+        val_unbound("Total"),
+        val_unbound("Parents"),
+        val_unbound("Children")
+    };
+    int pruned_rc = wam_run_predicate(&state, "bidirectional_ancestor/5", pruned_args, 5);
+    if (pruned_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
     }
 
     wam_free_state(&state);
@@ -4681,6 +4805,7 @@ run_tests_once :-
     test_builtin_call_generation,
     test_call_foreign_generation,
     test_category_ancestor_kernel_generation,
+    test_bidirectional_ancestor_kernel_generation,
     test_transitive_closure_kernel_generation,
     test_transitive_distance_kernel_generation,
     test_transitive_parent_distance_kernel_generation,
@@ -4695,6 +4820,7 @@ run_tests_once :-
     test_reverse_index_plan_runtime_available_lmdb_offset,
     test_streaming_foreign_results_generation,
     test_kernel_detector_setup_generation,
+    test_bidirectional_ancestor_setup_generation,
     test_transitive_closure_detector_setup_generation,
     test_transitive_distance_detector_setup_generation,
     test_transitive_parent_distance_detector_setup_generation,
@@ -4722,6 +4848,7 @@ run_tests_once :-
     test_builtin_call_executable_smoke,
     test_call_foreign_executable_smoke,
     test_category_ancestor_kernel_executable_smoke,
+    test_bidirectional_ancestor_kernel_executable_smoke,
     test_transitive_closure_kernel_executable_smoke,
     test_transitive_distance_kernel_executable_smoke,
     test_transitive_parent_distance_kernel_executable_smoke,

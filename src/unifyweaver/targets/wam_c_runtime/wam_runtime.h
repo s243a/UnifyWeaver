@@ -152,6 +152,18 @@ typedef struct {
 } WamIntResults;
 
 typedef struct {
+    int total_hops;
+    int parent_hops;
+    int child_hops;
+} WamBidirectionalAncestorResult;
+
+typedef struct {
+    WamBidirectionalAncestorResult *values;
+    int count;
+    int cap;
+} WamBidirectionalAncestorResults;
+
+typedef struct {
     int reg;
     int is_y_reg;
     WamValue val;
@@ -192,6 +204,7 @@ typedef struct {
     HashEntry *s_hash_table;
     int s_hash_size;
     int list_target_pc;
+    bool no_match_fallthrough;
 } WamSwitchInstr;
 
 typedef union {
@@ -264,6 +277,9 @@ struct WamState {
     int category_edge_count;
     int category_edge_cap;
     int category_max_depth;
+    double bidirectional_parent_step_cost;
+    double bidirectional_child_step_cost;
+    double bidirectional_cost_budget;
 
     /* Native weighted_shortest_path3 kernel data */
     WeightedEdge *weighted_edges;
@@ -286,6 +302,11 @@ void wam_register_transitive_edge(WamState *state, const char *child, const char
 void wam_register_weighted_edge(WamState *state, const char *source, const char *target, int weight);
 void wam_register_direct_distance_edge(WamState *state, const char *source, const char *target, int distance);
 void wam_register_category_ancestor_kernel(WamState *state, const char *pred, int max_depth);
+void wam_register_bidirectional_ancestor_kernel(WamState *state, const char *pred,
+                                                int max_depth,
+                                                double parent_step_cost,
+                                                double child_step_cost,
+                                                double cost_budget);
 void wam_register_transitive_closure_kernel(WamState *state, const char *pred);
 void wam_register_transitive_distance_kernel(WamState *state, const char *pred);
 void wam_register_transitive_parent_distance_kernel(WamState *state, const char *pred);
@@ -293,6 +314,7 @@ void wam_register_transitive_step_parent_distance_kernel(WamState *state, const 
 void wam_register_weighted_shortest_path_kernel(WamState *state, const char *pred);
 void wam_register_astar_shortest_path_kernel(WamState *state, const char *pred);
 bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity);
+bool wam_bidirectional_ancestor_handler(WamState *state, const char *pred, int arity);
 bool wam_transitive_closure_handler(WamState *state, const char *pred, int arity);
 bool wam_transitive_distance_handler(WamState *state, const char *pred, int arity);
 bool wam_transitive_parent_distance_handler(WamState *state, const char *pred, int arity);
@@ -323,7 +345,15 @@ int wam_reverse_csr_lookup_children(WamReverseCsrArtifact *artifact,
 void wam_int_results_init(WamIntResults *results);
 void wam_int_results_close(WamIntResults *results);
 bool wam_int_results_push(WamIntResults *results, int value);
+void wam_bidirectional_ancestor_results_init(WamBidirectionalAncestorResults *results);
+void wam_bidirectional_ancestor_results_close(WamBidirectionalAncestorResults *results);
+bool wam_bidirectional_ancestor_results_push(WamBidirectionalAncestorResults *results,
+                                             int total_hops,
+                                             int parent_hops,
+                                             int child_hops);
 bool wam_collect_category_ancestor_hops(WamState *state, WamIntResults *results);
+bool wam_collect_bidirectional_ancestor_hops(WamState *state,
+                                             WamBidirectionalAncestorResults *results);
 
 /* Helpers */
 static inline WamValue val_atom(const char *s) {
