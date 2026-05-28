@@ -51,6 +51,18 @@ lw_add(X, R) :- R is X + 1.
 :- dynamic lw_multi/2.
 lw_multi(X, R) :- T is X + 1, R is T * 2.
 
+% Pattern-matching deterministic — uses get_structure / unify_*.
+:- dynamic lw_pair_first/2.
+lw_pair_first(pair(X, _), X).
+
+% List head match — uses get_list / unify_variable.
+:- dynamic lw_head/2.
+lw_head([H|_], H).
+
+% Literal compound — uses get_structure + unify_constant chain.
+:- dynamic lw_lit_pair/1.
+lw_lit_pair(p(1, 2)).
+
 % Multi-clause — NOT lowerable (try_me_else/trust_me in the bytecode).
 :- dynamic lw_choice/2.
 lw_choice(1, 10).
@@ -74,8 +86,13 @@ host_target_triple(Triple) :-
 
 test_lowerability :-
     format('--- lowerability gate ---~n'),
-    % Single-clause deterministic predicates should lower.
-    forall(member(PI, [lw_const/2, lw_unify/2, lw_add/2, lw_multi/2]),
+    % Single-clause deterministic predicates should lower. The first 4
+    % are simple register/builtin shapes (added in PR M1); the latter 3
+    % exercise the pattern-matching extension (get_structure / get_list
+    % / unify_variable / unify_constant).
+    forall(member(PI,
+                  [lw_const/2, lw_unify/2, lw_add/2, lw_multi/2,
+                   lw_pair_first/2, lw_head/2, lw_lit_pair/1]),
         ( compile_predicate_to_wam(user:PI, [], Wam),
           ( wam_llvm_lowerable(PI, Wam, R)
           -> format('  PASS: ~w lowerable (~w)~n', [PI, R])
@@ -101,7 +118,9 @@ test_ir_structure :-
     tmp_file_stream(text, LLPath, S0), close(S0),
     host_target_triple(Triple),
     write_wam_llvm_project(
-        [user:lw_const/2, user:lw_add/2, user:lw_choice/2],
+        [user:lw_const/2, user:lw_add/2,
+         user:lw_pair_first/2, user:lw_head/2, user:lw_lit_pair/1,
+         user:lw_choice/2],
         [ module_name('lw_struct'),
           target_triple(Triple),
           target_datalayout(''),
@@ -118,6 +137,19 @@ test_ir_structure :-
     -> format('  PASS: lowered lw_add_2 function present~n')
     ;  format('  FAIL: lowered lw_add_2 function missing~n'),
        throw(missing_lowered(lw_add_2))
+    ),
+    % Pattern-matching predicates also produce lowered functions now.
+    ( sub_string(Src, _, _, _, "define i1 @lowered_lw_pair_first_2")
+    -> format('  PASS: lowered lw_pair_first_2 (get_structure path)~n')
+    ;  throw(missing_lowered(lw_pair_first_2))
+    ),
+    ( sub_string(Src, _, _, _, "define i1 @lowered_lw_head_2")
+    -> format('  PASS: lowered lw_head_2 (get_list path)~n')
+    ;  throw(missing_lowered(lw_head_2))
+    ),
+    ( sub_string(Src, _, _, _, "define i1 @lowered_lw_lit_pair_1")
+    -> format('  PASS: lowered lw_lit_pair_1 (unify_constant path)~n')
+    ;  throw(missing_lowered(lw_lit_pair_1))
     ),
     % lw_choice/2 is multi-clause → must fall back to WAM bytecode path,
     % so its `@lw_choice` entry is the WAM entry func, NOT a lowered one.
@@ -139,7 +171,8 @@ test_llvm_as_validation :-
     tmp_file_stream(text, LLPath, S0), close(S0),
     host_target_triple(Triple),
     write_wam_llvm_project(
-        [user:lw_const/2, user:lw_unify/2, user:lw_add/2, user:lw_multi/2],
+        [user:lw_const/2, user:lw_unify/2, user:lw_add/2, user:lw_multi/2,
+         user:lw_pair_first/2, user:lw_head/2, user:lw_lit_pair/1],
         [ module_name('lw_validate'),
           target_triple(Triple),
           target_datalayout(''),
@@ -150,7 +183,7 @@ test_llvm_as_validation :-
     format(atom(Cmd), 'llvm-as ~w -o ~w 2>&1', [LLPath, BCPath]),
     shell(Cmd, Exit),
     ( Exit =:= 0
-    -> format('  PASS: llvm-as accepted the module with 4 lowered predicates~n')
+    -> format('  PASS: llvm-as accepted the module with 7 lowered predicates~n')
     ;  format('  FAIL: llvm-as rejected (exit=~w)~n', [Exit]),
        throw(llvm_as_failed)
     ),
@@ -229,7 +262,68 @@ test_execution :-
     % lw_add(X, R) :- R is X + 1.   : pass int 10
     run_exec_test(lw_add, 1, 10),
     % lw_multi(X, R) :- T is X+1, R is T*2.   : pass int 4
-    run_exec_test(lw_multi, 1, 4).
+    run_exec_test(lw_multi, 1, 4),
+    % --- pattern-matching predicates ---
+    % Each is invoked with A1 = unbound, which exercises the
+    % get_structure/get_list "write" path (allocate compound on arena,
+    % bind A1, then unify_*/set_* populate the args). The lowered
+    % function should succeed.
+    %
+    % Read-mode verification (passing a bound compound and checking the
+    % extracted arg) requires constructing %Compound globals in the
+    % driver IR — out of scope for this smoke test; the read path is
+    % exercised by the same code paths as the bytecode @step case,
+    % which is already covered indirectly by the wider regression suite.
+    run_exec_test(lw_pair_first, 6, 0),
+    run_exec_test(lw_head, 6, 0),
+    test_exec_unary(lw_lit_pair, 6, 0).
+
+% Same as run_exec_test but for 1-arity preds.
+test_exec_unary(PredAtom, A1Tag, A1Pay) :-
+    format('  testing lowered ~w/1 with A1=tag~w/~w...~n',
+        [PredAtom, A1Tag, A1Pay]),
+    clear_llvm_foreign_kernel_specs,
+    tmp_file_stream(text, LLPath, S0), close(S0),
+    host_target_triple(Triple),
+    write_wam_llvm_project(
+        [user:PredAtom/1],
+        [ module_name('lwexec1'),
+          target_triple(Triple),
+          target_datalayout(''),
+          emit_mode(functions)
+        ],
+        LLPath),
+    atom_string(PredAtom, PredStr),
+    format(atom(DriverIR),
+'define i32 @main() {
+entry:
+  %a1_0 = insertvalue %Value undef, i32 ~w, 0
+  %a1 = insertvalue %Value %a1_0, i64 ~w, 1
+  %ok = call i1 @lowered_~w_1(%Value %a1)
+  %ret = select i1 %ok, i32 0, i32 1
+  ret i32 %ret
+}
+', [A1Tag, A1Pay, PredStr]),
+    setup_call_cleanup(open(LLPath, append, Out),
+        ( write(Out, '\n'), write(Out, DriverIR) ), close(Out)),
+    atom_concat(LLPath, '.o', OPath),
+    atom_concat(LLPath, '.out', BinPath),
+    format(atom(LlcCmd),
+        'llc -O2 -filetype=obj -relocation-model=pic ~w -o ~w 2>/dev/null',
+        [LLPath, OPath]),
+    shell(LlcCmd, _),
+    format(atom(ClangCmd), 'clang -O2 ~w -o ~w 2>/dev/null', [OPath, BinPath]),
+    shell(ClangCmd, _),
+    shell(BinPath, RunExit),
+    ( RunExit =:= 0
+    -> format('    PASS: ~w/1 lowered exec returned success~n', [PredAtom])
+    ;  format('    FAIL: ~w/1 returned ~w (expected 0)~n', [PredAtom, RunExit]),
+       throw(exec_failed(PredAtom, RunExit))
+    ),
+    catch(delete_file(LLPath), _, true),
+    catch(delete_file(OPath), _, true),
+    catch(delete_file(BinPath), _, true),
+    clear_llvm_foreign_kernel_specs.
 
 % ============================================================================
 % Main
