@@ -52,8 +52,10 @@
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module(wam_llvm_lowered_emitter, [
     wam_llvm_lowerable/3,
+    wam_llvm_lowerable_with_closure/4,
     lower_predicate_to_llvm/4,
     llvm_lowered_func_name/2,
+    call_execute_targets/2,
     emit_native_wrapper/2,
     emit_hybrid_dispatcher/5
 ]).
@@ -1485,12 +1487,85 @@ read_template_file(Path, Content) :-
 %  own first instruction — silent self-recursion. Same class of bug
 %  WAT had before PR #1476.
 compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode) :-
-    pass1_classify_predicates(Predicates, Options, 0, Classified),
+    % M4: closure analysis — compute the set of predicates in this
+    % batch whose lowered kernels can be safely inter-linked via
+    % `call`/`execute`. A predicate joins the closure iff all of its
+    % clause-1 call/execute targets are also in the closure (computed
+    % to fixpoint). Passed through Options so pass1's per-pred
+    % lowerability check can consult it.
+    compute_lowered_closure(Predicates, Options, ClosureSet),
+    OptionsWithClosure = [lowered_closure(ClosureSet)|Options],
+    pass1_classify_predicates(Predicates, OptionsWithClosure, 0, Classified),
     build_merged_labels(Classified, NamePCPairs, LabelMap),
-    pass2_emit_merged(Classified, LabelMap, NamePCPairs, Options,
+    pass2_emit_merged(Classified, LabelMap, NamePCPairs, OptionsWithClosure,
                       NativeParts, WamParts),
     atomic_list_concat(NativeParts, '\n\n', NativeCode),
     atomic_list_concat(WamParts, '\n\n', WamCode).
+
+%% compute_lowered_closure(+Predicates, +Options, -ClosureSet) is det.
+%
+%  M4 fixpoint analysis: returns the set of `Pred/Arity` indicators in
+%  this compile batch whose lowered kernels can call each other safely.
+%
+%  Algorithm:
+%    1. Collect every predicate that's gated for lowering and whose
+%       bytecode compiles cleanly. Call this the candidate set.
+%    2. Start with an empty closure. Iterate: find every candidate
+%       whose clause-1 body passes wam_llvm_lowerable_with_closure/4
+%       against the *current* closure. Add it. Repeat until no new
+%       members are discovered.
+%
+%  The fixpoint always terminates because the closure is monotonic
+%  and bounded by the candidate set. Predicates with no call/execute
+%  in their clause-1 body join on the first iteration.
+%
+%  When emit_mode is `interpreter` (the default), the closure is
+%  empty — no per-batch analysis needed.
+compute_lowered_closure(Predicates, Options, ClosureSet) :-
+    option(emit_mode(Mode), Options, interpreter),
+    ( Mode == interpreter
+    -> ClosureSet = []
+    ;  collect_lowerable_candidates(Predicates, Options, Candidates),
+       closure_fixpoint(Candidates, [], ClosureSet)
+    ).
+
+%% collect_lowerable_candidates(+Predicates, +Options, -Candidates).
+%
+%  Candidates is a list of `Pred/Arity-WamCode` pairs for predicates
+%  that (a) are gated for lowering via emit_mode_allows_lowering and
+%  (b) have a compileable WAM bytecode. Predicates that fail either
+%  check are excluded — they will fall through to the WAM-fallback
+%  branch of pass1 regardless of the closure.
+collect_lowerable_candidates([], _, []).
+collect_lowerable_candidates([PI|Rest], Options, Candidates) :-
+    ( PI = Module:Pred/Arity -> true
+    ; PI = Pred/Arity, Module = user
+    ),
+    ( emit_mode_allows_lowering(Module:Pred/Arity, Options),
+      catch(
+          wam_target:compile_predicate_to_wam(Module:Pred/Arity,
+              Options, Wam),
+          _, fail)
+    -> Candidates = [Pred/Arity-Wam | RestCands],
+       collect_lowerable_candidates(Rest, Options, RestCands)
+    ;  collect_lowerable_candidates(Rest, Options, Candidates)
+    ).
+
+closure_fixpoint(Candidates, CurrentSet, FinalSet) :-
+    findall(Pred/Arity,
+        ( member(Pred/Arity-Wam, Candidates),
+          \+ memberchk(Pred/Arity, CurrentSet),
+          catch(
+              wam_llvm_lowerable_with_closure(Pred/Arity, Wam,
+                  CurrentSet, _Shape),
+              _, fail)
+        ),
+        NewMembers),
+    ( NewMembers == []
+    -> FinalSet = CurrentSet
+    ;  append(NewMembers, CurrentSet, ExpandedSet),
+       closure_fixpoint(Candidates, ExpandedSet, FinalSet)
+    ).
 
 %% pass1_classify_predicates(+Preds, +Options, +StartPC, -Classified)
 %
@@ -1552,8 +1627,12 @@ pass1_classify_predicates([PredIndicator|Rest], Options, StartPC,
             wam_target:compile_predicate_to_wam(Module:Pred/Arity,
                 Options, LowerWamRaw),
             _, fail),
+        option(lowered_closure(Closure), Options, []),
+        % Use the closure-aware lowerability check: gates call/execute
+        % targets against the closure set computed in compile_predicates_for_llvm/4.
         catch(
-            wam_llvm_lowerable(Pred/Arity, LowerWamRaw, LowerShape),
+            wam_llvm_lowerable_with_closure(Pred/Arity, LowerWamRaw,
+                Closure, LowerShape),
             _, fail)
     ->  catch(
             lower_predicate_to_llvm(Pred/Arity, LowerWamRaw,
