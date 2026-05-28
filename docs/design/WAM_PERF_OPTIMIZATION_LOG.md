@@ -900,6 +900,56 @@ What this doesn't measure (deferred):
   already takes ~300 ms; at 10k the .ll module grows roughly 50x
   and that may bottleneck.
 
+### M9: findall / aggregate_all(bag/set) end-to-end
+
+The pre-M9 `wam_apply_aggregation` returned a sentinel Atom for the
+collect agg-type (id 4 — the type the WAM compiler lowers `findall/3`
+and `aggregate_all(bag(_), ..., _)` to), so any program that used
+findall got `L = Atom_0` regardless of the body's solutions. M9 lands
+three coupled fixes that together make findall actually return a list:
+
+1. **`collect_case` in `@wam_apply_aggregation`** — builds a Prolog
+   cons-cell chain from the accumulator entries, terminated by an
+   empty-list Atom. Tail-first iteration so the chain ends up in
+   solution order. Compound + 2-element args array are arena-allocated.
+
+2. **Module-level globals** — `@wam_empty_list_atom_id` (interned at
+   codegen time) lets `collect_case` build the empty-list Atom without
+   a runtime intern table; the `[|]/2` functor string global
+   (`@.fn__5B_7C_5D`) is registered eagerly so programs that consume
+   findall results without explicitly constructing cons cells still
+   produce a valid module.
+
+3. **`wam_switch_on_constant` deref + `wam_finalize_aggregate`
+   bind-via-Ref** — first-arg-indexed multi-clause predicates called
+   from inside an aggregate body had their A1 passed as a Ref. The
+   pre-M9 `wam_get_reg` (no deref) saw the Ref payload as a literal
+   and never matched any switch entry, so the body silently failed.
+   `wam_finalize_aggregate` used to bind the result via `wam_set_reg`
+   which overwrites the register slot instead of writing through any
+   Ref to its heap cell — meaning the caller's output variable never
+   saw the result. Both now use the dereffing / Ref-aware paths.
+
+Test: `tests/core/test_wam_llvm_findall_execution.pl` compiles
+
+```prolog
+my_fact(11).  my_fact(22).  my_fact(33).
+test_collect(L) :- findall(X, my_fact(X), L).
+```
+
+then runs a hand-rolled LLVM driver that calls `test_collect` with an
+unbound A1 backed by a heap cell, derefs the result, walks the
+cons-cell chain. Pre-M9 the driver returned 0 (empty list); post-M9
+it returns 3 (the three solutions).
+
+This is the first M9 deliverable. Builtins coverage for the surrounding
+`effective_distance.pl` workload — `setof/3` (which needs msort+dedup
+over findall), `member/2` (multi-result enumeration), `aggregate_all(sum)`
+(already works for fully-deterministic bodies, but the bodies inside
+`effective_distance` lean on findall via path_to_root) — is incremental
+follow-up. Each one unblocks more of the workload; the perf measurement
+context for them is the M8 dev-scale benchmark.
+
 ---
 
 ## Clojure WAM — current implementation status

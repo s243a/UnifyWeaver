@@ -740,12 +740,15 @@ not_found:
 ;   0 on no match — caller should return false (backtrack)
 define i32 @wam_switch_on_constant(%WamState* %vm, %SwitchEntry* %table, i32 %count) {
 entry:
-  ; Fetch A1 (register index 0)
-  %a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
-  ; NOTE: minimal deref — register array holds the value directly; a proper
-  ; deref chain walk would follow Ref tag=5 chains. The current WAM target
-  ; stores resolved values in registers, so this matches the Rust reference
-  ; (which calls self.deref_var for the same purpose).
+  ; M9: deref A1 before the unbound-vs-bound branch. Without this,
+  ; first-arg-indexed multi-clause predicates called from inside an
+  ; aggregation body (findall / aggregate_all) get a Ref in A1 — the
+  ; put_value at the call site copies a put_variable-created Ref into
+  ; A1 — and the pre-M9 code mistook the Ref-payload for a constant
+  ; payload to scan against, never matching, and the body silently
+  ; failed instead of generating solutions. wam_get_reg_deref walks
+  ; the Ref chain so we see the underlying Unbound / Atom / Integer.
+  %a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %is_unbound = call i1 @value_is_unbound(%Value %a1)
   br i1 %is_unbound, label %skip_switch, label %scan_init
 
@@ -809,7 +812,9 @@ not_match:
 ; but reads A2 (register 1) instead of A1 (register 0).
 define i32 @wam_switch_on_constant_a2(%WamState* %vm, %SwitchEntry* %table, i32 %count) {
 entry:
-  %a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  ; M9: deref A2 — same fix as wam_switch_on_constant, see the
+  ; comment there for the rationale.
+  %a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %is_unbound = call i1 @value_is_unbound(%Value %a2)
   br i1 %is_unbound, label %skip_switch, label %scan_init
 
@@ -1262,7 +1267,10 @@ store:
 ; agg_type: 0=sum, 1=count, 2=min, 3=max, 4=collect, 5=bag
 ; For count, we just return Integer(count).
 ; For sum/min/max, we iterate over the %Value array.
-; collect/bag return a sentinel atom for now (full list support is TODO).
+; M9: collect (agg_type=4) and bag (agg_type=5) build a Prolog
+; cons-cell list from the accumulator entries. Both return the same
+; shape — bag/findall preserves order/duplicates, set goes through a
+; downstream sort/dedup pass that doesn't change the per-entry shape.
 define %Value @wam_apply_aggregation(i32 %agg_type, %Value* %accum, i32 %count) {
 entry:
   switch i32 %agg_type, label %default_case [
@@ -1270,6 +1278,8 @@ entry:
     i32 1, label %count_case
     i32 2, label %min_case
     i32 3, label %max_case
+    i32 4, label %collect_case
+    i32 5, label %collect_case
   ]
 
 count_case:
@@ -1362,8 +1372,70 @@ max_done:
   %x_final = insertvalue %Value %x_val, i64 %best_x, 1
   ret %Value %x_final
 
+collect_case:
+  ; M9: build the result list from accum[count-1] down to accum[0].
+  ; Tail seed: empty-list Atom whose payload is the interned `[]`
+  ; atom id (set up at codegen time in wam_llvm_target.pl).
+  %empty_id = load i64, i64* @wam_empty_list_atom_id
+  %empty_v0 = insertvalue %Value undef, i32 0, 0       ; tag 0 = Atom
+  %empty_v  = insertvalue %Value %empty_v0, i64 %empty_id, 1
+  ; If count == 0, just return the empty list.
+  %has_any = icmp sgt i32 %count, 0
+  br i1 %has_any, label %collect_setup, label %collect_done_empty
+
+collect_done_empty:
+  ret %Value %empty_v
+
+collect_setup:
+  call void @wam_arena_ensure()
+  br label %collect_loop
+
+collect_loop:
+  ; idx walks down from count-1 to 0; tail threads through.
+  %ci = phi i32 [ %count, %collect_setup ], [ %ci_prev, %collect_step ]
+  %tail = phi %Value [ %empty_v, %collect_setup ], [ %new_cons, %collect_step ]
+  %ci_done = icmp sle i32 %ci, 0
+  br i1 %ci_done, label %collect_finish, label %collect_step
+
+collect_step:
+  %ci_prev = sub i32 %ci, 1
+  %slot = getelementptr %Value, %Value* %accum, i32 %ci_prev
+  %head = load %Value, %Value* %slot
+  ; Allocate a fresh %Compound on the arena: { functor_ptr, arity, args_ptr }.
+  %cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %cp_mem = call i8* @wam_arena_alloc(i64 %cp_size)
+  %cp = bitcast i8* %cp_mem to %Compound*
+  ; Functor: `[|]` (cons). The string global @.fn__5B_7C_5D is
+  ; emitted by emit_functor_string_globals when "[|]" is in the
+  ; functor_string_global table — wam_llvm_target.pl asserts it
+  ; eagerly for the M9 collect path even if the source program
+  ; never explicitly constructs a cons cell.
+  %fn_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 0
+  %fn_ptr  = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %fn_ptr, i8** %fn_slot
+  %ar_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 1
+  store i32 2, i32* %ar_slot
+  ; Allocate the 2-element args array on the arena.
+  %args_mem = call i8* @wam_arena_alloc(i64 32)         ; 2 * sizeof(%Value)
+  %args = bitcast i8* %args_mem to %Value*
+  %args_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 2
+  store %Value* %args, %Value** %args_slot
+  ; args[0] = head, args[1] = tail.
+  %a0 = getelementptr %Value, %Value* %args, i32 0
+  store %Value %head, %Value* %a0
+  %a1 = getelementptr %Value, %Value* %args, i32 1
+  store %Value %tail, %Value* %a1
+  ; Wrap the compound as a %Value{tag=3, payload=ptrtoint(cp)}.
+  %cp_i64 = ptrtoint %Compound* %cp to i64
+  %nc0 = insertvalue %Value undef, i32 3, 0
+  %new_cons = insertvalue %Value %nc0, i64 %cp_i64, 1
+  br label %collect_loop
+
+collect_finish:
+  ret %Value %tail
+
 default_case:
-  ; collect/bag: return sentinel atom 0 for now (minimal scope)
+  ; Unknown agg_type — return sentinel Atom 0.
   %d_val = insertvalue %Value undef, i32 0, 0
   %d_final = insertvalue %Value %d_val, i64 0, 1
   ret %Value %d_final
@@ -3435,8 +3507,14 @@ do_finalize:
   %src_raw = bitcast %Value* %src_regs to i8*
   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst_raw, i8* %src_raw, i64 512, i1 false)
 
-  ; Bind result register to computed value
-  call void @wam_set_reg(%WamState* %vm, i32 %res_reg, %Value %result)
+  ; M9: bind via wam_bind_reg so the result propagates through Refs
+  ; — when the caller's L is an unbound var (Ref to a heap cell), the
+  ; binding needs to write through to the heap cell to be visible at
+  ; the caller's site. Pre-M9 wam_set_reg just overwrote the register
+  ; slot, leaving the heap cell unbound and the caller unable to read
+  ; the aggregation result.
+  call void @wam_trail_binding(%WamState* %vm, i32 %res_reg)
+  call void @wam_bind_reg(%WamState* %vm, i32 %res_reg, %Value %result)
 
   ; Pop the aggregate frame
   store i32 %top_idx, i32* %cpn_ptr

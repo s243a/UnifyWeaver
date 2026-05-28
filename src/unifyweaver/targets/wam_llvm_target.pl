@@ -1196,6 +1196,26 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     % empty-list atom "[]").
     assert(functor_string_global(".", 2)),
     assert(functor_string_global("[]", 3)),
+    % M9: cons-cell functor for the findall / aggregate_all(bag/set)
+    % result list. @wam_apply_aggregation's collect_case allocates
+    % `[|]`-tagged Compounds on the arena to build the result; the
+    % functor string global it references must exist or llvm-as rejects
+    % the module. The bytecode emit already registers "[|]" lazily on
+    % first `put_structure [|]/2` — registering it eagerly here means
+    % programs that ONLY consume the list via findall (no explicit
+    % cons-cell construction in the body) still get a valid module.
+    assert(functor_string_global("[|]", 4)),
+    % M9: intern "[]" so the empty-list atom id is known at runtime.
+    % @wam_apply_aggregation's collect_case reads this id from a
+    % module-level global to terminate the cons-cell chain.
+    intern_atom('[]', EmptyListAtomId),
+    format(atom(EmptyListGlobal),
+'; M9: empty-list atom id for the findall / aggregate_all(bag/set)
+; collect path. Read by @wam_apply_aggregation when building the
+; result cons-cell chain (the tail of the final cell is an Atom
+; %Value with payload = this id).
+@wam_empty_list_atom_id = private constant i64 ~w',
+        [EmptyListAtomId]),
     compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode),
 
     % Emit functor string globals collected during WAM compilation.
@@ -1203,7 +1223,8 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
 
     % Prepend foreign kernel globals + functor strings to the native
     % predicates section so they are at module scope before any use.
-    atomic_list_concat([ForeignGlobals, '\n', FunctorGlobals, '\n\n', NativeCode], FinalNativeCode),
+    atomic_list_concat([ForeignGlobals, '\n', FunctorGlobals, '\n',
+        EmptyListGlobal, '\n\n', NativeCode], FinalNativeCode),
 
     % Generate external declarations (native vs WASM).
     generate_external_declarations(Triple, ExternalDecls),
