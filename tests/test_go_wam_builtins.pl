@@ -22,6 +22,7 @@
 :- dynamic user:test_char_type_builtin/0.
 :- dynamic user:test_string_code_builtin/0.
 :- dynamic user:test_split_string_builtin/0.
+:- dynamic user:test_tab_builtin/0.
 :- dynamic user:test_succ_builtin/0.
 :- dynamic user:test_atom_number_builtin/0.
 :- dynamic user:test_atom_case_builtin/0.
@@ -255,6 +256,14 @@ test(builtins_execution) :-
                 \+ split_string('a,b', Comma, _, _),
                 \+ split_string('a,b', Comma, '', [a,b,c])
             )),
+          assertz(user:test_tab_builtin :-
+            (   tab(3),
+                write(tabbed),
+                tab(0),
+                \+ tab(-1),
+                \+ tab(_),
+                \+ tab(foo)
+            )),
           assertz(user:test_succ_builtin :-
             (   succ(0, 1),
                 succ(2, X),
@@ -458,6 +467,7 @@ test(builtins_execution) :-
           retractall(user:test_char_type_builtin),
           retractall(user:test_string_code_builtin),
           retractall(user:test_split_string_builtin),
+          retractall(user:test_tab_builtin),
           retractall(user:test_succ_builtin),
           retractall(user:test_atom_number_builtin),
           retractall(user:test_atom_case_builtin),
@@ -478,7 +488,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_tab_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -530,6 +540,7 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "char_type/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "string_code/3"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "split_string/4"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "tab/1"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "succ/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "atom_number/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "upcase_atom/2"')),
@@ -703,6 +714,14 @@ func main() {
 		fmt.Println("SPLIT_STRING_FAILURE")
 	}
 
+	tabVM := wam.NewWamState(wam.Test_tab_builtinCode, wam.Test_tab_builtinLabels)
+	tabVM.PC = wam.Test_tab_builtinStartPC
+	if tabVM.Run() {
+		fmt.Println("TAB_SUCCESS")
+	} else {
+		fmt.Println("TAB_FAILURE")
+	}
+
 	succVM := wam.NewWamState(wam.Test_succ_builtinCode, wam.Test_succ_builtinLabels)
 	succVM.PC = wam.Test_succ_builtinStartPC
 	if succVM.Run() {
@@ -857,6 +876,7 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "CHAR_TYPE_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "STRING_CODE_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SPLIT_STRING_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "   tabbedTAB_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SUCC_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_NUMBER_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_CASE_SUCCESS")),
