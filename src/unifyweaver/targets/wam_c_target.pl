@@ -188,6 +188,7 @@ detect_kernels([PI|Rest], Kernels) :-
     detect_kernels(Rest, RestKernels).
 
 wam_c_supported_kernel(recursive_kernel(category_ancestor, _Pred, _ConfigOps)).
+wam_c_supported_kernel(recursive_kernel(bidirectional_ancestor, _Pred, _ConfigOps)).
 wam_c_supported_kernel(recursive_kernel(transitive_closure2, _Pred, _ConfigOps)).
 wam_c_supported_kernel(recursive_kernel(transitive_distance3, _Pred, _ConfigOps)).
 wam_c_supported_kernel(recursive_kernel(transitive_parent_distance4, _Pred, _ConfigOps)).
@@ -212,6 +213,14 @@ wam_c_kernel_registration_line(Key-recursive_kernel(category_ancestor, _Pred, Co
     format(atom(Line),
            '    wam_register_category_ancestor_kernel(state, "~w", ~w);',
            [Key, MaxDepth]).
+wam_c_kernel_registration_line(Key-recursive_kernel(bidirectional_ancestor, _Pred, ConfigOps), Line) :-
+    wam_c_kernel_max_depth(ConfigOps, MaxDepth),
+    wam_c_kernel_float_config(ConfigOps, parent_step_cost, 1.0, ParentCost),
+    wam_c_kernel_float_config(ConfigOps, child_step_cost, 3.0, ChildCost),
+    wam_c_kernel_float_config(ConfigOps, cost_budget, 10.0, Budget),
+    format(atom(Line),
+           '    wam_register_bidirectional_ancestor_kernel(state, "~w", ~w, ~w, ~w, ~w);',
+           [Key, MaxDepth, ParentCost, ChildCost, Budget]).
 wam_c_kernel_registration_line(Key-recursive_kernel(transitive_closure2, _Pred, _ConfigOps), Line) :-
     format(atom(Line),
            '    wam_register_transitive_closure_kernel(state, "~w");',
@@ -243,6 +252,15 @@ wam_c_kernel_max_depth(ConfigOps, MaxDepth) :-
         MaxDepth0 > 0
     ->  MaxDepth = MaxDepth0
     ;   MaxDepth = 10
+    ).
+
+wam_c_kernel_float_config(ConfigOps, Key, Default, Value) :-
+    Term =.. [Key, Value0],
+    (   member(Term, ConfigOps),
+        number(Value0),
+        Value0 > 0
+    ->  Value = Value0
+    ;   Value = Default
     ).
 
 % ============================================================================
@@ -1525,12 +1543,20 @@ wam_lines_to_c_pass2([Line|Rest], PC, LabelMap, Arity, OffsetVar, CodeSize, Inst
 wam_generate_c_instruction(PC, Parts, LabelMap, Arity, OffsetVar, CodeLines) :-
     c_pc_expr(OffsetVar, PC, PCExpr),
     (   (   Parts = ["switch_on_constant" | Entries],
-            SwitchReg = 0
+            SwitchReg = 0,
+            Fallthrough = false
         ;   Parts = ["switch_on_constant_a2" | Entries],
-            SwitchReg = 1
+            SwitchReg = 1,
+            Fallthrough = false
+        ;   Parts = ["switch_on_constant_fallthrough" | Entries],
+            SwitchReg = 0,
+            Fallthrough = true
+        ;   Parts = ["switch_on_constant_a2_fallthrough" | Entries],
+            SwitchReg = 1,
+            Fallthrough = true
         )
     ->  length(Entries, HashSize),
-        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_CONSTANT, .as.switch_index = { .reg = ~w, .hash_size = ~w } };', [PCExpr, SwitchReg, HashSize]),
+        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_CONSTANT, .as.switch_index = { .reg = ~w, .hash_size = ~w, .no_match_fallthrough = ~w } };', [PCExpr, SwitchReg, HashSize, Fallthrough]),
         format(atom(L1), '    state->code[~w].as.switch_index.hash_table = malloc(sizeof(HashEntry) * ~w);', [PCExpr, HashSize]),
         generate_hash_table_entries(PC, PCExpr, "as.switch_index.hash_table", Entries, 0, LabelMap, OffsetVar, HashLines),
         append([L0, L1], HashLines, CodeLines)
@@ -1767,6 +1793,10 @@ compile_step_wam_to_c(_Options, CCode) :-
                     return true; // Unbound variable falls through to the sequential try_me_else chain
                 }
                 if (cell->tag != VAL_ATOM && cell->tag != VAL_INT) {
+                    if (instr->as.switch_index.no_match_fallthrough) {
+                        state->P++;
+                        return true;
+                    }
                     return false; // Type mismatch, fail
                 }
                 for (int i = 0; i < instr->as.switch_index.hash_size; i++) {
@@ -1774,6 +1804,10 @@ compile_step_wam_to_c(_Options, CCode) :-
                         state->P = instr->as.switch_index.hash_table[i].target_pc;
                         return true;
                     }
+                }
+                if (instr->as.switch_index.no_match_fallthrough) {
+                    state->P++;
+                    return true;
                 }
                 return false; // Not found in index, fail
             }
@@ -2787,9 +2821,54 @@ bool wam_int_results_push(WamIntResults *results, int value) {
     return true;
 }
 
+void wam_bidirectional_ancestor_results_init(WamBidirectionalAncestorResults *results) {
+    memset(results, 0, sizeof(WamBidirectionalAncestorResults));
+}
+
+void wam_bidirectional_ancestor_results_close(WamBidirectionalAncestorResults *results) {
+    free(results->values);
+    memset(results, 0, sizeof(WamBidirectionalAncestorResults));
+}
+
+bool wam_bidirectional_ancestor_results_push(WamBidirectionalAncestorResults *results,
+                                             int total_hops,
+                                             int parent_hops,
+                                             int child_hops) {
+    if (results->count >= results->cap) {
+        results->cap = results->cap ? results->cap * 2 : WAM_INITIAL_CAP;
+        results->values = realloc(results->values,
+                                  sizeof(WamBidirectionalAncestorResult) * results->cap);
+        if (!results->values) {
+            results->count = 0;
+            results->cap = 0;
+            return false;
+        }
+    }
+    results->values[results->count].total_hops = total_hops;
+    results->values[results->count].parent_hops = parent_hops;
+    results->values[results->count].child_hops = child_hops;
+    results->count++;
+    return true;
+}
+
 void wam_register_category_ancestor_kernel(WamState *state, const char *pred, int max_depth) {
     state->category_max_depth = max_depth > 0 ? max_depth : 10;
     wam_register_foreign_predicate(state, pred, 4, wam_category_ancestor_handler);
+}
+
+void wam_register_bidirectional_ancestor_kernel(WamState *state, const char *pred,
+                                                int max_depth,
+                                                double parent_step_cost,
+                                                double child_step_cost,
+                                                double cost_budget) {
+    state->category_max_depth = max_depth > 0 ? max_depth : 10;
+    state->bidirectional_parent_step_cost =
+        parent_step_cost > 0.0 ? parent_step_cost : 1.0;
+    state->bidirectional_child_step_cost =
+        child_step_cost > 0.0 ? child_step_cost : 3.0;
+    state->bidirectional_cost_budget =
+        cost_budget > 0.0 ? cost_budget : 10.0;
+    wam_register_foreign_predicate(state, pred, 5, wam_bidirectional_ancestor_handler);
 }
 
 void wam_register_transitive_closure_kernel(WamState *state, const char *pred) {
@@ -2943,6 +3022,137 @@ bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity)
     WamValue result = val_int(results.values[0]);
     bool ok = wam_unify(state, &state->A[2], &result);
     wam_int_results_close(&results);
+    return ok;
+}
+
+static bool wam_bidirectional_ancestor_dfs(WamState *state,
+                                           const char *node,
+                                           const char *root,
+                                           int depth,
+                                           int max_depth,
+                                           const char **visited,
+                                           int visited_len,
+                                           int parent_hops,
+                                           int child_hops,
+                                           double cost,
+                                           WamBidirectionalAncestorResults *results) {
+    bool found = false;
+    double parent_cost = state->bidirectional_parent_step_cost > 0.0
+        ? state->bidirectional_parent_step_cost
+        : 1.0;
+    double child_cost = state->bidirectional_child_step_cost > 0.0
+        ? state->bidirectional_child_step_cost
+        : 3.0;
+    double budget = state->bidirectional_cost_budget > 0.0
+        ? state->bidirectional_cost_budget
+        : 10.0;
+
+    for (int i = 0; i < state->category_edge_count; i++) {
+        CategoryEdge *edge = &state->category_edges[i];
+        if (strcmp(edge->child, node) != 0) continue;
+        if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
+        double next_cost = cost + parent_cost;
+        if (next_cost > budget) continue;
+        int next_parent_hops = parent_hops + 1;
+        if (strcmp(edge->parent, root) == 0) {
+            if (!wam_bidirectional_ancestor_results_push(
+                    results, next_parent_hops + child_hops,
+                    next_parent_hops, child_hops)) {
+                return false;
+            }
+            found = true;
+            continue;
+        }
+        if (depth + 1 >= max_depth || visited_len >= 64) continue;
+        visited[visited_len] = edge->parent;
+        if (wam_bidirectional_ancestor_dfs(state, edge->parent, root,
+                                           depth + 1, max_depth,
+                                           visited, visited_len + 1,
+                                           next_parent_hops, child_hops,
+                                           next_cost, results)) {
+            found = true;
+        }
+    }
+
+    for (int i = 0; i < state->category_edge_count; i++) {
+        CategoryEdge *edge = &state->category_edges[i];
+        if (strcmp(edge->parent, node) != 0) continue;
+        if (wam_visited_array_contains(visited, visited_len, edge->child)) continue;
+        double next_cost = cost + child_cost;
+        if (next_cost > budget) continue;
+        int next_child_hops = child_hops + 1;
+        if (strcmp(edge->child, root) == 0) {
+            if (!wam_bidirectional_ancestor_results_push(
+                    results, parent_hops + next_child_hops,
+                    parent_hops, next_child_hops)) {
+                return false;
+            }
+            found = true;
+            continue;
+        }
+        if (depth + 1 >= max_depth || visited_len >= 64) continue;
+        visited[visited_len] = edge->child;
+        if (wam_bidirectional_ancestor_dfs(state, edge->child, root,
+                                           depth + 1, max_depth,
+                                           visited, visited_len + 1,
+                                           parent_hops, next_child_hops,
+                                           next_cost, results)) {
+            found = true;
+        }
+    }
+
+    return found;
+}
+
+bool wam_collect_bidirectional_ancestor_hops(WamState *state,
+                                             WamBidirectionalAncestorResults *results) {
+    const char *cat = NULL;
+    const char *root = NULL;
+    const char *visited[64];
+    int visited_len = 0;
+    if (!wam_value_as_atom(state, state->A[0], &cat)) return false;
+    if (!wam_value_as_atom(state, state->A[1], &root)) return false;
+    if (strcmp(cat, root) == 0) {
+        return wam_bidirectional_ancestor_results_push(results, 0, 0, 0);
+    }
+
+    visited[visited_len++] = cat;
+    int max_depth = state->category_max_depth > 0 ? state->category_max_depth : 10;
+    return wam_bidirectional_ancestor_dfs(state, cat, root, 0, max_depth,
+                                          visited, visited_len, 0, 0, 0.0,
+                                          results);
+}
+
+static bool wam_unify_bidirectional_ancestor_result(
+        WamState *state,
+        WamBidirectionalAncestorResult *result) {
+    WamValue total_value = val_int(result->total_hops);
+    WamValue parent_value = val_int(result->parent_hops);
+    WamValue child_value = val_int(result->child_hops);
+    return wam_unify(state, &state->A[2], &total_value) &&
+           wam_unify(state, &state->A[3], &parent_value) &&
+           wam_unify(state, &state->A[4], &child_value);
+}
+
+bool wam_bidirectional_ancestor_handler(WamState *state, const char *pred, int arity) {
+    (void)pred;
+    if (arity != 5) return false;
+
+    WamBidirectionalAncestorResults results;
+    wam_bidirectional_ancestor_results_init(&results);
+    if (!wam_collect_bidirectional_ancestor_hops(state, &results) || results.count == 0) {
+        wam_bidirectional_ancestor_results_close(&results);
+        return false;
+    }
+
+    bool ok = false;
+    for (int i = 0; i < results.count; i++) {
+        if (wam_unify_bidirectional_ancestor_result(state, &results.values[i])) {
+            ok = true;
+            break;
+        }
+    }
+    wam_bidirectional_ancestor_results_close(&results);
     return ok;
 }
 
