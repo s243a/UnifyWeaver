@@ -1341,7 +1341,7 @@ def _capture_sink_functor(sink: 'Term', state: WamState) -> Optional[Tuple[str, 
     if not isinstance(sink, Compound) or len(sink.args) != 1:
         return None
     functor = _display_functor_name(sink.functor, len(sink.args))
-    if functor in ('atom', 'string', 'codes'):
+    if functor in ('atom', 'string', 'codes', 'stream'):
         return functor, sink.args[0]
     return None
 
@@ -1353,7 +1353,17 @@ def _unify_capture_sink(sink: 'Term', text: str, state: WamState) -> bool:
     kind, target = parsed
     if kind in ('atom', 'string'):
         return unify(target, make_atom(text), state)
-    return unify(target, _list_from_codes([ord(ch) for ch in text]), state)
+    if kind == 'codes':
+        return unify(target, _list_from_codes([ord(ch) for ch in text]), state)
+    raw = _unwrap_stream(deref(target, state))
+    if raw is None or not hasattr(raw, 'write'):
+        return False
+    try:
+        raw.write(text)
+        raw.flush()
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def _execute_with_output_to(state: WamState) -> bool:
