@@ -2103,6 +2103,7 @@ void wam_free_state(WamState *state) {
     free(state->B_array);
     free(state->E_array);
     free(state->category_edges);
+    free(state->category_ids);
     free(state->weighted_edges);
     free(state->direct_distance_edges);
     memset(state, 0, sizeof(WamState));
@@ -2562,6 +2563,27 @@ bool wam_register_category_parent_fact_source(WamState *state, WamFactSource *so
     return true;
 }
 
+void wam_register_category_id(WamState *state, const char *atom, int id) {
+    const char *interned = wam_intern_atom(state, atom);
+    for (int i = 0; i < state->category_id_count; i++) {
+        if (strcmp(state->category_ids[i].atom, interned) == 0) {
+            state->category_ids[i].id = id;
+            return;
+        }
+    }
+    if (state->category_id_count >= state->category_id_cap) {
+        state->category_id_cap = state->category_id_cap ? state->category_id_cap * 2 : WAM_INITIAL_CAP;
+        state->category_ids = realloc(state->category_ids, sizeof(WamCategoryIdEntry) * state->category_id_cap);
+    }
+    state->category_ids[state->category_id_count].atom = interned;
+    state->category_ids[state->category_id_count].id = id;
+    state->category_id_count++;
+}
+
+void wam_attach_bidirectional_child_csr(WamState *state, WamReverseCsrArtifact *artifact) {
+    state->bidirectional_child_csr = artifact;
+}
+
 static int32_t wam_read_i32_le(const unsigned char *p) {
     uint32_t v = ((uint32_t)p[0]) |
                  ((uint32_t)p[1] << 8) |
@@ -2940,6 +2962,26 @@ static bool wam_visited_array_contains(const char **visited, int visited_len, co
     return false;
 }
 
+static bool wam_category_atom_to_id(WamState *state, const char *atom, int *id_out) {
+    for (int i = 0; i < state->category_id_count; i++) {
+        if (strcmp(state->category_ids[i].atom, atom) == 0) {
+            *id_out = state->category_ids[i].id;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool wam_category_id_to_atom(WamState *state, int id, const char **atom_out) {
+    for (int i = 0; i < state->category_id_count; i++) {
+        if (state->category_ids[i].id == id) {
+            *atom_out = state->category_ids[i].atom;
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool wam_category_ancestor_dfs(WamState *state,
                                       const char *cat,
                                       const char *root,
@@ -3035,6 +3077,107 @@ static bool wam_bidirectional_ancestor_dfs(WamState *state,
                                            int parent_hops,
                                            int child_hops,
                                            double cost,
+                                           WamBidirectionalAncestorResults *results);
+
+static bool wam_bidirectional_ancestor_step_child(
+        WamState *state,
+        const char *child,
+        const char *root,
+        int depth,
+        int max_depth,
+        const char **visited,
+        int visited_len,
+        int parent_hops,
+        int child_hops,
+        double cost,
+        double child_cost,
+        double budget,
+        WamBidirectionalAncestorResults *results,
+        bool *found) {
+    if (wam_visited_array_contains(visited, visited_len, child)) return true;
+    double next_cost = cost + child_cost;
+    if (next_cost > budget) return true;
+    int next_child_hops = child_hops + 1;
+    if (strcmp(child, root) == 0) {
+        if (!wam_bidirectional_ancestor_results_push(
+                results, parent_hops + next_child_hops,
+                parent_hops, next_child_hops)) {
+            return false;
+        }
+        *found = true;
+        return true;
+    }
+    if (depth + 1 >= max_depth || visited_len >= 64) return true;
+    visited[visited_len] = child;
+    if (wam_bidirectional_ancestor_dfs(state, child, root,
+                                       depth + 1, max_depth,
+                                       visited, visited_len + 1,
+                                       parent_hops, next_child_hops,
+                                       next_cost, results)) {
+        *found = true;
+    }
+    return true;
+}
+
+static bool wam_bidirectional_ancestor_expand_children(
+        WamState *state,
+        const char *node,
+        const char *root,
+        int depth,
+        int max_depth,
+        const char **visited,
+        int visited_len,
+        int parent_hops,
+        int child_hops,
+        double cost,
+        double child_cost,
+        double budget,
+        WamBidirectionalAncestorResults *results,
+        bool *found) {
+    if (state->bidirectional_child_csr) {
+        int parent_id = 0;
+        if (!wam_category_atom_to_id(state, node, &parent_id)) return true;
+        int child_ids[256];
+        int child_count = wam_reverse_csr_lookup_children(
+            state->bidirectional_child_csr, parent_id, child_ids, 256);
+        if (child_count < 0) return false;
+        int limit = child_count < 256 ? child_count : 256;
+        for (int i = 0; i < limit; i++) {
+            const char *child = NULL;
+            if (!wam_category_id_to_atom(state, child_ids[i], &child)) continue;
+            if (!wam_bidirectional_ancestor_step_child(
+                    state, child, root, depth, max_depth, visited, visited_len,
+                    parent_hops, child_hops, cost, child_cost, budget,
+                    results, found)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    for (int i = 0; i < state->category_edge_count; i++) {
+        CategoryEdge *edge = &state->category_edges[i];
+        if (strcmp(edge->parent, node) != 0) continue;
+        if (!wam_bidirectional_ancestor_step_child(
+                state, edge->child, root, depth, max_depth, visited, visited_len,
+                parent_hops, child_hops, cost, child_cost, budget,
+                results, found)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool wam_bidirectional_ancestor_dfs(WamState *state,
+                                           const char *node,
+                                           const char *root,
+                                           int depth,
+                                           int max_depth,
+                                           const char **visited,
+                                           int visited_len,
+                                           int parent_hops,
+                                           int child_hops,
+                                           double cost,
                                            WamBidirectionalAncestorResults *results) {
     bool found = false;
     double parent_cost = state->bidirectional_parent_step_cost > 0.0
@@ -3074,31 +3217,11 @@ static bool wam_bidirectional_ancestor_dfs(WamState *state,
         }
     }
 
-    for (int i = 0; i < state->category_edge_count; i++) {
-        CategoryEdge *edge = &state->category_edges[i];
-        if (strcmp(edge->parent, node) != 0) continue;
-        if (wam_visited_array_contains(visited, visited_len, edge->child)) continue;
-        double next_cost = cost + child_cost;
-        if (next_cost > budget) continue;
-        int next_child_hops = child_hops + 1;
-        if (strcmp(edge->child, root) == 0) {
-            if (!wam_bidirectional_ancestor_results_push(
-                    results, parent_hops + next_child_hops,
-                    parent_hops, next_child_hops)) {
-                return false;
-            }
-            found = true;
-            continue;
-        }
-        if (depth + 1 >= max_depth || visited_len >= 64) continue;
-        visited[visited_len] = edge->child;
-        if (wam_bidirectional_ancestor_dfs(state, edge->child, root,
-                                           depth + 1, max_depth,
-                                           visited, visited_len + 1,
-                                           parent_hops, next_child_hops,
-                                           next_cost, results)) {
-            found = true;
-        }
+    if (!wam_bidirectional_ancestor_expand_children(
+            state, node, root, depth, max_depth, visited, visited_len,
+            parent_hops, child_hops, cost, child_cost, budget,
+            results, &found)) {
+        return false;
     }
 
     return found;
