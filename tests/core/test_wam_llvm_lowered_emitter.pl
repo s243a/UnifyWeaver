@@ -69,6 +69,18 @@ lw_choice(1, 10).
 lw_choice(2, 20).
 lw_choice(3, 30).
 
+% --- M4 call/execute coverage ---
+
+% Direct lowered-to-lowered call: caller invokes leaf, both lower.
+% In WAM bytecode: caller compiles `lw_leaf(X, Y)` to a sequence
+% ending in `execute lw_leaf/2`. Both kernels share the calling
+% state, so when lw_leaf binds A2 it's visible to lw_caller's caller.
+:- dynamic lw_leaf/2.
+lw_leaf(X, Y) :- Y is X + 100.
+
+:- dynamic lw_caller/2.
+lw_caller(X, Y) :- lw_leaf(X, Y).
+
 host_target_triple(Triple) :-
     ( catch(
         ( process_create(path(clang), ['-print-target-triple'],
@@ -172,7 +184,7 @@ test_ir_structure :-
     ;  format('  FAIL: hybrid lowered_lw_choice_2 missing~n'),
        throw(missing_hybrid_fast(lw_choice_2))
     ),
-    ( sub_string(Src, _, _, _, "M3 hybrid dispatcher")
+    ( sub_string(Src, _, _, _, "hybrid dispatcher")
     -> format('  PASS: hybrid dispatcher @lw_choice present~n')
     ;  format('  FAIL: hybrid dispatcher @lw_choice missing~n'),
        throw(missing_hybrid_dispatcher(lw_choice_2))
@@ -229,6 +241,9 @@ run_exec_test(PredAtom, A1Tag, A1Pay) :-
         ],
         LLPath),
     atom_string(PredAtom, PredStr),
+    % M4: call the public entry @<pred>, not @lowered_<pred>_<arity>.
+    % The kernel signature is now (%WamState*) — Value args go in via
+    % the public entry's wam_set_reg sequence.
     format(atom(DriverIR),
 'define i32 @main() {
 entry:
@@ -236,7 +251,7 @@ entry:
   %a1 = insertvalue %Value %a1_0, i64 ~w, 1
   %a2_0 = insertvalue %Value undef, i32 6, 0
   %a2 = insertvalue %Value %a2_0, i64 0, 1
-  %ok = call i1 @lowered_~w_2(%Value %a1, %Value %a2)
+  %ok = call i1 @~w(%Value %a1, %Value %a2)
   %ret = select i1 %ok, i32 0, i32 1
   ret i32 %ret
 }
@@ -312,7 +327,83 @@ test_execution :-
     test_hybrid_dispatch(lw_choice, 1, 1, success),
     test_hybrid_dispatch(lw_choice, 2, 1, success),
     test_hybrid_dispatch(lw_choice, 3, 1, success),
-    test_hybrid_dispatch(lw_choice, 9, 1, failure).
+    test_hybrid_dispatch(lw_choice, 9, 1, failure),
+    % --- M4: cross-predicate call/execute coverage ---
+    %
+    % lw_caller/2 calls lw_leaf/2 (via WAM `execute` since it's a
+    % tail call). With M4 closure analysis, both join the lowered
+    % closure: lw_leaf has no call/execute, lw_caller's only call
+    % target is lw_leaf which is in the closure on iteration 1, so
+    % lw_caller joins on iteration 2. The emitter generates
+    %   @lowered_lw_leaf_2(%WamState*) and
+    %   @lowered_lw_caller_2(%WamState*)
+    % with the caller's body containing a `musttail call i1
+    % @lowered_lw_leaf_2(%WamState* %vm)`. Calling @lw_caller(7, _)
+    % should succeed (lw_leaf(7, Y) binds Y = 107).
+    test_call_chain.
+
+test_call_chain :-
+    format('--- M4 call/execute chain: lw_caller → lw_leaf ---~n'),
+    clear_llvm_foreign_kernel_specs,
+    tmp_file_stream(text, LLPath, S0), close(S0),
+    host_target_triple(Triple),
+    write_wam_llvm_project(
+        [user:lw_leaf/2, user:lw_caller/2],
+        [ module_name('lwm4chain'),
+          target_triple(Triple),
+          target_datalayout(''),
+          emit_mode(functions)
+        ],
+        LLPath),
+    read_file_to_string(LLPath, Src, []),
+    % Both kernels should be present.
+    ( sub_string(Src, _, _, _, "@lowered_lw_leaf_2(%WamState* %vm)")
+    -> format('  PASS: @lowered_lw_leaf_2 kernel with %WamState* sig~n')
+    ;  format('  FAIL: @lowered_lw_leaf_2 missing or wrong signature~n'),
+       throw(missing_leaf_kernel)
+    ),
+    ( sub_string(Src, _, _, _, "@lowered_lw_caller_2(%WamState* %vm)")
+    -> format('  PASS: @lowered_lw_caller_2 kernel with %WamState* sig~n')
+    ;  format('  FAIL: @lowered_lw_caller_2 missing or wrong signature~n'),
+       throw(missing_caller_kernel)
+    ),
+    % The caller's body should contain a musttail call to the leaf kernel.
+    ( sub_string(Src, _, _, _, "musttail call i1 @lowered_lw_leaf_2")
+    -> format('  PASS: caller emits `musttail call` to leaf kernel~n')
+    ;  format('  FAIL: caller missing musttail call to leaf~n'),
+       throw(missing_musttail)
+    ),
+    % Append a driver IR and execute end-to-end.
+    DriverIR = 'define i32 @main() {
+entry:
+  %a1_0 = insertvalue %Value undef, i32 1, 0
+  %a1 = insertvalue %Value %a1_0, i64 7, 1
+  %a2_0 = insertvalue %Value undef, i32 6, 0
+  %a2 = insertvalue %Value %a2_0, i64 0, 1
+  %ok = call i1 @lw_caller(%Value %a1, %Value %a2)
+  %ret = select i1 %ok, i32 0, i32 1
+  ret i32 %ret
+}',
+    setup_call_cleanup(open(LLPath, append, Out),
+        ( write(Out, '\n'), write(Out, DriverIR) ), close(Out)),
+    atom_concat(LLPath, '.o', OPath),
+    atom_concat(LLPath, '.out', BinPath),
+    format(atom(LlcCmd),
+        'llc -O2 -filetype=obj -relocation-model=pic ~w -o ~w 2>/dev/null',
+        [LLPath, OPath]),
+    shell(LlcCmd, _),
+    format(atom(ClangCmd), 'clang -O2 ~w -o ~w 2>/dev/null', [OPath, BinPath]),
+    shell(ClangCmd, _),
+    shell(BinPath, RunExit),
+    ( RunExit =:= 0
+    -> format('  PASS: lw_caller(7, _) → success (cross-pred lowered chain)~n')
+    ;  format('  FAIL: lw_caller(7, _) exit=~w (expected 0)~n', [RunExit]),
+       throw(call_chain_exec_failed(RunExit))
+    ),
+    catch(delete_file(LLPath), _, true),
+    catch(delete_file(OPath), _, true),
+    catch(delete_file(BinPath), _, true),
+    clear_llvm_foreign_kernel_specs.
 
 %% test_hybrid_dispatch(+Pred, +A1Value, +A1Tag, +Expected)
 %
@@ -389,7 +480,7 @@ test_exec_unary(PredAtom, A1Tag, A1Pay) :-
 entry:
   %a1_0 = insertvalue %Value undef, i32 ~w, 0
   %a1 = insertvalue %Value %a1_0, i64 ~w, 1
-  %ok = call i1 @lowered_~w_1(%Value %a1)
+  %ok = call i1 @~w(%Value %a1)
   %ret = select i1 %ok, i32 0, i32 1
   ret i32 %ret
 }

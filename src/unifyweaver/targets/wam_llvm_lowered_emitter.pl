@@ -55,10 +55,13 @@
 
 :- module(wam_llvm_lowered_emitter, [
     wam_llvm_lowerable/3,            % +Pred/Arity, +WamCode, -Shape
+    wam_llvm_lowerable_with_closure/4, % +Pred/Arity, +WamCode, +ClosureSet,
+                                     %  -Shape (M4 — call/execute aware)
     lower_predicate_to_llvm/4,       % +Pred/Arity, +WamCode, +Options, -LLVMCode
     is_deterministic_pred_llvm/1,    % +Instrs
     llvm_lowered_func_name/2,        % +Pred/Arity, -LLVMFuncName
     clause1_instrs/2,                % +Instrs, -Clause1Body (exported for tests)
+    call_execute_targets/2,          % +Instrs, -PredArities (M4)
     emit_native_wrapper/2,           % +Pred/Arity, -WrapperCode (M3)
     emit_hybrid_dispatcher/5         % +Pred/Arity, +StartPC, +InstrCount,
                                      % +LabelArraySize, -DispatcherCode (M3)
@@ -217,6 +220,58 @@ take_to_proceed([proceed|_], [proceed]) :- !.
 take_to_proceed([fail|_], [fail]) :- !.
 take_to_proceed([I|Rest], [I|Out]) :- take_to_proceed(Rest, Out).
 
+%% wam_llvm_lowerable_with_closure(+PI, +WamCode, +ClosureSet, -Shape).
+%
+%  M4 lowerability check that accounts for call/execute dependencies.
+%  ClosureSet is a list of `Pred/Arity` indicators that are known to
+%  be lowered in the current module (the closure of lowerable preds).
+%  Succeeds with Shape iff:
+%
+%    1. The standard wam_llvm_lowerable/3 check passes (clause-1 body
+%       is deterministic + every instruction is in the supported set).
+%    2. Every `call`/`execute` target in the clause-1 body is in
+%       ClosureSet — so the emitter can confidently emit
+%       `call i1 @lowered_<callee>_<arity>(%vm)` knowing the symbol
+%       will be defined at link time.
+%
+%  Predicates with no call/execute (the M3 lowerable set) trivially
+%  pass the closure check — their lowerable status is independent of
+%  the closure. This predicate is therefore a strict refinement of
+%  wam_llvm_lowerable/3.
+wam_llvm_lowerable_with_closure(PI, WamCode, ClosureSet, Shape) :-
+    wam_llvm_lowerable(PI, WamCode, Shape),
+    % Extract the clause-1 body's call/execute targets and verify all
+    % are in the closure set.
+    (   is_list(WamCode) -> Instrs = WamCode
+    ;   atom(WamCode) -> parse_wam_text(WamCode, Instrs)
+    ;   parse_wam_text(WamCode, Instrs)
+    ),
+    clause1_instrs(Instrs, C1),
+    call_execute_targets(C1, Targets),
+    forall(member(T, Targets), memberchk(T, ClosureSet)).
+
+%% call_execute_targets(+Instrs, -Targets) is det.
+%
+%  Walks an instruction list and returns the de-duplicated set of
+%  `Pred/Arity` indicators reached via `call`/`execute`. Used by both
+%  the closure analysis and as a hook for future cross-predicate
+%  passes.
+call_execute_targets(Instrs, Targets) :-
+    findall(T, instr_calls_target(Instrs, T), TargetList0),
+    sort(TargetList0, Targets).
+
+instr_calls_target(Instrs, Pred/Arity) :-
+    member(I, Instrs),
+    ( I = call(PredStr, _)
+    ; I = execute(PredStr)
+    ),
+    ( atom(PredStr) -> atom_string(PredStr, S)
+    ; string(PredStr) -> S = PredStr
+    ),
+    split_string(S, "/", "", [NameStr, ArityStr]),
+    atom_string(Pred, NameStr),
+    number_string(Arity, ArityStr).
+
 supported(get_constant(_, _)).
 supported(get_variable(_, _)).
 supported(get_value(_, _)).
@@ -235,6 +290,8 @@ supported(set_value(_)).
 supported(allocate).
 supported(deallocate).
 supported(builtin_call(_, _)).
+supported(call(_, _)).         % M4 — direct call into another lowered kernel
+supported(execute(_)).         % M4 — tail call into another lowered kernel
 supported(proceed).
 supported(fail).
 
@@ -276,6 +333,17 @@ llvm_safe_code(_, 0'_).
 %  Caller must have already verified wam_llvm_lowerable/3.
 %  Emits a function for *clause 1 only* — for multi-clause predicates,
 %  clauses 2+ are reached via dispatcher fallback to the bytecode path.
+%
+%  M4 signature change: the kernel now takes a caller-supplied
+%  `%WamState*` and reads its argument registers (A1..AN) from there.
+%  No state allocation or free inside the kernel — that's the
+%  responsibility of the public entry `@<pred>` wrapper.
+%
+%  This makes lowered-to-lowered `call`/`execute` cheap: the caller
+%  passes its shared state, the callee operates on it, bindings flow
+%  through the trail naturally. Without this change, every nested
+%  call would need to package args as `%Value` and allocate a fresh
+%  state, defeating the perf benefit and breaking binding propagation.
 lower_predicate_to_llvm(PI, WamCode, _Options, LLVMCode) :-
     ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
     llvm_lowered_func_name(Pred/Arity, FuncName),
@@ -286,42 +354,32 @@ lower_predicate_to_llvm(PI, WamCode, _Options, LLVMCode) :-
     % the whole instruction list; for multi-clause preds it's the body
     % between try_me_else and the first proceed/fail.
     clause1_instrs(Instrs, C1Instrs),
-    % Build the parameter list and the entry-block "copy %a<i> into reg i-1".
-    build_param_list(Arity, ParamList),
-    build_arg_setup(Arity, ArgSetup),
     % Emit one basic block per instruction, then the shared
     % succeed/fail epilogue blocks.
     emit_all_instrs(C1Instrs, 0, BodyBlocks),
     atomic_list_concat(BodyBlocks, '\n', BodyStr),
     format(atom(LLVMCode),
-'; === lowered predicate: ~w/~w ===
-; Emitted by wam_llvm_lowered_emitter.pl. Each WAM instruction lives in
-; its own basic block named pc_<N>. Success branches to the next block;
-; failure branches to %lowered_fail. The final proceed branches to
-; %lowered_succeed. Both epilogue blocks free the %WamState before
-; returning so callers do not leak the ~~85 KB state allocation across
-; repeated invocations.
-define i1 @~w(~w) {
+'; === lowered kernel: ~w/~w ===
+; M4: takes a caller-supplied %WamState* — does not allocate or free
+; state. Args are read from the shared state\'s A1..A~w registers,
+; which the caller must have populated via preceding put_* instrs
+; (or, for the outermost call, the @<pred> public-entry wrapper).
+; Each WAM instruction lives in its own basic block named pc_<N>;
+; success branches to the next block, failure branches to
+; %lowered_fail. The final proceed branches to %lowered_succeed.
+define i1 @~w(%WamState* %vm) {
 entry:
-  %vm = call %WamState* @wam_state_new(
-    %Instruction* null,
-    i32 0,
-    i32* null,
-    i32 0)
-~w
   br label %pc_0
 
 ~w
 
 lowered_succeed:
-  call void @wam_state_free(%WamState* %vm)
   ret i1 true
 
 lowered_fail:
-  call void @wam_state_free(%WamState* %vm)
   ret i1 false
 }',
-        [Pred, Arity, FuncName, ParamList, ArgSetup, BodyStr]).
+        [Pred, Arity, Arity, FuncName, BodyStr]).
 
 build_param_list(0, "") :- !.
 build_param_list(Arity, ParamList) :-
@@ -1304,6 +1362,53 @@ emit_instr(unify_constant(CStr), N, Next, Block) :- !,
          '', W0, W1, W2, W3],
         '\n', Block).
 
+% --- call <pred>/<arity>: direct call into another lowered kernel (M4) ---
+%
+% The callee must also be lowered as a kernel with the
+% `(%WamState*) → i1` signature. Caller has already populated A1..AN
+% via preceding put_*/get_* instructions; the callee reads them from
+% the shared state. Bindings the callee makes (via wam_bind_reg etc.)
+% remain visible to the caller through the shared trail.
+%
+% The op-2 continuation PC in the original WAM call is irrelevant in
+% the lowered form because there is no PC — control flow IS the
+% sequencing. On success branch to the next basic block; on failure
+% branch to %lowered_fail (the caller's epilogue).
+%
+% Closure constraint: this only emits correctly if the callee is in
+% the module's lowered set. wam_llvm_target's closure analysis (M4)
+% gates emission to ensure that.
+emit_instr(call(PredStr, _ContPC), N, Next, Block) :- !,
+    parse_call_target(PredStr, CalleeName, CalleeArity),
+    llvm_lowered_func_name(CalleeName/CalleeArity, CalleeKernel),
+    format(atom(Block),
+'pc_~w:
+  ; call ~w (lowered kernel, shared state)
+  %call.~w.r = call i1 @~w(%WamState* %vm)
+  br i1 %call.~w.r, label %~w, label %lowered_fail',
+        [N, PredStr,
+         N, CalleeKernel,
+         N, Next]).
+
+% --- execute <pred>: tail call into another lowered kernel (M4) ---
+%
+% Same as call but in tail position. Uses LLVM `musttail` so the
+% caller's stack frame is reused — important for any predicate doing
+% iterative recursion (transitive_closure, list traversal, etc.).
+% musttail requires matching signatures, which all lowered kernels
+% satisfy by construction.
+emit_instr(execute(PredStr), N, _Next, Block) :- !,
+    parse_call_target(PredStr, CalleeName, CalleeArity),
+    llvm_lowered_func_name(CalleeName/CalleeArity, CalleeKernel),
+    format(atom(Block),
+'pc_~w:
+  ; execute ~w (tail call into lowered kernel)
+  %exec.~w.r = musttail call i1 @~w(%WamState* %vm)
+  ret i1 %exec.~w.r',
+        [N, PredStr,
+         N, CalleeKernel,
+         N]).
+
 % --- builtin_call op/Arity, ArgCount: delegate to @execute_builtin ---
 emit_instr(builtin_call(OpStr, ArityStr), N, Next, Block) :- !,
     ( atom(OpStr) -> OpAtom = OpStr ; atom_string(OpAtom, OpStr) ),
@@ -1391,92 +1496,99 @@ parse_functor(FStr, Name, Arity) :-
     Name = NameStr,
     number_string(Arity, ArityStr).
 
+%% parse_call_target(+PredStr, -Name, -Arity)
+%
+%  "foo/2" → Name='foo', Arity=2. Used by the call/execute emitters
+%  to resolve the callee's lowered-kernel symbol.
+parse_call_target(PredStr, NameAtom, Arity) :-
+    ( atom(PredStr) -> atom_string(PredStr, S)
+    ; string(PredStr) -> S = PredStr
+    ),
+    split_string(S, "/", "", [NameStr, ArityStr]),
+    atom_string(NameAtom, NameStr),
+    number_string(Arity, ArityStr).
+
 % ============================================================================
 % M3: Public-entry wrappers + multi-clause dispatchers
 % ============================================================================
 
 %% emit_native_wrapper(+Pred/Arity, -WrapperCode) is det.
 %
-%  Emits `define i1 @<pred>(%Value %a1, ...)` as a thin wrapper around
-%  the lowered function. Single-clause lowered predicates use this so
-%  external callers can invoke `@<pred>` regardless of emit mode
-%  (unifies the API between emit_mode(interpreter) and
-%  emit_mode(functions) for the same predicate).
+%  Emits `define i1 @<pred>(%Value %a1, ...)` as the public entry for
+%  external callers. Allocates a fresh %WamState, copies the %Value
+%  arguments into A1..AN, calls the kernel, frees the state.
 %
-%  Single-arg form (the lowered function returns success/failure with
-%  no extra dispatch logic needed) — at -O2 the wrapper inlines into
-%  the caller's call site.
+%  Under M4, the kernel takes %WamState* (not Value params), so this
+%  wrapper handles the state lifecycle on behalf of external callers.
+%  Calls from one lowered kernel to another skip this wrapper and
+%  share state directly via @lowered_<callee>_<arity>(%WamState*).
 emit_native_wrapper(Pred/Arity, WrapperCode) :-
     atom_string(Pred, PredStr),
     llvm_lowered_func_name(Pred/Arity, LoweredName),
     build_param_list(Arity, ParamList),
-    build_arg_list(Arity, ArgList),
+    build_arg_setup(Arity, ArgSetup),
     format(atom(WrapperCode),
-'; Public entry for ~w/~w (M3 native wrapper around the lowered fn).
-; At -O2 this collapses into the caller via inlining.
+'; Public entry for ~w/~w (M4 native wrapper).
+; Allocates state, copies args into A-registers, calls kernel, frees.
 define i1 @~w(~w) {
 entry:
-  %r = call i1 @~w(~w)
+  %vm = call %WamState* @wam_state_new(
+    %Instruction* null, i32 0, i32* null, i32 0)
+~w
+  %r = call i1 @~w(%WamState* %vm)
+  call void @wam_state_free(%WamState* %vm)
   ret i1 %r
 }',
         [PredStr, Arity,
          PredStr, ParamList,
-         LoweredName, ArgList]).
+         ArgSetup,
+         LoweredName]).
 
 %% emit_hybrid_dispatcher(+Pred/Arity, +StartPC, +InstrCount,
 %%                        +LabelArraySize, -DispatcherCode) is det.
 %
-%  Emits the M3 multi-clause dispatcher entry `@<pred>` for predicates
+%  Emits the multi-clause dispatcher entry `@<pred>` for predicates
 %  whose clause 1 is lowerable but whose full body contains
-%  try_me_else / retry_me_else / trust_me (so additional clauses need
-%  the bytecode interpreter for backtrack).
+%  try_me_else / retry_me_else / trust_me (additional clauses need the
+%  bytecode interpreter for backtrack).
 %
-%  Fast path: invoke `@lowered_<pred>_<arity>` first; if it returns
-%  true, return true immediately.
-%
-%  Slow path: on failure, allocate a fresh %WamState, set the input
-%  registers, set the start PC to the predicate's offset in
-%  @module_code, and call @run_loop. This runs the FULL bytecode for
-%  the predicate (all clauses, with proper choice-point management),
-%  matching the F# target's dispatchCall semantics:
-%  the lowered clause-1 is a hint, not a replacement.
-%
-%  Limitation accepted in M3: the fast path doesn't share its
-%  %WamState with the slow path. If clause 1 binds an A-register via
-%  the lowered code and then fails, the slow path starts clean — it
-%  doesn't see clause 1's intermediate bindings. That matches the F#
-%  target's behaviour and is correct for first-arg-indexed predicates
-%  where clause 1 either succeeds deterministically or fails before
-%  any side-effecting binding. Predicates that don't fit that shape
-%  still benefit from the slow path; they just pay a small redundant
-%  cost on the fast-path attempt.
+%  M4 redesign: both fast and slow paths share a SINGLE %WamState
+%  allocated by the dispatcher. The fast path is the lowered kernel
+%  invoked on that shared state. On fast-path failure the dispatcher
+%  resets the bytecode entry point (PC = StartPC) and runs @run_loop
+%  on the SAME state — bindings made by the fast path remain visible.
+%  This is a step toward proper clause-1-with-rollback semantics; full
+%  trail rollback between fast and slow is deferred (the bindings
+%  difference matters only for predicates whose clause 1 partially
+%  succeeds — first-arg-indexed predicates fail fast on the head match
+%  before any binding work).
 emit_hybrid_dispatcher(Pred/Arity, StartPC, InstrCount, LabelArraySize,
                        DispatcherCode) :-
     atom_string(Pred, PredStr),
     llvm_lowered_func_name(Pred/Arity, LoweredName),
     build_param_list(Arity, ParamList),
-    build_arg_list(Arity, ArgList),
-    build_arg_setup_slow(Arity, ArgSetupSlow),
+    build_arg_setup(Arity, ArgSetup),
     format(atom(DispatcherCode),
-'; Public entry for ~w/~w (M3 hybrid dispatcher).
+'; Public entry for ~w/~w (M4 hybrid dispatcher, shared %WamState).
 ; Fast path: lowered clause 1 (deterministic + supported instr subset).
 ; Slow path on fast-path failure: full bytecode via @run_loop, which
 ; handles try_me_else / retry_me_else / trust_me for clauses 2+.
 define i1 @~w(~w) {
 entry:
-  %fast = call i1 @~w(~w)
-  br i1 %fast, label %success, label %slow_path
-
-success:
-  ret i1 true
-
-slow_path:
   %vm = call %WamState* @wam_state_new(
     %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @module_code, i32 0, i32 0),
     i32 ~w,
     i32* getelementptr ([~w x i32], [~w x i32]* @module_labels, i32 0, i32 0),
     i32 ~w)
 ~w
+  %fast = call i1 @~w(%WamState* %vm)
+  br i1 %fast, label %success, label %slow_path
+
+success:
+  call void @wam_state_free(%WamState* %vm)
+  ret i1 true
+
+slow_path:
   call void @wam_set_pc(%WamState* %vm, i32 ~w)
   %slow = call i1 @run_loop(%WamState* %vm)
   call void @wam_state_free(%WamState* %vm)
@@ -1484,12 +1596,12 @@ slow_path:
 }',
         [PredStr, Arity,
          PredStr, ParamList,
-         LoweredName, ArgList,
          InstrCount, InstrCount,
          InstrCount,
          LabelArraySize, LabelArraySize,
          LabelArraySize,
-         ArgSetupSlow,
+         ArgSetup,
+         LoweredName,
          StartPC]).
 
 %% build_arg_list(+Arity, -ArgList)

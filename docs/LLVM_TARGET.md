@@ -290,9 +290,19 @@ Mirrors `wam_fsharp_lowered_emitter.pl` / `wam_rust_lowered_emitter.pl`:
    `get_list`, `unify_variable`, `unify_value`, `unify_constant`,
    `put_constant`, `put_variable`, `put_value`, `put_structure`,
    `set_constant`, `set_variable`, `set_value`, `allocate`,
-   `deallocate`, `builtin_call`, `proceed`, `fail`. Anything else
-   (`call`, `execute`, `jump`, `cut_ite`, etc.) makes the gate fail
-   silently and the predicate falls back to the bytecode path.
+   `deallocate`, `builtin_call`, `call`, `execute`, `proceed`,
+   `fail`. Anything else (`jump`, `cut_ite`, etc.) makes the gate
+   fail silently and the predicate falls back to the bytecode path.
+3. **Closure-closed under `call`/`execute`** — `call <pred>/<N>` and
+   `execute <pred>/<N>` instructions are lowered as direct
+   `call i1 @lowered_<callee>_<N>(%WamState* %vm)` so the callee
+   symbol must exist. Before classification, M4 runs a fixpoint
+   closure analysis on the input predicate list: a predicate joins
+   the lowered closure iff every `call`/`execute` target in its
+   clause-1 body is also in the closure. Anything left outside the
+   closure falls back to the bytecode path even if its instruction
+   set is otherwise supported. (Future: cross-module closure when
+   the linker can resolve symbols across compile units.)
 
 The lowerability check returns a *shape* the pipeline acts on:
 
@@ -332,24 +342,35 @@ predicate took.
   the bytecode `@step` cases. `get_list` read-mode currently returns
   the same failure sentinel the bytecode interpreter does — once the
   interpreter gains ground-list read support, this path follows.
-- **M3 (this release): multi-clause via lowered clause-1 + bytecode
-  fallback**. Predicates whose clause 1 is deterministic + supported
+- **M3**: multi-clause via lowered clause-1 + bytecode
+  fallback. Predicates whose clause 1 is deterministic + supported
   but whose full body has additional clauses with `try_me_else` /
-  `retry_me_else` / `trust_me` now lower as a `hybrid` record. The
+  `retry_me_else` / `trust_me` lower as a `hybrid` record. The
   emitted module contains BOTH `@lowered_<pred>_<arity>` (the
-  clause-1 fast path) AND `@<pred>` (a dispatcher that tries the fast
-  path first, then on failure runs the full bytecode through
-  `@run_loop` at the predicate's `StartPC` in `@module_code`).
-  Mirrors the F# target's `dispatchCall` semantics:
-  the lowered clause-1 is a hint, not a replacement — the slow path
-  always handles the full backtracking behaviour. Single-clause
+  clause-1 fast path) AND `@<pred>` (a dispatcher). Single-clause
   predicates also gain a `@<pred>` wrapper around their lowered
   function so external callers can use the same name across emit
   modes.
-- Future: `call`/`execute` lowered to direct `call i1 @<other_pred>`
-  so cross-predicate calls within lowered code stay native;
-  caller-supplied `%WamState*` to avoid per-call state alloc when a
-  lowered predicate calls another lowered predicate.
+- **M4 (this release): kernel signature refactor + `call`/`execute`
+  with shared state + closure analysis**. The lowered kernel
+  signature is now `define i1 @lowered_<pred>_<arity>(%WamState*
+  %vm)` — no `%Value` parameters. Args live in the caller's `%vm`
+  registers; the kernel reads them from there. Public-entry wrappers
+  (`@<pred>(%Value %a1, ...)`) allocate state, copy args into
+  registers, call the kernel, free state.
+  Lowered-to-lowered calls now emit
+  `call i1 @lowered_<callee>_<N>(%WamState* %vm)` for `call` and
+  `musttail call i1 @lowered_<callee>_<N>(%WamState* %vm)` for
+  `execute` — proper tail calls when the caller's last instruction
+  is a tail-call. The hybrid dispatcher (M3) also now shares state
+  between its fast and slow paths.
+  Fixpoint closure analysis (`compute_lowered_closure/3`) computes
+  the set of mutually-call-resolvable preds before classification,
+  so the emitter can confidently emit direct calls knowing the
+  symbols will resolve at link time.
+- Future: trail-rollback between fast and slow paths in the hybrid
+  dispatcher so clause-1 partial bindings don't leak into the slow
+  path; cross-module closure when LTO is available.
 
 ### Tests
 
