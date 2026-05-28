@@ -124,6 +124,150 @@ call the resolver.
 
 **Estimated effort**: ~1-2 days. Branch: `feat/wam-rust-lmdb-cached`.
 
+### 3.1 Cache capacity sizing (design captured from discussion 2026-05-22)
+
+When `lmdb_materialisation(auto)` resolves to `cached`, the resolver
+also picks a default `cache_capacity`. The sizing rule is a
+dual-constraint formula:
+
+```
+cache_capacity = min(
+    unrestricted_working_set,
+    cap_pct × (MemAvailable - headroom_floor)
+)
+```
+
+where:
+
+- `unrestricted_working_set` = the cache capacity that would let the
+  cache fully serve the workload with no evictions. Derived from
+  existing metadata as `demand_set_estimate × edge_size_bytes`.
+- `MemAvailable` = Linux kernel's `/proc/meminfo` field of the same
+  name. It is the kernel's own estimate of memory available for new
+  allocations *without swapping*. Already accounts for reclaimable
+  page cache and avoids the "swap-pressure" trap that a naive
+  `MemFree − fixed_threshold` formula would fall into.
+- `headroom_floor = max(512 MB, 0.10 × MemTotal)` — defensive
+  minimum so the cache never starves the rest of the process or the
+  kernel. The `max(fixed, fraction)` form makes the rule portable
+  across small laptops and large servers (a flat 1 GB threshold is
+  too aggressive on a 4 GB laptop and too conservative on a 256 GB
+  server).
+- `cap_pct` = fraction of available memory the cache is allowed to
+  claim. Default `0.50`.
+
+For workloads with a small demand set (e.g. the enwiki
+category-graph demand-set is only ~12 MB of edges), the
+`unrestricted_working_set` clamp wins and the memory math is
+irrelevant — the cache fits entirely in working set and the resolver
+returns `cache_capacity = unrestricted_working_set`. The
+system-memory constraint only activates for very large fan-out
+workloads.
+
+#### Predicate-level overrides
+
+Per-predicate overrides slot into the existing `recursive_kernel`
+options pattern:
+
+```prolog
+:- recursive_kernel(category_ancestor, category_ancestor/4, [
+    max_depth(10),
+    edge_pred(category_parent/2),
+    cache_capacity(10000),                  % explicit absolute (existing)
+    cache_capacity_free_pct(0.30),          % NEW — override `cap_pct`
+    cache_capacity_floor_bytes(1073741824)  % NEW — override `headroom_floor` (1 GB)
+]).
+```
+
+Defaults live in `core/cost_model.pl`; explicit options on the
+kernel decl override.
+
+#### Cross-platform note
+
+`/proc/meminfo` is Linux-only. macOS uses `vm_stat` /
+`sysctl hw.memsize`; Windows uses `GlobalMemoryStatusEx`. Initial
+implementation reads Linux `/proc/meminfo`; macOS/Windows fall back
+to `MemTotal × 0.5` as a conservative default until per-platform
+readers land.
+
+#### Swap
+
+`MemAvailable` accounts for "available without swapping", so swap is
+handled implicitly. If swap is being actively used (high
+`SwapTotal − SwapFree`), the system is already under memory pressure
+and the resolver should be conservative — a follow-up refinement
+could read `/proc/sys/vm/swappiness` and `SwapFree` to further reduce
+`cap_pct`, but not needed for v1.
+
+### 3.2 Preflight findings (Rust runtime architecture + Haskell parity)
+
+Notes captured 2026-05-22 from reading the Rust runtime template
+(`templates/targets/rust_wam/state.rs.mustache`), both LMDB sources
+(`lmdb_fact_source_lmdb_zero.rs.mustache`, `lmdb_fact_source_heed.rs.mustache`),
+and the Haskell reference (`templates/targets/haskell_wam/lmdb_fact_source.hs.mustache`).
+
+**Rust runtime is template-emitted.** Correction to §2's "Files"
+list: there is no source-tree `src/unifyweaver/runtime/rust/wam_rust/`
+directory. The Rust WAM runtime is emitted from
+`templates/targets/rust_wam/state.rs.mustache` into each generated
+Cargo project. R7's runtime changes go in the template, propagating
+to every bench on next codegen. Test fixtures and generated benches
+in `output/` and `examples/more/.../gen/` are read-only outputs.
+
+**Foreign-predicate dispatch already supports a lazy path.**
+`WamState` has `foreign_native_kinds: HashMap<String, String>`,
+`foreign_predicates: HashSet<String>`, and a `CallForeign(name,
+arity)` instruction. R7 adds a new handler-kind tag
+`"lazy_lmdb_lookup"` plus a new VM field
+`lazy_lookups: HashMap<String, Arc<LmdbFactSource>>`. The existing
+eager path (`indexed_atom_fact2` + `CallIndexedAtomFact2`) is
+untouched — `lazy` is a parallel route, not a replacement.
+
+**Mirror Haskell's hot-vs-cold separation.** Haskell uses
+`EdgeLookup :: Int -> [Int]` for the hot kernel's forward-direction
+parent lookup, and a separate `computeDemandSetCursorBFS` for the
+one-shot reverse-direction demand-set BFS. Rust preserves this:
+`LookupSource` only covers the forward parent direction; reverse
+child lookup stays in `LmdbFactSource::reachable_to_root` and runs
+before the kernel. This matches `WAM_REVERSE_INDEX_ARTIFACTS.md` §7
+("If parent lookup is memory-mapped, the reverse child artifact
+should not be touched during the hot kernel unless
+`phase(runtime_available)` is explicit").
+
+**Cache wrappers must be transparent to the kernel.** Haskell's
+`lmdbRawEdgeLookup`, `lmdbL1EdgeLookup`, `lmdbL2EdgeLookup`,
+`lmdbTwoLevelEdgeLookup` all share the same `EdgeLookup` type — the
+kernel call site doesn't know which it has. Rust's R8
+`CachedLookup<LmdbFactSource>` must decorate the same `LookupSource`
+trait that R7's bare `LmdbFactSource` implements, so the step
+handler is identical for `lazy` and `cached`.
+
+**Cursor lifetime: per-call now, per-thread later.** Both Rust LMDB
+sources today open a short-lived read txn per `lookup_via_dupsort`
+call. That's the "open-per-call" mode in §10. Haskell uses
+per-thread cursors (`DupsortCursorCache`, `lmdb_fact_source.hs.mustache`
+lines 105-123). Rust R7 sticks with per-call (matches existing code,
+zero new infrastructure); per-thread caching is deferred — the
+source files' own comments call this out as a future R3-equivalent
+optimisation.
+
+**Cache capacity formula already implemented in Haskell.** Lines
+388-394 of `lmdb_fact_source.hs.mustache` (`l2MemoryBudgetBytes`)
+implement essentially the formula recorded in §3.1 above:
+`min(MemAvailable/2, MemAvailable - 500 MB)`. Rust R8 should port
+that code rather than re-derive it. My §3.1 design note adds two
+refinements (portable headroom `max(512 MB, 10% MemTotal)` and the
+`unrestricted_working_set` clamp from below) that Haskell could also
+adopt for consistency.
+
+**Result type: `Vec<i32>` vs `[Int]`.** Haskell's `EdgeLookup`
+returns a lazy list. Rust's `lookup_parents` returns `Vec<i32>`. The
+kernel's choice-point iteration consumes all results either way, so
+the difference is cosmetic at the kernel level. The spec's
+`impl Iterator<Item=i32>` ideal can be deferred until there's a
+measured cost from Vec materialisation — for `category_parent` the
+average list length is ~2-3 ints, so the Vec cost is trivial.
+
 ## 4. Phase R9 — workload-segregation contract
 
 **Scope**: Add the `workload_segregated(bool)` option to the

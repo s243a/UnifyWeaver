@@ -1866,6 +1866,44 @@ test_lowered_calls_detected_kernel_via_callforeign :-
     ;   fail_test(Test, 'Lowered helper did not emit CallForeign for detected kernel')
     ).
 
+%% R7: LookupSource trait + lazy_lookups field present in the runtime template.
+test_r7_lookupsource_trait_in_state_template :-
+    Test = 'WAM-Rust R7: LookupSource trait + lazy_lookups field in state template',
+    (   read_file_to_string('templates/targets/rust_wam/state.rs.mustache', S, []),
+        sub_string(S, _, _, _, "pub trait LookupSource: Send + Sync"),
+        sub_string(S, _, _, _, "fn lookup_key_for_atom"),
+        sub_string(S, _, _, _, "fn lookup_parents"),
+        sub_string(S, _, _, _, "fn atom_for_key"),
+        sub_string(S, _, _, _, "pub lazy_lookups: HashMap<String, Arc<dyn LookupSource>>"),
+        sub_string(S, _, _, _, "pub fn register_lazy_lookup"),
+        sub_string(S, _, _, _, "pub fn edge_parents")
+    ->  pass(Test)
+    ;   fail_test(Test, 'state.rs.mustache missing LookupSource trait or lazy_lookups infrastructure')
+    ).
+
+%% R7: lazy_lmdb_lookup arm emitted in execute_foreign_predicate.
+test_r7_lazy_lmdb_lookup_handler_arm :-
+    Test = 'WAM-Rust R7: execute_foreign_predicate has lazy_lmdb_lookup arm',
+    (   wam_rust_target:compile_execute_foreign_predicate_to_rust(Code),
+        sub_string(Code, _, _, _, "\"lazy_lmdb_lookup\" => {"),
+        sub_string(Code, _, _, _, "lookup_key_for_atom(&key_atom)"),
+        sub_string(Code, _, _, _, "source.lookup_parents(key_int)"),
+        sub_string(Code, _, _, _, "source.atom_for_key(*vid)"),
+        sub_string(Code, _, _, _, "finish_foreign_results(&pred_key, vec![value_reg], results)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'execute_foreign_predicate is missing the lazy_lmdb_lookup arm or its key calls')
+    ).
+
+%% R7: native category_ancestor routes through edge_parents (lazy_lookups-aware).
+test_r7_native_category_ancestor_uses_edge_parents :-
+    Test = 'WAM-Rust R7: native category_ancestor uses edge_parents (not raw ffi_facts)',
+    (   wam_rust_target:compile_collect_native_category_ancestor_to_rust(Code),
+        sub_string(Code, _, _, _, "self.edge_parents(cat_id, edge_pred)"),
+        \+ sub_string(Code, _, _, _, "self.ffi_facts.get(edge_pred)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'collect_native_category_ancestor_hops still reads ffi_facts directly; should call edge_parents')
+    ).
+
 %% Regression: rust_val_literal must strip outer quotes from atom tokens
 %% so a Prolog source-level `'42'` (numeric-looking quoted atom) becomes
 %% Value::Atom("42") rather than Value::Atom("'42'").  The naive
@@ -1985,6 +2023,9 @@ run_tests :-
     test_native_wam_mixed_project,
     test_rust_wam_lib_imports_hashset,
     test_lowered_calls_detected_kernel_via_callforeign,
+    test_r7_lookupsource_trait_in_state_template,
+    test_r7_lazy_lmdb_lookup_handler_arm,
+    test_r7_native_category_ancestor_uses_edge_parents,
     test_lowered_quoted_numeric_atom_strips_quotes,
     test_lowered_unquoted_integer_stays_integer,
 
