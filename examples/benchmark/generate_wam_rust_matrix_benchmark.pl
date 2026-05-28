@@ -2,6 +2,7 @@
 
 :- use_module('../../src/unifyweaver/targets/wam_rust_target').
 :- use_module('../../src/unifyweaver/targets/prolog_target').
+:- use_module('../../src/unifyweaver/core/template_system', [render_template/3]).
 
 %% generate_wam_rust_matrix_benchmark.pl
 %%
@@ -80,22 +81,25 @@ parse_lmdb_crate(heed, [lmdb_crate(heed)]).
 % - lazy:  parent edges read on-demand via LookupSource trait + LMDB cursor.
 % - cached: not yet implemented (R8); errors here.
 % - auto: R7 returns eager; R8 will wire the cost-model resolver.
-parse_lmdb_materialisation(eager, eager, [lmdb_materialisation(eager)]).
-parse_lmdb_materialisation(auto,  eager, [lmdb_materialisation(eager)]).
-parse_lmdb_materialisation(lazy,  lazy,  [lmdb_materialisation(lazy)]).
-parse_lmdb_materialisation(cached, _, _) :-
-    format(user_error,
-        'Error: lmdb_materialisation(cached) not yet implemented (see Phase R8 in docs/design/WAM_LMDB_LAZY_IMPLEMENTATION_PLAN.md)~n', []),
-    halt(1).
+parse_lmdb_materialisation(eager,  eager,  [lmdb_materialisation(eager)]).
+parse_lmdb_materialisation(auto,   eager,  [lmdb_materialisation(eager)]).
+parse_lmdb_materialisation(lazy,   lazy,   [lmdb_materialisation(lazy)]).
+parse_lmdb_materialisation(cached, cached, [lmdb_materialisation(cached)]).
 
-% Lazy mode only makes sense when the LMDB is opened at runtime
-% (i.e., lmdb_mode == cursor). Without it there is no LmdbFactSource
-% for the LookupSource backend to wrap.
+% Lazy / cached modes only make sense when the LMDB is opened at
+% runtime (i.e., lmdb_mode == cursor). Without it there is no
+% LmdbFactSource for the LookupSource backend to wrap.
 validate_lmdb_materialisation_combo(eager, _).
 validate_lmdb_materialisation_combo(lazy, cursor) :- !.
 validate_lmdb_materialisation_combo(lazy, LmdbModeAtom) :-
     format(user_error,
         'Error: lmdb_materialisation(lazy) requires lmdb_mode(cursor); got lmdb_mode(~w)~n',
+        [LmdbModeAtom]),
+    halt(1).
+validate_lmdb_materialisation_combo(cached, cursor) :- !.
+validate_lmdb_materialisation_combo(cached, LmdbModeAtom) :-
+    format(user_error,
+        'Error: lmdb_materialisation(cached) requires lmdb_mode(cursor); got lmdb_mode(~w)~n',
         [LmdbModeAtom]),
     halt(1).
 
@@ -152,47 +156,77 @@ write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbMat
         close(Stream)
     ).
 
-% R7: for lmdb_materialisation(lazy), rewrite the eager-Vec build block
-% in the LMDB main template to use the LookupSource trait. The eager
-% template stays the source of truth — we string-substitute the
-% materialisation block + WAM kernel dispatch. R8 should replace this
-% post-process hack with a proper template-section / compiler-option.
+% R8a: for lmdb_materialisation(lazy|cached), render the
+% materialisation-mode-dispatched setup block from the mustache
+% template and splice it in place of the eager block in
+% `rust_main_template_lmdb`. The LazyCategoryParents struct (shared
+% by lazy and cached) is injected after the LmdbFactSource use
+% statement. Eager mode is a pass-through (the base template
+% already has the eager setup inline).
 apply_lmdb_materialisation_transform(eager, Code, Code).
 apply_lmdb_materialisation_transform(lazy, BaseCode, Code) :-
-    rewrite_eager_to_lazy(BaseCode, Code).
+    rewrite_for_lookup_source_mode(lazy, BaseCode, Code).
+apply_lmdb_materialisation_transform(cached, BaseCode, Code) :-
+    rewrite_for_lookup_source_mode(cached, BaseCode, Code).
 
-% --- R7 lazy-mode post-process rewrite ---
+% --- R8a lookup-source-mode rewrite (lazy + cached) ---
 %
-% Performs two textual edits to the rendered LMDB main.rs:
-%   1. Inject a `LazyCategoryParents` struct + LookupSource impl after
-%      the LmdbFactSource use-statement.
-%   2. Replace the eager runtime_category_parents Vec build (plus
-%      register_indexed_atom_fact2 + ffi_facts population +
-%      setup_foreign_predicates) with the lazy setup block that
-%      registers category_parent/2 as a foreign predicate dispatched
-%      via the "lazy_lmdb_lookup" handler.
-%
-% The generated lazy setup also patches the in-memory WAM Vec<Instruction>
-% in place: any CallIndexedAtomFact2("category_parent") is rewritten to
-% CallForeign("category_parent", 2). TODO(R8): replace this in-place
-% Vec rewrite with proper compiler-option support in wam_target.pl.
-rewrite_eager_to_lazy(BaseCode, Code) :-
-    inject_lazy_struct(BaseCode, Code1),
-    replace_eager_setup_block(Code1, Code).
+% Used by apply_lmdb_materialisation_transform for both lazy and
+% cached modes. Renders the materialisation-setup mustache template
+% with the appropriate {{case}} branch active, then splices it into
+% the rendered base main.rs at the eager-block anchors. Also injects
+% the LazyCategoryParents struct (shared between lazy and cached) at
+% module scope.
+rewrite_for_lookup_source_mode(Mode, BaseCode, Code) :-
+    materialisation_setup_dict(Mode, Dict),
+    materialisation_setup_template(SetupTemplate),
+    render_template(SetupTemplate, Dict, RenderedSetup),
+    lazy_struct_template(StructTemplate),
+    render_template(StructTemplate, [], RenderedStruct),
+    inject_lazy_struct(BaseCode, RenderedStruct, Code1),
+    replace_eager_setup_block(Code1, RenderedSetup, Code).
 
-inject_lazy_struct(Source, Result) :-
+% Build the Dict passed to render_template for the materialisation
+% setup template. Cache-capacity / shard defaults are R8a placeholders;
+% R8b's auto-resolver will compute these from /proc/meminfo.
+materialisation_setup_dict(Mode, [
+    materialisation = Mode,
+    cache_capacity_default = 1024,
+    cache_shards_default = 4
+]).
+
+% Locate + read the materialisation-setup mustache template.
+materialisation_setup_template(Code) :-
+    rust_wam_template_path('materialisation_setup.rs.mustache', Path),
+    read_file_to_string(Path, Code, []).
+
+% Locate + read the LazyCategoryParents struct mustache.
+lazy_struct_template(Code) :-
+    rust_wam_template_path('lazy_category_parents.rs.mustache', Path),
+    read_file_to_string(Path, Code, []).
+
+% Compute the absolute path of a template under templates/targets/rust_wam/.
+% Mirrors the F# pattern (`fsharp_*_template_source/1`): walk up from
+% this source file to project root, append the templates/ path.
+rust_wam_template_path(Filename, Path) :-
+    source_file(rust_wam_template_path(_, _), SrcFile),
+    file_directory_name(SrcFile, BenchDir),         % examples/benchmark/
+    file_directory_name(BenchDir, ExamplesDir),     % examples/
+    file_directory_name(ExamplesDir, ProjectRoot),  % project root
+    atomic_list_concat([ProjectRoot,
+                        '/templates/targets/rust_wam/', Filename], Path).
+
+inject_lazy_struct(Source, RenderedStruct, Result) :-
     StructAnchor = "use wam_rust_matrix_bench::lmdb_fact_source::LmdbFactSource;",
-    lazy_struct_definition(StructCode),
     find_and_split_once(Source, StructAnchor, Prefix, Suffix),
-    atomics_to_string([Prefix, StructAnchor, StructCode, Suffix], Result).
+    atomics_to_string([Prefix, StructAnchor, "\n", RenderedStruct, Suffix], Result).
 
-replace_eager_setup_block(Source, Result) :-
+replace_eager_setup_block(Source, RenderedSetup, Result) :-
     BlockStart = "    // Build runtime_category_parents",
     BlockEnd = "    setup_foreign_predicates(&mut vm);",
-    lazy_setup_block(Replacement),
     find_and_split_once(Source, BlockStart, Prefix, MidPlusEnd),
     find_and_split_once(MidPlusEnd, BlockEnd, _DiscardedMid, Suffix),
-    atomics_to_string([Prefix, Replacement, Suffix], Result).
+    atomics_to_string([Prefix, RenderedSetup, Suffix], Result).
 
 % First-match deterministic split: Source = Prefix ++ Needle ++ Suffix.
 find_and_split_once(Source, Needle, Prefix, Suffix) :-
@@ -201,15 +235,10 @@ find_and_split_once(Source, Needle, Prefix, Suffix) :-
         string_concat(Needle, Suffix, Rest)
     )).
 
-% Rust source for the LazyCategoryParents struct + LookupSource impl.
-% Inserted right after `use ... LmdbFactSource;`. Uses the fully-qualified
-% trait path so we don't need to also edit the use-statements block.
-lazy_struct_definition(Code) :-
-    Code = "\n\n// R7 lazy-mode wrapper: bundles LmdbFactSource with the\n// s2i/i2s atom intern maps so the kernel can call into a single\n// LookupSource for category_parent/2.\nstruct LazyCategoryParents {\n    source: LmdbFactSource,\n    s2i: HashMap<String, i32>,\n    i2s: HashMap<i32, String>,\n}\n\nimpl wam_rust_matrix_bench::state::LookupSource for LazyCategoryParents {\n    fn lookup_key_for_atom(&self, atom: &str) -> Option<i32> {\n        self.s2i.get(atom).copied()\n    }\n    fn lookup_parents(&self, key: i32) -> Vec<i32> {\n        self.source.lookup_parents(key).unwrap_or_default()\n    }\n    fn atom_for_key(&self, key: i32) -> Option<String> {\n        self.i2s.get(&key).cloned()\n    }\n}\n".
-
-% Replacement for the eager-Vec build + register/ffi_facts/setup block.
-lazy_setup_block(Code) :-
-    Code = "    // R7 lazy: skip the eager runtime_category_parents Vec build.\n    // The kernel reads parent edges on-demand via the LookupSource\n    // trait. Materialisation cost drops from O(demand_set_edges) to\n    // O(1) at setup time; per-call cost shifts to the kernel.\n    // The eager path only loads i2s (it translates ints to strings\n    // when building the Vec). Lazy needs s2i too to translate the\n    // kernel's atom A1 to the LMDB int key.\n    let s2i = lmdb.load_s2i().expect(\"load_s2i\");\n    let load_ms = started.elapsed().as_millis();\n\n    let (mut code, mut labels) = shared_wam_program();\n    // R7 lazy: rewrite category_parent dispatch from CallIndexedAtomFact2\n    // to CallForeign so it lands in the \"lazy_lmdb_lookup\" handler.\n    // TODO(R8): move this rewrite into the WAM compiler via a proper\n    // option, instead of patching the emitted Vec<Instruction> here.\n    for instr in code.iter_mut() {\n        if let Instruction::CallIndexedAtomFact2(pred) = instr {\n            if pred == \"category_parent\" {\n                *instr = Instruction::CallForeign(\"category_parent\".to_string(), 2);\n            }\n        }\n    }\n    resolve_targets(&mut code, &labels);\n\n    let mut vm = WamState::new(code, labels);\n    // Register category_parent/2 as a foreign predicate backed by the\n    // LookupSource trait wrapping LmdbFactSource.\n    let lazy_source = std::sync::Arc::new(LazyCategoryParents {\n        source: lmdb.clone(),\n        s2i: s2i.clone(),\n        i2s: i2s.clone(),\n    });\n    vm.register_lazy_lookup(\"category_parent/2\", lazy_source);\n    vm.register_foreign_predicate(\"category_parent/2\");\n    vm.register_foreign_native_kind(\"category_parent/2\", \"lazy_lmdb_lookup\");\n    vm.register_foreign_result_layout(\"category_parent/2\", \"tuple:1\");\n    vm.register_foreign_result_mode(\"category_parent/2\", \"stream\");\n    // Pre-intern every atom the kernel might produce. Mirrors what the\n    // eager path does implicitly via ffi_facts population.\n    for cat in s2i.keys() {\n        vm.intern_atom(cat);\n    }\n    setup_foreign_predicates(&mut vm);".
+% (R7's inline lazy_struct_definition/1 and lazy_setup_block/1 were
+% retired in R8a — their content now lives in
+% templates/targets/rust_wam/{lazy_category_parents,materialisation_setup}.rs.mustache
+% and is rendered via the template_system.)
 
 rust_main_template('use std::collections::{HashMap, HashSet};
 use std::fs::File;

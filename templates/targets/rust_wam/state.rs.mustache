@@ -2,7 +2,7 @@
 // Date: {{date}}
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use crate::value::Value;
 use crate::instructions::Instruction;
 
@@ -25,6 +25,97 @@ pub trait LookupSource: Send + Sync {
     /// `None` means the int has no reverse-intern entry, which the
     /// handler skips silently.
     fn atom_for_key(&self, key: i32) -> Option<String>;
+}
+
+/// R8: Decorator over any `LookupSource` that adds a bounded
+/// per-key result cache. Implements `LookupSource` itself so the
+/// kernel can't tell whether it's hitting a cache or the underlying
+/// source. Mirrors Haskell's `lmdbCachedEdgeLookup` from
+/// `lmdb_fact_source.hs.mustache`.
+///
+/// Implementation: sharded `Mutex<HashMap>` with per-shard FIFO
+/// eviction once `cap_per_shard` is reached. FIFO (rather than LRU)
+/// keeps the hot path lock-free of LRU bookkeeping; for our
+/// read-only graph workload the value-correctness contract is
+/// preserved either way (any miss falls through to the inner source).
+///
+/// Atom-side methods (`lookup_key_for_atom`, `atom_for_key`) are
+/// passthrough — only `lookup_parents` is cached, which is the
+/// expensive cursor-seek operation.
+pub struct CachedLookup<S: LookupSource> {
+    inner: S,
+    shards: Vec<Mutex<CacheShard>>,
+    cap_per_shard: usize,
+}
+
+struct CacheShard {
+    map: HashMap<i32, Vec<i32>>,
+    /// Insertion order, for FIFO eviction once the shard hits cap.
+    order: Vec<i32>,
+}
+
+impl<S: LookupSource> CachedLookup<S> {
+    /// Build a cached wrapper. `capacity` is the total cache size in
+    /// entries (distributed evenly across shards). `num_shards` should
+    /// be ≥1; a sensible default is the number of available threads.
+    pub fn new(inner: S, capacity: usize, num_shards: usize) -> Self {
+        let num_shards = num_shards.max(1);
+        let cap_per_shard = (capacity / num_shards).max(1);
+        let shards = (0..num_shards)
+            .map(|_| Mutex::new(CacheShard {
+                map: HashMap::with_capacity(cap_per_shard),
+                order: Vec::with_capacity(cap_per_shard),
+            }))
+            .collect();
+        CachedLookup { inner, shards, cap_per_shard }
+    }
+
+    #[inline]
+    fn shard_for(&self, key: i32) -> &Mutex<CacheShard> {
+        let idx = (key as u32 as usize) % self.shards.len();
+        &self.shards[idx]
+    }
+}
+
+impl<S: LookupSource> LookupSource for CachedLookup<S> {
+    fn lookup_key_for_atom(&self, atom: &str) -> Option<i32> {
+        self.inner.lookup_key_for_atom(atom)
+    }
+
+    fn lookup_parents(&self, key: i32) -> Vec<i32> {
+        // Fast path: cache hit. Clone the cached Vec under the lock and
+        // return it. (Vec<i32> clones are cheap — ~2-3 ints per key on
+        // average for our graph workload.)
+        {
+            let shard = self.shard_for(key).lock().unwrap();
+            if let Some(vs) = shard.map.get(&key) {
+                return vs.clone();
+            }
+        }
+        // Slow path: cache miss. Fetch from inner without holding the
+        // shard lock (the cursor read may take µs and we don't want to
+        // serialise other shards on it).
+        let vs = self.inner.lookup_parents(key);
+        // Re-acquire, insert with FIFO eviction if at cap.
+        {
+            let mut shard = self.shard_for(key).lock().unwrap();
+            if !shard.map.contains_key(&key) {
+                if shard.map.len() >= self.cap_per_shard {
+                    if let Some(evict_key) = shard.order.first().copied() {
+                        shard.order.remove(0);
+                        shard.map.remove(&evict_key);
+                    }
+                }
+                shard.map.insert(key, vs.clone());
+                shard.order.push(key);
+            }
+        }
+        vs
+    }
+
+    fn atom_for_key(&self, key: i32) -> Option<String> {
+        self.inner.atom_for_key(key)
+    }
 }
 
 /// Trail entry: records the old value of a register before mutation.
