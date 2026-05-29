@@ -928,11 +928,38 @@
                                                   (subvec indexed-items (inc idx))))}})
           (range (count indexed-items)))))
 
-(defn apply-select-solution [base-state resume-pc list-value]
-  (if-let [items (proper-list-items base-state list-value)]
-    (apply-first-foreign-solution base-state resume-pc
-                                  (select-solution-results base-state items))
-    (backtrack base-state)))
+(defn select-insert-results [state elem rest-items]
+  (let [ctx (:intern-context state)
+        indexed-rest (vec rest-items)]
+    (mapv (fn [idx]
+            {:bindings {2 (list->term ctx (concat (subvec indexed-rest 0 idx)
+                                                  [elem]
+                                                  (subvec indexed-rest idx)))}})
+          (range (inc (count indexed-rest))))))
+
+(defn apply-select-solution [base-state resume-pc]
+  (let [elem (deref-value (:bindings base-state)
+                          (or (reg-get-raw base-state "A1") ::unbound))
+        list-value (deref-value (:bindings base-state)
+                                (or (reg-get-raw base-state "A2") ::unbound))
+        rest-value (deref-value (:bindings base-state)
+                                (or (reg-get-raw base-state "A3") ::unbound))
+        list-items (proper-list-items base-state list-value)
+        rest-items (proper-list-items base-state rest-value)]
+    (cond
+      (some? list-items)
+      (apply-first-foreign-solution base-state resume-pc
+                                    (select-solution-results base-state list-items))
+
+      (and (logic-var? list-value)
+           (not (logic-var? elem))
+           (not= elem ::unbound)
+           (some? rest-items))
+      (apply-first-foreign-solution base-state resume-pc
+                                    (select-insert-results base-state elem rest-items))
+
+      :else
+      (backtrack base-state))))
 
 (defn numlist-int-value [state value]
   (cond
@@ -2290,9 +2317,7 @@
           (apply-nth1-solution state (inc (:pc state)))
 
           "select/3"
-          (let [list-value (deref-value (:bindings state)
-                                        (or (reg-get-raw state "A2") ::unbound))]
-            (apply-select-solution state (inc (:pc state)) list-value))
+          (apply-select-solution state (inc (:pc state)))
 
           "numlist/3"
           (apply-numlist-solution state)

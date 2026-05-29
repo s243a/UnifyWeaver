@@ -811,9 +811,7 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "select/3" ; Op == 'select/3'),
     !,
-    format(atom(Expr),
-           '(let [list-value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound))] (runtime/apply-select-solution ~w (inc (:pc ~w)) list-value))',
-           [S, S, S, S]).
+    format(atom(Expr), '(runtime/apply-select-solution ~w (inc (:pc ~w)))', [S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "numlist/3" ; Op == 'numlist/3'),
