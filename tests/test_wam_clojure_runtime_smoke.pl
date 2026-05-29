@@ -358,7 +358,7 @@ user:wam_nth1_unbound_list(X) :- user:wam_unbound_arg(L), nth1(1, L, X).
 user:wam_select_guard(Elem, List, Rest) :- select(Elem, List, Rest).
 user:wam_select_backtrack(Elem, Rest) :- select(Elem, [a,b,c], Rest), Elem = b.
 user:wam_select_bad_list(Rest) :- select(a, [a|b], Rest).
-user:wam_select_unbound_list(Rest) :- user:wam_unbound_arg(L), select(a, L, Rest).
+user:wam_select_unbound_list(Rest) :- select(a, L, Rest), is_list(L).
 user:wam_numlist_guard(Low, High, List) :- numlist(Low, High, List).
 user:wam_numlist_high_before_low(List) :- numlist(3, 1, List).
 user:wam_numlist_unbound_low(List) :- numlist(Low, 3, List), integer(Low).
@@ -994,7 +994,7 @@ smoke_cases([
     case('wam_select_guard/3', args(a, '[a,b,c]', '[a,c]'), "false"),
     case('wam_select_backtrack/2', args(b, '[a,c]'), "true"),
     case('wam_select_bad_list/1', '[b,c]', "false"),
-    case('wam_select_unbound_list/1', '[b,c]', "false"),
+    case('wam_select_unbound_list/1', '[b,c]', "true"),
     case('wam_numlist_guard/3', args(1, 3, '[1,2,3]'), "true"),
     case('wam_numlist_guard/3', args(2, 2, '[2]'), "true"),
     case('wam_numlist_guard/3', args(1, 3, '[1,3]'), "false"),
