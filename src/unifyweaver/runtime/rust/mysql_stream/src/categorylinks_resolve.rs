@@ -265,6 +265,9 @@ fn field_i64(field: &Field) -> Option<i64> {
     match field {
         Field::Int(value) => Some(*value),
         Field::Str(bytes) => std::str::from_utf8(bytes).ok()?.parse().ok(),
+        // Float columns (e.g. page_random) are never ID columns in the
+        // tables we care about; treat as unrepresentable.
+        Field::Float(_) => None,
         Field::Null => None,
     }
 }

@@ -42,6 +42,7 @@ fn tsv_escape_bytes(bytes: &[u8], out: &mut Vec<u8>) {
 fn write_field<W: Write>(out: &mut W, f: &Field) -> io::Result<()> {
     match f {
         Field::Int(n) => write!(out, "{}", n),
+        Field::Float(x) => write!(out, "{}", x),
         Field::Str(bytes) => {
             let mut buf = Vec::with_capacity(bytes.len());
             tsv_escape_bytes(bytes, &mut buf);
