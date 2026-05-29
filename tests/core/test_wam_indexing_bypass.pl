@@ -70,6 +70,7 @@
 % -----
 %   swipl -q -g run_tests -t halt tests/core/test_wam_indexing_bypass.pl
 
+:- use_module('../helpers/smoke_paths', [tmp_root/1, clean_dir/1]).
 :- use_module(library(filesex), [directory_file_path/3, make_directory_path/1]).
 :- use_module(library(process)).
 :- use_module(library(readutil)).
@@ -107,23 +108,9 @@ tool_runs(Tool, Args) :-
 dotnet_available  :- tool_runs(dotnet,  ['--version']).
 python_available  :- tool_runs(python3, ['--version']).
 
-tmp_root(Root) :-
-    (   getenv('TMPDIR', R0), R0 \== ''
-    ->  Root = R0
-    ;   Root = '/tmp'
-    ).
-
 bypass_root(Dir) :-
     tmp_root(Root),
     directory_file_path(Root, 'uw_wam_indexing_bypass', Dir).
-
-clean_dir(Dir) :-
-    (   exists_directory(Dir)
-    ->  process_create(path(rm), ['-rf', Dir],
-            [stdout(null), stderr(null), process(Pid)]),
-        process_wait(Pid, _)
-    ;   true
-    ).
 
 keep_dirs :- catch(getenv('WAM_BYPASS_KEEP', '1'), _, fail), !.
 keep_dirs :- fail.

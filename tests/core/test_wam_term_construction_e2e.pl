@@ -29,6 +29,7 @@
 
 :- use_module('../../src/unifyweaver/targets/wam_target').
 :- use_module('../../src/unifyweaver/targets/wam_haskell_target').
+:- use_module('../helpers/smoke_paths', [tmp_root/1, clean_dir/1]).
 :- use_module(library(filesex), [directory_file_path/3, make_directory_path/1]).
 :- use_module(library(process)).
 :- use_module(library(readutil)).
@@ -66,11 +67,7 @@ cabal_available :- tool_runs(cabal, ['--version']).
 %% Paths
 %% ========================================================================
 
-tmp_root(Root) :-
-    (   getenv('TMPDIR', R0), R0 \== ''
-    ->  Root = R0
-    ;   Root = '/tmp'
-    ).
+% tmp_root/1 imported from helpers/smoke_paths (cross-platform).
 
 build_dir(Dir) :-
     tmp_root(Root),
@@ -251,12 +248,7 @@ keep_or_clean(Dir) :-
     ;   true   % leave for the second test to read; cleanup at the end
     ).
 
-cleanup_build_dir(Dir) :-
-    (   exists_directory(Dir)
-    ->  process_create(path(rm), ['-rf', Dir], [process(Pid)]),
-        process_wait(Pid, _)
-    ;   true
-    ).
+cleanup_build_dir(Dir) :- clean_dir(Dir).
 
 %% ========================================================================
 %% Runner

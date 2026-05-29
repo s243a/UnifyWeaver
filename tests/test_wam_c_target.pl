@@ -4,6 +4,7 @@
 
 :- use_module('../src/unifyweaver/targets/wam_c_target').
 :- use_module('../src/unifyweaver/targets/wam_target').
+:- use_module('helpers/smoke_paths', [tmp_root/1]).
 :- use_module(library(filesex), [directory_file_path/3]).
 :- use_module(library(readutil), [read_file_to_string/3]).
 
@@ -17,14 +18,9 @@ fail_test(Test, Reason) :-
     format('[FAIL] ~w: ~w~n', [Test, Reason]),
     (   test_failed -> true ; assert(test_failed) ).
 
-wam_c_temp_root(Root) :-
-    (   getenv('TMPDIR', EnvRoot),
-        EnvRoot \= ''
-    ->  Root = EnvRoot
-    ;   exists_directory('/data/data/com.termux/files/usr/tmp')
-    ->  Root = '/data/data/com.termux/files/usr/tmp'
-    ;   Root = '/tmp'
-    ).
+% Delegate to the shared smoke_paths helper so this test works on
+% native Windows (no /tmp) and Termux (writable /data/data/.../tmp).
+wam_c_temp_root(Root) :- tmp_root(Root).
 
 wam_c_temp_path(Prefix, Stamp, Path) :-
     wam_c_temp_root(Root),
