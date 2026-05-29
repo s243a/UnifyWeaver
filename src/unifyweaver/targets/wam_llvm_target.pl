@@ -2600,8 +2600,28 @@ wam_llvm_case('set_variable',
 wam_llvm_case('set_value',
 '  ; set_value: op1 = Xn register index
   ; Write Xn value into the compound args array via WriteCtx.
+  ; M10: if Xn is a direct Unbound (no backing heap cell -- usually
+  ; because get_variable copied a direct-Unbound input arg verbatim),
+  ; promote it to a fresh Ref-into-heap and update Xn so subsequent
+  ; uses see the same Ref. Without this, the compound arg holds a
+  ; direct Unbound that no unification path can bind back through.
   %sve.xn = trunc i64 %op1 to i32
   %sve.val = call %Value @wam_get_reg(%WamState* %vm, i32 %sve.xn)
+  %sve.tag = extractvalue %Value %sve.val, 0
+  %sve.is_unb = icmp eq i32 %sve.tag, 6
+  br i1 %sve.is_unb, label %sve.promote, label %sve.write
+
+sve.promote:
+  %sve.unb = call %Value @value_unbound(i8* null)
+  %sve.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %sve.unb)
+  %sve.ref = call %Value @value_ref(i32 %sve.addr)
+  call void @wam_trail_binding(%WamState* %vm, i32 %sve.xn)
+  call void @wam_set_reg(%WamState* %vm, i32 %sve.xn, %Value %sve.ref)
+  call void @wam_write_ctx_set_arg(%WamState* %vm, %Value %sve.ref)
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i1 true
+
+sve.write:
   call void @wam_write_ctx_set_arg(%WamState* %vm, %Value %sve.val)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
@@ -3271,6 +3291,7 @@ entry:
     i32 27, label %builtin_arg
     i32 28, label %builtin_univ
     i32 29, label %builtin_copy_term
+    i32 30, label %builtin_msort
   ]
 
 builtin_is:
@@ -4029,6 +4050,30 @@ ct.a2_check:
   %ct.a2_eq = call i1 @value_equals(%Value %ct.a2, %Value %ct.copy)
   ret i1 %ct.a2_eq
 
+builtin_msort:
+  ; M10: msort/2 -- A1 = input list (Compound [|]/2 chain), A2 = output.
+  ; Calls @wam_msort_list which walks the input, collects into an
+  ; arena buffer, in-place insertion sorts by (tag, payload), then
+  ; rebuilds a [|]/2 chain on the arena. A2 is bound (through any
+  ; aliased Ref) to the new list head.
+  %ms.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ms.result = call %Value @wam_msort_list(%WamState* %vm, %Value %ms.a1)
+  %ms.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %ms.a2_unb = call i1 @value_is_unbound(%Value %ms.a2)
+  br i1 %ms.a2_unb, label %ms.bind, label %ms.check
+
+ms.bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %ms.result)
+  ret i1 true
+
+ms.check:
+  ; A2 was already bound -- structurally compare via wam_unify_value
+  ; so list-of-ints `[1,2,3] = msort([3,1,2], _)` succeeds.
+  %ms.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %ms.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %ms.raw2, %Value %ms.result)
+  ret i1 %ms.ok
+
 unknown:
   ret i1 false
 }'.
@@ -4596,6 +4641,7 @@ builtin_op_to_id('functor/3', 26).
 builtin_op_to_id('arg/3', 27).
 builtin_op_to_id('=../2', 28).
 builtin_op_to_id('copy_term/2', 29).
+builtin_op_to_id('msort/2', 30).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================

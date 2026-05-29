@@ -94,6 +94,41 @@ test_mem_second(_, R) :- L = [11, 22, 33], my_mem(22, L), R = 22.
 :- dynamic test_mem_third/2.
 test_mem_third(_, R) :- L = [11, 22, 33], my_mem(33, L), R = 33.
 
+% M10: msort/2 builtin -- sort a list of integers, return the head.
+% The trailing `R is X` forces the result into A1 so the run_test_r0
+% driver (which reads reg 0) sees the value.
+:- dynamic test_msort_head/2.
+test_msort_head(_, R) :-
+    msort([33, 11, 22], Sorted),
+    Sorted = [X|_],
+    R is X.
+
+:- dynamic test_msort_second/2.
+test_msort_second(_, R) :-
+    msort([33, 11, 22], Sorted),
+    Sorted = [_, X|_],
+    R is X.
+
+:- dynamic test_msort_third/2.
+test_msort_third(_, R) :-
+    msort([33, 11, 22], Sorted),
+    Sorted = [_, _, X],
+    R is X.
+
+% Idempotent on a single element.
+:- dynamic test_msort_one/2.
+test_msort_one(_, R) :-
+    msort([42], Sorted),
+    Sorted = [X],
+    R is X.
+
+% msort preserves duplicates (unlike sort/2): expect [1, 1, 2, 3, 3].
+:- dynamic test_msort_dups/2.
+test_msort_dups(_, R) :-
+    msort([3, 1, 3, 2, 1], Sorted),
+    Sorted = [_, X|_],
+    R is X.
+
 run_test(Label, PredAtom, InputVal, Expected) :-
     format('  ~w: ', [Label]),
     clear_llvm_foreign_kernel_specs,
@@ -207,8 +242,15 @@ entry:
   %ok = call i1 @run_loop(%WamState* %vm)
   br i1 %ok, label %hit, label %miss
 hit:
-  %r = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
-  %r32 = trunc i64 %r to i32
+  ; M10: deref reg 0 before reading the payload. get_variable now
+  ; promotes a direct-Unbound input Ai to a Ref-into-heap so callees
+  ; can bind through it; once is/2 binds, reg 0 is a Ref whose
+  ; payload is the heap address, NOT the result value. Deref-then-
+  ; payload gets the actual integer the test expects.
+  %r_raw = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %r_d = call %Value @wam_deref_value(%WamState* %vm, %Value %r_raw)
+  %r_pay = extractvalue %Value %r_d, 1
+  %r32 = trunc i64 %r_pay to i32
   ret i32 %r32
 miss:
   ret i32 255
@@ -265,6 +307,12 @@ test_all :-
        run_test_r0('mem_first [11,22,33] -> 11', test_mem_first + [my_mem/2], 0, 11),
        run_test_r0('mem_second [11,22,33] -> 22', test_mem_second + [my_mem/2], 0, 22),
        run_test_r0('mem_third [11,22,33] -> 33', test_mem_third + [my_mem/2], 0, 33),
+       format('--- M10 msort/2 builtin ---~n'),
+       run_test_r0('msort_head [33,11,22] -> 11', test_msort_head, 0, 11),
+       run_test_r0('msort_second [33,11,22] -> 22', test_msort_second, 0, 22),
+       run_test_r0('msort_third [33,11,22] -> 33', test_msort_third, 0, 33),
+       run_test_r0('msort_one [42] -> 42', test_msort_one, 0, 42),
+       run_test_r0('msort_dups [3,1,3,2,1] -> 1', test_msort_dups, 0, 1),
        format('--- multi-clause (first-arg indexing) ---~n'),
        run_test('choice(1) = 10', test_choice, 1, 10),
        run_test('choice(2) = 20', test_choice, 2, 20),

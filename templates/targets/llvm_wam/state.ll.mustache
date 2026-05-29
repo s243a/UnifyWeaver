@@ -1564,6 +1564,160 @@ default_case:
   ret %Value %d_final
 }
 
+; M10: msort/2 runtime helper. Walks the input list (a [|]/2 Compound
+; chain terminated by the `[]` Atom), copies elements into an arena
+; buffer, sorts in place with insertion sort, and rebuilds a [|]/2
+; Compound chain of the same length. Comparator: (tag, payload)
+; lexicographic so ints/atoms/floats all order consistently and
+; distinct tags sort apart. Compound vs compound currently compares
+; only the payload (the pointer) -- good enough for the typical
+; "sort a flat list of ints" case; structural ordering is M11 work.
+; Returns the new list's head Value (Compound, or the [] Atom when
+; the input is empty).
+define %Value @wam_msort_list(%WamState* %vm, %Value %head_in) inlinehint nounwind {
+entry:
+  call void @wam_arena_ensure()
+  ; ---- Pass 1: count elements ----
+  br label %count_loop
+count_loop:
+  %cnt_cur = phi %Value [ %head_in, %entry ], [ %cnt_next, %cnt_step ]
+  %cnt_n = phi i32 [ 0, %entry ], [ %cnt_n1, %cnt_step ]
+  %cnt_d = call %Value @wam_deref_value(%WamState* %vm, %Value %cnt_cur)
+  %cnt_tag = extractvalue %Value %cnt_d, 0
+  %cnt_is_cmp = icmp eq i32 %cnt_tag, 3
+  br i1 %cnt_is_cmp, label %cnt_step, label %cnt_done
+cnt_step:
+  %cnt_cp_bits = extractvalue %Value %cnt_d, 1
+  %cnt_cp = inttoptr i64 %cnt_cp_bits to %Compound*
+  %cnt_args_slot = getelementptr %Compound, %Compound* %cnt_cp, i32 0, i32 2
+  %cnt_args = load %Value*, %Value** %cnt_args_slot
+  %cnt_tail_ptr = getelementptr %Value, %Value* %cnt_args, i32 1
+  %cnt_next = load %Value, %Value* %cnt_tail_ptr
+  %cnt_n1 = add i32 %cnt_n, 1
+  br label %count_loop
+cnt_done:
+  ; If the input was empty (only the [] atom), return it unchanged.
+  %is_empty = icmp eq i32 %cnt_n, 0
+  br i1 %is_empty, label %ret_empty, label %alloc_buf
+ret_empty:
+  ret %Value %cnt_d
+
+  ; ---- Allocate buffer of N Values ----
+alloc_buf:
+  %n64 = zext i32 %cnt_n to i64
+  %buf_bytes = shl i64 %n64, 4
+  %buf_mem = call i8* @wam_arena_alloc(i64 %buf_bytes)
+  %buf = bitcast i8* %buf_mem to %Value*
+
+  ; ---- Pass 2: copy elements into buffer ----
+  br label %copy_loop
+copy_loop:
+  %cp_cur = phi %Value [ %head_in, %alloc_buf ], [ %cp_next, %cp_step ]
+  %cp_i = phi i32 [ 0, %alloc_buf ], [ %cp_i1, %cp_step ]
+  %cp_d = call %Value @wam_deref_value(%WamState* %vm, %Value %cp_cur)
+  %cp_tag = extractvalue %Value %cp_d, 0
+  %cp_is_cmp = icmp eq i32 %cp_tag, 3
+  br i1 %cp_is_cmp, label %cp_step, label %sort_init
+cp_step:
+  %cp_cp_bits = extractvalue %Value %cp_d, 1
+  %cp_cp = inttoptr i64 %cp_cp_bits to %Compound*
+  %cp_args_slot = getelementptr %Compound, %Compound* %cp_cp, i32 0, i32 2
+  %cp_args = load %Value*, %Value** %cp_args_slot
+  %cp_h_ptr = getelementptr %Value, %Value* %cp_args, i32 0
+  %cp_h = load %Value, %Value* %cp_h_ptr
+  ; Deref the head so the buffer stores the underlying value, not a
+  ; Ref into the input -- sorting by tag/payload needs the actual data.
+  %cp_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %cp_h)
+  %cp_slot = getelementptr %Value, %Value* %buf, i32 %cp_i
+  store %Value %cp_h_d, %Value* %cp_slot
+  %cp_tail_ptr = getelementptr %Value, %Value* %cp_args, i32 1
+  %cp_next = load %Value, %Value* %cp_tail_ptr
+  %cp_i1 = add i32 %cp_i, 1
+  br label %copy_loop
+
+  ; ---- Insertion sort over buf[0..cnt_n) ----
+sort_init:
+  br label %sort_outer
+sort_outer:
+  %so_i = phi i32 [ 1, %sort_init ], [ %so_i1, %sort_done_inner ]
+  %so_more = icmp slt i32 %so_i, %cnt_n
+  br i1 %so_more, label %sort_pick, label %build_init
+sort_pick:
+  %so_key_ptr = getelementptr %Value, %Value* %buf, i32 %so_i
+  %so_key = load %Value, %Value* %so_key_ptr
+  %so_key_tag = extractvalue %Value %so_key, 0
+  %so_key_pay = extractvalue %Value %so_key, 1
+  br label %sort_inner
+sort_inner:
+  %si_j = phi i32 [ %so_i, %sort_pick ], [ %si_j_dec, %si_shift ]
+  %si_j_dec = sub i32 %si_j, 1
+  %si_j_pos = icmp sge i32 %si_j_dec, 0
+  br i1 %si_j_pos, label %si_cmp, label %si_done
+si_cmp:
+  %si_left_ptr = getelementptr %Value, %Value* %buf, i32 %si_j_dec
+  %si_left = load %Value, %Value* %si_left_ptr
+  %si_left_tag = extractvalue %Value %si_left, 0
+  %si_left_pay = extractvalue %Value %si_left, 1
+  ; Compare by (tag, payload). If left_tag > key_tag, shift; if equal,
+  ; compare payloads (signed for ints/etc, raw for pointers -- both
+  ; fine for "consistent ordering").
+  %tag_gt = icmp sgt i32 %si_left_tag, %so_key_tag
+  %tag_eq = icmp eq i32 %si_left_tag, %so_key_tag
+  %pay_gt = icmp sgt i64 %si_left_pay, %so_key_pay
+  %pay_gt_when_eq = and i1 %tag_eq, %pay_gt
+  %should_shift = or i1 %tag_gt, %pay_gt_when_eq
+  br i1 %should_shift, label %si_shift, label %si_done
+si_shift:
+  %si_dst_ptr = getelementptr %Value, %Value* %buf, i32 %si_j
+  store %Value %si_left, %Value* %si_dst_ptr
+  br label %sort_inner
+si_done:
+  %si_dst2_ptr = getelementptr %Value, %Value* %buf, i32 %si_j
+  store %Value %so_key, %Value* %si_dst2_ptr
+  br label %sort_done_inner
+sort_done_inner:
+  %so_i1 = add i32 %so_i, 1
+  br label %sort_outer
+
+  ; ---- Build output [|]/2 chain from buf[n-1] down to buf[0] ----
+build_init:
+  %empty_id = load i64, i64* @wam_empty_list_atom_id
+  %empty_v0 = insertvalue %Value undef, i32 0, 0
+  %empty_v  = insertvalue %Value %empty_v0, i64 %empty_id, 1
+  br label %build_loop
+build_loop:
+  %bi = phi i32 [ %cnt_n, %build_init ], [ %bi_prev, %build_step ]
+  %btail = phi %Value [ %empty_v, %build_init ], [ %new_cons, %build_step ]
+  %bi_done = icmp sle i32 %bi, 0
+  br i1 %bi_done, label %build_finish, label %build_step
+build_step:
+  %bi_prev = sub i32 %bi, 1
+  %b_head_ptr = getelementptr %Value, %Value* %buf, i32 %bi_prev
+  %b_head = load %Value, %Value* %b_head_ptr
+  %b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %b_cp_mem = call i8* @wam_arena_alloc(i64 %b_cp_size)
+  %b_cp = bitcast i8* %b_cp_mem to %Compound*
+  %b_fn_slot = getelementptr %Compound, %Compound* %b_cp, i32 0, i32 0
+  %b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %b_fn_ptr, i8** %b_fn_slot
+  %b_ar_slot = getelementptr %Compound, %Compound* %b_cp, i32 0, i32 1
+  store i32 2, i32* %b_ar_slot
+  %b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %b_args = bitcast i8* %b_args_mem to %Value*
+  %b_args_slot = getelementptr %Compound, %Compound* %b_cp, i32 0, i32 2
+  store %Value* %b_args, %Value** %b_args_slot
+  %b_a0 = getelementptr %Value, %Value* %b_args, i32 0
+  store %Value %b_head, %Value* %b_a0
+  %b_a1 = getelementptr %Value, %Value* %b_args, i32 1
+  store %Value %btail, %Value* %b_a1
+  %b_cp_i64 = ptrtoint %Compound* %b_cp to i64
+  %nc0 = insertvalue %Value undef, i32 3, 0
+  %new_cons = insertvalue %Value %nc0, i64 %b_cp_i64, 1
+  br label %build_loop
+build_finish:
+  ret %Value %btail
+}
+
 ; Update the agg_return_pc of the nearest aggregate-frame CP.
 define void @wam_update_agg_return_pc(%WamState* %vm, i32 %return_pc) {
 entry:
