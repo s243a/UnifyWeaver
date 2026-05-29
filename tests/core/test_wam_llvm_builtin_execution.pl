@@ -146,6 +146,133 @@ test_setof_count(_, R) :-
     length(Cs, N),
     R is N.
 
+% M11: findall over a Compound template. Pre-M11, end_aggregate
+% only dereferenced atomic values; Compound entries shared args
+% pointers that pointed into the per-iteration heap region, so
+% every accumulated entry collapsed to the LAST iteration's values
+% after backtrack rewound the heap. wam_freeze_value now deep-
+% copies the Compound's args onto the arena so each entry is
+% self-contained.
+:- dynamic pair/2.
+pair(1, 10).
+pair(2, 20).
+pair(3, 30).
+
+:- dynamic test_findall_pair_first_key/2.
+test_findall_pair_first_key(_, R) :-
+    findall(K-V, pair(K, V), Pairs),
+    Pairs = [K1-_|_],
+    R is K1.
+
+:- dynamic test_findall_pair_first_val/2.
+test_findall_pair_first_val(_, R) :-
+    findall(K-V, pair(K, V), Pairs),
+    Pairs = [_-V1|_],
+    R is V1.
+
+:- dynamic test_findall_pair_last_key/2.
+test_findall_pair_last_key(_, R) :-
+    findall(K-V, pair(K, V), Pairs),
+    Pairs = [_, _, K3-_],
+    R is K3.
+
+:- dynamic test_findall_pair_count/2.
+test_findall_pair_count(_, R) :-
+    findall(K-V, pair(K, V), Pairs),
+    length(Pairs, N),
+    R is N.
+
+% M11: float `**` with negative exponent. Pre-M11, eval_arith was
+% integer-only and returned 0 for negative exp; now eval_arith_value
+% detects the **/2 pattern at the top level and computes via floating
+% point. The test predicates just bind R via is/2; a custom driver
+% (run_pow_test below) reads reg 0''s tag and float bits so we can
+% verify the result type AND value without needing float arithmetic
+% to compose through eval_arith yet (which is M12 work).
+:- dynamic test_pow_neg_eighth/2.
+test_pow_neg_eighth(_, R) :- R is 2 ** -3.   % expect Float(0.125)
+
+:- dynamic test_pow_neg_fifth/2.
+test_pow_neg_fifth(_, R) :- R is 5 ** -1.    % expect Float(0.2)
+
+:- dynamic test_pow_neg_two/2.
+test_pow_neg_two(_, R) :- R is 10 ** -2.     % expect Float(0.01)
+
+% Custom driver: returns 1000 * float_value cast to i32 so the shell
+% exit code carries enough precision to verify the result. Tag is
+% checked separately via the IR -- if it''s not Float (tag=2) we
+% return 254 as a sentinel so a wrong-type result is distinguishable
+% from a "right tag, wrong value" mismatch.
+run_pow_test(Label, Preds, EntryPred, ScaleI, ExpectedI) :-
+    format('  ~w: ', [Label]),
+    clear_llvm_foreign_kernel_specs,
+    tmp_file_stream(text, LLPath, Stream), close(Stream),
+    host_target_triple(Triple),
+    AllPreds = [user:EntryPred/2 | Preds],
+    write_wam_llvm_project(AllPreds,
+        [module_name('pow_t'), target_triple(Triple), target_datalayout('')],
+        LLPath),
+    read_file_to_string(LLPath, Src, []),
+    extract_instr_count(Src, EntryPred, IC),
+    extract_label_count(Src, EntryPred, LC),
+    format(atom(DriverIR),
+'define i32 @main() {
+entry:
+  %a1_0 = insertvalue %Value undef, i32 1, 0
+  %a1 = insertvalue %Value %a1_0, i64 0, 1
+  %a2_0 = insertvalue %Value undef, i32 6, 0
+  %a2 = insertvalue %Value %a2_0, i64 0, 1
+  %vm = call %WamState* @wam_state_new(
+      %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @module_code, i32 0, i32 0),
+      i32 ~w,
+      i32* getelementptr ([~w x i32], [~w x i32]* @module_labels, i32 0, i32 0),
+      i32 ~w)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
+  %ok = call i1 @run_loop(%WamState* %vm)
+  br i1 %ok, label %hit, label %miss
+hit:
+  %r_raw = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %r_d = call %Value @wam_deref_value(%WamState* %vm, %Value %r_raw)
+  %r_tag = extractvalue %Value %r_d, 0
+  %is_float = icmp eq i32 %r_tag, 2
+  br i1 %is_float, label %scale_float, label %wrong_tag
+scale_float:
+  %r_bits = extractvalue %Value %r_d, 1
+  %r_d_val = bitcast i64 %r_bits to double
+  %scale = sitofp i32 ~w to double
+  %scaled = fmul double %r_d_val, %scale
+  %scaled_i = fptosi double %scaled to i32
+  ret i32 %scaled_i
+wrong_tag:
+  ret i32 254
+miss:
+  ret i32 255
+}
+', [IC, IC, IC, LC, LC, LC, ScaleI]),
+    setup_call_cleanup(open(LLPath, append, Out),
+        ( write(Out, '\n'), write(Out, DriverIR) ), close(Out)),
+    atom_concat(LLPath, '.o', OPath),
+    atom_concat(LLPath, '.out', BinPath),
+    format(atom(LlcCmd),
+        'llc -O0 -filetype=obj -relocation-model=pic ~w -o ~w 2>/dev/null',
+        [LLPath, OPath]),
+    shell(LlcCmd, _),
+    format(atom(ClangCmd), 'clang -O0 ~w -o ~w 2>/dev/null', [OPath, BinPath]),
+    shell(ClangCmd, _),
+    shell(BinPath, ExitCode),
+    ( ExitCode =:= ExpectedI
+    -> format('PASS (~w)~n', [ExitCode])
+    ; ExitCode =:= 254
+    -> format('FAIL (result was not a Float -- got non-2 tag)~n')
+    ;  format('FAIL (got ~w, expected ~w)~n', [ExitCode, ExpectedI])
+    ),
+    catch(delete_file(LLPath), _, true),
+    catch(delete_file(OPath), _, true),
+    catch(delete_file(BinPath), _, true),
+    clear_llvm_foreign_kernel_specs,
+    assertion(ExitCode =:= ExpectedI).
+
 % M10: \+/1 negation-as-failure via inline (G -> fail ; true) rewrite
 % in the WAM compiler. No runtime metacall: the bytecode goes through
 % the existing if-then-else (try_me_else / cut_ite / trust_me) chain.
@@ -369,6 +496,22 @@ test_all :-
        format('--- M10 setof/3 (sort + dedup) ---~n'),
        run_test_r0('setof color/1 count -> 3',
                    test_setof_count + [color/1], 0, 3),
+       format('--- M11 findall over compound template ---~n'),
+       run_test_r0('findall pair(K,V), first key -> 1',
+                   test_findall_pair_first_key + [pair/2], 0, 1),
+       run_test_r0('findall pair(K,V), first val -> 10',
+                   test_findall_pair_first_val + [pair/2], 0, 10),
+       run_test_r0('findall pair(K,V), third key -> 3',
+                   test_findall_pair_last_key + [pair/2], 0, 3),
+       run_test_r0('findall pair(K,V), count -> 3',
+                   test_findall_pair_count + [pair/2], 0, 3),
+       format('--- M11 float ** with negative exponent ---~n'),
+       run_pow_test('2**-3 -> Float 0.125, *1000 -> 125',
+                    [], test_pow_neg_eighth, 1000, 125),
+       run_pow_test('5**-1 -> Float 0.2, *100 -> 20',
+                    [], test_pow_neg_fifth, 100, 20),
+       run_pow_test('10**-2 -> Float 0.01, *10000 -> 100',
+                    [], test_pow_neg_two, 10000, 100),
        format('--- M10 \\+ negation-as-failure (inline rewrite) ---~n'),
        run_test_r0('\\+ in_basket(soap) -> succeeds, R=7',
                    test_not_absent + [in_basket/1], 0, 7),

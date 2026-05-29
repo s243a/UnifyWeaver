@@ -3051,18 +3051,17 @@ wam_llvm_case('begin_aggregate',
 % op1 = value_reg_idx
 wam_llvm_case('end_aggregate',
 '  %ea.val_reg = trunc i64 %op1 to i32
-  ; M10: deref before push. The per-iteration value reg is typically
-  ; a put_variable-allocated Ref whose heap cell holds the actual
-  ; result. On backtrack the heap rewinds, so the Ref becomes
-  ; dangling -- pushing the Ref unchanged means all accumulated
-  ; entries end up pointing to the same recycled heap address,
-  ; and set/setof dedups them all to one element. Dereferencing
-  ; here captures the atomic value while it is still bound.
-  ; Compound values still need a deep-copy (M11) -- their args
-  ; can hold Refs into the per-iteration heap region; for now
-  ; the typical setof-of-atoms / findall-of-ints case is correct.
+  ; M11: freeze (deref + deep-copy compounds) before push. Per-
+  ; iteration values are typically Refs into the volatile heap
+  ; region; backtrack between iterations rewinds the heap, so a
+  ; raw Ref ends up dangling and every accumulated entry collapses
+  ; to the same recycled address. wam_freeze_value follows the
+  ; Ref, captures atomic values directly, and for Compounds
+  ; recursively copies the args onto the arena so the result is
+  ; self-contained -- enabling findall(p(X,Y), ..., L) of compound
+  ; templates and setof/sort of compound elements.
   %ea.val_raw = call %Value @wam_get_reg(%WamState* %vm, i32 %ea.val_reg)
-  %ea.val = call %Value @wam_deref_value(%WamState* %vm, %Value %ea.val_raw)
+  %ea.val = call %Value @wam_freeze_value(%WamState* %vm, %Value %ea.val_raw)
 
   ; Push value to accumulator
   call void @wam_agg_push(%WamState* %vm, %Value %ea.val)
@@ -3324,12 +3323,12 @@ entry:
   ]
 
 builtin_is:
-  ; A1 is result, A2 is expression. Reads dereffed via eval_arith;
-  ; deref A1 to detect Ref-aliased unbound; bind via wam_bind_reg so
-  ; aliased registers update through the shared heap cell.
+  ; A1 is result, A2 is expression. M11: go through eval_arith_value
+  ; so `**` with a negative integer exponent returns a Float instead
+  ; of the integer eval_arith''s 0. Everything else still routes
+  ; through integer eval_arith (boxed via value_integer).
   %is.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
-  %is.result = call i64 @eval_arith(%WamState* %vm, %Value %is.a2)
-  %is.result_val = call %Value @value_integer(i64 %is.result)
+  %is.result_val = call %Value @eval_arith_value(%WamState* %vm, %Value %is.a2)
   %is.a1d = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %is.a1_unb = call i1 @value_is_unbound(%Value %is.a1d)
   br i1 %is.a1_unb, label %is.do_bind, label %is.check_eq
@@ -4326,6 +4325,108 @@ fail:
   %f.fmt = getelementptr [26 x i8], [26 x i8]* @.fmt_arith_fail, i32 0, i32 0
   call i32 (i8*, ...) @printf(i8* %f.fmt)
   ret i64 0
+}
+
+; M11: Float-aware top-level evaluator. Returns a tagged %Value so
+; is/2 can produce either Integer (tag=1) or Float (tag=2) results.
+; Right now only one case actually returns Float: `Base ** Exp`
+; where the evaluated Exp is negative -- the integer eval_arith
+; returns 0 for negative exp, which silently miscomputes
+; effective_distance''s `Hops ** NegN` (NegN = -5). For everything
+; else this is a thin wrapper that boxes the i64 eval_arith result
+; as an Integer. Full float propagation through `+`/`-`/`*`/`/`
+; with mixed operands is M12 work (requires a full rewrite of
+; eval_arith to return %Value end-to-end).
+define %Value @eval_arith_value(%WamState* %vm, %Value %expr_raw) {
+entry:
+  %expr = call %Value @wam_deref_value(%WamState* %vm, %Value %expr_raw)
+  %tag = extractvalue %Value %expr, 0
+  ; Top-level Compound check -- if it''s a `**`/2 we may want to
+  ; produce a Float instead of the integer eval_arith would return.
+  %is_cmp = icmp eq i32 %tag, 3
+  br i1 %is_cmp, label %check_pow_pattern, label %fallback_int
+
+check_pow_pattern:
+  %cp_bits = extractvalue %Value %expr, 1
+  %cp_ptr = inttoptr i64 %cp_bits to %Compound*
+  %ar_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 1
+  %arity = load i32, i32* %ar_slot
+  %is_binary = icmp eq i32 %arity, 2
+  br i1 %is_binary, label %check_pow_fn, label %fallback_int
+
+check_pow_fn:
+  %fn_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 0
+  %fn_ptr = load i8*, i8** %fn_slot
+  %fn0 = load i8, i8* %fn_ptr
+  %fn0_is_star = icmp eq i8 %fn0, 42
+  br i1 %fn0_is_star, label %check_pow_fn2, label %fallback_int
+
+check_pow_fn2:
+  %fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %fn1 = load i8, i8* %fn1_ptr
+  %fn1_is_star = icmp eq i8 %fn1, 42
+  br i1 %fn1_is_star, label %check_pow_fn3, label %fallback_int
+
+check_pow_fn3:
+  ; Make sure the functor is exactly "**" (length 2): fn[2] must be 0.
+  ; This avoids confusing `***` or anything else hypothetical.
+  %fn2_ptr = getelementptr i8, i8* %fn_ptr, i32 2
+  %fn2 = load i8, i8* %fn2_ptr
+  %fn2_is_zero = icmp eq i8 %fn2, 0
+  br i1 %fn2_is_zero, label %eval_pow_args, label %fallback_int
+
+eval_pow_args:
+  %args_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 2
+  %args = load %Value*, %Value** %args_slot
+  %base_ptr = getelementptr %Value, %Value* %args, i32 0
+  %base_v = load %Value, %Value* %base_ptr
+  %exp_ptr = getelementptr %Value, %Value* %args, i32 1
+  %exp_v = load %Value, %Value* %exp_ptr
+  ; Evaluate both as i64; if either was Float, eval_arith truncates --
+  ; the current path covers the integer-base / integer-exp case only.
+  ; Full float-exp / float-base is M12.
+  %base_i = call i64 @eval_arith(%WamState* %vm, %Value %base_v)
+  %exp_i = call i64 @eval_arith(%WamState* %vm, %Value %exp_v)
+  %exp_neg = icmp slt i64 %exp_i, 0
+  br i1 %exp_neg, label %float_pow, label %fallback_int
+
+float_pow:
+  ; base ** -n = 1 / (base ** n) as double. Loop over |exp| iterations.
+  %abs_exp = sub i64 0, %exp_i
+  %base_d = sitofp i64 %base_i to double
+  br label %float_pow_loop
+
+float_pow_loop:
+  %fp_acc = phi double [ 1.0, %float_pow ], [ %fp_new_acc, %float_pow_step ]
+  %fp_n = phi i64 [ %abs_exp, %float_pow ], [ %fp_dec, %float_pow_step ]
+  %fp_done = icmp sle i64 %fp_n, 0
+  br i1 %fp_done, label %float_pow_finish, label %float_pow_step
+
+float_pow_step:
+  %fp_new_acc = fmul double %fp_acc, %base_d
+  %fp_dec = sub i64 %fp_n, 1
+  br label %float_pow_loop
+
+float_pow_finish:
+  ; result = 1 / acc. Handle acc == 0 (base = 0, n > 0) -> 0 by
+  ; checking before dividing -- IEEE division by 0 would give inf.
+  %is_zero = fcmp oeq double %fp_acc, 0.0
+  br i1 %is_zero, label %float_pow_zero, label %float_pow_recip
+
+float_pow_zero:
+  %fz = call %Value @value_float(double 0.0)
+  ret %Value %fz
+
+float_pow_recip:
+  %fp_r = fdiv double 1.0, %fp_acc
+  %fpv = call %Value @value_float(double %fp_r)
+  ret %Value %fpv
+
+fallback_int:
+  ; Default: integer eval, box as Integer.
+  %i_r = call i64 @eval_arith(%WamState* %vm, %Value %expr_raw)
+  %iv = call %Value @value_integer(i64 %i_r)
+  ret %Value %iv
 }'.
 
 compile_copy_term_to_llvm(Code) :-
@@ -4399,6 +4500,80 @@ ct_loop_step:
   br label %ct_loop
 
 ct_done:
+  %new_i64 = ptrtoint %Compound* %new_cp to i64
+  %new_val0 = insertvalue %Value undef, i32 3, 0
+  %new_val = insertvalue %Value %new_val0, i64 %new_i64, 1
+  ret %Value %new_val
+}
+
+; M11: deref-aware deep-copy. Resolves Refs to the heap-stored value,
+; then copies Compounds (recursing on args) so the returned %Value
+; is self-contained -- it survives a heap rewind. Used by
+; end_aggregate to capture per-iteration findall / setof results
+; whose Compound args otherwise point into the per-iteration heap
+; region that backtrack reclaims, silently aliasing every accumulated
+; entry to the LAST iteration''s values.
+;
+; Atoms / Integers / Floats pass through. Unbounds after deref stay
+; unbound (best effort -- typical aggregate templates have all vars
+; bound by the time end_aggregate runs; an unbound template arg
+; indicates a logic bug the caller will see via the spurious
+; unbound in the result list).
+define %Value @wam_freeze_value(%WamState* %vm, %Value %v) {
+entry:
+  %d = call %Value @wam_deref_value(%WamState* %vm, %Value %v)
+  %tag = extractvalue %Value %d, 0
+  %is_cmp = icmp eq i32 %tag, 3
+  br i1 %is_cmp, label %fz_compound, label %fz_atomic
+
+fz_atomic:
+  ; Atom (0), Integer (1), Float (2), Ref-to-unbound (5 derefs to 6),
+  ; Unbound (6), Bool (7) -- all self-contained values; copy nothing.
+  ret %Value %d
+
+fz_compound:
+  %cp_bits = extractvalue %Value %d, 1
+  %cp_ptr = inttoptr i64 %cp_bits to %Compound*
+  %fn_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 0
+  %fn_ptr = load i8*, i8** %fn_slot
+  %ar_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 1
+  %arity = load i32, i32* %ar_slot
+  %args_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 2
+  %src_args = load %Value*, %Value** %args_slot
+
+  call void @wam_arena_ensure()
+  %cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %new_mem = call i8* @wam_arena_alloc(i64 %cp_size)
+  %new_cp = bitcast i8* %new_mem to %Compound*
+  %new_fn_slot = getelementptr %Compound, %Compound* %new_cp, i32 0, i32 0
+  store i8* %fn_ptr, i8** %new_fn_slot
+  %new_ar_slot = getelementptr %Compound, %Compound* %new_cp, i32 0, i32 1
+  store i32 %arity, i32* %new_ar_slot
+  %ar64 = zext i32 %arity to i64
+  %args_bytes = shl i64 %ar64, 4
+  %new_args_mem = call i8* @wam_arena_alloc(i64 %args_bytes)
+  %new_args = bitcast i8* %new_args_mem to %Value*
+  %new_args_slot = getelementptr %Compound, %Compound* %new_cp, i32 0, i32 2
+  store %Value* %new_args, %Value** %new_args_slot
+
+  %has_args = icmp sgt i32 %arity, 0
+  br i1 %has_args, label %fz_loop, label %fz_done
+
+fz_loop:
+  %i = phi i32 [ 0, %fz_compound ], [ %i_next, %fz_step ]
+  %src_ptr = getelementptr %Value, %Value* %src_args, i32 %i
+  %src_val = load %Value, %Value* %src_ptr
+  %dst_val = call %Value @wam_freeze_value(%WamState* %vm, %Value %src_val)
+  %dst_ptr = getelementptr %Value, %Value* %new_args, i32 %i
+  store %Value %dst_val, %Value* %dst_ptr
+  br label %fz_step
+
+fz_step:
+  %i_next = add i32 %i, 1
+  %more = icmp slt i32 %i_next, %arity
+  br i1 %more, label %fz_loop, label %fz_done
+
+fz_done:
   %new_i64 = ptrtoint %Compound* %new_cp to i64
   %new_val0 = insertvalue %Value undef, i32 3, 0
   %new_val = insertvalue %Value %new_val0, i64 %new_i64, 1
