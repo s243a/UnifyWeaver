@@ -227,6 +227,51 @@ test_float_chain(_, R) :- R is (1 / 2) + (1 / 4). % 0.5 + 0.25 = 0.75
 :- dynamic test_float_pow_chain/2.
 test_float_pow_chain(_, R) :- R is (2 ** -2) + 0.5. % 0.25 + 0.5 = 0.75
 
+% M14: float-aware comparison ops. Pre-M14, builtin_gt/lt/etc read
+% the register payload as raw i64 -- meaningless when one operand
+% is a Float because float bits aren''t the numeric value. Also,
+% comparisons over a Compound expression like `X > Y * 2` mis-fed
+% the unmaterialised Compound pointer to icmp.
+:- dynamic test_cmp_float_gt/2.
+test_cmp_float_gt(_, R) :-
+    X is 1 / 4,        % Float 0.25
+    ( X > 0 -> R is 1 ; R is 0 ).   % expect 1
+
+:- dynamic test_cmp_float_gt_neg/2.
+test_cmp_float_gt_neg(_, R) :-
+    X is -1 / 4,       % Float -0.25
+    ( X > 0 -> R is 1 ; R is 0 ).   % expect 0
+
+:- dynamic test_cmp_float_eq/2.
+test_cmp_float_eq(_, R) :-
+    X is 1 / 2,        % Float 0.5
+    ( X =:= 0.5 -> R is 1 ; R is 0 ). % expect 1
+
+:- dynamic test_cmp_compound_expr/2.
+test_cmp_compound_expr(_, R) :-
+    Y = 3,
+    % Direct comparison of Y * 2 against 5 -- arithmetic eval on both sides.
+    ( Y * 2 > 5 -> R is 1 ; R is 0 ).   % 6 > 5 -> 1
+
+% M14: aggregate_all(sum(F), ...) over Float-producing inner goal.
+% The sum_case now scans for any Float entry and switches to a
+% double accumulator instead of integer add-of-bits.
+:- dynamic node/1.
+node(2).
+node(4).
+node(8).
+
+:- dynamic test_sum_int/2.
+test_sum_int(_, R) :-
+    aggregate_all(sum(N), node(N), S),   % 2 + 4 + 8 = 14, stays Integer
+    R is S.                              % route through is/2 -> A1
+
+:- dynamic test_sum_float/2.
+test_sum_float(_, R) :-
+    aggregate_all(sum(W), (node(N), W is 1 / N), Sum),
+    % Sum = 1/2 + 1/4 + 1/8 = 0.875
+    R is Sum.
+
 % M12: format/2 -- prints to stdout. Tested by capturing the shell
 % stdout and comparing against expected string. Each predicate
 % does ONE format call and then succeeds (no R binding -- the
@@ -648,6 +693,14 @@ test_all :-
                     [], test_float_chain, 100, 75),
        run_pow_test('(2**-2)+0.5 -> Float 0.75, *100 -> 75',
                     [], test_float_pow_chain, 100, 75),
+       format('--- M14 float-aware comparisons + float sum ---~n'),
+       run_test_r0('1/4 > 0 -> 1', test_cmp_float_gt, 0, 1),
+       run_test_r0('-1/4 > 0 -> 0', test_cmp_float_gt_neg, 0, 0),
+       run_test_r0('1/2 =:= 0.5 -> 1', test_cmp_float_eq, 0, 1),
+       run_test_r0('Y*2 > 5 when Y=3 -> 1', test_cmp_compound_expr, 0, 1),
+       run_test_r0('sum(node) int -> 14', test_sum_int + [node/1], 0, 14),
+       run_pow_test('sum(1/N) -> 0.875, *100 -> 87',
+                    [node/1], test_sum_float, 100, 87),
        format('--- M12 format/2 stdout printing ---~n'),
        run_fmt_test('literal "hello world"', test_fmt_literal,
                     "hello world\n"),

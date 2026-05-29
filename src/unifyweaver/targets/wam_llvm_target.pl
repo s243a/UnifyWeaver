@@ -3357,52 +3357,141 @@ is.check_eq:
   ret i1 %is.eq
 
 builtin_gt:
-  %gt.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
-  %gt.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
-  %gt.v1 = call i64 @value_payload(%Value %gt.a1)
-  %gt.v2 = call i64 @value_payload(%Value %gt.a2)
-  %gt.r = icmp sgt i64 %gt.v1, %gt.v2
-  ret i1 %gt.r
+  ; M14: arithmetic compare. Evaluate both args via eval_arith_value
+  ; so a Compound operand (e.g. `X > Y * 2`) is reduced to a numeric
+  ; Value rather than treated as a pointer payload. Dispatch on tag:
+  ; if either operand is Float, promote both to double and use fcmp;
+  ; otherwise compare integer payloads with icmp.
+  %gt.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gt.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %gt.e1 = call %Value @eval_arith_value(%WamState* %vm, %Value %gt.a1)
+  %gt.e2 = call %Value @eval_arith_value(%WamState* %vm, %Value %gt.a2)
+  %gt.t1 = extractvalue %Value %gt.e1, 0
+  %gt.t2 = extractvalue %Value %gt.e2, 0
+  %gt.f1 = icmp eq i32 %gt.t1, 2
+  %gt.f2 = icmp eq i32 %gt.t2, 2
+  %gt.eitherf = or i1 %gt.f1, %gt.f2
+  br i1 %gt.eitherf, label %gt.float, label %gt.int
+gt.int:
+  %gt.iv1 = extractvalue %Value %gt.e1, 1
+  %gt.iv2 = extractvalue %Value %gt.e2, 1
+  %gt.ir = icmp sgt i64 %gt.iv1, %gt.iv2
+  ret i1 %gt.ir
+gt.float:
+  %gt.d1 = call double @value_to_double(%Value %gt.e1)
+  %gt.d2 = call double @value_to_double(%Value %gt.e2)
+  %gt.fr = fcmp ogt double %gt.d1, %gt.d2
+  ret i1 %gt.fr
 
 builtin_lt:
-  %lt.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
-  %lt.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
-  %lt.v1 = call i64 @value_payload(%Value %lt.a1)
-  %lt.v2 = call i64 @value_payload(%Value %lt.a2)
-  %lt.r = icmp slt i64 %lt.v1, %lt.v2
-  ret i1 %lt.r
+  %lt.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %lt.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %lt.e1 = call %Value @eval_arith_value(%WamState* %vm, %Value %lt.a1)
+  %lt.e2 = call %Value @eval_arith_value(%WamState* %vm, %Value %lt.a2)
+  %lt.t1 = extractvalue %Value %lt.e1, 0
+  %lt.t2 = extractvalue %Value %lt.e2, 0
+  %lt.f1 = icmp eq i32 %lt.t1, 2
+  %lt.f2 = icmp eq i32 %lt.t2, 2
+  %lt.eitherf = or i1 %lt.f1, %lt.f2
+  br i1 %lt.eitherf, label %lt.float, label %lt.int
+lt.int:
+  %lt.iv1 = extractvalue %Value %lt.e1, 1
+  %lt.iv2 = extractvalue %Value %lt.e2, 1
+  %lt.ir = icmp slt i64 %lt.iv1, %lt.iv2
+  ret i1 %lt.ir
+lt.float:
+  %lt.d1 = call double @value_to_double(%Value %lt.e1)
+  %lt.d2 = call double @value_to_double(%Value %lt.e2)
+  %lt.fr = fcmp olt double %lt.d1, %lt.d2
+  ret i1 %lt.fr
 
 builtin_ge:
-  %ge.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
-  %ge.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
-  %ge.v1 = call i64 @value_payload(%Value %ge.a1)
-  %ge.v2 = call i64 @value_payload(%Value %ge.a2)
-  %ge.r = icmp sge i64 %ge.v1, %ge.v2
-  ret i1 %ge.r
+  %ge.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ge.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %ge.e1 = call %Value @eval_arith_value(%WamState* %vm, %Value %ge.a1)
+  %ge.e2 = call %Value @eval_arith_value(%WamState* %vm, %Value %ge.a2)
+  %ge.t1 = extractvalue %Value %ge.e1, 0
+  %ge.t2 = extractvalue %Value %ge.e2, 0
+  %ge.f1 = icmp eq i32 %ge.t1, 2
+  %ge.f2 = icmp eq i32 %ge.t2, 2
+  %ge.eitherf = or i1 %ge.f1, %ge.f2
+  br i1 %ge.eitherf, label %ge.float, label %ge.int
+ge.int:
+  %ge.iv1 = extractvalue %Value %ge.e1, 1
+  %ge.iv2 = extractvalue %Value %ge.e2, 1
+  %ge.ir = icmp sge i64 %ge.iv1, %ge.iv2
+  ret i1 %ge.ir
+ge.float:
+  %ge.d1 = call double @value_to_double(%Value %ge.e1)
+  %ge.d2 = call double @value_to_double(%Value %ge.e2)
+  %ge.fr = fcmp oge double %ge.d1, %ge.d2
+  ret i1 %ge.fr
 
 builtin_le:
-  %le.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
-  %le.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
-  %le.v1 = call i64 @value_payload(%Value %le.a1)
-  %le.v2 = call i64 @value_payload(%Value %le.a2)
-  %le.r = icmp sle i64 %le.v1, %le.v2
-  ret i1 %le.r
+  %le.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %le.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %le.e1 = call %Value @eval_arith_value(%WamState* %vm, %Value %le.a1)
+  %le.e2 = call %Value @eval_arith_value(%WamState* %vm, %Value %le.a2)
+  %le.t1 = extractvalue %Value %le.e1, 0
+  %le.t2 = extractvalue %Value %le.e2, 0
+  %le.f1 = icmp eq i32 %le.t1, 2
+  %le.f2 = icmp eq i32 %le.t2, 2
+  %le.eitherf = or i1 %le.f1, %le.f2
+  br i1 %le.eitherf, label %le.float, label %le.int
+le.int:
+  %le.iv1 = extractvalue %Value %le.e1, 1
+  %le.iv2 = extractvalue %Value %le.e2, 1
+  %le.ir = icmp sle i64 %le.iv1, %le.iv2
+  ret i1 %le.ir
+le.float:
+  %le.d1 = call double @value_to_double(%Value %le.e1)
+  %le.d2 = call double @value_to_double(%Value %le.e2)
+  %le.fr = fcmp ole double %le.d1, %le.d2
+  ret i1 %le.fr
 
 builtin_arith_eq:
-  %aeq.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
-  %aeq.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
-  %aeq.v1 = call i64 @value_payload(%Value %aeq.a1)
-  %aeq.v2 = call i64 @value_payload(%Value %aeq.a2)
-  %aeq.r = icmp eq i64 %aeq.v1, %aeq.v2
-  ret i1 %aeq.r
+  %aeq.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %aeq.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %aeq.e1 = call %Value @eval_arith_value(%WamState* %vm, %Value %aeq.a1)
+  %aeq.e2 = call %Value @eval_arith_value(%WamState* %vm, %Value %aeq.a2)
+  %aeq.t1 = extractvalue %Value %aeq.e1, 0
+  %aeq.t2 = extractvalue %Value %aeq.e2, 0
+  %aeq.f1 = icmp eq i32 %aeq.t1, 2
+  %aeq.f2 = icmp eq i32 %aeq.t2, 2
+  %aeq.eitherf = or i1 %aeq.f1, %aeq.f2
+  br i1 %aeq.eitherf, label %aeq.float, label %aeq.int
+aeq.int:
+  %aeq.iv1 = extractvalue %Value %aeq.e1, 1
+  %aeq.iv2 = extractvalue %Value %aeq.e2, 1
+  %aeq.ir = icmp eq i64 %aeq.iv1, %aeq.iv2
+  ret i1 %aeq.ir
+aeq.float:
+  %aeq.d1 = call double @value_to_double(%Value %aeq.e1)
+  %aeq.d2 = call double @value_to_double(%Value %aeq.e2)
+  %aeq.fr = fcmp oeq double %aeq.d1, %aeq.d2
+  ret i1 %aeq.fr
 
 builtin_arith_ne:
-  %ane.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
-  %ane.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
-  %ane.v1 = call i64 @value_payload(%Value %ane.a1)
-  %ane.v2 = call i64 @value_payload(%Value %ane.a2)
-  %ane.r = icmp ne i64 %ane.v1, %ane.v2
-  ret i1 %ane.r
+  %ane.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ane.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %ane.e1 = call %Value @eval_arith_value(%WamState* %vm, %Value %ane.a1)
+  %ane.e2 = call %Value @eval_arith_value(%WamState* %vm, %Value %ane.a2)
+  %ane.t1 = extractvalue %Value %ane.e1, 0
+  %ane.t2 = extractvalue %Value %ane.e2, 0
+  %ane.f1 = icmp eq i32 %ane.t1, 2
+  %ane.f2 = icmp eq i32 %ane.t2, 2
+  %ane.eitherf = or i1 %ane.f1, %ane.f2
+  br i1 %ane.eitherf, label %ane.float, label %ane.int
+ane.int:
+  %ane.iv1 = extractvalue %Value %ane.e1, 1
+  %ane.iv2 = extractvalue %Value %ane.e2, 1
+  %ane.ir = icmp ne i64 %ane.iv1, %ane.iv2
+  ret i1 %ane.ir
+ane.float:
+  %ane.d1 = call double @value_to_double(%Value %ane.e1)
+  %ane.d2 = call double @value_to_double(%Value %ane.e2)
+  %ane.fr = fcmp one double %ane.d1, %ane.d2
+  ret i1 %ane.fr
 
 builtin_eq:
   %eq.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
