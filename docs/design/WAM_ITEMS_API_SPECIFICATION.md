@@ -488,25 +488,24 @@ items natively: `wam_cpp_target.pl` calls the shared
 it never carried the per-shape text-rewrite duplication. (An earlier draft of
 this section claimed it did — that was inaccurate.)
 
-**Elixir and F# have been migrated off the per-shape text rules.** Each target's
-`iso_errors_rewrite_line/3` now tokenizes a WAM line with the shared
+**Elixir, F#, and Python have been migrated off the per-shape text rules.** Each
+target's `iso_errors_rewrite_line/3` now tokenizes a WAM line with the shared
 `wam_tokenize_line/2`, recognises it to a structured item via
 `wam_recognise_instruction/2`, and applies the shared
 `iso_errors_rewrite_item/3` (exported from `core/iso_errors`) — a single
 `arg(1)`-based key swap that covers all four shapes at once. The swapped key is
 spliced back into the original line so text output stays byte-identical. The
 four duplicated `iso_errors_rewrite_parts` clauses and the local
-`iso_errors_lookup/3` are gone from both. This is the `swap_key_in_item/3`-style
-pass the note below anticipated, realised without yet requiring a full
-items-first emitter. (Elixir: PR #2559. F#: this PR.)
+`iso_errors_lookup/3` are gone from all three. This is the
+`swap_key_in_item/3`-style pass the note below anticipated, realised without yet
+requiring a full items-first emitter. (Elixir: PR #2559. F# + Python: this PR.)
 
-**Python and Haskell still carry their own text-rewrite paths.** Python has the
-same four `iso_errors_rewrite_parts` clauses + `iso_errors_lookup/3`; Haskell
-uses a narrower `builtin_call`-only `sub_string` rewrite. Both are
-straightforward follow-ups along the same pattern. In all targets, ISO mode
-stays per-predicate — resolved by `iso_errors_mode_for(Config, PI, Mode)`,
-honouring `iso_errors_override` per `Pred/Arity`; this refactor does not change
-that.
+**Haskell still carries its own text-rewrite path** — a narrower
+`builtin_call`-only `sub_string` rewrite (it never had the four-shape
+duplication). Migrating it to the shared item pass is a straightforward
+follow-up. In all targets, ISO mode stays per-predicate — resolved by
+`iso_errors_mode_for(Config, PI, Mode)`, honouring `iso_errors_override` per
+`Pred/Arity`; this refactor does not change that.
 
 The interaction remains important for the remaining targets' future migrations.
 Once a target consumes structured WAM items directly, ISO rewrites collapse to
