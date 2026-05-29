@@ -2275,31 +2275,69 @@ gs.fail:
 
 wam_llvm_case('get_list',
 '  ; get_list: op1 = Ai register index
+  ; M10: handle the Compound representation produced by the new
+  ; put_list. Tag dispatch:
+  ;   tag=3 Compound -> READ mode: extract args, push UnifyCtx(2)
+  ;   tag=6 Unbound  -> WRITE mode: allocate [|]/2 Compound, bind Ai,
+  ;                     push WriteCtx(2)
+  ;   anything else (incl. Ref to non-list) -> fail
+  ; The prior impl checked tag>=5 to go to write mode, which meant
+  ; calls with a constructed list (tag=3) went to a stub `gl.read`
+  ; that returned false -- head unification against a list literal
+  ; never matched.
   %gl.ai = trunc i64 %op1 to i32
   %gl.val = call %Value @wam_get_reg_deref(%WamState* %vm, i32 %gl.ai)
   %gl.tag = extractvalue %Value %gl.val, 0
-  %gl.is_ref_or_unb = icmp uge i32 %gl.tag, 5 ; Ref(5) or Unbound(6)
-  br i1 %gl.is_ref_or_unb, label %gl.write, label %gl.read
+  %gl.is_cp = icmp eq i32 %gl.tag, 3
+  br i1 %gl.is_cp, label %gl.read, label %gl.check_unb
 
-gl.write:
-  %gl.marker = call %Value @value_atom(i8* null)
-  %gl.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %gl.marker)
-  %gl.unb = call %Value @value_unbound(i8* null)
-  call i32 @wam_heap_push(%WamState* %vm, %Value %gl.unb)
-  call i32 @wam_heap_push(%WamState* %vm, %Value %gl.unb)
-  %gl.ref = call %Value @value_ref(i32 %gl.addr)
-  call void @wam_trail_binding(%WamState* %vm, i32 %gl.ai)
-  call void @wam_set_reg(%WamState* %vm, i32 %gl.ai, %Value %gl.ref)
-  call void @wam_push_write_ctx(%WamState* %vm, i32 2)
-  %gl.hp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
-  %gl.hp = load %Value*, %Value** %gl.hp_ptr
-  %gl.h_addr = add i32 %gl.addr, 1
-  %gl.args = getelementptr %Value, %Value* %gl.hp, i32 %gl.h_addr
-  call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %gl.args)
+gl.check_unb:
+  %gl.unb_p = call i1 @value_is_unbound(%Value %gl.val)
+  br i1 %gl.unb_p, label %gl.write, label %gl.fail
+
+gl.read:
+  ; Compound: load args pointer, push UnifyCtx with arity 2.
+  %gl.cp_bits = extractvalue %Value %gl.val, 1
+  %gl.cp_ptr = inttoptr i64 %gl.cp_bits to %Compound*
+  %gl.args_slot = getelementptr %Compound, %Compound* %gl.cp_ptr, i32 0, i32 2
+  %gl.args = load %Value*, %Value** %gl.args_slot
+  call void @wam_push_unify_ctx(%WamState* %vm, %Value* %gl.args, i32 2)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true
 
-gl.read:
+gl.write:
+  ; Allocate [|]/2 Compound on arena, bind Ai, push WriteCtx.
+  call void @wam_arena_ensure()
+  %gl.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %gl.cp_mem = call i8* @wam_arena_alloc(i64 %gl.cp_size)
+  %gl.wcp = bitcast i8* %gl.cp_mem to %Compound*
+  %gl.wfn_slot = getelementptr %Compound, %Compound* %gl.wcp, i32 0, i32 0
+  %gl.wfn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %gl.wfn_ptr, i8** %gl.wfn_slot
+  %gl.war_slot = getelementptr %Compound, %Compound* %gl.wcp, i32 0, i32 1
+  store i32 2, i32* %gl.war_slot
+  %gl.wargs_mem = call i8* @wam_arena_alloc(i64 32)
+  %gl.wargs = bitcast i8* %gl.wargs_mem to %Value*
+  %gl.wargs_slot = getelementptr %Compound, %Compound* %gl.wcp, i32 0, i32 2
+  store %Value* %gl.wargs, %Value** %gl.wargs_slot
+  %gl.wunb = call %Value @value_unbound(i8* null)
+  %gl.w0_ptr = getelementptr %Value, %Value* %gl.wargs, i32 0
+  store %Value %gl.wunb, %Value* %gl.w0_ptr
+  %gl.w1_ptr = getelementptr %Value, %Value* %gl.wargs, i32 1
+  store %Value %gl.wunb, %Value* %gl.w1_ptr
+  %gl.wcp_i64 = ptrtoint %Compound* %gl.wcp to i64
+  %gl.wval0 = insertvalue %Value undef, i32 3, 0
+  %gl.wval = insertvalue %Value %gl.wval0, i64 %gl.wcp_i64, 1
+  %gl.old = call %Value @wam_get_reg(%WamState* %vm, i32 %gl.ai)
+  call void @wam_trail_binding(%WamState* %vm, i32 %gl.ai)
+  call void @wam_set_reg(%WamState* %vm, i32 %gl.ai, %Value %gl.wval)
+  call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %gl.old, %Value %gl.wval)
+  call void @wam_push_write_ctx(%WamState* %vm, i32 2)
+  call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %gl.wargs)
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i1 true
+
+gl.fail:
   ret i1 false').
 
 wam_llvm_case('unify_variable',
@@ -2503,27 +2541,43 @@ wam_llvm_case('put_structure',
 
 wam_llvm_case('put_list',
 '  ; put_list: op1 = Ai register index
-  ; Push list marker + 2 unbound cells for [H|T] on heap.
-  ; Bind Ai to Ref of marker, push WriteCtx(2) pointing to H slot.
+  ; M10: build a [|]/2 Compound on the arena (matches put_structure''s
+  ; representation). Prior impl used a heap-marker (Atom sentinel +
+  ; 2 unbound cells) which deref''d to an Atom -- the resulting list
+  ; was incompatible with put_structure [|]/2 (Compound) and with
+  ; findall''s collect_case output, so any cross-built unification
+  ; silently failed (Compound vs Atom tag mismatch).
   %pl.ai = trunc i64 %op1 to i32
-  %pl.marker = call %Value @value_atom(i8* null)
-  %pl.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %pl.marker)
+  call void @wam_arena_ensure()
+  ; Allocate %Compound + 2-arg args array on arena.
+  %pl.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %pl.cp_mem = call i8* @wam_arena_alloc(i64 %pl.cp_size)
+  %pl.cp = bitcast i8* %pl.cp_mem to %Compound*
+  %pl.fn_slot = getelementptr %Compound, %Compound* %pl.cp, i32 0, i32 0
+  %pl.fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %pl.fn_ptr, i8** %pl.fn_slot
+  %pl.ar_slot = getelementptr %Compound, %Compound* %pl.cp, i32 0, i32 1
+  store i32 2, i32* %pl.ar_slot
+  %pl.args_mem = call i8* @wam_arena_alloc(i64 32)
+  %pl.args = bitcast i8* %pl.args_mem to %Value*
+  %pl.args_slot = getelementptr %Compound, %Compound* %pl.cp, i32 0, i32 2
+  store %Value* %pl.args, %Value** %pl.args_slot
+  ; Init both args to Unbound so unify mode runs against valid cells.
   %pl.unb = call %Value @value_unbound(i8* null)
-  call i32 @wam_heap_push(%WamState* %vm, %Value %pl.unb)
-  call i32 @wam_heap_push(%WamState* %vm, %Value %pl.unb)
-  %pl.ref = call %Value @value_ref(i32 %pl.addr)
-
+  %pl.a0_ptr = getelementptr %Value, %Value* %pl.args, i32 0
+  store %Value %pl.unb, %Value* %pl.a0_ptr
+  %pl.a1_ptr = getelementptr %Value, %Value* %pl.args, i32 1
+  store %Value %pl.unb, %Value* %pl.a1_ptr
+  ; Wrap as %Value{tag=3 Compound, payload=ptr}.
+  %pl.cp_i64 = ptrtoint %Compound* %pl.cp to i64
+  %pl.val0 = insertvalue %Value undef, i32 3, 0
+  %pl.val = insertvalue %Value %pl.val0, i64 %pl.cp_i64, 1
   %pl.old = call %Value @wam_get_reg(%WamState* %vm, i32 %pl.ai)
   call void @wam_trail_binding(%WamState* %vm, i32 %pl.ai)
-  call void @wam_set_reg(%WamState* %vm, i32 %pl.ai, %Value %pl.ref)
-  call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pl.old, %Value %pl.ref)
-
+  call void @wam_set_reg(%WamState* %vm, i32 %pl.ai, %Value %pl.val)
+  call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pl.old, %Value %pl.val)
+  ; WriteCtx writes into args[0..1] via set_constant/set_variable/set_value.
   call void @wam_push_write_ctx(%WamState* %vm, i32 2)
-  ; Set WriteCtx args to point to the head slot (pl.addr + 1)
-  %pl.hp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
-  %pl.hp = load %Value*, %Value** %pl.hp_ptr
-  %pl.h_addr = add i32 %pl.addr, 1
-  %pl.args = getelementptr %Value, %Value* %pl.hp, i32 %pl.h_addr
   call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %pl.args)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
