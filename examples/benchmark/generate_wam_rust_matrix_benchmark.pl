@@ -3,6 +3,8 @@
 :- use_module('../../src/unifyweaver/targets/wam_rust_target').
 :- use_module('../../src/unifyweaver/targets/prolog_target').
 :- use_module('../../src/unifyweaver/core/template_system', [render_template/3]).
+:- use_module('../../src/unifyweaver/core/cost_model',
+              [resolve_auto_lmdb_materialisation/2, resolve_lmdb_cache_capacity/2]).
 
 %% generate_wam_rust_matrix_benchmark.pl
 %%
@@ -21,27 +23,29 @@ benchmark_workload_path(Path) :-
 
 main :-
     current_prolog_flag(argv, Argv),
-    (   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, LmdbMaterialisationAtom]
+    (   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, LmdbMaterialisationAtom, FactCountAtom]
     ->  true
+    ;   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, LmdbMaterialisationAtom]
+    ->  FactCountAtom = '0'
     ;   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom]
-    ->  LmdbMaterialisationAtom = eager
+    ->  LmdbMaterialisationAtom = eager, FactCountAtom = '0'
     ;   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom]
-    ->  LmdbCrateAtom = auto, LmdbMaterialisationAtom = eager
+    ->  LmdbCrateAtom = auto, LmdbMaterialisationAtom = eager, FactCountAtom = '0'
     ;   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom]
-    ->  LmdbModeAtom = none, LmdbCrateAtom = auto, LmdbMaterialisationAtom = eager
+    ->  LmdbModeAtom = none, LmdbCrateAtom = auto, LmdbMaterialisationAtom = eager, FactCountAtom = '0'
     ;   format(user_error,
-            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off> [<none|cursor>] [<lmdb_zero|heed|auto>] [<eager|lazy|cached|auto>]~n',
+            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off> [<none|cursor>] [<lmdb_zero|heed|auto>] [<eager|lazy|cached|auto>] [<fact-count>]~n',
             []),
         halt(1)
     ),
-    generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, LmdbMaterialisationAtom, OutputDir),
+    generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, LmdbMaterialisationAtom, FactCountAtom, OutputDir),
     halt(0).
 
 main :-
     format(user_error, 'Error: generation failed~n', []),
     halt(1).
 
-generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, LmdbMaterialisationAtom, OutputDir) :-
+generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, LmdbMaterialisationAtom, FactCountAtom, OutputDir) :-
     benchmark_workload_path(WorkloadPath),
     load_files(WorkloadPath, [silent(true)]),
     retractall(user:mode(category_ancestor(_, _, _, _))),
@@ -51,7 +55,10 @@ generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom,
     parse_kernel_mode(KernelModeAtom, KernelOptions),
     parse_lmdb_mode(LmdbModeAtom, LmdbOptions),
     parse_lmdb_crate(LmdbCrateAtom, LmdbCrateOptions),
-    parse_lmdb_materialisation(LmdbMaterialisationAtom, LmdbMaterialisation, LmdbMaterialisationOptions),
+    materialisation_metadata(FactCountAtom, Metadata),
+    resolve_lmdb_materialisation(LmdbMaterialisationAtom, Metadata,
+                                 LmdbMaterialisation, LmdbMaterialisationOptions),
+    resolve_lmdb_cache_capacity(Metadata, CacheCapacity),
     validate_lmdb_materialisation_combo(LmdbMaterialisation, LmdbModeAtom),
     BasePreds = [dimension_n/1, max_depth/1, category_ancestor/4],
     prolog_target:generate_prolog_script(BasePreds, OptimizationOptions, ScriptCode),
@@ -64,10 +71,10 @@ generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom,
     append([[module_name(wam_rust_matrix_bench), wam_fallback(true), emit_mode(EmitMode), parallel(true)],
             KernelOptions, LmdbOptions, LmdbCrateOptions, LmdbMaterialisationOptions], Options),
     write_wam_rust_project(Predicates, Options, OutputDir),
-    write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbMaterialisation),
+    write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbMaterialisation, CacheCapacity),
     format(user_error,
-           '[WAM-Rust-Matrix] variant=~w emit_mode=~w kernels=~w lmdb=~w lmdb_crate=~w materialisation=~w output=~w~n',
-           [VariantAtom, EmitMode, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, LmdbMaterialisation, OutputDir]).
+           '[WAM-Rust-Matrix] variant=~w emit_mode=~w kernels=~w lmdb=~w lmdb_crate=~w materialisation=~w(from ~w) cache_capacity=~w output=~w~n',
+           [VariantAtom, EmitMode, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, LmdbMaterialisation, LmdbMaterialisationAtom, CacheCapacity, OutputDir]).
 
 parse_lmdb_mode(none, []).
 parse_lmdb_mode(cursor, [lmdb_mode(cursor)]).
@@ -76,15 +83,29 @@ parse_lmdb_crate(auto, [lmdb_crate(auto)]).
 parse_lmdb_crate(lmdb_zero, [lmdb_crate(lmdb_zero)]).
 parse_lmdb_crate(heed, [lmdb_crate(heed)]).
 
-% Phase R7: lmdb_materialisation option (eager | lazy | cached | auto).
-% - eager: current behaviour — build runtime_category_parents Vec at startup.
+% lmdb_materialisation option (eager | lazy | cached | auto).
+% - eager: build runtime_category_parents Vec at startup.
 % - lazy:  parent edges read on-demand via LookupSource trait + LMDB cursor.
-% - cached: not yet implemented (R8); errors here.
-% - auto: R7 returns eager; R8 will wire the cost-model resolver.
-parse_lmdb_materialisation(eager,  eager,  [lmdb_materialisation(eager)]).
-parse_lmdb_materialisation(auto,   eager,  [lmdb_materialisation(eager)]).
-parse_lmdb_materialisation(lazy,   lazy,   [lmdb_materialisation(lazy)]).
-parse_lmdb_materialisation(cached, cached, [lmdb_materialisation(cached)]).
+% - cached: lazy + a sharded bounded cache (CachedLookup decorator).
+% - auto (R8b): the cost-model resolver picks eager/lazy/cached from
+%   fixture metadata (fact_count, workload_segregated, ...). Mode
+%   selection is codegen-time and static — MemAvailable is read at
+%   *runtime* for the cache-capacity clamp, never baked in here.
+%
+% The matrix bench regenerates one project per fixture scale, so
+% fact_count is a legitimate generation-time parameter. When omitted
+% (FactCountAtom = '0') the resolver's safe default is eager.
+materialisation_metadata(FactCountAtom, Metadata) :-
+    ( atom_number(FactCountAtom, FactCount0) -> true ; FactCount0 = 0 ),
+    FactCount is max(0, FactCount0),
+    Metadata = [fact_count(FactCount)].
+
+% Resolve the requested materialisation atom against fixture metadata.
+% Explicit eager/lazy/cached pass through unchanged; auto runs the
+% cost-model decision tree. Always re-derives the option list from the
+% resolved mode so downstream codegen sees the concrete mode.
+resolve_lmdb_materialisation(RequestedAtom, Metadata, Mode, [lmdb_materialisation(Mode)]) :-
+    resolve_auto_lmdb_materialisation([lmdb_materialisation(RequestedAtom) | Metadata], Mode).
 
 % Lazy / cached modes only make sense when the LMDB is opened at
 % runtime (i.e., lmdb_mode == cursor). Without it there is no
@@ -140,7 +161,7 @@ collect_wam_predicates(accumulated, [
     user:'category_ancestor$effective_distance_sum_bound'/3
 ]).
 
-write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbMaterialisation) :-
+write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbMaterialisation, CacheCapacity) :-
     directory_file_path(OutputDir, 'src', SrcDir),
     directory_file_path(SrcDir, 'main.rs', MainPath),
     format(string(ModeMetric), 'wam_rust_matrix_~w_~w', [EmitModeAtom, KernelModeAtom]),
@@ -149,7 +170,7 @@ write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbMat
     ;   rust_main_template(Template)
     ),
     format(string(BaseCode), Template, [ModeMetric]),
-    apply_lmdb_materialisation_transform(LmdbMaterialisation, BaseCode, Code),
+    apply_lmdb_materialisation_transform(LmdbMaterialisation, CacheCapacity, BaseCode, Code),
     setup_call_cleanup(
         open(MainPath, write, Stream, [encoding(utf8)]),
         format(Stream, '~w', [Code]),
@@ -163,11 +184,11 @@ write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbMat
 % by lazy and cached) is injected after the LmdbFactSource use
 % statement. Eager mode is a pass-through (the base template
 % already has the eager setup inline).
-apply_lmdb_materialisation_transform(eager, Code, Code).
-apply_lmdb_materialisation_transform(lazy, BaseCode, Code) :-
-    rewrite_for_lookup_source_mode(lazy, BaseCode, Code).
-apply_lmdb_materialisation_transform(cached, BaseCode, Code) :-
-    rewrite_for_lookup_source_mode(cached, BaseCode, Code).
+apply_lmdb_materialisation_transform(eager, _CacheCapacity, Code, Code).
+apply_lmdb_materialisation_transform(lazy, CacheCapacity, BaseCode, Code) :-
+    rewrite_for_lookup_source_mode(lazy, CacheCapacity, BaseCode, Code).
+apply_lmdb_materialisation_transform(cached, CacheCapacity, BaseCode, Code) :-
+    rewrite_for_lookup_source_mode(cached, CacheCapacity, BaseCode, Code).
 
 % --- R8a lookup-source-mode rewrite (lazy + cached) ---
 %
@@ -177,8 +198,8 @@ apply_lmdb_materialisation_transform(cached, BaseCode, Code) :-
 % the rendered base main.rs at the eager-block anchors. Also injects
 % the LazyCategoryParents struct (shared between lazy and cached) at
 % module scope.
-rewrite_for_lookup_source_mode(Mode, BaseCode, Code) :-
-    materialisation_setup_dict(Mode, Dict),
+rewrite_for_lookup_source_mode(Mode, CacheCapacity, BaseCode, Code) :-
+    materialisation_setup_dict(Mode, CacheCapacity, Dict),
     materialisation_setup_template(SetupTemplate),
     render_template(SetupTemplate, Dict, RenderedSetup),
     lazy_struct_template(StructTemplate),
@@ -187,12 +208,17 @@ rewrite_for_lookup_source_mode(Mode, BaseCode, Code) :-
     replace_eager_setup_block(Code1, RenderedSetup, Code).
 
 % Build the Dict passed to render_template for the materialisation
-% setup template. Cache-capacity / shard defaults are R8a placeholders;
-% R8b's auto-resolver will compute these from /proc/meminfo.
-materialisation_setup_dict(Mode, [
+% setup template. cache_capacity_default is the §3.1
+% `unrestricted_working_set` clamp computed by R8b's resolver
+% (resolve_lmdb_cache_capacity/2); the generated Rust applies the
+% MemAvailable-dependent clamp on top of it at runtime. cache_cap_pct
+% and cache_floor_bytes parameterise that runtime clamp (§3.1).
+materialisation_setup_dict(Mode, CacheCapacity, [
     materialisation = Mode,
-    cache_capacity_default = 1024,
-    cache_shards_default = 4
+    cache_capacity_default = CacheCapacity,
+    cache_shards_default = 4,
+    cache_cap_pct = '0.5',
+    cache_floor_bytes = 536870912
 ]).
 
 % Locate + read the materialisation-setup mustache template.
@@ -217,7 +243,7 @@ rust_wam_template_path(Filename, Path) :-
                         '/templates/targets/rust_wam/', Filename], Path).
 
 inject_lazy_struct(Source, RenderedStruct, Result) :-
-    StructAnchor = "use wam_rust_matrix_bench::lmdb_fact_source::LmdbFactSource;",
+    StructAnchor = "use wam_lib::lmdb_fact_source::LmdbFactSource;",
     find_and_split_once(Source, StructAnchor, Prefix, Suffix),
     atomics_to_string([Prefix, StructAnchor, "\n", RenderedStruct, Suffix], Result).
 
@@ -246,12 +272,12 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::time::Instant;
 
-use wam_rust_matrix_bench::foreign_pred_keys;
-use wam_rust_matrix_bench::setup_foreign_predicates;
-use wam_rust_matrix_bench::shared_wam_program;
-use wam_rust_matrix_bench::instructions::Instruction;
-use wam_rust_matrix_bench::state::WamState;
-use wam_rust_matrix_bench::value::Value;
+use wam_lib::foreign_pred_keys;
+use wam_lib::setup_foreign_predicates;
+use wam_lib::shared_wam_program;
+use wam_lib::instructions::Instruction;
+use wam_lib::state::WamState;
+use wam_lib::value::Value;
 
 fn load_tsv_pairs(path: &Path) -> Vec<(String, String)> {
     let file = File::open(path).unwrap_or_else(|e| panic!("cannot open {}: {}", path.display(), e));
@@ -843,13 +869,13 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::time::Instant;
 
-use wam_rust_matrix_bench::foreign_pred_keys;
-use wam_rust_matrix_bench::setup_foreign_predicates;
-use wam_rust_matrix_bench::shared_wam_program;
-use wam_rust_matrix_bench::instructions::Instruction;
-use wam_rust_matrix_bench::state::WamState;
-use wam_rust_matrix_bench::value::Value;
-use wam_rust_matrix_bench::lmdb_fact_source::LmdbFactSource;
+use wam_lib::foreign_pred_keys;
+use wam_lib::setup_foreign_predicates;
+use wam_lib::shared_wam_program;
+use wam_lib::instructions::Instruction;
+use wam_lib::state::WamState;
+use wam_lib::value::Value;
+use wam_lib::lmdb_fact_source::LmdbFactSource;
 
 fn load_tsv_pairs(path: &Path) -> Vec<(String, String)> {
     let file = File::open(path).unwrap_or_else(|e| panic!("cannot open {}: {}", path.display(), e));
