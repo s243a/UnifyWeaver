@@ -367,9 +367,12 @@ test_reverse_csr_generation :-
         atom_string(RuntimeCode, S),
         sub_string(S, _, _, _, 'void wam_reverse_csr_init'),
         sub_string(S, _, _, _, 'bool wam_reverse_csr_load'),
+        sub_string(S, _, _, _, 'bool wam_reverse_csr_load_pread_drop'),
         sub_string(S, _, _, _, 'bool wam_reverse_csr_load_lmdb_offset'),
+        sub_string(S, _, _, _, 'bool wam_reverse_csr_load_lmdb_offset_pread_drop'),
         sub_string(S, _, _, _, 'int wam_reverse_csr_lookup_children'),
         sub_string(S, _, _, _, 'pread('),
+        sub_string(S, _, _, _, 'posix_fadvise'),
         sub_string(S, _, _, _, 'wam_read_i32_le')
     ->  pass(Test)
     ;   fail_test(Test, 'reverse CSR helpers missing')
@@ -408,6 +411,7 @@ test_reverse_index_plan_csr_cost_model :-
         memberchk(runtime_child_lookup(available), Capabilities),
         memberchk(runtime_api(wam_reverse_csr_lookup_children), Capabilities),
         memberchk(runtime_index_backend(lmdb_offset), Capabilities),
+        memberchk(runtime_io(pread_drop), Capabilities),
         memberchk(runtime_requires(wam_c_enable_lmdb), Capabilities)
     ->  pass(Test)
     ;   fail_test(Test, 'CSR options were not normalized through the cost model')
@@ -473,6 +477,24 @@ test_reverse_index_plan_runtime_direct_io_unsupported :-
     ;   fail_test(Test, 'runtime direct_io CSR artifact should not be marked available')
     ).
 
+test_reverse_index_plan_runtime_buffered_pread_drop_available :-
+    Test = 'WAM-C: runtime buffered_pread_drop CSR artifact is available',
+    (   resolve_wam_c_reverse_index_plan(
+            [reverse_index(artifact([
+                storage_kind(csr_pread_artifact),
+                phase(runtime_available),
+                index_backend(sorted_array),
+                io_policy(buffered_pread_drop)
+            ]))],
+            wam_c_reverse_index_plan(artifact(Resolved), Capabilities)
+        ),
+        memberchk(io_policy(buffered_pread_drop), Resolved),
+        memberchk(runtime_child_lookup(available), Capabilities),
+        memberchk(runtime_io(pread_drop), Capabilities)
+    ->  pass(Test)
+    ;   fail_test(Test, 'runtime buffered_pread_drop CSR artifact should be marked available')
+    ).
+
 test_reverse_index_setup_generation :-
     Test = 'WAM-C: reverse_index artifact emits CSR setup lifecycle',
     (   generate_setup_reverse_index_c(
@@ -518,6 +540,26 @@ test_reverse_index_setup_lmdb_offset_generation :-
     ;   fail_test(Test, 'LMDB-offset CSR setup load order changed')
     ).
 
+test_reverse_index_setup_lmdb_offset_pread_drop_generation :-
+    Test = 'WAM-C: reverse_index lmdb-offset setup emits buffered_pread_drop loader',
+    (   generate_setup_reverse_index_c(
+            [reverse_index(artifact([
+                storage_kind(csr_pread_artifact),
+                phase(runtime_available),
+                index_backend(lmdb_offset),
+                io_policy(buffered_pread_drop)
+            ])),
+             reverse_csr_offset_lmdb_path('/tmp/category_child.offsets.lmdb'),
+             reverse_csr_values_path('/tmp/category_child.csr.val'),
+             reverse_csr_offset_lmdb_dbi(offsets)],
+            Code
+        ),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'wam_reverse_csr_load_lmdb_offset_pread_drop(bidirectional_child_csr, "/tmp/category_child.csr.val", "/tmp/category_child.offsets.lmdb", "offsets")')
+    ->  pass(Test)
+    ;   fail_test(Test, 'LMDB-offset buffered_pread_drop CSR setup loader missing')
+    ).
+
 test_reverse_index_setup_rejects_runtime_direct_io :-
     Test = 'WAM-C: reverse_index setup rejects unimplemented direct_io runtime policy',
     (   catch((generate_setup_reverse_index_c(
@@ -537,23 +579,23 @@ test_reverse_index_setup_rejects_runtime_direct_io :-
     ;   fail_test(Test, 'expected permission_error(use, csr_io_policy, direct_io)')
     ).
 
-test_reverse_index_setup_rejects_runtime_buffered_pread_drop :-
-    Test = 'WAM-C: reverse_index setup rejects unimplemented buffered_pread_drop runtime policy',
-    (   catch((generate_setup_reverse_index_c(
-                   [reverse_index(artifact([
-                       storage_kind(csr_pread_artifact),
-                       phase(runtime_available),
-                       index_backend(sorted_array),
-                       io_policy(buffered_pread_drop)
-                   ])),
-                    reverse_csr_index_path('/tmp/category_child.csr.idx'),
-                    reverse_csr_values_path('/tmp/category_child.csr.val')],
-                   _Code
-               ), fail),
-              error(permission_error(use, csr_io_policy, buffered_pread_drop), _),
-              true)
+test_reverse_index_setup_buffered_pread_drop_generation :-
+    Test = 'WAM-C: reverse_index setup emits buffered_pread_drop loader',
+    (   generate_setup_reverse_index_c(
+            [reverse_index(artifact([
+                storage_kind(csr_pread_artifact),
+                phase(runtime_available),
+                index_backend(sorted_array),
+                io_policy(buffered_pread_drop)
+            ])),
+             reverse_csr_index_path('/tmp/category_child.csr.idx'),
+             reverse_csr_values_path('/tmp/category_child.csr.val')],
+            Code
+        ),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'wam_reverse_csr_load_pread_drop(bidirectional_child_csr, "/tmp/category_child.csr.idx", "/tmp/category_child.csr.val")')
     ->  pass(Test)
-    ;   fail_test(Test, 'expected permission_error(use, csr_io_policy, buffered_pread_drop)')
+    ;   fail_test(Test, 'buffered_pread_drop CSR setup loader missing')
     ).
 
 test_streaming_foreign_results_generation :-
@@ -5134,10 +5176,12 @@ run_tests_once :-
     test_reverse_index_plan_runtime_available_sorted_array,
     test_reverse_index_plan_runtime_available_lmdb_offset,
     test_reverse_index_plan_runtime_direct_io_unsupported,
+    test_reverse_index_plan_runtime_buffered_pread_drop_available,
     test_reverse_index_setup_generation,
     test_reverse_index_setup_lmdb_offset_generation,
+    test_reverse_index_setup_lmdb_offset_pread_drop_generation,
     test_reverse_index_setup_rejects_runtime_direct_io,
-    test_reverse_index_setup_rejects_runtime_buffered_pread_drop,
+    test_reverse_index_setup_buffered_pread_drop_generation,
     test_streaming_foreign_results_generation,
     test_kernel_detector_setup_generation,
     test_bidirectional_ancestor_setup_generation,
