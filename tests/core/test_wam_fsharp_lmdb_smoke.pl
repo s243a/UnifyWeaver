@@ -15,6 +15,7 @@
 :- encoding(utf8).
 :- use_module('../../src/unifyweaver/targets/wam_fsharp_target',
               [write_wam_fsharp_project/3]).
+:- use_module('../helpers/smoke_paths', [python_cmd/1]).
 :- use_module(library(filesex), [delete_directory_and_contents/1,
                                   make_directory_path/1,
                                   directory_file_path/3]).
@@ -42,8 +43,9 @@ main :-
 
     %% Step 1: Generate synthetic Phase 1 LMDB (10 parents, 3 children each)
     format('Generating LMDB fixture...~n'),
+    python_cmd(Py),
     setup_call_cleanup(
-        process_create(path(python3),
+        process_create(path(Py),
                        ['examples/benchmark/generate_synthetic_phase1_lmdb.py',
                         LmdbDir,
                         '--parents', '5',
