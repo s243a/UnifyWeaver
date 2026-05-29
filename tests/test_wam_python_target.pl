@@ -28,10 +28,10 @@ test(wam_python_module) :-
 	target_registry:target_module(wam_python, wam_python_target).
 
 test(wam_python_has_wam_capability) :-
-	target_registry:target_has_capability(wam_python, wam).
+	once(target_registry:target_has_capability(wam_python, wam)).
 
 test(wam_python_has_trail_backtracking) :-
-	target_registry:target_has_capability(wam_python, trail_backtracking).
+	once(target_registry:target_has_capability(wam_python, trail_backtracking)).
 
 :- end_tests(wam_python_registry).
 
@@ -1770,7 +1770,7 @@ test(is_not_match_call) :-
 test(ite_block_detected) :-
 	% Two-clause ITE: foo(a) and foo(b)
 	Instrs = [get_constant(a, "1"), proceed, get_constant(b, "1"), proceed],
-	wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks),
+	once(wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks)),
 	length(Blocks, 2).
 
 test(ite_block_three_clauses) :-
@@ -1778,7 +1778,7 @@ test(ite_block_three_clauses) :-
 	Instrs = [get_constant(a, "1"), proceed,
 	          get_constant(b, "1"), proceed,
 	          get_constant(c, "1"), proceed],
-	wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks),
+	once(wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks)),
 	length(Blocks, 3).
 
 test(ite_block_not_detected_single_clause) :-
@@ -1791,7 +1791,7 @@ test(ite_block_with_fail_fallthrough) :-
 	Instrs = [get_constant(a, "1"), proceed,
 	          get_constant(b, "1"), proceed,
 	          fail],
-	wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks),
+	once(wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks)),
 	length(Blocks, 3).
 
 test(emit_ite_generates_if, [nondet]) :-
