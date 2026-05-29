@@ -4299,6 +4299,16 @@ f2.print_lit:
 f2.directive:
   %f2.p_dir = getelementptr i8, i8* %f2.p, i32 1
   %f2.d = load i8, i8* %f2.p_dir
+  ; M15: digit -> precision-prefixed directive (~Nf / ~Ne). Parse
+  ; the digit run, then look at the terminator: ``f`` -> fixed-point
+  ; (printf "%.*f"), ``e`` -> scientific (printf "%.*e"), anything
+  ; else -> unknown, print verbatim.
+  %f2.d_ge0 = icmp uge i8 %f2.d, 48
+  %f2.d_le9 = icmp ule i8 %f2.d, 57
+  %f2.d_is_digit = and i1 %f2.d_ge0, %f2.d_le9
+  br i1 %f2.d_is_digit, label %f2.parse_num, label %f2.dispatch_letter
+
+f2.dispatch_letter:
   switch i8 %f2.d, label %f2.unknown_dir [
     i8 119, label %f2.directive_w
     i8 100, label %f2.directive_w
@@ -4306,6 +4316,89 @@ f2.directive:
     i8 110, label %f2.directive_n
     i8 126, label %f2.directive_t
   ]
+
+f2.parse_num:
+  br label %f2.num_loop
+f2.num_loop:
+  %f2.np = phi i8* [ %f2.p_dir, %f2.parse_num ], [ %f2.np_next, %f2.num_step ]
+  %f2.nacc = phi i64 [ 0, %f2.parse_num ], [ %f2.nacc_new, %f2.num_step ]
+  %f2.nc = load i8, i8* %f2.np
+  %f2.nc_ge0 = icmp uge i8 %f2.nc, 48
+  %f2.nc_le9 = icmp ule i8 %f2.nc, 57
+  %f2.nc_is_d = and i1 %f2.nc_ge0, %f2.nc_le9
+  br i1 %f2.nc_is_d, label %f2.num_step, label %f2.num_done
+f2.num_step:
+  %f2.nd_val_i8 = sub i8 %f2.nc, 48
+  %f2.nd_val = zext i8 %f2.nd_val_i8 to i64
+  %f2.nacc_mul = mul i64 %f2.nacc, 10
+  %f2.nacc_new = add i64 %f2.nacc_mul, %f2.nd_val
+  %f2.np_next = getelementptr i8, i8* %f2.np, i32 1
+  br label %f2.num_loop
+f2.num_done:
+  ; %f2.np points to the terminator char (the first non-digit after ~).
+  ; ``f`` and ``e`` both consume one float-promotable arg and use
+  ; printf("%.*<spec>", N, val). The pointer advances past the
+  ; terminator (np + 1).
+  %f2.nc_is_f = icmp eq i8 %f2.nc, 102
+  %f2.nc_is_e = icmp eq i8 %f2.nc, 101
+  %f2.nc_is_fe = or i1 %f2.nc_is_f, %f2.nc_is_e
+  br i1 %f2.nc_is_fe, label %f2.precision_print, label %f2.precision_unknown
+
+f2.precision_unknown:
+  ; Bad ~<digits><non-fe>: print the ~ then fall through to the
+  ; ordinary unknown handler which will print the next char. Drop
+  ; the parsed digits (best-effort -- atypical in practice).
+  call i32 @putchar(i32 126)
+  %f2.nc_i32 = zext i8 %f2.nc to i32
+  call i32 @putchar(i32 %f2.nc_i32)
+  %f2.p_after_punk = getelementptr i8, i8* %f2.np, i32 1
+  br label %f2.iter_end
+
+f2.precision_print:
+  ; Consume one arg from the args list; promote to double via
+  ; value_to_double; call printf with the chosen format ("%.*f" or
+  ; "%.*e") and the parsed precision N.
+  %f2.parg_d = call %Value @wam_deref_value(%WamState* %vm, %Value %f2.args)
+  %f2.parg_tag = extractvalue %Value %f2.parg_d, 0
+  %f2.parg_has = icmp eq i32 %f2.parg_tag, 3
+  br i1 %f2.parg_has, label %f2.precision_read_arg, label %f2.precision_no_arg
+
+f2.precision_no_arg:
+  ; No arg available: silently skip the directive but advance the
+  ; pointer past the terminator so we don''t loop forever.
+  %f2.p_after_pna = getelementptr i8, i8* %f2.np, i32 1
+  br label %f2.iter_end
+
+f2.precision_read_arg:
+  %f2.pcp_bits = extractvalue %Value %f2.parg_d, 1
+  %f2.pcp = inttoptr i64 %f2.pcp_bits to %Compound*
+  %f2.pcargs_slot = getelementptr %Compound, %Compound* %f2.pcp, i32 0, i32 2
+  %f2.pcargs = load %Value*, %Value** %f2.pcargs_slot
+  %f2.phead_ptr = getelementptr %Value, %Value* %f2.pcargs, i32 0
+  %f2.phead_raw = load %Value, %Value* %f2.phead_ptr
+  %f2.phead = call %Value @wam_deref_value(%WamState* %vm, %Value %f2.phead_raw)
+  %f2.ptail_ptr = getelementptr %Value, %Value* %f2.pcargs, i32 1
+  %f2.ptail = load %Value, %Value* %f2.ptail_ptr
+  %f2.pval_d = call double @value_to_double(%Value %f2.phead)
+  %f2.nacc_i32 = trunc i64 %f2.nacc to i32
+  br i1 %f2.nc_is_f, label %f2.do_starf, label %f2.do_stare
+
+f2.do_starf:
+  %f2.fmt_sf = getelementptr [5 x i8], [5 x i8]* @.fmt_starf, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %f2.fmt_sf, i32 %f2.nacc_i32, double %f2.pval_d)
+  br label %f2.precision_after
+
+f2.do_stare:
+  %f2.fmt_se = getelementptr [5 x i8], [5 x i8]* @.fmt_stare, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %f2.fmt_se, i32 %f2.nacc_i32, double %f2.pval_d)
+  br label %f2.precision_after
+
+f2.precision_after:
+  %f2.p_after_pcons = getelementptr i8, i8* %f2.np, i32 1
+  br label %f2.iter_end_precision_consume
+
+f2.iter_end_precision_consume:
+  br label %f2.iter_end
 
 f2.directive_n:
   call i32 @putchar(i32 10)
@@ -4394,21 +4487,26 @@ f2.iter_end_consume:
   br label %f2.iter_end
 
 f2.iter_end:
-  ; Merge all per-iteration paths. The consume path arrives via
-  ; %f2.iter_end_consume and uses %f2.tail; everything else keeps
-  ; %f2.args unchanged.
+  ; Merge all per-iteration paths. Consume paths advance args to
+  ; %f2.tail / %f2.ptail; everything else keeps %f2.args unchanged.
   %f2.p_next = phi i8* [ %f2.p_lit_next, %f2.print_lit ],
                         [ %f2.p_after_n, %f2.directive_n ],
                         [ %f2.p_after_t, %f2.directive_t ],
                         [ %f2.p_after_u, %f2.unknown_dir ],
                         [ %f2.p_no_arg, %f2.no_arg ],
-                        [ %f2.p_after_w, %f2.iter_end_consume ]
+                        [ %f2.p_after_w, %f2.iter_end_consume ],
+                        [ %f2.p_after_punk, %f2.precision_unknown ],
+                        [ %f2.p_after_pna, %f2.precision_no_arg ],
+                        [ %f2.p_after_pcons, %f2.iter_end_precision_consume ]
   %f2.args_next = phi %Value [ %f2.args, %f2.print_lit ],
                               [ %f2.args, %f2.directive_n ],
                               [ %f2.args, %f2.directive_t ],
                               [ %f2.args, %f2.unknown_dir ],
                               [ %f2.args, %f2.no_arg ],
-                              [ %f2.tail, %f2.iter_end_consume ]
+                              [ %f2.tail, %f2.iter_end_consume ],
+                              [ %f2.args, %f2.precision_unknown ],
+                              [ %f2.args, %f2.precision_no_arg ],
+                              [ %f2.ptail, %f2.iter_end_precision_consume ]
   br label %f2.loop
 
 f2.done:

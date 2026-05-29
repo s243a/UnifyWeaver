@@ -301,6 +301,33 @@ test_fmt_tilde_escape(_, R) :-
     format('about ~~w~n', []),
     R is 1.
 
+% M15: precision directives ~Nf (fixed-point) and ~Ne (scientific).
+% Parses the digit run between ~ and f/e at runtime, then routes the
+% next arg through printf "%.*f" / "%.*e" with the parsed precision.
+:- dynamic test_fmt_6f/2.
+test_fmt_6f(_, R) :-
+    X is 1 / 4,                       % Float 0.25
+    format('~6f~n', [X]),
+    R is 1.
+
+:- dynamic test_fmt_3f/2.
+test_fmt_3f(_, R) :-
+    X is 1 / 8,                       % Float 0.125
+    format('d=~3f~n', [X]),
+    R is 1.
+
+:- dynamic test_fmt_int_via_f/2.
+test_fmt_int_via_f(_, R) :-
+    % Integer arg routed through ~Nf: should promote via sitofp.
+    format('n=~2f~n', [7]),
+    R is 1.
+
+:- dynamic test_fmt_2e/2.
+test_fmt_2e(_, R) :-
+    X is 1 / 4000,                    % Float 0.00025
+    format('e=~2e~n', [X]),
+    R is 1.
+
 % Runner for format/2 tests: captures stdout, compares against an
 % expected string. The test predicate must end with `R is 1` so the
 % module compiles cleanly and the call succeeds.
@@ -712,6 +739,15 @@ test_all :-
                     "color=red\n"),
        run_fmt_test('"about ~~w~n" tilde escape', test_fmt_tilde_escape,
                     "about ~w\n"),
+       format('--- M15 precision directives (~~Nf / ~~Ne) ---~n'),
+       run_fmt_test('"~6f~n" with 0.25', test_fmt_6f,
+                    "0.250000\n"),
+       run_fmt_test('"d=~3f~n" with 0.125', test_fmt_3f,
+                    "d=0.125\n"),
+       run_fmt_test('"n=~2f~n" with integer 7', test_fmt_int_via_f,
+                    "n=7.00\n"),
+       run_fmt_test('"e=~2e~n" with 0.00025', test_fmt_2e,
+                    "e=2.50e-04\n"),
        format('--- M10 \\+ negation-as-failure (inline rewrite) ---~n'),
        run_test_r0('\\+ in_basket(soap) -> succeeds, R=7',
                    test_not_absent + [in_basket/1], 0, 7),
