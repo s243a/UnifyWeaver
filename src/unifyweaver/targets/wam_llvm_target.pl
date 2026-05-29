@@ -1223,10 +1223,16 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     % Emit functor string globals collected during WAM compilation.
     emit_functor_string_globals(FunctorGlobals),
 
+    % M12: emit per-atom string globals + lookup table so format/2,
+    % write/1 of atoms, and other runtime code can resolve interned
+    % atom ids back to printable strings.
+    emit_atom_string_globals(AtomStringGlobals),
+
     % Prepend foreign kernel globals + functor strings to the native
     % predicates section so they are at module scope before any use.
     atomic_list_concat([ForeignGlobals, '\n', FunctorGlobals, '\n',
-        EmptyListGlobal, '\n\n', NativeCode], FinalNativeCode),
+        EmptyListGlobal, '\n', AtomStringGlobals, '\n\n', NativeCode],
+        FinalNativeCode),
 
     % Generate external declarations (native vs WASM).
     generate_external_declarations(Triple, ExternalDecls),
@@ -1391,13 +1397,19 @@ define i32 @snprintf(i8* %buf, i64 %size, i8* %fmt, ...) {
 define i32 @strcmp(i8* %a, i8* %b) {
   ret i32 0
 }
+
+; Stub putchar for WASM (no-op, returns 0).
+define i32 @putchar(i32 %c) {
+  ret i32 0
+}
 '
     ;  Decls = 'declare i8* @malloc(i64)
 declare i8* @realloc(i8*, i64)
 declare void @free(i8*)
 declare i32 @snprintf(i8*, i64, i8*, ...)
 declare i32 @strcmp(i8*, i8*)
-declare i32 @printf(i8*, ...)'
+declare i32 @printf(i8*, ...)
+declare i32 @putchar(i32)'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
@@ -3320,6 +3332,8 @@ entry:
     i32 29, label %builtin_copy_term
     i32 30, label %builtin_msort
     i32 31, label %builtin_length
+    i32 32, label %builtin_format2
+    i32 33, label %builtin_format1
   ]
 
 builtin_is:
@@ -4141,6 +4155,176 @@ ln.cmp:
   %ln.eq = call i1 @value_equals(%Value %ln.a2d, %Value %ln.r_val)
   ret i1 %ln.eq
 
+builtin_format2:
+  ; M12: format/2 -- A1 = format string atom, A2 = args list ([|]/2 chain).
+  ; Walks the format string char by char. ~w/~d/~a consume the next
+  ; arg and print its value (dispatched on tag: Integer printf %lld,
+  ; Float printf %g, Atom printf %s after atom-table lookup).
+  ; ~n prints newline; ~~ prints a literal tilde; anything else
+  ; (unknown directives) passes through verbatim. Bound at the
+  ; module via the M12 @wam_atom_strings global, so a literal format
+  ; atom like ''hello ~w~n'' resolves at runtime to its C string.
+  %f2.fmt_v = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %f2.fmt_id = extractvalue %Value %f2.fmt_v, 1
+  %f2.fmt_p0 = call i8* @wam_atom_to_string(i64 %f2.fmt_id)
+  %f2.args0 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %f2.null = icmp eq i8* %f2.fmt_p0, null
+  br i1 %f2.null, label %f2.done, label %f2.loop
+
+builtin_format1:
+  ; format/1: same as format/2 but with no args. Build a fresh empty
+  ; args list (Atom [] sentinel) and fall through to the same loop.
+  %f1.fmt_v = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %f1.fmt_id = extractvalue %Value %f1.fmt_v, 1
+  %f1.fmt_p0 = call i8* @wam_atom_to_string(i64 %f1.fmt_id)
+  %f1.empty_id = load i64, i64* @wam_empty_list_atom_id
+  %f1.args_v0 = insertvalue %Value undef, i32 0, 0
+  %f1.args0 = insertvalue %Value %f1.args_v0, i64 %f1.empty_id, 1
+  %f1.null = icmp eq i8* %f1.fmt_p0, null
+  br i1 %f1.null, label %f2.done, label %f2.loop
+
+f2.loop:
+  ; Per-iteration state: %p = current ptr into format string, %args
+  ; = remaining args list. Three input edges: format/2 entry,
+  ; format/1 entry, and the per-iteration backedge from %f2.iter_end.
+  %f2.p = phi i8* [ %f2.fmt_p0, %builtin_format2 ],
+                  [ %f1.fmt_p0, %builtin_format1 ],
+                  [ %f2.p_next, %f2.iter_end ]
+  %f2.args = phi %Value [ %f2.args0, %builtin_format2 ],
+                         [ %f1.args0, %builtin_format1 ],
+                         [ %f2.args_next, %f2.iter_end ]
+  %f2.c = load i8, i8* %f2.p
+  %f2.done_p = icmp eq i8 %f2.c, 0
+  br i1 %f2.done_p, label %f2.done, label %f2.check_tilde
+
+f2.check_tilde:
+  %f2.is_tilde = icmp eq i8 %f2.c, 126
+  br i1 %f2.is_tilde, label %f2.directive, label %f2.print_lit
+
+f2.print_lit:
+  %f2.c_i32 = zext i8 %f2.c to i32
+  call i32 @putchar(i32 %f2.c_i32)
+  %f2.p_lit_next = getelementptr i8, i8* %f2.p, i32 1
+  br label %f2.iter_end
+
+f2.directive:
+  %f2.p_dir = getelementptr i8, i8* %f2.p, i32 1
+  %f2.d = load i8, i8* %f2.p_dir
+  switch i8 %f2.d, label %f2.unknown_dir [
+    i8 119, label %f2.directive_w
+    i8 100, label %f2.directive_w
+    i8 97,  label %f2.directive_w
+    i8 110, label %f2.directive_n
+    i8 126, label %f2.directive_t
+  ]
+
+f2.directive_n:
+  call i32 @putchar(i32 10)
+  %f2.p_after_n = getelementptr i8, i8* %f2.p, i32 2
+  br label %f2.iter_end
+
+f2.directive_t:
+  call i32 @putchar(i32 126)
+  %f2.p_after_t = getelementptr i8, i8* %f2.p, i32 2
+  br label %f2.iter_end
+
+f2.unknown_dir:
+  call i32 @putchar(i32 126)
+  %f2.d_i32 = zext i8 %f2.d to i32
+  call i32 @putchar(i32 %f2.d_i32)
+  %f2.p_after_u = getelementptr i8, i8* %f2.p, i32 2
+  br label %f2.iter_end
+
+f2.directive_w:
+  ; Print next arg (if available). Deref args first -- the previous
+  ; iteration left %f2.args as the raw tail field of the cons cell,
+  ; which is typically a Ref into the heap rather than a Compound.
+  %f2.args_d = call %Value @wam_deref_value(%WamState* %vm, %Value %f2.args)
+  %f2.args_tag = extractvalue %Value %f2.args_d, 0
+  %f2.has_arg = icmp eq i32 %f2.args_tag, 3
+  br i1 %f2.has_arg, label %f2.read_arg, label %f2.no_arg
+
+f2.read_arg:
+  %f2.cp_bits = extractvalue %Value %f2.args_d, 1
+  %f2.cp = inttoptr i64 %f2.cp_bits to %Compound*
+  %f2.cargs_slot = getelementptr %Compound, %Compound* %f2.cp, i32 0, i32 2
+  %f2.cargs = load %Value*, %Value** %f2.cargs_slot
+  %f2.head_ptr = getelementptr %Value, %Value* %f2.cargs, i32 0
+  %f2.head_raw = load %Value, %Value* %f2.head_ptr
+  %f2.head = call %Value @wam_deref_value(%WamState* %vm, %Value %f2.head_raw)
+  %f2.tail_ptr = getelementptr %Value, %Value* %f2.cargs, i32 1
+  %f2.tail = load %Value, %Value* %f2.tail_ptr
+  %f2.head_tag = extractvalue %Value %f2.head, 0
+  switch i32 %f2.head_tag, label %f2.print_anon [
+    i32 0, label %f2.print_atom
+    i32 1, label %f2.print_int
+    i32 2, label %f2.print_float
+  ]
+
+f2.print_int:
+  %f2.iv = extractvalue %Value %f2.head, 1
+  %f2.fmt_lld = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %f2.fmt_lld, i64 %f2.iv)
+  br label %f2.after_w
+
+f2.print_float:
+  %f2.fbits = extractvalue %Value %f2.head, 1
+  %f2.fval = bitcast i64 %f2.fbits to double
+  %f2.fmt_dbl = getelementptr [3 x i8], [3 x i8]* @.fmt_dbl, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %f2.fmt_dbl, double %f2.fval)
+  br label %f2.after_w
+
+f2.print_atom:
+  %f2.aid = extractvalue %Value %f2.head, 1
+  %f2.astr = call i8* @wam_atom_to_string(i64 %f2.aid)
+  %f2.astr_null = icmp eq i8* %f2.astr, null
+  br i1 %f2.astr_null, label %f2.after_w, label %f2.print_atom_go
+f2.print_atom_go:
+  %f2.fmt_str = getelementptr [3 x i8], [3 x i8]* @.fmt_str, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %f2.fmt_str, i8* %f2.astr)
+  br label %f2.after_w
+
+f2.print_anon:
+  ; Compound and other tags: print underscore placeholder. Full
+  ; pretty-printing is deferred; effective_distance''s format strings
+  ; only use atoms, integers, and floats.
+  call i32 @putchar(i32 95)
+  br label %f2.after_w
+
+f2.after_w:
+  ; Args consumed: advance to %f2.tail.
+  %f2.p_after_w = getelementptr i8, i8* %f2.p, i32 2
+  br label %f2.iter_end_consume
+
+f2.no_arg:
+  ; No arg available -- skip silently, keep args unchanged.
+  %f2.p_no_arg = getelementptr i8, i8* %f2.p, i32 2
+  br label %f2.iter_end
+
+f2.iter_end_consume:
+  br label %f2.iter_end
+
+f2.iter_end:
+  ; Merge all per-iteration paths. The consume path arrives via
+  ; %f2.iter_end_consume and uses %f2.tail; everything else keeps
+  ; %f2.args unchanged.
+  %f2.p_next = phi i8* [ %f2.p_lit_next, %f2.print_lit ],
+                        [ %f2.p_after_n, %f2.directive_n ],
+                        [ %f2.p_after_t, %f2.directive_t ],
+                        [ %f2.p_after_u, %f2.unknown_dir ],
+                        [ %f2.p_no_arg, %f2.no_arg ],
+                        [ %f2.p_after_w, %f2.iter_end_consume ]
+  %f2.args_next = phi %Value [ %f2.args, %f2.print_lit ],
+                              [ %f2.args, %f2.directive_n ],
+                              [ %f2.args, %f2.directive_t ],
+                              [ %f2.args, %f2.unknown_dir ],
+                              [ %f2.args, %f2.no_arg ],
+                              [ %f2.tail, %f2.iter_end_consume ]
+  br label %f2.loop
+
+f2.done:
+  ret i1 true
+
 unknown:
   ret i1 false
 }'.
@@ -4741,6 +4925,118 @@ emit_functor_string_globals(IR) :-
     ;  atomic_list_concat(Defs, '\n', IR)
     ).
 
+%% emit_atom_string_globals(-IR)
+%
+%  M12: emit per-atom string globals and a runtime lookup table so the
+%  format/2 builtin (and any other runtime code that needs to print an
+%  atom by id) can resolve an interned atom id back to a printable
+%  C string.
+%
+%  Layout:
+%    @.atom_str_<id> = private constant [N x i8] c"<name>\00"   (per atom)
+%    @wam_atom_strings = private constant [Max+1 x i8*] [ ... ]  (lookup)
+%    @wam_atom_string_count = private constant i32 Max+1        (bounds)
+%
+%  Atom ids start at 1 (id 0 is reserved); slot 0 of the lookup array
+%  is the null pointer so a guarded lookup of "atom 0" returns null.
+emit_atom_string_globals(IR) :-
+    findall(Id-Name, atom_table_entry(Name, Id), Pairs0),
+    ( Pairs0 == []
+    -> % Emit a minimal stub so format/2 and any other runtime code that
+       % references @wam_atom_to_string still links. One null slot is
+       % enough -- atom-id lookups will all return null and the printer
+       % silently skips them.
+       IR = '@wam_atom_strings = private constant [1 x i8*] [i8* null]
+@wam_atom_string_count = private constant i32 1
+
+define i8* @wam_atom_to_string(i64 %id) {
+  ret i8* null
+}'
+    ;  sort(Pairs0, Pairs),   % sort by id
+       last(Pairs, MaxId-_),
+       ArrSize is MaxId + 1,
+       % Per-atom string globals.
+       findall(StrGlobal,
+           ( member(Id-Name, Pairs),
+             escape_llvm_string(Name, Escaped, EscapedByteLen),
+             ArrLen is EscapedByteLen + 1,
+             format(atom(StrGlobal),
+                 '@.atom_str_~w = private constant [~w x i8] c"~w\\00"',
+                 [Id, ArrLen, Escaped])
+           ),
+           StrGlobals),
+       % Lookup table: slot 0 = null, slot Id = ptr to @.atom_str_<Id>.
+       findall(SlotEntry,
+           ( numlist(0, MaxId, Idxs),
+             member(Idx, Idxs),
+             ( Idx == 0
+             -> SlotEntry = 'i8* null'
+             ;  member(Idx-IdxName, Pairs)
+             -> escape_llvm_string(IdxName, _, IdxByteLen),
+                IdxArrLen is IdxByteLen + 1,
+                format(atom(SlotEntry),
+                    'i8* getelementptr ([~w x i8], [~w x i8]* @.atom_str_~w, i32 0, i32 0)',
+                    [IdxArrLen, IdxArrLen, Idx])
+             ;  SlotEntry = 'i8* null'
+             )
+           ),
+           Slots),
+       atomic_list_concat(Slots, ',\n  ', SlotsStr),
+       format(atom(LookupTable),
+'@wam_atom_strings = private constant [~w x i8*] [
+  ~w
+]
+@wam_atom_string_count = private constant i32 ~w
+
+define i8* @wam_atom_to_string(i64 %id) {
+entry:
+  %cnt = load i32, i32* @wam_atom_string_count
+  %cnt64 = zext i32 %cnt to i64
+  %in_range = icmp ult i64 %id, %cnt64
+  br i1 %in_range, label %lookup, label %nullret
+lookup:
+  %slot_ptr = getelementptr [~w x i8*], [~w x i8*]* @wam_atom_strings, i32 0, i64 %id
+  %s = load i8*, i8** %slot_ptr
+  ret i8* %s
+nullret:
+  ret i8* null
+}',
+           [ArrSize, SlotsStr, ArrSize, ArrSize, ArrSize]),
+       atomic_list_concat(StrGlobals, '\n', StrGlobalsStr),
+       atomic_list_concat([StrGlobalsStr, LookupTable], '\n\n', IR)
+    ).
+
+%% escape_llvm_string(+Name, -Escaped, -ByteLen)
+%
+%  Encode an arbitrary atom name as the body of an LLVM `c"..."`
+%  string literal. Printable ASCII (0x20..0x7E except `"` and `\\`)
+%  passes through; everything else (including spaces, since those
+%  print fine, but tildes / newlines / quotes / backslashes that the
+%  WAM compiler''s format-string interning produces) emits as `\HH`.
+%  ByteLen is the number of underlying bytes in the unescaped name,
+%  which is also the length the runtime needs for the array size.
+escape_llvm_string(Name, Escaped, ByteLen) :-
+    ( atom(Name) -> atom_codes(Name, Codes)
+    ; string(Name) -> string_codes(Name, Codes)
+    ; Codes = Name
+    ),
+    length(Codes, ByteLen),
+    escape_llvm_codes(Codes, EscCodes),
+    string_codes(Escaped, EscCodes).
+
+escape_llvm_codes([], []).
+escape_llvm_codes([C|Cs], Out) :-
+    ( C >= 0x20, C =< 0x7E, C \== 0x22, C \== 0x5C
+    -> Out = [C|Rest],
+       escape_llvm_codes(Cs, Rest)
+    ;  Hi is (C >> 4) /\ 0xF,
+       Lo is C /\ 0xF,
+       hex_digit(Hi, HiC),
+       hex_digit(Lo, LoC),
+       Out = [0'\\, HiC, LoC | Rest],
+       escape_llvm_codes(Cs, Rest)
+    ).
+
 %% sanitize_functor_for_llvm(+Name, -Sanitized)
 %  Produce a bijective LLVM-identifier encoding of Name. Alphanumeric
 %  bytes pass through unchanged; everything else (including underscore)
@@ -4886,6 +5182,8 @@ builtin_op_to_id('=../2', 28).
 builtin_op_to_id('copy_term/2', 29).
 builtin_op_to_id('msort/2', 30).
 builtin_op_to_id('length/2', 31).
+builtin_op_to_id('format/2', 32).
+builtin_op_to_id('format/1', 33).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
@@ -5104,7 +5402,15 @@ wam_lines_to_llvm(Lines, StartPC, LLVMLits, LabelEntries) :-
 %  First pass: separate labels from instructions, track PC.
 wam_lines_pass1([], _, [], []).
 wam_lines_pass1([Line|Rest], PC, RawInstrs, Labels) :-
-    split_string(Line, " \t", " \t", Parts),
+    % M12: quote-aware split. A `put_constant 'hello world~n', A1`
+    % bytecode line has whitespace inside the single-quoted atom; the
+    % old space/tab split shattered it into garbage parts that the
+    % per-instruction parser couldn't recognise and fell to the
+    % `; TODO: ...` stub, which broke @module_code array length
+    % accounting at llc time. Now `'...'` groups are preserved as a
+    % single Part (with the quotes still attached -- downstream
+    % clean_comma + llvm_pack_value_str strips them).
+    quote_aware_split(Line, Parts),
     delete(Parts, "", CleanParts),
     (   CleanParts == []
     ->  wam_lines_pass1(Rest, PC, RawInstrs, Labels)
@@ -5118,6 +5424,58 @@ wam_lines_pass1([Line|Rest], PC, RawInstrs, Labels) :-
             wam_lines_pass1(Rest, NPC, RestInstrs, Labels)
         )
     ).
+
+%% quote_aware_split(+Line, -Parts)
+%
+%  Split Line on whitespace while preserving single-quoted runs as a
+%  single Part. Quote escapes inside a quoted run follow the standard
+%  Prolog convention: a doubled `''` is a single literal apostrophe.
+%  Quotes themselves stay in the returned Part (so callers can tell a
+%  quoted atom from an unquoted identifier); the downstream
+%  clean_comma + llvm_pack_value_str path handles stripping.
+quote_aware_split(Line, Parts) :-
+    ( atom(Line) -> atom_codes(Line, Codes)
+    ; string(Line) -> string_codes(Line, Codes)
+    ; Codes = Line
+    ),
+    qa_split(Codes, [], Parts).
+
+% qa_split(+Codes, +CurAcc, -PartsOut)
+qa_split([], [], []) :- !.
+qa_split([], Acc, [Part]) :-
+    reverse(Acc, AccF),
+    string_codes(Part, AccF).
+qa_split([C|Cs], Acc, Out) :-
+    ( ( C == 0' ; C == 0'\t )
+    -> ( Acc == []
+       -> qa_split(Cs, [], Out)
+       ;  reverse(Acc, AccF),
+          string_codes(Part, AccF),
+          Out = [Part | Rest],
+          qa_split(Cs, [], Rest)
+       )
+    ; C == 0''
+    -> % Enter a single-quoted run. Read codes verbatim (handling
+       % doubled `''` as an escape) until the closing quote.
+       qa_quoted([C|Cs], Acc, AccQ, Cs2),
+       qa_split(Cs2, AccQ, Out)
+    ;  qa_split(Cs, [C|Acc], Out)
+    ).
+
+% qa_quoted(+Codes, +AccIn, -AccOut, -RestCodes)
+%  Codes starts with the opening `'`. Reads through to the matching
+%  closing `'`, preserving the quotes (and any escaped doubles) in AccOut.
+qa_quoted([Q|Cs], AccIn, AccOut, RestOut) :-
+    Q = 0'',
+    qa_quoted_body(Cs, [Q|AccIn], AccOut, RestOut).
+
+qa_quoted_body([], Acc, Acc, []).
+qa_quoted_body([0'', 0''|Cs], Acc, AccOut, RestOut) :- !,
+    % Escaped apostrophe: keep both in the accumulator.
+    qa_quoted_body(Cs, [0'', 0''|Acc], AccOut, RestOut).
+qa_quoted_body([0''|Cs], Acc, [0''|Acc], Cs) :- !.
+qa_quoted_body([C|Cs], Acc, AccOut, RestOut) :-
+    qa_quoted_body(Cs, [C|Acc], AccOut, RestOut).
 
 %% build_label_index_map(+LabelEntries, -LabelMap)
 %  Creates an assoc mapping label names to their index in the label array.
@@ -5508,9 +5866,37 @@ clean_comma(S, Clean) :-
 llvm_pack_value_str(Str, Packed) :-
     (   number_string(N, Str)
     ->  Packed = N
-    ;   atom_string(A, Str),
+    ;   strip_quoted_atom(Str, Unquoted),
+        atom_string(A, Unquoted),
         llvm_pack_value(atom(A), Packed)
     ).
+
+%% strip_quoted_atom(+S, -Inner)
+%
+%  If S is a single-quoted atom representation `'...'`, return the
+%  inner string with `''` un-escaped to `'`. Otherwise return S
+%  unchanged.
+strip_quoted_atom(Str, Inner) :-
+    string_length(Str, L),
+    ( L >= 2,
+      sub_string(Str, 0, 1, _, "'"),
+      sub_string(Str, _, 1, 0, "'")
+    -> InnerLen is L - 2,
+       sub_string(Str, 1, InnerLen, 1, Body),
+       % Un-escape `''` (Prolog''s quoted-atom escape for `'`).
+       % Most format strings don''t contain `'`, so this is a no-op
+       % in the common path.
+       string_codes(Body, BodyCodes),
+       unescape_quotes(BodyCodes, UnescCodes),
+       string_codes(Inner, UnescCodes)
+    ;  Inner = Str
+    ).
+
+unescape_quotes([], []).
+unescape_quotes([0'', 0''|Cs], [0''|Rest]) :- !,
+    unescape_quotes(Cs, Rest).
+unescape_quotes([C|Cs], [C|Rest]) :-
+    unescape_quotes(Cs, Rest).
 
 % NOTE: we don't take a %WamState param — the function creates its own vm
 % via wam_state_new() in the entry block. Taking %vm as a param conflicted

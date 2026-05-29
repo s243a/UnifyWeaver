@@ -198,6 +198,97 @@ test_pow_neg_fifth(_, R) :- R is 5 ** -1.    % expect Float(0.2)
 :- dynamic test_pow_neg_two/2.
 test_pow_neg_two(_, R) :- R is 10 ** -2.     % expect Float(0.01)
 
+% M12: format/2 -- prints to stdout. Tested by capturing the shell
+% stdout and comparing against expected string. Each predicate
+% does ONE format call and then succeeds (no R binding -- the
+% format-test driver reads from stdout, not the exit code).
+:- dynamic test_fmt_literal/2.
+test_fmt_literal(_, R) :-
+    format('hello world~n', []),
+    R is 1.
+
+:- dynamic test_fmt_int/2.
+test_fmt_int(_, R) :-
+    format('n=~w~n', [42]),
+    R is 1.
+
+:- dynamic test_fmt_two_ints/2.
+test_fmt_two_ints(_, R) :-
+    format('~w + ~w~n', [3, 4]),
+    R is 1.
+
+:- dynamic test_fmt_atom/2.
+test_fmt_atom(_, R) :-
+    format('color=~w~n', [red]),
+    R is 1.
+
+:- dynamic test_fmt_tilde_escape/2.
+test_fmt_tilde_escape(_, R) :-
+    format('about ~~w~n', []),
+    R is 1.
+
+% Runner for format/2 tests: captures stdout, compares against an
+% expected string. The test predicate must end with `R is 1` so the
+% module compiles cleanly and the call succeeds.
+run_fmt_test(Label, PredAtom, ExpectedStdout) :-
+    format('  ~w: ', [Label]),
+    clear_llvm_foreign_kernel_specs,
+    tmp_file_stream(text, LLPath, Stream), close(Stream),
+    host_target_triple(Triple),
+    write_wam_llvm_project(
+        [user:PredAtom/2],
+        [ module_name('fmt_t'),
+          target_triple(Triple),
+          target_datalayout('')
+        ],
+        LLPath),
+    read_file_to_string(LLPath, Src, []),
+    extract_instr_count(Src, PredAtom, IC),
+    extract_label_count(Src, PredAtom, LC),
+    format(atom(DriverIR),
+'define i32 @main() {
+entry:
+  %a1_0 = insertvalue %Value undef, i32 1, 0
+  %a1 = insertvalue %Value %a1_0, i64 0, 1
+  %a2_0 = insertvalue %Value undef, i32 6, 0
+  %a2 = insertvalue %Value %a2_0, i64 0, 1
+  %vm = call %WamState* @wam_state_new(
+      %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @module_code, i32 0, i32 0),
+      i32 ~w,
+      i32* getelementptr ([~w x i32], [~w x i32]* @module_labels, i32 0, i32 0),
+      i32 ~w)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
+  %ok = call i1 @run_loop(%WamState* %vm)
+  ret i32 0
+}
+', [IC, IC, IC, LC, LC, LC]),
+    setup_call_cleanup(open(LLPath, append, Out),
+        ( write(Out, '\n'), write(Out, DriverIR) ), close(Out)),
+    atom_concat(LLPath, '.o', OPath),
+    atom_concat(LLPath, '.out', BinPath),
+    atom_concat(LLPath, '.stdout', StdoutPath),
+    format(atom(LlcCmd),
+        'llc -O0 -filetype=obj -relocation-model=pic ~w -o ~w 2>/dev/null',
+        [LLPath, OPath]),
+    shell(LlcCmd, _),
+    format(atom(ClangCmd), 'clang -O0 ~w -o ~w 2>/dev/null', [OPath, BinPath]),
+    shell(ClangCmd, _),
+    format(atom(RunCmd), '~w > ~w 2>&1', [BinPath, StdoutPath]),
+    shell(RunCmd, _),
+    read_file_to_string(StdoutPath, ActualStdout, []),
+    ( ActualStdout == ExpectedStdout
+    -> format('PASS~n')
+    ;  format('FAIL~n    got: ~q~n    expected: ~q~n',
+              [ActualStdout, ExpectedStdout])
+    ),
+    catch(delete_file(LLPath), _, true),
+    catch(delete_file(OPath), _, true),
+    catch(delete_file(BinPath), _, true),
+    catch(delete_file(StdoutPath), _, true),
+    clear_llvm_foreign_kernel_specs,
+    assertion(ActualStdout == ExpectedStdout).
+
 % Custom driver: returns 1000 * float_value cast to i32 so the shell
 % exit code carries enough precision to verify the result. Tag is
 % checked separately via the IR -- if it''s not Float (tag=2) we
@@ -512,6 +603,17 @@ test_all :-
                     [], test_pow_neg_fifth, 100, 20),
        run_pow_test('10**-2 -> Float 0.01, *10000 -> 100',
                     [], test_pow_neg_two, 10000, 100),
+       format('--- M12 format/2 stdout printing ---~n'),
+       run_fmt_test('literal "hello world"', test_fmt_literal,
+                    "hello world\n"),
+       run_fmt_test('"n=~w~n" with 42', test_fmt_int,
+                    "n=42\n"),
+       run_fmt_test('"~w + ~w~n" with 3, 4', test_fmt_two_ints,
+                    "3 + 4\n"),
+       run_fmt_test('"color=~w~n" with red', test_fmt_atom,
+                    "color=red\n"),
+       run_fmt_test('"about ~~w~n" tilde escape', test_fmt_tilde_escape,
+                    "about ~w\n"),
        format('--- M10 \\+ negation-as-failure (inline rewrite) ---~n'),
        run_test_r0('\\+ in_basket(soap) -> succeeds, R=7',
                    test_not_absent + [in_basket/1], 0, 7),
