@@ -14,6 +14,8 @@ use std::io::{self, BufRead, BufReader, Read};
 
 use flate2::read::GzDecoder;
 
+pub mod categorylinks_resolve;
+
 /// A single column value from a MySQL INSERT row.
 ///
 /// `Str` holds raw bytes rather than a String because MySQL VARBINARY
