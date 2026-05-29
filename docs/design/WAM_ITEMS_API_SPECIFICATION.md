@@ -482,23 +482,32 @@ Why migrate small targets first:
 
 ## 9. ISO-Sweep Interaction
 
-The C++ ISO sweep (arith compares + `succ_iso/2`) did not stay blocked on this
-refactor; it shipped against the existing text/items compatibility path. That
-means the C++ ISO implementation still carries multi-shape rewrite logic for
-`builtin_call`, `put_structure`, `call`, and `execute`.
+The C++ ISO sweep (arith compares + `succ_iso/2`) already builds structured WAM
+items natively: `wam_cpp_target.pl` calls the shared
+`iso_errors_rewrite(Config, PI, Items0, Items)` directly on its items list, so
+it never carried the per-shape text-rewrite duplication. (An earlier draft of
+this section claimed it did — that was inaccurate.)
 
-**Elixir is the first target migrated off the per-shape text rules.** Its
-`iso_errors_rewrite_line/3` now tokenizes each WAM line with the shared
+**Elixir and F# have been migrated off the per-shape text rules.** Each target's
+`iso_errors_rewrite_line/3` now tokenizes a WAM line with the shared
 `wam_tokenize_line/2`, recognises it to a structured item via
 `wam_recognise_instruction/2`, and applies the shared
 `iso_errors_rewrite_item/3` (exported from `core/iso_errors`) — a single
 `arg(1)`-based key swap that covers all four shapes at once. The swapped key is
 spliced back into the original line so text output stays byte-identical. The
 four duplicated `iso_errors_rewrite_parts` clauses and the local
-`iso_errors_lookup/3` are gone. This is the `swap_key_in_item/3`-style pass the
-note below anticipated, realised without yet requiring a full items-first
-emitter.
+`iso_errors_lookup/3` are gone from both. This is the `swap_key_in_item/3`-style
+pass the note below anticipated, realised without yet requiring a full
+items-first emitter. (Elixir: PR #2559. F#: this PR.)
 
-The interaction remains important for the other targets' future migrations.
+**Python and Haskell still carry their own text-rewrite paths.** Python has the
+same four `iso_errors_rewrite_parts` clauses + `iso_errors_lookup/3`; Haskell
+uses a narrower `builtin_call`-only `sub_string` rewrite. Both are
+straightforward follow-ups along the same pattern. In all targets, ISO mode
+stays per-predicate — resolved by `iso_errors_mode_for(Config, PI, Mode)`,
+honouring `iso_errors_override` per `Pred/Arity`; this refactor does not change
+that.
+
+The interaction remains important for the remaining targets' future migrations.
 Once a target consumes structured WAM items directly, ISO rewrites collapse to
 this same single shared pass instead of several text-shape rules per key.
