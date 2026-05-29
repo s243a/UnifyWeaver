@@ -75,6 +75,25 @@ test_choice(1, 10).
 test_choice(2, 20).
 test_choice(3, 30).
 
+% M10: list construction + recursive multi-clause traversal.
+% Exercises put_list / get_list (the Compound representation fix) and
+% the disjoint X/Y register layout: my_mem's first clause has no
+% `allocate` and writes X1, X2 -- under the pre-M10 ABI those slot
+% indices aliased the caller's Y1, Y2 and silently corrupted the
+% outer `R` variable.
+:- dynamic my_mem/2.
+my_mem(X, [X|_]).
+my_mem(X, [_|T]) :- my_mem(X, T).
+
+:- dynamic test_mem_first/2.
+test_mem_first(_, R) :- L = [11, 22, 33], my_mem(11, L), R = 11.
+
+:- dynamic test_mem_second/2.
+test_mem_second(_, R) :- L = [11, 22, 33], my_mem(22, L), R = 22.
+
+:- dynamic test_mem_third/2.
+test_mem_third(_, R) :- L = [11, 22, 33], my_mem(33, L), R = 33.
+
 run_test(Label, PredAtom, InputVal, Expected) :-
     format('  ~w: ', [Label]),
     clear_llvm_foreign_kernel_specs,
@@ -145,13 +164,24 @@ miss:
     assertion(ExitCode =:= Expected).
 
 % Runner for is/2 predicates: result ends up in A1 (reg 0) due to WAM register layout.
-run_test_r0(Label, PredAtom, InputVal, Expected) :-
+% Accepts either a single predicate atom (compiled solo) or a Pred/Helpers
+% pair where Helpers is a list of additional Pred/Arity to include in the
+% module (used by M10 list tests that need both the entry pred and the
+% user-defined member/2 it calls).
+run_test_r0(Label, Pred, InputVal, Expected) :-
+    ( Pred = PredAtom + Helpers -> true
+    ; PredAtom = Pred, Helpers = []
+    ),
     format('  ~w: ', [Label]),
     clear_llvm_foreign_kernel_specs,
     tmp_file_stream(text, LLPath, Stream), close(Stream),
     host_target_triple(Triple),
+    % Entry must be FIRST so it gets start_pc = 0 (run_test_r0's driver
+    % calls @run_loop directly without wam_set_pc -- new VMs start at PC 0).
+    findall(user:P/A, member(P/A, Helpers), HelperPreds),
+    AllPreds = [user:PredAtom/2 | HelperPreds],
     write_wam_llvm_project(
-        [user:PredAtom/2],
+        AllPreds,
         [ module_name('bt_exec'),
           target_triple(Triple),
           target_datalayout('')
@@ -231,6 +261,10 @@ test_all :-
        run_test_r0('5**3 = 125', test_pow, 5, 125),
        run_test_r0('2**5 = 32', test_pow2, 5, 32),
        run_test_r0('2**7 = 128', test_pow2, 7, 128),
+       format('--- M10 list traversal (put_list + member-style) ---~n'),
+       run_test_r0('mem_first [11,22,33] -> 11', test_mem_first + [my_mem/2], 0, 11),
+       run_test_r0('mem_second [11,22,33] -> 22', test_mem_second + [my_mem/2], 0, 22),
+       run_test_r0('mem_third [11,22,33] -> 33', test_mem_third + [my_mem/2], 0, 33),
        format('--- multi-clause (first-arg indexing) ---~n'),
        run_test('choice(1) = 10', test_choice, 1, 10),
        run_test('choice(2) = 20', test_choice, 2, 20),
