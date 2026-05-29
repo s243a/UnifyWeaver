@@ -2374,6 +2374,7 @@ void wam_free_state(WamState *state) {
     free(state->B_array);
     free(state->E_array);
     free(state->category_edges);
+    free(state->category_edges_by_child);
     free(state->category_ids);
     free(state->weighted_edges);
     free(state->direct_distance_edges);
@@ -2666,6 +2667,7 @@ void wam_register_category_parent(WamState *state, const char *child, const char
     state->category_edges[state->category_edge_count].child = wam_intern_atom(state, child);
     state->category_edges[state->category_edge_count].parent = wam_intern_atom(state, parent);
     state->category_edge_count++;
+    state->category_child_index_dirty = true;
 }
 
 void wam_register_transitive_edge(WamState *state, const char *child, const char *parent) {
@@ -2700,6 +2702,7 @@ void wam_fact_source_init(WamFactSource *source) {
 
 void wam_fact_source_close(WamFactSource *source) {
     free(source->edges);
+    free(source->edges_by_child);
     memset(source, 0, sizeof(WamFactSource));
 }
 
@@ -2714,6 +2717,7 @@ static void wam_fact_source_add_edge(WamState *state,
     source->edges[source->edge_count].child = wam_intern_atom(state, child);
     source->edges[source->edge_count].parent = wam_intern_atom(state, parent);
     source->edge_count++;
+    source->child_index_dirty = true;
 }
 
 bool wam_fact_source_load_tsv(WamState *state, WamFactSource *source, const char *path) {
@@ -2816,13 +2820,80 @@ done:
 #endif
 }
 
+static int wam_compare_category_edge_child_parent(const void *left, const void *right) {
+    const CategoryEdge *a = (const CategoryEdge *)left;
+    const CategoryEdge *b = (const CategoryEdge *)right;
+    int child_cmp = strcmp(a->child, b->child);
+    if (child_cmp != 0) return child_cmp;
+    return strcmp(a->parent, b->parent);
+}
+
+static int wam_category_edge_lower_bound(CategoryEdge *edges, int count, const char *child) {
+    int lo = 0;
+    int hi = count;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (strcmp(edges[mid].child, child) < 0) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+static bool wam_fact_source_ensure_child_index(WamFactSource *source) {
+    if (!source->child_index_dirty &&
+        source->edges_by_child &&
+        source->child_index_count == source->edge_count) {
+        return true;
+    }
+    free(source->edges_by_child);
+    source->edges_by_child = NULL;
+    source->child_index_count = 0;
+    if (source->edge_count == 0) {
+        source->child_index_dirty = false;
+        return true;
+    }
+    source->edges_by_child = malloc(sizeof(CategoryEdge) * (size_t)source->edge_count);
+    if (!source->edges_by_child) return false;
+    memcpy(source->edges_by_child, source->edges, sizeof(CategoryEdge) * (size_t)source->edge_count);
+    qsort(source->edges_by_child, (size_t)source->edge_count, sizeof(CategoryEdge),
+          wam_compare_category_edge_child_parent);
+    source->child_index_count = source->edge_count;
+    source->child_index_dirty = false;
+    return true;
+}
+
+bool wam_fact_source_child_range(WamFactSource *source, const char *child,
+                                 CategoryEdge **edges_out, int *count_out) {
+    *edges_out = NULL;
+    *count_out = 0;
+    if (!wam_fact_source_ensure_child_index(source)) return false;
+    int start = wam_category_edge_lower_bound(source->edges_by_child,
+                                              source->child_index_count,
+                                              child);
+    if (start >= source->child_index_count ||
+        strcmp(source->edges_by_child[start].child, child) != 0) {
+        return true;
+    }
+    int end = start;
+    while (end < source->child_index_count &&
+           strcmp(source->edges_by_child[end].child, child) == 0) {
+        end++;
+    }
+    *edges_out = source->edges_by_child + start;
+    *count_out = end - start;
+    return true;
+}
+
 int wam_fact_source_lookup_arg1(WamFactSource *source, const char *arg1,
                                 CategoryEdge *out_edges, int max_edges) {
+    CategoryEdge *edges = NULL;
     int count = 0;
-    for (int i = 0; i < source->edge_count; i++) {
-        if (strcmp(source->edges[i].child, arg1) != 0) continue;
-        if (count < max_edges) out_edges[count] = source->edges[i];
-        count++;
+    if (!wam_fact_source_child_range(source, arg1, &edges, &count)) return -1;
+    for (int i = 0; i < count && i < max_edges; i++) {
+        out_edges[i] = edges[i];
     }
     return count;
 }
@@ -2831,6 +2902,53 @@ bool wam_register_category_parent_fact_source(WamState *state, WamFactSource *so
     for (int i = 0; i < source->edge_count; i++) {
         wam_register_category_parent(state, source->edges[i].child, source->edges[i].parent);
     }
+    return true;
+}
+
+static bool wam_state_ensure_category_child_index(WamState *state) {
+    if (!state->category_child_index_dirty &&
+        state->category_edges_by_child &&
+        state->category_child_index_count == state->category_edge_count) {
+        return true;
+    }
+    free(state->category_edges_by_child);
+    state->category_edges_by_child = NULL;
+    state->category_child_index_count = 0;
+    if (state->category_edge_count == 0) {
+        state->category_child_index_dirty = false;
+        return true;
+    }
+    state->category_edges_by_child = malloc(sizeof(CategoryEdge) * (size_t)state->category_edge_count);
+    if (!state->category_edges_by_child) return false;
+    memcpy(state->category_edges_by_child, state->category_edges,
+           sizeof(CategoryEdge) * (size_t)state->category_edge_count);
+    qsort(state->category_edges_by_child, (size_t)state->category_edge_count,
+          sizeof(CategoryEdge), wam_compare_category_edge_child_parent);
+    state->category_child_index_count = state->category_edge_count;
+    state->category_child_index_dirty = false;
+    return true;
+}
+
+static bool wam_state_category_child_range(WamState *state, const char *child,
+                                           CategoryEdge **edges_out,
+                                           int *count_out) {
+    *edges_out = NULL;
+    *count_out = 0;
+    if (!wam_state_ensure_category_child_index(state)) return false;
+    int start = wam_category_edge_lower_bound(state->category_edges_by_child,
+                                              state->category_child_index_count,
+                                              child);
+    if (start >= state->category_child_index_count ||
+        strcmp(state->category_edges_by_child[start].child, child) != 0) {
+        return true;
+    }
+    int end = start;
+    while (end < state->category_child_index_count &&
+           strcmp(state->category_edges_by_child[end].child, child) == 0) {
+        end++;
+    }
+    *edges_out = state->category_edges_by_child + start;
+    *count_out = end - start;
     return true;
 }
 
@@ -3393,9 +3511,11 @@ static bool wam_category_ancestor_dfs(WamState *state,
                                       int visited_len,
                                       WamIntResults *results) {
     bool found = false;
-    for (int i = 0; i < state->category_edge_count; i++) {
-        CategoryEdge *edge = &state->category_edges[i];
-        if (strcmp(edge->child, cat) != 0) continue;
+    CategoryEdge *edges = NULL;
+    int edge_count = 0;
+    if (!wam_state_category_child_range(state, cat, &edges, &edge_count)) return false;
+    for (int i = 0; i < edge_count; i++) {
+        CategoryEdge *edge = &edges[i];
         if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
         if (strcmp(edge->parent, root) == 0) {
             if (!wam_int_results_push(results, depth + 1)) return false;
@@ -3405,9 +3525,8 @@ static bool wam_category_ancestor_dfs(WamState *state,
 
     if (visited_len >= max_depth || visited_len >= 64) return found;
 
-    for (int i = 0; i < state->category_edge_count; i++) {
-        CategoryEdge *edge = &state->category_edges[i];
-        if (strcmp(edge->child, cat) != 0) continue;
+    for (int i = 0; i < edge_count; i++) {
+        CategoryEdge *edge = &edges[i];
         if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
         visited[visited_len] = edge->parent;
         if (wam_category_ancestor_dfs(state, edge->parent, root, depth + 1,
@@ -3592,9 +3711,11 @@ static bool wam_bidirectional_ancestor_dfs(WamState *state,
         ? state->bidirectional_cost_budget
         : 10.0;
 
-    for (int i = 0; i < state->category_edge_count; i++) {
-        CategoryEdge *edge = &state->category_edges[i];
-        if (strcmp(edge->child, node) != 0) continue;
+    CategoryEdge *edges = NULL;
+    int edge_count = 0;
+    if (!wam_state_category_child_range(state, node, &edges, &edge_count)) return false;
+    for (int i = 0; i < edge_count; i++) {
+        CategoryEdge *edge = &edges[i];
         if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
         double next_cost = cost + parent_cost;
         if (next_cost > budget) continue;

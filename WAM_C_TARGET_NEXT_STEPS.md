@@ -1,23 +1,24 @@
 # WAM C Target - Status And Next Steps
 
-Status date: 2026-05-17
+Status date: 2026-05-28
 
 Base verified locally:
 
-- `main` at `dba9ab10` (`Merge pull request #2232 from s243a/feat/wam-c-weighted-shortest-path-kernel`)
+- `main` at `9f805888` (`Merge pull request #2566 from s243a/feat/wam-c-direct-io-csr`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
+- `swipl -q -g run_tests -t halt tests/core/test_cost_model.pl`
 - `python3 tests/test_benchmark_target_matrix.py`
 - `python3 tests/test_wam_c_lowered_helper_scale_regression.py`
 - `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py tests/test_benchmark_target_matrix.py tests/test_wam_c_lowered_helper_scale_regression.py`
 - `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev,10x --target-sets c-wam-lowered-helper --repetitions 1 --baseline-target c-wam-lowered-helper-interpreted`
 - `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels,c-wam-accumulated-lmdb,c-wam-accumulated-no-kernels-lmdb --repetitions 1 --baseline-target prolog-accumulated`
-- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 10x --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels,c-wam-accumulated-lmdb,c-wam-accumulated-no-kernels-lmdb --repetitions 1 --baseline-target prolog-accumulated`
+- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 10x --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels,c-wam-accumulated-lmdb,c-wam-accumulated-no-kernels-lmdb --repetitions 1 --baseline-target prolog-accumulated --run-timeout-seconds 180`
 - `git diff --check`
 
 Active branch:
 
-- `feat/wam-c-astar-shortest-path-kernel`
+- `investigate/wam-c-accumulated-runtime-cost`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -79,6 +80,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | `transitive_step_parent_distance5` native kernel | Done | C shared-kernel detector accepts `transitive_step_parent_distance5`, emits detected setup, registers a native arity-5 foreign handler, and covers direct plus detected-project executable smokes |
 | `weighted_shortest_path3` native kernel | Done | C shared-kernel detector accepts `weighted_shortest_path3`, emits detected setup, registers a native arity-3 foreign handler, and covers direct plus detected-project executable smokes over integer weighted edges |
 | `astar_shortest_path4` native kernel | Done | C shared-kernel detector accepts `astar_shortest_path4`, emits detected setup, registers a native arity-4 foreign handler, and covers direct plus detected-project executable smokes over integer weighted and direct-distance edges |
+| Accumulated runtime edge-index fix | Done | Lazy child indexes for `WamState` and `WamFactSource` remove repeated full-edge scans; `10x` accumulated C targets now run around 0.066-0.069s with output parity versus Prolog at 0.204s |
 
 ## Current C Target Baseline
 
@@ -164,34 +166,7 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `investigate/wam-c-accumulated-runtime-cost`
-
-Goal: explain why the accumulated C WAM effective-distance target is much
-slower than optimized Prolog at `10x`.
-
-Scope:
-
-- Profile generated `c-wam-accumulated` and `c-wam-accumulated-no-kernels` runs
-  at `10x`.
-- Identify whether the cost is WAM dispatch, fact lookup, repeated setup,
-  generated query shape, or native-kernel integration overhead.
-- Keep this separate from `transitive_closure2` unless the same root cause
-  blocks the new kernel.
-
-Status: recommended after the next shared-kernel slice, or sooner if runtime
-performance becomes the blocking question.
-
-Reason:
-
-- The measured shared-kernel family is now covered in C through
-  `astar_shortest_path4` at the small in-memory integer-weight level.
-- Previous benchmark-demand evidence showed accumulated C WAM is still about
-  `0.03x` versus optimized Prolog at `10x`, and native kernels barely move the
-  accumulated target relative to no-kernels.
-- Before adding broader fact-storage or wrapper integration, the next useful
-  question is where that runtime cost is coming from.
-
-### 2. `feat/wam-c-native-kernel-float-output`
+### 1. `feat/wam-c-native-kernel-float-output`
 
 Goal: close the output-type parity gap for weighted/A* native kernels by adding
 a C runtime representation for floating-point results.
@@ -203,6 +178,28 @@ Scope:
   results that are not exact integers.
 - Keep benchmark integration separate unless the value representation itself
   proves stable.
+
+Reason:
+
+- The accumulated effective-distance runtime blocker is resolved at `10x`; the
+  dominant cost was repeated full-edge scans in ancestor traversal, not WAM
+  dispatch or native-kernel call overhead.
+- Weighted/A* native kernels currently cover integer results, while Haskell and
+  Rust have broader numeric-result surfaces.
+
+### 2. `investigate/wam-c-larger-artifact-layouts`
+
+Goal: measure whether the newer parent-only LMDB and reverse CSR artifact
+layouts remain the right defaults at larger category scales.
+
+Scope:
+
+- Reuse the existing effective-distance matrix before adding new benchmark
+  surfaces.
+- Compare TSV, LMDB, CSR, and direct-I/O CSR modes where the current generator
+  can already emit them.
+- Keep any in-memory compressed CSR work out of this branch unless measurement
+  shows the current layout is the limiting factor.
 
 Status: recommended after the runtime-cost investigation, or sooner if a
 concrete generated benchmark requires float output.
@@ -396,9 +393,7 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Proceed with `investigate/wam-c-accumulated-runtime-cost`.
-
-Keep it narrow: profile the existing accumulated C WAM effective-distance
-targets at `10x`, identify whether the dominant cost is WAM dispatch, fact
-lookup, repeated setup, generated query shape, or native-kernel integration
-overhead, and document a concrete next implementation branch from that evidence.
+Proceed with `feat/wam-c-native-kernel-float-output` unless the next round of
+work is explicitly benchmark-scale focused. The accumulated runtime
+investigation found and fixed the dominant `10x` cost: repeated full-edge scans
+inside recursive ancestor traversal.
