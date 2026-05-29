@@ -445,7 +445,7 @@ fn field_i64(field: &Field) -> Option<i64> {
     match field {
         Field::Int(value) => Some(*value),
         Field::Str(bytes) => std::str::from_utf8(bytes).ok()?.parse().ok(),
-        Field::Null => None,
+        Field::Float(_) | Field::Null => None,
     }
 }
 
