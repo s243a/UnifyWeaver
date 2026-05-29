@@ -1080,6 +1080,40 @@ test(runtime_format_helpers) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+test(runtime_list_ordering_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_list_ordering_demo),
+			assertz((user:py_list_ordering_demo :-
+				sort([3, 1, 2, 1, 3], Sorted),
+				Sorted = [1, 2, 3],
+				msort([3, 1, 2, 1, 3], MSorted),
+				MSorted = [1, 1, 2, 3, 3],
+				sort([foo, 1, bar, 2], Mixed),
+				Mixed = [1, 2, bar, foo],
+				keysort([b-1, a-2, b-3, a-4], KeySorted),
+				KeySorted = [a-2, a-4, b-1, b-3],
+				sort([], EmptySorted),
+				EmptySorted = [],
+				keysort([], EmptyKeys),
+				EmptyKeys = [],
+				\+ keysort([bad], _))),
+			user:python_parser_tmp_dir('tmp_wam_python_list_ordering', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_list_ordering_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_list_ordering_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_list_ordering_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_with_output_to_helpers) :-
 	setup_call_cleanup(
 		(   retractall(user:py_with_output_to_demo),
@@ -1970,6 +2004,9 @@ test(static_runtime_has_lua_baseline_builtins, [nondet]) :-
 		"format/2",
 		"format/3",
 		"with_output_to/2",
+		"sort/2",
+		"msort/2",
+		"keysort/2",
 		"put_char/1",
 		"put_char/2",
 		"put_code/1",
@@ -2004,6 +2041,11 @@ test(static_runtime_io_emits_output, [nondet]) :-
 	sub_string(Content, _, _, _, "'format/3'"),
 	sub_string(Content, _, _, _, "def _execute_with_output_to"),
 	sub_string(Content, _, _, _, "'with_output_to/2'"),
+	sub_string(Content, _, _, _, "def _execute_sort_like"),
+	sub_string(Content, _, _, _, "def _execute_keysort"),
+	sub_string(Content, _, _, _, "'sort/2'"),
+	sub_string(Content, _, _, _, "'msort/2'"),
+	sub_string(Content, _, _, _, "'keysort/2'"),
 	sub_string(Content, _, _, _, "def _execute_put_char"),
 	sub_string(Content, _, _, _, "def _execute_put_code"),
 	sub_string(Content, _, _, _, "def _execute_read_line_to_string"),

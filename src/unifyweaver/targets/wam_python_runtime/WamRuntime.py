@@ -294,6 +294,64 @@ def _term_ground(term: 'Term', state: WamState) -> bool:
     return True
 
 
+def _standard_order_key(term: 'Term', state: WamState) -> Tuple:
+    term = deref(term, state)
+    if isinstance(term, Var):
+        return (0, term.id)
+    if isinstance(term, Float):
+        return (1, term.f)
+    if isinstance(term, Int):
+        return (1, term.n)
+    if isinstance(term, Atom):
+        return (2, _runtime_atom_text(term.name))
+    if isinstance(term, Compound):
+        functor = _display_functor_name(term.functor, len(term.args))
+        return (3, len(term.args), functor, tuple(_standard_order_key(arg, state) for arg in term.args))
+    if isinstance(term, Ref):
+        return _standard_order_key(deref(term, state), state)
+    return (4, repr(term))
+
+
+def _execute_sort_like(state: WamState, dedup: bool) -> bool:
+    items = _term_to_list(get_reg(state, 1), state)
+    if items is None:
+        return False
+    sorted_items = sorted(items, key=lambda item: _standard_order_key(item, state))
+    if dedup:
+        unique: List[Term] = []
+        previous_key = None
+        have_previous = False
+        for item in sorted_items:
+            key = _standard_order_key(item, state)
+            if not have_previous or key != previous_key:
+                unique.append(item)
+                previous_key = key
+                have_previous = True
+        sorted_items = unique
+    return unify(get_reg(state, 2), _list_from_terms(sorted_items), state)
+
+
+def _pair_key(term: 'Term', state: WamState) -> Optional[Tuple]:
+    term = deref(term, state)
+    if not isinstance(term, Compound) or _display_functor_name(term.functor, len(term.args)) != '-' or len(term.args) != 2:
+        return None
+    return _standard_order_key(term.args[0], state)
+
+
+def _execute_keysort(state: WamState) -> bool:
+    items = _term_to_list(get_reg(state, 1), state)
+    if items is None:
+        return False
+    keyed: List[Tuple[Tuple, Term]] = []
+    for item in items:
+        key = _pair_key(item, state)
+        if key is None:
+            return False
+        keyed.append((key, item))
+    keyed.sort(key=lambda pair: pair[0])
+    return unify(get_reg(state, 2), _list_from_terms([item for _, item in keyed]), state)
+
+
 def _make_cons(head: 'Term', tail: 'Term') -> 'Compound':
     """Construct a cons cell Compound('.', [head, tail])."""
     return Compound('.', [head, tail])
@@ -2421,6 +2479,12 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         if items is None:
             return False
         return _execute_member_from_index(get_reg(state, 1), items, 0, resume_ip, state)
+    if builtin in ('sort/2', 'sort') and arity == 2:
+        return _execute_sort_like(state, dedup=True)
+    if builtin in ('msort/2', 'msort') and arity == 2:
+        return _execute_sort_like(state, dedup=False)
+    if builtin in ('keysort/2', 'keysort') and arity == 2:
+        return _execute_keysort(state)
     if builtin in ('functor/3', 'functor') and arity == 3:
         term = deref(get_reg(state, 1), state)
         name = deref(get_reg(state, 2), state)
