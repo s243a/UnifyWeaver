@@ -322,13 +322,16 @@ normalize_kind_options(artifact, Opts0, Opts) :-
     validate_reverse_ordering(Ordering),
     option(cache_bytes(CacheBytes), Opts0, 0),
     validate_nonnegative_integer(cache_bytes, CacheBytes),
+    option(block_size_edges(BlockSizeEdges), Opts0, 0),
+    validate_nonnegative_integer(block_size_edges, BlockSizeEdges),
     artifact_index_options(StorageKind, Opts0, IndexOpt),
     artifact_io_options(StorageKind, Opts0, IoOpt),
     append([
         relation(Relation),
         storage_kind(StorageKind),
         ordering(Ordering),
-        cache_bytes(CacheBytes)
+        cache_bytes(CacheBytes),
+        block_size_edges(BlockSizeEdges)
     ], IndexOpt, PrefixOpts),
     append(PrefixOpts, IoOpt, Opts).
 

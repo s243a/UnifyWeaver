@@ -659,6 +659,7 @@ test_reverse_index_artifact_normalizes_storage_kind :-
         storage_kind(csr_pread_artifact),
         ordering(root_bfs),
         cache_bytes(1024),
+        block_size_edges(0),
         index_backend(lmdb_offset),
         io_policy(buffered_pread)
     ]),
