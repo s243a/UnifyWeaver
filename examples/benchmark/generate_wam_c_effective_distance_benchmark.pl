@@ -74,9 +74,7 @@ generate(FactsPath, OutputDir, KernelMode, OptionsOrFactStorage) :-
     compile_wam_runtime_to_c([], RuntimeCode),
     directory_file_path(OutputDir, 'wam_runtime.c', RuntimePath),
     write_text_file(RuntimePath, RuntimeCode),
-    WamCode = 'category_ancestor/4:\n    call_foreign category_ancestor/4, 4\n    proceed',
-    compile_wam_predicate_to_c(user:category_ancestor/4, WamCode, [], PredCode),
-    format(atom(LibCode), '#include "wam_runtime.h"~n~n~w~n', [PredCode]),
+    effective_distance_predicate_lib_code(ChildSearch, LibCode),
     directory_file_path(OutputDir, 'lib.c', LibPath),
     write_text_file(LibPath, LibCode),
     category_parent_tsv(CategoryParents, CategoryTsv),
@@ -93,6 +91,17 @@ generate(FactsPath, OutputDir, KernelMode, OptionsOrFactStorage) :-
     format(user_error,
            '[WAM-C-EffectiveDistance] mode=~w fact_storage=~w output=~w~n',
            [ParsedMode, FactStorage, OutputDir]).
+
+effective_distance_predicate_lib_code(ChildSearch, LibCode) :-
+    CategoryWamCode = 'category_ancestor/4:\n    call_foreign category_ancestor/4, 4\n    proceed',
+    compile_wam_predicate_to_c(user:category_ancestor/4, CategoryWamCode, [], CategoryPredCode),
+    (   child_search_enabled(ChildSearch)
+    ->  BidirWamCode = 'bidirectional_ancestor/5:\n    call_foreign bidirectional_ancestor/5, 5\n    proceed',
+        compile_wam_predicate_to_c(user:bidirectional_ancestor/5, BidirWamCode, [], BidirPredCode),
+        format(atom(PredCode), '~w~n~n~w', [CategoryPredCode, BidirPredCode])
+    ;   PredCode = CategoryPredCode
+    ),
+    format(atom(LibCode), '#include "wam_runtime.h"~n~n~w~n', [PredCode]).
 
 parse_kernel_mode(kernels_on, kernels_on).
 parse_kernel_mode(kernels_off, kernels_off).
@@ -409,6 +418,10 @@ effective_distance_main_code(KernelMode, FactStorage, ChildSearch, Dimension, Ma
     child_search_child_cost(ChildSearch, ChildStepCost),
     child_search_budget(ChildSearch, ChildSearchBudget),
     fact_source_load_code(FactStorage, LoadCode),
+    bidirectional_setup_declaration(ChildSearch, BidirSetupDeclaration),
+    bidirectional_setup_call(ChildSearch, BidirSetupCall),
+    bidirectional_register_call(ChildSearch, MaxDepth, ParentStepCost, ChildStepCost,
+                                ChildSearchBudget, BidirRegisterCall),
     format(atom(Code),
 '#include <math.h>
 #include <stdio.h>
@@ -416,6 +429,7 @@ effective_distance_main_code(KernelMode, FactStorage, ChildSearch, Dimension, Ma
 #include "wam_runtime.h"
 
 void setup_category_ancestor_4(WamState* state);
+~w
 
 ~w
 ~w
@@ -512,17 +526,16 @@ static void collect_hops(WamState *state,
                          int kernels_on,
                          WamIntResults *results);
 
-static int collect_bounded_child_hops(WamState *state,
-                                      WamFactSource *source,
-                                      const char *cat,
-                                      const char *root,
-                                      int kernels_on,
-                                      int max_child_expansions,
-                                      int child_depth,
-                                      double parent_step_cost,
-                                      double child_step_cost,
-                                      double budget,
-                                      WamDoubleResults *results) {
+static int collect_reference_child_costs(WamState *state,
+                                         WamFactSource *source,
+                                         const char *cat,
+                                         const char *root,
+                                         int max_child_expansions,
+                                         int child_depth,
+                                         double parent_step_cost,
+                                         double child_step_cost,
+                                         double budget,
+                                         WamDoubleResults *results) {
     if (max_child_expansions <= 0 || child_depth <= 0) return 0;
     int found = 0;
     int expanded = 0;
@@ -534,17 +547,17 @@ static int collect_bounded_child_hops(WamState *state,
 
         WamIntResults child_hops;
         wam_int_results_init(&child_hops);
-        collect_hops(state, source, edge->child, root, kernels_on, &child_hops);
+        collect_hops(state, source, edge->child, root, 0, &child_hops);
         if (child_hops.count == 0 && child_depth > 1 &&
             child_step_cost < budget) {
             WamDoubleResults child_costs;
             double_results_init(&child_costs);
-            (void)collect_bounded_child_hops(state, source, edge->child, root,
-                                             kernels_on, max_child_expansions,
-                                             child_depth - 1,
-                                             parent_step_cost, child_step_cost,
-                                             budget - child_step_cost,
-                                             &child_costs);
+            (void)collect_reference_child_costs(state, source, edge->child, root,
+                                                max_child_expansions,
+                                                child_depth - 1,
+                                                parent_step_cost, child_step_cost,
+                                                budget - child_step_cost,
+                                                &child_costs);
             for (int ci = 0; ci < child_costs.count; ci++) {
                 double path_cost = child_step_cost + child_costs.values[ci];
                 if (path_cost > budget) continue;
@@ -569,6 +582,61 @@ static int collect_bounded_child_hops(WamState *state,
         }
         wam_int_results_close(&child_hops);
     }
+    return found;
+}
+
+static int collect_bidirectional_child_costs(WamState *state,
+                                             WamFactSource *source,
+                                             const char *cat,
+                                             const char *root,
+                                             int kernels_on,
+                                             int max_child_expansions,
+                                             int child_depth,
+                                             double parent_step_cost,
+                                             double child_step_cost,
+                                             double budget,
+                                             WamDoubleResults *results) {
+    if (!kernels_on) {
+        return collect_reference_child_costs(state, source, cat, root,
+                                             max_child_expansions, child_depth,
+                                             parent_step_cost, child_step_cost,
+                                             budget, results);
+    }
+    if (max_child_expansions <= 0 || child_depth <= 0) return 0;
+    int found = 0;
+    int accepted = 0;
+    int heap_mark = state->H;
+    WamBidirectionalAncestorResults bidir;
+    wam_bidirectional_ancestor_results_init(&bidir);
+    state->A[0] = val_atom(cat);
+    state->A[1] = val_atom(root);
+    state->A[2] = val_unbound("Total");
+    state->A[3] = val_unbound("Parents");
+    state->A[4] = val_unbound("Children");
+    if (!wam_collect_bidirectional_ancestor_hops(state, &bidir)) {
+        wam_bidirectional_ancestor_results_close(&bidir);
+        state->H = heap_mark;
+        return 0;
+    }
+    for (int i = 0; i < bidir.count; i++) {
+        WamBidirectionalAncestorResult *path = &bidir.values[i];
+        if (path->child_hops <= 0) continue;
+        if (path->child_hops > child_depth) continue;
+        if (accepted >= max_child_expansions) break;
+        double path_cost =
+            ((double)path->parent_hops * parent_step_cost) +
+            ((double)path->child_hops * child_step_cost);
+        if (path_cost > budget) continue;
+        if (!double_results_push(results, path_cost)) {
+            wam_bidirectional_ancestor_results_close(&bidir);
+            state->H = heap_mark;
+            return 0;
+        }
+        accepted++;
+        found = 1;
+    }
+    wam_bidirectional_ancestor_results_close(&bidir);
+    state->H = heap_mark;
     return found;
 }
 
@@ -599,6 +667,7 @@ int main(void) {
     wam_state_init(&state);
     wam_fact_source_init(&source);
     setup_category_ancestor_4(&state);
+~w
 
     if (!(~w)) {
         fprintf(stderr, "failed to load category_parent facts\\n");
@@ -608,6 +677,7 @@ int main(void) {
     }
     wam_register_category_parent_fact_source(&state, &source);
     wam_register_category_ancestor_kernel(&state, "category_ancestor/4", ~w);
+~w
 
     printf("article\\troot_category\\teffective_distance\\n");
     for (int ai = 0; ai < ARTICLE_COUNT; ai++) {
@@ -628,11 +698,11 @@ int main(void) {
                                             ((double)hops.values[hi] + 1.0) * ~w);
                     }
                     if (path_costs.count == 0 && ~w) {
-                        (void)collect_bounded_child_hops(&state, &source,
-                                                         ARTICLE_CATS[ci], ROOTS[ri],
-                                                         ~w, ~w,
-                                                         ~w, ~w, ~w, ~w,
-                                                         &path_costs);
+                        (void)collect_bidirectional_child_costs(&state, &source,
+                                                                ARTICLE_CATS[ci], ROOTS[ri],
+                                                                ~w, ~w,
+                                                                ~w, ~w, ~w, ~w,
+                                                                &path_costs);
                         for (int pi = 0; pi < path_costs.count; pi++) {
                             path_costs.values[pi] += ~w;
                         }
@@ -655,7 +725,8 @@ int main(void) {
     wam_free_state(&state);
     return 0;
 }
-', [ArticleArrays, ArticlesArray, RootArray, MaxDepth, LoadCode, MaxDepth,
+', [BidirSetupDeclaration, ArticleArrays, ArticlesArray, RootArray, MaxDepth,
+    BidirSetupCall, LoadCode, MaxDepth, BidirRegisterCall,
     ParentStepCost, KernelFlag, ParentStepCost,
     ChildSearchFlag, KernelFlag, MaxChildExpansions, ChildSearchDepth,
     ParentStepCost, ChildStepCost, ChildSearchBudget, ParentStepCost,
@@ -675,11 +746,35 @@ child_search_flag(child_search(bounded, MaxChildren, ChildDepth, _, _, _), 1) :-
     !.
 child_search_flag(_, 0).
 
+child_search_enabled(ChildSearch) :-
+    child_search_flag(ChildSearch, 1).
+
 child_search_max_children(child_search(_, MaxChildren, _, _, _, _), MaxChildren).
 child_search_depth(child_search(_, _, ChildDepth, _, _, _), ChildDepth).
 child_search_parent_cost(child_search(_, _, _, ParentCost, _, _), ParentCost).
 child_search_child_cost(child_search(_, _, _, _, ChildCost, _), ChildCost).
 child_search_budget(child_search(_, _, _, _, _, Budget), Budget).
+
+bidirectional_setup_declaration(ChildSearch,
+                                'void setup_bidirectional_ancestor_5(WamState* state);') :-
+    child_search_enabled(ChildSearch),
+    !.
+bidirectional_setup_declaration(_, '').
+
+bidirectional_setup_call(ChildSearch,
+                         '    setup_bidirectional_ancestor_5(&state);') :-
+    child_search_enabled(ChildSearch),
+    !.
+bidirectional_setup_call(_, '').
+
+bidirectional_register_call(ChildSearch, MaxDepth, ParentStepCost, ChildStepCost,
+                            Budget, Call) :-
+    child_search_enabled(ChildSearch),
+    !,
+    format(atom(Call),
+           '    wam_register_bidirectional_ancestor_kernel(&state, "bidirectional_ancestor/5", ~w, ~w, ~w, ~w);',
+           [MaxDepth, ParentStepCost, ChildStepCost, Budget]).
+bidirectional_register_call(_, _, _, _, _, '').
 
 c_pair_arrays(NamesName, ValuesName, Pairs, Code) :-
     pairs_keys(Pairs, Keys),
