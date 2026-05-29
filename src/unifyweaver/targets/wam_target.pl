@@ -21,6 +21,7 @@
 
 :- use_module(library(lists)).
 :- use_module(library(option)).
+:- use_module(library(gensym)).
 :- use_module('../core/clause_body_analysis').
 :- use_module('../core/template_system').
 :- use_module('../core/binding_state_analysis').
@@ -101,6 +102,15 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
     (   option(inline_not_as_failure(false), Options)
     ->  b_setval(wam_inline_not, false)
     ;   b_setval(wam_inline_not, true)
+    ),
+    % M17: emit if-then-else with get_level Y_n / cut Y_n bytecode
+    % instead of the legacy cut_ite. Targets that opt in (currently
+    % LLVM) implement the new instructions properly; others keep the
+    % cut_ite pattern. Default off so existing C++/Go/Lua/etc. paths
+    % don''t see new opcodes they don''t parse.
+    (   option(ite_use_y_level(true), Options)
+    ->  b_setval(wam_ite_use_y_level, true)
+    ;   b_setval(wam_ite_use_y_level, false)
     ),
     % args_first_emission: emit set_variable for ALL outer-compound
     % args BEFORE any nested put_structure. The legacy emit
@@ -780,6 +790,9 @@ wam_inline_bagof_setof_enabled :-
 
 wam_inline_not_enabled :-
     catch(b_getval(wam_inline_not, true), _, fail).
+
+wam_ite_use_y_level_enabled :-
+    catch(b_getval(wam_ite_use_y_level, true), _, fail).
 
 is_builtin_goal(is).
 is_builtin_goal(=).
@@ -1622,26 +1635,49 @@ flatten_conjunction(Goal, [Goal]).
 %  implementation and just fails.
 compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, Vf, _HasEnv, Code) :-
     next_ite_label(ElseLabel, ContLabel),
-    % Flatten condition into a goal list
+    ( wam_ite_use_y_level_enabled
+    -> % M17: allocate a fresh permanent Y for the cut barrier.
+       % get_level Y_n snapshots cp_count BEFORE try_me_else; cut Y_n
+       % at the commit site sets cp_count = Y_n. Together they cut
+       % the ITE choice point AND any inner CPs the condition''s
+       % multi-clause calls left behind -- the naive cut_ite (which
+       % decrements cp_count by 1) silently picked the wrong CP in
+       % that case.
+       %
+       % allocate_var falls back to X if no y_alloc reservation
+       % exists for the var; X regs are caller-saved and the inner
+       % call would clobber the snapshot before cut reads it. Reserve
+       % a fresh Y at the top so allocate_var picks it up.
+       V0 = vmap(Bindings0, XCount0),
+       max_yi_index(Bindings0, 0, MaxY),
+       NextY is MaxY + 1,
+       format(atom(BarrierReg), "Y~w", [NextY]),
+       gensym('$ite_barrier_', BarrierVar),
+       V0a = vmap([b(BarrierVar, BarrierReg)|Bindings0], XCount0)
+    ;  V0a = V0,
+       BarrierReg = none
+    ),
     flatten_conjunction(CondGoal, CondGoals),
-    compile_inner_call_goals(CondGoals, V0, V1, CondCode),
+    compile_inner_call_goals(CondGoals, V0a, V1, CondCode),
     % Then and Else can each be themselves a nested if-then-else --
     % compile_ite_branch recurses on those forms. Else starts from
-    % V0 since backtrack restores to before the condition.
+    % V0a since backtrack restores to before the condition (but the
+    % barrier var is already allocated so its slot is reserved).
     compile_ite_branch(ThenGoal, V1, V2, ThenCode),
-    compile_ite_branch(ElseGoal, V0, V3, ElseCode),
-    % Use the wider variable map as output
+    compile_ite_branch(ElseGoal, V0a, V3, ElseCode),
     (   V2 = V3 -> Vf = V2
-    ;   Vf = V2  % prefer then-branch vars (else-branch is alternative)
+    ;   Vf = V2
     ),
-    % Emit: try_me_else ElseLabel / Cond / !/0 / Then / jump ContLabel
-    %        ElseLabel: trust_me / Else / ContLabel:
-    % Use cut_ite (soft cut) instead of !/0 — pops only the if-then-else
-    % CP, preserving aggregate frames and outer choice points.
-    % ContLabel marks the continuation after both branches.
-    format(string(Code),
-        "    try_me_else ~w~n~w~n    cut_ite~n~w~n    jump ~w~n~w:~n    trust_me~n~w~n~w:",
-        [ElseLabel, CondCode, ThenCode, ContLabel, ElseLabel, ElseCode, ContLabel]).
+    ( BarrierReg == none
+    -> format(string(Code),
+          "    try_me_else ~w~n~w~n    cut_ite~n~w~n    jump ~w~n~w:~n    trust_me~n~w~n~w:",
+          [ElseLabel, CondCode, ThenCode, ContLabel,
+           ElseLabel, ElseCode, ContLabel])
+    ;  format(string(Code),
+          "    get_level ~w~n    try_me_else ~w~n~w~n    cut ~w~n~w~n    jump ~w~n~w:~n    trust_me~n~w~n~w:",
+          [BarrierReg, ElseLabel, CondCode, BarrierReg, ThenCode,
+           ContLabel, ElseLabel, ElseCode, ContLabel])
+    ).
 
 %% compile_ite_branch(+Branch, +V0, -Vf, -Code) is det.
 %  Compile a Then- or Else-branch of an if-then-else. If the branch
