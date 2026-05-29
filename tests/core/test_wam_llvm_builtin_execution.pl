@@ -129,6 +129,23 @@ test_msort_dups(_, R) :-
     Sorted = [_, X|_],
     R is X.
 
+% M10: setof/3 via aggregate_all -> sort + dedup. The agg_type_id
+% routes set/setof to id 6, which inserts a sort+dedup pass before
+% building the cons-cell chain. Drives off a small dynamic fact
+% base so the inner goal yields a deterministic multi-set.
+:- dynamic color/1.
+color(red).
+color(blue).
+color(red).    % duplicate
+color(green).
+color(blue).   % duplicate
+
+:- dynamic test_setof_count/2.
+test_setof_count(_, R) :-
+    setof(C, color(C), Cs),
+    length(Cs, N),
+    R is N.
+
 run_test(Label, PredAtom, InputVal, Expected) :-
     format('  ~w: ', [Label]),
     clear_llvm_foreign_kernel_specs,
@@ -313,6 +330,9 @@ test_all :-
        run_test_r0('msort_third [33,11,22] -> 33', test_msort_third, 0, 33),
        run_test_r0('msort_one [42] -> 42', test_msort_one, 0, 42),
        run_test_r0('msort_dups [3,1,3,2,1] -> 1', test_msort_dups, 0, 1),
+       format('--- M10 setof/3 (sort + dedup) ---~n'),
+       run_test_r0('setof color/1 count -> 3',
+                   test_setof_count + [color/1], 0, 3),
        format('--- multi-clause (first-arg indexing) ---~n'),
        run_test('choice(1) = 10', test_choice, 1, 10),
        run_test('choice(2) = 20', test_choice, 2, 20),

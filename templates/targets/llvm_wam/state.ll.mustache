@@ -1403,6 +1403,7 @@ entry:
     i32 3, label %max_case
     i32 4, label %collect_case
     i32 5, label %collect_case
+    i32 6, label %set_case
   ]
 
 count_case:
@@ -1556,6 +1557,136 @@ collect_step:
 
 collect_finish:
   ret %Value %tail
+
+set_case:
+  ; M10: setof / set -- sort the accumulator in place by (tag, payload)
+  ; lexicographic, then build a cons-cell chain skipping adjacent
+  ; duplicates. Same shape as collect_case but goes through an
+  ; insertion-sort + dedup pass first.
+  %set_has_any = icmp sgt i32 %count, 0
+  br i1 %set_has_any, label %set_sort_init, label %set_empty
+
+set_empty:
+  %set_e_id = load i64, i64* @wam_empty_list_atom_id
+  %set_ev0 = insertvalue %Value undef, i32 0, 0
+  %set_ev  = insertvalue %Value %set_ev0, i64 %set_e_id, 1
+  ret %Value %set_ev
+
+set_sort_init:
+  br label %set_sort_outer
+set_sort_outer:
+  %set_so_i = phi i32 [ 1, %set_sort_init ], [ %set_so_i1, %set_sort_done_inner ]
+  %set_so_more = icmp slt i32 %set_so_i, %count
+  br i1 %set_so_more, label %set_sort_pick, label %set_build_init
+set_sort_pick:
+  %set_so_key_ptr = getelementptr %Value, %Value* %accum, i32 %set_so_i
+  %set_so_key = load %Value, %Value* %set_so_key_ptr
+  %set_so_key_tag = extractvalue %Value %set_so_key, 0
+  %set_so_key_pay = extractvalue %Value %set_so_key, 1
+  br label %set_sort_inner
+set_sort_inner:
+  %set_si_j = phi i32 [ %set_so_i, %set_sort_pick ], [ %set_si_j_dec, %set_si_shift ]
+  %set_si_j_dec = sub i32 %set_si_j, 1
+  %set_si_j_pos = icmp sge i32 %set_si_j_dec, 0
+  br i1 %set_si_j_pos, label %set_si_cmp, label %set_si_done
+set_si_cmp:
+  %set_si_left_ptr = getelementptr %Value, %Value* %accum, i32 %set_si_j_dec
+  %set_si_left = load %Value, %Value* %set_si_left_ptr
+  %set_si_left_tag = extractvalue %Value %set_si_left, 0
+  %set_si_left_pay = extractvalue %Value %set_si_left, 1
+  %set_tag_gt = icmp sgt i32 %set_si_left_tag, %set_so_key_tag
+  %set_tag_eq = icmp eq i32 %set_si_left_tag, %set_so_key_tag
+  %set_pay_gt = icmp sgt i64 %set_si_left_pay, %set_so_key_pay
+  %set_pay_gt_eq = and i1 %set_tag_eq, %set_pay_gt
+  %set_should_shift = or i1 %set_tag_gt, %set_pay_gt_eq
+  br i1 %set_should_shift, label %set_si_shift, label %set_si_done
+set_si_shift:
+  %set_si_dst_ptr = getelementptr %Value, %Value* %accum, i32 %set_si_j
+  store %Value %set_si_left, %Value* %set_si_dst_ptr
+  br label %set_sort_inner
+set_si_done:
+  %set_si_dst2_ptr = getelementptr %Value, %Value* %accum, i32 %set_si_j
+  store %Value %set_so_key, %Value* %set_si_dst2_ptr
+  br label %set_sort_done_inner
+set_sort_done_inner:
+  %set_so_i1 = add i32 %set_so_i, 1
+  br label %set_sort_outer
+
+set_build_init:
+  ; Build cons chain from i = count-1 down to 0, but skip when
+  ; accum[i] equals the value just emitted (the head of the running
+  ; chain). Since the array is sorted, duplicates are adjacent, so
+  ; comparing against the just-emitted head is sufficient for full
+  ; deduplication. The first element always emits.
+  call void @wam_arena_ensure()
+  %set_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %set_emptyv0 = insertvalue %Value undef, i32 0, 0
+  %set_emptyv  = insertvalue %Value %set_emptyv0, i64 %set_empty_id, 1
+  br label %set_build_loop
+
+set_build_loop:
+  %set_bi = phi i32 [ %count, %set_build_init ], [ %set_bi_prev, %set_build_step_or_skip ]
+  %set_btail = phi %Value [ %set_emptyv, %set_build_init ], [ %set_new_tail, %set_build_step_or_skip ]
+  %set_bi_done = icmp sle i32 %set_bi, 0
+  br i1 %set_bi_done, label %set_finish, label %set_check_dup
+
+set_check_dup:
+  %set_bi_prev = sub i32 %set_bi, 1
+  %set_head_ptr = getelementptr %Value, %Value* %accum, i32 %set_bi_prev
+  %set_head = load %Value, %Value* %set_head_ptr
+  ; If this is NOT the last unprocessed slot (bi_prev > 0), check
+  ; whether accum[bi_prev] equals accum[bi_prev - 1]. If equal, the
+  ; PRIOR pass will emit accum[bi_prev - 1]; we skip this one to
+  ; avoid the dup. Equivalent: emit only when current != prev.
+  %set_has_prior = icmp sgt i32 %set_bi_prev, 0
+  br i1 %set_has_prior, label %set_dup_check, label %set_emit
+
+set_dup_check:
+  %set_prior_idx = sub i32 %set_bi_prev, 1
+  %set_prior_ptr = getelementptr %Value, %Value* %accum, i32 %set_prior_idx
+  %set_prior = load %Value, %Value* %set_prior_ptr
+  %set_h_tag = extractvalue %Value %set_head, 0
+  %set_h_pay = extractvalue %Value %set_head, 1
+  %set_p_tag = extractvalue %Value %set_prior, 0
+  %set_p_pay = extractvalue %Value %set_prior, 1
+  %set_tags_eq = icmp eq i32 %set_h_tag, %set_p_tag
+  %set_pays_eq = icmp eq i64 %set_h_pay, %set_p_pay
+  %set_is_dup = and i1 %set_tags_eq, %set_pays_eq
+  br i1 %set_is_dup, label %set_skip, label %set_emit
+
+set_skip:
+  ; Drop this duplicate: tail stays the same, advance.
+  br label %set_build_step_or_skip
+
+set_emit:
+  ; Build a new cons cell: { [|]/2, [head, tail] }
+  %set_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %set_cp_mem = call i8* @wam_arena_alloc(i64 %set_cp_size)
+  %set_cp = bitcast i8* %set_cp_mem to %Compound*
+  %set_fn_slot = getelementptr %Compound, %Compound* %set_cp, i32 0, i32 0
+  %set_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %set_fn_ptr, i8** %set_fn_slot
+  %set_ar_slot = getelementptr %Compound, %Compound* %set_cp, i32 0, i32 1
+  store i32 2, i32* %set_ar_slot
+  %set_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %set_args = bitcast i8* %set_args_mem to %Value*
+  %set_args_slot = getelementptr %Compound, %Compound* %set_cp, i32 0, i32 2
+  store %Value* %set_args, %Value** %set_args_slot
+  %set_a0 = getelementptr %Value, %Value* %set_args, i32 0
+  store %Value %set_head, %Value* %set_a0
+  %set_a1 = getelementptr %Value, %Value* %set_args, i32 1
+  store %Value %set_btail, %Value* %set_a1
+  %set_cp_i64 = ptrtoint %Compound* %set_cp to i64
+  %set_nc0 = insertvalue %Value undef, i32 3, 0
+  %set_nc = insertvalue %Value %set_nc0, i64 %set_cp_i64, 1
+  br label %set_build_step_or_skip
+
+set_build_step_or_skip:
+  %set_new_tail = phi %Value [ %set_btail, %set_skip ], [ %set_nc, %set_emit ]
+  br label %set_build_loop
+
+set_finish:
+  ret %Value %set_btail
 
 default_case:
   ; Unknown agg_type — return sentinel Atom 0.

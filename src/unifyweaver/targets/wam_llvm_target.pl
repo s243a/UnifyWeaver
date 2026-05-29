@@ -1547,7 +1547,18 @@ compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode) :-
     % to fixpoint). Passed through Options so pass1's per-pred
     % lowerability check can consult it.
     compute_lowered_closure(Predicates, Options, ClosureSet),
-    OptionsWithClosure = [lowered_closure(ClosureSet)|Options],
+    % M10: enable inline lowering of bagof/setof so they go through
+    % the same aggregate dispatch path as findall/aggregate_all rather
+    % than the runtime fallback (which is not wired up for LLVM).
+    % The WAM compiler treats bagof/setof as primitive calls when
+    % this flag is false; with it true they expand to begin_aggregate
+    % bagof/setof, ..., end_aggregate and the LLVM target dispatches
+    % to wam_apply_aggregation case 5 (bag/bagof) or 6 (set/setof).
+    ( memberchk(inline_bagof_setof(_), Options)
+    -> OptionsWithBS = Options
+    ;  OptionsWithBS = [inline_bagof_setof(true) | Options]
+    ),
+    OptionsWithClosure = [lowered_closure(ClosureSet)|OptionsWithBS],
     pass1_classify_predicates(Predicates, OptionsWithClosure, 0, Classified),
     build_merged_labels(Classified, NamePCPairs, LabelMap),
     pass2_emit_merged(Classified, LabelMap, NamePCPairs, OptionsWithClosure,
@@ -3034,7 +3045,18 @@ wam_llvm_case('begin_aggregate',
 % op1 = value_reg_idx
 wam_llvm_case('end_aggregate',
 '  %ea.val_reg = trunc i64 %op1 to i32
-  %ea.val = call %Value @wam_get_reg(%WamState* %vm, i32 %ea.val_reg)
+  ; M10: deref before push. The per-iteration value reg is typically
+  ; a put_variable-allocated Ref whose heap cell holds the actual
+  ; result. On backtrack the heap rewinds, so the Ref becomes
+  ; dangling -- pushing the Ref unchanged means all accumulated
+  ; entries end up pointing to the same recycled heap address,
+  ; and set/setof dedups them all to one element. Dereferencing
+  ; here captures the atomic value while it is still bound.
+  ; Compound values still need a deep-copy (M11) -- their args
+  ; can hold Refs into the per-iteration heap region; for now
+  ; the typical setof-of-atoms / findall-of-ints case is correct.
+  %ea.val_raw = call %Value @wam_get_reg(%WamState* %vm, i32 %ea.val_reg)
+  %ea.val = call %Value @wam_deref_value(%WamState* %vm, %Value %ea.val_raw)
 
   ; Push value to accumulator
   call void @wam_agg_push(%WamState* %vm, %Value %ea.val)
@@ -3292,6 +3314,7 @@ entry:
     i32 28, label %builtin_univ
     i32 29, label %builtin_copy_term
     i32 30, label %builtin_msort
+    i32 31, label %builtin_length
   ]
 
 builtin_is:
@@ -4074,6 +4097,45 @@ ms.check:
   %ms.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %ms.raw2, %Value %ms.result)
   ret i1 %ms.ok
 
+builtin_length:
+  ; M10: length/2 -- A1 = list, A2 = count. Walks the [|]/2 Compound
+  ; chain counting elements, binds A2 to Integer(count). Same chain
+  ; convention as msort: terminator is the [] Atom; non-list values
+  ; halt the walk at whatever count was accumulated so far. Reverse
+  ; mode (length(L, N) with L unbound) is not implemented -- typical
+  ; benchmark usage has the list bound.
+  %ln.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  br label %ln.loop
+ln.loop:
+  %ln.cur = phi %Value [ %ln.a1, %builtin_length ], [ %ln.next, %ln.step ]
+  %ln.n = phi i32 [ 0, %builtin_length ], [ %ln.n1, %ln.step ]
+  %ln.d = call %Value @wam_deref_value(%WamState* %vm, %Value %ln.cur)
+  %ln.tag = extractvalue %Value %ln.d, 0
+  %ln.is_cmp = icmp eq i32 %ln.tag, 3
+  br i1 %ln.is_cmp, label %ln.step, label %ln.done
+ln.step:
+  %ln.cp_bits = extractvalue %Value %ln.d, 1
+  %ln.cp = inttoptr i64 %ln.cp_bits to %Compound*
+  %ln.args_slot = getelementptr %Compound, %Compound* %ln.cp, i32 0, i32 2
+  %ln.args = load %Value*, %Value** %ln.args_slot
+  %ln.tail_ptr = getelementptr %Value, %Value* %ln.args, i32 1
+  %ln.next = load %Value, %Value* %ln.tail_ptr
+  %ln.n1 = add i32 %ln.n, 1
+  br label %ln.loop
+ln.done:
+  %ln.n64 = sext i32 %ln.n to i64
+  %ln.r_val = call %Value @value_integer(i64 %ln.n64)
+  %ln.a2d = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %ln.a2_unb = call i1 @value_is_unbound(%Value %ln.a2d)
+  br i1 %ln.a2_unb, label %ln.bind, label %ln.cmp
+ln.bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %ln.r_val)
+  ret i1 true
+ln.cmp:
+  %ln.eq = call i1 @value_equals(%Value %ln.a2d, %Value %ln.r_val)
+  ret i1 %ln.eq
+
 unknown:
   ret i1 false
 }'.
@@ -4642,6 +4704,7 @@ builtin_op_to_id('arg/3', 27).
 builtin_op_to_id('=../2', 28).
 builtin_op_to_id('copy_term/2', 29).
 builtin_op_to_id('msort/2', 30).
+builtin_op_to_id('length/2', 31).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
@@ -4956,6 +5019,19 @@ wam_line_to_llvm_literal_resolved(["switch_on_term" | _], _, Lit) :- !,
     Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
 wam_line_to_llvm_literal_resolved(["switch_on_term_a2" | _], _, Lit) :- !,
     Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
+% try / retry / trust (no `_me_else` suffix): emitted by the WAM
+% compiler''s indexed-dispatch group pass to chain together clauses
+% that share an indexing key. The LLVM target''s switch_on_constant
+% / switch_on_term are nop fallthroughs, so the indexed body never
+% gets entered and these instructions are unreachable in practice;
+% emit nop so they fall through to the next instruction (which
+% continues the try_me_else / retry_me_else / trust_me chain).
+wam_line_to_llvm_literal_resolved(["try" | _], _, Lit) :- !,
+    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
+wam_line_to_llvm_literal_resolved(["retry" | _], _, Lit) :- !,
+    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
+wam_line_to_llvm_literal_resolved(["trust" | _], _, Lit) :- !,
+    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
 % All other instructions: delegate to existing parser (no labels needed)
 wam_line_to_llvm_literal_resolved(Parts, _LabelMap, Lit) :-
     wam_line_to_llvm_literal(Parts, Lit).
@@ -5121,8 +5197,17 @@ wam_line_to_llvm_literal(["set_constant", C], Lit) :-
 wam_line_to_llvm_literal(["allocate"], '%Instruction { i32 16, i64 0, i64 0 }').
 wam_line_to_llvm_literal(["deallocate"], '%Instruction { i32 17, i64 0, i64 0 }').
 
-% begin_aggregate type, ValueReg, ResultReg
+% begin_aggregate type, ValueReg, ResultReg [, WitnessRegs]
+% The WitnessRegs 4th arg is emitted by the WAM compiler for bagof/setof
+% (M10) to support ISO grouping. The LLVM runtime does not use witness
+% grouping yet -- ignore the witness string and fall through to the
+% same dispatch as the 3-arg form.
 wam_line_to_llvm_literal(["begin_aggregate", TypeStr, ValRegStr, ResRegStr], Lit) :- !,
+    begin_aggregate_lit(TypeStr, ValRegStr, ResRegStr, Lit).
+wam_line_to_llvm_literal(["begin_aggregate", TypeStr, ValRegStr, ResRegStr, _Witness], Lit) :- !,
+    begin_aggregate_lit(TypeStr, ValRegStr, ResRegStr, Lit).
+
+begin_aggregate_lit(TypeStr, ValRegStr, ResRegStr, Lit) :-
     clean_comma(TypeStr, CT), clean_comma(ValRegStr, CV), clean_comma(ResRegStr, CR),
     atom_string(CTAtom, CT),
     agg_type_id(CTAtom, TypeId),
@@ -5146,6 +5231,13 @@ agg_type_id(min, 2).
 agg_type_id(max, 3).
 agg_type_id(collect, 4).
 agg_type_id(bag, 5).
+% M10: set / setof / bagof -> sort + dedup of the accumulator. The
+% bagof case keeps duplicates; only set/setof dedup. Use the same id
+% (6) for both -- they share the sort+build path, dedup is a runtime
+% switch driven by which agg_type the bytecode sets.
+agg_type_id(set, 6).
+agg_type_id(setof, 6).
+agg_type_id(bagof, 5).  % bagof keeps duplicates, same as bag
 agg_type_id(_, 4).  % fallback: collect
 
 % call_foreign KindName, InstanceId
@@ -5202,6 +5294,12 @@ wam_line_to_llvm_literal(["switch_on_constant_a2"|_],
 wam_line_to_llvm_literal(["switch_on_term"|_],
     '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
 wam_line_to_llvm_literal(["switch_on_term_a2"|_],
+    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
+wam_line_to_llvm_literal(["try"|_],
+    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
+wam_line_to_llvm_literal(["retry"|_],
+    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
+wam_line_to_llvm_literal(["trust"|_],
     '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
 
 wam_line_to_llvm_literal(["cut_ite"],
