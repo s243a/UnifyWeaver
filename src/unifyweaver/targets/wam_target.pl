@@ -95,6 +95,13 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
     ->  b_setval(wam_inline_bagof_setof, true)
     ;   b_setval(wam_inline_bagof_setof, false)
     ),
+    % M10: \+ G inlines to (G -> fail ; true) by default. Opt out
+    % with inline_not_as_failure(false) -- builds a builtin_call
+    % \+/1 instead, which the runtime must metacall.
+    (   option(inline_not_as_failure(false), Options)
+    ->  b_setval(wam_inline_not, false)
+    ;   b_setval(wam_inline_not, true)
+    ),
     % args_first_emission: emit set_variable for ALL outer-compound
     % args BEFORE any nested put_structure. The legacy emit
     % interleaved `set_variable Xn ; put_structure F/N, Xn ;
@@ -771,6 +778,9 @@ goals_contain_call_or_aggregate(Goals) :-
 wam_inline_bagof_setof_enabled :-
     catch(b_getval(wam_inline_bagof_setof, true), _, fail).
 
+wam_inline_not_enabled :-
+    catch(b_getval(wam_inline_not, true), _, fail).
+
 is_builtin_goal(is).
 is_builtin_goal(=).
 is_builtin_goal(\=).
@@ -1150,6 +1160,21 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
         ;   compile_goals(Rest, V1, HasEnv, Vf, RestCode),
             format(string(Code), "~w~n~w", [GoalCode, RestCode])
         )
+    % Negation-as-failure: \+ G. Rewrite to ((G, !, fail) ; true) so
+    % the existing disjunction compiler handles the bookkeeping.
+    % `!/0` cuts to the env frame''s cut_barrier (set by allocate to
+    % the cpn at clause entry), wiping the outer disjunction''s
+    % choice point AND any inner CPs that the condition''s multi-
+    % clause calls may have left behind -- exactly the cleanup that
+    % a proper \+ needs. `fail` then propagates up. The alternate
+    % `(G -> fail ; true)` rewrite goes through `cut_ite` which is
+    % a soft cut and only pops one CP -- it gets the wrong CP when
+    % G pushes its own choice points.
+    ;   nonvar(Goal),
+        Goal = \+(NotGoal),
+        wam_inline_not_enabled
+    ->  compile_goals([((NotGoal, !, fail) ; true) | Rest],
+                      V0, HasEnv, Vf, Code)
     % Bare if-then: (Cond -> Then) without an Else clause. Reuses the
     % if-then-else compiler with Else=fail — semantically identical
     % for the success path; Cond-failure just falls through to fail

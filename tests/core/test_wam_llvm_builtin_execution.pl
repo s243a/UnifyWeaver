@@ -57,6 +57,14 @@ test_add(X, R) :- R is X + 1.
 :- dynamic test_mul/2.
 test_mul(X, R) :- R is X * 3.
 
+% Compound arithmetic: R is X ** 3 (integer power)
+:- dynamic test_pow/2.
+test_pow(X, R) :- R is X ** 3.
+
+% Compound arithmetic: R is 2 ** X (variable exponent)
+:- dynamic test_pow2/2.
+test_pow2(X, R) :- R is 2 ** X.
+
 % Multi-step: R is (X + 1) * 2 — two separate is/2 calls
 :- dynamic test_multi/2.
 test_multi(X, R) :- T is X + 1, R is T * 2.
@@ -66,6 +74,113 @@ test_multi(X, R) :- T is X + 1, R is T * 2.
 test_choice(1, 10).
 test_choice(2, 20).
 test_choice(3, 30).
+
+% M10: list construction + recursive multi-clause traversal.
+% Exercises put_list / get_list (the Compound representation fix) and
+% the disjoint X/Y register layout: my_mem's first clause has no
+% `allocate` and writes X1, X2 -- under the pre-M10 ABI those slot
+% indices aliased the caller's Y1, Y2 and silently corrupted the
+% outer `R` variable.
+:- dynamic my_mem/2.
+my_mem(X, [X|_]).
+my_mem(X, [_|T]) :- my_mem(X, T).
+
+:- dynamic test_mem_first/2.
+test_mem_first(_, R) :- L = [11, 22, 33], my_mem(11, L), R = 11.
+
+:- dynamic test_mem_second/2.
+test_mem_second(_, R) :- L = [11, 22, 33], my_mem(22, L), R = 22.
+
+:- dynamic test_mem_third/2.
+test_mem_third(_, R) :- L = [11, 22, 33], my_mem(33, L), R = 33.
+
+% M10: msort/2 builtin -- sort a list of integers, return the head.
+% The trailing `R is X` forces the result into A1 so the run_test_r0
+% driver (which reads reg 0) sees the value.
+:- dynamic test_msort_head/2.
+test_msort_head(_, R) :-
+    msort([33, 11, 22], Sorted),
+    Sorted = [X|_],
+    R is X.
+
+:- dynamic test_msort_second/2.
+test_msort_second(_, R) :-
+    msort([33, 11, 22], Sorted),
+    Sorted = [_, X|_],
+    R is X.
+
+:- dynamic test_msort_third/2.
+test_msort_third(_, R) :-
+    msort([33, 11, 22], Sorted),
+    Sorted = [_, _, X],
+    R is X.
+
+% Idempotent on a single element.
+:- dynamic test_msort_one/2.
+test_msort_one(_, R) :-
+    msort([42], Sorted),
+    Sorted = [X],
+    R is X.
+
+% msort preserves duplicates (unlike sort/2): expect [1, 1, 2, 3, 3].
+:- dynamic test_msort_dups/2.
+test_msort_dups(_, R) :-
+    msort([3, 1, 3, 2, 1], Sorted),
+    Sorted = [_, X|_],
+    R is X.
+
+% M10: setof/3 via aggregate_all -> sort + dedup. The agg_type_id
+% routes set/setof to id 6, which inserts a sort+dedup pass before
+% building the cons-cell chain. Drives off a small dynamic fact
+% base so the inner goal yields a deterministic multi-set.
+:- dynamic color/1.
+color(red).
+color(blue).
+color(red).    % duplicate
+color(green).
+color(blue).   % duplicate
+
+:- dynamic test_setof_count/2.
+test_setof_count(_, R) :-
+    setof(C, color(C), Cs),
+    length(Cs, N),
+    R is N.
+
+% M10: \+/1 negation-as-failure via inline (G -> fail ; true) rewrite
+% in the WAM compiler. No runtime metacall: the bytecode goes through
+% the existing if-then-else (try_me_else / cut_ite / trust_me) chain.
+%
+% Coverage is partial: the inline rewrite only behaves correctly when
+% the inner goal FAILS (typical "negation of an absent fact" use).
+% \+ of a SUCCEEDING goal currently mis-succeeds because the LLVM
+% target's cut_ite naively pops one CP, which is the inner retry CP
+% rather than the ITE guard CP -- proper get_level/cut Y_n is M11.
+:- dynamic in_basket/1.
+in_basket(apple).
+in_basket(bread).
+in_basket(milk).
+
+% \+ of an absent item -> succeeds.
+:- dynamic test_not_absent/2.
+test_not_absent(_, R) :-
+    \+ in_basket(soap),
+    R is 7.
+
+% \+ of a present item -> fails the whole goal -> predicate fails,
+% run_test_r0 maps that to exit 255 (the `miss:` branch).
+:- dynamic test_not_present/2.
+test_not_present(_, R) :-
+    \+ in_basket(apple),
+    R is 7.
+
+% Chain: \+ followed by another check. Exercises that the inline
+% expansion leaves the env / Y-reg state consistent for the next
+% goal.
+:- dynamic test_not_then/2.
+test_not_then(_, R) :-
+    \+ in_basket(soap),
+    in_basket(bread),
+    R is 13.
 
 run_test(Label, PredAtom, InputVal, Expected) :-
     format('  ~w: ', [Label]),
@@ -137,13 +252,24 @@ miss:
     assertion(ExitCode =:= Expected).
 
 % Runner for is/2 predicates: result ends up in A1 (reg 0) due to WAM register layout.
-run_test_r0(Label, PredAtom, InputVal, Expected) :-
+% Accepts either a single predicate atom (compiled solo) or a Pred/Helpers
+% pair where Helpers is a list of additional Pred/Arity to include in the
+% module (used by M10 list tests that need both the entry pred and the
+% user-defined member/2 it calls).
+run_test_r0(Label, Pred, InputVal, Expected) :-
+    ( Pred = PredAtom + Helpers -> true
+    ; PredAtom = Pred, Helpers = []
+    ),
     format('  ~w: ', [Label]),
     clear_llvm_foreign_kernel_specs,
     tmp_file_stream(text, LLPath, Stream), close(Stream),
     host_target_triple(Triple),
+    % Entry must be FIRST so it gets start_pc = 0 (run_test_r0's driver
+    % calls @run_loop directly without wam_set_pc -- new VMs start at PC 0).
+    findall(user:P/A, member(P/A, Helpers), HelperPreds),
+    AllPreds = [user:PredAtom/2 | HelperPreds],
     write_wam_llvm_project(
-        [user:PredAtom/2],
+        AllPreds,
         [ module_name('bt_exec'),
           target_triple(Triple),
           target_datalayout('')
@@ -169,8 +295,15 @@ entry:
   %ok = call i1 @run_loop(%WamState* %vm)
   br i1 %ok, label %hit, label %miss
 hit:
-  %r = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
-  %r32 = trunc i64 %r to i32
+  ; M10: deref reg 0 before reading the payload. get_variable now
+  ; promotes a direct-Unbound input Ai to a Ref-into-heap so callees
+  ; can bind through it; once is/2 binds, reg 0 is a Ref whose
+  ; payload is the heap address, NOT the result value. Deref-then-
+  ; payload gets the actual integer the test expects.
+  %r_raw = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %r_d = call %Value @wam_deref_value(%WamState* %vm, %Value %r_raw)
+  %r_pay = extractvalue %Value %r_d, 1
+  %r32 = trunc i64 %r_pay to i32
   ret i32 %r32
 miss:
   ret i32 255
@@ -218,6 +351,31 @@ test_all :-
        run_test_r0('10+1 = 11', test_add, 10, 11),
        run_test_r0('0+1 = 1', test_add, 0, 1),
        run_test_r0('7*3 = 21', test_mul, 7, 21),
+       run_test_r0('2**3 = 8', test_pow, 2, 8),
+       run_test_r0('3**3 = 27', test_pow, 3, 27),
+       run_test_r0('5**3 = 125', test_pow, 5, 125),
+       run_test_r0('2**5 = 32', test_pow2, 5, 32),
+       run_test_r0('2**7 = 128', test_pow2, 7, 128),
+       format('--- M10 list traversal (put_list + member-style) ---~n'),
+       run_test_r0('mem_first [11,22,33] -> 11', test_mem_first + [my_mem/2], 0, 11),
+       run_test_r0('mem_second [11,22,33] -> 22', test_mem_second + [my_mem/2], 0, 22),
+       run_test_r0('mem_third [11,22,33] -> 33', test_mem_third + [my_mem/2], 0, 33),
+       format('--- M10 msort/2 builtin ---~n'),
+       run_test_r0('msort_head [33,11,22] -> 11', test_msort_head, 0, 11),
+       run_test_r0('msort_second [33,11,22] -> 22', test_msort_second, 0, 22),
+       run_test_r0('msort_third [33,11,22] -> 33', test_msort_third, 0, 33),
+       run_test_r0('msort_one [42] -> 42', test_msort_one, 0, 42),
+       run_test_r0('msort_dups [3,1,3,2,1] -> 1', test_msort_dups, 0, 1),
+       format('--- M10 setof/3 (sort + dedup) ---~n'),
+       run_test_r0('setof color/1 count -> 3',
+                   test_setof_count + [color/1], 0, 3),
+       format('--- M10 \\+ negation-as-failure (inline rewrite) ---~n'),
+       run_test_r0('\\+ in_basket(soap) -> succeeds, R=7',
+                   test_not_absent + [in_basket/1], 0, 7),
+       run_test_r0('\\+ in_basket(apple) -> fails (exit 255)',
+                   test_not_present + [in_basket/1], 0, 255),
+       run_test_r0('\\+ then in_basket(bread), R=13',
+                   test_not_then + [in_basket/1], 0, 13),
        format('--- multi-clause (first-arg indexing) ---~n'),
        run_test('choice(1) = 10', test_choice, 1, 10),
        run_test('choice(2) = 20', test_choice, 2, 20),

@@ -1193,18 +1193,20 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     retractall(functor_string_global(_, _)),
     % Pre-register functor globals referenced directly by runtime
     % helpers (e.g. =../2 needs the cons-cell functor "." and the
-    % empty-list atom "[]").
-    assert(functor_string_global(".", 2)),
-    assert(functor_string_global("[]", 3)),
+    % empty-list atom "[]"). Route through register_functor_string so
+    % the key type (string) matches the bytecode-side registration —
+    % otherwise a program that BOTH uses findall AND explicitly
+    % constructs cons cells emits two `@.fn__5B_7C_5D` globals and
+    % llc rejects the module ("redefinition of global").
+    register_functor_string("."),
+    register_functor_string("[]"),
     % M9: cons-cell functor for the findall / aggregate_all(bag/set)
     % result list. @wam_apply_aggregation's collect_case allocates
     % `[|]`-tagged Compounds on the arena to build the result; the
     % functor string global it references must exist or llvm-as rejects
-    % the module. The bytecode emit already registers "[|]" lazily on
-    % first `put_structure [|]/2` — registering it eagerly here means
-    % programs that ONLY consume the list via findall (no explicit
-    % cons-cell construction in the body) still get a valid module.
-    assert(functor_string_global("[|]", 4)),
+    % the module. Eager registration handles programs that consume the
+    % list via findall but never explicitly construct a cons cell.
+    register_functor_string("[|]"),
     % M9: intern "[]" so the empty-list atom id is known at runtime.
     % @wam_apply_aggregation's collect_case reads this id from a
     % module-level global to terminate the cons-cell chain.
@@ -1545,7 +1547,18 @@ compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode) :-
     % to fixpoint). Passed through Options so pass1's per-pred
     % lowerability check can consult it.
     compute_lowered_closure(Predicates, Options, ClosureSet),
-    OptionsWithClosure = [lowered_closure(ClosureSet)|Options],
+    % M10: enable inline lowering of bagof/setof so they go through
+    % the same aggregate dispatch path as findall/aggregate_all rather
+    % than the runtime fallback (which is not wired up for LLVM).
+    % The WAM compiler treats bagof/setof as primitive calls when
+    % this flag is false; with it true they expand to begin_aggregate
+    % bagof/setof, ..., end_aggregate and the LLVM target dispatches
+    % to wam_apply_aggregation case 5 (bag/bagof) or 6 (set/setof).
+    ( memberchk(inline_bagof_setof(_), Options)
+    -> OptionsWithBS = Options
+    ;  OptionsWithBS = [inline_bagof_setof(true) | Options]
+    ),
+    OptionsWithClosure = [lowered_closure(ClosureSet)|OptionsWithBS],
     pass1_classify_predicates(Predicates, OptionsWithClosure, 0, Classified),
     build_merged_labels(Classified, NamePCPairs, LabelMap),
     pass2_emit_merged(Classified, LabelMap, NamePCPairs, OptionsWithClosure,
@@ -2273,31 +2286,69 @@ gs.fail:
 
 wam_llvm_case('get_list',
 '  ; get_list: op1 = Ai register index
+  ; M10: handle the Compound representation produced by the new
+  ; put_list. Tag dispatch:
+  ;   tag=3 Compound -> READ mode: extract args, push UnifyCtx(2)
+  ;   tag=6 Unbound  -> WRITE mode: allocate [|]/2 Compound, bind Ai,
+  ;                     push WriteCtx(2)
+  ;   anything else (incl. Ref to non-list) -> fail
+  ; The prior impl checked tag>=5 to go to write mode, which meant
+  ; calls with a constructed list (tag=3) went to a stub `gl.read`
+  ; that returned false -- head unification against a list literal
+  ; never matched.
   %gl.ai = trunc i64 %op1 to i32
   %gl.val = call %Value @wam_get_reg_deref(%WamState* %vm, i32 %gl.ai)
   %gl.tag = extractvalue %Value %gl.val, 0
-  %gl.is_ref_or_unb = icmp uge i32 %gl.tag, 5 ; Ref(5) or Unbound(6)
-  br i1 %gl.is_ref_or_unb, label %gl.write, label %gl.read
+  %gl.is_cp = icmp eq i32 %gl.tag, 3
+  br i1 %gl.is_cp, label %gl.read, label %gl.check_unb
 
-gl.write:
-  %gl.marker = call %Value @value_atom(i8* null)
-  %gl.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %gl.marker)
-  %gl.unb = call %Value @value_unbound(i8* null)
-  call i32 @wam_heap_push(%WamState* %vm, %Value %gl.unb)
-  call i32 @wam_heap_push(%WamState* %vm, %Value %gl.unb)
-  %gl.ref = call %Value @value_ref(i32 %gl.addr)
-  call void @wam_trail_binding(%WamState* %vm, i32 %gl.ai)
-  call void @wam_set_reg(%WamState* %vm, i32 %gl.ai, %Value %gl.ref)
-  call void @wam_push_write_ctx(%WamState* %vm, i32 2)
-  %gl.hp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
-  %gl.hp = load %Value*, %Value** %gl.hp_ptr
-  %gl.h_addr = add i32 %gl.addr, 1
-  %gl.args = getelementptr %Value, %Value* %gl.hp, i32 %gl.h_addr
-  call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %gl.args)
+gl.check_unb:
+  %gl.unb_p = call i1 @value_is_unbound(%Value %gl.val)
+  br i1 %gl.unb_p, label %gl.write, label %gl.fail
+
+gl.read:
+  ; Compound: load args pointer, push UnifyCtx with arity 2.
+  %gl.cp_bits = extractvalue %Value %gl.val, 1
+  %gl.cp_ptr = inttoptr i64 %gl.cp_bits to %Compound*
+  %gl.args_slot = getelementptr %Compound, %Compound* %gl.cp_ptr, i32 0, i32 2
+  %gl.args = load %Value*, %Value** %gl.args_slot
+  call void @wam_push_unify_ctx(%WamState* %vm, %Value* %gl.args, i32 2)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true
 
-gl.read:
+gl.write:
+  ; Allocate [|]/2 Compound on arena, bind Ai, push WriteCtx.
+  call void @wam_arena_ensure()
+  %gl.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %gl.cp_mem = call i8* @wam_arena_alloc(i64 %gl.cp_size)
+  %gl.wcp = bitcast i8* %gl.cp_mem to %Compound*
+  %gl.wfn_slot = getelementptr %Compound, %Compound* %gl.wcp, i32 0, i32 0
+  %gl.wfn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %gl.wfn_ptr, i8** %gl.wfn_slot
+  %gl.war_slot = getelementptr %Compound, %Compound* %gl.wcp, i32 0, i32 1
+  store i32 2, i32* %gl.war_slot
+  %gl.wargs_mem = call i8* @wam_arena_alloc(i64 32)
+  %gl.wargs = bitcast i8* %gl.wargs_mem to %Value*
+  %gl.wargs_slot = getelementptr %Compound, %Compound* %gl.wcp, i32 0, i32 2
+  store %Value* %gl.wargs, %Value** %gl.wargs_slot
+  %gl.wunb = call %Value @value_unbound(i8* null)
+  %gl.w0_ptr = getelementptr %Value, %Value* %gl.wargs, i32 0
+  store %Value %gl.wunb, %Value* %gl.w0_ptr
+  %gl.w1_ptr = getelementptr %Value, %Value* %gl.wargs, i32 1
+  store %Value %gl.wunb, %Value* %gl.w1_ptr
+  %gl.wcp_i64 = ptrtoint %Compound* %gl.wcp to i64
+  %gl.wval0 = insertvalue %Value undef, i32 3, 0
+  %gl.wval = insertvalue %Value %gl.wval0, i64 %gl.wcp_i64, 1
+  %gl.old = call %Value @wam_get_reg(%WamState* %vm, i32 %gl.ai)
+  call void @wam_trail_binding(%WamState* %vm, i32 %gl.ai)
+  call void @wam_set_reg(%WamState* %vm, i32 %gl.ai, %Value %gl.wval)
+  call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %gl.old, %Value %gl.wval)
+  call void @wam_push_write_ctx(%WamState* %vm, i32 2)
+  call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %gl.wargs)
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i1 true
+
+gl.fail:
   ret i1 false').
 
 wam_llvm_case('unify_variable',
@@ -2501,27 +2552,43 @@ wam_llvm_case('put_structure',
 
 wam_llvm_case('put_list',
 '  ; put_list: op1 = Ai register index
-  ; Push list marker + 2 unbound cells for [H|T] on heap.
-  ; Bind Ai to Ref of marker, push WriteCtx(2) pointing to H slot.
+  ; M10: build a [|]/2 Compound on the arena (matches put_structure''s
+  ; representation). Prior impl used a heap-marker (Atom sentinel +
+  ; 2 unbound cells) which deref''d to an Atom -- the resulting list
+  ; was incompatible with put_structure [|]/2 (Compound) and with
+  ; findall''s collect_case output, so any cross-built unification
+  ; silently failed (Compound vs Atom tag mismatch).
   %pl.ai = trunc i64 %op1 to i32
-  %pl.marker = call %Value @value_atom(i8* null)
-  %pl.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %pl.marker)
+  call void @wam_arena_ensure()
+  ; Allocate %Compound + 2-arg args array on arena.
+  %pl.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %pl.cp_mem = call i8* @wam_arena_alloc(i64 %pl.cp_size)
+  %pl.cp = bitcast i8* %pl.cp_mem to %Compound*
+  %pl.fn_slot = getelementptr %Compound, %Compound* %pl.cp, i32 0, i32 0
+  %pl.fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %pl.fn_ptr, i8** %pl.fn_slot
+  %pl.ar_slot = getelementptr %Compound, %Compound* %pl.cp, i32 0, i32 1
+  store i32 2, i32* %pl.ar_slot
+  %pl.args_mem = call i8* @wam_arena_alloc(i64 32)
+  %pl.args = bitcast i8* %pl.args_mem to %Value*
+  %pl.args_slot = getelementptr %Compound, %Compound* %pl.cp, i32 0, i32 2
+  store %Value* %pl.args, %Value** %pl.args_slot
+  ; Init both args to Unbound so unify mode runs against valid cells.
   %pl.unb = call %Value @value_unbound(i8* null)
-  call i32 @wam_heap_push(%WamState* %vm, %Value %pl.unb)
-  call i32 @wam_heap_push(%WamState* %vm, %Value %pl.unb)
-  %pl.ref = call %Value @value_ref(i32 %pl.addr)
-
+  %pl.a0_ptr = getelementptr %Value, %Value* %pl.args, i32 0
+  store %Value %pl.unb, %Value* %pl.a0_ptr
+  %pl.a1_ptr = getelementptr %Value, %Value* %pl.args, i32 1
+  store %Value %pl.unb, %Value* %pl.a1_ptr
+  ; Wrap as %Value{tag=3 Compound, payload=ptr}.
+  %pl.cp_i64 = ptrtoint %Compound* %pl.cp to i64
+  %pl.val0 = insertvalue %Value undef, i32 3, 0
+  %pl.val = insertvalue %Value %pl.val0, i64 %pl.cp_i64, 1
   %pl.old = call %Value @wam_get_reg(%WamState* %vm, i32 %pl.ai)
   call void @wam_trail_binding(%WamState* %vm, i32 %pl.ai)
-  call void @wam_set_reg(%WamState* %vm, i32 %pl.ai, %Value %pl.ref)
-  call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pl.old, %Value %pl.ref)
-
+  call void @wam_set_reg(%WamState* %vm, i32 %pl.ai, %Value %pl.val)
+  call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pl.old, %Value %pl.val)
+  ; WriteCtx writes into args[0..1] via set_constant/set_variable/set_value.
   call void @wam_push_write_ctx(%WamState* %vm, i32 2)
-  ; Set WriteCtx args to point to the head slot (pl.addr + 1)
-  %pl.hp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
-  %pl.hp = load %Value*, %Value** %pl.hp_ptr
-  %pl.h_addr = add i32 %pl.addr, 1
-  %pl.args = getelementptr %Value, %Value* %pl.hp, i32 %pl.h_addr
   call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %pl.args)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
@@ -2544,8 +2611,28 @@ wam_llvm_case('set_variable',
 wam_llvm_case('set_value',
 '  ; set_value: op1 = Xn register index
   ; Write Xn value into the compound args array via WriteCtx.
+  ; M10: if Xn is a direct Unbound (no backing heap cell -- usually
+  ; because get_variable copied a direct-Unbound input arg verbatim),
+  ; promote it to a fresh Ref-into-heap and update Xn so subsequent
+  ; uses see the same Ref. Without this, the compound arg holds a
+  ; direct Unbound that no unification path can bind back through.
   %sve.xn = trunc i64 %op1 to i32
   %sve.val = call %Value @wam_get_reg(%WamState* %vm, i32 %sve.xn)
+  %sve.tag = extractvalue %Value %sve.val, 0
+  %sve.is_unb = icmp eq i32 %sve.tag, 6
+  br i1 %sve.is_unb, label %sve.promote, label %sve.write
+
+sve.promote:
+  %sve.unb = call %Value @value_unbound(i8* null)
+  %sve.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %sve.unb)
+  %sve.ref = call %Value @value_ref(i32 %sve.addr)
+  call void @wam_trail_binding(%WamState* %vm, i32 %sve.xn)
+  call void @wam_set_reg(%WamState* %vm, i32 %sve.xn, %Value %sve.ref)
+  call void @wam_write_ctx_set_arg(%WamState* %vm, %Value %sve.ref)
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i1 true
+
+sve.write:
   call void @wam_write_ctx_set_arg(%WamState* %vm, %Value %sve.val)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
@@ -2598,12 +2685,17 @@ wam_llvm_case('allocate',
   %alloc.le_cpn = load i32, i32* %alloc.le_ptr
   store i32 %alloc.le_cpn, i32* %alloc.cb_ptr
 
-  ; Snapshot regs[16..31] (the Y-reg window) into the env frame.
-  %alloc.y_src = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 16
+  ; M10: snapshot regs[48..63] (the Y-reg window) into the env frame.
+  ; Y1..Y16 map to 48..63 under the disjoint X/Y ABI -- see
+  ; bindings/llvm_wam_bindings.pl reg_name_to_index. Pre-M10 the
+  ; snapshot covered 16..63 (X and Y mixed); now only Y space needs
+  ; protection (X space dies at calls per canonical WAM).
+  %alloc.y_src = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 48
   %alloc.y_dst = getelementptr %StackEntry, %StackEntry* %alloc.entry, i32 0, i32 3, i32 0
   %alloc.y_src_i8 = bitcast %Value* %alloc.y_src to i8*
   %alloc.y_dst_i8 = bitcast %Value* %alloc.y_dst to i8*
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alloc.y_dst_i8, i8* %alloc.y_src_i8, i64 768, i1 false)
+  ; 16 Values * 16 bytes = 256 bytes.
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alloc.y_dst_i8, i8* %alloc.y_src_i8, i64 256, i1 false)
   ; Increment stack size
   %alloc.new_ss = add i32 %alloc.ss, 1
   store i32 %alloc.new_ss, i32* %alloc.ss_ptr
@@ -2652,14 +2744,13 @@ dealloc.restore:
   %dealloc.cb_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 23
   store i32 %dealloc.saved_cb, i32* %dealloc.cb_ptr
 
-  ; Restore regs[16..31] (Y-reg window) from the env frame snapshot.
-  ; This is what makes Y-regs per-clause-local even though they share
-  ; physical slots with X-regs — see allocate for the save side.
+  ; M10: restore regs[48..63] (Y-reg window) from the env frame
+  ; snapshot. See allocate for the save side.
   %dealloc.y_src = getelementptr %StackEntry, %StackEntry* %dealloc.entry, i32 0, i32 3, i32 0
-  %dealloc.y_dst = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 16
+  %dealloc.y_dst = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 48
   %dealloc.y_src_i8 = bitcast %Value* %dealloc.y_src to i8*
   %dealloc.y_dst_i8 = bitcast %Value* %dealloc.y_dst to i8*
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dealloc.y_dst_i8, i8* %dealloc.y_src_i8, i64 768, i1 false)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dealloc.y_dst_i8, i8* %dealloc.y_src_i8, i64 256, i1 false)
   ; Pop stack down to this frame (exclusive)
   store i32 %dealloc.prev_idx, i32* %dealloc.ss_ptr
   br label %dealloc.done
@@ -2786,12 +2877,18 @@ wam_llvm_case('try_me_else',
   %tme.hs = load i32, i32* %tme.hs_ptr
   %tme.sht_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 11
   store i32 %tme.hs, i32* %tme.sht_ptr
-  ; Save current cpn into ChoicePoint.saved_b (field 12)
-  %tme.saved_b_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 12
-  store i32 %tme.cpn, i32* %tme.saved_b_ptr
-  ; Also set global cut_barrier to this value
+  ; M10: snapshot the CURRENT cut_barrier into saved_b so trust_me /
+  ; retry_me_else can restore it on this CP''s removal. Pre-M10 we
+  ; stored cpn here AND overwrote the global cb with cpn, which
+  ; corrupted any outer ITE/clause cut barrier that an inner
+  ; try_me_else encountered. With this change cb stays at the
+  ; clause-entry value (set by allocate), so `!/0` cuts to the
+  ; correct level even when the ITE condition triggers an inner
+  ; multi-clause dispatch.
   %tme.cb_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 23
-  store i32 %tme.cpn, i32* %tme.cb_ptr
+  %tme.cur_cb = load i32, i32* %tme.cb_ptr
+  %tme.saved_b_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 12
+  store i32 %tme.cur_cb, i32* %tme.saved_b_ptr
 
   %tme.new_cpn = add i32 %tme.cpn, 1
   store i32 %tme.new_cpn, i32* %tme.cpn_ptr
@@ -2954,7 +3051,18 @@ wam_llvm_case('begin_aggregate',
 % op1 = value_reg_idx
 wam_llvm_case('end_aggregate',
 '  %ea.val_reg = trunc i64 %op1 to i32
-  %ea.val = call %Value @wam_get_reg(%WamState* %vm, i32 %ea.val_reg)
+  ; M10: deref before push. The per-iteration value reg is typically
+  ; a put_variable-allocated Ref whose heap cell holds the actual
+  ; result. On backtrack the heap rewinds, so the Ref becomes
+  ; dangling -- pushing the Ref unchanged means all accumulated
+  ; entries end up pointing to the same recycled heap address,
+  ; and set/setof dedups them all to one element. Dereferencing
+  ; here captures the atomic value while it is still bound.
+  ; Compound values still need a deep-copy (M11) -- their args
+  ; can hold Refs into the per-iteration heap region; for now
+  ; the typical setof-of-atoms / findall-of-ints case is correct.
+  %ea.val_raw = call %Value @wam_get_reg(%WamState* %vm, i32 %ea.val_reg)
+  %ea.val = call %Value @wam_deref_value(%WamState* %vm, %Value %ea.val_raw)
 
   ; Push value to accumulator
   call void @wam_agg_push(%WamState* %vm, %Value %ea.val)
@@ -3211,6 +3319,8 @@ entry:
     i32 27, label %builtin_arg
     i32 28, label %builtin_univ
     i32 29, label %builtin_copy_term
+    i32 30, label %builtin_msort
+    i32 31, label %builtin_length
   ]
 
 builtin_is:
@@ -3462,8 +3572,37 @@ uf.bind_a2:
   ret i1 true
 
 uf.both_bound:
-  %uf.eq = call i1 @value_equals(%Value %uf.a1, %Value %uf.a2)
-  ret i1 %uf.eq
+  ; M10: both operands are bound. If both are compounds, recurse via
+  ; wam_unify_value so cons-cell patterns like `L = [H|_]` unify the
+  ; head/tail (binding fresh vars inside the [H|_] pattern). Atomic
+  ; tags (atoms, integers, floats) just compare payload.
+  %uf.tag1 = extractvalue %Value %uf.a1, 0
+  %uf.tag2 = extractvalue %Value %uf.a2, 0
+  %uf.tags_eq = icmp eq i32 %uf.tag1, %uf.tag2
+  br i1 %uf.tags_eq, label %uf.tagmatch, label %uf.notmatch
+
+uf.tagmatch:
+  %uf.is_cmp = icmp eq i32 %uf.tag1, 3
+  br i1 %uf.is_cmp, label %uf.deep, label %uf.atomic
+
+uf.deep:
+  ; Compounds: read the raw register values (NOT the deref''d ones) so
+  ; wam_unify_value can re-deref through any Ref chains its recursion
+  ; uncovers. Pass the deref''d ones too via a fresh call -- equivalent
+  ; here because the top-level deref already happened.
+  %uf.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %uf.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %uf.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %uf.raw1, %Value %uf.raw2)
+  ret i1 %uf.uok
+
+uf.atomic:
+  %uf.pay1 = extractvalue %Value %uf.a1, 1
+  %uf.pay2 = extractvalue %Value %uf.a2, 1
+  %uf.peq = icmp eq i64 %uf.pay1, %uf.pay2
+  ret i1 %uf.peq
+
+uf.notmatch:
+  ret i1 false
 
 builtin_not_unify:
   ; not-unify: succeeds if A1 and A2 do NOT unify.
@@ -3940,6 +4079,69 @@ ct.a2_check:
   %ct.a2_eq = call i1 @value_equals(%Value %ct.a2, %Value %ct.copy)
   ret i1 %ct.a2_eq
 
+builtin_msort:
+  ; M10: msort/2 -- A1 = input list (Compound [|]/2 chain), A2 = output.
+  ; Calls @wam_msort_list which walks the input, collects into an
+  ; arena buffer, in-place insertion sorts by (tag, payload), then
+  ; rebuilds a [|]/2 chain on the arena. A2 is bound (through any
+  ; aliased Ref) to the new list head.
+  %ms.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ms.result = call %Value @wam_msort_list(%WamState* %vm, %Value %ms.a1)
+  %ms.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %ms.a2_unb = call i1 @value_is_unbound(%Value %ms.a2)
+  br i1 %ms.a2_unb, label %ms.bind, label %ms.check
+
+ms.bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %ms.result)
+  ret i1 true
+
+ms.check:
+  ; A2 was already bound -- structurally compare via wam_unify_value
+  ; so list-of-ints `[1,2,3] = msort([3,1,2], _)` succeeds.
+  %ms.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %ms.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %ms.raw2, %Value %ms.result)
+  ret i1 %ms.ok
+
+builtin_length:
+  ; M10: length/2 -- A1 = list, A2 = count. Walks the [|]/2 Compound
+  ; chain counting elements, binds A2 to Integer(count). Same chain
+  ; convention as msort: terminator is the [] Atom; non-list values
+  ; halt the walk at whatever count was accumulated so far. Reverse
+  ; mode (length(L, N) with L unbound) is not implemented -- typical
+  ; benchmark usage has the list bound.
+  %ln.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  br label %ln.loop
+ln.loop:
+  %ln.cur = phi %Value [ %ln.a1, %builtin_length ], [ %ln.next, %ln.step ]
+  %ln.n = phi i32 [ 0, %builtin_length ], [ %ln.n1, %ln.step ]
+  %ln.d = call %Value @wam_deref_value(%WamState* %vm, %Value %ln.cur)
+  %ln.tag = extractvalue %Value %ln.d, 0
+  %ln.is_cmp = icmp eq i32 %ln.tag, 3
+  br i1 %ln.is_cmp, label %ln.step, label %ln.done
+ln.step:
+  %ln.cp_bits = extractvalue %Value %ln.d, 1
+  %ln.cp = inttoptr i64 %ln.cp_bits to %Compound*
+  %ln.args_slot = getelementptr %Compound, %Compound* %ln.cp, i32 0, i32 2
+  %ln.args = load %Value*, %Value** %ln.args_slot
+  %ln.tail_ptr = getelementptr %Value, %Value* %ln.args, i32 1
+  %ln.next = load %Value, %Value* %ln.tail_ptr
+  %ln.n1 = add i32 %ln.n, 1
+  br label %ln.loop
+ln.done:
+  %ln.n64 = sext i32 %ln.n to i64
+  %ln.r_val = call %Value @value_integer(i64 %ln.n64)
+  %ln.a2d = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %ln.a2_unb = call i1 @value_is_unbound(%Value %ln.a2d)
+  br i1 %ln.a2_unb, label %ln.bind, label %ln.cmp
+ln.bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %ln.r_val)
+  ret i1 true
+ln.cmp:
+  %ln.eq = call i1 @value_equals(%Value %ln.a2d, %Value %ln.r_val)
+  ret i1 %ln.eq
+
 unknown:
   ret i1 false
 }'.
@@ -4016,8 +4218,45 @@ do_sub:
   ret i64 %sub_r
 
 do_mul:
+  ; M10: disambiguate `**` (power) from `*` (multiply) by inspecting
+  ; the second byte of the functor name. `*` has fn[1] = \\0;
+  ; `**` has fn[1] = \'*\'. Anything else falls through to plain `*`.
+  %mul_fn_second_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %mul_fn_second = load i8, i8* %mul_fn_second_ptr
+  %mul_is_pow = icmp eq i8 %mul_fn_second, 42  ; \'*\'
+  br i1 %mul_is_pow, label %do_pow, label %do_mul_plain
+
+do_mul_plain:
   %mul_r = mul i64 %a, %b
   ret i64 %mul_r
+
+do_pow:
+  ; Integer power loop: base ** exp computed as repeated multiply.
+  ; Negative exponent returns 0 (eval_arith is integer-only; proper
+  ; float pow is M11 deferred work that retags eval_arith to carry
+  ; either i64 or double).
+  %p_neg = icmp slt i64 %b, 0
+  br i1 %p_neg, label %pow_neg, label %pow_loop_setup
+
+pow_neg:
+  ret i64 0
+
+pow_loop_setup:
+  br label %pow_loop
+
+pow_loop:
+  %p_acc = phi i64 [ 1, %pow_loop_setup ], [ %p_new_acc, %pow_step ]
+  %p_n = phi i64 [ %b, %pow_loop_setup ], [ %p_dec, %pow_step ]
+  %p_done = icmp sle i64 %p_n, 0
+  br i1 %p_done, label %pow_done, label %pow_step
+
+pow_step:
+  %p_new_acc = mul i64 %p_acc, %a
+  %p_dec = sub i64 %p_n, 1
+  br label %pow_loop
+
+pow_done:
+  ret i64 %p_acc
 
 do_div:
   %div_zero = icmp eq i64 %b, 0
@@ -4470,6 +4709,8 @@ builtin_op_to_id('functor/3', 26).
 builtin_op_to_id('arg/3', 27).
 builtin_op_to_id('=../2', 28).
 builtin_op_to_id('copy_term/2', 29).
+builtin_op_to_id('msort/2', 30).
+builtin_op_to_id('length/2', 31).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
@@ -4777,6 +5018,26 @@ wam_line_to_llvm_literal_resolved(["switch_on_structure" | _], _, Lit) :- !,
 wam_line_to_llvm_literal_resolved(["switch_on_constant_a2" | EntryParts], LabelMap,
         switch_deferred(constant_a2, Entries)) :- !,
     parse_switch_entries(EntryParts, LabelMap, Entries).
+% switch_on_term / switch_on_term_a2: type-based dispatch that falls
+% back to the try_me_else / retry_me_else chain. The LLVM target does
+% not implement these yet, so emit a nop and let the linear chain run.
+wam_line_to_llvm_literal_resolved(["switch_on_term" | _], _, Lit) :- !,
+    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
+wam_line_to_llvm_literal_resolved(["switch_on_term_a2" | _], _, Lit) :- !,
+    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
+% try / retry / trust (no `_me_else` suffix): emitted by the WAM
+% compiler''s indexed-dispatch group pass to chain together clauses
+% that share an indexing key. The LLVM target''s switch_on_constant
+% / switch_on_term are nop fallthroughs, so the indexed body never
+% gets entered and these instructions are unreachable in practice;
+% emit nop so they fall through to the next instruction (which
+% continues the try_me_else / retry_me_else / trust_me chain).
+wam_line_to_llvm_literal_resolved(["try" | _], _, Lit) :- !,
+    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
+wam_line_to_llvm_literal_resolved(["retry" | _], _, Lit) :- !,
+    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
+wam_line_to_llvm_literal_resolved(["trust" | _], _, Lit) :- !,
+    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
 % All other instructions: delegate to existing parser (no labels needed)
 wam_line_to_llvm_literal_resolved(Parts, _LabelMap, Lit) :-
     wam_line_to_llvm_literal(Parts, Lit).
@@ -4910,10 +5171,13 @@ wam_line_to_llvm_literal(["put_structure", FN, Ai], Lit) :-
     format(atom(Lit),
         '%Instruction { i32 11, i64 ptrtoint ([~w x i8]* @.fn_~w to i64), i64 ~w }',
         [NameLenPlus1, SaneName, Op2]),
-    % Record functor string for emission as global.
-    ( functor_string_global(NameStr, _) -> true
-    ; assert(functor_string_global(NameStr, NameLenPlus1))
-    ).
+    % Record functor string for emission as global. Route through
+    % register_functor_string so the table key normalises to a
+    % string regardless of whether NameStr arrives as an atom or
+    % string -- otherwise an eager-registered "[|]" (string key)
+    % and a lazy-registered '[|]' (atom key from split_functor_arity)
+    % both get emitted, causing `redefinition of global` in llc.
+    register_functor_string(NameStr).
 wam_line_to_llvm_literal(["put_list", Ai], Lit) :-
     clean_comma(Ai, CAi),
     atom_string(CAi, CAiAtom),
@@ -4939,8 +5203,17 @@ wam_line_to_llvm_literal(["set_constant", C], Lit) :-
 wam_line_to_llvm_literal(["allocate"], '%Instruction { i32 16, i64 0, i64 0 }').
 wam_line_to_llvm_literal(["deallocate"], '%Instruction { i32 17, i64 0, i64 0 }').
 
-% begin_aggregate type, ValueReg, ResultReg
+% begin_aggregate type, ValueReg, ResultReg [, WitnessRegs]
+% The WitnessRegs 4th arg is emitted by the WAM compiler for bagof/setof
+% (M10) to support ISO grouping. The LLVM runtime does not use witness
+% grouping yet -- ignore the witness string and fall through to the
+% same dispatch as the 3-arg form.
 wam_line_to_llvm_literal(["begin_aggregate", TypeStr, ValRegStr, ResRegStr], Lit) :- !,
+    begin_aggregate_lit(TypeStr, ValRegStr, ResRegStr, Lit).
+wam_line_to_llvm_literal(["begin_aggregate", TypeStr, ValRegStr, ResRegStr, _Witness], Lit) :- !,
+    begin_aggregate_lit(TypeStr, ValRegStr, ResRegStr, Lit).
+
+begin_aggregate_lit(TypeStr, ValRegStr, ResRegStr, Lit) :-
     clean_comma(TypeStr, CT), clean_comma(ValRegStr, CV), clean_comma(ResRegStr, CR),
     atom_string(CTAtom, CT),
     agg_type_id(CTAtom, TypeId),
@@ -4964,6 +5237,13 @@ agg_type_id(min, 2).
 agg_type_id(max, 3).
 agg_type_id(collect, 4).
 agg_type_id(bag, 5).
+% M10: set / setof / bagof -> sort + dedup of the accumulator. The
+% bagof case keeps duplicates; only set/setof dedup. Use the same id
+% (6) for both -- they share the sort+build path, dedup is a runtime
+% switch driven by which agg_type the bytecode sets.
+agg_type_id(set, 6).
+agg_type_id(setof, 6).
+agg_type_id(bagof, 5).  % bagof keeps duplicates, same as bag
 agg_type_id(_, 4).  % fallback: collect
 
 % call_foreign KindName, InstanceId
@@ -5017,6 +5297,16 @@ wam_line_to_llvm_literal(["switch_on_structure"|_],
     '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
 wam_line_to_llvm_literal(["switch_on_constant_a2"|_],
     '%Instruction { i32 27, i64 0, i64 0 }').  % nop fallthrough
+wam_line_to_llvm_literal(["switch_on_term"|_],
+    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
+wam_line_to_llvm_literal(["switch_on_term_a2"|_],
+    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
+wam_line_to_llvm_literal(["try"|_],
+    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
+wam_line_to_llvm_literal(["retry"|_],
+    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
+wam_line_to_llvm_literal(["trust"|_],
+    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
 
 wam_line_to_llvm_literal(["cut_ite"],
     '%Instruction { i32 31, i64 0, i64 0 }').
