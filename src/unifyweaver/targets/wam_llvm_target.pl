@@ -3464,8 +3464,37 @@ uf.bind_a2:
   ret i1 true
 
 uf.both_bound:
-  %uf.eq = call i1 @value_equals(%Value %uf.a1, %Value %uf.a2)
-  ret i1 %uf.eq
+  ; M10: both operands are bound. If both are compounds, recurse via
+  ; wam_unify_value so cons-cell patterns like `L = [H|_]` unify the
+  ; head/tail (binding fresh vars inside the [H|_] pattern). Atomic
+  ; tags (atoms, integers, floats) just compare payload.
+  %uf.tag1 = extractvalue %Value %uf.a1, 0
+  %uf.tag2 = extractvalue %Value %uf.a2, 0
+  %uf.tags_eq = icmp eq i32 %uf.tag1, %uf.tag2
+  br i1 %uf.tags_eq, label %uf.tagmatch, label %uf.notmatch
+
+uf.tagmatch:
+  %uf.is_cmp = icmp eq i32 %uf.tag1, 3
+  br i1 %uf.is_cmp, label %uf.deep, label %uf.atomic
+
+uf.deep:
+  ; Compounds: read the raw register values (NOT the deref''d ones) so
+  ; wam_unify_value can re-deref through any Ref chains its recursion
+  ; uncovers. Pass the deref''d ones too via a fresh call -- equivalent
+  ; here because the top-level deref already happened.
+  %uf.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %uf.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %uf.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %uf.raw1, %Value %uf.raw2)
+  ret i1 %uf.uok
+
+uf.atomic:
+  %uf.pay1 = extractvalue %Value %uf.a1, 1
+  %uf.pay2 = extractvalue %Value %uf.a2, 1
+  %uf.peq = icmp eq i64 %uf.pay1, %uf.pay2
+  ret i1 %uf.peq
+
+uf.notmatch:
+  ret i1 false
 
 builtin_not_unify:
   ; not-unify: succeeds if A1 and A2 do NOT unify.
