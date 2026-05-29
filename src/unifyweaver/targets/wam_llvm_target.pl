@@ -4511,106 +4511,304 @@ fail:
   ret i64 0
 }
 
-; M11: Float-aware top-level evaluator. Returns a tagged %Value so
-; is/2 can produce either Integer (tag=1) or Float (tag=2) results.
-; Right now only one case actually returns Float: `Base ** Exp`
-; where the evaluated Exp is negative -- the integer eval_arith
-; returns 0 for negative exp, which silently miscomputes
-; effective_distance''s `Hops ** NegN` (NegN = -5). For everything
-; else this is a thin wrapper that boxes the i64 eval_arith result
-; as an Integer. Full float propagation through `+`/`-`/`*`/`/`
-; with mixed operands is M12 work (requires a full rewrite of
-; eval_arith to return %Value end-to-end).
+; M13: Float-aware tagged arithmetic evaluator. Returns a %Value
+; (Integer tag=1 or Float tag=2). Recurses into itself for compound
+; args so int/float propagates through nested expressions. Promotion
+; rule: any Float operand floats the whole binary op; pure Integer
+; chains stay Integer. Division (/) follows Prolog convention --
+; Integer / Integer that divides exactly stays Integer; otherwise
+; the result is Float. The legacy integer-only @eval_arith is kept
+; for paths that still need an i64 directly (currently none in the
+; merged tree).
 define %Value @eval_arith_value(%WamState* %vm, %Value %expr_raw) {
 entry:
   %expr = call %Value @wam_deref_value(%WamState* %vm, %Value %expr_raw)
   %tag = extractvalue %Value %expr, 0
-  ; Top-level Compound check -- if it''s a `**`/2 we may want to
-  ; produce a Float instead of the integer eval_arith would return.
-  %is_cmp = icmp eq i32 %tag, 3
-  br i1 %is_cmp, label %check_pow_pattern, label %fallback_int
+  switch i32 %tag, label %ev_zero [
+    i32 1, label %ev_atomic_in
+    i32 2, label %ev_atomic_in
+    i32 3, label %ev_compound
+  ]
 
-check_pow_pattern:
+ev_atomic_in:
+  ret %Value %expr
+
+ev_compound:
   %cp_bits = extractvalue %Value %expr, 1
   %cp_ptr = inttoptr i64 %cp_bits to %Compound*
   %ar_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 1
   %arity = load i32, i32* %ar_slot
-  %is_binary = icmp eq i32 %arity, 2
-  br i1 %is_binary, label %check_pow_fn, label %fallback_int
-
-check_pow_fn:
   %fn_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 0
   %fn_ptr = load i8*, i8** %fn_slot
   %fn0 = load i8, i8* %fn_ptr
-  %fn0_is_star = icmp eq i8 %fn0, 42
-  br i1 %fn0_is_star, label %check_pow_fn2, label %fallback_int
-
-check_pow_fn2:
-  %fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
-  %fn1 = load i8, i8* %fn1_ptr
-  %fn1_is_star = icmp eq i8 %fn1, 42
-  br i1 %fn1_is_star, label %check_pow_fn3, label %fallback_int
-
-check_pow_fn3:
-  ; Make sure the functor is exactly "**" (length 2): fn[2] must be 0.
-  ; This avoids confusing `***` or anything else hypothetical.
-  %fn2_ptr = getelementptr i8, i8* %fn_ptr, i32 2
-  %fn2 = load i8, i8* %fn2_ptr
-  %fn2_is_zero = icmp eq i8 %fn2, 0
-  br i1 %fn2_is_zero, label %eval_pow_args, label %fallback_int
-
-eval_pow_args:
   %args_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 2
   %args = load %Value*, %Value** %args_slot
-  %base_ptr = getelementptr %Value, %Value* %args, i32 0
-  %base_v = load %Value, %Value* %base_ptr
-  %exp_ptr = getelementptr %Value, %Value* %args, i32 1
-  %exp_v = load %Value, %Value* %exp_ptr
-  ; Evaluate both as i64; if either was Float, eval_arith truncates --
-  ; the current path covers the integer-base / integer-exp case only.
-  ; Full float-exp / float-base is M12.
-  %base_i = call i64 @eval_arith(%WamState* %vm, %Value %base_v)
-  %exp_i = call i64 @eval_arith(%WamState* %vm, %Value %exp_v)
-  %exp_neg = icmp slt i64 %exp_i, 0
-  br i1 %exp_neg, label %float_pow, label %fallback_int
+  %is_binary = icmp eq i32 %arity, 2
+  br i1 %is_binary, label %ev_eval_binary, label %ev_check_unary
 
-float_pow:
-  ; base ** -n = 1 / (base ** n) as double. Loop over |exp| iterations.
-  %abs_exp = sub i64 0, %exp_i
-  %base_d = sitofp i64 %base_i to double
-  br label %float_pow_loop
+ev_eval_binary:
+  %a_ptr = getelementptr %Value, %Value* %args, i32 0
+  %a_raw = load %Value, %Value* %a_ptr
+  %a = call %Value @eval_arith_value(%WamState* %vm, %Value %a_raw)
+  %b_ptr = getelementptr %Value, %Value* %args, i32 1
+  %b_raw = load %Value, %Value* %b_ptr
+  %b = call %Value @eval_arith_value(%WamState* %vm, %Value %b_raw)
+  %a_tag = extractvalue %Value %a, 0
+  %b_tag = extractvalue %Value %b, 0
+  %a_is_float = icmp eq i32 %a_tag, 2
+  %b_is_float = icmp eq i32 %b_tag, 2
+  %either_float = or i1 %a_is_float, %b_is_float
+  switch i8 %fn0, label %ev_check_named_binary [
+    i8 43, label %ev_add
+    i8 45, label %ev_sub
+    i8 42, label %ev_mul_or_pow
+    i8 47, label %ev_div
+  ]
 
-float_pow_loop:
-  %fp_acc = phi double [ 1.0, %float_pow ], [ %fp_new_acc, %float_pow_step ]
-  %fp_n = phi i64 [ %abs_exp, %float_pow ], [ %fp_dec, %float_pow_step ]
-  %fp_done = icmp sle i64 %fp_n, 0
-  br i1 %fp_done, label %float_pow_finish, label %float_pow_step
+ev_add:
+  br i1 %either_float, label %ev_add_f, label %ev_add_i
+ev_add_i:
+  %add_a_i = extractvalue %Value %a, 1
+  %add_b_i = extractvalue %Value %b, 1
+  %add_r_i = add i64 %add_a_i, %add_b_i
+  %add_v_i = call %Value @value_integer(i64 %add_r_i)
+  ret %Value %add_v_i
+ev_add_f:
+  %add_a_d = call double @value_to_double(%Value %a)
+  %add_b_d = call double @value_to_double(%Value %b)
+  %add_r_d = fadd double %add_a_d, %add_b_d
+  %add_v_f = call %Value @value_float(double %add_r_d)
+  ret %Value %add_v_f
 
-float_pow_step:
-  %fp_new_acc = fmul double %fp_acc, %base_d
-  %fp_dec = sub i64 %fp_n, 1
-  br label %float_pow_loop
+ev_sub:
+  br i1 %either_float, label %ev_sub_f, label %ev_sub_i
+ev_sub_i:
+  %sub_a_i = extractvalue %Value %a, 1
+  %sub_b_i = extractvalue %Value %b, 1
+  %sub_r_i = sub i64 %sub_a_i, %sub_b_i
+  %sub_v_i = call %Value @value_integer(i64 %sub_r_i)
+  ret %Value %sub_v_i
+ev_sub_f:
+  %sub_a_d = call double @value_to_double(%Value %a)
+  %sub_b_d = call double @value_to_double(%Value %b)
+  %sub_r_d = fsub double %sub_a_d, %sub_b_d
+  %sub_v_f = call %Value @value_float(double %sub_r_d)
+  ret %Value %sub_v_f
 
-float_pow_finish:
-  ; result = 1 / acc. Handle acc == 0 (base = 0, n > 0) -> 0 by
-  ; checking before dividing -- IEEE division by 0 would give inf.
-  %is_zero = fcmp oeq double %fp_acc, 0.0
-  br i1 %is_zero, label %float_pow_zero, label %float_pow_recip
+ev_mul_or_pow:
+  ; Disambiguate `*` vs `**` by inspecting fn[1].
+  %mul_fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %mul_fn1 = load i8, i8* %mul_fn1_ptr
+  %mul_is_pow = icmp eq i8 %mul_fn1, 42
+  br i1 %mul_is_pow, label %ev_pow_branch, label %ev_mul_branch
 
-float_pow_zero:
-  %fz = call %Value @value_float(double 0.0)
-  ret %Value %fz
+ev_mul_branch:
+  br i1 %either_float, label %ev_mul_f, label %ev_mul_i
+ev_mul_i:
+  %mul_a_i = extractvalue %Value %a, 1
+  %mul_b_i = extractvalue %Value %b, 1
+  %mul_r_i = mul i64 %mul_a_i, %mul_b_i
+  %mul_v_i = call %Value @value_integer(i64 %mul_r_i)
+  ret %Value %mul_v_i
+ev_mul_f:
+  %mul_a_d = call double @value_to_double(%Value %a)
+  %mul_b_d = call double @value_to_double(%Value %b)
+  %mul_r_d = fmul double %mul_a_d, %mul_b_d
+  %mul_v_f = call %Value @value_float(double %mul_r_d)
+  ret %Value %mul_v_f
 
-float_pow_recip:
-  %fp_r = fdiv double 1.0, %fp_acc
-  %fpv = call %Value @value_float(double %fp_r)
-  ret %Value %fpv
+ev_pow_branch:
+  ; ** rules:
+  ;   int base, int exp >= 0       -> int loop
+  ;   any float operand, or exp<0  -> float (via the negative-exp
+  ;                                    reciprocal path or fpow loop)
+  br i1 %either_float, label %ev_pow_float, label %ev_pow_int_check
+ev_pow_int_check:
+  %pow_b_i = extractvalue %Value %b, 1
+  %pow_neg = icmp slt i64 %pow_b_i, 0
+  br i1 %pow_neg, label %ev_pow_float, label %ev_pow_int
+ev_pow_int:
+  %pow_a_i = extractvalue %Value %a, 1
+  br label %ev_pow_iloop
+ev_pow_iloop:
+  %pow_acc_i = phi i64 [ 1, %ev_pow_int ], [ %pow_new_i, %ev_pow_istep ]
+  %pow_n_i = phi i64 [ %pow_b_i, %ev_pow_int ], [ %pow_dec_i, %ev_pow_istep ]
+  %pow_done_i = icmp sle i64 %pow_n_i, 0
+  br i1 %pow_done_i, label %ev_pow_idone, label %ev_pow_istep
+ev_pow_istep:
+  %pow_new_i = mul i64 %pow_acc_i, %pow_a_i
+  %pow_dec_i = sub i64 %pow_n_i, 1
+  br label %ev_pow_iloop
+ev_pow_idone:
+  %pow_v_i = call %Value @value_integer(i64 %pow_acc_i)
+  ret %Value %pow_v_i
 
-fallback_int:
-  ; Default: integer eval, box as Integer.
-  %i_r = call i64 @eval_arith(%WamState* %vm, %Value %expr_raw)
-  %iv = call %Value @value_integer(i64 %i_r)
-  ret %Value %iv
+ev_pow_float:
+  ; base ** exp via fpow loop. For int exp we loop |exp| times; if
+  ; exp is float we punt to a simple loop using its truncated integer
+  ; absolute value (good enough for the common int-exp-with-float-
+  ; base case; full IEEE pow is a separate libm dependency).
+  %pow_base_d = call double @value_to_double(%Value %a)
+  %pow_exp_d = call double @value_to_double(%Value %b)
+  %pow_exp_neg = fcmp olt double %pow_exp_d, 0.0
+  ; Take the absolute exponent as an integer iteration count.
+  %pow_abs_exp_d = call double @llvm.fabs.f64(double %pow_exp_d)
+  %pow_abs_exp = fptosi double %pow_abs_exp_d to i64
+  br label %ev_pow_floop
+ev_pow_floop:
+  %pow_acc_d = phi double [ 1.0, %ev_pow_float ], [ %pow_new_d, %ev_pow_fstep ]
+  %pow_n_d = phi i64 [ %pow_abs_exp, %ev_pow_float ], [ %pow_dec_d, %ev_pow_fstep ]
+  %pow_done_d = icmp sle i64 %pow_n_d, 0
+  br i1 %pow_done_d, label %ev_pow_fdone, label %ev_pow_fstep
+ev_pow_fstep:
+  %pow_new_d = fmul double %pow_acc_d, %pow_base_d
+  %pow_dec_d = sub i64 %pow_n_d, 1
+  br label %ev_pow_floop
+ev_pow_fdone:
+  br i1 %pow_exp_neg, label %ev_pow_neg_finish, label %ev_pow_pos_finish
+ev_pow_neg_finish:
+  %pow_acc_zero = fcmp oeq double %pow_acc_d, 0.0
+  br i1 %pow_acc_zero, label %ev_pow_zero, label %ev_pow_recip
+ev_pow_zero:
+  %pow_zv = call %Value @value_float(double 0.0)
+  ret %Value %pow_zv
+ev_pow_recip:
+  %pow_recip_d = fdiv double 1.0, %pow_acc_d
+  %pow_recip_v = call %Value @value_float(double %pow_recip_d)
+  ret %Value %pow_recip_v
+ev_pow_pos_finish:
+  %pow_pos_v = call %Value @value_float(double %pow_acc_d)
+  ret %Value %pow_pos_v
+
+ev_div:
+  ; Prolog ``/``: int/int that divides exactly stays int; otherwise
+  ; the result is float.
+  br i1 %either_float, label %ev_div_f, label %ev_div_i_check
+ev_div_i_check:
+  %div_a_i = extractvalue %Value %a, 1
+  %div_b_i = extractvalue %Value %b, 1
+  %div_zero_i = icmp eq i64 %div_b_i, 0
+  br i1 %div_zero_i, label %ev_zero, label %ev_div_i_test
+ev_div_i_test:
+  %div_rem = srem i64 %div_a_i, %div_b_i
+  %div_exact = icmp eq i64 %div_rem, 0
+  br i1 %div_exact, label %ev_div_i_exact, label %ev_div_f
+ev_div_i_exact:
+  %div_r_i = sdiv i64 %div_a_i, %div_b_i
+  %div_v_i = call %Value @value_integer(i64 %div_r_i)
+  ret %Value %div_v_i
+ev_div_f:
+  %div_a_d = call double @value_to_double(%Value %a)
+  %div_b_d = call double @value_to_double(%Value %b)
+  %div_b_zero = fcmp oeq double %div_b_d, 0.0
+  br i1 %div_b_zero, label %ev_zero, label %ev_div_f_go
+ev_div_f_go:
+  %div_r_d = fdiv double %div_a_d, %div_b_d
+  %div_v_f = call %Value @value_float(double %div_r_d)
+  ret %Value %div_v_f
+
+ev_check_named_binary:
+  ; mod / max / min -- functor name starts with ``m``.
+  %nb_is_m = icmp eq i8 %fn0, 109
+  br i1 %nb_is_m, label %ev_nb_second, label %ev_zero
+ev_nb_second:
+  %nb_fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %nb_fn1 = load i8, i8* %nb_fn1_ptr
+  switch i8 %nb_fn1, label %ev_zero [
+    i8 111, label %ev_mod
+    i8 97,  label %ev_max
+    i8 105, label %ev_min
+  ]
+ev_mod:
+  ; Integer-only: truncate any float operands.
+  %mod_a_i = extractvalue %Value %a, 1
+  %mod_b_i = extractvalue %Value %b, 1
+  %mod_b_zero = icmp eq i64 %mod_b_i, 0
+  br i1 %mod_b_zero, label %ev_zero, label %ev_mod_go
+ev_mod_go:
+  %mod_r_i = srem i64 %mod_a_i, %mod_b_i
+  %mod_v = call %Value @value_integer(i64 %mod_r_i)
+  ret %Value %mod_v
+ev_max:
+  br i1 %either_float, label %ev_max_f, label %ev_max_i
+ev_max_i:
+  %max_a_i = extractvalue %Value %a, 1
+  %max_b_i = extractvalue %Value %b, 1
+  %max_gt_i = icmp sgt i64 %max_a_i, %max_b_i
+  %max_r_i = select i1 %max_gt_i, i64 %max_a_i, i64 %max_b_i
+  %max_v_i = call %Value @value_integer(i64 %max_r_i)
+  ret %Value %max_v_i
+ev_max_f:
+  %max_a_d = call double @value_to_double(%Value %a)
+  %max_b_d = call double @value_to_double(%Value %b)
+  %max_gt_d = fcmp ogt double %max_a_d, %max_b_d
+  %max_r_d = select i1 %max_gt_d, double %max_a_d, double %max_b_d
+  %max_v_f = call %Value @value_float(double %max_r_d)
+  ret %Value %max_v_f
+ev_min:
+  br i1 %either_float, label %ev_min_f, label %ev_min_i
+ev_min_i:
+  %min_a_i = extractvalue %Value %a, 1
+  %min_b_i = extractvalue %Value %b, 1
+  %min_lt_i = icmp slt i64 %min_a_i, %min_b_i
+  %min_r_i = select i1 %min_lt_i, i64 %min_a_i, i64 %min_b_i
+  %min_v_i = call %Value @value_integer(i64 %min_r_i)
+  ret %Value %min_v_i
+ev_min_f:
+  %min_a_d = call double @value_to_double(%Value %a)
+  %min_b_d = call double @value_to_double(%Value %b)
+  %min_lt_d = fcmp olt double %min_a_d, %min_b_d
+  %min_r_d = select i1 %min_lt_d, double %min_a_d, double %min_b_d
+  %min_v_f = call %Value @value_float(double %min_r_d)
+  ret %Value %min_v_f
+
+ev_check_unary:
+  %is_unary = icmp eq i32 %arity, 1
+  br i1 %is_unary, label %ev_eval_unary, label %ev_zero
+ev_eval_unary:
+  %u_ptr = getelementptr %Value, %Value* %args, i32 0
+  %u_raw = load %Value, %Value* %u_ptr
+  %u = call %Value @eval_arith_value(%WamState* %vm, %Value %u_raw)
+  %u_tag = extractvalue %Value %u, 0
+  %u_is_float = icmp eq i32 %u_tag, 2
+  switch i8 %fn0, label %ev_zero [
+    i8 45, label %ev_neg
+    i8 97, label %ev_abs
+  ]
+ev_neg:
+  br i1 %u_is_float, label %ev_neg_f, label %ev_neg_i
+ev_neg_i:
+  %neg_u_i = extractvalue %Value %u, 1
+  %neg_r_i = sub i64 0, %neg_u_i
+  %neg_v_i = call %Value @value_integer(i64 %neg_r_i)
+  ret %Value %neg_v_i
+ev_neg_f:
+  %neg_u_d = call double @value_to_double(%Value %u)
+  %neg_r_d = fsub double 0.0, %neg_u_d
+  %neg_v_f = call %Value @value_float(double %neg_r_d)
+  ret %Value %neg_v_f
+ev_abs:
+  br i1 %u_is_float, label %ev_abs_f, label %ev_abs_i
+ev_abs_i:
+  %abs_u_i = extractvalue %Value %u, 1
+  %abs_neg_i = icmp slt i64 %abs_u_i, 0
+  %abs_op_i = sub i64 0, %abs_u_i
+  %abs_r_i = select i1 %abs_neg_i, i64 %abs_op_i, i64 %abs_u_i
+  %abs_v_i = call %Value @value_integer(i64 %abs_r_i)
+  ret %Value %abs_v_i
+ev_abs_f:
+  %abs_u_d = call double @value_to_double(%Value %u)
+  %abs_r_d = call double @llvm.fabs.f64(double %abs_u_d)
+  %abs_v_f = call %Value @value_float(double %abs_r_d)
+  ret %Value %abs_v_f
+
+ev_zero:
+  ; Unknown / fail -- return Integer 0 as a benign placeholder. The
+  ; legacy @eval_arith printed an error to stderr here; for the
+  ; tagged path we just box zero so callers don''t crash on an
+  ; unrecognized expression.
+  %z_v = call %Value @value_integer(i64 0)
+  ret %Value %z_v
 }'.
 
 compile_copy_term_to_llvm(Code) :-
@@ -5662,16 +5860,17 @@ wam_line_to_llvm_literal(["unify_constant", C], Lit) :-
 
 wam_line_to_llvm_literal(["put_constant", C, Ai], Lit) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
-    llvm_pack_value_str(CC, PackedVal),
     atom_string(CAi, CAiAtom),
     reg_name_to_index(CAiAtom, RegIdx),
-    % Encode op2 = (tag << 16) | reg_idx. Integers get tag 1, atoms get
-    % tag 0. Previously the runtime hardcoded tag 0, which mis-tagged
-    % every integer constant — surface symptom was arg/3 having to accept
-    % tag 0 or 1 for its N argument.
-    ( number_string(_, CC) -> Tag = 1 ; Tag = 0 ),
+    set_constant_literal_parts(CC, PayloadStr, Tag),
+    % Encode op2 = (tag << 16) | reg_idx. Float literals (tag=2) and
+    % integers (tag=1) and atoms (tag=0) all routed through the
+    % shared set_constant_literal_parts helper so float constants
+    % survive the WAM-text round-trip as `bitcast (double <c> to i64)`
+    % rather than a bare `0.5` that llc rejects.
     Op2 is (Tag << 16) \/ RegIdx,
-    format(atom(Lit), '%Instruction { i32 8, i64 ~w, i64 ~w }', [PackedVal, Op2]).
+    format(atom(Lit), '%Instruction { i32 8, i64 ~w, i64 ~w }',
+        [PayloadStr, Op2]).
 wam_line_to_llvm_literal(["put_variable", Xn, Ai], Lit) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     atom_string(CXn, CXnAtom), atom_string(CAi, CAiAtom),
@@ -5728,10 +5927,36 @@ wam_line_to_llvm_literal(["set_value", Xn], Lit) :-
     format(atom(Lit), '%Instruction { i32 14, i64 ~w, i64 0 }', [XnIdx]).
 wam_line_to_llvm_literal(["set_constant", C], Lit) :-
     clean_comma(C, CC),
-    llvm_pack_value_str(CC, PackedVal),
-    % Determine tag: integers get tag=1, atoms get tag=0.
-    ( number_string(_, CC) -> Tag = 1 ; Tag = 0 ),
-    format(atom(Lit), '%Instruction { i32 15, i64 ~w, i64 ~w }', [PackedVal, Tag]).
+    set_constant_literal_parts(CC, PayloadStr, Tag),
+    format(atom(Lit), '%Instruction { i32 15, i64 ~w, i64 ~w }',
+        [PayloadStr, Tag]).
+
+%% set_constant_literal_parts(+Str, -PayloadStr, -Tag)
+%
+%  Resolve a textual constant from a `set_constant` / `put_constant`
+%  bytecode line to its (Tag, Payload) representation. Integer
+%  literals box as Integer (tag=1); float literals box as Float
+%  (tag=2) with the IEEE-754 bit pattern in the payload via
+%  bitcast double <c> to i64. Atoms intern through the runtime
+%  atom table and box as Atom (tag=0).
+set_constant_literal_parts(CC, PayloadStr, Tag) :-
+    (   number_string(N, CC)
+    ->  ( integer(N)
+        ->  Tag = 1,
+            format(atom(PayloadStr), '~w', [N])
+        ;   % Float: emit as a bitcast of the double constant to i64
+            %   `i64 bitcast (double 0.5 to i64)`
+            % so llc sees a valid i64 initializer at compile time.
+            Tag = 2,
+            format(atom(PayloadStr),
+                'bitcast (double ~w to i64)', [N])
+        )
+    ;   Tag = 0,
+        strip_quoted_atom(CC, Unquoted),
+        atom_string(A, Unquoted),
+        intern_atom(A, AtomId),
+        format(atom(PayloadStr), '~w', [AtomId])
+    ).
 
 wam_line_to_llvm_literal(["allocate"], '%Instruction { i32 16, i64 0, i64 0 }').
 wam_line_to_llvm_literal(["deallocate"], '%Instruction { i32 17, i64 0, i64 0 }').

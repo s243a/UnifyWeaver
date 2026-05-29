@@ -12,6 +12,7 @@ target triple = "{{target_triple}}"
 {{external_declarations}}
 declare void @llvm.memcpy.p0i8.p0i8.i64(i8*, i8*, i64, i1)
 declare void @llvm.memset.p0i8.i64(i8*, i8, i64, i1)
+declare double @llvm.fabs.f64(double)
 
 ; === Value Constructors & Inspectors ===
 {{value_functions}}
