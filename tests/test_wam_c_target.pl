@@ -260,6 +260,7 @@ test_category_ancestor_kernel_generation :-
         sub_string(S, _, _, _, 'void wam_register_category_parent'),
         sub_string(S, _, _, _, 'void wam_register_category_ancestor_kernel'),
         sub_string(S, _, _, _, 'bool wam_category_ancestor_handler'),
+        sub_string(S, _, _, _, 'wam_state_category_child_range'),
         sub_string(S, _, _, _, 'wam_category_ancestor_dfs')
     ->  pass(Test)
     ;   fail_test(Test, 'category_ancestor native kernel helpers missing')
@@ -355,6 +356,7 @@ test_fact_source_generation :-
         sub_string(S, _, _, _, 'void wam_fact_source_init'),
         sub_string(S, _, _, _, 'bool wam_fact_source_load_tsv'),
         sub_string(S, _, _, _, 'bool wam_fact_source_load_lmdb'),
+        sub_string(S, _, _, _, 'bool wam_fact_source_child_range'),
         sub_string(S, _, _, _, 'int wam_fact_source_lookup_arg1'),
         sub_string(S, _, _, _, 'bool wam_register_category_parent_fact_source')
     ->  pass(Test)

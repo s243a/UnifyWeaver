@@ -848,9 +848,11 @@ static int collect_reference_hops(WamFactSource *source,
                                   int visited_len,
                                   WamIntResults *results) {
     int found = 0;
-    for (int i = 0; i < source->edge_count; i++) {
-        CategoryEdge *edge = &source->edges[i];
-        if (strcmp(edge->child, cat) != 0) continue;
+    CategoryEdge *edges = NULL;
+    int edge_count = 0;
+    if (!wam_fact_source_child_range(source, cat, &edges, &edge_count)) return 0;
+    for (int i = 0; i < edge_count; i++) {
+        CategoryEdge *edge = &edges[i];
         if (visited_contains(visited, visited_len, edge->parent)) continue;
         if (strcmp(edge->parent, root) == 0) {
             if (!wam_int_results_push(results, depth + 1)) return 0;
@@ -858,9 +860,8 @@ static int collect_reference_hops(WamFactSource *source,
         }
     }
     if (visited_len >= max_depth || visited_len >= 64) return found;
-    for (int i = 0; i < source->edge_count; i++) {
-        CategoryEdge *edge = &source->edges[i];
-        if (strcmp(edge->child, cat) != 0) continue;
+    for (int i = 0; i < edge_count; i++) {
+        CategoryEdge *edge = &edges[i];
         if (visited_contains(visited, visited_len, edge->parent)) continue;
         visited[visited_len] = edge->parent;
         if (collect_reference_hops(source, edge->parent, root, depth + 1,

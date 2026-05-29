@@ -124,6 +124,9 @@ typedef struct {
     CategoryEdge *edges;
     int edge_count;
     int edge_cap;
+    CategoryEdge *edges_by_child;
+    int child_index_count;
+    bool child_index_dirty;
 } WamFactSource;
 
 typedef struct {
@@ -285,6 +288,9 @@ struct WamState {
     CategoryEdge *category_edges;
     int category_edge_count;
     int category_edge_cap;
+    CategoryEdge *category_edges_by_child;
+    int category_child_index_count;
+    bool category_child_index_dirty;
     int category_max_depth;
     double bidirectional_parent_step_cost;
     double bidirectional_child_step_cost;
@@ -341,6 +347,8 @@ bool wam_fact_source_load_lmdb(WamState *state, WamFactSource *source,
                                const char *env_path, const char *db_name);
 int wam_fact_source_lookup_arg1(WamFactSource *source, const char *arg1,
                                 CategoryEdge *out_edges, int max_edges);
+bool wam_fact_source_child_range(WamFactSource *source, const char *child,
+                                 CategoryEdge **edges_out, int *count_out);
 bool wam_register_category_parent_fact_source(WamState *state, WamFactSource *source);
 void wam_register_category_id(WamState *state, const char *atom, int id);
 void wam_attach_bidirectional_child_csr(WamState *state, WamReverseCsrArtifact *artifact);
