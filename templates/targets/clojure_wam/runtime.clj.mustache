@@ -1441,11 +1441,20 @@
         out (deref-value (:bindings state)
                          (or (reg-get-raw state "A2") ::unbound))
         text (atom-text state value)]
-    (if (some? text)
+    (cond
+      (some? text)
       (let [[ok next-state] (unify-values state out (count text))]
         (if ok
           (advance next-state)
           (backtrack state)))
+
+      (and (logic-var? value) (= out 0))
+      (let [[ok next-state] (unify-text-atom-value state value "")]
+        (if ok
+          (advance next-state)
+          (backtrack state)))
+
+      :else
       (backtrack state))))
 
 (declare apply-first-foreign-solution)
