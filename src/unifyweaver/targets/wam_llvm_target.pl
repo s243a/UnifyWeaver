@@ -4206,14 +4206,24 @@ ms.check:
   ret i1 %ms.ok
 
 builtin_length:
-  ; M10: length/2 -- A1 = list, A2 = count. Walks the [|]/2 Compound
-  ; chain counting elements, binds A2 to Integer(count). Same chain
-  ; convention as msort: terminator is the [] Atom; non-list values
-  ; halt the walk at whatever count was accumulated so far. Reverse
-  ; mode (length(L, N) with L unbound) is not implemented -- typical
-  ; benchmark usage has the list bound.
+  ; M10/M16: length/2. Two modes:
+  ;
+  ;   Forward (A1 = bound list, A2 = unbound or Integer):
+  ;     walks the [|]/2 chain counting elements, binds A2 to
+  ;     Integer(count). Same chain convention as msort: terminator
+  ;     is the [] Atom; non-list values halt the walk at whatever
+  ;     count was accumulated so far.
+  ;
+  ;   Reverse (A1 = unbound, A2 = Integer N):
+  ;     allocates N fresh-unbound heap cells and builds an N-element
+  ;     [|]/2 chain on the arena whose head is bound to A1. Each
+  ;     head args[0] is Ref(heap_addr) so the resulting list elements
+  ;     are real logic variables (they can be unified later via the
+  ;     existing wam_unify_value machinery).
   %ln.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
-  br label %ln.loop
+  %ln.a1_unb = call i1 @value_is_unbound(%Value %ln.a1)
+  br i1 %ln.a1_unb, label %ln.reverse, label %ln.loop
+
 ln.loop:
   %ln.cur = phi %Value [ %ln.a1, %builtin_length ], [ %ln.next, %ln.step ]
   %ln.n = phi i32 [ 0, %builtin_length ], [ %ln.n1, %ln.step ]
@@ -4243,6 +4253,66 @@ ln.bind:
 ln.cmp:
   %ln.eq = call i1 @value_equals(%Value %ln.a2d, %Value %ln.r_val)
   ret i1 %ln.eq
+
+ln.reverse:
+  ; A1 is unbound: check that A2 is a known Integer and build a
+  ; fresh N-element list bound to A1.
+  %ln.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %ln.a2_tag = extractvalue %Value %ln.a2, 0
+  %ln.a2_is_int = icmp eq i32 %ln.a2_tag, 1
+  br i1 %ln.a2_is_int, label %ln.r_build_init, label %ln.r_fail
+
+ln.r_fail:
+  ret i1 false
+
+ln.r_build_init:
+  %ln.n_i64 = extractvalue %Value %ln.a2, 1
+  %ln.n_i32 = trunc i64 %ln.n_i64 to i32
+  %ln.empty_id = load i64, i64* @wam_empty_list_atom_id
+  %ln.empty_v0 = insertvalue %Value undef, i32 0, 0
+  %ln.empty_v  = insertvalue %Value %ln.empty_v0, i64 %ln.empty_id, 1
+  call void @wam_arena_ensure()
+  br label %ln.r_build_loop
+
+ln.r_build_loop:
+  %ln.r_i = phi i32 [ 0, %ln.r_build_init ], [ %ln.r_i_next, %ln.r_build_step ]
+  %ln.r_tail = phi %Value [ %ln.empty_v, %ln.r_build_init ], [ %ln.r_new_cons, %ln.r_build_step ]
+  %ln.r_done = icmp sge i32 %ln.r_i, %ln.n_i32
+  br i1 %ln.r_done, label %ln.r_build_done, label %ln.r_build_step
+
+ln.r_build_step:
+  ; Fresh logic variable: push Unbound to the heap and remember its
+  ; addr as a Ref. This is the standard WAM way to make a freshly
+  ; bindable element.
+  %ln.r_unb = call %Value @value_unbound(i8* null)
+  %ln.r_h_addr = call i32 @wam_heap_push(%WamState* %vm, %Value %ln.r_unb)
+  %ln.r_h_ref = call %Value @value_ref(i32 %ln.r_h_addr)
+  %ln.r_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %ln.r_cp_mem = call i8* @wam_arena_alloc(i64 %ln.r_cp_size)
+  %ln.r_cp = bitcast i8* %ln.r_cp_mem to %Compound*
+  %ln.r_fn_slot = getelementptr %Compound, %Compound* %ln.r_cp, i32 0, i32 0
+  %ln.r_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %ln.r_fn_ptr, i8** %ln.r_fn_slot
+  %ln.r_ar_slot = getelementptr %Compound, %Compound* %ln.r_cp, i32 0, i32 1
+  store i32 2, i32* %ln.r_ar_slot
+  %ln.r_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %ln.r_args = bitcast i8* %ln.r_args_mem to %Value*
+  %ln.r_args_slot = getelementptr %Compound, %Compound* %ln.r_cp, i32 0, i32 2
+  store %Value* %ln.r_args, %Value** %ln.r_args_slot
+  %ln.r_h0_ptr = getelementptr %Value, %Value* %ln.r_args, i32 0
+  store %Value %ln.r_h_ref, %Value* %ln.r_h0_ptr
+  %ln.r_t_ptr = getelementptr %Value, %Value* %ln.r_args, i32 1
+  store %Value %ln.r_tail, %Value* %ln.r_t_ptr
+  %ln.r_cp_i64 = ptrtoint %Compound* %ln.r_cp to i64
+  %ln.r_nc0 = insertvalue %Value undef, i32 3, 0
+  %ln.r_new_cons = insertvalue %Value %ln.r_nc0, i64 %ln.r_cp_i64, 1
+  %ln.r_i_next = add i32 %ln.r_i, 1
+  br label %ln.r_build_loop
+
+ln.r_build_done:
+  call void @wam_trail_binding(%WamState* %vm, i32 0)
+  call void @wam_bind_reg(%WamState* %vm, i32 0, %Value %ln.r_tail)
+  ret i1 true
 
 builtin_format2:
   ; M12: format/2 -- A1 = format string atom, A2 = args list ([|]/2 chain).

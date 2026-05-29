@@ -129,6 +129,32 @@ test_msort_dups(_, R) :-
     Sorted = [_, X|_],
     R is X.
 
+% M16: reverse-mode length/2 -- length(L, N) with L unbound and N
+% bound to an Integer allocates a fresh N-element list of unbound
+% logic variables and binds L. We then unify the result with a
+% concrete pattern to confirm the structure round-trips.
+:- dynamic test_length_rev_size/2.
+test_length_rev_size(_, R) :-
+    length(L, 4),
+    length(L, N),   % round-trip: forward-mode length on the freshly built list
+    R is N.
+
+:- dynamic test_length_rev_unify_head/2.
+test_length_rev_unify_head(_, R) :-
+    length(L, 3),
+    L = [11, _, _],   % bind the first cell -- exercises that the
+                       % args[0] Ref in the reverse-built cons cell
+                       % is actually a bindable logic variable.
+    L = [H|_],
+    R is H.
+
+:- dynamic test_length_rev_unify_all/2.
+test_length_rev_unify_all(_, R) :-
+    length(L, 3),
+    L = [4, 5, 6],
+    L = [_, M, _],
+    R is M.
+
 % M10: setof/3 via aggregate_all -> sort + dedup. The agg_type_id
 % routes set/setof to id 6, which inserts a sort+dedup pass before
 % building the cons-cell chain. Drives off a small dynamic fact
@@ -685,6 +711,13 @@ test_all :-
        run_test_r0('msort_third [33,11,22] -> 33', test_msort_third, 0, 33),
        run_test_r0('msort_one [42] -> 42', test_msort_one, 0, 42),
        run_test_r0('msort_dups [3,1,3,2,1] -> 1', test_msort_dups, 0, 1),
+       format('--- M16 reverse-mode length/2 ---~n'),
+       run_test_r0('length(L, 4), length(L, N) -> 4',
+                   test_length_rev_size, 0, 4),
+       run_test_r0('length(L, 3), L = [11,_,_], head -> 11',
+                   test_length_rev_unify_head, 0, 11),
+       run_test_r0('length(L, 3), L = [4,5,6], middle -> 5',
+                   test_length_rev_unify_all, 0, 5),
        format('--- M10 setof/3 (sort + dedup) ---~n'),
        run_test_r0('setof color/1 count -> 3',
                    test_setof_count + [color/1], 0, 3),
