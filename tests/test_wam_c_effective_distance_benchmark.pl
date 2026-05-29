@@ -127,6 +127,46 @@ test_child_search_uses_bidirectional_kernel :-
     ;   fail_test(Test, 'child search did not route through bidirectional collector')
     ).
 
+test_child_search_builds_reverse_csr :-
+    Test = 'WAM-C effective-distance: reverse_index csr writes and attaches CSR',
+    (   unique_tmp_dir(child_search_csr, OutputDir),
+        write_child_search_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(
+            FactsPath,
+            OutputDir,
+            kernels_on,
+            [ fact_storage(facts_tsv),
+              child_search(bounded),
+              max_child_expansions(4),
+              child_search_depth(1),
+              reverse_index(csr([
+                  phase(runtime_available),
+                  index_backend(sorted_array),
+                  io_policy(buffered_pread)
+              ]))
+            ]),
+        directory_file_path(OutputDir, 'category_child.csr.idx', IndexPath),
+        directory_file_path(OutputDir, 'category_child.csr.val', ValuesPath),
+        directory_file_path(OutputDir, 'lib.c', LibPath),
+        directory_file_path(OutputDir, 'main.c', MainPath),
+        exists_file(IndexPath),
+        exists_file(ValuesPath),
+        read_file_to_string(LibPath, Lib, []),
+        read_file_to_string(MainPath, Main, []),
+        sub_string(Lib, _, _, _, 'setup_wam_c_reverse_index_artifacts'),
+        sub_string(Lib, _, _, _, 'wam_reverse_csr_load(bidirectional_child_csr, "category_child.csr.idx", "category_child.csr.val")'),
+        sub_string(Lib, _, _, _, 'wam_register_category_id(state, "orphan"'),
+        sub_string(Main, _, _, _, 'WamReverseCsrArtifact bidirectional_child_csr'),
+        sub_string(Main, _, _, _, 'setup_wam_c_reverse_index_artifacts(&state, &bidirectional_child_csr)'),
+        sub_string(Main, _, _, _, 'teardown_wam_c_reverse_index_artifacts(&state, &bidirectional_child_csr)'),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project(OutputDir, Output),
+        sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
+        sub_string(Output, _, _, _, "article_a\troot\t3.000000")
+    ->  pass(Test)
+    ;   fail_test(Test, 'reverse_index csr child-search output mismatch')
+    ).
+
 test_generate_and_run_bounded_child_search_kernels_off :-
     Test = 'WAM-C effective-distance: kernels_off child search matches reference path',
     (   unique_tmp_dir(child_search_kernels_off, OutputDir),
@@ -333,6 +373,7 @@ run_tests_once :-
     test_generate_and_run_lmdb_if_available,
     test_generate_and_run_bounded_child_search,
     test_child_search_uses_bidirectional_kernel,
+    test_child_search_builds_reverse_csr,
     test_generate_and_run_bounded_child_search_kernels_off,
     test_generate_and_run_weighted_child_search,
     test_generate_and_run_child_search_budget_pruning,
