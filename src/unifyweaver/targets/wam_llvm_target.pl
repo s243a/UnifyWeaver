@@ -5077,9 +5077,17 @@ ev_eval_unary:
   %u = call %Value @eval_arith_value(%WamState* %vm, %Value %u_raw)
   %u_tag = extractvalue %Value %u, 0
   %u_is_float = icmp eq i32 %u_tag, 2
+  ; M18: dispatch on the first functor byte. Most unary math ops are
+  ; uniquely identified by their first letter; ceiling/cos and sqrt/
+  ; sign/sin share initials and disambiguate on the second byte.
   switch i8 %fn0, label %ev_zero [
-    i8 45, label %ev_neg
-    i8 97, label %ev_abs
+    i8 45,  label %ev_neg       ; ''-''
+    i8 97,  label %ev_abs       ; ''a''
+    i8 116, label %ev_trunc     ; ''t''
+    i8 114, label %ev_round     ; ''r''
+    i8 102, label %ev_floor     ; ''f''
+    i8 99,  label %ev_ceil_cos  ; ''c''
+    i8 115, label %ev_sqrt_sign ; ''s''
   ]
 ev_neg:
   br i1 %u_is_float, label %ev_neg_f, label %ev_neg_i
@@ -5107,6 +5115,102 @@ ev_abs_f:
   %abs_r_d = call double @llvm.fabs.f64(double %abs_u_d)
   %abs_v_f = call %Value @value_float(double %abs_r_d)
   ret %Value %abs_v_f
+
+; M18 truncate/round/floor/ceiling: take a numeric Value, convert to
+; double, apply the LLVM intrinsic, return Integer (Prolog''s
+; truncate/round/floor/ceiling all yield Integer results).
+ev_trunc:
+  br i1 %u_is_float, label %ev_trunc_f, label %ev_trunc_i
+ev_trunc_i:
+  ret %Value %u
+ev_trunc_f:
+  %trunc_d = call double @value_to_double(%Value %u)
+  %trunc_r_d = call double @llvm.trunc.f64(double %trunc_d)
+  %trunc_r_i = fptosi double %trunc_r_d to i64
+  %trunc_v = call %Value @value_integer(i64 %trunc_r_i)
+  ret %Value %trunc_v
+
+ev_round:
+  br i1 %u_is_float, label %ev_round_f, label %ev_round_i
+ev_round_i:
+  ret %Value %u
+ev_round_f:
+  %round_d = call double @value_to_double(%Value %u)
+  %round_r_d = call double @llvm.round.f64(double %round_d)
+  %round_r_i = fptosi double %round_r_d to i64
+  %round_v = call %Value @value_integer(i64 %round_r_i)
+  ret %Value %round_v
+
+ev_floor:
+  br i1 %u_is_float, label %ev_floor_f, label %ev_floor_i
+ev_floor_i:
+  ret %Value %u
+ev_floor_f:
+  %floor_d = call double @value_to_double(%Value %u)
+  %floor_r_d = call double @llvm.floor.f64(double %floor_d)
+  %floor_r_i = fptosi double %floor_r_d to i64
+  %floor_v = call %Value @value_integer(i64 %floor_r_i)
+  ret %Value %floor_v
+
+ev_ceil_cos:
+  ; Disambiguate ceiling vs cos on the second byte: ''e'' -> ceiling,
+  ; ''o'' -> cos. Anything else falls back to ev_zero.
+  %cc_fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %cc_fn1 = load i8, i8* %cc_fn1_ptr
+  switch i8 %cc_fn1, label %ev_zero [
+    i8 101, label %ev_ceil  ; ''e''
+  ]
+ev_ceil:
+  br i1 %u_is_float, label %ev_ceil_f, label %ev_ceil_i
+ev_ceil_i:
+  ret %Value %u
+ev_ceil_f:
+  %ceil_d = call double @value_to_double(%Value %u)
+  %ceil_r_d = call double @llvm.ceil.f64(double %ceil_d)
+  %ceil_r_i = fptosi double %ceil_r_d to i64
+  %ceil_v = call %Value @value_integer(i64 %ceil_r_i)
+  ret %Value %ceil_v
+
+ev_sqrt_sign:
+  ; Disambiguate sqrt vs sign on the second byte: ''q'' -> sqrt,
+  ; ''i'' -> sign. (sin/cos/log/exp are not implemented; they''d add
+  ; libm dependencies the current target avoids.)
+  %ss_fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %ss_fn1 = load i8, i8* %ss_fn1_ptr
+  switch i8 %ss_fn1, label %ev_zero [
+    i8 113, label %ev_sqrt  ; ''q''
+    i8 105, label %ev_sign  ; ''i'' (sign -- only handle ``si`` -> sign,
+                            ;  sin is omitted to keep the dispatch
+                            ;  shallow; callers wanting sin can use a
+                            ;  Taylor series in user code.)
+  ]
+ev_sqrt:
+  ; sqrt always returns Float (Prolog ``sqrt(4)`` -> 2.0, not 2).
+  %sqrt_d = call double @value_to_double(%Value %u)
+  %sqrt_r_d = call double @llvm.sqrt.f64(double %sqrt_d)
+  %sqrt_v = call %Value @value_float(double %sqrt_r_d)
+  ret %Value %sqrt_v
+
+ev_sign:
+  ; sign returns Integer for Integer input, Float for Float input
+  ; (mirroring Prolog''s usual type-preserving sign).
+  br i1 %u_is_float, label %ev_sign_f, label %ev_sign_i
+ev_sign_i:
+  %sign_i = extractvalue %Value %u, 1
+  %sign_is_pos = icmp sgt i64 %sign_i, 0
+  %sign_is_neg = icmp slt i64 %sign_i, 0
+  %sign_pos_v = select i1 %sign_is_pos, i64 1, i64 0
+  %sign_r_i = select i1 %sign_is_neg, i64 -1, i64 %sign_pos_v
+  %sign_v_i = call %Value @value_integer(i64 %sign_r_i)
+  ret %Value %sign_v_i
+ev_sign_f:
+  %sign_d = call double @value_to_double(%Value %u)
+  %sign_is_pos_d = fcmp ogt double %sign_d, 0.0
+  %sign_is_neg_d = fcmp olt double %sign_d, 0.0
+  %sign_pos_d = select i1 %sign_is_pos_d, double 1.0, double 0.0
+  %sign_r_d = select i1 %sign_is_neg_d, double -1.0, double %sign_pos_d
+  %sign_v_f = call %Value @value_float(double %sign_r_d)
+  ret %Value %sign_v_f
 
 ev_zero:
   ; Unknown / fail -- return Integer 0 as a benign placeholder. The
