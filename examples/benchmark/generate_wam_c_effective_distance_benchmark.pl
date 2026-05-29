@@ -74,14 +74,18 @@ generate(FactsPath, OutputDir, KernelMode, OptionsOrFactStorage) :-
     compile_wam_runtime_to_c([], RuntimeCode),
     directory_file_path(OutputDir, 'wam_runtime.c', RuntimePath),
     write_text_file(RuntimePath, RuntimeCode),
-    effective_distance_predicate_lib_code(ChildSearch, LibCode),
-    directory_file_path(OutputDir, 'lib.c', LibPath),
-    write_text_file(LibPath, LibCode),
     category_parent_tsv(CategoryParents, CategoryTsv),
     directory_file_path(OutputDir, 'category_parent.tsv', CategoryPath),
     write_text_file(CategoryPath, CategoryTsv),
     maybe_write_lmdb_seeder(FactStorage, OutputDir, CategoryParents),
-    effective_distance_main_code(ParsedMode, FactStorage, ChildSearch, Dimension, MaxDepth,
+    effective_distance_reverse_index_options(OptionsOrFactStorage, OutputDir,
+                                             CategoryParents, ArticleCategories,
+                                             RootCategories, ReverseIndexOptions),
+    effective_distance_predicate_lib_code(ChildSearch, ReverseIndexOptions, LibCode),
+    directory_file_path(OutputDir, 'lib.c', LibPath),
+    write_text_file(LibPath, LibCode),
+    effective_distance_main_code(ParsedMode, FactStorage, ChildSearch,
+                                 ReverseIndexOptions, Dimension, MaxDepth,
                                  ArticleCategories, RootCategories, MainCode),
     directory_file_path(OutputDir, 'main.c', MainPath),
     write_text_file(MainPath, MainCode),
@@ -92,7 +96,7 @@ generate(FactsPath, OutputDir, KernelMode, OptionsOrFactStorage) :-
            '[WAM-C-EffectiveDistance] mode=~w fact_storage=~w output=~w~n',
            [ParsedMode, FactStorage, OutputDir]).
 
-effective_distance_predicate_lib_code(ChildSearch, LibCode) :-
+effective_distance_predicate_lib_code(ChildSearch, ReverseIndexOptions, LibCode) :-
     CategoryWamCode = 'category_ancestor/4:\n    call_foreign category_ancestor/4, 4\n    proceed',
     compile_wam_predicate_to_c(user:category_ancestor/4, CategoryWamCode, [], CategoryPredCode),
     (   child_search_enabled(ChildSearch)
@@ -101,7 +105,9 @@ effective_distance_predicate_lib_code(ChildSearch, LibCode) :-
         format(atom(PredCode), '~w~n~n~w', [CategoryPredCode, BidirPredCode])
     ;   PredCode = CategoryPredCode
     ),
-    format(atom(LibCode), '#include "wam_runtime.h"~n~n~w~n', [PredCode]).
+    generate_setup_reverse_index_c(ReverseIndexOptions, ReverseIndexCode),
+    format(atom(LibCode), '#include "wam_runtime.h"~n~n~w~n~n~w~n',
+           [ReverseIndexCode, PredCode]).
 
 parse_kernel_mode(kernels_on, kernels_on).
 parse_kernel_mode(kernels_off, kernels_off).
@@ -170,6 +176,56 @@ parse_child_search(Atom, Mode) :-
     parse_child_search(String, Mode), !.
 parse_child_search(Atom, _) :-
     throw(error(domain_error(wam_c_child_search, Atom), _)).
+
+effective_distance_reverse_index_options(Options, OutputDir, CategoryParents,
+                                         ArticleCategories, RootCategories,
+                                         ReverseIndexOptions) :-
+    is_list(Options),
+    memberchk(reverse_index(csr(CsrOptions0)), Options),
+    !,
+    validate_effective_distance_csr_options(CsrOptions0),
+    write_effective_distance_reverse_csr(OutputDir, CategoryParents,
+                                         ArticleCategories, RootCategories,
+                                         CategoryIdMap),
+    ReverseIndexOptions = [
+        reverse_index(artifact([
+            storage_kind(csr_pread_artifact),
+            phase(runtime_available),
+            index_backend(sorted_array),
+            io_policy(buffered_pread)
+        ])),
+        reverse_csr_index_path('category_child.csr.idx'),
+        reverse_csr_values_path('category_child.csr.val'),
+        category_id_map(CategoryIdMap)
+    ].
+effective_distance_reverse_index_options(Options, _OutputDir, _CategoryParents,
+                                         _ArticleCategories, _RootCategories,
+                                         ReverseIndexOptions) :-
+    is_list(Options),
+    memberchk(reverse_index(artifact(ArtifactOptions)), Options),
+    !,
+    findall(Opt, effective_distance_reverse_artifact_option(Options, Opt), ExtraOptions),
+    ReverseIndexOptions = [reverse_index(artifact(ArtifactOptions))|ExtraOptions].
+effective_distance_reverse_index_options(_, _, _, _, _, []).
+
+validate_effective_distance_csr_options(Options) :-
+    must_be(list, Options),
+    (   memberchk(index_backend(lmdb_offset), Options)
+    ->  throw(error(domain_error(wam_c_effective_distance_reverse_index,
+                                 index_backend(lmdb_offset)), _))
+    ;   true
+    ).
+
+effective_distance_reverse_artifact_option(Options, reverse_csr_index_path(Path)) :-
+    memberchk(reverse_csr_index_path(Path), Options).
+effective_distance_reverse_artifact_option(Options, reverse_csr_values_path(Path)) :-
+    memberchk(reverse_csr_values_path(Path), Options).
+effective_distance_reverse_artifact_option(Options, reverse_csr_offset_lmdb_path(Path)) :-
+    memberchk(reverse_csr_offset_lmdb_path(Path), Options).
+effective_distance_reverse_artifact_option(Options, reverse_csr_offset_lmdb_dbi(Dbi)) :-
+    memberchk(reverse_csr_offset_lmdb_dbi(Dbi), Options).
+effective_distance_reverse_artifact_option(Options, category_id_map(Map)) :-
+    memberchk(category_id_map(Map), Options).
 
 option_or_default(Key, Options, Default, Value) :-
     Term =.. [Key, Value0],
@@ -240,6 +296,113 @@ category_parent_tsv(Pairs, Tsv) :-
 
 category_parent_tsv_line(Child-Parent, Line) :-
     format(atom(Line), '~w\t~w\n', [Child, Parent]).
+
+write_effective_distance_reverse_csr(OutputDir, CategoryParents,
+                                     ArticleCategories, RootCategories,
+                                     CategoryIdMap) :-
+    effective_distance_category_id_map(CategoryParents, ArticleCategories,
+                                       RootCategories, CategoryIdMap),
+    directory_file_path(OutputDir, 'category_child.csr.idx', IndexPath),
+    directory_file_path(OutputDir, 'category_child.csr.val', ValuesPath),
+    findall(ParentId-ChildId,
+            (   member(Child-Parent, CategoryParents),
+                memberchk(Child-ChildId, CategoryIdMap),
+                memberchk(Parent-ParentId, CategoryIdMap)
+            ),
+            ChildPairs0),
+    sort(ChildPairs0, ChildPairs),
+    group_children_by_parent(ChildPairs, Rows),
+    write_reverse_csr_files(IndexPath, ValuesPath, Rows).
+
+effective_distance_category_id_map(CategoryParents, ArticleCategories,
+                                   RootCategories, CategoryIdMap) :-
+    findall(Category,
+            (   member(Child-Parent, CategoryParents),
+                (Category = Child ; Category = Parent)
+            ;   member(_Article-ArticleCategory, ArticleCategories),
+                Category = ArticleCategory
+            ;   member(Root, RootCategories),
+                Category = Root
+            ),
+            Categories0),
+    sort(Categories0, Categories),
+    assign_category_ids(Categories, 1, CategoryIdMap).
+
+assign_category_ids([], _NextId, []).
+assign_category_ids([Category|Rest], Id, [Category-Id|MappedRest]) :-
+    NextId is Id + 1,
+    assign_category_ids(Rest, NextId, MappedRest).
+
+group_children_by_parent([], []).
+group_children_by_parent([Parent-Child|Rest], [csr_row(Parent, Children)|Rows]) :-
+    take_parent_children(Rest, Parent, [Child], Remaining, Children0),
+    sort(Children0, Children),
+    group_children_by_parent(Remaining, Rows).
+
+take_parent_children([Parent-Child|Rest], Parent, Acc, Remaining, Children) :-
+    !,
+    take_parent_children(Rest, Parent, [Child|Acc], Remaining, Children).
+take_parent_children(Remaining, _Parent, Children, Remaining, Children).
+
+write_reverse_csr_files(IndexPath, ValuesPath, Rows) :-
+    setup_call_cleanup(
+        open(IndexPath, write, IndexStream, [type(binary)]),
+        setup_call_cleanup(
+            open(ValuesPath, write, ValuesStream, [type(binary)]),
+            write_reverse_csr_rows(Rows, 0, IndexStream, ValuesStream),
+            close(ValuesStream)
+        ),
+        close(IndexStream)
+    ).
+
+write_reverse_csr_rows([], _Offset, _IndexStream, _ValuesStream).
+write_reverse_csr_rows([csr_row(ParentId, Children)|Rows], Offset,
+                       IndexStream, ValuesStream) :-
+    length(Children, Count),
+    put_i32_le(IndexStream, ParentId),
+    put_u64_le(IndexStream, Offset),
+    put_u32_le(IndexStream, Count),
+    forall(member(ChildId, Children), put_i32_le(ValuesStream, ChildId)),
+    NextOffset is Offset + Count,
+    write_reverse_csr_rows(Rows, NextOffset, IndexStream, ValuesStream).
+
+put_i32_le(Stream, Value) :-
+    Value >= -2147483648,
+    Value =< 2147483647,
+    Unsigned is Value /\ 0xffffffff,
+    put_u32_le(Stream, Unsigned).
+
+put_u32_le(Stream, Value) :-
+    Value >= 0,
+    Value =< 0xffffffff,
+    Byte0 is Value /\ 0xff,
+    Byte1 is (Value >> 8) /\ 0xff,
+    Byte2 is (Value >> 16) /\ 0xff,
+    Byte3 is (Value >> 24) /\ 0xff,
+    put_byte(Stream, Byte0),
+    put_byte(Stream, Byte1),
+    put_byte(Stream, Byte2),
+    put_byte(Stream, Byte3).
+
+put_u64_le(Stream, Value) :-
+    Value >= 0,
+    Value =< 0xffffffffffffffff,
+    Byte0 is Value /\ 0xff,
+    Byte1 is (Value >> 8) /\ 0xff,
+    Byte2 is (Value >> 16) /\ 0xff,
+    Byte3 is (Value >> 24) /\ 0xff,
+    Byte4 is (Value >> 32) /\ 0xff,
+    Byte5 is (Value >> 40) /\ 0xff,
+    Byte6 is (Value >> 48) /\ 0xff,
+    Byte7 is (Value >> 56) /\ 0xff,
+    put_byte(Stream, Byte0),
+    put_byte(Stream, Byte1),
+    put_byte(Stream, Byte2),
+    put_byte(Stream, Byte3),
+    put_byte(Stream, Byte4),
+    put_byte(Stream, Byte5),
+    put_byte(Stream, Byte6),
+    put_byte(Stream, Byte7).
 
 maybe_write_lmdb_seeder(facts_tsv, _OutputDir, _CategoryParents).
 maybe_write_lmdb_seeder(facts_lmdb, OutputDir, CategoryParents) :-
@@ -403,7 +566,8 @@ int main(void) {
 }
 ', [ExpectedRows, ExpectedDuplicate]).
 
-effective_distance_main_code(KernelMode, FactStorage, ChildSearch, Dimension, MaxDepth,
+effective_distance_main_code(KernelMode, FactStorage, ChildSearch, ReverseIndexOptions,
+                             Dimension, MaxDepth,
                              ArticleCategories, RootCategories, Code) :-
     c_pair_arrays('ARTICLE_IDS', 'ARTICLE_CATS', ArticleCategories, ArticleArrays),
     pairs_keys(ArticleCategories, ArticleIds0),
@@ -422,6 +586,10 @@ effective_distance_main_code(KernelMode, FactStorage, ChildSearch, Dimension, Ma
     bidirectional_setup_call(ChildSearch, BidirSetupCall),
     bidirectional_register_call(ChildSearch, MaxDepth, ParentStepCost, ChildStepCost,
                                 ChildSearchBudget, BidirRegisterCall),
+    reverse_index_declaration(ReverseIndexOptions, ReverseIndexDeclaration),
+    reverse_index_local(ReverseIndexOptions, ReverseIndexLocal),
+    reverse_index_setup_call(ReverseIndexOptions, ReverseIndexSetupCall),
+    reverse_index_teardown_call(ReverseIndexOptions, ReverseIndexTeardownCall),
     format(atom(Code),
 '#include <math.h>
 #include <stdio.h>
@@ -429,6 +597,7 @@ effective_distance_main_code(KernelMode, FactStorage, ChildSearch, Dimension, Ma
 #include "wam_runtime.h"
 
 void setup_category_ancestor_4(WamState* state);
+~w
 ~w
 
 ~w
@@ -664,13 +833,16 @@ static void collect_hops(WamState *state,
 int main(void) {
     WamState state;
     WamFactSource source;
+~w
     wam_state_init(&state);
     wam_fact_source_init(&source);
     setup_category_ancestor_4(&state);
 ~w
+~w
 
     if (!(~w)) {
         fprintf(stderr, "failed to load category_parent facts\\n");
+~w
         wam_fact_source_close(&source);
         wam_free_state(&state);
         return 1;
@@ -721,16 +893,19 @@ int main(void) {
         }
     }
 
+~w
     wam_fact_source_close(&source);
     wam_free_state(&state);
     return 0;
 }
-', [BidirSetupDeclaration, ArticleArrays, ArticlesArray, RootArray, MaxDepth,
-    BidirSetupCall, LoadCode, MaxDepth, BidirRegisterCall,
+', [BidirSetupDeclaration, ReverseIndexDeclaration,
+    ArticleArrays, ArticlesArray, RootArray, MaxDepth,
+    ReverseIndexLocal, BidirSetupCall, ReverseIndexSetupCall,
+    LoadCode, ReverseIndexTeardownCall, MaxDepth, BidirRegisterCall,
     ParentStepCost, KernelFlag, ParentStepCost,
     ChildSearchFlag, KernelFlag, MaxChildExpansions, ChildSearchDepth,
     ParentStepCost, ChildStepCost, ChildSearchBudget, ParentStepCost,
-    Dimension, Dimension]).
+    Dimension, Dimension, ReverseIndexTeardownCall]).
 
 fact_source_load_code(facts_tsv,
                       'wam_fact_source_load_tsv(&state, &source, "category_parent.tsv")').
@@ -775,6 +950,41 @@ bidirectional_register_call(ChildSearch, MaxDepth, ParentStepCost, ChildStepCost
            '    wam_register_bidirectional_ancestor_kernel(&state, "bidirectional_ancestor/5", ~w, ~w, ~w, ~w);',
            [MaxDepth, ParentStepCost, ChildStepCost, Budget]).
 bidirectional_register_call(_, _, _, _, _, '').
+
+reverse_index_enabled(ReverseIndexOptions) :-
+    ReverseIndexOptions \= [].
+
+reverse_index_declaration(ReverseIndexOptions,
+'bool setup_wam_c_reverse_index_artifacts(WamState* state,
+                                         WamReverseCsrArtifact* bidirectional_child_csr);
+void teardown_wam_c_reverse_index_artifacts(WamState* state,
+                                            WamReverseCsrArtifact* bidirectional_child_csr);') :-
+    reverse_index_enabled(ReverseIndexOptions),
+    !.
+reverse_index_declaration(_, '').
+
+reverse_index_local(ReverseIndexOptions,
+'    WamReverseCsrArtifact bidirectional_child_csr;') :-
+    reverse_index_enabled(ReverseIndexOptions),
+    !.
+reverse_index_local(_, '').
+
+reverse_index_setup_call(ReverseIndexOptions,
+'    if (!setup_wam_c_reverse_index_artifacts(&state, &bidirectional_child_csr)) {
+        fprintf(stderr, "failed to load reverse CSR artifact\\n");
+        wam_fact_source_close(&source);
+        wam_free_state(&state);
+        return 2;
+    }') :-
+    reverse_index_enabled(ReverseIndexOptions),
+    !.
+reverse_index_setup_call(_, '').
+
+reverse_index_teardown_call(ReverseIndexOptions,
+'    teardown_wam_c_reverse_index_artifacts(&state, &bidirectional_child_csr);') :-
+    reverse_index_enabled(ReverseIndexOptions),
+    !.
+reverse_index_teardown_call(_, '').
 
 c_pair_arrays(NamesName, ValuesName, Pairs, Code) :-
     pairs_keys(Pairs, Keys),
