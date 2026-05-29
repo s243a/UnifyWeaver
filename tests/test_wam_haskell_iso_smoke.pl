@@ -182,22 +182,11 @@ test_iso_atoms_interned :-
 %% =====================================================================
 
 :- use_module(library(filesex), [directory_file_path/3, make_directory_path/1]).
+:- use_module('helpers/smoke_paths', [tmp_root/1]).
 
-tmp_root_candidate(Root) :-
-    member(Env, ['TMPDIR', 'TMP', 'TEMP']),
-    getenv(Env, Root),
-    Root \== ''.
-tmp_root_candidate(Root) :-
-    getenv('PREFIX', Prefix),
-    Prefix \== '',
-    directory_file_path(Prefix, tmp, Root).
-tmp_root_candidate('output').
-
-writable_tmp_root(Root) :-
-    tmp_root_candidate(Root),
-    catch(make_directory_path(Root), _, fail),
-    access_file(Root, write),
-    !.
+% writable_tmp_root/1 delegates to the shared smoke_paths helper
+% (which covers Windows %TEMP%, Termux, /tmp, etc.).
+writable_tmp_root(Root) :- tmp_root(Root).
 
 tmp_project_dir(Dir) :-
     writable_tmp_root(Root),

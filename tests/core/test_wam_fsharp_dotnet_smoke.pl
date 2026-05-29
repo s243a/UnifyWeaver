@@ -61,9 +61,9 @@
 %   swipl -q -g run_tests -t halt tests/core/test_wam_fsharp_dotnet_smoke.pl
 
 :- use_module('../../src/unifyweaver/targets/wam_fsharp_target').
+:- use_module('../helpers/smoke_paths', [tmp_root/1, clean_dir/1]).
 :- use_module(library(filesex), [directory_file_path/3,
-                                  make_directory_path/1,
-                                  delete_directory_and_contents/1]).
+                                  make_directory_path/1]).
 :- use_module(library(process)).
 :- use_module(library(readutil)).
 
@@ -97,28 +97,7 @@ dotnet_available :-
 %% Paths
 %% ========================================================================
 
-%% tmp_root_candidate(-Root)
-%% Enumerate candidate tmp roots in precedence order; tmp_root/1 picks
-%% the first one that exists (or can be created) and is writable.
-tmp_root_candidate(Root) :-
-    member(Var, ['UW_SMOKE_TMPDIR', 'TMPDIR', 'TMP', 'TEMP']),
-    getenv(Var, Raw),
-    Raw \== '',
-    Root = Raw.
-tmp_root_candidate(Root) :-
-    getenv('PREFIX', Prefix),
-    Prefix \== '',
-    directory_file_path(Prefix, tmp, Root).
-tmp_root_candidate('/data/data/com.termux/files/usr/tmp').
-tmp_root_candidate('/tmp').
-tmp_root_candidate('./tmp').
-
-tmp_root(Root) :-
-    tmp_root_candidate(Cand),
-    catch(make_directory_path(Cand), _, fail),
-    access_file(Cand, write),
-    !,
-    Root = Cand.
+%% tmp_root/1 and clean_dir/1 imported from helpers/smoke_paths.
 
 smoke_root(Dir) :-
     tmp_root(Root),
@@ -127,12 +106,6 @@ smoke_root(Dir) :-
 %% ========================================================================
 %% Project generation + build
 %% ========================================================================
-
-clean_dir(Dir) :-
-    (   exists_directory(Dir)
-    ->  catch(delete_directory_and_contents(Dir), _, true)
-    ;   true
-    ).
 
 %% setenv on the parent so the child inherits HOME / PATH / etc. and just
 %% sees our additions.  Avoids the InvalidOperationException from NuGet
