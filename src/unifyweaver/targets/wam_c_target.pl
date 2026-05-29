@@ -57,32 +57,35 @@ wam_c_reverse_index_capabilities(artifact(Opts), [
     runtime_child_lookup(available),
     runtime_api(wam_reverse_csr_lookup_children),
     runtime_index_backend(sorted_array),
-    runtime_io(pread)
+    runtime_io(RuntimeIo)
 ]) :-
     memberchk(storage_kind(csr_pread_artifact), Opts),
     memberchk(index_backend(sorted_array), Opts),
     wam_c_reverse_index_runtime_io_policy_supported(artifact(Opts)),
+    wam_c_reverse_index_runtime_io_capability(artifact(Opts), RuntimeIo),
     !.
 wam_c_reverse_index_capabilities(csr(Opts), [
     planning(accepted),
     runtime_child_lookup(available_after_artifact_build),
     runtime_api(wam_reverse_csr_lookup_children),
     runtime_index_backend(sorted_array),
-    runtime_io(pread)
+    runtime_io(RuntimeIo)
 ]) :-
     memberchk(index_backend(sorted_array), Opts),
     wam_c_reverse_index_runtime_io_policy_supported(csr(Opts)),
+    wam_c_reverse_index_runtime_io_capability(csr(Opts), RuntimeIo),
     !.
 wam_c_reverse_index_capabilities(ReverseIndex, [
     planning(accepted),
     runtime_child_lookup(available),
     runtime_api(wam_reverse_csr_lookup_children),
     runtime_index_backend(lmdb_offset),
-    runtime_io(pread),
+    runtime_io(RuntimeIo),
     runtime_requires(wam_c_enable_lmdb)
 ]) :-
     wam_c_reverse_index_uses_lmdb_offset(ReverseIndex),
     wam_c_reverse_index_runtime_io_policy_supported(ReverseIndex),
+    wam_c_reverse_index_runtime_io_capability(ReverseIndex, RuntimeIo),
     !.
 wam_c_reverse_index_capabilities(ReverseIndex, [
     planning(accepted),
@@ -113,7 +116,18 @@ wam_c_reverse_index_runtime_io_policy(artifact(Opts), Policy) :-
     memberchk(phase(runtime_available), Opts),
     memberchk(io_policy(Policy), Opts).
 
+wam_c_reverse_index_declared_io_policy(csr(Opts), Policy) :-
+    memberchk(io_policy(Policy), Opts).
+wam_c_reverse_index_declared_io_policy(artifact(Opts), Policy) :-
+    memberchk(io_policy(Policy), Opts).
+
 wam_c_supported_reverse_index_runtime_io_policy(buffered_pread).
+wam_c_supported_reverse_index_runtime_io_policy(buffered_pread_drop).
+
+wam_c_reverse_index_runtime_io_capability(ReverseIndex, pread_drop) :-
+    wam_c_reverse_index_declared_io_policy(ReverseIndex, buffered_pread_drop),
+    !.
+wam_c_reverse_index_runtime_io_capability(_ReverseIndex, pread).
 
 wam_c_reverse_index_runtime_io_policy_supported(ReverseIndex) :-
     (   wam_c_reverse_index_runtime_io_policy(ReverseIndex, Policy)
@@ -262,9 +276,10 @@ wam_c_reverse_index_setup_plan(Options, Plan) :-
     wam_c_require_reverse_index_runtime_io_policy(ReverseIndex),
     wam_c_reverse_index_runtime_available(ReverseIndex, Capabilities),
     wam_c_reverse_index_setup_backend(ReverseIndex, Backend),
+    wam_c_reverse_index_setup_policy(ReverseIndex, IoPolicy),
     wam_c_reverse_index_setup_paths(Backend, Options, Paths),
     option(category_id_map(CategoryIdMap), Options, []),
-    Plan = wam_c_reverse_index_setup(Backend, Paths, CategoryIdMap).
+    Plan = wam_c_reverse_index_setup(Backend, IoPolicy, Paths, CategoryIdMap).
 
 wam_c_reverse_index_runtime_available(artifact(Opts), Capabilities) :-
     memberchk(phase(runtime_available), Opts),
@@ -279,6 +294,11 @@ wam_c_reverse_index_setup_backend(ReverseIndex, lmdb_offset) :-
     wam_c_reverse_index_uses_lmdb_offset(ReverseIndex),
     !.
 wam_c_reverse_index_setup_backend(_ReverseIndex, sorted_array).
+
+wam_c_reverse_index_setup_policy(ReverseIndex, Policy) :-
+    wam_c_reverse_index_runtime_io_policy(ReverseIndex, Policy),
+    !.
+wam_c_reverse_index_setup_policy(_ReverseIndex, buffered_pread).
 
 wam_c_reverse_index_setup_paths(sorted_array, Options,
                                 sorted_array(IndexPath, ValuesPath)) :-
@@ -306,9 +326,9 @@ void teardown_wam_c_reverse_index_artifacts(WamState* state,
 ').
 
 wam_c_reverse_index_setup_code(
-        wam_c_reverse_index_setup(Backend, Paths, CategoryIdMap),
+        wam_c_reverse_index_setup(Backend, IoPolicy, Paths, CategoryIdMap),
         Code) :-
-    wam_c_reverse_index_load_call(Backend, Paths, LoadCall),
+    wam_c_reverse_index_load_call(Backend, IoPolicy, Paths, LoadCall),
     wam_c_category_id_setup_lines(CategoryIdMap, IdLines),
     format(atom(Code),
 'bool setup_wam_c_reverse_index_artifacts(WamState* state,
@@ -331,6 +351,7 @@ void teardown_wam_c_reverse_index_artifacts(WamState* state,
 ', [LoadCall, IdLines]).
 
 wam_c_reverse_index_load_call(sorted_array,
+                              buffered_pread,
                               sorted_array(IndexPath, ValuesPath),
                               LoadCall) :-
     c_string_literal(IndexPath, IndexLit),
@@ -338,7 +359,17 @@ wam_c_reverse_index_load_call(sorted_array,
     format(atom(LoadCall),
            'wam_reverse_csr_load(bidirectional_child_csr, ~w, ~w)',
            [IndexLit, ValuesLit]).
+wam_c_reverse_index_load_call(sorted_array,
+                              buffered_pread_drop,
+                              sorted_array(IndexPath, ValuesPath),
+                              LoadCall) :-
+    c_string_literal(IndexPath, IndexLit),
+    c_string_literal(ValuesPath, ValuesLit),
+    format(atom(LoadCall),
+           'wam_reverse_csr_load_pread_drop(bidirectional_child_csr, ~w, ~w)',
+           [IndexLit, ValuesLit]).
 wam_c_reverse_index_load_call(lmdb_offset,
+                              buffered_pread,
                               lmdb_offset(OffsetPath, ValuesPath, DbiName),
                               LoadCall) :-
     c_string_literal(OffsetPath, OffsetLit),
@@ -346,6 +377,16 @@ wam_c_reverse_index_load_call(lmdb_offset,
     c_string_literal(DbiName, DbiLit),
     format(atom(LoadCall),
            'wam_reverse_csr_load_lmdb_offset(bidirectional_child_csr, ~w, ~w, ~w)',
+           [ValuesLit, OffsetLit, DbiLit]).
+wam_c_reverse_index_load_call(lmdb_offset,
+                              buffered_pread_drop,
+                              lmdb_offset(OffsetPath, ValuesPath, DbiName),
+                              LoadCall) :-
+    c_string_literal(OffsetPath, OffsetLit),
+    c_string_literal(ValuesPath, ValuesLit),
+    c_string_literal(DbiName, DbiLit),
+    format(atom(LoadCall),
+           'wam_reverse_csr_load_lmdb_offset_pread_drop(bidirectional_child_csr, ~w, ~w, ~w)',
            [ValuesLit, OffsetLit, DbiLit]).
 
 wam_c_category_id_setup_lines([], '').
@@ -2801,6 +2842,18 @@ static bool wam_pread_exact(int fd, void *buffer, size_t bytes, off_t offset) {
     return true;
 }
 
+static void wam_drop_fd_range(int fd, off_t offset, off_t bytes) {
+#if defined(POSIX_FADV_DONTNEED)
+    if (fd >= 0 && bytes > 0) {
+        (void)posix_fadvise(fd, offset, bytes, POSIX_FADV_DONTNEED);
+    }
+#else
+    (void)fd;
+    (void)offset;
+    (void)bytes;
+#endif
+}
+
 void wam_reverse_csr_init(WamReverseCsrArtifact *artifact) {
     memset(artifact, 0, sizeof(WamReverseCsrArtifact));
     artifact->index_fd = -1;
@@ -2827,10 +2880,12 @@ bool wam_reverse_csr_load(WamReverseCsrArtifact *artifact,
                           const char *values_path) {
     const size_t record_bytes = 16;
     unsigned char *raw = NULL;
+    bool drop_after_read = artifact->drop_after_read;
     bool ok = false;
     off_t index_size = 0;
 
     wam_reverse_csr_close(artifact);
+    artifact->drop_after_read = drop_after_read;
     artifact->index_fd = open(index_path, O_RDONLY);
     if (artifact->index_fd < 0) goto done;
     artifact->values_fd = open(values_path, O_RDONLY);
@@ -2848,6 +2903,9 @@ bool wam_reverse_csr_load(WamReverseCsrArtifact *artifact,
         raw = malloc((size_t)index_size);
         if (!artifact->rows || !raw) goto done;
         if (!wam_pread_exact(artifact->index_fd, raw, (size_t)index_size, 0)) goto done;
+        if (artifact->drop_after_read) {
+            wam_drop_fd_range(artifact->index_fd, 0, index_size);
+        }
         for (int i = 0; i < artifact->row_count; i++) {
             const unsigned char *record = raw + ((size_t)i * record_bytes);
             int parent = (int)wam_read_i32_le(record);
@@ -2866,6 +2924,16 @@ done:
     return ok;
 }
 
+bool wam_reverse_csr_load_pread_drop(WamReverseCsrArtifact *artifact,
+                                     const char *index_path,
+                                     const char *values_path) {
+    bool ok = false;
+    artifact->drop_after_read = true;
+    ok = wam_reverse_csr_load(artifact, index_path, values_path);
+    if (ok) artifact->drop_after_read = true;
+    return ok;
+}
+
 bool wam_reverse_csr_load_lmdb_offset(WamReverseCsrArtifact *artifact,
                                       const char *values_path,
                                       const char *offset_env_path,
@@ -2879,9 +2947,11 @@ bool wam_reverse_csr_load_lmdb_offset(WamReverseCsrArtifact *artifact,
 #else
     MDB_txn *txn = NULL;
     int rc = 0;
+    bool drop_after_read = artifact->drop_after_read;
     bool ok = false;
 
     wam_reverse_csr_close(artifact);
+    artifact->drop_after_read = drop_after_read;
     artifact->values_fd = open(values_path, O_RDONLY);
     if (artifact->values_fd < 0) goto done;
 
@@ -2908,6 +2978,17 @@ done:
     if (!ok) wam_reverse_csr_close(artifact);
     return ok;
 #endif
+}
+
+bool wam_reverse_csr_load_lmdb_offset_pread_drop(WamReverseCsrArtifact *artifact,
+                                                const char *values_path,
+                                                const char *offset_env_path,
+                                                const char *db_name) {
+    bool ok = false;
+    artifact->drop_after_read = true;
+    ok = wam_reverse_csr_load_lmdb_offset(artifact, values_path, offset_env_path, db_name);
+    if (ok) artifact->drop_after_read = true;
+    return ok;
 }
 
 static WamReverseCsrRow *wam_reverse_csr_find_row(WamReverseCsrArtifact *artifact,
@@ -2995,6 +3076,13 @@ int wam_reverse_csr_lookup_children(WamReverseCsrArtifact *artifact,
             return -1;
         }
         out_children[i] = (int)wam_read_i32_le(encoded);
+    }
+    if (artifact->drop_after_read && to_read > 0) {
+        uint64_t first_byte = offset_edges * 4ULL;
+        uint64_t byte_count = (uint64_t)to_read * 4ULL;
+        if (first_byte <= (uint64_t)LLONG_MAX && byte_count <= (uint64_t)LLONG_MAX) {
+            wam_drop_fd_range(artifact->values_fd, (off_t)first_byte, (off_t)byte_count);
+        }
     }
     return total;
 }
