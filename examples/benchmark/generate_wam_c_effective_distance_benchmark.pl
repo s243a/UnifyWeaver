@@ -90,7 +90,7 @@ generate(FactsPath, OutputDir, KernelMode, OptionsOrFactStorage) :-
     directory_file_path(OutputDir, 'main.c', MainPath),
     write_text_file(MainPath, MainCode),
     directory_file_path(OutputDir, 'README.md', ReadmePath),
-    effective_distance_readme(ParsedMode, FactStorage, Readme),
+    effective_distance_readme(ParsedMode, FactStorage, ReverseIndexOptions, Readme),
     write_text_file(ReadmePath, Readme),
     format(user_error,
            '[WAM-C-EffectiveDistance] mode=~w fact_storage=~w output=~w~n',
@@ -183,21 +183,21 @@ effective_distance_reverse_index_options(Options, OutputDir, CategoryParents,
     is_list(Options),
     memberchk(reverse_index(csr(CsrOptions0)), Options),
     !,
-    validate_effective_distance_csr_options(CsrOptions0),
+    effective_distance_csr_index_backend(CsrOptions0, IndexBackend),
     write_effective_distance_reverse_csr(OutputDir, CategoryParents,
                                          ArticleCategories, RootCategories,
-                                         CategoryIdMap),
+                                         IndexBackend, CategoryIdMap),
     ReverseIndexOptions = [
         reverse_index(artifact([
             storage_kind(csr_pread_artifact),
             phase(runtime_available),
-            index_backend(sorted_array),
+            index_backend(IndexBackend),
             io_policy(buffered_pread)
         ])),
-        reverse_csr_index_path('category_child.csr.idx'),
         reverse_csr_values_path('category_child.csr.val'),
         category_id_map(CategoryIdMap)
-    ].
+    | ReverseIndexPathOptions],
+    effective_distance_reverse_index_path_options(IndexBackend, ReverseIndexPathOptions).
 effective_distance_reverse_index_options(Options, _OutputDir, _CategoryParents,
                                          _ArticleCategories, _RootCategories,
                                          ReverseIndexOptions) :-
@@ -208,13 +208,24 @@ effective_distance_reverse_index_options(Options, _OutputDir, _CategoryParents,
     ReverseIndexOptions = [reverse_index(artifact(ArtifactOptions))|ExtraOptions].
 effective_distance_reverse_index_options(_, _, _, _, _, []).
 
-validate_effective_distance_csr_options(Options) :-
+effective_distance_csr_index_backend(Options, Backend) :-
     must_be(list, Options),
-    (   memberchk(index_backend(lmdb_offset), Options)
-    ->  throw(error(domain_error(wam_c_effective_distance_reverse_index,
-                                 index_backend(lmdb_offset)), _))
-    ;   true
+    (   memberchk(index_backend(RawBackend), Options)
+    ->  parse_effective_distance_csr_index_backend(RawBackend, Backend)
+    ;   Backend = sorted_array
     ).
+
+parse_effective_distance_csr_index_backend(sorted_array, sorted_array).
+parse_effective_distance_csr_index_backend(lmdb_offset, lmdb_offset).
+parse_effective_distance_csr_index_backend(Backend, _) :-
+    throw(error(domain_error(wam_c_effective_distance_csr_index_backend, Backend), _)).
+
+effective_distance_reverse_index_path_options(sorted_array,
+                                             [reverse_csr_index_path('category_child.csr.idx')]).
+effective_distance_reverse_index_path_options(lmdb_offset,
+                                             [ reverse_csr_offset_lmdb_path('category_child.csr.offsets.lmdb'),
+                                               reverse_csr_offset_lmdb_dbi(offsets)
+                                             ]).
 
 effective_distance_reverse_artifact_option(Options, reverse_csr_index_path(Path)) :-
     memberchk(reverse_csr_index_path(Path), Options).
@@ -299,7 +310,7 @@ category_parent_tsv_line(Child-Parent, Line) :-
 
 write_effective_distance_reverse_csr(OutputDir, CategoryParents,
                                      ArticleCategories, RootCategories,
-                                     CategoryIdMap) :-
+                                     IndexBackend, CategoryIdMap) :-
     effective_distance_category_id_map(CategoryParents, ArticleCategories,
                                        RootCategories, CategoryIdMap),
     directory_file_path(OutputDir, 'category_child.csr.idx', IndexPath),
@@ -312,7 +323,8 @@ write_effective_distance_reverse_csr(OutputDir, CategoryParents,
             ChildPairs0),
     sort(ChildPairs0, ChildPairs),
     group_children_by_parent(ChildPairs, Rows),
-    write_reverse_csr_files(IndexPath, ValuesPath, Rows).
+    write_reverse_csr_files(IndexPath, ValuesPath, Rows),
+    maybe_write_reverse_csr_offset_lmdb_seeder(IndexBackend, OutputDir, Rows).
 
 effective_distance_category_id_map(CategoryParents, ArticleCategories,
                                    RootCategories, CategoryIdMap) :-
@@ -365,6 +377,147 @@ write_reverse_csr_rows([csr_row(ParentId, Children)|Rows], Offset,
     forall(member(ChildId, Children), put_i32_le(ValuesStream, ChildId)),
     NextOffset is Offset + Count,
     write_reverse_csr_rows(Rows, NextOffset, IndexStream, ValuesStream).
+
+maybe_write_reverse_csr_offset_lmdb_seeder(sorted_array, _OutputDir, _Rows).
+maybe_write_reverse_csr_offset_lmdb_seeder(lmdb_offset, OutputDir, Rows) :-
+    length(Rows, RowCount),
+    reverse_csr_offset_lmdb_seeder_code(RowCount, SeederCode),
+    directory_file_path(OutputDir, 'seed_category_child_csr_offsets_lmdb.c', SeederPath),
+    write_text_file(SeederPath, SeederCode).
+
+reverse_csr_offset_lmdb_seeder_code(ExpectedRows, Code) :-
+    MapSize is max(ExpectedRows * 128, 1048576),
+    format(atom(Code),
+'#include <errno.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include "lmdb.h"
+
+static int mkdir_if_needed(const char *path) {
+    if (mkdir(path, 0775) == 0 || errno == EEXIST) return 1;
+    return 0;
+}
+
+static int32_t read_i32_le(const unsigned char *p) {
+    uint32_t v = ((uint32_t)p[0]) |
+                 ((uint32_t)p[1] << 8) |
+                 ((uint32_t)p[2] << 16) |
+                 ((uint32_t)p[3] << 24);
+    return (int32_t)v;
+}
+
+static uint64_t read_u64_le(const unsigned char *p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) v |= ((uint64_t)p[i]) << (8 * i);
+    return v;
+}
+
+static uint32_t read_u32_le(const unsigned char *p) {
+    return ((uint32_t)p[0]) |
+           ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
+static void write_i32_le(unsigned char *p, int32_t value) {
+    uint32_t v = (uint32_t)value;
+    p[0] = (unsigned char)(v & 0xffu);
+    p[1] = (unsigned char)((v >> 8) & 0xffu);
+    p[2] = (unsigned char)((v >> 16) & 0xffu);
+    p[3] = (unsigned char)((v >> 24) & 0xffu);
+}
+
+static void write_offset_record(unsigned char *p, uint64_t offset_edges, uint32_t child_count) {
+    for (int i = 0; i < 8; i++) p[i] = (unsigned char)((offset_edges >> (8 * i)) & 0xffu);
+    p[8] = (unsigned char)(child_count & 0xffu);
+    p[9] = (unsigned char)((child_count >> 8) & 0xffu);
+    p[10] = (unsigned char)((child_count >> 16) & 0xffu);
+    p[11] = (unsigned char)((child_count >> 24) & 0xffu);
+}
+
+static int seed_offsets(MDB_txn *txn, MDB_dbi dbi, const char *idx_path, int *row_count) {
+    FILE *idx = fopen(idx_path, "rb");
+    if (!idx) return 0;
+    unsigned char record[16];
+    int ok = 1;
+    *row_count = 0;
+    while (fread(record, 1, sizeof(record), idx) == sizeof(record)) {
+        int32_t parent = read_i32_le(record);
+        uint64_t offset_edges = read_u64_le(record + 4);
+        uint32_t child_count = read_u32_le(record + 12);
+        unsigned char key_bytes[4];
+        unsigned char data_bytes[12];
+        MDB_val key;
+        MDB_val data;
+        write_i32_le(key_bytes, parent);
+        write_offset_record(data_bytes, offset_edges, child_count);
+        key.mv_size = sizeof(key_bytes);
+        key.mv_data = key_bytes;
+        data.mv_size = sizeof(data_bytes);
+        data.mv_data = data_bytes;
+        if (mdb_put(txn, dbi, &key, &data, 0) != MDB_SUCCESS) {
+            ok = 0;
+            break;
+        }
+        (*row_count)++;
+    }
+    if (ferror(idx)) ok = 0;
+    fclose(idx);
+    return ok;
+}
+
+int main(void) {
+    const char *env_path = "category_child.csr.offsets.lmdb";
+    const char *idx_path = "category_child.csr.idx";
+    MDB_env *env = NULL;
+    MDB_txn *txn = NULL;
+    MDB_dbi dbi = 0;
+    int row_count = 0;
+    int rc = 0;
+
+    if (!mkdir_if_needed(env_path)) return 1;
+    rc = mdb_env_create(&env);
+    if (rc != MDB_SUCCESS) return 2;
+    rc = mdb_env_set_maxdbs(env, 2);
+    if (rc != MDB_SUCCESS) { mdb_env_close(env); return 3; }
+    rc = mdb_env_set_mapsize(env, ~w);
+    if (rc != MDB_SUCCESS) { mdb_env_close(env); return 4; }
+    rc = mdb_env_open(env, env_path, 0, 0664);
+    if (rc != MDB_SUCCESS) { mdb_env_close(env); return 5; }
+    rc = mdb_txn_begin(env, NULL, 0, &txn);
+    if (rc != MDB_SUCCESS) { mdb_env_close(env); return 6; }
+    rc = mdb_dbi_open(txn, "offsets", MDB_CREATE, &dbi);
+    if (rc != MDB_SUCCESS) {
+        mdb_txn_abort(txn);
+        mdb_env_close(env);
+        return 7;
+    }
+    if (!seed_offsets(txn, dbi, idx_path, &row_count)) {
+        mdb_txn_abort(txn);
+        mdb_dbi_close(env, dbi);
+        mdb_env_close(env);
+        return 8;
+    }
+    rc = mdb_txn_commit(txn);
+    if (rc != MDB_SUCCESS) {
+        mdb_dbi_close(env, dbi);
+        mdb_env_close(env);
+        return 9;
+    }
+    if (row_count != ~w) {
+        fprintf(stderr, "expected ~w offset rows, wrote %%d\\n", row_count);
+        mdb_dbi_close(env, dbi);
+        mdb_env_close(env);
+        return 10;
+    }
+    mdb_dbi_close(env, dbi);
+    mdb_env_close(env);
+    return 0;
+}
+', [MapSize, ExpectedRows, ExpectedRows]).
 
 put_i32_le(Stream, Value) :-
     Value >= -2147483648,
@@ -1019,8 +1172,8 @@ c_escaped_chars(['\\'|Rest]) --> ['\\', '\\'], c_escaped_chars(Rest).
 c_escaped_chars(['"'|Rest]) --> ['\\', '"'], c_escaped_chars(Rest).
 c_escaped_chars([C|Rest]) --> [C], c_escaped_chars(Rest).
 
-effective_distance_readme(KernelMode, FactStorage, Readme) :-
-    build_notes(FactStorage, BuildNotes),
+effective_distance_readme(KernelMode, FactStorage, ReverseIndexOptions, Readme) :-
+    build_notes(FactStorage, ReverseIndexOptions, BuildNotes),
     format(atom(Readme),
 '# WAM-C Effective Distance Benchmark
 
@@ -1042,10 +1195,22 @@ Kernel mode: `~w`.
 Fact storage: `~w`.
 ', [BuildNotes, KernelMode, FactStorage]).
 
-build_notes(facts_tsv,
+build_notes(facts_tsv, ReverseIndexOptions,
+            'gcc -std=c11 -Wall -Wextra seed_category_child_csr_offsets_lmdb.c -llmdb -o seed_category_child_csr_offsets_lmdb\n./seed_category_child_csr_offsets_lmdb\ngcc -std=c11 -Wall -Wextra -DWAM_C_ENABLE_LMDB -I ../../src/unifyweaver/targets/wam_c_runtime wam_runtime.c lib.c main.c -lm -llmdb -o wam_c_effective_distance') :-
+    reverse_index_uses_lmdb_offset(ReverseIndexOptions),
+    !.
+build_notes(facts_tsv, _ReverseIndexOptions,
             'gcc -std=c11 -Wall -Wextra -I ../../src/unifyweaver/targets/wam_c_runtime wam_runtime.c lib.c main.c -lm -o wam_c_effective_distance').
-build_notes(facts_lmdb,
+build_notes(facts_lmdb, ReverseIndexOptions,
+            'gcc -std=c11 -Wall -Wextra seed_category_parent_lmdb.c -llmdb -o seed_category_parent_lmdb\n./seed_category_parent_lmdb\ngcc -std=c11 -Wall -Wextra seed_category_child_csr_offsets_lmdb.c -llmdb -o seed_category_child_csr_offsets_lmdb\n./seed_category_child_csr_offsets_lmdb\ngcc -std=c11 -Wall -Wextra -DWAM_C_ENABLE_LMDB -I ../../src/unifyweaver/targets/wam_c_runtime wam_runtime.c lib.c main.c -lm -llmdb -o wam_c_effective_distance') :-
+    reverse_index_uses_lmdb_offset(ReverseIndexOptions),
+    !.
+build_notes(facts_lmdb, _ReverseIndexOptions,
             'gcc -std=c11 -Wall -Wextra seed_category_parent_lmdb.c -llmdb -o seed_category_parent_lmdb\n./seed_category_parent_lmdb\ngcc -std=c11 -Wall -Wextra -DWAM_C_ENABLE_LMDB -I ../../src/unifyweaver/targets/wam_c_runtime wam_runtime.c lib.c main.c -lm -llmdb -o wam_c_effective_distance').
+
+reverse_index_uses_lmdb_offset(ReverseIndexOptions) :-
+    memberchk(reverse_index(artifact(ArtifactOptions)), ReverseIndexOptions),
+    memberchk(index_backend(lmdb_offset), ArtifactOptions).
 
 write_text_file(Path, Content) :-
     setup_call_cleanup(

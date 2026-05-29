@@ -167,6 +167,50 @@ test_child_search_builds_reverse_csr :-
     ;   fail_test(Test, 'reverse_index csr child-search output mismatch')
     ).
 
+test_child_search_builds_lmdb_offset_reverse_csr :-
+    Test = 'WAM-C effective-distance: reverse_index csr can emit LMDB-offset CSR',
+    (   unique_tmp_dir(child_search_lmdb_offset_csr, OutputDir),
+        write_child_search_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(
+            FactsPath,
+            OutputDir,
+            kernels_on,
+            [ fact_storage(facts_tsv),
+              child_search(bounded),
+              max_child_expansions(4),
+              child_search_depth(1),
+              reverse_index(csr([
+                  phase(runtime_available),
+                  index_backend(lmdb_offset),
+                  io_policy(buffered_pread)
+              ]))
+            ]),
+        directory_file_path(OutputDir, 'category_child.csr.idx', IndexPath),
+        directory_file_path(OutputDir, 'category_child.csr.val', ValuesPath),
+        directory_file_path(OutputDir, 'seed_category_child_csr_offsets_lmdb.c', SeederPath),
+        directory_file_path(OutputDir, 'lib.c', LibPath),
+        directory_file_path(OutputDir, 'README.md', ReadmePath),
+        exists_file(IndexPath),
+        exists_file(ValuesPath),
+        exists_file(SeederPath),
+        read_file_to_string(SeederPath, Seeder, []),
+        read_file_to_string(LibPath, Lib, []),
+        read_file_to_string(ReadmePath, Readme, []),
+        sub_string(Seeder, _, _, _, 'category_child.csr.offsets.lmdb'),
+        sub_string(Seeder, _, _, _, 'mdb_dbi_open(txn, "offsets", MDB_CREATE, &dbi)'),
+        sub_string(Lib, _, _, _, 'wam_reverse_csr_load_lmdb_offset(bidirectional_child_csr, "category_child.csr.val", "category_child.csr.offsets.lmdb", "offsets")'),
+        sub_string(Readme, _, _, _, 'seed_category_child_csr_offsets_lmdb.c'),
+        sub_string(Readme, _, _, _, '-DWAM_C_ENABLE_LMDB'),
+        (   lmdb_toolchain_available
+        ->  compile_generated_project(OutputDir, facts_tsv),
+            run_generated_project(OutputDir, Output),
+            sub_string(Output, _, _, _, "article_a\troot\t3.000000")
+        ;   true
+        )
+    ->  pass(Test)
+    ;   fail_test(Test, 'LMDB-offset reverse_index csr generated files mismatch')
+    ).
+
 test_generate_and_run_bounded_child_search_kernels_off :-
     Test = 'WAM-C effective-distance: kernels_off child search matches reference path',
     (   unique_tmp_dir(child_search_kernels_off, OutputDir),
@@ -270,13 +314,14 @@ unique_tmp_dir(KernelMode, OutputDir) :-
 
 compile_generated_project(OutputDir, FactStorage) :-
     maybe_seed_lmdb_project(OutputDir, FactStorage),
+    maybe_seed_reverse_csr_offset_lmdb_project(OutputDir),
     directory_file_path(OutputDir, 'wam_runtime.c', RuntimePath),
     directory_file_path(OutputDir, 'lib.c', LibPath),
     directory_file_path(OutputDir, 'main.c', MainPath),
     directory_file_path(OutputDir, 'wam_c_effective_distance', ExePath),
     IncludeDir = 'src/unifyweaver/targets/wam_c_runtime',
-    compile_flags(FactStorage, Flags),
-    link_flags(FactStorage, Links),
+    compile_flags(OutputDir, FactStorage, Flags),
+    link_flags(OutputDir, FactStorage, Links),
     append(['-std=c11', '-Wall', '-Wextra'|Flags],
            ['-I', IncludeDir, RuntimePath, LibPath, MainPath, '-lm'|Links],
            Args0),
@@ -319,11 +364,49 @@ maybe_seed_lmdb_project(OutputDir, facts_lmdb) :-
         fail
     ).
 
-compile_flags(facts_tsv, []).
-compile_flags(facts_lmdb, ['-DWAM_C_ENABLE_LMDB']).
+maybe_seed_reverse_csr_offset_lmdb_project(OutputDir) :-
+    reverse_csr_lmdb_offset_project(OutputDir),
+    !,
+    directory_file_path(OutputDir, 'seed_category_child_csr_offsets_lmdb.c', SeederPath),
+    directory_file_path(OutputDir, 'seed_category_child_csr_offsets_lmdb', SeederExe),
+    process_create(path(gcc),
+        ['-std=c11', '-Wall', '-Wextra', SeederPath, '-llmdb', '-o', SeederExe],
+        [stdout(null), stderr(pipe(CompileErr)), process(CompilePid)]),
+    read_string(CompileErr, _, CompileErrText),
+    close(CompileErr),
+    process_wait(CompilePid, CompileStatus),
+    (   CompileStatus = exit(0)
+    ->  true
+    ;   format(user_error, 'reverse CSR LMDB seeder gcc failed: ~w~n', [CompileErrText]),
+        fail
+    ),
+    process_create(SeederExe, [],
+        [cwd(OutputDir), stdout(null), stderr(pipe(RunErr)), process(RunPid)]),
+    read_string(RunErr, _, RunErrText),
+    close(RunErr),
+    process_wait(RunPid, RunStatus),
+    (   RunStatus = exit(0)
+    ->  true
+    ;   format(user_error, 'reverse CSR LMDB seeder failed: ~w~n', [RunErrText]),
+        fail
+    ).
+maybe_seed_reverse_csr_offset_lmdb_project(_OutputDir).
 
-link_flags(facts_tsv, []).
-link_flags(facts_lmdb, ['-llmdb']).
+compile_flags(OutputDir, _FactStorage, ['-DWAM_C_ENABLE_LMDB']) :-
+    reverse_csr_lmdb_offset_project(OutputDir),
+    !.
+compile_flags(_OutputDir, facts_tsv, []).
+compile_flags(_OutputDir, facts_lmdb, ['-DWAM_C_ENABLE_LMDB']).
+
+link_flags(OutputDir, _FactStorage, ['-llmdb']) :-
+    reverse_csr_lmdb_offset_project(OutputDir),
+    !.
+link_flags(_OutputDir, facts_tsv, []).
+link_flags(_OutputDir, facts_lmdb, ['-llmdb']).
+
+reverse_csr_lmdb_offset_project(OutputDir) :-
+    directory_file_path(OutputDir, 'seed_category_child_csr_offsets_lmdb.c', SeederPath),
+    exists_file(SeederPath).
 
 lmdb_toolchain_available :-
     catch(
@@ -374,6 +457,7 @@ run_tests_once :-
     test_generate_and_run_bounded_child_search,
     test_child_search_uses_bidirectional_kernel,
     test_child_search_builds_reverse_csr,
+    test_child_search_builds_lmdb_offset_reverse_csr,
     test_generate_and_run_bounded_child_search_kernels_off,
     test_generate_and_run_weighted_child_search,
     test_generate_and_run_child_search_budget_pruning,
