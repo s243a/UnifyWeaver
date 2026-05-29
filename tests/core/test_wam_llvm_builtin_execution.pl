@@ -129,6 +129,32 @@ test_msort_dups(_, R) :-
     Sorted = [_, X|_],
     R is X.
 
+% M16: reverse-mode length/2 -- length(L, N) with L unbound and N
+% bound to an Integer allocates a fresh N-element list of unbound
+% logic variables and binds L. We then unify the result with a
+% concrete pattern to confirm the structure round-trips.
+:- dynamic test_length_rev_size/2.
+test_length_rev_size(_, R) :-
+    length(L, 4),
+    length(L, N),   % round-trip: forward-mode length on the freshly built list
+    R is N.
+
+:- dynamic test_length_rev_unify_head/2.
+test_length_rev_unify_head(_, R) :-
+    length(L, 3),
+    L = [11, _, _],   % bind the first cell -- exercises that the
+                       % args[0] Ref in the reverse-built cons cell
+                       % is actually a bindable logic variable.
+    L = [H|_],
+    R is H.
+
+:- dynamic test_length_rev_unify_all/2.
+test_length_rev_unify_all(_, R) :-
+    length(L, 3),
+    L = [4, 5, 6],
+    L = [_, M, _],
+    R is M.
+
 % M10: setof/3 via aggregate_all -> sort + dedup. The agg_type_id
 % routes set/setof to id 6, which inserts a sort+dedup pass before
 % building the cons-cell chain. Drives off a small dynamic fact
@@ -299,6 +325,33 @@ test_fmt_atom(_, R) :-
 :- dynamic test_fmt_tilde_escape/2.
 test_fmt_tilde_escape(_, R) :-
     format('about ~~w~n', []),
+    R is 1.
+
+% M15: precision directives ~Nf (fixed-point) and ~Ne (scientific).
+% Parses the digit run between ~ and f/e at runtime, then routes the
+% next arg through printf "%.*f" / "%.*e" with the parsed precision.
+:- dynamic test_fmt_6f/2.
+test_fmt_6f(_, R) :-
+    X is 1 / 4,                       % Float 0.25
+    format('~6f~n', [X]),
+    R is 1.
+
+:- dynamic test_fmt_3f/2.
+test_fmt_3f(_, R) :-
+    X is 1 / 8,                       % Float 0.125
+    format('d=~3f~n', [X]),
+    R is 1.
+
+:- dynamic test_fmt_int_via_f/2.
+test_fmt_int_via_f(_, R) :-
+    % Integer arg routed through ~Nf: should promote via sitofp.
+    format('n=~2f~n', [7]),
+    R is 1.
+
+:- dynamic test_fmt_2e/2.
+test_fmt_2e(_, R) :-
+    X is 1 / 4000,                    % Float 0.00025
+    format('e=~2e~n', [X]),
     R is 1.
 
 % Runner for format/2 tests: captures stdout, compares against an
@@ -658,6 +711,13 @@ test_all :-
        run_test_r0('msort_third [33,11,22] -> 33', test_msort_third, 0, 33),
        run_test_r0('msort_one [42] -> 42', test_msort_one, 0, 42),
        run_test_r0('msort_dups [3,1,3,2,1] -> 1', test_msort_dups, 0, 1),
+       format('--- M16 reverse-mode length/2 ---~n'),
+       run_test_r0('length(L, 4), length(L, N) -> 4',
+                   test_length_rev_size, 0, 4),
+       run_test_r0('length(L, 3), L = [11,_,_], head -> 11',
+                   test_length_rev_unify_head, 0, 11),
+       run_test_r0('length(L, 3), L = [4,5,6], middle -> 5',
+                   test_length_rev_unify_all, 0, 5),
        format('--- M10 setof/3 (sort + dedup) ---~n'),
        run_test_r0('setof color/1 count -> 3',
                    test_setof_count + [color/1], 0, 3),
@@ -712,6 +772,15 @@ test_all :-
                     "color=red\n"),
        run_fmt_test('"about ~~w~n" tilde escape', test_fmt_tilde_escape,
                     "about ~w\n"),
+       format('--- M15 precision directives (~~Nf / ~~Ne) ---~n'),
+       run_fmt_test('"~6f~n" with 0.25', test_fmt_6f,
+                    "0.250000\n"),
+       run_fmt_test('"d=~3f~n" with 0.125', test_fmt_3f,
+                    "d=0.125\n"),
+       run_fmt_test('"n=~2f~n" with integer 7', test_fmt_int_via_f,
+                    "n=7.00\n"),
+       run_fmt_test('"e=~2e~n" with 0.00025', test_fmt_2e,
+                    "e=2.50e-04\n"),
        format('--- M10 \\+ negation-as-failure (inline rewrite) ---~n'),
        run_test_r0('\\+ in_basket(soap) -> succeeds, R=7',
                    test_not_absent + [in_basket/1], 0, 7),

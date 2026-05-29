@@ -3436,6 +3436,11 @@ define %Value @wam_make_list_value(%List* %list_ptr) alwaysinline nounwind readn
 @.fmt_str = private constant [3 x i8] c"%s\00"
 @.fmt_dbl = private constant [3 x i8] c"%g\00"
 @.fmt_chr = private constant [3 x i8] c"%c\00"
+; M15: variable-precision fixed-point. printf "%.*f" reads the
+; precision from the argument list before the double.
+@.fmt_starf = private constant [5 x i8] c"%.*f\00"
+; Scientific notation, variable precision (~Ne directive).
+@.fmt_stare = private constant [5 x i8] c"%.*e\00"
 
 define %Value @wam_make_empty_list_value() alwaysinline nounwind readnone {
   %v0 = insertvalue %Value undef, i32 4, 0

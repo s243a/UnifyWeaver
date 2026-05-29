@@ -4206,14 +4206,24 @@ ms.check:
   ret i1 %ms.ok
 
 builtin_length:
-  ; M10: length/2 -- A1 = list, A2 = count. Walks the [|]/2 Compound
-  ; chain counting elements, binds A2 to Integer(count). Same chain
-  ; convention as msort: terminator is the [] Atom; non-list values
-  ; halt the walk at whatever count was accumulated so far. Reverse
-  ; mode (length(L, N) with L unbound) is not implemented -- typical
-  ; benchmark usage has the list bound.
+  ; M10/M16: length/2. Two modes:
+  ;
+  ;   Forward (A1 = bound list, A2 = unbound or Integer):
+  ;     walks the [|]/2 chain counting elements, binds A2 to
+  ;     Integer(count). Same chain convention as msort: terminator
+  ;     is the [] Atom; non-list values halt the walk at whatever
+  ;     count was accumulated so far.
+  ;
+  ;   Reverse (A1 = unbound, A2 = Integer N):
+  ;     allocates N fresh-unbound heap cells and builds an N-element
+  ;     [|]/2 chain on the arena whose head is bound to A1. Each
+  ;     head args[0] is Ref(heap_addr) so the resulting list elements
+  ;     are real logic variables (they can be unified later via the
+  ;     existing wam_unify_value machinery).
   %ln.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
-  br label %ln.loop
+  %ln.a1_unb = call i1 @value_is_unbound(%Value %ln.a1)
+  br i1 %ln.a1_unb, label %ln.reverse, label %ln.loop
+
 ln.loop:
   %ln.cur = phi %Value [ %ln.a1, %builtin_length ], [ %ln.next, %ln.step ]
   %ln.n = phi i32 [ 0, %builtin_length ], [ %ln.n1, %ln.step ]
@@ -4243,6 +4253,66 @@ ln.bind:
 ln.cmp:
   %ln.eq = call i1 @value_equals(%Value %ln.a2d, %Value %ln.r_val)
   ret i1 %ln.eq
+
+ln.reverse:
+  ; A1 is unbound: check that A2 is a known Integer and build a
+  ; fresh N-element list bound to A1.
+  %ln.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %ln.a2_tag = extractvalue %Value %ln.a2, 0
+  %ln.a2_is_int = icmp eq i32 %ln.a2_tag, 1
+  br i1 %ln.a2_is_int, label %ln.r_build_init, label %ln.r_fail
+
+ln.r_fail:
+  ret i1 false
+
+ln.r_build_init:
+  %ln.n_i64 = extractvalue %Value %ln.a2, 1
+  %ln.n_i32 = trunc i64 %ln.n_i64 to i32
+  %ln.empty_id = load i64, i64* @wam_empty_list_atom_id
+  %ln.empty_v0 = insertvalue %Value undef, i32 0, 0
+  %ln.empty_v  = insertvalue %Value %ln.empty_v0, i64 %ln.empty_id, 1
+  call void @wam_arena_ensure()
+  br label %ln.r_build_loop
+
+ln.r_build_loop:
+  %ln.r_i = phi i32 [ 0, %ln.r_build_init ], [ %ln.r_i_next, %ln.r_build_step ]
+  %ln.r_tail = phi %Value [ %ln.empty_v, %ln.r_build_init ], [ %ln.r_new_cons, %ln.r_build_step ]
+  %ln.r_done = icmp sge i32 %ln.r_i, %ln.n_i32
+  br i1 %ln.r_done, label %ln.r_build_done, label %ln.r_build_step
+
+ln.r_build_step:
+  ; Fresh logic variable: push Unbound to the heap and remember its
+  ; addr as a Ref. This is the standard WAM way to make a freshly
+  ; bindable element.
+  %ln.r_unb = call %Value @value_unbound(i8* null)
+  %ln.r_h_addr = call i32 @wam_heap_push(%WamState* %vm, %Value %ln.r_unb)
+  %ln.r_h_ref = call %Value @value_ref(i32 %ln.r_h_addr)
+  %ln.r_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %ln.r_cp_mem = call i8* @wam_arena_alloc(i64 %ln.r_cp_size)
+  %ln.r_cp = bitcast i8* %ln.r_cp_mem to %Compound*
+  %ln.r_fn_slot = getelementptr %Compound, %Compound* %ln.r_cp, i32 0, i32 0
+  %ln.r_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %ln.r_fn_ptr, i8** %ln.r_fn_slot
+  %ln.r_ar_slot = getelementptr %Compound, %Compound* %ln.r_cp, i32 0, i32 1
+  store i32 2, i32* %ln.r_ar_slot
+  %ln.r_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %ln.r_args = bitcast i8* %ln.r_args_mem to %Value*
+  %ln.r_args_slot = getelementptr %Compound, %Compound* %ln.r_cp, i32 0, i32 2
+  store %Value* %ln.r_args, %Value** %ln.r_args_slot
+  %ln.r_h0_ptr = getelementptr %Value, %Value* %ln.r_args, i32 0
+  store %Value %ln.r_h_ref, %Value* %ln.r_h0_ptr
+  %ln.r_t_ptr = getelementptr %Value, %Value* %ln.r_args, i32 1
+  store %Value %ln.r_tail, %Value* %ln.r_t_ptr
+  %ln.r_cp_i64 = ptrtoint %Compound* %ln.r_cp to i64
+  %ln.r_nc0 = insertvalue %Value undef, i32 3, 0
+  %ln.r_new_cons = insertvalue %Value %ln.r_nc0, i64 %ln.r_cp_i64, 1
+  %ln.r_i_next = add i32 %ln.r_i, 1
+  br label %ln.r_build_loop
+
+ln.r_build_done:
+  call void @wam_trail_binding(%WamState* %vm, i32 0)
+  call void @wam_bind_reg(%WamState* %vm, i32 0, %Value %ln.r_tail)
+  ret i1 true
 
 builtin_format2:
   ; M12: format/2 -- A1 = format string atom, A2 = args list ([|]/2 chain).
@@ -4299,6 +4369,16 @@ f2.print_lit:
 f2.directive:
   %f2.p_dir = getelementptr i8, i8* %f2.p, i32 1
   %f2.d = load i8, i8* %f2.p_dir
+  ; M15: digit -> precision-prefixed directive (~Nf / ~Ne). Parse
+  ; the digit run, then look at the terminator: ``f`` -> fixed-point
+  ; (printf "%.*f"), ``e`` -> scientific (printf "%.*e"), anything
+  ; else -> unknown, print verbatim.
+  %f2.d_ge0 = icmp uge i8 %f2.d, 48
+  %f2.d_le9 = icmp ule i8 %f2.d, 57
+  %f2.d_is_digit = and i1 %f2.d_ge0, %f2.d_le9
+  br i1 %f2.d_is_digit, label %f2.parse_num, label %f2.dispatch_letter
+
+f2.dispatch_letter:
   switch i8 %f2.d, label %f2.unknown_dir [
     i8 119, label %f2.directive_w
     i8 100, label %f2.directive_w
@@ -4306,6 +4386,89 @@ f2.directive:
     i8 110, label %f2.directive_n
     i8 126, label %f2.directive_t
   ]
+
+f2.parse_num:
+  br label %f2.num_loop
+f2.num_loop:
+  %f2.np = phi i8* [ %f2.p_dir, %f2.parse_num ], [ %f2.np_next, %f2.num_step ]
+  %f2.nacc = phi i64 [ 0, %f2.parse_num ], [ %f2.nacc_new, %f2.num_step ]
+  %f2.nc = load i8, i8* %f2.np
+  %f2.nc_ge0 = icmp uge i8 %f2.nc, 48
+  %f2.nc_le9 = icmp ule i8 %f2.nc, 57
+  %f2.nc_is_d = and i1 %f2.nc_ge0, %f2.nc_le9
+  br i1 %f2.nc_is_d, label %f2.num_step, label %f2.num_done
+f2.num_step:
+  %f2.nd_val_i8 = sub i8 %f2.nc, 48
+  %f2.nd_val = zext i8 %f2.nd_val_i8 to i64
+  %f2.nacc_mul = mul i64 %f2.nacc, 10
+  %f2.nacc_new = add i64 %f2.nacc_mul, %f2.nd_val
+  %f2.np_next = getelementptr i8, i8* %f2.np, i32 1
+  br label %f2.num_loop
+f2.num_done:
+  ; %f2.np points to the terminator char (the first non-digit after ~).
+  ; ``f`` and ``e`` both consume one float-promotable arg and use
+  ; printf("%.*<spec>", N, val). The pointer advances past the
+  ; terminator (np + 1).
+  %f2.nc_is_f = icmp eq i8 %f2.nc, 102
+  %f2.nc_is_e = icmp eq i8 %f2.nc, 101
+  %f2.nc_is_fe = or i1 %f2.nc_is_f, %f2.nc_is_e
+  br i1 %f2.nc_is_fe, label %f2.precision_print, label %f2.precision_unknown
+
+f2.precision_unknown:
+  ; Bad ~<digits><non-fe>: print the ~ then fall through to the
+  ; ordinary unknown handler which will print the next char. Drop
+  ; the parsed digits (best-effort -- atypical in practice).
+  call i32 @putchar(i32 126)
+  %f2.nc_i32 = zext i8 %f2.nc to i32
+  call i32 @putchar(i32 %f2.nc_i32)
+  %f2.p_after_punk = getelementptr i8, i8* %f2.np, i32 1
+  br label %f2.iter_end
+
+f2.precision_print:
+  ; Consume one arg from the args list; promote to double via
+  ; value_to_double; call printf with the chosen format ("%.*f" or
+  ; "%.*e") and the parsed precision N.
+  %f2.parg_d = call %Value @wam_deref_value(%WamState* %vm, %Value %f2.args)
+  %f2.parg_tag = extractvalue %Value %f2.parg_d, 0
+  %f2.parg_has = icmp eq i32 %f2.parg_tag, 3
+  br i1 %f2.parg_has, label %f2.precision_read_arg, label %f2.precision_no_arg
+
+f2.precision_no_arg:
+  ; No arg available: silently skip the directive but advance the
+  ; pointer past the terminator so we don''t loop forever.
+  %f2.p_after_pna = getelementptr i8, i8* %f2.np, i32 1
+  br label %f2.iter_end
+
+f2.precision_read_arg:
+  %f2.pcp_bits = extractvalue %Value %f2.parg_d, 1
+  %f2.pcp = inttoptr i64 %f2.pcp_bits to %Compound*
+  %f2.pcargs_slot = getelementptr %Compound, %Compound* %f2.pcp, i32 0, i32 2
+  %f2.pcargs = load %Value*, %Value** %f2.pcargs_slot
+  %f2.phead_ptr = getelementptr %Value, %Value* %f2.pcargs, i32 0
+  %f2.phead_raw = load %Value, %Value* %f2.phead_ptr
+  %f2.phead = call %Value @wam_deref_value(%WamState* %vm, %Value %f2.phead_raw)
+  %f2.ptail_ptr = getelementptr %Value, %Value* %f2.pcargs, i32 1
+  %f2.ptail = load %Value, %Value* %f2.ptail_ptr
+  %f2.pval_d = call double @value_to_double(%Value %f2.phead)
+  %f2.nacc_i32 = trunc i64 %f2.nacc to i32
+  br i1 %f2.nc_is_f, label %f2.do_starf, label %f2.do_stare
+
+f2.do_starf:
+  %f2.fmt_sf = getelementptr [5 x i8], [5 x i8]* @.fmt_starf, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %f2.fmt_sf, i32 %f2.nacc_i32, double %f2.pval_d)
+  br label %f2.precision_after
+
+f2.do_stare:
+  %f2.fmt_se = getelementptr [5 x i8], [5 x i8]* @.fmt_stare, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %f2.fmt_se, i32 %f2.nacc_i32, double %f2.pval_d)
+  br label %f2.precision_after
+
+f2.precision_after:
+  %f2.p_after_pcons = getelementptr i8, i8* %f2.np, i32 1
+  br label %f2.iter_end_precision_consume
+
+f2.iter_end_precision_consume:
+  br label %f2.iter_end
 
 f2.directive_n:
   call i32 @putchar(i32 10)
@@ -4394,21 +4557,26 @@ f2.iter_end_consume:
   br label %f2.iter_end
 
 f2.iter_end:
-  ; Merge all per-iteration paths. The consume path arrives via
-  ; %f2.iter_end_consume and uses %f2.tail; everything else keeps
-  ; %f2.args unchanged.
+  ; Merge all per-iteration paths. Consume paths advance args to
+  ; %f2.tail / %f2.ptail; everything else keeps %f2.args unchanged.
   %f2.p_next = phi i8* [ %f2.p_lit_next, %f2.print_lit ],
                         [ %f2.p_after_n, %f2.directive_n ],
                         [ %f2.p_after_t, %f2.directive_t ],
                         [ %f2.p_after_u, %f2.unknown_dir ],
                         [ %f2.p_no_arg, %f2.no_arg ],
-                        [ %f2.p_after_w, %f2.iter_end_consume ]
+                        [ %f2.p_after_w, %f2.iter_end_consume ],
+                        [ %f2.p_after_punk, %f2.precision_unknown ],
+                        [ %f2.p_after_pna, %f2.precision_no_arg ],
+                        [ %f2.p_after_pcons, %f2.iter_end_precision_consume ]
   %f2.args_next = phi %Value [ %f2.args, %f2.print_lit ],
                               [ %f2.args, %f2.directive_n ],
                               [ %f2.args, %f2.directive_t ],
                               [ %f2.args, %f2.unknown_dir ],
                               [ %f2.args, %f2.no_arg ],
-                              [ %f2.tail, %f2.iter_end_consume ]
+                              [ %f2.tail, %f2.iter_end_consume ],
+                              [ %f2.args, %f2.precision_unknown ],
+                              [ %f2.args, %f2.precision_no_arg ],
+                              [ %f2.ptail, %f2.iter_end_precision_consume ]
   br label %f2.loop
 
 f2.done:
