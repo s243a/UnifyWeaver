@@ -2877,12 +2877,18 @@ wam_llvm_case('try_me_else',
   %tme.hs = load i32, i32* %tme.hs_ptr
   %tme.sht_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 11
   store i32 %tme.hs, i32* %tme.sht_ptr
-  ; Save current cpn into ChoicePoint.saved_b (field 12)
-  %tme.saved_b_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 12
-  store i32 %tme.cpn, i32* %tme.saved_b_ptr
-  ; Also set global cut_barrier to this value
+  ; M10: snapshot the CURRENT cut_barrier into saved_b so trust_me /
+  ; retry_me_else can restore it on this CP''s removal. Pre-M10 we
+  ; stored cpn here AND overwrote the global cb with cpn, which
+  ; corrupted any outer ITE/clause cut barrier that an inner
+  ; try_me_else encountered. With this change cb stays at the
+  ; clause-entry value (set by allocate), so `!/0` cuts to the
+  ; correct level even when the ITE condition triggers an inner
+  ; multi-clause dispatch.
   %tme.cb_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 23
-  store i32 %tme.cpn, i32* %tme.cb_ptr
+  %tme.cur_cb = load i32, i32* %tme.cb_ptr
+  %tme.saved_b_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 12
+  store i32 %tme.cur_cb, i32* %tme.saved_b_ptr
 
   %tme.new_cpn = add i32 %tme.cpn, 1
   store i32 %tme.new_cpn, i32* %tme.cpn_ptr

@@ -1160,26 +1160,21 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
         ;   compile_goals(Rest, V1, HasEnv, Vf, RestCode),
             format(string(Code), "~w~n~w", [GoalCode, RestCode])
         )
-    % Negation-as-failure: \+ G. Rewrite to (G -> fail ; true) so the
-    % existing if-then-else compiler handles the cut + branch dance.
-    % Without this rewrite, \+ G compiles to `builtin_call \+/1, 1`
-    % which requires a runtime metacall (functor name -> PC lookup +
-    % register marshaling). The inline form needs no metacall and
-    % piggybacks on cut_ite handling targets already implement.
-    %
-    % CAVEAT: the LLVM target's cut_ite is a naive "decrement cpn by
-    % 1", which is wrong when the condition pushed inner CPs (e.g.
-    % a call to a multi-clause predicate leaves a retry CP). Result:
-    % \+ of a SUCCEEDING goal incorrectly succeeds (the inner CP is
-    % cut instead of the ITE CP, so backtrack lands on the else
-    % branch). The proper fix is get_level/cut Y_n -- M11 work.
-    % \+ of a FAILING goal works (the else branch is the intended
-    % path), which covers the common "negation of an absent fact"
-    % idiom. Opt-out via inline_not_as_failure(false).
+    % Negation-as-failure: \+ G. Rewrite to ((G, !, fail) ; true) so
+    % the existing disjunction compiler handles the bookkeeping.
+    % `!/0` cuts to the env frame''s cut_barrier (set by allocate to
+    % the cpn at clause entry), wiping the outer disjunction''s
+    % choice point AND any inner CPs that the condition''s multi-
+    % clause calls may have left behind -- exactly the cleanup that
+    % a proper \+ needs. `fail` then propagates up. The alternate
+    % `(G -> fail ; true)` rewrite goes through `cut_ite` which is
+    % a soft cut and only pops one CP -- it gets the wrong CP when
+    % G pushes its own choice points.
     ;   nonvar(Goal),
         Goal = \+(NotGoal),
         wam_inline_not_enabled
-    ->  compile_goals([(NotGoal -> fail ; true) | Rest], V0, HasEnv, Vf, Code)
+    ->  compile_goals([((NotGoal, !, fail) ; true) | Rest],
+                      V0, HasEnv, Vf, Code)
     % Bare if-then: (Cond -> Then) without an Else clause. Reuses the
     % if-then-else compiler with Else=fail — semantically identical
     % for the success path; Cond-failure just falls through to fail

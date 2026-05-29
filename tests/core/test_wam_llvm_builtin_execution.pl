@@ -166,6 +166,13 @@ test_not_absent(_, R) :-
     \+ in_basket(soap),
     R is 7.
 
+% \+ of a present item -> fails the whole goal -> predicate fails,
+% run_test_r0 maps that to exit 255 (the `miss:` branch).
+:- dynamic test_not_present/2.
+test_not_present(_, R) :-
+    \+ in_basket(apple),
+    R is 7.
+
 % Chain: \+ followed by another check. Exercises that the inline
 % expansion leaves the env / Y-reg state consistent for the next
 % goal.
@@ -365,6 +372,8 @@ test_all :-
        format('--- M10 \\+ negation-as-failure (inline rewrite) ---~n'),
        run_test_r0('\\+ in_basket(soap) -> succeeds, R=7',
                    test_not_absent + [in_basket/1], 0, 7),
+       run_test_r0('\\+ in_basket(apple) -> fails (exit 255)',
+                   test_not_present + [in_basket/1], 0, 255),
        run_test_r0('\\+ then in_basket(bread), R=13',
                    test_not_then + [in_basket/1], 0, 13),
        format('--- multi-clause (first-arg indexing) ---~n'),
