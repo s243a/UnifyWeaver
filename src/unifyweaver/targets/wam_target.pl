@@ -95,6 +95,13 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
     ->  b_setval(wam_inline_bagof_setof, true)
     ;   b_setval(wam_inline_bagof_setof, false)
     ),
+    % M10: \+ G inlines to (G -> fail ; true) by default. Opt out
+    % with inline_not_as_failure(false) -- builds a builtin_call
+    % \+/1 instead, which the runtime must metacall.
+    (   option(inline_not_as_failure(false), Options)
+    ->  b_setval(wam_inline_not, false)
+    ;   b_setval(wam_inline_not, true)
+    ),
     % args_first_emission: emit set_variable for ALL outer-compound
     % args BEFORE any nested put_structure. The legacy emit
     % interleaved `set_variable Xn ; put_structure F/N, Xn ;
@@ -771,6 +778,9 @@ goals_contain_call_or_aggregate(Goals) :-
 wam_inline_bagof_setof_enabled :-
     catch(b_getval(wam_inline_bagof_setof, true), _, fail).
 
+wam_inline_not_enabled :-
+    catch(b_getval(wam_inline_not, true), _, fail).
+
 is_builtin_goal(is).
 is_builtin_goal(=).
 is_builtin_goal(\=).
@@ -1150,6 +1160,26 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
         ;   compile_goals(Rest, V1, HasEnv, Vf, RestCode),
             format(string(Code), "~w~n~w", [GoalCode, RestCode])
         )
+    % Negation-as-failure: \+ G. Rewrite to (G -> fail ; true) so the
+    % existing if-then-else compiler handles the cut + branch dance.
+    % Without this rewrite, \+ G compiles to `builtin_call \+/1, 1`
+    % which requires a runtime metacall (functor name -> PC lookup +
+    % register marshaling). The inline form needs no metacall and
+    % piggybacks on cut_ite handling targets already implement.
+    %
+    % CAVEAT: the LLVM target's cut_ite is a naive "decrement cpn by
+    % 1", which is wrong when the condition pushed inner CPs (e.g.
+    % a call to a multi-clause predicate leaves a retry CP). Result:
+    % \+ of a SUCCEEDING goal incorrectly succeeds (the inner CP is
+    % cut instead of the ITE CP, so backtrack lands on the else
+    % branch). The proper fix is get_level/cut Y_n -- M11 work.
+    % \+ of a FAILING goal works (the else branch is the intended
+    % path), which covers the common "negation of an absent fact"
+    % idiom. Opt-out via inline_not_as_failure(false).
+    ;   nonvar(Goal),
+        Goal = \+(NotGoal),
+        wam_inline_not_enabled
+    ->  compile_goals([(NotGoal -> fail ; true) | Rest], V0, HasEnv, Vf, Code)
     % Bare if-then: (Cond -> Then) without an Else clause. Reuses the
     % if-then-else compiler with Else=fail — semantically identical
     % for the success path; Cond-failure just falls through to fail

@@ -146,6 +146,35 @@ test_setof_count(_, R) :-
     length(Cs, N),
     R is N.
 
+% M10: \+/1 negation-as-failure via inline (G -> fail ; true) rewrite
+% in the WAM compiler. No runtime metacall: the bytecode goes through
+% the existing if-then-else (try_me_else / cut_ite / trust_me) chain.
+%
+% Coverage is partial: the inline rewrite only behaves correctly when
+% the inner goal FAILS (typical "negation of an absent fact" use).
+% \+ of a SUCCEEDING goal currently mis-succeeds because the LLVM
+% target's cut_ite naively pops one CP, which is the inner retry CP
+% rather than the ITE guard CP -- proper get_level/cut Y_n is M11.
+:- dynamic in_basket/1.
+in_basket(apple).
+in_basket(bread).
+in_basket(milk).
+
+% \+ of an absent item -> succeeds.
+:- dynamic test_not_absent/2.
+test_not_absent(_, R) :-
+    \+ in_basket(soap),
+    R is 7.
+
+% Chain: \+ followed by another check. Exercises that the inline
+% expansion leaves the env / Y-reg state consistent for the next
+% goal.
+:- dynamic test_not_then/2.
+test_not_then(_, R) :-
+    \+ in_basket(soap),
+    in_basket(bread),
+    R is 13.
+
 run_test(Label, PredAtom, InputVal, Expected) :-
     format('  ~w: ', [Label]),
     clear_llvm_foreign_kernel_specs,
@@ -333,6 +362,11 @@ test_all :-
        format('--- M10 setof/3 (sort + dedup) ---~n'),
        run_test_r0('setof color/1 count -> 3',
                    test_setof_count + [color/1], 0, 3),
+       format('--- M10 \\+ negation-as-failure (inline rewrite) ---~n'),
+       run_test_r0('\\+ in_basket(soap) -> succeeds, R=7',
+                   test_not_absent + [in_basket/1], 0, 7),
+       run_test_r0('\\+ then in_basket(bread), R=13',
+                   test_not_then + [in_basket/1], 0, 13),
        format('--- multi-clause (first-arg indexing) ---~n'),
        run_test('choice(1) = 10', test_choice, 1, 10),
        run_test('choice(2) = 20', test_choice, 2, 20),
