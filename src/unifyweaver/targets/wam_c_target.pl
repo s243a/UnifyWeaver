@@ -61,6 +61,7 @@ wam_c_reverse_index_capabilities(artifact(Opts), [
 ]) :-
     memberchk(storage_kind(csr_pread_artifact), Opts),
     memberchk(index_backend(sorted_array), Opts),
+    wam_c_reverse_index_runtime_io_policy_supported(artifact(Opts)),
     !.
 wam_c_reverse_index_capabilities(csr(Opts), [
     planning(accepted),
@@ -70,6 +71,7 @@ wam_c_reverse_index_capabilities(csr(Opts), [
     runtime_io(pread)
 ]) :-
     memberchk(index_backend(sorted_array), Opts),
+    wam_c_reverse_index_runtime_io_policy_supported(csr(Opts)),
     !.
 wam_c_reverse_index_capabilities(ReverseIndex, [
     planning(accepted),
@@ -80,6 +82,16 @@ wam_c_reverse_index_capabilities(ReverseIndex, [
     runtime_requires(wam_c_enable_lmdb)
 ]) :-
     wam_c_reverse_index_uses_lmdb_offset(ReverseIndex),
+    wam_c_reverse_index_runtime_io_policy_supported(ReverseIndex),
+    !.
+wam_c_reverse_index_capabilities(ReverseIndex, [
+    planning(accepted),
+    runtime_child_lookup(unsupported),
+    runtime_reason(csr_io_policy_not_implemented(Policy)),
+    runtime_io(Policy)
+]) :-
+    wam_c_reverse_index_runtime_io_policy(ReverseIndex, Policy),
+    \+ wam_c_supported_reverse_index_runtime_io_policy(Policy),
     !.
 wam_c_reverse_index_capabilities(ReverseIndex, [
     planning(accepted),
@@ -93,6 +105,28 @@ wam_c_reverse_index_uses_lmdb_offset(csr(Opts)) :-
 wam_c_reverse_index_uses_lmdb_offset(artifact(Opts)) :-
     memberchk(storage_kind(csr_pread_artifact), Opts),
     memberchk(index_backend(lmdb_offset), Opts).
+
+wam_c_reverse_index_runtime_io_policy(csr(Opts), Policy) :-
+    memberchk(phase(runtime_available), Opts),
+    memberchk(io_policy(Policy), Opts).
+wam_c_reverse_index_runtime_io_policy(artifact(Opts), Policy) :-
+    memberchk(phase(runtime_available), Opts),
+    memberchk(io_policy(Policy), Opts).
+
+wam_c_supported_reverse_index_runtime_io_policy(buffered_pread).
+
+wam_c_reverse_index_runtime_io_policy_supported(ReverseIndex) :-
+    (   wam_c_reverse_index_runtime_io_policy(ReverseIndex, Policy)
+    ->  wam_c_supported_reverse_index_runtime_io_policy(Policy)
+    ;   true
+    ).
+
+wam_c_require_reverse_index_runtime_io_policy(ReverseIndex) :-
+    (   wam_c_reverse_index_runtime_io_policy(ReverseIndex, Policy),
+        \+ wam_c_supported_reverse_index_runtime_io_policy(Policy)
+    ->  throw(error(permission_error(use, csr_io_policy, Policy), _))
+    ;   true
+    ).
 
 % ============================================================================
 % PHASE 4: Hybrid Module Assembly
@@ -225,6 +259,7 @@ generate_setup_reverse_index_c(Options, Code) :-
 wam_c_reverse_index_setup_plan(Options, Plan) :-
     resolve_wam_c_reverse_index_plan(Options,
         wam_c_reverse_index_plan(ReverseIndex, Capabilities)),
+    wam_c_require_reverse_index_runtime_io_policy(ReverseIndex),
     wam_c_reverse_index_runtime_available(ReverseIndex, Capabilities),
     wam_c_reverse_index_setup_backend(ReverseIndex, Backend),
     wam_c_reverse_index_setup_paths(Backend, Options, Paths),

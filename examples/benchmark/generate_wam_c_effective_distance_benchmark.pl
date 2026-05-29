@@ -6,6 +6,7 @@
 :- initialization(main, main).
 
 :- use_module('../../src/unifyweaver/targets/wam_c_target').
+:- use_module('../../src/unifyweaver/core/cost_model', [resolve_csr_io_policy/2]).
 :- use_module(library(filesex), [directory_file_path/3, make_directory_path/1]).
 :- use_module(library(lists)).
 :- use_module(library(pairs), [pairs_keys/2, pairs_values/2]).
@@ -184,6 +185,7 @@ effective_distance_reverse_index_options(Options, OutputDir, CategoryParents,
     memberchk(reverse_index(csr(CsrOptions0)), Options),
     !,
     effective_distance_csr_index_backend(CsrOptions0, IndexBackend),
+    effective_distance_csr_io_policy(CsrOptions0, IoPolicy),
     write_effective_distance_reverse_csr(OutputDir, CategoryParents,
                                          ArticleCategories, RootCategories,
                                          IndexBackend, CategoryIdMap),
@@ -192,7 +194,7 @@ effective_distance_reverse_index_options(Options, OutputDir, CategoryParents,
             storage_kind(csr_pread_artifact),
             phase(runtime_available),
             index_backend(IndexBackend),
-            io_policy(buffered_pread)
+            io_policy(IoPolicy)
         ])),
         reverse_csr_values_path('category_child.csr.val'),
         category_id_map(CategoryIdMap)
@@ -219,6 +221,10 @@ parse_effective_distance_csr_index_backend(sorted_array, sorted_array).
 parse_effective_distance_csr_index_backend(lmdb_offset, lmdb_offset).
 parse_effective_distance_csr_index_backend(Backend, _) :-
     throw(error(domain_error(wam_c_effective_distance_csr_index_backend, Backend), _)).
+
+effective_distance_csr_io_policy(Options, IoPolicy) :-
+    must_be(list, Options),
+    resolve_csr_io_policy(Options, IoPolicy).
 
 effective_distance_reverse_index_path_options(sorted_array,
                                              [reverse_csr_index_path('category_child.csr.idx')]).
