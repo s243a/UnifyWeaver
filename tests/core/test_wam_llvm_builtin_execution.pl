@@ -146,6 +146,42 @@ test_setof_count(_, R) :-
     length(Cs, N),
     R is N.
 
+% M11: findall over a Compound template. Pre-M11, end_aggregate
+% only dereferenced atomic values; Compound entries shared args
+% pointers that pointed into the per-iteration heap region, so
+% every accumulated entry collapsed to the LAST iteration's values
+% after backtrack rewound the heap. wam_freeze_value now deep-
+% copies the Compound's args onto the arena so each entry is
+% self-contained.
+:- dynamic pair/2.
+pair(1, 10).
+pair(2, 20).
+pair(3, 30).
+
+:- dynamic test_findall_pair_first_key/2.
+test_findall_pair_first_key(_, R) :-
+    findall(K-V, pair(K, V), Pairs),
+    Pairs = [K1-_|_],
+    R is K1.
+
+:- dynamic test_findall_pair_first_val/2.
+test_findall_pair_first_val(_, R) :-
+    findall(K-V, pair(K, V), Pairs),
+    Pairs = [_-V1|_],
+    R is V1.
+
+:- dynamic test_findall_pair_last_key/2.
+test_findall_pair_last_key(_, R) :-
+    findall(K-V, pair(K, V), Pairs),
+    Pairs = [_, _, K3-_],
+    R is K3.
+
+:- dynamic test_findall_pair_count/2.
+test_findall_pair_count(_, R) :-
+    findall(K-V, pair(K, V), Pairs),
+    length(Pairs, N),
+    R is N.
+
 % M10: \+/1 negation-as-failure via inline (G -> fail ; true) rewrite
 % in the WAM compiler. No runtime metacall: the bytecode goes through
 % the existing if-then-else (try_me_else / cut_ite / trust_me) chain.
@@ -369,6 +405,15 @@ test_all :-
        format('--- M10 setof/3 (sort + dedup) ---~n'),
        run_test_r0('setof color/1 count -> 3',
                    test_setof_count + [color/1], 0, 3),
+       format('--- M11 findall over compound template ---~n'),
+       run_test_r0('findall pair(K,V), first key -> 1',
+                   test_findall_pair_first_key + [pair/2], 0, 1),
+       run_test_r0('findall pair(K,V), first val -> 10',
+                   test_findall_pair_first_val + [pair/2], 0, 10),
+       run_test_r0('findall pair(K,V), third key -> 3',
+                   test_findall_pair_last_key + [pair/2], 0, 3),
+       run_test_r0('findall pair(K,V), count -> 3',
+                   test_findall_pair_count + [pair/2], 0, 3),
        format('--- M10 \\+ negation-as-failure (inline rewrite) ---~n'),
        run_test_r0('\\+ in_basket(soap) -> succeeds, R=7',
                    test_not_absent + [in_basket/1], 0, 7),

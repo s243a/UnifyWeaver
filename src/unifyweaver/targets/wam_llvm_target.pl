@@ -3051,18 +3051,17 @@ wam_llvm_case('begin_aggregate',
 % op1 = value_reg_idx
 wam_llvm_case('end_aggregate',
 '  %ea.val_reg = trunc i64 %op1 to i32
-  ; M10: deref before push. The per-iteration value reg is typically
-  ; a put_variable-allocated Ref whose heap cell holds the actual
-  ; result. On backtrack the heap rewinds, so the Ref becomes
-  ; dangling -- pushing the Ref unchanged means all accumulated
-  ; entries end up pointing to the same recycled heap address,
-  ; and set/setof dedups them all to one element. Dereferencing
-  ; here captures the atomic value while it is still bound.
-  ; Compound values still need a deep-copy (M11) -- their args
-  ; can hold Refs into the per-iteration heap region; for now
-  ; the typical setof-of-atoms / findall-of-ints case is correct.
+  ; M11: freeze (deref + deep-copy compounds) before push. Per-
+  ; iteration values are typically Refs into the volatile heap
+  ; region; backtrack between iterations rewinds the heap, so a
+  ; raw Ref ends up dangling and every accumulated entry collapses
+  ; to the same recycled address. wam_freeze_value follows the
+  ; Ref, captures atomic values directly, and for Compounds
+  ; recursively copies the args onto the arena so the result is
+  ; self-contained -- enabling findall(p(X,Y), ..., L) of compound
+  ; templates and setof/sort of compound elements.
   %ea.val_raw = call %Value @wam_get_reg(%WamState* %vm, i32 %ea.val_reg)
-  %ea.val = call %Value @wam_deref_value(%WamState* %vm, %Value %ea.val_raw)
+  %ea.val = call %Value @wam_freeze_value(%WamState* %vm, %Value %ea.val_raw)
 
   ; Push value to accumulator
   call void @wam_agg_push(%WamState* %vm, %Value %ea.val)
@@ -4399,6 +4398,80 @@ ct_loop_step:
   br label %ct_loop
 
 ct_done:
+  %new_i64 = ptrtoint %Compound* %new_cp to i64
+  %new_val0 = insertvalue %Value undef, i32 3, 0
+  %new_val = insertvalue %Value %new_val0, i64 %new_i64, 1
+  ret %Value %new_val
+}
+
+; M11: deref-aware deep-copy. Resolves Refs to the heap-stored value,
+; then copies Compounds (recursing on args) so the returned %Value
+; is self-contained -- it survives a heap rewind. Used by
+; end_aggregate to capture per-iteration findall / setof results
+; whose Compound args otherwise point into the per-iteration heap
+; region that backtrack reclaims, silently aliasing every accumulated
+; entry to the LAST iteration''s values.
+;
+; Atoms / Integers / Floats pass through. Unbounds after deref stay
+; unbound (best effort -- typical aggregate templates have all vars
+; bound by the time end_aggregate runs; an unbound template arg
+; indicates a logic bug the caller will see via the spurious
+; unbound in the result list).
+define %Value @wam_freeze_value(%WamState* %vm, %Value %v) {
+entry:
+  %d = call %Value @wam_deref_value(%WamState* %vm, %Value %v)
+  %tag = extractvalue %Value %d, 0
+  %is_cmp = icmp eq i32 %tag, 3
+  br i1 %is_cmp, label %fz_compound, label %fz_atomic
+
+fz_atomic:
+  ; Atom (0), Integer (1), Float (2), Ref-to-unbound (5 derefs to 6),
+  ; Unbound (6), Bool (7) -- all self-contained values; copy nothing.
+  ret %Value %d
+
+fz_compound:
+  %cp_bits = extractvalue %Value %d, 1
+  %cp_ptr = inttoptr i64 %cp_bits to %Compound*
+  %fn_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 0
+  %fn_ptr = load i8*, i8** %fn_slot
+  %ar_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 1
+  %arity = load i32, i32* %ar_slot
+  %args_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 2
+  %src_args = load %Value*, %Value** %args_slot
+
+  call void @wam_arena_ensure()
+  %cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %new_mem = call i8* @wam_arena_alloc(i64 %cp_size)
+  %new_cp = bitcast i8* %new_mem to %Compound*
+  %new_fn_slot = getelementptr %Compound, %Compound* %new_cp, i32 0, i32 0
+  store i8* %fn_ptr, i8** %new_fn_slot
+  %new_ar_slot = getelementptr %Compound, %Compound* %new_cp, i32 0, i32 1
+  store i32 %arity, i32* %new_ar_slot
+  %ar64 = zext i32 %arity to i64
+  %args_bytes = shl i64 %ar64, 4
+  %new_args_mem = call i8* @wam_arena_alloc(i64 %args_bytes)
+  %new_args = bitcast i8* %new_args_mem to %Value*
+  %new_args_slot = getelementptr %Compound, %Compound* %new_cp, i32 0, i32 2
+  store %Value* %new_args, %Value** %new_args_slot
+
+  %has_args = icmp sgt i32 %arity, 0
+  br i1 %has_args, label %fz_loop, label %fz_done
+
+fz_loop:
+  %i = phi i32 [ 0, %fz_compound ], [ %i_next, %fz_step ]
+  %src_ptr = getelementptr %Value, %Value* %src_args, i32 %i
+  %src_val = load %Value, %Value* %src_ptr
+  %dst_val = call %Value @wam_freeze_value(%WamState* %vm, %Value %src_val)
+  %dst_ptr = getelementptr %Value, %Value* %new_args, i32 %i
+  store %Value %dst_val, %Value* %dst_ptr
+  br label %fz_step
+
+fz_step:
+  %i_next = add i32 %i, 1
+  %more = icmp slt i32 %i_next, %arity
+  br i1 %more, label %fz_loop, label %fz_done
+
+fz_done:
   %new_i64 = ptrtoint %Compound* %new_cp to i64
   %new_val0 = insertvalue %Value undef, i32 3, 0
   %new_val = insertvalue %Value %new_val0, i64 %new_i64, 1
