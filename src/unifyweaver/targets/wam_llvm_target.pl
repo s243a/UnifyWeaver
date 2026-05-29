@@ -1570,7 +1570,19 @@ compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode) :-
     -> OptionsWithBS = Options
     ;  OptionsWithBS = [inline_bagof_setof(true) | Options]
     ),
-    OptionsWithClosure = [lowered_closure(ClosureSet)|OptionsWithBS],
+    % M17: emit if-then-else with get_level Y_n / cut Y_n bytecode
+    % rather than the naive cut_ite. The LLVM target''s cut_ite was
+    % a "decrement cp_count by 1" stub, which silently cut the wrong
+    % choice point when the condition pushed inner CPs (e.g. a call
+    % to a multi-clause predicate). With get_level/cut Y_n we snapshot
+    % the cp_count into a permanent Y register before the try_me_else
+    % and restore it at the cut site, so soft cut works correctly
+    % regardless of inner CP pushes.
+    ( memberchk(ite_use_y_level(_), OptionsWithBS)
+    -> OptionsWithLevel = OptionsWithBS
+    ;  OptionsWithLevel = [ite_use_y_level(true) | OptionsWithBS]
+    ),
+    OptionsWithClosure = [lowered_closure(ClosureSet)|OptionsWithLevel],
     pass1_classify_predicates(Predicates, OptionsWithClosure, 0, Classified),
     build_merged_labels(Classified, NamePCPairs, LabelMap),
     pass2_emit_merged(Classified, LabelMap, NamePCPairs, OptionsWithClosure,
@@ -2150,6 +2162,8 @@ entry:
     i32 30, label %call_foreign
     i32 31, label %cut_ite
     i32 32, label %jump
+    i32 33, label %get_level
+    i32 34, label %cut
   ], !prof !99
 
 ~w
@@ -2166,7 +2180,7 @@ default:
 ; Comments inside the operand list aren\'t allowed (the LLVM IR
 ; parser rejects `;` mid-operand), so the per-opcode rationale lives
 ; in the comment block above the @step definition.
-!99 = !{!\"branch_weights\", i32 1, i32 50, i32 80, i32 100, i32 20, i32 20, i32 30, i32 30, i32 10, i32 50, i32 80, i32 100, i32 20, i32 10, i32 20, i32 30, i32 30, i32 50, i32 50, i32 80, i32 50, i32 100, i32 60, i32 30, i32 5, i32 10, i32 10, i32 5, i32 5, i32 5, i32 5, i32 10, i32 5, i32 5}', [CasesCode]).
+!99 = !{!\"branch_weights\", i32 1, i32 50, i32 80, i32 100, i32 20, i32 20, i32 30, i32 30, i32 10, i32 50, i32 80, i32 100, i32 20, i32 10, i32 20, i32 30, i32 30, i32 50, i32 50, i32 80, i32 50, i32 100, i32 60, i32 30, i32 5, i32 10, i32 10, i32 5, i32 5, i32 5, i32 5, i32 10, i32 5, i32 5, i32 5, i32 5}', [CasesCode]).
 
 compile_llvm_step_case(CaseCode) :-
     wam_llvm_case(Label, BodyCode),
@@ -3145,6 +3159,41 @@ j.go:
 
 j.fail:
   ret i1 false').
+
+wam_llvm_case('get_level',
+'  ; M17: snapshot the current cp_count into a Y register so cut Y_n
+  ; can restore it later. Used for proper if-then-else soft cut --
+  ; pre-M17 the LLVM target''s cut_ite just decremented cp_count by 1,
+  ; which silently cut the wrong CP when the condition pushed inner
+  ; multi-clause CPs. op1 = Y register index.
+  %gl.yn = trunc i64 %op1 to i32
+  %gl.cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %gl.cpn = load i32, i32* %gl.cpn_ptr
+  %gl.cpn64 = zext i32 %gl.cpn to i64
+  %gl.v = call %Value @value_integer(i64 %gl.cpn64)
+  call void @wam_trail_binding(%WamState* %vm, i32 %gl.yn)
+  call void @wam_set_reg(%WamState* %vm, i32 %gl.yn, %Value %gl.v)
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i1 true').
+
+wam_llvm_case('cut',
+'  ; M17: restore cp_count from the snapshot stored in Y_n by an
+  ; earlier get_level. Cuts the if-then-else CP and any inner CPs
+  ; the condition pushed. op1 = Y register index.
+  %cy.yn = trunc i64 %op1 to i32
+  %cy.v = call %Value @wam_get_reg(%WamState* %vm, i32 %cy.yn)
+  %cy.pay = extractvalue %Value %cy.v, 1
+  %cy.target = trunc i64 %cy.pay to i32
+  %cy.cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cy.cur = load i32, i32* %cy.cpn_ptr
+  %cy.do_cut = icmp sgt i32 %cy.cur, %cy.target
+  br i1 %cy.do_cut, label %cy.go, label %cy.skip
+cy.go:
+  store i32 %cy.target, i32* %cy.cpn_ptr
+  br label %cy.skip
+cy.skip:
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i1 true').
 
 % ============================================================================
 % PHASE 3: Helper predicates → LLVM functions
@@ -6325,6 +6374,18 @@ wam_line_to_llvm_literal(["trust"|_],
 
 wam_line_to_llvm_literal(["cut_ite"],
     '%Instruction { i32 31, i64 0, i64 0 }').
+
+% M17: get_level Y_n / cut Y_n -- proper soft cut for if-then-else.
+wam_line_to_llvm_literal(["get_level", Yn], Lit) :-
+    clean_comma(Yn, CYn),
+    atom_string(CYnAtom, CYn),
+    reg_name_to_index(CYnAtom, YnIdx),
+    format(atom(Lit), '%Instruction { i32 33, i64 ~w, i64 0 }', [YnIdx]).
+wam_line_to_llvm_literal(["cut", Yn], Lit) :-
+    clean_comma(Yn, CYn),
+    atom_string(CYnAtom, CYn),
+    reg_name_to_index(CYnAtom, YnIdx),
+    format(atom(Lit), '%Instruction { i32 34, i64 ~w, i64 0 }', [YnIdx]).
 
 % jump without a label map errors — label-referencing. Text parser that
 % produces label-free literals is only used for the non-resolved path

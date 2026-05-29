@@ -155,6 +155,38 @@ test_length_rev_unify_all(_, R) :-
     L = [_, M, _],
     R is M.
 
+% M17: if-then-else soft cut with a multi-clause condition. Pre-M17
+% cut_ite naively decremented cp_count by 1, which popped the inner
+% retry CP left over from in_basket''s clause dispatch rather than
+% the ITE guard CP -- after `fail` from the then-branch the backtrack
+% landed on the else-branch and produced a wrong answer. M17 emits
+% get_level Y_n before try_me_else and cut Y_n at the commit site so
+% the cut restores cp_count to the pre-ITE level regardless of any
+% CPs the condition pushed.
+:- dynamic ite_basket/1.
+ite_basket(apple).
+ite_basket(bread).
+ite_basket(milk).
+
+:- dynamic test_ite_succ_then_fail/2.
+test_ite_succ_then_fail(_, R) :-
+    % apple IS in the basket -> condition succeeds, commits to "then" branch.
+    ( ite_basket(apple) -> R is 11 ; R is 22 ).
+
+:- dynamic test_ite_fail_to_else/2.
+test_ite_fail_to_else(_, R) :-
+    % soap is NOT in the basket -> condition fails, takes else branch.
+    ( ite_basket(soap) -> R is 11 ; R is 22 ).
+
+% Chained ITE after a multi-clause call (the case cut_ite would mis-handle).
+:- dynamic test_ite_chained_after_call/2.
+test_ite_chained_after_call(_, R) :-
+    ( ite_basket(milk) -> X is 7 ; X is 0 ),
+    % Continuation arithmetic exercises that the ITE returned with
+    % a clean cp_stack -- pre-M17 inner retry CPs would survive and
+    % the wrong branch would be taken on subsequent backtrack.
+    R is X + 1.
+
 % M10: setof/3 via aggregate_all -> sort + dedup. The agg_type_id
 % routes set/setof to id 6, which inserts a sort+dedup pass before
 % building the cons-cell chain. Drives off a small dynamic fact
@@ -718,6 +750,13 @@ test_all :-
                    test_length_rev_unify_head, 0, 11),
        run_test_r0('length(L, 3), L = [4,5,6], middle -> 5',
                    test_length_rev_unify_all, 0, 5),
+       format('--- M17 if-then-else soft cut (get_level/cut Y_n) ---~n'),
+       run_test_r0('(apple -> 11 ; 22) -> 11',
+                   test_ite_succ_then_fail + [ite_basket/1], 0, 11),
+       run_test_r0('(soap -> 11 ; 22) -> 22',
+                   test_ite_fail_to_else + [ite_basket/1], 0, 22),
+       run_test_r0('(milk -> 7 ; 0), R is X+1 -> 8',
+                   test_ite_chained_after_call + [ite_basket/1], 0, 8),
        format('--- M10 setof/3 (sort + dedup) ---~n'),
        run_test_r0('setof color/1 count -> 3',
                    test_setof_count + [color/1], 0, 3),
