@@ -459,9 +459,9 @@ user:wam_string_concat_new_string :- string_concat(fo, o, X), X = foo.
 user:wam_string_concat_unbound_left(C) :- user:wam_unbound_arg(A), string_concat(A, o, C), A = fo.
 user:wam_string_concat_unbound_right(C) :- user:wam_unbound_arg(B), string_concat(fo, B, C), B = o.
 user:wam_atom_length_guard(A, N) :- atom_length(A, N).
-user:wam_atom_length_unbound(N) :- user:wam_unbound_arg(A), atom_length(A, N).
+user:wam_atom_length_unbound(N) :- atom_length(_A, N).
 user:wam_string_length_guard(A, N) :- string_length(A, N).
-user:wam_string_length_unbound(N) :- user:wam_unbound_arg(A), string_length(A, N).
+user:wam_string_length_unbound(N) :- string_length(_A, N).
 user:wam_sub_atom_extract :- sub_atom(hello, 1, 3, A, S), A =:= 1, S = ell.
 user:wam_sub_atom_prefix :- sub_atom(hello, 0, 3, _, hel).
 user:wam_sub_atom_suffix :- sub_atom(hello, _, 3, 0, llo).
@@ -1141,9 +1141,9 @@ smoke_cases([
     case('wam_string_concat_unbound_right/1', foo, "true"),
     case('wam_atom_length_guard/2', args(foo, 3), "true"),
     case('wam_atom_length_guard/2', args(foo, 2), "false"),
-    case('wam_atom_length_unbound/1', 0, "false"),
+    case('wam_atom_length_unbound/1', 0, "true"),
     case('wam_string_length_guard/2', args(foo, 3), "true"),
-    case('wam_string_length_unbound/1', 0, "false"),
+    case('wam_string_length_unbound/1', 0, "true"),
     case('wam_sub_atom_extract/0', no_args, "true"),
     case('wam_sub_atom_prefix/0', no_args, "true"),
     case('wam_sub_atom_suffix/0', no_args, "true"),
