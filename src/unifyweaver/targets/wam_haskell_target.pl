@@ -4916,6 +4916,7 @@ compile_wam_runtime_to_haskell(Options0, DetectedKernels, Code) :-
 '{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE FlexibleContexts #-}
 module WamRuntime where
 
 import qualified Data.Map.Strict as Map
