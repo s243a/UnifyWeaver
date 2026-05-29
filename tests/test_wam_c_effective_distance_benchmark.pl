@@ -211,6 +211,31 @@ test_child_search_builds_lmdb_offset_reverse_csr :-
     ;   fail_test(Test, 'LMDB-offset reverse_index csr generated files mismatch')
     ).
 
+test_child_search_rejects_runtime_direct_io_reverse_csr :-
+    Test = 'WAM-C effective-distance: runtime direct_io reverse CSR fails clearly',
+    (   unique_tmp_dir(child_search_direct_io_csr, OutputDir),
+        write_child_search_facts(OutputDir, FactsPath),
+        catch((generate_wam_c_effective_distance_benchmark:generate(
+                   FactsPath,
+                   OutputDir,
+                   kernels_on,
+                   [ fact_storage(facts_tsv),
+                     child_search(bounded),
+                     max_child_expansions(4),
+                     child_search_depth(1),
+                     reverse_index(csr([
+                         phase(runtime_available),
+                         index_backend(sorted_array),
+                         io_policy(direct_io)
+                     ]))
+                   ]),
+               fail),
+              error(permission_error(use, csr_io_policy, direct_io), _),
+              true)
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected permission_error(use, csr_io_policy, direct_io)')
+    ).
+
 test_generate_and_run_bounded_child_search_kernels_off :-
     Test = 'WAM-C effective-distance: kernels_off child search matches reference path',
     (   unique_tmp_dir(child_search_kernels_off, OutputDir),
@@ -458,6 +483,7 @@ run_tests_once :-
     test_child_search_uses_bidirectional_kernel,
     test_child_search_builds_reverse_csr,
     test_child_search_builds_lmdb_offset_reverse_csr,
+    test_child_search_rejects_runtime_direct_io_reverse_csr,
     test_generate_and_run_bounded_child_search_kernels_off,
     test_generate_and_run_weighted_child_search,
     test_generate_and_run_child_search_budget_pruning,

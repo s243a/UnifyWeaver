@@ -455,6 +455,24 @@ test_reverse_index_plan_runtime_available_lmdb_offset :-
     ;   fail_test(Test, 'runtime lmdb-offset CSR artifact was not marked available')
     ).
 
+test_reverse_index_plan_runtime_direct_io_unsupported :-
+    Test = 'WAM-C: runtime direct_io CSR artifact is rejected as unsupported',
+    (   resolve_wam_c_reverse_index_plan(
+            [reverse_index(artifact([
+                storage_kind(csr_pread_artifact),
+                phase(runtime_available),
+                index_backend(sorted_array),
+                io_policy(direct_io)
+            ]))],
+            wam_c_reverse_index_plan(artifact(Resolved), Capabilities)
+        ),
+        memberchk(io_policy(direct_io), Resolved),
+        memberchk(runtime_child_lookup(unsupported), Capabilities),
+        memberchk(runtime_reason(csr_io_policy_not_implemented(direct_io)), Capabilities)
+    ->  pass(Test)
+    ;   fail_test(Test, 'runtime direct_io CSR artifact should not be marked available')
+    ).
+
 test_reverse_index_setup_generation :-
     Test = 'WAM-C: reverse_index artifact emits CSR setup lifecycle',
     (   generate_setup_reverse_index_c(
@@ -498,6 +516,44 @@ test_reverse_index_setup_lmdb_offset_generation :-
         sub_string(S, _, _, _, 'wam_reverse_csr_load_lmdb_offset(bidirectional_child_csr, "/tmp/category_child.csr.val", "/tmp/category_child.offsets.lmdb", "offsets")')
     ->  pass(Test)
     ;   fail_test(Test, 'LMDB-offset CSR setup load order changed')
+    ).
+
+test_reverse_index_setup_rejects_runtime_direct_io :-
+    Test = 'WAM-C: reverse_index setup rejects unimplemented direct_io runtime policy',
+    (   catch((generate_setup_reverse_index_c(
+                   [reverse_index(artifact([
+                       storage_kind(csr_pread_artifact),
+                       phase(runtime_available),
+                       index_backend(sorted_array),
+                       io_policy(direct_io)
+                   ])),
+                    reverse_csr_index_path('/tmp/category_child.csr.idx'),
+                    reverse_csr_values_path('/tmp/category_child.csr.val')],
+                   _Code
+               ), fail),
+              error(permission_error(use, csr_io_policy, direct_io), _),
+              true)
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected permission_error(use, csr_io_policy, direct_io)')
+    ).
+
+test_reverse_index_setup_rejects_runtime_buffered_pread_drop :-
+    Test = 'WAM-C: reverse_index setup rejects unimplemented buffered_pread_drop runtime policy',
+    (   catch((generate_setup_reverse_index_c(
+                   [reverse_index(artifact([
+                       storage_kind(csr_pread_artifact),
+                       phase(runtime_available),
+                       index_backend(sorted_array),
+                       io_policy(buffered_pread_drop)
+                   ])),
+                    reverse_csr_index_path('/tmp/category_child.csr.idx'),
+                    reverse_csr_values_path('/tmp/category_child.csr.val')],
+                   _Code
+               ), fail),
+              error(permission_error(use, csr_io_policy, buffered_pread_drop), _),
+              true)
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected permission_error(use, csr_io_policy, buffered_pread_drop)')
     ).
 
 test_streaming_foreign_results_generation :-
@@ -5077,8 +5133,11 @@ run_tests_once :-
     test_reverse_index_plan_csr_cost_model,
     test_reverse_index_plan_runtime_available_sorted_array,
     test_reverse_index_plan_runtime_available_lmdb_offset,
+    test_reverse_index_plan_runtime_direct_io_unsupported,
     test_reverse_index_setup_generation,
     test_reverse_index_setup_lmdb_offset_generation,
+    test_reverse_index_setup_rejects_runtime_direct_io,
+    test_reverse_index_setup_rejects_runtime_buffered_pread_drop,
     test_streaming_foreign_results_generation,
     test_kernel_detector_setup_generation,
     test_bidirectional_ancestor_setup_generation,
