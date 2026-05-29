@@ -90,8 +90,13 @@
                 iso_errors_mode_for/3,
                 iso_errors_warn_multi_module/2,
                 iso_errors_rewrite/4,
+                iso_errors_rewrite_item/3,
                 iso_errors_audit_normalise_pi/2,
                 iso_errors_audit_walk/5
+              ]).
+:- use_module('../targets/wam_text_parser',
+              [ wam_tokenize_line/2,
+                wam_recognise_instruction/2
               ]).
 :- use_module('../core/prolog_term_parser').
 :- use_module('../core/cpp_runtime_parser_wrappers').
@@ -4481,46 +4486,40 @@ iso_errors_rewrite_text(Config, PI, WamText, RewrittenText) :-
 
 iso_errors_has_lax_entries :- iso_errors:iso_errors_default_to_lax(_, _), !.
 
+% Rewrite one line via the shared items pipeline. Tokenize the line
+% with the shared quote-aware tokenizer, recognise it to a structured
+% WAM item, apply the shared item-level ISO rewrite, and splice the
+% new key back into the original line.
+%
+% iso_errors_rewrite_item/3 (in core/iso_errors) is the single source
+% of truth for the builtin_call / put_structure / call / execute key
+% swaps — this target no longer carries its own per-shape text rules.
+% All four rewritable shapes carry the key as their first argument, so
+% arg(1, ...) extracts old/new keys generically.
+%
+% Splicing rather than re-printing the recognised item preserves the
+% original whitespace byte-for-byte, so existing text output is
+% unaffected. Any failure along the chain (unrecognised line, key not
+% in the ISO/lax tables, splice miss) falls through to OutLine = Line.
 iso_errors_rewrite_line(Mode, Line, OutLine) :-
-    split_string(Line, " \t", " \t", Parts0),
-    exclude(==(""), Parts0, Parts),
-    (   iso_errors_rewrite_parts(Mode, Parts, Line, OutLine)
+    (   wam_tokenize_line(Line, Tokens),
+        wam_recognise_instruction(Tokens, Item0),
+        iso_errors_rewrite_item(Mode, Item0, Item1),
+        Item0 \== Item1,
+        arg(1, Item0, OldKey),
+        arg(1, Item1, NewKey),
+        iso_errors_splice_line(Line, OldKey, NewKey, OutLine)
     ->  true
     ;   OutLine = Line
     ).
 
-iso_errors_rewrite_parts(Mode, ["builtin_call", Key0 | _], Line, OutLine) :- !,
-    iso_errors_clean_key_token(Key0, Key),
-    iso_errors_lookup(Mode, Key, NewKey),
-    Key \== NewKey,
-    iso_errors_splice_line(Line, Key, NewKey, OutLine).
-iso_errors_rewrite_parts(Mode, ["put_structure", Key0 | _], Line, OutLine) :- !,
-    iso_errors_clean_key_token(Key0, Key),
-    iso_errors_lookup(Mode, Key, NewKey),
-    Key \== NewKey,
-    iso_errors_splice_line(Line, Key, NewKey, OutLine).
-iso_errors_rewrite_parts(Mode, ["call", Key0 | _], Line, OutLine) :- !,
-    iso_errors_clean_key_token(Key0, Key),
-    iso_errors_lookup(Mode, Key, NewKey),
-    Key \== NewKey,
-    iso_errors_splice_line(Line, Key, NewKey, OutLine).
-iso_errors_rewrite_parts(Mode, ["execute", Key0 | _], Line, OutLine) :- !,
-    iso_errors_clean_key_token(Key0, Key),
-    iso_errors_lookup(Mode, Key, NewKey),
-    Key \== NewKey,
-    iso_errors_splice_line(Line, Key, NewKey, OutLine).
-
+% Kept: the audit (iso_errors_audit_classify_line/2) still uses this to
+% strip the trailing comma from a builtin_call key token.
 iso_errors_clean_key_token(Token0, Token) :-
     (   string_concat(Token, ",", Token0)
     ->  true
     ;   Token = Token0
     ).
-
-iso_errors_lookup(true, Key, NewKey) :-
-    iso_errors:iso_errors_default_to_iso(Key, NewKey), !.
-iso_errors_lookup(false, Key, NewKey) :-
-    iso_errors:iso_errors_default_to_lax(Key, NewKey), !.
-iso_errors_lookup(_, Key, Key).
 
 iso_errors_splice_line(Line, Key, NewKey, OutLine) :-
     sub_string(Line, Before, KLen, _After, Key),
