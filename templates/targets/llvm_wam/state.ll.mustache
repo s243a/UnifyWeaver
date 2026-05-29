@@ -3392,6 +3392,11 @@ define %Value @wam_make_list_value(%List* %list_ptr) alwaysinline nounwind readn
 ; Format strings for write/1 and nl/0 builtins.
 @.fmt_int = private constant [3 x i8] c"%d\00"
 @.fmt_nl  = private constant [2 x i8] c"\0A\00"
+; M12: extras used by format/2.
+@.fmt_lld = private constant [5 x i8] c"%lld\00"
+@.fmt_str = private constant [3 x i8] c"%s\00"
+@.fmt_dbl = private constant [3 x i8] c"%g\00"
+@.fmt_chr = private constant [3 x i8] c"%c\00"
 
 define %Value @wam_make_empty_list_value() alwaysinline nounwind readnone {
   %v0 = insertvalue %Value undef, i32 4, 0
