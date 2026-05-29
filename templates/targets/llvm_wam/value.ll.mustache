@@ -54,6 +54,22 @@ define i64 @value_payload(%Value %v) alwaysinline nounwind readnone {
   ret i64 %p
 }
 
+; M13: Promote a Value (Integer or Float) to double. Integers go through
+; sitofp; Floats bitcast their payload back. Caller must guarantee
+; the value is numeric (tag == 1 or 2).
+define double @value_to_double(%Value %v) alwaysinline nounwind readnone {
+  %tag = extractvalue %Value %v, 0
+  %is_float = icmp eq i32 %tag, 2
+  %pay = extractvalue %Value %v, 1
+  br i1 %is_float, label %as_float, label %as_int
+as_float:
+  %fd = bitcast i64 %pay to double
+  ret double %fd
+as_int:
+  %id = sitofp i64 %pay to double
+  ret double %id
+}
+
 define i1 @value_is_unbound(%Value %v) alwaysinline nounwind readnone {
   %tag = extractvalue %Value %v, 0
   %is = icmp eq i32 %tag, 6

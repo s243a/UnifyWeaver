@@ -198,6 +198,35 @@ test_pow_neg_fifth(_, R) :- R is 5 ** -1.    % expect Float(0.2)
 :- dynamic test_pow_neg_two/2.
 test_pow_neg_two(_, R) :- R is 10 ** -2.     % expect Float(0.01)
 
+% M13: full float propagation through +, -, *, / with mixed operands.
+% These all return Float (any float operand floats the result, or the
+% division is non-exact). Verified via the same run_pow_test driver
+% which reads the result tag (must be Float = 2) and scales the
+% double to an integer the shell exit code can carry.
+:- dynamic test_div_inexact/2.
+test_div_inexact(_, R) :- R is 1 / 4.        % Float(0.25)
+
+:- dynamic test_div_exact/2.
+test_div_exact(_, R) :- R is 6 / 2.          % Integer(3) -- exact
+
+:- dynamic test_float_add/2.
+test_float_add(_, R) :- X is 1 / 4, R is X + 1.   % 0.25 + 1 = 1.25
+
+:- dynamic test_float_mul/2.
+test_float_mul(_, R) :- X is 1 / 2, R is X * 3.   % 0.5 * 3 = 1.5
+
+:- dynamic test_float_sub/2.
+test_float_sub(_, R) :- X is 1 / 4, R is 2 - X.   % 2 - 0.25 = 1.75
+
+:- dynamic test_float_neg/2.
+test_float_neg(_, R) :- X is 1 / 4, R is -X.      % -0.25
+
+:- dynamic test_float_chain/2.
+test_float_chain(_, R) :- R is (1 / 2) + (1 / 4). % 0.5 + 0.25 = 0.75
+
+:- dynamic test_float_pow_chain/2.
+test_float_pow_chain(_, R) :- R is (2 ** -2) + 0.5. % 0.25 + 0.5 = 0.75
+
 % M12: format/2 -- prints to stdout. Tested by capturing the shell
 % stdout and comparing against expected string. Each predicate
 % does ONE format call and then succeeds (no R binding -- the
@@ -603,6 +632,22 @@ test_all :-
                     [], test_pow_neg_fifth, 100, 20),
        run_pow_test('10**-2 -> Float 0.01, *10000 -> 100',
                     [], test_pow_neg_two, 10000, 100),
+       format('--- M13 float arithmetic propagation ---~n'),
+       run_pow_test('1/4 -> Float 0.25, *100 -> 25',
+                    [], test_div_inexact, 100, 25),
+       run_test_r0('6/2 -> Integer 3 (exact)', test_div_exact, 0, 3),
+       run_pow_test('(1/4)+1 -> Float 1.25, *100 -> 125',
+                    [], test_float_add, 100, 125),
+       run_pow_test('(1/2)*3 -> Float 1.5, *100 -> 150',
+                    [], test_float_mul, 100, 150),
+       run_pow_test('2-(1/4) -> Float 1.75, *100 -> 175',
+                    [], test_float_sub, 100, 175),
+       run_pow_test('-(1/4) -> Float -0.25, *-100 -> 25',
+                    [], test_float_neg, -100, 25),
+       run_pow_test('(1/2)+(1/4) -> Float 0.75, *100 -> 75',
+                    [], test_float_chain, 100, 75),
+       run_pow_test('(2**-2)+0.5 -> Float 0.75, *100 -> 75',
+                    [], test_float_pow_chain, 100, 75),
        format('--- M12 format/2 stdout printing ---~n'),
        run_fmt_test('literal "hello world"', test_fmt_literal,
                     "hello world\n"),
