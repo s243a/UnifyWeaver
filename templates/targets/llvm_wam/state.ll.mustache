@@ -1413,10 +1413,31 @@ count_case:
   ret %Value %c_final
 
 sum_case:
-  br label %sum_loop
+  ; M14: scan once for any Float entry. If all entries are Integer
+  ; we use the integer path (preserves precision; the original
+  ; behaviour). If any entry is a Float we use a double accumulator
+  ; -- previously the integer loop just added raw payload bits which
+  ; gave junk for Float entries (Float bits != the underlying value).
+  br label %sum_scan
+sum_scan:
+  %scan_i = phi i32 [0, %sum_case], [%scan_inext, %sum_scan_step]
+  %had_float = phi i1 [false, %sum_case], [%scan_new_hadf, %sum_scan_step]
+  %scan_done = icmp sge i32 %scan_i, %count
+  br i1 %scan_done, label %sum_dispatch, label %sum_scan_step
+sum_scan_step:
+  %scan_slot = getelementptr %Value, %Value* %accum, i32 %scan_i
+  %scan_val = load %Value, %Value* %scan_slot
+  %scan_tag = extractvalue %Value %scan_val, 0
+  %scan_is_f = icmp eq i32 %scan_tag, 2
+  %scan_new_hadf = or i1 %had_float, %scan_is_f
+  %scan_inext = add i32 %scan_i, 1
+  br label %sum_scan
+sum_dispatch:
+  br i1 %had_float, label %sum_float, label %sum_loop
+
 sum_loop:
-  %i_s = phi i32 [0, %sum_case], [%next_s, %sum_body]
-  %acc_s = phi i64 [0, %sum_case], [%new_acc_s, %sum_body]
+  %i_s = phi i32 [0, %sum_dispatch], [%next_s, %sum_body]
+  %acc_s = phi i64 [0, %sum_dispatch], [%new_acc_s, %sum_body]
   %done_s = icmp sge i32 %i_s, %count
   br i1 %done_s, label %sum_done, label %sum_body
 sum_body:
@@ -1427,11 +1448,29 @@ sum_body:
   %next_s = add i32 %i_s, 1
   br label %sum_loop
 sum_done:
-  ; PHI value %acc_s is valid here as %sum_done is a direct successor
-  ; of the loop block and the edge carries the final iteration state.
   %s_val = insertvalue %Value undef, i32 1, 0    ; Integer tag
   %s_final = insertvalue %Value %s_val, i64 %acc_s, 1
   ret %Value %s_final
+
+sum_float:
+  br label %sum_floop
+sum_floop:
+  %i_sf = phi i32 [0, %sum_float], [%next_sf, %sum_fbody]
+  %acc_sf = phi double [0.0, %sum_float], [%new_acc_sf, %sum_fbody]
+  %done_sf = icmp sge i32 %i_sf, %count
+  br i1 %done_sf, label %sum_fdone, label %sum_fbody
+sum_fbody:
+  %slot_sf = getelementptr %Value, %Value* %accum, i32 %i_sf
+  %val_sf = load %Value, %Value* %slot_sf
+  ; Promote each entry to double -- Integers go via sitofp, Floats
+  ; reinterpret their payload bits.
+  %term_d = call double @value_to_double(%Value %val_sf)
+  %new_acc_sf = fadd double %acc_sf, %term_d
+  %next_sf = add i32 %i_sf, 1
+  br label %sum_floop
+sum_fdone:
+  %sf_val = call %Value @value_float(double %acc_sf)
+  ret %Value %sf_val
 
 min_case:
   ; Initial value: take first element if count > 0, else 0
