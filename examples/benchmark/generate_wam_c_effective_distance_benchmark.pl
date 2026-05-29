@@ -186,16 +186,18 @@ effective_distance_reverse_index_options(Options, OutputDir, CategoryParents,
     !,
     effective_distance_csr_index_backend(CsrOptions0, IndexBackend),
     effective_distance_csr_io_policy(CsrOptions0, IoPolicy),
+    effective_distance_csr_block_size_options(CsrOptions0, BlockSizeOptions),
     write_effective_distance_reverse_csr(OutputDir, CategoryParents,
                                          ArticleCategories, RootCategories,
-                                         IndexBackend, CategoryIdMap),
+                                         IndexBackend, IoPolicy, CategoryIdMap),
+    append([
+        storage_kind(csr_pread_artifact),
+        phase(runtime_available),
+        index_backend(IndexBackend),
+        io_policy(IoPolicy)
+    ], BlockSizeOptions, ArtifactOptions),
     ReverseIndexOptions = [
-        reverse_index(artifact([
-            storage_kind(csr_pread_artifact),
-            phase(runtime_available),
-            index_backend(IndexBackend),
-            io_policy(IoPolicy)
-        ])),
+        reverse_index(artifact(ArtifactOptions)),
         reverse_csr_values_path('category_child.csr.val'),
         category_id_map(CategoryIdMap)
     | ReverseIndexPathOptions],
@@ -225,6 +227,11 @@ parse_effective_distance_csr_index_backend(Backend, _) :-
 effective_distance_csr_io_policy(Options, IoPolicy) :-
     must_be(list, Options),
     resolve_csr_io_policy(Options, IoPolicy).
+
+effective_distance_csr_block_size_options(Options, [block_size_edges(BlockSizeEdges)]) :-
+    memberchk(block_size_edges(BlockSizeEdges), Options),
+    !.
+effective_distance_csr_block_size_options(_, []).
 
 effective_distance_reverse_index_path_options(sorted_array,
                                              [reverse_csr_index_path('category_child.csr.idx')]).
@@ -316,7 +323,7 @@ category_parent_tsv_line(Child-Parent, Line) :-
 
 write_effective_distance_reverse_csr(OutputDir, CategoryParents,
                                      ArticleCategories, RootCategories,
-                                     IndexBackend, CategoryIdMap) :-
+                                     IndexBackend, IoPolicy, CategoryIdMap) :-
     effective_distance_category_id_map(CategoryParents, ArticleCategories,
                                        RootCategories, CategoryIdMap),
     directory_file_path(OutputDir, 'category_child.csr.idx', IndexPath),
@@ -330,6 +337,7 @@ write_effective_distance_reverse_csr(OutputDir, CategoryParents,
     sort(ChildPairs0, ChildPairs),
     group_children_by_parent(ChildPairs, Rows),
     write_reverse_csr_files(IndexPath, ValuesPath, Rows),
+    maybe_pad_reverse_csr_values(IoPolicy, ValuesPath),
     maybe_write_reverse_csr_offset_lmdb_seeder(IndexBackend, OutputDir, Rows).
 
 effective_distance_category_id_map(CategoryParents, ArticleCategories,
@@ -383,6 +391,23 @@ write_reverse_csr_rows([csr_row(ParentId, Children)|Rows], Offset,
     forall(member(ChildId, Children), put_i32_le(ValuesStream, ChildId)),
     NextOffset is Offset + Count,
     write_reverse_csr_rows(Rows, NextOffset, IndexStream, ValuesStream).
+
+maybe_pad_reverse_csr_values(direct_io, ValuesPath) :-
+    !,
+    pad_file_to_alignment(ValuesPath, 4096).
+maybe_pad_reverse_csr_values(_, _).
+
+pad_file_to_alignment(Path, Alignment) :-
+    size_file(Path, Size),
+    Pad is (Alignment - (Size mod Alignment)) mod Alignment,
+    (   Pad =:= 0
+    ->  true
+    ;   setup_call_cleanup(
+            open(Path, append, Stream, [type(binary)]),
+            forall(between(1, Pad, _), put_byte(Stream, 0)),
+            close(Stream)
+        )
+    ).
 
 maybe_write_reverse_csr_offset_lmdb_seeder(sorted_array, _OutputDir, _Rows).
 maybe_write_reverse_csr_offset_lmdb_seeder(lmdb_offset, OutputDir, Rows) :-

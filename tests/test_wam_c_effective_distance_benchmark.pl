@@ -264,6 +264,36 @@ test_child_search_rejects_runtime_direct_io_reverse_csr :-
     ;   fail_test(Test, 'expected permission_error(use, csr_io_policy, direct_io)')
     ).
 
+test_child_search_builds_direct_io_reverse_csr :-
+    Test = 'WAM-C effective-distance: reverse_index csr emits direct_io loader',
+    (   unique_tmp_dir(child_search_direct_io_csr_enabled, OutputDir),
+        write_child_search_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(
+            FactsPath,
+            OutputDir,
+            kernels_on,
+            [ fact_storage(facts_tsv),
+              child_search(bounded),
+              max_child_expansions(4),
+              child_search_depth(1),
+              reverse_index(csr([
+                  phase(runtime_available),
+                  index_backend(sorted_array),
+                  io_policy(direct_io),
+                  block_size_edges(1024)
+              ]))
+            ]),
+        directory_file_path(OutputDir, 'lib.c', LibPath),
+        directory_file_path(OutputDir, 'category_child.csr.val', ValuesPath),
+        read_file_to_string(LibPath, Lib, []),
+        sub_string(Lib, _, _, _, 'wam_reverse_csr_load_direct_io(bidirectional_child_csr, "category_child.csr.idx", "category_child.csr.val", 1024)'),
+        size_file(ValuesPath, ValuesBytes),
+        0 is ValuesBytes mod 4096,
+        compile_generated_project(OutputDir, facts_tsv)
+    ->  pass(Test)
+    ;   fail_test(Test, 'direct_io reverse_index csr generated files mismatch')
+    ).
+
 test_generate_and_run_bounded_child_search_kernels_off :-
     Test = 'WAM-C effective-distance: kernels_off child search matches reference path',
     (   unique_tmp_dir(child_search_kernels_off, OutputDir),
@@ -513,6 +543,7 @@ run_tests_once :-
     test_child_search_builds_pread_drop_reverse_csr,
     test_child_search_builds_lmdb_offset_reverse_csr,
     test_child_search_rejects_runtime_direct_io_reverse_csr,
+    test_child_search_builds_direct_io_reverse_csr,
     test_generate_and_run_bounded_child_search_kernels_off,
     test_generate_and_run_weighted_child_search,
     test_generate_and_run_child_search_budget_pruning,

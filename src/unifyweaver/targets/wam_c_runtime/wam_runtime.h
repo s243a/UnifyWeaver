@@ -136,6 +136,9 @@ typedef struct {
     int index_fd;
     int values_fd;
     bool drop_after_read;
+    bool direct_io;
+    size_t direct_io_alignment;
+    off_t values_size;
     WamReverseCsrRow *rows;
     int row_count;
 #ifdef WAM_C_ENABLE_LMDB
@@ -349,6 +352,10 @@ bool wam_reverse_csr_load(WamReverseCsrArtifact *artifact,
 bool wam_reverse_csr_load_pread_drop(WamReverseCsrArtifact *artifact,
                                      const char *index_path,
                                      const char *values_path);
+bool wam_reverse_csr_load_direct_io(WamReverseCsrArtifact *artifact,
+                                    const char *index_path,
+                                    const char *values_path,
+                                    int block_size_edges);
 bool wam_reverse_csr_load_lmdb_offset(WamReverseCsrArtifact *artifact,
                                       const char *values_path,
                                       const char *offset_env_path,
@@ -357,6 +364,11 @@ bool wam_reverse_csr_load_lmdb_offset_pread_drop(WamReverseCsrArtifact *artifact
                                                 const char *values_path,
                                                 const char *offset_env_path,
                                                 const char *db_name);
+bool wam_reverse_csr_load_lmdb_offset_direct_io(WamReverseCsrArtifact *artifact,
+                                                const char *values_path,
+                                                const char *offset_env_path,
+                                                const char *db_name,
+                                                int block_size_edges);
 int wam_reverse_csr_lookup_children(WamReverseCsrArtifact *artifact,
                                     int parent,
                                     int *out_children,
