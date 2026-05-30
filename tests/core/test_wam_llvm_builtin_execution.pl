@@ -408,6 +408,42 @@ test_atom_chars_print(_, R) :-
     format('~w', [Cs]),
     R is 1.
 
+% M28: between/3 multi-result iterator. Three patterns:
+%   bind + use (one solution, fail on next): runs to completion
+%   accumulate via findall (consume the iterator)
+%   check (both ends + bound X): no iterator, just range check.
+:- dynamic test_between_bind_first/2.
+test_between_bind_first(_, R) :-
+    between(3, 5, X),    % binds X = 3 on first solution
+    R is X.
+
+:- dynamic test_between_check_in/2.
+test_between_check_in(_, R) :-
+    % X already bound, both ends bound, X in range -> succeeds.
+    X = 5,
+    between(1, 10, X),
+    R is 1.
+
+:- dynamic test_between_check_out/2.
+test_between_check_out(_, R) :-
+    % X already bound, X out of range -> fails. run_test_r0 maps
+    % the failure to exit 255.
+    X = 99,
+    between(1, 10, X),
+    R is 1.
+
+:- dynamic test_between_sum/2.
+test_between_sum(_, R) :-
+    % Sum 1..10 = 55. Exercises full iterator drain via
+    % aggregate_all + between.
+    aggregate_all(sum(X), between(1, 10, X), S),
+    R is S.
+
+:- dynamic test_between_count/2.
+test_between_count(_, R) :-
+    aggregate_all(count, between(1, 7, _), N),
+    R is N.   % 7 -- route through is/2 so the result lands in A1
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -1155,6 +1191,17 @@ test_all :-
                    test_atom_chars_length, 0, 5),
        run_fmt_test('write atom_chars(hi) -> "[h, i]"',
                     test_atom_chars_print, "[h, i]"),
+       format('--- M28 between/3 ---~n'),
+       run_test_r0('between(3, 5, X) bind first -> 3',
+                   test_between_bind_first, 0, 3),
+       run_test_r0('between(1, 10, 5) in range -> 1',
+                   test_between_check_in, 0, 1),
+       run_test_r0('between(1, 10, 99) out of range -> 255',
+                   test_between_check_out, 0, 255),
+       run_test_r0('aggregate_all(sum(X), between(1, 10, X)) -> 55',
+                   test_between_sum, 0, 55),
+       run_test_r0('aggregate_all(count, between(1, 7, _)) -> 7',
+                   test_between_count, 0, 7),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),

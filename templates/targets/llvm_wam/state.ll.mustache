@@ -4486,31 +4486,40 @@ yield:
   br i1 %is_paired, label %yield_paired, label %yield_single
 
 yield_single:
-  ; Read result[cursor], write to result_reg
+  ; Read result[cursor], write to result_reg. M28: route through
+  ; trail_binding + bind_reg instead of set_reg so a result_reg
+  ; that holds a Ref into the heap (e.g. the put_value Y_var, A_n
+  ; pattern that aggregate_all uses for its value reg) gets the
+  ; underlying heap cell bound. Without this, the next iteration''s
+  ; deref of the Y-aliased reg sees Unbound and the aggregator
+  ; collects a sentinel instead of the yielded value.
   %fr_ptr_s = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 8
   %results_raw_s = load i8*, i8** %fr_ptr_s
   %results_s = bitcast i8* %results_raw_s to %Value*
   %cursor_64_s = zext i32 %cursor to i64
   %val_ptr_s = getelementptr %Value, %Value* %results_s, i64 %cursor_64_s
   %val_s = load %Value, %Value* %val_ptr_s
-  call void @wam_set_reg(%WamState* %vm, i32 %result_reg, %Value %val_s)
+  call void @wam_trail_binding(%WamState* %vm, i32 %result_reg)
+  call void @wam_bind_reg(%WamState* %vm, i32 %result_reg, %Value %val_s)
   %next_cursor_s = add i32 %cursor, 1
   br label %yield_done
 
 yield_paired:
   ; Paired mode: result[cursor] → reg 1 (A2), result[cursor+1] → reg 2 (A3).
-  ; Cursor advances by 2.
+  ; Cursor advances by 2. M28: same trail + bind change as yield_single.
   %fr_ptr_p = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 8
   %results_raw_p = load i8*, i8** %fr_ptr_p
   %results_p = bitcast i8* %results_raw_p to %Value*
   %cursor_64_p = zext i32 %cursor to i64
   %val1_ptr = getelementptr %Value, %Value* %results_p, i64 %cursor_64_p
   %val1 = load %Value, %Value* %val1_ptr
-  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %val1)
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %val1)
   %cursor_64_p1 = add i64 %cursor_64_p, 1
   %val2_ptr = getelementptr %Value, %Value* %results_p, i64 %cursor_64_p1
   %val2 = load %Value, %Value* %val2_ptr
-  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %val2)
+  call void @wam_trail_binding(%WamState* %vm, i32 2)
+  call void @wam_bind_reg(%WamState* %vm, i32 2, %Value %val2)
   %next_cursor_p = add i32 %cursor, 2
   br label %yield_done
 
@@ -4557,5 +4566,11 @@ pop_restore:
   %pop_scp = load i32, i32* %pop_scp_ptr
   call void @wam_set_cp(%WamState* %vm, i32 %pop_scp)
 
-  ret i1 false
+  ; M28: after popping the exhausted foreign-iter CP, retry backtrack
+  ; on the now-exposed CP underneath. Without this, an aggregate
+  ; sitting below a between/3 iterator never finalises -- foreign_
+  ; iter_next''s false return goes straight back to run_loop which
+  ; reads it as "no more solutions" and fails the whole goal.
+  %pop_retry = call i1 @backtrack(%WamState* %vm)
+  ret i1 %pop_retry
 }
