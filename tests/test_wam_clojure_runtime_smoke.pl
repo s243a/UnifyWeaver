@@ -366,7 +366,7 @@ user:wam_numlist_high_before_low(List) :- numlist(3, 1, List).
 user:wam_numlist_unbound_low(List) :- numlist(Low, 3, List), integer(Low).
 user:wam_delete_guard(L, Elem, Rest) :- delete(L, Elem, Rest).
 user:wam_delete_bad_list(Rest) :- delete([a|b], a, Rest).
-user:wam_delete_unbound_list(Rest) :- user:wam_unbound_arg(L), delete(L, a, Rest).
+user:wam_delete_unbound_list(Rest) :- delete(L, a, Rest), is_list(L).
 user:wam_sort_guard(L, S) :- sort(L, S).
 user:wam_sort_bad_list(S) :- sort([a|b], S).
 user:wam_sort_unbound_list(S) :- sort(L, S), is_list(L).
@@ -1014,7 +1014,9 @@ smoke_cases([
     case('wam_delete_guard/3', args('[f(a),f(b),f(a)]', 'f(a)', '[f(b)]'), "true"),
     case('wam_delete_guard/3', args('[a,b,a,c]', a, '[a,b,c]'), "false"),
     case('wam_delete_bad_list/1', '[]', "false"),
-    case('wam_delete_unbound_list/1', '[]', "false"),
+    case('wam_delete_unbound_list/1', '[]', "true"),
+    case('wam_delete_unbound_list/1', '[b,c]', "true"),
+    case('wam_delete_unbound_list/1', '[a]', "false"),
     case('wam_sort_guard/2', args('[b,a,a,c]', '[a,b,c]'), "true"),
     case('wam_sort_guard/2', args('[b,a,a,c]', '[a,b]'), "false"),
     case('wam_sort_guard/2', args('[f(b),f(a),a]', '[a,f(a),f(b)]'), "true"),
