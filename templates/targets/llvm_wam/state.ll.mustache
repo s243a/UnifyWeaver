@@ -1880,13 +1880,74 @@ wv.list_done:
   ret void
 
 wv.term:
+  ; M22: detect simple infix / prefix operator notation before
+  ; falling through to the canonical functor(args) form. Only
+  ; single-char operators are recognised here -- 2-char operators
+  ; like ``->`` / ``:-`` / ``=:=`` need a small lookup and are
+  ; deferred to a follow-up.
+  %wv.fn1_ptr = getelementptr i8, i8* %wv.fn_ptr, i32 1
+  %wv.fn1 = load i8, i8* %wv.fn1_ptr
+  %wv.fn1_zero = icmp eq i8 %wv.fn1, 0
+  br i1 %wv.fn1_zero, label %wv.maybe_op, label %wv.canonical
+
+wv.maybe_op:
+  %wv.fn0_char = load i8, i8* %wv.fn_ptr
+  %wv.is_binary = icmp eq i32 %wv.arity, 2
+  %wv.is_unary = icmp eq i32 %wv.arity, 1
+  br i1 %wv.is_binary, label %wv.binary_op, label %wv.unary_check
+
+wv.binary_op:
+  ; Single-byte binary operators that print as infix without parens.
+  ; Precedence is not modelled yet -- a child operator with lower
+  ; priority than its parent should be parenthesised, but the
+  ; runtime doesn''t have an op-priority table yet.
+  switch i8 %wv.fn0_char, label %wv.canonical [
+    i8 43, label %wv.infix  ; ''+''
+    i8 45, label %wv.infix  ; ''-''
+    i8 42, label %wv.infix  ; ''*''
+    i8 47, label %wv.infix  ; ''/''
+    i8 61, label %wv.infix  ; ''=''
+    i8 60, label %wv.infix  ; ''<''
+    i8 62, label %wv.infix  ; ''>''
+    i8 58, label %wv.infix  ; '':''
+    i8 94, label %wv.infix  ; ''^''
+  ]
+
+wv.infix:
+  %wv.iarg0_ptr = getelementptr %Value, %Value* %wv.args, i32 0
+  %wv.iarg0 = load %Value, %Value* %wv.iarg0_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.iarg0)
+  %wv.fn0_i32 = zext i8 %wv.fn0_char to i32
+  call i32 @putchar(i32 %wv.fn0_i32)
+  %wv.iarg1_ptr = getelementptr %Value, %Value* %wv.args, i32 1
+  %wv.iarg1 = load %Value, %Value* %wv.iarg1_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.iarg1)
+  ret void
+
+wv.unary_check:
+  br i1 %wv.is_unary, label %wv.maybe_prefix, label %wv.canonical
+
+wv.maybe_prefix:
+  ; Only ``-`` is a meaningful single-char prefix op; ``+`` is a no-op
+  ; that real code never writes out. ``\+`` is two characters.
+  %wv.is_neg = icmp eq i8 %wv.fn0_char, 45
+  br i1 %wv.is_neg, label %wv.prefix, label %wv.canonical
+
+wv.prefix:
+  call i32 @putchar(i32 45)
+  %wv.parg_ptr = getelementptr %Value, %Value* %wv.args, i32 0
+  %wv.parg = load %Value, %Value* %wv.parg_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.parg)
+  ret void
+
+wv.canonical:
   %wv.fmt_str2 = getelementptr [3 x i8], [3 x i8]* @.fmt_str, i32 0, i32 0
   call i32 (i8*, ...) @printf(i8* %wv.fmt_str2, i8* %wv.fn_ptr)
   call i32 @putchar(i32 40)
   br label %wv.term_loop
 
 wv.term_loop:
-  %wv.ti = phi i32 [ 0, %wv.term ], [ %wv.ti_next, %wv.term_after ]
+  %wv.ti = phi i32 [ 0, %wv.canonical ], [ %wv.ti_next, %wv.term_after ]
   %wv.done_t = icmp sge i32 %wv.ti, %wv.arity
   br i1 %wv.done_t, label %wv.term_done, label %wv.term_iter
 
