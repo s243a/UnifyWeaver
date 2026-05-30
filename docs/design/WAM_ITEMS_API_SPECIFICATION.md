@@ -181,6 +181,81 @@ The bulk of parsing (~80-90% of any target''s parser today) lives
 in the shared building blocks. Targets ship only what's unique to
 them.
 
+### 1.5 Representation modes vs runtime parser modes
+
+`output(items)` / `output(text)` is a **build-time representation choice**.
+It is independent of `runtime_parser(...)`, which controls whether a generated
+program can parse Prolog terms from text at execution time.
+
+The intended target-generator pipeline is:
+
+```text
+Prolog clauses -> compile_predicate_to_wam_items/3 -> target emitter
+```
+
+The legacy compatibility pipeline remains:
+
+```text
+Prolog clauses -> compile_predicate_to_wam_text/3 -> wam_text_to_items/2 -> target emitter
+```
+
+Targets should prefer the first pipeline for in-tree compilation. The second
+pipeline is for debug dumps, external WAM text, snapshot tests, and migration
+periods where a target has not yet been moved to direct items consumption. In
+particular, a target should not require its own compile-time text parser merely
+to consume WAM that this repository just generated.
+
+### 1.6 Custom symbolic instructions
+
+Targets may extend the standard item catalogue with custom symbolic WAM
+instructions. A custom instruction is still an item term; it is not a raw text
+line. The recommended shape is:
+
+```prolog
+custom_wam(Op, Operands, Meta)
+```
+
+where `Op` is an atom, `Operands` is a list of ordinary WAM item operands, and
+`Meta` is a list of options. `Meta` may include an execution policy:
+
+```prolog
+mode(compiled)      % default: lower directly into target source
+mode(interpreted)   % keep as an instruction dispatched by the runtime VM
+mode(jit)           % emit a stable symbolic form that a target JIT may compile later
+```
+
+Policy meaning:
+
+- `compiled` means the target emitter must know how to lower the instruction
+  into ordinary target-language code or into a sequence of standard WAM items.
+  This is the default because it keeps generated projects self-contained.
+- `interpreted` means the item is intentionally preserved in the runtime
+  instruction stream. The target runtime must have a dispatcher case for `Op`,
+  and unsupported targets must reject the item at generation time.
+- `jit` means the item is preserved with enough symbolic metadata for a runtime
+  or host-language JIT to specialize it after profiling or after seeing concrete
+  data layout. Targets without a JIT must either reject the item or downgrade it
+  through an explicit fallback such as `fallback(compiled)` or
+  `fallback(interpreted)` in `Meta`.
+
+Custom items must round-trip through the common text parser only when a target
+registers an extension recogniser/printer. Standard `wam_text_to_items/2` should
+stay strict for the core instruction set; lenient or extension-aware parsing
+belongs in the target composition layer described in §1.4.
+
+A future shared registry can make this explicit:
+
+```prolog
+%% wam_custom_instruction(+Target, +Op, +Modes, +Lowerer)
+%  Declares that Target accepts custom operation Op, supports execution policies
+%  Modes, and lowers or validates through Lowerer.
+```
+
+Until that registry exists, target-specific custom instructions should be
+clearly namespaced in `Op` (for example `llvm_profile_counter` rather than
+`profile_counter`) and covered by target tests proving unsupported modes fail
+loudly.
+
 ## 2. Item term shapes
 
 The shapes match what every target's existing tokenizer + parser
