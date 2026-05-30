@@ -1744,6 +1744,176 @@ default_case:
 ; "sort a flat list of ints" case; structural ordering is M11 work.
 ; Returns the new list's head Value (Compound, or the [] Atom when
 ; the input is empty).
+
+; M21: recursive pretty-printer used by write/1 and friends.
+; Prints Integers, Floats, Atoms via existing format strings, and
+; Compounds as either list notation ([a, b, c] when the functor is
+; [|]/2) or term notation (functor(arg, ...)) otherwise. Unbound
+; cells render as `_`; unknown atoms (id out of range) render as
+; `?`. Recurses into compound args -- no depth limit, so a cyclic
+; term would loop, but the rest of the runtime never produces
+; cycles.
+define void @wam_write_value(%WamState* %vm, %Value %v) {
+entry:
+  %wv.d = call %Value @wam_deref_value(%WamState* %vm, %Value %v)
+  %wv.tag = extractvalue %Value %wv.d, 0
+  switch i32 %wv.tag, label %wv.unbound [
+    i32 0, label %wv.atom
+    i32 1, label %wv.int
+    i32 2, label %wv.float
+    i32 3, label %wv.compound
+  ]
+
+wv.int:
+  %wv.iv = extractvalue %Value %wv.d, 1
+  %wv.fmt_lld = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %wv.fmt_lld, i64 %wv.iv)
+  ret void
+
+wv.float:
+  %wv.fb = extractvalue %Value %wv.d, 1
+  %wv.fv = bitcast i64 %wv.fb to double
+  %wv.fmt_dbl = getelementptr [3 x i8], [3 x i8]* @.fmt_dbl, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %wv.fmt_dbl, double %wv.fv)
+  ret void
+
+wv.atom:
+  %wv.aid = extractvalue %Value %wv.d, 1
+  %wv.eid = load i64, i64* @wam_empty_list_atom_id
+  %wv.is_empty = icmp eq i64 %wv.aid, %wv.eid
+  br i1 %wv.is_empty, label %wv.empty_list, label %wv.atom_str
+
+wv.empty_list:
+  call i32 @putchar(i32 91)
+  call i32 @putchar(i32 93)
+  ret void
+
+wv.atom_str:
+  %wv.str = call i8* @wam_atom_to_string(i64 %wv.aid)
+  %wv.null = icmp eq i8* %wv.str, null
+  br i1 %wv.null, label %wv.atom_unknown, label %wv.atom_go
+
+wv.atom_go:
+  %wv.fmt_str = getelementptr [3 x i8], [3 x i8]* @.fmt_str, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %wv.fmt_str, i8* %wv.str)
+  ret void
+
+wv.atom_unknown:
+  call i32 @putchar(i32 63)
+  ret void
+
+wv.unbound:
+  call i32 @putchar(i32 95)
+  ret void
+
+wv.compound:
+  %wv.cp_bits = extractvalue %Value %wv.d, 1
+  %wv.cp = inttoptr i64 %wv.cp_bits to %Compound*
+  %wv.fn_slot = getelementptr %Compound, %Compound* %wv.cp, i32 0, i32 0
+  %wv.fn_ptr = load i8*, i8** %wv.fn_slot
+  %wv.ar_slot = getelementptr %Compound, %Compound* %wv.cp, i32 0, i32 1
+  %wv.arity = load i32, i32* %wv.ar_slot
+  %wv.args_slot = getelementptr %Compound, %Compound* %wv.cp, i32 0, i32 2
+  %wv.args = load %Value*, %Value** %wv.args_slot
+  ; Detect list notation by comparing the functor ptr to @.fn__5B_7C_5D
+  ; (the eager-registered [|]/2 string). Compound args of [|] are
+  ; (Head, Tail) where Tail recurses through more [|] cells or
+  ; terminates in the [] Atom.
+  %wv.bracket = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  %wv.is_list = icmp eq i8* %wv.fn_ptr, %wv.bracket
+  br i1 %wv.is_list, label %wv.list, label %wv.term
+
+wv.list:
+  call i32 @putchar(i32 91)
+  %wv.h0_ptr = getelementptr %Value, %Value* %wv.args, i32 0
+  %wv.h0 = load %Value, %Value* %wv.h0_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.h0)
+  %wv.t0_ptr = getelementptr %Value, %Value* %wv.args, i32 1
+  %wv.t0 = load %Value, %Value* %wv.t0_ptr
+  br label %wv.list_walk
+
+wv.list_walk:
+  %wv.cur = phi %Value [ %wv.t0, %wv.list ], [ %wv.cur_next, %wv.list_step ]
+  %wv.cur_d = call %Value @wam_deref_value(%WamState* %vm, %Value %wv.cur)
+  %wv.cur_tag = extractvalue %Value %wv.cur_d, 0
+  %wv.cur_is_atom = icmp eq i32 %wv.cur_tag, 0
+  br i1 %wv.cur_is_atom, label %wv.list_check_end, label %wv.list_check_cons
+
+wv.list_check_end:
+  %wv.cur_aid = extractvalue %Value %wv.cur_d, 1
+  %wv.eid2 = load i64, i64* @wam_empty_list_atom_id
+  %wv.cur_is_end = icmp eq i64 %wv.cur_aid, %wv.eid2
+  br i1 %wv.cur_is_end, label %wv.list_done, label %wv.list_improper
+
+wv.list_check_cons:
+  %wv.cur_is_cmp = icmp eq i32 %wv.cur_tag, 3
+  br i1 %wv.cur_is_cmp, label %wv.list_check_cons2, label %wv.list_improper
+
+wv.list_check_cons2:
+  %wv.cur_cp_bits = extractvalue %Value %wv.cur_d, 1
+  %wv.cur_cp = inttoptr i64 %wv.cur_cp_bits to %Compound*
+  %wv.cur_fn_slot = getelementptr %Compound, %Compound* %wv.cur_cp, i32 0, i32 0
+  %wv.cur_fn_ptr = load i8*, i8** %wv.cur_fn_slot
+  %wv.bracket2 = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  %wv.cur_is_list = icmp eq i8* %wv.cur_fn_ptr, %wv.bracket2
+  br i1 %wv.cur_is_list, label %wv.list_step, label %wv.list_improper
+
+wv.list_step:
+  call i32 @putchar(i32 44)
+  call i32 @putchar(i32 32)
+  %wv.cur_args_slot = getelementptr %Compound, %Compound* %wv.cur_cp, i32 0, i32 2
+  %wv.cur_args = load %Value*, %Value** %wv.cur_args_slot
+  %wv.cur_h_ptr = getelementptr %Value, %Value* %wv.cur_args, i32 0
+  %wv.cur_h = load %Value, %Value* %wv.cur_h_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.cur_h)
+  %wv.cur_t_ptr = getelementptr %Value, %Value* %wv.cur_args, i32 1
+  %wv.cur_next = load %Value, %Value* %wv.cur_t_ptr
+  br label %wv.list_walk
+
+wv.list_improper:
+  call i32 @putchar(i32 124)
+  call void @wam_write_value(%WamState* %vm, %Value %wv.cur_d)
+  br label %wv.list_done
+
+wv.list_done:
+  call i32 @putchar(i32 93)
+  ret void
+
+wv.term:
+  %wv.fmt_str2 = getelementptr [3 x i8], [3 x i8]* @.fmt_str, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %wv.fmt_str2, i8* %wv.fn_ptr)
+  call i32 @putchar(i32 40)
+  br label %wv.term_loop
+
+wv.term_loop:
+  %wv.ti = phi i32 [ 0, %wv.term ], [ %wv.ti_next, %wv.term_after ]
+  %wv.done_t = icmp sge i32 %wv.ti, %wv.arity
+  br i1 %wv.done_t, label %wv.term_done, label %wv.term_iter
+
+wv.term_iter:
+  %wv.first = icmp eq i32 %wv.ti, 0
+  br i1 %wv.first, label %wv.term_arg, label %wv.term_sep
+
+wv.term_sep:
+  call i32 @putchar(i32 44)
+  call i32 @putchar(i32 32)
+  br label %wv.term_arg
+
+wv.term_arg:
+  %wv.arg_ptr = getelementptr %Value, %Value* %wv.args, i32 %wv.ti
+  %wv.arg = load %Value, %Value* %wv.arg_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.arg)
+  br label %wv.term_after
+
+wv.term_after:
+  %wv.ti_next = add i32 %wv.ti, 1
+  br label %wv.term_loop
+
+wv.term_done:
+  call i32 @putchar(i32 41)
+  ret void
+}
+
 define %Value @wam_msort_list(%WamState* %vm, %Value %head_in) inlinehint nounwind {
 entry:
   call void @wam_arena_ensure()
