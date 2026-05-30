@@ -540,6 +540,51 @@ test_atom_chars_reverse_dedup(_, R) :-
     atom_chars(B, [h, i, j]),
     ( A == B -> R is 1 ; R is 0 ).
 
+% M31: sub_atom/5 deterministic extraction. Requires Atom + Before +
+% Length all bound. Verifies After is computed correctly and the
+% extracted slice is interned (so subsequent forward ops see it).
+
+:- dynamic test_sub_atom_extract_length/2.
+test_sub_atom_extract_length(_, R) :-
+    sub_atom(hello, 1, 3, _, S),    % "ell"
+    atom_length(S, N),
+    R is N.   % 3
+
+:- dynamic test_sub_atom_extract_after/2.
+test_sub_atom_extract_after(_, R) :-
+    sub_atom(hello, 1, 3, A, _),    % After = 5 - 1 - 3 = 1
+    R is A.   % 1
+
+:- dynamic test_sub_atom_extract_first_code/2.
+test_sub_atom_extract_first_code(_, R) :-
+    sub_atom(hello, 1, 3, _, S),    % "ell"
+    atom_codes(S, [C|_]),
+    R is C.   % 'e' = 101
+
+:- dynamic test_sub_atom_dedup/2.
+test_sub_atom_dedup(_, R) :-
+    sub_atom(hello, 1, 3, _, S1),
+    sub_atom(hello, 1, 3, _, S2),
+    ( S1 == S2 -> R is 1 ; R is 0 ).
+
+:- dynamic test_sub_atom_empty/2.
+test_sub_atom_empty(_, R) :-
+    sub_atom(hello, 2, 0, _, S),    % empty slice
+    atom_length(S, N),
+    R is N.   % 0
+
+:- dynamic test_sub_atom_full/2.
+test_sub_atom_full(_, R) :-
+    sub_atom(hello, 0, 5, A, S),    % whole atom, After = 0
+    atom_length(S, N),
+    R is N + A.   % 5 + 0 = 5
+
+:- dynamic test_sub_atom_overflow/2.
+test_sub_atom_overflow(_, R) :-
+    ( sub_atom(hi, 0, 99, _, _)
+    -> R is 1
+    ;  R is 0 ).   % 0 -- length exceeds source
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -1324,6 +1369,21 @@ test_all :-
                    test_atom_chars_reverse_first, 0, 104),
        run_test_r0('atom_chars(A,[h,i,j]) atom_codes(A) twice == 1',
                    test_atom_chars_reverse_dedup, 0, 1),
+       format('--- M31 sub_atom/5 deterministic extraction ---~n'),
+       run_test_r0('sub_atom(hello,1,3,_,S) atom_length(S) -> 3',
+                   test_sub_atom_extract_length, 0, 3),
+       run_test_r0('sub_atom(hello,1,3,A,_) After -> 1',
+                   test_sub_atom_extract_after, 0, 1),
+       run_test_r0('sub_atom(hello,1,3,_,S) first code -> 101 (e)',
+                   test_sub_atom_extract_first_code, 0, 101),
+       run_test_r0('sub_atom(hello,1,3,_,S) twice -> same id -> 1',
+                   test_sub_atom_dedup, 0, 1),
+       run_test_r0('sub_atom(hello,2,0,_,S) atom_length(S) -> 0',
+                   test_sub_atom_empty, 0, 0),
+       run_test_r0('sub_atom(hello,0,5,A,S) N + After -> 5',
+                   test_sub_atom_full, 0, 5),
+       run_test_r0('sub_atom(hi,0,99,_,_) overflow -> 0',
+                   test_sub_atom_overflow, 0, 0),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),

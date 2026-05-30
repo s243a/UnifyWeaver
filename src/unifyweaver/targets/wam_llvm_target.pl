@@ -3400,6 +3400,7 @@ entry:
     i32 38, label %builtin_atom_chars
     i32 39, label %builtin_between
     i32 40, label %builtin_atom_concat
+    i32 41, label %builtin_sub_atom
   ]
 
 builtin_is:
@@ -5192,6 +5193,83 @@ atc.check:
   %atc.eq = call i1 @value_equals(%Value %atc.a3, %Value %atc.new_v)
   ret i1 %atc.eq
 
+builtin_sub_atom:
+  ; M31: sub_atom(Atom, Before, Length, After, SubAtom) -- deterministic
+  ; extraction mode only. Requires A1 bound atom, A2 + A3 bound
+  ; non-negative Integers. Computes After = n - Before - Length, fails
+  ; if any of Before / Length / After is negative or the span exceeds
+  ; the source atom''s length. Then memcpys the [Before, Before+Length)
+  ; slice into an arena buffer, interns it, and unifies A4 with
+  ; Integer(After) and A5 with the new atom. Full nondeterministic
+  ; enumeration over Before / Length is deferred to a later milestone.
+  %sba.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sba.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %sba.a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  %sba.t1 = extractvalue %Value %sba.a1, 0
+  %sba.t2 = extractvalue %Value %sba.a2, 0
+  %sba.t3 = extractvalue %Value %sba.a3, 0
+  %sba.is_atom = icmp eq i32 %sba.t1, 0
+  %sba.is_int2 = icmp eq i32 %sba.t2, 1
+  %sba.is_int3 = icmp eq i32 %sba.t3, 1
+  %sba.ai = and i1 %sba.is_atom, %sba.is_int2
+  %sba.aii = and i1 %sba.ai, %sba.is_int3
+  br i1 %sba.aii, label %sba.lookup, label %sba.fail
+sba.fail:
+  ret i1 false
+sba.lookup:
+  %sba.aid = extractvalue %Value %sba.a1, 1
+  %sba.str = call i8* @wam_atom_to_string(i64 %sba.aid)
+  %sba.str_null = icmp eq i8* %sba.str, null
+  br i1 %sba.str_null, label %sba.fail, label %sba.measure
+sba.measure:
+  br label %sba.m_loop
+sba.m_loop:
+  %sba.mp = phi i8* [ %sba.str, %sba.measure ], [ %sba.mpn, %sba.m_step ]
+  %sba.mn = phi i64 [ 0, %sba.measure ], [ %sba.mn1, %sba.m_step ]
+  %sba.mc = load i8, i8* %sba.mp
+  %sba.mz = icmp eq i8 %sba.mc, 0
+  br i1 %sba.mz, label %sba.bounds, label %sba.m_step
+sba.m_step:
+  %sba.mpn = getelementptr i8, i8* %sba.mp, i32 1
+  %sba.mn1 = add i64 %sba.mn, 1
+  br label %sba.m_loop
+sba.bounds:
+  ; Validate Before >= 0, Length >= 0, Before + Length <= n.
+  %sba.b = extractvalue %Value %sba.a2, 1
+  %sba.l = extractvalue %Value %sba.a3, 1
+  %sba.b_neg = icmp slt i64 %sba.b, 0
+  %sba.l_neg = icmp slt i64 %sba.l, 0
+  %sba.any_neg = or i1 %sba.b_neg, %sba.l_neg
+  br i1 %sba.any_neg, label %sba.fail, label %sba.bounds2
+sba.bounds2:
+  %sba.bl = add i64 %sba.b, %sba.l
+  %sba.over = icmp sgt i64 %sba.bl, %sba.mn
+  br i1 %sba.over, label %sba.fail, label %sba.slice
+sba.slice:
+  ; After = n - (Before + Length); allocate (Length+1) bytes; memcpy
+  ; slice; null-terminate; intern.
+  %sba.after = sub i64 %sba.mn, %sba.bl
+  call void @wam_arena_ensure()
+  %sba.bufsize = add i64 %sba.l, 1
+  %sba.buf = call i8* @wam_arena_alloc(i64 %sba.bufsize)
+  %sba.src = getelementptr i8, i8* %sba.str, i64 %sba.b
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %sba.buf, i8* %sba.src, i64 %sba.l, i1 false)
+  %sba.term = getelementptr i8, i8* %sba.buf, i64 %sba.l
+  store i8 0, i8* %sba.term
+  %sba.new_id = call i64 @wam_intern_atom(i8* %sba.buf, i64 %sba.l)
+  %sba.new_v0 = insertvalue %Value undef, i32 0, 0
+  %sba.new_v = insertvalue %Value %sba.new_v0, i64 %sba.new_id, 1
+  %sba.after_v0 = insertvalue %Value undef, i32 1, 0
+  %sba.after_v = insertvalue %Value %sba.after_v0, i64 %sba.after, 1
+  ; Unify A4 with After.
+  %sba.raw4 = call %Value @wam_get_reg(%WamState* %vm, i32 3)
+  %sba.u4 = call i1 @wam_unify_value(%WamState* %vm, %Value %sba.raw4, %Value %sba.after_v)
+  br i1 %sba.u4, label %sba.unify5, label %sba.fail
+sba.unify5:
+  %sba.raw5 = call %Value @wam_get_reg(%WamState* %vm, i32 4)
+  %sba.u5 = call i1 @wam_unify_value(%WamState* %vm, %Value %sba.raw5, %Value %sba.new_v)
+  ret i1 %sba.u5
+
 unknown:
   ret i1 false
 }'.
@@ -6605,6 +6683,7 @@ builtin_op_to_id('char_code/2', 37).
 builtin_op_to_id('atom_chars/2', 38).
 builtin_op_to_id('between/3', 39).
 builtin_op_to_id('atom_concat/3', 40).
+builtin_op_to_id('sub_atom/5', 41).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
