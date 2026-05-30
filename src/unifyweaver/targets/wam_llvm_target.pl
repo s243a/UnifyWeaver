@@ -3404,6 +3404,8 @@ entry:
     i32 42, label %builtin_atom_number
     i32 43, label %builtin_number_codes
     i32 44, label %builtin_number_chars
+    i32 45, label %builtin_upcase_atom
+    i32 46, label %builtin_downcase_atom
   ]
 
 builtin_is:
@@ -5707,6 +5709,124 @@ nch.r_parse_done:
   %nch.r_uok = call i1 @wam_unify_value(%WamState* %vm, %Value %nch.r_raw1, %Value %nch.r_rev_v)
   ret i1 %nch.r_uok
 
+builtin_upcase_atom:
+  ; M35: upcase_atom(+Atom, ?Upper) -- map ''a''..''z'' to ''A''..''Z'',
+  ; pass other bytes through unchanged. Requires A1 bound atom; A2
+  ; can be unbound (binds) or bound atom (unify-equality check).
+  %uca.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %uca.t1 = extractvalue %Value %uca.a1, 0
+  %uca.is_atom = icmp eq i32 %uca.t1, 0
+  br i1 %uca.is_atom, label %uca.lookup, label %uca.fail
+uca.fail:
+  ret i1 false
+uca.lookup:
+  %uca.aid = extractvalue %Value %uca.a1, 1
+  %uca.str = call i8* @wam_atom_to_string(i64 %uca.aid)
+  %uca.str_null = icmp eq i8* %uca.str, null
+  br i1 %uca.str_null, label %uca.fail, label %uca.measure
+uca.measure:
+  br label %uca.m_loop
+uca.m_loop:
+  %uca.mp = phi i8* [ %uca.str, %uca.measure ], [ %uca.mpn, %uca.m_step ]
+  %uca.mn = phi i64 [ 0, %uca.measure ], [ %uca.mn1, %uca.m_step ]
+  %uca.mc = load i8, i8* %uca.mp
+  %uca.mz = icmp eq i8 %uca.mc, 0
+  br i1 %uca.mz, label %uca.alloc, label %uca.m_step
+uca.m_step:
+  %uca.mpn = getelementptr i8, i8* %uca.mp, i32 1
+  %uca.mn1 = add i64 %uca.mn, 1
+  br label %uca.m_loop
+uca.alloc:
+  call void @wam_arena_ensure()
+  %uca.bufsz = add i64 %uca.mn, 1
+  %uca.buf = call i8* @wam_arena_alloc(i64 %uca.bufsz)
+  br label %uca.x_loop
+uca.x_loop:
+  %uca.xi = phi i64 [ 0, %uca.alloc ], [ %uca.xi1, %uca.x_step ]
+  %uca.xdone = icmp uge i64 %uca.xi, %uca.mn
+  br i1 %uca.xdone, label %uca.x_term, label %uca.x_step
+uca.x_step:
+  %uca.xsrc = getelementptr i8, i8* %uca.str, i64 %uca.xi
+  %uca.xch = load i8, i8* %uca.xsrc
+  ; Lowercase if ''a''..''z'' (97..122), else passthrough.
+  %uca.xge = icmp uge i8 %uca.xch, 97
+  %uca.xle = icmp ule i8 %uca.xch, 122
+  %uca.xlow = and i1 %uca.xge, %uca.xle
+  %uca.xup = sub i8 %uca.xch, 32
+  %uca.xout = select i1 %uca.xlow, i8 %uca.xup, i8 %uca.xch
+  %uca.xdst = getelementptr i8, i8* %uca.buf, i64 %uca.xi
+  store i8 %uca.xout, i8* %uca.xdst
+  %uca.xi1 = add i64 %uca.xi, 1
+  br label %uca.x_loop
+uca.x_term:
+  %uca.term_dst = getelementptr i8, i8* %uca.buf, i64 %uca.mn
+  store i8 0, i8* %uca.term_dst
+  %uca.new_id = call i64 @wam_intern_atom(i8* %uca.buf, i64 %uca.mn)
+  %uca.new_v0 = insertvalue %Value undef, i32 0, 0
+  %uca.new_v = insertvalue %Value %uca.new_v0, i64 %uca.new_id, 1
+  %uca.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %uca.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %uca.raw2, %Value %uca.new_v)
+  ret i1 %uca.uok
+
+builtin_downcase_atom:
+  ; M35: downcase_atom(+Atom, ?Lower) -- map ''A''..''Z'' to ''a''..''z'',
+  ; pass other bytes through unchanged. Same shape as upcase_atom but
+  ; with the inverse byte transform.
+  %dca.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %dca.t1 = extractvalue %Value %dca.a1, 0
+  %dca.is_atom = icmp eq i32 %dca.t1, 0
+  br i1 %dca.is_atom, label %dca.lookup, label %dca.fail
+dca.fail:
+  ret i1 false
+dca.lookup:
+  %dca.aid = extractvalue %Value %dca.a1, 1
+  %dca.str = call i8* @wam_atom_to_string(i64 %dca.aid)
+  %dca.str_null = icmp eq i8* %dca.str, null
+  br i1 %dca.str_null, label %dca.fail, label %dca.measure
+dca.measure:
+  br label %dca.m_loop
+dca.m_loop:
+  %dca.mp = phi i8* [ %dca.str, %dca.measure ], [ %dca.mpn, %dca.m_step ]
+  %dca.mn = phi i64 [ 0, %dca.measure ], [ %dca.mn1, %dca.m_step ]
+  %dca.mc = load i8, i8* %dca.mp
+  %dca.mz = icmp eq i8 %dca.mc, 0
+  br i1 %dca.mz, label %dca.alloc, label %dca.m_step
+dca.m_step:
+  %dca.mpn = getelementptr i8, i8* %dca.mp, i32 1
+  %dca.mn1 = add i64 %dca.mn, 1
+  br label %dca.m_loop
+dca.alloc:
+  call void @wam_arena_ensure()
+  %dca.bufsz = add i64 %dca.mn, 1
+  %dca.buf = call i8* @wam_arena_alloc(i64 %dca.bufsz)
+  br label %dca.x_loop
+dca.x_loop:
+  %dca.xi = phi i64 [ 0, %dca.alloc ], [ %dca.xi1, %dca.x_step ]
+  %dca.xdone = icmp uge i64 %dca.xi, %dca.mn
+  br i1 %dca.xdone, label %dca.x_term, label %dca.x_step
+dca.x_step:
+  %dca.xsrc = getelementptr i8, i8* %dca.str, i64 %dca.xi
+  %dca.xch = load i8, i8* %dca.xsrc
+  ; Uppercase if ''A''..''Z'' (65..90), else passthrough.
+  %dca.xge = icmp uge i8 %dca.xch, 65
+  %dca.xle = icmp ule i8 %dca.xch, 90
+  %dca.xupp = and i1 %dca.xge, %dca.xle
+  %dca.xlow = add i8 %dca.xch, 32
+  %dca.xout = select i1 %dca.xupp, i8 %dca.xlow, i8 %dca.xch
+  %dca.xdst = getelementptr i8, i8* %dca.buf, i64 %dca.xi
+  store i8 %dca.xout, i8* %dca.xdst
+  %dca.xi1 = add i64 %dca.xi, 1
+  br label %dca.x_loop
+dca.x_term:
+  %dca.term_dst = getelementptr i8, i8* %dca.buf, i64 %dca.mn
+  store i8 0, i8* %dca.term_dst
+  %dca.new_id = call i64 @wam_intern_atom(i8* %dca.buf, i64 %dca.mn)
+  %dca.new_v0 = insertvalue %Value undef, i32 0, 0
+  %dca.new_v = insertvalue %Value %dca.new_v0, i64 %dca.new_id, 1
+  %dca.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %dca.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %dca.raw2, %Value %dca.new_v)
+  ret i1 %dca.uok
+
 unknown:
   ret i1 false
 }'.
@@ -7124,6 +7244,8 @@ builtin_op_to_id('sub_atom/5', 41).
 builtin_op_to_id('atom_number/2', 42).
 builtin_op_to_id('number_codes/2', 43).
 builtin_op_to_id('number_chars/2', 44).
+builtin_op_to_id('upcase_atom/2', 45).
+builtin_op_to_id('downcase_atom/2', 46).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
