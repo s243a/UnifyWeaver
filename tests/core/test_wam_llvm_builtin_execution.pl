@@ -518,6 +518,34 @@ test_write_list_of_pairs(_, R) :-
     format('~w', [L]),
     R is 1.
 
+% M23: 2-char symbolic operators in pretty-printer. Same arity=2
+% path as M22 but for functors of length 2 with no word boundary
+% (i.e. all-symbolic): ``->``, ``:-``, ``==``, ``\\=``, ``=<``,
+% ``>=``, ``//``, ``**``.
+:- dynamic test_write_arrow/2.
+test_write_arrow(_, R) :- T = (a->b), format('~w', [T]), R is 1.
+
+:- dynamic test_write_neck/2.
+test_write_neck(_, R) :- T = (h :- g), format('~w', [T]), R is 1.
+
+:- dynamic test_write_struct_eq/2.
+test_write_struct_eq(_, R) :- T = (1==2), format('~w', [T]), R is 1.
+
+:- dynamic test_write_not_unify/2.
+test_write_not_unify(_, R) :- T = (a\=b), format('~w', [T]), R is 1.
+
+:- dynamic test_write_le/2.
+test_write_le(_, R) :- T = (3=<4), format('~w', [T]), R is 1.
+
+:- dynamic test_write_ge/2.
+test_write_ge(_, R) :- T = (5>=4), format('~w', [T]), R is 1.
+
+:- dynamic test_write_int_div/2.
+test_write_int_div(_, R) :- T = (7//2), format('~w', [T]), R is 1.
+
+:- dynamic test_write_pow/2.
+test_write_pow(_, R) :- T = (2**8), format('~w', [T]), R is 1.
+
 % M15: precision directives ~Nf (fixed-point) and ~Ne (scientific).
 % Parses the digit run between ~ and f/e at runtime, then routes the
 % next arg through printf "%.*f" / "%.*e" with the parsed precision.
@@ -1024,6 +1052,15 @@ test_all :-
        run_fmt_test('~w of -(x)', test_write_neg, "-x"),
        run_fmt_test('~w of [a-1, b-2]',
                     test_write_list_of_pairs, "[a-1, b-2]"),
+       format('--- M23 two-char symbolic operator notation ---~n'),
+       run_fmt_test('~w of (a->b)', test_write_arrow, "a->b"),
+       run_fmt_test('~w of (h :- g)', test_write_neck, "h:-g"),
+       run_fmt_test('~w of (1==2)', test_write_struct_eq, "1==2"),
+       run_fmt_test('~w of (a\\=b)', test_write_not_unify, "a\\=b"),
+       run_fmt_test('~w of (3=<4)', test_write_le, "3=<4"),
+       run_fmt_test('~w of (5>=4)', test_write_ge, "5>=4"),
+       run_fmt_test('~w of (7//2)', test_write_int_div, "7//2"),
+       run_fmt_test('~w of (2**8)', test_write_pow, "2**8"),
        format('--- M15 precision directives (~~Nf / ~~Ne) ---~n'),
        run_fmt_test('"~6f~n" with 0.25', test_fmt_6f,
                     "0.250000\n"),

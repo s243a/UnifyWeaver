@@ -1880,21 +1880,67 @@ wv.list_done:
   ret void
 
 wv.term:
-  ; M22: detect simple infix / prefix operator notation before
-  ; falling through to the canonical functor(args) form. Only
-  ; single-char operators are recognised here -- 2-char operators
-  ; like ``->`` / ``:-`` / ``=:=`` need a small lookup and are
-  ; deferred to a follow-up.
+  ; M22 / M23: detect infix / prefix operator notation before
+  ; falling through to the canonical functor(args) form.
+  ; Single-char ops (fn[1] == 0): M22 path.
+  ; Two-char ops (fn[1] != 0, fn[2] == 0): M23 path. Symbolic 2-byte
+  ; operators like ``->`` / ``:-`` / ``==`` / ``=<`` print without
+  ; spaces; word-like 2-char ops (``is``, ``mod``, ``xor``) need
+  ; word-boundary spacing and are deferred.
   %wv.fn1_ptr = getelementptr i8, i8* %wv.fn_ptr, i32 1
   %wv.fn1 = load i8, i8* %wv.fn1_ptr
   %wv.fn1_zero = icmp eq i8 %wv.fn1, 0
-  br i1 %wv.fn1_zero, label %wv.maybe_op, label %wv.canonical
+  br i1 %wv.fn1_zero, label %wv.maybe_op, label %wv.maybe_op2
 
 wv.maybe_op:
   %wv.fn0_char = load i8, i8* %wv.fn_ptr
   %wv.is_binary = icmp eq i32 %wv.arity, 2
   %wv.is_unary = icmp eq i32 %wv.arity, 1
   br i1 %wv.is_binary, label %wv.binary_op, label %wv.unary_check
+
+wv.maybe_op2:
+  ; Only consider 2-char ops for arity=2.
+  %wv.b2 = icmp eq i32 %wv.arity, 2
+  br i1 %wv.b2, label %wv.check_2char, label %wv.canonical
+
+wv.check_2char:
+  ; fn[2] must be 0 -- ops are exactly 2 bytes.
+  %wv.fn2_ptr = getelementptr i8, i8* %wv.fn_ptr, i32 2
+  %wv.fn2 = load i8, i8* %wv.fn2_ptr
+  %wv.fn2_zero = icmp eq i8 %wv.fn2, 0
+  br i1 %wv.fn2_zero, label %wv.binary_op2, label %wv.canonical
+
+wv.binary_op2:
+  ; Pack (fn[0], fn[1]) into i16: (fn[0] << 8) | fn[1].
+  %wv.fn0_c2 = load i8, i8* %wv.fn_ptr
+  %wv.fn0_z16 = zext i8 %wv.fn0_c2 to i16
+  %wv.fn1_z16 = zext i8 %wv.fn1 to i16
+  %wv.fn0_shift = shl i16 %wv.fn0_z16, 8
+  %wv.packed = or i16 %wv.fn0_shift, %wv.fn1_z16
+  switch i16 %wv.packed, label %wv.canonical [
+    i16 11582, label %wv.infix2  ; ''-'' ''>'' -> ``->``
+    i16 14893, label %wv.infix2  ; '':'' ''-'' -> ``:-``
+    i16 15677, label %wv.infix2  ; ''='' ''='' -> ``==``
+    i16 23613, label %wv.infix2  ; ''\\'' ''='' -> ``\\=``
+    i16 15676, label %wv.infix2  ; ''='' ''<'' -> ``=<``
+    i16 15933, label %wv.infix2  ; ''>'' ''='' -> ``>=``
+    i16 12079, label %wv.infix2  ; ''/'' ''/'' -> ``//``
+    i16 10794, label %wv.infix2  ; ''*'' ''*'' -> ``**``
+  ]
+
+wv.infix2:
+  %wv.i2_a0_ptr = getelementptr %Value, %Value* %wv.args, i32 0
+  %wv.i2_a0 = load %Value, %Value* %wv.i2_a0_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.i2_a0)
+  %wv.i2_fn0_c = load i8, i8* %wv.fn_ptr
+  %wv.i2_fn0_i32 = zext i8 %wv.i2_fn0_c to i32
+  call i32 @putchar(i32 %wv.i2_fn0_i32)
+  %wv.i2_fn1_i32 = zext i8 %wv.fn1 to i32
+  call i32 @putchar(i32 %wv.i2_fn1_i32)
+  %wv.i2_a1_ptr = getelementptr %Value, %Value* %wv.args, i32 1
+  %wv.i2_a1 = load %Value, %Value* %wv.i2_a1_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.i2_a1)
+  ret void
 
 wv.binary_op:
   ; Single-byte binary operators that print as infix without parens.
