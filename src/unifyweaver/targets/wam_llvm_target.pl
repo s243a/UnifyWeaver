@@ -5235,17 +5235,20 @@ ev_eval_unary:
   %u = call %Value @eval_arith_value(%WamState* %vm, %Value %u_raw)
   %u_tag = extractvalue %Value %u, 0
   %u_is_float = icmp eq i32 %u_tag, 2
-  ; M18: dispatch on the first functor byte. Most unary math ops are
-  ; uniquely identified by their first letter; ceiling/cos and sqrt/
-  ; sign/sin share initials and disambiguate on the second byte.
+  ; M18/M20: dispatch on the first functor byte. Most unary math ops
+  ; are uniquely identified by their first letter; the c / s / t
+  ; prefixes have collisions handled by second-byte dispatch in the
+  ; *_disambig labels.
   switch i8 %fn0, label %ev_zero [
     i8 45,  label %ev_neg       ; ''-''
     i8 97,  label %ev_abs       ; ''a''
-    i8 116, label %ev_trunc     ; ''t''
     i8 114, label %ev_round     ; ''r''
     i8 102, label %ev_floor     ; ''f''
-    i8 99,  label %ev_ceil_cos  ; ''c''
-    i8 115, label %ev_sqrt_sign ; ''s''
+    i8 99,  label %ev_ceil_cos  ; ''c'' -> ceiling | cos
+    i8 115, label %ev_sqrt_sign ; ''s'' -> sqrt | sign | sin
+    i8 116, label %ev_trunc_tan ; ''t'' -> truncate | tan
+    i8 108, label %ev_log       ; ''l''
+    i8 101, label %ev_exp       ; ''e''
   ]
 ev_neg:
   br i1 %u_is_float, label %ev_neg_f, label %ev_neg_i
@@ -5310,6 +5313,38 @@ ev_floor_f:
   %floor_v = call %Value @value_integer(i64 %floor_r_i)
   ret %Value %floor_v
 
+ev_trunc_tan:
+  ; ''t'' -> truncate (second byte ''r'') | tan (second byte ''a'').
+  %tt_fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %tt_fn1 = load i8, i8* %tt_fn1_ptr
+  switch i8 %tt_fn1, label %ev_zero [
+    i8 114, label %ev_trunc  ; ''r''
+    i8 97,  label %ev_tan    ; ''a''
+  ]
+
+ev_tan:
+  ; tan(x) = sin(x) / cos(x); always Float.
+  %tan_d = call double @value_to_double(%Value %u)
+  %tan_s = call double @llvm.sin.f64(double %tan_d)
+  %tan_c = call double @llvm.cos.f64(double %tan_d)
+  %tan_r = fdiv double %tan_s, %tan_c
+  %tan_v = call %Value @value_float(double %tan_r)
+  ret %Value %tan_v
+
+ev_log:
+  ; log(x) -> natural log, always Float.
+  %log_d = call double @value_to_double(%Value %u)
+  %log_r = call double @llvm.log.f64(double %log_d)
+  %log_v = call %Value @value_float(double %log_r)
+  ret %Value %log_v
+
+ev_exp:
+  ; exp(x) -> e^x, always Float.
+  %exp_d = call double @value_to_double(%Value %u)
+  %exp_r = call double @llvm.exp.f64(double %exp_d)
+  %exp_v = call %Value @value_float(double %exp_r)
+  ret %Value %exp_v
+
 ev_ceil_cos:
   ; Disambiguate ceiling vs cos on the second byte: ''e'' -> ceiling,
   ; ''o'' -> cos. Anything else falls back to ev_zero.
@@ -5317,7 +5352,15 @@ ev_ceil_cos:
   %cc_fn1 = load i8, i8* %cc_fn1_ptr
   switch i8 %cc_fn1, label %ev_zero [
     i8 101, label %ev_ceil  ; ''e''
+    i8 111, label %ev_cos   ; ''o''
   ]
+
+ev_cos:
+  %cos_d = call double @value_to_double(%Value %u)
+  %cos_r = call double @llvm.cos.f64(double %cos_d)
+  %cos_v = call %Value @value_float(double %cos_r)
+  ret %Value %cos_v
+
 ev_ceil:
   br i1 %u_is_float, label %ev_ceil_f, label %ev_ceil_i
 ev_ceil_i:
@@ -5330,18 +5373,30 @@ ev_ceil_f:
   ret %Value %ceil_v
 
 ev_sqrt_sign:
-  ; Disambiguate sqrt vs sign on the second byte: ''q'' -> sqrt,
-  ; ''i'' -> sign. (sin/cos/log/exp are not implemented; they''d add
-  ; libm dependencies the current target avoids.)
+  ; Disambiguate sqrt | sign | sin. Second byte routes to sqrt
+  ; (``q``) directly; for ``i`` we peek at the third byte to split
+  ; sign (``g``) from sin (``n``).
   %ss_fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
   %ss_fn1 = load i8, i8* %ss_fn1_ptr
   switch i8 %ss_fn1, label %ev_zero [
-    i8 113, label %ev_sqrt  ; ''q''
-    i8 105, label %ev_sign  ; ''i'' (sign -- only handle ``si`` -> sign,
-                            ;  sin is omitted to keep the dispatch
-                            ;  shallow; callers wanting sin can use a
-                            ;  Taylor series in user code.)
+    i8 113, label %ev_sqrt        ; ''q''
+    i8 105, label %ev_sign_or_sin ; ''i''
   ]
+
+ev_sign_or_sin:
+  %ssi_fn2_ptr = getelementptr i8, i8* %fn_ptr, i32 2
+  %ssi_fn2 = load i8, i8* %ssi_fn2_ptr
+  switch i8 %ssi_fn2, label %ev_zero [
+    i8 103, label %ev_sign  ; ''g'' (sign)
+    i8 110, label %ev_sin   ; ''n'' (sin)
+  ]
+
+ev_sin:
+  %sin_d = call double @value_to_double(%Value %u)
+  %sin_r = call double @llvm.sin.f64(double %sin_d)
+  %sin_v = call %Value @value_float(double %sin_r)
+  ret %Value %sin_v
+
 ev_sqrt:
   ; sqrt always returns Float (Prolog ``sqrt(4)`` -> 2.0, not 2).
   %sqrt_d = call double @value_to_double(%Value %u)

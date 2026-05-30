@@ -351,6 +351,40 @@ test_atom_codes_length(_, R) :-
     length(Cs, N),
     R is N.   % 5
 
+% M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
+% intrinsics that the M18 -lm rollout already links. Verified via
+% truncate(... * scale) so the shell exit code can carry an integer
+% close to the expected value (the Prolog-side truncate makes the
+% result int-typed before is/2 boxes it).
+:- dynamic test_sin_pi_half/2.
+test_sin_pi_half(_, R) :-
+    % sin(pi/2) = 1.0; *100 -> 100. We approximate pi as 22/7 to
+    % avoid needing a runtime pi constant (close enough for the
+    % exit-code precision the test driver carries).
+    X is sin(22/7/2),
+    R is truncate(X * 100).   % ~ 99 (22/7 is slightly off pi)
+
+:- dynamic test_cos_zero/2.
+test_cos_zero(_, R) :-
+    X is cos(0),
+    R is truncate(X * 100).   % 100
+
+:- dynamic test_tan_zero/2.
+test_tan_zero(_, R) :-
+    X is tan(0),
+    R is truncate(X * 100).   % 0
+
+:- dynamic test_log_e/2.
+test_log_e(_, R) :-
+    % log(e^2) = 2; emit via exp + log round-trip.
+    X is log(exp(2)),
+    R is truncate(X).   % 2
+
+:- dynamic test_exp_zero/2.
+test_exp_zero(_, R) :-
+    X is exp(0),
+    R is truncate(X).   % 1
+
 % M14: float-aware comparison ops. Pre-M14, builtin_gt/lt/etc read
 % the register payload as raw i64 -- meaningless when one operand
 % is a Float because float bits aren''t the numeric value. Also,
@@ -885,6 +919,17 @@ test_all :-
                    test_atom_codes_second, 0, 101),
        run_test_r0('length(atom_codes(world)) -> 5',
                    test_atom_codes_length, 0, 5),
+       format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
+       run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
+                   test_sin_pi_half, 0, 99),
+       run_test_r0('truncate(cos(0) * 100) -> 100',
+                   test_cos_zero, 0, 100),
+       run_test_r0('truncate(tan(0) * 100) -> 0',
+                   test_tan_zero, 0, 0),
+       run_test_r0('truncate(log(exp(2))) -> 2',
+                   test_log_e, 0, 2),
+       run_test_r0('truncate(exp(0)) -> 1',
+                   test_exp_zero, 0, 1),
        format('--- M14 float-aware comparisons + float sum ---~n'),
        run_test_r0('1/4 > 0 -> 1', test_cmp_float_gt, 0, 1),
        run_test_r0('-1/4 > 0 -> 0', test_cmp_float_gt_neg, 0, 0),
