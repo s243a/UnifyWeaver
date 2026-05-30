@@ -304,6 +304,29 @@ test(compile_runtime_reads_static_runtime_source) :-
 :- end_tests(wam_python_phase_a).
 
 % ============================================================================
+% Items-mode migration audit
+% ============================================================================
+
+:- begin_tests(wam_python_items_mode_audit).
+
+test(python_target_still_uses_text_wam_generation) :-
+    once(source_file(wam_python_target:compile_wam_predicate_to_python(_, _, _, _), Path)),
+    read_file_to_string(Path, Content, []),
+    sub_string(Content, _, _, _, "compile_predicate_to_wam(Pred/Arity, [], WamCode)"),
+    sub_string(Content, _, _, _, "compile_predicate_to_wam(Module:Pred/Arity, [], WamText)"),
+    sub_string(Content, _, _, _, "parse_wam_text_py(WamCode, Instrs)"),
+    sub_string(Content, _, _, _, "wam_code_to_python_instructions(WamCode"),
+    !.
+
+test(python_items_mode_migration_target_not_yet_present) :-
+    once(source_file(wam_python_target:compile_wam_predicate_to_python(_, _, _, _), Path)),
+    read_file_to_string(Path, Content, []),
+    \+ sub_string(Content, _, _, _, "compile_predicate_to_wam_items"),
+    \+ sub_string(Content, _, _, _, "compile_wam_predicate_items_to_python").
+
+:- end_tests(wam_python_items_mode_audit).
+
+% ============================================================================
 % Phase B: Label pre-resolution — load_program, call_pc, run_wam(code, labels, ...)
 % ============================================================================
 
