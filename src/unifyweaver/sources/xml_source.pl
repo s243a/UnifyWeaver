@@ -1224,11 +1224,25 @@ known_namespace(dcterms, 'http://purl.org/dc/terms/').
 :- multifile template_system:template/2.
 
 % Template for lxml iterparse engine
+%
+% Python detection: try `python` then `python3`, picking the first
+% whose --version exits 0.  Necessary on Windows where `python3` is
+% often the Microsoft Store app-execution alias (exits 49 and prints
+% an install prompt to stderr).  Linux and macOS distros usually
+% accept either name.
 template_system:template(xml_iterparse_source, '#!/bin/bash
 # {{pred}} - XML source (lxml iterparse)
 
 {{pred}}() {
-    python3 /dev/fd/3 3<<\'EOF\'
+    local _uw_py=""
+    for _uw_cand in python python3; do
+        if "$_uw_cand" --version >/dev/null 2>&1; then _uw_py="$_uw_cand"; break; fi
+    done
+    if [[ -z "$_uw_py" ]]; then
+        echo "Error: no working python interpreter found on PATH" >&2
+        return 127
+    fi
+    "$_uw_py" - <<\'EOF\'
 {{python_code}}
 EOF
 }
@@ -1266,7 +1280,16 @@ template_system:template(xml_xmllint_source, Template) :-
         '        return 127\n',
         '    fi\n',
         '\n',
-        '    python3 - <<\'PY\' "${cmd[@]}" -- \'{{file}}\' \'{{xpath}}\'\n',
+        '    local _uw_py=""\n',
+        '    for _uw_cand in python python3; do\n',
+        '        if "$_uw_cand" --version >/dev/null 2>&1; then _uw_py="$_uw_cand"; break; fi\n',
+        '    done\n',
+        '    if [[ -z "$_uw_py" ]]; then\n',
+        '        echo "Error: no working python interpreter found on PATH" >&2\n',
+        '        return 127\n',
+        '    fi\n',
+        '\n',
+        '    "$_uw_py" - <<\'PY\' "${cmd[@]}" -- \'{{file}}\' \'{{xpath}}\'\n',
         'import re\n',
         'import subprocess\n',
         'import sys\n',
