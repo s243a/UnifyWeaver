@@ -351,6 +351,32 @@ test_atom_codes_length(_, R) :-
     length(Cs, N),
     R is N.   % 5
 
+% M26: char_code/2 -- bidirectional char-atom <-> integer-code primitive.
+% Forward mode walks the single-char atom''s string and takes the first
+% byte; reverse mode looks up the @wam_char_to_atom_id table populated
+% with all printable ASCII (32..126) at module build time.
+:- dynamic test_char_code_forward_h/2.
+test_char_code_forward_h(_, R) :-
+    char_code(h, X),
+    R is X.   % 104
+
+:- dynamic test_char_code_forward_z/2.
+test_char_code_forward_z(_, R) :-
+    char_code(z, X),
+    R is X.   % 122
+
+:- dynamic test_char_code_reverse_h/2.
+test_char_code_reverse_h(_, R) :-
+    char_code(C, 104),
+    char_code(C, X),    % round-trip through forward to read the code back
+    R is X.             % 104
+
+:- dynamic test_char_code_check/2.
+test_char_code_check(_, R) :-
+    % Both bound, code matches: succeeds.
+    char_code(a, 97),
+    R is 1.
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -1080,6 +1106,15 @@ test_all :-
                    test_atom_codes_second, 0, 101),
        run_test_r0('length(atom_codes(world)) -> 5',
                    test_atom_codes_length, 0, 5),
+       format('--- M26 char_code/2 ---~n'),
+       run_test_r0('char_code(h, X) -> 104',
+                   test_char_code_forward_h, 0, 104),
+       run_test_r0('char_code(z, X) -> 122',
+                   test_char_code_forward_z, 0, 122),
+       run_test_r0('char_code(C, 104), char_code(C, X) -> 104',
+                   test_char_code_reverse_h, 0, 104),
+       run_test_r0('char_code(a, 97) (check mode) -> 1',
+                   test_char_code_check, 0, 1),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
