@@ -3624,48 +3624,13 @@ builtin_neq:
   ret i1 %neq.r
 
 builtin_write:
-  ; M19: dispatch on tag so write/1 prints Integers, Floats and
-  ; Atoms (via the M12 atom-string table). Compounds and other tags
-  ; print a placeholder `_` -- full term pretty-printing is deferred.
-  %wr.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
-  %wr.tag = call i32 @value_tag(%Value %wr.a1)
-  switch i32 %wr.tag, label %wr.print_anon [
-    i32 0, label %wr.print_atom
-    i32 1, label %wr.print_int
-    i32 2, label %wr.print_float
-  ]
-
-wr.print_int:
-  %wr.pay = call i64 @value_payload(%Value %wr.a1)
-  %wr.fmt_lld = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
-  call i32 (i8*, ...) @printf(i8* %wr.fmt_lld, i64 %wr.pay)
-  br label %wr.done
-
-wr.print_float:
-  %wr.fbits = call i64 @value_payload(%Value %wr.a1)
-  %wr.fval = bitcast i64 %wr.fbits to double
-  %wr.fmt_dbl = getelementptr [3 x i8], [3 x i8]* @.fmt_dbl, i32 0, i32 0
-  call i32 (i8*, ...) @printf(i8* %wr.fmt_dbl, double %wr.fval)
-  br label %wr.done
-
-wr.print_atom:
-  %wr.aid = call i64 @value_payload(%Value %wr.a1)
-  %wr.astr = call i8* @wam_atom_to_string(i64 %wr.aid)
-  %wr.astr_null = icmp eq i8* %wr.astr, null
-  br i1 %wr.astr_null, label %wr.done, label %wr.print_atom_go
-wr.print_atom_go:
-  %wr.fmt_str = getelementptr [3 x i8], [3 x i8]* @.fmt_str, i32 0, i32 0
-  call i32 (i8*, ...) @printf(i8* %wr.fmt_str, i8* %wr.astr)
-  br label %wr.done
-
-wr.print_anon:
-  ; Compound / Ref / Unbound / Bool -- placeholder. Full pretty-
-  ; printing of compounds (with parens + args) is deferred; format/2
-  ; with ~w handles the more common per-arg printing.
-  call i32 @putchar(i32 95)
-  br label %wr.done
-
-wr.done:
+  ; M21: route through @wam_write_value which handles all tags
+  ; (Integer, Float, Atom, Compound, Unbound). Compounds print as
+  ; ``functor(arg1, arg2, ...)`` with recursive nested terms; the
+  ; ``[|]/2`` functor special-cases to list notation. The previous
+  ; M19 inline dispatch lives on inside the helper.
+  %wr.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  call void @wam_write_value(%WamState* %vm, %Value %wr.a1)
   ret i1 true
 
 builtin_nl:
@@ -4576,50 +4541,19 @@ f2.directive_w:
   br i1 %f2.has_arg, label %f2.read_arg, label %f2.no_arg
 
 f2.read_arg:
+  ; M21: route ~w through @wam_write_value so the per-tag dispatch
+  ; (including compound pretty-printing as ``functor(...)`` and list
+  ; notation for [|]/2 chains) is shared with write/1. Pre-M21 the
+  ; inline switch printed Compounds as ``_``.
   %f2.cp_bits = extractvalue %Value %f2.args_d, 1
   %f2.cp = inttoptr i64 %f2.cp_bits to %Compound*
   %f2.cargs_slot = getelementptr %Compound, %Compound* %f2.cp, i32 0, i32 2
   %f2.cargs = load %Value*, %Value** %f2.cargs_slot
   %f2.head_ptr = getelementptr %Value, %Value* %f2.cargs, i32 0
   %f2.head_raw = load %Value, %Value* %f2.head_ptr
-  %f2.head = call %Value @wam_deref_value(%WamState* %vm, %Value %f2.head_raw)
   %f2.tail_ptr = getelementptr %Value, %Value* %f2.cargs, i32 1
   %f2.tail = load %Value, %Value* %f2.tail_ptr
-  %f2.head_tag = extractvalue %Value %f2.head, 0
-  switch i32 %f2.head_tag, label %f2.print_anon [
-    i32 0, label %f2.print_atom
-    i32 1, label %f2.print_int
-    i32 2, label %f2.print_float
-  ]
-
-f2.print_int:
-  %f2.iv = extractvalue %Value %f2.head, 1
-  %f2.fmt_lld = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
-  call i32 (i8*, ...) @printf(i8* %f2.fmt_lld, i64 %f2.iv)
-  br label %f2.after_w
-
-f2.print_float:
-  %f2.fbits = extractvalue %Value %f2.head, 1
-  %f2.fval = bitcast i64 %f2.fbits to double
-  %f2.fmt_dbl = getelementptr [3 x i8], [3 x i8]* @.fmt_dbl, i32 0, i32 0
-  call i32 (i8*, ...) @printf(i8* %f2.fmt_dbl, double %f2.fval)
-  br label %f2.after_w
-
-f2.print_atom:
-  %f2.aid = extractvalue %Value %f2.head, 1
-  %f2.astr = call i8* @wam_atom_to_string(i64 %f2.aid)
-  %f2.astr_null = icmp eq i8* %f2.astr, null
-  br i1 %f2.astr_null, label %f2.after_w, label %f2.print_atom_go
-f2.print_atom_go:
-  %f2.fmt_str = getelementptr [3 x i8], [3 x i8]* @.fmt_str, i32 0, i32 0
-  call i32 (i8*, ...) @printf(i8* %f2.fmt_str, i8* %f2.astr)
-  br label %f2.after_w
-
-f2.print_anon:
-  ; Compound and other tags: print underscore placeholder. Full
-  ; pretty-printing is deferred; effective_distance''s format strings
-  ; only use atoms, integers, and floats.
-  call i32 @putchar(i32 95)
+  call void @wam_write_value(%WamState* %vm, %Value %f2.head_raw)
   br label %f2.after_w
 
 f2.after_w:

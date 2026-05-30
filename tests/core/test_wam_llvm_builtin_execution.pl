@@ -459,6 +459,38 @@ test_fmt_tilde_escape(_, R) :-
     format('about ~~w~n', []),
     R is 1.
 
+% M21: compound pretty-printing through write/1. The runtime helper
+% @wam_write_value walks Compounds recursively, printing them as
+% functor(arg, ...) or list notation for [|]/2 chains. Tested via
+% format/2 ~w which now routes through the same helper -- the test
+% predicates use format() so stdout capture works.
+:- dynamic test_write_list3/2.
+test_write_list3(_, R) :-
+    L = [1, 2, 3],
+    format('~w', [L]),
+    R is 1.
+
+:- dynamic test_write_pair/2.
+test_write_pair(_, R) :-
+    format('~w', [a-b]),
+    R is 1.
+
+:- dynamic test_write_empty/2.
+test_write_empty(_, R) :-
+    format('~w', [[]]),
+    R is 1.
+
+:- dynamic test_write_nested/2.
+test_write_nested(_, R) :-
+    format('~w', [[1, [2, 3], 4]]),
+    R is 1.
+
+:- dynamic test_write_compound/2.
+test_write_compound(_, R) :-
+    T = foo(1, hello, 3.5),
+    format('~w', [T]),
+    R is 1.
+
 % M15: precision directives ~Nf (fixed-point) and ~Ne (scientific).
 % Parses the digit run between ~ and f/e at runtime, then routes the
 % next arg through printf "%.*f" / "%.*e" with the parsed precision.
@@ -949,6 +981,13 @@ test_all :-
                     "color=red\n"),
        run_fmt_test('"about ~~w~n" tilde escape', test_fmt_tilde_escape,
                     "about ~w\n"),
+       format('--- M21 compound pretty-printing through write/1 ---~n'),
+       run_fmt_test('~w of [1,2,3]', test_write_list3, "[1, 2, 3]"),
+       run_fmt_test('~w of a-b', test_write_pair, "-(a, b)"),
+       run_fmt_test('~w of []', test_write_empty, "[]"),
+       run_fmt_test('~w of [1,[2,3],4]', test_write_nested, "[1, [2, 3], 4]"),
+       run_fmt_test('~w of foo(1, hello, 3.5)', test_write_compound,
+                    "foo(1, hello, 3.5)"),
        format('--- M15 precision directives (~~Nf / ~~Ne) ---~n'),
        run_fmt_test('"~6f~n" with 0.25', test_fmt_6f,
                     "0.250000\n"),
