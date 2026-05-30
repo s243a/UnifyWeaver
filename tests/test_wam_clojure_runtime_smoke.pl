@@ -168,6 +168,10 @@
 :- dynamic user:wam_atom_number_unbound_pair/1.
 :- dynamic user:wam_upcase_atom_guard/2.
 :- dynamic user:wam_downcase_atom_guard/2.
+:- dynamic user:wam_upcase_atom_forward/0.
+:- dynamic user:wam_upcase_atom_forward_mismatch/0.
+:- dynamic user:wam_downcase_atom_forward/0.
+:- dynamic user:wam_downcase_atom_forward_mismatch/0.
 :- dynamic user:wam_upcase_atom_unbound_source/1.
 :- dynamic user:wam_downcase_atom_unbound_source/1.
 :- dynamic user:wam_atomic_list_concat_2_guard/1.
@@ -424,6 +428,10 @@ user:wam_atom_number_bad_atom :- atom_number(foo, _).
 user:wam_atom_number_unbound_pair(_) :- user:wam_unbound_arg(A), user:wam_unbound_arg(N), atom_number(A, N).
 user:wam_upcase_atom_guard(A, U) :- upcase_atom(A, U).
 user:wam_downcase_atom_guard(A, L) :- downcase_atom(A, L).
+user:wam_upcase_atom_forward :- upcase_atom(hello, U), U = 'HELLO'.
+user:wam_upcase_atom_forward_mismatch :- upcase_atom(hello, U), U = hello.
+user:wam_downcase_atom_forward :- downcase_atom('HELLO', D), D = hello.
+user:wam_downcase_atom_forward_mismatch :- downcase_atom('HELLO', D), D = 'HELLO'.
 user:wam_upcase_atom_unbound_source(_) :- user:wam_unbound_arg(A), upcase_atom(A, _).
 user:wam_downcase_atom_unbound_source(_) :- user:wam_unbound_arg(A), downcase_atom(A, _).
 user:wam_atomic_list_concat_2_guard(A) :- atomic_list_concat([f,o,o], A).
@@ -685,6 +693,10 @@ run_smoke :-
           user:wam_atom_number_unbound_pair/1,
           user:wam_upcase_atom_guard/2,
           user:wam_downcase_atom_guard/2,
+          user:wam_upcase_atom_forward/0,
+          user:wam_upcase_atom_forward_mismatch/0,
+          user:wam_downcase_atom_forward/0,
+          user:wam_downcase_atom_forward_mismatch/0,
           user:wam_upcase_atom_unbound_source/1,
           user:wam_downcase_atom_unbound_source/1,
           user:wam_atomic_list_concat_2_guard/1,
@@ -1118,6 +1130,10 @@ smoke_cases([
     case('wam_upcase_atom_guard/2', args(hello, hello), "false"),
     case('wam_downcase_atom_guard/2', args('HELLO', hello), "true"),
     case('wam_downcase_atom_guard/2', args('HELLO', 'HELLO'), "false"),
+    case('wam_upcase_atom_forward/0', no_args, "true"),
+    case('wam_upcase_atom_forward_mismatch/0', no_args, "false"),
+    case('wam_downcase_atom_forward/0', no_args, "true"),
+    case('wam_downcase_atom_forward_mismatch/0', no_args, "false"),
     case('wam_upcase_atom_unbound_source/1', a, "false"),
     case('wam_downcase_atom_unbound_source/1', a, "false"),
     case('wam_atomic_list_concat_2_guard/1', foo, "true"),
