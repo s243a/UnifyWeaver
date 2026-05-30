@@ -444,6 +444,46 @@ test_between_count(_, R) :-
     aggregate_all(count, between(1, 7, _), N),
     R is N.   % 7 -- route through is/2 so the result lands in A1
 
+% M29: atom_concat/3 forward mode -- needs runtime atom interning to
+% construct novel atoms not in the static table. Tests the round-trip
+% by piping the result through atom_length / char_code so the test
+% driver gets back an integer the shell can carry.
+:- dynamic test_atom_concat_length/2.
+test_atom_concat_length(_, R) :-
+    atom_concat(hello, world, A),
+    atom_length(A, N),
+    R is N.   % 5 + 5 = 10
+
+:- dynamic test_atom_concat_first/2.
+test_atom_concat_first(_, R) :-
+    atom_concat(ab, cd, A),
+    atom_codes(A, Cs),
+    Cs = [C|_],
+    R is C.   % ''a'' = 97
+
+:- dynamic test_atom_concat_second/2.
+test_atom_concat_second(_, R) :-
+    atom_concat(ab, cd, A),
+    atom_codes(A, Cs),
+    Cs = [_, _, C|_],
+    R is C.   % ''c'' = 99
+
+% Same string interned twice should reuse the dynamic-table entry.
+% Test by interning the same atom_concat twice and verifying the
+% atom ids match (== succeeds for equal atoms).
+:- dynamic test_atom_concat_dedup/2.
+test_atom_concat_dedup(_, R) :-
+    atom_concat(hello, world, A),
+    atom_concat(hello, world, B),
+    ( A == B -> R is 1 ; R is 0 ).
+
+% Empty atom handling.
+:- dynamic test_atom_concat_left_empty/2.
+test_atom_concat_left_empty(_, R) :-
+    atom_concat('', hi, A),
+    atom_length(A, N),
+    R is N.   % 2
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -1202,6 +1242,17 @@ test_all :-
                    test_between_sum, 0, 55),
        run_test_r0('aggregate_all(count, between(1, 7, _)) -> 7',
                    test_between_count, 0, 7),
+       format('--- M29 atom_concat/3 forward + runtime atom interning ---~n'),
+       run_test_r0('atom_length(hello++world) -> 10',
+                   test_atom_concat_length, 0, 10),
+       run_test_r0('atom_codes(ab++cd)[0] -> 97',
+                   test_atom_concat_first, 0, 97),
+       run_test_r0('atom_codes(ab++cd)[2] -> 99',
+                   test_atom_concat_second, 0, 99),
+       run_test_r0('atom_concat twice -> same id (== true) -> 1',
+                   test_atom_concat_dedup, 0, 1),
+       run_test_r0('atom_length('''' ++ hi) -> 2',
+                   test_atom_concat_left_empty, 0, 2),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),

@@ -3399,6 +3399,7 @@ entry:
     i32 37, label %builtin_char_code
     i32 38, label %builtin_atom_chars
     i32 39, label %builtin_between
+    i32 40, label %builtin_atom_concat
   ]
 
 builtin_is:
@@ -4972,6 +4973,82 @@ bet.bind_first:
       i8* %bet.arr_i8, i32 %bet.count, i32 2, i32 %bet.return_pc)
   ret i1 true
 
+builtin_atom_concat:
+  ; M29: atom_concat(A1, A2, A3) -- forward mode only.
+  ;   A1, A2 bound atoms, A3 unbound or atom:
+  ;     concatenate the two strings, intern the result, bind / check A3.
+  ;   anything else: fail (reverse / partial-mode decomposition is
+  ;     enumerable and a separate piece).
+  %atc.v1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %atc.v2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %atc.t1 = extractvalue %Value %atc.v1, 0
+  %atc.t2 = extractvalue %Value %atc.v2, 0
+  %atc.is_atom1 = icmp eq i32 %atc.t1, 0
+  %atc.is_atom2 = icmp eq i32 %atc.t2, 0
+  %atc.both = and i1 %atc.is_atom1, %atc.is_atom2
+  br i1 %atc.both, label %atc.lookup, label %atc.fail
+atc.fail:
+  ret i1 false
+atc.lookup:
+  %atc.id1 = extractvalue %Value %atc.v1, 1
+  %atc.id2 = extractvalue %Value %atc.v2, 1
+  %atc.s1 = call i8* @wam_atom_to_string(i64 %atc.id1)
+  %atc.s2 = call i8* @wam_atom_to_string(i64 %atc.id2)
+  %atc.s1_null = icmp eq i8* %atc.s1, null
+  %atc.s2_null = icmp eq i8* %atc.s2, null
+  %atc.any_null = or i1 %atc.s1_null, %atc.s2_null
+  br i1 %atc.any_null, label %atc.fail, label %atc.measure
+atc.measure:
+  ; Measure both strings.
+  br label %atc.m1_loop
+atc.m1_loop:
+  %atc.m1_p = phi i8* [ %atc.s1, %atc.measure ], [ %atc.m1_pn, %atc.m1_step ]
+  %atc.m1_n = phi i64 [ 0, %atc.measure ], [ %atc.m1_n1, %atc.m1_step ]
+  %atc.m1_c = load i8, i8* %atc.m1_p
+  %atc.m1_z = icmp eq i8 %atc.m1_c, 0
+  br i1 %atc.m1_z, label %atc.m2_init, label %atc.m1_step
+atc.m1_step:
+  %atc.m1_pn = getelementptr i8, i8* %atc.m1_p, i32 1
+  %atc.m1_n1 = add i64 %atc.m1_n, 1
+  br label %atc.m1_loop
+atc.m2_init:
+  br label %atc.m2_loop
+atc.m2_loop:
+  %atc.m2_p = phi i8* [ %atc.s2, %atc.m2_init ], [ %atc.m2_pn, %atc.m2_step ]
+  %atc.m2_n = phi i64 [ 0, %atc.m2_init ], [ %atc.m2_n1, %atc.m2_step ]
+  %atc.m2_c = load i8, i8* %atc.m2_p
+  %atc.m2_z = icmp eq i8 %atc.m2_c, 0
+  br i1 %atc.m2_z, label %atc.cat_alloc, label %atc.m2_step
+atc.m2_step:
+  %atc.m2_pn = getelementptr i8, i8* %atc.m2_p, i32 1
+  %atc.m2_n1 = add i64 %atc.m2_n, 1
+  br label %atc.m2_loop
+atc.cat_alloc:
+  ; Allocate buf for n1 + n2 + 1 bytes on the arena (temporary --
+  ; intern_atom copies it).
+  call void @wam_arena_ensure()
+  %atc.total = add i64 %atc.m1_n, %atc.m2_n
+  %atc.bufsize = add i64 %atc.total, 1
+  %atc.buf = call i8* @wam_arena_alloc(i64 %atc.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %atc.buf, i8* %atc.s1, i64 %atc.m1_n, i1 false)
+  %atc.tail_dst = getelementptr i8, i8* %atc.buf, i64 %atc.m1_n
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %atc.tail_dst, i8* %atc.s2, i64 %atc.m2_n, i1 false)
+  %atc.term_dst = getelementptr i8, i8* %atc.buf, i64 %atc.total
+  store i8 0, i8* %atc.term_dst
+  %atc.new_id = call i64 @wam_intern_atom(i8* %atc.buf, i64 %atc.total)
+  %atc.new_v0 = insertvalue %Value undef, i32 0, 0
+  %atc.new_v = insertvalue %Value %atc.new_v0, i64 %atc.new_id, 1
+  %atc.a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  %atc.a3_unb = call i1 @value_is_unbound(%Value %atc.a3)
+  br i1 %atc.a3_unb, label %atc.bind, label %atc.check
+atc.bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 2)
+  call void @wam_bind_reg(%WamState* %vm, i32 2, %Value %atc.new_v)
+  ret i1 true
+atc.check:
+  %atc.eq = call i1 @value_equals(%Value %atc.a3, %Value %atc.new_v)
+  ret i1 %atc.eq
+
 unknown:
   ret i1 false
 }'.
@@ -5953,12 +6030,23 @@ emit_atom_string_globals(IR) :-
        IR = '@wam_atom_strings = private constant [1 x i8*] [i8* null]
 @wam_atom_string_count = private constant i32 1
 @wam_char_to_atom_id = private constant [128 x i64] zeroinitializer
+@wam_atom_dyn_ptr   = global i8** null
+@wam_atom_dyn_count = global i32 0
+@wam_atom_dyn_cap   = global i32 0
 
 define i8* @wam_atom_to_string(i64 %id) {
   ret i8* null
 }
 
 define i64 @wam_char_to_atom(i64 %ch) {
+  ret i64 0
+}
+
+define i1 @wam_str_eq_n(i8* %str, i64 %len, i8* %cand) {
+  ret i1 false
+}
+
+define i64 @wam_intern_atom(i8* %str, i64 %len) {
   ret i64 0
 }'
     ;  sort(Pairs0, Pairs),   % sort by id
@@ -6016,21 +6104,41 @@ define i64 @wam_char_to_atom(i64 %ch) {
 @wam_atom_string_count = private constant i32 ~w
 @wam_char_to_atom_id = private constant [128 x i64] [~w]
 
+; M29: runtime-interned atom table. Atoms with id >= the static
+; count above live here, indexed by (id - static_count). The table
+; is malloc''d on first intern and grown by realloc; entries are
+; malloc''d C strings owned by the table.
+@wam_atom_dyn_ptr   = global i8** null
+@wam_atom_dyn_count = global i32 0
+@wam_atom_dyn_cap   = global i32 0
+
 define i8* @wam_atom_to_string(i64 %id) {
 entry:
   %cnt = load i32, i32* @wam_atom_string_count
   %cnt64 = zext i32 %cnt to i64
-  %in_range = icmp ult i64 %id, %cnt64
-  br i1 %in_range, label %lookup, label %nullret
-lookup:
+  %in_static = icmp ult i64 %id, %cnt64
+  br i1 %in_static, label %lookup_static, label %check_dyn
+lookup_static:
   %slot_ptr = getelementptr [~w x i8*], [~w x i8*]* @wam_atom_strings, i32 0, i64 %id
   %s = load i8*, i8** %slot_ptr
   ret i8* %s
+check_dyn:
+  ; M29: id >= static_count, try dynamic table.
+  %dyn_idx_64 = sub i64 %id, %cnt64
+  %dyn_cnt = load i32, i32* @wam_atom_dyn_count
+  %dyn_cnt_64 = zext i32 %dyn_cnt to i64
+  %in_dyn = icmp ult i64 %dyn_idx_64, %dyn_cnt_64
+  br i1 %in_dyn, label %lookup_dyn, label %nullret
+lookup_dyn:
+  %dyn_ptr = load i8**, i8*** @wam_atom_dyn_ptr
+  %dyn_slot_ptr = getelementptr i8*, i8** %dyn_ptr, i64 %dyn_idx_64
+  %dyn_s = load i8*, i8** %dyn_slot_ptr
+  ret i8* %dyn_s
 nullret:
   ret i8* null
 }
 
-; M26: byte -> single-char atom id lookup. Returns 0 (sentinel "no
+; M29: byte -> single-char atom id lookup. Returns 0 (sentinel "no
 ; such atom") for non-printable bytes or out-of-range indices.
 define i64 @wam_char_to_atom(i64 %ch) {
 entry:
@@ -6042,8 +6150,130 @@ get:
   ret i64 %id
 zret:
   ret i64 0
+}
+
+; M29: case-sensitive string equality of (str, len) against a
+; null-terminated C string. Returns true iff str[0..len) matches
+; cand[0..len) AND cand[len] == 0.
+define i1 @wam_str_eq_n(i8* %str, i64 %len, i8* %cand) {
+entry:
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %i1, %step ]
+  %done = icmp uge i64 %i, %len
+  br i1 %done, label %check_term, label %step
+step:
+  %sp = getelementptr i8, i8* %str, i64 %i
+  %cp = getelementptr i8, i8* %cand, i64 %i
+  %sc = load i8, i8* %sp
+  %cc = load i8, i8* %cp
+  %eq = icmp eq i8 %sc, %cc
+  %i1 = add i64 %i, 1
+  br i1 %eq, label %loop, label %neq
+neq:
+  ret i1 false
+check_term:
+  %tp = getelementptr i8, i8* %cand, i64 %len
+  %tc = load i8, i8* %tp
+  %term = icmp eq i8 %tc, 0
+  ret i1 %term
+}
+
+; M29: intern an atom by (str, len). Linear scan over static then
+; dynamic table; if found, return existing id. If not found, copy
+; the string into a malloc''d block, append to the dynamic table
+; (growing via realloc as needed), and return the new id.
+define i64 @wam_intern_atom(i8* %str, i64 %len) {
+entry:
+  ; Scan static table.
+  %st_cnt = load i32, i32* @wam_atom_string_count
+  %st_cnt_64 = zext i32 %st_cnt to i64
+  br label %scan_static
+scan_static:
+  %s_i = phi i64 [ 0, %entry ], [ %s_i1, %scan_static_step ]
+  %s_done = icmp uge i64 %s_i, %st_cnt_64
+  br i1 %s_done, label %scan_dyn_init, label %scan_static_check
+scan_static_check:
+  %st_slot_ptr = getelementptr [~w x i8*], [~w x i8*]* @wam_atom_strings, i32 0, i64 %s_i
+  %st_cand = load i8*, i8** %st_slot_ptr
+  %st_null = icmp eq i8* %st_cand, null
+  br i1 %st_null, label %scan_static_step, label %scan_static_cmp
+scan_static_cmp:
+  %st_eq = call i1 @wam_str_eq_n(i8* %str, i64 %len, i8* %st_cand)
+  br i1 %st_eq, label %ret_static_id, label %scan_static_step
+ret_static_id:
+  ret i64 %s_i
+scan_static_step:
+  %s_i1 = add i64 %s_i, 1
+  br label %scan_static
+
+scan_dyn_init:
+  %dyn_cnt = load i32, i32* @wam_atom_dyn_count
+  %dyn_cnt_64 = zext i32 %dyn_cnt to i64
+  %dyn_ptr_0 = load i8**, i8*** @wam_atom_dyn_ptr
+  br label %scan_dyn
+scan_dyn:
+  %d_i = phi i64 [ 0, %scan_dyn_init ], [ %d_i1, %scan_dyn_step ]
+  %d_done = icmp uge i64 %d_i, %dyn_cnt_64
+  br i1 %d_done, label %do_intern, label %scan_dyn_check
+scan_dyn_check:
+  %d_slot_ptr = getelementptr i8*, i8** %dyn_ptr_0, i64 %d_i
+  %d_cand = load i8*, i8** %d_slot_ptr
+  %d_eq = call i1 @wam_str_eq_n(i8* %str, i64 %len, i8* %d_cand)
+  br i1 %d_eq, label %ret_dyn_id, label %scan_dyn_step
+ret_dyn_id:
+  %dyn_id = add i64 %st_cnt_64, %d_i
+  ret i64 %dyn_id
+scan_dyn_step:
+  %d_i1 = add i64 %d_i, 1
+  br label %scan_dyn
+
+do_intern:
+  ; Need to append. First, ensure capacity.
+  %dyn_cap = load i32, i32* @wam_atom_dyn_cap
+  %need_grow = icmp uge i32 %dyn_cnt, %dyn_cap
+  br i1 %need_grow, label %do_grow, label %do_alloc_str
+
+do_grow:
+  ; new_cap = max(8, dyn_cap * 2)
+  %dyn_cap_64 = zext i32 %dyn_cap to i64
+  %doubled = shl i64 %dyn_cap_64, 1
+  %is_small = icmp ult i64 %doubled, 8
+  %new_cap_64 = select i1 %is_small, i64 8, i64 %doubled
+  %new_bytes = shl i64 %new_cap_64, 3   ; i8* is 8 bytes
+  %old_ptr_i8 = bitcast i8** %dyn_ptr_0 to i8*
+  %new_ptr_i8 = call i8* @realloc(i8* %old_ptr_i8, i64 %new_bytes)
+  %new_ptr_null = icmp eq i8* %new_ptr_i8, null
+  br i1 %new_ptr_null, label %intern_fail, label %do_grow_ok
+intern_fail:
+  ret i64 0
+do_grow_ok:
+  %new_ptr = bitcast i8* %new_ptr_i8 to i8**
+  store i8** %new_ptr, i8*** @wam_atom_dyn_ptr
+  %new_cap_i32 = trunc i64 %new_cap_64 to i32
+  store i32 %new_cap_i32, i32* @wam_atom_dyn_cap
+  br label %do_alloc_str
+
+do_alloc_str:
+  ; Allocate len+1 bytes for the null-terminated copy.
+  %str_bytes = add i64 %len, 1
+  %str_buf = call i8* @malloc(i64 %str_bytes)
+  %str_buf_null = icmp eq i8* %str_buf, null
+  br i1 %str_buf_null, label %intern_fail, label %do_copy
+do_copy:
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %str_buf, i8* %str, i64 %len, i1 false)
+  %term_ptr = getelementptr i8, i8* %str_buf, i64 %len
+  store i8 0, i8* %term_ptr
+  ; Append str_buf to dynamic table at index dyn_cnt.
+  %cur_ptr = load i8**, i8*** @wam_atom_dyn_ptr
+  %append_slot = getelementptr i8*, i8** %cur_ptr, i32 %dyn_cnt
+  store i8* %str_buf, i8** %append_slot
+  %new_cnt = add i32 %dyn_cnt, 1
+  store i32 %new_cnt, i32* @wam_atom_dyn_count
+  %new_id = add i64 %st_cnt_64, %dyn_cnt_64
+  ret i64 %new_id
 }',
-           [ArrSize, SlotsStr, ArrSize, CharSlotsStr, ArrSize, ArrSize]),
+           [ArrSize, SlotsStr, ArrSize, CharSlotsStr, ArrSize, ArrSize, ArrSize, ArrSize]),
        atomic_list_concat(StrGlobals, '\n', StrGlobalsStr),
        atomic_list_concat([StrGlobalsStr, LookupTable], '\n\n', IR)
     ).
@@ -6231,6 +6461,7 @@ builtin_op_to_id('atom_codes/2', 36).
 builtin_op_to_id('char_code/2', 37).
 builtin_op_to_id('atom_chars/2', 38).
 builtin_op_to_id('between/3', 39).
+builtin_op_to_id('atom_concat/3', 40).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
