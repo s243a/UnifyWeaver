@@ -154,4 +154,21 @@ test(fsharp_cannot_require_native_parser_yet,
 test(fsharp_off_explicit_none) :-
     wam_target_runtime_parser(wam_fsharp, [runtime_parser(off)], none).
 
+
+% --- Haskell WAM target (compiled mode opt-in only) -----------------------
+
+test(haskell_defaults_to_none) :-
+    wam_target_runtime_parser(wam_haskell, [], none).
+
+test(haskell_can_opt_into_compiled_parser) :-
+    wam_target_runtime_parser(wam_haskell, [runtime_parser(compiled)],
+                              compiled(prolog_term_parser)).
+
+test(haskell_cannot_require_native_parser_yet,
+     [throws(error(domain_error(runtime_parser_mode(wam_haskell), native), _))]) :-
+    wam_target_runtime_parser(wam_haskell, [runtime_parser(native)], _).
+
+test(haskell_off_explicit_none) :-
+    wam_target_runtime_parser(wam_haskell, [runtime_parser(off)], none).
+
 :- end_tests(wam_runtime_parser_capability).
