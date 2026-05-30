@@ -2111,6 +2111,9 @@ is_builtin_pred(compare, 3).      % standard order: -1 / 0 / +1 as atom.
 is_builtin_pred(char_type, 2).    % char classification + case conv.
 is_builtin_pred(upcase_atom, 2).  % whole-atom case conversion: upper.
 is_builtin_pred(downcase_atom, 2).% whole-atom case conversion: lower.
+is_builtin_pred(nth0, 3).         % nth0(+Index, +List, ?Elem) -- 0-indexed.
+is_builtin_pred(nth1, 3).         % nth1(+Index, +List, ?Elem) -- 1-indexed.
+is_builtin_pred(last, 2).         % last(+List, ?Elem).
 is_builtin_pred(numlist, 3).      % integer range generator: [Lo..Hi].
 is_builtin_pred(sort, 2).         % stable sort + dedup (std order).
 is_builtin_pred(msort, 2).        % stable sort, NO dedup (std order).

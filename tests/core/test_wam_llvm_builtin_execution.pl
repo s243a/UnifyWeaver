@@ -830,6 +830,60 @@ test_string_length_empty(_, R) :-
     string_length('', N),
     R is N + 42.   % 42
 
+% M37: nth0/3, nth1/3, last/2 -- list-indexing trio. Forward modes
+% only (Index + List bound).
+
+:- dynamic test_nth0_first/2.
+test_nth0_first(_, R) :-
+    nth0(0, [10, 20, 30], E),
+    R is E.   % 10
+
+:- dynamic test_nth0_middle/2.
+test_nth0_middle(_, R) :-
+    nth0(2, [10, 20, 30, 40], E),
+    R is E.   % 30
+
+:- dynamic test_nth0_last/2.
+test_nth0_last(_, R) :-
+    nth0(3, [10, 20, 30, 40], E),
+    R is E.   % 40
+
+:- dynamic test_nth0_overflow/2.
+test_nth0_overflow(_, R) :-
+    ( nth0(5, [10, 20], _) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_nth0_negative/2.
+test_nth0_negative(_, R) :-
+    ( nth0(-1, [10, 20], _) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_nth1_first/2.
+test_nth1_first(_, R) :-
+    nth1(1, [10, 20, 30], E),
+    R is E.   % 10
+
+:- dynamic test_nth1_third/2.
+test_nth1_third(_, R) :-
+    nth1(3, [10, 20, 30, 40], E),
+    R is E.   % 30
+
+:- dynamic test_nth1_zero/2.
+test_nth1_zero(_, R) :-
+    ( nth1(0, [10, 20], _) -> R is 1 ; R is 0 ).   % 0 -- 1-indexed rejects 0
+
+:- dynamic test_last_simple/2.
+test_last_simple(_, R) :-
+    last([10, 20, 30], E),
+    R is E.   % 30
+
+:- dynamic test_last_singleton/2.
+test_last_singleton(_, R) :-
+    last([99], E),
+    R is E.   % 99
+
+:- dynamic test_last_empty/2.
+test_last_empty(_, R) :-
+    ( last([], _) -> R is 1 ; R is 0 ).   % 0
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -1714,6 +1768,29 @@ test_all :-
                    test_string_length_simple, 0, 5),
        run_test_r0('string_length(\'\', N) + 42 -> 42',
                    test_string_length_empty, 0, 42),
+       format('--- M37 nth0/3 + nth1/3 + last/2 list-indexing ---~n'),
+       run_test_r0('nth0(0, [10,20,30], E) -> 10',
+                   test_nth0_first, 0, 10),
+       run_test_r0('nth0(2, [10,20,30,40], E) -> 30',
+                   test_nth0_middle, 0, 30),
+       run_test_r0('nth0(3, [10,20,30,40], E) -> 40',
+                   test_nth0_last, 0, 40),
+       run_test_r0('nth0(5, [10,20], _) overflow -> 0',
+                   test_nth0_overflow, 0, 0),
+       run_test_r0('nth0(-1, [10,20], _) negative -> 0',
+                   test_nth0_negative, 0, 0),
+       run_test_r0('nth1(1, [10,20,30], E) -> 10',
+                   test_nth1_first, 0, 10),
+       run_test_r0('nth1(3, [10,20,30,40], E) -> 30',
+                   test_nth1_third, 0, 30),
+       run_test_r0('nth1(0, [10,20], _) rejects 0 -> 0',
+                   test_nth1_zero, 0, 0),
+       run_test_r0('last([10,20,30], E) -> 30',
+                   test_last_simple, 0, 30),
+       run_test_r0('last([99], E) -> 99',
+                   test_last_singleton, 0, 99),
+       run_test_r0('last([], _) -> 0',
+                   test_last_empty, 0, 0),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
