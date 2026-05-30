@@ -484,6 +484,62 @@ test_atom_concat_left_empty(_, R) :-
     atom_length(A, N),
     R is N.   % 2
 
+% M30: atom_codes/2 reverse mode. Build an atom from a list of integer
+% codes. Validates the dynamic atom-table grows correctly and that
+% subsequent forward operations (length, concat, ==) see the new atom.
+
+:- dynamic test_atom_codes_reverse_length/2.
+test_atom_codes_reverse_length(_, R) :-
+    atom_codes(A, [104, 105]),   % "hi"
+    atom_length(A, N),
+    R is N.   % 2
+
+:- dynamic test_atom_codes_reverse_concat/2.
+test_atom_codes_reverse_concat(_, R) :-
+    atom_codes(A, [104, 105]),   % "hi"
+    atom_concat(A, lo, B),       % "hilo"
+    atom_length(B, N),
+    R is N.   % 4
+
+% Two reverse-mode interns of the same code list must produce the
+% same atom id (dedup via @wam_str_eq_n linear scan).
+:- dynamic test_atom_codes_reverse_dedup/2.
+test_atom_codes_reverse_dedup(_, R) :-
+    atom_codes(A, [104, 105]),
+    atom_codes(B, [104, 105]),
+    ( A == B -> R is 1 ; R is 0 ).
+
+% Empty code list builds the empty atom.
+:- dynamic test_atom_codes_reverse_empty/2.
+test_atom_codes_reverse_empty(_, R) :-
+    atom_codes(A, []),
+    atom_length(A, N),
+    R is N.   % 0
+
+% M30: atom_chars/2 reverse mode. Build an atom from a list of
+% single-char atoms (each element''s first byte is taken).
+
+:- dynamic test_atom_chars_reverse_length/2.
+test_atom_chars_reverse_length(_, R) :-
+    atom_chars(A, [h, i]),
+    atom_length(A, N),
+    R is N.   % 2
+
+:- dynamic test_atom_chars_reverse_first/2.
+test_atom_chars_reverse_first(_, R) :-
+    atom_chars(A, [h, i]),
+    atom_codes(A, [C|_]),
+    R is C.   % ''h'' = 104
+
+% Cross-mode dedup: atoms built by atom_chars reverse and re-decoded
+% via atom_codes forward should produce the same id when interned
+% twice.
+:- dynamic test_atom_chars_reverse_dedup/2.
+test_atom_chars_reverse_dedup(_, R) :-
+    atom_chars(A, [h, i, j]),
+    atom_chars(B, [h, i, j]),
+    ( A == B -> R is 1 ; R is 0 ).
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -1253,6 +1309,21 @@ test_all :-
                    test_atom_concat_dedup, 0, 1),
        run_test_r0('atom_length('''' ++ hi) -> 2',
                    test_atom_concat_left_empty, 0, 2),
+       format('--- M30 atom_codes/2 + atom_chars/2 reverse mode ---~n'),
+       run_test_r0('atom_codes(A, [104,105]), atom_length(A) -> 2',
+                   test_atom_codes_reverse_length, 0, 2),
+       run_test_r0('atom_codes(A, [104,105]) then atom_concat(A, lo) length -> 4',
+                   test_atom_codes_reverse_concat, 0, 4),
+       run_test_r0('atom_codes(A,[104,105]) twice -> same id (== true) -> 1',
+                   test_atom_codes_reverse_dedup, 0, 1),
+       run_test_r0('atom_codes(A, []) empty list -> atom_length 0',
+                   test_atom_codes_reverse_empty, 0, 0),
+       run_test_r0('atom_chars(A, [h,i]) atom_length -> 2',
+                   test_atom_chars_reverse_length, 0, 2),
+       run_test_r0('atom_chars(A,[h,i]) first code -> 104',
+                   test_atom_chars_reverse_first, 0, 104),
+       run_test_r0('atom_chars(A,[h,i,j]) atom_codes(A) twice == 1',
+                   test_atom_chars_reverse_dedup, 0, 1),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),

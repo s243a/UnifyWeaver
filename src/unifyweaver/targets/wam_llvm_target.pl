@@ -4654,15 +4654,21 @@ al.cmp:
   ret i1 %al.eq
 
 builtin_atom_codes:
-  ; M19: atom_codes/2 -- A1 = atom, A2 = list of Integer codes.
-  ; Forward mode only: looks up A1, walks the C string emitting an
-  ; Integer-per-byte cons-cell chain ([code1, code2, ..., []]),
-  ; binds A2 to the chain head. Reverse mode (codes -> atom) needs
-  ; runtime atom interning and is deferred.
+  ; M19/M30: atom_codes/2 -- A1 = atom, A2 = list of Integer codes.
+  ; Forward mode (A1 bound atom): walks the C string emitting an
+  ; Integer-per-byte cons-cell chain ([code1, code2, ..., []]), binds
+  ; A2 to the chain head.
+  ; Reverse mode (A1 unbound, A2 = bound list of Integers): walks A2
+  ; twice -- first to count + validate, then to memcpy bytes into an
+  ; arena buffer, then @wam_intern_atom builds/dedupes an atom and we
+  ; bind A1.
   %aco.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %aco.t1 = extractvalue %Value %aco.a1, 0
   %aco.is_atom = icmp eq i32 %aco.t1, 0
-  br i1 %aco.is_atom, label %aco.lookup, label %aco.fail
+  br i1 %aco.is_atom, label %aco.lookup, label %aco.try_reverse
+aco.try_reverse:
+  %aco.a1_unb = call i1 @value_is_unbound(%Value %aco.a1)
+  br i1 %aco.a1_unb, label %aco.reverse_init, label %aco.fail
 aco.fail:
   ret i1 false
 aco.lookup:
@@ -4738,6 +4744,72 @@ aco.unify:
   %aco.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %aco.raw2, %Value %aco.btail)
   ret i1 %aco.uok
 
+aco.reverse_init:
+  %aco.r_a2_in = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  br label %aco.r_count_loop
+aco.r_count_loop:
+  %aco.r_cur_c = phi %Value [ %aco.r_a2_in, %aco.reverse_init ], [ %aco.r_next_c, %aco.r_count_ok ]
+  %aco.r_cnt = phi i32 [ 0, %aco.reverse_init ], [ %aco.r_cnt1, %aco.r_count_ok ]
+  %aco.r_cur_d = call %Value @wam_deref_value(%WamState* %vm, %Value %aco.r_cur_c)
+  %aco.r_tag_c = extractvalue %Value %aco.r_cur_d, 0
+  %aco.r_is_cmp_c = icmp eq i32 %aco.r_tag_c, 3
+  br i1 %aco.r_is_cmp_c, label %aco.r_count_step, label %aco.r_count_done
+aco.r_count_step:
+  %aco.r_cp_bits_c = extractvalue %Value %aco.r_cur_d, 1
+  %aco.r_cp_c = inttoptr i64 %aco.r_cp_bits_c to %Compound*
+  %aco.r_args_slot_c = getelementptr %Compound, %Compound* %aco.r_cp_c, i32 0, i32 2
+  %aco.r_args_c = load %Value*, %Value** %aco.r_args_slot_c
+  %aco.r_head_ptr_c = getelementptr %Value, %Value* %aco.r_args_c, i32 0
+  %aco.r_head_c = load %Value, %Value* %aco.r_head_ptr_c
+  %aco.r_head_d = call %Value @wam_deref_value(%WamState* %vm, %Value %aco.r_head_c)
+  %aco.r_head_tag = extractvalue %Value %aco.r_head_d, 0
+  %aco.r_head_is_int = icmp eq i32 %aco.r_head_tag, 1
+  br i1 %aco.r_head_is_int, label %aco.r_count_ok, label %aco.fail
+aco.r_count_ok:
+  %aco.r_tail_ptr_c = getelementptr %Value, %Value* %aco.r_args_c, i32 1
+  %aco.r_next_c = load %Value, %Value* %aco.r_tail_ptr_c
+  %aco.r_cnt1 = add i32 %aco.r_cnt, 1
+  br label %aco.r_count_loop
+aco.r_count_done:
+  ; Allocate buffer: cnt + 1 bytes (room for null terminator).
+  %aco.r_buf_sz64 = sext i32 %aco.r_cnt to i64
+  %aco.r_buf_sz_full = add i64 %aco.r_buf_sz64, 1
+  call void @wam_arena_ensure()
+  %aco.r_buf = call i8* @wam_arena_alloc(i64 %aco.r_buf_sz_full)
+  br label %aco.r_fill_loop
+aco.r_fill_loop:
+  %aco.r_cur_f = phi %Value [ %aco.r_a2_in, %aco.r_count_done ], [ %aco.r_next_f, %aco.r_fill_step ]
+  %aco.r_idx = phi i32 [ 0, %aco.r_count_done ], [ %aco.r_idx1, %aco.r_fill_step ]
+  %aco.r_done_f = icmp sge i32 %aco.r_idx, %aco.r_cnt
+  br i1 %aco.r_done_f, label %aco.r_intern, label %aco.r_fill_step
+aco.r_fill_step:
+  %aco.r_cur_fd = call %Value @wam_deref_value(%WamState* %vm, %Value %aco.r_cur_f)
+  %aco.r_cp_bits_f = extractvalue %Value %aco.r_cur_fd, 1
+  %aco.r_cp_f = inttoptr i64 %aco.r_cp_bits_f to %Compound*
+  %aco.r_args_slot_f = getelementptr %Compound, %Compound* %aco.r_cp_f, i32 0, i32 2
+  %aco.r_args_f = load %Value*, %Value** %aco.r_args_slot_f
+  %aco.r_head_ptr_f = getelementptr %Value, %Value* %aco.r_args_f, i32 0
+  %aco.r_head_f = load %Value, %Value* %aco.r_head_ptr_f
+  %aco.r_head_fd = call %Value @wam_deref_value(%WamState* %vm, %Value %aco.r_head_f)
+  %aco.r_code_i = extractvalue %Value %aco.r_head_fd, 1
+  %aco.r_code_b = trunc i64 %aco.r_code_i to i8
+  %aco.r_dst = getelementptr i8, i8* %aco.r_buf, i32 %aco.r_idx
+  store i8 %aco.r_code_b, i8* %aco.r_dst
+  %aco.r_tail_ptr_f = getelementptr %Value, %Value* %aco.r_args_f, i32 1
+  %aco.r_next_f = load %Value, %Value* %aco.r_tail_ptr_f
+  %aco.r_idx1 = add i32 %aco.r_idx, 1
+  br label %aco.r_fill_loop
+aco.r_intern:
+  ; Null-terminate, intern, bind A1.
+  %aco.r_term = getelementptr i8, i8* %aco.r_buf, i32 %aco.r_cnt
+  store i8 0, i8* %aco.r_term
+  %aco.r_aid = call i64 @wam_intern_atom(i8* %aco.r_buf, i64 %aco.r_buf_sz64)
+  %aco.r_av0 = insertvalue %Value undef, i32 0, 0
+  %aco.r_av = insertvalue %Value %aco.r_av0, i64 %aco.r_aid, 1
+  call void @wam_trail_binding(%WamState* %vm, i32 0)
+  call void @wam_bind_reg(%WamState* %vm, i32 0, %Value %aco.r_av)
+  ret i1 true
+
 builtin_char_code:
   ; M26: char_code(C, X) -- C is a single-char atom, X is its code.
   ; Three modes:
@@ -4795,18 +4867,21 @@ chc.fail:
   ret i1 false
 
 builtin_atom_chars:
-  ; M27: atom_chars/2 forward mode -- A1 = atom, A2 = list of
-  ; single-char atoms. Walks A1''s C string twice: first to measure
-  ; the length, then backwards from index n-1 to 0 emitting cons
-  ; cells whose heads are single-char Atom values pulled from the
-  ; M26 @wam_char_to_atom_id table. Non-printable bytes (outside
-  ; 32..126) get an atom id of 0 -- the head still emits as
-  ; Atom(0), which @wam_write_value renders as ``?``. Reverse mode
-  ; (list of chars -> atom) needs runtime interning and is deferred.
+  ; M27/M30: atom_chars/2 -- A1 = atom, A2 = list of single-char atoms.
+  ; Forward (A1 bound atom): walk the C string twice (measure, then
+  ; back-to-front) emitting cons cells whose heads are single-char
+  ; Atom values pulled from @wam_char_to_atom_id (M26). Non-printable
+  ; bytes get atom id 0 (renders ``?``).
+  ; Reverse (A1 unbound, A2 = list of atoms): count + validate each
+  ; element is an atom, allocate buffer, copy first byte of each
+  ; element''s string, null-terminate, intern, bind A1.
   %ach.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %ach.t1 = extractvalue %Value %ach.a1, 0
   %ach.is_atom = icmp eq i32 %ach.t1, 0
-  br i1 %ach.is_atom, label %ach.lookup, label %ach.fail
+  br i1 %ach.is_atom, label %ach.lookup, label %ach.try_reverse
+ach.try_reverse:
+  %ach.a1_unb = call i1 @value_is_unbound(%Value %ach.a1)
+  br i1 %ach.a1_unb, label %ach.reverse_init, label %ach.fail
 ach.fail:
   ret i1 false
 ach.lookup:
@@ -4880,6 +4955,74 @@ ach.unify:
   %ach.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %ach.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %ach.raw2, %Value %ach.btail)
   ret i1 %ach.uok
+
+ach.reverse_init:
+  %ach.r_a2_in = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  br label %ach.r_count_loop
+ach.r_count_loop:
+  %ach.r_cur_c = phi %Value [ %ach.r_a2_in, %ach.reverse_init ], [ %ach.r_next_c, %ach.r_count_ok ]
+  %ach.r_cnt = phi i32 [ 0, %ach.reverse_init ], [ %ach.r_cnt1, %ach.r_count_ok ]
+  %ach.r_cur_d = call %Value @wam_deref_value(%WamState* %vm, %Value %ach.r_cur_c)
+  %ach.r_tag_c = extractvalue %Value %ach.r_cur_d, 0
+  %ach.r_is_cmp_c = icmp eq i32 %ach.r_tag_c, 3
+  br i1 %ach.r_is_cmp_c, label %ach.r_count_step, label %ach.r_count_done
+ach.r_count_step:
+  %ach.r_cp_bits_c = extractvalue %Value %ach.r_cur_d, 1
+  %ach.r_cp_c = inttoptr i64 %ach.r_cp_bits_c to %Compound*
+  %ach.r_args_slot_c = getelementptr %Compound, %Compound* %ach.r_cp_c, i32 0, i32 2
+  %ach.r_args_c = load %Value*, %Value** %ach.r_args_slot_c
+  %ach.r_head_ptr_c = getelementptr %Value, %Value* %ach.r_args_c, i32 0
+  %ach.r_head_c = load %Value, %Value* %ach.r_head_ptr_c
+  %ach.r_head_d = call %Value @wam_deref_value(%WamState* %vm, %Value %ach.r_head_c)
+  %ach.r_head_tag = extractvalue %Value %ach.r_head_d, 0
+  %ach.r_head_is_atom = icmp eq i32 %ach.r_head_tag, 0
+  br i1 %ach.r_head_is_atom, label %ach.r_count_ok, label %ach.fail
+ach.r_count_ok:
+  %ach.r_tail_ptr_c = getelementptr %Value, %Value* %ach.r_args_c, i32 1
+  %ach.r_next_c = load %Value, %Value* %ach.r_tail_ptr_c
+  %ach.r_cnt1 = add i32 %ach.r_cnt, 1
+  br label %ach.r_count_loop
+ach.r_count_done:
+  %ach.r_buf_sz64 = sext i32 %ach.r_cnt to i64
+  %ach.r_buf_sz_full = add i64 %ach.r_buf_sz64, 1
+  call void @wam_arena_ensure()
+  %ach.r_buf = call i8* @wam_arena_alloc(i64 %ach.r_buf_sz_full)
+  br label %ach.r_fill_loop
+ach.r_fill_loop:
+  %ach.r_cur_f = phi %Value [ %ach.r_a2_in, %ach.r_count_done ], [ %ach.r_next_f, %ach.r_fill_copy ]
+  %ach.r_idx = phi i32 [ 0, %ach.r_count_done ], [ %ach.r_idx1, %ach.r_fill_copy ]
+  %ach.r_done_f = icmp sge i32 %ach.r_idx, %ach.r_cnt
+  br i1 %ach.r_done_f, label %ach.r_intern, label %ach.r_fill_step
+ach.r_fill_step:
+  %ach.r_cur_fd = call %Value @wam_deref_value(%WamState* %vm, %Value %ach.r_cur_f)
+  %ach.r_cp_bits_f = extractvalue %Value %ach.r_cur_fd, 1
+  %ach.r_cp_f = inttoptr i64 %ach.r_cp_bits_f to %Compound*
+  %ach.r_args_slot_f = getelementptr %Compound, %Compound* %ach.r_cp_f, i32 0, i32 2
+  %ach.r_args_f = load %Value*, %Value** %ach.r_args_slot_f
+  %ach.r_head_ptr_f = getelementptr %Value, %Value* %ach.r_args_f, i32 0
+  %ach.r_head_f = load %Value, %Value* %ach.r_head_ptr_f
+  %ach.r_head_fd = call %Value @wam_deref_value(%WamState* %vm, %Value %ach.r_head_f)
+  %ach.r_head_aid = extractvalue %Value %ach.r_head_fd, 1
+  %ach.r_str = call i8* @wam_atom_to_string(i64 %ach.r_head_aid)
+  %ach.r_str_null = icmp eq i8* %ach.r_str, null
+  br i1 %ach.r_str_null, label %ach.fail, label %ach.r_fill_copy
+ach.r_fill_copy:
+  %ach.r_ch = load i8, i8* %ach.r_str
+  %ach.r_dst = getelementptr i8, i8* %ach.r_buf, i32 %ach.r_idx
+  store i8 %ach.r_ch, i8* %ach.r_dst
+  %ach.r_tail_ptr_f = getelementptr %Value, %Value* %ach.r_args_f, i32 1
+  %ach.r_next_f = load %Value, %Value* %ach.r_tail_ptr_f
+  %ach.r_idx1 = add i32 %ach.r_idx, 1
+  br label %ach.r_fill_loop
+ach.r_intern:
+  %ach.r_term = getelementptr i8, i8* %ach.r_buf, i32 %ach.r_cnt
+  store i8 0, i8* %ach.r_term
+  %ach.r_aid = call i64 @wam_intern_atom(i8* %ach.r_buf, i64 %ach.r_buf_sz64)
+  %ach.r_av0 = insertvalue %Value undef, i32 0, 0
+  %ach.r_av = insertvalue %Value %ach.r_av0, i64 %ach.r_aid, 1
+  call void @wam_trail_binding(%WamState* %vm, i32 0)
+  call void @wam_bind_reg(%WamState* %vm, i32 0, %Value %ach.r_av)
+  ret i1 true
 
 builtin_between:
   ; M28: between(Low, High, X) -- A1 = Low, A2 = High, A3 = X.
