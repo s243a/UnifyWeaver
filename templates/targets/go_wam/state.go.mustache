@@ -1748,6 +1748,33 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			}
 		}
 		return vm.Unify(arg3, &List{Elements: kept})
+	case "permutation/2":
+		items, ok := vm.listToSlice(arg1)
+		if !ok {
+			return false
+		}
+		d2 := vm.deref(arg2)
+		if isUnbound(d2) {
+			return vm.Unify(arg2, &List{Elements: append([]Value(nil), items...)})
+		}
+		other, ok := vm.listToSlice(arg2)
+		if !ok || len(items) != len(other) {
+			return false
+		}
+		left := append([]Value(nil), items...)
+		right := append([]Value(nil), other...)
+		sort.SliceStable(left, func(i, j int) bool {
+			return compareValues(vm.deref(left[i]), vm.deref(left[j])) < 0
+		})
+		sort.SliceStable(right, func(i, j int) bool {
+			return compareValues(vm.deref(right[i]), vm.deref(right[j])) < 0
+		})
+		for i := range left {
+			if compareValues(vm.deref(left[i]), vm.deref(right[i])) != 0 {
+				return false
+			}
+		}
+		return true
 	case "append/3":
 		l1, ok1 := vm.listToSlice(arg1)
 		l2, ok2 := vm.listToSlice(arg2)

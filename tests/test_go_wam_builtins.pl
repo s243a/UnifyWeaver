@@ -11,6 +11,7 @@
 :- dynamic user:test_memberchk_builtin/0.
 :- dynamic user:test_select_builtin/0.
 :- dynamic user:test_delete_builtin/0.
+:- dynamic user:test_permutation_builtin/0.
 :- dynamic user:test_reverse_builtin/0.
 :- dynamic user:test_last_builtin/0.
 :- dynamic user:test_nth_builtin/0.
@@ -108,6 +109,17 @@ test(builtins_execution) :-
                 delete([a,a,a], a, Empty),
                 Empty = [],
                 \+ delete([a|b], a, _)
+            )),
+          assertz(user:test_permutation_builtin :-
+            (   permutation([a,b,c], [c,a,b]),
+                permutation([3,1,2,1], [1,1,2,3]),
+                permutation([foo,1,bar], [bar,foo,1]),
+                permutation([x,y], Same),
+                Same = [x,y],
+                \+ permutation([a,b,c], [a,b,d]),
+                \+ permutation([a,b], [a,b,b]),
+                \+ permutation([a|b], _),
+                \+ permutation([a,b], [a|b])
             )),
           assertz(user:test_reverse_builtin :-
             (   reverse([a,b,c], R),
@@ -456,6 +468,7 @@ test(builtins_execution) :-
           retractall(user:test_memberchk_builtin),
           retractall(user:test_select_builtin),
           retractall(user:test_delete_builtin),
+          retractall(user:test_permutation_builtin),
           retractall(user:test_reverse_builtin),
           retractall(user:test_last_builtin),
           retractall(user:test_nth_builtin),
@@ -488,7 +501,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_tab_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_permutation_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_tab_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -523,6 +536,7 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "memberchk/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "select/3"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "delete/3"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "permutation/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "reverse/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "last/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "nth0/3"')),
@@ -624,6 +638,14 @@ func main() {
 		fmt.Println("DELETE_SUCCESS")
 	} else {
 		fmt.Println("DELETE_FAILURE")
+	}
+
+	permutationVM := wam.NewWamState(wam.Test_permutation_builtinCode, wam.Test_permutation_builtinLabels)
+	permutationVM.PC = wam.Test_permutation_builtinStartPC
+	if permutationVM.Run() {
+		fmt.Println("PERMUTATION_SUCCESS")
+	} else {
+		fmt.Println("PERMUTATION_FAILURE")
 	}
 
 	reverseVM := wam.NewWamState(wam.Test_reverse_builtinCode, wam.Test_reverse_builtinLabels)
@@ -865,6 +887,7 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "MEMBERCHK_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SELECT_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "DELETE_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "PERMUTATION_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "REVERSE_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "LAST_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "NTH_SUCCESS")),
