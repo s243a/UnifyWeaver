@@ -634,6 +634,54 @@ test_atom_number_roundtrip(_, R) :-
     atom_number(A, N),
     R is N.   % 99 (kept <256 for bash exit-code carry)
 
+% M33: number_codes/2 integer mode -- forward (int -> codes) + reverse
+% (codes -> int). Mirrors atom_number/2 but with a list-of-codes
+% interchange format.
+
+:- dynamic test_number_codes_fwd_first/2.
+test_number_codes_fwd_first(_, R) :-
+    number_codes(42, [C|_]),
+    R is C.   % '4' = 52
+
+:- dynamic test_number_codes_fwd_length/2.
+test_number_codes_fwd_length(_, R) :-
+    number_codes(1234, L),   % "1234" -> 4 codes (kept <256 in R)
+    length(L, N),
+    R is N.   % 4
+
+:- dynamic test_number_codes_fwd_neg_first/2.
+test_number_codes_fwd_neg_first(_, R) :-
+    number_codes(-5, [C|_]),
+    R is C.   % '-' = 45
+
+:- dynamic test_number_codes_rev/2.
+test_number_codes_rev(_, R) :-
+    number_codes(N, [52, 50]),   % "42"
+    R is N.   % 42
+
+:- dynamic test_number_codes_rev_neg/2.
+test_number_codes_rev_neg(_, R) :-
+    number_codes(N, [45, 49, 55]),   % "-17"
+    R is N + 100.   % 83
+
+:- dynamic test_number_codes_rev_bad/2.
+test_number_codes_rev_bad(_, R) :-
+    ( number_codes(_, [49, 97, 98, 99])   % "1abc"
+    -> R is 1
+    ;  R is 0 ).   % 0 -- trailing junk fails
+
+:- dynamic test_number_codes_rev_empty/2.
+test_number_codes_rev_empty(_, R) :-
+    ( number_codes(_, [])
+    -> R is 1
+    ;  R is 0 ).   % 0 -- empty list fails
+
+:- dynamic test_number_codes_roundtrip/2.
+test_number_codes_roundtrip(_, R) :-
+    number_codes(99, Codes),
+    number_codes(N, Codes),
+    R is N.   % 99
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -1450,6 +1498,23 @@ test_all :-
                    test_atom_number_rev_neg, 0, 3),
        run_test_r0('roundtrip atom_number(A,99) twice -> 99',
                    test_atom_number_roundtrip, 0, 99),
+       format('--- M33 number_codes/2 integer forward + reverse ---~n'),
+       run_test_r0('number_codes(42, [C|_]) first code -> 52 (\'4\')',
+                   test_number_codes_fwd_first, 0, 52),
+       run_test_r0('number_codes(1234, L), length(L) -> 4',
+                   test_number_codes_fwd_length, 0, 4),
+       run_test_r0('number_codes(-5, [C|_]) first code -> 45 (\'-\')',
+                   test_number_codes_fwd_neg_first, 0, 45),
+       run_test_r0('number_codes(N, [52,50]) -> 42',
+                   test_number_codes_rev, 0, 42),
+       run_test_r0('number_codes(N, [45,49,55]) + 100 -> 83',
+                   test_number_codes_rev_neg, 0, 83),
+       run_test_r0('number_codes(_, "1abc") trailing junk -> 0',
+                   test_number_codes_rev_bad, 0, 0),
+       run_test_r0('number_codes(_, []) empty -> 0',
+                   test_number_codes_rev_empty, 0, 0),
+       run_test_r0('roundtrip number_codes(99) -> 99',
+                   test_number_codes_roundtrip, 0, 99),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),

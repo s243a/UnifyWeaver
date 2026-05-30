@@ -3402,6 +3402,7 @@ entry:
     i32 40, label %builtin_atom_concat
     i32 41, label %builtin_sub_atom
     i32 42, label %builtin_atom_number
+    i32 43, label %builtin_number_codes
   ]
 
 builtin_is:
@@ -5355,6 +5356,180 @@ anu.reverse:
   %anu.rev_u = call i1 @wam_unify_value(%WamState* %vm, %Value %anu.raw1, %Value %anu.rev_v)
   ret i1 %anu.rev_u
 
+builtin_number_codes:
+  ; M33: number_codes(?Number, ?Codes) -- integer mode only.
+  ;   A1 bound Integer: snprintf %lld into an arena buffer, then walk
+  ;     the buffer back-to-front emitting an Integer-per-byte cons
+  ;     chain and unify A2 with the head.
+  ;   A1 unbound + A2 bound list of Integer codes: count + validate
+  ;     each head is Integer, copy bytes into an arena buffer, then
+  ;     parse digits (with optional leading ''-'') and bind A1 with
+  ;     the resulting Integer.
+  ;   Other modes fail. Float parsing / formatting deferred.
+  %nco.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %nco.t1 = extractvalue %Value %nco.a1, 0
+  %nco.is_int1 = icmp eq i32 %nco.t1, 1
+  br i1 %nco.is_int1, label %nco.fwd, label %nco.try_rev
+nco.try_rev:
+  %nco.a1_unb = call i1 @value_is_unbound(%Value %nco.a1)
+  br i1 %nco.a1_unb, label %nco.rev_init, label %nco.fail
+nco.fail:
+  ret i1 false
+nco.fwd:
+  ; Format number into an arena scratch buffer.
+  %nco.n = extractvalue %Value %nco.a1, 1
+  call void @wam_arena_ensure()
+  %nco.fbuf = call i8* @wam_arena_alloc(i64 32)
+  %nco.ffmt = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
+  %nco.flen32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %nco.fbuf, i64 32, i8* %nco.ffmt, i64 %nco.n)
+  br label %nco.f_build_init
+nco.f_build_init:
+  %nco.f_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %nco.f_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %nco.f_empty_v  = insertvalue %Value %nco.f_empty_v0, i64 %nco.f_empty_id, 1
+  br label %nco.f_build_loop
+nco.f_build_loop:
+  %nco.f_bi = phi i32 [ %nco.flen32, %nco.f_build_init ], [ %nco.f_bi_prev, %nco.f_build_step ]
+  %nco.f_btail = phi %Value [ %nco.f_empty_v, %nco.f_build_init ], [ %nco.f_new_cons, %nco.f_build_step ]
+  %nco.f_done_b = icmp sle i32 %nco.f_bi, 0
+  br i1 %nco.f_done_b, label %nco.f_bind_out, label %nco.f_build_step
+nco.f_build_step:
+  %nco.f_bi_prev = sub i32 %nco.f_bi, 1
+  %nco.f_cp_b = getelementptr i8, i8* %nco.fbuf, i32 %nco.f_bi_prev
+  %nco.f_ch_b = load i8, i8* %nco.f_cp_b
+  %nco.f_ch_b64 = zext i8 %nco.f_ch_b to i64
+  %nco.f_code_v = call %Value @value_integer(i64 %nco.f_ch_b64)
+  ; Allocate a [|]/2 Compound on the arena.
+  %nco.f_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %nco.f_cp_mem = call i8* @wam_arena_alloc(i64 %nco.f_cp_size)
+  %nco.f_cp = bitcast i8* %nco.f_cp_mem to %Compound*
+  %nco.f_fn_slot = getelementptr %Compound, %Compound* %nco.f_cp, i32 0, i32 0
+  %nco.f_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %nco.f_fn_ptr, i8** %nco.f_fn_slot
+  %nco.f_ar_slot = getelementptr %Compound, %Compound* %nco.f_cp, i32 0, i32 1
+  store i32 2, i32* %nco.f_ar_slot
+  %nco.f_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %nco.f_args = bitcast i8* %nco.f_args_mem to %Value*
+  %nco.f_args_slot = getelementptr %Compound, %Compound* %nco.f_cp, i32 0, i32 2
+  store %Value* %nco.f_args, %Value** %nco.f_args_slot
+  %nco.f_h_ptr = getelementptr %Value, %Value* %nco.f_args, i32 0
+  store %Value %nco.f_code_v, %Value* %nco.f_h_ptr
+  %nco.f_t_ptr = getelementptr %Value, %Value* %nco.f_args, i32 1
+  store %Value %nco.f_btail, %Value* %nco.f_t_ptr
+  %nco.f_cp_i64 = ptrtoint %Compound* %nco.f_cp to i64
+  %nco.f_nc0 = insertvalue %Value undef, i32 3, 0
+  %nco.f_new_cons = insertvalue %Value %nco.f_nc0, i64 %nco.f_cp_i64, 1
+  br label %nco.f_build_loop
+nco.f_bind_out:
+  %nco.f_raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %nco.f_uok = call i1 @wam_unify_value(%WamState* %vm, %Value %nco.f_raw2, %Value %nco.f_btail)
+  ret i1 %nco.f_uok
+
+nco.rev_init:
+  %nco.r_a2_in = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  br label %nco.r_count_loop
+nco.r_count_loop:
+  %nco.r_cur_c = phi %Value [ %nco.r_a2_in, %nco.rev_init ], [ %nco.r_next_c, %nco.r_count_ok ]
+  %nco.r_cnt = phi i32 [ 0, %nco.rev_init ], [ %nco.r_cnt1, %nco.r_count_ok ]
+  %nco.r_cur_d = call %Value @wam_deref_value(%WamState* %vm, %Value %nco.r_cur_c)
+  %nco.r_tag_c = extractvalue %Value %nco.r_cur_d, 0
+  %nco.r_is_cmp_c = icmp eq i32 %nco.r_tag_c, 3
+  br i1 %nco.r_is_cmp_c, label %nco.r_count_step, label %nco.r_count_done
+nco.r_count_step:
+  %nco.r_cp_bits_c = extractvalue %Value %nco.r_cur_d, 1
+  %nco.r_cp_c = inttoptr i64 %nco.r_cp_bits_c to %Compound*
+  %nco.r_args_slot_c = getelementptr %Compound, %Compound* %nco.r_cp_c, i32 0, i32 2
+  %nco.r_args_c = load %Value*, %Value** %nco.r_args_slot_c
+  %nco.r_head_ptr_c = getelementptr %Value, %Value* %nco.r_args_c, i32 0
+  %nco.r_head_c = load %Value, %Value* %nco.r_head_ptr_c
+  %nco.r_head_d = call %Value @wam_deref_value(%WamState* %vm, %Value %nco.r_head_c)
+  %nco.r_head_tag = extractvalue %Value %nco.r_head_d, 0
+  %nco.r_head_is_int = icmp eq i32 %nco.r_head_tag, 1
+  br i1 %nco.r_head_is_int, label %nco.r_count_ok, label %nco.fail
+nco.r_count_ok:
+  %nco.r_tail_ptr_c = getelementptr %Value, %Value* %nco.r_args_c, i32 1
+  %nco.r_next_c = load %Value, %Value* %nco.r_tail_ptr_c
+  %nco.r_cnt1 = add i32 %nco.r_cnt, 1
+  br label %nco.r_count_loop
+nco.r_count_done:
+  ; Reject empty code list.
+  %nco.r_empty = icmp eq i32 %nco.r_cnt, 0
+  br i1 %nco.r_empty, label %nco.fail, label %nco.r_alloc
+nco.r_alloc:
+  %nco.r_buf_sz64 = sext i32 %nco.r_cnt to i64
+  %nco.r_buf_sz_full = add i64 %nco.r_buf_sz64, 1
+  call void @wam_arena_ensure()
+  %nco.r_buf = call i8* @wam_arena_alloc(i64 %nco.r_buf_sz_full)
+  br label %nco.r_fill_loop
+nco.r_fill_loop:
+  %nco.r_cur_f = phi %Value [ %nco.r_a2_in, %nco.r_alloc ], [ %nco.r_next_f, %nco.r_fill_step ]
+  %nco.r_idx = phi i32 [ 0, %nco.r_alloc ], [ %nco.r_idx1, %nco.r_fill_step ]
+  %nco.r_done_f = icmp sge i32 %nco.r_idx, %nco.r_cnt
+  br i1 %nco.r_done_f, label %nco.r_parse_init, label %nco.r_fill_step
+nco.r_fill_step:
+  %nco.r_cur_fd = call %Value @wam_deref_value(%WamState* %vm, %Value %nco.r_cur_f)
+  %nco.r_cp_bits_f = extractvalue %Value %nco.r_cur_fd, 1
+  %nco.r_cp_f = inttoptr i64 %nco.r_cp_bits_f to %Compound*
+  %nco.r_args_slot_f = getelementptr %Compound, %Compound* %nco.r_cp_f, i32 0, i32 2
+  %nco.r_args_f = load %Value*, %Value** %nco.r_args_slot_f
+  %nco.r_head_ptr_f = getelementptr %Value, %Value* %nco.r_args_f, i32 0
+  %nco.r_head_f = load %Value, %Value* %nco.r_head_ptr_f
+  %nco.r_head_fd = call %Value @wam_deref_value(%WamState* %vm, %Value %nco.r_head_f)
+  %nco.r_code_i = extractvalue %Value %nco.r_head_fd, 1
+  %nco.r_code_b = trunc i64 %nco.r_code_i to i8
+  %nco.r_dst = getelementptr i8, i8* %nco.r_buf, i32 %nco.r_idx
+  store i8 %nco.r_code_b, i8* %nco.r_dst
+  %nco.r_tail_ptr_f = getelementptr %Value, %Value* %nco.r_args_f, i32 1
+  %nco.r_next_f = load %Value, %Value* %nco.r_tail_ptr_f
+  %nco.r_idx1 = add i32 %nco.r_idx, 1
+  br label %nco.r_fill_loop
+nco.r_parse_init:
+  ; Null-terminate the assembled buffer, then parse like atom_number
+  ; (optional leading ''-'', then >=1 digit, accumulate).
+  %nco.r_term = getelementptr i8, i8* %nco.r_buf, i32 %nco.r_cnt
+  store i8 0, i8* %nco.r_term
+  %nco.r_c0 = load i8, i8* %nco.r_buf
+  %nco.r_is_neg = icmp eq i8 %nco.r_c0, 45
+  br i1 %nco.r_is_neg, label %nco.r_sel_neg, label %nco.r_sel_pos
+nco.r_sel_neg:
+  %nco.r_pn0 = getelementptr i8, i8* %nco.r_buf, i32 1
+  br label %nco.r_first_check
+nco.r_sel_pos:
+  br label %nco.r_first_check
+nco.r_first_check:
+  %nco.r_p_start = phi i8* [ %nco.r_pn0, %nco.r_sel_neg ], [ %nco.r_buf, %nco.r_sel_pos ]
+  %nco.r_sign = phi i64 [ -1, %nco.r_sel_neg ], [ 1, %nco.r_sel_pos ]
+  %nco.r_fc = load i8, i8* %nco.r_p_start
+  %nco.r_fc_ge0 = icmp uge i8 %nco.r_fc, 48
+  %nco.r_fc_le9 = icmp ule i8 %nco.r_fc, 57
+  %nco.r_fc_dig = and i1 %nco.r_fc_ge0, %nco.r_fc_le9
+  br i1 %nco.r_fc_dig, label %nco.r_parse_loop, label %nco.fail
+nco.r_parse_loop:
+  %nco.r_p = phi i8* [ %nco.r_p_start, %nco.r_first_check ], [ %nco.r_pn, %nco.r_parse_step ]
+  %nco.r_acc = phi i64 [ 0, %nco.r_first_check ], [ %nco.r_acc1, %nco.r_parse_step ]
+  %nco.r_lc = load i8, i8* %nco.r_p
+  %nco.r_lc_zero = icmp eq i8 %nco.r_lc, 0
+  br i1 %nco.r_lc_zero, label %nco.r_parse_done, label %nco.r_parse_check
+nco.r_parse_check:
+  %nco.r_lc_ge0 = icmp uge i8 %nco.r_lc, 48
+  %nco.r_lc_le9 = icmp ule i8 %nco.r_lc, 57
+  %nco.r_lc_dig = and i1 %nco.r_lc_ge0, %nco.r_lc_le9
+  br i1 %nco.r_lc_dig, label %nco.r_parse_step, label %nco.fail
+nco.r_parse_step:
+  %nco.r_dig8 = sub i8 %nco.r_lc, 48
+  %nco.r_dig64 = zext i8 %nco.r_dig8 to i64
+  %nco.r_mul = mul i64 %nco.r_acc, 10
+  %nco.r_acc1 = add i64 %nco.r_mul, %nco.r_dig64
+  %nco.r_pn = getelementptr i8, i8* %nco.r_p, i32 1
+  br label %nco.r_parse_loop
+nco.r_parse_done:
+  %nco.r_signed = mul i64 %nco.r_acc, %nco.r_sign
+  %nco.r_rev_v0 = insertvalue %Value undef, i32 1, 0
+  %nco.r_rev_v = insertvalue %Value %nco.r_rev_v0, i64 %nco.r_signed, 1
+  %nco.r_raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %nco.r_uok = call i1 @wam_unify_value(%WamState* %vm, %Value %nco.r_raw1, %Value %nco.r_rev_v)
+  ret i1 %nco.r_uok
+
 unknown:
   ret i1 false
 }'.
@@ -6770,6 +6945,7 @@ builtin_op_to_id('between/3', 39).
 builtin_op_to_id('atom_concat/3', 40).
 builtin_op_to_id('sub_atom/5', 41).
 builtin_op_to_id('atom_number/2', 42).
+builtin_op_to_id('number_codes/2', 43).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
