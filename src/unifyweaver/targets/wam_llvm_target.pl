@@ -3410,6 +3410,9 @@ entry:
     i32 48, label %builtin_atom_length
     i32 49, label %builtin_atom_string_alias
     i32 50, label %builtin_atom_string_alias
+    i32 51, label %builtin_nth0
+    i32 52, label %builtin_nth1
+    i32 53, label %builtin_last
   ]
 
 builtin_is:
@@ -5842,6 +5845,135 @@ builtin_atom_string_alias:
   %asa.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %asa.r1, %Value %asa.r2)
   ret i1 %asa.ok
 
+builtin_nth0:
+  ; M37: nth0(+Index, +List, ?Elem) -- 0-indexed list access.
+  ; Walks the [|]/2 chain Index times then takes the head; unifies A3
+  ; with that element. Negative Index, non-Integer Index, or running
+  ; off the end of the list all fail cleanly.
+  %n0.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %n0.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %n0.t1 = extractvalue %Value %n0.a1, 0
+  %n0.is_int = icmp eq i32 %n0.t1, 1
+  br i1 %n0.is_int, label %n0.start, label %n0.fail
+n0.fail:
+  ret i1 false
+n0.start:
+  %n0.i0 = extractvalue %Value %n0.a1, 1
+  %n0.i0_neg = icmp slt i64 %n0.i0, 0
+  br i1 %n0.i0_neg, label %n0.fail, label %n0.loop
+n0.loop:
+  %n0.cur = phi %Value [ %n0.a2, %n0.start ], [ %n0.next, %n0.advance ]
+  %n0.i = phi i64 [ %n0.i0, %n0.start ], [ %n0.i_next, %n0.advance ]
+  %n0.d = call %Value @wam_deref_value(%WamState* %vm, %Value %n0.cur)
+  %n0.tag = extractvalue %Value %n0.d, 0
+  %n0.is_cmp = icmp eq i32 %n0.tag, 3
+  br i1 %n0.is_cmp, label %n0.dispatch, label %n0.fail
+n0.dispatch:
+  %n0.i_zero = icmp eq i64 %n0.i, 0
+  br i1 %n0.i_zero, label %n0.take_head, label %n0.advance
+n0.advance:
+  %n0.cp = extractvalue %Value %n0.d, 1
+  %n0.cp_ptr = inttoptr i64 %n0.cp to %Compound*
+  %n0.args_slot = getelementptr %Compound, %Compound* %n0.cp_ptr, i32 0, i32 2
+  %n0.args = load %Value*, %Value** %n0.args_slot
+  %n0.tail_ptr = getelementptr %Value, %Value* %n0.args, i32 1
+  %n0.next = load %Value, %Value* %n0.tail_ptr
+  %n0.i_next = sub i64 %n0.i, 1
+  br label %n0.loop
+n0.take_head:
+  %n0.cp_h = extractvalue %Value %n0.d, 1
+  %n0.cp_h_ptr = inttoptr i64 %n0.cp_h to %Compound*
+  %n0.h_args_slot = getelementptr %Compound, %Compound* %n0.cp_h_ptr, i32 0, i32 2
+  %n0.h_args = load %Value*, %Value** %n0.h_args_slot
+  %n0.head_ptr = getelementptr %Value, %Value* %n0.h_args, i32 0
+  %n0.head = load %Value, %Value* %n0.head_ptr
+  %n0.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %n0.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %n0.raw3, %Value %n0.head)
+  ret i1 %n0.ok
+
+builtin_nth1:
+  ; M37: nth1(+Index, +List, ?Elem) -- 1-indexed list access. Same
+  ; mechanics as nth0 but the loop starts at Index - 1; Index < 1
+  ; fails.
+  %n1.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %n1.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %n1.t1 = extractvalue %Value %n1.a1, 0
+  %n1.is_int = icmp eq i32 %n1.t1, 1
+  br i1 %n1.is_int, label %n1.start, label %n1.fail
+n1.fail:
+  ret i1 false
+n1.start:
+  %n1.i_raw = extractvalue %Value %n1.a1, 1
+  %n1.i_le0 = icmp sle i64 %n1.i_raw, 0
+  br i1 %n1.i_le0, label %n1.fail, label %n1.adjust
+n1.adjust:
+  %n1.i0 = sub i64 %n1.i_raw, 1
+  br label %n1.loop
+n1.loop:
+  %n1.cur = phi %Value [ %n1.a2, %n1.adjust ], [ %n1.next, %n1.advance ]
+  %n1.i = phi i64 [ %n1.i0, %n1.adjust ], [ %n1.i_next, %n1.advance ]
+  %n1.d = call %Value @wam_deref_value(%WamState* %vm, %Value %n1.cur)
+  %n1.tag = extractvalue %Value %n1.d, 0
+  %n1.is_cmp = icmp eq i32 %n1.tag, 3
+  br i1 %n1.is_cmp, label %n1.dispatch, label %n1.fail
+n1.dispatch:
+  %n1.i_zero = icmp eq i64 %n1.i, 0
+  br i1 %n1.i_zero, label %n1.take_head, label %n1.advance
+n1.advance:
+  %n1.cp = extractvalue %Value %n1.d, 1
+  %n1.cp_ptr = inttoptr i64 %n1.cp to %Compound*
+  %n1.args_slot = getelementptr %Compound, %Compound* %n1.cp_ptr, i32 0, i32 2
+  %n1.args = load %Value*, %Value** %n1.args_slot
+  %n1.tail_ptr = getelementptr %Value, %Value* %n1.args, i32 1
+  %n1.next = load %Value, %Value* %n1.tail_ptr
+  %n1.i_next = sub i64 %n1.i, 1
+  br label %n1.loop
+n1.take_head:
+  %n1.cp_h = extractvalue %Value %n1.d, 1
+  %n1.cp_h_ptr = inttoptr i64 %n1.cp_h to %Compound*
+  %n1.h_args_slot = getelementptr %Compound, %Compound* %n1.cp_h_ptr, i32 0, i32 2
+  %n1.h_args = load %Value*, %Value** %n1.h_args_slot
+  %n1.head_ptr = getelementptr %Value, %Value* %n1.h_args, i32 0
+  %n1.head = load %Value, %Value* %n1.head_ptr
+  %n1.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %n1.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %n1.raw3, %Value %n1.head)
+  ret i1 %n1.ok
+
+builtin_last:
+  ; M37: last(+List, ?Elem) -- returns the last element of a non-
+  ; empty list. Walks the [|]/2 chain; when the tail of the current
+  ; cons cell is not itself a compound, the current head is the
+  ; answer. Empty list and non-list arguments fail cleanly.
+  %lst.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  br label %lst.loop
+lst.fail:
+  ret i1 false
+lst.loop:
+  %lst.cur = phi %Value [ %lst.a1, %builtin_last ], [ %lst.tail_d, %lst.step ]
+  %lst.d = call %Value @wam_deref_value(%WamState* %vm, %Value %lst.cur)
+  %lst.tag = extractvalue %Value %lst.d, 0
+  %lst.is_cmp = icmp eq i32 %lst.tag, 3
+  br i1 %lst.is_cmp, label %lst.peek, label %lst.fail
+lst.peek:
+  %lst.cp = extractvalue %Value %lst.d, 1
+  %lst.cp_ptr = inttoptr i64 %lst.cp to %Compound*
+  %lst.args_slot = getelementptr %Compound, %Compound* %lst.cp_ptr, i32 0, i32 2
+  %lst.args = load %Value*, %Value** %lst.args_slot
+  %lst.tail_ptr = getelementptr %Value, %Value* %lst.args, i32 1
+  %lst.tail = load %Value, %Value* %lst.tail_ptr
+  %lst.tail_d = call %Value @wam_deref_value(%WamState* %vm, %Value %lst.tail)
+  %lst.tail_tag = extractvalue %Value %lst.tail_d, 0
+  %lst.tail_is_cmp = icmp eq i32 %lst.tail_tag, 3
+  br i1 %lst.tail_is_cmp, label %lst.step, label %lst.done
+lst.step:
+  br label %lst.loop
+lst.done:
+  %lst.head_ptr = getelementptr %Value, %Value* %lst.args, i32 0
+  %lst.head = load %Value, %Value* %lst.head_ptr
+  %lst.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %lst.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %lst.raw2, %Value %lst.head)
+  ret i1 %lst.ok
+
 unknown:
   ret i1 false
 }'.
@@ -7265,6 +7397,9 @@ builtin_op_to_id('string_concat/3', 47).  % alias of atom_concat/3
 builtin_op_to_id('string_length/2', 48).  % alias of atom_length/2
 builtin_op_to_id('atom_string/2', 49).    % atom <-> string (runtime treats both as atoms)
 builtin_op_to_id('string_to_atom/2', 50). % string_to_atom(?S, ?A) -- same as atom_string but swapped
+builtin_op_to_id('nth0/3', 51).
+builtin_op_to_id('nth1/3', 52).
+builtin_op_to_id('last/2', 53).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
