@@ -814,6 +814,11 @@ is_builtin_goal(length).
 is_builtin_goal(is_list).
 is_builtin_goal(append).
 is_builtin_goal((\+)).
+is_builtin_goal(atom_length).
+is_builtin_goal(atom_codes).
+is_builtin_goal(atom_chars).
+is_builtin_goal(char_code).
+is_builtin_goal(between).
 
 %% expand_aggregate_goals_for_perm_vars(+Goals, -Expanded)
 %  For permanent-variable detection, expand aggregate_all/findall/
@@ -2083,6 +2088,7 @@ is_builtin_pred(string_length, 2).      % alias for atom_length/2.
 is_builtin_pred(number_chars, 2).       % number ↔ list of single-char atoms.
 is_builtin_pred(atom_to_term, 3).       % parse atom + return [] bindings.
 is_builtin_pred(char_code, 2).    % char-atom ↔ integer code.
+is_builtin_pred(between, 3).      % between(+Low, +High, ?X) -- nondet enumeration.
 is_builtin_pred(assertz, 1).      % dynamic db: append fact.
 is_builtin_pred(asserta, 1).      % dynamic db: prepend fact.
 % retract/1 is nondeterministic — dispatched via the Call/Execute

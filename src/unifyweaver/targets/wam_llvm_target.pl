@@ -3398,6 +3398,7 @@ entry:
     i32 36, label %builtin_atom_codes
     i32 37, label %builtin_char_code
     i32 38, label %builtin_atom_chars
+    i32 39, label %builtin_between
   ]
 
 builtin_is:
@@ -4879,6 +4880,98 @@ ach.unify:
   %ach.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %ach.raw2, %Value %ach.btail)
   ret i1 %ach.uok
 
+builtin_between:
+  ; M28: between(Low, High, X) -- A1 = Low, A2 = High, A3 = X.
+  ; Two modes:
+  ;   check (X bound to Integer):
+  ;     succeeds iff Low <= X <= High. Single result.
+  ;   enumerate (X unbound):
+  ;     allocates an Integer[High - Low + 1] array on the arena,
+  ;     binds A3 to Integer(Low), and pushes a foreign-iter choice
+  ;     point so backtrack walks the rest. Result count capped at
+  ;     1,000,000 to keep the arena from exploding -- larger ranges
+  ;     fail and the user should use a tighter loop.
+  ;
+  ; Low or High not bound to Integer -> fail.
+  %bet.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %bet.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %bet.t1 = extractvalue %Value %bet.a1, 0
+  %bet.t2 = extractvalue %Value %bet.a2, 0
+  %bet.int1 = icmp eq i32 %bet.t1, 1
+  %bet.int2 = icmp eq i32 %bet.t2, 1
+  %bet.both_int = and i1 %bet.int1, %bet.int2
+  br i1 %bet.both_int, label %bet.go, label %bet.fail
+bet.fail:
+  ret i1 false
+bet.go:
+  %bet.lo = extractvalue %Value %bet.a1, 1
+  %bet.hi = extractvalue %Value %bet.a2, 1
+  %bet.a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  %bet.a3_unb = call i1 @value_is_unbound(%Value %bet.a3)
+  br i1 %bet.a3_unb, label %bet.enum, label %bet.check
+bet.check:
+  ; A3 already bound. Must be Integer and within [Low, High].
+  %bet.t3 = extractvalue %Value %bet.a3, 0
+  %bet.int3 = icmp eq i32 %bet.t3, 1
+  br i1 %bet.int3, label %bet.range, label %bet.fail
+bet.range:
+  %bet.x = extractvalue %Value %bet.a3, 1
+  %bet.cmp_lo = icmp sle i64 %bet.lo, %bet.x
+  %bet.cmp_hi = icmp sle i64 %bet.x, %bet.hi
+  %bet.in_range = and i1 %bet.cmp_lo, %bet.cmp_hi
+  ret i1 %bet.in_range
+bet.enum:
+  ; Compute count = High - Low + 1. Fail if non-positive.
+  %bet.diff = sub i64 %bet.hi, %bet.lo
+  %bet.count64 = add i64 %bet.diff, 1
+  %bet.empty = icmp sle i64 %bet.count64, 0
+  br i1 %bet.empty, label %bet.fail, label %bet.size_check
+bet.size_check:
+  ; Cap result-array size: 1,000,000 ints = 16 MB on the arena.
+  ; Larger ranges fail rather than blow up memory; user code can
+  ; do its own incremental loop in that case.
+  %bet.too_big = icmp ugt i64 %bet.count64, 1000000
+  br i1 %bet.too_big, label %bet.fail, label %bet.alloc
+bet.alloc:
+  ; malloc not arena: the foreign-iter pop_cp path calls free() on
+  ; the result array when exhausted, so we need an owned heap
+  ; allocation rather than an arena bump.
+  %bet.bytes = shl i64 %bet.count64, 4  ; count * sizeof(%Value) = count * 16
+  %bet.mem = call i8* @malloc(i64 %bet.bytes)
+  %bet.mem_null = icmp eq i8* %bet.mem, null
+  br i1 %bet.mem_null, label %bet.fail, label %bet.alloc_ok
+bet.alloc_ok:
+  %bet.arr = bitcast i8* %bet.mem to %Value*
+  %bet.count = trunc i64 %bet.count64 to i32
+  br label %bet.fill_loop
+bet.fill_loop:
+  %bet.fi = phi i32 [ 0, %bet.alloc_ok ], [ %bet.fi_next, %bet.fill_step ]
+  %bet.fi_done = icmp sge i32 %bet.fi, %bet.count
+  br i1 %bet.fi_done, label %bet.bind_first, label %bet.fill_step
+bet.fill_step:
+  %bet.fi_64 = sext i32 %bet.fi to i64
+  %bet.val_i = add i64 %bet.lo, %bet.fi_64
+  %bet.v0 = insertvalue %Value undef, i32 1, 0
+  %bet.v = insertvalue %Value %bet.v0, i64 %bet.val_i, 1
+  %bet.slot = getelementptr %Value, %Value* %bet.arr, i32 %bet.fi
+  store %Value %bet.v, %Value* %bet.slot
+  %bet.fi_next = add i32 %bet.fi, 1
+  br label %bet.fill_loop
+bet.bind_first:
+  ; Bind A3 = Integer(Low) and push the foreign-iter CP so subsequent
+  ; backtracks walk arr[1..count-1].
+  %bet.first_ptr = getelementptr %Value, %Value* %bet.arr, i32 0
+  %bet.first = load %Value, %Value* %bet.first_ptr
+  call void @wam_trail_binding(%WamState* %vm, i32 2)
+  call void @wam_bind_reg(%WamState* %vm, i32 2, %Value %bet.first)
+  ; return_pc = current_pc + 1 -- where execution will resume on each yield.
+  %bet.pc = call i32 @wam_get_pc(%WamState* %vm)
+  %bet.return_pc = add i32 %bet.pc, 1
+  %bet.arr_i8 = bitcast %Value* %bet.arr to i8*
+  call void @wam_push_foreign_choice_point(%WamState* %vm,
+      i8* %bet.arr_i8, i32 %bet.count, i32 2, i32 %bet.return_pc)
+  ret i1 true
+
 unknown:
   ret i1 false
 }'.
@@ -6137,6 +6230,7 @@ builtin_op_to_id('atom_length/2', 35).
 builtin_op_to_id('atom_codes/2', 36).
 builtin_op_to_id('char_code/2', 37).
 builtin_op_to_id('atom_chars/2', 38).
+builtin_op_to_id('between/3', 39).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
