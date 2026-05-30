@@ -585,6 +585,55 @@ test_sub_atom_overflow(_, R) :-
     -> R is 1
     ;  R is 0 ).   % 0 -- length exceeds source
 
+% M32: atom_number/2 integer mode -- forward (atom -> int) + reverse
+% (int -> atom). Float parsing / formatting deferred.
+
+:- dynamic test_atom_number_fwd/2.
+test_atom_number_fwd(_, R) :-
+    atom_number('42', N),
+    R is N.   % 42
+
+:- dynamic test_atom_number_fwd_neg/2.
+test_atom_number_fwd_neg(_, R) :-
+    atom_number('-17', N),
+    R is N + 100.   % 83
+
+:- dynamic test_atom_number_fwd_zero/2.
+test_atom_number_fwd_zero(_, R) :-
+    atom_number('0', N),
+    R is N + 7.   % 7
+
+:- dynamic test_atom_number_fwd_bad/2.
+test_atom_number_fwd_bad(_, R) :-
+    ( atom_number('12abc', _)
+    -> R is 1
+    ;  R is 0 ).   % 0 -- trailing junk fails
+
+:- dynamic test_atom_number_fwd_empty/2.
+test_atom_number_fwd_empty(_, R) :-
+    ( atom_number('', _)
+    -> R is 1
+    ;  R is 0 ).   % 0 -- empty atom fails
+
+:- dynamic test_atom_number_rev/2.
+test_atom_number_rev(_, R) :-
+    atom_number(A, 42),
+    atom_length(A, N),
+    R is N.   % 2
+
+:- dynamic test_atom_number_rev_neg/2.
+test_atom_number_rev_neg(_, R) :-
+    atom_number(A, -17),
+    atom_length(A, N),
+    R is N.   % 3
+
+% Roundtrip: number -> atom -> back to same number.
+:- dynamic test_atom_number_roundtrip/2.
+test_atom_number_roundtrip(_, R) :-
+    atom_number(A, 99),
+    atom_number(A, N),
+    R is N.   % 99 (kept <256 for bash exit-code carry)
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -1384,6 +1433,23 @@ test_all :-
                    test_sub_atom_full, 0, 5),
        run_test_r0('sub_atom(hi,0,99,_,_) overflow -> 0',
                    test_sub_atom_overflow, 0, 0),
+       format('--- M32 atom_number/2 integer forward + reverse ---~n'),
+       run_test_r0('atom_number(\'42\', N) -> 42',
+                   test_atom_number_fwd, 0, 42),
+       run_test_r0('atom_number(\'-17\', N) -> N + 100 = 83',
+                   test_atom_number_fwd_neg, 0, 83),
+       run_test_r0('atom_number(\'0\', N) -> N + 7 = 7',
+                   test_atom_number_fwd_zero, 0, 7),
+       run_test_r0('atom_number(\'12abc\', _) trailing junk -> 0',
+                   test_atom_number_fwd_bad, 0, 0),
+       run_test_r0('atom_number(\'\', _) empty -> 0',
+                   test_atom_number_fwd_empty, 0, 0),
+       run_test_r0('atom_number(A, 42), atom_length(A) -> 2',
+                   test_atom_number_rev, 0, 2),
+       run_test_r0('atom_number(A, -17), atom_length(A) -> 3',
+                   test_atom_number_rev_neg, 0, 3),
+       run_test_r0('roundtrip atom_number(A,99) twice -> 99',
+                   test_atom_number_roundtrip, 0, 99),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),

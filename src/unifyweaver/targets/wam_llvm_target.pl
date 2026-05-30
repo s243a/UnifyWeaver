@@ -3401,6 +3401,7 @@ entry:
     i32 39, label %builtin_between
     i32 40, label %builtin_atom_concat
     i32 41, label %builtin_sub_atom
+    i32 42, label %builtin_atom_number
   ]
 
 builtin_is:
@@ -5270,6 +5271,90 @@ sba.unify5:
   %sba.u5 = call i1 @wam_unify_value(%WamState* %vm, %Value %sba.raw5, %Value %sba.new_v)
   ret i1 %sba.u5
 
+builtin_atom_number:
+  ; M32: atom_number(?Atom, ?Number) -- integer mode only.
+  ;   A1 bound atom: parse digits (with optional leading ''-''), unify
+  ;     A2 with Integer(value). Empty / sign-only / non-digit input
+  ;     fails cleanly.
+  ;   A1 unbound + A2 bound Integer: snprintf the value with %lld,
+  ;     intern it, unify A1 with the resulting atom.
+  ;   Other combinations fail. Float parsing / formatting is deferred.
+  %anu.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %anu.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %anu.t1 = extractvalue %Value %anu.a1, 0
+  %anu.is_atom = icmp eq i32 %anu.t1, 0
+  br i1 %anu.is_atom, label %anu.fwd_lookup, label %anu.try_reverse
+anu.try_reverse:
+  %anu.t2 = extractvalue %Value %anu.a2, 0
+  %anu.is_int2 = icmp eq i32 %anu.t2, 1
+  br i1 %anu.is_int2, label %anu.reverse, label %anu.fail
+anu.fail:
+  ret i1 false
+anu.fwd_lookup:
+  %anu.aid = extractvalue %Value %anu.a1, 1
+  %anu.str = call i8* @wam_atom_to_string(i64 %anu.aid)
+  %anu.str_null = icmp eq i8* %anu.str, null
+  br i1 %anu.str_null, label %anu.fail, label %anu.parse_init
+anu.parse_init:
+  ; Inspect first byte to decide sign.
+  %anu.c0 = load i8, i8* %anu.str
+  %anu.is_neg = icmp eq i8 %anu.c0, 45   ; ASCII ''-''
+  br i1 %anu.is_neg, label %anu.sel_neg, label %anu.sel_pos
+anu.sel_neg:
+  %anu.pn0 = getelementptr i8, i8* %anu.str, i32 1
+  br label %anu.first_check
+anu.sel_pos:
+  br label %anu.first_check
+anu.first_check:
+  %anu.p_start = phi i8* [ %anu.pn0, %anu.sel_neg ], [ %anu.str, %anu.sel_pos ]
+  %anu.sign = phi i64 [ -1, %anu.sel_neg ], [ 1, %anu.sel_pos ]
+  ; Require at least one digit after the optional sign.
+  %anu.fc = load i8, i8* %anu.p_start
+  %anu.fc_ge0 = icmp uge i8 %anu.fc, 48
+  %anu.fc_le9 = icmp ule i8 %anu.fc, 57
+  %anu.fc_dig = and i1 %anu.fc_ge0, %anu.fc_le9
+  br i1 %anu.fc_dig, label %anu.parse_loop, label %anu.fail
+anu.parse_loop:
+  %anu.p = phi i8* [ %anu.p_start, %anu.first_check ], [ %anu.pn, %anu.parse_step ]
+  %anu.acc = phi i64 [ 0, %anu.first_check ], [ %anu.acc1, %anu.parse_step ]
+  %anu.lc = load i8, i8* %anu.p
+  %anu.lc_zero = icmp eq i8 %anu.lc, 0
+  br i1 %anu.lc_zero, label %anu.parse_done, label %anu.parse_check
+anu.parse_check:
+  %anu.lc_ge0 = icmp uge i8 %anu.lc, 48
+  %anu.lc_le9 = icmp ule i8 %anu.lc, 57
+  %anu.lc_dig = and i1 %anu.lc_ge0, %anu.lc_le9
+  br i1 %anu.lc_dig, label %anu.parse_step, label %anu.fail
+anu.parse_step:
+  %anu.dig8 = sub i8 %anu.lc, 48
+  %anu.dig64 = zext i8 %anu.dig8 to i64
+  %anu.mul = mul i64 %anu.acc, 10
+  %anu.acc1 = add i64 %anu.mul, %anu.dig64
+  %anu.pn = getelementptr i8, i8* %anu.p, i32 1
+  br label %anu.parse_loop
+anu.parse_done:
+  %anu.signed = mul i64 %anu.acc, %anu.sign
+  %anu.fwd_v0 = insertvalue %Value undef, i32 1, 0
+  %anu.fwd_v = insertvalue %Value %anu.fwd_v0, i64 %anu.signed, 1
+  %anu.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %anu.fwd_u = call i1 @wam_unify_value(%WamState* %vm, %Value %anu.raw2, %Value %anu.fwd_v)
+  ret i1 %anu.fwd_u
+anu.reverse:
+  ; A2 bound Integer; format ``%lld`` into a 32-byte arena buffer and
+  ; intern.
+  %anu.n = extractvalue %Value %anu.a2, 1
+  call void @wam_arena_ensure()
+  %anu.rbuf = call i8* @wam_arena_alloc(i64 32)
+  %anu.rfmt = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
+  %anu.rlen = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %anu.rbuf, i64 32, i8* %anu.rfmt, i64 %anu.n)
+  %anu.rlen64 = sext i32 %anu.rlen to i64
+  %anu.rev_id = call i64 @wam_intern_atom(i8* %anu.rbuf, i64 %anu.rlen64)
+  %anu.rev_v0 = insertvalue %Value undef, i32 0, 0
+  %anu.rev_v = insertvalue %Value %anu.rev_v0, i64 %anu.rev_id, 1
+  %anu.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %anu.rev_u = call i1 @wam_unify_value(%WamState* %vm, %Value %anu.raw1, %Value %anu.rev_v)
+  ret i1 %anu.rev_u
+
 unknown:
   ret i1 false
 }'.
@@ -6684,6 +6769,7 @@ builtin_op_to_id('atom_chars/2', 38).
 builtin_op_to_id('between/3', 39).
 builtin_op_to_id('atom_concat/3', 40).
 builtin_op_to_id('sub_atom/5', 41).
+builtin_op_to_id('atom_number/2', 42).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
