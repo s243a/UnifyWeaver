@@ -491,6 +491,33 @@ test_write_compound(_, R) :-
     format('~w', [T]),
     R is 1.
 
+% M22: operator notation in pretty-printer. Single-char binary ops
+% print as ``arg1 op arg2``; unary ``-`` prints as ``-arg``.
+% Precedence isn''t modelled, so ``1+2*3`` will round-trip with all
+% operators flat (no parens) -- enough to read but not strictly
+% re-parseable for compound expressions.
+:- dynamic test_write_add/2.
+test_write_add(_, R) :- T = 1+2, format('~w', [T]), R is 1.
+
+:- dynamic test_write_mul_add/2.
+test_write_mul_add(_, R) :-
+    T = 1+2*3, format('~w', [T]), R is 1.
+
+:- dynamic test_write_eq/2.
+test_write_eq(_, R) :- T = (x=y), format('~w', [T]), R is 1.
+
+:- dynamic test_write_colon/2.
+test_write_colon(_, R) :- T = a:b, format('~w', [T]), R is 1.
+
+:- dynamic test_write_neg/2.
+test_write_neg(_, R) :- T = -(x), format('~w', [T]), R is 1.
+
+:- dynamic test_write_list_of_pairs/2.
+test_write_list_of_pairs(_, R) :-
+    L = [a-1, b-2],
+    format('~w', [L]),
+    R is 1.
+
 % M15: precision directives ~Nf (fixed-point) and ~Ne (scientific).
 % Parses the digit run between ~ and f/e at runtime, then routes the
 % next arg through printf "%.*f" / "%.*e" with the parsed precision.
@@ -983,11 +1010,20 @@ test_all :-
                     "about ~w\n"),
        format('--- M21 compound pretty-printing through write/1 ---~n'),
        run_fmt_test('~w of [1,2,3]', test_write_list3, "[1, 2, 3]"),
-       run_fmt_test('~w of a-b', test_write_pair, "-(a, b)"),
+       run_fmt_test('~w of a-b (M22 infix notation)',
+                    test_write_pair, "a-b"),
        run_fmt_test('~w of []', test_write_empty, "[]"),
        run_fmt_test('~w of [1,[2,3],4]', test_write_nested, "[1, [2, 3], 4]"),
        run_fmt_test('~w of foo(1, hello, 3.5)', test_write_compound,
                     "foo(1, hello, 3.5)"),
+       format('--- M22 infix / prefix operator notation ---~n'),
+       run_fmt_test('~w of 1+2', test_write_add, "1+2"),
+       run_fmt_test('~w of 1+2*3', test_write_mul_add, "1+2*3"),
+       run_fmt_test('~w of x=y', test_write_eq, "x=y"),
+       run_fmt_test('~w of a:b', test_write_colon, "a:b"),
+       run_fmt_test('~w of -(x)', test_write_neg, "-x"),
+       run_fmt_test('~w of [a-1, b-2]',
+                    test_write_list_of_pairs, "[a-1, b-2]"),
        format('--- M15 precision directives (~~Nf / ~~Ne) ---~n'),
        run_fmt_test('"~6f~n" with 0.25', test_fmt_6f,
                     "0.250000\n"),
