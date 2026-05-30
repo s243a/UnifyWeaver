@@ -3413,6 +3413,7 @@ entry:
     i32 51, label %builtin_nth0
     i32 52, label %builtin_nth1
     i32 53, label %builtin_last
+    i32 54, label %builtin_reverse
   ]
 
 builtin_is:
@@ -5974,6 +5975,62 @@ lst.done:
   %lst.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %lst.raw2, %Value %lst.head)
   ret i1 %lst.ok
 
+builtin_reverse:
+  ; M38: reverse(+List, ?Reversed) -- deterministic forward mode.
+  ; Single-pass walk of A1: for each cons cell, prepend the head onto
+  ; an accumulator initially seeded with the [] atom. The final
+  ; accumulator is the reversed list. Walking stops at the first
+  ; non-compound cell (matches length/2 semantics on improper lists:
+  ; reverse(non_list) -> succeeds with []).
+  %rev.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  call void @wam_arena_ensure()
+  %rev.empty_id = load i64, i64* @wam_empty_list_atom_id
+  %rev.empty_v0 = insertvalue %Value undef, i32 0, 0
+  %rev.empty_v  = insertvalue %Value %rev.empty_v0, i64 %rev.empty_id, 1
+  br label %rev.loop
+rev.loop:
+  %rev.cur = phi %Value [ %rev.a1, %builtin_reverse ], [ %rev.tail, %rev.step ]
+  %rev.acc = phi %Value [ %rev.empty_v, %builtin_reverse ], [ %rev.new_cons, %rev.step ]
+  %rev.d = call %Value @wam_deref_value(%WamState* %vm, %Value %rev.cur)
+  %rev.tag = extractvalue %Value %rev.d, 0
+  %rev.is_cmp = icmp eq i32 %rev.tag, 3
+  br i1 %rev.is_cmp, label %rev.step, label %rev.done
+rev.step:
+  %rev.cp = extractvalue %Value %rev.d, 1
+  %rev.cp_ptr = inttoptr i64 %rev.cp to %Compound*
+  %rev.args_slot = getelementptr %Compound, %Compound* %rev.cp_ptr, i32 0, i32 2
+  %rev.args = load %Value*, %Value** %rev.args_slot
+  %rev.head_ptr = getelementptr %Value, %Value* %rev.args, i32 0
+  %rev.head = load %Value, %Value* %rev.head_ptr
+  %rev.tail_ptr = getelementptr %Value, %Value* %rev.args, i32 1
+  %rev.tail = load %Value, %Value* %rev.tail_ptr
+  ; Allocate a fresh [|]/2 Compound on the arena: head = current head,
+  ; tail = accumulator.
+  %rev.new_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %rev.new_cp_mem = call i8* @wam_arena_alloc(i64 %rev.new_cp_size)
+  %rev.new_cp = bitcast i8* %rev.new_cp_mem to %Compound*
+  %rev.new_fn_slot = getelementptr %Compound, %Compound* %rev.new_cp, i32 0, i32 0
+  %rev.new_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %rev.new_fn_ptr, i8** %rev.new_fn_slot
+  %rev.new_ar_slot = getelementptr %Compound, %Compound* %rev.new_cp, i32 0, i32 1
+  store i32 2, i32* %rev.new_ar_slot
+  %rev.new_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %rev.new_args = bitcast i8* %rev.new_args_mem to %Value*
+  %rev.new_args_slot = getelementptr %Compound, %Compound* %rev.new_cp, i32 0, i32 2
+  store %Value* %rev.new_args, %Value** %rev.new_args_slot
+  %rev.new_h_ptr = getelementptr %Value, %Value* %rev.new_args, i32 0
+  store %Value %rev.head, %Value* %rev.new_h_ptr
+  %rev.new_t_ptr = getelementptr %Value, %Value* %rev.new_args, i32 1
+  store %Value %rev.acc, %Value* %rev.new_t_ptr
+  %rev.new_cp_i64 = ptrtoint %Compound* %rev.new_cp to i64
+  %rev.new_cons_v0 = insertvalue %Value undef, i32 3, 0
+  %rev.new_cons = insertvalue %Value %rev.new_cons_v0, i64 %rev.new_cp_i64, 1
+  br label %rev.loop
+rev.done:
+  %rev.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %rev.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %rev.raw2, %Value %rev.acc)
+  ret i1 %rev.ok
+
 unknown:
   ret i1 false
 }'.
@@ -7400,6 +7457,7 @@ builtin_op_to_id('string_to_atom/2', 50). % string_to_atom(?S, ?A) -- same as at
 builtin_op_to_id('nth0/3', 51).
 builtin_op_to_id('nth1/3', 52).
 builtin_op_to_id('last/2', 53).
+builtin_op_to_id('reverse/2', 54).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
