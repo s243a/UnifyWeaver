@@ -1011,14 +1011,29 @@
         elem (deref-value (:bindings state)
                           (or (reg-get-raw state "A2") ::unbound))
         out (deref-value (:bindings state)
-                         (or (reg-get-raw state "A3") ::unbound))]
-    (if-let [items (proper-list-items state list-value)]
-      (let [kept (remove #(term-identical? state % elem) items)
+                         (or (reg-get-raw state "A3") ::unbound))
+        out-items (proper-list-items state out)]
+    (cond
+      (proper-list-items state list-value)
+      (let [kept (remove #(term-identical? state % elem)
+                         (proper-list-items state list-value))
             result-term (list->term (:intern-context state) kept)
             [ok next-state] (unify-values state out result-term)]
         (if ok
           (advance next-state)
           (backtrack state)))
+
+      (and (logic-var? list-value)
+           (not (logic-var? elem))
+           (not= elem ::unbound)
+           (some? out-items)
+           (not-any? #(term-identical? state % elem) out-items))
+      (let [[ok next-state] (unify-values state list-value out)]
+        (if ok
+          (advance next-state)
+          (backtrack state)))
+
+      :else
       (backtrack state))))
 
 (defn sorted-unique-list? [state items]
