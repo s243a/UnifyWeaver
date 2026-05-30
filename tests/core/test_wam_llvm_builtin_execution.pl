@@ -324,6 +324,33 @@ test_sign_neg(_, R) :- R is sign(-7).                       % -1
 :- dynamic test_sign_zero/2.
 test_sign_zero(_, R) :- R is sign(0).                       % 0
 
+% M19: atom_length/2 and atom_codes/2 -- atom-string primitives.
+% atom_length walks the atom''s C string in the M12 atom-string table.
+% atom_codes also walks it but emits an Integer-per-byte cons chain.
+:- dynamic test_atom_length_hello/2.
+test_atom_length_hello(_, R) :- atom_length(hello, N), R is N. % 5
+
+:- dynamic test_atom_length_empty/2.
+test_atom_length_empty(_, R) :- atom_length('', N), R is N.    % 0
+
+:- dynamic test_atom_codes_head/2.
+test_atom_codes_head(_, R) :-
+    atom_codes(hello, Cs),
+    Cs = [H|_],
+    R is H.   % ''h'' = 104
+
+:- dynamic test_atom_codes_second/2.
+test_atom_codes_second(_, R) :-
+    atom_codes(hello, Cs),
+    Cs = [_, X|_],
+    R is X.   % ''e'' = 101
+
+:- dynamic test_atom_codes_length/2.
+test_atom_codes_length(_, R) :-
+    atom_codes(world, Cs),
+    length(Cs, N),
+    R is N.   % 5
+
 % M14: float-aware comparison ops. Pre-M14, builtin_gt/lt/etc read
 % the register payload as raw i64 -- meaningless when one operand
 % is a Float because float bits aren''t the numeric value. Also,
@@ -847,6 +874,17 @@ test_all :-
        run_test_r0('sign(-7) -> -1 (exit 255)',
                    test_sign_neg, 0, 255),
        run_test_r0('sign(0) -> 0', test_sign_zero, 0, 0),
+       format('--- M19 atom_length / atom_codes ---~n'),
+       run_test_r0('atom_length(hello) -> 5',
+                   test_atom_length_hello, 0, 5),
+       run_test_r0('atom_length('''') -> 0',
+                   test_atom_length_empty, 0, 0),
+       run_test_r0('atom_codes(hello)[0] -> ''h''=104',
+                   test_atom_codes_head, 0, 104),
+       run_test_r0('atom_codes(hello)[1] -> ''e''=101',
+                   test_atom_codes_second, 0, 101),
+       run_test_r0('length(atom_codes(world)) -> 5',
+                   test_atom_codes_length, 0, 5),
        format('--- M14 float-aware comparisons + float sum ---~n'),
        run_test_r0('1/4 > 0 -> 1', test_cmp_float_gt, 0, 1),
        run_test_r0('-1/4 > 0 -> 0', test_cmp_float_gt_neg, 0, 0),

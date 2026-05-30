@@ -3383,6 +3383,8 @@ entry:
     i32 31, label %builtin_length
     i32 32, label %builtin_format2
     i32 33, label %builtin_format1
+    i32 35, label %builtin_atom_length
+    i32 36, label %builtin_atom_codes
   ]
 
 builtin_is:
@@ -3622,17 +3624,45 @@ builtin_neq:
   ret i1 %neq.r
 
 builtin_write:
-  ; write/1: print A1 payload as integer via printf. No-op on WASM.
+  ; M19: dispatch on tag so write/1 prints Integers, Floats and
+  ; Atoms (via the M12 atom-string table). Compounds and other tags
+  ; print a placeholder `_` -- full term pretty-printing is deferred.
   %wr.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %wr.tag = call i32 @value_tag(%Value %wr.a1)
-  %wr.pay = call i64 @value_payload(%Value %wr.a1)
-  %wr.is_int = icmp eq i32 %wr.tag, 1
-  br i1 %wr.is_int, label %wr.print_int, label %wr.done
+  switch i32 %wr.tag, label %wr.print_anon [
+    i32 0, label %wr.print_atom
+    i32 1, label %wr.print_int
+    i32 2, label %wr.print_float
+  ]
 
 wr.print_int:
-  %wr.fmt = getelementptr [3 x i8], [3 x i8]* @.fmt_int, i32 0, i32 0
-  %wr.i32 = trunc i64 %wr.pay to i32
-  call i32 (i8*, ...) @printf(i8* %wr.fmt, i32 %wr.i32)
+  %wr.pay = call i64 @value_payload(%Value %wr.a1)
+  %wr.fmt_lld = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %wr.fmt_lld, i64 %wr.pay)
+  br label %wr.done
+
+wr.print_float:
+  %wr.fbits = call i64 @value_payload(%Value %wr.a1)
+  %wr.fval = bitcast i64 %wr.fbits to double
+  %wr.fmt_dbl = getelementptr [3 x i8], [3 x i8]* @.fmt_dbl, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %wr.fmt_dbl, double %wr.fval)
+  br label %wr.done
+
+wr.print_atom:
+  %wr.aid = call i64 @value_payload(%Value %wr.a1)
+  %wr.astr = call i8* @wam_atom_to_string(i64 %wr.aid)
+  %wr.astr_null = icmp eq i8* %wr.astr, null
+  br i1 %wr.astr_null, label %wr.done, label %wr.print_atom_go
+wr.print_atom_go:
+  %wr.fmt_str = getelementptr [3 x i8], [3 x i8]* @.fmt_str, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %wr.fmt_str, i8* %wr.astr)
+  br label %wr.done
+
+wr.print_anon:
+  ; Compound / Ref / Unbound / Bool -- placeholder. Full pretty-
+  ; printing of compounds (with parens + args) is deferred; format/2
+  ; with ~w handles the more common per-arg printing.
+  call i32 @putchar(i32 95)
   br label %wr.done
 
 wr.done:
@@ -4630,6 +4660,134 @@ f2.iter_end:
 
 f2.done:
   ret i1 true
+
+builtin_atom_length:
+  ; M19: atom_length/2 -- A1 = atom, A2 = Integer length.
+  ; Looks up A1''s atom id in @wam_atom_strings to get the underlying
+  ; C string, walks it counting bytes until the null terminator, and
+  ; binds A2 to Integer(count). Non-atom A1 silently fails (returns
+  ; false). Reverse mode (length->atom) is not supported -- it would
+  ; require runtime atom interning.
+  %al.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %al.t1 = extractvalue %Value %al.a1, 0
+  %al.is_atom = icmp eq i32 %al.t1, 0
+  br i1 %al.is_atom, label %al.lookup, label %al.fail
+al.fail:
+  ret i1 false
+al.lookup:
+  %al.aid = extractvalue %Value %al.a1, 1
+  %al.str = call i8* @wam_atom_to_string(i64 %al.aid)
+  %al.str_null = icmp eq i8* %al.str, null
+  br i1 %al.str_null, label %al.fail, label %al.walk
+al.walk:
+  br label %al.loop
+al.loop:
+  %al.p = phi i8* [ %al.str, %al.walk ], [ %al.pn, %al.step ]
+  %al.n = phi i64 [ 0, %al.walk ], [ %al.n1, %al.step ]
+  %al.c = load i8, i8* %al.p
+  %al.zero = icmp eq i8 %al.c, 0
+  br i1 %al.zero, label %al.done, label %al.step
+al.step:
+  %al.pn = getelementptr i8, i8* %al.p, i32 1
+  %al.n1 = add i64 %al.n, 1
+  br label %al.loop
+al.done:
+  %al.r = call %Value @value_integer(i64 %al.n)
+  %al.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %al.a2_unb = call i1 @value_is_unbound(%Value %al.a2)
+  br i1 %al.a2_unb, label %al.bind, label %al.cmp
+al.bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %al.r)
+  ret i1 true
+al.cmp:
+  %al.eq = call i1 @value_equals(%Value %al.a2, %Value %al.r)
+  ret i1 %al.eq
+
+builtin_atom_codes:
+  ; M19: atom_codes/2 -- A1 = atom, A2 = list of Integer codes.
+  ; Forward mode only: looks up A1, walks the C string emitting an
+  ; Integer-per-byte cons-cell chain ([code1, code2, ..., []]),
+  ; binds A2 to the chain head. Reverse mode (codes -> atom) needs
+  ; runtime atom interning and is deferred.
+  %aco.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %aco.t1 = extractvalue %Value %aco.a1, 0
+  %aco.is_atom = icmp eq i32 %aco.t1, 0
+  br i1 %aco.is_atom, label %aco.lookup, label %aco.fail
+aco.fail:
+  ret i1 false
+aco.lookup:
+  %aco.aid = extractvalue %Value %aco.a1, 1
+  %aco.str = call i8* @wam_atom_to_string(i64 %aco.aid)
+  %aco.str_null = icmp eq i8* %aco.str, null
+  br i1 %aco.str_null, label %aco.fail, label %aco.measure
+aco.measure:
+  ; First pass: walk to find the length so we can build the chain
+  ; from the back forward (using the same pattern as findall''s
+  ; collect_case).
+  br label %aco.measure_loop
+aco.measure_loop:
+  %aco.mp = phi i8* [ %aco.str, %aco.measure ], [ %aco.mpn, %aco.measure_step ]
+  %aco.mn = phi i32 [ 0, %aco.measure ], [ %aco.mn1, %aco.measure_step ]
+  %aco.mc = load i8, i8* %aco.mp
+  %aco.mzero = icmp eq i8 %aco.mc, 0
+  br i1 %aco.mzero, label %aco.build_init, label %aco.measure_step
+aco.measure_step:
+  %aco.mpn = getelementptr i8, i8* %aco.mp, i32 1
+  %aco.mn1 = add i32 %aco.mn, 1
+  br label %aco.measure_loop
+aco.build_init:
+  ; Tail seed: the [] Atom. Build the chain by walking backward from
+  ; index n-1 down to 0.
+  %aco.empty_id = load i64, i64* @wam_empty_list_atom_id
+  %aco.empty_v0 = insertvalue %Value undef, i32 0, 0
+  %aco.empty_v  = insertvalue %Value %aco.empty_v0, i64 %aco.empty_id, 1
+  call void @wam_arena_ensure()
+  br label %aco.build_loop
+aco.build_loop:
+  %aco.bi = phi i32 [ %aco.mn, %aco.build_init ], [ %aco.bi_prev, %aco.build_step ]
+  %aco.btail = phi %Value [ %aco.empty_v, %aco.build_init ], [ %aco.new_cons, %aco.build_step ]
+  %aco.done_b = icmp sle i32 %aco.bi, 0
+  br i1 %aco.done_b, label %aco.bind_out, label %aco.build_step
+aco.build_step:
+  %aco.bi_prev = sub i32 %aco.bi, 1
+  %aco.cp_b = getelementptr i8, i8* %aco.str, i32 %aco.bi_prev
+  %aco.ch_b = load i8, i8* %aco.cp_b
+  %aco.ch_b64 = zext i8 %aco.ch_b to i64
+  %aco.code_v = call %Value @value_integer(i64 %aco.ch_b64)
+  ; Allocate a [|]/2 Compound on the arena.
+  %aco.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %aco.cp_mem = call i8* @wam_arena_alloc(i64 %aco.cp_size)
+  %aco.cp = bitcast i8* %aco.cp_mem to %Compound*
+  %aco.fn_slot = getelementptr %Compound, %Compound* %aco.cp, i32 0, i32 0
+  %aco.fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %aco.fn_ptr, i8** %aco.fn_slot
+  %aco.ar_slot = getelementptr %Compound, %Compound* %aco.cp, i32 0, i32 1
+  store i32 2, i32* %aco.ar_slot
+  %aco.args_mem = call i8* @wam_arena_alloc(i64 32)
+  %aco.args = bitcast i8* %aco.args_mem to %Value*
+  %aco.args_slot = getelementptr %Compound, %Compound* %aco.cp, i32 0, i32 2
+  store %Value* %aco.args, %Value** %aco.args_slot
+  %aco.h_ptr = getelementptr %Value, %Value* %aco.args, i32 0
+  store %Value %aco.code_v, %Value* %aco.h_ptr
+  %aco.t_ptr = getelementptr %Value, %Value* %aco.args, i32 1
+  store %Value %aco.btail, %Value* %aco.t_ptr
+  %aco.cp_i64 = ptrtoint %Compound* %aco.cp to i64
+  %aco.nc0 = insertvalue %Value undef, i32 3, 0
+  %aco.new_cons = insertvalue %Value %aco.nc0, i64 %aco.cp_i64, 1
+  br label %aco.build_loop
+aco.bind_out:
+  %aco.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %aco.a2_unb = call i1 @value_is_unbound(%Value %aco.a2)
+  br i1 %aco.a2_unb, label %aco.bind, label %aco.unify
+aco.bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %aco.btail)
+  ret i1 true
+aco.unify:
+  %aco.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %aco.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %aco.raw2, %Value %aco.btail)
+  ret i1 %aco.uok
 
 unknown:
   ret i1 false
@@ -5792,6 +5950,8 @@ builtin_op_to_id('msort/2', 30).
 builtin_op_to_id('length/2', 31).
 builtin_op_to_id('format/2', 32).
 builtin_op_to_id('format/1', 33).
+builtin_op_to_id('atom_length/2', 35).
+builtin_op_to_id('atom_codes/2', 36).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
