@@ -731,6 +731,63 @@ test_number_chars_roundtrip(_, R) :-
     number_chars(N, Chars),
     R is N.   % 99
 
+% M35: upcase_atom/2 + downcase_atom/2 -- ASCII a..z <-> A..Z, other
+% bytes passthrough.
+
+:- dynamic test_upcase_length/2.
+test_upcase_length(_, R) :-
+    upcase_atom(hello, U),
+    atom_length(U, N),
+    R is N.   % 5
+
+:- dynamic test_upcase_first_code/2.
+test_upcase_first_code(_, R) :-
+    upcase_atom(hello, U),
+    atom_codes(U, [C|_]),
+    R is C.   % 'H' = 72
+
+:- dynamic test_upcase_last_code/2.
+test_upcase_last_code(_, R) :-
+    upcase_atom(ab, U),
+    atom_codes(U, [_, C2]),
+    R is C2.   % 'B' = 66
+
+:- dynamic test_upcase_passthrough/2.
+test_upcase_passthrough(_, R) :-
+    upcase_atom('hi!', U),    % '!' is not in a..z, stays '!' (33)
+    atom_codes(U, [_, _, C3]),
+    R is C3.   % '!' = 33
+
+:- dynamic test_upcase_dedup/2.
+test_upcase_dedup(_, R) :-
+    upcase_atom(hello, U1),
+    upcase_atom(hello, U2),
+    ( U1 == U2 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_downcase_length/2.
+test_downcase_length(_, R) :-
+    downcase_atom('HELLO', D),
+    atom_length(D, N),
+    R is N.   % 5
+
+:- dynamic test_downcase_first_code/2.
+test_downcase_first_code(_, R) :-
+    downcase_atom('HELLO', D),
+    atom_codes(D, [C|_]),
+    R is C.   % 'h' = 104
+
+:- dynamic test_downcase_mixed/2.
+test_downcase_mixed(_, R) :-
+    downcase_atom('aB', D),    % 'a' stays 'a', 'B' becomes 'b'
+    atom_codes(D, [_, C2]),
+    R is C2.   % 'b' = 98
+
+:- dynamic test_upcase_downcase_roundtrip/2.
+test_upcase_downcase_roundtrip(_, R) :-
+    upcase_atom(hello, U),
+    downcase_atom(U, D),
+    ( D == hello -> R is 1 ; R is 0 ).   % 1
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -1581,6 +1638,25 @@ test_all :-
                    test_number_chars_rev_empty, 0, 0),
        run_test_r0('roundtrip number_chars(99) -> 99',
                    test_number_chars_roundtrip, 0, 99),
+       format('--- M35 upcase_atom/2 + downcase_atom/2 ---~n'),
+       run_test_r0('upcase_atom(hello, U), atom_length(U) -> 5',
+                   test_upcase_length, 0, 5),
+       run_test_r0('upcase_atom(hello, U) first code -> 72 (H)',
+                   test_upcase_first_code, 0, 72),
+       run_test_r0('upcase_atom(ab, U) second code -> 66 (B)',
+                   test_upcase_last_code, 0, 66),
+       run_test_r0('upcase_atom(\'hi!\', U) third code -> 33 (!)',
+                   test_upcase_passthrough, 0, 33),
+       run_test_r0('upcase_atom(hello) twice -> same id -> 1',
+                   test_upcase_dedup, 0, 1),
+       run_test_r0('downcase_atom(\'HELLO\', D), atom_length -> 5',
+                   test_downcase_length, 0, 5),
+       run_test_r0('downcase_atom(\'HELLO\', D) first -> 104 (h)',
+                   test_downcase_first_code, 0, 104),
+       run_test_r0('downcase_atom(\'aB\', D) second -> 98 (b)',
+                   test_downcase_mixed, 0, 98),
+       run_test_r0('upcase then downcase roundtrip -> hello -> 1',
+                   test_upcase_downcase_roundtrip, 0, 1),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
