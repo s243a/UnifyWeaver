@@ -3397,6 +3397,7 @@ entry:
     i32 35, label %builtin_atom_length
     i32 36, label %builtin_atom_codes
     i32 37, label %builtin_char_code
+    i32 38, label %builtin_atom_chars
   ]
 
 builtin_is:
@@ -4791,6 +4792,93 @@ chc.forward_cmp:
 chc.fail:
   ret i1 false
 
+builtin_atom_chars:
+  ; M27: atom_chars/2 forward mode -- A1 = atom, A2 = list of
+  ; single-char atoms. Walks A1''s C string twice: first to measure
+  ; the length, then backwards from index n-1 to 0 emitting cons
+  ; cells whose heads are single-char Atom values pulled from the
+  ; M26 @wam_char_to_atom_id table. Non-printable bytes (outside
+  ; 32..126) get an atom id of 0 -- the head still emits as
+  ; Atom(0), which @wam_write_value renders as ``?``. Reverse mode
+  ; (list of chars -> atom) needs runtime interning and is deferred.
+  %ach.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ach.t1 = extractvalue %Value %ach.a1, 0
+  %ach.is_atom = icmp eq i32 %ach.t1, 0
+  br i1 %ach.is_atom, label %ach.lookup, label %ach.fail
+ach.fail:
+  ret i1 false
+ach.lookup:
+  %ach.aid = extractvalue %Value %ach.a1, 1
+  %ach.str = call i8* @wam_atom_to_string(i64 %ach.aid)
+  %ach.str_null = icmp eq i8* %ach.str, null
+  br i1 %ach.str_null, label %ach.fail, label %ach.measure
+ach.measure:
+  br label %ach.measure_loop
+ach.measure_loop:
+  %ach.mp = phi i8* [ %ach.str, %ach.measure ], [ %ach.mpn, %ach.measure_step ]
+  %ach.mn = phi i32 [ 0, %ach.measure ], [ %ach.mn1, %ach.measure_step ]
+  %ach.mc = load i8, i8* %ach.mp
+  %ach.mzero = icmp eq i8 %ach.mc, 0
+  br i1 %ach.mzero, label %ach.build_init, label %ach.measure_step
+ach.measure_step:
+  %ach.mpn = getelementptr i8, i8* %ach.mp, i32 1
+  %ach.mn1 = add i32 %ach.mn, 1
+  br label %ach.measure_loop
+ach.build_init:
+  %ach.empty_id = load i64, i64* @wam_empty_list_atom_id
+  %ach.empty_v0 = insertvalue %Value undef, i32 0, 0
+  %ach.empty_v  = insertvalue %Value %ach.empty_v0, i64 %ach.empty_id, 1
+  call void @wam_arena_ensure()
+  br label %ach.build_loop
+ach.build_loop:
+  %ach.bi = phi i32 [ %ach.mn, %ach.build_init ], [ %ach.bi_prev, %ach.build_step ]
+  %ach.btail = phi %Value [ %ach.empty_v, %ach.build_init ], [ %ach.new_cons, %ach.build_step ]
+  %ach.done_b = icmp sle i32 %ach.bi, 0
+  br i1 %ach.done_b, label %ach.bind_out, label %ach.build_step
+ach.build_step:
+  %ach.bi_prev = sub i32 %ach.bi, 1
+  %ach.cp_b = getelementptr i8, i8* %ach.str, i32 %ach.bi_prev
+  %ach.ch_b = load i8, i8* %ach.cp_b
+  %ach.ch_b64 = zext i8 %ach.ch_b to i64
+  ; Look up the char''s atom id via @wam_char_to_atom. Out-of-range
+  ; or non-printable bytes return 0, which renders as ``?``.
+  %ach.char_aid = call i64 @wam_char_to_atom(i64 %ach.ch_b64)
+  %ach.char_v0 = insertvalue %Value undef, i32 0, 0
+  %ach.char_v = insertvalue %Value %ach.char_v0, i64 %ach.char_aid, 1
+  ; Allocate a [|]/2 Compound on the arena.
+  %ach.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %ach.cp_mem = call i8* @wam_arena_alloc(i64 %ach.cp_size)
+  %ach.cp = bitcast i8* %ach.cp_mem to %Compound*
+  %ach.fn_slot = getelementptr %Compound, %Compound* %ach.cp, i32 0, i32 0
+  %ach.fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %ach.fn_ptr, i8** %ach.fn_slot
+  %ach.ar_slot = getelementptr %Compound, %Compound* %ach.cp, i32 0, i32 1
+  store i32 2, i32* %ach.ar_slot
+  %ach.args_mem = call i8* @wam_arena_alloc(i64 32)
+  %ach.args = bitcast i8* %ach.args_mem to %Value*
+  %ach.args_slot = getelementptr %Compound, %Compound* %ach.cp, i32 0, i32 2
+  store %Value* %ach.args, %Value** %ach.args_slot
+  %ach.h_ptr = getelementptr %Value, %Value* %ach.args, i32 0
+  store %Value %ach.char_v, %Value* %ach.h_ptr
+  %ach.t_ptr = getelementptr %Value, %Value* %ach.args, i32 1
+  store %Value %ach.btail, %Value* %ach.t_ptr
+  %ach.cp_i64 = ptrtoint %Compound* %ach.cp to i64
+  %ach.nc0 = insertvalue %Value undef, i32 3, 0
+  %ach.new_cons = insertvalue %Value %ach.nc0, i64 %ach.cp_i64, 1
+  br label %ach.build_loop
+ach.bind_out:
+  %ach.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %ach.a2_unb = call i1 @value_is_unbound(%Value %ach.a2)
+  br i1 %ach.a2_unb, label %ach.bind, label %ach.unify
+ach.bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %ach.btail)
+  ret i1 true
+ach.unify:
+  %ach.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %ach.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %ach.raw2, %Value %ach.btail)
+  ret i1 %ach.uok
+
 unknown:
   ret i1 false
 }'.
@@ -6048,6 +6136,7 @@ builtin_op_to_id('format/1', 33).
 builtin_op_to_id('atom_length/2', 35).
 builtin_op_to_id('atom_codes/2', 36).
 builtin_op_to_id('char_code/2', 37).
+builtin_op_to_id('atom_chars/2', 38).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
