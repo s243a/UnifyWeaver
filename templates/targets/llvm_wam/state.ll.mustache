@@ -1934,7 +1934,29 @@ wv.binary_op3:
     i32 7892850, label %wv.infix_word3  ; ''x'' ''o'' ''r'' (120,111,114)
     i32 7497069, label %wv.infix_word3  ; ''r'' ''e'' ''m'' (114,101,109)
     i32 6580598, label %wv.infix_word3  ; ''d'' ''i'' ''v'' (100,105,118)
+    i32 4012605, label %wv.infix3       ; ''='' '':'' ''='' -> ``=:=``
+    i32 4021309, label %wv.infix3       ; ''='' ''\\'' ''='' -> ``=\\=``
+    i32 4009518, label %wv.infix3       ; ''='' ''.'' ''.'' -> ``=..``
+    i32 6044989, label %wv.infix3       ; ''\\'' ''='' ''='' -> ``\\==``
+    i32 4209980, label %wv.infix3       ; ''@'' ''='' ''<'' -> ``@=<``
+    i32 4210237, label %wv.infix3       ; ''@'' ''>'' ''='' -> ``@>=``
   ]
+
+wv.infix3:
+  ; Print: arg0 + fn[0..2] (no spaces, symbolic 3-byte op) + arg1.
+  %wv.s3_a0_ptr = getelementptr %Value, %Value* %wv.args, i32 0
+  %wv.s3_a0 = load %Value, %Value* %wv.s3_a0_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.s3_a0)
+  %wv.s3_fn0_i32 = zext i8 %wv.fn0_c3 to i32
+  call i32 @putchar(i32 %wv.s3_fn0_i32)
+  %wv.s3_fn1_i32 = zext i8 %wv.fn1 to i32
+  call i32 @putchar(i32 %wv.s3_fn1_i32)
+  %wv.s3_fn2_i32 = zext i8 %wv.fn2 to i32
+  call i32 @putchar(i32 %wv.s3_fn2_i32)
+  %wv.s3_a1_ptr = getelementptr %Value, %Value* %wv.args, i32 1
+  %wv.s3_a1 = load %Value, %Value* %wv.s3_a1_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.s3_a1)
+  ret void
 
 wv.infix_word3:
   ; Print: arg0 + '' '' + fn[0..2] + '' '' + arg1.

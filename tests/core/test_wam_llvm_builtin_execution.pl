@@ -582,6 +582,44 @@ test_write_div(_, R) :-
     format('~w', [T]),
     R is 1.
 
+% M25: 3-char symbolic operators. Same 3-byte packed-i32 dispatch as
+% the word-like ops, but routed to wv.infix3 (no surrounding spaces).
+:- dynamic test_write_arith_eq/2.
+test_write_arith_eq(_, R) :-
+    T = =:=(x, y),
+    format('~w', [T]),
+    R is 1.
+
+:- dynamic test_write_arith_ne/2.
+test_write_arith_ne(_, R) :-
+    T = =\=(x, y),
+    format('~w', [T]),
+    R is 1.
+
+:- dynamic test_write_univ/2.
+test_write_univ(_, R) :-
+    T = =..(foo, [1, 2]),
+    format('~w', [T]),
+    R is 1.
+
+:- dynamic test_write_struct_ne/2.
+test_write_struct_ne(_, R) :-
+    T = \==(a, b),
+    format('~w', [T]),
+    R is 1.
+
+:- dynamic test_write_term_le/2.
+test_write_term_le(_, R) :-
+    T = @=<(a, b),
+    format('~w', [T]),
+    R is 1.
+
+:- dynamic test_write_term_ge/2.
+test_write_term_ge(_, R) :-
+    T = @>=(b, a),
+    format('~w', [T]),
+    R is 1.
+
 % M15: precision directives ~Nf (fixed-point) and ~Ne (scientific).
 % Parses the digit run between ~ and f/e at runtime, then routes the
 % next arg through printf "%.*f" / "%.*e" with the parsed precision.
@@ -1103,6 +1141,14 @@ test_all :-
        run_fmt_test('~w of xor(5, 3)', test_write_xor, "5 xor 3"),
        run_fmt_test('~w of rem(10, 4)', test_write_rem, "10 rem 4"),
        run_fmt_test('~w of div(8, 3)', test_write_div, "8 div 3"),
+       format('--- M25 three-char symbolic operators ---~n'),
+       run_fmt_test('~w of =:=(x, y)', test_write_arith_eq, "x=:=y"),
+       run_fmt_test('~w of =\\=(x, y)', test_write_arith_ne, "x=\\=y"),
+       run_fmt_test('~w of =..(foo, [1, 2])',
+                    test_write_univ, "foo=..[1, 2]"),
+       run_fmt_test('~w of \\==(a, b)', test_write_struct_ne, "a\\==b"),
+       run_fmt_test('~w of @=<(a, b)', test_write_term_le, "a@=<b"),
+       run_fmt_test('~w of @>=(b, a)', test_write_term_ge, "b@>=a"),
        format('--- M15 precision directives (~~Nf / ~~Ne) ---~n'),
        run_fmt_test('"~6f~n" with 0.25', test_fmt_6f,
                     "0.250000\n"),
