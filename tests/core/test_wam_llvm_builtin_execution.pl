@@ -788,6 +788,48 @@ test_upcase_downcase_roundtrip(_, R) :-
     downcase_atom(U, D),
     ( D == hello -> R is 1 ; R is 0 ).   % 1
 
+% M36: string-type aliases. Runtime has no distinct string type, so
+% atom_string / string_to_atom reduce to unify, and string_concat /
+% string_length share dispatch labels with atom_concat / atom_length.
+
+:- dynamic test_atom_string_fwd/2.
+test_atom_string_fwd(_, R) :-
+    atom_string(hello, S),
+    atom_length(S, N),
+    R is N.   % 5
+
+:- dynamic test_atom_string_check/2.
+test_atom_string_check(_, R) :-
+    ( atom_string(hello, hello) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_string_to_atom_fwd/2.
+test_string_to_atom_fwd(_, R) :-
+    string_to_atom(world, A),
+    atom_length(A, N),
+    R is N.   % 5
+
+:- dynamic test_string_concat_length/2.
+test_string_concat_length(_, R) :-
+    string_concat(hi, there, S),
+    atom_length(S, N),
+    R is N.   % 7
+
+:- dynamic test_string_concat_first_code/2.
+test_string_concat_first_code(_, R) :-
+    string_concat(ab, cd, S),
+    atom_codes(S, [C|_]),
+    R is C.   % 'a' = 97
+
+:- dynamic test_string_length_simple/2.
+test_string_length_simple(_, R) :-
+    string_length(hello, N),
+    R is N.   % 5
+
+:- dynamic test_string_length_empty/2.
+test_string_length_empty(_, R) :-
+    string_length('', N),
+    R is N + 42.   % 42
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -1657,6 +1699,21 @@ test_all :-
                    test_downcase_mixed, 0, 98),
        run_test_r0('upcase then downcase roundtrip -> hello -> 1',
                    test_upcase_downcase_roundtrip, 0, 1),
+       format('--- M36 string-type aliases (atom_string/string_concat/string_length/string_to_atom) ---~n'),
+       run_test_r0('atom_string(hello, S), atom_length(S) -> 5',
+                   test_atom_string_fwd, 0, 5),
+       run_test_r0('atom_string(hello, hello) check -> 1',
+                   test_atom_string_check, 0, 1),
+       run_test_r0('string_to_atom(world, A), atom_length(A) -> 5',
+                   test_string_to_atom_fwd, 0, 5),
+       run_test_r0('string_concat(hi, there, S), atom_length(S) -> 7',
+                   test_string_concat_length, 0, 7),
+       run_test_r0('string_concat(ab, cd, S) first code -> 97',
+                   test_string_concat_first_code, 0, 97),
+       run_test_r0('string_length(hello, N) -> 5',
+                   test_string_length_simple, 0, 5),
+       run_test_r0('string_length(\'\', N) + 42 -> 42',
+                   test_string_length_empty, 0, 42),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
