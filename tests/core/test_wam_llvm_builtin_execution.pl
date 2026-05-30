@@ -546,6 +546,42 @@ test_write_int_div(_, R) :- T = (7//2), format('~w', [T]), R is 1.
 :- dynamic test_write_pow/2.
 test_write_pow(_, R) :- T = (2**8), format('~w', [T]), R is 1.
 
+% M24: word-like operators in the pretty-printer. ``is`` (2-char) and
+% ``mod`` / ``xor`` / ``rem`` / ``div`` (3-char) are printed with
+% surrounding spaces so they don''t collide with adjacent atoms /
+% numbers (``Xis5`` is ambiguous; ``X is 5`` reads cleanly).
+:- dynamic test_write_is/2.
+test_write_is(_, R) :-
+    % Build the ``is/2`` compound explicitly so we exercise the
+    % pretty-printer rather than just evaluating with the runtime.
+    T = is(x, 5),
+    format('~w', [T]),
+    R is 1.
+
+:- dynamic test_write_mod/2.
+test_write_mod(_, R) :-
+    T = mod(7, 3),
+    format('~w', [T]),
+    R is 1.
+
+:- dynamic test_write_xor/2.
+test_write_xor(_, R) :-
+    T = xor(5, 3),
+    format('~w', [T]),
+    R is 1.
+
+:- dynamic test_write_rem/2.
+test_write_rem(_, R) :-
+    T = rem(10, 4),
+    format('~w', [T]),
+    R is 1.
+
+:- dynamic test_write_div/2.
+test_write_div(_, R) :-
+    T = div(8, 3),
+    format('~w', [T]),
+    R is 1.
+
 % M15: precision directives ~Nf (fixed-point) and ~Ne (scientific).
 % Parses the digit run between ~ and f/e at runtime, then routes the
 % next arg through printf "%.*f" / "%.*e" with the parsed precision.
@@ -1061,6 +1097,12 @@ test_all :-
        run_fmt_test('~w of (5>=4)', test_write_ge, "5>=4"),
        run_fmt_test('~w of (7//2)', test_write_int_div, "7//2"),
        run_fmt_test('~w of (2**8)', test_write_pow, "2**8"),
+       format('--- M24 word-like operators (is / mod / xor / rem / div) ---~n'),
+       run_fmt_test('~w of is(x, 5)', test_write_is, "x is 5"),
+       run_fmt_test('~w of mod(7, 3)', test_write_mod, "7 mod 3"),
+       run_fmt_test('~w of xor(5, 3)', test_write_xor, "5 xor 3"),
+       run_fmt_test('~w of rem(10, 4)', test_write_rem, "10 rem 4"),
+       run_fmt_test('~w of div(8, 3)', test_write_div, "8 div 3"),
        format('--- M15 precision directives (~~Nf / ~~Ne) ---~n'),
        run_fmt_test('"~6f~n" with 0.25', test_fmt_6f,
                     "0.250000\n"),
