@@ -2156,7 +2156,8 @@ compile_put_argument(Arg, I, V0, V1, Code) :-
     ->  quote_wam_constant(Arg, ArgStr),
         format(string(Code), "    put_constant ~w, A~w", [ArgStr, I]),
         V1 = V0
-    ;   is_list_term(Arg)
+    ;   is_list_term(Arg),
+        proper_list(Arg, _)
     ->  Arg = [H|T],
         next_x_reg(V0, XReg, V_temp),
         bind_var(Arg, XReg, V_temp, V2),
