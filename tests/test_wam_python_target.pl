@@ -14,6 +14,7 @@
 :- use_module('../src/unifyweaver/targets/wam_python_target').
 :- use_module('../src/unifyweaver/core/target_registry').
 :- use_module('../src/unifyweaver/core/prolog_term_parser').
+:- use_module('../src/unifyweaver/targets/wam_text_parser', [wam_text_to_items/2]).
 
 % ============================================================================
 % Registry smoke tests
@@ -324,6 +325,29 @@ test(python_items_mode_migration_target_not_yet_present) :-
     \+ sub_string(Content, _, _, _, "compile_predicate_to_wam_items"),
     \+ sub_string(Content, _, _, _, "compile_wam_predicate_items_to_python").
 
+
+test(items_adapter_matches_text_adapter_for_standard_items) :-
+    WamText = 'demo/1:
+    get_constant foo, A1
+    put_constant \'42\', A2
+    call bar/2, 2
+    proceed',
+    wam_text_to_items(WamText, Items),
+    wam_python_target:wam_items_to_python_instructions(Items, demo/1, Instrs, Labels),
+    sub_string(Instrs, _, _, _, '("__label__", "demo/1")'),
+    sub_string(Instrs, _, _, _, '("get_constant", Atom("foo"), A1)'),
+    sub_string(Instrs, _, _, _, '("put_constant", Atom("42"), A2)'),
+    sub_string(Instrs, _, _, _, '("call", "bar/2", 2)'),
+    sub_string(Instrs, _, _, _, '("proceed",)'),
+    sub_string(Labels, _, _, _, '("__label__", "demo/1")'),
+    !.
+
+test(items_adapter_preserves_typed_atom_constants) :-
+    Items = [label("typed/1"), put_constant('42', "A1"), put_constant(42, "A2"), proceed],
+    wam_python_target:wam_items_to_python_instructions(Items, typed/1, Instrs, _Labels),
+    sub_string(Instrs, _, _, _, '("put_constant", Atom("42"), A1)'),
+    sub_string(Instrs, _, _, _, '("put_constant", Int(42), A2)'),
+    !.
 :- end_tests(wam_python_items_mode_audit).
 
 % ============================================================================
