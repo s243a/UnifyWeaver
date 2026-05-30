@@ -162,6 +162,8 @@
 :- dynamic user:wam_atom_number_guard/2.
 :- dynamic user:wam_atom_number_reverse/0.
 :- dynamic user:wam_atom_number_reverse_mismatch/0.
+:- dynamic user:wam_atom_number_forward/0.
+:- dynamic user:wam_atom_number_forward_mismatch/0.
 :- dynamic user:wam_atom_number_bad_atom/0.
 :- dynamic user:wam_atom_number_unbound_pair/1.
 :- dynamic user:wam_upcase_atom_guard/2.
@@ -416,6 +418,8 @@ user:wam_atom_string_unbound_pair(_) :- user:wam_unbound_arg(A), user:wam_unboun
 user:wam_atom_number_guard(A, N) :- atom_number(A, N).
 user:wam_atom_number_reverse :- atom_number(A, 42), atom_codes(A, [52,50]).
 user:wam_atom_number_reverse_mismatch :- atom_number(A, 42), atom_codes(A, [52,51]).
+user:wam_atom_number_forward :- atom_number(42, N), N =:= 42.
+user:wam_atom_number_forward_mismatch :- atom_number(42, N), N =:= 43.
 user:wam_atom_number_bad_atom :- atom_number(foo, _).
 user:wam_atom_number_unbound_pair(_) :- user:wam_unbound_arg(A), user:wam_unbound_arg(N), atom_number(A, N).
 user:wam_upcase_atom_guard(A, U) :- upcase_atom(A, U).
@@ -675,6 +679,8 @@ run_smoke :-
           user:wam_atom_number_guard/2,
           user:wam_atom_number_reverse/0,
           user:wam_atom_number_reverse_mismatch/0,
+          user:wam_atom_number_forward/0,
+          user:wam_atom_number_forward_mismatch/0,
           user:wam_atom_number_bad_atom/0,
           user:wam_atom_number_unbound_pair/1,
           user:wam_upcase_atom_guard/2,
@@ -1104,6 +1110,8 @@ smoke_cases([
     case('wam_atom_number_guard/2', args(42, 43), "false"),
     case('wam_atom_number_reverse/0', no_args, "true"),
     case('wam_atom_number_reverse_mismatch/0', no_args, "false"),
+    case('wam_atom_number_forward/0', no_args, "true"),
+    case('wam_atom_number_forward_mismatch/0', no_args, "false"),
     case('wam_atom_number_bad_atom/0', no_args, "false"),
     case('wam_atom_number_unbound_pair/1', a, "false"),
     case('wam_upcase_atom_guard/2', args(hello, 'HELLO'), "true"),
