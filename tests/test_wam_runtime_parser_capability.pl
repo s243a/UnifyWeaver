@@ -129,13 +129,9 @@ test(parser_dependent_body_goal_module_qualified_body) :-
 
 % --- F# WAM target (compiled mode opt-in only) ----------------------------
 %
-% Default is `none` because the F# WAM instruction emitter is
-% missing several instructions the portable parser needs
-% (`get_structure`, certain `unify_constant`/`get_constant` forms,
-% `switch_on_term`, `switch_on_constant_fallthrough`).  They're
-% emitted as `Proceed` stubs today, so parser predicates compile
-% but don't execute correctly.  `runtime_parser(compiled)` makes
-% the wiring exercise itself a stress test for the F# emitter.
+% F# has no native parser today, but `runtime_parser(compiled)` runs
+% the portable parser end-to-end via WAM.  Keep the default at `none`
+% so existing generated projects do not silently bundle the parser library.
 
 test(fsharp_defaults_to_none) :-
     wam_target_runtime_parser(wam_fsharp, [], none).
