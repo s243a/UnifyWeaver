@@ -285,6 +285,45 @@ test_float_chain(_, R) :- R is (1 / 2) + (1 / 4). % 0.5 + 0.25 = 0.75
 :- dynamic test_float_pow_chain/2.
 test_float_pow_chain(_, R) :- R is (2 ** -2) + 0.5. % 0.25 + 0.5 = 0.75
 
+% M18: more eval_arith unary ops -- truncate, round, floor, ceiling,
+% sqrt, sign. These either lower to LLVM intrinsics (which the linker
+% pulls from libm) or use inline integer logic (sign). truncate /
+% round / floor / ceiling all return Integer; sqrt returns Float;
+% sign returns the operand''s tag.
+:- dynamic test_truncate_pos/2.
+test_truncate_pos(_, R) :- X is 7 / 2, R is truncate(X).    % 3.5 -> 3
+
+:- dynamic test_truncate_neg/2.
+test_truncate_neg(_, R) :- X is -7 / 2, R is truncate(X).   % -3.5 -> -3
+
+:- dynamic test_round_up/2.
+test_round_up(_, R) :- X is 7 / 2, R is round(X).           % 3.5 -> 4
+
+:- dynamic test_round_down/2.
+test_round_down(_, R) :- X is 5 / 2, R is round(X).         % 2.5 -> 3
+                                                            % (round-half-away-from-zero)
+
+:- dynamic test_floor_pos/2.
+test_floor_pos(_, R) :- X is 7 / 2, R is floor(X).          % 3.5 -> 3
+
+:- dynamic test_floor_neg/2.
+test_floor_neg(_, R) :- X is -7 / 2, R is floor(X).         % -3.5 -> -4
+
+:- dynamic test_ceiling_pos/2.
+test_ceiling_pos(_, R) :- X is 7 / 2, R is ceiling(X).      % 3.5 -> 4
+
+:- dynamic test_sqrt_int/2.
+test_sqrt_int(_, R) :- X is sqrt(16), R is truncate(X).     % 4.0 -> 4
+
+:- dynamic test_sign_pos/2.
+test_sign_pos(_, R) :- R is sign(7).                        % 1
+
+:- dynamic test_sign_neg/2.
+test_sign_neg(_, R) :- R is sign(-7).                       % -1
+
+:- dynamic test_sign_zero/2.
+test_sign_zero(_, R) :- R is sign(0).                       % 0
+
 % M14: float-aware comparison ops. Pre-M14, builtin_gt/lt/etc read
 % the register payload as raw i64 -- meaningless when one operand
 % is a Float because float bits aren''t the numeric value. Also,
@@ -431,7 +470,7 @@ entry:
         'llc -O0 -filetype=obj -relocation-model=pic ~w -o ~w 2>/dev/null',
         [LLPath, OPath]),
     shell(LlcCmd, _),
-    format(atom(ClangCmd), 'clang -O0 ~w -o ~w 2>/dev/null', [OPath, BinPath]),
+    format(atom(ClangCmd), 'clang -O0 ~w -o ~w -lm 2>/dev/null', [OPath, BinPath]),
     shell(ClangCmd, _),
     format(atom(RunCmd), '~w > ~w 2>&1', [BinPath, StdoutPath]),
     shell(RunCmd, _),
@@ -508,7 +547,7 @@ miss:
         'llc -O0 -filetype=obj -relocation-model=pic ~w -o ~w 2>/dev/null',
         [LLPath, OPath]),
     shell(LlcCmd, _),
-    format(atom(ClangCmd), 'clang -O0 ~w -o ~w 2>/dev/null', [OPath, BinPath]),
+    format(atom(ClangCmd), 'clang -O0 ~w -o ~w -lm 2>/dev/null', [OPath, BinPath]),
     shell(ClangCmd, _),
     shell(BinPath, ExitCode),
     ( ExitCode =:= ExpectedI
@@ -611,7 +650,7 @@ miss:
     shell(LlcCmd, LlcExit),
     ( LlcExit =\= 0
     -> format('FAIL (llc=~w)~n', [LlcExit]), ExitCode = -1
-    ;  format(atom(ClangCmd), 'clang ~w -o ~w 2>/dev/null', [OPath, BinPath]),
+    ;  format(atom(ClangCmd), 'clang ~w -o ~w -lm 2>/dev/null', [OPath, BinPath]),
        shell(ClangCmd, ClangExit),
        ( ClangExit =\= 0
        -> format('FAIL (clang=~w)~n', [ClangExit]), ExitCode = -1
@@ -699,7 +738,7 @@ miss:
     shell(LlcCmd, LlcExit),
     ( LlcExit =\= 0
     -> format('FAIL (llc=~w)~n', [LlcExit]), ExitCode = -1
-    ;  format(atom(ClangCmd), 'clang ~w -o ~w 2>/dev/null', [OPath, BinPath]),
+    ;  format(atom(ClangCmd), 'clang ~w -o ~w -lm 2>/dev/null', [OPath, BinPath]),
        shell(ClangCmd, ClangExit),
        ( ClangExit =\= 0
        -> format('FAIL (clang=~w)~n', [ClangExit]), ExitCode = -1
@@ -792,6 +831,22 @@ test_all :-
                     [], test_float_chain, 100, 75),
        run_pow_test('(2**-2)+0.5 -> Float 0.75, *100 -> 75',
                     [], test_float_pow_chain, 100, 75),
+       format('--- M18 truncate / round / floor / ceiling / sqrt / sign ---~n'),
+       run_test_r0('truncate(7/2) -> 3', test_truncate_pos, 0, 3),
+       % Shell exit codes are unsigned 8-bit: -3 comes back as 253.
+       run_test_r0('truncate(-7/2) -> -3 (exit 253)',
+                   test_truncate_neg, 0, 253),
+       run_test_r0('round(7/2) -> 4', test_round_up, 0, 4),
+       run_test_r0('round(5/2) -> 3', test_round_down, 0, 3),
+       run_test_r0('floor(7/2) -> 3', test_floor_pos, 0, 3),
+       run_test_r0('floor(-7/2) -> -4 (exit 252)',
+                   test_floor_neg, 0, 252),
+       run_test_r0('ceiling(7/2) -> 4', test_ceiling_pos, 0, 4),
+       run_test_r0('truncate(sqrt(16)) -> 4', test_sqrt_int, 0, 4),
+       run_test_r0('sign(7) -> 1', test_sign_pos, 0, 1),
+       run_test_r0('sign(-7) -> -1 (exit 255)',
+                   test_sign_neg, 0, 255),
+       run_test_r0('sign(0) -> 0', test_sign_zero, 0, 0),
        format('--- M14 float-aware comparisons + float sum ---~n'),
        run_test_r0('1/4 > 0 -> 1', test_cmp_float_gt, 0, 1),
        run_test_r0('-1/4 > 0 -> 0', test_cmp_float_gt_neg, 0, 0),

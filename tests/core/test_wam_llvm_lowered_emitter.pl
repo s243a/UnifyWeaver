@@ -269,7 +269,7 @@ entry:
        throw(llc_failed(PredAtom))
     ; true
     ),
-    format(atom(ClangCmd), 'clang -O2 ~w -o ~w 2>/dev/null', [OPath, BinPath]),
+    format(atom(ClangCmd), 'clang -O2 ~w -o ~w -lm 2>/dev/null', [OPath, BinPath]),
     shell(ClangCmd, ClangExit),
     ( ClangExit =\= 0
     -> format('    FAIL: clang exit=~w~n', [ClangExit]),
@@ -392,7 +392,7 @@ entry:
         'llc -O2 -filetype=obj -relocation-model=pic ~w -o ~w 2>/dev/null',
         [LLPath, OPath]),
     shell(LlcCmd, _),
-    format(atom(ClangCmd), 'clang -O2 ~w -o ~w 2>/dev/null', [OPath, BinPath]),
+    format(atom(ClangCmd), 'clang -O2 ~w -o ~w -lm 2>/dev/null', [OPath, BinPath]),
     shell(ClangCmd, _),
     shell(BinPath, RunExit),
     ( RunExit =:= 0
@@ -444,7 +444,7 @@ entry:
         'llc -O2 -filetype=obj -relocation-model=pic ~w -o ~w 2>/dev/null',
         [LLPath, OPath]),
     shell(LlcCmd, _),
-    format(atom(ClangCmd), 'clang -O2 ~w -o ~w 2>/dev/null', [OPath, BinPath]),
+    format(atom(ClangCmd), 'clang -O2 ~w -o ~w -lm 2>/dev/null', [OPath, BinPath]),
     shell(ClangCmd, _),
     shell(BinPath, RunExit),
     ( RunExit =:= ExpectedExit
@@ -493,7 +493,7 @@ entry:
         'llc -O2 -filetype=obj -relocation-model=pic ~w -o ~w 2>/dev/null',
         [LLPath, OPath]),
     shell(LlcCmd, _),
-    format(atom(ClangCmd), 'clang -O2 ~w -o ~w 2>/dev/null', [OPath, BinPath]),
+    format(atom(ClangCmd), 'clang -O2 ~w -o ~w -lm 2>/dev/null', [OPath, BinPath]),
     shell(ClangCmd, _),
     shell(BinPath, RunExit),
     ( RunExit =:= 0
