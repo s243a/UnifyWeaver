@@ -3406,6 +3406,10 @@ entry:
     i32 44, label %builtin_number_chars
     i32 45, label %builtin_upcase_atom
     i32 46, label %builtin_downcase_atom
+    i32 47, label %builtin_atom_concat
+    i32 48, label %builtin_atom_length
+    i32 49, label %builtin_atom_string_alias
+    i32 50, label %builtin_atom_string_alias
   ]
 
 builtin_is:
@@ -5827,6 +5831,17 @@ dca.x_term:
   %dca.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %dca.raw2, %Value %dca.new_v)
   ret i1 %dca.uok
 
+builtin_atom_string_alias:
+  ; M36: atom_string(?Atom, ?String) and string_to_atom(?String, ?Atom)
+  ; -- the runtime has no distinct string type, so both reduce to
+  ; unifying A1 with A2 (handles bind, check, and both-unbound modes
+  ; uniformly). string_concat/3 and string_length/2 share dispatch
+  ; labels with atom_concat / atom_length directly (no block needed).
+  %asa.r1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %asa.r2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %asa.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %asa.r1, %Value %asa.r2)
+  ret i1 %asa.ok
+
 unknown:
   ret i1 false
 }'.
@@ -7246,6 +7261,10 @@ builtin_op_to_id('number_codes/2', 43).
 builtin_op_to_id('number_chars/2', 44).
 builtin_op_to_id('upcase_atom/2', 45).
 builtin_op_to_id('downcase_atom/2', 46).
+builtin_op_to_id('string_concat/3', 47).  % alias of atom_concat/3
+builtin_op_to_id('string_length/2', 48).  % alias of atom_length/2
+builtin_op_to_id('atom_string/2', 49).    % atom <-> string (runtime treats both as atoms)
+builtin_op_to_id('string_to_atom/2', 50). % string_to_atom(?S, ?A) -- same as atom_string but swapped
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
