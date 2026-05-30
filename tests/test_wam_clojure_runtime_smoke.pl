@@ -156,6 +156,8 @@
 :- dynamic user:wam_atom_string_guard/2.
 :- dynamic user:wam_atom_string_reverse/0.
 :- dynamic user:wam_atom_string_reverse_mismatch/0.
+:- dynamic user:wam_atom_string_forward/0.
+:- dynamic user:wam_atom_string_forward_mismatch/0.
 :- dynamic user:wam_atom_string_unbound_pair/1.
 :- dynamic user:wam_atom_number_guard/2.
 :- dynamic user:wam_atom_number_reverse/0.
@@ -179,6 +181,8 @@
 :- dynamic user:wam_string_to_atom_guard/2.
 :- dynamic user:wam_string_to_atom_reverse/0.
 :- dynamic user:wam_string_to_atom_reverse_mismatch/0.
+:- dynamic user:wam_string_to_atom_forward/0.
+:- dynamic user:wam_string_to_atom_forward_mismatch/0.
 :- dynamic user:wam_string_to_atom_unbound_pair/1.
 :- dynamic user:wam_string_codes_guard/2.
 :- dynamic user:wam_string_codes_reverse/0.
@@ -404,6 +408,8 @@ user:wam_quoted_atom_backslash :- atom_codes('a\\b', [97,92,98]).
 user:wam_atom_string_guard(A, S) :- atom_string(A, S).
 user:wam_atom_string_reverse :- atom_string(A, world), A = world.
 user:wam_atom_string_reverse_mismatch :- atom_string(A, world), A = hello.
+user:wam_atom_string_forward :- atom_string(hello, S), S = hello.
+user:wam_atom_string_forward_mismatch :- atom_string(hello, S), S = world.
 user:wam_atom_string_unbound_pair(_) :- user:wam_unbound_arg(A), user:wam_unbound_arg(S), atom_string(A, S).
 user:wam_atom_number_guard(A, N) :- atom_number(A, N).
 user:wam_atom_number_reverse :- atom_number(A, 42), atom_codes(A, [52,50]).
@@ -427,6 +433,8 @@ user:wam_atomic_list_concat_unbound_list(_) :- user:wam_unbound_arg(L), atomic_l
 user:wam_string_to_atom_guard(S, A) :- string_to_atom(S, A).
 user:wam_string_to_atom_reverse :- string_to_atom(world, A), A = world.
 user:wam_string_to_atom_reverse_mismatch :- string_to_atom(world, A), A = hello.
+user:wam_string_to_atom_forward :- string_to_atom(S, hello), S = hello.
+user:wam_string_to_atom_forward_mismatch :- string_to_atom(S, hello), S = world.
 user:wam_string_to_atom_unbound_pair(_) :- user:wam_unbound_arg(S), user:wam_unbound_arg(A), string_to_atom(S, A).
 user:wam_string_codes_guard(A, C) :- string_codes(A, C).
 user:wam_string_codes_reverse :- string_codes(A, [102,111,111]), A = foo.
@@ -657,6 +665,8 @@ run_smoke :-
           user:wam_atom_string_guard/2,
           user:wam_atom_string_reverse/0,
           user:wam_atom_string_reverse_mismatch/0,
+          user:wam_atom_string_forward/0,
+          user:wam_atom_string_forward_mismatch/0,
           user:wam_atom_string_unbound_pair/1,
           user:wam_atom_number_guard/2,
           user:wam_atom_number_reverse/0,
@@ -680,6 +690,8 @@ run_smoke :-
           user:wam_string_to_atom_guard/2,
           user:wam_string_to_atom_reverse/0,
           user:wam_string_to_atom_reverse_mismatch/0,
+          user:wam_string_to_atom_forward/0,
+          user:wam_string_to_atom_forward_mismatch/0,
           user:wam_string_to_atom_unbound_pair/1,
           user:wam_string_codes_guard/2,
           user:wam_string_codes_reverse/0,
@@ -1079,6 +1091,8 @@ smoke_cases([
     case('wam_atom_string_guard/2', args(hello, world), "false"),
     case('wam_atom_string_reverse/0', no_args, "true"),
     case('wam_atom_string_reverse_mismatch/0', no_args, "false"),
+    case('wam_atom_string_forward/0', no_args, "true"),
+    case('wam_atom_string_forward_mismatch/0', no_args, "false"),
     case('wam_atom_string_unbound_pair/1', a, "false"),
     case('wam_atom_number_guard/2', args(42, 42), "true"),
     case('wam_atom_number_guard/2', args(42, 43), "false"),
@@ -1106,6 +1120,8 @@ smoke_cases([
     case('wam_string_to_atom_guard/2', args(hello, world), "false"),
     case('wam_string_to_atom_reverse/0', no_args, "true"),
     case('wam_string_to_atom_reverse_mismatch/0', no_args, "false"),
+    case('wam_string_to_atom_forward/0', no_args, "true"),
+    case('wam_string_to_atom_forward_mismatch/0', no_args, "false"),
     case('wam_string_to_atom_unbound_pair/1', a, "false"),
     case('wam_string_codes_guard/2', args(foo, '[102,111,111]'), "true"),
     case('wam_string_codes_guard/2', args(foo, '[102,111]'), "false"),
