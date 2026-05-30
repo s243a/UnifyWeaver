@@ -301,6 +301,40 @@ opts into the building blocks and adds its own clauses. Either
 way, the bug-prone tokenizer and the bulk of instruction-shape
 recognition lives in **one** place.
 
+
+## 6.2 Custom symbolic instructions
+
+Items also give us a cleaner extension point for target-specific WAM
+instructions. In the text pipeline, a custom instruction is easy to print but
+hard to preserve: every target parser has to learn its syntax before the item
+can reach the emitter. In the items pipeline, a custom instruction is just a
+structured term from the start.
+
+The important distinction is between **representation** and **execution**:
+
+- representation mode decides whether the generator hands a target structured
+  items or canonical text. The default should be structured items.
+- execution policy decides what a target does with a custom item after it sees
+  it: compile it away, keep it in the interpreter, or preserve symbolic metadata
+  for a target JIT.
+
+That suggests three execution policies for custom symbolic instructions:
+
+| Policy | Meaning | Good fit |
+| --- | --- | --- |
+| `compiled` | Lower the custom item directly into target source or into standard WAM items. This should be the default. | Known target intrinsic, static optimization, kernel hook. |
+| `interpreted` | Keep the custom item in the runtime instruction stream and dispatch it in the VM. | Debug counters, tracing, rare operations where code size matters more than speed. |
+| `jit` | Preserve symbolic metadata so the runtime or host language can specialize later. | Hot-path specialization, data-layout-dependent kernels, host runtimes with real JIT support. |
+
+The policy should be explicit in item metadata rather than inferred from the
+instruction name. That prevents a target from silently treating a JIT-only item
+as interpreted, or compiling away a marker that a profiler expects to observe.
+Unsupported policies should fail at generation time.
+
+This does not require every target to support custom instructions. The baseline
+contract remains the standard item catalogue. Custom items are an extension
+mechanism for targets that already have a reason to go beyond it.
+
 ## 7. What's intentionally out of scope
 
 - **Removing the text API.** Even after every target migrates, the
