@@ -66,6 +66,10 @@ type ChoicePoint struct {
 	ForeignResults   []Value
 	MemberTail       Value
 	SelectResults    []SelectSolution
+	BetweenActive    bool
+	BetweenCurrent   int64
+	BetweenHigh      int64
+	BetweenReg       int
 }
 
 type EnvFrame struct {
@@ -1305,6 +1309,35 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return vm.Unify(arg1, &Integer{Val: bInt.Val - 1})
 		}
 		return false
+	case "between/3":
+		lo, ok1 := vm.deref(arg1).(*Integer)
+		hi, ok2 := vm.deref(arg2).(*Integer)
+		if !ok1 || !ok2 || lo.Val > hi.Val {
+			return false
+		}
+		v := vm.deref(arg3)
+		if n, ok := v.(*Integer); ok {
+			return n.Val >= lo.Val && n.Val <= hi.Val
+		}
+		if !isUnbound(v) {
+			return false
+		}
+		if lo.Val < hi.Val {
+			vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+				ResumePC:       vm.PC + 1,
+				CP:             vm.CP,
+				E:              vm.E,
+				StackLen:       len(vm.Stack),
+				SavedRegs:      vm.snapshotAllRegs(),
+				HeapTop:        vm.HeapLen,
+				TrailMark:      vm.TrailLen,
+				BetweenActive:  true,
+				BetweenCurrent: lo.Val + 1,
+				BetweenHigh:    hi.Val,
+				BetweenReg:     2,
+			})
+		}
+		return vm.Unify(arg3, &Integer{Val: lo.Val})
 	case "atom_number/2":
 		atomVal := vm.deref(arg1)
 		numberVal := vm.deref(arg2)
@@ -2181,6 +2214,36 @@ func (vm *WamState) backtrack() bool {
                 vm.ChoicePoints = vm.ChoicePoints[:topIdx]
             }
             if !vm.applySelectSolution(solution) {
+                continue
+            }
+            vm.PC = resumePC
+            return true
+        }
+        return vm.backtrack()
+    }
+    if cp.BetweenActive {
+        for cp.BetweenCurrent <= cp.BetweenHigh {
+            vm.unwindTrailTo(cp.TrailMark)
+            vm.restoreSavedRegs(cp.SavedRegs)
+            if cp.StackLen <= len(vm.Stack) {
+                vm.Stack = vm.Stack[:cp.StackLen]
+            }
+            if cp.HeapTop <= vm.HeapLen {
+                vm.heapTrimTo(cp.HeapTop)
+            }
+            vm.PC = cp.ResumePC
+            vm.CP = cp.CP
+            vm.E = cp.E
+            vm.Halted = false
+            vm.CurrentStruct = nil
+            vm.CurrentList = nil
+            n := cp.BetweenCurrent
+            cp.BetweenCurrent++
+            resumePC := cp.ResumePC
+            if cp.BetweenCurrent > cp.BetweenHigh {
+                vm.ChoicePoints = vm.ChoicePoints[:topIdx]
+            }
+            if !vm.Unify(vm.getReg(cp.BetweenReg), &Integer{Val: n}) {
                 continue
             }
             vm.PC = resumePC
