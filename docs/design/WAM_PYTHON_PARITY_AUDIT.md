@@ -110,10 +110,21 @@ Current load-bearing text path:
 - `wam_python_iso_audit/3` still recompiles predicates to WAM text and parses
   lines for audit reporting.
 
-Migration target:
+Items-mode bridge now present:
 
-1. Add an item-driven entry point parallel to `compile_wam_predicate_to_python/4`,
-   for example `compile_wam_predicate_items_to_python/4`.
+- `wam_items_to_python_instructions/4` consumes `label(Name)` plus standard WAM
+  instruction items and emits the same Python instruction literals as the text
+  path.
+- The adapter preserves typed direct-item constants, so an atom like `'42'` is
+  emitted as `Atom("42")` while integer `42` is emitted as `Int(42)`.
+- Current tests compare the adapter against `wam_text_to_items/2` output for a
+  standard WAM-text fixture and cover typed atom/integer constant separation.
+
+Remaining migration target:
+
+1. Add an item-driven predicate compiler parallel to `compile_wam_predicate_to_python/4`,
+   for example `compile_wam_predicate_items_to_python/4`, using
+   `wam_items_to_python_instructions/4` internally.
 2. Change planning to store WAM items once `compile_predicate_to_wam_items/3` is
    available as a real generator API.
 3. Teach the lowered emitter to consume the same item list directly, or add one
@@ -121,9 +132,9 @@ Migration target:
 4. Keep the text parser only for external WAM text/debug migration paths, not
    for WAM text generated inside the same process.
 
-Until that migration lands, `tests/test_wam_python_target.pl` includes an
-items-mode audit test that intentionally records the current text-first state so
-future work can flip the assertions when Python moves to direct items.
+Until that migration lands, `tests/test_wam_python_target.pl` includes
+items-mode audit tests that record the remaining text-first planning path and
+protect the new items adapter.
 
 ## Remaining Follow-Up
 
@@ -148,7 +159,7 @@ Completed follow-up:
 ## Verification Commands
 
 Use these checks after touching Python WAM runtime parity. On current `main`,
-`tests/test_wam_python_target.pl` passes 168/168 without choicepoint warnings:
+`tests/test_wam_python_target.pl` passes 170/170 without choicepoint warnings:
 
 ```sh
 swipl -q -g run_tests -t halt tests/test_wam_python_target.pl

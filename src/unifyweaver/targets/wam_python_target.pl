@@ -27,6 +27,7 @@
 	compile_wam_predicate_to_python/4,     % +Pred/Arity, +WamCode, +Options, -PythonCode
 	wam_instruction_to_python_literal/2,   % +WamInstr, -PyLiteral
 	wam_line_to_python_literal/2,          % +Parts, -PyLit
+	wam_items_to_python_instructions/4,  % +Items, +PredIndicator, -InstrLits, -LabelLits
 	write_wam_python_project/3,            % +Predicates, +Options, +ProjectDir
 	emit_wam_python/3,                     % +Predicates, +Options, +Mode
 	iso_errors_resolve_options/2,          % +Options, -Config
@@ -1144,6 +1145,131 @@ switch_entry_to_python(Key-Label, Entry) :-
 	;   integer(Key) -> format(atom(Entry), '~w: "~w"', [Key, Label])
 	;   format(atom(Entry), '"~w": "~w"', [Key, Label])
 	).
+
+
+% ============================================================================
+% WAM items → Python instruction literals
+% ============================================================================
+
+%% wam_items_to_python_instructions(+Items, +PredIndicator, -InstrLiterals, -LabelLiterals)
+%  Convert structured WAM items directly into Python instruction literals.
+%  This is the migration bridge for items-mode target generation: callers that
+%  already have `label(Name)` / instruction items can bypass WAM text tokenizing.
+wam_items_to_python_instructions(Items, _PredIndicator, InstrLiterals, LabelLiterals) :-
+	wam_items_to_python_(Items, 0, InstrParts, LabelParts),
+	atomic_list_concat(InstrParts, '\n', InstrLiterals),
+	atomic_list_concat(LabelParts, '\n', LabelLiterals).
+
+wam_items_to_python_([], _, [], []).
+wam_items_to_python_([label(LabelName)|Rest], PC, [LabelEntry|RestInstrs], [LabelEntry|RestLabels]) :-
+	!,
+	format(string(LabelEntry), '        ("__label__", "~w"),', [LabelName]),
+	wam_items_to_python_(Rest, PC, RestInstrs, RestLabels).
+wam_items_to_python_([Item|Rest], PC, Instrs, Labels) :-
+	(   wam_item_to_python_literal(Item, PyInstr)
+	->  format(string(InstrEntry), '        ~w,', [PyInstr]),
+		NPC is PC + 1,
+		Instrs = [InstrEntry|RestInstrs],
+		wam_items_to_python_(Rest, NPC, RestInstrs, Labels)
+	;   format(string(InstrEntry), '        # SKIP ITEM: ~q', [Item]),
+		NPC is PC + 1,
+		Instrs = [InstrEntry|RestInstrs],
+		wam_items_to_python_(Rest, NPC, RestInstrs, Labels)
+	).
+
+wam_item_to_python_literal(get_constant(C, Ai), Py) :-
+	python_item_constant_literal(C, PyVal), clean_comma(Ai, CAi),
+	format(atom(Py), '("get_constant", ~w, ~w)', [PyVal, CAi]).
+wam_item_to_python_literal(unify_constant(C), Py) :-
+	python_item_constant_literal(C, PyVal),
+	format(atom(Py), '("unify_constant", ~w)', [PyVal]).
+wam_item_to_python_literal(set_constant(C), Py) :-
+	python_item_constant_literal(C, PyVal),
+	format(atom(Py), '("set_constant", ~w)', [PyVal]).
+wam_item_to_python_literal(put_constant(C, Ai), Py) :-
+	python_item_constant_literal(C, PyVal), clean_comma(Ai, CAi),
+	format(atom(Py), '("put_constant", ~w, ~w)', [PyVal, CAi]).
+wam_item_to_python_literal(Item, Py) :-
+	wam_item_to_line_parts(Item, Parts),
+	wam_line_to_python_literal(Parts, Py).
+
+python_item_constant_literal(Token, PyVal) :-
+	string(Token),
+	!,
+	python_text_constant_literal(Token, PyVal).
+python_item_constant_literal(Token, PyVal) :-
+	integer(Token),
+	!,
+	format(atom(PyVal), 'Int(~w)', [Token]).
+python_item_constant_literal(Token, PyVal) :-
+	float(Token),
+	!,
+	format(atom(PyVal), 'Float(~w)', [Token]).
+python_item_constant_literal(Token, PyVal) :-
+	atom(Token),
+	!,
+	atom_string(Token, Name),
+	escape_python_string(Name, Esc),
+	format(atom(PyVal), 'Atom("~w")', [Esc]).
+python_item_constant_literal(Token, PyVal) :-
+	term_string(Token, Name),
+	escape_python_string(Name, Esc),
+	format(atom(PyVal), 'Atom("~w")', [Esc]).
+
+wam_item_to_line_parts(get_variable(Xn, Ai), ["get_variable", Xn, Ai]).
+wam_item_to_line_parts(get_value(Xn, Ai), ["get_value", Xn, Ai]).
+wam_item_to_line_parts(get_structure(Fn, Ai), ["get_structure", Fn, Ai]).
+wam_item_to_line_parts(get_list(Ai), ["get_list", Ai]).
+wam_item_to_line_parts(get_nil(Ai), ["get_nil", Ai]).
+wam_item_to_line_parts(get_integer(N, Ai), ["get_integer", N, Ai]).
+wam_item_to_line_parts(get_float(F, Ai), ["get_float", F, Ai]).
+wam_item_to_line_parts(unify_variable(Xn), ["unify_variable", Xn]).
+wam_item_to_line_parts(unify_value(Xn), ["unify_value", Xn]).
+wam_item_to_line_parts(unify_nil, ["unify_nil"]).
+wam_item_to_line_parts(unify_void(N), ["unify_void", N]).
+wam_item_to_line_parts(set_variable(Xn), ["set_variable", Xn]).
+wam_item_to_line_parts(set_value(Xn), ["set_value", Xn]).
+wam_item_to_line_parts(set_local_value(Xn), ["set_local_value", Xn]).
+wam_item_to_line_parts(set_nil, ["set_nil"]).
+wam_item_to_line_parts(set_integer(N), ["set_integer", N]).
+wam_item_to_line_parts(set_void(N), ["set_void", N]).
+wam_item_to_line_parts(put_variable(Xn, Ai), ["put_variable", Xn, Ai]).
+wam_item_to_line_parts(put_value(Xn, Ai), ["put_value", Xn, Ai]).
+wam_item_to_line_parts(put_unsafe_value(Yn, Ai), ["put_unsafe_value", Yn, Ai]).
+wam_item_to_line_parts(put_nil(Ai), ["put_nil", Ai]).
+wam_item_to_line_parts(put_integer(N, Ai), ["put_integer", N, Ai]).
+wam_item_to_line_parts(put_float(F, Ai), ["put_float", F, Ai]).
+wam_item_to_line_parts(put_structure(Fn, Ai), ["put_structure", Fn, Ai]).
+wam_item_to_line_parts(put_list(Ai), ["put_list", Ai]).
+wam_item_to_line_parts(call(P, N), ["call", P, N]).
+wam_item_to_line_parts(execute(P), ["execute", P]).
+wam_item_to_line_parts(proceed, ["proceed"]).
+wam_item_to_line_parts(fail, ["fail"]).
+wam_item_to_line_parts(halt, ["halt"]).
+wam_item_to_line_parts(allocate, ["allocate"]).
+wam_item_to_line_parts(deallocate, ["deallocate"]).
+wam_item_to_line_parts(try_me_else(Label), ["try_me_else", Label]).
+wam_item_to_line_parts(retry_me_else(Label), ["retry_me_else", Label]).
+wam_item_to_line_parts(trust_me, ["trust_me"]).
+wam_item_to_line_parts(try(Label), ["try", Label]).
+wam_item_to_line_parts(retry(Label), ["retry", Label]).
+wam_item_to_line_parts(trust(Label), ["trust", Label]).
+wam_item_to_line_parts(neck_cut, ["neck_cut"]).
+wam_item_to_line_parts(get_level(Yn), ["get_level", Yn]).
+wam_item_to_line_parts(cut(Yn), ["cut", Yn]).
+wam_item_to_line_parts(switch_on_term(Args), ["switch_on_term"|Args]).
+wam_item_to_line_parts(is(Target, Expr), ["is", Target, Expr]).
+wam_item_to_line_parts(builtin_call(Op, Arity), ["builtin_call", Op, Arity]).
+wam_item_to_line_parts(call_foreign(Pred, Arity), ["call_foreign", Pred, Arity]).
+wam_item_to_line_parts(begin_aggregate(AggType, ValueReg, ResultReg), ["begin_aggregate", AggType, ValueReg, ResultReg]).
+wam_item_to_line_parts(end_aggregate(ValueReg), ["end_aggregate", ValueReg]).
+wam_item_to_line_parts(cut_ite, ["cut_ite"]).
+wam_item_to_line_parts(jump(Label), ["jump", Label]).
+wam_item_to_line_parts(call_indexed_atom_fact2(Pred), ["call_indexed_atom_fact2", Pred]).
+wam_item_to_line_parts(base_category_ancestor(CatReg, TargetReg, VisitedReg), ["base_category_ancestor", CatReg, TargetReg, VisitedReg]).
+wam_item_to_line_parts(base_category_ancestor_bind(CatReg, TargetReg, HopsReg, VisitedReg), ["base_category_ancestor_bind", CatReg, TargetReg, HopsReg, VisitedReg]).
+wam_item_to_line_parts(recurse_category_ancestor(MidReg, RootReg, ChildHopsReg, VisitedReg, Pred, Skip), ["recurse_category_ancestor", MidReg, RootReg, ChildHopsReg, VisitedReg, Pred, Skip]).
+wam_item_to_line_parts(return_add1(OutReg, InReg), ["return_add1", OutReg, InReg]).
 
 % ============================================================================
 % WAM line parsing → Python instruction literals
