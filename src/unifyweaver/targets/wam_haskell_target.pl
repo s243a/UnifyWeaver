@@ -71,7 +71,11 @@
               resolve_csr_index_backend/2]).
 :- use_module('../core/algorithm_manifest',
              [load_algorithm_manifest/2]).
-:- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
+:- use_module('../targets/wam_text_parser',
+              [ wam_classify_constant_token/2,
+                wam_tokenize_line/2,
+                wam_recognise_instruction/2
+              ]).
 :- use_module('../targets/wam_runtime_parser_capability',
              [parser_dependent_body_goal/2, wam_target_runtime_parser/3]).
 :- use_module('../core/prolog_term_parser').
@@ -84,6 +88,7 @@
                 iso_errors_mode_for/3,
                 iso_errors_warn_multi_module/2,
                 iso_errors_rewrite/4,
+                iso_errors_rewrite_item/3,
                 iso_errors_audit_normalise_pi/2,
                 iso_errors_audit_walk/5
               ]).
@@ -6684,52 +6689,62 @@ iso_errors:iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
 iso_errors:iso_errors_default_to_lax("succ/2", "succ_lax/2").
 
 %% iso_errors_rewrite_text(+Config, +PI, +WamText, -RewrittenText)
-%  Text-level ISO rewrite: replaces BuiltinCall keys per the ISO config.
-%  Mirrors the F# and Python iso_errors_rewrite_text/4.
+%  Text-level ISO rewrite routed through the shared items pipeline.
+%  Mirrors the Elixir / F# / Python migration: each line is tokenized
+%  with the shared quote-aware tokenizer, recognised to a structured
+%  item, rewritten by the shared iso_errors_rewrite_item/3, and the
+%  swapped key is spliced back into the original line (whitespace
+%  preserved byte-for-byte).
+%
+%  iso_errors_mode_for/3 may yield the atom `default` (the third-valued
+%  config default the Haskell target supports) in addition to
+%  true/false; only true/false drive a rewrite, anything else passes
+%  the text through unchanged.
+%
+%  Previously this target only rewrote `builtin_call` keys. The shared
+%  iso_errors_rewrite_item/3 also covers put_structure / call / execute,
+%  but the only keys in the ISO/lax tables are arithmetic builtins
+%  (is/2, the six comparisons, succ/2) which the WAM compiler always
+%  emits as builtin_call — so the broader coverage is a harmless
+%  superset that keeps Haskell consistent with the other targets.
 iso_errors_rewrite_text(Config, PI, WamText, RewrittenText) :-
     iso_errors_mode_for(Config, PI, Mode),
-    (   Mode == true  -> RMode = iso
-    ;   Mode == false -> RMode = lax
-    ;   RMode = default
-    ),
-    (   RMode == default
-    ->  RewrittenText = WamText
-    ;   atom_string(WamText, WamStr),
+    (   ( Mode == true ; Mode == false )
+    ->  atom_string(WamText, WamStr),
         split_string(WamStr, "\n", "", Lines),
-        maplist(iso_errors_rewrite_line(RMode), Lines, NewLines),
+        maplist(iso_errors_rewrite_line(Mode), Lines, NewLines),
         atomic_list_concat(NewLines, "\n", RewrittenText)
+    ;   RewrittenText = WamText
     ).
 
-iso_errors_rewrite_line(Mode, Line, NewLine) :-
-    (   sub_string(Line, Before, _, _, "builtin_call "),
-        sub_string(Line, Before, 13, _, "builtin_call ")
-    ->  sub_string(Line, 0, Before, _, Prefix),
-        Offset is Before + 13,
-        sub_string(Line, Offset, _, 0, Rest),
-        split_string(Rest, " ", "", [KeyRaw|Tail]),
-        % Strip trailing comma from key token (e.g. "is/2," -> "is/2")
-        (   string_concat(Key, ",", KeyRaw) -> true ; Key = KeyRaw ),
-        iso_errors_rewrite_key(Mode, Key, NewKey),
-        % Reattach comma if it was there
-        (   string_concat(_, ",", KeyRaw)
-        ->  string_concat(NewKey, ",", NewKeyTok)
-        ;   NewKeyTok = NewKey
-        ),
-        atomic_list_concat([NewKeyTok|Tail], " ", NewRest),
-        atom_concat(Prefix, "builtin_call ", P2),
-        atom_concat(P2, NewRest, NewLine)
-    ;   NewLine = Line
+% Rewrite one line via the shared items pipeline. Any failure along the
+% chain (unrecognised line, key not in the ISO/lax tables, splice miss)
+% falls through to OutLine = Line. All four rewritable shapes carry the
+% key as their first argument, so arg(1, ...) extracts old/new keys
+% generically.
+iso_errors_rewrite_line(Mode, Line, OutLine) :-
+    (   wam_tokenize_line(Line, Tokens),
+        wam_recognise_instruction(Tokens, Item0),
+        iso_errors_rewrite_item(Mode, Item0, Item1),
+        Item0 \== Item1,
+        arg(1, Item0, OldKey),
+        arg(1, Item1, NewKey),
+        iso_errors_splice_line(Line, OldKey, NewKey, OutLine)
+    ->  true
+    ;   OutLine = Line
     ).
 
-iso_errors_rewrite_key(iso, Key, NewKey) :-
-    (   iso_errors:iso_errors_default_to_iso(Key, NewKey) -> true
-    ;   NewKey = Key
-    ).
-iso_errors_rewrite_key(lax, Key, NewKey) :-
-    (   iso_errors:iso_errors_default_to_lax(Key, NewKey) -> true
-    ;   NewKey = Key
-    ).
-iso_errors_rewrite_key(default, Key, Key).
+% Replace the first occurrence of Key in Line with NewKey, preserving
+% surrounding whitespace. Same helper the other targets use.
+iso_errors_splice_line(Line, Key, NewKey, OutLine) :-
+    sub_string(Line, Before, KLen, _After, Key),
+    string_length(Key, KLen),
+    sub_string(Line, 0, Before, _, Pre),
+    PostStart is Before + KLen,
+    sub_string(Line, PostStart, _, 0, Post),
+    string_concat(Pre, NewKey, T1),
+    string_concat(T1, Post, OutLine),
+    !.
 
 %% write_hs_file(+Path, +Content)
 write_hs_file(Path, Content) :-
