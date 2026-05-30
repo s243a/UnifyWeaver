@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <stdint.h>
+#include <limits.h>
 #include <sys/types.h>
 #ifdef WAM_C_ENABLE_LMDB
 #include <lmdb.h>
@@ -27,7 +28,7 @@ typedef bool (*WamForeignHandler)(WamState *state, const char *pred, int arity);
 
 /* Value tag enum */
 typedef enum {
-    VAL_ATOM, VAL_INT, VAL_REF, VAL_STR, VAL_UNBOUND, VAL_LIST
+    VAL_ATOM, VAL_INT, VAL_FLOAT, VAL_REF, VAL_STR, VAL_UNBOUND, VAL_LIST
 } WamValueTag;
 
 typedef struct {
@@ -35,6 +36,7 @@ typedef struct {
     union {
         const char *atom;
         int integer;
+        double floating;
         int ref_addr;
         const char *str_functor;
         const char *unbound_name;
@@ -117,7 +119,7 @@ typedef struct {
 typedef struct {
     const char *source;
     const char *target;
-    int weight;
+    double weight;
 } WeightedEdge;
 
 typedef struct {
@@ -318,8 +320,8 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity);
 bool wam_execute_foreign_predicate(WamState *state, const char *pred, int arity);
 void wam_register_category_parent(WamState *state, const char *child, const char *parent);
 void wam_register_transitive_edge(WamState *state, const char *child, const char *parent);
-void wam_register_weighted_edge(WamState *state, const char *source, const char *target, int weight);
-void wam_register_direct_distance_edge(WamState *state, const char *source, const char *target, int distance);
+void wam_register_weighted_edge(WamState *state, const char *source, const char *target, double weight);
+void wam_register_direct_distance_edge(WamState *state, const char *source, const char *target, double distance);
 void wam_register_category_ancestor_kernel(WamState *state, const char *pred, int max_depth);
 void wam_register_bidirectional_ancestor_kernel(WamState *state, const char *pred,
                                                 int max_depth,
@@ -402,6 +404,15 @@ static inline WamValue val_atom(const char *s) {
 }
 static inline WamValue val_int(int n) {
     WamValue v; v.tag = VAL_INT; v.data.integer = n; return v;
+}
+static inline WamValue val_float(double n) {
+    WamValue v; v.tag = VAL_FLOAT; v.data.floating = n; return v;
+}
+static inline WamValue val_number_from_double(double n) {
+    if (n >= (double)INT_MIN && n <= (double)INT_MAX && n == (double)((int)n)) {
+        return val_int((int)n);
+    }
+    return val_float(n);
 }
 static inline WamValue val_unbound(const char *name) {
     WamValue v; v.tag = VAL_UNBOUND; v.data.unbound_name = name; return v;
@@ -536,6 +547,7 @@ static inline bool val_is_unbound(WamValue v) {
 static inline bool val_equal(WamValue v1, WamValue v2) {
     if (v1.tag != v2.tag) return false;
     if (v1.tag == VAL_INT) return v1.data.integer == v2.data.integer;
+    if (v1.tag == VAL_FLOAT) return v1.data.floating == v2.data.floating;
     if (v1.tag == VAL_ATOM) return strcmp(v1.data.atom, v2.data.atom) == 0;
     // simplify for demonstration
     return false;
@@ -596,6 +608,8 @@ static inline bool wam_unify(WamState *state, WamValue *v1, WamValue *v2) {
         
         if (d1->tag == VAL_INT) {
             if (d1->data.integer != d2->data.integer) return false;
+        } else if (d1->tag == VAL_FLOAT) {
+            if (d1->data.floating != d2->data.floating) return false;
         } else if (d1->tag == VAL_ATOM) {
             if (strcmp(d1->data.atom, d2->data.atom) != 0) return false;
         } else if (d1->tag == VAL_LIST) {
