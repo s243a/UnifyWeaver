@@ -377,6 +377,37 @@ test_char_code_check(_, R) :-
     char_code(a, 97),
     R is 1.
 
+% M27: atom_chars/2 forward mode -- walks atom string, maps each byte
+% to a single-char atom via the M26 char-id table, builds a cons chain.
+% Reverse mode (chars -> atom) needs runtime interning and is deferred.
+:- dynamic test_atom_chars_head/2.
+test_atom_chars_head(_, R) :-
+    atom_chars(hello, Cs),
+    Cs = [C|_],
+    char_code(C, X),    % round-trip the single-char atom back to a code
+    R is X.             % ''h'' = 104
+
+:- dynamic test_atom_chars_third/2.
+test_atom_chars_third(_, R) :-
+    atom_chars(hello, Cs),
+    Cs = [_, _, C|_],
+    char_code(C, X),
+    R is X.             % ''l'' = 108
+
+:- dynamic test_atom_chars_length/2.
+test_atom_chars_length(_, R) :-
+    atom_chars(world, Cs),
+    length(Cs, N),
+    R is N.             % 5
+
+% Round-trip through both atom_chars and write/1 to verify the
+% printer renders the list of single-char atoms correctly.
+:- dynamic test_atom_chars_print/2.
+test_atom_chars_print(_, R) :-
+    atom_chars(hi, Cs),
+    format('~w', [Cs]),
+    R is 1.
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -1115,6 +1146,15 @@ test_all :-
                    test_char_code_reverse_h, 0, 104),
        run_test_r0('char_code(a, 97) (check mode) -> 1',
                    test_char_code_check, 0, 1),
+       format('--- M27 atom_chars/2 forward mode ---~n'),
+       run_test_r0('atom_chars(hello)[0] code -> 104',
+                   test_atom_chars_head, 0, 104),
+       run_test_r0('atom_chars(hello)[2] code -> 108',
+                   test_atom_chars_third, 0, 108),
+       run_test_r0('length(atom_chars(world)) -> 5',
+                   test_atom_chars_length, 0, 5),
+       run_fmt_test('write atom_chars(hi) -> "[h, i]"',
+                    test_atom_chars_print, "[h, i]"),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
