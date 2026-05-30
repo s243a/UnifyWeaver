@@ -1218,6 +1218,17 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
 ; %Value with payload = this id).
 @wam_empty_list_atom_id = private constant i64 ~w',
         [EmptyListAtomId]),
+    % M26: eagerly intern single-character atoms for the printable
+    % ASCII range (32..126). char_code/2 and atom_chars/2 use these
+    % via the @wam_char_to_atom_id lookup table emitted alongside
+    % the regular atom-string globals. Reserving these slots now
+    % means the per-module table is dense and the runtime doesn''t
+    % need to fall back to runtime atom interning for any printable
+    % character.
+    forall(between(32, 126, CharCode),
+        ( char_code(CharAtom, CharCode),
+          intern_atom(CharAtom, _)
+        )),
     compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode),
 
     % Emit functor string globals collected during WAM compilation.
@@ -3385,6 +3396,7 @@ entry:
     i32 33, label %builtin_format1
     i32 35, label %builtin_atom_length
     i32 36, label %builtin_atom_codes
+    i32 37, label %builtin_char_code
   ]
 
 builtin_is:
@@ -4723,6 +4735,62 @@ aco.unify:
   %aco.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %aco.raw2, %Value %aco.btail)
   ret i1 %aco.uok
 
+builtin_char_code:
+  ; M26: char_code(C, X) -- C is a single-char atom, X is its code.
+  ; Three modes:
+  ;   forward (C bound atom, X unbound or Integer):
+  ;     look up C''s string, take the first byte, bind X = Integer(byte)
+  ;   reverse (X bound Integer, C unbound):
+  ;     look up @wam_char_to_atom_id[X], bind C = Atom(id) if printable
+  ;   check (both bound): verify code matches first byte of atom string
+  %chc.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %chc.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %chc.t1 = extractvalue %Value %chc.a1, 0
+  %chc.is_atom1 = icmp eq i32 %chc.t1, 0
+  br i1 %chc.is_atom1, label %chc.forward_check, label %chc.try_reverse
+
+chc.try_reverse:
+  ; A1 not an atom -- must be reverse mode: A2 = Integer code,
+  ; bind A1 = single-char atom.
+  %chc.t2 = extractvalue %Value %chc.a2, 0
+  %chc.is_int2 = icmp eq i32 %chc.t2, 1
+  br i1 %chc.is_int2, label %chc.reverse, label %chc.fail
+
+chc.reverse:
+  %chc.code_i = extractvalue %Value %chc.a2, 1
+  %chc.aid = call i64 @wam_char_to_atom(i64 %chc.code_i)
+  %chc.no_atom = icmp eq i64 %chc.aid, 0
+  br i1 %chc.no_atom, label %chc.fail, label %chc.reverse_bind
+chc.reverse_bind:
+  %chc.av0 = insertvalue %Value undef, i32 0, 0
+  %chc.av = insertvalue %Value %chc.av0, i64 %chc.aid, 1
+  call void @wam_trail_binding(%WamState* %vm, i32 0)
+  call void @wam_bind_reg(%WamState* %vm, i32 0, %Value %chc.av)
+  ret i1 true
+
+chc.forward_check:
+  ; A1 is an atom -- look up its string and take the first byte.
+  %chc.aid1 = extractvalue %Value %chc.a1, 1
+  %chc.str = call i8* @wam_atom_to_string(i64 %chc.aid1)
+  %chc.null = icmp eq i8* %chc.str, null
+  br i1 %chc.null, label %chc.fail, label %chc.read_byte
+chc.read_byte:
+  %chc.c0 = load i8, i8* %chc.str
+  %chc.c0_64 = zext i8 %chc.c0 to i64
+  %chc.code_v = call %Value @value_integer(i64 %chc.c0_64)
+  %chc.a2_unb = call i1 @value_is_unbound(%Value %chc.a2)
+  br i1 %chc.a2_unb, label %chc.forward_bind, label %chc.forward_cmp
+chc.forward_bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %chc.code_v)
+  ret i1 true
+chc.forward_cmp:
+  %chc.eq = call i1 @value_equals(%Value %chc.a2, %Value %chc.code_v)
+  ret i1 %chc.eq
+
+chc.fail:
+  ret i1 false
+
 unknown:
   ret i1 false
 }'.
@@ -5703,9 +5771,14 @@ emit_atom_string_globals(IR) :-
        % silently skips them.
        IR = '@wam_atom_strings = private constant [1 x i8*] [i8* null]
 @wam_atom_string_count = private constant i32 1
+@wam_char_to_atom_id = private constant [128 x i64] zeroinitializer
 
 define i8* @wam_atom_to_string(i64 %id) {
   ret i8* null
+}
+
+define i64 @wam_char_to_atom(i64 %ch) {
+  ret i64 0
 }'
     ;  sort(Pairs0, Pairs),   % sort by id
        last(Pairs, MaxId-_),
@@ -5737,11 +5810,30 @@ define i8* @wam_atom_to_string(i64 %id) {
            ),
            Slots),
        atomic_list_concat(Slots, ',\n  ', SlotsStr),
+       % M26: char -> atom_id reverse lookup for the printable ASCII
+       % range. Indices 0..31 and 127 are 0 (no atom); 32..126 hold
+       % the interned id from the eager pass at write_wam_llvm_project
+       % entry. char_code/2 reverse mode and atom_chars/2 forward use
+       % this to map a byte to its single-char atom id without a
+       % runtime string compare.
+       findall(CharSlot,
+           ( numlist(0, 127, ChIdxs),
+             member(Ch, ChIdxs),
+             ( Ch >= 32, Ch =< 126,
+               char_code(ChAtom, Ch),
+               atom_table_entry(ChAtom, ChId)
+             -> format(atom(CharSlot), 'i64 ~w', [ChId])
+             ;  CharSlot = 'i64 0'
+             )
+           ),
+           CharSlots),
+       atomic_list_concat(CharSlots, ', ', CharSlotsStr),
        format(atom(LookupTable),
 '@wam_atom_strings = private constant [~w x i8*] [
   ~w
 ]
 @wam_atom_string_count = private constant i32 ~w
+@wam_char_to_atom_id = private constant [128 x i64] [~w]
 
 define i8* @wam_atom_to_string(i64 %id) {
 entry:
@@ -5755,8 +5847,22 @@ lookup:
   ret i8* %s
 nullret:
   ret i8* null
+}
+
+; M26: byte -> single-char atom id lookup. Returns 0 (sentinel "no
+; such atom") for non-printable bytes or out-of-range indices.
+define i64 @wam_char_to_atom(i64 %ch) {
+entry:
+  %in_rng = icmp ult i64 %ch, 128
+  br i1 %in_rng, label %get, label %zret
+get:
+  %ch_slot = getelementptr [128 x i64], [128 x i64]* @wam_char_to_atom_id, i32 0, i64 %ch
+  %id = load i64, i64* %ch_slot
+  ret i64 %id
+zret:
+  ret i64 0
 }',
-           [ArrSize, SlotsStr, ArrSize, ArrSize, ArrSize]),
+           [ArrSize, SlotsStr, ArrSize, CharSlotsStr, ArrSize, ArrSize]),
        atomic_list_concat(StrGlobals, '\n', StrGlobalsStr),
        atomic_list_concat([StrGlobalsStr, LookupTable], '\n\n', IR)
     ).
@@ -5941,6 +6047,7 @@ builtin_op_to_id('format/2', 32).
 builtin_op_to_id('format/1', 33).
 builtin_op_to_id('atom_length/2', 35).
 builtin_op_to_id('atom_codes/2', 36).
+builtin_op_to_id('char_code/2', 37).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
