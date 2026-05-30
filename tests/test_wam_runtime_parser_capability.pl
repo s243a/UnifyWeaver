@@ -156,6 +156,13 @@ test(fsharp_off_explicit_none) :-
 test(haskell_defaults_to_none) :-
     wam_target_runtime_parser(wam_haskell, [], none).
 
+test(haskell_alias_defaults_to_none) :-
+    wam_target_runtime_parser(haskell, [], none).
+
+test(haskell_alias_can_opt_into_compiled_parser) :-
+    wam_target_runtime_parser(haskell, [runtime_parser(compiled)],
+                              compiled(prolog_term_parser)).
+
 test(haskell_can_opt_into_compiled_parser) :-
     wam_target_runtime_parser(wam_haskell, [runtime_parser(compiled)],
                               compiled(prolog_term_parser)).
