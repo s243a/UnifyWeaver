@@ -67,19 +67,22 @@ each WAM instruction).
 | target | `none` | `native` | `compiled` | default | end-to-end tested |
 | --- | :---: | :---: | :---: | --- | --- |
 | **F#**       | ✅ | — | ✅ | `none` | yes — `test_wam_fsharp_parser_smoke.pl` 42/42 |
-| **Python**   | ✅ | — | ✅ | `none` * | yes — `test_wam_python_target.pl` `wam_python_runtime_parser_mode` block |
+| **Python**   | ✅ | — | ✅ | `none` * | yes — `test_wam_python_target.pl` `wam_python_runtime_parser_mode` block covers read-term, stream, syntax-policy, and term-to-atom cases |
 | **C++**      | ✅ | ✅ | ✅ | `native(parse_term)` | partial — codegen tests in `test_wam_cpp_generator.pl`, one `'42'` parse verified end-to-end during the audit |
 | **R**        | ✅ | ✅ | ✅ | `native(parse_term)` | codegen tests; runtime end-to-end via the R smoke harness |
 | **Elixir**   | ✅ | — | — | `none` | n/a — `runtime_parser(compiled)` correctly throws `domain_error` (since Elixir isn't in the capability table); guarded by `test_runtime_parser_compiled_request_errors` |
 | **Rust**     | ✅ | — | — | `none` | n/a (no parser-mode wiring) |
-| **Haskell**  | ✅ | — | — | `none` | n/a (no parser-mode wiring) |
+| **Haskell**  | ✅ | — | ✅ | `none` | partial — capability and project-expansion wiring; generated parser E2E is noted as slow in `docs/SESSION_HASKELL_PARITY_SUMMARY.md` |
 | **Go**       | ✅ | — | — | `none` | n/a (no parser-mode wiring) |
 | **Clojure**  | ✅ | — | — | `none` | n/a (no parser-mode wiring) |
 | **Lua**      | ✅ | — | — | `none` | n/a (no parser-mode wiring) |
 
 `*` Python doesn't have an explicit `target_runtime_parser_default/2`
 fact, so `runtime_parser(auto)` falls through to `none`.  In practice
-the codegen pulls the parser when the user requests `compiled`.
+the codegen pulls the parser when the user requests `compiled`. Haskell
+is similar: it advertises opt-in compiled-parser support, while keeping
+`runtime_parser(auto)` at `none` so normal generated projects do not pay
+the parser-bundling cost.
 
 ## Audit findings (cross-target backport of the F# fixes)
 
@@ -93,7 +96,8 @@ Auditing the other targets for the same bug classes turned up:
 | **Rust** | `rust_val_literal` re-emitted quoted-numeric atoms verbatim (`Value::Atom("'42'")` instead of `Value::Atom("42")`) — same class as F# #2422 | #2431 |
 | **Python** | `_constant_term` re-parsed `Atom("42").name` through `_parse_constant`, silently promoting it to `Int(42)` at `put_constant` time; `wam_lines_to_python` used a naive whitespace split that broke any atom token containing a space (`':- p'`) | #2433 |
 | **C++** | audit clean — uses `wam_text_to_items/2` + `wam_classify_constant_token/2` which already honour the quoted-atom convention.  One end-to-end `'42'` parse verified before the ~12-min-per-case compile time made `:- p` / `\+ foo` impractical to also verify. | none |
-| **R, Elixir, Lua, Clojure, Haskell, Go, Rust** (compiled path) | not applicable — these targets don't bundle the compiled parser at all | none |
+| **R, Elixir, Lua, Clojure, Go, Rust** (compiled path) | not applicable — these targets either use native parsing or don't bundle the compiled parser | none |
+| **Haskell** (compiled path) | added after the original audit; appends portable parser + wrapper predicates but keeps the default off because parser-bundled generation is heavyweight | #2522 |
 
 The bug classes are roughly:
 
@@ -168,12 +172,14 @@ Significant work; worth it if there's a real user, not otherwise.
 
 ### 2. Add `compiled` to one more target with a real use case
 
-Rust is the next natural candidate — it has the largest gap between
-"target has WAM but no parser" and "target needs to read user terms"
-(LMDB fact sources, anything reading config-file Prolog).  The work
-mirrors what's already done for Python: append `prolog_term_parser`
-predicates, write a Python-style `_execute_read_term_from_atom`
-wrapper in Rust, expose it as a WAM builtin.
+Haskell now has opt-in compiled-parser wiring: `runtime_parser(compiled)`
+appends the portable parser and target-agnostic wrapper predicates while
+leaving the default at `none`.  Rust remains the next natural candidate —
+it has the largest gap between "target has WAM but no parser" and "target
+needs to read user terms" (LMDB fact sources, anything reading config-file
+Prolog).  The work mirrors what's already done for Python and Haskell:
+append `prolog_term_parser` predicates, write a Python-style
+`_execute_read_term_from_atom` wrapper in Rust, expose it as a WAM builtin.
 
 Pre-work that benefits everyone: factor out the existing C++ and
 Python wrapper logic into a shared template so the Rust port (and any
@@ -183,7 +189,9 @@ future port) is mostly translation rather than re-design.
 
 The Python target now has end-to-end tests in
 `tests/test_wam_python_target.pl` for bare-integer atoms,
-prefix-directive atoms, and prefix-NaF atoms.  The C++ target has
+prefix-directive atoms, prefix-NaF atoms, stream reads, syntax-error policy,
+and reverse `term_to_atom/2`.  Haskell has capability/project-expansion
+coverage and documented slow generated-parser E2E.  The C++ target has
 end-to-end tests for parser-label presence in the generated source but
 nothing that actually builds + runs the parser library.
 
