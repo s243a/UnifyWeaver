@@ -192,6 +192,8 @@
 :- dynamic user:wam_string_chars_reverse_mismatch/0.
 :- dynamic user:wam_char_code_guard/2.
 :- dynamic user:wam_char_code_reverse/0.
+:- dynamic user:wam_char_code_forward/0.
+:- dynamic user:wam_char_code_forward_mismatch/0.
 :- dynamic user:wam_char_code_bad_char/0.
 :- dynamic user:wam_char_code_unbound_pair/1.
 :- dynamic user:wam_char_type_alpha/0.
@@ -444,6 +446,8 @@ user:wam_string_chars_reverse :- string_chars(A, [f,o,o]), A = foo.
 user:wam_string_chars_reverse_mismatch :- string_chars(A, [f,o]), A = foo.
 user:wam_char_code_guard(C, N) :- char_code(C, N).
 user:wam_char_code_reverse :- char_code(C, 65), C = 'A'.
+user:wam_char_code_forward :- char_code(a, N), N =:= 97.
+user:wam_char_code_forward_mismatch :- char_code(a, N), N =:= 98.
 user:wam_char_code_bad_char :- char_code(ab, _).
 user:wam_char_code_unbound_pair(_) :- user:wam_unbound_arg(C), user:wam_unbound_arg(N), char_code(C, N).
 user:wam_char_type_alpha :- char_type(a, alpha).
@@ -701,6 +705,8 @@ run_smoke :-
           user:wam_string_chars_reverse_mismatch/0,
           user:wam_char_code_guard/2,
           user:wam_char_code_reverse/0,
+          user:wam_char_code_forward/0,
+          user:wam_char_code_forward_mismatch/0,
           user:wam_char_code_bad_char/0,
           user:wam_char_code_unbound_pair/1,
           user:wam_char_type_alpha/0,
@@ -1134,6 +1140,8 @@ smoke_cases([
     case('wam_char_code_guard/2', args(a, 97), "true"),
     case('wam_char_code_guard/2', args(a, 98), "false"),
     case('wam_char_code_reverse/0', no_args, "true"),
+    case('wam_char_code_forward/0', no_args, "true"),
+    case('wam_char_code_forward_mismatch/0', no_args, "false"),
     case('wam_char_code_bad_char/0', no_args, "false"),
     case('wam_char_code_unbound_pair/1', a, "false"),
     case('wam_char_type_alpha/0', no_args, "true"),
