@@ -571,7 +571,7 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "number_chars/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "atom_string/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "string_to_atom/2"')),
-    assertion(sub_string(LibCode, _, _, _, 'Op: "\\\\+/1"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "fail/0"')),
     assertion(sub_string(LibCode, _, _, _, 'AggType: "set"')),
 
     % Add a main.go to run the test in a separate cmd directory
