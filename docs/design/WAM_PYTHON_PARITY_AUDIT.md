@@ -90,6 +90,41 @@ instead of assembling a second runtime from Prolog string fragments. Generated
 projects also copy the same `WamRuntime.py`, so tests and generated projects
 now share one Python WAM runtime surface.
 
+
+## Items-Mode Readiness
+
+Python is a good candidate for the WAM items-mode migration because generated
+projects already use one packaged runtime surface, but the generator still has a
+text-first compile pipeline.
+
+Current load-bearing text path:
+
+- `plan_python_predicate/3` calls `compile_predicate_to_wam(..., WamCode)` and
+  stores canonical WAM text in `pred_plan/4`.
+- `compile_wam_predicate_to_python/4` converts that text through
+  `wam_code_to_python_instructions/4`, which tokenizes each line and calls
+  `wam_line_to_python_literal/2`.
+- lowered mode calls `parse_wam_text_py/2` in `compile_lowered_wam_predicate_to_python/4`,
+  `lowered_candidate_wam/1`, and `lowered_route_supported/4` before emitting
+  lowered Python functions.
+- `wam_python_iso_audit/3` still recompiles predicates to WAM text and parses
+  lines for audit reporting.
+
+Migration target:
+
+1. Add an item-driven entry point parallel to `compile_wam_predicate_to_python/4`,
+   for example `compile_wam_predicate_items_to_python/4`.
+2. Change planning to store WAM items once `compile_predicate_to_wam_items/3` is
+   available as a real generator API.
+3. Teach the lowered emitter to consume the same item list directly, or add one
+   shared adapter from items to the lowered-emitter instruction representation.
+4. Keep the text parser only for external WAM text/debug migration paths, not
+   for WAM text generated inside the same process.
+
+Until that migration lands, `tests/test_wam_python_target.pl` includes an
+items-mode audit test that intentionally records the current text-first state so
+future work can flip the assertions when Python moves to direct items.
+
 ## Remaining Follow-Up
 
 The packaged static runtime now carries the Lua/Rust/Haskell builtin baseline.
@@ -113,7 +148,7 @@ Completed follow-up:
 ## Verification Commands
 
 Use these checks after touching Python WAM runtime parity. On current `main`,
-`tests/test_wam_python_target.pl` passes 166/166 without choicepoint warnings:
+`tests/test_wam_python_target.pl` passes 168/168 without choicepoint warnings:
 
 ```sh
 swipl -q -g run_tests -t halt tests/test_wam_python_target.pl
