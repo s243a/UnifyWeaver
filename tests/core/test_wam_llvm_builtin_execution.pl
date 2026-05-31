@@ -884,6 +884,44 @@ test_last_singleton(_, R) :-
 test_last_empty(_, R) :-
     ( last([], _) -> R is 1 ; R is 0 ).   % 0
 
+% M38: reverse/2 deterministic forward mode.
+
+:- dynamic test_reverse_first/2.
+test_reverse_first(_, R) :-
+    reverse([10, 20, 30], L),
+    nth0(0, L, E),
+    R is E.   % 30 (originally last)
+
+:- dynamic test_reverse_last/2.
+test_reverse_last(_, R) :-
+    reverse([10, 20, 30], L),
+    last(L, E),
+    R is E.   % 10 (originally first)
+
+:- dynamic test_reverse_length/2.
+test_reverse_length(_, R) :-
+    reverse([1, 2, 3, 4, 5], L),
+    length(L, N),
+    R is N.   % 5
+
+:- dynamic test_reverse_empty/2.
+test_reverse_empty(_, R) :-
+    reverse([], L),
+    length(L, N),
+    R is N + 7.   % 7
+
+:- dynamic test_reverse_singleton/2.
+test_reverse_singleton(_, R) :-
+    reverse([42], [E]),
+    R is E.   % 42
+
+:- dynamic test_reverse_idempotent/2.
+test_reverse_idempotent(_, R) :-
+    reverse([1, 2, 3], L1),
+    reverse(L1, L2),
+    nth0(0, L2, E),
+    R is E.   % 1 (reverse twice -> original)
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -1791,6 +1829,19 @@ test_all :-
                    test_last_singleton, 0, 99),
        run_test_r0('last([], _) -> 0',
                    test_last_empty, 0, 0),
+       format('--- M38 reverse/2 deterministic ---~n'),
+       run_test_r0('reverse([10,20,30], L), nth0(0, L) -> 30',
+                   test_reverse_first, 0, 30),
+       run_test_r0('reverse([10,20,30], L), last(L) -> 10',
+                   test_reverse_last, 0, 10),
+       run_test_r0('reverse([1..5], L), length(L) -> 5',
+                   test_reverse_length, 0, 5),
+       run_test_r0('reverse([], L) + 7 -> 7',
+                   test_reverse_empty, 0, 7),
+       run_test_r0('reverse([42], [E]) -> 42',
+                   test_reverse_singleton, 0, 42),
+       run_test_r0('reverse twice idempotent -> 1',
+                   test_reverse_idempotent, 0, 1),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
