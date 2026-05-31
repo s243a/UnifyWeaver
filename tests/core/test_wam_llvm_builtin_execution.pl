@@ -1860,6 +1860,52 @@ test_alc_three_ints(_, R) :-
     atom_codes(A, [_, _, C, _, _, _]),    % position 2 is '2' from "20"
     R is C.   % 50
 
+% M56: atomic_list_concat/3 with Integer heads.
+
+:- dynamic test_alc3_int_only_length/2.
+test_alc3_int_only_length(_, R) :-
+    atomic_list_concat([1, 2, 3], '-', A),
+    atom_length(A, N),
+    R is N.   % 5 -- "1-2-3"
+
+:- dynamic test_alc3_int_first/2.
+test_alc3_int_first(_, R) :-
+    atomic_list_concat([42], '-', A),
+    atom_codes(A, [C|_]),
+    R is C.   % '4' = 52
+
+:- dynamic test_alc3_int_seam/2.
+test_alc3_int_seam(_, R) :-
+    atomic_list_concat([10, 20], '/', A),
+    atom_codes(A, [_, _, C, _, _]),  % position 2 is '/'
+    R is C.   % 47
+
+:- dynamic test_alc3_int_with_atom/2.
+test_alc3_int_with_atom(_, R) :-
+    atomic_list_concat([foo, 42, bar], '-', A),
+    atom_length(A, N),
+    R is N.   % 10 = 3 + 1 + 2 + 1 + 3
+
+:- dynamic test_alc3_int_negative/2.
+test_alc3_int_negative(_, R) :-
+    atomic_list_concat([-5, 7], '+', A),
+    atom_length(A, N),
+    R is N.   % 4 ("-5+7")
+
+:- dynamic test_alc3_int_multi_char_sep/2.
+test_alc3_int_multi_char_sep(_, R) :-
+    atomic_list_concat([1, 2, 3], ', ', A),
+    atom_length(A, N),
+    R is N.   % 7 -- "1, 2, 3"
+
+:- dynamic test_alc3_int_split_count/2.
+test_alc3_int_split_count(_, R) :-
+    % Forward int + split round-trip.
+    atomic_list_concat([100, 200, 300], '|', Joined),
+    atomic_list_concat(Parts, '|', Joined),
+    length(Parts, N),
+    R is N.   % 3
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -3099,6 +3145,21 @@ test_all :-
                    test_alc_int_last, 0, 9),
        run_test_r0('alc([10, 20, 30]) pos 2 -> 50',
                    test_alc_three_ints, 0, 50),
+       format('--- M56 atomic_list_concat/3 Integer heads ---~n'),
+       run_test_r0('alc([1,2,3], \'-\') length -> 5',
+                   test_alc3_int_only_length, 0, 5),
+       run_test_r0('alc([42], \'-\') first -> 52',
+                   test_alc3_int_first, 0, 52),
+       run_test_r0('alc([10, 20], \'/\') seam -> 47',
+                   test_alc3_int_seam, 0, 47),
+       run_test_r0('alc([foo, 42, bar], \'-\') length -> 10',
+                   test_alc3_int_with_atom, 0, 10),
+       run_test_r0('alc([-5, 7], \'+\') length -> 4',
+                   test_alc3_int_negative, 0, 4),
+       run_test_r0('alc([1,2,3], \', \') length -> 7',
+                   test_alc3_int_multi_char_sep, 0, 7),
+       run_test_r0('alc/3 int + split roundtrip count -> 3',
+                   test_alc3_int_split_count, 0, 3),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),

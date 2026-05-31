@@ -7750,17 +7750,17 @@ alc.f_done:
   ret i1 %alc.ok
 
 builtin_atomic_list_concat3:
-  ; M53: atomic_list_concat(+List, +Sep, ?Atom) -- atoms-only forward.
-  ; A2 must be a bound Atom (the separator). Splits Atom by Sep is
-  ; deferred (reverse mode would need a substring scan).
-  ; Two-pass walk of A1:
-  ;   1. measure sep_len; walk A1 summing atom_len + (sep_len for
-  ;      every element after the first) into total;
-  ;   2. allocate (total+1) byte buffer; walk A1 again, before each
-  ;      element after the first memcpy the separator, then memcpy
-  ;      the atom''s string. Null-terminate, intern, unify A3.
+  ; M53/M54/M56: atomic_list_concat(?List, +Sep, ?Atom).
+  ; Forward (List bound, A2 sep, A3 ?): concat with sep between
+  ; elements. M56 adds Integer support (in addition to Atoms) via
+  ; snprintf widening (same trick as M55 for alc/2).
+  ; Split (List unbound, A2 sep, A3 bound): scan A3 for sep
+  ; occurrences and emit Atoms.
   %alc3.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   call void @wam_arena_ensure()
+  ; Scratch buffer for measuring integer element lengths during forward
+  ; mode pass 1. Allocated unconditionally; harmless for split mode.
+  %alc3.iscratch = call i8* @wam_arena_alloc(i64 32)
   %alc3.t2 = extractvalue %Value %alc3.a2, 0
   %alc3.is_sep_atom = icmp eq i32 %alc3.t2, 0
   br i1 %alc3.is_sep_atom, label %alc3.sep_lookup, label %alc3.fail
@@ -7805,7 +7805,16 @@ alc3.c_step:
   %alc3.c_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc3.c_head)
   %alc3.c_h_tag = extractvalue %Value %alc3.c_h_d, 0
   %alc3.c_h_is_atom = icmp eq i32 %alc3.c_h_tag, 0
-  br i1 %alc3.c_h_is_atom, label %alc3.c_measure, label %alc3.fail
+  br i1 %alc3.c_h_is_atom, label %alc3.c_measure, label %alc3.c_try_int
+alc3.c_try_int:
+  %alc3.c_h_is_int = icmp eq i32 %alc3.c_h_tag, 1
+  br i1 %alc3.c_h_is_int, label %alc3.c_int_measure, label %alc3.fail
+alc3.c_int_measure:
+  %alc3.c_int_v = extractvalue %Value %alc3.c_h_d, 1
+  %alc3.c_int_fmt = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
+  %alc3.c_int_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc3.iscratch, i64 32, i8* %alc3.c_int_fmt, i64 %alc3.c_int_v)
+  %alc3.c_int_len = sext i32 %alc3.c_int_n32 to i64
+  br label %alc3.c_advance
 alc3.c_measure:
   %alc3.c_aid = extractvalue %Value %alc3.c_h_d, 1
   %alc3.c_str = call i8* @wam_atom_to_string(i64 %alc3.c_aid)
@@ -7822,11 +7831,12 @@ alc3.c_m_step:
   %alc3.c_mn1 = add i64 %alc3.c_mn, 1
   br label %alc3.c_m_loop
 alc3.c_advance:
-  ; Add atom length, plus separator length for every element after the first.
+  ; Add element length (atom or int), plus separator length for every element after the first.
+  %alc3.c_elem_len = phi i64 [ %alc3.c_mn, %alc3.c_m_loop ], [ %alc3.c_int_len, %alc3.c_int_measure ]
   %alc3.c_not_first = icmp ne i32 %alc3.c_n, 0
   %alc3.c_sep_add = select i1 %alc3.c_not_first, i64 %alc3.smn, i64 0
   %alc3.c_with_sep = add i64 %alc3.c_total, %alc3.c_sep_add
-  %alc3.c_total1 = add i64 %alc3.c_with_sep, %alc3.c_mn
+  %alc3.c_total1 = add i64 %alc3.c_with_sep, %alc3.c_elem_len
   %alc3.c_n1 = add i32 %alc3.c_n, 1
   %alc3.c_t_ptr = getelementptr %Value, %Value* %alc3.c_args, i32 1
   %alc3.c_next = load %Value, %Value* %alc3.c_t_ptr
@@ -7836,9 +7846,9 @@ alc3.c_done:
   %alc3.buf = call i8* @wam_arena_alloc(i64 %alc3.bufsz)
   br label %alc3.f_loop
 alc3.f_loop:
-  %alc3.f_cur = phi %Value [ %alc3.a1, %alc3.c_done ], [ %alc3.f_next, %alc3.f_copy_atom ]
-  %alc3.f_off = phi i64 [ 0, %alc3.c_done ], [ %alc3.f_off2, %alc3.f_copy_atom ]
-  %alc3.f_idx = phi i32 [ 0, %alc3.c_done ], [ %alc3.f_idx1, %alc3.f_copy_atom ]
+  %alc3.f_cur = phi %Value [ %alc3.a1, %alc3.c_done ], [ %alc3.f_next, %alc3.f_after ]
+  %alc3.f_off = phi i64 [ 0, %alc3.c_done ], [ %alc3.f_off_next, %alc3.f_after ]
+  %alc3.f_idx = phi i32 [ 0, %alc3.c_done ], [ %alc3.f_idx1, %alc3.f_after ]
   %alc3.f_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc3.f_cur)
   %alc3.f_tag = extractvalue %Value %alc3.f_d, 0
   %alc3.f_is_cmp = icmp eq i32 %alc3.f_tag, 3
@@ -7847,12 +7857,13 @@ alc3.f_pre_sep:
   %alc3.f_not_first = icmp ne i32 %alc3.f_idx, 0
   %alc3.f_off_after_sep_if = add i64 %alc3.f_off, %alc3.smn
   %alc3.f_off_after_sep = select i1 %alc3.f_not_first, i64 %alc3.f_off_after_sep_if, i64 %alc3.f_off
-  br i1 %alc3.f_not_first, label %alc3.f_copy_sep, label %alc3.f_load_atom
+  br i1 %alc3.f_not_first, label %alc3.f_copy_sep, label %alc3.f_dispatch
 alc3.f_copy_sep:
   %alc3.f_sep_dst = getelementptr i8, i8* %alc3.buf, i64 %alc3.f_off
   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alc3.f_sep_dst, i8* %alc3.sep_str, i64 %alc3.smn, i1 false)
-  br label %alc3.f_load_atom
-alc3.f_load_atom:
+  br label %alc3.f_dispatch
+alc3.f_dispatch:
+  ; M56: load head, branch atom vs int.
   %alc3.f_cp = extractvalue %Value %alc3.f_d, 1
   %alc3.f_cp_ptr = inttoptr i64 %alc3.f_cp to %Compound*
   %alc3.f_args_slot = getelementptr %Compound, %Compound* %alc3.f_cp_ptr, i32 0, i32 2
@@ -7860,9 +7871,22 @@ alc3.f_load_atom:
   %alc3.f_h_ptr = getelementptr %Value, %Value* %alc3.f_args, i32 0
   %alc3.f_head = load %Value, %Value* %alc3.f_h_ptr
   %alc3.f_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc3.f_head)
+  %alc3.f_h_tag = extractvalue %Value %alc3.f_h_d, 0
+  %alc3.f_is_atom = icmp eq i32 %alc3.f_h_tag, 0
+  br i1 %alc3.f_is_atom, label %alc3.f_load_atom, label %alc3.f_int_write
+alc3.f_load_atom:
   %alc3.f_aid = extractvalue %Value %alc3.f_h_d, 1
   %alc3.f_str = call i8* @wam_atom_to_string(i64 %alc3.f_aid)
   br label %alc3.f_m_loop
+alc3.f_int_write:
+  %alc3.f_int_v = extractvalue %Value %alc3.f_h_d, 1
+  %alc3.f_int_dst = getelementptr i8, i8* %alc3.buf, i64 %alc3.f_off_after_sep
+  %alc3.f_int_avail = sub i64 %alc3.bufsz, %alc3.f_off_after_sep
+  %alc3.f_int_fmt = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
+  %alc3.f_int_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc3.f_int_dst, i64 %alc3.f_int_avail, i8* %alc3.f_int_fmt, i64 %alc3.f_int_v)
+  %alc3.f_int_len = sext i32 %alc3.f_int_n32 to i64
+  %alc3.f_off_after_int = add i64 %alc3.f_off_after_sep, %alc3.f_int_len
+  br label %alc3.f_after
 alc3.f_m_loop:
   %alc3.f_mp = phi i8* [ %alc3.f_str, %alc3.f_load_atom ], [ %alc3.f_mpn, %alc3.f_m_step ]
   %alc3.f_mn = phi i64 [ 0, %alc3.f_load_atom ], [ %alc3.f_mn1, %alc3.f_m_step ]
@@ -7876,7 +7900,10 @@ alc3.f_m_step:
 alc3.f_copy_atom:
   %alc3.f_atom_dst = getelementptr i8, i8* %alc3.buf, i64 %alc3.f_off_after_sep
   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alc3.f_atom_dst, i8* %alc3.f_str, i64 %alc3.f_mn, i1 false)
-  %alc3.f_off2 = add i64 %alc3.f_off_after_sep, %alc3.f_mn
+  %alc3.f_off_after_atom = add i64 %alc3.f_off_after_sep, %alc3.f_mn
+  br label %alc3.f_after
+alc3.f_after:
+  %alc3.f_off_next = phi i64 [ %alc3.f_off_after_atom, %alc3.f_copy_atom ], [ %alc3.f_off_after_int, %alc3.f_int_write ]
   %alc3.f_idx1 = add i32 %alc3.f_idx, 1
   %alc3.f_t_ptr = getelementptr %Value, %Value* %alc3.f_args, i32 1
   %alc3.f_next = load %Value, %Value* %alc3.f_t_ptr
