@@ -2306,8 +2306,7 @@ test_ks_atom_keys_value(_, R) :-
 :- dynamic test_ks_float_keys/2.
 test_ks_float_keys(_, R) :-
     keysort([3.5-a, 1.5-b, 2.5-c], [K-_|_]),
-    truncate(K * 10, R10),
-    R is R10.   % 15
+    R is truncate(K * 10).   % 15
 
 :- dynamic test_ks_mixed_num_keys/2.
 test_ks_mixed_num_keys(_, R) :-
