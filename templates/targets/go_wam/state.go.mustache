@@ -1781,6 +1781,26 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			}
 		}
 		return vm.Unify(arg3, &List{Elements: kept})
+	case "list_to_set/2":
+		items, ok := vm.listToSlice(arg1)
+		if !ok {
+			return false
+		}
+		result := make([]Value, 0, len(items))
+		for _, item := range items {
+			candidate := vm.deref(item)
+			found := false
+			for _, existing := range result {
+				if valueEquals(vm.deref(existing), candidate) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				result = append(result, candidate)
+			}
+		}
+		return vm.Unify(arg2, &List{Elements: result})
 	case "permutation/2":
 		items, ok := vm.listToSlice(arg1)
 		if !ok {
