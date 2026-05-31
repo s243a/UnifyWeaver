@@ -1093,15 +1093,19 @@
     (symbol? value) (name value)
     :else nil))
 
-(defn number-text [value]
-  (when (number? value)
-    (str value)))
-
 (declare parse-number-text)
+
+(defn number-text [state value]
+  (cond
+    (number? value) (str value)
+    (string? value) (when (some? (parse-number-text value)) value)
+    (atom-term? value) (let [text (atom-text state value)]
+                         (when (some? (parse-number-text text)) text))
+    :else nil))
 
 (defn atom-number-text [state value]
   (or (atom-text state value)
-      (number-text value)))
+      (number-text state value)))
 
 (defn atom-number-value [state value]
   (cond
@@ -1164,7 +1168,7 @@
         codes? (or (= pred "atom_codes/2") (= pred "string_codes/2") (= pred "number_codes/2"))
         atom? (or (= pred "atom_codes/2") (= pred "atom_chars/2")
                   (= pred "string_codes/2") (= pred "string_chars/2"))
-        value-text (if atom? (atom-text state left) (number-text left))
+        value-text (if atom? (atom-text state left) (number-text state left))
         list-text (if codes? (code-list-text state right) (char-list-text state right))]
     (cond
       (and (some? value-text) (some? list-text))
@@ -1272,7 +1276,7 @@
 
 (defn atomic-concat-text [state value]
   (or (atom-text state value)
-      (number-text value)))
+      (number-text state value)))
 
 (defn atomic-concat-list-term [state texts]
   (loop [s state
