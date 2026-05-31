@@ -319,11 +319,12 @@ test(python_target_still_uses_text_wam_generation) :-
     sub_string(Content, _, _, _, "wam_code_to_python_instructions(WamCode"),
     !.
 
-test(python_items_mode_migration_target_not_yet_present) :-
+test(python_items_mode_planning_still_uses_text_wam) :-
     once(source_file(wam_python_target:compile_wam_predicate_to_python(_, _, _, _), Path)),
     read_file_to_string(Path, Content, []),
+    sub_string(Content, _, _, _, "compile_wam_predicate_items_to_python"),
     \+ sub_string(Content, _, _, _, "compile_predicate_to_wam_items"),
-    \+ sub_string(Content, _, _, _, "compile_wam_predicate_items_to_python").
+    !.
 
 
 test(items_adapter_matches_text_adapter_for_standard_items) :-
@@ -347,6 +348,24 @@ test(items_adapter_preserves_typed_atom_constants) :-
     wam_python_target:wam_items_to_python_instructions(Items, typed/1, Instrs, _Labels),
     sub_string(Instrs, _, _, _, '("put_constant", Atom("42"), A1)'),
     sub_string(Instrs, _, _, _, '("put_constant", Int(42), A2)'),
+    !.
+
+
+test(items_predicate_compiler_matches_text_compiler) :-
+    WamText = 'demo/1:
+    put_constant foo, A1
+    proceed',
+    wam_text_to_items(WamText, Items),
+    wam_python_target:compile_wam_predicate_to_python(demo/1, WamText, [], TextCode),
+    wam_python_target:compile_wam_predicate_items_to_python(demo/1, Items, [], ItemsCode),
+    assertion(ItemsCode == TextCode).
+
+test(items_predicate_compiler_honors_registrar_prefix) :-
+    Items = [label("demo/1"), put_constant(foo, "A1"), proceed],
+    wam_python_target:compile_wam_predicate_items_to_python(demo/1, Items,
+        [registrar_prefix(register_)], Code),
+    sub_string(Code, _, _, _, 'def register_pred_demo_1(raw_program):'),
+    sub_string(Code, _, _, _, 'raw_program["demo/1"] = ('),
     !.
 :- end_tests(wam_python_items_mode_audit).
 

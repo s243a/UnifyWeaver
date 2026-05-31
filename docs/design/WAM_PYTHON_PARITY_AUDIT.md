@@ -115,6 +115,8 @@ Items-mode bridge now present:
 - `wam_items_to_python_instructions/4` consumes `label(Name)` plus standard WAM
   instruction items and emits the same Python instruction literals as the text
   path.
+- `compile_wam_predicate_items_to_python/4` wraps that adapter in the same
+  registrar function shape as `compile_wam_predicate_to_python/4`.
 - The adapter preserves typed direct-item constants, so an atom like `'42'` is
   emitted as `Atom("42")` while integer `42` is emitted as `Int(42)`.
 - Current tests compare the adapter against `wam_text_to_items/2` output for a
@@ -122,14 +124,12 @@ Items-mode bridge now present:
 
 Remaining migration target:
 
-1. Add an item-driven predicate compiler parallel to `compile_wam_predicate_to_python/4`,
-   for example `compile_wam_predicate_items_to_python/4`, using
-   `wam_items_to_python_instructions/4` internally.
-2. Change planning to store WAM items once `compile_predicate_to_wam_items/3` is
-   available as a real generator API.
-3. Teach the lowered emitter to consume the same item list directly, or add one
+1. Change planning to store WAM items once `compile_predicate_to_wam_items/3` is
+   available as a real generator API, then route interpreter-mode predicates
+   through `compile_wam_predicate_items_to_python/4`.
+2. Teach the lowered emitter to consume the same item list directly, or add one
    shared adapter from items to the lowered-emitter instruction representation.
-4. Keep the text parser only for external WAM text/debug migration paths, not
+3. Keep the text parser only for external WAM text/debug migration paths, not
    for WAM text generated inside the same process.
 
 Until that migration lands, `tests/test_wam_python_target.pl` includes
@@ -159,7 +159,7 @@ Completed follow-up:
 ## Verification Commands
 
 Use these checks after touching Python WAM runtime parity. On current `main`,
-`tests/test_wam_python_target.pl` passes 170/170 without choicepoint warnings:
+`tests/test_wam_python_target.pl` passes 172/172 without choicepoint warnings:
 
 ```sh
 swipl -q -g run_tests -t halt tests/test_wam_python_target.pl
