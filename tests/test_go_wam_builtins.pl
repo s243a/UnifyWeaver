@@ -26,6 +26,7 @@
 :- dynamic user:test_tab_builtin/0.
 :- dynamic user:test_succ_builtin/0.
 :- dynamic user:test_between_builtin/0.
+:- dynamic user:test_list_numeric_builtin/0.
 :- dynamic user:test_atom_number_builtin/0.
 :- dynamic user:test_atom_case_builtin/0.
 :- dynamic user:test_atom_concat_builtin/0.
@@ -165,6 +166,26 @@ test(builtins_execution) :-
                 Ns = [2,3,4,5],
                 findall(One, between(7, 7, One), Ones),
                 Ones = [7]
+            )),
+          assertz(user:test_list_numeric_builtin :-
+            (   sum_list([1,2,3,4], Sum),
+                Sum =:= 10,
+                sum_list([], Zero),
+                Zero =:= 0,
+                sum_list([1,2.5,3], MixedSum),
+                MixedSum =:= 6.5,
+                max_list([3,1,4,1,5,9,2,6], Max),
+                Max =:= 9,
+                min_list([3,1,4,1,5,9,2,6], Min),
+                Min =:= 1,
+                max_list([7], OneMax),
+                OneMax =:= 7,
+                min_list([7], OneMin),
+                OneMin =:= 7,
+                \+ max_list([], _),
+                \+ min_list([], _),
+                \+ sum_list([1,a], _),
+                \+ sum_list([1|2], _)
             )),
           assertz(user:test_sort_builtin :-
             (   sort([3,1,2,1,3], S),
@@ -494,6 +515,7 @@ test(builtins_execution) :-
           retractall(user:test_tab_builtin),
           retractall(user:test_succ_builtin),
           retractall(user:test_between_builtin),
+          retractall(user:test_list_numeric_builtin),
           retractall(user:test_atom_number_builtin),
           retractall(user:test_atom_case_builtin),
           retractall(user:test_atom_concat_builtin),
@@ -513,7 +535,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_permutation_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_between_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_tab_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_permutation_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_between_builtin/0, test_list_numeric_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_tab_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -555,6 +577,9 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "nth1/3"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "numlist/3"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "between/3"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "sum_list/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "min_list/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "max_list/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "sort/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "msort/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "@</2"')),
@@ -773,6 +798,14 @@ func main() {
 		fmt.Println("BETWEEN_FAILURE")
 	}
 
+	listNumericVM := wam.NewWamState(wam.Test_list_numeric_builtinCode, wam.Test_list_numeric_builtinLabels)
+	listNumericVM.PC = wam.Test_list_numeric_builtinStartPC
+	if listNumericVM.Run() {
+		fmt.Println("LIST_NUMERIC_SUCCESS")
+	} else {
+		fmt.Println("LIST_NUMERIC_FAILURE")
+	}
+
 	atomNumberVM := wam.NewWamState(wam.Test_atom_number_builtinCode, wam.Test_atom_number_builtinLabels)
 	atomNumberVM.PC = wam.Test_atom_number_builtinStartPC
 	if atomNumberVM.Run() {
@@ -923,6 +956,7 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "   tabbedTAB_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SUCC_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "BETWEEN_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "LIST_NUMERIC_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_NUMBER_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_CASE_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_CONCAT_SUCCESS")),

@@ -469,6 +469,15 @@ wam_go_direct_builtin("numlist/3", 3, 'numlist/3').
 wam_go_direct_builtin(between/3, 3, 'between/3').
 wam_go_direct_builtin('between/3', 3, 'between/3').
 wam_go_direct_builtin("between/3", 3, 'between/3').
+wam_go_direct_builtin(sum_list/2, 2, 'sum_list/2').
+wam_go_direct_builtin('sum_list/2', 2, 'sum_list/2').
+wam_go_direct_builtin("sum_list/2", 2, 'sum_list/2').
+wam_go_direct_builtin(min_list/2, 2, 'min_list/2').
+wam_go_direct_builtin('min_list/2', 2, 'min_list/2').
+wam_go_direct_builtin("min_list/2", 2, 'min_list/2').
+wam_go_direct_builtin(max_list/2, 2, 'max_list/2').
+wam_go_direct_builtin('max_list/2', 2, 'max_list/2').
+wam_go_direct_builtin("max_list/2", 2, 'max_list/2').
 wam_go_direct_builtin(sort/2, 2, 'sort/2').
 wam_go_direct_builtin('sort/2', 2, 'sort/2').
 wam_go_direct_builtin("sort/2", 2, 'sort/2').
