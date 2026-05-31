@@ -43,6 +43,29 @@ drift was 0.007% — every single pair converged.
 
 ## 2. Why this happens: the geometric-series argument
 
+### 2.0 Notation
+
+Several variant symbols denote the branching asymmetry at different
+stages of refinement. They are not interchangeable; the distinction
+matters for §4–§5.
+
+| Symbol | Definition | Where it's computed | Example value (simplewiki) |
+|---|---|---|---|
+| `D` | `E[d_child]` — average child fan-out | first moment of the child-degree distribution | 7.34 |
+| `b` (early) | `E[d²_child] / E[d²_parent]` — raw second-moment ratio | scan child/parent degree distributions globally | 1353 |
+| `b_eff` | `(E[d²_c]/E[d_c]) / (E[d²_p]/E[d_p])` — friendship-paradox-corrected branching asymmetry | same scan, with first-moment correction | 589 (global) / 9.59 (topical, §4.5) |
+| `BranchRatio` | `b_eff × routing_correction` — the composed scalar the kernel passes to the metric | adds the empirical routing factor | 226 (global) / 3.68 (topical, currently — see §5.4) |
+| `b'` | per-child-hop empirical path-count growth | measured by running the kernel at varying `cc` and reading path-count ratios | ~11 |
+
+`b` (early-formula) was used in §2 below before the first-moment
+correction; subsequent sections use `b_eff` exclusively. **The
+operative quantity for convergence is `b' < b_eff · D`, not the
+raw `b·D`.** §4.4 and §5.5 explain why the early `b·D ≈ 9933`
+number, while not wrong, is misleading once we account for
+inhomogeneity.
+
+### 2.1 The geometric-series argument
+
 Each path's weight in the metric is
 
 ```
@@ -50,11 +73,14 @@ w(path) = (1/D)^N · (1/(b·D))^M
 ```
 
 where N = parent hops, M = child hops, D = avg child fan-out, and
-b = E[d²_child] / E[d²_parent] (the calibrated branching asymmetry).
+b = E[d²_child] / E[d²_parent] (the early calibrated branching
+asymmetry — see §2.0; honest topical calibration uses `b_eff`
+instead, with a different numerical value).
 
-On simplewiki: D ≈ 7.34, b ≈ 1353. So a single child hop carries
-weight ≈ `1/(b·D) ≈ 10⁻⁴`, and each additional child hop multiplies
-by another factor of 10⁻⁴.
+On simplewiki under the original global calibration:
+D ≈ 7.34, b ≈ 1353. So a single child hop carries weight
+≈ `1/(b·D) ≈ 10⁻⁴`, and each additional child hop multiplies by
+another factor of 10⁻⁴.
 
 The contribution to the weighted sum from paths with M child hops
 is bounded by
@@ -69,6 +95,16 @@ growth by 2+ orders of magnitude. Result: a convergent geometric
 series whose terms shrink by ~10⁴ per level. The total contribution
 of mixed paths is asymptotically negligible compared to the
 upward-only baseline.
+
+> **Forward reference.** The `b·D ≈ 9933` figure here is the
+> *global* calibration. §4.4 shows this overestimates the
+> traversed branching by ~50× because the global moment scan
+> includes admin hubs the search never touches; §4.5 derives the
+> honest topical recalibration `b_eff ≈ 9.59` giving `b_eff·D ≈ 70`.
+> Both numbers satisfy the convergence inequality `b·D > b'` (with
+> empirical `b' ≈ 11` per §4.4), which is why the property holds
+> under either calibration — but §5.5 explains why the topical
+> number is the principled one for any quantitative use of `(b, D)`.
 
 ## 3. Proposed formal property: metric-tree-likeness
 
