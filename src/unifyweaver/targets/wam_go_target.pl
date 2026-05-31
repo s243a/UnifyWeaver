@@ -478,6 +478,9 @@ wam_go_direct_builtin("min_list/2", 2, 'min_list/2').
 wam_go_direct_builtin(max_list/2, 2, 'max_list/2').
 wam_go_direct_builtin('max_list/2', 2, 'max_list/2').
 wam_go_direct_builtin("max_list/2", 2, 'max_list/2').
+wam_go_direct_builtin(list_to_set/2, 2, 'list_to_set/2').
+wam_go_direct_builtin('list_to_set/2', 2, 'list_to_set/2').
+wam_go_direct_builtin("list_to_set/2", 2, 'list_to_set/2').
 wam_go_direct_builtin(sort/2, 2, 'sort/2').
 wam_go_direct_builtin('sort/2', 2, 'sort/2').
 wam_go_direct_builtin("sort/2", 2, 'sort/2').
