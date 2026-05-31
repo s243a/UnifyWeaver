@@ -151,7 +151,36 @@ the aggregate one: "for queries on this graph under this metric,
 tree-search is accurate to ε on average — individual queries may
 differ but rarely materially."
 
-### 3.1 What this is *not*
+### 3.1 Why the property is principled: `D` does double duty
+
+The convergence inequality `b·D > b'` (path-count growth `b'`
+empirically matches `b_eff` once topical calibration is honest)
+has substantial slack on real graphs — by 6×+ on simplewiki's
+topical core. That slack might look like a tuning artifact ("of
+course it works, the inequality has tons of room"), but it isn't.
+The slack has a principled source: `D = E[d_child]` is doing
+*two distinct jobs* simultaneously, both grounded in a single
+measured graph property.
+
+1. `D` is the **per-parent-hop weight** in `w(path) = (1/D)^N (1/(b·D))^M`.
+   It enters the metric formula directly.
+2. `D` is the **convergence slack**. Once `b` is calibrated to
+   match empirical path growth (`b ≈ b'`), the convergence
+   ratio reduces to `b'/(b·D) ≈ 1/D`. So `D` is what buys the
+   safety margin in the inequality.
+
+Both roles come from the same single measurement
+(`E[d_child]`). `D` is not a free parameter that happens to
+absorb errors — it's a structurally-motivated quantity that
+inherits its double duty from the construction of the metric
+itself. That's what makes metric-tree-likeness an honest
+property rather than a tuning success.
+
+The detailed analysis — including the consequence that the
+routing correction *consumes* part of `D`'s slack without
+naming itself as a slack consumer — is in §5.5.1.
+
+### 3.2 What this is *not*
 
 - Not **structural tree-likeness** (treewidth). The graph can have
   arbitrarily many cycles and still be metric-tree-like under the
@@ -170,7 +199,7 @@ not of either alone. A graph that's metric-tree-like under
 power-mean weighting may not be under uniform weighting, and vice
 versa.
 
-### 3.2 What it is: the "child shortcuts are statistically rare"
+### 3.3 What it is: the "child shortcuts are statistically rare"
 property
 
 When a (graph, metric) pair is metric-tree-like, child shortcuts
