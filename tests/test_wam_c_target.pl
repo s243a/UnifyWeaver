@@ -3679,6 +3679,8 @@ int main(void) {
     wam_register_weighted_edge(&state, "tom", "eve", 1);
     wam_register_weighted_edge(&state, "eve", "ann", 1);
     wam_register_weighted_edge(&state, "bob", "ann", 1);
+    wam_register_weighted_edge(&state, "flo", "mid", 0.5);
+    wam_register_weighted_edge(&state, "mid", "fin", 1.0);
     wam_register_weighted_shortest_path_kernel(&state, "weighted_path/3");
 
     WamValue shortest_args[3] = {
@@ -3717,6 +3719,29 @@ int main(void) {
         return 30;
     }
 
+    WamValue float_args[3] = {
+        val_atom("flo"),
+        val_atom("fin"),
+        val_unbound("Weight")
+    };
+    int float_rc = wam_run_predicate(&state, "weighted_path/3", float_args, 3);
+    if (float_rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_FLOAT || state.A[2].data.floating != 1.5) {
+        wam_free_state(&state);
+        return 35;
+    }
+
+    WamValue float_direct_args[3] = {
+        val_atom("flo"),
+        val_atom("fin"),
+        val_float(1.5)
+    };
+    int float_direct_rc = wam_run_predicate(&state, "weighted_path/3", float_direct_args, 3);
+    if (float_direct_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 36;
+    }
+
     WamValue fail_args[3] = {
         val_atom("ann"),
         val_atom("tom"),
@@ -3743,9 +3768,12 @@ static void register_astar_edges(WamState *state) {
     wam_register_weighted_edge(state, "tom", "eve", 1);
     wam_register_weighted_edge(state, "eve", "ann", 1);
     wam_register_weighted_edge(state, "bob", "ann", 1);
+    wam_register_weighted_edge(state, "flo", "mid", 0.5);
+    wam_register_weighted_edge(state, "mid", "fin", 1.0);
     wam_register_direct_distance_edge(state, "tom", "ann", 2);
     wam_register_direct_distance_edge(state, "eve", "ann", 1);
     wam_register_direct_distance_edge(state, "bob", "ann", 1);
+    wam_register_direct_distance_edge(state, "flo", "fin", 1.5);
 }
 
 int main(void) {
@@ -3778,6 +3806,19 @@ int main(void) {
     if (direct_rc != 0 || state.P != WAM_HALT) {
         wam_free_state(&state);
         return 20;
+    }
+
+    WamValue float_args[4] = {
+        val_atom("flo"),
+        val_atom("fin"),
+        val_int(5),
+        val_unbound("Weight")
+    };
+    int float_rc = wam_run_predicate(&state, "astar_path/4", float_args, 4);
+    if (float_rc != 0 || state.P != WAM_HALT ||
+        state.A[3].tag != VAL_FLOAT || state.A[3].data.floating != 1.5) {
+        wam_free_state(&state);
+        return 25;
     }
 
     WamValue bad_dim_args[4] = {
