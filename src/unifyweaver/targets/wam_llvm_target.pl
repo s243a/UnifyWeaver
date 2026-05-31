@@ -7746,9 +7746,11 @@ alc3.sm_step:
   %alc3.smn1 = add i64 %alc3.smn, 1
   br label %alc3.sm_loop
 alc3.count_init:
-  ; %alc3.smn now holds sep_len.
+  ; %alc3.smn now holds sep_len. Branch on A1: bound list -> forward
+  ; concat; unbound -> split-mode (M54) using A3 as the source atom.
   %alc3.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
-  br label %alc3.c_loop
+  %alc3.a1_unb = call i1 @value_is_unbound(%Value %alc3.a1)
+  br i1 %alc3.a1_unb, label %alc3.split_entry, label %alc3.c_loop
 alc3.c_loop:
   %alc3.c_cur = phi %Value [ %alc3.a1, %alc3.count_init ], [ %alc3.c_next, %alc3.c_advance ]
   %alc3.c_total = phi i64 [ 0, %alc3.count_init ], [ %alc3.c_total1, %alc3.c_advance ]
@@ -7852,6 +7854,181 @@ alc3.f_done:
   %alc3.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
   %alc3.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %alc3.raw3, %Value %alc3.new_v)
   ret i1 %alc3.ok
+
+alc3.split_entry:
+  ; M54: split mode -- A1 unbound, A2 sep atom (already validated +
+  ; measured into %alc3.smn), A3 bound source atom. Empty separator
+  ; fails (can''t infinitely split). Three-pass:
+  ;   1. Measure source atom -> atom_len. Scan source looking for sep
+  ;      occurrences, counting parts (parts = matches + 1).
+  ;   2. Allocate parts_arr of %Value; re-scan, at each match intern
+  ;      the substring atom_str[seg_start..i] as an Atom and store at
+  ;      arr[idx]; advance seg_start past sep. After loop, intern the
+  ;      final segment.
+  ;   3. Build cons chain back-to-front, unify A1.
+  %alc3.s_sep_empty = icmp eq i64 %alc3.smn, 0
+  br i1 %alc3.s_sep_empty, label %alc3.fail, label %alc3.s_a3_lookup
+alc3.s_a3_lookup:
+  %alc3.s_a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  %alc3.s_a3_tag = extractvalue %Value %alc3.s_a3, 0
+  %alc3.s_a3_is_atom = icmp eq i32 %alc3.s_a3_tag, 0
+  br i1 %alc3.s_a3_is_atom, label %alc3.s_a3_str, label %alc3.fail
+alc3.s_a3_str:
+  %alc3.s_a3_aid = extractvalue %Value %alc3.s_a3, 1
+  %alc3.s_atom_str = call i8* @wam_atom_to_string(i64 %alc3.s_a3_aid)
+  %alc3.s_atom_null = icmp eq i8* %alc3.s_atom_str, null
+  br i1 %alc3.s_atom_null, label %alc3.fail, label %alc3.s_amloop
+alc3.s_amloop:
+  %alc3.s_amp = phi i8* [ %alc3.s_atom_str, %alc3.s_a3_str ], [ %alc3.s_ampn, %alc3.s_amstep ]
+  %alc3.s_amn = phi i64 [ 0, %alc3.s_a3_str ], [ %alc3.s_amn1, %alc3.s_amstep ]
+  %alc3.s_amc = load i8, i8* %alc3.s_amp
+  %alc3.s_amz = icmp eq i8 %alc3.s_amc, 0
+  br i1 %alc3.s_amz, label %alc3.s_count_init, label %alc3.s_amstep
+alc3.s_amstep:
+  %alc3.s_ampn = getelementptr i8, i8* %alc3.s_amp, i32 1
+  %alc3.s_amn1 = add i64 %alc3.s_amn, 1
+  br label %alc3.s_amloop
+alc3.s_count_init:
+  ; %alc3.s_amn is atom_len. Scan for sep matches.
+  br label %alc3.s_c_loop
+alc3.s_c_loop:
+  %alc3.s_c_i = phi i64 [ 0, %alc3.s_count_init ], [ %alc3.s_c_i_next, %alc3.s_c_join ]
+  %alc3.s_c_cnt = phi i32 [ 1, %alc3.s_count_init ], [ %alc3.s_c_cnt_next, %alc3.s_c_join ]
+  %alc3.s_c_end = add i64 %alc3.s_c_i, %alc3.smn
+  %alc3.s_c_oob = icmp ugt i64 %alc3.s_c_end, %alc3.s_amn
+  br i1 %alc3.s_c_oob, label %alc3.s_alloc, label %alc3.s_c_try
+alc3.s_c_try:
+  ; Inline byte-by-byte compare of atom_str[i .. i+sep_len) with sep_str.
+  br label %alc3.s_c_cmploop
+alc3.s_c_cmploop:
+  %alc3.s_c_j = phi i64 [ 0, %alc3.s_c_try ], [ %alc3.s_c_j1, %alc3.s_c_cmp_eq ]
+  %alc3.s_c_j_done = icmp uge i64 %alc3.s_c_j, %alc3.smn
+  br i1 %alc3.s_c_j_done, label %alc3.s_c_pass, label %alc3.s_c_cmp_check
+alc3.s_c_cmp_check:
+  %alc3.s_c_apos = add i64 %alc3.s_c_i, %alc3.s_c_j
+  %alc3.s_c_ap = getelementptr i8, i8* %alc3.s_atom_str, i64 %alc3.s_c_apos
+  %alc3.s_c_sp = getelementptr i8, i8* %alc3.sep_str, i64 %alc3.s_c_j
+  %alc3.s_c_ac = load i8, i8* %alc3.s_c_ap
+  %alc3.s_c_sc = load i8, i8* %alc3.s_c_sp
+  %alc3.s_c_eq = icmp eq i8 %alc3.s_c_ac, %alc3.s_c_sc
+  br i1 %alc3.s_c_eq, label %alc3.s_c_cmp_eq, label %alc3.s_c_fail
+alc3.s_c_cmp_eq:
+  %alc3.s_c_j1 = add i64 %alc3.s_c_j, 1
+  br label %alc3.s_c_cmploop
+alc3.s_c_pass:
+  ; sep_len bytes matched -- count this as a separator.
+  br label %alc3.s_c_join
+alc3.s_c_fail:
+  br label %alc3.s_c_join
+alc3.s_c_join:
+  %alc3.s_c_matched = phi i1 [ true, %alc3.s_c_pass ], [ false, %alc3.s_c_fail ]
+  %alc3.s_c_adv = select i1 %alc3.s_c_matched, i64 %alc3.smn, i64 1
+  %alc3.s_c_i_next = add i64 %alc3.s_c_i, %alc3.s_c_adv
+  %alc3.s_c_inc32 = zext i1 %alc3.s_c_matched to i32
+  %alc3.s_c_cnt_next = add i32 %alc3.s_c_cnt, %alc3.s_c_inc32
+  br label %alc3.s_c_loop
+alc3.s_alloc:
+  %alc3.s_cnt64 = sext i32 %alc3.s_c_cnt to i64
+  %alc3.s_arr_bytes = shl i64 %alc3.s_cnt64, 4
+  %alc3.s_arr_mem = call i8* @wam_arena_alloc(i64 %alc3.s_arr_bytes)
+  %alc3.s_arr = bitcast i8* %alc3.s_arr_mem to %Value*
+  br label %alc3.s_f_loop
+alc3.s_f_loop:
+  ; Pass 2: scan again, intern each segment, store in arr.
+  %alc3.s_f_i = phi i64 [ 0, %alc3.s_alloc ], [ %alc3.s_f_i_next, %alc3.s_f_join ]
+  %alc3.s_f_start = phi i64 [ 0, %alc3.s_alloc ], [ %alc3.s_f_start_next, %alc3.s_f_join ]
+  %alc3.s_f_idx = phi i32 [ 0, %alc3.s_alloc ], [ %alc3.s_f_idx_next, %alc3.s_f_join ]
+  %alc3.s_f_end = add i64 %alc3.s_f_i, %alc3.smn
+  %alc3.s_f_oob = icmp ugt i64 %alc3.s_f_end, %alc3.s_amn
+  br i1 %alc3.s_f_oob, label %alc3.s_finalize, label %alc3.s_f_try
+alc3.s_f_try:
+  br label %alc3.s_f_cmploop
+alc3.s_f_cmploop:
+  %alc3.s_f_j = phi i64 [ 0, %alc3.s_f_try ], [ %alc3.s_f_j1, %alc3.s_f_cmp_eq ]
+  %alc3.s_f_j_done = icmp uge i64 %alc3.s_f_j, %alc3.smn
+  br i1 %alc3.s_f_j_done, label %alc3.s_f_match, label %alc3.s_f_cmp_check
+alc3.s_f_cmp_check:
+  %alc3.s_f_apos = add i64 %alc3.s_f_i, %alc3.s_f_j
+  %alc3.s_f_ap = getelementptr i8, i8* %alc3.s_atom_str, i64 %alc3.s_f_apos
+  %alc3.s_f_sp = getelementptr i8, i8* %alc3.sep_str, i64 %alc3.s_f_j
+  %alc3.s_f_ac = load i8, i8* %alc3.s_f_ap
+  %alc3.s_f_sc = load i8, i8* %alc3.s_f_sp
+  %alc3.s_f_eq = icmp eq i8 %alc3.s_f_ac, %alc3.s_f_sc
+  br i1 %alc3.s_f_eq, label %alc3.s_f_cmp_eq, label %alc3.s_f_nomatch
+alc3.s_f_cmp_eq:
+  %alc3.s_f_j1 = add i64 %alc3.s_f_j, 1
+  br label %alc3.s_f_cmploop
+alc3.s_f_match:
+  ; sep matched at position i -- intern atom_str[start..i] as a part.
+  %alc3.s_f_seg_ptr = getelementptr i8, i8* %alc3.s_atom_str, i64 %alc3.s_f_start
+  %alc3.s_f_seg_len = sub i64 %alc3.s_f_i, %alc3.s_f_start
+  ; intern_atom expects str + length (doesn''t require null term).
+  %alc3.s_f_seg_id = call i64 @wam_intern_atom(i8* %alc3.s_f_seg_ptr, i64 %alc3.s_f_seg_len)
+  %alc3.s_f_seg_v0 = insertvalue %Value undef, i32 0, 0
+  %alc3.s_f_seg_v = insertvalue %Value %alc3.s_f_seg_v0, i64 %alc3.s_f_seg_id, 1
+  %alc3.s_f_m_slot = getelementptr %Value, %Value* %alc3.s_arr, i32 %alc3.s_f_idx
+  store %Value %alc3.s_f_seg_v, %Value* %alc3.s_f_m_slot
+  %alc3.s_f_m_i_next = add i64 %alc3.s_f_i, %alc3.smn
+  %alc3.s_f_m_idx_next = add i32 %alc3.s_f_idx, 1
+  br label %alc3.s_f_join
+alc3.s_f_nomatch:
+  %alc3.s_f_nm_i_next = add i64 %alc3.s_f_i, 1
+  br label %alc3.s_f_join
+alc3.s_f_join:
+  %alc3.s_f_i_next = phi i64 [ %alc3.s_f_m_i_next, %alc3.s_f_match ], [ %alc3.s_f_nm_i_next, %alc3.s_f_nomatch ]
+  ; On match, segment-start advances past the separator (= the new i).
+  ; On no-match, segment-start is unchanged.
+  %alc3.s_f_start_next = phi i64 [ %alc3.s_f_m_i_next, %alc3.s_f_match ], [ %alc3.s_f_start, %alc3.s_f_nomatch ]
+  %alc3.s_f_idx_next = phi i32 [ %alc3.s_f_m_idx_next, %alc3.s_f_match ], [ %alc3.s_f_idx, %alc3.s_f_nomatch ]
+  br label %alc3.s_f_loop
+alc3.s_finalize:
+  ; Intern the final segment atom_str[start..atom_len].
+  %alc3.s_fin_ptr = getelementptr i8, i8* %alc3.s_atom_str, i64 %alc3.s_f_start
+  %alc3.s_fin_len = sub i64 %alc3.s_amn, %alc3.s_f_start
+  %alc3.s_fin_id = call i64 @wam_intern_atom(i8* %alc3.s_fin_ptr, i64 %alc3.s_fin_len)
+  %alc3.s_fin_v0 = insertvalue %Value undef, i32 0, 0
+  %alc3.s_fin_v = insertvalue %Value %alc3.s_fin_v0, i64 %alc3.s_fin_id, 1
+  %alc3.s_fin_slot = getelementptr %Value, %Value* %alc3.s_arr, i32 %alc3.s_f_idx
+  store %Value %alc3.s_fin_v, %Value* %alc3.s_fin_slot
+  br label %alc3.s_build_init
+alc3.s_build_init:
+  %alc3.s_b_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %alc3.s_b_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %alc3.s_b_empty_v  = insertvalue %Value %alc3.s_b_empty_v0, i64 %alc3.s_b_empty_id, 1
+  br label %alc3.s_b_loop
+alc3.s_b_loop:
+  %alc3.s_b_i = phi i32 [ %alc3.s_c_cnt, %alc3.s_build_init ], [ %alc3.s_b_i_prev, %alc3.s_b_step ]
+  %alc3.s_b_acc = phi %Value [ %alc3.s_b_empty_v, %alc3.s_build_init ], [ %alc3.s_b_new_cons, %alc3.s_b_step ]
+  %alc3.s_b_done = icmp sle i32 %alc3.s_b_i, 0
+  br i1 %alc3.s_b_done, label %alc3.s_b_bind, label %alc3.s_b_step
+alc3.s_b_step:
+  %alc3.s_b_i_prev = sub i32 %alc3.s_b_i, 1
+  %alc3.s_b_slot = getelementptr %Value, %Value* %alc3.s_arr, i32 %alc3.s_b_i_prev
+  %alc3.s_b_head = load %Value, %Value* %alc3.s_b_slot
+  %alc3.s_b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %alc3.s_b_cp_mem = call i8* @wam_arena_alloc(i64 %alc3.s_b_cp_size)
+  %alc3.s_b_cp = bitcast i8* %alc3.s_b_cp_mem to %Compound*
+  %alc3.s_b_fn_slot = getelementptr %Compound, %Compound* %alc3.s_b_cp, i32 0, i32 0
+  %alc3.s_b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %alc3.s_b_fn_ptr, i8** %alc3.s_b_fn_slot
+  %alc3.s_b_ar_slot = getelementptr %Compound, %Compound* %alc3.s_b_cp, i32 0, i32 1
+  store i32 2, i32* %alc3.s_b_ar_slot
+  %alc3.s_b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %alc3.s_b_args = bitcast i8* %alc3.s_b_args_mem to %Value*
+  %alc3.s_b_args_slot = getelementptr %Compound, %Compound* %alc3.s_b_cp, i32 0, i32 2
+  store %Value* %alc3.s_b_args, %Value** %alc3.s_b_args_slot
+  %alc3.s_b_h_ptr = getelementptr %Value, %Value* %alc3.s_b_args, i32 0
+  store %Value %alc3.s_b_head, %Value* %alc3.s_b_h_ptr
+  %alc3.s_b_t_ptr = getelementptr %Value, %Value* %alc3.s_b_args, i32 1
+  store %Value %alc3.s_b_acc, %Value* %alc3.s_b_t_ptr
+  %alc3.s_b_cp_i64 = ptrtoint %Compound* %alc3.s_b_cp to i64
+  %alc3.s_b_nc0 = insertvalue %Value undef, i32 3, 0
+  %alc3.s_b_new_cons = insertvalue %Value %alc3.s_b_nc0, i64 %alc3.s_b_cp_i64, 1
+  br label %alc3.s_b_loop
+alc3.s_b_bind:
+  %alc3.s_b_raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %alc3.s_b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %alc3.s_b_raw1, %Value %alc3.s_b_acc)
+  ret i1 %alc3.s_b_ok
 
 unknown:
   ret i1 false
