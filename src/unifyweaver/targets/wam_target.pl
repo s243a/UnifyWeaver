@@ -2116,6 +2116,8 @@ is_builtin_pred(nth1, 3).         % nth1(+Index, +List, ?Elem) -- 1-indexed.
 is_builtin_pred(last, 2).         % last(+List, ?Elem).
 is_builtin_pred(memberchk, 2).    % memberchk(?Elem, +List) -- deterministic membership.
 is_builtin_pred(numlist, 3).      % integer range generator: [Lo..Hi].
+is_builtin_pred(sum_list, 2).     % sum_list(+List, ?Sum) -- integer sum.
+is_builtin_pred(sumlist, 2).      % alias of sum_list.
 is_builtin_pred(sort, 2).         % stable sort + dedup (std order).
 is_builtin_pred(msort, 2).        % stable sort, NO dedup (std order).
 is_builtin_pred(select, 3).       % nondet list element selection.

@@ -3417,6 +3417,9 @@ entry:
     i32 55, label %builtin_append
     i32 56, label %builtin_memberchk
     i32 57, label %builtin_delete
+    i32 58, label %builtin_numlist
+    i32 59, label %builtin_sum_list
+    i32 60, label %builtin_sum_list
   ]
 
 builtin_is:
@@ -6273,6 +6276,110 @@ del.b_bind:
   %del.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %del.b_raw3, %Value %del.b_acc)
   ret i1 %del.b_ok
 
+builtin_numlist:
+  ; M42: numlist(+Low, +High, ?List) -- generate [Low, Low+1, ..., High].
+  ; A1 and A2 must be Integer Values. Empty range (High < Low) fails;
+  ; size capped at 1,000,000 elements to match between/3.
+  %nml.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %nml.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %nml.t1 = extractvalue %Value %nml.a1, 0
+  %nml.t2 = extractvalue %Value %nml.a2, 0
+  %nml.int1 = icmp eq i32 %nml.t1, 1
+  %nml.int2 = icmp eq i32 %nml.t2, 1
+  %nml.both = and i1 %nml.int1, %nml.int2
+  br i1 %nml.both, label %nml.range, label %nml.fail
+nml.fail:
+  ret i1 false
+nml.range:
+  %nml.lo = extractvalue %Value %nml.a1, 1
+  %nml.hi = extractvalue %Value %nml.a2, 1
+  %nml.diff = sub i64 %nml.hi, %nml.lo
+  %nml.count = add i64 %nml.diff, 1
+  %nml.empty = icmp sle i64 %nml.count, 0
+  br i1 %nml.empty, label %nml.fail, label %nml.size_check
+nml.size_check:
+  %nml.too_big = icmp ugt i64 %nml.count, 1000000
+  br i1 %nml.too_big, label %nml.fail, label %nml.build_init
+nml.build_init:
+  call void @wam_arena_ensure()
+  %nml.empty_id = load i64, i64* @wam_empty_list_atom_id
+  %nml.empty_v0 = insertvalue %Value undef, i32 0, 0
+  %nml.empty_v  = insertvalue %Value %nml.empty_v0, i64 %nml.empty_id, 1
+  %nml.count32 = trunc i64 %nml.count to i32
+  br label %nml.build_loop
+nml.build_loop:
+  ; Walk i = count-1 down to 0; new element = Low + i; cons onto acc.
+  %nml.i = phi i32 [ %nml.count32, %nml.build_init ], [ %nml.i_prev, %nml.build_step ]
+  %nml.acc = phi %Value [ %nml.empty_v, %nml.build_init ], [ %nml.new_cons, %nml.build_step ]
+  %nml.done_b = icmp sle i32 %nml.i, 0
+  br i1 %nml.done_b, label %nml.bind, label %nml.build_step
+nml.build_step:
+  %nml.i_prev = sub i32 %nml.i, 1
+  %nml.i_prev64 = sext i32 %nml.i_prev to i64
+  %nml.val_i = add i64 %nml.lo, %nml.i_prev64
+  %nml.val_v = call %Value @value_integer(i64 %nml.val_i)
+  %nml.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %nml.cp_mem = call i8* @wam_arena_alloc(i64 %nml.cp_size)
+  %nml.cp = bitcast i8* %nml.cp_mem to %Compound*
+  %nml.fn_slot = getelementptr %Compound, %Compound* %nml.cp, i32 0, i32 0
+  %nml.fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %nml.fn_ptr, i8** %nml.fn_slot
+  %nml.ar_slot = getelementptr %Compound, %Compound* %nml.cp, i32 0, i32 1
+  store i32 2, i32* %nml.ar_slot
+  %nml.args_mem = call i8* @wam_arena_alloc(i64 32)
+  %nml.args = bitcast i8* %nml.args_mem to %Value*
+  %nml.args_slot = getelementptr %Compound, %Compound* %nml.cp, i32 0, i32 2
+  store %Value* %nml.args, %Value** %nml.args_slot
+  %nml.h_ptr = getelementptr %Value, %Value* %nml.args, i32 0
+  store %Value %nml.val_v, %Value* %nml.h_ptr
+  %nml.t_ptr = getelementptr %Value, %Value* %nml.args, i32 1
+  store %Value %nml.acc, %Value* %nml.t_ptr
+  %nml.cp_i64 = ptrtoint %Compound* %nml.cp to i64
+  %nml.nc0 = insertvalue %Value undef, i32 3, 0
+  %nml.new_cons = insertvalue %Value %nml.nc0, i64 %nml.cp_i64, 1
+  br label %nml.build_loop
+nml.bind:
+  %nml.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %nml.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %nml.raw3, %Value %nml.acc)
+  ret i1 %nml.ok
+
+builtin_sum_list:
+  ; M42: sum_list(+List, ?Sum) -- integer sum. Non-Integer heads
+  ; fail. Empty list sums to 0. Also dispatches sumlist/2 (alias).
+  %sl.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  br label %sl.loop
+sl.fail:
+  ret i1 false
+sl.loop:
+  %sl.cur = phi %Value [ %sl.a1, %builtin_sum_list ], [ %sl.tail, %sl.add ]
+  %sl.acc = phi i64 [ 0, %builtin_sum_list ], [ %sl.acc1, %sl.add ]
+  %sl.d = call %Value @wam_deref_value(%WamState* %vm, %Value %sl.cur)
+  %sl.tag = extractvalue %Value %sl.d, 0
+  %sl.is_cmp = icmp eq i32 %sl.tag, 3
+  br i1 %sl.is_cmp, label %sl.step, label %sl.done
+sl.step:
+  %sl.cp = extractvalue %Value %sl.d, 1
+  %sl.cp_ptr = inttoptr i64 %sl.cp to %Compound*
+  %sl.args_slot = getelementptr %Compound, %Compound* %sl.cp_ptr, i32 0, i32 2
+  %sl.args = load %Value*, %Value** %sl.args_slot
+  %sl.head_ptr = getelementptr %Value, %Value* %sl.args, i32 0
+  %sl.head_raw = load %Value, %Value* %sl.head_ptr
+  %sl.head = call %Value @wam_deref_value(%WamState* %vm, %Value %sl.head_raw)
+  %sl.head_tag = extractvalue %Value %sl.head, 0
+  %sl.head_is_int = icmp eq i32 %sl.head_tag, 1
+  br i1 %sl.head_is_int, label %sl.add, label %sl.fail
+sl.add:
+  %sl.h_val = extractvalue %Value %sl.head, 1
+  %sl.acc1 = add i64 %sl.acc, %sl.h_val
+  %sl.tail_ptr = getelementptr %Value, %Value* %sl.args, i32 1
+  %sl.tail = load %Value, %Value* %sl.tail_ptr
+  br label %sl.loop
+sl.done:
+  %sl.sum_v = call %Value @value_integer(i64 %sl.acc)
+  %sl.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %sl.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sl.raw2, %Value %sl.sum_v)
+  ret i1 %sl.ok
+
 unknown:
   ret i1 false
 }'.
@@ -7703,6 +7810,9 @@ builtin_op_to_id('reverse/2', 54).
 builtin_op_to_id('append/3', 55).
 builtin_op_to_id('memberchk/2', 56).
 builtin_op_to_id('delete/3', 57).
+builtin_op_to_id('numlist/3', 58).
+builtin_op_to_id('sum_list/2', 59).
+builtin_op_to_id('sumlist/2', 60).   % alias of sum_list/2
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================

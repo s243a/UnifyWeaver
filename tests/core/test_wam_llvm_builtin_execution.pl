@@ -1056,6 +1056,60 @@ test_delete_preserves_order(_, R) :-
     nth0(1, L, E),    % L = [10, 20, 30], index 1 is 20
     R is E.   % 20
 
+% M42: numlist/3 + sum_list/2.
+
+:- dynamic test_numlist_length/2.
+test_numlist_length(_, R) :-
+    numlist(3, 7, L),
+    length(L, N),
+    R is N.   % 5
+
+:- dynamic test_numlist_first/2.
+test_numlist_first(_, R) :-
+    numlist(10, 15, [F|_]),
+    R is F.   % 10
+
+:- dynamic test_numlist_last/2.
+test_numlist_last(_, R) :-
+    numlist(1, 7, L),
+    last(L, E),
+    R is E.   % 7
+
+:- dynamic test_numlist_singleton/2.
+test_numlist_singleton(_, R) :-
+    numlist(42, 42, [E]),
+    R is E.   % 42
+
+:- dynamic test_numlist_empty/2.
+test_numlist_empty(_, R) :-
+    ( numlist(5, 3, _) -> R is 1 ; R is 0 ).   % 0 -- High < Low
+
+:- dynamic test_numlist_sum/2.
+test_numlist_sum(_, R) :-
+    numlist(1, 10, L),
+    sum_list(L, S),
+    R is S.   % 55
+
+:- dynamic test_sum_list_simple/2.
+test_sum_list_simple(_, R) :-
+    sum_list([10, 20, 30], S),
+    R is S.   % 60
+
+:- dynamic test_sum_list_empty/2.
+test_sum_list_empty(_, R) :-
+    sum_list([], S),
+    R is S + 7.   % 7
+
+:- dynamic test_sum_list_singleton/2.
+test_sum_list_singleton(_, R) :-
+    sum_list([99], S),
+    R is S.   % 99
+
+:- dynamic test_sumlist_alias/2.
+test_sumlist_alias(_, R) :-
+    sumlist([1, 2, 3, 4, 5], S),
+    R is S.   % 15
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -2023,6 +2077,27 @@ test_all :-
                    test_delete_last, 0, 3),
        run_test_r0('delete([10,5,20,5,30], 5, L), nth0(1) -> 20',
                    test_delete_preserves_order, 0, 20),
+       format('--- M42 numlist/3 + sum_list/2 ---~n'),
+       run_test_r0('numlist(3, 7, L), length -> 5',
+                   test_numlist_length, 0, 5),
+       run_test_r0('numlist(10, 15, [F|_]) -> 10',
+                   test_numlist_first, 0, 10),
+       run_test_r0('numlist(1, 7, L), last -> 7',
+                   test_numlist_last, 0, 7),
+       run_test_r0('numlist(42, 42, [E]) -> 42',
+                   test_numlist_singleton, 0, 42),
+       run_test_r0('numlist(5, 3, _) empty range -> 0',
+                   test_numlist_empty, 0, 0),
+       run_test_r0('numlist(1, 10) sum_list -> 55',
+                   test_numlist_sum, 0, 55),
+       run_test_r0('sum_list([10,20,30]) -> 60',
+                   test_sum_list_simple, 0, 60),
+       run_test_r0('sum_list([]) + 7 -> 7',
+                   test_sum_list_empty, 0, 7),
+       run_test_r0('sum_list([99]) -> 99',
+                   test_sum_list_singleton, 0, 99),
+       run_test_r0('sumlist([1..5]) alias -> 15',
+                   test_sumlist_alias, 0, 15),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
