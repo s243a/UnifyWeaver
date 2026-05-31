@@ -3415,6 +3415,7 @@ entry:
     i32 53, label %builtin_last
     i32 54, label %builtin_reverse
     i32 55, label %builtin_append
+    i32 56, label %builtin_memberchk
   ]
 
 builtin_is:
@@ -6123,6 +6124,44 @@ app.b_bind:
   %app.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %app.b_raw3, %Value %app.b_acc)
   ret i1 %app.b_ok
 
+builtin_memberchk:
+  ; M40: memberchk(?Elem, +List) -- deterministic membership check.
+  ; Walks A2''s [|]/2 chain; for each head, save the trail position,
+  ; try wam_unify_value(A1, head). On success return true immediately
+  ; (no CP push -- memberchk is deterministic). On failure, unwind
+  ; the trail back to the saved mark and advance to the tail. Empty
+  ; list (or non-list) returns false.
+  %mck.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  br label %mck.loop
+mck.loop:
+  %mck.cur = phi %Value [ %mck.a2, %builtin_memberchk ], [ %mck.tail, %mck.rollback ]
+  %mck.d = call %Value @wam_deref_value(%WamState* %vm, %Value %mck.cur)
+  %mck.tag = extractvalue %Value %mck.d, 0
+  %mck.is_cmp = icmp eq i32 %mck.tag, 3
+  br i1 %mck.is_cmp, label %mck.try, label %mck.fail
+mck.try:
+  %mck.cp = extractvalue %Value %mck.d, 1
+  %mck.cp_ptr = inttoptr i64 %mck.cp to %Compound*
+  %mck.args_slot = getelementptr %Compound, %Compound* %mck.cp_ptr, i32 0, i32 2
+  %mck.args = load %Value*, %Value** %mck.args_slot
+  %mck.head_ptr = getelementptr %Value, %Value* %mck.args, i32 0
+  %mck.head = load %Value, %Value* %mck.head_ptr
+  %mck.tail_ptr = getelementptr %Value, %Value* %mck.args, i32 1
+  %mck.tail = load %Value, %Value* %mck.tail_ptr
+  ; Save trail mark before tentative unify.
+  %mck.ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %mck.saved_ts = load i32, i32* %mck.ts_ptr
+  %mck.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %mck.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %mck.raw1, %Value %mck.head)
+  br i1 %mck.uok, label %mck.success, label %mck.rollback
+mck.rollback:
+  call void @unwind_trail(%WamState* %vm, i32 %mck.saved_ts)
+  br label %mck.loop
+mck.success:
+  ret i1 true
+mck.fail:
+  ret i1 false
+
 unknown:
   ret i1 false
 }'.
@@ -7551,6 +7590,7 @@ builtin_op_to_id('nth1/3', 52).
 builtin_op_to_id('last/2', 53).
 builtin_op_to_id('reverse/2', 54).
 builtin_op_to_id('append/3', 55).
+builtin_op_to_id('memberchk/2', 56).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
