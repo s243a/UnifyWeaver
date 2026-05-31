@@ -229,13 +229,17 @@
 :- dynamic user:wam_text_conversion_unbound_pair/1.
 :- dynamic user:wam_atom_concat_guard/3.
 :- dynamic user:wam_atom_concat_new_atom/0.
+:- dynamic user:wam_atom_concat_new_atom_mismatch/0.
 :- dynamic user:wam_atom_concat_unbound_left/1.
 :- dynamic user:wam_atom_concat_unbound_right/1.
 :- dynamic user:wam_atom_concat_unbound_both/1.
 :- dynamic user:wam_string_concat_guard/3.
 :- dynamic user:wam_string_concat_new_string/0.
+:- dynamic user:wam_string_concat_new_string_mismatch/0.
 :- dynamic user:wam_string_concat_unbound_left/1.
+:- dynamic user:wam_string_concat_unbound_left_mismatch/1.
 :- dynamic user:wam_string_concat_unbound_right/1.
+:- dynamic user:wam_string_concat_unbound_right_mismatch/1.
 :- dynamic user:wam_atom_length_guard/2.
 :- dynamic user:wam_atom_length_forward/0.
 :- dynamic user:wam_atom_length_forward_mismatch/0.
@@ -511,13 +515,17 @@ user:wam_number_chars_bad_chars :- number_chars(_, [f,o,o]).
 user:wam_text_conversion_unbound_pair(_) :- user:wam_unbound_arg(A), user:wam_unbound_arg(C), atom_codes(A, C).
 user:wam_atom_concat_guard(A, B, C) :- atom_concat(A, B, C).
 user:wam_atom_concat_new_atom :- atom_concat(fo, o, X), X = foo.
+user:wam_atom_concat_new_atom_mismatch :- atom_concat(fo, o, X), X = bar.
 user:wam_atom_concat_unbound_left(C) :- user:wam_unbound_arg(A), atom_concat(A, o, C), A = fo.
 user:wam_atom_concat_unbound_right(C) :- user:wam_unbound_arg(B), atom_concat(fo, B, C), B = o.
 user:wam_atom_concat_unbound_both(C) :- user:wam_unbound_arg(A), user:wam_unbound_arg(B), atom_concat(A, B, C).
 user:wam_string_concat_guard(A, B, C) :- string_concat(A, B, C).
 user:wam_string_concat_new_string :- string_concat(fo, o, X), X = foo.
+user:wam_string_concat_new_string_mismatch :- string_concat(fo, o, X), X = bar.
 user:wam_string_concat_unbound_left(C) :- user:wam_unbound_arg(A), string_concat(A, o, C), A = fo.
+user:wam_string_concat_unbound_left_mismatch(C) :- user:wam_unbound_arg(A), string_concat(A, o, C), A = bar.
 user:wam_string_concat_unbound_right(C) :- user:wam_unbound_arg(B), string_concat(fo, B, C), B = o.
+user:wam_string_concat_unbound_right_mismatch(C) :- user:wam_unbound_arg(B), string_concat(fo, B, C), B = bar.
 user:wam_atom_length_guard(A, N) :- atom_length(A, N).
 user:wam_atom_length_forward :- atom_length(foo, N), N =:= 3.
 user:wam_atom_length_forward_mismatch :- atom_length(foo, N), N =:= 2.
@@ -798,13 +806,17 @@ run_smoke :-
           user:wam_text_conversion_unbound_pair/1,
           user:wam_atom_concat_guard/3,
           user:wam_atom_concat_new_atom/0,
+          user:wam_atom_concat_new_atom_mismatch/0,
           user:wam_atom_concat_unbound_left/1,
           user:wam_atom_concat_unbound_right/1,
           user:wam_atom_concat_unbound_both/1,
           user:wam_string_concat_guard/3,
           user:wam_string_concat_new_string/0,
+          user:wam_string_concat_new_string_mismatch/0,
           user:wam_string_concat_unbound_left/1,
+          user:wam_string_concat_unbound_left_mismatch/1,
           user:wam_string_concat_unbound_right/1,
+          user:wam_string_concat_unbound_right_mismatch/1,
           user:wam_atom_length_guard/2,
           user:wam_atom_length_forward/0,
           user:wam_atom_length_forward_mismatch/0,
@@ -1264,15 +1276,20 @@ smoke_cases([
     case('wam_atom_concat_guard/3', args(fo, o, foo), "true"),
     case('wam_atom_concat_guard/3', args(fo, o, bar), "false"),
     case('wam_atom_concat_new_atom/0', no_args, "true"),
+    case('wam_atom_concat_new_atom_mismatch/0', no_args, "false"),
     case('wam_atom_concat_unbound_left/1', foo, "true"),
     case('wam_atom_concat_unbound_left/1', bar, "false"),
     case('wam_atom_concat_unbound_right/1', foo, "true"),
     case('wam_atom_concat_unbound_right/1', bar, "false"),
     case('wam_atom_concat_unbound_both/1', foo, "false"),
     case('wam_string_concat_guard/3', args(fo, o, foo), "true"),
+    case('wam_string_concat_guard/3', args(fo, o, bar), "false"),
     case('wam_string_concat_new_string/0', no_args, "true"),
+    case('wam_string_concat_new_string_mismatch/0', no_args, "false"),
     case('wam_string_concat_unbound_left/1', foo, "true"),
+    case('wam_string_concat_unbound_left_mismatch/1', foo, "false"),
     case('wam_string_concat_unbound_right/1', foo, "true"),
+    case('wam_string_concat_unbound_right_mismatch/1', foo, "false"),
     case('wam_atom_length_guard/2', args(foo, 3), "true"),
     case('wam_atom_length_guard/2', args(foo, 2), "false"),
     case('wam_atom_length_forward/0', no_args, "true"),
