@@ -1876,6 +1876,54 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			items = append(items, &Integer{Val: n})
 		}
 		return vm.Unify(arg3, &List{Elements: items})
+	case "sum_list/2", "min_list/2", "max_list/2":
+		items, ok := vm.listToSlice(arg1)
+		if !ok {
+			return false
+		}
+		if op != "sum_list/2" && len(items) == 0 {
+			return false
+		}
+		allInts := true
+		var intAcc int64
+		var floatAcc float64
+		if op == "sum_list/2" {
+			for _, item := range items {
+				switch n := vm.deref(item).(type) {
+				case *Integer:
+					intAcc += n.Val
+					floatAcc += float64(n.Val)
+				case *Float:
+					allInts = false
+					floatAcc += n.Val
+				default:
+					return false
+				}
+			}
+		} else {
+			for idx, item := range items {
+				switch n := vm.deref(item).(type) {
+				case *Integer:
+					if idx == 0 || (op == "min_list/2" && n.Val < intAcc) || (op == "max_list/2" && n.Val > intAcc) {
+						intAcc = n.Val
+					}
+					if idx == 0 || (op == "min_list/2" && float64(n.Val) < floatAcc) || (op == "max_list/2" && float64(n.Val) > floatAcc) {
+						floatAcc = float64(n.Val)
+					}
+				case *Float:
+					allInts = false
+					if idx == 0 || (op == "min_list/2" && n.Val < floatAcc) || (op == "max_list/2" && n.Val > floatAcc) {
+						floatAcc = n.Val
+					}
+				default:
+					return false
+				}
+			}
+		}
+		if allInts {
+			return vm.Unify(arg2, &Integer{Val: intAcc})
+		}
+		return vm.Unify(arg2, &Float{Val: floatAcc})
 	case "sort/2", "msort/2":
 		items, ok := vm.listToSlice(arg1)
 		if !ok {
