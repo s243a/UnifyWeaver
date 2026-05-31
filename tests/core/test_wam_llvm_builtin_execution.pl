@@ -1521,6 +1521,67 @@ test_pairs_keys_values_sum(_, R) :-
     sum_list(Vs, SV),
     R is SK + SV.   % 60 + 6 = 66
 
+% M50: pairs_keys_values/3 forward (single-pass split).
+
+:- dynamic test_pkv_keys_length/2.
+test_pkv_keys_length(_, R) :-
+    pairs_keys_values([a-1, b-2, c-3], Ks, _),
+    length(Ks, N),
+    R is N.   % 3
+
+:- dynamic test_pkv_values_length/2.
+test_pkv_values_length(_, R) :-
+    pairs_keys_values([a-1, b-2, c-3], _, Vs),
+    length(Vs, N),
+    R is N.   % 3
+
+:- dynamic test_pkv_keys_first/2.
+test_pkv_keys_first(_, R) :-
+    pairs_keys_values([10-x, 20-y], [F|_], _),
+    R is F.   % 10
+
+:- dynamic test_pkv_values_first/2.
+test_pkv_values_first(_, R) :-
+    pairs_keys_values([a-100, b-200], _, [F|_]),
+    R is F.   % 100
+
+:- dynamic test_pkv_empty/2.
+test_pkv_empty(_, R) :-
+    pairs_keys_values([], Ks, Vs),
+    length(Ks, NK),
+    length(Vs, NV),
+    R is NK + NV + 17.   % 17
+
+:- dynamic test_pkv_singleton/2.
+test_pkv_singleton(_, R) :-
+    pairs_keys_values([42-99], [K], [V]),
+    R is K + V.   % 141
+
+:- dynamic test_pkv_keys_last/2.
+test_pkv_keys_last(_, R) :-
+    pairs_keys_values([1-x, 2-y, 30-z], Ks, _),
+    last(Ks, E),
+    R is E.   % 30
+
+:- dynamic test_pkv_values_last/2.
+test_pkv_values_last(_, R) :-
+    pairs_keys_values([a-10, b-20, c-99], _, Vs),
+    last(Vs, E),
+    R is E.   % 99
+
+% Cross-check with pairs_keys / pairs_values separately.
+:- dynamic test_pkv_matches_split/2.
+test_pkv_matches_split(_, R) :-
+    P = [10-1, 20-2, 30-3],
+    pairs_keys(P, KsA),
+    pairs_values(P, VsA),
+    pairs_keys_values(P, KsB, VsB),
+    sum_list(KsA, SKA),
+    sum_list(KsB, SKB),
+    sum_list(VsA, SVA),
+    sum_list(VsB, SVB),
+    ( SKA =:= SKB, SVA =:= SVB -> R is 1 ; R is 0 ).   % 1
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -2650,6 +2711,25 @@ test_all :-
                    test_pairs_values_empty, 0, 13),
        run_test_r0('pairs_keys + pairs_values sums [10-1, 20-2, 30-3] -> 66',
                    test_pairs_keys_values_sum, 0, 66),
+       format('--- M50 pairs_keys_values/3 forward (split) ---~n'),
+       run_test_r0('pkv([a-1,b-2,c-3], Ks, _) length -> 3',
+                   test_pkv_keys_length, 0, 3),
+       run_test_r0('pkv([a-1,b-2,c-3], _, Vs) length -> 3',
+                   test_pkv_values_length, 0, 3),
+       run_test_r0('pkv([10-x, 20-y], [F|_], _) -> 10',
+                   test_pkv_keys_first, 0, 10),
+       run_test_r0('pkv([a-100, b-200], _, [F|_]) -> 100',
+                   test_pkv_values_first, 0, 100),
+       run_test_r0('pkv([], Ks, Vs) + 17 -> 17',
+                   test_pkv_empty, 0, 17),
+       run_test_r0('pkv([42-99], [K], [V]) K+V -> 141',
+                   test_pkv_singleton, 0, 141),
+       run_test_r0('pkv last key -> 30',
+                   test_pkv_keys_last, 0, 30),
+       run_test_r0('pkv last value -> 99',
+                   test_pkv_values_last, 0, 99),
+       run_test_r0('pkv matches pairs_keys + pairs_values -> 1',
+                   test_pkv_matches_split, 0, 1),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
