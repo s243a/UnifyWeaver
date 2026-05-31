@@ -1582,6 +1582,59 @@ test_pkv_matches_split(_, R) :-
     sum_list(VsB, SVB),
     ( SKA =:= SKB, SVA =:= SVB -> R is 1 ; R is 0 ).   % 1
 
+% M51: pairs_keys_values/3 reverse (zip keys + values into pair list).
+
+:- dynamic test_pkv_rev_length/2.
+test_pkv_rev_length(_, R) :-
+    pairs_keys_values(P, [a, b, c], [1, 2, 3]),
+    length(P, N),
+    R is N.   % 3
+
+:- dynamic test_pkv_rev_roundtrip_keys/2.
+test_pkv_rev_roundtrip_keys(_, R) :-
+    pairs_keys_values(P, [10, 20, 30], [x, y, z]),
+    % P should be [10-x, 20-y, 30-z]; pairs_keys recovers the keys.
+    pairs_keys(P, Ks),
+    sum_list(Ks, S),
+    R is S.   % 60
+
+:- dynamic test_pkv_rev_roundtrip_values/2.
+test_pkv_rev_roundtrip_values(_, R) :-
+    pairs_keys_values(P, [a, b, c], [10, 20, 30]),
+    pairs_values(P, Vs),
+    sum_list(Vs, S),
+    R is S.   % 60
+
+:- dynamic test_pkv_rev_empty/2.
+test_pkv_rev_empty(_, R) :-
+    pairs_keys_values(P, [], []),
+    length(P, N),
+    R is N + 19.   % 19
+
+:- dynamic test_pkv_rev_singleton/2.
+test_pkv_rev_singleton(_, R) :-
+    pairs_keys_values(P, [42], [99]),
+    pairs_keys(P, [K]),
+    pairs_values(P, [V]),
+    R is K + V.   % 141
+
+:- dynamic test_pkv_rev_mismatch_keys_longer/2.
+test_pkv_rev_mismatch_keys_longer(_, R) :-
+    ( pairs_keys_values(_, [a, b, c], [1, 2]) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_pkv_rev_mismatch_values_longer/2.
+test_pkv_rev_mismatch_values_longer(_, R) :-
+    ( pairs_keys_values(_, [a], [1, 2, 3]) -> R is 1 ; R is 0 ).   % 0
+
+% Forward then reverse should reconstruct equivalent structure.
+:- dynamic test_pkv_forward_then_reverse/2.
+test_pkv_forward_then_reverse(_, R) :-
+    pairs_keys_values([10-1, 20-2, 30-3], Ks, Vs),
+    pairs_keys_values(P2, Ks, Vs),
+    pairs_keys(P2, Ks2),
+    sum_list(Ks2, S),
+    R is S.   % 60
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -2730,6 +2783,23 @@ test_all :-
                    test_pkv_values_last, 0, 99),
        run_test_r0('pkv matches pairs_keys + pairs_values -> 1',
                    test_pkv_matches_split, 0, 1),
+       format('--- M51 pairs_keys_values/3 reverse (zip) ---~n'),
+       run_test_r0('pkv(P, [a,b,c], [1,2,3]), length(P) -> 3',
+                   test_pkv_rev_length, 0, 3),
+       run_test_r0('pkv reverse + pairs_keys roundtrip sum -> 60',
+                   test_pkv_rev_roundtrip_keys, 0, 60),
+       run_test_r0('pkv reverse + pairs_values roundtrip sum -> 60',
+                   test_pkv_rev_roundtrip_values, 0, 60),
+       run_test_r0('pkv(P, [], []) + 19 -> 19',
+                   test_pkv_rev_empty, 0, 19),
+       run_test_r0('pkv(P, [42], [99]) K+V -> 141',
+                   test_pkv_rev_singleton, 0, 141),
+       run_test_r0('pkv mismatch keys longer -> 0',
+                   test_pkv_rev_mismatch_keys_longer, 0, 0),
+       run_test_r0('pkv mismatch values longer -> 0',
+                   test_pkv_rev_mismatch_values_longer, 0, 0),
+       run_test_r0('pkv forward then reverse roundtrip sum -> 60',
+                   test_pkv_forward_then_reverse, 0, 60),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
