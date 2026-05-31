@@ -2020,6 +2020,95 @@ test_ct_unknown_type(_, R) :-
 test_ct_multichar_atom(_, R) :-
     ( char_type(ab, alpha) -> R is 1 ; R is 0 ).   % 0 -- not single-char
 
+% M59: compare/3 -- three-way standard order (Integer / Float / Atom).
+
+:- dynamic test_cmp_int_lt/2.
+test_cmp_int_lt(_, R) :-
+    compare(O, 1, 5),
+    char_code(O, C),
+    R is C.   % '<' = 60
+
+:- dynamic test_cmp_int_eq/2.
+test_cmp_int_eq(_, R) :-
+    compare(O, 7, 7),
+    char_code(O, C),
+    R is C.   % '=' = 61
+
+:- dynamic test_cmp_int_gt/2.
+test_cmp_int_gt(_, R) :-
+    compare(O, 10, 3),
+    char_code(O, C),
+    R is C.   % '>' = 62
+
+:- dynamic test_cmp_neg/2.
+test_cmp_neg(_, R) :-
+    compare(O, -5, 5),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_float_lt/2.
+test_cmp_float_lt(_, R) :-
+    compare(O, 1.5, 2.5),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_float_eq/2.
+test_cmp_float_eq(_, R) :-
+    compare(O, 3.14, 3.14),
+    char_code(O, C),
+    R is C.   % '='
+
+:- dynamic test_cmp_int_float_mixed/2.
+test_cmp_int_float_mixed(_, R) :-
+    % Numbers compared by value: 2 < 2.5
+    compare(O, 2, 2.5),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_atom_lt/2.
+test_cmp_atom_lt(_, R) :-
+    compare(O, apple, banana),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_atom_eq/2.
+test_cmp_atom_eq(_, R) :-
+    compare(O, hello, hello),
+    char_code(O, C),
+    R is C.   % '='
+
+:- dynamic test_cmp_atom_gt/2.
+test_cmp_atom_gt(_, R) :-
+    compare(O, zebra, apple),
+    char_code(O, C),
+    R is C.   % '>'
+
+:- dynamic test_cmp_num_atom/2.
+test_cmp_num_atom(_, R) :-
+    % Numbers come before atoms in ISO standard order.
+    compare(O, 42, foo),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_atom_num/2.
+test_cmp_atom_num(_, R) :-
+    compare(O, foo, 42),
+    char_code(O, C),
+    R is C.   % '>'
+
+:- dynamic test_cmp_check_mode_lt/2.
+test_cmp_check_mode_lt(_, R) :-
+    % Order bound in advance -- compare just unifies.
+    ( compare(<, 1, 2) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_cmp_check_mode_eq/2.
+test_cmp_check_mode_eq(_, R) :-
+    ( compare(=, foo, foo) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_cmp_check_mode_wrong/2.
+test_cmp_check_mode_wrong(_, R) :-
+    ( compare(>, 1, 5) -> R is 1 ; R is 0 ).   % 0 -- 1 > 5 is false
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -3326,6 +3415,37 @@ test_all :-
                    test_ct_unknown_type, 0, 0),
        run_test_r0('char_type(ab, alpha) multichar -> 0',
                    test_ct_multichar_atom, 0, 0),
+       format('--- M59 compare/3 (Integer / Float / Atom) ---~n'),
+       run_test_r0('compare(O, 1, 5) -> 60 (<)',
+                   test_cmp_int_lt, 0, 60),
+       run_test_r0('compare(O, 7, 7) -> 61 (=)',
+                   test_cmp_int_eq, 0, 61),
+       run_test_r0('compare(O, 10, 3) -> 62 (>)',
+                   test_cmp_int_gt, 0, 62),
+       run_test_r0('compare(O, -5, 5) -> 60 (<)',
+                   test_cmp_neg, 0, 60),
+       run_test_r0('compare(O, 1.5, 2.5) -> 60 (<)',
+                   test_cmp_float_lt, 0, 60),
+       run_test_r0('compare(O, 3.14, 3.14) -> 61 (=)',
+                   test_cmp_float_eq, 0, 61),
+       run_test_r0('compare(O, 2, 2.5) mixed -> 60 (<)',
+                   test_cmp_int_float_mixed, 0, 60),
+       run_test_r0('compare(O, apple, banana) -> 60 (<)',
+                   test_cmp_atom_lt, 0, 60),
+       run_test_r0('compare(O, hello, hello) -> 61 (=)',
+                   test_cmp_atom_eq, 0, 61),
+       run_test_r0('compare(O, zebra, apple) -> 62 (>)',
+                   test_cmp_atom_gt, 0, 62),
+       run_test_r0('compare(O, 42, foo) cross-cat -> 60',
+                   test_cmp_num_atom, 0, 60),
+       run_test_r0('compare(O, foo, 42) cross-cat -> 62',
+                   test_cmp_atom_num, 0, 62),
+       run_test_r0('compare(<, 1, 2) check mode -> 1',
+                   test_cmp_check_mode_lt, 0, 1),
+       run_test_r0('compare(=, foo, foo) check mode -> 1',
+                   test_cmp_check_mode_eq, 0, 1),
+       run_test_r0('compare(>, 1, 5) check mode wrong -> 0',
+                   test_cmp_check_mode_wrong, 0, 0),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
