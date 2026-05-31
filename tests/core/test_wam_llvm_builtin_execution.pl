@@ -1213,6 +1213,73 @@ test_subtract_dupes(_, R) :-
     length(L, N),
     R is N.   % 2
 
+% M45: intersection/3 -- elements of A1 with a unify-match in A2.
+
+:- dynamic test_intersection_disjoint/2.
+test_intersection_disjoint(_, R) :-
+    intersection([1, 2, 3], [4, 5, 6], L),
+    length(L, N),
+    R is N + 8.   % 8 -- empty
+
+:- dynamic test_intersection_one/2.
+test_intersection_one(_, R) :-
+    intersection([1, 2, 3], [2], L),
+    length(L, N),
+    R is N.   % 1
+
+:- dynamic test_intersection_many/2.
+test_intersection_many(_, R) :-
+    intersection([1, 2, 3, 4, 5], [2, 4, 99], L),
+    length(L, N),
+    R is N.   % 2 -- [2, 4]
+
+:- dynamic test_intersection_all/2.
+test_intersection_all(_, R) :-
+    intersection([1, 2, 3], [3, 2, 1], L),
+    length(L, N),
+    R is N.   % 3 -- everything matches
+
+:- dynamic test_intersection_empty_left/2.
+test_intersection_empty_left(_, R) :-
+    intersection([], [1, 2], L),
+    length(L, N),
+    R is N + 7.   % 7
+
+:- dynamic test_intersection_empty_right/2.
+test_intersection_empty_right(_, R) :-
+    intersection([1, 2, 3], [], L),
+    length(L, N),
+    R is N + 5.   % 5 -- nothing matches
+
+:- dynamic test_intersection_first/2.
+test_intersection_first(_, R) :-
+    intersection([10, 20, 30, 40], [20, 40, 99], L),
+    nth0(0, L, E),
+    R is E.   % 20
+
+:- dynamic test_intersection_preserves_order/2.
+test_intersection_preserves_order(_, R) :-
+    intersection([10, 5, 20, 5, 30], [5, 20], L),
+    % L = [5, 20, 5]; nth0(2) is the second 5.
+    nth0(2, L, E),
+    R is E.   % 5
+
+:- dynamic test_intersection_dupes/2.
+test_intersection_dupes(_, R) :-
+    % All occurrences of a match in A1 survive.
+    intersection([1, 2, 1, 3, 1], [1], L),
+    length(L, N),
+    R is N.   % 3
+
+% Composition: List = Intersection + Subtract should reconstruct A1.
+:- dynamic test_inter_subtract_complement/2.
+test_inter_subtract_complement(_, R) :-
+    intersection([1, 2, 3, 4, 5], [2, 4], Inter),    % [2, 4]
+    subtract([1, 2, 3, 4, 5], [2, 4], Diff),         % [1, 3, 5]
+    length(Inter, NI),
+    length(Diff, ND),
+    R is NI + ND.   % 2 + 3 = 5
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -2239,6 +2306,27 @@ test_all :-
                    test_subtract_preserves_order, 0, 20),
        run_test_r0('subtract([1,2,1,3,1], [1]) length -> 2 (all dupes filtered)',
                    test_subtract_dupes, 0, 2),
+       format('--- M45 intersection/3 ---~n'),
+       run_test_r0('intersection([1,2,3], [4,5,6]) disjoint + 8 -> 8',
+                   test_intersection_disjoint, 0, 8),
+       run_test_r0('intersection([1,2,3], [2]) length -> 1',
+                   test_intersection_one, 0, 1),
+       run_test_r0('intersection([1..5], [2,4,99]) length -> 2',
+                   test_intersection_many, 0, 2),
+       run_test_r0('intersection([1,2,3], [3,2,1]) length -> 3',
+                   test_intersection_all, 0, 3),
+       run_test_r0('intersection([], [1,2]) + 7 -> 7',
+                   test_intersection_empty_left, 0, 7),
+       run_test_r0('intersection([1,2,3], []) + 5 -> 5',
+                   test_intersection_empty_right, 0, 5),
+       run_test_r0('intersection([10,20,30,40], [20,40,99]) nth0(0) -> 20',
+                   test_intersection_first, 0, 20),
+       run_test_r0('intersection([10,5,20,5,30], [5,20]) nth0(2) -> 5',
+                   test_intersection_preserves_order, 0, 5),
+       run_test_r0('intersection([1,2,1,3,1], [1]) length -> 3 (all dupes survive)',
+                   test_intersection_dupes, 0, 3),
+       run_test_r0('intersection + subtract partition reconstruct -> 5',
+                   test_inter_subtract_complement, 0, 5),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),

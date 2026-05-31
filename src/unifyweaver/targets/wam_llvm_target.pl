@@ -3423,6 +3423,7 @@ entry:
     i32 61, label %builtin_max_list
     i32 62, label %builtin_min_list
     i32 63, label %builtin_subtract
+    i32 64, label %builtin_intersection
   ]
 
 builtin_is:
@@ -6629,6 +6630,127 @@ sbt.b_bind:
   %sbt.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sbt.b_raw3, %Value %sbt.b_acc)
   ret i1 %sbt.b_ok
 
+builtin_intersection:
+  ; M45: intersection(+List1, +List2, ?Common) -- elements of List1
+  ; that have a unify-match in List2 (i.e. subtract''s keep/skip
+  ; logic inverted: match -> keep, no-match -> skip).
+  %ist.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ist.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  call void @wam_arena_ensure()
+  br label %ist.c_loop
+ist.c_loop:
+  %ist.c_cur = phi %Value [ %ist.a1, %builtin_intersection ], [ %ist.c_next, %ist.c_step ]
+  %ist.c_cnt = phi i32 [ 0, %builtin_intersection ], [ %ist.c_cnt1, %ist.c_step ]
+  %ist.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %ist.c_cur)
+  %ist.c_tag = extractvalue %Value %ist.c_d, 0
+  %ist.c_is_cmp = icmp eq i32 %ist.c_tag, 3
+  br i1 %ist.c_is_cmp, label %ist.c_step, label %ist.c_done
+ist.c_step:
+  %ist.c_cp = extractvalue %Value %ist.c_d, 1
+  %ist.c_cp_ptr = inttoptr i64 %ist.c_cp to %Compound*
+  %ist.c_args_slot = getelementptr %Compound, %Compound* %ist.c_cp_ptr, i32 0, i32 2
+  %ist.c_args = load %Value*, %Value** %ist.c_args_slot
+  %ist.c_t_ptr = getelementptr %Value, %Value* %ist.c_args, i32 1
+  %ist.c_next = load %Value, %Value* %ist.c_t_ptr
+  %ist.c_cnt1 = add i32 %ist.c_cnt, 1
+  br label %ist.c_loop
+ist.c_done:
+  %ist.cnt64 = sext i32 %ist.c_cnt to i64
+  %ist.arr_bytes = shl i64 %ist.cnt64, 4
+  %ist.arr_mem = call i8* @wam_arena_alloc(i64 %ist.arr_bytes)
+  %ist.arr = bitcast i8* %ist.arr_mem to %Value*
+  br label %ist.outer_loop
+ist.outer_loop:
+  %ist.o_cur = phi %Value [ %ist.a1, %ist.c_done ], [ %ist.o_next, %ist.o_after ]
+  %ist.in_idx = phi i32 [ 0, %ist.c_done ], [ %ist.in_idx1, %ist.o_after ]
+  %ist.out_idx = phi i32 [ 0, %ist.c_done ], [ %ist.out_next, %ist.o_after ]
+  %ist.o_done = icmp sge i32 %ist.in_idx, %ist.c_cnt
+  br i1 %ist.o_done, label %ist.build_init, label %ist.o_step
+ist.o_step:
+  %ist.o_d = call %Value @wam_deref_value(%WamState* %vm, %Value %ist.o_cur)
+  %ist.o_cp = extractvalue %Value %ist.o_d, 1
+  %ist.o_cp_ptr = inttoptr i64 %ist.o_cp to %Compound*
+  %ist.o_args_slot = getelementptr %Compound, %Compound* %ist.o_cp_ptr, i32 0, i32 2
+  %ist.o_args = load %Value*, %Value** %ist.o_args_slot
+  %ist.o_h_ptr = getelementptr %Value, %Value* %ist.o_args, i32 0
+  %ist.o_head = load %Value, %Value* %ist.o_h_ptr
+  %ist.o_t_ptr = getelementptr %Value, %Value* %ist.o_args, i32 1
+  %ist.o_next = load %Value, %Value* %ist.o_t_ptr
+  br label %ist.inner_loop
+ist.inner_loop:
+  %ist.i_cur = phi %Value [ %ist.a2, %ist.o_step ], [ %ist.i_next, %ist.i_rollback ]
+  %ist.i_d = call %Value @wam_deref_value(%WamState* %vm, %Value %ist.i_cur)
+  %ist.i_tag = extractvalue %Value %ist.i_d, 0
+  %ist.i_is_cmp = icmp eq i32 %ist.i_tag, 3
+  br i1 %ist.i_is_cmp, label %ist.i_try, label %ist.no_match
+ist.i_try:
+  %ist.i_cp = extractvalue %Value %ist.i_d, 1
+  %ist.i_cp_ptr = inttoptr i64 %ist.i_cp to %Compound*
+  %ist.i_args_slot = getelementptr %Compound, %Compound* %ist.i_cp_ptr, i32 0, i32 2
+  %ist.i_args = load %Value*, %Value** %ist.i_args_slot
+  %ist.i_h_ptr = getelementptr %Value, %Value* %ist.i_args, i32 0
+  %ist.i_head = load %Value, %Value* %ist.i_h_ptr
+  %ist.i_t_ptr = getelementptr %Value, %Value* %ist.i_args, i32 1
+  %ist.i_next = load %Value, %Value* %ist.i_t_ptr
+  %ist.ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %ist.saved_ts = load i32, i32* %ist.ts_ptr
+  %ist.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %ist.o_head, %Value %ist.i_head)
+  br i1 %ist.uok, label %ist.match, label %ist.i_rollback
+ist.i_rollback:
+  call void @unwind_trail(%WamState* %vm, i32 %ist.saved_ts)
+  br label %ist.inner_loop
+ist.match:
+  ; Element matched -- KEEP at arr[out_idx]; binding kept.
+  %ist.m_slot = getelementptr %Value, %Value* %ist.arr, i32 %ist.out_idx
+  store %Value %ist.o_head, %Value* %ist.m_slot
+  %ist.out_kept = add i32 %ist.out_idx, 1
+  br label %ist.o_after
+ist.no_match:
+  ; A2 exhausted without match -- SKIP element.
+  br label %ist.o_after
+ist.o_after:
+  %ist.out_next = phi i32 [ %ist.out_kept, %ist.match ], [ %ist.out_idx, %ist.no_match ]
+  %ist.in_idx1 = add i32 %ist.in_idx, 1
+  br label %ist.outer_loop
+ist.build_init:
+  %ist.b_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %ist.b_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %ist.b_empty_v  = insertvalue %Value %ist.b_empty_v0, i64 %ist.b_empty_id, 1
+  br label %ist.b_loop
+ist.b_loop:
+  %ist.b_i = phi i32 [ %ist.out_idx, %ist.build_init ], [ %ist.b_i_prev, %ist.b_step ]
+  %ist.b_acc = phi %Value [ %ist.b_empty_v, %ist.build_init ], [ %ist.b_new_cons, %ist.b_step ]
+  %ist.b_done = icmp sle i32 %ist.b_i, 0
+  br i1 %ist.b_done, label %ist.b_bind, label %ist.b_step
+ist.b_step:
+  %ist.b_i_prev = sub i32 %ist.b_i, 1
+  %ist.b_slot = getelementptr %Value, %Value* %ist.arr, i32 %ist.b_i_prev
+  %ist.b_head = load %Value, %Value* %ist.b_slot
+  %ist.b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %ist.b_cp_mem = call i8* @wam_arena_alloc(i64 %ist.b_cp_size)
+  %ist.b_cp = bitcast i8* %ist.b_cp_mem to %Compound*
+  %ist.b_fn_slot = getelementptr %Compound, %Compound* %ist.b_cp, i32 0, i32 0
+  %ist.b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %ist.b_fn_ptr, i8** %ist.b_fn_slot
+  %ist.b_ar_slot = getelementptr %Compound, %Compound* %ist.b_cp, i32 0, i32 1
+  store i32 2, i32* %ist.b_ar_slot
+  %ist.b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %ist.b_args = bitcast i8* %ist.b_args_mem to %Value*
+  %ist.b_args_slot = getelementptr %Compound, %Compound* %ist.b_cp, i32 0, i32 2
+  store %Value* %ist.b_args, %Value** %ist.b_args_slot
+  %ist.b_h_ptr = getelementptr %Value, %Value* %ist.b_args, i32 0
+  store %Value %ist.b_head, %Value* %ist.b_h_ptr
+  %ist.b_t_ptr = getelementptr %Value, %Value* %ist.b_args, i32 1
+  store %Value %ist.b_acc, %Value* %ist.b_t_ptr
+  %ist.b_cp_i64 = ptrtoint %Compound* %ist.b_cp to i64
+  %ist.b_nc0 = insertvalue %Value undef, i32 3, 0
+  %ist.b_new_cons = insertvalue %Value %ist.b_nc0, i64 %ist.b_cp_i64, 1
+  br label %ist.b_loop
+ist.b_bind:
+  %ist.b_raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %ist.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %ist.b_raw3, %Value %ist.b_acc)
+  ret i1 %ist.b_ok
+
 unknown:
   ret i1 false
 }'.
@@ -8065,6 +8187,7 @@ builtin_op_to_id('sumlist/2', 60).   % alias of sum_list/2
 builtin_op_to_id('max_list/2', 61).
 builtin_op_to_id('min_list/2', 62).
 builtin_op_to_id('subtract/3', 63).
+builtin_op_to_id('intersection/3', 64).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
