@@ -3416,6 +3416,7 @@ entry:
     i32 54, label %builtin_reverse
     i32 55, label %builtin_append
     i32 56, label %builtin_memberchk
+    i32 57, label %builtin_delete
   ]
 
 builtin_is:
@@ -6162,6 +6163,116 @@ mck.success:
 mck.fail:
   ret i1 false
 
+builtin_delete:
+  ; M41: delete(+List, ?Elem, ?Result) -- filter out matches.
+  ; Three-pass:
+  ;   1. count A1''s elements n;
+  ;   2. allocate arr of n %Values, walk A1 again; for each head,
+  ;      save trail mark + try wam_unify_value(A2, head). Match
+  ;      succeeds: skip head, keep the binding (so subsequent
+  ;      unifies use the now-bound A2 -- matches SWI semantics for
+  ;      unbound A2 like delete([a,b,a], X, R) -> X=a, R=[b]).
+  ;      Match fails: unwind to mark, keep head at arr[out_idx++].
+  ;   3. build cons chain from arr back-to-front prepending onto
+  ;      the [] atom; unify A3 with the chain.
+  %del.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  call void @wam_arena_ensure()
+  br label %del.c_loop
+del.c_loop:
+  %del.c_cur = phi %Value [ %del.a1, %builtin_delete ], [ %del.c_next, %del.c_step ]
+  %del.c_cnt = phi i32 [ 0, %builtin_delete ], [ %del.c_cnt1, %del.c_step ]
+  %del.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %del.c_cur)
+  %del.c_tag = extractvalue %Value %del.c_d, 0
+  %del.c_is_cmp = icmp eq i32 %del.c_tag, 3
+  br i1 %del.c_is_cmp, label %del.c_step, label %del.c_done
+del.c_step:
+  %del.c_cp = extractvalue %Value %del.c_d, 1
+  %del.c_cp_ptr = inttoptr i64 %del.c_cp to %Compound*
+  %del.c_args_slot = getelementptr %Compound, %Compound* %del.c_cp_ptr, i32 0, i32 2
+  %del.c_args = load %Value*, %Value** %del.c_args_slot
+  %del.c_tail_ptr = getelementptr %Value, %Value* %del.c_args, i32 1
+  %del.c_next = load %Value, %Value* %del.c_tail_ptr
+  %del.c_cnt1 = add i32 %del.c_cnt, 1
+  br label %del.c_loop
+del.c_done:
+  %del.cnt64 = sext i32 %del.c_cnt to i64
+  %del.arr_bytes = shl i64 %del.cnt64, 4
+  %del.arr_mem = call i8* @wam_arena_alloc(i64 %del.arr_bytes)
+  %del.arr = bitcast i8* %del.arr_mem to %Value*
+  br label %del.f_loop
+del.f_loop:
+  %del.f_cur = phi %Value [ %del.a1, %del.c_done ], [ %del.f_next, %del.f_after ]
+  %del.f_in_idx = phi i32 [ 0, %del.c_done ], [ %del.f_in_idx1, %del.f_after ]
+  %del.f_out_idx = phi i32 [ 0, %del.c_done ], [ %del.f_out_idx_next, %del.f_after ]
+  %del.f_done_b = icmp sge i32 %del.f_in_idx, %del.c_cnt
+  br i1 %del.f_done_b, label %del.b_init, label %del.f_step
+del.f_step:
+  %del.f_d = call %Value @wam_deref_value(%WamState* %vm, %Value %del.f_cur)
+  %del.f_cp = extractvalue %Value %del.f_d, 1
+  %del.f_cp_ptr = inttoptr i64 %del.f_cp to %Compound*
+  %del.f_args_slot = getelementptr %Compound, %Compound* %del.f_cp_ptr, i32 0, i32 2
+  %del.f_args = load %Value*, %Value** %del.f_args_slot
+  %del.f_head_ptr = getelementptr %Value, %Value* %del.f_args, i32 0
+  %del.f_head = load %Value, %Value* %del.f_head_ptr
+  %del.f_tail_ptr = getelementptr %Value, %Value* %del.f_args, i32 1
+  %del.f_next = load %Value, %Value* %del.f_tail_ptr
+  ; Save trail mark + tentatively unify A2 with head.
+  %del.ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %del.saved_ts = load i32, i32* %del.ts_ptr
+  %del.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %del.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %del.raw2, %Value %del.f_head)
+  br i1 %del.uok, label %del.f_after, label %del.f_keep
+del.f_keep:
+  call void @unwind_trail(%WamState* %vm, i32 %del.saved_ts)
+  %del.f_slot = getelementptr %Value, %Value* %del.arr, i32 %del.f_out_idx
+  store %Value %del.f_head, %Value* %del.f_slot
+  %del.f_out_idx_kept = add i32 %del.f_out_idx, 1
+  br label %del.f_after
+del.f_after:
+  ; out_idx advances only when we keep (kept path computed it);
+  ; if matched, we use the original out_idx unchanged.
+  %del.f_out_idx_next = phi i32 [ %del.f_out_idx, %del.f_step ], [ %del.f_out_idx_kept, %del.f_keep ]
+  %del.f_in_idx1 = add i32 %del.f_in_idx, 1
+  br label %del.f_loop
+del.b_init:
+  %del.b_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %del.b_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %del.b_empty_v  = insertvalue %Value %del.b_empty_v0, i64 %del.b_empty_id, 1
+  br label %del.b_loop
+del.b_loop:
+  %del.b_i = phi i32 [ %del.f_out_idx, %del.b_init ], [ %del.b_i_prev, %del.b_step ]
+  %del.b_acc = phi %Value [ %del.b_empty_v, %del.b_init ], [ %del.b_new_cons, %del.b_step ]
+  %del.b_done_b = icmp sle i32 %del.b_i, 0
+  br i1 %del.b_done_b, label %del.b_bind, label %del.b_step
+del.b_step:
+  %del.b_i_prev = sub i32 %del.b_i, 1
+  %del.b_slot = getelementptr %Value, %Value* %del.arr, i32 %del.b_i_prev
+  %del.b_head = load %Value, %Value* %del.b_slot
+  %del.b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %del.b_cp_mem = call i8* @wam_arena_alloc(i64 %del.b_cp_size)
+  %del.b_cp = bitcast i8* %del.b_cp_mem to %Compound*
+  %del.b_fn_slot = getelementptr %Compound, %Compound* %del.b_cp, i32 0, i32 0
+  %del.b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %del.b_fn_ptr, i8** %del.b_fn_slot
+  %del.b_ar_slot = getelementptr %Compound, %Compound* %del.b_cp, i32 0, i32 1
+  store i32 2, i32* %del.b_ar_slot
+  %del.b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %del.b_args = bitcast i8* %del.b_args_mem to %Value*
+  %del.b_args_slot = getelementptr %Compound, %Compound* %del.b_cp, i32 0, i32 2
+  store %Value* %del.b_args, %Value** %del.b_args_slot
+  %del.b_h_ptr = getelementptr %Value, %Value* %del.b_args, i32 0
+  store %Value %del.b_head, %Value* %del.b_h_ptr
+  %del.b_t_ptr = getelementptr %Value, %Value* %del.b_args, i32 1
+  store %Value %del.b_acc, %Value* %del.b_t_ptr
+  %del.b_cp_i64 = ptrtoint %Compound* %del.b_cp to i64
+  %del.b_nc0 = insertvalue %Value undef, i32 3, 0
+  %del.b_new_cons = insertvalue %Value %del.b_nc0, i64 %del.b_cp_i64, 1
+  br label %del.b_loop
+del.b_bind:
+  %del.b_raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %del.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %del.b_raw3, %Value %del.b_acc)
+  ret i1 %del.b_ok
+
 unknown:
   ret i1 false
 }'.
@@ -7591,6 +7702,7 @@ builtin_op_to_id('last/2', 53).
 builtin_op_to_id('reverse/2', 54).
 builtin_op_to_id('append/3', 55).
 builtin_op_to_id('memberchk/2', 56).
+builtin_op_to_id('delete/3', 57).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
