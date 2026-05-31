@@ -1754,7 +1754,8 @@ test_alc3s_simple_count(_, R) :-
 
 :- dynamic test_alc3s_first_length/2.
 test_alc3s_first_length(_, R) :-
-    atomic_list_concat([P|_], '-', 'hello-world'),
+    atomic_list_concat(Parts, '-', 'hello-world'),    % Parts = unbound -> split
+    nth0(0, Parts, P),
     atom_length(P, N),
     R is N.   % 5 ("hello")
 
