@@ -3426,6 +3426,9 @@ entry:
     i32 64, label %builtin_intersection
     i32 65, label %builtin_union
     i32 66, label %builtin_list_to_set
+    i32 67, label %builtin_atom_chars
+    i32 68, label %builtin_atom_codes
+    i32 69, label %builtin_string_code
   ]
 
 builtin_is:
@@ -7046,6 +7049,55 @@ l2s.b_bind:
   %l2s.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %l2s.b_raw2, %Value %l2s.b_acc)
   ret i1 %l2s.b_ok
 
+builtin_string_code:
+  ; M48: string_code(+Index, +String, ?Code) -- 1-based byte access.
+  ; Atoms are strings in this runtime, so A2 is just an Atom.
+  ; Validates A1 is Integer, A2 is Atom, Index in [1, length]. Returns
+  ; the byte at position Index-1 as an Integer code. Failing the
+  ; bounds check or types simply returns false (no type_error throw).
+  %stc.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %stc.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %stc.t1 = extractvalue %Value %stc.a1, 0
+  %stc.t2 = extractvalue %Value %stc.a2, 0
+  %stc.is_int = icmp eq i32 %stc.t1, 1
+  %stc.is_atom = icmp eq i32 %stc.t2, 0
+  %stc.both = and i1 %stc.is_int, %stc.is_atom
+  br i1 %stc.both, label %stc.lookup, label %stc.fail
+stc.fail:
+  ret i1 false
+stc.lookup:
+  %stc.aid = extractvalue %Value %stc.a2, 1
+  %stc.str = call i8* @wam_atom_to_string(i64 %stc.aid)
+  %stc.str_null = icmp eq i8* %stc.str, null
+  br i1 %stc.str_null, label %stc.fail, label %stc.measure
+stc.measure:
+  br label %stc.m_loop
+stc.m_loop:
+  %stc.mp = phi i8* [ %stc.str, %stc.measure ], [ %stc.mpn, %stc.m_step ]
+  %stc.mn = phi i64 [ 0, %stc.measure ], [ %stc.mn1, %stc.m_step ]
+  %stc.mc = load i8, i8* %stc.mp
+  %stc.mz = icmp eq i8 %stc.mc, 0
+  br i1 %stc.mz, label %stc.bounds, label %stc.m_step
+stc.m_step:
+  %stc.mpn = getelementptr i8, i8* %stc.mp, i32 1
+  %stc.mn1 = add i64 %stc.mn, 1
+  br label %stc.m_loop
+stc.bounds:
+  %stc.idx = extractvalue %Value %stc.a1, 1
+  %stc.lo_bad = icmp slt i64 %stc.idx, 1
+  %stc.hi_bad = icmp sgt i64 %stc.idx, %stc.mn
+  %stc.bad = or i1 %stc.lo_bad, %stc.hi_bad
+  br i1 %stc.bad, label %stc.fail, label %stc.read
+stc.read:
+  %stc.pos = sub i64 %stc.idx, 1
+  %stc.byte_ptr = getelementptr i8, i8* %stc.str, i64 %stc.pos
+  %stc.byte = load i8, i8* %stc.byte_ptr
+  %stc.byte64 = zext i8 %stc.byte to i64
+  %stc.code_v = call %Value @value_integer(i64 %stc.byte64)
+  %stc.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %stc.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %stc.raw3, %Value %stc.code_v)
+  ret i1 %stc.ok
+
 unknown:
   ret i1 false
 }'.
@@ -8485,6 +8537,9 @@ builtin_op_to_id('subtract/3', 63).
 builtin_op_to_id('intersection/3', 64).
 builtin_op_to_id('union/3', 65).
 builtin_op_to_id('list_to_set/2', 66).
+builtin_op_to_id('string_chars/2', 67).  % alias of atom_chars/2
+builtin_op_to_id('string_codes/2', 68).  % alias of atom_codes/2
+builtin_op_to_id('string_code/3', 69).   % string_code(+Idx, +Str, -Code) 1-based
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================

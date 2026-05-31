@@ -1410,6 +1410,54 @@ test_l2s_idempotent(_, R) :-
     length(L2, N),
     R is N.   % 3 -- already a set
 
+% M48: string_chars/2, string_codes/2 aliases + string_code/3.
+
+:- dynamic test_string_chars_first/2.
+test_string_chars_first(_, R) :-
+    string_chars(hello, [H|_]),
+    char_code(H, C),
+    R is C.   % 'h' = 104
+
+:- dynamic test_string_chars_length/2.
+test_string_chars_length(_, R) :-
+    string_chars(abc, L),
+    length(L, N),
+    R is N.   % 3
+
+:- dynamic test_string_codes_first/2.
+test_string_codes_first(_, R) :-
+    string_codes(hello, [C|_]),
+    R is C.   % 104
+
+:- dynamic test_string_codes_length/2.
+test_string_codes_length(_, R) :-
+    string_codes(abcde, L),
+    length(L, N),
+    R is N.   % 5
+
+:- dynamic test_string_code_first/2.
+test_string_code_first(_, R) :-
+    string_code(1, hello, C),
+    R is C.   % 'h' = 104
+
+:- dynamic test_string_code_middle/2.
+test_string_code_middle(_, R) :-
+    string_code(3, abcdef, C),
+    R is C.   % 'c' = 99
+
+:- dynamic test_string_code_last/2.
+test_string_code_last(_, R) :-
+    string_code(5, hello, C),
+    R is C.   % 'o' = 111
+
+:- dynamic test_string_code_oob_low/2.
+test_string_code_oob_low(_, R) :-
+    ( string_code(0, hello, _) -> R is 1 ; R is 0 ).   % 0 -- 1-based
+
+:- dynamic test_string_code_oob_high/2.
+test_string_code_oob_high(_, R) :-
+    ( string_code(99, hello, _) -> R is 1 ; R is 0 ).   % 0
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -2499,6 +2547,25 @@ test_all :-
                    test_l2s_atom_dupes, 0, 3),
        run_test_r0('list_to_set idempotent on already-a-set -> 3',
                    test_l2s_idempotent, 0, 3),
+       format('--- M48 string_chars/2 + string_codes/2 aliases + string_code/3 ---~n'),
+       run_test_r0('string_chars(hello, [H|_]) char_code -> 104',
+                   test_string_chars_first, 0, 104),
+       run_test_r0('string_chars(abc, L) length -> 3',
+                   test_string_chars_length, 0, 3),
+       run_test_r0('string_codes(hello, [C|_]) -> 104',
+                   test_string_codes_first, 0, 104),
+       run_test_r0('string_codes(abcde, L) length -> 5',
+                   test_string_codes_length, 0, 5),
+       run_test_r0('string_code(1, hello, C) -> 104 (h)',
+                   test_string_code_first, 0, 104),
+       run_test_r0('string_code(3, abcdef, C) -> 99 (c)',
+                   test_string_code_middle, 0, 99),
+       run_test_r0('string_code(5, hello, C) -> 111 (o)',
+                   test_string_code_last, 0, 111),
+       run_test_r0('string_code(0, hello, _) -> 0 (1-based)',
+                   test_string_code_oob_low, 0, 0),
+       run_test_r0('string_code(99, hello, _) -> 0 (overflow)',
+                   test_string_code_oob_high, 0, 0),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
