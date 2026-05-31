@@ -1521,6 +1521,120 @@ test_pairs_keys_values_sum(_, R) :-
     sum_list(Vs, SV),
     R is SK + SV.   % 60 + 6 = 66
 
+% M50: pairs_keys_values/3 forward (single-pass split).
+
+:- dynamic test_pkv_keys_length/2.
+test_pkv_keys_length(_, R) :-
+    pairs_keys_values([a-1, b-2, c-3], Ks, _),
+    length(Ks, N),
+    R is N.   % 3
+
+:- dynamic test_pkv_values_length/2.
+test_pkv_values_length(_, R) :-
+    pairs_keys_values([a-1, b-2, c-3], _, Vs),
+    length(Vs, N),
+    R is N.   % 3
+
+:- dynamic test_pkv_keys_first/2.
+test_pkv_keys_first(_, R) :-
+    pairs_keys_values([10-x, 20-y], [F|_], _),
+    R is F.   % 10
+
+:- dynamic test_pkv_values_first/2.
+test_pkv_values_first(_, R) :-
+    pairs_keys_values([a-100, b-200], _, [F|_]),
+    R is F.   % 100
+
+:- dynamic test_pkv_empty/2.
+test_pkv_empty(_, R) :-
+    pairs_keys_values([], Ks, Vs),
+    length(Ks, NK),
+    length(Vs, NV),
+    R is NK + NV + 17.   % 17
+
+:- dynamic test_pkv_singleton/2.
+test_pkv_singleton(_, R) :-
+    pairs_keys_values([42-99], [K], [V]),
+    R is K + V.   % 141
+
+:- dynamic test_pkv_keys_last/2.
+test_pkv_keys_last(_, R) :-
+    pairs_keys_values([1-x, 2-y, 30-z], Ks, _),
+    last(Ks, E),
+    R is E.   % 30
+
+:- dynamic test_pkv_values_last/2.
+test_pkv_values_last(_, R) :-
+    pairs_keys_values([a-10, b-20, c-99], _, Vs),
+    last(Vs, E),
+    R is E.   % 99
+
+% Cross-check with pairs_keys / pairs_values separately.
+:- dynamic test_pkv_matches_split/2.
+test_pkv_matches_split(_, R) :-
+    P = [10-1, 20-2, 30-3],
+    pairs_keys(P, KsA),
+    pairs_values(P, VsA),
+    pairs_keys_values(P, KsB, VsB),
+    sum_list(KsA, SKA),
+    sum_list(KsB, SKB),
+    sum_list(VsA, SVA),
+    sum_list(VsB, SVB),
+    ( SKA =:= SKB, SVA =:= SVB -> R is 1 ; R is 0 ).   % 1
+
+% M51: pairs_keys_values/3 reverse (zip keys + values into pair list).
+
+:- dynamic test_pkv_rev_length/2.
+test_pkv_rev_length(_, R) :-
+    pairs_keys_values(P, [a, b, c], [1, 2, 3]),
+    length(P, N),
+    R is N.   % 3
+
+:- dynamic test_pkv_rev_roundtrip_keys/2.
+test_pkv_rev_roundtrip_keys(_, R) :-
+    pairs_keys_values(P, [10, 20, 30], [x, y, z]),
+    % P should be [10-x, 20-y, 30-z]; pairs_keys recovers the keys.
+    pairs_keys(P, Ks),
+    sum_list(Ks, S),
+    R is S.   % 60
+
+:- dynamic test_pkv_rev_roundtrip_values/2.
+test_pkv_rev_roundtrip_values(_, R) :-
+    pairs_keys_values(P, [a, b, c], [10, 20, 30]),
+    pairs_values(P, Vs),
+    sum_list(Vs, S),
+    R is S.   % 60
+
+:- dynamic test_pkv_rev_empty/2.
+test_pkv_rev_empty(_, R) :-
+    pairs_keys_values(P, [], []),
+    length(P, N),
+    R is N + 19.   % 19
+
+:- dynamic test_pkv_rev_singleton/2.
+test_pkv_rev_singleton(_, R) :-
+    pairs_keys_values(P, [42], [99]),
+    pairs_keys(P, [K]),
+    pairs_values(P, [V]),
+    R is K + V.   % 141
+
+:- dynamic test_pkv_rev_mismatch_keys_longer/2.
+test_pkv_rev_mismatch_keys_longer(_, R) :-
+    ( pairs_keys_values(_, [a, b, c], [1, 2]) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_pkv_rev_mismatch_values_longer/2.
+test_pkv_rev_mismatch_values_longer(_, R) :-
+    ( pairs_keys_values(_, [a], [1, 2, 3]) -> R is 1 ; R is 0 ).   % 0
+
+% Forward then reverse should reconstruct equivalent structure.
+:- dynamic test_pkv_forward_then_reverse/2.
+test_pkv_forward_then_reverse(_, R) :-
+    pairs_keys_values([10-1, 20-2, 30-3], Ks, Vs),
+    pairs_keys_values(P2, Ks, Vs),
+    pairs_keys(P2, Ks2),
+    sum_list(Ks2, S),
+    R is S.   % 60
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -2650,6 +2764,42 @@ test_all :-
                    test_pairs_values_empty, 0, 13),
        run_test_r0('pairs_keys + pairs_values sums [10-1, 20-2, 30-3] -> 66',
                    test_pairs_keys_values_sum, 0, 66),
+       format('--- M50 pairs_keys_values/3 forward (split) ---~n'),
+       run_test_r0('pkv([a-1,b-2,c-3], Ks, _) length -> 3',
+                   test_pkv_keys_length, 0, 3),
+       run_test_r0('pkv([a-1,b-2,c-3], _, Vs) length -> 3',
+                   test_pkv_values_length, 0, 3),
+       run_test_r0('pkv([10-x, 20-y], [F|_], _) -> 10',
+                   test_pkv_keys_first, 0, 10),
+       run_test_r0('pkv([a-100, b-200], _, [F|_]) -> 100',
+                   test_pkv_values_first, 0, 100),
+       run_test_r0('pkv([], Ks, Vs) + 17 -> 17',
+                   test_pkv_empty, 0, 17),
+       run_test_r0('pkv([42-99], [K], [V]) K+V -> 141',
+                   test_pkv_singleton, 0, 141),
+       run_test_r0('pkv last key -> 30',
+                   test_pkv_keys_last, 0, 30),
+       run_test_r0('pkv last value -> 99',
+                   test_pkv_values_last, 0, 99),
+       run_test_r0('pkv matches pairs_keys + pairs_values -> 1',
+                   test_pkv_matches_split, 0, 1),
+       format('--- M51 pairs_keys_values/3 reverse (zip) ---~n'),
+       run_test_r0('pkv(P, [a,b,c], [1,2,3]), length(P) -> 3',
+                   test_pkv_rev_length, 0, 3),
+       run_test_r0('pkv reverse + pairs_keys roundtrip sum -> 60',
+                   test_pkv_rev_roundtrip_keys, 0, 60),
+       run_test_r0('pkv reverse + pairs_values roundtrip sum -> 60',
+                   test_pkv_rev_roundtrip_values, 0, 60),
+       run_test_r0('pkv(P, [], []) + 19 -> 19',
+                   test_pkv_rev_empty, 0, 19),
+       run_test_r0('pkv(P, [42], [99]) K+V -> 141',
+                   test_pkv_rev_singleton, 0, 141),
+       run_test_r0('pkv mismatch keys longer -> 0',
+                   test_pkv_rev_mismatch_keys_longer, 0, 0),
+       run_test_r0('pkv mismatch values longer -> 0',
+                   test_pkv_rev_mismatch_values_longer, 0, 0),
+       run_test_r0('pkv forward then reverse roundtrip sum -> 60',
+                   test_pkv_forward_then_reverse, 0, 60),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),

@@ -1207,6 +1207,10 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     % the module. Eager registration handles programs that consume the
     % list via findall but never explicitly construct a cons cell.
     register_functor_string("[|]"),
+    % M51: pre-register `-` so pairs_keys_values/3 reverse mode can
+    % construct K-V pair compounds without depending on the source
+    % program to mention `-/2` itself.
+    register_functor_string("-"),
     % M9: intern "[]" so the empty-list atom id is known at runtime.
     % @wam_apply_aggregation's collect_case reads this id from a
     % module-level global to terminate the cons-cell chain.
@@ -3431,6 +3435,7 @@ entry:
     i32 69, label %builtin_string_code
     i32 70, label %builtin_pairs_keys
     i32 71, label %builtin_pairs_values
+    i32 72, label %builtin_pairs_keys_values
   ]
 
 builtin_is:
@@ -7312,6 +7317,299 @@ pvs.b_bind:
   %pvs.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %pvs.b_raw2, %Value %pvs.b_acc)
   ret i1 %pvs.b_ok
 
+builtin_pairs_keys_values:
+  ; M50/M51: pairs_keys_values(?Pairs, ?Keys, ?Values).
+  ;   Forward (A1 bound pair list): decompose into parallel Keys +
+  ;     Values lists (three-pass: count, fill, build x2).
+  ;   Reverse (A1 unbound + A2 and A3 bound lists of equal length):
+  ;     zip into a list of -/2 K-V compounds, unify A1 with the
+  ;     resulting chain. Length mismatch fails.
+  %pkv.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  call void @wam_arena_ensure()
+  %pkv.a1_unb = call i1 @value_is_unbound(%Value %pkv.a1)
+  br i1 %pkv.a1_unb, label %pkv.r_init, label %pkv.c_loop
+pkv.fail:
+  ret i1 false
+pkv.c_loop:
+  %pkv.c_cur = phi %Value [ %pkv.a1, %builtin_pairs_keys_values ], [ %pkv.c_next, %pkv.c_step ]
+  %pkv.c_cnt = phi i32 [ 0, %builtin_pairs_keys_values ], [ %pkv.c_cnt1, %pkv.c_step ]
+  %pkv.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %pkv.c_cur)
+  %pkv.c_tag = extractvalue %Value %pkv.c_d, 0
+  %pkv.c_is_cmp = icmp eq i32 %pkv.c_tag, 3
+  br i1 %pkv.c_is_cmp, label %pkv.c_step, label %pkv.c_done
+pkv.c_step:
+  %pkv.c_cp = extractvalue %Value %pkv.c_d, 1
+  %pkv.c_cp_ptr = inttoptr i64 %pkv.c_cp to %Compound*
+  %pkv.c_args_slot = getelementptr %Compound, %Compound* %pkv.c_cp_ptr, i32 0, i32 2
+  %pkv.c_args = load %Value*, %Value** %pkv.c_args_slot
+  %pkv.c_t_ptr = getelementptr %Value, %Value* %pkv.c_args, i32 1
+  %pkv.c_next = load %Value, %Value* %pkv.c_t_ptr
+  %pkv.c_cnt1 = add i32 %pkv.c_cnt, 1
+  br label %pkv.c_loop
+pkv.c_done:
+  %pkv.cnt64 = sext i32 %pkv.c_cnt to i64
+  %pkv.arr_bytes = shl i64 %pkv.cnt64, 4
+  %pkv.k_arr_mem = call i8* @wam_arena_alloc(i64 %pkv.arr_bytes)
+  %pkv.k_arr = bitcast i8* %pkv.k_arr_mem to %Value*
+  %pkv.v_arr_mem = call i8* @wam_arena_alloc(i64 %pkv.arr_bytes)
+  %pkv.v_arr = bitcast i8* %pkv.v_arr_mem to %Value*
+  br label %pkv.f_loop
+pkv.f_loop:
+  %pkv.f_cur = phi %Value [ %pkv.a1, %pkv.c_done ], [ %pkv.f_next, %pkv.f_extract ]
+  %pkv.f_idx = phi i32 [ 0, %pkv.c_done ], [ %pkv.f_idx1, %pkv.f_extract ]
+  %pkv.f_done_b = icmp sge i32 %pkv.f_idx, %pkv.c_cnt
+  br i1 %pkv.f_done_b, label %pkv.kb_init, label %pkv.f_step
+pkv.f_step:
+  %pkv.f_d = call %Value @wam_deref_value(%WamState* %vm, %Value %pkv.f_cur)
+  %pkv.f_cp = extractvalue %Value %pkv.f_d, 1
+  %pkv.f_cp_ptr = inttoptr i64 %pkv.f_cp to %Compound*
+  %pkv.f_args_slot = getelementptr %Compound, %Compound* %pkv.f_cp_ptr, i32 0, i32 2
+  %pkv.f_args = load %Value*, %Value** %pkv.f_args_slot
+  %pkv.f_h_ptr = getelementptr %Value, %Value* %pkv.f_args, i32 0
+  %pkv.f_head = load %Value, %Value* %pkv.f_h_ptr
+  %pkv.f_t_ptr = getelementptr %Value, %Value* %pkv.f_args, i32 1
+  %pkv.f_next = load %Value, %Value* %pkv.f_t_ptr
+  %pkv.f_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %pkv.f_head)
+  %pkv.f_h_tag = extractvalue %Value %pkv.f_h_d, 0
+  %pkv.f_h_is_cmp = icmp eq i32 %pkv.f_h_tag, 3
+  br i1 %pkv.f_h_is_cmp, label %pkv.f_h_check, label %pkv.fail
+pkv.f_h_check:
+  %pkv.f_h_cp = extractvalue %Value %pkv.f_h_d, 1
+  %pkv.f_h_cp_ptr = inttoptr i64 %pkv.f_h_cp to %Compound*
+  %pkv.f_h_ar_slot = getelementptr %Compound, %Compound* %pkv.f_h_cp_ptr, i32 0, i32 1
+  %pkv.f_h_ar = load i32, i32* %pkv.f_h_ar_slot
+  %pkv.f_h_ar_ok = icmp eq i32 %pkv.f_h_ar, 2
+  br i1 %pkv.f_h_ar_ok, label %pkv.f_extract, label %pkv.fail
+pkv.f_extract:
+  %pkv.f_h_args_slot = getelementptr %Compound, %Compound* %pkv.f_h_cp_ptr, i32 0, i32 2
+  %pkv.f_h_args = load %Value*, %Value** %pkv.f_h_args_slot
+  %pkv.f_h_key_ptr = getelementptr %Value, %Value* %pkv.f_h_args, i32 0
+  %pkv.f_key = load %Value, %Value* %pkv.f_h_key_ptr
+  %pkv.f_h_val_ptr = getelementptr %Value, %Value* %pkv.f_h_args, i32 1
+  %pkv.f_val = load %Value, %Value* %pkv.f_h_val_ptr
+  %pkv.f_k_slot = getelementptr %Value, %Value* %pkv.k_arr, i32 %pkv.f_idx
+  store %Value %pkv.f_key, %Value* %pkv.f_k_slot
+  %pkv.f_v_slot = getelementptr %Value, %Value* %pkv.v_arr, i32 %pkv.f_idx
+  store %Value %pkv.f_val, %Value* %pkv.f_v_slot
+  %pkv.f_idx1 = add i32 %pkv.f_idx, 1
+  br label %pkv.f_loop
+pkv.kb_init:
+  ; Build keys chain.
+  %pkv.kb_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %pkv.kb_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %pkv.kb_empty_v  = insertvalue %Value %pkv.kb_empty_v0, i64 %pkv.kb_empty_id, 1
+  br label %pkv.kb_loop
+pkv.kb_loop:
+  %pkv.kb_i = phi i32 [ %pkv.c_cnt, %pkv.kb_init ], [ %pkv.kb_i_prev, %pkv.kb_step ]
+  %pkv.kb_acc = phi %Value [ %pkv.kb_empty_v, %pkv.kb_init ], [ %pkv.kb_new_cons, %pkv.kb_step ]
+  %pkv.kb_done = icmp sle i32 %pkv.kb_i, 0
+  br i1 %pkv.kb_done, label %pkv.vb_init, label %pkv.kb_step
+pkv.kb_step:
+  %pkv.kb_i_prev = sub i32 %pkv.kb_i, 1
+  %pkv.kb_slot = getelementptr %Value, %Value* %pkv.k_arr, i32 %pkv.kb_i_prev
+  %pkv.kb_head = load %Value, %Value* %pkv.kb_slot
+  %pkv.kb_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %pkv.kb_cp_mem = call i8* @wam_arena_alloc(i64 %pkv.kb_cp_size)
+  %pkv.kb_cp = bitcast i8* %pkv.kb_cp_mem to %Compound*
+  %pkv.kb_fn_slot = getelementptr %Compound, %Compound* %pkv.kb_cp, i32 0, i32 0
+  %pkv.kb_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %pkv.kb_fn_ptr, i8** %pkv.kb_fn_slot
+  %pkv.kb_ar_slot = getelementptr %Compound, %Compound* %pkv.kb_cp, i32 0, i32 1
+  store i32 2, i32* %pkv.kb_ar_slot
+  %pkv.kb_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %pkv.kb_args = bitcast i8* %pkv.kb_args_mem to %Value*
+  %pkv.kb_args_slot = getelementptr %Compound, %Compound* %pkv.kb_cp, i32 0, i32 2
+  store %Value* %pkv.kb_args, %Value** %pkv.kb_args_slot
+  %pkv.kb_h_ptr = getelementptr %Value, %Value* %pkv.kb_args, i32 0
+  store %Value %pkv.kb_head, %Value* %pkv.kb_h_ptr
+  %pkv.kb_t_ptr = getelementptr %Value, %Value* %pkv.kb_args, i32 1
+  store %Value %pkv.kb_acc, %Value* %pkv.kb_t_ptr
+  %pkv.kb_cp_i64 = ptrtoint %Compound* %pkv.kb_cp to i64
+  %pkv.kb_nc0 = insertvalue %Value undef, i32 3, 0
+  %pkv.kb_new_cons = insertvalue %Value %pkv.kb_nc0, i64 %pkv.kb_cp_i64, 1
+  br label %pkv.kb_loop
+pkv.vb_init:
+  ; Build values chain. Carry the finished keys chain through phi so
+  ; the final bind block can see both.
+  %pkv.k_final = phi %Value [ %pkv.kb_acc, %pkv.kb_loop ]
+  %pkv.vb_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %pkv.vb_empty_v  = insertvalue %Value %pkv.vb_empty_v0, i64 %pkv.kb_empty_id, 1
+  br label %pkv.vb_loop
+pkv.vb_loop:
+  %pkv.vb_i = phi i32 [ %pkv.c_cnt, %pkv.vb_init ], [ %pkv.vb_i_prev, %pkv.vb_step ]
+  %pkv.vb_acc = phi %Value [ %pkv.vb_empty_v, %pkv.vb_init ], [ %pkv.vb_new_cons, %pkv.vb_step ]
+  %pkv.vb_done = icmp sle i32 %pkv.vb_i, 0
+  br i1 %pkv.vb_done, label %pkv.bind, label %pkv.vb_step
+pkv.vb_step:
+  %pkv.vb_i_prev = sub i32 %pkv.vb_i, 1
+  %pkv.vb_slot = getelementptr %Value, %Value* %pkv.v_arr, i32 %pkv.vb_i_prev
+  %pkv.vb_head = load %Value, %Value* %pkv.vb_slot
+  %pkv.vb_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %pkv.vb_cp_mem = call i8* @wam_arena_alloc(i64 %pkv.vb_cp_size)
+  %pkv.vb_cp = bitcast i8* %pkv.vb_cp_mem to %Compound*
+  %pkv.vb_fn_slot = getelementptr %Compound, %Compound* %pkv.vb_cp, i32 0, i32 0
+  %pkv.vb_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %pkv.vb_fn_ptr, i8** %pkv.vb_fn_slot
+  %pkv.vb_ar_slot = getelementptr %Compound, %Compound* %pkv.vb_cp, i32 0, i32 1
+  store i32 2, i32* %pkv.vb_ar_slot
+  %pkv.vb_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %pkv.vb_args = bitcast i8* %pkv.vb_args_mem to %Value*
+  %pkv.vb_args_slot = getelementptr %Compound, %Compound* %pkv.vb_cp, i32 0, i32 2
+  store %Value* %pkv.vb_args, %Value** %pkv.vb_args_slot
+  %pkv.vb_h_ptr = getelementptr %Value, %Value* %pkv.vb_args, i32 0
+  store %Value %pkv.vb_head, %Value* %pkv.vb_h_ptr
+  %pkv.vb_t_ptr = getelementptr %Value, %Value* %pkv.vb_args, i32 1
+  store %Value %pkv.vb_acc, %Value* %pkv.vb_t_ptr
+  %pkv.vb_cp_i64 = ptrtoint %Compound* %pkv.vb_cp to i64
+  %pkv.vb_nc0 = insertvalue %Value undef, i32 3, 0
+  %pkv.vb_new_cons = insertvalue %Value %pkv.vb_nc0, i64 %pkv.vb_cp_i64, 1
+  br label %pkv.vb_loop
+pkv.bind:
+  %pkv.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %pkv.uk = call i1 @wam_unify_value(%WamState* %vm, %Value %pkv.raw2, %Value %pkv.k_final)
+  br i1 %pkv.uk, label %pkv.bind_vals, label %pkv.fail
+pkv.bind_vals:
+  %pkv.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %pkv.uv = call i1 @wam_unify_value(%WamState* %vm, %Value %pkv.raw3, %Value %pkv.vb_acc)
+  ret i1 %pkv.uv
+
+pkv.r_init:
+  ; Reverse: A1 unbound. Walk Keys + Values in parallel, requiring
+  ; equal length; build pair_arr of -/2 compounds; cons-chain it;
+  ; unify A1.
+  %pkv.r_a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %pkv.r_a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  br label %pkv.r_count_loop
+pkv.r_count_loop:
+  %pkv.r_cur_k = phi %Value [ %pkv.r_a2, %pkv.r_init ], [ %pkv.r_next_k, %pkv.r_count_step ]
+  %pkv.r_cur_v = phi %Value [ %pkv.r_a3, %pkv.r_init ], [ %pkv.r_next_v, %pkv.r_count_step ]
+  %pkv.r_cnt = phi i32 [ 0, %pkv.r_init ], [ %pkv.r_cnt1, %pkv.r_count_step ]
+  %pkv.r_dk = call %Value @wam_deref_value(%WamState* %vm, %Value %pkv.r_cur_k)
+  %pkv.r_dv = call %Value @wam_deref_value(%WamState* %vm, %Value %pkv.r_cur_v)
+  %pkv.r_tk = extractvalue %Value %pkv.r_dk, 0
+  %pkv.r_tv = extractvalue %Value %pkv.r_dv, 0
+  %pkv.r_k_cmp = icmp eq i32 %pkv.r_tk, 3
+  %pkv.r_v_cmp = icmp eq i32 %pkv.r_tv, 3
+  %pkv.r_both_cmp = and i1 %pkv.r_k_cmp, %pkv.r_v_cmp
+  %pkv.r_neither_cmp = and i1 %pkv.r_k_cmp, %pkv.r_v_cmp
+  br i1 %pkv.r_both_cmp, label %pkv.r_count_step, label %pkv.r_count_check_end
+pkv.r_count_check_end:
+  ; Both must be non-compound at the same step (proper-list ends
+  ; simultaneously). Otherwise length mismatch -> fail.
+  %pkv.r_k_end = icmp ne i32 %pkv.r_tk, 3
+  %pkv.r_v_end = icmp ne i32 %pkv.r_tv, 3
+  %pkv.r_both_end = and i1 %pkv.r_k_end, %pkv.r_v_end
+  br i1 %pkv.r_both_end, label %pkv.r_alloc, label %pkv.fail
+pkv.r_count_step:
+  %pkv.r_k_cp = extractvalue %Value %pkv.r_dk, 1
+  %pkv.r_k_cp_ptr = inttoptr i64 %pkv.r_k_cp to %Compound*
+  %pkv.r_k_args_slot = getelementptr %Compound, %Compound* %pkv.r_k_cp_ptr, i32 0, i32 2
+  %pkv.r_k_args = load %Value*, %Value** %pkv.r_k_args_slot
+  %pkv.r_k_t_ptr = getelementptr %Value, %Value* %pkv.r_k_args, i32 1
+  %pkv.r_next_k = load %Value, %Value* %pkv.r_k_t_ptr
+  %pkv.r_v_cp = extractvalue %Value %pkv.r_dv, 1
+  %pkv.r_v_cp_ptr = inttoptr i64 %pkv.r_v_cp to %Compound*
+  %pkv.r_v_args_slot = getelementptr %Compound, %Compound* %pkv.r_v_cp_ptr, i32 0, i32 2
+  %pkv.r_v_args = load %Value*, %Value** %pkv.r_v_args_slot
+  %pkv.r_v_t_ptr = getelementptr %Value, %Value* %pkv.r_v_args, i32 1
+  %pkv.r_next_v = load %Value, %Value* %pkv.r_v_t_ptr
+  %pkv.r_cnt1 = add i32 %pkv.r_cnt, 1
+  br label %pkv.r_count_loop
+pkv.r_alloc:
+  %pkv.r_cnt64 = sext i32 %pkv.r_cnt to i64
+  %pkv.r_arr_bytes = shl i64 %pkv.r_cnt64, 4
+  %pkv.r_arr_mem = call i8* @wam_arena_alloc(i64 %pkv.r_arr_bytes)
+  %pkv.r_arr = bitcast i8* %pkv.r_arr_mem to %Value*
+  br label %pkv.r_fill_loop
+pkv.r_fill_loop:
+  %pkv.r_f_k = phi %Value [ %pkv.r_a2, %pkv.r_alloc ], [ %pkv.r_f_next_k, %pkv.r_fill_step ]
+  %pkv.r_f_v = phi %Value [ %pkv.r_a3, %pkv.r_alloc ], [ %pkv.r_f_next_v, %pkv.r_fill_step ]
+  %pkv.r_f_idx = phi i32 [ 0, %pkv.r_alloc ], [ %pkv.r_f_idx1, %pkv.r_fill_step ]
+  %pkv.r_f_done = icmp sge i32 %pkv.r_f_idx, %pkv.r_cnt
+  br i1 %pkv.r_f_done, label %pkv.r_build_init, label %pkv.r_fill_step
+pkv.r_fill_step:
+  ; Load current K and V heads.
+  %pkv.r_f_dk = call %Value @wam_deref_value(%WamState* %vm, %Value %pkv.r_f_k)
+  %pkv.r_f_k_cp = extractvalue %Value %pkv.r_f_dk, 1
+  %pkv.r_f_k_cp_ptr = inttoptr i64 %pkv.r_f_k_cp to %Compound*
+  %pkv.r_f_k_args_slot = getelementptr %Compound, %Compound* %pkv.r_f_k_cp_ptr, i32 0, i32 2
+  %pkv.r_f_k_args = load %Value*, %Value** %pkv.r_f_k_args_slot
+  %pkv.r_f_k_h_ptr = getelementptr %Value, %Value* %pkv.r_f_k_args, i32 0
+  %pkv.r_f_key = load %Value, %Value* %pkv.r_f_k_h_ptr
+  %pkv.r_f_k_t_ptr = getelementptr %Value, %Value* %pkv.r_f_k_args, i32 1
+  %pkv.r_f_next_k = load %Value, %Value* %pkv.r_f_k_t_ptr
+  %pkv.r_f_dv = call %Value @wam_deref_value(%WamState* %vm, %Value %pkv.r_f_v)
+  %pkv.r_f_v_cp = extractvalue %Value %pkv.r_f_dv, 1
+  %pkv.r_f_v_cp_ptr = inttoptr i64 %pkv.r_f_v_cp to %Compound*
+  %pkv.r_f_v_args_slot = getelementptr %Compound, %Compound* %pkv.r_f_v_cp_ptr, i32 0, i32 2
+  %pkv.r_f_v_args = load %Value*, %Value** %pkv.r_f_v_args_slot
+  %pkv.r_f_v_h_ptr = getelementptr %Value, %Value* %pkv.r_f_v_args, i32 0
+  %pkv.r_f_val = load %Value, %Value* %pkv.r_f_v_h_ptr
+  %pkv.r_f_v_t_ptr = getelementptr %Value, %Value* %pkv.r_f_v_args, i32 1
+  %pkv.r_f_next_v = load %Value, %Value* %pkv.r_f_v_t_ptr
+  ; Build -/2 pair compound: functor=@.fn__2D, arity=2, args=[K, V].
+  %pkv.r_p_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %pkv.r_p_cp_mem = call i8* @wam_arena_alloc(i64 %pkv.r_p_cp_size)
+  %pkv.r_p_cp = bitcast i8* %pkv.r_p_cp_mem to %Compound*
+  %pkv.r_p_fn_slot = getelementptr %Compound, %Compound* %pkv.r_p_cp, i32 0, i32 0
+  %pkv.r_p_fn_ptr = getelementptr [2 x i8], [2 x i8]* @.fn__2D, i32 0, i32 0
+  store i8* %pkv.r_p_fn_ptr, i8** %pkv.r_p_fn_slot
+  %pkv.r_p_ar_slot = getelementptr %Compound, %Compound* %pkv.r_p_cp, i32 0, i32 1
+  store i32 2, i32* %pkv.r_p_ar_slot
+  %pkv.r_p_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %pkv.r_p_args = bitcast i8* %pkv.r_p_args_mem to %Value*
+  %pkv.r_p_args_slot = getelementptr %Compound, %Compound* %pkv.r_p_cp, i32 0, i32 2
+  store %Value* %pkv.r_p_args, %Value** %pkv.r_p_args_slot
+  %pkv.r_p_k_dst = getelementptr %Value, %Value* %pkv.r_p_args, i32 0
+  store %Value %pkv.r_f_key, %Value* %pkv.r_p_k_dst
+  %pkv.r_p_v_dst = getelementptr %Value, %Value* %pkv.r_p_args, i32 1
+  store %Value %pkv.r_f_val, %Value* %pkv.r_p_v_dst
+  %pkv.r_p_cp_i64 = ptrtoint %Compound* %pkv.r_p_cp to i64
+  %pkv.r_p_v0 = insertvalue %Value undef, i32 3, 0
+  %pkv.r_p_v = insertvalue %Value %pkv.r_p_v0, i64 %pkv.r_p_cp_i64, 1
+  %pkv.r_p_slot = getelementptr %Value, %Value* %pkv.r_arr, i32 %pkv.r_f_idx
+  store %Value %pkv.r_p_v, %Value* %pkv.r_p_slot
+  %pkv.r_f_idx1 = add i32 %pkv.r_f_idx, 1
+  br label %pkv.r_fill_loop
+pkv.r_build_init:
+  %pkv.r_b_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %pkv.r_b_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %pkv.r_b_empty_v  = insertvalue %Value %pkv.r_b_empty_v0, i64 %pkv.r_b_empty_id, 1
+  br label %pkv.r_b_loop
+pkv.r_b_loop:
+  %pkv.r_b_i = phi i32 [ %pkv.r_cnt, %pkv.r_build_init ], [ %pkv.r_b_i_prev, %pkv.r_b_step ]
+  %pkv.r_b_acc = phi %Value [ %pkv.r_b_empty_v, %pkv.r_build_init ], [ %pkv.r_b_new_cons, %pkv.r_b_step ]
+  %pkv.r_b_done = icmp sle i32 %pkv.r_b_i, 0
+  br i1 %pkv.r_b_done, label %pkv.r_bind, label %pkv.r_b_step
+pkv.r_b_step:
+  %pkv.r_b_i_prev = sub i32 %pkv.r_b_i, 1
+  %pkv.r_b_slot = getelementptr %Value, %Value* %pkv.r_arr, i32 %pkv.r_b_i_prev
+  %pkv.r_b_head = load %Value, %Value* %pkv.r_b_slot
+  %pkv.r_b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %pkv.r_b_cp_mem = call i8* @wam_arena_alloc(i64 %pkv.r_b_cp_size)
+  %pkv.r_b_cp = bitcast i8* %pkv.r_b_cp_mem to %Compound*
+  %pkv.r_b_fn_slot = getelementptr %Compound, %Compound* %pkv.r_b_cp, i32 0, i32 0
+  %pkv.r_b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %pkv.r_b_fn_ptr, i8** %pkv.r_b_fn_slot
+  %pkv.r_b_ar_slot = getelementptr %Compound, %Compound* %pkv.r_b_cp, i32 0, i32 1
+  store i32 2, i32* %pkv.r_b_ar_slot
+  %pkv.r_b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %pkv.r_b_args = bitcast i8* %pkv.r_b_args_mem to %Value*
+  %pkv.r_b_args_slot = getelementptr %Compound, %Compound* %pkv.r_b_cp, i32 0, i32 2
+  store %Value* %pkv.r_b_args, %Value** %pkv.r_b_args_slot
+  %pkv.r_b_h_ptr = getelementptr %Value, %Value* %pkv.r_b_args, i32 0
+  store %Value %pkv.r_b_head, %Value* %pkv.r_b_h_ptr
+  %pkv.r_b_t_ptr = getelementptr %Value, %Value* %pkv.r_b_args, i32 1
+  store %Value %pkv.r_b_acc, %Value* %pkv.r_b_t_ptr
+  %pkv.r_b_cp_i64 = ptrtoint %Compound* %pkv.r_b_cp to i64
+  %pkv.r_b_nc0 = insertvalue %Value undef, i32 3, 0
+  %pkv.r_b_new_cons = insertvalue %Value %pkv.r_b_nc0, i64 %pkv.r_b_cp_i64, 1
+  br label %pkv.r_b_loop
+pkv.r_bind:
+  %pkv.r_raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %pkv.r_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %pkv.r_raw1, %Value %pkv.r_b_acc)
+  ret i1 %pkv.r_ok
+
 unknown:
   ret i1 false
 }'.
@@ -8756,6 +9054,7 @@ builtin_op_to_id('string_codes/2', 68).  % alias of atom_codes/2
 builtin_op_to_id('string_code/3', 69).   % string_code(+Idx, +Str, -Code) 1-based
 builtin_op_to_id('pairs_keys/2', 70).    % extract keys from K-V pair list
 builtin_op_to_id('pairs_values/2', 71).  % extract values
+builtin_op_to_id('pairs_keys_values/3', 72). % forward only: split pairs -> keys + values
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
