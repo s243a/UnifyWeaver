@@ -25,6 +25,7 @@
 	compile_wam_helpers_to_python/2,       % +Options, -PythonCode
 	compile_wam_runtime_to_python/2,       % +Options, -PythonCode
 	compile_wam_predicate_to_python/4,     % +Pred/Arity, +WamCode, +Options, -PythonCode
+	compile_wam_predicate_items_to_python/4, % +Pred/Arity, +Items, +Options, -PythonCode
 	wam_instruction_to_python_literal/2,   % +WamInstr, -PyLiteral
 	wam_line_to_python_literal/2,          % +Parts, -PyLit
 	wam_items_to_python_instructions/4,  % +Items, +PredIndicator, -InstrLits, -LabelLits
@@ -1257,7 +1258,8 @@ wam_item_to_line_parts(trust(Label), ["trust", Label]).
 wam_item_to_line_parts(neck_cut, ["neck_cut"]).
 wam_item_to_line_parts(get_level(Yn), ["get_level", Yn]).
 wam_item_to_line_parts(cut(Yn), ["cut", Yn]).
-wam_item_to_line_parts(switch_on_term(Args), ["switch_on_term"|Args]).
+wam_item_to_line_parts(switch_on_term(Args), Parts) :-
+	append(["switch_on_term"], Args, Parts).
 wam_item_to_line_parts(is(Target, Expr), ["is", Target, Expr]).
 wam_item_to_line_parts(builtin_call(Op, Arity), ["builtin_call", Op, Arity]).
 wam_item_to_line_parts(call_foreign(Pred, Arity), ["call_foreign", Pred, Arity]).
@@ -1570,13 +1572,23 @@ sub_string_replace(Str, From, To, Result) :-
 %  Emits a register_predicate(raw_program) call so the flat program can be
 %  built by load_program in main.py.
 compile_wam_predicate_to_python(Pred/Arity, WamCode, Options, PythonCode) :-
+	wam_code_to_python_instructions(WamCode, Pred/Arity, InstrLiterals, _LabelLiterals),
+	format_python_wam_registrar(Pred/Arity, Options, InstrLiterals, PythonCode).
+
+%% compile_wam_predicate_items_to_python(+Pred/Arity, +Items, +Options, -PythonCode)
+%  Converts structured WAM items for a predicate to Python code.
+%  This is the item-driven counterpart to compile_wam_predicate_to_python/4;
+%  callers can bypass WAM text when they already have label/instruction items.
+compile_wam_predicate_items_to_python(Pred/Arity, Items, Options, PythonCode) :-
+	wam_items_to_python_instructions(Items, Pred/Arity, InstrLiterals, _LabelLiterals),
+	format_python_wam_registrar(Pred/Arity, Options, InstrLiterals, PythonCode).
+
+format_python_wam_registrar(Pred/Arity, Options, InstrLiterals, PythonCode) :-
 	atom_string(Pred, PredStr),
 	python_func_name(Pred/Arity, FuncName),
 	option(registrar_prefix(RegistrarPrefix), Options, ''),
 	atom_concat(RegistrarPrefix, FuncName, RegistrarName),
-	% Build the label key: "Pred/Arity"
 	format(atom(LabelKey), '~w/~w', [PredStr, Arity]),
-	wam_code_to_python_instructions(WamCode, Pred/Arity, InstrLiterals, _LabelLiterals),
 	format(string(PythonCode),
 'def ~w(raw_program):
     """Register WAM code for ~w/~w into raw_program dict."""

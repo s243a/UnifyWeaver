@@ -2714,8 +2714,14 @@ is_ground_atom_list(L, Atoms) :-
     maplist(atom, Items),
     Atoms = Items.
 
-proper_list(T, []) :- T == [], !.
-proper_list([H|T], [H|R]) :- proper_list(T, R).
+proper_list(T, Items) :-
+    nonvar(T),
+    proper_list_(T, Items).
+
+proper_list_(T, []) :- T == [], !.
+proper_list_([H|T], [H|R]) :-
+    nonvar(T),
+    proper_list_(T, R).
 
 %% emit_not_member_const_atoms_lowering(+X, +Atoms, +V0, -Vf, -Code)
 %
