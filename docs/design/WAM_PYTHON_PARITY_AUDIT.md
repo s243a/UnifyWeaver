@@ -97,16 +97,17 @@ Python is a good candidate for the WAM items-mode migration because generated
 projects already use one packaged runtime surface, but the generator still has a
 text-first compile pipeline.
 
-Current load-bearing text path:
+Current load-bearing items path:
 
-- `plan_python_predicate/3` calls `compile_predicate_to_wam(..., WamCode)` and
-  stores canonical WAM text in `pred_plan/4`.
-- `compile_wam_predicate_to_python/4` converts that text through
-  `wam_code_to_python_instructions/4`, which tokenizes each line and calls
-  `wam_line_to_python_literal/2`.
-- lowered mode calls `parse_wam_text_py/2` in `compile_lowered_wam_predicate_to_python/4`,
-  `lowered_candidate_wam/1`, and `lowered_route_supported/4` before emitting
-  lowered Python functions.
+- `plan_python_predicate/3` still calls `compile_predicate_to_wam(..., WamText)`
+  when compiling Prolog predicates, but immediately normalizes that text through
+  `wam_text_to_items/2` and stores `wam_items(WamText, Items)` in `pred_plan/4`.
+- interpreter-mode predicate emission routes planned predicates through
+  `compile_wam_predicate_items_to_python/4`, so generated Python no longer
+  reparses planned WAM text during interpreter registration.
+- lowered mode still unwraps the stored text and calls `parse_wam_text_py/2` in
+  `compile_lowered_wam_predicate_to_python/4`, `lowered_candidate_wam/1`, and
+  `lowered_route_supported/4` before emitting lowered Python functions.
 - `wam_python_iso_audit/3` still recompiles predicates to WAM text and parses
   lines for audit reporting.
 
@@ -120,21 +121,23 @@ Items-mode bridge now present:
 - The adapter preserves typed direct-item constants, so an atom like `'42'` is
   emitted as `Atom("42")` while integer `42` is emitted as `Int(42)`.
 - Current tests compare the adapter against `wam_text_to_items/2` output for a
-  standard WAM-text fixture and cover typed atom/integer constant separation.
+  standard WAM-text fixture, cover typed atom/integer constant separation, and
+  assert that `compile_all_predicates/3` uses the items-backed plan for
+  interpreter-mode predicate registration.
 
 Remaining migration target:
 
-1. Change planning to store WAM items once `compile_predicate_to_wam_items/3` is
-   available as a real generator API, then route interpreter-mode predicates
-   through `compile_wam_predicate_items_to_python/4`.
+1. Replace the temporary `compile_predicate_to_wam/3` plus `wam_text_to_items/2`
+   normalization step with `compile_predicate_to_wam_items/3` once that common
+   generator API exists.
 2. Teach the lowered emitter to consume the same item list directly, or add one
    shared adapter from items to the lowered-emitter instruction representation.
 3. Keep the text parser only for external WAM text/debug migration paths, not
    for WAM text generated inside the same process.
 
-Until that migration lands, `tests/test_wam_python_target.pl` includes
-items-mode audit tests that record the remaining text-first planning path and
-protect the new items adapter.
+Until the native generator API lands, `tests/test_wam_python_target.pl` includes
+items-mode audit tests that record the remaining text-to-items normalization
+bridge and protect the item-driven Python emitter.
 
 ## Remaining Follow-Up
 
@@ -159,7 +162,7 @@ Completed follow-up:
 ## Verification Commands
 
 Use these checks after touching Python WAM runtime parity. On current `main`,
-`tests/test_wam_python_target.pl` passes 172/172 without choicepoint warnings:
+`tests/test_wam_python_target.pl` passes 173/173 without choicepoint warnings:
 
 ```sh
 swipl -q -g run_tests -t halt tests/test_wam_python_target.pl
