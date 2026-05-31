@@ -683,7 +683,25 @@ For high-value queries, an extra 20-seed sample at cc=5 + cc=100
 costs ~1 second on simplewiki. The aggregate-vs-per-pair check
 gives us early warning if some pairs drift while others don't.
 
-### 6.4 Data preparation: build the LMDB from a topical root
+## 7. Data-prep consequences of the inhomogeneity finding
+
+§6 follows directly from the property: if a (graph, metric) pair
+is metric-tree-like, you can use tree-search. The items below are
+different — they are *production recommendations* that follow from
+§4.5's inhomogeneity finding, not from the property itself. They
+depend on the §4.5 evidence holding up (which it does on
+simplewiki) and on the §5.4 open question about the routing
+correction (which is *not yet settled*; see task #14).
+
+> **Status:** these recommendations are **tentative** until §5.4
+> is settled by task #14. The §4.5 evidence is empirical and
+> robust; the §5.4 claim that routing correction can be dropped
+> is supported by argument but not yet by a re-run of the drift
+> probe under topical calibration. Treat §7.1's "no
+> routing-correction band-aid" as conditional on task #14
+> confirming the drift criterion still holds without that factor.
+
+### 7.1 Data preparation: build the LMDB from a topical root
 
 The inhomogeneity result (§4.5) has a direct production
 consequence: **the LMDB should be built from a topical root, not
@@ -692,9 +710,11 @@ from the full category dump**.
 Recipe:
 
 1. Identify the topical root for the target wiki. On
-   simplewiki: `Category:Articles` (page_id 137597). On
-   enwiki: `Category:Main_topic_classifications` (page_id
-   7345184).
+   simplewiki: `Category:Articles` (page_id 137597, verified).
+   On enwiki: `Category:Main_topic_classifications` — the
+   page_id should be verified against the live wiki before use
+   (cited as 7345184 from earlier work, not re-verified in this
+   doc).
 2. During ingest, BFS from the topical root via the
    `cl_type = 'subcat'` edges; mark every reached page_id as
    in-scope.
@@ -706,25 +726,29 @@ Recipe:
 The result is an LMDB that contains the "topical core" only.
 Calibration on this LMDB will give `b_eff` matching the empirical
 per-hop branching out of the box (no topical-subgraph scoping
-needed at runtime, no routing-correction band-aid, no manual
-hub blacklist). The size reduction on simplewiki is ~75% (~80k
-in-scope nodes vs ~92k full), which is also cache-friendly.
+needed at runtime, no manual hub blacklist). The size reduction
+on simplewiki is ~75% (~80k in-scope nodes vs ~92k full), which
+is also cache-friendly. **Whether the routing-correction factor
+can be dropped from `BranchRatio` is task #14**; if it cannot,
+the same LMDB still works, the routing correction just stays
+applied at calibration time.
 
 Implementation: add `--filter-root <page_id>` to the
 `mysql_stream_lmdb` ingester (see the categorylinks 3-mode
 ingester for the natural extension point). The flag is optional;
 omitted, the full graph is ingested as today.
 
-### 6.5 Calibration recipe (summary)
+### 7.2 Calibration recipe (summary)
 
-Putting §4 and §6.4 together:
+Putting §4 and §7.1 together:
 
 1. **Build** the LMDB with `--filter-root <topical_root_id>`
-   (§6.4).
+   (§7.1).
 2. **Calibrate** at setup time: scan `category_child` and
    `category_parent` for degree moments, compute
-   `b_eff = (E[d²_c]/E[d_c]) / (E[d²_p]/E[d_p])`. No routing
-   correction (tentative — see §5.4).
+   `b_eff = (E[d²_c]/E[d_c]) / (E[d²_p]/E[d_p])`. Whether to
+   drop the routing correction factor is contingent on task #14
+   (see §5.4).
 3. **Certificate**: run the 20-pair drift probe at the production
    budget (§6.1). If `ε_agg < 0.1%`, deploy tree-search.
 4. **Per-query**: tree search using `(b_eff, D, parentCost)`.
@@ -735,7 +759,7 @@ entirely at step 1 (ingest), the calibration honesty lives at
 step 2, the certificate lives at step 3, and runtime stays
 fast.
 
-## 7. Status of this document
+## 8. Status of this document
 
 This is **not a theorem**. It's a name (`metric-tree-likeness`)
 attached to a phenomenon we've observed once, with a reasonable
@@ -759,10 +783,9 @@ a useful property worth adding to the cost-model framework:
 the fast tree-search path; pairs that fail get the full
 bidirectional search.
 
-## 8. References
+## 9. References
 
 - `WAM_FSHARP_CSR_KERNEL_INTEGRATION.md` — design of the
   bidirectional kernel itself.
 - `WIKIPEDIA_CATEGORYLINKS_INGEST_MODES.md` — the ingester whose
   correct-mode output made this measurement possible.
-- Simplewiki benchmark log: `/tmp/per_seed.log` (transient).
