@@ -1280,6 +1280,74 @@ test_inter_subtract_complement(_, R) :-
     length(Diff, ND),
     R is NI + ND.   % 2 + 3 = 5
 
+% M46: union/3 -- A1 ++ subtract(A2, A1).
+
+:- dynamic test_union_disjoint/2.
+test_union_disjoint(_, R) :-
+    union([1, 2, 3], [4, 5, 6], L),
+    length(L, N),
+    R is N.   % 6
+
+:- dynamic test_union_overlap/2.
+test_union_overlap(_, R) :-
+    union([1, 2, 3], [2, 4, 5], L),
+    length(L, N),
+    R is N.   % 5 -- 2 dropped from A2
+
+:- dynamic test_union_identical/2.
+test_union_identical(_, R) :-
+    union([1, 2, 3], [1, 2, 3], L),
+    length(L, N),
+    R is N.   % 3 -- all of A2 filtered
+
+:- dynamic test_union_empty_left/2.
+test_union_empty_left(_, R) :-
+    union([], [7, 8, 9], L),
+    length(L, N),
+    R is N.   % 3
+
+:- dynamic test_union_empty_right/2.
+test_union_empty_right(_, R) :-
+    union([1, 2, 3], [], L),
+    length(L, N),
+    R is N.   % 3
+
+:- dynamic test_union_both_empty/2.
+test_union_both_empty(_, R) :-
+    union([], [], L),
+    length(L, N),
+    R is N + 11.   % 11
+
+:- dynamic test_union_a1_first/2.
+test_union_a1_first(_, R) :-
+    union([10, 20], [30, 40], L),
+    nth0(0, L, E),
+    R is E.   % 10 -- A1 comes first
+
+:- dynamic test_union_a1_dupes_kept/2.
+test_union_a1_dupes_kept(_, R) :-
+    % SWI semantics: A1''s own duplicates are preserved, only A2 is
+    % filtered against A1.
+    union([1, 1, 2], [3], L),
+    length(L, N),
+    R is N.   % 4 -- [1, 1, 2, 3]
+
+:- dynamic test_union_a2_first_match_filtered/2.
+test_union_a2_first_match_filtered(_, R) :-
+    % A2''s first 2 matches A1, gets dropped; 4 survives.
+    union([1, 2, 3], [2, 4], L),
+    nth0(3, L, E),
+    R is E.   % 4 (last position)
+
+:- dynamic test_union_size_relation/2.
+test_union_size_relation(_, R) :-
+    % |union| + |intersection| = |A1| + |A2| (inclusion-exclusion).
+    union([1, 2, 3, 4], [3, 4, 5, 6], U),
+    intersection([1, 2, 3, 4], [3, 4, 5, 6], I),
+    length(U, NU),
+    length(I, NI),
+    R is NU + NI.   % 6 + 2 = 8 (= 4 + 4)
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -2327,6 +2395,27 @@ test_all :-
                    test_intersection_dupes, 0, 3),
        run_test_r0('intersection + subtract partition reconstruct -> 5',
                    test_inter_subtract_complement, 0, 5),
+       format('--- M46 union/3 ---~n'),
+       run_test_r0('union([1,2,3], [4,5,6]) disjoint length -> 6',
+                   test_union_disjoint, 0, 6),
+       run_test_r0('union([1,2,3], [2,4,5]) overlap length -> 5',
+                   test_union_overlap, 0, 5),
+       run_test_r0('union([1,2,3], [1,2,3]) identical length -> 3',
+                   test_union_identical, 0, 3),
+       run_test_r0('union([], [7,8,9]) length -> 3',
+                   test_union_empty_left, 0, 3),
+       run_test_r0('union([1,2,3], []) length -> 3',
+                   test_union_empty_right, 0, 3),
+       run_test_r0('union([], []) + 11 -> 11',
+                   test_union_both_empty, 0, 11),
+       run_test_r0('union([10,20], [30,40]) nth0(0) -> 10 (A1 first)',
+                   test_union_a1_first, 0, 10),
+       run_test_r0('union([1,1,2], [3]) length -> 4 (A1 dupes kept)',
+                   test_union_a1_dupes_kept, 0, 4),
+       run_test_r0('union([1,2,3], [2,4]) nth0(3) -> 4 (2 filtered)',
+                   test_union_a2_first_match_filtered, 0, 4),
+       run_test_r0('|union| + |inter| = |A1| + |A2| (8)',
+                   test_union_size_relation, 0, 8),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
