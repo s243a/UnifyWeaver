@@ -3414,6 +3414,7 @@ entry:
     i32 52, label %builtin_nth1
     i32 53, label %builtin_last
     i32 54, label %builtin_reverse
+    i32 55, label %builtin_append
   ]
 
 builtin_is:
@@ -6031,6 +6032,97 @@ rev.done:
   %rev.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %rev.raw2, %Value %rev.acc)
   ret i1 %rev.ok
 
+builtin_append:
+  ; M39: append(+List1, +List2, ?List3) -- deterministic mode (A1 and
+  ; A2 both bound lists). Two-pass: count A1, allocate a Value array,
+  ; copy each head, then build the result by walking the array
+  ; back-to-front prepending each head onto A2 as the seed tail.
+  ; append([], L, L) handled as the count=0 degenerate case (the
+  ; build loop never runs, acc stays equal to A2).
+  %app.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %app.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  call void @wam_arena_ensure()
+  br label %app.c_loop
+app.c_loop:
+  %app.c_cur = phi %Value [ %app.a1, %builtin_append ], [ %app.c_next, %app.c_step ]
+  %app.c_cnt = phi i32 [ 0, %builtin_append ], [ %app.c_cnt1, %app.c_step ]
+  %app.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %app.c_cur)
+  %app.c_tag = extractvalue %Value %app.c_d, 0
+  %app.c_is_cmp = icmp eq i32 %app.c_tag, 3
+  br i1 %app.c_is_cmp, label %app.c_step, label %app.c_done
+app.c_step:
+  %app.c_cp = extractvalue %Value %app.c_d, 1
+  %app.c_cp_ptr = inttoptr i64 %app.c_cp to %Compound*
+  %app.c_args_slot = getelementptr %Compound, %Compound* %app.c_cp_ptr, i32 0, i32 2
+  %app.c_args = load %Value*, %Value** %app.c_args_slot
+  %app.c_tail_ptr = getelementptr %Value, %Value* %app.c_args, i32 1
+  %app.c_next = load %Value, %Value* %app.c_tail_ptr
+  %app.c_cnt1 = add i32 %app.c_cnt, 1
+  br label %app.c_loop
+app.c_done:
+  ; Allocate an arr of %Value (16 bytes each); skip alloc if empty.
+  %app.cnt64 = sext i32 %app.c_cnt to i64
+  %app.arr_bytes = shl i64 %app.cnt64, 4
+  %app.arr_mem = call i8* @wam_arena_alloc(i64 %app.arr_bytes)
+  %app.arr = bitcast i8* %app.arr_mem to %Value*
+  br label %app.f_loop
+app.f_loop:
+  %app.f_cur = phi %Value [ %app.a1, %app.c_done ], [ %app.f_next, %app.f_step ]
+  %app.f_idx = phi i32 [ 0, %app.c_done ], [ %app.f_idx1, %app.f_step ]
+  %app.f_done_b = icmp sge i32 %app.f_idx, %app.c_cnt
+  br i1 %app.f_done_b, label %app.b_init, label %app.f_step
+app.f_step:
+  %app.f_d = call %Value @wam_deref_value(%WamState* %vm, %Value %app.f_cur)
+  %app.f_cp = extractvalue %Value %app.f_d, 1
+  %app.f_cp_ptr = inttoptr i64 %app.f_cp to %Compound*
+  %app.f_args_slot = getelementptr %Compound, %Compound* %app.f_cp_ptr, i32 0, i32 2
+  %app.f_args = load %Value*, %Value** %app.f_args_slot
+  %app.f_head_ptr = getelementptr %Value, %Value* %app.f_args, i32 0
+  %app.f_head = load %Value, %Value* %app.f_head_ptr
+  %app.f_tail_ptr = getelementptr %Value, %Value* %app.f_args, i32 1
+  %app.f_next = load %Value, %Value* %app.f_tail_ptr
+  %app.f_slot = getelementptr %Value, %Value* %app.arr, i32 %app.f_idx
+  store %Value %app.f_head, %Value* %app.f_slot
+  %app.f_idx1 = add i32 %app.f_idx, 1
+  br label %app.f_loop
+app.b_init:
+  br label %app.b_loop
+app.b_loop:
+  ; Walk back-to-front: i from cnt-1 down to 0, prepending arr[i]
+  ; onto acc; initial acc seed is A2 (preserves the second list).
+  %app.b_i = phi i32 [ %app.c_cnt, %app.b_init ], [ %app.b_i_prev, %app.b_step ]
+  %app.b_acc = phi %Value [ %app.a2, %app.b_init ], [ %app.b_new_cons, %app.b_step ]
+  %app.b_done_b = icmp sle i32 %app.b_i, 0
+  br i1 %app.b_done_b, label %app.b_bind, label %app.b_step
+app.b_step:
+  %app.b_i_prev = sub i32 %app.b_i, 1
+  %app.b_slot = getelementptr %Value, %Value* %app.arr, i32 %app.b_i_prev
+  %app.b_head = load %Value, %Value* %app.b_slot
+  %app.b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %app.b_cp_mem = call i8* @wam_arena_alloc(i64 %app.b_cp_size)
+  %app.b_cp = bitcast i8* %app.b_cp_mem to %Compound*
+  %app.b_fn_slot = getelementptr %Compound, %Compound* %app.b_cp, i32 0, i32 0
+  %app.b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %app.b_fn_ptr, i8** %app.b_fn_slot
+  %app.b_ar_slot = getelementptr %Compound, %Compound* %app.b_cp, i32 0, i32 1
+  store i32 2, i32* %app.b_ar_slot
+  %app.b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %app.b_args = bitcast i8* %app.b_args_mem to %Value*
+  %app.b_args_slot = getelementptr %Compound, %Compound* %app.b_cp, i32 0, i32 2
+  store %Value* %app.b_args, %Value** %app.b_args_slot
+  %app.b_h_ptr = getelementptr %Value, %Value* %app.b_args, i32 0
+  store %Value %app.b_head, %Value* %app.b_h_ptr
+  %app.b_t_ptr = getelementptr %Value, %Value* %app.b_args, i32 1
+  store %Value %app.b_acc, %Value* %app.b_t_ptr
+  %app.b_cp_i64 = ptrtoint %Compound* %app.b_cp to i64
+  %app.b_nc0 = insertvalue %Value undef, i32 3, 0
+  %app.b_new_cons = insertvalue %Value %app.b_nc0, i64 %app.b_cp_i64, 1
+  br label %app.b_loop
+app.b_bind:
+  %app.b_raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %app.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %app.b_raw3, %Value %app.b_acc)
+  ret i1 %app.b_ok
+
 unknown:
   ret i1 false
 }'.
@@ -7458,6 +7550,7 @@ builtin_op_to_id('nth0/3', 51).
 builtin_op_to_id('nth1/3', 52).
 builtin_op_to_id('last/2', 53).
 builtin_op_to_id('reverse/2', 54).
+builtin_op_to_id('append/3', 55).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================

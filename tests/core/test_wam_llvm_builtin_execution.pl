@@ -922,6 +922,57 @@ test_reverse_idempotent(_, R) :-
     nth0(0, L2, E),
     R is E.   % 1 (reverse twice -> original)
 
+% M39: append/3 deterministic (A1 and A2 both bound lists).
+
+:- dynamic test_append_length/2.
+test_append_length(_, R) :-
+    append([1, 2, 3], [4, 5], L),
+    length(L, N),
+    R is N.   % 5
+
+:- dynamic test_append_first/2.
+test_append_first(_, R) :-
+    append([10, 20], [30, 40], L),
+    nth0(0, L, E),
+    R is E.   % 10 (head from A1)
+
+:- dynamic test_append_seam/2.
+test_append_seam(_, R) :-
+    append([10, 20], [30, 40], L),
+    nth0(2, L, E),
+    R is E.   % 30 (first elem of A2)
+
+:- dynamic test_append_last/2.
+test_append_last(_, R) :-
+    append([10, 20], [30, 40], L),
+    last(L, E),
+    R is E.   % 40
+
+:- dynamic test_append_left_empty/2.
+test_append_left_empty(_, R) :-
+    append([], [7, 8], L),
+    length(L, N),
+    R is N.   % 2
+
+:- dynamic test_append_right_empty/2.
+test_append_right_empty(_, R) :-
+    append([7, 8], [], L),
+    length(L, N),
+    R is N.   % 2
+
+:- dynamic test_append_both_empty/2.
+test_append_both_empty(_, R) :-
+    append([], [], L),
+    length(L, N),
+    R is N + 9.   % 9
+
+:- dynamic test_append_roundtrip/2.
+test_append_roundtrip(_, R) :-
+    append([1, 2], [3, 4], L),
+    reverse(L, L2),
+    nth0(0, L2, E),
+    R is E.   % 4 (last of L becomes first after reverse)
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -1842,6 +1893,23 @@ test_all :-
                    test_reverse_singleton, 0, 42),
        run_test_r0('reverse twice idempotent -> 1',
                    test_reverse_idempotent, 0, 1),
+       format('--- M39 append/3 deterministic ---~n'),
+       run_test_r0('append([1,2,3], [4,5], L), length -> 5',
+                   test_append_length, 0, 5),
+       run_test_r0('append([10,20], [30,40], L), nth0(0) -> 10',
+                   test_append_first, 0, 10),
+       run_test_r0('append([10,20], [30,40], L), nth0(2) -> 30 (seam)',
+                   test_append_seam, 0, 30),
+       run_test_r0('append([10,20], [30,40], L), last -> 40',
+                   test_append_last, 0, 40),
+       run_test_r0('append([], [7,8], L), length -> 2',
+                   test_append_left_empty, 0, 2),
+       run_test_r0('append([7,8], [], L), length -> 2',
+                   test_append_right_empty, 0, 2),
+       run_test_r0('append([], [], L), length + 9 -> 9',
+                   test_append_both_empty, 0, 9),
+       run_test_r0('append + reverse roundtrip -> last becomes first -> 4',
+                   test_append_roundtrip, 0, 4),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
