@@ -1685,6 +1685,65 @@ test_alc_dedup(_, R) :-
     atomic_list_concat([hi, there], B),
     ( A == B -> R is 1 ; R is 0 ).   % 1 -- intern dedupes
 
+% M53: atomic_list_concat/3 with separator (forward, atoms-only).
+
+:- dynamic test_alc3_simple_length/2.
+test_alc3_simple_length(_, R) :-
+    atomic_list_concat([a, b, c], '-', A),
+    atom_length(A, N),
+    R is N.   % 5 -- "a-b-c"
+
+:- dynamic test_alc3_first_code/2.
+test_alc3_first_code(_, R) :-
+    atomic_list_concat([hi, there], '/', A),
+    atom_codes(A, [C|_]),
+    R is C.   % 'h' = 104
+
+:- dynamic test_alc3_sep_code/2.
+test_alc3_sep_code(_, R) :-
+    atomic_list_concat([ab, cd], '/', A),
+    atom_codes(A, [_, _, C, _, _]),
+    R is C.   % '/' = 47
+
+:- dynamic test_alc3_multi_char_sep/2.
+test_alc3_multi_char_sep(_, R) :-
+    atomic_list_concat([a, b], ' :: ', A),
+    atom_length(A, N),
+    R is N.   % 6 = 1 + 4 + 1
+
+:- dynamic test_alc3_empty_list/2.
+test_alc3_empty_list(_, R) :-
+    atomic_list_concat([], '-', A),
+    atom_length(A, N),
+    R is N + 27.   % 27 -- empty result
+
+:- dynamic test_alc3_singleton/2.
+test_alc3_singleton(_, R) :-
+    % Only one element -> separator never appears in output.
+    atomic_list_concat([foo], '/', A),
+    atom_length(A, N),
+    R is N.   % 3
+
+:- dynamic test_alc3_empty_sep/2.
+test_alc3_empty_sep(_, R) :-
+    % Empty separator -> same as atomic_list_concat/2.
+    atomic_list_concat([a, b, c], '', A),
+    atom_length(A, N),
+    R is N.   % 3
+
+:- dynamic test_alc3_dedup/2.
+test_alc3_dedup(_, R) :-
+    atomic_list_concat([a, b], '-', A1),
+    atomic_list_concat([a, b], '-', A2),
+    ( A1 == A2 -> R is 1 ; R is 0 ).   % 1
+
+% Cross-check: alc3 with empty sep equals alc/2.
+:- dynamic test_alc3_matches_alc2/2.
+test_alc3_matches_alc2(_, R) :-
+    atomic_list_concat([hello, world], '', A1),
+    atomic_list_concat([hello, world], A2),
+    ( A1 == A2 -> R is 1 ; R is 0 ).   % 1
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -2867,6 +2926,25 @@ test_all :-
                    test_alc_with_empties, 0, 2),
        run_test_r0('atomic_list_concat dedup -> 1',
                    test_alc_dedup, 0, 1),
+       format('--- M53 atomic_list_concat/3 separator (atoms-only forward) ---~n'),
+       run_test_r0('alc([a,b,c], \'-\') length -> 5',
+                   test_alc3_simple_length, 0, 5),
+       run_test_r0('alc([hi,there], \'/\') first -> 104',
+                   test_alc3_first_code, 0, 104),
+       run_test_r0('alc([ab,cd], \'/\') sep code -> 47',
+                   test_alc3_sep_code, 0, 47),
+       run_test_r0('alc([a,b], \' :: \') length -> 6',
+                   test_alc3_multi_char_sep, 0, 6),
+       run_test_r0('alc([], \'-\') + 27 -> 27',
+                   test_alc3_empty_list, 0, 27),
+       run_test_r0('alc([foo], \'/\') singleton length -> 3',
+                   test_alc3_singleton, 0, 3),
+       run_test_r0('alc([a,b,c], \'\') length -> 3',
+                   test_alc3_empty_sep, 0, 3),
+       run_test_r0('alc/3 dedup -> 1',
+                   test_alc3_dedup, 0, 1),
+       run_test_r0('alc/3 empty sep matches alc/2 -> 1',
+                   test_alc3_matches_alc2, 0, 1),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),

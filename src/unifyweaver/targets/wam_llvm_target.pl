@@ -3437,6 +3437,7 @@ entry:
     i32 71, label %builtin_pairs_values
     i32 72, label %builtin_pairs_keys_values
     i32 73, label %builtin_atomic_list_concat
+    i32 74, label %builtin_atomic_list_concat3
   ]
 
 builtin_is:
@@ -7712,6 +7713,146 @@ alc.f_done:
   %alc.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %alc.raw2, %Value %alc.new_v)
   ret i1 %alc.ok
 
+builtin_atomic_list_concat3:
+  ; M53: atomic_list_concat(+List, +Sep, ?Atom) -- atoms-only forward.
+  ; A2 must be a bound Atom (the separator). Splits Atom by Sep is
+  ; deferred (reverse mode would need a substring scan).
+  ; Two-pass walk of A1:
+  ;   1. measure sep_len; walk A1 summing atom_len + (sep_len for
+  ;      every element after the first) into total;
+  ;   2. allocate (total+1) byte buffer; walk A1 again, before each
+  ;      element after the first memcpy the separator, then memcpy
+  ;      the atom''s string. Null-terminate, intern, unify A3.
+  %alc3.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  call void @wam_arena_ensure()
+  %alc3.t2 = extractvalue %Value %alc3.a2, 0
+  %alc3.is_sep_atom = icmp eq i32 %alc3.t2, 0
+  br i1 %alc3.is_sep_atom, label %alc3.sep_lookup, label %alc3.fail
+alc3.fail:
+  ret i1 false
+alc3.sep_lookup:
+  %alc3.sep_aid = extractvalue %Value %alc3.a2, 1
+  %alc3.sep_str = call i8* @wam_atom_to_string(i64 %alc3.sep_aid)
+  %alc3.sep_null = icmp eq i8* %alc3.sep_str, null
+  br i1 %alc3.sep_null, label %alc3.fail, label %alc3.sm_loop
+alc3.sm_loop:
+  %alc3.smp = phi i8* [ %alc3.sep_str, %alc3.sep_lookup ], [ %alc3.smpn, %alc3.sm_step ]
+  %alc3.smn = phi i64 [ 0, %alc3.sep_lookup ], [ %alc3.smn1, %alc3.sm_step ]
+  %alc3.smc = load i8, i8* %alc3.smp
+  %alc3.smz = icmp eq i8 %alc3.smc, 0
+  br i1 %alc3.smz, label %alc3.count_init, label %alc3.sm_step
+alc3.sm_step:
+  %alc3.smpn = getelementptr i8, i8* %alc3.smp, i32 1
+  %alc3.smn1 = add i64 %alc3.smn, 1
+  br label %alc3.sm_loop
+alc3.count_init:
+  ; %alc3.smn now holds sep_len.
+  %alc3.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  br label %alc3.c_loop
+alc3.c_loop:
+  %alc3.c_cur = phi %Value [ %alc3.a1, %alc3.count_init ], [ %alc3.c_next, %alc3.c_advance ]
+  %alc3.c_total = phi i64 [ 0, %alc3.count_init ], [ %alc3.c_total1, %alc3.c_advance ]
+  %alc3.c_n = phi i32 [ 0, %alc3.count_init ], [ %alc3.c_n1, %alc3.c_advance ]
+  %alc3.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc3.c_cur)
+  %alc3.c_tag = extractvalue %Value %alc3.c_d, 0
+  %alc3.c_is_cmp = icmp eq i32 %alc3.c_tag, 3
+  br i1 %alc3.c_is_cmp, label %alc3.c_step, label %alc3.c_done
+alc3.c_step:
+  %alc3.c_cp = extractvalue %Value %alc3.c_d, 1
+  %alc3.c_cp_ptr = inttoptr i64 %alc3.c_cp to %Compound*
+  %alc3.c_args_slot = getelementptr %Compound, %Compound* %alc3.c_cp_ptr, i32 0, i32 2
+  %alc3.c_args = load %Value*, %Value** %alc3.c_args_slot
+  %alc3.c_h_ptr = getelementptr %Value, %Value* %alc3.c_args, i32 0
+  %alc3.c_head = load %Value, %Value* %alc3.c_h_ptr
+  %alc3.c_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc3.c_head)
+  %alc3.c_h_tag = extractvalue %Value %alc3.c_h_d, 0
+  %alc3.c_h_is_atom = icmp eq i32 %alc3.c_h_tag, 0
+  br i1 %alc3.c_h_is_atom, label %alc3.c_measure, label %alc3.fail
+alc3.c_measure:
+  %alc3.c_aid = extractvalue %Value %alc3.c_h_d, 1
+  %alc3.c_str = call i8* @wam_atom_to_string(i64 %alc3.c_aid)
+  %alc3.c_str_null = icmp eq i8* %alc3.c_str, null
+  br i1 %alc3.c_str_null, label %alc3.fail, label %alc3.c_m_loop
+alc3.c_m_loop:
+  %alc3.c_mp = phi i8* [ %alc3.c_str, %alc3.c_measure ], [ %alc3.c_mpn, %alc3.c_m_step ]
+  %alc3.c_mn = phi i64 [ 0, %alc3.c_measure ], [ %alc3.c_mn1, %alc3.c_m_step ]
+  %alc3.c_mc = load i8, i8* %alc3.c_mp
+  %alc3.c_mz = icmp eq i8 %alc3.c_mc, 0
+  br i1 %alc3.c_mz, label %alc3.c_advance, label %alc3.c_m_step
+alc3.c_m_step:
+  %alc3.c_mpn = getelementptr i8, i8* %alc3.c_mp, i32 1
+  %alc3.c_mn1 = add i64 %alc3.c_mn, 1
+  br label %alc3.c_m_loop
+alc3.c_advance:
+  ; Add atom length, plus separator length for every element after the first.
+  %alc3.c_not_first = icmp ne i32 %alc3.c_n, 0
+  %alc3.c_sep_add = select i1 %alc3.c_not_first, i64 %alc3.smn, i64 0
+  %alc3.c_with_sep = add i64 %alc3.c_total, %alc3.c_sep_add
+  %alc3.c_total1 = add i64 %alc3.c_with_sep, %alc3.c_mn
+  %alc3.c_n1 = add i32 %alc3.c_n, 1
+  %alc3.c_t_ptr = getelementptr %Value, %Value* %alc3.c_args, i32 1
+  %alc3.c_next = load %Value, %Value* %alc3.c_t_ptr
+  br label %alc3.c_loop
+alc3.c_done:
+  %alc3.bufsz = add i64 %alc3.c_total, 1
+  %alc3.buf = call i8* @wam_arena_alloc(i64 %alc3.bufsz)
+  br label %alc3.f_loop
+alc3.f_loop:
+  %alc3.f_cur = phi %Value [ %alc3.a1, %alc3.c_done ], [ %alc3.f_next, %alc3.f_copy_atom ]
+  %alc3.f_off = phi i64 [ 0, %alc3.c_done ], [ %alc3.f_off2, %alc3.f_copy_atom ]
+  %alc3.f_idx = phi i32 [ 0, %alc3.c_done ], [ %alc3.f_idx1, %alc3.f_copy_atom ]
+  %alc3.f_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc3.f_cur)
+  %alc3.f_tag = extractvalue %Value %alc3.f_d, 0
+  %alc3.f_is_cmp = icmp eq i32 %alc3.f_tag, 3
+  br i1 %alc3.f_is_cmp, label %alc3.f_pre_sep, label %alc3.f_done
+alc3.f_pre_sep:
+  %alc3.f_not_first = icmp ne i32 %alc3.f_idx, 0
+  %alc3.f_off_after_sep_if = add i64 %alc3.f_off, %alc3.smn
+  %alc3.f_off_after_sep = select i1 %alc3.f_not_first, i64 %alc3.f_off_after_sep_if, i64 %alc3.f_off
+  br i1 %alc3.f_not_first, label %alc3.f_copy_sep, label %alc3.f_load_atom
+alc3.f_copy_sep:
+  %alc3.f_sep_dst = getelementptr i8, i8* %alc3.buf, i64 %alc3.f_off
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alc3.f_sep_dst, i8* %alc3.sep_str, i64 %alc3.smn, i1 false)
+  br label %alc3.f_load_atom
+alc3.f_load_atom:
+  %alc3.f_cp = extractvalue %Value %alc3.f_d, 1
+  %alc3.f_cp_ptr = inttoptr i64 %alc3.f_cp to %Compound*
+  %alc3.f_args_slot = getelementptr %Compound, %Compound* %alc3.f_cp_ptr, i32 0, i32 2
+  %alc3.f_args = load %Value*, %Value** %alc3.f_args_slot
+  %alc3.f_h_ptr = getelementptr %Value, %Value* %alc3.f_args, i32 0
+  %alc3.f_head = load %Value, %Value* %alc3.f_h_ptr
+  %alc3.f_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc3.f_head)
+  %alc3.f_aid = extractvalue %Value %alc3.f_h_d, 1
+  %alc3.f_str = call i8* @wam_atom_to_string(i64 %alc3.f_aid)
+  br label %alc3.f_m_loop
+alc3.f_m_loop:
+  %alc3.f_mp = phi i8* [ %alc3.f_str, %alc3.f_load_atom ], [ %alc3.f_mpn, %alc3.f_m_step ]
+  %alc3.f_mn = phi i64 [ 0, %alc3.f_load_atom ], [ %alc3.f_mn1, %alc3.f_m_step ]
+  %alc3.f_mc = load i8, i8* %alc3.f_mp
+  %alc3.f_mz = icmp eq i8 %alc3.f_mc, 0
+  br i1 %alc3.f_mz, label %alc3.f_copy_atom, label %alc3.f_m_step
+alc3.f_m_step:
+  %alc3.f_mpn = getelementptr i8, i8* %alc3.f_mp, i32 1
+  %alc3.f_mn1 = add i64 %alc3.f_mn, 1
+  br label %alc3.f_m_loop
+alc3.f_copy_atom:
+  %alc3.f_atom_dst = getelementptr i8, i8* %alc3.buf, i64 %alc3.f_off_after_sep
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alc3.f_atom_dst, i8* %alc3.f_str, i64 %alc3.f_mn, i1 false)
+  %alc3.f_off2 = add i64 %alc3.f_off_after_sep, %alc3.f_mn
+  %alc3.f_idx1 = add i32 %alc3.f_idx, 1
+  %alc3.f_t_ptr = getelementptr %Value, %Value* %alc3.f_args, i32 1
+  %alc3.f_next = load %Value, %Value* %alc3.f_t_ptr
+  br label %alc3.f_loop
+alc3.f_done:
+  %alc3.term_dst = getelementptr i8, i8* %alc3.buf, i64 %alc3.c_total
+  store i8 0, i8* %alc3.term_dst
+  %alc3.new_id = call i64 @wam_intern_atom(i8* %alc3.buf, i64 %alc3.c_total)
+  %alc3.new_v0 = insertvalue %Value undef, i32 0, 0
+  %alc3.new_v = insertvalue %Value %alc3.new_v0, i64 %alc3.new_id, 1
+  %alc3.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %alc3.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %alc3.raw3, %Value %alc3.new_v)
+  ret i1 %alc3.ok
+
 unknown:
   ret i1 false
 }'.
@@ -9158,6 +9299,7 @@ builtin_op_to_id('pairs_keys/2', 70).    % extract keys from K-V pair list
 builtin_op_to_id('pairs_values/2', 71).  % extract values
 builtin_op_to_id('pairs_keys_values/3', 72). % forward only: split pairs -> keys + values
 builtin_op_to_id('atomic_list_concat/2', 73). % concat list of atoms (atoms only mode)
+builtin_op_to_id('atomic_list_concat/3', 74). % concat with separator atom (atoms-only forward)
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
