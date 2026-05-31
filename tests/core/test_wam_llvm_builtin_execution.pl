@@ -5,6 +5,11 @@
 % Tests =/2 unification and simple comparisons that don't require
 % compound term construction (which has deeper WAM integration needs).
 
+% The cumulative LLVM IR built per test passed Prolog's 1 GB default
+% global-stack limit around M41 (sub_string over the full IR text is
+% the hot spot). Bump to 4 GB so the test suite stays self-contained.
+:- set_prolog_flag(stack_limit, 4_294_967_296).
+
 :- use_module('../../src/unifyweaver/targets/wam_llvm_target',
     [write_wam_llvm_project/3,
      clear_llvm_foreign_kernel_specs/0]).
@@ -1001,6 +1006,56 @@ test_memberchk_first_match_wins(_, R) :-
     % Two 5s in the list; deterministic memberchk takes the first.
     ( memberchk(5, [3, 5, 5, 9]) -> R is 1 ; R is 0 ).   % 1
 
+% M41: delete/3 deterministic.
+
+:- dynamic test_delete_no_match/2.
+test_delete_no_match(_, R) :-
+    delete([1, 2, 3], 99, L),
+    length(L, N),
+    R is N.   % 3 -- nothing removed
+
+:- dynamic test_delete_single/2.
+test_delete_single(_, R) :-
+    delete([1, 2, 3], 2, L),
+    length(L, N),
+    R is N.   % 2
+
+:- dynamic test_delete_multiple/2.
+test_delete_multiple(_, R) :-
+    delete([1, 2, 1, 3, 1], 1, L),
+    length(L, N),
+    R is N.   % 2 -- three 1s removed
+
+:- dynamic test_delete_all/2.
+test_delete_all(_, R) :-
+    delete([7, 7, 7], 7, L),
+    length(L, N),
+    R is N + 5.   % 5 -- empty result
+
+:- dynamic test_delete_empty/2.
+test_delete_empty(_, R) :-
+    delete([], 1, L),
+    length(L, N),
+    R is N + 8.   % 8
+
+:- dynamic test_delete_first/2.
+test_delete_first(_, R) :-
+    delete([1, 2, 3, 4], 1, L),
+    nth0(0, L, E),
+    R is E.   % 2 -- first becomes 2 after removing the 1
+
+:- dynamic test_delete_last/2.
+test_delete_last(_, R) :-
+    delete([1, 2, 3, 99], 99, L),
+    last(L, E),
+    R is E.   % 3 -- 99 removed from tail
+
+:- dynamic test_delete_preserves_order/2.
+test_delete_preserves_order(_, R) :-
+    delete([10, 5, 20, 5, 30], 5, L),
+    nth0(1, L, E),    % L = [10, 20, 30], index 1 is 20
+    R is E.   % 20
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -1951,6 +2006,23 @@ test_all :-
                    test_memberchk_bind, 0, 42),
        run_test_r0('memberchk(5, [3,5,5,9]) first-match -> 1',
                    test_memberchk_first_match_wins, 0, 1),
+       format('--- M41 delete/3 deterministic ---~n'),
+       run_test_r0('delete([1,2,3], 99, L), length -> 3 (no match)',
+                   test_delete_no_match, 0, 3),
+       run_test_r0('delete([1,2,3], 2, L), length -> 2',
+                   test_delete_single, 0, 2),
+       run_test_r0('delete([1,2,1,3,1], 1, L), length -> 2',
+                   test_delete_multiple, 0, 2),
+       run_test_r0('delete([7,7,7], 7, L), length + 5 -> 5 (empty)',
+                   test_delete_all, 0, 5),
+       run_test_r0('delete([], 1, L), length + 8 -> 8',
+                   test_delete_empty, 0, 8),
+       run_test_r0('delete([1,2,3,4], 1, L), nth0(0) -> 2',
+                   test_delete_first, 0, 2),
+       run_test_r0('delete([1,2,3,99], 99, L), last -> 3',
+                   test_delete_last, 0, 3),
+       run_test_r0('delete([10,5,20,5,30], 5, L), nth0(1) -> 20',
+                   test_delete_preserves_order, 0, 20),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
