@@ -3436,6 +3436,7 @@ entry:
     i32 70, label %builtin_pairs_keys
     i32 71, label %builtin_pairs_values
     i32 72, label %builtin_pairs_keys_values
+    i32 73, label %builtin_atomic_list_concat
   ]
 
 builtin_is:
@@ -7610,6 +7611,107 @@ pkv.r_bind:
   %pkv.r_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %pkv.r_raw1, %Value %pkv.r_b_acc)
   ret i1 %pkv.r_ok
 
+builtin_atomic_list_concat:
+  ; M52: atomic_list_concat(+List, ?Atom) -- atoms-only mode.
+  ; Walks A1 summing each Atom head''s string length, allocates a
+  ; single buffer, walks again memcpy''ing each string, interns the
+  ; result. Non-atom heads (Integer, Float, etc.) fail; that case
+  ; needs snprintf per element and is deferred.
+  %alc.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  call void @wam_arena_ensure()
+  br label %alc.c_loop
+alc.fail:
+  ret i1 false
+alc.c_loop:
+  %alc.c_cur = phi %Value [ %alc.a1, %builtin_atomic_list_concat ], [ %alc.c_next, %alc.c_advance ]
+  %alc.c_total = phi i64 [ 0, %builtin_atomic_list_concat ], [ %alc.c_total1, %alc.c_advance ]
+  %alc.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc.c_cur)
+  %alc.c_tag = extractvalue %Value %alc.c_d, 0
+  %alc.c_is_cmp = icmp eq i32 %alc.c_tag, 3
+  br i1 %alc.c_is_cmp, label %alc.c_step, label %alc.c_done
+alc.c_step:
+  %alc.c_cp = extractvalue %Value %alc.c_d, 1
+  %alc.c_cp_ptr = inttoptr i64 %alc.c_cp to %Compound*
+  %alc.c_args_slot = getelementptr %Compound, %Compound* %alc.c_cp_ptr, i32 0, i32 2
+  %alc.c_args = load %Value*, %Value** %alc.c_args_slot
+  %alc.c_h_ptr = getelementptr %Value, %Value* %alc.c_args, i32 0
+  %alc.c_head = load %Value, %Value* %alc.c_h_ptr
+  %alc.c_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc.c_head)
+  %alc.c_h_tag = extractvalue %Value %alc.c_h_d, 0
+  %alc.c_h_is_atom = icmp eq i32 %alc.c_h_tag, 0
+  br i1 %alc.c_h_is_atom, label %alc.c_measure, label %alc.fail
+alc.c_measure:
+  %alc.c_aid = extractvalue %Value %alc.c_h_d, 1
+  %alc.c_str = call i8* @wam_atom_to_string(i64 %alc.c_aid)
+  %alc.c_str_null = icmp eq i8* %alc.c_str, null
+  br i1 %alc.c_str_null, label %alc.fail, label %alc.c_m_loop
+alc.c_m_loop:
+  %alc.c_mp = phi i8* [ %alc.c_str, %alc.c_measure ], [ %alc.c_mpn, %alc.c_m_step ]
+  %alc.c_mn = phi i64 [ 0, %alc.c_measure ], [ %alc.c_mn1, %alc.c_m_step ]
+  %alc.c_mc = load i8, i8* %alc.c_mp
+  %alc.c_mz = icmp eq i8 %alc.c_mc, 0
+  br i1 %alc.c_mz, label %alc.c_advance, label %alc.c_m_step
+alc.c_m_step:
+  %alc.c_mpn = getelementptr i8, i8* %alc.c_mp, i32 1
+  %alc.c_mn1 = add i64 %alc.c_mn, 1
+  br label %alc.c_m_loop
+alc.c_advance:
+  %alc.c_total1 = add i64 %alc.c_total, %alc.c_mn
+  %alc.c_t_ptr = getelementptr %Value, %Value* %alc.c_args, i32 1
+  %alc.c_next = load %Value, %Value* %alc.c_t_ptr
+  br label %alc.c_loop
+alc.c_done:
+  %alc.bufsz = add i64 %alc.c_total, 1
+  %alc.buf = call i8* @wam_arena_alloc(i64 %alc.bufsz)
+  br label %alc.f_loop
+alc.f_loop:
+  %alc.f_cur = phi %Value [ %alc.a1, %alc.c_done ], [ %alc.f_next, %alc.f_after ]
+  %alc.f_off = phi i64 [ 0, %alc.c_done ], [ %alc.f_off1, %alc.f_after ]
+  %alc.f_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc.f_cur)
+  %alc.f_tag = extractvalue %Value %alc.f_d, 0
+  %alc.f_is_cmp = icmp eq i32 %alc.f_tag, 3
+  br i1 %alc.f_is_cmp, label %alc.f_step, label %alc.f_done
+alc.f_step:
+  %alc.f_cp = extractvalue %Value %alc.f_d, 1
+  %alc.f_cp_ptr = inttoptr i64 %alc.f_cp to %Compound*
+  %alc.f_args_slot = getelementptr %Compound, %Compound* %alc.f_cp_ptr, i32 0, i32 2
+  %alc.f_args = load %Value*, %Value** %alc.f_args_slot
+  %alc.f_h_ptr = getelementptr %Value, %Value* %alc.f_args, i32 0
+  %alc.f_head = load %Value, %Value* %alc.f_h_ptr
+  %alc.f_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc.f_head)
+  %alc.f_aid = extractvalue %Value %alc.f_h_d, 1
+  %alc.f_str = call i8* @wam_atom_to_string(i64 %alc.f_aid)
+  ; Measure this atom''s length again (second pass).
+  br label %alc.f_m_loop
+alc.f_m_loop:
+  %alc.f_mp = phi i8* [ %alc.f_str, %alc.f_step ], [ %alc.f_mpn, %alc.f_m_step ]
+  %alc.f_mn = phi i64 [ 0, %alc.f_step ], [ %alc.f_mn1, %alc.f_m_step ]
+  %alc.f_mc = load i8, i8* %alc.f_mp
+  %alc.f_mz = icmp eq i8 %alc.f_mc, 0
+  br i1 %alc.f_mz, label %alc.f_copy, label %alc.f_m_step
+alc.f_m_step:
+  %alc.f_mpn = getelementptr i8, i8* %alc.f_mp, i32 1
+  %alc.f_mn1 = add i64 %alc.f_mn, 1
+  br label %alc.f_m_loop
+alc.f_copy:
+  %alc.f_dst = getelementptr i8, i8* %alc.buf, i64 %alc.f_off
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alc.f_dst, i8* %alc.f_str, i64 %alc.f_mn, i1 false)
+  %alc.f_off1 = add i64 %alc.f_off, %alc.f_mn
+  %alc.f_t_ptr = getelementptr %Value, %Value* %alc.f_args, i32 1
+  %alc.f_next = load %Value, %Value* %alc.f_t_ptr
+  br label %alc.f_after
+alc.f_after:
+  br label %alc.f_loop
+alc.f_done:
+  %alc.term_dst = getelementptr i8, i8* %alc.buf, i64 %alc.c_total
+  store i8 0, i8* %alc.term_dst
+  %alc.new_id = call i64 @wam_intern_atom(i8* %alc.buf, i64 %alc.c_total)
+  %alc.new_v0 = insertvalue %Value undef, i32 0, 0
+  %alc.new_v = insertvalue %Value %alc.new_v0, i64 %alc.new_id, 1
+  %alc.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %alc.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %alc.raw2, %Value %alc.new_v)
+  ret i1 %alc.ok
+
 unknown:
   ret i1 false
 }'.
@@ -9055,6 +9157,7 @@ builtin_op_to_id('string_code/3', 69).   % string_code(+Idx, +Str, -Code) 1-base
 builtin_op_to_id('pairs_keys/2', 70).    % extract keys from K-V pair list
 builtin_op_to_id('pairs_values/2', 71).  % extract values
 builtin_op_to_id('pairs_keys_values/3', 72). % forward only: split pairs -> keys + values
+builtin_op_to_id('atomic_list_concat/2', 73). % concat list of atoms (atoms only mode)
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
