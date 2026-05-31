@@ -249,6 +249,12 @@
 :- dynamic user:wam_sub_atom_suffix/0.
 :- dynamic user:wam_sub_atom_backtrack_later_before/0.
 :- dynamic user:wam_sub_atom_length_bound_later_before/0.
+:- dynamic user:wam_sub_atom_before_unify/0.
+:- dynamic user:wam_sub_atom_before_unify_mismatch/0.
+:- dynamic user:wam_sub_atom_length_unify/0.
+:- dynamic user:wam_sub_atom_length_unify_mismatch/0.
+:- dynamic user:wam_sub_atom_after_unify/0.
+:- dynamic user:wam_sub_atom_after_unify_mismatch/0.
 :- dynamic user:wam_sub_atom_no_match/0.
 :- dynamic user:wam_sub_atom_numeric_source_arg/1.
 :- dynamic user:wam_sub_atom_numeric_sub_arg/1.
@@ -525,6 +531,12 @@ user:wam_sub_atom_prefix :- sub_atom(hello, 0, 3, _, hel).
 user:wam_sub_atom_suffix :- sub_atom(hello, _, 3, 0, llo).
 user:wam_sub_atom_backtrack_later_before :- sub_atom(abcabc, B, _, _, b), B =:= 4.
 user:wam_sub_atom_length_bound_later_before :- sub_atom(abcabc, B, 1, _, b), B =:= 4.
+user:wam_sub_atom_before_unify :- sub_atom(hello, B, _, _, ell), B = 1.
+user:wam_sub_atom_before_unify_mismatch :- sub_atom(hello, B, _, _, ell), B = 2.
+user:wam_sub_atom_length_unify :- sub_atom(hello, _, L, _, ell), L = 3.
+user:wam_sub_atom_length_unify_mismatch :- sub_atom(hello, _, L, _, ell), L = 2.
+user:wam_sub_atom_after_unify :- sub_atom(hello, _, _, A, ell), A = 1.
+user:wam_sub_atom_after_unify_mismatch :- sub_atom(hello, _, _, A, ell), A = 2.
 user:wam_sub_atom_no_match :- sub_atom(abc, _, _, _, xyz).
 user:wam_sub_atom_numeric_source_arg(A) :- sub_atom(A, 1, 3, 1, 234).
 user:wam_sub_atom_numeric_sub_arg(S) :- sub_atom(12345, 1, 2, _, S).
@@ -806,6 +818,12 @@ run_smoke :-
           user:wam_sub_atom_suffix/0,
           user:wam_sub_atom_backtrack_later_before/0,
           user:wam_sub_atom_length_bound_later_before/0,
+          user:wam_sub_atom_before_unify/0,
+          user:wam_sub_atom_before_unify_mismatch/0,
+          user:wam_sub_atom_length_unify/0,
+          user:wam_sub_atom_length_unify_mismatch/0,
+          user:wam_sub_atom_after_unify/0,
+          user:wam_sub_atom_after_unify_mismatch/0,
           user:wam_sub_atom_no_match/0,
           user:wam_sub_atom_numeric_source_arg/1,
           user:wam_sub_atom_numeric_sub_arg/1,
@@ -1269,6 +1287,12 @@ smoke_cases([
     case('wam_sub_atom_suffix/0', no_args, "true"),
     case('wam_sub_atom_backtrack_later_before/0', no_args, "true"),
     case('wam_sub_atom_length_bound_later_before/0', no_args, "true"),
+    case('wam_sub_atom_before_unify/0', no_args, "true"),
+    case('wam_sub_atom_before_unify_mismatch/0', no_args, "false"),
+    case('wam_sub_atom_length_unify/0', no_args, "true"),
+    case('wam_sub_atom_length_unify_mismatch/0', no_args, "false"),
+    case('wam_sub_atom_after_unify/0', no_args, "true"),
+    case('wam_sub_atom_after_unify_mismatch/0', no_args, "false"),
     case('wam_sub_atom_no_match/0', no_args, "false"),
     case('wam_sub_atom_numeric_source_arg/1', 12345, "true"),
     case('wam_sub_atom_numeric_sub_arg/1', 23, "true"),

@@ -1494,6 +1494,9 @@
     (string? value) (parse-number-text value)
     :else nil))
 
+(defn sub-atom-count-term [state n]
+  (normalize-literal-term (:intern-context state) (str n)))
+
 (defn sub-atom-solution-results [state text before length after sub]
   (let [n (count text)
         before-spec (if-let [n* (sub-atom-int-value state before)]
@@ -1520,9 +1523,9 @@
                :let [a (- n b l)
                      piece (subs text b (+ b l))
                      bindings (cond-> {}
-                                (= before-spec ::var) (assoc 2 b)
-                                (= length-spec ::var) (assoc 3 l)
-                                (= after-spec ::var) (assoc 4 a)
+                                (= before-spec ::var) (assoc 2 (sub-atom-count-term state b))
+                                (= length-spec ::var) (assoc 3 (sub-atom-count-term state l))
+                                (= after-spec ::var) (assoc 4 (sub-atom-count-term state a))
                                 (= sub-text ::var) (assoc 5 piece))]
                :when (and (or (= after-spec ::var) (= after-spec a))
                           (or (= sub-text ::var) (= sub-text piece)))]
@@ -1541,7 +1544,7 @@
                (or (logic-var? length) (= length ::unbound) (some? length-n)))
       [(cond-> {:bindings {1 sub-text}}
          (or (logic-var? length) (= length ::unbound))
-         (assoc-in [:bindings 3] (count sub-text)))])))
+         (assoc-in [:bindings 3] (sub-atom-count-term state (count sub-text))))])))
 
 (defn apply-sub-atom-solution [base-state resume-pc]
   (let [source (deref-value (:bindings base-state)
