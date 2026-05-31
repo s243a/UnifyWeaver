@@ -32,19 +32,19 @@ test(tokenize_quoted_atom_with_spaces) :-
     % PR #2076 regression: format strings must survive tokenization
     % as a single token.
     wam_tokenize_line("    put_constant 'plain text~n', A1", T),
-    assertion(T == ["put_constant", "plain text~n", "A1"]).
+    assertion(T == ["put_constant", "'plain text~n'", "A1"]).
 
 test(tokenize_quoted_atom_with_internal_commas) :-
     wam_tokenize_line("    put_constant 'a, b, c', A1", T),
-    assertion(T == ["put_constant", "a, b, c", "A1"]).
+    assertion(T == ["put_constant", "'a, b, c'", "A1"]).
 
 test(tokenize_quoted_atom_with_escaped_quote) :-
     wam_tokenize_line("    put_constant 'it\\'s', A1", T),
-    assertion(T == ["put_constant", "it's", "A1"]).
+    assertion(T == ["put_constant", "'it's'", "A1"]).
 
 test(tokenize_quoted_atom_with_escaped_backslash) :-
     wam_tokenize_line("    put_constant 'a\\\\b', A1", T),
-    assertion(T == ["put_constant", "a\\b", "A1"]).
+    assertion(T == ["put_constant", "'a\\b'", "A1"]).
 
 test(tokenize_conjunction_functor_preserved) :-
     % PR #2084 regression: ",/2" must be one token; bare comma
@@ -114,6 +114,24 @@ test(recognise_builtin_call) :-
     wam_recognise_instruction(["builtin_call", "is/2", "2"], I),
     assertion(I == builtin_call("is/2", "2")).
 
+test(recognise_numeric_and_nil_instructions) :-
+    Pairs = [
+        ["get_float", "3.5", "A1"]-get_float("3.5", "A1"),
+        ["unify_nil"]-unify_nil,
+        ["unify_void", "2"]-unify_void("2"),
+        ["put_unsafe_value", "Y1", "A2"]-put_unsafe_value("Y1", "A2"),
+        ["put_nil", "A1"]-put_nil("A1"),
+        ["put_integer", "7", "A1"]-put_integer("7", "A1"),
+        ["put_float", "3.5", "A1"]-put_float("3.5", "A1"),
+        ["set_local_value", "Y1"]-set_local_value("Y1"),
+        ["set_nil"]-set_nil,
+        ["set_integer", "7"]-set_integer("7"),
+        ["set_void", "2"]-set_void("2")
+    ],
+    forall(member(Tokens-Expected, Pairs),
+           ( wam_recognise_instruction(Tokens, Item),
+             assertion(Item == Expected) )).
+
 test(recognise_try_me_else) :-
     wam_recognise_instruction(["try_me_else", "L_clause_2"], I),
     assertion(I == try_me_else("L_clause_2")).
@@ -166,7 +184,7 @@ test(text_to_items_with_quoted_atom) :-
     Text = "tp/0:\n    put_constant 'hello world', A1\n    execute write/1\n",
     wam_text_to_items(Text, Items),
     assertion(Items == [label("tp/0"),
-                        put_constant("hello world", "A1"),
+                        put_constant("'hello world'", "A1"),
                         execute("write/1")]).
 
 test(text_to_items_with_conjunction_functor) :-

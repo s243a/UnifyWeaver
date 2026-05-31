@@ -66,7 +66,8 @@
 :- use_module('../targets/wam_text_parser',
               [wam_classify_constant_token/2,
                wam_tokenize_line/2,
-               wam_recognise_instruction/2]).
+               wam_recognise_instruction/2,
+               wam_text_to_items/2]).
 :- use_module(wam_runtime_parser_capability, [
 	parser_dependent_body_goal/2,
 	wam_target_runtime_parser/3
@@ -1743,13 +1744,16 @@ iso_errors:iso_errors_default_to_lax("read/2", "read_lax/2").
 
 %% iso_errors_rewrite_plans(+Config, +Plans0, -Plans)
 %  Python-specific pred_plan wrapper: applies iso_errors_rewrite_text
-%  to each pred_plan(Pred, Arity, Wam, wam) plan's WAM text.
+%  to each pred_plan(Pred, Arity, WamRepr, wam) plan's WAM text, then
+%  refreshes the structured items used by interpreter-mode codegen.
 iso_errors_rewrite_plans(Config, Plans0, Plans) :-
 	maplist(iso_errors_rewrite_plan(Config), Plans0, Plans).
 
 iso_errors_rewrite_plan(Config, pred_plan(Pred, Arity, Wam0, wam), pred_plan(Pred, Arity, Wam, wam)) :-
 	!,
-	iso_errors_rewrite_text(Config, Pred/Arity, Wam0, Wam).
+	wam_plan_text(Wam0, WamText0),
+	iso_errors_rewrite_text(Config, Pred/Arity, WamText0, WamText),
+	python_wam_text_plan(WamText, Wam).
 iso_errors_rewrite_plan(_, Plan, Plan).
 
 %% iso_errors_rewrite_text(+Config, +PI, +WamText, -RewrittenText)
@@ -2030,44 +2034,58 @@ python_predicate_clause(Name/Arity, Head, Body) :-
 plan_python_predicates(Predicates, Options, Plans) :-
 	maplist(plan_python_predicate(Options), Predicates, Plans).
 
-plan_python_predicate(Options, Module:Pred/Arity-WamCode,
-                      pred_plan(Pred, Arity, WamCode, Kind)) :- !,
+plan_python_predicate(Options, _Module:Pred/Arity-WamText,
+                      pred_plan(Pred, Arity, Wam, Kind)) :- !,
 	(   is_ffi_predicate(Pred, Arity, Options)
-	->  Kind = ffi
-	;   Module == user
-	->  Kind = wam
-	;   Kind = wam
+	->  Kind = ffi,
+	    Wam = ''
+	;   python_wam_text_plan(WamText, Wam),
+	    Kind = wam
 	).
 plan_python_predicate(Options, Module:Pred/Arity,
-                      pred_plan(Pred, Arity, WamCode, Kind)) :- !,
+                      pred_plan(Pred, Arity, Wam, Kind)) :- !,
 	(   is_ffi_predicate(Pred, Arity, Options)
 	->  Kind = ffi,
-	    WamCode = ''
-	;   compile_predicate_to_wam(Module:Pred/Arity, [], WamCode)
-	->  Kind = wam
-	;   WamCode = '',
+	    Wam = ''
+	;   compile_predicate_to_wam(Module:Pred/Arity, [], WamText)
+	->  python_wam_text_plan(WamText, Wam),
+	    Kind = wam
+	;   Wam = '',
 	    Kind = missing
 	).
-plan_python_predicate(Options, Pred/Arity-WamCode, pred_plan(Pred, Arity, WamCode, Kind)) :- !,
-	(   is_ffi_predicate(Pred, Arity, Options)
-	->  Kind = ffi
-	;   Kind = wam
-	).
-plan_python_predicate(Options, Pred/Arity, pred_plan(Pred, Arity, WamCode, Kind)) :-
+plan_python_predicate(Options, Pred/Arity-WamText, pred_plan(Pred, Arity, Wam, Kind)) :- !,
 	(   is_ffi_predicate(Pred, Arity, Options)
 	->  Kind = ffi,
-	    WamCode = ''
-	;   compile_predicate_to_wam(Pred/Arity, [], WamCode)
-	->  Kind = wam
-	;   WamCode = '',
+	    Wam = ''
+	;   python_wam_text_plan(WamText, Wam),
+	    Kind = wam
+	).
+plan_python_predicate(Options, Pred/Arity, pred_plan(Pred, Arity, Wam, Kind)) :-
+	(   is_ffi_predicate(Pred, Arity, Options)
+	->  Kind = ffi,
+	    Wam = ''
+	;   compile_predicate_to_wam(Pred/Arity, [], WamText)
+	->  python_wam_text_plan(WamText, Wam),
+	    Kind = wam
+	;   Wam = '',
 	    Kind = missing
 	).
+
+python_wam_text_plan(WamText, wam_items(WamText, Items)) :-
+	wam_text_to_items(WamText, Items).
+
+wam_plan_text(wam_items(WamText, _Items), WamText) :- !.
+wam_plan_text(WamText, WamText).
+
+wam_plan_items(wam_items(_WamText, Items), Items) :- !.
+wam_plan_items(WamText, Items) :-
+	wam_text_to_items(WamText, Items).
 
 lowered_route_set(Plans, Options, LoweredSet) :-
 	(   option(emit_mode(lowered), Options)
 	->  findall(Pred/Arity,
-	        ( member(pred_plan(Pred, Arity, WamCode, wam), Plans),
-	          lowered_candidate_wam(WamCode)
+	        ( member(pred_plan(Pred, Arity, Wam, wam), Plans),
+	          lowered_candidate_wam(Wam)
 	        ),
 	        Candidates0),
 	    sort(Candidates0, Candidates),
@@ -2075,8 +2093,9 @@ lowered_route_set(Plans, Options, LoweredSet) :-
 	;   LoweredSet = []
 	).
 
-lowered_candidate_wam(WamCode) :-
-	parse_wam_text_py(WamCode, Instrs),
+lowered_candidate_wam(Wam) :-
+	wam_plan_text(Wam, WamText),
+	parse_wam_text_py(WamText, Instrs),
 	is_deterministic_pred_py(Instrs).
 
 fix_lowered_route_set(Current, Plans, Options, Final) :-
@@ -2088,8 +2107,9 @@ fix_lowered_route_set(Current, Plans, Options, Final) :-
 	).
 
 lowered_route_supported(Plans, Options, Current, Pred/Arity) :-
-	member(pred_plan(Pred, Arity, WamCode, wam), Plans),
-	parse_wam_text_py(WamCode, Instrs),
+	member(pred_plan(Pred, Arity, Wam, wam), Plans),
+	wam_plan_text(Wam, WamText),
+	parse_wam_text_py(WamText, Instrs),
 	findall(CalleePred/CalleeArity, direct_wam_call(Instrs, CalleePred/CalleeArity), Calls0),
 	sort(Calls0, Calls),
 	forall(member(CalleePred/CalleeArity, Calls),
@@ -2124,17 +2144,20 @@ pred_string_indicator(PredStr, ArityStr, Pred/Arity) :-
 	    atom_number(ArityAtom0, Arity)
 	).
 
-compile_planned_predicate(Options, LoweredSet, pred_plan(Pred, Arity, WamCode, Kind), PredCode) :-
+compile_planned_predicate(Options, LoweredSet, pred_plan(Pred, Arity, Wam, Kind), PredCode) :-
 	(   Kind = ffi
 	->  compile_ffi_stub_predicate(Pred, Arity, Options, PredCode)
 	;   Kind = missing
 	->  atom_string(Pred, PredStr),
 	    format(string(PredCode), '# Could not compile ~w/~w to WAM\n', [PredStr, Arity])
 	;   member(Pred/Arity, LoweredSet)
-	->  compile_lowered_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode)
+	->  wam_plan_text(Wam, WamText),
+	    compile_lowered_wam_predicate_to_python(Pred/Arity, WamText, Options, PredCode)
 	;   option(emit_mode(lowered), Options)
-	->  compile_wam_predicate_to_python(Pred/Arity, WamCode, [registrar_prefix(register_)|Options], PredCode)
-	;   compile_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode)
+	->  wam_plan_items(Wam, Items),
+	    compile_wam_predicate_items_to_python(Pred/Arity, Items, [registrar_prefix(register_)|Options], PredCode)
+	;   wam_plan_items(Wam, Items),
+	    compile_wam_predicate_items_to_python(Pred/Arity, Items, Options, PredCode)
 	).
 
 %% pred_func_name(+Options, +PredSpec, -FuncName)

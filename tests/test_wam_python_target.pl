@@ -310,19 +310,18 @@ test(compile_runtime_reads_static_runtime_source) :-
 
 :- begin_tests(wam_python_items_mode_audit).
 
-test(python_target_still_uses_text_wam_generation) :-
+test(python_planning_normalizes_wam_text_to_items) :-
     once(source_file(wam_python_target:compile_wam_predicate_to_python(_, _, _, _), Path)),
     read_file_to_string(Path, Content, []),
-    sub_string(Content, _, _, _, "compile_predicate_to_wam(Pred/Arity, [], WamCode)"),
-    sub_string(Content, _, _, _, "compile_predicate_to_wam(Module:Pred/Arity, [], WamText)"),
-    sub_string(Content, _, _, _, "parse_wam_text_py(WamCode, Instrs)"),
-    sub_string(Content, _, _, _, "wam_code_to_python_instructions(WamCode"),
+    sub_string(Content, _, _, _, "python_wam_text_plan(WamText, wam_items(WamText, Items))"),
+    sub_string(Content, _, _, _, "compile_wam_predicate_items_to_python(Pred/Arity, Items, Options, PredCode)"),
+    sub_string(Content, _, _, _, "wam_plan_text(Wam, WamText)"),
     !.
 
-test(python_items_mode_planning_still_uses_text_wam) :-
+test(python_items_mode_still_waits_on_native_item_generator) :-
     once(source_file(wam_python_target:compile_wam_predicate_to_python(_, _, _, _), Path)),
     read_file_to_string(Path, Content, []),
-    sub_string(Content, _, _, _, "compile_wam_predicate_items_to_python"),
+    sub_string(Content, _, _, _, "wam_text_to_items(WamText, Items)"),
     \+ sub_string(Content, _, _, _, "compile_predicate_to_wam_items"),
     !.
 
@@ -366,6 +365,16 @@ test(items_predicate_compiler_honors_registrar_prefix) :-
         [registrar_prefix(register_)], Code),
     sub_string(Code, _, _, _, 'def register_pred_demo_1(raw_program):'),
     sub_string(Code, _, _, _, 'raw_program["demo/1"] = ('),
+    !.
+
+test(compile_all_interpreter_uses_items_plan) :-
+    WamText = 'demo/1:
+    put_constant foo, A1
+    proceed',
+    wam_python_target:compile_all_predicates([demo/1-WamText], [], Code),
+    sub_string(Code, _, _, _, 'def pred_demo_1(raw_program):'),
+    sub_string(Code, _, _, _, 'raw_program["demo/1"] = ('),
+    sub_string(Code, _, _, _, '("put_constant", Atom("foo"), A1)'),
     !.
 :- end_tests(wam_python_items_mode_audit).
 
