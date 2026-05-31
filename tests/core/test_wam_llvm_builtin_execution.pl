@@ -1810,6 +1810,56 @@ test_alc3s_roundtrip(_, R) :-
     length(Parts, N),
     R is N.   % 3
 
+% M55: atomic_list_concat/2 with Integer heads (snprintf widening).
+
+:- dynamic test_alc_int_only_length/2.
+test_alc_int_only_length(_, R) :-
+    atomic_list_concat([1, 2, 3], A),
+    atom_length(A, N),
+    R is N.   % 3 -- "123"
+
+:- dynamic test_alc_int_first_code/2.
+test_alc_int_first_code(_, R) :-
+    atomic_list_concat([42], A),
+    atom_codes(A, [C|_]),
+    R is C.   % '4' = 52
+
+:- dynamic test_alc_int_negative/2.
+test_alc_int_negative(_, R) :-
+    atomic_list_concat([-7], A),
+    atom_codes(A, [C|_]),
+    R is C.   % '-' = 45
+
+:- dynamic test_alc_mixed_length/2.
+test_alc_mixed_length(_, R) :-
+    atomic_list_concat([foo, 42, bar], A),
+    atom_length(A, N),
+    R is N.   % 8 ("foo42bar")
+
+:- dynamic test_alc_mixed_seam/2.
+test_alc_mixed_seam(_, R) :-
+    atomic_list_concat([ab, 99, cd], A),
+    atom_codes(A, [_, _, C, _, _, _]),    % position 2 is '9'
+    R is C.   % 57
+
+:- dynamic test_alc_int_zero/2.
+test_alc_int_zero(_, R) :-
+    atomic_list_concat([0], A),
+    atom_codes(A, [C|_]),
+    R is C.   % '0' = 48
+
+:- dynamic test_alc_int_last/2.
+test_alc_int_last(_, R) :-
+    atomic_list_concat([prefix, 200], A),
+    atom_length(A, N),
+    R is N.   % 9 ("prefix200")
+
+:- dynamic test_alc_three_ints/2.
+test_alc_three_ints(_, R) :-
+    atomic_list_concat([10, 20, 30], A),
+    atom_codes(A, [_, _, C, _, _, _]),    % position 2 is '2' from "20"
+    R is C.   % 50
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -3032,6 +3082,23 @@ test_all :-
                    test_alc3s_empty_sep_fails, 0, 0),
        run_test_r0('alc roundtrip count -> 3',
                    test_alc3s_roundtrip, 0, 3),
+       format('--- M55 atomic_list_concat/2 Integer heads ---~n'),
+       run_test_r0('alc([1,2,3]) atom_length -> 3',
+                   test_alc_int_only_length, 0, 3),
+       run_test_r0('alc([42]) first code -> 52',
+                   test_alc_int_first_code, 0, 52),
+       run_test_r0('alc([-7]) first code -> 45',
+                   test_alc_int_negative, 0, 45),
+       run_test_r0('alc([foo, 42, bar]) length -> 8',
+                   test_alc_mixed_length, 0, 8),
+       run_test_r0('alc([ab, 99, cd]) pos 2 -> 57',
+                   test_alc_mixed_seam, 0, 57),
+       run_test_r0('alc([0]) first code -> 48',
+                   test_alc_int_zero, 0, 48),
+       run_test_r0('alc([prefix, 200]) length -> 9',
+                   test_alc_int_last, 0, 9),
+       run_test_r0('alc([10, 20, 30]) pos 2 -> 50',
+                   test_alc_three_ints, 0, 50),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
