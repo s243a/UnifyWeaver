@@ -12,6 +12,7 @@
 :- dynamic user:test_select_builtin/0.
 :- dynamic user:test_delete_builtin/0.
 :- dynamic user:test_subtract_builtin/0.
+:- dynamic user:test_intersection_builtin/0.
 :- dynamic user:test_permutation_builtin/0.
 :- dynamic user:test_reverse_builtin/0.
 :- dynamic user:test_last_builtin/0.
@@ -129,6 +130,24 @@ test(builtins_execution) :-
                 AllRemoved = [],
                 \+ subtract([a|b], [a], _),
                 \+ subtract([a,b], [a|b], _)
+            )),
+          assertz(user:test_intersection_builtin :-
+            (   intersection([a,b,c,b], [b,d], R),
+                R = [b,b],
+                intersection([a,b,c], [d,e], Disjoint),
+                Disjoint = [],
+                intersection([], [a], EmptyLeft),
+                EmptyLeft = [],
+                intersection([a,b], [], EmptyRight),
+                EmptyRight = [],
+                intersection([1,2,1,3,1], [1], Nums),
+                Nums = [1,1,1],
+                intersection([10,5,20,5,30], [5,20], Ordered),
+                Ordered = [5,20,5],
+                intersection([a,b,c], [c,b,a], AllKept),
+                AllKept = [a,b,c],
+                \+ intersection([a|b], [a], _),
+                \+ intersection([a,b], [a|b], _)
             )),
           assertz(user:test_permutation_builtin :-
             (   permutation([a,b,c], [c,a,b]),
@@ -530,6 +549,7 @@ test(builtins_execution) :-
           retractall(user:test_select_builtin),
           retractall(user:test_delete_builtin),
           retractall(user:test_subtract_builtin),
+          retractall(user:test_intersection_builtin),
           retractall(user:test_permutation_builtin),
           retractall(user:test_reverse_builtin),
           retractall(user:test_last_builtin),
@@ -566,7 +586,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_subtract_builtin/0, test_permutation_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_between_builtin/0, test_list_numeric_builtin/0, test_list_to_set_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_tab_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_subtract_builtin/0, test_intersection_builtin/0, test_permutation_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_between_builtin/0, test_list_numeric_builtin/0, test_list_to_set_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_tab_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -602,6 +622,7 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "select/3"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "delete/3"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "subtract/3"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "intersection/3"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "permutation/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "reverse/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "last/2"')),
@@ -717,6 +738,14 @@ func main() {
 		fmt.Println("SUBTRACT_SUCCESS")
 	} else {
 		fmt.Println("SUBTRACT_FAILURE")
+	}
+
+	intersectionVM := wam.NewWamState(wam.Test_intersection_builtinCode, wam.Test_intersection_builtinLabels)
+	intersectionVM.PC = wam.Test_intersection_builtinStartPC
+	if intersectionVM.Run() {
+		fmt.Println("INTERSECTION_SUCCESS")
+	} else {
+		fmt.Println("INTERSECTION_FAILURE")
 	}
 
 	permutationVM := wam.NewWamState(wam.Test_permutation_builtinCode, wam.Test_permutation_builtinLabels)
@@ -991,6 +1020,7 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "SELECT_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "DELETE_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SUBTRACT_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "INTERSECTION_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "PERMUTATION_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "REVERSE_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "LAST_SUCCESS")),
