@@ -1906,6 +1906,38 @@ test_alc3_int_split_count(_, R) :-
     length(Parts, N),
     R is N.   % 3
 
+% M57: Float widening for atomic_list_concat/2 and /3.
+
+:- dynamic test_alc_float_singleton/2.
+test_alc_float_singleton(_, R) :-
+    atomic_list_concat([3.5], A),
+    atom_codes(A, [C|_]),
+    R is C.   % '3' = 51
+
+:- dynamic test_alc_float_with_atom/2.
+test_alc_float_with_atom(_, R) :-
+    atomic_list_concat([pi, '=', 3.14], A),
+    atom_codes(A, [C|_]),
+    R is C.   % 'p' = 112
+
+:- dynamic test_alc_float_with_int/2.
+test_alc_float_with_int(_, R) :-
+    atomic_list_concat([1, 2.5, 3], A),
+    atom_codes(A, [_, _, C|_]),
+    R is C.   % '.' = 46 (position 2 is the decimal point of 2.5)
+
+:- dynamic test_alc3_float_only/2.
+test_alc3_float_only(_, R) :-
+    atomic_list_concat([1.5, 2.5], '+', A),
+    atom_codes(A, [_, _, _, C|_]),    % position 3 is the '+'
+    R is C.   % 43
+
+:- dynamic test_alc3_float_mixed/2.
+test_alc3_float_mixed(_, R) :-
+    atomic_list_concat([x, 1.5, y], ',', A),
+    atom_codes(A, [C|_]),
+    R is C.   % 'x' = 120
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -3160,6 +3192,17 @@ test_all :-
                    test_alc3_int_multi_char_sep, 0, 7),
        run_test_r0('alc/3 int + split roundtrip count -> 3',
                    test_alc3_int_split_count, 0, 3),
+       format('--- M57 atomic_list_concat Float widening ---~n'),
+       run_test_r0('alc([3.5]) first -> 51 (\'3\')',
+                   test_alc_float_singleton, 0, 51),
+       run_test_r0('alc([pi, \'=\', 3.14]) first -> 112 (p)',
+                   test_alc_float_with_atom, 0, 112),
+       run_test_r0('alc([1, 2.5, 3]) pos 2 -> 46 (.)',
+                   test_alc_float_with_int, 0, 46),
+       run_test_r0('alc/3 [1.5, 2.5] / \'+\' pos 3 -> 43',
+                   test_alc3_float_only, 0, 43),
+       run_test_r0('alc/3 [x, 1.5, y] / \',\' first -> 120 (x)',
+                   test_alc3_float_mixed, 0, 120),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
