@@ -1635,6 +1635,56 @@ test_pkv_forward_then_reverse(_, R) :-
     sum_list(Ks2, S),
     R is S.   % 60
 
+% M52: atomic_list_concat/2 (atoms-only mode).
+
+:- dynamic test_alc_simple_length/2.
+test_alc_simple_length(_, R) :-
+    atomic_list_concat([hello, world], A),
+    atom_length(A, N),
+    R is N.   % 10
+
+:- dynamic test_alc_first_code/2.
+test_alc_first_code(_, R) :-
+    atomic_list_concat([hello, world], A),
+    atom_codes(A, [C|_]),
+    R is C.   % 'h' = 104
+
+:- dynamic test_alc_seam_code/2.
+test_alc_seam_code(_, R) :-
+    atomic_list_concat([ab, cd], A),
+    atom_codes(A, [_, _, C, _]),
+    R is C.   % 'c' = 99
+
+:- dynamic test_alc_empty_list/2.
+test_alc_empty_list(_, R) :-
+    atomic_list_concat([], A),
+    atom_length(A, N),
+    R is N + 31.   % 31 -- empty atom
+
+:- dynamic test_alc_singleton/2.
+test_alc_singleton(_, R) :-
+    atomic_list_concat([only], A),
+    atom_length(A, N),
+    R is N.   % 4
+
+:- dynamic test_alc_many/2.
+test_alc_many(_, R) :-
+    atomic_list_concat([a, b, c, d, e], A),
+    atom_length(A, N),
+    R is N.   % 5
+
+:- dynamic test_alc_with_empties/2.
+test_alc_with_empties(_, R) :-
+    atomic_list_concat(['', hi, ''], A),
+    atom_length(A, N),
+    R is N.   % 2
+
+:- dynamic test_alc_dedup/2.
+test_alc_dedup(_, R) :-
+    atomic_list_concat([hi, there], A),
+    atomic_list_concat([hi, there], B),
+    ( A == B -> R is 1 ; R is 0 ).   % 1 -- intern dedupes
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -2800,6 +2850,23 @@ test_all :-
                    test_pkv_rev_mismatch_values_longer, 0, 0),
        run_test_r0('pkv forward then reverse roundtrip sum -> 60',
                    test_pkv_forward_then_reverse, 0, 60),
+       format('--- M52 atomic_list_concat/2 (atoms-only) ---~n'),
+       run_test_r0('atomic_list_concat([hello, world]) length -> 10',
+                   test_alc_simple_length, 0, 10),
+       run_test_r0('atomic_list_concat([hello, world]) first -> 104',
+                   test_alc_first_code, 0, 104),
+       run_test_r0('atomic_list_concat([ab, cd]) seam -> 99 (c)',
+                   test_alc_seam_code, 0, 99),
+       run_test_r0('atomic_list_concat([]) + 31 -> 31',
+                   test_alc_empty_list, 0, 31),
+       run_test_r0('atomic_list_concat([only]) length -> 4',
+                   test_alc_singleton, 0, 4),
+       run_test_r0('atomic_list_concat([a,b,c,d,e]) length -> 5',
+                   test_alc_many, 0, 5),
+       run_test_r0('atomic_list_concat([\'\', hi, \'\']) length -> 2',
+                   test_alc_with_empties, 0, 2),
+       run_test_r0('atomic_list_concat dedup -> 1',
+                   test_alc_dedup, 0, 1),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
