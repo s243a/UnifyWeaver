@@ -1744,6 +1744,72 @@ test_alc3_matches_alc2(_, R) :-
     atomic_list_concat([hello, world], A2),
     ( A1 == A2 -> R is 1 ; R is 0 ).   % 1
 
+% M54: atomic_list_concat/3 split mode (bound Atom + Sep -> Parts).
+
+:- dynamic test_alc3s_simple_count/2.
+test_alc3s_simple_count(_, R) :-
+    atomic_list_concat(Parts, '-', 'a-b-c'),
+    length(Parts, N),
+    R is N.   % 3
+
+:- dynamic test_alc3s_first_length/2.
+test_alc3s_first_length(_, R) :-
+    atomic_list_concat(Parts, '-', 'hello-world'),    % Parts = unbound -> split
+    nth0(0, Parts, P),
+    atom_length(P, N),
+    R is N.   % 5 ("hello")
+
+:- dynamic test_alc3s_last_length/2.
+test_alc3s_last_length(_, R) :-
+    atomic_list_concat(Parts, '/', 'a/bb/ccc'),
+    last(Parts, P),
+    atom_length(P, N),
+    R is N.   % 3 ("ccc")
+
+:- dynamic test_alc3s_no_sep/2.
+test_alc3s_no_sep(_, R) :-
+    % No separator in source -> single-element list with the whole atom.
+    atomic_list_concat(Parts, '-', 'helloworld'),
+    length(Parts, N),
+    R is N.   % 1
+
+:- dynamic test_alc3s_empty_atom/2.
+test_alc3s_empty_atom(_, R) :-
+    atomic_list_concat(Parts, '-', ''),
+    length(Parts, N),
+    R is N.   % 1 -- ['']
+
+:- dynamic test_alc3s_sep_only/2.
+test_alc3s_sep_only(_, R) :-
+    % Atom is exactly the separator -> two empty parts.
+    atomic_list_concat(Parts, '-', '-'),
+    length(Parts, N),
+    R is N.   % 2
+
+:- dynamic test_alc3s_consecutive_seps/2.
+test_alc3s_consecutive_seps(_, R) :-
+    atomic_list_concat(Parts, '-', 'a--b'),
+    length(Parts, N),
+    R is N.   % 3 -- ['a', '', 'b']
+
+:- dynamic test_alc3s_multi_char_sep/2.
+test_alc3s_multi_char_sep(_, R) :-
+    atomic_list_concat(Parts, '::', 'foo::bar::baz'),
+    length(Parts, N),
+    R is N.   % 3
+
+:- dynamic test_alc3s_empty_sep_fails/2.
+test_alc3s_empty_sep_fails(_, R) :-
+    ( atomic_list_concat(_, '', 'abc') -> R is 1 ; R is 0 ).   % 0
+
+% Forward then reverse round-trip recovers parts (atom_codes head check).
+:- dynamic test_alc3s_roundtrip/2.
+test_alc3s_roundtrip(_, R) :-
+    atomic_list_concat([alpha, beta, gamma], '|', Joined),
+    atomic_list_concat(Parts, '|', Joined),
+    length(Parts, N),
+    R is N.   % 3
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -2945,6 +3011,27 @@ test_all :-
                    test_alc3_dedup, 0, 1),
        run_test_r0('alc/3 empty sep matches alc/2 -> 1',
                    test_alc3_matches_alc2, 0, 1),
+       format('--- M54 atomic_list_concat/3 split mode ---~n'),
+       run_test_r0('alc(Parts, \'-\', \'a-b-c\') length -> 3',
+                   test_alc3s_simple_count, 0, 3),
+       run_test_r0('alc([P|_], \'-\', \'hello-world\') first length -> 5',
+                   test_alc3s_first_length, 0, 5),
+       run_test_r0('alc(Parts, \'/\', \'a/bb/ccc\') last length -> 3',
+                   test_alc3s_last_length, 0, 3),
+       run_test_r0('alc(Parts, \'-\', \'helloworld\') -> 1',
+                   test_alc3s_no_sep, 0, 1),
+       run_test_r0('alc(Parts, \'-\', \'\') -> 1 ([\'\'])',
+                   test_alc3s_empty_atom, 0, 1),
+       run_test_r0('alc(Parts, \'-\', \'-\') -> 2 ([\'\', \'\'])',
+                   test_alc3s_sep_only, 0, 2),
+       run_test_r0('alc(Parts, \'-\', \'a--b\') -> 3',
+                   test_alc3s_consecutive_seps, 0, 3),
+       run_test_r0('alc(Parts, \'::\', \'foo::bar::baz\') -> 3',
+                   test_alc3s_multi_char_sep, 0, 3),
+       run_test_r0('alc(_, \'\', _) empty sep -> 0',
+                   test_alc3s_empty_sep_fails, 0, 0),
+       run_test_r0('alc roundtrip count -> 3',
+                   test_alc3s_roundtrip, 0, 3),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
