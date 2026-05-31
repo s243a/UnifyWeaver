@@ -2018,6 +2018,7 @@ is_builtin_pred(delete, 3).         % remove all matching elements
 is_builtin_pred(subtract, 3).       % set difference: List1 minus List2
 is_builtin_pred(intersection, 3).   % set intersection: elements in both
 is_builtin_pred(union, 3).          % set union: A1 ++ (A2 minus A1)
+is_builtin_pred(list_to_set, 2).    % dedupe list (first-occurrence order).
 is_builtin_pred(must_be, 2).        % type check with type_error throw
 is_builtin_pred(string_chars, 2).   % alias for atom_chars/2 (atoms = strings).
 is_builtin_pred(string_codes, 2).   % alias for atom_codes/2.

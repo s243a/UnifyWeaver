@@ -1348,6 +1348,68 @@ test_union_size_relation(_, R) :-
     length(I, NI),
     R is NU + NI.   % 6 + 2 = 8 (= 4 + 4)
 
+% M47: list_to_set/2 -- dedupe preserving first-occurrence order.
+
+:- dynamic test_l2s_simple/2.
+test_l2s_simple(_, R) :-
+    list_to_set([1, 2, 3], L),
+    length(L, N),
+    R is N.   % 3 -- no dupes
+
+:- dynamic test_l2s_dupes/2.
+test_l2s_dupes(_, R) :-
+    list_to_set([1, 2, 1, 3, 2], L),
+    length(L, N),
+    R is N.   % 3 -- [1, 2, 3]
+
+:- dynamic test_l2s_all_dupes/2.
+test_l2s_all_dupes(_, R) :-
+    list_to_set([7, 7, 7, 7], L),
+    length(L, N),
+    R is N.   % 1
+
+:- dynamic test_l2s_empty/2.
+test_l2s_empty(_, R) :-
+    list_to_set([], L),
+    length(L, N),
+    R is N + 9.   % 9
+
+:- dynamic test_l2s_singleton/2.
+test_l2s_singleton(_, R) :-
+    list_to_set([42], [E]),
+    R is E.   % 42
+
+:- dynamic test_l2s_order_first/2.
+test_l2s_order_first(_, R) :-
+    list_to_set([3, 1, 2, 1, 3], L),
+    nth0(0, L, E),
+    R is E.   % 3 -- first occurrence wins
+
+:- dynamic test_l2s_order_second/2.
+test_l2s_order_second(_, R) :-
+    list_to_set([3, 1, 2, 1, 3], L),
+    nth0(1, L, E),
+    R is E.   % 1
+
+:- dynamic test_l2s_order_third/2.
+test_l2s_order_third(_, R) :-
+    list_to_set([3, 1, 2, 1, 3], L),
+    nth0(2, L, E),
+    R is E.   % 2
+
+:- dynamic test_l2s_atom_dupes/2.
+test_l2s_atom_dupes(_, R) :-
+    list_to_set([a, b, a, c, b], L),
+    length(L, N),
+    R is N.   % 3
+
+:- dynamic test_l2s_idempotent/2.
+test_l2s_idempotent(_, R) :-
+    list_to_set([1, 2, 2, 3], L1),
+    list_to_set(L1, L2),
+    length(L2, N),
+    R is N.   % 3 -- already a set
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -2416,6 +2478,27 @@ test_all :-
                    test_union_a2_first_match_filtered, 0, 4),
        run_test_r0('|union| + |inter| = |A1| + |A2| (8)',
                    test_union_size_relation, 0, 8),
+       format('--- M47 list_to_set/2 ---~n'),
+       run_test_r0('list_to_set([1,2,3]) length -> 3 (no dupes)',
+                   test_l2s_simple, 0, 3),
+       run_test_r0('list_to_set([1,2,1,3,2]) length -> 3',
+                   test_l2s_dupes, 0, 3),
+       run_test_r0('list_to_set([7,7,7,7]) length -> 1',
+                   test_l2s_all_dupes, 0, 1),
+       run_test_r0('list_to_set([]) + 9 -> 9',
+                   test_l2s_empty, 0, 9),
+       run_test_r0('list_to_set([42], [E]) -> 42',
+                   test_l2s_singleton, 0, 42),
+       run_test_r0('list_to_set([3,1,2,1,3]) nth0(0) -> 3 (first wins)',
+                   test_l2s_order_first, 0, 3),
+       run_test_r0('list_to_set([3,1,2,1,3]) nth0(1) -> 1',
+                   test_l2s_order_second, 0, 1),
+       run_test_r0('list_to_set([3,1,2,1,3]) nth0(2) -> 2',
+                   test_l2s_order_third, 0, 2),
+       run_test_r0('list_to_set([a,b,a,c,b]) length -> 3',
+                   test_l2s_atom_dupes, 0, 3),
+       run_test_r0('list_to_set idempotent on already-a-set -> 3',
+                   test_l2s_idempotent, 0, 3),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
