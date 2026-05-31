@@ -1938,6 +1938,88 @@ test_alc3_float_mixed(_, R) :-
     atom_codes(A, [C|_]),
     R is C.   % 'x' = 120
 
+% M58: char_type/2 -- check mode.
+
+:- dynamic test_ct_alpha_yes/2.
+test_ct_alpha_yes(_, R) :-
+    ( char_type(a, alpha) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_alpha_no/2.
+test_ct_alpha_no(_, R) :-
+    ( char_type('5', alpha) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_digit_yes/2.
+test_ct_digit_yes(_, R) :-
+    ( char_type('7', digit) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_digit_no/2.
+test_ct_digit_no(_, R) :-
+    ( char_type(z, digit) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_upper_yes/2.
+test_ct_upper_yes(_, R) :-
+    ( char_type('A', upper) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_upper_no/2.
+test_ct_upper_no(_, R) :-
+    ( char_type(a, upper) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_lower_yes/2.
+test_ct_lower_yes(_, R) :-
+    ( char_type(m, lower) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_alnum_letter/2.
+test_ct_alnum_letter(_, R) :-
+    ( char_type(b, alnum) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_alnum_digit/2.
+test_ct_alnum_digit(_, R) :-
+    ( char_type('3', alnum) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_alnum_punct/2.
+test_ct_alnum_punct(_, R) :-
+    ( char_type('!', alnum) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_space_yes/2.
+test_ct_space_yes(_, R) :-
+    ( char_type(' ', space) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_ascii_yes/2.
+test_ct_ascii_yes(_, R) :-
+    ( char_type('A', ascii) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_punct_yes/2.
+test_ct_punct_yes(_, R) :-
+    ( char_type('!', punct) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_punct_no_space/2.
+test_ct_punct_no_space(_, R) :-
+    ( char_type(' ', punct) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_csymf_letter/2.
+test_ct_csymf_letter(_, R) :-
+    ( char_type(z, csymf) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_csymf_underscore/2.
+test_ct_csymf_underscore(_, R) :-
+    ( char_type('_', csymf) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_csymf_digit_no/2.
+test_ct_csymf_digit_no(_, R) :-
+    ( char_type('5', csymf) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_csym_digit_yes/2.
+test_ct_csym_digit_yes(_, R) :-
+    ( char_type('5', csym) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_unknown_type/2.
+test_ct_unknown_type(_, R) :-
+    ( char_type(a, bogus) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_multichar_atom/2.
+test_ct_multichar_atom(_, R) :-
+    ( char_type(ab, alpha) -> R is 1 ; R is 0 ).   % 0 -- not single-char
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -3203,6 +3285,47 @@ test_all :-
                    test_alc3_float_only, 0, 43),
        run_test_r0('alc/3 [x, 1.5, y] / \',\' first -> 120 (x)',
                    test_alc3_float_mixed, 0, 120),
+       format('--- M58 char_type/2 (check mode) ---~n'),
+       run_test_r0('char_type(a, alpha) -> 1',
+                   test_ct_alpha_yes, 0, 1),
+       run_test_r0('char_type(\'5\', alpha) -> 0',
+                   test_ct_alpha_no, 0, 0),
+       run_test_r0('char_type(\'7\', digit) -> 1',
+                   test_ct_digit_yes, 0, 1),
+       run_test_r0('char_type(z, digit) -> 0',
+                   test_ct_digit_no, 0, 0),
+       run_test_r0('char_type(\'A\', upper) -> 1',
+                   test_ct_upper_yes, 0, 1),
+       run_test_r0('char_type(a, upper) -> 0',
+                   test_ct_upper_no, 0, 0),
+       run_test_r0('char_type(m, lower) -> 1',
+                   test_ct_lower_yes, 0, 1),
+       run_test_r0('char_type(b, alnum) letter -> 1',
+                   test_ct_alnum_letter, 0, 1),
+       run_test_r0('char_type(\'3\', alnum) digit -> 1',
+                   test_ct_alnum_digit, 0, 1),
+       run_test_r0('char_type(\'!\', alnum) -> 0',
+                   test_ct_alnum_punct, 0, 0),
+       run_test_r0('char_type(\' \', space) -> 1',
+                   test_ct_space_yes, 0, 1),
+       run_test_r0('char_type(\'A\', ascii) -> 1',
+                   test_ct_ascii_yes, 0, 1),
+       run_test_r0('char_type(\'!\', punct) -> 1',
+                   test_ct_punct_yes, 0, 1),
+       run_test_r0('char_type(\' \', punct) -> 0',
+                   test_ct_punct_no_space, 0, 0),
+       run_test_r0('char_type(z, csymf) -> 1',
+                   test_ct_csymf_letter, 0, 1),
+       run_test_r0('char_type(\'_\', csymf) -> 1',
+                   test_ct_csymf_underscore, 0, 1),
+       run_test_r0('char_type(\'5\', csymf) -> 0',
+                   test_ct_csymf_digit_no, 0, 0),
+       run_test_r0('char_type(\'5\', csym) -> 1',
+                   test_ct_csym_digit_yes, 0, 1),
+       run_test_r0('char_type(a, bogus) unknown type -> 0',
+                   test_ct_unknown_type, 0, 0),
+       run_test_r0('char_type(ab, alpha) multichar -> 0',
+                   test_ct_multichar_atom, 0, 0),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
