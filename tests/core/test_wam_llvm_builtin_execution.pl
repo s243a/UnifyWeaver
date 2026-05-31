@@ -2109,6 +2109,116 @@ test_cmp_check_mode_eq(_, R) :-
 test_cmp_check_mode_wrong(_, R) :-
     ( compare(>, 1, 5) -> R is 1 ; R is 0 ).   % 0 -- 1 > 5 is false
 
+% M60: must_be/2 fail-instead-of-throw type guard.
+
+:- dynamic test_mb_atom_yes/2.
+test_mb_atom_yes(_, R) :-
+    ( must_be(atom, hello) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_atom_no/2.
+test_mb_atom_no(_, R) :-
+    ( must_be(atom, 42) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_integer_yes/2.
+test_mb_integer_yes(_, R) :-
+    ( must_be(integer, 7) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_integer_no/2.
+test_mb_integer_no(_, R) :-
+    ( must_be(integer, 3.14) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_float_yes/2.
+test_mb_float_yes(_, R) :-
+    ( must_be(float, 2.5) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_number_int/2.
+test_mb_number_int(_, R) :-
+    ( must_be(number, 99) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_number_flt/2.
+test_mb_number_flt(_, R) :-
+    ( must_be(number, 1.5) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_number_atom/2.
+test_mb_number_atom(_, R) :-
+    ( must_be(number, foo) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_compound_yes/2.
+test_mb_compound_yes(_, R) :-
+    ( must_be(compound, [1, 2, 3]) -> R is 1 ; R is 0 ).   % 1 -- list is compound
+
+:- dynamic test_mb_compound_no/2.
+test_mb_compound_no(_, R) :-
+    ( must_be(compound, atom) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_var_yes/2.
+test_mb_var_yes(_, R) :-
+    ( must_be(var, _Fresh) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_var_no/2.
+test_mb_var_no(_, R) :-
+    ( must_be(var, 5) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_nonvar_yes/2.
+test_mb_nonvar_yes(_, R) :-
+    ( must_be(nonvar, 5) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_nonvar_no/2.
+test_mb_nonvar_no(_, R) :-
+    ( must_be(nonvar, _Fresh) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_atomic_atom/2.
+test_mb_atomic_atom(_, R) :-
+    ( must_be(atomic, hello) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_atomic_int/2.
+test_mb_atomic_int(_, R) :-
+    ( must_be(atomic, 7) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_atomic_compound/2.
+test_mb_atomic_compound(_, R) :-
+    ( must_be(atomic, [1, 2]) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_callable_atom/2.
+test_mb_callable_atom(_, R) :-
+    ( must_be(callable, foo) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_callable_compound/2.
+test_mb_callable_compound(_, R) :-
+    ( must_be(callable, [1]) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_callable_int/2.
+test_mb_callable_int(_, R) :-
+    ( must_be(callable, 5) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_list_empty/2.
+test_mb_list_empty(_, R) :-
+    ( must_be(list, []) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_list_cons/2.
+test_mb_list_cons(_, R) :-
+    ( must_be(list, [1, 2]) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_list_no/2.
+test_mb_list_no(_, R) :-
+    ( must_be(list, hello) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_boolean_true/2.
+test_mb_boolean_true(_, R) :-
+    ( must_be(boolean, true) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_boolean_false/2.
+test_mb_boolean_false(_, R) :-
+    ( must_be(boolean, false) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_boolean_no/2.
+test_mb_boolean_no(_, R) :-
+    ( must_be(boolean, maybe) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_unknown_type/2.
+test_mb_unknown_type(_, R) :-
+    ( must_be(bogus, hello) -> R is 1 ; R is 0 ).   % 0
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -3446,6 +3556,61 @@ test_all :-
                    test_cmp_check_mode_eq, 0, 1),
        run_test_r0('compare(>, 1, 5) check mode wrong -> 0',
                    test_cmp_check_mode_wrong, 0, 0),
+       format('--- M60 must_be/2 (fail-instead-of-throw type guard) ---~n'),
+       run_test_r0('must_be(atom, hello) -> 1',
+                   test_mb_atom_yes, 0, 1),
+       run_test_r0('must_be(atom, 42) -> 0',
+                   test_mb_atom_no, 0, 0),
+       run_test_r0('must_be(integer, 7) -> 1',
+                   test_mb_integer_yes, 0, 1),
+       run_test_r0('must_be(integer, 3.14) -> 0',
+                   test_mb_integer_no, 0, 0),
+       run_test_r0('must_be(float, 2.5) -> 1',
+                   test_mb_float_yes, 0, 1),
+       run_test_r0('must_be(number, 99) int -> 1',
+                   test_mb_number_int, 0, 1),
+       run_test_r0('must_be(number, 1.5) flt -> 1',
+                   test_mb_number_flt, 0, 1),
+       run_test_r0('must_be(number, foo) -> 0',
+                   test_mb_number_atom, 0, 0),
+       run_test_r0('must_be(compound, [1,2,3]) -> 1',
+                   test_mb_compound_yes, 0, 1),
+       run_test_r0('must_be(compound, atom) -> 0',
+                   test_mb_compound_no, 0, 0),
+       run_test_r0('must_be(var, _Fresh) -> 1',
+                   test_mb_var_yes, 0, 1),
+       run_test_r0('must_be(var, 5) -> 0',
+                   test_mb_var_no, 0, 0),
+       run_test_r0('must_be(nonvar, 5) -> 1',
+                   test_mb_nonvar_yes, 0, 1),
+       run_test_r0('must_be(nonvar, _Fresh) -> 0',
+                   test_mb_nonvar_no, 0, 0),
+       run_test_r0('must_be(atomic, hello) -> 1',
+                   test_mb_atomic_atom, 0, 1),
+       run_test_r0('must_be(atomic, 7) -> 1',
+                   test_mb_atomic_int, 0, 1),
+       run_test_r0('must_be(atomic, [1,2]) -> 0',
+                   test_mb_atomic_compound, 0, 0),
+       run_test_r0('must_be(callable, foo) -> 1',
+                   test_mb_callable_atom, 0, 1),
+       run_test_r0('must_be(callable, [1]) -> 1',
+                   test_mb_callable_compound, 0, 1),
+       run_test_r0('must_be(callable, 5) -> 0',
+                   test_mb_callable_int, 0, 0),
+       run_test_r0('must_be(list, []) -> 1',
+                   test_mb_list_empty, 0, 1),
+       run_test_r0('must_be(list, [1,2]) -> 1',
+                   test_mb_list_cons, 0, 1),
+       run_test_r0('must_be(list, hello) -> 0',
+                   test_mb_list_no, 0, 0),
+       run_test_r0('must_be(boolean, true) -> 1',
+                   test_mb_boolean_true, 0, 1),
+       run_test_r0('must_be(boolean, false) -> 1',
+                   test_mb_boolean_false, 0, 1),
+       run_test_r0('must_be(boolean, maybe) -> 0',
+                   test_mb_boolean_no, 0, 0),
+       run_test_r0('must_be(bogus, hello) -> 0',
+                   test_mb_unknown_type, 0, 0),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),

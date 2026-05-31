@@ -1226,6 +1226,20 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     register_functor_string("csymf"),
     register_functor_string("newline"),
     register_functor_string("end_of_line"),
+    % M60: must_be/2 type names. Some overlap with M58 char_type
+    % (alpha etc.) but distinct names need separate registration.
+    register_functor_string("atom"),
+    register_functor_string("integer"),
+    register_functor_string("float"),
+    register_functor_string("number"),
+    register_functor_string("compound"),
+    register_functor_string("var"),
+    register_functor_string("nonvar"),
+    register_functor_string("atomic"),
+    register_functor_string("callable"),
+    register_functor_string("ground"),
+    register_functor_string("list"),
+    register_functor_string("boolean"),
     % M9: intern "[]" so the empty-list atom id is known at runtime.
     % @wam_apply_aggregation's collect_case reads this id from a
     % module-level global to terminate the cons-cell chain.
@@ -3455,6 +3469,7 @@ entry:
     i32 74, label %builtin_atomic_list_concat3
     i32 75, label %builtin_char_type
     i32 76, label %builtin_compare
+    i32 77, label %builtin_must_be
   ]
 
 builtin_is:
@@ -8485,6 +8500,208 @@ cmp.bind:
   %cmp.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %cmp.raw1, %Value %cmp.v)
   ret i1 %cmp.ok
 
+builtin_must_be:
+  ; M60: must_be(+Type, @Value) -- type guard. Fails on mismatch
+  ; (SWI throws type_error; without catch/throw infrastructure
+  ; failure is the closest semantic).
+  ; Supported types: atom, integer, float, number, compound, var,
+  ; nonvar, atomic, callable, ground, list, boolean.
+  %mb.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %mb.a2_raw = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %mb.a2 = call %Value @wam_deref_value(%WamState* %vm, %Value %mb.a2_raw)
+  %mb.t1 = extractvalue %Value %mb.a1, 0
+  %mb.is_type_atom = icmp eq i32 %mb.t1, 0
+  br i1 %mb.is_type_atom, label %mb.lookup, label %mb.fail
+mb.fail:
+  ret i1 false
+mb.lookup:
+  %mb.aid1 = extractvalue %Value %mb.a1, 1
+  %mb.t_str = call i8* @wam_atom_to_string(i64 %mb.aid1)
+  %mb.t_null = icmp eq i8* %mb.t_str, null
+  br i1 %mb.t_null, label %mb.fail, label %mb.dispatch
+mb.dispatch:
+  %mb.v_tag = extractvalue %Value %mb.a2, 0
+  ; Try each type name in order.
+  %mb.fn_atom = getelementptr [5 x i8], [5 x i8]* @.fn_atom, i32 0, i32 0
+  %mb.is_atom_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_atom)
+  %mb.eq_atom_t = icmp eq i32 %mb.is_atom_t, 0
+  br i1 %mb.eq_atom_t, label %mb.check_atom, label %mb.try_integer
+mb.try_integer:
+  %mb.fn_int = getelementptr [8 x i8], [8 x i8]* @.fn_integer, i32 0, i32 0
+  %mb.is_int_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_int)
+  %mb.eq_int_t = icmp eq i32 %mb.is_int_t, 0
+  br i1 %mb.eq_int_t, label %mb.check_int, label %mb.try_float
+mb.try_float:
+  %mb.fn_flt = getelementptr [6 x i8], [6 x i8]* @.fn_float, i32 0, i32 0
+  %mb.is_flt_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_flt)
+  %mb.eq_flt_t = icmp eq i32 %mb.is_flt_t, 0
+  br i1 %mb.eq_flt_t, label %mb.check_float, label %mb.try_number
+mb.try_number:
+  %mb.fn_num = getelementptr [7 x i8], [7 x i8]* @.fn_number, i32 0, i32 0
+  %mb.is_num_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_num)
+  %mb.eq_num_t = icmp eq i32 %mb.is_num_t, 0
+  br i1 %mb.eq_num_t, label %mb.check_number, label %mb.try_compound
+mb.try_compound:
+  %mb.fn_cmp = getelementptr [9 x i8], [9 x i8]* @.fn_compound, i32 0, i32 0
+  %mb.is_cmp_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_cmp)
+  %mb.eq_cmp_t = icmp eq i32 %mb.is_cmp_t, 0
+  br i1 %mb.eq_cmp_t, label %mb.check_compound, label %mb.try_var
+mb.try_var:
+  %mb.fn_var = getelementptr [4 x i8], [4 x i8]* @.fn_var, i32 0, i32 0
+  %mb.is_var_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_var)
+  %mb.eq_var_t = icmp eq i32 %mb.is_var_t, 0
+  br i1 %mb.eq_var_t, label %mb.check_var, label %mb.try_nonvar
+mb.try_nonvar:
+  %mb.fn_nonvar = getelementptr [7 x i8], [7 x i8]* @.fn_nonvar, i32 0, i32 0
+  %mb.is_nonvar_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_nonvar)
+  %mb.eq_nonvar_t = icmp eq i32 %mb.is_nonvar_t, 0
+  br i1 %mb.eq_nonvar_t, label %mb.check_nonvar, label %mb.try_atomic
+mb.try_atomic:
+  %mb.fn_atomic = getelementptr [7 x i8], [7 x i8]* @.fn_atomic, i32 0, i32 0
+  %mb.is_atomic_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_atomic)
+  %mb.eq_atomic_t = icmp eq i32 %mb.is_atomic_t, 0
+  br i1 %mb.eq_atomic_t, label %mb.check_atomic, label %mb.try_callable
+mb.try_callable:
+  %mb.fn_callable = getelementptr [9 x i8], [9 x i8]* @.fn_callable, i32 0, i32 0
+  %mb.is_callable_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_callable)
+  %mb.eq_callable_t = icmp eq i32 %mb.is_callable_t, 0
+  br i1 %mb.eq_callable_t, label %mb.check_callable, label %mb.try_ground
+mb.try_ground:
+  %mb.fn_ground = getelementptr [7 x i8], [7 x i8]* @.fn_ground, i32 0, i32 0
+  %mb.is_ground_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_ground)
+  %mb.eq_ground_t = icmp eq i32 %mb.is_ground_t, 0
+  br i1 %mb.eq_ground_t, label %mb.check_nonvar, label %mb.try_list
+mb.try_list:
+  %mb.fn_list = getelementptr [5 x i8], [5 x i8]* @.fn_list, i32 0, i32 0
+  %mb.is_list_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_list)
+  %mb.eq_list_t = icmp eq i32 %mb.is_list_t, 0
+  br i1 %mb.eq_list_t, label %mb.check_list, label %mb.try_boolean
+mb.try_boolean:
+  %mb.fn_bool = getelementptr [8 x i8], [8 x i8]* @.fn_boolean, i32 0, i32 0
+  %mb.is_bool_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_bool)
+  %mb.eq_bool_t = icmp eq i32 %mb.is_bool_t, 0
+  br i1 %mb.eq_bool_t, label %mb.check_boolean, label %mb.fail
+mb.check_atom:
+  %mb.r_atom = icmp eq i32 %mb.v_tag, 0
+  ret i1 %mb.r_atom
+mb.check_int:
+  %mb.r_int = icmp eq i32 %mb.v_tag, 1
+  ret i1 %mb.r_int
+mb.check_float:
+  %mb.r_flt = icmp eq i32 %mb.v_tag, 2
+  ret i1 %mb.r_flt
+mb.check_number:
+  %mb.r_num_int = icmp eq i32 %mb.v_tag, 1
+  %mb.r_num_flt = icmp eq i32 %mb.v_tag, 2
+  %mb.r_num = or i1 %mb.r_num_int, %mb.r_num_flt
+  ret i1 %mb.r_num
+mb.check_compound:
+  %mb.r_cmp = icmp eq i32 %mb.v_tag, 3
+  ret i1 %mb.r_cmp
+mb.check_var:
+  %mb.r_var = call i1 @value_is_unbound(%Value %mb.a2)
+  ret i1 %mb.r_var
+mb.check_nonvar:
+  ; Also reached by ``ground'' since we don''t have full ground analysis;
+  ; a non-unbound argument is treated as ground for this guard.
+  %mb.r_nonvar_unb = call i1 @value_is_unbound(%Value %mb.a2)
+  %mb.r_nonvar = xor i1 %mb.r_nonvar_unb, true
+  ret i1 %mb.r_nonvar
+mb.check_atomic:
+  ; atomic = atom or number.
+  %mb.r_atomic_a = icmp eq i32 %mb.v_tag, 0
+  %mb.r_atomic_i = icmp eq i32 %mb.v_tag, 1
+  %mb.r_atomic_f = icmp eq i32 %mb.v_tag, 2
+  %mb.r_atomic_ai = or i1 %mb.r_atomic_a, %mb.r_atomic_i
+  %mb.r_atomic = or i1 %mb.r_atomic_ai, %mb.r_atomic_f
+  ret i1 %mb.r_atomic
+mb.check_callable:
+  ; callable = atom or compound.
+  %mb.r_call_a = icmp eq i32 %mb.v_tag, 0
+  %mb.r_call_c = icmp eq i32 %mb.v_tag, 3
+  %mb.r_call = or i1 %mb.r_call_a, %mb.r_call_c
+  ret i1 %mb.r_call
+mb.check_list:
+  ; list = [] atom, OR a Compound with arity 2 (cons). This is a
+  ; shallow check (doesn''t recursively verify the tail is a proper
+  ; list). Matches SWI''s ``proper_list-or-empty'' fast-path approximate.
+  %mb.r_l_is_atom = icmp eq i32 %mb.v_tag, 0
+  br i1 %mb.r_l_is_atom, label %mb.list_check_empty, label %mb.list_check_compound
+mb.list_check_empty:
+  %mb.r_l_aid = extractvalue %Value %mb.a2, 1
+  %mb.r_l_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %mb.r_l_empty = icmp eq i64 %mb.r_l_aid, %mb.r_l_empty_id
+  ret i1 %mb.r_l_empty
+mb.list_check_compound:
+  %mb.r_l_is_cmp = icmp eq i32 %mb.v_tag, 3
+  br i1 %mb.r_l_is_cmp, label %mb.list_check_arity, label %mb.list_done_no
+mb.list_check_arity:
+  %mb.r_l_cp = extractvalue %Value %mb.a2, 1
+  %mb.r_l_cp_ptr = inttoptr i64 %mb.r_l_cp to %Compound*
+  %mb.r_l_ar_slot = getelementptr %Compound, %Compound* %mb.r_l_cp_ptr, i32 0, i32 1
+  %mb.r_l_ar = load i32, i32* %mb.r_l_ar_slot
+  %mb.r_l_ar_ok = icmp eq i32 %mb.r_l_ar, 2
+  ret i1 %mb.r_l_ar_ok
+mb.list_done_no:
+  ret i1 false
+mb.check_boolean:
+  ; true / false (the atoms).
+  %mb.r_b_is_atom = icmp eq i32 %mb.v_tag, 0
+  br i1 %mb.r_b_is_atom, label %mb.bool_strcmp, label %mb.bool_no
+mb.bool_strcmp:
+  %mb.r_b_aid = extractvalue %Value %mb.a2, 1
+  %mb.r_b_str = call i8* @wam_atom_to_string(i64 %mb.r_b_aid)
+  %mb.r_b_null = icmp eq i8* %mb.r_b_str, null
+  br i1 %mb.r_b_null, label %mb.bool_no, label %mb.bool_actual_cmp
+mb.bool_actual_cmp:
+  %mb.r_b_c0 = load i8, i8* %mb.r_b_str
+  %mb.r_b_t = icmp eq i8 %mb.r_b_c0, 116    ; ''t'' for true
+  %mb.r_b_f = icmp eq i8 %mb.r_b_c0, 102    ; ''f'' for false
+  ; Verify length matches (4 for true, 5 for false). We just check
+  ; that the first byte is t or f and the rest matches via strcmp.
+  ; Simpler: just strcmp against ``true'' or ``false''.
+  %mb.r_b_first = or i1 %mb.r_b_t, %mb.r_b_f
+  br i1 %mb.r_b_first, label %mb.bool_full_cmp, label %mb.bool_no
+mb.bool_full_cmp:
+  ; Compare against ``true'' literal (4 chars). Need a static string.
+  ; Reuse @.fn_atom (5 chars c"atom\00") -- no, just inline-test via
+  ; byte comparisons. Easier: assume single-byte uniqueness and
+  ; require atom length == 4 (true) or == 5 (false).
+  %mb.r_b_p1_ptr = getelementptr i8, i8* %mb.r_b_str, i32 1
+  %mb.r_b_p1 = load i8, i8* %mb.r_b_p1_ptr
+  %mb.r_b_t_ok2 = icmp eq i8 %mb.r_b_p1, 114   ; ''r'' in true
+  %mb.r_b_f_ok2 = icmp eq i8 %mb.r_b_p1, 97    ; ''a'' in false
+  %mb.r_b_p2_ptr = getelementptr i8, i8* %mb.r_b_str, i32 2
+  %mb.r_b_p2 = load i8, i8* %mb.r_b_p2_ptr
+  %mb.r_b_t_ok3 = icmp eq i8 %mb.r_b_p2, 117   ; ''u''
+  %mb.r_b_f_ok3 = icmp eq i8 %mb.r_b_p2, 108   ; ''l''
+  %mb.r_b_p3_ptr = getelementptr i8, i8* %mb.r_b_str, i32 3
+  %mb.r_b_p3 = load i8, i8* %mb.r_b_p3_ptr
+  %mb.r_b_t_ok4 = icmp eq i8 %mb.r_b_p3, 101   ; ''e'' in true
+  %mb.r_b_f_ok4 = icmp eq i8 %mb.r_b_p3, 115   ; ''s'' in false
+  %mb.r_b_p4_ptr = getelementptr i8, i8* %mb.r_b_str, i32 4
+  %mb.r_b_p4 = load i8, i8* %mb.r_b_p4_ptr
+  %mb.r_b_t_ok5 = icmp eq i8 %mb.r_b_p4, 0     ; null terminator for true
+  %mb.r_b_f_ok5 = icmp eq i8 %mb.r_b_p4, 101   ; ''e'' in false
+  %mb.r_b_p5_ptr = getelementptr i8, i8* %mb.r_b_str, i32 5
+  %mb.r_b_p5 = load i8, i8* %mb.r_b_p5_ptr
+  %mb.r_b_f_ok6 = icmp eq i8 %mb.r_b_p5, 0     ; null terminator for false
+  ; ``true'' matches if first 4 bytes are t/r/u/e AND byte 4 is null.
+  %mb.r_b_t_ab = and i1 %mb.r_b_t, %mb.r_b_t_ok2
+  %mb.r_b_t_abc = and i1 %mb.r_b_t_ab, %mb.r_b_t_ok3
+  %mb.r_b_t_abcd = and i1 %mb.r_b_t_abc, %mb.r_b_t_ok4
+  %mb.r_b_t_all = and i1 %mb.r_b_t_abcd, %mb.r_b_t_ok5
+  ; ``false'' matches if first 5 bytes are f/a/l/s/e AND byte 5 is null.
+  %mb.r_b_f_ab = and i1 %mb.r_b_f, %mb.r_b_f_ok2
+  %mb.r_b_f_abc = and i1 %mb.r_b_f_ab, %mb.r_b_f_ok3
+  %mb.r_b_f_abcd = and i1 %mb.r_b_f_abc, %mb.r_b_f_ok4
+  %mb.r_b_f_abcde = and i1 %mb.r_b_f_abcd, %mb.r_b_f_ok5
+  %mb.r_b_f_all = and i1 %mb.r_b_f_abcde, %mb.r_b_f_ok6
+  %mb.r_b_any = or i1 %mb.r_b_t_all, %mb.r_b_f_all
+  ret i1 %mb.r_b_any
+mb.bool_no:
+  ret i1 false
+
 unknown:
   ret i1 false
 }'.
@@ -9934,6 +10151,7 @@ builtin_op_to_id('atomic_list_concat/2', 73). % concat list of atoms (atoms only
 builtin_op_to_id('atomic_list_concat/3', 74). % concat with separator atom (atoms-only forward)
 builtin_op_to_id('char_type/2', 75).          % char classification (check mode)
 builtin_op_to_id('compare/3', 76).            % three-way term order (num/atom)
+builtin_op_to_id('must_be/2', 77).            % type guard (fail-instead-of-throw)
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
