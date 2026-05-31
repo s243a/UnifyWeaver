@@ -146,9 +146,13 @@
 :- dynamic user:wam_ground_unbound/1.
 :- dynamic user:wam_ground_nested_unbound/1.
 :- dynamic user:wam_atom_codes_guard/2.
+:- dynamic user:wam_atom_codes_forward/0.
+:- dynamic user:wam_atom_codes_forward_mismatch/0.
 :- dynamic user:wam_atom_codes_reverse/0.
 :- dynamic user:wam_atom_codes_reverse_mismatch/0.
 :- dynamic user:wam_atom_chars_guard/2.
+:- dynamic user:wam_atom_chars_forward/0.
+:- dynamic user:wam_atom_chars_forward_mismatch/0.
 :- dynamic user:wam_atom_chars_reverse/0.
 :- dynamic user:wam_atom_chars_reverse_mismatch/0.
 :- dynamic user:wam_quoted_atom_quote/0.
@@ -191,9 +195,13 @@
 :- dynamic user:wam_string_to_atom_forward_mismatch/0.
 :- dynamic user:wam_string_to_atom_unbound_pair/1.
 :- dynamic user:wam_string_codes_guard/2.
+:- dynamic user:wam_string_codes_forward/0.
+:- dynamic user:wam_string_codes_forward_mismatch/0.
 :- dynamic user:wam_string_codes_reverse/0.
 :- dynamic user:wam_string_codes_reverse_mismatch/0.
 :- dynamic user:wam_string_chars_guard/2.
+:- dynamic user:wam_string_chars_forward/0.
+:- dynamic user:wam_string_chars_forward_mismatch/0.
 :- dynamic user:wam_string_chars_reverse/0.
 :- dynamic user:wam_string_chars_reverse_mismatch/0.
 :- dynamic user:wam_char_code_guard/2.
@@ -406,9 +414,13 @@ user:wam_ground_guard(X) :- ground(X).
 user:wam_ground_unbound(_) :- user:wam_unbound_arg(Y), ground(Y).
 user:wam_ground_nested_unbound(_) :- user:wam_unbound_arg(Y), ground(f(Y)).
 user:wam_atom_codes_guard(A, C) :- atom_codes(A, C).
+user:wam_atom_codes_forward :- atom_codes(foo, C), C = [102,111,111].
+user:wam_atom_codes_forward_mismatch :- atom_codes(foo, C), C = [102,111].
 user:wam_atom_codes_reverse :- atom_codes(A, [102,111,111]), A = foo.
 user:wam_atom_codes_reverse_mismatch :- atom_codes(A, [102,111]), A = foo.
 user:wam_atom_chars_guard(A, C) :- atom_chars(A, C).
+user:wam_atom_chars_forward :- atom_chars(foo, C), C = [f,o,o].
+user:wam_atom_chars_forward_mismatch :- atom_chars(foo, C), C = [f,o].
 user:wam_atom_chars_reverse :- atom_chars(A, [f,o,o]), A = foo.
 user:wam_atom_chars_reverse_mismatch :- atom_chars(A, [f,o]), A = foo.
 user:wam_quoted_atom_quote :- atom_codes('a''b', [97,39,98]).
@@ -451,9 +463,13 @@ user:wam_string_to_atom_forward :- string_to_atom(S, hello), S = hello.
 user:wam_string_to_atom_forward_mismatch :- string_to_atom(S, hello), S = world.
 user:wam_string_to_atom_unbound_pair(_) :- user:wam_unbound_arg(S), user:wam_unbound_arg(A), string_to_atom(S, A).
 user:wam_string_codes_guard(A, C) :- string_codes(A, C).
+user:wam_string_codes_forward :- string_codes(foo, C), C = [102,111,111].
+user:wam_string_codes_forward_mismatch :- string_codes(foo, C), C = [102,111].
 user:wam_string_codes_reverse :- string_codes(A, [102,111,111]), A = foo.
 user:wam_string_codes_reverse_mismatch :- string_codes(A, [102,111]), A = foo.
 user:wam_string_chars_guard(A, C) :- string_chars(A, C).
+user:wam_string_chars_forward :- string_chars(foo, C), C = [f,o,o].
+user:wam_string_chars_forward_mismatch :- string_chars(foo, C), C = [f,o].
 user:wam_string_chars_reverse :- string_chars(A, [f,o,o]), A = foo.
 user:wam_string_chars_reverse_mismatch :- string_chars(A, [f,o]), A = foo.
 user:wam_char_code_guard(C, N) :- char_code(C, N).
@@ -671,9 +687,13 @@ run_smoke :-
           user:wam_ground_unbound/1,
           user:wam_ground_nested_unbound/1,
           user:wam_atom_codes_guard/2,
+          user:wam_atom_codes_forward/0,
+          user:wam_atom_codes_forward_mismatch/0,
           user:wam_atom_codes_reverse/0,
           user:wam_atom_codes_reverse_mismatch/0,
           user:wam_atom_chars_guard/2,
+          user:wam_atom_chars_forward/0,
+          user:wam_atom_chars_forward_mismatch/0,
           user:wam_atom_chars_reverse/0,
           user:wam_atom_chars_reverse_mismatch/0,
           user:wam_quoted_atom_quote/0,
@@ -716,9 +736,13 @@ run_smoke :-
           user:wam_string_to_atom_forward_mismatch/0,
           user:wam_string_to_atom_unbound_pair/1,
           user:wam_string_codes_guard/2,
+          user:wam_string_codes_forward/0,
+          user:wam_string_codes_forward_mismatch/0,
           user:wam_string_codes_reverse/0,
           user:wam_string_codes_reverse_mismatch/0,
           user:wam_string_chars_guard/2,
+          user:wam_string_chars_forward/0,
+          user:wam_string_chars_forward_mismatch/0,
           user:wam_string_chars_reverse/0,
           user:wam_string_chars_reverse_mismatch/0,
           user:wam_char_code_guard/2,
@@ -1103,10 +1127,14 @@ smoke_cases([
     case('wam_ground_nested_unbound/1', a, "false"),
     case('wam_atom_codes_guard/2', args(foo, '[102,111,111]'), "true"),
     case('wam_atom_codes_guard/2', args(foo, '[102,111]'), "false"),
+    case('wam_atom_codes_forward/0', no_args, "true"),
+    case('wam_atom_codes_forward_mismatch/0', no_args, "false"),
     case('wam_atom_codes_reverse/0', no_args, "true"),
     case('wam_atom_codes_reverse_mismatch/0', no_args, "false"),
     case('wam_atom_chars_guard/2', args(foo, '[f,o,o]'), "true"),
     case('wam_atom_chars_guard/2', args(foo, '[f,o]'), "false"),
+    case('wam_atom_chars_forward/0', no_args, "true"),
+    case('wam_atom_chars_forward_mismatch/0', no_args, "false"),
     case('wam_atom_chars_reverse/0', no_args, "true"),
     case('wam_atom_chars_reverse_mismatch/0', no_args, "false"),
     case('wam_quoted_atom_quote/0', no_args, "true"),
@@ -1155,10 +1183,14 @@ smoke_cases([
     case('wam_string_to_atom_unbound_pair/1', a, "false"),
     case('wam_string_codes_guard/2', args(foo, '[102,111,111]'), "true"),
     case('wam_string_codes_guard/2', args(foo, '[102,111]'), "false"),
+    case('wam_string_codes_forward/0', no_args, "true"),
+    case('wam_string_codes_forward_mismatch/0', no_args, "false"),
     case('wam_string_codes_reverse/0', no_args, "true"),
     case('wam_string_codes_reverse_mismatch/0', no_args, "false"),
     case('wam_string_chars_guard/2', args(foo, '[f,o,o]'), "true"),
     case('wam_string_chars_guard/2', args(foo, '[f,o]'), "false"),
+    case('wam_string_chars_forward/0', no_args, "true"),
+    case('wam_string_chars_forward_mismatch/0', no_args, "false"),
     case('wam_string_chars_reverse/0', no_args, "true"),
     case('wam_string_chars_reverse_mismatch/0', no_args, "false"),
     case('wam_char_code_guard/2', args(a, 97), "true"),
