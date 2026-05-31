@@ -218,8 +218,12 @@
 :- dynamic user:wam_char_type_code_mismatch/0.
 :- dynamic user:wam_char_type_lower_fail/0.
 :- dynamic user:wam_number_codes_guard/2.
+:- dynamic user:wam_number_codes_forward/0.
+:- dynamic user:wam_number_codes_forward_mismatch/0.
 :- dynamic user:wam_number_codes_reverse/0.
 :- dynamic user:wam_number_chars_guard/2.
+:- dynamic user:wam_number_chars_forward/0.
+:- dynamic user:wam_number_chars_forward_mismatch/0.
 :- dynamic user:wam_number_chars_reverse/0.
 :- dynamic user:wam_number_chars_bad_chars/0.
 :- dynamic user:wam_text_conversion_unbound_pair/1.
@@ -486,8 +490,12 @@ user:wam_char_type_code_reverse :- char_type(C, code(97)), C = a.
 user:wam_char_type_code_mismatch :- char_type('A', code(66)).
 user:wam_char_type_lower_fail :- char_type('A', lower).
 user:wam_number_codes_guard(N, C) :- number_codes(N, C).
+user:wam_number_codes_forward :- number_codes(42, C), C = [52,50].
+user:wam_number_codes_forward_mismatch :- number_codes(42, C), C = [52].
 user:wam_number_codes_reverse :- number_codes(N, [52,50]), N =:= 42.
 user:wam_number_chars_guard(N, C) :- number_chars(N, C).
+user:wam_number_chars_forward :- number_chars(42, C), C = ['4','2'].
+user:wam_number_chars_forward_mismatch :- number_chars(42, C), C = ['4'].
 user:wam_number_chars_reverse :- number_chars(N, ['4','2']), N =:= 42.
 user:wam_number_chars_bad_chars :- number_chars(_, [f,o,o]).
 user:wam_text_conversion_unbound_pair(_) :- user:wam_unbound_arg(A), user:wam_unbound_arg(C), atom_codes(A, C).
@@ -759,8 +767,12 @@ run_smoke :-
           user:wam_char_type_code_mismatch/0,
           user:wam_char_type_lower_fail/0,
           user:wam_number_codes_guard/2,
+          user:wam_number_codes_forward/0,
+          user:wam_number_codes_forward_mismatch/0,
           user:wam_number_codes_reverse/0,
           user:wam_number_chars_guard/2,
+          user:wam_number_chars_forward/0,
+          user:wam_number_chars_forward_mismatch/0,
           user:wam_number_chars_reverse/0,
           user:wam_number_chars_bad_chars/0,
           user:wam_text_conversion_unbound_pair/1,
@@ -1209,9 +1221,13 @@ smoke_cases([
     case('wam_char_type_lower_fail/0', no_args, "false"),
     case('wam_number_codes_guard/2', args(42, '[52,50]'), "true"),
     case('wam_number_codes_guard/2', args(42, '[52]'), "false"),
+    case('wam_number_codes_forward/0', no_args, "true"),
+    case('wam_number_codes_forward_mismatch/0', no_args, "false"),
     case('wam_number_codes_reverse/0', no_args, "true"),
     case('wam_number_chars_guard/2', args(42, '[''4'',''2'']'), "true"),
     case('wam_number_chars_guard/2', args(42, '[''4'']'), "false"),
+    case('wam_number_chars_forward/0', no_args, "true"),
+    case('wam_number_chars_forward_mismatch/0', no_args, "false"),
     case('wam_number_chars_reverse/0', no_args, "true"),
     case('wam_number_chars_bad_chars/0', no_args, "false"),
     case('wam_text_conversion_unbound_pair/1', a, "false"),
