@@ -2118,6 +2118,8 @@ is_builtin_pred(memberchk, 2).    % memberchk(?Elem, +List) -- deterministic mem
 is_builtin_pred(numlist, 3).      % integer range generator: [Lo..Hi].
 is_builtin_pred(sum_list, 2).     % sum_list(+List, ?Sum) -- integer sum.
 is_builtin_pred(sumlist, 2).      % alias of sum_list.
+is_builtin_pred(max_list, 2).     % max_list(+List, ?Max) -- empty fails.
+is_builtin_pred(min_list, 2).     % min_list(+List, ?Min) -- empty fails.
 is_builtin_pred(sort, 2).         % stable sort + dedup (std order).
 is_builtin_pred(msort, 2).        % stable sort, NO dedup (std order).
 is_builtin_pred(select, 3).       % nondet list element selection.
