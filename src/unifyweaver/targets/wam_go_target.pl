@@ -448,6 +448,9 @@ wam_go_direct_builtin("select/3", 3, 'select/3').
 wam_go_direct_builtin(delete/3, 3, 'delete/3').
 wam_go_direct_builtin('delete/3', 3, 'delete/3').
 wam_go_direct_builtin("delete/3", 3, 'delete/3').
+wam_go_direct_builtin(subtract/3, 3, 'subtract/3').
+wam_go_direct_builtin('subtract/3', 3, 'subtract/3').
+wam_go_direct_builtin("subtract/3", 3, 'subtract/3').
 wam_go_direct_builtin(permutation/2, 2, 'permutation/2').
 wam_go_direct_builtin('permutation/2', 2, 'permutation/2').
 wam_go_direct_builtin("permutation/2", 2, 'permutation/2').
