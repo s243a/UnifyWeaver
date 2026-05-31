@@ -7646,7 +7646,10 @@ alc.c_step:
   br i1 %alc.c_h_is_atom, label %alc.c_measure, label %alc.c_try_int
 alc.c_try_int:
   %alc.c_h_is_int = icmp eq i32 %alc.c_h_tag, 1
-  br i1 %alc.c_h_is_int, label %alc.c_int_measure, label %alc.fail
+  br i1 %alc.c_h_is_int, label %alc.c_int_measure, label %alc.c_try_float
+alc.c_try_float:
+  %alc.c_h_is_float = icmp eq i32 %alc.c_h_tag, 2
+  br i1 %alc.c_h_is_float, label %alc.c_float_measure, label %alc.fail
 alc.c_int_measure:
   ; snprintf the integer into the scratch buffer; return value is the
   ; rendered length (excluding null).
@@ -7654,6 +7657,14 @@ alc.c_int_measure:
   %alc.c_int_fmt = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
   %alc.c_int_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc.iscratch, i64 32, i8* %alc.c_int_fmt, i64 %alc.c_int_v)
   %alc.c_int_len = sext i32 %alc.c_int_n32 to i64
+  br label %alc.c_advance
+alc.c_float_measure:
+  ; M57: extract i64 payload, bitcast to double, snprintf %g.
+  %alc.c_flt_bits = extractvalue %Value %alc.c_h_d, 1
+  %alc.c_flt_v = bitcast i64 %alc.c_flt_bits to double
+  %alc.c_flt_fmt = getelementptr [3 x i8], [3 x i8]* @.fmt_dbl, i32 0, i32 0
+  %alc.c_flt_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc.iscratch, i64 32, i8* %alc.c_flt_fmt, double %alc.c_flt_v)
+  %alc.c_flt_len = sext i32 %alc.c_flt_n32 to i64
   br label %alc.c_advance
 alc.c_measure:
   %alc.c_aid = extractvalue %Value %alc.c_h_d, 1
@@ -7671,7 +7682,7 @@ alc.c_m_step:
   %alc.c_mn1 = add i64 %alc.c_mn, 1
   br label %alc.c_m_loop
 alc.c_advance:
-  %alc.c_elem_len = phi i64 [ %alc.c_mn, %alc.c_m_loop ], [ %alc.c_int_len, %alc.c_int_measure ]
+  %alc.c_elem_len = phi i64 [ %alc.c_mn, %alc.c_m_loop ], [ %alc.c_int_len, %alc.c_int_measure ], [ %alc.c_flt_len, %alc.c_float_measure ]
   %alc.c_total1 = add i64 %alc.c_total, %alc.c_elem_len
   %alc.c_t_ptr = getelementptr %Value, %Value* %alc.c_args, i32 1
   %alc.c_next = load %Value, %Value* %alc.c_t_ptr
@@ -7697,7 +7708,10 @@ alc.f_step:
   %alc.f_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc.f_head)
   %alc.f_h_tag = extractvalue %Value %alc.f_h_d, 0
   %alc.f_is_atom = icmp eq i32 %alc.f_h_tag, 0
-  br i1 %alc.f_is_atom, label %alc.f_load_atom, label %alc.f_int_write
+  br i1 %alc.f_is_atom, label %alc.f_load_atom, label %alc.f_try_int
+alc.f_try_int:
+  %alc.f_is_int = icmp eq i32 %alc.f_h_tag, 1
+  br i1 %alc.f_is_int, label %alc.f_int_write, label %alc.f_float_write
 alc.f_load_atom:
   %alc.f_aid = extractvalue %Value %alc.f_h_d, 1
   %alc.f_str = call i8* @wam_atom_to_string(i64 %alc.f_aid)
@@ -7713,10 +7727,25 @@ alc.f_int_write:
   %alc.f_int_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc.f_int_dst, i64 %alc.f_int_avail, i8* %alc.f_int_fmt, i64 %alc.f_int_v)
   %alc.f_int_len = sext i32 %alc.f_int_n32 to i64
   br label %alc.f_copy_int
+alc.f_float_write:
+  ; M57: snprintf %g directly into the output buffer.
+  %alc.f_flt_bits = extractvalue %Value %alc.f_h_d, 1
+  %alc.f_flt_v = bitcast i64 %alc.f_flt_bits to double
+  %alc.f_flt_dst = getelementptr i8, i8* %alc.buf, i64 %alc.f_off
+  %alc.f_flt_avail = sub i64 %alc.bufsz, %alc.f_off
+  %alc.f_flt_fmt = getelementptr [3 x i8], [3 x i8]* @.fmt_dbl, i32 0, i32 0
+  %alc.f_flt_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc.f_flt_dst, i64 %alc.f_flt_avail, i8* %alc.f_flt_fmt, double %alc.f_flt_v)
+  %alc.f_flt_len = sext i32 %alc.f_flt_n32 to i64
+  br label %alc.f_copy_flt
 alc.f_copy_int:
   %alc.f_off_int = add i64 %alc.f_off, %alc.f_int_len
   %alc.f_t_ptr_int = getelementptr %Value, %Value* %alc.f_args, i32 1
   %alc.f_next_int = load %Value, %Value* %alc.f_t_ptr_int
+  br label %alc.f_after
+alc.f_copy_flt:
+  %alc.f_off_flt = add i64 %alc.f_off, %alc.f_flt_len
+  %alc.f_t_ptr_flt = getelementptr %Value, %Value* %alc.f_args, i32 1
+  %alc.f_next_flt = load %Value, %Value* %alc.f_t_ptr_flt
   br label %alc.f_after
 alc.f_m_loop:
   %alc.f_mp = phi i8* [ %alc.f_str, %alc.f_load_atom ], [ %alc.f_mpn, %alc.f_m_step ]
@@ -7736,8 +7765,8 @@ alc.f_copy:
   %alc.f_next_atom = load %Value, %Value* %alc.f_t_ptr_atom
   br label %alc.f_after
 alc.f_after:
-  %alc.f_off1 = phi i64 [ %alc.f_off_atom, %alc.f_copy ], [ %alc.f_off_int, %alc.f_copy_int ]
-  %alc.f_next = phi %Value [ %alc.f_next_atom, %alc.f_copy ], [ %alc.f_next_int, %alc.f_copy_int ]
+  %alc.f_off1 = phi i64 [ %alc.f_off_atom, %alc.f_copy ], [ %alc.f_off_int, %alc.f_copy_int ], [ %alc.f_off_flt, %alc.f_copy_flt ]
+  %alc.f_next = phi %Value [ %alc.f_next_atom, %alc.f_copy ], [ %alc.f_next_int, %alc.f_copy_int ], [ %alc.f_next_flt, %alc.f_copy_flt ]
   br label %alc.f_loop
 alc.f_done:
   %alc.term_dst = getelementptr i8, i8* %alc.buf, i64 %alc.c_total
@@ -7808,12 +7837,22 @@ alc3.c_step:
   br i1 %alc3.c_h_is_atom, label %alc3.c_measure, label %alc3.c_try_int
 alc3.c_try_int:
   %alc3.c_h_is_int = icmp eq i32 %alc3.c_h_tag, 1
-  br i1 %alc3.c_h_is_int, label %alc3.c_int_measure, label %alc3.fail
+  br i1 %alc3.c_h_is_int, label %alc3.c_int_measure, label %alc3.c_try_float
+alc3.c_try_float:
+  %alc3.c_h_is_float = icmp eq i32 %alc3.c_h_tag, 2
+  br i1 %alc3.c_h_is_float, label %alc3.c_float_measure, label %alc3.fail
 alc3.c_int_measure:
   %alc3.c_int_v = extractvalue %Value %alc3.c_h_d, 1
   %alc3.c_int_fmt = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
   %alc3.c_int_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc3.iscratch, i64 32, i8* %alc3.c_int_fmt, i64 %alc3.c_int_v)
   %alc3.c_int_len = sext i32 %alc3.c_int_n32 to i64
+  br label %alc3.c_advance
+alc3.c_float_measure:
+  %alc3.c_flt_bits = extractvalue %Value %alc3.c_h_d, 1
+  %alc3.c_flt_v = bitcast i64 %alc3.c_flt_bits to double
+  %alc3.c_flt_fmt = getelementptr [3 x i8], [3 x i8]* @.fmt_dbl, i32 0, i32 0
+  %alc3.c_flt_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc3.iscratch, i64 32, i8* %alc3.c_flt_fmt, double %alc3.c_flt_v)
+  %alc3.c_flt_len = sext i32 %alc3.c_flt_n32 to i64
   br label %alc3.c_advance
 alc3.c_measure:
   %alc3.c_aid = extractvalue %Value %alc3.c_h_d, 1
@@ -7831,8 +7870,8 @@ alc3.c_m_step:
   %alc3.c_mn1 = add i64 %alc3.c_mn, 1
   br label %alc3.c_m_loop
 alc3.c_advance:
-  ; Add element length (atom or int), plus separator length for every element after the first.
-  %alc3.c_elem_len = phi i64 [ %alc3.c_mn, %alc3.c_m_loop ], [ %alc3.c_int_len, %alc3.c_int_measure ]
+  ; Add element length (atom / int / float), plus separator length for every element after the first.
+  %alc3.c_elem_len = phi i64 [ %alc3.c_mn, %alc3.c_m_loop ], [ %alc3.c_int_len, %alc3.c_int_measure ], [ %alc3.c_flt_len, %alc3.c_float_measure ]
   %alc3.c_not_first = icmp ne i32 %alc3.c_n, 0
   %alc3.c_sep_add = select i1 %alc3.c_not_first, i64 %alc3.smn, i64 0
   %alc3.c_with_sep = add i64 %alc3.c_total, %alc3.c_sep_add
@@ -7873,7 +7912,10 @@ alc3.f_dispatch:
   %alc3.f_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc3.f_head)
   %alc3.f_h_tag = extractvalue %Value %alc3.f_h_d, 0
   %alc3.f_is_atom = icmp eq i32 %alc3.f_h_tag, 0
-  br i1 %alc3.f_is_atom, label %alc3.f_load_atom, label %alc3.f_int_write
+  br i1 %alc3.f_is_atom, label %alc3.f_load_atom, label %alc3.f_try_int
+alc3.f_try_int:
+  %alc3.f_is_int = icmp eq i32 %alc3.f_h_tag, 1
+  br i1 %alc3.f_is_int, label %alc3.f_int_write, label %alc3.f_float_write
 alc3.f_load_atom:
   %alc3.f_aid = extractvalue %Value %alc3.f_h_d, 1
   %alc3.f_str = call i8* @wam_atom_to_string(i64 %alc3.f_aid)
@@ -7886,6 +7928,16 @@ alc3.f_int_write:
   %alc3.f_int_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc3.f_int_dst, i64 %alc3.f_int_avail, i8* %alc3.f_int_fmt, i64 %alc3.f_int_v)
   %alc3.f_int_len = sext i32 %alc3.f_int_n32 to i64
   %alc3.f_off_after_int = add i64 %alc3.f_off_after_sep, %alc3.f_int_len
+  br label %alc3.f_after
+alc3.f_float_write:
+  %alc3.f_flt_bits = extractvalue %Value %alc3.f_h_d, 1
+  %alc3.f_flt_v = bitcast i64 %alc3.f_flt_bits to double
+  %alc3.f_flt_dst = getelementptr i8, i8* %alc3.buf, i64 %alc3.f_off_after_sep
+  %alc3.f_flt_avail = sub i64 %alc3.bufsz, %alc3.f_off_after_sep
+  %alc3.f_flt_fmt = getelementptr [3 x i8], [3 x i8]* @.fmt_dbl, i32 0, i32 0
+  %alc3.f_flt_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc3.f_flt_dst, i64 %alc3.f_flt_avail, i8* %alc3.f_flt_fmt, double %alc3.f_flt_v)
+  %alc3.f_flt_len = sext i32 %alc3.f_flt_n32 to i64
+  %alc3.f_off_after_flt = add i64 %alc3.f_off_after_sep, %alc3.f_flt_len
   br label %alc3.f_after
 alc3.f_m_loop:
   %alc3.f_mp = phi i8* [ %alc3.f_str, %alc3.f_load_atom ], [ %alc3.f_mpn, %alc3.f_m_step ]
@@ -7903,7 +7955,7 @@ alc3.f_copy_atom:
   %alc3.f_off_after_atom = add i64 %alc3.f_off_after_sep, %alc3.f_mn
   br label %alc3.f_after
 alc3.f_after:
-  %alc3.f_off_next = phi i64 [ %alc3.f_off_after_atom, %alc3.f_copy_atom ], [ %alc3.f_off_after_int, %alc3.f_int_write ]
+  %alc3.f_off_next = phi i64 [ %alc3.f_off_after_atom, %alc3.f_copy_atom ], [ %alc3.f_off_after_int, %alc3.f_int_write ], [ %alc3.f_off_after_flt, %alc3.f_float_write ]
   %alc3.f_idx1 = add i32 %alc3.f_idx, 1
   %alc3.f_t_ptr = getelementptr %Value, %Value* %alc3.f_args, i32 1
   %alc3.f_next = load %Value, %Value* %alc3.f_t_ptr
