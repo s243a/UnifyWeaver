@@ -1123,7 +1123,8 @@
       [s out])))
 
 (defn code-list-term [state text]
-  [state (list->term (:intern-context state) (map int text))])
+  [state (list->term (:intern-context state)
+                     (map #(normalize-literal-term (:intern-context state) (str (int %))) text))])
 
 (defn char-list-term [state text]
   (let [[next-state chars] (intern-char-terms state text)]
