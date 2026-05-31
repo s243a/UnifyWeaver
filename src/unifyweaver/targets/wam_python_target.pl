@@ -46,7 +46,11 @@
 :- use_module('../core/template_system').
 :- use_module('../core/prolog_term_parser').
 :- use_module('../bindings/python_wam_bindings').
-:- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../targets/wam_target', [
+	compile_predicate_to_wam/3,
+	compile_predicate_to_wam_text/3,
+	compile_predicate_to_wam_items/3
+]).
 :- use_module('../core/iso_errors',
               [ iso_errors_resolve_options/2,
                 iso_errors_load_config/2,
@@ -1751,9 +1755,16 @@ iso_errors_rewrite_plans(Config, Plans0, Plans) :-
 
 iso_errors_rewrite_plan(Config, pred_plan(Pred, Arity, Wam0, wam), pred_plan(Pred, Arity, Wam, wam)) :-
 	!,
-	wam_plan_text(Wam0, WamText0),
-	iso_errors_rewrite_text(Config, Pred/Arity, WamText0, WamText),
-	python_wam_text_plan(WamText, Wam).
+	(   Wam0 = wam_items(text(WamText0), _Items0)
+	->  iso_errors_rewrite_text(Config, Pred/Arity, WamText0, WamText),
+	    python_wam_text_plan(WamText, Wam)
+	;   Wam0 = wam_items(items_only, Items0)
+	->  iso_errors_rewrite(Config, Pred/Arity, Items0, Items),
+	    python_wam_items_plan(Items, Wam)
+	;   wam_plan_text(Wam0, WamText0)
+	->  iso_errors_rewrite_text(Config, Pred/Arity, WamText0, WamText),
+	    python_wam_text_plan(WamText, Wam)
+	).
 iso_errors_rewrite_plan(_, Plan, Plan).
 
 %% iso_errors_rewrite_text(+Config, +PI, +WamText, -RewrittenText)
@@ -2047,9 +2058,8 @@ plan_python_predicate(Options, Module:Pred/Arity,
 	(   is_ffi_predicate(Pred, Arity, Options)
 	->  Kind = ffi,
 	    Wam = ''
-	;   compile_predicate_to_wam(Module:Pred/Arity, [], WamText)
-	->  python_wam_text_plan(WamText, Wam),
-	    Kind = wam
+	;   python_plan_compile_predicate(Options, Module:Pred/Arity, Wam)
+	->  Kind = wam
 	;   Wam = '',
 	    Kind = missing
 	).
@@ -2064,20 +2074,30 @@ plan_python_predicate(Options, Pred/Arity, pred_plan(Pred, Arity, Wam, Kind)) :-
 	(   is_ffi_predicate(Pred, Arity, Options)
 	->  Kind = ffi,
 	    Wam = ''
-	;   compile_predicate_to_wam(Pred/Arity, [], WamText)
-	->  python_wam_text_plan(WamText, Wam),
-	    Kind = wam
+	;   python_plan_compile_predicate(Options, Pred/Arity, Wam)
+	->  Kind = wam
 	;   Wam = '',
 	    Kind = missing
 	).
 
-python_wam_text_plan(WamText, wam_items(WamText, Items)) :-
+python_plan_compile_predicate(Options, PredIndicator, Wam) :-
+	(   option(emit_mode(lowered), Options)
+	->  compile_predicate_to_wam_text(PredIndicator, [], WamText),
+	    python_wam_text_plan(WamText, Wam)
+	;   compile_predicate_to_wam_items(PredIndicator, [], Items),
+	    python_wam_items_plan(Items, Wam)
+	).
+
+python_wam_text_plan(WamText, wam_items(text(WamText), Items)) :-
 	wam_text_to_items(WamText, Items).
 
-wam_plan_text(wam_items(WamText, _Items), WamText) :- !.
+python_wam_items_plan(Items, wam_items(items_only, Items)).
+
+wam_plan_text(wam_items(text(WamText), _Items), WamText) :- !.
+wam_plan_text(wam_items(items_only, _Items), _) :- !, fail.
 wam_plan_text(WamText, WamText).
 
-wam_plan_items(wam_items(_WamText, Items), Items) :- !.
+wam_plan_items(wam_items(_Source, Items), Items) :- !.
 wam_plan_items(WamText, Items) :-
 	wam_text_to_items(WamText, Items).
 

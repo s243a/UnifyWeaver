@@ -5,6 +5,20 @@ The concrete shape of the structured-items API we're adding to
 `WAM_ITEMS_API_PHILOSOPHY.md`. For per-target migration plans, see
 the per-target section in §6 below.
 
+## 0. Implementation Status
+
+The first implementation step is intentionally conservative:
+
+- `compile_predicate_to_wam_text/3` is now the explicit legacy text API.
+- `compile_predicate_to_wam_items/3` is available as a bridge: it compiles text
+  through the existing generator and normalizes it with `wam_text_to_items/2`.
+- `compile_predicate_to_wam/3` still returns text by default for compatibility
+  with the existing targets. The default-output flip described below remains a
+  later migration step after more callers consume items directly.
+
+The final API shape below is still the target design; current code deliberately
+lands the low-risk bridge first.
+
 ## 1. Public API
 
 Three predicates. The two `_items/3` and `_text/3` predicates are

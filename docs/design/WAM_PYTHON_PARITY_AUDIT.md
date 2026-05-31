@@ -99,15 +99,19 @@ text-first compile pipeline.
 
 Current load-bearing items path:
 
-- `plan_python_predicate/3` still calls `compile_predicate_to_wam(..., WamText)`
-  when compiling Prolog predicates, but immediately normalizes that text through
-  `wam_text_to_items/2` and stores `wam_items(WamText, Items)` in `pred_plan/4`.
+- `plan_python_predicate/3` calls `compile_predicate_to_wam_items/3` for
+  internally compiled interpreter-mode predicates and stores `wam_items(items_only,
+  Items)` in `pred_plan/4`.
+- Supplied WAM text still normalizes through `wam_text_to_items/2` and stores
+  `wam_items(text(WamText), Items)` so external/debug text input remains
+  supported.
 - interpreter-mode predicate emission routes planned predicates through
   `compile_wam_predicate_items_to_python/4`, so generated Python no longer
-  reparses planned WAM text during interpreter registration.
-- lowered mode still unwraps the stored text and calls `parse_wam_text_py/2` in
-  `compile_lowered_wam_predicate_to_python/4`, `lowered_candidate_wam/1`, and
-  `lowered_route_supported/4` before emitting lowered Python functions.
+  reparses internally generated WAM text during interpreter registration.
+- lowered mode still requests explicit WAM text via `compile_predicate_to_wam_text/3`
+  and calls `parse_wam_text_py/2` in `compile_lowered_wam_predicate_to_python/4`,
+  `lowered_candidate_wam/1`, and `lowered_route_supported/4` before emitting
+  lowered Python functions.
 - `wam_python_iso_audit/3` still recompiles predicates to WAM text and parses
   lines for audit reporting.
 
@@ -122,22 +126,21 @@ Items-mode bridge now present:
   emitted as `Atom("42")` while integer `42` is emitted as `Int(42)`.
 - Current tests compare the adapter against `wam_text_to_items/2` output for a
   standard WAM-text fixture, cover typed atom/integer constant separation, and
-  assert that `compile_all_predicates/3` uses the items-backed plan for
-  interpreter-mode predicate registration.
+  assert that `compile_all_predicates/3` uses the common items API for internally
+  compiled interpreter-mode predicates.
 
 Remaining migration target:
 
-1. Replace the temporary `compile_predicate_to_wam/3` plus `wam_text_to_items/2`
-   normalization step with `compile_predicate_to_wam_items/3` once that common
-   generator API exists.
+1. Replace the current `compile_predicate_to_wam_items/3` bridge implementation
+   with direct item emission once `wam_target.pl` grows native item generation.
 2. Teach the lowered emitter to consume the same item list directly, or add one
    shared adapter from items to the lowered-emitter instruction representation.
 3. Keep the text parser only for external WAM text/debug migration paths, not
    for WAM text generated inside the same process.
 
-Until the native generator API lands, `tests/test_wam_python_target.pl` includes
-items-mode audit tests that record the remaining text-to-items normalization
-bridge and protect the item-driven Python emitter.
+Until native item emission lands, `tests/test_wam_python_target.pl` includes
+items-mode audit tests that record the remaining bridge boundary and protect the
+item-driven Python emitter.
 
 ## Remaining Follow-Up
 
@@ -162,7 +165,7 @@ Completed follow-up:
 ## Verification Commands
 
 Use these checks after touching Python WAM runtime parity. On current `main`,
-`tests/test_wam_python_target.pl` passes 173/173 without choicepoint warnings:
+`tests/test_wam_python_target.pl` passes 174/174 without choicepoint warnings:
 
 ```sh
 swipl -q -g run_tests -t halt tests/test_wam_python_target.pl
