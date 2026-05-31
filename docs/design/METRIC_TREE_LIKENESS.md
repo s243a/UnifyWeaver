@@ -41,6 +41,14 @@ Across a 2400× increase in path count, the aggregate metric moved
 0.02%. Per-seed (20 seeds at depth 4 from Physics), the worst-case
 drift was 0.007% — every single pair converged.
 
+In retrospect this measurement already satisfies §3's homogeneity
+precondition without our noticing: rooting at `Category:Physics`
+restricts the BFS reach to the topical subgraph (see §4.5), so
+the A* pruning effectively excludes admin hubs. We weren't aware
+of the inhomogeneity issue at the time, but the experimental setup
+sidestepped it. §4.5 derives the consequence — calibration must be
+performed on the *traversed* subgraph, not the global one.
+
 ## 2. Why this happens: the geometric-series argument
 
 ### 2.0 Notation
@@ -346,8 +354,11 @@ b_eff = 9.59 already matches empirical without it.
 
 ### 5.1 Sufficient conditions
 
-What graph properties guarantee metric-tree-likeness? Working
-hypotheses:
+The operative quantity is the convergence inequality `b·D > b'`
+from §5.5.1 (path-count growth bounded by calibrated branching).
+The conditions below are *sufficient* graph-structural conditions
+under which that inequality is expected to hold; they are not
+themselves the property. Working hypotheses:
 
 - **Power-law degree distribution** with sufficiently heavy
   asymmetry between parent and child fan-out (makes
@@ -362,7 +373,9 @@ hypotheses:
 
 We don't have a clean theorem. The empirical observation is
 consistent with all three but doesn't isolate which is doing the
-work.
+work — and §5.5.1's "as long as `b·D > b'`" framing suggests any
+graph property that yields the inequality (whatever its
+structural origin) would be enough.
 
 ### 5.2 Necessary conditions
 
@@ -541,6 +554,12 @@ what makes it principled — `D` isn't a free parameter that
 happens to absorb errors; it's a single measurement doing
 double duty by construction of the metric.
 
+(§5.6 reaches a related conclusion from a different angle: the
+weight formula itself is a path-count normaliser, so the
+*structure* of `(1/D)^N · (1/(b·D))^M` already encodes the
+counting-vs-information balance the property needs. §5.5.1 is
+the calibration-side of that story; §5.6 is the formula-side.)
+
 The routing correction doesn't have that double role. It's a
 single-purpose empirical adjustment for path-wander. It happens
 to leave convergence intact because `D`'s slack absorbs it, not
@@ -553,6 +572,11 @@ interpretability of `b`, `D`, and the convergence ratio
 individually.
 
 ### 5.6 Weights as path-count normalisers — a cleaner restatement
+
+This section is the formula-side companion to §5.5.1's
+calibration-side analysis. §5.5.1 explains why `D`'s slack is
+principled; §5.6 explains why the *form* of the weight formula
+encodes path-count normalisation by construction.
 
 The metric weight `w(path) = (1/D)^N · (1/(b·D))^M` is often
 read as "give parent paths weight 1/D and child paths weight
@@ -692,12 +716,22 @@ measure drift) shows < 0.1%, we have evidence that for this
 statistically equivalent to the full bidirectional answer**.
 The runtime decision is then simple: **use the tree-search**.
 
+**The certificate must be obtained at the production budget B.**
+The convergence rate depends on B (higher budget admits more
+M-child-hop paths before saturation; see §2.1's geometric-series
+argument), so a certificate obtained at B=15 doesn't license
+tree-search at B=50 without re-checking. A safe protocol: pick
+the largest budget you expect to use in production, certify at
+that budget, then deploy tree-search for any query at budget ≤
+B_certified.
+
 On simplewiki, this is a measured **~2000× speedup** (11 ms vs
 ~43 s) for the same metric value to four significant digits.
 It's much cheaper than proving non-existence of meaningful
 cross-paths structurally, and the certificate is honest: it's a
 statistical claim about *this* graph under *this* metric for
-queries from *this* distribution, not a universal one.
+queries from *this* distribution *at this budget*, not a universal
+one.
 
 ### 6.2 Drift as a diagnostic
 
@@ -739,11 +773,10 @@ from the full category dump**.
 Recipe:
 
 1. Identify the topical root for the target wiki. On
-   simplewiki: `Category:Articles` (page_id 137597, verified).
-   On enwiki: `Category:Main_topic_classifications` — the
-   page_id should be verified against the live wiki before use
-   (cited as 7345184 from earlier work, not re-verified in this
-   doc).
+   simplewiki: `Category:Articles` (page_id 137597). On
+   enwiki: `Category:Main_topic_classifications` (page_id
+   7345184). Both verified against the live Wikipedia API on
+   2026-05-31.
 2. During ingest, BFS from the topical root via the
    `cl_type = 'subcat'` edges; mark every reached page_id as
    in-scope.
