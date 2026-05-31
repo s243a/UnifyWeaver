@@ -3,7 +3,8 @@
 The concrete shape of the structured-items API we're adding to
 `wam_target.pl`. For *why* each decision, see
 `WAM_ITEMS_API_PHILOSOPHY.md`. For per-target migration plans, see
-the per-target section in §6 below.
+the per-target section in §6 below. For target-level representation mode names,
+see `WAM_REPRESENTATION_MODES.md`.
 
 ## 0. Implementation Status
 

@@ -99,6 +99,8 @@ text-first compile pipeline.
 
 Current load-bearing items path:
 
+- WAM representation mode is resolved through `wam_ir_mode/4`; Python defaults
+  to `wam_items_bridge` for interpreter mode and `wam_text` for lowered mode.
 - `plan_python_predicate/3` calls `compile_predicate_to_wam_items/3` for
   internally compiled interpreter-mode predicates and stores `wam_items(items_only,
   Items)` in `pred_plan/4`.
@@ -165,7 +167,7 @@ Completed follow-up:
 ## Verification Commands
 
 Use these checks after touching Python WAM runtime parity. On current `main`,
-`tests/test_wam_python_target.pl` passes 174/174 without choicepoint warnings:
+`tests/test_wam_python_target.pl` passes 177/177 without choicepoint warnings:
 
 ```sh
 swipl -q -g run_tests -t halt tests/test_wam_python_target.pl
