@@ -2705,8 +2705,18 @@ is_ground_atom_list(L, Atoms) :-
     maplist(atom, Items),
     Atoms = Items.
 
+% Walk a list term, collecting its elements. Must FAIL (not loop) on a
+% partial or improper list. The nonvar/1 guard stops the recursion the
+% moment the tail is an unbound variable, so a partial list like [a|_]
+% does not unify here, and the L = [H|T] match rejects an improper tail
+% like [a|b]. This is the contract compile_put_argument/5 relies on (via
+% the `proper_list(Arg, _)` guard added in #aac54075): when proper_list/2
+% fails, the list branch is skipped and the argument falls through to the
+% compound branch, which emits put_structure for the '[|]'/2 cons cell.
+% Without the nonvar/1 guard, clause 2 unifies [H|T] with an unbound tail
+% and recurses forever, blowing the stack on any partial-list argument.
 proper_list(T, []) :- T == [], !.
-proper_list([H|T], [H|R]) :- proper_list(T, R).
+proper_list(L, [H|R]) :- nonvar(L), L = [H|T], proper_list(T, R).
 
 %% emit_not_member_const_atoms_lowering(+X, +Atoms, +V0, -Vf, -Code)
 %
