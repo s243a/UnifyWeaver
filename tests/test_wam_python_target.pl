@@ -308,21 +308,25 @@ test(compile_runtime_reads_static_runtime_source) :-
 % Items-mode migration audit
 % ============================================================================
 
+:- dynamic user:py_items_api_demo/0.
+user:py_items_api_demo.
+
 :- begin_tests(wam_python_items_mode_audit).
 
-test(python_planning_normalizes_wam_text_to_items) :-
+test(python_planning_uses_common_items_api) :-
     once(source_file(wam_python_target:compile_wam_predicate_to_python(_, _, _, _), Path)),
     read_file_to_string(Path, Content, []),
-    sub_string(Content, _, _, _, "python_wam_text_plan(WamText, wam_items(WamText, Items))"),
+    sub_string(Content, _, _, _, "compile_predicate_to_wam_items(PredIndicator, [], Items)"),
+    sub_string(Content, _, _, _, "python_wam_items_plan(Items, Wam)"),
     sub_string(Content, _, _, _, "compile_wam_predicate_items_to_python(Pred/Arity, Items, Options, PredCode)"),
-    sub_string(Content, _, _, _, "wam_plan_text(Wam, WamText)"),
     !.
 
-test(python_items_mode_still_waits_on_native_item_generator) :-
+test(python_lowered_mode_keeps_text_plan) :-
     once(source_file(wam_python_target:compile_wam_predicate_to_python(_, _, _, _), Path)),
     read_file_to_string(Path, Content, []),
-    sub_string(Content, _, _, _, "wam_text_to_items(WamText, Items)"),
-    \+ sub_string(Content, _, _, _, "compile_predicate_to_wam_items"),
+    sub_string(Content, _, _, _, "option(emit_mode(lowered), Options)"),
+    sub_string(Content, _, _, _, "compile_predicate_to_wam_text(PredIndicator, [], WamText)"),
+    sub_string(Content, _, _, _, "wam_plan_text(Wam, WamText)"),
     !.
 
 
@@ -375,6 +379,13 @@ test(compile_all_interpreter_uses_items_plan) :-
     sub_string(Code, _, _, _, 'def pred_demo_1(raw_program):'),
     sub_string(Code, _, _, _, 'raw_program["demo/1"] = ('),
     sub_string(Code, _, _, _, '("put_constant", Atom("foo"), A1)'),
+    !.
+
+test(compile_all_generated_predicate_uses_items_api) :-
+    wam_python_target:compile_all_predicates([user:py_items_api_demo/0], [], Code),
+    sub_string(Code, _, _, _, 'def pred_py_items_api_demo_0(raw_program):'),
+    sub_string(Code, _, _, _, 'raw_program["py_items_api_demo/0"] = ('),
+    sub_string(Code, _, _, _, '("proceed",)'),
     !.
 :- end_tests(wam_python_items_mode_audit).
 

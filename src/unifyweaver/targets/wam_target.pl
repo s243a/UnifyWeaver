@@ -9,6 +9,8 @@
 :- module(wam_target, [
     target_info/1,
     compile_predicate_to_wam/3,          % +PredIndicator, +Options, -WAMCode
+    compile_predicate_to_wam_text/3,     % +PredIndicator, +Options, -WAMCode
+    compile_predicate_to_wam_items/3,    % +PredIndicator, +Options, -Items
     compile_predicate/3,                 % +PredIndicator, +Options, -WAMCode (dispatch alias)
     compile_facts_to_wam/3,              % +Pred, +Arity, -WAMCode
     compile_wam_module/3,                % +Predicates, +Options, -WAMCode
@@ -25,6 +27,7 @@
 :- use_module('../core/clause_body_analysis').
 :- use_module('../core/template_system').
 :- use_module('../core/binding_state_analysis').
+:- use_module('../targets/wam_text_parser', [wam_text_to_items/2]).
 
 %% target_info(-Info)
 target_info(info{
@@ -47,7 +50,15 @@ compile_predicate(PredArity, Options, Code) :-
     compile_predicate_to_wam(PredArity, Options, Code).
 
 %% compile_predicate_to_wam(+PredIndicator, +Options, -Code)
+%  Compatibility wrapper: returns canonical WAM text, matching the historical
+%  API. New callers that want an explicit format should use
+%  compile_predicate_to_wam_text/3 or compile_predicate_to_wam_items/3.
 compile_predicate_to_wam(PredIndicator, Options, Code) :-
+    compile_predicate_to_wam_text(PredIndicator, Options, Code).
+
+%% compile_predicate_to_wam_text(+PredIndicator, +Options, -Code)
+%  Compile a predicate to canonical WAM text.
+compile_predicate_to_wam_text(PredIndicator, Options, Code) :-
     % Handle module qualification
     (   PredIndicator = Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity -> option(module(Module), Options, user)
@@ -63,12 +74,21 @@ compile_predicate_to_wam(PredIndicator, Options, Code) :-
     ;   compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code)
     ).
 
+%% compile_predicate_to_wam_items(+PredIndicator, +Options, -Items)
+%  Compile a predicate to structured WAM items. This bridge keeps the legacy
+%  text generator as the source of truth for now, then normalizes through the
+%  shared parser. A later generator pass can replace this with direct item
+%  emission without changing target-facing call sites.
+compile_predicate_to_wam_items(PredIndicator, Options, Items) :-
+    compile_predicate_to_wam_text(PredIndicator, Options, Code),
+    wam_text_to_items(Code, Items).
+
 %% compile_wam_module(+Predicates, +Options, -Code) is det.
 %
 %   Compiles a list of predicates to a single WAM module using templates.
 compile_wam_module(Predicates, Options, Code) :-
     maplist({Options}/[PI, PredCode]>> (
-        compile_predicate_to_wam(PI, Options, PredCode)
+        compile_predicate_to_wam_text(PI, Options, PredCode)
     ), Predicates, PredCodes),
     
     atomic_list_concat(PredCodes, '\n\n', AllPredsCode),
