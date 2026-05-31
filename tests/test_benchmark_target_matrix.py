@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "examples" / "benchmark"))
 from benchmark_effective_distance_matrix import (  # noqa: E402
     RunResult,
     benchmark_target,
+    build_wam_c_effective_distance,
     kernel_pair_delta_rows,
     parse_args,
     print_kernel_pair_deltas,
@@ -118,6 +119,41 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
             "hybrid-wam-lowered-helper",
         )
 
+    def test_c_child_search_layout_targets_are_registered_separately(self) -> None:
+        targets = resolve_targets(
+            explicit_targets=None,
+            target_set_names=["c-wam-child-search-layouts"],
+        )
+
+        self.assertEqual(
+            targets,
+            [
+                "c-wam-accumulated-child-scan",
+                "c-wam-accumulated-child-csr",
+                "c-wam-accumulated-child-csr-drop",
+                "c-wam-accumulated-child-csr-lmdb-offset",
+            ],
+        )
+        for target in targets:
+            self.assertEqual(TARGETS[target].category, "hybrid-wam-child-search")
+
+    def test_c_child_csr_layout_targets_are_registered_separately(self) -> None:
+        targets = resolve_targets(
+            explicit_targets=None,
+            target_set_names=["c-wam-child-csr-layouts"],
+        )
+
+        self.assertEqual(
+            targets,
+            [
+                "c-wam-accumulated-child-csr",
+                "c-wam-accumulated-child-csr-drop",
+                "c-wam-accumulated-child-csr-lmdb-offset",
+            ],
+        )
+        for target in targets:
+            self.assertEqual(TARGETS[target].category, "hybrid-wam-child-search")
+
     def test_scala_targets_are_registered(self) -> None:
         targets = resolve_targets(
             explicit_targets=None,
@@ -178,6 +214,17 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
             "scala-wam-accumulated,scala-wam-accumulated-artifact",
             text,
         )
+        self.assertIn(
+            "c-wam-child-search-layouts\tc-wam-accumulated-child-scan,"
+            "c-wam-accumulated-child-csr,c-wam-accumulated-child-csr-drop,"
+            "c-wam-accumulated-child-csr-lmdb-offset",
+            text,
+        )
+        self.assertIn(
+            "c-wam-child-csr-layouts\tc-wam-accumulated-child-csr,"
+            "c-wam-accumulated-child-csr-drop,c-wam-accumulated-child-csr-lmdb-offset",
+            text,
+        )
         self.assertIn("clojure-wam-scaffold\t", text)
 
     def test_effective_distance_runner_resolves_seeded_clojure_targets(self) -> None:
@@ -213,6 +260,29 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         self.assertEqual(result.row_count, 1)
         run_command_mock.assert_called_once()
         self.assertEqual(run_command_mock.call_args.args[0], ["lowered-helper-benchmark"])
+
+    def test_c_child_csr_layout_build_passes_profile_to_generator(self) -> None:
+        with patch("benchmark_effective_distance_matrix.require_file") as require_file_mock, \
+             patch("benchmark_effective_distance_matrix.run_command") as run_command_mock, \
+             patch.object(Path, "exists", return_value=False):
+            require_file_mock.return_value = ROOT / "data" / "benchmark" / "dev" / "facts.pl"
+            run_command_mock.return_value = subprocess.CompletedProcess(
+                args=["wam-c-benchmark"],
+                returncode=0,
+                stdout="",
+                stderr="",
+            )
+
+            build_wam_c_effective_distance(
+                ROOT / "output" / "matrix-test",
+                "dev",
+                "kernels_on",
+                "facts_tsv",
+                "child_csr_sorted",
+            )
+
+        generator_command = run_command_mock.call_args_list[0].args[0]
+        self.assertEqual(generator_command[-1], "child_csr_sorted")
 
     def test_kernel_pair_registry_covers_registered_wam_pairs(self) -> None:
         pairs = {(pair.family, pair.mode): pair for pair in KERNEL_TARGET_PAIRS}

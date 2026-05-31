@@ -280,31 +280,36 @@ def build_wam_go_effective_distance(root: Path, scale: str, kernel_mode: str) ->
 
 
 def build_wam_c_effective_distance(
-    root: Path, scale: str, kernel_mode: str, fact_storage: str = "facts_tsv"
+    root: Path,
+    scale: str,
+    kernel_mode: str,
+    fact_storage: str = "facts_tsv",
+    layout_profile: str = "parent_only",
 ) -> list[str]:
     facts_path = require_file(BENCH_DIR / scale / "facts.pl")
-    project_dir = root / f"wam_c_{kernel_mode}_{fact_storage}" / scale
+    project_dir = root / f"wam_c_{kernel_mode}_{fact_storage}_{layout_profile}" / scale
     project_dir.mkdir(parents=True, exist_ok=True)
-    run_command(
-        [
-            "swipl",
-            "-q",
-            "-s",
-            str(WAM_C_GENERATOR),
-            "--",
-            str(facts_path),
-            str(project_dir),
-            kernel_mode,
-            fact_storage,
-        ],
-        cwd=ROOT,
-    )
+    generator_command = [
+        "swipl",
+        "-q",
+        "-s",
+        str(WAM_C_GENERATOR),
+        "--",
+        str(facts_path),
+        str(project_dir),
+        kernel_mode,
+        fact_storage,
+    ]
+    if layout_profile != "parent_only":
+        generator_command.append(layout_profile)
+    run_command(generator_command, cwd=ROOT)
     runtime_path = project_dir / "wam_runtime.c"
     lib_path = project_dir / "lib.c"
     main_path = project_dir / "main.c"
     binary_path = project_dir / "wam_c_effective_distance"
     compile_flags = ["-std=c11", "-Wall", "-Wextra"]
     link_flags = ["-lm"]
+    uses_lmdb_runtime = False
     if fact_storage == "facts_lmdb":
         seeder_path = project_dir / "seed_category_parent_lmdb.c"
         seeder_binary = project_dir / "seed_category_parent_lmdb"
@@ -320,10 +325,28 @@ def build_wam_c_effective_distance(
             cwd=ROOT,
         )
         run_command([str(seeder_binary)], cwd=project_dir)
-        compile_flags.append("-DWAM_C_ENABLE_LMDB")
-        link_flags.append("-llmdb")
+        uses_lmdb_runtime = True
     elif fact_storage != "facts_tsv":
         raise ValueError(f"unknown WAM-C fact storage mode: {fact_storage}")
+    reverse_csr_offset_seeder_path = project_dir / "seed_category_child_csr_offsets_lmdb.c"
+    if reverse_csr_offset_seeder_path.exists():
+        reverse_csr_offset_seeder_binary = project_dir / "seed_category_child_csr_offsets_lmdb"
+        run_command(
+            [
+                "gcc",
+                *compile_flags,
+                str(reverse_csr_offset_seeder_path),
+                "-llmdb",
+                "-o",
+                str(reverse_csr_offset_seeder_binary),
+            ],
+            cwd=ROOT,
+        )
+        run_command([str(reverse_csr_offset_seeder_binary)], cwd=project_dir)
+        uses_lmdb_runtime = True
+    if uses_lmdb_runtime:
+        compile_flags.append("-DWAM_C_ENABLE_LMDB")
+        link_flags.append("-llmdb")
     run_command(
         [
             "gcc",
@@ -1064,6 +1087,22 @@ def main() -> int:
                     command = build_wam_c_effective_distance(temp_root, scale, "kernels_on", "facts_lmdb")
                 elif target == "c-wam-accumulated-no-kernels-lmdb":
                     command = build_wam_c_effective_distance(temp_root, scale, "kernels_off", "facts_lmdb")
+                elif target == "c-wam-accumulated-child-scan":
+                    command = build_wam_c_effective_distance(
+                        temp_root, scale, "kernels_on", "facts_tsv", "child_scan"
+                    )
+                elif target == "c-wam-accumulated-child-csr":
+                    command = build_wam_c_effective_distance(
+                        temp_root, scale, "kernels_on", "facts_tsv", "child_csr_sorted"
+                    )
+                elif target == "c-wam-accumulated-child-csr-drop":
+                    command = build_wam_c_effective_distance(
+                        temp_root, scale, "kernels_on", "facts_tsv", "child_csr_buffered_drop"
+                    )
+                elif target == "c-wam-accumulated-child-csr-lmdb-offset":
+                    command = build_wam_c_effective_distance(
+                        temp_root, scale, "kernels_on", "facts_tsv", "child_csr_lmdb_offset"
+                    )
                 elif target == "c-wam-lowered-helper":
                     command = build_wam_c_lowered_helper_benchmark(temp_root, scale, "lowered")
                 elif target == "c-wam-lowered-helper-interpreted":
