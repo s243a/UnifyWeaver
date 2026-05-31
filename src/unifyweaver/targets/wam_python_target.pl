@@ -51,6 +51,7 @@
 	compile_predicate_to_wam_text/3,
 	compile_predicate_to_wam_items/3
 ]).
+:- use_module('../targets/wam_ir_mode', [wam_ir_mode/4]).
 :- use_module('../core/iso_errors',
               [ iso_errors_resolve_options/2,
                 iso_errors_load_config/2,
@@ -2081,11 +2082,28 @@ plan_python_predicate(Options, Pred/Arity, pred_plan(Pred, Arity, Wam, Kind)) :-
 	).
 
 python_plan_compile_predicate(Options, PredIndicator, Wam) :-
-	(   option(emit_mode(lowered), Options)
+	python_wam_emit_ir_mode(Options, IrMode),
+	(   IrMode = wam_text
 	->  compile_predicate_to_wam_text(PredIndicator, [], WamText),
 	    python_wam_text_plan(WamText, Wam)
-	;   compile_predicate_to_wam_items(PredIndicator, [], Items),
+	;   IrMode = wam_items_bridge
+	->  compile_predicate_to_wam_items(PredIndicator, [], Items),
 	    python_wam_items_plan(Items, Wam)
+	).
+
+python_wam_emit_ir_mode(Options, IrMode) :-
+	(   option(emit_mode(lowered), Options)
+	->  EmitMode = lowered
+	;   EmitMode = interpreter
+	),
+	wam_ir_mode(wam_python, EmitMode, Options, IrMode),
+	(   IrMode == direct_target
+	->  throw(error(domain_error(wam_python_ir_mode, direct_target),
+	                python_plan_compile_predicate/3))
+	;   IrMode == wam_items_native
+	->  throw(error(existence_error(wam_ir_mode, wam_items_native),
+	                python_plan_compile_predicate/3))
+	;   true
 	).
 
 python_wam_text_plan(WamText, wam_items(text(WamText), Items)) :-

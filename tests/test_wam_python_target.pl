@@ -324,7 +324,8 @@ test(python_planning_uses_common_items_api) :-
 test(python_lowered_mode_keeps_text_plan) :-
     once(source_file(wam_python_target:compile_wam_predicate_to_python(_, _, _, _), Path)),
     read_file_to_string(Path, Content, []),
-    sub_string(Content, _, _, _, "option(emit_mode(lowered), Options)"),
+    sub_string(Content, _, _, _, "python_wam_emit_ir_mode(Options, IrMode)"),
+    sub_string(Content, _, _, _, "wam_ir_mode(wam_python, EmitMode, Options, IrMode)"),
     sub_string(Content, _, _, _, "compile_predicate_to_wam_text(PredIndicator, [], WamText)"),
     sub_string(Content, _, _, _, "wam_plan_text(Wam, WamText)"),
     !.
@@ -387,6 +388,24 @@ test(compile_all_generated_predicate_uses_items_api) :-
     sub_string(Code, _, _, _, 'raw_program["py_items_api_demo/0"] = ('),
     sub_string(Code, _, _, _, '("proceed",)'),
     !.
+
+test(compile_all_generated_predicate_allows_text_ir_override) :-
+    wam_python_target:compile_all_predicates([user:py_items_api_demo/0],
+        [wam_ir(wam_text)], Code),
+    sub_string(Code, _, _, _, 'def pred_py_items_api_demo_0(raw_program):'),
+    sub_string(Code, _, _, _, 'raw_program["py_items_api_demo/0"] = ('),
+    sub_string(Code, _, _, _, '("proceed",)'),
+    !.
+
+test(compile_all_generated_predicate_rejects_direct_target_ir,
+     [throws(error(domain_error(wam_python_ir_mode, direct_target), _))]) :-
+    wam_python_target:compile_all_predicates([user:py_items_api_demo/0],
+        [wam_ir(direct_target)], _).
+
+test(compile_all_generated_predicate_rejects_native_items_until_available,
+     [throws(error(existence_error(wam_ir_mode, wam_items_native), _))]) :-
+    wam_python_target:compile_all_predicates([user:py_items_api_demo/0],
+        [wam_ir(wam_items_native)], _).
 :- end_tests(wam_python_items_mode_audit).
 
 % ============================================================================
