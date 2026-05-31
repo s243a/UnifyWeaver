@@ -3422,6 +3422,7 @@ entry:
     i32 60, label %builtin_sum_list
     i32 61, label %builtin_max_list
     i32 62, label %builtin_min_list
+    i32 63, label %builtin_subtract
   ]
 
 builtin_is:
@@ -6500,6 +6501,134 @@ mnl.done:
   %mnl.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %mnl.raw2, %Value %mnl.res_v)
   ret i1 %mnl.ok
 
+builtin_subtract:
+  ; M44: subtract(+List1, +List2, ?Difference) -- elements of List1
+  ; that have no unify-match in List2. Three-pass:
+  ;   1. count A1''s elements n;
+  ;   2. allocate arr of n %Values; for each A1 head, inner-walk A2
+  ;      with the trial-unify + rollback pattern (memberchk inline).
+  ;      Match found anywhere in A2: skip the head, keep the binding
+  ;      (matches SWI subtract([a,b,c], [X], R) -> X=a, R=[b,c]).
+  ;      A2 exhausted without match: store head at arr[out_idx++].
+  ;   3. walk arr back-to-front prepending each survivor onto [];
+  ;      unify A3 with the resulting cons chain.
+  %sbt.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sbt.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  call void @wam_arena_ensure()
+  br label %sbt.c_loop
+sbt.c_loop:
+  %sbt.c_cur = phi %Value [ %sbt.a1, %builtin_subtract ], [ %sbt.c_next, %sbt.c_step ]
+  %sbt.c_cnt = phi i32 [ 0, %builtin_subtract ], [ %sbt.c_cnt1, %sbt.c_step ]
+  %sbt.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %sbt.c_cur)
+  %sbt.c_tag = extractvalue %Value %sbt.c_d, 0
+  %sbt.c_is_cmp = icmp eq i32 %sbt.c_tag, 3
+  br i1 %sbt.c_is_cmp, label %sbt.c_step, label %sbt.c_done
+sbt.c_step:
+  %sbt.c_cp = extractvalue %Value %sbt.c_d, 1
+  %sbt.c_cp_ptr = inttoptr i64 %sbt.c_cp to %Compound*
+  %sbt.c_args_slot = getelementptr %Compound, %Compound* %sbt.c_cp_ptr, i32 0, i32 2
+  %sbt.c_args = load %Value*, %Value** %sbt.c_args_slot
+  %sbt.c_t_ptr = getelementptr %Value, %Value* %sbt.c_args, i32 1
+  %sbt.c_next = load %Value, %Value* %sbt.c_t_ptr
+  %sbt.c_cnt1 = add i32 %sbt.c_cnt, 1
+  br label %sbt.c_loop
+sbt.c_done:
+  %sbt.cnt64 = sext i32 %sbt.c_cnt to i64
+  %sbt.arr_bytes = shl i64 %sbt.cnt64, 4
+  %sbt.arr_mem = call i8* @wam_arena_alloc(i64 %sbt.arr_bytes)
+  %sbt.arr = bitcast i8* %sbt.arr_mem to %Value*
+  br label %sbt.outer_loop
+sbt.outer_loop:
+  %sbt.o_cur = phi %Value [ %sbt.a1, %sbt.c_done ], [ %sbt.o_next, %sbt.o_after ]
+  %sbt.in_idx = phi i32 [ 0, %sbt.c_done ], [ %sbt.in_idx1, %sbt.o_after ]
+  %sbt.out_idx = phi i32 [ 0, %sbt.c_done ], [ %sbt.out_next, %sbt.o_after ]
+  %sbt.o_done = icmp sge i32 %sbt.in_idx, %sbt.c_cnt
+  br i1 %sbt.o_done, label %sbt.build_init, label %sbt.o_step
+sbt.o_step:
+  %sbt.o_d = call %Value @wam_deref_value(%WamState* %vm, %Value %sbt.o_cur)
+  %sbt.o_cp = extractvalue %Value %sbt.o_d, 1
+  %sbt.o_cp_ptr = inttoptr i64 %sbt.o_cp to %Compound*
+  %sbt.o_args_slot = getelementptr %Compound, %Compound* %sbt.o_cp_ptr, i32 0, i32 2
+  %sbt.o_args = load %Value*, %Value** %sbt.o_args_slot
+  %sbt.o_h_ptr = getelementptr %Value, %Value* %sbt.o_args, i32 0
+  %sbt.o_head = load %Value, %Value* %sbt.o_h_ptr
+  %sbt.o_t_ptr = getelementptr %Value, %Value* %sbt.o_args, i32 1
+  %sbt.o_next = load %Value, %Value* %sbt.o_t_ptr
+  br label %sbt.inner_loop
+sbt.inner_loop:
+  %sbt.i_cur = phi %Value [ %sbt.a2, %sbt.o_step ], [ %sbt.i_next, %sbt.i_rollback ]
+  %sbt.i_d = call %Value @wam_deref_value(%WamState* %vm, %Value %sbt.i_cur)
+  %sbt.i_tag = extractvalue %Value %sbt.i_d, 0
+  %sbt.i_is_cmp = icmp eq i32 %sbt.i_tag, 3
+  br i1 %sbt.i_is_cmp, label %sbt.i_try, label %sbt.no_match
+sbt.i_try:
+  %sbt.i_cp = extractvalue %Value %sbt.i_d, 1
+  %sbt.i_cp_ptr = inttoptr i64 %sbt.i_cp to %Compound*
+  %sbt.i_args_slot = getelementptr %Compound, %Compound* %sbt.i_cp_ptr, i32 0, i32 2
+  %sbt.i_args = load %Value*, %Value** %sbt.i_args_slot
+  %sbt.i_h_ptr = getelementptr %Value, %Value* %sbt.i_args, i32 0
+  %sbt.i_head = load %Value, %Value* %sbt.i_h_ptr
+  %sbt.i_t_ptr = getelementptr %Value, %Value* %sbt.i_args, i32 1
+  %sbt.i_next = load %Value, %Value* %sbt.i_t_ptr
+  %sbt.ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %sbt.saved_ts = load i32, i32* %sbt.ts_ptr
+  %sbt.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %sbt.o_head, %Value %sbt.i_head)
+  br i1 %sbt.uok, label %sbt.match, label %sbt.i_rollback
+sbt.i_rollback:
+  call void @unwind_trail(%WamState* %vm, i32 %sbt.saved_ts)
+  br label %sbt.inner_loop
+sbt.match:
+  ; Element matched -- skip; binding kept.
+  br label %sbt.o_after
+sbt.no_match:
+  ; A2 exhausted without match -- keep o_head at arr[out_idx].
+  %sbt.no_slot = getelementptr %Value, %Value* %sbt.arr, i32 %sbt.out_idx
+  store %Value %sbt.o_head, %Value* %sbt.no_slot
+  %sbt.out_kept = add i32 %sbt.out_idx, 1
+  br label %sbt.o_after
+sbt.o_after:
+  %sbt.out_next = phi i32 [ %sbt.out_idx, %sbt.match ], [ %sbt.out_kept, %sbt.no_match ]
+  %sbt.in_idx1 = add i32 %sbt.in_idx, 1
+  br label %sbt.outer_loop
+sbt.build_init:
+  %sbt.b_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %sbt.b_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %sbt.b_empty_v  = insertvalue %Value %sbt.b_empty_v0, i64 %sbt.b_empty_id, 1
+  br label %sbt.b_loop
+sbt.b_loop:
+  %sbt.b_i = phi i32 [ %sbt.out_idx, %sbt.build_init ], [ %sbt.b_i_prev, %sbt.b_step ]
+  %sbt.b_acc = phi %Value [ %sbt.b_empty_v, %sbt.build_init ], [ %sbt.b_new_cons, %sbt.b_step ]
+  %sbt.b_done = icmp sle i32 %sbt.b_i, 0
+  br i1 %sbt.b_done, label %sbt.b_bind, label %sbt.b_step
+sbt.b_step:
+  %sbt.b_i_prev = sub i32 %sbt.b_i, 1
+  %sbt.b_slot = getelementptr %Value, %Value* %sbt.arr, i32 %sbt.b_i_prev
+  %sbt.b_head = load %Value, %Value* %sbt.b_slot
+  %sbt.b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %sbt.b_cp_mem = call i8* @wam_arena_alloc(i64 %sbt.b_cp_size)
+  %sbt.b_cp = bitcast i8* %sbt.b_cp_mem to %Compound*
+  %sbt.b_fn_slot = getelementptr %Compound, %Compound* %sbt.b_cp, i32 0, i32 0
+  %sbt.b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %sbt.b_fn_ptr, i8** %sbt.b_fn_slot
+  %sbt.b_ar_slot = getelementptr %Compound, %Compound* %sbt.b_cp, i32 0, i32 1
+  store i32 2, i32* %sbt.b_ar_slot
+  %sbt.b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %sbt.b_args = bitcast i8* %sbt.b_args_mem to %Value*
+  %sbt.b_args_slot = getelementptr %Compound, %Compound* %sbt.b_cp, i32 0, i32 2
+  store %Value* %sbt.b_args, %Value** %sbt.b_args_slot
+  %sbt.b_h_ptr = getelementptr %Value, %Value* %sbt.b_args, i32 0
+  store %Value %sbt.b_head, %Value* %sbt.b_h_ptr
+  %sbt.b_t_ptr = getelementptr %Value, %Value* %sbt.b_args, i32 1
+  store %Value %sbt.b_acc, %Value* %sbt.b_t_ptr
+  %sbt.b_cp_i64 = ptrtoint %Compound* %sbt.b_cp to i64
+  %sbt.b_nc0 = insertvalue %Value undef, i32 3, 0
+  %sbt.b_new_cons = insertvalue %Value %sbt.b_nc0, i64 %sbt.b_cp_i64, 1
+  br label %sbt.b_loop
+sbt.b_bind:
+  %sbt.b_raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %sbt.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sbt.b_raw3, %Value %sbt.b_acc)
+  ret i1 %sbt.b_ok
+
 unknown:
   ret i1 false
 }'.
@@ -7935,6 +8064,7 @@ builtin_op_to_id('sum_list/2', 59).
 builtin_op_to_id('sumlist/2', 60).   % alias of sum_list/2
 builtin_op_to_id('max_list/2', 61).
 builtin_op_to_id('min_list/2', 62).
+builtin_op_to_id('subtract/3', 63).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================

@@ -1156,6 +1156,63 @@ test_max_minus_min(_, R) :-
     min_list([4, 7, 1, 9, 3], Mn),
     R is Mx - Mn.   % 9 - 1 = 8
 
+% M44: subtract/3 -- elements of A1 with no unify-match in A2.
+
+:- dynamic test_subtract_disjoint/2.
+test_subtract_disjoint(_, R) :-
+    subtract([1, 2, 3], [4, 5, 6], L),
+    length(L, N),
+    R is N.   % 3 -- all kept
+
+:- dynamic test_subtract_one/2.
+test_subtract_one(_, R) :-
+    subtract([1, 2, 3], [2], L),
+    length(L, N),
+    R is N.   % 2
+
+:- dynamic test_subtract_many/2.
+test_subtract_many(_, R) :-
+    subtract([1, 2, 3, 4, 5], [2, 4], L),
+    length(L, N),
+    R is N.   % 3
+
+:- dynamic test_subtract_all/2.
+test_subtract_all(_, R) :-
+    subtract([1, 2, 3], [3, 2, 1], L),
+    length(L, N),
+    R is N + 7.   % 7 -- empty result
+
+:- dynamic test_subtract_empty_left/2.
+test_subtract_empty_left(_, R) :-
+    subtract([], [1, 2], L),
+    length(L, N),
+    R is N + 8.   % 8
+
+:- dynamic test_subtract_empty_right/2.
+test_subtract_empty_right(_, R) :-
+    subtract([7, 8, 9], [], L),
+    length(L, N),
+    R is N.   % 3 -- nothing to remove
+
+:- dynamic test_subtract_first/2.
+test_subtract_first(_, R) :-
+    subtract([10, 20, 30, 40], [10], L),
+    nth0(0, L, E),
+    R is E.   % 20
+
+:- dynamic test_subtract_preserves_order/2.
+test_subtract_preserves_order(_, R) :-
+    subtract([10, 5, 20, 5, 30], [5], L),
+    nth0(1, L, E),    % L = [10, 20, 30]
+    R is E.   % 20
+
+:- dynamic test_subtract_dupes/2.
+test_subtract_dupes(_, R) :-
+    % All occurrences in A1 are filtered, just like delete/3.
+    subtract([1, 2, 1, 3, 1], [1], L),
+    length(L, N),
+    R is N.   % 2
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -2163,6 +2220,25 @@ test_all :-
                    test_min_list_empty, 0, 0),
        run_test_r0('max_list - min_list of [4,7,1,9,3] -> 8',
                    test_max_minus_min, 0, 8),
+       format('--- M44 subtract/3 ---~n'),
+       run_test_r0('subtract([1,2,3], [4,5,6]) disjoint length -> 3',
+                   test_subtract_disjoint, 0, 3),
+       run_test_r0('subtract([1,2,3], [2]) length -> 2',
+                   test_subtract_one, 0, 2),
+       run_test_r0('subtract([1,2,3,4,5], [2,4]) length -> 3',
+                   test_subtract_many, 0, 3),
+       run_test_r0('subtract([1,2,3], [3,2,1]) empty + 7 -> 7',
+                   test_subtract_all, 0, 7),
+       run_test_r0('subtract([], [1,2]) + 8 -> 8',
+                   test_subtract_empty_left, 0, 8),
+       run_test_r0('subtract([7,8,9], []) length -> 3',
+                   test_subtract_empty_right, 0, 3),
+       run_test_r0('subtract([10,20,30,40], [10]) nth0(0) -> 20',
+                   test_subtract_first, 0, 20),
+       run_test_r0('subtract([10,5,20,5,30], [5]) nth0(1) -> 20',
+                   test_subtract_preserves_order, 0, 20),
+       run_test_r0('subtract([1,2,1,3,1], [1]) length -> 2 (all dupes filtered)',
+                   test_subtract_dupes, 0, 2),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
