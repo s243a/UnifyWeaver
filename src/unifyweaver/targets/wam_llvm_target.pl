@@ -3420,6 +3420,8 @@ entry:
     i32 58, label %builtin_numlist
     i32 59, label %builtin_sum_list
     i32 60, label %builtin_sum_list
+    i32 61, label %builtin_max_list
+    i32 62, label %builtin_min_list
   ]
 
 builtin_is:
@@ -6380,6 +6382,124 @@ sl.done:
   %sl.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sl.raw2, %Value %sl.sum_v)
   ret i1 %sl.ok
 
+builtin_max_list:
+  ; M43: max_list(+List, ?Max) -- integer max. Empty list fails;
+  ; first element is the initial extremum; non-Integer head fails.
+  %mxl.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  br label %mxl.entry
+mxl.fail:
+  ret i1 false
+mxl.entry:
+  %mxl.d0 = call %Value @wam_deref_value(%WamState* %vm, %Value %mxl.a1)
+  %mxl.tag0 = extractvalue %Value %mxl.d0, 0
+  %mxl.is_cmp0 = icmp eq i32 %mxl.tag0, 3
+  br i1 %mxl.is_cmp0, label %mxl.first, label %mxl.fail
+mxl.first:
+  %mxl.cp0 = extractvalue %Value %mxl.d0, 1
+  %mxl.cp0_ptr = inttoptr i64 %mxl.cp0 to %Compound*
+  %mxl.args0_slot = getelementptr %Compound, %Compound* %mxl.cp0_ptr, i32 0, i32 2
+  %mxl.args0 = load %Value*, %Value** %mxl.args0_slot
+  %mxl.h0_ptr = getelementptr %Value, %Value* %mxl.args0, i32 0
+  %mxl.h0_raw = load %Value, %Value* %mxl.h0_ptr
+  %mxl.h0_d = call %Value @wam_deref_value(%WamState* %vm, %Value %mxl.h0_raw)
+  %mxl.h0_tag = extractvalue %Value %mxl.h0_d, 0
+  %mxl.h0_int = icmp eq i32 %mxl.h0_tag, 1
+  br i1 %mxl.h0_int, label %mxl.init, label %mxl.fail
+mxl.init:
+  %mxl.val0 = extractvalue %Value %mxl.h0_d, 1
+  %mxl.t0_ptr = getelementptr %Value, %Value* %mxl.args0, i32 1
+  %mxl.tail0 = load %Value, %Value* %mxl.t0_ptr
+  br label %mxl.loop
+mxl.loop:
+  %mxl.cur = phi %Value [ %mxl.tail0, %mxl.init ], [ %mxl.tail_n, %mxl.update ]
+  %mxl.acc = phi i64 [ %mxl.val0, %mxl.init ], [ %mxl.acc1, %mxl.update ]
+  %mxl.d = call %Value @wam_deref_value(%WamState* %vm, %Value %mxl.cur)
+  %mxl.tag = extractvalue %Value %mxl.d, 0
+  %mxl.is_cmp = icmp eq i32 %mxl.tag, 3
+  br i1 %mxl.is_cmp, label %mxl.step, label %mxl.done
+mxl.step:
+  %mxl.cp = extractvalue %Value %mxl.d, 1
+  %mxl.cp_ptr = inttoptr i64 %mxl.cp to %Compound*
+  %mxl.args_slot = getelementptr %Compound, %Compound* %mxl.cp_ptr, i32 0, i32 2
+  %mxl.args = load %Value*, %Value** %mxl.args_slot
+  %mxl.h_ptr = getelementptr %Value, %Value* %mxl.args, i32 0
+  %mxl.h_raw = load %Value, %Value* %mxl.h_ptr
+  %mxl.h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %mxl.h_raw)
+  %mxl.h_tag = extractvalue %Value %mxl.h_d, 0
+  %mxl.h_int = icmp eq i32 %mxl.h_tag, 1
+  br i1 %mxl.h_int, label %mxl.update, label %mxl.fail
+mxl.update:
+  %mxl.h_val = extractvalue %Value %mxl.h_d, 1
+  %mxl.is_bigger = icmp sgt i64 %mxl.h_val, %mxl.acc
+  %mxl.acc1 = select i1 %mxl.is_bigger, i64 %mxl.h_val, i64 %mxl.acc
+  %mxl.t_ptr = getelementptr %Value, %Value* %mxl.args, i32 1
+  %mxl.tail_n = load %Value, %Value* %mxl.t_ptr
+  br label %mxl.loop
+mxl.done:
+  %mxl.res_v = call %Value @value_integer(i64 %mxl.acc)
+  %mxl.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %mxl.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %mxl.raw2, %Value %mxl.res_v)
+  ret i1 %mxl.ok
+
+builtin_min_list:
+  ; M43: min_list(+List, ?Min) -- integer min. Mirrors max_list with
+  ; the comparison flipped (icmp slt instead of sgt).
+  %mnl.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  br label %mnl.entry
+mnl.fail:
+  ret i1 false
+mnl.entry:
+  %mnl.d0 = call %Value @wam_deref_value(%WamState* %vm, %Value %mnl.a1)
+  %mnl.tag0 = extractvalue %Value %mnl.d0, 0
+  %mnl.is_cmp0 = icmp eq i32 %mnl.tag0, 3
+  br i1 %mnl.is_cmp0, label %mnl.first, label %mnl.fail
+mnl.first:
+  %mnl.cp0 = extractvalue %Value %mnl.d0, 1
+  %mnl.cp0_ptr = inttoptr i64 %mnl.cp0 to %Compound*
+  %mnl.args0_slot = getelementptr %Compound, %Compound* %mnl.cp0_ptr, i32 0, i32 2
+  %mnl.args0 = load %Value*, %Value** %mnl.args0_slot
+  %mnl.h0_ptr = getelementptr %Value, %Value* %mnl.args0, i32 0
+  %mnl.h0_raw = load %Value, %Value* %mnl.h0_ptr
+  %mnl.h0_d = call %Value @wam_deref_value(%WamState* %vm, %Value %mnl.h0_raw)
+  %mnl.h0_tag = extractvalue %Value %mnl.h0_d, 0
+  %mnl.h0_int = icmp eq i32 %mnl.h0_tag, 1
+  br i1 %mnl.h0_int, label %mnl.init, label %mnl.fail
+mnl.init:
+  %mnl.val0 = extractvalue %Value %mnl.h0_d, 1
+  %mnl.t0_ptr = getelementptr %Value, %Value* %mnl.args0, i32 1
+  %mnl.tail0 = load %Value, %Value* %mnl.t0_ptr
+  br label %mnl.loop
+mnl.loop:
+  %mnl.cur = phi %Value [ %mnl.tail0, %mnl.init ], [ %mnl.tail_n, %mnl.update ]
+  %mnl.acc = phi i64 [ %mnl.val0, %mnl.init ], [ %mnl.acc1, %mnl.update ]
+  %mnl.d = call %Value @wam_deref_value(%WamState* %vm, %Value %mnl.cur)
+  %mnl.tag = extractvalue %Value %mnl.d, 0
+  %mnl.is_cmp = icmp eq i32 %mnl.tag, 3
+  br i1 %mnl.is_cmp, label %mnl.step, label %mnl.done
+mnl.step:
+  %mnl.cp = extractvalue %Value %mnl.d, 1
+  %mnl.cp_ptr = inttoptr i64 %mnl.cp to %Compound*
+  %mnl.args_slot = getelementptr %Compound, %Compound* %mnl.cp_ptr, i32 0, i32 2
+  %mnl.args = load %Value*, %Value** %mnl.args_slot
+  %mnl.h_ptr = getelementptr %Value, %Value* %mnl.args, i32 0
+  %mnl.h_raw = load %Value, %Value* %mnl.h_ptr
+  %mnl.h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %mnl.h_raw)
+  %mnl.h_tag = extractvalue %Value %mnl.h_d, 0
+  %mnl.h_int = icmp eq i32 %mnl.h_tag, 1
+  br i1 %mnl.h_int, label %mnl.update, label %mnl.fail
+mnl.update:
+  %mnl.h_val = extractvalue %Value %mnl.h_d, 1
+  %mnl.is_smaller = icmp slt i64 %mnl.h_val, %mnl.acc
+  %mnl.acc1 = select i1 %mnl.is_smaller, i64 %mnl.h_val, i64 %mnl.acc
+  %mnl.t_ptr = getelementptr %Value, %Value* %mnl.args, i32 1
+  %mnl.tail_n = load %Value, %Value* %mnl.t_ptr
+  br label %mnl.loop
+mnl.done:
+  %mnl.res_v = call %Value @value_integer(i64 %mnl.acc)
+  %mnl.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %mnl.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %mnl.raw2, %Value %mnl.res_v)
+  ret i1 %mnl.ok
+
 unknown:
   ret i1 false
 }'.
@@ -7813,6 +7933,8 @@ builtin_op_to_id('delete/3', 57).
 builtin_op_to_id('numlist/3', 58).
 builtin_op_to_id('sum_list/2', 59).
 builtin_op_to_id('sumlist/2', 60).   % alias of sum_list/2
+builtin_op_to_id('max_list/2', 61).
+builtin_op_to_id('min_list/2', 62).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================

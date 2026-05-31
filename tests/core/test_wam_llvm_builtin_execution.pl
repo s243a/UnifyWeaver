@@ -1110,6 +1110,52 @@ test_sumlist_alias(_, R) :-
     sumlist([1, 2, 3, 4, 5], S),
     R is S.   % 15
 
+% M43: max_list/2 + min_list/2 -- integer aggregations.
+
+:- dynamic test_max_list_simple/2.
+test_max_list_simple(_, R) :-
+    max_list([3, 7, 2, 9, 5], M),
+    R is M.   % 9
+
+:- dynamic test_max_list_singleton/2.
+test_max_list_singleton(_, R) :-
+    max_list([42], M),
+    R is M.   % 42
+
+:- dynamic test_max_list_first_biggest/2.
+test_max_list_first_biggest(_, R) :-
+    max_list([100, 50, 25, 10], M),
+    R is M.   % 100
+
+:- dynamic test_max_list_empty/2.
+test_max_list_empty(_, R) :-
+    ( max_list([], _) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_min_list_simple/2.
+test_min_list_simple(_, R) :-
+    min_list([7, 3, 9, 2, 5], M),
+    R is M.   % 2
+
+:- dynamic test_min_list_singleton/2.
+test_min_list_singleton(_, R) :-
+    min_list([42], M),
+    R is M.   % 42
+
+:- dynamic test_min_list_first_smallest/2.
+test_min_list_first_smallest(_, R) :-
+    min_list([1, 10, 100], M),
+    R is M.   % 1
+
+:- dynamic test_min_list_empty/2.
+test_min_list_empty(_, R) :-
+    ( min_list([], _) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_max_minus_min/2.
+test_max_minus_min(_, R) :-
+    max_list([4, 7, 1, 9, 3], Mx),
+    min_list([4, 7, 1, 9, 3], Mn),
+    R is Mx - Mn.   % 9 - 1 = 8
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -2098,6 +2144,25 @@ test_all :-
                    test_sum_list_singleton, 0, 99),
        run_test_r0('sumlist([1..5]) alias -> 15',
                    test_sumlist_alias, 0, 15),
+       format('--- M43 max_list/2 + min_list/2 ---~n'),
+       run_test_r0('max_list([3,7,2,9,5]) -> 9',
+                   test_max_list_simple, 0, 9),
+       run_test_r0('max_list([42]) -> 42',
+                   test_max_list_singleton, 0, 42),
+       run_test_r0('max_list([100,50,25,10]) -> 100',
+                   test_max_list_first_biggest, 0, 100),
+       run_test_r0('max_list([]) -> 0',
+                   test_max_list_empty, 0, 0),
+       run_test_r0('min_list([7,3,9,2,5]) -> 2',
+                   test_min_list_simple, 0, 2),
+       run_test_r0('min_list([42]) -> 42',
+                   test_min_list_singleton, 0, 42),
+       run_test_r0('min_list([1,10,100]) -> 1',
+                   test_min_list_first_smallest, 0, 1),
+       run_test_r0('min_list([]) -> 0',
+                   test_min_list_empty, 0, 0),
+       run_test_r0('max_list - min_list of [4,7,1,9,3] -> 8',
+                   test_max_minus_min, 0, 8),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
