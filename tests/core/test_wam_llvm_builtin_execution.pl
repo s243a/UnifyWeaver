@@ -2052,8 +2052,8 @@ test_cmp_float_lt(_, R) :-
     char_code(O, C),
     R is C.   % '<'
 
-:- dynamic test_cmp_float_eq/2.
-test_cmp_float_eq(_, R) :-
+:- dynamic test_cmp_order_float_eq/2.
+test_cmp_order_float_eq(_, R) :-
     compare(O, 3.14, 3.14),
     char_code(O, C),
     R is C.   % '='
@@ -3427,7 +3427,7 @@ test_all :-
        run_test_r0('compare(O, 1.5, 2.5) -> 60 (<)',
                    test_cmp_float_lt, 0, 60),
        run_test_r0('compare(O, 3.14, 3.14) -> 61 (=)',
-                   test_cmp_float_eq, 0, 61),
+                   test_cmp_order_float_eq, 0, 61),
        run_test_r0('compare(O, 2, 2.5) mixed -> 60 (<)',
                    test_cmp_int_float_mixed, 0, 60),
        run_test_r0('compare(O, apple, banana) -> 60 (<)',
