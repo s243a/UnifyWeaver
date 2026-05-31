@@ -2219,6 +2219,32 @@ test_mb_boolean_no(_, R) :-
 test_mb_unknown_type(_, R) :-
     ( must_be(bogus, hello) -> R is 1 ; R is 0 ).   % 0
 
+% M61: display/1 and writeln/1 -- alias for write/1 and write+nl.
+
+:- dynamic test_display_succeeds/2.
+test_display_succeeds(_, R) :-
+    ( display(hello) -> R is 1 ; R is 0 ).   % 1 (and prints ``hello'')
+
+:- dynamic test_display_integer/2.
+test_display_integer(_, R) :-
+    ( display(42) -> R is 1 ; R is 0 ).   % 1 (prints ``42'')
+
+:- dynamic test_display_compound/2.
+test_display_compound(_, R) :-
+    ( display(foo(1, 2)) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_writeln_succeeds/2.
+test_writeln_succeeds(_, R) :-
+    ( writeln(hello) -> R is 1 ; R is 0 ).   % 1 (prints ``hello\n'')
+
+:- dynamic test_writeln_integer/2.
+test_writeln_integer(_, R) :-
+    ( writeln(7) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_writeln_list/2.
+test_writeln_list(_, R) :-
+    ( writeln([1, 2, 3]) -> R is 1 ; R is 0 ).   % 1
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -3611,6 +3637,19 @@ test_all :-
                    test_mb_boolean_no, 0, 0),
        run_test_r0('must_be(bogus, hello) -> 0',
                    test_mb_unknown_type, 0, 0),
+       format('--- M61 display/1 + writeln/1 ---~n'),
+       run_test_r0('display(hello) succeeds -> 1',
+                   test_display_succeeds, 0, 1),
+       run_test_r0('display(42) -> 1',
+                   test_display_integer, 0, 1),
+       run_test_r0('display(foo(1, 2)) -> 1',
+                   test_display_compound, 0, 1),
+       run_test_r0('writeln(hello) -> 1',
+                   test_writeln_succeeds, 0, 1),
+       run_test_r0('writeln(7) -> 1',
+                   test_writeln_integer, 0, 1),
+       run_test_r0('writeln([1,2,3]) -> 1',
+                   test_writeln_list, 0, 1),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),

@@ -3470,6 +3470,8 @@ entry:
     i32 75, label %builtin_char_type
     i32 76, label %builtin_compare
     i32 77, label %builtin_must_be
+    i32 78, label %builtin_write
+    i32 79, label %builtin_writeln
   ]
 
 builtin_is:
@@ -3714,8 +3716,19 @@ builtin_write:
   ; ``functor(arg1, arg2, ...)`` with recursive nested terms; the
   ; ``[|]/2`` functor special-cases to list notation. The previous
   ; M19 inline dispatch lives on inside the helper.
+  ; M61: display/1 dispatches to this same label since our runtime
+  ; doesn''t (yet) distinguish operator vs canonical print modes.
   %wr.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   call void @wam_write_value(%WamState* %vm, %Value %wr.a1)
+  ret i1 true
+
+builtin_writeln:
+  ; M61: writeln/1 = write/1 + nl/0. Same value-print helper as write,
+  ; followed by a single newline.
+  %wln.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  call void @wam_write_value(%WamState* %vm, %Value %wln.a1)
+  %wln.fmt = getelementptr [2 x i8], [2 x i8]* @.fmt_nl, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %wln.fmt)
   ret i1 true
 
 builtin_nl:
@@ -10152,6 +10165,8 @@ builtin_op_to_id('atomic_list_concat/3', 74). % concat with separator atom (atom
 builtin_op_to_id('char_type/2', 75).          % char classification (check mode)
 builtin_op_to_id('compare/3', 76).            % three-way term order (num/atom)
 builtin_op_to_id('must_be/2', 77).            % type guard (fail-instead-of-throw)
+builtin_op_to_id('display/1', 78).            % alias of write/1 (operator-free print)
+builtin_op_to_id('writeln/1', 79).            % write/1 + nl/0 combined
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
