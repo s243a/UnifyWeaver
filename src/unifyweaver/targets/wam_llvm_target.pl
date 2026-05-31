@@ -7613,13 +7613,16 @@ pkv.r_bind:
   ret i1 %pkv.r_ok
 
 builtin_atomic_list_concat:
-  ; M52: atomic_list_concat(+List, ?Atom) -- atoms-only mode.
-  ; Walks A1 summing each Atom head''s string length, allocates a
-  ; single buffer, walks again memcpy''ing each string, interns the
-  ; result. Non-atom heads (Integer, Float, etc.) fail; that case
-  ; needs snprintf per element and is deferred.
+  ; M52/M55: atomic_list_concat(+List, ?Atom) -- atoms-and-integers.
+  ; Walks A1 summing each head''s rendered string length (atom-length
+  ; for Atoms, snprintf-return-value for Integers); allocates a
+  ; single buffer; walks again memcpying atoms and re-snprintfing
+  ; Integers at the running offset. Float / Compound / other heads
+  ; fail the call (Float widening deferred).
   %alc.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   call void @wam_arena_ensure()
+  ; Scratch buffer for measuring integer lengths during pass 1.
+  %alc.iscratch = call i8* @wam_arena_alloc(i64 32)
   br label %alc.c_loop
 alc.fail:
   ret i1 false
@@ -7640,7 +7643,18 @@ alc.c_step:
   %alc.c_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc.c_head)
   %alc.c_h_tag = extractvalue %Value %alc.c_h_d, 0
   %alc.c_h_is_atom = icmp eq i32 %alc.c_h_tag, 0
-  br i1 %alc.c_h_is_atom, label %alc.c_measure, label %alc.fail
+  br i1 %alc.c_h_is_atom, label %alc.c_measure, label %alc.c_try_int
+alc.c_try_int:
+  %alc.c_h_is_int = icmp eq i32 %alc.c_h_tag, 1
+  br i1 %alc.c_h_is_int, label %alc.c_int_measure, label %alc.fail
+alc.c_int_measure:
+  ; snprintf the integer into the scratch buffer; return value is the
+  ; rendered length (excluding null).
+  %alc.c_int_v = extractvalue %Value %alc.c_h_d, 1
+  %alc.c_int_fmt = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
+  %alc.c_int_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc.iscratch, i64 32, i8* %alc.c_int_fmt, i64 %alc.c_int_v)
+  %alc.c_int_len = sext i32 %alc.c_int_n32 to i64
+  br label %alc.c_advance
 alc.c_measure:
   %alc.c_aid = extractvalue %Value %alc.c_h_d, 1
   %alc.c_str = call i8* @wam_atom_to_string(i64 %alc.c_aid)
@@ -7657,7 +7671,8 @@ alc.c_m_step:
   %alc.c_mn1 = add i64 %alc.c_mn, 1
   br label %alc.c_m_loop
 alc.c_advance:
-  %alc.c_total1 = add i64 %alc.c_total, %alc.c_mn
+  %alc.c_elem_len = phi i64 [ %alc.c_mn, %alc.c_m_loop ], [ %alc.c_int_len, %alc.c_int_measure ]
+  %alc.c_total1 = add i64 %alc.c_total, %alc.c_elem_len
   %alc.c_t_ptr = getelementptr %Value, %Value* %alc.c_args, i32 1
   %alc.c_next = load %Value, %Value* %alc.c_t_ptr
   br label %alc.c_loop
@@ -7680,13 +7695,32 @@ alc.f_step:
   %alc.f_h_ptr = getelementptr %Value, %Value* %alc.f_args, i32 0
   %alc.f_head = load %Value, %Value* %alc.f_h_ptr
   %alc.f_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc.f_head)
+  %alc.f_h_tag = extractvalue %Value %alc.f_h_d, 0
+  %alc.f_is_atom = icmp eq i32 %alc.f_h_tag, 0
+  br i1 %alc.f_is_atom, label %alc.f_load_atom, label %alc.f_int_write
+alc.f_load_atom:
   %alc.f_aid = extractvalue %Value %alc.f_h_d, 1
   %alc.f_str = call i8* @wam_atom_to_string(i64 %alc.f_aid)
   ; Measure this atom''s length again (second pass).
   br label %alc.f_m_loop
+alc.f_int_write:
+  ; snprintf %lld directly into the output buffer at the running offset.
+  %alc.f_int_v = extractvalue %Value %alc.f_h_d, 1
+  %alc.f_int_dst = getelementptr i8, i8* %alc.buf, i64 %alc.f_off
+  ; Remaining buffer size: bufsz - off; we already sized for total + 1.
+  %alc.f_int_avail = sub i64 %alc.bufsz, %alc.f_off
+  %alc.f_int_fmt = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
+  %alc.f_int_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc.f_int_dst, i64 %alc.f_int_avail, i8* %alc.f_int_fmt, i64 %alc.f_int_v)
+  %alc.f_int_len = sext i32 %alc.f_int_n32 to i64
+  br label %alc.f_copy_int
+alc.f_copy_int:
+  %alc.f_off_int = add i64 %alc.f_off, %alc.f_int_len
+  %alc.f_t_ptr_int = getelementptr %Value, %Value* %alc.f_args, i32 1
+  %alc.f_next_int = load %Value, %Value* %alc.f_t_ptr_int
+  br label %alc.f_after
 alc.f_m_loop:
-  %alc.f_mp = phi i8* [ %alc.f_str, %alc.f_step ], [ %alc.f_mpn, %alc.f_m_step ]
-  %alc.f_mn = phi i64 [ 0, %alc.f_step ], [ %alc.f_mn1, %alc.f_m_step ]
+  %alc.f_mp = phi i8* [ %alc.f_str, %alc.f_load_atom ], [ %alc.f_mpn, %alc.f_m_step ]
+  %alc.f_mn = phi i64 [ 0, %alc.f_load_atom ], [ %alc.f_mn1, %alc.f_m_step ]
   %alc.f_mc = load i8, i8* %alc.f_mp
   %alc.f_mz = icmp eq i8 %alc.f_mc, 0
   br i1 %alc.f_mz, label %alc.f_copy, label %alc.f_m_step
@@ -7697,11 +7731,13 @@ alc.f_m_step:
 alc.f_copy:
   %alc.f_dst = getelementptr i8, i8* %alc.buf, i64 %alc.f_off
   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alc.f_dst, i8* %alc.f_str, i64 %alc.f_mn, i1 false)
-  %alc.f_off1 = add i64 %alc.f_off, %alc.f_mn
-  %alc.f_t_ptr = getelementptr %Value, %Value* %alc.f_args, i32 1
-  %alc.f_next = load %Value, %Value* %alc.f_t_ptr
+  %alc.f_off_atom = add i64 %alc.f_off, %alc.f_mn
+  %alc.f_t_ptr_atom = getelementptr %Value, %Value* %alc.f_args, i32 1
+  %alc.f_next_atom = load %Value, %Value* %alc.f_t_ptr_atom
   br label %alc.f_after
 alc.f_after:
+  %alc.f_off1 = phi i64 [ %alc.f_off_atom, %alc.f_copy ], [ %alc.f_off_int, %alc.f_copy_int ]
+  %alc.f_next = phi %Value [ %alc.f_next_atom, %alc.f_copy ], [ %alc.f_next_int, %alc.f_copy_int ]
   br label %alc.f_loop
 alc.f_done:
   %alc.term_dst = getelementptr i8, i8* %alc.buf, i64 %alc.c_total
