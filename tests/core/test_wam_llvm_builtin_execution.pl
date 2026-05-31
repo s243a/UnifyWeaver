@@ -973,6 +973,34 @@ test_append_roundtrip(_, R) :-
     nth0(0, L2, E),
     R is E.   % 4 (last of L becomes first after reverse)
 
+% M40: memberchk/2 deterministic.
+
+:- dynamic test_memberchk_int_hit/2.
+test_memberchk_int_hit(_, R) :-
+    ( memberchk(20, [10, 20, 30]) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_memberchk_int_miss/2.
+test_memberchk_int_miss(_, R) :-
+    ( memberchk(99, [10, 20, 30]) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_memberchk_int_empty/2.
+test_memberchk_int_empty(_, R) :-
+    ( memberchk(1, []) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_memberchk_atom_hit/2.
+test_memberchk_atom_hit(_, R) :-
+    ( memberchk(b, [a, b, c]) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_memberchk_bind/2.
+test_memberchk_bind(_, R) :-
+    memberchk(X, [42, 99, 7]),
+    R is X.   % 42 -- unbound X gets first element
+
+:- dynamic test_memberchk_first_match_wins/2.
+test_memberchk_first_match_wins(_, R) :-
+    % Two 5s in the list; deterministic memberchk takes the first.
+    ( memberchk(5, [3, 5, 5, 9]) -> R is 1 ; R is 0 ).   % 1
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -1910,6 +1938,19 @@ test_all :-
                    test_append_both_empty, 0, 9),
        run_test_r0('append + reverse roundtrip -> last becomes first -> 4',
                    test_append_roundtrip, 0, 4),
+       format('--- M40 memberchk/2 deterministic ---~n'),
+       run_test_r0('memberchk(20, [10,20,30]) -> 1',
+                   test_memberchk_int_hit, 0, 1),
+       run_test_r0('memberchk(99, [10,20,30]) -> 0',
+                   test_memberchk_int_miss, 0, 0),
+       run_test_r0('memberchk(1, []) -> 0',
+                   test_memberchk_int_empty, 0, 0),
+       run_test_r0('memberchk(b, [a,b,c]) -> 1',
+                   test_memberchk_atom_hit, 0, 1),
+       run_test_r0('memberchk(X, [42,99,7]) -> 42',
+                   test_memberchk_bind, 0, 42),
+       run_test_r0('memberchk(5, [3,5,5,9]) first-match -> 1',
+                   test_memberchk_first_match_wins, 0, 1),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
