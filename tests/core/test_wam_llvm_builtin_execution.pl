@@ -1458,6 +1458,69 @@ test_string_code_oob_low(_, R) :-
 test_string_code_oob_high(_, R) :-
     ( string_code(99, hello, _) -> R is 1 ; R is 0 ).   % 0
 
+% M49: pairs_keys/2 + pairs_values/2 forward modes.
+
+:- dynamic test_pairs_keys_simple/2.
+test_pairs_keys_simple(_, R) :-
+    pairs_keys([a-1, b-2, c-3], Ks),
+    length(Ks, N),
+    R is N.   % 3
+
+:- dynamic test_pairs_keys_first/2.
+test_pairs_keys_first(_, R) :-
+    pairs_keys([10-x, 20-y, 30-z], [F|_]),
+    R is F.   % 10
+
+:- dynamic test_pairs_keys_last/2.
+test_pairs_keys_last(_, R) :-
+    pairs_keys([10-a, 20-b, 30-c], Ks),
+    last(Ks, E),
+    R is E.   % 30
+
+:- dynamic test_pairs_keys_empty/2.
+test_pairs_keys_empty(_, R) :-
+    pairs_keys([], Ks),
+    length(Ks, N),
+    R is N + 11.   % 11
+
+:- dynamic test_pairs_keys_singleton/2.
+test_pairs_keys_singleton(_, R) :-
+    pairs_keys([42-foo], [K]),
+    R is K.   % 42
+
+:- dynamic test_pairs_values_simple/2.
+test_pairs_values_simple(_, R) :-
+    pairs_values([a-10, b-20, c-30], Vs),
+    length(Vs, N),
+    R is N.   % 3
+
+:- dynamic test_pairs_values_first/2.
+test_pairs_values_first(_, R) :-
+    pairs_values([a-100, b-200], [F|_]),
+    R is F.   % 100
+
+:- dynamic test_pairs_values_last/2.
+test_pairs_values_last(_, R) :-
+    pairs_values([a-10, b-20, c-99], Vs),
+    last(Vs, E),
+    R is E.   % 99
+
+:- dynamic test_pairs_values_empty/2.
+test_pairs_values_empty(_, R) :-
+    pairs_values([], Vs),
+    length(Vs, N),
+    R is N + 13.   % 13
+
+% Compose: pairs_keys + pairs_values should reproduce the structure.
+:- dynamic test_pairs_keys_values_sum/2.
+test_pairs_keys_values_sum(_, R) :-
+    P = [10-1, 20-2, 30-3],
+    pairs_keys(P, Ks),
+    pairs_values(P, Vs),
+    sum_list(Ks, SK),
+    sum_list(Vs, SV),
+    R is SK + SV.   % 60 + 6 = 66
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -2566,6 +2629,27 @@ test_all :-
                    test_string_code_oob_low, 0, 0),
        run_test_r0('string_code(99, hello, _) -> 0 (overflow)',
                    test_string_code_oob_high, 0, 0),
+       format('--- M49 pairs_keys/2 + pairs_values/2 ---~n'),
+       run_test_r0('pairs_keys([a-1, b-2, c-3]) length -> 3',
+                   test_pairs_keys_simple, 0, 3),
+       run_test_r0('pairs_keys([10-x, 20-y, 30-z]) first -> 10',
+                   test_pairs_keys_first, 0, 10),
+       run_test_r0('pairs_keys([10-a, 20-b, 30-c]) last -> 30',
+                   test_pairs_keys_last, 0, 30),
+       run_test_r0('pairs_keys([]) + 11 -> 11',
+                   test_pairs_keys_empty, 0, 11),
+       run_test_r0('pairs_keys([42-foo], [K]) -> 42',
+                   test_pairs_keys_singleton, 0, 42),
+       run_test_r0('pairs_values([a-10, b-20, c-30]) length -> 3',
+                   test_pairs_values_simple, 0, 3),
+       run_test_r0('pairs_values([a-100, b-200]) first -> 100',
+                   test_pairs_values_first, 0, 100),
+       run_test_r0('pairs_values([a-10, b-20, c-99]) last -> 99',
+                   test_pairs_values_last, 0, 99),
+       run_test_r0('pairs_values([]) + 13 -> 13',
+                   test_pairs_values_empty, 0, 13),
+       run_test_r0('pairs_keys + pairs_values sums [10-1, 20-2, 30-3] -> 66',
+                   test_pairs_keys_values_sum, 0, 66),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
