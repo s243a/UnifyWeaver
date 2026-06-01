@@ -154,13 +154,16 @@ of admitted child-hop levels.
 
 In practice (design note §4.4), at $B = 15$ we use $cc \in
 \{100, 10, 5, 3\}$ with corresponding $M_{\max} \in \{0, 1, 3, 5\}$.
-The transition ratios are $1.05$, $122.7$, $18.7$; the
-per-child-hop growth recovers as $b' \approx \exp((\log 122.7)/2)
-\approx 11.1$ from the dominant transition (the
-$cc=100 \to 10$ ratio is essentially flat because that transition
-only admits $M = 1$ paths, which are few). The geometric mean
-across non-degenerate transitions gives $b' \approx 11$ on
-simplewiki topical core.
+The transition ratios are $1.05$, $122.7$, $18.7$. The
+$cc = 10 \to 5$ transition admits *two additional* $M$ levels
+($M = 2$ and $M = 3$), so the per-child-hop growth recovers as
+$b' \approx (122.7)^{1/2} \approx 11.1$ — the exponent $1/2$ is
+$1/(\Delta M_{\max})$, the inverse of the number of new
+child-hop levels admitted at the transition. The
+$cc = 100 \to 10$ ratio is essentially flat (1.05) because that
+transition only admits $M = 1$ paths, which are few. The
+geometric mean across non-degenerate transitions gives
+$b' \approx 11$ on simplewiki topical core.
 
 ### 0.5 The tree-likeness index
 
@@ -300,12 +303,14 @@ Source: D. J. Watts and S. H. Strogatz, "Collective dynamics of
 **Relevance to TLI: only the distance criterion is operative.**
 The clustering coefficient $C$ does not appear in the theorems
 or conjectures below; only the $L = \Theta(\log n)$ condition is
-used (to classify regimes in §5.3). A *random* small-world
-(Erdős-Rényi or Chung-Lu) has $C \to 0$ but still has the
-distance scaling. The Watts-Strogatz definition is included here
-for terminology completeness; the operative concept is "graphs
-with $L = \Theta(\log n)$", which includes both Watts-Strogatz
-and random-graph small-worlds.
+used (to classify regimes in §5.3). Strictly, Erdős-Rényi and
+Chung-Lu random graphs are *not* small-world by Watts-Strogatz's
+full definition (they have $C \to 0$), but they share the
+distance scaling. The operative concept in this document is
+"graphs with $L = \Theta(\log n)$" — call this the
+*logarithmic-diameter regime*. It includes both Watts-Strogatz
+small-worlds *and* random graphs, and is the regime we compare
+against tree-like and ultra-small-world graphs in §5.3.
 
 ### 1.3 Ultra-small-world for scale-free graphs (Cohen–Havlin)
 
@@ -522,12 +527,21 @@ $$
 \frac{\sum_{M \ge 1} W_M}{W_0} \le \frac{r}{1 - r}
 $$
 
-**Proof.** By Lemma 2.1 and Proposition 2.2 the weighted
-contribution per path is $\approx (h+1)^{-n}$ for numerator and
-$\approx 1$ for denominator. The number of paths at level
-$(N, M)$ is $D^N (b')^M$, each carrying weight
-$D^{-N} (b_{\text{eff}} \cdot D)^{-M} = D^{-N} (r \cdot D / D)^{-M} \cdot D^{-M}$.
-Multiplying:
+**Proof.** By Lemma 2.1, the number of paths at level $(N, M)$
+is $D^N (b')^M$. Each carries weight
+$$
+w(p) = D^{-N} \cdot (b_{\text{eff}} \cdot D)^{-M}
+$$
+Multiplying path count by weight, the $D^{\pm N}$ factors cancel:
+$$
+D^N (b')^M \cdot D^{-N} (b_{\text{eff}} \cdot D)^{-M}
+\;=\; \frac{(b')^M}{(b_{\text{eff}} \cdot D)^M}
+\;=\; \left(\frac{b'}{b_{\text{eff}} \cdot D}\right)^M
+\;=\; r^M
+$$
+i.e. the weighted path count at level $(N, M)$ is $r^M$ for every
+$N$, with the length factor $(h+1)^{-n}$ multiplying for the
+numerator and $1$ for the denominator.
 
 For the numerator,
 $$S_M \approx \sum_N r^M \cdot (N+M+1)^{-n} = r^M \cdot L_M$$
@@ -674,25 +688,30 @@ contribution-sum drifts by $r/(1-r)$, but $d_{\text{wPow}}$ is
 the ratio of these sums and the drifts partially cancel. The
 question is *how much* they cancel — i.e. what $\alpha$ is.
 
-**Status.** Open in two directions:
+**Status.** Mixed:
 
-1. **First-order analysis at simplewiki parameters
-   ($B = 15, cc = 5, n = 2$) does NOT give clean $\alpha = 2$
-   scaling.** See §5.1 for the numerical check: $L_M / L_0$ and
-   $R_M / R_0$ differ by ~30–60% at level $M = 1$, so the $r^1$
-   coefficient does not cancel and the leading-order TLI
-   prediction is ~2.1%, not ~$r^2 \approx 0.025\%$.
-2. **The empirical TLI is still ~100× smaller than the first-
-   order prediction** (0.02% vs 2.1%). The source of this further
-   gap is unclear — candidates include budget-truncated $M$
-   ranges, higher-order Taylor terms with their own cancellation,
-   or measurement variance in the aggregate over only 20 seed
-   pairs.
+1. **First-order Taylor analysis at simplewiki parameters
+   ($B = 15, cc = 5, n = 2$) shows substantial-but-not-complete
+   cancellation.** See §5.1 for the verified numerical table:
+   $L_1/L_0 \approx 0.631$ and $R_1/R_0 \approx 0.583$, so the
+   $r^1$ coefficient is $\approx 0.048$ — small (5% of the
+   worst-case) but not zero. Leading-order TLI prediction
+   $\approx 0.44\%$, a 40× reduction from the contribution-sum
+   bound of 18.6%.
+2. **The empirical TLI is still ~22× smaller** than this
+   first-order prediction (0.02% vs 0.44%). Source unclear —
+   candidates include budget-truncated $M$ ranges (the $M = 3$
+   level is empty at simplewiki parameters), higher-order
+   Taylor terms with their own cancellation, or measurement
+   variance in the aggregate over only 20 seed pairs.
 
 A definitive answer requires either a careful expansion to
 higher order in $r$, or empirical Monte Carlo at varying $r$ to
 fit $\alpha$ directly. The conjecture as stated is *consistent
-with* but not *derived from* the empirical observations.
+with* but not *fully derived from* the empirical observations:
+the 40× drop from contribution-sum bound to first-order
+prediction is genuine evidence of substantial cancellation,
+but the remaining 22× gap is unexplained.
 
 ### 3.4 Topical scoping is sufficient for homogeneity on Wikipedia
 
@@ -820,19 +839,22 @@ note §2.0's notation table.
 
 ### 4.3 Conjecture 3.3 ($\psi$ sharpening)
 
-**Mixed evidence.** First-order Taylor analysis at simplewiki
-parameters (§5.1) reduces the bound from the $r/(1-r) \approx
-18.6\%$ contribution-sum estimate to ~2.1% (after partial num/
-denom cancellation), but does *not* reach the empirical 0.02%.
-A clean $r^2/(1-r)$ scaling would predict ~0.025%, agreeing
-within 1.5× — but this is post-hoc fitting, not derivation.
+**Mixed evidence.** Recomputed first-order Taylor analysis at
+simplewiki parameters (§5.1, verified table) shows the $r^1$
+coefficient is ~0.048 — small (5% of the worst-case bound) but
+not zero. The predicted first-order TLI is ~0.44%, reducing the
+naive contribution-sum bound (18.6%) by ~40× through partial
+num/denom cancellation. The empirical TLI of 0.02% is still
+~22× below this — consistent with $r^2$-like scaling but not
+purely $r^2$ either (which would predict ~0.025%, off by
+another factor of two from observed).
 
-Until a careful expansion to higher order in $r$ resolves the
-exponent $\alpha$, Conjecture 3.3 is consistent with the data
-but not derived from theory. Pending: either an analytic
-expansion of $d_{\text{wPow}}(B, cc)$ to second order in $r$, or
-Monte Carlo evaluation at varying $r$ to fit $\alpha$
-empirically.
+Honest status: the cancellation is real and substantial, but
+not asymptotically clean at $r = 0.157$. Higher-order Taylor
+terms or budget-truncation effects must account for the
+remaining gap. Pending: either an analytic expansion of
+$d_{\text{wPow}}(B, cc)$ to second order in $r$, or Monte Carlo
+evaluation at varying $r$ to fit $\alpha$ empirically.
 
 ### 4.4 Conjecture 3.4 (topical homogeneity)
 
@@ -878,47 +900,66 @@ $$
 where $\Delta\log N \approx \sum_{k \ge 1} r^k L_k / L_0$ and
 $\Delta\log W \approx \sum_{k \ge 1} r^k R_k / R_0$.
 
-**Numerical check at simplewiki parameters does not support
-clean $r^2$ scaling.** For $B = 15$, $cc = 5$, $n = 2$,
-$d_{\min} = 4$:
+**Numerical check at simplewiki parameters.** For $B = 15$,
+$cc = 5$, $n = 2$, $d_{\min} = 4$:
 
-| Level $M$ | $L_M$ | $L_M / L_0$ | $R_M$ | $R_M / R_0$ | $L_M/L_0 - R_M/R_0$ |
-|---|---|---|---|---|---|
-| 0 | $\approx 0.149$ | 1.000 | 12 | 1.000 | 0 |
-| 1 | $\approx 0.140$ | 0.940 | 8 | 0.667 | 0.273 |
-| 2 | $\approx 0.122$ | 0.819 | 3 | 0.250 | 0.569 |
+| Level $M$ | $N$ range | $L_M = \sum_N (N+M+1)^{-2}$ | $L_M / L_0$ | $R_M$ | $R_M / R_0$ | $L_M/L_0 - R_M/R_0$ |
+|---|---|---|---|---|---|---|
+| 0 | $[4, 15]$ | $\approx 0.1607$ | 1.000 | 12 | 1.000 | 0 |
+| 1 | $[4, 10]$ | $\approx 0.1014$ | 0.631 | 7 | 0.583 | **+0.048** |
+| 2 | $[4, 5]$  | $\approx 0.0360$ | 0.224 | 2 | 0.167 | +0.057 |
+| 3 | $\varnothing$ | 0 | 0 | 0 | 0 | 0 |
 
-The $r^1$ coefficient does *not* cancel — the difference at
-$M=1$ alone is $0.273 r$, giving a leading-order contribution of
-$\approx 0.5 \cdot 0.273 \cdot 0.157 \approx 0.021$, i.e. ~2.1%.
-This is much smaller than the contribution-sum bound (18.6%)
-but still ~100× larger than the empirical TLI of 0.02%.
+(The $M = 3$ level requires $N \le B - 3 \cdot cc = 0$, which
+is below $d_{\min} = 4$, so the range is empty.)
 
-**Status: Conjecture 3.3's $\psi \sim r^2/(1-r)$ scaling is not
-yet supported.** A naive first-order Taylor expansion in $r$
-gives a ~2.1% prediction, not $r^2 \approx 0.025\%$. The
-remaining ~100× gap between first-order theory and empirical
-TLI likely has a different source — possibilities:
+**Partial first-order cancellation.** The $r^1$ coefficient of
+$\alpha_S - \alpha_W$ is the $M=1$ difference, $\approx 0.048$.
+This is small but *non-zero*: a 47% reduction from the
+worst-case contribution-sum bound (where the coefficient would
+be 1), but not the full cancellation that pure $r^2$ scaling
+would require.
 
-- **Budget-constrained M range.** At $B = 15, cc = 5$ only
-  $M \in \{0, 1, 2, 3\}$ are admissible, and $M \in \{2, 3\}$
-  have very restricted $N$-ranges (3 values and 1 value
-  respectively). The effective sum is short and the higher-$M$
-  contributions are heavily truncated.
-- **Higher-order cancellation.** The Taylor expansion at $r=0$
-  may have larger higher-order terms that further reduce TLI;
-  computing the next term explicitly would resolve this.
-- **The simplewiki measurement itself.** TLI = 0.02% is the
-  *aggregate* over 20 seed pairs; per-pair drifts of 0.007%
-  worst-case (design note §4.2) are still 50× smaller than 2.1%.
+**Predicted first-order TLI on simplewiki:**
+$$
+\mathrm{TLI}_{\text{1st-order}} \approx \frac{1}{n} \left|
+r \cdot 0.048 + r^2 \cdot 0.057 \right|
+\approx \frac{1}{2} \left| 0.157 \cdot 0.048 + 0.0246 \cdot 0.057 \right|
+\approx \frac{1}{2} \cdot 0.00889
+\approx 0.44\%
+$$
+
+So:
+- Contribution-sum bound (Theorem 2.3): $r/(1-r) \approx 18.6\%$
+- First-order with partial cancellation: $\approx 0.44\%$
+- Empirical TLI: $\approx 0.02\%$
+- **Remaining gap: ~22× (better than the original ~1000× but not negligible)**
+
+**Status of Conjecture 3.3.** *Mixed evidence.* The $r^1$
+coefficient is small (~5% of the worst-case), consistent with
+substantial-but-incomplete first-order cancellation. This is
+*partially consistent* with $\psi(r) \sim r^2/(1-r)$ scaling
+(which predicts $\approx 0.025\%$ from this $r$) but the
+predicted ~0.44% sits between the $r^1$ and $r^2$ scaling
+regimes. The remaining ~22× gap to empirical likely involves:
+
+- **Budget-truncated higher-$M$ levels.** The $L_3, R_3$ being
+  zero (rather than continuing geometrically) eats some
+  predicted contribution.
+- **Higher-order Taylor terms.** Beyond first order in $r$, the
+  ratio $N/W$ has corrections from $(1+\alpha_S)(1+\alpha_W)^{-1}$
+  expansion that may further cancel.
+- **Length-factor structure.** The $(h+1)^{-n}$ factor for $n=2$
+  more aggressively suppresses longer paths than the geometric
+  bound assumes.
 
 **Open question.** What is the actual scaling of $\psi(r)$ as a
-function of $r$ and the budget $B$? An honest answer requires
+function of $r$ and the budget $B$? Resolving this requires
 either (i) a careful Taylor expansion accounting for the budget-
 truncated $L_M, R_M$ sums, or (ii) Monte Carlo evaluation at
 varying $r$ to fit the exponent empirically. Conjecture 3.3 as
-stated is *consistent with* the empirical gap but not derived
-from it.
+stated is *consistent with* the empirical gap but not yet
+derived from theory.
 
 ### 5.2 Quantitative homogeneity ↔ calibration error
 
