@@ -53,6 +53,12 @@
 :- dynamic user:wam_compare_lt/0.
 :- dynamic user:wam_compare_eq/0.
 :- dynamic user:wam_compare_gt/0.
+:- dynamic user:wam_compare_lt_unify/0.
+:- dynamic user:wam_compare_lt_unify_mismatch/0.
+:- dynamic user:wam_compare_eq_unify/0.
+:- dynamic user:wam_compare_eq_unify_mismatch/0.
+:- dynamic user:wam_compare_gt_unify/0.
+:- dynamic user:wam_compare_gt_unify_mismatch/0.
 :- dynamic user:wam_compare_atom_number/0.
 :- dynamic user:wam_compare_output_guard/1.
 :- dynamic user:wam_compare_does_not_bind/0.
@@ -343,6 +349,12 @@ user:wam_term_order_does_not_bind :- user:wam_unbound_arg(X), X @< a, X == a.
 user:wam_compare_lt :- compare(Order, a, b), Order == '<'.
 user:wam_compare_eq :- compare(Order, f(a), f(a)), Order == '='.
 user:wam_compare_gt :- compare(Order, b, a), Order == '>'.
+user:wam_compare_lt_unify :- compare(Order, a, b), Order = '<'.
+user:wam_compare_lt_unify_mismatch :- compare(Order, a, b), Order = '>'.
+user:wam_compare_eq_unify :- compare(Order, f(a), f(a)), Order = '='.
+user:wam_compare_eq_unify_mismatch :- compare(Order, f(a), f(a)), Order = '<'.
+user:wam_compare_gt_unify :- compare(Order, b, a), Order = '>'.
+user:wam_compare_gt_unify_mismatch :- compare(Order, b, a), Order = '<'.
 user:wam_compare_atom_number :- compare(Order, 42, a), Order == '<'.
 user:wam_compare_output_guard(Order) :- compare(Order, a, b).
 user:wam_compare_does_not_bind :- user:wam_unbound_arg(X), compare('<', X, a), X == a.
@@ -638,6 +650,12 @@ run_smoke :-
           user:wam_compare_lt/0,
           user:wam_compare_eq/0,
           user:wam_compare_gt/0,
+          user:wam_compare_lt_unify/0,
+          user:wam_compare_lt_unify_mismatch/0,
+          user:wam_compare_eq_unify/0,
+          user:wam_compare_eq_unify_mismatch/0,
+          user:wam_compare_gt_unify/0,
+          user:wam_compare_gt_unify_mismatch/0,
           user:wam_compare_atom_number/0,
           user:wam_compare_output_guard/1,
           user:wam_compare_does_not_bind/0,
@@ -1010,6 +1028,12 @@ smoke_cases([
     case('wam_compare_lt/0', no_args, "true"),
     case('wam_compare_eq/0', no_args, "true"),
     case('wam_compare_gt/0', no_args, "true"),
+    case('wam_compare_lt_unify/0', no_args, "true"),
+    case('wam_compare_lt_unify_mismatch/0', no_args, "false"),
+    case('wam_compare_eq_unify/0', no_args, "true"),
+    case('wam_compare_eq_unify_mismatch/0', no_args, "false"),
+    case('wam_compare_gt_unify/0', no_args, "true"),
+    case('wam_compare_gt_unify_mismatch/0', no_args, "false"),
     case('wam_compare_atom_number/0', no_args, "true"),
     case('wam_compare_output_guard/1', '<', "true"),
     case('wam_compare_output_guard/1', '=', "false"),
