@@ -2452,6 +2452,35 @@ test_cmp_lists_diff(_, R) :-
     char_code(O, C),
     R is C.   % '<'
 
+% M70: msort/2 + aggregate_all(set, ...) migrated to @wam_term_cmp.
+% Integer-only sorting unchanged; atom sorting now alphabetical (was
+% previously by intern atom_id which is allocation order).
+
+:- dynamic test_msort_atoms_alpha/2.
+test_msort_atoms_alpha(_, R) :-
+    % b interns before a in this program, but standard order is alpha:
+    % expected sorted: [a, b, c, d].
+    msort([d, b, a, c], [F|_]),
+    char_code(F, C), R is C.   % 97 ('a')
+
+:- dynamic test_msort_atoms_last/2.
+test_msort_atoms_last(_, R) :-
+    msort([d, b, a, c], L),
+    last(L, E),
+    char_code(E, C), R is C.   % 100 ('d')
+
+:- dynamic test_msort_dupes_kept/2.
+test_msort_dupes_kept(_, R) :-
+    % msort keeps duplicates (unlike sort).
+    msort([2, 1, 2, 1, 3], L),
+    length(L, N), R is N.   % 5
+
+:- dynamic test_msort_compound/2.
+test_msort_compound(_, R) :-
+    % Compound sorted via @wam_term_cmp recursion through args.
+    msort([foo(3), foo(1), foo(2)], [F|_]),
+    F = foo(N), R is N.   % 1
+
 % M69: @</2 @=</2 @>/2 @>=/2 standard-order comparison operators.
 
 :- dynamic test_at_lt_yes/2.
@@ -4086,6 +4115,15 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M70 msort/2 + setof migrated to @wam_term_cmp ---~n'),
+       run_test_r0('msort([d,b,a,c]) first -> 97 (a)',
+                   test_msort_atoms_alpha, 0, 97),
+       run_test_r0('msort([d,b,a,c]) last -> 100 (d)',
+                   test_msort_atoms_last, 0, 100),
+       run_test_r0('msort([2,1,2,1,3]) length -> 5 (dupes kept)',
+                   test_msort_dupes_kept, 0, 5),
+       run_test_r0('msort([foo(3), foo(1), foo(2)]) first arg -> 1',
+                   test_msort_compound, 0, 1),
        format('--- M69 standard-order comparison operators ---~n'),
        run_test_r0('1 @< 2 -> 1',
                    test_at_lt_yes, 0, 1),
