@@ -3472,6 +3472,7 @@ entry:
     i32 77, label %builtin_must_be
     i32 78, label %builtin_write
     i32 79, label %builtin_writeln
+    i32 80, label %builtin_keysort
   ]
 
 builtin_is:
@@ -3730,6 +3731,219 @@ builtin_writeln:
   %wln.fmt = getelementptr [2 x i8], [2 x i8]* @.fmt_nl, i32 0, i32 0
   call i32 (i8*, ...) @printf(i8* %wln.fmt)
   ret i1 true
+
+builtin_keysort:
+  ; M62: keysort(+Pairs, ?Sorted). Stable insertion sort over a list
+  ; of -/2 K-V pairs, ordered by the Key (args[0]) under standard
+  ; term order. Supported key types: Integer, Float, Atom. Compound
+  ; keys are treated as equal (so they retain input order — which
+  ; isn''t SWI-correct but doesn''t crash).
+  ; Three-pass: count + validate; insertion-sort; build cons chain.
+  %ks.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  call void @wam_arena_ensure()
+  br label %ks.c_loop
+ks.fail:
+  ret i1 false
+ks.c_loop:
+  %ks.c_cur = phi %Value [ %ks.a1, %builtin_keysort ], [ %ks.c_next, %ks.c_step ]
+  %ks.c_cnt = phi i32 [ 0, %builtin_keysort ], [ %ks.c_cnt1, %ks.c_step ]
+  %ks.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %ks.c_cur)
+  %ks.c_tag = extractvalue %Value %ks.c_d, 0
+  %ks.c_is_cmp = icmp eq i32 %ks.c_tag, 3
+  br i1 %ks.c_is_cmp, label %ks.c_step, label %ks.c_done
+ks.c_step:
+  %ks.c_cp = extractvalue %Value %ks.c_d, 1
+  %ks.c_cp_ptr = inttoptr i64 %ks.c_cp to %Compound*
+  %ks.c_args_slot = getelementptr %Compound, %Compound* %ks.c_cp_ptr, i32 0, i32 2
+  %ks.c_args = load %Value*, %Value** %ks.c_args_slot
+  %ks.c_t_ptr = getelementptr %Value, %Value* %ks.c_args, i32 1
+  %ks.c_next = load %Value, %Value* %ks.c_t_ptr
+  %ks.c_cnt1 = add i32 %ks.c_cnt, 1
+  br label %ks.c_loop
+ks.c_done:
+  ; Allocate arr of n %Values to hold the pairs.
+  %ks.cnt64 = sext i32 %ks.c_cnt to i64
+  %ks.arr_bytes = shl i64 %ks.cnt64, 4
+  %ks.arr_mem = call i8* @wam_arena_alloc(i64 %ks.arr_bytes)
+  %ks.arr = bitcast i8* %ks.arr_mem to %Value*
+  br label %ks.f_loop
+ks.f_loop:
+  %ks.f_cur = phi %Value [ %ks.a1, %ks.c_done ], [ %ks.f_next, %ks.f_extract ]
+  %ks.f_idx = phi i32 [ 0, %ks.c_done ], [ %ks.f_idx1, %ks.f_extract ]
+  %ks.f_done_b = icmp sge i32 %ks.f_idx, %ks.c_cnt
+  br i1 %ks.f_done_b, label %ks.sort_init, label %ks.f_step
+ks.f_step:
+  %ks.f_d = call %Value @wam_deref_value(%WamState* %vm, %Value %ks.f_cur)
+  %ks.f_cp = extractvalue %Value %ks.f_d, 1
+  %ks.f_cp_ptr = inttoptr i64 %ks.f_cp to %Compound*
+  %ks.f_args_slot = getelementptr %Compound, %Compound* %ks.f_cp_ptr, i32 0, i32 2
+  %ks.f_args = load %Value*, %Value** %ks.f_args_slot
+  %ks.f_h_ptr = getelementptr %Value, %Value* %ks.f_args, i32 0
+  %ks.f_pair = load %Value, %Value* %ks.f_h_ptr
+  %ks.f_t_ptr = getelementptr %Value, %Value* %ks.f_args, i32 1
+  %ks.f_next = load %Value, %Value* %ks.f_t_ptr
+  ; Validate pair is arity-2 compound.
+  %ks.f_pd = call %Value @wam_deref_value(%WamState* %vm, %Value %ks.f_pair)
+  %ks.f_pt = extractvalue %Value %ks.f_pd, 0
+  %ks.f_p_is_cmp = icmp eq i32 %ks.f_pt, 3
+  br i1 %ks.f_p_is_cmp, label %ks.f_check_arity, label %ks.fail
+ks.f_check_arity:
+  %ks.f_p_cp = extractvalue %Value %ks.f_pd, 1
+  %ks.f_p_cp_ptr = inttoptr i64 %ks.f_p_cp to %Compound*
+  %ks.f_p_ar_slot = getelementptr %Compound, %Compound* %ks.f_p_cp_ptr, i32 0, i32 1
+  %ks.f_p_ar = load i32, i32* %ks.f_p_ar_slot
+  %ks.f_p_ar_ok = icmp eq i32 %ks.f_p_ar, 2
+  br i1 %ks.f_p_ar_ok, label %ks.f_extract, label %ks.fail
+ks.f_extract:
+  ; Store the dereffed pair Value into arr[idx].
+  %ks.f_slot = getelementptr %Value, %Value* %ks.arr, i32 %ks.f_idx
+  store %Value %ks.f_pd, %Value* %ks.f_slot
+  %ks.f_idx1 = add i32 %ks.f_idx, 1
+  br label %ks.f_loop
+
+  ; ---- Insertion sort ----
+ks.sort_init:
+  br label %ks.so_loop
+ks.so_loop:
+  ; Outer loop: i from 1 to cnt - 1.
+  %ks.so_i = phi i32 [ 1, %ks.sort_init ], [ %ks.so_i1, %ks.si_done ]
+  %ks.so_more = icmp slt i32 %ks.so_i, %ks.c_cnt
+  br i1 %ks.so_more, label %ks.so_pick, label %ks.build_init
+ks.so_pick:
+  %ks.so_key_slot = getelementptr %Value, %Value* %ks.arr, i32 %ks.so_i
+  %ks.so_key_pair = load %Value, %Value* %ks.so_key_slot
+  ; Extract the key (args[0]) from the pair compound.
+  %ks.so_key_cp = extractvalue %Value %ks.so_key_pair, 1
+  %ks.so_key_cp_ptr = inttoptr i64 %ks.so_key_cp to %Compound*
+  %ks.so_key_args_slot = getelementptr %Compound, %Compound* %ks.so_key_cp_ptr, i32 0, i32 2
+  %ks.so_key_args = load %Value*, %Value** %ks.so_key_args_slot
+  %ks.so_key_ptr = getelementptr %Value, %Value* %ks.so_key_args, i32 0
+  %ks.so_key_raw = load %Value, %Value* %ks.so_key_ptr
+  %ks.so_key = call %Value @wam_deref_value(%WamState* %vm, %Value %ks.so_key_raw)
+  br label %ks.si_loop
+ks.si_loop:
+  ; Inner loop: j starts at i; while j > 0 and arr[j-1].key > key, shift.
+  %ks.si_j = phi i32 [ %ks.so_i, %ks.so_pick ], [ %ks.si_j_dec, %ks.si_shift ]
+  %ks.si_j_dec = sub i32 %ks.si_j, 1
+  %ks.si_j_pos = icmp sge i32 %ks.si_j_dec, 0
+  br i1 %ks.si_j_pos, label %ks.si_cmp, label %ks.si_done
+ks.si_cmp:
+  %ks.si_prev_slot = getelementptr %Value, %Value* %ks.arr, i32 %ks.si_j_dec
+  %ks.si_prev_pair = load %Value, %Value* %ks.si_prev_slot
+  ; Extract prev key.
+  %ks.si_pcp = extractvalue %Value %ks.si_prev_pair, 1
+  %ks.si_pcp_ptr = inttoptr i64 %ks.si_pcp to %Compound*
+  %ks.si_pargs_slot = getelementptr %Compound, %Compound* %ks.si_pcp_ptr, i32 0, i32 2
+  %ks.si_pargs = load %Value*, %Value** %ks.si_pargs_slot
+  %ks.si_pkey_ptr = getelementptr %Value, %Value* %ks.si_pargs, i32 0
+  %ks.si_pkey_raw = load %Value, %Value* %ks.si_pkey_ptr
+  %ks.si_pkey = call %Value @wam_deref_value(%WamState* %vm, %Value %ks.si_pkey_raw)
+  ; Inline compare(pkey, key) -- returns true if pkey > key.
+  %ks.si_pt = extractvalue %Value %ks.si_pkey, 0
+  %ks.si_kt = extractvalue %Value %ks.so_key, 0
+  %ks.si_pcat_atom = icmp eq i32 %ks.si_pt, 0
+  %ks.si_pcat_cmp = icmp eq i32 %ks.si_pt, 3
+  %ks.si_pcat_mid = select i1 %ks.si_pcat_cmp, i32 2, i32 0
+  %ks.si_pcat = select i1 %ks.si_pcat_atom, i32 1, i32 %ks.si_pcat_mid
+  %ks.si_kcat_atom = icmp eq i32 %ks.si_kt, 0
+  %ks.si_kcat_cmp = icmp eq i32 %ks.si_kt, 3
+  %ks.si_kcat_mid = select i1 %ks.si_kcat_cmp, i32 2, i32 0
+  %ks.si_kcat = select i1 %ks.si_kcat_atom, i32 1, i32 %ks.si_kcat_mid
+  %ks.si_cat_eq = icmp eq i32 %ks.si_pcat, %ks.si_kcat
+  br i1 %ks.si_cat_eq, label %ks.si_same_cat, label %ks.si_diff_cat
+ks.si_diff_cat:
+  ; pkey > key iff pcat > kcat.
+  %ks.si_diff_gt = icmp sgt i32 %ks.si_pcat, %ks.si_kcat
+  br i1 %ks.si_diff_gt, label %ks.si_shift, label %ks.si_done
+ks.si_same_cat:
+  %ks.si_cat_is_atom = icmp eq i32 %ks.si_pcat, 1
+  br i1 %ks.si_cat_is_atom, label %ks.si_atom_cmp, label %ks.si_num_or_cmp
+ks.si_num_or_cmp:
+  %ks.si_cat_is_cmp = icmp eq i32 %ks.si_pcat, 2
+  ; Compound keys: treat as equal (don''t shift, stable).
+  br i1 %ks.si_cat_is_cmp, label %ks.si_done, label %ks.si_num_cmp
+ks.si_atom_cmp:
+  %ks.si_p_aid = extractvalue %Value %ks.si_pkey, 1
+  %ks.si_k_aid = extractvalue %Value %ks.so_key, 1
+  %ks.si_p_str = call i8* @wam_atom_to_string(i64 %ks.si_p_aid)
+  %ks.si_k_str = call i8* @wam_atom_to_string(i64 %ks.si_k_aid)
+  %ks.si_strcmp = call i32 @strcmp(i8* %ks.si_p_str, i8* %ks.si_k_str)
+  %ks.si_atom_gt = icmp sgt i32 %ks.si_strcmp, 0
+  br i1 %ks.si_atom_gt, label %ks.si_shift, label %ks.si_done
+ks.si_num_cmp:
+  %ks.si_p_int = icmp eq i32 %ks.si_pt, 1
+  %ks.si_k_int = icmp eq i32 %ks.si_kt, 1
+  %ks.si_both_int = and i1 %ks.si_p_int, %ks.si_k_int
+  br i1 %ks.si_both_int, label %ks.si_int_cmp, label %ks.si_flt_cmp
+ks.si_int_cmp:
+  %ks.si_p_iv = extractvalue %Value %ks.si_pkey, 1
+  %ks.si_k_iv = extractvalue %Value %ks.so_key, 1
+  %ks.si_int_gt = icmp sgt i64 %ks.si_p_iv, %ks.si_k_iv
+  br i1 %ks.si_int_gt, label %ks.si_shift, label %ks.si_done
+ks.si_flt_cmp:
+  %ks.si_p_bits = extractvalue %Value %ks.si_pkey, 1
+  %ks.si_k_bits = extractvalue %Value %ks.so_key, 1
+  %ks.si_p_is_flt = icmp eq i32 %ks.si_pt, 2
+  %ks.si_k_is_flt = icmp eq i32 %ks.si_kt, 2
+  %ks.si_p_dflt = bitcast i64 %ks.si_p_bits to double
+  %ks.si_p_dint = sitofp i64 %ks.si_p_bits to double
+  %ks.si_p_d = select i1 %ks.si_p_is_flt, double %ks.si_p_dflt, double %ks.si_p_dint
+  %ks.si_k_dflt = bitcast i64 %ks.si_k_bits to double
+  %ks.si_k_dint = sitofp i64 %ks.si_k_bits to double
+  %ks.si_k_d = select i1 %ks.si_k_is_flt, double %ks.si_k_dflt, double %ks.si_k_dint
+  %ks.si_flt_gt = fcmp ogt double %ks.si_p_d, %ks.si_k_d
+  br i1 %ks.si_flt_gt, label %ks.si_shift, label %ks.si_done
+ks.si_shift:
+  ; Move arr[j-1] up into arr[j], then loop.
+  %ks.si_shift_dst = getelementptr %Value, %Value* %ks.arr, i32 %ks.si_j
+  store %Value %ks.si_prev_pair, %Value* %ks.si_shift_dst
+  br label %ks.si_loop
+ks.si_done:
+  ; Place the picked key at arr[j].
+  %ks.si_place_dst = getelementptr %Value, %Value* %ks.arr, i32 %ks.si_j
+  store %Value %ks.so_key_pair, %Value* %ks.si_place_dst
+  %ks.so_i1 = add i32 %ks.so_i, 1
+  br label %ks.so_loop
+
+  ; ---- Build cons chain from sorted arr ----
+ks.build_init:
+  %ks.b_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %ks.b_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %ks.b_empty_v  = insertvalue %Value %ks.b_empty_v0, i64 %ks.b_empty_id, 1
+  br label %ks.b_loop
+ks.b_loop:
+  %ks.b_i = phi i32 [ %ks.c_cnt, %ks.build_init ], [ %ks.b_i_prev, %ks.b_step ]
+  %ks.b_acc = phi %Value [ %ks.b_empty_v, %ks.build_init ], [ %ks.b_new_cons, %ks.b_step ]
+  %ks.b_done = icmp sle i32 %ks.b_i, 0
+  br i1 %ks.b_done, label %ks.b_bind, label %ks.b_step
+ks.b_step:
+  %ks.b_i_prev = sub i32 %ks.b_i, 1
+  %ks.b_slot = getelementptr %Value, %Value* %ks.arr, i32 %ks.b_i_prev
+  %ks.b_head = load %Value, %Value* %ks.b_slot
+  %ks.b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %ks.b_cp_mem = call i8* @wam_arena_alloc(i64 %ks.b_cp_size)
+  %ks.b_cp = bitcast i8* %ks.b_cp_mem to %Compound*
+  %ks.b_fn_slot = getelementptr %Compound, %Compound* %ks.b_cp, i32 0, i32 0
+  %ks.b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %ks.b_fn_ptr, i8** %ks.b_fn_slot
+  %ks.b_ar_slot = getelementptr %Compound, %Compound* %ks.b_cp, i32 0, i32 1
+  store i32 2, i32* %ks.b_ar_slot
+  %ks.b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %ks.b_args = bitcast i8* %ks.b_args_mem to %Value*
+  %ks.b_args_slot = getelementptr %Compound, %Compound* %ks.b_cp, i32 0, i32 2
+  store %Value* %ks.b_args, %Value** %ks.b_args_slot
+  %ks.b_h_ptr = getelementptr %Value, %Value* %ks.b_args, i32 0
+  store %Value %ks.b_head, %Value* %ks.b_h_ptr
+  %ks.b_t_ptr = getelementptr %Value, %Value* %ks.b_args, i32 1
+  store %Value %ks.b_acc, %Value* %ks.b_t_ptr
+  %ks.b_cp_i64 = ptrtoint %Compound* %ks.b_cp to i64
+  %ks.b_nc0 = insertvalue %Value undef, i32 3, 0
+  %ks.b_new_cons = insertvalue %Value %ks.b_nc0, i64 %ks.b_cp_i64, 1
+  br label %ks.b_loop
+ks.b_bind:
+  %ks.b_raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %ks.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %ks.b_raw2, %Value %ks.b_acc)
+  ret i1 %ks.b_ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -10167,6 +10381,7 @@ builtin_op_to_id('compare/3', 76).            % three-way term order (num/atom)
 builtin_op_to_id('must_be/2', 77).            % type guard (fail-instead-of-throw)
 builtin_op_to_id('display/1', 78).            % alias of write/1 (operator-free print)
 builtin_op_to_id('writeln/1', 79).            % write/1 + nl/0 combined
+builtin_op_to_id('keysort/2', 80).            % stable sort of K-V pairs by Key
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================

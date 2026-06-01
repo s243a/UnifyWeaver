@@ -2245,6 +2245,75 @@ test_writeln_integer(_, R) :-
 test_writeln_list(_, R) :-
     ( writeln([1, 2, 3]) -> R is 1 ; R is 0 ).   % 1
 
+% M62: keysort/2 -- stable insertion sort of K-V pairs by Key.
+
+:- dynamic test_ks_int_keys_length/2.
+test_ks_int_keys_length(_, R) :-
+    keysort([3-a, 1-b, 2-c], S),
+    length(S, N),
+    R is N.   % 3
+
+:- dynamic test_ks_int_keys_first/2.
+test_ks_int_keys_first(_, R) :-
+    keysort([3-a, 1-b, 2-c], [K-_|_]),
+    R is K.   % 1 (smallest)
+
+:- dynamic test_ks_int_keys_last/2.
+test_ks_int_keys_last(_, R) :-
+    keysort([5-x, 2-y, 8-z, 1-w], S),
+    last(S, K-_),
+    R is K.   % 8
+
+:- dynamic test_ks_already_sorted/2.
+test_ks_already_sorted(_, R) :-
+    keysort([1-a, 2-b, 3-c], [K-_|_]),
+    R is K.   % 1
+
+:- dynamic test_ks_reverse_sorted/2.
+test_ks_reverse_sorted(_, R) :-
+    keysort([5-a, 4-b, 3-c, 2-d, 1-e], [K-_|_]),
+    R is K.   % 1
+
+:- dynamic test_ks_empty/2.
+test_ks_empty(_, R) :-
+    keysort([], S),
+    length(S, N),
+    R is N + 17.   % 17
+
+:- dynamic test_ks_singleton/2.
+test_ks_singleton(_, R) :-
+    keysort([42-only], [K-_]),
+    R is K.   % 42
+
+:- dynamic test_ks_stable_dupes/2.
+test_ks_stable_dupes(_, R) :-
+    % Equal keys -- check stable order: input order preserved.
+    keysort([2-first, 1-x, 2-second, 1-y], S),
+    nth0(2, S, K-_),
+    R is K.   % 2 (the first 2-pair)
+
+:- dynamic test_ks_atom_keys/2.
+test_ks_atom_keys(_, R) :-
+    keysort([banana-2, apple-1, cherry-3], [K-_|_]),
+    atom_length(K, L),
+    R is L.   % 5 ("apple")
+
+:- dynamic test_ks_atom_keys_value/2.
+test_ks_atom_keys_value(_, R) :-
+    keysort([banana-2, apple-1, cherry-3], [_-V|_]),
+    R is V.   % 1 (apple''s value)
+
+:- dynamic test_ks_float_keys/2.
+test_ks_float_keys(_, R) :-
+    keysort([3.5-a, 1.5-b, 2.5-c], [K-_|_]),
+    R is truncate(K * 10).   % 15
+
+:- dynamic test_ks_mixed_num_keys/2.
+test_ks_mixed_num_keys(_, R) :-
+    % Mixed int/float keys: 1 < 1.5 < 2 < 2.5
+    keysort([2-a, 1.5-b, 1-c, 2.5-d], [K-_|_]),
+    R is K.   % 1
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -3650,6 +3719,31 @@ test_all :-
                    test_writeln_integer, 0, 1),
        run_test_r0('writeln([1,2,3]) -> 1',
                    test_writeln_list, 0, 1),
+       format('--- M62 keysort/2 (Integer / Float / Atom keys) ---~n'),
+       run_test_r0('keysort([3-a,1-b,2-c]) length -> 3',
+                   test_ks_int_keys_length, 0, 3),
+       run_test_r0('keysort([3-a,1-b,2-c]) first key -> 1',
+                   test_ks_int_keys_first, 0, 1),
+       run_test_r0('keysort([5-x,2-y,8-z,1-w]) last key -> 8',
+                   test_ks_int_keys_last, 0, 8),
+       run_test_r0('keysort([1-a,2-b,3-c]) already sorted -> 1',
+                   test_ks_already_sorted, 0, 1),
+       run_test_r0('keysort([5..1]-) reverse -> 1',
+                   test_ks_reverse_sorted, 0, 1),
+       run_test_r0('keysort([]) + 17 -> 17',
+                   test_ks_empty, 0, 17),
+       run_test_r0('keysort([42-only]) -> 42',
+                   test_ks_singleton, 0, 42),
+       run_test_r0('keysort stable on equal keys nth0(2) -> 2',
+                   test_ks_stable_dupes, 0, 2),
+       run_test_r0('keysort atom keys first length -> 5 (apple)',
+                   test_ks_atom_keys, 0, 5),
+       run_test_r0('keysort atom keys first value -> 1',
+                   test_ks_atom_keys_value, 0, 1),
+       run_test_r0('keysort float keys first*10 -> 15',
+                   test_ks_float_keys, 0, 15),
+       run_test_r0('keysort mixed num keys first -> 1',
+                   test_ks_mixed_num_keys, 0, 1),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
