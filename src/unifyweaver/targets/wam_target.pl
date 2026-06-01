@@ -1242,14 +1242,11 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
     % normal dispatch (including if-then-else inlining).
     ;   Goal = once(OnceGoal)
     ->  compile_goals([(OnceGoal -> true) | Rest], V0, HasEnv, Vf, Code)
-    % forall(G, T) — for every solution of G, T must succeed.
-    % Desugars to \+ (G, \+ T): negation-as-failure over the
-    % conjunction of generator + negated test. Recursion routes
-    % through compile_goal_call, which emits `call \+/1, 1` and the
-    % runtime handles negation via the builtin path.
-    ;   Goal = forall(GenGoal, TestGoal)
-    ->  compile_goals([\+ (GenGoal, \+ TestGoal) | Rest],
-                      V0, HasEnv, Vf, Code)
+    % M71: forall/2 now handled by the earlier M71 clause that uses
+    % the soft-cut rewrite. This stale clause used \+ (G, \+ T) which
+    % was broken for nested negation (both cuts hit the same barrier);
+    % the earlier clause takes precedence so this would never fire,
+    % but remove it to avoid confusion if the earlier clause ever moves.
     ;   Rest == []
     ->  % Last goal: execute (Tail Call Optimization)
         (   %% Term-construction builtins (=../2 and functor/3) only
@@ -1754,9 +1751,14 @@ compile_inner_call_goals([Goal|Rest], V0, Vf, Code) :-
     % machinery picks it up.
     ;   Goal = once(OnceGoal)
     ->  compile_inner_call_goals([(OnceGoal -> true) | Rest], V0, Vf, Code)
+    % M71: forall rewrites to soft-cut form (matches the compile_goals
+    % clause). The old \+ (G, \+ T) form fails for nested negation
+    % because both ! cuts hit the clause''s single cut_barrier.
     ;   Goal = forall(GenGoal, TestGoal)
-    ->  compile_inner_call_goals([\+ (GenGoal, \+ TestGoal) | Rest],
-                                 V0, Vf, Code)
+    ->  compile_inner_call_goals(
+            [((GenGoal, (TestGoal -> fail ; true)) -> fail ; true)
+             | Rest],
+            V0, Vf, Code)
     ;   compile_goal_call(Goal, V0, V1, GoalCode),
         compile_inner_call_goals(Rest, V1, Vf, RestCode),
         join_goal_codes(GoalCode, RestCode, Code)
