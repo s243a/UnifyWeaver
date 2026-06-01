@@ -1,23 +1,26 @@
-# Metric-tree-likeness: when tree-search is statistically enough
+# Tree-likeness index: a (graph, metric)-pair statistic
 
-**Operational claim**: a (graph, metric) pair is *metric-tree-like*
-when you can search the graph as if it were a tree (ignoring
-cross-edges) and the metric value you get is statistically close
-to the full-DAG value.
+**Operational claim**: the **tree-likeness index** (TLI) of a
+`(graph, metric, query-distribution, budget)` tuple measures how
+much the metric value drifts as we relax a child-step cost constraint
+to admit more cross-edge paths. When TLI is low, the graph "behaves
+like a tree" under the metric — searching it as a tree (ignoring
+cross-edges) recovers the full-DAG metric value to within the
+index.
 
-**Status**: Design note. Captures a property observed empirically on
+**Status**: Design note. Captures a statistic observed empirically on
 simplewiki during bidirectional-kernel benchmarking. Not yet a theorem;
 not yet a calibration step. Worth recording because it gives a
 principled reason to choose **tree-search over bidirectional search**
-for (graph, metric) pairs that satisfy it — a substantial speedup with
+for `(graph, metric)` pairs with low TLI — a substantial speedup with
 documented statistical accuracy.
 
-The property attaches to the **pair**, not to either alone. The same
-graph under uniform weighting may not be metric-tree-like; the same
-metric on a symmetric DAG may not be metric-tree-like. The
-calibration of `b` and `D` is what couples them — and that
-calibration is what `bidirectional_ancestor` already computes from
-the graph during setup.
+TLI attaches to the **(graph, metric) pair**, not to either alone.
+The same graph under uniform weighting can have a high TLI; the same
+metric on a symmetric DAG can have a high TLI. The calibration of
+`b` and `D` is what couples them — and that calibration is what
+`bidirectional_ancestor` already computes from the graph during
+setup.
 
 **Date**: 2026-05-29
 **Source data**: `/tmp/uw_simplewiki_phase1_lmdb` (294,773 edges,
@@ -116,53 +119,64 @@ negligible compared to the upward-only baseline.
 > under either calibration — but §5.5 explains why the topical
 > number is the principled one for any quantitative use of `(b, D)`.
 
-## 3. Proposed formal property: metric-tree-likeness
+## 3. The tree-likeness index
 
-> **Definition (operational).** A (graph, metric) pair is
-> *metric-tree-like* iff searching the graph as if it were a tree
-> (e.g. shortest-path tree from root, ignoring all cross-edges)
-> gives a metric value statistically close to the full-DAG
-> value. "Statistically close" is parameterised by an error
-> tolerance ε whose practical value depends on use case — see
-> §6.1 for the operational threshold (`ε_agg < 0.1%`) used by
-> the simplewiki certificate.
+> **Definition (operational).** The **tree-likeness index** of a
+> tuple `(G, μ, Q, B)` — graph, directionally-weighted metric,
+> query distribution, search budget — is the relative drift of the
+> metric value as the child-step cost constraint is relaxed:
+>
+> ```
+> TLI(G, μ, Q, B)  :=  | d_wPow(B, cc = ∞) − d_wPow(B, cc → 0⁺) |
+>                      ─────────────────────────────────────────
+>                                 d_wPow(B, cc → 0⁺)
+> ```
+>
+> Here `d_wPow(B, cc)` is the metric evaluated over all paths
+> reaching the root within total cost budget `B` at child-step cost
+> `cc`. At `cc = ∞` only parent paths are admitted (tree-search);
+> as `cc → 0⁺`, all child shortcuts are admitted (full DAG search).
+> Lower TLI means more tree-like — when TLI ≈ 0 the tree-search
+> answer essentially equals the full-DAG answer.
 
 > **Homogeneity precondition (added on the basis of §4.5).** The
-> definition above assumes the graph is *statistically
-> homogeneous* — every region the query distribution can reach
-> has the same characteristic degree distribution and the same
-> calibrated `b_eff`. For inhomogeneous graphs the property must
-> be re-stated as: **there exists a decomposition into
-> homogeneous subgraphs such that each subgraph is metric-tree-
-> like under its own calibration**; the query's reachable set
-> determines which subgraph's calibration applies. See §4.5 for
-> the topical-core example on Wikipedia.
+> definition above is well-defined for any graph, but the
+> *interpretation* "TLI characterises the graph" assumes the
+> graph is *statistically homogeneous* — every region the query
+> distribution can reach has the same characteristic degree
+> distribution and the same calibrated `b_eff`. For inhomogeneous
+> graphs, TLI computed globally can be misleading; **the relevant
+> statistic is TLI computed on the homogeneous subgraph the query
+> distribution actually traverses** (see §4.5 for the topical-core
+> example on Wikipedia, and §5.6.2 for why this matters).
 
-This is the *practical* formulation. It tells you what to do —
-"just run tree search, the answer will be close enough" — rather
-than just describing a property of the graph.
+This is the *practical* formulation. Computing TLI is a concrete
+measurement (run the kernel at two cc values, compare). Calling a
+graph "tree-like" then becomes a thresholding decision on TLI,
+typically `TLI < ε` for some application-specific ε. See §6.1 for
+the threshold used by the simplewiki certificate.
 
-The equivalent structural formulation is the one we've been
-measuring: the weighted contribution of paths that *use* the
-non-tree edges is asymptotically negligible compared to paths
-that stay on the tree. Both are saying the same thing; the
-operational version is what's useful for cost-model decisions.
+The equivalent structural framing is what §5.6 measures: the
+weighted contribution of M ≥ 1 paths (those using cross-edges) is
+small relative to the M = 0 baseline. Both formulations capture
+the same phenomenon — TLI is just the operational measurement of
+that contribution ratio.
 
-Two versions of "statistically close":
+Two practical variants of TLI:
 
-- **Aggregate metric-tree-likeness**: the property holds *on
-  average* over a query distribution. Mean d_eff under
-  tree-search matches mean d_eff under full bidirectional search.
-- **Per-pair metric-tree-likeness**: the property holds for *every*
-  (seed, root) pair. Tree-search gives the right answer for each
-  individual query, not just the average.
+- **Aggregate TLI** — drift in the *mean* `d_wPow` over a query
+  distribution. Cheapest and most commonly reported.
+- **Per-pair TLI** — sup_{q ∈ Q} of the drift over individual
+  query pairs. Strictly stronger; catches cases where the
+  aggregate hides individual outliers.
 
-Per-pair is strictly stronger and what we ultimately want to
-claim. Aggregate is what we can typically promise without
-exhaustive case analysis. The user-facing claim should usually be
-the aggregate one: "for queries on this graph under this metric,
-tree-search is accurate to ε on average — individual queries may
-differ but rarely materially."
+Per-pair TLI ≤ aggregate TLI by Jensen-like reasoning, so a low
+per-pair TLI is the strongest available claim. Aggregate TLI is
+what we can typically promise without exhaustive case analysis.
+The user-facing claim should usually be the aggregate one: "for
+queries on this graph under this metric, the tree-search answer
+matches the full DAG answer to within `ε = TLI_agg` on average —
+individual queries may differ but rarely materially."
 
 ### 3.1 Why the property is principled: `D` does double duty
 
@@ -187,8 +201,8 @@ Both roles come from the same single measurement
 (`E[d_child]`). `D` is not a free parameter that happens to
 absorb errors — it's a structurally-motivated quantity that
 inherits its double duty from the construction of the metric
-itself. That's what makes metric-tree-likeness an honest
-property rather than a tuning success.
+itself. That's what makes TLI an honest statistic rather than a
+tuning success.
 
 The detailed analysis — including the consequence that the
 routing correction *consumes* part of `D`'s slack without
@@ -197,28 +211,28 @@ naming itself as a slack consumer — is in §5.5.1.
 ### 3.2 What this is *not*
 
 - Not **structural tree-likeness** (treewidth). The graph can have
-  arbitrarily many cycles and still be metric-tree-like under the
-  right metric.
+  arbitrarily many cycles and still have low TLI under the right
+  metric.
 - Not **Gromov hyperbolicity** (negative curvature). Hyperbolicity
-  is a geometric property of the distance metric itself; metric-
-  tree-likeness is a property of how the *weighted path sum*
-  decomposes between tree edges and cross edges.
+  is a geometric property of the distance metric itself; TLI is a
+  property of how the *weighted path sum* decomposes between tree
+  edges and cross edges.
 - Not **bounded treewidth + small cycle space**. Wikipedia
   categories likely have huge cycle space — every cross-cutting
   categorization adds a cycle. The metric just happens to weight
   those cycles down.
 
-It's a *third* notion: a property of the (graph, metric) pair,
-not of either alone. A graph that's metric-tree-like under
-power-mean weighting may not be under uniform weighting, and vice
+It's a *third* notion: a statistic of the (graph, metric) pair,
+not of either alone. A graph with low TLI under power-mean
+weighting may have high TLI under uniform weighting, and vice
 versa.
 
 ### 3.3 What it is: the "child shortcuts are statistically rare"
 property
 
-When a (graph, metric) pair is metric-tree-like, child shortcuts
-*exist* in the graph but don't carry enough weight under the metric
-to perturb the answer. Wikipedia categories have cross-cuts
+When a (graph, metric) pair has low TLI, child shortcuts *exist*
+in the graph but don't carry enough weight under the metric to
+perturb the answer. Wikipedia categories have cross-cuts
 everywhere (a 20th-century physicist is in both "physicists" and
 "20th-century people"), but each category has one **dominant**
 topical parent. The cross-cuts are real edges in the graph but
@@ -348,8 +362,8 @@ two qualitatively different statistical regimes mixed together**.
 The topical regime (γ ≈ 2.4–2.5, characteristic fan-outs 1–100,
 tree-like organisation) and the administrative regime (list-shaped
 categories with fan-outs in the thousands, no internal hierarchy).
-Each regime can be metric-tree-like under its own calibration;
-together they are not metric-tree-like under any single calibration.
+Each regime can have low TLI under its own calibration; together
+they have high TLI under any single global calibration.
 
 The routing correction (the 0.384 factor in §4.4) was effectively
 *band-aiding* this inhomogeneity — compensating for hub categories
@@ -386,9 +400,10 @@ structural origin) would be enough.
 
 ### 5.2 Necessary conditions
 
-Is metric-tree-likeness equivalent to some classical property
+Is "low TLI" equivalent to some classical graph property
 (e.g., bounded fractional cycle space), or genuinely a new
-property? Probably new because it depends on the metric.
+condition? Probably new because TLI depends on the metric, not
+just on G.
 
 ### 5.3 What would falsify it?
 
@@ -398,8 +413,8 @@ A graph engineered to defeat the metric:
   weight nearly as much as parent paths, no convergence.
 - **Bipartite-style** graph where most upward paths to root pass
   through a small set of choke nodes, but child shortcuts exist
-  that bypass them. Per-pair metric-tree-likeness would fail even
-  if aggregate held.
+  that bypass them. Per-pair TLI would be high even if aggregate
+  TLI held low.
 - **Diamond graph** with two distinct distance regimes between
   every leaf-pair, depending on whether you go up-then-down or
   the other way. Child shortcuts could carry as much weight as
@@ -534,9 +549,8 @@ tight). The geometric mean ~11 is itself only an order-of-
 magnitude estimate. The convergence holds because `b·D ≫
 path_growth` across most plausible measurements.
 
-The corollary is uncomfortable: a metric-tree-likeness
-certificate that passes by a wide margin tells you *almost
-nothing* about whether your calibration is correct. The
+The corollary is uncomfortable: a low TLI by a wide margin tells
+you *almost nothing* about whether your calibration is correct. The
 certificate is necessary for using the cheap tree-search path,
 but it's not sufficient for trusting `(b, D)` for any other
 purpose. **Calibration honesty needs a separate check** — the
@@ -635,12 +649,12 @@ empirical per-child-hop path growth, which equals `b · D` in our
 notation when properly calibrated) makes the M ≥ 1 contributions
 to `d_wPow` small enough to ignore.
 
-#### 5.6.1 Operational restatement of the property
+#### 5.6.1 Operational restatement
 
-A graph is **ε-metric-tree-like** under the weighted-power-mean
-metric iff its empirically calibrated `b'` produces weights
-`(1/b')^M` small enough that the sum over M ≥ 1 paths
-contributes less than `ε` to `d_wPow`:
+A graph has **TLI ≤ ε** under the weighted-power-mean metric iff
+its empirically calibrated `b'` produces weights `(1/b')^M` small
+enough that the sum over M ≥ 1 paths contributes less than `ε`
+to `d_wPow`:
 
 ```
 sum_{M ≥ 1}  #paths(M) · (1/b')^M · (length_factor)^M  <  ε · d_wPow(M=0)
@@ -649,9 +663,9 @@ sum_{M ≥ 1}  #paths(M) · (1/b')^M · (length_factor)^M  <  ε · d_wPow(M=0)
 This formulation has three nice properties:
 
 1. **Geometric structure is not required.** A small-world graph
-   with the right `b'` can still be metric-tree-like. The
-   graph's geometric regime determines `b'`; only `b'` enters
-   the property.
+   with the right `b'` can still have low TLI. The graph's
+   geometric regime determines `b'`; only `b'` enters the
+   computation.
 2. **Calibration honesty is the whole game.** If `b' << path_growth`,
    the property silently fails because the weights don't actually
    cancel path-count growth. If `b' >> path_growth`, the property
@@ -715,12 +729,11 @@ So the corrected decomposition:
   actually-traversed regime, calibration is honest, property
   holds.
 
-The metric-tree-likeness property doesn't require the topical core
-to be *geometrically* tree-shaped — only that its calibration
-honestly captures whatever regime it is in. The task #15
-measurement settles the geometric question; the §6.1 certificate
-settles the metric question; they're independent answers to
-independent questions.
+Low TLI doesn't require the topical core to be *geometrically*
+tree-shaped — only that its calibration honestly captures
+whatever regime it is in. The task #15 measurement settles the
+geometric question; the §6.1 certificate settles the metric
+question; they're independent answers to independent questions.
 
 This is a sharper statement of what §3 was reaching for: the
 property is fundamentally about calibration-induced weight
@@ -732,11 +745,12 @@ shape.
 
 ### 6.1 Convergence as a certificate: use tree-search
 
-If a single empirical convergence check (run at cc=100 and cc=5,
-measure drift) shows < 0.1%, we have evidence that for this
-(graph, metric, query class) the **tree-search answer is
-statistically equivalent to the full bidirectional answer**.
-The runtime decision is then simple: **use the tree-search**.
+If a single empirical TLI measurement (run at cc=100 and cc=5,
+compute the drift per §3) shows TLI < 0.1%, we have evidence
+that for this `(graph, metric, query class, budget)` the
+**tree-search answer is statistically equivalent to the full
+bidirectional answer** to within 0.1%. The runtime decision is
+then simple: **use the tree-search**.
 
 **The certificate must be obtained at the production budget B.**
 The convergence rate depends on B (higher budget admits more
@@ -757,10 +771,10 @@ one.
 
 ### 6.2 Drift as a diagnostic
 
-If the convergence check shows > 1% drift, that's a signal:
-either the graph is genuinely not metric-tree-like (run
-bidirectional), or our metric calibration is wrong (re-check b
-and D).
+If the convergence check shows > 1% drift (i.e. TLI > 1%), that's
+a signal: either the graph genuinely has high TLI under this
+metric (run bidirectional), or our calibration is wrong (re-check
+b and D).
 
 ### 6.3 Per-pair check is cheap
 
@@ -770,8 +784,9 @@ gives us early warning if some pairs drift while others don't.
 
 ## 7. Data-prep consequences of the inhomogeneity finding
 
-§6 follows directly from the property: if a (graph, metric) pair
-is metric-tree-like, you can use tree-search. The items below are
+§6 follows directly from the index: if a (graph, metric) pair has
+TLI below your application threshold, you can use tree-search.
+The items below are
 different — they are *production recommendations* that follow from
 §4.5's inhomogeneity finding, not from the property itself. They
 depend on the §4.5 evidence holding up (which it does on
@@ -845,7 +860,7 @@ fast.
 
 ## 8. Status of this document
 
-This is **not a theorem**. It's a name (`metric-tree-likeness`)
+This is **not a theorem**. It's a name (`tree-likeness index`)
 attached to a phenomenon we've observed once, with a reasonable
 mechanism (geometric series), and a list of things that could
 falsify it. The next step is to construct a (graph, metric) pair
