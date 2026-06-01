@@ -190,12 +190,12 @@ Reason:
 - Weighted/A* native kernels previously covered only integer results, while
   Haskell and Rust had broader numeric-result surfaces.
 
-### Active: `investigate/wam-c-csr-artifact-only-large-scales`
+### Active: `investigate/wam-c-csr-lookup-microbenchmark`
 
 Goal: measure whether the newer parent-only LMDB and reverse CSR artifact
 layouts remain the right defaults at larger category scales, without forcing
 full WAM-C query-runner generation and C compilation when only artifact bytes
-are needed.
+or narrow lookup timings are needed.
 
 Implemented so far:
 
@@ -236,15 +236,28 @@ Implemented so far:
   `1,687,552` bytes, `42,422` parent rows, `196,900` child-parent edges, and
   `84,136` category IDs. Build time was about `0.11s` for sorted-array rows
   and about `0.15s` for LMDB-offset rows.
+- Added `benchmark_wam_c_reverse_csr_lookup.py`, which builds the same TSV
+  artifacts, generates the shared WAM-C runtime C file, compiles a tiny harness,
+  and times the actual `wam_reverse_csr_lookup_children` API without running
+  effective distance.
+- WAM-C CSR lookup microbenchmarks with `1,000` sampled parent rows and `5`
+  timed iterations show sorted-array CSR ahead of LMDB-offset at the measured
+  scales. At `10k`, sorted-array median is about `0.78us` per parent lookup,
+  pread/drop sorted-array is about `1.08us`, LMDB-offset is about `1.00us`,
+  and LMDB-offset pread/drop is about `1.33us`. At the shared
+  `50k_cats`/`100k_cats` category graph, sorted-array is about `1.15-1.17us`,
+  pread/drop sorted-array about `1.48us`, LMDB-offset about `1.39-1.44us`,
+  and LMDB-offset pread/drop about `1.75us` per parent lookup.
 
 Open measurement:
 
 - `10x` child-search layout runs are not a routine local gate even with a small
   child-expansion cap; run them only as an explicit longer benchmark window.
 - Use compile-only rows for routine generated-project comparisons through
-  `10k`, use `--artifact-only` for `50k_cats` and `100k_cats` size checks, then
-  schedule runtime rows separately for scales where child-search query
-  execution is acceptable.
+  `10k`, use `--artifact-only` for `50k_cats` and `100k_cats` size checks, and
+  use the WAM-C CSR lookup microbenchmark when choosing sorted-array versus
+  LMDB-offset file-backed layouts. Schedule full child-search runtime rows
+  separately for scales where query execution is acceptable.
 - Parent-only TSV and LMDB targets remain the priority memory structures for
   current effective-distance workloads. Reverse CSR targets are now available
   for future child-path variants and artifact-layout measurements.
@@ -441,6 +454,8 @@ After hash-bucket row dispatch but before compact row tables:
 Use `benchmark_wam_c_child_csr_scale_sweep.py` for routine compile-only
 generated-project artifact comparisons through `10k`, and use
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only --scales
-50k_cats,100k_cats` for large category-graph artifact bytes. Next, decide
-whether to add a small cold/warm CSR lookup microbenchmark for the file-backed
-reader before spending implementation time on in-memory compressed CSR.
+50k_cats,100k_cats` for large category-graph artifact bytes. Use
+`benchmark_wam_c_reverse_csr_lookup.py` for narrow WAM-C runtime lookup costs.
+The current evidence supports keeping sorted-array file-backed CSR as the first
+child-lookup layout and deferring in-memory compressed CSR until a full
+child-search workload shows the file-backed reader is the limiting factor.
