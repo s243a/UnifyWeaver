@@ -2455,6 +2455,12 @@ test_cmp_lists_diff(_, R) :-
 % M65: keysort/2 + sort/2 migrated to @wam_term_cmp -> Compound keys /
 % elements now sort correctly.
 
+:- dynamic test_ks_plain_compound_list_length/2.
+test_ks_plain_compound_list_length(_, R) :-
+    % Plain list of single compounds (no pair).
+    L = [foo(1), foo(2), foo(3)],
+    length(L, R).   % 3
+
 :- dynamic test_ks_compound_input_length/2.
 test_ks_compound_input_length(_, R) :-
     % Even more basic: just the input list (no keysort yet).
@@ -3978,6 +3984,8 @@ test_all :-
        run_test_r0('compare [1,2,3] vs [1,2,4] -> 60',
                    test_cmp_lists_diff, 0, 60),
        format('--- M65 keysort + sort migrated to @wam_term_cmp (Compound keys / elements) ---~n'),
+       run_test_r0('plain compound list length -> 3 (no pair)',
+                   test_ks_plain_compound_list_length, 0, 3),
        run_test_r0('compound-pair input list length -> 3 (no keysort)',
                    test_ks_compound_input_length, 0, 3),
        run_test_r0('keysort compound keys length -> 3 (sanity)',
