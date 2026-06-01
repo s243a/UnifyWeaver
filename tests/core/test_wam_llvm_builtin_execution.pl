@@ -2384,6 +2384,74 @@ test_sort_already_sorted(_, R) :-
     length(L, N),
     R is N.   % 5 (no dedup, already sorted)
 
+% M64: compare/3 extension to Compound terms (via @wam_term_cmp helper).
+
+:- dynamic test_cmp_compound_eq/2.
+test_cmp_compound_eq(_, R) :-
+    compare(O, foo(1, 2), foo(1, 2)),
+    char_code(O, C),
+    R is C.   % '='
+
+:- dynamic test_cmp_compound_arity_lt/2.
+test_cmp_compound_arity_lt(_, R) :-
+    % Smaller arity comes first.
+    compare(O, foo(1), foo(1, 2)),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_compound_arity_gt/2.
+test_cmp_compound_arity_gt(_, R) :-
+    compare(O, foo(1, 2, 3), foo(1, 2)),
+    char_code(O, C),
+    R is C.   % '>'
+
+:- dynamic test_cmp_compound_functor_lt/2.
+test_cmp_compound_functor_lt(_, R) :-
+    % Same arity, alphabetical functor order.
+    compare(O, alpha(1, 2), beta(1, 2)),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_compound_arg_lt/2.
+test_cmp_compound_arg_lt(_, R) :-
+    % Same arity + functor, first differing arg decides.
+    compare(O, foo(1, 5), foo(1, 9)),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_compound_arg_gt/2.
+test_cmp_compound_arg_gt(_, R) :-
+    compare(O, foo(2, 5), foo(1, 5)),
+    char_code(O, C),
+    R is C.   % '>'
+
+:- dynamic test_cmp_compound_recursive/2.
+test_cmp_compound_recursive(_, R) :-
+    % Nested compounds -- recursion through args.
+    compare(O, foo(bar(1)), foo(bar(2))),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_compound_vs_atom/2.
+test_cmp_compound_vs_atom(_, R) :-
+    % Cross-category: Compound > Atom.
+    compare(O, foo(1), bar),
+    char_code(O, C),
+    R is C.   % '>'
+
+:- dynamic test_cmp_lists_via_compound/2.
+test_cmp_lists_via_compound(_, R) :-
+    % Lists are compounds ([|]/2); equal lists compare =.
+    compare(O, [1, 2, 3], [1, 2, 3]),
+    char_code(O, C),
+    R is C.   % '='
+
+:- dynamic test_cmp_lists_diff/2.
+test_cmp_lists_diff(_, R) :-
+    compare(O, [1, 2, 3], [1, 2, 4]),
+    char_code(O, C),
+    R is C.   % '<'
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -3839,6 +3907,27 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M64 compare/3 Compound terms (recursive via helper) ---~n'),
+       run_test_r0('compare(O, foo(1,2), foo(1,2)) -> 61 (=)',
+                   test_cmp_compound_eq, 0, 61),
+       run_test_r0('compare(O, foo(1), foo(1,2)) arity lt -> 60',
+                   test_cmp_compound_arity_lt, 0, 60),
+       run_test_r0('compare(O, foo(1,2,3), foo(1,2)) arity gt -> 62',
+                   test_cmp_compound_arity_gt, 0, 62),
+       run_test_r0('compare(O, alpha, beta) functor lt -> 60',
+                   test_cmp_compound_functor_lt, 0, 60),
+       run_test_r0('compare(O, foo(1,5), foo(1,9)) arg lt -> 60',
+                   test_cmp_compound_arg_lt, 0, 60),
+       run_test_r0('compare(O, foo(2,5), foo(1,5)) arg gt -> 62',
+                   test_cmp_compound_arg_gt, 0, 62),
+       run_test_r0('compare nested foo(bar(1)) vs foo(bar(2)) -> 60',
+                   test_cmp_compound_recursive, 0, 60),
+       run_test_r0('compare compound vs atom -> 62 (atom < compound)',
+                   test_cmp_compound_vs_atom, 0, 62),
+       run_test_r0('compare equal lists -> 61',
+                   test_cmp_lists_via_compound, 0, 61),
+       run_test_r0('compare [1,2,3] vs [1,2,4] -> 60',
+                   test_cmp_lists_diff, 0, 60),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),

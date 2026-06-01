@@ -3251,12 +3251,14 @@ compile_wam_helpers_to_llvm(_Options, LLVMCode) :-
     compile_execute_builtin_to_llvm(BuiltinCode),
     compile_eval_arith_to_llvm(ArithCode),
     compile_copy_term_to_llvm(CopyTermCode),
+    compile_term_cmp_to_llvm(TermCmpCode),
     atomic_list_concat([
         BacktrackCode, '\n\n',
         UnwindCode, '\n\n',
         BuiltinCode, '\n\n',
         ArithCode, '\n\n',
-        CopyTermCode
+        CopyTermCode, '\n\n',
+        TermCmpCode
     ], LLVMCode).
 
 compile_backtrack_to_llvm(Code) :-
@@ -8834,103 +8836,22 @@ ctp.do_newline:
   ret i1 %ctp.n_any
 
 builtin_compare:
-  ; M59: compare(?Order, @T1, @T2). Order is bound to ''<'', ''='', or ''>''
-  ; per the standard order of terms. Supported: Integer, Float, Atom.
-  ; Compound term comparison is deferred -- fails for now.
-  ; Cross-category order: Number < Atom < Compound (matches ISO).
+  ; M59/M64: compare(?Order, @T1, @T2). Order is bound to ''<'', ''='',
+  ; or ''>'' per the standard order of terms. Delegates to the M64
+  ; @wam_term_cmp helper which handles all four supported categories
+  ; (Atom / Integer / Float / Compound) with proper recursion on
+  ; compound args.
   %cmp.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %cmp.a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
-  %cmp.t2 = extractvalue %Value %cmp.a2, 0
-  %cmp.t3 = extractvalue %Value %cmp.a3, 0
-  ; Map tag (0=Atom, 1=Integer, 2=Float, 3=Compound) to category
-  ; (0=Number, 1=Atom, 2=Compound). Numbers come first, atoms middle,
-  ; compounds last. Unknown tags fall to category 2 which mostly
-  ; means ``unsupported'' here.
-  %cmp.t2_is_atom = icmp eq i32 %cmp.t2, 0
-  %cmp.t2_is_cmp = icmp eq i32 %cmp.t2, 3
-  %cmp.cat2_mid = select i1 %cmp.t2_is_cmp, i32 2, i32 0
-  %cmp.cat2 = select i1 %cmp.t2_is_atom, i32 1, i32 %cmp.cat2_mid
-  %cmp.t3_is_atom = icmp eq i32 %cmp.t3, 0
-  %cmp.t3_is_cmp = icmp eq i32 %cmp.t3, 3
-  %cmp.cat3_mid = select i1 %cmp.t3_is_cmp, i32 2, i32 0
-  %cmp.cat3 = select i1 %cmp.t3_is_atom, i32 1, i32 %cmp.cat3_mid
+  %cmp.r = call i32 @wam_term_cmp(%WamState* %vm, %Value %cmp.a2, %Value %cmp.a3)
   ; Look up the three result atoms via the char-to-atom table (M26).
   %cmp.lt_id = call i64 @wam_char_to_atom(i64 60)   ; ''<''
   %cmp.eq_id = call i64 @wam_char_to_atom(i64 61)   ; ''=''
   %cmp.gt_id = call i64 @wam_char_to_atom(i64 62)   ; ''>''
-  %cmp.cat_eq = icmp eq i32 %cmp.cat2, %cmp.cat3
-  br i1 %cmp.cat_eq, label %cmp.same_cat, label %cmp.diff_cat
-cmp.diff_cat:
-  ; Result is determined purely by category order.
-  %cmp.cat_lt = icmp slt i32 %cmp.cat2, %cmp.cat3
-  %cmp.diff_id = select i1 %cmp.cat_lt, i64 %cmp.lt_id, i64 %cmp.gt_id
-  br label %cmp.bind
-cmp.same_cat:
-  ; Same category. Compound (cat 2) is unsupported -> fail.
-  %cmp.cat_is_cmp = icmp eq i32 %cmp.cat2, 2
-  br i1 %cmp.cat_is_cmp, label %cmp.fail, label %cmp.same_not_cmp
-cmp.fail:
-  ret i1 false
-cmp.same_not_cmp:
-  %cmp.cat_is_atom = icmp eq i32 %cmp.cat2, 1
-  br i1 %cmp.cat_is_atom, label %cmp.same_atoms, label %cmp.same_nums
-cmp.same_atoms:
-  %cmp.aid2 = extractvalue %Value %cmp.a2, 1
-  %cmp.aid3 = extractvalue %Value %cmp.a3, 1
-  %cmp.str2 = call i8* @wam_atom_to_string(i64 %cmp.aid2)
-  %cmp.str3 = call i8* @wam_atom_to_string(i64 %cmp.aid3)
-  %cmp.s_a_null2 = icmp eq i8* %cmp.str2, null
-  %cmp.s_a_null3 = icmp eq i8* %cmp.str3, null
-  %cmp.s_a_any_null = or i1 %cmp.s_a_null2, %cmp.s_a_null3
-  br i1 %cmp.s_a_any_null, label %cmp.fail, label %cmp.same_atoms_cmp
-cmp.same_atoms_cmp:
-  %cmp.s_a_r = call i32 @strcmp(i8* %cmp.str2, i8* %cmp.str3)
-  %cmp.s_a_lt = icmp slt i32 %cmp.s_a_r, 0
-  %cmp.s_a_gt = icmp sgt i32 %cmp.s_a_r, 0
-  %cmp.s_a_mid = select i1 %cmp.s_a_gt, i64 %cmp.gt_id, i64 %cmp.eq_id
-  %cmp.s_a_id = select i1 %cmp.s_a_lt, i64 %cmp.lt_id, i64 %cmp.s_a_mid
-  br label %cmp.bind_via_atom
-cmp.same_nums:
-  ; Both numbers. If both Integer, compare as i64. Otherwise convert to
-  ; double and use fcmp (handles Int-Float and Float-Float).
-  %cmp.t2_is_int = icmp eq i32 %cmp.t2, 1
-  %cmp.t3_is_int = icmp eq i32 %cmp.t3, 1
-  %cmp.both_int = and i1 %cmp.t2_is_int, %cmp.t3_is_int
-  br i1 %cmp.both_int, label %cmp.cmp_int, label %cmp.cmp_float
-cmp.cmp_int:
-  %cmp.iv2 = extractvalue %Value %cmp.a2, 1
-  %cmp.iv3 = extractvalue %Value %cmp.a3, 1
-  %cmp.i_lt = icmp slt i64 %cmp.iv2, %cmp.iv3
-  %cmp.i_gt = icmp sgt i64 %cmp.iv2, %cmp.iv3
-  %cmp.i_mid = select i1 %cmp.i_gt, i64 %cmp.gt_id, i64 %cmp.eq_id
-  %cmp.i_id = select i1 %cmp.i_lt, i64 %cmp.lt_id, i64 %cmp.i_mid
-  br label %cmp.bind_via_int
-cmp.cmp_float:
-  ; Widen both to double. If tag == 2, bitcast i64 to double.
-  ; Otherwise (tag == 1, Integer) sitofp.
-  %cmp.bits2 = extractvalue %Value %cmp.a2, 1
-  %cmp.bits3 = extractvalue %Value %cmp.a3, 1
-  %cmp.t2_is_flt = icmp eq i32 %cmp.t2, 2
-  %cmp.t3_is_flt = icmp eq i32 %cmp.t3, 2
-  %cmp.d2_flt = bitcast i64 %cmp.bits2 to double
-  %cmp.d2_int = sitofp i64 %cmp.bits2 to double
-  %cmp.d2 = select i1 %cmp.t2_is_flt, double %cmp.d2_flt, double %cmp.d2_int
-  %cmp.d3_flt = bitcast i64 %cmp.bits3 to double
-  %cmp.d3_int = sitofp i64 %cmp.bits3 to double
-  %cmp.d3 = select i1 %cmp.t3_is_flt, double %cmp.d3_flt, double %cmp.d3_int
-  %cmp.f_lt = fcmp olt double %cmp.d2, %cmp.d3
-  %cmp.f_gt = fcmp ogt double %cmp.d2, %cmp.d3
-  %cmp.f_mid = select i1 %cmp.f_gt, i64 %cmp.gt_id, i64 %cmp.eq_id
-  %cmp.f_id = select i1 %cmp.f_lt, i64 %cmp.lt_id, i64 %cmp.f_mid
-  br label %cmp.bind_via_float
-cmp.bind_via_atom:
-  br label %cmp.bind
-cmp.bind_via_int:
-  br label %cmp.bind
-cmp.bind_via_float:
-  br label %cmp.bind
-cmp.bind:
-  %cmp.id = phi i64 [ %cmp.diff_id, %cmp.diff_cat ], [ %cmp.s_a_id, %cmp.bind_via_atom ], [ %cmp.i_id, %cmp.bind_via_int ], [ %cmp.f_id, %cmp.bind_via_float ]
+  %cmp.lt = icmp slt i32 %cmp.r, 0
+  %cmp.gt = icmp sgt i32 %cmp.r, 0
+  %cmp.mid = select i1 %cmp.gt, i64 %cmp.gt_id, i64 %cmp.eq_id
+  %cmp.id = select i1 %cmp.lt, i64 %cmp.lt_id, i64 %cmp.mid
   %cmp.v0 = insertvalue %Value undef, i32 0, 0
   %cmp.v = insertvalue %Value %cmp.v0, i64 %cmp.id, 1
   %cmp.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
@@ -9933,6 +9854,139 @@ fz_done:
   %new_val0 = insertvalue %Value undef, i32 3, 0
   %new_val = insertvalue %Value %new_val0, i64 %new_i64, 1
   ret %Value %new_val
+}'.
+
+%% compile_term_cmp_to_llvm(-IR)
+%
+%  M64: emit @wam_term_cmp(vm, v1, v2) -> i32 (-1, 0, +1) per standard
+%  term order. Supports Atom / Integer / Float / Compound with proper
+%  recursion through compound args. Used by builtin_compare (and
+%  future keysort / sort migrations).
+compile_term_cmp_to_llvm(Code) :-
+    Code = '; M64: standard-term-order compare. Returns -1, 0, or +1.
+; Category order (ISO): Number < Atom < Compound. Within each
+; category, atoms by strcmp, numbers by value (mixed int/float
+; widened to double), compounds by arity then functor then args
+; left-to-right (recursive).
+define i32 @wam_term_cmp(%WamState* %vm, %Value %v1, %Value %v2) {
+entry:
+  %d1 = call %Value @wam_deref_value(%WamState* %vm, %Value %v1)
+  %d2 = call %Value @wam_deref_value(%WamState* %vm, %Value %v2)
+  %t1 = extractvalue %Value %d1, 0
+  %t2 = extractvalue %Value %d2, 0
+  ; Map tag -> category: Atom=1, Number=0, Compound=2.
+  %t1_atom = icmp eq i32 %t1, 0
+  %t1_cmp = icmp eq i32 %t1, 3
+  %t1_cat_mid = select i1 %t1_cmp, i32 2, i32 0
+  %cat1 = select i1 %t1_atom, i32 1, i32 %t1_cat_mid
+  %t2_atom = icmp eq i32 %t2, 0
+  %t2_cmp = icmp eq i32 %t2, 3
+  %t2_cat_mid = select i1 %t2_cmp, i32 2, i32 0
+  %cat2 = select i1 %t2_atom, i32 1, i32 %t2_cat_mid
+  %cat_eq = icmp eq i32 %cat1, %cat2
+  br i1 %cat_eq, label %same_cat, label %diff_cat
+diff_cat:
+  %dc_lt = icmp slt i32 %cat1, %cat2
+  %dc_r = select i1 %dc_lt, i32 -1, i32 1
+  ret i32 %dc_r
+same_cat:
+  %sc_is_atom = icmp eq i32 %cat1, 1
+  br i1 %sc_is_atom, label %cmp_atoms, label %sc_num_or_cmp
+sc_num_or_cmp:
+  %sc_is_cmp = icmp eq i32 %cat1, 2
+  br i1 %sc_is_cmp, label %cmp_compounds, label %cmp_nums
+cmp_atoms:
+  %a_id1 = extractvalue %Value %d1, 1
+  %a_id2 = extractvalue %Value %d2, 1
+  %a_str1 = call i8* @wam_atom_to_string(i64 %a_id1)
+  %a_str2 = call i8* @wam_atom_to_string(i64 %a_id2)
+  %a_r = call i32 @strcmp(i8* %a_str1, i8* %a_str2)
+  %a_lt = icmp slt i32 %a_r, 0
+  %a_gt = icmp sgt i32 %a_r, 0
+  %a_mid = select i1 %a_gt, i32 1, i32 0
+  %a_result = select i1 %a_lt, i32 -1, i32 %a_mid
+  ret i32 %a_result
+cmp_nums:
+  %n_t1_int = icmp eq i32 %t1, 1
+  %n_t2_int = icmp eq i32 %t2, 1
+  %n_both_int = and i1 %n_t1_int, %n_t2_int
+  br i1 %n_both_int, label %cmp_int_int, label %cmp_num_float
+cmp_int_int:
+  %ii_v1 = extractvalue %Value %d1, 1
+  %ii_v2 = extractvalue %Value %d2, 1
+  %ii_lt = icmp slt i64 %ii_v1, %ii_v2
+  %ii_gt = icmp sgt i64 %ii_v1, %ii_v2
+  %ii_mid = select i1 %ii_gt, i32 1, i32 0
+  %ii_result = select i1 %ii_lt, i32 -1, i32 %ii_mid
+  ret i32 %ii_result
+cmp_num_float:
+  %nf_b1 = extractvalue %Value %d1, 1
+  %nf_b2 = extractvalue %Value %d2, 1
+  %nf_t1_flt = icmp eq i32 %t1, 2
+  %nf_t2_flt = icmp eq i32 %t2, 2
+  %nf_d1_flt = bitcast i64 %nf_b1 to double
+  %nf_d1_int = sitofp i64 %nf_b1 to double
+  %nf_d1 = select i1 %nf_t1_flt, double %nf_d1_flt, double %nf_d1_int
+  %nf_d2_flt = bitcast i64 %nf_b2 to double
+  %nf_d2_int = sitofp i64 %nf_b2 to double
+  %nf_d2 = select i1 %nf_t2_flt, double %nf_d2_flt, double %nf_d2_int
+  %nf_lt = fcmp olt double %nf_d1, %nf_d2
+  %nf_gt = fcmp ogt double %nf_d1, %nf_d2
+  %nf_mid = select i1 %nf_gt, i32 1, i32 0
+  %nf_result = select i1 %nf_lt, i32 -1, i32 %nf_mid
+  ret i32 %nf_result
+cmp_compounds:
+  %c_bits1 = extractvalue %Value %d1, 1
+  %c_bits2 = extractvalue %Value %d2, 1
+  %c_cp1 = inttoptr i64 %c_bits1 to %Compound*
+  %c_cp2 = inttoptr i64 %c_bits2 to %Compound*
+  %c_ar1_slot = getelementptr %Compound, %Compound* %c_cp1, i32 0, i32 1
+  %c_ar1 = load i32, i32* %c_ar1_slot
+  %c_ar2_slot = getelementptr %Compound, %Compound* %c_cp2, i32 0, i32 1
+  %c_ar2 = load i32, i32* %c_ar2_slot
+  %c_ar_eq = icmp eq i32 %c_ar1, %c_ar2
+  br i1 %c_ar_eq, label %cmp_funcs, label %c_ar_diff
+c_ar_diff:
+  %c_ar_lt = icmp slt i32 %c_ar1, %c_ar2
+  %c_ar_r = select i1 %c_ar_lt, i32 -1, i32 1
+  ret i32 %c_ar_r
+cmp_funcs:
+  %c_fn1_slot = getelementptr %Compound, %Compound* %c_cp1, i32 0, i32 0
+  %c_fn1 = load i8*, i8** %c_fn1_slot
+  %c_fn2_slot = getelementptr %Compound, %Compound* %c_cp2, i32 0, i32 0
+  %c_fn2 = load i8*, i8** %c_fn2_slot
+  %c_fn_r = call i32 @strcmp(i8* %c_fn1, i8* %c_fn2)
+  %c_fn_zero = icmp eq i32 %c_fn_r, 0
+  br i1 %c_fn_zero, label %cmp_args_init, label %c_fn_diff
+c_fn_diff:
+  %c_fn_lt = icmp slt i32 %c_fn_r, 0
+  %c_fn_result = select i1 %c_fn_lt, i32 -1, i32 1
+  ret i32 %c_fn_result
+cmp_args_init:
+  %c_args1_slot = getelementptr %Compound, %Compound* %c_cp1, i32 0, i32 2
+  %c_args1 = load %Value*, %Value** %c_args1_slot
+  %c_args2_slot = getelementptr %Compound, %Compound* %c_cp2, i32 0, i32 2
+  %c_args2 = load %Value*, %Value** %c_args2_slot
+  br label %cmp_args_loop
+cmp_args_loop:
+  %ca_i = phi i32 [ 0, %cmp_args_init ], [ %ca_i_next, %cmp_args_continue ]
+  %ca_done = icmp sge i32 %ca_i, %c_ar1
+  br i1 %ca_done, label %cmp_args_equal, label %cmp_args_step
+cmp_args_step:
+  %ca_a1_ptr = getelementptr %Value, %Value* %c_args1, i32 %ca_i
+  %ca_a1 = load %Value, %Value* %ca_a1_ptr
+  %ca_a2_ptr = getelementptr %Value, %Value* %c_args2, i32 %ca_i
+  %ca_a2 = load %Value, %Value* %ca_a2_ptr
+  %ca_r = call i32 @wam_term_cmp(%WamState* %vm, %Value %ca_a1, %Value %ca_a2)
+  %ca_nonzero = icmp ne i32 %ca_r, 0
+  br i1 %ca_nonzero, label %cmp_args_ret, label %cmp_args_continue
+cmp_args_ret:
+  ret i32 %ca_r
+cmp_args_continue:
+  %ca_i_next = add i32 %ca_i, 1
+  br label %cmp_args_loop
+cmp_args_equal:
+  ret i32 0
 }'.
 
 % ============================================================================
