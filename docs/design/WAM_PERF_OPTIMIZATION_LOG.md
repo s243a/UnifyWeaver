@@ -4277,4 +4277,165 @@ This appendix closes the P2 deliverable from
 now consume `resident_cursor` as a measured baseline and the
 branching distribution above as flux-decay tuning input.
 
+## Phase R appendix #15: Rust LMDB eager vs lazy vs cached — fair comparison on the Articles-rooted simplewiki subgraph (2026-05-31)
+
+Builds on R7 (Rust `lazy`), R8a (`cached` decorator), R8b (`auto`
+resolver). Goal: compare the three `lmdb_materialisation` modes for the
+WAM-Rust effective-distance kernel on real Wikipedia category data.
+
+### The methodology lesson (read this first)
+
+The headline result of the first pass — "lazy is 445× slower than
+eager at simplewiki" — was **a benchmark artifact, not a real
+finding**, and it took several wrong turns to see why:
+
+- **eager and lazy were running on different datasets.** Eager
+  materialises `runtime_category_parents` filtered to the reachable
+  demand set (`reachable_to_root`); the lazy/cached `edge_parents`
+  path returned **raw, unfiltered** LMDB parents. So the two modes
+  walked different graphs — eager the carrot-shaped reachable subtree,
+  lazy the full graph including ancestor branches that can never reach
+  the root.
+- **The kernel is O(paths), not O(nodes).** `collect_native_category_ancestor_hops`
+  is path enumeration with *per-path* cycle avoidance (the `visited`
+  arg is the path-so-far, a `Vec`), emitting one result per path to the
+  root. It has **no global memoization** by design. On a high-fan-in
+  DAG the path count is combinatorial, so walking even slightly more
+  graph (the unfiltered branches) explodes the traversal — same
+  byte-identical output, ~220× the work (681M vs 3.1M edge lookups).
+- Intermediate mis-attributions (now retracted): the gap was *not*
+  `CallForeign` per-call dispatch overhead (per-call cost is ~230 ns ≈
+  eager once the lazy path is integer-keyed), and was *not* fixed by
+  cursor reuse / per-thread L1 (those help, but weren't the cause). The
+  per-call work was never the bottleneck; the *amount of graph walked*
+  was.
+
+The fix is to compare on **identical data**. Two ways, both used here:
+(a) apply the same demand-set filter to the lazy path at runtime
+(correctness/safety net — see code changes); (b) **build the LMDB as a
+closed, root-rooted subgraph** so every node is reachable and there is
+nothing to filter. (b) is the clean benchmark and the recommended
+fixture shape.
+
+### Fixture: closed Articles subgraph (correct-mode ingest)
+
+Source: `simplewiki-latest-{categorylinks,linktarget,page}.sql.gz`.
+Ingested with `mysql_stream_lmdb --mode correct` (3-dump join →
+`(page_id, page_id)` category edges; requires the float-column parser
+fix, PR #2569). simplewiki's top category is **`Category:Articles`**
+(page_id `137597`; enwiki's is `Main topic classifications`).
+
+Built a closed subgraph = the descendant closure of Articles, keeping
+only edges with **both** endpoints inside the closure:
+
+```
+full correct-mode edges : 292,667
+Articles-subtree nodes  :  79,375
+Articles-subtree edges  : 189,831   (the ~103k dropped edges led OUT
+                                      of the Articles carrot)
+```
+
+`reachable_to_root(137597)` now equals the whole DB, so eager and lazy
+operate on the **same** dataset. All three modes produce byte-identical
+output (`tuple_count=38,555`).
+
+Hardware: 5 GB RAM, 8 cores; LMDB 23 MB (fully cached). Serial seed
+loop (no `par_iter` yet). All numbers single-process.
+
+### Result 1 — totals by seed count (the eager↔lazy/cached crossover)
+
+`WAM_SEED_LIMIT=N`, total_ms (root = Articles):
+
+| seeds N | eager | cached | lazy | best |
+| ---: | ---: | ---: | ---: | :--- |
+| 1      |   822 |   170 |   168 | lazy/cached ~5× |
+| 10     |   743 |   175 |   170 | lazy/cached ~4× |
+| 100    |   843 |   192 |   206 | cached ~4× |
+| 1,000  | 1,022 |   421 |   612 | cached ~2.4× |
+| 5,000  | 2,002 | 1,886 | 3,181 | cached (lazy now loses) |
+| 38,628 (all) | 12,667 | 19,463 | 33,097 | eager 1.55× |
+
+Eager pays a **fixed ~0.8 s demand-set materialisation** regardless of
+seed count (it builds the whole reachable Vec up front); lazy/cached
+pay ~0.17 s startup and more per query. Crossovers: **cached beats
+eager up to ~6,000 seeds**, lazy up to ~1,750. Eager wins only the
+full-corpus sweep, where it amortises.
+
+### Result 2 — per-query (query_ms / seeds), load_ms in brackets
+
+| seeds N | eager | cached | lazy |
+| ---: | :--- | :--- | :--- |
+| 1      | 6.00 ms [151] | 3.00 ms [82] | 3.00 ms [80] |
+| 100    | 0.220 ms [144] | 0.210 ms [83] | 0.400 ms [82] |
+| 1,000  | 0.231 ms [154] | 0.245 ms [81] | 0.464 ms [81] |
+| 5,000  | 0.223 ms [155] | 0.339 ms [81] | 0.601 ms [81] |
+| 38,628 | 0.291 ms [150] | 0.515 ms [82] | 0.841 ms [80] |
+
+- **eager per-query ≈ fixed ~0.25 ms** — the in-memory `ffi_facts`
+  floor.
+- **cached ≈ 0.6× lazy throughout** — the cache earning its keep on
+  shared ancestors — and within ~1–1.8× of eager.
+- **lazy highest** — no result cache, re-hits LMDB each query.
+- load: eager ~150 ms (Vec build) vs lazy/cached ~82 ms (none).
+
+Caveat (perf-skepticism): `WAM_SEED_LIMIT` *truncates* the sorted seed
+set, so each N is a **different workload** — this confounds a clean
+cache-warmup curve (cached per-query rises with N here largely because
+the seed mix changes, not because the cache degrades). The robust
+signals are cross-mode at fixed N: cached < lazy always, cached ≈ eager
+order. A true warmup curve needs a fixed seed set run repeatedly; not
+done here.
+
+### Findings
+
+1. **On identical data, lazy/cached are 1.55× / 2.6× eager on the full
+   sweep, and 2–5× *faster* than eager for small-to-moderate seed
+   counts** (the realistic interactive pattern — you rarely query all
+   38k categories at once). Per-query is sub-millisecond for all modes.
+2. **cached is the best default.** Near-eager per-query, half the
+   startup, wins totals up to ~6k seeds. With `cache_capacity ≥ working
+   set` (R8b's §3.1 default; trivially the dataset size for a graph this
+   small) it never evicts, so per-query is bounded and stable.
+3. **The crossover scales with materialisation cost.** Eager's fixed
+   cost is ~0.8 s at simplewiki but ~194 s at enwiki (appendix #8-shape
+   load). So at enwiki the crossover seed-count is enormous and
+   lazy/cached win essentially all realistic query counts — the real
+   lazy-access value. (enwiki correct-mode re-ingest not yet run.)
+4. **The kernel's O(paths) enumeration is the underlying scale risk.**
+   It is tractable only because the demand-set restriction bounds the
+   branching. A memoized / DP kernel (distance per *node*) would be
+   O(nodes+edges) and robust regardless of access mode — a separate
+   kernel-algorithm change benefiting all modes (valid only if the
+   metric is min-style, not sum-over-paths).
+
+### Code changes (branch `feat/wam-rust-lmdb-cursor-reuse`)
+
+All byte-identical-verified; codegen tests green.
+
+- **Demand-set filter on the lazy `edge_parents` path** (`state.rs`
+  `WamState.demand_set`, set from `reachable_to_root` at setup) — the
+  correctness/safety net so `lazy`/`cached` match eager's edge set even
+  on an unfiltered DB. *This is the change that matters.*
+- Per-call refinements (correct, contribute the cached<lazy gap and
+  per-call parity, but not the cause of the original blow-up):
+  pure-integer `wam↔lmdb` maps (`build_lazy_int_maps`) so `edge_parents`
+  has no per-call string round-trip; per-thread reused LMDB read txn
+  (`NOTLS` + leaked `'static` env) avoiding `mdb_txn_begin` per lookup;
+  per-thread L1 result cache in `CachedLookup` in front of the sharded
+  L2.
+
+### Open / follow-ups
+
+- **enwiki correct-mode subgraph** ("Main topic classifications" root)
+  to demonstrate the at-scale crossover where eager's load dominates.
+- **Parallelise the seed loop** (`rayon` `par_iter` over `seed_cats`;
+  `LookupSource` is already `Send + Sync`) — ~core-count wall-clock win,
+  orthogonal to mode.
+- **R8b resolver framing**: the eager↔cached decision should hinge on
+  *expected seed/query count vs materialisation cost*, not `fact_count`
+  alone (the resolver already takes `expected_query_count_per_process`;
+  it just wasn't the primary axis).
+- **Reproducible fixture builder**: the Articles-subgraph extraction was
+  a throwaway script; promote to a checked-in fixture tool.
+
 
