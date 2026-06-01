@@ -134,21 +134,33 @@ $M$ ranges should yield consistent $b'$ estimates under
 homogeneity; the design note's §4.4 measurements at $cc \in
 \{100, 10, 5, 3\}$ are such an overlapping family.
 
-**Equivalent operational definition.** Equivalently,
+**Estimation in practice.** At fixed $B$, the maximum admissible
+$M$ is finite, so $b'$ cannot be extracted from a single
+$(B, cc)$ measurement. Instead, we run the kernel at a sequence
+of decreasing $cc$ values that admit successively more child
+hops. For two adjacent values $cc_1 > cc_2$ with
+$M_{\max}(B, cc_1) = m_1$ and $M_{\max}(B, cc_2) = m_2 > m_1$,
+under homogeneity
 $$
-b' = \lim_{cc \to 0^+}
-\left(\frac{\text{total } \#\text{paths at } (B, cc)}
-           {\text{total } \#\text{paths at } (B, cc = \infty)}\right)^{1/M_{\max}(B, cc)}
+\frac{\text{total } \#\text{paths at } (B, cc_2)}
+     {\text{total } \#\text{paths at } (B, cc_1)}
+\;\approx\;
+\frac{\sum_{M=0}^{m_2} (b')^M}{\sum_{M=0}^{m_1} (b')^M}
 $$
-where $M_{\max}(B, cc) = \lfloor B/cc \rfloor$. This makes the
-$cc \to 0^+$ regime explicit: $b'$ is the per-child-hop multiplier
-seen as we admit increasing numbers of child hops within fixed
-budget.
+so taking the geometric mean over transitions where
+$m_{k+1} - m_k = 1$ recovers $b'$ directly. For larger
+$M$ increments, the appropriate root corrects for the number
+of admitted child-hop levels.
 
-In practice (design note §4.4) we estimate $b'$ as the geometric
-mean of successive total-path-count ratios at $cc$ transitions
-$100 \to 10 \to 5 \to 3$, yielding $b' \approx 11$ on simplewiki
-topical core.
+In practice (design note §4.4), at $B = 15$ we use $cc \in
+\{100, 10, 5, 3\}$ with corresponding $M_{\max} \in \{0, 1, 3, 5\}$.
+The transition ratios are $1.05$, $122.7$, $18.7$; the
+per-child-hop growth recovers as $b' \approx \exp((\log 122.7)/2)
+\approx 11.1$ from the dominant transition (the
+$cc=100 \to 10$ ratio is essentially flat because that transition
+only admits $M = 1$ paths, which are few). The geometric mean
+across non-degenerate transitions gives $b' \approx 11$ on
+simplewiki topical core.
 
 ### 0.5 The tree-likeness index
 
@@ -163,6 +175,25 @@ $$
 i.e. the relative drift of the mean metric value as the child-step
 cost ranges from infinity (tree-search, $M = 0$ only) to
 $0^+$ (full DAG search, all $M$ admitted within budget).
+
+**Denominator choice.** We use
+$d_{\text{wPow}}(v; B, 0^+)$ — the full-DAG metric value — as the
+reference. The interpretation: tree-search is an *approximation*
+to the full-DAG value, and TLI is the relative approximation
+error of that approximation. Using $d_{\text{wPow}}(v; B, \infty)$
+as the denominator would give the inverse error; the absolute
+value in the numerator makes the index sign-agnostic
+regardless. (For the empirical drifts observed on simplewiki,
+the difference between the two normalisations is
+~0.02% × O(TLI) and immaterial.)
+
+**Absolute value.** The convergence direction is not guaranteed
+to be monotonic in $cc$ for all $(G, \mu, Q, B)$ — admitting
+more paths can either decrease or increase $d_{\text{wPow}}$
+depending on whether the new paths have above- or below-average
+$(h+1)^{-n}$ values. The absolute value handles both
+directions; empirically on simplewiki the drift is positive (the
+full-DAG value is slightly higher).
 
 In practice we estimate this with a finite contrast between two
 $cc$ values, typically $cc = 100$ (effectively tree-search at
@@ -197,10 +228,26 @@ homogeneous* if $\mathrm{supp}(Q)$ decomposes as
 $\bigsqcup_i V_i$ where each $(G|_{V_i}, Q|_{V_i}, B)$ is
 homogeneous. In this case the theorems below apply
 *piecewise* — each subgraph has its own $(D_i, b'_i,
-b_{\text{eff},i})$. This is the setting design note §4.5
-documents on Wikipedia: the global graph is piecewise
-homogeneous (topical regime + administrative regime) but not
-globally homogeneous.
+b_{\text{eff},i})$.
+
+**Important caveat.** The piecewise framing only applies when $Q$
+is restricted to a single component $V_i$ at calibration time
+(equivalently, the calibration sees only the subgraph
+$G|_{V_i}$). If $Q$ mixes nodes from multiple components — i.e.
+the query distribution genuinely spans different statistical
+regimes — Lemma 2.1's factorisation fails (different parts of
+$\mathrm{supp}(Q)$ produce different $(D, b')$ values), and
+neither Theorem 2.3 nor Corollary 2.3.1 applies. The
+recommended workflow is to *constrain* $Q$ to a single
+homogeneous component via the topical-root LMDB construction
+(design note §7.1), not to apply theorems piecewise to a query
+that crosses components.
+
+This is the setting design note §4.5 documents on Wikipedia: the
+global graph is piecewise homogeneous (topical regime +
+administrative regime) but not globally homogeneous, and the
+production recipe constrains $Q$ to the topical component
+specifically because cross-component queries break the theory.
 
 ## 1. Background: established results we build on
 
@@ -316,19 +363,40 @@ ultra-small-world consequences from this fit.
 distribution $P(k)$, the expected degree of a node reached by
 following a random edge is
 $$
-\frac{\mathbb{E}[k^2]}{\mathbb{E}[k]} \ge \mathbb{E}[k]
+\tilde{d} := \frac{\mathbb{E}[k^2]}{\mathbb{E}[k]} \ge \mathbb{E}[k]
 $$
-with equality iff degrees are constant.
+with equality iff degrees are constant. The quantity $\tilde{d}$
+is the *size-biased mean* or **Chung-Lu effective degree** (cf.
+§1.1).
 
 Source: S. L. Feld, "Why your friends have more friends than you
 do", *American Journal of Sociology* 96(6): 1464–1477 (1991).
 
-**Relevance to TLI.** The first-moment correction in our
-definition of $b_{\text{eff}}$ versus the raw second-moment ratio
-$b$ is precisely this size-biased correction applied separately
-to the child and parent edge populations. Design note §4.4
-labels this the "degree-bias correction"; this lemma is the
-underlying reason it has the form it does.
+**Relevance to TLI: $b_{\text{eff}}$ is the ratio of Chung-Lu
+effective degrees.** Applying the size-biased mean separately to
+the child and parent edge populations gives
+$$
+\tilde{d}_c = \frac{\mathbb{E}[d_c^2]}{\mathbb{E}[d_c]}, \qquad
+\tilde{d}_p = \frac{\mathbb{E}[d_p^2]}{\mathbb{E}[d_p]}
+$$
+and our calibrated branching asymmetry is exactly the ratio
+$$
+b_{\text{eff}}
+= \frac{\mathbb{E}[d_c^2]/\mathbb{E}[d_c]}{\mathbb{E}[d_p^2]/\mathbb{E}[d_p]}
+= \frac{\tilde{d}_c}{\tilde{d}_p}
+$$
+i.e. the Chung-Lu effective degree in the child direction divided
+by the Chung-Lu effective degree in the parent direction. **Low
+TLI thus has a clean interpretation: the child-direction
+Chung-Lu effective degree dominates the parent-direction one by
+a factor large enough that the convergence inequality
+$b_{\text{eff}} \cdot D > b'$ holds.**
+
+The raw second-moment ratio $b = \mathbb{E}[d_c^2]/\mathbb{E}[d_p^2]$
+omits the first-moment factors and is only approximately equal
+to $b_{\text{eff}}$ when $\mathbb{E}[d_c] \approx \mathbb{E}[d_p]$;
+on simplewiki the two differ by the factor 0.436 (design note
+§4.4), the same first-moment correction.
 
 ### 1.6 Tree pair distance
 
@@ -463,15 +531,26 @@ Multiplying:
 
 For the numerator,
 $$S_M \approx \sum_N r^M \cdot (N+M+1)^{-n} = r^M \cdot L_M$$
-where $L_M = \sum_{N \in [\text{admissible range}]} (N+M+1)^{-n}$.
-Since the length factor $(N+M+1)^{-n}$ decreases in both $N$
-and $M$, $L_M \le L_0$ for all $M \ge 0$, so
-$S_M / S_0 \le r^M$ and the geometric sum gives the bound.
+where $L_M := \sum_{N \in [d_{\min},\ B - M \cdot cc]} (N+M+1)^{-n}$.
+
+**Claim: $L_M \le L_0$ for all $M \ge 0$.** For each $N$ in the
+admissible range at level $M$ (which is a subset of the level-0
+range $[d_{\min}, B]$ truncated from the top by $M \cdot cc$),
+$(N+M+1)^{-n} \le (N+1)^{-n}$ pointwise since $x \mapsto x^{-n}$
+is decreasing. So $L_M$ is term-by-term dominated and has fewer
+or equal terms compared to $L_0$, giving $L_M \le L_0$. Hence
+$S_M / S_0 \le r^M$ and the geometric sum gives
+$\sum_{M \ge 1} S_M / S_0 \le r/(1-r)$.
 
 For the denominator,
-$$W_M \approx \sum_N r^M = r^M \cdot |\text{admissible } N \text{ range at level } M|$$
-The range size shrinks weakly in $M$ (the budget loses capacity
-$cc$ per child hop), so $W_M / W_0 \le r^M$ similarly. $\square$
+$$W_M \approx \sum_N r^M = r^M \cdot R_M$$
+where $R_M$ is the size of the admissible $N$-range at level $M$.
+
+**Claim: $R_M \le R_0$ for all $M \ge 0$.** The level-$M$ range
+$[d_{\min}, B - M \cdot cc]$ is a (possibly empty) subset of the
+level-0 range $[d_{\min}, B]$ obtained by truncating from the
+top, so $R_M \le R_0$. Hence $W_M / W_0 \le r^M$, hence
+$\sum_{M \ge 1} W_M / W_0 \le r/(1-r)$. $\square$
 
 **Caveats and tightness.**
 
@@ -578,26 +657,42 @@ test.
 This is the "decoupling geometry from metric" claim of design
 note §5.6.2 stated as a falsifiable conjecture.
 
-### 3.3 Sharpening of the bound: $\psi(r) \sim r^2 / (1 - r)$
+### 3.3 Sharpening of the bound (refinement of Conjecture 3.1)
+
+This conjecture *refines* Conjecture 3.1 by proposing a specific
+form for the function $\psi$ — it is not an independent claim
+but a guess at the leading-order asymptotic.
 
 **Conjecture 3.3.** The function $\psi$ in Conjecture 3.1
-satisfies $\psi(r) \le C \cdot r^2 / (1 - r)$ for some constant
-$C$ depending only on $n$ (the power-mean exponent) and
-$\mathrm{depth}_{\min}$ (the minimum distance from the support
-of $Q$ to the root).
+satisfies $\psi(r) \le C(n, B, d_{\min}) \cdot r^{\alpha} / (1 - r)$
+for some constant $C$ depending on $n$, the budget $B$, and the
+minimum distance $d_{\min}$ from the support of $Q$ to the
+root, with exponent $\alpha \ge 1$.
 
 **Motivation.** Theorem 2.3 bounds the *individual*
-contribution-sum drifts (numerator and denominator) by $r/(1-r)$.
-But $d_{\text{wPow}}$ is the ratio of these sums; if both drift
-by the same amount, the ratio drift is second-order in $r$. The
-empirical gap (theorem bound $r/(1-r) \approx 18.6\%$ vs
-empirical TLI ~$0.02\%$, a factor of ~1000) is consistent with
-this conjectured tighter scaling.
+contribution-sum drifts by $r/(1-r)$, but $d_{\text{wPow}}$ is
+the ratio of these sums and the drifts partially cancel. The
+question is *how much* they cancel — i.e. what $\alpha$ is.
 
-**Status.** Open. Even the constant $C$ is unknown; a careful
-calculation distinguishing the numerator and denominator
-contribution sums via their different length-factor dependences
-should resolve it.
+**Status.** Open in two directions:
+
+1. **First-order analysis at simplewiki parameters
+   ($B = 15, cc = 5, n = 2$) does NOT give clean $\alpha = 2$
+   scaling.** See §5.1 for the numerical check: $L_M / L_0$ and
+   $R_M / R_0$ differ by ~30–60% at level $M = 1$, so the $r^1$
+   coefficient does not cancel and the leading-order TLI
+   prediction is ~2.1%, not ~$r^2 \approx 0.025\%$.
+2. **The empirical TLI is still ~100× smaller than the first-
+   order prediction** (0.02% vs 2.1%). The source of this further
+   gap is unclear — candidates include budget-truncated $M$
+   ranges, higher-order Taylor terms with their own cancellation,
+   or measurement variance in the aggregate over only 20 seed
+   pairs.
+
+A definitive answer requires either a careful expansion to
+higher order in $r$, or empirical Monte Carlo at varying $r$ to
+fit $\alpha$ directly. The conjecture as stated is *consistent
+with* but not *derived from* the empirical observations.
 
 ### 3.4 Topical scoping is sufficient for homogeneity on Wikipedia
 
@@ -661,6 +756,17 @@ $b_{\text{eff}}$ to roughly $1/3$ of its honest value, which the
 robustness band absorbs but is not principled. See design note
 §5.4 for the discussion.
 
+**Directionality clarification.** A stronger statement than
+"unnecessary": $\rho < 1$ deflates $b_{\text{eff}}$, which
+*decreases* $\mathrm{BranchRatio}$, *increases* the convergence
+ratio $r = b'/(\mathrm{BranchRatio} \cdot D)$, and *loosens* the
+Theorem 2.3 bound. Dropping the routing correction therefore
+gives a *strictly tighter* theoretical bound on TLI, not just a
+simpler formula. The conjecture is more precisely "the routing
+correction was actively miscalibrating in the wrong direction,
+and dropping it gives a better-justified bound while leaving
+empirical TLI unchanged."
+
 **Status.** *Tentative.* The drift probe under the alternate
 composition has not been re-run on topical calibration. Task #14
 in the design note is to settle this empirically by measuring
@@ -670,9 +776,11 @@ TLI under both compositions and verifying both remain below the
 **Production consequence.** If confirmed, the data-prep recipe
 (design note §7.1) and calibration recipe (§7.2) become
 unconditionally simpler: drop the routing correction term, use
-$b_{\text{eff}}$ directly. If refuted, the routing correction
-stays but its theoretical role becomes "calibration-error
-band-aid" rather than "principled factor."
+$b_{\text{eff}}$ directly. The theoretical bound becomes tighter
+in the bargain. If refuted (i.e. dropping routing correction
+substantially increases TLI), the routing correction stays but
+its theoretical role becomes "calibration-error band-aid for an
+unmodelled effect" rather than "principled factor."
 
 ## 4. Empirical status
 
@@ -710,13 +818,21 @@ original design note pre-correction had this as $b_{\text{eff}}
 relationship between these calibrations is documented in design
 note §2.0's notation table.
 
-### 4.3 Conjecture 3.3 ($\psi \sim r^2/(1-r)$ tightening)
+### 4.3 Conjecture 3.3 ($\psi$ sharpening)
 
-Pending: a careful theoretical analysis distinguishing the
-numerator and denominator contribution sums via their different
-length-factor dependences. The empirical 1000× gap between the
-contribution-sum bound and the actual TLI is consistent with the
-conjectured $r^2$ scaling.
+**Mixed evidence.** First-order Taylor analysis at simplewiki
+parameters (§5.1) reduces the bound from the $r/(1-r) \approx
+18.6\%$ contribution-sum estimate to ~2.1% (after partial num/
+denom cancellation), but does *not* reach the empirical 0.02%.
+A clean $r^2/(1-r)$ scaling would predict ~0.025%, agreeing
+within 1.5× — but this is post-hoc fitting, not derivation.
+
+Until a careful expansion to higher order in $r$ resolves the
+exponent $\alpha$, Conjecture 3.3 is consistent with the data
+but not derived from theory. Pending: either an analytic
+expansion of $d_{\text{wPow}}(B, cc)$ to second order in $r$, or
+Monte Carlo evaluation at varying $r$ to fit $\alpha$
+empirically.
 
 ### 4.4 Conjecture 3.4 (topical homogeneity)
 
@@ -753,27 +869,56 @@ i.e. a bound on *individual* contribution-sum drifts. On
 simplewiki this gives $r/(1 - r) \approx 0.186$, while
 empirically TLI is ~0.02% — a factor of ~1000 gap.
 
-The gap arises because $d_{\text{wPow}} = (N/W)^{-1/n}$ is a
-*ratio*. To first order in $r$,
+Since $d_{\text{wPow}} = (N/W)^{-1/n}$ is a *ratio*, the first-
+order TLI estimate is
 $$
-\frac{\mathrm{TLI}}{1} \approx \frac{1}{n}
+\mathrm{TLI} \approx \frac{1}{n}
 \bigl|\Delta\log N - \Delta\log W\bigr|
 $$
-where $\Delta\log N \approx \sum r^k L_k / L_0$ and
-$\Delta\log W \approx \sum r^k R_k / R_0$ with $L_M$ the
-length-factor sum at level $M$ and $R_M$ the admissible-$N$
-range at level $M$. Both $\Delta\log N$ and $\Delta\log W$ are
-bounded by $r/(1-r)$ but their *difference* is much smaller —
-both are dominated by the same $r/(1-r)$ leading term, and the
-correction depends on the *ratio* $L_M/R_M$ vs $L_0/R_0$.
+where $\Delta\log N \approx \sum_{k \ge 1} r^k L_k / L_0$ and
+$\Delta\log W \approx \sum_{k \ge 1} r^k R_k / R_0$.
 
-**Open question (Conjecture 3.3).** Is $\psi(r) = O(r^2/(1-r))$
-the correct scaling, with the constant depending on $n$,
-$d_{\min}$, and the budget $B$? A careful Taylor expansion of
-the ratio $N/W$ in $r$ should resolve this. The empirical 1000×
-gap is consistent with $r^2$ scaling: $r^2/(1-r) \approx 0.029$
-for $r = 0.157$, only ~1.5× off from the empirical 0.02% (and
-closer once the constant $C$ is known).
+**Numerical check at simplewiki parameters does not support
+clean $r^2$ scaling.** For $B = 15$, $cc = 5$, $n = 2$,
+$d_{\min} = 4$:
+
+| Level $M$ | $L_M$ | $L_M / L_0$ | $R_M$ | $R_M / R_0$ | $L_M/L_0 - R_M/R_0$ |
+|---|---|---|---|---|---|
+| 0 | $\approx 0.149$ | 1.000 | 12 | 1.000 | 0 |
+| 1 | $\approx 0.140$ | 0.940 | 8 | 0.667 | 0.273 |
+| 2 | $\approx 0.122$ | 0.819 | 3 | 0.250 | 0.569 |
+
+The $r^1$ coefficient does *not* cancel — the difference at
+$M=1$ alone is $0.273 r$, giving a leading-order contribution of
+$\approx 0.5 \cdot 0.273 \cdot 0.157 \approx 0.021$, i.e. ~2.1%.
+This is much smaller than the contribution-sum bound (18.6%)
+but still ~100× larger than the empirical TLI of 0.02%.
+
+**Status: Conjecture 3.3's $\psi \sim r^2/(1-r)$ scaling is not
+yet supported.** A naive first-order Taylor expansion in $r$
+gives a ~2.1% prediction, not $r^2 \approx 0.025\%$. The
+remaining ~100× gap between first-order theory and empirical
+TLI likely has a different source — possibilities:
+
+- **Budget-constrained M range.** At $B = 15, cc = 5$ only
+  $M \in \{0, 1, 2, 3\}$ are admissible, and $M \in \{2, 3\}$
+  have very restricted $N$-ranges (3 values and 1 value
+  respectively). The effective sum is short and the higher-$M$
+  contributions are heavily truncated.
+- **Higher-order cancellation.** The Taylor expansion at $r=0$
+  may have larger higher-order terms that further reduce TLI;
+  computing the next term explicitly would resolve this.
+- **The simplewiki measurement itself.** TLI = 0.02% is the
+  *aggregate* over 20 seed pairs; per-pair drifts of 0.007%
+  worst-case (design note §4.2) are still 50× smaller than 2.1%.
+
+**Open question.** What is the actual scaling of $\psi(r)$ as a
+function of $r$ and the budget $B$? An honest answer requires
+either (i) a careful Taylor expansion accounting for the budget-
+truncated $L_M, R_M$ sums, or (ii) Monte Carlo evaluation at
+varying $r$ to fit the exponent empirically. Conjecture 3.3 as
+stated is *consistent with* the empirical gap but not derived
+from it.
 
 ### 5.2 Quantitative homogeneity ↔ calibration error
 
