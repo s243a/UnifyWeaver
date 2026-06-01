@@ -1193,14 +1193,20 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
         wam_inline_not_enabled
     ->  compile_goals([((NotGoal, !, fail) ; true) | Rest],
                       V0, HasEnv, Vf, Code)
-    % M71: forall(Cond, Action) inlines to \+ (Cond, \+ Action) --
-    % the standard rewrite. Falls into the \+ rewrite above for both
-    % the outer and inner negations.
+    % M71: forall(Cond, Action) inlines as
+    %   ((Cond, (Action -> fail ; true)) -> fail ; true)
+    % i.e., \+ (Cond, \+ Action) using soft-cut (-> form) for BOTH
+    % negations. The cut-based ((G, !, fail) ; true) rewrite that \+
+    % uses by default doesn''t nest correctly here: the inner ! and
+    % outer ! both target the clause''s single cut_barrier, so the
+    % inner cut wipes the outer disjunction''s CP and forall always
+    % fails. Soft-cut (-> ; ) gives proper local-scope cuts.
     ;   nonvar(Goal),
-        Goal = forall(ForallCond, ForallAction),
-        wam_inline_not_enabled
-    ->  compile_goals([\+ (ForallCond, \+ ForallAction) | Rest],
-                      V0, HasEnv, Vf, Code)
+        Goal = forall(ForallCond, ForallAction)
+    ->  compile_goals(
+            [((ForallCond, (ForallAction -> fail ; true)) -> fail ; true)
+             | Rest],
+            V0, HasEnv, Vf, Code)
     % Bare if-then: (Cond -> Then) without an Else clause. Reuses the
     % if-then-else compiler with Else=fail — semantically identical
     % for the success path; Cond-failure just falls through to fail
