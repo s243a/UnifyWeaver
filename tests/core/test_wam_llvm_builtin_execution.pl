@@ -2452,6 +2452,45 @@ test_cmp_lists_diff(_, R) :-
     char_code(O, C),
     R is C.   % '<'
 
+% M67 verification: literal-list tests with proper R-is-N pattern.
+
+:- dynamic test_lit_3_ints/2.
+test_lit_3_ints(_, R) :- L = [1, 2, 3], length(L, N), R is N.   % 3
+
+:- dynamic test_lit_3_compounds_arity1/2.
+test_lit_3_compounds_arity1(_, R) :- L = [foo(1), foo(2), foo(3)], length(L, N), R is N.   % 3
+
+:- dynamic test_lit_pair_int/2.
+test_lit_pair_int(_, R) :- L = [a-1, b-2, c-3], length(L, N), R is N.   % 3
+
+% M67: re-add the deferred M65 compound-key/element tests now that
+% we know the test framework reads R via reg 0 (force via R is N).
+
+:- dynamic test_ks_compound_keys_length/2.
+test_ks_compound_keys_length(_, R) :-
+    keysort([foo(3)-c, foo(1)-a, foo(2)-b], L),
+    length(L, N), R is N.   % 3
+
+:- dynamic test_ks_compound_keys_first/2.
+test_ks_compound_keys_first(_, R) :-
+    keysort([foo(3)-c, foo(1)-a, foo(2)-b], [_-V|_]),
+    char_code(V, C), R is C.   % 97 ('a')
+
+:- dynamic test_sort_compound_elements/2.
+test_sort_compound_elements(_, R) :-
+    sort([foo(3), foo(1), foo(2)], [F|_]),
+    F = foo(N), R is N.   % 1
+
+:- dynamic test_sort_compound_dedup/2.
+test_sort_compound_dedup(_, R) :-
+    sort([foo(2), foo(1), foo(3), foo(1)], L),
+    length(L, N), R is N.   % 3
+
+:- dynamic test_sort_lists/2.
+test_sort_lists(_, R) :-
+    sort([[3, 4], [1, 2], [2, 3]], [F|_]),
+    F = [H|_], R is H.   % 1
+
 % M66: tab/1, put_char/1, put_code/1 -- small I/O builtins.
 
 :- dynamic test_tab_3/2.
@@ -3955,6 +3994,22 @@ test_all :-
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
        format('--- M66 tab/1 + put_char/1 + put_code/1 ---~n'),
+       run_test_r0('[1,2,3] length via R is N -> 3',
+                   test_lit_3_ints, 0, 3),
+       run_test_r0('[foo(1), foo(2), foo(3)] length via R is N -> 3',
+                   test_lit_3_compounds_arity1, 0, 3),
+       run_test_r0('[a-1, b-2, c-3] length via R is N -> 3',
+                   test_lit_pair_int, 0, 3),
+       run_test_r0('keysort compound keys length -> 3',
+                   test_ks_compound_keys_length, 0, 3),
+       run_test_r0('keysort compound keys first value -> 97',
+                   test_ks_compound_keys_first, 0, 97),
+       run_test_r0('sort compound elements first arg -> 1',
+                   test_sort_compound_elements, 0, 1),
+       run_test_r0('sort compound dedup length -> 3',
+                   test_sort_compound_dedup, 0, 3),
+       run_test_r0('sort lists first sublist first elem -> 1',
+                   test_sort_lists, 0, 1),
        run_test_r0('tab(3) -> 1',
                    test_tab_3, 0, 1),
        run_test_r0('tab(0) -> 1',
