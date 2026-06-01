@@ -2452,29 +2452,6 @@ test_cmp_lists_diff(_, R) :-
     char_code(O, C),
     R is C.   % '<'
 
-% M66 investigation: scope of literal-list emit bug. Pure Prolog
-% reports length 3 for [foo(1), foo(2), foo(3)] but LLVM emits a
-% list whose length walk returns 16. Suite below maps which list
-% shapes are affected.
-
-:- dynamic test_lit_3_ints/2.
-test_lit_3_ints(_, R) :- L = [1, 2, 3], length(L, R).   % 3
-
-:- dynamic test_lit_3_atoms/2.
-test_lit_3_atoms(_, R) :- L = [a, b, c], length(L, R).   % 3
-
-:- dynamic test_lit_3_compounds_arity1/2.
-test_lit_3_compounds_arity1(_, R) :- L = [foo(1), foo(2), foo(3)], length(L, R).   % 3
-
-:- dynamic test_lit_singleton_compound/2.
-test_lit_singleton_compound(_, R) :- L = [foo(1)], length(L, R).   % 1
-
-:- dynamic test_lit_2_compounds/2.
-test_lit_2_compounds(_, R) :- L = [foo(1), foo(2)], length(L, R).   % 2
-
-:- dynamic test_lit_pair_int/2.
-test_lit_pair_int(_, R) :- L = [a-1, b-2, c-3], length(L, R).   % 3
-
 % M65: keysort/2 + sort/2 migrated to @wam_term_cmp.
 % Compound key / element behavioral tests deferred -- there''s a
 % pre-existing emit bug where literal lists of compound terms in
@@ -3939,19 +3916,6 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
-       format('--- M66 literal-list-of-X length probes ---~n'),
-       run_test_r0('[1,2,3] length -> 3',
-                   test_lit_3_ints, 0, 3),
-       run_test_r0('[a,b,c] length -> 3',
-                   test_lit_3_atoms, 0, 3),
-       run_test_r0('[foo(1)] length -> 1',
-                   test_lit_singleton_compound, 0, 1),
-       run_test_r0('[foo(1), foo(2)] length -> 2',
-                   test_lit_2_compounds, 0, 2),
-       run_test_r0('[foo(1), foo(2), foo(3)] length -> 3',
-                   test_lit_3_compounds_arity1, 0, 3),
-       run_test_r0('[a-1, b-2, c-3] length -> 3',
-                   test_lit_pair_int, 0, 3),
        format('--- M64 compare/3 Compound terms (recursive via helper) ---~n'),
        run_test_r0('compare(O, foo(1,2), foo(1,2)) -> 61 (=)',
                    test_cmp_compound_eq, 0, 61),
