@@ -4,18 +4,21 @@ Status date: 2026-05-31
 
 Latest branch verification:
 
-- `investigate/wam-c-larger-artifact-layouts` based on `main` at `982c82f0`
-  (`Merge pull request #2652 from s243a/feat/wam-c-native-kernel-float-output`)
+- `investigate/wam-c-child-csr-scale-sweep` based on `main` at `05de16c8`
+  (`Merge pull request #2662 from s243a/investigate/wam-c-larger-artifact-layouts`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py tests/test_benchmark_target_matrix.py`
 - `python3 tests/test_benchmark_target_matrix.py`
+- `python3 -m py_compile examples/benchmark/benchmark_wam_c_child_csr_scale_sweep.py tests/test_wam_c_child_csr_scale_sweep.py`
+- `python3 tests/test_wam_c_child_csr_scale_sweep.py`
 - `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --target-sets c-wam-child-search-layouts --repetitions 1 --baseline-target c-wam-accumulated-child-scan --run-timeout-seconds 180`
 - `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 10x --target-sets c-wam-child-csr-layouts --compile-only-targets c-wam-accumulated-child-csr,c-wam-accumulated-child-csr-drop,c-wam-accumulated-child-csr-lmdb-offset --baseline-target c-wam-accumulated-child-csr`
+- `python3 examples/benchmark/benchmark_wam_c_child_csr_scale_sweep.py`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-larger-artifact-layouts`
+- `investigate/wam-c-child-csr-scale-sweep`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -203,6 +206,8 @@ Implemented so far:
   `c-wam-child-csr-layouts` for larger CSR-only comparisons.
 - Compile-only matrix rows now report WAM-C artifact byte sizes for TSV, LMDB,
   CSR index/values, and LMDB-offset stores.
+- Added `benchmark_wam_c_child_csr_scale_sweep.py` as the routine compile-only
+  scale-sweep wrapper for CSR layout artifacts.
 - `dev` layout smoke shows output parity across scan, sorted-array CSR,
   buffered-pread-drop CSR, and LMDB-offset CSR; runtimes were about
   `0.130-0.145s` for the four variants.
@@ -210,6 +215,10 @@ Implemented so far:
   `0.735-0.811s`; the generated parent TSV is `167,698` bytes, the reverse
   CSR index is `22,528` bytes, reverse CSR values are `15,728` bytes, and the
   LMDB-offset store adds `77,824` bytes.
+- The default compile-only scale sweep now covers `10x,1k,5k,10k` and finishes
+  locally in roughly half a minute. At `10k`, parent TSV is `1,266,946` bytes,
+  reverse CSR index is `118,672` bytes, reverse CSR values are `100,908` bytes,
+  and the LMDB-offset store adds `327,680` bytes.
 
 Open measurement:
 
@@ -218,6 +227,8 @@ Open measurement:
 - Use compile-only rows for routine larger-scale artifact-size comparisons,
   then schedule runtime rows separately for scales where child-search query
   execution is acceptable.
+- `50k_cats` and `100k_cats` are explicit opt-in scales for the wrapper because
+  generated-project build time is no longer a routine local gate there.
 - Parent-only TSV and LMDB targets remain the priority memory structures for
   current effective-distance workloads. Reverse CSR targets are now available
   for future child-path variants and artifact-layout measurements.
@@ -411,9 +422,8 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Use `c-wam-child-search-layouts` at `dev` as the fast correctness gate and
-`c-wam-child-csr-layouts` in compile-only mode for routine larger-scale
-artifact-size comparisons. Run full child-search runtime rows only in explicit
-longer benchmark windows, and do not promote in-memory compressed CSR work
-until those measurements show that the current file-backed CSR layout is the
-limiting factor.
+Use `benchmark_wam_c_child_csr_scale_sweep.py` for routine compile-only
+artifact-size comparisons through `10k`. Run `50k_cats`, `100k_cats`, and full
+child-search runtime rows only in explicit longer benchmark windows, and do not
+promote in-memory compressed CSR work until those measurements show that the
+current file-backed CSR layout is the limiting factor.
