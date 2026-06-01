@@ -227,6 +227,7 @@ wam_recognise_instruction(["allocate"],                allocate).
 wam_recognise_instruction(["deallocate"],              deallocate).
 wam_recognise_instruction(["builtin_call", Op, Ar],    builtin_call(Op, Ar)).
 wam_recognise_instruction(["call_foreign", Pred, Ar],  call_foreign(Pred, Ar)).
+wam_recognise_instruction(["arg", N, Reg, OutReg],     arg(N, Reg, OutReg)).
 wam_recognise_instruction(["try_me_else", L],          try_me_else(L)).
 wam_recognise_instruction(["retry_me_else", L],        retry_me_else(L)).
 wam_recognise_instruction(["trust_me"],                trust_me).
