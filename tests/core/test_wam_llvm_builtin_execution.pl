@@ -2452,6 +2452,15 @@ test_cmp_lists_diff(_, R) :-
     char_code(O, C),
     R is C.   % '<'
 
+% M65: keysort/2 + sort/2 migrated to @wam_term_cmp.
+% Compound key / element behavioral tests deferred -- there''s a
+% pre-existing emit bug where literal lists of compound terms in
+% the body construct extra cells; verified by pure-Prolog returning
+% length 3 but LLVM returning 16 even before keysort enters the
+% picture. The refactor itself is exercised by all the pre-existing
+% Integer / Float / Atom keysort and sort tests, which continue to
+% pass.
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer

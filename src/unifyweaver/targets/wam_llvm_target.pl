@@ -3840,62 +3840,12 @@ ks.si_cmp:
   %ks.si_pargs = load %Value*, %Value** %ks.si_pargs_slot
   %ks.si_pkey_ptr = getelementptr %Value, %Value* %ks.si_pargs, i32 0
   %ks.si_pkey_raw = load %Value, %Value* %ks.si_pkey_ptr
-  %ks.si_pkey = call %Value @wam_deref_value(%WamState* %vm, %Value %ks.si_pkey_raw)
-  ; Inline compare(pkey, key) -- returns true if pkey > key.
-  %ks.si_pt = extractvalue %Value %ks.si_pkey, 0
-  %ks.si_kt = extractvalue %Value %ks.so_key, 0
-  %ks.si_pcat_atom = icmp eq i32 %ks.si_pt, 0
-  %ks.si_pcat_cmp = icmp eq i32 %ks.si_pt, 3
-  %ks.si_pcat_mid = select i1 %ks.si_pcat_cmp, i32 2, i32 0
-  %ks.si_pcat = select i1 %ks.si_pcat_atom, i32 1, i32 %ks.si_pcat_mid
-  %ks.si_kcat_atom = icmp eq i32 %ks.si_kt, 0
-  %ks.si_kcat_cmp = icmp eq i32 %ks.si_kt, 3
-  %ks.si_kcat_mid = select i1 %ks.si_kcat_cmp, i32 2, i32 0
-  %ks.si_kcat = select i1 %ks.si_kcat_atom, i32 1, i32 %ks.si_kcat_mid
-  %ks.si_cat_eq = icmp eq i32 %ks.si_pcat, %ks.si_kcat
-  br i1 %ks.si_cat_eq, label %ks.si_same_cat, label %ks.si_diff_cat
-ks.si_diff_cat:
-  ; pkey > key iff pcat > kcat.
-  %ks.si_diff_gt = icmp sgt i32 %ks.si_pcat, %ks.si_kcat
-  br i1 %ks.si_diff_gt, label %ks.si_shift, label %ks.si_done
-ks.si_same_cat:
-  %ks.si_cat_is_atom = icmp eq i32 %ks.si_pcat, 1
-  br i1 %ks.si_cat_is_atom, label %ks.si_atom_cmp, label %ks.si_num_or_cmp
-ks.si_num_or_cmp:
-  %ks.si_cat_is_cmp = icmp eq i32 %ks.si_pcat, 2
-  ; Compound keys: treat as equal (don''t shift, stable).
-  br i1 %ks.si_cat_is_cmp, label %ks.si_done, label %ks.si_num_cmp
-ks.si_atom_cmp:
-  %ks.si_p_aid = extractvalue %Value %ks.si_pkey, 1
-  %ks.si_k_aid = extractvalue %Value %ks.so_key, 1
-  %ks.si_p_str = call i8* @wam_atom_to_string(i64 %ks.si_p_aid)
-  %ks.si_k_str = call i8* @wam_atom_to_string(i64 %ks.si_k_aid)
-  %ks.si_strcmp = call i32 @strcmp(i8* %ks.si_p_str, i8* %ks.si_k_str)
-  %ks.si_atom_gt = icmp sgt i32 %ks.si_strcmp, 0
-  br i1 %ks.si_atom_gt, label %ks.si_shift, label %ks.si_done
-ks.si_num_cmp:
-  %ks.si_p_int = icmp eq i32 %ks.si_pt, 1
-  %ks.si_k_int = icmp eq i32 %ks.si_kt, 1
-  %ks.si_both_int = and i1 %ks.si_p_int, %ks.si_k_int
-  br i1 %ks.si_both_int, label %ks.si_int_cmp, label %ks.si_flt_cmp
-ks.si_int_cmp:
-  %ks.si_p_iv = extractvalue %Value %ks.si_pkey, 1
-  %ks.si_k_iv = extractvalue %Value %ks.so_key, 1
-  %ks.si_int_gt = icmp sgt i64 %ks.si_p_iv, %ks.si_k_iv
-  br i1 %ks.si_int_gt, label %ks.si_shift, label %ks.si_done
-ks.si_flt_cmp:
-  %ks.si_p_bits = extractvalue %Value %ks.si_pkey, 1
-  %ks.si_k_bits = extractvalue %Value %ks.so_key, 1
-  %ks.si_p_is_flt = icmp eq i32 %ks.si_pt, 2
-  %ks.si_k_is_flt = icmp eq i32 %ks.si_kt, 2
-  %ks.si_p_dflt = bitcast i64 %ks.si_p_bits to double
-  %ks.si_p_dint = sitofp i64 %ks.si_p_bits to double
-  %ks.si_p_d = select i1 %ks.si_p_is_flt, double %ks.si_p_dflt, double %ks.si_p_dint
-  %ks.si_k_dflt = bitcast i64 %ks.si_k_bits to double
-  %ks.si_k_dint = sitofp i64 %ks.si_k_bits to double
-  %ks.si_k_d = select i1 %ks.si_k_is_flt, double %ks.si_k_dflt, double %ks.si_k_dint
-  %ks.si_flt_gt = fcmp ogt double %ks.si_p_d, %ks.si_k_d
-  br i1 %ks.si_flt_gt, label %ks.si_shift, label %ks.si_done
+  ; M65: delegate to @wam_term_cmp -- handles all categories (Atom /
+  ; Int / Float / Compound) with proper recursion through compound
+  ; args. Shift iff pkey > key (strict, so equal-key dupes stay stable).
+  %ks.si_r = call i32 @wam_term_cmp(%WamState* %vm, %Value %ks.si_pkey_raw, %Value %ks.so_key)
+  %ks.si_pkey_gt = icmp sgt i32 %ks.si_r, 0
+  br i1 %ks.si_pkey_gt, label %ks.si_shift, label %ks.si_done
 ks.si_shift:
   ; Move arr[j-1] up into arr[j], then loop.
   %ks.si_shift_dst = getelementptr %Value, %Value* %ks.arr, i32 %ks.si_j
@@ -4021,60 +3971,11 @@ srt.si_loop:
 srt.si_cmp:
   %srt.si_prev_slot = getelementptr %Value, %Value* %srt.arr, i32 %srt.si_j_dec
   %srt.si_prev = load %Value, %Value* %srt.si_prev_slot
-  ; Inline compare: prev > key ?  (same cat map / atom strcmp /
-  ; int icmp / float fcmp as M59 / keysort).
-  %srt.si_pt = extractvalue %Value %srt.si_prev, 0
-  %srt.si_kt = extractvalue %Value %srt.so_key, 0
-  %srt.si_pcat_atom = icmp eq i32 %srt.si_pt, 0
-  %srt.si_pcat_cmp = icmp eq i32 %srt.si_pt, 3
-  %srt.si_pcat_mid = select i1 %srt.si_pcat_cmp, i32 2, i32 0
-  %srt.si_pcat = select i1 %srt.si_pcat_atom, i32 1, i32 %srt.si_pcat_mid
-  %srt.si_kcat_atom = icmp eq i32 %srt.si_kt, 0
-  %srt.si_kcat_cmp = icmp eq i32 %srt.si_kt, 3
-  %srt.si_kcat_mid = select i1 %srt.si_kcat_cmp, i32 2, i32 0
-  %srt.si_kcat = select i1 %srt.si_kcat_atom, i32 1, i32 %srt.si_kcat_mid
-  %srt.si_cat_eq = icmp eq i32 %srt.si_pcat, %srt.si_kcat
-  br i1 %srt.si_cat_eq, label %srt.si_same_cat, label %srt.si_diff_cat
-srt.si_diff_cat:
-  %srt.si_diff_gt = icmp sgt i32 %srt.si_pcat, %srt.si_kcat
-  br i1 %srt.si_diff_gt, label %srt.si_shift, label %srt.si_done
-srt.si_same_cat:
-  %srt.si_cat_is_atom = icmp eq i32 %srt.si_pcat, 1
-  br i1 %srt.si_cat_is_atom, label %srt.si_atom_cmp, label %srt.si_num_or_cmp
-srt.si_num_or_cmp:
-  %srt.si_cat_is_cmp = icmp eq i32 %srt.si_pcat, 2
-  br i1 %srt.si_cat_is_cmp, label %srt.si_done, label %srt.si_num_cmp
-srt.si_atom_cmp:
-  %srt.si_p_aid = extractvalue %Value %srt.si_prev, 1
-  %srt.si_k_aid = extractvalue %Value %srt.so_key, 1
-  %srt.si_p_str = call i8* @wam_atom_to_string(i64 %srt.si_p_aid)
-  %srt.si_k_str = call i8* @wam_atom_to_string(i64 %srt.si_k_aid)
-  %srt.si_strcmp = call i32 @strcmp(i8* %srt.si_p_str, i8* %srt.si_k_str)
-  %srt.si_atom_gt = icmp sgt i32 %srt.si_strcmp, 0
-  br i1 %srt.si_atom_gt, label %srt.si_shift, label %srt.si_done
-srt.si_num_cmp:
-  %srt.si_p_int = icmp eq i32 %srt.si_pt, 1
-  %srt.si_k_int = icmp eq i32 %srt.si_kt, 1
-  %srt.si_both_int = and i1 %srt.si_p_int, %srt.si_k_int
-  br i1 %srt.si_both_int, label %srt.si_int_cmp, label %srt.si_flt_cmp
-srt.si_int_cmp:
-  %srt.si_p_iv = extractvalue %Value %srt.si_prev, 1
-  %srt.si_k_iv = extractvalue %Value %srt.so_key, 1
-  %srt.si_int_gt = icmp sgt i64 %srt.si_p_iv, %srt.si_k_iv
-  br i1 %srt.si_int_gt, label %srt.si_shift, label %srt.si_done
-srt.si_flt_cmp:
-  %srt.si_p_bits = extractvalue %Value %srt.si_prev, 1
-  %srt.si_k_bits = extractvalue %Value %srt.so_key, 1
-  %srt.si_p_is_flt = icmp eq i32 %srt.si_pt, 2
-  %srt.si_k_is_flt = icmp eq i32 %srt.si_kt, 2
-  %srt.si_p_dflt = bitcast i64 %srt.si_p_bits to double
-  %srt.si_p_dint = sitofp i64 %srt.si_p_bits to double
-  %srt.si_p_d = select i1 %srt.si_p_is_flt, double %srt.si_p_dflt, double %srt.si_p_dint
-  %srt.si_k_dflt = bitcast i64 %srt.si_k_bits to double
-  %srt.si_k_dint = sitofp i64 %srt.si_k_bits to double
-  %srt.si_k_d = select i1 %srt.si_k_is_flt, double %srt.si_k_dflt, double %srt.si_k_dint
-  %srt.si_flt_gt = fcmp ogt double %srt.si_p_d, %srt.si_k_d
-  br i1 %srt.si_flt_gt, label %srt.si_shift, label %srt.si_done
+  ; M65: delegate to @wam_term_cmp -- handles all categories with
+  ; recursion through compound args. Shift iff prev > key.
+  %srt.si_r = call i32 @wam_term_cmp(%WamState* %vm, %Value %srt.si_prev, %Value %srt.so_key)
+  %srt.si_prev_gt = icmp sgt i32 %srt.si_r, 0
+  br i1 %srt.si_prev_gt, label %srt.si_shift, label %srt.si_done
 srt.si_shift:
   %srt.si_shift_dst = getelementptr %Value, %Value* %srt.arr, i32 %srt.si_j
   store %Value %srt.si_prev, %Value* %srt.si_shift_dst
