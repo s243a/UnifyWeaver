@@ -63,7 +63,7 @@ matters for §4–§5.
 | `b` (early) | `E[d²_child] / E[d²_parent]` — raw second-moment ratio | scan child/parent degree distributions globally | 1353 |
 | `b_eff` | `(E[d²_c]/E[d_c]) / (E[d²_p]/E[d_p])` — friendship-paradox-corrected branching asymmetry | same scan, with first-moment correction | 589 (global) / 9.59 (topical, §4.5) |
 | `BranchRatio` | `b_eff × routing_correction` — the composed scalar the kernel passes to the metric | adds the empirical routing factor | 226 (global) / 3.68 (topical, currently — see §5.4) |
-| `b'` | per-child-hop empirical path-count growth | measured by running the kernel at varying `cc` and reading path-count ratios | ~11 |
+| `b'` | per-child-hop empirical path-count growth: `b' = lim_{M→∞} #paths(M+1) / #paths(M)`, where `#paths(M)` is the count of paths with M child hops reaching root | measured by running the kernel at varying `cc` and reading path-count ratios at successive transitions | ~11 |
 
 `b` (early-formula) was used in §2 below before the first-moment
 correction; subsequent sections use `b_eff` exclusively. **The
@@ -97,12 +97,14 @@ is bounded by
 contribution(M) ≤ (number of M-child-hop paths) · (1/(b·D))^M
 ```
 
-For this graph, the number of M-child-hop paths grows ~15-100× per
-extra child hop (within budget=15), but `b·D ≈ 9933` dominates that
-growth by 2+ orders of magnitude. Result: a convergent geometric
-series whose terms shrink by ~10⁴ per level. The total contribution
-of mixed paths is asymptotically negligible compared to the
-upward-only baseline.
+For this graph, the original estimate was that the number of
+M-child-hop paths grows ~15–100× per extra child hop (within
+budget=15); §4.4's direct measurement subsequently pinned this
+at ~11× geometric-mean (`b' ≈ 11`). Either way `b·D ≈ 9933`
+dominates that growth by 2+ orders of magnitude. Result: a
+convergent geometric series whose terms shrink by ~10³ per
+level. The total contribution of mixed paths is asymptotically
+negligible compared to the upward-only baseline.
 
 > **Forward reference.** The `b·D ≈ 9933` figure here is the
 > *global* calibration. §4.4 shows this overestimates the
@@ -120,7 +122,10 @@ upward-only baseline.
 > *metric-tree-like* iff searching the graph as if it were a tree
 > (e.g. shortest-path tree from root, ignoring all cross-edges)
 > gives a metric value statistically close to the full-DAG
-> value.
+> value. "Statistically close" is parameterised by an error
+> tolerance ε whose practical value depends on use case — see
+> §6.1 for the operational threshold (`ε_agg < 0.1%`) used by
+> the simplewiki certificate.
 
 > **Homogeneity precondition (added on the basis of §4.5).** The
 > definition above assumes the graph is *statistically
@@ -162,9 +167,9 @@ differ but rarely materially."
 ### 3.1 Why the property is principled: `D` does double duty
 
 The convergence inequality `b·D > b'` (path-count growth `b'`
-empirically matches `b_eff` once topical calibration is honest)
-has substantial slack on real graphs — by 6×+ on simplewiki's
-topical core. That slack might look like a tuning artifact ("of
+empirically agrees with `b_eff` to within ~15% once topical
+calibration is honest: 11 vs 9.59 on simplewiki) has substantial
+slack on real graphs — by 6×+ on simplewiki's topical core. That slack might look like a tuning artifact ("of
 course it works, the inequality has tons of room"), but it isn't.
 The slack has a principled source: `D = E[d_child]` is doing
 *two distinct jobs* simultaneously, both grounded in a single
@@ -173,9 +178,10 @@ measured graph property.
 1. `D` is the **per-parent-hop weight** in `w(path) = (1/D)^N (1/(b·D))^M`.
    It enters the metric formula directly.
 2. `D` is the **convergence slack**. Once `b` is calibrated to
-   match empirical path growth (`b ≈ b'`), the convergence
-   ratio reduces to `b'/(b·D) ≈ 1/D`. So `D` is what buys the
-   safety margin in the inequality.
+   approximately match empirical path growth (`b ≈ b'` within
+   ~15% under honest topical calibration), the convergence
+   ratio reduces to `b'/(b·D) ≈ 1/D` to first order. So `D` is
+   what buys the safety margin in the inequality.
 
 Both roles come from the same single measurement
 (`E[d_child]`). `D` is not a free parameter that happens to
@@ -261,9 +267,10 @@ geometric-series collapse described in §2.
 ### 4.3 Comparison with broken-ingest run (PR #2502 data)
 
 The earlier broken-ingest simplewiki test (mixed-namespace, 25k
-edges) had b ≈ 61 and showed d_wPow drift of about 1% (5.17 →
-5.22). The current correctly-ingested graph (294k edges, b ≈ 1353)
-drifts 0.02%. Two interpretations, both probably partly true:
+edges) had b ≈ 61 (from PR #2502 benchmark output; the broken
+LMDB is no longer retained) and showed d_wPow drift of about 1%
+(5.17 → 5.22). The current correctly-ingested graph (294k edges,
+b ≈ 1353) drifts 0.02%. Two interpretations, both probably partly true:
 
 1. The corrected graph has more uniform "category-real" edges,
    making the asymmetry stronger and b larger.
@@ -281,7 +288,7 @@ gives concrete numbers for each correction term:
 | Quantity | Value | Interpretation |
 |---|---|---|
 | `E[d²_c] / E[d²_p]` (second-moment ratio) | 1353 | Raw distributional asymmetry |
-| `× E[d_p] / E[d_c]` (first-moment correction) | 0.436 | Friendship-paradox normalisation |
+| `× E[d_p] / E[d_c]` (first-moment correction) | 0.436 | Degree-bias correction — deflates the second-moment ratio by the parent-to-child fan-out ratio (since `E[d_c] > E[d_p]` here, the factor is < 1) |
 | `b_eff` (global, traversal-effective) | **589** | Calibrated asymmetry, global graph |
 | `× routing_correction` (avg_min_dist / avg_path_hops) | 0.384 | Hub-correlation pruning |
 | Final `BranchRatio` (global) | 226 | Composed calibration |
@@ -396,7 +403,16 @@ A graph engineered to defeat the metric:
 - **Diamond graph** with two distinct distance regimes between
   every leaf-pair, depending on whether you go up-then-down or
   the other way. Child shortcuts could carry as much weight as
-  parent paths.
+  parent paths. Concretely: in a balanced binary diamond
+  (D = 2, each node has 2 parents and 2 children at the
+  intermediate layer), `b = E[d²_c] / E[d²_p] ≈ 1`, so
+  `b·D = 2`. Any realistic per-child-hop path-count growth
+  `b' ≥ 2` (i.e. at least one path per added hop, which the
+  graph guarantees by construction) puts the convergence ratio
+  `b'/(b·D) ≥ 1`, defeating the geometric series. This is the
+  *minimal* falsification example — convergence fails not
+  because the metric is poorly calibrated, but because the
+  graph denies the metric the asymmetry it needs.
 
 Constructing one of these synthetically and verifying the metric
 drifts more is the natural next experimental step.
@@ -462,17 +478,23 @@ inequality with substantial slack on the simplewiki graph. With
 and the metric becomes increasingly insensitive to the exact
 value of `b·D` as it grows past the boundary.
 
-Working through the actual values:
+Working through the actual values (`b·D` here means
+`BranchRatio · D` — i.e. whichever calibrated `b` is in play times
+the average child fan-out `D ≈ 7.34`):
 
-| Calibration | b·D | per-child weight | path_growth / (b·D) |
-|---|---|---|---|
-| Boundary | 11 | 9.1% | 1.00 (no convergence) |
-| Topical, with routing | 27 | 3.7% | 0.407 |
-| Topical, no routing | 70 | 1.4% | 0.157 |
-| Global, with routing | 226 | 0.44% | 0.049 |
+| Calibration | BranchRatio | `b·D` | per-child weight | path_growth / (b·D) |
+|---|---|---|---|---|
+| Theoretical boundary (path_growth) | — | 11 | 9.1% | 1.00 (no convergence) |
+| Topical, with routing | 3.68 | 27 | 3.7% | 0.407 |
+| Topical, no routing | 9.59 | 70 | 1.4% | 0.157 |
+| Global, with routing | 226 | 1659 | 0.06% | 0.007 |
 
-So per-child penalties anywhere in the band roughly **0.4% – 8%**
-produce a convergent metric on this graph. That's nearly two
+(The "Theoretical boundary" row is not a real calibration — it
+marks where `b·D` would have to drop to before convergence breaks.
+The three calibration rows are all comfortably above it.)
+
+So per-child penalties anywhere in the band roughly **0.06% – 8%**
+produce a convergent metric on this graph. That's well over two
 orders of magnitude of valid penalty values. This explains why
 three different calibration approaches with very different `b`
 numbers all yielded aggregate drift `< 0.1%` in earlier
