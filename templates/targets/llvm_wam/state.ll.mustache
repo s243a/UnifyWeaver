@@ -1394,7 +1394,7 @@ store:
 ; cons-cell list from the accumulator entries. Both return the same
 ; shape — bag/findall preserves order/duplicates, set goes through a
 ; downstream sort/dedup pass that doesn't change the per-entry shape.
-define %Value @wam_apply_aggregation(i32 %agg_type, %Value* %accum, i32 %count) {
+define %Value @wam_apply_aggregation(%WamState* %vm, i32 %agg_type, %Value* %accum, i32 %count) {
 entry:
   switch i32 %agg_type, label %default_case [
     i32 0, label %sum_case
@@ -1631,13 +1631,11 @@ set_sort_inner:
 set_si_cmp:
   %set_si_left_ptr = getelementptr %Value, %Value* %accum, i32 %set_si_j_dec
   %set_si_left = load %Value, %Value* %set_si_left_ptr
-  %set_si_left_tag = extractvalue %Value %set_si_left, 0
-  %set_si_left_pay = extractvalue %Value %set_si_left, 1
-  %set_tag_gt = icmp sgt i32 %set_si_left_tag, %set_so_key_tag
-  %set_tag_eq = icmp eq i32 %set_si_left_tag, %set_so_key_tag
-  %set_pay_gt = icmp sgt i64 %set_si_left_pay, %set_so_key_pay
-  %set_pay_gt_eq = and i1 %set_tag_eq, %set_pay_gt
-  %set_should_shift = or i1 %set_tag_gt, %set_pay_gt_eq
+  ; M70: delegate to @wam_term_cmp (same migration as the plain msort
+  ; loop above). Same behaviour on integer-only setof; correct
+  ; standard order on atoms / compounds.
+  %set_si_cmp_r = call i32 @wam_term_cmp(%WamState* %vm, %Value %set_si_left, %Value %set_so_key)
+  %set_should_shift = icmp sgt i32 %set_si_cmp_r, 0
   br i1 %set_should_shift, label %set_si_shift, label %set_si_done
 set_si_shift:
   %set_si_dst_ptr = getelementptr %Value, %Value* %accum, i32 %set_si_j
@@ -2189,16 +2187,13 @@ sort_inner:
 si_cmp:
   %si_left_ptr = getelementptr %Value, %Value* %buf, i32 %si_j_dec
   %si_left = load %Value, %Value* %si_left_ptr
-  %si_left_tag = extractvalue %Value %si_left, 0
-  %si_left_pay = extractvalue %Value %si_left, 1
-  ; Compare by (tag, payload). If left_tag > key_tag, shift; if equal,
-  ; compare payloads (signed for ints/etc, raw for pointers -- both
-  ; fine for "consistent ordering").
-  %tag_gt = icmp sgt i32 %si_left_tag, %so_key_tag
-  %tag_eq = icmp eq i32 %si_left_tag, %so_key_tag
-  %pay_gt = icmp sgt i64 %si_left_pay, %so_key_pay
-  %pay_gt_when_eq = and i1 %tag_eq, %pay_gt
-  %should_shift = or i1 %tag_gt, %pay_gt_when_eq
+  ; M70: delegate to @wam_term_cmp -- proper standard term order
+  ; (alphabetic atoms, recursive compound, etc.) replaces the old
+  ; (tag, payload) ordering. Behaviour unchanged for integer-only
+  ; lists (which is what every existing msort test uses) and now
+  ; correct for atoms / floats / compounds.
+  %si_cmp_r = call i32 @wam_term_cmp(%WamState* %vm, %Value %si_left, %Value %so_key)
+  %should_shift = icmp sgt i32 %si_cmp_r, 0
   br i1 %should_shift, label %si_shift, label %si_done
 si_shift:
   %si_dst_ptr = getelementptr %Value, %Value* %buf, i32 %si_j
@@ -4313,7 +4308,7 @@ do_finalize:
   %accum_ptr = load %Value*, %Value** %accum_ptr_ptr
   %count_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 21
   %count = load i32, i32* %count_ptr
-  %result = call %Value @wam_apply_aggregation(i32 %agg_type, %Value* %accum_ptr, i32 %count)
+  %result = call %Value @wam_apply_aggregation(%WamState* %vm, i32 %agg_type, %Value* %accum_ptr, i32 %count)
 
   ; Restore trail (unwind to CP's mark)
   %tm_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 2
