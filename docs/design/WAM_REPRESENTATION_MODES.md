@@ -40,13 +40,16 @@ conservative:
 - Python lowered mode: `wam_text`
 - Lua interpreter mode: `wam_items_bridge`
 - Lua lowered/functions mode: `wam_text`
-- R interpreter mode: `wam_items_bridge` as the intended migration default
+- R interpreter mode: `wam_items_bridge`
+- R lowered/functions mode: `wam_text`
 - Unknown WAM targets: `wam_text`
 
 WAM-specific targets may reject `direct_target`; callers should use the ordinary
 non-WAM target when they want direct target-native code.
 
-Lua follows the same partial migration shape as Python: interpreter-mode
+Lua and R follow the same partial migration shape as Python: interpreter-mode
 generated predicates consume common WAM items through the bridge, while lowered
-Lua emission keeps the text path because its lowerability analysis still works
-over tokenized WAM text.
+emission keeps the text path because lowerability analysis and target-specific
+classifiers still work over tokenized WAM text. R additionally keeps WAM text for
+fact-shape classification and recursive-kernel detection even when the emitted
+instruction array comes from bridged WAM items.
