@@ -2452,6 +2452,58 @@ test_cmp_lists_diff(_, R) :-
     char_code(O, C),
     R is C.   % '<'
 
+% M68: split_string/4 -- per-char separators + pad-strip on segments.
+
+:- dynamic test_ss_simple/2.
+test_ss_simple(_, R) :-
+    split_string('a,b,c', ',', '', L),
+    length(L, N), R is N.   % 3
+
+:- dynamic test_ss_first_length/2.
+test_ss_first_length(_, R) :-
+    split_string('hello,world', ',', '', [H|_]),
+    atom_length(H, N), R is N.   % 5
+
+:- dynamic test_ss_multi_sep/2.
+test_ss_multi_sep(_, R) :-
+    % Any of ,; splits.
+    split_string('a,b;c,d', ',;', '', L),
+    length(L, N), R is N.   % 4
+
+:- dynamic test_ss_pad_strip/2.
+test_ss_pad_strip(_, R) :-
+    % Spaces stripped from segments.
+    split_string(' a , b , c ', ',', ' ', [H|_]),
+    atom_length(H, N), R is N.   % 1 ("a", spaces gone)
+
+:- dynamic test_ss_no_sep/2.
+test_ss_no_sep(_, R) :-
+    % No separator in input -> single element.
+    split_string(abc, ',', '', L),
+    length(L, N), R is N.   % 1
+
+:- dynamic test_ss_empty_sep/2.
+test_ss_empty_sep(_, R) :-
+    % Empty sep set -> no split, single element.
+    split_string(abc, '', '', L),
+    length(L, N), R is N.   % 1
+
+:- dynamic test_ss_empty_source/2.
+test_ss_empty_source(_, R) :-
+    split_string('', ',', '', L),
+    length(L, N), R is N + 31.   % 32 = 1 + 31 (one empty segment)
+
+:- dynamic test_ss_consecutive_seps/2.
+test_ss_consecutive_seps(_, R) :-
+    split_string('a,,b', ',', '', L),
+    length(L, N), R is N.   % 3 -- ['a', '', 'b']
+
+:- dynamic test_ss_pad_only/2.
+test_ss_pad_only(_, R) :-
+    % Whole string is pad chars; emitted segment is empty.
+    split_string('   ', ',', ' ', [H|_]),
+    atom_length(H, N), R is N + 42.   % 42 (length 0)
+
 % M67 verification: literal-list tests with proper R-is-N pattern.
 
 :- dynamic test_lit_3_ints/2.
@@ -3993,6 +4045,25 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M68 split_string/4 ---~n'),
+       run_test_r0('split_string(\'a,b,c\', \',\', \'\') length -> 3',
+                   test_ss_simple, 0, 3),
+       run_test_r0('split_string first segment length -> 5',
+                   test_ss_first_length, 0, 5),
+       run_test_r0('split_string multi-char sep set length -> 4',
+                   test_ss_multi_sep, 0, 4),
+       run_test_r0('split_string pad-strip first length -> 1',
+                   test_ss_pad_strip, 0, 1),
+       run_test_r0('split_string no sep present -> 1',
+                   test_ss_no_sep, 0, 1),
+       run_test_r0('split_string empty sep -> 1',
+                   test_ss_empty_sep, 0, 1),
+       run_test_r0('split_string empty source -> 1 (+31 = 32)',
+                   test_ss_empty_source, 0, 32),
+       run_test_r0('split_string consecutive seps length -> 3',
+                   test_ss_consecutive_seps, 0, 3),
+       run_test_r0('split_string pad-only -> empty (+42 = 42)',
+                   test_ss_pad_only, 0, 42),
        format('--- M66 tab/1 + put_char/1 + put_code/1 ---~n'),
        run_test_r0('[1,2,3] length via R is N -> 3',
                    test_lit_3_ints, 0, 3),
