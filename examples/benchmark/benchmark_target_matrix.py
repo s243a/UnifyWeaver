@@ -102,6 +102,26 @@ TARGETS: dict[str, TargetInfo] = {
         "hybrid-wam",
         "Hybrid WAM C effective-distance runner with reference DFS, kernels disabled, and LMDB fact storage",
     ),
+    "c-wam-accumulated-child-scan": TargetInfo(
+        "c-wam-accumulated-child-scan",
+        "hybrid-wam-child-search",
+        "Hybrid WAM C effective-distance runner with bounded child search over loaded parent facts",
+    ),
+    "c-wam-accumulated-child-csr": TargetInfo(
+        "c-wam-accumulated-child-csr",
+        "hybrid-wam-child-search",
+        "Hybrid WAM C effective-distance runner with bounded child search over sorted-array reverse CSR",
+    ),
+    "c-wam-accumulated-child-csr-drop": TargetInfo(
+        "c-wam-accumulated-child-csr-drop",
+        "hybrid-wam-child-search",
+        "Hybrid WAM C effective-distance runner with bounded child search over buffered-pread-drop reverse CSR",
+    ),
+    "c-wam-accumulated-child-csr-lmdb-offset": TargetInfo(
+        "c-wam-accumulated-child-csr-lmdb-offset",
+        "hybrid-wam-child-search",
+        "Hybrid WAM C effective-distance runner with bounded child search over reverse CSR and LMDB row offsets",
+    ),
     "c-wam-lowered-helper": TargetInfo(
         "c-wam-lowered-helper",
         "hybrid-wam-lowered-helper",
@@ -378,6 +398,17 @@ TARGET_SETS: dict[str, list[str]] = {
     "c-wam-lowered-helper": [
         "c-wam-lowered-helper-interpreted",
         "c-wam-lowered-helper",
+    ],
+    "c-wam-child-search-layouts": [
+        "c-wam-accumulated-child-scan",
+        "c-wam-accumulated-child-csr",
+        "c-wam-accumulated-child-csr-drop",
+        "c-wam-accumulated-child-csr-lmdb-offset",
+    ],
+    "c-wam-child-csr-layouts": [
+        "c-wam-accumulated-child-csr",
+        "c-wam-accumulated-child-csr-drop",
+        "c-wam-accumulated-child-csr-lmdb-offset",
     ],
     "scala-wam-artifact": [
         "scala-wam-seeded",

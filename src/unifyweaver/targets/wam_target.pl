@@ -2737,6 +2737,14 @@ is_ground_atom_list(L, Atoms) :-
     maplist(atom, Items),
     Atoms = Items.
 
+% Walk a list term, collecting its elements. Must FAIL (not loop) on a
+% partial or improper list, so callers (compile_put_argument/5 via the
+% `proper_list(Arg, _)` guard from #aac54075, and is_ground_atom_list/2)
+% can rely on a clean failure to fall through to the compound branch
+% (put_structure for the '[|]'/2 cons cell). The nonvar/1 guards stop the
+% recursion the moment a tail is an unbound variable, so a partial list
+% like [a|_] fails instead of recursing forever; an improper tail like
+% [a|b] fails when proper_list_/2 hits a non-list, non-[] tail.
 proper_list(T, Items) :-
     nonvar(T),
     proper_list_(T, Items).

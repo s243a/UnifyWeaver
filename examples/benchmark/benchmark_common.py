@@ -155,12 +155,16 @@ def available_targets(requested: list[str]) -> list[str]:
     c_wam_targets = {
         "c-wam-accumulated",
         "c-wam-accumulated-no-kernels",
+        "c-wam-accumulated-child-scan",
+        "c-wam-accumulated-child-csr",
+        "c-wam-accumulated-child-csr-drop",
         "c-wam-lowered-helper",
         "c-wam-lowered-helper-interpreted",
     }
     c_wam_lmdb_targets = {
         "c-wam-accumulated-lmdb",
         "c-wam-accumulated-no-kernels-lmdb",
+        "c-wam-accumulated-child-csr-lmdb-offset",
     }
     for target in requested:
         if target.startswith("csharp-") and shutil.which("dotnet") is None:

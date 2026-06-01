@@ -1,24 +1,24 @@
 # WAM C Target - Status And Next Steps
 
-Status date: 2026-05-28
+Status date: 2026-05-31
 
-Base verified locally:
+Latest branch verification:
 
-- `main` at `9f805888` (`Merge pull request #2566 from s243a/feat/wam-c-direct-io-csr`)
-- `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
+- `investigate/wam-c-child-csr-scale-sweep` based on `main` at `05de16c8`
+  (`Merge pull request #2662 from s243a/investigate/wam-c-larger-artifact-layouts`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
-- `swipl -q -g run_tests -t halt tests/core/test_cost_model.pl`
+- `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py tests/test_benchmark_target_matrix.py`
 - `python3 tests/test_benchmark_target_matrix.py`
-- `python3 tests/test_wam_c_lowered_helper_scale_regression.py`
-- `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py tests/test_benchmark_target_matrix.py tests/test_wam_c_lowered_helper_scale_regression.py`
-- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev,10x --target-sets c-wam-lowered-helper --repetitions 1 --baseline-target c-wam-lowered-helper-interpreted`
-- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels,c-wam-accumulated-lmdb,c-wam-accumulated-no-kernels-lmdb --repetitions 1 --baseline-target prolog-accumulated`
-- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 10x --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels,c-wam-accumulated-lmdb,c-wam-accumulated-no-kernels-lmdb --repetitions 1 --baseline-target prolog-accumulated --run-timeout-seconds 180`
+- `python3 -m py_compile examples/benchmark/benchmark_wam_c_child_csr_scale_sweep.py tests/test_wam_c_child_csr_scale_sweep.py`
+- `python3 tests/test_wam_c_child_csr_scale_sweep.py`
+- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --target-sets c-wam-child-search-layouts --repetitions 1 --baseline-target c-wam-accumulated-child-scan --run-timeout-seconds 180`
+- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 10x --target-sets c-wam-child-csr-layouts --compile-only-targets c-wam-accumulated-child-csr,c-wam-accumulated-child-csr-drop,c-wam-accumulated-child-csr-lmdb-offset --baseline-target c-wam-accumulated-child-csr`
+- `python3 examples/benchmark/benchmark_wam_c_child_csr_scale_sweep.py`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-accumulated-runtime-cost`
+- `investigate/wam-c-child-csr-scale-sweep`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -78,9 +78,10 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | `transitive_distance3` native kernel | Done | C shared-kernel detector accepts `transitive_distance3`, emits detected setup, registers a native arity-3 foreign handler, and covers direct plus detected-project executable smokes |
 | `transitive_parent_distance4` native kernel | Done | C shared-kernel detector accepts `transitive_parent_distance4`, emits detected setup, registers a native arity-4 foreign handler, and covers direct plus detected-project executable smokes |
 | `transitive_step_parent_distance5` native kernel | Done | C shared-kernel detector accepts `transitive_step_parent_distance5`, emits detected setup, registers a native arity-5 foreign handler, and covers direct plus detected-project executable smokes |
-| `weighted_shortest_path3` native kernel | Done | C shared-kernel detector accepts `weighted_shortest_path3`, emits detected setup, registers a native arity-3 foreign handler, and covers direct plus detected-project executable smokes over integer weighted edges |
-| `astar_shortest_path4` native kernel | Done | C shared-kernel detector accepts `astar_shortest_path4`, emits detected setup, registers a native arity-4 foreign handler, and covers direct plus detected-project executable smokes over integer weighted and direct-distance edges |
-| Accumulated runtime edge-index fix | Done | Lazy child indexes for `WamState` and `WamFactSource` remove repeated full-edge scans; `10x` accumulated C targets now run around 0.066-0.069s with output parity versus Prolog at 0.204s |
+| `weighted_shortest_path3` native kernel | Done | C shared-kernel detector accepts `weighted_shortest_path3`, emits detected setup, registers a native arity-3 foreign handler, and covers direct plus detected-project executable smokes over weighted edges |
+| `astar_shortest_path4` native kernel | Done | C shared-kernel detector accepts `astar_shortest_path4`, emits detected setup, registers a native arity-4 foreign handler, and covers direct plus detected-project executable smokes over weighted and direct-distance edges |
+| Accumulated runtime edge-index fix | Done | Lazy child indexes for `WamState` and `WamFactSource` remove repeated full-edge scans; `10x` accumulated C targets now run around 0.065-0.071s with output parity versus Prolog at 0.202s |
+| Native weighted-kernel float output | Done | C runtime has `VAL_FLOAT`, numeric unification, double weighted/direct edge storage, and executable weighted/A* smokes for fractional 1.5 results while preserving exact-integer outputs as `VAL_INT` |
 
 ## Current C Target Baseline
 
@@ -109,7 +110,8 @@ The C target is now a credible small WAM backend:
   `transitive_distance3`, `transitive_parent_distance4`, and
   `transitive_step_parent_distance5` handlers over an in-memory edge table,
   plus `weighted_shortest_path3` and `astar_shortest_path4` over in-memory
-  integer weighted edges.
+  weighted edges with exact-integer results kept as `VAL_INT` and fractional
+  results returned as `VAL_FLOAT`.
 - Supports loading category-parent facts from TSV through a small
   `WamFactSource` interface.
 - Supports collecting all integer hop results for native `category_ancestor/4`
@@ -154,55 +156,98 @@ missing important target features; `Missing` = no comparable C path yet.
 | Aggregates (`findall`/`bagof`/`setof`) | Missing | Present in hybrid/lowered paths | Present in interpreter/lowered paths | Add only after C has enough runtime term-copy and list construction coverage. |
 | Negation / control builtins | Partial | Broader | Broader | C likely needs explicit tests for `\+/1`, cut interactions, and if-then-else lowering. |
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
-| Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, native transitive closure/distance/parent-distance/step-parent-distance handlers, integer-weighted shortest path, and integer A* shortest path; remaining parity gaps are broader integration details. |
+| Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, native transitive closure/distance/parent-distance/step-parent-distance handlers, weighted shortest path, and A* shortest path with integer and fractional result coverage; remaining parity gaps are broader integration details. |
 | Shared kernel detector integration | Partial/Done | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`, `transitive_closure2`, `transitive_distance3`, `transitive_parent_distance4`, `transitive_step_parent_distance5`, `weighted_shortest_path3`, and `astar_shortest_path4`; Haskell and Rust still have broader wrapper/fact-layout integration. |
 | Lowered/native helper functions | Partial/Done | Done | Done | C has constant fact-only native helpers, planner metadata, interpreted-vs-lowered matrix wiring, body-call helpers, filtered-fact helpers, comparison-filter helpers, rejection metadata, repeated-variable filter hardening, empty-result rejection metadata, and projected body-call helper expansion. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
-| LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts and generated effective-distance LMDB wiring; larger artifact layout support remains. |
-| Effective-distance benchmark harness | Partial/Done | Done | Done | C is wired into the shared matrix for TSV and LMDB `kernels_on`/`kernels_off`; next gap is larger artifact layouts. |
+| LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts, generated effective-distance LMDB wiring, and a matrix path for LMDB-offset reverse CSR row lookup. |
+| Effective-distance benchmark harness | Partial/Done | Done | Done | C is wired into the shared matrix for TSV and LMDB parent-only targets plus bounded child-search scan, sorted-array CSR, buffered-pread-drop CSR, and LMDB-offset CSR layout targets. |
 | Classic-program e2e suite | Partial/Done | Partial/Done | Partial/Done | C now covers generated Fibonacci-style recursion with arithmetic; add Ackermann-style depth only if routine runtime stays acceptable. |
 | Memory lifecycle | Partial/Done | Runtime-managed | Runtime-managed | C has ASAN lifecycle smoke coverage for repeated setup, indexed clauses, fact-source loading, native kernel dispatch, and repeated top-level calls. |
 | Instruction layout efficiency | Done | N/A | N/A | C now packs instruction fields into tag-specific payload arms; benchmark larger generated programs if layout becomes performance-sensitive. |
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-native-kernel-float-output`
+### Completed: `feat/wam-c-native-kernel-float-output`
 
 Goal: close the output-type parity gap for weighted/A* native kernels by adding
 a C runtime representation for floating-point results.
 
-Scope:
+Evidence:
 
-- Add a `VAL_FLOAT` or equivalent runtime value representation.
-- Extend foreign-handler unification and smoke assertions for weighted/A*
-  results that are not exact integers.
-- Keep benchmark integration separate unless the value representation itself
-  proves stable.
+- `VAL_FLOAT`, `val_float`, and `val_number_from_double` are available in
+  the C runtime.
+- Weighted and direct-distance edges store `double` weights.
+- Weighted shortest path and A* emit exact integers as `VAL_INT` and fractional
+  weights as `VAL_FLOAT`.
+- Executable smokes cover fractional weighted and A* results.
 
 Reason:
 
 - The accumulated effective-distance runtime blocker is resolved at `10x`; the
   dominant cost was repeated full-edge scans in ancestor traversal, not WAM
   dispatch or native-kernel call overhead.
-- Weighted/A* native kernels currently cover integer results, while Haskell and
-  Rust have broader numeric-result surfaces.
+- Weighted/A* native kernels previously covered only integer results, while
+  Haskell and Rust had broader numeric-result surfaces.
 
-### 2. `investigate/wam-c-larger-artifact-layouts`
+### Active: `investigate/wam-c-csr-artifact-only-large-scales`
 
 Goal: measure whether the newer parent-only LMDB and reverse CSR artifact
-layouts remain the right defaults at larger category scales.
+layouts remain the right defaults at larger category scales, without forcing
+full WAM-C query-runner generation and C compilation when only artifact bytes
+are needed.
 
-Scope:
+Implemented so far:
 
-- Reuse the existing effective-distance matrix before adding new benchmark
-  surfaces.
-- Compare TSV, LMDB, CSR, and direct-I/O CSR modes where the current generator
-  can already emit them.
-- Keep any in-memory compressed CSR work out of this branch unless measurement
-  shows the current layout is the limiting factor.
+- Reused the existing effective-distance matrix instead of adding a separate
+  benchmark script.
+- Added WAM-C generator layout profiles for bounded child search over loaded
+  parent facts, sorted-array reverse CSR, buffered-pread-drop reverse CSR, and
+  LMDB-offset reverse CSR.
+- Added `c-wam-child-search-layouts` for scan-vs-CSR smoke comparisons and
+  `c-wam-child-csr-layouts` for larger CSR-only comparisons.
+- Compile-only matrix rows now report WAM-C artifact byte sizes for TSV, LMDB,
+  CSR index/values, and LMDB-offset stores.
+- Added `benchmark_wam_c_child_csr_scale_sweep.py` as the routine compile-only
+  scale-sweep wrapper for CSR layout artifacts.
+- Added an `--artifact-only` path to that wrapper. It reads the benchmark TSVs,
+  assigns the same sorted category IDs as the WAM-C generator, writes the
+  parent-sorted reverse CSR index/value files, and optionally writes the
+  LMDB-offset lookup store. This keeps `50k_cats` and `100k_cats` artifact
+  measurements out of the expensive generated-C compile path.
+- `dev` layout smoke shows output parity across scan, sorted-array CSR,
+  buffered-pread-drop CSR, and LMDB-offset CSR; runtimes were about
+  `0.130-0.145s` for the four variants.
+- `10x` CSR compile-only smoke builds all three CSR layouts in about
+  `0.735-0.811s`; the generated parent TSV is `167,698` bytes, the reverse
+  CSR index is `22,528` bytes, reverse CSR values are `15,728` bytes, and the
+  LMDB-offset store adds `77,824` bytes.
+- The default compile-only scale sweep now covers `10x,1k,5k,10k` and finishes
+  locally in roughly half a minute. At `10k`, parent TSV is `1,266,946` bytes,
+  reverse CSR index is `118,672` bytes, reverse CSR values are `100,908` bytes,
+  and the LMDB-offset store adds `327,680` bytes.
+- The artifact-only path reproduces the `10k` generated parent TSV, CSR index,
+  and CSR value byte counts without compiling C. Its Python-created LMDB-offset
+  directory reports `335,872` bytes including `lock.mdb`, while the data file
+  alone is consistent with the prior `327,680` byte observation.
+- `50k_cats` and `100k_cats` artifact-only rows currently share the same local
+  category-parent graph: generated parent TSV `10,126,909` bytes, reverse CSR
+  index `678,752` bytes, reverse CSR values `787,600` bytes, LMDB-offset store
+  `1,687,552` bytes, `42,422` parent rows, `196,900` child-parent edges, and
+  `84,136` category IDs. Build time was about `0.11s` for sorted-array rows
+  and about `0.15s` for LMDB-offset rows.
 
-Status: recommended after the runtime-cost investigation, or sooner if a
-concrete generated benchmark requires float output.
+Open measurement:
+
+- `10x` child-search layout runs are not a routine local gate even with a small
+  child-expansion cap; run them only as an explicit longer benchmark window.
+- Use compile-only rows for routine generated-project comparisons through
+  `10k`, use `--artifact-only` for `50k_cats` and `100k_cats` size checks, then
+  schedule runtime rows separately for scales where child-search query
+  execution is acceptable.
+- Parent-only TSV and LMDB targets remain the priority memory structures for
+  current effective-distance workloads. Reverse CSR targets are now available
+  for future child-path variants and artifact-layout measurements.
 
 ### Completed Investigation: `investigate/wam-c-next-benchmark-demand`
 
@@ -393,7 +438,9 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Proceed with `feat/wam-c-native-kernel-float-output` unless the next round of
-work is explicitly benchmark-scale focused. The accumulated runtime
-investigation found and fixed the dominant `10x` cost: repeated full-edge scans
-inside recursive ancestor traversal.
+Use `benchmark_wam_c_child_csr_scale_sweep.py` for routine compile-only
+generated-project artifact comparisons through `10k`, and use
+`benchmark_wam_c_child_csr_scale_sweep.py --artifact-only --scales
+50k_cats,100k_cats` for large category-graph artifact bytes. Next, decide
+whether to add a small cold/warm CSR lookup microbenchmark for the file-backed
+reader before spending implementation time on in-memory compressed CSR.

@@ -78,9 +78,13 @@
     vm.register_foreign_native_kind("category_parent/2", "lazy_lmdb_lookup");
     vm.register_foreign_result_layout("category_parent/2", "tuple:1");
     vm.register_foreign_result_mode("category_parent/2", "stream");
-    for cat in s2i.keys() {
-        vm.intern_atom(cat);
-    }
+    // Intern every s2i atom and build the WAM↔LMDB integer maps so the
+    // kernel's edge_parents lazy path is pure-integer (no per-call string
+    // round-trip).
+    vm.build_lazy_int_maps(&s2i);
+    // Prune the lazy edge path to the reachable demand set, matching the
+    // eager materialisation's edge filter (avoids 220× over-exploration).
+    vm.set_demand_set(reachable_ids.clone());
     setup_foreign_predicates(&mut vm);
 {{default}}
     // Cached: lazy with a sharded bounded cache layered in front.
@@ -134,8 +138,12 @@
     vm.register_foreign_native_kind("category_parent/2", "lazy_lmdb_lookup");
     vm.register_foreign_result_layout("category_parent/2", "tuple:1");
     vm.register_foreign_result_mode("category_parent/2", "stream");
-    for cat in s2i.keys() {
-        vm.intern_atom(cat);
-    }
+    // Intern every s2i atom and build the WAM↔LMDB integer maps so the
+    // kernel's edge_parents lazy path is pure-integer (no per-call string
+    // round-trip).
+    vm.build_lazy_int_maps(&s2i);
+    // Prune the lazy edge path to the reachable demand set, matching the
+    // eager materialisation's edge filter (avoids 220× over-exploration).
+    vm.set_demand_set(reachable_ids.clone());
     setup_foreign_predicates(&mut vm);
 {{/match}}

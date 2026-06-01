@@ -1938,6 +1938,529 @@ test_alc3_float_mixed(_, R) :-
     atom_codes(A, [C|_]),
     R is C.   % 'x' = 120
 
+% M58: char_type/2 -- check mode.
+
+:- dynamic test_ct_alpha_yes/2.
+test_ct_alpha_yes(_, R) :-
+    ( char_type(a, alpha) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_alpha_no/2.
+test_ct_alpha_no(_, R) :-
+    ( char_type('5', alpha) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_digit_yes/2.
+test_ct_digit_yes(_, R) :-
+    ( char_type('7', digit) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_digit_no/2.
+test_ct_digit_no(_, R) :-
+    ( char_type(z, digit) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_upper_yes/2.
+test_ct_upper_yes(_, R) :-
+    ( char_type('A', upper) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_upper_no/2.
+test_ct_upper_no(_, R) :-
+    ( char_type(a, upper) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_lower_yes/2.
+test_ct_lower_yes(_, R) :-
+    ( char_type(m, lower) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_alnum_letter/2.
+test_ct_alnum_letter(_, R) :-
+    ( char_type(b, alnum) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_alnum_digit/2.
+test_ct_alnum_digit(_, R) :-
+    ( char_type('3', alnum) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_alnum_punct/2.
+test_ct_alnum_punct(_, R) :-
+    ( char_type('!', alnum) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_space_yes/2.
+test_ct_space_yes(_, R) :-
+    ( char_type(' ', space) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_ascii_yes/2.
+test_ct_ascii_yes(_, R) :-
+    ( char_type('A', ascii) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_punct_yes/2.
+test_ct_punct_yes(_, R) :-
+    ( char_type('!', punct) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_punct_no_space/2.
+test_ct_punct_no_space(_, R) :-
+    ( char_type(' ', punct) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_csymf_letter/2.
+test_ct_csymf_letter(_, R) :-
+    ( char_type(z, csymf) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_csymf_underscore/2.
+test_ct_csymf_underscore(_, R) :-
+    ( char_type('_', csymf) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_csymf_digit_no/2.
+test_ct_csymf_digit_no(_, R) :-
+    ( char_type('5', csymf) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_csym_digit_yes/2.
+test_ct_csym_digit_yes(_, R) :-
+    ( char_type('5', csym) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_unknown_type/2.
+test_ct_unknown_type(_, R) :-
+    ( char_type(a, bogus) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_multichar_atom/2.
+test_ct_multichar_atom(_, R) :-
+    ( char_type(ab, alpha) -> R is 1 ; R is 0 ).   % 0 -- not single-char
+
+% M59: compare/3 -- three-way standard order (Integer / Float / Atom).
+
+:- dynamic test_cmp_int_lt/2.
+test_cmp_int_lt(_, R) :-
+    compare(O, 1, 5),
+    char_code(O, C),
+    R is C.   % '<' = 60
+
+:- dynamic test_cmp_int_eq/2.
+test_cmp_int_eq(_, R) :-
+    compare(O, 7, 7),
+    char_code(O, C),
+    R is C.   % '=' = 61
+
+:- dynamic test_cmp_int_gt/2.
+test_cmp_int_gt(_, R) :-
+    compare(O, 10, 3),
+    char_code(O, C),
+    R is C.   % '>' = 62
+
+:- dynamic test_cmp_neg/2.
+test_cmp_neg(_, R) :-
+    compare(O, -5, 5),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_float_lt/2.
+test_cmp_float_lt(_, R) :-
+    compare(O, 1.5, 2.5),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_order_float_eq/2.
+test_cmp_order_float_eq(_, R) :-
+    compare(O, 3.14, 3.14),
+    char_code(O, C),
+    R is C.   % '='
+
+:- dynamic test_cmp_int_float_mixed/2.
+test_cmp_int_float_mixed(_, R) :-
+    % Numbers compared by value: 2 < 2.5
+    compare(O, 2, 2.5),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_atom_lt/2.
+test_cmp_atom_lt(_, R) :-
+    compare(O, apple, banana),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_atom_eq/2.
+test_cmp_atom_eq(_, R) :-
+    compare(O, hello, hello),
+    char_code(O, C),
+    R is C.   % '='
+
+:- dynamic test_cmp_atom_gt/2.
+test_cmp_atom_gt(_, R) :-
+    compare(O, zebra, apple),
+    char_code(O, C),
+    R is C.   % '>'
+
+:- dynamic test_cmp_num_atom/2.
+test_cmp_num_atom(_, R) :-
+    % Numbers come before atoms in ISO standard order.
+    compare(O, 42, foo),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_atom_num/2.
+test_cmp_atom_num(_, R) :-
+    compare(O, foo, 42),
+    char_code(O, C),
+    R is C.   % '>'
+
+:- dynamic test_cmp_check_mode_lt/2.
+test_cmp_check_mode_lt(_, R) :-
+    % Order bound in advance -- compare just unifies.
+    ( compare(<, 1, 2) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_cmp_check_mode_eq/2.
+test_cmp_check_mode_eq(_, R) :-
+    ( compare(=, foo, foo) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_cmp_check_mode_wrong/2.
+test_cmp_check_mode_wrong(_, R) :-
+    ( compare(>, 1, 5) -> R is 1 ; R is 0 ).   % 0 -- 1 > 5 is false
+
+% M60: must_be/2 fail-instead-of-throw type guard.
+
+:- dynamic test_mb_atom_yes/2.
+test_mb_atom_yes(_, R) :-
+    ( must_be(atom, hello) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_atom_no/2.
+test_mb_atom_no(_, R) :-
+    ( must_be(atom, 42) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_integer_yes/2.
+test_mb_integer_yes(_, R) :-
+    ( must_be(integer, 7) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_integer_no/2.
+test_mb_integer_no(_, R) :-
+    ( must_be(integer, 3.14) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_float_yes/2.
+test_mb_float_yes(_, R) :-
+    ( must_be(float, 2.5) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_number_int/2.
+test_mb_number_int(_, R) :-
+    ( must_be(number, 99) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_number_flt/2.
+test_mb_number_flt(_, R) :-
+    ( must_be(number, 1.5) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_number_atom/2.
+test_mb_number_atom(_, R) :-
+    ( must_be(number, foo) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_compound_yes/2.
+test_mb_compound_yes(_, R) :-
+    ( must_be(compound, [1, 2, 3]) -> R is 1 ; R is 0 ).   % 1 -- list is compound
+
+:- dynamic test_mb_compound_no/2.
+test_mb_compound_no(_, R) :-
+    ( must_be(compound, atom) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_var_yes/2.
+test_mb_var_yes(_, R) :-
+    ( must_be(var, _Fresh) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_var_no/2.
+test_mb_var_no(_, R) :-
+    ( must_be(var, 5) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_nonvar_yes/2.
+test_mb_nonvar_yes(_, R) :-
+    ( must_be(nonvar, 5) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_nonvar_no/2.
+test_mb_nonvar_no(_, R) :-
+    ( must_be(nonvar, _Fresh) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_atomic_atom/2.
+test_mb_atomic_atom(_, R) :-
+    ( must_be(atomic, hello) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_atomic_int/2.
+test_mb_atomic_int(_, R) :-
+    ( must_be(atomic, 7) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_atomic_compound/2.
+test_mb_atomic_compound(_, R) :-
+    ( must_be(atomic, [1, 2]) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_callable_atom/2.
+test_mb_callable_atom(_, R) :-
+    ( must_be(callable, foo) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_callable_compound/2.
+test_mb_callable_compound(_, R) :-
+    ( must_be(callable, [1]) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_callable_int/2.
+test_mb_callable_int(_, R) :-
+    ( must_be(callable, 5) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_list_empty/2.
+test_mb_list_empty(_, R) :-
+    ( must_be(list, []) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_list_cons/2.
+test_mb_list_cons(_, R) :-
+    ( must_be(list, [1, 2]) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_list_no/2.
+test_mb_list_no(_, R) :-
+    ( must_be(list, hello) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_boolean_true/2.
+test_mb_boolean_true(_, R) :-
+    ( must_be(boolean, true) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_boolean_false/2.
+test_mb_boolean_false(_, R) :-
+    ( must_be(boolean, false) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_boolean_no/2.
+test_mb_boolean_no(_, R) :-
+    ( must_be(boolean, maybe) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_unknown_type/2.
+test_mb_unknown_type(_, R) :-
+    ( must_be(bogus, hello) -> R is 1 ; R is 0 ).   % 0
+
+% M61: display/1 and writeln/1 -- alias for write/1 and write+nl.
+
+:- dynamic test_display_succeeds/2.
+test_display_succeeds(_, R) :-
+    ( display(hello) -> R is 1 ; R is 0 ).   % 1 (and prints ``hello'')
+
+:- dynamic test_display_integer/2.
+test_display_integer(_, R) :-
+    ( display(42) -> R is 1 ; R is 0 ).   % 1 (prints ``42'')
+
+:- dynamic test_display_compound/2.
+test_display_compound(_, R) :-
+    ( display(foo(1, 2)) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_writeln_succeeds/2.
+test_writeln_succeeds(_, R) :-
+    ( writeln(hello) -> R is 1 ; R is 0 ).   % 1 (prints ``hello\n'')
+
+:- dynamic test_writeln_integer/2.
+test_writeln_integer(_, R) :-
+    ( writeln(7) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_writeln_list/2.
+test_writeln_list(_, R) :-
+    ( writeln([1, 2, 3]) -> R is 1 ; R is 0 ).   % 1
+
+% M62: keysort/2 -- stable insertion sort of K-V pairs by Key.
+
+:- dynamic test_ks_int_keys_length/2.
+test_ks_int_keys_length(_, R) :-
+    keysort([3-a, 1-b, 2-c], S),
+    length(S, N),
+    R is N.   % 3
+
+:- dynamic test_ks_int_keys_first/2.
+test_ks_int_keys_first(_, R) :-
+    keysort([3-a, 1-b, 2-c], [K-_|_]),
+    R is K.   % 1 (smallest)
+
+:- dynamic test_ks_int_keys_last/2.
+test_ks_int_keys_last(_, R) :-
+    keysort([5-x, 2-y, 8-z, 1-w], S),
+    last(S, K-_),
+    R is K.   % 8
+
+:- dynamic test_ks_already_sorted/2.
+test_ks_already_sorted(_, R) :-
+    keysort([1-a, 2-b, 3-c], [K-_|_]),
+    R is K.   % 1
+
+:- dynamic test_ks_reverse_sorted/2.
+test_ks_reverse_sorted(_, R) :-
+    keysort([5-a, 4-b, 3-c, 2-d, 1-e], [K-_|_]),
+    R is K.   % 1
+
+:- dynamic test_ks_empty/2.
+test_ks_empty(_, R) :-
+    keysort([], S),
+    length(S, N),
+    R is N + 17.   % 17
+
+:- dynamic test_ks_singleton/2.
+test_ks_singleton(_, R) :-
+    keysort([42-only], [K-_]),
+    R is K.   % 42
+
+:- dynamic test_ks_stable_dupes/2.
+test_ks_stable_dupes(_, R) :-
+    % Equal keys -- check stable order: input order preserved.
+    keysort([2-first, 1-x, 2-second, 1-y], S),
+    nth0(2, S, K-_),
+    R is K.   % 2 (the first 2-pair)
+
+:- dynamic test_ks_atom_keys/2.
+test_ks_atom_keys(_, R) :-
+    keysort([banana-2, apple-1, cherry-3], [K-_|_]),
+    atom_length(K, L),
+    R is L.   % 5 ("apple")
+
+:- dynamic test_ks_atom_keys_value/2.
+test_ks_atom_keys_value(_, R) :-
+    keysort([banana-2, apple-1, cherry-3], [_-V|_]),
+    R is V.   % 1 (apple''s value)
+
+:- dynamic test_ks_float_keys/2.
+test_ks_float_keys(_, R) :-
+    keysort([3.5-a, 1.5-b, 2.5-c], [K-_|_]),
+    R is truncate(K * 10).   % 15
+
+:- dynamic test_ks_mixed_num_keys/2.
+test_ks_mixed_num_keys(_, R) :-
+    % Mixed int/float keys: 1 < 1.5 < 2 < 2.5
+    keysort([2-a, 1.5-b, 1-c, 2.5-d], [K-_|_]),
+    R is K.   % 1
+
+% M63: sort/2 -- standard term order with dedup.
+
+:- dynamic test_sort_int_unique/2.
+test_sort_int_unique(_, R) :-
+    sort([3, 1, 2], L),
+    length(L, N),
+    R is N.   % 3
+
+:- dynamic test_sort_int_first/2.
+test_sort_int_first(_, R) :-
+    sort([5, 2, 8, 1, 3], [F|_]),
+    R is F.   % 1
+
+:- dynamic test_sort_int_last/2.
+test_sort_int_last(_, R) :-
+    sort([5, 2, 8, 1, 3], L),
+    last(L, E),
+    R is E.   % 8
+
+:- dynamic test_sort_dedup/2.
+test_sort_dedup(_, R) :-
+    sort([3, 1, 2, 1, 3, 2], L),
+    length(L, N),
+    R is N.   % 3 (dedup removes duplicates)
+
+:- dynamic test_sort_all_same/2.
+test_sort_all_same(_, R) :-
+    sort([7, 7, 7, 7], L),
+    length(L, N),
+    R is N.   % 1
+
+:- dynamic test_sort_empty/2.
+test_sort_empty(_, R) :-
+    sort([], L),
+    length(L, N),
+    R is N + 23.   % 23
+
+:- dynamic test_sort_singleton/2.
+test_sort_singleton(_, R) :-
+    sort([42], [E]),
+    R is E.   % 42
+
+:- dynamic test_sort_atom_keys/2.
+test_sort_atom_keys(_, R) :-
+    sort([banana, apple, cherry], [F|_]),
+    atom_length(F, L),
+    R is L.   % 5 (apple)
+
+:- dynamic test_sort_atom_dedup/2.
+test_sort_atom_dedup(_, R) :-
+    sort([b, a, c, a, b], L),
+    length(L, N),
+    R is N.   % 3
+
+:- dynamic test_sort_float/2.
+test_sort_float(_, R) :-
+    sort([3.5, 1.5, 2.5], [F|_]),
+    R is truncate(F * 10).   % 15
+
+:- dynamic test_sort_mixed_num/2.
+test_sort_mixed_num(_, R) :-
+    sort([3, 1.5, 2, 1], [F|_]),
+    R is F.   % 1
+
+:- dynamic test_sort_already_sorted/2.
+test_sort_already_sorted(_, R) :-
+    sort([1, 2, 3, 4, 5], L),
+    length(L, N),
+    R is N.   % 5 (no dedup, already sorted)
+
+% M64: compare/3 extension to Compound terms (via @wam_term_cmp helper).
+
+:- dynamic test_cmp_compound_eq/2.
+test_cmp_compound_eq(_, R) :-
+    compare(O, foo(1, 2), foo(1, 2)),
+    char_code(O, C),
+    R is C.   % '='
+
+:- dynamic test_cmp_compound_arity_lt/2.
+test_cmp_compound_arity_lt(_, R) :-
+    % Smaller arity comes first.
+    compare(O, foo(1), foo(1, 2)),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_compound_arity_gt/2.
+test_cmp_compound_arity_gt(_, R) :-
+    compare(O, foo(1, 2, 3), foo(1, 2)),
+    char_code(O, C),
+    R is C.   % '>'
+
+:- dynamic test_cmp_compound_functor_lt/2.
+test_cmp_compound_functor_lt(_, R) :-
+    % Same arity, alphabetical functor order.
+    compare(O, alpha(1, 2), beta(1, 2)),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_compound_arg_lt/2.
+test_cmp_compound_arg_lt(_, R) :-
+    % Same arity + functor, first differing arg decides.
+    compare(O, foo(1, 5), foo(1, 9)),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_compound_arg_gt/2.
+test_cmp_compound_arg_gt(_, R) :-
+    compare(O, foo(2, 5), foo(1, 5)),
+    char_code(O, C),
+    R is C.   % '>'
+
+:- dynamic test_cmp_compound_recursive/2.
+test_cmp_compound_recursive(_, R) :-
+    % Nested compounds -- recursion through args.
+    compare(O, foo(bar(1)), foo(bar(2))),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_compound_vs_atom/2.
+test_cmp_compound_vs_atom(_, R) :-
+    % Cross-category: Compound > Atom.
+    compare(O, foo(1), bar),
+    char_code(O, C),
+    R is C.   % '>'
+
+:- dynamic test_cmp_lists_via_compound/2.
+test_cmp_lists_via_compound(_, R) :-
+    % Lists are compounds ([|]/2); equal lists compare =.
+    compare(O, [1, 2, 3], [1, 2, 3]),
+    char_code(O, C),
+    R is C.   % '='
+
+:- dynamic test_cmp_lists_diff/2.
+test_cmp_lists_diff(_, R) :-
+    compare(O, [1, 2, 3], [1, 2, 4]),
+    char_code(O, C),
+    R is C.   % '<'
+
+% M65: keysort/2 + sort/2 migrated to @wam_term_cmp.
+% Compound key / element behavioral tests deferred -- there''s a
+% pre-existing emit bug where literal lists of compound terms in
+% the body construct extra cells; verified by pure-Prolog returning
+% length 3 but LLVM returning 16 even before keysort enters the
+% picture. The refactor itself is exercised by all the pre-existing
+% Integer / Float / Atom keysort and sort tests, which continue to
+% pass.
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -3203,6 +3726,217 @@ test_all :-
                    test_alc3_float_only, 0, 43),
        run_test_r0('alc/3 [x, 1.5, y] / \',\' first -> 120 (x)',
                    test_alc3_float_mixed, 0, 120),
+       format('--- M58 char_type/2 (check mode) ---~n'),
+       run_test_r0('char_type(a, alpha) -> 1',
+                   test_ct_alpha_yes, 0, 1),
+       run_test_r0('char_type(\'5\', alpha) -> 0',
+                   test_ct_alpha_no, 0, 0),
+       run_test_r0('char_type(\'7\', digit) -> 1',
+                   test_ct_digit_yes, 0, 1),
+       run_test_r0('char_type(z, digit) -> 0',
+                   test_ct_digit_no, 0, 0),
+       run_test_r0('char_type(\'A\', upper) -> 1',
+                   test_ct_upper_yes, 0, 1),
+       run_test_r0('char_type(a, upper) -> 0',
+                   test_ct_upper_no, 0, 0),
+       run_test_r0('char_type(m, lower) -> 1',
+                   test_ct_lower_yes, 0, 1),
+       run_test_r0('char_type(b, alnum) letter -> 1',
+                   test_ct_alnum_letter, 0, 1),
+       run_test_r0('char_type(\'3\', alnum) digit -> 1',
+                   test_ct_alnum_digit, 0, 1),
+       run_test_r0('char_type(\'!\', alnum) -> 0',
+                   test_ct_alnum_punct, 0, 0),
+       run_test_r0('char_type(\' \', space) -> 1',
+                   test_ct_space_yes, 0, 1),
+       run_test_r0('char_type(\'A\', ascii) -> 1',
+                   test_ct_ascii_yes, 0, 1),
+       run_test_r0('char_type(\'!\', punct) -> 1',
+                   test_ct_punct_yes, 0, 1),
+       run_test_r0('char_type(\' \', punct) -> 0',
+                   test_ct_punct_no_space, 0, 0),
+       run_test_r0('char_type(z, csymf) -> 1',
+                   test_ct_csymf_letter, 0, 1),
+       run_test_r0('char_type(\'_\', csymf) -> 1',
+                   test_ct_csymf_underscore, 0, 1),
+       run_test_r0('char_type(\'5\', csymf) -> 0',
+                   test_ct_csymf_digit_no, 0, 0),
+       run_test_r0('char_type(\'5\', csym) -> 1',
+                   test_ct_csym_digit_yes, 0, 1),
+       run_test_r0('char_type(a, bogus) unknown type -> 0',
+                   test_ct_unknown_type, 0, 0),
+       run_test_r0('char_type(ab, alpha) multichar -> 0',
+                   test_ct_multichar_atom, 0, 0),
+       format('--- M59 compare/3 (Integer / Float / Atom) ---~n'),
+       run_test_r0('compare(O, 1, 5) -> 60 (<)',
+                   test_cmp_int_lt, 0, 60),
+       run_test_r0('compare(O, 7, 7) -> 61 (=)',
+                   test_cmp_int_eq, 0, 61),
+       run_test_r0('compare(O, 10, 3) -> 62 (>)',
+                   test_cmp_int_gt, 0, 62),
+       run_test_r0('compare(O, -5, 5) -> 60 (<)',
+                   test_cmp_neg, 0, 60),
+       run_test_r0('compare(O, 1.5, 2.5) -> 60 (<)',
+                   test_cmp_float_lt, 0, 60),
+       run_test_r0('compare(O, 3.14, 3.14) -> 61 (=)',
+                   test_cmp_order_float_eq, 0, 61),
+       run_test_r0('compare(O, 2, 2.5) mixed -> 60 (<)',
+                   test_cmp_int_float_mixed, 0, 60),
+       run_test_r0('compare(O, apple, banana) -> 60 (<)',
+                   test_cmp_atom_lt, 0, 60),
+       run_test_r0('compare(O, hello, hello) -> 61 (=)',
+                   test_cmp_atom_eq, 0, 61),
+       run_test_r0('compare(O, zebra, apple) -> 62 (>)',
+                   test_cmp_atom_gt, 0, 62),
+       run_test_r0('compare(O, 42, foo) cross-cat -> 60',
+                   test_cmp_num_atom, 0, 60),
+       run_test_r0('compare(O, foo, 42) cross-cat -> 62',
+                   test_cmp_atom_num, 0, 62),
+       run_test_r0('compare(<, 1, 2) check mode -> 1',
+                   test_cmp_check_mode_lt, 0, 1),
+       run_test_r0('compare(=, foo, foo) check mode -> 1',
+                   test_cmp_check_mode_eq, 0, 1),
+       run_test_r0('compare(>, 1, 5) check mode wrong -> 0',
+                   test_cmp_check_mode_wrong, 0, 0),
+       format('--- M60 must_be/2 (fail-instead-of-throw type guard) ---~n'),
+       run_test_r0('must_be(atom, hello) -> 1',
+                   test_mb_atom_yes, 0, 1),
+       run_test_r0('must_be(atom, 42) -> 0',
+                   test_mb_atom_no, 0, 0),
+       run_test_r0('must_be(integer, 7) -> 1',
+                   test_mb_integer_yes, 0, 1),
+       run_test_r0('must_be(integer, 3.14) -> 0',
+                   test_mb_integer_no, 0, 0),
+       run_test_r0('must_be(float, 2.5) -> 1',
+                   test_mb_float_yes, 0, 1),
+       run_test_r0('must_be(number, 99) int -> 1',
+                   test_mb_number_int, 0, 1),
+       run_test_r0('must_be(number, 1.5) flt -> 1',
+                   test_mb_number_flt, 0, 1),
+       run_test_r0('must_be(number, foo) -> 0',
+                   test_mb_number_atom, 0, 0),
+       run_test_r0('must_be(compound, [1,2,3]) -> 1',
+                   test_mb_compound_yes, 0, 1),
+       run_test_r0('must_be(compound, atom) -> 0',
+                   test_mb_compound_no, 0, 0),
+       run_test_r0('must_be(var, _Fresh) -> 1',
+                   test_mb_var_yes, 0, 1),
+       run_test_r0('must_be(var, 5) -> 0',
+                   test_mb_var_no, 0, 0),
+       run_test_r0('must_be(nonvar, 5) -> 1',
+                   test_mb_nonvar_yes, 0, 1),
+       run_test_r0('must_be(nonvar, _Fresh) -> 0',
+                   test_mb_nonvar_no, 0, 0),
+       run_test_r0('must_be(atomic, hello) -> 1',
+                   test_mb_atomic_atom, 0, 1),
+       run_test_r0('must_be(atomic, 7) -> 1',
+                   test_mb_atomic_int, 0, 1),
+       run_test_r0('must_be(atomic, [1,2]) -> 0',
+                   test_mb_atomic_compound, 0, 0),
+       run_test_r0('must_be(callable, foo) -> 1',
+                   test_mb_callable_atom, 0, 1),
+       run_test_r0('must_be(callable, [1]) -> 1',
+                   test_mb_callable_compound, 0, 1),
+       run_test_r0('must_be(callable, 5) -> 0',
+                   test_mb_callable_int, 0, 0),
+       run_test_r0('must_be(list, []) -> 1',
+                   test_mb_list_empty, 0, 1),
+       run_test_r0('must_be(list, [1,2]) -> 1',
+                   test_mb_list_cons, 0, 1),
+       run_test_r0('must_be(list, hello) -> 0',
+                   test_mb_list_no, 0, 0),
+       run_test_r0('must_be(boolean, true) -> 1',
+                   test_mb_boolean_true, 0, 1),
+       run_test_r0('must_be(boolean, false) -> 1',
+                   test_mb_boolean_false, 0, 1),
+       run_test_r0('must_be(boolean, maybe) -> 0',
+                   test_mb_boolean_no, 0, 0),
+       run_test_r0('must_be(bogus, hello) -> 0',
+                   test_mb_unknown_type, 0, 0),
+       format('--- M61 display/1 + writeln/1 ---~n'),
+       run_test_r0('display(hello) succeeds -> 1',
+                   test_display_succeeds, 0, 1),
+       run_test_r0('display(42) -> 1',
+                   test_display_integer, 0, 1),
+       run_test_r0('display(foo(1, 2)) -> 1',
+                   test_display_compound, 0, 1),
+       run_test_r0('writeln(hello) -> 1',
+                   test_writeln_succeeds, 0, 1),
+       run_test_r0('writeln(7) -> 1',
+                   test_writeln_integer, 0, 1),
+       run_test_r0('writeln([1,2,3]) -> 1',
+                   test_writeln_list, 0, 1),
+       format('--- M62 keysort/2 (Integer / Float / Atom keys) ---~n'),
+       run_test_r0('keysort([3-a,1-b,2-c]) length -> 3',
+                   test_ks_int_keys_length, 0, 3),
+       run_test_r0('keysort([3-a,1-b,2-c]) first key -> 1',
+                   test_ks_int_keys_first, 0, 1),
+       run_test_r0('keysort([5-x,2-y,8-z,1-w]) last key -> 8',
+                   test_ks_int_keys_last, 0, 8),
+       run_test_r0('keysort([1-a,2-b,3-c]) already sorted -> 1',
+                   test_ks_already_sorted, 0, 1),
+       run_test_r0('keysort([5..1]-) reverse -> 1',
+                   test_ks_reverse_sorted, 0, 1),
+       run_test_r0('keysort([]) + 17 -> 17',
+                   test_ks_empty, 0, 17),
+       run_test_r0('keysort([42-only]) -> 42',
+                   test_ks_singleton, 0, 42),
+       run_test_r0('keysort stable on equal keys nth0(2) -> 2',
+                   test_ks_stable_dupes, 0, 2),
+       run_test_r0('keysort atom keys first length -> 5 (apple)',
+                   test_ks_atom_keys, 0, 5),
+       run_test_r0('keysort atom keys first value -> 1',
+                   test_ks_atom_keys_value, 0, 1),
+       run_test_r0('keysort float keys first*10 -> 15',
+                   test_ks_float_keys, 0, 15),
+       run_test_r0('keysort mixed num keys first -> 1',
+                   test_ks_mixed_num_keys, 0, 1),
+       format('--- M63 sort/2 (standard order + dedup) ---~n'),
+       run_test_r0('sort([3,1,2]) length -> 3',
+                   test_sort_int_unique, 0, 3),
+       run_test_r0('sort([5,2,8,1,3]) first -> 1',
+                   test_sort_int_first, 0, 1),
+       run_test_r0('sort([5,2,8,1,3]) last -> 8',
+                   test_sort_int_last, 0, 8),
+       run_test_r0('sort([3,1,2,1,3,2]) dedup length -> 3',
+                   test_sort_dedup, 0, 3),
+       run_test_r0('sort([7,7,7,7]) length -> 1',
+                   test_sort_all_same, 0, 1),
+       run_test_r0('sort([]) + 23 -> 23',
+                   test_sort_empty, 0, 23),
+       run_test_r0('sort([42], [E]) -> 42',
+                   test_sort_singleton, 0, 42),
+       run_test_r0('sort atom keys first length -> 5 (apple)',
+                   test_sort_atom_keys, 0, 5),
+       run_test_r0('sort atom dedup length -> 3',
+                   test_sort_atom_dedup, 0, 3),
+       run_test_r0('sort float first*10 -> 15',
+                   test_sort_float, 0, 15),
+       run_test_r0('sort mixed num first -> 1',
+                   test_sort_mixed_num, 0, 1),
+       run_test_r0('sort already-sorted length -> 5',
+                   test_sort_already_sorted, 0, 5),
+       format('--- M64 compare/3 Compound terms (recursive via helper) ---~n'),
+       run_test_r0('compare(O, foo(1,2), foo(1,2)) -> 61 (=)',
+                   test_cmp_compound_eq, 0, 61),
+       run_test_r0('compare(O, foo(1), foo(1,2)) arity lt -> 60',
+                   test_cmp_compound_arity_lt, 0, 60),
+       run_test_r0('compare(O, foo(1,2,3), foo(1,2)) arity gt -> 62',
+                   test_cmp_compound_arity_gt, 0, 62),
+       run_test_r0('compare(O, alpha, beta) functor lt -> 60',
+                   test_cmp_compound_functor_lt, 0, 60),
+       run_test_r0('compare(O, foo(1,5), foo(1,9)) arg lt -> 60',
+                   test_cmp_compound_arg_lt, 0, 60),
+       run_test_r0('compare(O, foo(2,5), foo(1,5)) arg gt -> 62',
+                   test_cmp_compound_arg_gt, 0, 62),
+       run_test_r0('compare nested foo(bar(1)) vs foo(bar(2)) -> 60',
+                   test_cmp_compound_recursive, 0, 60),
+       run_test_r0('compare compound vs atom -> 62 (atom < compound)',
+                   test_cmp_compound_vs_atom, 0, 62),
+       run_test_r0('compare equal lists -> 61',
+                   test_cmp_lists_via_compound, 0, 61),
+       run_test_r0('compare [1,2,3] vs [1,2,4] -> 60',
+                   test_cmp_lists_diff, 0, 60),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
