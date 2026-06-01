@@ -2452,6 +2452,13 @@ test_cmp_lists_diff(_, R) :-
     char_code(O, C),
     R is C.   % '<'
 
+% M71 manual-rewrite check: does the soft-cut form work when written
+% directly (without forall)?
+
+:- dynamic test_forall_manual/2.
+test_forall_manual(_, R) :-
+    ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
+
 % M71: forall/2 -- compile-time rewrite to \+ (Cond, \+ Action).
 
 :- dynamic positive/1.
@@ -4148,6 +4155,8 @@ test_all :-
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
        format('--- M71 forall/2 (compile-time \\+ (Cond, \\+ Action) rewrite) ---~n'),
+       run_test_r0('forall manual soft-cut rewrite -> 1',
+                   test_forall_manual + [positive/1], 0, 1),
        run_test_r0('forall(positive(X), X > 0) -> 1',
                    test_forall_all_pos + [positive/1], 0, 1),
        run_test_r0('forall(positive(X), X > 1) -> 0 (1 fails)',
