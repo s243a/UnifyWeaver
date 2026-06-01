@@ -2459,6 +2459,29 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M72: get_time/1 -- wall-clock seconds since the epoch as Float.
+
+:- dynamic test_get_time_succeeds/2.
+test_get_time_succeeds(_, R) :- ( get_time(_) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_get_time_positive/2.
+test_get_time_positive(_, R) :-
+    get_time(T),
+    ( T > 0.0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_get_time_recent/2.
+test_get_time_recent(_, R) :-
+    % UNIX time should be past 2020 (1577836800 epoch).
+    get_time(T),
+    ( T > 1577836800.0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_get_time_monotonic/2.
+test_get_time_monotonic(_, R) :-
+    % Two get_time calls -- second should be >= first.
+    get_time(T1),
+    get_time(T2),
+    ( T2 >= T1 -> R is 1 ; R is 0 ).   % 1
+
 % M71: forall/2 -- compile-time rewrite to \+ (Cond, \+ Action).
 
 :- dynamic positive/1.
@@ -4154,6 +4177,15 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M72 get_time/1 ---~n'),
+       run_test_r0('get_time(_) succeeds -> 1',
+                   test_get_time_succeeds, 0, 1),
+       run_test_r0('get_time(T), T > 0.0 -> 1',
+                   test_get_time_positive, 0, 1),
+       run_test_r0('get_time(T) > 2020 epoch -> 1',
+                   test_get_time_recent, 0, 1),
+       run_test_r0('get_time monotonic -> 1',
+                   test_get_time_monotonic, 0, 1),
        format('--- M71 forall/2 (compile-time \\+ (Cond, \\+ Action) rewrite) ---~n'),
        run_test_r0('forall manual soft-cut rewrite -> 1',
                    test_forall_manual + [positive/1], 0, 1),

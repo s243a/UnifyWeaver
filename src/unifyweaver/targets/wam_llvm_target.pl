@@ -1453,7 +1453,8 @@ declare void @free(i8*)
 declare i32 @snprintf(i8*, i64, i8*, ...)
 declare i32 @strcmp(i8*, i8*)
 declare i32 @printf(i8*, ...)
-declare i32 @putchar(i32)'
+declare i32 @putchar(i32)
+declare i64 @time(i64*)'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
@@ -3486,6 +3487,7 @@ entry:
     i32 87, label %builtin_at_le
     i32 88, label %builtin_at_gt
     i32 89, label %builtin_at_ge
+    i32 90, label %builtin_get_time
   ]
 
 builtin_is:
@@ -4334,6 +4336,20 @@ builtin_at_ge:
   %atge.r = call i32 @wam_term_cmp(%WamState* %vm, %Value %atge.a1, %Value %atge.a2)
   %atge.ok = icmp sge i32 %atge.r, 0
   ret i1 %atge.ok
+
+builtin_get_time:
+  ; M72: get_time(?Time) -- wall-clock seconds since the epoch, as
+  ; Float. Calls libc time(NULL) so resolution is whole-second;
+  ; gettimeofday / clock_gettime can replace this for sub-second
+  ; precision in a follow-up. Unifies A1 with the resulting Float.
+  %gt.t_i64 = call i64 @time(i64* null)
+  %gt.t_d = sitofp i64 %gt.t_i64 to double
+  %gt.t_bits = bitcast double %gt.t_d to i64
+  %gt.v0 = insertvalue %Value undef, i32 2, 0
+  %gt.v = insertvalue %Value %gt.v0, i64 %gt.t_bits, 1
+  %gt.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gt.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gt.raw1, %Value %gt.v)
+  ret i1 %gt.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -10905,6 +10921,7 @@ builtin_op_to_id('@</2', 86).                 % standard order: less than.
 builtin_op_to_id('@=</2', 87).                % standard order: less or equal.
 builtin_op_to_id('@>/2', 88).                 % standard order: greater than.
 builtin_op_to_id('@>=/2', 89).                % standard order: greater or equal.
+builtin_op_to_id('get_time/1', 90).           % wall-clock time as Float seconds since epoch.
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
