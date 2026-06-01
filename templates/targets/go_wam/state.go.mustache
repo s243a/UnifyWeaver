@@ -1802,6 +1802,23 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			}
 		}
 		return vm.Unify(arg3, &List{Elements: result})
+	case "intersection/3":
+		left, okLeft := vm.listToSlice(arg1)
+		right, okRight := vm.listToSlice(arg2)
+		if !okLeft || !okRight {
+			return false
+		}
+		result := make([]Value, 0, len(left))
+		for _, item := range left {
+			candidate := vm.deref(item)
+			for _, other := range right {
+				if valueEquals(candidate, vm.deref(other)) {
+					result = append(result, item)
+					break
+				}
+			}
+		}
+		return vm.Unify(arg3, &List{Elements: result})
 	case "list_to_set/2":
 		items, ok := vm.listToSlice(arg1)
 		if !ok {
