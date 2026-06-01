@@ -190,10 +190,12 @@ Reason:
 - Weighted/A* native kernels previously covered only integer results, while
   Haskell and Rust had broader numeric-result surfaces.
 
-### Active: `investigate/wam-c-larger-artifact-layouts`
+### Active: `investigate/wam-c-csr-artifact-only-large-scales`
 
 Goal: measure whether the newer parent-only LMDB and reverse CSR artifact
-layouts remain the right defaults at larger category scales.
+layouts remain the right defaults at larger category scales, without forcing
+full WAM-C query-runner generation and C compilation when only artifact bytes
+are needed.
 
 Implemented so far:
 
@@ -208,6 +210,11 @@ Implemented so far:
   CSR index/values, and LMDB-offset stores.
 - Added `benchmark_wam_c_child_csr_scale_sweep.py` as the routine compile-only
   scale-sweep wrapper for CSR layout artifacts.
+- Added an `--artifact-only` path to that wrapper. It reads the benchmark TSVs,
+  assigns the same sorted category IDs as the WAM-C generator, writes the
+  parent-sorted reverse CSR index/value files, and optionally writes the
+  LMDB-offset lookup store. This keeps `50k_cats` and `100k_cats` artifact
+  measurements out of the expensive generated-C compile path.
 - `dev` layout smoke shows output parity across scan, sorted-array CSR,
   buffered-pread-drop CSR, and LMDB-offset CSR; runtimes were about
   `0.130-0.145s` for the four variants.
@@ -219,16 +226,25 @@ Implemented so far:
   locally in roughly half a minute. At `10k`, parent TSV is `1,266,946` bytes,
   reverse CSR index is `118,672` bytes, reverse CSR values are `100,908` bytes,
   and the LMDB-offset store adds `327,680` bytes.
+- The artifact-only path reproduces the `10k` generated parent TSV, CSR index,
+  and CSR value byte counts without compiling C. Its Python-created LMDB-offset
+  directory reports `335,872` bytes including `lock.mdb`, while the data file
+  alone is consistent with the prior `327,680` byte observation.
+- `50k_cats` and `100k_cats` artifact-only rows currently share the same local
+  category-parent graph: generated parent TSV `10,126,909` bytes, reverse CSR
+  index `678,752` bytes, reverse CSR values `787,600` bytes, LMDB-offset store
+  `1,687,552` bytes, `42,422` parent rows, `196,900` child-parent edges, and
+  `84,136` category IDs. Build time was about `0.11s` for sorted-array rows
+  and about `0.15s` for LMDB-offset rows.
 
 Open measurement:
 
 - `10x` child-search layout runs are not a routine local gate even with a small
   child-expansion cap; run them only as an explicit longer benchmark window.
-- Use compile-only rows for routine larger-scale artifact-size comparisons,
-  then schedule runtime rows separately for scales where child-search query
+- Use compile-only rows for routine generated-project comparisons through
+  `10k`, use `--artifact-only` for `50k_cats` and `100k_cats` size checks, then
+  schedule runtime rows separately for scales where child-search query
   execution is acceptable.
-- `50k_cats` and `100k_cats` are explicit opt-in scales for the wrapper because
-  generated-project build time is no longer a routine local gate there.
 - Parent-only TSV and LMDB targets remain the priority memory structures for
   current effective-distance workloads. Reverse CSR targets are now available
   for future child-path variants and artifact-layout measurements.
@@ -423,7 +439,8 @@ After hash-bucket row dispatch but before compact row tables:
 ## Suggested Immediate Next Step
 
 Use `benchmark_wam_c_child_csr_scale_sweep.py` for routine compile-only
-artifact-size comparisons through `10k`. Run `50k_cats`, `100k_cats`, and full
-child-search runtime rows only in explicit longer benchmark windows, and do not
-promote in-memory compressed CSR work until those measurements show that the
-current file-backed CSR layout is the limiting factor.
+generated-project artifact comparisons through `10k`, and use
+`benchmark_wam_c_child_csr_scale_sweep.py --artifact-only --scales
+50k_cats,100k_cats` for large category-graph artifact bytes. Next, decide
+whether to add a small cold/warm CSR lookup microbenchmark for the file-backed
+reader before spending implementation time on in-memory compressed CSR.
