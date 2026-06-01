@@ -97,33 +97,52 @@ Python is a good candidate for the WAM items-mode migration because generated
 projects already use one packaged runtime surface, but the generator still has a
 text-first compile pipeline.
 
-Current load-bearing text path:
+Current load-bearing items path:
 
-- `plan_python_predicate/3` calls `compile_predicate_to_wam(..., WamCode)` and
-  stores canonical WAM text in `pred_plan/4`.
-- `compile_wam_predicate_to_python/4` converts that text through
-  `wam_code_to_python_instructions/4`, which tokenizes each line and calls
-  `wam_line_to_python_literal/2`.
-- lowered mode calls `parse_wam_text_py/2` in `compile_lowered_wam_predicate_to_python/4`,
+- WAM representation mode is resolved through `wam_ir_mode/4`; Python defaults
+  to `wam_items_bridge` for interpreter mode and `wam_text` for lowered mode.
+- `plan_python_predicate/3` calls `compile_predicate_to_wam_items/3` for
+  internally compiled interpreter-mode predicates and stores `wam_items(items_only,
+  Items)` in `pred_plan/4`.
+- Supplied WAM text still normalizes through `wam_text_to_items/2` and stores
+  `wam_items(text(WamText), Items)` so external/debug text input remains
+  supported.
+- interpreter-mode predicate emission routes planned predicates through
+  `compile_wam_predicate_items_to_python/4`, so generated Python no longer
+  reparses internally generated WAM text during interpreter registration.
+- lowered mode still requests explicit WAM text via `compile_predicate_to_wam_text/3`
+  and calls `parse_wam_text_py/2` in `compile_lowered_wam_predicate_to_python/4`,
   `lowered_candidate_wam/1`, and `lowered_route_supported/4` before emitting
   lowered Python functions.
 - `wam_python_iso_audit/3` still recompiles predicates to WAM text and parses
   lines for audit reporting.
 
-Migration target:
+Items-mode bridge now present:
 
-1. Add an item-driven entry point parallel to `compile_wam_predicate_to_python/4`,
-   for example `compile_wam_predicate_items_to_python/4`.
-2. Change planning to store WAM items once `compile_predicate_to_wam_items/3` is
-   available as a real generator API.
-3. Teach the lowered emitter to consume the same item list directly, or add one
+- `wam_items_to_python_instructions/4` consumes `label(Name)` plus standard WAM
+  instruction items and emits the same Python instruction literals as the text
+  path.
+- `compile_wam_predicate_items_to_python/4` wraps that adapter in the same
+  registrar function shape as `compile_wam_predicate_to_python/4`.
+- The adapter preserves typed direct-item constants, so an atom like `'42'` is
+  emitted as `Atom("42")` while integer `42` is emitted as `Int(42)`.
+- Current tests compare the adapter against `wam_text_to_items/2` output for a
+  standard WAM-text fixture, cover typed atom/integer constant separation, and
+  assert that `compile_all_predicates/3` uses the common items API for internally
+  compiled interpreter-mode predicates.
+
+Remaining migration target:
+
+1. Replace the current `compile_predicate_to_wam_items/3` bridge implementation
+   with direct item emission once `wam_target.pl` grows native item generation.
+2. Teach the lowered emitter to consume the same item list directly, or add one
    shared adapter from items to the lowered-emitter instruction representation.
-4. Keep the text parser only for external WAM text/debug migration paths, not
+3. Keep the text parser only for external WAM text/debug migration paths, not
    for WAM text generated inside the same process.
 
-Until that migration lands, `tests/test_wam_python_target.pl` includes an
-items-mode audit test that intentionally records the current text-first state so
-future work can flip the assertions when Python moves to direct items.
+Until native item emission lands, `tests/test_wam_python_target.pl` includes
+items-mode audit tests that record the remaining bridge boundary and protect the
+item-driven Python emitter.
 
 ## Remaining Follow-Up
 
@@ -148,7 +167,7 @@ Completed follow-up:
 ## Verification Commands
 
 Use these checks after touching Python WAM runtime parity. On current `main`,
-`tests/test_wam_python_target.pl` passes 168/168 without choicepoint warnings:
+`tests/test_wam_python_target.pl` passes 177/177 without choicepoint warnings:
 
 ```sh
 swipl -q -g run_tests -t halt tests/test_wam_python_target.pl

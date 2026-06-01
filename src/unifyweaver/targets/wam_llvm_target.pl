@@ -1207,6 +1207,39 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     % the module. Eager registration handles programs that consume the
     % list via findall but never explicitly construct a cons cell.
     register_functor_string("[|]"),
+    % M51: pre-register `-` so pairs_keys_values/3 reverse mode can
+    % construct K-V pair compounds without depending on the source
+    % program to mention `-/2` itself.
+    register_functor_string("-"),
+    % M58: pre-register the type names char_type/2 dispatches on so
+    % their @.fn_<name> globals exist for strcmp comparisons.
+    register_functor_string("alpha"),
+    register_functor_string("alnum"),
+    register_functor_string("digit"),
+    register_functor_string("upper"),
+    register_functor_string("lower"),
+    register_functor_string("space"),
+    register_functor_string("ascii"),
+    register_functor_string("white"),
+    register_functor_string("punct"),
+    register_functor_string("csym"),
+    register_functor_string("csymf"),
+    register_functor_string("newline"),
+    register_functor_string("end_of_line"),
+    % M60: must_be/2 type names. Some overlap with M58 char_type
+    % (alpha etc.) but distinct names need separate registration.
+    register_functor_string("atom"),
+    register_functor_string("integer"),
+    register_functor_string("float"),
+    register_functor_string("number"),
+    register_functor_string("compound"),
+    register_functor_string("var"),
+    register_functor_string("nonvar"),
+    register_functor_string("atomic"),
+    register_functor_string("callable"),
+    register_functor_string("ground"),
+    register_functor_string("list"),
+    register_functor_string("boolean"),
     % M9: intern "[]" so the empty-list atom id is known at runtime.
     % @wam_apply_aggregation's collect_case reads this id from a
     % module-level global to terminate the cons-cell chain.
@@ -3218,12 +3251,14 @@ compile_wam_helpers_to_llvm(_Options, LLVMCode) :-
     compile_execute_builtin_to_llvm(BuiltinCode),
     compile_eval_arith_to_llvm(ArithCode),
     compile_copy_term_to_llvm(CopyTermCode),
+    compile_term_cmp_to_llvm(TermCmpCode),
     atomic_list_concat([
         BacktrackCode, '\n\n',
         UnwindCode, '\n\n',
         BuiltinCode, '\n\n',
         ArithCode, '\n\n',
-        CopyTermCode
+        CopyTermCode, '\n\n',
+        TermCmpCode
     ], LLVMCode).
 
 compile_backtrack_to_llvm(Code) :-
@@ -3401,6 +3436,46 @@ entry:
     i32 39, label %builtin_between
     i32 40, label %builtin_atom_concat
     i32 41, label %builtin_sub_atom
+    i32 42, label %builtin_atom_number
+    i32 43, label %builtin_number_codes
+    i32 44, label %builtin_number_chars
+    i32 45, label %builtin_upcase_atom
+    i32 46, label %builtin_downcase_atom
+    i32 47, label %builtin_atom_concat
+    i32 48, label %builtin_atom_length
+    i32 49, label %builtin_atom_string_alias
+    i32 50, label %builtin_atom_string_alias
+    i32 51, label %builtin_nth0
+    i32 52, label %builtin_nth1
+    i32 53, label %builtin_last
+    i32 54, label %builtin_reverse
+    i32 55, label %builtin_append
+    i32 56, label %builtin_memberchk
+    i32 57, label %builtin_delete
+    i32 58, label %builtin_numlist
+    i32 59, label %builtin_sum_list
+    i32 60, label %builtin_sum_list
+    i32 61, label %builtin_max_list
+    i32 62, label %builtin_min_list
+    i32 63, label %builtin_subtract
+    i32 64, label %builtin_intersection
+    i32 65, label %builtin_union
+    i32 66, label %builtin_list_to_set
+    i32 67, label %builtin_atom_chars
+    i32 68, label %builtin_atom_codes
+    i32 69, label %builtin_string_code
+    i32 70, label %builtin_pairs_keys
+    i32 71, label %builtin_pairs_values
+    i32 72, label %builtin_pairs_keys_values
+    i32 73, label %builtin_atomic_list_concat
+    i32 74, label %builtin_atomic_list_concat3
+    i32 75, label %builtin_char_type
+    i32 76, label %builtin_compare
+    i32 77, label %builtin_must_be
+    i32 78, label %builtin_write
+    i32 79, label %builtin_writeln
+    i32 80, label %builtin_keysort
+    i32 81, label %builtin_sort
   ]
 
 builtin_is:
@@ -3645,9 +3720,442 @@ builtin_write:
   ; ``functor(arg1, arg2, ...)`` with recursive nested terms; the
   ; ``[|]/2`` functor special-cases to list notation. The previous
   ; M19 inline dispatch lives on inside the helper.
+  ; M61: display/1 dispatches to this same label since our runtime
+  ; doesn''t (yet) distinguish operator vs canonical print modes.
   %wr.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   call void @wam_write_value(%WamState* %vm, %Value %wr.a1)
   ret i1 true
+
+builtin_writeln:
+  ; M61: writeln/1 = write/1 + nl/0. Same value-print helper as write,
+  ; followed by a single newline.
+  %wln.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  call void @wam_write_value(%WamState* %vm, %Value %wln.a1)
+  %wln.fmt = getelementptr [2 x i8], [2 x i8]* @.fmt_nl, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %wln.fmt)
+  ret i1 true
+
+builtin_keysort:
+  ; M62: keysort(+Pairs, ?Sorted). Stable insertion sort over a list
+  ; of -/2 K-V pairs, ordered by the Key (args[0]) under standard
+  ; term order. Supported key types: Integer, Float, Atom. Compound
+  ; keys are treated as equal (so they retain input order — which
+  ; isn''t SWI-correct but doesn''t crash).
+  ; Three-pass: count + validate; insertion-sort; build cons chain.
+  %ks.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  call void @wam_arena_ensure()
+  br label %ks.c_loop
+ks.fail:
+  ret i1 false
+ks.c_loop:
+  %ks.c_cur = phi %Value [ %ks.a1, %builtin_keysort ], [ %ks.c_next, %ks.c_step ]
+  %ks.c_cnt = phi i32 [ 0, %builtin_keysort ], [ %ks.c_cnt1, %ks.c_step ]
+  %ks.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %ks.c_cur)
+  %ks.c_tag = extractvalue %Value %ks.c_d, 0
+  %ks.c_is_cmp = icmp eq i32 %ks.c_tag, 3
+  br i1 %ks.c_is_cmp, label %ks.c_step, label %ks.c_done
+ks.c_step:
+  %ks.c_cp = extractvalue %Value %ks.c_d, 1
+  %ks.c_cp_ptr = inttoptr i64 %ks.c_cp to %Compound*
+  %ks.c_args_slot = getelementptr %Compound, %Compound* %ks.c_cp_ptr, i32 0, i32 2
+  %ks.c_args = load %Value*, %Value** %ks.c_args_slot
+  %ks.c_t_ptr = getelementptr %Value, %Value* %ks.c_args, i32 1
+  %ks.c_next = load %Value, %Value* %ks.c_t_ptr
+  %ks.c_cnt1 = add i32 %ks.c_cnt, 1
+  br label %ks.c_loop
+ks.c_done:
+  ; Allocate arr of n %Values to hold the pairs.
+  %ks.cnt64 = sext i32 %ks.c_cnt to i64
+  %ks.arr_bytes = shl i64 %ks.cnt64, 4
+  %ks.arr_mem = call i8* @wam_arena_alloc(i64 %ks.arr_bytes)
+  %ks.arr = bitcast i8* %ks.arr_mem to %Value*
+  br label %ks.f_loop
+ks.f_loop:
+  %ks.f_cur = phi %Value [ %ks.a1, %ks.c_done ], [ %ks.f_next, %ks.f_extract ]
+  %ks.f_idx = phi i32 [ 0, %ks.c_done ], [ %ks.f_idx1, %ks.f_extract ]
+  %ks.f_done_b = icmp sge i32 %ks.f_idx, %ks.c_cnt
+  br i1 %ks.f_done_b, label %ks.sort_init, label %ks.f_step
+ks.f_step:
+  %ks.f_d = call %Value @wam_deref_value(%WamState* %vm, %Value %ks.f_cur)
+  %ks.f_cp = extractvalue %Value %ks.f_d, 1
+  %ks.f_cp_ptr = inttoptr i64 %ks.f_cp to %Compound*
+  %ks.f_args_slot = getelementptr %Compound, %Compound* %ks.f_cp_ptr, i32 0, i32 2
+  %ks.f_args = load %Value*, %Value** %ks.f_args_slot
+  %ks.f_h_ptr = getelementptr %Value, %Value* %ks.f_args, i32 0
+  %ks.f_pair = load %Value, %Value* %ks.f_h_ptr
+  %ks.f_t_ptr = getelementptr %Value, %Value* %ks.f_args, i32 1
+  %ks.f_next = load %Value, %Value* %ks.f_t_ptr
+  ; Validate pair is arity-2 compound.
+  %ks.f_pd = call %Value @wam_deref_value(%WamState* %vm, %Value %ks.f_pair)
+  %ks.f_pt = extractvalue %Value %ks.f_pd, 0
+  %ks.f_p_is_cmp = icmp eq i32 %ks.f_pt, 3
+  br i1 %ks.f_p_is_cmp, label %ks.f_check_arity, label %ks.fail
+ks.f_check_arity:
+  %ks.f_p_cp = extractvalue %Value %ks.f_pd, 1
+  %ks.f_p_cp_ptr = inttoptr i64 %ks.f_p_cp to %Compound*
+  %ks.f_p_ar_slot = getelementptr %Compound, %Compound* %ks.f_p_cp_ptr, i32 0, i32 1
+  %ks.f_p_ar = load i32, i32* %ks.f_p_ar_slot
+  %ks.f_p_ar_ok = icmp eq i32 %ks.f_p_ar, 2
+  br i1 %ks.f_p_ar_ok, label %ks.f_extract, label %ks.fail
+ks.f_extract:
+  ; Store the dereffed pair Value into arr[idx].
+  %ks.f_slot = getelementptr %Value, %Value* %ks.arr, i32 %ks.f_idx
+  store %Value %ks.f_pd, %Value* %ks.f_slot
+  %ks.f_idx1 = add i32 %ks.f_idx, 1
+  br label %ks.f_loop
+
+  ; ---- Insertion sort ----
+ks.sort_init:
+  br label %ks.so_loop
+ks.so_loop:
+  ; Outer loop: i from 1 to cnt - 1.
+  %ks.so_i = phi i32 [ 1, %ks.sort_init ], [ %ks.so_i1, %ks.si_done ]
+  %ks.so_more = icmp slt i32 %ks.so_i, %ks.c_cnt
+  br i1 %ks.so_more, label %ks.so_pick, label %ks.build_init
+ks.so_pick:
+  %ks.so_key_slot = getelementptr %Value, %Value* %ks.arr, i32 %ks.so_i
+  %ks.so_key_pair = load %Value, %Value* %ks.so_key_slot
+  ; Extract the key (args[0]) from the pair compound.
+  %ks.so_key_cp = extractvalue %Value %ks.so_key_pair, 1
+  %ks.so_key_cp_ptr = inttoptr i64 %ks.so_key_cp to %Compound*
+  %ks.so_key_args_slot = getelementptr %Compound, %Compound* %ks.so_key_cp_ptr, i32 0, i32 2
+  %ks.so_key_args = load %Value*, %Value** %ks.so_key_args_slot
+  %ks.so_key_ptr = getelementptr %Value, %Value* %ks.so_key_args, i32 0
+  %ks.so_key_raw = load %Value, %Value* %ks.so_key_ptr
+  %ks.so_key = call %Value @wam_deref_value(%WamState* %vm, %Value %ks.so_key_raw)
+  br label %ks.si_loop
+ks.si_loop:
+  ; Inner loop: j starts at i; while j > 0 and arr[j-1].key > key, shift.
+  %ks.si_j = phi i32 [ %ks.so_i, %ks.so_pick ], [ %ks.si_j_dec, %ks.si_shift ]
+  %ks.si_j_dec = sub i32 %ks.si_j, 1
+  %ks.si_j_pos = icmp sge i32 %ks.si_j_dec, 0
+  br i1 %ks.si_j_pos, label %ks.si_cmp, label %ks.si_done
+ks.si_cmp:
+  %ks.si_prev_slot = getelementptr %Value, %Value* %ks.arr, i32 %ks.si_j_dec
+  %ks.si_prev_pair = load %Value, %Value* %ks.si_prev_slot
+  ; Extract prev key.
+  %ks.si_pcp = extractvalue %Value %ks.si_prev_pair, 1
+  %ks.si_pcp_ptr = inttoptr i64 %ks.si_pcp to %Compound*
+  %ks.si_pargs_slot = getelementptr %Compound, %Compound* %ks.si_pcp_ptr, i32 0, i32 2
+  %ks.si_pargs = load %Value*, %Value** %ks.si_pargs_slot
+  %ks.si_pkey_ptr = getelementptr %Value, %Value* %ks.si_pargs, i32 0
+  %ks.si_pkey_raw = load %Value, %Value* %ks.si_pkey_ptr
+  %ks.si_pkey = call %Value @wam_deref_value(%WamState* %vm, %Value %ks.si_pkey_raw)
+  ; Inline compare(pkey, key) -- returns true if pkey > key.
+  %ks.si_pt = extractvalue %Value %ks.si_pkey, 0
+  %ks.si_kt = extractvalue %Value %ks.so_key, 0
+  %ks.si_pcat_atom = icmp eq i32 %ks.si_pt, 0
+  %ks.si_pcat_cmp = icmp eq i32 %ks.si_pt, 3
+  %ks.si_pcat_mid = select i1 %ks.si_pcat_cmp, i32 2, i32 0
+  %ks.si_pcat = select i1 %ks.si_pcat_atom, i32 1, i32 %ks.si_pcat_mid
+  %ks.si_kcat_atom = icmp eq i32 %ks.si_kt, 0
+  %ks.si_kcat_cmp = icmp eq i32 %ks.si_kt, 3
+  %ks.si_kcat_mid = select i1 %ks.si_kcat_cmp, i32 2, i32 0
+  %ks.si_kcat = select i1 %ks.si_kcat_atom, i32 1, i32 %ks.si_kcat_mid
+  %ks.si_cat_eq = icmp eq i32 %ks.si_pcat, %ks.si_kcat
+  br i1 %ks.si_cat_eq, label %ks.si_same_cat, label %ks.si_diff_cat
+ks.si_diff_cat:
+  ; pkey > key iff pcat > kcat.
+  %ks.si_diff_gt = icmp sgt i32 %ks.si_pcat, %ks.si_kcat
+  br i1 %ks.si_diff_gt, label %ks.si_shift, label %ks.si_done
+ks.si_same_cat:
+  %ks.si_cat_is_atom = icmp eq i32 %ks.si_pcat, 1
+  br i1 %ks.si_cat_is_atom, label %ks.si_atom_cmp, label %ks.si_num_or_cmp
+ks.si_num_or_cmp:
+  %ks.si_cat_is_cmp = icmp eq i32 %ks.si_pcat, 2
+  ; Compound keys: treat as equal (don''t shift, stable).
+  br i1 %ks.si_cat_is_cmp, label %ks.si_done, label %ks.si_num_cmp
+ks.si_atom_cmp:
+  %ks.si_p_aid = extractvalue %Value %ks.si_pkey, 1
+  %ks.si_k_aid = extractvalue %Value %ks.so_key, 1
+  %ks.si_p_str = call i8* @wam_atom_to_string(i64 %ks.si_p_aid)
+  %ks.si_k_str = call i8* @wam_atom_to_string(i64 %ks.si_k_aid)
+  %ks.si_strcmp = call i32 @strcmp(i8* %ks.si_p_str, i8* %ks.si_k_str)
+  %ks.si_atom_gt = icmp sgt i32 %ks.si_strcmp, 0
+  br i1 %ks.si_atom_gt, label %ks.si_shift, label %ks.si_done
+ks.si_num_cmp:
+  %ks.si_p_int = icmp eq i32 %ks.si_pt, 1
+  %ks.si_k_int = icmp eq i32 %ks.si_kt, 1
+  %ks.si_both_int = and i1 %ks.si_p_int, %ks.si_k_int
+  br i1 %ks.si_both_int, label %ks.si_int_cmp, label %ks.si_flt_cmp
+ks.si_int_cmp:
+  %ks.si_p_iv = extractvalue %Value %ks.si_pkey, 1
+  %ks.si_k_iv = extractvalue %Value %ks.so_key, 1
+  %ks.si_int_gt = icmp sgt i64 %ks.si_p_iv, %ks.si_k_iv
+  br i1 %ks.si_int_gt, label %ks.si_shift, label %ks.si_done
+ks.si_flt_cmp:
+  %ks.si_p_bits = extractvalue %Value %ks.si_pkey, 1
+  %ks.si_k_bits = extractvalue %Value %ks.so_key, 1
+  %ks.si_p_is_flt = icmp eq i32 %ks.si_pt, 2
+  %ks.si_k_is_flt = icmp eq i32 %ks.si_kt, 2
+  %ks.si_p_dflt = bitcast i64 %ks.si_p_bits to double
+  %ks.si_p_dint = sitofp i64 %ks.si_p_bits to double
+  %ks.si_p_d = select i1 %ks.si_p_is_flt, double %ks.si_p_dflt, double %ks.si_p_dint
+  %ks.si_k_dflt = bitcast i64 %ks.si_k_bits to double
+  %ks.si_k_dint = sitofp i64 %ks.si_k_bits to double
+  %ks.si_k_d = select i1 %ks.si_k_is_flt, double %ks.si_k_dflt, double %ks.si_k_dint
+  %ks.si_flt_gt = fcmp ogt double %ks.si_p_d, %ks.si_k_d
+  br i1 %ks.si_flt_gt, label %ks.si_shift, label %ks.si_done
+ks.si_shift:
+  ; Move arr[j-1] up into arr[j], then loop.
+  %ks.si_shift_dst = getelementptr %Value, %Value* %ks.arr, i32 %ks.si_j
+  store %Value %ks.si_prev_pair, %Value* %ks.si_shift_dst
+  br label %ks.si_loop
+ks.si_done:
+  ; Place the picked key at arr[j].
+  %ks.si_place_dst = getelementptr %Value, %Value* %ks.arr, i32 %ks.si_j
+  store %Value %ks.so_key_pair, %Value* %ks.si_place_dst
+  %ks.so_i1 = add i32 %ks.so_i, 1
+  br label %ks.so_loop
+
+  ; ---- Build cons chain from sorted arr ----
+ks.build_init:
+  %ks.b_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %ks.b_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %ks.b_empty_v  = insertvalue %Value %ks.b_empty_v0, i64 %ks.b_empty_id, 1
+  br label %ks.b_loop
+ks.b_loop:
+  %ks.b_i = phi i32 [ %ks.c_cnt, %ks.build_init ], [ %ks.b_i_prev, %ks.b_step ]
+  %ks.b_acc = phi %Value [ %ks.b_empty_v, %ks.build_init ], [ %ks.b_new_cons, %ks.b_step ]
+  %ks.b_done = icmp sle i32 %ks.b_i, 0
+  br i1 %ks.b_done, label %ks.b_bind, label %ks.b_step
+ks.b_step:
+  %ks.b_i_prev = sub i32 %ks.b_i, 1
+  %ks.b_slot = getelementptr %Value, %Value* %ks.arr, i32 %ks.b_i_prev
+  %ks.b_head = load %Value, %Value* %ks.b_slot
+  %ks.b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %ks.b_cp_mem = call i8* @wam_arena_alloc(i64 %ks.b_cp_size)
+  %ks.b_cp = bitcast i8* %ks.b_cp_mem to %Compound*
+  %ks.b_fn_slot = getelementptr %Compound, %Compound* %ks.b_cp, i32 0, i32 0
+  %ks.b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %ks.b_fn_ptr, i8** %ks.b_fn_slot
+  %ks.b_ar_slot = getelementptr %Compound, %Compound* %ks.b_cp, i32 0, i32 1
+  store i32 2, i32* %ks.b_ar_slot
+  %ks.b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %ks.b_args = bitcast i8* %ks.b_args_mem to %Value*
+  %ks.b_args_slot = getelementptr %Compound, %Compound* %ks.b_cp, i32 0, i32 2
+  store %Value* %ks.b_args, %Value** %ks.b_args_slot
+  %ks.b_h_ptr = getelementptr %Value, %Value* %ks.b_args, i32 0
+  store %Value %ks.b_head, %Value* %ks.b_h_ptr
+  %ks.b_t_ptr = getelementptr %Value, %Value* %ks.b_args, i32 1
+  store %Value %ks.b_acc, %Value* %ks.b_t_ptr
+  %ks.b_cp_i64 = ptrtoint %Compound* %ks.b_cp to i64
+  %ks.b_nc0 = insertvalue %Value undef, i32 3, 0
+  %ks.b_new_cons = insertvalue %Value %ks.b_nc0, i64 %ks.b_cp_i64, 1
+  br label %ks.b_loop
+ks.b_bind:
+  %ks.b_raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %ks.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %ks.b_raw2, %Value %ks.b_acc)
+  ret i1 %ks.b_ok
+
+builtin_sort:
+  ; M63: sort(+List, ?Sorted) -- insertion sort by standard term order
+  ; plus dedup. Supports Integer, Float, Atom elements. Compound
+  ; elements are treated as equal in the comparator (no shift) so
+  ; they retain input order; dedup uses @value_equals which is fine
+  ; for atoms/numbers.
+  %srt.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  call void @wam_arena_ensure()
+  br label %srt.c_loop
+srt.fail:
+  ret i1 false
+srt.c_loop:
+  %srt.c_cur = phi %Value [ %srt.a1, %builtin_sort ], [ %srt.c_next, %srt.c_step ]
+  %srt.c_cnt = phi i32 [ 0, %builtin_sort ], [ %srt.c_cnt1, %srt.c_step ]
+  %srt.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %srt.c_cur)
+  %srt.c_tag = extractvalue %Value %srt.c_d, 0
+  %srt.c_is_cmp = icmp eq i32 %srt.c_tag, 3
+  br i1 %srt.c_is_cmp, label %srt.c_step, label %srt.c_done
+srt.c_step:
+  %srt.c_cp = extractvalue %Value %srt.c_d, 1
+  %srt.c_cp_ptr = inttoptr i64 %srt.c_cp to %Compound*
+  %srt.c_args_slot = getelementptr %Compound, %Compound* %srt.c_cp_ptr, i32 0, i32 2
+  %srt.c_args = load %Value*, %Value** %srt.c_args_slot
+  %srt.c_t_ptr = getelementptr %Value, %Value* %srt.c_args, i32 1
+  %srt.c_next = load %Value, %Value* %srt.c_t_ptr
+  %srt.c_cnt1 = add i32 %srt.c_cnt, 1
+  br label %srt.c_loop
+srt.c_done:
+  %srt.cnt64 = sext i32 %srt.c_cnt to i64
+  %srt.arr_bytes = shl i64 %srt.cnt64, 4
+  %srt.arr_mem = call i8* @wam_arena_alloc(i64 %srt.arr_bytes)
+  %srt.arr = bitcast i8* %srt.arr_mem to %Value*
+  br label %srt.f_loop
+srt.f_loop:
+  %srt.f_cur = phi %Value [ %srt.a1, %srt.c_done ], [ %srt.f_next, %srt.f_step ]
+  %srt.f_idx = phi i32 [ 0, %srt.c_done ], [ %srt.f_idx1, %srt.f_step ]
+  %srt.f_done_b = icmp sge i32 %srt.f_idx, %srt.c_cnt
+  br i1 %srt.f_done_b, label %srt.sort_init, label %srt.f_step
+srt.f_step:
+  %srt.f_d = call %Value @wam_deref_value(%WamState* %vm, %Value %srt.f_cur)
+  %srt.f_cp = extractvalue %Value %srt.f_d, 1
+  %srt.f_cp_ptr = inttoptr i64 %srt.f_cp to %Compound*
+  %srt.f_args_slot = getelementptr %Compound, %Compound* %srt.f_cp_ptr, i32 0, i32 2
+  %srt.f_args = load %Value*, %Value** %srt.f_args_slot
+  %srt.f_h_ptr = getelementptr %Value, %Value* %srt.f_args, i32 0
+  %srt.f_h_raw = load %Value, %Value* %srt.f_h_ptr
+  %srt.f_h = call %Value @wam_deref_value(%WamState* %vm, %Value %srt.f_h_raw)
+  %srt.f_slot = getelementptr %Value, %Value* %srt.arr, i32 %srt.f_idx
+  store %Value %srt.f_h, %Value* %srt.f_slot
+  %srt.f_t_ptr = getelementptr %Value, %Value* %srt.f_args, i32 1
+  %srt.f_next = load %Value, %Value* %srt.f_t_ptr
+  %srt.f_idx1 = add i32 %srt.f_idx, 1
+  br label %srt.f_loop
+
+  ; ---- Insertion sort (inline term compare) ----
+srt.sort_init:
+  br label %srt.so_loop
+srt.so_loop:
+  %srt.so_i = phi i32 [ 1, %srt.sort_init ], [ %srt.so_i1, %srt.si_done ]
+  %srt.so_more = icmp slt i32 %srt.so_i, %srt.c_cnt
+  br i1 %srt.so_more, label %srt.so_pick, label %srt.dedup_init
+srt.so_pick:
+  %srt.so_key_slot = getelementptr %Value, %Value* %srt.arr, i32 %srt.so_i
+  %srt.so_key = load %Value, %Value* %srt.so_key_slot
+  br label %srt.si_loop
+srt.si_loop:
+  %srt.si_j = phi i32 [ %srt.so_i, %srt.so_pick ], [ %srt.si_j_dec, %srt.si_shift ]
+  %srt.si_j_dec = sub i32 %srt.si_j, 1
+  %srt.si_j_pos = icmp sge i32 %srt.si_j_dec, 0
+  br i1 %srt.si_j_pos, label %srt.si_cmp, label %srt.si_done
+srt.si_cmp:
+  %srt.si_prev_slot = getelementptr %Value, %Value* %srt.arr, i32 %srt.si_j_dec
+  %srt.si_prev = load %Value, %Value* %srt.si_prev_slot
+  ; Inline compare: prev > key ?  (same cat map / atom strcmp /
+  ; int icmp / float fcmp as M59 / keysort).
+  %srt.si_pt = extractvalue %Value %srt.si_prev, 0
+  %srt.si_kt = extractvalue %Value %srt.so_key, 0
+  %srt.si_pcat_atom = icmp eq i32 %srt.si_pt, 0
+  %srt.si_pcat_cmp = icmp eq i32 %srt.si_pt, 3
+  %srt.si_pcat_mid = select i1 %srt.si_pcat_cmp, i32 2, i32 0
+  %srt.si_pcat = select i1 %srt.si_pcat_atom, i32 1, i32 %srt.si_pcat_mid
+  %srt.si_kcat_atom = icmp eq i32 %srt.si_kt, 0
+  %srt.si_kcat_cmp = icmp eq i32 %srt.si_kt, 3
+  %srt.si_kcat_mid = select i1 %srt.si_kcat_cmp, i32 2, i32 0
+  %srt.si_kcat = select i1 %srt.si_kcat_atom, i32 1, i32 %srt.si_kcat_mid
+  %srt.si_cat_eq = icmp eq i32 %srt.si_pcat, %srt.si_kcat
+  br i1 %srt.si_cat_eq, label %srt.si_same_cat, label %srt.si_diff_cat
+srt.si_diff_cat:
+  %srt.si_diff_gt = icmp sgt i32 %srt.si_pcat, %srt.si_kcat
+  br i1 %srt.si_diff_gt, label %srt.si_shift, label %srt.si_done
+srt.si_same_cat:
+  %srt.si_cat_is_atom = icmp eq i32 %srt.si_pcat, 1
+  br i1 %srt.si_cat_is_atom, label %srt.si_atom_cmp, label %srt.si_num_or_cmp
+srt.si_num_or_cmp:
+  %srt.si_cat_is_cmp = icmp eq i32 %srt.si_pcat, 2
+  br i1 %srt.si_cat_is_cmp, label %srt.si_done, label %srt.si_num_cmp
+srt.si_atom_cmp:
+  %srt.si_p_aid = extractvalue %Value %srt.si_prev, 1
+  %srt.si_k_aid = extractvalue %Value %srt.so_key, 1
+  %srt.si_p_str = call i8* @wam_atom_to_string(i64 %srt.si_p_aid)
+  %srt.si_k_str = call i8* @wam_atom_to_string(i64 %srt.si_k_aid)
+  %srt.si_strcmp = call i32 @strcmp(i8* %srt.si_p_str, i8* %srt.si_k_str)
+  %srt.si_atom_gt = icmp sgt i32 %srt.si_strcmp, 0
+  br i1 %srt.si_atom_gt, label %srt.si_shift, label %srt.si_done
+srt.si_num_cmp:
+  %srt.si_p_int = icmp eq i32 %srt.si_pt, 1
+  %srt.si_k_int = icmp eq i32 %srt.si_kt, 1
+  %srt.si_both_int = and i1 %srt.si_p_int, %srt.si_k_int
+  br i1 %srt.si_both_int, label %srt.si_int_cmp, label %srt.si_flt_cmp
+srt.si_int_cmp:
+  %srt.si_p_iv = extractvalue %Value %srt.si_prev, 1
+  %srt.si_k_iv = extractvalue %Value %srt.so_key, 1
+  %srt.si_int_gt = icmp sgt i64 %srt.si_p_iv, %srt.si_k_iv
+  br i1 %srt.si_int_gt, label %srt.si_shift, label %srt.si_done
+srt.si_flt_cmp:
+  %srt.si_p_bits = extractvalue %Value %srt.si_prev, 1
+  %srt.si_k_bits = extractvalue %Value %srt.so_key, 1
+  %srt.si_p_is_flt = icmp eq i32 %srt.si_pt, 2
+  %srt.si_k_is_flt = icmp eq i32 %srt.si_kt, 2
+  %srt.si_p_dflt = bitcast i64 %srt.si_p_bits to double
+  %srt.si_p_dint = sitofp i64 %srt.si_p_bits to double
+  %srt.si_p_d = select i1 %srt.si_p_is_flt, double %srt.si_p_dflt, double %srt.si_p_dint
+  %srt.si_k_dflt = bitcast i64 %srt.si_k_bits to double
+  %srt.si_k_dint = sitofp i64 %srt.si_k_bits to double
+  %srt.si_k_d = select i1 %srt.si_k_is_flt, double %srt.si_k_dflt, double %srt.si_k_dint
+  %srt.si_flt_gt = fcmp ogt double %srt.si_p_d, %srt.si_k_d
+  br i1 %srt.si_flt_gt, label %srt.si_shift, label %srt.si_done
+srt.si_shift:
+  %srt.si_shift_dst = getelementptr %Value, %Value* %srt.arr, i32 %srt.si_j
+  store %Value %srt.si_prev, %Value* %srt.si_shift_dst
+  br label %srt.si_loop
+srt.si_done:
+  %srt.si_place_dst = getelementptr %Value, %Value* %srt.arr, i32 %srt.si_j
+  store %Value %srt.so_key, %Value* %srt.si_place_dst
+  %srt.so_i1 = add i32 %srt.so_i, 1
+  br label %srt.so_loop
+
+  ; ---- Dedup: compact arr in-place, removing consecutive equals ----
+srt.dedup_init:
+  ; If empty list, jump straight to build with out_cnt = 0.
+  %srt.d_empty = icmp eq i32 %srt.c_cnt, 0
+  br i1 %srt.d_empty, label %srt.build_init, label %srt.d_loop
+srt.d_loop:
+  ; in_idx runs 1..cnt-1; out_idx starts at 1 (arr[0] is always kept).
+  %srt.d_in = phi i32 [ 1, %srt.dedup_init ], [ %srt.d_in1, %srt.d_after ]
+  %srt.d_out = phi i32 [ 1, %srt.dedup_init ], [ %srt.d_out_next, %srt.d_after ]
+  %srt.d_more = icmp slt i32 %srt.d_in, %srt.c_cnt
+  br i1 %srt.d_more, label %srt.d_step, label %srt.d_done
+srt.d_step:
+  %srt.d_in_slot = getelementptr %Value, %Value* %srt.arr, i32 %srt.d_in
+  %srt.d_in_val = load %Value, %Value* %srt.d_in_slot
+  %srt.d_out_prev_idx = sub i32 %srt.d_out, 1
+  %srt.d_out_prev_slot = getelementptr %Value, %Value* %srt.arr, i32 %srt.d_out_prev_idx
+  %srt.d_out_prev = load %Value, %Value* %srt.d_out_prev_slot
+  %srt.d_eq = call i1 @value_equals(%Value %srt.d_in_val, %Value %srt.d_out_prev)
+  br i1 %srt.d_eq, label %srt.d_after, label %srt.d_keep
+srt.d_keep:
+  %srt.d_out_slot = getelementptr %Value, %Value* %srt.arr, i32 %srt.d_out
+  store %Value %srt.d_in_val, %Value* %srt.d_out_slot
+  %srt.d_out_kept = add i32 %srt.d_out, 1
+  br label %srt.d_after
+srt.d_after:
+  %srt.d_out_next = phi i32 [ %srt.d_out, %srt.d_step ], [ %srt.d_out_kept, %srt.d_keep ]
+  %srt.d_in1 = add i32 %srt.d_in, 1
+  br label %srt.d_loop
+srt.d_done:
+  br label %srt.build_init
+
+  ; ---- Build cons chain from arr[0..out_cnt) ----
+srt.build_init:
+  %srt.out_cnt = phi i32 [ 0, %srt.dedup_init ], [ %srt.d_out, %srt.d_done ]
+  %srt.b_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %srt.b_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %srt.b_empty_v  = insertvalue %Value %srt.b_empty_v0, i64 %srt.b_empty_id, 1
+  br label %srt.b_loop
+srt.b_loop:
+  %srt.b_i = phi i32 [ %srt.out_cnt, %srt.build_init ], [ %srt.b_i_prev, %srt.b_step ]
+  %srt.b_acc = phi %Value [ %srt.b_empty_v, %srt.build_init ], [ %srt.b_new_cons, %srt.b_step ]
+  %srt.b_done = icmp sle i32 %srt.b_i, 0
+  br i1 %srt.b_done, label %srt.b_bind, label %srt.b_step
+srt.b_step:
+  %srt.b_i_prev = sub i32 %srt.b_i, 1
+  %srt.b_slot = getelementptr %Value, %Value* %srt.arr, i32 %srt.b_i_prev
+  %srt.b_head = load %Value, %Value* %srt.b_slot
+  %srt.b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %srt.b_cp_mem = call i8* @wam_arena_alloc(i64 %srt.b_cp_size)
+  %srt.b_cp = bitcast i8* %srt.b_cp_mem to %Compound*
+  %srt.b_fn_slot = getelementptr %Compound, %Compound* %srt.b_cp, i32 0, i32 0
+  %srt.b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %srt.b_fn_ptr, i8** %srt.b_fn_slot
+  %srt.b_ar_slot = getelementptr %Compound, %Compound* %srt.b_cp, i32 0, i32 1
+  store i32 2, i32* %srt.b_ar_slot
+  %srt.b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %srt.b_args = bitcast i8* %srt.b_args_mem to %Value*
+  %srt.b_args_slot = getelementptr %Compound, %Compound* %srt.b_cp, i32 0, i32 2
+  store %Value* %srt.b_args, %Value** %srt.b_args_slot
+  %srt.b_h_ptr = getelementptr %Value, %Value* %srt.b_args, i32 0
+  store %Value %srt.b_head, %Value* %srt.b_h_ptr
+  %srt.b_t_ptr = getelementptr %Value, %Value* %srt.b_args, i32 1
+  store %Value %srt.b_acc, %Value* %srt.b_t_ptr
+  %srt.b_cp_i64 = ptrtoint %Compound* %srt.b_cp to i64
+  %srt.b_nc0 = insertvalue %Value undef, i32 3, 0
+  %srt.b_new_cons = insertvalue %Value %srt.b_nc0, i64 %srt.b_cp_i64, 1
+  br label %srt.b_loop
+srt.b_bind:
+  %srt.b_raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %srt.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %srt.b_raw2, %Value %srt.b_acc)
+  ret i1 %srt.b_ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -5270,6 +5778,3288 @@ sba.unify5:
   %sba.u5 = call i1 @wam_unify_value(%WamState* %vm, %Value %sba.raw5, %Value %sba.new_v)
   ret i1 %sba.u5
 
+builtin_atom_number:
+  ; M32: atom_number(?Atom, ?Number) -- integer mode only.
+  ;   A1 bound atom: parse digits (with optional leading ''-''), unify
+  ;     A2 with Integer(value). Empty / sign-only / non-digit input
+  ;     fails cleanly.
+  ;   A1 unbound + A2 bound Integer: snprintf the value with %lld,
+  ;     intern it, unify A1 with the resulting atom.
+  ;   Other combinations fail. Float parsing / formatting is deferred.
+  %anu.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %anu.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %anu.t1 = extractvalue %Value %anu.a1, 0
+  %anu.is_atom = icmp eq i32 %anu.t1, 0
+  br i1 %anu.is_atom, label %anu.fwd_lookup, label %anu.try_reverse
+anu.try_reverse:
+  %anu.t2 = extractvalue %Value %anu.a2, 0
+  %anu.is_int2 = icmp eq i32 %anu.t2, 1
+  br i1 %anu.is_int2, label %anu.reverse, label %anu.fail
+anu.fail:
+  ret i1 false
+anu.fwd_lookup:
+  %anu.aid = extractvalue %Value %anu.a1, 1
+  %anu.str = call i8* @wam_atom_to_string(i64 %anu.aid)
+  %anu.str_null = icmp eq i8* %anu.str, null
+  br i1 %anu.str_null, label %anu.fail, label %anu.parse_init
+anu.parse_init:
+  ; Inspect first byte to decide sign.
+  %anu.c0 = load i8, i8* %anu.str
+  %anu.is_neg = icmp eq i8 %anu.c0, 45   ; ASCII ''-''
+  br i1 %anu.is_neg, label %anu.sel_neg, label %anu.sel_pos
+anu.sel_neg:
+  %anu.pn0 = getelementptr i8, i8* %anu.str, i32 1
+  br label %anu.first_check
+anu.sel_pos:
+  br label %anu.first_check
+anu.first_check:
+  %anu.p_start = phi i8* [ %anu.pn0, %anu.sel_neg ], [ %anu.str, %anu.sel_pos ]
+  %anu.sign = phi i64 [ -1, %anu.sel_neg ], [ 1, %anu.sel_pos ]
+  ; Require at least one digit after the optional sign.
+  %anu.fc = load i8, i8* %anu.p_start
+  %anu.fc_ge0 = icmp uge i8 %anu.fc, 48
+  %anu.fc_le9 = icmp ule i8 %anu.fc, 57
+  %anu.fc_dig = and i1 %anu.fc_ge0, %anu.fc_le9
+  br i1 %anu.fc_dig, label %anu.parse_loop, label %anu.fail
+anu.parse_loop:
+  %anu.p = phi i8* [ %anu.p_start, %anu.first_check ], [ %anu.pn, %anu.parse_step ]
+  %anu.acc = phi i64 [ 0, %anu.first_check ], [ %anu.acc1, %anu.parse_step ]
+  %anu.lc = load i8, i8* %anu.p
+  %anu.lc_zero = icmp eq i8 %anu.lc, 0
+  br i1 %anu.lc_zero, label %anu.parse_done, label %anu.parse_check
+anu.parse_check:
+  %anu.lc_ge0 = icmp uge i8 %anu.lc, 48
+  %anu.lc_le9 = icmp ule i8 %anu.lc, 57
+  %anu.lc_dig = and i1 %anu.lc_ge0, %anu.lc_le9
+  br i1 %anu.lc_dig, label %anu.parse_step, label %anu.fail
+anu.parse_step:
+  %anu.dig8 = sub i8 %anu.lc, 48
+  %anu.dig64 = zext i8 %anu.dig8 to i64
+  %anu.mul = mul i64 %anu.acc, 10
+  %anu.acc1 = add i64 %anu.mul, %anu.dig64
+  %anu.pn = getelementptr i8, i8* %anu.p, i32 1
+  br label %anu.parse_loop
+anu.parse_done:
+  %anu.signed = mul i64 %anu.acc, %anu.sign
+  %anu.fwd_v0 = insertvalue %Value undef, i32 1, 0
+  %anu.fwd_v = insertvalue %Value %anu.fwd_v0, i64 %anu.signed, 1
+  %anu.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %anu.fwd_u = call i1 @wam_unify_value(%WamState* %vm, %Value %anu.raw2, %Value %anu.fwd_v)
+  ret i1 %anu.fwd_u
+anu.reverse:
+  ; A2 bound Integer; format ``%lld`` into a 32-byte arena buffer and
+  ; intern.
+  %anu.n = extractvalue %Value %anu.a2, 1
+  call void @wam_arena_ensure()
+  %anu.rbuf = call i8* @wam_arena_alloc(i64 32)
+  %anu.rfmt = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
+  %anu.rlen = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %anu.rbuf, i64 32, i8* %anu.rfmt, i64 %anu.n)
+  %anu.rlen64 = sext i32 %anu.rlen to i64
+  %anu.rev_id = call i64 @wam_intern_atom(i8* %anu.rbuf, i64 %anu.rlen64)
+  %anu.rev_v0 = insertvalue %Value undef, i32 0, 0
+  %anu.rev_v = insertvalue %Value %anu.rev_v0, i64 %anu.rev_id, 1
+  %anu.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %anu.rev_u = call i1 @wam_unify_value(%WamState* %vm, %Value %anu.raw1, %Value %anu.rev_v)
+  ret i1 %anu.rev_u
+
+builtin_number_codes:
+  ; M33: number_codes(?Number, ?Codes) -- integer mode only.
+  ;   A1 bound Integer: snprintf %lld into an arena buffer, then walk
+  ;     the buffer back-to-front emitting an Integer-per-byte cons
+  ;     chain and unify A2 with the head.
+  ;   A1 unbound + A2 bound list of Integer codes: count + validate
+  ;     each head is Integer, copy bytes into an arena buffer, then
+  ;     parse digits (with optional leading ''-'') and bind A1 with
+  ;     the resulting Integer.
+  ;   Other modes fail. Float parsing / formatting deferred.
+  %nco.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %nco.t1 = extractvalue %Value %nco.a1, 0
+  %nco.is_int1 = icmp eq i32 %nco.t1, 1
+  br i1 %nco.is_int1, label %nco.fwd, label %nco.try_rev
+nco.try_rev:
+  %nco.a1_unb = call i1 @value_is_unbound(%Value %nco.a1)
+  br i1 %nco.a1_unb, label %nco.rev_init, label %nco.fail
+nco.fail:
+  ret i1 false
+nco.fwd:
+  ; Format number into an arena scratch buffer.
+  %nco.n = extractvalue %Value %nco.a1, 1
+  call void @wam_arena_ensure()
+  %nco.fbuf = call i8* @wam_arena_alloc(i64 32)
+  %nco.ffmt = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
+  %nco.flen32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %nco.fbuf, i64 32, i8* %nco.ffmt, i64 %nco.n)
+  br label %nco.f_build_init
+nco.f_build_init:
+  %nco.f_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %nco.f_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %nco.f_empty_v  = insertvalue %Value %nco.f_empty_v0, i64 %nco.f_empty_id, 1
+  br label %nco.f_build_loop
+nco.f_build_loop:
+  %nco.f_bi = phi i32 [ %nco.flen32, %nco.f_build_init ], [ %nco.f_bi_prev, %nco.f_build_step ]
+  %nco.f_btail = phi %Value [ %nco.f_empty_v, %nco.f_build_init ], [ %nco.f_new_cons, %nco.f_build_step ]
+  %nco.f_done_b = icmp sle i32 %nco.f_bi, 0
+  br i1 %nco.f_done_b, label %nco.f_bind_out, label %nco.f_build_step
+nco.f_build_step:
+  %nco.f_bi_prev = sub i32 %nco.f_bi, 1
+  %nco.f_cp_b = getelementptr i8, i8* %nco.fbuf, i32 %nco.f_bi_prev
+  %nco.f_ch_b = load i8, i8* %nco.f_cp_b
+  %nco.f_ch_b64 = zext i8 %nco.f_ch_b to i64
+  %nco.f_code_v = call %Value @value_integer(i64 %nco.f_ch_b64)
+  ; Allocate a [|]/2 Compound on the arena.
+  %nco.f_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %nco.f_cp_mem = call i8* @wam_arena_alloc(i64 %nco.f_cp_size)
+  %nco.f_cp = bitcast i8* %nco.f_cp_mem to %Compound*
+  %nco.f_fn_slot = getelementptr %Compound, %Compound* %nco.f_cp, i32 0, i32 0
+  %nco.f_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %nco.f_fn_ptr, i8** %nco.f_fn_slot
+  %nco.f_ar_slot = getelementptr %Compound, %Compound* %nco.f_cp, i32 0, i32 1
+  store i32 2, i32* %nco.f_ar_slot
+  %nco.f_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %nco.f_args = bitcast i8* %nco.f_args_mem to %Value*
+  %nco.f_args_slot = getelementptr %Compound, %Compound* %nco.f_cp, i32 0, i32 2
+  store %Value* %nco.f_args, %Value** %nco.f_args_slot
+  %nco.f_h_ptr = getelementptr %Value, %Value* %nco.f_args, i32 0
+  store %Value %nco.f_code_v, %Value* %nco.f_h_ptr
+  %nco.f_t_ptr = getelementptr %Value, %Value* %nco.f_args, i32 1
+  store %Value %nco.f_btail, %Value* %nco.f_t_ptr
+  %nco.f_cp_i64 = ptrtoint %Compound* %nco.f_cp to i64
+  %nco.f_nc0 = insertvalue %Value undef, i32 3, 0
+  %nco.f_new_cons = insertvalue %Value %nco.f_nc0, i64 %nco.f_cp_i64, 1
+  br label %nco.f_build_loop
+nco.f_bind_out:
+  %nco.f_raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %nco.f_uok = call i1 @wam_unify_value(%WamState* %vm, %Value %nco.f_raw2, %Value %nco.f_btail)
+  ret i1 %nco.f_uok
+
+nco.rev_init:
+  %nco.r_a2_in = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  br label %nco.r_count_loop
+nco.r_count_loop:
+  %nco.r_cur_c = phi %Value [ %nco.r_a2_in, %nco.rev_init ], [ %nco.r_next_c, %nco.r_count_ok ]
+  %nco.r_cnt = phi i32 [ 0, %nco.rev_init ], [ %nco.r_cnt1, %nco.r_count_ok ]
+  %nco.r_cur_d = call %Value @wam_deref_value(%WamState* %vm, %Value %nco.r_cur_c)
+  %nco.r_tag_c = extractvalue %Value %nco.r_cur_d, 0
+  %nco.r_is_cmp_c = icmp eq i32 %nco.r_tag_c, 3
+  br i1 %nco.r_is_cmp_c, label %nco.r_count_step, label %nco.r_count_done
+nco.r_count_step:
+  %nco.r_cp_bits_c = extractvalue %Value %nco.r_cur_d, 1
+  %nco.r_cp_c = inttoptr i64 %nco.r_cp_bits_c to %Compound*
+  %nco.r_args_slot_c = getelementptr %Compound, %Compound* %nco.r_cp_c, i32 0, i32 2
+  %nco.r_args_c = load %Value*, %Value** %nco.r_args_slot_c
+  %nco.r_head_ptr_c = getelementptr %Value, %Value* %nco.r_args_c, i32 0
+  %nco.r_head_c = load %Value, %Value* %nco.r_head_ptr_c
+  %nco.r_head_d = call %Value @wam_deref_value(%WamState* %vm, %Value %nco.r_head_c)
+  %nco.r_head_tag = extractvalue %Value %nco.r_head_d, 0
+  %nco.r_head_is_int = icmp eq i32 %nco.r_head_tag, 1
+  br i1 %nco.r_head_is_int, label %nco.r_count_ok, label %nco.fail
+nco.r_count_ok:
+  %nco.r_tail_ptr_c = getelementptr %Value, %Value* %nco.r_args_c, i32 1
+  %nco.r_next_c = load %Value, %Value* %nco.r_tail_ptr_c
+  %nco.r_cnt1 = add i32 %nco.r_cnt, 1
+  br label %nco.r_count_loop
+nco.r_count_done:
+  ; Reject empty code list.
+  %nco.r_empty = icmp eq i32 %nco.r_cnt, 0
+  br i1 %nco.r_empty, label %nco.fail, label %nco.r_alloc
+nco.r_alloc:
+  %nco.r_buf_sz64 = sext i32 %nco.r_cnt to i64
+  %nco.r_buf_sz_full = add i64 %nco.r_buf_sz64, 1
+  call void @wam_arena_ensure()
+  %nco.r_buf = call i8* @wam_arena_alloc(i64 %nco.r_buf_sz_full)
+  br label %nco.r_fill_loop
+nco.r_fill_loop:
+  %nco.r_cur_f = phi %Value [ %nco.r_a2_in, %nco.r_alloc ], [ %nco.r_next_f, %nco.r_fill_step ]
+  %nco.r_idx = phi i32 [ 0, %nco.r_alloc ], [ %nco.r_idx1, %nco.r_fill_step ]
+  %nco.r_done_f = icmp sge i32 %nco.r_idx, %nco.r_cnt
+  br i1 %nco.r_done_f, label %nco.r_parse_init, label %nco.r_fill_step
+nco.r_fill_step:
+  %nco.r_cur_fd = call %Value @wam_deref_value(%WamState* %vm, %Value %nco.r_cur_f)
+  %nco.r_cp_bits_f = extractvalue %Value %nco.r_cur_fd, 1
+  %nco.r_cp_f = inttoptr i64 %nco.r_cp_bits_f to %Compound*
+  %nco.r_args_slot_f = getelementptr %Compound, %Compound* %nco.r_cp_f, i32 0, i32 2
+  %nco.r_args_f = load %Value*, %Value** %nco.r_args_slot_f
+  %nco.r_head_ptr_f = getelementptr %Value, %Value* %nco.r_args_f, i32 0
+  %nco.r_head_f = load %Value, %Value* %nco.r_head_ptr_f
+  %nco.r_head_fd = call %Value @wam_deref_value(%WamState* %vm, %Value %nco.r_head_f)
+  %nco.r_code_i = extractvalue %Value %nco.r_head_fd, 1
+  %nco.r_code_b = trunc i64 %nco.r_code_i to i8
+  %nco.r_dst = getelementptr i8, i8* %nco.r_buf, i32 %nco.r_idx
+  store i8 %nco.r_code_b, i8* %nco.r_dst
+  %nco.r_tail_ptr_f = getelementptr %Value, %Value* %nco.r_args_f, i32 1
+  %nco.r_next_f = load %Value, %Value* %nco.r_tail_ptr_f
+  %nco.r_idx1 = add i32 %nco.r_idx, 1
+  br label %nco.r_fill_loop
+nco.r_parse_init:
+  ; Null-terminate the assembled buffer, then parse like atom_number
+  ; (optional leading ''-'', then >=1 digit, accumulate).
+  %nco.r_term = getelementptr i8, i8* %nco.r_buf, i32 %nco.r_cnt
+  store i8 0, i8* %nco.r_term
+  %nco.r_c0 = load i8, i8* %nco.r_buf
+  %nco.r_is_neg = icmp eq i8 %nco.r_c0, 45
+  br i1 %nco.r_is_neg, label %nco.r_sel_neg, label %nco.r_sel_pos
+nco.r_sel_neg:
+  %nco.r_pn0 = getelementptr i8, i8* %nco.r_buf, i32 1
+  br label %nco.r_first_check
+nco.r_sel_pos:
+  br label %nco.r_first_check
+nco.r_first_check:
+  %nco.r_p_start = phi i8* [ %nco.r_pn0, %nco.r_sel_neg ], [ %nco.r_buf, %nco.r_sel_pos ]
+  %nco.r_sign = phi i64 [ -1, %nco.r_sel_neg ], [ 1, %nco.r_sel_pos ]
+  %nco.r_fc = load i8, i8* %nco.r_p_start
+  %nco.r_fc_ge0 = icmp uge i8 %nco.r_fc, 48
+  %nco.r_fc_le9 = icmp ule i8 %nco.r_fc, 57
+  %nco.r_fc_dig = and i1 %nco.r_fc_ge0, %nco.r_fc_le9
+  br i1 %nco.r_fc_dig, label %nco.r_parse_loop, label %nco.fail
+nco.r_parse_loop:
+  %nco.r_p = phi i8* [ %nco.r_p_start, %nco.r_first_check ], [ %nco.r_pn, %nco.r_parse_step ]
+  %nco.r_acc = phi i64 [ 0, %nco.r_first_check ], [ %nco.r_acc1, %nco.r_parse_step ]
+  %nco.r_lc = load i8, i8* %nco.r_p
+  %nco.r_lc_zero = icmp eq i8 %nco.r_lc, 0
+  br i1 %nco.r_lc_zero, label %nco.r_parse_done, label %nco.r_parse_check
+nco.r_parse_check:
+  %nco.r_lc_ge0 = icmp uge i8 %nco.r_lc, 48
+  %nco.r_lc_le9 = icmp ule i8 %nco.r_lc, 57
+  %nco.r_lc_dig = and i1 %nco.r_lc_ge0, %nco.r_lc_le9
+  br i1 %nco.r_lc_dig, label %nco.r_parse_step, label %nco.fail
+nco.r_parse_step:
+  %nco.r_dig8 = sub i8 %nco.r_lc, 48
+  %nco.r_dig64 = zext i8 %nco.r_dig8 to i64
+  %nco.r_mul = mul i64 %nco.r_acc, 10
+  %nco.r_acc1 = add i64 %nco.r_mul, %nco.r_dig64
+  %nco.r_pn = getelementptr i8, i8* %nco.r_p, i32 1
+  br label %nco.r_parse_loop
+nco.r_parse_done:
+  %nco.r_signed = mul i64 %nco.r_acc, %nco.r_sign
+  %nco.r_rev_v0 = insertvalue %Value undef, i32 1, 0
+  %nco.r_rev_v = insertvalue %Value %nco.r_rev_v0, i64 %nco.r_signed, 1
+  %nco.r_raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %nco.r_uok = call i1 @wam_unify_value(%WamState* %vm, %Value %nco.r_raw1, %Value %nco.r_rev_v)
+  ret i1 %nco.r_uok
+
+builtin_number_chars:
+  ; M34: number_chars(?Number, ?Chars) -- integer mode only.
+  ;   A1 bound Integer: snprintf %lld, walk buffer back-to-front
+  ;     emitting an Atom-per-byte cons chain. Heads are single-char
+  ;     atoms from @wam_char_to_atom; unify A2 with the chain head.
+  ;   A1 unbound + A2 bound list of single-char Atoms: count +
+  ;     validate Atom heads, copy each element''s first byte into a
+  ;     buffer, null-terminate, parse with the atom_number/2 digit
+  ;     loop, bind A1 = Integer.
+  ;   Other modes fail. Float parsing / formatting deferred.
+  %nch.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %nch.t1 = extractvalue %Value %nch.a1, 0
+  %nch.is_int1 = icmp eq i32 %nch.t1, 1
+  br i1 %nch.is_int1, label %nch.fwd, label %nch.try_rev
+nch.try_rev:
+  %nch.a1_unb = call i1 @value_is_unbound(%Value %nch.a1)
+  br i1 %nch.a1_unb, label %nch.rev_init, label %nch.fail
+nch.fail:
+  ret i1 false
+nch.fwd:
+  %nch.n = extractvalue %Value %nch.a1, 1
+  call void @wam_arena_ensure()
+  %nch.fbuf = call i8* @wam_arena_alloc(i64 32)
+  %nch.ffmt = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
+  %nch.flen32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %nch.fbuf, i64 32, i8* %nch.ffmt, i64 %nch.n)
+  br label %nch.f_build_init
+nch.f_build_init:
+  %nch.f_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %nch.f_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %nch.f_empty_v  = insertvalue %Value %nch.f_empty_v0, i64 %nch.f_empty_id, 1
+  br label %nch.f_build_loop
+nch.f_build_loop:
+  %nch.f_bi = phi i32 [ %nch.flen32, %nch.f_build_init ], [ %nch.f_bi_prev, %nch.f_build_step ]
+  %nch.f_btail = phi %Value [ %nch.f_empty_v, %nch.f_build_init ], [ %nch.f_new_cons, %nch.f_build_step ]
+  %nch.f_done_b = icmp sle i32 %nch.f_bi, 0
+  br i1 %nch.f_done_b, label %nch.f_bind_out, label %nch.f_build_step
+nch.f_build_step:
+  %nch.f_bi_prev = sub i32 %nch.f_bi, 1
+  %nch.f_cp_b = getelementptr i8, i8* %nch.fbuf, i32 %nch.f_bi_prev
+  %nch.f_ch_b = load i8, i8* %nch.f_cp_b
+  %nch.f_ch_b64 = zext i8 %nch.f_ch_b to i64
+  %nch.f_char_aid = call i64 @wam_char_to_atom(i64 %nch.f_ch_b64)
+  %nch.f_char_v0 = insertvalue %Value undef, i32 0, 0
+  %nch.f_char_v = insertvalue %Value %nch.f_char_v0, i64 %nch.f_char_aid, 1
+  ; Allocate a [|]/2 Compound on the arena.
+  %nch.f_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %nch.f_cp_mem = call i8* @wam_arena_alloc(i64 %nch.f_cp_size)
+  %nch.f_cp = bitcast i8* %nch.f_cp_mem to %Compound*
+  %nch.f_fn_slot = getelementptr %Compound, %Compound* %nch.f_cp, i32 0, i32 0
+  %nch.f_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %nch.f_fn_ptr, i8** %nch.f_fn_slot
+  %nch.f_ar_slot = getelementptr %Compound, %Compound* %nch.f_cp, i32 0, i32 1
+  store i32 2, i32* %nch.f_ar_slot
+  %nch.f_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %nch.f_args = bitcast i8* %nch.f_args_mem to %Value*
+  %nch.f_args_slot = getelementptr %Compound, %Compound* %nch.f_cp, i32 0, i32 2
+  store %Value* %nch.f_args, %Value** %nch.f_args_slot
+  %nch.f_h_ptr = getelementptr %Value, %Value* %nch.f_args, i32 0
+  store %Value %nch.f_char_v, %Value* %nch.f_h_ptr
+  %nch.f_t_ptr = getelementptr %Value, %Value* %nch.f_args, i32 1
+  store %Value %nch.f_btail, %Value* %nch.f_t_ptr
+  %nch.f_cp_i64 = ptrtoint %Compound* %nch.f_cp to i64
+  %nch.f_nc0 = insertvalue %Value undef, i32 3, 0
+  %nch.f_new_cons = insertvalue %Value %nch.f_nc0, i64 %nch.f_cp_i64, 1
+  br label %nch.f_build_loop
+nch.f_bind_out:
+  %nch.f_raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %nch.f_uok = call i1 @wam_unify_value(%WamState* %vm, %Value %nch.f_raw2, %Value %nch.f_btail)
+  ret i1 %nch.f_uok
+
+nch.rev_init:
+  %nch.r_a2_in = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  br label %nch.r_count_loop
+nch.r_count_loop:
+  %nch.r_cur_c = phi %Value [ %nch.r_a2_in, %nch.rev_init ], [ %nch.r_next_c, %nch.r_count_ok ]
+  %nch.r_cnt = phi i32 [ 0, %nch.rev_init ], [ %nch.r_cnt1, %nch.r_count_ok ]
+  %nch.r_cur_d = call %Value @wam_deref_value(%WamState* %vm, %Value %nch.r_cur_c)
+  %nch.r_tag_c = extractvalue %Value %nch.r_cur_d, 0
+  %nch.r_is_cmp_c = icmp eq i32 %nch.r_tag_c, 3
+  br i1 %nch.r_is_cmp_c, label %nch.r_count_step, label %nch.r_count_done
+nch.r_count_step:
+  %nch.r_cp_bits_c = extractvalue %Value %nch.r_cur_d, 1
+  %nch.r_cp_c = inttoptr i64 %nch.r_cp_bits_c to %Compound*
+  %nch.r_args_slot_c = getelementptr %Compound, %Compound* %nch.r_cp_c, i32 0, i32 2
+  %nch.r_args_c = load %Value*, %Value** %nch.r_args_slot_c
+  %nch.r_head_ptr_c = getelementptr %Value, %Value* %nch.r_args_c, i32 0
+  %nch.r_head_c = load %Value, %Value* %nch.r_head_ptr_c
+  %nch.r_head_d = call %Value @wam_deref_value(%WamState* %vm, %Value %nch.r_head_c)
+  %nch.r_head_tag = extractvalue %Value %nch.r_head_d, 0
+  %nch.r_head_is_atom = icmp eq i32 %nch.r_head_tag, 0
+  br i1 %nch.r_head_is_atom, label %nch.r_count_ok, label %nch.fail
+nch.r_count_ok:
+  %nch.r_tail_ptr_c = getelementptr %Value, %Value* %nch.r_args_c, i32 1
+  %nch.r_next_c = load %Value, %Value* %nch.r_tail_ptr_c
+  %nch.r_cnt1 = add i32 %nch.r_cnt, 1
+  br label %nch.r_count_loop
+nch.r_count_done:
+  %nch.r_empty = icmp eq i32 %nch.r_cnt, 0
+  br i1 %nch.r_empty, label %nch.fail, label %nch.r_alloc
+nch.r_alloc:
+  %nch.r_buf_sz64 = sext i32 %nch.r_cnt to i64
+  %nch.r_buf_sz_full = add i64 %nch.r_buf_sz64, 1
+  call void @wam_arena_ensure()
+  %nch.r_buf = call i8* @wam_arena_alloc(i64 %nch.r_buf_sz_full)
+  br label %nch.r_fill_loop
+nch.r_fill_loop:
+  %nch.r_cur_f = phi %Value [ %nch.r_a2_in, %nch.r_alloc ], [ %nch.r_next_f, %nch.r_fill_copy ]
+  %nch.r_idx = phi i32 [ 0, %nch.r_alloc ], [ %nch.r_idx1, %nch.r_fill_copy ]
+  %nch.r_done_f = icmp sge i32 %nch.r_idx, %nch.r_cnt
+  br i1 %nch.r_done_f, label %nch.r_parse_init, label %nch.r_fill_step
+nch.r_fill_step:
+  %nch.r_cur_fd = call %Value @wam_deref_value(%WamState* %vm, %Value %nch.r_cur_f)
+  %nch.r_cp_bits_f = extractvalue %Value %nch.r_cur_fd, 1
+  %nch.r_cp_f = inttoptr i64 %nch.r_cp_bits_f to %Compound*
+  %nch.r_args_slot_f = getelementptr %Compound, %Compound* %nch.r_cp_f, i32 0, i32 2
+  %nch.r_args_f = load %Value*, %Value** %nch.r_args_slot_f
+  %nch.r_head_ptr_f = getelementptr %Value, %Value* %nch.r_args_f, i32 0
+  %nch.r_head_f = load %Value, %Value* %nch.r_head_ptr_f
+  %nch.r_head_fd = call %Value @wam_deref_value(%WamState* %vm, %Value %nch.r_head_f)
+  %nch.r_head_aid = extractvalue %Value %nch.r_head_fd, 1
+  %nch.r_str = call i8* @wam_atom_to_string(i64 %nch.r_head_aid)
+  %nch.r_str_null = icmp eq i8* %nch.r_str, null
+  br i1 %nch.r_str_null, label %nch.fail, label %nch.r_fill_copy
+nch.r_fill_copy:
+  %nch.r_ch = load i8, i8* %nch.r_str
+  %nch.r_dst = getelementptr i8, i8* %nch.r_buf, i32 %nch.r_idx
+  store i8 %nch.r_ch, i8* %nch.r_dst
+  %nch.r_tail_ptr_f = getelementptr %Value, %Value* %nch.r_args_f, i32 1
+  %nch.r_next_f = load %Value, %Value* %nch.r_tail_ptr_f
+  %nch.r_idx1 = add i32 %nch.r_idx, 1
+  br label %nch.r_fill_loop
+nch.r_parse_init:
+  %nch.r_term = getelementptr i8, i8* %nch.r_buf, i32 %nch.r_cnt
+  store i8 0, i8* %nch.r_term
+  %nch.r_c0 = load i8, i8* %nch.r_buf
+  %nch.r_is_neg = icmp eq i8 %nch.r_c0, 45
+  br i1 %nch.r_is_neg, label %nch.r_sel_neg, label %nch.r_sel_pos
+nch.r_sel_neg:
+  %nch.r_pn0 = getelementptr i8, i8* %nch.r_buf, i32 1
+  br label %nch.r_first_check
+nch.r_sel_pos:
+  br label %nch.r_first_check
+nch.r_first_check:
+  %nch.r_p_start = phi i8* [ %nch.r_pn0, %nch.r_sel_neg ], [ %nch.r_buf, %nch.r_sel_pos ]
+  %nch.r_sign = phi i64 [ -1, %nch.r_sel_neg ], [ 1, %nch.r_sel_pos ]
+  %nch.r_fc = load i8, i8* %nch.r_p_start
+  %nch.r_fc_ge0 = icmp uge i8 %nch.r_fc, 48
+  %nch.r_fc_le9 = icmp ule i8 %nch.r_fc, 57
+  %nch.r_fc_dig = and i1 %nch.r_fc_ge0, %nch.r_fc_le9
+  br i1 %nch.r_fc_dig, label %nch.r_parse_loop, label %nch.fail
+nch.r_parse_loop:
+  %nch.r_p = phi i8* [ %nch.r_p_start, %nch.r_first_check ], [ %nch.r_pn, %nch.r_parse_step ]
+  %nch.r_acc = phi i64 [ 0, %nch.r_first_check ], [ %nch.r_acc1, %nch.r_parse_step ]
+  %nch.r_lc = load i8, i8* %nch.r_p
+  %nch.r_lc_zero = icmp eq i8 %nch.r_lc, 0
+  br i1 %nch.r_lc_zero, label %nch.r_parse_done, label %nch.r_parse_check
+nch.r_parse_check:
+  %nch.r_lc_ge0 = icmp uge i8 %nch.r_lc, 48
+  %nch.r_lc_le9 = icmp ule i8 %nch.r_lc, 57
+  %nch.r_lc_dig = and i1 %nch.r_lc_ge0, %nch.r_lc_le9
+  br i1 %nch.r_lc_dig, label %nch.r_parse_step, label %nch.fail
+nch.r_parse_step:
+  %nch.r_dig8 = sub i8 %nch.r_lc, 48
+  %nch.r_dig64 = zext i8 %nch.r_dig8 to i64
+  %nch.r_mul = mul i64 %nch.r_acc, 10
+  %nch.r_acc1 = add i64 %nch.r_mul, %nch.r_dig64
+  %nch.r_pn = getelementptr i8, i8* %nch.r_p, i32 1
+  br label %nch.r_parse_loop
+nch.r_parse_done:
+  %nch.r_signed = mul i64 %nch.r_acc, %nch.r_sign
+  %nch.r_rev_v0 = insertvalue %Value undef, i32 1, 0
+  %nch.r_rev_v = insertvalue %Value %nch.r_rev_v0, i64 %nch.r_signed, 1
+  %nch.r_raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %nch.r_uok = call i1 @wam_unify_value(%WamState* %vm, %Value %nch.r_raw1, %Value %nch.r_rev_v)
+  ret i1 %nch.r_uok
+
+builtin_upcase_atom:
+  ; M35: upcase_atom(+Atom, ?Upper) -- map ''a''..''z'' to ''A''..''Z'',
+  ; pass other bytes through unchanged. Requires A1 bound atom; A2
+  ; can be unbound (binds) or bound atom (unify-equality check).
+  %uca.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %uca.t1 = extractvalue %Value %uca.a1, 0
+  %uca.is_atom = icmp eq i32 %uca.t1, 0
+  br i1 %uca.is_atom, label %uca.lookup, label %uca.fail
+uca.fail:
+  ret i1 false
+uca.lookup:
+  %uca.aid = extractvalue %Value %uca.a1, 1
+  %uca.str = call i8* @wam_atom_to_string(i64 %uca.aid)
+  %uca.str_null = icmp eq i8* %uca.str, null
+  br i1 %uca.str_null, label %uca.fail, label %uca.measure
+uca.measure:
+  br label %uca.m_loop
+uca.m_loop:
+  %uca.mp = phi i8* [ %uca.str, %uca.measure ], [ %uca.mpn, %uca.m_step ]
+  %uca.mn = phi i64 [ 0, %uca.measure ], [ %uca.mn1, %uca.m_step ]
+  %uca.mc = load i8, i8* %uca.mp
+  %uca.mz = icmp eq i8 %uca.mc, 0
+  br i1 %uca.mz, label %uca.alloc, label %uca.m_step
+uca.m_step:
+  %uca.mpn = getelementptr i8, i8* %uca.mp, i32 1
+  %uca.mn1 = add i64 %uca.mn, 1
+  br label %uca.m_loop
+uca.alloc:
+  call void @wam_arena_ensure()
+  %uca.bufsz = add i64 %uca.mn, 1
+  %uca.buf = call i8* @wam_arena_alloc(i64 %uca.bufsz)
+  br label %uca.x_loop
+uca.x_loop:
+  %uca.xi = phi i64 [ 0, %uca.alloc ], [ %uca.xi1, %uca.x_step ]
+  %uca.xdone = icmp uge i64 %uca.xi, %uca.mn
+  br i1 %uca.xdone, label %uca.x_term, label %uca.x_step
+uca.x_step:
+  %uca.xsrc = getelementptr i8, i8* %uca.str, i64 %uca.xi
+  %uca.xch = load i8, i8* %uca.xsrc
+  ; Lowercase if ''a''..''z'' (97..122), else passthrough.
+  %uca.xge = icmp uge i8 %uca.xch, 97
+  %uca.xle = icmp ule i8 %uca.xch, 122
+  %uca.xlow = and i1 %uca.xge, %uca.xle
+  %uca.xup = sub i8 %uca.xch, 32
+  %uca.xout = select i1 %uca.xlow, i8 %uca.xup, i8 %uca.xch
+  %uca.xdst = getelementptr i8, i8* %uca.buf, i64 %uca.xi
+  store i8 %uca.xout, i8* %uca.xdst
+  %uca.xi1 = add i64 %uca.xi, 1
+  br label %uca.x_loop
+uca.x_term:
+  %uca.term_dst = getelementptr i8, i8* %uca.buf, i64 %uca.mn
+  store i8 0, i8* %uca.term_dst
+  %uca.new_id = call i64 @wam_intern_atom(i8* %uca.buf, i64 %uca.mn)
+  %uca.new_v0 = insertvalue %Value undef, i32 0, 0
+  %uca.new_v = insertvalue %Value %uca.new_v0, i64 %uca.new_id, 1
+  %uca.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %uca.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %uca.raw2, %Value %uca.new_v)
+  ret i1 %uca.uok
+
+builtin_downcase_atom:
+  ; M35: downcase_atom(+Atom, ?Lower) -- map ''A''..''Z'' to ''a''..''z'',
+  ; pass other bytes through unchanged. Same shape as upcase_atom but
+  ; with the inverse byte transform.
+  %dca.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %dca.t1 = extractvalue %Value %dca.a1, 0
+  %dca.is_atom = icmp eq i32 %dca.t1, 0
+  br i1 %dca.is_atom, label %dca.lookup, label %dca.fail
+dca.fail:
+  ret i1 false
+dca.lookup:
+  %dca.aid = extractvalue %Value %dca.a1, 1
+  %dca.str = call i8* @wam_atom_to_string(i64 %dca.aid)
+  %dca.str_null = icmp eq i8* %dca.str, null
+  br i1 %dca.str_null, label %dca.fail, label %dca.measure
+dca.measure:
+  br label %dca.m_loop
+dca.m_loop:
+  %dca.mp = phi i8* [ %dca.str, %dca.measure ], [ %dca.mpn, %dca.m_step ]
+  %dca.mn = phi i64 [ 0, %dca.measure ], [ %dca.mn1, %dca.m_step ]
+  %dca.mc = load i8, i8* %dca.mp
+  %dca.mz = icmp eq i8 %dca.mc, 0
+  br i1 %dca.mz, label %dca.alloc, label %dca.m_step
+dca.m_step:
+  %dca.mpn = getelementptr i8, i8* %dca.mp, i32 1
+  %dca.mn1 = add i64 %dca.mn, 1
+  br label %dca.m_loop
+dca.alloc:
+  call void @wam_arena_ensure()
+  %dca.bufsz = add i64 %dca.mn, 1
+  %dca.buf = call i8* @wam_arena_alloc(i64 %dca.bufsz)
+  br label %dca.x_loop
+dca.x_loop:
+  %dca.xi = phi i64 [ 0, %dca.alloc ], [ %dca.xi1, %dca.x_step ]
+  %dca.xdone = icmp uge i64 %dca.xi, %dca.mn
+  br i1 %dca.xdone, label %dca.x_term, label %dca.x_step
+dca.x_step:
+  %dca.xsrc = getelementptr i8, i8* %dca.str, i64 %dca.xi
+  %dca.xch = load i8, i8* %dca.xsrc
+  ; Uppercase if ''A''..''Z'' (65..90), else passthrough.
+  %dca.xge = icmp uge i8 %dca.xch, 65
+  %dca.xle = icmp ule i8 %dca.xch, 90
+  %dca.xupp = and i1 %dca.xge, %dca.xle
+  %dca.xlow = add i8 %dca.xch, 32
+  %dca.xout = select i1 %dca.xupp, i8 %dca.xlow, i8 %dca.xch
+  %dca.xdst = getelementptr i8, i8* %dca.buf, i64 %dca.xi
+  store i8 %dca.xout, i8* %dca.xdst
+  %dca.xi1 = add i64 %dca.xi, 1
+  br label %dca.x_loop
+dca.x_term:
+  %dca.term_dst = getelementptr i8, i8* %dca.buf, i64 %dca.mn
+  store i8 0, i8* %dca.term_dst
+  %dca.new_id = call i64 @wam_intern_atom(i8* %dca.buf, i64 %dca.mn)
+  %dca.new_v0 = insertvalue %Value undef, i32 0, 0
+  %dca.new_v = insertvalue %Value %dca.new_v0, i64 %dca.new_id, 1
+  %dca.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %dca.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %dca.raw2, %Value %dca.new_v)
+  ret i1 %dca.uok
+
+builtin_atom_string_alias:
+  ; M36: atom_string(?Atom, ?String) and string_to_atom(?String, ?Atom)
+  ; -- the runtime has no distinct string type, so both reduce to
+  ; unifying A1 with A2 (handles bind, check, and both-unbound modes
+  ; uniformly). string_concat/3 and string_length/2 share dispatch
+  ; labels with atom_concat / atom_length directly (no block needed).
+  %asa.r1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %asa.r2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %asa.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %asa.r1, %Value %asa.r2)
+  ret i1 %asa.ok
+
+builtin_nth0:
+  ; M37: nth0(+Index, +List, ?Elem) -- 0-indexed list access.
+  ; Walks the [|]/2 chain Index times then takes the head; unifies A3
+  ; with that element. Negative Index, non-Integer Index, or running
+  ; off the end of the list all fail cleanly.
+  %n0.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %n0.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %n0.t1 = extractvalue %Value %n0.a1, 0
+  %n0.is_int = icmp eq i32 %n0.t1, 1
+  br i1 %n0.is_int, label %n0.start, label %n0.fail
+n0.fail:
+  ret i1 false
+n0.start:
+  %n0.i0 = extractvalue %Value %n0.a1, 1
+  %n0.i0_neg = icmp slt i64 %n0.i0, 0
+  br i1 %n0.i0_neg, label %n0.fail, label %n0.loop
+n0.loop:
+  %n0.cur = phi %Value [ %n0.a2, %n0.start ], [ %n0.next, %n0.advance ]
+  %n0.i = phi i64 [ %n0.i0, %n0.start ], [ %n0.i_next, %n0.advance ]
+  %n0.d = call %Value @wam_deref_value(%WamState* %vm, %Value %n0.cur)
+  %n0.tag = extractvalue %Value %n0.d, 0
+  %n0.is_cmp = icmp eq i32 %n0.tag, 3
+  br i1 %n0.is_cmp, label %n0.dispatch, label %n0.fail
+n0.dispatch:
+  %n0.i_zero = icmp eq i64 %n0.i, 0
+  br i1 %n0.i_zero, label %n0.take_head, label %n0.advance
+n0.advance:
+  %n0.cp = extractvalue %Value %n0.d, 1
+  %n0.cp_ptr = inttoptr i64 %n0.cp to %Compound*
+  %n0.args_slot = getelementptr %Compound, %Compound* %n0.cp_ptr, i32 0, i32 2
+  %n0.args = load %Value*, %Value** %n0.args_slot
+  %n0.tail_ptr = getelementptr %Value, %Value* %n0.args, i32 1
+  %n0.next = load %Value, %Value* %n0.tail_ptr
+  %n0.i_next = sub i64 %n0.i, 1
+  br label %n0.loop
+n0.take_head:
+  %n0.cp_h = extractvalue %Value %n0.d, 1
+  %n0.cp_h_ptr = inttoptr i64 %n0.cp_h to %Compound*
+  %n0.h_args_slot = getelementptr %Compound, %Compound* %n0.cp_h_ptr, i32 0, i32 2
+  %n0.h_args = load %Value*, %Value** %n0.h_args_slot
+  %n0.head_ptr = getelementptr %Value, %Value* %n0.h_args, i32 0
+  %n0.head = load %Value, %Value* %n0.head_ptr
+  %n0.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %n0.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %n0.raw3, %Value %n0.head)
+  ret i1 %n0.ok
+
+builtin_nth1:
+  ; M37: nth1(+Index, +List, ?Elem) -- 1-indexed list access. Same
+  ; mechanics as nth0 but the loop starts at Index - 1; Index < 1
+  ; fails.
+  %n1.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %n1.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %n1.t1 = extractvalue %Value %n1.a1, 0
+  %n1.is_int = icmp eq i32 %n1.t1, 1
+  br i1 %n1.is_int, label %n1.start, label %n1.fail
+n1.fail:
+  ret i1 false
+n1.start:
+  %n1.i_raw = extractvalue %Value %n1.a1, 1
+  %n1.i_le0 = icmp sle i64 %n1.i_raw, 0
+  br i1 %n1.i_le0, label %n1.fail, label %n1.adjust
+n1.adjust:
+  %n1.i0 = sub i64 %n1.i_raw, 1
+  br label %n1.loop
+n1.loop:
+  %n1.cur = phi %Value [ %n1.a2, %n1.adjust ], [ %n1.next, %n1.advance ]
+  %n1.i = phi i64 [ %n1.i0, %n1.adjust ], [ %n1.i_next, %n1.advance ]
+  %n1.d = call %Value @wam_deref_value(%WamState* %vm, %Value %n1.cur)
+  %n1.tag = extractvalue %Value %n1.d, 0
+  %n1.is_cmp = icmp eq i32 %n1.tag, 3
+  br i1 %n1.is_cmp, label %n1.dispatch, label %n1.fail
+n1.dispatch:
+  %n1.i_zero = icmp eq i64 %n1.i, 0
+  br i1 %n1.i_zero, label %n1.take_head, label %n1.advance
+n1.advance:
+  %n1.cp = extractvalue %Value %n1.d, 1
+  %n1.cp_ptr = inttoptr i64 %n1.cp to %Compound*
+  %n1.args_slot = getelementptr %Compound, %Compound* %n1.cp_ptr, i32 0, i32 2
+  %n1.args = load %Value*, %Value** %n1.args_slot
+  %n1.tail_ptr = getelementptr %Value, %Value* %n1.args, i32 1
+  %n1.next = load %Value, %Value* %n1.tail_ptr
+  %n1.i_next = sub i64 %n1.i, 1
+  br label %n1.loop
+n1.take_head:
+  %n1.cp_h = extractvalue %Value %n1.d, 1
+  %n1.cp_h_ptr = inttoptr i64 %n1.cp_h to %Compound*
+  %n1.h_args_slot = getelementptr %Compound, %Compound* %n1.cp_h_ptr, i32 0, i32 2
+  %n1.h_args = load %Value*, %Value** %n1.h_args_slot
+  %n1.head_ptr = getelementptr %Value, %Value* %n1.h_args, i32 0
+  %n1.head = load %Value, %Value* %n1.head_ptr
+  %n1.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %n1.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %n1.raw3, %Value %n1.head)
+  ret i1 %n1.ok
+
+builtin_last:
+  ; M37: last(+List, ?Elem) -- returns the last element of a non-
+  ; empty list. Walks the [|]/2 chain; when the tail of the current
+  ; cons cell is not itself a compound, the current head is the
+  ; answer. Empty list and non-list arguments fail cleanly.
+  %lst.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  br label %lst.loop
+lst.fail:
+  ret i1 false
+lst.loop:
+  %lst.cur = phi %Value [ %lst.a1, %builtin_last ], [ %lst.tail_d, %lst.step ]
+  %lst.d = call %Value @wam_deref_value(%WamState* %vm, %Value %lst.cur)
+  %lst.tag = extractvalue %Value %lst.d, 0
+  %lst.is_cmp = icmp eq i32 %lst.tag, 3
+  br i1 %lst.is_cmp, label %lst.peek, label %lst.fail
+lst.peek:
+  %lst.cp = extractvalue %Value %lst.d, 1
+  %lst.cp_ptr = inttoptr i64 %lst.cp to %Compound*
+  %lst.args_slot = getelementptr %Compound, %Compound* %lst.cp_ptr, i32 0, i32 2
+  %lst.args = load %Value*, %Value** %lst.args_slot
+  %lst.tail_ptr = getelementptr %Value, %Value* %lst.args, i32 1
+  %lst.tail = load %Value, %Value* %lst.tail_ptr
+  %lst.tail_d = call %Value @wam_deref_value(%WamState* %vm, %Value %lst.tail)
+  %lst.tail_tag = extractvalue %Value %lst.tail_d, 0
+  %lst.tail_is_cmp = icmp eq i32 %lst.tail_tag, 3
+  br i1 %lst.tail_is_cmp, label %lst.step, label %lst.done
+lst.step:
+  br label %lst.loop
+lst.done:
+  %lst.head_ptr = getelementptr %Value, %Value* %lst.args, i32 0
+  %lst.head = load %Value, %Value* %lst.head_ptr
+  %lst.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %lst.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %lst.raw2, %Value %lst.head)
+  ret i1 %lst.ok
+
+builtin_reverse:
+  ; M38: reverse(+List, ?Reversed) -- deterministic forward mode.
+  ; Single-pass walk of A1: for each cons cell, prepend the head onto
+  ; an accumulator initially seeded with the [] atom. The final
+  ; accumulator is the reversed list. Walking stops at the first
+  ; non-compound cell (matches length/2 semantics on improper lists:
+  ; reverse(non_list) -> succeeds with []).
+  %rev.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  call void @wam_arena_ensure()
+  %rev.empty_id = load i64, i64* @wam_empty_list_atom_id
+  %rev.empty_v0 = insertvalue %Value undef, i32 0, 0
+  %rev.empty_v  = insertvalue %Value %rev.empty_v0, i64 %rev.empty_id, 1
+  br label %rev.loop
+rev.loop:
+  %rev.cur = phi %Value [ %rev.a1, %builtin_reverse ], [ %rev.tail, %rev.step ]
+  %rev.acc = phi %Value [ %rev.empty_v, %builtin_reverse ], [ %rev.new_cons, %rev.step ]
+  %rev.d = call %Value @wam_deref_value(%WamState* %vm, %Value %rev.cur)
+  %rev.tag = extractvalue %Value %rev.d, 0
+  %rev.is_cmp = icmp eq i32 %rev.tag, 3
+  br i1 %rev.is_cmp, label %rev.step, label %rev.done
+rev.step:
+  %rev.cp = extractvalue %Value %rev.d, 1
+  %rev.cp_ptr = inttoptr i64 %rev.cp to %Compound*
+  %rev.args_slot = getelementptr %Compound, %Compound* %rev.cp_ptr, i32 0, i32 2
+  %rev.args = load %Value*, %Value** %rev.args_slot
+  %rev.head_ptr = getelementptr %Value, %Value* %rev.args, i32 0
+  %rev.head = load %Value, %Value* %rev.head_ptr
+  %rev.tail_ptr = getelementptr %Value, %Value* %rev.args, i32 1
+  %rev.tail = load %Value, %Value* %rev.tail_ptr
+  ; Allocate a fresh [|]/2 Compound on the arena: head = current head,
+  ; tail = accumulator.
+  %rev.new_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %rev.new_cp_mem = call i8* @wam_arena_alloc(i64 %rev.new_cp_size)
+  %rev.new_cp = bitcast i8* %rev.new_cp_mem to %Compound*
+  %rev.new_fn_slot = getelementptr %Compound, %Compound* %rev.new_cp, i32 0, i32 0
+  %rev.new_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %rev.new_fn_ptr, i8** %rev.new_fn_slot
+  %rev.new_ar_slot = getelementptr %Compound, %Compound* %rev.new_cp, i32 0, i32 1
+  store i32 2, i32* %rev.new_ar_slot
+  %rev.new_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %rev.new_args = bitcast i8* %rev.new_args_mem to %Value*
+  %rev.new_args_slot = getelementptr %Compound, %Compound* %rev.new_cp, i32 0, i32 2
+  store %Value* %rev.new_args, %Value** %rev.new_args_slot
+  %rev.new_h_ptr = getelementptr %Value, %Value* %rev.new_args, i32 0
+  store %Value %rev.head, %Value* %rev.new_h_ptr
+  %rev.new_t_ptr = getelementptr %Value, %Value* %rev.new_args, i32 1
+  store %Value %rev.acc, %Value* %rev.new_t_ptr
+  %rev.new_cp_i64 = ptrtoint %Compound* %rev.new_cp to i64
+  %rev.new_cons_v0 = insertvalue %Value undef, i32 3, 0
+  %rev.new_cons = insertvalue %Value %rev.new_cons_v0, i64 %rev.new_cp_i64, 1
+  br label %rev.loop
+rev.done:
+  %rev.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %rev.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %rev.raw2, %Value %rev.acc)
+  ret i1 %rev.ok
+
+builtin_append:
+  ; M39: append(+List1, +List2, ?List3) -- deterministic mode (A1 and
+  ; A2 both bound lists). Two-pass: count A1, allocate a Value array,
+  ; copy each head, then build the result by walking the array
+  ; back-to-front prepending each head onto A2 as the seed tail.
+  ; append([], L, L) handled as the count=0 degenerate case (the
+  ; build loop never runs, acc stays equal to A2).
+  %app.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %app.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  call void @wam_arena_ensure()
+  br label %app.c_loop
+app.c_loop:
+  %app.c_cur = phi %Value [ %app.a1, %builtin_append ], [ %app.c_next, %app.c_step ]
+  %app.c_cnt = phi i32 [ 0, %builtin_append ], [ %app.c_cnt1, %app.c_step ]
+  %app.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %app.c_cur)
+  %app.c_tag = extractvalue %Value %app.c_d, 0
+  %app.c_is_cmp = icmp eq i32 %app.c_tag, 3
+  br i1 %app.c_is_cmp, label %app.c_step, label %app.c_done
+app.c_step:
+  %app.c_cp = extractvalue %Value %app.c_d, 1
+  %app.c_cp_ptr = inttoptr i64 %app.c_cp to %Compound*
+  %app.c_args_slot = getelementptr %Compound, %Compound* %app.c_cp_ptr, i32 0, i32 2
+  %app.c_args = load %Value*, %Value** %app.c_args_slot
+  %app.c_tail_ptr = getelementptr %Value, %Value* %app.c_args, i32 1
+  %app.c_next = load %Value, %Value* %app.c_tail_ptr
+  %app.c_cnt1 = add i32 %app.c_cnt, 1
+  br label %app.c_loop
+app.c_done:
+  ; Allocate an arr of %Value (16 bytes each); skip alloc if empty.
+  %app.cnt64 = sext i32 %app.c_cnt to i64
+  %app.arr_bytes = shl i64 %app.cnt64, 4
+  %app.arr_mem = call i8* @wam_arena_alloc(i64 %app.arr_bytes)
+  %app.arr = bitcast i8* %app.arr_mem to %Value*
+  br label %app.f_loop
+app.f_loop:
+  %app.f_cur = phi %Value [ %app.a1, %app.c_done ], [ %app.f_next, %app.f_step ]
+  %app.f_idx = phi i32 [ 0, %app.c_done ], [ %app.f_idx1, %app.f_step ]
+  %app.f_done_b = icmp sge i32 %app.f_idx, %app.c_cnt
+  br i1 %app.f_done_b, label %app.b_init, label %app.f_step
+app.f_step:
+  %app.f_d = call %Value @wam_deref_value(%WamState* %vm, %Value %app.f_cur)
+  %app.f_cp = extractvalue %Value %app.f_d, 1
+  %app.f_cp_ptr = inttoptr i64 %app.f_cp to %Compound*
+  %app.f_args_slot = getelementptr %Compound, %Compound* %app.f_cp_ptr, i32 0, i32 2
+  %app.f_args = load %Value*, %Value** %app.f_args_slot
+  %app.f_head_ptr = getelementptr %Value, %Value* %app.f_args, i32 0
+  %app.f_head = load %Value, %Value* %app.f_head_ptr
+  %app.f_tail_ptr = getelementptr %Value, %Value* %app.f_args, i32 1
+  %app.f_next = load %Value, %Value* %app.f_tail_ptr
+  %app.f_slot = getelementptr %Value, %Value* %app.arr, i32 %app.f_idx
+  store %Value %app.f_head, %Value* %app.f_slot
+  %app.f_idx1 = add i32 %app.f_idx, 1
+  br label %app.f_loop
+app.b_init:
+  br label %app.b_loop
+app.b_loop:
+  ; Walk back-to-front: i from cnt-1 down to 0, prepending arr[i]
+  ; onto acc; initial acc seed is A2 (preserves the second list).
+  %app.b_i = phi i32 [ %app.c_cnt, %app.b_init ], [ %app.b_i_prev, %app.b_step ]
+  %app.b_acc = phi %Value [ %app.a2, %app.b_init ], [ %app.b_new_cons, %app.b_step ]
+  %app.b_done_b = icmp sle i32 %app.b_i, 0
+  br i1 %app.b_done_b, label %app.b_bind, label %app.b_step
+app.b_step:
+  %app.b_i_prev = sub i32 %app.b_i, 1
+  %app.b_slot = getelementptr %Value, %Value* %app.arr, i32 %app.b_i_prev
+  %app.b_head = load %Value, %Value* %app.b_slot
+  %app.b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %app.b_cp_mem = call i8* @wam_arena_alloc(i64 %app.b_cp_size)
+  %app.b_cp = bitcast i8* %app.b_cp_mem to %Compound*
+  %app.b_fn_slot = getelementptr %Compound, %Compound* %app.b_cp, i32 0, i32 0
+  %app.b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %app.b_fn_ptr, i8** %app.b_fn_slot
+  %app.b_ar_slot = getelementptr %Compound, %Compound* %app.b_cp, i32 0, i32 1
+  store i32 2, i32* %app.b_ar_slot
+  %app.b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %app.b_args = bitcast i8* %app.b_args_mem to %Value*
+  %app.b_args_slot = getelementptr %Compound, %Compound* %app.b_cp, i32 0, i32 2
+  store %Value* %app.b_args, %Value** %app.b_args_slot
+  %app.b_h_ptr = getelementptr %Value, %Value* %app.b_args, i32 0
+  store %Value %app.b_head, %Value* %app.b_h_ptr
+  %app.b_t_ptr = getelementptr %Value, %Value* %app.b_args, i32 1
+  store %Value %app.b_acc, %Value* %app.b_t_ptr
+  %app.b_cp_i64 = ptrtoint %Compound* %app.b_cp to i64
+  %app.b_nc0 = insertvalue %Value undef, i32 3, 0
+  %app.b_new_cons = insertvalue %Value %app.b_nc0, i64 %app.b_cp_i64, 1
+  br label %app.b_loop
+app.b_bind:
+  %app.b_raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %app.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %app.b_raw3, %Value %app.b_acc)
+  ret i1 %app.b_ok
+
+builtin_memberchk:
+  ; M40: memberchk(?Elem, +List) -- deterministic membership check.
+  ; Walks A2''s [|]/2 chain; for each head, save the trail position,
+  ; try wam_unify_value(A1, head). On success return true immediately
+  ; (no CP push -- memberchk is deterministic). On failure, unwind
+  ; the trail back to the saved mark and advance to the tail. Empty
+  ; list (or non-list) returns false.
+  %mck.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  br label %mck.loop
+mck.loop:
+  %mck.cur = phi %Value [ %mck.a2, %builtin_memberchk ], [ %mck.tail, %mck.rollback ]
+  %mck.d = call %Value @wam_deref_value(%WamState* %vm, %Value %mck.cur)
+  %mck.tag = extractvalue %Value %mck.d, 0
+  %mck.is_cmp = icmp eq i32 %mck.tag, 3
+  br i1 %mck.is_cmp, label %mck.try, label %mck.fail
+mck.try:
+  %mck.cp = extractvalue %Value %mck.d, 1
+  %mck.cp_ptr = inttoptr i64 %mck.cp to %Compound*
+  %mck.args_slot = getelementptr %Compound, %Compound* %mck.cp_ptr, i32 0, i32 2
+  %mck.args = load %Value*, %Value** %mck.args_slot
+  %mck.head_ptr = getelementptr %Value, %Value* %mck.args, i32 0
+  %mck.head = load %Value, %Value* %mck.head_ptr
+  %mck.tail_ptr = getelementptr %Value, %Value* %mck.args, i32 1
+  %mck.tail = load %Value, %Value* %mck.tail_ptr
+  ; Save trail mark before tentative unify.
+  %mck.ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %mck.saved_ts = load i32, i32* %mck.ts_ptr
+  %mck.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %mck.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %mck.raw1, %Value %mck.head)
+  br i1 %mck.uok, label %mck.success, label %mck.rollback
+mck.rollback:
+  call void @unwind_trail(%WamState* %vm, i32 %mck.saved_ts)
+  br label %mck.loop
+mck.success:
+  ret i1 true
+mck.fail:
+  ret i1 false
+
+builtin_delete:
+  ; M41: delete(+List, ?Elem, ?Result) -- filter out matches.
+  ; Three-pass:
+  ;   1. count A1''s elements n;
+  ;   2. allocate arr of n %Values, walk A1 again; for each head,
+  ;      save trail mark + try wam_unify_value(A2, head). Match
+  ;      succeeds: skip head, keep the binding (so subsequent
+  ;      unifies use the now-bound A2 -- matches SWI semantics for
+  ;      unbound A2 like delete([a,b,a], X, R) -> X=a, R=[b]).
+  ;      Match fails: unwind to mark, keep head at arr[out_idx++].
+  ;   3. build cons chain from arr back-to-front prepending onto
+  ;      the [] atom; unify A3 with the chain.
+  %del.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  call void @wam_arena_ensure()
+  br label %del.c_loop
+del.c_loop:
+  %del.c_cur = phi %Value [ %del.a1, %builtin_delete ], [ %del.c_next, %del.c_step ]
+  %del.c_cnt = phi i32 [ 0, %builtin_delete ], [ %del.c_cnt1, %del.c_step ]
+  %del.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %del.c_cur)
+  %del.c_tag = extractvalue %Value %del.c_d, 0
+  %del.c_is_cmp = icmp eq i32 %del.c_tag, 3
+  br i1 %del.c_is_cmp, label %del.c_step, label %del.c_done
+del.c_step:
+  %del.c_cp = extractvalue %Value %del.c_d, 1
+  %del.c_cp_ptr = inttoptr i64 %del.c_cp to %Compound*
+  %del.c_args_slot = getelementptr %Compound, %Compound* %del.c_cp_ptr, i32 0, i32 2
+  %del.c_args = load %Value*, %Value** %del.c_args_slot
+  %del.c_tail_ptr = getelementptr %Value, %Value* %del.c_args, i32 1
+  %del.c_next = load %Value, %Value* %del.c_tail_ptr
+  %del.c_cnt1 = add i32 %del.c_cnt, 1
+  br label %del.c_loop
+del.c_done:
+  %del.cnt64 = sext i32 %del.c_cnt to i64
+  %del.arr_bytes = shl i64 %del.cnt64, 4
+  %del.arr_mem = call i8* @wam_arena_alloc(i64 %del.arr_bytes)
+  %del.arr = bitcast i8* %del.arr_mem to %Value*
+  br label %del.f_loop
+del.f_loop:
+  %del.f_cur = phi %Value [ %del.a1, %del.c_done ], [ %del.f_next, %del.f_after ]
+  %del.f_in_idx = phi i32 [ 0, %del.c_done ], [ %del.f_in_idx1, %del.f_after ]
+  %del.f_out_idx = phi i32 [ 0, %del.c_done ], [ %del.f_out_idx_next, %del.f_after ]
+  %del.f_done_b = icmp sge i32 %del.f_in_idx, %del.c_cnt
+  br i1 %del.f_done_b, label %del.b_init, label %del.f_step
+del.f_step:
+  %del.f_d = call %Value @wam_deref_value(%WamState* %vm, %Value %del.f_cur)
+  %del.f_cp = extractvalue %Value %del.f_d, 1
+  %del.f_cp_ptr = inttoptr i64 %del.f_cp to %Compound*
+  %del.f_args_slot = getelementptr %Compound, %Compound* %del.f_cp_ptr, i32 0, i32 2
+  %del.f_args = load %Value*, %Value** %del.f_args_slot
+  %del.f_head_ptr = getelementptr %Value, %Value* %del.f_args, i32 0
+  %del.f_head = load %Value, %Value* %del.f_head_ptr
+  %del.f_tail_ptr = getelementptr %Value, %Value* %del.f_args, i32 1
+  %del.f_next = load %Value, %Value* %del.f_tail_ptr
+  ; Save trail mark + tentatively unify A2 with head.
+  %del.ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %del.saved_ts = load i32, i32* %del.ts_ptr
+  %del.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %del.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %del.raw2, %Value %del.f_head)
+  br i1 %del.uok, label %del.f_after, label %del.f_keep
+del.f_keep:
+  call void @unwind_trail(%WamState* %vm, i32 %del.saved_ts)
+  %del.f_slot = getelementptr %Value, %Value* %del.arr, i32 %del.f_out_idx
+  store %Value %del.f_head, %Value* %del.f_slot
+  %del.f_out_idx_kept = add i32 %del.f_out_idx, 1
+  br label %del.f_after
+del.f_after:
+  ; out_idx advances only when we keep (kept path computed it);
+  ; if matched, we use the original out_idx unchanged.
+  %del.f_out_idx_next = phi i32 [ %del.f_out_idx, %del.f_step ], [ %del.f_out_idx_kept, %del.f_keep ]
+  %del.f_in_idx1 = add i32 %del.f_in_idx, 1
+  br label %del.f_loop
+del.b_init:
+  %del.b_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %del.b_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %del.b_empty_v  = insertvalue %Value %del.b_empty_v0, i64 %del.b_empty_id, 1
+  br label %del.b_loop
+del.b_loop:
+  %del.b_i = phi i32 [ %del.f_out_idx, %del.b_init ], [ %del.b_i_prev, %del.b_step ]
+  %del.b_acc = phi %Value [ %del.b_empty_v, %del.b_init ], [ %del.b_new_cons, %del.b_step ]
+  %del.b_done_b = icmp sle i32 %del.b_i, 0
+  br i1 %del.b_done_b, label %del.b_bind, label %del.b_step
+del.b_step:
+  %del.b_i_prev = sub i32 %del.b_i, 1
+  %del.b_slot = getelementptr %Value, %Value* %del.arr, i32 %del.b_i_prev
+  %del.b_head = load %Value, %Value* %del.b_slot
+  %del.b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %del.b_cp_mem = call i8* @wam_arena_alloc(i64 %del.b_cp_size)
+  %del.b_cp = bitcast i8* %del.b_cp_mem to %Compound*
+  %del.b_fn_slot = getelementptr %Compound, %Compound* %del.b_cp, i32 0, i32 0
+  %del.b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %del.b_fn_ptr, i8** %del.b_fn_slot
+  %del.b_ar_slot = getelementptr %Compound, %Compound* %del.b_cp, i32 0, i32 1
+  store i32 2, i32* %del.b_ar_slot
+  %del.b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %del.b_args = bitcast i8* %del.b_args_mem to %Value*
+  %del.b_args_slot = getelementptr %Compound, %Compound* %del.b_cp, i32 0, i32 2
+  store %Value* %del.b_args, %Value** %del.b_args_slot
+  %del.b_h_ptr = getelementptr %Value, %Value* %del.b_args, i32 0
+  store %Value %del.b_head, %Value* %del.b_h_ptr
+  %del.b_t_ptr = getelementptr %Value, %Value* %del.b_args, i32 1
+  store %Value %del.b_acc, %Value* %del.b_t_ptr
+  %del.b_cp_i64 = ptrtoint %Compound* %del.b_cp to i64
+  %del.b_nc0 = insertvalue %Value undef, i32 3, 0
+  %del.b_new_cons = insertvalue %Value %del.b_nc0, i64 %del.b_cp_i64, 1
+  br label %del.b_loop
+del.b_bind:
+  %del.b_raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %del.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %del.b_raw3, %Value %del.b_acc)
+  ret i1 %del.b_ok
+
+builtin_numlist:
+  ; M42: numlist(+Low, +High, ?List) -- generate [Low, Low+1, ..., High].
+  ; A1 and A2 must be Integer Values. Empty range (High < Low) fails;
+  ; size capped at 1,000,000 elements to match between/3.
+  %nml.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %nml.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %nml.t1 = extractvalue %Value %nml.a1, 0
+  %nml.t2 = extractvalue %Value %nml.a2, 0
+  %nml.int1 = icmp eq i32 %nml.t1, 1
+  %nml.int2 = icmp eq i32 %nml.t2, 1
+  %nml.both = and i1 %nml.int1, %nml.int2
+  br i1 %nml.both, label %nml.range, label %nml.fail
+nml.fail:
+  ret i1 false
+nml.range:
+  %nml.lo = extractvalue %Value %nml.a1, 1
+  %nml.hi = extractvalue %Value %nml.a2, 1
+  %nml.diff = sub i64 %nml.hi, %nml.lo
+  %nml.count = add i64 %nml.diff, 1
+  %nml.empty = icmp sle i64 %nml.count, 0
+  br i1 %nml.empty, label %nml.fail, label %nml.size_check
+nml.size_check:
+  %nml.too_big = icmp ugt i64 %nml.count, 1000000
+  br i1 %nml.too_big, label %nml.fail, label %nml.build_init
+nml.build_init:
+  call void @wam_arena_ensure()
+  %nml.empty_id = load i64, i64* @wam_empty_list_atom_id
+  %nml.empty_v0 = insertvalue %Value undef, i32 0, 0
+  %nml.empty_v  = insertvalue %Value %nml.empty_v0, i64 %nml.empty_id, 1
+  %nml.count32 = trunc i64 %nml.count to i32
+  br label %nml.build_loop
+nml.build_loop:
+  ; Walk i = count-1 down to 0; new element = Low + i; cons onto acc.
+  %nml.i = phi i32 [ %nml.count32, %nml.build_init ], [ %nml.i_prev, %nml.build_step ]
+  %nml.acc = phi %Value [ %nml.empty_v, %nml.build_init ], [ %nml.new_cons, %nml.build_step ]
+  %nml.done_b = icmp sle i32 %nml.i, 0
+  br i1 %nml.done_b, label %nml.bind, label %nml.build_step
+nml.build_step:
+  %nml.i_prev = sub i32 %nml.i, 1
+  %nml.i_prev64 = sext i32 %nml.i_prev to i64
+  %nml.val_i = add i64 %nml.lo, %nml.i_prev64
+  %nml.val_v = call %Value @value_integer(i64 %nml.val_i)
+  %nml.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %nml.cp_mem = call i8* @wam_arena_alloc(i64 %nml.cp_size)
+  %nml.cp = bitcast i8* %nml.cp_mem to %Compound*
+  %nml.fn_slot = getelementptr %Compound, %Compound* %nml.cp, i32 0, i32 0
+  %nml.fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %nml.fn_ptr, i8** %nml.fn_slot
+  %nml.ar_slot = getelementptr %Compound, %Compound* %nml.cp, i32 0, i32 1
+  store i32 2, i32* %nml.ar_slot
+  %nml.args_mem = call i8* @wam_arena_alloc(i64 32)
+  %nml.args = bitcast i8* %nml.args_mem to %Value*
+  %nml.args_slot = getelementptr %Compound, %Compound* %nml.cp, i32 0, i32 2
+  store %Value* %nml.args, %Value** %nml.args_slot
+  %nml.h_ptr = getelementptr %Value, %Value* %nml.args, i32 0
+  store %Value %nml.val_v, %Value* %nml.h_ptr
+  %nml.t_ptr = getelementptr %Value, %Value* %nml.args, i32 1
+  store %Value %nml.acc, %Value* %nml.t_ptr
+  %nml.cp_i64 = ptrtoint %Compound* %nml.cp to i64
+  %nml.nc0 = insertvalue %Value undef, i32 3, 0
+  %nml.new_cons = insertvalue %Value %nml.nc0, i64 %nml.cp_i64, 1
+  br label %nml.build_loop
+nml.bind:
+  %nml.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %nml.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %nml.raw3, %Value %nml.acc)
+  ret i1 %nml.ok
+
+builtin_sum_list:
+  ; M42: sum_list(+List, ?Sum) -- integer sum. Non-Integer heads
+  ; fail. Empty list sums to 0. Also dispatches sumlist/2 (alias).
+  %sl.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  br label %sl.loop
+sl.fail:
+  ret i1 false
+sl.loop:
+  %sl.cur = phi %Value [ %sl.a1, %builtin_sum_list ], [ %sl.tail, %sl.add ]
+  %sl.acc = phi i64 [ 0, %builtin_sum_list ], [ %sl.acc1, %sl.add ]
+  %sl.d = call %Value @wam_deref_value(%WamState* %vm, %Value %sl.cur)
+  %sl.tag = extractvalue %Value %sl.d, 0
+  %sl.is_cmp = icmp eq i32 %sl.tag, 3
+  br i1 %sl.is_cmp, label %sl.step, label %sl.done
+sl.step:
+  %sl.cp = extractvalue %Value %sl.d, 1
+  %sl.cp_ptr = inttoptr i64 %sl.cp to %Compound*
+  %sl.args_slot = getelementptr %Compound, %Compound* %sl.cp_ptr, i32 0, i32 2
+  %sl.args = load %Value*, %Value** %sl.args_slot
+  %sl.head_ptr = getelementptr %Value, %Value* %sl.args, i32 0
+  %sl.head_raw = load %Value, %Value* %sl.head_ptr
+  %sl.head = call %Value @wam_deref_value(%WamState* %vm, %Value %sl.head_raw)
+  %sl.head_tag = extractvalue %Value %sl.head, 0
+  %sl.head_is_int = icmp eq i32 %sl.head_tag, 1
+  br i1 %sl.head_is_int, label %sl.add, label %sl.fail
+sl.add:
+  %sl.h_val = extractvalue %Value %sl.head, 1
+  %sl.acc1 = add i64 %sl.acc, %sl.h_val
+  %sl.tail_ptr = getelementptr %Value, %Value* %sl.args, i32 1
+  %sl.tail = load %Value, %Value* %sl.tail_ptr
+  br label %sl.loop
+sl.done:
+  %sl.sum_v = call %Value @value_integer(i64 %sl.acc)
+  %sl.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %sl.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sl.raw2, %Value %sl.sum_v)
+  ret i1 %sl.ok
+
+builtin_max_list:
+  ; M43: max_list(+List, ?Max) -- integer max. Empty list fails;
+  ; first element is the initial extremum; non-Integer head fails.
+  %mxl.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  br label %mxl.entry
+mxl.fail:
+  ret i1 false
+mxl.entry:
+  %mxl.d0 = call %Value @wam_deref_value(%WamState* %vm, %Value %mxl.a1)
+  %mxl.tag0 = extractvalue %Value %mxl.d0, 0
+  %mxl.is_cmp0 = icmp eq i32 %mxl.tag0, 3
+  br i1 %mxl.is_cmp0, label %mxl.first, label %mxl.fail
+mxl.first:
+  %mxl.cp0 = extractvalue %Value %mxl.d0, 1
+  %mxl.cp0_ptr = inttoptr i64 %mxl.cp0 to %Compound*
+  %mxl.args0_slot = getelementptr %Compound, %Compound* %mxl.cp0_ptr, i32 0, i32 2
+  %mxl.args0 = load %Value*, %Value** %mxl.args0_slot
+  %mxl.h0_ptr = getelementptr %Value, %Value* %mxl.args0, i32 0
+  %mxl.h0_raw = load %Value, %Value* %mxl.h0_ptr
+  %mxl.h0_d = call %Value @wam_deref_value(%WamState* %vm, %Value %mxl.h0_raw)
+  %mxl.h0_tag = extractvalue %Value %mxl.h0_d, 0
+  %mxl.h0_int = icmp eq i32 %mxl.h0_tag, 1
+  br i1 %mxl.h0_int, label %mxl.init, label %mxl.fail
+mxl.init:
+  %mxl.val0 = extractvalue %Value %mxl.h0_d, 1
+  %mxl.t0_ptr = getelementptr %Value, %Value* %mxl.args0, i32 1
+  %mxl.tail0 = load %Value, %Value* %mxl.t0_ptr
+  br label %mxl.loop
+mxl.loop:
+  %mxl.cur = phi %Value [ %mxl.tail0, %mxl.init ], [ %mxl.tail_n, %mxl.update ]
+  %mxl.acc = phi i64 [ %mxl.val0, %mxl.init ], [ %mxl.acc1, %mxl.update ]
+  %mxl.d = call %Value @wam_deref_value(%WamState* %vm, %Value %mxl.cur)
+  %mxl.tag = extractvalue %Value %mxl.d, 0
+  %mxl.is_cmp = icmp eq i32 %mxl.tag, 3
+  br i1 %mxl.is_cmp, label %mxl.step, label %mxl.done
+mxl.step:
+  %mxl.cp = extractvalue %Value %mxl.d, 1
+  %mxl.cp_ptr = inttoptr i64 %mxl.cp to %Compound*
+  %mxl.args_slot = getelementptr %Compound, %Compound* %mxl.cp_ptr, i32 0, i32 2
+  %mxl.args = load %Value*, %Value** %mxl.args_slot
+  %mxl.h_ptr = getelementptr %Value, %Value* %mxl.args, i32 0
+  %mxl.h_raw = load %Value, %Value* %mxl.h_ptr
+  %mxl.h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %mxl.h_raw)
+  %mxl.h_tag = extractvalue %Value %mxl.h_d, 0
+  %mxl.h_int = icmp eq i32 %mxl.h_tag, 1
+  br i1 %mxl.h_int, label %mxl.update, label %mxl.fail
+mxl.update:
+  %mxl.h_val = extractvalue %Value %mxl.h_d, 1
+  %mxl.is_bigger = icmp sgt i64 %mxl.h_val, %mxl.acc
+  %mxl.acc1 = select i1 %mxl.is_bigger, i64 %mxl.h_val, i64 %mxl.acc
+  %mxl.t_ptr = getelementptr %Value, %Value* %mxl.args, i32 1
+  %mxl.tail_n = load %Value, %Value* %mxl.t_ptr
+  br label %mxl.loop
+mxl.done:
+  %mxl.res_v = call %Value @value_integer(i64 %mxl.acc)
+  %mxl.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %mxl.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %mxl.raw2, %Value %mxl.res_v)
+  ret i1 %mxl.ok
+
+builtin_min_list:
+  ; M43: min_list(+List, ?Min) -- integer min. Mirrors max_list with
+  ; the comparison flipped (icmp slt instead of sgt).
+  %mnl.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  br label %mnl.entry
+mnl.fail:
+  ret i1 false
+mnl.entry:
+  %mnl.d0 = call %Value @wam_deref_value(%WamState* %vm, %Value %mnl.a1)
+  %mnl.tag0 = extractvalue %Value %mnl.d0, 0
+  %mnl.is_cmp0 = icmp eq i32 %mnl.tag0, 3
+  br i1 %mnl.is_cmp0, label %mnl.first, label %mnl.fail
+mnl.first:
+  %mnl.cp0 = extractvalue %Value %mnl.d0, 1
+  %mnl.cp0_ptr = inttoptr i64 %mnl.cp0 to %Compound*
+  %mnl.args0_slot = getelementptr %Compound, %Compound* %mnl.cp0_ptr, i32 0, i32 2
+  %mnl.args0 = load %Value*, %Value** %mnl.args0_slot
+  %mnl.h0_ptr = getelementptr %Value, %Value* %mnl.args0, i32 0
+  %mnl.h0_raw = load %Value, %Value* %mnl.h0_ptr
+  %mnl.h0_d = call %Value @wam_deref_value(%WamState* %vm, %Value %mnl.h0_raw)
+  %mnl.h0_tag = extractvalue %Value %mnl.h0_d, 0
+  %mnl.h0_int = icmp eq i32 %mnl.h0_tag, 1
+  br i1 %mnl.h0_int, label %mnl.init, label %mnl.fail
+mnl.init:
+  %mnl.val0 = extractvalue %Value %mnl.h0_d, 1
+  %mnl.t0_ptr = getelementptr %Value, %Value* %mnl.args0, i32 1
+  %mnl.tail0 = load %Value, %Value* %mnl.t0_ptr
+  br label %mnl.loop
+mnl.loop:
+  %mnl.cur = phi %Value [ %mnl.tail0, %mnl.init ], [ %mnl.tail_n, %mnl.update ]
+  %mnl.acc = phi i64 [ %mnl.val0, %mnl.init ], [ %mnl.acc1, %mnl.update ]
+  %mnl.d = call %Value @wam_deref_value(%WamState* %vm, %Value %mnl.cur)
+  %mnl.tag = extractvalue %Value %mnl.d, 0
+  %mnl.is_cmp = icmp eq i32 %mnl.tag, 3
+  br i1 %mnl.is_cmp, label %mnl.step, label %mnl.done
+mnl.step:
+  %mnl.cp = extractvalue %Value %mnl.d, 1
+  %mnl.cp_ptr = inttoptr i64 %mnl.cp to %Compound*
+  %mnl.args_slot = getelementptr %Compound, %Compound* %mnl.cp_ptr, i32 0, i32 2
+  %mnl.args = load %Value*, %Value** %mnl.args_slot
+  %mnl.h_ptr = getelementptr %Value, %Value* %mnl.args, i32 0
+  %mnl.h_raw = load %Value, %Value* %mnl.h_ptr
+  %mnl.h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %mnl.h_raw)
+  %mnl.h_tag = extractvalue %Value %mnl.h_d, 0
+  %mnl.h_int = icmp eq i32 %mnl.h_tag, 1
+  br i1 %mnl.h_int, label %mnl.update, label %mnl.fail
+mnl.update:
+  %mnl.h_val = extractvalue %Value %mnl.h_d, 1
+  %mnl.is_smaller = icmp slt i64 %mnl.h_val, %mnl.acc
+  %mnl.acc1 = select i1 %mnl.is_smaller, i64 %mnl.h_val, i64 %mnl.acc
+  %mnl.t_ptr = getelementptr %Value, %Value* %mnl.args, i32 1
+  %mnl.tail_n = load %Value, %Value* %mnl.t_ptr
+  br label %mnl.loop
+mnl.done:
+  %mnl.res_v = call %Value @value_integer(i64 %mnl.acc)
+  %mnl.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %mnl.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %mnl.raw2, %Value %mnl.res_v)
+  ret i1 %mnl.ok
+
+builtin_subtract:
+  ; M44: subtract(+List1, +List2, ?Difference) -- elements of List1
+  ; that have no unify-match in List2. Three-pass:
+  ;   1. count A1''s elements n;
+  ;   2. allocate arr of n %Values; for each A1 head, inner-walk A2
+  ;      with the trial-unify + rollback pattern (memberchk inline).
+  ;      Match found anywhere in A2: skip the head, keep the binding
+  ;      (matches SWI subtract([a,b,c], [X], R) -> X=a, R=[b,c]).
+  ;      A2 exhausted without match: store head at arr[out_idx++].
+  ;   3. walk arr back-to-front prepending each survivor onto [];
+  ;      unify A3 with the resulting cons chain.
+  %sbt.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sbt.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  call void @wam_arena_ensure()
+  br label %sbt.c_loop
+sbt.c_loop:
+  %sbt.c_cur = phi %Value [ %sbt.a1, %builtin_subtract ], [ %sbt.c_next, %sbt.c_step ]
+  %sbt.c_cnt = phi i32 [ 0, %builtin_subtract ], [ %sbt.c_cnt1, %sbt.c_step ]
+  %sbt.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %sbt.c_cur)
+  %sbt.c_tag = extractvalue %Value %sbt.c_d, 0
+  %sbt.c_is_cmp = icmp eq i32 %sbt.c_tag, 3
+  br i1 %sbt.c_is_cmp, label %sbt.c_step, label %sbt.c_done
+sbt.c_step:
+  %sbt.c_cp = extractvalue %Value %sbt.c_d, 1
+  %sbt.c_cp_ptr = inttoptr i64 %sbt.c_cp to %Compound*
+  %sbt.c_args_slot = getelementptr %Compound, %Compound* %sbt.c_cp_ptr, i32 0, i32 2
+  %sbt.c_args = load %Value*, %Value** %sbt.c_args_slot
+  %sbt.c_t_ptr = getelementptr %Value, %Value* %sbt.c_args, i32 1
+  %sbt.c_next = load %Value, %Value* %sbt.c_t_ptr
+  %sbt.c_cnt1 = add i32 %sbt.c_cnt, 1
+  br label %sbt.c_loop
+sbt.c_done:
+  %sbt.cnt64 = sext i32 %sbt.c_cnt to i64
+  %sbt.arr_bytes = shl i64 %sbt.cnt64, 4
+  %sbt.arr_mem = call i8* @wam_arena_alloc(i64 %sbt.arr_bytes)
+  %sbt.arr = bitcast i8* %sbt.arr_mem to %Value*
+  br label %sbt.outer_loop
+sbt.outer_loop:
+  %sbt.o_cur = phi %Value [ %sbt.a1, %sbt.c_done ], [ %sbt.o_next, %sbt.o_after ]
+  %sbt.in_idx = phi i32 [ 0, %sbt.c_done ], [ %sbt.in_idx1, %sbt.o_after ]
+  %sbt.out_idx = phi i32 [ 0, %sbt.c_done ], [ %sbt.out_next, %sbt.o_after ]
+  %sbt.o_done = icmp sge i32 %sbt.in_idx, %sbt.c_cnt
+  br i1 %sbt.o_done, label %sbt.build_init, label %sbt.o_step
+sbt.o_step:
+  %sbt.o_d = call %Value @wam_deref_value(%WamState* %vm, %Value %sbt.o_cur)
+  %sbt.o_cp = extractvalue %Value %sbt.o_d, 1
+  %sbt.o_cp_ptr = inttoptr i64 %sbt.o_cp to %Compound*
+  %sbt.o_args_slot = getelementptr %Compound, %Compound* %sbt.o_cp_ptr, i32 0, i32 2
+  %sbt.o_args = load %Value*, %Value** %sbt.o_args_slot
+  %sbt.o_h_ptr = getelementptr %Value, %Value* %sbt.o_args, i32 0
+  %sbt.o_head = load %Value, %Value* %sbt.o_h_ptr
+  %sbt.o_t_ptr = getelementptr %Value, %Value* %sbt.o_args, i32 1
+  %sbt.o_next = load %Value, %Value* %sbt.o_t_ptr
+  br label %sbt.inner_loop
+sbt.inner_loop:
+  %sbt.i_cur = phi %Value [ %sbt.a2, %sbt.o_step ], [ %sbt.i_next, %sbt.i_rollback ]
+  %sbt.i_d = call %Value @wam_deref_value(%WamState* %vm, %Value %sbt.i_cur)
+  %sbt.i_tag = extractvalue %Value %sbt.i_d, 0
+  %sbt.i_is_cmp = icmp eq i32 %sbt.i_tag, 3
+  br i1 %sbt.i_is_cmp, label %sbt.i_try, label %sbt.no_match
+sbt.i_try:
+  %sbt.i_cp = extractvalue %Value %sbt.i_d, 1
+  %sbt.i_cp_ptr = inttoptr i64 %sbt.i_cp to %Compound*
+  %sbt.i_args_slot = getelementptr %Compound, %Compound* %sbt.i_cp_ptr, i32 0, i32 2
+  %sbt.i_args = load %Value*, %Value** %sbt.i_args_slot
+  %sbt.i_h_ptr = getelementptr %Value, %Value* %sbt.i_args, i32 0
+  %sbt.i_head = load %Value, %Value* %sbt.i_h_ptr
+  %sbt.i_t_ptr = getelementptr %Value, %Value* %sbt.i_args, i32 1
+  %sbt.i_next = load %Value, %Value* %sbt.i_t_ptr
+  %sbt.ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %sbt.saved_ts = load i32, i32* %sbt.ts_ptr
+  %sbt.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %sbt.o_head, %Value %sbt.i_head)
+  br i1 %sbt.uok, label %sbt.match, label %sbt.i_rollback
+sbt.i_rollback:
+  call void @unwind_trail(%WamState* %vm, i32 %sbt.saved_ts)
+  br label %sbt.inner_loop
+sbt.match:
+  ; Element matched -- skip; binding kept.
+  br label %sbt.o_after
+sbt.no_match:
+  ; A2 exhausted without match -- keep o_head at arr[out_idx].
+  %sbt.no_slot = getelementptr %Value, %Value* %sbt.arr, i32 %sbt.out_idx
+  store %Value %sbt.o_head, %Value* %sbt.no_slot
+  %sbt.out_kept = add i32 %sbt.out_idx, 1
+  br label %sbt.o_after
+sbt.o_after:
+  %sbt.out_next = phi i32 [ %sbt.out_idx, %sbt.match ], [ %sbt.out_kept, %sbt.no_match ]
+  %sbt.in_idx1 = add i32 %sbt.in_idx, 1
+  br label %sbt.outer_loop
+sbt.build_init:
+  %sbt.b_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %sbt.b_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %sbt.b_empty_v  = insertvalue %Value %sbt.b_empty_v0, i64 %sbt.b_empty_id, 1
+  br label %sbt.b_loop
+sbt.b_loop:
+  %sbt.b_i = phi i32 [ %sbt.out_idx, %sbt.build_init ], [ %sbt.b_i_prev, %sbt.b_step ]
+  %sbt.b_acc = phi %Value [ %sbt.b_empty_v, %sbt.build_init ], [ %sbt.b_new_cons, %sbt.b_step ]
+  %sbt.b_done = icmp sle i32 %sbt.b_i, 0
+  br i1 %sbt.b_done, label %sbt.b_bind, label %sbt.b_step
+sbt.b_step:
+  %sbt.b_i_prev = sub i32 %sbt.b_i, 1
+  %sbt.b_slot = getelementptr %Value, %Value* %sbt.arr, i32 %sbt.b_i_prev
+  %sbt.b_head = load %Value, %Value* %sbt.b_slot
+  %sbt.b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %sbt.b_cp_mem = call i8* @wam_arena_alloc(i64 %sbt.b_cp_size)
+  %sbt.b_cp = bitcast i8* %sbt.b_cp_mem to %Compound*
+  %sbt.b_fn_slot = getelementptr %Compound, %Compound* %sbt.b_cp, i32 0, i32 0
+  %sbt.b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %sbt.b_fn_ptr, i8** %sbt.b_fn_slot
+  %sbt.b_ar_slot = getelementptr %Compound, %Compound* %sbt.b_cp, i32 0, i32 1
+  store i32 2, i32* %sbt.b_ar_slot
+  %sbt.b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %sbt.b_args = bitcast i8* %sbt.b_args_mem to %Value*
+  %sbt.b_args_slot = getelementptr %Compound, %Compound* %sbt.b_cp, i32 0, i32 2
+  store %Value* %sbt.b_args, %Value** %sbt.b_args_slot
+  %sbt.b_h_ptr = getelementptr %Value, %Value* %sbt.b_args, i32 0
+  store %Value %sbt.b_head, %Value* %sbt.b_h_ptr
+  %sbt.b_t_ptr = getelementptr %Value, %Value* %sbt.b_args, i32 1
+  store %Value %sbt.b_acc, %Value* %sbt.b_t_ptr
+  %sbt.b_cp_i64 = ptrtoint %Compound* %sbt.b_cp to i64
+  %sbt.b_nc0 = insertvalue %Value undef, i32 3, 0
+  %sbt.b_new_cons = insertvalue %Value %sbt.b_nc0, i64 %sbt.b_cp_i64, 1
+  br label %sbt.b_loop
+sbt.b_bind:
+  %sbt.b_raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %sbt.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sbt.b_raw3, %Value %sbt.b_acc)
+  ret i1 %sbt.b_ok
+
+builtin_intersection:
+  ; M45: intersection(+List1, +List2, ?Common) -- elements of List1
+  ; that have a unify-match in List2 (i.e. subtract''s keep/skip
+  ; logic inverted: match -> keep, no-match -> skip).
+  %ist.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ist.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  call void @wam_arena_ensure()
+  br label %ist.c_loop
+ist.c_loop:
+  %ist.c_cur = phi %Value [ %ist.a1, %builtin_intersection ], [ %ist.c_next, %ist.c_step ]
+  %ist.c_cnt = phi i32 [ 0, %builtin_intersection ], [ %ist.c_cnt1, %ist.c_step ]
+  %ist.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %ist.c_cur)
+  %ist.c_tag = extractvalue %Value %ist.c_d, 0
+  %ist.c_is_cmp = icmp eq i32 %ist.c_tag, 3
+  br i1 %ist.c_is_cmp, label %ist.c_step, label %ist.c_done
+ist.c_step:
+  %ist.c_cp = extractvalue %Value %ist.c_d, 1
+  %ist.c_cp_ptr = inttoptr i64 %ist.c_cp to %Compound*
+  %ist.c_args_slot = getelementptr %Compound, %Compound* %ist.c_cp_ptr, i32 0, i32 2
+  %ist.c_args = load %Value*, %Value** %ist.c_args_slot
+  %ist.c_t_ptr = getelementptr %Value, %Value* %ist.c_args, i32 1
+  %ist.c_next = load %Value, %Value* %ist.c_t_ptr
+  %ist.c_cnt1 = add i32 %ist.c_cnt, 1
+  br label %ist.c_loop
+ist.c_done:
+  %ist.cnt64 = sext i32 %ist.c_cnt to i64
+  %ist.arr_bytes = shl i64 %ist.cnt64, 4
+  %ist.arr_mem = call i8* @wam_arena_alloc(i64 %ist.arr_bytes)
+  %ist.arr = bitcast i8* %ist.arr_mem to %Value*
+  br label %ist.outer_loop
+ist.outer_loop:
+  %ist.o_cur = phi %Value [ %ist.a1, %ist.c_done ], [ %ist.o_next, %ist.o_after ]
+  %ist.in_idx = phi i32 [ 0, %ist.c_done ], [ %ist.in_idx1, %ist.o_after ]
+  %ist.out_idx = phi i32 [ 0, %ist.c_done ], [ %ist.out_next, %ist.o_after ]
+  %ist.o_done = icmp sge i32 %ist.in_idx, %ist.c_cnt
+  br i1 %ist.o_done, label %ist.build_init, label %ist.o_step
+ist.o_step:
+  %ist.o_d = call %Value @wam_deref_value(%WamState* %vm, %Value %ist.o_cur)
+  %ist.o_cp = extractvalue %Value %ist.o_d, 1
+  %ist.o_cp_ptr = inttoptr i64 %ist.o_cp to %Compound*
+  %ist.o_args_slot = getelementptr %Compound, %Compound* %ist.o_cp_ptr, i32 0, i32 2
+  %ist.o_args = load %Value*, %Value** %ist.o_args_slot
+  %ist.o_h_ptr = getelementptr %Value, %Value* %ist.o_args, i32 0
+  %ist.o_head = load %Value, %Value* %ist.o_h_ptr
+  %ist.o_t_ptr = getelementptr %Value, %Value* %ist.o_args, i32 1
+  %ist.o_next = load %Value, %Value* %ist.o_t_ptr
+  br label %ist.inner_loop
+ist.inner_loop:
+  %ist.i_cur = phi %Value [ %ist.a2, %ist.o_step ], [ %ist.i_next, %ist.i_rollback ]
+  %ist.i_d = call %Value @wam_deref_value(%WamState* %vm, %Value %ist.i_cur)
+  %ist.i_tag = extractvalue %Value %ist.i_d, 0
+  %ist.i_is_cmp = icmp eq i32 %ist.i_tag, 3
+  br i1 %ist.i_is_cmp, label %ist.i_try, label %ist.no_match
+ist.i_try:
+  %ist.i_cp = extractvalue %Value %ist.i_d, 1
+  %ist.i_cp_ptr = inttoptr i64 %ist.i_cp to %Compound*
+  %ist.i_args_slot = getelementptr %Compound, %Compound* %ist.i_cp_ptr, i32 0, i32 2
+  %ist.i_args = load %Value*, %Value** %ist.i_args_slot
+  %ist.i_h_ptr = getelementptr %Value, %Value* %ist.i_args, i32 0
+  %ist.i_head = load %Value, %Value* %ist.i_h_ptr
+  %ist.i_t_ptr = getelementptr %Value, %Value* %ist.i_args, i32 1
+  %ist.i_next = load %Value, %Value* %ist.i_t_ptr
+  %ist.ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %ist.saved_ts = load i32, i32* %ist.ts_ptr
+  %ist.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %ist.o_head, %Value %ist.i_head)
+  br i1 %ist.uok, label %ist.match, label %ist.i_rollback
+ist.i_rollback:
+  call void @unwind_trail(%WamState* %vm, i32 %ist.saved_ts)
+  br label %ist.inner_loop
+ist.match:
+  ; Element matched -- KEEP at arr[out_idx]; binding kept.
+  %ist.m_slot = getelementptr %Value, %Value* %ist.arr, i32 %ist.out_idx
+  store %Value %ist.o_head, %Value* %ist.m_slot
+  %ist.out_kept = add i32 %ist.out_idx, 1
+  br label %ist.o_after
+ist.no_match:
+  ; A2 exhausted without match -- SKIP element.
+  br label %ist.o_after
+ist.o_after:
+  %ist.out_next = phi i32 [ %ist.out_kept, %ist.match ], [ %ist.out_idx, %ist.no_match ]
+  %ist.in_idx1 = add i32 %ist.in_idx, 1
+  br label %ist.outer_loop
+ist.build_init:
+  %ist.b_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %ist.b_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %ist.b_empty_v  = insertvalue %Value %ist.b_empty_v0, i64 %ist.b_empty_id, 1
+  br label %ist.b_loop
+ist.b_loop:
+  %ist.b_i = phi i32 [ %ist.out_idx, %ist.build_init ], [ %ist.b_i_prev, %ist.b_step ]
+  %ist.b_acc = phi %Value [ %ist.b_empty_v, %ist.build_init ], [ %ist.b_new_cons, %ist.b_step ]
+  %ist.b_done = icmp sle i32 %ist.b_i, 0
+  br i1 %ist.b_done, label %ist.b_bind, label %ist.b_step
+ist.b_step:
+  %ist.b_i_prev = sub i32 %ist.b_i, 1
+  %ist.b_slot = getelementptr %Value, %Value* %ist.arr, i32 %ist.b_i_prev
+  %ist.b_head = load %Value, %Value* %ist.b_slot
+  %ist.b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %ist.b_cp_mem = call i8* @wam_arena_alloc(i64 %ist.b_cp_size)
+  %ist.b_cp = bitcast i8* %ist.b_cp_mem to %Compound*
+  %ist.b_fn_slot = getelementptr %Compound, %Compound* %ist.b_cp, i32 0, i32 0
+  %ist.b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %ist.b_fn_ptr, i8** %ist.b_fn_slot
+  %ist.b_ar_slot = getelementptr %Compound, %Compound* %ist.b_cp, i32 0, i32 1
+  store i32 2, i32* %ist.b_ar_slot
+  %ist.b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %ist.b_args = bitcast i8* %ist.b_args_mem to %Value*
+  %ist.b_args_slot = getelementptr %Compound, %Compound* %ist.b_cp, i32 0, i32 2
+  store %Value* %ist.b_args, %Value** %ist.b_args_slot
+  %ist.b_h_ptr = getelementptr %Value, %Value* %ist.b_args, i32 0
+  store %Value %ist.b_head, %Value* %ist.b_h_ptr
+  %ist.b_t_ptr = getelementptr %Value, %Value* %ist.b_args, i32 1
+  store %Value %ist.b_acc, %Value* %ist.b_t_ptr
+  %ist.b_cp_i64 = ptrtoint %Compound* %ist.b_cp to i64
+  %ist.b_nc0 = insertvalue %Value undef, i32 3, 0
+  %ist.b_new_cons = insertvalue %Value %ist.b_nc0, i64 %ist.b_cp_i64, 1
+  br label %ist.b_loop
+ist.b_bind:
+  %ist.b_raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %ist.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %ist.b_raw3, %Value %ist.b_acc)
+  ret i1 %ist.b_ok
+
+builtin_union:
+  ; M46: union(+List1, +List2, ?Union) -- A1 ++ subtract(A2, A1).
+  ; Five-pass:
+  ;   1. count A1 -> n1.
+  ;   2. count A2 -> n2.
+  ;   3. allocate arr of (n1 + n2) %Values; walk A1 storing each head
+  ;      at arr[0..n1-1]; set out_idx = n1.
+  ;   4. outer-walk A2; for each head, inner-walk A1 with the trial-
+  ;      unify + rollback pattern. Found in A1 -> skip; not found ->
+  ;      arr[out_idx++] = head.
+  ;   5. walk arr back-to-front prepending each entry onto [] and
+  ;      unify A3 with the chain.
+  ; SWI semantics keep A1''s own dupes (so union([1,1], [1]) = [1, 1])
+  ; and only filter A2 against A1.
+  %uni.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %uni.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  call void @wam_arena_ensure()
+  br label %uni.c1_loop
+uni.c1_loop:
+  %uni.c1_cur = phi %Value [ %uni.a1, %builtin_union ], [ %uni.c1_next, %uni.c1_step ]
+  %uni.c1_cnt = phi i32 [ 0, %builtin_union ], [ %uni.c1_cnt1, %uni.c1_step ]
+  %uni.c1_d = call %Value @wam_deref_value(%WamState* %vm, %Value %uni.c1_cur)
+  %uni.c1_tag = extractvalue %Value %uni.c1_d, 0
+  %uni.c1_is_cmp = icmp eq i32 %uni.c1_tag, 3
+  br i1 %uni.c1_is_cmp, label %uni.c1_step, label %uni.c2_init
+uni.c1_step:
+  %uni.c1_cp = extractvalue %Value %uni.c1_d, 1
+  %uni.c1_cp_ptr = inttoptr i64 %uni.c1_cp to %Compound*
+  %uni.c1_args_slot = getelementptr %Compound, %Compound* %uni.c1_cp_ptr, i32 0, i32 2
+  %uni.c1_args = load %Value*, %Value** %uni.c1_args_slot
+  %uni.c1_t_ptr = getelementptr %Value, %Value* %uni.c1_args, i32 1
+  %uni.c1_next = load %Value, %Value* %uni.c1_t_ptr
+  %uni.c1_cnt1 = add i32 %uni.c1_cnt, 1
+  br label %uni.c1_loop
+uni.c2_init:
+  br label %uni.c2_loop
+uni.c2_loop:
+  %uni.c2_cur = phi %Value [ %uni.a2, %uni.c2_init ], [ %uni.c2_next, %uni.c2_step ]
+  %uni.c2_cnt = phi i32 [ 0, %uni.c2_init ], [ %uni.c2_cnt1, %uni.c2_step ]
+  %uni.c2_d = call %Value @wam_deref_value(%WamState* %vm, %Value %uni.c2_cur)
+  %uni.c2_tag = extractvalue %Value %uni.c2_d, 0
+  %uni.c2_is_cmp = icmp eq i32 %uni.c2_tag, 3
+  br i1 %uni.c2_is_cmp, label %uni.c2_step, label %uni.alloc
+uni.c2_step:
+  %uni.c2_cp = extractvalue %Value %uni.c2_d, 1
+  %uni.c2_cp_ptr = inttoptr i64 %uni.c2_cp to %Compound*
+  %uni.c2_args_slot = getelementptr %Compound, %Compound* %uni.c2_cp_ptr, i32 0, i32 2
+  %uni.c2_args = load %Value*, %Value** %uni.c2_args_slot
+  %uni.c2_t_ptr = getelementptr %Value, %Value* %uni.c2_args, i32 1
+  %uni.c2_next = load %Value, %Value* %uni.c2_t_ptr
+  %uni.c2_cnt1 = add i32 %uni.c2_cnt, 1
+  br label %uni.c2_loop
+uni.alloc:
+  %uni.total = add i32 %uni.c1_cnt, %uni.c2_cnt
+  %uni.total64 = sext i32 %uni.total to i64
+  %uni.arr_bytes = shl i64 %uni.total64, 4
+  %uni.arr_mem = call i8* @wam_arena_alloc(i64 %uni.arr_bytes)
+  %uni.arr = bitcast i8* %uni.arr_mem to %Value*
+  br label %uni.f1_loop
+uni.f1_loop:
+  ; Fill arr[0..n1-1] with A1''s heads in order.
+  %uni.f1_cur = phi %Value [ %uni.a1, %uni.alloc ], [ %uni.f1_next, %uni.f1_step ]
+  %uni.f1_idx = phi i32 [ 0, %uni.alloc ], [ %uni.f1_idx1, %uni.f1_step ]
+  %uni.f1_done_b = icmp sge i32 %uni.f1_idx, %uni.c1_cnt
+  br i1 %uni.f1_done_b, label %uni.o_init, label %uni.f1_step
+uni.f1_step:
+  %uni.f1_d = call %Value @wam_deref_value(%WamState* %vm, %Value %uni.f1_cur)
+  %uni.f1_cp = extractvalue %Value %uni.f1_d, 1
+  %uni.f1_cp_ptr = inttoptr i64 %uni.f1_cp to %Compound*
+  %uni.f1_args_slot = getelementptr %Compound, %Compound* %uni.f1_cp_ptr, i32 0, i32 2
+  %uni.f1_args = load %Value*, %Value** %uni.f1_args_slot
+  %uni.f1_h_ptr = getelementptr %Value, %Value* %uni.f1_args, i32 0
+  %uni.f1_head = load %Value, %Value* %uni.f1_h_ptr
+  %uni.f1_t_ptr = getelementptr %Value, %Value* %uni.f1_args, i32 1
+  %uni.f1_next = load %Value, %Value* %uni.f1_t_ptr
+  %uni.f1_slot = getelementptr %Value, %Value* %uni.arr, i32 %uni.f1_idx
+  store %Value %uni.f1_head, %Value* %uni.f1_slot
+  %uni.f1_idx1 = add i32 %uni.f1_idx, 1
+  br label %uni.f1_loop
+uni.o_init:
+  br label %uni.outer_loop
+uni.outer_loop:
+  ; Outer-walk A2, filtering out matches in A1.
+  %uni.o_cur = phi %Value [ %uni.a2, %uni.o_init ], [ %uni.o_next, %uni.o_after ]
+  %uni.in_idx = phi i32 [ 0, %uni.o_init ], [ %uni.in_idx1, %uni.o_after ]
+  %uni.out_idx = phi i32 [ %uni.c1_cnt, %uni.o_init ], [ %uni.out_next, %uni.o_after ]
+  %uni.o_done = icmp sge i32 %uni.in_idx, %uni.c2_cnt
+  br i1 %uni.o_done, label %uni.build_init, label %uni.o_step
+uni.o_step:
+  %uni.o_d = call %Value @wam_deref_value(%WamState* %vm, %Value %uni.o_cur)
+  %uni.o_cp = extractvalue %Value %uni.o_d, 1
+  %uni.o_cp_ptr = inttoptr i64 %uni.o_cp to %Compound*
+  %uni.o_args_slot = getelementptr %Compound, %Compound* %uni.o_cp_ptr, i32 0, i32 2
+  %uni.o_args = load %Value*, %Value** %uni.o_args_slot
+  %uni.o_h_ptr = getelementptr %Value, %Value* %uni.o_args, i32 0
+  %uni.o_head = load %Value, %Value* %uni.o_h_ptr
+  %uni.o_t_ptr = getelementptr %Value, %Value* %uni.o_args, i32 1
+  %uni.o_next = load %Value, %Value* %uni.o_t_ptr
+  br label %uni.inner_loop
+uni.inner_loop:
+  %uni.i_cur = phi %Value [ %uni.a1, %uni.o_step ], [ %uni.i_next, %uni.i_rollback ]
+  %uni.i_d = call %Value @wam_deref_value(%WamState* %vm, %Value %uni.i_cur)
+  %uni.i_tag = extractvalue %Value %uni.i_d, 0
+  %uni.i_is_cmp = icmp eq i32 %uni.i_tag, 3
+  br i1 %uni.i_is_cmp, label %uni.i_try, label %uni.no_match
+uni.i_try:
+  %uni.i_cp = extractvalue %Value %uni.i_d, 1
+  %uni.i_cp_ptr = inttoptr i64 %uni.i_cp to %Compound*
+  %uni.i_args_slot = getelementptr %Compound, %Compound* %uni.i_cp_ptr, i32 0, i32 2
+  %uni.i_args = load %Value*, %Value** %uni.i_args_slot
+  %uni.i_h_ptr = getelementptr %Value, %Value* %uni.i_args, i32 0
+  %uni.i_head = load %Value, %Value* %uni.i_h_ptr
+  %uni.i_t_ptr = getelementptr %Value, %Value* %uni.i_args, i32 1
+  %uni.i_next = load %Value, %Value* %uni.i_t_ptr
+  %uni.ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %uni.saved_ts = load i32, i32* %uni.ts_ptr
+  %uni.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %uni.o_head, %Value %uni.i_head)
+  br i1 %uni.uok, label %uni.match, label %uni.i_rollback
+uni.i_rollback:
+  call void @unwind_trail(%WamState* %vm, i32 %uni.saved_ts)
+  br label %uni.inner_loop
+uni.match:
+  ; Found in A1 -- skip; keep the binding.
+  br label %uni.o_after
+uni.no_match:
+  ; Not in A1 -- append to arr.
+  %uni.no_slot = getelementptr %Value, %Value* %uni.arr, i32 %uni.out_idx
+  store %Value %uni.o_head, %Value* %uni.no_slot
+  %uni.out_kept = add i32 %uni.out_idx, 1
+  br label %uni.o_after
+uni.o_after:
+  %uni.out_next = phi i32 [ %uni.out_idx, %uni.match ], [ %uni.out_kept, %uni.no_match ]
+  %uni.in_idx1 = add i32 %uni.in_idx, 1
+  br label %uni.outer_loop
+uni.build_init:
+  %uni.b_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %uni.b_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %uni.b_empty_v  = insertvalue %Value %uni.b_empty_v0, i64 %uni.b_empty_id, 1
+  br label %uni.b_loop
+uni.b_loop:
+  %uni.b_i = phi i32 [ %uni.out_idx, %uni.build_init ], [ %uni.b_i_prev, %uni.b_step ]
+  %uni.b_acc = phi %Value [ %uni.b_empty_v, %uni.build_init ], [ %uni.b_new_cons, %uni.b_step ]
+  %uni.b_done = icmp sle i32 %uni.b_i, 0
+  br i1 %uni.b_done, label %uni.b_bind, label %uni.b_step
+uni.b_step:
+  %uni.b_i_prev = sub i32 %uni.b_i, 1
+  %uni.b_slot = getelementptr %Value, %Value* %uni.arr, i32 %uni.b_i_prev
+  %uni.b_head = load %Value, %Value* %uni.b_slot
+  %uni.b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %uni.b_cp_mem = call i8* @wam_arena_alloc(i64 %uni.b_cp_size)
+  %uni.b_cp = bitcast i8* %uni.b_cp_mem to %Compound*
+  %uni.b_fn_slot = getelementptr %Compound, %Compound* %uni.b_cp, i32 0, i32 0
+  %uni.b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %uni.b_fn_ptr, i8** %uni.b_fn_slot
+  %uni.b_ar_slot = getelementptr %Compound, %Compound* %uni.b_cp, i32 0, i32 1
+  store i32 2, i32* %uni.b_ar_slot
+  %uni.b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %uni.b_args = bitcast i8* %uni.b_args_mem to %Value*
+  %uni.b_args_slot = getelementptr %Compound, %Compound* %uni.b_cp, i32 0, i32 2
+  store %Value* %uni.b_args, %Value** %uni.b_args_slot
+  %uni.b_h_ptr = getelementptr %Value, %Value* %uni.b_args, i32 0
+  store %Value %uni.b_head, %Value* %uni.b_h_ptr
+  %uni.b_t_ptr = getelementptr %Value, %Value* %uni.b_args, i32 1
+  store %Value %uni.b_acc, %Value* %uni.b_t_ptr
+  %uni.b_cp_i64 = ptrtoint %Compound* %uni.b_cp to i64
+  %uni.b_nc0 = insertvalue %Value undef, i32 3, 0
+  %uni.b_new_cons = insertvalue %Value %uni.b_nc0, i64 %uni.b_cp_i64, 1
+  br label %uni.b_loop
+uni.b_bind:
+  %uni.b_raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %uni.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %uni.b_raw3, %Value %uni.b_acc)
+  ret i1 %uni.b_ok
+
+builtin_list_to_set:
+  ; M47: list_to_set(+List, ?Set) -- deduplicate while preserving
+  ; first-occurrence order. Three-pass:
+  ;   1. count A1 -> n;
+  ;   2. allocate arr of n %Values; outer-walk A1; for each head,
+  ;      inner-scan the surviving prefix arr[0..out_idx-1] with the
+  ;      trial-unify + rollback pattern. If a match is found, skip
+  ;      (binding kept). Otherwise append arr[out_idx++] = head.
+  ;   3. walk arr back-to-front prepending each entry onto [] and
+  ;      unify A2 with the chain.
+  %l2s.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  call void @wam_arena_ensure()
+  br label %l2s.c_loop
+l2s.c_loop:
+  %l2s.c_cur = phi %Value [ %l2s.a1, %builtin_list_to_set ], [ %l2s.c_next, %l2s.c_step ]
+  %l2s.c_cnt = phi i32 [ 0, %builtin_list_to_set ], [ %l2s.c_cnt1, %l2s.c_step ]
+  %l2s.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %l2s.c_cur)
+  %l2s.c_tag = extractvalue %Value %l2s.c_d, 0
+  %l2s.c_is_cmp = icmp eq i32 %l2s.c_tag, 3
+  br i1 %l2s.c_is_cmp, label %l2s.c_step, label %l2s.c_done
+l2s.c_step:
+  %l2s.c_cp = extractvalue %Value %l2s.c_d, 1
+  %l2s.c_cp_ptr = inttoptr i64 %l2s.c_cp to %Compound*
+  %l2s.c_args_slot = getelementptr %Compound, %Compound* %l2s.c_cp_ptr, i32 0, i32 2
+  %l2s.c_args = load %Value*, %Value** %l2s.c_args_slot
+  %l2s.c_t_ptr = getelementptr %Value, %Value* %l2s.c_args, i32 1
+  %l2s.c_next = load %Value, %Value* %l2s.c_t_ptr
+  %l2s.c_cnt1 = add i32 %l2s.c_cnt, 1
+  br label %l2s.c_loop
+l2s.c_done:
+  %l2s.cnt64 = sext i32 %l2s.c_cnt to i64
+  %l2s.arr_bytes = shl i64 %l2s.cnt64, 4
+  %l2s.arr_mem = call i8* @wam_arena_alloc(i64 %l2s.arr_bytes)
+  %l2s.arr = bitcast i8* %l2s.arr_mem to %Value*
+  br label %l2s.outer_loop
+l2s.outer_loop:
+  %l2s.o_cur = phi %Value [ %l2s.a1, %l2s.c_done ], [ %l2s.o_next, %l2s.o_after ]
+  %l2s.in_idx = phi i32 [ 0, %l2s.c_done ], [ %l2s.in_idx1, %l2s.o_after ]
+  %l2s.out_idx = phi i32 [ 0, %l2s.c_done ], [ %l2s.out_next, %l2s.o_after ]
+  %l2s.o_done = icmp sge i32 %l2s.in_idx, %l2s.c_cnt
+  br i1 %l2s.o_done, label %l2s.build_init, label %l2s.o_step
+l2s.o_step:
+  %l2s.o_d = call %Value @wam_deref_value(%WamState* %vm, %Value %l2s.o_cur)
+  %l2s.o_cp = extractvalue %Value %l2s.o_d, 1
+  %l2s.o_cp_ptr = inttoptr i64 %l2s.o_cp to %Compound*
+  %l2s.o_args_slot = getelementptr %Compound, %Compound* %l2s.o_cp_ptr, i32 0, i32 2
+  %l2s.o_args = load %Value*, %Value** %l2s.o_args_slot
+  %l2s.o_h_ptr = getelementptr %Value, %Value* %l2s.o_args, i32 0
+  %l2s.o_head = load %Value, %Value* %l2s.o_h_ptr
+  %l2s.o_t_ptr = getelementptr %Value, %Value* %l2s.o_args, i32 1
+  %l2s.o_next = load %Value, %Value* %l2s.o_t_ptr
+  br label %l2s.inner_loop
+l2s.inner_loop:
+  ; Scan arr[0..out_idx-1] looking for a unify match with o_head.
+  %l2s.i_idx = phi i32 [ 0, %l2s.o_step ], [ %l2s.i_idx1, %l2s.i_rollback ]
+  %l2s.i_done = icmp sge i32 %l2s.i_idx, %l2s.out_idx
+  br i1 %l2s.i_done, label %l2s.no_match, label %l2s.i_try
+l2s.i_try:
+  %l2s.i_slot = getelementptr %Value, %Value* %l2s.arr, i32 %l2s.i_idx
+  %l2s.i_head = load %Value, %Value* %l2s.i_slot
+  %l2s.ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %l2s.saved_ts = load i32, i32* %l2s.ts_ptr
+  %l2s.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %l2s.o_head, %Value %l2s.i_head)
+  br i1 %l2s.uok, label %l2s.match, label %l2s.i_rollback
+l2s.i_rollback:
+  call void @unwind_trail(%WamState* %vm, i32 %l2s.saved_ts)
+  %l2s.i_idx1 = add i32 %l2s.i_idx, 1
+  br label %l2s.inner_loop
+l2s.match:
+  ; Duplicate -- skip; keep the (probably no-op) binding.
+  br label %l2s.o_after
+l2s.no_match:
+  ; First occurrence -- append.
+  %l2s.no_slot = getelementptr %Value, %Value* %l2s.arr, i32 %l2s.out_idx
+  store %Value %l2s.o_head, %Value* %l2s.no_slot
+  %l2s.out_kept = add i32 %l2s.out_idx, 1
+  br label %l2s.o_after
+l2s.o_after:
+  %l2s.out_next = phi i32 [ %l2s.out_idx, %l2s.match ], [ %l2s.out_kept, %l2s.no_match ]
+  %l2s.in_idx1 = add i32 %l2s.in_idx, 1
+  br label %l2s.outer_loop
+l2s.build_init:
+  %l2s.b_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %l2s.b_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %l2s.b_empty_v  = insertvalue %Value %l2s.b_empty_v0, i64 %l2s.b_empty_id, 1
+  br label %l2s.b_loop
+l2s.b_loop:
+  %l2s.b_i = phi i32 [ %l2s.out_idx, %l2s.build_init ], [ %l2s.b_i_prev, %l2s.b_step ]
+  %l2s.b_acc = phi %Value [ %l2s.b_empty_v, %l2s.build_init ], [ %l2s.b_new_cons, %l2s.b_step ]
+  %l2s.b_done = icmp sle i32 %l2s.b_i, 0
+  br i1 %l2s.b_done, label %l2s.b_bind, label %l2s.b_step
+l2s.b_step:
+  %l2s.b_i_prev = sub i32 %l2s.b_i, 1
+  %l2s.b_slot = getelementptr %Value, %Value* %l2s.arr, i32 %l2s.b_i_prev
+  %l2s.b_head = load %Value, %Value* %l2s.b_slot
+  %l2s.b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %l2s.b_cp_mem = call i8* @wam_arena_alloc(i64 %l2s.b_cp_size)
+  %l2s.b_cp = bitcast i8* %l2s.b_cp_mem to %Compound*
+  %l2s.b_fn_slot = getelementptr %Compound, %Compound* %l2s.b_cp, i32 0, i32 0
+  %l2s.b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %l2s.b_fn_ptr, i8** %l2s.b_fn_slot
+  %l2s.b_ar_slot = getelementptr %Compound, %Compound* %l2s.b_cp, i32 0, i32 1
+  store i32 2, i32* %l2s.b_ar_slot
+  %l2s.b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %l2s.b_args = bitcast i8* %l2s.b_args_mem to %Value*
+  %l2s.b_args_slot = getelementptr %Compound, %Compound* %l2s.b_cp, i32 0, i32 2
+  store %Value* %l2s.b_args, %Value** %l2s.b_args_slot
+  %l2s.b_h_ptr = getelementptr %Value, %Value* %l2s.b_args, i32 0
+  store %Value %l2s.b_head, %Value* %l2s.b_h_ptr
+  %l2s.b_t_ptr = getelementptr %Value, %Value* %l2s.b_args, i32 1
+  store %Value %l2s.b_acc, %Value* %l2s.b_t_ptr
+  %l2s.b_cp_i64 = ptrtoint %Compound* %l2s.b_cp to i64
+  %l2s.b_nc0 = insertvalue %Value undef, i32 3, 0
+  %l2s.b_new_cons = insertvalue %Value %l2s.b_nc0, i64 %l2s.b_cp_i64, 1
+  br label %l2s.b_loop
+l2s.b_bind:
+  %l2s.b_raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %l2s.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %l2s.b_raw2, %Value %l2s.b_acc)
+  ret i1 %l2s.b_ok
+
+builtin_string_code:
+  ; M48: string_code(+Index, +String, ?Code) -- 1-based byte access.
+  ; Atoms are strings in this runtime, so A2 is just an Atom.
+  ; Validates A1 is Integer, A2 is Atom, Index in [1, length]. Returns
+  ; the byte at position Index-1 as an Integer code. Failing the
+  ; bounds check or types simply returns false (no type_error throw).
+  %stc.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %stc.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %stc.t1 = extractvalue %Value %stc.a1, 0
+  %stc.t2 = extractvalue %Value %stc.a2, 0
+  %stc.is_int = icmp eq i32 %stc.t1, 1
+  %stc.is_atom = icmp eq i32 %stc.t2, 0
+  %stc.both = and i1 %stc.is_int, %stc.is_atom
+  br i1 %stc.both, label %stc.lookup, label %stc.fail
+stc.fail:
+  ret i1 false
+stc.lookup:
+  %stc.aid = extractvalue %Value %stc.a2, 1
+  %stc.str = call i8* @wam_atom_to_string(i64 %stc.aid)
+  %stc.str_null = icmp eq i8* %stc.str, null
+  br i1 %stc.str_null, label %stc.fail, label %stc.measure
+stc.measure:
+  br label %stc.m_loop
+stc.m_loop:
+  %stc.mp = phi i8* [ %stc.str, %stc.measure ], [ %stc.mpn, %stc.m_step ]
+  %stc.mn = phi i64 [ 0, %stc.measure ], [ %stc.mn1, %stc.m_step ]
+  %stc.mc = load i8, i8* %stc.mp
+  %stc.mz = icmp eq i8 %stc.mc, 0
+  br i1 %stc.mz, label %stc.bounds, label %stc.m_step
+stc.m_step:
+  %stc.mpn = getelementptr i8, i8* %stc.mp, i32 1
+  %stc.mn1 = add i64 %stc.mn, 1
+  br label %stc.m_loop
+stc.bounds:
+  %stc.idx = extractvalue %Value %stc.a1, 1
+  %stc.lo_bad = icmp slt i64 %stc.idx, 1
+  %stc.hi_bad = icmp sgt i64 %stc.idx, %stc.mn
+  %stc.bad = or i1 %stc.lo_bad, %stc.hi_bad
+  br i1 %stc.bad, label %stc.fail, label %stc.read
+stc.read:
+  %stc.pos = sub i64 %stc.idx, 1
+  %stc.byte_ptr = getelementptr i8, i8* %stc.str, i64 %stc.pos
+  %stc.byte = load i8, i8* %stc.byte_ptr
+  %stc.byte64 = zext i8 %stc.byte to i64
+  %stc.code_v = call %Value @value_integer(i64 %stc.byte64)
+  %stc.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %stc.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %stc.raw3, %Value %stc.code_v)
+  ret i1 %stc.ok
+
+builtin_pairs_keys:
+  ; M49: pairs_keys(+Pairs, ?Keys) -- extract args[0] of each Compound
+  ; head into a parallel keys list. Three-pass: count, fill via
+  ; compound deref + arg extraction, build cons chain.
+  ; Each head must be Compound with arity 2 (matches K-V shape);
+  ; non-compound or wrong-arity head fails the whole call.
+  %pky.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  call void @wam_arena_ensure()
+  br label %pky.c_loop
+pky.fail:
+  ret i1 false
+pky.c_loop:
+  %pky.c_cur = phi %Value [ %pky.a1, %builtin_pairs_keys ], [ %pky.c_next, %pky.c_step ]
+  %pky.c_cnt = phi i32 [ 0, %builtin_pairs_keys ], [ %pky.c_cnt1, %pky.c_step ]
+  %pky.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %pky.c_cur)
+  %pky.c_tag = extractvalue %Value %pky.c_d, 0
+  %pky.c_is_cmp = icmp eq i32 %pky.c_tag, 3
+  br i1 %pky.c_is_cmp, label %pky.c_step, label %pky.c_done
+pky.c_step:
+  %pky.c_cp = extractvalue %Value %pky.c_d, 1
+  %pky.c_cp_ptr = inttoptr i64 %pky.c_cp to %Compound*
+  %pky.c_args_slot = getelementptr %Compound, %Compound* %pky.c_cp_ptr, i32 0, i32 2
+  %pky.c_args = load %Value*, %Value** %pky.c_args_slot
+  %pky.c_t_ptr = getelementptr %Value, %Value* %pky.c_args, i32 1
+  %pky.c_next = load %Value, %Value* %pky.c_t_ptr
+  %pky.c_cnt1 = add i32 %pky.c_cnt, 1
+  br label %pky.c_loop
+pky.c_done:
+  %pky.cnt64 = sext i32 %pky.c_cnt to i64
+  %pky.arr_bytes = shl i64 %pky.cnt64, 4
+  %pky.arr_mem = call i8* @wam_arena_alloc(i64 %pky.arr_bytes)
+  %pky.arr = bitcast i8* %pky.arr_mem to %Value*
+  br label %pky.f_loop
+pky.f_loop:
+  %pky.f_cur = phi %Value [ %pky.a1, %pky.c_done ], [ %pky.f_next, %pky.f_extract ]
+  %pky.f_idx = phi i32 [ 0, %pky.c_done ], [ %pky.f_idx1, %pky.f_extract ]
+  %pky.f_done_b = icmp sge i32 %pky.f_idx, %pky.c_cnt
+  br i1 %pky.f_done_b, label %pky.b_init, label %pky.f_step
+pky.f_step:
+  %pky.f_d = call %Value @wam_deref_value(%WamState* %vm, %Value %pky.f_cur)
+  %pky.f_cp = extractvalue %Value %pky.f_d, 1
+  %pky.f_cp_ptr = inttoptr i64 %pky.f_cp to %Compound*
+  %pky.f_args_slot = getelementptr %Compound, %Compound* %pky.f_cp_ptr, i32 0, i32 2
+  %pky.f_args = load %Value*, %Value** %pky.f_args_slot
+  %pky.f_h_ptr = getelementptr %Value, %Value* %pky.f_args, i32 0
+  %pky.f_head = load %Value, %Value* %pky.f_h_ptr
+  %pky.f_t_ptr = getelementptr %Value, %Value* %pky.f_args, i32 1
+  %pky.f_next = load %Value, %Value* %pky.f_t_ptr
+  ; Inspect pair: arity must be 2; otherwise fail.
+  %pky.f_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %pky.f_head)
+  %pky.f_h_tag = extractvalue %Value %pky.f_h_d, 0
+  %pky.f_h_is_cmp = icmp eq i32 %pky.f_h_tag, 3
+  br i1 %pky.f_h_is_cmp, label %pky.f_h_check, label %pky.fail
+pky.f_h_check:
+  %pky.f_h_cp = extractvalue %Value %pky.f_h_d, 1
+  %pky.f_h_cp_ptr = inttoptr i64 %pky.f_h_cp to %Compound*
+  %pky.f_h_ar_slot = getelementptr %Compound, %Compound* %pky.f_h_cp_ptr, i32 0, i32 1
+  %pky.f_h_ar = load i32, i32* %pky.f_h_ar_slot
+  %pky.f_h_ar_ok = icmp eq i32 %pky.f_h_ar, 2
+  br i1 %pky.f_h_ar_ok, label %pky.f_extract, label %pky.fail
+pky.f_extract:
+  %pky.f_h_args_slot = getelementptr %Compound, %Compound* %pky.f_h_cp_ptr, i32 0, i32 2
+  %pky.f_h_args = load %Value*, %Value** %pky.f_h_args_slot
+  %pky.f_h_key_ptr = getelementptr %Value, %Value* %pky.f_h_args, i32 0
+  %pky.f_key = load %Value, %Value* %pky.f_h_key_ptr
+  %pky.f_slot = getelementptr %Value, %Value* %pky.arr, i32 %pky.f_idx
+  store %Value %pky.f_key, %Value* %pky.f_slot
+  %pky.f_idx1 = add i32 %pky.f_idx, 1
+  br label %pky.f_loop
+pky.b_init:
+  %pky.b_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %pky.b_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %pky.b_empty_v  = insertvalue %Value %pky.b_empty_v0, i64 %pky.b_empty_id, 1
+  br label %pky.b_loop
+pky.b_loop:
+  %pky.b_i = phi i32 [ %pky.c_cnt, %pky.b_init ], [ %pky.b_i_prev, %pky.b_step ]
+  %pky.b_acc = phi %Value [ %pky.b_empty_v, %pky.b_init ], [ %pky.b_new_cons, %pky.b_step ]
+  %pky.b_done = icmp sle i32 %pky.b_i, 0
+  br i1 %pky.b_done, label %pky.b_bind, label %pky.b_step
+pky.b_step:
+  %pky.b_i_prev = sub i32 %pky.b_i, 1
+  %pky.b_slot = getelementptr %Value, %Value* %pky.arr, i32 %pky.b_i_prev
+  %pky.b_head = load %Value, %Value* %pky.b_slot
+  %pky.b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %pky.b_cp_mem = call i8* @wam_arena_alloc(i64 %pky.b_cp_size)
+  %pky.b_cp = bitcast i8* %pky.b_cp_mem to %Compound*
+  %pky.b_fn_slot = getelementptr %Compound, %Compound* %pky.b_cp, i32 0, i32 0
+  %pky.b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %pky.b_fn_ptr, i8** %pky.b_fn_slot
+  %pky.b_ar_slot = getelementptr %Compound, %Compound* %pky.b_cp, i32 0, i32 1
+  store i32 2, i32* %pky.b_ar_slot
+  %pky.b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %pky.b_args = bitcast i8* %pky.b_args_mem to %Value*
+  %pky.b_args_slot = getelementptr %Compound, %Compound* %pky.b_cp, i32 0, i32 2
+  store %Value* %pky.b_args, %Value** %pky.b_args_slot
+  %pky.b_h_ptr = getelementptr %Value, %Value* %pky.b_args, i32 0
+  store %Value %pky.b_head, %Value* %pky.b_h_ptr
+  %pky.b_t_ptr = getelementptr %Value, %Value* %pky.b_args, i32 1
+  store %Value %pky.b_acc, %Value* %pky.b_t_ptr
+  %pky.b_cp_i64 = ptrtoint %Compound* %pky.b_cp to i64
+  %pky.b_nc0 = insertvalue %Value undef, i32 3, 0
+  %pky.b_new_cons = insertvalue %Value %pky.b_nc0, i64 %pky.b_cp_i64, 1
+  br label %pky.b_loop
+pky.b_bind:
+  %pky.b_raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %pky.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %pky.b_raw2, %Value %pky.b_acc)
+  ret i1 %pky.b_ok
+
+builtin_pairs_values:
+  ; M49: pairs_values(+Pairs, ?Values) -- mirrors pairs_keys but
+  ; extracts args[1] (the value side) from each pair compound.
+  %pvs.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  call void @wam_arena_ensure()
+  br label %pvs.c_loop
+pvs.fail:
+  ret i1 false
+pvs.c_loop:
+  %pvs.c_cur = phi %Value [ %pvs.a1, %builtin_pairs_values ], [ %pvs.c_next, %pvs.c_step ]
+  %pvs.c_cnt = phi i32 [ 0, %builtin_pairs_values ], [ %pvs.c_cnt1, %pvs.c_step ]
+  %pvs.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %pvs.c_cur)
+  %pvs.c_tag = extractvalue %Value %pvs.c_d, 0
+  %pvs.c_is_cmp = icmp eq i32 %pvs.c_tag, 3
+  br i1 %pvs.c_is_cmp, label %pvs.c_step, label %pvs.c_done
+pvs.c_step:
+  %pvs.c_cp = extractvalue %Value %pvs.c_d, 1
+  %pvs.c_cp_ptr = inttoptr i64 %pvs.c_cp to %Compound*
+  %pvs.c_args_slot = getelementptr %Compound, %Compound* %pvs.c_cp_ptr, i32 0, i32 2
+  %pvs.c_args = load %Value*, %Value** %pvs.c_args_slot
+  %pvs.c_t_ptr = getelementptr %Value, %Value* %pvs.c_args, i32 1
+  %pvs.c_next = load %Value, %Value* %pvs.c_t_ptr
+  %pvs.c_cnt1 = add i32 %pvs.c_cnt, 1
+  br label %pvs.c_loop
+pvs.c_done:
+  %pvs.cnt64 = sext i32 %pvs.c_cnt to i64
+  %pvs.arr_bytes = shl i64 %pvs.cnt64, 4
+  %pvs.arr_mem = call i8* @wam_arena_alloc(i64 %pvs.arr_bytes)
+  %pvs.arr = bitcast i8* %pvs.arr_mem to %Value*
+  br label %pvs.f_loop
+pvs.f_loop:
+  %pvs.f_cur = phi %Value [ %pvs.a1, %pvs.c_done ], [ %pvs.f_next, %pvs.f_extract ]
+  %pvs.f_idx = phi i32 [ 0, %pvs.c_done ], [ %pvs.f_idx1, %pvs.f_extract ]
+  %pvs.f_done_b = icmp sge i32 %pvs.f_idx, %pvs.c_cnt
+  br i1 %pvs.f_done_b, label %pvs.b_init, label %pvs.f_step
+pvs.f_step:
+  %pvs.f_d = call %Value @wam_deref_value(%WamState* %vm, %Value %pvs.f_cur)
+  %pvs.f_cp = extractvalue %Value %pvs.f_d, 1
+  %pvs.f_cp_ptr = inttoptr i64 %pvs.f_cp to %Compound*
+  %pvs.f_args_slot = getelementptr %Compound, %Compound* %pvs.f_cp_ptr, i32 0, i32 2
+  %pvs.f_args = load %Value*, %Value** %pvs.f_args_slot
+  %pvs.f_h_ptr = getelementptr %Value, %Value* %pvs.f_args, i32 0
+  %pvs.f_head = load %Value, %Value* %pvs.f_h_ptr
+  %pvs.f_t_ptr = getelementptr %Value, %Value* %pvs.f_args, i32 1
+  %pvs.f_next = load %Value, %Value* %pvs.f_t_ptr
+  %pvs.f_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %pvs.f_head)
+  %pvs.f_h_tag = extractvalue %Value %pvs.f_h_d, 0
+  %pvs.f_h_is_cmp = icmp eq i32 %pvs.f_h_tag, 3
+  br i1 %pvs.f_h_is_cmp, label %pvs.f_h_check, label %pvs.fail
+pvs.f_h_check:
+  %pvs.f_h_cp = extractvalue %Value %pvs.f_h_d, 1
+  %pvs.f_h_cp_ptr = inttoptr i64 %pvs.f_h_cp to %Compound*
+  %pvs.f_h_ar_slot = getelementptr %Compound, %Compound* %pvs.f_h_cp_ptr, i32 0, i32 1
+  %pvs.f_h_ar = load i32, i32* %pvs.f_h_ar_slot
+  %pvs.f_h_ar_ok = icmp eq i32 %pvs.f_h_ar, 2
+  br i1 %pvs.f_h_ar_ok, label %pvs.f_extract, label %pvs.fail
+pvs.f_extract:
+  %pvs.f_h_args_slot = getelementptr %Compound, %Compound* %pvs.f_h_cp_ptr, i32 0, i32 2
+  %pvs.f_h_args = load %Value*, %Value** %pvs.f_h_args_slot
+  %pvs.f_h_val_ptr = getelementptr %Value, %Value* %pvs.f_h_args, i32 1
+  %pvs.f_val = load %Value, %Value* %pvs.f_h_val_ptr
+  %pvs.f_slot = getelementptr %Value, %Value* %pvs.arr, i32 %pvs.f_idx
+  store %Value %pvs.f_val, %Value* %pvs.f_slot
+  %pvs.f_idx1 = add i32 %pvs.f_idx, 1
+  br label %pvs.f_loop
+pvs.b_init:
+  %pvs.b_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %pvs.b_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %pvs.b_empty_v  = insertvalue %Value %pvs.b_empty_v0, i64 %pvs.b_empty_id, 1
+  br label %pvs.b_loop
+pvs.b_loop:
+  %pvs.b_i = phi i32 [ %pvs.c_cnt, %pvs.b_init ], [ %pvs.b_i_prev, %pvs.b_step ]
+  %pvs.b_acc = phi %Value [ %pvs.b_empty_v, %pvs.b_init ], [ %pvs.b_new_cons, %pvs.b_step ]
+  %pvs.b_done = icmp sle i32 %pvs.b_i, 0
+  br i1 %pvs.b_done, label %pvs.b_bind, label %pvs.b_step
+pvs.b_step:
+  %pvs.b_i_prev = sub i32 %pvs.b_i, 1
+  %pvs.b_slot = getelementptr %Value, %Value* %pvs.arr, i32 %pvs.b_i_prev
+  %pvs.b_head = load %Value, %Value* %pvs.b_slot
+  %pvs.b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %pvs.b_cp_mem = call i8* @wam_arena_alloc(i64 %pvs.b_cp_size)
+  %pvs.b_cp = bitcast i8* %pvs.b_cp_mem to %Compound*
+  %pvs.b_fn_slot = getelementptr %Compound, %Compound* %pvs.b_cp, i32 0, i32 0
+  %pvs.b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %pvs.b_fn_ptr, i8** %pvs.b_fn_slot
+  %pvs.b_ar_slot = getelementptr %Compound, %Compound* %pvs.b_cp, i32 0, i32 1
+  store i32 2, i32* %pvs.b_ar_slot
+  %pvs.b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %pvs.b_args = bitcast i8* %pvs.b_args_mem to %Value*
+  %pvs.b_args_slot = getelementptr %Compound, %Compound* %pvs.b_cp, i32 0, i32 2
+  store %Value* %pvs.b_args, %Value** %pvs.b_args_slot
+  %pvs.b_h_ptr = getelementptr %Value, %Value* %pvs.b_args, i32 0
+  store %Value %pvs.b_head, %Value* %pvs.b_h_ptr
+  %pvs.b_t_ptr = getelementptr %Value, %Value* %pvs.b_args, i32 1
+  store %Value %pvs.b_acc, %Value* %pvs.b_t_ptr
+  %pvs.b_cp_i64 = ptrtoint %Compound* %pvs.b_cp to i64
+  %pvs.b_nc0 = insertvalue %Value undef, i32 3, 0
+  %pvs.b_new_cons = insertvalue %Value %pvs.b_nc0, i64 %pvs.b_cp_i64, 1
+  br label %pvs.b_loop
+pvs.b_bind:
+  %pvs.b_raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %pvs.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %pvs.b_raw2, %Value %pvs.b_acc)
+  ret i1 %pvs.b_ok
+
+builtin_pairs_keys_values:
+  ; M50/M51: pairs_keys_values(?Pairs, ?Keys, ?Values).
+  ;   Forward (A1 bound pair list): decompose into parallel Keys +
+  ;     Values lists (three-pass: count, fill, build x2).
+  ;   Reverse (A1 unbound + A2 and A3 bound lists of equal length):
+  ;     zip into a list of -/2 K-V compounds, unify A1 with the
+  ;     resulting chain. Length mismatch fails.
+  %pkv.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  call void @wam_arena_ensure()
+  %pkv.a1_unb = call i1 @value_is_unbound(%Value %pkv.a1)
+  br i1 %pkv.a1_unb, label %pkv.r_init, label %pkv.c_loop
+pkv.fail:
+  ret i1 false
+pkv.c_loop:
+  %pkv.c_cur = phi %Value [ %pkv.a1, %builtin_pairs_keys_values ], [ %pkv.c_next, %pkv.c_step ]
+  %pkv.c_cnt = phi i32 [ 0, %builtin_pairs_keys_values ], [ %pkv.c_cnt1, %pkv.c_step ]
+  %pkv.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %pkv.c_cur)
+  %pkv.c_tag = extractvalue %Value %pkv.c_d, 0
+  %pkv.c_is_cmp = icmp eq i32 %pkv.c_tag, 3
+  br i1 %pkv.c_is_cmp, label %pkv.c_step, label %pkv.c_done
+pkv.c_step:
+  %pkv.c_cp = extractvalue %Value %pkv.c_d, 1
+  %pkv.c_cp_ptr = inttoptr i64 %pkv.c_cp to %Compound*
+  %pkv.c_args_slot = getelementptr %Compound, %Compound* %pkv.c_cp_ptr, i32 0, i32 2
+  %pkv.c_args = load %Value*, %Value** %pkv.c_args_slot
+  %pkv.c_t_ptr = getelementptr %Value, %Value* %pkv.c_args, i32 1
+  %pkv.c_next = load %Value, %Value* %pkv.c_t_ptr
+  %pkv.c_cnt1 = add i32 %pkv.c_cnt, 1
+  br label %pkv.c_loop
+pkv.c_done:
+  %pkv.cnt64 = sext i32 %pkv.c_cnt to i64
+  %pkv.arr_bytes = shl i64 %pkv.cnt64, 4
+  %pkv.k_arr_mem = call i8* @wam_arena_alloc(i64 %pkv.arr_bytes)
+  %pkv.k_arr = bitcast i8* %pkv.k_arr_mem to %Value*
+  %pkv.v_arr_mem = call i8* @wam_arena_alloc(i64 %pkv.arr_bytes)
+  %pkv.v_arr = bitcast i8* %pkv.v_arr_mem to %Value*
+  br label %pkv.f_loop
+pkv.f_loop:
+  %pkv.f_cur = phi %Value [ %pkv.a1, %pkv.c_done ], [ %pkv.f_next, %pkv.f_extract ]
+  %pkv.f_idx = phi i32 [ 0, %pkv.c_done ], [ %pkv.f_idx1, %pkv.f_extract ]
+  %pkv.f_done_b = icmp sge i32 %pkv.f_idx, %pkv.c_cnt
+  br i1 %pkv.f_done_b, label %pkv.kb_init, label %pkv.f_step
+pkv.f_step:
+  %pkv.f_d = call %Value @wam_deref_value(%WamState* %vm, %Value %pkv.f_cur)
+  %pkv.f_cp = extractvalue %Value %pkv.f_d, 1
+  %pkv.f_cp_ptr = inttoptr i64 %pkv.f_cp to %Compound*
+  %pkv.f_args_slot = getelementptr %Compound, %Compound* %pkv.f_cp_ptr, i32 0, i32 2
+  %pkv.f_args = load %Value*, %Value** %pkv.f_args_slot
+  %pkv.f_h_ptr = getelementptr %Value, %Value* %pkv.f_args, i32 0
+  %pkv.f_head = load %Value, %Value* %pkv.f_h_ptr
+  %pkv.f_t_ptr = getelementptr %Value, %Value* %pkv.f_args, i32 1
+  %pkv.f_next = load %Value, %Value* %pkv.f_t_ptr
+  %pkv.f_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %pkv.f_head)
+  %pkv.f_h_tag = extractvalue %Value %pkv.f_h_d, 0
+  %pkv.f_h_is_cmp = icmp eq i32 %pkv.f_h_tag, 3
+  br i1 %pkv.f_h_is_cmp, label %pkv.f_h_check, label %pkv.fail
+pkv.f_h_check:
+  %pkv.f_h_cp = extractvalue %Value %pkv.f_h_d, 1
+  %pkv.f_h_cp_ptr = inttoptr i64 %pkv.f_h_cp to %Compound*
+  %pkv.f_h_ar_slot = getelementptr %Compound, %Compound* %pkv.f_h_cp_ptr, i32 0, i32 1
+  %pkv.f_h_ar = load i32, i32* %pkv.f_h_ar_slot
+  %pkv.f_h_ar_ok = icmp eq i32 %pkv.f_h_ar, 2
+  br i1 %pkv.f_h_ar_ok, label %pkv.f_extract, label %pkv.fail
+pkv.f_extract:
+  %pkv.f_h_args_slot = getelementptr %Compound, %Compound* %pkv.f_h_cp_ptr, i32 0, i32 2
+  %pkv.f_h_args = load %Value*, %Value** %pkv.f_h_args_slot
+  %pkv.f_h_key_ptr = getelementptr %Value, %Value* %pkv.f_h_args, i32 0
+  %pkv.f_key = load %Value, %Value* %pkv.f_h_key_ptr
+  %pkv.f_h_val_ptr = getelementptr %Value, %Value* %pkv.f_h_args, i32 1
+  %pkv.f_val = load %Value, %Value* %pkv.f_h_val_ptr
+  %pkv.f_k_slot = getelementptr %Value, %Value* %pkv.k_arr, i32 %pkv.f_idx
+  store %Value %pkv.f_key, %Value* %pkv.f_k_slot
+  %pkv.f_v_slot = getelementptr %Value, %Value* %pkv.v_arr, i32 %pkv.f_idx
+  store %Value %pkv.f_val, %Value* %pkv.f_v_slot
+  %pkv.f_idx1 = add i32 %pkv.f_idx, 1
+  br label %pkv.f_loop
+pkv.kb_init:
+  ; Build keys chain.
+  %pkv.kb_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %pkv.kb_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %pkv.kb_empty_v  = insertvalue %Value %pkv.kb_empty_v0, i64 %pkv.kb_empty_id, 1
+  br label %pkv.kb_loop
+pkv.kb_loop:
+  %pkv.kb_i = phi i32 [ %pkv.c_cnt, %pkv.kb_init ], [ %pkv.kb_i_prev, %pkv.kb_step ]
+  %pkv.kb_acc = phi %Value [ %pkv.kb_empty_v, %pkv.kb_init ], [ %pkv.kb_new_cons, %pkv.kb_step ]
+  %pkv.kb_done = icmp sle i32 %pkv.kb_i, 0
+  br i1 %pkv.kb_done, label %pkv.vb_init, label %pkv.kb_step
+pkv.kb_step:
+  %pkv.kb_i_prev = sub i32 %pkv.kb_i, 1
+  %pkv.kb_slot = getelementptr %Value, %Value* %pkv.k_arr, i32 %pkv.kb_i_prev
+  %pkv.kb_head = load %Value, %Value* %pkv.kb_slot
+  %pkv.kb_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %pkv.kb_cp_mem = call i8* @wam_arena_alloc(i64 %pkv.kb_cp_size)
+  %pkv.kb_cp = bitcast i8* %pkv.kb_cp_mem to %Compound*
+  %pkv.kb_fn_slot = getelementptr %Compound, %Compound* %pkv.kb_cp, i32 0, i32 0
+  %pkv.kb_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %pkv.kb_fn_ptr, i8** %pkv.kb_fn_slot
+  %pkv.kb_ar_slot = getelementptr %Compound, %Compound* %pkv.kb_cp, i32 0, i32 1
+  store i32 2, i32* %pkv.kb_ar_slot
+  %pkv.kb_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %pkv.kb_args = bitcast i8* %pkv.kb_args_mem to %Value*
+  %pkv.kb_args_slot = getelementptr %Compound, %Compound* %pkv.kb_cp, i32 0, i32 2
+  store %Value* %pkv.kb_args, %Value** %pkv.kb_args_slot
+  %pkv.kb_h_ptr = getelementptr %Value, %Value* %pkv.kb_args, i32 0
+  store %Value %pkv.kb_head, %Value* %pkv.kb_h_ptr
+  %pkv.kb_t_ptr = getelementptr %Value, %Value* %pkv.kb_args, i32 1
+  store %Value %pkv.kb_acc, %Value* %pkv.kb_t_ptr
+  %pkv.kb_cp_i64 = ptrtoint %Compound* %pkv.kb_cp to i64
+  %pkv.kb_nc0 = insertvalue %Value undef, i32 3, 0
+  %pkv.kb_new_cons = insertvalue %Value %pkv.kb_nc0, i64 %pkv.kb_cp_i64, 1
+  br label %pkv.kb_loop
+pkv.vb_init:
+  ; Build values chain. Carry the finished keys chain through phi so
+  ; the final bind block can see both.
+  %pkv.k_final = phi %Value [ %pkv.kb_acc, %pkv.kb_loop ]
+  %pkv.vb_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %pkv.vb_empty_v  = insertvalue %Value %pkv.vb_empty_v0, i64 %pkv.kb_empty_id, 1
+  br label %pkv.vb_loop
+pkv.vb_loop:
+  %pkv.vb_i = phi i32 [ %pkv.c_cnt, %pkv.vb_init ], [ %pkv.vb_i_prev, %pkv.vb_step ]
+  %pkv.vb_acc = phi %Value [ %pkv.vb_empty_v, %pkv.vb_init ], [ %pkv.vb_new_cons, %pkv.vb_step ]
+  %pkv.vb_done = icmp sle i32 %pkv.vb_i, 0
+  br i1 %pkv.vb_done, label %pkv.bind, label %pkv.vb_step
+pkv.vb_step:
+  %pkv.vb_i_prev = sub i32 %pkv.vb_i, 1
+  %pkv.vb_slot = getelementptr %Value, %Value* %pkv.v_arr, i32 %pkv.vb_i_prev
+  %pkv.vb_head = load %Value, %Value* %pkv.vb_slot
+  %pkv.vb_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %pkv.vb_cp_mem = call i8* @wam_arena_alloc(i64 %pkv.vb_cp_size)
+  %pkv.vb_cp = bitcast i8* %pkv.vb_cp_mem to %Compound*
+  %pkv.vb_fn_slot = getelementptr %Compound, %Compound* %pkv.vb_cp, i32 0, i32 0
+  %pkv.vb_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %pkv.vb_fn_ptr, i8** %pkv.vb_fn_slot
+  %pkv.vb_ar_slot = getelementptr %Compound, %Compound* %pkv.vb_cp, i32 0, i32 1
+  store i32 2, i32* %pkv.vb_ar_slot
+  %pkv.vb_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %pkv.vb_args = bitcast i8* %pkv.vb_args_mem to %Value*
+  %pkv.vb_args_slot = getelementptr %Compound, %Compound* %pkv.vb_cp, i32 0, i32 2
+  store %Value* %pkv.vb_args, %Value** %pkv.vb_args_slot
+  %pkv.vb_h_ptr = getelementptr %Value, %Value* %pkv.vb_args, i32 0
+  store %Value %pkv.vb_head, %Value* %pkv.vb_h_ptr
+  %pkv.vb_t_ptr = getelementptr %Value, %Value* %pkv.vb_args, i32 1
+  store %Value %pkv.vb_acc, %Value* %pkv.vb_t_ptr
+  %pkv.vb_cp_i64 = ptrtoint %Compound* %pkv.vb_cp to i64
+  %pkv.vb_nc0 = insertvalue %Value undef, i32 3, 0
+  %pkv.vb_new_cons = insertvalue %Value %pkv.vb_nc0, i64 %pkv.vb_cp_i64, 1
+  br label %pkv.vb_loop
+pkv.bind:
+  %pkv.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %pkv.uk = call i1 @wam_unify_value(%WamState* %vm, %Value %pkv.raw2, %Value %pkv.k_final)
+  br i1 %pkv.uk, label %pkv.bind_vals, label %pkv.fail
+pkv.bind_vals:
+  %pkv.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %pkv.uv = call i1 @wam_unify_value(%WamState* %vm, %Value %pkv.raw3, %Value %pkv.vb_acc)
+  ret i1 %pkv.uv
+
+pkv.r_init:
+  ; Reverse: A1 unbound. Walk Keys + Values in parallel, requiring
+  ; equal length; build pair_arr of -/2 compounds; cons-chain it;
+  ; unify A1.
+  %pkv.r_a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %pkv.r_a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  br label %pkv.r_count_loop
+pkv.r_count_loop:
+  %pkv.r_cur_k = phi %Value [ %pkv.r_a2, %pkv.r_init ], [ %pkv.r_next_k, %pkv.r_count_step ]
+  %pkv.r_cur_v = phi %Value [ %pkv.r_a3, %pkv.r_init ], [ %pkv.r_next_v, %pkv.r_count_step ]
+  %pkv.r_cnt = phi i32 [ 0, %pkv.r_init ], [ %pkv.r_cnt1, %pkv.r_count_step ]
+  %pkv.r_dk = call %Value @wam_deref_value(%WamState* %vm, %Value %pkv.r_cur_k)
+  %pkv.r_dv = call %Value @wam_deref_value(%WamState* %vm, %Value %pkv.r_cur_v)
+  %pkv.r_tk = extractvalue %Value %pkv.r_dk, 0
+  %pkv.r_tv = extractvalue %Value %pkv.r_dv, 0
+  %pkv.r_k_cmp = icmp eq i32 %pkv.r_tk, 3
+  %pkv.r_v_cmp = icmp eq i32 %pkv.r_tv, 3
+  %pkv.r_both_cmp = and i1 %pkv.r_k_cmp, %pkv.r_v_cmp
+  %pkv.r_neither_cmp = and i1 %pkv.r_k_cmp, %pkv.r_v_cmp
+  br i1 %pkv.r_both_cmp, label %pkv.r_count_step, label %pkv.r_count_check_end
+pkv.r_count_check_end:
+  ; Both must be non-compound at the same step (proper-list ends
+  ; simultaneously). Otherwise length mismatch -> fail.
+  %pkv.r_k_end = icmp ne i32 %pkv.r_tk, 3
+  %pkv.r_v_end = icmp ne i32 %pkv.r_tv, 3
+  %pkv.r_both_end = and i1 %pkv.r_k_end, %pkv.r_v_end
+  br i1 %pkv.r_both_end, label %pkv.r_alloc, label %pkv.fail
+pkv.r_count_step:
+  %pkv.r_k_cp = extractvalue %Value %pkv.r_dk, 1
+  %pkv.r_k_cp_ptr = inttoptr i64 %pkv.r_k_cp to %Compound*
+  %pkv.r_k_args_slot = getelementptr %Compound, %Compound* %pkv.r_k_cp_ptr, i32 0, i32 2
+  %pkv.r_k_args = load %Value*, %Value** %pkv.r_k_args_slot
+  %pkv.r_k_t_ptr = getelementptr %Value, %Value* %pkv.r_k_args, i32 1
+  %pkv.r_next_k = load %Value, %Value* %pkv.r_k_t_ptr
+  %pkv.r_v_cp = extractvalue %Value %pkv.r_dv, 1
+  %pkv.r_v_cp_ptr = inttoptr i64 %pkv.r_v_cp to %Compound*
+  %pkv.r_v_args_slot = getelementptr %Compound, %Compound* %pkv.r_v_cp_ptr, i32 0, i32 2
+  %pkv.r_v_args = load %Value*, %Value** %pkv.r_v_args_slot
+  %pkv.r_v_t_ptr = getelementptr %Value, %Value* %pkv.r_v_args, i32 1
+  %pkv.r_next_v = load %Value, %Value* %pkv.r_v_t_ptr
+  %pkv.r_cnt1 = add i32 %pkv.r_cnt, 1
+  br label %pkv.r_count_loop
+pkv.r_alloc:
+  %pkv.r_cnt64 = sext i32 %pkv.r_cnt to i64
+  %pkv.r_arr_bytes = shl i64 %pkv.r_cnt64, 4
+  %pkv.r_arr_mem = call i8* @wam_arena_alloc(i64 %pkv.r_arr_bytes)
+  %pkv.r_arr = bitcast i8* %pkv.r_arr_mem to %Value*
+  br label %pkv.r_fill_loop
+pkv.r_fill_loop:
+  %pkv.r_f_k = phi %Value [ %pkv.r_a2, %pkv.r_alloc ], [ %pkv.r_f_next_k, %pkv.r_fill_step ]
+  %pkv.r_f_v = phi %Value [ %pkv.r_a3, %pkv.r_alloc ], [ %pkv.r_f_next_v, %pkv.r_fill_step ]
+  %pkv.r_f_idx = phi i32 [ 0, %pkv.r_alloc ], [ %pkv.r_f_idx1, %pkv.r_fill_step ]
+  %pkv.r_f_done = icmp sge i32 %pkv.r_f_idx, %pkv.r_cnt
+  br i1 %pkv.r_f_done, label %pkv.r_build_init, label %pkv.r_fill_step
+pkv.r_fill_step:
+  ; Load current K and V heads.
+  %pkv.r_f_dk = call %Value @wam_deref_value(%WamState* %vm, %Value %pkv.r_f_k)
+  %pkv.r_f_k_cp = extractvalue %Value %pkv.r_f_dk, 1
+  %pkv.r_f_k_cp_ptr = inttoptr i64 %pkv.r_f_k_cp to %Compound*
+  %pkv.r_f_k_args_slot = getelementptr %Compound, %Compound* %pkv.r_f_k_cp_ptr, i32 0, i32 2
+  %pkv.r_f_k_args = load %Value*, %Value** %pkv.r_f_k_args_slot
+  %pkv.r_f_k_h_ptr = getelementptr %Value, %Value* %pkv.r_f_k_args, i32 0
+  %pkv.r_f_key = load %Value, %Value* %pkv.r_f_k_h_ptr
+  %pkv.r_f_k_t_ptr = getelementptr %Value, %Value* %pkv.r_f_k_args, i32 1
+  %pkv.r_f_next_k = load %Value, %Value* %pkv.r_f_k_t_ptr
+  %pkv.r_f_dv = call %Value @wam_deref_value(%WamState* %vm, %Value %pkv.r_f_v)
+  %pkv.r_f_v_cp = extractvalue %Value %pkv.r_f_dv, 1
+  %pkv.r_f_v_cp_ptr = inttoptr i64 %pkv.r_f_v_cp to %Compound*
+  %pkv.r_f_v_args_slot = getelementptr %Compound, %Compound* %pkv.r_f_v_cp_ptr, i32 0, i32 2
+  %pkv.r_f_v_args = load %Value*, %Value** %pkv.r_f_v_args_slot
+  %pkv.r_f_v_h_ptr = getelementptr %Value, %Value* %pkv.r_f_v_args, i32 0
+  %pkv.r_f_val = load %Value, %Value* %pkv.r_f_v_h_ptr
+  %pkv.r_f_v_t_ptr = getelementptr %Value, %Value* %pkv.r_f_v_args, i32 1
+  %pkv.r_f_next_v = load %Value, %Value* %pkv.r_f_v_t_ptr
+  ; Build -/2 pair compound: functor=@.fn__2D, arity=2, args=[K, V].
+  %pkv.r_p_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %pkv.r_p_cp_mem = call i8* @wam_arena_alloc(i64 %pkv.r_p_cp_size)
+  %pkv.r_p_cp = bitcast i8* %pkv.r_p_cp_mem to %Compound*
+  %pkv.r_p_fn_slot = getelementptr %Compound, %Compound* %pkv.r_p_cp, i32 0, i32 0
+  %pkv.r_p_fn_ptr = getelementptr [2 x i8], [2 x i8]* @.fn__2D, i32 0, i32 0
+  store i8* %pkv.r_p_fn_ptr, i8** %pkv.r_p_fn_slot
+  %pkv.r_p_ar_slot = getelementptr %Compound, %Compound* %pkv.r_p_cp, i32 0, i32 1
+  store i32 2, i32* %pkv.r_p_ar_slot
+  %pkv.r_p_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %pkv.r_p_args = bitcast i8* %pkv.r_p_args_mem to %Value*
+  %pkv.r_p_args_slot = getelementptr %Compound, %Compound* %pkv.r_p_cp, i32 0, i32 2
+  store %Value* %pkv.r_p_args, %Value** %pkv.r_p_args_slot
+  %pkv.r_p_k_dst = getelementptr %Value, %Value* %pkv.r_p_args, i32 0
+  store %Value %pkv.r_f_key, %Value* %pkv.r_p_k_dst
+  %pkv.r_p_v_dst = getelementptr %Value, %Value* %pkv.r_p_args, i32 1
+  store %Value %pkv.r_f_val, %Value* %pkv.r_p_v_dst
+  %pkv.r_p_cp_i64 = ptrtoint %Compound* %pkv.r_p_cp to i64
+  %pkv.r_p_v0 = insertvalue %Value undef, i32 3, 0
+  %pkv.r_p_v = insertvalue %Value %pkv.r_p_v0, i64 %pkv.r_p_cp_i64, 1
+  %pkv.r_p_slot = getelementptr %Value, %Value* %pkv.r_arr, i32 %pkv.r_f_idx
+  store %Value %pkv.r_p_v, %Value* %pkv.r_p_slot
+  %pkv.r_f_idx1 = add i32 %pkv.r_f_idx, 1
+  br label %pkv.r_fill_loop
+pkv.r_build_init:
+  %pkv.r_b_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %pkv.r_b_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %pkv.r_b_empty_v  = insertvalue %Value %pkv.r_b_empty_v0, i64 %pkv.r_b_empty_id, 1
+  br label %pkv.r_b_loop
+pkv.r_b_loop:
+  %pkv.r_b_i = phi i32 [ %pkv.r_cnt, %pkv.r_build_init ], [ %pkv.r_b_i_prev, %pkv.r_b_step ]
+  %pkv.r_b_acc = phi %Value [ %pkv.r_b_empty_v, %pkv.r_build_init ], [ %pkv.r_b_new_cons, %pkv.r_b_step ]
+  %pkv.r_b_done = icmp sle i32 %pkv.r_b_i, 0
+  br i1 %pkv.r_b_done, label %pkv.r_bind, label %pkv.r_b_step
+pkv.r_b_step:
+  %pkv.r_b_i_prev = sub i32 %pkv.r_b_i, 1
+  %pkv.r_b_slot = getelementptr %Value, %Value* %pkv.r_arr, i32 %pkv.r_b_i_prev
+  %pkv.r_b_head = load %Value, %Value* %pkv.r_b_slot
+  %pkv.r_b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %pkv.r_b_cp_mem = call i8* @wam_arena_alloc(i64 %pkv.r_b_cp_size)
+  %pkv.r_b_cp = bitcast i8* %pkv.r_b_cp_mem to %Compound*
+  %pkv.r_b_fn_slot = getelementptr %Compound, %Compound* %pkv.r_b_cp, i32 0, i32 0
+  %pkv.r_b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %pkv.r_b_fn_ptr, i8** %pkv.r_b_fn_slot
+  %pkv.r_b_ar_slot = getelementptr %Compound, %Compound* %pkv.r_b_cp, i32 0, i32 1
+  store i32 2, i32* %pkv.r_b_ar_slot
+  %pkv.r_b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %pkv.r_b_args = bitcast i8* %pkv.r_b_args_mem to %Value*
+  %pkv.r_b_args_slot = getelementptr %Compound, %Compound* %pkv.r_b_cp, i32 0, i32 2
+  store %Value* %pkv.r_b_args, %Value** %pkv.r_b_args_slot
+  %pkv.r_b_h_ptr = getelementptr %Value, %Value* %pkv.r_b_args, i32 0
+  store %Value %pkv.r_b_head, %Value* %pkv.r_b_h_ptr
+  %pkv.r_b_t_ptr = getelementptr %Value, %Value* %pkv.r_b_args, i32 1
+  store %Value %pkv.r_b_acc, %Value* %pkv.r_b_t_ptr
+  %pkv.r_b_cp_i64 = ptrtoint %Compound* %pkv.r_b_cp to i64
+  %pkv.r_b_nc0 = insertvalue %Value undef, i32 3, 0
+  %pkv.r_b_new_cons = insertvalue %Value %pkv.r_b_nc0, i64 %pkv.r_b_cp_i64, 1
+  br label %pkv.r_b_loop
+pkv.r_bind:
+  %pkv.r_raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %pkv.r_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %pkv.r_raw1, %Value %pkv.r_b_acc)
+  ret i1 %pkv.r_ok
+
+builtin_atomic_list_concat:
+  ; M52/M55: atomic_list_concat(+List, ?Atom) -- atoms-and-integers.
+  ; Walks A1 summing each head''s rendered string length (atom-length
+  ; for Atoms, snprintf-return-value for Integers); allocates a
+  ; single buffer; walks again memcpying atoms and re-snprintfing
+  ; Integers at the running offset. Float / Compound / other heads
+  ; fail the call (Float widening deferred).
+  %alc.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  call void @wam_arena_ensure()
+  ; Scratch buffer for measuring integer lengths during pass 1.
+  %alc.iscratch = call i8* @wam_arena_alloc(i64 32)
+  br label %alc.c_loop
+alc.fail:
+  ret i1 false
+alc.c_loop:
+  %alc.c_cur = phi %Value [ %alc.a1, %builtin_atomic_list_concat ], [ %alc.c_next, %alc.c_advance ]
+  %alc.c_total = phi i64 [ 0, %builtin_atomic_list_concat ], [ %alc.c_total1, %alc.c_advance ]
+  %alc.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc.c_cur)
+  %alc.c_tag = extractvalue %Value %alc.c_d, 0
+  %alc.c_is_cmp = icmp eq i32 %alc.c_tag, 3
+  br i1 %alc.c_is_cmp, label %alc.c_step, label %alc.c_done
+alc.c_step:
+  %alc.c_cp = extractvalue %Value %alc.c_d, 1
+  %alc.c_cp_ptr = inttoptr i64 %alc.c_cp to %Compound*
+  %alc.c_args_slot = getelementptr %Compound, %Compound* %alc.c_cp_ptr, i32 0, i32 2
+  %alc.c_args = load %Value*, %Value** %alc.c_args_slot
+  %alc.c_h_ptr = getelementptr %Value, %Value* %alc.c_args, i32 0
+  %alc.c_head = load %Value, %Value* %alc.c_h_ptr
+  %alc.c_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc.c_head)
+  %alc.c_h_tag = extractvalue %Value %alc.c_h_d, 0
+  %alc.c_h_is_atom = icmp eq i32 %alc.c_h_tag, 0
+  br i1 %alc.c_h_is_atom, label %alc.c_measure, label %alc.c_try_int
+alc.c_try_int:
+  %alc.c_h_is_int = icmp eq i32 %alc.c_h_tag, 1
+  br i1 %alc.c_h_is_int, label %alc.c_int_measure, label %alc.c_try_float
+alc.c_try_float:
+  %alc.c_h_is_float = icmp eq i32 %alc.c_h_tag, 2
+  br i1 %alc.c_h_is_float, label %alc.c_float_measure, label %alc.fail
+alc.c_int_measure:
+  ; snprintf the integer into the scratch buffer; return value is the
+  ; rendered length (excluding null).
+  %alc.c_int_v = extractvalue %Value %alc.c_h_d, 1
+  %alc.c_int_fmt = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
+  %alc.c_int_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc.iscratch, i64 32, i8* %alc.c_int_fmt, i64 %alc.c_int_v)
+  %alc.c_int_len = sext i32 %alc.c_int_n32 to i64
+  br label %alc.c_advance
+alc.c_float_measure:
+  ; M57: extract i64 payload, bitcast to double, snprintf %g.
+  %alc.c_flt_bits = extractvalue %Value %alc.c_h_d, 1
+  %alc.c_flt_v = bitcast i64 %alc.c_flt_bits to double
+  %alc.c_flt_fmt = getelementptr [3 x i8], [3 x i8]* @.fmt_dbl, i32 0, i32 0
+  %alc.c_flt_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc.iscratch, i64 32, i8* %alc.c_flt_fmt, double %alc.c_flt_v)
+  %alc.c_flt_len = sext i32 %alc.c_flt_n32 to i64
+  br label %alc.c_advance
+alc.c_measure:
+  %alc.c_aid = extractvalue %Value %alc.c_h_d, 1
+  %alc.c_str = call i8* @wam_atom_to_string(i64 %alc.c_aid)
+  %alc.c_str_null = icmp eq i8* %alc.c_str, null
+  br i1 %alc.c_str_null, label %alc.fail, label %alc.c_m_loop
+alc.c_m_loop:
+  %alc.c_mp = phi i8* [ %alc.c_str, %alc.c_measure ], [ %alc.c_mpn, %alc.c_m_step ]
+  %alc.c_mn = phi i64 [ 0, %alc.c_measure ], [ %alc.c_mn1, %alc.c_m_step ]
+  %alc.c_mc = load i8, i8* %alc.c_mp
+  %alc.c_mz = icmp eq i8 %alc.c_mc, 0
+  br i1 %alc.c_mz, label %alc.c_advance, label %alc.c_m_step
+alc.c_m_step:
+  %alc.c_mpn = getelementptr i8, i8* %alc.c_mp, i32 1
+  %alc.c_mn1 = add i64 %alc.c_mn, 1
+  br label %alc.c_m_loop
+alc.c_advance:
+  %alc.c_elem_len = phi i64 [ %alc.c_mn, %alc.c_m_loop ], [ %alc.c_int_len, %alc.c_int_measure ], [ %alc.c_flt_len, %alc.c_float_measure ]
+  %alc.c_total1 = add i64 %alc.c_total, %alc.c_elem_len
+  %alc.c_t_ptr = getelementptr %Value, %Value* %alc.c_args, i32 1
+  %alc.c_next = load %Value, %Value* %alc.c_t_ptr
+  br label %alc.c_loop
+alc.c_done:
+  %alc.bufsz = add i64 %alc.c_total, 1
+  %alc.buf = call i8* @wam_arena_alloc(i64 %alc.bufsz)
+  br label %alc.f_loop
+alc.f_loop:
+  %alc.f_cur = phi %Value [ %alc.a1, %alc.c_done ], [ %alc.f_next, %alc.f_after ]
+  %alc.f_off = phi i64 [ 0, %alc.c_done ], [ %alc.f_off1, %alc.f_after ]
+  %alc.f_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc.f_cur)
+  %alc.f_tag = extractvalue %Value %alc.f_d, 0
+  %alc.f_is_cmp = icmp eq i32 %alc.f_tag, 3
+  br i1 %alc.f_is_cmp, label %alc.f_step, label %alc.f_done
+alc.f_step:
+  %alc.f_cp = extractvalue %Value %alc.f_d, 1
+  %alc.f_cp_ptr = inttoptr i64 %alc.f_cp to %Compound*
+  %alc.f_args_slot = getelementptr %Compound, %Compound* %alc.f_cp_ptr, i32 0, i32 2
+  %alc.f_args = load %Value*, %Value** %alc.f_args_slot
+  %alc.f_h_ptr = getelementptr %Value, %Value* %alc.f_args, i32 0
+  %alc.f_head = load %Value, %Value* %alc.f_h_ptr
+  %alc.f_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc.f_head)
+  %alc.f_h_tag = extractvalue %Value %alc.f_h_d, 0
+  %alc.f_is_atom = icmp eq i32 %alc.f_h_tag, 0
+  br i1 %alc.f_is_atom, label %alc.f_load_atom, label %alc.f_try_int
+alc.f_try_int:
+  %alc.f_is_int = icmp eq i32 %alc.f_h_tag, 1
+  br i1 %alc.f_is_int, label %alc.f_int_write, label %alc.f_float_write
+alc.f_load_atom:
+  %alc.f_aid = extractvalue %Value %alc.f_h_d, 1
+  %alc.f_str = call i8* @wam_atom_to_string(i64 %alc.f_aid)
+  ; Measure this atom''s length again (second pass).
+  br label %alc.f_m_loop
+alc.f_int_write:
+  ; snprintf %lld directly into the output buffer at the running offset.
+  %alc.f_int_v = extractvalue %Value %alc.f_h_d, 1
+  %alc.f_int_dst = getelementptr i8, i8* %alc.buf, i64 %alc.f_off
+  ; Remaining buffer size: bufsz - off; we already sized for total + 1.
+  %alc.f_int_avail = sub i64 %alc.bufsz, %alc.f_off
+  %alc.f_int_fmt = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
+  %alc.f_int_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc.f_int_dst, i64 %alc.f_int_avail, i8* %alc.f_int_fmt, i64 %alc.f_int_v)
+  %alc.f_int_len = sext i32 %alc.f_int_n32 to i64
+  br label %alc.f_copy_int
+alc.f_float_write:
+  ; M57: snprintf %g directly into the output buffer.
+  %alc.f_flt_bits = extractvalue %Value %alc.f_h_d, 1
+  %alc.f_flt_v = bitcast i64 %alc.f_flt_bits to double
+  %alc.f_flt_dst = getelementptr i8, i8* %alc.buf, i64 %alc.f_off
+  %alc.f_flt_avail = sub i64 %alc.bufsz, %alc.f_off
+  %alc.f_flt_fmt = getelementptr [3 x i8], [3 x i8]* @.fmt_dbl, i32 0, i32 0
+  %alc.f_flt_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc.f_flt_dst, i64 %alc.f_flt_avail, i8* %alc.f_flt_fmt, double %alc.f_flt_v)
+  %alc.f_flt_len = sext i32 %alc.f_flt_n32 to i64
+  br label %alc.f_copy_flt
+alc.f_copy_int:
+  %alc.f_off_int = add i64 %alc.f_off, %alc.f_int_len
+  %alc.f_t_ptr_int = getelementptr %Value, %Value* %alc.f_args, i32 1
+  %alc.f_next_int = load %Value, %Value* %alc.f_t_ptr_int
+  br label %alc.f_after
+alc.f_copy_flt:
+  %alc.f_off_flt = add i64 %alc.f_off, %alc.f_flt_len
+  %alc.f_t_ptr_flt = getelementptr %Value, %Value* %alc.f_args, i32 1
+  %alc.f_next_flt = load %Value, %Value* %alc.f_t_ptr_flt
+  br label %alc.f_after
+alc.f_m_loop:
+  %alc.f_mp = phi i8* [ %alc.f_str, %alc.f_load_atom ], [ %alc.f_mpn, %alc.f_m_step ]
+  %alc.f_mn = phi i64 [ 0, %alc.f_load_atom ], [ %alc.f_mn1, %alc.f_m_step ]
+  %alc.f_mc = load i8, i8* %alc.f_mp
+  %alc.f_mz = icmp eq i8 %alc.f_mc, 0
+  br i1 %alc.f_mz, label %alc.f_copy, label %alc.f_m_step
+alc.f_m_step:
+  %alc.f_mpn = getelementptr i8, i8* %alc.f_mp, i32 1
+  %alc.f_mn1 = add i64 %alc.f_mn, 1
+  br label %alc.f_m_loop
+alc.f_copy:
+  %alc.f_dst = getelementptr i8, i8* %alc.buf, i64 %alc.f_off
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alc.f_dst, i8* %alc.f_str, i64 %alc.f_mn, i1 false)
+  %alc.f_off_atom = add i64 %alc.f_off, %alc.f_mn
+  %alc.f_t_ptr_atom = getelementptr %Value, %Value* %alc.f_args, i32 1
+  %alc.f_next_atom = load %Value, %Value* %alc.f_t_ptr_atom
+  br label %alc.f_after
+alc.f_after:
+  %alc.f_off1 = phi i64 [ %alc.f_off_atom, %alc.f_copy ], [ %alc.f_off_int, %alc.f_copy_int ], [ %alc.f_off_flt, %alc.f_copy_flt ]
+  %alc.f_next = phi %Value [ %alc.f_next_atom, %alc.f_copy ], [ %alc.f_next_int, %alc.f_copy_int ], [ %alc.f_next_flt, %alc.f_copy_flt ]
+  br label %alc.f_loop
+alc.f_done:
+  %alc.term_dst = getelementptr i8, i8* %alc.buf, i64 %alc.c_total
+  store i8 0, i8* %alc.term_dst
+  %alc.new_id = call i64 @wam_intern_atom(i8* %alc.buf, i64 %alc.c_total)
+  %alc.new_v0 = insertvalue %Value undef, i32 0, 0
+  %alc.new_v = insertvalue %Value %alc.new_v0, i64 %alc.new_id, 1
+  %alc.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %alc.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %alc.raw2, %Value %alc.new_v)
+  ret i1 %alc.ok
+
+builtin_atomic_list_concat3:
+  ; M53/M54/M56: atomic_list_concat(?List, +Sep, ?Atom).
+  ; Forward (List bound, A2 sep, A3 ?): concat with sep between
+  ; elements. M56 adds Integer support (in addition to Atoms) via
+  ; snprintf widening (same trick as M55 for alc/2).
+  ; Split (List unbound, A2 sep, A3 bound): scan A3 for sep
+  ; occurrences and emit Atoms.
+  %alc3.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  call void @wam_arena_ensure()
+  ; Scratch buffer for measuring integer element lengths during forward
+  ; mode pass 1. Allocated unconditionally; harmless for split mode.
+  %alc3.iscratch = call i8* @wam_arena_alloc(i64 32)
+  %alc3.t2 = extractvalue %Value %alc3.a2, 0
+  %alc3.is_sep_atom = icmp eq i32 %alc3.t2, 0
+  br i1 %alc3.is_sep_atom, label %alc3.sep_lookup, label %alc3.fail
+alc3.fail:
+  ret i1 false
+alc3.sep_lookup:
+  %alc3.sep_aid = extractvalue %Value %alc3.a2, 1
+  %alc3.sep_str = call i8* @wam_atom_to_string(i64 %alc3.sep_aid)
+  %alc3.sep_null = icmp eq i8* %alc3.sep_str, null
+  br i1 %alc3.sep_null, label %alc3.fail, label %alc3.sm_loop
+alc3.sm_loop:
+  %alc3.smp = phi i8* [ %alc3.sep_str, %alc3.sep_lookup ], [ %alc3.smpn, %alc3.sm_step ]
+  %alc3.smn = phi i64 [ 0, %alc3.sep_lookup ], [ %alc3.smn1, %alc3.sm_step ]
+  %alc3.smc = load i8, i8* %alc3.smp
+  %alc3.smz = icmp eq i8 %alc3.smc, 0
+  br i1 %alc3.smz, label %alc3.count_init, label %alc3.sm_step
+alc3.sm_step:
+  %alc3.smpn = getelementptr i8, i8* %alc3.smp, i32 1
+  %alc3.smn1 = add i64 %alc3.smn, 1
+  br label %alc3.sm_loop
+alc3.count_init:
+  ; %alc3.smn now holds sep_len. Branch on A1: bound list -> forward
+  ; concat; unbound -> split-mode (M54) using A3 as the source atom.
+  %alc3.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %alc3.a1_unb = call i1 @value_is_unbound(%Value %alc3.a1)
+  br i1 %alc3.a1_unb, label %alc3.split_entry, label %alc3.c_loop
+alc3.c_loop:
+  %alc3.c_cur = phi %Value [ %alc3.a1, %alc3.count_init ], [ %alc3.c_next, %alc3.c_advance ]
+  %alc3.c_total = phi i64 [ 0, %alc3.count_init ], [ %alc3.c_total1, %alc3.c_advance ]
+  %alc3.c_n = phi i32 [ 0, %alc3.count_init ], [ %alc3.c_n1, %alc3.c_advance ]
+  %alc3.c_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc3.c_cur)
+  %alc3.c_tag = extractvalue %Value %alc3.c_d, 0
+  %alc3.c_is_cmp = icmp eq i32 %alc3.c_tag, 3
+  br i1 %alc3.c_is_cmp, label %alc3.c_step, label %alc3.c_done
+alc3.c_step:
+  %alc3.c_cp = extractvalue %Value %alc3.c_d, 1
+  %alc3.c_cp_ptr = inttoptr i64 %alc3.c_cp to %Compound*
+  %alc3.c_args_slot = getelementptr %Compound, %Compound* %alc3.c_cp_ptr, i32 0, i32 2
+  %alc3.c_args = load %Value*, %Value** %alc3.c_args_slot
+  %alc3.c_h_ptr = getelementptr %Value, %Value* %alc3.c_args, i32 0
+  %alc3.c_head = load %Value, %Value* %alc3.c_h_ptr
+  %alc3.c_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc3.c_head)
+  %alc3.c_h_tag = extractvalue %Value %alc3.c_h_d, 0
+  %alc3.c_h_is_atom = icmp eq i32 %alc3.c_h_tag, 0
+  br i1 %alc3.c_h_is_atom, label %alc3.c_measure, label %alc3.c_try_int
+alc3.c_try_int:
+  %alc3.c_h_is_int = icmp eq i32 %alc3.c_h_tag, 1
+  br i1 %alc3.c_h_is_int, label %alc3.c_int_measure, label %alc3.c_try_float
+alc3.c_try_float:
+  %alc3.c_h_is_float = icmp eq i32 %alc3.c_h_tag, 2
+  br i1 %alc3.c_h_is_float, label %alc3.c_float_measure, label %alc3.fail
+alc3.c_int_measure:
+  %alc3.c_int_v = extractvalue %Value %alc3.c_h_d, 1
+  %alc3.c_int_fmt = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
+  %alc3.c_int_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc3.iscratch, i64 32, i8* %alc3.c_int_fmt, i64 %alc3.c_int_v)
+  %alc3.c_int_len = sext i32 %alc3.c_int_n32 to i64
+  br label %alc3.c_advance
+alc3.c_float_measure:
+  %alc3.c_flt_bits = extractvalue %Value %alc3.c_h_d, 1
+  %alc3.c_flt_v = bitcast i64 %alc3.c_flt_bits to double
+  %alc3.c_flt_fmt = getelementptr [3 x i8], [3 x i8]* @.fmt_dbl, i32 0, i32 0
+  %alc3.c_flt_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc3.iscratch, i64 32, i8* %alc3.c_flt_fmt, double %alc3.c_flt_v)
+  %alc3.c_flt_len = sext i32 %alc3.c_flt_n32 to i64
+  br label %alc3.c_advance
+alc3.c_measure:
+  %alc3.c_aid = extractvalue %Value %alc3.c_h_d, 1
+  %alc3.c_str = call i8* @wam_atom_to_string(i64 %alc3.c_aid)
+  %alc3.c_str_null = icmp eq i8* %alc3.c_str, null
+  br i1 %alc3.c_str_null, label %alc3.fail, label %alc3.c_m_loop
+alc3.c_m_loop:
+  %alc3.c_mp = phi i8* [ %alc3.c_str, %alc3.c_measure ], [ %alc3.c_mpn, %alc3.c_m_step ]
+  %alc3.c_mn = phi i64 [ 0, %alc3.c_measure ], [ %alc3.c_mn1, %alc3.c_m_step ]
+  %alc3.c_mc = load i8, i8* %alc3.c_mp
+  %alc3.c_mz = icmp eq i8 %alc3.c_mc, 0
+  br i1 %alc3.c_mz, label %alc3.c_advance, label %alc3.c_m_step
+alc3.c_m_step:
+  %alc3.c_mpn = getelementptr i8, i8* %alc3.c_mp, i32 1
+  %alc3.c_mn1 = add i64 %alc3.c_mn, 1
+  br label %alc3.c_m_loop
+alc3.c_advance:
+  ; Add element length (atom / int / float), plus separator length for every element after the first.
+  %alc3.c_elem_len = phi i64 [ %alc3.c_mn, %alc3.c_m_loop ], [ %alc3.c_int_len, %alc3.c_int_measure ], [ %alc3.c_flt_len, %alc3.c_float_measure ]
+  %alc3.c_not_first = icmp ne i32 %alc3.c_n, 0
+  %alc3.c_sep_add = select i1 %alc3.c_not_first, i64 %alc3.smn, i64 0
+  %alc3.c_with_sep = add i64 %alc3.c_total, %alc3.c_sep_add
+  %alc3.c_total1 = add i64 %alc3.c_with_sep, %alc3.c_elem_len
+  %alc3.c_n1 = add i32 %alc3.c_n, 1
+  %alc3.c_t_ptr = getelementptr %Value, %Value* %alc3.c_args, i32 1
+  %alc3.c_next = load %Value, %Value* %alc3.c_t_ptr
+  br label %alc3.c_loop
+alc3.c_done:
+  %alc3.bufsz = add i64 %alc3.c_total, 1
+  %alc3.buf = call i8* @wam_arena_alloc(i64 %alc3.bufsz)
+  br label %alc3.f_loop
+alc3.f_loop:
+  %alc3.f_cur = phi %Value [ %alc3.a1, %alc3.c_done ], [ %alc3.f_next, %alc3.f_after ]
+  %alc3.f_off = phi i64 [ 0, %alc3.c_done ], [ %alc3.f_off_next, %alc3.f_after ]
+  %alc3.f_idx = phi i32 [ 0, %alc3.c_done ], [ %alc3.f_idx1, %alc3.f_after ]
+  %alc3.f_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc3.f_cur)
+  %alc3.f_tag = extractvalue %Value %alc3.f_d, 0
+  %alc3.f_is_cmp = icmp eq i32 %alc3.f_tag, 3
+  br i1 %alc3.f_is_cmp, label %alc3.f_pre_sep, label %alc3.f_done
+alc3.f_pre_sep:
+  %alc3.f_not_first = icmp ne i32 %alc3.f_idx, 0
+  %alc3.f_off_after_sep_if = add i64 %alc3.f_off, %alc3.smn
+  %alc3.f_off_after_sep = select i1 %alc3.f_not_first, i64 %alc3.f_off_after_sep_if, i64 %alc3.f_off
+  br i1 %alc3.f_not_first, label %alc3.f_copy_sep, label %alc3.f_dispatch
+alc3.f_copy_sep:
+  %alc3.f_sep_dst = getelementptr i8, i8* %alc3.buf, i64 %alc3.f_off
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alc3.f_sep_dst, i8* %alc3.sep_str, i64 %alc3.smn, i1 false)
+  br label %alc3.f_dispatch
+alc3.f_dispatch:
+  ; M56: load head, branch atom vs int.
+  %alc3.f_cp = extractvalue %Value %alc3.f_d, 1
+  %alc3.f_cp_ptr = inttoptr i64 %alc3.f_cp to %Compound*
+  %alc3.f_args_slot = getelementptr %Compound, %Compound* %alc3.f_cp_ptr, i32 0, i32 2
+  %alc3.f_args = load %Value*, %Value** %alc3.f_args_slot
+  %alc3.f_h_ptr = getelementptr %Value, %Value* %alc3.f_args, i32 0
+  %alc3.f_head = load %Value, %Value* %alc3.f_h_ptr
+  %alc3.f_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %alc3.f_head)
+  %alc3.f_h_tag = extractvalue %Value %alc3.f_h_d, 0
+  %alc3.f_is_atom = icmp eq i32 %alc3.f_h_tag, 0
+  br i1 %alc3.f_is_atom, label %alc3.f_load_atom, label %alc3.f_try_int
+alc3.f_try_int:
+  %alc3.f_is_int = icmp eq i32 %alc3.f_h_tag, 1
+  br i1 %alc3.f_is_int, label %alc3.f_int_write, label %alc3.f_float_write
+alc3.f_load_atom:
+  %alc3.f_aid = extractvalue %Value %alc3.f_h_d, 1
+  %alc3.f_str = call i8* @wam_atom_to_string(i64 %alc3.f_aid)
+  br label %alc3.f_m_loop
+alc3.f_int_write:
+  %alc3.f_int_v = extractvalue %Value %alc3.f_h_d, 1
+  %alc3.f_int_dst = getelementptr i8, i8* %alc3.buf, i64 %alc3.f_off_after_sep
+  %alc3.f_int_avail = sub i64 %alc3.bufsz, %alc3.f_off_after_sep
+  %alc3.f_int_fmt = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
+  %alc3.f_int_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc3.f_int_dst, i64 %alc3.f_int_avail, i8* %alc3.f_int_fmt, i64 %alc3.f_int_v)
+  %alc3.f_int_len = sext i32 %alc3.f_int_n32 to i64
+  %alc3.f_off_after_int = add i64 %alc3.f_off_after_sep, %alc3.f_int_len
+  br label %alc3.f_after
+alc3.f_float_write:
+  %alc3.f_flt_bits = extractvalue %Value %alc3.f_h_d, 1
+  %alc3.f_flt_v = bitcast i64 %alc3.f_flt_bits to double
+  %alc3.f_flt_dst = getelementptr i8, i8* %alc3.buf, i64 %alc3.f_off_after_sep
+  %alc3.f_flt_avail = sub i64 %alc3.bufsz, %alc3.f_off_after_sep
+  %alc3.f_flt_fmt = getelementptr [3 x i8], [3 x i8]* @.fmt_dbl, i32 0, i32 0
+  %alc3.f_flt_n32 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %alc3.f_flt_dst, i64 %alc3.f_flt_avail, i8* %alc3.f_flt_fmt, double %alc3.f_flt_v)
+  %alc3.f_flt_len = sext i32 %alc3.f_flt_n32 to i64
+  %alc3.f_off_after_flt = add i64 %alc3.f_off_after_sep, %alc3.f_flt_len
+  br label %alc3.f_after
+alc3.f_m_loop:
+  %alc3.f_mp = phi i8* [ %alc3.f_str, %alc3.f_load_atom ], [ %alc3.f_mpn, %alc3.f_m_step ]
+  %alc3.f_mn = phi i64 [ 0, %alc3.f_load_atom ], [ %alc3.f_mn1, %alc3.f_m_step ]
+  %alc3.f_mc = load i8, i8* %alc3.f_mp
+  %alc3.f_mz = icmp eq i8 %alc3.f_mc, 0
+  br i1 %alc3.f_mz, label %alc3.f_copy_atom, label %alc3.f_m_step
+alc3.f_m_step:
+  %alc3.f_mpn = getelementptr i8, i8* %alc3.f_mp, i32 1
+  %alc3.f_mn1 = add i64 %alc3.f_mn, 1
+  br label %alc3.f_m_loop
+alc3.f_copy_atom:
+  %alc3.f_atom_dst = getelementptr i8, i8* %alc3.buf, i64 %alc3.f_off_after_sep
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alc3.f_atom_dst, i8* %alc3.f_str, i64 %alc3.f_mn, i1 false)
+  %alc3.f_off_after_atom = add i64 %alc3.f_off_after_sep, %alc3.f_mn
+  br label %alc3.f_after
+alc3.f_after:
+  %alc3.f_off_next = phi i64 [ %alc3.f_off_after_atom, %alc3.f_copy_atom ], [ %alc3.f_off_after_int, %alc3.f_int_write ], [ %alc3.f_off_after_flt, %alc3.f_float_write ]
+  %alc3.f_idx1 = add i32 %alc3.f_idx, 1
+  %alc3.f_t_ptr = getelementptr %Value, %Value* %alc3.f_args, i32 1
+  %alc3.f_next = load %Value, %Value* %alc3.f_t_ptr
+  br label %alc3.f_loop
+alc3.f_done:
+  %alc3.term_dst = getelementptr i8, i8* %alc3.buf, i64 %alc3.c_total
+  store i8 0, i8* %alc3.term_dst
+  %alc3.new_id = call i64 @wam_intern_atom(i8* %alc3.buf, i64 %alc3.c_total)
+  %alc3.new_v0 = insertvalue %Value undef, i32 0, 0
+  %alc3.new_v = insertvalue %Value %alc3.new_v0, i64 %alc3.new_id, 1
+  %alc3.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %alc3.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %alc3.raw3, %Value %alc3.new_v)
+  ret i1 %alc3.ok
+
+alc3.split_entry:
+  ; M54: split mode -- A1 unbound, A2 sep atom (already validated +
+  ; measured into %alc3.smn), A3 bound source atom. Empty separator
+  ; fails (can''t infinitely split). Three-pass:
+  ;   1. Measure source atom -> atom_len. Scan source looking for sep
+  ;      occurrences, counting parts (parts = matches + 1).
+  ;   2. Allocate parts_arr of %Value; re-scan, at each match intern
+  ;      the substring atom_str[seg_start..i] as an Atom and store at
+  ;      arr[idx]; advance seg_start past sep. After loop, intern the
+  ;      final segment.
+  ;   3. Build cons chain back-to-front, unify A1.
+  %alc3.s_sep_empty = icmp eq i64 %alc3.smn, 0
+  br i1 %alc3.s_sep_empty, label %alc3.fail, label %alc3.s_a3_lookup
+alc3.s_a3_lookup:
+  %alc3.s_a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  %alc3.s_a3_tag = extractvalue %Value %alc3.s_a3, 0
+  %alc3.s_a3_is_atom = icmp eq i32 %alc3.s_a3_tag, 0
+  br i1 %alc3.s_a3_is_atom, label %alc3.s_a3_str, label %alc3.fail
+alc3.s_a3_str:
+  %alc3.s_a3_aid = extractvalue %Value %alc3.s_a3, 1
+  %alc3.s_atom_str = call i8* @wam_atom_to_string(i64 %alc3.s_a3_aid)
+  %alc3.s_atom_null = icmp eq i8* %alc3.s_atom_str, null
+  br i1 %alc3.s_atom_null, label %alc3.fail, label %alc3.s_amloop
+alc3.s_amloop:
+  %alc3.s_amp = phi i8* [ %alc3.s_atom_str, %alc3.s_a3_str ], [ %alc3.s_ampn, %alc3.s_amstep ]
+  %alc3.s_amn = phi i64 [ 0, %alc3.s_a3_str ], [ %alc3.s_amn1, %alc3.s_amstep ]
+  %alc3.s_amc = load i8, i8* %alc3.s_amp
+  %alc3.s_amz = icmp eq i8 %alc3.s_amc, 0
+  br i1 %alc3.s_amz, label %alc3.s_count_init, label %alc3.s_amstep
+alc3.s_amstep:
+  %alc3.s_ampn = getelementptr i8, i8* %alc3.s_amp, i32 1
+  %alc3.s_amn1 = add i64 %alc3.s_amn, 1
+  br label %alc3.s_amloop
+alc3.s_count_init:
+  ; %alc3.s_amn is atom_len. Scan for sep matches.
+  br label %alc3.s_c_loop
+alc3.s_c_loop:
+  %alc3.s_c_i = phi i64 [ 0, %alc3.s_count_init ], [ %alc3.s_c_i_next, %alc3.s_c_join ]
+  %alc3.s_c_cnt = phi i32 [ 1, %alc3.s_count_init ], [ %alc3.s_c_cnt_next, %alc3.s_c_join ]
+  %alc3.s_c_end = add i64 %alc3.s_c_i, %alc3.smn
+  %alc3.s_c_oob = icmp ugt i64 %alc3.s_c_end, %alc3.s_amn
+  br i1 %alc3.s_c_oob, label %alc3.s_alloc, label %alc3.s_c_try
+alc3.s_c_try:
+  ; Inline byte-by-byte compare of atom_str[i .. i+sep_len) with sep_str.
+  br label %alc3.s_c_cmploop
+alc3.s_c_cmploop:
+  %alc3.s_c_j = phi i64 [ 0, %alc3.s_c_try ], [ %alc3.s_c_j1, %alc3.s_c_cmp_eq ]
+  %alc3.s_c_j_done = icmp uge i64 %alc3.s_c_j, %alc3.smn
+  br i1 %alc3.s_c_j_done, label %alc3.s_c_pass, label %alc3.s_c_cmp_check
+alc3.s_c_cmp_check:
+  %alc3.s_c_apos = add i64 %alc3.s_c_i, %alc3.s_c_j
+  %alc3.s_c_ap = getelementptr i8, i8* %alc3.s_atom_str, i64 %alc3.s_c_apos
+  %alc3.s_c_sp = getelementptr i8, i8* %alc3.sep_str, i64 %alc3.s_c_j
+  %alc3.s_c_ac = load i8, i8* %alc3.s_c_ap
+  %alc3.s_c_sc = load i8, i8* %alc3.s_c_sp
+  %alc3.s_c_eq = icmp eq i8 %alc3.s_c_ac, %alc3.s_c_sc
+  br i1 %alc3.s_c_eq, label %alc3.s_c_cmp_eq, label %alc3.s_c_fail
+alc3.s_c_cmp_eq:
+  %alc3.s_c_j1 = add i64 %alc3.s_c_j, 1
+  br label %alc3.s_c_cmploop
+alc3.s_c_pass:
+  ; sep_len bytes matched -- count this as a separator.
+  br label %alc3.s_c_join
+alc3.s_c_fail:
+  br label %alc3.s_c_join
+alc3.s_c_join:
+  %alc3.s_c_matched = phi i1 [ true, %alc3.s_c_pass ], [ false, %alc3.s_c_fail ]
+  %alc3.s_c_adv = select i1 %alc3.s_c_matched, i64 %alc3.smn, i64 1
+  %alc3.s_c_i_next = add i64 %alc3.s_c_i, %alc3.s_c_adv
+  %alc3.s_c_inc32 = zext i1 %alc3.s_c_matched to i32
+  %alc3.s_c_cnt_next = add i32 %alc3.s_c_cnt, %alc3.s_c_inc32
+  br label %alc3.s_c_loop
+alc3.s_alloc:
+  %alc3.s_cnt64 = sext i32 %alc3.s_c_cnt to i64
+  %alc3.s_arr_bytes = shl i64 %alc3.s_cnt64, 4
+  %alc3.s_arr_mem = call i8* @wam_arena_alloc(i64 %alc3.s_arr_bytes)
+  %alc3.s_arr = bitcast i8* %alc3.s_arr_mem to %Value*
+  br label %alc3.s_f_loop
+alc3.s_f_loop:
+  ; Pass 2: scan again, intern each segment, store in arr.
+  %alc3.s_f_i = phi i64 [ 0, %alc3.s_alloc ], [ %alc3.s_f_i_next, %alc3.s_f_join ]
+  %alc3.s_f_start = phi i64 [ 0, %alc3.s_alloc ], [ %alc3.s_f_start_next, %alc3.s_f_join ]
+  %alc3.s_f_idx = phi i32 [ 0, %alc3.s_alloc ], [ %alc3.s_f_idx_next, %alc3.s_f_join ]
+  %alc3.s_f_end = add i64 %alc3.s_f_i, %alc3.smn
+  %alc3.s_f_oob = icmp ugt i64 %alc3.s_f_end, %alc3.s_amn
+  br i1 %alc3.s_f_oob, label %alc3.s_finalize, label %alc3.s_f_try
+alc3.s_f_try:
+  br label %alc3.s_f_cmploop
+alc3.s_f_cmploop:
+  %alc3.s_f_j = phi i64 [ 0, %alc3.s_f_try ], [ %alc3.s_f_j1, %alc3.s_f_cmp_eq ]
+  %alc3.s_f_j_done = icmp uge i64 %alc3.s_f_j, %alc3.smn
+  br i1 %alc3.s_f_j_done, label %alc3.s_f_match, label %alc3.s_f_cmp_check
+alc3.s_f_cmp_check:
+  %alc3.s_f_apos = add i64 %alc3.s_f_i, %alc3.s_f_j
+  %alc3.s_f_ap = getelementptr i8, i8* %alc3.s_atom_str, i64 %alc3.s_f_apos
+  %alc3.s_f_sp = getelementptr i8, i8* %alc3.sep_str, i64 %alc3.s_f_j
+  %alc3.s_f_ac = load i8, i8* %alc3.s_f_ap
+  %alc3.s_f_sc = load i8, i8* %alc3.s_f_sp
+  %alc3.s_f_eq = icmp eq i8 %alc3.s_f_ac, %alc3.s_f_sc
+  br i1 %alc3.s_f_eq, label %alc3.s_f_cmp_eq, label %alc3.s_f_nomatch
+alc3.s_f_cmp_eq:
+  %alc3.s_f_j1 = add i64 %alc3.s_f_j, 1
+  br label %alc3.s_f_cmploop
+alc3.s_f_match:
+  ; sep matched at position i -- intern atom_str[start..i] as a part.
+  %alc3.s_f_seg_ptr = getelementptr i8, i8* %alc3.s_atom_str, i64 %alc3.s_f_start
+  %alc3.s_f_seg_len = sub i64 %alc3.s_f_i, %alc3.s_f_start
+  ; intern_atom expects str + length (doesn''t require null term).
+  %alc3.s_f_seg_id = call i64 @wam_intern_atom(i8* %alc3.s_f_seg_ptr, i64 %alc3.s_f_seg_len)
+  %alc3.s_f_seg_v0 = insertvalue %Value undef, i32 0, 0
+  %alc3.s_f_seg_v = insertvalue %Value %alc3.s_f_seg_v0, i64 %alc3.s_f_seg_id, 1
+  %alc3.s_f_m_slot = getelementptr %Value, %Value* %alc3.s_arr, i32 %alc3.s_f_idx
+  store %Value %alc3.s_f_seg_v, %Value* %alc3.s_f_m_slot
+  %alc3.s_f_m_i_next = add i64 %alc3.s_f_i, %alc3.smn
+  %alc3.s_f_m_idx_next = add i32 %alc3.s_f_idx, 1
+  br label %alc3.s_f_join
+alc3.s_f_nomatch:
+  %alc3.s_f_nm_i_next = add i64 %alc3.s_f_i, 1
+  br label %alc3.s_f_join
+alc3.s_f_join:
+  %alc3.s_f_i_next = phi i64 [ %alc3.s_f_m_i_next, %alc3.s_f_match ], [ %alc3.s_f_nm_i_next, %alc3.s_f_nomatch ]
+  ; On match, segment-start advances past the separator (= the new i).
+  ; On no-match, segment-start is unchanged.
+  %alc3.s_f_start_next = phi i64 [ %alc3.s_f_m_i_next, %alc3.s_f_match ], [ %alc3.s_f_start, %alc3.s_f_nomatch ]
+  %alc3.s_f_idx_next = phi i32 [ %alc3.s_f_m_idx_next, %alc3.s_f_match ], [ %alc3.s_f_idx, %alc3.s_f_nomatch ]
+  br label %alc3.s_f_loop
+alc3.s_finalize:
+  ; Intern the final segment atom_str[start..atom_len].
+  %alc3.s_fin_ptr = getelementptr i8, i8* %alc3.s_atom_str, i64 %alc3.s_f_start
+  %alc3.s_fin_len = sub i64 %alc3.s_amn, %alc3.s_f_start
+  %alc3.s_fin_id = call i64 @wam_intern_atom(i8* %alc3.s_fin_ptr, i64 %alc3.s_fin_len)
+  %alc3.s_fin_v0 = insertvalue %Value undef, i32 0, 0
+  %alc3.s_fin_v = insertvalue %Value %alc3.s_fin_v0, i64 %alc3.s_fin_id, 1
+  %alc3.s_fin_slot = getelementptr %Value, %Value* %alc3.s_arr, i32 %alc3.s_f_idx
+  store %Value %alc3.s_fin_v, %Value* %alc3.s_fin_slot
+  br label %alc3.s_build_init
+alc3.s_build_init:
+  %alc3.s_b_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %alc3.s_b_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %alc3.s_b_empty_v  = insertvalue %Value %alc3.s_b_empty_v0, i64 %alc3.s_b_empty_id, 1
+  br label %alc3.s_b_loop
+alc3.s_b_loop:
+  %alc3.s_b_i = phi i32 [ %alc3.s_c_cnt, %alc3.s_build_init ], [ %alc3.s_b_i_prev, %alc3.s_b_step ]
+  %alc3.s_b_acc = phi %Value [ %alc3.s_b_empty_v, %alc3.s_build_init ], [ %alc3.s_b_new_cons, %alc3.s_b_step ]
+  %alc3.s_b_done = icmp sle i32 %alc3.s_b_i, 0
+  br i1 %alc3.s_b_done, label %alc3.s_b_bind, label %alc3.s_b_step
+alc3.s_b_step:
+  %alc3.s_b_i_prev = sub i32 %alc3.s_b_i, 1
+  %alc3.s_b_slot = getelementptr %Value, %Value* %alc3.s_arr, i32 %alc3.s_b_i_prev
+  %alc3.s_b_head = load %Value, %Value* %alc3.s_b_slot
+  %alc3.s_b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %alc3.s_b_cp_mem = call i8* @wam_arena_alloc(i64 %alc3.s_b_cp_size)
+  %alc3.s_b_cp = bitcast i8* %alc3.s_b_cp_mem to %Compound*
+  %alc3.s_b_fn_slot = getelementptr %Compound, %Compound* %alc3.s_b_cp, i32 0, i32 0
+  %alc3.s_b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %alc3.s_b_fn_ptr, i8** %alc3.s_b_fn_slot
+  %alc3.s_b_ar_slot = getelementptr %Compound, %Compound* %alc3.s_b_cp, i32 0, i32 1
+  store i32 2, i32* %alc3.s_b_ar_slot
+  %alc3.s_b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %alc3.s_b_args = bitcast i8* %alc3.s_b_args_mem to %Value*
+  %alc3.s_b_args_slot = getelementptr %Compound, %Compound* %alc3.s_b_cp, i32 0, i32 2
+  store %Value* %alc3.s_b_args, %Value** %alc3.s_b_args_slot
+  %alc3.s_b_h_ptr = getelementptr %Value, %Value* %alc3.s_b_args, i32 0
+  store %Value %alc3.s_b_head, %Value* %alc3.s_b_h_ptr
+  %alc3.s_b_t_ptr = getelementptr %Value, %Value* %alc3.s_b_args, i32 1
+  store %Value %alc3.s_b_acc, %Value* %alc3.s_b_t_ptr
+  %alc3.s_b_cp_i64 = ptrtoint %Compound* %alc3.s_b_cp to i64
+  %alc3.s_b_nc0 = insertvalue %Value undef, i32 3, 0
+  %alc3.s_b_new_cons = insertvalue %Value %alc3.s_b_nc0, i64 %alc3.s_b_cp_i64, 1
+  br label %alc3.s_b_loop
+alc3.s_b_bind:
+  %alc3.s_b_raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %alc3.s_b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %alc3.s_b_raw1, %Value %alc3.s_b_acc)
+  ret i1 %alc3.s_b_ok
+
+builtin_char_type:
+  ; M58: char_type(+Char, +Type) -- check mode only. A1 is a single-
+  ; char atom; A2 is the type atom (alpha, digit, upper, lower,
+  ; alnum, space, white, ascii, punct, csym, csymf, newline,
+  ; end_of_line). Enumeration mode (unbound Char or Type) deferred.
+  %ctp.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ctp.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %ctp.t1 = extractvalue %Value %ctp.a1, 0
+  %ctp.t2 = extractvalue %Value %ctp.a2, 0
+  %ctp.is_atom1 = icmp eq i32 %ctp.t1, 0
+  %ctp.is_atom2 = icmp eq i32 %ctp.t2, 0
+  %ctp.both = and i1 %ctp.is_atom1, %ctp.is_atom2
+  br i1 %ctp.both, label %ctp.lookup, label %ctp.fail
+ctp.fail:
+  ret i1 false
+ctp.lookup:
+  %ctp.aid1 = extractvalue %Value %ctp.a1, 1
+  %ctp.aid2 = extractvalue %Value %ctp.a2, 1
+  %ctp.c_str = call i8* @wam_atom_to_string(i64 %ctp.aid1)
+  %ctp.t_str = call i8* @wam_atom_to_string(i64 %ctp.aid2)
+  %ctp.c_null = icmp eq i8* %ctp.c_str, null
+  %ctp.t_null = icmp eq i8* %ctp.t_str, null
+  %ctp.any_null = or i1 %ctp.c_null, %ctp.t_null
+  br i1 %ctp.any_null, label %ctp.fail, label %ctp.measure_c
+ctp.measure_c:
+  ; Verify A1''s atom is exactly one byte long. char_type requires a
+  ; single-char atom.
+  %ctp.c0 = load i8, i8* %ctp.c_str
+  %ctp.c0_zero = icmp eq i8 %ctp.c0, 0
+  br i1 %ctp.c0_zero, label %ctp.fail, label %ctp.measure_c_next
+ctp.measure_c_next:
+  %ctp.c1_ptr = getelementptr i8, i8* %ctp.c_str, i32 1
+  %ctp.c1 = load i8, i8* %ctp.c1_ptr
+  %ctp.c1_zero = icmp eq i8 %ctp.c1, 0
+  br i1 %ctp.c1_zero, label %ctp.dispatch, label %ctp.fail
+ctp.dispatch:
+  ; %ctp.c0 holds the character byte. Try each type name in order.
+  %ctp.fn_alpha = getelementptr [6 x i8], [6 x i8]* @.fn_alpha, i32 0, i32 0
+  %ctp.cmp_alpha = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_alpha)
+  %ctp.is_alpha_t = icmp eq i32 %ctp.cmp_alpha, 0
+  br i1 %ctp.is_alpha_t, label %ctp.do_alpha, label %ctp.try_alnum
+ctp.try_alnum:
+  %ctp.fn_alnum = getelementptr [6 x i8], [6 x i8]* @.fn_alnum, i32 0, i32 0
+  %ctp.cmp_alnum = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_alnum)
+  %ctp.is_alnum_t = icmp eq i32 %ctp.cmp_alnum, 0
+  br i1 %ctp.is_alnum_t, label %ctp.do_alnum, label %ctp.try_digit
+ctp.try_digit:
+  %ctp.fn_digit = getelementptr [6 x i8], [6 x i8]* @.fn_digit, i32 0, i32 0
+  %ctp.cmp_digit = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_digit)
+  %ctp.is_digit_t = icmp eq i32 %ctp.cmp_digit, 0
+  br i1 %ctp.is_digit_t, label %ctp.do_digit, label %ctp.try_upper
+ctp.try_upper:
+  %ctp.fn_upper = getelementptr [6 x i8], [6 x i8]* @.fn_upper, i32 0, i32 0
+  %ctp.cmp_upper = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_upper)
+  %ctp.is_upper_t = icmp eq i32 %ctp.cmp_upper, 0
+  br i1 %ctp.is_upper_t, label %ctp.do_upper, label %ctp.try_lower
+ctp.try_lower:
+  %ctp.fn_lower = getelementptr [6 x i8], [6 x i8]* @.fn_lower, i32 0, i32 0
+  %ctp.cmp_lower = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_lower)
+  %ctp.is_lower_t = icmp eq i32 %ctp.cmp_lower, 0
+  br i1 %ctp.is_lower_t, label %ctp.do_lower, label %ctp.try_space
+ctp.try_space:
+  %ctp.fn_space = getelementptr [6 x i8], [6 x i8]* @.fn_space, i32 0, i32 0
+  %ctp.cmp_space = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_space)
+  %ctp.is_space_t = icmp eq i32 %ctp.cmp_space, 0
+  br i1 %ctp.is_space_t, label %ctp.do_space, label %ctp.try_white
+ctp.try_white:
+  %ctp.fn_white = getelementptr [6 x i8], [6 x i8]* @.fn_white, i32 0, i32 0
+  %ctp.cmp_white = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_white)
+  %ctp.is_white_t = icmp eq i32 %ctp.cmp_white, 0
+  br i1 %ctp.is_white_t, label %ctp.do_white, label %ctp.try_ascii
+ctp.try_ascii:
+  %ctp.fn_ascii = getelementptr [6 x i8], [6 x i8]* @.fn_ascii, i32 0, i32 0
+  %ctp.cmp_ascii = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_ascii)
+  %ctp.is_ascii_t = icmp eq i32 %ctp.cmp_ascii, 0
+  br i1 %ctp.is_ascii_t, label %ctp.do_ascii, label %ctp.try_punct
+ctp.try_punct:
+  %ctp.fn_punct = getelementptr [6 x i8], [6 x i8]* @.fn_punct, i32 0, i32 0
+  %ctp.cmp_punct = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_punct)
+  %ctp.is_punct_t = icmp eq i32 %ctp.cmp_punct, 0
+  br i1 %ctp.is_punct_t, label %ctp.do_punct, label %ctp.try_csym
+ctp.try_csym:
+  %ctp.fn_csym = getelementptr [5 x i8], [5 x i8]* @.fn_csym, i32 0, i32 0
+  %ctp.cmp_csym = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_csym)
+  %ctp.is_csym_t = icmp eq i32 %ctp.cmp_csym, 0
+  br i1 %ctp.is_csym_t, label %ctp.do_csym, label %ctp.try_csymf
+ctp.try_csymf:
+  %ctp.fn_csymf = getelementptr [6 x i8], [6 x i8]* @.fn_csymf, i32 0, i32 0
+  %ctp.cmp_csymf = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_csymf)
+  %ctp.is_csymf_t = icmp eq i32 %ctp.cmp_csymf, 0
+  br i1 %ctp.is_csymf_t, label %ctp.do_csymf, label %ctp.try_newline
+ctp.try_newline:
+  %ctp.fn_newline = getelementptr [8 x i8], [8 x i8]* @.fn_newline, i32 0, i32 0
+  %ctp.cmp_newline = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_newline)
+  %ctp.is_newline_t = icmp eq i32 %ctp.cmp_newline, 0
+  br i1 %ctp.is_newline_t, label %ctp.do_newline, label %ctp.try_eol
+ctp.try_eol:
+  %ctp.fn_eol = getelementptr [12 x i8], [12 x i8]* @.fn_end_5Fof_5Fline, i32 0, i32 0
+  %ctp.cmp_eol = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_eol)
+  %ctp.is_eol_t = icmp eq i32 %ctp.cmp_eol, 0
+  br i1 %ctp.is_eol_t, label %ctp.do_newline, label %ctp.fail
+ctp.do_alpha:
+  %ctp.a_ge_a = icmp uge i8 %ctp.c0, 97
+  %ctp.a_le_z = icmp ule i8 %ctp.c0, 122
+  %ctp.a_lower = and i1 %ctp.a_ge_a, %ctp.a_le_z
+  %ctp.a_ge_A = icmp uge i8 %ctp.c0, 65
+  %ctp.a_le_Z = icmp ule i8 %ctp.c0, 90
+  %ctp.a_upper = and i1 %ctp.a_ge_A, %ctp.a_le_Z
+  %ctp.a_any = or i1 %ctp.a_lower, %ctp.a_upper
+  ret i1 %ctp.a_any
+ctp.do_alnum:
+  %ctp.an_ge_a = icmp uge i8 %ctp.c0, 97
+  %ctp.an_le_z = icmp ule i8 %ctp.c0, 122
+  %ctp.an_lower = and i1 %ctp.an_ge_a, %ctp.an_le_z
+  %ctp.an_ge_A = icmp uge i8 %ctp.c0, 65
+  %ctp.an_le_Z = icmp ule i8 %ctp.c0, 90
+  %ctp.an_upper = and i1 %ctp.an_ge_A, %ctp.an_le_Z
+  %ctp.an_ge_0 = icmp uge i8 %ctp.c0, 48
+  %ctp.an_le_9 = icmp ule i8 %ctp.c0, 57
+  %ctp.an_dig = and i1 %ctp.an_ge_0, %ctp.an_le_9
+  %ctp.an_letter = or i1 %ctp.an_lower, %ctp.an_upper
+  %ctp.an_any = or i1 %ctp.an_letter, %ctp.an_dig
+  ret i1 %ctp.an_any
+ctp.do_digit:
+  %ctp.d_ge_0 = icmp uge i8 %ctp.c0, 48
+  %ctp.d_le_9 = icmp ule i8 %ctp.c0, 57
+  %ctp.d_any = and i1 %ctp.d_ge_0, %ctp.d_le_9
+  ret i1 %ctp.d_any
+ctp.do_upper:
+  %ctp.u_ge_A = icmp uge i8 %ctp.c0, 65
+  %ctp.u_le_Z = icmp ule i8 %ctp.c0, 90
+  %ctp.u_any = and i1 %ctp.u_ge_A, %ctp.u_le_Z
+  ret i1 %ctp.u_any
+ctp.do_lower:
+  %ctp.l_ge_a = icmp uge i8 %ctp.c0, 97
+  %ctp.l_le_z = icmp ule i8 %ctp.c0, 122
+  %ctp.l_any = and i1 %ctp.l_ge_a, %ctp.l_le_z
+  ret i1 %ctp.l_any
+ctp.do_space:
+  ; ISO Prolog: space includes ASCII space (32), HT (9), VT (11), FF (12),
+  ; LF (10), CR (13). Same set as ``white'' for now; SWI distinguishes
+  ; further but we collapse them.
+  %ctp.s_sp = icmp eq i8 %ctp.c0, 32
+  %ctp.s_ht = icmp eq i8 %ctp.c0, 9
+  %ctp.s_lf = icmp eq i8 %ctp.c0, 10
+  %ctp.s_vt = icmp eq i8 %ctp.c0, 11
+  %ctp.s_ff = icmp eq i8 %ctp.c0, 12
+  %ctp.s_cr = icmp eq i8 %ctp.c0, 13
+  %ctp.s_a = or i1 %ctp.s_sp, %ctp.s_ht
+  %ctp.s_b = or i1 %ctp.s_a, %ctp.s_lf
+  %ctp.s_c = or i1 %ctp.s_b, %ctp.s_vt
+  %ctp.s_d = or i1 %ctp.s_c, %ctp.s_ff
+  %ctp.s_any = or i1 %ctp.s_d, %ctp.s_cr
+  ret i1 %ctp.s_any
+ctp.do_white:
+  ; SWI ``white'' = space + tab only.
+  %ctp.w_sp = icmp eq i8 %ctp.c0, 32
+  %ctp.w_ht = icmp eq i8 %ctp.c0, 9
+  %ctp.w_any = or i1 %ctp.w_sp, %ctp.w_ht
+  ret i1 %ctp.w_any
+ctp.do_ascii:
+  ; Byte < 128.
+  %ctp.as_any = icmp ult i8 %ctp.c0, 128
+  ret i1 %ctp.as_any
+ctp.do_punct:
+  ; SWI ``punct'' = printable graphical character that is not alphanumeric
+  ; or space. ASCII 33..126 minus alnum minus space.
+  %ctp.p_ge33 = icmp uge i8 %ctp.c0, 33
+  %ctp.p_le126 = icmp ule i8 %ctp.c0, 126
+  %ctp.p_print = and i1 %ctp.p_ge33, %ctp.p_le126
+  %ctp.p_ge_a = icmp uge i8 %ctp.c0, 97
+  %ctp.p_le_z = icmp ule i8 %ctp.c0, 122
+  %ctp.p_lower = and i1 %ctp.p_ge_a, %ctp.p_le_z
+  %ctp.p_ge_A = icmp uge i8 %ctp.c0, 65
+  %ctp.p_le_Z = icmp ule i8 %ctp.c0, 90
+  %ctp.p_upper = and i1 %ctp.p_ge_A, %ctp.p_le_Z
+  %ctp.p_ge_0 = icmp uge i8 %ctp.c0, 48
+  %ctp.p_le_9 = icmp ule i8 %ctp.c0, 57
+  %ctp.p_dig = and i1 %ctp.p_ge_0, %ctp.p_le_9
+  %ctp.p_letter = or i1 %ctp.p_lower, %ctp.p_upper
+  %ctp.p_alnum = or i1 %ctp.p_letter, %ctp.p_dig
+  %ctp.p_not_alnum = xor i1 %ctp.p_alnum, true
+  %ctp.p_any = and i1 %ctp.p_print, %ctp.p_not_alnum
+  ret i1 %ctp.p_any
+ctp.do_csym:
+  ; C symbol: alnum or underscore.
+  %ctp.cs_ge_a = icmp uge i8 %ctp.c0, 97
+  %ctp.cs_le_z = icmp ule i8 %ctp.c0, 122
+  %ctp.cs_lower = and i1 %ctp.cs_ge_a, %ctp.cs_le_z
+  %ctp.cs_ge_A = icmp uge i8 %ctp.c0, 65
+  %ctp.cs_le_Z = icmp ule i8 %ctp.c0, 90
+  %ctp.cs_upper = and i1 %ctp.cs_ge_A, %ctp.cs_le_Z
+  %ctp.cs_ge_0 = icmp uge i8 %ctp.c0, 48
+  %ctp.cs_le_9 = icmp ule i8 %ctp.c0, 57
+  %ctp.cs_dig = and i1 %ctp.cs_ge_0, %ctp.cs_le_9
+  %ctp.cs_us = icmp eq i8 %ctp.c0, 95
+  %ctp.cs_letter = or i1 %ctp.cs_lower, %ctp.cs_upper
+  %ctp.cs_alnum = or i1 %ctp.cs_letter, %ctp.cs_dig
+  %ctp.cs_any = or i1 %ctp.cs_alnum, %ctp.cs_us
+  ret i1 %ctp.cs_any
+ctp.do_csymf:
+  ; C symbol-first: alpha or underscore.
+  %ctp.csf_ge_a = icmp uge i8 %ctp.c0, 97
+  %ctp.csf_le_z = icmp ule i8 %ctp.c0, 122
+  %ctp.csf_lower = and i1 %ctp.csf_ge_a, %ctp.csf_le_z
+  %ctp.csf_ge_A = icmp uge i8 %ctp.c0, 65
+  %ctp.csf_le_Z = icmp ule i8 %ctp.c0, 90
+  %ctp.csf_upper = and i1 %ctp.csf_ge_A, %ctp.csf_le_Z
+  %ctp.csf_us = icmp eq i8 %ctp.c0, 95
+  %ctp.csf_letter = or i1 %ctp.csf_lower, %ctp.csf_upper
+  %ctp.csf_any = or i1 %ctp.csf_letter, %ctp.csf_us
+  ret i1 %ctp.csf_any
+ctp.do_newline:
+  ; ``newline'' and ``end_of_line'' both match LF (and CR for end_of_line).
+  %ctp.n_lf = icmp eq i8 %ctp.c0, 10
+  %ctp.n_cr = icmp eq i8 %ctp.c0, 13
+  %ctp.n_any = or i1 %ctp.n_lf, %ctp.n_cr
+  ret i1 %ctp.n_any
+
+builtin_compare:
+  ; M59/M64: compare(?Order, @T1, @T2). Order is bound to ''<'', ''='',
+  ; or ''>'' per the standard order of terms. Delegates to the M64
+  ; @wam_term_cmp helper which handles all four supported categories
+  ; (Atom / Integer / Float / Compound) with proper recursion on
+  ; compound args.
+  %cmp.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %cmp.a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  %cmp.r = call i32 @wam_term_cmp(%WamState* %vm, %Value %cmp.a2, %Value %cmp.a3)
+  ; Look up the three result atoms via the char-to-atom table (M26).
+  %cmp.lt_id = call i64 @wam_char_to_atom(i64 60)   ; ''<''
+  %cmp.eq_id = call i64 @wam_char_to_atom(i64 61)   ; ''=''
+  %cmp.gt_id = call i64 @wam_char_to_atom(i64 62)   ; ''>''
+  %cmp.lt = icmp slt i32 %cmp.r, 0
+  %cmp.gt = icmp sgt i32 %cmp.r, 0
+  %cmp.mid = select i1 %cmp.gt, i64 %cmp.gt_id, i64 %cmp.eq_id
+  %cmp.id = select i1 %cmp.lt, i64 %cmp.lt_id, i64 %cmp.mid
+  %cmp.v0 = insertvalue %Value undef, i32 0, 0
+  %cmp.v = insertvalue %Value %cmp.v0, i64 %cmp.id, 1
+  %cmp.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %cmp.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %cmp.raw1, %Value %cmp.v)
+  ret i1 %cmp.ok
+
+builtin_must_be:
+  ; M60: must_be(+Type, @Value) -- type guard. Fails on mismatch
+  ; (SWI throws type_error; without catch/throw infrastructure
+  ; failure is the closest semantic).
+  ; Supported types: atom, integer, float, number, compound, var,
+  ; nonvar, atomic, callable, ground, list, boolean.
+  %mb.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %mb.a2_raw = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %mb.a2 = call %Value @wam_deref_value(%WamState* %vm, %Value %mb.a2_raw)
+  %mb.t1 = extractvalue %Value %mb.a1, 0
+  %mb.is_type_atom = icmp eq i32 %mb.t1, 0
+  br i1 %mb.is_type_atom, label %mb.lookup, label %mb.fail
+mb.fail:
+  ret i1 false
+mb.lookup:
+  %mb.aid1 = extractvalue %Value %mb.a1, 1
+  %mb.t_str = call i8* @wam_atom_to_string(i64 %mb.aid1)
+  %mb.t_null = icmp eq i8* %mb.t_str, null
+  br i1 %mb.t_null, label %mb.fail, label %mb.dispatch
+mb.dispatch:
+  %mb.v_tag = extractvalue %Value %mb.a2, 0
+  ; Try each type name in order.
+  %mb.fn_atom = getelementptr [5 x i8], [5 x i8]* @.fn_atom, i32 0, i32 0
+  %mb.is_atom_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_atom)
+  %mb.eq_atom_t = icmp eq i32 %mb.is_atom_t, 0
+  br i1 %mb.eq_atom_t, label %mb.check_atom, label %mb.try_integer
+mb.try_integer:
+  %mb.fn_int = getelementptr [8 x i8], [8 x i8]* @.fn_integer, i32 0, i32 0
+  %mb.is_int_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_int)
+  %mb.eq_int_t = icmp eq i32 %mb.is_int_t, 0
+  br i1 %mb.eq_int_t, label %mb.check_int, label %mb.try_float
+mb.try_float:
+  %mb.fn_flt = getelementptr [6 x i8], [6 x i8]* @.fn_float, i32 0, i32 0
+  %mb.is_flt_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_flt)
+  %mb.eq_flt_t = icmp eq i32 %mb.is_flt_t, 0
+  br i1 %mb.eq_flt_t, label %mb.check_float, label %mb.try_number
+mb.try_number:
+  %mb.fn_num = getelementptr [7 x i8], [7 x i8]* @.fn_number, i32 0, i32 0
+  %mb.is_num_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_num)
+  %mb.eq_num_t = icmp eq i32 %mb.is_num_t, 0
+  br i1 %mb.eq_num_t, label %mb.check_number, label %mb.try_compound
+mb.try_compound:
+  %mb.fn_cmp = getelementptr [9 x i8], [9 x i8]* @.fn_compound, i32 0, i32 0
+  %mb.is_cmp_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_cmp)
+  %mb.eq_cmp_t = icmp eq i32 %mb.is_cmp_t, 0
+  br i1 %mb.eq_cmp_t, label %mb.check_compound, label %mb.try_var
+mb.try_var:
+  %mb.fn_var = getelementptr [4 x i8], [4 x i8]* @.fn_var, i32 0, i32 0
+  %mb.is_var_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_var)
+  %mb.eq_var_t = icmp eq i32 %mb.is_var_t, 0
+  br i1 %mb.eq_var_t, label %mb.check_var, label %mb.try_nonvar
+mb.try_nonvar:
+  %mb.fn_nonvar = getelementptr [7 x i8], [7 x i8]* @.fn_nonvar, i32 0, i32 0
+  %mb.is_nonvar_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_nonvar)
+  %mb.eq_nonvar_t = icmp eq i32 %mb.is_nonvar_t, 0
+  br i1 %mb.eq_nonvar_t, label %mb.check_nonvar, label %mb.try_atomic
+mb.try_atomic:
+  %mb.fn_atomic = getelementptr [7 x i8], [7 x i8]* @.fn_atomic, i32 0, i32 0
+  %mb.is_atomic_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_atomic)
+  %mb.eq_atomic_t = icmp eq i32 %mb.is_atomic_t, 0
+  br i1 %mb.eq_atomic_t, label %mb.check_atomic, label %mb.try_callable
+mb.try_callable:
+  %mb.fn_callable = getelementptr [9 x i8], [9 x i8]* @.fn_callable, i32 0, i32 0
+  %mb.is_callable_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_callable)
+  %mb.eq_callable_t = icmp eq i32 %mb.is_callable_t, 0
+  br i1 %mb.eq_callable_t, label %mb.check_callable, label %mb.try_ground
+mb.try_ground:
+  %mb.fn_ground = getelementptr [7 x i8], [7 x i8]* @.fn_ground, i32 0, i32 0
+  %mb.is_ground_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_ground)
+  %mb.eq_ground_t = icmp eq i32 %mb.is_ground_t, 0
+  br i1 %mb.eq_ground_t, label %mb.check_nonvar, label %mb.try_list
+mb.try_list:
+  %mb.fn_list = getelementptr [5 x i8], [5 x i8]* @.fn_list, i32 0, i32 0
+  %mb.is_list_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_list)
+  %mb.eq_list_t = icmp eq i32 %mb.is_list_t, 0
+  br i1 %mb.eq_list_t, label %mb.check_list, label %mb.try_boolean
+mb.try_boolean:
+  %mb.fn_bool = getelementptr [8 x i8], [8 x i8]* @.fn_boolean, i32 0, i32 0
+  %mb.is_bool_t = call i32 @strcmp(i8* %mb.t_str, i8* %mb.fn_bool)
+  %mb.eq_bool_t = icmp eq i32 %mb.is_bool_t, 0
+  br i1 %mb.eq_bool_t, label %mb.check_boolean, label %mb.fail
+mb.check_atom:
+  %mb.r_atom = icmp eq i32 %mb.v_tag, 0
+  ret i1 %mb.r_atom
+mb.check_int:
+  %mb.r_int = icmp eq i32 %mb.v_tag, 1
+  ret i1 %mb.r_int
+mb.check_float:
+  %mb.r_flt = icmp eq i32 %mb.v_tag, 2
+  ret i1 %mb.r_flt
+mb.check_number:
+  %mb.r_num_int = icmp eq i32 %mb.v_tag, 1
+  %mb.r_num_flt = icmp eq i32 %mb.v_tag, 2
+  %mb.r_num = or i1 %mb.r_num_int, %mb.r_num_flt
+  ret i1 %mb.r_num
+mb.check_compound:
+  %mb.r_cmp = icmp eq i32 %mb.v_tag, 3
+  ret i1 %mb.r_cmp
+mb.check_var:
+  %mb.r_var = call i1 @value_is_unbound(%Value %mb.a2)
+  ret i1 %mb.r_var
+mb.check_nonvar:
+  ; Also reached by ``ground'' since we don''t have full ground analysis;
+  ; a non-unbound argument is treated as ground for this guard.
+  %mb.r_nonvar_unb = call i1 @value_is_unbound(%Value %mb.a2)
+  %mb.r_nonvar = xor i1 %mb.r_nonvar_unb, true
+  ret i1 %mb.r_nonvar
+mb.check_atomic:
+  ; atomic = atom or number.
+  %mb.r_atomic_a = icmp eq i32 %mb.v_tag, 0
+  %mb.r_atomic_i = icmp eq i32 %mb.v_tag, 1
+  %mb.r_atomic_f = icmp eq i32 %mb.v_tag, 2
+  %mb.r_atomic_ai = or i1 %mb.r_atomic_a, %mb.r_atomic_i
+  %mb.r_atomic = or i1 %mb.r_atomic_ai, %mb.r_atomic_f
+  ret i1 %mb.r_atomic
+mb.check_callable:
+  ; callable = atom or compound.
+  %mb.r_call_a = icmp eq i32 %mb.v_tag, 0
+  %mb.r_call_c = icmp eq i32 %mb.v_tag, 3
+  %mb.r_call = or i1 %mb.r_call_a, %mb.r_call_c
+  ret i1 %mb.r_call
+mb.check_list:
+  ; list = [] atom, OR a Compound with arity 2 (cons). This is a
+  ; shallow check (doesn''t recursively verify the tail is a proper
+  ; list). Matches SWI''s ``proper_list-or-empty'' fast-path approximate.
+  %mb.r_l_is_atom = icmp eq i32 %mb.v_tag, 0
+  br i1 %mb.r_l_is_atom, label %mb.list_check_empty, label %mb.list_check_compound
+mb.list_check_empty:
+  %mb.r_l_aid = extractvalue %Value %mb.a2, 1
+  %mb.r_l_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %mb.r_l_empty = icmp eq i64 %mb.r_l_aid, %mb.r_l_empty_id
+  ret i1 %mb.r_l_empty
+mb.list_check_compound:
+  %mb.r_l_is_cmp = icmp eq i32 %mb.v_tag, 3
+  br i1 %mb.r_l_is_cmp, label %mb.list_check_arity, label %mb.list_done_no
+mb.list_check_arity:
+  %mb.r_l_cp = extractvalue %Value %mb.a2, 1
+  %mb.r_l_cp_ptr = inttoptr i64 %mb.r_l_cp to %Compound*
+  %mb.r_l_ar_slot = getelementptr %Compound, %Compound* %mb.r_l_cp_ptr, i32 0, i32 1
+  %mb.r_l_ar = load i32, i32* %mb.r_l_ar_slot
+  %mb.r_l_ar_ok = icmp eq i32 %mb.r_l_ar, 2
+  ret i1 %mb.r_l_ar_ok
+mb.list_done_no:
+  ret i1 false
+mb.check_boolean:
+  ; true / false (the atoms).
+  %mb.r_b_is_atom = icmp eq i32 %mb.v_tag, 0
+  br i1 %mb.r_b_is_atom, label %mb.bool_strcmp, label %mb.bool_no
+mb.bool_strcmp:
+  %mb.r_b_aid = extractvalue %Value %mb.a2, 1
+  %mb.r_b_str = call i8* @wam_atom_to_string(i64 %mb.r_b_aid)
+  %mb.r_b_null = icmp eq i8* %mb.r_b_str, null
+  br i1 %mb.r_b_null, label %mb.bool_no, label %mb.bool_actual_cmp
+mb.bool_actual_cmp:
+  %mb.r_b_c0 = load i8, i8* %mb.r_b_str
+  %mb.r_b_t = icmp eq i8 %mb.r_b_c0, 116    ; ''t'' for true
+  %mb.r_b_f = icmp eq i8 %mb.r_b_c0, 102    ; ''f'' for false
+  ; Verify length matches (4 for true, 5 for false). We just check
+  ; that the first byte is t or f and the rest matches via strcmp.
+  ; Simpler: just strcmp against ``true'' or ``false''.
+  %mb.r_b_first = or i1 %mb.r_b_t, %mb.r_b_f
+  br i1 %mb.r_b_first, label %mb.bool_full_cmp, label %mb.bool_no
+mb.bool_full_cmp:
+  ; Compare against ``true'' literal (4 chars). Need a static string.
+  ; Reuse @.fn_atom (5 chars c"atom\00") -- no, just inline-test via
+  ; byte comparisons. Easier: assume single-byte uniqueness and
+  ; require atom length == 4 (true) or == 5 (false).
+  %mb.r_b_p1_ptr = getelementptr i8, i8* %mb.r_b_str, i32 1
+  %mb.r_b_p1 = load i8, i8* %mb.r_b_p1_ptr
+  %mb.r_b_t_ok2 = icmp eq i8 %mb.r_b_p1, 114   ; ''r'' in true
+  %mb.r_b_f_ok2 = icmp eq i8 %mb.r_b_p1, 97    ; ''a'' in false
+  %mb.r_b_p2_ptr = getelementptr i8, i8* %mb.r_b_str, i32 2
+  %mb.r_b_p2 = load i8, i8* %mb.r_b_p2_ptr
+  %mb.r_b_t_ok3 = icmp eq i8 %mb.r_b_p2, 117   ; ''u''
+  %mb.r_b_f_ok3 = icmp eq i8 %mb.r_b_p2, 108   ; ''l''
+  %mb.r_b_p3_ptr = getelementptr i8, i8* %mb.r_b_str, i32 3
+  %mb.r_b_p3 = load i8, i8* %mb.r_b_p3_ptr
+  %mb.r_b_t_ok4 = icmp eq i8 %mb.r_b_p3, 101   ; ''e'' in true
+  %mb.r_b_f_ok4 = icmp eq i8 %mb.r_b_p3, 115   ; ''s'' in false
+  %mb.r_b_p4_ptr = getelementptr i8, i8* %mb.r_b_str, i32 4
+  %mb.r_b_p4 = load i8, i8* %mb.r_b_p4_ptr
+  %mb.r_b_t_ok5 = icmp eq i8 %mb.r_b_p4, 0     ; null terminator for true
+  %mb.r_b_f_ok5 = icmp eq i8 %mb.r_b_p4, 101   ; ''e'' in false
+  %mb.r_b_p5_ptr = getelementptr i8, i8* %mb.r_b_str, i32 5
+  %mb.r_b_p5 = load i8, i8* %mb.r_b_p5_ptr
+  %mb.r_b_f_ok6 = icmp eq i8 %mb.r_b_p5, 0     ; null terminator for false
+  ; ``true'' matches if first 4 bytes are t/r/u/e AND byte 4 is null.
+  %mb.r_b_t_ab = and i1 %mb.r_b_t, %mb.r_b_t_ok2
+  %mb.r_b_t_abc = and i1 %mb.r_b_t_ab, %mb.r_b_t_ok3
+  %mb.r_b_t_abcd = and i1 %mb.r_b_t_abc, %mb.r_b_t_ok4
+  %mb.r_b_t_all = and i1 %mb.r_b_t_abcd, %mb.r_b_t_ok5
+  ; ``false'' matches if first 5 bytes are f/a/l/s/e AND byte 5 is null.
+  %mb.r_b_f_ab = and i1 %mb.r_b_f, %mb.r_b_f_ok2
+  %mb.r_b_f_abc = and i1 %mb.r_b_f_ab, %mb.r_b_f_ok3
+  %mb.r_b_f_abcd = and i1 %mb.r_b_f_abc, %mb.r_b_f_ok4
+  %mb.r_b_f_abcde = and i1 %mb.r_b_f_abcd, %mb.r_b_f_ok5
+  %mb.r_b_f_all = and i1 %mb.r_b_f_abcde, %mb.r_b_f_ok6
+  %mb.r_b_any = or i1 %mb.r_b_t_all, %mb.r_b_f_all
+  ret i1 %mb.r_b_any
+mb.bool_no:
+  ret i1 false
+
 unknown:
   ret i1 false
 }'.
@@ -6066,6 +9856,139 @@ fz_done:
   ret %Value %new_val
 }'.
 
+%% compile_term_cmp_to_llvm(-IR)
+%
+%  M64: emit @wam_term_cmp(vm, v1, v2) -> i32 (-1, 0, +1) per standard
+%  term order. Supports Atom / Integer / Float / Compound with proper
+%  recursion through compound args. Used by builtin_compare (and
+%  future keysort / sort migrations).
+compile_term_cmp_to_llvm(Code) :-
+    Code = '; M64: standard-term-order compare. Returns -1, 0, or +1.
+; Category order (ISO): Number < Atom < Compound. Within each
+; category, atoms by strcmp, numbers by value (mixed int/float
+; widened to double), compounds by arity then functor then args
+; left-to-right (recursive).
+define i32 @wam_term_cmp(%WamState* %vm, %Value %v1, %Value %v2) {
+entry:
+  %d1 = call %Value @wam_deref_value(%WamState* %vm, %Value %v1)
+  %d2 = call %Value @wam_deref_value(%WamState* %vm, %Value %v2)
+  %t1 = extractvalue %Value %d1, 0
+  %t2 = extractvalue %Value %d2, 0
+  ; Map tag -> category: Atom=1, Number=0, Compound=2.
+  %t1_atom = icmp eq i32 %t1, 0
+  %t1_cmp = icmp eq i32 %t1, 3
+  %t1_cat_mid = select i1 %t1_cmp, i32 2, i32 0
+  %cat1 = select i1 %t1_atom, i32 1, i32 %t1_cat_mid
+  %t2_atom = icmp eq i32 %t2, 0
+  %t2_cmp = icmp eq i32 %t2, 3
+  %t2_cat_mid = select i1 %t2_cmp, i32 2, i32 0
+  %cat2 = select i1 %t2_atom, i32 1, i32 %t2_cat_mid
+  %cat_eq = icmp eq i32 %cat1, %cat2
+  br i1 %cat_eq, label %same_cat, label %diff_cat
+diff_cat:
+  %dc_lt = icmp slt i32 %cat1, %cat2
+  %dc_r = select i1 %dc_lt, i32 -1, i32 1
+  ret i32 %dc_r
+same_cat:
+  %sc_is_atom = icmp eq i32 %cat1, 1
+  br i1 %sc_is_atom, label %cmp_atoms, label %sc_num_or_cmp
+sc_num_or_cmp:
+  %sc_is_cmp = icmp eq i32 %cat1, 2
+  br i1 %sc_is_cmp, label %cmp_compounds, label %cmp_nums
+cmp_atoms:
+  %a_id1 = extractvalue %Value %d1, 1
+  %a_id2 = extractvalue %Value %d2, 1
+  %a_str1 = call i8* @wam_atom_to_string(i64 %a_id1)
+  %a_str2 = call i8* @wam_atom_to_string(i64 %a_id2)
+  %a_r = call i32 @strcmp(i8* %a_str1, i8* %a_str2)
+  %a_lt = icmp slt i32 %a_r, 0
+  %a_gt = icmp sgt i32 %a_r, 0
+  %a_mid = select i1 %a_gt, i32 1, i32 0
+  %a_result = select i1 %a_lt, i32 -1, i32 %a_mid
+  ret i32 %a_result
+cmp_nums:
+  %n_t1_int = icmp eq i32 %t1, 1
+  %n_t2_int = icmp eq i32 %t2, 1
+  %n_both_int = and i1 %n_t1_int, %n_t2_int
+  br i1 %n_both_int, label %cmp_int_int, label %cmp_num_float
+cmp_int_int:
+  %ii_v1 = extractvalue %Value %d1, 1
+  %ii_v2 = extractvalue %Value %d2, 1
+  %ii_lt = icmp slt i64 %ii_v1, %ii_v2
+  %ii_gt = icmp sgt i64 %ii_v1, %ii_v2
+  %ii_mid = select i1 %ii_gt, i32 1, i32 0
+  %ii_result = select i1 %ii_lt, i32 -1, i32 %ii_mid
+  ret i32 %ii_result
+cmp_num_float:
+  %nf_b1 = extractvalue %Value %d1, 1
+  %nf_b2 = extractvalue %Value %d2, 1
+  %nf_t1_flt = icmp eq i32 %t1, 2
+  %nf_t2_flt = icmp eq i32 %t2, 2
+  %nf_d1_flt = bitcast i64 %nf_b1 to double
+  %nf_d1_int = sitofp i64 %nf_b1 to double
+  %nf_d1 = select i1 %nf_t1_flt, double %nf_d1_flt, double %nf_d1_int
+  %nf_d2_flt = bitcast i64 %nf_b2 to double
+  %nf_d2_int = sitofp i64 %nf_b2 to double
+  %nf_d2 = select i1 %nf_t2_flt, double %nf_d2_flt, double %nf_d2_int
+  %nf_lt = fcmp olt double %nf_d1, %nf_d2
+  %nf_gt = fcmp ogt double %nf_d1, %nf_d2
+  %nf_mid = select i1 %nf_gt, i32 1, i32 0
+  %nf_result = select i1 %nf_lt, i32 -1, i32 %nf_mid
+  ret i32 %nf_result
+cmp_compounds:
+  %c_bits1 = extractvalue %Value %d1, 1
+  %c_bits2 = extractvalue %Value %d2, 1
+  %c_cp1 = inttoptr i64 %c_bits1 to %Compound*
+  %c_cp2 = inttoptr i64 %c_bits2 to %Compound*
+  %c_ar1_slot = getelementptr %Compound, %Compound* %c_cp1, i32 0, i32 1
+  %c_ar1 = load i32, i32* %c_ar1_slot
+  %c_ar2_slot = getelementptr %Compound, %Compound* %c_cp2, i32 0, i32 1
+  %c_ar2 = load i32, i32* %c_ar2_slot
+  %c_ar_eq = icmp eq i32 %c_ar1, %c_ar2
+  br i1 %c_ar_eq, label %cmp_funcs, label %c_ar_diff
+c_ar_diff:
+  %c_ar_lt = icmp slt i32 %c_ar1, %c_ar2
+  %c_ar_r = select i1 %c_ar_lt, i32 -1, i32 1
+  ret i32 %c_ar_r
+cmp_funcs:
+  %c_fn1_slot = getelementptr %Compound, %Compound* %c_cp1, i32 0, i32 0
+  %c_fn1 = load i8*, i8** %c_fn1_slot
+  %c_fn2_slot = getelementptr %Compound, %Compound* %c_cp2, i32 0, i32 0
+  %c_fn2 = load i8*, i8** %c_fn2_slot
+  %c_fn_r = call i32 @strcmp(i8* %c_fn1, i8* %c_fn2)
+  %c_fn_zero = icmp eq i32 %c_fn_r, 0
+  br i1 %c_fn_zero, label %cmp_args_init, label %c_fn_diff
+c_fn_diff:
+  %c_fn_lt = icmp slt i32 %c_fn_r, 0
+  %c_fn_result = select i1 %c_fn_lt, i32 -1, i32 1
+  ret i32 %c_fn_result
+cmp_args_init:
+  %c_args1_slot = getelementptr %Compound, %Compound* %c_cp1, i32 0, i32 2
+  %c_args1 = load %Value*, %Value** %c_args1_slot
+  %c_args2_slot = getelementptr %Compound, %Compound* %c_cp2, i32 0, i32 2
+  %c_args2 = load %Value*, %Value** %c_args2_slot
+  br label %cmp_args_loop
+cmp_args_loop:
+  %ca_i = phi i32 [ 0, %cmp_args_init ], [ %ca_i_next, %cmp_args_continue ]
+  %ca_done = icmp sge i32 %ca_i, %c_ar1
+  br i1 %ca_done, label %cmp_args_equal, label %cmp_args_step
+cmp_args_step:
+  %ca_a1_ptr = getelementptr %Value, %Value* %c_args1, i32 %ca_i
+  %ca_a1 = load %Value, %Value* %ca_a1_ptr
+  %ca_a2_ptr = getelementptr %Value, %Value* %c_args2, i32 %ca_i
+  %ca_a2 = load %Value, %Value* %ca_a2_ptr
+  %ca_r = call i32 @wam_term_cmp(%WamState* %vm, %Value %ca_a1, %Value %ca_a2)
+  %ca_nonzero = icmp ne i32 %ca_r, 0
+  br i1 %ca_nonzero, label %cmp_args_ret, label %cmp_args_continue
+cmp_args_ret:
+  ret i32 %ca_r
+cmp_args_continue:
+  %ca_i_next = add i32 %ca_i, 1
+  br label %cmp_args_loop
+cmp_args_equal:
+  ret i32 0
+}'.
+
 % ============================================================================
 % ASSEMBLY: Combine Phase 2 + Phase 3 into complete runtime
 % ============================================================================
@@ -6684,6 +10607,46 @@ builtin_op_to_id('atom_chars/2', 38).
 builtin_op_to_id('between/3', 39).
 builtin_op_to_id('atom_concat/3', 40).
 builtin_op_to_id('sub_atom/5', 41).
+builtin_op_to_id('atom_number/2', 42).
+builtin_op_to_id('number_codes/2', 43).
+builtin_op_to_id('number_chars/2', 44).
+builtin_op_to_id('upcase_atom/2', 45).
+builtin_op_to_id('downcase_atom/2', 46).
+builtin_op_to_id('string_concat/3', 47).  % alias of atom_concat/3
+builtin_op_to_id('string_length/2', 48).  % alias of atom_length/2
+builtin_op_to_id('atom_string/2', 49).    % atom <-> string (runtime treats both as atoms)
+builtin_op_to_id('string_to_atom/2', 50). % string_to_atom(?S, ?A) -- same as atom_string but swapped
+builtin_op_to_id('nth0/3', 51).
+builtin_op_to_id('nth1/3', 52).
+builtin_op_to_id('last/2', 53).
+builtin_op_to_id('reverse/2', 54).
+builtin_op_to_id('append/3', 55).
+builtin_op_to_id('memberchk/2', 56).
+builtin_op_to_id('delete/3', 57).
+builtin_op_to_id('numlist/3', 58).
+builtin_op_to_id('sum_list/2', 59).
+builtin_op_to_id('sumlist/2', 60).   % alias of sum_list/2
+builtin_op_to_id('max_list/2', 61).
+builtin_op_to_id('min_list/2', 62).
+builtin_op_to_id('subtract/3', 63).
+builtin_op_to_id('intersection/3', 64).
+builtin_op_to_id('union/3', 65).
+builtin_op_to_id('list_to_set/2', 66).
+builtin_op_to_id('string_chars/2', 67).  % alias of atom_chars/2
+builtin_op_to_id('string_codes/2', 68).  % alias of atom_codes/2
+builtin_op_to_id('string_code/3', 69).   % string_code(+Idx, +Str, -Code) 1-based
+builtin_op_to_id('pairs_keys/2', 70).    % extract keys from K-V pair list
+builtin_op_to_id('pairs_values/2', 71).  % extract values
+builtin_op_to_id('pairs_keys_values/3', 72). % forward only: split pairs -> keys + values
+builtin_op_to_id('atomic_list_concat/2', 73). % concat list of atoms (atoms only mode)
+builtin_op_to_id('atomic_list_concat/3', 74). % concat with separator atom (atoms-only forward)
+builtin_op_to_id('char_type/2', 75).          % char classification (check mode)
+builtin_op_to_id('compare/3', 76).            % three-way term order (num/atom)
+builtin_op_to_id('must_be/2', 77).            % type guard (fail-instead-of-throw)
+builtin_op_to_id('display/1', 78).            % alias of write/1 (operator-free print)
+builtin_op_to_id('writeln/1', 79).            % write/1 + nl/0 combined
+builtin_op_to_id('keysort/2', 80).            % stable sort of K-V pairs by Key
+builtin_op_to_id('sort/2', 81).               % sort + dedup under standard term order
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================

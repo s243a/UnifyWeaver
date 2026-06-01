@@ -9,6 +9,8 @@
 :- module(wam_target, [
     target_info/1,
     compile_predicate_to_wam/3,          % +PredIndicator, +Options, -WAMCode
+    compile_predicate_to_wam_text/3,     % +PredIndicator, +Options, -WAMCode
+    compile_predicate_to_wam_items/3,    % +PredIndicator, +Options, -Items
     compile_predicate/3,                 % +PredIndicator, +Options, -WAMCode (dispatch alias)
     compile_facts_to_wam/3,              % +Pred, +Arity, -WAMCode
     compile_wam_module/3,                % +Predicates, +Options, -WAMCode
@@ -25,6 +27,7 @@
 :- use_module('../core/clause_body_analysis').
 :- use_module('../core/template_system').
 :- use_module('../core/binding_state_analysis').
+:- use_module('../targets/wam_text_parser', [wam_text_to_items/2]).
 
 %% target_info(-Info)
 target_info(info{
@@ -47,7 +50,15 @@ compile_predicate(PredArity, Options, Code) :-
     compile_predicate_to_wam(PredArity, Options, Code).
 
 %% compile_predicate_to_wam(+PredIndicator, +Options, -Code)
+%  Compatibility wrapper: returns canonical WAM text, matching the historical
+%  API. New callers that want an explicit format should use
+%  compile_predicate_to_wam_text/3 or compile_predicate_to_wam_items/3.
 compile_predicate_to_wam(PredIndicator, Options, Code) :-
+    compile_predicate_to_wam_text(PredIndicator, Options, Code).
+
+%% compile_predicate_to_wam_text(+PredIndicator, +Options, -Code)
+%  Compile a predicate to canonical WAM text.
+compile_predicate_to_wam_text(PredIndicator, Options, Code) :-
     % Handle module qualification
     (   PredIndicator = Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity -> option(module(Module), Options, user)
@@ -63,12 +74,21 @@ compile_predicate_to_wam(PredIndicator, Options, Code) :-
     ;   compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code)
     ).
 
+%% compile_predicate_to_wam_items(+PredIndicator, +Options, -Items)
+%  Compile a predicate to structured WAM items. This bridge keeps the legacy
+%  text generator as the source of truth for now, then normalizes through the
+%  shared parser. A later generator pass can replace this with direct item
+%  emission without changing target-facing call sites.
+compile_predicate_to_wam_items(PredIndicator, Options, Items) :-
+    compile_predicate_to_wam_text(PredIndicator, Options, Code),
+    wam_text_to_items(Code, Items).
+
 %% compile_wam_module(+Predicates, +Options, -Code) is det.
 %
 %   Compiles a list of predicates to a single WAM module using templates.
 compile_wam_module(Predicates, Options, Code) :-
     maplist({Options}/[PI, PredCode]>> (
-        compile_predicate_to_wam(PI, Options, PredCode)
+        compile_predicate_to_wam_text(PI, Options, PredCode)
     ), Predicates, PredCodes),
     
     atomic_list_concat(PredCodes, '\n\n', AllPredsCode),
@@ -2016,6 +2036,9 @@ is_builtin_pred(unifiable, 3).      % non-binding unification + bindings list
 is_builtin_pred(plus, 3).           % bidirectional integer addition
 is_builtin_pred(delete, 3).         % remove all matching elements
 is_builtin_pred(subtract, 3).       % set difference: List1 minus List2
+is_builtin_pred(intersection, 3).   % set intersection: elements in both
+is_builtin_pred(union, 3).          % set union: A1 ++ (A2 minus A1)
+is_builtin_pred(list_to_set, 2).    % dedupe list (first-occurrence order).
 is_builtin_pred(must_be, 2).        % type check with type_error throw
 is_builtin_pred(string_chars, 2).   % alias for atom_chars/2 (atoms = strings).
 is_builtin_pred(string_codes, 2).   % alias for atom_codes/2.
@@ -2091,6 +2114,7 @@ is_builtin_pred(char_code, 2).    % char-atom ↔ integer code.
 is_builtin_pred(between, 3).      % between(+Low, +High, ?X) -- nondet enumeration.
 is_builtin_pred(atom_concat, 3).  % atom_concat(+A1, +A2, -A12) -- forward concat.
 is_builtin_pred(sub_atom, 5).     % sub_atom(+A, +B, +L, ?After, ?Sub) -- deterministic extraction.
+is_builtin_pred(atom_number, 2).  % atom_number(?A, ?N) -- integer mode only.
 is_builtin_pred(assertz, 1).      % dynamic db: append fact.
 is_builtin_pred(asserta, 1).      % dynamic db: prepend fact.
 % retract/1 is nondeterministic — dispatched via the Call/Execute
@@ -2110,7 +2134,15 @@ is_builtin_pred(compare, 3).      % standard order: -1 / 0 / +1 as atom.
 is_builtin_pred(char_type, 2).    % char classification + case conv.
 is_builtin_pred(upcase_atom, 2).  % whole-atom case conversion: upper.
 is_builtin_pred(downcase_atom, 2).% whole-atom case conversion: lower.
+is_builtin_pred(nth0, 3).         % nth0(+Index, +List, ?Elem) -- 0-indexed.
+is_builtin_pred(nth1, 3).         % nth1(+Index, +List, ?Elem) -- 1-indexed.
+is_builtin_pred(last, 2).         % last(+List, ?Elem).
+is_builtin_pred(memberchk, 2).    % memberchk(?Elem, +List) -- deterministic membership.
 is_builtin_pred(numlist, 3).      % integer range generator: [Lo..Hi].
+is_builtin_pred(sum_list, 2).     % sum_list(+List, ?Sum) -- integer sum.
+is_builtin_pred(sumlist, 2).      % alias of sum_list.
+is_builtin_pred(max_list, 2).     % max_list(+List, ?Max) -- empty fails.
+is_builtin_pred(min_list, 2).     % min_list(+List, ?Min) -- empty fails.
 is_builtin_pred(sort, 2).         % stable sort + dedup (std order).
 is_builtin_pred(msort, 2).        % stable sort, NO dedup (std order).
 is_builtin_pred(select, 3).       % nondet list element selection.
@@ -2706,17 +2738,21 @@ is_ground_atom_list(L, Atoms) :-
     Atoms = Items.
 
 % Walk a list term, collecting its elements. Must FAIL (not loop) on a
-% partial or improper list. The nonvar/1 guard stops the recursion the
-% moment the tail is an unbound variable, so a partial list like [a|_]
-% does not unify here, and the L = [H|T] match rejects an improper tail
-% like [a|b]. This is the contract compile_put_argument/5 relies on (via
-% the `proper_list(Arg, _)` guard added in #aac54075): when proper_list/2
-% fails, the list branch is skipped and the argument falls through to the
-% compound branch, which emits put_structure for the '[|]'/2 cons cell.
-% Without the nonvar/1 guard, clause 2 unifies [H|T] with an unbound tail
-% and recurses forever, blowing the stack on any partial-list argument.
-proper_list(T, []) :- T == [], !.
-proper_list(L, [H|R]) :- nonvar(L), L = [H|T], proper_list(T, R).
+% partial or improper list, so callers (compile_put_argument/5 via the
+% `proper_list(Arg, _)` guard from #aac54075, and is_ground_atom_list/2)
+% can rely on a clean failure to fall through to the compound branch
+% (put_structure for the '[|]'/2 cons cell). The nonvar/1 guards stop the
+% recursion the moment a tail is an unbound variable, so a partial list
+% like [a|_] fails instead of recursing forever; an improper tail like
+% [a|b] fails when proper_list_/2 hits a non-list, non-[] tail.
+proper_list(T, Items) :-
+    nonvar(T),
+    proper_list_(T, Items).
+
+proper_list_(T, []) :- T == [], !.
+proper_list_([H|T], [H|R]) :-
+    nonvar(T),
+    proper_list_(T, R).
 
 %% emit_not_member_const_atoms_lowering(+X, +Atoms, +V0, -Vf, -Code)
 %

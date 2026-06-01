@@ -14,6 +14,7 @@
 :- use_module('../src/unifyweaver/targets/wam_python_target').
 :- use_module('../src/unifyweaver/core/target_registry').
 :- use_module('../src/unifyweaver/core/prolog_term_parser').
+:- use_module('../src/unifyweaver/targets/wam_text_parser', [wam_text_to_items/2]).
 
 % ============================================================================
 % Registry smoke tests
@@ -307,23 +308,104 @@ test(compile_runtime_reads_static_runtime_source) :-
 % Items-mode migration audit
 % ============================================================================
 
+:- dynamic user:py_items_api_demo/0.
+user:py_items_api_demo.
+
 :- begin_tests(wam_python_items_mode_audit).
 
-test(python_target_still_uses_text_wam_generation) :-
+test(python_planning_uses_common_items_api) :-
     once(source_file(wam_python_target:compile_wam_predicate_to_python(_, _, _, _), Path)),
     read_file_to_string(Path, Content, []),
-    sub_string(Content, _, _, _, "compile_predicate_to_wam(Pred/Arity, [], WamCode)"),
-    sub_string(Content, _, _, _, "compile_predicate_to_wam(Module:Pred/Arity, [], WamText)"),
-    sub_string(Content, _, _, _, "parse_wam_text_py(WamCode, Instrs)"),
-    sub_string(Content, _, _, _, "wam_code_to_python_instructions(WamCode"),
+    sub_string(Content, _, _, _, "compile_predicate_to_wam_items(PredIndicator, [], Items)"),
+    sub_string(Content, _, _, _, "python_wam_items_plan(Items, Wam)"),
+    sub_string(Content, _, _, _, "compile_wam_predicate_items_to_python(Pred/Arity, Items, Options, PredCode)"),
     !.
 
-test(python_items_mode_migration_target_not_yet_present) :-
+test(python_lowered_mode_keeps_text_plan) :-
     once(source_file(wam_python_target:compile_wam_predicate_to_python(_, _, _, _), Path)),
     read_file_to_string(Path, Content, []),
-    \+ sub_string(Content, _, _, _, "compile_predicate_to_wam_items"),
-    \+ sub_string(Content, _, _, _, "compile_wam_predicate_items_to_python").
+    sub_string(Content, _, _, _, "python_wam_emit_ir_mode(Options, IrMode)"),
+    sub_string(Content, _, _, _, "wam_ir_mode(wam_python, EmitMode, Options, IrMode)"),
+    sub_string(Content, _, _, _, "compile_predicate_to_wam_text(PredIndicator, [], WamText)"),
+    sub_string(Content, _, _, _, "wam_plan_text(Wam, WamText)"),
+    !.
 
+
+test(items_adapter_matches_text_adapter_for_standard_items) :-
+    WamText = 'demo/1:
+    get_constant foo, A1
+    put_constant \'42\', A2
+    call bar/2, 2
+    proceed',
+    wam_text_to_items(WamText, Items),
+    wam_python_target:wam_items_to_python_instructions(Items, demo/1, Instrs, Labels),
+    sub_string(Instrs, _, _, _, '("__label__", "demo/1")'),
+    sub_string(Instrs, _, _, _, '("get_constant", Atom("foo"), A1)'),
+    sub_string(Instrs, _, _, _, '("put_constant", Atom("42"), A2)'),
+    sub_string(Instrs, _, _, _, '("call", "bar/2", 2)'),
+    sub_string(Instrs, _, _, _, '("proceed",)'),
+    sub_string(Labels, _, _, _, '("__label__", "demo/1")'),
+    !.
+
+test(items_adapter_preserves_typed_atom_constants) :-
+    Items = [label("typed/1"), put_constant('42', "A1"), put_constant(42, "A2"), proceed],
+    wam_python_target:wam_items_to_python_instructions(Items, typed/1, Instrs, _Labels),
+    sub_string(Instrs, _, _, _, '("put_constant", Atom("42"), A1)'),
+    sub_string(Instrs, _, _, _, '("put_constant", Int(42), A2)'),
+    !.
+
+
+test(items_predicate_compiler_matches_text_compiler) :-
+    WamText = 'demo/1:
+    put_constant foo, A1
+    proceed',
+    wam_text_to_items(WamText, Items),
+    wam_python_target:compile_wam_predicate_to_python(demo/1, WamText, [], TextCode),
+    wam_python_target:compile_wam_predicate_items_to_python(demo/1, Items, [], ItemsCode),
+    assertion(ItemsCode == TextCode).
+
+test(items_predicate_compiler_honors_registrar_prefix) :-
+    Items = [label("demo/1"), put_constant(foo, "A1"), proceed],
+    wam_python_target:compile_wam_predicate_items_to_python(demo/1, Items,
+        [registrar_prefix(register_)], Code),
+    sub_string(Code, _, _, _, 'def register_pred_demo_1(raw_program):'),
+    sub_string(Code, _, _, _, 'raw_program["demo/1"] = ('),
+    !.
+
+test(compile_all_interpreter_uses_items_plan) :-
+    WamText = 'demo/1:
+    put_constant foo, A1
+    proceed',
+    wam_python_target:compile_all_predicates([demo/1-WamText], [], Code),
+    sub_string(Code, _, _, _, 'def pred_demo_1(raw_program):'),
+    sub_string(Code, _, _, _, 'raw_program["demo/1"] = ('),
+    sub_string(Code, _, _, _, '("put_constant", Atom("foo"), A1)'),
+    !.
+
+test(compile_all_generated_predicate_uses_items_api) :-
+    wam_python_target:compile_all_predicates([user:py_items_api_demo/0], [], Code),
+    sub_string(Code, _, _, _, 'def pred_py_items_api_demo_0(raw_program):'),
+    sub_string(Code, _, _, _, 'raw_program["py_items_api_demo/0"] = ('),
+    sub_string(Code, _, _, _, '("proceed",)'),
+    !.
+
+test(compile_all_generated_predicate_allows_text_ir_override) :-
+    wam_python_target:compile_all_predicates([user:py_items_api_demo/0],
+        [wam_ir(wam_text)], Code),
+    sub_string(Code, _, _, _, 'def pred_py_items_api_demo_0(raw_program):'),
+    sub_string(Code, _, _, _, 'raw_program["py_items_api_demo/0"] = ('),
+    sub_string(Code, _, _, _, '("proceed",)'),
+    !.
+
+test(compile_all_generated_predicate_rejects_direct_target_ir,
+     [throws(error(domain_error(wam_python_ir_mode, direct_target), _))]) :-
+    wam_python_target:compile_all_predicates([user:py_items_api_demo/0],
+        [wam_ir(direct_target)], _).
+
+test(compile_all_generated_predicate_rejects_native_items_until_available,
+     [throws(error(existence_error(wam_ir_mode, wam_items_native), _))]) :-
+    wam_python_target:compile_all_predicates([user:py_items_api_demo/0],
+        [wam_ir(wam_items_native)], _).
 :- end_tests(wam_python_items_mode_audit).
 
 % ============================================================================

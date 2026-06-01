@@ -1093,15 +1093,19 @@
     (symbol? value) (name value)
     :else nil))
 
-(defn number-text [value]
-  (when (number? value)
-    (str value)))
-
 (declare parse-number-text)
+
+(defn number-text [state value]
+  (cond
+    (number? value) (str value)
+    (string? value) (when (some? (parse-number-text value)) value)
+    (atom-term? value) (let [text (atom-text state value)]
+                         (when (some? (parse-number-text text)) text))
+    :else nil))
 
 (defn atom-number-text [state value]
   (or (atom-text state value)
-      (number-text value)))
+      (number-text state value)))
 
 (defn atom-number-value [state value]
   (cond
@@ -1123,7 +1127,8 @@
       [s out])))
 
 (defn code-list-term [state text]
-  [state (list->term (:intern-context state) (map int text))])
+  [state (list->term (:intern-context state)
+                     (map #(normalize-literal-term (:intern-context state) (str (int %))) text))])
 
 (defn char-list-term [state text]
   (let [[next-state chars] (intern-char-terms state text)]
@@ -1163,7 +1168,7 @@
         codes? (or (= pred "atom_codes/2") (= pred "string_codes/2") (= pred "number_codes/2"))
         atom? (or (= pred "atom_codes/2") (= pred "atom_chars/2")
                   (= pred "string_codes/2") (= pred "string_chars/2"))
-        value-text (if atom? (atom-text state left) (number-text left))
+        value-text (if atom? (atom-text state left) (number-text state left))
         list-text (if codes? (code-list-text state right) (char-list-text state right))]
     (cond
       (and (some? value-text) (some? list-text))
@@ -1271,7 +1276,7 @@
 
 (defn atomic-concat-text [state value]
   (or (atom-text state value)
-      (number-text value)))
+      (number-text state value)))
 
 (defn atomic-concat-list-term [state texts]
   (loop [s state
@@ -1331,6 +1336,9 @@
 (defn valid-char-code? [value]
   (and (integer? value) (not (neg? value)) (<= value 65535)))
 
+(defn char-code-count-term [state code]
+  (normalize-literal-term (:intern-context state) (str code)))
+
 (defn apply-char-code-solution [state]
   (let [char-value (deref-value (:bindings state)
                                 (or (reg-get-raw state "A1") ::unbound))
@@ -1340,7 +1348,10 @@
         code (code-point-value state code-value)]
     (cond
       (some? char-text)
-      (let [[ok unified-state] (unify-values state code-value (int (first char-text)))]
+      (let [char-code (int (first char-text))
+            [ok unified-state] (if (logic-var? code-value)
+                                 (unify-values state code-value (char-code-count-term state char-code))
+                                 [(= code char-code) state])]
         (if ok
           (advance unified-state)
           (backtrack state)))
@@ -1395,7 +1406,10 @@
             code (code-point-value state code-value)]
         (cond
           (some? char-text)
-          (let [[ok unified-state] (unify-values state code-value (int (first char-text)))]
+          (let [char-code (int (first char-text))
+                [ok unified-state] (if (logic-var? code-value)
+                                     (unify-values state code-value (char-code-count-term state char-code))
+                                     [(= code char-code) state])]
             (if ok
               (advance unified-state)
               (backtrack state)))
@@ -1455,15 +1469,23 @@
                            (or (reg-get-raw state "A1") ::unbound))
         out (deref-value (:bindings state)
                          (or (reg-get-raw state "A2") ::unbound))
-        text (atom-text state value)]
+        text (atom-text state value)
+        out-count (cond
+                    (integer? out) out
+                    (string? out) (parse-number-text out)
+                    (atom-term? out) (parse-number-text (atom-text state out))
+                    :else nil)]
     (cond
       (some? text)
-      (let [[ok next-state] (unify-values state out (count text))]
+      (let [len (count text)
+            [ok next-state] (if (logic-var? out)
+                              (unify-values state out (normalize-literal-term (:intern-context state) (str len)))
+                              [(= out-count len) state])]
         (if ok
           (advance next-state)
           (backtrack state)))
 
-      (and (logic-var? value) (= out 0))
+      (and (logic-var? value) (= out-count 0))
       (let [[ok next-state] (unify-text-atom-value state value "")]
         (if ok
           (advance next-state)
@@ -1480,6 +1502,9 @@
     (atom-term? value) (parse-number-text (atom-text state value))
     (string? value) (parse-number-text value)
     :else nil))
+
+(defn sub-atom-count-term [state n]
+  (normalize-literal-term (:intern-context state) (str n)))
 
 (defn sub-atom-solution-results [state text before length after sub]
   (let [n (count text)
@@ -1507,9 +1532,9 @@
                :let [a (- n b l)
                      piece (subs text b (+ b l))
                      bindings (cond-> {}
-                                (= before-spec ::var) (assoc 2 b)
-                                (= length-spec ::var) (assoc 3 l)
-                                (= after-spec ::var) (assoc 4 a)
+                                (= before-spec ::var) (assoc 2 (sub-atom-count-term state b))
+                                (= length-spec ::var) (assoc 3 (sub-atom-count-term state l))
+                                (= after-spec ::var) (assoc 4 (sub-atom-count-term state a))
                                 (= sub-text ::var) (assoc 5 piece))]
                :when (and (or (= after-spec ::var) (= after-spec a))
                           (or (= sub-text ::var) (= sub-text piece)))]
@@ -1528,7 +1553,7 @@
                (or (logic-var? length) (= length ::unbound) (some? length-n)))
       [(cond-> {:bindings {1 sub-text}}
          (or (logic-var? length) (= length ::unbound))
-         (assoc-in [:bindings 3] (count sub-text)))])))
+         (assoc-in [:bindings 3] (sub-atom-count-term state (count sub-text))))])))
 
 (defn apply-sub-atom-solution [base-state resume-pc]
   (let [source (deref-value (:bindings base-state)

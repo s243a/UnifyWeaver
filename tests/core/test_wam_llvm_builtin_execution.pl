@@ -5,6 +5,11 @@
 % Tests =/2 unification and simple comparisons that don't require
 % compound term construction (which has deeper WAM integration needs).
 
+% The cumulative LLVM IR built per test passed Prolog's 1 GB default
+% global-stack limit around M41 (sub_string over the full IR text is
+% the hot spot). Bump to 4 GB so the test suite stays self-contained.
+:- set_prolog_flag(stack_limit, 4_294_967_296).
+
 :- use_module('../../src/unifyweaver/targets/wam_llvm_target',
     [write_wam_llvm_project/3,
      clear_llvm_foreign_kernel_specs/0]).
@@ -584,6 +589,1868 @@ test_sub_atom_overflow(_, R) :-
     ( sub_atom(hi, 0, 99, _, _)
     -> R is 1
     ;  R is 0 ).   % 0 -- length exceeds source
+
+% M32: atom_number/2 integer mode -- forward (atom -> int) + reverse
+% (int -> atom). Float parsing / formatting deferred.
+
+:- dynamic test_atom_number_fwd/2.
+test_atom_number_fwd(_, R) :-
+    atom_number('42', N),
+    R is N.   % 42
+
+:- dynamic test_atom_number_fwd_neg/2.
+test_atom_number_fwd_neg(_, R) :-
+    atom_number('-17', N),
+    R is N + 100.   % 83
+
+:- dynamic test_atom_number_fwd_zero/2.
+test_atom_number_fwd_zero(_, R) :-
+    atom_number('0', N),
+    R is N + 7.   % 7
+
+:- dynamic test_atom_number_fwd_bad/2.
+test_atom_number_fwd_bad(_, R) :-
+    ( atom_number('12abc', _)
+    -> R is 1
+    ;  R is 0 ).   % 0 -- trailing junk fails
+
+:- dynamic test_atom_number_fwd_empty/2.
+test_atom_number_fwd_empty(_, R) :-
+    ( atom_number('', _)
+    -> R is 1
+    ;  R is 0 ).   % 0 -- empty atom fails
+
+:- dynamic test_atom_number_rev/2.
+test_atom_number_rev(_, R) :-
+    atom_number(A, 42),
+    atom_length(A, N),
+    R is N.   % 2
+
+:- dynamic test_atom_number_rev_neg/2.
+test_atom_number_rev_neg(_, R) :-
+    atom_number(A, -17),
+    atom_length(A, N),
+    R is N.   % 3
+
+% Roundtrip: number -> atom -> back to same number.
+:- dynamic test_atom_number_roundtrip/2.
+test_atom_number_roundtrip(_, R) :-
+    atom_number(A, 99),
+    atom_number(A, N),
+    R is N.   % 99 (kept <256 for bash exit-code carry)
+
+% M33: number_codes/2 integer mode -- forward (int -> codes) + reverse
+% (codes -> int). Mirrors atom_number/2 but with a list-of-codes
+% interchange format.
+
+:- dynamic test_number_codes_fwd_first/2.
+test_number_codes_fwd_first(_, R) :-
+    number_codes(42, [C|_]),
+    R is C.   % '4' = 52
+
+:- dynamic test_number_codes_fwd_length/2.
+test_number_codes_fwd_length(_, R) :-
+    number_codes(1234, L),   % "1234" -> 4 codes (kept <256 in R)
+    length(L, N),
+    R is N.   % 4
+
+:- dynamic test_number_codes_fwd_neg_first/2.
+test_number_codes_fwd_neg_first(_, R) :-
+    number_codes(-5, [C|_]),
+    R is C.   % '-' = 45
+
+:- dynamic test_number_codes_rev/2.
+test_number_codes_rev(_, R) :-
+    number_codes(N, [52, 50]),   % "42"
+    R is N.   % 42
+
+:- dynamic test_number_codes_rev_neg/2.
+test_number_codes_rev_neg(_, R) :-
+    number_codes(N, [45, 49, 55]),   % "-17"
+    R is N + 100.   % 83
+
+:- dynamic test_number_codes_rev_bad/2.
+test_number_codes_rev_bad(_, R) :-
+    ( number_codes(_, [49, 97, 98, 99])   % "1abc"
+    -> R is 1
+    ;  R is 0 ).   % 0 -- trailing junk fails
+
+:- dynamic test_number_codes_rev_empty/2.
+test_number_codes_rev_empty(_, R) :-
+    ( number_codes(_, [])
+    -> R is 1
+    ;  R is 0 ).   % 0 -- empty list fails
+
+:- dynamic test_number_codes_roundtrip/2.
+test_number_codes_roundtrip(_, R) :-
+    number_codes(99, Codes),
+    number_codes(N, Codes),
+    R is N.   % 99
+
+% M34: number_chars/2 integer mode -- forward (int -> chars) +
+% reverse (chars -> int). Mirrors M33 but emits single-char atoms.
+
+:- dynamic test_number_chars_fwd_head/2.
+test_number_chars_fwd_head(_, R) :-
+    number_chars(42, [H|_]),
+    char_code(H, C),
+    R is C.   % '4' = 52
+
+:- dynamic test_number_chars_fwd_length/2.
+test_number_chars_fwd_length(_, R) :-
+    number_chars(1234, L),
+    length(L, N),
+    R is N.   % 4
+
+:- dynamic test_number_chars_fwd_neg_head/2.
+test_number_chars_fwd_neg_head(_, R) :-
+    number_chars(-5, [H|_]),
+    char_code(H, C),
+    R is C.   % '-' = 45
+
+:- dynamic test_number_chars_rev/2.
+test_number_chars_rev(_, R) :-
+    number_chars(N, ['4', '2']),
+    R is N.   % 42
+
+:- dynamic test_number_chars_rev_neg/2.
+test_number_chars_rev_neg(_, R) :-
+    number_chars(N, ['-', '1', '7']),
+    R is N + 100.   % 83
+
+:- dynamic test_number_chars_rev_bad/2.
+test_number_chars_rev_bad(_, R) :-
+    ( number_chars(_, ['1', a, b, c])
+    -> R is 1
+    ;  R is 0 ).   % 0 -- trailing non-digit fails
+
+:- dynamic test_number_chars_rev_empty/2.
+test_number_chars_rev_empty(_, R) :-
+    ( number_chars(_, [])
+    -> R is 1
+    ;  R is 0 ).   % 0 -- empty list fails
+
+:- dynamic test_number_chars_roundtrip/2.
+test_number_chars_roundtrip(_, R) :-
+    number_chars(99, Chars),
+    number_chars(N, Chars),
+    R is N.   % 99
+
+% M35: upcase_atom/2 + downcase_atom/2 -- ASCII a..z <-> A..Z, other
+% bytes passthrough.
+
+:- dynamic test_upcase_length/2.
+test_upcase_length(_, R) :-
+    upcase_atom(hello, U),
+    atom_length(U, N),
+    R is N.   % 5
+
+:- dynamic test_upcase_first_code/2.
+test_upcase_first_code(_, R) :-
+    upcase_atom(hello, U),
+    atom_codes(U, [C|_]),
+    R is C.   % 'H' = 72
+
+:- dynamic test_upcase_last_code/2.
+test_upcase_last_code(_, R) :-
+    upcase_atom(ab, U),
+    atom_codes(U, [_, C2]),
+    R is C2.   % 'B' = 66
+
+:- dynamic test_upcase_passthrough/2.
+test_upcase_passthrough(_, R) :-
+    upcase_atom('hi!', U),    % '!' is not in a..z, stays '!' (33)
+    atom_codes(U, [_, _, C3]),
+    R is C3.   % '!' = 33
+
+:- dynamic test_upcase_dedup/2.
+test_upcase_dedup(_, R) :-
+    upcase_atom(hello, U1),
+    upcase_atom(hello, U2),
+    ( U1 == U2 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_downcase_length/2.
+test_downcase_length(_, R) :-
+    downcase_atom('HELLO', D),
+    atom_length(D, N),
+    R is N.   % 5
+
+:- dynamic test_downcase_first_code/2.
+test_downcase_first_code(_, R) :-
+    downcase_atom('HELLO', D),
+    atom_codes(D, [C|_]),
+    R is C.   % 'h' = 104
+
+:- dynamic test_downcase_mixed/2.
+test_downcase_mixed(_, R) :-
+    downcase_atom('aB', D),    % 'a' stays 'a', 'B' becomes 'b'
+    atom_codes(D, [_, C2]),
+    R is C2.   % 'b' = 98
+
+:- dynamic test_upcase_downcase_roundtrip/2.
+test_upcase_downcase_roundtrip(_, R) :-
+    upcase_atom(hello, U),
+    downcase_atom(U, D),
+    ( D == hello -> R is 1 ; R is 0 ).   % 1
+
+% M36: string-type aliases. Runtime has no distinct string type, so
+% atom_string / string_to_atom reduce to unify, and string_concat /
+% string_length share dispatch labels with atom_concat / atom_length.
+
+:- dynamic test_atom_string_fwd/2.
+test_atom_string_fwd(_, R) :-
+    atom_string(hello, S),
+    atom_length(S, N),
+    R is N.   % 5
+
+:- dynamic test_atom_string_check/2.
+test_atom_string_check(_, R) :-
+    ( atom_string(hello, hello) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_string_to_atom_fwd/2.
+test_string_to_atom_fwd(_, R) :-
+    string_to_atom(world, A),
+    atom_length(A, N),
+    R is N.   % 5
+
+:- dynamic test_string_concat_length/2.
+test_string_concat_length(_, R) :-
+    string_concat(hi, there, S),
+    atom_length(S, N),
+    R is N.   % 7
+
+:- dynamic test_string_concat_first_code/2.
+test_string_concat_first_code(_, R) :-
+    string_concat(ab, cd, S),
+    atom_codes(S, [C|_]),
+    R is C.   % 'a' = 97
+
+:- dynamic test_string_length_simple/2.
+test_string_length_simple(_, R) :-
+    string_length(hello, N),
+    R is N.   % 5
+
+:- dynamic test_string_length_empty/2.
+test_string_length_empty(_, R) :-
+    string_length('', N),
+    R is N + 42.   % 42
+
+% M37: nth0/3, nth1/3, last/2 -- list-indexing trio. Forward modes
+% only (Index + List bound).
+
+:- dynamic test_nth0_first/2.
+test_nth0_first(_, R) :-
+    nth0(0, [10, 20, 30], E),
+    R is E.   % 10
+
+:- dynamic test_nth0_middle/2.
+test_nth0_middle(_, R) :-
+    nth0(2, [10, 20, 30, 40], E),
+    R is E.   % 30
+
+:- dynamic test_nth0_last/2.
+test_nth0_last(_, R) :-
+    nth0(3, [10, 20, 30, 40], E),
+    R is E.   % 40
+
+:- dynamic test_nth0_overflow/2.
+test_nth0_overflow(_, R) :-
+    ( nth0(5, [10, 20], _) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_nth0_negative/2.
+test_nth0_negative(_, R) :-
+    ( nth0(-1, [10, 20], _) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_nth1_first/2.
+test_nth1_first(_, R) :-
+    nth1(1, [10, 20, 30], E),
+    R is E.   % 10
+
+:- dynamic test_nth1_third/2.
+test_nth1_third(_, R) :-
+    nth1(3, [10, 20, 30, 40], E),
+    R is E.   % 30
+
+:- dynamic test_nth1_zero/2.
+test_nth1_zero(_, R) :-
+    ( nth1(0, [10, 20], _) -> R is 1 ; R is 0 ).   % 0 -- 1-indexed rejects 0
+
+:- dynamic test_last_simple/2.
+test_last_simple(_, R) :-
+    last([10, 20, 30], E),
+    R is E.   % 30
+
+:- dynamic test_last_singleton/2.
+test_last_singleton(_, R) :-
+    last([99], E),
+    R is E.   % 99
+
+:- dynamic test_last_empty/2.
+test_last_empty(_, R) :-
+    ( last([], _) -> R is 1 ; R is 0 ).   % 0
+
+% M38: reverse/2 deterministic forward mode.
+
+:- dynamic test_reverse_first/2.
+test_reverse_first(_, R) :-
+    reverse([10, 20, 30], L),
+    nth0(0, L, E),
+    R is E.   % 30 (originally last)
+
+:- dynamic test_reverse_last/2.
+test_reverse_last(_, R) :-
+    reverse([10, 20, 30], L),
+    last(L, E),
+    R is E.   % 10 (originally first)
+
+:- dynamic test_reverse_length/2.
+test_reverse_length(_, R) :-
+    reverse([1, 2, 3, 4, 5], L),
+    length(L, N),
+    R is N.   % 5
+
+:- dynamic test_reverse_empty/2.
+test_reverse_empty(_, R) :-
+    reverse([], L),
+    length(L, N),
+    R is N + 7.   % 7
+
+:- dynamic test_reverse_singleton/2.
+test_reverse_singleton(_, R) :-
+    reverse([42], [E]),
+    R is E.   % 42
+
+:- dynamic test_reverse_idempotent/2.
+test_reverse_idempotent(_, R) :-
+    reverse([1, 2, 3], L1),
+    reverse(L1, L2),
+    nth0(0, L2, E),
+    R is E.   % 1 (reverse twice -> original)
+
+% M39: append/3 deterministic (A1 and A2 both bound lists).
+
+:- dynamic test_append_length/2.
+test_append_length(_, R) :-
+    append([1, 2, 3], [4, 5], L),
+    length(L, N),
+    R is N.   % 5
+
+:- dynamic test_append_first/2.
+test_append_first(_, R) :-
+    append([10, 20], [30, 40], L),
+    nth0(0, L, E),
+    R is E.   % 10 (head from A1)
+
+:- dynamic test_append_seam/2.
+test_append_seam(_, R) :-
+    append([10, 20], [30, 40], L),
+    nth0(2, L, E),
+    R is E.   % 30 (first elem of A2)
+
+:- dynamic test_append_last/2.
+test_append_last(_, R) :-
+    append([10, 20], [30, 40], L),
+    last(L, E),
+    R is E.   % 40
+
+:- dynamic test_append_left_empty/2.
+test_append_left_empty(_, R) :-
+    append([], [7, 8], L),
+    length(L, N),
+    R is N.   % 2
+
+:- dynamic test_append_right_empty/2.
+test_append_right_empty(_, R) :-
+    append([7, 8], [], L),
+    length(L, N),
+    R is N.   % 2
+
+:- dynamic test_append_both_empty/2.
+test_append_both_empty(_, R) :-
+    append([], [], L),
+    length(L, N),
+    R is N + 9.   % 9
+
+:- dynamic test_append_roundtrip/2.
+test_append_roundtrip(_, R) :-
+    append([1, 2], [3, 4], L),
+    reverse(L, L2),
+    nth0(0, L2, E),
+    R is E.   % 4 (last of L becomes first after reverse)
+
+% M40: memberchk/2 deterministic.
+
+:- dynamic test_memberchk_int_hit/2.
+test_memberchk_int_hit(_, R) :-
+    ( memberchk(20, [10, 20, 30]) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_memberchk_int_miss/2.
+test_memberchk_int_miss(_, R) :-
+    ( memberchk(99, [10, 20, 30]) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_memberchk_int_empty/2.
+test_memberchk_int_empty(_, R) :-
+    ( memberchk(1, []) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_memberchk_atom_hit/2.
+test_memberchk_atom_hit(_, R) :-
+    ( memberchk(b, [a, b, c]) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_memberchk_bind/2.
+test_memberchk_bind(_, R) :-
+    memberchk(X, [42, 99, 7]),
+    R is X.   % 42 -- unbound X gets first element
+
+:- dynamic test_memberchk_first_match_wins/2.
+test_memberchk_first_match_wins(_, R) :-
+    % Two 5s in the list; deterministic memberchk takes the first.
+    ( memberchk(5, [3, 5, 5, 9]) -> R is 1 ; R is 0 ).   % 1
+
+% M41: delete/3 deterministic.
+
+:- dynamic test_delete_no_match/2.
+test_delete_no_match(_, R) :-
+    delete([1, 2, 3], 99, L),
+    length(L, N),
+    R is N.   % 3 -- nothing removed
+
+:- dynamic test_delete_single/2.
+test_delete_single(_, R) :-
+    delete([1, 2, 3], 2, L),
+    length(L, N),
+    R is N.   % 2
+
+:- dynamic test_delete_multiple/2.
+test_delete_multiple(_, R) :-
+    delete([1, 2, 1, 3, 1], 1, L),
+    length(L, N),
+    R is N.   % 2 -- three 1s removed
+
+:- dynamic test_delete_all/2.
+test_delete_all(_, R) :-
+    delete([7, 7, 7], 7, L),
+    length(L, N),
+    R is N + 5.   % 5 -- empty result
+
+:- dynamic test_delete_empty/2.
+test_delete_empty(_, R) :-
+    delete([], 1, L),
+    length(L, N),
+    R is N + 8.   % 8
+
+:- dynamic test_delete_first/2.
+test_delete_first(_, R) :-
+    delete([1, 2, 3, 4], 1, L),
+    nth0(0, L, E),
+    R is E.   % 2 -- first becomes 2 after removing the 1
+
+:- dynamic test_delete_last/2.
+test_delete_last(_, R) :-
+    delete([1, 2, 3, 99], 99, L),
+    last(L, E),
+    R is E.   % 3 -- 99 removed from tail
+
+:- dynamic test_delete_preserves_order/2.
+test_delete_preserves_order(_, R) :-
+    delete([10, 5, 20, 5, 30], 5, L),
+    nth0(1, L, E),    % L = [10, 20, 30], index 1 is 20
+    R is E.   % 20
+
+% M42: numlist/3 + sum_list/2.
+
+:- dynamic test_numlist_length/2.
+test_numlist_length(_, R) :-
+    numlist(3, 7, L),
+    length(L, N),
+    R is N.   % 5
+
+:- dynamic test_numlist_first/2.
+test_numlist_first(_, R) :-
+    numlist(10, 15, [F|_]),
+    R is F.   % 10
+
+:- dynamic test_numlist_last/2.
+test_numlist_last(_, R) :-
+    numlist(1, 7, L),
+    last(L, E),
+    R is E.   % 7
+
+:- dynamic test_numlist_singleton/2.
+test_numlist_singleton(_, R) :-
+    numlist(42, 42, [E]),
+    R is E.   % 42
+
+:- dynamic test_numlist_empty/2.
+test_numlist_empty(_, R) :-
+    ( numlist(5, 3, _) -> R is 1 ; R is 0 ).   % 0 -- High < Low
+
+:- dynamic test_numlist_sum/2.
+test_numlist_sum(_, R) :-
+    numlist(1, 10, L),
+    sum_list(L, S),
+    R is S.   % 55
+
+:- dynamic test_sum_list_simple/2.
+test_sum_list_simple(_, R) :-
+    sum_list([10, 20, 30], S),
+    R is S.   % 60
+
+:- dynamic test_sum_list_empty/2.
+test_sum_list_empty(_, R) :-
+    sum_list([], S),
+    R is S + 7.   % 7
+
+:- dynamic test_sum_list_singleton/2.
+test_sum_list_singleton(_, R) :-
+    sum_list([99], S),
+    R is S.   % 99
+
+:- dynamic test_sumlist_alias/2.
+test_sumlist_alias(_, R) :-
+    sumlist([1, 2, 3, 4, 5], S),
+    R is S.   % 15
+
+% M43: max_list/2 + min_list/2 -- integer aggregations.
+
+:- dynamic test_max_list_simple/2.
+test_max_list_simple(_, R) :-
+    max_list([3, 7, 2, 9, 5], M),
+    R is M.   % 9
+
+:- dynamic test_max_list_singleton/2.
+test_max_list_singleton(_, R) :-
+    max_list([42], M),
+    R is M.   % 42
+
+:- dynamic test_max_list_first_biggest/2.
+test_max_list_first_biggest(_, R) :-
+    max_list([100, 50, 25, 10], M),
+    R is M.   % 100
+
+:- dynamic test_max_list_empty/2.
+test_max_list_empty(_, R) :-
+    ( max_list([], _) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_min_list_simple/2.
+test_min_list_simple(_, R) :-
+    min_list([7, 3, 9, 2, 5], M),
+    R is M.   % 2
+
+:- dynamic test_min_list_singleton/2.
+test_min_list_singleton(_, R) :-
+    min_list([42], M),
+    R is M.   % 42
+
+:- dynamic test_min_list_first_smallest/2.
+test_min_list_first_smallest(_, R) :-
+    min_list([1, 10, 100], M),
+    R is M.   % 1
+
+:- dynamic test_min_list_empty/2.
+test_min_list_empty(_, R) :-
+    ( min_list([], _) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_max_minus_min/2.
+test_max_minus_min(_, R) :-
+    max_list([4, 7, 1, 9, 3], Mx),
+    min_list([4, 7, 1, 9, 3], Mn),
+    R is Mx - Mn.   % 9 - 1 = 8
+
+% M44: subtract/3 -- elements of A1 with no unify-match in A2.
+
+:- dynamic test_subtract_disjoint/2.
+test_subtract_disjoint(_, R) :-
+    subtract([1, 2, 3], [4, 5, 6], L),
+    length(L, N),
+    R is N.   % 3 -- all kept
+
+:- dynamic test_subtract_one/2.
+test_subtract_one(_, R) :-
+    subtract([1, 2, 3], [2], L),
+    length(L, N),
+    R is N.   % 2
+
+:- dynamic test_subtract_many/2.
+test_subtract_many(_, R) :-
+    subtract([1, 2, 3, 4, 5], [2, 4], L),
+    length(L, N),
+    R is N.   % 3
+
+:- dynamic test_subtract_all/2.
+test_subtract_all(_, R) :-
+    subtract([1, 2, 3], [3, 2, 1], L),
+    length(L, N),
+    R is N + 7.   % 7 -- empty result
+
+:- dynamic test_subtract_empty_left/2.
+test_subtract_empty_left(_, R) :-
+    subtract([], [1, 2], L),
+    length(L, N),
+    R is N + 8.   % 8
+
+:- dynamic test_subtract_empty_right/2.
+test_subtract_empty_right(_, R) :-
+    subtract([7, 8, 9], [], L),
+    length(L, N),
+    R is N.   % 3 -- nothing to remove
+
+:- dynamic test_subtract_first/2.
+test_subtract_first(_, R) :-
+    subtract([10, 20, 30, 40], [10], L),
+    nth0(0, L, E),
+    R is E.   % 20
+
+:- dynamic test_subtract_preserves_order/2.
+test_subtract_preserves_order(_, R) :-
+    subtract([10, 5, 20, 5, 30], [5], L),
+    nth0(1, L, E),    % L = [10, 20, 30]
+    R is E.   % 20
+
+:- dynamic test_subtract_dupes/2.
+test_subtract_dupes(_, R) :-
+    % All occurrences in A1 are filtered, just like delete/3.
+    subtract([1, 2, 1, 3, 1], [1], L),
+    length(L, N),
+    R is N.   % 2
+
+% M45: intersection/3 -- elements of A1 with a unify-match in A2.
+
+:- dynamic test_intersection_disjoint/2.
+test_intersection_disjoint(_, R) :-
+    intersection([1, 2, 3], [4, 5, 6], L),
+    length(L, N),
+    R is N + 8.   % 8 -- empty
+
+:- dynamic test_intersection_one/2.
+test_intersection_one(_, R) :-
+    intersection([1, 2, 3], [2], L),
+    length(L, N),
+    R is N.   % 1
+
+:- dynamic test_intersection_many/2.
+test_intersection_many(_, R) :-
+    intersection([1, 2, 3, 4, 5], [2, 4, 99], L),
+    length(L, N),
+    R is N.   % 2 -- [2, 4]
+
+:- dynamic test_intersection_all/2.
+test_intersection_all(_, R) :-
+    intersection([1, 2, 3], [3, 2, 1], L),
+    length(L, N),
+    R is N.   % 3 -- everything matches
+
+:- dynamic test_intersection_empty_left/2.
+test_intersection_empty_left(_, R) :-
+    intersection([], [1, 2], L),
+    length(L, N),
+    R is N + 7.   % 7
+
+:- dynamic test_intersection_empty_right/2.
+test_intersection_empty_right(_, R) :-
+    intersection([1, 2, 3], [], L),
+    length(L, N),
+    R is N + 5.   % 5 -- nothing matches
+
+:- dynamic test_intersection_first/2.
+test_intersection_first(_, R) :-
+    intersection([10, 20, 30, 40], [20, 40, 99], L),
+    nth0(0, L, E),
+    R is E.   % 20
+
+:- dynamic test_intersection_preserves_order/2.
+test_intersection_preserves_order(_, R) :-
+    intersection([10, 5, 20, 5, 30], [5, 20], L),
+    % L = [5, 20, 5]; nth0(2) is the second 5.
+    nth0(2, L, E),
+    R is E.   % 5
+
+:- dynamic test_intersection_dupes/2.
+test_intersection_dupes(_, R) :-
+    % All occurrences of a match in A1 survive.
+    intersection([1, 2, 1, 3, 1], [1], L),
+    length(L, N),
+    R is N.   % 3
+
+% Composition: List = Intersection + Subtract should reconstruct A1.
+:- dynamic test_inter_subtract_complement/2.
+test_inter_subtract_complement(_, R) :-
+    intersection([1, 2, 3, 4, 5], [2, 4], Inter),    % [2, 4]
+    subtract([1, 2, 3, 4, 5], [2, 4], Diff),         % [1, 3, 5]
+    length(Inter, NI),
+    length(Diff, ND),
+    R is NI + ND.   % 2 + 3 = 5
+
+% M46: union/3 -- A1 ++ subtract(A2, A1).
+
+:- dynamic test_union_disjoint/2.
+test_union_disjoint(_, R) :-
+    union([1, 2, 3], [4, 5, 6], L),
+    length(L, N),
+    R is N.   % 6
+
+:- dynamic test_union_overlap/2.
+test_union_overlap(_, R) :-
+    union([1, 2, 3], [2, 4, 5], L),
+    length(L, N),
+    R is N.   % 5 -- 2 dropped from A2
+
+:- dynamic test_union_identical/2.
+test_union_identical(_, R) :-
+    union([1, 2, 3], [1, 2, 3], L),
+    length(L, N),
+    R is N.   % 3 -- all of A2 filtered
+
+:- dynamic test_union_empty_left/2.
+test_union_empty_left(_, R) :-
+    union([], [7, 8, 9], L),
+    length(L, N),
+    R is N.   % 3
+
+:- dynamic test_union_empty_right/2.
+test_union_empty_right(_, R) :-
+    union([1, 2, 3], [], L),
+    length(L, N),
+    R is N.   % 3
+
+:- dynamic test_union_both_empty/2.
+test_union_both_empty(_, R) :-
+    union([], [], L),
+    length(L, N),
+    R is N + 11.   % 11
+
+:- dynamic test_union_a1_first/2.
+test_union_a1_first(_, R) :-
+    union([10, 20], [30, 40], L),
+    nth0(0, L, E),
+    R is E.   % 10 -- A1 comes first
+
+:- dynamic test_union_a1_dupes_kept/2.
+test_union_a1_dupes_kept(_, R) :-
+    % SWI semantics: A1''s own duplicates are preserved, only A2 is
+    % filtered against A1.
+    union([1, 1, 2], [3], L),
+    length(L, N),
+    R is N.   % 4 -- [1, 1, 2, 3]
+
+:- dynamic test_union_a2_first_match_filtered/2.
+test_union_a2_first_match_filtered(_, R) :-
+    % A2''s first 2 matches A1, gets dropped; 4 survives.
+    union([1, 2, 3], [2, 4], L),
+    nth0(3, L, E),
+    R is E.   % 4 (last position)
+
+:- dynamic test_union_size_relation/2.
+test_union_size_relation(_, R) :-
+    % |union| + |intersection| = |A1| + |A2| (inclusion-exclusion).
+    union([1, 2, 3, 4], [3, 4, 5, 6], U),
+    intersection([1, 2, 3, 4], [3, 4, 5, 6], I),
+    length(U, NU),
+    length(I, NI),
+    R is NU + NI.   % 6 + 2 = 8 (= 4 + 4)
+
+% M47: list_to_set/2 -- dedupe preserving first-occurrence order.
+
+:- dynamic test_l2s_simple/2.
+test_l2s_simple(_, R) :-
+    list_to_set([1, 2, 3], L),
+    length(L, N),
+    R is N.   % 3 -- no dupes
+
+:- dynamic test_l2s_dupes/2.
+test_l2s_dupes(_, R) :-
+    list_to_set([1, 2, 1, 3, 2], L),
+    length(L, N),
+    R is N.   % 3 -- [1, 2, 3]
+
+:- dynamic test_l2s_all_dupes/2.
+test_l2s_all_dupes(_, R) :-
+    list_to_set([7, 7, 7, 7], L),
+    length(L, N),
+    R is N.   % 1
+
+:- dynamic test_l2s_empty/2.
+test_l2s_empty(_, R) :-
+    list_to_set([], L),
+    length(L, N),
+    R is N + 9.   % 9
+
+:- dynamic test_l2s_singleton/2.
+test_l2s_singleton(_, R) :-
+    list_to_set([42], [E]),
+    R is E.   % 42
+
+:- dynamic test_l2s_order_first/2.
+test_l2s_order_first(_, R) :-
+    list_to_set([3, 1, 2, 1, 3], L),
+    nth0(0, L, E),
+    R is E.   % 3 -- first occurrence wins
+
+:- dynamic test_l2s_order_second/2.
+test_l2s_order_second(_, R) :-
+    list_to_set([3, 1, 2, 1, 3], L),
+    nth0(1, L, E),
+    R is E.   % 1
+
+:- dynamic test_l2s_order_third/2.
+test_l2s_order_third(_, R) :-
+    list_to_set([3, 1, 2, 1, 3], L),
+    nth0(2, L, E),
+    R is E.   % 2
+
+:- dynamic test_l2s_atom_dupes/2.
+test_l2s_atom_dupes(_, R) :-
+    list_to_set([a, b, a, c, b], L),
+    length(L, N),
+    R is N.   % 3
+
+:- dynamic test_l2s_idempotent/2.
+test_l2s_idempotent(_, R) :-
+    list_to_set([1, 2, 2, 3], L1),
+    list_to_set(L1, L2),
+    length(L2, N),
+    R is N.   % 3 -- already a set
+
+% M48: string_chars/2, string_codes/2 aliases + string_code/3.
+
+:- dynamic test_string_chars_first/2.
+test_string_chars_first(_, R) :-
+    string_chars(hello, [H|_]),
+    char_code(H, C),
+    R is C.   % 'h' = 104
+
+:- dynamic test_string_chars_length/2.
+test_string_chars_length(_, R) :-
+    string_chars(abc, L),
+    length(L, N),
+    R is N.   % 3
+
+:- dynamic test_string_codes_first/2.
+test_string_codes_first(_, R) :-
+    string_codes(hello, [C|_]),
+    R is C.   % 104
+
+:- dynamic test_string_codes_length/2.
+test_string_codes_length(_, R) :-
+    string_codes(abcde, L),
+    length(L, N),
+    R is N.   % 5
+
+:- dynamic test_string_code_first/2.
+test_string_code_first(_, R) :-
+    string_code(1, hello, C),
+    R is C.   % 'h' = 104
+
+:- dynamic test_string_code_middle/2.
+test_string_code_middle(_, R) :-
+    string_code(3, abcdef, C),
+    R is C.   % 'c' = 99
+
+:- dynamic test_string_code_last/2.
+test_string_code_last(_, R) :-
+    string_code(5, hello, C),
+    R is C.   % 'o' = 111
+
+:- dynamic test_string_code_oob_low/2.
+test_string_code_oob_low(_, R) :-
+    ( string_code(0, hello, _) -> R is 1 ; R is 0 ).   % 0 -- 1-based
+
+:- dynamic test_string_code_oob_high/2.
+test_string_code_oob_high(_, R) :-
+    ( string_code(99, hello, _) -> R is 1 ; R is 0 ).   % 0
+
+% M49: pairs_keys/2 + pairs_values/2 forward modes.
+
+:- dynamic test_pairs_keys_simple/2.
+test_pairs_keys_simple(_, R) :-
+    pairs_keys([a-1, b-2, c-3], Ks),
+    length(Ks, N),
+    R is N.   % 3
+
+:- dynamic test_pairs_keys_first/2.
+test_pairs_keys_first(_, R) :-
+    pairs_keys([10-x, 20-y, 30-z], [F|_]),
+    R is F.   % 10
+
+:- dynamic test_pairs_keys_last/2.
+test_pairs_keys_last(_, R) :-
+    pairs_keys([10-a, 20-b, 30-c], Ks),
+    last(Ks, E),
+    R is E.   % 30
+
+:- dynamic test_pairs_keys_empty/2.
+test_pairs_keys_empty(_, R) :-
+    pairs_keys([], Ks),
+    length(Ks, N),
+    R is N + 11.   % 11
+
+:- dynamic test_pairs_keys_singleton/2.
+test_pairs_keys_singleton(_, R) :-
+    pairs_keys([42-foo], [K]),
+    R is K.   % 42
+
+:- dynamic test_pairs_values_simple/2.
+test_pairs_values_simple(_, R) :-
+    pairs_values([a-10, b-20, c-30], Vs),
+    length(Vs, N),
+    R is N.   % 3
+
+:- dynamic test_pairs_values_first/2.
+test_pairs_values_first(_, R) :-
+    pairs_values([a-100, b-200], [F|_]),
+    R is F.   % 100
+
+:- dynamic test_pairs_values_last/2.
+test_pairs_values_last(_, R) :-
+    pairs_values([a-10, b-20, c-99], Vs),
+    last(Vs, E),
+    R is E.   % 99
+
+:- dynamic test_pairs_values_empty/2.
+test_pairs_values_empty(_, R) :-
+    pairs_values([], Vs),
+    length(Vs, N),
+    R is N + 13.   % 13
+
+% Compose: pairs_keys + pairs_values should reproduce the structure.
+:- dynamic test_pairs_keys_values_sum/2.
+test_pairs_keys_values_sum(_, R) :-
+    P = [10-1, 20-2, 30-3],
+    pairs_keys(P, Ks),
+    pairs_values(P, Vs),
+    sum_list(Ks, SK),
+    sum_list(Vs, SV),
+    R is SK + SV.   % 60 + 6 = 66
+
+% M50: pairs_keys_values/3 forward (single-pass split).
+
+:- dynamic test_pkv_keys_length/2.
+test_pkv_keys_length(_, R) :-
+    pairs_keys_values([a-1, b-2, c-3], Ks, _),
+    length(Ks, N),
+    R is N.   % 3
+
+:- dynamic test_pkv_values_length/2.
+test_pkv_values_length(_, R) :-
+    pairs_keys_values([a-1, b-2, c-3], _, Vs),
+    length(Vs, N),
+    R is N.   % 3
+
+:- dynamic test_pkv_keys_first/2.
+test_pkv_keys_first(_, R) :-
+    pairs_keys_values([10-x, 20-y], [F|_], _),
+    R is F.   % 10
+
+:- dynamic test_pkv_values_first/2.
+test_pkv_values_first(_, R) :-
+    pairs_keys_values([a-100, b-200], _, [F|_]),
+    R is F.   % 100
+
+:- dynamic test_pkv_empty/2.
+test_pkv_empty(_, R) :-
+    pairs_keys_values([], Ks, Vs),
+    length(Ks, NK),
+    length(Vs, NV),
+    R is NK + NV + 17.   % 17
+
+:- dynamic test_pkv_singleton/2.
+test_pkv_singleton(_, R) :-
+    pairs_keys_values([42-99], [K], [V]),
+    R is K + V.   % 141
+
+:- dynamic test_pkv_keys_last/2.
+test_pkv_keys_last(_, R) :-
+    pairs_keys_values([1-x, 2-y, 30-z], Ks, _),
+    last(Ks, E),
+    R is E.   % 30
+
+:- dynamic test_pkv_values_last/2.
+test_pkv_values_last(_, R) :-
+    pairs_keys_values([a-10, b-20, c-99], _, Vs),
+    last(Vs, E),
+    R is E.   % 99
+
+% Cross-check with pairs_keys / pairs_values separately.
+:- dynamic test_pkv_matches_split/2.
+test_pkv_matches_split(_, R) :-
+    P = [10-1, 20-2, 30-3],
+    pairs_keys(P, KsA),
+    pairs_values(P, VsA),
+    pairs_keys_values(P, KsB, VsB),
+    sum_list(KsA, SKA),
+    sum_list(KsB, SKB),
+    sum_list(VsA, SVA),
+    sum_list(VsB, SVB),
+    ( SKA =:= SKB, SVA =:= SVB -> R is 1 ; R is 0 ).   % 1
+
+% M51: pairs_keys_values/3 reverse (zip keys + values into pair list).
+
+:- dynamic test_pkv_rev_length/2.
+test_pkv_rev_length(_, R) :-
+    pairs_keys_values(P, [a, b, c], [1, 2, 3]),
+    length(P, N),
+    R is N.   % 3
+
+:- dynamic test_pkv_rev_roundtrip_keys/2.
+test_pkv_rev_roundtrip_keys(_, R) :-
+    pairs_keys_values(P, [10, 20, 30], [x, y, z]),
+    % P should be [10-x, 20-y, 30-z]; pairs_keys recovers the keys.
+    pairs_keys(P, Ks),
+    sum_list(Ks, S),
+    R is S.   % 60
+
+:- dynamic test_pkv_rev_roundtrip_values/2.
+test_pkv_rev_roundtrip_values(_, R) :-
+    pairs_keys_values(P, [a, b, c], [10, 20, 30]),
+    pairs_values(P, Vs),
+    sum_list(Vs, S),
+    R is S.   % 60
+
+:- dynamic test_pkv_rev_empty/2.
+test_pkv_rev_empty(_, R) :-
+    pairs_keys_values(P, [], []),
+    length(P, N),
+    R is N + 19.   % 19
+
+:- dynamic test_pkv_rev_singleton/2.
+test_pkv_rev_singleton(_, R) :-
+    pairs_keys_values(P, [42], [99]),
+    pairs_keys(P, [K]),
+    pairs_values(P, [V]),
+    R is K + V.   % 141
+
+:- dynamic test_pkv_rev_mismatch_keys_longer/2.
+test_pkv_rev_mismatch_keys_longer(_, R) :-
+    ( pairs_keys_values(_, [a, b, c], [1, 2]) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_pkv_rev_mismatch_values_longer/2.
+test_pkv_rev_mismatch_values_longer(_, R) :-
+    ( pairs_keys_values(_, [a], [1, 2, 3]) -> R is 1 ; R is 0 ).   % 0
+
+% Forward then reverse should reconstruct equivalent structure.
+:- dynamic test_pkv_forward_then_reverse/2.
+test_pkv_forward_then_reverse(_, R) :-
+    pairs_keys_values([10-1, 20-2, 30-3], Ks, Vs),
+    pairs_keys_values(P2, Ks, Vs),
+    pairs_keys(P2, Ks2),
+    sum_list(Ks2, S),
+    R is S.   % 60
+
+% M52: atomic_list_concat/2 (atoms-only mode).
+
+:- dynamic test_alc_simple_length/2.
+test_alc_simple_length(_, R) :-
+    atomic_list_concat([hello, world], A),
+    atom_length(A, N),
+    R is N.   % 10
+
+:- dynamic test_alc_first_code/2.
+test_alc_first_code(_, R) :-
+    atomic_list_concat([hello, world], A),
+    atom_codes(A, [C|_]),
+    R is C.   % 'h' = 104
+
+:- dynamic test_alc_seam_code/2.
+test_alc_seam_code(_, R) :-
+    atomic_list_concat([ab, cd], A),
+    atom_codes(A, [_, _, C, _]),
+    R is C.   % 'c' = 99
+
+:- dynamic test_alc_empty_list/2.
+test_alc_empty_list(_, R) :-
+    atomic_list_concat([], A),
+    atom_length(A, N),
+    R is N + 31.   % 31 -- empty atom
+
+:- dynamic test_alc_singleton/2.
+test_alc_singleton(_, R) :-
+    atomic_list_concat([only], A),
+    atom_length(A, N),
+    R is N.   % 4
+
+:- dynamic test_alc_many/2.
+test_alc_many(_, R) :-
+    atomic_list_concat([a, b, c, d, e], A),
+    atom_length(A, N),
+    R is N.   % 5
+
+:- dynamic test_alc_with_empties/2.
+test_alc_with_empties(_, R) :-
+    atomic_list_concat(['', hi, ''], A),
+    atom_length(A, N),
+    R is N.   % 2
+
+:- dynamic test_alc_dedup/2.
+test_alc_dedup(_, R) :-
+    atomic_list_concat([hi, there], A),
+    atomic_list_concat([hi, there], B),
+    ( A == B -> R is 1 ; R is 0 ).   % 1 -- intern dedupes
+
+% M53: atomic_list_concat/3 with separator (forward, atoms-only).
+
+:- dynamic test_alc3_simple_length/2.
+test_alc3_simple_length(_, R) :-
+    atomic_list_concat([a, b, c], '-', A),
+    atom_length(A, N),
+    R is N.   % 5 -- "a-b-c"
+
+:- dynamic test_alc3_first_code/2.
+test_alc3_first_code(_, R) :-
+    atomic_list_concat([hi, there], '/', A),
+    atom_codes(A, [C|_]),
+    R is C.   % 'h' = 104
+
+:- dynamic test_alc3_sep_code/2.
+test_alc3_sep_code(_, R) :-
+    atomic_list_concat([ab, cd], '/', A),
+    atom_codes(A, [_, _, C, _, _]),
+    R is C.   % '/' = 47
+
+:- dynamic test_alc3_multi_char_sep/2.
+test_alc3_multi_char_sep(_, R) :-
+    atomic_list_concat([a, b], ' :: ', A),
+    atom_length(A, N),
+    R is N.   % 6 = 1 + 4 + 1
+
+:- dynamic test_alc3_empty_list/2.
+test_alc3_empty_list(_, R) :-
+    atomic_list_concat([], '-', A),
+    atom_length(A, N),
+    R is N + 27.   % 27 -- empty result
+
+:- dynamic test_alc3_singleton/2.
+test_alc3_singleton(_, R) :-
+    % Only one element -> separator never appears in output.
+    atomic_list_concat([foo], '/', A),
+    atom_length(A, N),
+    R is N.   % 3
+
+:- dynamic test_alc3_empty_sep/2.
+test_alc3_empty_sep(_, R) :-
+    % Empty separator -> same as atomic_list_concat/2.
+    atomic_list_concat([a, b, c], '', A),
+    atom_length(A, N),
+    R is N.   % 3
+
+:- dynamic test_alc3_dedup/2.
+test_alc3_dedup(_, R) :-
+    atomic_list_concat([a, b], '-', A1),
+    atomic_list_concat([a, b], '-', A2),
+    ( A1 == A2 -> R is 1 ; R is 0 ).   % 1
+
+% Cross-check: alc3 with empty sep equals alc/2.
+:- dynamic test_alc3_matches_alc2/2.
+test_alc3_matches_alc2(_, R) :-
+    atomic_list_concat([hello, world], '', A1),
+    atomic_list_concat([hello, world], A2),
+    ( A1 == A2 -> R is 1 ; R is 0 ).   % 1
+
+% M54: atomic_list_concat/3 split mode (bound Atom + Sep -> Parts).
+
+:- dynamic test_alc3s_simple_count/2.
+test_alc3s_simple_count(_, R) :-
+    atomic_list_concat(Parts, '-', 'a-b-c'),
+    length(Parts, N),
+    R is N.   % 3
+
+:- dynamic test_alc3s_first_length/2.
+test_alc3s_first_length(_, R) :-
+    atomic_list_concat(Parts, '-', 'hello-world'),    % Parts = unbound -> split
+    nth0(0, Parts, P),
+    atom_length(P, N),
+    R is N.   % 5 ("hello")
+
+:- dynamic test_alc3s_last_length/2.
+test_alc3s_last_length(_, R) :-
+    atomic_list_concat(Parts, '/', 'a/bb/ccc'),
+    last(Parts, P),
+    atom_length(P, N),
+    R is N.   % 3 ("ccc")
+
+:- dynamic test_alc3s_no_sep/2.
+test_alc3s_no_sep(_, R) :-
+    % No separator in source -> single-element list with the whole atom.
+    atomic_list_concat(Parts, '-', 'helloworld'),
+    length(Parts, N),
+    R is N.   % 1
+
+:- dynamic test_alc3s_empty_atom/2.
+test_alc3s_empty_atom(_, R) :-
+    atomic_list_concat(Parts, '-', ''),
+    length(Parts, N),
+    R is N.   % 1 -- ['']
+
+:- dynamic test_alc3s_sep_only/2.
+test_alc3s_sep_only(_, R) :-
+    % Atom is exactly the separator -> two empty parts.
+    atomic_list_concat(Parts, '-', '-'),
+    length(Parts, N),
+    R is N.   % 2
+
+:- dynamic test_alc3s_consecutive_seps/2.
+test_alc3s_consecutive_seps(_, R) :-
+    atomic_list_concat(Parts, '-', 'a--b'),
+    length(Parts, N),
+    R is N.   % 3 -- ['a', '', 'b']
+
+:- dynamic test_alc3s_multi_char_sep/2.
+test_alc3s_multi_char_sep(_, R) :-
+    atomic_list_concat(Parts, '::', 'foo::bar::baz'),
+    length(Parts, N),
+    R is N.   % 3
+
+:- dynamic test_alc3s_empty_sep_fails/2.
+test_alc3s_empty_sep_fails(_, R) :-
+    ( atomic_list_concat(_, '', 'abc') -> R is 1 ; R is 0 ).   % 0
+
+% Forward then reverse round-trip recovers parts (atom_codes head check).
+:- dynamic test_alc3s_roundtrip/2.
+test_alc3s_roundtrip(_, R) :-
+    atomic_list_concat([alpha, beta, gamma], '|', Joined),
+    atomic_list_concat(Parts, '|', Joined),
+    length(Parts, N),
+    R is N.   % 3
+
+% M55: atomic_list_concat/2 with Integer heads (snprintf widening).
+
+:- dynamic test_alc_int_only_length/2.
+test_alc_int_only_length(_, R) :-
+    atomic_list_concat([1, 2, 3], A),
+    atom_length(A, N),
+    R is N.   % 3 -- "123"
+
+:- dynamic test_alc_int_first_code/2.
+test_alc_int_first_code(_, R) :-
+    atomic_list_concat([42], A),
+    atom_codes(A, [C|_]),
+    R is C.   % '4' = 52
+
+:- dynamic test_alc_int_negative/2.
+test_alc_int_negative(_, R) :-
+    atomic_list_concat([-7], A),
+    atom_codes(A, [C|_]),
+    R is C.   % '-' = 45
+
+:- dynamic test_alc_mixed_length/2.
+test_alc_mixed_length(_, R) :-
+    atomic_list_concat([foo, 42, bar], A),
+    atom_length(A, N),
+    R is N.   % 8 ("foo42bar")
+
+:- dynamic test_alc_mixed_seam/2.
+test_alc_mixed_seam(_, R) :-
+    atomic_list_concat([ab, 99, cd], A),
+    atom_codes(A, [_, _, C, _, _, _]),    % position 2 is '9'
+    R is C.   % 57
+
+:- dynamic test_alc_int_zero/2.
+test_alc_int_zero(_, R) :-
+    atomic_list_concat([0], A),
+    atom_codes(A, [C|_]),
+    R is C.   % '0' = 48
+
+:- dynamic test_alc_int_last/2.
+test_alc_int_last(_, R) :-
+    atomic_list_concat([prefix, 200], A),
+    atom_length(A, N),
+    R is N.   % 9 ("prefix200")
+
+:- dynamic test_alc_three_ints/2.
+test_alc_three_ints(_, R) :-
+    atomic_list_concat([10, 20, 30], A),
+    atom_codes(A, [_, _, C, _, _, _]),    % position 2 is '2' from "20"
+    R is C.   % 50
+
+% M56: atomic_list_concat/3 with Integer heads.
+
+:- dynamic test_alc3_int_only_length/2.
+test_alc3_int_only_length(_, R) :-
+    atomic_list_concat([1, 2, 3], '-', A),
+    atom_length(A, N),
+    R is N.   % 5 -- "1-2-3"
+
+:- dynamic test_alc3_int_first/2.
+test_alc3_int_first(_, R) :-
+    atomic_list_concat([42], '-', A),
+    atom_codes(A, [C|_]),
+    R is C.   % '4' = 52
+
+:- dynamic test_alc3_int_seam/2.
+test_alc3_int_seam(_, R) :-
+    atomic_list_concat([10, 20], '/', A),
+    atom_codes(A, [_, _, C, _, _]),  % position 2 is '/'
+    R is C.   % 47
+
+:- dynamic test_alc3_int_with_atom/2.
+test_alc3_int_with_atom(_, R) :-
+    atomic_list_concat([foo, 42, bar], '-', A),
+    atom_length(A, N),
+    R is N.   % 10 = 3 + 1 + 2 + 1 + 3
+
+:- dynamic test_alc3_int_negative/2.
+test_alc3_int_negative(_, R) :-
+    atomic_list_concat([-5, 7], '+', A),
+    atom_length(A, N),
+    R is N.   % 4 ("-5+7")
+
+:- dynamic test_alc3_int_multi_char_sep/2.
+test_alc3_int_multi_char_sep(_, R) :-
+    atomic_list_concat([1, 2, 3], ', ', A),
+    atom_length(A, N),
+    R is N.   % 7 -- "1, 2, 3"
+
+:- dynamic test_alc3_int_split_count/2.
+test_alc3_int_split_count(_, R) :-
+    % Forward int + split round-trip.
+    atomic_list_concat([100, 200, 300], '|', Joined),
+    atomic_list_concat(Parts, '|', Joined),
+    length(Parts, N),
+    R is N.   % 3
+
+% M57: Float widening for atomic_list_concat/2 and /3.
+
+:- dynamic test_alc_float_singleton/2.
+test_alc_float_singleton(_, R) :-
+    atomic_list_concat([3.5], A),
+    atom_codes(A, [C|_]),
+    R is C.   % '3' = 51
+
+:- dynamic test_alc_float_with_atom/2.
+test_alc_float_with_atom(_, R) :-
+    atomic_list_concat([pi, '=', 3.14], A),
+    atom_codes(A, [C|_]),
+    R is C.   % 'p' = 112
+
+:- dynamic test_alc_float_with_int/2.
+test_alc_float_with_int(_, R) :-
+    atomic_list_concat([1, 2.5, 3], A),
+    atom_codes(A, [_, _, C|_]),
+    R is C.   % '.' = 46 (position 2 is the decimal point of 2.5)
+
+:- dynamic test_alc3_float_only/2.
+test_alc3_float_only(_, R) :-
+    atomic_list_concat([1.5, 2.5], '+', A),
+    atom_codes(A, [_, _, _, C|_]),    % position 3 is the '+'
+    R is C.   % 43
+
+:- dynamic test_alc3_float_mixed/2.
+test_alc3_float_mixed(_, R) :-
+    atomic_list_concat([x, 1.5, y], ',', A),
+    atom_codes(A, [C|_]),
+    R is C.   % 'x' = 120
+
+% M58: char_type/2 -- check mode.
+
+:- dynamic test_ct_alpha_yes/2.
+test_ct_alpha_yes(_, R) :-
+    ( char_type(a, alpha) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_alpha_no/2.
+test_ct_alpha_no(_, R) :-
+    ( char_type('5', alpha) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_digit_yes/2.
+test_ct_digit_yes(_, R) :-
+    ( char_type('7', digit) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_digit_no/2.
+test_ct_digit_no(_, R) :-
+    ( char_type(z, digit) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_upper_yes/2.
+test_ct_upper_yes(_, R) :-
+    ( char_type('A', upper) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_upper_no/2.
+test_ct_upper_no(_, R) :-
+    ( char_type(a, upper) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_lower_yes/2.
+test_ct_lower_yes(_, R) :-
+    ( char_type(m, lower) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_alnum_letter/2.
+test_ct_alnum_letter(_, R) :-
+    ( char_type(b, alnum) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_alnum_digit/2.
+test_ct_alnum_digit(_, R) :-
+    ( char_type('3', alnum) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_alnum_punct/2.
+test_ct_alnum_punct(_, R) :-
+    ( char_type('!', alnum) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_space_yes/2.
+test_ct_space_yes(_, R) :-
+    ( char_type(' ', space) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_ascii_yes/2.
+test_ct_ascii_yes(_, R) :-
+    ( char_type('A', ascii) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_punct_yes/2.
+test_ct_punct_yes(_, R) :-
+    ( char_type('!', punct) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_punct_no_space/2.
+test_ct_punct_no_space(_, R) :-
+    ( char_type(' ', punct) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_csymf_letter/2.
+test_ct_csymf_letter(_, R) :-
+    ( char_type(z, csymf) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_csymf_underscore/2.
+test_ct_csymf_underscore(_, R) :-
+    ( char_type('_', csymf) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_csymf_digit_no/2.
+test_ct_csymf_digit_no(_, R) :-
+    ( char_type('5', csymf) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_csym_digit_yes/2.
+test_ct_csym_digit_yes(_, R) :-
+    ( char_type('5', csym) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ct_unknown_type/2.
+test_ct_unknown_type(_, R) :-
+    ( char_type(a, bogus) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ct_multichar_atom/2.
+test_ct_multichar_atom(_, R) :-
+    ( char_type(ab, alpha) -> R is 1 ; R is 0 ).   % 0 -- not single-char
+
+% M59: compare/3 -- three-way standard order (Integer / Float / Atom).
+
+:- dynamic test_cmp_int_lt/2.
+test_cmp_int_lt(_, R) :-
+    compare(O, 1, 5),
+    char_code(O, C),
+    R is C.   % '<' = 60
+
+:- dynamic test_cmp_int_eq/2.
+test_cmp_int_eq(_, R) :-
+    compare(O, 7, 7),
+    char_code(O, C),
+    R is C.   % '=' = 61
+
+:- dynamic test_cmp_int_gt/2.
+test_cmp_int_gt(_, R) :-
+    compare(O, 10, 3),
+    char_code(O, C),
+    R is C.   % '>' = 62
+
+:- dynamic test_cmp_neg/2.
+test_cmp_neg(_, R) :-
+    compare(O, -5, 5),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_float_lt/2.
+test_cmp_float_lt(_, R) :-
+    compare(O, 1.5, 2.5),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_order_float_eq/2.
+test_cmp_order_float_eq(_, R) :-
+    compare(O, 3.14, 3.14),
+    char_code(O, C),
+    R is C.   % '='
+
+:- dynamic test_cmp_int_float_mixed/2.
+test_cmp_int_float_mixed(_, R) :-
+    % Numbers compared by value: 2 < 2.5
+    compare(O, 2, 2.5),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_atom_lt/2.
+test_cmp_atom_lt(_, R) :-
+    compare(O, apple, banana),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_atom_eq/2.
+test_cmp_atom_eq(_, R) :-
+    compare(O, hello, hello),
+    char_code(O, C),
+    R is C.   % '='
+
+:- dynamic test_cmp_atom_gt/2.
+test_cmp_atom_gt(_, R) :-
+    compare(O, zebra, apple),
+    char_code(O, C),
+    R is C.   % '>'
+
+:- dynamic test_cmp_num_atom/2.
+test_cmp_num_atom(_, R) :-
+    % Numbers come before atoms in ISO standard order.
+    compare(O, 42, foo),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_atom_num/2.
+test_cmp_atom_num(_, R) :-
+    compare(O, foo, 42),
+    char_code(O, C),
+    R is C.   % '>'
+
+:- dynamic test_cmp_check_mode_lt/2.
+test_cmp_check_mode_lt(_, R) :-
+    % Order bound in advance -- compare just unifies.
+    ( compare(<, 1, 2) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_cmp_check_mode_eq/2.
+test_cmp_check_mode_eq(_, R) :-
+    ( compare(=, foo, foo) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_cmp_check_mode_wrong/2.
+test_cmp_check_mode_wrong(_, R) :-
+    ( compare(>, 1, 5) -> R is 1 ; R is 0 ).   % 0 -- 1 > 5 is false
+
+% M60: must_be/2 fail-instead-of-throw type guard.
+
+:- dynamic test_mb_atom_yes/2.
+test_mb_atom_yes(_, R) :-
+    ( must_be(atom, hello) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_atom_no/2.
+test_mb_atom_no(_, R) :-
+    ( must_be(atom, 42) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_integer_yes/2.
+test_mb_integer_yes(_, R) :-
+    ( must_be(integer, 7) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_integer_no/2.
+test_mb_integer_no(_, R) :-
+    ( must_be(integer, 3.14) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_float_yes/2.
+test_mb_float_yes(_, R) :-
+    ( must_be(float, 2.5) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_number_int/2.
+test_mb_number_int(_, R) :-
+    ( must_be(number, 99) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_number_flt/2.
+test_mb_number_flt(_, R) :-
+    ( must_be(number, 1.5) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_number_atom/2.
+test_mb_number_atom(_, R) :-
+    ( must_be(number, foo) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_compound_yes/2.
+test_mb_compound_yes(_, R) :-
+    ( must_be(compound, [1, 2, 3]) -> R is 1 ; R is 0 ).   % 1 -- list is compound
+
+:- dynamic test_mb_compound_no/2.
+test_mb_compound_no(_, R) :-
+    ( must_be(compound, atom) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_var_yes/2.
+test_mb_var_yes(_, R) :-
+    ( must_be(var, _Fresh) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_var_no/2.
+test_mb_var_no(_, R) :-
+    ( must_be(var, 5) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_nonvar_yes/2.
+test_mb_nonvar_yes(_, R) :-
+    ( must_be(nonvar, 5) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_nonvar_no/2.
+test_mb_nonvar_no(_, R) :-
+    ( must_be(nonvar, _Fresh) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_atomic_atom/2.
+test_mb_atomic_atom(_, R) :-
+    ( must_be(atomic, hello) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_atomic_int/2.
+test_mb_atomic_int(_, R) :-
+    ( must_be(atomic, 7) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_atomic_compound/2.
+test_mb_atomic_compound(_, R) :-
+    ( must_be(atomic, [1, 2]) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_callable_atom/2.
+test_mb_callable_atom(_, R) :-
+    ( must_be(callable, foo) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_callable_compound/2.
+test_mb_callable_compound(_, R) :-
+    ( must_be(callable, [1]) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_callable_int/2.
+test_mb_callable_int(_, R) :-
+    ( must_be(callable, 5) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_list_empty/2.
+test_mb_list_empty(_, R) :-
+    ( must_be(list, []) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_list_cons/2.
+test_mb_list_cons(_, R) :-
+    ( must_be(list, [1, 2]) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_list_no/2.
+test_mb_list_no(_, R) :-
+    ( must_be(list, hello) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_boolean_true/2.
+test_mb_boolean_true(_, R) :-
+    ( must_be(boolean, true) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_boolean_false/2.
+test_mb_boolean_false(_, R) :-
+    ( must_be(boolean, false) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mb_boolean_no/2.
+test_mb_boolean_no(_, R) :-
+    ( must_be(boolean, maybe) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mb_unknown_type/2.
+test_mb_unknown_type(_, R) :-
+    ( must_be(bogus, hello) -> R is 1 ; R is 0 ).   % 0
+
+% M61: display/1 and writeln/1 -- alias for write/1 and write+nl.
+
+:- dynamic test_display_succeeds/2.
+test_display_succeeds(_, R) :-
+    ( display(hello) -> R is 1 ; R is 0 ).   % 1 (and prints ``hello'')
+
+:- dynamic test_display_integer/2.
+test_display_integer(_, R) :-
+    ( display(42) -> R is 1 ; R is 0 ).   % 1 (prints ``42'')
+
+:- dynamic test_display_compound/2.
+test_display_compound(_, R) :-
+    ( display(foo(1, 2)) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_writeln_succeeds/2.
+test_writeln_succeeds(_, R) :-
+    ( writeln(hello) -> R is 1 ; R is 0 ).   % 1 (prints ``hello\n'')
+
+:- dynamic test_writeln_integer/2.
+test_writeln_integer(_, R) :-
+    ( writeln(7) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_writeln_list/2.
+test_writeln_list(_, R) :-
+    ( writeln([1, 2, 3]) -> R is 1 ; R is 0 ).   % 1
+
+% M62: keysort/2 -- stable insertion sort of K-V pairs by Key.
+
+:- dynamic test_ks_int_keys_length/2.
+test_ks_int_keys_length(_, R) :-
+    keysort([3-a, 1-b, 2-c], S),
+    length(S, N),
+    R is N.   % 3
+
+:- dynamic test_ks_int_keys_first/2.
+test_ks_int_keys_first(_, R) :-
+    keysort([3-a, 1-b, 2-c], [K-_|_]),
+    R is K.   % 1 (smallest)
+
+:- dynamic test_ks_int_keys_last/2.
+test_ks_int_keys_last(_, R) :-
+    keysort([5-x, 2-y, 8-z, 1-w], S),
+    last(S, K-_),
+    R is K.   % 8
+
+:- dynamic test_ks_already_sorted/2.
+test_ks_already_sorted(_, R) :-
+    keysort([1-a, 2-b, 3-c], [K-_|_]),
+    R is K.   % 1
+
+:- dynamic test_ks_reverse_sorted/2.
+test_ks_reverse_sorted(_, R) :-
+    keysort([5-a, 4-b, 3-c, 2-d, 1-e], [K-_|_]),
+    R is K.   % 1
+
+:- dynamic test_ks_empty/2.
+test_ks_empty(_, R) :-
+    keysort([], S),
+    length(S, N),
+    R is N + 17.   % 17
+
+:- dynamic test_ks_singleton/2.
+test_ks_singleton(_, R) :-
+    keysort([42-only], [K-_]),
+    R is K.   % 42
+
+:- dynamic test_ks_stable_dupes/2.
+test_ks_stable_dupes(_, R) :-
+    % Equal keys -- check stable order: input order preserved.
+    keysort([2-first, 1-x, 2-second, 1-y], S),
+    nth0(2, S, K-_),
+    R is K.   % 2 (the first 2-pair)
+
+:- dynamic test_ks_atom_keys/2.
+test_ks_atom_keys(_, R) :-
+    keysort([banana-2, apple-1, cherry-3], [K-_|_]),
+    atom_length(K, L),
+    R is L.   % 5 ("apple")
+
+:- dynamic test_ks_atom_keys_value/2.
+test_ks_atom_keys_value(_, R) :-
+    keysort([banana-2, apple-1, cherry-3], [_-V|_]),
+    R is V.   % 1 (apple''s value)
+
+:- dynamic test_ks_float_keys/2.
+test_ks_float_keys(_, R) :-
+    keysort([3.5-a, 1.5-b, 2.5-c], [K-_|_]),
+    R is truncate(K * 10).   % 15
+
+:- dynamic test_ks_mixed_num_keys/2.
+test_ks_mixed_num_keys(_, R) :-
+    % Mixed int/float keys: 1 < 1.5 < 2 < 2.5
+    keysort([2-a, 1.5-b, 1-c, 2.5-d], [K-_|_]),
+    R is K.   % 1
+
+% M63: sort/2 -- standard term order with dedup.
+
+:- dynamic test_sort_int_unique/2.
+test_sort_int_unique(_, R) :-
+    sort([3, 1, 2], L),
+    length(L, N),
+    R is N.   % 3
+
+:- dynamic test_sort_int_first/2.
+test_sort_int_first(_, R) :-
+    sort([5, 2, 8, 1, 3], [F|_]),
+    R is F.   % 1
+
+:- dynamic test_sort_int_last/2.
+test_sort_int_last(_, R) :-
+    sort([5, 2, 8, 1, 3], L),
+    last(L, E),
+    R is E.   % 8
+
+:- dynamic test_sort_dedup/2.
+test_sort_dedup(_, R) :-
+    sort([3, 1, 2, 1, 3, 2], L),
+    length(L, N),
+    R is N.   % 3 (dedup removes duplicates)
+
+:- dynamic test_sort_all_same/2.
+test_sort_all_same(_, R) :-
+    sort([7, 7, 7, 7], L),
+    length(L, N),
+    R is N.   % 1
+
+:- dynamic test_sort_empty/2.
+test_sort_empty(_, R) :-
+    sort([], L),
+    length(L, N),
+    R is N + 23.   % 23
+
+:- dynamic test_sort_singleton/2.
+test_sort_singleton(_, R) :-
+    sort([42], [E]),
+    R is E.   % 42
+
+:- dynamic test_sort_atom_keys/2.
+test_sort_atom_keys(_, R) :-
+    sort([banana, apple, cherry], [F|_]),
+    atom_length(F, L),
+    R is L.   % 5 (apple)
+
+:- dynamic test_sort_atom_dedup/2.
+test_sort_atom_dedup(_, R) :-
+    sort([b, a, c, a, b], L),
+    length(L, N),
+    R is N.   % 3
+
+:- dynamic test_sort_float/2.
+test_sort_float(_, R) :-
+    sort([3.5, 1.5, 2.5], [F|_]),
+    R is truncate(F * 10).   % 15
+
+:- dynamic test_sort_mixed_num/2.
+test_sort_mixed_num(_, R) :-
+    sort([3, 1.5, 2, 1], [F|_]),
+    R is F.   % 1
+
+:- dynamic test_sort_already_sorted/2.
+test_sort_already_sorted(_, R) :-
+    sort([1, 2, 3, 4, 5], L),
+    length(L, N),
+    R is N.   % 5 (no dedup, already sorted)
+
+% M64: compare/3 extension to Compound terms (via @wam_term_cmp helper).
+
+:- dynamic test_cmp_compound_eq/2.
+test_cmp_compound_eq(_, R) :-
+    compare(O, foo(1, 2), foo(1, 2)),
+    char_code(O, C),
+    R is C.   % '='
+
+:- dynamic test_cmp_compound_arity_lt/2.
+test_cmp_compound_arity_lt(_, R) :-
+    % Smaller arity comes first.
+    compare(O, foo(1), foo(1, 2)),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_compound_arity_gt/2.
+test_cmp_compound_arity_gt(_, R) :-
+    compare(O, foo(1, 2, 3), foo(1, 2)),
+    char_code(O, C),
+    R is C.   % '>'
+
+:- dynamic test_cmp_compound_functor_lt/2.
+test_cmp_compound_functor_lt(_, R) :-
+    % Same arity, alphabetical functor order.
+    compare(O, alpha(1, 2), beta(1, 2)),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_compound_arg_lt/2.
+test_cmp_compound_arg_lt(_, R) :-
+    % Same arity + functor, first differing arg decides.
+    compare(O, foo(1, 5), foo(1, 9)),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_compound_arg_gt/2.
+test_cmp_compound_arg_gt(_, R) :-
+    compare(O, foo(2, 5), foo(1, 5)),
+    char_code(O, C),
+    R is C.   % '>'
+
+:- dynamic test_cmp_compound_recursive/2.
+test_cmp_compound_recursive(_, R) :-
+    % Nested compounds -- recursion through args.
+    compare(O, foo(bar(1)), foo(bar(2))),
+    char_code(O, C),
+    R is C.   % '<'
+
+:- dynamic test_cmp_compound_vs_atom/2.
+test_cmp_compound_vs_atom(_, R) :-
+    % Cross-category: Compound > Atom.
+    compare(O, foo(1), bar),
+    char_code(O, C),
+    R is C.   % '>'
+
+:- dynamic test_cmp_lists_via_compound/2.
+test_cmp_lists_via_compound(_, R) :-
+    % Lists are compounds ([|]/2); equal lists compare =.
+    compare(O, [1, 2, 3], [1, 2, 3]),
+    char_code(O, C),
+    R is C.   % '='
+
+:- dynamic test_cmp_lists_diff/2.
+test_cmp_lists_diff(_, R) :-
+    compare(O, [1, 2, 3], [1, 2, 4]),
+    char_code(O, C),
+    R is C.   % '<'
 
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
@@ -1384,6 +3251,683 @@ test_all :-
                    test_sub_atom_full, 0, 5),
        run_test_r0('sub_atom(hi,0,99,_,_) overflow -> 0',
                    test_sub_atom_overflow, 0, 0),
+       format('--- M32 atom_number/2 integer forward + reverse ---~n'),
+       run_test_r0('atom_number(\'42\', N) -> 42',
+                   test_atom_number_fwd, 0, 42),
+       run_test_r0('atom_number(\'-17\', N) -> N + 100 = 83',
+                   test_atom_number_fwd_neg, 0, 83),
+       run_test_r0('atom_number(\'0\', N) -> N + 7 = 7',
+                   test_atom_number_fwd_zero, 0, 7),
+       run_test_r0('atom_number(\'12abc\', _) trailing junk -> 0',
+                   test_atom_number_fwd_bad, 0, 0),
+       run_test_r0('atom_number(\'\', _) empty -> 0',
+                   test_atom_number_fwd_empty, 0, 0),
+       run_test_r0('atom_number(A, 42), atom_length(A) -> 2',
+                   test_atom_number_rev, 0, 2),
+       run_test_r0('atom_number(A, -17), atom_length(A) -> 3',
+                   test_atom_number_rev_neg, 0, 3),
+       run_test_r0('roundtrip atom_number(A,99) twice -> 99',
+                   test_atom_number_roundtrip, 0, 99),
+       format('--- M33 number_codes/2 integer forward + reverse ---~n'),
+       run_test_r0('number_codes(42, [C|_]) first code -> 52 (\'4\')',
+                   test_number_codes_fwd_first, 0, 52),
+       run_test_r0('number_codes(1234, L), length(L) -> 4',
+                   test_number_codes_fwd_length, 0, 4),
+       run_test_r0('number_codes(-5, [C|_]) first code -> 45 (\'-\')',
+                   test_number_codes_fwd_neg_first, 0, 45),
+       run_test_r0('number_codes(N, [52,50]) -> 42',
+                   test_number_codes_rev, 0, 42),
+       run_test_r0('number_codes(N, [45,49,55]) + 100 -> 83',
+                   test_number_codes_rev_neg, 0, 83),
+       run_test_r0('number_codes(_, "1abc") trailing junk -> 0',
+                   test_number_codes_rev_bad, 0, 0),
+       run_test_r0('number_codes(_, []) empty -> 0',
+                   test_number_codes_rev_empty, 0, 0),
+       run_test_r0('roundtrip number_codes(99) -> 99',
+                   test_number_codes_roundtrip, 0, 99),
+       format('--- M34 number_chars/2 integer forward + reverse ---~n'),
+       run_test_r0('number_chars(42, [H|_]) char_code -> 52',
+                   test_number_chars_fwd_head, 0, 52),
+       run_test_r0('number_chars(1234, L), length(L) -> 4',
+                   test_number_chars_fwd_length, 0, 4),
+       run_test_r0('number_chars(-5, [H|_]) char_code -> 45',
+                   test_number_chars_fwd_neg_head, 0, 45),
+       run_test_r0('number_chars(N, [\'4\',\'2\']) -> 42',
+                   test_number_chars_rev, 0, 42),
+       run_test_r0('number_chars(N, [\'-\',\'1\',\'7\']) + 100 -> 83',
+                   test_number_chars_rev_neg, 0, 83),
+       run_test_r0('number_chars(_, [\'1\',a,b,c]) trailing junk -> 0',
+                   test_number_chars_rev_bad, 0, 0),
+       run_test_r0('number_chars(_, []) empty -> 0',
+                   test_number_chars_rev_empty, 0, 0),
+       run_test_r0('roundtrip number_chars(99) -> 99',
+                   test_number_chars_roundtrip, 0, 99),
+       format('--- M35 upcase_atom/2 + downcase_atom/2 ---~n'),
+       run_test_r0('upcase_atom(hello, U), atom_length(U) -> 5',
+                   test_upcase_length, 0, 5),
+       run_test_r0('upcase_atom(hello, U) first code -> 72 (H)',
+                   test_upcase_first_code, 0, 72),
+       run_test_r0('upcase_atom(ab, U) second code -> 66 (B)',
+                   test_upcase_last_code, 0, 66),
+       run_test_r0('upcase_atom(\'hi!\', U) third code -> 33 (!)',
+                   test_upcase_passthrough, 0, 33),
+       run_test_r0('upcase_atom(hello) twice -> same id -> 1',
+                   test_upcase_dedup, 0, 1),
+       run_test_r0('downcase_atom(\'HELLO\', D), atom_length -> 5',
+                   test_downcase_length, 0, 5),
+       run_test_r0('downcase_atom(\'HELLO\', D) first -> 104 (h)',
+                   test_downcase_first_code, 0, 104),
+       run_test_r0('downcase_atom(\'aB\', D) second -> 98 (b)',
+                   test_downcase_mixed, 0, 98),
+       run_test_r0('upcase then downcase roundtrip -> hello -> 1',
+                   test_upcase_downcase_roundtrip, 0, 1),
+       format('--- M36 string-type aliases (atom_string/string_concat/string_length/string_to_atom) ---~n'),
+       run_test_r0('atom_string(hello, S), atom_length(S) -> 5',
+                   test_atom_string_fwd, 0, 5),
+       run_test_r0('atom_string(hello, hello) check -> 1',
+                   test_atom_string_check, 0, 1),
+       run_test_r0('string_to_atom(world, A), atom_length(A) -> 5',
+                   test_string_to_atom_fwd, 0, 5),
+       run_test_r0('string_concat(hi, there, S), atom_length(S) -> 7',
+                   test_string_concat_length, 0, 7),
+       run_test_r0('string_concat(ab, cd, S) first code -> 97',
+                   test_string_concat_first_code, 0, 97),
+       run_test_r0('string_length(hello, N) -> 5',
+                   test_string_length_simple, 0, 5),
+       run_test_r0('string_length(\'\', N) + 42 -> 42',
+                   test_string_length_empty, 0, 42),
+       format('--- M37 nth0/3 + nth1/3 + last/2 list-indexing ---~n'),
+       run_test_r0('nth0(0, [10,20,30], E) -> 10',
+                   test_nth0_first, 0, 10),
+       run_test_r0('nth0(2, [10,20,30,40], E) -> 30',
+                   test_nth0_middle, 0, 30),
+       run_test_r0('nth0(3, [10,20,30,40], E) -> 40',
+                   test_nth0_last, 0, 40),
+       run_test_r0('nth0(5, [10,20], _) overflow -> 0',
+                   test_nth0_overflow, 0, 0),
+       run_test_r0('nth0(-1, [10,20], _) negative -> 0',
+                   test_nth0_negative, 0, 0),
+       run_test_r0('nth1(1, [10,20,30], E) -> 10',
+                   test_nth1_first, 0, 10),
+       run_test_r0('nth1(3, [10,20,30,40], E) -> 30',
+                   test_nth1_third, 0, 30),
+       run_test_r0('nth1(0, [10,20], _) rejects 0 -> 0',
+                   test_nth1_zero, 0, 0),
+       run_test_r0('last([10,20,30], E) -> 30',
+                   test_last_simple, 0, 30),
+       run_test_r0('last([99], E) -> 99',
+                   test_last_singleton, 0, 99),
+       run_test_r0('last([], _) -> 0',
+                   test_last_empty, 0, 0),
+       format('--- M38 reverse/2 deterministic ---~n'),
+       run_test_r0('reverse([10,20,30], L), nth0(0, L) -> 30',
+                   test_reverse_first, 0, 30),
+       run_test_r0('reverse([10,20,30], L), last(L) -> 10',
+                   test_reverse_last, 0, 10),
+       run_test_r0('reverse([1..5], L), length(L) -> 5',
+                   test_reverse_length, 0, 5),
+       run_test_r0('reverse([], L) + 7 -> 7',
+                   test_reverse_empty, 0, 7),
+       run_test_r0('reverse([42], [E]) -> 42',
+                   test_reverse_singleton, 0, 42),
+       run_test_r0('reverse twice idempotent -> 1',
+                   test_reverse_idempotent, 0, 1),
+       format('--- M39 append/3 deterministic ---~n'),
+       run_test_r0('append([1,2,3], [4,5], L), length -> 5',
+                   test_append_length, 0, 5),
+       run_test_r0('append([10,20], [30,40], L), nth0(0) -> 10',
+                   test_append_first, 0, 10),
+       run_test_r0('append([10,20], [30,40], L), nth0(2) -> 30 (seam)',
+                   test_append_seam, 0, 30),
+       run_test_r0('append([10,20], [30,40], L), last -> 40',
+                   test_append_last, 0, 40),
+       run_test_r0('append([], [7,8], L), length -> 2',
+                   test_append_left_empty, 0, 2),
+       run_test_r0('append([7,8], [], L), length -> 2',
+                   test_append_right_empty, 0, 2),
+       run_test_r0('append([], [], L), length + 9 -> 9',
+                   test_append_both_empty, 0, 9),
+       run_test_r0('append + reverse roundtrip -> last becomes first -> 4',
+                   test_append_roundtrip, 0, 4),
+       format('--- M40 memberchk/2 deterministic ---~n'),
+       run_test_r0('memberchk(20, [10,20,30]) -> 1',
+                   test_memberchk_int_hit, 0, 1),
+       run_test_r0('memberchk(99, [10,20,30]) -> 0',
+                   test_memberchk_int_miss, 0, 0),
+       run_test_r0('memberchk(1, []) -> 0',
+                   test_memberchk_int_empty, 0, 0),
+       run_test_r0('memberchk(b, [a,b,c]) -> 1',
+                   test_memberchk_atom_hit, 0, 1),
+       run_test_r0('memberchk(X, [42,99,7]) -> 42',
+                   test_memberchk_bind, 0, 42),
+       run_test_r0('memberchk(5, [3,5,5,9]) first-match -> 1',
+                   test_memberchk_first_match_wins, 0, 1),
+       format('--- M41 delete/3 deterministic ---~n'),
+       run_test_r0('delete([1,2,3], 99, L), length -> 3 (no match)',
+                   test_delete_no_match, 0, 3),
+       run_test_r0('delete([1,2,3], 2, L), length -> 2',
+                   test_delete_single, 0, 2),
+       run_test_r0('delete([1,2,1,3,1], 1, L), length -> 2',
+                   test_delete_multiple, 0, 2),
+       run_test_r0('delete([7,7,7], 7, L), length + 5 -> 5 (empty)',
+                   test_delete_all, 0, 5),
+       run_test_r0('delete([], 1, L), length + 8 -> 8',
+                   test_delete_empty, 0, 8),
+       run_test_r0('delete([1,2,3,4], 1, L), nth0(0) -> 2',
+                   test_delete_first, 0, 2),
+       run_test_r0('delete([1,2,3,99], 99, L), last -> 3',
+                   test_delete_last, 0, 3),
+       run_test_r0('delete([10,5,20,5,30], 5, L), nth0(1) -> 20',
+                   test_delete_preserves_order, 0, 20),
+       format('--- M42 numlist/3 + sum_list/2 ---~n'),
+       run_test_r0('numlist(3, 7, L), length -> 5',
+                   test_numlist_length, 0, 5),
+       run_test_r0('numlist(10, 15, [F|_]) -> 10',
+                   test_numlist_first, 0, 10),
+       run_test_r0('numlist(1, 7, L), last -> 7',
+                   test_numlist_last, 0, 7),
+       run_test_r0('numlist(42, 42, [E]) -> 42',
+                   test_numlist_singleton, 0, 42),
+       run_test_r0('numlist(5, 3, _) empty range -> 0',
+                   test_numlist_empty, 0, 0),
+       run_test_r0('numlist(1, 10) sum_list -> 55',
+                   test_numlist_sum, 0, 55),
+       run_test_r0('sum_list([10,20,30]) -> 60',
+                   test_sum_list_simple, 0, 60),
+       run_test_r0('sum_list([]) + 7 -> 7',
+                   test_sum_list_empty, 0, 7),
+       run_test_r0('sum_list([99]) -> 99',
+                   test_sum_list_singleton, 0, 99),
+       run_test_r0('sumlist([1..5]) alias -> 15',
+                   test_sumlist_alias, 0, 15),
+       format('--- M43 max_list/2 + min_list/2 ---~n'),
+       run_test_r0('max_list([3,7,2,9,5]) -> 9',
+                   test_max_list_simple, 0, 9),
+       run_test_r0('max_list([42]) -> 42',
+                   test_max_list_singleton, 0, 42),
+       run_test_r0('max_list([100,50,25,10]) -> 100',
+                   test_max_list_first_biggest, 0, 100),
+       run_test_r0('max_list([]) -> 0',
+                   test_max_list_empty, 0, 0),
+       run_test_r0('min_list([7,3,9,2,5]) -> 2',
+                   test_min_list_simple, 0, 2),
+       run_test_r0('min_list([42]) -> 42',
+                   test_min_list_singleton, 0, 42),
+       run_test_r0('min_list([1,10,100]) -> 1',
+                   test_min_list_first_smallest, 0, 1),
+       run_test_r0('min_list([]) -> 0',
+                   test_min_list_empty, 0, 0),
+       run_test_r0('max_list - min_list of [4,7,1,9,3] -> 8',
+                   test_max_minus_min, 0, 8),
+       format('--- M44 subtract/3 ---~n'),
+       run_test_r0('subtract([1,2,3], [4,5,6]) disjoint length -> 3',
+                   test_subtract_disjoint, 0, 3),
+       run_test_r0('subtract([1,2,3], [2]) length -> 2',
+                   test_subtract_one, 0, 2),
+       run_test_r0('subtract([1,2,3,4,5], [2,4]) length -> 3',
+                   test_subtract_many, 0, 3),
+       run_test_r0('subtract([1,2,3], [3,2,1]) empty + 7 -> 7',
+                   test_subtract_all, 0, 7),
+       run_test_r0('subtract([], [1,2]) + 8 -> 8',
+                   test_subtract_empty_left, 0, 8),
+       run_test_r0('subtract([7,8,9], []) length -> 3',
+                   test_subtract_empty_right, 0, 3),
+       run_test_r0('subtract([10,20,30,40], [10]) nth0(0) -> 20',
+                   test_subtract_first, 0, 20),
+       run_test_r0('subtract([10,5,20,5,30], [5]) nth0(1) -> 20',
+                   test_subtract_preserves_order, 0, 20),
+       run_test_r0('subtract([1,2,1,3,1], [1]) length -> 2 (all dupes filtered)',
+                   test_subtract_dupes, 0, 2),
+       format('--- M45 intersection/3 ---~n'),
+       run_test_r0('intersection([1,2,3], [4,5,6]) disjoint + 8 -> 8',
+                   test_intersection_disjoint, 0, 8),
+       run_test_r0('intersection([1,2,3], [2]) length -> 1',
+                   test_intersection_one, 0, 1),
+       run_test_r0('intersection([1..5], [2,4,99]) length -> 2',
+                   test_intersection_many, 0, 2),
+       run_test_r0('intersection([1,2,3], [3,2,1]) length -> 3',
+                   test_intersection_all, 0, 3),
+       run_test_r0('intersection([], [1,2]) + 7 -> 7',
+                   test_intersection_empty_left, 0, 7),
+       run_test_r0('intersection([1,2,3], []) + 5 -> 5',
+                   test_intersection_empty_right, 0, 5),
+       run_test_r0('intersection([10,20,30,40], [20,40,99]) nth0(0) -> 20',
+                   test_intersection_first, 0, 20),
+       run_test_r0('intersection([10,5,20,5,30], [5,20]) nth0(2) -> 5',
+                   test_intersection_preserves_order, 0, 5),
+       run_test_r0('intersection([1,2,1,3,1], [1]) length -> 3 (all dupes survive)',
+                   test_intersection_dupes, 0, 3),
+       run_test_r0('intersection + subtract partition reconstruct -> 5',
+                   test_inter_subtract_complement, 0, 5),
+       format('--- M46 union/3 ---~n'),
+       run_test_r0('union([1,2,3], [4,5,6]) disjoint length -> 6',
+                   test_union_disjoint, 0, 6),
+       run_test_r0('union([1,2,3], [2,4,5]) overlap length -> 5',
+                   test_union_overlap, 0, 5),
+       run_test_r0('union([1,2,3], [1,2,3]) identical length -> 3',
+                   test_union_identical, 0, 3),
+       run_test_r0('union([], [7,8,9]) length -> 3',
+                   test_union_empty_left, 0, 3),
+       run_test_r0('union([1,2,3], []) length -> 3',
+                   test_union_empty_right, 0, 3),
+       run_test_r0('union([], []) + 11 -> 11',
+                   test_union_both_empty, 0, 11),
+       run_test_r0('union([10,20], [30,40]) nth0(0) -> 10 (A1 first)',
+                   test_union_a1_first, 0, 10),
+       run_test_r0('union([1,1,2], [3]) length -> 4 (A1 dupes kept)',
+                   test_union_a1_dupes_kept, 0, 4),
+       run_test_r0('union([1,2,3], [2,4]) nth0(3) -> 4 (2 filtered)',
+                   test_union_a2_first_match_filtered, 0, 4),
+       run_test_r0('|union| + |inter| = |A1| + |A2| (8)',
+                   test_union_size_relation, 0, 8),
+       format('--- M47 list_to_set/2 ---~n'),
+       run_test_r0('list_to_set([1,2,3]) length -> 3 (no dupes)',
+                   test_l2s_simple, 0, 3),
+       run_test_r0('list_to_set([1,2,1,3,2]) length -> 3',
+                   test_l2s_dupes, 0, 3),
+       run_test_r0('list_to_set([7,7,7,7]) length -> 1',
+                   test_l2s_all_dupes, 0, 1),
+       run_test_r0('list_to_set([]) + 9 -> 9',
+                   test_l2s_empty, 0, 9),
+       run_test_r0('list_to_set([42], [E]) -> 42',
+                   test_l2s_singleton, 0, 42),
+       run_test_r0('list_to_set([3,1,2,1,3]) nth0(0) -> 3 (first wins)',
+                   test_l2s_order_first, 0, 3),
+       run_test_r0('list_to_set([3,1,2,1,3]) nth0(1) -> 1',
+                   test_l2s_order_second, 0, 1),
+       run_test_r0('list_to_set([3,1,2,1,3]) nth0(2) -> 2',
+                   test_l2s_order_third, 0, 2),
+       run_test_r0('list_to_set([a,b,a,c,b]) length -> 3',
+                   test_l2s_atom_dupes, 0, 3),
+       run_test_r0('list_to_set idempotent on already-a-set -> 3',
+                   test_l2s_idempotent, 0, 3),
+       format('--- M48 string_chars/2 + string_codes/2 aliases + string_code/3 ---~n'),
+       run_test_r0('string_chars(hello, [H|_]) char_code -> 104',
+                   test_string_chars_first, 0, 104),
+       run_test_r0('string_chars(abc, L) length -> 3',
+                   test_string_chars_length, 0, 3),
+       run_test_r0('string_codes(hello, [C|_]) -> 104',
+                   test_string_codes_first, 0, 104),
+       run_test_r0('string_codes(abcde, L) length -> 5',
+                   test_string_codes_length, 0, 5),
+       run_test_r0('string_code(1, hello, C) -> 104 (h)',
+                   test_string_code_first, 0, 104),
+       run_test_r0('string_code(3, abcdef, C) -> 99 (c)',
+                   test_string_code_middle, 0, 99),
+       run_test_r0('string_code(5, hello, C) -> 111 (o)',
+                   test_string_code_last, 0, 111),
+       run_test_r0('string_code(0, hello, _) -> 0 (1-based)',
+                   test_string_code_oob_low, 0, 0),
+       run_test_r0('string_code(99, hello, _) -> 0 (overflow)',
+                   test_string_code_oob_high, 0, 0),
+       format('--- M49 pairs_keys/2 + pairs_values/2 ---~n'),
+       run_test_r0('pairs_keys([a-1, b-2, c-3]) length -> 3',
+                   test_pairs_keys_simple, 0, 3),
+       run_test_r0('pairs_keys([10-x, 20-y, 30-z]) first -> 10',
+                   test_pairs_keys_first, 0, 10),
+       run_test_r0('pairs_keys([10-a, 20-b, 30-c]) last -> 30',
+                   test_pairs_keys_last, 0, 30),
+       run_test_r0('pairs_keys([]) + 11 -> 11',
+                   test_pairs_keys_empty, 0, 11),
+       run_test_r0('pairs_keys([42-foo], [K]) -> 42',
+                   test_pairs_keys_singleton, 0, 42),
+       run_test_r0('pairs_values([a-10, b-20, c-30]) length -> 3',
+                   test_pairs_values_simple, 0, 3),
+       run_test_r0('pairs_values([a-100, b-200]) first -> 100',
+                   test_pairs_values_first, 0, 100),
+       run_test_r0('pairs_values([a-10, b-20, c-99]) last -> 99',
+                   test_pairs_values_last, 0, 99),
+       run_test_r0('pairs_values([]) + 13 -> 13',
+                   test_pairs_values_empty, 0, 13),
+       run_test_r0('pairs_keys + pairs_values sums [10-1, 20-2, 30-3] -> 66',
+                   test_pairs_keys_values_sum, 0, 66),
+       format('--- M50 pairs_keys_values/3 forward (split) ---~n'),
+       run_test_r0('pkv([a-1,b-2,c-3], Ks, _) length -> 3',
+                   test_pkv_keys_length, 0, 3),
+       run_test_r0('pkv([a-1,b-2,c-3], _, Vs) length -> 3',
+                   test_pkv_values_length, 0, 3),
+       run_test_r0('pkv([10-x, 20-y], [F|_], _) -> 10',
+                   test_pkv_keys_first, 0, 10),
+       run_test_r0('pkv([a-100, b-200], _, [F|_]) -> 100',
+                   test_pkv_values_first, 0, 100),
+       run_test_r0('pkv([], Ks, Vs) + 17 -> 17',
+                   test_pkv_empty, 0, 17),
+       run_test_r0('pkv([42-99], [K], [V]) K+V -> 141',
+                   test_pkv_singleton, 0, 141),
+       run_test_r0('pkv last key -> 30',
+                   test_pkv_keys_last, 0, 30),
+       run_test_r0('pkv last value -> 99',
+                   test_pkv_values_last, 0, 99),
+       run_test_r0('pkv matches pairs_keys + pairs_values -> 1',
+                   test_pkv_matches_split, 0, 1),
+       format('--- M51 pairs_keys_values/3 reverse (zip) ---~n'),
+       run_test_r0('pkv(P, [a,b,c], [1,2,3]), length(P) -> 3',
+                   test_pkv_rev_length, 0, 3),
+       run_test_r0('pkv reverse + pairs_keys roundtrip sum -> 60',
+                   test_pkv_rev_roundtrip_keys, 0, 60),
+       run_test_r0('pkv reverse + pairs_values roundtrip sum -> 60',
+                   test_pkv_rev_roundtrip_values, 0, 60),
+       run_test_r0('pkv(P, [], []) + 19 -> 19',
+                   test_pkv_rev_empty, 0, 19),
+       run_test_r0('pkv(P, [42], [99]) K+V -> 141',
+                   test_pkv_rev_singleton, 0, 141),
+       run_test_r0('pkv mismatch keys longer -> 0',
+                   test_pkv_rev_mismatch_keys_longer, 0, 0),
+       run_test_r0('pkv mismatch values longer -> 0',
+                   test_pkv_rev_mismatch_values_longer, 0, 0),
+       run_test_r0('pkv forward then reverse roundtrip sum -> 60',
+                   test_pkv_forward_then_reverse, 0, 60),
+       format('--- M52 atomic_list_concat/2 (atoms-only) ---~n'),
+       run_test_r0('atomic_list_concat([hello, world]) length -> 10',
+                   test_alc_simple_length, 0, 10),
+       run_test_r0('atomic_list_concat([hello, world]) first -> 104',
+                   test_alc_first_code, 0, 104),
+       run_test_r0('atomic_list_concat([ab, cd]) seam -> 99 (c)',
+                   test_alc_seam_code, 0, 99),
+       run_test_r0('atomic_list_concat([]) + 31 -> 31',
+                   test_alc_empty_list, 0, 31),
+       run_test_r0('atomic_list_concat([only]) length -> 4',
+                   test_alc_singleton, 0, 4),
+       run_test_r0('atomic_list_concat([a,b,c,d,e]) length -> 5',
+                   test_alc_many, 0, 5),
+       run_test_r0('atomic_list_concat([\'\', hi, \'\']) length -> 2',
+                   test_alc_with_empties, 0, 2),
+       run_test_r0('atomic_list_concat dedup -> 1',
+                   test_alc_dedup, 0, 1),
+       format('--- M53 atomic_list_concat/3 separator (atoms-only forward) ---~n'),
+       run_test_r0('alc([a,b,c], \'-\') length -> 5',
+                   test_alc3_simple_length, 0, 5),
+       run_test_r0('alc([hi,there], \'/\') first -> 104',
+                   test_alc3_first_code, 0, 104),
+       run_test_r0('alc([ab,cd], \'/\') sep code -> 47',
+                   test_alc3_sep_code, 0, 47),
+       run_test_r0('alc([a,b], \' :: \') length -> 6',
+                   test_alc3_multi_char_sep, 0, 6),
+       run_test_r0('alc([], \'-\') + 27 -> 27',
+                   test_alc3_empty_list, 0, 27),
+       run_test_r0('alc([foo], \'/\') singleton length -> 3',
+                   test_alc3_singleton, 0, 3),
+       run_test_r0('alc([a,b,c], \'\') length -> 3',
+                   test_alc3_empty_sep, 0, 3),
+       run_test_r0('alc/3 dedup -> 1',
+                   test_alc3_dedup, 0, 1),
+       run_test_r0('alc/3 empty sep matches alc/2 -> 1',
+                   test_alc3_matches_alc2, 0, 1),
+       format('--- M54 atomic_list_concat/3 split mode ---~n'),
+       run_test_r0('alc(Parts, \'-\', \'a-b-c\') length -> 3',
+                   test_alc3s_simple_count, 0, 3),
+       run_test_r0('alc([P|_], \'-\', \'hello-world\') first length -> 5',
+                   test_alc3s_first_length, 0, 5),
+       run_test_r0('alc(Parts, \'/\', \'a/bb/ccc\') last length -> 3',
+                   test_alc3s_last_length, 0, 3),
+       run_test_r0('alc(Parts, \'-\', \'helloworld\') -> 1',
+                   test_alc3s_no_sep, 0, 1),
+       run_test_r0('alc(Parts, \'-\', \'\') -> 1 ([\'\'])',
+                   test_alc3s_empty_atom, 0, 1),
+       run_test_r0('alc(Parts, \'-\', \'-\') -> 2 ([\'\', \'\'])',
+                   test_alc3s_sep_only, 0, 2),
+       run_test_r0('alc(Parts, \'-\', \'a--b\') -> 3',
+                   test_alc3s_consecutive_seps, 0, 3),
+       run_test_r0('alc(Parts, \'::\', \'foo::bar::baz\') -> 3',
+                   test_alc3s_multi_char_sep, 0, 3),
+       run_test_r0('alc(_, \'\', _) empty sep -> 0',
+                   test_alc3s_empty_sep_fails, 0, 0),
+       run_test_r0('alc roundtrip count -> 3',
+                   test_alc3s_roundtrip, 0, 3),
+       format('--- M55 atomic_list_concat/2 Integer heads ---~n'),
+       run_test_r0('alc([1,2,3]) atom_length -> 3',
+                   test_alc_int_only_length, 0, 3),
+       run_test_r0('alc([42]) first code -> 52',
+                   test_alc_int_first_code, 0, 52),
+       run_test_r0('alc([-7]) first code -> 45',
+                   test_alc_int_negative, 0, 45),
+       run_test_r0('alc([foo, 42, bar]) length -> 8',
+                   test_alc_mixed_length, 0, 8),
+       run_test_r0('alc([ab, 99, cd]) pos 2 -> 57',
+                   test_alc_mixed_seam, 0, 57),
+       run_test_r0('alc([0]) first code -> 48',
+                   test_alc_int_zero, 0, 48),
+       run_test_r0('alc([prefix, 200]) length -> 9',
+                   test_alc_int_last, 0, 9),
+       run_test_r0('alc([10, 20, 30]) pos 2 -> 50',
+                   test_alc_three_ints, 0, 50),
+       format('--- M56 atomic_list_concat/3 Integer heads ---~n'),
+       run_test_r0('alc([1,2,3], \'-\') length -> 5',
+                   test_alc3_int_only_length, 0, 5),
+       run_test_r0('alc([42], \'-\') first -> 52',
+                   test_alc3_int_first, 0, 52),
+       run_test_r0('alc([10, 20], \'/\') seam -> 47',
+                   test_alc3_int_seam, 0, 47),
+       run_test_r0('alc([foo, 42, bar], \'-\') length -> 10',
+                   test_alc3_int_with_atom, 0, 10),
+       run_test_r0('alc([-5, 7], \'+\') length -> 4',
+                   test_alc3_int_negative, 0, 4),
+       run_test_r0('alc([1,2,3], \', \') length -> 7',
+                   test_alc3_int_multi_char_sep, 0, 7),
+       run_test_r0('alc/3 int + split roundtrip count -> 3',
+                   test_alc3_int_split_count, 0, 3),
+       format('--- M57 atomic_list_concat Float widening ---~n'),
+       run_test_r0('alc([3.5]) first -> 51 (\'3\')',
+                   test_alc_float_singleton, 0, 51),
+       run_test_r0('alc([pi, \'=\', 3.14]) first -> 112 (p)',
+                   test_alc_float_with_atom, 0, 112),
+       run_test_r0('alc([1, 2.5, 3]) pos 2 -> 46 (.)',
+                   test_alc_float_with_int, 0, 46),
+       run_test_r0('alc/3 [1.5, 2.5] / \'+\' pos 3 -> 43',
+                   test_alc3_float_only, 0, 43),
+       run_test_r0('alc/3 [x, 1.5, y] / \',\' first -> 120 (x)',
+                   test_alc3_float_mixed, 0, 120),
+       format('--- M58 char_type/2 (check mode) ---~n'),
+       run_test_r0('char_type(a, alpha) -> 1',
+                   test_ct_alpha_yes, 0, 1),
+       run_test_r0('char_type(\'5\', alpha) -> 0',
+                   test_ct_alpha_no, 0, 0),
+       run_test_r0('char_type(\'7\', digit) -> 1',
+                   test_ct_digit_yes, 0, 1),
+       run_test_r0('char_type(z, digit) -> 0',
+                   test_ct_digit_no, 0, 0),
+       run_test_r0('char_type(\'A\', upper) -> 1',
+                   test_ct_upper_yes, 0, 1),
+       run_test_r0('char_type(a, upper) -> 0',
+                   test_ct_upper_no, 0, 0),
+       run_test_r0('char_type(m, lower) -> 1',
+                   test_ct_lower_yes, 0, 1),
+       run_test_r0('char_type(b, alnum) letter -> 1',
+                   test_ct_alnum_letter, 0, 1),
+       run_test_r0('char_type(\'3\', alnum) digit -> 1',
+                   test_ct_alnum_digit, 0, 1),
+       run_test_r0('char_type(\'!\', alnum) -> 0',
+                   test_ct_alnum_punct, 0, 0),
+       run_test_r0('char_type(\' \', space) -> 1',
+                   test_ct_space_yes, 0, 1),
+       run_test_r0('char_type(\'A\', ascii) -> 1',
+                   test_ct_ascii_yes, 0, 1),
+       run_test_r0('char_type(\'!\', punct) -> 1',
+                   test_ct_punct_yes, 0, 1),
+       run_test_r0('char_type(\' \', punct) -> 0',
+                   test_ct_punct_no_space, 0, 0),
+       run_test_r0('char_type(z, csymf) -> 1',
+                   test_ct_csymf_letter, 0, 1),
+       run_test_r0('char_type(\'_\', csymf) -> 1',
+                   test_ct_csymf_underscore, 0, 1),
+       run_test_r0('char_type(\'5\', csymf) -> 0',
+                   test_ct_csymf_digit_no, 0, 0),
+       run_test_r0('char_type(\'5\', csym) -> 1',
+                   test_ct_csym_digit_yes, 0, 1),
+       run_test_r0('char_type(a, bogus) unknown type -> 0',
+                   test_ct_unknown_type, 0, 0),
+       run_test_r0('char_type(ab, alpha) multichar -> 0',
+                   test_ct_multichar_atom, 0, 0),
+       format('--- M59 compare/3 (Integer / Float / Atom) ---~n'),
+       run_test_r0('compare(O, 1, 5) -> 60 (<)',
+                   test_cmp_int_lt, 0, 60),
+       run_test_r0('compare(O, 7, 7) -> 61 (=)',
+                   test_cmp_int_eq, 0, 61),
+       run_test_r0('compare(O, 10, 3) -> 62 (>)',
+                   test_cmp_int_gt, 0, 62),
+       run_test_r0('compare(O, -5, 5) -> 60 (<)',
+                   test_cmp_neg, 0, 60),
+       run_test_r0('compare(O, 1.5, 2.5) -> 60 (<)',
+                   test_cmp_float_lt, 0, 60),
+       run_test_r0('compare(O, 3.14, 3.14) -> 61 (=)',
+                   test_cmp_order_float_eq, 0, 61),
+       run_test_r0('compare(O, 2, 2.5) mixed -> 60 (<)',
+                   test_cmp_int_float_mixed, 0, 60),
+       run_test_r0('compare(O, apple, banana) -> 60 (<)',
+                   test_cmp_atom_lt, 0, 60),
+       run_test_r0('compare(O, hello, hello) -> 61 (=)',
+                   test_cmp_atom_eq, 0, 61),
+       run_test_r0('compare(O, zebra, apple) -> 62 (>)',
+                   test_cmp_atom_gt, 0, 62),
+       run_test_r0('compare(O, 42, foo) cross-cat -> 60',
+                   test_cmp_num_atom, 0, 60),
+       run_test_r0('compare(O, foo, 42) cross-cat -> 62',
+                   test_cmp_atom_num, 0, 62),
+       run_test_r0('compare(<, 1, 2) check mode -> 1',
+                   test_cmp_check_mode_lt, 0, 1),
+       run_test_r0('compare(=, foo, foo) check mode -> 1',
+                   test_cmp_check_mode_eq, 0, 1),
+       run_test_r0('compare(>, 1, 5) check mode wrong -> 0',
+                   test_cmp_check_mode_wrong, 0, 0),
+       format('--- M60 must_be/2 (fail-instead-of-throw type guard) ---~n'),
+       run_test_r0('must_be(atom, hello) -> 1',
+                   test_mb_atom_yes, 0, 1),
+       run_test_r0('must_be(atom, 42) -> 0',
+                   test_mb_atom_no, 0, 0),
+       run_test_r0('must_be(integer, 7) -> 1',
+                   test_mb_integer_yes, 0, 1),
+       run_test_r0('must_be(integer, 3.14) -> 0',
+                   test_mb_integer_no, 0, 0),
+       run_test_r0('must_be(float, 2.5) -> 1',
+                   test_mb_float_yes, 0, 1),
+       run_test_r0('must_be(number, 99) int -> 1',
+                   test_mb_number_int, 0, 1),
+       run_test_r0('must_be(number, 1.5) flt -> 1',
+                   test_mb_number_flt, 0, 1),
+       run_test_r0('must_be(number, foo) -> 0',
+                   test_mb_number_atom, 0, 0),
+       run_test_r0('must_be(compound, [1,2,3]) -> 1',
+                   test_mb_compound_yes, 0, 1),
+       run_test_r0('must_be(compound, atom) -> 0',
+                   test_mb_compound_no, 0, 0),
+       run_test_r0('must_be(var, _Fresh) -> 1',
+                   test_mb_var_yes, 0, 1),
+       run_test_r0('must_be(var, 5) -> 0',
+                   test_mb_var_no, 0, 0),
+       run_test_r0('must_be(nonvar, 5) -> 1',
+                   test_mb_nonvar_yes, 0, 1),
+       run_test_r0('must_be(nonvar, _Fresh) -> 0',
+                   test_mb_nonvar_no, 0, 0),
+       run_test_r0('must_be(atomic, hello) -> 1',
+                   test_mb_atomic_atom, 0, 1),
+       run_test_r0('must_be(atomic, 7) -> 1',
+                   test_mb_atomic_int, 0, 1),
+       run_test_r0('must_be(atomic, [1,2]) -> 0',
+                   test_mb_atomic_compound, 0, 0),
+       run_test_r0('must_be(callable, foo) -> 1',
+                   test_mb_callable_atom, 0, 1),
+       run_test_r0('must_be(callable, [1]) -> 1',
+                   test_mb_callable_compound, 0, 1),
+       run_test_r0('must_be(callable, 5) -> 0',
+                   test_mb_callable_int, 0, 0),
+       run_test_r0('must_be(list, []) -> 1',
+                   test_mb_list_empty, 0, 1),
+       run_test_r0('must_be(list, [1,2]) -> 1',
+                   test_mb_list_cons, 0, 1),
+       run_test_r0('must_be(list, hello) -> 0',
+                   test_mb_list_no, 0, 0),
+       run_test_r0('must_be(boolean, true) -> 1',
+                   test_mb_boolean_true, 0, 1),
+       run_test_r0('must_be(boolean, false) -> 1',
+                   test_mb_boolean_false, 0, 1),
+       run_test_r0('must_be(boolean, maybe) -> 0',
+                   test_mb_boolean_no, 0, 0),
+       run_test_r0('must_be(bogus, hello) -> 0',
+                   test_mb_unknown_type, 0, 0),
+       format('--- M61 display/1 + writeln/1 ---~n'),
+       run_test_r0('display(hello) succeeds -> 1',
+                   test_display_succeeds, 0, 1),
+       run_test_r0('display(42) -> 1',
+                   test_display_integer, 0, 1),
+       run_test_r0('display(foo(1, 2)) -> 1',
+                   test_display_compound, 0, 1),
+       run_test_r0('writeln(hello) -> 1',
+                   test_writeln_succeeds, 0, 1),
+       run_test_r0('writeln(7) -> 1',
+                   test_writeln_integer, 0, 1),
+       run_test_r0('writeln([1,2,3]) -> 1',
+                   test_writeln_list, 0, 1),
+       format('--- M62 keysort/2 (Integer / Float / Atom keys) ---~n'),
+       run_test_r0('keysort([3-a,1-b,2-c]) length -> 3',
+                   test_ks_int_keys_length, 0, 3),
+       run_test_r0('keysort([3-a,1-b,2-c]) first key -> 1',
+                   test_ks_int_keys_first, 0, 1),
+       run_test_r0('keysort([5-x,2-y,8-z,1-w]) last key -> 8',
+                   test_ks_int_keys_last, 0, 8),
+       run_test_r0('keysort([1-a,2-b,3-c]) already sorted -> 1',
+                   test_ks_already_sorted, 0, 1),
+       run_test_r0('keysort([5..1]-) reverse -> 1',
+                   test_ks_reverse_sorted, 0, 1),
+       run_test_r0('keysort([]) + 17 -> 17',
+                   test_ks_empty, 0, 17),
+       run_test_r0('keysort([42-only]) -> 42',
+                   test_ks_singleton, 0, 42),
+       run_test_r0('keysort stable on equal keys nth0(2) -> 2',
+                   test_ks_stable_dupes, 0, 2),
+       run_test_r0('keysort atom keys first length -> 5 (apple)',
+                   test_ks_atom_keys, 0, 5),
+       run_test_r0('keysort atom keys first value -> 1',
+                   test_ks_atom_keys_value, 0, 1),
+       run_test_r0('keysort float keys first*10 -> 15',
+                   test_ks_float_keys, 0, 15),
+       run_test_r0('keysort mixed num keys first -> 1',
+                   test_ks_mixed_num_keys, 0, 1),
+       format('--- M63 sort/2 (standard order + dedup) ---~n'),
+       run_test_r0('sort([3,1,2]) length -> 3',
+                   test_sort_int_unique, 0, 3),
+       run_test_r0('sort([5,2,8,1,3]) first -> 1',
+                   test_sort_int_first, 0, 1),
+       run_test_r0('sort([5,2,8,1,3]) last -> 8',
+                   test_sort_int_last, 0, 8),
+       run_test_r0('sort([3,1,2,1,3,2]) dedup length -> 3',
+                   test_sort_dedup, 0, 3),
+       run_test_r0('sort([7,7,7,7]) length -> 1',
+                   test_sort_all_same, 0, 1),
+       run_test_r0('sort([]) + 23 -> 23',
+                   test_sort_empty, 0, 23),
+       run_test_r0('sort([42], [E]) -> 42',
+                   test_sort_singleton, 0, 42),
+       run_test_r0('sort atom keys first length -> 5 (apple)',
+                   test_sort_atom_keys, 0, 5),
+       run_test_r0('sort atom dedup length -> 3',
+                   test_sort_atom_dedup, 0, 3),
+       run_test_r0('sort float first*10 -> 15',
+                   test_sort_float, 0, 15),
+       run_test_r0('sort mixed num first -> 1',
+                   test_sort_mixed_num, 0, 1),
+       run_test_r0('sort already-sorted length -> 5',
+                   test_sort_already_sorted, 0, 5),
+       format('--- M64 compare/3 Compound terms (recursive via helper) ---~n'),
+       run_test_r0('compare(O, foo(1,2), foo(1,2)) -> 61 (=)',
+                   test_cmp_compound_eq, 0, 61),
+       run_test_r0('compare(O, foo(1), foo(1,2)) arity lt -> 60',
+                   test_cmp_compound_arity_lt, 0, 60),
+       run_test_r0('compare(O, foo(1,2,3), foo(1,2)) arity gt -> 62',
+                   test_cmp_compound_arity_gt, 0, 62),
+       run_test_r0('compare(O, alpha, beta) functor lt -> 60',
+                   test_cmp_compound_functor_lt, 0, 60),
+       run_test_r0('compare(O, foo(1,5), foo(1,9)) arg lt -> 60',
+                   test_cmp_compound_arg_lt, 0, 60),
+       run_test_r0('compare(O, foo(2,5), foo(1,5)) arg gt -> 62',
+                   test_cmp_compound_arg_gt, 0, 62),
+       run_test_r0('compare nested foo(bar(1)) vs foo(bar(2)) -> 60',
+                   test_cmp_compound_recursive, 0, 60),
+       run_test_r0('compare compound vs atom -> 62 (atom < compound)',
+                   test_cmp_compound_vs_atom, 0, 62),
+       run_test_r0('compare equal lists -> 61',
+                   test_cmp_lists_via_compound, 0, 61),
+       run_test_r0('compare [1,2,3] vs [1,2,4] -> 60',
+                   test_cmp_lists_diff, 0, 60),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),

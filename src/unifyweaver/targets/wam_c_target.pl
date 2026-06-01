@@ -893,7 +893,11 @@ c_static_value_literal(Atom, Lit) :-
     format(atom(Lit), '{ .tag = VAL_ATOM, .data.atom = "~w" }', [Atom]).
 c_static_value_literal(Int, Lit) :-
     integer(Int),
+    !,
     format(atom(Lit), '{ .tag = VAL_INT, .data.integer = ~w }', [Int]).
+c_static_value_literal(Float, Lit) :-
+    float(Float),
+    format(atom(Lit), '{ .tag = VAL_FLOAT, .data.floating = ~16g }', [Float]).
 
 lowered_fact_bucket_arrays(Symbol, Rows, ArraysCode, CasesCode, BucketCount) :-
     findall(First, member([First|_], Rows), FirstValues0),
@@ -1635,14 +1639,14 @@ wam_instruction_to_c_literal(Instr, _, Code) :- wam_instruction_to_c_literal(Ins
 
 c_value_literal(Str, Lit) :-
     string(Str),
-    (   number_string(Int, Str),
-        integer(Int)
-    ->  c_value_literal(Int, Lit)
+    (   number_string(Number, Str)
+    ->  c_value_literal(Number, Lit)
     ;   atom_string(Atom, Str),
         c_value_literal(Atom, Lit)
     ).
 c_value_literal(Atom, Lit) :- atom(Atom), format(atom(Lit), 'val_atom("~w")', [Atom]).
-c_value_literal(Int, Lit) :- integer(Int), format(atom(Lit), 'val_int(~w)', [Int]).
+c_value_literal(Int, Lit) :- integer(Int), !, format(atom(Lit), 'val_int(~w)', [Int]).
+c_value_literal(Float, Lit) :- float(Float), format(atom(Lit), 'val_float(~16g)', [Float]).
 
 c_reg_index(RegStr, IsY, Idx) :-
     string(RegStr),
@@ -2446,6 +2450,11 @@ static bool wam_term_functor(WamState *state, WamValue term,
         *arity_out = 0;
         return true;
     }
+    if (cell->tag == VAL_FLOAT) {
+        *name_out = *cell;
+        *arity_out = 0;
+        return true;
+    }
     if (cell->tag == VAL_LIST) {
         *name_out = val_atom(".");
         *arity_out = 2;
@@ -2585,8 +2594,8 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
         WamValue *a1 = wam_deref_ptr(state, &state->A[0]);
         if (strcmp(op, "atom/1") == 0) return a1->tag == VAL_ATOM;
         if (strcmp(op, "integer/1") == 0) return a1->tag == VAL_INT;
-        if (strcmp(op, "number/1") == 0) return a1->tag == VAL_INT;
-        if (strcmp(op, "float/1") == 0) return false;
+        if (strcmp(op, "number/1") == 0) return a1->tag == VAL_INT || a1->tag == VAL_FLOAT;
+        if (strcmp(op, "float/1") == 0) return a1->tag == VAL_FLOAT;
         if (strcmp(op, "var/1") == 0) return val_is_unbound(*a1);
         if (strcmp(op, "nonvar/1") == 0) return !val_is_unbound(*a1);
         if (strcmp(op, "compound/1") == 0) return a1->tag == VAL_STR || a1->tag == VAL_LIST;
@@ -2615,7 +2624,7 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
         WamValue *arity_cell = wam_deref_ptr(state, &state->A[2]);
         if (arity_cell->tag != VAL_INT || arity_cell->data.integer < 0) return false;
         if (arity_cell->data.integer == 0) {
-            if (name->tag != VAL_ATOM && name->tag != VAL_INT) return false;
+            if (name->tag != VAL_ATOM && name->tag != VAL_INT && name->tag != VAL_FLOAT) return false;
             return wam_unify(state, &state->A[0], name);
         }
         if (name->tag != VAL_ATOM) return false;
@@ -2674,7 +2683,7 @@ void wam_register_transitive_edge(WamState *state, const char *child, const char
     wam_register_category_parent(state, child, parent);
 }
 
-void wam_register_weighted_edge(WamState *state, const char *source, const char *target, int weight) {
+void wam_register_weighted_edge(WamState *state, const char *source, const char *target, double weight) {
     if (state->weighted_edge_count >= state->weighted_edge_cap) {
         state->weighted_edge_cap = state->weighted_edge_cap ? state->weighted_edge_cap * 2 : WAM_INITIAL_CAP;
         state->weighted_edges = realloc(state->weighted_edges, sizeof(WeightedEdge) * state->weighted_edge_cap);
@@ -2685,7 +2694,7 @@ void wam_register_weighted_edge(WamState *state, const char *source, const char 
     state->weighted_edge_count++;
 }
 
-void wam_register_direct_distance_edge(WamState *state, const char *source, const char *target, int distance) {
+void wam_register_direct_distance_edge(WamState *state, const char *source, const char *target, double distance) {
     if (state->direct_distance_edge_count >= state->direct_distance_edge_cap) {
         state->direct_distance_edge_cap = state->direct_distance_edge_cap ? state->direct_distance_edge_cap * 2 : WAM_INITIAL_CAP;
         state->direct_distance_edges = realloc(state->direct_distance_edges, sizeof(WeightedEdge) * state->direct_distance_edge_cap);
@@ -4100,12 +4109,12 @@ static bool wam_weighted_shortest_path_dijkstra(WamState *state,
                                                 const char *start,
                                                 const char *target,
                                                 const char **target_out,
-                                                int *weight_out) {
+                                                double *weight_out) {
     const char *nodes[256];
-    int distances[256];
+    double distances[256];
     bool done[256];
     int node_count = 0;
-    const int inf = 1073741823;
+    const double inf = 1.0e100;
 
     nodes[node_count] = start;
     distances[node_count] = 0;
@@ -4114,7 +4123,7 @@ static bool wam_weighted_shortest_path_dijkstra(WamState *state,
 
     while (true) {
         int best_idx = -1;
-        int best_distance = inf;
+        double best_distance = inf;
         for (int i = 0; i < node_count; i++) {
             if (!done[i] && distances[i] < best_distance) {
                 best_idx = i;
@@ -4159,7 +4168,7 @@ static bool wam_weighted_shortest_path_dijkstra(WamState *state,
 
     if (!target) {
         int best_idx = -1;
-        int best_distance = inf;
+        double best_distance = inf;
         for (int i = 0; i < node_count; i++) {
             if (strcmp(nodes[i], start) != 0 && distances[i] < best_distance) {
                 best_idx = i;
@@ -4191,19 +4200,19 @@ bool wam_weighted_shortest_path_handler(WamState *state, const char *pred, int a
     }
 
     const char *result_target = NULL;
-    int result_weight = 0;
+    double result_weight = 0.0;
     if (!wam_weighted_shortest_path_dijkstra(state, start, target,
                                              &result_target, &result_weight)) {
         return false;
     }
 
     WamValue target_value = val_atom(result_target);
-    WamValue weight_value = val_int(result_weight);
+    WamValue weight_value = val_number_from_double(result_weight);
     return wam_unify(state, &state->A[1], &target_value) &&
            wam_unify(state, &state->A[2], &weight_value);
 }
 
-static int wam_astar_heuristic(WamState *state, const char *node, const char *target) {
+static double wam_astar_heuristic(WamState *state, const char *node, const char *target) {
     for (int i = 0; i < state->direct_distance_edge_count; i++) {
         WeightedEdge *edge = &state->direct_distance_edges[i];
         if (strcmp(edge->source, node) == 0 && strcmp(edge->target, target) == 0) {
@@ -4217,12 +4226,12 @@ static bool wam_astar_shortest_path_search(WamState *state,
                                            const char *start,
                                            const char *target,
                                            int dimensionality,
-                                           int *weight_out) {
+                                           double *weight_out) {
     const char *nodes[256];
-    int distances[256];
+    double distances[256];
     bool done[256];
     int node_count = 0;
-    const int inf = 1073741823;
+    const double inf = 1.0e100;
     (void)dimensionality;
 
     nodes[node_count] = start;
@@ -4232,12 +4241,12 @@ static bool wam_astar_shortest_path_search(WamState *state,
 
     while (true) {
         int best_idx = -1;
-        int best_score = inf;
-        int best_distance = inf;
+        double best_score = inf;
+        double best_distance = inf;
         for (int i = 0; i < node_count; i++) {
             if (done[i]) continue;
-            int heuristic = wam_astar_heuristic(state, nodes[i], target);
-            int score = distances[i] <= inf - heuristic ? distances[i] + heuristic : inf;
+            double heuristic = wam_astar_heuristic(state, nodes[i], target);
+            double score = distances[i] <= inf - heuristic ? distances[i] + heuristic : inf;
             if (score < best_score || (score == best_score && distances[i] < best_distance)) {
                 best_idx = i;
                 best_score = score;
@@ -4293,14 +4302,14 @@ bool wam_astar_shortest_path_handler(WamState *state, const char *pred, int arit
     WamValue *dim_cell = wam_deref_ptr(state, &state->A[2]);
     if (dim_cell->tag != VAL_INT) return false;
 
-    int result_weight = 0;
+    double result_weight = 0.0;
     if (!wam_astar_shortest_path_search(state, start, target,
                                         dim_cell->data.integer,
                                         &result_weight)) {
         return false;
     }
 
-    WamValue weight_value = val_int(result_weight);
+    WamValue weight_value = val_number_from_double(result_weight);
     return wam_unify(state, &state->A[3], &weight_value);
 }
 '.
