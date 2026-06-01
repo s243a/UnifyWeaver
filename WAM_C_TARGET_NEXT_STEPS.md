@@ -10,6 +10,7 @@ Latest branch verification:
 - `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py tests/test_benchmark_target_matrix.py`
 - `python3 tests/test_benchmark_target_matrix.py`
 - `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --target-sets c-wam-child-search-layouts --repetitions 1 --baseline-target c-wam-accumulated-child-scan --run-timeout-seconds 180`
+- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 10x --target-sets c-wam-child-csr-layouts --compile-only-targets c-wam-accumulated-child-csr,c-wam-accumulated-child-csr-drop,c-wam-accumulated-child-csr-lmdb-offset --baseline-target c-wam-accumulated-child-csr`
 - `git diff --check`
 
 Active branch:
@@ -200,14 +201,23 @@ Implemented so far:
   LMDB-offset reverse CSR.
 - Added `c-wam-child-search-layouts` for scan-vs-CSR smoke comparisons and
   `c-wam-child-csr-layouts` for larger CSR-only comparisons.
+- Compile-only matrix rows now report WAM-C artifact byte sizes for TSV, LMDB,
+  CSR index/values, and LMDB-offset stores.
 - `dev` layout smoke shows output parity across scan, sorted-array CSR,
   buffered-pread-drop CSR, and LMDB-offset CSR; runtimes were about
   `0.130-0.145s` for the four variants.
+- `10x` CSR compile-only smoke builds all three CSR layouts in about
+  `0.735-0.811s`; the generated parent TSV is `167,698` bytes, the reverse
+  CSR index is `22,528` bytes, reverse CSR values are `15,728` bytes, and the
+  LMDB-offset store adds `77,824` bytes.
 
 Open measurement:
 
 - `10x` child-search layout runs are not a routine local gate even with a small
   child-expansion cap; run them only as an explicit longer benchmark window.
+- Use compile-only rows for routine larger-scale artifact-size comparisons,
+  then schedule runtime rows separately for scales where child-search query
+  execution is acceptable.
 - Parent-only TSV and LMDB targets remain the priority memory structures for
   current effective-distance workloads. Reverse CSR targets are now available
   for future child-path variants and artifact-layout measurements.
@@ -402,6 +412,8 @@ After hash-bucket row dispatch but before compact row tables:
 ## Suggested Immediate Next Step
 
 Use `c-wam-child-search-layouts` at `dev` as the fast correctness gate and
-`c-wam-child-csr-layouts` for explicit longer larger-scale measurement. Do not
-promote in-memory compressed CSR work until those measurements show that the
-current file-backed CSR layout is the limiting factor.
+`c-wam-child-csr-layouts` in compile-only mode for routine larger-scale
+artifact-size comparisons. Run full child-search runtime rows only in explicit
+longer benchmark windows, and do not promote in-memory compressed CSR work
+until those measurements show that the current file-backed CSR layout is the
+limiting factor.

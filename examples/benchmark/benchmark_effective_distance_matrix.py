@@ -841,7 +841,7 @@ def should_timeout_target(target: str, timeout_targets: set[str]) -> bool:
     return not timeout_targets or target in timeout_targets
 
 
-def compile_only_result(target: str, scale: str, build_seconds: float) -> RunResult:
+def compile_only_result(target: str, scale: str, build_seconds: float, message: str = "") -> RunResult:
     return RunResult(
         target=target,
         scale=scale,
@@ -850,8 +850,59 @@ def compile_only_result(target: str, scale: str, build_seconds: float) -> RunRes
         row_count=0,
         stderr="",
         status="compile_only",
-        message="generated/built but not executed",
+        message=message or "generated/built but not executed",
     )
+
+
+def file_tree_size_bytes(path: Path) -> int:
+    if path.is_file():
+        return path.stat().st_size
+    if path.is_dir():
+        return sum(child.stat().st_size for child in path.rglob("*") if child.is_file())
+    return 0
+
+
+def wam_c_project_dir(root: Path, scale: str, target: str) -> Path | None:
+    profiles = {
+        "c-wam-accumulated": ("kernels_on", "facts_tsv", "parent_only"),
+        "c-wam-accumulated-no-kernels": ("kernels_off", "facts_tsv", "parent_only"),
+        "c-wam-accumulated-lmdb": ("kernels_on", "facts_lmdb", "parent_only"),
+        "c-wam-accumulated-no-kernels-lmdb": ("kernels_off", "facts_lmdb", "parent_only"),
+        "c-wam-accumulated-child-scan": ("kernels_on", "facts_tsv", "child_scan"),
+        "c-wam-accumulated-child-csr": ("kernels_on", "facts_tsv", "child_csr_sorted"),
+        "c-wam-accumulated-child-csr-drop": ("kernels_on", "facts_tsv", "child_csr_buffered_drop"),
+        "c-wam-accumulated-child-csr-lmdb-offset": (
+            "kernels_on",
+            "facts_tsv",
+            "child_csr_lmdb_offset",
+        ),
+    }
+    profile = profiles.get(target)
+    if profile is None:
+        return None
+    kernel_mode, fact_storage, layout_profile = profile
+    return root / f"wam_c_{kernel_mode}_{fact_storage}_{layout_profile}" / scale
+
+
+def wam_c_artifact_size_message(root: Path, scale: str, target: str) -> str:
+    project_dir = wam_c_project_dir(root, scale, target)
+    if project_dir is None:
+        return ""
+    artifacts = [
+        ("category_parent_tsv", project_dir / "category_parent.tsv"),
+        ("category_parent_lmdb", project_dir / "category_parent.lmdb"),
+        ("reverse_csr_index", project_dir / "category_child.csr.idx"),
+        ("reverse_csr_values", project_dir / "category_child.csr.val"),
+        ("reverse_csr_offsets_lmdb", project_dir / "category_child.csr.offsets.lmdb"),
+    ]
+    parts = []
+    for label, path in artifacts:
+        size = file_tree_size_bytes(path)
+        if size > 0:
+            parts.append(f"{label}_bytes={size}")
+    if not parts:
+        return "generated/built but not executed"
+    return "generated/built but not executed; " + " ".join(parts)
 
 
 def failed_result(
@@ -1151,7 +1202,8 @@ def main() -> int:
                     command = commands[target]
                 build_seconds = time.perf_counter() - build_started
                 if target in compile_only_targets:
-                    results.append(compile_only_result(target, scale, build_seconds))
+                    message = wam_c_artifact_size_message(temp_root, scale, target)
+                    results.append(compile_only_result(target, scale, build_seconds, message))
                     continue
                 results.append(
                     benchmark_target(

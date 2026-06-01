@@ -17,6 +17,8 @@ from benchmark_effective_distance_matrix import (  # noqa: E402
     RunResult,
     benchmark_target,
     build_wam_c_effective_distance,
+    compile_only_result,
+    wam_c_artifact_size_message,
     kernel_pair_delta_rows,
     parse_args,
     print_kernel_pair_deltas,
@@ -283,6 +285,42 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
 
         generator_command = run_command_mock.call_args_list[0].args[0]
         self.assertEqual(generator_command[-1], "child_csr_sorted")
+
+    def test_wam_c_artifact_size_message_reports_generated_layout_files(self) -> None:
+        project_dir = (
+            ROOT
+            / "output"
+            / "matrix-test"
+            / "wam_c_kernels_on_facts_tsv_child_csr_sorted"
+            / "dev"
+        )
+        with patch("benchmark_effective_distance_matrix.file_tree_size_bytes") as size_mock:
+            size_mock.side_effect = lambda path: {
+                project_dir / "category_parent.tsv": 100,
+                project_dir / "category_child.csr.idx": 32,
+                project_dir / "category_child.csr.val": 64,
+            }.get(path, 0)
+
+            message = wam_c_artifact_size_message(
+                ROOT / "output" / "matrix-test",
+                "dev",
+                "c-wam-accumulated-child-csr",
+            )
+
+        self.assertIn("category_parent_tsv_bytes=100", message)
+        self.assertIn("reverse_csr_index_bytes=32", message)
+        self.assertIn("reverse_csr_values_bytes=64", message)
+
+    def test_compile_only_result_preserves_artifact_message(self) -> None:
+        result = compile_only_result(
+            "c-wam-accumulated-child-csr",
+            "dev",
+            1.25,
+            "generated/built but not executed; reverse_csr_values_bytes=64",
+        )
+
+        self.assertEqual(result.status, "compile_only")
+        self.assertEqual(result.message, "generated/built but not executed; reverse_csr_values_bytes=64")
 
     def test_kernel_pair_registry_covers_registered_wam_pairs(self) -> None:
         pairs = {(pair.family, pair.mode): pair for pair in KERNEL_TARGET_PAIRS}
