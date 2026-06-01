@@ -3476,6 +3476,9 @@ entry:
     i32 79, label %builtin_writeln
     i32 80, label %builtin_keysort
     i32 81, label %builtin_sort
+    i32 82, label %builtin_tab
+    i32 83, label %builtin_put_char
+    i32 84, label %builtin_put_code
   ]
 
 builtin_is:
@@ -4057,6 +4060,82 @@ srt.b_bind:
   %srt.b_raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %srt.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %srt.b_raw2, %Value %srt.b_acc)
   ret i1 %srt.b_ok
+
+builtin_tab:
+  ; M66: tab(+N) -- write N spaces to stdout. N must be a non-negative
+  ; Integer; negative or non-integer N fails. Each space written via
+  ; @putchar(32).
+  %tab.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %tab.t1 = extractvalue %Value %tab.a1, 0
+  %tab.is_int = icmp eq i32 %tab.t1, 1
+  br i1 %tab.is_int, label %tab.start, label %tab.fail
+tab.fail:
+  ret i1 false
+tab.start:
+  %tab.n = extractvalue %Value %tab.a1, 1
+  %tab.neg = icmp slt i64 %tab.n, 0
+  br i1 %tab.neg, label %tab.fail, label %tab.loop
+tab.loop:
+  %tab.i = phi i64 [ 0, %tab.start ], [ %tab.i_next, %tab.step ]
+  %tab.done = icmp sge i64 %tab.i, %tab.n
+  br i1 %tab.done, label %tab.exit, label %tab.step
+tab.step:
+  call i32 @putchar(i32 32)
+  %tab.i_next = add i64 %tab.i, 1
+  br label %tab.loop
+tab.exit:
+  ret i1 true
+
+builtin_put_char:
+  ; M66: put_char(+Char) -- Char is a single-char atom. Writes its
+  ; first byte to stdout. Non-atom or multi-byte atom fails (latter
+  ; via the length check).
+  %pc.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %pc.t1 = extractvalue %Value %pc.a1, 0
+  %pc.is_atom = icmp eq i32 %pc.t1, 0
+  br i1 %pc.is_atom, label %pc.lookup, label %pc.fail
+pc.fail:
+  ret i1 false
+pc.lookup:
+  %pc.aid = extractvalue %Value %pc.a1, 1
+  %pc.str = call i8* @wam_atom_to_string(i64 %pc.aid)
+  %pc.null = icmp eq i8* %pc.str, null
+  br i1 %pc.null, label %pc.fail, label %pc.check
+pc.check:
+  ; First byte must be non-null and second byte must be null (single-
+  ; char atom).
+  %pc.b0 = load i8, i8* %pc.str
+  %pc.b0_zero = icmp eq i8 %pc.b0, 0
+  br i1 %pc.b0_zero, label %pc.fail, label %pc.check2
+pc.check2:
+  %pc.b1_ptr = getelementptr i8, i8* %pc.str, i32 1
+  %pc.b1 = load i8, i8* %pc.b1_ptr
+  %pc.b1_zero = icmp eq i8 %pc.b1, 0
+  br i1 %pc.b1_zero, label %pc.write, label %pc.fail
+pc.write:
+  %pc.b0_32 = zext i8 %pc.b0 to i32
+  call i32 @putchar(i32 %pc.b0_32)
+  ret i1 true
+
+builtin_put_code:
+  ; M66: put_code(+Code) -- Code is an Integer in [0, 255]. Writes the
+  ; byte directly to stdout.
+  %pco.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %pco.t1 = extractvalue %Value %pco.a1, 0
+  %pco.is_int = icmp eq i32 %pco.t1, 1
+  br i1 %pco.is_int, label %pco.range, label %pco.fail
+pco.fail:
+  ret i1 false
+pco.range:
+  %pco.n = extractvalue %Value %pco.a1, 1
+  %pco.lo = icmp slt i64 %pco.n, 0
+  %pco.hi = icmp sgt i64 %pco.n, 255
+  %pco.bad = or i1 %pco.lo, %pco.hi
+  br i1 %pco.bad, label %pco.fail, label %pco.write
+pco.write:
+  %pco.n32 = trunc i64 %pco.n to i32
+  call i32 @putchar(i32 %pco.n32)
+  ret i1 true
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -10548,6 +10627,9 @@ builtin_op_to_id('display/1', 78).            % alias of write/1 (operator-free 
 builtin_op_to_id('writeln/1', 79).            % write/1 + nl/0 combined
 builtin_op_to_id('keysort/2', 80).            % stable sort of K-V pairs by Key
 builtin_op_to_id('sort/2', 81).               % sort + dedup under standard term order
+builtin_op_to_id('tab/1', 82).                % I/O: print N spaces.
+builtin_op_to_id('put_char/1', 83).           % I/O: print first byte of single-char atom.
+builtin_op_to_id('put_code/1', 84).           % I/O: print byte value as char.
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
